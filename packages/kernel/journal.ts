@@ -1,4 +1,4 @@
-// 日志与世界（kernel.md）：空世界常量、链位置、锚点、重放与段校验。
+// 日志与世界：空世界常量、链位置、锚点、重放与段校验。
 // 逐 op 的机械语义在 journal.apply.ts（允许的点分段拆分），本文件转口其公共件。
 
 import { KernelError } from './types.ts'

@@ -1,4 +1,4 @@
-// 内容哈希（地基，kernel.md）：FIPS 180-4 sha256 + H()；utf8 拆分在 hash.utf8.ts。
+// 内容哈希（地基）：FIPS 180-4 sha256 + H()；utf8 拆分在 hash.utf8.ts。
 // H 走增量压缩：canonical 字符流按 code unit 喂入，凑满 512 位块就地压缩，
 // 不物化整条字节数组。零第三方 import。
 

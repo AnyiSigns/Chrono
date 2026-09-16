@@ -1,4 +1,4 @@
-// 唯一写口（kernel.md）：机械校验（validate）→ 构造（entryOf）→ 应用
+// 唯一写口：机械校验（validate）→ 构造（entryOf）→ 应用
 // （applyEntry 恰一次）→ 回填 argsHash（全库唯一回填点）。判决 = ok/reasons，只管合法性。
 // 形态检查拆分在 commit.form.ts（预算护栏）。
 

@@ -1,9 +1,9 @@
-// 值模型（kernel.md）：类型格、规范序列化、结构相等。纯函数，零 import（types 除外）。
+// 值模型：类型格、规范序列化、结构相等。纯函数，零 import（types 除外）。
 
 import { KernelError } from './types.ts'
 import type { Json } from './types.ts'
 
-/** 类型格的全序标签（`cmp` 跨型比较按此下标，）。运行时冻结：全序口径不可被改写。 */
+/** 类型格的全序标签（`cmp` 跨型比较按此下标）。运行时冻结：全序口径不可被改写。 */
 export const TYPE_ORDER = Object.freeze(['Int', 'Str', 'Bool', 'List', 'Json', 'None'] as const)
 
 /** `TYPE_ORDER` 的取值联合。 */

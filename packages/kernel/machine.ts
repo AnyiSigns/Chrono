@@ -1,4 +1,4 @@
-// 归约机（kernel.md）：8 原语、严格深度优先左到右、无 lambda / 无递归 / 无 while。
+// 归约机：8 原语、严格深度优先左到右、无 lambda / 无递归 / 无 while。
 // 内部求值返回 Json 并抛 KernelError（层层干净），公共 `eval` 收三态；
 // `env` 是共享可变对象（gas / depth / n 靠同一实例累加，evalCall 禁止展开复制）。
 

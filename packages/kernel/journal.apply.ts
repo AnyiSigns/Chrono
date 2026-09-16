@@ -1,4 +1,4 @@
-// 机械语义层（世界的逐 op apply 语义，规格：docs/kernel.md）：applyEntry 与 batch 两段式。
+// 机械语义层（世界的逐 op apply 语义）：applyEntry 与 batch 两段式。
 // 点分段拆分（预算护栏）：两个身份在 journal.id.ts，世界常量与重放/校验在 journal.ts。
 // 别名契约：只改调用方独占的世界副本，**绝不改传入的 Entry**。
 
