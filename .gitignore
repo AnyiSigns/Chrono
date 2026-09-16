@@ -40,3 +40,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Experiment 运行产物
+experiment/tmp/
+experiment/host-state/

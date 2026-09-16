@@ -24,7 +24,30 @@
 
 图 · 作用域 · 通道 · 路由策略 · 提示词 · 参数 · 工具绑定 · UI 描述 · 可见性规则 · 判定标准 —— 全部是**世界内容**。内核不知道里面有什么，只要求它们有身份、有世代、能标注依附。二进制本体不住在世界里：权重、模型、构建产物只以"声明 + 哈希 + 平台"的形式进 `defs`，本体归宿主存储或包注册表。
 
-一份内容怎么分类（可训 / 冻结 / 检索绑定 / 可搜索，或上层想用的任何别的名字），是上层的事。**内核不要求任何分类字段**：`Identity` 只有 `id` / `schema` / `gens` / `active` / `born`（§7），没有 class，也没有标签位。上层要分组，用它已有的手段——`schema` 指向一份 def、`pins` 挂一个引用、或写在自己的 body 里——那都是世界内容，不是内核结构。
+一份内容怎么分类（可训 / 冻结 / 检索绑定 / 可搜索，或上层想用的任何别的名字），是上层的事。**内核不要求任何分类字段**：`Identity` 只有 `id` / `schema` / `gens` / `active` / `born`（§7），没有 class，也没有标签位。上层要分组，用它已有的手段——`schema` 指向一份 def、`pins` 挂一个引用、或写在自己的 body 里——那都是世界内容，不是内核结构。但分组归分组，**结构性依赖的唯一记录处是 `pins`**（规矩 A，§0.4）：body 里的哈希只是业务数据值。
+
+## 0.4 四档：什么住在哪
+
+热路径的成本几乎全部来自一个混淆：**把"只是发生过的事"当成"决定世界现在是什么的事"**。按**是不是声明** × **能不能重算**两个轴分四档——"声明"就是"是事实就得进世界、被记账"；大小只是结果，不是判据。
+
+| 档 | 判据 | 住在哪 | 内核为它付什么 | 丢了的后果 |
+|---|---|---|---|---|
+| **① 声明** | 影响"世界现在是什么"，需要被引用 / pin：**含源码文本** | `defs` + `ids` | 哈希它（写一次、全量审计重放一次）、克隆、进摘要、进依附判定 | **不可丢** |
+| **② 留痕** | 只需"发生过、不可抵赖"，不需被引用 | `Entry.args`（载荷 note，§11.2），被链覆盖 | 一次 `H(args)` 进链；**不**克隆、**不**摘要、**不**进闭包 | 可归档，**不可删** |
+| **③ 可重算的本体** | 大，但能由 ① 重新算出来 | 宿主**缓存** | **零** | 丢了重建即可：构建产物、索引、解析结果 |
+| **④ 不可重算的本体** | 大，且算不回来 | 宿主**持久存储** | **零**（世界只存"哈希 + 平台"声明） | 丢了就真没了：训练权重、外部抓取的数据、用户上传原始件 |
+
+③ 与 ④ 在**协议上同形**（世界里都是一条"哈希 + 平台"声明），区别只在宿主的保留策略。
+
+**源码为什么必须在 ①**（不因大而外迁）：① **回滚承诺**——回滚一个插件 = `set_active` 指回旧 payload，一个记账动作，前提是旧世代源码必然还在；住进"可丢弃缓存"，承诺即为假。② **依附判定**——换源码必须判得出旧内容失效，`pins` 得指得到它。③ **无特权**——给"代码"开"其实住在外面"的例外就是内建特权（§2）。
+
+**会话类产品的税（写死，别让它意外发生）**：分支编辑重放的 `defs` 字节 ∝ **总尝试次数**而非会话数（每次重做的声明都追加、不折叠）——四档在此用法下不是优化，是**前置条件**：会话正文与工具结果属 ②③，只有"线 / 世代 / 依赖声明"属 ①。
+
+**一条内核永远给不出的保证**：内核不认识"引用"，所以一份 def 引用的内容没了，它照样合法。**"声明完整"永远是宿主算出来的**（闭包是宿主动词）。
+
+**规矩 A：结构性依赖只走 `pins`，`pins` 是唯一记录处。** 判据一句话——"**被引用的那份 def 不在世界里，这份 def 还成立吗？**"不成立 ⇒ 它是依赖 ⇒ 必须是 `pins` 的一项；body 里的哈希只能是业务数据值。这样闭包 = 宿主沿 `pins` 做一次**只读遍历**（内核仍不提供该算法、仍不解释 pin 名——§22），归档裁剪、跨世界搬运、`stale()` 依附判定全部随之可执行。**内核无法强制这点**（它不读 body）：漏写 pins 不会被拒，只会让 `stale()` 静默失效（§11.3"双缺 → false"）——不报错的错，所以门禁以数据落在上层（宿主在采纳前求值判据 term，M2 的本分）。
+
+**规矩 B：留痕走链，声明走世界。** 带内容的记录不该为了"能被记住"而挤进热世界；`note` 载荷就是 ② 的实现（§11.2 形状表）。**② 换到的是 RAM / 克隆 / 摘要，不省哈希时间**——把大字节塞进 `note` 只是把 RAM 墙换成时间墙，所以 ② 放摘要级、③④ 放本体；载荷大小由**宿主门禁**限制（不是内核常量，§2）。
 
 ---
 
@@ -146,6 +169,8 @@
 
 > **宿主必须为每个 `EffRequest → EffResult` 留存配对的审计记录**（谁执行、何时、实际入参、返回/错误），并把该记录 `put` 成 def、经 `request.ref` 指向它（§7）。没有这一步，"世界可追溯"只对**写**成立、对**效果**不成立——而真实世界的副作用恰恰发生在效果侧。内核把 `ref` 原样进 `entryHash`，篡改会被链校验发现；但**留没留、内容真不真，是宿主的责任**。
 
+> **宿主落盘字节保真（与审计契约并列的硬契约）**：`Entry.args` 按存取的字节原样落盘、原样恢复。判据只有一条——**能否逐字节还原**。编解码器（gzip / zstd 字典 / 块级差量；解压后字节相同）**合法**；语义往返（`parse` 后再 `stringify`、按字段重建对象、丢未知字段、键序漂移）**非法**——`argsHash` 对不上时损失的不是某条记录，是**整条链在那个位置断**。差量与压缩因此归存储层，不碰世界语义（§6.1、规模实验 C/G 段）。
+
 一句话给产品：**能机械校验"合法"，不等于能保证"合理"。** 判决与机械校验守护的是"改坏了能退、非法进不来、历史改不掉"，不是"这个进化方向是对的"。后者永远是上层（研究 + 审核）的事。
 
 ---
@@ -178,7 +203,7 @@ packages/kernel/
   machine.test.ts
   run.ts                编排：输入 → 输出（含 observationsOf）
   run.test.ts
-  invariants.test.ts    第 14 节的 15 条不变量（跨模块）
+  invariants.test.ts    第 14 节的 16 条不变量（跨模块）
 ```
 
 **测试与被测文件同目录**（`coding-standard.md` §7.2），不建 `test/` 子目录，也不镜像路径。`*.test.ts` 由评审写（§5.4），实现者的提交里不含它们。`index.ts` **从 P0 起就存在**，每批追加本批的导出（口径见 §5.4）。
@@ -235,7 +260,7 @@ packages/kernel/
 
 | # | 决定 | 理由 |
 |---|---|---|
-| D1 | **两把身份分开**：位置 `pos`（链头哈希，O(1)）用于并发与链完整性；内容 `wrev = H({defs 的键集, ids 内容摘要})`（O(defs)）用于快照锚点与跨世界比较，**按需算**。摘要只吃 `schema` / `active` / 各 gen 的内容哈希，**不吃 `born` / `adopted` 履历**（定义见 §10.1"两个身份的分工"） | 内容哈希必须覆盖语义，但把它挂在每次写入上会退化成 O(世界)/条。拆开后写入只碰 O(1) 的 `pos`。`wrev` 用键集而非序列化 body：键本身就是 `H(Def)`，语义等价、成本降一个量级。摘除履历字段：否则同内容同 `active` 而采纳历史不同的世界锚点不同，pin 无端漂移。都不做可达闭包——闭包要求内核认识 body 里的引用标记 = 认识语义 |
+| D1 | **两把身份分开**：位置 `pos`（链头哈希，O(1)）用于并发与链完整性；内容 `wrev = H({defs 的键集, ids 内容摘要})`（O(defs)）用于快照锚点与跨世界比较，**按需算**。摘要只吃 `schema` / `active` / 各 gen 的内容哈希，**不吃 `born` / `adopted` 履历**（定义见 §10.1"两个身份的分工"） | 内容哈希必须覆盖语义，但把它挂在每次写入上会退化成 O(世界)/条。拆开后写入只碰 O(1) 的 `pos`。`wrev` 用键集而非序列化 body：键本身就是 `H(Def)`，语义等价、成本降一个量级。摘除履历字段：否则同内容同 `active` 而采纳历史不同的世界锚点不同，pin 无端漂移。都不做可达闭包——闭包要求内核认识 body 里的引用标记 = 认识语义（§0.4 规矩 A 使"上层沿 pins 算闭包、不解析 body"成为可能，内核仍不提供该算法） |
 | D2 | **不捕获续体**：效果结果由输入回灌，从入口重跑 | 确定性重跑本身就是复现；捕获续体要序列化求值栈，复杂且易错 |
 | D3 | **`eff_id = H({run, i, n})`**：`i` = directive 序号，`n` = 该次求值内的效果序号 | 需要一个确定性的效果身份才能把结果对上号。只带 `n` 会在同一次调用内多次求值时碰撞，所以必须带上 `i` |
 | D4 | **错误一律抛 `KernelError{ code }`**，只在 `run` 的边界 catch 并转成 `refused(reasons)` | 内层（`canonicalJson` / `H` / `t` / `walk` / `eval`）返回类型保持干净（`string` / `Hash` / `Json`），不必层层解包 `Result`；错误码表就是 §12.5 与各节边界表，测试用 `toThrow` 断言 `code` |
@@ -246,7 +271,7 @@ packages/kernel/
 | 角色 | 交付物 | 不做什么 |
 |---|---|---|
 | **实现者** | 非 `*.test.ts` 的实现文件；`npx tsc --noEmit` 零错误、`npx prettier --check .` 零差异、文件与函数行数达标 | **不写测试**；不改测试；不为测试加导出或开关 |
-| **评审者** | `*.test.ts`（§8.6 / §9.6 / §10.5 / §11.4 / §12.6 / §13.3 的清单 + §14 的 15 条不变量） | 不改实现；不迁就实现放宽断言 |
+| **评审者** | `*.test.ts`（§8.6 / §9.6 / §10.5 / §11.4 / §12.6 / §13.3 的清单 + §14 的 16 条不变量） | 不改实现；不迁就实现放宽断言 |
 
 测试是**评审的产物与证据**，不是实现者的自证。三条硬后果：
 
@@ -299,7 +324,7 @@ export type Path = (string | number)[]
 // ── 世界 ──────────────────────────────────────────────
 export interface Def {
   body: Json
-  pins?: Record<string, Hash>        // 不透明：内核不解释 pin 名
+  pins?: Record<string, Hash>        // 结构性依赖唯一记录处（§0.4 规矩 A）；名不透明：内核不解释（§11.2②）
   sig?: Hash
 }
 // Def 就是 put 的载荷本身：`put.args: Def`，`defs[H(Def)] = Def`。
@@ -594,6 +619,8 @@ export function applyEntry(w: World, e: Entry, adoptedBy?: Hash):
 export function replay(entries: Entry[], from?: World): World          // 只重建，不校验链；from 缺省 = EMPTY_WORLD
 export function verify(entries: Entry[], anchor?: Anchor,
                        expected?: { hashes?: Hash[]; worldRev?: Hash }): { ok: boolean; error?: string }
+                                                        // **不抛**：一切失败转返回码——含链内 snapshot 自校
+                                                        // 失败的 world_rev_mismatch（§10.4；replay 保持抛，契约不同）
 export function entryHash(e: Entry): Hash               // H({at, seq, prev, op, argsHash, by, ref}) —— O(1)；
                                                         // 前提：e.argsHash 已定（commit 回填后，或已落盘 entry）
 export function anchorAfter(world: World, e: Entry): Anchor   // { world, head: { seq: e.seq, hash: entryHash(e) } }
@@ -609,7 +636,7 @@ export function anchorAfter(world: World, e: Entry): Anchor   // { world, head: 
 |---|---|---|
 | `put` | `H(Def)` —— 与 `defs` 的键**是同一个值** | 零（键本来就要算） |
 | `batch` | `H({ops: [[op_i, h_i], …]})`，`h_i` = 各子操作的 `argsHash`（`argsHashOf` 纯哈希预计算，两段式段 1，§10.3） | O(子操作数)，不吃总字节 |
-| 其它 | `H(args)`（载荷都小：`payload` / `sig` / `pins` / `world_rev` 全是哈希） | 一次，且只有这一次 |
+| 其它 | `H(args)`（`payload` / `sig` / `pins` / `world_rev` 全是小哈希；`note` 可带留痕载荷，见 §11.2 形状表） | 一次，且只有这一次 |
 
 四条性质：
 
@@ -687,12 +714,13 @@ fork:         add_identity 且 born.parent = args.parent
 graft:        add_gen 且带 graft:{from,gen}（from 是身份 id，且该身份的 gen 必须存在）
 batch:        见 10.3（段 1 重算子哈希并聚合 argsHash；段 2 逐子应用，adoptedBy = 外层位置；
               所有子操作都 isNoop → isNoop = true）
-note:         世界不变，仅审计（isNoop 恒 false）
+note:         世界不变，仅留痕（isNoop 恒 false——**故意不去重**：同载荷提交两次是两条 entry；
+              "处理过没有"归上层 WriteRequest.id，不归内核）。args 为任意 JSON 对象 = 留痕载荷（② 档，§0.4 规矩 B）
 snapshot:     args = { world_rev }；先自校 worldRev(world) === args.world_rev，不符 → Err('world_rev_mismatch')
               世界不变（worldRev 因此不变），但 isNoop 恒 false；快照的位置由该 entry 的 seq / entryHash 唯一确定（见 10.7）
 ```
 
-非 `put` / `batch` 的 op：`argsHash = H(args)`（一次规范化，载荷都小）。
+非 `put` / `batch` 的 op：`argsHash = H(args)`（一次规范化；`payload` / `sig` / `pins` / `world_rev` 全是小哈希——例外只有 `note` 的留痕载荷：唯一可能带大 args 的非 batch op，换到的是**不进 `defs`**（不克隆、不摘要），**不省哈希时间**——规矩 B，§0.4）。
 
 `at` / `by` 直读 `Entry` 自身，`write` 由 `Entry` + `adoptedBy` 确定性地派生（§10.2 步①），所以 `replay` 与 `run` 得到逐字段相同的世界。
 
@@ -747,6 +775,8 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 
 **与 `applyEntry` 的接线**：`applyEntry` 遇 `op === 'batch'`，转 `batch(w, e.args, e, adoptedBy)`——步① = 段 1（得 `argsHash`，且当 `adoptedBy` 为空时由它算出本批的 `outerPos`），步② = 段 2（就地改 `w`、失败回滚），然后原样上报 `{ argsHash, isNoop, written }`——没有第二套语义。`argsHash` 的回填只发生在 `commit`（§11.1）；`batch` 与 `applyEntry` 都不改传给它的那个 `e`。因为每批都从日志里**替换前**的 `args` 重新替换，`replay` / `verify` 必然算出与存值一致的 `argsHash`——这也是"改 `args` 不改 `argsHash`"能被抓出来的前提。`argsHashOf` / `substitute` 是内部函数，经 `batch` / `verify` 间接验收（§5.4）。
 
+**dup 短路（全 `put` 批）**：段 1 预哈希后，若**全部**子操作都是 `put` 且全部键已在 `defs`——直接定论 `isNoop = true`、`written = []`，跳过段 2（重试不重付 apply 账；崩溃恢复的常态路径）。边界写死：含任何非 `put`（或嵌套 batch）的批仍走段 2——非 `put` 的 `isNoop` 不由键存在性决定。短路不改任何形态：判决字段与走段 2 的定论逐字段一致、`entry === null`、链哈希无差；段 1 的哈希账不可免（那是 `argsHash`，链格式）。
+
 ### 10.4 边界表
 
 | 场景 | 期望 |
@@ -763,7 +793,7 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 | `batch` 内 `add_gen` / `graft` | `adopted.write` === **外层 batch entry 的 `entryHash`**（真实链上位置，非幻影；§10.3 两段式） |
 | `batch` 内第二个 `add_identity` 撞同一批次第一个新开的 id | 段 2 失败 → 整批逆序回滚，`commit` 转 `id_taken` 拒绝（`validate` 不递归 batch，§11.2） |
 | `snapshot` entry | 世界不变（`worldRev` 因此不变）；仅追加一条审计 |
-| `snapshot` 的 `world_rev` 与实算不符 | `Err('world_rev_mismatch')` |
+| `snapshot` 的 `world_rev` 与实算不符 | `applyEntry` 抛 `KernelError('world_rev_mismatch')`；`verify`（含 `run` 路径**之外**的一切调用方）由它 **catch 转返回码** → `{ok:false, error:'world_rev_mismatch'}`——verify 自己从不抛；`replay` 保持抛（它的契约就是抛，§10.1 / §19 / §20） |
 | 改一条 entry 的 `args` 但不改 `argsHash` | `verify` → `{ok:false, error:'args_hash_mismatch'}`（§10.1 第 3 条） |
 | `verify` 遇到 `seq` / `prev` 不接，或传入了 `expected` 但对不上 | `{ok:false, error:'chain_broken'}` |
 | `verify` / `replay` 的 `applyEntry` 失败 | `{ok:false, error:'apply_failed'}` / `Err('apply_failed')`（同一个码） |
@@ -774,6 +804,13 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 
 边界表逐条；`replay(entries)` 与逐步 `applyEntry` 一致且**逐字段**复现（含 `ids` 的 `at` / `by` / `write`）；**`replay(tailEntries, snapshotWorld)` 的 `worldRev` === `replay(allEntries)` 的 `worldRev`**（这条是长链安全的核心断言）；`verify(allEntries)` 正例、`verify(tailEntries, anchorAfter(snap))` 正例、篡改一条 entry 后 `chain_broken`；改 `args` 不改 `argsHash` → `args_hash_mismatch`（前提：`applyEntry` 不覆写存值——**冻结入参断言**，不变量 15）；`entryHash` 的 `prev` 链可校验；`worldRev(EMPTY_WORLD)` 稳定；`batch` 的 `argsHash` 由子哈希聚合（计数桩：聚合只碰子操作数）；**批内 `add_gen` 的 `adopted.write` === 外层 batch entry 的 `entryHash`、普通 `add_gen` 的 === 自身**；`worldRev` 摘要不吃 `born`/`adopted`（同内容同 active、履历不同的两世界摘要相等的构造例）。
 
+本轮新增（T3 / T5 口径，§10.4 / §10.3）：
+
+1. 篡改链中 `snapshot` 的 `world_rev` → `verify` **返回** `{ok:false, error:'world_rev_mismatch'}`（不是抛；`applyEntry` 直测仍抛，两口径各一例）。
+2. **`replay(尾段, 错的基础)` 不报错**——把"不保证"写死成断言：例 = 尾段一条 `add_identity` 在真实历史上本该撞 `id_taken` 而被拒，接在一个缺前缀的基础上却成功 ⇒ 产出链上从未被授权的世界；随后 `verify(尾段, anchor)` 用 `chain_broken` 抓出同一构造。
+3. 完整三步 `verify([], anchorAfter(基础,快照), {worldRev: 快照.args.world_rev})` → `verify(段, anchorAfter(基础,快照))` → `replay(段, 基础)`，结果与 `full` 逐字段等价（§0.4 规矩 A 的宿主义务）。
+4. **全 `put` 幂等批短路**（T5）：计数桩断言同批 `H` 次数从 `2N → N`；短路前后 `verdict`（`ok`/`reasons`/`pos`/`written`）与走段 2 的现实现逐字段一致且 `entry === null`；含非 `put` 的混合批不短路。
+
 ### 10.6 日志就是那条链（内核没有"补丁链"这个概念）
 
 | 上层概念 | 内核里的形态 |
@@ -782,6 +819,8 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 | 一个补丁 | 一条 `Entry`（由 `WriteRequest` 产生） |
 | 审批态（pending / approved / rejected） | 不在内核，在上层 |
 | 回滚补丁 | **追加一条 `Entry`**（`set_active` 指回旧世代），不是删节点 |
+| 分支（"一条线"） | **身份**，不是链上的一段：一条线 = `add_identity` / `fork`；线的一次状态 = `add_gen`（payload 指向那一刻的全量内容）；"哪条线为真" = `set_active` |
+| 编辑重放（"截断 + 新分支"） | 表达为：从被编辑的世代 `add_gen` 新 payload + `set_active` 指过去——**旧线仍在链上，只是不再被取用**。**真截断禁止**（删尾部 = 改历史 = 弃三承诺之一，不能既要又要）。行级归属用 `Entry.ref` 约定：宿主让它指向"这条线"的 def（§7），**分组过滤在宿主，内核不解释**——挪到这格反而更强：旧线可审计，且旧线上已真实执行的效果有据可查，重放不会把已花掉的钱、已发出的请求再花一遍（§12.4 幂等端口缓存） |
 | 补丁的 kind 枚举 | 不存在——业务种类是上层对日志的**过滤视图** |
 
 **删除在内核里根本不存在**，所以回滚可逆、可重放、可对照。审计闭环靠三个字段：`Entry.at`（何时）+ `Entry.by`（谁提的）+ `Entry.ref`（指向世界里上层写的审计记录，内核不解释其内容）——三者都进 `entryHash`，所以改任何一个都会被链校验发现。
@@ -814,6 +853,7 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 3. **段的独立性**：归档段 `[a..b]` 失热后仍要审计 = `verify(段, anchorAfter(seq a-1 的 entry), expected?)`——每段自带起点与终点哈希，"没删东西"的承诺由锚点兑现，不靠热路径全量在场。
 4. **冷启动顺序**：取最近快照的世界与 entry 位置 → 用 (2) 校验热段 → `replay(hotEntries, snapWorld)` 得当前世界；任一步红 = 宿主存储被改或节拍有 bug，拒绝挂载（内核不猜）。
 5. 快照频率、保留份数、冷存储分层 = **宿主 manifest 的参数，不是内核常量**；本文件只锁协议，不锁节拍。
+6. **归档时的保留集** = 尾段引用集（热段各 op 的 `args` 里内核认识的 Hash 字段之并：`payload` / `sig` / `pins.*` / `schema` / `ref`）**∪ 快照世界各 active 世代的闭包**——沿 `pins` / `payload` / `sig` / `schema` 遍历即得（规矩 A 保证结构依赖都在 pins，不在 body）。移出 ≠ 删除：冷存照常持有，按第 3 条随时可取回核算。
 
 ---
 
@@ -837,8 +877,9 @@ export function stale(def: Def, world: World, identityId: string): boolean
 ② 引用    【内核认识的字段】里的每个 Hash 必须已在 defs：
           add_identity.schema · add_gen.payload · add_gen.sig · add_gen.pins.* 的值 ·
           put.args.sig · put.args.pins.* 的值 · request.ref
-          （body 内部的引用内核认不出来，由上层负责；
-           身份引用 graft.from / born.parent 不是 Hash，走 G3 查 ids，不查 defs）→ 'missing_ref'
+           （body 内部的引用内核认不出来，由上层负责——注意这是内核的**能力边界**，不是上层的**许可**：
+            规矩 A（§0.4）把结构性依赖唯一记录处定死在 pins，漏写内核不拒、stale 静默失效，门禁归上层数据；
+            身份引用 graft.from / born.parent 不是 Hash，走 G3 查 ids，不查 defs）→ 'missing_ref'
 ③ 位置    expect_pos === head.hash                                       → 'pos_conflict'
 ④ 不变量  G1–G3                                                          → 见下表
 → 全过：返回 verdict（`written` = 本次写入的 def 键，**不算 `worldRev`**）；
@@ -862,7 +903,7 @@ export function stale(def: Def, world: World, identityId: string): boolean
 | `fork` | `{ id, schema, parent }` |
 | `graft` | `{ id, payload, pins, sig, from, gen }`（`from` = 身份 id） |
 | `batch` | `{ ops: Array<{ op: Op; args: Json }> }` |
-| `note` | `{}`（内核不解释内容；审计内容走 `ref`） |
+| `note` | 任意 JSON 对象 = 留痕载荷（② 档，§0.4 规矩 B；建议摘要级，本体走宿主 blob；**载荷大小是宿主门禁，不是内核常量**；内核不解释内容，审计记录照旧走 `ref`） |
 | `snapshot` | `{ world_rev }` |
 
 | # | G 判定 | 错误码 |
@@ -896,6 +937,14 @@ stale(def, world, id):
 ### 11.4 验收清单（`commit.test.ts`，评审写，§5.4）
 
 每个错误码一正一反；`expect_pos` 过期 → `pos_conflict`；重复 `put` → `ok:true, reasons:['dup']`、`entry === null` 且世界不变；只含幂等 `put` 的 `batch` 同样 `entry === null`；`note` / `snapshot` 世界不变但 `entry !== null`；`args` 带 `seq` 的 `add_gen` → `bad_form`；`commit` 对每条 in-chain entry 只调 `applyEntry` 一次（计数桩；batch 合成子不计，§10.3）；**`put` 的 `argsHash` === `H(Def)` === 该 def 的键**、`batch` 的 `argsHash` 由子哈希聚合（§10.1）；`commit` 返回的 `hash` === `entryHash(entry)` 且不重算；`commit` 后 Entry 的 `argsHash` 已回填 === `applyEntry` 返回值（冻结断言见不变量 15）；**batch 内子 `add_identity` 撞已在 `ids` 的 id → `entry===null`、`reasons=['id_taken']`、世界与 `head` 分文未动**（validate 不递归的兜底路径）；`stale` 各分支一例（sig 变、pin 变、身份 retired、身份不存在、双缺 → `false`、**sig 单侧 null → 不因 sig 判 stale**）。
+
+本轮新增（T2 口径，§11.2 形状表 `note` 行 / §0.4 规矩 B / 不变量 16）：
+
+1. 载荷 `note` 正例（任意 JSON 对象，如 `{kind:'obs', step:3, blob:<hash>}` → `ok:true`）；空 `{}` 仍过（向后兼容）；`args` 顶层为数组 / 字符串 → `bad_form`（hasForm 前置只收非 null 非数组对象）。
+2. **同载荷 `note` 提交两次 → 两条 entry**（`isNoop` 恒 false，故意不去重；"处理过没有"归上层 `WriteRequest.id`）。
+3. 改载荷不改 `argsHash` → `args_hash_mismatch`——留痕不可抵赖的正向证明（不变量 16）。
+4. batch 内 `note` 载荷含 `{"$n":k}` 且**经 `commit` 的完整形态路径**（现有 `journal.b` 只测 `applyEntry` 直路）。
+5. 载荷 `note` 双跑逐字节一致。
 
 ---
 
@@ -1180,8 +1229,9 @@ fun refuse(reasons):                          // run 级拒绝：世界/日志�
 | 13 | 单次复制 | 单次 `run` 只 `cloneWorld` 一次；**in-chain** `applyEntry` 调用次数 = 本次实际产生的 entry 数（幂等命中不计；batch 内对合成子 entry 的递归应用不计——识别特征：其参数 `e` 与本次 journal 的任何 entry 都不同一，计数桩按引用去重；可测） |
 | 14 | 哈希不重复（性能） | 计数桩（按载荷字节计，entryHash 类小定长 map 各记常数 1）：`put` 恰 1、其它单 op 写入 ≤ 2（§10.1）；**batch 是唯一双趟点**：≤ `2·#子操作 + 2`（段 1 预哈希与段 2 子操作步①各一次——两段式为 `outerPos` 付的账；实现拿"已算哈希"缓存可压到 `#子操作 + 2`，规格只锁上界不锁做法）；`entryHash` **不读 `args`**（改 `e.args` 而保持 `e.argsHash` → `entryHash(e)` 不变，可测）；`verify` 每条 entry 只算一次 `entryHash` |
 | 15 | 入参不动（冻结桩） | 把 `Entry` **连同** `args` 深 `Object.freeze` 后传 `applyEntry`（含 batch / 嵌套 batch / verify / replay 全路径）：调用返回后 `e` 各字段（尤其 `argsHash`）与调用前逐字节一致——严格模式下任何就地改写会当场抛，测试即红。本条是 `args_hash_mismatch` 检测与"纯函数"承诺的机制底座（§10.1-3/4，替代旧口径"applyEntry 回填 e.argsHash"） |
+| 16 | 留痕不进世界（§0.4 规矩 B 的可执行定义） | 只含载荷 `note` 的链（单条或嵌 `batch`，任意混合）：`run` / `replay` 所得 `world` 与 `EMPTY_WORLD` 逐字节相同、全程 `worldRev` 不变；`defs` 键数与 note 条数无关（键数桩）；同载荷 `note` 提交两次 → **两条 entry**（`dup` 不适用）；载荷 `note` 的 `args` 被改而 `argsHash` 未改 → `args_hash_mismatch`（链对留痕内容同样不可抵赖） |
 
-**计数桩怎么来**：§14-13 / §14-14 的计数用 vitest 的模块 mock 完成（拦截 `applyEntry` / `canonicalJson` 的调用），§14-15 用 `Object.freeze` 深冻结入参（无需额外机制），**都不需要实现导出内部函数、也不加测试开关**（§5.4 第 1 条）。因此 §6 的依赖方向（谁从哪个文件 import 什么）是这些断言的隐含契约，不许改。
+**计数桩怎么来**：§14-13 / §14-14 的计数用 vitest 的模块 mock 完成（拦截 `applyEntry` / `canonicalJson` 的调用），§14-15 用 `Object.freeze` 深冻结入参（无需额外机制），§14-16 的 `defs` 键数桩只需 `Object.keys(world.defs).length`（在只含载荷 note 的链上前后比对），**都不需要实现导出内部函数、也不加测试开关**（§5.4 第 1 条）。因此 §6 的依赖方向（谁从哪个文件 import 什么）是这些断言的隐含契约，不许改。
 
 ---
 
@@ -1191,7 +1241,7 @@ fun refuse(reasons):                          // run 级拒绝：世界/日志�
 |---|---|---|
 | **P0** | `types` `value` `hash` `journal` **+ `index`**（导出这四者的并集） | `value.test.ts` / `hash.test.ts` / `journal.test.ts` 全绿；不变量 1/2/7/8/15 绿 |
 | **P1** | `commit` `machine`（`index` 追加其导出） | `commit.test.ts` / `machine.test.ts` 全绿；不变量 3/4/5/6/9/10/11/14 绿 |
-| **P2** | `run`（`index` 追加 `run` / `observationsOf`） | 15 条全绿；`run` 四态 + 回灌闭环绿 |
+| **P2** | `run`（`index` 追加 `run` / `observationsOf`） | 16 条全绿（16 由本轮加入，见 §14）；`run` 四态 + 回灌闭环绿 |
 
 `index.ts` 必须在 P0 就位：评审只能从它导入（§5.4），否则 P0 的三个测试文件无从写起。
 
@@ -1292,6 +1342,8 @@ fun replay(entries, from = EMPTY_WORLD):
   return w
 ```
 
+`replay` 的契约就是**抛**：除上面两个码，`applyEntry` 自身的 `KernelError` 也原样穿出——目前只有链内 `snapshot` 自校失败可达（`Err('world_rev_mismatch')`，§10.2）。与 `verify` 的区别是分工（§10.1）：`replay` 只重建、出状态，失败即抛；`verify` 只报告、返回码。**`replay(尾段, 错的基础)` 不会报错**——它不校验链，seq / prev 检查只在 `verify`（§10.4）；"接错基础算出链上从未被授权的世界"由调用方按 §10.7 归档协议第 4 条的三步成对避免（① 校基础 → ② 校接驳 → ③ 才 replay）。
+
 核心断言：**`replay(tail, snapshotWorld) === replay(allEntries)`**（就世界内容而言）。这是长链安全的唯一依据（测试清单见 §10.5）。
 
 内容一致性由 `worldRev` 单独核对：`worldRev(replay(tail, snap)) === worldRev(replay(all))`。**它不在每条 entry 上算，只在需要比对时算一次。**
@@ -1302,21 +1354,24 @@ fun replay(entries, from = EMPTY_WORLD):
 
 ```
 fun verify(entries, anchor = { world: EMPTY_WORLD, head: EMPTY_HEAD }, expected?):
-  w = cloneWorld(anchor.world)
-  prev = anchor.head.hash                  // 不再是硬编码的 null
-  expectSeq = anchor.head.seq + 1          // 不再是 entries[0].seq 反推
-  for i, e of entries:
-     if e.seq  !== expectSeq  → { ok:false, error:'chain_broken' }
-     if e.prev !== prev       → { ok:false, error:'chain_broken' }
-     r = applyEntry(w, e)
-     if !r.ok                 → { ok:false, error:'apply_failed' }
-     if r.argsHash !== e.argsHash → { ok:false, error:'args_hash_mismatch' }  // 冷路径加强查：e 不被覆写，
-                                                                               // 吃到的是**存着的**值（不变量 15）
-     h = entryHash(e)                        // O(1)，整个循环里每条只算一次
-     if expected?.hashes 且 expected.hashes[i] !== h → { ok:false, error:'chain_broken' }
-     prev = h ; expectSeq += 1
-  if expected?.worldRev 且 worldRev(w) !== expected.worldRev → { ok:false, error:'world_rev_mismatch' }
-  return { ok: true }
+  try:
+    w = cloneWorld(anchor.world)
+    prev = anchor.head.hash                  // 不再是硬编码的 null
+    expectSeq = anchor.head.seq + 1          // 不再是 entries[0].seq 反推
+    for i, e of entries:
+       if e.seq  !== expectSeq  → { ok:false, error:'chain_broken' }
+       if e.prev !== prev       → { ok:false, error:'chain_broken' }
+       r = applyEntry(w, e)
+       if !r.ok                 → { ok:false, error:'apply_failed' }
+       if r.argsHash !== e.argsHash → { ok:false, error:'args_hash_mismatch' }  // 冷路径加强查：e 不被覆写，
+                                                                                 // 吃到的是**存着的**值（不变量 15）
+       h = entryHash(e)                        // O(1)，整个循环里每条只算一次
+       if expected?.hashes 且 expected.hashes[i] !== h → { ok:false, error:'chain_broken' }
+       prev = h ; expectSeq += 1
+    if expected?.worldRev 且 worldRev(w) !== expected.worldRev → { ok:false, error:'world_rev_mismatch' }
+    return { ok: true }
+  catch KernelError e:                         // **verify 自身从不抛**（§10.1 旁注）：applyEntry 的 KernelError
+    return { ok: false, error: e.code }        // 全部转返回码；目前只有链内 snapshot 自校可达（world_rev_mismatch，§10.4）
 ```
 
 五查：`seq` 连续、`prev` 接得上、`applyEntry` 成功、`argsHash` 与实算一致、`entryHash` 与清单一致；段末再用**可选的 `worldRev` 锚点**核对内容。锚点与 `expected.hashes` 的偏移由调用方对齐（段首 entry 对应 `hashes[0]`）。`args_hash_mismatch` 这一查是**热路径优化换来的**（§10.1 第 3 条）：`run` 省掉重复规范化，`verify` 把账算回来。
@@ -1356,7 +1411,7 @@ export function observationsOf(d: Directive | null, outcome: ObsOutcome): Json |
 
 | 不做 | 为什么 |
 |---|---|
-| 可达闭包遍历 | 要求内核认识 body 里的引用标记 = 认识语义 |
+| 可达闭包遍历 | 要求内核认识 body 里的引用标记 = 认识语义。§0.4 规矩 A 收窄了后果：依赖只走 pins 时，**上层沿 `pins` / `payload` / `sig` / `schema` 只读遍历即得闭包，不必解析任何 body**——此行禁的是"闭包算法进内核"和"内核解释 pin 名"，不是"闭包算不了" |
 | 内容回收 / 删除 | 内核没有删除；缩小世界由上层重建 |
 | 效果执行 / 重试 / 超时 | 内核只发射，执行是宿主的事 |
 | 审核判定 / 排程 | 都是动词，在上层 |
