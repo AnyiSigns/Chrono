@@ -794,7 +794,7 @@ batch(w, args, e, adoptedBy):                    // w = 调用方独占副本（
 | `batch` 内第二个 `add_identity` 撞同一批次第一个新开的 id | 段 2 失败 → 整批逆序回滚，`commit` 转 `id_taken` 拒绝（`validate` 不递归 batch，§11.2） |
 | `snapshot` entry | 世界不变（`worldRev` 因此不变）；仅追加一条审计 |
 | `snapshot` 的 `world_rev` 与实算不符 | `applyEntry` 抛 `KernelError('world_rev_mismatch')`；`verify`（含 `run` 路径**之外**的一切调用方）由它 **catch 转返回码** → `{ok:false, error:'world_rev_mismatch'}`——verify 自己从不抛；`replay` 保持抛（它的契约就是抛，§10.1 / §19 / §20） |
-| 改一条 entry 的 `args` 但不改 `argsHash` | `verify` → `{ok:false, error:'args_hash_mismatch'}`（§10.1 第 3 条） |
+| 改一条 entry 的 `args` 但不改 `argsHash`（**非 `snapshot` 限定**——`snapshot` 见上一行：`§20` 循环里 `applyEntry` 自校先于 `argsHash` 比对，改 `args.world_rev`（即便不同步 `argsHash`）先命中 `world_rev_mismatch`，码序即规格，评审裁决 2026-09-16） | `verify` → `{ok:false, error:'args_hash_mismatch'}`（§10.1 第 3 条） |
 | `verify` 遇到 `seq` / `prev` 不接，或传入了 `expected` 但对不上 | `{ok:false, error:'chain_broken'}` |
 | `verify` / `replay` 的 `applyEntry` 失败 | `{ok:false, error:'apply_failed'}` / `Err('apply_failed')`（同一个码） |
 | `verify(tail, anchorAfter(snapshot))` | 通过——起点来自锚点，不是硬编码的 `null`（§20） |
