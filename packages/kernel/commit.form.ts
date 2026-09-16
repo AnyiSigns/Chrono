@@ -67,7 +67,7 @@ const FORM_CHECKS: { [op: string]: (c: ArgShape) => boolean } = {
     c.exact(['body'], ['pins', 'sig']) &&
     (!('pins' in c.r) || isPinSet(c.r['pins'])) &&
     (!('sig' in c.r) || isHash(c.r['sig'])),
-  note: (c) => c.keys.length === 0,
+  note: () => true, // 任意 JSON 对象 = 留痕载荷（§11.2 形状表）：hasForm 前置已保证 args 是非 null、非数组对象
   snapshot: (c) => c.exact(['world_rev'], []) && isHash(c.r['world_rev']),
   add_identity: (c) =>
     c.exact(['id', 'schema'], ['parent']) &&

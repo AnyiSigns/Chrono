@@ -55,7 +55,8 @@ export function anchorAfter(world: World, e: Entry): { world: World; head: Head 
  * 长链安全的唯一依据。applyEntry 不改入参 ⇒ 比对吃的是**存着的** argsHash。
  * @param entries 链序 entry
  * @param from 起点世界，缺省 EMPTY_WORLD（内部自行 cloneWorld，对调用方是纯的）
- * @throws KernelError('apply_failed' | 'args_hash_mismatch')
+ * @throws KernelError('apply_failed' | 'args_hash_mismatch')；`applyEntry` 的 KernelError 亦原样穿出
+ *   （目前只有链内 snapshot 自校失败可达：'world_rev_mismatch'。§19：replay 的契约就是抛）
  */
 export function replay(entries: Entry[], from: World = EMPTY_WORLD): World {
   const w = cloneWorld(from)
@@ -70,6 +71,7 @@ export function replay(entries: Entry[], from: World = EMPTY_WORLD): World {
 /**
  * 段校验：五查——seq 连续、prev 衔接、applyEntry 成功、argsHash 与实算一致、
  * entryHash 与清单一致；段末再用可选 worldRev 锚点核对内容。只校验，不返回世界。
+ * **不抛**：一切失败转返回码——含链内 snapshot 自校的 world_rev_mismatch（§20；replay 保持抛，契约不同）。
  * @param anchor 链锚点起点，缺省 = 空世界 + EMPTY_HEAD
  * @param expected.hashes 与 entries 下标对齐（段首 entry 对应 hashes[0]）
  */
@@ -78,22 +80,28 @@ export function verify(
   anchor: { world: World; head: Head } = { world: EMPTY_WORLD, head: EMPTY_HEAD },
   expected?: { hashes?: Hash[]; worldRev?: Hash },
 ): { ok: boolean; error?: string } {
-  const w = cloneWorld(anchor.world)
-  let prev = anchor.head.hash
-  let expectSeq = anchor.head.seq + 1
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]
-    if (e.seq !== expectSeq || e.prev !== prev) return { ok: false, error: 'chain_broken' }
-    const r = applyEntry(w, e)
-    if (!r.ok) return { ok: false, error: 'apply_failed' }
-    if (r.argsHash !== e.argsHash) return { ok: false, error: 'args_hash_mismatch' }
-    const h = entryHash(e)
-    if (expected?.hashes && expected.hashes[i] !== h) return { ok: false, error: 'chain_broken' }
-    prev = h
-    expectSeq += 1
+  try {
+    const w = cloneWorld(anchor.world)
+    let prev = anchor.head.hash
+    let expectSeq = anchor.head.seq + 1
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i]
+      if (e.seq !== expectSeq || e.prev !== prev) return { ok: false, error: 'chain_broken' }
+      const r = applyEntry(w, e)
+      if (!r.ok) return { ok: false, error: 'apply_failed' }
+      if (r.argsHash !== e.argsHash) return { ok: false, error: 'args_hash_mismatch' }
+      const h = entryHash(e)
+      if (expected?.hashes && expected.hashes[i] !== h) return { ok: false, error: 'chain_broken' }
+      prev = h
+      expectSeq += 1
+    }
+    if (expected?.worldRev !== undefined && worldRev(w) !== expected.worldRev) {
+      return { ok: false, error: 'world_rev_mismatch' }
+    }
+    return { ok: true }
+  } catch (e) {
+    // verify 自身从不抛（§10.1 旁注）：applyEntry 的 KernelError 全部转返回码
+    if (e instanceof KernelError) return { ok: false, error: e.code }
+    throw e
   }
-  if (expected?.worldRev !== undefined && worldRev(w) !== expected.worldRev) {
-    return { ok: false, error: 'world_rev_mismatch' }
-  }
-  return { ok: true }
 }

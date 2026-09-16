@@ -208,6 +208,13 @@ function applyBatch(
 ): ApplyOutcome {
   const opsList = readOps(e.args)
   const { argsHash, hashes, outerPos } = batchDigest(opsList, e)
+  // dup 短路：全为 put 且段 1 算出的每个键都已在 defs——预哈希后即可定论，
+  // 跳过段 2（重试不重付 apply 账）。判决与走段 2 的定论逐字段一致（isNoop=true、written=[]）。
+  // 边界写死：含任何非 put（或嵌套 batch）的批仍走段 2——非 put 的 isNoop 不由键存在性决定。
+  // 空批在 every() 下平凡成立：与段 2 的空转定论相同。段 1 的哈希账不可免（链格式）。
+  if (opsList.every((s, k) => s.op === 'put' && Boolean(w.defs[hashes[k]]))) {
+    return ok(w, true, argsHash, [])
+  }
   // 段 2：真实应用。undo 收集沿嵌套链共享（收紧批局部回滚，令外层回滚可覆盖已提交的
   // 内层改动，否则整批原子性在嵌套下不成立）；子操作失败面与规格的边界表一致
   const undo: Undo[] = sink ?? []
