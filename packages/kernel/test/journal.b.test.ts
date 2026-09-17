@@ -2,7 +2,7 @@
 // 公共面仅 ./index.ts。
 
 import { describe, expect, it } from 'vitest'
-import type { Def, Entry, Hash, Head, Json, Op, World } from './index.ts'
+import type { Def, Entry, Hash, Head, Json, Op, World } from '../index.ts'
 import {
   EMPTY_HEAD,
   EMPTY_WORLD,
@@ -15,7 +15,7 @@ import {
   replay,
   verify,
   worldRev,
-} from './index.ts'
+} from '../index.ts'
 
 type Outcome = ReturnType<typeof applyEntry>
 

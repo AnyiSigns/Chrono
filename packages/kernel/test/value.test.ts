@@ -1,7 +1,7 @@
 // value.ts 验收测试：覆盖类型判定顺序、canonicalJson 边界、键序无关性与 deepEq。只经公共面 index.ts 导入。
 
-import { canonicalJson, deepEq, KernelError, t, TYPE_ORDER } from './index.ts'
-import type { Json } from './index.ts'
+import { canonicalJson, deepEq, KernelError, t, TYPE_ORDER } from '../index.ts'
+import type { Json } from '../index.ts'
 import { describe, expect, it } from 'vitest'
 
 /** 错误断言口径：抛 KernelError、code 即错误码、message === code。 */

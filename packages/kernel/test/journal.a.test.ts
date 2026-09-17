@@ -3,8 +3,8 @@
 // 该校验属 validate 前置职责），本文件不含此用例，见审查报告缺口清单。
 
 import { describe, expect, it } from 'vitest'
-import type { Entry, Hash, Head, Json, Op, World } from './index.ts'
-import { EMPTY_HEAD, EMPTY_WORLD, H, applyEntry, cloneWorld, entryHash, worldRev } from './index.ts'
+import type { Entry, Hash, Head, Json, Op, World } from '../index.ts'
+import { EMPTY_HEAD, EMPTY_WORLD, H, applyEntry, cloneWorld, entryHash, worldRev } from '../index.ts'
 
 type Outcome = ReturnType<typeof applyEntry>
 type OkOutcome = Extract<Outcome, { ok: true }>

@@ -4,8 +4,8 @@
 // 门禁判据落在数据上（run 的 eval，与 host.ts 两行 check 同构）。
 import { describe, expect, it } from 'vitest'
 
-import { H, EMPTY_HEAD, EMPTY_WORLD, cloneWorld, commit, run, stale, validate } from './index.ts'
-import type { Def, Hash, Json, World, WriteRequest } from './index.ts'
+import { H, EMPTY_HEAD, EMPTY_WORLD, cloneWorld, commit, run, stale, validate } from '../index.ts'
+import type { Def, Hash, Json, World, WriteRequest } from '../index.ts'
 
 const NOW = 1_234_567
 const asJson = (v: unknown): Json => v as Json

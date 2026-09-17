@@ -1,7 +1,7 @@
 // hash.ts 验收测试：sha256 已知向量就地自证、utf8 编码、H 的流式与两段式口径。只从 index.ts 导入。
 
-import { canonicalJson, H, KernelError, sha256, utf8 } from './index.ts'
-import type { Json } from './index.ts'
+import { canonicalJson, H, KernelError, sha256, utf8 } from '../index.ts'
+import type { Json } from '../index.ts'
 import { describe, expect, it } from 'vitest'
 
 /** 错误断言口径：抛 KernelError、code 即错误码、message === code。 */

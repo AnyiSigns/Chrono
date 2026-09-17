@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const stubs = vi.hoisted(() => ({ canon: 0, entryHash: 0 }))
 
-vi.mock('./value.ts', async (importOriginal) => {
+vi.mock('../value.ts', async (importOriginal) => {
   const o = (await importOriginal()) as Record<string, unknown>
   const inner = o.canonicalJson as (v: unknown) => string
   // positionMap 判定与 invariants.gates 桩同口径：位置哈希吃固定字段小 map，按常数记账
@@ -26,7 +26,7 @@ vi.mock('./value.ts', async (importOriginal) => {
   }
 })
 
-vi.mock('./journal.id.ts', async (importOriginal) => {
+vi.mock('../journal.id.ts', async (importOriginal) => {
   const o = (await importOriginal()) as Record<string, unknown>
   const hash = o.entryHash as (e: unknown) => string
   return {
@@ -38,8 +38,8 @@ vi.mock('./journal.id.ts', async (importOriginal) => {
   }
 })
 
-import { EMPTY_WORLD, H, cloneWorld, commit } from './index.ts'
-import type { Entry, Hash, Json, Op, World, WriteRequest } from './index.ts'
+import { EMPTY_WORLD, H, cloneWorld, commit } from '../index.ts'
+import type { Entry, Hash, Json, Op, World, WriteRequest } from '../index.ts'
 
 const NOW = 313_370
 const J = (v: unknown): Json => v as Json

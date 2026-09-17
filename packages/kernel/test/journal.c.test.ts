@@ -4,7 +4,7 @@
 // 夹具与 journal.b 同规则（就地重复，不另建共享夹具）。
 import { describe, expect, it } from 'vitest'
 
-import type { Entry, Hash, Head, Json, Op, World } from './index.ts'
+import type { Entry, Hash, Head, Json, Op, World } from '../index.ts'
 import {
   EMPTY_HEAD,
   EMPTY_WORLD,
@@ -17,7 +17,7 @@ import {
   replay,
   verify,
   worldRev,
-} from './index.ts'
+} from '../index.ts'
 
 type Outcome = ReturnType<typeof applyEntry>
 

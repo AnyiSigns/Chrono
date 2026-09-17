@@ -12,7 +12,7 @@ import {
   run,
   verify,
   worldRev,
-} from './index.ts'
+} from '../index.ts'
 import type {
   Def,
   Directive,
@@ -23,7 +23,7 @@ import type {
   Op,
   World,
   WriteRequest,
-} from './index.ts'
+} from '../index.ts'
 
 const J = (v: unknown): Json => v as Json
 type Head = Parameters<typeof commit>[0]

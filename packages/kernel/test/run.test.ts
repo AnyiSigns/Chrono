@@ -15,8 +15,8 @@ import {
   observationsOf,
   run,
   verify,
-} from './index.ts'
-import type { Directive, Hash, Json, KernelInput, World, WriteRequest } from './index.ts'
+} from '../index.ts'
+import type { Directive, Hash, Json, KernelInput, World, WriteRequest } from '../index.ts'
 
 const J = (v: unknown): Json => v as Json
 type Head = Parameters<typeof commit>[0]

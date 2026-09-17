@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 const SRC_DIR = decodeURIComponent(
   (import.meta as unknown as { url: string }).url.replace(/^file:\/\/\//, ''),
-).replace(/\/[^/]*$/, '/')
+).replace(/\/test\/[^/]*$/, '/')
 const RUNTIME_FILES = [
   'index.ts',
   'types.ts',

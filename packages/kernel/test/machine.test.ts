@@ -2,8 +2,8 @@
 // Env / Term 未从面导出——以 Parameters<typeof evaluate> 结构化构造，不 import 内部模块。
 // 随机用例固定种子（LCG，属性测试保证可重跑）。
 import { describe, expect, it } from 'vitest'
-import { cmp, eval as evaluate, H } from './index.ts'
-import type { Json } from './index.ts'
+import { cmp, eval as evaluate, H } from '../index.ts'
+import type { Json } from '../index.ts'
 
 type EnvT = Parameters<typeof evaluate>[1]
 type TermT = Parameters<typeof evaluate>[0]

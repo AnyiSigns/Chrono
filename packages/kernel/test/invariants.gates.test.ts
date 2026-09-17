@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const stubs = vi.hoisted(() => ({ canon: 0, entryHash: 0, worldRev: 0 }))
 
-vi.mock('./value.ts', async (importOriginal) => {
+vi.mock('../value.ts', async (importOriginal) => {
   const o = (await importOriginal()) as Record<string, unknown>
   const inner = o.canonicalJson as (v: unknown) => string
   // 位置哈希吃固定字段小 map（at/seq/prev/op/argsHash/by/ref），按常数记账、不计入载荷规范化
@@ -27,7 +27,7 @@ vi.mock('./value.ts', async (importOriginal) => {
   }
 })
 
-vi.mock('./journal.id.ts', async (importOriginal) => {
+vi.mock('../journal.id.ts', async (importOriginal) => {
   const o = (await importOriginal()) as Record<string, unknown>
   const pos = o.entryHash as (e: unknown) => string
   const rev = o.worldRev as (w: unknown) => string
@@ -55,8 +55,8 @@ import {
   validate,
   verify,
   worldRev,
-} from './index.ts'
-import type { Def, Entry, Hash, Json, KernelInput, Op, World, WriteRequest } from './index.ts'
+} from '../index.ts'
+import type { Def, Entry, Hash, Json, KernelInput, Op, World, WriteRequest } from '../index.ts'
 
 type Head = Parameters<typeof commit>[0]
 type TermT = Parameters<typeof evaluate>[0]
@@ -121,7 +121,7 @@ function input(over: Partial<KernelInput> = {}): KernelInput {
 
 const SRC_DIR = decodeURIComponent(
   (import.meta as unknown as { url: string }).url.replace(/^file:\/\/\//, ''),
-).replace(/\/[^/]*$/, '/')
+).replace(/\/test\/[^/]*$/, '/')
 const RUNTIME_FILES =
   'index.ts types.ts value.ts hash.ts hash.utf8.ts journal.ts journal.id.ts journal.apply.ts ' +
   'commit.ts commit.form.ts machine.ts run.ts'

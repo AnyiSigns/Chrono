@@ -14,8 +14,8 @@ import {
   replay,
   verify,
   worldRev,
-} from './index.ts'
-import type { Entry, Hash, Json, Op, World, WriteRequest } from './index.ts'
+} from '../index.ts'
+import type { Entry, Hash, Json, Op, World, WriteRequest } from '../index.ts'
 
 const NOW = 987_654
 const J = (v: unknown): Json => v as Json

@@ -1,5 +1,5 @@
 // commit.ts 验收：只打公共面 ./index.ts。
-// applyEntry / entryHash 计数桩：journal.ts 是转口母文件，故 vi.mock('./journal.ts')
+// applyEntry / entryHash 计数桩：journal.ts 是转口母文件，故 vi.mock('../journal.ts')
 // 包一层透传计数；桩内不解构绑定。
 import { describe, expect, it, vi, afterEach } from 'vitest'
 
@@ -11,7 +11,7 @@ const counters = vi.hoisted(() => ({
   returned: [] as unknown[],
 }))
 
-vi.mock('./journal.ts', async (importOriginal) => {
+vi.mock('../journal.ts', async (importOriginal) => {
   const o = (await importOriginal()) as Record<string, unknown>
   return {
     ...o,
@@ -40,8 +40,8 @@ import {
   EMPTY_WORLD,
   cloneWorld,
   worldRev,
-} from './index.ts'
-import type { Def, Hash, Json, World, WriteRequest } from './index.ts'
+} from '../index.ts'
+import type { Def, Hash, Json, World, WriteRequest } from '../index.ts'
 
 const NOW = 1_234_567
 const asJson = (v: unknown): Json => v as Json
