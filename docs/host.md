@@ -53,7 +53,7 @@
 ## 三、目录布局
 
 ```
-Agent/
+Chrono/
 ├── docs/                    设计文档；`kernel.md` 是唯一权威
 │   └── plans/               计划文档（不参与设计口径）
 ├── packages/

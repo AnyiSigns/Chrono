@@ -1,0 +1,22 @@
+{
+  "name": "host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "载体宿主：装配 / 效果 / 账本 / 投影（一个进程）",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
+  }
+}

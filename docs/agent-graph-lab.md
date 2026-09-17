@@ -1,4 +1,4 @@
-﻿# AgentGraphLab — 自适应可进化 agent 图编排系统（设计规格，该实验独立，不要与主项目混淆）
+﻿# ChronoGraphLab — 自适应可进化 agent 图编排系统（设计规格，该实验独立，不要与主项目混淆）
 
 > 定位：面向**复杂任务**的**可进化 agent 运行时架构**。核心思想：**图不固定**，
 > 执行拓扑由**编排模型（不含 LLM）**在运行时现场生成；控制层可训；节点池声明式、
@@ -17,7 +17,7 @@
 > | 契约术语 `requires/when/provides/out_type` | 附录 I.1.1（旧术语，已过期） | §3.1：统一为 `inputs/outputs/pre/post` |
 > | 适应度 `fit` 的 λ/μ 字母分配 | 附录 I.6（λ 罚结构、μ 罚调用） | §8：按 `docs/agent.md` G7 的分配（λ 罚成本、μ 罚结构），**字母与附录 I 相反**，勿混 |
 >
-> 独立实验树：`experiment/AgentGraphLab/`（定名见 §12-1）。**先 standalone，不接内核**；
+> 独立实验树：`experiment/ChronoGraphLab/`（定名见 §12-1）。**先 standalone，不接内核**；
 > 账本形状对齐内核 `Entry`（`{seq, prev, op, args, argsHash, by, ref?, at}` + 链式哈希），将来搬迁只换
 > 存储不换语义。
 >
@@ -971,7 +971,7 @@ GA8① 是 DataGraphLab 里没有的臂，必须存在。
 
 | # | 项 | 默认值 | 理由 |
 |---|---|---|---|
-| 1 | 实验目录 | `experiment/AgentGraphLab/` | 与 `DataGraphLab` 平级、同名风格 |
+| 1 | 实验目录 | `experiment/ChronoGraphLab/` | 与 `DataGraphLab` 平级、同名风格 |
 | 2 | 图文法上限 | `MAX_NODES=12`、`MAX_EDGES=24`、`MAX_DEPTH=6`、`MAX_RECUR=2`（**无 `MAX_REPEAT`**：DAG 每节点恰好执行一次，见 §4 不变量 3） | 编码任务的有效编排深度远低于此；上限的作用是**封住搜索空间与 token 长度**，不是能力边界。`MAX_EDGES=24` 对 12 节点 + 扇出 N≤3 聚合偏紧，**P1 用合成任务测"合法图被 `MAX_EDGES` 截断率"，> 5% 则上调或改"入边度上限 per 节点"** |
 | 3 | 门禁初值 | `Δ=0.05`、`ε=0.02`、`δ=0.05`、`floor=0.05`、`margin=0.02`、`k=3`（结晶次数）、`N=30`（能力缺口）、`SOLVABLE_MIN=0.80`（GA2 dev 可解比例下限）、`HOLDOUT_EVERY=3`（holdout 检查点间隔，= `ESC_ROUNDS`） | 真 LLM 单任务方差大 ⇒ 两处统计条件都要写死：**目标命题**用配对差值**单侧 CI 下限 `≥ Δ`**（BH-FDR 校正）；**采纳闸**用**配对非劣检验**——dev 配对差值**单侧 CI 下限 `≥ −δ`**（同任务同 seed 配对二元，Newcombe/McNemar；`δ` 为预注册**非劣界**，默认 `δ = 0.05`）。**`n` 由预注册 power analysis 定、`n ≥ 200` 只是下限**（配对检验按**不一致对数**估计，不是按总 n）；**硬闸额外要求实测 CI 半宽 `h ≤ δ`**，否则本回合只记"未判定"（不采纳、不算失败）——**没有这条，`h > δ` 时硬闸会退化成"必须显著更好"**，正是要堵的坑。**不得用"`n=200` 时 `h≈0.07–0.10`"去反向抬高 `δ`**（那会让 10% 的真实退步过关）；若功效分析证明在可负担的 `n` 下 `h > δ`，只能走登记提案改 `δ`，并写明可接受的最大退步。**不再另设"点估计非降"条款**（与 `−δ` 容忍度互斥）。**严格提升**（`CI 下限 > 0`）只用于 §13 升级触发与软闸，不得当采纳硬闸。**弃用"两臂 Wilson CI 不重叠"作采纳判据**（非配对、保守，与本节配对比较协议不一致，且与 `docs/agent.md` G7 显式偏离——见文首覆盖表）；Wilson 仅作单臂 pass@1 的展示性 CI。`floor` = 随机合法图臂（GA8③）pass@1 上限（对齐 G1.1），**区别于**全拒臂 GA8④ 的 0-下界 |
 | 4 | 模型档位 | **主档 + 廉价档同门**：`StepFun: Step 3.7 Flash (free)` —— 强档 `variant: high`（写代码主力）、廉价档 `variant: low`（分解、摘要、路由辅助）；**`agent/manager` 的提案归纳用强档 `variant: high`**（失败语义归纳是核心判断，且每回合仅一次、成本低；**监控指标层非 LLM，不在此列**，见 §8）；另设**异模型对照位**（`Auto Free` / `NVIDIA: Nemotron 3 Ultra (free)`）供"换模型不换结构"的对照臂。降级链：`Step 3.7 Flash (free)` → `Auto Free`。**具体 id 与 variant 必须在 manifest 里 pin**。**端口名定死**：真 LLM 主档 = `model.kilo`，桩/回放同门实现 = `model.replay`（§11 P2 的"同门" = 同一 `model` 端口协议、同一门禁），二者缺一不可 | **同门不同 reasoning 变体**把"模型能力差异"从对照里消掉，测的才是结构与编排；该档经用户实测稳定，优先选稳定源。`kilo` 免费档会变动 ⇒ 档位抽象 + manifest pin 仍保留。限速按指数退避 + 配额账；**限速/超时/失败单列，不并入能力失败**；**退避等待不计入 `walltime` cap**（记 `ratelimit_wait`，§0.1） |
