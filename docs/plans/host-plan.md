@@ -184,11 +184,16 @@ on_commit_ok(head_advanced):
 
 ```
 execute(eff):
-  try:
-    result = call_endpoint(resolve(emitter_of(eff), eff.port, eff.method), eff.args)
-  catch transport_error:                       # 连接 / 帧 / 进程死亡
-    fail(transport_failed)                     # 传输级才 refused
-  # endpoint error / 超时 → result = { ok:false, ... }（数据，回灌）
+execute(eff):
+  ep = resolve(emitter_of(eff), eff.port, eff.method)
+  if ep == null: result = { ok:false }                       # 未解析 → 没执行 → refused
+  else:
+    try:
+      resp = call_endpoint(ep, eff.args, timeout)
+      result = resp.ok ? { ok:true, value: resp.value }
+                       : { ok:true, value: { error: resp.code, message: resp.message } }  # 有响应 → 值，term 可分支
+    catch transport_error:                                   # 连接 / 帧 / 进程死亡 / 超时
+      result = { ok:false }                                  # 没执行 → refused
   audit_def = { request: eff, result, port, method }
   h_audit = H(audit_def)                       # 审计 **def 键**（= H(Def)；`ref` 指向世界里的 def，见 commit.ts checkRefs）
   commit(head, world, WriteRequest{ op:put, args:audit_def, by: initiator, ref: null }, now_round)
@@ -314,7 +319,7 @@ stop():
 
 | 片 | 交付 | 出口检查 |
 | --- | --- | --- |
-| **S1 引导 + 账本最小面** | A0 入世；`packages/boot` 薄壳 + `packages/client` 库；宿主 + 入站 socket（`submit` / `command` / `commands` / `status`，`event` 透传）；`seed` / `verify` / `replay(full)`；A12 停机；单 append-only journal 文件；`EffectAudit` def + `ref` | `seed → start → run` 跑完一轮 kernel 调用并落账；同输入重放逐字节一致；`boot stop` 干净停机；`boot <命令>` 与 `boot help` 可用 |
+| **S1 引导 + 账本最小面** | A0 入世；`packages/boot` 薄壳 + `packages/client` 库；宿主 + 入站 socket（`submit` / `command` / `commands` / `status`，`event` 透传）；`seed` / `verify` / `replay(full)`；A12 停机；单 append-only journal 文件；`EffectAudit` def（**成功 eff 的 `ref` 归 S4**） | `submit [write]`（直接写，不经 term/eff）→ `done` → 落账；同输入重放逐字节一致；`submit [eval(toy-eff)]` → 未解析 → `refused:eff_error` + 审计 def 落（**这是预期**，无端点表）；`boot stop` 干净停机；`boot <命令>` / `boot help` 可用 |
 | **S2 声明 + 闭包** | `plugin.json` schema；A2 闭包 + 拓扑 + 环检测；A3 `stale()` 处置 | 拓扑序正确；漏 `pins` 显式失效；成环只隔离该分支（其余照常起） |
 | **S3 `assembly`** | A5 源码树 + 物化 + 跑 `start`；A4 握手；端点表；A11 健康重启 + 坏分支隔离 | 两个**从未见过**的 toy 插件包（一个独立、一个跨插件 `pins`）只加插件包即被连接生效；成环 / 握手失败只隔离该分支 |
 | **S4 `effect`** | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传 | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流 |

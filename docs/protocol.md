@@ -35,8 +35,8 @@
 
 `port` 是**逻辑名**（不是哈希）——宿主已在路由时按发出者 `pins` 解析到本服务；它必须是本服务**声明的能力类**。
 
-- `error` 与调用超时 → 宿主转成 `EffResult{ok:false}` **回灌**（数据，term 可据此降级）；
-  只有连接 / 帧 / 进程死亡等**传输级故障**才让该轮 `refused`（`transport_failed`）。
+- endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
+  只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
 
 ### 2.3 控制
 

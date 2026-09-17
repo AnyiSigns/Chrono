@@ -128,7 +128,7 @@ RuntimeState  = { pid, transport, addr, gen }          // 运行态，永不进�
 - **端点表的键不含调用方**（`impl+gen+cap+method`，`gen` = 依赖当前 active 世代）——换实现只改 `pins` 指向，
   调用方与 term 都不用改。
 - `pin` 名 = 逻辑端点名 = 调用点写的 `port`；**约定**等于能力类名，但解析时不硬绑死。
-- **降级链（同一逻辑能力多实现）**：`pins` 是 `名 → 单哈希`（内核冻结、不可多值），故降级用**多条别名 pin**表达，**不**把一个 pin 改多值。每个别名是一个**独立 pin 名**，指向**另一个身份**，且该别名必须是目标身份**声明的能力类**（A1 的 `cap ∈ impl.implements` 即强制此条）。降级顺序由 term 判定——先试主名、失败再试别名；宿主对每个 pin 名机械解析，**不自动重试**（自动选优 = 宿主业务）。换某别名指向的身份 = 改 `pins`（写新世代、显式记账）；换同一身份的实现 = `set_active`（换代，不碰 `pins`）。
+- **降级链（同一逻辑能力多实现）**：`pins` 是 `名 → 单哈希`（内核冻结、不可多值），故降级用**多条别名 pin**表达，**不**把一个 pin 改多值。每个别名是一个**独立 pin 名**，指向**另一个身份**，且该别名必须是目标身份**声明的能力类**（A1 的 `cap ∈ impl.implements` 即强制此条）。降级顺序由 term 判定——先试主名，**eff 返回的 `value` 含错误描述**时再试别名（term 据值分支，非内核/宿主判定）；宿主对每个 pin 名机械解析，**不自动重试**（自动选优 = 宿主业务）。换某别名指向的身份 = 改 `pins`（写新世代、显式记账）；换同一身份的实现 = `set_active`（换代，不碰 `pins`）。
 - 端点表键 = `impl+gen+cap+method`，`cap` = **服务声明的能力类**（即解析所用的 pin 名）；别名是 pin 的**名**（字符串键），不是 pin 的哈希**值**。
 - **纪律**：term 的 `Call` 只在本身份内的 def 之间；跨插件一律走 `eff`（否则发出者归属不明）。
 - 工具名就是能力类名（`tool.<name>`），**不另设一套命名**。
@@ -162,8 +162,8 @@ RuntimeState  = { pid, transport, addr, gen }          // 运行态，永不进�
 - 效果一律经宿主；**审计先于业务写**（audit def → `request.ref`），**失败也落审计**（`execute` 必须
   try/catch，失败也 `put` 审计 def，记失败形态）。
 - `eff` 的 `port` 是**逻辑名**，运行时按发出者 `pins` 解析（见「路由」）；**不改内核的 `EffRequest`**。
-- **失败作数据回灌**：endpoint 返回 `error` 或调用超时 → `EffResult{ok:false}` 回灌，term 可据此分支
-  （降级链）；只有连接 / 帧 / 进程死亡等**传输级故障**才让该轮 `refused`（`transport_failed`）。
+- **失败作数据回灌**：endpoint **有响应**（`result` 或 `error`）→ `EffResult{ok:true, value}` 回灌（`error` 时 `value` 是错误描述），
+  term 可据此分支（降级链）；只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
 - 审计 def 进 ① `defs`——它要被 `ref` 指到，必须可寻址。
 - **审计 `put` 是宿主对 `commit` 的直接调用**（`kernel.md` 导出 `commit`）——宿主侧唯一不经 `run` directive 的直写，
   为的是让 `ref` 指向的审计 def 在业务写之前就已可寻址。`kernel.md` §二「唯一调用 commit 的地方 = `run`」指内核**模块内部**依赖，不含宿主外部调用。

@@ -70,7 +70,7 @@ export function acquireLock(file: string, now: number): LockAcquired | LockBusy 
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
     }
     const holder = readLock(file)
-    if (holder && holder.pid !== process.pid && isProcessAlive(holder.pid)) {
+    if (holder && isProcessAlive(holder.pid)) {
       return { ok: false, code: 'writer_busy', holder }
     }
     try {

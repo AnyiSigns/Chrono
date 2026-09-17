@@ -152,6 +152,7 @@
 - 文件/目录名使用其所属语言的惯用风格，且全项目统一。
 - 测试文件与被测文件同名 + 后缀（`userService.test.ts`、`test_user_service.py`）。
 - 每个模块提供明确的入口与导出清单（避免"桶文件"无脑 re-export 导致混乱）。
+- 测试文件待每个子目录的test目录（没有就新建，不要全待该功能、机制的根目录）。例：example\test\ and example\example-example\test\
 
 ### 7.2 配置管理
 

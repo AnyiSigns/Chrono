@@ -21,6 +21,7 @@
 ├── package.json     npm 信封：name / version / 依赖 / scripts（宿主不解释，入 ① 作源码）
 ├── plugin.json      插件契约：12 字段（宿主解释、入世进 ①；与信封无关）
 ├── README.md        自述（人读）
+├── test/          测试文件
 ├── execute/         执行件源码（0..n）
 ├── terms/           term def（0..n）
 └── schema/          声明 schema（0..n）
