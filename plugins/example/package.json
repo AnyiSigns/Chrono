@@ -1,0 +1,7 @@
+{
+  "name": "example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "形状示例插件（非真实能力插件；npm 信封，宿主不解释）"
+}

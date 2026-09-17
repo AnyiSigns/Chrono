@@ -41,10 +41,13 @@
 ### 2.3 控制
 
 ```
-宿主 → 服务   reload { v, gen }          → 服务 ack { id }
-宿主 → 服务   drain  { v, deadline_ms }  → 在途结束，服务发 bye { v }
-宿主 → 服务   probe  { v, id }           → 服务 pong { id, ok }
+宿主 → 服务   reload { v, id, gen }          → 服务 ack { id }
+宿主 → 服务   drain  { v, id, deadline_ms }  → 在途结束，服务发 bye { v, id }
+宿主 → 服务   probe  { v, id }               → 服务 pong { id, ok }
 ```
+
+- `reload` / `drain` / `probe` 均按 `id` 配对（§一）；`drain` 的 `deadline_ms` 取自 `decl.restart.drain_ms`（同一值，字段名按消息语义用 `deadline_ms`）。
+- drain 期间宿主暂停该服务的 health 探针（防 drain 中忙等被误判 `health_timeout`，见 `host-plan.md` A6）。
 
 ### 2.4 上行事件（服务 → 宿主，主动）
 
@@ -66,6 +69,10 @@
 - **不得**索取其他插件的物理端点——插件间不直连。
 - `manifest` **不得**声明超出 `plugin.json` 的能力——多出来的不登记（不扩权）。
 
+### 2.6 服务义务
+
+- **断连自退出**：服务检测到与宿主连接断开（socket 关闭 / EPIPE）即**自退出**——避免宿主崩溃后孤儿进程占端点；宿主重启无需清理旧进程。
+
 ## 三、入站协议（发起者 ↔ 宿主）
 
 发起者 = CLI（`boot run` / `status` / `boot <命令>`）、UI、测试、以客户端身份连接的插件。
@@ -76,6 +83,7 @@
 发起者 → 宿主   command  { v, id, name, args, caps, limits }  → result { id, ... }
 发起者 → 宿主   commands { v, id }                           → list { id, commands: [...] }
 发起者 → 宿主   status   { v, id }                           → state { id, world_head, loaded: [...] }
+发起者 → 宿主   stop     { v, id }                           → accepted { id }   # 令宿主停机（`host-plan.md` A12 序列）
 宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传，广播给已连接客户端
 ```
 
@@ -85,7 +93,10 @@
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
 - `caps` / `limits` 由发起者给，宿主**透传不扩权**；`now` 由宿主固定，不由客户端给。
 - `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。
-- 本协议定义 `submit` / `command` / `commands` / `result` / `status` / `event`；裁决、订阅、多客户端不在其内。
+- `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。
+- `status` 的 `loaded` = 已装载身份清单（`id` + active `gen`），非阻塞快照、可能瞬态。
+- 载体生命周期事件（`handshake_failed` / `cycle` / `restart_exhausted` / `service_exit`）记宿主侧**运维日志**（`state/lifecycle.log`），**非本协议消息**、不进世界；协议侧只见对应错误码（§四）。
+- 本协议定义 `submit` / `command` / `commands` / `result` / `status` / `stop` / `event`；裁决、订阅、多客户端不在其内。
 
 ## 四、错误码
 

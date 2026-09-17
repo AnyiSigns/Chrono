@@ -1,7 +1,5 @@
 # 内核：设计、架构与边界
 
-> 本稿从 `design-conclusions.md`、`kernel-design.md`、`kernel-next-steps.md` 与已更新的 `kernel.md` 四份文档中蒸馏内核相关的 What / Why / 边界。叙述以"kernel-next 已落地"的稳态为准，不含批次、任务、计划语义。文中的字段名、op、导出面、原语均与 `kernel.md` 规格对齐，便于反查；可观察契约的权威以 `kernel.md` 为准，"内核认识什么、不做什么"的判据以本文为准。为可读起见，类型以骨架式给出（只列字段，不写 TS 全貌），算法只给思路不给伪代码。
-
 ---
 
 ## 一、内核是什么

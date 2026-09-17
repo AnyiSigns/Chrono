@@ -4,7 +4,8 @@
 
 ```
 plugins/example/
-├── plugin.json     机器可读契约（11 个字段）
+├── package.json     npm 信封（宿主不解释）
+├── plugin.json      插件契约（12 字段；宿主解释）
 ├── README.md       本文件（人读自述）
 ├── execute/        执行件源码（0..n）——自带服务进程
 ├── terms/          term def（0..n）——判定 / 评分 / 门禁

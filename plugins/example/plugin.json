@@ -1,5 +1,6 @@
 {
-  "identity": { "kind": "service", "name": "example" },
+  "identity": "example",
+  "schema": "schema/plugin.schema.json",
   "implements": ["example.echo"],
   "methods": { "example.echo": ["echo"] },
   "pins": {},
@@ -8,6 +9,10 @@
   "restart": { "policy": "on-exit", "backoff": "exponential", "max": 5, "window_ms": 60000, "drain_ms": 5000 },
   "health": { "probe": "example.echo.echo", "interval_ms": 10000, "timeout_ms": 2000 },
   "state": "recomputable",
-  "members": ["execute/", "terms/", "schema/"],
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
   "commands": []
 }

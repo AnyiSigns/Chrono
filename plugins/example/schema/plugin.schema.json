@@ -1,0 +1,5 @@
+{
+  "title": "example identity schema（占位）",
+  "description": "形状示例占位；具体格式与内容在 S2 冻结，以届时 schema/ 为准。",
+  "type": "object"
+}
