@@ -44,3 +44,6 @@ logs/
 # Experiment 运行产物
 experiment/tmp/
 experiment/host-state/
+
+# 载体运行态产物（见 plan-00 仓库布局）
+state/
