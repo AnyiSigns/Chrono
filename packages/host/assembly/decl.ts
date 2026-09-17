@@ -74,18 +74,27 @@ function parseCommands(v: Json | undefined): PluginCommand[] | null {
   return out
 }
 
+/** 成员种类：驱动数据热生效 / 代码起新服务，只认这三种。 */
+const MEMBER_KINDS = new Set(['execute', 'term', 'schema'])
+
 function parseMembers(v: Json | undefined): PluginMember[] | null {
   if (!Array.isArray(v)) return null
   const out: PluginMember[] = []
   for (const item of v) {
     if (!isRecord(item)) return null
-    if (typeof item['kind'] !== 'string' || typeof item['path'] !== 'string') return null
-    out.push({ kind: item['kind'], path: item['path'] })
+    const kind = item['kind']
+    if (typeof kind !== 'string' || !MEMBER_KINDS.has(kind)) return null
+    if (typeof item['path'] !== 'string') return null
+    out.push({ kind, path: item['path'] })
   }
   return out
 }
 
-/** 机械形态检查：12 个字段一个不少、类型正确；不做 schema 级校验。 */
+/**
+ * 宿主侧 `plugin.json` 元 schema：12 个字段一个不少、类型正确、枚举合法
+ * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）。
+ * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
+ */
 export function parsePluginDecl(value: Json): ParseDeclResult {
   if (!isRecord(value)) return { ok: false, reasons: ['bad_plugin_decl'] }
   const commands = parseCommands(value['commands'])
@@ -103,7 +112,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     typeof value['protocol'] === 'string' &&
     isRecord(value['restart']) &&
     isRecord(value['health']) &&
-    typeof value['state'] === 'string' &&
+    value['state'] === 'recomputable' &&
     members !== null &&
     commands !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }

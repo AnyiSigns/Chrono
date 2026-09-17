@@ -1,6 +1,8 @@
-// 装配包出口：只读世界的声明解析与源码打包计划。
+// 装配包出口：只读世界的声明解析、源码打包计划、pins 闭包与装配计划。
 // 本包不 import effect / ledger 的写口——"不认识插件种类"由此成为 import 图上的事实。
 
+export { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
+export type { AssemblyPlan, DependencyEdge, IsolatedIdentity, IsolatedReason } from './closure.ts'
 export {
   listCommands,
   parsePluginDecl,
