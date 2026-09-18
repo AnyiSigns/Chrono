@@ -198,6 +198,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 - 命令 = 插件在 `plugin.json` 里声明的**具名入口**（`name` → 入口 def + 参数 schema）；客户端按名字调用，
   宿主解析 `name`、机械校验 `args`、构造 directive 走一次 run。
+- `args` 按 `argsSchema` 的 **JSON Schema 白名单子集**（方言见 `plugins.md` §二）机械校验；不符 → `bad_args`，
+  **不构造 directive、不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`；**只查形态，不查语义**。
 - 命令**不是旁路**：判定仍是 term、写仍经「落账」；宿主不认识命令语义，只按声明路由。
 - 宿主命令名（`start` / `stop` / `run` / `status` / `seed` / `verify` / `replay`）是**保留字**，插件命令不得占用。
 - 命令清单由宿主从声明读出——客户端没有世界。

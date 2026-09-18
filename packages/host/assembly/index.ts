@@ -20,6 +20,8 @@ export type {
   PluginDecl,
   PluginMember,
 } from './decl.ts'
+export { validateArgs, validateArgsSchema } from './args-schema.ts'
+export type { ArgsSchemaCheck } from './args-schema.ts'
 export { planIngest } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
 export { materializeCommit } from './materialize.ts'

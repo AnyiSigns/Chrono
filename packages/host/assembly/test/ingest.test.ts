@@ -63,6 +63,26 @@ describe('装配 assembly', () => {
       } as Json)
       expect(result.ok).toBe(false)
     })
+
+    it('保留命令名（宿主命令 start/stop/run/status/seed/verify/replay）→ bad_plugin_decl', () => {
+      for (const name of ['start', 'stop', 'run', 'status', 'seed', 'verify', 'replay']) {
+        const result = parsePluginDecl({
+          identity: 't',
+          schema: 's',
+          implements: [],
+          methods: {},
+          pins: {},
+          start: '',
+          protocol: '1',
+          restart: {},
+          health: {},
+          state: 'recomputable',
+          members: [],
+          commands: [{ name, entry: 'terms/x.json' }],
+        } as Json)
+        expect(result.ok, `命令名 ${name} 应被拒`).toBe(false)
+      }
+    })
   })
 
   describe('termDefOf', () => {

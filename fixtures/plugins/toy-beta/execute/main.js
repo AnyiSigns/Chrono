@@ -85,6 +85,34 @@ function emitEvent() {
   });
 }
 
+function handleCall(msg) {
+  // 行为可用 service-config.json 覆写（测试用）：silent=不答（超时）/ exit=进程退出 /
+  // error=有响应错误 / callValue=固定回值；缺省回显 {impl, port, method, args}。
+  if (config.callMode === "silent") return;
+  if (config.callMode === "exit") return process.exit(1);
+  if (config.callMode === "error") {
+    writeFrame({
+      v: "1",
+      id: msg.id,
+      kind: "error",
+      ok: false,
+      code: config.callErrorCode !== undefined ? config.callErrorCode : "toy.failed",
+      message: config.callErrorMessage !== undefined ? config.callErrorMessage : "toy error",
+    });
+    return;
+  }
+  const value =
+    config.callValue !== undefined
+      ? config.callValue
+      : {
+          impl: readPlugin().identity,
+          port: msg.port,
+          method: msg.method,
+          args: msg.args === undefined ? null : msg.args,
+        };
+  writeFrame({ v: "1", id: msg.id, kind: "result", ok: true, value });
+}
+
 function handle(msg) {
   if (msg && typeof msg === "object") {
     switch (msg.kind) {
@@ -138,7 +166,11 @@ function handle(msg) {
         return;
       }
       case "call": {
-        writeFrame({ id: msg.id, ok: true, value: null });
+        if (typeof config.callDelayMs === "number" && config.callDelayMs > 0) {
+          setTimeout(() => handleCall(msg), config.callDelayMs);
+          return;
+        }
+        handleCall(msg);
         return;
       }
     }

@@ -97,6 +97,8 @@
 - `run` 的语义与续跑纪律见 `host.md` §五「效果」与 `kernel.md` §十二。
 - **命令是具名入口的糖**：宿主按声明把 `name` 解析成入口 def，机械校验 `args`，构造
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
+- `command` 的 `args` 由宿主按 `argsSchema`（**JSON Schema 白名单子集**，方言见 `plugins.md` §二）校验；
+  不符 → `error{code:'bad_args'}`，**不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`。
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
 - `caps` / `limits` 由发起者给，宿主**透传不扩权**；`now` 由宿主固定，不由客户端给。
 - `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。
@@ -118,6 +120,7 @@
 | `writer_busy` | 抢锁失败 | `host.md` §五 写者 |
 | `unknown_command` | 声明里没有这个命令名 | `host.md` §五 命令 |
 | `bad_args` | 命令 `args` 不符合 `argsSchema` | `host.md` §五 命令 |
+| `bad_args_schema` | `argsSchema` 含白名单外关键词 / 形态非法（入世整包拒） | `plugins.md` §二 方言 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |
 | `transport_failed` | 服务管道 / 帧 / 进程死亡（传输级） | §2.2 |
 | `unresolved_pin` | 入世时被依赖身份不存在 / 未激活 | `host.md` §五 源码 |

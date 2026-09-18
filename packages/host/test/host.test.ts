@@ -1,16 +1,18 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { startHost } from '../host.ts'
+import type { HostHandle } from '../host.ts'
 import { join } from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../test/test-helpers.ts'
 import { runSeed } from '../offline.ts'
 
 describe('宿主 host', () => {
   let root: string
+  const handles: HostHandle[] = []
 
   beforeEach(() => {
     root = createTempRoot()
     createToyPlugin(root)
-    const { writeFileSync } = require('node:fs')
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]),
@@ -18,17 +20,25 @@ describe('宿主 host', () => {
   })
 
   afterEach(async () => {
-    try {
-      const handle = await startHost({ root })
-      await handle.stop()
-    } catch {
-      // 宿主未运行或已停止
+    for (const handle of [...handles].reverse()) {
+      try {
+        await handle.stop()
+      } catch {
+        // 尽力停机
+      }
     }
+    handles.length = 0
     await cleanupTempRoot(root)
   })
 
-  it('startHost 返回 HostHandle，含 root / socket / stop / emitEvent', async () => {
+  async function start(): Promise<HostHandle> {
     const handle = await startHost({ root })
+    handles.push(handle)
+    return handle
+  }
+
+  it('startHost 返回 HostHandle，含 root / socket / stop / emitEvent', async () => {
+    const handle = await start()
     expect(handle.root).toBe(root)
     expect(typeof handle.socket).toBe('string')
     expect(typeof handle.stop).toBe('function')
@@ -37,15 +47,15 @@ describe('宿主 host', () => {
   })
 
   it('stop 停机后锁可被重新 acquire', async () => {
-    const handle = await startHost({ root })
+    const handle = await start()
     await handle.stop()
-    const handle2 = await startHost({ root })
+    const handle2 = await start()
     expect(handle2.root).toBe(root)
     await handle2.stop()
   })
 
   it('submit [write] → done 落账', async () => {
-    const handle = await startHost({ root })
+    await start()
     const { connect } = require('../../client/index.ts')
     const client = await connect({ root, timeoutMs: 2000 })
     try {
@@ -64,22 +74,26 @@ describe('宿主 host', () => {
       expect(result.status).toBe('done')
     } finally {
       client.close()
-      await handle.stop()
     }
   })
 
-  it('submit [eval(missing)] → refused，reasons 含 missing_ref', async () => {
-    const handle = await startHost({ root })
+  it('submit [eval(missing)] → refused，reasons 含 missing_ref 且不落账', async () => {
+    await start()
     const { connect } = require('../../client/index.ts')
+    const { readJournal } = require('../ledger/index.ts')
     const client = await connect({ root, timeoutMs: 2000 })
     try {
       const result = await client.submit([
         { kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null },
       ])
       expect(result.status).toBe('refused')
+      expect(result.observations[result.observations.length - 1]).toMatchObject({
+        kind: 'refused',
+        reasons: expect.arrayContaining(['missing_ref']),
+      })
+      expect(readJournal(join(root, 'state', 'world', 'journal.jsonl'))).toEqual([])
     } finally {
       client.close()
-      await handle.stop()
     }
   })
 
@@ -96,7 +110,7 @@ describe('宿主 host', () => {
     expect(toyEff).toBeDefined()
     const toyEffHash = toyEff!.entry
 
-    const handle = await startHost({ root })
+    await start()
     const { connect } = require('../../client/index.ts')
     const client = await connect({ root, timeoutMs: 2000 })
     try {
@@ -119,13 +133,15 @@ describe('宿主 host', () => {
       expect(newEntry.op).toBe('put')
       expect(newEntry.by).toBe('client')
       expect(newEntry.ref).toBeUndefined()
+      // S4：toy-eff 无 pins → A1 路由归 unresolved_cap，内核归 eff_error
+      const auditBody = (newEntry.args as { body: { result: { ok: boolean; error: string } } }).body
+      expect(auditBody.result).toEqual({ ok: false, error: 'unresolved_cap' })
 
       const auditHash = H(newEntry.args as any)
       const replayed = replayFull(afterEntries)
       expect(replayed.defs[auditHash]).toBeDefined()
     } finally {
       client.close()
-      await handle.stop()
     }
   })
 })

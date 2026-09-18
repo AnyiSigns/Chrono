@@ -61,6 +61,17 @@ function isStringMap(v: Json | undefined): v is Record<string, string> {
   return Object.values(v).every((x) => typeof x === 'string')
 }
 
+/** 宿主命令名是保留字（`host.md` §五 命令）：插件命令不得占用。 */
+const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
+  'start',
+  'stop',
+  'run',
+  'status',
+  'seed',
+  'verify',
+  'replay',
+])
+
 function parseCommands(v: Json | undefined): PluginCommand[] | null {
   if (!Array.isArray(v)) return null
   const out: PluginCommand[] = []
@@ -68,6 +79,7 @@ function parseCommands(v: Json | undefined): PluginCommand[] | null {
     if (!isRecord(item)) return null
     const { name, entry, argsSchema } = item
     if (typeof name !== 'string' || name.length === 0) return null
+    if (RESERVED_COMMAND_NAMES.has(name)) return null
     if (typeof entry !== 'string' || entry.length === 0) return null
     if (argsSchema !== undefined && typeof argsSchema !== 'string') return null
     out.push(argsSchema === undefined ? { name, entry } : { name, entry, argsSchema })

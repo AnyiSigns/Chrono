@@ -19,13 +19,13 @@
 
 ## 本阶段口径
 
-- 实现严格按 `docs/host.md` §五 的设计口径；本计划的 A0–A11 是它的实现规格。
+- 实现严格按 `docs/host.md` §五 的设计口径；本计划的 A0–A13 是它的实现规格。
 - v1 从 `EMPTY_WORLD` **全量重放**，无快照、无 `partial`。
 - 只用 `fixtures/plugins/` 的 toy 服务验证，不引入真实插件。
 
 ---
 
-## 关键算法（A0–A11，实现规格）
+## 关键算法（A0–A13，实现规格）
 
 ### A0 · 入世（文件树 → defs）
 
@@ -42,7 +42,7 @@ ingest(entry):                             # entry = state/plugins.json 的 {nam
   schema  = put({ body: <schema/ 解析> })      # plugin.json.schema 指向的文件 → Identity.schema
   for t in topo(terms/*.json):                 # 包内先拓扑序（A0b）
       put(termDefOf(<把 $ref 替换成 callee def 键后的 AST>, sig = commit))   # 每个 term 一条 def
-  cmdArgs = put({ body: <argsSchema 解析> })   # commands[].argsSchema → def
+  cmdArgs = put({ body: <argsSchema 解析> })   # commands[].argsSchema → def；还要过方言元校验（白名单子集），否则 bad_args_schema 拒包
   # 两类占位符不同：内核批占位符 {'$n':k}（指向批内更早的 put）；term 源占位符 {'$ref':path}（宿主解析成 callee def 键）
   # 入世写批 = batch{ add_identity?, add_gen }   ← add_gen 同时激活（journal.apply.ts:180）
   #   （首次含 add_identity；换代只 add_gen）——不需 set_active
@@ -58,6 +58,7 @@ ingest(entry):                             # entry = state/plugins.json 的 {nam
 - 与 A5 物化互逆；源码住 ①（`kernel.md` §八）。
 - 宿主**只解释 `plugin.json`**；`package.json` / 锁文件是源码 blob（供物化后由 `decl.start` 装依赖），不参与契约解析。包源由 `state/plugins.json` 给出（**不分来源、同形**）。
 - 身份 schema（`Identity.schema`）：`plugin.json.schema` 指向包内 `schema/` 文件 → 入世解析成 def 哈希 → 写进 `Identity.schema`；它是身份的**自述 / 数据契约**（数据、非特权），宿主对 `plugin.json` 形状的元校验另有一份宿主侧 schema。
+- **命令名保留字（S4 落实）**：`start` / `stop` / `run` / `status` / `seed` / `verify` / `replay` 是宿主命令名，`commands[].name` 命中即整包 `bad_plugin_decl`（`plugin.json` 形状门，入世与运行期读声明同口径）。
 - **`sig` 口径**：`add_gen.sig` = 本世代 `commit` def 键（= `payload`）；term def 的 `sig` 同值。世代签名即"这一代源码 / 声明"的内容定址，重放可复现。
 - **入世需按身份级依赖序**：`pins` 解析要求被依赖身份已在世界里（`world.ids[depId].active`），否则报 `unresolved_pin`。故 seed 按 `state/plugins.json` 顺序逐包入世，或先入被依赖者再入依赖者（同批内顺序即依赖序）。
 - **排除机制**：通用排除（`node_modules` / `.git`，前者本就是宿主侧 ③）+ 插件 `.worldignore` 声明项；宿主**不内置** `dist` / `test` / `.venv` 等语言 / 构建名字（守「不认识语言」）。契约必需文件不可排除，否则 `bad_worldignore` 整批拒绝；畸形 `.worldignore`（含 `..` 段 / 读取失败）同样按 `bad_worldignore` 拒绝。测试在包目录跑、不入 ①。
@@ -106,6 +107,9 @@ resolve(emitter, cap, method):          # emitter = 当前 directive 入口 def 
 ```
 
 - 发出者 = 当前 directive 入口 def 的属主（宿主构造 directive，故知道）；`eff_id` 的 `i` 给出是哪条。
+- **发出者解析实现口径（S4）**：宿主为每条 directive 随行携带 `owner`——命令入口取声明身份；plan 产出条目继承产出它的 eval 的 owner（term 的 `Call` 只在本身份内）；入站直提 eval 只认「已声明命令入口 → 身份」，其余 fail-closed（无 owner ⇒ 不路由，审计记 `unresolved_cap`）。跨身份 entry 不在纪律内，故不做运行期树的 term→identity 反查。
+- **eff → directive 定位（S4）**：`eff.id = H({run,i,n})`；宿主取「观测数 = 已完成 directive 数 = 挂起所在的 `i`」，同 directive 内 `n` 恰为已回灌效果数，直接重算候选比对（O(1)）；不符才线性兜底扫描；定位失败 fail-closed（不路由）。
+- **漂移证据去重**：按 `(emitter, cap, 依赖世代)` 只记一条 `dep.drift`，不随每次调用刷运维日志。
 - **`pin` 绑定身份**：依赖换代 → 重解析到新 active，发出者进程 / term / body 不动。
 - **端点表键不含调用方**（`impl+gen+cap+method`，`gen` = 依赖当前 active）——换实现只改 `pins` 指向。
 - `pin` 名即调用点名（= `port` = 端点表查表用的 `cap`）；**降级链**用多条**别名 pin**（每个单值、指向另一身份、别名是目标声明的能力类），降级顺序由 term 判定、宿主不自动重试——见 `host.md` §五 路由。
@@ -237,6 +241,9 @@ execute(eff):
 - **审计 `put` 是宿主对 `commit` 的直接调用**（不经 `run` directive）——宿主侧唯一与 A0 `seed` 同类的直写；
   原因：审计 def 必须在业务写之前就可寻址，而续跑纪律禁止改 directives，故审计不能走 run directive。
   `at` = 该轮 `now`；`by` = 发起者；审计 entry 自身 `ref` 留空（它是**被指者**，不是指者）。
+- **`timeout` 来源（S4）**：宿主常量 `DEFAULT_CALL_TIMEOUT_MS = 30s`，`HostOptions.callTimeoutMs` 可覆写（`plugin.json` 无此字段）；
+  超时与连接 / 帧 / 进程死亡同归「没执行」→ `{ok:false}`，不自动重试。
+- **审计 entry 幂等键（S4）**：`id = audit-<eff.id>`——续跑 / 重放重复执行同一 `eff` 不产生第二条审计 entry（def 已在世界，`ref` 仍可指到）。
 - 审计与业务写 v1 **分两条 entry**；合成 `batch` 会让 `ref` 语义变复杂，后置。
 - 审计 `put` 会推进链头：续跑下一轮必须用**审计后的 `world` / `head`**（A9）。
 
@@ -274,6 +281,8 @@ loop:
 - 效果放叶子、长循环拆 directive（成本纪律）。
 - 审计 `put`（A7）在 `waiting` 期间已由宿主直写 `commit` 落到链上、推进 head；`done` 的 `out.journal` 只是该轮的**业务写**（write directives），两者先后同链。
 - A9 = **单轮**（含 waiting 续跑）；A10 = **轮间**驱动，每轮独立 `run_id` / `now`，并把 plan 切轮（见 A10）。
+- **单轮返回 `lastAuditHash`**（本轮最后一条 eff 的审计 def 键；无 eff 为 null）供 A10 填 `ref`。
+- **`refused` / `idle` 同样回灌审计后的 `world` / `head`（S4 钉死）**：审计在挂起期间已推进链头，若调用方拿轮前旧头，下一次提交会以旧 `expect_pos` 续链、分叉。宿主的 `world` / `head` 与账本必须同步前进。
 
 ### A10 · 判定 → 落账（轮与轮之间）
 
@@ -310,6 +319,10 @@ round(directives, run_id, now) -> (out, phases):  # 每轮独立 run_id / now；
 - A9 是**单轮内**的续跑（同 `run_id` / `now` / `directives`，`results` 只增）；A10 是**轮间**驱动，每轮独立 `run_id` / `now`（非回退）。
 - **分相 = 一轮内不混 eval 与 write；`write` 每条单独一轮**（多条原子写用一条 `batch`）。保序、不重排 plan 语义。
 - **plan 通道**：term 用保留包装 `{"$directives":[...]}` 产 directive；宿主只对**顶层 eval 观测**（entry = 本次提交的顶层 directive 的 entry）识别该包装，其余 eval / `extern` / 嵌套观测只作数据回给发起者。
+- **plan 条目插在剩余轮之前（S4）**：该 eval 的判定立即生效，随后才继续入站提交里余下的段；多 eval 同轮各产计划时按观测序拼接。
+- **plan 条目属主继承产出者（S4）**：plan 里的 eval 发 eff 时用产出该 plan 的 eval 的 owner 路由（宿主不重新对 entry 反查属主）。
+- **plan 递归（S4）**：plan 产出的 eval 再产 plan，逐层执行到穷尽（每层独立 `run_id` / `now`）；非法条目 / `unresolved_pin` / 坏 `batch` 子操作 → `refused`（`bad_directive` / `unresolved_pin`），不跑后续轮。
+- **`batch` 子操作同样解析 pins（S4）**：递归 `args.ops`；子操作缺 `args` 键 → `bad_directive`（宿主不替它补 `null`，交内核形态门会漏过）。
 - 插件**服务**不产生 directive；directive 由 term 经 plan 通道产出，或由发起者在入站面直接提交。
 
 ### A11 · 健康 / 重启 / 超限（坏分支隔离）
@@ -319,9 +332,9 @@ on_service_exit(proc, reason):
   lifecycle_log(service.exit, proc, reason)
   remove_endpoints(proc.id, proc.gen)            # 进程已死：该 gen 端点先摘除（重启成功后重挂）
   if decl.restart.policy == 'never': isolate(reverse_reachable(proc.id)); return   # 策略 never：不重启，退出即隔离该分支
-  # 稳定复位：按【本次运行时长】判——活过 window 才算稳定、复位；否则算 flapping。
+  # 稳定复位：按【本次运行时长】判——活过 window_ms 才算稳定、复位；否则算 flapping。
   # 【不】按握手成功复位：持续 flapping 每次握手都成功，按握手复位会永不耗尽 max。
-  if now - proc.started_at >= decl.restart.window: attempts[proc] = 0
+  if now - proc.started_at >= decl.restart.window_ms: attempts[proc] = 0
   attempts[proc] += 1
   if attempts[proc] > decl.restart.max:
       lifecycle_log(service.restart_exhausted, proc)
@@ -336,7 +349,7 @@ health_probe(proc):                            # protocol §2.3 probe/pong；dra
 ```
 
 - 崩溃恢复由 `assembly` 按声明执行；`health` / `restart` 字段由此被消费（`restart.policy` = `on-exit` / `never`，缺省 / 未知按 `on-exit`；`health.probe` 是服务侧自述、宿主不消费）。
-- 超限后**不自动无限重启**；隔离范围同 A2「坏分支」。**复位按「本次运行时长 ≥ `window`」**（`started_at` 在每次起 / 重启时记录），**握手成功不复位**——否则持续 flapping（每次握手都成功）永不耗尽 `max`。
+- 超限后**不自动无限重启**；隔离范围同 A2「坏分支」。**复位按「本次运行时长 ≥ `window_ms`」**（`started_at` 在每次起 / 重启时记录），**握手成功不复位**——否则持续 flapping（每次握手都成功）永不耗尽 `max`。
 
 ### A12 · 停机序列（`boot stop`）
 
@@ -354,6 +367,23 @@ stop():
 - 反拓扑序 = A2 启动序的逆；只 drain 已装载身份。起时对称落 `host.start`（`boot start` 进入主循环前），与 `host.stop` 成对。
 - `boot stop` 是**客户端命令**（连运行中的宿主下发）；宿主收到即执行本序列。
 
+### A13 · 命令 args 校验（命令是具名入口的糖）
+
+```
+validate_args(world, cmd, args):           # 命中 host.ts command 分支：resolveCommand 之后、构造 directive 之前
+  if cmd.argsSchema == null: return ok     # 缺省 argsSchema = 不设门
+  def = world.defs[cmd.argsSchema]
+  if def == null: return fail(bad_args_schema)     # fail-closed（入世已保证 def 在；缺则拒）
+  return subset_validate(def.body, args)           # JSON Schema 白名单子集，方言见 plugins.md §二
+# 失败 → error{code:'bad_args'}：不构造 directive、不跑 run、不落账（无审计）
+# 缺 args 按 null 校验；校验器用显式栈（防深嵌套），无正则 / 无网络 / 无副作用
+```
+
+- **方言元校验在入世**：`commands[].argsSchema` 的 def body 若含白名单外关键词 / 形态非法 → `bad_args_schema`，**整包拒**（与 `bad_worldignore` / `term_cycle` 同路）。
+- **运行期补门（S4）**：命令侧对 `world.defs[argsSchema]` 先补一次方言元校验（防运行期 `add_gen` 注入未过入世门禁的 schema）→ 不过归 `bad_args_schema`，再走白名单子集校验（不过归 `bad_args`）。
+- 类型判定复用内核值标签 `t`，`enum` / `const` 复用内核 `deepEq`（一种口径）；`integer` = `Number.isInteger`；`minLength` / `maxLength` 按 Unicode 码点。
+- 门禁只查**形态**；业务语义校验归插件（term / 服务），宿主不认识命令语义。
+
 ---
 
 ## 本阶段交付（分片，逐片单独会话与验收）
@@ -363,7 +393,7 @@ stop():
 | **S1 引导 + 账本最小面** | A0/A0b 入世（含 term `$ref` 替换 + 成环整包拒）；`packages/boot` 薄壳 + `packages/client` 库；宿主 + 入站 socket（`submit` / `command` / `commands` / `status`，`event` 透传）；`seed` / `verify` / `replay(full)`；A12 停机；单 append-only journal 文件；`EffectAudit` def（**成功 eff 的 `ref` 归 S4**） | `submit [write]`（直接写，不经 term/eff）→ `done` → 落账；同输入重放逐字节一致；`submit [eval(toy-eff)]` → 未解析 → `refused:eff_error` + 审计 def 落（**这是预期**，无端点表）；`boot stop` 干净停机；`boot <命令>` / `boot help` 可用 |
 | **S2 声明 + 闭包** | `plugin.json` schema；A2 闭包 + 拓扑 + 环检测；A3 `stale()` 处置 | 拓扑序正确；漏 `pins` 显式失效；成环只隔离该分支（其余照常起） |
 | **S3 `assembly`** | A5 源码树 + 物化 + 跑 `start`；A4 握手；端点表；A11 健康重启 + 坏分支隔离 | 两个**从未见过**的 toy 插件包（一个独立、一个跨插件 `pins`）只加插件包即被连接生效；成环 / 握手失败只隔离该分支 |
-| **S4 `effect`** | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传；**命令 `args` 按 `argsSchema` 机械校验**（坏参 → `bad_args`，S1 遗留） | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流；坏参在装配 / 执行前被拒 |
+| **S4 `effect`** | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传；**A13 命令 `args` 按 `argsSchema` 校验**（JSON Schema 白名单子集，坏参 → `bad_args`，S1 遗留） | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流；坏参在装配 / 执行前被拒；白名单外关键词入世 `bad_args_schema` 拒包 |
 | **S4.5 跨语言** | 一个**非 JS**（如 Python）toy 插件包：`package.json` + `plugin.json` + `execute/main.py`（读写 **stdin/stdout**；服务协议最小面：4 字节长度帧 + `hello`/`manifest` + `call`/`result`/`error` + `probe`/`pong` + `drain`/`bye` + `reload`/`ack`）+ `schema/` + `README` | 只加该插件包（`state/plugins.json` 加一行 + 包就位）、**不改载体一行** → 被连接 → 握手 → `call`/`result` → 回灌 → 落账；挂起→审计→回灌→续跑逐字节可重放。**这就是「宿主不认识语言 / npm 只是信封」的证明** |
 | **S4.6 投影（base_only）** | `projection` 包：`base_only` 只读投影；directive 的 `ctx` = 该投影（宿主从 `state/world/` 基础世界构造）；v1 基础世界 = `EMPTY_WORLD`（无快照） | term 经 `ctx` 读基础世界；投影只读、不写链、不推进 head；基础为空时不报错（非空内容随快照后置） |
 | **S5 世代跟随** | A6 换代 + 退役隔离；A8 单写者锁 | `add_gen` / `set_active` 生效；旧服务排空退出；依赖换代不改发出者进程（A1 重解析）；依赖退役 → 隔离发出者（不回落）；运维日志有对应条目；双写者被拒 |

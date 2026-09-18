@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
+import { validateArgsSchema } from './args-schema.ts'
 import { parsePluginDecl, termDefOf } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
@@ -261,6 +262,10 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
     const schema = readJsonFile(join(pkgRoot, command.argsSchema))
     if (schema === undefined) {
       return { ok: false, reasons: [`missing_args_schema:${command.argsSchema}`] }
+    }
+    const dialect = validateArgsSchema(schema)
+    if (!dialect.ok) {
+      return { ok: false, reasons: [`bad_args_schema:${command.name}:${dialect.reason}`] }
     }
     ops.push({ op: 'put', args: { body: schema } })
   }

@@ -5,9 +5,16 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
-import { listCommands, resolveCommand, startAssembly } from './assembly/index.ts'
+import {
+  listCommands,
+  resolveCommand,
+  startAssembly,
+  validateArgs,
+  validateArgsSchema,
+} from './assembly/index.ts'
 import type { AssemblyRuntimeHandle } from './assembly/index.ts'
-import { runRound } from './effect/index.ts'
+import { createRoundRouter, runSubmission } from './effect/index.ts'
+import type { RoundRouter } from './effect/index.ts'
 import { appendJournal, acquireLock, loadAnchor, releaseLock } from './ledger/index.ts'
 import { appendLifecycle } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
@@ -18,12 +25,14 @@ import type { Directive, Entry, Json, World, Head } from '../kernel/index.ts'
 
 export interface HostOptions {
   root: string
+  /** 效果调用超时；缺省走 `DEFAULT_CALL_TIMEOUT_MS`（测试可注入更短值）。 */
+  callTimeoutMs?: number
 }
 
 export interface HostHandle {
   root: string
   socket: string
-  /** 停机序列：断开客户端 → 关闭服务 → 释放锁。 */
+  /** 停机序列：等在途提交 → 断开客户端 → 关闭服务 → 释放锁。 */
   stop: () => Promise<void>
   /** 插件事件透传入口：只广播给已连接客户端，不落账、不推进。 */
   emitEvent: (impl: string, topic: string, payload: Json) => void
@@ -44,29 +53,42 @@ function readMessage(raw: Json): InboundMessage | null {
   return record as unknown as InboundMessage
 }
 
+/** 合法 op 名单（与内核 `Op` 同口径）：入站 write 形态校验用。 */
+const OP_NAMES: ReadonlySet<string> = new Set([
+  'put',
+  'add_identity',
+  'add_gen',
+  'set_active',
+  'retire',
+  'fork',
+  'graft',
+  'batch',
+  'note',
+  'snapshot',
+])
+
 /** 机械校验 directives 形态；非法返回 null（不得让畸形提交打崩写者）。 */
 function asDirectives(value: unknown): Directive[] | null {
   if (!Array.isArray(value)) return null
   for (const item of value) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null
-    const kind = (item as { [k: string]: unknown })['kind']
-    if (kind !== 'eval' && kind !== 'extern' && kind !== 'write') return null
+    const record = item as { [k: string]: unknown }
+    const kind = record['kind']
+    if (kind === 'eval') {
+      if (typeof record['entry'] !== 'string' || record['entry'].length === 0) return null
+      continue
+    }
+    if (kind === 'extern') continue
+    if (kind === 'write') {
+      const request = record['request']
+      if (typeof request !== 'object' || request === null || Array.isArray(request)) return null
+      const op = (request as { [k: string]: unknown })['op']
+      if (typeof op !== 'string' || !OP_NAMES.has(op)) return null
+      continue
+    }
+    return null
   }
   return value as Directive[]
-}
-
-/** 机械填字段：写请求的位置恒为当前链头，id / by 缺省补齐；args / op 原样透传。 */
-function normalizeDirectives(directives: Directive[], head: Head): Directive[] {
-  return directives.map((directive) => {
-    if (directive.kind !== 'write') return directive
-    const request = { ...directive.request }
-    const id = typeof request.id === 'string' ? request.id : ''
-    const by = typeof request.by === 'string' ? request.by : ''
-    request.id = id.length > 0 ? id : `w-${randomUUID()}`
-    request.by = by.length > 0 ? by : 'client'
-    request.target = { expect_pos: head.hash }
-    return { kind: 'write', request }
-  })
 }
 
 function listen(server: Server, address: string): Promise<void> {
@@ -93,6 +115,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   let head: Head = anchor.head
   const clients = new Set<Socket>()
   let stopping = false
+  let router: RoundRouter | undefined
 
   const address = socketPath(root)
   mkdirSync(paths.sockDir, { recursive: true })
@@ -116,8 +139,142 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const persistAudit = (entry: Entry): void => {
     appendJournal(paths.journalFile, [entry])
   }
+  const persistRound = (entries: Entry[]): void => {
+    appendJournal(paths.journalFile, entries)
+  }
 
   let runtime: AssemblyRuntimeHandle | undefined
+  /** 写类提交的串行链：单写者语义下同一时刻至多一次 run。 */
+  let chain: Promise<void> = Promise.resolve()
+  /** 逐轮时间戳非回退（A10）：时钟回拨时仍单调 +1。 */
+  let lastNow = startedAt
+  const nextNow = (): number => {
+    const now = Date.now()
+    lastNow = now > lastNow ? now : lastNow + 1
+    return lastNow
+  }
+
+  const handleSubmit = async (
+    socket: Socket,
+    message: Extract<InboundMessage, { kind: 'submit' }>,
+    directives: Directive[],
+    runId: string,
+  ): Promise<void> => {
+    // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
+    const entryOwners = new Map<string, string>()
+    for (const command of listCommands(world)) {
+      if (!entryOwners.has(command.entry)) entryOwners.set(command.entry, command.identity)
+    }
+    const outcome = await runSubmission({
+      world,
+      head,
+      directives,
+      caps: message.caps ?? {},
+      limits: message.limits ?? DEFAULT_LIMITS,
+      initiator: 'client',
+      now: nextNow,
+      router,
+      callTimeoutMs: options.callTimeoutMs,
+      initialOwnerOf: (directive) =>
+        directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
+      onAudit: persistAudit,
+      onRound: persistRound,
+    })
+    world = outcome.world
+    head = outcome.head
+    send(socket, {
+      v: PROTOCOL_VERSION,
+      kind: 'result',
+      run: runId,
+      status: outcome.status,
+      observations: outcome.observations,
+    })
+  }
+
+  const handleCommand = async (
+    socket: Socket,
+    message: Extract<InboundMessage, { kind: 'command' }>,
+  ): Promise<void> => {
+    if (typeof message.name !== 'string') {
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'error',
+        code: 'bad_directive',
+        message: 'command name must be a string',
+      })
+      return
+    }
+    const command = resolveCommand(world, message.name)
+    if (command === null) {
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'error',
+        code: 'unknown_command',
+        message: message.name,
+      })
+      return
+    }
+    const args = message.args ?? null
+    if (command.argsSchema !== null) {
+      const schemaDef = world.defs[command.argsSchema]
+      // 运行期 add_gen 产出的 argsSchema 未必过入世门禁：命令侧补一次方言元校验（fail-closed）
+      const dialect = schemaDef === undefined ? null : validateArgsSchema(schemaDef.body)
+      if (schemaDef === undefined || dialect === null || !dialect.ok) {
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: message.id,
+          kind: 'error',
+          code: 'bad_args_schema',
+          message: message.name,
+        })
+        return
+      }
+      if (!validateArgs(schemaDef.body, args)) {
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: message.id,
+          kind: 'error',
+          code: 'bad_args',
+          message: message.name,
+        })
+        return
+      }
+    }
+    const directives: Directive[] = [
+      {
+        kind: 'eval',
+        entry: command.entry,
+        args,
+        ctx: projectBaseOnly(world, head),
+      },
+    ]
+    const outcome = await runSubmission({
+      world,
+      head,
+      directives,
+      caps: message.caps ?? {},
+      limits: message.limits ?? DEFAULT_LIMITS,
+      initiator: 'command',
+      now: nextNow,
+      router,
+      callTimeoutMs: options.callTimeoutMs,
+      initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
+      onAudit: persistAudit,
+      onRound: persistRound,
+    })
+    world = outcome.world
+    head = outcome.head
+    send(socket, {
+      v: PROTOCOL_VERSION,
+      id: message.id,
+      kind: 'result',
+      status: outcome.status,
+      observations: outcome.observations,
+    })
+  }
+
   const server = createServer((socket: Socket) => {
     clients.add(socket)
     const decoder = createFrameDecoder()
@@ -145,12 +302,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     socket.on('error', () => clients.delete(socket))
   })
 
-  const stop = async (): Promise<void> => {
-    if (stopping) return
+  let stopPromise: Promise<void> | undefined
+  const doStop = async (): Promise<void> => {
     stopping = true
     try {
       appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
     } finally {
+      // 在途提交先跑完（审计 / 业务写不落在停机中途），再断连接与服务
+      await chain.catch(() => {})
       for (const client of clients) client.destroy()
       try {
         await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -173,6 +332,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
+  /** 停机幂等：并发 / 重复调用共享同一个 promise。 */
+  const stop = (): Promise<void> => {
+    if (stopPromise === undefined) stopPromise = doStop()
+    return stopPromise
+  }
+
   const dispatch = (socket: Socket, message: InboundMessage): void => {
     if (message.v !== PROTOCOL_VERSION) {
       send(socket, {
@@ -186,6 +351,16 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
     switch (message.kind) {
       case 'submit': {
+        if (stopping) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'internal',
+            message: 'stopping',
+          })
+          return
+        }
         const directives = asDirectives(message.directives)
         if (directives === null) {
           send(socket, {
@@ -197,80 +372,54 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           })
           return
         }
+        const submit = message
         const runId = randomUUID()
-        send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'accepted', run: runId })
-        const outcome = runRound({
-          world,
-          head,
-          directives: normalizeDirectives(directives, head),
-          caps: message.caps ?? {},
-          limits: message.limits ?? DEFAULT_LIMITS,
-          initiator: 'client',
-          now: Date.now(),
-          onAudit: persistAudit,
-        })
-        world = outcome.world
-        head = outcome.head
-        if (outcome.status === 'done') appendJournal(paths.journalFile, outcome.journal)
-        send(socket, {
-          v: PROTOCOL_VERSION,
-          kind: 'result',
-          run: runId,
-          status: outcome.status,
-          observations: outcome.observations,
-        })
+        // accepted 先于排队发出：长提交不阻塞后到客户端的受理确认
+        send(socket, { v: PROTOCOL_VERSION, id: submit.id, kind: 'accepted', run: runId })
+        chain = chain
+          .then(() => handleSubmit(socket, submit, directives, runId))
+          .catch(() => {
+            try {
+              send(socket, {
+                v: PROTOCOL_VERSION,
+                id: submit.id,
+                kind: 'error',
+                code: 'internal',
+                message: 'submit failed',
+              })
+            } catch {
+              // 客户端已断：错误无处可送
+            }
+          })
         return
       }
       case 'command': {
-        if (typeof message.name !== 'string') {
+        if (stopping) {
           send(socket, {
             v: PROTOCOL_VERSION,
             id: message.id,
             kind: 'error',
-            code: 'bad_directive',
-            message: 'command name must be a string',
+            code: 'internal',
+            message: 'stopping',
           })
           return
         }
-        const command = resolveCommand(world, message.name)
-        if (command === null) {
-          send(socket, {
-            v: PROTOCOL_VERSION,
-            id: message.id,
-            kind: 'error',
-            code: 'unknown_command',
-            message: message.name,
+        const command = message
+        chain = chain
+          .then(() => handleCommand(socket, command))
+          .catch(() => {
+            try {
+              send(socket, {
+                v: PROTOCOL_VERSION,
+                id: command.id,
+                kind: 'error',
+                code: 'internal',
+                message: 'command failed',
+              })
+            } catch {
+              // 客户端已断：错误无处可送
+            }
           })
-          return
-        }
-        const directives: Directive[] = [
-          {
-            kind: 'eval',
-            entry: command.entry,
-            args: message.args ?? null,
-            ctx: projectBaseOnly(world, head),
-          },
-        ]
-        const outcome = runRound({
-          world,
-          head,
-          directives,
-          caps: message.caps ?? {},
-          limits: message.limits ?? DEFAULT_LIMITS,
-          initiator: 'command',
-          now: Date.now(),
-          onAudit: persistAudit,
-        })
-        world = outcome.world
-        head = outcome.head
-        if (outcome.status === 'done') appendJournal(paths.journalFile, outcome.journal)
-        send(socket, {
-          v: PROTOCOL_VERSION,
-          id: message.id,
-          kind: 'result',
-          status: outcome.status,
-          observations: outcome.observations,
-        })
         return
       }
       case 'commands': {
@@ -298,7 +447,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       }
       case 'stop': {
         send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'accepted' })
-        setImmediate(() => void stop())
+        setImmediate(() => {
+          stop().catch(() => {
+            // 停机尽力而为；失败由锁 / socket 清理逻辑兜底
+          })
+        })
         return
       }
     }
@@ -311,6 +464,24 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       world,
       log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
       onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
+    })
+    const driftLogged = new Set<string>()
+    router = createRoundRouter({
+      endpoints: runtime.endpoints,
+      onDrift: (impl, cap, gen) => {
+        // 同一 (发出者, pin 名, 依赖世代) 只记一条证据，避免每次调用都刷运维日志
+        const key = `${impl}\u0000${cap}\u0000${gen}`
+        if (driftLogged.has(key)) return
+        driftLogged.add(key)
+        appendLifecycle(paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'dep',
+          event: 'drift',
+          impl,
+          cap,
+          gen,
+        })
+      },
     })
     await listen(server, address)
   } catch (err) {

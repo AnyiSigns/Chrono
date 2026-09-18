@@ -10,6 +10,7 @@ import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import {
   FIXTURE_ALPHA,
   FIXTURE_BETA,
+  FIXTURE_SERVICE_MAIN,
   isPidAlive,
   killProcessTree,
   waitFor,
@@ -833,44 +834,69 @@ describe('装配运行时 startAssembly', () => {
   }, 15000)
 
   it('restart.policy 缺失/未知 → 按 on-exit 处理（服务仍会重启）', async () => {
+    // 启动 pid 落文件：崩溃重启会发生「同一文件里出现两次启动」，不靠读端点表的瞬时行（防测试竞态）。
+    // exitAfterMs 取足够大，保证 startWorld 返回后能先读到首实例的端点行 pid。
+    const pidFiles: Record<string, string> = {
+      'toy-poldef': join(root, 'poldef.pids'),
+      'toy-polbogus': join(root, 'polbogus.pids'),
+    }
+    const withPidFile = (id: string): string =>
+      `require('node:fs').appendFileSync(${JSON.stringify(pidFiles[id])}, String(process.pid) + '\\n')\n${FIXTURE_SERVICE_MAIN}`
     const defRoot = writeTempPackage(root, {
       identity: 'toy-poldef',
       start: 'node execute/main.js',
       implements: ['toy.poldef'],
       // 无 policy 字段
       restart: { backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
-      serviceConfig: { exitAfterMs: 300, crashLimit: 1 },
+      serviceConfig: { exitAfterMs: 1200, crashLimit: 1 },
+      files: { 'execute/main.js': withPidFile('toy-poldef') },
     })
     const bogusRoot = writeTempPackage(root, {
       identity: 'toy-polbogus',
       start: 'node execute/main.js',
       implements: ['toy.polbogus'],
       restart: { policy: 'bogus', backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
-      serviceConfig: { exitAfterMs: 300, crashLimit: 1 },
+      serviceConfig: { exitAfterMs: 1200, crashLimit: 1 },
+      files: { 'execute/main.js': withPidFile('toy-polbogus') },
     })
     const { handle, world } = await startWorld([
       { name: 'toy-poldef', path: defRoot },
       { name: 'toy-polbogus', path: bogusRoot },
     ])
-    const firstPids = new Map(
-      ['toy-poldef', 'toy-polbogus'].map((id) => [
-        id,
-        handle.endpoints.get(id, world.ids[id].active as Hash, id.replace('toy-', 'toy.'), 'echo')!
-          .pid,
-      ]),
+    const rowOf = (id: string): { pid: number } | null =>
+      handle.endpoints.get(id, world.ids[id].active as Hash, id.replace('toy-', 'toy.'), 'echo')
+    const firstRowPids = new Map(
+      ['toy-poldef', 'toy-polbogus'].map((id) => {
+        const row = rowOf(id)
+        expect(row, `${id} 首实例端点行应在`).not.toBeNull()
+        return [id, (row as { pid: number }).pid]
+      }),
     )
+    const pidsOf = (id: string): number[] => {
+      try {
+        return readFileSync(pidFiles[id], 'utf8')
+          .split('\n')
+          .filter((line) => line.trim().length > 0)
+          .map((line) => Number.parseInt(line, 10))
+      } catch {
+        return []
+      }
+    }
     for (const id of ['toy-poldef', 'toy-polbogus']) {
       await waitFor(
+        () => pidsOf(id).length >= 2,
+        `${id} 崩溃后按 on-exit 重启（两次启动 pid）`,
+        8000,
+      )
+      const [first, second] = pidsOf(id)
+      expect(second).not.toBe(first)
+      // 端点行必须重挂到新实例（pid 与首实例不同），不是留着旧行
+      await waitFor(
         () => {
-          const row = handle.endpoints.get(
-            id,
-            world.ids[id].active as Hash,
-            id.replace('toy-', 'toy.'),
-            'echo',
-          )
-          return row !== null && row.pid !== firstPids.get(id)
+          const row = rowOf(id)
+          return row !== null && row.pid !== firstRowPids.get(id)
         },
-        `${id} 崩溃后按 on-exit 重启并重挂端点`,
+        `${id} 端点重挂到新实例`,
         8000,
       )
     }

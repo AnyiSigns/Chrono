@@ -1,0 +1,88 @@
+// A1 路由：发出者 pins（名 → 哈希）→ def → 属主身份 → 该身份当前 active 世代 → 端点表。
+// 只读世界：不执行效果、不写链；端点表键不含调用方（impl+gen+cap+method）。
+// `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
+
+import { readPluginDecl } from '../assembly/decl.ts'
+import type { EndpointRow } from '../endpoint-table.ts'
+import type { EndpointTable } from '../endpoint-table.ts'
+import type { Gen, Hash, Identity, World } from '../../kernel/index.ts'
+
+/** 路由失败码：与 protocol §四 同名（作为 `EffResult.error` 落审计，内核归 `eff_error`）。 */
+export type RouteError = 'unresolved_cap' | 'not_loaded' | 'stale'
+
+export type RouteOutcome = { ok: true; row: EndpointRow } | { ok: false; error: RouteError }
+
+/** 路由钩子：effect 在挂起点用它把 `eff` 解析到端点；实现由宿主按当前端点表构造。 */
+export interface RoundRouter {
+  resolve(world: World, emitterId: string, cap: string, method: string): RouteOutcome
+}
+
+export interface RouterOptions {
+  endpoints: EndpointTable
+  /** pin 哈希与依赖当前 active 不一致：漂移证据（每次解析都可能触发，去重归调用方），不阻塞调用。 */
+  onDrift?: (emitter: string, cap: string, gen: Hash) => void
+}
+
+/** 身份当前 active 世代；无身份 / retired / 世代缺失返回 null。 */
+export function activeGenOf(identity: Identity | undefined): Gen | null {
+  if (identity === undefined || identity.active === null) return null
+  return identity.gens.find((gen) => gen.payload === identity.active) ?? null
+}
+
+/**
+ * 构造 A1 路由器。ownerIndex 按世界对象缓存（世界只在 done 轮换代，轮内审计 put 不改 ids），
+ * 依赖“已声明能力类”按 (impl, gen) 缓存解析结果——解析仍每调用机械对照世界。
+ */
+export function createRoundRouter(options: RouterOptions): RoundRouter {
+  const ownerIndexes = new WeakMap<World, Map<Hash, string>>()
+  const implementsCache = new Map<string, Set<string> | null>()
+
+  const ownerIndexOf = (world: World): Map<Hash, string> => {
+    const cached = ownerIndexes.get(world)
+    if (cached !== undefined) return cached
+    const index = new Map<Hash, string>()
+    const ids = Object.keys(world.ids).sort()
+    for (const id of ids) {
+      const identity = world.ids[id]
+      if (identity.active === null) continue
+      for (const gen of identity.gens) {
+        if (gen.payload === identity.active && !index.has(gen.payload)) index.set(gen.payload, id)
+      }
+    }
+    for (const id of ids) {
+      for (const gen of world.ids[id].gens) {
+        if (!index.has(gen.payload)) index.set(gen.payload, id)
+      }
+    }
+    ownerIndexes.set(world, index)
+    return index
+  }
+
+  const implementsOf = (world: World, id: string, gen: Hash): Set<string> | null => {
+    const key = `${id}\u0000${gen}`
+    const cached = implementsCache.get(key)
+    if (cached !== undefined) return cached
+    const decl = readPluginDecl(world, id)?.decl ?? null
+    const caps = decl === null ? null : new Set(decl.implements)
+    implementsCache.set(key, caps)
+    return caps
+  }
+
+  return {
+    resolve(world, emitterId, cap, method) {
+      const pinned = activeGenOf(world.ids[emitterId])?.pins[cap]
+      if (pinned === undefined) return { ok: false, error: 'unresolved_cap' }
+      if (world.defs[pinned] === undefined) return { ok: false, error: 'stale' }
+      const owner = ownerIndexOf(world).get(pinned)
+      if (owner === undefined) return { ok: false, error: 'stale' }
+      const gen = activeGenOf(world.ids[owner])
+      if (gen === null) return { ok: false, error: 'stale' }
+      const caps = implementsOf(world, owner, gen.payload)
+      if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
+      const row = options.endpoints.get(owner, gen.payload, cap, method)
+      if (row === null) return { ok: false, error: 'not_loaded' }
+      if (pinned !== gen.payload) options.onDrift?.(emitterId, cap, gen.payload)
+      return { ok: true, row }
+    },
+  }
+}

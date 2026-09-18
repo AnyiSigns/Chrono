@@ -19,6 +19,9 @@ export interface ServiceManifest {
   state: string
 }
 
+/** 一次能力调用的应答：服务侧有响应（result / error）即数据，形态不合按协议损坏。 */
+export type CallResponse = { ok: true; value: Json } | { ok: false; code: string; message: string }
+
 export type ServiceChannelErrorCode = 'timeout' | 'closed' | 'protocol_error' | 'bad_manifest'
 
 export class ServiceChannelError extends Error {
@@ -31,7 +34,7 @@ export class ServiceChannelError extends Error {
 }
 
 interface Pending {
-  expect: string
+  expect: string | readonly string[]
   resolve: (message: Json) => void
   reject: (err: Error) => void
   timer: NodeJS.Timeout
@@ -121,6 +124,28 @@ export class ServiceLink {
     return isRecord(message) && message['ok'] === true
   }
 
+  /**
+   * 能力调用（protocol §2.2）：服务回 `result` / `error` 均为「有响应」。
+   * `result` 的 `ok` 必须是 `true`、`error` 的 `ok` 必须是 `false`；形态不合抛协议损坏。
+   */
+  async call(port: string, method: string, args: Json, timeoutMs: number): Promise<CallResponse> {
+    const message = await this.request(
+      'call',
+      { port, method, args },
+      ['result', 'error'],
+      timeoutMs,
+    )
+    const record = message as { [k: string]: Json }
+    if (record['kind'] === 'error') {
+      if (record['ok'] !== false) throw new ServiceChannelError('protocol_error')
+      const code = typeof record['code'] === 'string' ? record['code'] : 'error'
+      const text = typeof record['message'] === 'string' ? record['message'] : ''
+      return { ok: false, code, message: text }
+    }
+    if (record['ok'] !== true) throw new ServiceChannelError('protocol_error')
+    return { ok: true, value: (record['value'] ?? null) as Json }
+  }
+
   /** 排空：在途结束后服务回 bye。 */
   async drain(deadlineMs: number, timeoutMs: number): Promise<void> {
     await this.request('drain', { deadline_ms: deadlineMs }, 'bye', timeoutMs)
@@ -142,7 +167,7 @@ export class ServiceLink {
   private request(
     kind: string,
     fields: { [k: string]: Json },
-    expect: string,
+    expect: string | readonly string[],
     timeoutMs: number,
   ): Promise<Json> {
     const stdin = this.child.stdin
@@ -200,7 +225,10 @@ export class ServiceLink {
     if (pending === undefined) return
     this.pending.delete(id)
     clearTimeout(pending.timer)
-    if (message['kind'] !== pending.expect) {
+    const expected = Array.isArray(pending.expect)
+      ? pending.expect.includes(message['kind'] as string)
+      : message['kind'] === pending.expect
+    if (!expected) {
       pending.reject(new ServiceChannelError('protocol_error'))
       return
     }

@@ -51,11 +51,27 @@
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`） |
 | `protocol` | 服务协议版本 |
-| `restart` | 重启策略：`policy` = `on-exit`（崩溃后按 `backoff` / `max` 退避重启，缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；**稳定 `window`**：本次运行 ≥ `window` 才复位重启计数，否则算 flapping；另有 `drain_ms` |
+| `restart` | 重启策略：`policy` = `on-exit`（崩溃后按 `backoff` / `max` 退避重启，缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；另有 `drain_ms` |
 | `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
 | `state` | 状态档：只允许 `recomputable`（③ 可重算） |
 | `members` | 成员清单，每项带 `kind`（`execute` / `term` / `schema`）——「数据热生效 vs 代码起新服务」由此驱动，不按目录名 |
-| `commands` | 命令声明：`{ name, entry, argsSchema }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析） |
+| `commands` | 命令声明：`{ name, entry, argsSchema }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下 |
+
+### 命令 `argsSchema` 方言（v1 · JSON Schema 白名单子集）
+
+`argsSchema` 指向的 def body 必须落在**白名单子集**内；宿主只做**形态门禁**，语义校验（业务规则）归插件：
+
+- **白名单**（参与校验）：`type`（单值：`object` / `array` / `string` / `number` / `integer` / `boolean` / `null`）、
+  `properties`、`required`、`additionalProperties`（仅布尔，缺省 `true`）、`items`（单 schema）、`enum`、`const`、
+  `minimum` / `maximum`、`minItems` / `maxItems`、`minLength` / `maxLength`（按 **Unicode 码点**计）。
+- **注记**（不参与校验）：`title` / `description` / `default` / `examples`。
+- **其余关键词一律入世拒**（`bad_args_schema`，**不静默忽略**）——含 `$ref`（含远端）、`$schema`、`pattern`、`format`、
+  `oneOf` / `anyOf` / `allOf` / `not`、`if` / `then` / `else`、`multipleOf`、`exclusive*`、`uniqueItems`、`contains` 等。
+- **钉死的语义**：类型判定复用内核值标签 `t`（一种口径）；`enum` / `const` 用内核 `deepEq` 比较；
+  `integer` = `Number.isInteger`；缺键与 `null` 不同；`required` 只查键存在；`additionalProperties` 缺省 `true`。
+- **门禁在宿主、先于 run**：`argsSchema` 缺省 = 不设门；缺 `args` = `null`；不符 → `bad_args`，**不构造 directive、不落账**。
+  校验器用显式栈（防深嵌套），**不执行正则、不触网、无副作用**。
+- `Identity.schema` 用**同一方言**（身份数据契约），但宿主 v1 **不校验**身份数据——它仍是数据、非特权。
 
 ## 三、做法红线
 
