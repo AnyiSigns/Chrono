@@ -2,6 +2,7 @@
 // 分相：eval 连续段（可并一轮，extern 随邻）与 write（每条一轮）不共轮，保序、不重排 plan 语义。
 // 机械填字段：id / by / ref（紧邻 eval 段最后一条 eff 的审计键）/ expect_pos（该轮轮首链头）；
 // 结构 op 的 pins 按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）。
+// eval 的 ctx（A14）：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
 
 import { randomUUID } from 'node:crypto'
 import { runRound } from './run-loop.ts'
@@ -18,7 +19,16 @@ import type {
 } from '../../kernel/index.ts'
 
 type Rec = { [k: string]: Json }
-type EvalDirective = Extract<Directive, { kind: 'eval' }>
+
+/** 宿主侧 eval 草稿：`ctx` 字段**可缺省**——缺省 ⇒ 轮首投影；显式给出（含 null）⇒ 原样透传。 */
+export type EvalDraft = { kind: 'eval'; entry: Hash; args: Json; ctx?: Json }
+
+/** 宿主侧 directive 输入：入站提交与 plan 物化同形（write 的 request 由宿主在分组物化时机械重填）。 */
+export type DirectiveDraft =
+  EvalDraft | { kind: 'extern'; payload: Json } | { kind: 'write'; request: WriteRequest }
+
+/** 投影 provider：按该轮轮首的 world / head 构造；effect 不 import projection，由宿主注入。 */
+export type CtxProvider = (world: World, head: Head) => Json
 
 const OPS: ReadonlySet<string> = new Set([
   'put',
@@ -36,7 +46,7 @@ const OPS: ReadonlySet<string> = new Set([
 /** 携带来源标记的 directive：plan 产出的写由宿主重填 id / by（发起者），入站提交的保留作者给的幂等键。
  *  owner = A1 发出者（宿主构造 directive 时已知：命令入口属主，plan 条目继承产出者属主）。 */
 interface StagedDirective {
-  directive: Directive
+  directive: DirectiveDraft
   fromPlan: boolean
   owner?: string
 }
@@ -44,7 +54,7 @@ interface StagedDirective {
 export interface SubmissionInput {
   world: World
   head: Head
-  directives: Directive[]
+  directives: DirectiveDraft[]
   caps: Record<string, boolean>
   limits: { gas: number; depth: number }
   initiator: string
@@ -53,7 +63,9 @@ export interface SubmissionInput {
   router?: RoundRouter
   callTimeoutMs?: number
   /** 入站直提 directive 的属主解析（如命令入口哈希 → 身份）；解析不到 → 不路由。 */
-  initialOwnerOf?: (directive: Directive) => string | undefined
+  initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
+  /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
+  ctxFor?: CtxProvider
   /** 审计 entry 落点（A7：挂起期间即时落链）。 */
   onAudit?: (entry: Entry) => void
   /** 每轮 done 的业务 journal 落点（A10：done 才落账）。 */
@@ -91,19 +103,20 @@ function splitPhases(staged: StagedDirective[]): StagedDirective[][] {
 /** plan 里的单个 directive 形态；不合 → bad_directive（整次提交按 refused 收口）。 */
 function materializePlanItem(
   raw: Json,
-): { ok: true; directive: Directive } | { ok: false; reason: string } {
+): { ok: true; directive: DirectiveDraft } | { ok: false; reason: string } {
   if (!isRecord(raw)) return { ok: false, reason: 'bad_directive' }
   switch (raw['kind']) {
     case 'eval': {
       if (typeof raw['entry'] !== 'string' || raw['entry'].length === 0) {
         return { ok: false, reason: 'bad_directive' }
       }
-      const directive: EvalDirective = {
+      // ctx 判定用字段存在性：缺省留给宿主投影；显式给出（含 null）原样透传
+      const directive: EvalDraft = {
         kind: 'eval',
         entry: raw['entry'],
         args: raw['args'] ?? null,
-        ctx: raw['ctx'] ?? null,
       }
+      if ('ctx' in raw) directive.ctx = raw['ctx'] as Json
       return { ok: true, directive }
     }
     case 'extern':
@@ -113,7 +126,7 @@ function materializePlanItem(
       if (!isRecord(request) || typeof request['op'] !== 'string' || !OPS.has(request['op'])) {
         return { ok: false, reason: 'bad_directive' }
       }
-      const directive: Directive = {
+      const directive: DirectiveDraft = {
         kind: 'write',
         request: {
           id: '',
@@ -130,6 +143,11 @@ function materializePlanItem(
   }
 }
 
+/** 取 eval 草稿的入口哈希；其余 kind 返回 undefined。 */
+function entryOf(directive: DirectiveDraft): Hash | undefined {
+  return directive.kind === 'eval' ? directive.entry : undefined
+}
+
 /**
  * plan 通道：只认顶层 eval 观测（entry ∈ 本轮 directive 集合）value 里的保留包装。
  * 多个 eval 各自产计划时按观测序拼接；其余 value 一律当普通数据。
@@ -141,8 +159,8 @@ function pickPlan(
 ): { ok: true; directives: StagedDirective[] } | { ok: false; reason: string } {
   const entries = new Set(
     group
-      .filter((item) => item.directive.kind === 'eval')
-      .map((item) => (item.directive as EvalDirective).entry),
+      .map((item) => entryOf(item.directive))
+      .filter((entry): entry is Hash => entry !== undefined),
   )
   const out: StagedDirective[] = []
   for (const observation of observations) {
@@ -151,9 +169,7 @@ function pickPlan(
     if (typeof observation['entry'] !== 'string' || !entries.has(observation['entry'])) continue
     const value = observation['value']
     if (!isRecord(value) || !Array.isArray(value['$directives'])) continue
-    const producer = group.find(
-      (item) => item.directive.kind === 'eval' && item.directive.entry === observation['entry'],
-    )
+    const producer = group.find((item) => entryOf(item.directive) === observation['entry'])
     for (const raw of value['$directives']) {
       const item = materializePlanItem(raw)
       if (!item.ok) return item
@@ -206,17 +222,47 @@ function resolvePins(
   return { ok: true, value: { ...args, pins: resolved } }
 }
 
-/** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐。 */
+/** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐；eval 的 ctx 缺省填该轮投影（构造一次、该轮共享）。 */
 function prepareGroup(
   group: StagedDirective[],
-  context: { head: Head; ref: Hash | null; initiator: string; world: World },
+  context: { head: Head; ref: Hash | null; initiator: string; world: World; ctxFor?: CtxProvider },
 ):
   | { ok: true; directives: Directive[]; owners: Array<string | undefined> }
   | { ok: false; reason: string } {
   const directives: Directive[] = []
   const owners: Array<string | undefined> = []
+  let roundCtx: Json | undefined
+  // 按需构造：仅当该组确有缺省 ctx 的 eval 时才算（write 组不构造）；该组（= 该轮）共享同一份。
+  // provider 缺席时 eval 缺省 ctx 无值可填：宿主接线缺陷，立即抛错（不得静默退化成 null）。
+  const ctxOf = (): Json => {
+    if (roundCtx === undefined) {
+      if (context.ctxFor === undefined) {
+        throw new Error('ctxFor required when eval ctx is absent')
+      }
+      const built = context.ctxFor(context.world, context.head)
+      if (built === undefined) throw new Error('ctxFor returned undefined')
+      roundCtx = built
+    }
+    return roundCtx
+  }
   for (const item of group) {
-    if (item.directive.kind !== 'write') {
+    if (item.directive.kind === 'eval') {
+      // 字段存在性判定（JSON 值只能是 null / 其它，非 undefined）：缺省 ⇒ 投影；显式（含 null）⇒ 原样
+      const explicit = item.directive.ctx
+      const evalDirective: Extract<Directive, { kind: 'eval' }> =
+        explicit !== undefined
+          ? { kind: 'eval', entry: item.directive.entry, args: item.directive.args, ctx: explicit }
+          : {
+              kind: 'eval',
+              entry: item.directive.entry,
+              args: item.directive.args,
+              ctx: ctxOf(),
+            }
+      directives.push(evalDirective)
+      owners.push(item.owner)
+      continue
+    }
+    if (item.directive.kind === 'extern') {
       directives.push(item.directive)
       owners.push(item.owner)
       continue
@@ -272,7 +318,13 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
   let ref: Hash | null = null
   while (pending.length > 0) {
     const group = pending.shift() as StagedDirective[]
-    const prepared = prepareGroup(group, { head, ref, initiator: input.initiator, world })
+    const prepared = prepareGroup(group, {
+      head,
+      ref,
+      initiator: input.initiator,
+      world,
+      ctxFor: input.ctxFor,
+    })
     if (!prepared.ok) {
       observations.push({ kind: 'refused', reasons: [prepared.reason] })
       return { status: 'refused', world, head, observations }

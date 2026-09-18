@@ -19,13 +19,13 @@
 
 ## 本阶段口径
 
-- 实现严格按 `docs/host.md` §五 的设计口径；本计划的 A0–A13 是它的实现规格。
+- 实现严格按 `docs/host.md` §五 的设计口径；本计划的 A0–A14 是它的实现规格。
 - v1 从 `EMPTY_WORLD` **全量重放**，无快照、无 `partial`。
 - 只用 `fixtures/plugins/` 的 toy 服务验证，不引入真实插件。
 
 ---
 
-## 关键算法（A0–A13，实现规格）
+## 关键算法（A0–A14，实现规格）
 
 ### A0 · 入世（文件树 → defs）
 
@@ -35,7 +35,7 @@ ingest(entry):                             # entry = state/plugins.json 的 {nam
   ign = read_worldignore(root)                # 可选：包内 .worldignore，每行一个相对路径（按路径段前缀匹配；# 注释 / 空行忽略）
   for f in walk(root) \ {node_modules, .git} \ ign:   # 通用排除 + 插件声明排除
       blob[f] = put({ body: read(f) })         # 文件 → blob
-  # 契约必需文件（plugin.json / package.json / 锁 / README / decl.schema / commands entry·argsSchema / members 路径本身）不可被 ign 命中；命中 → 整批拒绝（bad_worldignore）
+  # 契约必需文件（plugin.json / package.json / 锁 / README / plugin.json.schema 指向的文件 / commands entry·argsSchema / members 路径本身）不可被 ign 命中；命中 → 整批拒绝（bad_worldignore）
   tree   = put({ body: { entries: [...] } })   # 目录 → tree，递归
   commit = put({ body: { tree, meta } })       # 一个世代 = 一个 commit
   # 契约层引用的包内文件各自成 def（入世解析）：
@@ -137,8 +137,8 @@ for d in roots \ bad:                         # 其余照常起；自身世代�
 order = rtopo \ bad                          # 启动序
 ```
 
-- `pin` 绑定**被依赖身份**，边落到该身份的**当前 active 世代**；反查 def→identity 靠 ③ 反查索引
-  `Map<defHash, identityId>`（装配期建、可从 `ids.gens` 重建、身份换代增量更新）——A1 / A2 共用它，O(1)。
+- `pin` 绑定**被依赖身份**，边落到该身份的**当前 active 世代**；反查 def→identity 靠按 `World` 对象缓存的索引
+  `Map<defHash, identityId>`（从 `ids.gens` 重建；世界换代即随新世界对象重算，不依赖装配期可变缓存）——A1 / A2 共用它，O(1)。
 - **Tarjan 单趟**即同时出 SCC（环）与逆拓扑序（启动序），无需再单跑一趟 topo_sort。
 - 环**不再整体拒绝**：环成员及其依赖者标 `not_loaded` + 记 `dep.cycle`，其余照常起。
 - `stale()` 判定口径见 `kernel.md` §九。
@@ -206,8 +206,9 @@ on_commit_ok(head_advanced):
   for retired in { id | 本次 commit 使某被依赖身份 retire / set_active(null) }:
     for d in reverse_reachable(retired): lifecycle_log(dep.retired, d); mark(d, not_loaded)   # 运行期 fail-closed（A3）
 
-# only_data_changed(id)：按 members 的 kind 判——只 term/schema 成员变动 → data（reload）；
-#   任一 execute 成员变动 → code（起新服务）。不按 terms//execute/ 目录名硬编码。
+# only_data_changed(id)：按 members 声明跨代比对「路径 + 解析内容（文件 / 子树哈希）」——
+#   任一 execute 成员路径增删 / 内容变化 → code（起新服务）；仅 term/schema 变化 → data（reload）；
+#   两类都有 / 同路径两用 → code（execute 优先）。不按 terms//execute/ 目录名硬编码。
 # swap_service(id, new_gen)：换代——materialize → start → handshake → EndpointTable.add(new)+mark_old(draining) →
 #   drain(old, decl.restart.drain_ms)；drain 期间暂停该服务 health 探针（见 A11）；超时强杀 + lifecycle_log(service.exit, old_proc)
 # restart_service(id, gen)：同 gen 重启（进程已死、无旧行并存）——materialize → start → handshake →
@@ -283,6 +284,7 @@ loop:
 - A9 = **单轮**（含 waiting 续跑）；A10 = **轮间**驱动，每轮独立 `run_id` / `now`，并把 plan 切轮（见 A10）。
 - **单轮返回 `lastAuditHash`**（本轮最后一条 eff 的审计 def 键；无 eff 为 null）供 A10 填 `ref`。
 - **`refused` / `idle` 同样回灌审计后的 `world` / `head`（S4 钉死）**：审计在挂起期间已推进链头，若调用方拿轮前旧头，下一次提交会以旧 `expect_pos` 续链、分叉。宿主的 `world` / `head` 与账本必须同步前进。
+- **入站提交缺省**：`caps` = `{}`；`limits` = `{ gas: 1_000_000, depth: 64 }`（`host.ts` `DEFAULT_LIMITS`）。
 
 ### A10 · 判定 → 落账（轮与轮之间）
 
@@ -306,6 +308,7 @@ round(directives, run_id, now) -> (out, phases):  # 每轮独立 run_id / now；
 #   target.expect_pos = **该轮轮首链头**（write 每条一轮 ⇒ 轮首头即该条执行时的头）
 #   结构 op 的 pins 由宿主按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）
 # write directive 的 request.args = plan 里的内容（宿主不改内容，只机械校验）
+# eval 条目的 ctx：**字段缺省** → A14 投影（构造时世界）；显式给出（含 null）→ 原样透传
 # op ∈ 全部 op（含 add_gen/set_active/retire/fork/graft）；run 内 set_active 只对下一轮 / 下一 run 生效
 # 真实位置只认 done 的 head / journal；refused / waiting 的 pos 一律作废
 # **分相**：一轮内不混 eval 与 write，且 expect_pos 稳——
@@ -321,9 +324,11 @@ round(directives, run_id, now) -> (out, phases):  # 每轮独立 run_id / now；
 - **plan 通道**：term 用保留包装 `{"$directives":[...]}` 产 directive；宿主只对**顶层 eval 观测**（entry = 本次提交的顶层 directive 的 entry）识别该包装，其余 eval / `extern` / 嵌套观测只作数据回给发起者。
 - **plan 条目插在剩余轮之前（S4）**：该 eval 的判定立即生效，随后才继续入站提交里余下的段；多 eval 同轮各产计划时按观测序拼接。
 - **plan 条目属主继承产出者（S4）**：plan 里的 eval 发 eff 时用产出该 plan 的 eval 的 owner 路由（宿主不重新对 entry 反查属主）。
+- **plan 的 eval 条目 ctx（S4.6）**：`ctx` 字段缺省 ⇒ 宿主投影（A14，取**该轮轮首**世界）；显式给出（含 `null`）⇒ 原样透传。判定用 `'ctx' in raw`，不能用 `?? null`。
 - **plan 递归（S4）**：plan 产出的 eval 再产 plan，逐层执行到穷尽（每层独立 `run_id` / `now`）；非法条目 / `unresolved_pin` / 坏 `batch` 子操作 → `refused`（`bad_directive` / `unresolved_pin`），不跑后续轮。
 - **`batch` 子操作同样解析 pins（S4）**：递归 `args.ops`；子操作缺 `args` 键 → `bad_directive`（宿主不替它补 `null`，交内核形态门会漏过）。
 - 插件**服务**不产生 directive；directive 由 term 经 plan 通道产出，或由发起者在入站面直接提交。
+- **设计口径见 `host.md` §五「落账」**（计划通道 / 分相 / 属主继承）；本节只写算法与字段填充。
 
 ### A11 · 健康 / 重启 / 超限（坏分支隔离）
 
@@ -349,6 +354,7 @@ health_probe(proc):                            # protocol §2.3 probe/pong；dra
 ```
 
 - 崩溃恢复由 `assembly` 按声明执行；`health` / `restart` 字段由此被消费（`restart.policy` = `on-exit` / `never`，缺省 / 未知按 `on-exit`；`health.probe` 是服务侧自述、宿主不消费）。
+- **声明默认值（实现常量，`supervision.ts` `parseRestart` / `parseHealth`）**：`backoff` ∈ `none` / `fixed` / `exponential`（未知 / 缺省按 `exponential`）、`backoff_ms` = 500、`backoff_max_ms` = 30000、`max` = 5、`window_ms` = 60000、`drain_ms` = 5000；`health.interval_ms` = 10000、`health.timeout_ms` = 2000。
 - 超限后**不自动无限重启**；隔离范围同 A2「坏分支」。**复位按「本次运行时长 ≥ `window_ms`」**（`started_at` 在每次起 / 重启时记录），**握手成功不复位**——否则持续 flapping（每次握手都成功）永不耗尽 `max`。
 
 ### A12 · 停机序列（`boot stop`）
@@ -384,6 +390,29 @@ validate_args(world, cmd, args):           # 命中 host.ts command 分支：res
 - 类型判定复用内核值标签 `t`，`enum` / `const` 复用内核 `deepEq`（一种口径）；`integer` = `Number.isInteger`；`minLength` / `maxLength` 按 Unicode 码点。
 - 门禁只查**形态**；业务语义校验归插件（term / 服务），宿主不认识命令语义。
 
+### A14 · 投影（`base_only`，v1 = 当前世界）
+
+```
+project(world, head):                      # 宿主只读视图；按引用构造，O(#身份)，不深拷贝
+  return { head: { seq: head.seq, hash: head.hash },
+           world_rev: worldRev(world),
+           ids: { for id in world.ids:
+                    { active: ids[id].active,
+                      gens: ids[id].gens.map(g => { seq: g.seq, payload: g.payload }),  # 不含 adopted/born
+                      body: ids[id].active == null ? null : (world.defs[ids[id].active]?.body ?? null) } } }
+# 形状口径：以身份名为键（字面 id 可达）；不给 defs 表（哈希键静态路径不可达）；不含源码 tree/blob
+# 注入规则（三路统一）：eval 的 ctx **字段缺省** → project(world, head)；显式给出（含 null）→ 原样透传
+# 含 eval 的轮按需构造一次、该轮 eval 共享（轮内 eval 不推进世界；eff 的审计推进发生在轮内但不回改 ctx）
+# 三路同规：客户端提交 / 命令 / plan 条目均在每轮分组物化时取（用该轮轮首 world / head）
+# effect 不 import projection：宿主把 ctxFor(world, head) provider 传进 rounds（分组物化点）；
+# run-loop 只收已填好 ctx 的 directives；provider 缺席而 eval 缺省 ctx ⇒ 抛错（不静默退化成 null）
+```
+
+- v1 无快照 ⇒ **基础世界 = 宿主当前世界**（全量重放结果，随链头推进演化）；投影只读、不写链、不推进 head、**不参与哈希**（`ctx` 不进 entry），确定性来自"世界是输入"。
+- `worldRev` 是 O(#defs)（`kernel.md` §十六）⇒ **含 eval 的轮按需构造一次**、该轮 eval 共享（该轮 eval 全带显式 ctx 则不构造）；不要逐 directive 重算。
+- `["g", path]` 是**静态字面路径**（`machine.ts`），缺失抛 `missing_path`；故 `defs.<hash>` 类位置对 term 不可达，只暴露 `ids.<id>.*`。
+- 触发三路（同一实现点）：客户端 `submit`、命令、plan 条目——均在**每轮分组物化时**取该轮轮首的 `world` / `head`（write 轮不需要 ctx）；plan 条目判定用 `'ctx' in raw`，不能用 `?? null`。
+
 ---
 
 ## 本阶段交付（分片，逐片单独会话与验收）
@@ -395,13 +424,16 @@ validate_args(world, cmd, args):           # 命中 host.ts command 分支：res
 | **S3 `assembly`**          | A5 源码树 + 物化 + 跑 `start`；A4 握手；端点表；A11 健康重启 + 坏分支隔离                                                                                                                                                                                                                                   | 两个**从未见过**的 toy 插件包（一个独立、一个跨插件 `pins`）只加插件包即被连接生效；成环 / 握手失败只隔离该分支                                                                                                                         |
 | **S4 `effect`**            | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传；**A13 命令 `args` 按 `argsSchema` 校验**（JSON Schema 白名单子集，坏参 → `bad_args`，S1 遗留）                                                                                                                  | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流；坏参在装配 / 执行前被拒；白名单外关键词入世 `bad_args_schema` 拒包                            |
 | **S4.5 跨语言**            | 一个**非 JS**（如 Python）toy 插件包：`package.json` + `plugin.json` + `execute/main.py`（读写 **stdin/stdout**；服务协议最小面：4 字节长度帧 + `hello`/`manifest` + `call`/`result`/`error` + `probe`/`pong` + `drain`/`bye` + `reload`/`ack`）+ `schema/` + `README`                                      | 只加该插件包（`state/plugins.json` 加一行 + 包就位）、**不改载体一行** → 被连接 → 握手 → `call`/`result` → 回灌 → 落账；挂起→审计→回灌→续跑逐字节可重放。**这就是「宿主不认识语言 / npm 只是信封」的证明**                              |
-| **S4.6 投影（base_only）** | `projection` 包：`base_only` 只读投影；directive 的 `ctx` = 该投影（宿主从 `state/world/` 基础世界构造）；v1 基础世界 = `EMPTY_WORLD`（无快照）                                                                                                                                                             | term 经 `ctx` 读基础世界；投影只读、不写链、不推进 head；基础为空时不报错（非空内容随快照后置）                                                                                                                                         |
+| **S4.6 投影（base_only）** | A14：`projection` 包（宿主只读视图）；v1 基础世界 = **当前世界**（无快照 ⇒ 全量重放结果）；形状 = `{head, world_rev, ids:{<id>:{active, gens, body}}}`；eval 的 `ctx` **缺省即投影、显式透传**（三路统一） | term 经 `["g",["ids",<id>,"body"]]` 读当前世界投影；投影只读、不写链、不推进 head、不参与哈希 |
 | **S5 世代跟随**            | A6 换代 + 退役隔离；A8 单写者锁                                                                                                                                                                                                                                                                             | `add_gen` / `set_active` 生效；旧服务排空退出；依赖换代不改发出者进程（A1 重解析）；依赖退役 → 隔离发出者（不回落）；运维日志有对应条目；双写者被拒                                                                                     |
 
 - **S4.5 环境前提**：非 JS 运行时（如 Python）——服务协议走 **stdio**（读写 stdin/stdout），**无需 named pipe / socket**（「端点地址注入」问题随 stdio 消失）。
 - 一个非 JS toy 即可，不必每个都跨语言。
 - **S4.5 落地**：`fixtures/plugins/toy-python/` 用 Python 3.14 实现服务协议最小面——4 字节大端长度 + UTF-8 JSON 帧经 `sys.stdin.buffer` / `sys.stdout.buffer` 读写（`toy-alpha` 同款 service-config 覆写面；stdout 只写帧并逐帧 flush），manifest 由包内 `plugin.json` 现读派生；`start = py execute/main.py`（本机 `python` 是 Store 别名，宿主经 cmd 解析不到，`py` 才是实际可用命令）。`.worldignore` 按包内路径段前缀逐条声明 `__pycache__/` 与 `execute/__pycache__/`（不是按目录名递归匹配）。
 - **S4.5 结论**：载体生产代码（`packages/host` 非测试文件、`packages/kernel`、`packages/boot`、`packages/client`）**零改动**——只加包 + `state/plugins.json` 一行即完成连接 / 握手 / `call`/`result` / 回灌 / 落账；E2E 与静默失败路径（超时 → `transport_failed` → `refused`，审计照落）见 `packages/host/test/host-python.test.ts`。
+- **S4.6 落地**：`packages/host/projection/index.ts` 按 A14 形状实现（身份字面 id 为键；`gens` 只留 `seq` / `payload`；`body` = active payload def body，`active=null` 或 def 缺失 → `null`；按引用构造，不深拷贝）。
+- **S4.6 注入点**：`effect/rounds.ts` 分组物化时按字段存在性（`ctx === undefined`）填 **该轮轮首** 投影；含 eval 的轮构造一次共享，write 轮不构造；显式 ctx（含 `null`）原样透传；`ctxFor` provider 由 `host.ts` 注入（命令 / 直提 eval 两条路径），plan 条目同规（`'ctx' in raw`）。
+- **S4.6 测试**：投影单测（空世界不报错 / 机械映射 / 不含 defs 与履历 / 构造不改世界）、rounds 注入行为（缺省与显式、每轮一次与轮首 world/head、write 轮不构造、轮内审计不回改 ctx、provider 缺席抛错）、E2E（term 经 `["g",["ids",<id>,"body"]]` 等读投影；eval 轮 journal / head / worldRev 不变）见 `packages/host/test/host-projection.test.ts` 与 `effect/test/rounds.test.ts`。
 
 ## 出口验收
 
@@ -414,7 +446,7 @@ validate_args(world, cmd, args):           # 命中 host.ts command 分支：res
 6. **无内核依赖判据**：插件包内不出现内核 import；卸载全部插件，内核与其测试仍全绿（`kernel.md` §十一）。
 7. **跟随判据**：被依赖身份换代 → 发出者进程 / term 不动，路由自动指到新 active；新 active 装载失败则隔离发出者，绝不回落旧世代。
 8. **跨语言判据**：一个**非 JS**（如 Python）插件包，只加包、**不改载体** → 被连接 / 握手 / 调用 / 回灌 / 落账，逐字节可重放（证「宿主不认识语言 / npm 只是信封」）。
-9. **投影判据**：directive 的 `ctx` 为 `base_only` 只读投影；term 经 `ctx` 读基础世界；投影不写链、不推进 head。
+9. **投影判据**：eval 的 `ctx` 缺省 ⇒ `base_only` 投影、显式 ⇒ 原样透传（三路同规）；term 可经 `["g",["ids",<id>,"body"]]` 读到 active payload；投影不写链、不推进 head、不参与哈希。
 
 ## 本阶段不做
 

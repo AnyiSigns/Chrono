@@ -174,7 +174,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **审计 `put` 是宿主对 `commit` 的直接调用**（`kernel.md` 导出 `commit`）——宿主侧唯一不经 `run` directive 的直写，
   为的是让 `ref` 指向的审计 def 在业务写之前就已可寻址。`kernel.md` §二「唯一调用 commit 的地方 = `run`」指内核**模块内部**依赖，不含宿主外部调用。
 - **`extern` 是确定性透传锚点（非效果）**：`{kind:'extern', payload}` directive 经 `run` 只原样产观测 `{kind:'extern', payload}`
-  （`kernel.md` §十二 / `run.ts`）——**不写世界、不推进 head、不耗 gas、不发 `eff`、不需审计**（无 `EffRequest`，故「效果一律经宿主」不适用）；
+  （`kernel.md` §十二）——**不写世界、不推进 head、不耗 gas、不发 `eff`、不需审计**（无 `EffRequest`，故「效果一律经宿主」不适用）；
   宿主把它原样回给发起者，不解释、不落账、不推进。用途：命令「无写返回值」（run 末尾 `extern(结果)`）、外部事件锚位。
 - `write` 的 `ref` = **触发它的那条 `eff` 的 audit 哈希**；分相后 write 轮内无 `eff`，故取**紧邻 eval 段内最后一条 `eff`** 的 audit 哈希；无前置 `eff`（如直接提交 write）时 `ref = null`。
 - `run` 照抄 `kernel.md` §十二；**只有 `done` 才落账**；续跑同 `run_id` / `now` / `directives`，
@@ -185,10 +185,16 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **判定与落账分离**：写内容是**判定**的产物。一轮 `done` 的 `observations` 里带着 term 的求值结果
   （`{kind:'eval', entry, ok, value}`），宿主据此**原样**构造 `write` directive，由 `commit` 落账——
   内容不改，只做机械校验。
+- **计划通道（term 产 directive）**：宿主只认**顶层 eval 观测** value 里的保留包装 `{"$directives":[...]}`——
+  条目**原样取用**（不改 `kind` / `op` / `args`），宿主只机械填 `id` / `by` / `ref` / `expect_pos`，
+  结构 op 的 `pins` 按名解析（与入世同路）；其余 value 一律作普通数据回发起者。
+  plan 条目**插在本次提交剩余轮之前**（判定立即生效），可逐层递归；plan 里 eval 发 `eff` 时
+  **继承产出它的 eval 的属主**（不按 entry 反查属主）。
+- **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计 `put` 推进 head 但不回改该轮 `ctx`），
+  **`write` 每条单独一轮**（其 `expect_pos` = 该轮轮首链头；要原子写多份用一条 `batch`），`extern` 中性可随邻段。
 - **term 可产全部 op**（含 `add_gen` / `set_active` / `retire` / `fork` / `graft`）——自改世界是 term 的能力，
   宿主不做 op 级限制。**v1 无 op 级鉴权**：内核不验 `by` 真实性（`kernel.md` §十四），宿主不限制 term 改哪个身份；
-  正当性靠「term 是判定」（可审计、可回滚），结构 op 的审批闸门是后续上层能力，不属载体。宿主只机械填 `expect_pos`（= 当前链头）/ `id`（幂等键）/ `by`（发起者）/ `ref`；
-  结构 op 的 `pins` 由宿主按「名 → 被依赖身份 active 世代 payload 哈希」解析（与入世同路），不由 plan 给。
+  正当性靠「term 是判定」（可审计、可回滚），结构 op 的审批闸门是后续上层能力，不属载体。
 - run 内 `set_active` 只对**下一轮 / 下一 run** 生效（本轮锚定起点世代）。
 - 真实位置只认 `done` 的 `head` / `journal`；`refused` / `waiting` 观测里的 `pos` 一律作废（`kernel.md` §十二）。
 - 发起者（CLI / UI / 测试）可在**入站面**直接提交 directive；插件作为**服务**没有写链通道——它只能应答，
@@ -203,23 +209,36 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 命令**不是旁路**：判定仍是 term、写仍经「落账」；宿主不认识命令语义，只按声明路由。
 - 宿主命令名（`start` / `stop` / `run` / `status` / `seed` / `verify` / `replay`）是**保留字**，插件命令不得占用。
 - 命令清单由宿主从声明读出——客户端没有世界。
-- 发起者提交 `directive` / 命令时携带 `caps` / `limits`，宿主**透传不扩权**（内核保证 `EffRequest.caps`
-  恒等于输入）；`now` 由宿主固定，不由客户端给。
+- 发起者提交 `directive` / 命令时携带 `caps` / `limits`，宿主**透传不扩权**（缺省由宿主补默认预算；
+  内核保证 `EffRequest.caps` 恒等于输入）；`now` 由宿主固定，不由客户端给。
 
 **投影**
 
-- 投影 = 宿主对世界的**只读视图**，作为 directive 的 `args` / `ctx` 交给 term；插件与 term 都不直接读世界。投影只读：不写链、不推进 head。
-- `base_only` 投影依赖宿主持有的基础世界（宿主从 `state/world/` 的基础世界构造）；无基础世界时不可用。
+- 投影 = 宿主对世界的**只读视图**，作为 directive 的 `ctx` 交给 term；插件与 term 都不直接读世界。投影只读：不写链、不推进 head、不参与哈希。
+- **v1 `base_only` 口径**：无快照 ⇒ **基础世界 = 宿主当前世界**（全量重放结果，随链头推进演化）；投影反映**构造时**的世界。
+- **形状**：内核 `["g", path]` 是**静态字面路径**（无变量、不可解引用哈希），故以**身份名**为键、宿主预解析：
+  ```
+  { head:{seq,hash}, world_rev,
+    ids: { <身份id>: { active: Hash|null, gens:[{seq,payload}], body: Json|null } } }
+  ```
+  `gens` **不含履历**（`adopted` / `born`；与 `world_rev` 摘要口径一致）；`body` = active 世代 payload def 的 body（宿主解析；无则 `null`）；
+  **不给 `defs` 表**（哈希键静态不可达）、**不含源码 tree/blob**。按引用构造，O(#身份)，不深拷贝。
+- **注入规则（三路统一）**：eval 的 `ctx` **字段缺省 ⇒ 宿主投影；显式给出（含 `null`）⇒ 原样透传**
+  （客户端提交 / 命令 / plan 同规）。投影**按需构造**：含 eval 的轮构造一次、该轮 eval 共享（轮内 eval 不推进世界），
+  **以该轮开头的世界为准**；write 轮不构造。
 
 **世代**
 
 - 触发 = 链头推进且**本插件自身 active 换代**（依赖换代不触发，见「路由」）；
   改**数据** → 进程不动、热生效；改**代码** → 新服务 + 旧服务 drain。
+- **数据 / 代码判据（机械，按 `members` 声明）**：跨代比对声明成员路径及其解析内容（文件 / 子树哈希）——
+  任一 `execute` 成员路径增删或内容变化 ⇒ **代码**；仅 `term` / `schema` 成员变化 ⇒ **数据**；
+  两类都有 ⇒ 代码（保守起新服务）；同一路径被 `execute` 与 `term` / `schema` 同时声明时 `execute` 优先。
 - **依赖退役 ≠ 依赖换代**：依赖 `retire` / `set_active(null)`（依赖没了）→ 运行期 **fail-closed 隔离**——
   对该身份反向可达的发出者及其依赖者标 `not_loaded` + 记 `dep.retired`（与装配期坏分支隔离同口径）；
   依赖**换代**（新 active 已装载）只由宿主重解析路由、**不隔离**发出者。
 - 端点表**原子切换**；在途 run 锚定旧世代，换代只对下一个 run 生效。
-- `assembly` **只跟随、不改 active**；**不做**原地热补丁（`kernel.md` §八）。**入世时 `add_gen` 同时激活**（`journal.apply.ts`）——新身份入世后即 active，由**发起者**提交（v1 的 `seed` 离线直写 `commit`，或运行时 directive）；assembly 不发 `add_gen` / `set_active`，只读其结果——`active` 为 `null` 的身份不在装配闭包内、不启动。
+- `assembly` **只跟随、不改 active**；**不做**原地热补丁（`kernel.md` §八）。**入世时 `add_gen` 同时激活**（`kernel.md` §五）——新身份入世后即 active，由**发起者**提交（v1 的 `seed` 离线直写 `commit`，或运行时 directive）；assembly 不发 `add_gen` / `set_active`，只读其结果——`active` 为 `null` 的身份不在装配闭包内、不启动。
 
 **写者**
 
@@ -228,9 +247,9 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 **其它**
 
-- 插件服务只允许持有**可重算状态（③）**；④ 不可重算状态必须显式声明。
+- 插件服务只允许持有**可重算状态（③）**；④ 不可重算状态必须显式声明——v1 无 ④ 声明形态（随 `auth_ref` 后置）。
 - 密钥不进世界：厂商声明只放 `auth_ref`——它是世界里的一条「哈希 + 平台」声明（④ 不可重算本体，`kernel.md` §八），
-  指向宿主**持久存储**的密钥本体；世界只存引用不存密钥，重放只复现引用、不复现密钥。`auth_ref` 的**字段 / 形态后置**（随首个 vendor 插件计划定）。
+  指向宿主**持久存储**的密钥本体；世界只存引用不存密钥，重放只复现引用、不复现密钥。`auth_ref` 的**字段 / 形态 v1 未定义**（随需要它的首个 vendor 能力后置）。
 - **服务断连自退出**：插件服务检测到与宿主连接断开（**stdin EOF / 管道断开**）即**自退出**（服务协议义务，见 `docs/protocol.md` §2.6）——避免宿主崩溃后孤儿进程占端点。
 - 判定 / **决策路由** / 评分 / 门禁写成 term；**能力解析路由**不是判定，是宿主的机械解析（见「路由」）。
   取用 / 效果执行 / 装载在宿主（`kernel.md` §十）。

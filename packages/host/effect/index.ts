@@ -7,4 +7,10 @@ export type { RouteError, RouteOutcome, RoundRouter, RouterOptions } from './rou
 export { DEFAULT_CALL_TIMEOUT_MS, runRound } from './run-loop.ts'
 export type { RoundInput, RoundOutcome } from './run-loop.ts'
 export { runSubmission } from './rounds.ts'
-export type { SubmissionInput, SubmissionOutcome } from './rounds.ts'
+export type {
+  CtxProvider,
+  DirectiveDraft,
+  EvalDraft,
+  SubmissionInput,
+  SubmissionOutcome,
+} from './rounds.ts'

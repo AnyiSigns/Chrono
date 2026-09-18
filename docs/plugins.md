@@ -37,8 +37,9 @@
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
 - **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。
 - **term 内 callee 引用必须无环**：`terms/` 里的 `$ref` 在入世时解析成 def 哈希；成环 → **整包入世被拒**（`term_cycle`），其他包照常。term 调用图本就是 defs DAG 的子图（`kernel.md` §十三），环 = 写错。
+- **term 读世界只经 `ctx` 投影**（形状见 `host.md` §五 投影）：内核 `["g", path]` 是**静态字面路径**，故按**身份字面 id** 取（`ctx.ids.<id>.active` / `.body`）；哈希键（`defs.<hash>`）不可达——宿主不把 `defs` 表给 term。
 - 插件包**不得依赖 `kernel` 或其他插件包**；插件间依赖只走 `pins`（npm 依赖只管自带库，见 §三）。
-- 密钥不进世界：`auth_ref` 的**字段 / 形态后置**（随首个 vendor 插件计划定）；原则（密钥走 ④ 声明、只存引用不存本体）见 `host.md` §五 其它。
+- 密钥不进世界：`auth_ref` 的**字段 / 形态 v1 未定义**；原则（密钥走 ④ 声明、只存引用不存本体）见 `host.md` §五 其它。
 
 `plugin.json` 字段（冻结）：
 
@@ -51,9 +52,9 @@
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`） |
 | `protocol` | 服务协议版本 |
-| `restart` | 重启策略：`policy` = `on-exit`（崩溃后按 `backoff` / `max` 退避重启，缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；另有 `drain_ms` |
-| `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
-| `state` | 状态档：只允许 `recomputable`（③ 可重算） |
+| `restart` | 重启策略：`policy` = `on-exit`（缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；`backoff` = `none` / `fixed` / `exponential`（缺省 `exponential`）、`backoff_ms` / `backoff_max_ms` 退避参数；`max` 重启上限；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；`drain_ms` 排空期限。v1 默认 `backoff=exponential`、`backoff_ms=500`、`backoff_max_ms=30000`、`max=5`、`window_ms=60000`、`drain_ms=5000` |
+| `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费（v1 默认 10000 / 2000）；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
+| `state` | 状态档：v1 只允许 `recomputable`（③ 可重算）；④ 不可重算的声明形态后置（随 `auth_ref`） |
 | `members` | 成员清单，每项带 `kind`（`execute` / `term` / `schema`）——「数据热生效 vs 代码起新服务」由此驱动，不按目录名 |
 | `commands` | 命令声明：`{ name, entry, argsSchema }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下 |
 

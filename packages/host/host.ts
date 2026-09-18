@@ -14,14 +14,14 @@ import {
 } from './assembly/index.ts'
 import type { AssemblyRuntimeHandle } from './assembly/index.ts'
 import { createRoundRouter, runSubmission } from './effect/index.ts'
-import type { RoundRouter } from './effect/index.ts'
+import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
 import { appendJournal, acquireLock, loadAnchor, releaseLock } from './ledger/index.ts'
 import { appendLifecycle } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
 import { projectBaseOnly } from './projection/index.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
 import type { InboundMessage, Limits, OutboundMessage } from './wire.ts'
-import type { Directive, Entry, Json, World, Head } from '../kernel/index.ts'
+import type { Entry, Json, World, Head } from '../kernel/index.ts'
 
 export interface HostOptions {
   root: string
@@ -67,8 +67,9 @@ const OP_NAMES: ReadonlySet<string> = new Set([
   'snapshot',
 ])
 
-/** 机械校验 directives 形态；非法返回 null（不得让畸形提交打崩写者）。 */
-function asDirectives(value: unknown): Directive[] | null {
+/** 机械校验 directives 形态；非法返回 null（不得让畸形提交打崩写者）。
+ *  eval 的 `ctx` 字段保原样：缺省留给宿主投影，显式给出（含 null）透传（A14）。 */
+function asDirectives(value: unknown): DirectiveDraft[] | null {
   if (!Array.isArray(value)) return null
   for (const item of value) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null
@@ -88,7 +89,7 @@ function asDirectives(value: unknown): Directive[] | null {
     }
     return null
   }
-  return value as Directive[]
+  return value as DirectiveDraft[]
 }
 
 function listen(server: Server, address: string): Promise<void> {
@@ -157,7 +158,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const handleSubmit = async (
     socket: Socket,
     message: Extract<InboundMessage, { kind: 'submit' }>,
-    directives: Directive[],
+    directives: DirectiveDraft[],
     runId: string,
   ): Promise<void> => {
     // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
@@ -177,6 +178,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       callTimeoutMs: options.callTimeoutMs,
       initialOwnerOf: (directive) =>
         directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
+      ctxFor: projectBaseOnly,
       onAudit: persistAudit,
       onRound: persistRound,
     })
@@ -242,14 +244,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         return
       }
     }
-    const directives: Directive[] = [
-      {
-        kind: 'eval',
-        entry: command.entry,
-        args,
-        ctx: projectBaseOnly(world, head),
-      },
-    ]
+    const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     const outcome = await runSubmission({
       world,
       head,
@@ -261,6 +256,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       router,
       callTimeoutMs: options.callTimeoutMs,
       initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
+      ctxFor: projectBaseOnly,
       onAudit: persistAudit,
       onRound: persistRound,
     })

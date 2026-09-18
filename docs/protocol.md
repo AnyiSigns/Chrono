@@ -94,13 +94,15 @@
 宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传，广播给已连接客户端
 ```
 
-- `run` 的语义与续跑纪律见 `host.md` §五「效果」与 `kernel.md` §十二。
+- `run` 的语义（含 term 产 directive 的计划通道 / 分相）见 `host.md` §五「落账」与「效果」；续跑纪律见 `kernel.md` §十二。
 - **命令是具名入口的糖**：宿主按声明把 `name` 解析成入口 def，机械校验 `args`，构造
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
 - `command` 的 `args` 由宿主按 `argsSchema`（**JSON Schema 白名单子集**，方言见 `plugins.md` §二）校验；
   不符 → `error{code:'bad_args'}`，**不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`。
+- directive 的 `eval.ctx` **字段缺省 ⇒ 宿主填入 `base_only` 投影**（形状见 `host.md` §五 投影）；显式给出（含 `null`）⇒ 原样透传；
+  客户端 / 命令 / plan 三路同规。
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
-- `caps` / `limits` 由发起者给，宿主**透传不扩权**；`now` 由宿主固定，不由客户端给。
+- `caps` / `limits` 由发起者给，宿主**透传不扩权**（缺省：`caps` 空表、`limits` 宿主默认预算）；`now` 由宿主固定，不由客户端给。
 - `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。
 - `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。
 - `status` 的 `loaded` = 已装载身份清单（`id` + active `gen`），非阻塞快照、可能瞬态。
@@ -123,7 +125,7 @@
 | `bad_args_schema` | `argsSchema` 含白名单外关键词 / 形态非法（入世整包拒） | `plugins.md` §二 方言 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |
 | `transport_failed` | 服务管道 / 帧 / 进程死亡（传输级） | §2.2 |
-| `unresolved_pin` | 入世时被依赖身份不存在 / 未激活 | `host.md` §五 源码 |
+| `unresolved_pin` | 被依赖身份不存在 / 未激活（入世、或运行期结构 op / `batch` 子操作的 pins 解析） | `host.md` §五 源码 / 落账 |
 | `bad_worldignore` | `.worldignore` 命中了契约必需文件 | `host.md` §五 源码 |
 | `term_cycle` | 入世时同包 term `$ref` 成环（该包整批拒） | `host.md` §五 源码 |
 | `bad_term_ref` | 入世时 `$ref` 指向包内不存在的成员 | `host.md` §五 源码 |

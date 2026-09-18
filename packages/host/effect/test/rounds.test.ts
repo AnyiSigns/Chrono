@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { H, pos, replay, worldRev } from '../../../kernel/index.ts'
-import { EMPTY_WORLD } from '../../../kernel/index.ts'
+import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
 import { runSubmission } from '../rounds.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
-import type { Def, Directive, Entry, Hash, Json, World } from '../../../kernel/index.ts'
+import type { Def, Directive, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
 
 const LIMITS = { gas: 1_000_000, depth: 64 }
 
@@ -310,7 +309,7 @@ describe('A10 轮间驱动 runSubmission', () => {
       $directives: [{ kind: 'write', request: { op: 'put', args: { body: { deep: true } } } }],
     }
     const leafPlanner = defHash(put({ body: ['c', leafPlan] }))
-    const midPlan: Json = { $directives: [{ kind: 'eval', entry: leafPlanner }] }
+    const midPlan: Json = { $directives: [{ kind: 'eval', entry: leafPlanner, ctx: null }] }
     const midPlanner = defHash(put({ body: ['c', midPlan] }))
     const world = worldOf({
       [leafPlanner]: put({ body: ['c', leafPlan] }),
@@ -371,7 +370,7 @@ describe('A10 轮间驱动 runSubmission', () => {
 
   it('plan 条目属主继承产出者：plan 的 eval 发 eff 用产出者身份路由', async () => {
     const step = defHash(put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }))
-    const plan: Json = { $directives: [{ kind: 'eval', entry: step }] }
+    const plan: Json = { $directives: [{ kind: 'eval', entry: step, ctx: null }] }
     const planner = defHash(put({ body: ['c', plan] }))
     const world = worldOf({
       [step]: put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }),
@@ -602,5 +601,300 @@ describe('A10 轮间驱动 runSubmission', () => {
     const all = [...audits, ...rounds].sort((a, b) => a.seq - b.seq)
     expect(all.length).toBeGreaterThan(0)
     expect(worldRev(outcome.world)).toBe(worldRev(replay(all, base)))
+  })
+})
+
+describe('A14 eval ctx 注入（三路同规）', () => {
+  const READER = ['g', ['marker']] as unknown as Json
+  const REV = ['g', ['world_rev']] as unknown as Json
+
+  function readerWorld(): { reader: Hash; revReader: Hash; world: World } {
+    const reader = defHash(put({ body: READER }))
+    const revReader = defHash(put({ body: REV }))
+    return {
+      reader,
+      revReader,
+      world: worldOf({ [reader]: put({ body: READER }), [revReader]: put({ body: REV }) }),
+    }
+  }
+
+  it('ctx 字段缺省 ⇒ 轮首投影：term 读到投影值，ctxFor 收到该轮 world / head', async () => {
+    const { reader, world } = readerWorld()
+    const head: Head = { seq: 4, hash: 'f'.repeat(64) }
+    const calls: Array<{ world: World; head: Head }> = []
+    const outcome = await runSubmission({
+      world,
+      head,
+      directives: [{ kind: 'eval', entry: reader, args: null }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: (w, h) => {
+        calls.push({ world: w, head: h })
+        return { marker: 'p1' }
+      },
+    })
+    expect(outcome.status).toBe('done')
+    expect((outcome.observations[0] as { value: Json }).value).toBe('p1')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].world).toBe(world)
+    expect(calls[0].head).toBe(head)
+  })
+
+  it('ctx 缺省但 provider 缺席：立即抛错，不静默退化成 null', async () => {
+    const { reader, world } = readerWorld()
+    await expect(
+      runSubmission({
+        world,
+        head: { seq: -1, hash: null },
+        directives: [{ kind: 'eval', entry: reader, args: null }],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'tester',
+        now: () => 1,
+      }),
+    ).rejects.toThrow('ctxFor')
+  })
+
+  it('provider 返回 undefined：立即抛错，不把非 JSON 值交给 term', async () => {
+    const { reader, world } = readerWorld()
+    await expect(
+      runSubmission({
+        world,
+        head: { seq: -1, hash: null },
+        directives: [{ kind: 'eval', entry: reader, args: null }],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'tester',
+        now: () => 1,
+        ctxFor: () => undefined as unknown as Json,
+      }),
+    ).rejects.toThrow('ctxFor returned undefined')
+  })
+
+  it('显式 ctx（含 null）⇒ 原样透传、不构造投影', async () => {
+    const { reader, revReader, world } = readerWorld()
+    let calls = 0
+    // 显式 null + 读 world_rev 的 term：若实现错把 null 当缺省填投影，此处会 done 而非 refused
+    const withNull = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: revReader, args: null, ctx: null }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => {
+        calls += 1
+        return { marker: 'should-not-be-used' }
+      },
+    })
+    expect(withNull.status).toBe('refused')
+    expect(withNull.observations[withNull.observations.length - 1]).toMatchObject({
+      kind: 'refused',
+      reasons: ['missing_path'],
+    })
+
+    const withValue = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: reader, args: null, ctx: { marker: 'mine' } }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => {
+        calls += 1
+        return { marker: 'should-not-be-used' }
+      },
+    })
+    expect(withValue.status).toBe('done')
+    expect((withValue.observations[0] as { value: Json }).value).toBe('mine')
+    expect(calls).toBe(0)
+  })
+
+  it('每轮构造一次（该轮 eval 共享）；write 轮不构造；后一轮用其轮首 world / head', async () => {
+    const { reader, world } = readerWorld()
+    const calls: Array<{ world: World; head: Head }> = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        { kind: 'eval', entry: reader, args: null },
+        { kind: 'eval', entry: reader, args: null },
+        writeD('put', { body: { w: 1 } }),
+        { kind: 'eval', entry: reader, args: null },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: (w, h) => {
+        calls.push({ world: w, head: h })
+        return { marker: `${worldRev(w)}:${h.seq}` }
+      },
+    })
+    expect(outcome.status).toBe('done')
+    // 第一段两个 eval 共享一次构造；write 轮不构造；write 之后的 eval 轮再构造一次（轮首已推进）
+    expect(calls.map((c) => c.head.seq)).toEqual([-1, 0])
+    // 第二轮 ctx 吃的是写后世界（worldRev(outcome.world)），证明用的是该轮轮首 world 而非提交起始 world
+    expect(calls[1].world).not.toBe(world)
+    const values = outcome.observations
+      .filter((o) => (o as { kind: string }).kind === 'eval')
+      .map((o) => (o as { value: Json }).value)
+    expect(values).toEqual([
+      `${worldRev(world)}:-1`,
+      `${worldRev(world)}:-1`,
+      `${worldRev(outcome.world)}:0`,
+    ])
+  })
+
+  it('纯 write 提交不构造 ctx', async () => {
+    const outcome = await runSubmission({
+      world: EMPTY_WORLD,
+      head: { seq: -1, hash: null },
+      directives: [writeD('put', { body: { only: 'write' } })],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => {
+        throw new Error('must not construct')
+      },
+    })
+    expect(outcome.status).toBe('done')
+  })
+
+  it('轮内 eff 的审计推进 head，但不回改该轮 ctx', async () => {
+    const callee = defHash(put({ body: ['g', ['head', 'seq']] }))
+    const main = defHash(
+      put({ body: ['call', ['c', callee], [['eff', 'toy.echo', 'echo', ['c', 1]]]] }),
+    )
+    const world = worldOf({
+      [callee]: put({ body: ['g', ['head', 'seq']] }),
+      [main]: put({ body: ['call', ['c', callee], [['eff', 'toy.echo', 'echo', ['c', 1]]]] }),
+    })
+    const audits: Entry[] = []
+    let calls = 0
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: main, args: null }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      router: fakeRouter(),
+      initialOwnerOf: () => 'caller',
+      onAudit: (entry) => audits.push(entry),
+      ctxFor: (_w, h) => {
+        calls += 1
+        return { head: { seq: h.seq, hash: h.hash } }
+      },
+    })
+    expect(outcome.status).toBe('done')
+    // 审计已推进链头（0），但 ctx 仍报该轮轮首（-1）
+    expect(audits).toHaveLength(1)
+    expect(outcome.head.seq).toBe(0)
+    expect((outcome.observations[0] as { value: Json }).value).toBe(-1)
+    expect(calls).toBe(1)
+  })
+
+  it('plan 条目 ctx 缺省 ⇒ 同规填投影；显式 null ⇒ 透传（refused）', async () => {
+    const { reader, revReader, world } = readerWorld()
+    const planOf = (item: Json): Json => ({ $directives: [item] })
+    const plannerKey = defHash(put({ body: ['c', planOf({ kind: 'eval', entry: reader })] }))
+    const plannerNullKey = defHash(
+      put({ body: ['c', planOf({ kind: 'eval', entry: revReader, ctx: null })] }),
+    )
+    const planWorld = worldOf({
+      [plannerKey]: put({ body: ['c', planOf({ kind: 'eval', entry: reader })] }),
+      [plannerNullKey]: put({ body: ['c', planOf({ kind: 'eval', entry: revReader, ctx: null })] }),
+      [reader]: put({ body: READER }),
+      [revReader]: put({ body: REV }),
+    })
+
+    let calls = 0
+    const filled = await runSubmission({
+      world: planWorld,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: plannerKey, args: null }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => {
+        calls += 1
+        return { marker: 'plan-ctx' }
+      },
+    })
+    expect(filled.status).toBe('done')
+    // 两个 eval 轮（产出者轮 + plan 轮）各构造一次
+    expect(calls).toBe(2)
+    const planEval = filled.observations.find(
+      (o) => (o as { kind: string; entry?: string }).entry === reader,
+    )
+    expect((planEval as { value: Json }).value).toBe('plan-ctx')
+
+    // 显式 null：错误实现若填投影会 done，正确实现 refused
+    const passthrough = await runSubmission({
+      world: planWorld,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: plannerNullKey, args: null }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => {
+        calls += 1
+        return { marker: 'plan-ctx' }
+      },
+    })
+    expect(passthrough.status).toBe('refused')
+    expect(passthrough.observations[passthrough.observations.length - 1]).toMatchObject({
+      kind: 'refused',
+      reasons: ['missing_path'],
+    })
+    // 产出者轮构造一次；plan 条目显式 null 不构造
+    expect(calls).toBe(3)
+  })
+
+  it('plan 轮取自身轮首 world / head：plan 先落 write，随后的 plan eval 吃到写后世界', async () => {
+    const { reader } = readerWorld()
+    const plan: Json = {
+      $directives: [
+        { kind: 'write', request: { op: 'put', args: { body: { planned: 1 } } } },
+        { kind: 'eval', entry: reader },
+      ],
+    }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({
+      [planner]: put({ body: ['c', plan] }),
+      [reader]: put({ body: READER }),
+    })
+    const calls: Array<{ world: World; head: Head }> = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: (w, h) => {
+        calls.push({ world: w, head: h })
+        return { marker: `${worldRev(w)}:${h.seq}` }
+      },
+    })
+    expect(outcome.status).toBe('done')
+    // 产出者 eval 显式 ctx:null 不构造；plan 的 write 轮不构造；plan 的 eval 轮构造一次
+    expect(calls).toHaveLength(1)
+    expect(calls[0].head.seq).toBe(0)
+    expect(calls[0].world).not.toBe(world)
+    const planEval = outcome.observations.find(
+      (o) => (o as { kind: string; entry?: string }).entry === reader,
+    )
+    expect((planEval as { value: Json }).value).toBe(`${worldRev(outcome.world)}:0`)
   })
 })

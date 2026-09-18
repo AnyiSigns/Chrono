@@ -97,6 +97,8 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 
 回滚是一条追加（`set_active` 指回旧世代），不是删节点。**删除在内核里根本不存在**——所以回滚可逆、可重放、可对照。`retire` 与 `set_active(null)` 世界效果相同却是两条不同 entry：历史绝不折叠；幂等（`dup`）只属于"同内容重复 `put`"这一种情形。
 
+`add_gen` **入世即激活**：新世代写入 `gens` 的同时 `Identity.active` 指向其 `payload`（同时激活）；`set_active` 用于把 `active` 指向任意旧世代（回滚）或置 `null`（下线）——`retire` 与置 `null` 效果相同，但仍是两条不同 entry。
+
 链是 Merkle 的：`entryHash` 只吃 `argsHash` 不吃 `args`。各 op 的 `argsHash` 口径：
 
 | op | argsHash |
@@ -140,7 +142,7 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 | 恢复/断线续流 = 快照 + 增量重放 | `verify(尾段, anchorAfter(快照))` + `replay(尾段, 快照世界)`；效果未回灌部分靠 `waiting` + `results` 台账 |
 | 编辑重放 = 截断 + 新分支 | **截断不给；新分支在身份层，不是链上一段** |
 
-一条"线"是一个身份（`add_identity`/`fork`），线的一次状态是一个世代（`add_gen`，payload 指全量内容），"哪条线为真"是 `set_active`。于是"截断加新分支"表达成：从被编辑的世代 `add_gen` 一个新 payload 并 `set_active` 过去——旧线仍在链上，只是不再被取用。真截断禁止：删尾部 = 改历史 = 放弃"历史改不掉"。挪一格反而更强：旧线可审计，且旧线上已真实执行的效果有据可查，重放不会把已花掉的钱、已发出的请求再干一遍。行级归属用 `Entry.ref`：它是 entry 字段、被 `entryHash` 覆盖、内核不解释内容，宿主可按它分组/过滤。
+一条"线"是一个身份（`add_identity`/`fork`），线的一次状态是一个世代（`add_gen`，payload 指全量内容、**入世即激活**），"哪条线为真"记在 `Identity.active`——`set_active` 可随时改指（含指回旧世代）。于是"截断加新分支"表达成：从被编辑的世代 `add_gen` 一个新 payload（入世即激活）——旧线仍在链上，只是不再被取用。真截断禁止：删尾部 = 改历史 = 放弃"历史改不掉"。挪一格反而更强：旧线可审计，且旧线上已真实执行的效果有据可查，重放不会把已花掉的钱、已发出的请求再干一遍。行级归属用 `Entry.ref`：它是 entry 字段、被 `entryHash` 覆盖、内核不解释内容，宿主可按它分组/过滤。
 
 唯一实质税必须记账：世界只增不减，而编辑重放系统的历史增速远大于最终状态——`defs` 字节 ∝ **总尝试次数**而非会话数。所以四档分层在此用法下不是优化，是前置条件。
 

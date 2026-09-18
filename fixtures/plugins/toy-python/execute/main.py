@@ -16,6 +16,19 @@ import sys
 PROTOCOL_VERSION = "1"
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 CONFIG_FILE = os.path.join(os.getcwd(), "service-config.json")
+KNOWN_KEYS = {
+    "callMode",
+    "callErrorCode",
+    "callErrorMessage",
+    "callValue",
+    "helloMode",
+    "probeMode",
+    "manifest",
+    "verbose",
+}
+HELLO_MODES = {"silent", "exit"}
+CALL_MODES = {"silent", "exit", "error"}
+PROBE_MODES = {"silent", "fail"}
 
 
 def load_config():
@@ -27,7 +40,24 @@ def load_config():
     except (OSError, ValueError) as err:
         log(f"bad service-config.json: {err}")
         return {}
-    return config if isinstance(config, dict) else {}
+    if not isinstance(config, dict):
+        return {}
+    # 与其 JS 孪生（toy-alpha/toy-beta main.js）断链的档位一律 fail-fast：
+    # 未支持的键 / 取值必须显式失败，不得静默 no-op（防两份实现静默漂移）。
+    unknown = sorted(set(config) - KNOWN_KEYS)
+    if unknown:
+        log(f"unsupported service-config keys: {', '.join(unknown)}")
+        raise SystemExit(2)
+    for key, allowed in (
+        ("helloMode", HELLO_MODES),
+        ("callMode", CALL_MODES),
+        ("probeMode", PROBE_MODES),
+    ):
+        value = config.get(key)
+        if value is not None and value not in allowed:
+            log(f"unsupported service-config {key}: {value!r}")
+            raise SystemExit(2)
+    return config
 
 
 def log(message):
