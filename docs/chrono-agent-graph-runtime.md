@@ -56,7 +56,8 @@
   两者都确定性可重放。思考受任务 `B` 约束——**`MAX_THINK` 是上限不是保底**。
 - **训练信号（主路，写死）**：THINK 词表 = `{THINK, THINK_STOP}`（一元计算步；**禁止**把契约 / motif 放进 THINK，否则等于偷生成节点）。
   搜索中间量经 **readout 头**对齐，不是 THINK token 本身：
-  ① 编排：MCTS 主变分路径 PV 的第 `min(i,|PV|-1)` 步动作（第一层 expand：motif/契约）作 think 步 `i` 的 `action_head(h_i)` 目标；`value_head(h_i)` 回归搜索 V 或终局 `pass@1`；
+  ① 编排：MCTS 主变分路径 PV 的第 `i` 步动作（第一层 expand：motif/契约）作 think 步 `i` 的 `action_head(h_i)` 目标
+     （**仅 `i ≤ |PV|`**；超出部分不设 PV 目标）；`value_head(h_i)` 回归搜索 V 或终局 `pass@1`；
   ② 分解：teacher 计划 token 作思考目标（序列 CE）；
   ③ 路由：每次 `any` 选边前的 THINK 对齐该端口的搜索/teacher `edge_choice`，value 标签 = 被喂节点 `post`。
   `|THINK| > |PV|` 的多余步只算 value、不算 PV 动作。无搜索样本时 ⇒ `L_pv=0`，只留 listwise / 真验收 value。
@@ -143,8 +144,9 @@
 未声明键**——否则违反"未声明读不可见"，且让归因（节点行为只由声明依赖决定）当场失效。
 **只能请求 shared 键、不能请求上游节点求值**（见《契约与图》§二末条）：`request_input` 若被允许触发新的前驱执行，
 活动子图就在执行期变形，`(拓扑, 选边) → 活动子图` 的唯一性当场失效。
-**供给判据必须确定性**：`supply(key)` 当且仅当 `remaining_d ≥ supply_cost_d(key)`（四维全满足，`supply_cost` 是
-该键的 pin 住的先验），否则 `refuse(budget)`；不许用"看着还够"这类运行时启发。
+**供给判据必须确定性**：`supply(key)` 当且仅当 `remaining_d ≥ supply_cost_d(key)`（四维全满足；`supply_cost` =
+该 `SharedRef` 的 pin 住的四维供给先验，初值按同键在 dev 上的实测 p90 回填、随池版本入账，改它 = 新池版本 + 记账），
+否则 `refuse(budget)`；不许用"看着还够"这类运行时启发。
 
 **自治档位与契约的关系（写死，堵档位漂移）**：`autonomy` 在 `NodeDecl` 上（实例属性），**不在契约上**——
 同一契约可有 L0 与 L1 实例。约束：① `autonomy:L1` ⇒ `bindings.retry_policy` 必填；

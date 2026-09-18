@@ -7,7 +7,7 @@
 > **定位**：面向**复杂任务**的**可进化 agent 运行时架构**。核心思想：**图不固定**，执行拓扑由**编排模型（不含 LLM）**
 > 在运行时现场生成；控制层可训；节点池声明式、惰性训练；搜索与生成混合；所有变更可回退可控。
 >
-> **独立实验树** `experiment/ChronoGraphLab/`，**standalone、不接内核**；账本 Entry **字段形状**与内核对齐（`{seq, prev, op, args, argsHash, by, ref?, at}` + 链式哈希），但 **op 集合不同**（实验 defs 链 8 op：`declare`/`put`/`add_ver`/`set_active`/`quarantine`/`accept`/`snapshot`/`audit`；内核为 `put`/`add_identity`/`add_gen`/…，仅 `set_active`/`snapshot` 重叠）且实验双链（defs/events）vs 内核单链；**两侧都是 8 个原语 ⇒ 迁移映射层接近一对一**，但仍须经 **op 语义映射层**，**非"只换存储不换语义"**（`declare` 的七个 `kind` 在内核里是同一 `put` 的不同 payload 形状，语义映射仍需逐 kind 定义）。
+> **独立实验树** `experiment/ChronoGraphLab/`，**standalone、不接内核**；账本 Entry **字段形状**与内核对齐（`{seq, prev, op, args, argsHash, by, ref?, at}` + 链式哈希），但 **op 集合不同**（实验 defs 链 8 op：`declare`/`put`/`add_ver`/`set_active`/`quarantine`/`accept`/`snapshot`/`audit`；内核 op 共 10 种：`put`/`add_identity`/`add_gen`/`set_active`/`retire`/`fork`/`graft`/`batch`/`note`/`snapshot`，其中 `batch` 为合成外壳、`note` 为留痕，**迁移面对手按 8 个原语计**；语义 1:1 可直接对上的是 `set_active`/`snapshot`，`put` 同名但 slot 语义仍须逐项映射）且实验双链（defs/events）vs 内核单链；**两侧按 8 个原语计 ⇒ 迁移映射层接近一对一**，但仍须经 **op 语义映射层**，**非"只换存储不换语义"**（`declare` 的七个 `kind` 在内核里是同一 `put` 的不同 payload 形状，语义映射仍需逐 kind 定义）。
 >
 > **角色纪律**：实现方不写测试、不改测试、不为测试加导出；评审方不改实现、不放宽断言。
 >

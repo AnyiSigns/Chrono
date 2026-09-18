@@ -217,7 +217,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
    **禁止**用 `max_depth+need` 这种把边数加到深度上的量纲混用。因此补齐**永不越过** `MAX_*`；
    若预留后仍无法闭合（只可能因预算耗尽），记 `incomplete`，**不得**产出未闭合图，**也不得**越过上限。
    语法层上限因此始终是硬 assert（见 §J.3），不再有"补齐越界"的例外。
-   **省略端口的 `LINK i→j`**：仅当 `(i,j)` **恰好一对**类型兼容端口（双方均有 `role` 则再过滤 role 相等后恰好一对）时进入 mask；
+   **省略端口的 `LINK i→j`**：按 §I.1「`role` 取值表与唯一匹配」的两阶段规则——先取**双方声明 `role` 且相等**的对（恰一对则用），否则在 **`role_ok` 兼容对**（双方声明须相等；单方/均未声明视为兼容）中恰一对才进入 mask；
    0 对不可行、>1 对必须显式端口。**禁止**按端口编号静默取首（与《契约与图》「运行时确定性优先序更不可取」对齐）。
 
 **交错解码（与预算配合，缓解尾部偏置）**：`NODE`/`LINK` 交错采样，模型可显式吐 `EXIT_STOP` 提前收口；
@@ -240,7 +240,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 **贪心补齐的偏置与公平性**：贪心补齐系统性让"图尾部 = 贪心结构、非模型意图"，关键节点若落尾部会被破坏。
 **交错解码已大幅降低但未消除该偏置**——预算触顶时仍走贪心补齐。因此：① 所有生成臂
 （自适应 / 随机合法图 / 无搜索纯生成）**共用同一补齐策略**，否则对照不公平；② 每臂必报
-`greedy_completion_rate`（被补齐节点 / 总节点），高 ⇒ 编排学不会预算感知或 `MAX_*` 上限过紧，是升级证据候选。
+`greedy_completion_rate`（按边：被补齐边 / 全部边），高 ⇒ 编排学不会预算感知或 `MAX_*` 上限过紧，是升级证据候选。
 
 **OR 分支密度（路由有落点的前提）**：路由贡献只在 `any` 端口（OR 分支）上体现；生成器须保证产出图有**非平凡 OR 分支密度**（`any_port_density`），否则路由结构上 ≈ 0、GA8⑦"同图随机路由臂"测不出。低密度记诊断、作升级证据候选。
 
@@ -351,7 +351,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 |---|---|---|---|
 | GA0 | 隔离与唯一写口 | 运行时/训练器不互相 import；账本只经唯一写口；非测试代码无外部依赖 | 测试即红 |
 | GA1 | 图文法 | **语法层**：生成拓扑 100% 闭合（required 全连 ∧ 非首节点 ≥1 入边 ∧ all_reach_sink ∧ |V|≥1）、类型兼容、上限内、**`sink` 唯一**（无第二个零出度节点）；语法非法图数 = 0（出现即解码器 bug）。**`decode_fallback(kind=no_legal_node\|no_compatible_predecessor)` 与 `assert` 失败一律判红**（它们是断言失败，不是回退路径）。语义层拒绝（同键 publish 偏序、缺 join、汇聚类型不可满足、entry 歧义）记 `compile_reject`，**不计入 GA1**，但必报 `compile_reject_rate`（分 reason 出列；`publish_order` 占比 > 0.05 记诊断） | 回合作废 |
-| GA2 | 可解性 | 用 **oracle 臂**（**默认最强模型 + 长预算 + 允许多次调用**；人类补丁仅当池规模小到可负担时可选，本实验 `N_dev≥200` 下不用人类补丁；独立于任何对照臂）在 **dev 上**判定可解比例 ≥ `SOLVABLE_MIN`（默认 0.80）；**`dev-lib` 与 `dev-hard` 两族分别达标**（合并达标不算——否则 `dev-hard` 可以靠 `dev-lib` 拉高，"不可解"被误读成"编排无效"）。**oracle 产物只用于可解性测量与难度度量 `f_*`，不得作为蒸馏目标入训练集**。**不用固定图臂**——它会低估可解域并掩盖任务缺陷。**同时报 under-`B` 可解比例**作 `S@B` 的可见天花板。**另报单次调用可解率**（1 次调用、同 cap）：`dev-lib` 上应较高（它是基线族），`dev-hard` 上须 ≤ `SINGLE_CALL_MAX`（默认 0.35），否则该族不成立、模板回炉 | 测试即红 |
+| GA2 | 可解性 | 用 **oracle 臂**（**默认最强模型 + 长预算 + 允许多次调用**；人类补丁仅当池规模小到可负担时可选，本实验 `N_dev=960`、人类补丁不可负担，故不用；独立于任何对照臂）在 **dev 上**判定可解比例 ≥ `SOLVABLE_MIN`（默认 0.80）；**`dev-lib` 与 `dev-hard` 两族分别达标**（合并达标不算——否则 `dev-hard` 可以靠 `dev-lib` 拉高，"不可解"被误读成"编排无效"）。**oracle 产物只用于可解性测量与难度度量 `f_*`，不得作为蒸馏目标入训练集**。**不用固定图臂**——它会低估可解域并掩盖任务缺陷。**同时报 under-`B` 可解比例**作 `S@B` 的可见天花板。**另报单次调用可解率**（1 次调用、同 cap）：`dev-lib` 上应较高（它是基线族），`dev-hard` 上须 ≤ `SINGLE_CALL_MAX`（默认 0.35），否则该族不成立、模板回炉 | 测试即红 |
 | GA3 | 抗投喂 / 拒绝比 | 节点级验收器对错误产物拒绝比 = 1.0、正确产物喂饱比 = 1.0；**全拒臂 == 0** | 测试即红 |
 | GA4 | 测试完整性 | 评测测试文件哈希 == 钉死哈希 | 任务分 0 |
 | GA5 | 泄漏与 holdout 纯洁 | 任务哈希与 `expected` 不出现在上下文 / 提示词 / 参数 / 记忆（含 JSON 内嵌）；**且搜索器与 teacher 从未在 holdout 上运行、蒸馏集不含任何 holdout 任务的拓扑** | 提案拒 |
@@ -388,7 +388,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 > **阶段门与 `ESC_ROUNDS` 的关系（P3 分段后需重申）**：升级阶梯的「阶段门」通道按 **P3a / P3b / P3c 各自验收**
 > 解锁下一段，不是「P3 整体全绿」。`ESC_ROUNDS` 的失败驱动通道只在**已进入训练回合的段**内计数
 > （P3a 起）；段间切换不重置 `ESC_ROUNDS`，但**新段引入的部件不算"上升一档"**（它们是计划内交付，不是阶梯项）。
-| **P5** | 报告与归因：全臂同预算对照（GA8 十三臂）+ 五自变量分解 + 如实红 | 报告落 `runs/`；待决登记回填 |
+| **P5** | 报告与归因：全臂同预算对照（结论网格 13 臂）+ 五自变量分解 + 如实红 | 报告落 `runs/`；待决登记回填 |
 | **P6** | **产品化桥**：账本与运行时迁内核、真实插件池接入、多 agent 角色分离（触发式） | 迁移清单里"需生产重验"的条目全部有结论；**不是**复现实验结论（生产域任务不同，既不可能也不必要） |
 
 **P0–P2 的 CI 路径可回放到 stub**：真 LLM 自 P1 起即可接入，但门禁与回归必须能回放到 stub；
@@ -448,7 +448,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
      **`dev-hard` 额外两关**：oracle 可解率 ≥ `SOLVABLE_MIN`（该族单独算）且**单次调用可解率 ≤ `SINGLE_CALL_MAX=0.35`**，
      任一不过 ⇒ 该模板回炉（前者说明任务无解、后者说明它其实单次可解、不属该族）；
   ② 沙箱：工作区 realpath 白名单（win32 reparse/junction + TOCTOU 二次校验）/ 超时 / 默认无网 / 产物路径回写；
-  ③ 任务级验收器：`hidden_test_cmd` 全过 ⇒ `pass@1=1`；超时/触顶 ⇒ `incomplete`；测试文件哈希钉死；
+  ③ 任务级验收器：`hidden_test_cmd` 全过 ⇒ `pass@1=1`；**做题** walltime 触顶/预算触顶 ⇒ `incomplete`（验收照跑）；**判卷**超时 ⇒ `pass@1=0` 且记 `verify_timeout`（不记 `incomplete`）；测试文件哈希钉死；
   ④ 入池五检：start_commit 必红 / **构造 oracle** 必绿 / 哈希钉死 / 路径⊆白名单 / 难度落档；
   ⑤ **能力 oracle**（最强模型+长预算）写 `runs/oracle-<stamp>/` 只读，不进蒸馏；测 `SOLVABLE_MIN`；
   ⑥ pin 冻结池 + 断言 `N_dev=960`/`N_hold=512`/`C_dev=480`/`C_hold=256` + 回填 `s`、锚点终值与 `CTX_BUDGET`；
@@ -531,7 +531,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 
 ### F.6 P5 — 报告与归因
 
-- **交付**：GA8 十三臂跑批；五自变量分解；成本归因报告；如实红记录；**迁移假设清单（§G.24/§G.25 的逐条落地）**。
+- **交付**：结论网格 13 臂跑批；五自变量分解；成本归因报告；如实红记录；**迁移假设清单（§G.24/§G.25 的逐条落地）**。
 - **步骤**：① 臂网格 × seeds 跑批；② 四维帕累托 + 三张分层表 + 编码器 / 推理档位 / 关思考消融列；
   ③ 主命题 / 采纳闸判定；④ 待决登记回填；
   ⑤ **成本换量纲**：把 `cost_exec` 结果**同时**折算成 **$/task**（按 pin 的单价与实测 input/output token 拆分）
@@ -545,7 +545,7 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 ### F.7 P6 — 产品化桥（原"后置档"）
 
 - **交付**：**账本与运行时迁内核**、**真实插件池接入**、多 agent 角色分离（触发式）；L3 保持关闭。
-- **步骤**：① op 语义映射层（实验 8 defs op ↔ 内核 8 原语，逐 `kind`/`slot` 定义映射）；
+- **步骤**：① op 语义映射层（实验 8 defs op ↔ 内核迁移面 8 原语——内核 op 共 10 种，去掉 `batch`/`note`；逐 `kind`/`slot` 定义映射）；
   ② 宿主 + 装配层接入（插件加载、`pins` 拓扑、`stale` 隔离）；③ 沙箱与 exec 端口换生产实现；
   ④ **在真实插件池上重跑迁移清单里标"需生产重验"的条目**（缩减版即可，目的是验证不是重做实验）；
   ⑤ 多 agent 角色分离按触发条件开。
@@ -565,11 +565,11 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 |---|---|---|---|
 | 1 | 实验目录 | `experiment/ChronoGraphLab/` | 与既有实验平级、同名风格 |
 | 2 | 图文法上限 | `MAX_NODES=12`、`MAX_EDGES=24`、`MAX_DEPTH=6`、`MAX_RECUR=2`、**`MAX_ANY_CAND=3`**（单个 `any` 入端口的候选边数上限）、**`MAX_FANIN=3`**（`cardinality:'n'` 入端口的入边度上限，与扇出 `N≤3` 同源）、**`MAX_SUBGOALS=6`**（分解产出的子目标数上限，封住编码器成本）、**`MOTIF_MAX=32`**（motif 库条目上限，封住 `action_head` 维度）（**无 `MAX_REPEAT`**） | 编码任务的有效编排深度远低于此；上限的作用是**封住搜索空间与 token 长度**，不是能力边界。`MAX_EDGES=24` 对 12 节点 + 扇出 N≤3 聚合偏紧，**P1 用合成任务测"合法图被 `MAX_EDGES` 截断率"，> 5% 则上调或改"入边度上限 per 节点"**。`MAX_ANY_CAND` / `MAX_FANIN` 必须与 `cardinality` 分开：前者管**拓扑候选边数**、后者管**运行时注入数**（《契约与图》§二不变量 2）；`MOTIF_MAX` 触顶后按 `sub_sig` 使用频次淘汰，被淘汰列置零冻结不复用 |
-| 3 | 门禁初值 | `Δ=0.05`、`ε=0.02`、`δ=0.05`、`floor=0.05`、`margin=0.02`、`k=3`（结晶次数）、`N=30`（能力缺口）、`SOLVABLE_MIN=0.80`、**`SINGLE_CALL_MAX=0.35`**（不可解族成立条件：单次调用可解率上界）、`HOLDOUT_EVERY=3`、`ESC_ROUNDS=3`（两参数默认同值但**独立**，改一不得默改另一） | 真 LLM 单任务方差大 ⇒ 两处统计条件都写死：**目标命题**用配对差值**单侧 CI 下限 `≥ Δ`**（BH-FDR 校正）；**采纳闸**用**配对非劣检验**——dev 配对差值**单侧 CI 下限 `≥ −δ`**（**配对单位 = 独立簇 `(template_id, k_files, defect_site)`**，簇内先聚合成比例再配对；**检验方法 = 按簇 BCa 自助**（`B=10000`，seed 住 manifest），见 §J.10——簇级成绩是比例不是二元，故**不用** Newcombe/McNemar；`δ` 为预注册**非劣界**）。**`n` = 簇数，由预注册 power analysis 定、`n ≥ 200` 只是下限**；**硬闸额外要求实测 CI 半宽 `h ≤ δ`**，否则本回合只记"未判定"（不采纳、不算失败）。**不得用"`n=200` 时 `h≈0.07–0.10`"去反向抬高 `δ`**；若可负担 `n` 下 `h > δ`，只能走登记提案改 `δ`，并写明可接受的最大退步。**不再另设"点估计非降"条款**（与 `−δ` 容忍度互斥）。**严格提升**（`CI 下限 > 0`）只用于升级触发与软闸，不得当采纳硬闸。**同一 `incumbent` 窗口内每回合判一次须用预注册 group-sequential（alpha-spending）控整体 type-I；窗口的最大回合数、每轮名义 α、累计 n 计划在窗口开始时登记，窗口内禁事后改；`incumbent` 变更 ⇒ 窗口清零并重新登记**。**弃用"两臂 Wilson CI 不重叠"作采纳判据**；Wilson 仅作单臂 pass@1 的展示性 CI。`floor` = 随机合法图臂 pass@1 上限，**区别于**全拒臂的 0-下界 |
-| 4 | 模型档位与配置源 | **配置源**：项目根 `.env`（`base_url` + `model_id`，**仅供测试**）；网关 = `https://api.kilo.ai/api/gateway`，**匿名免费档**（`api_key` 为空；若日后有密钥，走宿主凭据库：OS keychain 优先、退化为权限受限文件，**禁入库 / 禁入 manifest**）。`.env` 现有四档：`stepfun/step-3.7-flash:free`、`thinkingmachines/inkling:free`、`nvidia/nemotron-3.5-lightning:free`、`poolside/laguna-s-2.1:free`。**每 run 从清单选一个并 pin 进 manifest；run 内禁止 fallback 换模型**（换模型 = 转移函数漂移，破坏配对统计）。**主档 + 廉价档同门**：强档 `stepfun/step-3.7-flash:free`（写代码主力；网关暴露 reasoning 变体则取 `high`，否则 variant 记 `null`）、廉价档同模型低变体（**teacher 及辅助 LLM 调用**：任务分解 / 图候选 / 子图 / 上下文摘要——**非控制层角色**，控制层零 LLM 且内思考）；**执行层节点的 reasoning variant 可逐实例配**（走 `bindings.model`，见 GA8⑫）；**manager 提案归纳用强档**（每回合一次；监控指标层非 LLM，不在此列）。**异模型对照位** = `thinkingmachines/inkling:free` / `nvidia/nemotron-3.5-lightning:free` / `poolside/laguna-s-2.1:free`。**降级链仅在 run 之间**：`stepfun` → `thinkingmachines` → `nvidia` → `poolside`；run 内失败只重试或作废。**pin 进 manifest 的是解析后的 `{base_url, model_id, variant, provider}`**。**端口名定死**：真 LLM 主档 = `model.kilo`，桩/回放同门实现 = `model.replay`，二者缺一不可 | 同门不同 reasoning 变体把"模型能力差异"从对照消掉，测的才是结构与编排；免费档会变动 ⇒ 档位抽象 + manifest pin。teacher / 编码器 / manager 一律 `temperature=0` 并按 prompt-hash 记忆化；IO 只在 `adapters/llm_gateway.ts`（core 零 IO）。限速按指数退避 + 配额账；**限速/超时/失败单列，不并入能力失败**；**退避等待不计入 `walltime` cap**（记 `ratelimit_wait`） |
+| 3 | 门禁初值 | `Δ=0.05`、`ε=0.02`、`δ=0.05`、`floor=0.05`、`margin=0.02`、`k=3`（结晶次数）、`N=30`（能力缺口）、`SOLVABLE_MIN=0.80`、**`SINGLE_CALL_MAX=0.35`**（不可解族成立条件：单次调用可解率上界）、`HOLDOUT_EVERY=3`、`ESC_ROUNDS=3`（两参数默认同值但**独立**，改一不得默改另一） | 真 LLM 单任务方差大 ⇒ 两处统计条件都写死：**目标命题**用配对差值**单侧 CI 下限 `≥ Δ`**（BH-FDR 校正）；**采纳闸**用**配对非劣检验**——dev 配对差值**单侧 CI 下限 `≥ −δ`**（**配对单位 = 独立簇 `(template_id, k_files, defect_site)`**，簇内先聚合成比例再配对；**检验方法 = 按簇 BCa 自助**（`B=10000`，seed 住 manifest），见 §J.10——簇级成绩是比例不是二元，故**不用** Newcombe/McNemar；`δ` 为预注册**非劣界**）。**`n` = 簇数，由预注册 power analysis 定、`n ≥ 200` 只是下限**；**硬闸额外要求实测 CI 半宽 `h ≤ δ`**，否则本回合只记"未判定"（不采纳、不算失败）。**不得用"`n=200` 时 `h≈0.07–0.10`"去反向抬高 `δ`**；若可负担 `n` 下 `h > δ`，只能走登记提案改 `δ`，并写明可接受的最大退步。**不再另设"点估计非降"条款**（与 `−δ` 容忍度互斥）。**严格提升**（`CI 下限 > 0`）只用于升级触发，不得当采纳硬闸；软闸按 `fit` 改进超过 `margin`（见《进化与账本》§一），两者不是同一判据。**同一 `incumbent` 窗口内每回合判一次须用预注册 group-sequential（alpha-spending）控整体 type-I；窗口的最大回合数、每轮名义 α、累计 n 计划在窗口开始时登记，窗口内禁事后改；`incumbent` 变更 ⇒ 窗口清零并重新登记**。**弃用"两臂 Wilson CI 不重叠"作采纳判据**；Wilson 仅作单臂 pass@1 的展示性 CI。`floor` = 随机合法图臂 pass@1 上限，**区别于**全拒臂的 0-下界 |
+| 4 | 模型档位与配置源 | **配置源**：项目根 `.env`（`base_url` + `model_id`；免费 / 调试档用）；网关 = `https://api.kilo.ai/api/gateway`，**免费匿名档**（`api_key` 为空；付费档的密钥走宿主凭据库：OS keychain 优先、退化为权限受限文件，**禁入库 / 禁入 manifest**）。`.env` 现有四档：`stepfun/step-3.7-flash:free`、`thinkingmachines/inkling:free`、`nvidia/nemotron-3.5-lightning:free`、`poolside/laguna-s-2.1:free`。**每 run 从清单选一个并 pin 进 manifest；run 内禁止 fallback 换模型**（换模型 = 转移函数漂移，破坏配对统计）。**档位政策（两档，写死）**：**结论 run 一律走付费 flash 档**（强档 ≈ `GLM-5.3-Flash` / `DeepSeek V4 Flash` 平价第三方 / `GPT-5.6 Luna` 同级；**具体 provider / 模型 id 在首次结论 run 前按登记提案回填本清单并 pin 进 manifest**）；**若当次结论 run 时付费档尚未登记/可用，则维持免费匿名档跑，并在报告显式标注"免费档结论"及其速率/单价限制**；**免费匿名档**（`.env` 现有四档）平时只作 CI / 调试 / 回放。**主档 + 廉价档同门**：强档写代码主力（网关暴露 reasoning 变体则取 `high`，否则 variant 记 `null`）、廉价档同模型低变体（**teacher 及辅助 LLM 调用**：任务分解 / 图候选 / 子图 / 上下文摘要——**非控制层角色**，控制层零 LLM 且内思考）；**执行层节点的 reasoning variant 可逐实例配**（走 `bindings.model`，见 GA8⑫）；**manager 提案归纳用强档**（每回合一次；监控指标层非 LLM，不在此列）。**异模型对照位**：结论档用付费档内的异模型位（启用时登记）；CI / 调试档用 `thinkingmachines/inkling:free` / `nvidia/nemotron-3.5-lightning:free` / `poolside/laguna-s-2.1:free`。**降级链仅在 run 之间**：按启用时登记的档内顺序递减；run 内失败只重试或作废。**pin 进 manifest 的是解析后的 `{base_url, model_id, variant, provider}`**。**端口名定死**：真 LLM 主档 = `model.kilo`，桩/回放同门实现 = `model.replay`，二者缺一不可 | 同门不同 reasoning 变体把"模型能力差异"从对照消掉，测的才是结构与编排；免费档会变动 ⇒ 档位抽象 + manifest pin。teacher / 编码器 / manager 一律 `temperature=0` 并按 prompt-hash 记忆化；IO 只在 `adapters/llm_gateway.ts`（core 零 IO）。限速按指数退避 + 配额账；**限速/超时/失败单列，不并入能力失败**；**退避等待不计入 `walltime` cap**（记 `ratelimit_wait`） |
 | 5 | bench 来源 | **自造四族 TS 模板**（§I.2），dev / holdout 各两族：**基线族** dev `dev-lib` `T=20`、holdout `hold-pipe` `T=10`（单点缺陷修复，单次调用可解，作对照基线）；**不可解族** dev `dev-hard` `T=10`、holdout `hold-hard` `T=6`（四机制保证单次调用不可解：超窗 / 高单步失败率 / 冲突约束 / 不可逆首步）。`V̄=32` = `k_files`4 × `defect_site`4 × `rename_seed`2 ⇒ `N_dev=960`（`C_dev=480`）、`N_hold=512`（`C_hold=256`）。按 worst-case `s=1` 的核算式注册，实测 `s` 只许 ≥1 | 现成基准依赖重、易记忆泄漏；Node 沙箱 ⇒ 模板语言 = TS/vitest；holdout 换族不换语言（测编排泛化不是测语言迁移）。**必须有不可解族**：若全部任务单次调用可解，GA8① 会打平、主命题先天不成立——那反映的是任务域选错，不是编排无用。两族**分开报**、`SOLVABLE_MIN` **各自达标**、`dev-hard` 另需单次调用可解率 ≤ `SINGLE_CALL_MAX=0.35` |
 | 6 | 控制层规模 | 专家数 ≤ 32（= 契约数上限；触顶须走「控制层容量」档或并入既有契约的 `role`/子类型）、`top-k=2`（**mask 后合法专家数 < k 时 k 退化为合法数、记 `gate_k_shrink`，不补非法专家**）、参数量 ≤ 2M（含 `value head`、`action_head`、思考模块；**不含 `trainable` 节点自身权重**，后者单列；**容量诊断触发时走「控制层容量」档，上限提至 ≤ 8M**）、`MAX_THINK=16`（每模型每次生成）、`MAX_THINK_TASK=64`（**仅约束路由**每任务思考总量；编排/分解每次生成受 `MAX_THINK` 约束、不受此约束）、MDL 结构项 `μ` = 0.01、成本项 `λ` = 0.10（`cost_exec` 已归一化到 [0,1]，**不含 walltime**） | 控制层是**小模型**：要能在 CPU 上训、能逐字节重放。专家数必须与契约数同阶，否则路由无信号。思考 token 是控制层自己的 decode、按 token 计费，故不破坏零 LLM / 可重放；`MAX_THINK` 初值住账本、可版本化。`MAX_THINK_TASK` 只管路由是因为路由按 `any` 端口数反复思考、次数随图规模增长；编排/分解每任务各一次，`MAX_THINK` 已足够 |
-| 7 | 冷启动 | 未知能力兜底专家（零初始化）+ 契约级默认提示词 + 新实例**影子模式**（先在金丝雀集跑到与同契约在位实例持平，才允许被编排选中） | 不设影子期，新实例会以未训状态吃预算并污染统计 |
+| 7 | 冷启动 | 未知能力兜底专家（零初始化）+ 契约级默认提示词 + 新实例**影子模式**（**转正判据写死**：在金丝雀集上累计 `n ≥ CANARY_MIN_N` 且**未置零的原始 Wilson 单侧下界** ≥ 同契约在位实例者，才允许被编排选中；未达 `n` 前保持 shadow） | 不设影子期，新实例会以未训状态吃预算并污染统计 |
 | 8 | 自治 L3 | **起始关闭，但排在升级阶梯上**：P4 全绿 + 归因测试通过 ⇒ 上升 | 归因不清时开 L3 = 结论不可信；但永久关闭等于放弃了"节点自产拓扑"这条能力线 |
 | 9 | 账本 | **起始 standalone**；**产品化路径上必做**（不是运维触发项，见 §F.7）：接内核（`Entry` **字段形状**已对齐；**op 集合不同、须经 op 语义映射层**，非"只换存储"）。**触发 = 决定产品化**，不再等"多宿主/跨进程共享"这类运维信号 | 先跑通实验，别提前承担引导器/装配层成本；但"先研究、后产品化"意味着它**迟早必做**，故列为 P6 必做项而非可选 |
 | 10 | 扇出-聚合 | `N ≤ 3`；聚合契约三选一（`vote` / `judge` / `merge`）；**N 路全计费** | 全计费让成本惩罚自然抑制滥用，不需要额外门禁；只计采纳路会让 N 免费膨胀 |
@@ -584,13 +584,13 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 | 19 | 泄漏扫描 | `theta.ast_sim=0.60`（holdout 模板 vs 任一 dev 模板的 token-type bag 余弦）；超阈 ⇒ 该 holdout 模板不得入池 | 仅任务哈希不够；同语言不同族仍可能 AST 撞车 |
 | 20 | **per-task cap `B`**（原表缺，缺了成本无法预算、`cost_exec` 分母无值） | **基线族**（`dev-lib` / `hold-pipe`）`{ calls: 12, tokens: 60_000, tool_calls: 8, walltime: 300s }`；**不可解族**（`dev-hard` / `hold-hard`）`{ calls: 16, tokens: 120_000, tool_calls: 10, walltime: 420s }`；逐任务可再覆写，pin 进 task spec | 基线按活动子图 4–6 节点 × L1 平均 1.4 次尝试 ≈ 6 次调用的**中位**执行标定，留 2× 余量。不可解族 `tokens` 翻倍是**结构性的**：A 机制（超窗）的必读上下文本就大于一次调用的窗口，`f_ctx` 3–5 档任务按定义要读更多。**两族 cap 不同不破坏"同预算"**——同预算是**同族同 cap**（臂间比较），不是跨族同 cap（族间本就不是同一分布）。**`calls` 是硬上限，不是目标**——`used/cap` 进 `cost_exec`，用满即满分惩罚。GA8① 单节点臂共用同族 cap（它只花 1 次 call，这正是它的成本优势，必须可见） |
 | 21 | **搜索规模与质量门**（原表缺，缺了 `search_cost` 与 `ROUND_B` 算不出） | `MCTS_ROLLOUT = 30`（每任务展开次数）、`SEARCH_TASKS_PER_ROUND = 100`（= 全批；即每回合每个 dev 任务都搜）、`EA_GEN_PER_ROUND = 2`；**ExTS 质量门（§0.5-B）**：`τ_gate = 0.5`（扩展质量门；`0` = 退化为原无条件扩展）、`VIRTUAL_CHILD_N = 4`（虚拟子节点采样数）、`sigma_floor`（窄分布阈值，用于 discriminative shaping） | 前两个数**直接乘进总成本**：`rollout` 30→100 会让全实验 token ×2.5。30 是"够产多解、又不吃满预算"的起点；不足则由「搜索正样本产出率」诊断触发提案上调，**不许静默改**。`rollout` 的每次展开都要真跑验收 ⇒ 它是全实验最贵的单项，**这正是借 ExTS 质量门的理由**。**质量门必须与覆盖诊断同出列**：`τ_gate` 与 `sig` 同构重复率、`any_port_density` 一起报；覆盖恶化 ⇒ 回退 `τ_gate=0`（§J.7） |
-| 22 | **模型档位的成本现实**（决定能不能跑完，非可选项） | **付费 flash 档为默认真实运行档**（`GLM-5.3-Flash` / `DeepSeek V4 Flash` 平价第三方 / `GPT-5.6 Luna` 同级，按 §G.4 清单 pin）；**免费匿名档降级为"调试与 CI 回放档"**。全实验估算 ≈ **190,000 次任务执行 / 约 100 万次 LLM 调用 / ≈ 5.6B 输入 + 0.7B 输出 token**，flash 档带提示缓存 **$900–2,200**；含调试重跑 2–5× ⇒ **$2,000–7,000** | **钱不是瓶颈，速率是**：100 万次调用在免费档 ~20 RPM 下 = **35 天不间断**且日配额先撑爆；付费 flash 档 10 req/s 下 ≈ **28 小时**。故免费档只能跑 canary 与回放，不能跑结论。**提示缓存必须开**（系统提示 + repo 切片约 60% 输入可缓存，省约 1/3 总价）⇒ `prompt` 与 `context_policy` 的拼装顺序须把**稳定前缀放前面**（缓存命中的前提），这是架构约束不是优化。**成本需要削时的第一杠杆 = 臂子集化**：13 臂里 5 个主臂（主命题）跑满全池，8 个消融臂是**方向性**结论、跑分层 1/3 子集即可（省约 9% 总价，代价是消融列 CI 变宽、需在报告里标注子集规模）。**第二杠杆 = 降 `MCTS_ROLLOUT`**（线性省，但直接削弱搜索质量，**不推荐**）。**禁止**的杠杆是砍族——不可解族是主命题能否立起来的前提 |
+| 22 | **模型档位的成本现实**（决定能不能跑完，非可选项） | **付费 flash 档为默认真实运行档**（`GLM-5.3-Flash` / `DeepSeek V4 Flash` 平价第三方 / `GPT-5.6 Luna` 同级，按 §G.4 档位政策与登记清单 pin）；**付费档未就绪时维持免费匿名档跑并在报告标注"免费档结论"**；**免费匿名档平时降级为"调试与 CI 回放档"**。全实验估算（**新增 `dev-hard`/`hold-hard` 前的基准**）≈ **190,000 次任务执行 / 约 100 万次 LLM 调用 / ≈ 5.6B 输入 + 0.7B 输出 token**，flash 档带提示缓存 **$900–2,200**；含调试重跑 2–5× ⇒ **$2,000–7,000**；**引入两族后本组数字须按同式重算**（dev 池 640→960、hold 池 320→512），重算值 P2 定稿回填（§I.2 ④ 不另记绝对值） | **钱不是瓶颈，速率是**：100 万次调用在免费档 ~20 RPM 下 = **35 天不间断**且日配额先撑爆；付费 flash 档 10 req/s 下 ≈ **28 小时**。故默认免费档只跑 canary 与回放；**若结论 run 时付费档未就绪而维持免费档，必须在报告标注"免费档结论"及速率/单价限制**。**提示缓存必须开**（系统提示 + repo 切片约 60% 输入可缓存，省约 1/3 总价）⇒ `prompt` 与 `context_policy` 的拼装顺序须把**稳定前缀放前面**（缓存命中的前提），这是架构约束不是优化。**成本需要削时的第一杠杆 = 臂子集化**：结论网格 13 臂里 5 个主臂（主命题）跑满全池，8 个消融臂是**方向性**结论、跑分层 1/3 子集即可（省约 9% 总价，代价是消融列 CI 变宽、需在报告里标注子集规模）；**④全拒臂只作 GA3 门禁用，不进结论网格**。**第二杠杆 = 降 `MCTS_ROLLOUT`**（线性省，但直接削弱搜索质量，**不推荐**）。**禁止**的杠杆是砍族——不可解族是主命题能否立起来的前提 |
 | 23 | **代理内循环**（定位已调整） | `proxy` 节点行为模型（给定 `(contract_id, 难度向量, variant_index)` 的 `post` 通过概率与四维成本分布，从 ≥ 500 次真调用标定）；**用途 = CI 门禁、训练代码调试、超参扫描**；**不得**用于任何写进结论的 run | 原以为代理是可行性前提（免费档跑不完），实测成本后**降为迭代速度工具**：改一行训练代码不必等一天。相应地，**代理保真度门禁**（代理与真 LLM 在同一批图上 pass@1 的 Spearman ≥ 0.7）只约束"能否用代理调参"，**不**约束结论——结论一律真 LLM。这条避免了"代理 gap 污染主命题"这个原本会很难辩护的风险 |
 | 24 | **"真实运行"的准入条件（三轴区分，防"实验过了 ⇒ 生产可行"的误推）** | **轴① 代理 vs 真 LLM**：分界 = **该 run 的结果是否进结论**。**自 P1 起，一切产证据的 run 一律真 LLM**；代理只跑 CI/调试/超参扫描，其结果永不进结论。**"真实运行"是准入条件，不是某个阶段**。**轴② 实验 vs 生产**：分界 = 是否接内核、插件是否真实。**轴③ 合成 vs 真实任务**：分界 = 任务来源是否真实。 | 三轴**正交**，把轴① 的"真实"读成轴② 的"生产"是最容易犯的误推。**本实验只证明"机制 M 在 (任务分布 D, 池 P, 成本模型 C) 下有效"，不证明 (D′, P′, C′) 下有效**——两者的落差见 §G.25。故 P5 交付物必须含**迁移假设清单**（每条假设标：实验内已验证 / 需生产重验 / 已知不可转移），否则"实验全绿"会被当成"可以上生产" |
 | 25 | **六项迁移落差（实验→生产，按载荷排序；这是"研究可行 ≠ 生产可行"的具体内容）** | ① **验证器**（最深）：飞轮的监督来源是隐藏测试自动判分；真实任务常无自动验证 ⇒ 正样本产出率从"稀有"变"常态为零"，**燃料断点成为默认态**。这是**产品域前置条件**，实验测不了。② **池规模**：实验契约池是 toy 且 ≤ 32；真实插件生态远超 32，而专家/`NODE_SLOT` 维度上限 32 是硬约束（触顶须并入既有契约或走容量档）⇒ 该上限会先撞上。③ **特征面**（已知未解）：逐节点 obs 在实验里是 toy 产物，生产里是真实代码/文档/工具输出；"逐节点 LLM 编码"是后置档。④ **成本量纲**：实验用归一化 `cost_exec`（calls/tokens 按固定权重混，输入输出单价差 3–6 倍），生产看 $/task 与 P95 延迟 ⇒ 帕累托前沿结论未必在 $ 空间成立。⑤ **运行时是两套代码**：实验 standalone、不接内核；生产是宿主+装配层+插件 ⇒ executor/契约加载/沙箱均须重验。⑥ **固定图臂公平性**：实验 `|V_seed|` 由研究者手写；生产的"固定图"是产品实际 ship 的编排，若其不弱则自适应臂未必赢 | **桥的形态不是"实验完再做一次生产验证"，而是让实验顺带产出迁移清单 + 逐条廉价检验。** 已采纳：**`probe-real` 迁移探针族**（真实感契约池 + 接近真实的仓库，**明标污染、绝不进主命题**）⇒ 轴②③ 的 D′/P′ 在实验内即测；**`probe-real` 的变体 ②（弱监督）**另测落差①。只剩运行时轴（⑤）留给 P6。**另**：P6 把「账本迁内核」列为*可选*（触发条件 = 运维需求），但在"先研究、后产品化"下它是**产品化关键路径**，不是运维触发项——已改为 P6 必做 |
-
 | 26 | **精英档案（QD，§0.5-A）**（原表缺，缺了"防坍塌"无机制落点） | `ARCHIVE_SEED_K = 8`（每代从档案采样的精英数）；行为维度分桶数 `VBINS=4`（`|V|` 档）、`DBINS=3`（最大深度档）、`CBINS=3`（`cost_exec` 档）、`KBINS=3`（契约多样性档）；档案**跨回合持久**、进 manifest | 原设计只有 `Ei` / 熵**诊断**，没有机制干预；而 `GROW_CONTRACT_MAX=1` 下池增长慢、易坍塌到单一行为区。档案按**桶**均匀采样（不是按个体均匀），否则大桶淹没小桶、QD 失效。**档案的每桶精英必须进报告**（否则等于没做）；**档案桶覆盖率**进诊断列，覆盖下降 = 探索退化，触发升级诊断。分桶函数必须确定性（同图必落同桶），否则档案不可重放 |
 | 27 | **成熟度门（PSN 式，§J.6）** | 成熟判据：该结晶节点在金丝雀集上的成功率下界连续 `MATURITY_ROUNDS = 3` 回合不劣于其子图展开式，**或**累计调用次数 ≥ `MATURITY_CALLS = 20`。成熟 ⇒ 不进梯度且 `wd` 也 mask；未成熟 ⇒ 保持可塑 | 与惰性训练的"未激活专家不更新"是同一件事的两面。**不设永久冻结**——成熟只影响更新频率，仍可 `set_active` 回滚 |
+| 28 | **本轮补齐的统计/运行默认值**（原散落正文，统一住账本） | `alpha_lb=0.05`（实例 `success_lower_bound` 的 Wilson 单侧置信水平）、`CANARY_MIN_N=20`（影子转正所需金丝雀样本数）、`REJECT_REPEAT_MAX=2`（同 `(type,target)` 提案连续被拒上限）、`VERIFY_TIMEOUT=120`（判卷硬超时，秒）、`GAP_PROBE_K=8`（能力缺口重连上界探针张数） | 这些值此前只在 §I.1 / §J 正文内联，属"设计说住账本、账本里没有"的同类漏网；集中登记后 `success_lower_bound` / 影子转正 / 提案去重 / 判卷超时 / 缺口探针全部可复算 |
 
 其余探索性项（L3、迁内核、上调专家数）一律走"先登记后扩展"。
 
@@ -620,7 +620,7 @@ Ei = D_KL(π_policy ‖ π_search)（bits）；H(π) = 按 family_sig 分桶归�
 共退判据 = Ei 与 H(π_policy) 同向单调下降
 
 any_port_density(G) = (# any 入端口) / (# 全部入端口)；图平均过低（< 0.10）记诊断
-used_ext 搜索分摊：search_cost_d / n_eval_tasks（当轮实际评测任务；未评测不分摊；四维各自独立）
+used_ext 搜索分摊（**仅搜索进运行时档下**）：search_cost_d / n_eval_tasks（当轮实际评测任务；未评测不分摊；四维各自独立）；默认离线搜索档 `used_ext` 不含 `search`
 
 listwise：s(g) = (1/|tokens(g)|) · log p_θ(g)；  q(g) ∝ exp(s(g)/τ)
 # 禁止写成 p_θ(g) 出现在等式两边的记号滥用
@@ -658,17 +658,17 @@ memo 键 = H({task_id, node_index, contract_ref, 输入 slot 版本向量, 解�
 
 **评估协议**
 
-- 每臂每档 **累计 `n ≥ max(200, 功效分析所需)` 个独立簇**（同一 `incumbent` 窗口内跨回合累计、**按簇不重复**）
+- 采纳闸：**同一 `incumbent` 窗口内**累计 `n ≥ max(200, 功效分析所需)` 个独立簇（跨回合累计、**按簇不重复**；`n` 是簇数不是任务数，**不按难度档分别计**）
   **且**配对非劣检验成立（dev 簇级配对差值单侧 CI 下限 ≥ −δ **且实测半宽 ≤ δ**）；
-  **`n` 是簇数不是任务数；`n ≥ 200` 是下限，不是替代判据**。严格提升（CI 下限 > 0）另作升级/软闸判据。
+  **`n` 是簇数不是任务数；`n ≥ 200` 是下限，不是替代判据**。严格提升（CI 下限 > 0）另作升级触发判据；软闸按 `fit` 改进超过 `margin`（《进化与账本》§一）。
 - **主命题另立判据**：vs `fixedgraph` 的**簇级**配对差值**单侧 CI 下限 ≥ Δ**（**BH-FDR 校正族 A = 分层归因各档**：难度 / 契约 / 自治三表分桶；整体单一检验无须 BH-FDR），点估计并列。
   **主命题不受"窗口随 incumbent 重置"约束**——它比的是"自适应臂 vs 固定图臂"，两臂都不是 `incumbent`，
   可用全部 **480** 个 dev 簇一次性判定（结论回合判一次，不做重复检验，故不需要 group-sequential），
   **且必须按族分栏**（`dev-lib` 320 簇 / `dev-hard` 160 簇）。
   **检查点 holdout 的 BH-FDR 是独立校正族 B**（按检查点次数），与族 A、与采纳闸的 group-sequential **不共享 α**。
-- 臂网格 = **GA8 十三臂** × **≥ 3 个 seed**；主表先出 5 个主臂
-  `{固定图, 随机合法图, 无搜索纯生成, 自适应, 单节点}`，消融臂 ⑥⑦⑧⑨⑩⑪⑫⑬ 按 GA8 补齐。
-  **可用时点按 P3 分段**：`⑥⑧⑨` 与主臂 `①–⑤` 在 **P3a** 即可出（它们只依赖编排 + 固定分解 + 固定路由）；
+  - 臂网格 = **13 臂**（= 自适应臂 + GA8 ①–⑬ 去掉只作 GA3 门禁用的 ④全拒臂）× **≥ 3 个 seed**；主表先出 5 个主臂
+    `{自适应, 单节点①, 固定图②, 随机合法图③, 无搜索纯生成⑤}`，消融臂 ⑥⑦⑧⑨⑩⑪⑫⑬ 按 GA8 补齐；④全拒臂不进结论网格。
+  **可用时点按 P3 分段**：`⑥⑧⑨` 与主臂 `{自适应, ①, ②, ③, ⑤}` 在 **P3a** 即可出（它们只依赖编排 + 固定分解 + 固定路由）；
   `⑦`（同图随机路由，需"学到路由"作对照）与 `⑩`（自治档位，含 L2）在 **P3b** 后；`⑬`（关思考）与 MoE 相关项在 **P3c** 后；
   `⑪`（池冻结）在 **P4** 后。**每臂在其可用时点即可进报告，不必等齐**——这也是分段的主要收益；
   报每格均值 + CI。
@@ -683,7 +683,7 @@ memo 键 = H({task_id, node_index, contract_ref, 输入 slot 版本向量, 解�
 
 **成本与归因报告（每次 run 必出，缺一即不可采信）**
 
-`S_dev / S_holdout / cost_to_solve（对外四维 `used_ext` 帕累托前沿 + 各维中位数；`used_ext` 含编码器与 pro-rata 搜索成本）/ incomplete_rate / verify_timeout_rate / cap_overshoot / redundant_step_rate /
+`S_dev / S_holdout / cost_to_solve（对外四维 `used_ext` 帕累托前沿 + 各维中位数；`used_ext` 含编码器成本与（搜索进运行时档下的）pro-rata 搜索成本）/ incomplete_rate / verify_timeout_rate / cap_overshoot / redundant_step_rate /
 wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边）/ compile_reject_rate（分 reason）/ invalid_crossover_rate / gate_k_shrink_rate /
 **any_port_density（OR 分支端口占比；低 ⇒ 路由无落点、GA8⑦ 测不出）** / branch_not_taken 比例 / 搜索正样本产出率 / Ei 散度（含 |支撑集|）/ 训练集分布漂移 /
 蒸馏目标 |V| 分布 vs 搜索产出 |V| 分布 / rename_variance / fit_H_imputed 占比 / sig 同构重复率 /
@@ -718,6 +718,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 | 扇出上限 | `N ≤ 3` | 出现"多路显著增益且**全计费下**仍划算"的证据 | 上调 `N`；报 N-成本曲线 | 回 3 |
 | 并行化拓扑执行 | 关闭（串行） | 串行 `walltime` 成为瓶颈，**且**跨分支 publish 已改为在显式 join 契约处合并版本 | 并行执行；并行度进 manifest；`walltime` 改有效挂钟口径；报并行度-成本曲线 | 回串行 |
 | 控制层容量 | 专家 ≤ 32、参数 ≤ 2M | **容量诊断**（欠拟合证据），而不是仅"不达标" | arch bump + 重训 + F1–F4 | 回旧 arch |
+| **潜思考步（latent）** | 关闭（token 化 THINK） | P3c 全绿 **且** THINK 收益见顶（关思考臂不再出增益），**且** 计费 / 停机 / 可重放口径登记完成 | 定义无 token 思考的计费与停机口径；开消融臂对照 token 化 THINK | 回 token 化 THINK |
 | **motif 库上限** | `MOTIF_MAX=32` | 淘汰频次持续 > 0（说明 32 条不够装稳定 motif），**且** `action_head` 在被淘汰 motif 上的历史命中率显著 | 上调 `MOTIF_MAX` ⇒ `action_head` 追加列 + arch bump + 重训 | 回 32（超出列置零冻结） |
 | **图同构规范化** | 关闭（`sig` 按生成序） | `sig` 同构重复率 > 0.20（去重失效、listwise 候选集里塞满同构副本） | 加规范化档（受限同构：只对**同 `family_sig` 且节点数 ≤ 8** 的图做规范化，避免 NP-hard 全图同构）；`sig` 口径变更 ⇒ 全历史去重键作废、需重建 motif 库与训练集去重索引 | 回生成序 |
 | **拉式 → 推式执行** | 拉式惰性（OR 省预算） | 出现"路由因看不到候选产物而系统性选错"的证据（同图强制枚举各分支的离线对照显示：后验选边的 pass@1 显著高于先验选边，且差值 ≥ `Δ`） | 改推式后验选边；**OR 不再省预算** ⇒ cap 与 `cost_exec` 口径不变但实测成本上升，须重跑全部成本结论；与"扇出-聚合"的语义重叠须重新划界 | 回拉式 |
@@ -753,7 +754,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 - **`sig` 口径变更事故**：`sig` 是去重键、motif 索引键、listwise 候选集去重依据。一旦口径变
   （如加同构规范化），**全历史去重键作废**。处置：① 标记受影响世代 ② 重建 motif 库与训练集去重索引
   ③ 重算 `family_sig` 分桶熵与 `Ei`（分桶变了 ⇒ 历史 `Ei` 不可比）④ 不可只重建"看起来受影响"的部分。
-- **采纳窗口用尽**：`incumbent` 窗口最长 6 回合（320 簇 / 50 簇每回合）。若用尽仍未判定（`h > δ` 持续），
+- **采纳窗口用尽**：`incumbent` 窗口最长 6 回合（受 `dev-hard` 约束：160 簇 / 每回合 25 簇 ⇒ `⌊160/25⌋ = 6`）。若用尽仍未判定（`h > δ` 持续），
   记"未判定并重开窗口"（换 `seed_window`、重新登记 group-sequential），**不得**降低 `n_min` 或抬高 `δ` 来强行判定。
   连续两个窗口用尽 ⇒ 触发 `δ` 的登记提案复议（写明可接受的最大退步），这是**唯一**允许改 `δ` 的路径。
 - **`llm` 节点不可 memo 带来的成本上升**：相比"temperature=0 可短路"的旧口径，同契约同输入的 LLM 节点会真重复计费。
@@ -817,10 +818,12 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 
 **`role` 取值表与唯一匹配（禁止静默取首）**
 - `role` 为 append-only 枚举（走 `declare{kind:'role'}`），初始 `{code, plan, critique, tests, patch, verdict, summary}`，可扩展。
-- **`role_ok` 的判定（写死，三种情形）**：① 双方都声明 `role` ⇒ 必须相等；
+- **`role_ok` 的判定（写死，三种情形）**：① 双方都声明 `role` ⇒ 必须相等（**不相等即非 `role_ok` 对，任何回退都不得放行**）；
   ② **只有一方声明** ⇒ **视为兼容**（不能因单方声明就拒，否则新增 role 会让既有契约互不可连）；
-  ③ 双方都未声明 ⇒ 兼容。**唯一匹配的候选集先按 ① 过滤**：若"双方都声明且相等"的对恰好一对，取它；
-  否则回落到"全部类型兼容对"再判是否恰一对。分两阶段是为了让 `role` **缩小**歧义而不**制造**不可连。
+  ③ 双方都未声明 ⇒ 兼容。
+  **唯一匹配的两阶段（写死）**：阶段一取"**双方都声明且相等**"的对，**恰一对 ⇒ 直接取它**；
+  否则阶段二在**全部 `role_ok` 兼容对**中判，**恰一对才自动补齐**。分两阶段是为了让 `role` **缩小**歧义而不**制造**不可连；
+  阶段二**不得**回落到"忽略 role 的全部类型兼容对"（那会放行双方声明但不相等的对，与 ① 冲突）。
 - `LINK u→v` **唯一匹配** = 按上述两阶段后恰好一对 ⇒ 自动补齐。候选集**排除 `confidence` 旁路位**、
   排除已连满的入端口、排除已存在的同端口对。
   0 对 = 不可行（mask / 回退贪心）；>1 对 = 歧义 ⇒ **必须**显式端口对 `u:2→v:0`。
@@ -874,7 +877,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 **金丝雀集抽样规则**
 - 每契约 **pin 一张 canary 参考图** = 该契约节点在**首次任务级验收通过**的图中的**反向切片**（从该契约节点沿入边回溯到 `entry_supply` 边界，唯一确定；同一任务出现多图时取 `sig` 最小者）。参考图 pin 前该契约金丝雀统计记 `pending`（不进漂移判定）。参考图**只进金丝雀评估**、不进真实执行流与蒸馏。
 - 每契约金丝雀集 = **固定 20 个 dev 任务**，在该参考图上跑，按难度向量分层抽样（各难度档至少 2 个、档数 `D ≤ 10`），**且 `entry_supply` 与该切片边界类型兼容**（不兼容的任务不得入该契约金丝雀集），pin 进池版本；统计按实例滚动（同一图 × 同一任务集 ⇒ 同契约各实例可比，GA11），Wilson 下界仅展示。health 落派生表，不进 `NodeDecl`。
-- **`choose_instance`**：编排不输出实例 id。字典序 `(shadow 升序, success_lower_bound 降序, cost 升序, node_id 升序)`。影子或 `n=0` 时 `success_lower_bound=0`，排所有已转正之后。A/B 评估由 harness 强制指定实例，不走本规则、不经解码器。
+- **`choose_instance`**：编排不输出实例 id。字典序 `(shadow 升序, success_lower_bound 降序, cost 升序, node_id 升序)`。影子或 `n=0` 时 `success_lower_bound=0`（**仅排序键置零**），排所有已转正之后。A/B 评估由 harness 强制指定实例，不走本规则、不经解码器。`success_lower_bound` = 实例滚动成功率的 Wilson 单侧下界（`alpha_lb` 住账本、默认 0.05），用于选择、影子转正与展示（转正比较用未置零的原始下界），不作漂移判定（漂移用 CUSUM）。
 
 **bench 规模核算式（冻结池；P2 生成池时逐条断言）**
 - **池形态**：P2 一次性生成并 pin 的**冻结任务池**（dev / holdout 两池，逐任务 spec 与哈希入池版本）；课程每回合从 dev 池**重采样** `ROUND_DEV_N`；金丝雀任务从 dev 池 pin。
@@ -897,7 +900,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 - `s`、锚点终值与 `CTX_BUDGET` 在 P2 生成时实测回填；`T`/`V̄`/`N`/`C`/`D` 已注册，生成失败不得下调。
 
 **`SharedRef` schema 与 join 合并**
-- `SharedRef = { key, type_id, scope:'task' }`；键表 append-only（`declare{kind:'shared_ref'}`）。互斥 OR 分支的跨分支合并：
+- `SharedRef = { key, type_id, scope:'task', supply_cost? }`（`supply_cost` = 该键的四维供给先验，初值按同键在 dev 上的实测 p90 回填、随池版本 pin；改它 = 新池版本 + 记账）；键表 append-only（`declare{kind:'shared_ref'}`）。互斥 OR 分支的跨分支合并：
   `join` 契约声明 `inputs` 为各分支产物（`binding_mode:'all'` + `cardinality:'n'` + `required:false`——
   互斥分支下只有一条会有产物，故不能 required）、`outputs` 为合并键。
 - **合并规则（写死，`producer.step` 不可用作判据）**：按 `type_id` 分派——
@@ -973,7 +976,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 - trace 一等事件**分三张表**（作用域不同，见《契约与图》§2.2 事件表；均不入 defs 链）：
   - 执行流 `{ run_id, task_id, step, type, node_index?, instance_id?, payload, at }`，按 `(run_id, task_id, step)` 追加；
   - 生成流 `{ run_id, task_id, decode_seq, type, payload, at }`，按 `(run_id, task_id, decode_seq)` 追加
-    （`decode_fallback` / `decode_stop_kind` / `greedy_completion` / `think_stop` / `compile_reject` 发生在图存在之前，无 `step`/`node_index`）；
+    （`decode_fallback` / `decode_stop_kind` / `greedy_completion` / `think_stop` / `compile_reject` / **解码期 `incomplete`（`reason ∈ {closure_budget, closure_budget_or_sink, no_legal_token}`）** 发生在图存在之前，无 `step`/`node_index`；任务级 `incomplete` 归执行流表——同名双作用域，以所在表区分）；
   - 搜索流 `{ run_id, round, rollout_seq, type, payload, at }`，按 `(run_id, round, rollout_seq)` 追加
     （`invalid_crossover` / `gate_k_shrink`，属回合级 `search_cost` 记账面，不进单任务轨迹）。
   **三表不可合并**：合并会让 `step` 语义漂移，按 `step` 聚合的 `wasted_step` / `redundant_step_rate` 全部算错。
@@ -988,7 +991,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 - **被拒提案必须回灌 manager 输入（借自 Procedural Graphs，§0.1）**：manager 每回合的输入除证据外，
   必须含**近期被拒提案的清单**（`proposal_id` + `type` + `target` + 拒绝原因），
   否则 manager 会反复提同一条被拒提案——原设计只记了拒绝，**没有让拒绝影响后续提案**，这是缺口。
-  判据：**同 `(type, target)` 的提案连续被拒 ≥ `REJECT_REPEAT_MAX`（住账本）⇒ 本回合该提案直接拒并记
+  判据：**同 `(type, target)` 的提案连续被拒 ≥ `REJECT_REPEAT_MAX`（住账本，默认 2）⇒ 本回合该提案直接拒并记
   `evidence_id(kind='repeat_rejected')`**，manager 必须换方向或补充新证据。
 - 训练样本：`{ sample_id, task_id, producer ∈ {search, teacher, exec}, graph_sig | sub_sig, target_dist?,
   dense_labels?, trace_ref, pool_ver, weight_ver, prompt_ver }`；四闸判定式 = 对抗套件通过 ∧ 泄漏扫描无命中 ∧
@@ -1043,10 +1046,10 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
    **主命题的判定以两族合并的簇级配对为准，但必须同时报分族结果**——只在 `dev-hard` 上有增益是**有效结论**
    （"编排在需要编排的任务上有增益"），只需把声明范围写准（§H.1 的"缩小声明"机制正是为此）。
 
-> **代价与连锁（明写）**：① 模板工作量 +16 个模板（约 1.8× 于原计划）；② dev 池 640→960 任务 / 320→480 簇
+> **代价与连锁（明写）**：① 模板工作量 +16 个模板（30→46，约 1.5× 于原计划）；② dev 池 640→960 任务 / 320→480 簇
 > ⇒ 每回合 dev 批仍取 100 任务但**按族分层**（各 50），窗口最长仍 6 回合；③ A 类任务的单任务 token 成本更高
 > （必读上下文大）⇒ per-task cap 需按族区分：`dev-hard` 的 `tokens` cap 取 `120_000`（2× 基线），
-> 其余三维不变，pin 进 task spec；④ 全实验 token 估算上修约 40%（约 6.6B），flash 档仍在 $900–2,100 区间。
+> 其余三维不变，pin 进 task spec；④ 全实验 token 与成本估算随任务量上修（dev 池 640→960，**绝对值不在此重复登记**，统一按 §G.22 口径重算并在 P2 定稿时回填）。
 
 > **holdout 只做点估计非降（`ε` 判据），不做 CI 检验** ⇒ 160 簇够用；核算式 ⑤ 的"`N_hold ≥ 200`"改口径为
 > **`N_hold ≥ 200` 任务且独立簇 ≥ 150**（点估计的标准误在 160 簇下约 0.04，与 `ε=0.02` 同阶，
@@ -1191,7 +1194,7 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 ## J · 关键算法与伪代码（实现）
 
 > `B` / `C` / `D` 的口径在此给出实现伪代码（J.1–J.16）。`bootstrap_bca_ci`（采纳闸，按簇）、
-> `newcombe_ci`（仅单臂展示性 Wilson CI）、`common_supertype_exists`、`dedup_hit`、
+> `wilson_ci`（单臂 pass@1 的展示性 CI）、`common_supertype_exists`、`dedup_hit`、
 > `adversarial_suite_pass` 等判定已由 §I.1 定义；§I.2 模板族已定稿，P2 生成时只回填实测 `s` 与锚点终值。
 
 ### J.1 受约束解码（mask / 回退 / 补齐）
@@ -1209,11 +1212,12 @@ connected(st, v, p):
     return true                                          # entry 虚拟边
   return exists edge (_, _, v, p) in st.edges
 
-unique_match(i, j):
-  pairs = type-compatible port pairs (i→j)
-  if both ends declare role: pairs = role-equal subset
-  if |pairs| == 1: return that pair
-  return null                                            # 0 或 >1：不可静默取首
+unique_match(i, j):                                    # 两阶段，与 §I.1 role 口径一致
+  pairs = role_ok(type-compatible port pairs (i→j))     # 双方声明须相等；单方/均未声明视为兼容
+  strict = both-ends-declare-and-equal subset of pairs
+  if |strict| == 1: return that pair                    # 阶段一：双方声明且相等恰一对
+  if |pairs| == 1: return that pair                     # 阶段二：role_ok 兼容对恰一对
+  return null                                           # 0 或 >1：不可静默取首；禁止回落忽略 role
 
 simulate_closure(st):                                    # 与 complete_greedy 同一选择规则
   t = copy(st)
@@ -1301,18 +1305,18 @@ decode(policy, budget):
   st = empty
   loop:
     if budget.exhausted():                               # 先查预算，再采样
-      st = complete_greedy(st); stop_kind = "BUDGET_STOP"
+      st = complete_greedy(st, fail_reason="closure_budget"); stop_kind = "BUDGET_STOP"
       if st == null:
-        events.push(incomplete, reason="closure_budget"); return null, events
+        return null, events                                 # incomplete 由 complete_greedy 唯一发射
       break
     m = mask(st)
     if m has no legal token:                              # 空图或非空图都可能撞墙
       if st is empty:
         events.push(decode_fallback, kind="no_legal_node"); assert false   # 池不变量被破坏 ⇒ GA1 红
       # 非空图：EXIT_STOP 若合法必在 m 中；不在 ⇒ 未闭合且无边可加
-      st = complete_greedy(st); stop_kind = "NO_LEGAL_TOKEN"
+      st = complete_greedy(st, fail_reason="no_legal_token"); stop_kind = "NO_LEGAL_TOKEN"
       if st == null:
-        events.push(incomplete, reason="no_legal_token"); return null, events
+        return null, events                                 # incomplete 由 complete_greedy 唯一发射
       break
     t = sample(masked_softmax(policy.forward(st), m))
     if t == EXIT_STOP:
@@ -1335,8 +1339,8 @@ decode(policy, budget):
         events.push(decode_fallback, kind="infeasible_sample")
       st.edges.push((i,op,j,ip)); continue
   if simulate_closure(st) != st:
-    st = complete_greedy(st)
-    if st == null: events.push(incomplete); return null, events
+    st = complete_greedy(st, fail_reason="closure_budget_or_sink")
+    if st == null: return null, events                     # incomplete 由 complete_greedy 唯一发射
   events.push(decode_stop_kind = stop_kind)
   return st, events
 ```
@@ -1350,14 +1354,13 @@ decode(policy, budget):
 ### J.2 贪心补齐
 
 ```
-complete_greedy(st):
+complete_greedy(st, fail_reason="closure_budget_or_sink"):   # decode 期 incomplete 的唯一发射点
   t = simulate_closure(st)                               # 与 allowed_cap 同一规则
   if t == null:
-    events.push(incomplete, reason="closure_budget_or_sink")
-    return null
+    events.push(incomplete, reason=fail_reason); return null
   for each extra edge in t.edges \ st.edges:
     if budget.exhausted():
-      events.push(incomplete, reason="closure_budget"); return null
+      events.push(incomplete, reason=fail_reason); return null
     events.push(greedy_completion)                       # 逐次记账，计入本任务预算
   return t                                               # 含 entry 虚拟边语义与 sink 出边；|V|≥1
 ```
@@ -1452,8 +1455,8 @@ demand(v, st, graph, budget):                            # 返回 v 的产物或
     events.push(budget_event, kind="cap_block")
     st.in_progress.remove(v); return refusal("budget")
   assert_typed(arts)
-  if is_l1_retry(v) and not produces_new_info(arts, st):  # 空转只可能来自 L1 重试 / composite 内部
-    events.push(wasted_step)                             # 已计费，进 wasted_budget_rate
+  # wasted_step 的唯一落点在 L1 循环（J.15）与 composite 内部执行：
+  # 外层 DAG 节点首次执行必有新信息，此处不重复判（否则同一次重试会被记两次）。
   for (port, art) in arts: st.slots[(v, port)] = art
   for K in publishes(v): publish_append(K, declared_output(arts, K))   # 追加新版本，不就地替换
   st.step += 1
@@ -1467,7 +1470,7 @@ demand(v, st, graph, budget):                            # 返回 v 的产物或
 ② **`branch_not_taken` 改为末尾统一登记**：未被 demand 到的节点即未命中分支，0 计费。
 ③ **`resolve_any_ports(..., produced_candidates_only=true)` 删除**：改为选边在前、求值在后，`route_obs` 明确不含候选产物。
 ④ **`publish_atomic` → `publish_append`**：`shared[K]` 是**版本序列**（`Artifact[]`），发布是追加新版本而非原子替换——旧版本必须仍可被轨迹与 `pins` 指到（《契约与图》§2.2 规则 5、规则 8「覆盖 = 版本化」）。"原子替换"与"旧版本仍可指到"自相矛盾。
-⑤ **`wasted_step` 判定加 `is_l1_retry` 前置**：DAG 下首次执行必有新信息，无条件判会让该指标恒为 0（《契约与图》§2.2 已写死该口径）。
+⑤ **`wasted_step` 判定收敛到唯一落点**：只由 L1 循环（J.15）与 composite 内部执行产生；J.4 侧删除重复判定（原两处都记会把同一次重试记两次），与《契约与图》§2.2 的「唯一来源」口径一致。
 
 ### J.5 实例选择（确定性）
 
@@ -1482,7 +1485,7 @@ choose_instance(v, st):
   #   只有在「该契约没有已转正实例」时才允许被选中（此时它是唯一可用者，且仍走影子评估）。
   #   断言：返回的实例若 shadow=true，则 instances(v) 中不存在 shadow=false 者。违反 = 门禁红。
   # 字典序：shadow 升序, success_lower_bound 降序, cost 升序, node_id 升序
-  # shadow 或 n=0 ⇒ success_lower_bound = 0（排已转正之后）
+  # shadow 或 n=0 ⇒ success_lower_bound = 0（仅排序键；影子转正比较用未置零的原始下界）
   pick = lex_first(instances(v),
            key = (shadow?1:0, -success_lower_bound, cost, node_id))
   assert not pick.shadow or all(inst.shadow for inst in instances(v))
@@ -1787,7 +1790,8 @@ paired_noninferiority(pairs, delta, n_min, window_round_idx, seq_boundary):
 **J.10 已修的两处**：
 ① **原用 `newcombe_ci` + "McNemar 口径"**：那是**二元配对**（0/1）的方法；配对单位改为簇后，簇级成绩是**比例**（0/0.5/1），二元方法不适用。改为**按簇自助（BCa）**——它对任意有界配对差值都成立，且天然处理簇内相关。
 ② **`n_min` 的语义**：`n` 是**簇数**（≥ 200），不是任务数（原文两处混用会让 `n=200` 被 640 个任务轻易"满足"，CI 系统性过窄）。
-> `newcombe_ci` 保留用于**单臂 pass@1 的展示性 Wilson CI**（任务级二元），不再用于采纳闸；§J 开头的判定清单已同步。
+> `wilson_ci` 保留用于**单臂 pass@1 的展示性 CI**（任务级二元），不再用于采纳闸；§J 开头的判定清单已同步。
+> （J.10 内文提到的 McNemar/Newcombe 仅作"二元配对口径不适用"的反例说明，不是现用方法。）
 
 ### J.11 数据飞轮入库（四道闸骨架）
 
@@ -1806,7 +1810,7 @@ admit(sample, train_set):
 ```
 # inherited shared = 父契约 delegate_reads（⊆ reads）切片；未声明键不可见
 # parent.l2_policy.budget_split 来自 bindings.retry_policy 同源的 policy def（put(slot='binding.retry_policy') 可切版本）
-# 默认 split = remaining × θ_l2（住账本）；子图 incomplete ⇒ 父节点合法拒绝 max_recur/incomplete，已切预算不归还
+# 默认 split = remaining × θ_l2（住账本）；子图 incomplete ⇒ 父节点合法拒绝 max_recur / subgraph_incomplete，已切预算不归还
 
 delegate(parent, subgoal, budget):
   child_depth = parent.depth + 1
@@ -1821,9 +1825,9 @@ delegate(parent, subgoal, budget):
     # 子图解码的 decode token 必须记在 child_budget（它已从父预算切出），
     # 否则会被重复计一次（父先扣 slice、解码又扣父预算）。
     sub = decode_with_think(policy, child_budget, ctx_route_of(task))
-  if sub == null: return refuse("incomplete")            # 已切预算不归还
+  if sub == null: return refuse("subgraph_incomplete")   # 已切预算不归还
   plan = compile(sub)
-  if plan is compile_reject: return refuse(plan.reason)  # 已切预算不归还
+  if plan is compile_reject: return refuse("subgraph_reject", detail=plan.reason)  # 已切预算不归还
   shared_in = slice_shared(parent.shared, parent.contract.delegate_reads)
   result = run(sub, plan, task, shared_in, child_budget, depth=child_depth)
   events.push(delegate_audit, parent=parent.node_index, depth=child_depth,
@@ -1847,11 +1851,12 @@ delegate(parent, subgoal, budget):
 # 计费 = 实际采样的控制层 decode token，进本任务 B。MAX_THINK 是上限不是保底。
 # 路由另受 MAX_THINK_TASK（每任务累计）约束。
 
-think_prefix(policy, budget, max_think, ctx):
+think_prefix(policy, budget, max_think, ctx, max_think_task=None):
   # ctx.think_used 是**按任务累计**的可变计数器（每模型一份），不是常量 0
+  # max_think_task 只由**路由**传入 MAX_THINK_TASK；编排/分解传 None（只受 MAX_THINK 与任务 B 约束）
   tokens = []
   for i in 1..max_think:
-    if budget.exhausted() or ctx.think_used >= MAX_THINK_TASK:
+    if budget.exhausted() or (max_think_task != null and ctx.think_used >= max_think_task):
       break                                              # 触上限即停，确定性
     t = sample(masked_softmax(policy.think_forward(tokens), {THINK, THINK_STOP}))
     if t == THINK_STOP: break
@@ -1867,7 +1872,7 @@ decode_with_think(policy, budget, ctx):
 **J.13 已修的三处**：
 ① **`task_think_used` 原以常量 `0` 传入** ⇒ `MAX_THINK_TASK` 恒不触发、每任务思考量无界。改为可变 `ctx.think_used`。
 ② **`MAX_THINK_TASK` 的归属**：设计文档写"**路由**每任务思考总量 ≤ `MAX_THINK_TASK`"，因为路由每个 `any` 端口都思考一次、次数与图规模成正比；编排/分解每任务各只生成一次，`MAX_THINK` 已封住。故 **`ctx` 按模型分开计**：路由的 `ctx.think_used` 跨该任务全部 `any` 端口累计并受 `MAX_THINK_TASK` 约束；编排与分解各自每次生成受 `MAX_THINK` 约束、**不受** `MAX_THINK_TASK` 约束（但仍受任务 `B` 约束）。
-③ **`THINK ∪ {THINK_STOP}`** 写法把 `THINK`（单个 token）当集合，改为 `{THINK, THINK_STOP}`。
+③ **`THINK ∪ {THINK_STOP}`** 写法把 `THINK`（单个 token）当集合，改为 `{THINK, THINK_STOP}`；**`MAX_THINK_TASK` 的归属由 `max_think_task` 参数落实**（路由传 `MAX_THINK_TASK`，编排/分解传 `null`）。
 
 ### J.14 金丝雀反向切片
 

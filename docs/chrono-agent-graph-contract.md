@@ -26,7 +26,7 @@ NodeDecl = {
     subgraph?,                //   composite 节点折叠的子拓扑 def（结晶产物必填；pin）
   },
   cost_model: { tokens?, calls?, tool_calls?, walltime? },  // 解码期预算 mask 先验，不是计费真源
-  autonomy: L0 | L1 | L2,     // 自治档位
+  autonomy: L0 | L1 | L2,     // 自治档位（L3 登记待决；开启时 append-only 扩枚举 + arch bump）
 }
 ```
 
@@ -47,7 +47,7 @@ NodeDecl = {
 ```
 Contract = {                        // 规范形哈希 = contract_id = 编排模型看到的能力类
   contract_id,
-  role_tag,                         // 能力类的语义标签（append-only 枚举；供 manager 归纳与报告分档，不参与匹配）
+  role_tag,                         // 能力类的语义标签（append-only 枚举；供 manager 归纳与报告分档，不参与端口匹配；与端口级 role 是两件事）
   touches_effects: bool,            // 是否触达效果端口（fs/exec/net/model）
   can_delegate: bool,               // 是否可发起 L2+ 委派（含子图）
   inputs:  [ { name, type, role?, required, cardinality: 1|n, binding_mode: all|any, optional_read?: never } ],
@@ -129,13 +129,16 @@ Contract = {                        // 规范形哈希 = contract_id = 编排模
    理由：外环「失败模式聚类」是能力缺口证据的**主要来源**，而聚类必须跨契约可比——
    若每个契约自造码（`A.cannot_parse` / `B.parse_failed`），同一失败模式在 32 个契约里散成 32 个互不相识的码，
    聚类只能退化成按契约分组，"缺什么能力"就问不出来了。
-   **初始码表（六类，append-only 可扩展）**：
+   **初始码表（十一类，append-only 可扩展）**：
    `pre_unsat`（前置不满足）、`input_insufficient`（输入不足，含 `request_input` 未获供给）、
    `capability_mismatch`（这不该我做）、`budget`（预算不足）、`undeclared_read`（越权读，属断言性拒绝）、
-   `downstream_refusal`（上游拒绝传播）。
+   `downstream_refusal`（上游拒绝传播）、`redundant`（重复调度/重复调用，执行前拒绝）、
+   `max_recur`（委派递归超限）、`subgraph_incomplete`（子图未闭合或子图预算不足）、
+   `delegate_output_ambiguous`（子图 sink 到父 `outputs` 映射不唯一）、`subgraph_reject`（子图 `compile_reject`，原 reason 进 `detail`）。
    每个码带 `retriable: bool`（L1 是否值得重试：`input_insufficient` 可，`capability_mismatch` 不可）与
    `attributable_to ∈ {node, graph, task, budget}`（聚类维度：`capability_mismatch` 归 `graph`——是编排选错了节点，
-   不是节点不行；这条区分决定证据指向编排还是指向池）。
+   不是节点不行；这条区分决定证据指向编排还是指向池）。新增五码默认 `retriable:false`；
+   `redundant` / `max_recur` / `delegate_output_ambiguous` / `subgraph_reject` 归 `graph`，`subgraph_incomplete` 归 `budget`。
    **节点可在码之外附自由文本 `detail`**（进轨迹、供 manager 语义归纳），但**聚类只用码**，不用文本。
 5. **效果声明 = 权限上限**：契约里没声明的端口/方法，运行时就不注入，调用即拒。这是"不扩权"的落点，
    也是"自治只能花预算、不能拿权限"在契约层的实现。
@@ -247,8 +250,10 @@ memo 才能合法短路复用）；`determinism:'audited'` 的节点一律 `idem
 实例由运行时按下面的确定性规则选；A/B 评估由**评测 harness 强制绑定实例**，不经解码器。
 
 1. **健康分确定性排序**（字典序）：`(shadow 升序, success_lower_bound 降序, cost 升序, node_id 升序)` 取首。
-   `shadow=true`（未转正）或 `n=0` 时 `success_lower_bound=0`，排所有已转正实例之后。
-   **禁止**对 `success_lower_bound` 取最小（那会优先最差实例）。
+   `success_lower_bound` = 该实例滚动成功率的 **Wilson 单侧下界**（置信水平 `alpha_lb` 住账本，默认 0.05；按实例统计）；
+   **仅 `choose_instance` 排序键**在 `shadow=true`（未转正）或 `n=0` 时取 0（排所有已转正实例之后）；置零不改写原始统计，
+   **影子转正判定用未置零的原始下界**。
+   **禁止**对 `success_lower_bound` 取最小（那会优先最差实例）。该量用于实例选择、影子转正与展示，**不作漂移判定**（漂移用 CUSUM）。
 2. **A/B 强制**：评估绑定变异时必须**强制指定实例**，不许走默认规则——否则绑定效果与实例选择混淆。
 3. **选择结果逐次入轨迹**（`chosen_instance`），否则"换了实例"与"换了模型"分不开。
 
@@ -295,7 +300,7 @@ memo 才能合法短路复用）；`determinism:'audited'` 的节点一律 `idem
 - **求值顺序**：`demand(sink)` → 对每个 `all` 端口求值其**全部**入边前驱；对每个 `any` 端口，
   **先由路由选一条候选边，再只对被选中的那条前驱求值**。选边发生在**候选产物产出之前**。
 - **路由选边的 obs（因此不含候选产物内容）** = `{ 已产出 slot 摘要, 已执行能力集, 剩余预算三维,
-  各候选边的静态特征（前驱契约 id / 该前驱的历史成功率 / cost 先验 / 距 sink 距离）, 当前子目标编码 }`。
+  各候选边的静态特征（前驱契约 id / 该前驱的历史成功率 / cost 先验 / 距 sink 距离 / **确定性 VOI 特征**——候选边期望边际收益 ÷ cost 先验，只由先验与历史统计确定性地算出，不破坏可重放）, 当前子目标编码 }`。
   这是 OR 省预算的代价，**已写死、不得偷偷改成"先跑完再挑"**。
 - **求值顺序的确定性**：同一节点的多个待求值前驱按**节点生成序（下标升序）**依次求值；
   `any` 端口的选边在该端口首次被 demand 时发生一次并记 `edge_choice`，**同一执行内不重选**。
@@ -350,7 +355,7 @@ listwise 目标里的不同样本），强行同构合并会把"模型学到的�
 3. **"验收通道"的口径** = `exit` 触发的那一条任务级判分路径（`exec` 跑隐藏测试 + 哈希校验 + 产物路径回写）。
    它**不是一个节点**，是一个动作。
 4. **两轴语义 + 确定性档（原单值 `kind` 已拆）**：`touches_effects:false` = 不触达效果、可纯函数重算；
-   `touches_effects:true` = 触达端口（`fs`/`exec`/`net`），必须审计回灌；`can_delegate:true` = 可发起 L2+ 委派
+   `touches_effects:true` = 触达端口（`fs`/`exec`/`net`/`model`），必须审计回灌；`can_delegate:true` = 可发起 L2+ 委派
    （含子图），其决策与成本必须留痕。两轴正交，不再用 `pure/effect/agent` 单值兼任。
 
 ### 2.2 状态与通信
@@ -463,7 +468,7 @@ CostEvent = {
 |---|---|
 | `cap` 执法 | `Σ amount where counts_against_cap ∧ task_id=T ∧ dim=d` 与 `cap_d` 比较 |
 | `cost_exec(G)` | `Σ w_d · min(used_d, cap_d)/cap_d`，`used_d` 只取 `attributed_to='graph_exec'`、`d ∈ 三维` |
-| `used_ext` | `attributed_to ∈ {graph_exec, control_decode, encoder}` + `search` 的 pro-rata 份额，四维 |
+| `used_ext` | `attributed_to ∈ {graph_exec, control_decode, encoder}` +（**仅搜索进运行时档下**）`search` 的 pro-rata 份额，四维；默认离线搜索档不含 `search` |
 | `search_cost` | `attributed_to='search'`，按 `round` 聚合 |
 | `holdout_cost` / `verify_cost` | `attributed_to='verify'`，按 `run_id` 的 holdout/dev 标记分组 |
 | `encoder_cost` | `attributed_to='encoder'` |
@@ -551,7 +556,10 @@ CostEvent = {
    `publish`、`memo_hit`、`redundant_reject`、`wasted_step`、`input_request`、`autonomy_decision`、
    `budget_event`、`delegate_audit`、`incomplete`。
    **生成流一等事件**（同 `run_id`，但无 `step`/`node_index`——它们发生在图存在之前）：
-   `decode_fallback(kind)`、`decode_stop_kind`、`greedy_completion`、`think_stop`、`compile_reject`。
+   `decode_fallback(kind)`、`decode_stop_kind`、`greedy_completion`、`think_stop`、`compile_reject`、
+   解码期 `incomplete(reason=closure_budget|closure_budget_or_sink|no_legal_token)`。
+   **`incomplete` 双作用域（写死）**：解码期 `incomplete` 归生成流表；任务级 `incomplete`（收口/触顶）归执行流表；
+   两者以所在表区分，不混写。
    **搜索流一等事件**（回合作用域，属 `search_cost` 记账面，不进单任务轨迹）：`invalid_crossover`、`gate_k_shrink`。
    三个作用域**不可混写进同一条轨迹表**：执行流按 `(run_id, task_id, step)` 追加，生成流按 `(run_id, task_id, decode_seq)`
    追加，搜索流按 `(run_id, round, rollout_seq)` 追加。混写会让 `step` 语义漂移、`wasted_step` 等按 `step` 聚合的指标算错。
