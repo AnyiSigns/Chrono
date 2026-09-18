@@ -2,6 +2,7 @@
 // 只解释 `plugin.json` 形状，不校验语义；其余包内文件一律是源码 blob。
 
 import { H } from '../../kernel/index.ts'
+import { replaceTermRefs } from './term-refs.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
 export interface PluginCommand {
@@ -152,7 +153,10 @@ export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): 
     if (i === parts.length - 1) {
       if (mode !== 'file') return null
       const blob = world.defs[hash]
-      return typeof blob?.body === 'string' ? blob.body : null
+      if (typeof blob?.body !== 'string') return null
+      // base64 blob 是字节资产，不是文本；不参与 JSON 解析
+      if ((blob as { enc?: Json }).enc === 'base64') return null
+      return blob.body
     }
     if (mode !== 'dir') return null
     currentTree = hash
@@ -197,6 +201,31 @@ export function resolveTreeJson(world: World, treeHash: Hash, relPath: string): 
   }
 }
 
+/**
+ * 从世界 tree 解析一个 term 源（`terms/` 下或命令入口）的实际 def 哈希：
+ * 递归把 `$ref` 占位符替换成 callee def 哈希，`sig` 为本世代签名。
+ * 缺失 / 坏引用 / 成环返回 null（入世侧已把成环整包拒，此处只作防御）。
+ */
+function resolveTermHash(world: World, treeHash: Hash, relPath: string, sig: Hash): Hash | null {
+  const memo = new Map<string, Hash>()
+  const visiting = new Set<string>()
+  const resolve = (current: string): Hash | null => {
+    const cached = memo.get(current)
+    if (cached !== undefined) return cached
+    if (visiting.has(current)) return null
+    const ast = resolveTreeJson(world, treeHash, current)
+    if (ast === undefined) return null
+    visiting.add(current)
+    const replaced = replaceTermRefs(ast, (ref) => resolve(ref))
+    visiting.delete(current)
+    if (!replaced.ok) return null
+    const hash = H(termDefOf(replaced.value, sig))
+    memo.set(current, hash)
+    return hash
+  }
+  return resolve(relPath)
+}
+
 /** 列出世界里所有身份的具名命令；无法解析声明的身份跳过。 */
 export function listCommands(world: World): CommandDecl[] {
   const out: CommandDecl[] = []
@@ -204,8 +233,8 @@ export function listCommands(world: World): CommandDecl[] {
     const read = readPluginDecl(world, identityId)
     if (!read) continue
     for (const cmd of read.decl.commands) {
-      const ast = resolveTreeJson(world, read.tree, cmd.entry)
-      if (ast === undefined) continue
+      const entry = resolveTermHash(world, read.tree, cmd.entry, read.gen.sig)
+      if (entry === null) continue
       const argsSchema =
         cmd.argsSchema === undefined
           ? null
@@ -216,7 +245,7 @@ export function listCommands(world: World): CommandDecl[] {
       out.push({
         identity: identityId,
         name: cmd.name,
-        entry: H(termDefOf(ast, read.gen.sig)),
+        entry,
         argsSchema,
       })
     }

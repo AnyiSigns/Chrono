@@ -179,7 +179,7 @@ function t6Lineage(nGen: 1 | 2): { world: World; head: Head } {
   return { world, head }
 }
 
-describe('T6 规矩 A 生效：stale 走 pins（红→绿验收闸）', () => {
+describe('规矩 A 生效：stale 走 pins（红→绿验收闸）', () => {
   it('绿面：旧 manifest 的 pins.src=K1 对激活 gen（pins.src=K2）判 stale；当前 manifest 不 stale', () => {
     const { world } = t6Lineage(1)
     expect(world.ids['plg'].active).toBe(MAN1_KEY)

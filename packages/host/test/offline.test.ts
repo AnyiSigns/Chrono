@@ -10,7 +10,10 @@ describe('离线命令', () => {
     root = createTempRoot()
     createToyPlugin(root)
     const { writeFileSync } = require('node:fs')
-    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]))
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]),
+    )
   })
 
   afterEach(() => cleanupTempRoot(root))
@@ -47,9 +50,9 @@ describe('离线命令', () => {
     expect(toy!.status).toBe('unchanged')
   })
 
-  it('readPluginManifest 缺文件返回空数组', () => {
+  it('readPluginManifest 缺文件返回空数组', async () => {
     const emptyRoot = createTempRoot()
     expect(readPluginManifest(emptyRoot)).toEqual([])
-    cleanupTempRoot(emptyRoot)
+    await cleanupTempRoot(emptyRoot)
   })
 })

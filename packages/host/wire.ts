@@ -1,5 +1,5 @@
-// 入站协议的线格式：4 字节大端长度 + 规范序列化的 UTF-8 JSON。
-// 服务端与客户端各自持有本文件的等价实现（两侧边界独立，不跨包共享）。
+// 入站协议与服务协议共用的线格式：4 字节大端长度 + 规范序列化的 UTF-8 JSON。
+// 入站服务端与客户端各自持有本文件的等价实现（两侧边界独立，不跨包共享）。
 
 import { canonicalJson } from '../kernel/index.ts'
 import type { Directive, Json } from '../kernel/index.ts'
@@ -54,7 +54,10 @@ export function encodeFrame(msg: Json): Uint8Array {
   return frame
 }
 
-/** 增量解码器：喂入任意分片的字节，产出已完整到达的消息。 */
+/** 单帧上限：防无界缓冲（本地客户端 / 服务也不许用超大长度前缀压内存）。 */
+export const MAX_FRAME_BYTES = 16 * 1024 * 1024
+
+/** 增量解码器：喂入任意分片的字节，产出已完整到达的消息；超限或坏 JSON 抛错。 */
 export function createFrameDecoder(): { push: (chunk: Buffer) => Json[] } {
   let buffered: Buffer = Buffer.alloc(0)
   return {
@@ -63,6 +66,7 @@ export function createFrameDecoder(): { push: (chunk: Buffer) => Json[] } {
       const messages: Json[] = []
       while (buffered.length >= 4) {
         const length = buffered.readUInt32BE(0)
+        if (length > MAX_FRAME_BYTES) throw new Error('frame_too_large')
         if (buffered.length < 4 + length) break
         const body = buffered.subarray(4, 4 + length).toString('utf8')
         buffered = buffered.subarray(4 + length)

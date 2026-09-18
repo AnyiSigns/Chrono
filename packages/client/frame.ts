@@ -4,6 +4,9 @@
 import { canonicalJson } from '../kernel/index.ts'
 import type { Json } from '../kernel/index.ts'
 
+/** 单帧上限：与服务端一致，防无界缓冲。 */
+const MAX_FRAME_BYTES = 16 * 1024 * 1024
+
 export function encodeFrame(message: Json): Uint8Array {
   const body = Buffer.from(canonicalJson(message), 'utf8')
   const frame = Buffer.allocUnsafe(4 + body.length)
@@ -20,6 +23,7 @@ export function createFrameDecoder(): { push: (chunk: Buffer) => Json[] } {
       const messages: Json[] = []
       while (buffered.length >= 4) {
         const length = buffered.readUInt32BE(0)
+        if (length > MAX_FRAME_BYTES) throw new Error('frame_too_large')
         if (buffered.length < 4 + length) break
         const body = buffered.subarray(4, 4 + length).toString('utf8')
         buffered = buffered.subarray(4 + length)

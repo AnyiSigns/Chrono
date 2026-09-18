@@ -84,7 +84,7 @@ afterEach(() => {
   stubs.entryHash = 0
 })
 
-describe('T5 计数桩（段外两笔算常数）：短路把载荷账 2N+1 砍到 N+1、entryHash 2 砍到 1', () => {
+describe('计数桩（段外两笔算常数）：短路把载荷账 2N+1 砍到 N+1、entryHash 2 砍到 1', () => {
   const N = 3
   it('全 put 全已知批：段 1 预哈希后定论——canon 恰 N+1、entryHash 恰 1（outerPos）', () => {
     const { world, head, tags } = seedPuts(N)
@@ -156,7 +156,7 @@ describe('T5 计数桩（段外两笔算常数）：短路把载荷账 2N+1 砍�
   })
 })
 
-describe('T5 边界（§10.3 短路句写死）：非全 put 不短路、同批内部自重不短路、嵌套批经段 2 得同一判决', () => {
+describe('边界（§10.3 短路句写死）：非全 put 不短路、同批内部自重不短路、嵌套批经段 2 得同一判决', () => {
   it('含 note 的混合批（子 put 全命中）不短路：照常产 entry、非 dup、written 空', () => {
     const { world, head, tags } = seedPuts(2)
     const args = batchArgs([...tags.map(subPut), subNote(J({ after: true }))])

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { parsePluginDecl, readPluginDecl, resolveTreeBlob, listCommands, resolveCommand, termDefOf } from '../index.ts'
+import {
+  parsePluginDecl,
+  readPluginDecl,
+  resolveTreeBlob,
+  listCommands,
+  resolveCommand,
+  termDefOf,
+} from '../index.ts'
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 
@@ -7,9 +14,16 @@ describe('装配 assembly', () => {
   describe('parsePluginDecl', () => {
     it('合法 plugin.json 解析通过，字段齐全', () => {
       const decl = {
-        identity: 'toy', schema: 'schema/x.json', implements: ['toy.echo'],
-        methods: { 'toy.echo': ['echo'] }, pins: {}, start: '', protocol: '1',
-        restart: { policy: 'on-exit' }, health: { probe: 'p' }, state: 'recomputable',
+        identity: 'toy',
+        schema: 'schema/x.json',
+        implements: ['toy.echo'],
+        methods: { 'toy.echo': ['echo'] },
+        pins: {},
+        start: '',
+        protocol: '1',
+        restart: { policy: 'on-exit' },
+        health: { probe: 'p' },
+        state: 'recomputable',
         members: [{ kind: 'term', path: 'terms/' }],
         commands: [{ name: 'toy.hello', entry: 'terms/hello.json' }],
       }
@@ -30,8 +44,18 @@ describe('装配 assembly', () => {
 
     it('commands 缺 name / entry → bad_plugin_decl', () => {
       const result = parsePluginDecl({
-        identity: 't', schema: 's', implements: [], methods: {}, pins: {}, start: '', protocol: '1',
-        restart: {}, health: {}, state: 'recomputable', members: [], commands: [{ name: '', entry: '' }],
+        identity: 't',
+        schema: 's',
+        implements: [],
+        methods: {},
+        pins: {},
+        start: '',
+        protocol: '1',
+        restart: {},
+        health: {},
+        state: 'recomputable',
+        members: [],
+        commands: [{ name: '', entry: '' }],
       } as Json)
       expect(result.ok).toBe(false)
     })

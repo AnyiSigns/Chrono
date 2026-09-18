@@ -20,7 +20,8 @@ export type {
   PluginDecl,
   PluginMember,
 } from './decl.ts'
-export { planIngest, resolvePackageRoot } from './ingest.ts'
+export { planIngest } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
-export { packSourceDir } from './source.ts'
-export type { PackedSource } from './source.ts'
+export { materializeCommit } from './materialize.ts'
+export { startAssembly } from './runtime.ts'
+export type { AssemblyRuntimeHandle, LoadedIdentity, StartAssemblyOptions } from './runtime.ts'

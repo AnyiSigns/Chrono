@@ -1,5 +1,6 @@
 // 入世计划：把插件包源码树变成一条原子 batch 的子操作序列（纯计划，不落账）。
 // 计划由调用方（离线 seed）交给唯一写口提交；assembly 只读世界、不写链。
+// 排除与 term `$ref` 替换都在本层做：宿主只做机械解析，不认识语义。
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -7,7 +8,8 @@ import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { parsePluginDecl, termDefOf } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
-import { packSourceDir } from './source.ts'
+import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
+import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from './term-refs.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
 
 /** `state/plugins.json` 的一项：有 path 按路径解析，无 path 走 Node 解析。 */
@@ -28,8 +30,18 @@ export interface IngestPlan {
 
 export type IngestResult = { ok: true; plan: IngestPlan } | { ok: false; reasons: string[] }
 
+/** 锁文件属契约必需文件：存在即不可被 `.worldignore` 排除（npm 信封 + 常见生态锁名）。 */
+const LOCK_FILES = [
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lock',
+  'bun.lockb',
+]
+
 /** 解析插件包根目录：path 优先，其次 Node 解析；都找不到返回 null。 */
-export function resolvePackageRoot(entry: PluginEntry, root: string): string | null {
+function resolvePackageRoot(entry: PluginEntry, root: string): string | null {
   if (entry.path !== undefined && entry.path.length > 0) {
     const abs = resolve(root, entry.path)
     return existsSync(join(abs, 'plugin.json')) ? abs : null
@@ -84,6 +96,105 @@ function collectJsonFiles(absDir: string, rel: string, out: string[]): void {
   }
 }
 
+/** 声明中的包内路径必须是安全相对路径：禁 `..` 段、绝对路径、盘符与反斜杠。 */
+function isSafePackagePath(path: string): boolean {
+  if (path.length === 0) return false
+  if (path.startsWith('/') || path.startsWith('\\')) return false
+  if (path.includes('\\')) return false
+  if (/^[A-Za-z]:/.test(path)) return false
+  const segments = path.split('/').filter((segment) => segment.length > 0 && segment !== '.')
+  return segments.length > 0 && !segments.some((segment) => segment === '..')
+}
+
+/** 找第一个逃逸包根的声明路径（schema / 命令入口 / 参数 schema / members）；无则 null。 */
+function unsafeDeclaredPath(decl: PluginDecl): string | null {
+  const candidates: string[] = [decl.schema]
+  for (const command of decl.commands) {
+    candidates.push(command.entry)
+    if (command.argsSchema !== undefined) candidates.push(command.argsSchema)
+  }
+  for (const member of decl.members) candidates.push(member.path)
+  return candidates.find((candidate) => !isSafePackagePath(candidate)) ?? null
+}
+
+/** 契约层引用的包内文件：命中 `.worldignore` 即整批拒绝。 */
+function ignoredRequiredPath(
+  pkgRoot: string,
+  decl: PluginDecl,
+  patterns: string[][],
+): string | null {
+  const candidates = new Set<string>(['plugin.json', 'package.json', 'README.md', decl.schema])
+  for (const lock of LOCK_FILES) {
+    if (existsSync(join(pkgRoot, lock))) candidates.add(lock)
+  }
+  for (const command of decl.commands) {
+    candidates.add(command.entry)
+    if (command.argsSchema !== undefined) candidates.add(command.argsSchema)
+  }
+  for (const member of decl.members) candidates.add(member.path)
+  for (const candidate of candidates) {
+    const segments = pathSegments(candidate)
+    if (segments === null) continue
+    if (isIgnored(segments, patterns)) return candidate
+  }
+  return null
+}
+
+/**
+ * 包内 term 入世：先按 `$ref` 图拓扑序（callee 先），逐个替换占位符成 callee def 哈希。
+ * 引用包外 / 不存在的成员 → `bad_term_ref`；成环 → `term_cycle`；两者都整包拒。
+ */
+function planTerms(
+  pkgRoot: string,
+  decl: PluginDecl,
+  commitHash: Hash,
+  ops: Json[],
+): { ok: true } | { ok: false; reasons: string[] } {
+  const paths = new Set<string>()
+  const collected: string[] = []
+  collectJsonFiles(join(pkgRoot, 'terms'), 'terms', collected)
+  // 统一规范化（`./`、重复 `/` 等），否则引用侧规范化后会对不上索引
+  for (const raw of [...collected, ...decl.commands.map((command) => command.entry)]) {
+    const normalized = normalizeRefPath(raw)
+    if (normalized === null) return { ok: false, reasons: [`missing_entry:${raw}`] }
+    paths.add(normalized)
+  }
+  const all = [...paths].sort()
+
+  const asts = new Map<string, Json>()
+  for (const path of all) {
+    const ast = readJsonFile(join(pkgRoot, path))
+    if (ast === undefined) return { ok: false, reasons: [`missing_entry:${path}`] }
+    asts.set(path, ast)
+  }
+
+  const refs = new Map<string, string[]>()
+  for (const path of all) {
+    const found: string[] = []
+    collectRefs(asts.get(path) as Json, found)
+    const normalized: string[] = []
+    for (const ref of found) {
+      const target = normalizeRefPath(ref)
+      if (target === null || !paths.has(target)) return { ok: false, reasons: ['bad_term_ref'] }
+      normalized.push(target)
+    }
+    refs.set(path, normalized)
+  }
+
+  const order = termTopoOrder(all, (path) => refs.get(path) ?? [])
+  if (order === null) return { ok: false, reasons: ['term_cycle'] }
+
+  const hashes = new Map<string, Hash>()
+  for (const path of order) {
+    const replaced = replaceTermRefs(asts.get(path) as Json, (ref) => hashes.get(ref) ?? null)
+    if (!replaced.ok) return { ok: false, reasons: ['bad_term_ref'] }
+    const def = termDefOf(replaced.value, commitHash)
+    hashes.set(path, H(def as unknown as Json))
+    ops.push({ op: 'put', args: def as unknown as Json })
+  }
+  return { ok: true }
+}
+
 function planIdentity(
   world: World,
   decl: PluginDecl,
@@ -114,15 +225,22 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
   const parsed = parsePluginDecl(rawDecl)
   if (!parsed.ok) return parsed
   const decl = parsed.decl
+  if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
+
+  const worldignore = readWorldignore(pkgRoot)
+  if (!worldignore.ok) return { ok: false, reasons: ['bad_worldignore'] }
+  if (ignoredRequiredPath(pkgRoot, decl, worldignore.patterns) !== null) {
+    return { ok: false, reasons: ['bad_worldignore'] }
+  }
 
   const pins: Record<string, Hash> = {}
   for (const [name, depId] of Object.entries(decl.pins)) {
     const dep = world.ids[depId]
-    if (!dep || dep.active === null) return { ok: false, reasons: [`unresolved_pin:${name}`] }
+    if (!dep || dep.active === null) return { ok: false, reasons: ['unresolved_pin'] }
     pins[name] = dep.active
   }
 
-  const packed = packSourceDir(pkgRoot)
+  const packed = packSourceDir(pkgRoot, worldignore.patterns)
   const ops: Json[] = [...packed.ops]
   const meta = { name: decl.identity, version: readPackageVersion(pkgRoot) }
   const commitHash = H({ body: { tree: packed.rootTreeHash, meta } } as unknown as Json)
@@ -135,21 +253,15 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
   const schemaIndex = ops.length
   ops.push({ op: 'put', args: { body: schemaJson } })
 
-  const termPaths = new Set<string>()
-  const collected: string[] = []
-  collectJsonFiles(join(pkgRoot, 'terms'), 'terms', collected)
-  for (const path of collected) termPaths.add(path)
-  for (const cmd of decl.commands) termPaths.add(cmd.entry)
-  for (const path of termPaths) {
-    const ast = readJsonFile(join(pkgRoot, path))
-    if (ast === undefined) return { ok: false, reasons: [`missing_entry:${path}`] }
-    ops.push({ op: 'put', args: termDefOf(ast, commitHash) })
-  }
-  for (const cmd of decl.commands) {
-    if (cmd.argsSchema === undefined) continue
-    const schema = readJsonFile(join(pkgRoot, cmd.argsSchema))
-    if (schema === undefined)
-      return { ok: false, reasons: [`missing_args_schema:${cmd.argsSchema}`] }
+  const terms = planTerms(pkgRoot, decl, commitHash, ops)
+  if (!terms.ok) return { ok: false, reasons: terms.reasons }
+
+  for (const command of decl.commands) {
+    if (command.argsSchema === undefined) continue
+    const schema = readJsonFile(join(pkgRoot, command.argsSchema))
+    if (schema === undefined) {
+      return { ok: false, reasons: [`missing_args_schema:${command.argsSchema}`] }
+    }
     ops.push({ op: 'put', args: { body: schema } })
   }
 

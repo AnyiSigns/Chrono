@@ -11,7 +11,10 @@ describe('宿主 host', () => {
     root = createTempRoot()
     createToyPlugin(root)
     const { writeFileSync } = require('node:fs')
-    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]))
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]),
+    )
   })
 
   afterEach(async () => {
@@ -21,7 +24,7 @@ describe('宿主 host', () => {
     } catch {
       // 宿主未运行或已停止
     }
-    cleanupTempRoot(root)
+    await cleanupTempRoot(root)
   })
 
   it('startHost 返回 HostHandle，含 root / socket / stop / emitEvent', async () => {
@@ -46,7 +49,18 @@ describe('宿主 host', () => {
     const { connect } = require('../../client/index.ts')
     const client = await connect({ root, timeoutMs: 2000 })
     try {
-      const result = await client.submit([{ kind: 'write', request: { id: 'w1', op: 'put', target: { expect_pos: null }, args: { body: { v: 1 } }, by: 'client' } }])
+      const result = await client.submit([
+        {
+          kind: 'write',
+          request: {
+            id: 'w1',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { v: 1 } },
+            by: 'client',
+          },
+        },
+      ])
       expect(result.status).toBe('done')
     } finally {
       client.close()
@@ -59,7 +73,9 @@ describe('宿主 host', () => {
     const { connect } = require('../../client/index.ts')
     const client = await connect({ root, timeoutMs: 2000 })
     try {
-      const result = await client.submit([{ kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null }])
+      const result = await client.submit([
+        { kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null },
+      ])
       expect(result.status).toBe('refused')
     } finally {
       client.close()
@@ -87,10 +103,15 @@ describe('宿主 host', () => {
       const journalFile = join(root, 'state', 'world', 'journal.jsonl')
       const beforeCount = readJournal(journalFile).length
 
-      const result = await client.submit([{ kind: 'eval', entry: toyEffHash, args: null, ctx: null }])
+      const result = await client.submit([
+        { kind: 'eval', entry: toyEffHash, args: null, ctx: null },
+      ])
       expect(result.status).toBe('refused')
       const lastObs = result.observations[result.observations.length - 1] as any
-      expect(lastObs).toMatchObject({ kind: 'refused', reasons: expect.arrayContaining(['eff_error']) })
+      expect(lastObs).toMatchObject({
+        kind: 'refused',
+        reasons: expect.arrayContaining(['eff_error']),
+      })
 
       const afterEntries = readJournal(journalFile)
       expect(afterEntries.length).toBe(beforeCount + 1)

@@ -1,13 +1,20 @@
 // 插件包源码树 → defs 的纯打包：文件 → blob，目录 → tree（自底向上）。
+// 排除 = 通用排除（node_modules / .git）+ 插件 `.worldignore` 声明项；宿主不内置语言 / 构建名字。
 // 同时给出占位符形式的批内 ops 与真实哈希（供去重 / 身份引用），两者内容同构。
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import type { Json } from '../../kernel/index.ts'
 
-/** 不进源码树的目录 / 文件：依赖与构建产物属宿主侧可重算本体。 */
-const EXCLUDED = new Set(['node_modules', '.git', 'dist', 'build', '.DS_Store'])
+/** 通用排除：依赖（宿主侧 ③）与版本库元数据——宿主只内置这两个名字。 */
+const EXCLUDED = new Set(['node_modules', '.git'])
+
+/** 入世排除表文件名；自身永不进源码树。 */
+const WORLDIGNORE_FILE = '.worldignore'
+
+/** 物化目录的宿主标记文件名：标记不属于源码树，打包时恒排除。 */
+export const MATERIALIZE_MARKER = '.chrono-materialized'
 
 export interface PackedSource {
   ops: Json[]
@@ -15,6 +22,8 @@ export interface PackedSource {
   rootTreeHash: string
   fileCount: number
 }
+
+export type WorldignoreRead = { ok: true; patterns: string[][] } | { ok: false }
 
 interface DirResult {
   index: number
@@ -28,14 +37,55 @@ interface TreeEntry {
   hash: string
 }
 
+/** 把相对路径拆成路径段；空段与 `.` 丢弃，`..` 视为非法（返回 null）。 */
+export function pathSegments(relPath: string): string[] | null {
+  const segments = relPath.split('/').filter((segment) => segment.length > 0 && segment !== '.')
+  if (segments.some((segment) => segment === '..')) return null
+  return segments
+}
+
+/** 解析 `.worldignore` 文本：`#` 注释 / 空行忽略，其余每行一个相对路径。 */
+export function parseWorldignoreText(text: string): WorldignoreRead {
+  const patterns: string[][] = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+    const segments = pathSegments(trimmed)
+    if (segments === null) return { ok: false }
+    if (segments.length === 0) continue
+    patterns.push(segments)
+  }
+  return { ok: true, patterns }
+}
+
+/** 读包内 `.worldignore`；文件不存在视为空表。 */
+export function readWorldignore(pkgRoot: string): WorldignoreRead {
+  const file = join(pkgRoot, WORLDIGNORE_FILE)
+  if (!existsSync(file)) return { ok: true, patterns: [] }
+  try {
+    return parseWorldignoreText(readFileSync(file, 'utf8'))
+  } catch {
+    return { ok: false }
+  }
+}
+
+/** 路径段前缀匹配：pattern 的每一段都对上 relPath 的同位置段即命中（`test` 不误伤 `test.js`）。 */
+export function isIgnored(relSegments: string[], patterns: string[][]): boolean {
+  return patterns.some(
+    (pattern) =>
+      pattern.length <= relSegments.length &&
+      pattern.every((segment, index) => relSegments[index] === segment),
+  )
+}
+
 /** 打包一个目录：返回批内 put 子操作（文件在前、目录在后）与根 tree 的真实哈希。 */
-export function packSourceDir(absDir: string): PackedSource {
+export function packSourceDir(absDir: string, patterns: string[][] = []): PackedSource {
   const ops: Json[] = []
-  const root = packDir(absDir, ops)
+  const root = packDir(absDir, ops, [], patterns)
   return { ops, rootTreeIndex: root.index, rootTreeHash: root.hash, fileCount: root.fileCount }
 }
 
-function packDir(dir: string, ops: Json[]): DirResult {
+function packDir(dir: string, ops: Json[], rel: string[], patterns: string[][]): DirResult {
   const entries: TreeEntry[] = []
   const placeholderEntries: Json[] = []
   let fileCount = 0
@@ -43,14 +93,22 @@ function packDir(dir: string, ops: Json[]): DirResult {
     .filter((e) => !EXCLUDED.has(e.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const dirent of dirents) {
+    if (dirent.name === WORLDIGNORE_FILE || dirent.name === MATERIALIZE_MARKER) continue
+    const relPath = [...rel, dirent.name]
+    if (isIgnored(relPath, patterns)) continue
     const abs = join(dir, dirent.name)
     if (dirent.isDirectory()) {
-      const child = packDir(abs, ops)
+      const child = packDir(abs, ops, relPath, patterns)
       entries.push({ name: dirent.name, mode: 'dir', hash: child.hash })
       placeholderEntries.push({ name: dirent.name, mode: 'dir', hash: { $n: child.index } })
       fileCount += child.fileCount
     } else if (dirent.isFile()) {
-      const def = { body: readFileSync(abs, 'utf8') }
+      // 文本 blob = UTF-8 逐字节可逆；否则存 base64，保住非文本资产
+      const raw = readFileSync(abs)
+      const text = raw.toString('utf8')
+      const def = Buffer.from(text, 'utf8').equals(raw)
+        ? { body: text }
+        : { body: raw.toString('base64'), enc: 'base64' }
       const hash = H(def as unknown as Json)
       const index = ops.length
       ops.push({ op: 'put', args: def as unknown as Json })

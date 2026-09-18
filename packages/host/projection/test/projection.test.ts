@@ -10,7 +10,10 @@ describe('投影 projectBaseOnly', () => {
   it('返回 head 与 world_rev，不含世界内部结构', () => {
     const world = { defs: {}, ids: {} }
     const view = projectBaseOnly(world as any, EMPTY_HEAD)
-    expect(view).toEqual({ head: { seq: -1, hash: null }, world_rev: expect.stringMatching(/^[a-f0-9]{64}$/) })
+    expect(view).toEqual({
+      head: { seq: -1, hash: null },
+      world_rev: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
   })
 
   it('head 非空时携带 seq 与 hash', () => {

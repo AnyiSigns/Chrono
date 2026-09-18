@@ -6,7 +6,17 @@ import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../test/tes
 const EMPTY_HEAD = { seq: -1, hash: null as string | null }
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
-type Op = 'put' | 'add_identity' | 'add_gen' | 'set_active' | 'retire' | 'fork' | 'graft' | 'batch' | 'note' | 'snapshot'
+type Op =
+  | 'put'
+  | 'add_identity'
+  | 'add_gen'
+  | 'set_active'
+  | 'retire'
+  | 'fork'
+  | 'graft'
+  | 'batch'
+  | 'note'
+  | 'snapshot'
 
 function mkEntry(seq: number, prev: string | null, op: Op, args: Json) {
   return { seq, prev, op, args, argsHash: 'h'.repeat(64), by: 'u', at: 1000 + seq }

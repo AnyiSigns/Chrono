@@ -9,7 +9,13 @@ const EMPTY_HEAD: Head = { seq: -1, hash: null }
 const NOW = 1000
 
 function mkEff(port = 'toy.echo', method = 'echo') {
-  return { id: 'eff'.repeat(16), port, method, args: null, caps: {} } as { id: Hash; port: string; method: string; args: Json; caps: Record<string, boolean> }
+  return { id: 'eff'.repeat(16), port, method, args: null, caps: {} } as {
+    id: Hash
+    port: string
+    method: string
+    args: Json
+    caps: Record<string, boolean>
+  }
 }
 
 describe('效果执行 executeEffect', () => {

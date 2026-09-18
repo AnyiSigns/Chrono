@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
-import { listCommands, resolveCommand } from './assembly/index.ts'
+import { listCommands, resolveCommand, startAssembly } from './assembly/index.ts'
+import type { AssemblyRuntimeHandle } from './assembly/index.ts'
 import { runRound } from './effect/index.ts'
 import { appendJournal, acquireLock, loadAnchor, releaseLock } from './ledger/index.ts'
 import { appendLifecycle } from './lifecycle.ts'
@@ -13,7 +14,7 @@ import { hostPaths, socketPath } from './paths.ts'
 import { projectBaseOnly } from './projection/index.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
 import type { InboundMessage, Limits, OutboundMessage } from './wire.ts'
-import type { Directive, Entry, Hash, Json, World, Head } from '../kernel/index.ts'
+import type { Directive, Entry, Json, World, Head } from '../kernel/index.ts'
 
 export interface HostOptions {
   root: string
@@ -41,6 +42,17 @@ function readMessage(raw: Json): InboundMessage | null {
   if (typeof record['v'] !== 'string' || typeof record['id'] !== 'string') return null
   if (typeof record['kind'] !== 'string') return null
   return record as unknown as InboundMessage
+}
+
+/** 机械校验 directives 形态；非法返回 null（不得让畸形提交打崩写者）。 */
+function asDirectives(value: unknown): Directive[] | null {
+  if (!Array.isArray(value)) return null
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null
+    const kind = (item as { [k: string]: unknown })['kind']
+    if (kind !== 'eval' && kind !== 'extern' && kind !== 'write') return null
+  }
+  return value as Directive[]
 }
 
 /** 机械填字段：写请求的位置恒为当前链头，id / by 缺省补齐；args / op 原样透传。 */
@@ -105,14 +117,28 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     appendJournal(paths.journalFile, [entry])
   }
 
+  let runtime: AssemblyRuntimeHandle | undefined
   const server = createServer((socket: Socket) => {
     clients.add(socket)
     const decoder = createFrameDecoder()
     socket.on('data', (chunk: Buffer) => {
-      for (const raw of decoder.push(chunk)) {
+      let frames: Json[]
+      try {
+        frames = decoder.push(chunk)
+      } catch {
+        // 畸形帧：断掉该客户端，写者进程不因入站损坏退出
+        socket.destroy()
+        return
+      }
+      for (const raw of frames) {
         const message = readMessage(raw)
         if (message === null) continue
-        dispatch(socket, message)
+        try {
+          dispatch(socket, message)
+        } catch {
+          socket.destroy()
+          return
+        }
       }
     })
     socket.on('close', () => clients.delete(socket))
@@ -122,22 +148,29 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const stop = async (): Promise<void> => {
     if (stopping) return
     stopping = true
-    for (const client of clients) client.destroy()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    if (process.platform !== 'win32') {
+    try {
+      appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
+    } finally {
+      for (const client of clients) client.destroy()
       try {
-        unlinkSync(address)
+        await new Promise<void>((resolve) => server.close(() => resolve()))
       } catch {
-        // socket 文件可能已被外部清理；停机不因此失败
+        // 未进入监听状态时 close 可能报错；停机继续
       }
+      try {
+        if (runtime !== undefined) await runtime.stop()
+      } catch {
+        // 停机尽力而为；锁必须释放
+      }
+      if (process.platform !== 'win32') {
+        try {
+          unlinkSync(address)
+        } catch {
+          // socket 文件可能已被外部清理；停机不因此失败
+        }
+      }
+      releaseLock(paths.lockFile)
     }
-    releaseLock(paths.lockFile)
-    appendLifecycle(paths.lifecycleFile, {
-      at: Date.now(),
-      kind: 'cycle',
-      phase: 'stop',
-      pid: process.pid,
-    })
   }
 
   const dispatch = (socket: Socket, message: InboundMessage): void => {
@@ -153,12 +186,23 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
     switch (message.kind) {
       case 'submit': {
+        const directives = asDirectives(message.directives)
+        if (directives === null) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'directives must be an array of directives',
+          })
+          return
+        }
         const runId = randomUUID()
         send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'accepted', run: runId })
         const outcome = runRound({
           world,
           head,
-          directives: normalizeDirectives(message.directives, head),
+          directives: normalizeDirectives(directives, head),
           caps: message.caps ?? {},
           limits: message.limits ?? DEFAULT_LIMITS,
           initiator: 'client',
@@ -178,6 +222,16 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         return
       }
       case 'command': {
+        if (typeof message.name !== 'string') {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'command name must be a string',
+          })
+          return
+        }
         const command = resolveCommand(world, message.name)
         if (command === null) {
           send(socket, {
@@ -229,10 +283,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         return
       }
       case 'status': {
-        const loaded = Object.keys(world.ids)
-          .sort()
-          .filter((id) => world.ids[id].active !== null)
-          .map((id) => ({ id, gen: world.ids[id].active as Hash }))
+        const loaded =
+          runtime === undefined
+            ? []
+            : runtime.loaded().map((entry) => ({ id: entry.id, gen: entry.gen }))
         send(socket, {
           v: PROTOCOL_VERSION,
           id: message.id,
@@ -250,13 +304,32 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
-  await listen(server, address)
-  appendLifecycle(paths.lifecycleFile, {
-    at: startedAt,
-    kind: 'cycle',
-    phase: 'start',
-    pid: process.pid,
-  })
+  try {
+    appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
+    runtime = await startAssembly({
+      root,
+      world,
+      log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
+      onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
+    })
+    await listen(server, address)
+  } catch (err) {
+    // 启动失败不泄漏：停已起服务、关监听、释放锁
+    if (runtime !== undefined) {
+      try {
+        await runtime.stop()
+      } catch {
+        // 清理尽力而为，不遮蔽原始错误
+      }
+    }
+    try {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    } catch {
+      // 未进入监听状态时 close 可能报错
+    }
+    releaseLock(paths.lockFile)
+    throw err
+  }
 
   return {
     root,
