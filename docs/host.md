@@ -83,7 +83,7 @@ Chrono/
 │   └── plugins/             toy 插件（**仅测试 / 开发**）：与 `plugins/` 同形的 npm 包，
 │                            seed 进临时世界，不进正式世界
 ├── experiment/              独立实验树（standalone，不接内核）
-└── state/                   宿主侧落盘（gitignore；**永不进世界**）
+└── state/                   宿主侧落盘（ignore；**永不进世界**）
     ├── world/               journal 文件 + 基础世界 —— **真源**：备份它 = 备份世界
     ├── runtime/             运行态表 / 工作副本 / 依赖（由 `decl.start` 安装）/ 锁 —— **③ 可重算**：删了重建
     ├── plugins.json         插件包清单 `[{name, path?}]`：有 path 走路径、无 path 走 Node 解析（宿主侧配置，不进世界）
