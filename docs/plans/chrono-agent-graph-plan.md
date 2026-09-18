@@ -1,4 +1,4 @@
-# ChronoGraph 计划：落地
+# ChronoGraph 计划：落地（UnDone）
 
 > **设计口径在 `docs/chrono-agent-graph.md`（总览）及其机制文档 `-contract` / `-runtime` / `-evolution`；本计划写"怎么做"，含算法伪代码与具体数值。冲突时以设计为准。**
 > 本计划只做 **ChronoGraph 实验**（`experiment/ChronoGraphLab/`，standalone、不接内核）。
