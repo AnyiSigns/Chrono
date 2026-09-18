@@ -61,7 +61,10 @@ function isStringMap(v: Json | undefined): v is Record<string, string> {
   return Object.values(v).every((x) => typeof x === 'string')
 }
 
-/** 宿主命令名是保留字（`host.md` §五 命令）：插件命令不得占用。 */
+/**
+ * 宿主 / CLI 命令名是保留字（`host.md` §五 命令）：插件命令不得占用。
+ * 与 `packages/boot/main.ts` 的 `RESERVED` 保持同口径（离线命令与 CLI 自有命令一并保留）。
+ */
 const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'start',
   'stop',
@@ -70,6 +73,9 @@ const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'seed',
   'verify',
   'replay',
+  'compact',
+  'audit',
+  'assets',
 ])
 
 function parseCommands(v: Json | undefined): PluginCommand[] | null {

@@ -44,6 +44,7 @@
 
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
   只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
+- 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `boot start --call-timeout-ms` 可配，见 `host.md` §五 效果）。
 
 ### 2.3 控制
 
@@ -86,15 +87,34 @@
 
 ```
 发起者 → 宿主   submit   { v, id, directives, caps, limits }  → accepted { id, run }
-宿主 → 发起者   result   { run, status, observations }        # run 结束时推
+宿主 → 发起者   result   { run, status, observations }        # run 结束时推；status ∈ done/refused/idle/cancelled
+发起者 → 宿主   cancel   { v, id, run }                       → accepted { id }   # 真取消该 run（≠ stop 停宿主）
 发起者 → 宿主   command  { v, id, name, args, caps, limits }  → result { id, ... }
 发起者 → 宿主   commands { v, id }                           → list { id, commands: [...] }
+发起者 → 宿主   audit    { v, id, filter? }                  → audits { id, records, truncated }  # F8 只读审计面
+发起者 → 宿主   asset.put { v, id, mime, bytes }             → asset.ref { id, ref }   # G4 字节直写资产区（不进世界）
+发起者 → 宿主   asset.get { v, id, sha256 }                  → asset.bytes { id, sha256, size, bytes }
 发起者 → 宿主   status   { v, id }                           → state { id, world_head, loaded: [...] }
 发起者 → 宿主   stop     { v, id }                           → accepted { id }   # 令宿主按反拓扑序 drain 后停机
 宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传，广播给已连接客户端
 ```
 
 - `run` 的语义（含 term 产 directive 的计划通道 / 分相）见 `host.md` §五「落账」与「效果」；续跑纪律见 `kernel.md` §十二。
+- `cancel` 是**真取消**：宿主中止在途 / 排队的 run——丢弃尚未执行的部分（含 plan 产出的 directives）、
+  停止等待在途服务调用（服务协议**无取消消息**，宿主侧摘除等待、不杀服务进程，故谓「尽力」）、
+  对已在途的效果审计记 `outcome: 'cancelled'`，该 run 以 `result.status = 'cancelled'` 收口。
+  已落账内容**不回溯**。`cancel` 只影响一个 run、宿主继续运行；与保留字 `stop`（停宿主）无关。
+- 未知 / 已结束的 run → `error{code:'unknown_run'}`（fail-closed，不静默吞掉）。
+- `asset.put` / `asset.get` 是 **G4 资产面**：字节按内容寻址住宿主侧 `state/assets/<sha256>`（④ 不可重算），
+  **不进世界、不写链、不推进**；世界只存引用 `{kind:'asset', sha256, mime, size}`（内联在引用方数据里）。
+  `put.bytes` 是**规范 base64**（往返一致才收），宿主解码后算 sha256 落盘（同字节幂等）；原始字节上限 8 MiB
+  （base64 ≈10.67 MiB < 16 MiB 帧上限），更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；
+  超限 → `asset_too_large`；`get` 字节缺失 → `asset_missing`。回收走离线 `boot assets gc`（见 `host.md` §五 资产）。
+- `audit` 是 **F8 只读审计面**：按 `run`（回合）/ `emitter`（发出者身份）/ `outcome` 过滤 `EffectAudit`，
+  机械 AND、**seq 降序取最新 `limit` 条**（缺省 100、上限 1000）；`records` 形状
+  `{seq, at, by, body}`，`body = {kind:'effect_audit', request, result, port, method, outcome, run, emitter}`。
+  只读：不写链、不推进、不参与哈希（#37 审计视图 / #54 监控共用）。非法过滤（未知键 / 类型不符 /
+  `outcome` 不在词表 / `limit` 越界）→ `error{code:'bad_directive'}`。
 - **命令是具名入口的糖**：宿主按声明把 `name` 解析成入口 def，机械校验 `args`，构造
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
 - `command` 的 `args` 由宿主按 `argsSchema`（**JSON Schema 白名单子集**，方言见 `plugins.md` §二）校验；
@@ -121,6 +141,10 @@
 | `cycle` | `pins` 成环 | `host.md` §五 装配 |
 | `writer_busy` | 抢锁失败 | `host.md` §五 写者 |
 | `unknown_command` | 声明里没有这个命令名 | `host.md` §五 命令 |
+| `unknown_run` | `cancel` 指向未知 / 已结束的 run | §三 |
+| `bad_asset` | 资产 base64 / mime / sha256 形态非法 | §三 |
+| `asset_too_large` | 资产原始字节超过 8 MiB 上限 | §三 |
+| `asset_missing` | 资产字节不在宿主资产区（可能已回收） | §三 |
 | `bad_args` | 命令 `args` 不符合 `argsSchema` | `host.md` §五 命令 |
 | `bad_args_schema` | `argsSchema` 含白名单外关键词 / 形态非法（入世整包拒） | `plugins.md` §二 方言 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |

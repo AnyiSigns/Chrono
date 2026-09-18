@@ -1,16 +1,18 @@
-// 宿主进程入口：只解析根目录与信号，其余全部交给 startHost。
+// 宿主进程入口：只解析根目录、调用超时与信号，其余全部交给 startHost。
 
 import { startHost } from './host.ts'
+import { parseEntryArgv, resolveCallTimeoutMs } from './options.ts'
 import { resolveRoot } from './paths.ts'
 
-function readRoot(argv: string[]): string | undefined {
-  const index = argv.indexOf('--root')
-  return index >= 0 && index + 1 < argv.length ? argv[index + 1] : undefined
-}
-
 try {
-  const handle = await startHost({ root: resolveRoot(readRoot(process.argv.slice(2))) })
-  process.stdout.write(`host listening ${handle.socket}\n`)
+  const parsed = parseEntryArgv(process.argv.slice(2))
+  const root = resolveRoot(parsed.root)
+  const callTimeoutMs = resolveCallTimeoutMs(
+    parsed.callTimeout,
+    process.env['CHRONO_CALL_TIMEOUT_MS'],
+  )
+  const handle = await startHost({ root, callTimeoutMs })
+  process.stdout.write(`host listening ${handle.socket} call_timeout_ms=${callTimeoutMs}\n`)
   const shutdown = (): void => {
     void handle.stop().then(() => process.exit(0))
   }

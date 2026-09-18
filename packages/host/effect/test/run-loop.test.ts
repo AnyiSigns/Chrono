@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { H } from '../../../kernel/index.ts'
+import { ServiceChannelError } from '../../service-link.ts'
 import { runRound } from '../run-loop.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
@@ -182,6 +183,90 @@ describe('通用 run loop runRound', () => {
     expect(calls).toEqual([1, 2])
     expect(audits).toHaveLength(2)
     expect(outcome.observations).toEqual([{ kind: 'eval', entry: termHash, ok: true, value: 2 }])
+  })
+
+  it('取消（在途 abort）：status=cancelled、审计 outcome=cancelled、不续跑', async () => {
+    const termHash = 'ef'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
+      ids: {},
+    }
+    const audits: Entry[] = []
+    const controller = new AbortController()
+    const router: RoundRouter = {
+      resolve: () => ({
+        ok: true,
+        row: {
+          impl: 'toy',
+          gen: 'g'.repeat(64),
+          cap: 'toy.echo',
+          method: 'echo',
+          transport: 'stdio',
+          pid: 1,
+          link: {
+            call: () =>
+              new Promise((_resolve, reject) => {
+                controller.signal.addEventListener(
+                  'abort',
+                  () => reject(new ServiceChannelError('cancelled')),
+                  { once: true },
+                )
+              }),
+          },
+        } as unknown as EndpointRow,
+      }),
+    }
+    const pending = runRound({
+      world,
+      head: { ...EMPTY_HEAD },
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router,
+      signal: controller.signal,
+      onAudit: (entry) => audits.push(entry),
+    })
+    await Promise.resolve()
+    controller.abort()
+    const outcome = await pending
+    expect(outcome.status).toBe('cancelled')
+    expect(outcome.journal).toEqual([])
+    expect(audits).toHaveLength(1)
+    const body = (audits[0].args as unknown as { body: { result: EffResult; outcome: string } })
+      .body
+    expect(body.result).toEqual({ ok: false, error: 'cancelled' })
+    expect(body.outcome).toBe('cancelled')
+  })
+
+  it('取消（挂起前已 abort）：不跑内核、不落审计', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const termHash = 'ef'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
+      ids: {},
+    }
+    const audits: Entry[] = []
+    const outcome = await runRound({
+      world,
+      head: { ...EMPTY_HEAD },
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router: fakeRouter(async () => null),
+      signal: controller.signal,
+      onAudit: (entry) => audits.push(entry),
+    })
+    expect(outcome.status).toBe('cancelled')
+    expect(outcome.journal).toEqual([])
+    expect(audits).toEqual([])
+    expect(outcome.lastAuditHash).toBeNull()
   })
 
   it('属主缺失（owners[index] 为空）→ 不路由，审计记 not_loaded 且整体 refused:eff_error', async () => {

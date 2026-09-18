@@ -2,7 +2,8 @@ import { describe, expect, it, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { ServiceLink } from '../service-link.ts'
-import { FIXTURE_ALPHA } from './test-helpers-ext.ts'
+import { cleanupTempRoot, createTempRoot } from './test-helpers.ts'
+import { FIXTURE_ALPHA, writeTempPackage } from './test-helpers-ext.ts'
 
 function timeout(ms: number, label: string): Promise<never> {
   return new Promise((_, reject) => setTimeout(() => reject(new Error(label)), ms))
@@ -10,8 +11,9 @@ function timeout(ms: number, label: string): Promise<never> {
 
 describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
   const children: ChildProcess[] = []
+  const roots: string[] = []
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const child of children) {
       try {
         child.stdin?.end()
@@ -25,6 +27,7 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
       }
     }
     children.length = 0
+    for (const root of roots.splice(0)) await cleanupTempRoot(root)
   })
 
   function spawnFixture(cwd: string): ChildProcess {
@@ -55,6 +58,26 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
     await link.handshake(2000)
     const ok = await link.probe(1000)
     expect(ok).toBe(true)
+    await link.drain(100, 2000)
+  })
+
+  it('call 可中止：signal abort 抛 cancelled（不再等待，通道仍可用）', async () => {
+    const root = createTempRoot()
+    roots.push(root)
+    const pkgRoot = writeTempPackage(root, {
+      identity: 'toy-slow',
+      implements: ['toy.slow'],
+      start: 'node execute/main.js',
+      serviceConfig: { callMode: 'silent' },
+    })
+    const child = spawnFixture(pkgRoot)
+    const link = new ServiceLink(child, { impl: 'toy-slow', gen: 'g'.repeat(64) })
+    await link.handshake(2000)
+    const controller = new AbortController()
+    const pending = link.call('toy.slow', 'echo', null, 60_000, controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
+    // 取消只摘宿主侧等待；同通道后续请求不受影响（晚到响应按无 pending 忽略）
     await link.drain(100, 2000)
   })
 

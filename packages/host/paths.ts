@@ -10,8 +10,11 @@ export interface HostPaths {
   worldDir: string
   runtimeDir: string
   sockDir: string
+  assetsDir: string
   materializedDir: string
   journalFile: string
+  baseFile: string
+  coldDir: string
   lockFile: string
   lifecycleFile: string
   pluginsFile: string
@@ -35,8 +38,11 @@ export function hostPaths(root: string): HostPaths {
     worldDir,
     runtimeDir,
     sockDir,
+    assetsDir: resolve(stateDir, 'assets'),
     materializedDir: resolve(runtimeDir, 'materialized'),
     journalFile: resolve(worldDir, 'journal.jsonl'),
+    baseFile: resolve(worldDir, 'base.json'),
+    coldDir: resolve(worldDir, 'cold'),
     lockFile: resolve(runtimeDir, 'lock.json'),
     lifecycleFile: resolve(stateDir, 'lifecycle.log'),
     pluginsFile: resolve(stateDir, 'plugins.json'),

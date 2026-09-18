@@ -15,7 +15,10 @@ import {
 import type { AssemblyRuntimeHandle } from './assembly/index.ts'
 import { createRoundRouter, runSubmission } from './effect/index.ts'
 import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
-import { appendJournal, acquireLock, loadAnchor, releaseLock } from './ledger/index.ts'
+import { appendJournal, acquireLock, loadAnchor, readJournal, releaseLock } from './ledger/index.ts'
+import { DEFAULT_COMPACT_TAIL_ENTRIES, compactWorld } from './compact.ts'
+import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
+import { getAsset, putAsset } from './assets.ts'
 import { appendLifecycle } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
 import { projectBaseOnly } from './projection/index.ts'
@@ -27,6 +30,8 @@ export interface HostOptions {
   root: string
   /** 效果调用超时；缺省走 `DEFAULT_CALL_TIMEOUT_MS`（测试可注入更短值）。 */
   callTimeoutMs?: number
+  /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`（测试可注入小值）。 */
+  compactTailEntries?: number
 }
 
 export interface HostHandle {
@@ -111,9 +116,38 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const lock = acquireLock(paths.lockFile, startedAt)
   if (!lock.ok) throw new Error('writer_busy')
 
-  const anchor = loadAnchor(paths.journalFile)
+  const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
   let world: World = anchor.world
   let head: Head = anchor.head
+  /** F8 只读审计面：启动时由基础世界索引 + journal 尾段重建，运行期随审计落链增量补齐（只读）。 */
+  const audits = new AuditIndex()
+  for (const ref of anchor.baseAudits) {
+    const def = anchor.world.defs[ref.hash]
+    if (def !== undefined) {
+      audits.add({ seq: ref.seq, at: ref.at, by: ref.by, hash: ref.hash, body: def.body })
+    }
+  }
+  const collectAudits = (entries: Entry[]): void => {
+    for (const entry of entries) {
+      const record = auditRecordOf(entry)
+      if (record !== null) audits.add(record)
+    }
+  }
+  collectAudits(anchor.entries)
+  // G6 启动压缩：尾段达到阈值即追加快照 entry + 归档前缀 + 写基础世界（世界不变，链头推进到快照）。
+  // 归档前缀只取**当前 journal**（未归档部分）：回落全链时 `anchor.entries` 可能是全链，不能整段再归档。
+  const compactTailEntries = options.compactTailEntries ?? DEFAULT_COMPACT_TAIL_ENTRIES
+  if (compactTailEntries > 0 && anchor.entries.length >= compactTailEntries) {
+    const compacted = compactWorld(
+      paths,
+      world,
+      head,
+      readJournal(paths.journalFile),
+      audits.refs(),
+      Date.now(),
+    )
+    head = { seq: compacted.snapshot.seq, hash: compacted.snapshot.hash }
+  }
   const clients = new Set<Socket>()
   let stopping = false
   let router: RoundRouter | undefined
@@ -139,6 +173,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
 
   const persistAudit = (entry: Entry): void => {
     appendJournal(paths.journalFile, [entry])
+    collectAudits([entry])
   }
   const persistRound = (entries: Entry[]): void => {
     appendJournal(paths.journalFile, entries)
@@ -147,6 +182,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   let runtime: AssemblyRuntimeHandle | undefined
   /** 写类提交的串行链：单写者语义下同一时刻至多一次 run。 */
   let chain: Promise<void> = Promise.resolve()
+  /** 在册 run（含排队中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
+  const runs = new Map<string, AbortController>()
   /** 逐轮时间戳非回退（A10）：时钟回拨时仍单调 +1。 */
   let lastNow = startedAt
   const nextNow = (): number => {
@@ -160,6 +197,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     message: Extract<InboundMessage, { kind: 'submit' }>,
     directives: DirectiveDraft[],
     runId: string,
+    signal: AbortSignal,
   ): Promise<void> => {
     // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
     const entryOwners = new Map<string, string>()
@@ -173,9 +211,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       caps: message.caps ?? {},
       limits: message.limits ?? DEFAULT_LIMITS,
       initiator: 'client',
+      runId,
       now: nextNow,
       router,
       callTimeoutMs: options.callTimeoutMs,
+      signal,
       initialOwnerOf: (directive) =>
         directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
       ctxFor: projectBaseOnly,
@@ -248,6 +288,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       }
     }
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
+    // 命令也是一次 run：给审计一个可查询的回合 id（命令 result 不带 run，仅审计 / 运维可见）
+    const runId = randomUUID()
     const outcome = await runSubmission({
       world,
       head,
@@ -255,6 +297,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       caps: message.caps ?? {},
       limits: message.limits ?? DEFAULT_LIMITS,
       initiator: 'command',
+      runId,
       now: nextNow,
       router,
       callTimeoutMs: options.callTimeoutMs,
@@ -310,6 +353,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     try {
       appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
     } finally {
+      // 在途 / 排队 run 先取消：等链收敛时它们按 cancelled 落定，停机不耗在调用超时上
+      for (const controller of runs.values()) controller.abort()
       // 在途提交先跑完（审计 / 业务写不落在停机中途），再断连接与服务
       await chain.catch(() => {})
       for (const client of clients) client.destroy()
@@ -376,10 +421,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         }
         const submit = message
         const runId = randomUUID()
-        // accepted 先于排队发出：长提交不阻塞后到客户端的受理确认
+        const controller = new AbortController()
+        runs.set(runId, controller)
+        // accepted 先于排队发出：长提交不阻塞后到客户端的受理确认（run 入册后即可被 cancel 命中）
         send(socket, { v: PROTOCOL_VERSION, id: submit.id, kind: 'accepted', run: runId })
         chain = chain
-          .then(() => handleSubmit(socket, submit, directives, runId))
+          .then(() => handleSubmit(socket, submit, directives, runId, controller.signal))
           .catch(() => {
             try {
               send(socket, {
@@ -392,6 +439,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
             } catch {
               // 客户端已断：错误无处可送
             }
+          })
+          .finally(() => {
+            runs.delete(runId)
           })
         return
       }
@@ -422,6 +472,97 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
               // 客户端已断：错误无处可送
             }
           })
+        return
+      }
+      case 'cancel': {
+        if (typeof message.run !== 'string' || message.run.length === 0) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'cancel expects run',
+          })
+          return
+        }
+        const controller = runs.get(message.run)
+        if (controller === undefined) {
+          // 未知 / 已结束的 run：fail-closed（不猜、不静默）
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'unknown_run',
+            message: message.run,
+          })
+          return
+        }
+        controller.abort()
+        send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'accepted' })
+        return
+      }
+      case 'audit': {
+        const filter = parseAuditFilter(message.filter)
+        if (filter === null) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'bad audit filter',
+          })
+          return
+        }
+        const report = audits.query(filter)
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: message.id,
+          kind: 'audits',
+          records: report.records as unknown as Json[],
+          truncated: report.truncated,
+        })
+        return
+      }
+      case 'asset.put': {
+        const result = putAsset(paths.assetsDir, message.mime, message.bytes)
+        if (!result.ok) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: result.code,
+            message: 'asset put rejected',
+          })
+          return
+        }
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: message.id,
+          kind: 'asset.ref',
+          ref: result.ref as unknown as Json,
+        })
+        return
+      }
+      case 'asset.get': {
+        const result = getAsset(paths.assetsDir, message.sha256)
+        if (!result.ok) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: result.code,
+            message: message.sha256,
+          })
+          return
+        }
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: message.id,
+          kind: 'asset.bytes',
+          sha256: result.sha256,
+          size: result.size,
+          bytes: result.bytes,
+        })
         return
       }
       case 'commands': {

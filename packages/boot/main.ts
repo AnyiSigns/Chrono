@@ -6,12 +6,21 @@ import { readFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../client/index.ts'
-import type { Client } from '../client/index.ts'
-import { resolveRoot, runReplay, runSeed, runVerify } from '../host/index.ts'
+import type { AuditFilter, Client } from '../client/index.ts'
+import {
+  parseEntryArgv,
+  resolveCallTimeoutMs,
+  resolveRoot,
+  runAssetGc,
+  runCompact,
+  runReplay,
+  runSeed,
+  runVerify,
+} from '../host/index.ts'
 import type { PluginEntry } from '../host/index.ts'
 import type { Directive, Json } from '../kernel/index.ts'
 
-/** 宿主保留字：插件命令不得占用，CLI 亦不把它们当插件命令。 */
+/** 宿主 / CLI 保留字：插件命令不得占用，CLI 亦不把它们当插件命令。 */
 const RESERVED = new Set([
   'start',
   'stop',
@@ -20,31 +29,15 @@ const RESERVED = new Set([
   'seed',
   'verify',
   'replay',
+  'compact',
   'commands',
+  'audit',
+  'assets',
   'help',
 ])
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOST_MAIN = resolve(HERE, '..', 'host', 'main.ts')
-
-interface ParsedArgv {
-  root?: string
-  rest: string[]
-}
-
-function extractRoot(argv: string[]): ParsedArgv {
-  const rest: string[] = []
-  let root: string | undefined
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--root' && i + 1 < argv.length) {
-      root = argv[i + 1]
-      i += 1
-    } else {
-      rest.push(argv[i])
-    }
-  }
-  return root === undefined ? { rest } : { root, rest }
-}
 
 function parseJsonArg(arg: string | undefined): Json {
   if (arg === undefined) return null
@@ -62,19 +55,24 @@ function helpText(): string {
     '用法：boot <命令> [--root <路径>] [参数]',
     '',
     '宿主：',
-    '  start                       起宿主（唯一写者，后台进程）',
+    '  start [--call-timeout-ms <ms>]',
+    '                              起宿主（唯一写者，后台进程）；超时缺省读',
+    '                              CHRONO_CALL_TIMEOUT_MS，再缺省 30000',
     '  stop                        令宿主停机',
     '  status                      查看链头与已装载身份',
     '',
     '发起者：',
     '  run <directives-json|@文件>  提交 directives 跑一轮',
     '  commands                    列出插件声明的命令',
+    '  audit [filter-json|@文件]    只读审计面（run / emitter / outcome / limit）',
     '  <命令名> [args-json]         按声明调用插件命令',
     '',
     '离线（宿主未运行）：',
     '  seed [包路径...]             入世（缺省读 state/plugins.json）',
     '  verify                      全量校验 journal',
     '  replay                      全量重放并给出内容摘要',
+    '  compact                     压缩：追加快照 + 冷段归档 + 写基础世界',
+    '  assets gc                   回收资产区里世界无引用的字节',
     '',
     '  help                        本说明',
   ].join('\n')
@@ -104,15 +102,19 @@ async function waitForHost(root: string, timeoutMs: number): Promise<void> {
   }
 }
 
-async function startHostProcess(root: string): Promise<void> {
-  const child = spawn(process.execPath, [HOST_MAIN, '--root', root], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: root,
-  })
+async function startHostProcess(root: string, callTimeoutMs: number): Promise<void> {
+  const child = spawn(
+    process.execPath,
+    [HOST_MAIN, '--root', root, '--call-timeout-ms', String(callTimeoutMs)],
+    {
+      detached: true,
+      stdio: 'ignore',
+      cwd: root,
+    },
+  )
   child.unref()
   await waitForHost(root, 10_000)
-  print({ ok: true, root, pid: child.pid })
+  print({ ok: true, root, pid: child.pid, call_timeout_ms: callTimeoutMs })
 }
 
 function seedEntries(args: string[]): PluginEntry[] | undefined {
@@ -121,9 +123,9 @@ function seedEntries(args: string[]): PluginEntry[] | undefined {
 }
 
 async function main(): Promise<void> {
-  const { root: rootArg, rest } = extractRoot(process.argv.slice(2))
-  const root = resolveRoot(rootArg)
-  const [command, ...args] = rest
+  const parsed = parseEntryArgv(process.argv.slice(2))
+  const root = resolveRoot(parsed.root)
+  const [command, ...args] = parsed.rest
 
   if (command === undefined || command === 'help') {
     process.stdout.write(`${helpText()}\n`)
@@ -132,7 +134,10 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'start':
-      await startHostProcess(root)
+      await startHostProcess(
+        root,
+        resolveCallTimeoutMs(parsed.callTimeout, process.env['CHRONO_CALL_TIMEOUT_MS']),
+      )
       return
     case 'stop':
       await withClient(root, async (client) => {
@@ -146,6 +151,13 @@ async function main(): Promise<void> {
     case 'commands':
       await withClient(root, async (client) => print(await client.commands()))
       return
+    case 'audit': {
+      const filter = parseJsonArg(args[0])
+      await withClient(root, async (client) =>
+        print(await client.audit(filter === null ? undefined : (filter as unknown as AuditFilter))),
+      )
+      return
+    }
     case 'run':
       await withClient(root, async (client) => {
         const directives = parseJsonArg(args[0])
@@ -162,6 +174,14 @@ async function main(): Promise<void> {
     case 'replay':
       print(runReplay(root))
       return
+    case 'compact':
+      print(runCompact(root))
+      return
+    case 'assets': {
+      if (args[0] !== 'gc') throw new Error(`unknown_command: assets ${args[0] ?? ''}`)
+      print(runAssetGc(root))
+      return
+    }
     default:
       if (RESERVED.has(command)) throw new Error(`unknown_command: ${command}`)
       await withClient(root, async (client) =>

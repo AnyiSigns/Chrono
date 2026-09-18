@@ -84,7 +84,11 @@ Chrono/
 │                            seed 进临时世界，不进正式世界
 ├── experiment/              独立实验树（standalone，不接内核）
 └── state/                   宿主侧落盘（ignore；**永不进世界**）
-    ├── world/               journal 文件 + 基础世界 —— **真源**：备份它 = 备份世界
+    ├── world/               journal 尾段 + 基础世界 + 冷段 —— **真源**：备份它 = 备份世界
+    │   ├── journal.jsonl    快照起的尾段（append-only）
+    │   ├── base.json        基础世界（快照位置 + 世界本体 + 审计索引；③ 可重算：丢了 / 与尾段不对齐即由冷段 + 尾段全链重放重建）
+    │   └── cold/            冷段归档 `seg-<first>-<last>.jsonl`（快照前的前缀；移出 ≠ 删除）
+    ├── assets/              资产字节本体 `<sha256>`（④ 不可重算）—— **备份世界 ≠ 备份字节**，须一起备份
     ├── runtime/             运行态表 / 工作副本 / 依赖（由 `decl.start` 安装）/ 锁 —— **③ 可重算**：删了重建
     ├── plugins.json         插件包清单 `[{name, path?}]`：有 path 走路径、无 path 走 Node 解析（宿主侧配置，不进世界）
     └── sock/                入站面 socket —— 平台相关、不可重放
@@ -97,13 +101,14 @@ Chrono/
 - `boot` 是**唯一入口的薄壳**（genesis 常量），命令分三类：
   - `boot start`：起宿主（**唯一写者**）。
   - **客户端命令**（连运行中的宿主）：`boot run` / `boot status` / `boot stop` / `boot <命令>`。
-  - **离线命令**（宿主未运行）：`boot seed` / `verify` / `replay`。
+  - **离线命令**（宿主未运行）：`boot seed` / `verify` / `replay` / `compact` / `assets gc`。
 - 连入站面的代码只有一处：`packages/client`；CLI 与"两身份"的前端插件共用它。
 - 装配包（`assembly`）**只读世界**，不 import `effect` / `ledger` 的写口。
 - `packages/kernel` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载。
 - 插件之间**可以相互依赖**（写在 `pins`），但**不相互 import**、**不互相作 npm 依赖**：调用只写能力类名，宿主按 `pins` 路由。
 - `state/` 只放宿主侧落盘，**永不进世界**，且 gitignore：
-  `state/world/` 是**真源**（备份它 = 备份世界），`state/runtime/` 是**可重算产物**（③），
+  `state/world/` 是**真源**（备份它 = 备份世界），`state/assets/` 是**资产字节本体**（④ 不可重算，
+  备份世界 ≠ 备份字节，须一起备份），`state/runtime/` 是**可重算产物**（③），
   `state/sock/` 是**入站面 socket**。
 
 ## 四、数据形态
@@ -166,10 +171,25 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 **效果**
 
 - 效果一律经宿主；**审计先于业务写**（audit def → `request.ref`），**失败也落审计**（`execute` 必须
-  try/catch，失败也 `put` 审计 def，记失败形态）。
+  try/catch，失败也 `put` 审计 def，记失败形态）。审计 def body =
+  `{kind:'effect_audit', request, result, port, method, outcome, run, emitter}`；
+  `outcome` 机械导出：`ok`（有响应成功）/ `error`（有响应为错误）/ `transport_failed`（没执行）/
+  `cancelled`（被真取消中止）；`run` = 宿主对外回合 id（`accepted{run}`）、`emitter` = 发出者身份。
 - `eff` 的 `port` 是**逻辑名**，运行时按发出者 `pins` 解析（见「路由」）；**不改内核的 `EffRequest`**。
+- **调用超时**：常量缺省 30s（`DEFAULT_CALL_TIMEOUT_MS`）；进程级默认读 `CHRONO_CALL_TIMEOUT_MS`，
+  `boot start --call-timeout-ms <ms>`（或宿主入口 `--call-timeout-ms`）显式覆盖——优先级 **CLI > env > 常量**；
+  非法值启动即拒（`bad_call_timeout`），`boot start` 打印生效值。超时与连接 / 帧 / 进程死亡同归「没执行」。
 - **失败作数据回灌**：endpoint **有响应**（`result` 或 `error`）→ `EffResult{ok:true, value}` 回灌（`error` 时 `value` 是错误描述），
   term 可据此分支（降级链）；只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
+- **真取消（`cancel{run}`）**：中止在途 / 排队的 run——丢弃尚未执行的部分（含 plan 产出的 directives）、
+  尽力停止等待在途服务调用（服务协议无取消消息：宿主摘除等待、晚到响应忽略、不杀服务进程）、
+  在途效果审计记 `outcome: 'cancelled'`（result 记 `{ok:false,error:'cancelled'}`），该 run 以 `cancelled` 收口；
+  **已落账内容不回溯**。与 `stop`（停宿主）互不相干：`cancel` 只影响该 run，宿主继续运行；
+  停机时宿主亦取消全部在途 / 排队 run（不把停机耗在调用超时上）。
+- **F8 只读审计面**：宿主按回合（`run`）/ 身份（`emitter`）/ 结局（`outcome`）查询 `EffectAudit`
+  （入站 `audit`；seq 降序、缺省 100 条、上限 1000）；索引在启动时由**基础世界索引 + journal 尾段**重建、
+  运行期随审计落链增量补齐；
+  **只读**：不写链、不推进、不参与哈希；#37 审计视图与 #54 监控共用（查询语义见 `protocol.md` §三）。
 - 审计 def 进 ① `defs`——它要被 `ref` 指到，必须可寻址。
 - **审计 `put` 是宿主对 `commit` 的直接调用**（`kernel.md` 导出 `commit`）——宿主侧唯一不经 `run` directive 的直写，
   为的是让 `ref` 指向的审计 def 在业务写之前就已可寻址。`kernel.md` §二「唯一调用 commit 的地方 = `run`」指内核**模块内部**依赖，不含宿主外部调用。
@@ -215,7 +235,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 **投影**
 
 - 投影 = 宿主对世界的**只读视图**，作为 directive 的 `ctx` 交给 term；插件与 term 都不直接读世界。投影只读：不写链、不推进 head、不参与哈希。
-- **v1 `base_only` 口径**：无快照 ⇒ **基础世界 = 宿主当前世界**（全量重放结果，随链头推进演化）；投影反映**构造时**的世界。
+- **v1 `base_only` 口径**：**基础世界 = 宿主当前世界**（由基础世界文件 + 尾段重放得到，随链头推进演化）；投影反映**构造时**的世界。
 - **形状**：内核 `["g", path]` 是**静态字面路径**（无变量、不可解引用哈希），故以**身份名**为键、宿主预解析：
   ```
   { head:{seq,hash}, world_rev,
@@ -244,6 +264,26 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 - **同一时刻只有一个写者**；`verify` / `replay` 也持锁（日志可能正被写，读到半条会误判）。
 - **停机序列**（`boot stop`）：按**反拓扑序**逐个 `drain` 服务（依赖者先停）→ 落盘 `fsync`（journal 本已 append-only）→ 释放锁 → 退出。停机**不写链、不改 active**。
+- **压缩（G6）**：宿主在**启动时**尾段达到阈值（`DEFAULT_COMPACT_TAIL_ENTRIES`）或离线 `boot compact` 时执行——
+  ① 在链头追加快照 entry（`op:'snapshot'`，`args = { world_rev }`，应用时自校，锚不歪）；② 快照前的 entry 归档进
+  `world/cold/`；③ 尾段 journal 重写为「快照 entry 起」；④ 写 `world/base.json`（世界本体 + 快照位置 + 审计索引）。
+  这是宿主**第三处直写**（与审计、seed 同类），不走 run / directive；**世界不变**，链头推进到快照位置。
+  启动取用 = 读 `base.json` + 尾段重放（不再全量重放）；`verify` / `replay` 仍读冷段 + 尾段全链校验。
+  压缩幂等（离线 `compact` 只归档**当前 journal**，不重归档旧冷段）；`base.json` 缺失或与尾段不对齐
+  （崩溃窗口）时**回落全链**（冷段 + 尾段按 seq 去重）重放——基础世界是派生缓存，丢了不砖化；仅其**形态损坏**才 fail-closed（`bad_base`）。
+
+**资产（G4）**
+
+- **字节住宿主侧、引用进世界**：大块二进制（超限附件 / 截图 / 音频 / 导出物）的字节本体按内容寻址住
+  `state/assets/<sha256>`（④ 不可重算，**不进世界、不参与重放**）；世界只存引用
+  `{kind:'asset', sha256, mime, size}`（内联在引用方数据里，**不设登记身份**——避免单值寄存器写整表导致世界 O(N²)）。
+- **入站面**：`asset.put {mime, bytes(base64)}` → `asset.ref`（宿主解码后算 sha256 落盘；`put` 是宿主侧存储操作，
+  **不写链、不推进**）；`asset.get {sha256}` → `asset.bytes`。单帧 base64，原始字节 ≤ 8 MiB（base64 ≈10.67 MiB
+  < 16 MiB 帧上限）；更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；超限 → `asset_too_large`。
+- **回收归属**：离线命令 `boot assets gc`（持锁）机械扫描世界里的 `kind:'asset'` 引用，删「世界无引用」的字节
+  （只动 64-hex 命名的资产文件）；**不在宿主启动时自动删**。
+- **备份口径**：备份世界（`state/world/`）≠ 备份字节；须连同 `state/assets/` 一起备份。
+- **回放语义**：重放只复现引用，不复现字节；字节缺失时 `asset.get` → `asset_missing`（**已知限制**，非框架缺陷）。
 
 **其它**
 

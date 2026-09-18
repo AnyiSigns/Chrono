@@ -4,6 +4,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { H, run } from '../../kernel/index.ts'
+import { ServiceChannelError } from '../service-link.ts'
 import { executeEffect } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
 import type { RoundRouter } from './route.ts'
@@ -31,16 +32,20 @@ export interface RoundInput {
   limits: { gas: number; depth: number }
   /** 发起者：写进审计 entry 的 `by`。 */
   initiator: string
+  /** 宿主对外 run id（`accepted{run}`）：审计 def 的 `run` 用它（F8 按回合查询）；缺省用内核轮 run id。 */
+  runId?: string
   now: number
   /** A1 路由钩子；缺省时不解析端点（S1 语义：`not_loaded`）。 */
   router?: RoundRouter
   callTimeoutMs?: number
+  /** 该 run 的取消信号（G2 真取消）：abort 后不再执行挂起效果，在途调用尽力中止。 */
+  signal?: AbortSignal
   /** 审计 entry 的落点回调：调用方负责把它立即追加进账本。 */
   onAudit?: (entry: Entry) => void
 }
 
 export interface RoundOutcome {
-  status: 'done' | 'refused' | 'idle'
+  status: 'done' | 'refused' | 'idle' | 'cancelled'
   world: World
   head: Head
   journal: Entry[]
@@ -91,14 +96,19 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   if (emitter === undefined) return undefined
   const router = input.router
   const timeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+  const signal = input.signal
   return async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
     try {
-      const response = await routed.row.link.call(eff.port, eff.method, eff.args, timeoutMs)
+      const response = await routed.row.link.call(eff.port, eff.method, eff.args, timeoutMs, signal)
       if (response.ok) return { ok: true, value: response.value }
       return { ok: true, value: { error: response.code, message: response.message } }
-    } catch {
+    } catch (err) {
+      // 取消（不再等待）与传输失败分列：前者 outcome 记 cancelled，后者 transport_failed
+      if (err instanceof ServiceChannelError && err.code === 'cancelled') {
+        return { ok: false, error: 'cancelled' }
+      }
       return { ok: false, error: 'transport_failed' }
     }
   }
@@ -114,7 +124,20 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
   let suspensions = 0
   let located = -1
   let emissionsInDirective = 0
+  // 取消判定包一层：signal 是外部可变对象，裸比较会被 TS 按前一次判定收窄（假阴性）
+  const aborted = (): boolean => input.signal?.aborted === true
   for (let step = 0; step < MAX_SUSPENSIONS; step++) {
+    if (aborted()) {
+      // 挂起前已取消（含排到该 run 才轮到的取消）：不跑内核、不落审计 —— 该 run 整体丢弃
+      return {
+        status: 'cancelled',
+        world,
+        head,
+        journal: [],
+        observations: [],
+        lastAuditHash,
+      }
+    }
     const out = run({
       world,
       head,
@@ -147,13 +170,36 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       emissionsInDirective = found.n + 1
     }
     const caller = makeCaller(input, world, found === null ? -1 : found.index)
-    const executed = await executeEffect(eff, world, head, input.initiator, input.now, caller)
+    const executed = await executeEffect(
+      eff,
+      world,
+      head,
+      {
+        by: input.initiator,
+        now: input.now,
+        run: input.runId ?? runId,
+        emitter: found === null ? undefined : input.owners?.[found.index],
+      },
+      caller,
+      input.signal,
+    )
     results[eff.id] = executed.result
     world = executed.world
     head = executed.head
     if (executed.auditHash !== null) lastAuditHash = executed.auditHash
     if (executed.auditEntry !== null && input.onAudit !== undefined) {
       input.onAudit(executed.auditEntry)
+    }
+    if (aborted() && executed.result.error === 'cancelled') {
+      // 在途取消：审计已按 cancelled 落账；不续跑 —— 丢弃该 run 的剩余计划
+      return {
+        status: 'cancelled',
+        world,
+        head,
+        journal: [],
+        observations: out.observations,
+        lastAuditHash,
+      }
     }
     suspensions += 1
   }

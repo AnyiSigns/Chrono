@@ -15,9 +15,24 @@ export interface ClientOptions {
   timeoutMs?: number
 }
 
+/** 宿主出站 kind 白名单（运行期兜底）：未知 kind 视为协议漂移，显式收口而非静默超时。 */
+const KNOWN_OUTBOUND_KINDS: ReadonlySet<string> = new Set([
+  'event',
+  'accepted',
+  'error',
+  'result',
+  'list',
+  'state',
+  'audits',
+  'asset.ref',
+  'asset.bytes',
+])
+
 export interface SubmitOptions {
   caps?: Record<string, boolean>
   limits?: Limits
+  /** 受理回调：`accepted{run}` 到达即调用（UI 需要 run 句柄做取消 / 展示）。 */
+  onAccepted?: (run: string) => void
 }
 
 export interface SubmitResult {
@@ -42,6 +57,40 @@ export interface StatusResult {
   loaded: { id: string; gen: string }[]
 }
 
+/** F8 只读审计面：过滤条件（AND；`outcome` ∈ ok/error/transport_failed/cancelled）。 */
+export interface AuditFilter {
+  run?: string
+  emitter?: string
+  outcome?: string
+  limit?: number
+}
+
+export interface AuditRecord {
+  seq: number
+  at: number
+  by: string
+  body: Json
+}
+
+export interface AuditReport {
+  records: AuditRecord[]
+  truncated: boolean
+}
+
+/** G4 资产引用：世界侧只存这个（字节住宿主资产区，`getAsset` 取回）。 */
+export interface AssetRef {
+  kind: 'asset'
+  sha256: string
+  mime: string
+  size: number
+}
+
+export interface AssetBytes {
+  sha256: string
+  size: number
+  bytes: Uint8Array
+}
+
 export interface EventMessage {
   impl: string
   topic: string
@@ -50,8 +99,16 @@ export interface EventMessage {
 
 export interface Client {
   submit(directives: Directive[], options?: SubmitOptions): Promise<SubmitResult>
+  /** 真取消（protocol §三 `cancel{run}`）：中止在途 / 排队的 run；未知 / 已结束 → `unknown_run`。 */
+  cancel(run: string): Promise<void>
   command(name: string, args?: Json, options?: SubmitOptions): Promise<CommandResult>
   commands(): Promise<CommandInfo[]>
+  /** F8 只读审计面：按回合 / 身份 / outcome 查询（seq 降序取最新）。 */
+  audit(filter?: AuditFilter): Promise<AuditReport>
+  /** G4 资产入库：字节直写宿主资产区（不进世界），返回世界侧引用。 */
+  putAsset(mime: string, bytes: Uint8Array): Promise<AssetRef>
+  /** G4 取资产字节；字节缺失 → `asset_missing`。 */
+  getAsset(sha256: string): Promise<AssetBytes>
   status(): Promise<StatusResult>
   stop(): Promise<void>
   onEvent(handler: (event: EventMessage) => void): void
@@ -101,9 +158,17 @@ class HostClient implements Client {
     this.write(message as unknown as Json)
     return accepted.then(async (acc) => {
       if (acc.run === undefined) throw new ClientError('internal', 'accepted without run')
+      options.onAccepted?.(acc.run)
       const result = await this.awaitRun(acc.run)
       return { run: acc.run, status: result.status, observations: result.observations }
     })
+  }
+
+  async cancel(run: string): Promise<void> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'accepted' }>>(id)
+    this.write({ v: PROTOCOL_VERSION, id, kind: 'cancel', run })
+    await pending
   }
 
   async command(
@@ -127,6 +192,40 @@ class HostClient implements Client {
     this.write({ v: PROTOCOL_VERSION, id, kind: 'commands' })
     const list = await pending
     return list.commands as unknown as CommandInfo[]
+  }
+
+  async audit(filter: AuditFilter = {}): Promise<AuditReport> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'audits' }>>(id)
+    this.write({ v: PROTOCOL_VERSION, id, kind: 'audit', filter: filter as unknown as Json })
+    const report = await pending
+    return report as unknown as AuditReport
+  }
+
+  async putAsset(mime: string, bytes: Uint8Array): Promise<AssetRef> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'asset.ref' }>>(id)
+    this.write({
+      v: PROTOCOL_VERSION,
+      id,
+      kind: 'asset.put',
+      mime,
+      bytes: Buffer.from(bytes).toString('base64'),
+    })
+    const message = await pending
+    return message.ref as unknown as AssetRef
+  }
+
+  async getAsset(sha256: string): Promise<AssetBytes> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'asset.bytes' }>>(id)
+    this.write({ v: PROTOCOL_VERSION, id, kind: 'asset.get', sha256 })
+    const message = await pending
+    return {
+      sha256: message.sha256,
+      size: message.size,
+      bytes: Buffer.from(message.bytes, 'base64'),
+    }
   }
 
   async status(): Promise<StatusResult> {
@@ -233,6 +332,12 @@ class HostClient implements Client {
       } else {
         this.bufferedResults.set(message.run, message)
       }
+      return
+    }
+    if (!KNOWN_OUTBOUND_KINDS.has(message.kind)) {
+      // 未知 kind = 协议漂移：不静默悬挂等待器（否则只落成 timeout），直接收口暴露
+      this.failAll()
+      this.socket.destroy()
       return
     }
     if ('id' in message) {

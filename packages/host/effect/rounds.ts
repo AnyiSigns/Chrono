@@ -58,10 +58,14 @@ export interface SubmissionInput {
   caps: Record<string, boolean>
   limits: { gas: number; depth: number }
   initiator: string
+  /** 宿主对外 run id（`accepted{run}`）：审计 def 的 `run` 用它（F8 按回合查询）；缺省用内核轮 run id。 */
+  runId?: string
   /** 每轮取一次 `now`（每轮独立、非回退）。 */
   now: () => number
   router?: RoundRouter
   callTimeoutMs?: number
+  /** 该 run 的取消信号（G2 真取消）：取消即丢弃剩余轮（含 plan 产出的 directives）。 */
+  signal?: AbortSignal
   /** 入站直提 directive 的属主解析（如命令入口哈希 → 身份）；解析不到 → 不路由。 */
   initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
   /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
@@ -78,7 +82,7 @@ export interface SubmissionInput {
 }
 
 export interface SubmissionOutcome {
-  status: 'done' | 'refused' | 'idle'
+  status: 'done' | 'refused' | 'idle' | 'cancelled'
   world: World
   head: Head
   observations: Json[]
@@ -322,6 +326,10 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
   )
   let ref: Hash | null = null
   while (pending.length > 0) {
+    if (input.signal?.aborted === true) {
+      // 取消即丢弃剩余轮（含 plan 产出的 directives）；已落账内容不回溯
+      return { status: 'cancelled', world, head, observations }
+    }
     const group = pending.shift() as StagedDirective[]
     const prepared = prepareGroup(group, {
       head,
@@ -342,14 +350,16 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       caps: input.caps,
       limits: input.limits,
       initiator: input.initiator,
+      runId: input.runId,
       now: input.now(),
       router: input.router,
       callTimeoutMs: input.callTimeoutMs,
+      signal: input.signal,
       onAudit: input.onAudit,
     })
     observations.push(...out.observations)
     if (out.status !== 'done') {
-      // refused / idle：本轮 waiting 期间的审计已直写推进 world / head，必须回灌（A7/A9）
+      // refused / idle / cancelled：本轮 waiting 期间的审计已直写推进 world / head，必须回灌（A7/A9）
       return { status: out.status, world: out.world, head: out.head, observations }
     }
     world = out.world

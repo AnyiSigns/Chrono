@@ -3,10 +3,20 @@
 
 export { startHost } from './host.ts'
 export type { HostHandle, HostOptions } from './host.ts'
-export { readPluginManifest, runReplay, runSeed, runVerify } from './offline.ts'
-export type { ReplayReport, SeedItem, SeedReport, VerifyReport } from './offline.ts'
+export {
+  readPluginManifest,
+  runAssetGc,
+  runCompact,
+  runReplay,
+  runSeed,
+  runVerify,
+} from './offline.ts'
+export type { CompactReport, ReplayReport, SeedItem, SeedReport, VerifyReport } from './offline.ts'
+export type { AssetGcReport, AssetRef } from './assets.ts'
 export type { PluginEntry } from './assembly/index.ts'
 export { hostPaths, resolveRoot, socketPath } from './paths.ts'
 export type { HostPaths } from './paths.ts'
+export { parseEntryArgv, resolveCallTimeoutMs } from './options.ts'
+export type { EntryOptions } from './options.ts'
 export { PROTOCOL_VERSION } from './wire.ts'
 export type { InboundMessage, Limits, OutboundMessage } from './wire.ts'

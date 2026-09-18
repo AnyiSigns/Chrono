@@ -22,7 +22,8 @@ export interface ServiceManifest {
 /** 一次能力调用的应答：服务侧有响应（result / error）即数据，形态不合按协议损坏。 */
 export type CallResponse = { ok: true; value: Json } | { ok: false; code: string; message: string }
 
-export type ServiceChannelErrorCode = 'timeout' | 'closed' | 'protocol_error' | 'bad_manifest'
+export type ServiceChannelErrorCode =
+  'timeout' | 'closed' | 'protocol_error' | 'bad_manifest' | 'cancelled'
 
 export class ServiceChannelError extends Error {
   readonly code: ServiceChannelErrorCode
@@ -37,7 +38,8 @@ interface Pending {
   expect: string | readonly string[]
   resolve: (message: Json) => void
   reject: (err: Error) => void
-  timer: NodeJS.Timeout
+  /** 结算清理：清计时器、摘 abort 监听；结算路径（响应 / 超时 / 取消 / 断连）各调一次。 */
+  cleanup: () => void
 }
 
 export interface ServiceLinkOptions {
@@ -127,13 +129,22 @@ export class ServiceLink {
   /**
    * 能力调用（protocol §2.2）：服务回 `result` / `error` 均为「有响应」。
    * `result` 的 `ok` 必须是 `true`、`error` 的 `ok` 必须是 `false`；形态不合抛协议损坏。
+   * `signal` 中止（真取消）：不再等待（pending 摘除，晚到响应忽略），抛 `cancelled`——
+   * 服务协议无取消消息，宿主侧「尽力 abort」即停止等待，不杀服务进程。
    */
-  async call(port: string, method: string, args: Json, timeoutMs: number): Promise<CallResponse> {
+  async call(
+    port: string,
+    method: string,
+    args: Json,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<CallResponse> {
     const message = await this.request(
       'call',
       { port, method, args },
       ['result', 'error'],
       timeoutMs,
+      signal,
     )
     const record = message as { [k: string]: Json }
     if (record['kind'] === 'error') {
@@ -174,6 +185,7 @@ export class ServiceLink {
     fields: { [k: string]: Json },
     expect: string | readonly string[],
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<Json> {
     const stdin = this.child.stdin
     if (this.closed || stdin === null || stdin === undefined || stdin.destroyed) {
@@ -181,18 +193,42 @@ export class ServiceLink {
     }
     const id = randomUUID()
     return new Promise<Json>((resolve, reject) => {
+      // settle 只生效一次：清计时器、摘 abort 监听（防同一 signal 跨多次调用累积监听）
+      let settled = false
+      const cleanup = (): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+      }
+      const onAbort = (): void => {
+        if (settled) return
+        this.pending.delete(id)
+        cleanup()
+        reject(new ServiceChannelError('cancelled'))
+      }
       const timer = setTimeout(() => {
         this.pending.delete(id)
+        cleanup()
         reject(new ServiceChannelError('timeout'))
       }, timeoutMs)
       timer.unref?.()
-      this.pending.set(id, { expect, resolve, reject, timer })
+      if (signal !== undefined) {
+        if (signal.aborted) {
+          // 已取消：不发帧、不登记
+          cleanup()
+          reject(new ServiceChannelError('cancelled'))
+          return
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+      this.pending.set(id, { expect, resolve, reject, cleanup })
       stdin.write(
         encodeFrame({ v: SERVICE_PROTOCOL_VERSION, id, kind, ...fields } as Json),
         (err) => {
           if (err) {
-            clearTimeout(timer)
             this.pending.delete(id)
+            cleanup()
             reject(new ServiceChannelError('closed'))
           }
         },
@@ -229,7 +265,7 @@ export class ServiceLink {
     const pending = this.pending.get(id)
     if (pending === undefined) return
     this.pending.delete(id)
-    clearTimeout(pending.timer)
+    pending.cleanup()
     const expected = Array.isArray(pending.expect)
       ? pending.expect.includes(message['kind'] as string)
       : message['kind'] === pending.expect
@@ -250,7 +286,7 @@ export class ServiceLink {
 
   private failPending(code: ServiceChannelErrorCode = 'closed'): void {
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
+      pending.cleanup()
       pending.reject(new ServiceChannelError(code))
     }
     this.pending.clear()
