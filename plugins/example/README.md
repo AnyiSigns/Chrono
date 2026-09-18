@@ -5,11 +5,12 @@
 ```
 plugins/example/
 ├── package.json     npm 信封（宿主不解释）
-├── plugin.json      插件契约（12 字段；宿主解释）
+├── plugin.json     插件契约（12 字段；宿主解释）
 ├── README.md       本文件（人读自述）
 ├── execute/        执行件源码（0..n）——自带服务进程
-├── terms/          term def（0..n）——判定 / 评分 / 门禁
+├── terms/         term def（0..n）——判定 / 评分 / 门禁
 ├── test/          该插件的所有测试
+├── .worldignore      该插件需要排除入世的目录/文件
 └── schema/         声明 schema（0..n）
 ```
 
