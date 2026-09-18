@@ -28,6 +28,8 @@ export const FIXTURE_SERVICE_MAIN = readFileSync(
 
 export interface PackageSpec {
   identity: string
+  /** 包目录名（缺省 = identity）；同一身份多版本并存时用它避免目录互相覆盖。 */
+  dir?: string
   implements?: string[]
   methods?: Record<string, string[]>
   pins?: Record<string, string>
@@ -51,7 +53,7 @@ export interface PackageSpec {
  * 返回包根绝对路径；同名身份重复调用会覆盖已有文件（换代测试用）。
  */
 export function writeTempPackage(root: string, spec: PackageSpec): string {
-  const pkgRoot = join(root, 'pkgs', spec.identity)
+  const pkgRoot = join(root, 'pkgs', spec.dir ?? spec.identity)
   const methods =
     spec.methods ?? Object.fromEntries(spec.implements?.map((cap) => [cap, ['echo']]) ?? [])
   const start = spec.start ?? ''

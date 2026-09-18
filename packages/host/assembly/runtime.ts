@@ -1,10 +1,13 @@
-// 装配运行时：装配计划 → 实际服务进程（物化 / 握手 / 健康重启 / 停机）。
+// 装配运行时：装配计划 → 实际服务进程（物化 / 握手 / 健康重启 / 换代跟随 / 停机）。
 // 只读世界：不写链、不改 active；生命周期事件经注入的 log 落运维日志（state/lifecycle.log）。
-// 坏分支只隔离：握手不过 / 重启超限 → 该身份及其依赖者标 not_loaded，其余照常。
+// 坏分支只隔离：握手不过 / 重启超限 / 依赖退役 → 该身份及其依赖者标 not_loaded，其余照常。
+// A6 换代跟随：链头推进后比对世界，本插件自身 active 换代才动作——数据热生效（reload/ack，
+// 进程不动）/ 代码起新服务（旧服务 drain）；依赖换代不重装（A1 重解析路由），依赖退役则隔离。
 
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
-import { readPluginDecl } from './decl.ts'
+import { readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
+import { classifyGenerationChange } from './generation.ts'
 import { launchService } from './service-launcher.ts'
 import { EndpointTable } from '../endpoint-table.ts'
 import { hostPaths } from '../paths.ts'
@@ -13,16 +16,22 @@ import type { AssemblyPlan } from './closure.ts'
 import {
   backoffDelay,
   classifyStartFailure,
+  parseHealth,
+  parseRestart,
   stopChild,
   terminateChild,
   waitForExit,
 } from './supervision.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { LifecycleKind, LifecycleRecord } from '../lifecycle.ts'
-import type { Hash, Json, World } from '../../kernel/index.ts'
+import { stale } from '../../kernel/index.ts'
+import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
 /** 未声明超时时的握手上限；仅连接建立用，不是效果调用超时。 */
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
+
+/** 数据换代 `reload` 等 `ack` 的上限；超时按装载失败保守改走起新服务。 */
+const DEFAULT_RELOAD_TIMEOUT_MS = 10_000
 
 /** 已装载身份（供 `status.loaded`）：数据身份（无服务）也在列。 */
 export interface LoadedIdentity {
@@ -35,6 +44,8 @@ export interface AssemblyRuntimeHandle {
   loaded: () => LoadedIdentity[]
   endpoints: EndpointTable
   order: string[]
+  /** A6 换代跟随：链头推进后交新世界，宿主自身 active 换代 / 依赖退役在此落地。 */
+  applyWorld: (world: World) => Promise<void>
   stop: () => Promise<void>
 }
 
@@ -45,6 +56,8 @@ export interface StartAssemblyOptions {
   onEvent?: (impl: string, topic: string, payload: Json) => void
   /** 测试可注入更短的握手超时；缺省 10s。 */
   handshakeTimeoutMs?: number
+  /** 测试可注入更短的 reload/ack 超时；缺省 10s。 */
+  reloadTimeoutMs?: number
 }
 
 type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
@@ -53,13 +66,14 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   readonly endpoints = new EndpointTable()
   order: string[] = []
 
-  private readonly world: World
+  private world: World
+  private ownerIndex: Map<Hash, string>
   private readonly log: (record: LifecycleRecord) => void
   private readonly onEvent?: (impl: string, topic: string, payload: Json) => void
   private readonly handshakeTimeoutMs: number
+  private readonly reloadTimeoutMs: number
   private readonly paths: HostPaths
   private readonly plan: AssemblyPlan
-  private readonly ownerIndex: Map<Hash, string>
   private readonly depsOf = new Map<string, string[]>()
   private readonly dependents = new Map<string, string[]>()
   private readonly isolated = new Set<string>()
@@ -73,9 +87,35 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.log = options.log
     this.onEvent = options.onEvent
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
+    this.reloadTimeoutMs = options.reloadTimeoutMs ?? DEFAULT_RELOAD_TIMEOUT_MS
     this.paths = hostPaths(options.root)
     this.plan = computeAssemblyPlan(options.world)
     this.ownerIndex = buildOwnerIndex(options.world)
+  }
+
+  /**
+   * A6 换代跟随：世界推进后，只对本插件**自身 active 换代**动作（依赖换代不重装）；
+   * `retire` / `set_active(null)` 走运行期 fail-closed 隔离（反向可达的发出者一并下线）。
+   * 只读新世界、只改运行态（端点表 / 进程 / 隔离集），不写链、不改 active。
+   */
+  async applyWorld(next: World): Promise<void> {
+    if (this.stopping) return
+    const prev = this.world
+    this.world = next
+    this.ownerIndex = buildOwnerIndex(next)
+    this.buildDependencyMaps()
+    const ids = new Set([...Object.keys(prev.ids), ...Object.keys(next.ids)])
+    const changed: string[] = []
+    const retired: string[] = []
+    for (const id of [...ids].sort()) {
+      const before = prev.ids[id]?.active ?? null
+      const after = next.ids[id]?.active ?? null
+      if (before === after) continue
+      if (after === null) retired.push(id)
+      else changed.push(id)
+    }
+    for (const id of changed) await this.followGeneration(prev, next, id)
+    for (const id of retired) this.retireBranch(id)
   }
 
   async start(): Promise<void> {
@@ -130,14 +170,17 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.log({ at: Date.now(), kind, event, ...fields })
   }
 
-  private activeGen(id: string): { payload: Hash; pins: Record<string, Hash>; sig: Hash } | null {
+  private activeGen(id: string): Gen | null {
     const identity = this.world.ids[id]
     if (identity === undefined || identity.active === null) return null
     return identity.gens.find((gen) => gen.payload === identity.active) ?? null
   }
 
+  /** 依赖图（谁 pins 谁）按当前世界重算：换代会改 pins，退役隔离靠它取反向可达。 */
   private buildDependencyMaps(): void {
-    for (const id of this.plan.order) {
+    this.depsOf.clear()
+    this.dependents.clear()
+    for (const id of Object.keys(this.world.ids).sort()) {
       const gen = this.activeGen(id)
       const deps = new Set<string>()
       for (const pin of Object.values(gen?.pins ?? {})) {
@@ -238,10 +281,196 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 
   /** 起服务失败 / 坏声明的分支隔离：该身份 + 反向可达依赖者。 */
   private isolateStartFailure(id: string): void {
-    for (const reached of this.reverseReachable([id])) {
-      if (reached !== id) this.record('dep', 'stale', { impl: reached })
-      this.isolated.add(reached)
+    const reached = this.reverseReachable([id])
+    for (const other of reached) {
+      if (other !== id) this.record('dep', 'stale', { impl: other })
     }
+    this.isolateAll(reached)
+  }
+
+  /** 下线一批身份：停服务、摘端点、移出已装载、标记隔离（坏分支只隔离，绝不回落）。 */
+  private isolateAll(ids: Iterable<string>): void {
+    for (const id of ids) {
+      const service = this.services.get(id)
+      if (service !== undefined) {
+        this.services.delete(id)
+        this.clearHealth(service)
+        this.clearRestart(service)
+        service.draining = true
+        if (!service.handledExit) {
+          service.handledExit = true
+          stopChild(service.proc, service.link)
+          this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'isolated' })
+        }
+      }
+      this.endpoints.removeIdentity(id)
+      this.loadedIds.delete(id)
+      this.isolated.add(id)
+    }
+  }
+
+  /**
+   * 单个身份自身换代后的跟随（A6）：
+   * 数据变化 → reload/ack（进程不动）；代码变化 → 起新服务、旧服务 drain；
+   * 全新身份 → 按装配同路起（依赖未装载则隔离）；新 active 装载失败 → 隔离该分支（不回旧世代）。
+   */
+  private async followGeneration(prev: World, next: World, id: string): Promise<void> {
+    if (this.stopping || this.isolated.has(id)) return
+    const identity = next.ids[id]
+    const newGen = identity.gens.find((gen) => gen.payload === identity.active) ?? null
+    const newDecl = newGen === null ? null : readPluginDeclOfGen(next, newGen)
+    const payloadDef = newGen === null ? undefined : next.defs[newGen.payload]
+    if (
+      newGen === null ||
+      newDecl === null ||
+      payloadDef === undefined ||
+      stale(payloadDef, next, id)
+    ) {
+      this.record('dep', 'stale', { impl: id })
+      this.isolateAll(this.reverseReachable([id]))
+      return
+    }
+    const oldGenHash = prev.ids[id]?.active ?? null
+    const oldGen =
+      oldGenHash === null
+        ? null
+        : (prev.ids[id].gens.find((gen) => gen.payload === oldGenHash) ?? null)
+    if (oldGen === null) {
+      // 全新身份（或从 active=null 重新激活）：与装配同路起服务
+      await this.startIdentity(id)
+      this.noteRuntimeStart(id)
+      return
+    }
+    const oldService = this.services.get(id)
+    if (newDecl.decl.start.trim().length === 0) {
+      // 新世代没有执行件：声明了 execute 成员 → 坏声明；否则退化为数据身份
+      const hasExecute = newDecl.decl.members.some((member) => member.kind === 'execute')
+      if (hasExecute) {
+        this.record('service', 'start_failed', {
+          impl: id,
+          gen: newGen.payload,
+          reason: 'missing_start_command',
+        })
+        this.isolateAll(this.reverseReachable([id]))
+        return
+      }
+      if (oldService !== undefined) await this.retireService(id, oldService, 'superseded')
+      return
+    }
+    if (oldService === undefined) {
+      await this.startIdentity(id)
+      this.noteRuntimeStart(id)
+      return
+    }
+    if (classifyGenerationChange(prev, oldGen, next, newGen) === 'data') {
+      const reloaded = await this.tryReload(oldService, newGen.payload)
+      if (this.stopping || this.isolated.has(id)) return
+      if (reloaded) {
+        this.rekeyEndpoints(oldService, newGen, newDecl.decl)
+        return
+      }
+      // reload 未确认：保守按代码换代（起新服务 + 旧服务 drain），不把旧进程当已热更新
+    }
+    await this.swapService(id, oldService, newGen.payload, newDecl.decl)
+  }
+
+  /** 数据换代：通知服务新世代并等 ack；超时 / 通道断返回 false（交调用方保守处理）。 */
+  private async tryReload(service: ServiceRuntime, gen: Hash): Promise<boolean> {
+    try {
+      await service.link.reload(gen, this.reloadTimeoutMs)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** 数据换代后的端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。 */
+  private rekeyEndpoints(service: ServiceRuntime, gen: Gen, decl: PluginDecl): void {
+    this.endpoints.removeGeneration(service.id, service.gen)
+    this.clearHealth(service)
+    service.gen = gen.payload
+    service.decl = decl
+    service.restart = parseRestart(decl.restart)
+    service.health = parseHealth(decl.health)
+    this.registerEndpoints(service)
+    this.startHealth(service)
+  }
+
+  /**
+   * 代码换代：物化 + 起新服务 + 握手 → 新端点半表先挂（新 run 立即路由新 gen）→
+   * 旧服务 drain（期间健康探针缺席）→ 超时强杀；旧 gen 端点行在旧进程收尾时摘除。
+   * 新服务起不来 → 隔离该分支（绝不回落旧世代）。
+   */
+  private async swapService(
+    id: string,
+    oldService: ServiceRuntime,
+    newGen: Hash,
+    newDecl: PluginDecl,
+  ): Promise<void> {
+    // 先阻断旧服务的重启排程：换代期间旧 gen 不得借崩溃重启复活
+    this.clearRestart(oldService)
+    let next: ServiceRuntime
+    try {
+      next = await this.launch(id, newGen, newDecl)
+    } catch (err) {
+      this.handleStartFailure(id, newGen, err)
+      return
+    }
+    if (this.stopping || this.isolated.has(id)) {
+      stopChild(next.proc, next.link)
+      await waitForExit(next.proc, 2_000)
+      return
+    }
+    if (this.services.get(id) !== oldService) {
+      // 防御：旧服务已被别的路径替换；新服务不得顶掉更新的实例
+      stopChild(next.proc, next.link)
+      await waitForExit(next.proc, 2_000)
+      return
+    }
+    oldService.draining = true // 先停健康探针与退出重启
+    this.services.set(id, next)
+    this.registerEndpoints(next)
+    this.startHealth(next)
+    await this.stopSuperseded(oldService, 'superseded')
+  }
+
+  /** 排空并停掉被换代取代的服务（不重启）；退出路径记 service.exit。 */
+  private async stopSuperseded(service: ServiceRuntime, reason: string): Promise<void> {
+    this.clearHealth(service)
+    this.clearRestart(service)
+    service.draining = true
+    let drainReason = reason
+    try {
+      await service.link.drain(service.restart.drainMs, service.restart.drainMs + 1_000)
+    } catch {
+      drainReason = 'drain_timeout'
+    }
+    this.endpoints.removeGeneration(service.id, service.gen)
+    this.record('service', 'exit', { impl: service.id, gen: service.gen, reason: drainReason })
+    stopChild(service.proc, service.link)
+    await waitForExit(service.proc, 2_000)
+  }
+
+  /** 新世代无执行件：旧服务按换代路径退场，身份保留为数据身份。 */
+  private async retireService(id: string, service: ServiceRuntime, reason: string): Promise<void> {
+    if (this.services.get(id) === service) this.services.delete(id)
+    await this.stopSuperseded(service, reason)
+    this.endpoints.removeIdentity(id)
+  }
+
+  /** 运行期新起的身份补进停机序（反序停机时一并 drain）。 */
+  private noteRuntimeStart(id: string): void {
+    if (!this.loadedIds.has(id)) return
+    if (!this.order.includes(id)) this.order.push(id)
+  }
+
+  /** 依赖退役（retire / set_active(null)）：反向可达的发出者及其依赖者一并隔离，不回落。 */
+  private retireBranch(seed: string): void {
+    const reached = this.reverseReachable([seed])
+    for (const id of [...reached].sort()) {
+      this.record('dep', 'retired', { impl: id })
+    }
+    this.isolateAll(reached)
   }
 
   private launch(id: string, gen: Hash, decl: PluginDecl): Promise<ServiceRuntime> {
@@ -338,6 +567,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       gen: service.gen,
       reason: service.pendingExitReason ?? reason,
     })
+    // 已被换代取代（自身 active 不再是本 gen）→ 不重启旧世代（A6：绝不回落）
+    if (this.activeGen(service.id)?.payload !== service.gen) return
     // 声明 never：不重启，退出即隔离该分支
     if (service.restart.policy === 'never') {
       this.isolateBranch(service.id)
@@ -353,8 +584,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    * 不复位 window——relaunch 失败重试同样计数，避免「每次失败都清零、永不超限」。
    */
   private countRestartAttempt(service: ServiceRuntime): void {
-    // 隔离后不得再排程（防御：当前调用点均已先判 isolated，且中途无 await）
+    // 隔离 / 已被换代取代后不得再排程（防御：当前调用点均已先判，且中途无 await）
     if (this.stopping || this.isolated.has(service.id)) return
+    if (this.activeGen(service.id)?.payload !== service.gen) return
     service.attempts += 1
     if (service.attempts > service.restart.max) {
       this.record('service', 'restart_exhausted', { impl: service.id, gen: service.gen })
@@ -372,12 +604,18 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private async attemptRestart(service: ServiceRuntime): Promise<void> {
-    // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer
+    // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer；换代取代同理不重启
     if (this.stopping || this.isolated.has(service.id)) return
+    if (this.activeGen(service.id)?.payload !== service.gen) return
     try {
       const next = await this.launch(service.id, service.gen, service.decl)
-      // 重启窗口内该身份可能已被隔离：不得复活
+      // 重启窗口内该身份可能已被隔离 / 换代：不得复活
       if (this.stopping || this.isolated.has(service.id)) {
+        stopChild(next.proc, next.link)
+        await waitForExit(next.proc, 2_000)
+        return
+      }
+      if (this.activeGen(service.id)?.payload !== service.gen) {
         stopChild(next.proc, next.link)
         await waitForExit(next.proc, 2_000)
         return
@@ -388,8 +626,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.registerEndpoints(next)
       this.startHealth(next)
     } catch (err) {
-      // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 → 不再记失败、不再排程
+      // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 / 换代 → 不再记失败、不再排程
       if (this.isolated.has(service.id)) return
+      if (this.activeGen(service.id)?.payload !== service.gen) return
       const failure = classifyStartFailure(err)
       if (failure.event === 'handshake') {
         this.record('handshake', 'failed', { impl: service.id, gen: service.gen })
@@ -406,23 +645,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 
   /** 隔离坏分支：种子 + 反向可达依赖者下线（停服务、清端点、移出已装载）。 */
   private isolateBranch(seed: string): void {
-    for (const id of this.reverseReachable([seed])) {
-      const service = this.services.get(id)
-      if (service !== undefined) {
-        this.services.delete(id)
-        this.clearHealth(service)
-        this.clearRestart(service)
-        service.draining = true
-        if (!service.handledExit) {
-          service.handledExit = true
-          stopChild(service.proc, service.link)
-          this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'isolated' })
-        }
-      }
-      this.endpoints.removeIdentity(id)
-      this.loadedIds.delete(id)
-      this.isolated.add(id)
-    }
+    this.isolateAll(this.reverseReachable([seed]))
   }
 
   private clearHealth(service: ServiceRuntime): void {

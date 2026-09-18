@@ -70,6 +70,11 @@ export interface SubmissionInput {
   onAudit?: (entry: Entry) => void
   /** 每轮 done 的业务 journal 落点（A10：done 才落账）。 */
   onRound?: (entries: Entry[]) => void
+  /**
+   * 链头推进后的宿主钩子（A6 换代跟随）：在进入下一轮之前 await 完成——
+   * 这样 plan 的后续轮与下一次提交都按新世界路由；effect 不认识装配，回调由宿主注入。
+   */
+  onAdvanced?: (world: World, head: Head) => Promise<void> | void
 }
 
 export interface SubmissionOutcome {
@@ -350,6 +355,8 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
     world = out.world
     head = out.head
     input.onRound?.(out.journal)
+    // A6：本轮的写已落账 → 换代 / 退役在下一轮之前跟随（审计 put 不改 active，故只在 done 后）
+    if (input.onAdvanced !== undefined) await input.onAdvanced(world, head)
     if (group.some((item) => item.directive.kind === 'eval')) ref = out.lastAuditHash
     const plan = pickPlan(out.observations, group)
     if (!plan.ok) {

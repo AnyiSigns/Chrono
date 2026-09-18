@@ -7,8 +7,10 @@ export {
   listCommands,
   parsePluginDecl,
   readPluginDecl,
+  readPluginDeclOfGen,
   resolveCommand,
   resolveTreeBlob,
+  resolveTreeEntry,
   resolveTreeJson,
   termDefOf,
 } from './decl.ts'
@@ -19,7 +21,10 @@ export type {
   PluginCommand,
   PluginDecl,
   PluginMember,
+  TreeEntryRef,
 } from './decl.ts'
+export { classifyGenerationChange } from './generation.ts'
+export type { GenerationChange } from './generation.ts'
 export { validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
 export { planIngest } from './ingest.ts'

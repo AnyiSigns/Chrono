@@ -109,6 +109,8 @@ function handleCall(msg) {
           port: msg.port,
           method: msg.method,
           args: msg.args === undefined ? null : msg.args,
+          // pid：换代测试断言「数据 reload 进程不动 / 代码 swap 进程更换」
+          pid: process.pid,
         };
   writeFrame({ v: "1", id: msg.id, kind: "result", ok: true, value });
 }
@@ -166,6 +168,14 @@ function handle(msg) {
           kind: "pong",
           ok: config.probeMode !== "fail",
         });
+        return;
+      }
+      case "reload": {
+        // 数据换代热生效（docs/protocol.md §2.3）：服务回 ack，进程不动。
+        if (config.reloadMode === "silent") return;
+        if (config.reloadMode === "exit") return process.exit(1);
+        log("reload gen=" + (msg.gen === undefined ? "?" : msg.gen));
+        writeFrame({ v: "1", id: msg.id, kind: "ack" });
         return;
       }
       case "drain": {

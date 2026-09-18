@@ -181,6 +181,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       ctxFor: projectBaseOnly,
       onAudit: persistAudit,
       onRound: persistRound,
+      onAdvanced: async (advancedWorld) => {
+        if (runtime !== undefined) await runtime.applyWorld(advancedWorld)
+      },
     })
     world = outcome.world
     head = outcome.head
@@ -259,6 +262,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       ctxFor: projectBaseOnly,
       onAudit: persistAudit,
       onRound: persistRound,
+      onAdvanced: async (advancedWorld) => {
+        if (runtime !== undefined) await runtime.applyWorld(advancedWorld)
+      },
     })
     world = outcome.world
     head = outcome.head

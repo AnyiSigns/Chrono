@@ -148,8 +148,18 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
   }
 }
 
-/** 沿 tree 解析包内相对路径，返回文件文本；路径不存在或不是文件返回 null。 */
-export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): string | null {
+/** 包内相对路径在 tree 里的解析结果：文件或子树，附解析到的 def 键。 */
+export interface TreeEntryRef {
+  mode: 'file' | 'dir'
+  hash: Hash
+}
+
+/** 沿 tree 解析包内相对路径，返回 `{mode, hash}`；路径不存在 / 形态非法返回 null。 */
+export function resolveTreeEntry(
+  world: World,
+  treeHash: Hash,
+  relPath: string,
+): TreeEntryRef | null {
   const parts = relPath.split('/').filter((p) => p.length > 0 && p !== '.')
   if (parts.length === 0) return null
   let currentTree = treeHash
@@ -163,12 +173,8 @@ export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): 
     const mode = found['mode']
     if (typeof hash !== 'string') return null
     if (i === parts.length - 1) {
-      if (mode !== 'file') return null
-      const blob = world.defs[hash]
-      if (typeof blob?.body !== 'string') return null
-      // base64 blob 是字节资产，不是文本；不参与 JSON 解析
-      if ((blob as { enc?: Json }).enc === 'base64') return null
-      return blob.body
+      if (mode !== 'file' && mode !== 'dir') return null
+      return { mode, hash }
     }
     if (mode !== 'dir') return null
     currentTree = hash
@@ -176,12 +182,19 @@ export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): 
   return null
 }
 
-/** 读身份当前 active 世代的 `plugin.json`；缺任一步返回 null。 */
-export function readPluginDecl(world: World, identityId: string): DeclRead | null {
-  const identity = world.ids[identityId]
-  if (!identity || identity.active === null) return null
-  const gen = identity.gens.find((g) => g.payload === identity.active)
-  if (!gen) return null
+/** 沿 tree 解析包内相对路径，返回文件文本；路径不存在或不是文件返回 null。 */
+export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): string | null {
+  const entry = resolveTreeEntry(world, treeHash, relPath)
+  if (entry === null || entry.mode !== 'file') return null
+  const blob = world.defs[entry.hash]
+  if (typeof blob?.body !== 'string') return null
+  // base64 blob 是字节资产，不是文本；不参与 JSON 解析
+  if ((blob as { enc?: Json }).enc === 'base64') return null
+  return blob.body
+}
+
+/** 读指定世代的 `plugin.json`；缺任一步返回 null（供换代比对按旧世代读声明）。 */
+export function readPluginDeclOfGen(world: World, gen: Gen): DeclRead | null {
   const commit = world.defs[gen.payload]
   const tree = (commit?.body as { tree?: Json } | undefined)?.tree
   if (typeof tree !== 'string') return null
@@ -195,6 +208,15 @@ export function readPluginDecl(world: World, identityId: string): DeclRead | nul
   }
   const result = parsePluginDecl(parsed)
   return result.ok ? { decl: result.decl, gen, tree } : null
+}
+
+/** 读身份当前 active 世代的 `plugin.json`；缺任一步返回 null。 */
+export function readPluginDecl(world: World, identityId: string): DeclRead | null {
+  const identity = world.ids[identityId]
+  if (!identity || identity.active === null) return null
+  const gen = identity.gens.find((g) => g.payload === identity.active)
+  if (!gen) return null
+  return readPluginDeclOfGen(world, gen)
 }
 
 /** term def 的规范构造：body = AST、sig = 世代签名；读侧与入世侧共用同一构造。 */

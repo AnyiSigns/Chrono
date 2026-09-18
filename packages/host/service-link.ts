@@ -146,6 +146,11 @@ export class ServiceLink {
     return { ok: true, value: (record['value'] ?? null) as Json }
   }
 
+  /** 数据换代热生效：通知服务新世代，服务回 ack（进程不动）。 */
+  async reload(gen: string, timeoutMs: number): Promise<void> {
+    await this.request('reload', { gen }, 'ack', timeoutMs)
+  }
+
   /** 排空：在途结束后服务回 bye。 */
   async drain(deadlineMs: number, timeoutMs: number): Promise<void> {
     await this.request('drain', { deadline_ms: deadlineMs }, 'bye', timeoutMs)

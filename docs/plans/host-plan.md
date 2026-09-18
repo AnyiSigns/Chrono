@@ -209,13 +209,21 @@ on_commit_ok(head_advanced):
 # only_data_changed(id)：按 members 声明跨代比对「路径 + 解析内容（文件 / 子树哈希）」——
 #   任一 execute 成员路径增删 / 内容变化 → code（起新服务）；仅 term/schema 变化 → data（reload）；
 #   两类都有 / 同路径两用 → code（execute 优先）。不按 terms//execute/ 目录名硬编码。
+#   声明读不出（缺 def / 坏声明）→ code（保守）；未声明成员的变化看不见 → data。
 # swap_service(id, new_gen)：换代——materialize → start → handshake → EndpointTable.add(new)+mark_old(draining) →
 #   drain(old, decl.restart.drain_ms)；drain 期间暂停该服务 health 探针（见 A11）；超时强杀 + lifecycle_log(service.exit, old_proc)
+#   排空收尾后旧 gen 端点行摘除；旧服务退出记 service.exit reason 'superseded'（可观测）
 # restart_service(id, gen)：同 gen 重启（进程已死、无旧行并存）——materialize → start → handshake →
 #   EndpointTable 覆盖旧行；无 drain（见 A11）
 # EndpointTable 键含 gen ⇒ 在途 run 锚定旧世代，换代只对下一个 run 生效
 # 依赖换代不重装：宿主只重解析解析目标（A1），新 active 行已在表内
 # assembly 只跟随、不改 active：set_active 是内核 op
+# 跟随时机：每轮 done 落账后、下一轮之前（rounds 的 onAdvanced 钩子，宿主注入 applyWorld）；
+#   同一次提交内 plan 的后续轮与下一次提交都按新世界路由；审计 put 不改 active，不触发跟随。
+# 已离开 active 的旧 gen：在途退避重启排程作废（active ≠ service.gen 即不重启），绝不复活旧世代。
+# 新身份（active null → hash）/ 曾为数据身份者：按装配同路起服务（依赖未装载则隔离）。
+# 退役隔离：对 reverse_reachable(退役身份) 的每个身份各记一条 dep.retired，再统一下线（停服务、摘端点）。
+# reload 未被 ack / 超时 → 保守按 code 路径（起新服务 + 旧 drain），不把旧进程当已热更新。
 ```
 
 ### A7 · `EffectAudit` 落账顺序
@@ -434,6 +442,8 @@ project(world, head):                      # 宿主只读视图；按引用构�
 - **S4.6 落地**：`packages/host/projection/index.ts` 按 A14 形状实现（身份字面 id 为键；`gens` 只留 `seq` / `payload`；`body` = active payload def body，`active=null` 或 def 缺失 → `null`；按引用构造，不深拷贝）。
 - **S4.6 注入点**：`effect/rounds.ts` 分组物化时按字段存在性（`ctx === undefined`）填 **该轮轮首** 投影；含 eval 的轮构造一次共享，write 轮不构造；显式 ctx（含 `null`）原样透传；`ctxFor` provider 由 `host.ts` 注入（命令 / 直提 eval 两条路径），plan 条目同规（`'ctx' in raw`）。
 - **S4.6 测试**：投影单测（空世界不报错 / 机械映射 / 不含 defs 与履历 / 构造不改世界）、rounds 注入行为（缺省与显式、每轮一次与轮首 world/head、write 轮不构造、轮内审计不回改 ctx、provider 缺席抛错）、E2E（term 经 `["g",["ids",<id>,"body"]]` 等读投影；eval 轮 journal / head / worldRev 不变）见 `packages/host/test/host-projection.test.ts` 与 `effect/test/rounds.test.ts`。
+- **S5 落地**：`packages/host/assembly/generation.ts`（纯判据：`classifyGenerationChange` 按 members 跨代比对路径 + 文件/子树哈希，execute 优先；声明读不出保守 code）；`assembly/runtime.ts` 的 `applyWorld` 每轮 done 后落地——自身 active 换代：数据 → `ServiceLink.reload`/`ack`（进程不动、端点行换新 gen 键，ack 超时保守走 code 路径），代码 → 新服务起 + 旧服务 drain（`service.exit` reason `superseded`）；`retire` / `set_active(null)` → `reverse_reachable` 逐身份 `dep.retired` + 下线；新身份按装配同路起。`service-link.ts` 加 `reload`；`effect/rounds.ts` 加 `onAdvanced` 钩子（宿主注入，保证下一轮 / 下一次提交按新世界路由）；`host.ts` 接线。已在途的旧 gen 退避重启排程作废（active ≠ service.gen 即不重启）。
+- **S5 测试**：判据单测（term→data / execute→code / 双类→code / 路径增删 / 双用 execute 优先 / 声明不可读→code）见 `assembly/test/generation.test.ts`；`applyWorld` 运行相（数据 reload 进程不动、reload 超时保守换服务、代码换代旧服务 drain、退役反向隔离、新身份装载、幂等、旧 gen 重启排空）见 `assembly/test/generation-runtime.test.ts`；E2E（客户端 `add_gen` / `set_active` / `retire` 全链落账 + `status.loaded` / 审计 result / `dep.drift` / `dep.retired` / 双写者 `writer_busy`）见 `test/host-generation.test.ts`。toy 服务加 `reload`→`ack`（`reloadMode` 可测超时）与默认回值带 `pid`（进程不动的判据）。
 
 ## 出口验收
 
