@@ -24,6 +24,107 @@
 
 ---
 
+## §0 · 与先例的关系与借用清单
+
+> **为什么写这一节**：本方向已有大量先例（ADAS / 自演化 agent 图），且**主命题已有公开反证**（§0.4）。
+> 这一节不是文献综述，而是三条执行纪律：
+> ① **能被验证过的方案直接借**，不自创；② 明确本项目**真正需要自创**的部分；③ 明确**必须正面回应的反证**。
+> 所有借用项在落地处标注来源，便于日后溯源与替换。
+
+### 0.1 借用清单（按机制；"落地"列指向本计划的具体位置）
+
+| 机制 | 借自 | 借什么 | 落地 |
+|---|---|---|---|
+| **拓扑搜索 = MCTS over graph** | AFlow（ICLR'25，MCTS over code-workflow，执行反馈回传、成本-效果 Pareto）；GPTSwarm（ICML'24，"agents as optimizable graphs"，边优化）；EvoOR-Agent（AOE 网络 + 图介导 path-conditioned 重组） | 搜索算子与成本-效果报告口径 | §C / §J.7 / §J.8 |
+| **预算受限下的搜索策略** | **ExTS**（arXiv 2608.23848；在 AFlow 上验证） | 三机制：discriminative reward shaping / stochastic virtual child / **quality-conditioned branching** | §0.5-B / §J.7 |
+| **代理模型跳过坏候选** | AgentSquare（ICLR'25，performance predictor 作 in-context surrogate） | 先打分、只真跑 top-K | §G.23 / §J.11（`GAP_PROBE_K` 已是此形状） |
+| **shadow 转正 / 生长门 / 回滚的形式化** | **ATM**（arXiv 2607.20488） | 三条形式不变量：**capability monotonicity / state-routing completeness / shadow-before-live** | §0.5-C / §D / §J.5 / §J.6 |
+| **质量多样性档案（防坍塌）** | YGN-SAGE（MAP-Elites 4D archive + CMA-ME）；ARES（NSGA-II 多目标） | MAP-Elites 式精英档案：按行为维度分桶、每桶留精英 | §0.5-A / §C / §J.8 |
+| **子图结晶 = 结构化重构** | PSN（arXiv 2601.03509，structural refactoring + maturity-aware gating + rollback validation） | maturity-aware gating：成熟子图冻结、未成熟保持可塑 | §D（与惰性训练的 `wd` mask 合流） |
+| **池生长 ↔ 拓扑共演化** | SkillGraph（arXiv 2604.17503，技能库与通信拓扑闭环共演化） | 能力表示回灌拓扑预测器（不只是输出维追加，**输入侧也要**） | §D 记账 / §G.6（gate 输入含新契约表示） |
+| **路由选边的判据** | VOI budget control（arXiv 2605.05701） | value-of-information 作"下一个预算单位给谁"的判据 | §J.4 `route_obs`（作为**特征**，不替代学习） |
+| **拓扑生成的 fallback 链** | YGN-SAGE（6 条路径优先级：检索 → 档案 → LLM 合成 → 变异 → MCTS → 模板兜底） | 优先级结构；`P3a` 的固定路由就是 template fallback | §F.4 P3a/P3b |
+| **证据门控的生长 + 保留被拒** | Procedural Graphs（arXiv 2609.09153，"保留被拒编辑以防重复"） | 拒绝要进 manager 输入，防重复提案 | §I.1（`accept` 已记拒绝，补"拒绝进 manager 输入"） |
+| **预算约束评测口径** | BCAS（arXiv 2603.08877）；EcoAgent-Bench（arXiv 2608.05519） | 预算作为任务的一部分；报经济一致性（$/task + 尾延迟） | §G.20 / §F.6 P5 步骤⑤ |
+| **领域全景与分类** | 综述 *Self-Evolving Agents as Dynamic Graph Transformation*（arXiv 2608.18104） | 四类演化（节点/特征、边/拓扑、子图激活、跨组件共演化）作定位坐标 | §0.4 定位表述 |
+
+### 0.2 本项目需要自创的部分（找不到先例）
+
+1. **弱监督探针**：把**任务级验证从搜索中遮掉**、只留节点级 `post` 作搜索信号（`probe-real` 变体②）。
+   检索未发现先例。**这条同时是论文贡献与产品必需**（生产域常无自动验证，见设计文档总览 §四）。
+2. **闭集 append-only 契约池 + 有界文法 + 编译期类型检查**作为搜索空间。
+   先例（ADAS）**明确反对**这条路，理由是代码空间能吃到 LLM 的代码先验、图空间搜索效率低。
+   我们反过来选它，**换的是逐字节可重放与可审计**（`sig` / `compile_reject` / `EffectAudit` 全部可复算）。
+   ⇒ 必须在报告里正面回答"用效率换可重放"这个取舍，并给出 `compile_reject_rate` 与搜索成本作代价证据。
+3. **结晶 = 契约扩展**（子图折成新能力类，同时增专家、增 `action_head` 列、`H` 下降）。
+   PSN 做"合并冗余技能"、ATM 做"拆分过载 agent"，都没有"折成新的**可寻址能力类**"这个动作。
+
+### 0.3 与先例的差别（不是"更差/更好"，是"不同取舍"）
+
+| 维度 | 先例常见做法 | 本项目 | 代价/收益 |
+|---|---|---|---|
+| 搜索空间 | 代码空间 / 开放模块空间（ADAS、AFlow、AgentSquare） | **闭集契约池 + 有界文法** | 表达力上限 ↓ / 可重放与可审计 ↑ |
+| 改拓扑的时机 | 运行中 hot-swap（ATM、DyTopo、MetaGen） | **回合边界、离线、可 `set_active` 回滚** | 响应慢 / 安全与可回滚 ↑ |
+| 改拓扑的粒度 | 角色/团队/通信边 | **能力类契约 + 节点实例 + 子图结晶** | 抽象层更高 / 需类型系统支撑 |
+| 多样性保持 | MAP-Elites / NSGA-II（YGN-SAGE、ARES） | **本次补入**（§0.5-A） | 原设计只有 `Ei` 诊断、无机制干预 |
+| 学习门控 | OracleStack 式"可训练裁决"（YGN-SAGE） | **四道入库闸 + 采纳闸** | 更严 / 成本更高 |
+
+### 0.4 必须正面回应的反证
+
+> **Rethinking the Value of Multi-Agent Workflow: A Strong Single-Agent Baseline**（arXiv 2601.12307）
+> 结论：**单 agent 多轮对话 + KV cache 复用，打平同构多 agent 工作流，也打平 AFlow 优化出的异构工作流，且更便宜。**
+
+这条**直接冲击主命题**（"编排有增益"）。它说明"单节点臂打平"不是可能发生的风险，而是**已被观察到的现象**。三条回应，全部要落进报告：
+
+1. **任务域分族是承重结构**：`dev-hard` 四机制（超窗 / 高单步失败率 / 冲突约束 / 不可逆首步）保证**单次调用结构上不可解**。
+   GA2 的 `SINGLE_CALL_MAX` 是这一族的**成立条件**，不是事后解释。若 `dev-hard` 上单节点臂仍打平 ⇒ 判负。
+2. **该文的比较是同构多 agent**（同 base LLM，只差 prompt / tool / 位置）。
+   本项目的池是**异构能力类**（不同工具、不同权限、不同确定性档、不同自治档），异构性由契约承载。
+3. **该文未把预算作为约束**。本项目命题含**固定预算**：单 agent 多轮虽便宜，但预算耗尽即 `incomplete`；
+   编排的价值可能体现在"同样预算下能做完更多"。⇒ P5 必须报 `$/task` 与 `P95` 延迟，否则这条回应无证据。
+
+### 0.5 本次新增的三项机制（借用落地）
+
+**A · 精英档案（MAP-Elites 式）**
+
+- **新增 `elite_archive`**：按**行为维度**分桶，每桶保留该桶内的精英个体（`sig` + 结构 + 统计）。
+  行为维度（住账本）：`|V|` 档 × 最大深度档 × `cost_exec` 档 × **契约多样性档**（不同 `contract_id` 数）。
+- **与 `pareto_select` 的关系**：`pareto_select` 选"**当前代** Pareto 前沿"；档案选"**历史各行为桶**最优"。
+  两者互补，**不可互相替代**——前者防被支配，后者防坍塌。
+- **三个用途**：① **防坍塌**——EA/MCTS 的初始种群从档案采样，而非只从当前池；② **motif 表的来源**——
+  档案里各桶精英的 `sub_sig` 就是"模型学到了什么结构"的实证；③ **升级诊断**——档案覆盖的行为桶数下降 = 探索退化。
+- **门禁**：档案的**每桶精英必须进报告**（否则等于没做）；档案桶覆盖率进诊断列。
+- 落点：§C 搜索 / §J.8 EA / §I.1 motif 报告。
+
+**B · 质量门（ExTS 式，降搜索成本）**
+
+- §J.7 `expand` 加**质量门**：仅当父节点分数足以支付扩展成本时才扩展
+  （`score(parent) ≥ τ_gate · cost_estimate(expand)`），否则把预算转向**加深**已有高分链。
+- 三个机制一起借：① **discriminative reward shaping**（分数分布窄时分离候选，用相对排名而非绝对值）；
+  ② **stochastic virtual child**（从父节点奖励历史估计"新开分支"的价值，让扩展与加深竞争同一份预算）；
+  ③ **quality-conditioned branching**（上述质量门）。
+- **为什么必须借**：搜索是全实验最贵单项（每次 rollout 都真跑验收）。原设计是标准 PUCT + 无条件扩展，
+  ExTS 的结论正是"无条件扩展在预算受限时分配很差：探索奖励在低访问数时占优、坏兄弟先被展开、分支与节点质量无关"。
+- **风险（明写）**：质量门会降低覆盖 ⇒ `sig` 同构重复率与 `any_port_density` 可能恶化。
+  ⇒ 这两个诊断线必须在报告里与 `τ_gate` 一起出列；恶化则回退（`τ_gate=0` 即原行为）。
+- 落点：§J.7 / §G.21（`MCTS_ROLLOUT` 与 `τ_gate` 配套登记）。
+
+**C · 三条形式不变量（ATM 式）**
+
+把三条对齐到本项目已有的设计，并**形式化为可检查断言**（进门禁）：
+
+| ATM 不变量 | 本项目对应 | 断言 |
+|---|---|---|
+| **capability monotonicity**（子 ⊆ 父） | 结晶不变量：`inputs/outputs/effects/refuses/publishes` 取并集 | 新契约的 `effects` ⊇ 子图并集；**不得**出现"结晶后能力变窄" |
+| **state-routing completeness** | 子图 slot ↔ 外层端口的双向完整 | 子图内每个 slot 写入都有对应 `outputs` 端口；每个读都有对应入边或 `reads`；缺失即 `compile_reject(reason='crystallize_incomplete')` |
+| **shadow-before-live** | 结晶实例的 `shadow=true` 期间不得进真实执行流 | 断言 `shadow` 实例在 `choose_instance` 中被排除；只有影子期达标才转正 |
+
+- **与 ATM 的差别（明写）**：ATM 在**运行中的团队**上 hot-swap（需保持 `agent_id` / A2A 地址连续，因为上游调用方在看）；
+  本项目在**回合边界**改池，**离线、可 `set_active` 回滚** ⇒ 更保守，**不需要** identity 保持机制。
+- 落点：§D 结晶 / §J.5 `choose_instance` / §J.6。
+
+---
+
 ## A · 实现基座（具体机制）
 
 **确定性基础库**
@@ -186,6 +287,12 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
   **不是按子目标只 gate 一次**——否则多契约图无法生成，且位置级辅助损失无对齐点。
 - **gate 追加式扩展**：gate 输出维度随专家数变化 ⇒ 旧 gate 列原样保留、新专家列零初始化，训练时**冻结旧列**；
   整表重训只允许在「控制层容量」档中作为一次独立实验，并登记预期。
+- **gate 输入侧也要跟池生长（借自 SkillGraph，§0.1；原设计只做了输出侧）**：
+  原设计只把新专家加到 gate 的**输出**维度；但 `gate 输入 = 子目标编码 + 当前部分拓扑特征`，
+  其中"已生成契约"这类特征必须**编码契约身份**——若该编码是固定维度的 one-hot / 固定表，
+  新契约就落不进输入侧 ⇒ gate 无法区分"新契约"与"未知契约"，追加的输出列永远学不出正确路由。
+  落法：**契约身份输入 = 按 `contract_id` 索引的 append-only embedding 行**（与输出列同源、同一次追加），
+  新契约 = 新行零初始化；`arch` 的 fail-fast 检查必须含该表的行数与池版本一致。
 - **权重迁移与防遗忘**：arch bump 时旧专家权重按专家 id 保持可加载、新专家独立零初始化；重训只在"被激活专家 +
   受影响节点"上做。每次 arch bump 必须过"旧权重可加载 + 旧金丝雀不回退"的迁移门禁，否则回退旧 `ver`。
 - **gate 信用分配辅助损失**：蒸馏主损失是整图 listwise softmax，传到每个位置的 gate 决策时信用分配弱。
@@ -364,11 +471,14 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 **P3a（只上编排）**
 - **交付**：编排 TS 前向 + Python 训练器 + value head；数据飞轮三层数据 + 四道入库闸；
   MCTS / EA 搜索器 + llm teacher（产**固定分解**，全臂共用）；`any` 端口用**确定性固定路由**（选下标最小的已就绪候选）。
-- **步骤**：① 白名单特征 / Policy 前向 / `weights.json` arch 硬校验（`encoder_pin` + `action_head` dims + `MOTIF_MAX` fail-fast）；
+- **步骤**：① 白名单特征 / Policy 前向 / `weights.json` arch 硬校验（`encoder_pin` + `action_head` dims + **契约 embedding 表行数 = 池版本** + `MOTIF_MAX` fail-fast）；
   ② 训练器 + F1–F4（§I.3 参考前向逐 bit + §G.18 超参 + `DEV_VAL_N` 早停）；
-  ③ MCTS（§J.7，返回 `root_visits` + `graph_visits`）+ EA（§J.8）+ teacher + listwise（`τ=1`，`target_dist ∝ N(g)`）；
-  ④ 数据飞轮入库四闸 + oracle 生产者拒（§J.11）；⑤ **契约 embedding 表**（append-only 行，不上 MoE）。
-- **验收**：F1–F4；蒸馏后同任务 pass@1 提升；飞轮四项可观测指标出列；**vs 固定图臂的编排列可读**。
+  ③ MCTS（§J.7，返回 `root_visits` + `graph_visits`；**含 ExTS 质量门**）+ EA（§J.8，**含精英档案**）+ teacher +
+     listwise（`τ=1`，`target_dist ∝ N(g)`）；
+  ④ 数据飞轮入库四闸 + oracle 生产者拒（§J.11）；⑤ **契约 embedding 表**（append-only 行，不上 MoE）；
+  ⑥ **精英档案跨回合持久化**（进 manifest、随 run 冻结；`behavior_bucket` 确定性）。
+- **验收**：F1–F4；蒸馏后同任务 pass@1 提升；飞轮四项可观测指标出列；**vs 固定图臂的编排列可读**；
+  **精英档案桶覆盖率与各桶精英出列**（§G.26）；**质量门与覆盖诊断联动出列**（§J.7）。
 
 **P3b（加路由 + L2）**
 - **交付**：路由模型（`any` 选边、step 级标签、回合末离线更新、执行期冻结）；L2 子图委派与预算切分。
@@ -473,11 +583,14 @@ EXIT     := EXIT_STOP                             // 显式收口；末节点 ou
 | 18 | 训练超参 | AdamW `lr=3e-4` `β=(0.9,0.999)` `ε=1e-8` `wd=0.01`；`batch=16` 任务；`τ=1.0` **不退火**；`grad_clip=1.0`；`max_epoch=50`；`patience=5`（val listwise 无提升早停）；`DEV_VAL_N=64`（冻结 dev 切片，不进搜索/蒸馏，可与金丝雀重叠）；THINK `λ_th=0.10` `λ_v=0.05` `λ_stop=0.02` | 小模型 CPU 可训；τ=1 让 visit 自己携带峰，再退火等于多一个会藏欠拟合的旋钮；visit 过尖由已有「蒸馏 \|V\| vs 搜索 \|V\|」诊断触发提案改 τ。val 切片满足 F4，且不占用 holdout |
 | 19 | 泄漏扫描 | `theta.ast_sim=0.60`（holdout 模板 vs 任一 dev 模板的 token-type bag 余弦）；超阈 ⇒ 该 holdout 模板不得入池 | 仅任务哈希不够；同语言不同族仍可能 AST 撞车 |
 | 20 | **per-task cap `B`**（原表缺，缺了成本无法预算、`cost_exec` 分母无值） | **基线族**（`dev-lib` / `hold-pipe`）`{ calls: 12, tokens: 60_000, tool_calls: 8, walltime: 300s }`；**不可解族**（`dev-hard` / `hold-hard`）`{ calls: 16, tokens: 120_000, tool_calls: 10, walltime: 420s }`；逐任务可再覆写，pin 进 task spec | 基线按活动子图 4–6 节点 × L1 平均 1.4 次尝试 ≈ 6 次调用的**中位**执行标定，留 2× 余量。不可解族 `tokens` 翻倍是**结构性的**：A 机制（超窗）的必读上下文本就大于一次调用的窗口，`f_ctx` 3–5 档任务按定义要读更多。**两族 cap 不同不破坏"同预算"**——同预算是**同族同 cap**（臂间比较），不是跨族同 cap（族间本就不是同一分布）。**`calls` 是硬上限，不是目标**——`used/cap` 进 `cost_exec`，用满即满分惩罚。GA8① 单节点臂共用同族 cap（它只花 1 次 call，这正是它的成本优势，必须可见） |
-| 21 | **搜索规模**（原表缺，缺了 `search_cost` 与 `ROUND_B` 算不出） | `MCTS_ROLLOUT = 30`（每任务展开次数）、`SEARCH_TASKS_PER_ROUND = 100`（= 全批；即每回合每个 dev 任务都搜）、`EA_GEN_PER_ROUND = 2` | 这两个数**直接乘进总成本**：`rollout` 30→100 会让全实验 token ×2.5。30 是"够产多解、又不吃满预算"的起点；不足则由「搜索正样本产出率」诊断触发提案上调，**不许静默改**。`rollout` 的每次展开都要真跑验收 ⇒ 它是全实验最贵的单项 |
+| 21 | **搜索规模与质量门**（原表缺，缺了 `search_cost` 与 `ROUND_B` 算不出） | `MCTS_ROLLOUT = 30`（每任务展开次数）、`SEARCH_TASKS_PER_ROUND = 100`（= 全批；即每回合每个 dev 任务都搜）、`EA_GEN_PER_ROUND = 2`；**ExTS 质量门（§0.5-B）**：`τ_gate = 0.5`（扩展质量门；`0` = 退化为原无条件扩展）、`VIRTUAL_CHILD_N = 4`（虚拟子节点采样数）、`sigma_floor`（窄分布阈值，用于 discriminative shaping） | 前两个数**直接乘进总成本**：`rollout` 30→100 会让全实验 token ×2.5。30 是"够产多解、又不吃满预算"的起点；不足则由「搜索正样本产出率」诊断触发提案上调，**不许静默改**。`rollout` 的每次展开都要真跑验收 ⇒ 它是全实验最贵的单项，**这正是借 ExTS 质量门的理由**。**质量门必须与覆盖诊断同出列**：`τ_gate` 与 `sig` 同构重复率、`any_port_density` 一起报；覆盖恶化 ⇒ 回退 `τ_gate=0`（§J.7） |
 | 22 | **模型档位的成本现实**（决定能不能跑完，非可选项） | **付费 flash 档为默认真实运行档**（`GLM-5.3-Flash` / `DeepSeek V4 Flash` 平价第三方 / `GPT-5.6 Luna` 同级，按 §G.4 清单 pin）；**免费匿名档降级为"调试与 CI 回放档"**。全实验估算 ≈ **190,000 次任务执行 / 约 100 万次 LLM 调用 / ≈ 5.6B 输入 + 0.7B 输出 token**，flash 档带提示缓存 **$900–2,200**；含调试重跑 2–5× ⇒ **$2,000–7,000** | **钱不是瓶颈，速率是**：100 万次调用在免费档 ~20 RPM 下 = **35 天不间断**且日配额先撑爆；付费 flash 档 10 req/s 下 ≈ **28 小时**。故免费档只能跑 canary 与回放，不能跑结论。**提示缓存必须开**（系统提示 + repo 切片约 60% 输入可缓存，省约 1/3 总价）⇒ `prompt` 与 `context_policy` 的拼装顺序须把**稳定前缀放前面**（缓存命中的前提），这是架构约束不是优化。**成本需要削时的第一杠杆 = 臂子集化**：13 臂里 5 个主臂（主命题）跑满全池，8 个消融臂是**方向性**结论、跑分层 1/3 子集即可（省约 9% 总价，代价是消融列 CI 变宽、需在报告里标注子集规模）。**第二杠杆 = 降 `MCTS_ROLLOUT`**（线性省，但直接削弱搜索质量，**不推荐**）。**禁止**的杠杆是砍族——不可解族是主命题能否立起来的前提 |
 | 23 | **代理内循环**（定位已调整） | `proxy` 节点行为模型（给定 `(contract_id, 难度向量, variant_index)` 的 `post` 通过概率与四维成本分布，从 ≥ 500 次真调用标定）；**用途 = CI 门禁、训练代码调试、超参扫描**；**不得**用于任何写进结论的 run | 原以为代理是可行性前提（免费档跑不完），实测成本后**降为迭代速度工具**：改一行训练代码不必等一天。相应地，**代理保真度门禁**（代理与真 LLM 在同一批图上 pass@1 的 Spearman ≥ 0.7）只约束"能否用代理调参"，**不**约束结论——结论一律真 LLM。这条避免了"代理 gap 污染主命题"这个原本会很难辩护的风险 |
 | 24 | **"真实运行"的准入条件（三轴区分，防"实验过了 ⇒ 生产可行"的误推）** | **轴① 代理 vs 真 LLM**：分界 = **该 run 的结果是否进结论**。**自 P1 起，一切产证据的 run 一律真 LLM**；代理只跑 CI/调试/超参扫描，其结果永不进结论。**"真实运行"是准入条件，不是某个阶段**。**轴② 实验 vs 生产**：分界 = 是否接内核、插件是否真实。**轴③ 合成 vs 真实任务**：分界 = 任务来源是否真实。 | 三轴**正交**，把轴① 的"真实"读成轴② 的"生产"是最容易犯的误推。**本实验只证明"机制 M 在 (任务分布 D, 池 P, 成本模型 C) 下有效"，不证明 (D′, P′, C′) 下有效**——两者的落差见 §G.25。故 P5 交付物必须含**迁移假设清单**（每条假设标：实验内已验证 / 需生产重验 / 已知不可转移），否则"实验全绿"会被当成"可以上生产" |
 | 25 | **六项迁移落差（实验→生产，按载荷排序；这是"研究可行 ≠ 生产可行"的具体内容）** | ① **验证器**（最深）：飞轮的监督来源是隐藏测试自动判分；真实任务常无自动验证 ⇒ 正样本产出率从"稀有"变"常态为零"，**燃料断点成为默认态**。这是**产品域前置条件**，实验测不了。② **池规模**：实验契约池是 toy 且 ≤ 32；真实插件生态远超 32，而专家/`NODE_SLOT` 维度上限 32 是硬约束（触顶须并入既有契约或走容量档）⇒ 该上限会先撞上。③ **特征面**（已知未解）：逐节点 obs 在实验里是 toy 产物，生产里是真实代码/文档/工具输出；"逐节点 LLM 编码"是后置档。④ **成本量纲**：实验用归一化 `cost_exec`（calls/tokens 按固定权重混，输入输出单价差 3–6 倍），生产看 $/task 与 P95 延迟 ⇒ 帕累托前沿结论未必在 $ 空间成立。⑤ **运行时是两套代码**：实验 standalone、不接内核；生产是宿主+装配层+插件 ⇒ executor/契约加载/沙箱均须重验。⑥ **固定图臂公平性**：实验 `|V_seed|` 由研究者手写；生产的"固定图"是产品实际 ship 的编排，若其不弱则自适应臂未必赢 | **桥的形态不是"实验完再做一次生产验证"，而是让实验顺带产出迁移清单 + 逐条廉价检验。** 已采纳：**`probe-real` 迁移探针族**（真实感契约池 + 接近真实的仓库，**明标污染、绝不进主命题**）⇒ 轴②③ 的 D′/P′ 在实验内即测；**`probe-real` 的变体 ②（弱监督）**另测落差①。只剩运行时轴（⑤）留给 P6。**另**：P6 把「账本迁内核」列为*可选*（触发条件 = 运维需求），但在"先研究、后产品化"下它是**产品化关键路径**，不是运维触发项——已改为 P6 必做 |
+
+| 26 | **精英档案（QD，§0.5-A）**（原表缺，缺了"防坍塌"无机制落点） | `ARCHIVE_SEED_K = 8`（每代从档案采样的精英数）；行为维度分桶数 `VBINS=4`（`|V|` 档）、`DBINS=3`（最大深度档）、`CBINS=3`（`cost_exec` 档）、`KBINS=3`（契约多样性档）；档案**跨回合持久**、进 manifest | 原设计只有 `Ei` / 熵**诊断**，没有机制干预；而 `GROW_CONTRACT_MAX=1` 下池增长慢、易坍塌到单一行为区。档案按**桶**均匀采样（不是按个体均匀），否则大桶淹没小桶、QD 失效。**档案的每桶精英必须进报告**（否则等于没做）；**档案桶覆盖率**进诊断列，覆盖下降 = 探索退化，触发升级诊断。分桶函数必须确定性（同图必落同桶），否则档案不可重放 |
+| 27 | **成熟度门（PSN 式，§J.6）** | 成熟判据：该结晶节点在金丝雀集上的成功率下界连续 `MATURITY_ROUNDS = 3` 回合不劣于其子图展开式，**或**累计调用次数 ≥ `MATURITY_CALLS = 20`。成熟 ⇒ 不进梯度且 `wd` 也 mask；未成熟 ⇒ 保持可塑 | 与惰性训练的"未激活专家不更新"是同一件事的两面。**不设永久冻结**——成熟只影响更新频率，仍可 `set_active` 回滚 |
 
 其余探索性项（L3、迁内核、上调专家数）一律走"先登记后扩展"。
 
@@ -574,6 +687,8 @@ memo 键 = H({task_id, node_index, contract_ref, 输入 slot 版本向量, 解�
 wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边）/ compile_reject_rate（分 reason）/ invalid_crossover_rate / gate_k_shrink_rate /
 **any_port_density（OR 分支端口占比；低 ⇒ 路由无落点、GA8⑦ 测不出）** / branch_not_taken 比例 / 搜索正样本产出率 / Ei 散度（含 |支撑集|）/ 训练集分布漂移 /
 蒸馏目标 |V| 分布 vs 搜索产出 |V| 分布 / rename_variance / fit_H_imputed 占比 / sig 同构重复率 /
+**精英档案桶覆盖率与各桶精英清单（§G.26；覆盖率下降 = 探索退化，必须与 motif 表同页）** /
+**质量门参数 `τ_gate` 与覆盖诊断的联动（§J.7：`τ_gate` 必须与 `sig` 同构重复率、`any_port_density` 一起出列）** /
 **失败聚类表（按 `(RefusalCode, attributable_to)` 分组的计数与占比）** /
 **成本事件流对账表（各 `attributed_to` 视图之和 vs 事件流总量，差额须为 0；含每视图的 `counts_against_cap` 口径）** /
 每实例金丝雀统计（含 CUSUM 双侧状态）`，以及**三张分层表**：按难度向量分档（**六维**）、按契约分档、按自治档位分档，**外加编码器 / 推理档位 / 关思考消融列**；
@@ -734,6 +849,10 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
 - **必须报的两张 motif 表**（进每次 run 报告）：① **Top-`MOTIF_MAX` motif × 六维难度档的通过率矩阵**；
   ② **`Δ_motif` 排序表**（含 CI，按簇自助）。`Δ_motif` 为负的 motif 保留在表里——
   "搜索器偏爱但实际有害"的结构是 expert iteration 共退的直接证据，比熵指标更可读。
+- **motif 表的数据来源 = 精英档案（§0.5-A / §G.26），不是全量轨迹**：档案里各行为桶的精英就是
+  "在某个 `(|V|, 深度, cost, 契约多样性)` 区域里最好的那张图"，其 `sub_sig` 直接构成 motif 候选。
+  这样 motif 表天然带**行为分档**（不必事后分桶），且与"防坍塌"共用同一份数据——**一处采集、两处受益**。
+  **档案桶覆盖率**必须与 motif 表同页出列：覆盖率下降 = 搜索退化到少数行为区，此时 motif 表会系统性偏窄。
 
 **契约数触顶（32）后的并入机制**
 - 触顶后：新能力**并入既有契约**的 `role` / 子类型（扩展 `role` 枚举或新增 `inputs`/`outputs` 的子类型），
@@ -866,6 +985,11 @@ wasted_budget_rate（标注 = L1 空转率）/ greedy_completion_rate（按边�
   `attributable_to`：若失败主要归 `graph`（编排选错），应改提示词/池统计，**不产 `capability_gap`**。
 - 提案：`Proposal = { proposal_id, type ∈ {binding, instance_growth, contract_ext, crystallization}, evidence_id,
   target, expected_gain, payload, created_at }`；缺 `evidence_id` 直接拒。
+- **被拒提案必须回灌 manager 输入（借自 Procedural Graphs，§0.1）**：manager 每回合的输入除证据外，
+  必须含**近期被拒提案的清单**（`proposal_id` + `type` + `target` + 拒绝原因），
+  否则 manager 会反复提同一条被拒提案——原设计只记了拒绝，**没有让拒绝影响后续提案**，这是缺口。
+  判据：**同 `(type, target)` 的提案连续被拒 ≥ `REJECT_REPEAT_MAX`（住账本）⇒ 本回合该提案直接拒并记
+  `evidence_id(kind='repeat_rejected')`**，manager 必须换方向或补充新证据。
 - 训练样本：`{ sample_id, task_id, producer ∈ {search, teacher, exec}, graph_sig | sub_sig, target_dist?,
   dense_labels?, trace_ref, pool_ver, weight_ver, prompt_ver }`；四闸判定式 = 对抗套件通过 ∧ 泄漏扫描无命中 ∧
   内容寻址去重无命中 ∧ 回灌下逐字节可重放。
@@ -1292,7 +1416,11 @@ demand(v, st, graph, budget):                            # 返回 v 的产物或
         inputs[p].append(r.slots[(u, op)])
     else:                                                # any：先选边，再只求被选前驱
       cands = in_edges(graph, v, p)                      # 1..MAX_ANY_CAND 条候选
-      obs = route_obs(st, graph, v, p, cands)            # 不含候选产物内容
+      # route_obs 含 VOI 特征（借自 VOI budget control，§0.1）：
+      #   对每条候选边 e 给一个 value-of-information 特征 = 该边前驱的期望边际收益 / 其 cost 先验，
+      #   即"下一个预算单位投给它值不值"。这是**特征**，不替代学习（路由仍由模型选边）。
+      #   VOI 是确定性函数（只用 cost 先验、历史成功率、剩余预算），故不破坏可重放。
+      obs = route_obs(st, graph, v, p, cands, voi=voi_of(cands, st.budget))   # 不含候选产物内容
       pick = router.select(obs)                          # 确定性：同 obs 同 seed 同选择
       events.push(edge_choice, node_index=v, port=p, chosen=pick)
       r = demand(pick.u, st, graph, budget)
@@ -1343,16 +1471,29 @@ demand(v, st, graph, budget):                            # 返回 v 的产物或
 
 ### J.5 实例选择（确定性）
 
+> **来源标注**：`shadow-before-live` 不变量借自 **ATM（arXiv 2607.20488）**，见 §0.5-C。
+> 差别：ATM 在运行中的团队上 hot-swap（需保 `agent_id` / A2A 地址连续）；本项目在回合边界改池，
+> 离线、可 `set_active` 回滚 ⇒ 更保守，**不需要** identity 保持。
+
 ```
 choose_instance(v, st):
   if harness_forced_instance(v): return that            # 仅 A/B 评测；不经解码器
+  # 【ATM 不变量③ shadow-before-live】未转正实例（shadow=true）**不得**进入真实执行流：
+  #   只有在「该契约没有已转正实例」时才允许被选中（此时它是唯一可用者，且仍走影子评估）。
+  #   断言：返回的实例若 shadow=true，则 instances(v) 中不存在 shadow=false 者。违反 = 门禁红。
   # 字典序：shadow 升序, success_lower_bound 降序, cost 升序, node_id 升序
   # shadow 或 n=0 ⇒ success_lower_bound = 0（排已转正之后）
-  return lex_first(instances(v),
+  pick = lex_first(instances(v),
            key = (shadow?1:0, -success_lower_bound, cost, node_id))
+  assert not pick.shadow or all(inst.shadow for inst in instances(v))
+  return pick
 ```
 
 ### J.6 结晶契约合成
+
+> **来源标注**：结晶 = 结构化重构，借自 **PSN（arXiv 2601.03509）** 的 structural refactoring +
+> maturity-aware gating；三条形式不变量借自 **ATM（arXiv 2607.20488）**，见 §0.5-C。
+> **与 PSN 的差别**：PSN 合并冗余技能；本项目把子图折成**新的可寻址能力类**（同时增专家、增 `action_head` 列、`H` 下降）。
 
 ```
 # and_backbone_and_sink = 所有 any 实例化下都会执行的节点 ∪ sink（仅 OR 分支上的 post 不进入）
@@ -1363,7 +1504,7 @@ synthesize_contract(sub):
     if K in union(publishes(v) for v in sub):
       if all read points of K occur after first_publish(sub, K):
         reads.remove(K)                                  # 内部闭环不进新契约
-  return Contract(
+  c = Contract(
     inputs  = entry_map(sub),
     outputs = exit_outputs(sub),
     reads   = reads,                                     # 首次发布前被读的键保留
@@ -1379,19 +1520,56 @@ synthesize_contract(sub):
     determinism = min_effective_determinism(sub),
     delegate_reads = union(delegate_reads(v)) ∩ reads,
     canary_set = pending)
+  # 【ATM 不变量① capability monotonicity：子 ⊆ 父】合成后必须断言新契约**不窄于**子图并集。
+  # 允许变宽（并集自然变宽），**禁止**变窄——变窄意味着结晶后能力丢失，属合成 bug。
+  assert c.effects ⊇ union(effects(v) for v in sub)
+  assert c.refuses ⊇ union(refuses(v) for v in sub)
+  assert c.publishes ⊇ union(publishes(v) for v in sub)
+  # 【ATM 不变量② state-routing completeness：slot ↔ 端口双向完整】
+  #   ① 子图内每个 slot 写入都能映射到某个 outputs 端口（否则该产物在结晶后不可达）
+  #   ② 子图内每个读都有对应入边或 reads 条目（否则结晶后读不到）
+  #   任一缺失 ⇒ compile_reject(reason='crystallize_incomplete')，不产出契约。
+  assert slot_writes(sub) ⊆ ports_of(c.outputs)
+  assert reads_of(sub) ⊆ ports_of(c.inputs) ∪ c.reads
+  return c
 
 longest_path_aggregate(sub):
   # DAG 上按拓扑序 DP，四维分别聚合：dist[v] = cost_model(v) + max(dist[pred])
   # 返回 max over v of dist[v]（实例缺省回退契约 cost）
 ```
 
+**maturity-aware gating（借自 PSN）与惰性训练的合流**：结晶节点的"成熟度"与惰性训练的
+"未激活专家不更新"是同一件事的两面——**成熟 ⇒ 冻结**（不进梯度、`wd` 也 mask）、**未成熟 ⇒ 保持可塑**。
+成熟判据（住账本）：该结晶节点在金丝雀集上的成功率下界连续若干回合不劣于其子图展开式，
+或达到调用次数下限。**不设**"永久冻结"——成熟只影响更新频率，仍可被 `set_active` 回滚。
+
 ### J.7 MCTS（PUCT）
+
+> **来源标注**：搜索算子借自 AFlow（ICLR'25，MCTS over code-workflow，执行反馈回传 + 成本-效果 Pareto）
+> 与 GPTSwarm（ICML'24，可优化图）；**质量门三机制借自 ExTS（arXiv 2608.23848，在 AFlow 上验证）**，见 §0.5-B。
 
 ```
 # motif 检索：boundary_inputs(motif) 与当前 unconnected required 类型兼容；索引键 = sub_sig
 # prefix_sig(s) 只作 transposition table 键，不作 motif 匹配
 # value head 输入 = 编排白名单部分拓扑特征 + 剩余预算三维；不另开特征源
 # evaluate 的 cost 惩罚用 cost_exec（不含 walltime）
+
+# —— 借自 ExTS 的三机制（§0.5-B）——
+# ① discriminative reward shaping：分数分布窄（σ 小）时用**相对排名**而非绝对值做 Q，
+#    否则 Q 差异全被噪声吃掉、选择退化为随机。
+shaped_q(q_raw, siblings, sigma_floor):
+  if stdev(siblings) >= sigma_floor: return q_raw
+  return rank_percentile(q_raw, siblings)                 # 窄分布 ⇒ 用排名分离候选
+
+# ② stochastic virtual child：从父节点奖励历史估计"新开分支"的价值，
+#    让"扩展"与"加深"竞争同一份预算（原 PUCT 下扩展无条件发生）。
+virtual_child_value(s):
+  return bootstrap_sample(reward_history(s), n=VIRTUAL_CHILD_N)   # 确定性 RNG，seed 住 manifest
+
+# ③ quality-conditioned branching（质量门）：父节点分数不足以支付扩展成本时**不扩展**，
+#    预算转给"加深"已有高分链。这是 ExTS 在预算受限场景下的主要收益来源。
+expansion_worthwhile(s, cost_estimate):
+  return max(Q(s), virtual_child_value(s)) >= τ_gate * cost_estimate
 
 expand(s):
   cand = masked({ motifs with compatible boundary(s) } ∪ { idx | allowed_cap(s, idx) })
@@ -1414,14 +1592,20 @@ mcts_search(root, budget):
     s, path = select(root)                               # argmax Q + c·P·sqrt(N)/(1+N_a)；P=编排先验（评估臂可关）
     if terminal(s): v = evaluate(s)                      # 真验收 + cost_exec 惩罚 + value head
     else:
-      s2 = expand(s)
-      if s2 == null:
-        mark_exhausted(s); fail_streak += 1              # 该状态无合法扩展 ⇒ 标记，避免下轮再选中
-        if fail_streak > EXPAND_FAIL_MAX: break          # 全树无可扩展 ⇒ 收工（否则 while 空转到预算耗尽）
-        continue
-      fail_streak = 0
-      path = path + [s2]
-      v = rollout(s2)                                    # complete_greedy → 真验收（与生成臂同一补齐）
+      # 质量门：不划算就不扩展，把预算让给加深（ExTS ③）。
+      # τ_gate=0 时退化为原行为（无条件扩展）⇒ 该旋钮可作消融臂。
+      if not expansion_worthwhile(s, cost_estimate(s)):
+        path = path + [s]
+        v = rollout(s)                                   # 不扩展，直接加深：rollout 当前状态
+      else:
+        s2 = expand(s)
+        if s2 == null:
+          mark_exhausted(s); fail_streak += 1            # 该状态无合法扩展 ⇒ 标记，避免下轮再选中
+          if fail_streak > EXPAND_FAIL_MAX: break        # 全树无可扩展 ⇒ 收工（否则 while 空转到预算耗尽）
+          continue
+        fail_streak = 0
+        path = path + [s2]
+        v = rollout(s2)                                  # complete_greedy → 真验收（与生成臂同一补齐）
     backup(path, v)                                      # 沿整条路径回传访问均值；TT 键 = prefix_sig(s)
   # 返回两样：根动作 visit（给 THINK 的 PV 监督）与终局图 visit（给 listwise 目标）
   return { root_visits: visit_distribution(root),
@@ -1433,7 +1617,16 @@ mcts_search(root, budget):
 ② **`backup(s, v)` 只传叶子**：MCTS 的 backup 必须沿**选择路径**回传，否则父节点 `Q`/`N` 永不更新、PUCT 退化为随机。改为 `backup(path, v)`。
 ③ **返回值只有根 visit 分布**，而蒸馏的 listwise 目标需要**终局图的访问数** `N(g)`。补 `graph_visits`（对齐《控制与运行时》的 visit↔listwise 桥接口径）。
 
+**质量门的门禁与回退（写死）**：`τ_gate` 与 `VIRTUAL_CHILD_N` 住账本、随 `MCTS_ROLLOUT` 配套登记（§G.21）。
+**质量门会降低覆盖** ⇒ 报告必须把 `τ_gate` 与 `sig` 同构重复率、`any_port_density` **一起出列**；
+若同构重复率超诊断线或 `any_port_density` 跌破诊断线 ⇒ **回退到 `τ_gate=0`**（即原无条件扩展行为），
+并把该回退记入报告。**不许**在覆盖恶化的情况下继续保留质量门换成本好看。
+
 ### J.8 EA
+
+> **来源标注**：交叉算子借自 EvoOR-Agent（AOE 网络 + 图介导 path-conditioned 重组）；
+> **精英档案（QD）借自 MAP-Elites 路线**（YGN-SAGE 的 4D archive / ARES 的 NSGA-II，§0.5-A）。
+> 与它们的分工差别：`pareto_select` 管"当前代不被支配"，`elite_archive` 管"历史各行为桶不坍塌"。
 
 ```
 # 帕累托维：pass@1 最大、cost_exec 最小、H 最小。非支配层填满 EA_POP；层内 crowding 降序、并列 sig 升序。
@@ -1460,6 +1653,34 @@ pareto_select(pool, k=EA_POP):
       out += sort(F, key=(-crowding(F), sig))[: k-|out|]
       break
   return out
+
+# —— 借自 MAP-Elites（YGN-SAGE / ARES 的 QD 路线，§0.5-A）——
+# 与 pareto_select 的分工：pareto_select 选「当前代 Pareto 前沿」（防被支配）；
+# elite_archive 选「历史各行为桶最优」（防坍塌）。两者互补、不可互替。
+#
+# 行为维度（住账本）：|V| 档 × 最大深度档 × cost_exec 档 × 契约多样性档（不同 contract_id 数）。
+# 分桶函数必须确定性（同图必落同桶），否则档案本身不可重放。
+behavior_bucket(g):
+  return ( bin(|V|,        VBINS),
+           bin(max_depth(g), DBINS),
+           bin(cost_exec(g), CBINS),
+           bin(|distinct contract_id|, KBINS) )
+
+# 档案是**跨回合持久**的演化级结构（进 manifest，随 run 冻结）；
+# 每桶只留一个精英：先按 pass@1，再按 -cost_exec，最后按 sig 字典序（保证确定性、无并列歧义）。
+elite_archive = {}                                        # bucket -> elite
+
+archive_update(archive, g, score):
+  b = behavior_bucket(g)
+  cur = archive.get(b)
+  if cur == null or better(score(g), score(cur)): archive[b] = g
+  return archive
+
+# 用途①：EA 的初始种群从档案采样，而非只从当前池 ⇒ 防「池收敛到单一行为区」的坍塌。
+# 采样按桶均匀（不是按个体均匀），否则大桶会淹没小桶、QD 失效。
+archive_seed(archive, k, rng):
+  buckets = sorted(archive.keys())                        # 排序保证确定性
+  return [archive[b] for b in rng.sample_uniform(buckets, min(k, |buckets|))]
 
 mutate(p, rng):
   op = rng.choice([insert, delete, replace_same_contract, redirect_edge,
@@ -1501,9 +1722,11 @@ crossover_pairs(pool, rng):
   pairs = adjacent_pairs(groups)                         # (0,1),(2,3),… 不足丢弃
   return [pair for pair in pairs if rng.bernoulli(EA_CX)]
 
-ea_step(pool, rng):
+ea_step(pool, rng, archive):
   children = []
-  for p in pareto_select(pool):
+  # 初始种群：档案精英 + 当前代 Pareto 前沿（前者防坍塌、后者防被支配）
+  seed = archive_seed(archive, ARCHIVE_SEED_K, rng) + pareto_select(pool)
+  for p in seed:
     c = mutate(p, rng)
     if c != null and sig(c) not in pool: children.push(c)
   for (p1, p2) in crossover_pairs(pool, rng):
