@@ -1,4 +1,4 @@
-# 宿主计划：载体落地
+# 宿主计划：载体（Done）
 
 > 口径来源：`docs/kernel.md`（内核设计）+ `docs/host.md`（载体设计）+ `docs/plugins.md`（插件设计）。
 > **设计口径在 `docs/host.md`；本计划写"怎么做"，含算法伪代码。** 冲突时以 `host.md` 为准。
@@ -443,7 +443,7 @@ project(world, head):                      # 宿主只读视图；按引用构�
 - **S4.6 注入点**：`effect/rounds.ts` 分组物化时按字段存在性（`ctx === undefined`）填 **该轮轮首** 投影；含 eval 的轮构造一次共享，write 轮不构造；显式 ctx（含 `null`）原样透传；`ctxFor` provider 由 `host.ts` 注入（命令 / 直提 eval 两条路径），plan 条目同规（`'ctx' in raw`）。
 - **S4.6 测试**：投影单测（空世界不报错 / 机械映射 / 不含 defs 与履历 / 构造不改世界）、rounds 注入行为（缺省与显式、每轮一次与轮首 world/head、write 轮不构造、轮内审计不回改 ctx、provider 缺席抛错）、E2E（term 经 `["g",["ids",<id>,"body"]]` 等读投影；eval 轮 journal / head / worldRev 不变）见 `packages/host/test/host-projection.test.ts` 与 `effect/test/rounds.test.ts`。
 - **S5 落地**：`packages/host/assembly/generation.ts`（纯判据：`classifyGenerationChange` 按 members 跨代比对路径 + 文件/子树哈希，execute 优先；声明读不出保守 code）；`assembly/runtime.ts` 的 `applyWorld` 每轮 done 后落地——自身 active 换代：数据 → `ServiceLink.reload`/`ack`（进程不动、端点行换新 gen 键，ack 超时保守走 code 路径），代码 → 新服务起 + 旧服务 drain（`service.exit` reason `superseded`）；`retire` / `set_active(null)` → `reverse_reachable` 逐身份 `dep.retired` + 下线；新身份按装配同路起。`service-link.ts` 加 `reload`；`effect/rounds.ts` 加 `onAdvanced` 钩子（宿主注入，保证下一轮 / 下一次提交按新世界路由）；`host.ts` 接线。已在途的旧 gen 退避重启排程作废（active ≠ service.gen 即不重启）。
-- **S5 测试**：判据单测（term→data / execute→code / 双类→code / 路径增删 / 双用 execute 优先 / 声明不可读→code）见 `assembly/test/generation.test.ts`；`applyWorld` 运行相（数据 reload 进程不动、reload 超时保守换服务、代码换代旧服务 drain、退役反向隔离、新身份装载、幂等、旧 gen 重启排空）见 `assembly/test/generation-runtime.test.ts`；E2E（客户端 `add_gen` / `set_active` / `retire` 全链落账 + `status.loaded` / 审计 result / `dep.drift` / `dep.retired` / 双写者 `writer_busy`）见 `test/host-generation.test.ts`。toy 服务加 `reload`→`ack`（`reloadMode` 可测超时）与默认回值带 `pid`（进程不动的判据）。
+- **S5 测试**：判据单测（term→data / execute→code / 双类→code / 路径增删 / 双用 execute 优先 / 声明不可读→code）见 `assembly/test/generation.test.ts`；`applyWorld` 运行相（数据 reload 进程不动、reload 超时保守换服务、代码换代旧服务 drain、退役反向隔离、新身份装载、幂等、旧 gen 重启排空、**新 active 装载失败隔离**——握手不符 / 进程起不来 → `handshake.failed` / `service.start_failed` + 发出者 `dep.stale`，旧服务停掉、不回落）见 `assembly/test/generation-runtime.test.ts`；E2E（客户端 `add_gen` / `set_active` / `retire` 全链落账 + `status.loaded` / 审计 result / `dep.drift` / `dep.retired` / 双写者 `writer_busy`）见 `test/host-generation.test.ts`。toy 服务加 `reload`→`ack`（`reloadMode` 可测超时）与默认回值带 `pid`（进程不动的判据）。
 
 ## 出口验收
 

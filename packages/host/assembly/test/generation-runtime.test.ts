@@ -108,6 +108,52 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
     return records.filter((r) => r.kind === 'service' && r.event === 'exit' && r.impl === impl)
   }
 
+  /**
+   * 换代失败夹具：先 seed 坏世代、再 seed 好世代（好世代 active），最后 seed 依赖者。
+   * 坏 / 好世代的 execute 成员内容不同 ⇒ 判据 code ⇒ 走换服务路径；坏点由 `brokenSpec` 给。
+   */
+  function seedSwapFailureFixture(brokenSpec: object): {
+    world: World
+    head: Head
+    okGen: Hash
+    brokenGen: Hash
+  } {
+    const base = {
+      implements: ['toy.gen'],
+      methods: { 'toy.gen': ['echo'] },
+      start: 'node execute/main.js',
+      members: [{ kind: 'execute', path: 'execute/' }],
+    }
+    const { files, ...overrides } = brokenSpec as { files?: Record<string, string> }
+    const broken = writeTempPackage(root, {
+      identity: 'toy-gen',
+      dir: 'toy-gen-broken',
+      ...base,
+      files: { 'execute/extra.js': '// broken\n', ...(files ?? {}) },
+      ...overrides,
+    })
+    expect(runSeed(root, [{ name: 'toy-gen', path: broken }]).ok).toBe(true)
+    const ok = writeTempPackage(root, { identity: 'toy-gen', dir: 'toy-gen-ok', ...base })
+    expect(runSeed(root, [{ name: 'toy-gen', path: ok }]).ok).toBe(true)
+    const caller = writeTempPackage(root, {
+      identity: 'toy-caller',
+      pins: { 'toy.gen': 'toy-gen' },
+      start: '',
+      members: [{ kind: 'term', path: 'terms/' }],
+      terms: { 'x.json': JSON.stringify(['c', 1]) },
+    })
+    expect(runSeed(root, [{ name: 'toy-caller', path: caller }]).ok).toBe(true)
+    const anchor = loadAnchor(journalFile(root))
+    const gens = anchor.world.ids['toy-gen'].gens
+    expect(gens).toHaveLength(2)
+    return {
+      world: anchor.world,
+      head: anchor.head,
+      brokenGen: gens[0].payload,
+      okGen: gens[1].payload,
+    }
+  }
+
   it('数据换代（仅 term 变化）：reload/ack，进程不动、端点键换到新 gen', async () => {
     const identity = 'toy-gen'
     const base = {
@@ -345,5 +391,69 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
     expect(handle.endpoints.list()).toEqual([])
     expect(handle.loaded()).toEqual([])
     expect(records.some((r) => r.event === 'start_failed' && r.impl === 'toy-gen')).toBe(false)
+  }, 15000)
+
+  it('新 active 握手失败：handshake.failed + 发出者反向隔离，旧服务停掉（绝不回落）', async () => {
+    const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
+      serviceConfig: { manifest: { identity: 'toy-gen-wrong' } },
+    })
+    const handle = await startWorld(world)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: okGen, service: true })
+    const oldPid = handle.endpoints.get('toy-gen', okGen, 'toy.gen', 'echo')!.pid
+
+    await handle.applyWorld(step(world, head, 'set_active', { id: 'toy-gen', active: brokenGen }))
+
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'handshake',
+        event: 'failed',
+        impl: 'toy-gen',
+        gen: brokenGen,
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-caller' }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'exit',
+        impl: 'toy-gen',
+        gen: okGen,
+        reason: 'isolated',
+      }),
+    )
+    // 换代未完成：不回落旧世代（无 superseded 接管），旧端点 / 新端点都不在表
+    expect(records.some((r) => r.reason === 'superseded')).toBe(false)
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toEqual([])
+    await waitFor(() => !isPidAlive(oldPid), '旧服务停掉（不回落）', 5000)
+  }, 15000)
+
+  it('新 active 进程起不来（start_failed）：同样反向隔离，旧服务停掉（绝不回落）', async () => {
+    const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
+      start: 'node execute/nope.js',
+      files: { 'execute/nope.js': 'process.exit(1)\n' },
+    })
+    const handle = await startWorld(world)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: okGen, service: true })
+    const oldPid = handle.endpoints.get('toy-gen', okGen, 'toy.gen', 'echo')!.pid
+
+    await handle.applyWorld(step(world, head, 'set_active', { id: 'toy-gen', active: brokenGen }))
+
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-gen',
+        gen: brokenGen,
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-caller' }),
+    )
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toEqual([])
+    await waitFor(() => !isPidAlive(oldPid), '旧服务停掉（不回落）', 5000)
   }, 15000)
 })
