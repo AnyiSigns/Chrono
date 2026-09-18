@@ -353,7 +353,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    * 不复位 window——relaunch 失败重试同样计数，避免「每次失败都清零、永不超限」。
    */
   private countRestartAttempt(service: ServiceRuntime): void {
-    if (this.stopping) return
+    // 隔离后不得再排程（防御：当前调用点均已先判 isolated，且中途无 await）
+    if (this.stopping || this.isolated.has(service.id)) return
     service.attempts += 1
     if (service.attempts > service.restart.max) {
       this.record('service', 'restart_exhausted', { impl: service.id, gen: service.gen })
@@ -371,7 +372,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private async attemptRestart(service: ServiceRuntime): Promise<void> {
-    if (this.stopping) return
+    // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer
+    if (this.stopping || this.isolated.has(service.id)) return
     try {
       const next = await this.launch(service.id, service.gen, service.decl)
       // 重启窗口内该身份可能已被隔离：不得复活
@@ -386,6 +388,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.registerEndpoints(next)
       this.startHealth(next)
     } catch (err) {
+      // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 → 不再记失败、不再排程
+      if (this.isolated.has(service.id)) return
       const failure = classifyStartFailure(err)
       if (failure.event === 'handshake') {
         this.record('handshake', 'failed', { impl: service.id, gen: service.gen })

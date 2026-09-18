@@ -204,7 +204,16 @@ class HostClient implements Client {
   }
 
   private onData(chunk: Buffer): void {
-    for (const raw of this.decoder.push(chunk)) {
+    let raws: Json[]
+    try {
+      raws = this.decoder.push(chunk)
+    } catch {
+      // 解码器抛错（帧超上限 / 坏 JSON）：与宿主侧同构收口，不让异常冒泡崩客户端进程
+      this.failAll()
+      this.socket.destroy()
+      return
+    }
+    for (const raw of raws) {
       this.dispatch(raw as unknown as OutboundMessage)
     }
   }

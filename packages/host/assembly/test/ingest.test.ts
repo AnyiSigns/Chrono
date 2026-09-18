@@ -7,6 +7,10 @@ import {
   resolveCommand,
   termDefOf,
 } from '../index.ts'
+import { runSeed } from '../../offline.ts'
+import { loadAnchor } from '../../ledger/index.ts'
+import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
+import { writeTempPackage } from '../../test/test-helpers-ext.ts'
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 
@@ -85,6 +89,63 @@ describe('装配 assembly', () => {
       expect(resolveTreeBlob(world, th, 'plugin.json')).toBe('hello world')
       expect(resolveTreeBlob(world, th, 'missing.json')).toBeNull()
       expect(resolveTreeBlob(world, 'ghost'.repeat(16), 'anything')).toBeNull()
+    })
+
+    it("'.' 段与空段同口径折叠：'./plugin.json' / 'dir/./b' 解析到规范路径", () => {
+      const th = 'th'.repeat(32)
+      const ah = 'ah'.repeat(32)
+      const bh = 'bh'.repeat(32)
+      const world = {
+        defs: {
+          [th]: {
+            body: {
+              entries: [
+                { name: 'plugin.json', mode: 'file', hash: bh },
+                { name: 'dir', mode: 'dir', hash: ah },
+              ],
+            },
+          },
+          [ah]: { body: { entries: [{ name: 'b', mode: 'file', hash: bh }] } },
+          [bh]: { body: 'hello world' },
+        },
+        ids: {},
+      }
+      expect(resolveTreeBlob(world, th, './plugin.json')).toBe('hello world')
+      expect(resolveTreeBlob(world, th, 'dir/./b')).toBe('hello world')
+      expect(resolveTreeBlob(world, th, 'dir//b')).toBe('hello world')
+      expect(resolveTreeBlob(world, th, './dir/./b')).toBe('hello world')
+    })
+  })
+
+  describe('seed 级：命令入口路径规范化', () => {
+    it("入口含 './' 段：seed 成功且 listCommands / resolveCommand 命中", async () => {
+      const root = createTempRoot()
+      try {
+        const pkgRoot = writeTempPackage(root, {
+          identity: 'toy-dotentry',
+          start: 'node execute/main.js',
+          terms: { 'plain.json': JSON.stringify(['c', 'hello']) },
+          commands: [
+            { name: 'toy.dot', entry: './terms/plain.json' },
+            { name: 'toy.mid', entry: 'terms/./plain.json' },
+          ],
+        })
+        const report = runSeed(root, [{ name: 'toy-dotentry', path: pkgRoot }])
+        expect(report.ok).toBe(true)
+
+        const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+        const commands = listCommands(world)
+        const dot = commands.find((c) => c.name === 'toy.dot')
+        const mid = commands.find((c) => c.name === 'toy.mid')
+        expect(dot).toBeDefined()
+        expect(mid).toBeDefined()
+        // 两种写法规范化后指向同一 term def
+        expect(dot!.entry).toBe(mid!.entry)
+        expect(resolveCommand(world, 'toy.dot')).not.toBeNull()
+        expect(resolveCommand(world, 'toy.mid')).not.toBeNull()
+      } finally {
+        await cleanupTempRoot(root)
+      }
     })
   })
 })

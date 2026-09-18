@@ -915,4 +915,76 @@ describe('装配运行时 startAssembly', () => {
       expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-noexecfan' }),
     )
   }, 15000)
+
+  it('隔离后在途 relaunch 失败不再记失败 / 不再排程（无隔离后重启噪声）', async () => {
+    // X：never 策略，延迟退出 → 退出即隔离分支（反向可达含依赖者 Y）
+    const xRoot = writeTempPackage(root, {
+      identity: 'toy-iso-x',
+      start: 'node execute/main.js',
+      implements: ['toy.iso.x'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 2500 },
+    })
+    // Y：pins X，on-exit；先崩溃一次，随后 relaunch 卡在握手上（篡改物化 service-config），
+    // 使 X 退出隔离 Y 时，Y 的 relaunch 正在途。
+    const yRoot = writeTempPackage(root, {
+      identity: 'toy-iso-y',
+      start: 'node execute/main.js',
+      implements: ['toy.iso.y'],
+      pins: { x: 'toy-iso-x' },
+      restart: { policy: 'on-exit', backoff: 'none', max: 50, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 300, crashLimit: 1000 },
+    })
+    const { handle, world } = await startWorld(
+      [
+        { name: 'toy-iso-x', path: xRoot },
+        { name: 'toy-iso-y', path: yRoot },
+      ],
+      { handshakeTimeoutMs: 2000 },
+    )
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-iso-x', 'toy-iso-y'])
+
+    // 先等 Y 首次崩溃，确认重启环已在转，再篡改配置：使其后续 relaunch 进入握手在途环。
+    // 否则重负载下若首崩晚于 X 退出，隔离时 Y 无在途 relaunch，用例退化为恒过。
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-y'),
+      'Y 首次崩溃进入重启环',
+      8000,
+    )
+    const materialized = join(
+      hostPaths(root).materializedDir,
+      world.ids['toy-iso-y'].active as Hash,
+    )
+    writeFileSync(join(materialized, 'service-config.json'), JSON.stringify({ helloMode: 'stall' }))
+
+    // X 退出 → 隔离 Y（Y 正处于 relaunch 握手在途窗口内）
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-x'),
+      'X never 退出并隔离分支',
+      8000,
+    )
+    const exitIndex = records.findIndex(
+      (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-x',
+    )
+    // 观察窗需覆盖在途 relaunch 的握手超时落地（≤ handshakeTimeoutMs）
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+
+    const after = records.slice(exitIndex + 1)
+    expect(
+      after.some(
+        (r) =>
+          (r.kind === 'service' && r.event === 'start_failed' && r.impl === 'toy-iso-y') ||
+          (r.kind === 'handshake' && r.event === 'failed' && r.impl === 'toy-iso-y') ||
+          (r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-iso-y'),
+      ),
+    ).toBe(false)
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-iso-y')
+  }, 20000)
 })

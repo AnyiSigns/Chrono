@@ -138,7 +138,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
 
 /** 沿 tree 解析包内相对路径，返回文件文本；路径不存在或不是文件返回 null。 */
 export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): string | null {
-  const parts = relPath.split('/').filter((p) => p.length > 0)
+  const parts = relPath.split('/').filter((p) => p.length > 0 && p !== '.')
   if (parts.length === 0) return null
   let currentTree = treeHash
   for (let i = 0; i < parts.length; i++) {

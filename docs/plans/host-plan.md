@@ -32,10 +32,18 @@
 ```
 ingest(entry):                             # entry = state/plugins.json 的 {name, path?}；写动作（经 commit），非 assembly 的只读
   root = resolve_pkg(entry)                # 有 path 按路径解析（本地 / toy），无 path 走 Node 解析（node_modules）
-  for f in walk(root) \ {node_modules, 构建产物}:   # 包内源码树：plugin.json / package.json / 锁 / README / execute/ terms/ schema/
+  ign = read_worldignore(root)                # 可选：包内 .worldignore，每行一个相对路径（按路径段前缀匹配；# 注释 / 空行忽略）
+  for f in walk(root) \ {node_modules, .git} \ ign:   # 通用排除 + 插件声明排除
       blob[f] = put({ body: read(f) })         # 文件 → blob
+  # 契约必需文件（plugin.json / package.json / 锁 / README / decl.schema / commands entry·argsSchema / members 路径本身）不可被 ign 命中；命中 → 整批拒绝（bad_worldignore）
   tree   = put({ body: { entries: [...] } })   # 目录 → tree，递归
   commit = put({ body: { tree, meta } })       # 一个世代 = 一个 commit
+  # 契约层引用的包内文件各自成 def（入世解析）：
+  schema  = put({ body: <schema/ 解析> })      # plugin.json.schema 指向的文件 → Identity.schema
+  for t in topo(terms/*.json):                 # 包内先拓扑序（A0b）
+      put(termDefOf(<把 $ref 替换成 callee def 键后的 AST>, sig = commit))   # 每个 term 一条 def
+  cmdArgs = put({ body: <argsSchema 解析> })   # commands[].argsSchema → def
+  # 两类占位符不同：内核批占位符 {'$n':k}（指向批内更早的 put）；term 源占位符 {'$ref':path}（宿主解析成 callee def 键）
   # 入世写批 = batch{ add_identity?, add_gen }   ← add_gen 同时激活（journal.apply.ts:180）
   #   （首次含 add_identity；换代只 add_gen）——不需 set_active
   #   上面的 put 都是**该批的子操作**（入世整体原子）；add_gen.payload / sig / add_identity.schema
@@ -46,26 +54,37 @@ ingest(entry):                             # entry = state/plugins.json 的 {nam
 
 - 入世是**写动作**（经 `commit`），不是 assembly 的只读；assembly 只读结果。
 - **提交方**：v1 的 `seed`（离线、宿主未运行）**直写 `commit`**（与 A7 审计同属「宿主侧直写 commit」）；
-  运行时入世由发起者经 directive 走 `run`。`add_gen` **同时激活**（`journal.apply.ts`），故入世批**不需** `set_active`；漏了 `add_gen` 才会 `active = null`、永不装配。
+  运行时入世由发起者经 directive 走 `run`。`add_gen` **同时激活**（`journal.apply.ts`），故入世批**不需** `set_active`；漏了 `add_gen` 才会 `active = null`、永不装配。seed **逐包一条 batch**：某包被拒（`unresolved_pin` / `term_cycle` / `bad_worldignore` / `bad_term_ref`）**不阻断其他包**，最后汇总失败清单。另有本地声明 / 文件类失败码（`package_not_found` / `missing_plugin_json` / `bad_plugin_decl` / `missing_schema` / `missing_entry` / `missing_args_schema`），只进 seed 报告，不进协议错误码。
 - 与 A5 物化互逆；源码住 ①（`kernel.md` §八）。
-- 宿主**只解释 `plugin.json`**；`package.json` / 锁文件是源码 blob（供物化后 `npm install`），不参与契约解析。包源由 `state/plugins.json` 给出（**不分来源、同形**）。
+- 宿主**只解释 `plugin.json`**；`package.json` / 锁文件是源码 blob（供物化后由 `decl.start` 装依赖），不参与契约解析。包源由 `state/plugins.json` 给出（**不分来源、同形**）。
 - 身份 schema（`Identity.schema`）：`plugin.json.schema` 指向包内 `schema/` 文件 → 入世解析成 def 哈希 → 写进 `Identity.schema`；它是身份的**自述 / 数据契约**（数据、非特权），宿主对 `plugin.json` 形状的元校验另有一份宿主侧 schema。
-- 作者不算哈希（不变量 9），`pins` 的哈希由宿主在入世时解析。
+- **`sig` 口径**：`add_gen.sig` = 本世代 `commit` def 键（= `payload`）；term def 的 `sig` 同值。世代签名即"这一代源码 / 声明"的内容定址，重放可复现。
+- **入世需按身份级依赖序**：`pins` 解析要求被依赖身份已在世界里（`world.ids[depId].active`），否则报 `unresolved_pin`。故 seed 按 `state/plugins.json` 顺序逐包入世，或先入被依赖者再入依赖者（同批内顺序即依赖序）。
+- **排除机制**：通用排除（`node_modules` / `.git`，前者本就是宿主侧 ③）+ 插件 `.worldignore` 声明项；宿主**不内置** `dist` / `test` / `.venv` 等语言 / 构建名字（守「不认识语言」）。契约必需文件不可排除，否则 `bad_worldignore` 整批拒绝；畸形 `.worldignore`（含 `..` 段 / 读取失败）同样按 `bad_worldignore` 拒绝。测试在包目录跑、不入 ①。
+- 作者不算哈希（不变量 9），`pins` 的哈希与 term 内 callee 引用的替换哈希由宿主在入世时解析（A0b）。
 
-### A0b · term def 入世与 pin
+### A0b · term def 入世与 callee 引用（占位符机械替换）
 
 ```
-# term def = put 的 Def{ body: <AST>, pins: <callee 依赖>, sig }
-#   body 里 Call 的函数侧是 callee 的 def 哈希（机器按 env.defs[hash] 直查，machine.ts 不读 pins）
-#   pins 镜像同一批 callee 哈希（供 stale() 判依附）——规矩 A：结构性依赖只走 pins
+# term 源（terms/*.json）里对同包 callee 的引用写成**占位符**（单一保留键，如 {"$ref":"terms/foo.json"}）；
+# 入世时宿主**机械替换**成该 callee def 的哈希——与 batch 的 {"$n":k} 同构：只替换、不解释语义。
+# term def = put 的 Def{ body: <替换后的 AST>, sig }
+#   body 里 Call 的函数侧最终是 callee 的 def 哈希（机器按 env.defs[hash] 直查，machine.ts 不读 pins）
+#   term def **不写 pins**：callee 哈希是 body 里的数据值（host.md §五 路由），不是身份级依赖
 ```
 
-- **term-def pins 是哈希、不需宿主解析**（callee 是内容定址的 def、哈希稳定）；这与 `Gen.pins` 不同——
-  `Gen.pins` 指身份、身份换代会变，故作者写**名**、宿主解析成「被依赖身份 active 世代 payload 哈希」（A0）。
-  两者都是 `Record<string, Hash>`，但语义不同：term-def pin = 固定 callee def 哈希；Gen pin = 版本跟随的身份 payload。
-- **自底向上写**：callee 先 put（哈希已知），caller 的 body/pins 直接写 callee 哈希；宿主 put 时不改 body（不扫 AST 推断依赖 = 不认识语义）。
-- 漏写 term-def pins 不会被拒，只让 `stale()` 静默失效（`kernel.md` §九）——门禁以 schema 落在上层（机械校验 Call 函数侧哈希 ∈ pins，是 AST 结构检查非语义）。
-- term 间引用成环 → 该分支隔离（A2 口径）。
+- **作者不算哈希（不变量 9）**：term 源只写包内相对路径；替换在入世时由宿主做。替换规则是**纯结构**的
+  （枚举 `$ref` 保留键、不解释 Call 语义、不推断依赖），故宿主仍「不认识语义」。
+- **包内先拓扑序，成环整包拒**：入世先对**声明的** `$ref` 图（枚举保留键，纯结构）跑环检测；
+  无环 → 按拓扑序 callee 先 put（哈希已知）、caller 的 body 把 `$ref` 替换成 callee 哈希；
+  有环 → `reasons:['term_cycle']`，**只拒该包 batch**（世界分文未动），`state/plugins.json` 里其他包照常入世；
+  `$ref` 指向包内不存在的成员 → `bad_term_ref` 同拒。
+  注：A2 的闭包只沿身份级 `Gen.pins` 走、**看不到 term 内部引用**，故 term 环必须在入世判，不是 A2 的运行期隔离。
+- **term-def pins 与 `Gen.pins` 分属两域**：内核 `stale(def, world, id)` 比对的是 `def.pins` 与 `gen.pins`
+  （身份级、值为被依赖身份 payload 哈希）。term-def pins 若放 callee def 哈希会与 `gen.pins` 不匹配而**立即 stale**，
+  故 callee 引用只作 body 数据值、不进 pins。
+- 规矩 A 的落点：**身份级**（跨身份）依赖走 `Gen.pins`；term 内 callee 是**本身份内**的函数值。
+  漏写身份级 pins 不会被拒，只让 `stale()` 静默失效（`kernel.md` §九）——门禁以 schema 落在上层。
 
 ### A1 · 能力类名 → 端点解析（路由）
 
@@ -82,7 +101,7 @@ resolve(emitter, cap, method):          # emitter = 当前 directive 入口 def 
   if cap ∉ impl.implements: fail(not_loaded)  # 别名必须是目标声明的能力类
   ep = EndpointTable[impl.id + gen + cap + method]
   if ep == null: fail(not_loaded)             # 绝不回落旧世代
-  if h != gen.payload: lifecycle_log(drift, emitter, cap)   # 漂移证据，不阻塞
+  if h != gen.payload: lifecycle_log(dep.drift, emitter, cap)   # 漂移证据，不阻塞
   return ep
 ```
 
@@ -104,40 +123,48 @@ edges = { (A,B) | A ∈ roots, ∃ h ∈ A.active_gen.pins: owner_of(world.defs[
 sccs, rtopo = tarjan(roots, edges)          # 单趟出 SCC + 逆拓扑序（被依赖者先起）；无环身份即 size-1 无自环 SCC
 cycles = ∪ { s ∈ sccs | |s|>1 or has_self_loop(s) }
 bad = cycles ∪ reverse_reachable(cycles)    # 环成员 + 其依赖者
-for d in bad: lifecycle_log(cycle, d); mark(d, not_loaded)   # 只隔离坏分支
-for d in roots \ bad: mark(d, stale(d, world, identity(d)))  # 其余照常起
+for d in bad: lifecycle_log(dep.cycle, d); mark(d, not_loaded)   # 只隔离坏分支
+for d in roots \ bad:                         # 其余照常起；自身世代不完整 / 依附失效者隔离
+    g = active_gen(d)
+    if g == null or world.defs[g.payload] == null or world.defs[g.sig] == null
+       or stale(world.defs[g.payload], world, d):
+        lifecycle_log(dep.stale, d); mark(d, not_loaded)
+    else: mark(d, loaded)
 order = rtopo \ bad                          # 启动序
 ```
 
 - `pin` 绑定**被依赖身份**，边落到该身份的**当前 active 世代**；反查 def→identity 靠 ③ 反查索引
   `Map<defHash, identityId>`（装配期建、可从 `ids.gens` 重建、身份换代增量更新）——A1 / A2 共用它，O(1)。
 - **Tarjan 单趟**即同时出 SCC（环）与逆拓扑序（启动序），无需再单跑一趟 topo_sort。
-- 环**不再整体拒绝**：环成员及其依赖者标 `not_loaded` + 运维日志，其余照常起。
+- 环**不再整体拒绝**：环成员及其依赖者标 `not_loaded` + 记 `dep.cycle`，其余照常起。
 - `stale()` 判定口径见 `kernel.md` §九。
 
 ### A3 · `stale()` 处置
 
 ```
 if phase == assemble and (A's pinned dep retired/missing or A itself stale):
-    lifecycle_log(stale, A); not_loaded(branch)      # 坏分支隔离（含依赖者）；绝不拿旧实现顶上
+    lifecycle_log(dep.stale, A); not_loaded(branch)      # 坏分支隔离（含依赖者）；绝不拿旧实现顶上
 if phase == runtime and A's own active gen changed:
     reassemble(A)                                     # 见 A6
 if phase == runtime and A's pinned dep retired / set_active(null):  # 依赖没了（≠ 换代）
-    isolate(reverse_reachable(A)); lifecycle_log(stale_dep, A)       # 运行期 fail-closed，与装配期同口径
+    isolate(reverse_reachable(retired_dep))     # 种子 = 退役身份，含 A 自身及其依赖者
+    lifecycle_log(dep.retired, A)               # 运行期 fail-closed，与装配期同口径
 # 依赖换代（新 active 已装载）不重装 A、不隔离：只由 A1 重解析路由
 ```
 
 ### A4 · 握手（声明 vs 实际能力的机械校验）
 
 ```
-send(hello); m = recv(manifest)
-ok = (m.protocol == decl.protocol)
+send(hello); m = recv(manifest)                # 经服务 stdio：写 stdin 发 hello、读 stdout 收 manifest
+ok = (m.v == <服务协议版本>)                     # 信封版本不符同样按握手失败收口（服务侧不产 protocol_mismatch）
+ and (m.protocol == decl.protocol)
  and (m.identity == decl.identity)
  and covers(m.implements, decl.implements)     # 不得少
  and covers(m.methods, decl.methods)
  and (m.state == decl.state)                   # v1 只允许 recomputable
-if !ok: kill(proc); lifecycle_log(handshake_failed, proc); mark(not_loaded)
-# 多出来的能力（m.implements \ decl.implements）不登记：端点表只按 decl.implements 建行；多余项丢弃 + lifecycle_log
+if !ok: kill(proc); lifecycle_log(handshake.failed, proc); mark(reverse_reachable(proc.id), not_loaded)   # 该插件及其依赖者
+# manifest 不是 JSON / 回错消息种类（protocol_error）同归 handshake.failed；起服务 / 通道类失败记 service.start_failed
+# 多出来的能力（m.implements \ decl.implements）不登记：端点表只按 decl.implements 建行；多余项丢弃 + lifecycle_log(handshake.extra_dropped, proc)
 ```
 
 **只查形态，不查语义**：不查实现对不对、不跑测试、不校验业务语义。
@@ -145,17 +172,21 @@ if !ok: kill(proc); lifecycle_log(handshake_failed, proc); mark(not_loaded)
 ### A5 · 源码树 def + 物化
 
 ```
-blob   = { body: <文件文本 / 字节> }
+blob   = { body: <UTF-8 文本> } | { body: <base64>, enc: 'base64' }   # 后者存非 UTF-8 可逆的字节资产
 tree   = { body: { entries: [{ name, mode, hash }] } }
 commit = { body: { tree, parent?, meta } }
 # 一个插件世代 = 一个 commit def；Gen.payload = commit 键
-# commit.tree = 包内源码树（plugin.json + package.json + 锁 + README + execute/ terms/ schema/，减 node_modules/构建产物）
+# commit.tree = 包内源码树 − 通用排除（node_modules / .git）− 插件 .worldignore 声明项
+#   契约必需文件（plugin.json / package.json / 锁 / README / schema / commands / members 路径本身）不可被排除
 
 materialize(id):
   c = world.defs[id.active_gen.payload]
-  root = state/runtime/materialized/<c.hash>/   # ③ 可重算
-  write_tree(root, walk(c.tree))               # commit → tree → 递归 blob
-  run(decl.start, cwd = root)                  # 宿主不认识语言 / npm；依赖安装与构建由 decl.start 负责
+  root = state/runtime/materialized/<c.hash>/   # ③ 可重算；写暂存目录 + 宿主标记后原子改名
+  if exists(root) and marker(root) == c.hash: reuse(root)          # 标记不符 → 整目录重物化（防半棵树）
+  write_tree(root, walk(c.tree))               # commit → tree → 递归 blob（文本按 UTF-8、base64 按字节）
+  spawn(decl.start, cwd = root, stdio = stdin/stdout 管道)   # 宿主接管 stdio；协议走管道、日志走 stderr；宿主不认识语言 / npm
+  # 依赖安装 / 构建由 decl.start 自负（宿主不执行 npm install）；spawn 失败 / 立即退出 → lifecycle_log(service.start_failed, id, reason)
+  # 服务写进物化目录的文件（缓存 / 计数器等）不是源码树的一部分，也不保证跨代保留
 ```
 
 ### A6 · 世代跟随（链头推进 → 换代 → 原子切换 → drain）
@@ -167,14 +198,16 @@ on_commit_ok(head_advanced):
     if only_data_changed(id):                       # 见下：members 驱动，非目录名
         refresh_def_cache(id); send(reload); await_ack(id)        # 进程不动
     else:                                           # execute 成员的源码变了
-        swap_service(id, new_gen)                   # = materialize+start+handshake+原子切换+drain（与 A11 共用）
+        swap_service(id, new_gen)                   # = materialize+start+handshake+原子切换+drain（换代路径；A11 重启用 restart_service）
   for retired in { id | 本次 commit 使某被依赖身份 retire / set_active(null) }:
-    for d in reverse_reachable(retired): lifecycle_log(stale_dep, d); mark(d, not_loaded)   # 运行期 fail-closed（A3）
+    for d in reverse_reachable(retired): lifecycle_log(dep.retired, d); mark(d, not_loaded)   # 运行期 fail-closed（A3）
 
 # only_data_changed(id)：按 members 的 kind 判——只 term/schema 成员变动 → data（reload）；
 #   任一 execute 成员变动 → code（起新服务）。不按 terms//execute/ 目录名硬编码。
-# swap_service(id, new_gen)：materialize → start → handshake → EndpointTable.add(new)+mark_old(draining) →
-#   drain(old, decl.restart.drain_ms)；drain 期间暂停该服务 health 探针（B5，防误杀）；超时强杀 + lifecycle_log
+# swap_service(id, new_gen)：换代——materialize → start → handshake → EndpointTable.add(new)+mark_old(draining) →
+#   drain(old, decl.restart.drain_ms)；drain 期间暂停该服务 health 探针（见 A11）；超时强杀 + lifecycle_log(service.exit, old_proc)
+# restart_service(id, gen)：同 gen 重启（进程已死、无旧行并存）——materialize → start → handshake →
+#   EndpointTable 覆盖旧行；无 drain（见 A11）
 # EndpointTable 键含 gen ⇒ 在途 run 锚定旧世代，换代只对下一个 run 生效
 # 依赖换代不重装：宿主只重解析解析目标（A1），新 active 行已在表内
 # assembly 只跟随、不改 active：set_active 是内核 op
@@ -183,7 +216,6 @@ on_commit_ok(head_advanced):
 ### A7 · `EffectAudit` 落账顺序
 
 ```
-execute(eff):
 execute(eff):
   ep = resolve(emitter_of(eff), eff.port, eff.method)
   if ep == null: result = { ok:false }                       # 未解析 → 没执行 → refused
@@ -194,11 +226,11 @@ execute(eff):
                        : { ok:true, value: { error: resp.code, message: resp.message } }  # 有响应 → 值，term 可分支
     catch transport_error:                                   # 连接 / 帧 / 进程死亡 / 超时
       result = { ok:false }                                  # 没执行 → refused
-  audit_def = { request: eff, result, port, method }
+  audit_def = { body: { request: eff, result, port, method } }   # put 载荷 = Def{body}
   h_audit = H(audit_def)                       # 审计 **def 键**（= H(Def)；`ref` 指向世界里的 def，见 commit.ts checkRefs）
   commit(head, world, WriteRequest{ op:put, args:audit_def, by: initiator, ref: null }, now_round)
                     # 宿主侧直写 commit（不经 run directive）；进 ① defs、必须可寻址；失败也落；dup 幂等不产生新 entry
-  # 后续业务写：WriteRequest.ref = h_audit（多条 eff 促成同一次写取该轮内最后一条）
+  # 后续业务写：WriteRequest.ref = 紧邻 eval 段内最后一条 eff 的 audit 哈希（分相后 write 轮无 eff，见 A10）
   return result
 ```
 
@@ -257,15 +289,17 @@ round(directives, run_id, now) -> (out, phases):  # 每轮独立 run_id / now；
     idle    -> no_progress; stop
   return out, phases                             # 仅 done 有 phases；refused / idle 为 []
 
-# directives_of(plan)：plan 是 term 的 eval 输出（Json，固定 schema = directive 规格数组）；
-#   宿主只原样取用（kind/op/args 不改）+ 机械填字段，**不解释**（守宿主零业务）：
-#   request.id = 新幂等键   request.by = 发起者   request.ref = 触发它的 eff 的 audit 哈希（A7）
+# plan 通道：**顶层 eval 观测**的 value 带保留包装 {"$directives":[...]} 才当计划；
+#   宿主只认这一种包装（其余 value 一律当普通数据 / 观测返回，不执行）——机械识别保留键，不猜业务。
+# directives_of(plan)：宿主只原样取用（kind/op/args 不改）+ 机械填字段，**不解释**（守宿主零业务）：
+#   request.id = 新幂等键   request.by = 发起者
+#   request.ref = 紧邻 eval 段内最后一条 eff 的 audit 哈希（分相后 write 轮无 eff，见 A7）
 #   target.expect_pos = **该轮轮首链头**（write 每条一轮 ⇒ 轮首头即该条执行时的头）
 #   结构 op 的 pins 由宿主按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）
 # write directive 的 request.args = plan 里的内容（宿主不改内容，只机械校验）
 # op ∈ 全部 op（含 add_gen/set_active/retire/fork/graft）；run 内 set_active 只对下一轮 / 下一 run 生效
 # 真实位置只认 done 的 head / journal；refused / waiting 的 pos 一律作废
-# **分相（D1）**：一轮内不混 eval 与 write，且 expect_pos 稳——
+# **分相**：一轮内不混 eval 与 write，且 expect_pos 稳——
 #   eval 段：连续 eval 可并一轮（eval 不推进 head；eff 的审计 put 推进 head 但不改 eval 观测）；
 #   write 段：**每条 write 单独一轮**——位置 CAS 逐条前进（commit.ts:89 `expect_pos !== head.hash ⇒ pos_conflict`），
 #             expect_pos 每条都得等于该条执行时的链头，故不能把多条预填成轮首头；要原子写多份 → 一条 `batch` write directive（kernel §十二 推荐）。
@@ -275,42 +309,49 @@ round(directives, run_id, now) -> (out, phases):  # 每轮独立 run_id / now；
 
 - A9 是**单轮内**的续跑（同 `run_id` / `now` / `directives`，`results` 只增）；A10 是**轮间**驱动，每轮独立 `run_id` / `now`（非回退）。
 - **分相 = 一轮内不混 eval 与 write；`write` 每条单独一轮**（多条原子写用一条 `batch`）。保序、不重排 plan 语义。
-- 插件不产生 directive；发起者在入站面可直接提交 directive。
+- **plan 通道**：term 用保留包装 `{"$directives":[...]}` 产 directive；宿主只对**顶层 eval 观测**（entry = 本次提交的顶层 directive 的 entry）识别该包装，其余 eval / `extern` / 嵌套观测只作数据回给发起者。
+- 插件**服务**不产生 directive；directive 由 term 经 plan 通道产出，或由发起者在入站面直接提交。
 
 ### A11 · 健康 / 重启 / 超限（坏分支隔离）
 
 ```
 on_service_exit(proc, reason):
-  lifecycle_log(service_exit, proc, reason)
-  if now - last_stable(proc) > decl.restart.window: attempts[proc] = 0   # 稳定 window 后复位（D9）
-  if attempts[proc] >= decl.restart.max:
-      lifecycle_log(restart_exhausted, proc)
+  lifecycle_log(service.exit, proc, reason)
+  remove_endpoints(proc.id, proc.gen)            # 进程已死：该 gen 端点先摘除（重启成功后重挂）
+  if decl.restart.policy == 'never': isolate(reverse_reachable(proc.id)); return   # 策略 never：不重启，退出即隔离该分支
+  # 稳定复位：按【本次运行时长】判——活过 window 才算稳定、复位；否则算 flapping。
+  # 【不】按握手成功复位：持续 flapping 每次握手都成功，按握手复位会永不耗尽 max。
+  if now - proc.started_at >= decl.restart.window: attempts[proc] = 0
+  attempts[proc] += 1
+  if attempts[proc] > decl.restart.max:
+      lifecycle_log(service.restart_exhausted, proc)
       mark(not_loaded, proc.id)
       for d in reverse_reachable(proc.id): mark(d, not_loaded)          # 依赖者随之下线（A2 反向可达）
   else:
       delay = backoff(decl.restart, attempts[proc])                     # 策略 / 退避
-      swap_service(proc.id, proc.gen) on success → attempts[proc] = 0  # 起新服务+握手+原子切换+drain（与 A6 共用）
+      restart_service(proc.id, proc.gen); proc.started_at = now         # 同 gen 重启（无 drain）；只记启动时刻，不重置 attempts
 
 health_probe(proc):                            # protocol §2.3 probe/pong；drain 期间暂停（见 A6）
   if no pong within decl.health.timeout: on_service_exit(proc, 'health_timeout')
 ```
 
-- 崩溃恢复由 `assembly` 按声明执行；`health` / `restart` 字段由此被消费。
-- 超限后**不自动无限重启**；隔离范围同 A2「坏分支」。`window` 复位防长稳后偶发崩溃被当连续 flapping 耗尽 `max`。
+- 崩溃恢复由 `assembly` 按声明执行；`health` / `restart` 字段由此被消费（`restart.policy` = `on-exit` / `never`，缺省 / 未知按 `on-exit`；`health.probe` 是服务侧自述、宿主不消费）。
+- 超限后**不自动无限重启**；隔离范围同 A2「坏分支」。**复位按「本次运行时长 ≥ `window`」**（`started_at` 在每次起 / 重启时记录），**握手成功不复位**——否则持续 flapping（每次握手都成功）永不耗尽 `max`。
 
 ### A12 · 停机序列（`boot stop`）
 
 ```
 stop():
+  lifecycle_log(host.stop)                 # 宿主自停（对称：起时 lifecycle_log(host.start)）
   for id in reverse(topo_order):           # 反拓扑序：依赖者先停
-      drain(id, decl.restart.drain_ms)     # 在途结束 → bye；超时强杀 + lifecycle_log
+      drain(id, decl.restart.drain_ms)     # 在途结束 → bye；超时强杀 + lifecycle_log(service.exit, id)
   fsync(journal)                           # journal 本已 append-only，确保落盘
   release_lock()
   exit
 # 停机不写链、不改 active；宿主崩溃由「服务断连自退出」（protocol §2.6）兜底
 ```
 
-- 反拓扑序 = A2 启动序的逆；只 drain 已装载身份。
+- 反拓扑序 = A2 启动序的逆；只 drain 已装载身份。起时对称落 `host.start`（`boot start` 进入主循环前），与 `host.stop` 成对。
 - `boot stop` 是**客户端命令**（连运行中的宿主下发）；宿主收到即执行本序列。
 
 ---
@@ -319,15 +360,16 @@ stop():
 
 | 片 | 交付 | 出口检查 |
 | --- | --- | --- |
-| **S1 引导 + 账本最小面** | A0 入世；`packages/boot` 薄壳 + `packages/client` 库；宿主 + 入站 socket（`submit` / `command` / `commands` / `status`，`event` 透传）；`seed` / `verify` / `replay(full)`；A12 停机；单 append-only journal 文件；`EffectAudit` def（**成功 eff 的 `ref` 归 S4**） | `submit [write]`（直接写，不经 term/eff）→ `done` → 落账；同输入重放逐字节一致；`submit [eval(toy-eff)]` → 未解析 → `refused:eff_error` + 审计 def 落（**这是预期**，无端点表）；`boot stop` 干净停机；`boot <命令>` / `boot help` 可用 |
+| **S1 引导 + 账本最小面** | A0/A0b 入世（含 term `$ref` 替换 + 成环整包拒）；`packages/boot` 薄壳 + `packages/client` 库；宿主 + 入站 socket（`submit` / `command` / `commands` / `status`，`event` 透传）；`seed` / `verify` / `replay(full)`；A12 停机；单 append-only journal 文件；`EffectAudit` def（**成功 eff 的 `ref` 归 S4**） | `submit [write]`（直接写，不经 term/eff）→ `done` → 落账；同输入重放逐字节一致；`submit [eval(toy-eff)]` → 未解析 → `refused:eff_error` + 审计 def 落（**这是预期**，无端点表）；`boot stop` 干净停机；`boot <命令>` / `boot help` 可用 |
 | **S2 声明 + 闭包** | `plugin.json` schema；A2 闭包 + 拓扑 + 环检测；A3 `stale()` 处置 | 拓扑序正确；漏 `pins` 显式失效；成环只隔离该分支（其余照常起） |
 | **S3 `assembly`** | A5 源码树 + 物化 + 跑 `start`；A4 握手；端点表；A11 健康重启 + 坏分支隔离 | 两个**从未见过**的 toy 插件包（一个独立、一个跨插件 `pins`）只加插件包即被连接生效；成环 / 握手失败只隔离该分支 |
-| **S4 `effect`** | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传 | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流 |
-| **S4.5 跨语言** | 一个**非 JS**（如 Python）toy 插件包：`package.json` + `plugin.json` + `execute/main.py`（服务协议最小面：4 字节长度帧 + `hello`/`manifest` + `call`/`result`/`error` + `probe`/`pong` + `drain`/`bye` + `reload`/`ack`）+ `schema/` + `README` | 只加该插件包（`state/plugins.json` 加一行 + 包就位）、**不改载体一行** → 被连接 → 握手 → `call`/`result` → 回灌 → 落账；挂起→审计→回灌→续跑逐字节可重放。**这就是「宿主不认识语言 / npm 只是信封」的证明** |
-- **S4.5 环境前提**：非 JS 运行时（如 Python）+ Windows named pipe 裸 I/O（服务连宿主的管道，`open(r'\\.\pipe\<name>','r+b')`）。
-- **S4.5 前置**：S3 需定「服务如何得知端点地址」——宿主在 `start` 时经 **env / argv** 注入物理端点（`host.md` §五 未写死，S3 补）。
-- 一个非 JS toy 即可，不必每个都跨语言。
+| **S4 `effect`** | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传；**命令 `args` 按 `argsSchema` 机械校验**（坏参 → `bad_args`，S1 遗留） | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流；坏参在装配 / 执行前被拒 |
+| **S4.5 跨语言** | 一个**非 JS**（如 Python）toy 插件包：`package.json` + `plugin.json` + `execute/main.py`（读写 **stdin/stdout**；服务协议最小面：4 字节长度帧 + `hello`/`manifest` + `call`/`result`/`error` + `probe`/`pong` + `drain`/`bye` + `reload`/`ack`）+ `schema/` + `README` | 只加该插件包（`state/plugins.json` 加一行 + 包就位）、**不改载体一行** → 被连接 → 握手 → `call`/`result` → 回灌 → 落账；挂起→审计→回灌→续跑逐字节可重放。**这就是「宿主不认识语言 / npm 只是信封」的证明** |
+| **S4.6 投影（base_only）** | `projection` 包：`base_only` 只读投影；directive 的 `ctx` = 该投影（宿主从 `state/world/` 基础世界构造）；v1 基础世界 = `EMPTY_WORLD`（无快照） | term 经 `ctx` 读基础世界；投影只读、不写链、不推进 head；基础为空时不报错（非空内容随快照后置） |
 | **S5 世代跟随** | A6 换代 + 退役隔离；A8 单写者锁 | `add_gen` / `set_active` 生效；旧服务排空退出；依赖换代不改发出者进程（A1 重解析）；依赖退役 → 隔离发出者（不回落）；运维日志有对应条目；双写者被拒 |
+
+- **S4.5 环境前提**：非 JS 运行时（如 Python）——服务协议走 **stdio**（读写 stdin/stdout），**无需 named pipe / socket**（「端点地址注入」问题随 stdio 消失）。
+- 一个非 JS toy 即可，不必每个都跨语言。
 
 ## 出口验收
 
@@ -340,6 +382,7 @@ stop():
 6. **无内核依赖判据**：插件包内不出现内核 import；卸载全部插件，内核与其测试仍全绿（`kernel.md` §十一）。
 7. **跟随判据**：被依赖身份换代 → 发出者进程 / term 不动，路由自动指到新 active；新 active 装载失败则隔离发出者，绝不回落旧世代。
 8. **跨语言判据**：一个**非 JS**（如 Python）插件包，只加包、**不改载体** → 被连接 / 握手 / 调用 / 回灌 / 落账，逐字节可重放（证「宿主不认识语言 / npm 只是信封」）。
+9. **投影判据**：directive 的 `ctx` 为 `base_only` 只读投影；term 经 `ctx` 读基础世界；投影不写链、不推进 head。
 
 ## 本阶段不做
 
@@ -358,8 +401,8 @@ stop():
 
 ## 单次会话可完成
 
-按 S1 → S2 → S3 → S4 → S4.5 → S5 逐片提交，每片单独会话、单独验收。
-S1 是账本向、S2/S3 是装载向、S4 是效果向、S4.5 是跨语言向、S5 是换代向；
+按 S1 → S2 → S3 → S4 → S4.5 → S4.6 → S5 逐片提交，每片单独会话、单独验收。
+S1 是账本向、S2/S3 是装载向、S4 是效果向、S4.5 是跨语言向、S4.6 是投影向、S5 是换代向；
 任一片超尺度按 **声明解析 / `pins` 闭包 / 物化 / 连接** 再切。
 
 ## 后续插件计划的模板
