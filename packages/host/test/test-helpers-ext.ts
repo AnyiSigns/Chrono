@@ -15,6 +15,10 @@ export const FIXTURE_ALPHA = fileURLToPath(
 export const FIXTURE_BETA = fileURLToPath(
   new URL('../../../fixtures/plugins/toy-beta', import.meta.url),
 )
+/** 非 JS（Python）toy 插件包：服务协议走 stdio，宿主不解释语言。 */
+export const FIXTURE_PYTHON = fileURLToPath(
+  new URL('../../../fixtures/plugins/toy-python', import.meta.url),
+)
 
 /** 服务脚本源文本：临时服务包复用 fixture 同一份 main.js，避免两份实现漂移。 */
 export const FIXTURE_SERVICE_MAIN = readFileSync(

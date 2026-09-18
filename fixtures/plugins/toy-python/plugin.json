@@ -1,0 +1,24 @@
+{
+  "identity": "toy-python",
+  "schema": "schema/plugin.schema.json",
+  "implements": ["toy.python"],
+  "methods": { "toy.python": ["echo"] },
+  "pins": {},
+  "start": "py execute/main.py",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "none",
+    "max": 3,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": {
+    "probe": "toy.python.echo",
+    "interval_ms": 10000,
+    "timeout_ms": 1000
+  },
+  "state": "recomputable",
+  "members": [{ "kind": "execute", "path": "execute/" }],
+  "commands": []
+}
