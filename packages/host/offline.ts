@@ -3,8 +3,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
-import { planIngest } from './assembly/index.ts'
+import { planIngest, planPack } from './assembly/index.ts'
 import type { PluginEntry } from './assembly/index.ts'
 import {
   acquireLock,
@@ -112,6 +113,88 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
       items.push({ name: entry.name, status: 'seeded', identity: plan.identity, reasons: [] })
     }
     return { ok: items.every((item) => item.status !== 'failed'), items, head: anchor.head }
+  } finally {
+    releaseLock(paths.lockFile)
+  }
+}
+
+export interface PackReport {
+  ok: boolean
+  identity: string
+  status: 'packed' | 'unchanged' | 'failed'
+  reasons: string[]
+  commitHash?: Hash
+  isNewIdentity?: boolean
+  head: Head
+}
+
+/**
+ * 手动 / 程序化入世单个目录（`boot pack`）：与 seed 共用同一打包核心，整包一条原子 batch 直写。
+ * 身份不存在 → add_identity + add_gen；已存在 → 只 add_gen（不覆盖已有数据世代，只追加代码世代）。
+ * 坏包（坏声明 / 缺 plugin.json / 缺 schema / .worldignore 非法 / 引脚未解析）整批拒绝、世界分文未动。
+ */
+export function runPack(root: string, dir: string, identity?: string): PackReport {
+  const paths = hostPaths(root)
+  const lock = acquireLock(paths.lockFile, Date.now())
+  if (!lock.ok) throw new Error('writer_busy')
+  try {
+    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    const planned = planPack(anchor.world, resolve(root, dir), identity)
+    if (!planned.ok) {
+      return {
+        ok: false,
+        identity: identity ?? '',
+        status: 'failed',
+        reasons: planned.reasons,
+        head: anchor.head,
+      }
+    }
+    const plan = planned.plan
+    if (plan.unchanged) {
+      return {
+        ok: true,
+        identity: plan.identity,
+        status: 'unchanged',
+        reasons: [],
+        commitHash: plan.commitHash,
+        isNewIdentity: false,
+        head: anchor.head,
+      }
+    }
+    const request: WriteRequest = {
+      id: `pack-${randomUUID()}`,
+      op: 'batch',
+      target: { expect_pos: anchor.head.hash },
+      args: { ops: plan.ops },
+      by: 'pack',
+    }
+    const outcome = commit(anchor.head, anchor.world, request, Date.now())
+    if (!outcome.verdict.ok) {
+      return {
+        ok: false,
+        identity: plan.identity,
+        status: 'failed',
+        reasons: outcome.verdict.reasons,
+        head: anchor.head,
+      }
+    }
+    if (outcome.entry !== null) {
+      appendJournal(paths.journalFile, [outcome.entry])
+      anchor = {
+        ...anchor,
+        head: { seq: outcome.entry.seq, hash: outcome.hash as Hash },
+        entries: [...anchor.entries, outcome.entry],
+      }
+    }
+    return {
+      ok: true,
+      identity: plan.identity,
+      status: 'packed',
+      reasons: [],
+      commitHash: plan.commitHash,
+      isNewIdentity: plan.isNewIdentity,
+      head: anchor.head,
+    }
   } finally {
     releaseLock(paths.lockFile)
   }

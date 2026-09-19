@@ -14,13 +14,20 @@ describe('客户端 client', () => {
     root = createTempRoot()
     createToyPlugin(root)
     const { writeFileSync } = require('node:fs')
-    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]))
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]),
+    )
     runSeed(root)
     handle = await startHost({ root })
   })
 
   afterEach(async () => {
-    try { await handle.stop() } catch { /* ignore */ }
+    try {
+      await handle.stop()
+    } catch {
+      /* ignore */
+    }
     cleanupTempRoot(root)
   })
 
@@ -48,7 +55,18 @@ describe('客户端 client', () => {
   it('submit [write] → done，observations 含 write', async () => {
     const client = await connect({ root, timeoutMs: 2000 })
     try {
-      const result = await client.submit([{ kind: 'write', request: { id: 'w1', op: 'put', target: { expect_pos: null }, args: { body: { v: 1 } }, by: 'client' } }])
+      const result = await client.submit([
+        {
+          kind: 'write',
+          request: {
+            id: 'w1',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { v: 1 } },
+            by: 'client',
+          },
+        },
+      ])
       expect(result.status).toBe('done')
       expect(Array.isArray(result.observations)).toBe(true)
     } finally {
@@ -59,9 +77,13 @@ describe('客户端 client', () => {
   it('submit [eval(missing)] → refused，reasons 含 missing_ref', async () => {
     const client = await connect({ root, timeoutMs: 2000 })
     try {
-      const result = await client.submit([{ kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null as Json }])
+      const result = await client.submit([
+        { kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null as Json },
+      ])
       expect(result.status).toBe('refused')
-      const refusedObs = result.observations.find((o) => (o as Json & { kind: string }).kind === 'refused')
+      const refusedObs = result.observations.find(
+        (o) => (o as Json & { kind: string }).kind === 'refused',
+      )
       expect(refusedObs).toBeDefined()
       expect((refusedObs as Json & { reasons: string[] }).reasons).toContain('missing_ref')
     } finally {

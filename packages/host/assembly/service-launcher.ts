@@ -23,10 +23,23 @@ export interface ServiceLauncherDeps {
   world: World
   materializedDir: string
   handshakeTimeoutMs: number
+  /**
+   * 宿主侧服务启动包装器（最小沙箱形态）：只前置到 spawn 命令行，未配置 = 现状。
+   * 宿主不认识语言，也不据此改声明 / 契约。
+   */
+  startWrapper?: string
   onServiceEvent?: (impl: string, topic: string, payload: Json) => void
   onExtraDropped: (impl: string, gen: Hash, caps: string[]) => void
   onChannelClosed: (service: ServiceRuntime, reason: string) => void
   onExit: (service: ServiceRuntime, reason: string) => void
+}
+
+/**
+ * 拼接实际 spawn 命令：包装器命令片段前置到原 `start`，交给 shell 重新解析（跨平台同口径）。
+ * 未配置包装器 → 原样返回 `start`（零行为变化）。
+ */
+export function composeStartCommand(start: string, wrapper?: string): string {
+  return wrapper === undefined ? start : `${wrapper} ${start}`
 }
 
 /** 物化并拉起一个服务实例；起不来（物化 / spawn / 先死 / 握手不过）即抛错并清理。 */
@@ -38,7 +51,7 @@ export async function launchService(
 ): Promise<ServiceRuntime> {
   const cwd = materializeCommit(deps.world, gen, deps.materializedDir)
   if (cwd === null) throw new ServiceStartError('materialize_failed')
-  const child = spawn(decl.start, {
+  const child = spawn(composeStartCommand(decl.start, deps.startWrapper), {
     cwd,
     shell: true,
     windowsHide: true,

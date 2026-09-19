@@ -101,7 +101,7 @@ Chrono/
 - `boot` 是**唯一入口的薄壳**（genesis 常量），命令分三类：
   - `boot start`：起宿主（**唯一写者**）。
   - **客户端命令**（连运行中的宿主）：`boot run` / `boot status` / `boot stop` / `boot <命令>`。
-  - **离线命令**（宿主未运行）：`boot seed` / `verify` / `replay` / `compact` / `assets gc`。
+  - **离线命令**（宿主未运行）：`boot seed` / `pack` / `verify` / `replay` / `compact` / `assets gc`。
 - 连入站面的代码只有一处：`packages/client`；CLI 与"两身份"的前端插件共用它。
 - 装配包（`assembly`）**只读世界**，不 import `effect` / `ledger` 的写口。
 - `packages/kernel` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载。
@@ -132,10 +132,10 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 解析基准是**发出者身份**：一个 `eff` 归属于「当前 directive 入口 def 的属主」——宿主自己构造 directive，
   所以知道属主；`eff_id` 里的 directive 下标 `i` 给出是哪一条。
 - **`pin` 绑定的是被依赖身份，不是版本锁**。解析路径 = 发出者 `pins`（名 → 哈希）→ def → **属主身份**
-  → 该身份**当前 active 世代** → 端点表。被依赖身份换代时，宿主把发出者的解析目标重解析到新 active，
-  **发出者进程 / term / body 全不动**；pin 世代 ≠ 依赖 active 只记一条**漂移证据**，不阻塞。
+  → 该身份**当前代码世代**（`active` 是数据世代时取最近代码世代，见「装配」）→ 端点表。被依赖身份换代时，宿主把发出者的解析目标重解析到新代码世代，
+  **发出者进程 / term / body 全不动**；pin 世代 ≠ 依赖代码世代只记一条**漂移证据**，不阻塞。
 - **绝不回落旧世代**：依赖的新 active 装载失败 → 该调用 `not_loaded`，并按「装配」隔离该分支（不拿旧实现顶上）。
-- **端点表的键不含调用方**（`impl+gen+cap+method`，`gen` = 依赖当前 active 世代）——换实现只改 `pins` 指向，
+- **端点表的键不含调用方**（`impl+gen+cap+method`，`gen` = 依赖当前代码世代）——换实现只改 `pins` 指向，
   调用方与 term 都不用改。
 - `pin` 名 = 逻辑端点名 = 调用点写的 `port`；解析时按名查表，并要求该名 ∈ 目标身份声明的能力类（故别名必须是目标声明的能力类，见下）。
 - **降级链（同一逻辑能力多实现）**：`pins` 是 `名 → 单哈希`（内核冻结、不可多值），故降级用**多条别名 pin**表达，**不**把一个 pin 改多值。每个别名是一个**独立 pin 名**，指向**另一个身份**，且该别名必须是目标身份**声明的能力类**（解析时要求该别名 ∈ 目标身份声明的能力类，即强制此条）。降级顺序由 term 判定——先试主名，**eff 返回的 `value` 含错误描述**时再试别名（term 据值分支，非内核/宿主判定）；宿主对每个 pin 名机械解析，**不自动重试**（自动选优 = 宿主业务）。换某别名指向的身份 = 改 `pins`（写新世代、显式记账）；换同一身份的实现 = `set_active`（换代，不碰 `pins`）。
@@ -146,8 +146,13 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 **装配**
 
-- 闭包沿 `pins` **只读**遍历（规矩 A）；`pins` 指向**被依赖身份**，闭包落到各身份的**当前 active 世代**；
+- 闭包沿 `pins` **只读**遍历（规矩 A）；`pins` 指向**被依赖身份**，闭包落到各身份的**当前代码世代**；
   拓扑序 = 服务启动顺序（被依赖者先起）。
+- **世代二分（同身份混合世代）**：`gens` 里每个世代要么是**代码世代**（payload 指向 `commit` def，即
+  `world.defs[payload].body.tree` 是字符串），要么是**数据世代**（payload 指向数据 def）。**装配解析声明 / `pins`
+  一律按「当前代码世代」**：`active` 本身是代码世代则取 `active`（尊重 `set_active` 回滚），`active` 是数据世代
+  则取**最近代码世代**；找不到可解析的代码世代 ⇒ 该身份不参与装配（fail-closed，不回落更旧世代）。
+  数据世代只影响投影读侧（`.body`），不影响装载与路由。
 - **坏分支只隔离，不整体拒绝**：`pins` 成环（Tarjan SCC）时，环成员**及其依赖者**（反向可达）
   标 `not_loaded` + 记 `dep.cycle`，其余照常启动。
 - `stale()` 判定口径在 `kernel.md` §九（def ↔ 本身份 active 世代的一致性）；宿主 **fail-closed**：
@@ -167,6 +172,21 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 身份的 `schema`（`Identity.schema`）= `plugin.json.schema` 指向的包内文件——它是该身份的**自述 / 数据契约**（描述本身份声明的数据形态；数据、非特权，`kernel.md` §四 / §十一），入世解析成 def 哈希写进 `Identity.schema`。宿主对 `plugin.json` 形状的元校验是**宿主侧另一份 schema**，不占此字段。`Identity.schema` 在身份诞生（`add_identity` / `fork`）时固定；换代（`add_gen`）不带 schema——**要改数据契约须 `fork` 新身份**（内核无 set_schema op）。
 - 工作副本落 `state/runtime/`（③ 可重算），**永不进世界**；复用前校验宿主标记，标记缺失 / 不符即整目录重物化；服务写进物化目录的文件不是源码树的一部分、不保证跨代保留（**不得当持久层**）。依赖安装 / 构建 / 起服务全归插件的 `decl.start`，宿主**不认识语言、不执行 npm、不做编译**。
 - **起服务**：宿主 spawn `decl.start` 并接管其 **stdin/stdout**（服务协议走 stdio，见 `docs/protocol.md` §一 / §二）；服务日志走 stderr，stdout 只许协议帧。
+
+**入世路径（seed / pack）**
+
+- 两条入世路径**共用同一套打包规则**（通用排除 `node_modules` / `.git` + 包内 `.worldignore`，契约必需文件不可排除），故同一目录、同一身份产出**相同的源码 tree 与 commit 哈希**：
+  - `seed`：按 `state/plugins.json` 清单**批量**入世（缺省读清单；也可给若干包路径）。
+  - `pack`：**单个目录**手动 / 程序化入世（`boot pack <目录> --identity <身份名>`）。
+- 两者都把「一个包 = 一条原子 `batch`」直写 `commit`：身份不存在则 `add_identity` + `add_gen`；身份已存在则只 `add_gen`（追加代码世代，不覆盖既有数据世代；同内容重复入世为 `unchanged`）。坏包（坏声明 / 缺 `plugin.json` / 缺 `schema` / `.worldignore` 非法 / 引脚未解析）**整批拒绝、世界分文未动**，报结构化原因。
+- `pack` 的 `--identity` 必须与包内 `plugin.json.identity` **一致**，不一致即拒（`identity_mismatch`）——命名即契约，身份名只有一个来源。
+- **退出码**：`seed` / `pack` 有任一条目 `failed`（即报告 `ok:false`）时 CLI **退出码非 0**（结构化报告照常打印）；仅用法错误与其它异常退出 1。
+
+**服务启动包装器**
+
+- 宿主**不选沙箱后端**，只允许配置一个**包装器命令**把插件 `start` 包住（宿主仍不认识语言）：配置后实际 spawn 命令 = 包装器 + 原 `start`；未配置 = 现状（零行为变化）。
+- 配置优先级与调用超时同规：**CLI（`--start-wrapper`）> 环境（`CHRONO_START_WRAPPER`）> 无**。
+- 包装器**只影响 spawn 命令行**：不参与声明解析、不改 `plugin.json` 契约、不引入「特权插件」；非法值（空 / 纯空白 / 含 NUL 或换行）**fail-closed 拒启动**，并记一条 `host` `start_failed`（reason `bad_start_wrapper`）运维日志。
 
 **效果**
 
@@ -227,7 +247,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - `args` 按 `argsSchema` 的 **JSON Schema 白名单子集**（方言见 `plugins.md` §二）机械校验；不符 → `bad_args`，
   **不构造 directive、不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`；**只查形态，不查语义**。
 - 命令**不是旁路**：判定仍是 term、写仍经「落账」；宿主不认识命令语义，只按声明路由。
-- 宿主命令名（`start` / `stop` / `run` / `status` / `seed` / `verify` / `replay`）是**保留字**，插件命令不得占用。
+- 宿主命令名（`start` / `stop` / `run` / `status` / `seed` / `pack` / `verify` / `replay` / `compact` / `audit` / `assets`）是**保留字**，插件命令不得占用；CLI 另有 `commands` / `help` 两个自有命令（不转发宿主）。
 - 命令清单由宿主从声明读出——客户端没有世界。
 - 发起者提交 `directive` / 命令时携带 `caps` / `limits`，宿主**透传不扩权**（缺省由宿主补默认预算；
   内核保证 `EffRequest.caps` 恒等于输入）；`now` 由宿主固定，不由客户端给。
@@ -241,7 +261,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   { head:{seq,hash}, world_rev,
     ids: { <身份id>: { active: Hash|null, gens:[{seq,payload}], body: Json|null } } }
   ```
-  `gens` **不含履历**（`adopted` / `born`；与 `world_rev` 摘要口径一致）；`body` = active 世代 payload def 的 body（宿主解析；无则 `null`）；
+  `gens` **不含履历**（`adopted` / `born`；与 `world_rev` 摘要口径一致）；`body` = **最近数据世代的 payload def
+  body**（宿主解析；无数据世代则回落 active 世代 def body；都无则 `null`）；
   **不给 `defs` 表**（哈希键静态不可达）、**不含源码 tree/blob**。按引用构造，O(#身份)，不深拷贝。
 - **注入规则（三路统一）**：eval 的 `ctx` **字段缺省 ⇒ 宿主投影；显式给出（含 `null`）⇒ 原样透传**
   （客户端提交 / 命令 / plan 同规）。投影**按需构造**：含 eval 的轮构造一次、该轮 eval 共享（轮内 eval 不推进世界），
@@ -249,8 +270,11 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 **世代**
 
-- 触发 = 链头推进且**本插件自身 active 换代**（依赖换代不触发，见「路由」）；
+- 触发 = 链头推进且**本插件自身代码世代换代**（依赖换代不触发，见「路由」）；
   改**数据** → 进程不动、热生效；改**代码** → 新服务 + 旧服务 drain。
+- **数据世代不触发跟随**（G7 A1）：`active` 在代码 / 数据世代之间移动（写数据、`set_active` 指到数据世代）
+  **不判 `dep.stale`、不隔离、不动服务**；只有**当前代码世代**变化才走上面的换代逻辑。
+  `dep.stale` 判据 = 该身份**找不到可解析的代码世代** / 该代码世代 stale。
 - **数据 / 代码判据（机械，按 `members` 声明）**：跨代比对声明成员路径及其解析内容（文件 / 子树哈希）——
   任一 `execute` 成员路径增删或内容变化 ⇒ **代码**；仅 `term` / `schema` 成员变化 ⇒ **数据**；
   两类都有 ⇒ 代码（保守起新服务）；同一路径被 `execute` 与 `term` / `schema` 同时声明时 `execute` 优先。
@@ -304,7 +328,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
   | `kind` | `event` | 载荷 | 触发 |
   | --- | --- | --- | --- |
-  | `host` | `start` / `stop` | — | 宿主自起停 |
+  | `host` | `start` / `stop` / `start_failed` | `reason?` | 宿主自起停 / 启动选项非法 |
   | `dep` | `cycle` / `stale` / `drift` / `retired` | `impl`, `cap?` | 装配解析 / 依赖退役 |
   | `handshake` | `failed` / `extra_dropped` | `impl`, `gen`, `caps?` | 握手校验 |
   | `service` | `start_failed` / `exit` / `restart_exhausted` | `impl`, `gen`, `reason?` | 起服务 / 进程 |
@@ -335,3 +359,5 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 不做 `event` 背压 / 订阅过滤 / 持久——`event` 无 ack、无客户端即丢、无 topic 订阅（见 `docs/protocol.md` §三）。
 - 不做命令发现的授权过滤——`caps` 闸执行不闸发现；v1 单机受信。
 - 不做并发 `submit` 的抢占调度——多 `submit` FIFO 串行（单写者）；`status` 非阻塞快照、可能瞬态。
+- **不做结构 op（改 / 加插件）的审批闸门**——那属上层能力，不属载体。载体只保证：写口唯一（一切写经 `commit` 四步校验）、坏分支只隔离（fail-closed，绝不回落旧世代）。⇒ **人类审批必须落在上层**；否则世界里的数据可以命令宿主持久化并 spawn 新进程执行任意内容。
+- **运行期写出的包不过入世门禁（已知不对称，已决：接受并记风险）**：`boot seed` 走 ingest 的全套门禁（声明形状 / 路径约束 / `argsSchema` 方言 / term 环 / `.worldignore`），而运行期 `add_gen` 写包只走 `commit` 的形态 / 引用 / 位置 / 不变量校验，宿主仅在命令路径补一次 `argsSchema` 方言元校验。兜底：坏声明由装配期 `parsePluginDecl` 拦下 → 该分支隔离，不炸宿主；但坏 schema / 坏 term 可能到运行时才暴露。

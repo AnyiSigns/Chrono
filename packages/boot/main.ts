@@ -11,8 +11,10 @@ import {
   parseEntryArgv,
   resolveCallTimeoutMs,
   resolveRoot,
+  resolveStartWrapper,
   runAssetGc,
   runCompact,
+  runPack,
   runReplay,
   runSeed,
   runVerify,
@@ -27,6 +29,7 @@ const RESERVED = new Set([
   'run',
   'status',
   'seed',
+  'pack',
   'verify',
   'replay',
   'compact',
@@ -55,9 +58,10 @@ function helpText(): string {
     '用法：boot <命令> [--root <路径>] [参数]',
     '',
     '宿主：',
-    '  start [--call-timeout-ms <ms>]',
+    '  start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]',
     '                              起宿主（唯一写者，后台进程）；超时缺省读',
-    '                              CHRONO_CALL_TIMEOUT_MS，再缺省 30000',
+    '                              CHRONO_CALL_TIMEOUT_MS，再缺省 30000；',
+    '                              包装器缺省读 CHRONO_START_WRAPPER，再缺省无',
     '  stop                        令宿主停机',
     '  status                      查看链头与已装载身份',
     '',
@@ -68,7 +72,8 @@ function helpText(): string {
     '  <命令名> [args-json]         按声明调用插件命令',
     '',
     '离线（宿主未运行）：',
-    '  seed [包路径...]             入世（缺省读 state/plugins.json）',
+    '  seed [包路径...]             入世（缺省读 state/plugins.json，批量）',
+    '  pack <目录> --identity <id>  入世单个插件目录（手动 / 程序化）',
     '  verify                      全量校验 journal',
     '  replay                      全量重放并给出内容摘要',
     '  compact                     压缩：追加快照 + 冷段归档 + 写基础世界',
@@ -102,24 +107,54 @@ async function waitForHost(root: string, timeoutMs: number): Promise<void> {
   }
 }
 
-async function startHostProcess(root: string, callTimeoutMs: number): Promise<void> {
-  const child = spawn(
-    process.execPath,
-    [HOST_MAIN, '--root', root, '--call-timeout-ms', String(callTimeoutMs)],
-    {
-      detached: true,
-      stdio: 'ignore',
-      cwd: root,
-    },
-  )
+async function startHostProcess(
+  root: string,
+  callTimeoutMs: number,
+  startWrapper: string | undefined,
+): Promise<void> {
+  const hostArgs = [HOST_MAIN, '--root', root, '--call-timeout-ms', String(callTimeoutMs)]
+  if (startWrapper !== undefined) hostArgs.push('--start-wrapper', startWrapper)
+  const child = spawn(process.execPath, hostArgs, {
+    detached: true,
+    stdio: 'ignore',
+    cwd: root,
+  })
   child.unref()
   await waitForHost(root, 10_000)
-  print({ ok: true, root, pid: child.pid, call_timeout_ms: callTimeoutMs })
+  print({
+    ok: true,
+    root,
+    pid: child.pid,
+    call_timeout_ms: callTimeoutMs,
+    start_wrapper: startWrapper ?? null,
+  })
 }
 
 function seedEntries(args: string[]): PluginEntry[] | undefined {
   if (args.length === 0) return undefined
   return args.map((path) => ({ name: basename(path), path }))
+}
+
+/** `pack <目录> --identity <id>`：目录与身份名都必填，多余参数 / 未知 flag fail-closed。 */
+function packArgs(args: string[]): { dir: string; identity: string } {
+  let dir: string | undefined
+  let identity: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]
+    if (token === '--identity') {
+      const next = i + 1 < args.length ? args[i + 1] : undefined
+      if (next === undefined || next.startsWith('--')) throw new Error('missing_identity')
+      identity = next
+      i += 1
+      continue
+    }
+    if (token.startsWith('--')) throw new Error(`unknown_flag: ${token}`)
+    if (dir === undefined) dir = token
+    else throw new Error(`unexpected_arg: ${token}`)
+  }
+  if (dir === undefined) throw new Error('missing_dir')
+  if (identity === undefined) throw new Error('missing_identity')
+  return { dir, identity }
 }
 
 async function main(): Promise<void> {
@@ -137,6 +172,7 @@ async function main(): Promise<void> {
       await startHostProcess(
         root,
         resolveCallTimeoutMs(parsed.callTimeout, process.env['CHRONO_CALL_TIMEOUT_MS']),
+        resolveStartWrapper(parsed.startWrapper, process.env['CHRONO_START_WRAPPER']),
       )
       return
     case 'stop':
@@ -165,9 +201,19 @@ async function main(): Promise<void> {
         print(await client.submit(directives as Directive[]))
       })
       return
-    case 'seed':
-      print(runSeed(root, seedEntries(args)))
+    case 'seed': {
+      const report = runSeed(root, seedEntries(args))
+      print(report)
+      if (!report.ok) process.exitCode = 1
       return
+    }
+    case 'pack': {
+      const { dir, identity } = packArgs(args)
+      const report = runPack(root, dir, identity)
+      print(report)
+      if (!report.ok) process.exitCode = 1
+      return
+    }
     case 'verify':
       print(runVerify(root))
       return

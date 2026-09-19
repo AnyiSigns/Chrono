@@ -1,8 +1,9 @@
-// 宿主进程入口：只解析根目录、调用超时与信号，其余全部交给 startHost。
+// 宿主进程入口：只解析根目录、调用超时、启动包装器与信号，其余全部交给 startHost。
 
 import { startHost } from './host.ts'
-import { parseEntryArgv, resolveCallTimeoutMs } from './options.ts'
-import { resolveRoot } from './paths.ts'
+import { appendLifecycle } from './lifecycle.ts'
+import { parseEntryArgv, resolveCallTimeoutMs, resolveStartWrapper } from './options.ts'
+import { hostPaths, resolveRoot } from './paths.ts'
 
 try {
   const parsed = parseEntryArgv(process.argv.slice(2))
@@ -11,8 +12,23 @@ try {
     parsed.callTimeout,
     process.env['CHRONO_CALL_TIMEOUT_MS'],
   )
-  const handle = await startHost({ root, callTimeoutMs })
-  process.stdout.write(`host listening ${handle.socket} call_timeout_ms=${callTimeoutMs}\n`)
+  let startWrapper: string | undefined
+  try {
+    startWrapper = resolveStartWrapper(parsed.startWrapper, process.env['CHRONO_START_WRAPPER'])
+  } catch (err) {
+    // 包装器非法：fail-closed 拒启动，并留一条运维日志（不进世界、不进链）
+    appendLifecycle(hostPaths(root).lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: 'start_failed',
+      reason: 'bad_start_wrapper',
+    })
+    throw err
+  }
+  const handle = await startHost({ root, callTimeoutMs, startWrapper })
+  process.stdout.write(
+    `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'}\n`,
+  )
   const shutdown = (): void => {
     void handle.stop().then(() => process.exit(0))
   }

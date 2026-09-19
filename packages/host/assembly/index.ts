@@ -4,6 +4,10 @@
 export { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
 export type { AssemblyPlan, DependencyEdge, IsolatedIdentity, IsolatedReason } from './closure.ts'
 export {
+  assemblyGen,
+  isCodeGen,
+  latestCodeGen,
+  latestDataGen,
   listCommands,
   parsePluginDecl,
   readPluginDecl,
@@ -27,7 +31,7 @@ export { classifyGenerationChange } from './generation.ts'
 export type { GenerationChange } from './generation.ts'
 export { validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
-export { planIngest } from './ingest.ts'
+export { planIngest, planPack } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
 export { materializeCommit } from './materialize.ts'
 export { startAssembly } from './runtime.ts'

@@ -131,4 +131,48 @@ describe('A14 base_only 投影', () => {
     expect(world.ids['toy-alpha'].active).toBe(PAYLOAD)
     expect(head.seq).toBe(1)
   })
+
+  it('G7 A1：body 取最近数据世代；active 保持链上原义（数据世代 / 代码世代都可为 active）', () => {
+    const world = injectedWorld()
+    const dataPayload: Hash = '1'.repeat(64)
+    const newerCode: Hash = '2'.repeat(64)
+    world.defs[dataPayload] = { body: { hello: 'data' } }
+    world.defs[newerCode] = { body: { tree: 'tree-2', meta: { name: 'toy-alpha' } } }
+    // gens：commit0(PAYLOAD) → 数据(dataPayload) → 新 commit(newerCode)，active 指数据世代
+    world.ids['toy-alpha'].gens.push(
+      {
+        seq: 1,
+        payload: dataPayload,
+        pins: {},
+        sig: dataPayload,
+        adopted: { at: 8, by: 'client', write: 'w-2' },
+      },
+      {
+        seq: 2,
+        payload: newerCode,
+        pins: {},
+        sig: newerCode,
+        adopted: { at: 9, by: 'client', write: 'w-3' },
+      },
+    )
+    world.ids['toy-alpha'].active = dataPayload
+
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['toy-alpha'].active).toBe(dataPayload)
+    expect(view.ids['toy-alpha'].gens).toHaveLength(3)
+    // 最近数据世代优先于 active（active 恰好是数据）也优先于更晚的代码世代
+    expect(view.ids['toy-alpha'].body).toEqual({ hello: 'data' })
+
+    // active 指回代码世代：body 仍是最近数据世代（读侧拿到数据）
+    world.ids['toy-alpha'].active = newerCode
+    const view2 = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view2.ids['toy-alpha'].active).toBe(newerCode)
+    expect(view2.ids['toy-alpha'].body).toEqual({ hello: 'data' })
+  })
+
+  it('G7 A1：无数据世代时 body 回落 active（代码 / commit def body）', () => {
+    const world = injectedWorld()
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['toy-alpha'].body).toEqual({ tree: 'tree-hash', meta: { name: 'toy-alpha' } })
+  })
 })

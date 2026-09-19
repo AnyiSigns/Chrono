@@ -145,4 +145,93 @@ describe('CLI 薄壳 boot', () => {
     expect(bad.stderr).toContain('bad_call_timeout')
     expect(bad.stdout).toBe('')
   })
+
+  it('pack：单目录入世（--identity 指定身份名）', async () => {
+    const result = await runBoot([
+      'pack',
+      join(root, 'pkg', 'toy'),
+      '--identity',
+      'toy',
+      '--root',
+      root,
+    ])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as { ok: boolean; identity: string; status: string }
+    expect(report.ok).toBe(true)
+    expect(report.identity).toBe('toy')
+    expect(report.status).toBe('packed')
+  })
+
+  it('pack：坏包 → 结构化报告 ok:false 且退出码非 0', async () => {
+    const result = await runBoot(['pack', join(root, 'nope'), '--identity', 'nope', '--root', root])
+    expect(result.code).toBe(1)
+    const report = JSON.parse(result.stdout) as { ok: boolean; reasons: string[] }
+    expect(report.ok).toBe(false)
+    expect(report.reasons).toEqual(['package_not_found'])
+  })
+
+  it('pack：--identity 与包内 plugin.json.identity 不一致 → identity_mismatch、退出码非 0', async () => {
+    const result = await runBoot([
+      'pack',
+      join(root, 'pkg', 'toy'),
+      '--identity',
+      'other',
+      '--root',
+      root,
+    ])
+    expect(result.code).toBe(1)
+    const report = JSON.parse(result.stdout) as { ok: boolean; reasons: string[] }
+    expect(report.ok).toBe(false)
+    expect(report.reasons).toEqual(['identity_mismatch'])
+  })
+
+  it('seed：坏包 → 退出码非 0（与 pack 同规）', async () => {
+    const result = await runBoot(['seed', join(root, 'nope'), '--root', root])
+    expect(result.code).toBe(1)
+    const report = JSON.parse(result.stdout) as { ok: boolean; items: { status: string }[] }
+    expect(report.ok).toBe(false)
+    expect(report.items[0]!.status).toBe('failed')
+  })
+
+  it('pack：缺目录 / 缺 --identity → 退出码 1', async () => {
+    const noDir = await runBoot(['pack', '--identity', 'toy', '--root', root])
+    expect(noDir.code).toBe(1)
+    expect(noDir.stderr).toContain('missing_dir')
+
+    const noIdentity = await runBoot(['pack', join(root, 'pkg', 'toy'), '--root', root])
+    expect(noIdentity.code).toBe(1)
+    expect(noIdentity.stderr).toContain('missing_identity')
+  })
+
+  it('start 包装器优先级：CLI > env，未配置打印 null', async () => {
+    const started: number[] = []
+    try {
+      const cli = await runBoot(['start', '--root', root, '--start-wrapper', 'wrap-cli'], {
+        CHRONO_START_WRAPPER: 'wrap-env',
+      })
+      expect(cli.code).toBe(0)
+      const first = JSON.parse(cli.stdout) as { pid: number; start_wrapper: string | null }
+      expect(first.start_wrapper).toBe('wrap-cli')
+      started.push(first.pid)
+      await stopHost(root)
+
+      const envOnly = await runBoot(['start', '--root', root], {
+        CHRONO_START_WRAPPER: 'wrap-env',
+      })
+      expect(envOnly.code).toBe(0)
+      const second = JSON.parse(envOnly.stdout) as { pid: number; start_wrapper: string | null }
+      expect(second.start_wrapper).toBe('wrap-env')
+      started.push(second.pid)
+    } finally {
+      await stopHost(root)
+      for (const pid of started) await killProcessTree(pid)
+    }
+  })
+
+  it('start 非法包装器 → 退出码 1、报 bad_start_wrapper、不起宿主', async () => {
+    const bad = await runBoot(['start', '--root', root, '--start-wrapper', '   '])
+    expect(bad.code).toBe(1)
+    expect(bad.stderr).toContain('bad_start_wrapper')
+    expect(bad.stdout).toBe('')
+  })
 })

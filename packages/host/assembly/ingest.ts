@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { validateArgsSchema } from './args-schema.ts'
-import { parsePluginDecl, termDefOf } from './decl.ts'
+import { parsePluginDecl, termDefOf, latestCodeGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
 import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from './term-refs.ts'
@@ -198,7 +198,7 @@ function planTerms(
 
 function planIdentity(
   world: World,
-  decl: PluginDecl,
+  identity: string,
   pins: Record<string, Hash>,
   ops: Json[],
   commitIndex: number,
@@ -206,26 +206,31 @@ function planIdentity(
   commitHash: Hash,
   schemaHash: Hash,
 ): IngestPlan {
-  const isNewIdentity = world.ids[decl.identity] === undefined
+  const isNewIdentity = world.ids[identity] === undefined
   if (isNewIdentity) {
-    ops.push({ op: 'add_identity', args: { id: decl.identity, schema: { $n: schemaIndex } } })
+    ops.push({ op: 'add_identity', args: { id: identity, schema: { $n: schemaIndex } } })
   }
   ops.push({
     op: 'add_gen',
-    args: { id: decl.identity, payload: { $n: commitIndex }, pins, sig: { $n: commitIndex } },
+    args: { id: identity, payload: { $n: commitIndex }, pins, sig: { $n: commitIndex } },
   })
-  return { identity: decl.identity, ops, isNewIdentity, commitHash, schemaHash, unchanged: false }
+  return { identity, ops, isNewIdentity, commitHash, schemaHash, unchanged: false }
 }
 
-/** 解析一个插件包并构造入世 batch 计划；不改世界、不落账。 */
-export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
-  const pkgRoot = resolvePackageRoot(entry, root)
-  if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
+/**
+ * 已解析包根的入世核心：`identity` 缺省取 `plugin.json.identity`（seed 路径）；
+ * `pack` 显式给出身份名时必须与包内声明**一致**（命名即契约，单源），不一致即拒。
+ */
+function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: string): IngestResult {
   const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
   if (rawDecl === undefined) return { ok: false, reasons: ['missing_plugin_json'] }
   const parsed = parsePluginDecl(rawDecl)
   if (!parsed.ok) return parsed
   const decl = parsed.decl
+  if (identityOverride !== undefined && identityOverride !== decl.identity) {
+    return { ok: false, reasons: ['identity_mismatch'] }
+  }
+  const identity = identityOverride ?? decl.identity
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
 
   const worldignore = readWorldignore(pkgRoot)
@@ -243,7 +248,7 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
 
   const packed = packSourceDir(pkgRoot, worldignore.patterns)
   const ops: Json[] = [...packed.ops]
-  const meta = { name: decl.identity, version: readPackageVersion(pkgRoot) }
+  const meta = { name: identity, version: readPackageVersion(pkgRoot) }
   const commitHash = H({ body: { tree: packed.rootTreeHash, meta } } as unknown as Json)
   const commitIndex = ops.length
   ops.push({ op: 'put', args: { body: { tree: { $n: packed.rootTreeIndex }, meta } } })
@@ -270,12 +275,13 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
     ops.push({ op: 'put', args: { body: schema } })
   }
 
-  const existing = world.ids[decl.identity]
-  if (existing && existing.active === commitHash) {
+  const existing = world.ids[identity]
+  // G7 A1：包未变 = 「最近代码世代就是本包 commit」（active 可能已被数据世代占据）
+  if (existing && latestCodeGen(world, identity)?.payload === commitHash) {
     return {
       ok: true,
       plan: {
-        identity: decl.identity,
+        identity,
         ops: [],
         isNewIdentity: false,
         commitHash,
@@ -286,6 +292,36 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
   }
   return {
     ok: true,
-    plan: planIdentity(world, decl, pins, ops, commitIndex, schemaIndex, commitHash, schemaHash),
+    plan: planIdentity(
+      world,
+      identity,
+      pins,
+      ops,
+      commitIndex,
+      schemaIndex,
+      commitHash,
+      schemaHash,
+    ),
   }
+}
+
+/** 解析一个插件包并构造入世 batch 计划；不改世界、不落账。 */
+export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
+  const pkgRoot = resolvePackageRoot(entry, root)
+  if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
+  return planIngestAtRoot(world, pkgRoot)
+}
+
+/**
+ * 手动 / 程序化入世一个目录（`boot pack` 的纯计划面）：与 seed 共用同一打包核心
+ * （`packSourceDir` + `.worldignore` + 通用排除），故同一目录同一身份产出同一 tree / commit 哈希。
+ * `identity` 缺省取 `plugin.json.identity`；显式给出时作为世界身份与 `commit.meta.name`。
+ */
+export function planPack(world: World, dir: string, identity?: string): IngestResult {
+  const pkgRoot = resolve(dir)
+  if (!existsSync(pkgRoot)) return { ok: false, reasons: ['package_not_found'] }
+  if (!existsSync(join(pkgRoot, 'plugin.json'))) {
+    return { ok: false, reasons: ['missing_plugin_json'] }
+  }
+  return planIngestAtRoot(world, pkgRoot, identity)
 }

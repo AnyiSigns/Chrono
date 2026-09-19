@@ -71,6 +71,7 @@ const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'run',
   'status',
   'seed',
+  'pack',
   'verify',
   'replay',
   'compact',
@@ -216,12 +217,61 @@ export function readPluginDeclOfGen(world: World, gen: Gen): DeclRead | null {
   return result.ok ? { decl: result.decl, gen, tree } : null
 }
 
-/** 读身份当前 active 世代的 `plugin.json`；缺任一步返回 null。 */
+/**
+ * 世代二分（G7 A1）：payload def 的 body.tree 是字符串 ⇒ 代码世代（指向 commit def）；
+ * 其余（payload 指向数据 def）为数据世代。只做机械形态判断，不解析 plugin.json。
+ */
+export function isCodeGen(world: World, gen: Gen): boolean {
+  const body = world.defs[gen.payload]?.body
+  return typeof (body as { tree?: Json } | undefined)?.tree === 'string'
+}
+
+/** 最近的代码世代（`gens` 从后往前第一个 commit def）；无则 null。 */
+export function latestCodeGen(world: World, identityId: string): Gen | null {
+  const identity = world.ids[identityId]
+  if (identity === undefined) return null
+  for (let i = identity.gens.length - 1; i >= 0; i--) {
+    if (isCodeGen(world, identity.gens[i])) return identity.gens[i]
+  }
+  return null
+}
+
+/** 最近的数据世代（payload def 存在且非 commit def）；无则 null（投影 `body` 取它）。 */
+export function latestDataGen(world: World, identityId: string): Gen | null {
+  const identity = world.ids[identityId]
+  if (identity === undefined) return null
+  for (let i = identity.gens.length - 1; i >= 0; i--) {
+    const gen = identity.gens[i]
+    if (world.defs[gen.payload] === undefined) continue
+    if (!isCodeGen(world, gen)) return gen
+  }
+  return null
+}
+
+/**
+ * 装配取用世代（G7 A1）：active 是代码世代 ⇒ 取 active（尊重 `set_active` 回滚）；
+ * active 是数据世代 ⇒ 取最近代码世代（装配按最近 commit 解析）；
+ * 无代码世代（合成世界 / 无 tree 世代）回落 active；`active=null`（retired）→ null。
+ */
+export function assemblyGen(world: World, identityId: string): Gen | null {
+  const identity = world.ids[identityId]
+  if (identity === undefined || identity.active === null) return null
+  const activeGen = identity.gens.find((gen) => gen.payload === identity.active) ?? null
+  if (activeGen !== null && isCodeGen(world, activeGen)) return activeGen
+  const code = latestCodeGen(world, identityId)
+  if (code !== null) return code
+  return activeGen
+}
+
+/**
+ * 读身份装配世代的 `plugin.json`（G7 A1）：数据世代不参与声明解析；
+ * 无代码世代 / 装配世代的 `plugin.json` 不可解析 → null（fail-closed，不回落更旧世代）。
+ */
 export function readPluginDecl(world: World, identityId: string): DeclRead | null {
   const identity = world.ids[identityId]
   if (!identity || identity.active === null) return null
-  const gen = identity.gens.find((g) => g.payload === identity.active)
-  if (!gen) return null
+  const gen = assemblyGen(world, identityId)
+  if (gen === null) return null
   return readPluginDeclOfGen(world, gen)
 }
 

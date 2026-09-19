@@ -1,11 +1,12 @@
 // 装配运行时：装配计划 → 实际服务进程（物化 / 握手 / 健康重启 / 换代跟随 / 停机）。
 // 只读世界：不写链、不改 active；生命周期事件经注入的 log 落运维日志（state/lifecycle.log）。
 // 坏分支只隔离：握手不过 / 重启超限 / 依赖退役 → 该身份及其依赖者标 not_loaded，其余照常。
-// A6 换代跟随：链头推进后比对世界，本插件自身 active 换代才动作——数据热生效（reload/ack，
+// A6 换代跟随：链头推进后比对世界，本插件自身**代码世代**换代才动作——数据热生效（reload/ack，
 // 进程不动）/ 代码起新服务（旧服务 drain）；依赖换代不重装（A1 重解析路由），依赖退役则隔离。
+// G7 A1：数据世代（同身份混合世代）变化不触发跟随 / 隔离 / 服务动作。
 
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
-import { readPluginDecl, readPluginDeclOfGen } from './decl.ts'
+import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { classifyGenerationChange } from './generation.ts'
 import { launchService } from './service-launcher.ts'
@@ -58,6 +59,8 @@ export interface StartAssemblyOptions {
   handshakeTimeoutMs?: number
   /** 测试可注入更短的 reload/ack 超时；缺省 10s。 */
   reloadTimeoutMs?: number
+  /** 服务启动包装器（宿主侧最小沙箱形态）；缺省无（零行为变化）。 */
+  startWrapper?: string
 }
 
 type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
@@ -72,6 +75,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly onEvent?: (impl: string, topic: string, payload: Json) => void
   private readonly handshakeTimeoutMs: number
   private readonly reloadTimeoutMs: number
+  private readonly startWrapper: string | undefined
   private readonly paths: HostPaths
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
@@ -88,14 +92,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.onEvent = options.onEvent
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
     this.reloadTimeoutMs = options.reloadTimeoutMs ?? DEFAULT_RELOAD_TIMEOUT_MS
+    this.startWrapper = options.startWrapper
     this.paths = hostPaths(options.root)
     this.plan = computeAssemblyPlan(options.world)
     this.ownerIndex = buildOwnerIndex(options.world)
   }
 
   /**
-   * A6 换代跟随：世界推进后，只对本插件**自身 active 换代**动作（依赖换代不重装）；
+   * A6 换代跟随：世界推进后，只对本插件**自身代码世代换代**动作（依赖换代不重装）；
    * `retire` / `set_active(null)` 走运行期 fail-closed 隔离（反向可达的发出者一并下线）。
+   * G7 A1：数据世代变化（active 在代码 / 数据世代间移动）**不判 stale、不隔离、不动服务**。
    * 只读新世界、只改运行态（端点表 / 进程 / 隔离集），不写链、不改 active。
    */
   async applyWorld(next: World): Promise<void> {
@@ -108,11 +114,18 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     const changed: string[] = []
     const retired: string[] = []
     for (const id of [...ids].sort()) {
-      const before = prev.ids[id]?.active ?? null
-      const after = next.ids[id]?.active ?? null
-      if (before === after) continue
-      if (after === null) retired.push(id)
-      else changed.push(id)
+      const beforeIdentity = prev.ids[id]
+      const beforeActive = beforeIdentity?.active ?? null
+      const afterActive = next.ids[id]?.active ?? null
+      if (afterActive === null) {
+        if (beforeActive !== null) retired.push(id)
+        continue
+      }
+      const beforeCode =
+        beforeIdentity === undefined ? null : (assemblyGen(prev, id)?.payload ?? null)
+      const afterCode = assemblyGen(next, id)?.payload ?? null
+      // 代码世代变化才跟随；数据世代变化（beforeCode === afterCode）不动作
+      if (beforeCode !== afterCode || beforeActive === null) changed.push(id)
     }
     for (const id of changed) await this.followGeneration(prev, next, id)
     for (const id of retired) this.retireBranch(id)
@@ -133,7 +146,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     const out: LoadedIdentity[] = []
     for (const id of Object.keys(this.world.ids).sort()) {
       if (!this.loadedIds.has(id)) continue
-      const gen = this.activeGen(id)
+      const gen = this.assemblyGenOf(id)
       if (gen !== null) out.push({ id, gen: gen.payload, service: this.services.has(id) })
     }
     return out
@@ -170,10 +183,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.log({ at: Date.now(), kind, event, ...fields })
   }
 
-  private activeGen(id: string): Gen | null {
-    const identity = this.world.ids[id]
-    if (identity === undefined || identity.active === null) return null
-    return identity.gens.find((gen) => gen.payload === identity.active) ?? null
+  /** 装配取用世代（G7 A1）：最近代码世代；无代码世代回落 active；retired → null。 */
+  private assemblyGenOf(id: string): Gen | null {
+    return assemblyGen(this.world, id)
   }
 
   /** 依赖图（谁 pins 谁）按当前世界重算：换代会改 pins，退役隔离靠它取反向可达。 */
@@ -181,7 +193,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.depsOf.clear()
     this.dependents.clear()
     for (const id of Object.keys(this.world.ids).sort()) {
-      const gen = this.activeGen(id)
+      const gen = this.assemblyGenOf(id)
       const deps = new Set<string>()
       for (const pin of Object.values(gen?.pins ?? {})) {
         const owner = this.ownerIndex.get(pin)
@@ -226,16 +238,13 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       return
     }
     const read = readPluginDecl(this.world, id)
-    const gen = this.activeGen(id)
-    if (read === null || gen === null) {
-      this.record('service', 'start_failed', {
-        impl: id,
-        gen: gen?.payload,
-        reason: 'bad_plugin_decl',
-      })
+    if (read === null) {
+      this.record('service', 'start_failed', { impl: id, reason: 'bad_plugin_decl' })
       this.isolated.add(id)
       return
     }
+    // G7 A1：服务按「最近代码世代」起（数据世代可能正处 active，不参与物化 / 声明）
+    const gen = read.gen
     if (read.decl.start.trim().length === 0) {
       // 数据身份 = 无执行件且未声命令。声明了 execute 成员却没给 start：坏声明，隔离
       const hasExecute = read.decl.members.some((member) => member.kind === 'execute')
@@ -310,18 +319,20 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   /**
-   * 单个身份自身换代后的跟随（A6）：
+   * 单个身份自身**代码世代**换代后的跟随（A6 + G7 A1）：
    * 数据变化 → reload/ack（进程不动）；代码变化 → 起新服务、旧服务 drain；
-   * 全新身份 → 按装配同路起（依赖未装载则隔离）；新 active 装载失败 → 隔离该分支（不回旧世代）。
+   * 全新身份 → 按装配同路起（依赖未装载则隔离）；新代码世代装载失败 → 隔离该分支（不回旧世代）。
+   * 数据世代只影响投影读侧，不进本路径。
    */
   private async followGeneration(prev: World, next: World, id: string): Promise<void> {
     if (this.stopping || this.isolated.has(id)) return
     const identity = next.ids[id]
-    const newGen = identity.gens.find((gen) => gen.payload === identity.active) ?? null
-    const newDecl = newGen === null ? null : readPluginDeclOfGen(next, newGen)
-    const payloadDef = newGen === null ? undefined : next.defs[newGen.payload]
+    const newCodeGen = assemblyGen(next, id)
+    const newDecl = newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen)
+    const payloadDef = newCodeGen === null ? undefined : next.defs[newCodeGen.payload]
     if (
-      newGen === null ||
+      identity === undefined ||
+      newCodeGen === null ||
       newDecl === null ||
       payloadDef === undefined ||
       stale(payloadDef, next, id)
@@ -330,12 +341,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.isolateAll(this.reverseReachable([id]))
       return
     }
-    const oldGenHash = prev.ids[id]?.active ?? null
-    const oldGen =
-      oldGenHash === null
-        ? null
-        : (prev.ids[id].gens.find((gen) => gen.payload === oldGenHash) ?? null)
-    if (oldGen === null) {
+    const oldCodeGen = assemblyGen(prev, id)
+    if (oldCodeGen === null) {
       // 全新身份（或从 active=null 重新激活）：与装配同路起服务
       await this.startIdentity(id)
       this.noteRuntimeStart(id)
@@ -348,7 +355,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       if (hasExecute) {
         this.record('service', 'start_failed', {
           impl: id,
-          gen: newGen.payload,
+          gen: newCodeGen.payload,
           reason: 'missing_start_command',
         })
         this.isolateAll(this.reverseReachable([id]))
@@ -362,16 +369,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.noteRuntimeStart(id)
       return
     }
-    if (classifyGenerationChange(prev, oldGen, next, newGen) === 'data') {
-      const reloaded = await this.tryReload(oldService, newGen.payload)
+    if (classifyGenerationChange(prev, oldCodeGen, next, newCodeGen) === 'data') {
+      const reloaded = await this.tryReload(oldService, newCodeGen.payload)
       if (this.stopping || this.isolated.has(id)) return
       if (reloaded) {
-        this.rekeyEndpoints(oldService, newGen, newDecl.decl)
+        this.rekeyEndpoints(oldService, newCodeGen, newDecl.decl)
         return
       }
       // reload 未确认：保守按代码换代（起新服务 + 旧服务 drain），不把旧进程当已热更新
     }
-    await this.swapService(id, oldService, newGen.payload, newDecl.decl)
+    await this.swapService(id, oldService, newCodeGen.payload, newDecl.decl)
   }
 
   /** 数据换代：通知服务新世代并等 ack；超时 / 通道断返回 false（交调用方保守处理）。 */
@@ -479,6 +486,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         world: this.world,
         materializedDir: this.paths.materializedDir,
         handshakeTimeoutMs: this.handshakeTimeoutMs,
+        startWrapper: this.startWrapper,
         onServiceEvent: this.onEvent,
         onExtraDropped: (impl, extraGen, caps) =>
           this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),
@@ -568,7 +576,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       reason: service.pendingExitReason ?? reason,
     })
     // 已被换代取代（自身 active 不再是本 gen）→ 不重启旧世代（A6：绝不回落）
-    if (this.activeGen(service.id)?.payload !== service.gen) return
+    if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
     // 声明 never：不重启，退出即隔离该分支
     if (service.restart.policy === 'never') {
       this.isolateBranch(service.id)
@@ -586,7 +594,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private countRestartAttempt(service: ServiceRuntime): void {
     // 隔离 / 已被换代取代后不得再排程（防御：当前调用点均已先判，且中途无 await）
     if (this.stopping || this.isolated.has(service.id)) return
-    if (this.activeGen(service.id)?.payload !== service.gen) return
+    if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
     service.attempts += 1
     if (service.attempts > service.restart.max) {
       this.record('service', 'restart_exhausted', { impl: service.id, gen: service.gen })
@@ -606,7 +614,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private async attemptRestart(service: ServiceRuntime): Promise<void> {
     // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer；换代取代同理不重启
     if (this.stopping || this.isolated.has(service.id)) return
-    if (this.activeGen(service.id)?.payload !== service.gen) return
+    if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
     try {
       const next = await this.launch(service.id, service.gen, service.decl)
       // 重启窗口内该身份可能已被隔离 / 换代：不得复活
@@ -615,7 +623,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         await waitForExit(next.proc, 2_000)
         return
       }
-      if (this.activeGen(service.id)?.payload !== service.gen) {
+      if (this.assemblyGenOf(service.id)?.payload !== service.gen) {
         stopChild(next.proc, next.link)
         await waitForExit(next.proc, 2_000)
         return
@@ -628,7 +636,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     } catch (err) {
       // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 / 换代 → 不再记失败、不再排程
       if (this.isolated.has(service.id)) return
-      if (this.activeGen(service.id)?.payload !== service.gen) return
+      if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
       const failure = classifyStartFailure(err)
       if (failure.event === 'handshake') {
         this.record('handshake', 'failed', { impl: service.id, gen: service.gen })

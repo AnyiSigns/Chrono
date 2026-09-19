@@ -2,7 +2,7 @@
 // 只读世界：不执行效果、不写链；端点表键不含调用方（impl+gen+cap+method）。
 // `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
 
-import { readPluginDecl } from '../assembly/decl.ts'
+import { assemblyGen, readPluginDecl } from '../assembly/decl.ts'
 import type { EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
 import type { Gen, Hash, Identity, World } from '../../kernel/index.ts'
@@ -70,12 +70,13 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
 
   return {
     resolve(world, emitterId, cap, method) {
-      const pinned = activeGenOf(world.ids[emitterId])?.pins[cap]
+      // G7 A1：pins / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
+      const pinned = assemblyGen(world, emitterId)?.pins[cap]
       if (pinned === undefined) return { ok: false, error: 'unresolved_cap' }
       if (world.defs[pinned] === undefined) return { ok: false, error: 'stale' }
       const owner = ownerIndexOf(world).get(pinned)
       if (owner === undefined) return { ok: false, error: 'stale' }
-      const gen = activeGenOf(world.ids[owner])
+      const gen = assemblyGen(world, owner)
       if (gen === null) return { ok: false, error: 'stale' }
       const caps = implementsOf(world, owner, gen.payload)
       if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }

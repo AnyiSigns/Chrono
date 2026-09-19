@@ -9,6 +9,9 @@
 ## 一、什么是插件
 
 - 一个插件 = 一个 **npm 包** = 一个身份 = 一批成员。**只有一种插件，不分内部 / 外部**。
+- **数据身份的数据 = 同身份的数据世代**（同身份混合世代）：数据身份用 `put(data)` + `add_gen` 写数据，
+  数据世代与代码世代（包 `commit`）共存于同一身份的 `gens`；宿主装配按**最近代码世代**解析声明 / `pins`，
+  投影 `ctx.ids.<id>.body` 取**最近数据世代**（无数据世代回落代码世代）；数据世代变化不触发服务换代 / 隔离。
 - 成员三种，**同路无特例**：**执行件**（自带服务进程）/ **term**（判定数据）/ **声明**（`plugin.json` + `schema`）。
 - **npm 只是投递信封**：世界才是真源——插件入世（`put` / `batch`）后源码进 ① 才生效；包内第三方依赖（`node_modules`）是宿主侧 ③（可重算）。
 - 插件包放在哪（仓库 `plugins/<name>/` 或 `node_modules/`）**只是位置、不是分类**；宿主按 `state/plugins.json` 的 `[{name, path?}]` 解析（有 `path` 走路径、无 `path` 走 Node 解析）。
@@ -33,6 +36,8 @@
   所有插件共用**同一 `plugin.json` 形状**——这就是「一个口径」。
 - **入世 = 包内源码树**（`plugin.json` + `package.json` + 锁文件 + `README.md` + `execute/` / `terms/` / `schema/`）
   **减去通用排除（`node_modules` / `.git`）与 `.worldignore` 声明项**；契约必需文件不可被排除；宿主**只解释 `plugin.json`**，其余是源码 blob。
+  入世有两条路径：`seed`（按 `state/plugins.json` 清单批量）与 `pack`（单目录手动 / 程序化，`boot pack <目录> --identity <身份名>`）；
+  两者**同为入世路径、共用同一套打包规则**，故同一目录、同一身份产出相同的源码 tree 与 commit 哈希。
 - **`.worldignore`（可选）**：包内文本文件，每行一个相对路径（**按路径段前缀匹配**，故 `test/` 不误伤 `test.js`；`#` 注释、空行忽略），命中即不入 ①；不能命中契约必需文件（`plugin.json` / `package.json` / 锁 / `README.md` / `schema` / `commands` / `members` 路径本身），否则整批拒绝 `bad_worldignore`（畸形 `.worldignore`，如含 `..` 段 / 读取失败，同样拒绝）。插件用它排除构建产物 / 测试 / 语言运行时缓存（`dist/`、`.venv/`、`__pycache__/` 等）——宿主不认识语言，故不内置这些名字。
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
 - **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。

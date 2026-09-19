@@ -281,7 +281,9 @@ describe('宿主集成（入站面）', () => {
       try {
         socket.write(encodeFrame({ v: '1', id: 'm1', kind: 'submit' }))
         socket.write(encodeFrame({ v: '1', id: 'm2', kind: 'submit', directives: {} }))
-        socket.write(encodeFrame({ v: '1', id: 'm3', kind: 'submit', directives: [{ kind: 'bogus' }] }))
+        socket.write(
+          encodeFrame({ v: '1', id: 'm3', kind: 'submit', directives: [{ kind: 'bogus' }] }),
+        )
         const responses = await readFrames(socket, 3)
         const byId = new Map(
           responses.map((raw) => {

@@ -3,6 +3,7 @@
 // 运行相（自身换代重装、依赖退役隔离）不在本模块。
 
 import { stale } from '../../kernel/index.ts'
+import { assemblyGen } from './decl.ts'
 import type { Hash, World } from '../../kernel/index.ts'
 
 /** 隔离原因：cycle = 成环分支（环成员及其依赖者）；stale = 依附失效（含依赖者）。 */
@@ -81,9 +82,9 @@ function buildGraph(world: World, ownerIndex: Map<Hash, string>): DepGraph {
   const depFailed = new Set<string>()
   const selfFailed = new Set<string>()
   for (const from of roots) {
-    const identity = world.ids[from]
-    const gen = identity.gens.find((g) => g.payload === identity.active)
-    const payloadDef = gen === undefined ? undefined : world.defs[gen.payload]
+    // G7 A1：装配按「最近代码世代」取 pins / 判 stale；数据世代只影响投影读侧。
+    const gen = assemblyGen(world, from)
+    const payloadDef = gen === null ? undefined : world.defs[gen.payload]
     if (
       !gen ||
       payloadDef === undefined ||

@@ -21,6 +21,7 @@ import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { appendLifecycle } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
+import { resolveStartWrapper } from './options.ts'
 import { projectBaseOnly } from './projection/index.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
 import type { InboundMessage, Limits, OutboundMessage } from './wire.ts'
@@ -32,6 +33,8 @@ export interface HostOptions {
   callTimeoutMs?: number
   /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`（测试可注入小值）。 */
   compactTailEntries?: number
+  /** 服务启动包装器（宿主侧最小沙箱形态）：只前置到 spawn 命令行；缺省无（零行为变化）。 */
+  startWrapper?: string
 }
 
 export interface HostHandle {
@@ -110,6 +113,8 @@ function listen(server: Server, address: string): Promise<void> {
 
 /** 起宿主：全程阻塞在入站 socket 上，直到 stop 被调用。 */
 export async function startHost(options: HostOptions): Promise<HostHandle> {
+  // 包装器防御：库调用方可能绕过入口解析，非法值同样 fail-closed（不静默降级为无包装器）
+  if (options.startWrapper !== undefined) resolveStartWrapper(options.startWrapper)
   const root = options.root
   const paths = hostPaths(root)
   const startedAt = Date.now()
@@ -607,6 +612,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       world,
       log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
       onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
+      startWrapper: options.startWrapper,
     })
     const driftLogged = new Set<string>()
     router = createRoundRouter({
