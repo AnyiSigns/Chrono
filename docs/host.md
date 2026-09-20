@@ -23,7 +23,8 @@
 两条边界写死：
 
 - `assembly` 只读世界——"不认识插件种类"由此成为 import 图上的事实，而不是文档形容词。
-- **插件不 import 内核**：键 / 哈希 / 校验 / 写链全在宿主（`kernel.md` §十一 / §十八）。
+- **插件不 import 宿主与内核**（`packages/host` / `packages/kernel`）：键 / 哈希 / 校验 / 写链全在宿主（`kernel.md` §十一 / §十八）。
+- **「不认识」双向且只在实现面**：宿主不认识插件种类（只读声明与 `pins`），插件不认识宿主实现（不 import）；**契约面双向都认识**——宿主认识 `plugin.json` 与协议，插件认识协议帧 / 能力类名 / 保留类 `host`。插件对宿主的唯一合法依赖通道 = **线协议 + `pins`**（含 `host`），不存在源码依赖通道。
 
 **没有特权引擎**：「agent engine」不是某个插件，而是**宿主 + 全部插件 + 世界**的组合。
 宿主驱动的是**通用 run loop**，不认识回合 / 图 / 编排语义；`engine` 若作为插件存在，只是一个普通服务，
@@ -104,7 +105,7 @@ Chrono/
   - **离线命令**（宿主未运行）：`boot seed` / `pack` / `verify` / `replay` / `compact` / `assets gc`。
 - 连入站面的代码只有一处：`packages/client`；CLI 与"两身份"的前端插件共用它。
 - 装配包（`assembly`）**只读世界**，不 import `effect` / `ledger` 的写口。
-- `packages/kernel` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载。
+- `packages/kernel` / `packages/host` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载（服务经 stdio 协议、客户端经入站面协议认识宿主，**不经源码 import**）。
 - 插件之间**可以相互依赖**（写在 `pins`），但**不相互 import**、**不互相作 npm 依赖**：调用只写能力类名，宿主按 `pins` 路由。
 - `state/` 只放宿主侧落盘，**永不进世界**，且 gitignore：
   `state/world/` 是**真源**（备份它 = 备份世界），`state/assets/` 是**资产字节本体**（④ 不可重算，
@@ -409,7 +410,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 6. **落盘字节保真**：`Entry.args` 不重序列化。
 7. **声明驱动**：`assembly` 不认识插件种类，只看声明与 `pins`。
 8. **无特权**：toy 服务与任何插件同路，无任何插件享有特殊路径（`kernel.md` §十一「第一方无特权」的载体面）。
-9. **插件不 import 内核**：插件只提交内容与效果请求，不算哈希、不校验、不写链。
+9. **插件不 import 宿主与内核**：插件不得 import `packages/host` / `packages/kernel`，也不得把它们作 npm 依赖；服务代码同样不得 import `packages/client`（它 import 内核）。对宿主的依赖只经**线协议 + `pins`**（能力类名 / 方法名，保留类 `host`）；插件只提交内容与效果请求，不算哈希、不校验、不写链。
 
 ## 七、本设计不做什么
 

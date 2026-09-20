@@ -75,7 +75,7 @@
     test/               # 不入世界
     .worldignore
   ```
-- 服务代码自实现 stdio 帧协议；插件侧不 import 内核、不 import `packages/client`（它 import 内核）。
+- 服务代码自实现 stdio 帧协议；插件侧不 import 宿主（`packages/host`）与内核（`packages/kernel`）、不 import `packages/client`（它 import 内核）。
 
 ## 1.5 插件设计模板
 
@@ -209,7 +209,7 @@ graph LR
 
 1. 每波入世后：该波插件装配 / 握手 / 命令 / 落账通；全部卸载后内核与宿主测试全绿。
 2. 换实现不改调用方：12 换代（含夹具）、2 换厂商、14 换管道、11 换实现 -> UI 零改动。
-3. 插件包内不出现内核 import（含测试）。
+3. 插件包内不出现宿主与内核 import（含测试），也不把它们作 npm 依赖。
 4. 回放：seed -> 配置 -> 对话 -> 重启 -> `replay(full)` 逐字节一致；模型调用不重放。
 5. UI 插件化：15/16/17/18/38/39/40/46 随所在波独立换代、独立失败隔离；配色与全部视觉规格以 `docs/plans/ui-design.md`（token 唯一来源）为准；38 headless 不占端口。
 6. 首次引导统一流程：厂商模板与自定义厂商都能完成配置并立即对话（W2 `#17` 后可验）。
