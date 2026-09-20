@@ -45,6 +45,7 @@
   - **质感 `tone`**：`ghost`（近乎透明；只读检索类：`grep` / `glob` / `websearch` / `webfetch`）/ `plain`（常规；`edit` / `shell` / `webbrowser`）/ `solid`（实底；高危写类 `plugin.write` / `orchestration.propose`）。
   - **`detail.kind` 渲染器**：`text` / `code` / `diff`（逐行对比：新增绿 / 删除红 / 修改黄 + 上下文折叠）/ `matches`（`path:line  片段`）/ `paths` / `list` / `table` / `json` / `file` / `image`（资产引用 + lightbox）/ `terminal`（等宽，stdout / stderr 分色 + 退出码）/ **`question`（交互：单选 / 多选 / 自定义输入 / 提交，见下）**。
   - **`question` 交互渲染器（#48）**：渲染 `#48 question` 的提问卡（问题 + 选项 + 自定义输入 + 提交）；提交经**入站面**写槽 + 调 `question.answer`（**按名调用、不需 pins**）；**已答折叠成一条记录**（问 + 答），随历史留存可回放。卡在 `main` 槽消息流内，不抢 dock / overlay。**键盘可达（ui-design §16.2）**：单选用 `role="radiogroup"` + 方向键、多选用 checkbox 语义 + Space、`Enter` 提交当前；提交中按钮走按钮内等待态（§10），失败落行内 danger + [重试]。
+    - **`expired` 呈现（2026-09-20 写死，与 #39 审批 expired 刻意相反）**：#48 `question.sweep` 标 `expired` 的项（过期不再等答案）⇒ 整卡降 `--c-text-3` + 追加 12px「已超时」标签（warning 前景字），**选项与提交一律禁用**、不可再答；卡不自动消失、随历史留存（诚实反馈）。对照：审批 `expired` 仍可裁决（安全考量，ui-approval 侧）；question 过期 = 终局。状态来源与「已答」同源（卡片以命令重拉定稿），双插件登记见 `plugins/question/DESIGN.md`「渲染」。
   - **动态输出（`live:true`）**：收到 `tool.start` 即开卡，按 `call_id` 追加 `tool.delta` 分片（如 `shell` 的 `pip install` 进度）；`tool.end` 收尾；run 结束以消息 part 的**定稿结果**替换实时态（**回放只读定稿**，事件不落账）。**`tool.*` 载荷带 `run` / `thread` / `call_id`（#27 侧，自帧 `env`）——按线程过滤**（2026-09-20 修订）。
   - **降级**：无 `render` / 未知 `kind` → markdown 文本降级渲染（不空白、不报错）。
   - **为什么快照**：描述符随消息落 #11 ⇒ 展示与回放确定，换工具插件 / 换工具集都不影响旧消息渲染。
@@ -75,6 +76,8 @@ main 槽按当前线程的 `kind` 分派渲染（**不新增 slot**，见 `docs/
 - **「我」的消息**仍走既有用户气泡（右对齐、selection 底）；**参与者消息**左对齐、圆标 + 名在气泡上方，气泡底 `--c-surface` + 1px `--c-border`（与助手无底整宽区分）。
 - **圆桌轮转**：按 transcript 顺序渲染；**当前发言者**（正在生成）圆标外圈 1.5px accent 环 + 呼吸（§10 呼吸族，reduced-motion 静态），生成完移除。
 - **未读锚点**：进入群聊线程时若有新消息（`group.message` 增量、`last_seen` 落后），在首条新消息前画 1px accent 分割线 + 「以下为新消息」，滚过即淡出。
+  - **`last_seen` 口径（2026-09-20 写死）**：本插件**内存态 per-thread 游标**（切出线程时记录该线程最后一条消息 id）——纯视图态不落世界（与 ui-design §15 `uiState`「刷新即丢」口径一致）；**刷新即丢、刷新后不提供跨刷新锚点（登记限制）**。
+  - **归零语义分工（与 #46 角标不联动）**：#46 标签未读角标 = **切入该线程即清零**（粗粒度知会「有 N 条新的」）；本锚点 = **滚过即淡出**（细粒度定位「新从这条开始」）。切线程后未滚到锚点，角标也已清零——接受，角标只负责「叫你来看过了」。
 - 增量订阅 `group.message`（**按 `thread` 过滤**）；历史仍以 `chat.history` 为准。
 
 ### 工作流（`workflow`）

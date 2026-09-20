@@ -64,6 +64,7 @@ question(bag.args = { questions: [
   detail:{ kind:"question", interactive:true, questions:[…] } }`。
 - **交互**：#18 的 `question` 交互渲染器 —— 单选 / 多选（`multiple`）/ 自定义输入（`custom`）/ 提交；提交经**入站面**写槽 + 调 `question.answer`（**按名调用、不需 pins**）。
 - **已答**：折叠成一条记录（问 + 答），随消息历史留存、可回放。
+- **已超时（`expired`，2026-09-20 双侧登记）**：`question.sweep` 标 `expired` 的项，#18 卡片呈**整卡弱化（`--c-text-3`）+ 「已超时」标签（warning 前景字），选项与提交禁用、不可再答**（与本插件「过期不再等答案」一致）；卡不自动消失、随历史留存。**与 #39 审批的 `expired`「仍可裁决」刻意相反**——审批不自动裁决是安全考量，question 过期是 sweep 已定终局；实现时勿照抄审批口径。呈现细节见 `plugins/ui-chat/DESIGN.md`「question 交互渲染器」。
 - **不抢 slot**：卡在 `main` 槽的消息流里（不进 dock / overlay），历史里能看到"问过什么 / 答了什么"。
 
 ## 跨插件登记
