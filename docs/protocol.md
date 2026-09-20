@@ -35,16 +35,17 @@
 ### 2.2 能力调用
 
 ```
-宿主 → 服务   call   { v, id, port, method, args }
+宿主 → 服务   call   { v, id, port, method, args, env }
 服务 → 宿主   result { id, ok: true, value }
 服务 → 宿主   error  { id, ok: false, code, message }
 ```
 
 `port` 是**逻辑名**（不是哈希）——宿主已在路由时按发出者 `pins` 解析到本服务；它必须是本服务**声明的能力类**。
 
+- **`env`（宿主填写，机械）**：`{ run, thread, now }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
   只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
-- 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `boot start --call-timeout-ms` 可配，见 `host.md` §五 效果）。
+- 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `boot start --call-timeout-ms` 可配；**被调方可按插件 `schema.method_timeouts` 按方法覆盖**，见 `host.md` §五 效果）。
 
 ### 2.3 控制
 
@@ -71,13 +72,16 @@
 
 - **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins` 解析
   （与 §2.2 的 host→service `call` 同一路由口径，见 `host.md` §五「路由」）。
+- **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`）。
+  发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如 `#29` 把密钥下传 `#25` `exec`）：宿主原样透传给目标、
+  **端口审计里对值脱敏**（`{redacted:true, keys:[…]}`，见 `host.md` §五「反向调用 `env` 值脱敏」）。
 - 解析不到 → `port.error{code:'unresolved_cap'}`；目标未就绪 → `not_loaded`；目标返回 `error` 时原样回
   `port.error`（**失败作数据**，调用方可据此分支 / 降级，不炸本轮）。
 - **审计分流（写死）**：世界里的 `eff` 记 `EffectAudit` 并入链；**反向调用只记宿主侧端口审计，不入世界、不参与重放**
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。#27 的 `subagent.resume` / `subagent.terminate`、#42 的 `read` / `validate`、#28/#30/#31 的二进制字节、#43/#44 的审计读面走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在 #42 等上层，宿主不强制）。
+- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。#27 的 `subagent.resume` / `subagent.terminate`、#42 的 `read` / `validate` / `list`（经 `identities`）、#28/#30/#31 的二进制字节、#43/#44 的审计读面走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在 #42 等上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -191,6 +195,8 @@
 | `bad_start_wrapper` | 启动包装器非法值（空 / 含 NUL / 换行） | `host.md` §五 服务启动包装器 |
 | `bad_call_timeout` | 调用超时选项非法值 | `host.md` §五 效果 |
 | `picker_unavailable` | 无图形会话，原生目录选择器不可用 | `plugins/workspace/DESIGN.md` |
+| `not_found` | `host.source.read` 路径不存在 / 指向目录 | `host.md` §五 宿主扩展面 |
+| `net_denied` | `sandbox` 网络档位拒绝（`caps.net` 越档） | `plugins/sandbox/DESIGN.md` |
 | `internal` | 宿主内部错误 | — |
 
 - **注**：`refused` 的 `reasons` 由内核给出（如 `eff_error` / `pos_conflict` / `bad_term` / `gas_exhausted` 等），本表只列宿主 / 协议层错误码；`transport_failed` 是宿主对"效果未执行"（管道 / 帧 / 进程死亡 / 未解析 / 超时）的归类。

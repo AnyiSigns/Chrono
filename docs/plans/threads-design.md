@@ -36,7 +36,7 @@
 - **乐观并发**：提交时校验 base `worldRev`（或目标身份 rev）；冲突 → 宿主把该 run 的 `directives` + 已回灌 `results` 原样重提交（**同 `run_id`、同 `now`、`results` 只增不改**，复用 `kernel.md` §十二 续跑纪律），重试即占一个新 `seq`、入账可辨。
   - defs 内容寻址 ⇒ 不同 def 的并发 `put` 天然可交换；**冲突面只在共享身份的 body**（#11 会话列表、#1 input、#21 记忆索引、#33 图数据）。
   - 每线程写自己的会话链 ⇒ 大部分提交零冲突。
-- **`#1 input` 争用（写死）**：`#1` 原为全局单值寄存器，并发线程同时写会丢失。**版本提升 #1**：body 改为 **per-thread 键控**——`body = { slots: { "<thread_id|_main>": <slot> } }`；写类命令携带 `thread_id`，写自己的键、读自己的键 ⇒ 不同键的 `put` 可交换、无丢失更新。`#2 config` 是用户级（一用户一份），并发线程共享只读，写（主题/侧栏宽度）罕见且 last-write-wins 可接受，**不分区**。
+- **`#1 input` 争用（写死）**：`#1` 原为全局单值寄存器，并发线程同时写会丢失。**版本提升 #1**：body 改为 **per-thread 键控**——`body = { slots: { "<thread_id|_main>": <slot> } }`；写类命令携带 `thread_id`，写自己的键、读自己的键。**v1 已知限制（2026-09-20 修订口径）**：内核只有整值 `put` + 提交段机械重锚 ⇒ 不同键并非真正可交换——**同线程键写者唯一**（#40 待发队列串行）+ **服务侧清槽的整份 body 取自入口 term 的轮首 ctx（权威）**，跨线程 / 跨客户端并发仍 last-write-wins（见 `plugins/input/DESIGN.md`「并发语义」）。`#2 config` 是用户级（一用户一份），并发线程共享只读，写（主题/侧栏宽度）罕见且 last-write-wins 可接受，**不分区**。
 - **可回放**：回放按账里的提交序（`seq`）重放；并发期间的 LLM / 工具结果都在账里 ⇒ 逐字节等价（与「LLM 不确定、审计回灌确定」同口径）。
 - **宿主改动（登记，提出方 = 本设计；落 `host.md` §五 写者）**；内核只登记、**不改 `run` 语义**（`kernel.md` §十二）：
   1. 「单写者锁」从「run 全程持有」**收窄为「commit 期间持有」**——run 可并发推进 eval / 等待效果，只在落账那一刻串行；
@@ -80,7 +80,7 @@
 - **传输必须落世界**（§7.8 推论 1）：slots / shared 住 eval `args`、run 一结束就没了 ⇒ 跨线程消息只有一条路：**写进世界**。
 - **载体 = 目标线程的 `inbox`**（#11 会话 body 加 `inbox: {tail,count,last_seen}`，条目各自成 def + 链式 `tail`）：
   - 消息形状：`{ id, from: <thread_id|"user">, to: <thread_id>, kind: "instruction"|"report"|"decision_request"|"decision", body, refs?, at, seq }`。
-  - **并发写安全**：追加是**可交换**的（每条以当前 `tail` 为 `prev`），冲突由 §二 的**提交队列 + 乐观重试**化解——不需要多写者锁，也不需要 per-writer 分链。
+  - **并发写安全**：追加以**轮首 ctx 的 `tail` 为 `prev` 基准**、提交段机械重锚（v1 落地口径：`pos_conflict` 结构上不触发，见 `host.md` §五 写者——原「提交队列 + 乐观重试化解」表述作废）；**长链并发追加的交错由 #33 单写者（一次 interpret 回合尾一次写）与提交队列串行化解**——不需要多写者锁，也不需要 per-writer 分链。
   - **读**：目标线程 `context.assemble` 时投影读自己 inbox，把 `seq > last_seen` 的未读消息作为**独立切片**注入（`instruction` / `decision` 作 user 消息；`report` 作子线程结果）。
 - **父 → 子**：`thread.send {to, kind:"instruction", body}` —— 运行中生效（工具循环每轮重组装）。
 - **子 → 父**：`thread.send {to: parent, kind:"decision_request"|"report", body}` —— 决策请求会**唤醒**父线程（宿主按 resume 游标触发新 run，同 #32 机制）。
@@ -114,6 +114,7 @@
 - **位置**：侧边栏右侧、`main` 顶部；**鼠标悬浮显示、离开隐藏**（不占常态高度，hover 时 overlay 展开）；**hover 意图延时 150ms 出 / 300ms 收**（防误触），层级 `--z-topbar`（ui-design §16.11）。
 - **标签**：默认「对话」→ 会话标题更新后变**会话标题**；开子代理 → 追加**「子代理会话标题」**标签，点进切到子代理对话；群聊 / 工作流各一个标签。
 - **激活标签 = 当前 main 区显示的线程**；切换经 **`api.uiState`（`active_thread`）** 跨 slot 同步（UI 插件互不 pin，见 ui-design §15）；世界/状态派生数据仍走宿主事件。
+- **`current` ↔ `active_thread` 单桥（2026-09-20 补；#11/#46 侧已登记）**：侧栏 `session.select` 落账后 #11 发 `thread.updated`（事件清单加 `current` 变触发）——顶栏 #46 据此重算 `threads.state` 并按 `current` 重置 `active_thread`。
 - 线程状态角标：运行中（呼吸点）/ 待审批（warning 点）/ 完成 / 失败。
 - **已知例外（ui-design §11.10 / §14）**：顶栏为**纯 hover 交互，键盘不可达、触屏不可用**（2026-09-19 用户定）。
 
@@ -131,7 +132,7 @@
 
 ### 事件（#11 / #44 服务发，宿主透传，不进世界）
 
-`thread.opened` / `thread.updated`（标题 / 状态）/ `thread.closed` / `workflow.step`（步骤卡实时更新）/ `group.message`（群聊增量）——**emitter = #11 session 服务**（commit 落账后据 body 变化机械发：新会话→`opened`、标题/`status`/`inbox` 变→`updated`、关闭→`closed`、工作流节点推进→`workflow.step`、群聊追加→`group.message`）。`status` / `last_activity` / `pending` 由 #11 `deliver` / `commit` 顺带写（数据变化 ⇒ 事件）。`last_seen` 游标由 #11 `deliver` / 目标线程 `context.assemble` 读后写回（投影读后落账，下轮不再注入已读消息）。
+`thread.opened` / `thread.updated`（标题 / 状态 / **`current` 变**——`session.select` 落账后据此让 #46 重置 `active_thread`，2026-09-20 补）/ `thread.closed` / `workflow.step`（步骤卡实时更新）/ `group.message`（群聊增量）——**emitter = #11 session 服务**（commit 落账后据 body 变化机械发：新会话→`opened`、标题/`status`/`inbox`/**`current`** 变→`updated`、关闭→`closed`、工作流节点推进→`workflow.step`、群聊追加→`group.message`）。`status` / `last_activity` / `pending` 由 #11 `deliver` / `commit` 顺带写（数据变化 ⇒ 事件）。`last_seen` 游标由 #11 `deliver` / 目标线程 `context.assemble` 读后写回（投影读后落账，下轮不再注入已读消息）。
 `orchestration.unhealthy` —— **emitter = #44 evolve-metrics 服务**（**周期 `aggregate`** 产 `failure_cluster` 证据超 #33 阈值即发；不依赖用户打开 S13）。
 
 ---

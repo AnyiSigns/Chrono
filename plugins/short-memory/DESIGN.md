@@ -39,7 +39,7 @@
 ```json
 {
   "title": "short-memory（L1 会话摘要 + L2 工作区累积）",
-  "description": "L1：会话 id -> { summary:{goal,decisions[],facts[],open_questions[],files[],next_steps[]}, covered_upto, at, expires_at }，TTL 24h；L2：工作区 id -> { summary:{goal,decisions[],facts[],open_questions[],files[]}, sources[], at }，无 TTL。缺键 = 该会话 / 工作区无记忆。时间由 bag 传入（服务不取时间）。",
+  "description": "L1：会话 id -> { summary:{goal,decisions[],facts[],open_questions[],files[],next_steps[]}, covered_upto, at, expires_at }，TTL 24h；L2：工作区 id -> { summary:{goal,decisions[],facts[],open_questions[],files[]}, sources[], at }，无 TTL。缺键 = 该会话 / 工作区无记忆。时间由调用方 bag / 帧 `env.now` 传入（H16；本插件为数据身份、无服务）。（2026-09-20 修订）",
   "type": "object",
   "required": ["version", "sessions", "workspaces"],
   "additionalProperties": true,
@@ -77,12 +77,12 @@
 ```
 
 - **L1 写者 = #19**（`summarize` / `compact` 产物）；**L2 写者 = #19 `extract` 产 2–3 条 + #23 去重合并**；**删除 = #23 `sweep`**（过期 L1 / 超容量）。
-- 19 / 23 都必须 `+ 3` 读投影做**读-改-写**（不能盲写，否则抹掉其他会话 / 工作区的记忆）。
+- 19 / 23 所需 `#3` 投影片段**由调用方入口 term / #33 读出随 bag 传入**（§1.14「bag 装配总表」；服务不读投影，D8）——**读-改-写**，不能盲写，否则抹掉其他会话 / 工作区的记忆。（2026-09-20 修订）
 - **去重**：L1→L2 合并按文本 + 向量余弦（#20）去重；同义合并保留信息更全的一条（#23 口径）。
 
 ## TTL 与清理（已定：TTL 兜底 + agent 顺带清理）
 
-- **L1 TTL 24h**：`expires_at` 到期由 **#23 `sweep`** 出删除计划（可回放，非本地定时器）；时间由 bag 传入。
+- **L1 TTL 24h**：`expires_at` 到期由 **#23 `sweep`** 出删除计划（可回放，非本地定时器）；时间由调用方 bag / 帧 `env.now` 传入（H16）。（2026-09-20 修订）
 - **L2 / L3 容量兜底**：设上限（参数住 #23 schema，可热改）；超限按策略淘汰（低价值 / 最久未引用）。
 - **agent 顺带清理**：agent 每次查看 / 保存 / 更新记忆时，记忆工具（经 #23）**一并返回「过期 / 低价值候选」**，agent 可在同一次调用里决定删 / 合并；**准则住 #33 策略数据**（见下）。
 - 绝不永久存：L1 硬 TTL；L2 / L3 有容量上限 + agent 主动清理双保险。

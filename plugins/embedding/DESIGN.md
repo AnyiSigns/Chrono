@@ -9,7 +9,7 @@
 | 成员 | execute（Rust 二进制 + 模型小 config）、schema |
 | 能力类·方法 | `implements: ["embedding"]`，`methods: {embedding:["embed","chunk"]}` |
 | 命令 | 无 |
-| schema | `schema/embedding.json`（模型清单：`id` / `dim` / `pooling` / `normalize` / `max_seq` / `build_ref`（构建期权重来源，仅供重建时取权重）） |
+| schema | `schema/embedding.json`（模型清单：`id` / `dim` / `pooling` / `normalize` / `max_seq`；**顶层 `assets_manifest`：权重与 tokenizer 的 `{path, sha256, size}` 清单，宿主物化时按 H15a 从投递包源目录直拷并 sha256 校验**——2026-09-20 修订，原 `build_ref` 删除） |
 | 机制 | 见下「模型规格 / 部署 / 分块 / 能力契约」 |
 | 边界 | 不做：存储 / 检索 / 压缩 / 重排；**不触网**（本地推理） |
 | 验收 | 1) 同文本同向量（确定可回放）；2) 输出 384 维且 L2 归一；3) 中文可检索；4) 长文本按窗口切块不丢尾；5) 换模型版本（`id`/`dim` 变）可辨认并触发重建；6) **权重与编译二进制都不进世界**，只有源码入世 |
@@ -29,8 +29,8 @@
 
 ## 部署与打包
 
-- **运行时**：Rust 构建为二进制（ONNX 推理用 **`ort`（ONNX Runtime 绑定）**）；**模型权重与 tokenizer 用 `include_bytes!` 内嵌进二进制**（编译期输入），产物约 ~150 MB；`start` 指向该二进制；宿主不认识语言，只按 `start` 拉起。
-- **插件自带本地依赖（破例一次）**：`ort` 需要 `onnxruntime` 动态库，按「插件自带库（类似 `node_modules`）」处理——住宿主侧 ③、不入世；这与「二进制单文件」目标有出入，本轮接受。
+- **运行时**：Rust 构建为二进制（ONNX 推理用 **`ort`（ONNX Runtime 绑定）**）；**模型权重与 tokenizer 用 `include_bytes!` 内嵌进二进制**（编译期输入；该输入由 H15a 物化提供，见下），产物约 ~150 MB；`start` 指向该二进制；宿主不认识语言，只按 `start` 拉起。
+- **插件自带本地依赖**：`ort` 需要 `onnxruntime` 动态库，按「插件自带库（类似 `node_modules`）」处理——**按 H15/H15a 统一走宿主侧 ③**（原「破例一次」口径作废，2026-09-20 修订）；这与「二进制单文件」目标有出入，本轮接受。
 - **无运行时下载**：权重随二进制走，**首次安装不下载**（npm 包直接带该二进制）。
 - **模型可换、不堵死**：官方默认 granite-97m、**不内置多模型**；模型清单住 `schema/embedding.json`，换模型 = 改清单 + 重编译二进制 + 重建索引（agent 本就可改插件）。
 
@@ -38,14 +38,22 @@
 
 | | 内容 | 说明 |
 | --- | --- | --- |
-| **入世（世界真源）** | `plugin.json` / `package.json` / 锁 / `README.md` / `execute/` 的 **Rust 源码 + Cargo 清单** / `schema/` / `terms/` / 模型小 config（`config.json` / `1_Pooling_config.json` / `modules.json` / `sentence_bert_config.json` / `special_tokens_map.json` / `tokenizer_config.json`） | 源码可回滚 = 一条记账 |
-| **不入世（宿主侧 ③，`.worldignore` 排除）** | 编译产物二进制（内嵌权重，~150 MB）、ONNX 运行时库、构建期权重输入 `granite-97m/model_quint8_avx2.onnx` / `tokenizer.json` | 大字节 / 第三方依赖 / 构建产物 |
+| **入世（世界真源）** | `plugin.json` / `package.json` / 锁 / `README.md` / `execute/` 的 **Rust 源码 + Cargo 清单** / `schema/` / `terms/` / 模型小 config（`config.json` / `1_Pooling_config.json` / `modules.json` / `sentence_bert_config.json` / `special_tokens_map.json` / `tokenizer_config.json`）/ `granite-97m/LICENSE`（2026-09-20 补入世） | 源码可回滚 = 一条记账 |
+| **不入世（宿主侧 ③，`.worldignore` 排除）** | 编译产物二进制（内嵌权重，~150 MB）、ONNX 运行时库、构建期权重输入 `granite-97m/model_quint8_avx2.onnx` / `tokenizer.json`、`granite-97m/.gitignore`（2026-09-20 排除） | 大字节 / 第三方依赖 / 构建产物 |
 
-- **二进制放 `execute/` 随 npm 包投递**（本机开箱可跑、免下载），但**不进世界**。
-- **编译期权重输入**：`include_bytes!` 要求权重文件在**构建机**存在；权重仍被 `.gitignore` / `.worldignore` 排除，不入仓库、不入世界。从源码重建时需先取一次权重（仅构建者）。
+- **二进制统一走构建**（2026-09-20 修订）：投递的预编译二进制**仅作 `assets_manifest` 的复制源**，物化以**构建产物**为准；二进制随 npm 包投递（本机开箱可跑、免下载），但**不进世界**。
+- **编译期权重输入（H15a，2026-09-20 修订）**：schema 顶层 `assets_manifest`（`{path, sha256, size}`）登记权重与 tokenizer；宿主物化时从**投递包源目录**复制被 `.worldignore` 排除的大资产到物化目录、按 sha256 校验，失败 `deps_failed`——`include_bytes!` 的构建期输入由此满足。权重不入仓库、不入世界。
 - **代价（明确记账）**：二进制 ~150 MB 且平台相关；换模型 = 换权重 → 重编译重打包；构建内存 / 时间上升。
-- **③ 重建的现实**：宿主不认识语言、不做编译 ⇒ 二进制由包 / 安装器提供；纯从世界重装需重新获取 ③（源码在，可由外部工具链重建，权重需构建期获取）。
+- **③ 可重算性（2026-09-20 修订）**：宿主不认识语言、不做编译 ⇒ 二进制由构建产出；「源目录 + 世界源码」可重算 ③（源码在，可由外部工具链重建，权重经 `assets_manifest` 从投递包源目录复制）；**投递源目录本身丢失则须重新投递**——已知限制，2026-09-20 登记。
 - **版本锚**：向量随模型 `id` / `dim` 变；索引记录 `{model_id, dim}`，不匹配即整库重建（宿主侧 ③ 可重算，无需迁移世界）。**内嵌模型换版 = 重编译二进制 + 重建索引**。
+
+```jsonc
+// schema/embedding.json 顶层（H15a，2026-09-20 修订）
+{ "assets_manifest": [
+  { "path": "granite-97m/model_quint8_avx2.onnx", "sha256": "…", "size": 102760448 },
+  { "path": "granite-97m/tokenizer.json",         "sha256": "…", "size": 26214400 }
+] }
+```
 
 ## 分块（窗口切块）
 

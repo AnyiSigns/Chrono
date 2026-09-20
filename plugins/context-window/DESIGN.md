@@ -3,9 +3,9 @@
 | 字段 | 内容 |
 | --- | --- |
 | 编号 / 身份 | 13 / `context-window`（职责已从「装配」扩为**上下文调配器**） |
-| 语言 | **TS 主体 + Rust tokenizer 子组件**：组装 / 去重 / 配额 / 前缀缓存 / 格式化住 TS（**快迭代**，策略住 `schema/policy.json` 热改）；**只有 token 计数下推 Rust 原生扩展**（`native/tokenizer/`，napi-rs 一类，**进程内调用**、无额外 hop）。源码 + `package.json` + `Cargo.toml` 入世，`node_modules` / `target/` / `*.node` 走宿主侧 ③；**tokenizer 单一实现**（native 缺失即 #13 `not_loaded`，**不回落 JS**——两份计数会漂移、破坏「同输入同输出」） |
+| 语言 | **TS 主体 + Rust tokenizer 子组件**：组装 / 去重 / 配额 / 前缀缓存 / 格式化住 TS（**快迭代**，策略住 `schema/policy.json` 热改）；**只有 token 计数下推 Rust 原生扩展**（`native/tokenizer/`，napi-rs 一类，**进程内调用**、无额外 hop）。源码 + `package.json` + `Cargo.toml` 入世，`node_modules` / `target/` / `*.node` 走宿主侧 ③；**tokenizer 单一实现**（native 缺失 / 构建失败即 H15 `deps_failed` → #13 隔离，**不回落 JS**——两份计数会漂移、破坏「同输入同输出」）（2026-09-20 修订） |
 | 职责 | 回合管道里的**上下文调配器**（在 `#22` 召回写 bag 之后、`#12` 调模型之前执行；**不是"回合第一个服务"**——首个服务是 `#33` 管道里的召回段 `#22`）：候选汇集 → 结构化 → 去重 → 预算建模 + token 计数 → 配额分配 → 裁剪 → 来源调度 → 冲突消解 → 前缀缓存排序 → 按方言格式化（含多模态 content parts）→ 组装清单（事件）→ 75% 触发协调 |
-| 依赖 | pins 无；`+` 1、2、3、11（投影读）；**系统提示词 / 工具 schema / 技能片段由上层 bag 传**（#33 `context.assemble` 阶段写 `bag.system_prompt` / `bag.tools` / `bag.skills`；本插件不 pin #27 / #33 / #36）；`<-` 14（pins；切片清单由 14 接线给定）、33（pins：`context.assemble` 节点调 `context.build`——pin 边在 #33 侧，本行只记被依赖关系）；版本提升：#22 到位后加记忆引用字段（L3 召回由上层写入 bag）、#36 到位后加技能片段、#3 到位后按注入契约取 L1 / L2 |
+| 依赖 | pins 无；`+` 1、2、3、11（**由 #14 / #33 入口 term 读出随 bag 传入，§1.14；服务不读投影**）；**系统提示词 / 工具 schema / 技能片段由上层 bag 传**（#33 `context.assemble` 阶段写 `bag.system_prompt` / `bag.tools` / `bag.skills`；本插件不 pin #27 / #33 / #36）；`<-` 14（pins；切片清单由 14 接线给定）、33（pins：`context.assemble` 节点调 `context.build`——pin 边在 #33 侧，本行只记被依赖关系）；版本提升：#22 到位后加记忆引用字段 **`bag.recall`**（L3 召回由上层写入 bag；双侧定名，2026-09-20 修订）、#36 到位后加技能片段、#3 到位后按注入契约取 L1 / L2 |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["context"]`，`methods: {context:["build"]}` |
 | 命令 | 无 |
@@ -18,16 +18,16 @@
 - **为什么只下推 token 计数**：它是本插件唯一的纯 CPU 热点（每轮对候选消息反复计数），而**组装策略（去重 / 配额 / 裁剪 / 前缀排序 / 格式化）是迭代最频繁的部分**，必须留 TS 才能快速改。全服务 Rust 会把最常改的算法锁进编译期，故只把热点下推。
 - **形态**：`native/tokenizer/`（Rust crate + `Cargo.toml`）编译成原生扩展（`*.node`，napi-rs 一类），TS 服务**进程内**加载调用——不是第二个进程、不走 `port.call`、无 hop。
 - **物化（H15）**：源码 + `package.json` + `Cargo.toml` 入世；`node_modules` / `target/` / `*.node` 走宿主侧 ③；宿主物化时 `npm ci` + 构建原生扩展。
-- **单一实现（写死）**：tokenizer 只有 Rust 一份；**native 缺失 / 构建失败 ⇒ #13 `not_loaded`（隔离），不回落 JS 实现**——两份 tokenizer 必然漂移，会让「预算 / 75% 阈值 / 同输入同输出」全部失真。
+- **单一实现（写死）**：tokenizer 只有 Rust 一份；**native 缺失 / 构建失败 ⇒ H15 `deps_failed` → #13 隔离（与 H15 失败码对齐，2026-09-20 修订），不回落 JS 实现**——两份 tokenizer 必然漂移，会让「预算 / 75% 阈值 / 同输入同输出」全部失真。
 - **可逆**：能力类 / 方法 / `pins` 与实现无关；若将来热点消失，去掉 `native/` 即可（换实现不改调用方）。
-| 验收 | 1) 同世界同 bag 组装逐字节确定、可回放；2) 完全一致（规范化后）的消息只留最新一条；3) 工具调用 / 结果对不被裁散；4) 达 75% 追加且只追加一条压缩提示；5) `covered_upto` 之前轮次不进组装；6) 预算分配符合优先级、超限降级顺序确定；7) 组装清单事件含各来源 token 数与裁剪原因；8) 换 #22 / #36 / #19 实现不改本插件；9) **含工具结果的轮次追加且只追加一条交错引导语**，且引导语文案**不含任何工具标识符**（工具名 / 插件名 / 能力类名 / 端口名）；10) **过期 L1（`expires_at <= bag.now`）不注入**，且组装清单标 `l1_expired` |
+| 验收 | 1) 同世界同 bag 组装逐字节确定、可回放；2) 完全一致（规范化后）的消息只留最新一条；3) 工具调用 / 结果对不被裁散；4) 达 75% 追加且只追加一条压缩提示；5) `covered_upto` 之前轮次不进组装；6) 预算分配符合优先级、超限降级顺序确定；7) 组装清单事件含各来源 token 数与裁剪原因；8) 换 #22 / #36 / #19 实现不改本插件；9) **含工具结果的轮次追加且只追加一条交错引导语**，且引导语文案**不含任何工具标识符**（工具名 / 插件名 / 能力类名 / 端口名）；10) **过期 L1（`expires_at <= 帧 env.now`，H16）不注入**，且组装清单标 `l1_expired`（2026-09-20 修订） |
 | 状态 | 细节设计（2026-09-19）：扩为上下文调配器；**实现形态 = TS 主体 + Rust tokenizer 子组件**（组装逻辑留 TS 快迭代，仅 token 计数下推原生，见下节）；去重、配额、冲突消解、前缀缓存、多模态格式化、组装清单、75% 触发均已定。**本轮算法优化**：前缀只含「系统提示 + 工具 schema」（L2 移出）、token 计数按 def 哈希缓存 + 前缀和、75% 基数改可用预算、`dedup_key` 规范化缓存。**本轮补**：① 系统提示 / 工具 schema 来源定为 **bag**（#33 `context.assemble` 节点写，本插件不读 #33 / #27 投影）；② **交错引导语**（工具结果回灌后追加一条「说意图、禁标识符」system 引导，修回合内推理/工具交错放大器） |
 
-## 调配流水线
+## 调配流水线（2026-09-20 修订）
 
 ```
-0 候选汇集   系统提示(bag) / 工具 schema(bag) / L2 / 上一会话 L1 / 本会话 L1 / 技能 / L3 召回(bag) / 历史 / 风格
-0b TTL 过滤  L1 注入前校验 expires_at <= bag.now ⇒ 过期 L1 不注入（见下「读时 TTL 过滤」）
+0 候选汇集   本轮用户消息(#1 槽，含附件 text / 资产引用) / 系统提示(bag) / 工具 schema(bag) / L2 / 上一会话 L1 / 本会话 L1 / 技能 / L3 召回(bag) / 历史 / 风格
+0b TTL 过滤  L1 注入前校验 expires_at <= 帧 env.now（H16）⇒ 过期 L1 不注入（见下「读时 TTL 过滤」）
 1 结构化     每片段 -> 规范消息；工具调用与结果成对、标记 atomic
 2 去重       规范化后完全一致 -> 只留位置最新一条；跨来源也去重（记忆 vs 历史 -> 丢记忆副本）
 3 预算建模   总预算 = context_window - max_output - 余量；逐片段 token 计数
@@ -88,7 +88,7 @@
 | P5 | 风格 | 超预算首先丢 |
 
 - **未用额度下滚**：高优先级用不完的额度给下一级（尤其给历史）。
-- **P0+P1 出口（写死）**：`budget_impossible` 判据 = `P0 + P1` 的 token 和 > `budget`（P1 中无 TTL 的 L2 可能持续增长）。此时不静默截断：返回结构化 `budget_impossible`，由上层决定强压（调 #19 `compact`）或失败；L2 软上限与容量淘汰归 #23 `sweep`。
+- **P0+P1 出口（写死）**：`budget_impossible` 判据 = `P0 + P1` 的 token 和 > `budget`（P1 中无 TTL 的 L2 可能持续增长）。此时不静默截断：返回结构化 `budget_impossible`，由上层决定强压（调 #19 `compact`）或失败；L2 软上限与容量淘汰归 #23 `sweep`。**消费方（2026-09-20 修订）**：#14 `wiring.on_budget:'fail'`（入口 term 据结构化错误以 extern 失败收口）；#33 按 `thresholds` 分支。
 - **来源调度**：纳入量由配额决定；对 bag 里已有的召回集做截断（#22 的 `top_k` 由上层管道按预算传，见 #22「预算感知」）。
 
 ## 冲突消解
@@ -104,13 +104,13 @@
 
 ## 格式化（按方言，含多模态）
 
-- 按 `#4–10 vendor-*` 的 `sdk` / 自定义的 `protocol`，把 `parts` 编成该方言的 content parts：`openai-chat` / `openai-responses` / `anthropic-messages` 各自的 text / image / audio 形态。
-- **多模态内容装配**（原候选缺口）归此处：附件经 `#11` 的资产引用取字节（`state/assets/`），按模型 `modalities.input` 编 content parts；模型不支持该模态 → 降级为文本引用 + 组装清单标 `modality_dropped`。
+- vendor `sdk` / `quirks` **由 `bag.config` 携带**（调用方入口 term 装配，§1.14）；自定义厂商的 `protocol` 同路；据此把 `parts` 编成该方言的 content parts：`openai-chat` / `openai-responses` / `anthropic-messages` 各自的 text / image / audio 形态。（2026-09-20 修订）
+- **多模态内容装配**（原候选缺口）归此处：**可解析附件 `text` 内联进组装；二进制附件只传资产引用、不进组装**（无需取字节 / 无需 pin `host`；2026-09-20 修订）；按模型 `modalities.input` 编 content parts，模型不支持该模态 → 降级为文本引用 + 组装清单标 `modality_dropped`。
 - 方言映射表可随 `vendor-*` 换代；本插件不硬编码厂商怪癖。
 
-## 组装清单（宿主事件，不进世界）
+## 组装清单（插件事件，经宿主透传，不进世界）（2026-09-20 修订）
 
-- 每次组装产一条 `context.assembled` 事件：`{ run, thread, model, budget, used, sources:{prompt,tools,l2,l1,skill,recall,history,style:{tokens,count}}, deduped, trimmed:[{source,reason}], recall:[{entry,score}], flags:[] }`。
+- 每次组装产一条 `context.assembled` 事件：`{ run, thread, model, budget, used, sources:{prompt,tools,l2,l1,skill,recall,history,style:{tokens,count}}, deduped, trimmed:[{source,reason}], recall:[{entry,score}], flags:[] }`；**`run` / `thread` 自协议帧 `env`（H16）读取**。（2026-09-20 修订）
 - **`run` / `thread` 必填**（2026-09-19 补）：UI（#40 上下文用量行 / #18 调试）按 `thread` 过滤取当前线程最近一次——真并发下不按线程过滤会把别的线程的用量串进当前视图。
 - 经宿主 `event` 透传（**不落账、不推进、不参与哈希**）；UI / 日志消费，供调试「为什么这轮上下文长这样」。
 
@@ -118,7 +118,7 @@
 
 - 组装完成后若 `used >= budget × 75%`（`budget = context_window - max_output - 余量`，**不是裸 `context_window`**）→ **追加一条 system 消息提示 agent 压缩**（文案住 policy）；不删消息、不动 #33 图 / 策略数据。
 - agent 经记忆工具调 #19 `compact` / `extract` 落计划，`covered_upto` 前进后，下次组装才排除旧轮次；**压缩只写 `#3`、不删 #11 消息**。
-- 若裁剪后仍 > 100% → 不静默截断：返回结构化 `budget_exceeded`（上层决定强压或失败）。
+- 若裁剪后仍 > 100% → 不静默截断：返回结构化 `budget_exceeded`。**消费方（2026-09-20 修订）**：#14 `wiring.on_budget:'fail'`（入口 term 据结构化错误以 extern 失败收口）；#33 按 `thresholds` 分支。
 
 ## 交错引导语（工具结果回灌后注入，本轮定）
 
@@ -136,14 +136,14 @@
 
 ## 与 #3 的关系
 
-- 本插件是 #3 的**主投影读者**（`+ 3`，字面身份名、不产生依赖边）；#23 也 `+ 3` 做维护（同为投影读）；写回一律由 19 / 23 的计划落账。
-- L3 召回不经本插件发 eff：上层（#33 管道）调 #22 后写入 bag 的记忆引用字段，本插件只读 bag。
+- #3 的读取**由调用方入口 term 完成**（#14 / #33 装配 `bag.memories`，§1.14；本插件服务不读投影）；#23 维护所需的 #3 片段同路由（periodic reads / 入口 term）——两处读取互不依赖；写回一律由 19 / 23 的计划落账。
+- L3 召回不经本插件发 eff：上层（#33 管道）调 #22 后写入 **`bag.recall`**（记忆引用字段，双侧定名），本插件只读 bag。（2026-09-20 修订）
 
 ## 读时 TTL 过滤（L1，2026-09-19 补）
 
-- **判据**：L1 条目带 `expires_at`（#3 定，= `at + 24h`）；本插件在候选汇集后、结构化前，按 `bag.now` 校验 `expires_at <= now` 的 L1 ⇒ **不注入**（记入组装清单 `flags:["l1_expired"]`）。
-- **为什么读侧也要过滤**（不只靠 #23 `sweep`）：`sweep` 是周期性 / 回合尾触发，存在窗口期内过期 L1 仍被注入的情况；读侧过滤保证**任何时刻过期 L1 都不进上下文**，#23 的删除是清理存储、不是唯一的过期防线。
-- **时间来源**：`bag.now`（宿主按轮固定传入，与 #26 / #19 / #44 同规；服务不取时间）。
+- **判据**：L1 条目带 `expires_at`（#3 定，= `at + 24h`）；本插件在候选汇集后、结构化前，按帧 `env.now`（H16）校验 `expires_at <= now` 的 L1 ⇒ **不注入**（记入组装清单 `flags:["l1_expired"]`）。（2026-09-20 修订）
+- **为什么读侧也要过滤**（不只靠 #23 `sweep`）：`sweep` 是**宿主周期**触发（2026-09-20 修订：无回合尾触发），存在窗口期内过期 L1 仍被注入的情况；读侧过滤保证**任何时刻过期 L1 都不进上下文**，#23 的删除是清理存储、不是唯一的过期防线。
+- **时间来源**：帧 `env.now`（H16，宿主按轮固定注入；与 #26 / #19 / #44 同规；服务不取时间）。（2026-09-20 修订）
 - **不影响展示**：#3 是数据身份、L1 过期与否都不进 #11 展示历史（展示真源是 #11 消息）。
 - **失效丢弃**：`covered_upto` 对应消息在 #11 `refs` 里查不到（失效）⇒ 丢弃该 L1、不报错（#3 验收 6）。
 

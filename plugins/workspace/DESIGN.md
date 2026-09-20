@@ -5,7 +5,7 @@
 | 编号 / 身份 | 41 / `workspace` |
 | 语言 | **Rust**（`pick` 系统原生目录选择器 / `reveal` 文件管理器 / realpath 判定走原生 OS API，如 `rfd` 一类）。与 #20/#25 同路：源码 + `Cargo.toml` 入世，`target/` 与二进制走宿主侧 ③ 依赖缓存 |
 | 职责 | 工作区（工作目录）本体：列表**进世界** + 路径校验 + 原生目录选择器 `pick` + 在文件管理器中打开 `reveal` + 最近打开（本机 ③） |
-| 依赖 | pins 无；`<-` 16（pins：`workspace.list` / `pick` / `add` / `remove` / `reveal` 的入口 term 发 eff；`list` 读 `ctx.ids.workspace.body`、`add` / `remove` 读 `#1` 槽——**均由 #16 入口 term 读投影后经 args 传入，本插件服务不读投影**，D8）；11（**版本提升**：会话 schema 加 `workspace_id`）；1（**版本提升**：槽 kind 新增 `workspace.add` / `workspace.remove` 与字段 `workspace` / `name` / `path`，被提升方见 `plugins/input/DESIGN.md`）；28–31 / 25 的执行根由**入口 term 读投影解析**后经 #33/#27 **bag 传 `workspace_root`**（不 pin 本插件，见下「执行根交接」） |
+| 依赖 | pins 无；`<-` 16（pins：`workspace.list` / `pick` / `add` / `remove` / `reveal` 的入口 term 发 eff；`list` 读 `ctx.ids.workspace.body`、`add` / `remove` 读 `#1` 槽——**均由 #16 入口 term 读投影后经 args 传入，本插件服务不读投影**，D8）；11（**版本提升**：会话 schema 加 `workspace_id`）；1（**版本提升**：槽 kind 新增 `workspace.add` / `workspace.remove` 与字段 `workspace` / `name` / `path`，被提升方见 `plugins/input/DESIGN.md`）；28–31 / 25 的执行根：**#14 入口 term 解析当前会话工作区路径写 `bag.workspace_root`；#27 原样下传；#28–31 / #25 只消费、不各自投影读**（§1.14；不 pin 本插件，见下「执行根交接」）（2026-09-20 修订） |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["workspace"]`，`methods: {workspace:["list","pick","add","remove","reveal"]}` |
 | 命令 | 无（命令面在 #16 `ui-sidebar`） |
@@ -25,7 +25,7 @@
   "implements": ["workspace"],
   "methods": { "workspace": ["list", "pick", "add", "remove", "reveal"] },
   "pins": {},
-  "start": "node execute/main.js",     // 平台 IO（原生选择器 / 文件管理器），必须起服务
+  "start": "execute/workspace",        // Rust 构建产物名（H15 物化构建）；平台 IO（原生选择器 / 文件管理器），必须起服务（2026-09-20 修订）
   "protocol": "1",
   "restart": {}, "health": {},
   "state": "recomputable",
@@ -64,9 +64,9 @@
 | --- | --- | --- | --- |
 | `list` | `workspace.list`（无参） | args 由 #16 入口 term 读 `ctx.ids.workspace.body` 后传入（本插件服务不读投影，D8） | `[{ id, name, path, missing }]`；`missing` = 逐路径 stat 结果（不存在 / 非目录） |
 | `pick` | `workspace.pick`（无参） | — | `{ path }` / `{ cancelled: true }`；调原生选择器，成功记 ③ 最近打开 |
-| `add` | `workspace.add`（无参，读槽） | 槽 `{kind:'workspace.add', workspace, name, path}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入 | 校验 → 计划【batch：写 workspace 新一代 + 清槽 + extern】；失败 → 计划【batch：清槽 + extern{ok:false,error}】 |
-| `remove` | `workspace.remove`（无参，读槽） | 槽 `{kind:'workspace.remove', workspace}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入 | 计划【batch：写 workspace 新一代（删该项）+ 清槽 + extern】 |
-| `reveal` | `workspace.reveal`（args `{workspace}`） | workspace id | 解析 path → 打开文件管理器；`{ok:true}` / `{ok:false,error}`（**不写世界、不经槽**） |
+| `add` | `workspace.add`（无参，读槽） | 槽 `{kind:'workspace.add', workspace, name, path}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入；**当前 `workspaces` body 由 #16 入口 term 读投影后随 args 传入（§1.14）** | 校验 → 计划【batch：写 workspace 新一代 + 清槽 + extern】；失败 → 计划【batch：清槽 + extern{ok:false,error}】（2026-09-20 修订） |
+| `remove` | `workspace.remove`（无参，读槽） | 槽 `{kind:'workspace.remove', workspace}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入；**当前 `workspaces` body 由 #16 入口 term 读投影后随 args 传入（§1.14）** | 计划【batch：写 workspace 新一代（删该项）+ 清槽 + extern】（2026-09-20 修订） |
+| `reveal` | `workspace.reveal`（args `{workspace}`） | workspace id；**目标 `path` 由 #16 入口 term 读 `#41` body 后随 args 传入（§1.14）** | 解析 path → 打开文件管理器；`{ok:true}` / `{ok:false,error}`（**不写世界、不经槽**）（2026-09-20 修订） |
 
 - **写类走槽、命令无参**（§1.2 第 2 条）：`add` / `remove` 的载荷先写入 #1 输入槽，命令无参、入口 term eff 到本插件；**#16 入口 term 读 `ctx.ids.input.body.slots` 后把槽体经 args 传入**，本插件据 args 构造写计划（本插件服务**不读投影**，服务无写通道，D8）。
 - **`reveal` 不走槽**：它是纯动作（无世界写），故走命令 `args`（argsSchema `{workspace}`）；若走槽则无计划清槽、会污染下一回合。
@@ -105,13 +105,13 @@
 { op:'add_gen', args:{ id:'input', payload:{ $n:k }, pins:{}, sig:{ $n:k } } }
 ```
 
-- `idle` body 恒定 ⇒ 该线程键的 `put` 命中 dup、不新增 def；只多一条 gen entry（同 #1）。清槽是 per-thread 键控（只清本线程键、不擦其他线程）。
+- `idle` body 恒定 ⇒ **仅当整份 body 与既有 def 一致时**该 `put` 才命中 `dup`、不新增 def；只多一条 gen entry（同 #1，2026-09-20 修订）。清槽是 per-thread 键控（只清本线程键、不擦其他线程）。
 - **失败路径也必须清槽**：`add` / `remove` 无论成败都返回含清槽的计划，否则残留的 `workspace.*` 槽会让下一回合 #11 判定「非法槽 kind」。
-- **登记**：#1 现写「唯一写回者是 #11」已不完整——凡消费输入槽的写类命令，其终局计划都清槽（本插件即其一）。见下「跨插件登记」。
+- **登记**：#1 现口径 =「写回者 = 消费该槽的写类命令的终局计划，不限于 #11」——凡消费输入槽的写类命令，其终局计划都清槽（本插件即其一）。见下「跨插件登记」。（2026-09-20 修订）
 
 ## 执行根交接（bag 传，已定）
 
-- **解析点 = 入口 term**（#14 `chat` 的入口 term；服务不读投影，D8）：读投影 `ctx.ids.session.body`（`current` 会话 → `workspace_id`）→ `ctx.ids.workspace.body`（`workspaces[id].path`）→ 写入 `bag.workspace_root`，经 #33 传给 #27 `dispatch`。
+- **解析点 = 入口 term**（#14 `chat` 的入口 term；服务不读投影，D8）：读投影 `ctx.ids.session.body`（`current` 会话 → `workspace_id`）→ `ctx.ids.workspace.body`（**按 id 线性查找**（`workspaces` 是数组）取 `path`）→ 写入 `bag.workspace_root`，经 #33 传给 #27 `dispatch`（§1.14；2026-09-20 修订）。
 - **工具侧**（#28–31 / 25）：只用 `bag.workspace_root`，并在使用时再校验存在（目录可能已删）→ 缺失即结构化失败 `workspace_missing`；**不读本插件投影、不 pin 本插件**；#28 / #29 反向调 #25 时把 `workspace_root` 随 args 透传（#25 服务**不读投影**，D8）。
 - 为什么不让工具各自投影读：三份解析逻辑会漂移；为什么不让工具 eff `workspace.root`：每次调用多一跳、且 #28–31 都要 pin #41。
 - `workspace_id` **创建即钉死**（#11 会话 schema），故执行根在一次会话内稳定；换工作区 = 新建会话（跨区移动后置）。
@@ -136,6 +136,6 @@
 ## 跨插件登记
 
 - **版本提升：提出方** —— 要求 #1 `input` 升一代：槽 kind 新增 `workspace.add` / `workspace.remove`，字段新增 `workspace`（id）/ `name` / `path`；并修正「唯一写回者 #11」为「消费该槽的写类命令的终局计划」（本插件是新增写回者）。被提升方登记见 `plugins/input/DESIGN.md`。
-- **#16 命令面**新增 `workspace.add` / `workspace.remove` / `workspace.reveal`（`workspace.list` / `pick` 已有）；依赖行 `-> 41` 覆盖全部五条。
+- **#16 命令面**新增 `workspace.add` / `workspace.remove` / `workspace.reveal`（`workspace.list` / `pick` 已有）；依赖行 `-> 41` 覆盖全部五条；**`workspace.*` 命令的槽体与当前 body 由 #16 入口 term 装配**（§1.14）（2026-09-20 修订）。
 - **#11 会话**：`workspace_id` 创建即钉死（已登记在 `plugins/session/DESIGN.md`）。
-- **#27 tools**：新增「解析 `bag.workspace_root`」职责（本插件不 pin 它、它不 pin 本插件；纯投影读）；#27 解析后经 bag 下传，#28 / #29 反向调 #25 时随 args 透传（各服务均**不读投影**，D8）。
+- **#27 tools（2026-09-20 修订）**：**`bag.workspace_root` 由 #14 入口 term 解析写入、#27 原样下传**（本插件不 pin 它、它不 pin 本插件）；#28 / #29 反向调 #25 时随 args 透传（各服务均**不读投影**，D8）。

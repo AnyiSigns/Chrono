@@ -10,7 +10,7 @@
 | schema | `schema/evolution.json` |
 | 机制 | 见下 |
 | 边界 | 不做：聚合与判定（归 44）/ 提案（归 45）/ 门禁与采纳（归 33 + 32）/ 渲染（归 17）/ 起进程 |
-| 验收 | 1) 加一条轨迹 = 1 条目 def + 1 索引 def，**不重写全量**；2) 四类形状固定、可回放；3) 从 `verdict` 可反查 `proposal_id` → `evidence_id` → `trace` → `EffectAudit`（**全链可溯源**；`EffectAudit` 经 `host` + `audit` 读取，D7）；4) **拒绝的判定也在 tail 里**（只记采纳 = 环不可审计）；5) 纯数据身份：无进程、无端口；6) 世界增长 ∝ 回合数（轨迹只存摘要 + 引用） |
+| 验收 | 1) 加一条轨迹 = 1 条目 def + 1 索引 def，**不重写全量**；2) 四类形状固定、可回放；3) 从 `verdict` 可反查 `proposal_id` → `evidence_id` → `trace` → `eff_log`（**全链可溯源**）（2026-09-20 修订）；4) **拒绝的判定也在 tail 里**（只记采纳 = 环不可审计）；5) 纯数据身份：无进程、无端口；6) 世界增长 ∝ 回合数（轨迹只存摘要 + 引用） |
 | 状态 | 新增（2026-09-19，agent 图与自进化）：完整设计见 `docs/plans/agent-graph-design.md` |
 
 > **为什么四类合成一个身份**：轨迹高频可清理、证据 / 提案 / 判定低频要永久，生命周期不同；
@@ -46,7 +46,7 @@
       "l1_iters": 3, "l1_maxed": false,          // L1 自治：迭代次数 + 是否打满（no_progress 证据来源）
       "verify": { "passed": true, "skipped": false } | null,  // 仅 verify 节点：近 oracle 信号（verify_failure 来源）
       "usage": { "tokens": 0, "calls": 1, "tool_calls": 0, "walltime_ms": 0 },
-      "audit": { "def": "<EffectAudit 哈希>" } } ],
+      "eff_log": [ { "step": 0, "iter": 1, "port": "model", "method": "chat", "args_hash": "…", "result_hash": "…", "outcome": "ok" } ] } ],  // 每步记录、interpret 内收集、回合尾随 trace 写入——**post dense 信号与 shadow 配对的底座**（2026-09-20 定案）
   "directives_summary": { "def": "<本次 run directives 摘要哈希>" } | null,  // 影子回放数据载体（v1 闭环，见下）
   "ctx_summary": { "def": "<轮首投影 ctx 摘要哈希>" } | null,                // 影子回放数据载体
   "refused_at": { "node_index": 2, "iter": 1, "code": "denied", "attributable_to": "user" } | null,
@@ -56,8 +56,8 @@
   "at": "…", "prev": { "def": "…" } | null }
 ```
 
-- **只存摘要 + 引用，正文不重复存**（正文已在 `EffectAudit` 里）⇒ 世界增长 ∝ 回合数（验收 6）。
-- **`directives_summary` / `ctx_summary`（2026-09-19 新增，影子回放数据载体）**：本次 run 的 `directives`（各 directive 的 `kind`/`entry`/`args` 摘要，不含 `eff` 回灌值——那在 `EffectAudit`）与轮首投影 `ctx` 摘要（身份 `active`/`body` 快照、不含 `refs` 全量）。影子回放时，#44/影子执行器据新图重新构造等价 `directives`+`ctx`，按 `(port,method,canonicalJson(args))` 与历史 `EffectAudit` 配对回灌，缺匹配则记 `shadow:"unverified"`。这是 v1 闭环自进化环的载体（无它则「零 token 验证」无据可依）。
+- **只存摘要 + 引用，正文不重复存**（正文已在 `eff_log` / 世界数据里）⇒ 世界增长 ∝ 回合数（验收 6）。
+- **`directives_summary` / `ctx_summary`（2026-09-19 新增，影子回放数据载体）**：本次 run 的 `directives`（各 directive 的 `kind`/`entry`/`args` 摘要，不含 `eff` 回灌值——那在 `eff_log`）与轮首投影 `ctx` 摘要（身份 `active`/`body` 快照 + **保留 refs 哈希集合**（正文另存 def；影子重建的 ctx 可核对））。影子回放时，#44/影子执行器据新图重新构造等价 `directives`+`ctx`，按 `(port,method,canonicalJson(args))` 与 **`trace.eff_log`** 配对回灌，缺匹配则记 `shadow:"unverified"`；`host.audit` 读 `EffectAudit` 保留为**历史对照补充**（v1 以 eff_log 为准）（2026-09-20 修订）。这是 v1 闭环自进化环的载体（无它则「零 token 验证」无据可依）。
 - **`workspace_id` 必填**：证据聚类按它分区（见 #44）——不同项目失败模式不同，混聚会把"项目特性不同"误诊成"能力缺失"。
 - **`l1_iters` / `l1_maxed`**：L1 自治的过程数据。运行时**不拦** `no_progress`（解释器看不到 Scope 内部迭代，
   让 Scope 自己判又破"不能自己决定完成"），故降为**证据类型**、由 #44 事后聚类。
@@ -92,7 +92,7 @@
   "evidence_ids": ["ev-…"],
   "result": "accepted" | "rejected" | "undecided",
   "gate": { "mechanical": "pass" | "fail", "reason": null | "llm_chain_max",
-            "shadow": {"def":"…"} | null,        // 影子回放指标（零 token，历史输入 + 审计回灌）
+            "shadow": {"def":"…"} | null,        // 影子回放指标（零 token，历史输入 + `eff_log` 回灌）（2026-09-20 修订）
             "human": "approved" | "denied" | null },
   "adopted_gen": 12 | null,                      // accepted：#33 的新数据世代 seq
   "at": "…", "prev": {"def":"…"} | null }
@@ -108,8 +108,7 @@
 
 ## 容量与清理
 
-- **`trace` 是高频层**：容量上限与过期清理走 **#23 `memory-consolidate` 同路**——
-  写新索引不含旧条目（def 仍在链上，这是 ① 档的既定代价，不是"删除"）。
+- **`trace` 是高频层**：**唯一清理者 = #44 `sweep`**（掌握 `verdicts` 引用集，产清理计划）；**#23 只清 L1/L2/L3**（双侧一致）——写新索引不含旧条目（def 仍在链上，这是 ① 档的既定代价，不是"删除"）（2026-09-20 修订）。
 - **`evidence` / `proposals` / `verdicts` 是低频层**，永久保留（它们是"为什么变成这样"的唯一记录）。
 - 清理只动索引、**不动已被 `verdict` 引用的轨迹**（否则溯源链断）；引用判定由 #44 在产清理计划时做。
 
@@ -121,6 +120,6 @@
   **采纳 = 对 #33 自身图数据世代 `add_gen`**（本身份只存台账、不存图）。写本身份台账条目时，由写入者（#33 / #44 / #45）对 **#43 自身台账数据世代 `add_gen`**——两处 `add_gen` 主语不同，勿混。
 - **#44 evolve-metrics**：投影读 `trace` → 产 `evidence` 写计划；产 `trace` 清理计划。
 - **#45 orchestration-admin**：投影读全部四类 → 产 `proposals` 写计划（**只产提案、不产写**）。
-- **#17 ui-settings S13**：进化台账只读渲染（三类倒序列表，可下钻到 `trace` 与 `EffectAudit`）；**`EffectAudit` 的读取经宿主保留身份 `host` + `audit` 方法**（D7），不经本插件（本插件是纯数据身份、无 execute）。
-- **宿主能力（H1 已落地）**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`，按 `prev` 链窗口返回）；
+- **#17 ui-settings S13**：进化台账只读渲染（三类倒序列表，可下钻到 `trace` 与 `eff_log`）；**历史 `EffectAudit` 的读取经宿主保留身份 `host` + `audit` 方法**（D7，**历史对照补充——v1 数据底座以 `trace.eff_log` 为准**，2026-09-20 修订），不经本插件（本插件是纯数据身份、无 execute）。
+- **宿主能力（H1 已落地）**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`，**全量返回**、`next_before` 恒 `null`——2026-09-20 修订）；
   与 #11 / #21 / #35 / #33 共用同一条，**本身份不新增宿主动词**。

@@ -20,10 +20,10 @@
 
 ## 机制
 
-- `plugin.list(bag)`：返回宿主已知的插件身份（身份名 / **世代 64-hex 哈希** / `pins` 摘要）；**过滤掉可见性黑名单 {`sandbox`, 自己}**。
+- `plugin.list(bag)`：数据源 = **`host.identities {}`**（宿主只读身份清单面，H20 待落地：id / active / implements / commands；本插件过滤后返回）；**过滤掉可见性黑名单 {`sandbox`, 自己}**（2026-09-20 修订）。
 - `plugin.read(bag)`：读某身份的源码——经 **`host.source.read {identity, path}`**（保留能力类 `host`，H3）；被黑名单过滤的身份 → `hidden_identity`（本插件先过滤，不调宿主）。
 - `plugin.validate(bag)`：经 **`host.validate_package {files}`**（保留能力类 `host`，H13/D12）转发宿主的入世前校验 dry-run——对 `plugin.json` 12 字段 / 包内路径约束 / `argsSchema` 方言 / **受保护 `pins` 完整性** / term 环 / `.worldignore` 做 dry-run，返回错误列表与 **`result_hash`**；机械校验归宿主，本插件只转发。
-- `plugin.write(bag)`：构造世界写计划（**不直接写**）：**身份不存在时先 `add_identity`（否则只 `add_gen`）** → `put(blob)` × n → `put(tree)` → `put(commit)` → `add_gen(身份, payload=commit)`；批内用 `{"$n":k}` 占位串起。**必须携带上一次 `plugin.validate` 的结果哈希**（见修正 3）。
+- `plugin.write(bag)`：构造世界写计划（**不直接写**）：**身份不存在时先 `add_identity`（否则只 `add_gen`）** → `put(blob)` × n → `put(tree)` → `put(commit)` → `add_gen(身份, payload=commit)`；批内用 `{"$n":k}` 占位串起。**必须携带上一次 `plugin.validate` 的结果哈希**（见修正 3）。**`result_hash` 缓存住宿主 ③（`CHRONO_PLUGIN_STATE`，键 = 候选树规范化哈希）**；`write` 时本插件机械比对缓存（不依赖模型跨调用带回 64-hex；缺失 → `validate_required`）（2026-09-20 修订）。
 - **风险分级**：写插件 = 改世界源码（非工作区、非工具产物）→ 高危；**按 `(port, 工具名)` 机械判（D4）——`(plugin-admin, plugin.write)`**；**仅 `auto` 档允许直落**，否则升级弹卡（`#26` / `#33`）。
 
 ---
@@ -70,6 +70,7 @@ agent 可让别的路径产出 `add_gen(plugin-admin, 新数据世代)` 直接�
 原设计 `validate` 可选。**写死**：`plugin.write` 必须携带上一次 `plugin.validate` 的**结果哈希**（同一 bag / 同一源码树），
 否则拒 `validate_required`。理由：把"运行时才炸"提前到写期，与 #33 机械闸同一口径；
 且换代失败即 **fail-closed 隔离、绝不回落旧世代**（`plugins.md` §五），事后补救成本远高于事前校验。
+**（2026-09-20 修订）**：`result_hash` 缓存住宿主 ③（`CHRONO_PLUGIN_STATE`，键 = 候选树规范化哈希）；`write` 时本插件机械比对缓存，不依赖模型跨调用带回 64-hex；缺失即 `validate_required`。
 
 ---
 
@@ -88,7 +89,7 @@ agent 可让别的路径产出 `add_gen(plugin-admin, 新数据世代)` 直接�
 3. **边界冲突**：本插件边界已写明"装配与换代归宿主"、它不认识图；让它认识 #33 的数据 schema 就是越界。
 
 **一处刻意的不对称（写明理由）**：本插件产写计划、#45 产提案条目。
-根因是**影子回放**——编排变更能用历史输入 + 审计回灌验证（零 token），所以需要提案态承载影子指标给人裁决；
+根因是**影子回放**——编排变更能用历史输入 + `eff_log` 回灌验证（零 token），所以需要提案态承载影子指标给人裁决；
 **源码变更换的是进程，跑不了影子回放** ⇒ 提案态对它没有额外价值，只多一跳。
 
 **必须明写的限制**：`host.md` **v1 无 op 级鉴权** ⇒ "本插件不改图、编排面不改源码"是
@@ -139,3 +140,4 @@ agent 可让别的路径产出 `add_gen(plugin-admin, 新数据世代)` 直接�
 - **#33 loop-policy**：图变更不经本插件（归 #45）；本插件的 `plugin.write` 受 #33「审批段不可绕过」同一红线约束。
 - **#26 guard / #32 approval / #39 ui-approval**：本插件的 `(plugin-admin, plugin.write)` 判为高危 ⇒ `escalate` ⇒ 入审批队列，
   item `kind = plugin_write`（摘要 = 插件身份 + 变更文件清单 + `plugin.validate` 结果；**无影子指标**，换的是进程、跑不了影子回放）。
+- **draft §1.7 #42 行**：已同步 pins `host`（2026-09-20）。

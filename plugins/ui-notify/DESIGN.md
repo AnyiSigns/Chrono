@@ -5,9 +5,9 @@
 | 编号 / 身份 | 38 / `ui-notify` |
 | 职责 | 系统通知：把宿主事件转成本机通知（**headless 前端**，不占 slot） |
 | 依赖 | 收宿主事件（无 pins）；读 `#2 config.ui.notify`（开关）——**开关读取经入口 term，由只读命令 `notify.state` 触发**（ui-design §15：UI 服务不读投影、入口 term 可读） |
-| 成员 | execute, terms（只读命令 `notify.state` 入口 + 投影读 `ui.notify` 开关） |
+| 成员 | terms only（只读命令 `notify.state` 入口 + 投影读 `ui.notify` 开关；**无 execute 成员、`start` 为空 ⇒ 无服务进程、不占端口**——不与 `plugins.md`「有 execute 无 start 拒载」冲突）（2026-09-20 修订） |
 | 能力类·方法 | `implements: ["ui-notify"]`，`methods: {"ui-notify":["ping"]}`（占位；headless 前端，不被 pin） |
-| 命令 | `notify.state`（无参；入口 term 投影读 `#2 config.ui.notify`，返回各开关当前值 + 浏览器权限状态供 #17 S7 显示） |
+| 命令 | `notify.state`（无参；入口 term 投影读 `#2 config.ui.notify`，返回各开关当前值 + 浏览器权限状态供 #17 S7 显示；**#17 S7 经 `api.command('notify.state')` 调用——权限状态唯一来源，双方登记，删 #17 自读路径**）（2026-09-20 修订） |
 | schema | 无（零 schema 合法：无世界数据） |
 | 机制 | 见下「订阅 / 默认规则 / 通知形态 / 开关」 |
 | 边界 | 不做：会话视图 / slot 视图 / 判定 / 写世界；服务不读投影（开关经入口 term 读，见依赖行）、无 pins 不发 eff。**口径**：通知只是提示、**不挂操作按钮**；裁决必须回 `#39` 卡片做（不在通知里做安全操作） |
@@ -16,7 +16,8 @@
 
 ## 运行位置（写死）
 
-- 本插件是**前端插件**（`execute` 供 `entry.js`），但**不占 slot**：`#15` 的**独立 headless 清单**负责加载它（**不进 `state/ui-mounts.json`**；见 `plugins/ui-shell/DESIGN.md`）。
+- 本插件是**前端插件**（**成员 = terms only**：`plugin.json` 无 execute 成员、`start` 为空 ⇒ 无服务进程；不与 `plugins.md`「有 execute 无 start 拒载」冲突），但**不占 slot**：`#15` 的**独立 headless 清单**负责加载它（**不进 `state/ui-mounts.json`**；见 `plugins/ui-shell/DESIGN.md`）（2026-09-20 修订）。
+- **前端 bundle 住 `web/` 目录随包入世**（源码），由 `#15` 经 `host.source.read` 取字节并同源服务；`notify.state` 命令入口 term 即全部服务面（2026-09-20 修订）。
 - 它经 `#15` 的 `/events` SSE 收宿主事件，按规则调浏览器 `Notification` API；**宿主侧服务无法调浏览器 API**，故不存在「服务直接发系统通知」的路径。
 - 不占端口、不进 slot 布局、失败隔离同其它子应用。
 
@@ -27,8 +28,8 @@
 | `approval.pending` | #32 | **仅窗口无焦点时**通知（前台由 #39 卡片呈现）；**结构变更例外，见下** |
 | 回合完成（`run.finished`） | 宿主（宿主事件面） | **仅窗口无焦点时**通知 |
 | 回合失败（`refused` / 错误收口） | 宿主（宿主事件面） | **始终**通知 |
-| 模型错误（`model_timeout` / `model_rate_limited` / `model_auth_failed` …） | #12 | **始终**通知 |
-| 断线（S6，与宿主断开） | #15 / 宿主 | **始终**通知 |
+| 模型错误（`model_timeout` / `model_rate_limited` / `model_auth_failed` …） | **`run.finished`（`status=refused` 且 `reasons` 含 `model_*` / `transport_failed` 前缀）**——宿主事件分流判定，无需 #12 专用错误事件（2026-09-20 修订） | **始终**通知 |
+| 断线（S6，与宿主断开） | 壳合成事件 **`shell.disconnected` / `shell.reconnected`**（ui-design §15 登记，#15 侧已加）（2026-09-20 修订） | **始终**通知 |
 | **编排连续失败**（`orchestration.unhealthy`） | **#44 `evolve-metrics`**（**周期 `aggregate`** 自动发） | **始终**通知（本轮新增，见下） |
 | **提问待作答**（`question.pending`） | **#48 `question`**（提问入队落账后发） | **始终**通知（2026-09-19 补：agent 提问后本 run 正常结束，人在后台时会静默挂起，必须通知） |
 
@@ -60,7 +61,7 @@
 
 - **OS 原生模板**：不自绘、不挂按钮——标题 = 事件类型（回合完成 / 回合失败 / 待审批 / 待审批：编排变更 / 待审批：插件写入 / 模型错误 / 断线 / 编排连续失败 / 提问待作答），正文 = 会话名 + 首行摘要（≤80 字截断）。
 - 点击通知 = 聚焦浏览器页（shell）；裁决必须回 `#39` 看全文再做。
-- **去重与节流（2026-09-19 补，防轰炸）**：同一 `(thread, kind)` 在 **5s 窗口**内重复到达只弹一条（后续计数合并，如「待审批 ×3」）；**同屏最多 3 条**系统通知，超出按到达顺序排队；`question.pending` / `orchestration.unhealthy` 不受节流（结构性，必须即时）。
+- **去重与节流（2026-09-19 补，防轰炸）**：同一 `(thread, kind)` 在 **5s 窗口**内重复到达只弹一条（后续计数合并，如「待审批 ×3」）；**同屏最多 3 条**系统通知，超出按到达顺序排队；`question.pending` / `orchestration.unhealthy` 不受节流（结构性，必须即时）。**去重键说明（2026-09-20 修订）**：`approval.pending` 载荷带 `thread`（#32 侧已加）；`orchestration.unhealthy`（周期 run）`thread:null` ⇒ 去重键退化为 `kind`（兜底写明）。
 - 勿扰 / 免打扰交系统策略接管。
 
 ## 开关（全局，`#2 config.ui.notify`）
@@ -81,7 +82,7 @@
 
 ## 浏览器通知权限（2026-09-19 补）
 
-- **权限状态可读**：本插件（headless）经浏览器 `Notification.permission` 读 `default` / `granted` / `denied`，把状态暴露给 #17 S7 通知分组显示——**开关开了却收不到通知时，用户能看到原因**，而不是以为坏了。
+- **权限状态可读**：本插件（headless）经浏览器 `Notification.permission` 读 `default` / `granted` / `denied`，经 `notify.state` 命令把状态暴露给 #17 S7 通知分组显示——**#17 S7 经 `api.command('notify.state')` 调用（权限状态唯一来源，双方登记；删 #17 自读路径）**（2026-09-20 修订）——**开关开了却收不到通知时，用户能看到原因**，而不是以为坏了。
 - **请求入口在 #17**：请求授权必须由**用户手势**触发（浏览器要求），故 [请求授权] 按钮住 `#17 ui-settings` S7 通知分组（slot 应用，能拿到点击手势）；点击调 `Notification.requestPermission()`，结果回写显示。
 - **未授权（`default`）时**：开关置灰（`opacity:.45` + tooltip「浏览器未授权」）+ 分组内 12px 说明；**不报错、不弹 toast**。**已拒绝（`denied`）时**给指引「请在浏览器站点设置中允许通知」（文案走 `messages.v1.json`），**不重复弹系统请求**（浏览器也不再弹）。
 - **与开关的关系**：`ui.notify` 开关是「产品层是否要通知」，浏览器权限是「系统层是否允许」；**两者都满足才弹**。任一不满足都不影响其它前端（既有边界）。

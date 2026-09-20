@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 / 身份 | 45 / `orchestration-admin` |
 | 职责 | agent 面编排管理：`list` / `read` / `validate`（本地复刻 #33 机械闸 dry-run）/ `propose`；**只产提案条目、不产写** |
-| 依赖 | pins 无；`+` 33（投影读六类条目）、43（投影读证据与台账）、11 / 41（经投影解析当前 `workspace_id`）；`<-` 27（pins：以工具类 `orchestration-admin` 暴露给 agent） |
+| 依赖 | pins 无；`+` 33、43、11 / 41（**`list` / `read` / `validate` 的输入由 #33 装配**——图六类条目与台账来自其 bag；会话 / 工作区视图与**投影 `ids.33.pins`（H20 待落地）**由 #14 入口 term 读出随 bag 传——§1.14，**随 args 传入；服务不读投影**）（2026-09-20 修订）；`<-` 27（pins：以工具类 `orchestration-admin` 暴露给 agent） |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["orchestration","orchestration-admin"]`，`methods: {orchestration:["list","read","validate","propose"], "orchestration-admin":["describe","invoke"]}`（工具类名 = 身份名，见 `plugins/tools/DESIGN.md`「`tool` 端口契约」）。**`orchestration` 类 = 管理 API**（服务方法），v1 唯一消费者 = 本插件工具类 `orchestration-admin.invoke`（按工具名内部派发，即 #27 的调用入口）；图内不直接 `port.call` 该管理类（如需属后置，D15） |
 | 命令 | 无 |
@@ -26,8 +26,8 @@
 | --- | --- | --- |
 | `list(bag)` | 列当前 active 图的 Scope 概览（`node_index` / `contract_id` / `impl` / `scope` / `autonomy` / `links` 摘要）+ 契约清单 + 阈值表 | 只读数据 |
 | `read(bag)` | 读某条目全文（契约 / Scope / 图 / 阈值）+ 关联证据摘要 | 只读数据 |
-| `validate(bag)` | **本地复刻** #33 的机械闸 dry-run（六条图不变量 + 四条演化规则 + 闭合 / 类型 / publish 偏序 / 端口 ⊆ pins；不 eff #33）；返回错误列表与**结果哈希** | 校验结果 + 哈希 |
-| `propose(bag)` | 构造**提案条目**写计划（`put(提案) + put(新 evolution body) + add_gen(evolution)`） | **提案条目，不是图变更** |
+| `validate(bag)` | **本地复刻** #33 的机械闸 dry-run（六条图不变量 + 四条演化规则 + 闭合 / 类型 / publish 偏序 / **端口 ⊆ pins（按投影 `ids.loop-policy.pins`——当前代码世代声明、名→被依赖身份名，H20，机械判定）**；不 eff #33）；返回错误列表与**结果哈希**（2026-09-20 修订） | 校验结果 + 哈希 |
+| `propose(bag)` | 构造**提案条目**写计划（**先 `put(候选图 def)` + `put(writes[].payload def)`，再 `put(提案) + put(新 evolution body) + add_gen(evolution)`——patch 引用的 def 必须先落**）（2026-09-20 修订） | **提案条目，不是图变更** |
 
 **`propose` 的四条硬约束**（写期机械校验，不满足直接拒）：
 
@@ -37,8 +37,7 @@
 3. **`validate` 前置** —— 必须携带上次 `validate` 的结果哈希（同一 bag / 同一 patch），否则拒 `validate_required`。
 4. **额度** —— 每回合提案条数与 diff 大小受 #33 `thresholds` 上限（D14；用户显式请求**不占额度**，但仍逐条过门禁）。
 
-**本插件不判"该不该改"**：它只把提案落成可审计条目。三道门禁在别处——
-机械闸（#33 的 term）/ 影子回放（#44 `shadow` 方法，零 token）/ 人闸（#26 判高危 → #32 入队 → #39 裁决）。
+**本插件不判"该不该改"**：它只把提案落成可审计条目。**`propose` 只写台账、不入人闸**（#26 对 `orchestration.propose` 判 `allow`——它不改世界）；**人闸在采纳**：`orchestration_change` 由 #33「提案扫描与采纳」入 #32（三方一致：guard / tools / approval 侧同口径）（2026-09-20 修订）。**提案由 #33「提案扫描与采纳」消费**（回合尾读 #43 `proposals` → 机械闸 → shadow → #32 enqueue → 采纳展开；用户驱动提案不再停在台账——双侧登记）。
 
 ---
 
@@ -57,7 +56,7 @@
 3. **边界冲突**：#42 的边界已写明"装配与换代归宿主"、它不认识图；让它认识 #33 的数据 schema 就是越界。
 
 **一处刻意的不对称（写明理由，别强行统一）**：本插件产**提案条目**、#42 产**写计划**。
-根因是**影子回放**——编排变更能用历史输入 + 审计回灌验证（零 token、可复现），
+根因是**影子回放**——编排变更能用历史输入 + `eff_log` 回灌验证（零 token、可复现）（2026-09-20 修订），
 所以需要提案态承载影子指标给人裁决；**源码变更换的是进程、跑不了影子回放**
 ⇒ 提案态对它没有额外价值，只多一跳。
 
@@ -104,6 +103,8 @@
     { "identity": "skill",  "payload": { "def": "<#36 新条目/body 哈希>" } } ] }
 ```
 
+- **patch 引用的 def 必须先落（2026-09-20 修订）**：`propose` 计划补齐 **`put(候选图 def)` + `put(writes[].payload def)`**，再 `put(提案) + put(新 evolution body) + add_gen(evolution)`。
+
 - **采纳阶段（#33 服务）**：verdict = `accepted` 时，把 `patch.graph` + `patch.writes[]` 展开成**一条原子 `batch`**：`[add_gen(loop-policy, graph), add_gen(<writes[i].identity>, payload) …]`，交宿主落账（服务无写通道，计划经 #14 入口 term 成为顶层 `$directives`）。
 - **整批由审批闸拦**：#32 的 `orchestration_change` 审批对**整批**生效；不出现"图改了、人格 / 技能没写"的半采纳（失败整批回滚，世界逐字节不动）。
 - **溯源**：`verdict.adopted_gen` = #33 图世代 seq（主）；`patch.writes[].identity` 的世代 seq 由 #33 落账后回填 #43 `verdicts`（#43 扩列属其版本提升，已登记）。
@@ -113,11 +114,11 @@
 ## 纪律
 
 - **服务无写通道**：只返回计划，宿主落账（`draft-design.md` §1.2 第 5 条）。
-- **不读世界本体**：只读投影（#33 六类条目 + #43 台账）。
+- **不读世界本体**：输入由 **#33 装配随 bag / args 传入**（#33 六类条目 + #43 台账）（2026-09-20 修订）。
 - **同输入同输出**：不取时间、不用随机（`now` 由 bag 传）；提案 id 确定性生成（run + 序号）。
-- **不发 eff**（无 pins）：`validate` 是**读投影 + 本地复刻同一套机械校验逻辑**（本地复刻 #33 机械闸 dry-run，**已知实现重复**），不 eff 到 #33
+- **不发 eff**（无 pins）：`validate` 是**读 bag（#33 装配）+ 本地复刻同一套机械校验逻辑**（本地复刻 #33 机械闸 dry-run，**已知实现重复**），不 eff 到 #33
   （#33 的被调方法是 `loop-policy.interpret` 图解释器，不提供 `validate` 方法，D1）。与 #40/#11 附件校验重复同性质
-  （白名单 schema 无 `$ref`、无法共享），实现时以 #33 为准。
+  （白名单 schema 无 `$ref`、无法共享），实现时以 #33 为准。**（2026-09-20 补）**：`validate` 只是**预检**、不构成门禁证据（权威闸 = #33 写期机械闸 + #44 shadow + #32 人闸）；登记『以 #33 为准 + 副本版本一致性校验（#33 机械闸规则换代时如何发现本副本过期）』为待办。
 
 ---
 
@@ -140,7 +141,6 @@
 - **#43 evolution**：提案落其 `proposals` tail；`evidence_ids` 引用其 `evidence` 条目。
 - **#44 evolve-metrics**：消费其产出的证据（经 #43 投影）；**两者不互相调用**（分签）。
 - **#27 tools**：本插件以工具类 `orchestration-admin` 暴露，#27 pin 本插件并纳入工具目录（与 #42 同路）。
-- **#26 guard / #32 approval / #39 ui-approval**：**实际派发键 = (port `orchestration-admin`, tool `propose`)**（2026-09-19 口径对齐；不再写作方法式 `orchestration-admin.propose`，D15）判高危 ⇒ `escalate` ⇒
-  入审批队列，item `kind = orchestration_change`（摘要 = 图 diff + **影子回放指标对比**）。
+- **#26 guard / #32 approval / #39 ui-approval**：**实际派发键 = (port `orchestration-admin`, tool `propose`)**（2026-09-19 口径对齐；不再写作方法式 `orchestration-admin.propose`，D15）**`propose` 判 `allow`（只写台账、不改世界，不入人闸）**；**人闸在采纳**——`orchestration_change` 由 #33「提案扫描与采纳」入 #32，item `kind = orchestration_change`（摘要 = 图 diff + **影子回放指标对比**）（2026-09-20 修订）。
 - **#17 ui-settings S13**：人可见的编排页**只读**，图变更不经本页、只经本插件提案 + 审批。
 - **#42 plugin-admin**：分工见上；两者共用三条约束。

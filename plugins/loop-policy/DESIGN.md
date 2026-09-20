@@ -3,8 +3,8 @@
 | 字段 | 内容 |
 | --- | --- |
 | 编号 / 身份 | 33 / `loop-policy` |
-| 职责 | **唯一的编排插件**：回合管道 + **图解释器**（推式条件边 + 回合重入）+ 审批往返 + 回合尾触发。图与策略住**本身份的数据世代** |
-| 依赖 | `->` 11–13、19、22（`recall` 节点）、23（回合尾维护）、27、32、34、**44 `evolve-metrics`**（pins）；`->` **全部节点能力类**（pins 即节点类型空间）；`+` 35 / 36 / 41 / **43** / **47** / **48**（**均由 #14 入口 term 读投影后随 bag 传入**：人格名 / 技能 / `workspace_id` / 证据台账 / 待办清单 / 提问游标；**服务不读投影**）；`<-` 14（版本提升：替换其管道，入口 term eff `loop-policy.interpret`）、17（S13 投影读本身份图与阈值） |
+| 职责 | **唯一的编排插件**：回合管道 + **图解释器**（推式条件边 + 回合重入）+ 审批往返（跨 run 挂起/续跑，经 `chat.resume` 恢复）+ **回合尾写 trace / 证据 / 队列项与提案扫描**（不做记忆维护——归 #23 宿主周期）。图与策略住**本身份的数据世代**（2026-09-20 修订） |
+| 依赖 | `->` 11、12、13、22（`recall` 节点）、26、27、32、**34（降级判定）**、**44 `evolve-metrics`**（pins）；`->` **全部节点能力类**（pins 即节点类型空间）；`+` 35 / 36 / 41 / **43** / **47** + 本身份六类条目与 `bag.tier` / `bag.guard_rules` / `bag.workspace_root`（**均由 #14 入口 term 装配，§1.14**；**服务不读投影**）（2026-09-20 修订）；`<-` 14（版本提升：替换其管道，入口 term eff `loop-policy.interpret`）、17（S13 投影读本身份图与阈值） |
 | 成员 | execute, terms, schema（**服务自驱解释器**：图执行住 execute；`pre`/`post`/`when`/边判定为服务内声明式规则） |
 | 能力类·方法 | `implements: ["loop-policy"]`，`methods: {"loop-policy":["interpret"]}` |
 | 命令 | 无（命令面仍归 14；#14 入口 term eff `loop-policy.interpret`） |
@@ -12,8 +12,10 @@
 | 机制 | 见下；完整设计见 `docs/plans/agent-graph-design.md` |
 | 边界 | 不做节点实现（节点是各插件的 eff，经反向调用 `port.call` 派发）/ 不做审批判定（归 26）与审批流程（归 32）/ 不直接写链 / 不做模型端点选择与降级链（归 34）/ **不做池子组装拓扑**（见「演化口径」）/ **不做多图共存与选图**（单图） |
 | 验收 | 见下「验收」 |
-| 状态 | 细节设计（2026-09-19）：**Scope 统一**（节点=agent=作用域）、**推式条件边**（取代 `{from,on,to}`）、**单图演化**（取代多图+trigger）、回合重入、拒绝短路、scope 过滤、links 白名单；**2026-09-19 定案：解释器由 execute 服务自驱**（不再用宿主 run loop 递归执行图；判定改一次要换代，图/阈值数据仍住数据世代、可热改可回滚） |
+| 状态 | 细节设计（2026-09-19）：**Scope 统一**（节点=agent=作用域）、**推式条件边**（取代 `{from,on,to}`）、**单图演化**（取代多图+trigger）、回合重入、拒绝短路、scope 过滤、links 白名单；**2026-09-19 定案：解释器由 execute 服务自驱**（不再用宿主 run loop 递归执行图；判定改一次要换代，图/阈值数据仍住数据世代、可热改可回滚）。**（2026-09-20 修订：eff_log 审计底座 / 回合尾职责收敛 / 续跑经 chat.resume / 提案扫描 / 降级判定）** |
 
+> **前置注记（2026-09-20，待落地）**：本文依赖三项宿主/协议能力——**H16**：协议帧 `env:{run,thread,now}`；**H17**：`schema.method_timeouts`（interpret 声明大超时）；**H18**：plan eval 可写 `{kind:'eval', command:'chat.resume', args}`（宿主按命令名解析）。
+>
 > **本轮作废的两条旧口径**：① `edges:[{from, on:<判定值>, to}]`（状态机边，无 typed 端口 ⇒ `pre`/`post` 无落点 ⇒ dense 信号无来源 ⇒ 进化环断）；② 「拉式惰性 / `any` 端口先选边再求值前驱」（照搬实验，但实验的路由是可训模型；产品最核心的决定「模型这次要不要调工具」必须看实际产出才知道）。
 
 ---
@@ -25,9 +27,10 @@
 - **入口**：#14 `chat` 的入口 term 发 `eff(loop-policy.interpret, bag)` 启动/恢复一次解释；#14 的 `pins` 新增 `loop-policy`。
 - **解释器住 execute**：图遍历、边 `when`、契约 `pre`/`post`、拒绝短路、scope 过滤、实例选择、不变量与演化规则校验**全部是 #33 服务代码**（不再写成 term、不再经宿主 plan 通道递归）。
 - **节点派发 = 反向调用**：`interpret` 内按 `pins` 对节点能力类发 `port.call`（`protocol.md` §2.4；发出者 = #33 身份），owner = #33，故节点 eff 按 #33 的 `pins` 路由。
-- **数据仍住数据世代**：`contracts` / `nodes` / `prompts` / `graph` / `thresholds` / `refusal_codes` 六类条目仍是世界数据（可热改、可回滚）；**服务不读投影**，`interpret` 的图数据由 **#14 入口 term 读 `ctx` 后随 bag 传入**（`+ 35/36/41/43/47` 同理）。**改判定代码 = 换 execute = 换代**（这是本定案的代价，已接受）。
-- **不再需要** `entry` / `pre` / `post` / `when` 的 `{identity,path}` 逻辑名与「run 首解析」；它们改为服务内按 `contract_id` / 声明式规则名解析（规则本体住数据世代，求值器住 execute）。
-- **写链**：`interpret` 返回计划值，由 #14 入口 term 作为顶层 `$directives` 交宿主落账（服务无写通道不变）；`tool.dispatch` 阶段收集的工具写计划按 D3 冒泡并入。
+- **eff_log**：`interpret` 内每步（节点派发、guard、审批入队等）记 `{step, iter, port, method, args_hash, result_hash, outcome}`；回合尾随 trace 写入世界——**post dense 信号与 #44 shadow 配对的数据底座**（反向调用不入世界审计，见 `protocol.md` §2.4；替代旧 EffectAudit 依赖，2026-09-20 定案）。
+- **数据仍住数据世代**：`contracts` / `nodes` / `prompts` / `graph` / `thresholds` / `refusal_codes` 六类条目仍是世界数据（可热改、可回滚）；**服务不读投影**，`interpret` 的图数据由 **#14 入口 term 读 `ctx` 后随 bag 传入**（`+ 35/36/41/43/47` 同理）。**改判定代码 = 换 execute = 换代**（这是本定案的代价，已接受）。**协议帧 `env:{run,thread,now}`（H16，待落地）供事件与判定用时**。
+- **不再需要** `entry` / `pre` / `post` / `when` 的 `{identity,path}` 逻辑名与「run 首解析」；它们改为服务内按 `contract_id` / 声明式规则名解析（**数据世代放阈值 / 规则名 / 契约结构 / 图**；判定逻辑（`pre`/`post`/`when` 求值器）住 execute——改判定 = 换代（定案代价，已接受））。
+- **写链**：`interpret` 返回计划值，由 #14 入口 term 作为顶层 `$directives` 交宿主落账（服务无写通道不变）；**冒泡通则：`interpret` 内任何节点 / 触发调用返回的 `$directives` 一律收集并入回合尾计划**。
 
 ---
 
@@ -56,7 +59,7 @@ Scope = 节点 = agent = 一个可寻址的执行单元
 ids["loop-policy"].body = {
   contracts:     {tail,count},   // 能力类（闭集 append-only）
   nodes:         {tail,count},   // Scope 实例（开集，含 composite）
-  prompts:       {tail,count},   // 提示词（各自成 def；含保留 id `system` = 图级系统提示词）
+  prompts:       {tail,count},   // 提示词（各自成 def；含保留 id `system` = 图级系统提示词、`skill_select` = 技能选用准则）（2026-09-20 修订）
   graph:         {def:hash},     // **唯一顶层图**（单值，不是 tail）
   thresholds:    {tail,count},   // 阈值（热改）
   refusal_codes: {tail,count},   // 全局拒绝码表（append-only）
@@ -97,7 +100,7 @@ Contract = { contract_id, role_tag,
 
 - **契约不可变**：改 `inputs`/`outputs`/`pre`/`post` 的判定式结构 = 新 `contract_id`。
 - **阈值热改**：`post` 里的阈值不内联，按 `thresholds.<name>` 从**随 bag 传入的图数据**读 ⇒ 改阈值热生效、不动判定代码；改判定式 = 换 execute 代码 = 换代（服务自驱的既定代价）。**不需要**实验的 `put(slot=threshold)` + 结构指纹校验。
-- **`post` 输入面**（否则不可复算）：只能引用本 Scope 的 `outputs`/`inputs`/`reads` 解析到的产物、`thresholds.*`、本步 `EffectAudit` 声明字段。不得引用其它 Scope 的 slot、全局统计、预算余量。
+- **`post` 输入面**（否则不可复算）：只能引用本 Scope 的 `outputs`/`inputs`/`reads` 解析到的产物、`thresholds.*`、本步 `trace.eff_log`（本步记录）（2026-09-20 修订）。不得引用其它 Scope 的 slot、全局统计、预算余量。
 - **两级验收不混**：Scope 级 = `post`；回合级 = sink 产出 → `session.commit`。
 
 ### Scope 实例
@@ -159,7 +162,7 @@ Graph = { nodes:[contract_id…],                          // 生成序，下标
 - 执行：从首节点前推，每步按**已求值**的产出算 `when`，只沿成立的边走。未走分支 0 计费、记 `branch_not_taken`。
 - `binding_mode`：`all` = 所有入边都会触发（AND 汇聚）；**`any` = 恰有一条入边会触发**（互斥分支汇合），`cardinality=1`。这是控制流的**结果**，不是路由决策。
 - **"多路都跑再挑"必须显式建模**为 `cardinality:'n'` 的 `all` 端口 + 聚合契约（`vote`/`judge`/`merge`），N 路全计费。与 `any` 语义不同、不可互相顶替。
-- **可重放**：活动路径由 `(拓扑, 各 Scope 实际产出)` 唯一决定；LLM 产出不确定，但**审计回灌下逐字节等价**。
+- **可重放**：活动路径由 `(拓扑, 各 Scope 实际产出)` 唯一决定；LLM 产出不确定，但**`eff_log` 回灌配对下等价**（2026-09-20 修订）。
 - **DAG 保留**：无环买到单写者 slot 键唯一 + publish 偏序可静态判 + 一条路径上任一节点至多执行一次。终止性已由 `MAX_STEPS`+`gas` 保证，放开环换不到东西。
 
 **拒绝短路到 sink（写死）**：Scope 拒绝 ⇒ 解释器直接跳 sink 带码收口，**不为每个 Scope 画拒绝出边**。sink 落一条带错误的消息（#11 既有 `system` + `meta.error` 形状），回合正常结束、不是 run 失败；未求值 Scope 记 `branch_not_taken`；**`trace` 必须记 `refused_at`**（`node_index`/`iter`/码/归因）。
@@ -172,6 +175,8 @@ Graph = { nodes:[contract_id…],                          // 生成序，下标
 ## 五、分段执行（服务内循环，不再用宿主 run loop 递归）
 
 `kernel.md` §十二 的单 pending / 不捕获续体只约束**宿主 run**；图执行住 #33 服务进程，不受「一个 directive 内 k 个效果 ⇒ O(k²)」约束——服务在一次 `interpret` 内顺序推进多个节点。
+
+`interpret` 声明 `schema.method_timeouts`（H17，待落地，如 10 分钟）——整回合不受 30s 缺省截断（2026-09-20 修订）。
 
 ```
 interpret(bag)：
@@ -187,7 +192,7 @@ interpret(bag)：
 
 - **游标不进世界**：一次 `interpret` 内的 `iter` / `cursor` / `slots` / `shared` 是服务进程内状态，不落账；只有**回合尾一次写**（消息 + trace + 队列项）落世界。
 - **产物两档**：小产物在服务内存传递；大产物段尾 `write` 成 def、后续按哈希经 `refs` 引用（阈值住 `thresholds`）。
-- **审批 / 提问往返**：`interpret` 在入队 / 提问处**正常返回**（本 run 正常结束），resume 游标随队列项落世界；裁决 / 作答落账后宿主按游标触发**新 run** → #14 入口 term 再次 eff `loop-policy.interpret` 恢复。
+- **审批 / 提问往返**：`interpret` 在入队 / 提问处**正常返回**（本 run 结束）；item 带 `thread` 与 `resume:{command:'chat.resume', args}` 落世界；裁决 / 作答经 **H18**（#39 / #48 入口 term 产续跑计划）→ 宿主起新 run → #14 `chat.resume` 入口 term eff `interpret`（bag 带 `bag.resume`）恢复执行，answers 作为 question 工具结果回灌 `tool.dispatch`（2026-09-20 修订）。
 - **节点扇出（v1 保守）**：经 `port.call`（同一服务可挂多个在途反向调用）顺序跑完 N 路 + 聚合；**run 之间**并发由 threads-design §二 承载（宿主 run 级并发 + 提交队列 + 乐观校验）。
 - **代价（明写）**：判定代码住 execute ⇒ 改 `pre` / `post` / `when` 要换代；图 / 阈值数据仍住数据世代、热改可回滚。
 
@@ -197,9 +202,9 @@ interpret(bag)：
 
 工具循环天然是环，而图是 DAG。三条候选里两条不行：**放开环**破三条不变量且换不到东西；**塞进 L1 内部**会让工具派发与审批不再是图节点 ⇒ 不变量 4 无从校验、工具结果拿不到 `post` ⇒ dense 信号丢一半。
 
-**采纳：回合 = 多次图执行。** 图描述**一次模型轮次**；本轮派发过工具 ⇒ 按 `Graph.loop` 重入，`iter+1`。服务内以 `iter` 循环表达；每轮消息落 #11 ⇒ 下一轮 `context.assemble` 自然看到工具结果。
+**采纳：回合 = 多次图执行。** 图描述**一次模型轮次**；本轮派发过工具 ⇒ 按 `Graph.loop` 重入，`iter+1`。服务内以 `iter` 循环表达；**iter 间产物（工具结果 / 消息）走服务内存 `slots`/`shared`**；#11 回合尾一次写；**下一回合**的 `context.assemble` 才从 #11 看到工具结果（同一次 `interpret` 内不落账）（2026-09-20 修订）。
 
-四条好处（不是将就）：图是 DAG 且小；审批段是真节点、不变量可校验；每次重入**全新 slots** ⇒ 单写者平凡成立；每轮消息落 #11 ⇒ 下一轮 `context.assemble` 自然看到工具结果。
+四条好处（不是将就）：图是 DAG 且小；审批段是真节点、不变量可校验；每次重入**全新 slots** ⇒ 单写者平凡成立；**iter 间产物（工具结果 / 消息）走服务内存 `slots`/`shared`**；#11 回合尾一次写；**下一回合**的 `context.assemble` 才从 #11 看到工具结果（同一次 `interpret` 内不落账）（2026-09-20 修订）。
 
 达 `max_turn_iter` 仍在派发 ⇒ 落 `budget` 拒绝码并收口（**不静默截断**）。
 
@@ -217,15 +222,15 @@ interpret(bag)：
 | contract_id | eff 到 | touches_effects | 用在种子图 | 说明 |
 | --- | --- | --- | --- | --- |
 | `recall` | `retrieval.search`（#22） | true | ✗ | 召回先于组装；**种子图 v1 刻意暂不插 recall 节点**（非因 #22 未建——#22 W3 早于 #33 W6）⇒ 契约声明、节点待插（版本提升） |
-| `context.assemble` | `context.build`（#13） | false | ✓ 0 | 产 messages + 请求参数；把**系统提示词**（`prompts.system`）写进 bag 交 #13 作 P0 |
+| `context.assemble` | `context.build`（#13） | false | ✓ 0 | 产 messages + 请求参数；把**系统提示词**（`prompts.system`）写进 bag 交 #13 作 P0；**写 `bag.skills`**（#36 候选按 scope 过滤，`prompts` 保留 id `skill_select` 判定注入哪些）与 **`bag.persona`**（#35 人格；`prefer_tools` 随 persona 交 #13 排序参考）（2026-09-20 修订） |
 | `agent.step` | `model.chat`（#12） | true | ✓ 1 | 产 assistant message **或** tool_calls；`determinism:audited`、`idempotent:false`、永不 memo |
 | `tool.gate` | `guard.judge`（#26） | false | ✓ 2 | 纯函数；**按 call 逐项判**（整批），产每项 verdict + 批级汇总：`allow` / `escalate` / `deny` |
 | `approval.wait` | `approval.enqueue`（#32） | false | ✓ 3 | 入队后本 run 正常结束，靠 resume 游标续跑 |
 | `tool.dispatch` | `tools.dispatch`（#27） | true | ✓ 4 | **整批 `calls[]` 一次 eff**；并发在 #27 进程内（见 #27「整批 + 并发」）；高危；受不变量 4 约束 |
-| **`verify`** | `tools.dispatch`（#27，工具名 `shell` → #29 执行） | true | ✓ 5 | **本轮新增**：跑工作区声明的校验命令（`bindings.tools` 里的命令串经 `#27 shell` 工具执行，即 #29 沙箱内跑命令——不再含糊「dispatch 什么」）；默认实例是 no-op（见 7.4） |
+| **`verify`** | `tools.dispatch`（#27，工具名 `shell` → #29 执行） | true | ✓ 5 | **本轮新增**：跑工作区声明的校验命令（`bindings.tools` 里的命令串经 `#27 shell` 工具执行，即 #29 沙箱内跑命令——不再含糊「dispatch 什么」）；默认实例是 no-op（见 7.4）；`post` 输入面 = **本节点 outputs**（2026-09-20 修订） |
 | **`join`** | 无（纯函数） | false | ✗ | **不变量 2 要求必在**：跨互斥分支的 shared 版本合并 |
 | **`subagent`** | `model.chat`（#12） | true | ✗ | **不变量 3 要求必在**：`bindings.agent` 由上游 slot 解析 ⇒ 加子代理不必改图 |
-| **`evolve.propose`** | `model.chat`（#12） | true | ✗ | **v1 闭环新增（2026-09-19）**：LLM 提案 Scope，**不在种子图边里**（非默认路径）；回合尾 #44 产证据达阈 ⇒ #33 触发此 Scope 产提案写 #43 `proposals`；受 `llm_chain_max` 约束（独立触发、不与 `agent.step` 串链）；**用户请求也是证据**（先落 `class:'user_request'` 证据再触发此 Scope，见 §十三） |
+| **`evolve.propose`** | `model.chat`（#12） | true | ✗ | **v1 闭环新增（2026-09-19）**：LLM 提案 Scope，**不在种子图边里**（非默认路径）；**下一回合**：读**已落账** #43 evidence（达阈）触发（off-by-one 消除）；外环预算单列住 `thresholds`；受 `llm_chain_max` 约束（独立触发、不与 `agent.step` 串链）；**用户请求也是证据**（先落 `class:'user_request'` 证据再触发此 Scope，见 §十三）（2026-09-20 修订） |
 | `turn.commit` | `session.commit`（#11） | false | ✓ 6 | **sink**；返回计划 `{$directives:[write(batch), …]}` |
 
 **`join` / `subagent` 声明但不接线**：契约是**词汇**，图不必用到每个词。
@@ -257,6 +262,8 @@ sink: 6
 - **种子判定**（包内附，`when` 引用）：`nonempty` / `empty` / `eq` / `verdict_is` / **`wrote_files`**（本轮新增，
   机械查 results 里有无写类工具成功项）/ **`todo_incomplete`**（本轮新增，#47：当前会话待办清单存在 `pending` / `in_progress` 项 ⇒ 不收口、继续 loop；防"幻觉式收尾"）/ **`question_pending`**（2026-09-19 新增，#48：本轮 `tool.dispatch` 派发过 `question` 工具且未作答 ⇒ **不 loop、本 run 正常结束**，作答后宿主按 resume 游标触发新 run 回灌答案，与 `approval.wait` 同源跨 run 机制）。
 
+- **谓词优先级（2026-09-20 补）**：`question_pending` 为真 ⇒ 本 run 正常结束（不 loop）；其次 `todo_incomplete` 为真 ⇒ 继续 loop。
+
 - **整批工具调用与并发（本轮定）**：`tool.gate` / `tool.dispatch` 都按**整批**处理——`tool.dispatch` 把 `calls[]` 一次交给 #27，**并发在 #27 进程内**（对内核仍是一个 eff，见 #27「整批 + 并发」）。
   - **v1 批级汇总取最严**：批内 `any deny` → `deny`（整批不执行）；否则 `any escalate` → `escalate`（整批走 `approval.wait`）；否则 `allow`（整批并发执行）。**图不拆批、边不变、不变量 4 可机械校验。**
   - **登记（后续细化，本轮不改图）**：按 call 逐项拆批——`allowed` 立刻并发执行、`escalated` 入队、批准后只补跑该项——需把 `tool.gate` 输出从单 verdict 改成 `allowed` / `escalated` / `denied` 三路并调边。收益：一项要审批不拖累其余项；代价：种子图边数与 `when` 判定增加。
@@ -281,7 +288,7 @@ iter1: assemble → step(产 tool_calls) → gate
          │              ├ approved → dispatch → …（同上）
          │              └ denied   → commit（落拒绝）
          └ deny     → commit（落拒绝，不执行）
-loop.when 为真（派发过工具 或 verify 失败）⇒ iter2
+loop.when 为真（`dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete`：派发过工具 且 非 `question_pending`，或 verify 失败，或 todo 未完成）⇒ iter2
 iter2: assemble（含工具结果 + verify 报告）→ step → commit
 ```
 
@@ -297,10 +304,10 @@ iter2: assemble（含工具结果 + verify 报告）→ step → commit
 | `context.assemble` | messages 非空、末条为 user/tool、请求参数含 model | 组装出空上下文就调模型 | 本节点 outputs |
 | **`agent.step`** | 产出**非空** ∧ （message 或 tool_calls 恰有其一）∧ tool_calls **结构合法**（name 非空串、args 是对象、call_id 不重复） | **模型吐畸形 tool_call**（原本要到 #27 才失败，且归因指向 #27 而非模型） | 本节点 outputs |
 | `tool.dispatch` | results 条数 == calls 条数 ∧ 每项有 `ok`/`error` ∧ 失败项带码 | 部分结果丢失被当成全成功 | 本节点 outputs + inputs |
-| **`verify`** | report 形状合法（`skipped` 或 `passed`+`detail`） | 校验器自身坏了被读成"通过" | 本节点 outputs + 本步 `EffectAudit` 的 `exit_code` |
+| **`verify`** | report 形状合法（`skipped` 或 `passed`+`detail`） | 校验器自身坏了被读成"通过" | 本节点 outputs（`{passed, detail, exit_code}`）（2026-09-20 修订） |
 
 **只做结构检查，不查语义**：`post` 的输入面被写死为"本 Scope 的 outputs / inputs / reads + `thresholds.*` +
-本步 `EffectAudit` 声明字段"，**读不到工具目录** ⇒ 只能查 `name` 是**非空字符串**，不能查"这个工具是否存在"
+本步 `trace.eff_log`（本步记录）"，**读不到工具目录** ⇒ 只能查 `name` 是**非空字符串**，不能查"这个工具是否存在"
 （后者在 #27 派发时查，本来就在那儿）。这条边界是刻意的：放宽 `post` 输入面会让 dense 标签依赖全局状态、不可复算。
 
 ### 7.4 `verify` 的 scope 分档（用上刚设计的机制）
@@ -317,7 +324,7 @@ iter2: assemble（含工具结果 + verify 报告）→ step → commit
 - **这是 `scope` 机制的第一个真实用例**：结构通用（图里只有 `contract_id = verify`）、
   专门化落实例（每个项目自己的校验命令）——正是「图通用、专门化落实例层」口径的兑现。
 - **安全性**：校验命令来自 `bindings`（pin 住的数据、由人或提案设定），**不是模型输出**
-  ⇒ 与"模型自选命令"风险档次不同。不变量 4 的判据是「声明高危端口的 Scope，其高危调用在 `tool.gate` 后必经 `approval.wait`」——种子图里 `gate` 的 `escalate` 边即该段（`allow` 边只承载低危调用），故**结构上满足**。
+  ⇒ 与"模型自选命令"风险档次不同。不变量 4 的判据 = 声明高危端口的 Scope，其可达路径上存在 guard→approval 段（与运行时 verdict 无关）——种子图里 `gate` 的 `escalate` 边即该段，故**结构上满足**（2026-09-20 修订）。
 - **不阻断收口**（判断题，明写选择）：`verify` 失败**不拒绝、不丢工作**，只把报告带进 `commit`，
   由 `loop.when` 触发下一 iter 让模型看着失败详情自己修。
   理由：阻断会让已写入的文件变更失去落账机会；而重入本来就是"再来一轮"的既定机制（§6）。
@@ -441,9 +448,21 @@ GraphState = { task,
 - **缺省即静态管道**：无 `graph` 数据时回落包内种子图，与 #14 原管道逐字节等价。
 - **审批往返**：`26` 判升级 → `27` → `32` 入队 → 本 run 正常结束 → `39` 裁决 → 宿主按 resume 游标触发新 run → 本插件据终局继续或终止；**4 档 fs 强制归 #25**（不在此判定），批准后放行走 #25 的一次性 `caps.grant`。
 - **回合尾**：按策略 eff `compress`（#19）等；记忆行为准则住本身份策略数据。压缩**不设专门图节点**——#13 按 75% 阈值追加 system 消息提示 agent，agent 经记忆工具调 #19/#23 落计划。
-- **提问往返（#48，2026-09-19 闭合）**：模型经 `tool.dispatch` 调 `question` 工具 → #48 `invoke` 写队列项（含 `resume_cursor` + 问题）+ 返回「pending」标志（**不清槽**；清槽只归 `question.answer` 命令） → `tool.dispatch` 的 `post` 不过（非畸形）→ `question_pending` 为真 ⇒ `loop.when` 为假 ⇒ **不 loop、本 run 走 sink 正常结束**（落消息 + 队列项）；用户在 #18 卡作答 → `question.answer` 写计划记答案 + 清项 → 宿主按 `resume_cursor` 触发**新 run**，答案作为 `question` 工具结果回灌 `tool.dispatch` → 解释器据游标恢复继续。**与 `approval.wait` 同源**（跨 run resume，区别：审批 = allow/deny 门禁、question = 开放作答，见 #48）。**#1 input 需加 `question.answer` 槽 kind**（#48 版本提升）。
-- **进化环（v1 闭合，2026-09-19）**：回合尾写 `evolution.trace`（含 `directives_summary`/`ctx_summary`，影子回放载体）→ eff `evolve-metrics.aggregate`（#44）产证据 → **#33 读新证据投影，若达阈则触发 `evolve.propose` Scope**（LLM，独立触发、不与 `agent.step` 串链，受 `llm_chain_max` 约束）产提案写 #43 `proposals`（**用户请求也是证据**：先落 `class:'user_request'` 证据再触发此 Scope，避免分签红线——#45 不产证据，但 `evolve.propose` 是图内 LLM Scope 不是 #45）→ 三道门禁（**机械闸** = #33 服务本地跑 `validate` 逻辑；**影子回放** = #44 `shadow` 方法纯计算，据新图 + #43 `directives_summary`/`ctx_summary` 重构等价 `directives`+`ctx`，按 `(port,method,canonicalJson(args))` 与历史 `EffectAudit` 配对回灌，缺匹配记 `shadow:"unverified"`；**人闸** = #32/#39 审批，`orchestration_change` kind）→ `verdicts` 落账（采纳与拒绝都写）→ 采纳 = 对自身数据世代 `add_gen`（新图）→ 回滚 = `set_active` → 下一代图 → 新 `trace`。**两层分签**：#44 只产证据（+ 影子回放指标，均纯计算）、#45 只产提案不产证据不产写；`evolve.propose` 是图内 LLM Scope（产提案，不产证据）。
+- **提问往返（#48，2026-09-19 闭合）**：模型经 `tool.dispatch` 调 `question` 工具 → #48 `invoke` 写队列项（含 `resume_cursor` + 问题）+ 返回「pending」标志（**不清槽**；清槽只归 `question.answer` 命令） → `tool.dispatch` 的 **post 通过、但 `question_pending` 为真（工具结果不违反结构）** ⇒ `loop.when` 为假 ⇒ **不 loop、本 run 走 sink 正常结束**（落消息 + 队列项）；用户在 #18 卡作答 → `question.answer` 入口 term 产 `[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}}), write(记答案 + 清槽)]`（H18；args 形状 = #14 契约）→ 宿主触发**新 run**，答案作为 `question` 工具结果回灌 `tool.dispatch` → 解释器据游标恢复继续。**与 `approval.wait` 同源**（跨 run resume，区别：审批 = allow/deny 门禁、question = 开放作答，见 #48）。**#1 input 需加 `question.answer` 槽 kind**（#48 版本提升）。
+- **进化环（v1 闭合，2026-09-19）**：回合尾写 `evolution.trace`（含 `directives_summary`/`ctx_summary`，影子回放载体）→ eff `evolve-metrics.aggregate`（#44）产证据 → **#33 读新证据投影，若达阈则触发 `evolve.propose` Scope**（LLM，独立触发、不与 `agent.step` 串链，受 `llm_chain_max` 约束）产提案写 #43 `proposals`（**用户请求也是证据**：先落 `class:'user_request'` 证据再触发此 Scope，避免分签红线——#45 不产证据，但 `evolve.propose` 是图内 LLM Scope 不是 #45）→ 三道门禁（**机械闸** = #33 服务本地跑 `validate` 逻辑；**影子回放** = #44 `shadow` 方法纯计算，据新图 + #43 `directives_summary`/`ctx_summary` 重构等价 `directives`+`ctx`，按 `(port,method,canonicalJson(args))` 与历史 `trace.eff_log` 配对回灌，缺匹配记 `shadow:"unverified"`；**人闸** = #32/#39 审批，`orchestration_change` kind）→ `verdicts` 落账（采纳与拒绝都写）→ 采纳 = 对自身数据世代 `add_gen`（新图）→ 回滚 = `set_active` → 下一代图 → 新 `trace`。**两层分签**：#44 只产证据（+ 影子回放指标，均纯计算）、#45 只产提案不产证据不产写；`evolve.propose` 是图内 LLM Scope（产提案，不产证据）。
 - **等待审批期间不占用 #26**（26 是纯函数）。
+
+---
+
+## 十四、提案扫描与采纳（2026-09-20 新增）
+
+回合尾（或下一回合入口）读 #43 `proposals` 未决项（含 #45 用户驱动提案）→ 本地机械闸复刻 → `port.call #44 shadow`（新图 def + trace 窗口 + eff_log）→ `approval.wait` 产 `orchestration_change` 入 #32 → 裁决 `approved` ⇒ 按 `patch.writes[]` 展开采纳（产 `add_gen` / `set_active` 计划）；`denied` ⇒ verdicts 落拒绝。**用户驱动路径（`record` → `propose`）产出的提案由此消费，不再停在台账**。
+
+---
+
+## 十五、降级判定（#34）（2026-09-20 新增）
+
+`agent.step` 失败（error 值 / 拒绝码）→ 规则判定是否降级 → `port.call router.select`（args = 候选端口名清单（本插件 pins：主名 `model` + 别名 pin 名）+ 失败码）→ 以返回端口名 `port.call` 备选实现；无别名候选时 `select` 恒返回主名（机械 no-op）。降级规则住 `thresholds`（规则名）；判定逻辑住 execute。
 
 ---
 
@@ -465,21 +484,24 @@ GraphState = { task,
 10. **互联不越界**：跳往 `links` 外 ⇒ `link_denied`；互联边破 DAG ⇒ 写期拒；每次跳转有 `link_taken`。
 11. **六条不变量与四条演化规则生效**：含 `llm_chain_max`（提交三连 LLM ⇒ 写期拒）、审批段不可绕过、`derived_from` 缺失 ⇒ 拒、diff 超限 ⇒ 拒。
 12. **坏图必终止**：构造"永不到 sink"的图 ⇒ 达上限后 `refused`，宿主不挂死；#44 能读 trace 发 `orchestration.unhealthy`、#17 能回滚成功。
-13. **提问往返（#48）**：模型调 `question` 工具 ⇒ `question_pending` 为真 ⇒ `loop.when` 为假 ⇒ 本 run 走 sink 正常结束（非 `waiting`）；用户作答后宿主按 `resume_cursor` 触发新 run，答案作为工具结果回灌、解释器从游标恢复继续；与 `approval.wait` 同源跨 run 机制。
+13. **提问往返（#48）**：模型调 `question` 工具 ⇒ `question_pending` 为真 ⇒ `loop.when` 为假 ⇒ 本 run 走 sink 正常结束（非 `waiting`）；用户作答后由 `question.answer` 入口 term 产 `eval(command:'chat.resume')` 续跑计划（H18）→ 宿主触发新 run，答案作为工具结果回灌、解释器从游标恢复继续；与 `approval.wait` 同源跨 run 机制（2026-09-20 修订）。
 
 ---
 
 ## 跨插件登记
 
-- **#14 chat**：版本提升（本插件替换其管道；命令面仍归 14；**#14 `pins` 新增 `loop-policy`**，入口 term eff `loop-policy.interpret`）。
+- **#14 chat**：版本提升（本插件替换其管道；命令面仍归 14；**#14 `pins` 新增 `loop-policy`**，入口 term eff `loop-policy.interpret`）。**interpret bag 装配义务归 #14（§1.14 双方确认，2026-09-20）**；**#14 新增命令 `chat.resume`**（入口 term eff `loop-policy.interpret`、bag 带 `bag.resume`）。
+- **#49 session-title**：**title 旁路段保留归 #14（不经图，双方确认，2026-09-20）**。
 - **#35 agents**：instance 加人格字段（prompt/model/decoding 的 pin）+ `scope` 字段；本插件 `bindings.agent` pin 它；**实例仍不带执行权**（发不发 eff 由本插件决定）。
 - **#36 skill**：加 `scope` 字段（与 Scope / 人格同形）。
 - **#41 workspace**：本插件投影读 `workspace_id`（经 #11 当前会话），用于 `scope` 过滤。
-- **#26 / #32 / #39**：审批往返与"编排变更"待审批种类。
+- **#26 / #32 / #39**：审批往返与"编排变更"待审批种类；**#32 / #48 续跑经 `chat.resume`（H18，2026-09-20）**。
+- **#23 memory-consolidate**：**回合尾维护口径作废（2026-09-20 双方确认，宿主周期唯一触发）**——回合尾不做记忆维护（职责 = 写 trace / 证据 / 队列项 + 提案扫描）。
+- **#34 model-protocol**：本插件 pins `router` + 降级规则（见「降级判定（#34）」新增节，2026-09-20）。
 - **#17 ui-settings**：S13 编排 tab（图只读视图、Scope 名录、健康只读视图、回滚、进化台账）；`orchestration.unhealthy` 由 #44 发（非本插件 term）。
 - **#38 ui-notify**：编排变更待审批、编排连续失败（#44 发）两类事件。
-- **#43 `evolution` / #44 `evolve-metrics` / #45 `orchestration-admin`**：轨迹/证据/提案/判定的落点、证据聚合（pin #44）、agent 面编排管理。**两层分签**：#44 只产证据不提案、#45 只产提案不产证据不产写。**v1 闭环（2026-09-19）**：#33 服务触发 `evolve.propose` LLM Scope 产提案；#44 `shadow` 方法跑影子回放（据 #43 `directives_summary`/`ctx_summary` + 经 `host` 能力类 `audit` 取的 `EffectAudit` 回灌）；门禁三道（机械闸 = #33 服务本地 / 影子 #44 / 人闸 #32/#39）。
-- **#48 question（2026-09-19 集成）**：`tool.dispatch` 派发 `question` 工具后 `loop.when` 因 `question_pending` 不 loop、本 run 走 sink 结束；作答后宿主按 `resume_cursor` 触发新 run 回灌答案。种子判定 `question_pending` 已加。
+- **#43 `evolution` / #44 `evolve-metrics` / #45 `orchestration-admin`**：轨迹/证据/提案/判定的落点、证据聚合（pin #44）、agent 面编排管理。**两层分签**：#44 只产证据不提案、#45 只产提案不产证据不产写。**v1 闭环（2026-09-19）**：#33 服务触发 `evolve.propose` LLM Scope 产提案；#44 `shadow` 方法跑影子回放（据 #43 `directives_summary`/`ctx_summary` + `trace.eff_log` 回灌）；门禁三道（机械闸 = #33 服务本地 / 影子 #44 / 人闸 #32/#39）。**（2026-09-20 修订）**：#44 `aggregate` 亦为宿主周期方法（图坏时仍周期发 `orchestration.unhealthy`）；`record` 的 `user_message_def` 由本插件派发时注入；#45 提案由本插件「提案扫描与采纳」消费，`propose` 不入人闸（人闸在采纳）。
+- **#48 question（2026-09-19 集成）**：`tool.dispatch` 派发 `question` 工具后 `loop.when` 因 `question_pending` 不 loop、本 run 走 sink 结束；作答后由 `question.answer` 入口 term 产续跑计划（`eval(command:'chat.resume')`，H18）→ 宿主按 `chat.resume` 触发新 run 回灌答案。种子判定 `question_pending` 已加（2026-09-20 修订：续跑经 `chat.resume`）。
 - **#42 `plugin-admin`**：源码写不经本插件的图数据面；但其 `write` 与 #45 的 `propose` 同受「审批段不可绕过」约束。
 - **宿主能力（已落地）**：投影引用闭包解析（复用 #11/#21/#35 同一条）、审批挂起/续跑、只读审计面——**本插件不新增宿主动词**。
 - **线程设计（2026-09-19）**：`subagent` / 协作契约在 **run 级并发**下执行（宿主改动登记：run 级并发 + 提交队列 + 乐观校验，见 `host.md` §五 写者）；`context.assemble` 节点写 `bag.thread_kind` / `bag.parent_summaries` / `bag.task_prompt`（含 inbox 未读消息）；子发 `decision_request` 时**唤醒父线程**（按游标触发新 run，同 #32）；工作流线程的步骤状态供 #18 步骤卡（`workflow.step` 事件）。**本插件不提供线程控制**（线程数据 owner 是 #11、run 生命周期归宿主，见 `docs/plans/threads-design.md` §三）。

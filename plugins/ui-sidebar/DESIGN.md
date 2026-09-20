@@ -4,12 +4,12 @@
 | --- | --- |
 | 编号 / 身份 | 16 / `ui-sidebar` |
 | 职责 | 工作区分组 + 会话列表 + 按工作区新建 + 重命名（就地编辑）+ 添加工作目录入口 + **会话项状态角标** + **会话管理（删除 / 标题搜索 / 导出 / 分支）** |
-| 依赖 | `->` 11（pins：`session.new` / **`session.select`** / `session.rename` / **`session.delete`** / **`session.restore`** / **`session.branch`** 的入口 term 发 eff）；`->` 41 `workspace`（pins：`workspace.list` / `pick` / `add` / `remove` / `reveal` 的入口 term 发 eff；**已定 #41**，见 `plugins/workspace/DESIGN.md`）；`+` 1（入口 term 读槽判分支）；`~` 14（`chat.history`，含会话 `status` / `pending`）；**收宿主事件 `run.started` / `run.finished` / `thread.updated` / `approval.pending`（状态角标与终止）**；`<-` 15（挂载） |
+| 依赖 | `->` 11（pins：`session.new` / **`session.select`** / `session.rename` / **`session.delete`** / **`session.restore`** / **`session.branch`** 的入口 term 发 eff）；`->` 41 `workspace`（pins：`workspace.list` / `pick` / `add` / `remove` / `reveal` 的入口 term 发 eff；**已定 #41**，见 `plugins/workspace/DESIGN.md`）；`+` 1（入口 term 读槽判分支）；`~` 14（`chat.history`，含会话 `status` / `pending` / `inbox`）；**收宿主事件 `run.started` / `run.finished` / `thread.updated` / `approval.pending` / `group.message`（状态角标 / 未读与终止）**（2026-09-20 修订）；**会话列表 / 分组 / 角标数据统一经 `chat.history` 返回的 #11 body（唯一会话读面）；本插件不另设读面**（2026-09-20 修订）；`<-` 15（挂载） |
 | 成员 | execute, terms |
 | 能力类·方法 | `implements: ["ui-sidebar"]`，`methods: {"ui-sidebar":["ping"]}`（占位；UI 插件统一 `ui-<身份名>`，互不 pin） |
-| 命令 | `session.new`（读槽取 `workspace_id`）、**`session.select`**（读槽 `{kind:'session.select', conversation}`；切 `current`）、`session.rename`、**`session.delete`**（读槽 `{kind:'session.delete', conversation}`；软删）、**`session.restore`**（读槽 `{kind:'session.restore', conversation}`；撤销软删）、**`session.branch`**（读槽 `{kind:'session.branch', conversation, message}`；从某消息分叉）、`workspace.list`（无参；入口 term eff 到 41）、`workspace.pick`（无参；eff 到 41）、`workspace.add` / `workspace.remove`（读槽后 eff 到 41，写类走槽）、`workspace.reveal`（args `{workspace}`；eff 到 41，纯动作不走槽） |
+| 命令 | `session.new`（读槽取 `workspace_id`；入口 term eff `session.new_conversation`——命令名与方法名映射，#11 侧登记）（2026-09-20 修订）、**`session.select`**（读槽 `{kind:'session.select', conversation}`；切 `current`）、`session.rename`、**`session.delete`**（读槽 `{kind:'session.delete', conversation}`；软删）、**`session.restore`**（读槽 `{kind:'session.restore', conversation}`；撤销软删）、**`session.branch`**（读槽 `{kind:'session.branch', conversation, message}`；从某消息分叉）、`workspace.list`（无参；入口 term eff 到 41）、`workspace.pick`（无参；eff 到 41）、`workspace.add` / `workspace.remove`（读槽后 eff 到 41，写类走槽）、`workspace.reveal`（args `{workspace}`；eff 到 41，纯动作不走槽） |
 | schema | 无（零 schema 合法：无世界数据） |
-| 机制 | 点击 -> 写槽 + 调自己的命令；分组列表 = `workspace.list` 返回值 + `chat.history` 按 `workspace_id` 归组；**点击已有会话 = 写槽 `{kind:"session.select", conversation}` + 调 `session.select`（切 `current`，跨 slot 由 #18 重拉 `chat.history` 跟随）**；新建 = 写槽 `{kind:"session.new", workspace_id}` + 调命令；添加工作目录 = `workspace.pick` 取路径 -> 写槽 `{kind:"workspace.add", workspace, name, path}` + 调 `workspace.add`（`workspace` id 由前端生成）；[⋯] 移除 = 写槽 `{kind:"workspace.remove", workspace}` + 调 `workspace.remove`；[在文件管理器中打开] = 调 `workspace.reveal {workspace}`。**槽写入一律 per-thread 键控**（H11）：写 `#1` 时读-改-写 `body.slots`、只覆盖本线程键（`slots[<thread_id>]`，缺省 `_main`），不整值覆盖——见 #1「写入契约」 |
+| 机制 | 点击 -> 写槽 + 调自己的命令；分组列表 = `workspace.list` 返回值 + `chat.history` 按 `workspace_id` 归组；**点击已有会话 = 写槽 `{kind:"session.select", conversation}` + 调 `session.select`（切 `current`，跨 slot 由 #18 重拉 `chat.history` 跟随）**；新建 = 写槽 `{kind:"session.new", workspace_id}` + 调命令（入口 term eff #11 `session.new_conversation`——命令名与方法名映射，#11 侧登记）（2026-09-20 修订）；添加工作目录 = `workspace.pick` 取路径 -> 写槽 `{kind:"workspace.add", workspace, name, path}` + 调 `workspace.add`（`workspace` id 由前端生成）；[⋯] 移除 = 写槽 `{kind:"workspace.remove", workspace}` + 调 `workspace.remove`；[在文件管理器中打开] = 调 `workspace.reveal {workspace}`。**槽写入一律 per-thread 键控**（H11）：写 `#1` 时读-改-写 `body.slots`、只覆盖本线程键（`slots[<thread_id>]`，缺省 `_main`），不整值覆盖——见 #1「写入契约」 |
 | 边界 | 不做：渲染消息 / 判定 / **消息级删除（只做会话级软删入口）** / 跨会话全文搜索（v1 只做标题本地过滤）/ 工作区本体与路径校验（归 41）/ 会话跨区移动（后置）；**服务不读投影**（入口 term 读 `input` 槽判分支）、不写世界（写走入站面） |
 | 验收 | 1) 分组折叠与高亮正确；2) 各分组的 [新对话] 建到对应工作区且可回放；3) 添加工作目录走原生选择器、取消 / 失败均有明确收口；4) 就地编辑键盘行为正确；5) 换 11 / 41 实现零改动；6) 移除工作区只移出列表（不动磁盘、不删会话）；7) 目录缺失态（`missing`）正确渲染且不阻塞已有会话；8) **状态角标（运行 / 待审批 / 失败 / 未读）随宿主事件正确更新、无常驻红点**；9) **可终止非当前线程 run（`api.cancel`）**；10) **会话删除软删 + 撤销 toast 可恢复（`session.restore`）**；11) **标题搜索本地过滤正确**；12) **导出生成 markdown / JSON**；13) **768–1023 / <768 强制收缩且不引入抽屉**；14) **点击历史会话写 `session.select` 并切 `current`，主区跟随** |
 | 状态 | 已定（2026-09-18 改版：会话按工作区划分、新对话内嵌各分组，取消独立工作区选择器行）；**版本提升：提出方** —— 要求 #2 `config` 升一代新增 `ui.sidebar_width`（登记见 `plugins/config/DESIGN.md`） |
@@ -49,7 +49,7 @@ Chrono
 - **目录缺失态**：分组头 danger 点 6px + 名称 `--c-text-3` + tooltip「目录不存在」；[新对话] 置灰禁用（tooltip 说明原因）；已有会话仍可读（只读浏览不阻塞）。
 - **空分组**：展开后无会话时不渲染任何占位行（保持紧凑，[新对话] 就在组头）；**这是 §10 空态规范的分组内例外**——仅当整体无任何工作区 / 会话时，才在列表区出空态三行（图标 + 「还没有会话」+ [添加工作目录]）。
 - **首启默认**：自动把宿主进程 cwd 加入为第一个工作区（零摩擦、可直接开聊）；列表为空时仅顶部 [+ 添加工作目录] 可用。
-- **底部行**：[设置]（settings 图标+文字 ghost 行）+ [展开|收缩]（panel-left / panel-left-close 图标按钮 34×34）；收缩态为竖排 40×40 图标按钮：folder-plus（添加工作目录）/ 设置 / 展开。
+- **底部行**：[设置]（settings 图标+文字 ghost 行）+ [展开|收缩]（panel-left / panel-left-close 图标按钮 34×34）；收缩态为竖排 40×40 图标按钮：folder-plus（添加工作目录）/ 设置 / 展开。**[设置] 点击 → `api.uiState.set('settings_open', true)`（`settings_open` 的写者，#15 侧登记）**（2026-09-20 修订）。
 - **宽度可拉伸（2026-09-18 增）**：展开态右缘 4px 拖拽命中区（`cursor: col-resize`），范围 220–420px（默认 260）；拖拽 hover 时分隔线加深为 `--c-text-3`；拖动即时生效、无动画、无吸附；松手后防抖 300ms 写回 `2`（config）持久化、可回放；收缩态不可拉，需先展开。
 - **收缩态 hover 浮出列表（flyout）**：hover 会话区 150ms 意图延时后，从侧栏右侧滑出 260px 宽浮层（`--c-surface` 底、`--shadow-pop`、`--radius-md`、100ms 淡入+2px 位移），内容为**完整分组列表**（分组头 + [新对话] + 会话项，规格同展开态）；点击会话即切换并收起；指针离开 300ms 后收起。flyout 为 §9 弹层白名单中「锚定下拉」之外的唯一悬浮列表例外。
 
@@ -57,16 +57,16 @@ Chrono
 
 - **角标（会话项右端，不占额外行高）**——解决真并发下「哪条在跑 / 卡审批 / 失败」不可见：
 
-  | 状态 | 角标 | 来源 |
+  | 状态 | 角标 | 来源（事件名 → 订阅） |
   | --- | --- | --- |
-  | 运行中 | 6px 呼吸点（accent，§10 呼吸族） | `run.started` / `run.finished`（宿主事件面，`impl="host"`） |
-  | 待审批 | 6px warning 点 | `approval.pending` / 会话 `pending.approval` |
-  | 失败 | 6px danger 点 + tooltip 人话 | 会话 `status:"failed"` / `thread.updated` |
-  | 未读（群聊 / 子代理） | 12px 计数 `--c-text-2` | 会话 `inbox` / `group.message` |
+  | 运行中 | 6px 呼吸点（accent，§10 呼吸族） | `run.started` / `run.finished`（宿主事件面，`impl="host"`；订阅后按 `thread` 映射到会话项）（2026-09-20 修订） |
+  | 待审批 | 6px warning 点 | 订阅 `approval.pending`（#32，载荷带 `thread`）/ 会话 `pending.approval` |
+  | 失败 | 6px danger 点 + tooltip 人话 | 会话 `status:"failed"` / 订阅 `thread.updated`（#11） |
+  | 未读（群聊 / 子代理） | 12px 计数 `--c-text-2` | 会话 `inbox` / 订阅 `group.message`（#11；未读来源）（2026-09-20 修订） |
 
 - **不常驻红点**：失败 / 待审批点随状态消失（§1 原则 4 禁常驻红点）；tooltip 文案走 `messages.v1.json`；角标变化 100ms 淡入淡出；未读计数用 `tabular-nums`（§16.10）。
-- **终止非当前线程**：运行中的会话项 hover 淡入 [终止] 图标按钮（square 16px）→ **就地二次确认**（3s，同 #39 口径）→ 经 `api.cancel(run)` 发协议 `cancel{run}`；`run` 由 `run.started` 事件按 `thread` 映射得到。**这是「切走线程后仍能收回后台回合」的入口**（#40 的终止只管当前线程）。
-- 数据面：会话 `status` / `pending` 随 `chat.history` body 返回（#11），实时性靠宿主事件。
+- **终止非当前线程**：运行中的会话项 hover 淡入 [终止] 图标按钮（square 16px）→ **就地二次确认**（3s，同 #39 口径）→ 经 `api.cancel(run)` 发协议 `cancel{run}`；`run` 由 `run.started` 事件按 `thread` 映射得到。**`thread:null` 的 run 不显示角标；写死 #40 提交时带 `thread=active_thread`**（#40 侧已登记）（2026-09-20 修订）。**这是「切走线程后仍能收回后台回合」的入口**（#40 的终止只管当前线程）。
+- 数据面：会话 `status` / `pending` / `inbox` 随 `chat.history` body 返回（#11），实时性靠宿主事件。**会话列表 / 分组 / 角标数据统一经 `chat.history` 返回的 #11 body（唯一会话读面）；本插件不另设读面**（2026-09-20 修订）。
 
 ## 会话管理（2026-09-19 补，原「删除 / 搜索 / 导出后置」定形态）
 

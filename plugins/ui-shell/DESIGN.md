@@ -4,14 +4,14 @@
 | --- | --- |
 | 编号 / 身份 | 15 / `ui-shell` |
 | 职责 | **浏览器唯一入口**（持主端口 + 入站桥）+ 布局槽（**topbar** / sidebar / main / dock / composer / overlay）+ 路由 + 子应用反代 + 静态与 token / 图标 sprite / **文案表服务** + S0 启动 + S6 断线横幅 + **全局 toast** |
-| 依赖 | pins 无；不读投影；`~` 2（`config.read`，判「无配置」）；`<-` 16、17、18、38、39、40、46（挂载 / 加载；46 = `topbar` slot） |
-| 成员 | execute, schema |
+| 依赖 | pins：`{"host":"host"}`（headless 条目字节经 `host.source.read`（H3 已落地）取——壳服务是唯一加载方）（2026-09-20 修订）；不读投影；`~` 2（`config.read`，判「无配置」）；`<-` 16、17、18、38、39、40、46（挂载 / 加载；46 = `topbar` slot） |
+| 成员 | execute（壳服务进程）, schema |
 | 能力类·方法 | `implements: ["ui-shell"]`，`methods: {"ui-shell":["ping"]}`（占位；UI 插件统一 `ui-<身份名>`，互不 pin） |
 | 命令 | 无 |
 | schema | `schema/shell.json`（挂载表运行态引用 / 主端口 / 反代前缀）；挂载表落地 `state/ui-mounts.json`（③，启动自动生成默认值） |
 | 机制 | 见下「主端口与入站桥 / 挂载表 / 路由 / 子应用契约 / 无配置判据 / 断线与失败」 |
 | 边界 | 不做：渲染业务面板 / 业务判定 / 读投影；只做壳（布局 / 路由 / 反代 / token / 入站桥 / 断线横幅 / **toast** / **文案表**） |
-| 验收 | 1) 六个 slot（**topbar** / sidebar / main / dock / composer / overlay）可装载与卸载；2) 子应用失败隔离；3) 主题 token 生效；4) 断线横幅正确；5) 挂载表增删不改代码；6) 文案表唯一来源、各插件无硬编码人话文案，且**各身份错误码前缀均已入表**；7) **浏览器与后端入站面（#37）都只经本插件主端口**（无第二个对外端口）；8) **全局 toast 可经 `api.toast` 触发、堆叠 / 时长 / 关闭 / `aria-live` 正确**；9) **`/api/cancel` 发协议 `cancel{run}` 生效**（#40 / #16 可终止指定 run）；10) **`api.uiState` 键空间（`active_thread` / `boot_mode` / `settings_open`）读写与跨 slot 广播正确、刷新即丢、不落世界**；11) **层级栈按 token 生效、toast 在模态上可见、无自造 z-index**；12) **主题首帧无浅→深闪**；13) **三类静态资源任一失败均不阻塞功能** |
+| 验收 | 1) 六个 slot（**topbar** / sidebar / main / dock / composer / overlay）可装载与卸载；2) 子应用失败隔离；3) 主题 token 生效；4) 断线横幅正确；5) 挂载表增删不改代码；6) 文案表唯一来源、各插件无硬编码人话文案，且**各身份错误码前缀均已入表**；7) **浏览器与后端入站面（#37）都只经本插件主端口**（无第二个对外端口）；8) **全局 toast 可经 `api.toast` 触发、堆叠 / 时长 / 关闭 / `aria-live` 正确**；9) **`/api/cancel` 发协议 `cancel{run}` 生效**（#40 / #16 可终止指定 run）；10) **`api.uiState` 键空间（`active_thread` / `boot_mode` / `settings_open`）读写与跨 slot 广播正确、刷新即丢、不落世界**；11) **层级栈按 token 生效、toast（70）在模态（60）上可见、无自造 z-index**（2026-09-20 修订）；12) **主题首帧无浅→深闪**；13) **三类静态资源任一失败均不阻塞功能** |
 | 状态 | 细节设计（2026-09-19）：主端口 + 入站桥 / 挂载表 / 反代 / 子应用契约冻结；错误码统一 `ui_unreachable` / `ui_boot_failed` / `ui_version_mismatch` + slot 占位重试 |
 
 ## 主端口与入站桥
@@ -31,12 +31,13 @@
   { "id": "ui-threads",  "path": "/p/ui-threads/",  "slot": "topbar",   "port": 8793 },
   { "id": "ui-settings", "path": "/p/ui-settings/", "slot": "overlay",  "port": 8792 } ]
 // headless（#38 ui-notify）：不进本表；壳按独立 headless 清单加载其 entry.js，不给布局位
+// 判定（2026-09-20 修订）：/p/<id>/* 的 id 在表内 → 反代到该子应用端口；不在表内（如 mcp）→ 按 identity 构造 forward 帧发宿主
 ```
 
 - **一插件一 slot**（ui-design §15）；增删插件 = 改挂载表，**不改壳代码**（验收 5）。
-- `headless` = 不占 slot 但需在浏览器里运行的前端（如 #38 系统通知，要调浏览器 `Notification` API）；壳按**独立 headless 清单**加载其 `entry.js`，**不进 `state/ui-mounts.json`**、不给布局位。清单形状（③，可重算，启动无表则生成默认值）：`state/ui-headless.json` = `[{ "id": "ui-notify", "entry": "execute/entry.js" }]`——`id` 唯一、`entry` 为**插件包内路径**；壳经**宿主「插件源码读面」**（`host.md` §五 宿主扩展面）取字节，并以**壳同源静态路径**（如 `/assets/headless/ui-notify.js`）服务（**不经 `/p/` 反代**，与「不占端口」一致）；只做浏览器侧能力。
+- `headless` = 不占 slot 但需在浏览器里运行的前端（如 #38 系统通知，要调浏览器 `Notification` API）；壳按**独立 headless 清单**加载其 `entry.js`，**不进 `state/ui-mounts.json`**、不给布局位。清单形状（③，可重算，启动无表则生成默认值）：`state/ui-headless.json` = `[{ "id": "ui-notify", "entry": "execute/entry.js" }]`——`id` 唯一、`entry` 为**插件包内路径**；壳经**宿主「插件源码读面」`host.source.read`**（`host.md` §五 宿主扩展面；H3 已落地；壳 pin `host` 为唯一加载方）（2026-09-20 修订）取字节，并以**壳同源静态路径**（如 `/assets/headless/ui-notify.js`）服务（**不经 `/p/` 反代**，与「不占端口」一致）；只做浏览器侧能力。
 - slot 装载：壳取子应用 `entry.js` → `mount(root, api)` → 返回 `{ unmount }`；失败隔离在 slot 内（不影响其它 slot）。
-- **后端入站面（#37 MCP）也走本插件主端口**（`/p/<id>/*` 同源反代）：壳不直连插件服务（红线 3），而是转成宿主入站帧 `forward {identity, command, args}` 由宿主转发到目标插件自己声明的入口（**H8 已落地**）。产品对外**只有一个主端口**。
+- **后端入站面（#37 MCP）也走本插件主端口**（`/p/<id>/*` 同源反代）：壳不直连插件服务（红线 3），而是转成宿主入站帧 `forward {identity, command, args}` 由宿主转发到目标插件自己声明的入口（**H8 已落地**）。产品对外**只有一个主端口**。**`/p/<id>/*` 判定规则（写死，2026-09-20 修订）**：`id` **在挂载表内 → 反代到该子应用端口**；**不在挂载表（如 `mcp`）→ 按 identity 构造 `forward` 帧发宿主**（命令名由 `/p/<id>/<cmd>` 映射）——两者共用主端口、不新增对外端口。
 
 ## 路由
 
@@ -46,9 +47,12 @@ GET  /assets/tokens.v1.css    共享设计 token（唯一来源）
 GET  /assets/icons.v1.svg     线性图标 sprite（Lucide 按需子集，唯一来源；ui-design §8）
 GET  /assets/messages.v1.json 错误码→人话文案表（唯一来源；各插件按码取文案，禁硬编码）
 GET  /favicon.svg             站点图标（字母「C」字标）
-GET  /p/<id>/*                子应用反代（含 /entry.js 与子应用 /api、/events）
-GET  /events                  壳自己的 SSE（连接态、主题等全局状态）
+GET  /p/<id>/*                子应用反代（挂载表内 id；含 /entry.js 与子应用 /api、/events）/ forward 帧（表外 id 如 mcp）（2026-09-20 修订）
+GET  /events                  壳 SSE：**宿主事件原样重播**（`impl` 命名空间）+ 壳自身状态（连接态 / 主题）（2026-09-20 修订）
 POST /api/theme               主题切换（写 2）
+POST /api/submit              转入站帧 submit（写类指令；body 含 directive + thread）（2026-09-20 修订）
+POST /api/command             转入站帧 command（按名调命令；body 含 name / args + thread）（2026-09-20 修订）
+POST /api/asset               转入站帧 asset.put（资产上传）（2026-09-20 修订）
 POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终止当前回合 / #16 终止非当前线程）
 ```
 
@@ -57,14 +61,15 @@ POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终
 ## 跨 slot 视图状态 `api.uiState`（2026-09-19 定）
 
 - **纯前端视图态**经壳内存态读写与广播：`uiState.get(key)` / `uiState.set(key, value)` / `uiState.subscribe(key, cb)`；**不落世界、不占 `/events` 事件通道、不进挂载表**。
-- **状态键空间（壳定义，写死）**：`active_thread`（当前视图线程 id；`#46` 写、`#18` 订阅并按 `conversation` 重拉 `chat.history`）、`boot_mode`（`#17` 引导模式：壳判「无配置」置 `onboarding`，`#17` 订阅进引导）、`settings_open`（`#17` 设置模态开合，供壳/其它 slot 感知遮罩态）。新增键须在此登记。
+- **状态键空间（壳定义，写死）**：`active_thread`（当前视图线程 id；`#46` 写、`#18` 订阅并按 `conversation` 重拉 `chat.history`）、`boot_mode`（`#17` 引导模式：壳判「无配置」置 `onboarding`，`config.read` 含 `vendor` ⇒ 置 `ready`（引导完成），`#17` 订阅进引导）（2026-09-20 修订）、`settings_open`（`#17` 设置模态开合，供壳/其它 slot 感知遮罩态；**写者 = #16 [设置] 按钮（`api.uiState.set('settings_open', true)`）**——#15 侧登记）（2026-09-20 修订）。新增键须在此登记。
 - **语义**：视图态**刷新即丢**（本就不该持久）；需要持久化的视图偏好走 `#2 config` UI 字段（如 `ui.sidebar_width`），不经 `uiState`。壳只做键值广播，**不认识业务**（不解释 `active_thread` 的会话含义）。
 
 ## 无配置判据与断线
 
-- **无配置**：`~ 2 config.read` 返回值无 `vendor` 键 → 壳置 `uiState.boot_mode = 'onboarding'`，`#17 ui-settings` 订阅后进引导模式（壳自身不读投影，判据来自命令返回值；通道见「跨 slot 视图状态」）。
+- **无配置**：`~ 2 config.read` 返回值无 `vendor` 键 → 壳置 `uiState.boot_mode = 'onboarding'`，`#17 ui-settings` 订阅后进引导模式（壳自身不读投影，判据来自命令返回值；通道见「跨 slot 视图状态」）；**退出：`config.read` 返回含 `vendor` ⇒ 置 `ready`（引导完成）**（2026-09-20 修订）。
 - **S0 启动态**：居中产品名 + 「正在启动…」+ 呼吸条；壳静态部分首帧即画；slot 挂载完成后 150ms 淡入替换。不用骨架屏。
 - **S6 断线横幅**：顶部通栏悬浮 warning 条（warning 底 + alert-triangle + 「与宿主断开，重连中…」+ [重试]），overlay 不推挤布局；出现期消息列表加等高 top padding。
+- **断线事件（2026-09-20 修订）**：壳在宿主连接断开 / 重连时经 `/events` 注入**本地合成事件** `shell.disconnected` / `shell.reconnected`（ui-design §15 登记；#38 消费）。
 - **slot 失败占位**：原地灰色占位卡 = 左 3px danger 竖线 + alert-circle + 「××加载失败」+ 错误码人话 + [重试]；**只做手动重试**，不自动周期重试。
 
 ## 全局 toast（2026-09-19 定：归壳）
@@ -78,7 +83,7 @@ POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终
 
 ## 层级 / 主题首帧 / 资源降级（2026-09-19 补，ui-design §16.11–§16.14）
 
-- **层级栈（写死，壳统一）**：页面内容 < 顶栏 overlay < 下拉 / tooltip < dock < S6 横幅 < toast < 设置模态遮罩 + 模态 < lightbox；对应 `--z-topbar:10` / `--z-popover:20` / `--z-dock:30` / `--z-banner:40` / `--z-toast:50` / `--z-modal:60` / `--z-lightbox:70`。**子应用不得自造 z-index**，用 token。**toast 在模态之上仍可见**；同屏最多一个模态级遮罩。
+- **层级栈（写死，壳统一）**：页面内容 < 顶栏 overlay < 下拉 / tooltip < dock < S6 横幅 < 设置模态遮罩 + 模态 < toast / lightbox；对应 `--z-topbar:10` / `--z-popover:20` / `--z-dock:30` / `--z-banner:40` / `--z-modal:60` / `--z-toast:70` / `--z-lightbox:70`（2026-09-20 修订：toast 由 50 提到 70，确保在模态 60 之上仍可见；与 lightbox 同层）。**子应用不得自造 z-index**，用 token。**toast 在模态之上仍可见**；同屏最多一个模态级遮罩。
 - **主题首帧防闪（FOUC）**：壳在 `<head>` 内联脚本按 `#2 config.ui.theme` + `prefers-color-scheme` **首帧前**写 `<html data-theme>`，再加载 `tokens.v1.css`；config 未就绪先用系统偏好，就绪后**一次性校正**（不逐帧变）。
 - **静态资源降级**：`tokens.v1.css` 失败 → 内联最小 token 兜底（`--c-bg` / `--c-surface` / `--c-text` / `--c-border`）+ toast warning；`icons.v1.svg` 失败 → 图标位留空 + 保留 `aria-label`；`messages.v1.json` 失败 → 内置最小文案表（错误码原样）。三者**均不阻塞功能**。
 - **tooltip 归属**：tooltip 由**各子应用自绘**（用共享 token，规范见 ui-design §16.1）；壳只提供 token，不提供 tooltip 组件。

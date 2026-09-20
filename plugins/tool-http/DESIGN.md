@@ -33,6 +33,7 @@ websearch(bag.args = { query, count?, sources?, fresh? })
   | `Wikipedia API` | `*.wikipedia.org/w/api.php` | 公开 JSON（百科类补充） |
 
 - **零配置红线（写死）**：**不引入任何需要 key / 账号 / 环境变量的源**（Brave Search API、Google CSE、Bing Web Search API、SerpAPI 等一律不接）；因此本插件**不 pin `#24 secrets`**。加源只改 schema 清单，不改代码。
+- **抓取礼貌策略（2026-09-20 修订）**：`robots.txt` / User-Agent 覆盖**搜索源 HTML 抓取**（与 `webfetch` 同规）——不伪装、遵守站点声明；搜索源若禁抓则记入 `sources_failed`。
 - **流程**：并行查各源 → 归一化 `{title,url,snippet,source,rank}` → **URL 规范化去重** → **RRF 合并排序**（各源 rank 倒数融合，确定、可回放）→ `top_n`（缺省 10）。
 - **部分失败不整体失败**：可用源结果照回，失败源记入 `sources_failed`；全失败 → `all_sources_failed`。
 - **抗限流**：单源超时 / 429 / 结构变化都只记入 `sources_failed`，不重试成风暴；实例清单可热改（坏实例随时换）。
@@ -46,8 +47,20 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 
 - **流程**：GET → 跟随重定向（上限住 schema）→ 按 `content-type` 分流：
   `text/html` → 正文提取 + 转 markdown（`format:"raw"` 则原样）；`application/json` / `text/*` → 原样；
-  其它二进制 → v1 `binary_unsupported`（S1 资产面已落地，见下；本插件未实现前回此码）。
+  其它二进制 → 经 **`host.asset.put` 存资产、引用进结果**（**本插件 pin host**，S1 已落地）；分块等后置场景保留 `binary_unsupported`（2026-09-20 修订）。
 - 响应体 ≤ `output_max`，超限截断并标记 `truncated`；`robots.txt` 遵循与否住 schema。
+
+## fetcher 命令契约（2026-09-20 修订）
+
+`websearch` / `webfetch` 的网络出口统一经 **#25 `exec` 跑 fetcher 命令**（fetcher = 沙箱镜像内 `curl` 类工具）：
+
+```
+fetcher --url <url> --method <GET|POST> [--header k:v …] --timeout <ms> --max-size <bytes>
+  -> stdout: 响应体（受 output_max 截断）/ stderr: 错误
+```
+
+- 本插件把工具 args（URL / method / headers / 超时 / 大小上限）映射为上述参数；`#25` 按 `caps.net` 四档钳制（`none` / `limited`（声明 hosts 白名单）/ `all`），越档 `net_denied`（错误码已登记 `protocol.md` §四）。
+- 二进制响应经 `host.asset.put` 存资产、引用进结果（本插件 pin host）。
 
 ## 渲染（`describe.render`，本轮定）
 
@@ -61,9 +74,9 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 
 ## 网络与隔离
 
-- `caps.net = true` 由本插件声明、由 #25 按当前档与实现能力**尽力强制**（沙箱不设默认网络策略，见 #25「网络」）；越界 → `net_denied`。
+- **网络出口经 #25 `exec` 跑 fetcher 命令（2026-09-20 修订）**：命令契约 = URL / method / headers / 超时 / 大小上限 → fetcher 参数映射（fetcher = 沙箱镜像内 `curl` 类工具，见上「fetcher 命令契约」）；#25 按 **`caps.net` 四档钳制**、越档 `net_denied`（错误码已登记 `protocol.md` §四）。
 - 每个操作 = 一次**反向帧 `port.call`** 到 #25 执行；本插件不自开网络旁路、不绕 #25。
-- 无 cookie / 无页面状态，每次调用独立；`websearch` / `webfetch` 都 `idempotent:true`（GET 类）⇒ 宿主按 `(port, method, canonicalJson(args))` 缓存，摊平单 directive 内重复触碰。**已知取舍**：缓存键只含 args、不含时间，故同一 run 内重复同参调用回同结果（可回放优先）；跨 run 新鲜度由调用方换 args 或改源清单控制。
+- 无 cookie / 无页面状态，每次调用独立；`websearch` / `webfetch` 都 `idempotent:true`（GET 类）⇒ 宿主按 `(port, method, canonicalJson(args))` 缓存，摊平单 directive 内重复触碰。**已知取舍**：缓存键只含 args、不含时间，故同一 run 内重复同参调用回同结果（可回放优先）；**GET 类缓存跨 run 不复用**（同 run 内新鲜度取舍已知）（2026-09-20 修订）。
 
 ## 错误码
 
@@ -84,4 +97,4 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 - **#31 tool-browser**：分工 = 无状态抓取（本插件）vs 有会话 / JS 渲染（`webbrowser`）；两者不互相调用。
 - **总表 §1.7 更正（已同步）**：`#30` 依赖原写 `-> 24、25`，但**本插件零配置**（无 API key / 账号 / 环境变量），不解析密钥，故 pins 只 `-> 25`；总表该行已同步为 `-> 25`。
 - **不接需密钥的源（红线）**：Brave Search API / Google CSE / Bing Web Search API / SerpAPI 等一律不接；若将来要接，须先改本条红线并重新登记 `-> 24`。
-- **宿主能力（S1 已落地）**：服务侧资产存取面（二进制响应体前置；`host.asset.put/get`）。本插件尚未实现，验收待插件落地。
+- **宿主能力（S1 已落地）**：服务侧资产存取面（二进制响应体前置；`host.asset.put/get`）。**本插件 pin host**：二进制响应经 `host.asset.put` 存资产、引用进结果（2026-09-20 修订）。

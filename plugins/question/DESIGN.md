@@ -8,7 +8,7 @@
 | 成员 | **terms**（命令 `question.answer`）、execute、schema |
 | 能力类·方法 | `implements: ["question"]`，`methods: {"question":["describe","invoke","list"]}`（**类名 = 身份名**）；`describe` 回工具名 `question` |
 | 命令 | `question.answer`（读槽 `{kind:'question.answer', id, answers}`；产**写计划**：记答案 + 清队列项）；命令按名调用、不需 pins |
-| schema | `schema/question.json`（问题数上限 / 选项上限 / 是否允许自定义输入；**队列 body 形状见下「队列数据契约」**；可热改） |
+| schema | `schema/question.json`（问题数上限 / 选项上限 / 是否允许自定义输入 / **`expires_at` 时长（可配）** / **`question.sweep` 周期（宿主 periodic，D6）**；**队列 body 形状见下「队列数据契约」**；可热改）（2026-09-20 修订） |
 | 机制 | 见下「队列与续跑 / 工具 / 渲染」 |
 | 边界 | 不做：审批判定（allow / deny 门禁归 #26 / #32）/ 写其他身份 / 阻塞等待（不用 `eff` 阻塞，见机制） |
 | 验收 | 1) 提问后 run **正常结束**（不是 `waiting`）；2) 作答后按**游标**触发新 run、答案出现在 agent 上下文；3) 多问题 / 多选 / 自定义输入都可用；4) 队列跨 run 持久、可回放；5) 卡在消息流内渲染、已答折叠成记录；6) 换渲染实现不改 #27 |
@@ -17,11 +17,12 @@
 ## 队列与续跑（复用 #32 的跨 run 机制）
 
 - **提问不是阻塞**：受调用超时约束，`eff` 不能等人。故走与 #32 审批同源的形状——
-  ① 工具 `question` 产**写计划**：队列项进世界（`{id, run, session, questions, answers:null, resume, at}`）；**不读 #1 槽、也不清槽**（工具不消费 #1；清槽会误擦本线程输入槽，见下「清槽只归 `question.answer`」）；
-  ② 本 run **正常结束**（不是 `waiting`）；**队列项落账后本插件服务发 `question.pending` 事件**（载荷带 `run` / `thread` / 队列项 id，经宿主透传 → #38 始终通知，避免用户离开时静默挂起）；
-  ③ 用户在卡上作答 → `question.answer` 产写计划（记答案 + 清队列项）落账；
-  ④ 宿主据队列项里的 **resume 游标**触发**新 run**，把答案回灌给 agent（作为 `question` 工具的结果）。
+  ① 工具 `question` 产**写计划**：队列项进世界（`{id, run, session, thread, questions, answers:null, resume:{command:'chat.resume', args}, at, expires_at}`）；**不读 #1 槽、也不清槽**（工具不消费 #1；清槽会误擦本线程输入槽，见下「清槽只归 `question.answer`」）；
+  ② 本 run **正常结束**（不是 `waiting`）；**`question.pending` 在入队计划产出时即发**（乐观通知；#38 通知与 #18 卡片以命令重拉定稿；载荷带 `run` / `thread` / 队列项 id，经宿主透传 → #38 始终通知，避免用户离开时静默挂起）（2026-09-20 修订）；
+  ③ 用户在卡上作答 → `question.answer` 入口 term 产 `[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}}), write(记答案（标 `answered`）+ 清槽)]` 续跑计划（H18；args 形状与 #14 `chat.resume` 契约一致）落账（2026-09-20 修订）；
+  ④ 宿主据队列项里的 **`resume:{command:'chat.resume', args}`** 触发**新 run**，把答案回灌给 agent（作为 `question` 工具的结果）（2026-09-20 修订）。
 - **与 #32 的区别（写死）**：审批 = **allow / deny 门禁**（改的是"能不能继续"）；question = **开放作答**（补的是"缺的信息"）。机制同源、语义不同，故分身份。
+- **过期（2026-09-20 修订）**：item 带 `expires_at`（schema 可配）；**`question.sweep` 周期清理（宿主 periodic，周期住 schema）**——过期项标 `expired`、不再等答案（清理只动索引，def 仍在链上）。
 
 ### 队列数据契约 `schema/question.json`
 
@@ -33,15 +34,16 @@
 
 // item def（各自成 def、prev 成链；投影引用闭包进 ids.question.refs）
 { "id": "q-<run>-<seq>",                 // 确定性 id（run + 队列序），非随机
-  "run": "…", "session": "…",
+  "run": "…", "session": "…", "thread": "…",   // thread = 入队时的线程 id（来自 bag）（2026-09-20 修订）
   "questions": [ { id, header, question, options[], multiple, custom } ],
   "answers": null | [ … ],               // 作答后回填
-  "resume": { "iter": 2, "cursor": "…", "slots": { … } } | null,   // #33 游标（与 #32 同源；字段对齐 #33 eval args）
+  "resume": { "command": "chat.resume", "args": { "iter": 2, "cursor": "…", "slots": { … } } } | null,   // 续跑依据（H5 v1 / H18，与 #32 同源；args 字段对齐 #33 eval args）（2026-09-20 修订）
   "at": "…",
+  "expires_at": "…" | null,              // item 带过期时间（schema 可配）；`question.sweep` 周期清理（宿主 periodic，周期住 schema）——过期项标 `expired`、不再等答案（2026-09-20 修订）
   "prev": { "def": "<上一 item 哈希>" } | null }
 ```
 
-- **`question.answer` 如何定位 item**：#1 槽 `{kind:'question.answer', id, answers}` 的 `id` = item 的确定性 id（`q-<run>-<seq>`）；入口 term 投影读 `ids.question.body`（沿 `tail` 链）解析到该 id 的 item def，把 **item 体经 args 传入**后产「记答案 + 清项」写计划（term 直接产 directive，无需服务方法；服务**不读投影**，D8）。id 找不到（已被归档 / 已答）→ 结构化拒、不部分写。
+- **`question.answer` 如何定位 item**：#1 槽 `{kind:'question.answer', id, answers}` 的 `id` = item 的确定性 id（`q-<run>-<seq>`）；入口 term 投影读 `ids.question.body`（沿 `tail` 链）解析到该 id 的 item def，把 **item 体经 args 传入**后产 **`[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}}), write(记答案（标 `answered`）+ 清槽)]`**（H18，2026-09-20 修订；args 形状与 #14 契约一致：cursor/thread 透传自 item、answers 进 payload）。**清项 = 标 `answered`（不删 def——答案要供续跑读取）**；answers 经 `chat.resume` → interpret → 作为 question 工具结果回灌 `tool.dispatch`。入口 term 投影读为 terms 成员、合法（term 直接产 directive，无需服务方法；服务**不读投影**，D8）。id 找不到（已被归档 / 已答）→ 结构化拒、不部分写。
 - **清槽只归 `question.answer`**：工具 `question` 的 `invoke` 不消费 #1 槽，故**不清槽**（否则擦掉本线程输入槽、本回合输入丢失）；只有 `question.answer` 命令计划在同批清 `question.answer` 槽（per-thread 键控，见 #1「清槽契约」）。
 
 ## 工具
@@ -69,6 +71,7 @@ question(bag.args = { questions: [
 - **#1 input（版本提升：提出方，见上「状态」行）**：槽 kind 新增 `question.answer`、字段新增 `answers`。
 - **#27 tools**：按工具类 `question` 派发；工具名 `question`。
 - **#33 loop-policy**：提问产 resume 游标、作答后按游标触发新 run（与 #32 同源机制）。
+- **#14 chat（2026-09-20 新增）**：**`chat.resume` 续跑（双方登记）**——`question.answer` 入口 term 产 `eval(command:'chat.resume')`，宿主起新 run 后由 #14 入口 term eff `interpret`（bag 带 `bag.resume`）。
 - **#18 ui-chat**：新增 `detail.kind:"question"` 交互渲染器（消息流内）。
 - **#38 ui-notify（2026-09-19 补）**：订阅本插件发的 `question.pending` 事件（始终通知，开关 `ui.notify.question_pending`）；通知只提示、不挂作答按钮。
 - **事件 emitter = #48 服务**：`question.pending` 由本插件服务在队列项落账后发（`protocol.md` §2.5 上行事件，`impl="question"`）；宿主 `event` 透传（H10「事件 emitter 服务化」）。ui-design §15 / draft H10 的 emitter 登记归其所有者补。

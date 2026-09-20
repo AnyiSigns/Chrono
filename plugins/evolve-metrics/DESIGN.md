@@ -3,13 +3,13 @@
 | 字段 | 内容 |
 | --- | --- |
 | 编号 / 身份 | 44 / `evolve-metrics` |
-| 语言 | **Rust**（聚类 / 漂移 / 统计的纯计算，`ndarray` / `linfa` 一类）。与 #20/#25 同路：源码 + `Cargo.toml` 入世，`target/` 与二进制走宿主侧 ③ 依赖缓存；**用户零运行时依赖**（纯二进制，无需额外解释器） |
+| 语言 | **Rust**（聚类 / 漂移 / 统计的纯计算，`ndarray` / `linfa` 一类）。与 #20/#25 同路：源码 + `Cargo.toml` 入世，`target/` 与二进制走宿主侧 ③ 依赖缓存；**用户零运行时依赖**（纯二进制，无需额外解释器）（2026-09-20 确认：Rust 定案） |
 | 职责 | **指标层**：读轨迹投影 → 失败模式聚类（`failure_cluster`）/ `post_failure` / 成本异常 / 实例漂移 / 折叠候选 / `no_progress` / `verify_failure` 七类 → 产**证据**条目写计划。**非 LLM、纯计算、同输入同输出** |
-| 依赖 | pins `host`（**保留身份**：`audit` 读 `EffectAudit` 供 `shadow` 回灌，D7）；`+` 43（投影读 `trace`）、**33（投影读 `thresholds`：判 `orchestration.unhealthy` 的连续 `refused` 收口阈值）**；`<-` 33（pins：回合尾调 `aggregate`）、27（pins：`record` 经 #27 **能力类工具绑定**暴露——工具名 `record` 直绑本插件能力类方法，**无需 `describe`/`invoke`**，D2，2026-09-19 补登记） |
+| 依赖 | pins `host`（**保留身份**：`audit` 读历史 `EffectAudit` 作 `shadow` 的**补充对照源**（D7；**v1 主配对源 = #43 `trace.eff_log`**，2026-09-20 修订））；`+` 43（投影读 `trace`）、**33（`thresholds`：periodic 路径经 `reads` 注入、#33 路径由其 bag 传；服务不读投影）**（2026-09-20 修订）；`<-` 33（pins：回合尾调 `aggregate`）、27（pins：`record` 经 #27 **能力类工具绑定**暴露——工具名 `record` 直绑本插件能力类方法，**无需 `describe`/`invoke`**，D2，2026-09-19 补登记） |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["evolve-metrics"]`，`methods: {"evolve-metrics":["aggregate","sweep","shadow","record"]}` |
 | 命令 | 无 |
-| schema | `schema/evolve-metrics.json`（**仅 #44 私有参数：`sweep` 周期**；聚类阈值 / 窗口长度 / 成本异常倍数 / 漂移判据 / 折叠 k / `min_workspaces` / 轨迹保留回合数等**数值调参全部读 #33 `thresholds`**，本 schema 不重定义，D14） |
+| schema | `schema/evolve-metrics.json`（**两拍 periodic：`sweep` + `aggregate`**（`periodic:[{method:"sweep",…},{method:"aggregate", every_ms, reads:{"trace":["ids","evolution","body"], "thresholds":["ids","loop-policy","body","thresholds"]}}]`）——`aggregate` 亦周期：**图坏时（#33 回合尾不发）本插件仍能周期发 `orchestration.unhealthy`**；聚类阈值 / 窗口长度 / 成本异常倍数 / 漂移判据 / 折叠 k / `min_workspaces` / 轨迹保留回合数等**数值调参全部读 #33 `thresholds`**，本 schema 不重定义，D14）（2026-09-20 修订） |
 | 机制 | 见下 |
 | 边界 | **不做提案**（分签红线，见下）/ 不调模型 / 不直接写链（只返回计划）/ 不判"该不该改"（那是提案层与人闸）/ 不读世界本体（只投影） |
 | 验收 | 1) **输出里不含任何提案**（机械可查：只产 `kind:'evidence'` 条目）；2) 同输入同输出（纯计算、不取时间不用随机，`now` 由 bag 传）；3) 聚类键含 `workspace_id`，跨工作区证据**不合并**；4) 单工作区证据只能支撑 `scope:workspace` 提案，跨 ≥`min_workspaces` 才可支撑 global；5) 回合尾调用**零 token**；6) 空轨迹返回空集不报错；7) 清理计划不动被 `verdict` 引用的轨迹 |
@@ -25,13 +25,13 @@
 
 ---
 
-## `aggregate`（回合尾调用，零 token）
+## `aggregate`（宿主周期 + 回合尾调用，零 token）
 
 ```
 aggregate(bag) -> { evidence: [...], $directives: [ write(batch: 证据条目 + 索引) ] }
 ```
 
-读 `bag` 里宿主按 `schema.periodic.reads` 注入的 `#43` `trace` 窗口（按 `prev` 链，窗口长度读 #33 `thresholds`；服务不读投影，D8），产七类证据：
+读 `bag`：**periodic 路径**由宿主按 `schema.periodic.reads` 注入 `#43` `trace` 窗口（按 `prev` 链，窗口长度读 #33 `thresholds`）；**#33 `port.call` 路径**由其 bag 传（本轮 trace 内存 + 历史窗口 + thresholds）。服务不读投影（D8），产七类证据（2026-09-20 修订）：
 
 | 证据类 | 判据 | 提案方向（**本插件只标注、不提案**） |
 | --- | --- | --- |
@@ -85,21 +85,21 @@ cluster_key = (RefusalCode, attributable_to, workspace_id, contract_id?)
 
 - 读 `trace` 窗口 + `verdicts` 引用集 → 产**清理计划**（写新索引、不含过期条目）。
 - **不动被 `verdict` 引用的轨迹**（否则 `verdict → proposal → evidence → trace` 溯源链断，#43 验收 3 失效）。
-- 保留回合数读 #33 `thresholds`；`sweep` 由**宿主周期触发**（周期住本插件 schema，D6；`host.md` §五 定时触发「调指定命令 / 方法」），清理只动索引，**def 仍在链上**（① 档既定代价，不是删除）。
+- 保留回合数读 #33 `thresholds`；`sweep` 由**宿主周期触发**（周期住本插件 schema，D6；`host.md` §五 定时触发「调指定命令 / 方法」），清理只动索引，**def 仍在链上**（① 档既定代价，不是删除）。所需 `#43` `trace` / `verdicts` 投影片段由宿主按 `schema.periodic.reads` 机械注入 bag（服务不读投影，D8）（2026-09-20 修订）。
 - 与 **#23 `memory-consolidate` 同路**（同一套"写新索引不含旧条目"的手法），但两者各管各的身份，不互相调用。
 
 ---
 
 ## `record`（user_request 证据生产者，v1 闭环）
 
-- `record(user_message_def, workspace_id)`（**经 #27 的「能力类工具绑定」暴露**——工具名 `record` 直绑本插件能力类方法，**无需 `describe`/`invoke`**，D2）：把用户原始消息 def 落成一条 `class:'user_request'` 证据写计划（`put(证据) + put(新 evolution body) + add_gen`），返回 `evidence_id`。纯计算、不调模型、不发 eff。
+- `record(user_message_def, workspace_id)`（**经 #27 的「能力类工具绑定」暴露**——工具名 `record` 直绑本插件能力类方法，**无需 `describe`/`invoke`**，D2）：把用户原始消息 def 落成一条 `class:'user_request'` 证据写计划（`put(证据) + put(新 evolution body) + add_gen`），返回 `evidence_id`。纯计算、不调模型、不发 eff。**`user_message_def` 由 #33 在派发时注入**（interpret bag 含本回合首条用户消息 def——模型不知哈希、服务不自读；2026-09-20 定案）。
 - **为什么是 #44 而非 #45**：#45 分签红线「只产提案不产证据」；user_request 是**一等证据**（`class:'user_request'`），归证据层（#44）生产，#45 只引用 `evidence_id`。这保证"用户请求与自主提案走同一通道、同一门禁"且**机械可验证**（#45 输出永远不含证据）。
 - agent 流程（用户驱动结构变更）：用户说"加工作流" → agent 经 #27 调 `record`（落 user_request 证据）→ 拿 `evidence_id` → 调 #45 `propose`（带该 `evidence_id`）。
 
 ## `shadow`（影子回放，门禁第二道，v1 闭环）
 
-- 入参 = 候选新图 def + #43 `trace` 窗口（含 `directives_summary`/`ctx_summary`）+ `EffectAudit`（**经保留能力类 `host` 的 `audit { filter:{run?}, limit? } -> { records, truncated }` 读取**，D7；`records` 与入站 `audit` 同形）；纯计算、零 token、不发 eff。
-- 据**新图**重新构造等价 `directives` + `ctx`（用 `directives_summary`/`ctx_summary` 作锚，重放新图的解释器逻辑至各 `eff` 点），按 `(port, method, canonicalJson(args))` 与历史 `EffectAudit` 配对回灌结果；**不调任何真实端口**。
+- 入参 = 候选新图 def + #43 `trace` 窗口（含 `directives_summary`/`ctx_summary` + **`eff_log`**）+ `EffectAudit`（**经保留能力类 `host` 的 `audit { filter:{run?}, limit? } -> { records, truncated }` 读取**，D7；`records` 与入站 `audit` 同形；**分批按 `filter:{run}` 取，防 100/1000 上限截断**）；纯计算、零 token、不发 eff（2026-09-20 修订）。
+- 据**新图**重新构造等价 `directives` + `ctx`（用 `directives_summary`/`ctx_summary` 作锚，重放新图的解释器逻辑至各 `eff` 点），按 `(port, method, args_hash)` 与 **#43 `trace.eff_log`** 配对回灌结果（`host.audit` 读 `EffectAudit` 保留为**补充**）；**不调任何真实端口**（2026-09-20 修订）。
 - 出 `shadow` 指标：`pass`（所有 eff 都有匹配审计且结果一致）/ `fail`（结果不一致）/ `unverified`（有 eff 无匹配审计——历史未跑过该路径）。
 - 写进 `verdicts.gate.shadow`（经 #33 落账，本插件不写链）。
 - **分签红线不变**：`shadow` 产的是**门禁 gate 输入**（pass/fail/unverified），不是 `evidence`、不是 `proposal`——它是纯计算的对账，与证据/提案职责不重叠。
@@ -116,10 +116,10 @@ cluster_key = (RefusalCode, attributable_to, workspace_id, contract_id?)
 
 ## 跨插件登记
 
-- **#33 loop-policy**：pin 本插件，回合尾 eff `aggregate`；`sweep` 由**宿主周期触发**（周期住本插件 schema，D6），**不经 #33 周期 eff**；本插件读 #33 `thresholds`（连续 `refused` 收口阈值）判 `orchestration.unhealthy`。**本插件不反向依赖 #33**（投影读，避免成环）。
+- **#33 loop-policy**：pin 本插件；`aggregate` 触发 = **宿主周期（主）+ #33 回合尾 `port.call`（可选路径，bag 由 #33 装配：本轮 trace 内存 + 历史窗口 + thresholds）**；`sweep` 由**宿主周期触发**（周期住本插件 schema，D6），**不经 #33 周期 eff**；本插件读 #33 `thresholds`（连续 `refused` 收口阈值）判 `orchestration.unhealthy`。**本插件不反向依赖 #33**（投影读，避免成环）（2026-09-20 修订）。`evolve.propose` 的证据来自**已落账** #43（#33 **下一回合**读——off-by-one 已消，呼应 `loop-policy` 7.1）。
 - **#43 evolution**：投影读 `trace`；产 `evidence` 与清理计划写回。
 - **#45 orchestration-admin**：消费本插件产的 `evidence`（经 #43 投影），产提案。**两者不互相调用**（分签）。
 - **#17 ui-settings S13**：`orchestration.health` 降为**只读视图**（读 #43/#44/#33 投影），不再是 `orchestration.unhealthy` 的 emitter；本插件发该事件。
 - **#38 ui-notify**：订阅本插件发的 `orchestration.unhealthy`（始终通知，不依赖用户打开 S13）。
-- **宿主保留身份 `host`（D7）**：`shadow` 经 `host.audit {filter:{run?}, limit?}` 读 `EffectAudit` 供配对回灌；本插件不读世界本体、不发 eff（`host` 是保留身份、不在世界，`pins:{"host":"host"}` 解析回自身）。
+- **宿主保留身份 `host`（D7）**：`shadow` 的**主配对源 = #43 `trace.eff_log`**（按 `(port,method,args_hash)` 配对回灌）；`host.audit {filter:{run?}, limit?}` 读历史 `EffectAudit` 作**补充对照源**（分批按 `filter:{run}` 取）；本插件不读世界本体、不发 eff（`host` 是保留身份、不在世界，`pins:{"host":"host"}` 解析回自身）。
 - **宿主能力（H4 已落地）**：插件 ③ 目录（`state/plugins/<id>/`，与 #21 向量索引同路）——本插件复用。

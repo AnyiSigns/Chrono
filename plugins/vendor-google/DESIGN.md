@@ -11,7 +11,7 @@
 | 机制 | 预置由 seed 写入；S1 预填后落 `#2 config`；`#12` 见 `impl=sdk` → 加载官方 SDK 包（`sdk_package`；**由 #12 的包捆绑并钉版本**，随包投递住宿主侧 ③） |
 | 边界 | 不存 `base_url` / 密钥 / 模型目录 / 参数（归 #2）；不含代码；不存端口 / pid |
 | 验收 | 1) 同 #4 形状；2) `impl=sdk` 时 #12 走 SDK 包；3) 换模板不改 #12；4) 不含明文密钥 |
-| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**SDK 适配与字段值需单独核对**（原登记项） |
+| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**SDK 适配与字段值需单独核对（W0 建包前核对为显式前置任务，2026-09-20 登记）**（原登记项） |
 
 ```jsonc
 { "name": "Google",
@@ -31,5 +31,7 @@
     "note": "唯一走 SDK 的预设厂商；三协议自实现不覆盖其原生形态" } }
 ```
 
-- 规范字段含义见 `#4 vendor-openai`；本文件只填厂商值。**Google 是本轮唯一 `impl=sdk` 的预设厂商**（「混合」口径的 SDK 侧）。
+- 本文件仅保留本厂商差异与 JSON；共同模板、字段语义、验收口径见 `plugins/vendor-openai/DESIGN.md`（#4 规范源）（2026-09-20 修订）。
+- 规范字段含义见 `#4 vendor-openai`；本文件只填厂商值。**Google 是本轮唯一 `impl=sdk` 的预设厂商**（「混合」口径的 SDK 侧）。**「待核对」项：W0 建包前核对为显式前置任务（2026-09-20 登记）。**
+- **`impl=sdk` 鉴权（2026-09-20 修订）**：鉴权交 `@google/genai` 构造参数（`auth_style` / `auth_header` 仅作记录，见 #12）——v1 SDK 适配器即 Google 适配器。
 - **SDK 载具（与 #12 对齐）**：`@google/genai` 由 **#12 的包捆绑并钉版本**（`package.json` dependencies / lockfile，随包投递、住宿主侧 ③）；`max_tokens_field: "maxOutputTokens"` 是 **SDK 结构字段名**（非协议枚举），由 #12 的 `impl=sdk` 适配器解释——#12 已写明「`impl=sdk` 时允许 SDK 结构字段名」，本条确认口径一致。

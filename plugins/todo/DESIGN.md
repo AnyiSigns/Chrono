@@ -4,9 +4,9 @@
 | --- | --- |
 | 编号 / 身份 | 47 / `todo` |
 | 职责 | **隔离的任务清单 / 待办清单**（持久化进世界，**按会话键控**）+ 工具 `todo.write` / `todo.read` + 顶栏渲染位（有未完成项即出现）；**兼作收口门禁的数据源** |
-| 依赖 | `<-` 27（pins：工具类 `todo` 派发）；`<-` 46（顶栏标签读投影）；`<-` 33（投影读：收口门禁 `todo_incomplete`）；`+` 11（当前会话 id 由调用方入口 term 读 `ctx.ids.session.body.current` 后经 args 传入；本插件服务**不读投影**，D8） |
+| 依赖 | `<-` 27（pins：工具类 `todo` 派发）；`<-` 46（顶栏标签读投影）；`<-` 33（收口门禁 `todo_incomplete`，读 **`bag.todo`**）；`+` 11（当前会话 id 由调用方入口 term 读 `ctx.ids.session.body.current` 后经 args 传入；本插件服务**不读投影**，D8）（2026-09-20 修订） |
 | 成员 | execute, schema |
-| 能力类·方法 | `implements: ["todo"]`，`methods: {"todo":["describe","invoke"]}`（**类名 = 身份名**，见 `plugins/tools/DESIGN.md`）；`describe` 回工具名 `todo.write` / `todo.read` |
+| 能力类·方法 | `implements: ["todo"]`，`methods: {"todo":["describe","invoke"]}`（**类名 = 身份名**，见 `plugins/tools/DESIGN.md`）；`describe` 回工具名 `todo.write` / `todo.read`。**`todo.read` = 能力类工具绑定（method 缺省 = 投影读）；`todo.write` 保持 describe/invoke（args 带整表）**（2026-09-20 修订） |
 | 命令 | 无 |
 | schema | `schema/todo.json`（条数上限 / 文本长度上限 / 状态枚举；可热改） |
 | 机制 | 见下「数据 / 工具 / 收口门禁 / 渲染」 |
@@ -25,17 +25,18 @@
 | 工具名 | 幂等 | 说明 |
 | --- | --- | --- |
 | `todo.write` | ✗ | **整表替换**（同 `todowrite` 语义）：传完整条目数组，产写计划（新条目 defs + **本会话键的新 body**（`conversations[<id>].items.tail` 指向新链头）+ `add_gen`）；**只重写本会话键、旧 def 仍留链上**（可回放）；空数组 = 该会话清空 |
-| `todo.read` | ✓ | 投影读**当前会话**键的清单（`conversations[<conversation_id>]`）；返回 `{items:[…]}` |
+| `todo.read` | ✓ | **能力类工具绑定**（`tools` 绑定表 method 缺省 = 投影读）：清单数据由**调用方入口 term**（#14 装配 `bag.todo` / #46 `threads.state` 直读）读 #47 投影提供——本插件服务不自读投影；返回 `{items:[…]}`（2026-09-20 修订） |
 
 - 两个工具都各自声明 `argsSchema` 与 `caps`（无 fs / 无 net）；`todo.read` 幂等可缓存。
-- **会话 id 入参**：两个工具都以 `conversation_id` 为 args 入参，由 #27 入口 term 读 `ctx.ids.session.body.current` 后传入；本插件服务**不读投影**（D8）。
+- **会话 id 入参**：`todo.write` 以 `conversation_id` 为 args 入参，由 #27 入口 term 读 `ctx.ids.session.body.current` 后传入；`todo.read` 的清单数据由调用方入口 term（#14 装配 `bag.todo` / #46 `threads.state` 直读）读 #47 投影提供；本插件服务**不读投影**（D8）（2026-09-20 修订）。
 
 ## 收口门禁（防"幻觉式收尾"，关键）
 
 - **问题**：agent 做着做着"以为做完了"就收口终止——清单只在模型脑内，一收口就没了依据。
-- **解药（机械的）**：清单**进世界** ⇒ #33 在 sink 前（收口判定）**投影读当前会话键 `conversations[<id>]` 的清单**，新增种子判定 **`todo_incomplete`**：存在 `pending` / `in_progress` 项 ⇒ **不收口、继续 loop**（进 `Graph.loop.when`）。
+- **解药（机械的）**：清单**进世界** ⇒ #33 在 sink 前（收口判定）读 **`bag.todo`**（#14 入口 term 装配，§1.14；**不读投影**），新增种子判定 **`todo_incomplete`**：存在 `pending` / `in_progress` 项 ⇒ **不收口、继续 loop**（进 `Graph.loop.when`）（2026-09-20 修订）。
   - agent 要收口，**必须显式把清单更新为全 `completed`（或清空）**——把"我完成了"从口头断言变成**一次可审计的世界写**。
   - 终止性仍由 `thresholds.max_turn_iter` 保证（坏图必终止，见 #33）。
+- **与 `question_pending` 的优先级（本插件侧注记）**：#33 `loop.when` 已定 **question 优先**——`question_pending` 为真 ⇒ 本 run 正常结束（不 loop）；其次才看 `todo_incomplete` 是否继续 loop（2026-09-20 补）。
 - **口径**：门禁只查"清单是否被显式收尾"，**不判"做得对不对"**（后者是 `verify` / 人的事）。
 
 ## 渲染
@@ -51,6 +52,6 @@
 ## 跨插件登记
 
 - **#27 tools**：按工具类 `todo` 派发；工具名 `todo.write` / `todo.read`。
-- **#33 loop-policy**：新增种子判定 `todo_incomplete`，进 `Graph.loop.when`；#33 `+ 47` 投影读**当前会话键**清单（字面身份名、不产生依赖边）。
+- **#33 loop-policy**：新增种子判定 `todo_incomplete`，进 `Graph.loop.when`；#33 门禁读 **`bag.todo`**（#14 入口 term 装配，§1.14；不读投影）（2026-09-20 修订）。
 - **#46 ui-threads**：顶栏待办标签位（按父会话隔离）。
 - **#11 session**：清单按会话 id 键控（`conversations[<conversation_id>]`）；当前会话 id 由调用方入口 term 读 #11 投影后经 args 传入（不改 #11 schema，D8）。

@@ -9,7 +9,7 @@
 | 能力类·方法 | `implements: ["ui-approval"]`，`methods: {"ui-approval":["ping"]}`（占位；UI 插件统一 `ui-<身份名>`，互不 pin） |
 | 命令 | `approval.list`、`approval.decide`、`approval.decide_all`（无参；读 `input` 槽 kind 后 eff 到 32） |
 | schema | 无（零 schema 合法：无世界数据；槽形状借 `#1` 的 `approval.decide`） |
-| 机制 | 卡片态由宿主事件（`approval.pending`，来自 32）驱动；单条裁决 -> 写 `input` 槽 `{kind:"approval.decide", id, verdict}` + 调 `approval.decide`；整批裁决 -> 写 `{kind:"approval.decide", verdict}`（缺 `id` = 全部）+ 调 `approval.decide_all` -> 入口 term eff 到 32 -> 32 回写并发事件，使 18 的消息流继续。**verdict 值 = `accept` / `deny`**（槽词汇，见 #32「verdict 词汇映射」）；item 状态读 `approved` / `denied`。**槽写入一律 per-thread 键控**（H11）：读-改-写 `body.slots`、只覆盖本线程键（缺省 `_main`），见 #1「写入契约」 |
+| 机制 | 卡片态由宿主事件（`approval.pending`，来自 32）驱动；**item 带 `thread`（#32 侧已加）——写 `slots[item.thread]`；无 thread 项落 `_main`**（2026-09-20 修订）；单条裁决 -> 写 `input` 槽 `{kind:"approval.decide", id, verdict}` + 调 `approval.decide`；整批裁决 -> 写 `{kind:"approval.decide", verdict}`（缺 `id` = 全部）+ 调 `approval.decide_all` -> 入口 term eff 到 32 -> 32 回写并**发 `approval.decided` 终局事件**（补登记，卡片条目据此淡出——#32 侧已定义，2026-09-20 修订），使 18 的消息流继续。**verdict 值 = `accept` / `deny`**（槽词汇，见 #32「verdict 词汇映射」）；item 状态读 `approved` / `denied`。**槽写入一律 per-thread 键控**（H11）：读-改-写 `body.slots`、只覆盖本线程键（缺省 `_main`），见 #1「写入契约」 |
 | 边界 | 不做判定（裁决语义归 32 / 26）/ 不做审批流程本体 / 不做对话视图；**服务不读投影、不写世界**（入口 term 读 `input` 槽判分支）；无 pins 不发 eff |
 | 验收 | 1) 待审批事件到达即出停靠条；2) 裁决后 32 收到且消息流继续；3) 崩溃不影响 main / composer；4) 多项队列计数与「全部批准」正确；5) 换 32 实现零改动；6) **三种 `kind` 各出对应模板**，编排变更显影子指标且两类结构变更默认展开；7) **等待计时正确（>2min warning）、`expired` 弱化但仍可裁决、[全部拒绝] 明确为放弃并终止本回合**；8) **[全部批准] 与 [全部拒绝] 均走原地 3s 二次确认**；9) **裁决全键盘可达、失败行内收口且条目不消失、层级用 `--z-dock`** |
 | 状态 | 细节设计（2026-09-19）：卡片=**摘要 + 可展开全量**；停靠带 / 队列 / 整批裁决冻结。**版本提升**：按 `#32` item 的 `kind` 分三种模板（工具调用 / 编排变更 / 插件写），提出方登记见 `plugins/loop-policy/DESIGN.md` |
@@ -36,7 +36,7 @@
   ] }
 ```
 
-- 命令无参：入口 term 读 `input` 槽 kind 后 eff 到 `#32`；**写类载荷先入世界**（裁决经槽 `{kind:'approval.decide', id?, verdict}`，缺 `id` = 整批）。
+- 命令无参：入口 term 读 `input` 槽 kind 后 eff 到 `#32`；**写类载荷先入世界**（裁决经槽 `{kind:'approval.decide', id?, verdict}`，缺 `id` = 整批）。**裁决命令（`approval.decide` / `decide_all`）的入口 term 产 `[eval(command:'chat.resume', args 含裁决), write(记裁决 + 清槽)]` 续跑计划（H18；与 #32 / #14 侧一致）**（2026-09-20 修订）。
 - **卡片信息量（已定）**：默认显 tier + 工具名 + 参数**摘要**；点击条目**就地展开全量**（mono、可选中复制）；`severe` 档条目默认展开。
 
 ```
@@ -80,7 +80,7 @@ dock 槽
 ## 等待、超时与退出路径（2026-09-19 补）
 
 - **等待计时（进度文案，红线 §10「禁止静默无限等待」）**：停靠带头部「待审批 N」右侧追加 12px `--c-text-3` 计时「已等待 mm:ss」（`tabular-nums`，自 `approval.pending.at` 起算，按秒更新）；**>2min 转 warning 前景字**。
-- **退出路径（写死）**：dock 头部 [全部拒绝] 即**放弃并终止本回合**——裁决 `deny` 后 #33 终止、不再触发续跑（#32 既定）。故文案明确为「全部拒绝 = 放弃本回合」，避免被误读成「只拒掉一条工具调用」。**与 [全部批准] 对称，走原地 3s 二次确认**（按钮就地变「确认拒绝并终止本回合？」，再点执行、超时或点他处回退）；**不新增第三个按钮**（保持既有冻结的头部行）。
+- **退出路径（写死）**：dock 头部 [全部拒绝] 即**放弃并终止本回合**——裁决 `deny` 后 #33 终止、不再触发续跑（#32 既定）。故文案明确为「全部拒绝 = 放弃本回合」，避免被误读成「只拒掉一条工具调用」。**与 [全部批准] 对称，走原地 3s 二次确认**（按钮就地变「确认拒绝并终止本回合？」，再点执行、超时或点他处回退）；**不新增第三个按钮**（保持既有冻结的头部行）。**单条 [拒绝] 也终止本回合**（#33 `deny → refusal` 收口）——按钮文案与确认提示写明「拒绝并终止本回合」（与 [全部拒绝] 同语义）（2026-09-20 修订）。
 - **`expired` 状态呈现**：#32 超时只标 `expired`、**不自动裁决**（安全）。本插件对 `expired` 项：整条降为 `--c-text-3` + 追加 12px「已超时」标签（warning 前景字），**仍可裁决**（[批准] / [拒绝] 保持可用），计数仍计入「待审批 N」。**不自动消失、不自动拒绝**——诚实反馈（§11.7）。
 - **不静默消失**：任何 `pending` / `expired` 项在裁决前都留在停靠带；停靠带 0 高度只在无任何项时成立。
 - **无「自动重试」**：超时后是否继续等由 #33 决定；本插件只呈现状态与提供裁决，不代系统判断。
@@ -89,7 +89,7 @@ dock 槽
 ## 跨插件登记（补）
 
 - **#32 approval**：item 新增 `kind` / `shadow` 字段；本插件按 `kind` 选模板。
-  裁决路径不变（写 `#1` 槽 + `approval.decide`）。
+  裁决路径不变（写 `#1` 槽 + `approval.decide`）。**补登记 `approval.decided` 终局事件——卡片条目据此淡出（#32 侧已定义该终局事件）**（2026-09-20 修订）。
 - **#33 loop-policy**：编排变更的 diff 与影子指标由其产出、经 `#32` item 的 `shadow` 引用传入；
   本插件**不读 #33 投影**（保持无 pins、只 pin `#32`）。
 - **#38 ui-notify**：`approval.pending` 事件带 `kind`，通知文案分流（编排变更 / 插件写 / 工具调用）。

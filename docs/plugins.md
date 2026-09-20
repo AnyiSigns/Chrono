@@ -40,7 +40,7 @@
   两者**同为入世路径、共用同一套打包规则**，故同一目录、同一身份产出相同的源码 tree 与 commit 哈希。
 - **`.worldignore`（可选）**：包内文本文件，每行一个相对路径（**按路径段前缀匹配**，故 `test/` 不误伤 `test.js`；`#` 注释、空行忽略），命中即不入 ①；不能命中契约必需文件（`plugin.json` / `package.json` / 锁 / `README.md` / `schema` / `commands` / `members` 路径本身），否则整批拒绝 `bad_worldignore`（畸形 `.worldignore`，如含 `..` 段 / 读取失败，同样拒绝）。插件用它排除构建产物 / 测试 / 语言运行时缓存（`dist/`、`.venv/`、`__pycache__/` 等）——宿主不认识语言，故不内置这些名字。
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
-- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。
+- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。**注意（口径修正）**：宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`example` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
 - **term 内 callee 引用必须无环**：`terms/` 里的 `$ref` 在入世时解析成 def 哈希；成环 → **整包入世被拒**（`term_cycle`），其他包照常。term 调用图本就是 defs DAG 的子图（`kernel.md` §十三），环 = 写错。
 - **term 读世界只经 `ctx` 投影**（形状见 `host.md` §五 投影）：内核 `["g", path]` 是**静态字面路径**，故按**身份字面 id** 取（`ctx.ids.<id>.active` / `.body`）；哈希键（`defs.<hash>`）不可达——宿主不把 `defs` 表给 term。
 - 插件包**不得依赖 `kernel` 或其他插件包**；插件间依赖只走 `pins`（npm 依赖只管自带库，见 §三）。
@@ -81,6 +81,11 @@
 - **门禁在宿主、先于 run**：`argsSchema` 缺省 = 不设门；缺 `args` = `null`；不符 → `bad_args`，**不构造 directive、不落账**。
   校验器用显式栈（防深嵌套），**不执行正则、不触网、无副作用**。
 - `Identity.schema` 用**同一方言**（身份数据契约），但宿主 v1 **不校验**身份数据——它仍是数据、非特权。
+- **schema 顶层「宿主消费键」**（宿主机械读、不认识业务；其余键归插件自用）：
+  `periodic: [{ command | method, every_ms, reads? }]`（定时触发，`host.md` §五 定时触发）；
+  `method_timeouts: {"<能力类>.<方法>": ms}`（方法级调用超时覆盖，`host.md` §五 效果）；
+  `assets_manifest: [{ path, sha256, size }]`（投递目录大资产直拷，`host.md` §五 宿主扩展面）。
+  三键声明非法均只记运维日志、不阻断装载。
 
 ## 三、做法红线
 

@@ -299,9 +299,10 @@
 | --- | --- | --- | --- | --- | --- |
 | **slot 应用** | 16 `ui-sidebar`、17 `ui-settings`、18 `ui-chat`、39 `ui-approval`、40 `ui-composer`、**46 `ui-threads`** | 有 | 有 | 有 | 入站面客户端 + 收事件 |
 | **壳本体** | 15 `ui-shell` | 承载全部 slot | 有（唯一主端口） | 有 | 入站面客户端 + 收事件；**不占自身 slot** |
-| **headless 前端** | 38 `ui-notify` | 无 | 无 | **有（headless entry，不 mount slot）** | 入站面客户端 + 收事件 |
+| **headless 前端** | 38 `ui-notify`（**members = terms only**）（2026-09-20 修订） | 无 | 无 | **有（headless entry，不 mount slot；bundle 住 `web/`）** | 入站面客户端 + 收事件 |
 
-- headless 前端**不进挂载表**、不占端口、不被 shell 反代（**不 mount 任何 slot**）；但仍有**浏览器侧入口 bundle**（`entry.js`）——由 shell 的**独立 headless 清单**（`state/ui-headless.json` = `[{id, entry}]`，③ 可重算）加载（不进 `state/ui-mounts.json`），用于在浏览器侧调 `Notification` API 等前端能力（宿主侧服务调不了浏览器 API）。加载路径 = shell 提供（**同源静态，不经 `/p/` 反代、不占 slot**）：shell 按清单的 `{id, entry}`（`entry` = 插件包内路径）经**宿主「插件源码读面」**（`host.md` §五 宿主扩展面）取字节并同源服务。
+- headless 前端**不进挂载表**、不占端口、不被 shell 反代（**不 mount 任何 slot**）；但仍有**浏览器侧入口 bundle**（`entry.js`）——由 shell 的**独立 headless 清单**（`state/ui-headless.json` = `[{id, entry}]`，③ 可重算）加载（不进 `state/ui-mounts.json`），用于在浏览器侧调 `Notification` API 等前端能力（宿主侧服务调不了浏览器 API）。加载路径 = shell 提供（**同源静态，不经 `/p/` 反代、不占 slot**）：shell 按清单的 `{id, entry}`（`entry` = 插件包内路径）经**宿主「插件源码读面」`host.source.read`**（`host.md` §五 宿主扩展面；H3 已落地；shell pin `host`）取字节并同源服务。
+- **headless 形态定义（2026-09-20 修订）**：headless 插件 `plugin.json` 成员**仅 terms**（无 execute 成员、`start` 为空 ⇒ 无服务进程、不占端口）；前端 bundle 住 `web/` 目录随包入世（源码）；**命令入口 term 即其全部服务面**。#38 `ui-notify` 为首例。
 - **能力类口径**：UI 插件统一声明 `ui-<身份名>`（15 `ui-shell` 即 `ui-shell`），仅作占位、互不 `pin`；shell 自身不占 slot（它是壳本体，承载全部 slot 与主端口）。
 - **schema 口径**：无世界数据的 UI 插件（15 以外）可**零 schema**（§1.7 模板已放宽为「有世界数据时至少一个」）；`ui-approval` 等不得以 `null` 占位，直接省略 `schema` 字段。
 - **UI 插件通用边界（两档共同，四条）**：① **UI 服务不读投影**（`ctx`）；但**入口 term 可投影读**——读 `#1` 槽（判分支）与只读业务投影（如 #17 S13 读 #33/#35/#43、#16/#39 读 #1）是允许的（UI 插件可直接依赖后端插件，见 `docs/plugins.md` §三 第 4 条）；② 不写世界本体——写一律以**客户端身份**连入站面 `put`；③ **无 `pins` 就不能发 `eff`**（要 eff 必须先有 pins 边，见 `docs/plans/draft-design.md` §1.6）；④ **写槽一律 per-thread 键控（H11）**——UI 插件写 `#1` 一律读-改-写 `body.slots`、只覆盖本线程键（`slots[<thread_id>]`，缺省 `_main`），**清槽只清本键、不整值覆盖**（真并发下否则串线程）。
@@ -329,11 +330,27 @@
 - **挂载表**（shell 的本地运行态，③，落地 `state/ui-mounts.json`）：`[{id, path, slot, port}]`，例：`ui-chat -> /p/ui-chat/ -> slot main -> 8788`、`ui-approval -> /p/ui-approval/ -> slot dock -> 8789`、`ui-composer -> /p/ui-composer/ -> slot composer -> 8790`、`ui-threads -> /p/ui-threads/ -> slot topbar -> 8793`；启动无表则自动生成默认值。shell 不认识领域，只按表挂载。
 - **一插件一 slot**：挂载表的每个 `id` 只出现一次；同一插件要多占一个 slot 必须拆成两个插件（#39 `ui-approval`、#40 `ui-composer` 就是这么从 #18 拆出来的）。
 - **挂载方式**：shell 反代 `/p/<id>/*` 到子应用端口；shell 页面按 slot（`sidebar` / `main` / `dock` / `composer` / `overlay` / **`topbar`**）动态 `import` 子应用入口。
+- **`/p/<id>/*` 判定规则（写死，2026-09-20 修订）**：`id` **在挂载表内 → 反代到该子应用端口**；**不在挂载表（如 `mcp`）→ 按 identity 构造 `forward` 帧发宿主**（命令名由 `/p/<id>/<cmd>` 映射）——两者共用唯一主端口、不新增对外端口。
 - **子应用入口契约**：`GET /entry.js` 导出 `mount(root, api) -> {unmount()}`；`api = { tokens, theme, navigate, slot, submit, command, cancel, asset, events, toast, uiState }`——除既有 `tokens/theme/navigate/slot` 外，另提供**入站面能力**（`submit` 提交 directive、`command` 按名调命令、**`cancel(run)` 发协议 `cancel{run}` 真取消**、`asset` 资产存取、`events` 订阅宿主事件、**`toast({tone,text,action?})` 请求壳发全局轻提示**、**`uiState` 跨 slot 视图状态读写**），因为 UI 插件（#40 写槽 + 调 `chat.send` + 终止、#16 终止非当前线程 run、#39 调 `approval.decide`、#18 调 `question.answer`、#46 切线程）都需这些能力；各自打包，不共享运行时。
-- **`api.uiState`（壳中介视图状态，2026-09-19 定）**：**纯前端视图态**（如 `active_thread`、设置模态开合、引导模式）经壳内存态读写与广播，**不落世界、不占事件通道**；壳定义状态键空间，子应用 `uiState.get(key)` / `uiState.set(key, value)` / `uiState.subscribe(key, cb)`，壳在子应用间广播变更（同源、无 ack）。用途：`#46 ui-threads` 切 `active_thread` → `#18 ui-chat` 按 `conversation` 重拉 `chat.history`；壳判「无配置」→ `#17 ui-settings` 进引导模式。**刷新即丢**（视图态本就不该持久）；需要持久化的视图偏好走 `#2 config` UI 字段。
+- **`api.uiState`（壳中介视图状态，2026-09-19 定）**：**纯前端视图态**（如 `active_thread`、设置模态开合、引导模式）经壳内存态读写与广播，**不落世界、不占事件通道**；壳定义状态键空间，子应用 `uiState.get(key)` / `uiState.set(key, value)` / `uiState.subscribe(key, cb)`，壳在子应用间广播变更（同源、无 ack）。用途：`#46 ui-threads` 切 `active_thread` → `#18 ui-chat` 按 `conversation` 重拉 `chat.history`；壳判「无配置」→ `#17 ui-settings` 进引导模式。**刷新即丢**（视图态本就不该持久）；需要持久化的视图偏好走 `#2 config` UI 字段。**三键写者表（2026-09-20 修订）**：`settings_open`（写者 #16 [设置] 按钮）、`boot_mode`（写者 #15：`config.read` 含 `vendor` ⇒ `ready`）、`active_thread`（写者 #46 标签点击；**#11 `thread.updated`（`current` 变）触发 #46 重置**）。
 - **共享 token**：shell 提供 `/assets/tokens.v1.css`；子应用引用该版本化路径，不各自复制。
-- **事件**：**浏览器侧 UI 插件经 shell 的 `/events` SSE 桥收宿主事件**（浏览器不能直连宿主本地 socket；shell 持有入站面连接、把宿主广播的 `event` 原样经 `/events` 重播给各子应用——`impl` 作命名空间）；跨 slot 的**世界/状态派生同步**（如 39 审批条 <-> 18 消息流 <-> 40 输入卡）走宿主事件；跨 slot 的**纯视图态同步**（`active_thread` 等）走 `api.uiState`（见上，不占事件通道）。**后端插件不投递事件**（宿主不解释 `topic`，见 `protocol.md` §2.5）。事件来源两类：**插件服务**（`model.delta` = #12、`context.assembled` = #13、`approval.*` = #32、`thread.*` / `workflow.step` / `group.message` = #11、`orchestration.unhealthy` = #44、`question.pending` = #48）与**宿主自身**（`run.started` / `run.finished`，`impl = "host"`，见 `host.md` §五 宿主事件面）。
-  - **事件按线程作用域消费（写死）**：run / 流式类事件（`model.delta` / `run.*` / `context.assembled` 等）载荷**必须带 `run` 与 `thread`**；子应用只处理属于当前视图线程的事件。真并发下不按线程过滤，会把后台线程的流 / 用量串进当前视图。
+- **事件**：**浏览器侧 UI 插件经 shell 的 `/events` SSE 桥收宿主事件**（浏览器不能直连宿主本地 socket；shell 持有入站面连接、把宿主广播的 `event` 原样经 `/events` 重播给各子应用——`impl` 作命名空间）；跨 slot 的**世界/状态派生同步**（如 39 审批条 <-> 18 消息流 <-> 40 输入卡）走宿主事件；跨 slot 的**纯视图态同步**（`active_thread` 等）走 `api.uiState`（见上，不占事件通道）。**后端插件不投递事件**（宿主不解释 `topic`，见 `protocol.md` §2.5）。事件来源三类：**插件服务**（`model.delta` = #12、`tool.start/delta/end` = #27、`context.assembled` = #13、`approval.*` = #32、`thread.*` / `workflow.step` / `group.message` = #11、`orchestration.unhealthy` = #44、`question.pending` = #48）与**宿主自身**（`run.started` / `run.finished`，`impl = "host"`，见 `host.md` §五 宿主事件面）与**壳合成**（`shell.disconnected` / `shell.reconnected`——壳在宿主连接断开 / 重连时经 `/events` 注入，2026-09-20 修订）。
+  - **事件按线程作用域消费（写死）**：run / 流式类事件（`model.delta` / `tool.*` / `context.assembled` / `run.*`）载荷**必须带 `run` 与 `thread`**；子应用只处理属于当前视图线程的事件。真并发下不按线程过滤，会把后台线程的流 / 用量串进当前视图。
+  - **事件载荷与来源总表（2026-09-20 修订）**：**全部载荷必带 `thread`**；**run 级事件（`run.*` / `model.delta` / `tool.*` / `context.assembled`）另必带 `run`**（来源 = 服务协议帧 `env:{run,thread,now}`，H16 待落地）——`thread.*` / `approval.*` / `question.pending` 等数据变更类通知不是 run 级、只带 `thread`。UI 按线程过滤是写死口径。
+
+    | 事件 | emitter | 载荷要点 |
+    | --- | --- | --- |
+    | `run.started` / `run.finished` | 宿主 | 带 `run` / `thread`（`status` / `reasons`） |
+    | `model.delta` | #12 | 带 `run` / `thread` |
+    | `tool.start` / `tool.delta` / `tool.end` | #27 | 带 `run` / `thread` / `call_id` |
+    | `context.assembled` | #13 | 带 `run` / `thread`（`used` / `budget` / `sources` / `trimmed`） |
+    | `thread.opened` / `thread.updated` / `thread.closed` | #11 | 带 `thread`；**`thread.updated` 含 `select` 的 `current` 变** |
+    | `workflow.step` / `group.message` | #11 | 带 `thread` |
+    | `approval.pending` / `approval.decided` | #32 | 带 `thread`（无 thread 项退 `_main`） |
+    | `question.pending` | #48 | 带 `thread` |
+    | `orchestration.unhealthy` | #44 | 周期 run，`thread:null` |
+    | `shell.disconnected` / `shell.reconnected` | **壳合成事件**（新增登记） | 壳注入，无宿主帧 |
+
 - **失败隔离**：子应用加载失败 -> slot 内错误占位（统一错误码 `ui_unreachable` / `ui_boot_failed` / `ui_version_mismatch` + 重试按钮），不影响其它 slot。
 
 ---
@@ -401,10 +418,10 @@
 
 ```
 页面内容(0) < 顶栏 overlay(topbar, 10) < 下拉 / tooltip 弹层(20) < dock 停靠带(30)
-          < S6 断线横幅(40) < 全局 toast(50) < 设置模态遮罩 + 模态(60) < lightbox(70)
+          < S6 断线横幅(40) < 设置模态遮罩 + 模态(60) < 全局 toast(70) / lightbox(70)
 ```
 
-- 对应 token：`--z-topbar:10` / `--z-popover:20` / `--z-dock:30` / `--z-banner:40` / `--z-toast:50` / `--z-modal:60` / `--z-lightbox:70`。
+- 对应 token：`--z-topbar:10` / `--z-popover:20` / `--z-dock:30` / `--z-banner:40` / `--z-modal:60` / `--z-toast:70` / `--z-lightbox:70`（2026-09-20 修订：toast 由 50 提到 70，确保在模态 60 之上仍可见；与 lightbox 同层）。
 - **toast 在模态之上仍可见**（模态打开时的保存反馈）；**同屏最多一个模态级遮罩**；不新增层级值。
 
 ### 16.12 焦点环

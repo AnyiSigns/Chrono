@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 / 身份 | 46 / `ui-threads` |
 | 职责 | **线程顶栏**（slot `topbar`）：按 #11 会话列表（含 `kind` / `parent` / 标题）渲染标签；**鼠标悬浮显示、离开隐藏**；点击切换当前线程（main 区显示哪条线程）；**有待办（#47）时出一个「待办 N」标签位**；**内容按当前父会话隔离** |
-| 依赖 | 无 pins；`~` 14（读会话列表 / 标题）；`+` 47（投影读待办清单）、11（投影读线程字段 `kind`/`parent`）——**投影读在入口 term，经只读命令 `threads.state` 触发**（按 ui-design §15：UI 服务不读投影、入口 term 可读；成员 `terms`）；收宿主事件（`thread.*` / `workflow.step` / `group.message`，emitter = #11 服务）；跨 slot 视图态经 `api.uiState`（`active_thread`）；`<-` 15（挂载 `topbar`） |
+| 依赖 | 无 pins；`~` 14（读会话列表 / 标题）；`+` 47（投影读待办清单）、11（投影读线程字段 `kind`/`parent`）——**投影读在入口 term，经只读命令 `threads.state` 触发**（按 ui-design §15：UI 服务不读投影、入口 term 可读；成员 `terms`）；收宿主事件（`thread.*` / `workflow.step` / `group.message`，emitter = #11 服务）；跨 slot 视图态经 `api.uiState`（`active_thread`）；**侧栏 `session.select` 落账后 #11 发 `thread.updated`（含 `current` 变）→ 本插件重算 `threads.state` 并按 `current` 重置 `active_thread`**（单桥：`current` ↔ `active_thread`——threads-design §四口径，#11 侧已登记）（2026-09-20 修订）；`<-` 15（挂载 `topbar`） |
 | 成员 | execute（前端 entry.js）, terms（只读命令 `threads.state` 入口 + 投影读） |
 | 能力类·方法 | `implements: ["ui-threads"]`，`methods: {"ui-threads":["ping"]}`（占位；UI 插件统一 `ui-<身份名>`，互不 pin） |
 | 命令 | `threads.state`（无参；入口 term 投影读 #11 线程字段 + #47 待办清单，返回标签数据） |
@@ -16,9 +16,9 @@
 
 ## 标签
 
-- **来源** = #11 会话列表：每个线程一个标签，顺序 = 线程树（`main` 在前，子线程按 `parent` 归组）。
+- **来源** = #11 会话列表：每个线程一个标签，顺序 = 线程树（`main` 在前，子线程按 `parent` 归组）。**会话列表 / 标题直读 #11 投影（`threads.state` 入口 term）；`chat.history` 不用于本插件（防误导装配）**（2026-09-20 修订）。
 - **文案**：默认「对话」；会话标题更新（#11 `rename` / 自动标题）后变**会话标题**；子代理 = **子代理会话标题**；群聊 / 工作流各一标签。
-- **状态角标**：运行中（呼吸点）/ 待审批（warning 点）/ 完成 / 失败——来自宿主事件，**不读世界本体**。
+- **状态角标**：运行中（呼吸点）/ 待审批（warning 点）/ 完成 / 失败——**同源 `thread.updated` 的 `status` / `pending` 字段**（#11 事件；**不另订宿主 `run.*`**——#16 侧用宿主事件，两者数据源注记区分）（2026-09-20 修订），**不读世界本体**。
 - **待办标签位（#47 `todo`）**：当前（父）会话**有未完成项**时，追加一个**「待办 N」标签**；点开显示清单（逐项状态，只读）；全部 `completed` / 清空后标签消失。**标签位本身不占 slot**（与其他标签同列）。
 
 ## 按父会话隔离（写死）
@@ -26,6 +26,7 @@
 - **顶栏内容只属于当前父会话**：标签集合 = 该父会话（`main`）及其子线程（`parent` 指向它）+ 它的待办标签；**切换父会话 ⇒ 换一组标签**。
 - 判定：以当前 `main` 线程为根，取 `parent` 闭包内的线程；待办取该 `main` 会话的清单（#47）。
 - ⇒ 多会话并行时，顶栏不会把别人的子代理 / 待办混进来。
+- **`current` ↔ `active_thread` 单桥（2026-09-20 修订）**：侧栏 `session.select` 落账后 #11 发 `thread.updated`（事件清单加 `current` 变触发）→ 本插件重算 `threads.state` 并按 `current` 重置 `active_thread`（threads-design §四口径；#11 侧已登记）。
 
 ## 位置与显隐
 
@@ -37,7 +38,7 @@
 
 ## 切换
 
-- 点击标签 → **纯前端视图态变更**（`main` 区显示哪条线程不落世界）：本插件 `api.uiState.set('active_thread', threadId)`；`#18 ui-chat` 订阅该键，按 `chat.history {conversation}` 重拉对应线程消息并渲染。**跨 slot 视图态只走 `api.uiState`**（壳中介，见 `docs/plans/ui-design.md` §15），世界/状态派生数据（`thread.updated` / `group.message` / `workflow.step`，emitter = #11 服务）仍走宿主事件。
+- 点击标签 → **纯前端视图态变更**（`main` 区显示哪条线程不落世界）：本插件 `api.uiState.set('active_thread', threadId)`；`#18 ui-chat` 订阅该键，按 `chat.history {conversation}` 重拉对应线程消息并渲染。**跨 slot 视图态只走 `api.uiState`**（壳中介，见 `docs/plans/ui-design.md` §15），世界/状态派生数据（`thread.updated` / `group.message` / `workflow.step`，emitter = #11 服务）仍走宿主事件。**侧栏 `session.select` 落账后 #11 发 `thread.updated`（含 `current` 变）→ 本插件重算 `threads.state` 并按 `current` 重置 `active_thread`**（单桥：`current` ↔ `active_thread`——threads-design §四口径，#11 侧已登记）（2026-09-20 修订）。
 - **不引入新的入站指令**：切换是纯前端视图态（与"哪条消息被选中"同级），刷新后回到默认 `main`；若需持久化"上次查看的线程"，走 `#2 config` 的 UI 偏好字段（后置），不落 #11。
 - **UI 插件互不 pin**：跨 slot 世界/状态同步走宿主事件，跨 slot 视图态走 `api.uiState`（见 `docs/plans/ui-design.md` §15）。
 - 工作流标签额外订阅 `workflow.step` 更新步骤卡进度；群聊标签订阅 `group.message` 更新未读角标。
