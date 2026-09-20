@@ -27,6 +27,7 @@ yarn-error.log*
 .idea/
 .vscode/
 *.swp
+.kilo/
 
 # OS
 .DS_Store
