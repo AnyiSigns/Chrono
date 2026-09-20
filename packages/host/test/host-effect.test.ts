@@ -435,7 +435,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     expect(entries[entries.length - 1].prev).toBe(pos(entries.slice(0, entries.length - 1)))
   })
 
-  it('stop 与在途提交：等在途落账后再停机，锁可再抢', async () => {
+  it('停机 abort 在途 command run：审计按 cancelled 落账、plan 写丢弃、锁可再抢', async () => {
     const delayed = writeTempPackage(root, {
       identity: 'toy-delayed',
       implements: ['toy.alpha'],
@@ -461,10 +461,12 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       worker.close()
       stopper.close()
     }
-    expect(result?.status).toBe('done')
-    // 在途提交的审计 + 业务写都落账后才停机
+    expect(result?.status).toBe('cancelled')
+    // command run 被停机 abort：仅一条 cancelled 审计落账，plan 的业务写丢弃
     const added = readJournal(journalFile()).slice(before)
-    expect(added).toHaveLength(2)
+    expect(added).toHaveLength(1)
+    const body = (added[0].args as unknown as { body?: { outcome?: string } }).body
+    expect(body?.outcome).toBe('cancelled')
     // 停机完成后锁可再抢
     const lockFile = hostPaths(root).lockFile
     await waitFor(

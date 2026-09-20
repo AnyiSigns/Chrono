@@ -63,10 +63,18 @@ function injectedWorld(): World {
   }
 }
 
+type IdentityView = {
+  active: Hash | null
+  gens: Json[]
+  body: Json | null
+  refs: { [hash: string]: Json }
+  next_before: Hash | null
+}
+
 type Projection = {
   head: Head
   world_rev: Hash
-  ids: { [id: string]: { active: Hash | null; gens: Json[]; body: Json | null } }
+  ids: { [id: string]: IdentityView }
 }
 
 describe('A14 base_only 投影', () => {
@@ -93,6 +101,8 @@ describe('A14 base_only 投影', () => {
       active: PAYLOAD,
       gens: [{ seq: 0, payload: PAYLOAD }],
       body: { tree: 'tree-hash', meta: { name: 'toy-alpha' } },
+      refs: {},
+      next_before: null,
     })
     // retired：active=null ⇒ body=null；gens 保留（世代可读，取用与否归 term）
     expect(view.ids['toy-retired'].active).toBeNull()
@@ -109,7 +119,7 @@ describe('A14 base_only 投影', () => {
     expect(record['defs']).toBeUndefined()
     const ids = record['ids'] as { [k: string]: Json }
     const alpha = ids['toy-alpha'] as { [k: string]: Json }
-    expect(Object.keys(alpha).sort()).toEqual(['active', 'body', 'gens'])
+    expect(Object.keys(alpha).sort()).toEqual(['active', 'body', 'gens', 'next_before', 'refs'])
     const gen = (alpha['gens'] as Json[])[0] as { [k: string]: Json }
     expect(Object.keys(gen).sort()).toEqual(['payload', 'seq'])
     // body = payload def 的 body 原样（树是引用，不递归展开）
@@ -174,5 +184,98 @@ describe('A14 base_only 投影', () => {
     const world = injectedWorld()
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
     expect(view.ids['toy-alpha'].body).toEqual({ tree: 'tree-hash', meta: { name: 'toy-alpha' } })
+  })
+})
+
+/** 构造一个只有数据世代的身份：body = 给定数据，payload def body 不含 tree。 */
+function worldWithDataBody(body: Json, defs: World['defs']): World {
+  const payload: Hash = 'f'.repeat(64)
+  return {
+    defs: { ...defs, [payload]: { body } },
+    ids: {
+      sess: {
+        id: 'sess',
+        schema: SCHEMA,
+        gens: [
+          {
+            seq: 0,
+            payload,
+            pins: {},
+            sig: payload,
+            adopted: { at: 1, by: 'test', write: 'w-0' },
+          },
+        ],
+        active: payload,
+        born: { at: 1, by: 'test' },
+      },
+    },
+  }
+}
+
+describe('投影引用闭包 refs', () => {
+  const msg1: Hash = '1'.repeat(64)
+  const msg2: Hash = '2'.repeat(64)
+  const msg3: Hash = '3'.repeat(64)
+
+  it('从 body 出发跟随 {"def":hash} 传递闭包，全量收进 refs，next_before 恒 null', () => {
+    const world = worldWithDataBody(
+      { conversations: [{ head: { def: msg1 } }] },
+      {
+        [msg1]: { body: { role: 'assistant', prev: { def: msg2 } } },
+        [msg2]: { body: { role: 'user', prev: { def: msg3 } } },
+        [msg3]: { body: { role: 'user', prev: null } },
+      },
+    )
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    const refs = view.ids['sess'].refs
+    expect(Object.keys(refs).sort()).toEqual([msg1, msg2, msg3].sort())
+    expect(refs[msg1]).toEqual({ role: 'assistant', prev: { def: msg2 } })
+    expect(refs[msg3]).toEqual({ role: 'user', prev: null })
+    expect(view.ids['sess'].next_before).toBeNull()
+  })
+
+  it('成环不无限展开：已访问哈希去重', () => {
+    const world = worldWithDataBody(
+      { head: { def: msg1 } },
+      {
+        [msg1]: { body: { prev: { def: msg2 } } },
+        [msg2]: { body: { prev: { def: msg1 } } },
+      },
+    )
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(Object.keys(view.ids['sess'].refs).sort()).toEqual([msg1, msg2].sort())
+  })
+
+  it('标记指向缺失 def → 跳过，不抛', () => {
+    const missing: Hash = '9'.repeat(64)
+    const world = worldWithDataBody({ head: { def: missing } }, {})
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['sess'].refs).toEqual({})
+    expect(view.ids['sess'].next_before).toBeNull()
+  })
+
+  it('无标记 / body 为 null → refs 为空对象', () => {
+    const world = worldWithDataBody({ version: 1 }, {})
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['sess'].refs).toEqual({})
+  })
+
+  it('形如 {def:"not-a-hash"} 不是 64hex → 不当引用标记', () => {
+    const world = worldWithDataBody({ head: { def: 'not-a-hash' } }, {})
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['sess'].refs).toEqual({})
+  })
+
+  it('refCap 是硬上限：超出即停止收（防异常数据撑爆投影）', () => {
+    const world = worldWithDataBody(
+      { head: { def: msg1 } },
+      {
+        [msg1]: { body: { prev: { def: msg2 } } },
+        [msg2]: { body: { prev: { def: msg3 } } },
+        [msg3]: { body: { prev: null } },
+      },
+    )
+    const view = projectBaseOnly(world, EMPTY_HEAD, { refCap: 2 }) as unknown as Projection
+    expect(Object.keys(view.ids['sess'].refs)).toHaveLength(2)
   })
 })

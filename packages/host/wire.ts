@@ -21,6 +21,8 @@ export type InboundMessage =
       directives: Directive[]
       caps?: Record<string, boolean>
       limits?: Limits
+      /** 可选线程标记：仅随宿主 run 生命周期事件原样回带，宿主不解释。 */
+      thread?: string
     }
   | {
       v: string
@@ -30,11 +32,15 @@ export type InboundMessage =
       args?: Json
       caps?: Record<string, boolean>
       limits?: Limits
+      /** 可选线程标记：仅随宿主 run 生命周期事件原样回带，宿主不解释。 */
+      thread?: string
     }
   | { v: string; id: string; kind: 'cancel'; run: string }
   | { v: string; id: string; kind: 'audit'; filter?: Json }
   | { v: string; id: string; kind: 'asset.put'; mime: string; bytes: string }
   | { v: string; id: string; kind: 'asset.get'; sha256: string }
+  | { v: string; id: string; kind: 'secrets.put'; name: string; value: string }
+  | { v: string; id: string; kind: 'secrets.delete'; name: string }
   | { v: string; id: string; kind: 'commands' }
   | { v: string; id: string; kind: 'status' }
   | { v: string; id: string; kind: 'stop' }
@@ -48,7 +54,8 @@ export type OutboundMessage =
   | { v: string; id: string; kind: 'audits'; records: Json[]; truncated: boolean }
   | { v: string; id: string; kind: 'asset.ref'; ref: Json }
   | { v: string; id: string; kind: 'asset.bytes'; sha256: string; size: number; bytes: string }
-  | { v: string; id: string; kind: 'state'; world_head: Json; loaded: Json[] }
+  | { v: string; id: string; kind: 'secrets.ok'; name: string }
+  | { v: string; id: string; kind: 'state'; world_head: Json; world_rev: Json; loaded: Json[] }
   | { v: string; id: string; kind: 'error'; code: string; message: string }
   | { v: string; impl: string; kind: 'event'; topic: string; payload: Json }
 

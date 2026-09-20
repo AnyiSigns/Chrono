@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
-import { runSubmission } from '../rounds.ts'
+import { WorldWriter } from '../../writer.ts'
+import { resolvePins, runSubmission } from '../rounds.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Def, Directive, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
@@ -62,6 +63,31 @@ function writeD(op: 'put', args: Json): Directive {
 }
 
 describe('A10 轮间驱动 runSubmission', () => {
+  it('writer 与 world/head 同时给出或都缺 → 抛错（不静默取一）', async () => {
+    const writer = new WorldWriter({ world: EMPTY_WORLD, head: { seq: -1, hash: null } })
+    await expect(
+      runSubmission({
+        writer,
+        world: EMPTY_WORLD,
+        head: { seq: -1, hash: null },
+        directives: [],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'tester',
+        now: () => 1,
+      }),
+    ).rejects.toThrow('not both')
+    await expect(
+      runSubmission({
+        directives: [],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'tester',
+        now: () => 1,
+      }),
+    ).rejects.toThrow('provide either writer')
+  })
+
   it('空 directives → idle', async () => {
     const outcome = await runSubmission({
       world: EMPTY_WORLD,
@@ -258,6 +284,27 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect(outcome.status).toBe('done')
     expect(journal).toHaveLength(1)
     expect((journal[0].args as { pins: Record<string, Hash> }).pins['toy.echo']).toBe(active)
+  })
+
+  it('顶层结构 op 的 pins 值为 host：提前拒 bad_directive（内核会判 bad_form）', () => {
+    for (const op of ['add_gen', 'put', 'graft']) {
+      expect(resolvePins(op, { body: { x: 1 }, pins: { host: 'host' } }, EMPTY_WORLD)).toEqual({
+        ok: false,
+        reason: 'bad_directive',
+      })
+    }
+  })
+
+  it('batch 子操作的 pins 值为 host：保留字面量，不查世界', () => {
+    const resolved = resolvePins(
+      'batch',
+      { ops: [{ op: 'put', args: { body: { withHost: true }, pins: { host: 'host' } } }] },
+      EMPTY_WORLD,
+    )
+    expect(resolved).toEqual({
+      ok: true,
+      value: { ops: [{ op: 'put', args: { body: { withHost: true }, pins: { host: 'host' } } }] },
+    })
   })
 
   it('plan 条目形态非法（表驱动）→ refused:bad_directive；非数组 $directives 当普通数据', async () => {

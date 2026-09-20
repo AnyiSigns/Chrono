@@ -5,16 +5,20 @@
 // 进程不动）/ 代码起新服务（旧服务 drain）；依赖换代不重装（A1 重解析路由），依赖退役则隔离。
 // G7 A1：数据世代（同身份混合世代）变化不触发跟随 / 隔离 / 服务动作。
 
+import { resolve } from 'node:path'
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
 import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
+import { HOST_CAPABILITY } from '../host-methods.ts'
 import { classifyGenerationChange } from './generation.ts'
 import { launchService } from './service-launcher.ts'
+import { restoreDependencies } from './deps.ts'
 import { EndpointTable } from '../endpoint-table.ts'
 import { hostPaths } from '../paths.ts'
 import type { HostPaths } from '../paths.ts'
 import type { AssemblyPlan } from './closure.ts'
 import {
+  ServiceStartError,
   backoffDelay,
   classifyStartFailure,
   parseHealth,
@@ -23,6 +27,7 @@ import {
   terminateChild,
   waitForExit,
 } from './supervision.ts'
+import { isSafeIdentityName } from './identity-name.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { LifecycleKind, LifecycleRecord } from '../lifecycle.ts'
 import { stale } from '../../kernel/index.ts'
@@ -61,6 +66,10 @@ export interface StartAssemblyOptions {
   reloadTimeoutMs?: number
   /** 服务启动包装器（宿主侧最小沙箱形态）；缺省无（零行为变化）。 */
   startWrapper?: string
+  /** 依赖缓存目录；缺省由 root 派生的 `state/deps`。 */
+  depsDir?: string
+  /** 物化后的依赖恢复；缺省按清单绑定 `restoreDependencies`，测试可注入桩。 */
+  restore?: (cwd: string) => Promise<void>
 }
 
 type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
@@ -76,6 +85,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly handshakeTimeoutMs: number
   private readonly reloadTimeoutMs: number
   private readonly startWrapper: string | undefined
+  private readonly restore: (cwd: string) => Promise<void>
   private readonly paths: HostPaths
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
@@ -94,6 +104,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.reloadTimeoutMs = options.reloadTimeoutMs ?? DEFAULT_RELOAD_TIMEOUT_MS
     this.startWrapper = options.startWrapper
     this.paths = hostPaths(options.root)
+    const depsDir = options.depsDir ?? this.paths.depsDir
+    this.restore =
+      options.restore ?? ((cwd) => restoreDependencies(cwd, depsDir, undefined, this.startWrapper))
     this.plan = computeAssemblyPlan(options.world)
     this.ownerIndex = buildOwnerIndex(options.world)
   }
@@ -196,6 +209,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       const gen = this.assemblyGenOf(id)
       const deps = new Set<string>()
       for (const pin of Object.values(gen?.pins ?? {})) {
+        // 保留能力类 `host`：不是世界身份，不构成依赖边
+        if (pin === HOST_CAPABILITY) continue
         const owner = this.ownerIndex.get(pin)
         if (owner !== undefined) deps.add(owner)
       }
@@ -481,12 +496,20 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private launch(id: string, gen: Hash, decl: PluginDecl): Promise<ServiceRuntime> {
+    // 运行期写指令可造任意 id；身份名不安全（路径穿越 / 非法目录名）时拒绝起服务，
+    // 否则 `state/plugins/<id>/` 会逃出插件区、被当可写状态交给插件进程。
+    if (!isSafeIdentityName(id)) {
+      this.record('service', 'start_failed', { impl: id, gen, reason: 'bad_identity' })
+      return Promise.reject(new ServiceStartError('bad_identity'))
+    }
     return launchService(
       {
         world: this.world,
         materializedDir: this.paths.materializedDir,
         handshakeTimeoutMs: this.handshakeTimeoutMs,
+        pluginStateDir: resolve(this.paths.pluginsDir, id),
         startWrapper: this.startWrapper,
+        restore: this.restore,
         onServiceEvent: this.onEvent,
         onExtraDropped: (impl, extraGen, caps) =>
           this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),

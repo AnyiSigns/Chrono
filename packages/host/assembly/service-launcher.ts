@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
 import { ServiceLink } from '../service-link.ts'
 import {
@@ -24,10 +25,20 @@ export interface ServiceLauncherDeps {
   materializedDir: string
   handshakeTimeoutMs: number
   /**
+   * 该身份的插件 ③ 目录（`state/plugins/<id>/`）：宿主保证存在并以 `CHRONO_PLUGIN_STATE`
+   * 注入 spawn env；宿主不认识目录内容，只统一 GC。
+   */
+  pluginStateDir?: string
+  /**
    * 宿主侧服务启动包装器（最小沙箱形态）：只前置到 spawn 命令行，未配置 = 现状。
    * 宿主不认识语言，也不据此改声明 / 契约。
    */
   startWrapper?: string
+  /**
+   * 物化后、spawn 前的依赖恢复；缺省不恢复（由运行时按清单绑定）。
+   * 抛错按启动失败传播，不启动服务。
+   */
+  restore?: (cwd: string) => Promise<void>
   onServiceEvent?: (impl: string, topic: string, payload: Json) => void
   onExtraDropped: (impl: string, gen: Hash, caps: string[]) => void
   onChannelClosed: (service: ServiceRuntime, reason: string) => void
@@ -51,6 +62,22 @@ export async function launchService(
 ): Promise<ServiceRuntime> {
   const cwd = materializeCommit(deps.world, gen, deps.materializedDir)
   if (cwd === null) throw new ServiceStartError('materialize_failed')
+  // 依赖恢复先于 spawn：失败时尚未起进程，按启动失败分类传播
+  if (deps.restore !== undefined) {
+    try {
+      await deps.restore(cwd)
+    } catch (err) {
+      if (err instanceof ServiceStartError) throw err
+      throw new ServiceStartError('deps_failed')
+    }
+  }
+  // 插件 ③ 目录按身份创建并只注入本身份：不同身份互不可见彼此缓存目录
+  const pluginStateDir = deps.pluginStateDir
+  if (pluginStateDir !== undefined) mkdirSync(pluginStateDir, { recursive: true })
+  const env =
+    pluginStateDir === undefined
+      ? process.env
+      : { ...process.env, CHRONO_PLUGIN_STATE: pluginStateDir }
   const child = spawn(composeStartCommand(decl.start, deps.startWrapper), {
     cwd,
     shell: true,
@@ -58,7 +85,7 @@ export async function launchService(
     // POSIX 下建独立进程组，便于连同 shell 包装一起杀整树
     detached: process.platform !== 'win32',
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
+    env,
   })
   // 服务日志走 stderr；宿主持有读端防写满阻塞，stdout 只许协议帧
   child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))

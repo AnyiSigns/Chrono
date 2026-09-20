@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { H } from '../../../kernel/index.ts'
 import { EndpointTable } from '../../endpoint-table.ts'
 import { createRoundRouter } from '../route.ts'
+import type { HostCapabilityCall } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Def, Gen, Hash, Identity, Json, World } from '../../../kernel/index.ts'
 
@@ -212,5 +213,58 @@ describe('A1 路由 createRoundRouter', () => {
     expect(outcome.ok).toBe(true)
     if (outcome.ok) expect(outcome.row.gen).toBe(V2.payload)
     expect(drifts).toEqual(['caller:toy.echo'])
+  })
+
+  describe('保留能力类 host', () => {
+    const hostPinWorld = (): World => makeWorld({ host: 'host' })
+
+    it('pin 值为 host：已知方法返回宿主端点行，不查世界 / 端点表', async () => {
+      const world = hostPinWorld()
+      const calls: Array<{ method: string; emitter: string; args: Json }> = []
+      const host: HostCapabilityCall = async (method, emitter, args) => {
+        calls.push({ method, emitter, args })
+        return { ok: true, value: { records: [], truncated: false } }
+      }
+      const router = createRoundRouter({ endpoints: new EndpointTable(), host })
+      const outcome = router.resolve(world, 'caller', 'host', 'audit')
+      expect(outcome.ok).toBe(true)
+      if (!outcome.ok) return
+      expect(outcome.row).toMatchObject({
+        impl: 'host',
+        gen: 'host',
+        cap: 'host',
+        method: 'audit',
+        transport: 'host',
+        pid: 0,
+      })
+      const response = await outcome.row.link.call('host', 'audit', { limit: 1 }, 1000)
+      expect(response).toEqual({ ok: true, value: { records: [], truncated: false } })
+      expect(calls).toEqual([{ method: 'audit', emitter: 'caller', args: { limit: 1 } }])
+    })
+
+    it('未知方法 / 非 host cap → not_loaded', () => {
+      const world = hostPinWorld()
+      const host: HostCapabilityCall = async () => ({ ok: true, value: null })
+      const router = createRoundRouter({ endpoints: new EndpointTable(), host })
+      expect(router.resolve(world, 'caller', 'host', 'nope')).toEqual({
+        ok: false,
+        error: 'not_loaded',
+      })
+      // pin 值 host 但 pin 名（调用点 cap）不是 host：不路由
+      const aliased = makeWorld({ audit: 'host' })
+      expect(router.resolve(aliased, 'caller', 'audit', 'audit')).toEqual({
+        ok: false,
+        error: 'not_loaded',
+      })
+    })
+
+    it('未接线宿主派发器 → not_loaded', () => {
+      const world = hostPinWorld()
+      const router = createRoundRouter({ endpoints: new EndpointTable() })
+      expect(router.resolve(world, 'caller', 'host', 'audit')).toEqual({
+        ok: false,
+        error: 'not_loaded',
+      })
+    })
   })
 })

@@ -24,9 +24,9 @@ const client = await connect({ root, timeoutMs: 30_000 })
 | `client.cancel(run)`                 | 真取消：中止在途 / 排队的 run；未知 / 已结束 → `unknown_run`                        |
 | `client.command(name, args?, opts?)` | 调插件命令（宿主解析声明、校验 `args`、走一次 run）                                 |
 | `client.commands()`                  | 列出已声明命令（客户端没有世界，必须问宿主）                                        |
-| `client.audit(filter?)`              | F8 只读审计面：按 `run` / `emitter` / `outcome` 查询（seq 降序，缺省 100 条）       |
-| `client.putAsset(mime, bytes)`       | G4 资产入库：字节直写宿主资产区（不进世界），返回 `{kind:'asset',sha256,mime,size}` |
-| `client.getAsset(sha256)`            | G4 取资产字节；字节缺失 → `asset_missing`                                           |
+| `client.audit(filter?)`              | 只读审计面：按 `run` / `emitter` / `outcome` 查询（seq 降序，缺省 100 条）       |
+| `client.putAsset(mime, bytes)`       | 资产入库：字节直写宿主资产区（不进世界），返回 `{kind:'asset',sha256,mime,size}` |
+| `client.getAsset(sha256)`            | 取资产字节；字节缺失 → `asset_missing`                                           |
 | `client.status()`                    | `{world_head, loaded}` 非阻塞快照（可能瞬态）                                       |
 | `client.stop()`                      | 令宿主停机并关闭连接                                                                |
 | `client.onEvent(handler)`            | 订阅宿主广播的服务 `event`（`impl` 命名空间；无 ack、可丢）                         |

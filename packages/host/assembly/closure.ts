@@ -3,6 +3,7 @@
 // 运行相（自身换代重装、依赖退役隔离）不在本模块。
 
 import { stale } from '../../kernel/index.ts'
+import { HOST_CAPABILITY } from '../host-methods.ts'
 import { assemblyGen } from './decl.ts'
 import type { Hash, World } from '../../kernel/index.ts'
 
@@ -95,6 +96,8 @@ function buildGraph(world: World, ownerIndex: Map<Hash, string>): DepGraph {
       continue
     }
     for (const pin of Object.values(gen.pins)) {
+      // 保留能力类 `host`：不建边、不置 depFailed（宿主不是世界节点）
+      if (pin === HOST_CAPABILITY) continue
       const to = ownerIndex.get(pin)
       if (to === undefined || world.ids[to].active === null) {
         depFailed.add(from) // 漏 pins / 依赖退役：显式失效，绝不猜

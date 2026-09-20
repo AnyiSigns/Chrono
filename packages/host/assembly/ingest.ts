@@ -6,12 +6,20 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
+import { HOST_CAPABILITY } from '../host-methods.ts'
+import { isSafeIdentityName } from './identity-name.ts'
 import { validateArgsSchema } from './args-schema.ts'
-import { parsePluginDecl, termDefOf, latestCodeGen } from './decl.ts'
+import {
+  isCodeGen,
+  latestCodeGen,
+  parsePluginDecl,
+  readPluginDeclOfGen,
+  termDefOf,
+} from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
 import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from './term-refs.ts'
-import type { Hash, Json, World } from '../../kernel/index.ts'
+import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
 /** `state/plugins.json` 的一项：有 path 按路径解析，无 path 走 Node 解析。 */
 export interface PluginEntry {
@@ -40,6 +48,44 @@ const LOCK_FILES = [
   'bun.lock',
   'bun.lockb',
 ]
+
+/**
+ * 受保护身份（住宿主侧、不进世界，故连代码换代也改不动）：新世代删除对它们的 `pins` 引用即整批拒。
+ * 理由：可见性过滤是黑名单，攻击面在依赖关系——agent 可写一个不 pin `sandbox` 的 `tool-fs` 让强制失效。
+ * 这是纯机械的「旧世代有、新世代没了」比对，宿主不认识业务。
+ */
+const PROTECTED_PIN_IDENTITIES: ReadonlySet<string> = new Set([
+  'sandbox',
+  'guard',
+  'secrets',
+  'approval',
+])
+
+/**
+ * 跨代比对 `pins`：最近代码世代引用了某受保护身份、新声明不再引用 → 删了保护边。
+ * 按被依赖身份名比对（`decl.pins` 的值即身份名），不涉及解析后的哈希。
+ * 不依赖 `active`：retired 身份重入世同样按最近代码世代比对，否则「退役→重入世」可绕过保护。
+ * 身份不存在 / 无代码世代 → 无从比对，放行；有代码世代但声明读不出 → fail-closed 拒。
+ */
+function removedProtectedPin(world: World, identity: string, decl: PluginDecl): boolean {
+  const record = Object.hasOwn(world.ids, identity) ? world.ids[identity] : undefined
+  if (record === undefined) return false
+  let codeGen: Gen | null = null
+  for (let i = record.gens.length - 1; i >= 0; i--) {
+    if (isCodeGen(world, record.gens[i])) {
+      codeGen = record.gens[i]
+      break
+    }
+  }
+  if (codeGen === null) return false
+  const previous = readPluginDeclOfGen(world, codeGen)
+  if (previous === null) return true
+  const nextPins = new Set(Object.values(decl.pins))
+  for (const depId of Object.values(previous.decl.pins)) {
+    if (PROTECTED_PIN_IDENTITIES.has(depId) && !nextPins.has(depId)) return true
+  }
+  return false
+}
 
 /** 解析插件包根目录：path 优先，其次 Node 解析；都找不到返回 null。 */
 function resolvePackageRoot(entry: PluginEntry, root: string): string | null {
@@ -206,7 +252,7 @@ function planIdentity(
   commitHash: Hash,
   schemaHash: Hash,
 ): IngestPlan {
-  const isNewIdentity = world.ids[identity] === undefined
+  const isNewIdentity = !Object.hasOwn(world.ids, identity)
   if (isNewIdentity) {
     ops.push({ op: 'add_identity', args: { id: identity, schema: { $n: schemaIndex } } })
   }
@@ -231,7 +277,12 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
     return { ok: false, reasons: ['identity_mismatch'] }
   }
   const identity = identityOverride ?? decl.identity
+  if (!isSafeIdentityName(identity)) return { ok: false, reasons: ['bad_plugin_decl'] }
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
+
+  if (removedProtectedPin(world, identity, decl)) {
+    return { ok: false, reasons: ['protected_pin_removed'] }
+  }
 
   const worldignore = readWorldignore(pkgRoot)
   if (!worldignore.ok) return { ok: false, reasons: ['bad_worldignore'] }
@@ -241,6 +292,11 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
 
   const pins: Record<string, Hash> = {}
   for (const [name, depId] of Object.entries(decl.pins)) {
+    // 保留能力类 `host`：保留字面量，不查世界、不报 unresolved_pin
+    if (depId === HOST_CAPABILITY) {
+      pins[name] = HOST_CAPABILITY
+      continue
+    }
     const dep = world.ids[depId]
     if (!dep || dep.active === null) return { ok: false, reasons: ['unresolved_pin'] }
     pins[name] = dep.active
@@ -275,7 +331,7 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
     ops.push({ op: 'put', args: { body: schema } })
   }
 
-  const existing = world.ids[identity]
+  const existing = Object.hasOwn(world.ids, identity) ? world.ids[identity] : undefined
   // G7 A1：包未变 = 「最近代码世代就是本包 commit」（active 可能已被数据世代占据）
   if (existing && latestCodeGen(world, identity)?.payload === commitHash) {
     return {

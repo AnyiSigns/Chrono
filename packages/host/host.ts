@@ -19,13 +19,18 @@ import { appendJournal, acquireLock, loadAnchor, readJournal, releaseLock } from
 import { DEFAULT_COMPACT_TAIL_ENTRIES, compactWorld } from './compact.ts'
 import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
 import { getAsset, putAsset } from './assets.ts'
+import { createHostCapability } from './host-capability.ts'
+import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
+import { gcPluginState } from './plugin-state.ts'
 import { appendLifecycle } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
 import { resolveStartWrapper } from './options.ts'
 import { projectBaseOnly } from './projection/index.ts'
+import { WorldWriter } from './writer.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
 import type { InboundMessage, Limits, OutboundMessage } from './wire.ts'
-import type { Entry, Json, World, Head } from '../kernel/index.ts'
+import { worldRev } from '../kernel/index.ts'
+import type { Entry, Hash, Json, World, Head } from '../kernel/index.ts'
 
 export interface HostOptions {
   root: string
@@ -48,6 +53,9 @@ export interface HostHandle {
 
 /** 发起者未给 limits 时的宿主默认预算。 */
 const DEFAULT_LIMITS: Limits = { gas: 1_000_000, depth: 64 }
+
+/** detached run 并发上限：无调用方等待，超限即拒，防单个插件无限起后台 run 拖垮宿主。 */
+export const MAX_DETACHED_RUNS = 32
 
 function asRecord(value: Json): { [k: string]: Json } | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null
@@ -122,8 +130,6 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   if (!lock.ok) throw new Error('writer_busy')
 
   const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-  let world: World = anchor.world
-  let head: Head = anchor.head
   /** F8 只读审计面：启动时由基础世界索引 + journal 尾段重建，运行期随审计落链增量补齐（只读）。 */
   const audits = new AuditIndex()
   for (const ref of anchor.baseAudits) {
@@ -142,16 +148,47 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // G6 启动压缩：尾段达到阈值即追加快照 entry + 归档前缀 + 写基础世界（世界不变，链头推进到快照）。
   // 归档前缀只取**当前 journal**（未归档部分）：回落全链时 `anchor.entries` 可能是全链，不能整段再归档。
   const compactTailEntries = options.compactTailEntries ?? DEFAULT_COMPACT_TAIL_ENTRIES
+  let initialHead: Head = anchor.head
   if (compactTailEntries > 0 && anchor.entries.length >= compactTailEntries) {
     const compacted = compactWorld(
       paths,
-      world,
-      head,
+      anchor.world,
+      anchor.head,
       readJournal(paths.journalFile),
       audits.refs(),
       Date.now(),
     )
-    head = { seq: compacted.snapshot.seq, hash: compacted.snapshot.hash }
+    initialHead = { seq: compacted.snapshot.seq, hash: compacted.snapshot.hash }
+  }
+  // 落账互斥段：多个 run 可并发推进，只有「追加 journal + 推进世界 / 链头」经它串行。
+  const writer = new WorldWriter({ world: anchor.world, head: initialHead })
+  // 投影按链头缓存：同一世界的多轮 / 多 run 复用一份闭包视图（投影只读，内核不改 ctx）。
+  let ctxCache: { head: Hash | null; view: Json } | undefined
+  const cachedProjection = (world: World, head: Head): Json => {
+    if (ctxCache !== undefined && ctxCache.head === head.hash) return ctxCache.view
+    const view = projectBaseOnly(world, head)
+    ctxCache = { head: head.hash, view }
+    return view
+  }
+  // `world_rev` 是全量摘要（O(#defs)）：按链头缓存，避免每次 `status` 轮询都阻塞事件循环重算。
+  let revCache: { head: Hash | null; rev: Hash } | undefined
+  const cachedWorldRev = (world: World, head: Head): Hash => {
+    if (revCache !== undefined && revCache.head === head.hash) return revCache.rev
+    const rev = worldRev(world)
+    revCache = { head: head.hash, rev }
+    return rev
+  }
+  // 插件 ③ 目录统一 GC：抢锁后、装配前，清掉不在当前世界身份集里的缓存目录（宿主不认识内容）。
+  // 缓存可重算，GC 失败不致命：记一条运维日志后继续启动，不因此中断也不影响锁的释放。
+  try {
+    gcPluginState(paths.pluginsDir, writer.snapshot().world)
+  } catch (err) {
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: 'gc_failed',
+      reason: err instanceof Error ? err.message : String(err),
+    })
   }
   const clients = new Set<Socket>()
   let stopping = false
@@ -185,10 +222,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
 
   let runtime: AssemblyRuntimeHandle | undefined
-  /** 写类提交的串行链：单写者语义下同一时刻至多一次 run。 */
-  let chain: Promise<void> = Promise.resolve()
-  /** 在册 run（含排队中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
+  /** 在途 run（并发推进中）：停机时先等它们落定；`cancel{run}` 按 `runs` 表中止。 */
+  const inflight = new Set<Promise<void>>()
+  /** 在册 run（含并发推进中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
   const runs = new Map<string, AbortController>()
+  /** 在途 detached run（无调用方等待）：按此表计数执行并发上限。 */
+  const detachedRuns = new Set<string>()
   /** 逐轮时间戳非回退（A10）：时钟回拨时仍单调 +1。 */
   let lastNow = startedAt
   const nextNow = (): number => {
@@ -197,53 +236,151 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     return lastNow
   }
 
+  // 换代跟随串行且单调：并发 run 的 done 可能乱序到达，只应用不比当前更旧的链头，
+  // 且不并发进 applyWorld（它会改运行态端点表 / 进程）。用独立链而非落账段，避免长任务堵住提交。
+  let appliedSeq = initialHead.seq
+  let runtimeChain: Promise<void> = Promise.resolve()
+  const applyWorldSerial = (advancedWorld: World, advancedHead: Head): Promise<void> => {
+    const next = runtimeChain.then(async () => {
+      if (runtime === undefined || advancedHead.seq <= appliedSeq) return
+      appliedSeq = advancedHead.seq
+      await runtime.applyWorld(advancedWorld)
+    })
+    runtimeChain = next.then(
+      () => undefined,
+      () => undefined,
+    )
+    return next
+  }
+
+  /**
+   * H9 宿主通用原语：启动一次 detached run——无 socket、结果不回流，事件照广播。
+   * initiator = 调用方 emitter，directives = 单条 eval；宿主不认识游标语义（游标由调用方放进 args）。
+   * 并发超 `MAX_DETACHED_RUNS` 即拒（不起新 run）；`thread` 仅随事件原样回带。
+   */
+  const startDetachedRun = (
+    emitter: string,
+    entry: Hash,
+    args: Json,
+    thread: string | null,
+  ): { ok: true; run: string } | { ok: false; code: 'too_many_runs' } => {
+    if (detachedRuns.size >= MAX_DETACHED_RUNS) return { ok: false, code: 'too_many_runs' }
+    const runId = randomUUID()
+    detachedRuns.add(runId)
+    const controller = new AbortController()
+    runs.set(runId, controller)
+    broadcast('host', 'run.started', { run: runId, thread })
+    let finished = false
+    // 收口幂等：run.started / run.finished 严格成对、恰好一次（异常路径也以 refused 收口）
+    const finish = (status: string): void => {
+      if (finished) return
+      finished = true
+      broadcast('host', 'run.finished', { run: runId, thread, status })
+    }
+    const task = runSubmission({
+      writer,
+      directives: [{ kind: 'eval', entry, args }],
+      // detached run 不继承调用方 caps：以空 caps 起，权限最小化
+      caps: {},
+      limits: DEFAULT_LIMITS,
+      initiator: emitter,
+      runId,
+      now: nextNow,
+      router,
+      callTimeoutMs: options.callTimeoutMs,
+      signal: controller.signal,
+      initialOwnerOf: () => emitter,
+      ctxFor: cachedProjection,
+      onAudit: persistAudit,
+      onRound: persistRound,
+      onAdvanced: applyWorldSerial,
+    })
+      .then((outcome) => {
+        finish(outcome.status)
+      })
+      .catch((err: unknown) => {
+        // detached run 无调用方等待：先广播 run.finished{refused} 收口，错误只进运维日志
+        appendLifecycle(paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'host',
+          event: 'run_failed',
+          run: runId,
+          reason: err instanceof Error ? err.message : String(err),
+        })
+        finish('refused')
+      })
+      .finally(() => {
+        detachedRuns.delete(runId)
+        runs.delete(runId)
+        inflight.delete(task)
+      })
+    inflight.add(task)
+    return { ok: true, run: runId }
+  }
+
   const handleSubmit = async (
     socket: Socket,
     message: Extract<InboundMessage, { kind: 'submit' }>,
     directives: DirectiveDraft[],
     runId: string,
+    thread: string | null,
     signal: AbortSignal,
   ): Promise<void> => {
-    // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
-    const entryOwners = new Map<string, string>()
-    for (const command of listCommands(world)) {
-      if (!entryOwners.has(command.entry)) entryOwners.set(command.entry, command.identity)
+    broadcast('host', 'run.started', { run: runId, thread })
+    let status = 'refused'
+    try {
+      // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
+      const entryOwners = new Map<string, string>()
+      for (const command of listCommands(writer.snapshot().world)) {
+        if (!entryOwners.has(command.entry)) entryOwners.set(command.entry, command.identity)
+      }
+      const outcome = await runSubmission({
+        writer,
+        directives,
+        caps: message.caps ?? {},
+        limits: message.limits ?? DEFAULT_LIMITS,
+        initiator: 'client',
+        runId,
+        now: nextNow,
+        router,
+        callTimeoutMs: options.callTimeoutMs,
+        signal,
+        initialOwnerOf: (directive) =>
+          directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
+        ctxFor: cachedProjection,
+        onAudit: persistAudit,
+        onRound: persistRound,
+        onAdvanced: applyWorldSerial,
+      })
+      status = outcome.status
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        kind: 'result',
+        run: runId,
+        status: outcome.status,
+        observations: outcome.observations,
+      })
+    } catch (err) {
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'run_failed',
+        run: runId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    } finally {
+      // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
+      broadcast('host', 'run.finished', { run: runId, thread, status })
     }
-    const outcome = await runSubmission({
-      world,
-      head,
-      directives,
-      caps: message.caps ?? {},
-      limits: message.limits ?? DEFAULT_LIMITS,
-      initiator: 'client',
-      runId,
-      now: nextNow,
-      router,
-      callTimeoutMs: options.callTimeoutMs,
-      signal,
-      initialOwnerOf: (directive) =>
-        directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
-      ctxFor: projectBaseOnly,
-      onAudit: persistAudit,
-      onRound: persistRound,
-      onAdvanced: async (advancedWorld) => {
-        if (runtime !== undefined) await runtime.applyWorld(advancedWorld)
-      },
-    })
-    world = outcome.world
-    head = outcome.head
-    send(socket, {
-      v: PROTOCOL_VERSION,
-      kind: 'result',
-      run: runId,
-      status: outcome.status,
-      observations: outcome.observations,
-    })
   }
 
   const handleCommand = async (
     socket: Socket,
     message: Extract<InboundMessage, { kind: 'command' }>,
+    runId: string,
+    thread: string | null,
+    signal: AbortSignal,
   ): Promise<void> => {
     if (typeof message.name !== 'string') {
       send(socket, {
@@ -255,7 +392,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       return
     }
-    const command = resolveCommand(world, message.name)
+    const command = resolveCommand(writer.snapshot().world, message.name)
     if (command === null) {
       send(socket, {
         v: PROTOCOL_VERSION,
@@ -268,7 +405,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
     const args = message.args ?? null
     if (command.argsSchema !== null) {
-      const schemaDef = world.defs[command.argsSchema]
+      const schemaDef = writer.snapshot().world.defs[command.argsSchema]
       // 运行期 add_gen 产出的 argsSchema 未必过入世门禁：命令侧补一次方言元校验（fail-closed）
       const dialect = schemaDef === undefined ? null : validateArgsSchema(schemaDef.body)
       if (schemaDef === undefined || dialect === null || !dialect.ok) {
@@ -293,36 +430,49 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       }
     }
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
-    // 命令也是一次 run：给审计一个可查询的回合 id（命令 result 不带 run，仅审计 / 运维可见）
-    const runId = randomUUID()
-    const outcome = await runSubmission({
-      world,
-      head,
-      directives,
-      caps: message.caps ?? {},
-      limits: message.limits ?? DEFAULT_LIMITS,
-      initiator: 'command',
-      runId,
-      now: nextNow,
-      router,
-      callTimeoutMs: options.callTimeoutMs,
-      initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
-      ctxFor: projectBaseOnly,
-      onAudit: persistAudit,
-      onRound: persistRound,
-      onAdvanced: async (advancedWorld) => {
-        if (runtime !== undefined) await runtime.applyWorld(advancedWorld)
-      },
-    })
-    world = outcome.world
-    head = outcome.head
-    send(socket, {
-      v: PROTOCOL_VERSION,
-      id: message.id,
-      kind: 'result',
-      status: outcome.status,
-      observations: outcome.observations,
-    })
+    broadcast('host', 'run.started', { run: runId, thread })
+    let status = 'refused'
+    try {
+      // 命令也是一次 run：给审计一个可查询的回合 id（命令 result 不带 run，仅审计 / 运维可见）。
+      // 与 submit 同规建信号：cancel{run} 与停机 abort() 都能覆盖 command run。
+      const outcome = await runSubmission({
+        writer,
+        directives,
+        caps: message.caps ?? {},
+        limits: message.limits ?? DEFAULT_LIMITS,
+        initiator: 'command',
+        runId,
+        now: nextNow,
+        router,
+        callTimeoutMs: options.callTimeoutMs,
+        signal,
+        initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
+        ctxFor: cachedProjection,
+        onAudit: persistAudit,
+        onRound: persistRound,
+        onAdvanced: applyWorldSerial,
+      })
+      status = outcome.status
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'result',
+        status: outcome.status,
+        observations: outcome.observations,
+      })
+    } catch (err) {
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'run_failed',
+        run: runId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    } finally {
+      // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
+      broadcast('host', 'run.finished', { run: runId, thread, status })
+    }
   }
 
   const server = createServer((socket: Socket) => {
@@ -358,10 +508,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     try {
       appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
     } finally {
-      // 在途 / 排队 run 先取消：等链收敛时它们按 cancelled 落定，停机不耗在调用超时上
+      // 在途 / 并发推进中的 run 先取消：它们按 cancelled 落定，停机不耗在调用超时上
       for (const controller of runs.values()) controller.abort()
-      // 在途提交先跑完（审计 / 业务写不落在停机中途），再断连接与服务
-      await chain.catch(() => {})
+      // 等全部在途 run 收敛（审计 / 业务写不落在停机中途），再断连接与服务
+      await Promise.allSettled([...inflight])
       for (const client of clients) client.destroy()
       try {
         await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -426,12 +576,13 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         }
         const submit = message
         const runId = randomUUID()
+        const thread = typeof submit.thread === 'string' ? submit.thread : null
         const controller = new AbortController()
         runs.set(runId, controller)
-        // accepted 先于排队发出：长提交不阻塞后到客户端的受理确认（run 入册后即可被 cancel 命中）
+        // accepted 先于推进发出：长提交不阻塞后到客户端的受理确认（run 入册后即可被 cancel 命中）
         send(socket, { v: PROTOCOL_VERSION, id: submit.id, kind: 'accepted', run: runId })
-        chain = chain
-          .then(() => handleSubmit(socket, submit, directives, runId, controller.signal))
+        // 多个 run 并发推进（eval / 等待效果不互斥），只在落账那一刻经 writer 串行
+        const task = handleSubmit(socket, submit, directives, runId, thread, controller.signal)
           .catch(() => {
             try {
               send(socket, {
@@ -447,7 +598,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           })
           .finally(() => {
             runs.delete(runId)
+            inflight.delete(task)
           })
+        inflight.add(task)
         return
       }
       case 'command': {
@@ -462,8 +615,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           return
         }
         const command = message
-        chain = chain
-          .then(() => handleCommand(socket, command))
+        const runId = randomUUID()
+        const thread = typeof command.thread === 'string' ? command.thread : null
+        const controller = new AbortController()
+        runs.set(runId, controller)
+        const task = handleCommand(socket, command, runId, thread, controller.signal)
           .catch(() => {
             try {
               send(socket, {
@@ -477,6 +633,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
               // 客户端已断：错误无处可送
             }
           })
+          .finally(() => {
+            runs.delete(runId)
+            inflight.delete(task)
+          })
+        inflight.add(task)
         return
       }
       case 'cancel': {
@@ -570,8 +731,61 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         })
         return
       }
+      case 'secrets.put': {
+        const { name, value } = message
+        if (typeof name !== 'string' || typeof value !== 'string' || !isValidSecretName(name)) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'secrets.put expects { name, value }',
+          })
+          return
+        }
+        const written = putSecret(paths.secretsFile, name, value)
+        if (!written.ok) {
+          // 损坏文件 fail-closed：不静默以 {} 覆写丢密钥
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: written.reason === 'corrupt' ? 'internal' : 'bad_directive',
+            message: `secrets.put rejected: ${written.reason}`,
+          })
+          return
+        }
+        send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'secrets.ok', name })
+        return
+      }
+      case 'secrets.delete': {
+        const { name } = message
+        if (typeof name !== 'string' || !isValidSecretName(name)) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'bad_directive',
+            message: 'secrets.delete expects { name }',
+          })
+          return
+        }
+        const removed = deleteSecret(paths.secretsFile, name)
+        if (!removed.ok) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: removed.reason === 'corrupt' ? 'internal' : 'bad_directive',
+            message: `secrets.delete rejected: ${removed.reason}`,
+          })
+          return
+        }
+        send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'secrets.ok', name })
+        return
+      }
       case 'commands': {
-        const commands = listCommands(world).map((command) => ({
+        const commands = listCommands(writer.snapshot().world).map((command) => ({
           identity: command.identity,
           name: command.name,
           entry: command.entry,
@@ -584,11 +798,13 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           runtime === undefined
             ? []
             : runtime.loaded().map((entry) => ({ id: entry.id, gen: entry.gen }))
+        const current = writer.snapshot()
         send(socket, {
           v: PROTOCOL_VERSION,
           id: message.id,
           kind: 'state',
-          world_head: { seq: head.seq, hash: head.hash },
+          world_head: { seq: current.head.seq, hash: current.head.hash },
+          world_rev: cachedWorldRev(current.world, current.head),
           loaded,
         })
         return
@@ -609,14 +825,28 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
     runtime = await startAssembly({
       root,
-      world,
+      world: writer.snapshot().world,
       log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
       onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
       startWrapper: options.startWrapper,
+      depsDir: paths.depsDir,
     })
     const driftLogged = new Set<string>()
     router = createRoundRouter({
       endpoints: runtime.endpoints,
+      host: createHostCapability({
+        assetsDir: paths.assetsDir,
+        audits,
+        world: () => writer.snapshot().world,
+        abortRun: (run) => {
+          const controller = runs.get(run)
+          if (controller === undefined) return false
+          controller.abort()
+          return true
+        },
+        startDetachedRun,
+        isStopping: () => stopping,
+      }),
       onDrift: (impl, cap, gen) => {
         // 同一 (发出者, pin 名, 依赖世代) 只记一条证据，避免每次调用都刷运维日志
         const key = `${impl}\u0000${cap}\u0000${gen}`

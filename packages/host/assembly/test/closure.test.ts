@@ -186,6 +186,20 @@ describe('闭包 closure', () => {
       ])
     })
 
+    // ---------- 1b. 保留 pin host：不建边、不孤立 ----------
+    it('保留 pin host：不建依赖边、不置 depFailed、身份照常加载', () => {
+      const pA = h('pA')
+      const sA = h('sA')
+      const world = makeWorld(
+        { A: d('A', pA, sA, { host: 'host' }) },
+        { [pA]: def(null, sA), [sA]: def(null) },
+      )
+      const plan = computeAssemblyPlan(world)
+      expect(plan.order).toEqual(['A'])
+      expect(plan.isolated).toEqual([])
+      expect(plan.edges).toEqual([])
+    })
+
     // ---------- 2. 菱形 D pins B,C；B,C pins A ----------
     it('菱形：A 先于 B/C，B/C 先于 D', () => {
       const pA = h('pA')

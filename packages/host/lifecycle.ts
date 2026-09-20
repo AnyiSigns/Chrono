@@ -20,6 +20,8 @@ export interface LifecycleRecord {
   reason?: string
   caps?: string[]
   seq?: number
+  /** run 生命周期异常（如 `run_failed`）标注的宿主 run id。 */
+  run?: string
 }
 
 /** 追加一条生命周期事件；文件不存在则连同父目录一起创建。 */

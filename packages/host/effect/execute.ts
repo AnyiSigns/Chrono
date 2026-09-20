@@ -2,7 +2,7 @@
 // 审计 def 由宿主直接提交（不经 run directive），以保证它在业务写之前就可寻址。
 // 端点调用由调用方注入（A1 路由 + 服务协议 call）；未注入或调用未执行 → 不解析形态。
 
-import { H, commit } from '../../kernel/index.ts'
+import { H, canonicalJson, commit } from '../../kernel/index.ts'
 import type {
   EffRequest,
   EffResult,
@@ -65,26 +65,65 @@ function deriveOutcome(result: EffResult): AuditOutcome {
   return 'ok'
 }
 
+function isRecord(value: Json | undefined): value is { [k: string]: Json } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /**
- * 执行一次效果并落审计。世界与链头按引用就地演化（commit 语义）：
- * 调用方必须传入自己独占的世界副本，并在续跑时使用返回的 world / head。
- * @param eff 待解效果
- * @param world 当前世界（就地演化）
- * @param head 当前链头
- * @param meta 审计元信息（by / now / run / emitter）
- * @param call 端点调用器；缺省 = 无路由（记 `not_loaded`）
- * @param signal 该 run 的取消信号：中止且结果是 `{ok:false,error:'cancelled'}` 时 outcome 记 `cancelled`
+ * 审计脱敏：`port=secrets` + `method=resolve` 的 `result` 只落白名单 `{name, kind, has}`，
+ * 明文（短时句柄 / 密钥本体）不进审计正文；调用方拿到的真实结果不变（回灌走原 result）。
+ * 判据用 port 名而非解析后的身份：路由不变式是「pin 名 = 调用的能力类名 = 目标必须声明的类」，
+ * 且同一能力类不可被两个身份声明，故 port 名等价于目标声明的类，别名绕过不成立。
  */
-export async function executeEffect(
+function redactAuditResult(eff: EffRequest, result: EffResult): Json {
+  if (eff.port !== 'secrets' || eff.method !== 'resolve') return result as unknown as Json
+  const args = eff.args
+  const authRef = isRecord(args) ? args['auth_ref'] : undefined
+  const name = isRecord(authRef) && typeof authRef['name'] === 'string' ? authRef['name'] : null
+  const kind = isRecord(authRef) && typeof authRef['kind'] === 'string' ? authRef['kind'] : null
+  return { name, kind, has: deriveOutcome(result) === 'ok' }
+}
+
+/** host 批量返回方法：结果可能极大（字节 / 源码 / 审计记录）。 */
+const HOST_BULK_METHODS: ReadonlySet<string> = new Set(['asset.get', 'source.read', 'audit'])
+
+/**
+ * 审计结果序列化上限：超过只落 `{truncated:true,size}`。
+ * `host.asset.get`（8 MiB ≈ 10.7 MiB base64）与 `host.audit`（会拷入既往审计记录、超线性增长）
+ * 若原样入账，会把 defs / journal / 审计索引撑爆；调用方仍拿到完整结果，只是审计正文留截断标记。
+ */
+export const MAX_AUDIT_RESULT_BYTES = 64 * 1024
+
+/** 审计正文口径：先按白名单脱敏，再对 host 批量结果做体积截断。 */
+function auditResult(eff: EffRequest, result: EffResult): Json {
+  const redacted = redactAuditResult(eff, result)
+  if (eff.port !== 'host' || !HOST_BULK_METHODS.has(eff.method)) return redacted
+  const size = canonicalJson(redacted).length
+  if (size <= MAX_AUDIT_RESULT_BYTES) return redacted
+  return { truncated: true, size }
+}
+
+/** 效果调用的结果与取消标记：服务调用与审计落账拆开，以便只把落账放进串行段。 */
+export interface EffectCall {
+  result: EffResult
+  /** signal 已中止且结果记为 cancelled（审计 outcome 走 `cancelled`）。 */
+  cancelled: boolean
+}
+
+/**
+ * 执行端点调用：只做服务调用，不碰世界 / 链头。返回值一律是数据，不抛错。
+ * 服务调用可能长时间 await，故调用方应在互斥段之外调用它。
+ */
+export async function callEffect(
   eff: EffRequest,
-  world: World,
-  head: Head,
-  meta: AuditMeta,
   call?: EndpointCaller,
   signal?: AbortSignal,
-): Promise<ExecuteOutcome> {
+): Promise<EffectCall> {
   let result: EffResult
-  if (call === undefined) {
+  if (signal?.aborted === true) {
+    // 已中止：不再发起调用（否则可能依赖「未来 abort 事件」而悬挂），直接按 cancelled 收口
+    result = { ok: false, error: 'cancelled' }
+  } else if (call === undefined) {
     result = { ok: false, error: 'not_loaded' }
   } else {
     try {
@@ -93,13 +132,34 @@ export async function executeEffect(
       result = { ok: false, error: 'transport_failed' }
     }
   }
-  const aborted = signal?.aborted === true && result.ok === false && result.error === 'cancelled'
-  const auditOutcome: AuditOutcome = aborted ? 'cancelled' : deriveOutcome(result)
+  const cancelled = signal?.aborted === true && result.ok === false && result.error === 'cancelled'
+  return { result, cancelled }
+}
+
+/**
+ * 把一次效果结局落成审计：构造审计 def、按 `head.hash` 作 `expect_pos` 提交并就地推进世界。
+ * 调用方须在互斥段内调用（独占 world），并自行回填链头。
+ * @param eff 待解效果
+ * @param world 当前世界（就地演化）
+ * @param head 当前链头
+ * @param meta 审计元信息（by / now / run / emitter）
+ * @param result 已取得的调用结果
+ * @param cancelled 是否记为取消（outcome = `cancelled`）
+ */
+export function commitAudit(
+  eff: EffRequest,
+  world: World,
+  head: Head,
+  meta: AuditMeta,
+  result: EffResult,
+  cancelled: boolean,
+): ExecuteOutcome {
+  const auditOutcome: AuditOutcome = cancelled ? 'cancelled' : deriveOutcome(result)
   const auditDef = {
     body: {
       kind: EFFECT_AUDIT_KIND,
       request: eff as unknown as Json,
-      result: result as unknown as Json,
+      result: auditResult(eff, result),
       port: eff.port,
       method: eff.method,
       outcome: auditOutcome,
@@ -123,4 +183,28 @@ export async function executeEffect(
     ? { seq: outcome.entry.seq, hash: outcome.hash as Hash }
     : head
   return { result, world, head: nextHead, auditHash, auditEntry: outcome.entry }
+}
+
+/**
+ * 执行一次效果并落审计（`callEffect` + `commitAudit` 的便捷组合）。
+ * **仅供测试 / 单轮场景**：生产 run loop 必须分开调用两个原语，把落账放进宿主串行段
+ * （`run-loop.ts` 的 writer 纪律），直接用它会把 `commitAudit` 落到互斥段之外。
+ * 世界与链头按引用就地演化（commit 语义）：调用方必须独占 world。
+ * @param eff 待解效果
+ * @param world 当前世界（就地演化）
+ * @param head 当前链头
+ * @param meta 审计元信息（by / now / run / emitter）
+ * @param call 端点调用器；缺省 = 无路由（记 `not_loaded`）
+ * @param signal 该 run 的取消信号：中止且结果是 `{ok:false,error:'cancelled'}` 时 outcome 记 `cancelled`
+ */
+export async function executeEffect(
+  eff: EffRequest,
+  world: World,
+  head: Head,
+  meta: AuditMeta,
+  call?: EndpointCaller,
+  signal?: AbortSignal,
+): Promise<ExecuteOutcome> {
+  const { result, cancelled } = await callEffect(eff, call, signal)
+  return commitAudit(eff, world, head, meta, result, cancelled)
 }

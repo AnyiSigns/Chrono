@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { connect } from '../../client/index.ts'
+import type { EventMessage } from '../../client/index.ts'
 import type { Json } from '../../kernel/index.ts'
 import { join } from 'node:path'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../host/test/test-helpers.ts'
@@ -69,6 +70,35 @@ describe('客户端 client', () => {
       ])
       expect(result.status).toBe('done')
       expect(Array.isArray(result.observations)).toBe(true)
+    } finally {
+      client.close()
+    }
+  })
+
+  it('submit 传 thread：run.started 事件原样回带', async () => {
+    const client = await connect({ root, timeoutMs: 2000 })
+    const events: EventMessage[] = []
+    client.onEvent((event) => events.push(event))
+    try {
+      const result = await client.submit(
+        [
+          {
+            kind: 'write',
+            request: {
+              id: 'wt1',
+              op: 'put',
+              target: { expect_pos: null },
+              args: { body: { v: 1 } },
+              by: 'client',
+            },
+          },
+        ],
+        { thread: 'thr-client' },
+      )
+      expect(result.status).toBe('done')
+      const started = events.find((event) => event.impl === 'host' && event.topic === 'run.started')
+      expect(started).toBeDefined()
+      expect((started!.payload as { thread?: string }).thread).toBe('thr-client')
     } finally {
       client.close()
     }

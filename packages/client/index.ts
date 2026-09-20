@@ -26,11 +26,14 @@ const KNOWN_OUTBOUND_KINDS: ReadonlySet<string> = new Set([
   'audits',
   'asset.ref',
   'asset.bytes',
+  'secrets.ok',
 ])
 
 export interface SubmitOptions {
   caps?: Record<string, boolean>
   limits?: Limits
+  /** 可选线程标记：随宿主 run 生命周期事件原样回带，宿主不解释（与 wire 对齐）。 */
+  thread?: string
   /** 受理回调：`accepted{run}` 到达即调用（UI 需要 run 句柄做取消 / 展示）。 */
   onAccepted?: (run: string) => void
 }
@@ -54,6 +57,7 @@ export interface CommandInfo {
 
 export interface StatusResult {
   world_head: { seq: number; hash: string | null }
+  world_rev: string
   loaded: { id: string; gen: string }[]
 }
 
@@ -155,6 +159,7 @@ class HostClient implements Client {
     }
     if (options.caps !== undefined) message['caps'] = options.caps
     if (options.limits !== undefined) message['limits'] = options.limits as unknown as Json
+    if (options.thread !== undefined) message['thread'] = options.thread
     this.write(message as unknown as Json)
     return accepted.then(async (acc) => {
       if (acc.run === undefined) throw new ClientError('internal', 'accepted without run')
@@ -181,6 +186,7 @@ class HostClient implements Client {
     const message: { [k: string]: Json } = { v: PROTOCOL_VERSION, id, kind: 'command', name, args }
     if (options.caps !== undefined) message['caps'] = options.caps
     if (options.limits !== undefined) message['limits'] = options.limits as unknown as Json
+    if (options.thread !== undefined) message['thread'] = options.thread
     this.write(message as unknown as Json)
     const result = await pending
     return { status: result.status, observations: result.observations }

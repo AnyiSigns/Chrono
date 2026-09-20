@@ -137,6 +137,66 @@ describe('装配 assembly', () => {
     })
   })
 
+  describe('seed 级：保留 pin host', () => {
+    it("pins 值为 'host'：解析为保留字面量，不报 unresolved_pin", async () => {
+      const root = createTempRoot()
+      try {
+        const pkgRoot = writeTempPackage(root, {
+          identity: 'toy-hostpin',
+          pins: { host: 'host' },
+          start: '',
+          members: [{ kind: 'term', path: 'terms/' }],
+          terms: { 'x.json': JSON.stringify(['c', 1]) },
+        })
+        const report = runSeed(root, [{ name: 'toy-hostpin', path: pkgRoot }])
+        expect(report.ok).toBe(true)
+        const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+        const identity = world.ids['toy-hostpin']
+        expect(identity).toBeDefined()
+        const pins = identity!.gens[identity!.gens.length - 1].pins
+        expect(pins['host']).toBe('host')
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+  })
+
+  describe('seed 级：身份名安全单段净化', () => {
+    const cases: Array<[string, string]> = [
+      ['a/b', 'slash'],
+      ['../x', 'dotdot'],
+      ['C:\\x', 'drive'],
+      ['host', 'reserved-host'],
+      ['__proto__', 'proto-key'],
+      ['CON', 'windows-reserved'],
+      ['x.', 'trailing-dot'],
+      ['x:y', 'colon'],
+    ]
+    for (const [identity, dir] of cases) {
+      it(`identity=${JSON.stringify(identity)} → 整包拒 bad_plugin_decl`, async () => {
+        const root = createTempRoot()
+        try {
+          const pkgRoot = writeTempPackage(root, {
+            identity,
+            dir,
+            start: '',
+            members: [{ kind: 'term', path: 'terms/' }],
+            terms: { 'x.json': JSON.stringify(['c', 1]) },
+          })
+          const report = runSeed(root, [{ name: identity, path: pkgRoot }])
+          expect(report.ok).toBe(false)
+          expect(report.items[0].status).toBe('failed')
+          expect(report.items[0].reasons).toContain('bad_plugin_decl')
+          // 世界分文未动：不安全身份名不得成为目录 / 身份（用 hasOwn 防原型键误判）
+          const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+          expect(Object.hasOwn(world.ids, identity)).toBe(false)
+        } finally {
+          await cleanupTempRoot(root)
+        }
+      })
+    }
+  })
+
   describe('seed 级：命令入口路径规范化', () => {
     it("入口含 './' 段：seed 成功且 listCommands / resolveCommand 命中", async () => {
       const root = createTempRoot()

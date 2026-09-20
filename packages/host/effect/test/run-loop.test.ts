@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { H } from '../../../kernel/index.ts'
 import { ServiceChannelError } from '../../service-link.ts'
+import { WorldWriter } from '../../writer.ts'
 import { runRound } from '../run-loop.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
@@ -267,6 +268,69 @@ describe('通用 run loop runRound', () => {
     expect(outcome.journal).toEqual([])
     expect(audits).toEqual([])
     expect(outcome.lastAuditHash).toBeNull()
+  })
+
+  it('writer 与 world/head 同时给出 → 立即抛错（不静默取一）', async () => {
+    const writer = new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } })
+    await expect(
+      runRound({
+        writer,
+        world: emptyWorld(),
+        head: { ...EMPTY_HEAD },
+        directives: [],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'client',
+        now: NOW,
+      }),
+    ).rejects.toThrow('not both')
+  })
+
+  it('writer 与 world+head 都缺 → 立即抛错（fail-closed）', async () => {
+    await expect(
+      runRound({
+        directives: [],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'client',
+        now: NOW,
+      }),
+    ).rejects.toThrow('provide either writer')
+  })
+
+  it('效果路由用本 run 锚定世界：writer 快照已前进也不改路由世界', async () => {
+    const termHash = 'th'.repeat(32)
+    const anchored: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
+      ids: {},
+    }
+    const decoy: World = { defs: {}, ids: {} }
+    // 快照故意返回另一个世界：路由若错用快照即会拿到 decoy
+    class SnapshotDecoyWriter extends WorldWriter {
+      override snapshot(): { world: World; head: Head } {
+        return { world: decoy, head: { ...EMPTY_HEAD } }
+      }
+    }
+    const writer = new SnapshotDecoyWriter({ world: anchored, head: { ...EMPTY_HEAD } })
+    let sawWorld: World | undefined
+    const outcome = await runRound({
+      writer,
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router: {
+        resolve: (world) => {
+          sawWorld = world
+          return { ok: false, error: 'not_loaded' }
+        },
+      },
+    })
+    expect(sawWorld).toBe(anchored)
+    expect(sawWorld).not.toBe(decoy)
+    expect(outcome.status).toBe('refused')
   })
 
   it('属主缺失（owners[index] 为空）→ 不路由，审计记 not_loaded 且整体 refused:eff_error', async () => {

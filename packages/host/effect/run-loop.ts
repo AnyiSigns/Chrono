@@ -5,8 +5,9 @@
 import { randomUUID } from 'node:crypto'
 import { H, run } from '../../kernel/index.ts'
 import { ServiceChannelError } from '../service-link.ts'
-import { executeEffect } from './execute.ts'
+import { callEffect, commitAudit } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
+import { WorldWriter } from '../writer.ts'
 import type { RoundRouter } from './route.ts'
 import type {
   Directive,
@@ -23,8 +24,11 @@ import type {
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000
 
 export interface RoundInput {
-  world: World
-  head: Head
+  /** 起始世界 / 链头：与 `writer` 二者其一（都缺或同时给出 → 抛错）。 */
+  world?: World
+  head?: Head
+  /** 落账互斥段：内核 run 与审计提交都在它内部执行；与 `world` + `head` 二者其一。 */
+  writer?: WorldWriter
   directives: Directive[]
   /** 逐 directive 的发出者身份（与 directives 同序）：宿主构造 directive 时已知（A1）。 */
   owners?: ReadonlyArray<string | undefined>
@@ -40,8 +44,10 @@ export interface RoundInput {
   callTimeoutMs?: number
   /** 该 run 的取消信号（G2 真取消）：abort 后不再执行挂起效果，在途调用尽力中止。 */
   signal?: AbortSignal
-  /** 审计 entry 的落点回调：调用方负责把它立即追加进账本。 */
+  /** 审计 entry 的落点回调：在落账互斥段内调用（调用方负责追加进账本）。 */
   onAudit?: (entry: Entry) => void
+  /** done 轮业务 journal 的落点回调：与内核提交同段调用，保证账本追加序 = 链序。 */
+  onRound?: (entries: Entry[]) => void
 }
 
 export interface RoundOutcome {
@@ -56,6 +62,27 @@ export interface RoundOutcome {
 
 /** 单次提交内允许的挂起次数上限：防实现缺陷导致死循环，正常远低于此。 */
 const MAX_SUSPENSIONS = 100_000
+
+/**
+ * 落账段来源：`writer`（多 run 并发时宿主传入）或 `world` + `head` 二者其一。
+ * 同时给出或都缺都是接线缺陷：立即抛错，不静默取一（否则并发下可能悄悄用了错误的世界视图）。
+ */
+export function resolveWriter(input: {
+  world?: World
+  head?: Head
+  writer?: WorldWriter
+}): WorldWriter {
+  if (input.writer !== undefined) {
+    if (input.world !== undefined || input.head !== undefined) {
+      throw new Error('provide either writer or world+head, not both')
+    }
+    return input.writer
+  }
+  if (input.world === undefined || input.head === undefined) {
+    throw new Error('provide either writer or both world and head')
+  }
+  return new WorldWriter({ world: input.world, head: input.head })
+}
 
 /**
  * 反查 pending eff 属于哪条 directive：`eff.id = H({run, i, n})`。
@@ -114,12 +141,22 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   }
 }
 
+/** 把每条 write directive 的 `expect_pos` 机械锚到当前链头：并发提交下轮首头会前进。 */
+function anchorWrites(directives: Directive[], headHash: Hash | null): Directive[] {
+  return directives.map((directive) => {
+    if (directive.kind !== 'write') return directive
+    return {
+      kind: 'write',
+      request: { ...directive.request, target: { expect_pos: headHash } },
+    }
+  })
+}
+
 /** 跑一轮：同一 run_id / now，results 只增不改；审计在挂起期间即时落链。 */
 export async function runRound(input: RoundInput): Promise<RoundOutcome> {
   const runId = randomUUID()
+  const writer = resolveWriter(input)
   const results: Record<Hash, EffResult> = {}
-  let world = input.world
-  let head = input.head
   let lastAuditHash: Hash | null = null
   let suspensions = 0
   let located = -1
@@ -129,30 +166,44 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
   for (let step = 0; step < MAX_SUSPENSIONS; step++) {
     if (aborted()) {
       // 挂起前已取消（含排到该 run 才轮到的取消）：不跑内核、不落审计 —— 该 run 整体丢弃
+      const snap = writer.snapshot()
       return {
         status: 'cancelled',
-        world,
-        head,
+        world: snap.world,
+        head: snap.head,
         journal: [],
         observations: [],
         lastAuditHash,
       }
     }
-    const out = run({
-      world,
-      head,
-      run: runId,
-      directives: input.directives,
-      results,
-      limits: input.limits,
-      caps: input.caps,
-      now: input.now,
+    // 内核 run 与 done 落账同段：段内无 await，expect_pos 不会与并发提交交错。
+    // 段内当前 world 即本 run 锚定的世界视图：路由用它，而不是段后可能已被并发推进的快照。
+    const stepped = await writer.run((state) => {
+      const anchored = state.world
+      const result = run({
+        world: state.world,
+        head: state.head,
+        run: runId,
+        directives: anchorWrites(input.directives, state.head.hash),
+        results,
+        limits: input.limits,
+        caps: input.caps,
+        now: input.now,
+      })
+      if (result.status === 'done') {
+        state.world = result.world
+        state.head = result.head
+        input.onRound?.(result.journal)
+      }
+      return { result, anchored }
     })
+    const out = stepped.result
     if (out.status !== 'waiting') {
+      const snap = writer.snapshot()
       return {
         status: out.status,
-        world: out.world,
-        head: out.head,
+        world: snap.world,
+        head: snap.head,
         journal: out.journal,
         observations: out.observations,
         lastAuditHash,
@@ -169,33 +220,40 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       located = found.index
       emissionsInDirective = found.n + 1
     }
-    const caller = makeCaller(input, world, found === null ? -1 : found.index)
-    const executed = await executeEffect(
-      eff,
-      world,
-      head,
-      {
-        by: input.initiator,
-        now: input.now,
-        run: input.runId ?? runId,
-        emitter: found === null ? undefined : input.owners?.[found.index],
-      },
-      caller,
-      input.signal,
-    )
+    const caller = makeCaller(input, stepped.anchored, found === null ? -1 : found.index)
+    // 服务调用在互斥段之外：多个 run 的效果等待可并发
+    const { result, cancelled } = await callEffect(eff, caller, input.signal)
+    // 审计落账进互斥段：与内核提交共享同一链头 CAS，账本追加序 = 链序
+    const executed = await writer.run((state) => {
+      const outcome = commitAudit(
+        eff,
+        state.world,
+        state.head,
+        {
+          by: input.initiator,
+          now: input.now,
+          run: input.runId ?? runId,
+          emitter: found === null ? undefined : input.owners?.[found.index],
+        },
+        result,
+        cancelled,
+      )
+      state.world = outcome.world
+      state.head = outcome.head
+      if (outcome.auditEntry !== null && input.onAudit !== undefined) {
+        input.onAudit(outcome.auditEntry)
+      }
+      return outcome
+    })
     results[eff.id] = executed.result
-    world = executed.world
-    head = executed.head
     if (executed.auditHash !== null) lastAuditHash = executed.auditHash
-    if (executed.auditEntry !== null && input.onAudit !== undefined) {
-      input.onAudit(executed.auditEntry)
-    }
     if (aborted() && executed.result.error === 'cancelled') {
       // 在途取消：审计已按 cancelled 落账；不续跑 —— 丢弃该 run 的剩余计划
+      const snap = writer.snapshot()
       return {
         status: 'cancelled',
-        world,
-        head,
+        world: snap.world,
+        head: snap.head,
         journal: [],
         observations: out.observations,
         lastAuditHash,
@@ -203,10 +261,11 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
     }
     suspensions += 1
   }
+  const snap = writer.snapshot()
   return {
     status: 'refused',
-    world,
-    head,
+    world: snap.world,
+    head: snap.head,
     journal: [],
     observations: [{ kind: 'refused', reasons: ['too_many_suspensions'] }],
     lastAuditHash,

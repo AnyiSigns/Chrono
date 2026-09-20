@@ -3,9 +3,10 @@
 // `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
 
 import { assemblyGen, readPluginDecl } from '../assembly/decl.ts'
-import type { EndpointRow } from '../endpoint-table.ts'
+import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
+import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
-import type { Gen, Hash, Identity, World } from '../../kernel/index.ts'
+import type { Gen, Hash, Identity, Json, World } from '../../kernel/index.ts'
 
 /** 路由失败码：与 protocol §四 同名（作为 `EffResult.error` 落审计，内核归 `eff_error`）。 */
 export type RouteError = 'unresolved_cap' | 'not_loaded' | 'stale'
@@ -17,16 +18,46 @@ export interface RoundRouter {
   resolve(world: World, emitterId: string, cap: string, method: string): RouteOutcome
 }
 
+/**
+ * 宿主保留能力类调用器：方法级派发，`emitter` 是发出者身份（thread.resume 的 initiator 用它）。
+ * 返回一律是数据（成功值或错误码），不抛错。
+ */
+export type HostCapabilityCall = (
+  method: string,
+  emitter: string,
+  args: Json,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => Promise<EndpointCallResult>
+
 export interface RouterOptions {
   endpoints: EndpointTable
   /** pin 哈希与依赖当前 active 不一致：漂移证据（每次解析都可能触发，去重归调用方），不阻塞调用。 */
   onDrift?: (emitter: string, cap: string, gen: Hash) => void
+  /** 宿主保留能力类派发器；缺省时 `host` 路由 → `not_loaded`（未接线，不猜）。 */
+  host?: HostCapabilityCall
 }
 
 /** 身份当前 active 世代；无身份 / retired / 世代缺失返回 null。 */
 export function activeGenOf(identity: Identity | undefined): Gen | null {
   if (identity === undefined || identity.active === null) return null
   return identity.gens.find((gen) => gen.payload === identity.active) ?? null
+}
+
+/** 宿主保留端点行：无进程（pid 0），调用经注入的派发器；`gen` 也是保留字面量。 */
+function hostRow(emitter: string, method: string, host: HostCapabilityCall): EndpointRow {
+  return {
+    impl: HOST_CAPABILITY,
+    gen: HOST_CAPABILITY,
+    cap: HOST_CAPABILITY,
+    method,
+    transport: 'host',
+    pid: 0,
+    link: {
+      call: (_port, called, args, timeoutMs, signal) =>
+        host(called, emitter, args, timeoutMs, signal),
+    },
+  }
 }
 
 /**
@@ -73,6 +104,14 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       // G7 A1：pins / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
       const pinned = assemblyGen(world, emitterId)?.pins[cap]
       if (pinned === undefined) return { ok: false, error: 'unresolved_cap' }
+      // 保留能力类 `host`：只认 cap = host 且方法在保留集内，不查世界 / 端点表
+      if (pinned === HOST_CAPABILITY) {
+        if (cap !== HOST_CAPABILITY || !HOST_METHODS.has(method)) {
+          return { ok: false, error: 'not_loaded' }
+        }
+        if (options.host === undefined) return { ok: false, error: 'not_loaded' }
+        return { ok: true, row: hostRow(emitterId, method, options.host) }
+      }
       if (world.defs[pinned] === undefined) return { ok: false, error: 'stale' }
       const owner = ownerIndexOf(world).get(pinned)
       if (owner === undefined) return { ok: false, error: 'stale' }

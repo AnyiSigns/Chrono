@@ -163,4 +163,32 @@ describe('效果执行 executeEffect', () => {
     const second = await executeEffect(eff, emptyWorld(), { ...EMPTY_HEAD }, meta({ now: 2 }))
     expect(first.auditHash as Hash).toBe(second.auditHash as Hash)
   })
+
+  it('host 批量结果超限 → 审计只留截断标记，调用方仍拿完整值', async () => {
+    const big = 'x'.repeat(70 * 1024)
+    const eff = mkEff('host', 'asset.get')
+    const outcome = await executeEffect(eff, emptyWorld(), { ...EMPTY_HEAD }, meta(), async () => ({
+      ok: true,
+      value: { bytes: big },
+    }))
+    expect(outcome.result).toEqual({ ok: true, value: { bytes: big } })
+    const auditBody = (outcome.auditEntry!.args as { body: { result: Json } }).body
+    expect(auditBody.result).toEqual({ truncated: true, size: expect.any(Number) })
+  })
+
+  it('非 host 端口的大结果不截断（审计正文保真）', async () => {
+    const big = 'x'.repeat(70 * 1024)
+    const outcome = await executeEffect(
+      mkEff('toy.echo', 'echo'),
+      emptyWorld(),
+      { ...EMPTY_HEAD },
+      meta(),
+      async () => ({
+        ok: true,
+        value: { text: big },
+      }),
+    )
+    const auditBody = (outcome.auditEntry!.args as { body: { result: Json } }).body
+    expect(auditBody.result).toEqual({ ok: true, value: { text: big } })
+  })
 })

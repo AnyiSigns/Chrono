@@ -11,13 +11,16 @@ export interface HostPaths {
   runtimeDir: string
   sockDir: string
   assetsDir: string
+  pluginsDir: string
   materializedDir: string
+  depsDir: string
   journalFile: string
   baseFile: string
   coldDir: string
   lockFile: string
   lifecycleFile: string
   pluginsFile: string
+  secretsFile: string
 }
 
 /** 解析仓库根：显式参数 > `CHRONO_ROOT` > 当前工作目录。 */
@@ -39,13 +42,18 @@ export function hostPaths(root: string): HostPaths {
     runtimeDir,
     sockDir,
     assetsDir: resolve(stateDir, 'assets'),
+    // 插件 ③ 目录：`<id>/` 承载插件可重算产物，宿主统一 GC
+    pluginsDir: resolve(stateDir, 'plugins'),
     materializedDir: resolve(runtimeDir, 'materialized'),
+    depsDir: resolve(stateDir, 'deps'),
     journalFile: resolve(worldDir, 'journal.jsonl'),
     baseFile: resolve(worldDir, 'base.json'),
     coldDir: resolve(worldDir, 'cold'),
     lockFile: resolve(runtimeDir, 'lock.json'),
     lifecycleFile: resolve(stateDir, 'lifecycle.log'),
     pluginsFile: resolve(stateDir, 'plugins.json'),
+    // 密钥本地存储面：不进世界、不参与重放
+    secretsFile: resolve(stateDir, 'secrets.local.json'),
   }
 }
 

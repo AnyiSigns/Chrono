@@ -29,7 +29,7 @@ export type AssetPutResult =
   { ok: true; ref: AssetRef } | { ok: false; code: 'bad_asset' | 'asset_too_large' }
 
 export type AssetGetResult =
-  | { ok: true; sha256: string; size: number; bytes: string }
+  | { ok: true; sha256: string; size: number; bytes: string; mime: string }
   | { ok: false; code: 'bad_asset' | 'asset_missing' }
 
 export interface AssetGcReport {
@@ -39,6 +39,12 @@ export interface AssetGcReport {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
+/**
+ * mime 旁挂文件后缀：字节本体按内容寻址，mime 是调用方声明、不参与寻址，
+ * 故与字节文件同名旁挂（`<sha256>.mime`）；GC / 列举只认 64-hex 名字，旁挂不混入资产清单。
+ */
+const MIME_SUFFIX = '.mime'
+
 function isRecord(value: Json): value is { [k: string]: Json } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -47,6 +53,20 @@ function isRecord(value: Json): value is { [k: string]: Json } {
 export function assetFile(dir: string, sha256: string): string | null {
   if (!SHA256_HEX.test(sha256)) return null
   return resolve(dir, sha256)
+}
+
+function assetMimeFile(dir: string, sha256: string): string {
+  return resolve(dir, `${sha256}${MIME_SUFFIX}`)
+}
+
+function readAssetMime(dir: string, sha256: string): string {
+  const file = assetMimeFile(dir, sha256)
+  if (!existsSync(file)) return ''
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return ''
+  }
 }
 
 /** 入库：base64 → 校验 → 内容寻址落盘（已存在即幂等复用）；返回世界侧引用。 */
@@ -69,17 +89,25 @@ export function putAsset(dir: string, mime: unknown, bytes: unknown): AssetPutRe
     // 原子落盘（temp + fsync + rename）：半截文件不冒充已入库
     writeFileAtomic(file, decoded)
   }
+  // mime 与字节同源声明：落旁挂（原子）以便 `get` 原样回带；同字节同 mime 幂等，不重复 fsync
+  if (readAssetMime(dir, sha256) !== mime) writeFileAtomic(assetMimeFile(dir, sha256), mime)
   return { ok: true, ref: { kind: ASSET_REF_KIND, sha256, mime, size: decoded.length } }
 }
 
-/** 取字节：按 sha256 读回；不存在 → `asset_missing`。 */
+/** 取字节：按 sha256 读回；不存在 → `asset_missing`。mime 缺失时回空串（旧字节）。 */
 export function getAsset(dir: string, sha256: unknown): AssetGetResult {
   if (typeof sha256 !== 'string') return { ok: false, code: 'bad_asset' }
   const file = assetFile(dir, sha256)
   if (file === null) return { ok: false, code: 'bad_asset' }
   if (!existsSync(file)) return { ok: false, code: 'asset_missing' }
   const decoded = readFileSync(file)
-  return { ok: true, sha256, size: decoded.length, bytes: decoded.toString('base64') }
+  return {
+    ok: true,
+    sha256,
+    size: decoded.length,
+    bytes: decoded.toString('base64'),
+    mime: readAssetMime(dir, sha256),
+  }
 }
 
 /** 机械收集世界里的资产引用 sha256（枚举 `kind:'asset'` 对象；显式栈、不递归爆栈）。 */
@@ -103,19 +131,29 @@ export function collectAssetRefs(world: World): Set<string> {
 
 /**
  * 离线回收：删除资产区里「世界无引用」的字节。
- * 只动 64-hex 命名的文件（临时文件 / 非资产文件不碰）；返回被删清单与保留数。
+ * 只动 64-hex 命名的文件（临时文件 / 非资产文件不碰）；字节被删时连带删其 mime 旁挂，
+ * 并清理字节已不在的孤儿旁挂；返回被删清单与保留数。
  */
 export function gcAssets(dir: string, keep: ReadonlySet<string>): AssetGcReport {
   if (!existsSync(dir)) return { removed: [], kept: 0 }
   const removed: string[] = []
   let kept = 0
   for (const name of readdirSync(dir)) {
+    if (name.endsWith(MIME_SUFFIX)) {
+      // 孤儿旁挂（字节本体已不在）：一并清掉，不留悬空元数据
+      const base = name.slice(0, -MIME_SUFFIX.length)
+      if (SHA256_HEX.test(base) && !existsSync(resolve(dir, base))) {
+        rmSync(resolve(dir, name), { force: true })
+      }
+      continue
+    }
     if (!SHA256_HEX.test(name)) continue
     if (keep.has(name)) {
       kept += 1
       continue
     }
     rmSync(resolve(dir, name), { force: true })
+    rmSync(assetMimeFile(dir, name), { force: true })
     removed.push(name)
   }
   return { removed: removed.sort(), kept }

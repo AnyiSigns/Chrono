@@ -1,11 +1,13 @@
 // A10 轮间驱动：done → 落账回调 → plan 通道（保留包装 `{"$directives":[...]}`）→ 分相 → 下一轮。
 // 分相：eval 连续段（可并一轮，extern 随邻）与 write（每条一轮）不共轮，保序、不重排 plan 语义。
-// 机械填字段：id / by / ref（紧邻 eval 段最后一条 eff 的审计键）/ expect_pos（该轮轮首链头）；
+// 机械填字段：id / by / ref（紧邻 eval 段最后一条 eff 的审计键）/ expect_pos（落账段内锚到当前链头）；
 // 结构 op 的 pins 按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）。
 // eval 的 ctx（A14）：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
 
 import { randomUUID } from 'node:crypto'
-import { runRound } from './run-loop.ts'
+import { HOST_CAPABILITY } from '../host-methods.ts'
+import { resolveWriter, runRound } from './run-loop.ts'
+import type { WorldWriter } from '../writer.ts'
 import type { RoundRouter } from './route.ts'
 import type {
   Directive,
@@ -52,8 +54,11 @@ interface StagedDirective {
 }
 
 export interface SubmissionInput {
-  world: World
-  head: Head
+  /** 起始世界 / 链头：与 `writer` 二者其一（都缺或同时给出 → 抛错）。 */
+  world?: World
+  head?: Head
+  /** 落账互斥段：所有内核提交与审计落账都经它串行；与 `world` + `head` 二者其一。 */
+  writer?: WorldWriter
   directives: DirectiveDraft[]
   caps: Record<string, boolean>
   limits: { gas: number; depth: number }
@@ -70,9 +75,9 @@ export interface SubmissionInput {
   initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
   /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
   ctxFor?: CtxProvider
-  /** 审计 entry 落点（A7：挂起期间即时落链）。 */
+  /** 审计 entry 落点（在落账互斥段内调用，保证账本追加序 = 链序）。 */
   onAudit?: (entry: Entry) => void
-  /** 每轮 done 的业务 journal 落点（A10：done 才落账）。 */
+  /** 每轮 done 的业务 journal 落点（与内核提交同段调用，保证账本追加序 = 链序）。 */
   onRound?: (entries: Entry[]) => void
   /**
    * 链头推进后的宿主钩子（A6 换代跟随）：在进入下一轮之前 await 完成——
@@ -192,10 +197,11 @@ function pickPlan(
  * 结构 op 的 pins：值写身份名 → 解析成该身份 active 世代 payload 哈希（与 A0 同路）；
  * `batch` 递归子操作；非字符串值（如批内 `{"$n":k}` 占位）原样透传，交内核批处理。
  */
-function resolvePins(
+export function resolvePins(
   op: string,
   args: Json,
   world: World,
+  nested = false,
 ): { ok: true; value: Json } | { ok: false; reason: string } {
   if (!isRecord(args)) return { ok: true, value: args }
   if (op === 'batch') {
@@ -206,7 +212,7 @@ function resolvePins(
       if (!isRecord(sub) || typeof sub['op'] !== 'string' || !('args' in sub)) {
         return { ok: false, reason: 'bad_directive' }
       }
-      const subArgs = resolvePins(sub['op'], sub['args'] as Json, world)
+      const subArgs = resolvePins(sub['op'], sub['args'] as Json, world, true)
       if (!subArgs.ok) return subArgs
       const next: Rec = { ...sub, args: subArgs.value }
       resolvedOps.push(next)
@@ -220,6 +226,13 @@ function resolvePins(
   for (const [name, value] of Object.entries(pins)) {
     if (typeof value !== 'string') {
       resolved[name] = value // 批内占位符 / 已达 def 键的非名字值：不解释，原样给内核
+      continue
+    }
+    // 保留能力类 `host`：内核只在 batch 子操作里不递归校验，顶层结构 op 带它会被判 bad_form；
+    // 顶层提前拒（bad_directive），batch 子操作保留字面量交内核批处理。
+    if (value === HOST_CAPABILITY) {
+      if (!nested) return { ok: false, reason: 'bad_directive' }
+      resolved[name] = HOST_CAPABILITY
       continue
     }
     const dependency = world.ids[value]
@@ -295,7 +308,8 @@ function prepareGroup(
     const request: WriteRequest = {
       id: generated ? `w-${randomUUID()}` : source.id,
       op: source.op,
-      target: { expect_pos: context.head.hash },
+      // 占位：并发提交下轮首头会前进，expect_pos 由 run-loop 在落账段内锚到当前链头
+      target: { expect_pos: null },
       args: args.value,
       by,
     }
@@ -311,11 +325,11 @@ function prepareGroup(
  * 插在剩余轮之前（= 保序：该 eval 的判定立即生效），继续到穷尽 / refused / idle。
  */
 export async function runSubmission(input: SubmissionInput): Promise<SubmissionOutcome> {
+  const writer = resolveWriter(input)
   const observations: Json[] = []
-  let world = input.world
-  let head = input.head
   if (input.directives.length === 0) {
-    return { status: 'idle', world, head, observations }
+    const snap = writer.snapshot()
+    return { status: 'idle', world: snap.world, head: snap.head, observations }
   }
   const pending = splitPhases(
     input.directives.map((directive) => ({
@@ -328,23 +342,25 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
   while (pending.length > 0) {
     if (input.signal?.aborted === true) {
       // 取消即丢弃剩余轮（含 plan 产出的 directives）；已落账内容不回溯
-      return { status: 'cancelled', world, head, observations }
+      const snap = writer.snapshot()
+      return { status: 'cancelled', world: snap.world, head: snap.head, observations }
     }
     const group = pending.shift() as StagedDirective[]
+    const roundStart = writer.snapshot()
     const prepared = prepareGroup(group, {
-      head,
+      head: roundStart.head,
       ref,
       initiator: input.initiator,
-      world,
+      world: roundStart.world,
       ctxFor: input.ctxFor,
     })
     if (!prepared.ok) {
       observations.push({ kind: 'refused', reasons: [prepared.reason] })
-      return { status: 'refused', world, head, observations }
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
     }
     const out = await runRound({
-      world,
-      head,
+      writer,
       directives: prepared.directives,
       owners: prepared.owners,
       caps: input.caps,
@@ -356,26 +372,26 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       callTimeoutMs: input.callTimeoutMs,
       signal: input.signal,
       onAudit: input.onAudit,
+      onRound: input.onRound,
     })
     observations.push(...out.observations)
     if (out.status !== 'done') {
       // refused / idle / cancelled：本轮 waiting 期间的审计已直写推进 world / head，必须回灌（A7/A9）
       return { status: out.status, world: out.world, head: out.head, observations }
     }
-    world = out.world
-    head = out.head
-    input.onRound?.(out.journal)
-    // A6：本轮的写已落账 → 换代 / 退役在下一轮之前跟随（审计 put 不改 active，故只在 done 后）
-    if (input.onAdvanced !== undefined) await input.onAdvanced(world, head)
+    // 业务 journal 已由 runRound 在落账段内追加并推进 writer；此处只做换代跟随
+    if (input.onAdvanced !== undefined) await input.onAdvanced(out.world, out.head)
     if (group.some((item) => item.directive.kind === 'eval')) ref = out.lastAuditHash
     const plan = pickPlan(out.observations, group)
     if (!plan.ok) {
       observations.push({ kind: 'refused', reasons: [plan.reason] })
-      return { status: 'refused', world, head, observations }
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
     }
     if (plan.directives.length > 0) {
       pending.unshift(...splitPhases(plan.directives))
     }
   }
-  return { status: 'done', world, head, observations }
+  const snap = writer.snapshot()
+  return { status: 'done', world: snap.world, head: snap.head, observations }
 }

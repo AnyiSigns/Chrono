@@ -1,17 +1,35 @@
 // 端点表：逻辑能力（能力类 + 方法）→ 物理端点（服务进程 stdio），运行态、住宿主侧 ③。
 // 键不含调用方：`impl+gen+cap+method`，由 assembly 写、effect 读。
 
-import type { Hash } from '../kernel/index.ts'
-import type { ServiceLink } from './service-link.ts'
+import type { Hash, Json } from '../kernel/index.ts'
+
+/** 一次能力调用的应答：有响应（成功值或错误）即数据，形态由 link 实现保证。 */
+export type EndpointCallResult =
+  { ok: true; value: Json } | { ok: false; code: string; message: string }
+
+/**
+ * 端点调用通道：服务（stdio）与宿主保留能力类（host）同形，`run-loop` 只依赖这个接口。
+ * `ServiceLink` 天然满足它（同签名 / 同应答形态）。
+ */
+export interface EndpointLink {
+  call(
+    port: string,
+    method: string,
+    args: Json,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<EndpointCallResult>
+}
 
 export interface EndpointRow {
   impl: string
   gen: Hash
   cap: string
   method: string
-  transport: 'stdio'
+  /** `stdio` = 子进程服务；`host` = 宿主保留能力类（无进程）。 */
+  transport: 'stdio' | 'host'
   pid: number
-  link: ServiceLink
+  link: EndpointLink
 }
 
 function endpointKey(impl: string, gen: Hash, cap: string, method: string): string {

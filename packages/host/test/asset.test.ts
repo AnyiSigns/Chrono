@@ -108,7 +108,23 @@ describe('G4 资产面 assets', () => {
     expect(report.kept).toBe(1)
     expect(existsSync(join(dir, keep.ref.sha256))).toBe(true)
     expect(existsSync(join(dir, drop.ref.sha256))).toBe(false)
+    // 字节被删时连带删其 mime 旁挂
+    expect(existsSync(join(dir, `${drop.ref.sha256}.mime`))).toBe(false)
+    expect(existsSync(join(dir, `${keep.ref.sha256}.mime`))).toBe(true)
     expect(existsSync(join(dir, 'not-an-asset.txt'))).toBe(true)
     expect(existsSync(join(dir, tempName))).toBe(true)
+  })
+
+  it('gcAssets：清理无对应 64hex 字节文件的孤儿 .mime 旁挂', () => {
+    const dir = assetsDir()
+    mkdirSync(dir, { recursive: true })
+    const orphan = 'a'.repeat(64)
+    writeFileSync(join(dir, `${orphan}.mime`), 'text/plain')
+    const keep = putAsset(dir, 'text/plain', Buffer.from('keep').toString('base64'))
+    if (!keep.ok) throw new Error('put failed')
+    const report = gcAssets(dir, new Set([keep.ref.sha256]))
+    expect(report.kept).toBe(1)
+    expect(existsSync(join(dir, `${orphan}.mime`))).toBe(false)
+    expect(existsSync(join(dir, `${keep.ref.sha256}.mime`))).toBe(true)
   })
 })
