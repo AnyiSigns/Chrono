@@ -163,6 +163,26 @@ function entryOf(directive: DirectiveDraft): Hash | undefined {
 }
 
 /**
+ * 方法返回的顶层计划值（`{"$directives":[...]}`）→ 宿主 directive 草稿。
+ * 与 plan 通道同形同校验（`materializePlanItem`）；非计划值返回 `not_a_plan`。
+ * 供 H6 定时触发直接调能力方法后落账其计划值。
+ */
+export function parsePlanDirectives(
+  value: Json,
+): { ok: true; directives: DirectiveDraft[] } | { ok: false; reason: string } {
+  if (!isRecord(value) || !Array.isArray(value['$directives'])) {
+    return { ok: false, reason: 'not_a_plan' }
+  }
+  const directives: DirectiveDraft[] = []
+  for (const raw of value['$directives']) {
+    const item = materializePlanItem(raw)
+    if (!item.ok) return item
+    directives.push(item.directive)
+  }
+  return { ok: true, directives }
+}
+
+/**
  * plan 通道：只认顶层 eval 观测（entry ∈ 本轮 directive 集合）value 里的保留包装。
  * 多个 eval 各自产计划时按观测序拼接；其余 value 一律当普通数据。
  * plan 条目的发出者继承产出它的那条 eval 的属主。

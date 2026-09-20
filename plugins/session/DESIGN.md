@@ -54,7 +54,7 @@
 - `count` 冗余记数（UI 免走链即知条数）；链完整性以 `prev` 为准。
 - **线程字段随 threads 版本提升落 schema**（2026-09-19 补：原只登记在「跨插件登记」而数据契约未含，现已补齐）；`kind` 等字段 v1 实现时与 #1 H11 per-thread 键控**同批**落地（读取方依赖 #33 的 `thread_kind` 组装分派）。
 
-## 引用解析（宿主扩展，本轮登记为宿主待补能力）
+## 引用解析（宿主扩展，H1 已落地）
 
 - **标记**：body / 子 def 里的引用写成显式标记 `{"def": "<64hex>"}`。
 - **解析**：宿主构造投影时，从身份 body 出发**跟随标记闭包**，把可达 def 的 body 放进 `ids.<id>.refs`（`{ <hash>: <body> }`）；**按 `prev` 链窗口返回**：默认从 `head` 逆序取最近 `W` 条（`W` 住**宿主上限**；#13 只消费组装所需窗口，不定义 `W`），并回 `next_before` 游标。超窗不丢历史——客户端带 `before` 再拉上一窗。**不再用"截断丢弃"**（原 `refs_truncated` 口径作废：静默截断会让"全量展示真源"名不副实）。
@@ -113,7 +113,7 @@
 
 ## 跨插件登记
 
-- **宿主待补能力**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`）；同时服务 #21 / #35。
+- **宿主能力（H1 已落地）**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`）；同时服务 #21 / #35。
 - **#41 workspace**：会话 schema 加 `workspace_id`（**创建即钉死、不可改**，已登记）。
 - **#16 ui-sidebar（版本提升：被提升方，2026-09-19）**：新增能力方法 `session.select` / `session.delete` / `session.restore` / `session.branch` 与槽 kind `session.select` / `session.delete` / `session.restore` / `session.branch`（写 `#1`、per-thread 键控）；`select` 切 `current`（切回历史会话的唯一写路径），删除为**软删**（`deleted_at`）、消息 def 不回溯，见「新建 / 切换与重命名」。
 - **#49 session-title（版本提升：被提升方，2026-09-19）**：新增能力方法 `set_title {conversation, title}`（服务调用路径，args 驱动、不走 `#1` 槽）；标题落账后本插件机械发 `thread.updated`，#16 / #46 自动跟随。

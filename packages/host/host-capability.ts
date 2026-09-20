@@ -1,9 +1,10 @@
 // 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / source.read /
-// thread.terminate / thread.resume。宿主不解释业务，只做机械路由与内容寻址。
+// validate_package / thread.terminate / thread.resume。宿主不解释业务，只做机械路由与内容寻址。
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
 import { readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
 import { getAsset, putAsset } from './assets.ts'
+import { validatePackage } from './validate-package.ts'
 import type { AuditIndex, AuditReport } from './audit.ts'
 import { parseAuditFilter } from './audit.ts'
 import type { EndpointCallResult } from './endpoint-table.ts'
@@ -12,6 +13,8 @@ import type { Hash, Json, World } from '../kernel/index.ts'
 
 export interface HostCapabilityDeps {
   assetsDir: string
+  /** 宿主运行态目录（③）：`validate_package` 的候选文件临时落点，用后即删。 */
+  runtimeDir: string
   /** 只读审计索引（启动时重建、运行期增量补齐）。 */
   audits: AuditIndex
   /** 当前世界快照（`source.read` 用；运行期随落账推进）。 */
@@ -112,6 +115,15 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
   return { ok: true, value: { path, content: bytes.content, size: bytes.size } }
 }
 
+/** `validate_package { files }`：按入世同一套机械校验 dry-run 候选包，不写世界。 */
+function validatePackageCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
+  const record = asRecord(args)
+  const files = record === null ? undefined : record['files']
+  const outcome = validatePackage(deps.world(), deps.runtimeDir, files ?? null)
+  if (!outcome.accepted) return bad('bad_directive', outcome.message)
+  return { ok: true, value: outcome.report as unknown as Json }
+}
+
 /** `thread.terminate { run }`：等价 `cancel{run}`；未知 / 已结束 → `unknown_run`。 */
 function threadTerminateCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
@@ -158,9 +170,8 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
         return threadTerminateCall(deps, args)
       case 'thread.resume':
         return threadResumeCall(deps, emitter, args)
-      // 入世校验 dry-run 归第三批 H13：本批只固定路由面，派发回 not_loaded
       case 'validate_package':
-        return bad('not_loaded', 'validate_package not implemented')
+        return validatePackageCall(deps, args)
       default:
         return bad('not_loaded', method)
     }

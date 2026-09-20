@@ -73,4 +73,4 @@ question(bag.args = { questions: [
 - **#38 ui-notify（2026-09-19 补）**：订阅本插件发的 `question.pending` 事件（始终通知，开关 `ui.notify.question_pending`）；通知只提示、不挂作答按钮。
 - **事件 emitter = #48 服务**：`question.pending` 由本插件服务在队列项落账后发（`protocol.md` §2.5 上行事件，`impl="question"`）；宿主 `event` 透传（H10「事件 emitter 服务化」）。ui-design §15 / draft H10 的 emitter 登记归其所有者补。
 - **#32 approval**：机制同源、语义不同；两者共用"队列进世界 + 跨 run 续跑"的宿主能力。
-- **宿主待补能力**：无新增（复用 #32 已登记的"按队列项游标触发新 run"）。
+- **宿主能力**：无新增（复用 #32 的 H5 plan 通道续跑）。

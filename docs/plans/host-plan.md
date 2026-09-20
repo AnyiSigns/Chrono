@@ -445,6 +445,16 @@ project(world, head):                      # 宿主只读视图；按引用构�
 - **S5 落地**：`packages/host/assembly/generation.ts`（纯判据：`classifyGenerationChange` 按 members 跨代比对路径 + 文件/子树哈希，execute 优先；声明读不出保守 code）；`assembly/runtime.ts` 的 `applyWorld` 每轮 done 后落地——自身 active 换代：数据 → `ServiceLink.reload`/`ack`（进程不动、端点行换新 gen 键，ack 超时保守走 code 路径），代码 → 新服务起 + 旧服务 drain（`service.exit` reason `superseded`）；`retire` / `set_active(null)` → `reverse_reachable` 逐身份 `dep.retired` + 下线；新身份按装配同路起。`service-link.ts` 加 `reload`；`effect/rounds.ts` 加 `onAdvanced` 钩子（宿主注入，保证下一轮 / 下一次提交按新世界路由）；`host.ts` 接线。已在途的旧 gen 退避重启排程作废（active ≠ service.gen 即不重启）。
 - **S5 测试**：判据单测（term→data / execute→code / 双类→code / 路径增删 / 双用 execute 优先 / 声明不可读→code）见 `assembly/test/generation.test.ts`；`applyWorld` 运行相（数据 reload 进程不动、reload 超时保守换服务、代码换代旧服务 drain、退役反向隔离、新身份装载、幂等、旧 gen 重启排空、**新 active 装载失败隔离**——握手不符 / 进程起不来 → `handshake.failed` / `service.start_failed` + 发出者 `dep.stale`，旧服务停掉、不回落）见 `assembly/test/generation-runtime.test.ts`；E2E（客户端 `add_gen` / `set_active` / `retire` 全链落账 + `status.loaded` / 审计 result / `dep.drift` / `dep.retired` / 双写者 `writer_busy`）见 `test/host-generation.test.ts`。toy 服务加 `reload`→`ack`（`reloadMode` 可测超时）与默认回值带 `pid`（进程不动的判据）。
 
+## 插件前置第三批落地（H6 / H8 / H13；H3 / S1 随 H14）
+
+> 与 `docs/plans/draft-design.md` §1.13 对应；载体改动，不改内核、不给插件开特例。
+
+- **H13 `host.validate_package`（已落地）**：`packages/host/validate-package.ts` 把 `files`（`{ <包内路径>: text | {text} | {base64} }`，路径安全单段校验）落临时目录后**复用 `assembly` 的 `planPack`** dry-run（`plugin.json` 12 字段 / 路径约束 / `argsSchema` 方言 / 受保护 `pins` / term 环 / `.worldignore`），返回 `{ok, errors, result_hash}`；`result_hash` = 候选树 `commit` 哈希（`planPack` 未通过时 → null）。接线在 `host-capability.ts`（`runtimeDir` 注入）；测试见 `test/host-capability.test.ts`。
+- **H6 定时触发（已落地）**：`packages/host/periodic.ts` 读身份 `schema` def body 顶层 `periodic` 数组（`{command|method, every_ms, reads?}`）并增量排程（`setInterval` unref、单条目并发去重、声明变更随 `applyWorld` 对齐、停机清空）；`host.ts` 的 `runPeriodicEntry` 起 run——命令条目按入口 term 起 `eval`，方法条目直接调端点方法并把返回的 `$directives` 经 `effect` 新导出 `parsePlanDirectives` 落账；`reads` 由 `buildPeriodicBag` 机械取投影片段。周期 run 发宿主 `run.started` / `run.finished`（`thread:null`）。测试见 `test/host-periodic.test.ts`。
+- **H8 插件入站转发（已落地）**：入站帧 `forward {identity, command, args?}`（`wire.ts` + `client` 的 `forward`）；`host.ts` 的 `handleForward` 要求解析到的命令属主 = `identity`（否则 `unknown_command`），构造一次 run（`initiator:"forward"`）。测试见 `test/host-forward.test.ts`。
+- **H3 源码读面 / S1 服务侧资产存取面**：已随 H14 的保留能力类 `host` 落地（`host-capability.ts` 的 `source.read` / `asset.put` / `asset.get`），测试见 `test/host-capability.test.ts`。
+- **S2 仍待实现**：`#25 sandbox` 的结构化 `fsop` 属插件本体，须在 #28/#30/#31 开工前落地（本批不改）。
+
 ## 出口验收
 
 1. `boot seed` → `boot start` → `boot run` 提交一个 toy 任务（toy term + toy 服务），落账可校验。

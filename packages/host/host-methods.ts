@@ -6,7 +6,7 @@ export const HOST_CAPABILITY = 'host'
 
 /**
  * 宿主保留能力类的方法集。
- * `validate_package` 属入世校验 dry-run（第三批 H13）：此处只登记以固定路由面，派发回 `not_loaded`。
+ * `validate_package` = 入世校验 dry-run（H13），与 `seed` / `pack` 同一套机械校验、不写世界。
  */
 export const HOST_METHODS: ReadonlySet<string> = new Set([
   'audit',

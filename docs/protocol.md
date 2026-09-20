@@ -77,7 +77,7 @@
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，**v1 登记但未实现，调用回 `not_loaded`，见 H13**）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。#27 的 `subagent.resume` / `subagent.terminate`、#42 的 `read` / `validate`、#28/#30/#31 的二进制字节、#43/#44 的审计读面走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在 #42 等上层，宿主不强制）。
+- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。#27 的 `subagent.resume` / `subagent.terminate`、#42 的 `read` / `validate`、#28/#30/#31 的二进制字节、#43/#44 的审计读面走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在 #42 等上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -112,6 +112,7 @@
 宿主 → 发起者   result   { run, status, observations }        # run 结束时推；status ∈ done/refused/idle/cancelled
 发起者 → 宿主   cancel   { v, id, run }                       → accepted { id }   # 真取消该 run（≠ stop 停宿主）
 发起者 → 宿主   command  { v, id, name, args, caps, limits, thread? }  → result { id, ... }
+发起者 → 宿主   forward  { v, id, identity, command, args?, caps?, limits?, thread? } → result { id, ... }  # 插件入站转发（H8）
 发起者 → 宿主   commands { v, id }                           → list { id, commands: [...] }
 发起者 → 宿主   audit    { v, id, filter? }                  → audits { id, records, truncated }  # 只读审计面
 发起者 → 宿主   asset.put { v, id, mime, bytes }             → asset.ref { id, ref }   # 字节直写资产区（不进世界）
@@ -146,6 +147,7 @@
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
 - `command` 的 `args` 由宿主按 `argsSchema`（**JSON Schema 白名单子集**，方言见 `plugins.md` §二）校验；
   不符 → `error{code:'bad_args'}`，**不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`。
+- **`forward` 是插件入站转发**：壳把 `/p/<id>/*` 转成该帧，宿主按 `command` 解析入口 term 并**要求其属主 = `identity`**（否则 `unknown_command`），构造一次 run（`initiator = "forward"`）——即宿主把入站帧转发到目标插件**自己声明**的入口，`/p/` 反代不直连插件服务（保「唯一主端口」）。`args` 校验、`result` 形状、`cancel` 与 `command` 同规；命令名由壳侧 `/p/<id>/*` 映射提供，宿主不认识业务。
 - directive 的 `eval.ctx` **字段缺省 ⇒ 宿主填入 `base_only` 投影**（形状见 `host.md` §五 投影）；显式给出（含 `null`）⇒ 原样透传；
   客户端 / 命令 / plan 三路同规。
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
@@ -154,7 +156,7 @@
 - `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。
 - `status` 的 `loaded` = 已装载身份清单（`id` + active `gen`），非阻塞快照、可能瞬态；`world_head` / `world_rev` = 当前链头与内容摘要（供调用方核对落账世界与重放一致，只读、不推进）。
 - 载体生命周期事件（两级 `{kind, event}`：`handshake.failed` / `dep.cycle` / `service.exit` / `service.restart_exhausted` / …）记宿主侧**运维日志**（`state/lifecycle.log`），**非本协议消息**、不进世界；协议侧只见对应错误码（§四）。
-- 本协议定义 `submit` / `command` / `commands` / `result` / `status` / `stop` / `event` / `audit` / `asset.*` / `secrets.put` / `secrets.delete`；裁决、订阅、多客户端不在其内。
+- 本协议定义 `submit` / `command` / `forward` / `commands` / `result` / `status` / `stop` / `event` / `audit` / `asset.*` / `secrets.put` / `secrets.delete`；裁决、订阅、多客户端不在其内。
 
 ## 四、错误码
 

@@ -36,7 +36,7 @@
 - **一插件一 slot**（ui-design §15）；增删插件 = 改挂载表，**不改壳代码**（验收 5）。
 - `headless` = 不占 slot 但需在浏览器里运行的前端（如 #38 系统通知，要调浏览器 `Notification` API）；壳按**独立 headless 清单**加载其 `entry.js`，**不进 `state/ui-mounts.json`**、不给布局位。清单形状（③，可重算，启动无表则生成默认值）：`state/ui-headless.json` = `[{ "id": "ui-notify", "entry": "execute/entry.js" }]`——`id` 唯一、`entry` 为**插件包内路径**；壳经**宿主「插件源码读面」**（`host.md` §五 宿主扩展面）取字节，并以**壳同源静态路径**（如 `/assets/headless/ui-notify.js`）服务（**不经 `/p/` 反代**，与「不占端口」一致）；只做浏览器侧能力。
 - slot 装载：壳取子应用 `entry.js` → `mount(root, api)` → 返回 `{ unmount }`；失败隔离在 slot 内（不影响其它 slot）。
-- **后端入站面（#37 MCP）也走本插件主端口**（`/p/<id>/*` 同源反代）：壳不直连插件服务（红线 3），而是转成宿主入站帧由宿主转发到目标服务——**宿主待补能力「插件入站转发」**（见 `docs/plans/draft-design.md` §1.11）。产品对外**只有一个主端口**。
+- **后端入站面（#37 MCP）也走本插件主端口**（`/p/<id>/*` 同源反代）：壳不直连插件服务（红线 3），而是转成宿主入站帧 `forward {identity, command, args}` 由宿主转发到目标插件自己声明的入口（**H8 已落地**）。产品对外**只有一个主端口**。
 
 ## 路由
 
@@ -111,7 +111,7 @@ POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终
 
 - **#16 / #17 / #18 / #39 / #40 / #46**：挂载方（本插件）；各插件 slot 见挂载表（#46 `ui-threads` = `topbar`，线程顶栏，见 `docs/plans/threads-design.md`）。
 - **#38 ui-notify**：`headless` 挂载（不占 slot），由壳加载其子应用以调浏览器 `Notification` API。
-- **#37 mcp**：后端入站面经本插件主端口同源反代（`/p/<id>/*`），宿主转发到目标服务（宿主待补能力）。
+- **#37 mcp**：后端入站面经本插件主端口同源反代（`/p/<id>/*`），壳转成 `forward` 帧由宿主转发到目标插件声明的入口（H8 已落地）。
 - **#24 secrets**：`secrets.put` 走宿主入站面直写本地文件，不经本插件的 `/api` 世界路径。
 - **#2 config**：`/api/theme` 写 `ui.theme`（数据热生效）。
 - **各身份（#12 / #25 / #26 / #32 / #37 / #42 / 工具提供者）**：对外错误码按前缀登记进 `messages.v1.json`（见上「文案表」），人话文案唯一来源。

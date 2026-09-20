@@ -35,6 +35,19 @@ export type InboundMessage =
       /** 可选线程标记：仅随宿主 run 生命周期事件原样回带，宿主不解释。 */
       thread?: string
     }
+  | {
+      v: string
+      id: string
+      kind: 'forward'
+      /** 目标插件身份：宿主只把帧转发给该身份自己的声明入口（H8）。 */
+      identity: string
+      /** 目标身份声明的命令名（入口 term 由此解析）。 */
+      command: string
+      args?: Json
+      caps?: Record<string, boolean>
+      limits?: Limits
+      thread?: string
+    }
   | { v: string; id: string; kind: 'cancel'; run: string }
   | { v: string; id: string; kind: 'audit'; filter?: Json }
   | { v: string; id: string; kind: 'asset.put'; mime: string; bytes: string }

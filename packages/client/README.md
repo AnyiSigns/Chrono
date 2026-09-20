@@ -17,20 +17,21 @@ import { connect } from './index.ts'
 const client = await connect({ root, timeoutMs: 30_000 })
 ```
 
-| 成员                                 | 作用                                                                                |
-| ------------------------------------ | ----------------------------------------------------------------------------------- |
-| `connect(options)`                   | 连接运行中的宿主，返回 `Client`；失败 reject                                        |
-| `client.submit(directives, opts?)`   | 提交 directives，等 `accepted` 与 run 结束，返回 `{run, status, observations}`      |
-| `client.cancel(run)`                 | 真取消：中止在途 / 排队的 run；未知 / 已结束 → `unknown_run`                        |
-| `client.command(name, args?, opts?)` | 调插件命令（宿主解析声明、校验 `args`、走一次 run）                                 |
-| `client.commands()`                  | 列出已声明命令（客户端没有世界，必须问宿主）                                        |
-| `client.audit(filter?)`              | 只读审计面：按 `run` / `emitter` / `outcome` 查询（seq 降序，缺省 100 条）       |
-| `client.putAsset(mime, bytes)`       | 资产入库：字节直写宿主资产区（不进世界），返回 `{kind:'asset',sha256,mime,size}` |
-| `client.getAsset(sha256)`            | 取资产字节；字节缺失 → `asset_missing`                                           |
-| `client.status()`                    | `{world_head, loaded}` 非阻塞快照（可能瞬态）                                       |
-| `client.stop()`                      | 令宿主停机并关闭连接                                                                |
-| `client.onEvent(handler)`            | 订阅宿主广播的服务 `event`（`impl` 命名空间；无 ack、可丢）                         |
-| `client.close()`                     | 断开连接                                                                            |
+| 成员                                              | 作用                                                                             |
+| ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `connect(options)`                                | 连接运行中的宿主，返回 `Client`；失败 reject                                     |
+| `client.submit(directives, opts?)`                | 提交 directives，等 `accepted` 与 run 结束，返回 `{run, status, observations}`   |
+| `client.cancel(run)`                              | 真取消：中止在途 / 排队的 run；未知 / 已结束 → `unknown_run`                     |
+| `client.command(name, args?, opts?)`              | 调插件命令（宿主解析声明、校验 `args`、走一次 run）                              |
+| `client.forward(identity, command, args?, opts?)` | 插件入站转发：把帧交给该身份自己声明的入口；属主不符 → `unknown_command`         |
+| `client.commands()`                               | 列出已声明命令（客户端没有世界，必须问宿主）                                     |
+| `client.audit(filter?)`                           | 只读审计面：按 `run` / `emitter` / `outcome` 查询（seq 降序，缺省 100 条）       |
+| `client.putAsset(mime, bytes)`                    | 资产入库：字节直写宿主资产区（不进世界），返回 `{kind:'asset',sha256,mime,size}` |
+| `client.getAsset(sha256)`                         | 取资产字节；字节缺失 → `asset_missing`                                           |
+| `client.status()`                                 | `{world_head, loaded}` 非阻塞快照（可能瞬态）                                    |
+| `client.stop()`                                   | 令宿主停机并关闭连接                                                             |
+| `client.onEvent(handler)`                         | 订阅宿主广播的服务 `event`（`impl` 命名空间；无 ack、可丢）                      |
+| `client.close()`                                  | 断开连接                                                                         |
 
 - `opts.caps` / `opts.limits` 由发起者给，宿主**透传不扩权**；`now` 由宿主固定，不由客户端给。
 - `opts.onAccepted(run)`：受理即回调，给 UI 留取消 / 展示用的 run 句柄；被取消的 run 以
@@ -41,7 +42,7 @@ const client = await connect({ root, timeoutMs: 30_000 })
 
 ## 协议形状
 
-消息枚举在 `protocol.ts`（`v = '1'`）；`submit` / `cancel` / `command` / `commands` / `audit` /
+消息枚举在 `protocol.ts`（`v = '1'`）；`submit` / `cancel` / `command` / `forward` / `commands` / `audit` /
 `asset.put` / `asset.get` / `status` / `stop` 与 `accepted` / `result` / `list` / `audits` /
 `asset.ref` / `asset.bytes` / `state` / `error` 的完整定义见 [`docs/protocol.md`](../../docs/protocol.md) §三。
 `run` 结果按 run id 配对；`event` 广播给所有已连接客户端，不落账、不推进。

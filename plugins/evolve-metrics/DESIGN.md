@@ -122,4 +122,4 @@ cluster_key = (RefusalCode, attributable_to, workspace_id, contract_id?)
 - **#17 ui-settings S13**：`orchestration.health` 降为**只读视图**（读 #43/#44/#33 投影），不再是 `orchestration.unhealthy` 的 emitter；本插件发该事件。
 - **#38 ui-notify**：订阅本插件发的 `orchestration.unhealthy`（始终通知，不依赖用户打开 S13）。
 - **宿主保留身份 `host`（D7）**：`shadow` 经 `host.audit {filter:{run?}, limit?}` 读 `EffectAudit` 供配对回灌；本插件不读世界本体、不发 eff（`host` 是保留身份、不在世界，`pins:{"host":"host"}` 解析回自身）。
-- **宿主待补能力**：插件 ③ 目录（`state/plugins/<id>/`，与 #21 向量索引同路）——已登记，本插件复用。
+- **宿主能力（H4 已落地）**：插件 ③ 目录（`state/plugins/<id>/`，与 #21 向量索引同路）——本插件复用。

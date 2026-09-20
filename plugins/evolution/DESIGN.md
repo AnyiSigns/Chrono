@@ -122,5 +122,5 @@
 - **#44 evolve-metrics**：投影读 `trace` → 产 `evidence` 写计划；产 `trace` 清理计划。
 - **#45 orchestration-admin**：投影读全部四类 → 产 `proposals` 写计划（**只产提案、不产写**）。
 - **#17 ui-settings S13**：进化台账只读渲染（三类倒序列表，可下钻到 `trace` 与 `EffectAudit`）；**`EffectAudit` 的读取经宿主保留身份 `host` + `audit` 方法**（D7），不经本插件（本插件是纯数据身份、无 execute）。
-- **宿主待补能力**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`，按 `prev` 链窗口返回）；
+- **宿主能力（H1 已落地）**：投影引用闭包解析（`{"def":hash}` → `ids.<id>.refs`，按 `prev` 链窗口返回）；
   与 #11 / #21 / #35 / #33 共用同一条，**本身份不新增宿主动词**。

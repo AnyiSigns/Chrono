@@ -6,15 +6,24 @@ import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
 import {
+  assemblyGen,
   listCommands,
+  readPluginDecl,
   resolveCommand,
   startAssembly,
   validateArgs,
   validateArgsSchema,
 } from './assembly/index.ts'
-import type { AssemblyRuntimeHandle } from './assembly/index.ts'
-import { createRoundRouter, runSubmission } from './effect/index.ts'
+import type { AssemblyRuntimeHandle, CommandDecl, PluginDecl } from './assembly/index.ts'
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  createRoundRouter,
+  parsePlanDirectives,
+  runSubmission,
+} from './effect/index.ts'
 import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
+import { PeriodicScheduler } from './periodic.ts'
+import type { PeriodicEntry, PeriodicRead } from './periodic.ts'
 import { appendJournal, acquireLock, loadAnchor, readJournal, releaseLock } from './ledger/index.ts'
 import { DEFAULT_COMPACT_TAIL_ENTRIES, compactWorld } from './compact.ts'
 import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
@@ -106,6 +115,62 @@ function asDirectives(value: unknown): DirectiveDraft[] | null {
     return null
   }
   return value as DirectiveDraft[]
+}
+
+/** JS 原型键：投影路径段出现即拒（否则读到的是函数 / 原型，不是数据）。 */
+const UNSAFE_PROJECTION_KEYS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+])
+
+/** 沿投影字面路径取值；路径不合 / 越界 / 原型键 → null（宿主只机械取用，不解释业务）。 */
+function readProjectionPath(projection: Json, path: Json[]): Json {
+  let current: Json = projection
+  for (const segment of path) {
+    if (typeof segment === 'string') {
+      if (UNSAFE_PROJECTION_KEYS.has(segment)) return null
+      if (typeof current !== 'object' || current === null || Array.isArray(current)) return null
+      current = (current as { [k: string]: Json })[segment] ?? null
+    } else if (typeof segment === 'number' && Array.isArray(current)) {
+      current = current[segment] ?? null
+    } else {
+      return null
+    }
+  }
+  return current
+}
+
+/** 周期方法 bag：按 `schema.periodic.reads` 机械取投影片段；无 reads → null。 */
+function buildPeriodicBag(projection: Json, reads: PeriodicRead[]): Json {
+  if (reads.length === 0) return null
+  const bag: { [k: string]: Json } = {}
+  for (const read of reads) bag[read.key] = readProjectionPath(projection, read.path)
+  return bag
+}
+
+/** 声明里含该方法的能力类（方法名 → cap）；多类同名取字典序第一个。 */
+function capOfMethod(decl: PluginDecl, method: string): string | null {
+  for (const cap of Object.keys(decl.methods).sort()) {
+    if (decl.methods[cap].includes(method)) return cap
+  }
+  return null
+}
+
+/**
+ * 命令 args 的机械校验（无 socket 版）：命令入口 / 入站转发 / 周期触发共用同一口径。
+ * 运行期 add_gen 产出的 argsSchema 未必过入世门禁，故这里补一次方言元校验（fail-closed）。
+ */
+function commandArgsIssue(
+  world: World,
+  command: CommandDecl,
+  args: Json,
+): 'ok' | 'bad_args_schema' | 'bad_args' {
+  if (command.argsSchema === null) return 'ok'
+  const schemaDef = world.defs[command.argsSchema]
+  const dialect = schemaDef === undefined ? null : validateArgsSchema(schemaDef.body)
+  if (schemaDef === undefined || dialect === null || !dialect.ok) return 'bad_args_schema'
+  return validateArgs(schemaDef.body, args) ? 'ok' : 'bad_args'
 }
 
 function listen(server: Server, address: string): Promise<void> {
@@ -222,6 +287,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
 
   let runtime: AssemblyRuntimeHandle | undefined
+  /** H6 定时触发：按各插件 schema 的 `periodic` 声明调度周期 run；停机时清空。 */
+  let periodic: PeriodicScheduler | undefined
   /** 在途 run（并发推进中）：停机时先等它们落定；`cancel{run}` 按 `runs` 表中止。 */
   const inflight = new Set<Promise<void>>()
   /** 在册 run（含并发推进中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
@@ -245,6 +312,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       if (runtime === undefined || advancedHead.seq <= appliedSeq) return
       appliedSeq = advancedHead.seq
       await runtime.applyWorld(advancedWorld)
+      if (!stopping) periodic?.sync(advancedWorld)
     })
     runtimeChain = next.then(
       () => undefined,
@@ -318,6 +386,98 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     return { ok: true, run: runId }
   }
 
+  /**
+   * H6 定时触发：起一次周期 run。命令条目按声明入口 term 起 run；方法条目直接调该服务方法，
+   * 其返回的计划值（`$directives`）由宿主按该身份落账。`thread` 恒 null（非发起者提交）。
+   */
+  const firePeriodic = (entry: PeriodicEntry): void => {
+    if (stopping || runtime === undefined) return
+    const runId = randomUUID()
+    const controller = new AbortController()
+    runs.set(runId, controller)
+    broadcast('host', 'run.started', { run: runId, thread: null })
+    let status = 'refused'
+    const task: Promise<void> = runPeriodicEntry(entry, runId, controller.signal)
+      .then((outcome) => {
+        status = outcome
+      })
+      .catch((err: unknown) => {
+        appendLifecycle(paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'host',
+          event: 'run_failed',
+          run: runId,
+          reason: err instanceof Error ? err.message : String(err),
+        })
+      })
+      .finally(() => {
+        runs.delete(runId)
+        inflight.delete(task)
+        broadcast('host', 'run.finished', { run: runId, thread: null, status })
+      })
+    inflight.add(task)
+  }
+
+  const runPeriodicEntry = async (
+    entry: PeriodicEntry,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<string> => {
+    if (runtime === undefined) return 'refused'
+    const snapshot = writer.snapshot()
+    const world = snapshot.world
+    const declRead = readPluginDecl(world, entry.identity)
+    if (declRead === null) return 'refused'
+    const bag = buildPeriodicBag(cachedProjection(world, snapshot.head), entry.reads)
+    let directives: DirectiveDraft[]
+    if (entry.command !== undefined) {
+      const command = resolveCommand(world, entry.command)
+      if (command === null || command.identity !== entry.identity) return 'refused'
+      // 宿主注入的 bag 与入站 args 同规过 argsSchema（不得成为旁路）
+      if (commandArgsIssue(world, command, bag) !== 'ok') return 'refused'
+      directives = [{ kind: 'eval', entry: command.entry, args: bag }]
+    } else if (entry.method !== undefined) {
+      const cap = capOfMethod(declRead.decl, entry.method)
+      const gen = assemblyGen(world, entry.identity)
+      if (cap === null || gen === null) return 'refused'
+      const row = runtime.endpoints.get(entry.identity, gen.payload, cap, entry.method)
+      if (row === null) return 'refused'
+      const called = await row.link.call(
+        cap,
+        entry.method,
+        bag,
+        options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+        signal,
+      )
+      if (!called.ok) return 'refused'
+      const plan = parsePlanDirectives(called.value)
+      // 方法有响应但没给计划值 = 本拍无写，按完成收口；给了非法计划则 fail-closed 拒（同 plan 通道）
+      if (!plan.ok) return 'refused'
+      if (plan.directives.length === 0) return 'done'
+      directives = plan.directives
+    } else {
+      return 'refused'
+    }
+    const outcome = await runSubmission({
+      writer,
+      directives,
+      caps: {},
+      limits: DEFAULT_LIMITS,
+      initiator: entry.identity,
+      runId,
+      now: nextNow,
+      router,
+      callTimeoutMs: options.callTimeoutMs,
+      signal,
+      initialOwnerOf: () => entry.identity,
+      ctxFor: cachedProjection,
+      onAudit: persistAudit,
+      onRound: persistRound,
+      onAdvanced: applyWorldSerial,
+    })
+    return outcome.status
+  }
+
   const handleSubmit = async (
     socket: Socket,
     message: Extract<InboundMessage, { kind: 'submit' }>,
@@ -375,6 +535,28 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
+  /**
+   * 命令 args 的机械校验（命令入口与入站转发共用）：坏 schema / 坏参直接回错并返回 false。
+   * 运行期 add_gen 产出的 argsSchema 未必过入世门禁，故命令侧补一次方言元校验（fail-closed）。
+   */
+  const checkCommandArgs = (
+    socket: Socket,
+    id: string,
+    command: CommandDecl,
+    args: Json,
+  ): boolean => {
+    const issue = commandArgsIssue(writer.snapshot().world, command, args)
+    if (issue === 'ok') return true
+    send(socket, {
+      v: PROTOCOL_VERSION,
+      id,
+      kind: 'error',
+      code: issue,
+      message: command.name,
+    })
+    return false
+  }
+
   const handleCommand = async (
     socket: Socket,
     message: Extract<InboundMessage, { kind: 'command' }>,
@@ -404,31 +586,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       return
     }
     const args = message.args ?? null
-    if (command.argsSchema !== null) {
-      const schemaDef = writer.snapshot().world.defs[command.argsSchema]
-      // 运行期 add_gen 产出的 argsSchema 未必过入世门禁：命令侧补一次方言元校验（fail-closed）
-      const dialect = schemaDef === undefined ? null : validateArgsSchema(schemaDef.body)
-      if (schemaDef === undefined || dialect === null || !dialect.ok) {
-        send(socket, {
-          v: PROTOCOL_VERSION,
-          id: message.id,
-          kind: 'error',
-          code: 'bad_args_schema',
-          message: message.name,
-        })
-        return
-      }
-      if (!validateArgs(schemaDef.body, args)) {
-        send(socket, {
-          v: PROTOCOL_VERSION,
-          id: message.id,
-          kind: 'error',
-          code: 'bad_args',
-          message: message.name,
-        })
-        return
-      }
-    }
+    if (!checkCommandArgs(socket, message.id, command, args)) return
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     broadcast('host', 'run.started', { run: runId, thread })
     let status = 'refused'
@@ -475,6 +633,88 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
+  /**
+   * H8 插件入站转发：壳把 `/p/<id>/*` 转成宿主入站帧，宿主按 `identity` 只转发到该身份
+   * **自己声明**的入口 term（构造一次 run）；命令不属于该身份即拒——宿主不认识业务，只做机械路由。
+   */
+  const handleForward = async (
+    socket: Socket,
+    message: Extract<InboundMessage, { kind: 'forward' }>,
+    runId: string,
+    thread: string | null,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (
+      typeof message.identity !== 'string' ||
+      message.identity.length === 0 ||
+      typeof message.command !== 'string' ||
+      message.command.length === 0
+    ) {
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'error',
+        code: 'bad_directive',
+        message: 'forward expects { identity, command }',
+      })
+      return
+    }
+    const command = resolveCommand(writer.snapshot().world, message.command)
+    if (command === null || command.identity !== message.identity) {
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'error',
+        code: 'unknown_command',
+        message: message.command,
+      })
+      return
+    }
+    const args = message.args ?? null
+    if (!checkCommandArgs(socket, message.id, command, args)) return
+    const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
+    broadcast('host', 'run.started', { run: runId, thread })
+    let status = 'refused'
+    try {
+      const outcome = await runSubmission({
+        writer,
+        directives,
+        caps: message.caps ?? {},
+        limits: message.limits ?? DEFAULT_LIMITS,
+        initiator: 'forward',
+        runId,
+        now: nextNow,
+        router,
+        callTimeoutMs: options.callTimeoutMs,
+        signal,
+        initialOwnerOf: () => command.identity,
+        ctxFor: cachedProjection,
+        onAudit: persistAudit,
+        onRound: persistRound,
+        onAdvanced: applyWorldSerial,
+      })
+      status = outcome.status
+      send(socket, {
+        v: PROTOCOL_VERSION,
+        id: message.id,
+        kind: 'result',
+        status: outcome.status,
+        observations: outcome.observations,
+      })
+    } catch (err) {
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'run_failed',
+        run: runId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    } finally {
+      broadcast('host', 'run.finished', { run: runId, thread, status })
+    }
+  }
+
   const server = createServer((socket: Socket) => {
     clients.add(socket)
     const decoder = createFrameDecoder()
@@ -505,6 +745,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   let stopPromise: Promise<void> | undefined
   const doStop = async (): Promise<void> => {
     stopping = true
+    // 先停周期调度：停机中途不再起新的周期 run
+    periodic?.stop()
     try {
       appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
     } finally {
@@ -628,6 +870,43 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
                 kind: 'error',
                 code: 'internal',
                 message: 'command failed',
+              })
+            } catch {
+              // 客户端已断：错误无处可送
+            }
+          })
+          .finally(() => {
+            runs.delete(runId)
+            inflight.delete(task)
+          })
+        inflight.add(task)
+        return
+      }
+      case 'forward': {
+        if (stopping) {
+          send(socket, {
+            v: PROTOCOL_VERSION,
+            id: message.id,
+            kind: 'error',
+            code: 'internal',
+            message: 'stopping',
+          })
+          return
+        }
+        const forward = message
+        const runId = randomUUID()
+        const thread = typeof forward.thread === 'string' ? forward.thread : null
+        const controller = new AbortController()
+        runs.set(runId, controller)
+        const task = handleForward(socket, forward, runId, thread, controller.signal)
+          .catch(() => {
+            try {
+              send(socket, {
+                v: PROTOCOL_VERSION,
+                id: forward.id,
+                kind: 'error',
+                code: 'internal',
+                message: 'forward failed',
               })
             } catch {
               // 客户端已断：错误无处可送
@@ -836,6 +1115,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       endpoints: runtime.endpoints,
       host: createHostCapability({
         assetsDir: paths.assetsDir,
+        runtimeDir: paths.runtimeDir,
         audits,
         world: () => writer.snapshot().world,
         abortRun: (run) => {
@@ -862,9 +1142,30 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         })
       },
     })
+    // H6 定时触发：装配就绪后按各插件 schema 的 periodic 声明排程；声明变更随 applyWorld 增量对齐
+    // 同一 (身份, 原因) 只记一条证据，避免每轮落账都刷运维日志（每条都 fsync）
+    const periodicInvalidLogged = new Set<string>()
+    periodic = new PeriodicScheduler({
+      onFire: firePeriodic,
+      onInvalid: (identity, reason) => {
+        const key = `${identity}\u0000${reason}`
+        if (periodicInvalidLogged.has(key)) return
+        periodicInvalidLogged.add(key)
+        appendLifecycle(paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'dep',
+          event: 'periodic_invalid',
+          impl: identity,
+          reason,
+        })
+      },
+    })
+    periodic.sync(writer.snapshot().world)
     await listen(server, address)
   } catch (err) {
-    // 启动失败不泄漏：停已起服务、关监听、释放锁
+    // 启动失败不泄漏：停周期调度与已起服务、关监听、释放锁
+    stopping = true
+    periodic?.stop()
     if (runtime !== undefined) {
       try {
         await runtime.stop()

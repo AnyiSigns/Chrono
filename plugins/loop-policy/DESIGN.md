@@ -481,5 +481,5 @@ GraphState = { task,
 - **#43 `evolution` / #44 `evolve-metrics` / #45 `orchestration-admin`**：轨迹/证据/提案/判定的落点、证据聚合（pin #44）、agent 面编排管理。**两层分签**：#44 只产证据不提案、#45 只产提案不产证据不产写。**v1 闭环（2026-09-19）**：#33 服务触发 `evolve.propose` LLM Scope 产提案；#44 `shadow` 方法跑影子回放（据 #43 `directives_summary`/`ctx_summary` + 经 `host` 能力类 `audit` 取的 `EffectAudit` 回灌）；门禁三道（机械闸 = #33 服务本地 / 影子 #44 / 人闸 #32/#39）。
 - **#48 question（2026-09-19 集成）**：`tool.dispatch` 派发 `question` 工具后 `loop.when` 因 `question_pending` 不 loop、本 run 走 sink 结束；作答后宿主按 `resume_cursor` 触发新 run 回灌答案。种子判定 `question_pending` 已加。
 - **#42 `plugin-admin`**：源码写不经本插件的图数据面；但其 `write` 与 #45 的 `propose` 同受「审批段不可绕过」约束。
-- **宿主待补能力**：投影引用闭包解析（复用 #11/#21/#35 同一条）、审批挂起/续跑、只读审计面——**均已登记，本插件不新增宿主动词**。
+- **宿主能力（已落地）**：投影引用闭包解析（复用 #11/#21/#35 同一条）、审批挂起/续跑、只读审计面——**本插件不新增宿主动词**。
 - **线程设计（2026-09-19）**：`subagent` / 协作契约在 **run 级并发**下执行（宿主改动登记：run 级并发 + 提交队列 + 乐观校验，见 `host.md` §五 写者）；`context.assemble` 节点写 `bag.thread_kind` / `bag.parent_summaries` / `bag.task_prompt`（含 inbox 未读消息）；子发 `decision_request` 时**唤醒父线程**（按游标触发新 run，同 #32）；工作流线程的步骤状态供 #18 步骤卡（`workflow.step` 事件）。**本插件不提供线程控制**（线程数据 owner 是 #11、run 生命周期归宿主，见 `docs/plans/threads-design.md` §三）。

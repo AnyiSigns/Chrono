@@ -46,7 +46,7 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 
 - **流程**：GET → 跟随重定向（上限住 schema）→ 按 `content-type` 分流：
   `text/html` → 正文提取 + 转 markdown（`format:"raw"` 则原样）；`application/json` / `text/*` → 原样；
-  其它二进制 → v1 `binary_unsupported`（待宿主资产面，见下）。
+  其它二进制 → v1 `binary_unsupported`（S1 资产面已落地，见下；本插件未实现前回此码）。
 - 响应体 ≤ `output_max`，超限截断并标记 `truncated`；`robots.txt` 遵循与否住 schema。
 
 ## 渲染（`describe.render`，本轮定）
@@ -84,4 +84,4 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 - **#31 tool-browser**：分工 = 无状态抓取（本插件）vs 有会话 / JS 渲染（`webbrowser`）；两者不互相调用。
 - **总表 §1.7 更正（已同步）**：`#30` 依赖原写 `-> 24、25`，但**本插件零配置**（无 API key / 账号 / 环境变量），不解析密钥，故 pins 只 `-> 25`；总表该行已同步为 `-> 25`。
 - **不接需密钥的源（红线）**：Brave Search API / Google CSE / Bing Web Search API / SerpAPI 等一律不接；若将来要接，须先改本条红线并重新登记 `-> 24`。
-- **宿主待补能力**：服务侧资产存取面（二进制响应体前置）。
+- **宿主能力（S1 已落地）**：服务侧资产存取面（二进制响应体前置；`host.asset.put/get`）。本插件尚未实现，验收待插件落地。

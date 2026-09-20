@@ -33,7 +33,7 @@
 
 - 条目各自成 def + **链式 `tail`** ⇒ 加一条 = 1 条目 def + 1 小 body def，**不重写全量**（同 #11；原「哈希列表」会随条目数 O(N) 重写）。
 - **偏移口径**：`chunks[].start` / `end` 按 **Unicode 码点**计（与 `docs/plugins.md` §二「命令 `argsSchema` 方言」的 `minLength` / `maxLength` 同口径）；chunk 文本 = `text.slice(start,end)`，世界不落第二份。`#20 embedding.chunk` **同步返回码点偏移**（切窗用 token 计数，但输出 `start` / `end` 一律换算成码点），两插件口径统一。
-- 条目 body 由**宿主投影引用闭包解析**放进 `ids.memory-store.refs`（标记 `{"def":hash}`，见 `draft-design.md` §1.11 宿主待补能力）；`read` / `search` 按 hash 从 `refs` 取条目。
+- 条目 body 由**宿主投影引用闭包解析**放进 `ids.memory-store.refs`（标记 `{"def":hash}`，H1 已落地）；`read` / `search` 按 hash 从 `refs` 取条目。
 - `model.{id,dim}` 是**索引版本锚**：向量本体在 ③，换模型后 ③ 重建，世界只改锚。
 
 ## 向量索引（宿主侧 ③，可重算）

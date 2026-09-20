@@ -40,7 +40,7 @@
 ## 跨插件登记
 
 - **#19 compress**：本插件需要摘要时 eff #19（`->` 19）；**#19 的 `<-` 应补记 23**（双方各记一条，§1.6——本插件已在此侧登记）。
-- **宿主周期触发（D6）**：`consolidate` / `sweep` 的周期住 `schema/memory-maintenance.json`，由宿主按周期构造 run 触发；所需 `#3` / `#11` / `#21` 投影片段由宿主按 `schema.periodic.reads` **机械注入 bag**（服务不读投影，D8）；本插件不自触发。
+- **宿主周期触发（D6，H6 已落地）**：`consolidate` / `sweep` 的周期住 `schema/memory-maintenance.json` 顶层 `periodic`（`{method, every_ms, reads?}`），由宿主按周期构造 run 触发；所需 `#3` / `#11` / `#21` 投影片段由宿主按 `schema.periodic.reads` **机械注入 bag**（服务不读投影，D8）；本插件不自触发。
 - **#17 ui-settings S12**：`view` / `edit` 的投影读（#3 / #21）由 #17 的入口 term 完成、经 args/bag 传入（D8）；本插件 execute-only、服务不做 `+` 读。
 - **#21 memory-store**：L3 固化写计划按 `meta.source = "consolidate"`，与 #21 的 `source` 枚举对齐。
 - **#33 loop-policy**：本插件**不再挂在 #33 回合尾节点**（#33 为服务自驱解释器、无该维护节点）；#33 的「回合尾维护」旧口径作废。

@@ -106,6 +106,16 @@ export interface Client {
   /** 真取消（protocol §三 `cancel{run}`）：中止在途 / 排队的 run；未知 / 已结束 → `unknown_run`。 */
   cancel(run: string): Promise<void>
   command(name: string, args?: Json, options?: SubmitOptions): Promise<CommandResult>
+  /**
+   * H8 插件入站转发：把帧交给 `identity` **自己声明**的入口 term（构造一次 run）。
+   * 命令不属于该身份 → `unknown_command`；宿主只做机械路由、不认识业务。
+   */
+  forward(
+    identity: string,
+    command: string,
+    args?: Json,
+    options?: SubmitOptions,
+  ): Promise<CommandResult>
   commands(): Promise<CommandInfo[]>
   /** F8 只读审计面：按回合 / 身份 / outcome 查询（seq 降序取最新）。 */
   audit(filter?: AuditFilter): Promise<AuditReport>
@@ -184,6 +194,30 @@ class HostClient implements Client {
     const id = randomUUID()
     const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(id)
     const message: { [k: string]: Json } = { v: PROTOCOL_VERSION, id, kind: 'command', name, args }
+    if (options.caps !== undefined) message['caps'] = options.caps
+    if (options.limits !== undefined) message['limits'] = options.limits as unknown as Json
+    if (options.thread !== undefined) message['thread'] = options.thread
+    this.write(message as unknown as Json)
+    const result = await pending
+    return { status: result.status, observations: result.observations }
+  }
+
+  async forward(
+    identity: string,
+    command: string,
+    args: Json = null,
+    options: SubmitOptions = {},
+  ): Promise<CommandResult> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(id)
+    const message: { [k: string]: Json } = {
+      v: PROTOCOL_VERSION,
+      id,
+      kind: 'forward',
+      identity,
+      command,
+      args,
+    }
     if (options.caps !== undefined) message['caps'] = options.caps
     if (options.limits !== undefined) message['limits'] = options.limits as unknown as Json
     if (options.thread !== undefined) message['thread'] = options.thread

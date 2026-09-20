@@ -18,6 +18,7 @@ const AUDIT_TERM: Json = ['eff', 'host', 'audit', ['c', { limit: 5 }]]
 const ASSET_PUT_TERM: Json = ['eff', 'host', 'asset.put', ['v', 0]]
 const ASSET_GET_TERM: Json = ['eff', 'host', 'asset.get', ['v', 0]]
 const SOURCE_READ_TERM: Json = ['eff', 'host', 'source.read', ['v', 0]]
+const VALIDATE_TERM: Json = ['eff', 'host', 'validate_package', ['v', 0]]
 const TERMINATE_TERM: Json = ['eff', 'host', 'thread.terminate', ['v', 0]]
 const RESUME_TERM: Json = ['eff', 'host', 'thread.resume', ['v', 0]]
 const WRITE_TERM: Json = [
@@ -64,6 +65,7 @@ describe('H14 宿主保留能力类 host', () => {
         'assetPut.json': JSON.stringify(ASSET_PUT_TERM),
         'assetGet.json': JSON.stringify(ASSET_GET_TERM),
         'sourceRead.json': JSON.stringify(SOURCE_READ_TERM),
+        'validate.json': JSON.stringify(VALIDATE_TERM),
         'terminate.json': JSON.stringify(TERMINATE_TERM),
         'resume.json': JSON.stringify(RESUME_TERM),
         'write.json': JSON.stringify(WRITE_TERM),
@@ -74,6 +76,7 @@ describe('H14 宿主保留能力类 host', () => {
         { name: 'toy-host.assetPut', entry: 'terms/assetPut.json' },
         { name: 'toy-host.assetGet', entry: 'terms/assetGet.json' },
         { name: 'toy-host.sourceRead', entry: 'terms/sourceRead.json' },
+        { name: 'toy-host.validate', entry: 'terms/validate.json' },
         { name: 'toy-host.terminate', entry: 'terms/terminate.json' },
         { name: 'toy-host.resume', entry: 'terms/resume.json' },
         { name: 'toy-host.write', entry: 'terms/write.json' },
@@ -199,6 +202,56 @@ describe('H14 宿主保留能力类 host', () => {
         }),
       ) as { error: string }
       expect(absent.error).toBe('not_found')
+    } finally {
+      client.close()
+    }
+  })
+
+  it('validate_package：dry-run 候选包（通过回 result_hash / 缺件回 errors / 逃逸路径拒）', async () => {
+    seedHost()
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const candidate = {
+        'plugin.json': JSON.stringify({
+          identity: 'candidate',
+          schema: 'schema/plugin.schema.json',
+          implements: [],
+          methods: {},
+          pins: {},
+          start: '',
+          protocol: '1',
+          restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
+          health: { probe: '', interval_ms: 0, timeout_ms: 0 },
+          state: 'recomputable',
+          members: [],
+          commands: [],
+        }),
+        'schema/plugin.schema.json': JSON.stringify({ type: 'object' }),
+        'package.json': JSON.stringify({ name: 'candidate', version: '1.2.3' }),
+      }
+      const valid = valueOf(await client.command('toy-host.validate', { files: candidate })) as {
+        ok: boolean
+        errors: unknown[]
+        result_hash: string | null
+      }
+      expect(valid.ok).toBe(true)
+      expect(valid.errors).toEqual([])
+      expect(valid.result_hash).toMatch(/^[0-9a-f]{64}$/)
+
+      const missing = valueOf(
+        await client.command('toy-host.validate', {
+          files: { 'schema/plugin.schema.json': '{}' },
+        }),
+      ) as { ok: boolean; errors: { code: string }[] }
+      expect(missing.ok).toBe(false)
+      expect(missing.errors[0].code).toBe('missing_plugin_json')
+
+      const unsafe = valueOf(
+        await client.command('toy-host.validate', { files: { '../escape': 'x' } }),
+      ) as { error: string }
+      expect(unsafe.error).toBe('bad_directive')
     } finally {
       client.close()
     }

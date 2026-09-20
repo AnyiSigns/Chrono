@@ -241,20 +241,20 @@ graph LR
 > `#44` 被 `#33` pin，故须先于 #33；`#45` 无 pins（只投影读），可早入世但其 `validate` / `propose` 的**验收**需 #33 就位。
 > **#33 的图数据（含种子图回落）不依赖 #43–45**——无它们时 #33 照常跑，只是不产轨迹、无进化环。
 
-> **宿主待补能力（2026-09-19 已提升进 `docs/host.md` §五「宿主扩展面」+ `docs/protocol.md` §四 错误码；完整前置清单与开工顺序见 §1.13）**：
+> **宿主前置能力（2026-09-19 已提升进 `docs/host.md` §五「宿主扩展面」+ `docs/protocol.md` §四 错误码；完整前置清单与开工顺序见 §1.13；下表已落地的标 ✅）**：
 > - 插件 **③ 目录**（`state/plugins/<id>/`，H4 已落地）——起服务前 `mkdir` 并以 `CHRONO_PLUGIN_STATE` 只注入本身份（路径约定、非 fs 隔离）；宿主启动时统一 GC（删目录名 ∉ `world.ids`）；身份名须安全单段。
 > - **投影引用闭包解析（H1，已落地）**——身份 body 里的显式标记 `{"def":hash}`，宿主构造投影时跟随**传递闭包**放进 `ids.<id>.refs`；**全量返回**（`next_before` 恒 `null`，翻页由调用方在 `refs` 上切片；`refCap` 仅硬安全上限）；服务 #11（消息链窗口）、#21（条目）、#35（链式 `tail`）、**#33（六类条目）**、**#43（四类 tail）**，避免 O(N²) 全量重写。
 > - **插件源码读面（H3）**——`host.source.read {identity, path}` 把某身份的源码 `tree` / `blob` 按路径读给插件（世界 ① 有源码，投影不含 `tree` / `blob`）；服务 #42 `plugin-admin` 的 `read`。
 > - **入世校验「受保护 `pins` 不可删」（H2，已落地）**——跨代比对 `pins`（按依赖身份名、基准 = 最近代码世代声明，retired 也比对；读不出 → fail-closed），若新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval`）的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。理由：`#42` 的可见性过滤是**黑名单**，而攻击面在**依赖关系**——agent 可以写一个**不 pin `#25`** 的 `tool-fs` 让四档 fs 强制失效。这条是 `pins` 层机械校验，**宿主不需要认识业务**（只比较"旧世代有、新世代没了"），与「引脚未解析即拒」同路。覆盖 `seed`/`pack` 与 `#42 validate_package` 同路；裸运行期 `add_gen` 不在其内（v1 无 op 级鉴权）。
 > - **按队列项游标触发新 run（审批 / 提问续跑，H5）**——`#32` / `#48` 的 `enqueue` **会正常返回**，故那轮**不是 `waiting`**；正确形状是本 run 正常结束、`item` 带 resume 游标（`iter` / `cursor` / slots 引用），裁决 / 作答落账后宿主据游标触发**新 run**。这与内核 `waiting` 续跑（同 `run_id` / 同 `directives` / 同 `now`）**不是同一机制**：内核续跑用于"效果未回灌"，审批 / 提问往返用于"人不在 30s 内"。
 >   **v1 落地口径（2026-09-20）**：裁决 / 作答命令的入口 term 直接产 `$directives` 计划（首条 eval = 按游标续跑的入口 + args），宿主既有 **plan 通道**在同一提交内起后续轮（新 `run_id`、投影取该轮轮首世界 ⇒ 能看到已落账的裁决），依赖 **H12 并发**。故 v1 **无需额外宿主代码**；若 #32 / #48 实现时发现需要「非命令触发的自动续跑」，再补宿主触发面。
-> - **定时触发**——宿主按插件声明的周期构造一次 run（调指定命令 / 方法）；用于 `#12 sync`（models.dev 定期后台同步，入口 = `#12` 的 `model.sync` **方法**）、**#23 `sweep`/`consolidate`**、**#32 周期 sweep**、**#44 `sweep`**、**#37 出站清单刷新**（周期住各插件 schema）。
-> - **入世校验 dry-run 面**——`host.validate_package {files} -> {ok, errors, result_hash}`，按入世同一套机械校验 dry-run、不写世界；服务 #42 `plugin.validate`。
-> - **服务侧资产存取面（S1）**——`host.asset.put/get`，规范 base64、8 MiB 内联、内容寻址住 `state/assets/`；#28/#30/#31 二进制字节。
-> - **宿主保留能力类 `host`（H14 已落地）**——保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit` / `source.read` / `validate_package`（v1 回 `not_loaded`，归 H13）/ `asset.put` / `asset.get`。v1 受信面、无方法级鉴权；host pin 仅入世（batch）成立，裸运行期顶层结构 op 提前 `bad_directive`。
+> - **定时触发（H6 已落地）**——宿主按插件 `schema` 顶层 `periodic` 声明（`{command|method, every_ms, reads?}`）构造一次 run（命令按入口 term；方法直接调服务方法、其计划值由宿主落账）；`reads` 投影片段机械注入 bag。用于 `#12 sync`（models.dev 定期后台同步，入口 = `#12` 的 `model.sync` **方法**）、**#23 `sweep`/`consolidate`**、**#32 周期 sweep**、**#44 `sweep`/`aggregate`**、**#37 出站清单刷新**（周期住各插件 schema）。
+> - **入世校验 dry-run 面（H13 已落地）**——`host.validate_package {files} -> {ok, errors, result_hash}`，把候选树落临时目录后复用 `seed`/`pack` 同一套 `planPack` dry-run、不写世界；服务 #42 `plugin.validate`。
+> - **服务侧资产存取面（S1 已落地）**——`host.asset.put/get`，规范 base64、8 MiB 内联、内容寻址住 `state/assets/`；#28/#30/#31 二进制字节。
+> - **宿主保留能力类 `host`（H14 已落地）**——保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit` / `source.read` / `validate_package`（H13 已落地）/ `asset.put` / `asset.get`。v1 受信面、无方法级鉴权；host pin 仅入世（batch）成立，裸运行期顶层结构 op 提前 `bad_directive`。
 > - **密钥本地存储面（H7 已落地）**——入站 `secrets.put` / `secrets.delete`（宿主直写 `state/secrets.local.json`（`0600`），不经 run、不进世界、不进审计；损坏 fail-closed）；与 `asset.*` 并列；服务 `#24 secrets`。
 > - **效果审计脱敏（H7 已落地）**——`EffectAudit.result` 对 `secrets.resolve` 按白名单替换为 `{name,kind,has}`（调用方仍拿句柄本体，否则明文经审计落账）。
-> - **插件入站转发**——`#37 mcp` 的后端入站面经 `#15` 主端口同源反代（`/p/<id>/*`），壳不自连插件服务，须由宿主把入站帧转发到目标服务（保「唯一主端口」）。
+> - **插件入站转发（H8 已落地）**——`#37 mcp` 的后端入站面经 `#15` 主端口同源反代（`/p/<id>/*`），壳不自连插件服务，须由宿主把入站帧转发到目标服务（保「唯一主端口」）；入站帧 = `forward {identity, command, args?}`，宿主只转发到该身份自己声明的入口 term（属主不符 → `unknown_command`）。
 > - **run 级并发 + 提交队列 + 乐观校验（H12，已落地 v1）**——多 run 同时活动（并发只在 run 之间，run 内单 pending 不变）、所有 `commit` 进**单一提交队列**按**宿主仲裁序**落账。**v1 口径**：落账段（内核 `run` + append）无 await，write 的 `expect_pos` 段内机械锚到当前链头 ⇒ 等价 append-only 写的安全 rebase，`pos_conflict` 结构上不触发；`worldRev`/`expect_pos` CAS 冲突重试保留为契约、后置；读-改-写共享 body 的并发写仍 last-write-wins。锁从「run 全程持有」**收窄为「commit 期间持有」**；**仲裁序 = journal `seq`，不新增 `Entry`/`Op` 字段**。命令 run 与 submit run 同规可 cancel。`kernel.md` §十二只声明「宿主可并发调 `run`，语义不变」。
 > - **线程控制面（H9 已落地，拆分归属）**——`thread.send` / `thread.status` → **#11 `session` 服务**（`deliver` 能力方法 + 投影读；宿主不直造 #11 body）；`thread.resume` / `thread.terminate` → **宿主保留能力类 `host`**（run 生命周期；`resume` = 起 detached run 的通用原语、有并发上限、`caps:{}`、宿主不认识游标）；**#27 以工具名暴露**（`subagent.send` / `subagent.status` / `subagent.resume` / `subagent.terminate`）。`thread.*` / `workflow.step` / `group.message` 事件由 **#11 服务发**；`orchestration.unhealthy` 由 **#44 服务发**；`question.pending` 由 **#48 服务发**；`run.started` / `run.finished` 由**宿主发（H10 已落地，严格成对）**。
 
@@ -297,25 +297,25 @@ graph LR
 | --- | --- | --- | --- |
 | H1 | ✅ **投影引用闭包解析**：body 里 `{"def":hash}` 标记，宿主构造投影时跟随**传递闭包**放进 `ids.<id>.refs`；**全量返回**（`next_before` 恒 `null`，翻页窗口由 `chat.history` 入口 term 在 `refs` 上按 `before`/`limit` 切片；`refCap` 仅硬安全上限） | #11 消息链窗口、#21 条目、#35 链式 tail、#33 六类条目、#43 四类 tail | `host.md` §五 宿主扩展面 |
 | H2 | ✅ **受保护 `pins` 不可删**（入世校验）：跨代比对（按依赖身份名、基准 = **最近代码世代**声明，retired 也比对；读不出 → fail-closed），删除 `sandbox`/`guard`/`secrets`/`approval` 引用即整批拒 `protected_pin_removed`；受保护表住宿主侧。覆盖 `seed`/`pack` 与 `#42 validate_package` 同路；裸运行期 `add_gen` 不在其内（v1 无 op 级鉴权） | #42 安全面、#45 结构写 | `host.md` §五 源码 + 宿主扩展面 |
-| H3 | **插件源码读面**：`host.source.read {identity, path} -> {path, content, size}`，按路径读某身份源码 `tree`/`blob` 给插件 | #42 `read` | `host.md` §五 宿主扩展面 |
+| H3 | ✅ **插件源码读面**：`host.source.read {identity, path} -> {path, content, size}`，按路径读某身份源码 `tree`/`blob` 给插件（随 H14 保留能力类 `host` 落地） | #42 `read` | `host.md` §五 宿主扩展面 |
 | H4 | ✅ **插件 ③ 目录** `state/plugins/<id>/` + 统一 GC：起服务前 `mkdir` 并以 `CHRONO_PLUGIN_STATE` 只注入本身份（**路径约定、非 fs 隔离**）；启动时删目录名 ∉ `world.ids` 的项（retire 保留）；身份名须安全单段（否则 `bad_plugin_decl`） | #21 向量索引、#22 查询向量缓存、#23 sweep 水位、#31 浏览器会话、#41 最近打开、#44 基线缓存 | `host.md` §三 / §五 宿主扩展面 |
 | H5 | **按队列项游标触发新 run**：`enqueue` 正常返回（那轮非 `waiting`），本 run 正常结束、item 带 resume 游标，裁决 / 作答落账后触发**新 run** | #32 审批往返、#48 提问往返、#33 恢复 | `host.md` §五 宿主扩展面 |
-| H6 | **定时触发**：按插件 `schema` 声明周期构造一次 run（调周期方法，owner = 该插件）；**所需投影片段按 `schema.periodic.reads` 机械注入 bag**（服务不读投影）、方法返回计划值由宿主落账 | #12 `model.sync`、**#23 `sweep` / `consolidate`、#32 `sweep`、#44 `sweep` / `aggregate`、#37 出站清单刷新** | `host.md` §五 宿主扩展面 |
+| H6 | ✅ **定时触发**：按插件 `schema` 顶层 `periodic` 声明（`{command\|method, every_ms, reads?}`）构造一次 run（命令按入口 term；方法直接调服务方法、其计划值由宿主落账）；**所需投影片段按 `schema.periodic.reads` 机械注入 bag**（服务不读投影） | #12 `model.sync`、**#23 `sweep` / `consolidate`、#32 `sweep`、#44 `sweep` / `aggregate`、#37 出站清单刷新** | `host.md` §五 宿主扩展面 |
 | H7 | ✅ **密钥本地存储面**（入站 `secrets.put`/`delete`，直写 `state/secrets.local.json`（`0600`）、不进世界、不进审计；损坏 fail-closed；name/value 形态校验）+ **效果审计脱敏**（`secrets.resolve` 结果按白名单替换为 `{name,kind,has}`；判据 = port 名，路由不变式保证 port = 目标声明类） | #24 全部、#12、#29 | `host.md` §五 其它 / 宿主扩展面 |
-| H8 | **插件入站转发**：`/p/<id>/*` 入站帧由宿主转发到目标服务 | #37 mcp 入站 | `host.md` §五 宿主扩展面 |
+| H8 | ✅ **插件入站转发**：入站帧 `forward {identity, command, args?}`，宿主按 `identity` 只转发到该身份自己声明的入口 term（属主不符 → `unknown_command`） | #37 mcp 入站 | `host.md` §五 宿主扩展面；`protocol.md` §三 |
 | H9 | ✅ **线程控制面**：`thread.resume`/`thread.terminate` → **宿主保留能力类 `host`**（run 生命周期，见 H14；`resume` = 通用原语：起 detached run，宿主不认识游标、`caps:{}`、有并发上限）；`thread.send`/`status` 走 #11 服务（插件侧） | #46、#27 `subagent.*`、#33 | `host.md` §五 宿主扩展面；`docs/plans/threads-design.md` §三 |
 | H10 | ✅ **事件 emitter 服务化落地**：宿主 `event` 透传就绪；**宿主自身 run 生命周期事件**（`run.started` / `run.finished`，`impl="host"`，载荷带 `run`/`thread`）——**严格成对、恰好一次**（异常路径也发，status 记 `refused`）；`thread` 为发起者可选字段、原样回带（展示标签，不校验）；detached run 恒 `thread:null` | #11 发 `thread.*`/`workflow.step`/`group.message`、#44 发 `orchestration.unhealthy`、**#48 发 `question.pending`**、#46/#38/#18/#17 消费；宿主 run 事件供 #16/#40/#38 | `protocol.md` §2.5/§三；`host.md` §五 宿主事件面 |
 | H11 | **`#1` per-thread 键控（插件侧契约变更，宿主无需改）**：`#1` body 改 `{slots:{<thread_id>}}`；宿主投影**原样透传 body、不解释**；**读取方全部改读 `body.slots[thread_id]`** | 所有读 `#1` 的插件：#11/#13/#14/#16/#17/#32/#39/#40/#41/#48（须与 #1 同批改，否则读空） | `plugins/input/DESIGN.md`；`host.md` §五 投影 |
 | H12 | ✅ **run 级并发 + 提交队列 + 乐观校验**（原误标内核 K1）：锁从「run 全程」收窄为「commit 期间」；多 run 同时活动（run 内单 pending 不变）；提交队列串行落账（仲裁序 = journal `seq`，**不新增 `Entry`/`Op` 字段**）。**v1 落地口径**：落账段（内核 `run` + append）无 await，write 的 `expect_pos` 段内机械锚到当前链头 ⇒ 等价于 append-only 写的安全 rebase，`pos_conflict` 结构上不触发（CAS 冲突重试路径保留为契约、后置）；读-改-写共享 body 的并发写仍 last-write-wins。入站 `submit` accept 仍 FIFO；命令 run 与 submit run 同规可 cancel | 多线程 / 子代理并发：#11 线程字段、#33 图执行、#46 顶栏 | `host.md` §五 写者；`kernel.md` §十二（只登记，不改 `run`） |
-| H13 | **入世校验 dry-run 面**：`host.validate_package {files} -> {ok, errors, result_hash}`；按入世同一套机械校验（声明形状 / 路径 / `argsSchema` 方言 / term 环 / 受保护 `pins` / `.worldignore`）dry-run，不写世界 | #42 `plugin.validate`（`write` 须携带 `result_hash`，缺 → `validate_required`） | `host.md` §五 宿主扩展面 |
-| H14 | ✅ **宿主保留能力类 `host`**：保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit {filter?,limit?}` / `source.read {identity,path}` / `validate_package {files}`（**v1 仅登记、回 `not_loaded`，归 H13**） / `asset.put` / `asset.get`。**v1 受信面、无方法级鉴权**；host pin 仅入世（batch）成立，裸运行期顶层 `add_gen`/`put`/`graft` 提前 `bad_directive` | #27 `subagent.resume`/`terminate`、#42 `read`/`validate`、#28/#30/#31 字节存取、#43/#44 审计读面 | `host.md` §五 路由 / 宿主扩展面 |
+| H13 | ✅ **入世校验 dry-run 面**：`host.validate_package {files} -> {ok, errors, result_hash}`；把候选树落临时目录后**复用 `seed`/`pack` 同一套 `planPack`** dry-run（声明形状 / 路径 / `argsSchema` 方言 / term 环 / 受保护 `pins` / `.worldignore`），不写世界 | #42 `plugin.validate`（`write` 须携带 `result_hash`，缺 → `validate_required`） | `host.md` §五 宿主扩展面 |
+| H14 | ✅ **宿主保留能力类 `host`**：保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit {filter?,limit?}` / `source.read {identity,path}` / `validate_package {files}`（**H13 已落地**） / `asset.put` / `asset.get`。**v1 受信面、无方法级鉴权**；host pin 仅入世（batch）成立，裸运行期顶层 `add_gen`/`put`/`graft` 提前 `bad_directive` | #27 `subagent.resume`/`terminate`、#42 `read`/`validate`、#28/#30/#31 字节存取、#43/#44 审计读面 | `host.md` §五 路由 / 宿主扩展面 |
 | H15 | ✅ **非 TS 插件与原生子组件物化**：包内只放**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；编译产物 / 依赖目录 / 原生扩展（`node_modules` / `target/` / 二进制 / `*.node`）**走宿主侧 ③ 依赖缓存**，物化时按清单恢复（Node npm / Rust cargo / 原生扩展构建）。落地：`state/deps/` 放 npm 下载缓存与 `CARGO_TARGET_DIR`，`node_modules`/`target` 落物化目录；`.chrono-deps-ok` 标记判完成（半恢复自愈）；失败 `deps_failed`。宿主仍只跑 `start` | #20/#22/#25/#28/#41/#44（Rust 整服务）、**#13（Rust tokenizer 原生子组件）** | `host.md` §五 宿主扩展面；`plugins.md` §三 |
 
 ### C. 资产 / 沙箱面
 
 | # | 改动 | 阻塞 | 权威 |
 | --- | --- | --- | --- |
-| S1 | **服务侧资产存取面（已展开）**：`host.asset.put {mime, bytes} -> {kind:'asset',sha256,mime,size}` / `host.asset.get {sha256} -> {bytes,mime,size}`；规范 base64、**8 MiB 内联上限**、内容寻址住 `state/assets/`（④ 不进世界）；未就位时工具回 `binary_unsupported` | #28 二进制读写、#30 二进制响应、#31 截图 | `host.md` §五 宿主扩展面（分块后置） |
+| S1 | ✅ **服务侧资产存取面（已落地）**：`host.asset.put {mime, bytes} -> {kind:'asset',sha256,mime,size}` / `host.asset.get {sha256} -> {bytes,mime,size}`；规范 base64、**8 MiB 内联上限**、内容寻址住 `state/assets/`（④ 不进世界）；工具在本插件实现前回 `binary_unsupported` | #28 二进制读写、#30 二进制响应、#31 截图 | `host.md` §五 宿主扩展面（分块后置） |
 | S2 | **#25 结构化操作执行面 `fsop`（已展开）**：六 op（`stat`/`read`/`list`/`grep`/`write`/`replace`）+ `caps.fs`；**强制点 / realpath / 原子读改写 / `edit_conflict` 均在 #25**，#28 只声明 | #28 区内 / 区外结构化读写核心功能 | `plugins/sandbox/DESIGN.md`「结构化操作 `fsop`」 |
 
 ### D. 开工顺序建议
@@ -323,9 +323,10 @@ graph LR
 1. **先落 H12 + H1 + H2 + H5 + H11 + H15**（并发 / 投影闭包 / 受保护 pins / 游标续跑 / #1 键控 / 多语言物化）——前五项是**结构性**的、多数插件契约依赖；H15 是 #20/#25 等非 TS 插件入世与验收的前提。
    > **进度（2026-09-20）**：H1 / H2 / H12 / H15 **已落地**（host 333 测试全绿，client 10 全绿）；H11 宿主侧**无需改**（投影原样透传 `body`，`slots` 键控随 `#1` 插件实现）；H5 v1 **由 plan 通道满足**（裁决/作答命令的入口 term 产续跑计划，见上「按队列项游标触发新 run」），无额外宿主代码，待 #32/#48 实现时验证。
 2. 再落 **H4 + H7 + H9 + H10 + H14**（③ 目录 / 密钥面 / 线程控制 / 事件 / 宿主保留能力类 `host`）——记忆族、UI 族、线程族的前置。
-   > **进度（2026-09-20）**：**H4 / H7 / H9 / H10 / H14 已落地**（host 366 测试全绿 + 1 skip、client 11 全绿）；`validate_package` 仅登记路由、回 `not_loaded`，归第三批 H13。
+   > **进度（2026-09-20）**：**H4 / H7 / H9 / H10 / H14 已落地**（host 366 测试全绿 + 1 skip、client 11 全绿）；`validate_package` 已由第三批 H13 落地（见下）。
 3. **H3 / H6 / H8 / H13** 可随 #42 / #12 / #37 / #42 同批落（H6 须覆盖 #23/#32/#44/#37 的周期触发，H13 服务 #42 `validate`）。
-4. **S1 / S2 设计已展开**（见上），**实现**须在 #28 / #30 / #31 开工前落地，否则这些工具「能发现、跑不了」。
+   > **进度（2026-09-20）**：**H3（随 H14 的 `host.source.read`）/ H6（`schema.periodic` 调度）/ H8（入站 `forward` 帧）/ H13（`validate_package` 复用 `planPack` dry-run）均已落地**，并有单测 / E2E 覆盖；**S1** 亦已随 H14 的 `host.asset.*` 落地。
+4. **S1 / S2 设计已展开**（见上）；**S1 已落地**（`host.asset.put/get`）。**S2 实现须在 #28 / #30 / #31 开工前落地**（属 #25 `sandbox` 插件本体），否则这些工具「能发现、跑不了」。
 
 > **红线**：任何插件的 `DESIGN.md` 里写了「宿主待补能力」的，其**验收不得在对应宿主改动落地前宣布通过**——只能标「契约就位、待宿主」。
 

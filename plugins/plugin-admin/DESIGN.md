@@ -96,11 +96,11 @@ agent 可让别的路径产出 `add_gen(plugin-admin, 新数据世代)` 直接�
 
 ---
 
-## 宿主待补能力
+## 宿主能力（已落地；本插件尚未实现，验收待插件落地）
 
-- **插件源码读面**：`host.source.read {identity, path} -> {path, content(base64), size}`——把某身份的源码 `tree` / `blob` 按路径读给插件。世界 ① 有源码，但投影**不含** `tree` / `blob`（`host.md` §五 投影），故需宿主提供只读读面；已登记为保留能力类 `host` 的方法（H3）。
-- **入世校验「受保护 `pins` 不可删」**（修正 1，本轮新增）：跨代比对 `pins`，删除受保护引用即整批拒 `protected_pin_removed`。受保护 `pins` 身份表住宿主侧；**该表只用于 pins 不可删校验，与可见性黑名单 {`sandbox`, 自己} 无关**。
-- **入世校验 dry-run 面**（D12，已登记）：`host.validate_package {files} -> {ok, errors, result_hash}`——跑同一套 `plugin.json` / 路径 / `argsSchema` / 受保护 `pins` / term 环校验但**不写世界**，供 `plugin.validate` 转发；属宿主前置能力 H13（实现须先于 #42 验收）。
+- **插件源码读面**：`host.source.read {identity, path} -> {path, content(base64), size}`——把某身份的源码 `tree` / `blob` 按路径读给插件。世界 ① 有源码，但投影**不含** `tree` / `blob`（`host.md` §五 投影），故需宿主提供只读读面；已落地为保留能力类 `host` 的方法（H3，随 H14）。
+- **入世校验「受保护 `pins` 不可删」**（修正 1）：跨代比对 `pins`，删除受保护引用即整批拒 `protected_pin_removed`。受保护 `pins` 身份表住宿主侧；**该表只用于 pins 不可删校验，与可见性黑名单 {`sandbox`, 自己} 无关**。已落地（H2）。
+- **入世校验 dry-run 面**（D12）：`host.validate_package {files} -> {ok, errors, result_hash}`——宿主把候选树落临时目录后复用 `seed`/`pack` 同一套 `planPack` dry-run 但**不写世界**，供 `plugin.validate` 转发；已落地（H13）。
 
 ---
 

@@ -87,7 +87,7 @@ bag = { op, path, args, caps, tier, workspace_root, grant? }
 
 - **强制点在 #25，不在 #28**：#25 独立做 `realpath(path)` 并与 `workspace_root` 比对（防符号链接逃逸），取「#28 声明的 `caps.fs.*` ∩ 当前 `tier` 范围」后执行；#28 的「区内 / 区外」归类只是**声明**，越界由 #25 拒 `fs_denied` 或（`severe` 档）由 #26 判升级。
 - **原子读改写**：`replace` 在**一次 `fsop` 内**完成 read→比对→write（不给 #28 留 TOCTOU 窗口）；`old` 未命中或非唯一 → `edit_conflict`；`expected_hash`（可选）= 调用方读到的旧内容哈希，不符 → `edit_conflict`（乐观并发）。
-- **v1 只做文本**：命中二进制 / 超 `output_max` → `binary_unsupported` / `too_large`（**S1 服务侧资产面**就位后再支持二进制，见 `host.md` §五 宿主扩展面）。
+- **v1 只做文本**：命中二进制 / 超 `output_max` → `binary_unsupported` / `too_large`（**S1 服务侧资产面已落地**，见 `host.md` §五 宿主扩展面）。
 - **与 `exec` 同一套资源上限与隔离**（native / docker 共用）；`fsop` 不启动子进程，由 #25 在受限上下文内直接触盘。
 - **`caps.grant`**：与 `exec` 同规——批准后一次性放宽**本次** `fsop`（绑定 `call_id`），校验 `call_id` / 范围 / 档位后放行；不进世界、不可重放为常设权限。
 - **#28 不直接触盘**：#28 的四个工具全部映射为 `fsop`（`read`→`read`、`edit`→`replace` / `write`、`glob`→`list`、`grep`→`grep`），结果由 #25 回、#28 结构化后回 #27。
@@ -108,6 +108,6 @@ bag = { op, path, args, caps, tier, workspace_root, grant? }
 - **#26 guard**：本插件**强制** fs 范围（4 档做进沙箱）+ 消费一次性 `caps.grant`；guard **独占**「危险 / 越界」定义（`schema/guard.json`），本插件不读该定义、只按 caps 与 grant 强制。
 - **#40 ui-composer / #2 config**：档位全局、由输入框写 `config.permission`；档位由调用方入口 term 读投影后经 bag 传入（本插件服务**不读投影**，D8）；改档 = 改 config（数据热生效，进程不动）。
 - **#28–31**：工具声明 `caps`、pin 本插件；换 `impl` 不改工具。
-- **#28 `tool-fs`（版本提升：被提升方，**S2 已展开**）**：① **结构化操作执行面 `fsop`** 已定（见上，`sandbox:["exec","fsop","capabilities"]`）；② `severe` 的 fs 范围与「区外」判据已对齐（**区内 / 区外读写都经本插件强制**，区外 = 超出默认范围）；③ 二进制经 **S1 `host.asset.*`**（`host.md` §五 宿主扩展面），未就位时回 `binary_unsupported`。提出方登记见 `plugins/tool-fs/DESIGN.md`。
+- **#28 `tool-fs`（版本提升：被提升方，**S2 已展开**）**：① **结构化操作执行面 `fsop`** 已定（见上，`sandbox:["exec","fsop","capabilities"]`）；② `severe` 的 fs 范围与「区外」判据已对齐（**区内 / 区外读写都经本插件强制**，区外 = 超出默认范围）；③ 二进制经 **S1 `host.asset.*`**（已落地，`host.md` §五 宿主扩展面）。提出方登记见 `plugins/tool-fs/DESIGN.md`。
 - **#20 embedding**：二进制 / 编译产物走 `.worldignore` 的先例。
 - **#41 workspace**：`bag.workspace_root` 为 cwd（非 pin）。

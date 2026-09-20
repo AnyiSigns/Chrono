@@ -39,8 +39,8 @@
 
 ## 跨插件登记
 
-- **宿主待补能力「密钥本地存储面」**：入站 `secrets.put` / `secrets.delete`（宿主直写本地文件，不经 run、不进世界）——现有入站面只有 `asset.*`，需并列新增。
-- **宿主待补能力「效果审计脱敏」**：`EffectAudit` 的 `result` 对 `secrets.resolve` 按白名单替换为 `{name,kind,has}`（调用方仍拿到句柄本体）；否则明文经审计落账，破「密钥不进世界 / 不进审计」。
+- **宿主能力「密钥本地存储面」（H7 已落地）**：入站 `secrets.put` / `secrets.delete`（宿主直写本地文件，不经 run、不进世界）；与 `asset.*` 并列。
+- **宿主能力「效果审计脱敏」（H7 已落地）**：`EffectAudit` 的 `result` 对 `secrets.resolve` 按白名单替换为 `{name,kind,has}`（调用方仍拿到句柄本体）；否则明文经审计落账，破「密钥不进世界 / 不进审计」。
 - **#2 config**：`auth_ref.kind` 枚举 `env` → **`local` / `env`**（版本提升，被提升方登记见 `plugins/config/DESIGN.md`）。
 - **#17 ui-settings S8（D10）**：由「只显 env 名 + 状态」扩为**可输入密钥**（写入经 `secrets.put`）+ 引用名 + 状态点；**S8 经 `secrets.list` 读「已读到 / 未读到」⇒ #17 新增 `-> 24` pin**（本插件 `<-` 17 对应登记）。
 - **#12 / #29**：经 `resolve` 取句柄（#12 注入请求头 / #29 注入子进程 env），明文不出现在任何 args / 审计。`#28` / `#30` / `#31` / `#27` **不 pin 本插件**（无 `auth_ref` 可解；`#30` 零配置、不接需 key 的源）。

@@ -165,4 +165,4 @@
 - **#35 agents**：子代理人格 / 圆桌参与者取 instance 条目（`system_prompt` pin）；**`channels`（跨回合留言板）与 `inbox`（线程收件箱）分工**：前者是"写进世界、下一回合读"的通用留言板，后者是线程收件箱（父子消息专用、带 `kind` 与未读游标）。
 - **#32 approval**：并发下审批往返仍是既有跨 run resume 机制。
 - **#44 evolve-metrics**：**周期（宿主定时触发）`aggregate`** 产 `failure_cluster` 证据超 #33 阈值时发 `orchestration.unhealthy` 事件（#38 始终通知，不依赖用户打开 S13）。
-- **宿主待补能力 / 内核改动**：run 级并发 + 提交队列 + 乐观校验（见 §二）；**线程控制面** `thread.send` / `thread.status` / `thread.resume` / `thread.terminate`（见 §三）。
+- **宿主能力（已落地）/ 内核改动**：run 级并发 + 提交队列 + 乐观校验（H12，见 §二）；**线程控制面** `thread.send` / `thread.status` / `thread.resume` / `thread.terminate`（H9，见 §三）。

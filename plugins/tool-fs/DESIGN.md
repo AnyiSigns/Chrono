@@ -77,7 +77,7 @@
 
 - 文本读写：UTF-8；`read` 默认行窗口（`offset` / `limit`），单次输出 ≤ `output_max`，超限截断并标记 `truncated`（标记，非错）。
 - **二进制 / 大文件 v1 不内联**：命中二进制或超上限 → `binary_unsupported` / `too_large`（结构化失败，不静默）。
-  > **宿主待补能力（S1，已展开）**：`host.asset.put` / `host.asset.get`（服务侧字节存取，规范 base64、8 MiB 内联上限；见 `host.md` §五 宿主扩展面）。就位后二进制读写可用；**未就位时回 `binary_unsupported`**（v1 默认）。
+  > **宿主能力（S1 已落地）**：`host.asset.put` / `host.asset.get`（服务侧字节存取，规范 base64、8 MiB 内联上限；见 `host.md` §五 宿主扩展面）。本插件实现时二进制读写可用；**本插件尚未实现**，验收待插件落地。
 
 ## 错误码
 
@@ -101,8 +101,8 @@
 
 ## 跨插件登记
 
-- **#25 sandbox**：本插件 `->` 25，所有操作（**含区外**）经其 `fsop` 隔离 / 档位强制（反向帧 `port.call`）；`caps.fs`（区内 `workspace` / 区外 `full`）与一次性 `caps.grant` 见上；**版本提升（提出方，已落地）**：S2 `fsop` 已展开、`severe` fs 范围与「区外」判据已对齐（见 `plugins/sandbox/DESIGN.md`）。
+- **#25 sandbox**：本插件 `->` 25，所有操作（**含区外**）经其 `fsop` 隔离 / 档位强制（反向帧 `port.call`）；`caps.fs`（区内 `workspace` / 区外 `full`）与一次性 `caps.grant` 见上；**版本提升（提出方登记已落地）**：S2 `fsop` 设计已展开（实现待 #25）、`severe` fs 范围与「区外」判据已对齐（见 `plugins/sandbox/DESIGN.md`）。
 - **#26 guard**：区外读 / 写是否升级由 #26 判（本插件只声明"区外 + 读 / 写"）；已对齐——#26 的「工作区外」启发式改为**读写都升级**，与本插件「区外读写都依赖沙箱」一致。
 - **#27 tools**：按 `tool` 端口契约被派发；执行根 `workspace_root` 由 #27 bag 传（本插件不 pin #41）。
 - **总表 §1.7 更正（已同步）**：`#28` 依赖原写 `-> 24、25`，本插件**不解析密钥**（无 `auth_ref` 可解），故 pins 只 `-> 25`；总表该行已同步为 `-> 25`。
-- **宿主待补能力**：反向帧 `port.call`（已在 `docs/protocol.md` §2.4 落地）；**S1 服务侧资产存取面已展开**（`host.asset.put/get`，二进制读写前置，`host.md` §五 宿主扩展面）。
+- **宿主能力**：反向帧 `port.call`（已在 `docs/protocol.md` §2.4 落地）；**S1 服务侧资产存取面已落地**（`host.asset.put/get`，二进制读写前置，`host.md` §五 宿主扩展面）。

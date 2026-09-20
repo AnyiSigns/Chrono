@@ -74,7 +74,7 @@ complete(bag)：同 chat 的连接 / 密钥（eff 24）/ 韧性路径，但 **�
 
 - **`profile` 入参来源（D8）**：调用方（#17 S1 / #40）的**入口 term 从 `+ 2` 投影读当前 `vendor` 与所选 `ids`**，随 args 传入本方法；本服务不读投影（execute-only）。
 
-- **定期后台同步**：`sync` 由**宿主定时触发**（宿主待补能力，见下）按 `schema` 里的周期构造一次 run、**直接调方法 `model.sync`**（`host.md` §五 定时触发：调指定命令 / 方法；**无入口 term、服务不自 eff**）；不后台轮询、不写世界（仍走计划）；所需 `#2` 投影片段由宿主按 `schema.periodic.reads` **机械注入 bag**（服务不读投影，D8）。**写前去重**：与 `#2 config` 现有元数据逐字段比对，**无变化则不产出写计划**（避免每周期空推 config 世代、触发无谓热生效）。
+- **定期后台同步**：`sync` 由**宿主定时触发**（H6 已落地，见下）按 `schema` 顶层 `periodic` 的周期构造一次 run、**直接调方法 `model.sync`**（`host.md` §五 定时触发：调指定命令 / 方法；**无入口 term、服务不自 eff**）；不后台轮询、不写世界（仍走计划）；所需 `#2` 投影片段由宿主按 `schema.periodic.reads` **机械注入 bag**（服务不读投影，D8）。**写前去重**：与 `#2 config` 现有元数据逐字段比对，**无变化则不产出写计划**（避免每周期空推 config 世代、触发无谓热生效）。
 - `reasoning` 档位来源：社区有档位用社区；仅布尔 `true` → 用 vendor `default_reasoning`（按 SDK）；无 → 不显示档位控件（仍默认开推理、用模型默认档）。
 - `discover` 错误结构化：`discover_auth_failed` / `discover_bad_url` / `discover_unsupported` / `discover_network`。
 
@@ -82,9 +82,9 @@ complete(bag)：同 chat 的连接 / 密钥（eff 24）/ 韧性路径，但 **�
 
 `model_auth_failed`(401/403) / `model_rate_limited`(429) / `model_bad_request`(400) / `model_server_error`(5xx) / `model_timeout` / `model_stream_broken` / `model_network_error` / `model_unsupported`（`impl=sdk` 包缺失等）。
 
-## 宿主待补能力
+## 宿主能力（定时触发，H6 已落地）
 
-- **定时触发**：宿主按插件声明的周期构造一次 run（调指定命令 / 方法），用于 `#12 sync`；无此能力则退化为「用户手动刷新」。
+- **定时触发**：宿主按插件 `schema` 顶层 `periodic` 声明（`{method, every_ms, reads?}`）构造一次 run、直接调 `model.sync` 方法；`reads` 投影片段机械注入 bag。宿主能力已就位；本插件尚未实现，验收待插件落地。
 
 ## 跨插件登记
 

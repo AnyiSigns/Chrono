@@ -41,7 +41,9 @@ Chrono 的载体：**一个进程、四个包**（装配 / 效果 / 账本 / 投
 
 根文件：`host.ts`（抢锁 → 重放 → 装配 → 开 socket → 串行处理）、`main.ts`（进程入口）、`index.ts`（公共面，只此一面）、
 `offline.ts`（`seed` / `pack` / `verify` / `replay`）、`paths.ts`（落盘路径单点）、`service-link.ts`（服务协议宿主侧）、
-`lifecycle.ts`（运维日志）、`wire.ts`（线格式）、`endpoint-table.ts`（`impl+gen+cap+method` → 物理端点）。
+`lifecycle.ts`（运维日志）、`wire.ts`（线格式）、`endpoint-table.ts`（`impl+gen+cap+method` → 物理端点）、
+`host-capability.ts`（保留能力类 `host` 方法）、`validate-package.ts`（入世校验 dry-run）、
+`periodic.ts`（`schema.periodic` 定时触发）。
 
 ## 运行流程
 
@@ -125,15 +127,16 @@ npm run format:check
 npm test
 ```
 
-| 测试位置                                                                                      | 覆盖                                                                         |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `test/host-integration.test.ts`                                                               | 入站面：seed → start → status.loaded、停机、event 广播、listen 失败收口      |
-| `test/host-effect.test.ts`                                                                    | 效果：审计先落、回灌续跑、refused、并发提交串行化                            |
-| `test/host-generation.test.ts`                                                                | 世代跟随：`add_gen` / `set_active` / `retire`、依赖漂移与退役、双写者        |
-| `test/host-projection.test.ts`、`test/host-python.test.ts`                                    | 投影只读、跨语言（Python）服务                                               |
-| `test/offline-pack.test.ts`、`test/host-start-wrapper.test.ts`                                | `pack` 入世（新 / 已存在身份、坏包整批拒、与 `seed` 同哈希）/ 服务启动包装器 |
-| `test/host.test.ts`、`test/offline.test.ts`、`test/service-link.test.ts`、`test/wire.test.ts` | 单轮基础 / 离线命令 / 服务协议 / 线格式                                      |
-| `assembly/test/`、`effect/test/`、`ledger/test/`、`projection/test/`                          | 各子包单元与行为不变量                                                       |
+| 测试位置                                                                                      | 覆盖                                                                                    |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `test/host-integration.test.ts`                                                               | 入站面：seed → start → status.loaded、停机、event 广播、listen 失败收口                 |
+| `test/host-effect.test.ts`                                                                    | 效果：审计先落、回灌续跑、refused、并发提交串行化                                       |
+| `test/host-generation.test.ts`                                                                | 世代跟随：`add_gen` / `set_active` / `retire`、依赖漂移与退役、双写者                   |
+| `test/host-projection.test.ts`、`test/host-python.test.ts`                                    | 投影只读、跨语言（Python）服务                                                          |
+| `test/offline-pack.test.ts`、`test/host-start-wrapper.test.ts`                                | `pack` 入世（新 / 已存在身份、坏包整批拒、与 `seed` 同哈希）/ 服务启动包装器            |
+| `test/host.test.ts`、`test/offline.test.ts`、`test/service-link.test.ts`、`test/wire.test.ts` | 单轮基础 / 离线命令 / 服务协议 / 线格式                                                 |
+| `test/host-capability.test.ts`、`test/host-periodic.test.ts`、`test/host-forward.test.ts`     | 保留能力类 `host`（`source.read` / `asset.*` / `validate_package`）/ 定时触发 / 入站转发 |
+| `assembly/test/`、`effect/test/`、`ledger/test/`、`projection/test/`                          | 各子包单元与行为不变量                                                                  |
 
 ## 不做什么
 
