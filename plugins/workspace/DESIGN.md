@@ -25,7 +25,7 @@
   "implements": ["workspace"],
   "methods": { "workspace": ["list", "pick", "add", "remove", "reveal"] },
   "pins": {},
-  "start": "execute/workspace",        // Rust 构建产物名（H15 物化构建）；平台 IO（原生选择器 / 文件管理器），必须起服务（2026-09-20 修订）
+  "start": "node execute/launch.mjs",  // 宿主物化构建后经 launch.mjs 定位 Rust 二进制；平台 IO（原生选择器 / 文件管理器），必须起服务（2026-09-20 修订）
   "protocol": "1",
   "restart": {}, "health": {},
   "state": "recomputable",
@@ -66,10 +66,11 @@
 | `pick` | `workspace.pick`（无参） | — | `{ path }` / `{ cancelled: true }`；调原生选择器，成功记 ③ 最近打开 |
 | `add` | `workspace.add`（无参，读槽） | 槽 `{kind:'workspace.add', workspace, name, path}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入；**当前 `workspaces` body 由 #16 入口 term 读投影后随 args 传入（§1.14）** | 校验 → 计划【batch：写 workspace 新一代 + 清槽 + extern】；失败 → 计划【batch：清槽 + extern{ok:false,error}】（2026-09-20 修订） |
 | `remove` | `workspace.remove`（无参，读槽） | 槽 `{kind:'workspace.remove', workspace}` 由 #16 入口 term 读 `ctx.ids.input.body.slots` 后经 args 传入；**当前 `workspaces` body 由 #16 入口 term 读投影后随 args 传入（§1.14）** | 计划【batch：写 workspace 新一代（删该项）+ 清槽 + extern】（2026-09-20 修订） |
-| `reveal` | `workspace.reveal`（args `{workspace}`） | workspace id；**目标 `path` 由 #16 入口 term 读 `#41` body 后随 args 传入（§1.14）** | 解析 path → 打开文件管理器；`{ok:true}` / `{ok:false,error}`（**不写世界、不经槽**）（2026-09-20 修订） |
+| `reveal` | `workspace.reveal`（args `{workspace}`） | workspace id；**目标 `path` 只按 id 在随 args 传入的 body 里解析（#16 入口 term 读 `#41` body 后随 args 传入，§1.14；不接受未校验的 `args.path`）** | 解析 path → 打开文件管理器；成功记 ③ 最近打开；`{ok:true}` / `{ok:false,error}`（**不写世界、不经槽**）（2026-09-20 修订） |
 
 - **写类走槽、命令无参**（§1.2 第 2 条）：`add` / `remove` 的载荷先写入 #1 输入槽，命令无参、入口 term eff 到本插件；**#16 入口 term 读 `ctx.ids.input.body.slots` 后把槽体经 args 传入**，本插件据 args 构造写计划（本插件服务**不读投影**，服务无写通道，D8）。
 - **`reveal` 不走槽**：它是纯动作（无世界写），故走命令 `args`（argsSchema `{workspace}`）；若走槽则无计划清槽、会污染下一回合。
+- **缺省即拒（破坏性写防线）**：`add` / `remove` 要求 `args.body.workspaces` 与 `args.slots.slots` **显式存在**，缺任一个即 `bad_args`——不得用缺省空对象产出会清空既有工作区 / 其它线程槽的计划。
 - 命令面（`workspace.list` / `pick` / `add` / `remove` / `reveal`）在 #16 声明；本插件只声明能力类方法。
 
 ### `add` 的校验与去重
@@ -77,19 +78,20 @@
 1. **realpath 解析**：绝对化 + `realpath.native`（win32 解 junction / reparse point）——**不是 realpath 不算同一目录**。
 2. **存在 / 是目录 / 可读**：缺失 → `path_not_found`；存在但非目录 → `not_a_directory`；不可读 → `permission_denied`。
 3. **去重**：realpath 已在列表 → `workspace_exists`（extern 带既有 `workspace` id，UI 可直接定位）。
-4. 通过 → body 追加 `{ id, name, path }`（`name` 缺省 basename）→ 计划写回 + 清槽。
+4. **id 唯一性**：`id` 已在列表 → `workspace_exists`（realpath 去重不覆盖重复 id；重复 id 会生成重复条目）。
+5. 通过 → body 追加 `{ id, name, path }`（`name` 缺省 basename）→ 计划写回 + 清槽。
 
 ### 写计划形状（服务返回，宿主填 `id` / `by` / `ref` / `expect_pos`）
 
 ```jsonc
 // add 成功：一条 batch 原子写 workspace 新一代 + 清槽；extern 回执给 #16
 { "$directives": [
-  { kind: "write", op: "batch", args: { ops: [
+  { kind: "write", request: { op: "batch", args: { ops: [
       { op: "put",     args: { body: /* 合并后的 workspace body */ } },
       { op: "add_gen", args: { id: "workspace", payload: { $n: 0 }, pins: {}, sig: { $n: 0 } } },
       { op: "put",     args: { body: /* 清槽：per-thread 键控——{ slots: { …其余键, "<thread_id>": { kind:"idle" } } }，只清本线程键（#1「清槽契约」） */ } },
       { op: "add_gen", args: { id: "input", payload: { $n: 2 }, pins: {}, sig: { $n: 2 } } }
-  ] } },
+  ] } } },
   { kind: "extern", payload: { ok: true, workspace: "<新 id>" } }
 ] }
 ```

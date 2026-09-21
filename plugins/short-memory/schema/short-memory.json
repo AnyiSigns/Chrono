@@ -1,0 +1,12 @@
+{
+  "title": "short-memory（L1 会话摘要 + L2 工作区累积）",
+  "description": "L1：会话 id -> { summary:{goal,decisions[],facts[],open_questions[],files[],next_steps[]}, covered_upto, at, expires_at }，TTL 24h；L2：工作区 id -> { summary:{goal,decisions[],facts[],open_questions[],files[]}, sources[], at }，无 TTL。缺键 = 该会话 / 工作区无记忆。时间由调用方经 bag / 调用帧传入。",
+  "type": "object",
+  "required": ["version", "sessions", "workspaces"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "sessions": { "type": "object", "additionalProperties": true },
+    "workspaces": { "type": "object", "additionalProperties": true }
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "embedding"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 宿主按 Cargo.toml 恢复依赖：包根必须有 Cargo.toml，产物落共享缓存
+# `<root>/state/deps/cargo-target/release/embedding[.exe]`；`execute/launch.mjs` 据此定位二进制。
+# 权重 / tokenizer 经 `include_bytes!` 内嵌：构建期输入由宿主 `assets_manifest` 直拷提供。
+[[bin]]
+name = "embedding"
+path = "execute/main.rs"
+
+[dependencies]
+serde_json = "1"
+# 纯 Rust 正则特性：避免 onig 的 C 依赖（本 tokenizer 的 Split 模式含负向前瞻，需 fancy-regex）。
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+# ONNX Runtime 绑定：构建期下载并缓存 onnxruntime 动态库，`copy-dylibs` 把它放到产物目录。
+ort = "=2.0.0-rc.13"

@@ -45,14 +45,14 @@
 - `default_base_url` / `default_auth_ref_name` / `default_reasoning` 只是**预填模板**，用户可改；实际连接值以 `#2 config` 为准。
 - `reasoning` 档位来源（`#12` 口径）：社区有档位用社区；仅布尔 `true` → 用本 `default_reasoning`（**按 SDK**）；无 → 不显示档位控件（#12 仍默认开推理、用模型默认）。
 
-## 七家差异（规范源：**字段形状已冻结** / **厂商取值待核对**——W0 建包前核对为显式前置任务，2026-09-20 修订）
+## 七家差异（规范源：**字段形状已冻结**；deepseek / zai / kimi 取值**已按 2026 官方文档核对**，其余标 `待核对`）
 
 | # | sdk | impl | protocol | auth_style | reasoning_field | max_tokens_field | 备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 4 | `openai` | protocol | openai-chat | bearer | `reasoning_effort` | max_completion_tokens | 推理模型用 developer 角色 |
-| 5 | `deepseek` | protocol | openai-chat | bearer | `null`（模型决定） | max_tokens | 响应含 `reasoning_content`；待核对 |
+| 5 | `deepseek` | protocol | openai-chat | bearer | `reasoning_effort` | max_tokens | 响应含 `reasoning_content`；**已按 2026 官方文档核对** |
 | 6 | `dashscope` | protocol | openai-chat | bearer | `enable_thinking` | max_tokens | Qwen3 开关式；待核对 |
 | 7 | `google-genai` | **sdk** | —（SDK 托管） | header（`x-goog-api-key`，与 `#7 vendor-google` 2026-09-19 修正同步——原 query 口径作废） | `thinkingConfig.thinkingBudget` | maxOutputTokens | 包 `@google/genai`；**待单独核对** |
-| 8 | `zai` | protocol | openai-chat | bearer | `thinking` | max_tokens | 待核对 |
-| 9 | `kimi` | protocol | openai-chat | bearer | `null` | max_tokens | 待核对 |
+| 8 | `zai` | protocol | openai-chat | bearer | `reasoning_effort` | max_tokens | 标量档位走 `reasoning_effort`；**已按 2026 官方文档核对** |
+| 9 | `kimi` | protocol | openai-chat | bearer | `null` | max_completion_tokens | `max_tokens` 已废弃；**已按 2026 官方文档核对** |
 | 10 | `custom` | protocol | 由 `#2 config.protocol` 给 | 由 config 给 | 由 config 给 | 由 config 给 | 无预填、全手填 |

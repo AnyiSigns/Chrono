@@ -1,0 +1,59 @@
+{
+  "title": "guard（工具调用语义门）",
+  "description": "身份自述 / 数据契约：描述 guard.judge 的入参（bag）与逐 call 判定形状。judge 是纯函数——同输入同输出，不发起 eff、不等待、不取时间、不用随机。危险启发式规则 / 工作区外判据不住本 schema（schema 出生即冻结），住本身份数据世代 body（bag.guard_rules）。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "judge_request": {
+      "type": "object",
+      "description": "judge 的 args（即 bag）；tier / workspace_root / guard_rules 由调用方入口 term 读出随 bag 传入。",
+      "required": ["calls"],
+      "additionalProperties": true,
+      "properties": {
+        "calls": {
+          "type": "array",
+          "description": "待判调用，每项 {port, tool, args, path?}。",
+          "items": { "type": "object" }
+        },
+        "tier": {
+          "enum": ["auto", "severe", "review", "deny"],
+          "description": "当前权限档；缺省 / 未知按 fail-closed 处理。"
+        },
+        "workspace_root": {
+          "type": "string",
+          "description": "工作区根（词法预判基准）；realpath 权威在沙箱。"
+        },
+        "guard_rules": {
+          "type": "object",
+          "description": "危险规则数据（本身份数据世代 body）；缺省用内建机械兜底。"
+        }
+      }
+    },
+    "judge_decision": {
+      "type": "object",
+      "description": "逐 call 一条判定；decisions 与 calls 同序，summary 是各 verdict 计数。",
+      "required": ["index", "port", "tool", "verdict", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "description": "对应 calls 的下标。" },
+        "port": { "type": "string", "description": "能力类名（原样回带）。" },
+        "tool": { "type": "string", "description": "工具名（原样回带）。" },
+        "verdict": { "enum": ["allow", "escalate", "deny"] },
+        "reason": {
+          "enum": [
+            "allowed",
+            "outside_workspace",
+            "dangerous_pattern",
+            "mcp_untrusted",
+            "structural_write",
+            "undeclared_capability",
+            "forbidden_call",
+            "bad_call"
+          ],
+          "description": "固定理由码（词表）。"
+        },
+        "rule": { "type": "string", "description": "命中的规则标识（危险模式 id / mcp 服务器名 / 结构写键 / 越界路径）。" }
+      }
+    }
+  }
+}

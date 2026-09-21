@@ -1,0 +1,10 @@
+{
+  "name": "input",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "输入槽数据身份（per-thread 键控寄存器；无服务、无 pins、无 eff）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -35,7 +35,7 @@
 ```
 
 - **一插件一 slot**（ui-design §15）；增删插件 = 改挂载表，**不改壳代码**（验收 5）。
-- `headless` = 不占 slot 但需在浏览器里运行的前端（如 #38 系统通知，要调浏览器 `Notification` API）；壳按**独立 headless 清单**加载其 `entry.js`，**不进 `state/ui-mounts.json`**、不给布局位。清单形状（③，可重算，启动无表则生成默认值）：`state/ui-headless.json` = `[{ "id": "ui-notify", "entry": "execute/entry.js" }]`——`id` 唯一、`entry` 为**插件包内路径**；壳经**宿主「插件源码读面」`host.source.read`**（`host.md` §五 宿主扩展面；H3 已落地；壳 pin `host` 为唯一加载方）（2026-09-20 修订）取字节，并以**壳同源静态路径**（如 `/assets/headless/ui-notify.js`）服务（**不经 `/p/` 反代**，与「不占端口」一致）；只做浏览器侧能力。
+- `headless` = 不占 slot 但需在浏览器里运行的前端（如 #38 系统通知，要调浏览器 `Notification` API）；壳按**独立 headless 清单**加载其 `entry.js`，**不进 `state/ui-mounts.json`**、不给布局位。清单形状（③，可重算，启动无表则生成默认值）：`state/ui-headless.json` = `[{ "id": "ui-notify", "entry": "web/entry.js" }]`——`id` 唯一、`entry` 为**插件包内路径**；壳经**宿主「插件源码读面」`host.source.read`**（`host.md` §五 宿主扩展面；H3 已落地；壳 pin `host` 为唯一加载方）（2026-09-20 修订）取字节，并以**壳同源静态路径**（如 `/assets/headless/ui-notify.js`）服务（**不经 `/p/` 反代**，与「不占端口」一致）；只做浏览器侧能力。
 - slot 装载：壳取子应用 `entry.js` → `mount(root, api)` → 返回 `{ unmount }`；失败隔离在 slot 内（不影响其它 slot）。
 - **后端入站面（#37 MCP）也走本插件主端口**（`/p/<id>/*` 同源反代）：壳不直连插件服务（红线 3），而是转成宿主入站帧 `forward {identity, command, args}` 由宿主转发到目标插件自己声明的入口（**H8 已落地**）。产品对外**只有一个主端口**。**`/p/<id>/*` 判定规则（写死，2026-09-20 修订）**：`id` **在挂载表内 → 反代到该子应用端口**；**不在挂载表（如 `mcp`）→ 按 identity 构造 `forward` 帧发宿主**（命令名由 `/p/<id>/<cmd>` 映射）——两者共用主端口、不新增对外端口。
 

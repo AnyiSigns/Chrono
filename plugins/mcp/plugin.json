@@ -1,0 +1,48 @@
+{
+  "identity": "mcp",
+  "schema": "schema/mcp.json",
+  "implements": ["mcp"],
+  "methods": {
+    "mcp": ["describe", "invoke", "discover"]
+  },
+  "pins": { "secrets": "secrets" },
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "mcp.describe",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": [
+    {
+      "name": "mcp.in.ping",
+      "entry": "terms/mcp.in.ping.json",
+      "argsSchema": "schema/mcp.in.args.json"
+    },
+    {
+      "name": "mcp.in.tools_list",
+      "entry": "terms/mcp.in.tools_list.json",
+      "argsSchema": "schema/mcp.in.args.json"
+    },
+    {
+      "name": "mcp.in.tools_call",
+      "entry": "terms/mcp.in.tools_call.json",
+      "argsSchema": "schema/mcp.in.args.json"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "Google",
+  "sdk": "google-genai",
+  "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "default_auth_ref_name": "GEMINI_API_KEY",
+  "default_reasoning": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "quirks": {
+    "impl": "sdk",
+    "protocol": null,
+    "sdk_package": "@google/genai",
+    "auth_style": "header",
+    "auth_header": "x-goog-api-key",
+    "system_role": "system",
+    "reasoning_field": "thinkingConfig.thinkingBudget",
+    "reasoning_map": {
+      "low": 1024,
+      "medium": 8192,
+      "high": 24576
+    },
+    "reasoning_response_field": "thought",
+    "max_tokens_field": "maxOutputTokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "唯一走官方 SDK 的预设厂商；三协议自实现不覆盖其原生形态"
+  }
+}

@@ -7,9 +7,11 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
+import { hostPaths } from '../paths.ts'
 import { isSafeIdentityName } from './identity-name.ts'
 import { validateArgsSchema } from './args-schema.ts'
 import {
+  DEFAULT_SCHEMA_BODY,
   isCodeGen,
   latestCodeGen,
   parsePluginDecl,
@@ -25,6 +27,24 @@ import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 export interface PluginEntry {
   name: string
   path?: string
+}
+
+/** 读 `state/plugins.json`；缺文件即空清单；形态非法抛 `bad_plugins_manifest`。 */
+export function readPluginManifest(root: string): PluginEntry[] {
+  const file = hostPaths(root).pluginsFile
+  if (!existsSync(file)) return []
+  const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
+  if (!Array.isArray(parsed)) throw new Error('bad_plugins_manifest')
+  return parsed.map((item) => {
+    if (typeof item !== 'object' || item === null) throw new Error('bad_plugins_manifest')
+    const record = item as { name?: unknown; path?: unknown }
+    if (typeof record.name !== 'string' || record.name.length === 0) {
+      throw new Error('bad_plugins_manifest')
+    }
+    return record.path === undefined
+      ? { name: record.name }
+      : { name: record.name, path: String(record.path) }
+  })
 }
 
 export interface IngestPlan {
@@ -155,7 +175,7 @@ function isSafePackagePath(path: string): boolean {
 
 /** 找第一个逃逸包根的声明路径（schema / 命令入口 / 参数 schema / members）；无则 null。 */
 function unsafeDeclaredPath(decl: PluginDecl): string | null {
-  const candidates: string[] = [decl.schema]
+  const candidates: string[] = decl.schema === null ? [] : [decl.schema]
   for (const command of decl.commands) {
     candidates.push(command.entry)
     if (command.argsSchema !== undefined) candidates.push(command.argsSchema)
@@ -170,7 +190,8 @@ function ignoredRequiredPath(
   decl: PluginDecl,
   patterns: string[][],
 ): string | null {
-  const candidates = new Set<string>(['plugin.json', 'package.json', 'README.md', decl.schema])
+  const candidates = new Set<string>(['plugin.json', 'package.json', 'README.md'])
+  if (decl.schema !== null) candidates.add(decl.schema)
   for (const lock of LOCK_FILES) {
     if (existsSync(join(pkgRoot, lock))) candidates.add(lock)
   }
@@ -309,8 +330,15 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
   const commitIndex = ops.length
   ops.push({ op: 'put', args: { body: { tree: { $n: packed.rootTreeIndex }, meta } } })
 
-  const schemaJson = readJsonFile(join(pkgRoot, decl.schema))
-  if (schemaJson === undefined) return { ok: false, reasons: ['missing_schema'] }
+  // `schema` 省略 / 空串：宿主机械提供最小默认体（零 schema 的 UI 插件），仍 put 成 def 供身份引用
+  let schemaJson: Json
+  if (decl.schema === null) {
+    schemaJson = DEFAULT_SCHEMA_BODY
+  } else {
+    const read = readJsonFile(join(pkgRoot, decl.schema))
+    if (read === undefined) return { ok: false, reasons: ['missing_schema'] }
+    schemaJson = read
+  }
   const schemaHash = H({ body: schemaJson } as unknown as Json)
   const schemaIndex = ops.length
   ops.push({ op: 'put', args: { body: schemaJson } })
@@ -380,4 +408,25 @@ export function planPack(world: World, dir: string, identity?: string): IngestRe
     return { ok: false, reasons: ['missing_plugin_json'] }
   }
   return planIngestAtRoot(world, pkgRoot, identity)
+}
+
+/**
+ * 按 `state/plugins.json` 解析某身份的**投递包源目录**（物化时直拷大资产用）。
+ * 清单未登记 / 解析不到 / 清单损坏 → null（fail-closed，调用方按缺失处理）。
+ */
+export function resolvePluginSourceRoot(root: string, identity: string): string | null {
+  let entries: PluginEntry[]
+  try {
+    entries = readPluginManifest(root)
+  } catch {
+    return null
+  }
+  for (const entry of entries) {
+    const pkgRoot = resolvePackageRoot(entry, root)
+    if (pkgRoot === null) continue
+    const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
+    if (typeof rawDecl !== 'object' || rawDecl === null || Array.isArray(rawDecl)) continue
+    if ((rawDecl as { [k: string]: Json })['identity'] === identity) return pkgRoot
+  }
+  return null
 }

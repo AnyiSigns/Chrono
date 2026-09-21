@@ -1,0 +1,149 @@
+/* tokens.v1.css —— 全局设计语言 token 唯一来源。
+   仅含 CSS 自定义属性 + data-theme 分支 + reduced-motion 分支，无任何组件样式。
+   业务插件只准引用本文件 token，禁止硬编码色值。 */
+
+:root {
+  /* §2 颜色（浅色默认） */
+  --c-bg: #FAFAF9;
+  --c-surface: #FDFDFC;
+  --c-sidebar: #F5F5F3;
+  --c-selection: #ECECEA;
+  --c-border: #E3E2DF;
+  --c-text: #1F1E1C;
+  --c-text-2: #6E6D69;
+  --c-text-3: #9C9B96;
+  --c-accent: #46548C;
+  --c-accent-text: #FFFFFF;
+  --c-danger: #B4342A;
+  --c-danger-bg: #F7E9E7;
+  --c-warning: #9A6B15;
+  --c-warning-bg: #F5EDDC;
+  --c-success: #3E7A4E;
+  --c-success-bg: #E7F0E9;
+  --c-info: #46548C;
+  --c-info-bg: #E9EBF4;
+  --c-glass: rgba(253, 253, 252, .82);
+
+  /* §3 字体 */
+  --font-sans: -apple-system, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, "Sarasa Mono SC", monospace;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --leading-body: 22px;
+  --leading-code: 20px;
+  --weight-regular: 400;
+  --weight-strong: 600;
+
+  /* §4 间距与布局 */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --sidebar-w-expanded: 260px;
+  --sidebar-w-collapsed: 56px;
+  --sidebar-w-min: 220px;
+  --sidebar-w-max: 420px;
+  --list-item-h: 34px;
+  --msg-gap: 16px;
+  --msg-max-w: 720px;
+  --bubble-max-w: 72%;
+  --settings-w: clamp(640px, 65vw, 1120px);
+  --settings-h: 86vh;
+  --settings-nav-w: 160px;
+  --guide-max-w: 640px;
+  --dock-max-h: 40vh;
+  --composer-max-h: 30vh;
+  --main-min-h: 120px;
+
+  /* §5 圆角 */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+
+  /* §6 边框与层级 */
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, .10);
+  --glass-blur: 12px;
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--c-accent) 8%, transparent);
+
+  /* §7 动效 */
+  --motion-fast: 100ms ease-out;
+  --motion-base: 150ms ease-out;
+  --motion-slow: 200ms ease-out;
+
+  /* §8 图标尺寸 */
+  --icon-sm: 16px;
+  --icon-md: 20px;
+
+  /* §16.11 层级栈（写死，壳统一；子应用不得自造 z-index） */
+  --z-topbar: 10;
+  --z-popover: 20;
+  --z-dock: 30;
+  --z-banner: 40;
+  --z-modal: 60;
+  --z-toast: 70;
+  --z-lightbox: 70;
+}
+
+[data-theme="dark"] {
+  /* §2 颜色（深色） */
+  --c-bg: #171615;
+  --c-surface: #1E1D1B;
+  --c-sidebar: #141312;
+  --c-selection: #2A2927;
+  --c-border: rgba(255, 255, 255, .10);
+  --c-text: #E8E6E3;
+  --c-text-2: #A3A19B;
+  --c-text-3: #6F6D68;
+  --c-accent: #8E9BD4;
+  --c-accent-text: #1A1A24;
+  --c-danger: #E88A80;
+  --c-danger-bg: rgba(232, 138, 128, .12);
+  --c-warning: #D9AE5B;
+  --c-warning-bg: rgba(217, 174, 91, .12);
+  --c-success: #7FC795;
+  --c-success-bg: rgba(127, 199, 149, .12);
+  --c-info: #8E9BD4;
+  --c-info-bg: rgba(142, 155, 212, .12);
+  --c-glass: rgba(30, 29, 27, .84);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --c-bg: #171615;
+    --c-surface: #1E1D1B;
+    --c-sidebar: #141312;
+    --c-selection: #2A2927;
+    --c-border: rgba(255, 255, 255, .10);
+    --c-text: #E8E6E3;
+    --c-text-2: #A3A19B;
+    --c-text-3: #6F6D68;
+    --c-accent: #8E9BD4;
+    --c-accent-text: #1A1A24;
+    --c-danger: #E88A80;
+    --c-danger-bg: rgba(232, 138, 128, .12);
+    --c-warning: #D9AE5B;
+    --c-warning-bg: rgba(217, 174, 91, .12);
+    --c-success: #7FC795;
+    --c-success-bg: rgba(127, 199, 149, .12);
+    --c-info: #8E9BD4;
+    --c-info-bg: rgba(142, 155, 212, .12);
+    --c-glass: rgba(30, 29, 27, .84);
+    --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "智能体数据身份（模板 / 实例（人格）/ 通道三条链式索引；无服务、无 pins、无命令）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -45,6 +45,8 @@ export interface PackageSpec {
   files?: Record<string, string>
   terms?: Record<string, string>
   schema?: Record<string, unknown>
+  /** 省略 `plugin.json.schema` 字段与包内 schema 文件（零 schema 插件）。 */
+  omitSchema?: boolean
   packageJson?: Record<string, unknown>
 }
 
@@ -59,7 +61,7 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
   const start = spec.start ?? ''
   const pluginJson = {
     identity: spec.identity,
-    schema: 'schema/plugin.schema.json',
+    ...(spec.omitSchema ? {} : { schema: 'schema/plugin.schema.json' }),
     implements: spec.implements ?? [],
     methods,
     pins: spec.pins ?? {},
@@ -93,14 +95,16 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
     },
   )
   writeFile(join(pkgRoot, 'README.md'), `# ${spec.identity}\n`)
-  writeJson(
-    pkgRoot,
-    'schema/plugin.schema.json',
-    spec.schema ?? {
-      type: 'object',
-      title: `${spec.identity} identity schema`,
-    },
-  )
+  if (!spec.omitSchema) {
+    writeJson(
+      pkgRoot,
+      'schema/plugin.schema.json',
+      spec.schema ?? {
+        type: 'object',
+        title: `${spec.identity} identity schema`,
+      },
+    )
+  }
   if (start.trim().length > 0) {
     writeFile(join(pkgRoot, 'execute/main.js'), FIXTURE_SERVICE_MAIN)
   }

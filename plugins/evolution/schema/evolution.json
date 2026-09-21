@@ -1,0 +1,268 @@
+{
+  "title": "evolution（进化台账：trace / evidence / proposals / verdicts）",
+  "description": "自进化环的唯一落点：body 四条链头 = { version, trace:{tail,count}, evidence:{tail,count}, proposals:{tail,count}, verdicts:{tail,count} }。tail = {\"def\":\"<链头条目 def 哈希>\"} 或 null（空链）；四类条目各自成 def、带 prev 成链，不在 body 里列全部条目（避免全量重写）。条目 body 由宿主投影引用闭包解析进 ids.evolution.refs。`trace_entry` / `evidence_entry` / `proposal_entry` / `verdict_entry` 四个键只声明各类条目的平铺形状，不是 body 自身的字段。轨迹只存摘要 + 引用，正文不重复存；从 verdict 可反查 proposal → evidence → trace → eff_log（全链可溯源）。形态校验归写入端（宿主 v1 不校验身份数据）。",
+  "type": "object",
+  "required": ["version", "trace", "evidence", "proposals", "verdicts"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "trace": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "轨迹链索引（高频层，可清理；清理只动索引、不动被 verdict 引用的轨迹）。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<trace 条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "证据链索引（低频层，永久保留）。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<evidence 条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "proposals": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "提案链索引（低频层，永久保留）。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<proposal 条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "verdicts": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "判定链索引（低频层，永久保留；采纳与拒绝都写）。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<verdict 条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "trace_entry": {
+      "title": "trace 条目（回合尾一次写，单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条 trace 哈希>\"} 或 null（链首）。只存摘要 + 引用，正文在 eff_log / 世界数据里。",
+      "required": ["kind", "run", "session", "workspace_id", "steps", "outcome", "at", "prev"],
+      "properties": {
+        "kind": { "const": "trace" },
+        "run": { "type": "string" },
+        "session": { "type": "string" },
+        "workspace_id": { "type": "string", "description": "必填：证据聚类按它分区。" },
+        "graph": { "type": "string", "description": "当时 active 图的 def 哈希（64 位小写 hex）。" },
+        "steps": {
+          "type": "array",
+          "description": "每步一条（解释器内收集、回合尾随 trace 写入）。",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "node_index": { "type": "integer" },
+              "iter": { "type": "integer" },
+              "contract_id": { "type": "string" },
+              "chosen_instance": { "type": "string" },
+              "chosen_agent": { "description": "选中人格（instance id）或 null。" },
+              "verdict": { "enum": ["pass", "fail"] },
+              "refusal": { "description": "null 或 'capability_mismatch'。" },
+              "post_failed": { "description": "verdict=fail 的原因：null 或 'malformed_tool_call'。" },
+              "l1_iters": { "type": "integer", "description": "L1 自治迭代次数。" },
+              "l1_maxed": { "type": "boolean", "description": "L1 是否打满（no_progress 证据来源）。" },
+              "verify": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "仅 verify 节点：{ passed, skipped }（近 oracle 信号）或 null。",
+                "properties": {
+                  "passed": { "type": "boolean" },
+                  "skipped": { "type": "boolean" }
+                }
+              },
+              "usage": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "tokens": { "type": "integer" },
+                  "calls": { "type": "integer" },
+                  "tool_calls": { "type": "integer" },
+                  "walltime_ms": { "type": "integer" }
+                }
+              },
+              "eff_log": {
+                "type": "array",
+                "description": "每步效果记录：{ step, iter, port, method, args_hash, result_hash, outcome }；post dense 信号与影子配对的底座。",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "step": { "type": "integer" },
+                    "iter": { "type": "integer" },
+                    "port": { "type": "string" },
+                    "method": { "type": "string" },
+                    "args_hash": { "type": "string" },
+                    "result_hash": { "type": "string" },
+                    "outcome": { "enum": ["ok", "error", "transport_failed", "cancelled"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "directives_summary": { "description": "本次 run directives 摘要：{\"def\":hash} 或 null（影子回放数据载体）。" },
+        "ctx_summary": { "description": "轮首投影 ctx 摘要：{\"def\":hash} 或 null（影子回放数据载体）。" },
+        "refused_at": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "拒绝短路位置 { node_index, iter, code, attributable_to } 或 null；图里不可见，必须可还原。",
+          "properties": {
+            "node_index": { "type": "integer" },
+            "iter": { "type": "integer" },
+            "code": { "type": "string" },
+            "attributable_to": { "type": "string" }
+          }
+        },
+        "branch_not_taken": { "type": "integer", "description": "未触发分支的聚合计数（0 计费）。" },
+        "link_taken": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "from": { "type": "integer" },
+              "to_contract": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "outcome": { "enum": ["done", "refused", "idle", "cancelled"], "description": "内核四态。" },
+        "at": { "type": "string" },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    },
+    "evidence_entry": {
+      "title": "evidence 条目（单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条 evidence 哈希>\"} 或 null（链首）。用户请求也是一等证据（class='user_request'，带原始消息 def）。",
+      "required": ["kind", "id", "class", "cluster_key", "n", "window", "traces", "at", "prev"],
+      "properties": {
+        "kind": { "const": "evidence" },
+        "id": { "type": "string" },
+        "class": {
+          "enum": [
+            "failure_cluster",
+            "post_failure",
+            "cost_anomaly",
+            "instance_drift",
+            "fold_candidate",
+            "no_progress",
+            "verify_failure",
+            "user_request"
+          ]
+        },
+        "cluster_key": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "聚类键 { code, attributable_to, workspace_id, contract_id }（contract_id 可为 null）。",
+          "properties": {
+            "code": { "type": "string" },
+            "attributable_to": { "type": "string" },
+            "workspace_id": { "type": "string" },
+            "contract_id": { "description": "契约 id 或 null。" }
+          }
+        },
+        "n": { "type": "integer", "description": "证据规模（样本数）。" },
+        "window": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "观察窗口 { from_run, to_run }。",
+          "properties": {
+            "from_run": { "type": "string" },
+            "to_run": { "type": "string" }
+          }
+        },
+        "traces": {
+          "type": "array",
+          "description": "支撑该证据的轨迹条目：每项 {\"def\":\"<trace 条目哈希>\"}。",
+          "items": {
+            "type": "object",
+            "required": ["def"],
+            "additionalProperties": true,
+            "properties": { "def": { "type": "string" } }
+          }
+        },
+        "source_message": { "description": "class=user_request：原始消息 {\"def\":hash} 或 null。" },
+        "at": { "type": "string" },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    },
+    "proposal_entry": {
+      "title": "proposal 条目（单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条 proposal 哈希>\"} 或 null（链首）。无证据提案直接拒：evidence_ids 必填且非空。",
+      "required": ["kind", "id", "class", "evidence_ids", "patch", "by", "at", "prev"],
+      "properties": {
+        "kind": { "const": "proposal" },
+        "id": { "type": "string" },
+        "class": { "enum": ["binding", "instance_growth", "structure", "fold"] },
+        "evidence_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "必填且非空——无证据提案直接拒。"
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "变更目标 { graph:{\"def\":hash}|null, contract_id, node_id }。",
+          "properties": {
+            "graph": { "description": "图 {\"def\":hash} 或 null。" },
+            "contract_id": { "description": "契约 id 或 null。" },
+            "node_id": { "description": "节点 id 或 null。" }
+          }
+        },
+        "patch": {
+          "type": "object",
+          "required": ["def"],
+          "additionalProperties": true,
+          "description": "变更内容（新图 / 新 Scope / 新绑定）：{\"def\":hash}，fork-only。",
+          "properties": { "def": { "type": "string" } }
+        },
+        "by": { "enum": ["evolve-loop", "user"] },
+        "at": { "type": "string" },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    },
+    "verdict_entry": {
+      "title": "verdict 条目（门禁判定：采纳与拒绝都写，单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条 verdict 哈希>\"} 或 null（链首）。判定单位是候选版本（proposal_ids 打包），被拒不销毁证据。",
+      "required": ["kind", "id", "proposal_ids", "evidence_ids", "result", "gate", "at", "prev"],
+      "properties": {
+        "kind": { "const": "verdict" },
+        "id": { "type": "string" },
+        "proposal_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "打包内全部提案（判定单位 = 候选版本，不是单条提案）。"
+        },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "result": { "enum": ["accepted", "rejected", "undecided"] },
+        "gate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "门禁判定 { mechanical, reason, shadow, human }。",
+          "properties": {
+            "mechanical": { "enum": ["pass", "fail"] },
+            "reason": { "description": "null 或 'llm_chain_max'。" },
+            "shadow": { "description": "影子回放指标 {\"def\":hash} 或 null（零 token）。" },
+            "human": { "description": "null / 'approved' / 'denied'。" }
+          }
+        },
+        "adopted_gen": { "description": "accepted 时的新数据世代 seq（整数）或 null。" },
+        "at": { "type": "string" },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    }
+  }
+}

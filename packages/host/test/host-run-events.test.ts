@@ -1,5 +1,5 @@
 // H10 宿主 run 生命周期事件：run.started / run.finished 经入站广播（impl=host，不落账、不推进），
-// 载荷带 run / thread / status；submit 的 thread 原样回带，缺省为 null。
+// 载荷带 run / thread / status / reasons；submit 的 thread 原样回带，缺省为 null。
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { connect as netConnect } from 'node:net'
@@ -122,7 +122,12 @@ describe('H10 宿主 run 生命周期事件', () => {
     expect(started[0]).toMatchObject({ impl: 'host' })
     expect(startedPayload['thread']).toBe('thread-1')
     expect(finished[0]).toMatchObject({ impl: 'host' })
-    expect(finished[0]['payload']).toMatchObject({ run, thread: 'thread-1', status: 'done' })
+    expect(finished[0]['payload']).toMatchObject({
+      run,
+      thread: 'thread-1',
+      status: 'done',
+      reasons: [],
+    })
   })
 
   it('submit 异常路径：run.started / run.finished 成对且各一次，status=refused + 运维日志', async () => {
@@ -153,12 +158,47 @@ describe('H10 宿主 run 生命周期事件', () => {
       run,
       thread: 'thread-err',
       status: 'refused',
+      reasons: [],
     })
     const failed = readLifecycle(hostPaths(root).lifecycleFile).filter(
       (entry) => entry.event === 'run_failed',
     )
     expect(failed).toHaveLength(1)
     expect(failed[0].reason).toContain('injected run failure')
+  })
+
+  it('refused 收口：run.finished 的 reasons 取自 observations 末条 refused', async () => {
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const frames = await rawCollect(
+      root,
+      {
+        v: '1',
+        id: 'evt-reasons',
+        kind: 'submit',
+        thread: 'thread-reasons',
+        directives: [
+          {
+            kind: 'write',
+            request: { id: 'w-1', op: 'put', args: { pins: { x: 'missing-identity' } }, by: 'c' },
+          },
+        ],
+      },
+      (all) =>
+        all.some(
+          (frame) =>
+            isRecord(frame) && frame['kind'] === 'event' && frame['topic'] === 'run.finished',
+        ),
+    )
+    const finished = frames
+      .filter(isRecord)
+      .filter((frame) => frame['kind'] === 'event' && frame['topic'] === 'run.finished')
+    expect(finished).toHaveLength(1)
+    expect(finished[0]['payload']).toMatchObject({
+      thread: 'thread-reasons',
+      status: 'refused',
+      reasons: ['unresolved_pin'],
+    })
   })
 
   it('command run 也发事件，thread 缺省 null、status 正确', async () => {
@@ -185,7 +225,12 @@ describe('H10 宿主 run 生命周期事件', () => {
       expect(finished).toHaveLength(1)
       const run = (started[0].payload as { run: string }).run
       expect(isRecord(finished[0].payload)).toBe(true)
-      expect(finished[0].payload).toMatchObject({ run, thread: null, status: 'done' })
+      expect(finished[0].payload).toMatchObject({
+        run,
+        thread: null,
+        status: 'done',
+        reasons: [],
+      })
     } finally {
       client.close()
     }

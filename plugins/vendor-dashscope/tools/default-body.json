@@ -1,0 +1,31 @@
+{
+  "name": "DashScope",
+  "sdk": "dashscope",
+  "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "default_auth_ref_name": "DASHSCOPE_API_KEY",
+  "default_reasoning": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "quirks": {
+    "impl": "protocol",
+    "protocol": "openai-chat",
+    "sdk_package": null,
+    "auth_style": "bearer",
+    "auth_header": null,
+    "system_role": "system",
+    "reasoning_field": "enable_thinking",
+    "reasoning_map": {
+      "low": true,
+      "medium": true,
+      "high": true
+    },
+    "reasoning_response_field": "reasoning_content",
+    "max_tokens_field": "max_tokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "compatible-mode（OpenAI 兼容）；思考为布尔开关 enable_thinking（官方标注将废弃，建议 reasoning.effort）"
+  }
+}

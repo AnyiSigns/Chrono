@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EMPTY_HEAD, EMPTY_WORLD, worldRev } from '../../../kernel/index.ts'
+import { EMPTY_HEAD, EMPTY_WORLD, H, worldRev } from '../../../kernel/index.ts'
 import { projectBaseOnly } from '../index.ts'
 import type { Hash, Head, Json, World } from '../../../kernel/index.ts'
 
@@ -67,6 +67,7 @@ type IdentityView = {
   active: Hash | null
   gens: Json[]
   body: Json | null
+  pins: { [name: string]: string } | null
   refs: { [hash: string]: Json }
   next_before: Hash | null
 }
@@ -101,6 +102,8 @@ describe('A14 base_only 投影', () => {
       active: PAYLOAD,
       gens: [{ seq: 0, payload: PAYLOAD }],
       body: { tree: 'tree-hash', meta: { name: 'toy-alpha' } },
+      // commit body 的 tree 指向缺失 def：声明读不出 → pins null（fail-closed，不抛）
+      pins: null,
       refs: {},
       next_before: null,
     })
@@ -119,7 +122,14 @@ describe('A14 base_only 投影', () => {
     expect(record['defs']).toBeUndefined()
     const ids = record['ids'] as { [k: string]: Json }
     const alpha = ids['toy-alpha'] as { [k: string]: Json }
-    expect(Object.keys(alpha).sort()).toEqual(['active', 'body', 'gens', 'next_before', 'refs'])
+    expect(Object.keys(alpha).sort()).toEqual([
+      'active',
+      'body',
+      'gens',
+      'next_before',
+      'pins',
+      'refs',
+    ])
     const gen = (alpha['gens'] as Json[])[0] as { [k: string]: Json }
     expect(Object.keys(gen).sort()).toEqual(['payload', 'seq'])
     // body = payload def 的 body 原样（树是引用，不递归展开）
@@ -185,7 +195,60 @@ describe('A14 base_only 投影', () => {
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
     expect(view.ids['toy-alpha'].body).toEqual({ tree: 'tree-hash', meta: { name: 'toy-alpha' } })
   })
+
+  it('pins：机械读出当前代码世代声明里的表（名 → 被依赖身份名字面值）', () => {
+    const world = worldWithDecl({ 'toy.alpha': 'toy-alpha', 'toy.beta': 'toy-beta' })
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['toy-decl'].pins).toEqual({ 'toy.alpha': 'toy-alpha', 'toy.beta': 'toy-beta' })
+  })
 })
+
+/** 一个带可解析 `plugin.json` 的代码世代身份：tree / blob / commit 齐备，声明含给定 pins。 */
+function worldWithDecl(pins: { [name: string]: string }): World {
+  const decl = {
+    identity: 'toy-decl',
+    schema: 'schema/plugin.schema.json',
+    implements: ['toy.decl'],
+    methods: { 'toy.decl': ['echo'] },
+    pins,
+    start: '',
+    protocol: '1',
+    restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
+    health: { probe: '', interval_ms: 0, timeout_ms: 0 },
+    state: 'recomputable',
+    members: [],
+    commands: [],
+  }
+  const text = JSON.stringify(decl)
+  const blob: Hash = H({ body: text })
+  const entries = [{ name: 'plugin.json', mode: 'file', hash: blob }]
+  const tree: Hash = H({ body: { entries } })
+  const commit: Hash = H({ body: { tree, meta: { name: 'toy-decl' } } })
+  return {
+    defs: {
+      [blob]: { body: text },
+      [tree]: { body: { entries } },
+      [commit]: { body: { tree, meta: { name: 'toy-decl' } } },
+    },
+    ids: {
+      'toy-decl': {
+        id: 'toy-decl',
+        schema: SCHEMA,
+        active: commit,
+        gens: [
+          {
+            seq: 0,
+            payload: commit,
+            pins: {},
+            sig: commit,
+            adopted: { at: 1, by: 'seed', write: 'w-1' },
+          },
+        ],
+        born: { at: 1, by: 'seed' },
+      },
+    },
+  }
+}
 
 /** 构造一个只有数据世代的身份：body = 给定数据，payload def body 不含 tree。 */
 function worldWithDataBody(body: Json, defs: World['defs']): World {

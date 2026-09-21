@@ -1,0 +1,42 @@
+{
+  "identity": "session",
+  "schema": "schema/session.json",
+  "implements": ["session"],
+  "methods": {
+    "session": [
+      "commit",
+      "new_conversation",
+      "select",
+      "rename",
+      "set_title",
+      "delete",
+      "restore",
+      "branch",
+      "deliver"
+    ]
+  },
+  "pins": {},
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "session.commit",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

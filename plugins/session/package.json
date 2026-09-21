@@ -1,0 +1,10 @@
+{
+  "name": "session",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "会话数据 + 提交服务：消息各自成 def（链式 prev）、会话元数据进 body、构造原子写计划",
+  "scripts": {
+    "test": "node --test"
+  }
+}

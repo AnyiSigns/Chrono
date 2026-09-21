@@ -1,0 +1,479 @@
+{
+  "locale": "zh-CN",
+  "ui_unreachable": {
+    "title": "宿主不可达",
+    "body": "与宿主的连接已断开。确认宿主在运行，然后重试。",
+    "action": "重试"
+  },
+  "ui_boot_failed": {
+    "title": "界面加载失败",
+    "body": "这个界面未能启动。重试可重新加载。",
+    "action": "重试"
+  },
+  "ui_version_mismatch": {
+    "title": "界面版本不符",
+    "body": "界面与壳的契约版本不一致。更新插件后重试。",
+    "action": "重试"
+  },
+  "shell_disconnected": {
+    "title": "与宿主断开",
+    "body": "正在重连…",
+    "action": "重试"
+  },
+  "shell_reconnected": {
+    "title": "已重新连接",
+    "body": "与宿主的连接已恢复。"
+  },
+  "shell_tokens_fallback": {
+    "title": "样式降级",
+    "body": "设计 token 未能加载，已用最小样式兜底。"
+  },
+  "model_auth_failed": {
+    "title": "模型鉴权失败",
+    "body": "密钥被拒绝或已失效。检查厂商配置中的密钥，然后重试。"
+  },
+  "model_rate_limited": {
+    "title": "模型限流",
+    "body": "请求过于频繁。稍后重试，或更换模型端点。"
+  },
+  "model_bad_request": {
+    "title": "模型请求无效",
+    "body": "请求参数不符合该模型的要求。检查模型名与参数后重试。"
+  },
+  "model_server_error": {
+    "title": "模型服务错误",
+    "body": "模型服务端返回错误。稍后重试。"
+  },
+  "model_timeout": {
+    "title": "模型超时",
+    "body": "模型在等待上限内未返回。重试，或改用更快的模型。"
+  },
+  "model_stream_broken": {
+    "title": "模型流中断",
+    "body": "流式响应中途断开。重试可继续本次生成。"
+  },
+  "model_network_error": {
+    "title": "模型网络错误",
+    "body": "无法连接模型端点。检查网络与端点地址后重试。"
+  },
+  "model_unsupported": {
+    "title": "模型不受支持",
+    "body": "当前实现不支持这个模型或协议。改用受支持的模型。"
+  },
+  "discover_auth_failed": {
+    "title": "发现鉴权失败",
+    "body": "服务拒绝了这个密钥。检查密钥后重试。"
+  },
+  "discover_bad_url": {
+    "title": "发现地址无效",
+    "body": "端点地址格式不正确。检查地址后重试。"
+  },
+  "discover_unsupported": {
+    "title": "发现不受支持",
+    "body": "该端点不支持自动发现。手动填写模型信息。"
+  },
+  "discover_network": {
+    "title": "发现网络错误",
+    "body": "无法访问发现端点。检查网络后重试。"
+  },
+  "approval_pending": {
+    "title": "等待审批",
+    "body": "有调用在等待你的裁决。在停靠带处理。"
+  },
+  "approval_expired": {
+    "title": "审批已过期",
+    "body": "这条审批等待超时，未自动裁决。按需重新发起。"
+  },
+  "approval_denied": {
+    "title": "调用被拒绝",
+    "body": "你拒绝了这次调用。该调用未执行。"
+  },
+  "approval_queue_full": {
+    "title": "审批队列已满",
+    "body": "待审批项过多，新调用暂不能入队。先处理现有条目。"
+  },
+  "sandbox_unsupported": {
+    "title": "沙箱不可用",
+    "body": "当前平台或运行时缺少沙箱后端。换用受支持的环境。"
+  },
+  "sandbox_setup_failed": {
+    "title": "沙箱初始化失败",
+    "body": "沙箱后端未能就绪。检查运行时配置后重试。"
+  },
+  "guard_denied": {
+    "title": "调用被拒绝",
+    "body": "语义门判定该调用不允许执行。调整调用或权限档。"
+  },
+  "guard_escalated": {
+    "title": "需要升级审批",
+    "body": "该调用超出当前档位，需要人工裁决。"
+  },
+  "tool_failed": {
+    "title": "工具执行失败",
+    "body": "工具返回失败。查看详情后重试。"
+  },
+  "tool_timeout": {
+    "title": "工具超时",
+    "body": "工具在时限内未完成。重试，或调大该工具的超时。"
+  },
+  "tool_bad_tool_decl": {
+    "title": "工具声明不完整",
+    "body": "工具缺少描述四要素或参数说明。补全声明后重新装载。"
+  },
+  "tool_unknown_tool": {
+    "title": "未知工具",
+    "body": "目录里没有这个工具。检查工具名后重试。"
+  },
+  "tool_workspace_missing": {
+    "title": "缺少工作区",
+    "body": "相对路径调用需要工作区。先添加工作目录。"
+  },
+  "tool_needs_approval": {
+    "title": "需要审批",
+    "body": "该工具调用超出当前档位，等待裁决后执行。"
+  },
+  "tool_denied": {
+    "title": "调用被拒绝",
+    "body": "语义门拒绝了这次调用。该调用未执行。"
+  },
+  "tool_bad_args": {
+    "title": "工具参数不符",
+    "body": "参数不符合工具的声明。检查参数后重试。"
+  },
+  "mcp_restart_exhausted": {
+    "title": "MCP 服务器反复退出",
+    "body": "重启次数超过上限，该条目已隔离。检查服务器配置后重试。"
+  },
+  "mcp_server_failed": {
+    "title": "MCP 服务器失败",
+    "body": "外部服务器未能启动或响应。检查命令与参数。"
+  },
+  "mcp_entry_isolated": {
+    "title": "MCP 条目已隔离",
+    "body": "该条目因失败被隔离，不影响其它工具。修复后重新确认。"
+  },
+  "mcp_discover_failed": {
+    "title": "MCP 发现失败",
+    "body": "无法获取外部服务器工具清单。稍后重试。"
+  },
+  "plugin_validate_failed": {
+    "title": "插件校验失败",
+    "body": "候选包未通过机械校验。按错误列表修正后重试。"
+  },
+  "plugin_write_failed": {
+    "title": "插件写入失败",
+    "body": "写计划未落账。检查校验凭据后重试。"
+  },
+  "plugin_isolated": {
+    "title": "插件已隔离",
+    "body": "该插件装载失败并已隔离，依赖它的分支不可用。修复后重新入世。"
+  },
+  "plugin_hidden": {
+    "title": "插件不可见",
+    "body": "该身份被可见性过滤排除。换一个目标。"
+  },
+  "plugin_validate_required": {
+    "title": "缺少校验凭据",
+    "body": "写入前必须先校验候选包。重新校验后再写。"
+  },
+  "plugin_identity_mismatch": {
+    "title": "身份名不符",
+    "body": "候选包声明的身份名与目标不一致。检查身份名。"
+  },
+  "plugin_unresolved_pin": {
+    "title": "引脚解析不到",
+    "body": "依赖的身份不存在或未激活。先装载依赖身份。"
+  },
+  "plugin_bad_candidate": {
+    "title": "候选包非法",
+    "body": "候选包缺件或含不安全路径。修正后重试。"
+  },
+  "plugin_source_too_large": {
+    "title": "候选源码过大",
+    "body": "源码树超过大小上限。精简文件后重试。"
+  },
+  "plugin_too_many_files": {
+    "title": "候选文件过多",
+    "body": "文件数超过上限。精简包内容后重试。"
+  },
+  "fs_denied": {
+    "title": "路径被拒绝",
+    "body": "该路径超出当前权限档允许的范围。调整档位或换路径。"
+  },
+  "net_denied": {
+    "title": "网络被拒绝",
+    "body": "该网络访问超出当前权限档允许的范围。调整档位后重试。"
+  },
+  "edit_conflict": {
+    "title": "编辑冲突",
+    "body": "目标内容已变化，未写入。重新读取后再改。"
+  },
+  "binary_unsupported": {
+    "title": "二进制不受支持",
+    "body": "该操作只支持文本。二进制请走资产面。"
+  },
+  "too_large": {
+    "title": "内容过大",
+    "body": "内容超过上限。分段处理或改用资产面。"
+  },
+  "bad_path": {
+    "title": "路径非法",
+    "body": "路径形态不正确。检查路径后重试。"
+  },
+  "path_not_found": {
+    "title": "路径不存在",
+    "body": "目标路径不存在。检查后重试。"
+  },
+  "not_a_directory": {
+    "title": "不是目录",
+    "body": "目标路径不是目录。检查后重试。"
+  },
+  "bad_args": {
+    "title": "参数不符",
+    "body": "参数不符合声明。检查参数后重试。"
+  },
+  "unknown_command": {
+    "title": "未知命令",
+    "body": "声明里没有这个命令名。检查命令名。"
+  },
+  "unknown_run": {
+    "title": "未知回合",
+    "body": "该回合不存在或已结束。刷新后重试。"
+  },
+  "not_found": {
+    "title": "未找到",
+    "body": "目标不存在。检查后重试。"
+  },
+  "transport_failed": {
+    "title": "调用未执行",
+    "body": "与服务的连接中断或超时。重试可再试一次。"
+  },
+  "internal": {
+    "title": "内部错误",
+    "body": "宿主内部错误。查看日志后重试。"
+  },
+  "protocol_mismatch": {
+    "title": "协议版本不符",
+    "body": "客户端与宿主的协议版本不一致。更新后重试。"
+  },
+  "handshake_failed": {
+    "title": "握手失败",
+    "body": "插件服务的自述与声明不符。检查插件后重新装载。"
+  },
+  "unresolved_cap": {
+    "title": "能力解析不到",
+    "body": "依赖里没有这个能力名。检查插件的依赖声明。"
+  },
+  "not_loaded": {
+    "title": "依赖未装载",
+    "body": "依赖的身份未就绪。先装载依赖身份后重试。"
+  },
+  "stale": {
+    "title": "依赖已失效",
+    "body": "依赖的实现已失效。重新装载依赖后重试。"
+  },
+  "cycle": {
+    "title": "依赖成环",
+    "body": "依赖关系形成环。调整依赖声明后重新装载。"
+  },
+  "writer_busy": {
+    "title": "写入冲突",
+    "body": "另一个写入正在进行。稍后重试。"
+  },
+  "bad_asset": {
+    "title": "资产形态非法",
+    "body": "资产编码、类型或哈希不正确。检查后重试。"
+  },
+  "asset_too_large": {
+    "title": "资产过大",
+    "body": "资产超过 8 MiB 上限。改用更小的文件。"
+  },
+  "asset_missing": {
+    "title": "资产缺失",
+    "body": "资产字节不在资产区。重新上传后重试。"
+  },
+  "too_many_runs": {
+    "title": "并发回合过多",
+    "body": "后台回合数超过上限。稍后重试。"
+  },
+  "bad_args_schema": {
+    "title": "参数声明非法",
+    "body": "参数 schema 含不支持的写法。修正声明后重新装载。"
+  },
+  "bad_directive": {
+    "title": "指令形态非法",
+    "body": "指令的字段或种类不正确。检查后重试。"
+  },
+  "unresolved_pin": {
+    "title": "引脚解析不到",
+    "body": "依赖的身份不存在或未激活。先装载依赖身份。"
+  },
+  "bad_worldignore": {
+    "title": "排除表非法",
+    "body": "排除表命中了契约必需文件。修正后重新入世。"
+  },
+  "term_cycle": {
+    "title": "判定成环",
+    "body": "包内判定引用成环。修正后重新入世。"
+  },
+  "bad_term_ref": {
+    "title": "判定引用无效",
+    "body": "引用指向包内不存在的成员。修正后重新入世。"
+  },
+  "identity_mismatch": {
+    "title": "身份名不符",
+    "body": "包内声明的身份名与目标不一致。检查身份名。"
+  },
+  "protected_pin_removed": {
+    "title": "受保护依赖被删",
+    "body": "新世代删除了受保护身份的依赖。恢复该依赖后重新入世。"
+  },
+  "hidden_identity": {
+    "title": "身份不可见",
+    "body": "该身份被可见性过滤排除。换一个目标。"
+  },
+  "validate_required": {
+    "title": "缺少校验凭据",
+    "body": "写入前必须先校验候选包。重新校验后再写。"
+  },
+  "restart_exhausted": {
+    "title": "重启次数用尽",
+    "body": "服务反复退出并超过重启上限。检查服务后重新装载。"
+  },
+  "bad_start_wrapper": {
+    "title": "启动包装器非法",
+    "body": "启动包装器为空或含非法字符。修正后重启宿主。"
+  },
+  "bad_call_timeout": {
+    "title": "超时选项非法",
+    "body": "调用超时不是合法正整数。修正后重启宿主。"
+  },
+  "picker_unavailable": {
+    "title": "选择器不可用",
+    "body": "当前没有图形会话，无法打开原生选择器。手动输入路径。"
+  },
+  "timeout": {
+    "title": "操作超时",
+    "body": "操作在时限内未完成。重试，或调大超时。"
+  },
+  "oom": {
+    "title": "内存超限",
+    "body": "操作超过内存上限。缩小输入后重试。"
+  },
+  "cpu_exceeded": {
+    "title": "CPU 超限",
+    "body": "操作超过 CPU 上限。缩小输入后重试。"
+  },
+  "output_max": {
+    "title": "输出超限",
+    "body": "输出超过上限。缩小输出后重试。"
+  },
+  "procs_max": {
+    "title": "进程数超限",
+    "body": "并发进程数超过上限。稍后重试。"
+  },
+  "output_truncated": {
+    "title": "输出已截断",
+    "body": "输出超过上限，只保留前段。缩小输出后重试。"
+  },
+  "nonzero_exit": {
+    "title": "命令非零退出",
+    "body": "命令以非零状态结束。检查命令输出。"
+  },
+  "bad_url": {
+    "title": "地址非法",
+    "body": "地址格式不正确。检查地址后重试。"
+  },
+  "fetch_failed": {
+    "title": "抓取失败",
+    "body": "无法获取该地址。检查网络后重试。"
+  },
+  "http_status": {
+    "title": "响应状态异常",
+    "body": "服务返回了错误状态。稍后重试。"
+  },
+  "all_sources_failed": {
+    "title": "全部来源失败",
+    "body": "所有来源都未返回结果。稍后重试。"
+  },
+  "session_not_found": {
+    "title": "会话不存在",
+    "body": "目标浏览器会话不存在。重新打开会话。"
+  },
+  "navigate_failed": {
+    "title": "导航失败",
+    "body": "页面未能打开。检查地址后重试。"
+  },
+  "element_not_found": {
+    "title": "元素未找到",
+    "body": "页面上没有匹配的元素。检查选择器。"
+  },
+  "browser_unsupported": {
+    "title": "浏览器不受支持",
+    "body": "当前环境缺少可用的浏览器。检查运行环境。"
+  },
+  "permission_denied": {
+    "title": "权限被拒绝",
+    "body": "该操作超出当前权限档。调整档位后重试。"
+  },
+  "workspace_exists": {
+    "title": "工作区已存在",
+    "body": "该路径已在工作区列表中。换一个路径。"
+  },
+  "reveal_failed": {
+    "title": "打开位置失败",
+    "body": "无法在文件管理器中打开。检查路径。"
+  },
+  "workspace_missing": {
+    "title": "工作区缺失",
+    "body": "没有可用的工作区。先添加工作目录。"
+  },
+  "notify_permission_denied": {
+    "title": "通知未授权",
+    "body": "请在浏览器站点设置中允许通知。"
+  },
+  "notify_approval_pending": {
+    "title": "待审批",
+    "body": "有调用在等待裁决。"
+  },
+  "notify_orchestration_change": {
+    "title": "待审批：编排变更",
+    "body": "有编排变更在等待裁决。"
+  },
+  "notify_plugin_write": {
+    "title": "待审批：插件写入",
+    "body": "有插件写入在等待裁决。"
+  },
+  "notify_run_finished": {
+    "title": "回合完成",
+    "body": "回合已完成。"
+  },
+  "notify_run_failed": {
+    "title": "回合失败",
+    "body": "回合以失败收口。"
+  },
+  "notify_model_error": {
+    "title": "模型错误",
+    "body": "模型调用失败。"
+  },
+  "notify_disconnected": {
+    "title": "断线",
+    "body": "与宿主断开，重连中…"
+  },
+  "notify_reconnected": {
+    "title": "已重连",
+    "body": "已恢复与宿主的连接。"
+  },
+  "notify_orchestration_unhealthy": {
+    "title": "编排连续失败",
+    "body": "编排连续失败 {count} 次，可在设置 → 编排回滚到上一世代。"
+  },
+  "notify_question_pending": {
+    "title": "提问待作答",
+    "body": "有提问在等待作答。"
+  },
+  "unknown": {
+    "title": "出现问题",
+    "body": "错误码 {code} 暂无说明。重试可再试一次。"
+  }
+}

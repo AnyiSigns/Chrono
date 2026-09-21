@@ -44,6 +44,24 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     }
   })
 
+  it('schema 省略 / 空串 → ok:true 且 schema 为 null（零 schema 合法）', () => {
+    const omitted = baseDecl()
+    delete (omitted as Record<string, Json>)['schema']
+    const withoutSchema = parsePluginDecl(omitted)
+    expect(withoutSchema.ok).toBe(true)
+    if (withoutSchema.ok) expect(withoutSchema.decl.schema).toBeNull()
+
+    const emptySchema = parsePluginDecl(baseDecl({ schema: '' }))
+    expect(emptySchema.ok).toBe(true)
+    if (emptySchema.ok) expect(emptySchema.decl.schema).toBeNull()
+  })
+
+  it('schema 显式 null / 非字符串 → ok:false（省略才是唯一写法）', () => {
+    expect(parsePluginDecl(baseDecl({ schema: null })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ schema: 1 })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ schema: {} })).ok).toBe(false)
+  })
+
   it('state 非 recomputable（如 durable）→ ok:false', () => {
     expect(parsePluginDecl(baseDecl({ state: 'durable' })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ state: 'ephemeral' })).ok).toBe(false)

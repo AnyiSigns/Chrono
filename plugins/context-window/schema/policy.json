@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "budget": {
+    "margin_ratio": 0.05,
+    "default_context_window": 8192,
+    "default_max_output": 1024
+  },
+  "quota": {
+    "l2": 0.08,
+    "l1": 0.08,
+    "skill": 0.1,
+    "recall": 0.12,
+    "style": 0.03
+  },
+  "prefix": {
+    "stable": ["prompt", "tools"],
+    "order": ["l2", "l1", "skill", "recall", "history", "style"]
+  },
+  "thresholds": {
+    "compress_hint_ratio": 0.75
+  },
+  "messages": {
+    "compress_hint": "上下文接近预算上限；请先用自然语言总结并压缩较早的上下文，再继续。",
+    "interleave_guidance": "请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。"
+  },
+  "modality_fallback": {
+    "text_template": "[{kind} 附件：{name}（{mime}）]"
+  }
+}

@@ -13,8 +13,12 @@ import { HOST_CAPABILITY } from '../host-methods.ts'
 import { classifyGenerationChange } from './generation.ts'
 import { launchService } from './service-launcher.ts'
 import { restoreDependencies } from './deps.ts'
+import { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
+import { resolvePluginSourceRoot } from './ingest.ts'
 import { EndpointTable } from '../endpoint-table.ts'
 import { hostPaths } from '../paths.ts'
+import type { CallResponse } from '../service-link.ts'
+import type { CallEnv } from '../wire.ts'
 import type { HostPaths } from '../paths.ts'
 import type { AssemblyPlan } from './closure.ts'
 import {
@@ -70,6 +74,19 @@ export interface StartAssemblyOptions {
   depsDir?: string
   /** 物化后的依赖恢复；缺省按清单绑定 `restoreDependencies`，测试可注入桩。 */
   restore?: (cwd: string) => Promise<void>
+  /**
+   * 投递包源目录解析（大资产直拷用）：缺省按 `state/plugins.json` 解析；测试可注入。
+   * 返回 null 表示该身份无已知源目录。
+   */
+  sourceRoot?: (identity: string) => string | null
+  /** 反向调用（服务 → 宿主）转发；缺省不接线（`port.call` 得 `not_loaded`）。 */
+  onPortCall?: (
+    impl: string,
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ) => Promise<CallResponse>
 }
 
 type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
@@ -86,6 +103,14 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly reloadTimeoutMs: number
   private readonly startWrapper: string | undefined
   private readonly restore: (cwd: string) => Promise<void>
+  private readonly sourceRoot: (identity: string) => string | null
+  private readonly onPortCall?: (
+    impl: string,
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ) => Promise<CallResponse>
   private readonly paths: HostPaths
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
@@ -107,6 +132,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     const depsDir = options.depsDir ?? this.paths.depsDir
     this.restore =
       options.restore ?? ((cwd) => restoreDependencies(cwd, depsDir, undefined, this.startWrapper))
+    this.sourceRoot =
+      options.sourceRoot ?? ((identity) => resolvePluginSourceRoot(this.paths.root, identity))
+    this.onPortCall = options.onPortCall
     this.plan = computeAssemblyPlan(options.world)
     this.ownerIndex = buildOwnerIndex(options.world)
   }
@@ -510,6 +538,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         pluginStateDir: resolve(this.paths.pluginsDir, id),
         startWrapper: this.startWrapper,
         restore: this.restore,
+        copyAssets: this.assetsCopyOf(id),
+        onPortCall:
+          this.onPortCall === undefined
+            ? undefined
+            : (port, method, args, env) => this.onPortCall!(id, port, method, args, env),
         onServiceEvent: this.onEvent,
         onExtraDropped: (impl, extraGen, caps) =>
           this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),
@@ -520,6 +553,26 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       gen,
       decl,
     )
+  }
+
+  /**
+   * 投递目录大资产直拷的绑定：`schema.assets_manifest` 声明非法只记运维日志、按无清单处理；
+   * 有合法清单但源目录未知 → 直拷必失败（`deps_failed`），不静默跳过（缺资产会让构建 / 运行失败得更晚）。
+   */
+  private assetsCopyOf(id: string): ((cwd: string) => void) | undefined {
+    const manifest = readAssetsManifest(this.world, id)
+    if (!manifest.ok) {
+      this.record('dep', 'periodic_invalid', { impl: id, reason: manifest.reason })
+      return undefined
+    }
+    if (manifest.entries.length === 0) return undefined
+    const sourceDir = this.sourceRoot(id)
+    if (sourceDir === null) {
+      return () => {
+        throw new ServiceStartError('deps_failed')
+      }
+    }
+    return (cwd) => copyAssetsManifest(manifest.entries, sourceDir, cwd)
   }
 
   private registerEndpoints(service: ServiceRuntime): void {

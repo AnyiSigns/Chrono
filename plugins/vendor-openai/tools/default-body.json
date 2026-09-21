@@ -1,0 +1,31 @@
+{
+  "name": "OpenAI",
+  "sdk": "openai",
+  "default_base_url": "https://api.openai.com/v1",
+  "default_auth_ref_name": "OPENAI_API_KEY",
+  "default_reasoning": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "quirks": {
+    "impl": "protocol",
+    "protocol": "openai-chat",
+    "sdk_package": null,
+    "auth_style": "bearer",
+    "auth_header": null,
+    "system_role": "developer",
+    "reasoning_field": "reasoning_effort",
+    "reasoning_map": {
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
+    "reasoning_response_field": "reasoning_content",
+    "max_tokens_field": "max_completion_tokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "推理模型用 developer 角色；max_tokens 已废弃，用 max_completion_tokens"
+  }
+}

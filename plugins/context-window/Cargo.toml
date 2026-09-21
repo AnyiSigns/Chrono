@@ -1,0 +1,6 @@
+# 包根 Cargo.toml = workspace（虚拟清单）：宿主物化时在包根跑 `cargo build --release`，
+# 构建 native/tokenizer 的 cdylib，产物落宿主依赖缓存 `<root>/state/deps/cargo-target/release/`。
+# 源码 + 清单入世；`target/` 由 `.worldignore` 排除。
+[workspace]
+resolver = "2"
+members = ["native/tokenizer"]

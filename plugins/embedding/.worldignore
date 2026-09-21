@@ -1,3 +1,9 @@
+# 入世排除：构建产物与本地工具（源码 + Cargo 清单入世，二进制走宿主侧依赖缓存）
+target/
+tools/
+test/
+
+# 入世排除：大资产与构建期权重输入（宿主按 schema.assets_manifest 从投递包源目录直拷，见 H15a）
 granite-97m/model_quint8_avx2.onnx
 granite-97m/tokenizer.json
 granite-97m/.gitignore

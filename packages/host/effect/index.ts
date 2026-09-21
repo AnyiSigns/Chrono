@@ -12,7 +12,7 @@ export type {
 } from './route.ts'
 export { DEFAULT_CALL_TIMEOUT_MS, runRound } from './run-loop.ts'
 export type { RoundInput, RoundOutcome } from './run-loop.ts'
-export { runSubmission, parsePlanDirectives } from './rounds.ts'
+export { runSubmission, parsePlanDirectives, refusedReasons } from './rounds.ts'
 export type {
   CtxProvider,
   DirectiveDraft,

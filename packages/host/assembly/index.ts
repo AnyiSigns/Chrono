@@ -5,6 +5,7 @@ export { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
 export type { AssemblyPlan, DependencyEdge, IsolatedIdentity, IsolatedReason } from './closure.ts'
 export {
   assemblyGen,
+  DEFAULT_SCHEMA_BODY,
   isCodeGen,
   latestCodeGen,
   latestDataGen,
@@ -31,8 +32,10 @@ export { classifyGenerationChange } from './generation.ts'
 export type { GenerationChange } from './generation.ts'
 export { validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
-export { planIngest, planPack } from './ingest.ts'
+export { planIngest, planPack, readPluginManifest, resolvePluginSourceRoot } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
+export { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
+export type { AssetManifestEntry, AssetsManifestRead } from './assets-manifest.ts'
 export { materializeCommit } from './materialize.ts'
 export { startAssembly } from './runtime.ts'
 export type { AssemblyRuntimeHandle, LoadedIdentity, StartAssemblyOptions } from './runtime.ts'

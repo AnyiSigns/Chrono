@@ -1,0 +1,10 @@
+{
+  "name": "vendor-openai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "厂商适配模板数据身份（OpenAI；sdk=openai；无服务、无 pins、无命令）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "short-memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "短期记忆数据身份（L1 会话摘要 + L2 工作区累积；无服务、无 pins、无 eff）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -11,24 +11,24 @@
 | 机制 | 预置由 seed 写入；S1 预填后落 `#2 config`；`#12` 按 `sdk` + `quirks` 连（`impl=protocol`） |
 | 边界 | 不存 `base_url` / 密钥 / 模型目录 / 参数（归 #2）；不含代码；不存端口 / pid |
 | 验收 | 1) 同 #4 形状；2) `quirks` 被 #12 机械解释；3) 换模板不改 #12；4) 不含明文密钥 |
-| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**字段值待核对（W0 建包前核对为显式前置任务，2026-09-20 登记）** |
+| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**字段值已按 2026 官方文档核对**（2026-09-20 修订） |
 
 ```jsonc
 { "name": "Kimi",
   "sdk": "kimi",
   "default_base_url": "https://api.moonshot.cn/v1",
   "default_auth_ref_name": "MOONSHOT_API_KEY",
-  "default_reasoning": null,                            // 无档位（reasoning_field=null / reasoning_map={}）：#40 不显示档位控件（#12 仍默认开推理、用模型默认档）
   "quirks": {
     "impl": "protocol", "protocol": "openai-chat", "sdk_package": null,
     "auth_style": "bearer", "system_role": "system",
-    "reasoning_field": null,                            // 待核对（k2 thinking 是否有开关）
+    "reasoning_field": null,                            // thinking 为对象开关；k3 有 reasoning_effort
     "reasoning_map": {},
     "reasoning_response_field": "reasoning_content",
-    "max_tokens_field": "max_tokens", "models_path": "/models",
+    "max_tokens_field": "max_completion_tokens",        // max_tokens 已废弃
+    "models_path": "/models",
     "stream_usage": "final_chunk", "extra_headers": {},
-    "note": "OpenAI 兼容（Moonshot）" } }
+    "note": "OpenAI 兼容（Moonshot）；thinking 为对象开关，k3 有 reasoning_effort；max_tokens 已废弃、用 max_completion_tokens" } }
 ```
 
 - 本文件仅保留本厂商差异与 JSON；共同模板、字段语义、验收口径见 `plugins/vendor-openai/DESIGN.md`（#4 规范源）（2026-09-20 修订）。
-- 规范字段含义见 `#4 vendor-openai`；本文件只填厂商值。**「待核对」项：W0 建包前核对为显式前置任务（2026-09-20 登记）。**
+- 规范字段含义见 `#4 vendor-openai`；本文件只填厂商值，取值**已按 2026 官方文档核对**（2026-09-20 修订）。

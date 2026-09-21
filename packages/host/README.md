@@ -27,6 +27,7 @@ Chrono 的载体：**一个进程、四个包**（装配 / 效果 / 账本 / 投
 | `source.ts`           | 插件包源码树 → `defs`（文件 → blob、目录 → tree）+ `.worldignore` |
 | `ingest.ts`           | 入世计划：源码树 → 一条原子 `batch` 的 ops（含 term `$ref` 替换） |
 | `materialize.ts`      | 物化：世界 `commit` → 源码树 → 工作副本（③，与入世互逆）          |
+| `assets-manifest.ts`  | 投递目录大资产直拷：`schema.assets_manifest` → 物化目录（sha256） |
 | `term-refs.ts`        | term 源里 `{"$ref":"terms/foo.json"}` 的机械替换                  |
 | `args-schema.ts`      | 命令 `argsSchema` 方言：入世元校验 + 命令入口机械校验             |
 | `service-launcher.ts` | 起一个服务：物化 → spawn（stdio）→ hello / manifest → 组装运行态  |
@@ -127,16 +128,17 @@ npm run format:check
 npm test
 ```
 
-| 测试位置                                                                                      | 覆盖                                                                                    |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `test/host-integration.test.ts`                                                               | 入站面：seed → start → status.loaded、停机、event 广播、listen 失败收口                 |
-| `test/host-effect.test.ts`                                                                    | 效果：审计先落、回灌续跑、refused、并发提交串行化                                       |
-| `test/host-generation.test.ts`                                                                | 世代跟随：`add_gen` / `set_active` / `retire`、依赖漂移与退役、双写者                   |
-| `test/host-projection.test.ts`、`test/host-python.test.ts`                                    | 投影只读、跨语言（Python）服务                                                          |
-| `test/offline-pack.test.ts`、`test/host-start-wrapper.test.ts`                                | `pack` 入世（新 / 已存在身份、坏包整批拒、与 `seed` 同哈希）/ 服务启动包装器            |
-| `test/host.test.ts`、`test/offline.test.ts`、`test/service-link.test.ts`、`test/wire.test.ts` | 单轮基础 / 离线命令 / 服务协议 / 线格式                                                 |
+| 测试位置                                                                                      | 覆盖                                                                                     |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `test/host-integration.test.ts`                                                               | 入站面：seed → start → status.loaded、停机、event 广播、listen 失败收口                  |
+| `test/host-effect.test.ts`                                                                    | 效果：审计先落、回灌续跑、refused、并发提交串行化                                        |
+| `test/host-generation.test.ts`                                                                | 世代跟随：`add_gen` / `set_active` / `retire`、依赖漂移与退役、双写者                    |
+| `test/host-projection.test.ts`、`test/host-python.test.ts`                                    | 投影只读、跨语言（Python）服务                                                           |
+| `test/offline-pack.test.ts`、`test/host-start-wrapper.test.ts`                                | `pack` 入世（新 / 已存在身份、坏包整批拒、与 `seed` 同哈希）/ 服务启动包装器             |
+| `test/host.test.ts`、`test/offline.test.ts`、`test/service-link.test.ts`、`test/wire.test.ts` | 单轮基础 / 离线命令 / 服务协议 / 线格式                                                  |
 | `test/host-capability.test.ts`、`test/host-periodic.test.ts`、`test/host-forward.test.ts`     | 保留能力类 `host`（`source.read` / `asset.*` / `validate_package`）/ 定时触发 / 入站转发 |
-| `assembly/test/`、`effect/test/`、`ledger/test/`、`projection/test/`                          | 各子包单元与行为不变量                                                                  |
+| `test/host-env.test.ts`、`assembly/test/assets-manifest.test.ts`                              | 调用帧 `env` 注入（含反向 `port.call`）/ 投递目录大资产直拷                              |
+| `assembly/test/`、`effect/test/`、`ledger/test/`、`projection/test/`                          | 各子包单元与行为不变量                                                                   |
 
 ## 不做什么
 

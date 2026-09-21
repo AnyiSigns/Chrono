@@ -1,0 +1,15 @@
+{
+  "title": "workspace（工作区列表）",
+  "description": "工作区列表进世界、可回放。每项 { id, name, path }：id 由客户端生成（opaque 短 id）；path = 绝对 realpath（win32 解 junction / reparse point，归一 \\\\?\\ 前缀）；name 缺省 = basename(path)；按 realpath 去重、创建即钉死（目录改名 / 移动 = 该工作区失效，走 missing）。无时间戳（列表顺序 = 追加顺序）。最近打开住宿主侧 ③（state/plugins/workspace/recent.json），不在 body、不参与重放。",
+  "type": "object",
+  "required": ["version", "workspaces"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "workspaces": {
+      "type": "array",
+      "description": "工作区条目数组，顺序即追加顺序。元素形状 { id, name, path }（白名单子集无 oneOf / $ref，元素形状写在 description，由写入端保证：本插件计划 / seed 脚本）。",
+      "items": { "type": "object" }
+    }
+  }
+}

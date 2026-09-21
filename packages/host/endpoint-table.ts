@@ -1,6 +1,7 @@
 // 端点表：逻辑能力（能力类 + 方法）→ 物理端点（服务进程 stdio），运行态、住宿主侧 ③。
 // 键不含调用方：`impl+gen+cap+method`，由 assembly 写、effect 读。
 
+import type { CallEnv } from './wire.ts'
 import type { Hash, Json } from '../kernel/index.ts'
 
 /** 一次能力调用的应答：有响应（成功值或错误）即数据，形态由 link 实现保证。 */
@@ -18,6 +19,7 @@ export interface EndpointLink {
     args: Json,
     timeoutMs: number,
     signal?: AbortSignal,
+    env?: CallEnv,
   ): Promise<EndpointCallResult>
 }
 

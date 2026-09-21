@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "tiers": {
+    "auto": { "outside": false, "danger": false, "mcp": true, "structural": false },
+    "severe": { "outside": true, "danger": true, "mcp": true, "structural": true },
+    "review": { "outside": true, "danger": true, "mcp": true, "structural": true },
+    "deny": { "outside": true, "danger": true, "mcp": true, "structural": true }
+  },
+  "workspace": {
+    "enabled": true,
+    "verdict": "escalate",
+    "call_path_keys": ["path"],
+    "arg_path_keys": ["path", "paths"]
+  },
+  "danger_patterns": [
+    {
+      "id": "recursive_delete",
+      "verdict": "escalate",
+      "any_of": [
+        ["rm", "-rf"],
+        ["rm", "-r"],
+        ["rm", "--recursive"],
+        ["rmdir", "/s"],
+        ["del", "/s"],
+        ["remove-item", "-recurse"],
+        ["shutil.rmtree"]
+      ]
+    },
+    {
+      "id": "privilege_change",
+      "verdict": "escalate",
+      "any_of": [
+        ["sudo"],
+        ["runas"],
+        ["chmod", "u+s"],
+        ["chmod", "+s"],
+        ["chown"],
+        ["takeown"],
+        ["icacls", "grant"],
+        ["setfacl"]
+      ]
+    },
+    {
+      "id": "pipe_download_exec",
+      "verdict": "escalate",
+      "any_of": [
+        ["curl", "| sh"],
+        ["curl", "| bash"],
+        ["wget", "| sh"],
+        ["wget", "| bash"],
+        ["iwr", "iex"],
+        ["invoke-webrequest", "invoke-expression"],
+        ["downloadstring", "iex"]
+      ]
+    },
+    {
+      "id": "registry_service",
+      "verdict": "escalate",
+      "any_of": [
+        ["reg add"],
+        ["reg delete"],
+        ["sc create"],
+        ["sc config"],
+        ["new-service"],
+        ["set-service"],
+        ["systemctl"],
+        ["launchctl"]
+      ]
+    },
+    {
+      "id": "disk_format",
+      "verdict": "escalate",
+      "any_of": [
+        ["format c:"],
+        ["format /fs:"],
+        ["format /q"],
+        ["diskpart"],
+        ["fdisk"],
+        ["mkfs"],
+        ["dd of="]
+      ]
+    },
+    {
+      "id": "persistent_env",
+      "verdict": "escalate",
+      "any_of": [
+        ["setx"],
+        ["set-environmentvariable"],
+        ["~/.bashrc"],
+        ["~/.profile"],
+        ["/etc/environment"]
+      ]
+    }
+  ],
+  "mcp": {
+    "port": "mcp",
+    "default_verdict": "escalate",
+    "trusted": []
+  },
+  "structural_writes": [
+    { "port": "plugin-admin", "tool": "plugin.write", "verdict": "escalate" },
+    { "port": "orchestration-admin", "tool": "orchestration.propose", "verdict": "escalate" }
+  ],
+  "deny": {
+    "calls": [],
+    "allowed_ports": null
+  }
+}

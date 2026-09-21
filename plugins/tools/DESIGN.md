@@ -153,7 +153,7 @@ agent 改系统自身的**唯一**路径经本插件派发，两个管理面职�
     "live": false }                 // true = 动态输出（订阅 `tool.delta` 追加）
   ```
 
-  - `detail.kind`（渲染器闭集）：`text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / **`question`**（#48 交互卡：`interactive:true` + 问题 / 选项，提交经入站面写槽 + 按名调 `question.answer`，已答折叠）。**`diff` 载荷冻结为 `{kind:"diff", before, after}` 或 `{kind:"diff", patch}`**（两者取一、各工具保持一致）。
+  - `detail.kind`（渲染器闭集）：`text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / **`question`**（#48 交互卡：`interactive:true` + 问题 / 选项 + **`id`（队列项 id，供提交 `question.answer` 定位）+ `expired`（是否过期）+ `answers`（作答快照，未答 `null`）**，提交经入站面写槽 + 按名调 `question.answer`，已答折叠；字段口径见 `plugins/question/DESIGN.md`「渲染」）。**`diff` 载荷冻结为 `{kind:"diff", before, after}` 或 `{kind:"diff", patch}`**（两者取一、各工具保持一致）。
   - **`summary` 模板文法（冻结）**：裸 `{field}` = **args 字段**（如 `{path}`）；`{result.field}` = **结果字段**（如 `{result.added}`）；`{args.*}` / `{result.*}` 前缀写法不再使用。过长由 #18 截断（不换行溢出）。
   - `form:"line"` 时 `detail` 忽略（如 `read` 只画一行）。
 - **归属 = 各工具插件自带**（#18 只留挂载点）：**render 描述符随 `results` 返回；由 #33 `tool.dispatch` 落消息 part 进 #11**（**本插件不写 #11**），#18 按 part 渲染 → 展示与回放确定、**不依赖当前工具集**（换工具插件不影响旧消息渲染）（2026-09-20 修订）。

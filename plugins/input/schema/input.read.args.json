@@ -1,0 +1,11 @@
+{
+  "title": "input.read 参数",
+  "description": "只读命令参数：可选 thread。入口 term 直出整份 slots，不做过滤；thread 仅作声明校验，过滤 / 取用留调用方。不写 type（缺 args = null，而白名单子集无法表达「可空 object」）；给出 object 时按 properties / additionalProperties 机械校验。",
+  "additionalProperties": false,
+  "properties": {
+    "thread": {
+      "type": "string",
+      "description": "目标线程 id；缺省 = `_main`。本命令不据此过滤，调用方自行取 slots[thread]。"
+    }
+  }
+}

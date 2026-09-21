@@ -19,7 +19,7 @@
 - 位置：宿主侧用户本地文件（如 `state/secrets.local.json`，宿主单点解析路径）——**不进世界、不进账本、不进 config 导出、不参与哈希**。
 - 形状：`{ "<name>": "<value>", … }`（name = 用户起的引用名，如 `DEEPSEEK_API_KEY`）。
 - **写入 / 删除走宿主入站面**：`secrets.put { name, value }` / `secrets.delete { name }`——**不经 run、不进世界**（与 `asset.put` 同类：宿主直写本地态）。故明文永不出现在 directive / args / 槽 / 审计里。
-- `list` 只回 `[{ name, has }]`（**不回值**），供 S8 显「已读到 / 未读到」。
+- `list` 只回 `[{ name, has }]`（**不回值**），供 S8 显「已读到 / 未读到」。**契约（写死）**：缺名 = 未读到——只列实际读到的名字，`has` 恒为 `true`，`has:false` 不可达（保留字段只为形状稳定）。
 
 ## 引用（`#2 config`）
 

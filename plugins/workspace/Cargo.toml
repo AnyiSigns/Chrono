@@ -1,0 +1,23 @@
+[package]
+name = "workspace"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 宿主按 Cargo.toml 恢复依赖：包根必须有 Cargo.toml，产物落共享缓存
+# `<root>/state/deps/cargo-target/release/workspace[.exe]`；`execute/launch.mjs` 据此定位二进制。
+[[bin]]
+name = "workspace"
+path = "execute/main.rs"
+
+[dependencies]
+serde = "1"
+serde_json = "1"
+
+# win32 原生目录选择器（IFileOpenDialog / FOS_PICKFOLDERS）：只用 COM + Shell，不引入 GUI 框架。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }

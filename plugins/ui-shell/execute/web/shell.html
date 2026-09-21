@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Chrono</title>
+  <script>/*__CHRONO_THEME_SCRIPT__*/</script>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link id="shell-tokens" rel="stylesheet" href="/assets/tokens.v1.css">
+  <style>
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--c-bg);
+      color: var(--c-text);
+      font-family: var(--font-sans);
+      font-size: var(--font-size-md);
+      line-height: var(--leading-body);
+      overflow: hidden;
+    }
+    #shell-root { display: flex; height: 100vh; }
+    #slot-sidebar {
+      flex: none;
+      width: var(--sidebar-w-expanded);
+      background: var(--c-sidebar);
+      border-right: 1px solid var(--c-border);
+      overflow: hidden;
+      transition: width var(--motion-base);
+    }
+    #shell-column { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+    #slot-topbar {
+      position: relative;
+      z-index: var(--z-topbar);
+      flex: none;
+      height: 0;
+      overflow: visible;
+    }
+    #slot-main { flex: 1 1 auto; min-height: var(--main-min-h); overflow: auto; }
+    #slot-dock {
+      position: relative;
+      z-index: var(--z-dock);
+      flex: 0 3 auto;
+      min-height: 0;
+      max-height: var(--dock-max-h);
+      overflow: auto;
+    }
+    #slot-composer { flex: 0 1 auto; min-height: 0; max-height: var(--composer-max-h); overflow: auto; }
+    #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
+    #slot-overlay > * { pointer-events: auto; }
+    body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }
+    /* <1024：消息列退化为「全宽 − 边距」（ui-design §4 响应式表） */
+    body.shell-narrow #slot-main { --msg-max-w: 100%; }
+    ::selection { background: var(--c-selection); color: var(--c-text); }
+
+    #shell-banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: var(--z-banner);
+      display: flex;
+      align-items: center;
+      gap: var(--space-8);
+      padding: var(--space-8) var(--space-16);
+      background: var(--c-warning-bg);
+      color: var(--c-warning);
+      border-bottom: 1px solid var(--c-border);
+      font-size: var(--font-size-sm);
+    }
+    #shell-banner[hidden] { display: none; }
+    #shell-banner-retry {
+      min-width: 24px;
+      min-height: 24px;
+      padding: 0 var(--space-8);
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-sm);
+      color: var(--c-text);
+      font: inherit;
+      font-size: var(--font-size-sm);
+      cursor: pointer;
+    }
+    #shell-banner-retry:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+    body.shell-disconnected #slot-main { padding-top: 40px; }
+
+    #shell-toasts {
+      position: fixed;
+      right: var(--space-16);
+      bottom: var(--space-16);
+      z-index: var(--z-toast);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-8);
+      pointer-events: none;
+    }
+    .shell-toast {
+      pointer-events: auto;
+      min-width: 240px;
+      max-width: 360px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-pop);
+      padding: var(--space-8) var(--space-12) var(--space-8) var(--space-12);
+      border-left: 3px solid var(--c-info);
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-8);
+      animation: shell-toast-in var(--motion-fast) both;
+    }
+    .shell-toast[data-tone="success"] { border-left-color: var(--c-success); }
+    .shell-toast[data-tone="warning"] { border-left-color: var(--c-warning); }
+    .shell-toast[data-tone="danger"] { border-left-color: var(--c-danger); }
+    .shell-toast-text { flex: 1 1 auto; font-size: var(--font-size-sm); }
+    .shell-toast button {
+      font: inherit;
+      font-size: var(--font-size-sm);
+      color: var(--c-accent);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0 var(--space-4);
+      min-height: 24px;
+    }
+    .shell-toast .shell-toast-close { color: var(--c-text-2); min-width: 24px; }
+    @keyframes shell-toast-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+    #shell-splash {
+      position: fixed;
+      inset: 0;
+      z-index: var(--z-modal);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-12);
+      background: var(--c-bg);
+      transition: opacity var(--motion-base);
+    }
+    #shell-splash.shell-fade { opacity: 0; pointer-events: none; }
+    .shell-splash-name { font-size: var(--font-size-xl); font-weight: var(--weight-strong); }
+    .shell-splash-note { color: var(--c-text-2); font-size: var(--font-size-sm); }
+    .shell-breathe {
+      width: 48px;
+      height: 2px;
+      border-radius: var(--radius-sm);
+      background: var(--c-text-3);
+      animation: shell-breathe 1.6s ease-in-out infinite;
+    }
+    @keyframes shell-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
+
+    .shell-slot-failed {
+      margin: var(--space-16);
+      padding: var(--space-12);
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-left: 3px solid var(--c-danger);
+      border-radius: var(--radius-md);
+      color: var(--c-text-2);
+      font-size: var(--font-size-sm);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-8);
+    }
+    .shell-slot-failed-title { color: var(--c-text); font-weight: var(--weight-strong); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .shell-toast { animation: none; }
+      .shell-breathe { animation: none; opacity: .4; }
+    }
+  </style>
+  <script>window.__CHRONO_SHELL__ = /*__CHRONO_BOOTSTRAP__*/{};</script>
+</head>
+<body>
+  <div id="shell-splash">
+    <div class="shell-splash-name">Chrono</div>
+    <div class="shell-breathe" aria-hidden="true"></div>
+    <div class="shell-splash-note">正在启动…</div>
+  </div>
+  <div id="shell-root">
+    <aside id="slot-sidebar" data-slot="sidebar" aria-label="侧栏"></aside>
+    <div id="shell-column">
+      <header id="slot-topbar" data-slot="topbar"></header>
+      <main id="slot-main" data-slot="main"></main>
+      <section id="slot-dock" data-slot="dock" aria-label="审批停靠带"></section>
+      <footer id="slot-composer" data-slot="composer"></footer>
+    </div>
+  </div>
+  <div id="slot-overlay" data-slot="overlay"></div>
+  <div id="shell-banner" role="alert" hidden>
+    <svg width="16" height="16" aria-hidden="true"><use href="/assets/icons.v1.svg#alert-triangle"></use></svg>
+    <span id="shell-banner-text"></span>
+    <button id="shell-banner-retry" type="button"></button>
+  </div>
+  <div id="shell-toasts" aria-live="polite" aria-atomic="false"></div>
+  <script type="module" src="/assets/lib/shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP 适配器（双向）：出站接入外部 MCP 服务器并写工具清单投影，入站命令契约就位",
+  "scripts": {
+    "test": "node --test test/mcp.test.mjs"
+  }
+}

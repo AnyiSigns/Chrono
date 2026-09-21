@@ -1,0 +1,10 @@
+{
+  "name": "config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "用户模型配置数据身份（单一真源；无服务、无 pins、无 eff）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "title": "vendor（厂商适配模板：sdk 标识 + 声明式 quirks + 模板默认值）",
+  "description": "厂商适配（连接层）纯数据身份：body = { name, sdk, default_base_url, default_auth_ref_name, default_reasoning?, quirks }。模板默认值只是预填，用户实例（base_url / 密钥 / 模型目录 / 参数）以 config 为准；本身份不存明文密钥。可空字段以「缺键或 null」表达。形态校验归写入端（宿主不校验身份数据）。",
+  "type": "object",
+  "required": [
+    "name",
+    "sdk",
+    "default_base_url",
+    "default_auth_ref_name",
+    "quirks"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "厂商显示名（人读）。"
+    },
+    "sdk": {
+      "type": "string",
+      "description": "身份 / 方言标识；模型协议实现据此选实现与怪癖。七包取值：openai / deepseek / dashscope / google-genai / zai / kimi / custom。"
+    },
+    "default_base_url": {
+      "type": "string",
+      "description": "预填的 API 基址（模板值，用户可改；实际连接值以 config 为准）。custom 为空串。"
+    },
+    "default_auth_ref_name": {
+      "type": "string",
+      "description": "预填的密钥引用名（env 变量名或本地引用名；只存引用不存本体）。custom 为空串。"
+    },
+    "default_reasoning": {
+      "description": "预填推理档位数组（array<string>）；缺键或 null = 无档位（不显示档位控件）。"
+    },
+    "quirks": {
+      "type": "object",
+      "required": [
+        "impl",
+        "auth_style",
+        "system_role",
+        "max_tokens_field",
+        "models_path",
+        "stream_usage",
+        "extra_headers",
+        "note"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "impl": {
+          "enum": [
+            "protocol",
+            "sdk"
+          ],
+          "description": "protocol = 自实现三基础协议；sdk = 官方 SDK 包（随模型协议实现捆绑，世界只存 sdk_package 名）。"
+        },
+        "protocol": {
+          "description": "三基础协议之一（openai-chat / openai-responses / anthropic-messages）；impl=sdk 时 null；custom 由 config 给（可为 null）。"
+        },
+        "sdk_package": {
+          "description": "impl=sdk 时的 npm 包名（如 @google/genai）；否则 null。"
+        },
+        "auth_style": {
+          "enum": [
+            "bearer",
+            "query",
+            "header"
+          ],
+          "description": "鉴权携带方式。"
+        },
+        "auth_header": {
+          "description": "auth_style=header 时的头名；其余厂商为 null（bearer 自动用 Authorization）。"
+        },
+        "system_role": {
+          "enum": [
+            "system",
+            "developer"
+          ],
+          "description": "系统消息角色。"
+        },
+        "reasoning_field": {
+          "description": "请求里的推理字段名（impl=sdk 时可为 SDK 结构点路径）；null = 不可传（由模型决定）。"
+        },
+        "reasoning_map": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "归一档位 -> 厂商编码的映射；值类型 string | number | boolean；空对象 = 无档位。"
+        },
+        "reasoning_response_field": {
+          "description": "响应 / 流里推理文本字段名；缺键或 null = 无。"
+        },
+        "max_tokens_field": {
+          "type": "string",
+          "description": "协议枚举 max_tokens / max_completion_tokens / max_output_tokens；impl=sdk 时允许 SDK 结构字段名（如 maxOutputTokens），由适配器解释。"
+        },
+        "models_path": {
+          "type": "string",
+          "description": "discover 的相对路径。"
+        },
+        "stream_usage": {
+          "enum": [
+            "final_chunk",
+            "separate",
+            "none"
+          ],
+          "description": "流式里 usage 从哪来。"
+        },
+        "extra_headers": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "厂商固定头（不含密钥）；缺省空对象。"
+        },
+        "note": {
+          "type": "string",
+          "description": "人读备注（不参与连接）。"
+        }
+      }
+    }
+  }
+}

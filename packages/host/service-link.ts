@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 import { createFrameDecoder, encodeFrame } from './wire.ts'
+import type { CallEnv } from './wire.ts'
 import type { Json } from '../kernel/index.ts'
 
 /** 服务协议版本；与 `plugin.json.protocol` 同源口径，与入站协议版本独立。 */
@@ -46,6 +47,17 @@ export interface ServiceLinkOptions {
   impl: string
   gen: string
   onEvent?: (topic: string, payload: Json) => void
+  /**
+   * 反向调用（protocol §2.4）：服务发 `port.call` 时由宿主按发出者身份 `pins` 路由后转发；
+   * 返回值一律是数据（成功值或错误码），不抛错。`env` 取该连接上最近一条在途正向调用的
+   * 回合信息（`undefined` 表示无在途调用，由调用方补宿主时钟）。
+   */
+  onPortCall?: (
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ) => Promise<CallResponse>
   /** 对端关闭 / 帧损坏时回调一次（宿主主动 close 不触发）。 */
   onClosed?: (reason: string) => void
 }
@@ -90,7 +102,15 @@ export class ServiceLink {
   private readonly decoder = createFrameDecoder()
   private readonly pending = new Map<string, Pending>()
   private readonly onEvent?: (topic: string, payload: Json) => void
+  private readonly onPortCall?: (
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ) => Promise<CallResponse>
   private readonly onClosed?: (reason: string) => void
+  /** 在途正向调用的回合信息（LIFO）：反向调用没有自带 `env`，按最近一条在途调用回带。 */
+  private readonly inflightEnvs: CallEnv[] = []
   private closed = false
 
   constructor(child: ChildProcess, options: ServiceLinkOptions) {
@@ -98,6 +118,7 @@ export class ServiceLink {
     this.impl = options.impl
     this.gen = options.gen
     this.onEvent = options.onEvent
+    this.onPortCall = options.onPortCall
     this.onClosed = options.onClosed
     child.stdout?.on('data', (chunk: Buffer) => this.onData(chunk))
     child.stdout?.on('error', () => this.markClosed('channel_error'))
@@ -138,23 +159,31 @@ export class ServiceLink {
     args: Json,
     timeoutMs: number,
     signal?: AbortSignal,
+    env?: CallEnv,
   ): Promise<CallResponse> {
-    const message = await this.request(
-      'call',
-      { port, method, args },
-      ['result', 'error'],
-      timeoutMs,
-      signal,
-    )
-    const record = message as { [k: string]: Json }
-    if (record['kind'] === 'error') {
-      if (record['ok'] !== false) throw new ServiceChannelError('protocol_error')
-      const code = typeof record['code'] === 'string' ? record['code'] : 'error'
-      const text = typeof record['message'] === 'string' ? record['message'] : ''
-      return { ok: false, code, message: text }
+    // 帧上填 `env`（不改 args 语义）；同时在途登记，供本连接的反向调用回带同一回合
+    const fields: { [k: string]: Json } = { port, method, args }
+    if (env !== undefined) {
+      fields['env'] = env as unknown as Json
+      this.inflightEnvs.push(env)
     }
-    if (record['ok'] !== true) throw new ServiceChannelError('protocol_error')
-    return { ok: true, value: (record['value'] ?? null) as Json }
+    try {
+      const message = await this.request('call', fields, ['result', 'error'], timeoutMs, signal)
+      const record = message as { [k: string]: Json }
+      if (record['kind'] === 'error') {
+        if (record['ok'] !== false) throw new ServiceChannelError('protocol_error')
+        const code = typeof record['code'] === 'string' ? record['code'] : 'error'
+        const text = typeof record['message'] === 'string' ? record['message'] : ''
+        return { ok: false, code, message: text }
+      }
+      if (record['ok'] !== true) throw new ServiceChannelError('protocol_error')
+      return { ok: true, value: (record['value'] ?? null) as Json }
+    } finally {
+      if (env !== undefined) {
+        const index = this.inflightEnvs.lastIndexOf(env)
+        if (index >= 0) this.inflightEnvs.splice(index, 1)
+      }
+    }
   }
 
   /** 数据换代热生效：通知服务新世代，服务回 ack（进程不动）。 */
@@ -257,6 +286,11 @@ export class ServiceLink {
       }
       return
     }
+    // 反向调用（服务 → 宿主）：宿主按发出者 pins 路由后转发，结果按原 id 回 port.result / port.error
+    if (message['kind'] === 'port.call') {
+      void this.handlePortCall(message)
+      return
+    }
     const id = message['id']
     if (typeof id !== 'string') {
       this.markClosed('protocol_error')
@@ -274,6 +308,50 @@ export class ServiceLink {
       return
     }
     pending.resolve(message)
+  }
+
+  /** 反向调用：校验形态 → 交宿主路由转发 → 按原 id 回帧；失败一律作数据，不断通道。 */
+  private async handlePortCall(message: { [k: string]: Json }): Promise<void> {
+    const id = message['id']
+    if (typeof id !== 'string') {
+      this.markClosed('protocol_error')
+      return
+    }
+    const port = message['port']
+    const method = message['method']
+    if (this.onPortCall === undefined || typeof port !== 'string' || typeof method !== 'string') {
+      this.writePortResponse(id, {
+        ok: false,
+        code: 'not_loaded',
+        message: 'port.call unavailable',
+      })
+      return
+    }
+    const env =
+      this.inflightEnvs.length === 0 ? undefined : this.inflightEnvs[this.inflightEnvs.length - 1]
+    let response: CallResponse
+    try {
+      response = await this.onPortCall(port, method, (message['args'] ?? null) as Json, env)
+    } catch {
+      response = { ok: false, code: 'transport_failed', message: 'port.call failed' }
+    }
+    this.writePortResponse(id, response)
+  }
+
+  private writePortResponse(id: string, response: CallResponse): void {
+    const stdin = this.child.stdin
+    if (this.closed || stdin === null || stdin === undefined || stdin.destroyed) return
+    const frame: { [k: string]: Json } = response.ok
+      ? { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.result', ok: true, value: response.value }
+      : {
+          v: SERVICE_PROTOCOL_VERSION,
+          id,
+          kind: 'port.error',
+          ok: false,
+          error: response.code,
+          message: response.message,
+        }
+    stdin.write(encodeFrame(frame as Json))
   }
 
   private markClosed(reason: string): void {

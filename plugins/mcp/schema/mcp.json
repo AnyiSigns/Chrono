@@ -1,0 +1,116 @@
+{
+  "title": "mcp（MCP 适配器 · 双向）",
+  "description": "身份自述 / 数据契约：本身份数据世代 body 同时承载外部 MCP 服务器清单（servers）与发现到的外部工具清单（tools，命名空间化 mcp.<server>.<tool>）。服务器条目须 confirmed:true 才 spawn；未确认条目只登记不连接。外部工具清单的权威 = 本 body.tools（投影 ids.mcp.body），describe 只回本插件自述。宿主按顶层 periodic 直调 mcp.discover 刷新（reads 注入整个 body）。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "body 版本；出生即 1。"
+    },
+    "servers": {
+      "type": "array",
+      "description": "外部 MCP 服务器清单（配置）：命令 / 参数 / env / confirmed / trusted / restart。条目须 confirmed:true 才 spawn。易变运行态（connected / failures / tool_count / isolated / isolation / last_error）留服务进程内存，不写回 body。",
+      "items": {
+        "type": "object",
+        "required": ["id", "command"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "本地唯一 id（工具命名空间的一节）：工具名 = mcp.<id>.<tool>。"
+          },
+          "command": {
+            "type": "string",
+            "description": "可执行文件（宿主不认识语言；MCP stdio 服务器）。"
+          },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "命令行参数。"
+          },
+          "env": {
+            "type": "object",
+            "description": "追加环境变量：键 = 子进程环境变量名，值 = 字符串字面量，或 auth_ref 引用 {auth_ref:{kind:'local'|'env', name}}。引用值在 spawn 前经 secrets.resolve 解析后注入同名变量；明文不进世界 / 日志 / 计划。"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "可选工作目录。"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "description": "用户在插件设置面确认；true 才 spawn，未确认条目只登记不连接。"
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "供工具调用语义门做例外判定，本插件只透传、不解释。"
+          },
+          "restart": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "policy": {
+                "enum": ["on-exit", "never"],
+                "description": "子进程退出策略：never = 退出即隔离。"
+              },
+              "max": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "连续失败上限（缺省 3），超过即隔离该条目。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "发现到的外部工具清单（权威）。每项含命名空间化 name、描述四要素（缺项按 MCP description / inputSchema 兜底）、argsSchema、caps、idempotent、render 中性描述符。",
+      "items": {
+        "type": "object",
+        "required": ["name", "server", "tool"],
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string", "description": "mcp.<server>.<tool>（全局唯一）。" },
+          "server": { "type": "string", "description": "服务器 id。缺键 = 未标注。" },
+          "tool": { "type": "string", "description": "外部 MCP 工具原名。" },
+          "intent": { "type": "string", "description": "行为意图；MCP description 兜底。" },
+          "when_to_use": { "type": "string", "description": "使用时机；MCP description 兜底。" },
+          "param_semantics": { "type": "object", "description": "逐参数含义；inputSchema 各参数 description 兜底。" },
+          "boundaries": { "type": "string", "description": "使用边界；缺省「由外部 MCP 服务器定义」。" },
+          "description": { "type": "string", "description": "模型可见文本。" },
+          "argsSchema": { "type": "object", "description": "外部 inputSchema（原样透传）。" },
+          "caps": { "type": "object", "description": "能力声明（与工具目录口径一致）。" },
+          "idempotent": { "type": "boolean", "description": "外部工具未知，恒 false（不缓存）。" },
+          "render": { "type": "object", "description": "工具卡渲染描述符（中性兜底）。" }
+        }
+      }
+    },
+    "discover_bag": {
+      "type": "object",
+      "description": "（非 body 字段）mcp.discover 的入参：{servers: <整个 body>}（宿主 periodic reads 机械注入）。",
+      "additionalProperties": true
+    },
+    "invoke_bag": {
+      "type": "object",
+      "description": "（非 body 字段）mcp.invoke 的入参：{tool: \"mcp.<server>.<tool>\", tool_args: {...}}。",
+      "required": ["tool"],
+      "additionalProperties": true,
+      "properties": {
+        "tool": { "type": "string", "description": "命名空间化工具名。" },
+        "tool_args": { "type": "object", "description": "转发给外部 MCP tools/call 的 arguments。" }
+      }
+    }
+  },
+  "periodic": [
+    {
+      "method": "mcp.discover",
+      "every_ms": 300000,
+      "reads": { "servers": ["ids", "mcp", "body"] }
+    }
+  ],
+  "method_timeouts": {
+    "mcp.discover": 60000
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "workspaces": [
+    {
+      "id": "${WORKSPACE_ID}",
+      "name": "${WORKSPACE_NAME}",
+      "path": "${WORKSPACE_PATH}"
+    }
+  ]
+}

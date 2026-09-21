@@ -61,7 +61,8 @@ question(bag.args = { questions: [
 ## 渲染（消息流内交互卡，由 #18 画）
 
 - **形态**：`{ form:"card", label:"question", summary:"{header}", tone:"plain",
-  detail:{ kind:"question", interactive:true, questions:[…] } }`。
+  detail:{ kind:"question", interactive:true, id:"q-<run>-<seq>", questions:[…], expired:false, answers:null } }`。
+  - **载荷字段（写死）**：`id` = 队列项 id（`q-<run>-<seq>`，供 #18 提交 `question.answer` 定位 item）；`expired` = 是否已由 `question.sweep` 标过期；`answers` = 作答快照（未答 `null`，已答为 `[{question_id, selected, custom?}]`）——三者随消息 part 快照进 #11，使 #18 能提交 / 折叠 / 呈现 expired，且回放确定。
 - **交互**：#18 的 `question` 交互渲染器 —— 单选 / 多选（`multiple`）/ 自定义输入（`custom`）/ 提交；提交经**入站面**写槽 + 调 `question.answer`（**按名调用、不需 pins**）。
 - **已答**：折叠成一条记录（问 + 答），随消息历史留存、可回放。
 - **已超时（`expired`，2026-09-20 双侧登记）**：`question.sweep` 标 `expired` 的项，#18 卡片呈**整卡弱化（`--c-text-3`）+ 「已超时」标签（warning 前景字），选项与提交禁用、不可再答**（与本插件「过期不再等答案」一致）；卡不自动消失、随历史留存。**与 #39 审批的 `expired`「仍可裁决」刻意相反**——审批不自动裁决是安全考量，question 过期是 sweep 已定终局；实现时勿照抄审批口径。呈现细节见 `plugins/ui-chat/DESIGN.md`「question 交互渲染器」。

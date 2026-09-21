@@ -1,0 +1,26 @@
+{
+  "title": "ui-shell（浏览器唯一入口 + 布局壳）",
+  "description": "身份自述 / 数据契约。本插件是服务、不持有数据世代 body：壳页面与静态资源由服务进程直接服务，挂载表 / headless 清单是可重算的运行态（落地 state/ui-mounts.json 与 state/ui-headless.json，不进世界）。本 schema 只声明运行态引用：主端口、挂载表 / headless 清单文件名、反代前缀。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "ui_port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "主端口缺省值（默认 8787）。运行期以 CHRONO_UI_PORT 覆盖，绑定 127.0.0.1。"
+    },
+    "mounts_file": {
+      "type": "string",
+      "description": "挂载表文件名，相对宿主 state 目录（缺省 ui-mounts.json）。"
+    },
+    "headless_file": {
+      "type": "string",
+      "description": "headless 清单文件名，相对宿主 state 目录（缺省 ui-headless.json）。"
+    },
+    "proxy_prefix": {
+      "type": "string",
+      "description": "子应用反代前缀（缺省 /p/）。"
+    }
+  }
+}

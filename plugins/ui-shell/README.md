@@ -1,0 +1,113 @@
+# ui-shell（浏览器唯一入口 + 布局壳）
+
+Chrono 的**唯一对外主端口**：浏览器只连它。壳持有主端口与入站桥，负责布局槽装载、
+子应用同源反代、设计资源（token / 图标 sprite / 文案表）唯一来源、S0 启动态、
+S6 断线横幅与全局 toast。壳不渲染业务面板、不做业务判定、不读投影。
+
+- 能力类：`ui-shell`（`ping` 占位，UI 插件统一 `ui-<身份名>`、互不 pin）。
+- `pins`：`{"host":"host"}` —— 指向保留身份 `host`，只用于 `host.source.read` 取
+  headless 入口字节（壳是唯一加载方）。
+- 状态档：`recomputable`（③ 可重算；挂载表 / headless 清单 / 端口都不进世界）。
+- 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
+- 运行时零 npm 依赖：HTTP / SSE / socket 全用 Node 内置。
+
+## 路由
+
+```
+GET  /                        壳页面（S0 启动 → 各 slot 淡入）
+GET  /assets/tokens.v1.css    共享设计 token（唯一来源，无组件样式）
+GET  /assets/icons.v1.svg     线性图标 sprite（Lucide 子集，唯一来源）
+GET  /assets/messages.v1.json 错误码 → 人话文案表（唯一来源）
+GET  /favicon.svg             站点图标（字母 C 字标）
+GET  /assets/lib/<name>.js    壳页面共享前端库（ui-state / toast / theme / boot-mode / shell）
+GET  /assets/headless/<id>.js headless 入口（经 host.source.read 取字节、同源服务，不占 slot）
+GET  /p/<id>/*                挂载表内 id → 反代子应用端口；表外 id（如 mcp）→ 宿主 forward 帧
+GET  /events                  SSE：宿主事件原样重播 + 壳状态 + 壳合成断连 / 重连事件
+POST /api/theme               写 config.ui.theme（读-改-写，经入站写指令）
+POST /api/submit              转入站 submit（body 含 directive(s) + thread）
+POST /api/command             转入站 command（body 含 name / args + thread）
+POST /api/asset               转入站 asset.put（body 含 mime / bytes(base64)）
+GET  /api/asset?sha256=…      转入站 asset.get
+POST /api/cancel              发协议 cancel{run}
+GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导模式）
+```
+
+`/p/<id>/<cmd>` 表外路径映射为命令名：路径段以 `.` 连接并保证带 `<id>.` 前缀
+（`/p/mcp/discover` → `mcp.discover`，`/p/mcp/tools/list` → `mcp.tools.list`）。
+
+## 挂载表与 headless 清单
+
+- `state/ui-mounts.json` = `[{id, path, slot, port}]`；启动无表 / 坏表则写默认值。
+  默认：`ui-sidebar/sidebar/8791`、`ui-chat/main/8788`、`ui-approval/dock/8789`、
+  `ui-composer/composer/8790`、`ui-threads/topbar/8793`、`ui-settings/overlay/8792`。
+  子应用端口可 `CHRONO_UI_PORT_<ID>` 覆盖（ID 大写、非字母数字转 `_`）。一插件一 slot；
+  增删插件只改表，不改壳代码。
+- `state/ui-headless.json` = `[{id, entry}]`；`entry` 为插件包内路径。headless 不进挂载表、
+  不给布局位、不占端口；壳经 `host.source.read` 取字节并以同源静态路径服务。默认
+  `{id:"ui-notify", entry:"web/entry.js"}`。
+- 主端口默认 8787，`CHRONO_UI_PORT` 覆盖；全部绑定 `127.0.0.1`。
+
+## 子应用契约
+
+`GET /entry.js` 导出 `mount(root, api) -> {unmount()}`；可选导出 `contract`（字符串，
+与壳契约版本 `"1"` 不符即 `ui_version_mismatch`）。
+
+```text
+api = {
+  tokens: { css, icons, messages },   // 三个唯一来源路径
+  theme:  { get(), set(pref), subscribe(cb) },   // pref ∈ light / dark / system
+  navigate(path),
+  slot,                                // 本子应用所在 slot 名
+  submit(directive | directives, opts) // 转入站 submit
+  command(name, args, opts)            // 按名调命令
+  cancel(run)                          // 真取消指定 run
+  asset:  { put(mime, base64), get(sha256) }
+  events: { subscribe(topic, cb), onAny(cb), connected() }
+  toast({ tone, text, action? })       // tone ∈ info / success / warning / danger
+  uiState: { get(k), set(k,v), subscribe(k,cb), keys }
+}
+```
+
+- `uiState` 键空间（壳登记）：`active_thread` / `boot_mode` / `settings_open`。纯前端内存态，
+  跨 slot 广播，刷新即丢，不落世界。新增键先登记。
+- 失败隔离：子应用加载失败只在自身 slot 内渲染占位卡（`ui_unreachable` / `ui_boot_failed` /
+  `ui_version_mismatch` + 手动重试），不影响其它 slot。
+- 事件按 `impl` 命名空间；壳合成事件 `shell.disconnected` / `shell.reconnected` 与壳状态
+  `shell.state` 同经 `/events` 下发。
+
+## 无配置判据
+
+壳经入站 `command config.read` 取返回值：无 `vendor` 键 ⇒ `uiState.boot_mode='onboarding'`；
+含 `vendor` ⇒ `'ready'`。壳自身不读投影。
+
+## 全局 toast
+
+壳渲染（右下角堆叠、最多同屏 3 条、超出排队）。触发两路：子应用 `api.toast`；壳按内置规则
+（断线 / 重连 / token 降级）。info/success 2.5s、warning/danger 4s；带 action 不自动消失；
+hover 暂停、可关闭；`aria-live` 按 tone 取 `status` / `alert`。
+
+## 文案表维护义务
+
+`execute/web/messages.v1.json` 是**全部对外错误码 → 人话**的唯一来源；各插件禁硬编码人话。
+结构 `{ "<code>": { "title": "…", "body": "…", "action": "…"? }, "locale": … }`。
+须覆盖前缀：`ui_*` / `model_*` / `discover_*` / `approval_*` / `sandbox_*` / `guard_*` /
+`tool_*` / `mcp_*` / `plugin_*`；未登记码按 `unknown` 兜底。文案遵循全局文案规范
+（无感叹号、不道歉、省略号用 `…`）。新增码先登记再入表。
+
+## 图标 sprite 维护
+
+`execute/web/icons.v1.svg` 只含全局设计语言登记的子集，24×24 viewBox、stroke 1.5、
+round cap/join、`currentColor`。业务插件以 `<use href="/assets/icons.v1.svg#<name>">` 引用，
+禁止内嵌图标或 emoji。重新生成：`node tools/gen-icons.mjs <lucide-static 包目录>`。
+
+## 运行
+
+```sh
+npm test                          # 协议级 / 单元测试（node --test）
+node tools/e2e-smoke.mjs          # 宿主装配 + HTTP E2E（pack/seed → start → HTTP → stop → verify）
+```
+
+## `.worldignore`
+
+声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` /
+`schema/` / `execute/`（含 `execute/web/`））随源码入世。

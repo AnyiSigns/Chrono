@@ -1,0 +1,10 @@
+{
+  "name": "sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "隔离执行（Rust）：一次性 exec + 结构化文件操作 fsop + 四档 fs/net 强制；无 npm 依赖，二进制走宿主依赖缓存",
+  "scripts": {
+    "test": "cargo test"
+  }
+}

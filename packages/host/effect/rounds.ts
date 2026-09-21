@@ -65,6 +65,8 @@ export interface SubmissionInput {
   initiator: string
   /** 宿主对外 run id（`accepted{run}`）：审计 def 的 `run` 用它（F8 按回合查询）；缺省用内核轮 run id。 */
   runId?: string
+  /** 发起者提交信封的 `thread`：只随调用帧 `env` 回带（原样、不校验）；detached / 周期 run 恒 null。 */
+  thread?: string | null
   /** 每轮取一次 `now`（每轮独立、非回退）。 */
   now: () => number
   router?: RoundRouter
@@ -180,6 +182,21 @@ export function parsePlanDirectives(
     directives.push(item.directive)
   }
   return { ok: true, directives }
+}
+
+/**
+ * 从 run 收口的 observations 取最后一条 `refused` 观测的 `reasons`；无则空数组。
+ * 供宿主 `run.finished` 事件面载荷使用（`status=refused` 时说明收口原因）。
+ */
+export function refusedReasons(observations: Json[]): string[] {
+  for (let i = observations.length - 1; i >= 0; i--) {
+    const observation = observations[i]
+    if (!isRecord(observation) || observation['kind'] !== 'refused') continue
+    const reasons = observation['reasons']
+    if (!Array.isArray(reasons)) return []
+    return reasons.filter((reason): reason is string => typeof reason === 'string')
+  }
+  return []
 }
 
 /**
@@ -387,6 +404,7 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       limits: input.limits,
       initiator: input.initiator,
       runId: input.runId,
+      thread: input.thread,
       now: input.now(),
       router: input.router,
       callTimeoutMs: input.callTimeoutMs,

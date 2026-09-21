@@ -1,0 +1,23 @@
+{
+  "identity": "input",
+  "schema": "schema/slot.schema.json",
+  "implements": [],
+  "methods": {},
+  "pins": {},
+  "start": "",
+  "protocol": "1",
+  "restart": {},
+  "health": {},
+  "state": "recomputable",
+  "members": [
+    { "kind": "term", "path": "terms/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": [
+    {
+      "name": "input.read",
+      "entry": "terms/input.read.json",
+      "argsSchema": "schema/input.read.args.json"
+    }
+  ]
+}

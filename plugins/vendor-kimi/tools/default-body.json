@@ -1,0 +1,22 @@
+{
+  "name": "Kimi",
+  "sdk": "kimi",
+  "default_base_url": "https://api.moonshot.cn/v1",
+  "default_auth_ref_name": "MOONSHOT_API_KEY",
+  "quirks": {
+    "impl": "protocol",
+    "protocol": "openai-chat",
+    "sdk_package": null,
+    "auth_style": "bearer",
+    "auth_header": null,
+    "system_role": "system",
+    "reasoning_field": null,
+    "reasoning_map": {},
+    "reasoning_response_field": "reasoning_content",
+    "max_tokens_field": "max_completion_tokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "OpenAI 兼容（Moonshot）；thinking 为对象开关，k3 有 reasoning_effort；max_tokens 已废弃、用 max_completion_tokens"
+  }
+}

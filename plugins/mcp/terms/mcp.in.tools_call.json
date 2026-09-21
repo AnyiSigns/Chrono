@@ -1,0 +1,1 @@
+["c", { "jsonrpc": "2.0", "id": null, "error": { "code": -32000, "message": "not_available_in_v1", "data": { "note": "入站 v1 = 契约就位、能力面待后续波次接线" } } }]

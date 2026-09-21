@@ -22,7 +22,7 @@
 
 - `plugin.list(bag)`：数据源 = **`host.identities {}`**（宿主只读身份清单面，H20 待落地：id / active / implements / commands；本插件过滤后返回）；**过滤掉可见性黑名单 {`sandbox`, 自己}**（2026-09-20 修订）。
 - `plugin.read(bag)`：读某身份的源码——经 **`host.source.read {identity, path}`**（保留能力类 `host`，H3）；被黑名单过滤的身份 → `hidden_identity`（本插件先过滤，不调宿主）。
-- `plugin.validate(bag)`：经 **`host.validate_package {files}`**（保留能力类 `host`，H13/D12）转发宿主的入世前校验 dry-run——对 `plugin.json` 12 字段 / 包内路径约束 / `argsSchema` 方言 / **受保护 `pins` 完整性** / term 环 / `.worldignore` 做 dry-run，返回错误列表与 **`result_hash`**；机械校验归宿主，本插件只转发。
+- `plugin.validate(bag)`：经 **`host.validate_package {files}`**（保留能力类 `host`，H13/D12）转发宿主的入世前校验 dry-run——对 `plugin.json` **11 字段（`schema` 可省略）** / 包内路径约束 / `argsSchema` 方言 / **受保护 `pins` 完整性** / term 环 / `.worldignore` 做 dry-run，返回错误列表与 **`result_hash`**；机械校验归宿主，本插件只转发。
 - `plugin.write(bag)`：构造世界写计划（**不直接写**）：**身份不存在时先 `add_identity`（否则只 `add_gen`）** → `put(blob)` × n → `put(tree)` → `put(commit)` → `add_gen(身份, payload=commit)`；批内用 `{"$n":k}` 占位串起。**必须携带上一次 `plugin.validate` 的结果哈希**（见修正 3）。**`result_hash` 缓存住宿主 ③（`CHRONO_PLUGIN_STATE`，键 = 候选树规范化哈希）**；`write` 时本插件机械比对缓存（不依赖模型跨调用带回 64-hex；缺失 → `validate_required`）（2026-09-20 修订）。
 - **风险分级**：写插件 = 改世界源码（非工作区、非工具产物）→ 高危；**按 `(port, 工具名)` 机械判（D4）——`(plugin-admin, plugin.write)`**；**仅 `auto` 档允许直落**，否则升级弹卡（`#26` / `#33`）。
 
@@ -94,6 +94,11 @@ agent 可让别的路径产出 `add_gen(plugin-admin, 新数据世代)` 直接�
 
 **必须明写的限制**：`host.md` **v1 无 op 级鉴权** ⇒ "本插件不改图、编排面不改源码"是
 **工具面约定 + 审批闸**，不是内核强制。要硬强制需要 op 级鉴权，属后置档。
+
+**已知限制（下一波硬前置）**：`plugin.write` 只产 **execute 源码 def**（blob / tree / commit / schema），
+**不产 `terms/` 的 term def**——入世时 term 要解析成带 `sig` 的 def 并替换 `$ref`，与源码 blob 不同路。
+故带 `terms/` 的插件经本工具写入后，源码在、term def 不在，其入口命令不可用。补齐 term def 产出前，
+不要用 `plugin.write` 改带 `terms/` 的插件。
 
 ---
 

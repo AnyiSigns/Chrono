@@ -1,0 +1,74 @@
+{
+  "title": "embedding（本地向量化）",
+  "description": "身份自述 / 数据契约：描述 embedding 能力类两方法 embed / chunk 的入参与结果形状，并登记模型清单与构建期大资产。模型权重与 tokenizer 不进世界，宿主物化时按顶层 assets_manifest 从投递包源目录直拷到物化目录（供 include_bytes! 构建期读取）。服务不读投影、无写通道：一切输入随 bag 由调用方入口 term 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "model": {
+    "id": "granite-97m",
+    "dim": 384,
+    "pooling": "cls",
+    "normalize": true,
+    "max_seq": 32768
+  },
+  "properties": {
+    "embed_request": {
+      "type": "object",
+      "description": "embed 的 bag：texts 为单条或批量文本；model 缺省为清单里的 id。",
+      "required": ["texts"],
+      "additionalProperties": true,
+      "properties": {
+        "texts": { "type": "array", "items": { "type": "string" } },
+        "model": { "type": "string" }
+      }
+    },
+    "embed_result": {
+      "type": "object",
+      "description": "embed 结果：vectors 与 texts 一一对应，每维 dim，已 L2 归一。",
+      "required": ["model", "dim", "vectors"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "dim": { "type": "integer", "minimum": 1 },
+        "vectors": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }
+      }
+    },
+    "chunk_request": {
+      "type": "object",
+      "description": "chunk 的 bag：window / overlap 按 token 计（缺省 512 / 64）；输出的 start / end 一律是 Unicode 码点偏移。",
+      "required": ["text"],
+      "additionalProperties": true,
+      "properties": {
+        "text": { "type": "string" },
+        "window": { "type": "integer", "minimum": 1 },
+        "overlap": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "chunk_result": {
+      "type": "array",
+      "description": "chunk 结果：逐块 {index, start, end, text}；start / end 为码点偏移，text = 原文本的码点切片。",
+      "items": {
+        "type": "object",
+        "required": ["index", "start", "end", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "start": { "type": "integer", "minimum": 0 },
+          "end": { "type": "integer", "minimum": 0 },
+          "text": { "type": "string" }
+        }
+      }
+    }
+  },
+  "assets_manifest": [
+    {
+      "path": "granite-97m/model_quint8_avx2.onnx",
+      "sha256": "a6022dd8220ea6f6595562a1328ee216f4a94faa55362f2f4747c80f1e78772e",
+      "size": 98247878
+    },
+    {
+      "path": "granite-97m/tokenizer.json",
+      "sha256": "4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f",
+      "size": 25301672
+    }
+  ]
+}

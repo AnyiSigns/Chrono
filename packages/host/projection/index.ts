@@ -4,7 +4,7 @@
 // 按引用构造，O(#身份)（world_rev 另按 #defs 计），不深拷贝。
 
 import { worldRev } from '../../kernel/index.ts'
-import { latestDataGen } from '../assembly/decl.ts'
+import { latestDataGen, readPluginDecl } from '../assembly/decl.ts'
 import type { Hash, Head, Json, World } from '../../kernel/index.ts'
 
 /** def 键的形状：64 位小写十六进制；不符（业务数据恰好带 `def` 字段）不当作引用标记。 */
@@ -70,9 +70,11 @@ export interface ProjectionOptions {
 }
 
 /**
- * `base_only` 投影：链头锚 + 内容摘要 + 逐身份 active / 世代（不含履历）/ `body` / 引用闭包 `refs`。
+ * `base_only` 投影：链头锚 + 内容摘要 + 逐身份 active / 世代（不含履历）/ `body` / `pins` / 引用闭包 `refs`。
  * `body` 口径（G7 A1）= **最近数据世代的 payload def body**；无数据世代则回落 active（代码 / commit）
- * def body；`active` / `gens` 保持链上原义。`refs` = body 里 `{"def":hash}` 可达闭包（全量、`next_before` 恒 null）。
+ * def body；`active` / `gens` 保持链上原义。`pins` = 当前代码世代声明里的 `pins` 表（名 → 被依赖身份名，
+ * 机械来自声明，供调用方入口 term 判「端口 ⊆ pins」）；无代码世代则 null。
+ * `refs` = body 里 `{"def":hash}` 可达闭包（全量、`next_before` 恒 null）。
  * 只读是宿主纪律：不写链、不推进 head、不参与哈希。
  * @param world 基础世界（v1 = 宿主当前世界）
  * @param head 该世界的链头（投影反映构造时点的世界）
@@ -88,10 +90,13 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
     const dataGen = latestDataGen(world, id)
     const bodyHash = dataGen?.payload ?? active
     const body = bodyHash === null ? null : (world.defs[bodyHash]?.body ?? null)
+    // pins = 当前代码世代声明里的表（逻辑端点名 → 被依赖身份名字面值）；无代码世代 → null
+    const decl = readPluginDecl(world, id)
     ids[id] = {
       active,
       gens: identity.gens.map((gen) => ({ seq: gen.seq, payload: gen.payload })),
       body,
+      pins: decl === null ? null : decl.decl.pins,
       refs: body === null ? {} : collectRefs(world, body, cap),
       next_before: null,
     }

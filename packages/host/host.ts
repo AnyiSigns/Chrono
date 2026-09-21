@@ -19,6 +19,7 @@ import {
   DEFAULT_CALL_TIMEOUT_MS,
   createRoundRouter,
   parsePlanDirectives,
+  refusedReasons,
   runSubmission,
 } from './effect/index.ts'
 import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
@@ -37,7 +38,8 @@ import { resolveStartWrapper } from './options.ts'
 import { projectBaseOnly } from './projection/index.ts'
 import { WorldWriter } from './writer.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
-import type { InboundMessage, Limits, OutboundMessage } from './wire.ts'
+import type { CallEnv, InboundMessage, Limits, OutboundMessage } from './wire.ts'
+import type { CallResponse } from './service-link.ts'
 import { worldRev } from '../kernel/index.ts'
 import type { Entry, Hash, Json, World, Head } from '../kernel/index.ts'
 
@@ -322,6 +324,37 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
 
   /**
+   * 反向调用（protocol §2.4）：服务发 `port.call` 时按**发出者身份** `pins` 路由后转发给目标服务。
+   * 目标调用帧同样填 `env`：取发起服务在途正向调用的回合信息（同一 run / thread）；无在途调用时
+   * 补宿主固定时钟、run / thread 记 null。返回值一律是数据，不抛错（失败作数据回 `port.error`）。
+   */
+  const handlePortCall = async (
+    impl: string,
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ): Promise<CallResponse> => {
+    if (router === undefined) return { ok: false, code: 'not_loaded', message: 'router not ready' }
+    const snapshot = writer.snapshot()
+    const routed = router.resolve(snapshot.world, impl, port, method)
+    if (!routed.ok) return { ok: false, code: routed.error, message: routed.error }
+    const callEnv: CallEnv = env ?? { run: null, thread: null, now: nextNow() }
+    try {
+      return await routed.row.link.call(
+        port,
+        method,
+        args,
+        options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+        undefined,
+        callEnv,
+      )
+    } catch {
+      return { ok: false, code: 'transport_failed', message: 'port.call transport failed' }
+    }
+  }
+
+  /**
    * H9 宿主通用原语：启动一次 detached run——无 socket、结果不回流，事件照广播。
    * initiator = 调用方 emitter，directives = 单条 eval；宿主不认识游标语义（游标由调用方放进 args）。
    * 并发超 `MAX_DETACHED_RUNS` 即拒（不起新 run）；`thread` 仅随事件原样回带。
@@ -340,10 +373,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     broadcast('host', 'run.started', { run: runId, thread })
     let finished = false
     // 收口幂等：run.started / run.finished 严格成对、恰好一次（异常路径也以 refused 收口）
-    const finish = (status: string): void => {
+    const finish = (status: string, reasons: string[]): void => {
       if (finished) return
       finished = true
-      broadcast('host', 'run.finished', { run: runId, thread, status })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
     }
     const task = runSubmission({
       writer,
@@ -353,6 +386,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       limits: DEFAULT_LIMITS,
       initiator: emitter,
       runId,
+      // detached run 不是发起者提交：调用帧 env.thread 恒 null（事件里的 thread 只作展示标签）
+      thread: null,
       now: nextNow,
       router,
       callTimeoutMs: options.callTimeoutMs,
@@ -364,7 +399,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       onAdvanced: applyWorldSerial,
     })
       .then((outcome) => {
-        finish(outcome.status)
+        finish(outcome.status, refusedReasons(outcome.observations))
       })
       .catch((err: unknown) => {
         // detached run 无调用方等待：先广播 run.finished{refused} 收口，错误只进运维日志
@@ -375,7 +410,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           run: runId,
           reason: err instanceof Error ? err.message : String(err),
         })
-        finish('refused')
+        finish('refused', [])
       })
       .finally(() => {
         detachedRuns.delete(runId)
@@ -397,9 +432,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     runs.set(runId, controller)
     broadcast('host', 'run.started', { run: runId, thread: null })
     let status = 'refused'
+    let reasons: string[] = []
     const task: Promise<void> = runPeriodicEntry(entry, runId, controller.signal)
       .then((outcome) => {
-        status = outcome
+        status = outcome.status
+        reasons = outcome.reasons
       })
       .catch((err: unknown) => {
         appendLifecycle(paths.lifecycleFile, {
@@ -413,7 +450,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       .finally(() => {
         runs.delete(runId)
         inflight.delete(task)
-        broadcast('host', 'run.finished', { run: runId, thread: null, status })
+        broadcast('host', 'run.finished', { run: runId, thread: null, status, reasons })
       })
     inflight.add(task)
   }
@@ -422,41 +459,44 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     entry: PeriodicEntry,
     runId: string,
     signal: AbortSignal,
-  ): Promise<string> => {
-    if (runtime === undefined) return 'refused'
+  ): Promise<{ status: string; reasons: string[] }> => {
+    if (runtime === undefined) return { status: 'refused', reasons: [] }
     const snapshot = writer.snapshot()
     const world = snapshot.world
     const declRead = readPluginDecl(world, entry.identity)
-    if (declRead === null) return 'refused'
+    if (declRead === null) return { status: 'refused', reasons: [] }
     const bag = buildPeriodicBag(cachedProjection(world, snapshot.head), entry.reads)
     let directives: DirectiveDraft[]
     if (entry.command !== undefined) {
       const command = resolveCommand(world, entry.command)
-      if (command === null || command.identity !== entry.identity) return 'refused'
+      if (command === null || command.identity !== entry.identity) {
+        return { status: 'refused', reasons: [] }
+      }
       // 宿主注入的 bag 与入站 args 同规过 argsSchema（不得成为旁路）
-      if (commandArgsIssue(world, command, bag) !== 'ok') return 'refused'
+      if (commandArgsIssue(world, command, bag) !== 'ok') return { status: 'refused', reasons: [] }
       directives = [{ kind: 'eval', entry: command.entry, args: bag }]
     } else if (entry.method !== undefined) {
       const cap = capOfMethod(declRead.decl, entry.method)
       const gen = assemblyGen(world, entry.identity)
-      if (cap === null || gen === null) return 'refused'
+      if (cap === null || gen === null) return { status: 'refused', reasons: [] }
       const row = runtime.endpoints.get(entry.identity, gen.payload, cap, entry.method)
-      if (row === null) return 'refused'
+      if (row === null) return { status: 'refused', reasons: [] }
       const called = await row.link.call(
         cap,
         entry.method,
         bag,
         options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         signal,
+        { run: runId, thread: null, now: nextNow() },
       )
-      if (!called.ok) return 'refused'
+      if (!called.ok) return { status: 'refused', reasons: [] }
       const plan = parsePlanDirectives(called.value)
       // 方法有响应但没给计划值 = 本拍无写，按完成收口；给了非法计划则 fail-closed 拒（同 plan 通道）
-      if (!plan.ok) return 'refused'
-      if (plan.directives.length === 0) return 'done'
+      if (!plan.ok) return { status: 'refused', reasons: [plan.reason] }
+      if (plan.directives.length === 0) return { status: 'done', reasons: [] }
       directives = plan.directives
     } else {
-      return 'refused'
+      return { status: 'refused', reasons: [] }
     }
     const outcome = await runSubmission({
       writer,
@@ -465,6 +505,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       limits: DEFAULT_LIMITS,
       initiator: entry.identity,
       runId,
+      // 周期 run 非发起者提交：调用帧 env.thread 恒 null
+      thread: null,
       now: nextNow,
       router,
       callTimeoutMs: options.callTimeoutMs,
@@ -475,7 +517,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       onRound: persistRound,
       onAdvanced: applyWorldSerial,
     })
-    return outcome.status
+    return { status: outcome.status, reasons: refusedReasons(outcome.observations) }
   }
 
   const handleSubmit = async (
@@ -488,6 +530,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   ): Promise<void> => {
     broadcast('host', 'run.started', { run: runId, thread })
     let status = 'refused'
+    let reasons: string[] = []
     try {
       // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
       const entryOwners = new Map<string, string>()
@@ -501,6 +544,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         limits: message.limits ?? DEFAULT_LIMITS,
         initiator: 'client',
         runId,
+        thread,
         now: nextNow,
         router,
         callTimeoutMs: options.callTimeoutMs,
@@ -513,6 +557,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         onAdvanced: applyWorldSerial,
       })
       status = outcome.status
+      reasons = refusedReasons(outcome.observations)
       send(socket, {
         v: PROTOCOL_VERSION,
         kind: 'result',
@@ -531,7 +576,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
-      broadcast('host', 'run.finished', { run: runId, thread, status })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
     }
   }
 
@@ -590,6 +635,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     broadcast('host', 'run.started', { run: runId, thread })
     let status = 'refused'
+    let reasons: string[] = []
     try {
       // 命令也是一次 run：给审计一个可查询的回合 id（命令 result 不带 run，仅审计 / 运维可见）。
       // 与 submit 同规建信号：cancel{run} 与停机 abort() 都能覆盖 command run。
@@ -600,6 +646,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         limits: message.limits ?? DEFAULT_LIMITS,
         initiator: 'command',
         runId,
+        thread,
         now: nextNow,
         router,
         callTimeoutMs: options.callTimeoutMs,
@@ -611,6 +658,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         onAdvanced: applyWorldSerial,
       })
       status = outcome.status
+      reasons = refusedReasons(outcome.observations)
       send(socket, {
         v: PROTOCOL_VERSION,
         id: message.id,
@@ -629,7 +677,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
-      broadcast('host', 'run.finished', { run: runId, thread, status })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
     }
   }
 
@@ -675,6 +723,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     broadcast('host', 'run.started', { run: runId, thread })
     let status = 'refused'
+    let reasons: string[] = []
     try {
       const outcome = await runSubmission({
         writer,
@@ -683,6 +732,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         limits: message.limits ?? DEFAULT_LIMITS,
         initiator: 'forward',
         runId,
+        thread,
         now: nextNow,
         router,
         callTimeoutMs: options.callTimeoutMs,
@@ -694,6 +744,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         onAdvanced: applyWorldSerial,
       })
       status = outcome.status
+      reasons = refusedReasons(outcome.observations)
       send(socket, {
         v: PROTOCOL_VERSION,
         id: message.id,
@@ -711,7 +762,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       throw err
     } finally {
-      broadcast('host', 'run.finished', { run: runId, thread, status })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
     }
   }
 
@@ -1107,6 +1158,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       world: writer.snapshot().world,
       log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
       onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
+      onPortCall: handlePortCall,
       startWrapper: options.startWrapper,
       depsDir: paths.depsDir,
     })

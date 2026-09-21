@@ -1,0 +1,11 @@
+{
+  "name": "context-window",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "上下文调配器：候选汇集 / 去重 / 预算与配额 / 前缀缓存排序 / 方言格式化 / 组装清单（TS 主体 + Rust tokenizer 原生子组件）",
+  "scripts": {
+    "test": "node --test",
+    "test:rust": "cargo test"
+  }
+}

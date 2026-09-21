@@ -1,0 +1,15 @@
+{
+  "identity": "ui-notify",
+  "implements": ["ui-notify"],
+  "methods": {
+    "ui-notify": ["ping"]
+  },
+  "pins": {},
+  "start": "",
+  "protocol": "1",
+  "restart": {},
+  "health": {},
+  "state": "recomputable",
+  "members": [{ "kind": "term", "path": "terms/" }],
+  "commands": [{ "name": "notify.state", "entry": "terms/notify.state.json" }]
+}

@@ -16,10 +16,18 @@ export interface PluginMember {
   path: string
 }
 
+/**
+ * `schema` 省略 / 空串时的宿主最小默认 schema def body：无世界数据的 UI 插件可零 schema
+ * （`docs/plugins.md` §二），宿主机械提供一份最小体满足内核 `Identity.schema` 必需哈希。
+ * 数据、非特权；宿主不解释业务，只保证身份可 `add_identity`。
+ */
+export const DEFAULT_SCHEMA_BODY: Json = { type: 'object' }
+
 /** `plugin.json` 的解析结果；字段含义见插件规范，宿主只做形态检查。 */
 export interface PluginDecl {
   identity: string
-  schema: string
+  /** 包内 schema 相对路径；省略 / 空串为 `null`（入世时用 `DEFAULT_SCHEMA_BODY`）。 */
+  schema: string | null
   implements: string[]
   methods: Record<string, string[]>
   pins: Record<string, string>
@@ -111,19 +119,22 @@ function parseMembers(v: Json | undefined): PluginMember[] | null {
 }
 
 /**
- * 宿主侧 `plugin.json` 元 schema：12 个字段一个不少、类型正确、枚举合法
- * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）。
+ * 宿主侧 `plugin.json` 元 schema：其余 11 个字段一个不少、类型正确、枚举合法
+ * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
+ * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
 export function parsePluginDecl(value: Json): ParseDeclResult {
   if (!isRecord(value)) return { ok: false, reasons: ['bad_plugin_decl'] }
   const commands = parseCommands(value['commands'])
   const members = parseMembers(value['members'])
+  // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
+  const rawSchema = value['schema']
+  const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
   const ok =
     typeof value['identity'] === 'string' &&
     value['identity'].length > 0 &&
-    typeof value['schema'] === 'string' &&
-    value['schema'].length > 0 &&
+    (rawSchema === undefined || typeof rawSchema === 'string') &&
     isStringArray(value['implements']) &&
     isRecord(value['methods']) &&
     Object.values(value['methods']).every(isStringArray) &&
@@ -140,7 +151,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     ok: true,
     decl: {
       identity: value['identity'] as string,
-      schema: value['schema'] as string,
+      schema,
       implements: value['implements'] as string[],
       methods: value['methods'] as Record<string, string[]>,
       pins: value['pins'] as Record<string, string>,

@@ -1,0 +1,16 @@
+[package]
+name = "tokenizer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 原生扩展：cdylib，加载时按 `.node` 后缀 require；rlib 供 `cargo test` 构建测试目标。
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi4"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"

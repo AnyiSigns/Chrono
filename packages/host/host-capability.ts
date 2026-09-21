@@ -1,4 +1,4 @@
-// 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / source.read /
+// 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / identities / source.read /
 // validate_package / thread.terminate / thread.resume。宿主不解释业务，只做机械路由与内容寻址。
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
@@ -97,6 +97,25 @@ function blobBytes(
   }
 }
 
+/**
+ * `identities {}`：只读身份清单面——宿主从世界 + 各身份**当前代码世代声明**机械读出
+ * `id` / `active` / `implements` / `commands`（命令只出名字）；不解释业务，不含 `pins` 明细。
+ */
+function identitiesCall(deps: HostCapabilityDeps): EndpointCallResult {
+  const world = deps.world()
+  const list: Json[] = []
+  for (const id of Object.keys(world.ids).sort()) {
+    const read = readPluginDecl(world, id)
+    list.push({
+      id,
+      active: world.ids[id].active,
+      implements: read === null ? [] : read.decl.implements,
+      commands: read === null ? [] : read.decl.commands.map((command) => command.name),
+    })
+  }
+  return { ok: true, value: { list } }
+}
+
 /** `source.read { identity, path }`：按路径读某身份源码 blob（只读；目录 / 缺失 → `not_found`）。 */
 function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
@@ -164,6 +183,8 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
         return assetPutCall(deps, args)
       case 'asset.get':
         return assetGetCall(deps, args)
+      case 'identities':
+        return identitiesCall(deps)
       case 'source.read':
         return sourceReadCall(deps, args)
       case 'thread.terminate':

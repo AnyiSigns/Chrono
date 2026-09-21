@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "trace": { "tail": null, "count": 0 },
+  "evidence": { "tail": null, "count": 0 },
+  "proposals": { "tail": null, "count": 0 },
+  "verdicts": { "tail": null, "count": 0 }
+}

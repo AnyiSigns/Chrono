@@ -1,0 +1,31 @@
+{
+  "name": "DeepSeek",
+  "sdk": "deepseek",
+  "default_base_url": "https://api.deepseek.com/v1",
+  "default_auth_ref_name": "DEEPSEEK_API_KEY",
+  "default_reasoning": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "quirks": {
+    "impl": "protocol",
+    "protocol": "openai-chat",
+    "sdk_package": null,
+    "auth_style": "bearer",
+    "auth_header": null,
+    "system_role": "system",
+    "reasoning_field": "reasoning_effort",
+    "reasoning_map": {
+      "low": "low",
+      "medium": "high",
+      "high": "high"
+    },
+    "reasoning_response_field": "reasoning_content",
+    "max_tokens_field": "max_tokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "OpenAI 兼容；推理文本走 reasoning_content；reasoning_effort 支持 none / low / high / max（medium 兼容映射为 high）"
+  }
+}

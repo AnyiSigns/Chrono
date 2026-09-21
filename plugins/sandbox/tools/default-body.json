@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "impl": "native",
+  "tiers": {
+    "auto": { "fs": { "read": "full", "write": "full" }, "net": "all" },
+    "severe": { "fs": { "read": "workspace", "write": "workspace" }, "net": "limited" },
+    "review": { "fs": { "read": "workspace", "write": "none" }, "net": "none" },
+    "deny": { "fs": { "read": "none", "write": "none" }, "net": "none" }
+  },
+  "defaults": {
+    "timeout_ms": 30000,
+    "mem_mb": 1024,
+    "cpu_ms": 0,
+    "output_max": 1048576,
+    "procs_max": 32
+  },
+  "net_hosts": [],
+  "docker_image": "alpine:3"
+}

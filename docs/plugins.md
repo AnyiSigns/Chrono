@@ -22,7 +22,7 @@
 ```
 <plugin-package>/                 # 一个 npm 包（仓库 plugins/<name>/ 或 node_modules/<pkg>，同形）
 ├── package.json     npm 信封：name / version / 依赖 / scripts（宿主不解释，入 ① 作源码）
-├── plugin.json      插件契约：12 字段（宿主解释、入世进 ①；与信封无关）
+├── plugin.json      插件契约：12 字段（`schema` 可省略；宿主解释、入世进 ①；与信封无关）
 ├── README.md        自述（人读）
 ├── .worldignore     入世排除表（可选；宿主读，自身不入 ①）
 ├── test/            测试文件（**不入 ①**）
@@ -54,7 +54,7 @@
 | 字段 | 含义 |
 | --- | --- |
 | `identity` | 身份名 = 世界里的 `id`（**无 `kind`**——内核 `Identity` 无分类字段，身份性质由 `schema` 承载，`kernel.md` §四） |
-| `schema` | 身份**自述 / 数据契约**：指向包内 `schema/` 里的文件（如 `schema/plugin.schema.json`）；入世解析成 `Identity.schema` 哈希。它是**数据、非特权**（`kernel.md` §四）；宿主对 `plugin.json` 形状的元校验另有一份宿主侧 schema |
+| `schema` | 身份**自述 / 数据契约**：指向包内 `schema/` 里的文件（如 `schema/plugin.schema.json`）；入世解析成 `Identity.schema` 哈希。它是**数据、非特权**（`kernel.md` §四）；宿主对 `plugin.json` 形状的元校验另有一份宿主侧 schema。**可省略**：无世界数据的 UI 插件可**零 schema**（直接省略字段，不得以 `null` 占位）；省略时宿主机械提供最小默认 schema def `{"type":"object"}` 作 `Identity.schema` 哈希（内核要求身份必有 schema），不解释业务 |
 | `implements` | 提供的能力类（能力类名） |
 | `methods` | 能力类 → 方法名 |
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
@@ -145,6 +145,7 @@
   `execute/`（执行件）、`terms/`（判定数据）、`schema/`（声明 schema）、`.worldignore`（可选：入世排除表）。
 - `plugin.json` 的 12 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` /
   `protocol` / `restart` / `health` / `state` / `members` / `commands`。
+  **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def），其余 11 个字段一个不少。
 
 **行为**（§三 十条红线）
 

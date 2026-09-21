@@ -2,10 +2,9 @@
 // 与宿主进程互斥（同一把单写者锁）；seed 是宿主侧直写 commit 的入世路径。
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
-import { planIngest, planPack } from './assembly/index.ts'
+import { planIngest, planPack, readPluginManifest } from './assembly/index.ts'
 import type { PluginEntry } from './assembly/index.ts'
 import {
   acquireLock,
@@ -26,6 +25,9 @@ import type { AssetGcReport } from './assets.ts'
 import { compactWorld } from './compact.ts'
 import { hostPaths } from './paths.ts'
 import type { Hash, Head, WriteRequest } from '../kernel/index.ts'
+
+/** 与 assembly 同源，保留本模块导出面（`readPluginManifest` 属插件清单读面）。 */
+export { readPluginManifest }
 
 export interface SeedItem {
   name: string
@@ -50,24 +52,6 @@ export interface VerifyReport {
 export interface ReplayReport {
   head: Head
   worldRev: Hash
-}
-
-/** 读 `state/plugins.json`；缺文件即空清单。 */
-export function readPluginManifest(root: string): PluginEntry[] {
-  const file = hostPaths(root).pluginsFile
-  if (!existsSync(file)) return []
-  const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
-  if (!Array.isArray(parsed)) throw new Error('bad_plugins_manifest')
-  return parsed.map((item) => {
-    if (typeof item !== 'object' || item === null) throw new Error('bad_plugins_manifest')
-    const record = item as { name?: unknown; path?: unknown }
-    if (typeof record.name !== 'string' || record.name.length === 0) {
-      throw new Error('bad_plugins_manifest')
-    }
-    return record.path === undefined
-      ? { name: record.name }
-      : { name: record.name, path: String(record.path) }
-  })
 }
 
 /** 入世：逐个插件包构造原子 batch 并直写 commit；每个插件各自原子。 */

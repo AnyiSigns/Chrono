@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "params": {},
+  "permission": "review",
+  "ui": {
+    "theme": "system",
+    "style": "",
+    "sidebar_width": 260
+  },
+  "providers": {}
+}

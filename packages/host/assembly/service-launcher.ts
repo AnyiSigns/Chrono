@@ -17,7 +17,8 @@ import {
 } from './supervision.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { PluginDecl } from './decl.ts'
-import type { ServiceManifest } from '../service-link.ts'
+import type { CallResponse, ServiceManifest } from '../service-link.ts'
+import type { CallEnv } from '../wire.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
 
 export interface ServiceLauncherDeps {
@@ -39,6 +40,18 @@ export interface ServiceLauncherDeps {
    * 抛错按启动失败传播，不启动服务。
    */
   restore?: (cwd: string) => Promise<void>
+  /**
+   * 物化后、依赖恢复前的投递目录大资产直拷（`assets_manifest`）；缺省不拷。
+   * 必须在依赖恢复前：Rust 构建期输入（`include_bytes!`）依赖它已就位；抛错按启动失败传播。
+   */
+  copyAssets?: (cwd: string) => void
+  /** 反向调用（服务 → 宿主）转发；缺省不接线，服务发 `port.call` 得 `not_loaded`。 */
+  onPortCall?: (
+    port: string,
+    method: string,
+    args: Json,
+    env: CallEnv | undefined,
+  ) => Promise<CallResponse>
   onServiceEvent?: (impl: string, topic: string, payload: Json) => void
   onExtraDropped: (impl: string, gen: Hash, caps: string[]) => void
   onChannelClosed: (service: ServiceRuntime, reason: string) => void
@@ -62,6 +75,15 @@ export async function launchService(
 ): Promise<ServiceRuntime> {
   const cwd = materializeCommit(deps.world, gen, deps.materializedDir)
   if (cwd === null) throw new ServiceStartError('materialize_failed')
+  // 大资产直拷先于依赖恢复：构建期输入（如 Rust include_bytes!）须在构建前就位
+  if (deps.copyAssets !== undefined) {
+    try {
+      deps.copyAssets(cwd)
+    } catch (err) {
+      if (err instanceof ServiceStartError) throw err
+      throw new ServiceStartError('deps_failed')
+    }
+  }
   // 依赖恢复先于 spawn：失败时尚未起进程，按启动失败分类传播
   if (deps.restore !== undefined) {
     try {
@@ -98,6 +120,7 @@ export async function launchService(
     impl: id,
     gen,
     onEvent: (topic, payload) => deps.onServiceEvent?.(id, topic, payload),
+    onPortCall: deps.onPortCall,
     onClosed: (reason) => {
       if (service !== null) deps.onChannelClosed(service, reason)
     },

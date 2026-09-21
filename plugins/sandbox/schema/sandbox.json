@@ -1,0 +1,121 @@
+{
+  "title": "sandbox（隔离执行）",
+  "description": "身份自述 / 数据契约：描述 sandbox 能力类三方法 exec / fsop / capabilities 的入参与结果形状。四档 fs/net 映射表不住本 schema（schema 出生即冻结），住本身份数据世代 body（bag.sandbox_tiers）；本插件服务不读投影，tier / workspace_root / caps / sandbox_tiers 全由调用方入口 term 随 bag 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "caps": {
+      "type": "object",
+      "description": "工具声明的能力与资源上限；本插件取「声明 ∩ 当前档范围」后强制。缺省回落当前档范围与资源缺省。",
+      "additionalProperties": true,
+      "properties": {
+        "fs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": { "enum": ["full", "workspace", "none"] },
+            "write": { "enum": ["full", "workspace", "none"] }
+          }
+        },
+        "net": { "enum": ["none", "limited", "all", "unset"] },
+        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "mem_mb": { "type": "integer", "minimum": 0 },
+        "cpu_ms": { "type": "integer", "minimum": 0 },
+        "output_max": { "type": "integer", "minimum": 1 },
+        "procs_max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "description": "批准后一次性放行凭据（不进世界，绑定 call_id、校验档位 / 范围后消费一次）。",
+      "required": ["call_id"],
+      "additionalProperties": true,
+      "properties": {
+        "call_id": { "type": "string" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "expires": { "type": "number" },
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "net": { "enum": ["none", "limited", "all"] }
+      }
+    },
+    "exec_request": {
+      "type": "object",
+      "description": "exec 的 bag：cmd + args + env；cwd = bag.workspace_root。",
+      "required": ["cmd"],
+      "additionalProperties": true,
+      "properties": {
+        "cmd": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "workspace_root": { "type": "string" },
+        "sandbox_tiers": { "type": "object" }
+      }
+    },
+    "exec_result": {
+      "type": "object",
+      "description": "exec 结果；code 仅在超时 / 超限被杀时出现。",
+      "required": ["exit_code", "stdout", "stderr", "truncated", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "truncated": { "type": "boolean" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "code": { "enum": ["timeout", "oom", "cpu_exceeded", "procs_max", "null"] }
+      }
+    },
+    "fsop_request": {
+      "type": "object",
+      "description": "fsop 的 bag：op + path + args（逐 op 参数）+ caps / tier / workspace_root / sandbox_tiers / grant。",
+      "required": ["op", "path"],
+      "additionalProperties": true,
+      "properties": {
+        "op": { "enum": ["stat", "read", "list", "grep", "write", "replace"] },
+        "path": { "type": "string" },
+        "args": { "type": "object" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "workspace_root": { "type": "string" },
+        "sandbox_tiers": { "type": "object" }
+      }
+    },
+    "fsop_result": {
+      "type": "object",
+      "description": "fsop 结果：成功 {ok:true, op, result}，失败 {ok:false, code, message}。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "op": { "type": "string" },
+        "result": { "type": "object" },
+        "code": {
+          "enum": [
+            "bad_path",
+            "bad_args",
+            "path_not_found",
+            "not_a_directory",
+            "edit_conflict",
+            "too_large",
+            "binary_unsupported",
+            "fs_denied",
+            "sandbox_setup_failed"
+          ]
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "capabilities_result": {
+      "type": "object",
+      "description": "capabilities 自述：本机可用实现与平台能力。",
+      "required": ["platform", "implementations", "default_impl", "enforcement"],
+      "additionalProperties": true,
+      "properties": {
+        "platform": { "type": "string" },
+        "implementations": { "type": "array", "items": { "type": "object" } },
+        "default_impl": { "type": "string" },
+        "enforcement": { "type": "object" }
+      }
+    }
+  }
+}

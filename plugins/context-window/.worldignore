@@ -1,0 +1,7 @@
+# 入世排除：依赖与构建产物走宿主侧 ③；测试 / 本地工具不入世界。
+# 源码（execute/、native/tokenizer/src、Cargo.toml、Cargo.lock）与 schema 入世。
+node_modules/
+target/
+*.node
+test/
+tools/

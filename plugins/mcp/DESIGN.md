@@ -4,11 +4,11 @@
 | --- | --- |
 | 编号 / 身份 | 37 / `mcp`（原 `mcp-client` + `mcp-server` 合并，本轮收敛） |
 | 职责 | MCP 适配器，**双向**：**出站**接入外部 MCP 服务器（把它们的工具注册进 #27 的工具目录）；**入站**把本产品能力（工具 / 对话命令）以 MCP 形式暴露给外部 agent |
-| 依赖 | pins 无（**不反向依赖 27**，避免 27 ↔ 37 成环）；`<-` 27（pins：27 派发本插件提供的工具）；入站面由外部连接（无 pins）；**periodic `reads:{"servers":["ids","mcp","body"]}`**（服务器清单住数据世代 body，见下）（2026-09-20 修订） |
+| 依赖 | pins `{"secrets":"secrets"}`（spawn 前经反向 `port.call` 调 `secrets.resolve` 解析 `env` 里的 `auth_ref` 引用）；**不反向依赖 27**（避免 27 ↔ 37 成环）；`<-` 27（pins：27 派发本插件提供的工具）；入站面由外部连接（无 pins）；**periodic `reads:{"servers":["ids","mcp","body"]}`**（服务器清单住数据世代 body，见下）（2026-09-20 修订） |
 | 成员 | execute, schema（**无 `terms/`**——出站发现改为服务方法 `discover` + 宿主 periodic）（2026-09-20 修订） |
 | 能力类·方法 | `implements: ["mcp"]`（出站侧作为工具提供者，由 27 按 `pins` 纳入目录），`methods: {"mcp":["describe","invoke","discover"]}`（**类名 = 身份名**，见 `plugins/tools/DESIGN.md`「`tool` 端口契约」；`discover` = 出站发现服务方法；`describe` 只回本插件自述，外部工具清单权威 = 本身份数据世代 body 投影）（2026-09-20 修订） |
 | 命令 | 无（**原 `mcp.sync` terms 入口作废**——出站 = 服务方法 `discover` + 宿主 periodic；入站 = `forward` 帧同步回传）（2026-09-20 修订） |
-| schema | `schema/mcp.json`（**服务器清单住数据世代 body**：命令 / 参数 / `auth_ref` / `confirmed` / `trusted`；periodic reads 注入）（2026-09-20 修订） |
+| schema | `schema/mcp.json`（**服务器清单住数据世代 body**：命令 / 参数 / `env`（值可为 `auth_ref` 引用）/ `confirmed` / `trusted`；易变运行态不写回 body；periodic reads 注入）（2026-09-20 修订） |
 | 机制 | **出站**：按清单（**条目须 `confirmed:true` 才 spawn**）**自己 spawn** 外部 MCP 服务器进程（stdio 双向），把发现的外部工具写成本身份**数据世代 body 投影**（**不反向 eff 到 27**，否则与 27 成环）；**#14 入口 term** 读出该投影随 bag 传 #27（§1.14），#27 按 `pins` 纳入本适配器、调用时派发到本适配器再转发。**入站**：外部 MCP 请求 → #15 `/p/mcp/*` → **`forward` 帧** → 宿主按本身份声明的命令构造 run → **结果经 forward 的 `result` 同步回传**（#15 → HTTP/SSE 响应给 MCP 客户端；correlation = 请求-响应一对一，无需额外 id）（2026-09-20 修订） |
 | 边界 | 不做：工具派发本体（归 27）/ 绕开 27 自建派发 / 判定 / 直写世界 / 密钥本体（走 env 引用） |
 | 验收 | 1) 外部 MCP 工具出现在 #27 目录且可被模型调用；2) 本产品能力可被外部 MCP 客户端调用；3) 出站与入站共用同一份清单形状；4) 明文密钥不进世界（`auth_ref` / env 引用）；5) **出站刷新经宿主 periodic（`mcp.discover`）；`tools/list_changed` 只置脏标记、下一拍同步；入站经 `forward` 帧同步回传（不自开端口）**（2026-09-20 修订） |
@@ -21,9 +21,10 @@
 ## 出站进程生命周期（2026-09-19 补，原缺失）
 
 - **启动**：按数据世代 body 清单，对**每个 `confirmed:true`** 条目 spawn 子进程（stdio 双向），握手 MCP `initialize` → `tools/list` → 把工具写成本身份**数据世代 body 投影**（2026-09-20 修订）。
+- **密钥引用（2026-09-20 修订）**：服务器条目的 `env` 值可为字符串字面量，或 `auth_ref` 引用 `{auth_ref:{kind:'local'|'env', name}}`。spawn 前本插件经反向 `port.call`（`pins:{"secrets":"secrets"}`）调 `secrets.resolve {auth_ref}`，把明文注入**同名**子进程环境变量；明文不进日志 / 世界 / 计划 / event，解析失败计入该条目连接失败。
 - **健康（2026-09-20 修订）**：**外部子服务器的健康用本插件自身 event / 日志表达**（宿主 `service.*` 运维事件只描述本插件服务进程）；失败按 `restart` 策略重启；重启后重新 `tools/list` 刷新投影。
-- **工具清单刷新（2026-09-20 修订）**：宿主 periodic（`periodic:[{method:"mcp.discover", every_ms, reads:{"servers":["ids","mcp","body"]}}]`）触发服务方法 `discover` 重拉；收到 `tools/list_changed` 通知只**置脏标记**，下一拍 periodic 同步（**服务无写通道、event 不触发 run**）；写新投影世代（数据热生效，#27 下次 `list` 读到新清单）。
-- **断连重连 / 子进程管理（2026-09-20 修订）**：stdio EOF → 视为进程退出 → 宿主按 `restart` 重启；连续失败超 `max` → 隔离该外部服务器条目（从投影摘除，#27 不再派发其工具）。**本服务维护子进程表；`drain` / 退出时终止全部子进程；宿主 stop / restart 经进程树终止（startWrapper / 进程组）**。
+- **工具清单刷新（2026-09-20 修订）**：宿主 periodic（`periodic:[{method:"mcp.discover", every_ms, reads:{"servers":["ids","mcp","body"]}}]`）触发服务方法 `discover` 重拉；收到 `tools/list_changed` 通知只**置脏标记**，下一拍 periodic 同步（**服务无写通道、event 不触发 run**）。**仅当配置 / 工具清单变化（或置脏）才产 `put + add_gen`**；同一状态重复 discover 不产生新世代（易变运行态不写回 body）。
+- **断连重连 / 子进程管理（2026-09-20 修订）**：stdio EOF → 视为进程退出 → 宿主按 `restart` 重启；连续失败超 `max` → 隔离该外部服务器条目（从投影摘除，#27 不再派发其工具）。**隔离状态留服务进程内存（③ 可重算），不写回 body**：连接配置变化或本插件服务重启即解除隔离并重试。**本服务维护子进程表；`drain` / 退出时终止全部子进程；宿主 stop / restart 经进程树终止（startWrapper / 进程组）**。
 
 ## 出站发现 `discover` 与入站 `forward`（2026-09-20 重写）
 

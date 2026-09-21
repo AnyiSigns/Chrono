@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { H, run } from '../../kernel/index.ts'
 import { ServiceChannelError } from '../service-link.ts'
+import type { CallEnv } from '../wire.ts'
 import { callEffect, commitAudit } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
 import { WorldWriter } from '../writer.ts'
@@ -38,6 +39,8 @@ export interface RoundInput {
   initiator: string
   /** 宿主对外 run id（`accepted{run}`）：审计 def 的 `run` 用它（F8 按回合查询）；缺省用内核轮 run id。 */
   runId?: string
+  /** 发起者提交信封的 `thread`：只随调用帧 `env` 回带（原样、不校验）；detached / 周期 run 恒 null。 */
+  thread?: string | null
   now: number
   /** A1 路由钩子；缺省时不解析端点（S1 语义：`not_loaded`）。 */
   router?: RoundRouter
@@ -124,11 +127,24 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   const router = input.router
   const timeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
   const signal = input.signal
+  // 调用帧 env：本回合 run id / 发起者 thread / 宿主固定时钟（按轮固定，取轮首值）
+  const env: CallEnv = {
+    run: input.runId ?? null,
+    thread: input.thread ?? null,
+    now: input.now,
+  }
   return async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
     try {
-      const response = await routed.row.link.call(eff.port, eff.method, eff.args, timeoutMs, signal)
+      const response = await routed.row.link.call(
+        eff.port,
+        eff.method,
+        eff.args,
+        timeoutMs,
+        signal,
+        env,
+      )
       if (response.ok) return { ok: true, value: response.value }
       return { ok: true, value: { error: response.code, message: response.message } }
     } catch (err) {

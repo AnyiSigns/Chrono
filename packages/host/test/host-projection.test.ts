@@ -22,6 +22,7 @@ const READ_GENS: Json = ['g', ['ids', 'toy-alpha', 'gens', 0, 'payload']]
 const READ_MARKER: Json = ['g', ['marker']]
 const READ_GHOST: Json = ['g', ['ids', 'ghost', 'body']]
 const READ_ADOPTED: Json = ['g', ['ids', 'toy-alpha', 'gens', 0, 'adopted']]
+const READ_PINS: Json = ['g', ['ids', 'toy-caller', 'pins']]
 
 describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
   let root: string
@@ -52,9 +53,11 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
     const caller = writeTempPackage(root, {
       identity: 'toy-caller',
       start: '',
+      pins: { 'toy.alpha': 'toy-alpha' },
       members: [{ kind: 'term', path: 'terms/' }],
       commands: [
         { name: 'toy-caller.head', entry: 'terms/head.json' },
+        { name: 'toy-caller.pins', entry: 'terms/pins.json' },
         { name: 'toy-caller.rev', entry: 'terms/rev.json' },
         { name: 'toy-caller.active', entry: 'terms/active.json' },
         { name: 'toy-caller.body', entry: 'terms/body.json' },
@@ -74,6 +77,7 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
         'marker.json': JSON.stringify(READ_MARKER),
         'ghost.json': JSON.stringify(READ_GHOST),
         'adopted.json': JSON.stringify(READ_ADOPTED),
+        'pins.json': JSON.stringify(READ_PINS),
         'probe.json': JSON.stringify(READ_ACTIVE),
         'plan.json': JSON.stringify([
           'c',
@@ -127,6 +131,11 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
       expect((gens.observations[0] as { value: Json }).value).toBe(
         anchor.world.ids['toy-alpha'].gens[0].payload,
       )
+      // pins = 当前代码世代声明里的表（名 → 被依赖身份名）；toy-alpha 无 pins 声明 → {}
+      const pins = await client.command('toy-caller.pins')
+      expect(pins.status).toBe('done')
+      expect((pins.observations[0] as { value: Json }).value).toEqual({ 'toy.alpha': 'toy-alpha' })
+
       const adopted = await client.command('toy-caller.adopted')
       expect(adopted.status).toBe('refused')
       expect(adopted.observations[adopted.observations.length - 1]).toMatchObject({

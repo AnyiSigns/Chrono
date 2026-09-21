@@ -12,6 +12,17 @@ export interface Limits {
   depth: number
 }
 
+/**
+ * 服务调用帧的 `env`（宿主填写，机械）：本回合 run id / 发起者提交信封的 `thread`
+ * （原样回带、不校验；detached / 周期 run 恒 `null`）/ 宿主固定时钟。
+ * 只填帧，不改 `args` 语义；服务发事件载荷、判 TTL 一律用它，不得自取时间。
+ */
+export interface CallEnv {
+  run: string | null
+  thread: string | null
+  now: number
+}
+
 /** 发起者 → 宿主。 */
 export type InboundMessage =
   | {
@@ -39,7 +50,7 @@ export type InboundMessage =
       v: string
       id: string
       kind: 'forward'
-      /** 目标插件身份：宿主只把帧转发给该身份自己的声明入口（H8）。 */
+      /** 目标插件身份：宿主只把帧转发给该身份自己的声明入口（插件入站转发）。 */
       identity: string
       /** 目标身份声明的命令名（入口 term 由此解析）。 */
       command: string

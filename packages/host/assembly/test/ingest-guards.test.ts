@@ -45,6 +45,12 @@ describe('入世守卫：声明路径逃逸包根 → bad_plugin_decl', () => {
         },
       },
       {
+        label: 'schema=null（不得以 null 占位，应省略）',
+        patch: (decl) => {
+          decl.schema = null
+        },
+      },
+      {
         label: "commands[0].entry='C:/abs.json'（盘符）",
         patch: (decl) => {
           firstOf(decl.commands).entry = 'C:/abs.json'

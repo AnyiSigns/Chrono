@@ -1,0 +1,51 @@
+{
+  "title": "skill（技能包：内联清单 + 结构化触发 + 作用域）",
+  "description": "技能数据身份：body = { version, skills: [ ... ] }，内联列表（不做链式，写放大可接受）。技能只有说明文本，不含可执行内容；要执行走沙箱与工具族。每条技能：{ id, name, description, triggers:{keywords,file_globs,explicit}, scope:{kind,workspace_id?,session_id?}, body, enabled, at }。triggers 三者命中任一即候选；scope 缺键 ≡ {kind:'global'}，workspace 技能在其它工作区不进候选集（过滤由解释器执行，本身份只存字段）。形态校验归写入端（宿主 v1 不校验身份数据）。",
+  "type": "object",
+  "required": ["version", "skills"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "skills": {
+      "type": "array",
+      "description": "技能清单（内联）。每项形状：{ id, name, description, triggers:{keywords[],file_globs[],explicit[]}, scope:{kind,workspace_id?,session_id?}, body, enabled, at }；白名单子集无 oneOf / $ref，故写端保证形状。",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "triggers", "body"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "triggers": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "结构化触发：命中任一即候选。keywords = 对当前轮文本；file_globs = 上下文涉及文件；explicit = 用户显式点名（如 @测试）。三者均可缺键（缺键 = 空）。",
+            "properties": {
+              "keywords": { "type": "array", "items": { "type": "string" } },
+              "file_globs": { "type": "array", "items": { "type": "string" } },
+              "explicit": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "scope": {
+            "type": "object",
+            "required": ["kind"],
+            "additionalProperties": true,
+            "description": "作用域，与解释器的 Scope / 人格同形；缺键 ≡ {kind:'global'}。kind=global 全工作区 / workspace 仅匹配 workspace_id / session 仅该会话。过滤由解释器执行，本身份只存字段。",
+            "properties": {
+              "kind": { "enum": ["global", "workspace", "session"] },
+              "workspace_id": { "type": "string" },
+              "session_id": { "type": "string" }
+            }
+          },
+          "body": {
+            "type": "string",
+            "description": "纯文本说明（步骤 / 约定 / 示例），不含可执行内容。"
+          },
+          "enabled": { "type": "boolean", "description": "缺键 = 启用。" },
+          "at": { "type": "string" }
+        }
+      }
+    }
+  }
+}

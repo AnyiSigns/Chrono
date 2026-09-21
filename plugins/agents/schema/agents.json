@@ -1,0 +1,124 @@
+{
+  "title": "agents（智能体数据身份：模板 / 实例（人格）/ 通道）",
+  "description": "三条独立链的索引：body = { version, templates:{tail,count}, instances:{tail,count}, channels:{tail,count} }。tail = {\"def\":\"<链头条目 def 哈希>\"} 或 null（空链）；条目各自成 def、带 prev 成链，不在 body 里列全部哈希（避免全量重写）。条目 body 由宿主投影引用闭包解析进 ids.agents.refs。`template` / `instance` / `channel` 三个键只声明各自条目的平铺形状，不是 body 自身的字段（与 input 的 slot 声明同口径）。形态校验归写入端（宿主 v1 不校验身份数据）。",
+  "type": "object",
+  "required": ["version", "templates", "instances", "channels"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "templates": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "模板链索引。v1 未接线：预留给新建子代理 / 提案预填，暂无消费方。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<模板条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "instances": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "实例（人格）链索引。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<实例条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "channels": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "通道链索引。通道 = 跨回合留言板：写进世界、下一回合经投影读到（不经宿主 event 投递）。",
+      "properties": {
+        "tail": { "description": "链头：{\"def\":\"<通道条目 def 哈希>\"} 或 null（空链）。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "template": {
+      "title": "模板条目（templates 链的条目，单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条模板哈希>\"} 或 null（链首）。v1 未接线（预留：供新建子代理 / 提案预填）。",
+      "required": ["id", "name", "system_prompt", "scope", "prev"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "system_prompt": {
+          "type": "object",
+          "required": ["def"],
+          "additionalProperties": true,
+          "description": "提示词 pin，不内联：{\"def\":\"<提示词 def 哈希>\"}。",
+          "properties": { "def": { "type": "string" } }
+        },
+        "model": { "description": "可选：模型绑定 {\"def\":hash}；缺键由解释器 / 模型服务定。" },
+        "decoding": { "description": "可选：解码参数 {\"def\":hash}。" },
+        "prefer_tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "可选：偏好工具名（提示层，非权限）。"
+        },
+        "scope": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "description": "可见范围：kind=global 全工作区 / workspace 仅匹配 workspace_id / session 仅该会话。过滤由解释器执行，本身份只存字段。",
+          "properties": {
+            "kind": { "enum": ["global", "workspace", "session"] },
+            "workspace_id": { "type": "string" },
+            "session_id": { "type": "string" }
+          }
+        },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    },
+    "instance": {
+      "title": "实例条目（instances 链的条目，即人格，单值平铺）",
+      "description": "条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条实例哈希>\"} 或 null（链首）。实例只提供人格（prompt / model / decoding / 偏好工具）与 scope，不带执行权：发不发效果由解释器决定。",
+      "required": ["id", "name", "system_prompt", "scope", "prev"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "system_prompt": {
+          "type": "object",
+          "required": ["def"],
+          "additionalProperties": true,
+          "description": "提示词 pin，不内联：{\"def\":\"<提示词 def 哈希>\"}。",
+          "properties": { "def": { "type": "string" } }
+        },
+        "model": { "description": "可选：模型绑定 {\"def\":hash}；缺键由解释器 / 模型服务定。" },
+        "decoding": { "description": "可选：解码参数 {\"def\":hash}。" },
+        "prefer_tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "可选：偏好工具名（提示层，非权限）；消费方为解释器的上下文装配。"
+        },
+        "scope": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "description": "可见范围：kind=global 全工作区 / workspace 仅匹配 workspace_id / session 仅该会话。过滤由解释器执行，本身份只存字段。",
+          "properties": {
+            "kind": { "enum": ["global", "workspace", "session"] },
+            "workspace_id": { "type": "string" },
+            "session_id": { "type": "string" }
+          }
+        },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    },
+    "channel": {
+      "title": "通道条目（channels 链的条目，单值平铺）",
+      "description": "跨回合留言板的一条留言：条目各自成 def、带 prev 成链；prev = {\"def\":\"<上一条通道哈希>\"} 或 null（链首）。通道无隔离：任何能读本身份投影的 term 都能读全部通道。",
+      "required": ["id", "from", "text", "at", "prev"],
+      "properties": {
+        "id": { "type": "string" },
+        "channel": { "type": "string", "description": "可选：留言板名（主题）；缺键 = 默认板。" },
+        "from": { "type": "string", "description": "发信实例 id（instances 条目的 id）。" },
+        "to": { "description": "收信实例 id 或 null（null = 广播）。" },
+        "text": { "type": "string" },
+        "at": { "type": "string" },
+        "prev": { "description": "链指针：{\"def\":\"<上一条条目哈希>\"} 或 null（链首）。" }
+      }
+    }
+  }
+}

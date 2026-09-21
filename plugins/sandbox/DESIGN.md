@@ -28,7 +28,19 @@
 
 - **单调**：`auto` > `severe` > `review` > `deny`（按放行程度）。
 - **职责分离**：本插件**强制** fs 范围；`#26 guard` 只判「工作区外 / 危险操作」是否升级；`#33` 编排审批往返（`26 -> 27 -> 32 -> 39 -> 33`）；`deny` 直接不执行。
-- **升级放行（写死，否则「批了也执行不了」）**：`severe` 的默认范围 = 工作区 RW；越界 / 危险调用**先被拒并升级**（不执行，本插件**永不发升级、只 `fs_denied`**）。**`caps.grant` 签发者 = #33**：裁决放行时构造 `{call_id, tier, expires}`（**不进世界**），随 `tool.dispatch` bag → #27 透传 → 提供者 → 本插件随 `exec` / `fsop` args 传入；本插件校验 `call_id` 一次性 / 范围 / 档位后才放宽，**grant 不可重放为常设权限**（2026-09-20 修订）。
+- **升级放行（写死，否则「批了也执行不了」）**：`severe` 的默认范围 = 工作区 RW；越界 / 危险调用**先被拒并升级**（不执行，本插件**永不发升级、只 `fs_denied`**）。**`caps.grant` 签发者 = #33**：裁决放行时构造 `{call_id, op, path, tier, expires}`（**不进世界**），随 `tool.dispatch` bag → #27 透传 → 提供者 → 本插件随 `exec` / `fsop` args 传入；本插件校验后才放宽，**grant 不可重放为常设权限**（2026-09-20 修订）。
+
+### `caps.grant` 校验口径（可执行，写死）
+
+grant 只放宽**被批准的那一次**，判定顺序固定（任一不符即回落档位强制 = fail-closed 拒绝）：
+
+1. **`deny` 档短路**：`deny` 档下 fs 读写全拒，**任何 grant 都不放宽**（与 `exec` 同口径；`deny` 先于 grant 判定）。
+2. **绑定字段**：`{call_id, op, path, tier, expires}` 缺一不可——`op` 必须等于本次 `fsop` 的 op；目标路径必须落在 `paths` 任一项之下；`tier` 必须等于当前档；`expires` 用帧 `env.now` 判（不取系统时钟）。
+3. **`paths` 语义**：**为空 = 不适用（不构成 grant）**，而非「不限」；非空时逐项 realpath 解析后与目标比对。
+4. **`fs` 不得缺省放宽**：只有 grant **显式声明**的 `fs.read` / `fs.write` 才放宽，且范围须覆盖所需；未声明即不额外放宽（不回落 `full`）。grant 只允许**收紧到显式声明**，不允许无声明放大。
+5. **一次性**：`call_id` 消费后即拒；消费记录驻进程内存（容量上限 + TTL，凭据自身 `expires` 兜底）。
+
+- **已知限制（如实登记）**：v1 的 bag 与模型 args 未做 provenance 隔离——伪造 `grant` 的防线依赖 #27 / #28 的可信字段边界 + 审批闸（#26 / #32 / #33），本插件只做上述机械校验，不证明 grant 确由 #33 签发。
 - 映射表住**本身份数据世代 body**（`bag.sandbox_tiers` 由 #14 入口 term 读出传入，§1.14；**热改 = 数据换代**，不住 schema——schema 是身份契约出生即冻结）（2026-09-20 修订）。
 - **对 agent 隐藏（已定）**：唯一插件写工具 = `plugin-admin`（#42），其**可见性过滤排除 `sandbox`**（与自己）⇒ agent 够不着；沙箱仍是**普通插件**、不设框架特权（唯一不变量仍是内核不可改）。人仍可经入站面改沙箱。`.worldignore` 不适用：改插件是写**新**源码 + `add_gen`/`set_active`，排除源码既挡不住写新世代、又会让宿主无法物化运行。
 
@@ -54,6 +66,8 @@
 | `docker`（同期） | 容器：`--network` / `--read-only` + bind mount（工作区）/ `--memory` / `--cpus` / `--pids-limit` / `--user` | 依赖外部运行时；不可用 → `sandbox_unsupported` |
 
 - `impl` 住 schema / config（`native` / `docker`）；`capabilities` 报本机可用实现与平台能力（自述面，供 UI 展示；**改名以避与协议握手 `probe` 撞名**）。
+- **`capabilities.enforcement` 如实自述**：`fsop` = `in_process`（进程内 realpath + 打开语义）；`exec_fs` = `none`（native 的 `exec` 不做 fs 范围强制，Docker 的 OS 级隔离见其 `features`）；`net` = `declaration`（`caps.net` 越档 `net_denied`，实现尽力）。`exec_fs` 不得报 `declaration`——native 无任何声明检查。
+- **Docker 已知限制**：`limited` 网络白名单未实现，一律回落 `--network none`（fail-closed）；容器调用（`--read-only` / `--user` / bind mount / `--memory` / `--pids-limit`）本机无 docker，未验证。
 - 二进制与 ONNX 运行时同路（#20 先例）：**入世只有 Rust 源码 + Cargo 清单**，`target/` 编译产物走 `.worldignore`（宿主侧 ③）。
 
 ## exec
@@ -88,11 +102,11 @@ bag = { op, path, args, caps, tier, workspace_root, grant? }
 | `replace` | `old` / `new` / `replace_all?` / `expected_hash?` | `{ replaced, added, removed, patch }` | ✗ |
 
 - **`base` / `ignore` 参数（2026-09-20 修订）**：`base` = path 基准；`ignore` = 忽略表（调用方传入，住本身份数据世代 body）。
-- **强制点在 #25，不在 #28**：#25 独立做 `realpath(path)` 并与 `workspace_root` 比对（防符号链接逃逸），取「#28 声明的 `caps.fs.*` ∩ 当前 `tier` 范围」后执行；**免竞态打开语义**：realpath 校验与文件打开在同一受限上下文内完成（`O_NOFOLLOW` / `openat2` 同义；符号链接竞态由打开语义消除）；#28 的「区内 / 区外」归类只是**声明**，越界由 #25 拒 `fs_denied`（本插件**永不发升级**；升级判定归 #26 词法预判、派发前；realpath 判越界而 #26 未升级 ⇒ **fail-closed 拒绝**）（2026-09-20 修订）。
+- **强制点在 #25，不在 #28**：#25 独立做 `realpath(path)` 并与 `workspace_root` 比对（防符号链接逃逸），取「#28 声明的 `caps.fs.*` ∩ 当前 `tier` 范围」后执行；**免竞态打开语义**：读路径 realpath 校验与文件打开在同一受限上下文内完成，打开后重新 `canonicalize` 复核路径未变；**写路径统一走「临时文件 + rename」**（rename 替换目标链接本身、不写穿符号链接）；#28 的「区内 / 区外」归类只是**声明**，越界由 #25 拒 `fs_denied`（本插件**永不发升级**；升级判定归 #26 词法预判、派发前；realpath 判越界而 #26 未升级 ⇒ **fail-closed 拒绝**）（2026-09-20 修订）。
 - **原子读改写**：`replace` 在**一次 `fsop` 内**完成 read→比对→write（不给 #28 留 TOCTOU 窗口）；`old` 未命中或非唯一 → `edit_conflict`；`expected_hash`（可选）= 调用方读到的旧内容哈希，不符 → `edit_conflict`（乐观并发）。
-- **v1 只做文本**：命中二进制 / 超 `output_max` → `binary_unsupported` / `too_large`；`host.asset.put/get`（**S1 已落地**）是 **#28 / #30 / #31** 的二进制前置（它们 pin host）；**本插件不 pin host、不经资产面**（2026-09-20 修订）。
+- **v1 只做文本**：命中二进制 → `binary_unsupported`；**`read` 超 `output_max` 返回截断内容 + `truncated:true`（标记，非错）**，`too_large` 只留给 `write` / `replace` 的输入或既有文件超限；`host.asset.put/get`（**S1 已落地**）是 **#28 / #30 / #31** 的二进制前置（它们 pin host）；**本插件不 pin host、不经资产面**（2026-09-20 修订）。
 - **与 `exec` 同一套资源上限与隔离**（native / docker 共用）；`fsop` 不启动子进程，由 #25 在受限上下文内直接触盘。**诚实口径（2026-09-20 修订）**：`fsop` 为**进程内校验**（非 OS 级隔离；Docker 后端才是真 OS 隔离）——多实现可换，四档强制在进程内为 realpath + 打开语义强制。
-- **`caps.grant`**：与 `exec` 同规——批准后一次性放宽**本次** `fsop`（绑定 `call_id`），校验 `call_id` / 范围 / 档位后放行；不进世界、不可重放为常设权限。
+- **`caps.grant`**：与 `exec` 同规——批准后一次性放宽**本次** `fsop`，绑定 `{call_id, op, path, tier, expires}`；`deny` 档短路、`paths` 空视为不适用、`fs` 未声明不放宽（详见上「`caps.grant` 校验口径」）。不进世界、不可重放为常设权限。
 - **#28 不直接触盘**：#28 的四个工具全部映射为 `fsop`（`read`→`read`、`edit`→`replace` / `write`、`glob`→`list`、`grep`→`grep`），结果由 #25 回、#28 结构化后回 #27。
 
 ## 网络
@@ -104,7 +118,7 @@ bag = { op, path, args, caps, tier, workspace_root, grant? }
 
 - v1：**win32 + linux**；mac 后补（`sandbox_unsupported`）。Docker 可用时优先（若配置）。
 - 失败码：`sandbox_unsupported`（平台 / 运行时不可用）、`sandbox_setup_failed`、`timeout`、`oom`、`cpu_exceeded`、`output_max`、`procs_max`、`output_truncated`（非错，标记）、`fs_denied`（越界被拒）、`net_denied`（网络越档被拒，错误码已登记 `protocol.md` §四）（资源上限码对齐 #29，2026-09-20 修订）。
-- `fsop` 追加：`bad_path`（形态非法）、`path_not_found` / `not_a_directory`、`edit_conflict`（`replace` 的 `old` 未命中 / 非唯一 / `expected_hash` 不符）、`too_large` / `binary_unsupported`（v1 文本限制）。
+- `fsop` 追加：`bad_path`（形态非法）、`path_not_found` / `not_a_directory`、`permission_denied`（触盘权限不足，**不归** `path_not_found`）、`edit_conflict`（`replace` 的 `old` 未命中 / 非唯一 / `expected_hash` 不符）、`too_large`（`write` / `replace` 输入或既有文件超 `output_max`；`read` 超限是 `truncated` 标记、非错）、`binary_unsupported`（v1 文本限制）。
 
 ## 跨插件登记
 

@@ -1,0 +1,10 @@
+{
+  "name": "embedding",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地向量化（Rust）：granite-97m int8 ONNX 推理 + 真实 tokenizer 窗口切块；无 npm 依赖，权重内嵌二进制，编译走宿主依赖缓存",
+  "scripts": {
+    "test": "cargo test"
+  }
+}

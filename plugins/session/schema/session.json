@@ -1,0 +1,108 @@
+{
+  "title": "session（会话数据 + 消息 def）",
+  "description": "会话 body 只存会话元数据与链头（不列全部消息）；每条消息各自成 def、以 prev 串成链。body 与消息 def 的引用都用显式标记 {\"def\":\"<64hex>\"}，宿主按引用闭包把它们放进投影 refs。可空字段用 null（或直接缺键）表达；宿主 v1 不校验身份数据，本 schema 是身份自述 / 数据契约。",
+  "type": "object",
+  "required": ["version", "conversations"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "current": {
+      "type": "string",
+      "description": "当前会话 id；null = 无当前会话（缺键同义）"
+    },
+    "conversations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "count"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string", "description": "会话 id（线程 id）" },
+          "workspace_id": { "type": "string", "description": "所属工作区 id；创建即钉死、不可改（缺键 = 未绑定）" },
+          "title": { "type": "string", "description": "会话标题；新建缺省「新对话」" },
+          "kind": {
+            "enum": ["main", "subagent", "group", "workflow"],
+            "description": "线程种类；缺键 = main（向后兼容）"
+          },
+          "parent": {
+            "type": "object",
+            "description": "线程树父指针 {\"def\":\"<父会话 id / 哈希>\"}；null = 无父（缺键同义）"
+          },
+          "source_message": {
+            "type": "string",
+            "description": "分支源消息：消息 id 或 def 哈希（branch 写入）；非分支会话缺键"
+          },
+          "agent": {
+            "type": "object",
+            "description": "subagent 人格 {\"def\":\"<#35 instance 条目哈希>\"}；null = 无（缺键同义）"
+          },
+          "participants": {
+            "type": "array",
+            "items": { "type": "object" },
+            "description": "group 圆桌参与者 [{\"def\":\"<#35 instance 哈希>\"}]；缺键 = 空"
+          },
+          "workflow": {
+            "type": "object",
+            "description": "workflow 图执行位置 {graph:{\"def\":\"<#33 图哈希>\"}, node_index, iter}；null = 非工作流（缺键同义）"
+          },
+          "inbox": {
+            "type": "object",
+            "description": "线程收件箱 {tail:{\"def\":\"<最新 inbox 消息 def>\"}|null, count, last_seen}；deliver 写、assemble 读后推进 last_seen"
+          },
+          "status": {
+            "enum": ["running", "waiting", "blocked", "done", "failed", "terminated"],
+            "description": "线程处境；缺键 = 未标注"
+          },
+          "last_activity": {
+            "type": "object",
+            "description": "{at, summary} 最近活动；null = 无（缺键同义）"
+          },
+          "pending": {
+            "type": "object",
+            "description": "待办计数 {approval, question}；缺键 = 0"
+          },
+          "head": {
+            "type": "object",
+            "description": "链头 {\"def\":\"<最后一条消息 def 哈希>\"}；null = 空链（缺键同义）"
+          },
+          "count": { "type": "integer", "description": "消息条数冗余计数（链完整性以 prev 为准）" },
+          "created": { "type": "string", "description": "创建时间（ISO 8601，取帧 env.now）" },
+          "deleted_at": { "type": "string", "description": "软删时间戳（ISO 8601）；null = 未删（缺键同义）；消息 def 不删不回溯" }
+        }
+      }
+    },
+    "messageDef": {
+      "type": "object",
+      "description": "（非 body 字段）消息 def 的形状说明：每条消息各自成 def、内容寻址，head / prev 指向它。",
+      "required": ["id", "role", "at"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "消息 id（展示用标签，不参与哈希身份）" },
+        "role": {
+          "enum": ["user", "assistant", "system"],
+          "description": "消息角色；system 用于失败路径的独立错误消息"
+        },
+        "content": { "type": "string", "description": "消息正文" },
+        "parts": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "多模态 content parts（可选）；工具调用 / 结果 part 可带 render 渲染描述符"
+        },
+        "attachments": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "附件 [{kind, name, source:{kind:'asset',sha256,mime,size}, text?}]；字节走资产面、世界只存 source 引用"
+        },
+        "meta": {
+          "type": "object",
+          "description": "可选元数据 {model, usage, error}"
+        },
+        "at": { "type": "string", "description": "消息时间（ISO 8601，取帧 env.now）" },
+        "prev": {
+          "type": "object",
+          "description": "上一条消息引用 {\"def\":\"<上一条消息哈希>\"}；null = 链首（缺键同义）"
+        }
+      }
+    }
+  }
+}

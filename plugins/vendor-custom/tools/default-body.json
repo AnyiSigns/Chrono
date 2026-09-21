@@ -1,0 +1,22 @@
+{
+  "name": "Custom",
+  "sdk": "custom",
+  "default_base_url": "",
+  "default_auth_ref_name": "",
+  "quirks": {
+    "impl": "protocol",
+    "protocol": null,
+    "sdk_package": null,
+    "auth_style": "bearer",
+    "auth_header": null,
+    "system_role": "system",
+    "reasoning_field": null,
+    "reasoning_map": {},
+    "reasoning_response_field": null,
+    "max_tokens_field": "max_tokens",
+    "models_path": "/models",
+    "stream_usage": "final_chunk",
+    "extra_headers": {},
+    "note": "无预填；协议 / 连接值以 config 为准"
+  }
+}

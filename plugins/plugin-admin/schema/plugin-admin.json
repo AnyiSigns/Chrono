@@ -1,0 +1,18 @@
+{
+  "title": "plugin-admin（agent 的插件管理面）",
+  "description": "身份自述 / 数据契约。本插件是服务、不持有数据世代 body：list / read / validate 经保留能力类 host 转发，write 只产写计划。本 schema 只声明非安全参数（候选源码大小上限）。可见性名单与受保护 pins 身份表刻意不在此处——前者钉在包内常量（随代码入世，改它必须走代码换代），后者钉在宿主侧入世校验（不进世界）。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "max_source_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "候选源码树解码后总字节上限（validate / write 前置门禁，超出 → source_too_large）。缺省 4194304（4 MiB）。"
+    },
+    "max_files": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "候选源码树文件数上限（validate / write 前置门禁，超出 → too_many_files）。缺省 2048。"
+    }
+  }
+}

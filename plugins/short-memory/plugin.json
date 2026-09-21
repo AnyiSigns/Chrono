@@ -1,0 +1,14 @@
+{
+  "identity": "short-memory",
+  "schema": "schema/short-memory.json",
+  "implements": [],
+  "methods": {},
+  "pins": {},
+  "start": "",
+  "protocol": "1",
+  "restart": {},
+  "health": {},
+  "state": "recomputable",
+  "members": [{ "kind": "schema", "path": "schema/" }],
+  "commands": []
+}

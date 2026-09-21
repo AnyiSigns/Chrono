@@ -1,0 +1,12 @@
+{
+  "title": "mcp 入站命令 args（MCP JSON-RPC 请求形状）",
+  "description": "入站命令的 args 按 MCP JSON-RPC 请求形状透传：{jsonrpc, id, method, params}。宿主只做形态门禁（白名单子集），语义校验归本插件 / 壳。v1 入口 term 只回最小能力面。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "jsonrpc": { "type": "string", "description": "JSON-RPC 版本，通常 \"2.0\"。" },
+    "id": { "description": "请求 id（字符串 / 数字 / null）；原样透传，v1 不回带。" },
+    "method": { "type": "string", "description": "MCP 方法名（tools/list、tools/call、ping 等）。" },
+    "params": { "type": "object", "description": "MCP 方法参数。" }
+  }
+}

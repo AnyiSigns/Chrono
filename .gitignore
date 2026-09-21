@@ -47,6 +47,8 @@ logs/
 experiment/tmp/
 experiment/host-state/
 
+target/
+
 # 载体运行态产物
 state/
 .kilo/

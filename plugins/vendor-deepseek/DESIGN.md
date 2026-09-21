@@ -11,24 +11,24 @@
 | 机制 | 预置由 seed 写入；S1 引导页以本插件为模板预填，用户保存后连接实例落 `#2 config`；`#12` 按 `sdk` + `quirks` 连（`impl=protocol` → 自实现三协议） |
 | 边界 | 不存 `base_url` / 密钥 / 模型目录 / 参数（用户实例归 #2）；不含代码；不存端口 / pid |
 | 验收 | 1) 同 #4 形状；2) `quirks` 被 #12 机械解释；3) 换模板不改 #12；4) 不含明文密钥 |
-| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**字段值待核对（W0 建包前核对为显式前置任务，2026-09-20 登记）**（本文件标 `待核对`） |
+| 状态 | 细节设计（2026-09-19）：`quirks` 冻结；**字段值已按 2026 官方文档核对**（2026-09-20 修订） |
 
 ```jsonc
 { "name": "DeepSeek",
   "sdk": "deepseek",
   "default_base_url": "https://api.deepseek.com/v1",
   "default_auth_ref_name": "DEEPSEEK_API_KEY",
-  "default_reasoning": null,                            // 无档位（reasoning_field=null / reasoning_map={}）：#40 不显示档位控件（#12 仍默认开推理、用模型默认档）
+  "default_reasoning": ["low", "medium", "high"],
   "quirks": {
     "impl": "protocol", "protocol": "openai-chat", "sdk_package": null,
     "auth_style": "bearer", "system_role": "system",
-    "reasoning_field": null,                            // reasoner 推理由模型决定（待核对是否支持 enable_thinking）
-    "reasoning_map": {},
+    "reasoning_field": "reasoning_effort",              // 支持 none / low / high / max
+    "reasoning_map": { "low": "low", "medium": "high", "high": "high" },  // medium 兼容映射为 high
     "reasoning_response_field": "reasoning_content",    // 响应 / 流里的推理文本
     "max_tokens_field": "max_tokens", "models_path": "/models",
     "stream_usage": "final_chunk", "extra_headers": {},
-    "note": "OpenAI 兼容；推理文本走 reasoning_content" } }
+    "note": "OpenAI 兼容；推理文本走 reasoning_content；reasoning_effort 支持 none / low / high / max（medium 兼容映射为 high）" } }
 ```
 
 - 本文件仅保留本厂商差异与 JSON；共同模板、字段语义、验收口径见 `plugins/vendor-openai/DESIGN.md`（#4 规范源）（2026-09-20 修订）。
-- 规范字段含义见 `#4 vendor-openai`「数据契约」；本文件只填厂商值。**「待核对」项：W0 建包前核对为显式前置任务（2026-09-20 登记）。**
+- 规范字段含义见 `#4 vendor-openai`「数据契约」；本文件只填厂商值，取值**已按 2026 官方文档核对**（2026-09-20 修订）。

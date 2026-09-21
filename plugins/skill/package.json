@@ -1,0 +1,10 @@
+{
+  "name": "skill",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "技能包数据身份（内联清单 + 结构化触发 + 作用域；无服务、无 pins、无命令）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

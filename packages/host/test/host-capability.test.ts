@@ -15,6 +15,7 @@ import type { Json } from '../../kernel/index.ts'
 
 const ECHO_TERM: Json = ['eff', 'toy.alpha', 'echo', ['c', { n: 1 }]]
 const AUDIT_TERM: Json = ['eff', 'host', 'audit', ['c', { limit: 5 }]]
+const IDENTITIES_TERM: Json = ['eff', 'host', 'identities', ['c', null]]
 const ASSET_PUT_TERM: Json = ['eff', 'host', 'asset.put', ['v', 0]]
 const ASSET_GET_TERM: Json = ['eff', 'host', 'asset.get', ['v', 0]]
 const SOURCE_READ_TERM: Json = ['eff', 'host', 'source.read', ['v', 0]]
@@ -62,6 +63,7 @@ describe('H14 宿主保留能力类 host', () => {
       terms: {
         'echo.json': JSON.stringify(ECHO_TERM),
         'audit.json': JSON.stringify(AUDIT_TERM),
+        'identities.json': JSON.stringify(IDENTITIES_TERM),
         'assetPut.json': JSON.stringify(ASSET_PUT_TERM),
         'assetGet.json': JSON.stringify(ASSET_GET_TERM),
         'sourceRead.json': JSON.stringify(SOURCE_READ_TERM),
@@ -73,6 +75,7 @@ describe('H14 宿主保留能力类 host', () => {
       commands: [
         { name: 'toy-host.echo', entry: 'terms/echo.json' },
         { name: 'toy-host.audit', entry: 'terms/audit.json' },
+        { name: 'toy-host.identities', entry: 'terms/identities.json' },
         { name: 'toy-host.assetPut', entry: 'terms/assetPut.json' },
         { name: 'toy-host.assetGet', entry: 'terms/assetGet.json' },
         { name: 'toy-host.sourceRead', entry: 'terms/sourceRead.json' },
@@ -137,6 +140,29 @@ describe('H14 宿主保留能力类 host', () => {
       expect(value.truncated).toBe(false)
       expect(Array.isArray(value.records)).toBe(true)
       expect(value.records.some((record) => record.body.port === 'toy.alpha')).toBe(true)
+    } finally {
+      client.close()
+    }
+  })
+
+  it('identities：机械列出各身份 id / active / implements / commands（不含 pins 明细）', async () => {
+    seedHost()
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const value = valueOf(await client.command('toy-host.identities')) as {
+        list: Array<{ id: string; active: string | null; implements: string[]; commands: string[] }>
+      }
+      expect(Array.isArray(value.list)).toBe(true)
+      const alpha = value.list.find((entry) => entry.id === 'toy-alpha')
+      expect(alpha).toBeDefined()
+      expect(alpha?.active).toMatch(/^[0-9a-f]{64}$/)
+      expect(alpha?.implements).toEqual(['toy.alpha'])
+      const host = value.list.find((entry) => entry.id === 'toy-host')
+      expect(host?.commands).toContain('toy-host.identities')
+      // 只读清单面不含 pins 明细（pins 在投影 `ids.<id>.pins`）
+      expect(host === undefined ? null : Object.hasOwn(host, 'pins')).toBe(false)
     } finally {
       client.close()
     }

@@ -1,0 +1,93 @@
+{
+  "title": "input slot（用户意图信箱 · per-thread）",
+  "description": "per-thread 键控寄存器：body = {slots:{<thread_id>}}；客户端整值写入该线程键，回合读取，由消费该槽的写类命令的终局计划以 idle 世代清该键。缺省线程键 `_main`。形态校验归写入端（宿主不校验身份数据）。",
+  "type": "object",
+  "required": ["slots"],
+  "additionalProperties": true,
+  "properties": {
+    "slots": {
+      "type": "object",
+      "description": "键 = thread_id（缺省 `_main`）；值 = 槽 body（下方 `slot` 给出的平铺形态；白名单子集无 oneOf / $ref 且 additionalProperties 只能布尔，故只作声明，实际形态校验归写入端）。",
+      "additionalProperties": true
+    },
+    "slot": {
+      "title": "槽 body（slots 的值，单值平铺）",
+      "description": "slots 每个值的平铺形态声明；`kind` 判别联合，其余字段按 kind 取用。该键只描述 slots 的值形状，不是 body 自身的字段。",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "chat.message",
+            "session.new",
+            "session.select",
+            "session.rename",
+            "session.delete",
+            "session.restore",
+            "session.branch",
+            "model.probe",
+            "approval.decide",
+            "question.answer",
+            "workspace.add",
+            "workspace.remove",
+            "memory.edit",
+            "idle"
+          ]
+        },
+        "text": { "type": "string", "description": "kind=chat.message" },
+        "attachments": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "kind=chat.message；与消息附件同形：{ kind:'image'|'file'|'video'|'audio', name, source:{kind:'asset',sha256,mime,size}|{kind:'ext',url}, text? }。字节走资产面、世界只存 source 引用；text 仅可解析格式内联文本，不可解析格式缺省。"
+        },
+        "conversation": {
+          "type": "string",
+          "description": "目标会话 id；缺键 = 当前会话（kind=session.select / session.delete / session.restore / session.branch 的目标）"
+        },
+        "workspace_id": { "type": "string", "description": "kind=session.new；新会话所属工作区 id" },
+        "title": { "type": "string", "description": "kind=session.rename" },
+        "message": { "type": "string", "description": "kind=session.branch；源消息 id（以它为父链分叉）" },
+        "workspace": {
+          "type": "string",
+          "description": "工作区 id：kind=workspace.add 为新建工作区的客户端生成 id；kind=workspace.remove 为目标 id"
+        },
+        "name": { "type": "string", "description": "kind=workspace.add；缺键 = 取 basename(path)" },
+        "path": { "type": "string", "description": "kind=workspace.add；绝对路径" },
+        "url": { "type": "string", "description": "kind=model.probe" },
+        "protocol": {
+          "enum": ["openai-chat", "openai-responses", "anthropic-messages"],
+          "description": "kind=model.probe；自定义厂商的三基础协议"
+        },
+        "auth_ref": {
+          "type": "object",
+          "required": ["kind", "name"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "enum": ["local", "env"] },
+            "name": { "type": "string" }
+          },
+          "description": "kind=model.probe；只存引用，不存密钥本体（本体住宿主侧用户本地文件 / 进程环境）"
+        },
+        "id": {
+          "type": "string",
+          "description": "kind=approval.decide：待审批项 id；kind=question.answer：待作答问题队列项 id；kind=memory.edit：目标记忆条目 id"
+        },
+        "verdict": { "enum": ["accept", "deny"], "description": "kind=approval.decide" },
+        "answers": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "kind=question.answer；作答内容（按问题顺序的 {question_id, selected[], custom?}）"
+        },
+        "action": {
+          "enum": ["update", "delete", "pin"],
+          "description": "kind=memory.edit"
+        },
+        "layer": { "enum": ["l1", "l2", "l3"], "description": "kind=memory.edit；记忆层级" },
+        "patch": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "kind=memory.edit；更新内容（action=update 时）"
+        }
+      }
+    }
+  }
+}
