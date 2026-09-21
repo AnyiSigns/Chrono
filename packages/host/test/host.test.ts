@@ -133,9 +133,10 @@ describe('宿主 host', () => {
       expect(newEntry.op).toBe('put')
       expect(newEntry.by).toBe('client')
       expect(newEntry.ref).toBeUndefined()
-      // S4：toy-eff 无 pins → A1 路由归 unresolved_cap，内核归 eff_error
+      // S4：toy-eff 的 eff 目标是自身声明的能力类 toy.echo（无自 pin）→ 走自能力路由；
+      // toy 无 execute 成员（start 空）→ 无端点行 → not_loaded，内核归 eff_error
       const auditBody = (newEntry.args as { body: { result: { ok: boolean; error: string } } }).body
-      expect(auditBody.result).toEqual({ ok: false, error: 'unresolved_cap' })
+      expect(auditBody.result).toEqual({ ok: false, error: 'not_loaded' })
 
       const auditHash = H(newEntry.args as any)
       const replayed = replayFull(afterEntries)

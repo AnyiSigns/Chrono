@@ -6,13 +6,13 @@
 | 职责 | S1 首次引导（厂商模板 / 自定义厂商，同一流程）+ S7–S13 设置模态（通用 / 模型 / 插件 / 技能 / **记忆** / **编排** / 关于）；**另持编排健康判定 term 与回滚入口**（必须在 #33 之外，见 S13） |
 | 依赖 | `->` 12（pins：`model.vendors` / `model.discover` / `model.profile` 的入口 term 发 eff）、**24（pins：`secrets.list`，S8 引用名状态；入口 = 只读命令 `secrets.status`）（2026-09-20 修订）**；**版本提升（被提升方）**：#22 / #23 到位后新增 pins `retrieval`（`memory.search`）/ `memory-maintenance`（`memory.view` / `memory.edit`），S12 才发 eff——v1 不 pin，否则 W2 装配会因 22/23 未就绪被隔离；**v1 包不含 `memory.*` 命令；W3 升代时与 `retrieval` / `memory-maintenance` pins 同批加入（否则 `unresolved_cap`）**（2026-09-20 修订）；`+` 1（入口 term 读 `model.probe` 槽）、**2、3、21（S12 记忆本体 / 索引投影读，入口 term 装配）**（2026-09-20 修订）、**33（投影读 `graph` / `nodes` / `thresholds`，S13 只读视图与健康阈值）**、**35（投影读人格名）**、**43 `evolution`（投影读 `trace` / `verdicts` / `proposals` / `evidence`）**；`~` 2（`config.read`）、`notify.state`（按名，归 #38 声明；S7 权限状态唯一来源）（2026-09-20 修订）；**订阅 `api.uiState` 的 `boot_mode`（壳判「无配置」置 `onboarding` → 进引导；写者 #15）/ `settings_open`（设置模态开合；写者 #16）**（2026-09-20 修订）；写 = 客户端直写 2 或入站面直提 `set_active`（S13 回滚）；`<-` 15（挂载） |
 | 成员 | execute, terms |
-| 能力类·方法 | `implements: ["ui-settings"]`，`methods: {"ui-settings":["ping"]}`（占位；UI 插件统一 `ui-<身份名>`，互不 pin） |
-| 命令 | `model.vendors`、`model.discover`、`model.profile`（无参）；**`secrets.status`（无参，只读；入口 term eff #24 `secrets.list`，S8「已读到 / 未读到」数据源——#24 侧已登记）（2026-09-20 修订）**；`memory.view`（无参）、`memory.search`（args：查询）、`memory.edit`（**写类无参命令**：载荷先写 `#1` 槽 kind `memory.edit`（字段 id / action / layer / patch），入口 term 读槽 + `#3`/`#21` 投影 → eff #23；§1.14 总表）（2026-09-20 修订）；**`orchestration.health`（无参，S13 健康只读视图：纯 term 读 #43/#33 投影渲染健康状态 + warning 横幅；不发 eff、不写世界、不发 event——`orchestration.unhealthy` 事件由 #44 自动发）（2026-09-20 修订：本插件不 `+ 44`）**；**v1 包不含 `memory.*` 命令**（W3 升代同批加入）（2026-09-20 修订） |
+| 能力类·方法 | `implements: ["ui-settings"]`，`methods: {"ui-settings":["ping","vendors","profile","discover","health"]}`（`ping` 健康占位；`vendors` / `profile` / `discover` 为模型命令的服务侧装配 + 桥接，`health` 为编排健康判定；UI 插件统一 `ui-<身份名>`，互不 pin） |
+| 命令 | `model.vendors`、`model.discover`、`model.profile`（无参）；**`secrets.status`（无参，只读；入口 term eff #24 `secrets.list`，S8「已读到 / 未读到」数据源——#24 侧已登记）（2026-09-20 修订）**；`memory.view`（无参）、`memory.search`（args：查询）、`memory.edit`（**写类无参命令**：载荷先写 `#1` 槽 kind `memory.edit`（字段 id / action / layer / patch），入口 term 读槽 + `#3`/`#21` 投影 → eff #23；§1.14 总表）（2026-09-20 修订）；**`orchestration.health`（无参，S13 健康只读视图：入口 term 读 #43/#33 投影，服务判定后回结构化健康状态；不发 eff、不写世界、不发 event——`orchestration.unhealthy` 事件由 #44 自动发）（2026-09-21 修订：判定从 term 下沉到本插件 execute 服务）**；**v1 包不含 `memory.*` 命令**（W3 升代同批加入）（2026-09-20 修订） |
 | schema | 无（零 schema 合法：无世界数据） |
 | 机制 | 见下方 S1 与设置项；连接实例与模型目录一律落 `#2 config`；记忆读写经 22 / 23（不直写 #3 / #21）；**进引导 / 开设置经 `api.uiState`**（订阅 `boot_mode === 'onboarding'` 进 S1，`settings_open` 同步模态开合，见 `plugins/ui-shell/DESIGN.md`「跨 slot 视图状态」；写者已闭环——#16 写 `settings_open` / #15 写 `boot_mode`）（2026-09-20 修订） |
-| 边界 | 不做：对话视图 / 判定 / 存密钥（只存 `auth_ref`）/ 记忆本体与维护（归 3、19、21–23）；**服务不读投影**（入口 term 读 `input` 槽判分支）、不写世界（写走入站面）、无 pins 不发 eff |
-| 验收 | 1) 无配置时强制 S1；2) 模板与自定义同一流程都能完成配置并立即对话；3) 设置即时生效且可回放；4) 插件页只读正确；5) 勾选模型后档案元数据落 config 且可回放；6) 记忆 tab 能浏览 L1 / L2 / L3、搜索、编辑 / 删除 / 置顶，且写经 #23 计划可回放；7) **S13 健康判定在 #33 图坏掉时仍可用**（本插件 term 独立于 #33）；8) **回滚按钮能把 #33 指回上一数据世代**且回滚后编排恢复；9) 回灌缺失时只显「回滚未验证」，不显「成功」；10) **只读页有加载 / 空 / 错误三态、失败可重试、无空白页**；11) **`Esc` 关闭模态且焦点归还打开按钮、层级用 `--z-modal`、语言行置灰只读** |
-| 状态 | 已定；厂商模板 6 家全填（各自 `sdk` 标识；**仅 Google 走 SDK 包，其余走三协议自实现**）；**2026-09-19 改版：模板与自定义统一为 URL 驱动流程**；**新增 S12 记忆 tab**（22/23 pins 为版本提升，v1 不 pin）；**新增 S13 编排 tab + 编排健康判定 term + 回滚入口**（编排健康事件 emitter 已移交 #44 `evolve-metrics`，S13 为只读视图——提出方登记见 `plugins/evolve-metrics/DESIGN.md`） |
+| 边界 | 不做：对话视图 / 判定 / 存密钥（只存 `auth_ref`）/ 记忆本体与维护（归 3、19、21–23）；**服务不读投影**（入口 term 读投影后随 args 传入）、不写世界（写走入站面）、无 pins 不发 eff；服务对 `model` 的调用走宿主反向调用（`port.call`，按 `pins` 路由） |
+| 验收 | 1) 无配置时强制 S1；2) 模板与自定义同一流程都能完成配置并立即对话；3) 设置即时生效且可回放；4) 插件页只读正确；5) 勾选模型后档案元数据落 config 且可回放；6) 记忆 tab 能浏览 L1 / L2 / L3、搜索、编辑 / 删除 / 置顶，且写经 #23 计划可回放；7) **S13 健康判定在 #33 图坏掉时仍可用**（本插件服务独立于 #33，判定住本插件 execute 服务）；8) **回滚按钮能把 #33 指回上一数据世代**且回滚后编排恢复；9) 回灌缺失时只显「回滚未验证」，不显「成功」；10) **只读页有加载 / 空 / 错误三态、失败可重试、无空白页**；11) **`Esc` 关闭模态且焦点归还打开按钮、层级用 `--z-modal`、语言行置灰只读** |
+| 状态 | 已定；厂商模板 6 家全填（各自 `sdk` 标识；**仅 Google 走 SDK 包，其余走三协议自实现**）；**2026-09-19 改版：模板与自定义统一为 URL 驱动流程**；**新增 S12 记忆 tab**（22/23 pins 为版本提升，v1 不 pin）；**新增 S13 编排 tab + 编排健康判定 + 回滚入口**（编排健康事件 emitter 已移交 #44 `evolve-metrics`，S13 为只读视图——提出方登记见 `plugins/evolve-metrics/DESIGN.md`）；**2026-09-21 装配下沉**：模型命令的 bag 装配与编排健康判定从 term / 浏览器下沉到本插件 execute 服务（`methods.ts`），入口 term 只读投影随 args 传入——term 语言无对象构造 / 无算术（`docs/kernel.md` §十三），装配无法用 term 表达 |
 
 **S1 统一流程（模板 / 自定义只是预填来源不同）**
 
@@ -77,8 +77,7 @@
 所以「连续失败」判定与回滚触发**必须在图外**，而 #33 之外唯一同时满足"能读投影 + 有 UI"的是本插件。
 宿主也不行——让宿主在连续失败时自己走 #33 的 fallback 等于**宿主认识 #33 的业务**，破「载体不认识业务」。
 
-- **判定 = 本插件的 term**（纯函数、可回放）：读 **#43** `evolution.trace` 投影，数最近连续以 `refused` 收口的回合数，
-  与 `#33 thresholds` 里的阈值比较 ⇒ 产健康状态。**本插件不 pin #33 也不 pin #43**，只投影读（按字面身份名读投影不是依赖边）。**该「连续 N 次 refused」口径与 #44 `orchestration.unhealthy` 的判据同源**（#44 周期 `aggregate` 也用连续收口计数，不再用 `failure_cluster` 窗口计数）。
+- **判定 = 本插件的 execute 服务**（`execute/methods.ts` 的 `judgeHealth`，纯函数、可重算）：入口 term 读 **#43** `evolution` 投影与 **#33** `loop-policy`（阈值 / 世代）后随 args 传入，服务数最近连续以 `refused` 收口的回合数，与 `#33 thresholds` 里的阈值比较 ⇒ 回结构化健康状态（连续计数 / 阈值 / 拒绝码分布 / 健康态 / 回滚目标）。**本插件不 pin #33 也不 pin #43**，只投影读（按字面身份名读投影不是依赖边）。**该「连续 N 次 refused」口径与 #44 `orchestration.unhealthy` 的判据同源**（#44 周期 `aggregate` 也用连续收口计数，不再用 `failure_cluster` 窗口计数）。判定下沉到服务（而非 term）的理由：内核 term 语言无对象构造、无算术（`docs/kernel.md` §十三），装配 bag / 计数比较无法用 term 表达；判定仍**住本插件、不住 #33**（图被改坏时回滚入口不能也在图里）。
 - **`orchestration.unhealthy` 事件的 emitter = #44 evolve-metrics 服务**（2026-09-19 修正）：#44 **周期（宿主定时触发）`aggregate`** 按连续 N 次 `refused` 收口计数超 #33 阈值时**自动发**该事件，不依赖用户打开 S13。本插件的 `orchestration.health` 命令降为**只读视图**（用户打开 S13 时读 #43/#33 投影渲染健康状态 + warning 横幅；本插件不 `+ 44`）（2026-09-20 修订），不再发事件——解决「无人打开 S13 则通知永不触发」的断链。
 - **回滚 = 入站面直接提交 `set_active`**（指回 `#33` 上一个数据世代）：
   `host.md` §落账 已允许发起者在入站面直接提交 directive ⇒ **零宿主改动、零新动词**。
@@ -89,6 +88,35 @@
 - **膨胀点提示**：S11 技能 + S12 记忆 + S13 编排已让 17 从「配置」扩到「数据编辑 + 运维」；
   若继续长大，拆出 `ui-skills` / `ui-memory` / `ui-orchestration`（当前仍留 17，避免多身份与多挂载）。
   **但 S13 的健康判定与回滚入口不可与 #33 合并**（上文理由），拆分时也必须留在 #33 之外。
+
+### 服务侧装配与桥接（2026-09-21 修订）
+
+**为什么下沉到服务而不在 term**：内核 term 语言只有八个原语，**无对象 / 列表构造、无算术**
+（`docs/kernel.md` §十三），因此「读多个投影切片拼成 bag」「数连续 `refused` 并比阈值」无法用 term 表达。
+故 `model.vendors` / `model.profile` / `model.discover` 的入参装配与 `orchestration.health` 的判定
+一律住本插件 `execute/methods.ts`：
+
+- 入口 term 只读**最窄的 ctx 投影**并作为 eff args 传入；服务**不读投影**。
+  `model.discover` 只需输入身份 body（读 `ctx.ids.input.body`）；`model.vendors` / `model.profile` /
+  `orchestration.health` 需同时读多个身份（厂商模板 / config + 厂商模板 / 台账 + 阈值 + 世代），
+  而 `eff` 的 args 是**单一 Term**、term 又无对象构造，无法把多个投影切片拼成一个值，故这三条读整份
+  `ctx.ids`（服务侧再按名取用）。
+- 服务装配后经**宿主反向调用**（`port.call`，`docs/protocol.md` §2.4）调 `model` 端口（`pins.model`），
+  或直接判定回结构化结果；返回计划（`$directives`）或结果值，命令结果即 `model.*` 的结果 / 健康状态。
+- `model.discover` 的 `model.probe` 清槽由**服务返回的计划**携带（不再由客户端或入口 term 清）——
+  `plugins/input/DESIGN.md` §读取契约已同步。
+
+**触发前提（宿主缺口，2026-09-21 未闭合）**：宿主 `eff` 的 `port` **只按发出者 `pins` 解析**
+（`packages/host/effect/route.ts`），而本插件按 v1 口径**不 pin 自己**（`pins` 仅 `model` / `secrets`）。
+故「入口 term eff 到本插件自己的能力类 `ui-settings`」在现宿主下**解析不到**（`unresolved_cap` → `eff_error`），
+入口 term 无法触发本插件服务。自 pin（`"ui-settings": "ui-settings"`）在**首次 seed** 报 `unresolved_pin`、
+在**重 seed** 因 pins 自环被隔离（`dep.cycle` → `not_loaded`），**不是可行解**。
+另一条路是计划通道按命令名解析 `{kind:'eval', command}`（`docs/host.md` §五 落账已写），
+但 `packages/host/effect/rounds.ts` 的 `materializePlanItem` 只认 `eval`（需 `entry` 哈希）/`extern`/`write`，
+**未实现** `command` 形式，服务侧也拿不到他人 def 哈希。
+⇒ 2026-09-21 已把四个入口 term 改指本插件服务（`model.vendors` / `model.profile` / `model.discover` /
+`orchestration.health`），但**在宿主补齐上述能力前，这四条命令会以 `eff_error` 收口（`refused`）**。
+宿主能力二选一落地后即可用：① `eff` 允许解析到发出者自身声明的能力类；或 ② 计划 `eval` 支持 `command` 命令名。
 
 ## 跨插件登记（2026-09-20 修订）
 

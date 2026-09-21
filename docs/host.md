@@ -144,6 +144,14 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **纪律**：term 的 `Call` 只在本身份内的 def 之间；跨插件一律走 `eff`（否则发出者归属不明）。
 - 工具名就是能力类名（`tool.<name>`），**不另设一套命名**。
 - **保留身份 `host`**：`pins` 值为 `host` 的项解析到**宿主自身**保留能力类（见「宿主扩展面」），不要求世界里有该身份、不入装配闭包为普通节点。
+- **自能力路由（无需自 pin）**：`eff` 的目标能力类若**不在发出者 `pins` 里**，但发出者**自身装配世代**的 `implements`
+  声明含它，则解析到**发出者自己的端点行**（`impl+gen+cap+method`，`gen` = 自身装配世代）——插件把入口 term 的 `eff`
+  路由进**自己的 `execute` 服务**不必写自引用 pin。**优先级**：显式 `pins[cap]`（含保留值 `host`）优先，自能力仅在无该 pin 时兜底；
+  自身未声明该能力类 → `unresolved_cap`，声明了但端点行缺失 → `not_loaded`（与普通路径同码）。自能力**不是 `pins` 项、不构成跨身份依赖**：
+  不进装配闭包、不是 DAG 边、不参与受保护 `pins` 校验；保留能力类 `host` 不走此路（仍须显式 pin 值 `host`）。
+- **自能力回路有界**：plan 可逐层递归产 directive，自能力 `eff` 又允许服务回计划再次 `eff` 自己——单次提交的轮数上限
+  `MAX_SUBMISSION_ROUNDS`（宿主常量 10000，宿主可按提交收紧）；超限以 `refused` 收口（reason `too_many_rounds`），不挂死宿主。
+  单轮内的挂起次数另受 `run-loop` 的 `too_many_suspensions` 约束。
 - 解析不到即**拒绝**（不猜、不兜底）。
 
 **装配**
@@ -248,6 +256,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   **eval 可按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<命令名>', args}` 代替 `entry` 哈希——
   宿主按命令声明解析入口 def（与命令面同路、机械），属主即命令声明方；term 拿不到他人 def 哈希时用它
   （如 #32 / #48 的裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留，两者不可同条并存（否则 `bad_directive`）。
+  **⬜ 待落地（H18）**：当前 `materializePlanItem` 只接受 `entry` 哈希，`command` 形式尚未实现（见 `draft-design.md` §1.13 H18）。
 - **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计 `put` 推进 head 但不回改该轮 `ctx`），
   **`write` 每条单独一轮**（其 `expect_pos` = 该轮轮首链头；要原子写多份用一条 `batch`），`extern` 中性可随邻段。
 - **term 可产全部 op**（含 `add_gen` / `set_active` / `retire` / `fork` / `graft`）——自改世界是 term 的能力，

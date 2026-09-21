@@ -21,7 +21,7 @@ import { proxyRequest } from './proxy.ts'
 import { buildForwardArgs, forwardCommandName, routeOf } from './routes.ts'
 import type { Route } from './routes.ts'
 import { SseHub, shellStateRecord } from './sse.ts'
-import { injectThemeScript, normalizeThemePref } from './theme.ts'
+import { injectThemeScript, normalizeThemePref, toConfigTheme } from './theme.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -43,6 +43,10 @@ export interface UiServerDeps {
   headlessSource: (id: string) => string | null
   /** 写主题偏好后的运行态更新（缓存 + 广播）。 */
   applyThemePref: (pref: string) => void
+  /** config 写落账后重推无配置判据（`boot_mode` 派生）；由服务侧读回 config 并广播。 */
+  refreshConfig: () => void
+  /** 记下写 config 的 run（`submit` 回 accepted 后写尚未落账），run 终局时再重推。 */
+  trackConfigRun: (run: string) => void
   webDir?: string
   log?: (line: string) => void
 }
@@ -116,7 +120,7 @@ export function themeWriteDirective(pref: string, configBody: Json): Json | null
   if (isRecord(configBody) && Object.prototype.hasOwnProperty.call(configBody, 'tree')) return null
   const base = isRecord(configBody) ? configBody : {}
   const ui = isRecord(base['ui']) ? (base['ui'] as Rec) : {}
-  const merged: Rec = { ...base, ui: { ...ui, theme: pref } }
+  const merged: Rec = { ...base, ui: { ...ui, theme: toConfigTheme(pref) } }
   return {
     kind: 'write',
     request: {
@@ -129,6 +133,29 @@ export function themeWriteDirective(pref: string, configBody: Json): Json | null
       },
     },
   }
+}
+
+/**
+ * 判断一组 directive 是否写 config 身份（`add_gen` 的 `id === 'config'`）。
+ * 只用于触发 `boot_mode` 重推，不解释业务。
+ */
+export function directivesTouchConfig(directives: Json): boolean {
+  if (!Array.isArray(directives)) return false
+  for (const directive of directives) {
+    if (!isRecord(directive)) continue
+    const request = directive['request']
+    if (!isRecord(request)) continue
+    const args = request['args']
+    if (!isRecord(args)) continue
+    const ops = args['ops']
+    if (!Array.isArray(ops)) continue
+    for (const op of ops) {
+      if (!isRecord(op) || op['op'] !== 'add_gen') continue
+      const opArgs = op['args']
+      if (isRecord(opArgs) && opArgs['id'] === 'config') return true
+    }
+  }
+  return false
 }
 
 async function handleTheme(
@@ -194,6 +221,13 @@ async function handleSubmit(
   if (!result.ok) {
     sendJson(res, 502, { ok: false, code: result.code, message: result.message })
     return
+  }
+  if (directivesTouchConfig(directives)) {
+    const frame = result.frame
+    const run = frame === null ? null : frame['run']
+    const terminal = frame !== null && (frame['kind'] === 'result' || frame['status'] !== undefined)
+    if (terminal || typeof run !== 'string' || run.length === 0) deps.refreshConfig()
+    else deps.trackConfigRun(run)
   }
   const frame = result.frame ?? {}
   sendJson(res, 202, {

@@ -66,7 +66,7 @@ POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终
 
 ## 无配置判据与断线
 
-- **无配置**：`~ 2 config.read` 返回值无 `vendor` 键 → 壳置 `uiState.boot_mode = 'onboarding'`，`#17 ui-settings` 订阅后进引导模式（壳自身不读投影，判据来自命令返回值；通道见「跨 slot 视图状态」）；**退出：`config.read` 返回含 `vendor` ⇒ 置 `ready`（引导完成）**（2026-09-20 修订）。
+- **无配置**：`~ 2 config.read` 返回值无 `vendor` 键 → 壳置 `uiState.boot_mode = 'onboarding'`，`#17 ui-settings` 订阅后进引导模式（壳自身不读投影，判据来自命令返回值；通道见「跨 slot 视图状态」）；**退出：`config.read` 返回含 `vendor` ⇒ 置 `ready`（引导完成）**（2026-09-20 修订）。**重推触发点**：初次连接 / 重连读回、启动后延迟首读、`/api/submit` 命中 config 写（`add_gen` 的 `id === 'config'`）——写回 `accepted` 时记下 run，run 终局后读回，写同步返回时立即读回；服务侧读回后经 `shell.state` 广播，壳页面重跑判据并广播 `uiState.boot_mode`。`boot_mode` 写者恒为壳，其它插件只订阅。
 - **S0 启动态**：居中产品名 + 「正在启动…」+ 呼吸条；壳静态部分首帧即画；slot 挂载完成后 150ms 淡入替换。不用骨架屏。
 - **S6 断线横幅**：顶部通栏悬浮 warning 条（warning 底 + alert-triangle + 「与宿主断开，重连中…」+ [重试]），overlay 不推挤布局；出现期消息列表加等高 top padding。
 - **断线事件（2026-09-20 修订）**：壳在宿主连接断开 / 重连时经 `/events` 注入**本地合成事件** `shell.disconnected` / `shell.reconnected`（ui-design §15 登记；#38 消费）。
@@ -118,7 +118,7 @@ POST /api/cancel              发协议 cancel{run}（真取消某 run；#40 终
 - **#38 ui-notify**：`headless` 挂载（不占 slot），由壳加载其子应用以调浏览器 `Notification` API。
 - **#37 mcp**：后端入站面经本插件主端口同源反代（`/p/<id>/*`），壳转成 `forward` 帧由宿主转发到目标插件声明的入口（H8 已落地）。
 - **#24 secrets**：`secrets.put` 走宿主入站面直写本地文件，不经本插件的 `/api` 世界路径。
-- **#2 config**：`/api/theme` 写 `ui.theme`（数据热生效）。
+- **#2 config**：`/api/theme` 写 `ui.theme`（数据热生效）；DOM / SSE / 运行态词表为 `light` / `dark` / `system`，落 config 时换 `day` / `night` / `system`。
 - **各身份（#12 / #25 / #26 / #32 / #37 / #42 / 工具提供者）**：对外错误码按前缀登记进 `messages.v1.json`（见上「文案表」），人话文案唯一来源。
 - **#40 ui-composer / #16 ui-sidebar**：终止经 `/api/cancel` → 协议 `cancel{run}`（真取消指定 run）。
 - **各 UI 插件**：全局轻提示经 `api.toast` 请求壳渲染（本插件「全局 toast」）；toast **不占 slot、不挂 overlay**。

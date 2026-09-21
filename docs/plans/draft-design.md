@@ -253,7 +253,7 @@ graph LR
 > - **定时触发（H6 已落地）**——宿主按插件 `schema` 顶层 `periodic` 声明（`{command|method, every_ms, reads?}`）构造一次 run（命令按入口 term；方法直接调服务方法、其计划值由宿主落账）；`reads` 投影片段机械注入 bag。用于 `#12 sync`（models.dev 定期后台同步，入口 = `#12` 的 `model.sync` **方法**）、**#23 `sweep`/`consolidate`**、**#32 周期 sweep**、**#44 `sweep`/`aggregate`**、**#37 出站清单刷新**（周期住各插件 schema）。
 > - **入世校验 dry-run 面（H13 已落地）**——`host.validate_package {files} -> {ok, errors, result_hash}`，把候选树落临时目录后复用 `seed`/`pack` 同一套 `planPack` dry-run、不写世界；服务 #42 `plugin.validate`。
 > - **服务侧资产存取面（S1 已落地）**——`host.asset.put/get`，规范 base64、8 MiB 内联、内容寻址住 `state/assets/`；#28/#30/#31 二进制字节。
-> - **宿主保留能力类 `host`（H14 已落地；H20 待落地增 `identities`）**——保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit` / `source.read` / `validate_package`（H13 已落地）/ `asset.put` / `asset.get` / `identities`（H20 待落地，#42 `plugin.list`）。v1 受信面、无方法级鉴权；host pin 仅入世（batch）成立，裸运行期顶层结构 op 提前 `bad_directive`。
+> - **宿主保留能力类 `host`（H14 已落地；H20 已落地增 `identities`）**——保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit` / `source.read` / `validate_package`（H13 已落地）/ `asset.put` / `asset.get` / `identities`（H20 已落地，#42 `plugin.list`）。v1 受信面、无方法级鉴权；host pin 仅入世（batch）成立，裸运行期顶层结构 op 提前 `bad_directive`。
 > - **密钥本地存储面（H7 已落地）**——入站 `secrets.put` / `secrets.delete`（宿主直写 `state/secrets.local.json`（`0600`），不经 run、不进世界、不进审计；损坏 fail-closed）；与 `asset.*` 并列；服务 `#24 secrets`。
 > - **效果审计脱敏（H7 已落地）**——`EffectAudit.result` 对 `secrets.resolve` 按白名单替换为 `{name,kind,has}`（调用方仍拿解析结果本体，否则明文经审计落账）。
 > - **插件入站转发（H8 已落地）**——`#37 mcp` 的后端入站面经 `#15` 主端口同源反代（`/p/<id>/*`），壳不自连插件服务，须由宿主把入站帧转发到目标服务（保「唯一主端口」）；入站帧 = `forward {identity, command, args?}`，宿主只转发到该身份自己声明的入口 term（属主不符 → `unknown_command`）。
@@ -293,7 +293,7 @@ graph LR
 
 内核 `run` **无代码改动**：仍是纯函数、单 pending、`expect_pos` 单链头 CAS。`kernel.md` §十二只**登记**「宿主可并发调用多个 `run`，语义不变」。锁收窄 / 提交队列 / 乐观校验是宿主改动（H12）。
 
-### B. 宿主改动（15 项）+ 跨插件契约变更（1 项）
+### B. 宿主改动（21 项）+ 跨插件契约变更（1 项）
 
 | # | 改动 | 阻塞 | 权威 |
 | --- | --- | --- | --- |
@@ -312,12 +312,13 @@ graph LR
 | H13 | ✅ **入世校验 dry-run 面**：`host.validate_package {files} -> {ok, errors, result_hash}`；把候选树落临时目录后**复用 `seed`/`pack` 同一套 `planPack`** dry-run（声明形状 / 路径 / `argsSchema` 方言 / term 环 / 受保护 `pins` / `.worldignore`），不写世界 | #42 `plugin.validate`（`write` 须携带 `result_hash`，缺 → `validate_required`） | `host.md` §五 宿主扩展面 |
 | H14 | ✅ **宿主保留能力类 `host`**：保留身份名 `host`（不进世界），`pins` 值为 `host` 解析到宿主自身；方法 `thread.resume` / `thread.terminate` / `audit {filter?,limit?}` / `source.read {identity,path}` / `validate_package {files}`（**H13 已落地**） / `asset.put` / `asset.get`。**v1 受信面、无方法级鉴权**；host pin 仅入世（batch）成立，裸运行期顶层 `add_gen`/`put`/`graft` 提前 `bad_directive` | #27 `subagent.resume`/`terminate`、#42 `read`/`validate`、#28/#30/#31 字节存取、#43/#44 审计读面 | `host.md` §五 路由 / 宿主扩展面 |
 | H15 | ✅ **非 TS 插件与原生子组件物化**：包内只放**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；编译产物 / 依赖目录 / 原生扩展（`node_modules` / `target/` / 二进制 / `*.node`）**走宿主侧 ③ 依赖缓存**，物化时按清单恢复（Node npm / Rust cargo / 原生扩展构建）。落地：`state/deps/` 放 npm 下载缓存与 `CARGO_TARGET_DIR`，`node_modules`/`target` 落物化目录；`.chrono-deps-ok` 标记判完成（半恢复自愈）；失败 `deps_failed`。宿主仍只跑 `start` | #20/#22/#25/#28/#41/#44（Rust 整服务）、**#13（Rust tokenizer 原生子组件）** | `host.md` §五 宿主扩展面；`plugins.md` §三 |
-| H15a | ⬜ **H15 增补·投递目录大资产直拷（`assets_manifest`）**：schema 顶层 `assets_manifest: [{path, sha256, size}]`；物化时从投递包源目录复制被 `.worldignore` 排除的大资产到物化目录、按 sha256 校验；失败 `deps_failed` | **#20**（granite-97m 权重 / tokenizer，`include_bytes!` 构建期输入） | `host.md` §五 宿主扩展面；`plugins.md` §二 |
-| H16 | ⬜ **调用帧 `env` 注入**：`call` / `port.call` 帧填 `env: {run, thread, now}`（机械；不改 args 语义；服务发事件 / 判 TTL 一律用它） | #12（`model.delta` 载荷）、#13（`context.assembled` / TTL）、#27（`tool.*` 载荷）、#19/#23/#26/#44（`now`） | `host.md` §五 效果；`protocol.md` §2.2 / §2.4 |
-| H17 | ⬜ **方法级超时（`schema.method_timeouts`）**：按方法覆盖调用等待上限（方法级 > 进程级 > 常量；非法声明只记运维日志） | **#33（`interpret` 整回合）**、#12（`chat` / `complete` 流式） | `host.md` §五 效果；`plugins.md` §二 |
+| H15a | ✅ **H15 增补·投递目录大资产直拷（`assets_manifest`）**：schema 顶层 `assets_manifest: [{path, sha256, size}]`；物化时从投递包源目录复制被 `.worldignore` 排除的大资产到物化目录、按 sha256 校验；失败 `deps_failed` | **#20**（granite-97m 权重 / tokenizer，`include_bytes!` 构建期输入） | `host.md` §五 宿主扩展面；`plugins.md` §二 |
+| H16 | ✅ **调用帧 `env` 注入**：`call` / `port.call` 帧填 `env: {run, thread, now}`（机械；不改 args 语义；服务发事件 / 判 TTL 一律用它） | #12（`model.delta` 载荷）、#13（`context.assembled` / TTL）、#27（`tool.*` 载荷）、#19/#23/#26/#44（`now`） | `host.md` §五 效果；`protocol.md` §2.2 / §2.4 |
+| H17 | ✅ **方法级超时（`schema.method_timeouts`）**：按方法覆盖调用等待上限（方法级 > 进程级 > 常量；非法声明只记运维日志） | **#33（`interpret` 整回合）**、#12（`chat` / `complete` 流式） | `host.md` §五 效果；`plugins.md` §二 |
 | H18 | ⬜ **plan eval 按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<名>', args}`（宿主按命令声明解析入口，与命令面同路） | **#32/#48 跨 run 续跑**（裁决 / 作答入口 term 产 `chat.resume` 续跑计划）、#39 | `host.md` §五 落账 |
-| H19 | ⬜ **反向调用 `env` 值脱敏（端口审计）**：`port.call` 转发时，宿主端口审计对 args 顶层 `env` 的值替换为 `{redacted, keys}`（目标照收原值） | **#29 密钥下传 #25 `exec`** | `host.md` §五 效果审计脱敏；`protocol.md` §2.4 |
-| H20 | ⬜ **宿主只读面扩充**：`host.identities {}`（身份清单：id / active / implements / commands）+ **投影 `ids.<id>.pins`**（当前代码世代声明、名→被依赖身份名） | **#42 `plugin.list`**、**#45 `validate`（端口 ⊆ pins）**、#17 S13 | `host.md` §五 投影 / 宿主扩展面；`protocol.md` §2.4 |
+| H19 | ✅ **反向调用 `env` 值脱敏（端口审计）**：`port.call` 转发时，宿主端口审计对 args 顶层 `env` 的值替换为 `{redacted, keys}`（目标照收原值） | **#29 密钥下传 #25 `exec`** | `host.md` §五 效果审计脱敏；`protocol.md` §2.4 |
+| H20 | ✅ **宿主只读面扩充**：`host.identities {}`（身份清单：id / active / implements / commands）+ **投影 `ids.<id>.pins`**（当前代码世代声明、名→被依赖身份名） | **#42 `plugin.list`**、**#45 `validate`（端口 ⊆ pins）**、#17 S13 | `host.md` §五 投影 / 宿主扩展面；`protocol.md` §2.4 |
+| H21 | ✅ **自能力路由（无自 pin）**：`eff` 的目标能力类不在发出者 `pins` 里、但发出者自身装配世代 `implements` 声明含它时，解析到**发出者自己的端点行**（无需自引用 pin）；显式 `pins[cap]`（含 `host`）优先，自能力仅兜底，**非跨身份依赖、不进装配闭包**。单次提交轮数上限 `MAX_SUBMISSION_ROUNDS` 防 plan 自回路挂死（超限 `refused` reason `too_many_rounds`） | **#17 ui-settings 等有 `execute` 的入口 term eff 自身服务** | `host.md` §五 路由；`plugins.md` §三 |
 
 ### C. 资产 / 沙箱面
 
@@ -335,7 +336,7 @@ graph LR
 3. **H3 / H6 / H8 / H13** 可随 #42 / #12 / #37 / #42 同批落（H6 须覆盖 #23/#32/#44/#37 的周期触发，H13 服务 #42 `validate`）。
    > **进度（2026-09-20）**：**H3（随 H14 的 `host.source.read`）/ H6（`schema.periodic` 调度）/ H8（入站 `forward` 帧）/ H13（`validate_package` 复用 `planPack` dry-run）均已落地**，并有单测 / E2E 覆盖；**S1** 亦已随 H14 的 `host.asset.*` 落地。
 4. **S1 / S2 设计已展开**（见上）；**S1 已落地**（`host.asset.put/get`）。**S2 实现须在 #28 / #30 / #31 开工前落地**（属 #25 `sandbox` 插件本体），否则这些工具「能发现、跑不了」。
-5. **新增宿主扩展（2026-09-20，全部 ⬜ 待落地，均在对应插件开工前或同批落）**：**H16（`env` 注入，#12/#13/#27/#44 开工前）**、**H17（方法级超时，#33/#12 开工前）**、**H18（plan eval 按命令名，#32/#48 开工前）**、**H19（端口审计 `env` 脱敏，#29 开工前）**、**H20（`host.identities` + 投影 `pins`，#42/#45 开工前）**、**H15a（大资产直拷，#20 开工前）**。
+5. **新增宿主扩展（2026-09-20 登记，均在对应插件开工前或同批落）**：**H16（`env` 注入，#12/#13/#27/#44 开工前）**、**H17（方法级超时，#33/#12 开工前）**、**H19（端口审计 `env` 脱敏，#29 开工前）**、**H20（`host.identities` + 投影 `pins`，#42/#45 开工前）**、**H15a（大资产直拷，#20 开工前）** 均已落地，各有单测 / E2E 覆盖；**H18（plan eval 按命令名，#32/#48 开工前）仍待落地**。
 
 > **红线**：任何插件的 `DESIGN.md` 里写了「宿主待补能力」的，其**验收不得在对应宿主改动落地前宣布通过**——只能标「契约就位、待宿主」。
 

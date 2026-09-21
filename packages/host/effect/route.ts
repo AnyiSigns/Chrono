@@ -102,8 +102,18 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
   return {
     resolve(world, emitterId, cap, method) {
       // G7 A1：pins / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
-      const pinned = assemblyGen(world, emitterId)?.pins[cap]
-      if (pinned === undefined) return { ok: false, error: 'unresolved_cap' }
+      const gen = assemblyGen(world, emitterId)
+      const pinned = gen?.pins[cap]
+      if (pinned === undefined) {
+        // 自能力路径（无自 pin）：发出者未 pin 该 cap，但自身装配世代声明实现了它 →
+        // 解析到发出者自己的端点行。保留能力类 `host` 不参与（须显式 pin 值 host 才认）。
+        if (gen === null || cap === HOST_CAPABILITY) return { ok: false, error: 'unresolved_cap' }
+        const own = implementsOf(world, emitterId, gen.payload)
+        if (own === null || !own.has(cap)) return { ok: false, error: 'unresolved_cap' }
+        const ownRow = options.endpoints.get(emitterId, gen.payload, cap, method)
+        if (ownRow === null) return { ok: false, error: 'not_loaded' }
+        return { ok: true, row: ownRow }
+      }
       // 保留能力类 `host`：只认 cap = host 且方法在保留集内，不查世界 / 端点表
       if (pinned === HOST_CAPABILITY) {
         if (cap !== HOST_CAPABILITY || !HOST_METHODS.has(method)) {
@@ -115,13 +125,13 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       if (world.defs[pinned] === undefined) return { ok: false, error: 'stale' }
       const owner = ownerIndexOf(world).get(pinned)
       if (owner === undefined) return { ok: false, error: 'stale' }
-      const gen = assemblyGen(world, owner)
-      if (gen === null) return { ok: false, error: 'stale' }
-      const caps = implementsOf(world, owner, gen.payload)
+      const ownerGen = assemblyGen(world, owner)
+      if (ownerGen === null) return { ok: false, error: 'stale' }
+      const caps = implementsOf(world, owner, ownerGen.payload)
       if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
-      const row = options.endpoints.get(owner, gen.payload, cap, method)
+      const row = options.endpoints.get(owner, ownerGen.payload, cap, method)
       if (row === null) return { ok: false, error: 'not_loaded' }
-      if (pinned !== gen.payload) options.onDrift?.(emitterId, cap, gen.payload)
+      if (pinned !== ownerGen.payload) options.onDrift?.(emitterId, cap, ownerGen.payload)
       return { ok: true, row }
     },
   }

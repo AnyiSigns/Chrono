@@ -1,0 +1,208 @@
+// 配置读-改-写纯函数（浏览器侧，node 下可 import 单测）。
+// 写一律「客户端身份」经入站面提交：整值 put + add_gen（不改身份本体以外的东西）。
+// 本模块只构造新的 config body 与 directive，不触 DOM、不发请求。
+
+/** 身份 id 常量（模块内部用）。 */
+const CONFIG_ID = 'config'
+const INPUT_ID = 'input'
+
+/** 判断普通对象（非数组 / 非 null）。 */
+export function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 结构克隆（JSON 值）。 */
+export function clone(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+/** seed 默认 config body（与配置身份默认一致；用于「无配置」时本地兜底）。 */
+export function emptyConfig() {
+  return {
+    version: 1,
+    params: {},
+    permission: 'review',
+    ui: { theme: 'system', style: '', sidebar_width: 260 },
+    providers: {},
+  }
+}
+
+/** 厂商身份名去 `vendor-` 前缀，得 config `providers` 键。 */
+export function vendorKeyOf(identity) {
+  return String(identity).replace(/^vendor-/, '')
+}
+
+/** 列出已保存厂商 `[{key, entry}]`（键排序保确定性）。 */
+export function providerList(config) {
+  if (!isRecord(config) || !isRecord(config.providers)) return []
+  return Object.keys(config.providers)
+    .sort()
+    .map((key) => ({ key, entry: config.providers[key] }))
+    .filter((item) => isRecord(item.entry))
+}
+
+/** 已勾选模型 id（`enabled !== false` 视为勾选）。 */
+export function enabledModelIds(entry) {
+  if (!isRecord(entry) || !isRecord(entry.models)) return []
+  return Object.keys(entry.models).filter((id) => {
+    const model = entry.models[id]
+    return isRecord(model) ? model.enabled !== false : false
+  })
+}
+
+/** 构造一个厂商连接实例（只存 auth_ref，不存密钥本体）。 */
+export function providerEntry(form) {
+  const models = {}
+  for (const id of Array.isArray(form.models) ? form.models : []) {
+    if (typeof id !== 'string' || id.length === 0) continue
+    models[id] = { name: id, enabled: true }
+  }
+  const entry = {
+    name: typeof form.name === 'string' && form.name.length > 0 ? form.name : form.key,
+    base_url: form.base_url,
+    auth_ref: { kind: form.auth_ref.kind, name: form.auth_ref.name },
+    models,
+  }
+  if (typeof form.protocol === 'string' && form.protocol.length > 0) entry.protocol = form.protocol
+  return entry
+}
+
+/** 新增 / 覆盖一个厂商连接实例（其余字段原样）。 */
+export function upsertProvider(config, key, entry) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  const providers = isRecord(base.providers) ? base.providers : {}
+  base.providers = { ...providers, [key]: entry }
+  return base
+}
+
+/** 删除一个厂商连接实例；若删的是当前选择，同时清掉 vendor / model。 */
+export function removeProvider(config, key) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  const providers = isRecord(base.providers) ? base.providers : {}
+  delete providers[key]
+  base.providers = providers
+  if (base.vendor === key) {
+    delete base.vendor
+    delete base.model
+  }
+  return base
+}
+
+/** 设置当前选择（vendor / model）。 */
+export function setSelection(config, key, model) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  base.vendor = key
+  base.model = model
+  return base
+}
+
+/** 合并写入 `params` 字段（只覆盖给出的键）。 */
+export function setParams(config, params) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  const current = isRecord(base.params) ? base.params : {}
+  base.params = { ...current, ...params }
+  return base
+}
+
+/** 写 `ui.<field>`（只覆盖给出字段）。 */
+export function setUiField(config, field, value) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  const ui = isRecord(base.ui) ? base.ui : {}
+  base.ui = { ...ui, [field]: value }
+  return base
+}
+
+/** 写 `ui.notify.<key>`（缺省整组仍保留）。 */
+export function setNotify(config, key, value) {
+  const base = isRecord(config) ? clone(config) : emptyConfig()
+  const ui = isRecord(base.ui) ? base.ui : {}
+  const notify = isRecord(ui.notify) ? ui.notify : {}
+  base.ui = { ...ui, notify: { ...notify, [key]: value } }
+  return base
+}
+
+/** 读 `ui.notify` 整组（缺省空表）。 */
+export function notifyOf(config) {
+  if (!isRecord(config) || !isRecord(config.ui) || !isRecord(config.ui.notify)) return {}
+  return config.ui.notify
+}
+
+/**
+ * 引导完成：把表单合并进 config body。
+ * 表单 `{vendor, key?, protocol?, base_url, auth_ref:{kind,name}, models:[…], model, params?}`。
+ */
+export function buildOnboardingConfig(existing, form) {
+  const key = typeof form.key === 'string' && form.key.length > 0 ? form.key : vendorKeyOf(form.vendor)
+  const withProvider = upsertProvider(existing, key, providerEntry({ ...form, key }))
+  const withSelection = setSelection(withProvider, key, form.model)
+  return isRecord(form.params) ? setParams(withSelection, form.params) : withSelection
+}
+
+/** 一条 batch 写指令：put 整值 + add_gen 绑定身份（四字段全必填、占位符指回 put）。 */
+export function batchWriteDirective(identity, body) {
+  return {
+    kind: 'write',
+    request: {
+      op: 'batch',
+      args: {
+        ops: [
+          { op: 'put', args: { body } },
+          { op: 'add_gen', args: { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+        ],
+      },
+    },
+  }
+}
+
+/** config 整值写指令。 */
+export function configWriteDirective(body) {
+  return batchWriteDirective(CONFIG_ID, body)
+}
+
+/** 写输入槽：只覆盖本线程键（读-改-写，其余键原样）。 */
+export function slotWriteDirective(slots, threadKey, slot) {
+  const nextSlots = { ...(isRecord(slots) ? slots : {}), [threadKey]: slot }
+  return batchWriteDirective(INPUT_ID, { slots: nextSlots })
+}
+
+/** 导出 JSON 文本（整份 body，`auth_ref` 只有引用名、无明文）。 */
+export function exportJson(config) {
+  return `${JSON.stringify(config, null, 2)}\n`
+}
+
+/** 导入校验结果码（模块内部用）。 */
+const IMPORT_BAD_JSON = 'settings_import_bad_json'
+const IMPORT_BAD_SHAPE = 'settings_import_bad_shape'
+
+const PERMISSION_VALUES = ['auto', 'severe', 'review', 'deny']
+const THEME_VALUES = ['day', 'night', 'system']
+
+/** 主题卡片 id：config 的用户语义为 `day` / `night` / `system`，兼容壳落 DOM 的 `light` / `dark` 词表。 */
+export function themeCardOf(value) {
+  if (value === 'day' || value === 'light') return 'day'
+  if (value === 'night' || value === 'dark') return 'night'
+  return 'system'
+}
+
+/** 机械校验导入的 config 文本（白名单子集口径的写入端校验；宿主不校验身份数据）。 */
+export function validateImport(text) {
+  let parsed
+  try {
+    parsed = JSON.parse(String(text))
+  } catch {
+    return { ok: false, code: IMPORT_BAD_JSON }
+  }
+  if (!isRecord(parsed)) return { ok: false, code: IMPORT_BAD_SHAPE }
+  for (const key of ['version', 'params', 'permission', 'ui', 'providers']) {
+    if (!(key in parsed)) return { ok: false, code: IMPORT_BAD_SHAPE }
+  }
+  if (!Number.isInteger(parsed.version)) return { ok: false, code: IMPORT_BAD_SHAPE }
+  if (!isRecord(parsed.params) || !isRecord(parsed.ui) || !isRecord(parsed.providers)) {
+    return { ok: false, code: IMPORT_BAD_SHAPE }
+  }
+  if (!PERMISSION_VALUES.includes(parsed.permission)) return { ok: false, code: IMPORT_BAD_SHAPE }
+  if (parsed.ui.theme !== undefined && !THEME_VALUES.includes(parsed.ui.theme)) {
+    return { ok: false, code: IMPORT_BAD_SHAPE }
+  }
+  return { ok: true, body: parsed }
+}

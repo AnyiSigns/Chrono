@@ -20,7 +20,7 @@
 
 ## 机制
 
-- `plugin.list(bag)`：数据源 = **`host.identities {}`**（宿主只读身份清单面，H20 待落地：id / active / implements / commands；本插件过滤后返回）；**过滤掉可见性黑名单 {`sandbox`, 自己}**（2026-09-20 修订）。
+- `plugin.list(bag)`：数据源 = **`host.identities {}`**（宿主只读身份清单面，H20 已落地：id / active / implements / commands；本插件过滤后返回）；**过滤掉可见性黑名单 {`sandbox`, 自己}**（2026-09-20 修订）。
 - `plugin.read(bag)`：读某身份的源码——经 **`host.source.read {identity, path}`**（保留能力类 `host`，H3）；被黑名单过滤的身份 → `hidden_identity`（本插件先过滤，不调宿主）。
 - `plugin.validate(bag)`：经 **`host.validate_package {files}`**（保留能力类 `host`，H13/D12）转发宿主的入世前校验 dry-run——对 `plugin.json` **11 字段（`schema` 可省略）** / 包内路径约束 / `argsSchema` 方言 / **受保护 `pins` 完整性** / term 环 / `.worldignore` 做 dry-run，返回错误列表与 **`result_hash`**；机械校验归宿主，本插件只转发。
 - `plugin.write(bag)`：构造世界写计划（**不直接写**）：**身份不存在时先 `add_identity`（否则只 `add_gen`）** → `put(blob)` × n → `put(tree)` → `put(commit)` → `add_gen(身份, payload=commit)`；批内用 `{"$n":k}` 占位串起。**必须携带上一次 `plugin.validate` 的结果哈希**（见修正 3）。**`result_hash` 缓存住宿主 ③（`CHRONO_PLUGIN_STATE`，键 = 候选树规范化哈希）**；`write` 时本插件机械比对缓存（不依赖模型跨调用带回 64-hex；缺失 → `validate_required`）（2026-09-20 修订）。

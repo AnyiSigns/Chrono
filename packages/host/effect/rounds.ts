@@ -82,6 +82,11 @@ export interface SubmissionInput {
   /** 每轮 done 的业务 journal 落点（与内核提交同段调用，保证账本追加序 = 链序）。 */
   onRound?: (entries: Entry[]) => void
   /**
+   * 本次提交允许的轮数上限（缺省 `MAX_SUBMISSION_ROUNDS`）：防 plan / 自能力回路无界挂死宿主；
+   * 供宿主 / 测试按需收紧，生产缺省即常量。
+   */
+  maxRounds?: number
+  /**
    * 链头推进后的宿主钩子（A6 换代跟随）：在进入下一轮之前 await 完成——
    * 这样 plan 的后续轮与下一次提交都按新世界路由；effect 不认识装配，回调由宿主注入。
    */
@@ -358,6 +363,12 @@ function prepareGroup(
 }
 
 /**
+ * 单次提交允许的轮数上限：plan 可逐层递归产 directive，自能力 eff 又能让服务回计划再次 eff 自己——
+ * 无界即成环挂死宿主。正常远低于此；超限以 `refused` 收口（reason `too_many_rounds`）。
+ */
+export const MAX_SUBMISSION_ROUNDS = 10_000
+
+/**
  * 跑一次入站提交：初始 directives 分相执行；每轮 done 后取 plan 产出的 directives
  * 插在剩余轮之前（= 保序：该 eval 的判定立即生效），继续到穷尽 / refused / idle。
  */
@@ -376,12 +387,21 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
     })),
   )
   let ref: Hash | null = null
+  let rounds = 0
+  const maxRounds = input.maxRounds ?? MAX_SUBMISSION_ROUNDS
   while (pending.length > 0) {
     if (input.signal?.aborted === true) {
       // 取消即丢弃剩余轮（含 plan 产出的 directives）；已落账内容不回溯
       const snap = writer.snapshot()
       return { status: 'cancelled', world: snap.world, head: snap.head, observations }
     }
+    if (rounds >= maxRounds) {
+      // plan 自产指令成环（含自能力 eff 回计划）：有界收口，不挂死宿主
+      observations.push({ kind: 'refused', reasons: ['too_many_rounds'] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    rounds += 1
     const group = pending.shift() as StagedDirective[]
     const roundStart = writer.snapshot()
     const prepared = prepareGroup(group, {

@@ -14,7 +14,7 @@
 | 验收 | 见下「验收」 |
 | 状态 | 细节设计（2026-09-19）：**Scope 统一**（节点=agent=作用域）、**推式条件边**（取代 `{from,on,to}`）、**单图演化**（取代多图+trigger）、回合重入、拒绝短路、scope 过滤、links 白名单；**2026-09-19 定案：解释器由 execute 服务自驱**（不再用宿主 run loop 递归执行图；判定改一次要换代，图/阈值数据仍住数据世代、可热改可回滚）。**（2026-09-20 修订：eff_log 审计底座 / 回合尾职责收敛 / 续跑经 chat.resume / 提案扫描 / 降级判定）** |
 
-> **前置注记（2026-09-20，待落地）**：本文依赖三项宿主/协议能力——**H16**：协议帧 `env:{run,thread,now}`；**H17**：`schema.method_timeouts`（interpret 声明大超时）；**H18**：plan eval 可写 `{kind:'eval', command:'chat.resume', args}`（宿主按命令名解析）。
+> **前置注记（2026-09-20；H16 / H17 已落地，H18 待落地）**：本文依赖三项宿主/协议能力——**H16**：协议帧 `env:{run,thread,now}`；**H17**：`schema.method_timeouts`（interpret 声明大超时）；**H18**：plan eval 可写 `{kind:'eval', command:'chat.resume', args}`（宿主按命令名解析）。
 >
 > **本轮作废的两条旧口径**：① `edges:[{from, on:<判定值>, to}]`（状态机边，无 typed 端口 ⇒ `pre`/`post` 无落点 ⇒ dense 信号无来源 ⇒ 进化环断）；② 「拉式惰性 / `any` 端口先选边再求值前驱」（照搬实验，但实验的路由是可训模型；产品最核心的决定「模型这次要不要调工具」必须看实际产出才知道）。
 
@@ -28,7 +28,7 @@
 - **解释器住 execute**：图遍历、边 `when`、契约 `pre`/`post`、拒绝短路、scope 过滤、实例选择、不变量与演化规则校验**全部是 #33 服务代码**（不再写成 term、不再经宿主 plan 通道递归）。
 - **节点派发 = 反向调用**：`interpret` 内按 `pins` 对节点能力类发 `port.call`（`protocol.md` §2.4；发出者 = #33 身份），owner = #33，故节点 eff 按 #33 的 `pins` 路由。
 - **eff_log**：`interpret` 内每步（节点派发、guard、审批入队等）记 `{step, iter, port, method, args_hash, result_hash, outcome}`；回合尾随 trace 写入世界——**post dense 信号与 #44 shadow 配对的数据底座**（反向调用不入世界审计，见 `protocol.md` §2.4；替代旧 EffectAudit 依赖，2026-09-20 定案）。
-- **数据仍住数据世代**：`contracts` / `nodes` / `prompts` / `graph` / `thresholds` / `refusal_codes` 六类条目仍是世界数据（可热改、可回滚）；**服务不读投影**，`interpret` 的图数据由 **#14 入口 term 读 `ctx` 后随 bag 传入**（`+ 35/36/41/43/47` 同理）。**改判定代码 = 换 execute = 换代**（这是本定案的代价，已接受）。**协议帧 `env:{run,thread,now}`（H16，待落地）供事件与判定用时**。
+- **数据仍住数据世代**：`contracts` / `nodes` / `prompts` / `graph` / `thresholds` / `refusal_codes` 六类条目仍是世界数据（可热改、可回滚）；**服务不读投影**，`interpret` 的图数据由 **#14 入口 term 读 `ctx` 后随 bag 传入**（`+ 35/36/41/43/47` 同理）。**改判定代码 = 换 execute = 换代**（这是本定案的代价，已接受）。**协议帧 `env:{run,thread,now}`（H16，已落地）供事件与判定用时**。
 - **不再需要** `entry` / `pre` / `post` / `when` 的 `{identity,path}` 逻辑名与「run 首解析」；它们改为服务内按 `contract_id` / 声明式规则名解析（**数据世代放阈值 / 规则名 / 契约结构 / 图**；判定逻辑（`pre`/`post`/`when` 求值器）住 execute——改判定 = 换代（定案代价，已接受））。
 - **写链**：`interpret` 返回计划值，由 #14 入口 term 作为顶层 `$directives` 交宿主落账（服务无写通道不变）；**冒泡通则：`interpret` 内任何节点 / 触发调用返回的 `$directives` 一律收集并入回合尾计划**。
 
@@ -176,7 +176,7 @@ Graph = { nodes:[contract_id…],                          // 生成序，下标
 
 `kernel.md` §十二 的单 pending / 不捕获续体只约束**宿主 run**；图执行住 #33 服务进程，不受「一个 directive 内 k 个效果 ⇒ O(k²)」约束——服务在一次 `interpret` 内顺序推进多个节点。
 
-`interpret` 声明 `schema.method_timeouts`（H17，待落地，如 10 分钟）——整回合不受 30s 缺省截断（2026-09-20 修订）。
+`interpret` 声明 `schema.method_timeouts`（H17，已落地，如 10 分钟）——整回合不受 30s 缺省截断（2026-09-20 修订）。
 
 ```
 interpret(bag)：

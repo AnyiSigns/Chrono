@@ -1,0 +1,34 @@
+{
+  "identity": "compress",
+  "schema": "schema/compress.json",
+  "implements": ["compress"],
+  "methods": {
+    "compress": ["summarize", "compact", "extract"]
+  },
+  "pins": {
+    "model": "model-protocol",
+    "embedding": "embedding"
+  },
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "compress.summarize",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

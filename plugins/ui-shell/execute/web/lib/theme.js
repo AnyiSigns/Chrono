@@ -1,11 +1,12 @@
 // 主题偏好归一与解析（壳页面与壳服务共用同一实现）。
 // 偏好三值 light / dark / system；system 跟随 prefers-color-scheme。
+// config 的用户语义是 day / night / system，故此处一并接受 day→light、night→dark。
 
-export const THEME_PREFS = ['light', 'dark', 'system']
-
-/** 归一主题偏好；未知值回落 `system`。 */
+/** 归一主题偏好；接受 config 的 day/night 语义，未知值回落 `system`。 */
 export function normalizeThemePref(value) {
-  return value === 'light' || value === 'dark' ? value : 'system'
+  if (value === 'light' || value === 'day') return 'light'
+  if (value === 'dark' || value === 'night') return 'dark'
+  return 'system'
 }
 
 /** 解析实际主题：`system` 跟随系统偏好。 */

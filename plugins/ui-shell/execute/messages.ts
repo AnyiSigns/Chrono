@@ -24,6 +24,7 @@ export const MESSAGE_PREFIXES = [
   'tool_',
   'mcp_',
   'plugin_',
+  'settings_',
 ]
 
 export const UNKNOWN_CODE = 'unknown'

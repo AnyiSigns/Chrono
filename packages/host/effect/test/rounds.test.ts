@@ -385,6 +385,35 @@ describe('A10 轮间驱动 runSubmission', () => {
     ])
   })
 
+  it('plan 自回路：自能力 eff 回计划再 eval 自己 → 有界 refused:too_many_rounds', async () => {
+    const body: Json = ['eff', 'toy.echo', 'echo', ['c', 1]]
+    const term = defHash(put({ body }))
+    const world = worldOf({ [term]: put({ body }) })
+    // 服务把「再次 eval 该入口」当计划返回：每轮 1 条 eff → 无界递归
+    const plan: Json = { $directives: [{ kind: 'eval', entry: term, ctx: null }] }
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(term)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      router: fakeRouter(async () => plan),
+      initialOwnerOf: () => 'caller',
+      maxRounds: 64,
+    })
+    expect(outcome.status).toBe('refused')
+    expect(outcome.observations[outcome.observations.length - 1]).toEqual({
+      kind: 'refused',
+      reasons: ['too_many_rounds'],
+    })
+    // 恰好跑到上限即收口，不无限递归
+    expect(
+      outcome.observations.filter((o) => (o as { kind: string }).kind === 'eval'),
+    ).toHaveLength(64)
+  })
+
   it('多 eval 同轮：plan 按观测序拼接，顺序与观测一致', async () => {
     const planA: Json = {
       $directives: [{ kind: 'write', request: { op: 'put', args: { body: { a: 1 } } } }],

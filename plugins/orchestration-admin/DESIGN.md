@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 / 身份 | 45 / `orchestration-admin` |
 | 职责 | agent 面编排管理：`list` / `read` / `validate`（本地复刻 #33 机械闸 dry-run）/ `propose`；**只产提案条目、不产写** |
-| 依赖 | pins 无；`+` 33、43、11 / 41（**`list` / `read` / `validate` 的输入由 #33 装配**——图六类条目与台账来自其 bag；会话 / 工作区视图与**投影 `ids.33.pins`（H20 待落地）**由 #14 入口 term 读出随 bag 传——§1.14，**随 args 传入；服务不读投影**）（2026-09-20 修订）；`<-` 27（pins：以工具类 `orchestration-admin` 暴露给 agent） |
+| 依赖 | pins 无；`+` 33、43、11 / 41（**`list` / `read` / `validate` 的输入由 #33 装配**——图六类条目与台账来自其 bag；会话 / 工作区视图与**投影 `ids.33.pins`（H20 已落地）**由 #14 入口 term 读出随 bag 传——§1.14，**随 args 传入；服务不读投影**）（2026-09-20 修订）；`<-` 27（pins：以工具类 `orchestration-admin` 暴露给 agent） |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["orchestration","orchestration-admin"]`，`methods: {orchestration:["list","read","validate","propose"], "orchestration-admin":["describe","invoke"]}`（工具类名 = 身份名，见 `plugins/tools/DESIGN.md`「`tool` 端口契约」）。**`orchestration` 类 = 管理 API**（服务方法），v1 唯一消费者 = 本插件工具类 `orchestration-admin.invoke`（按工具名内部派发，即 #27 的调用入口）；图内不直接 `port.call` 该管理类（如需属后置，D15） |
 | 命令 | 无 |

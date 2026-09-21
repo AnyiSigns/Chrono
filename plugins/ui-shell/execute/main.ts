@@ -69,13 +69,32 @@ function shellState(): ShellState {
   return { connected, theme: themePref, boot_mode: bootMode }
 }
 
+/** 写 config 的 run（`submit` 回 accepted 时写尚未落账）；run 终局后重推无配置判据。 */
+const configRuns = new Set<string>()
+
+function trackConfigRun(run: string): void {
+  configRuns.add(run)
+}
+
+function finishConfigRun(run: string): void {
+  if (!configRuns.delete(run)) return
+  void refreshConfig()
+}
+
 const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
-  onEvent: (impl, topic, payload) => sse.hostEvent(impl, topic, payload),
+  onEvent: (impl, topic, payload) => {
+    sse.hostEvent(impl, topic, payload)
+    if (topic === 'run.finished' && isRecord(payload) && typeof payload['run'] === 'string') {
+      finishConfigRun(payload['run'])
+    }
+  },
   onFrame: (frame) => {
-    const topic = typeof frame['run'] === 'string' ? 'run.result' : 'host.frame'
+    const run = typeof frame['run'] === 'string' ? (frame['run'] as string) : null
+    const topic = run === null ? 'host.frame' : 'run.result'
     sse.broadcast({ impl: SHELL_IMPL, topic, payload: frame as unknown as Json })
+    if (run !== null) finishConfigRun(run)
   },
   onConnectionChange: (next) => {
     const prev = connected
@@ -122,16 +141,16 @@ async function refreshHeadless(): Promise<void> {
   }
 }
 
-/** 经入站 `config.read` 更新无配置判据与主题偏好（服务不读投影）。 */
+/** 经入站 `config.read` 更新无配置判据与主题偏好（服务不读投影）；变化时广播重推。 */
 async function refreshConfig(): Promise<void> {
   const read = await bridge.configRead()
   if (!read.ok) return
-  bootMode = deriveBootMode(read.value)
-  const pref = normalizeThemePref(themePrefOfConfig(read.value))
-  if (pref !== themePref) {
-    themePref = pref
-    sse.broadcast(shellStateRecord(connected, themePref))
-  }
+  const nextBoot = deriveBootMode(read.value)
+  const nextTheme = normalizeThemePref(themePrefOfConfig(read.value))
+  const changed = nextBoot !== bootMode || nextTheme !== themePref
+  bootMode = nextBoot
+  themePref = nextTheme
+  if (changed) sse.broadcast(shellStateRecord(connected, themePref))
 }
 
 function headlessSource(id: string): string | null {
@@ -290,6 +309,8 @@ startUiServer(
     state: shellState,
     headlessSource,
     applyThemePref,
+    refreshConfig,
+    trackConfigRun,
     log,
   },
   uiPort,

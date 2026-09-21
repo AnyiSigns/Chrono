@@ -267,4 +267,90 @@ describe('A1 路由 createRoundRouter', () => {
       })
     })
   })
+
+  describe('自能力路由（无自 pin）', () => {
+    const SOLO_DECL: Json = { ...(DECL as Record<string, Json>), identity: 'solo' }
+    const SOLO = commitOf(SOLO_DECL, 1)
+
+    function soloWorld(
+      soloPins: Record<string, Hash> = {},
+      active: Hash | null = SOLO.payload,
+    ): World {
+      return {
+        defs: { ...SOLO.defs },
+        ids: { solo: identityOf('solo', [genOf(SOLO.payload, soloPins, 0)], active) },
+      }
+    }
+
+    it('未 pin、自身 implements 含该能力类 → 解析到自己的端点行并可调用', async () => {
+      const world = soloWorld()
+      const endpoints = new EndpointTable()
+      endpoints.add(rowOf('solo', SOLO.payload, 'toy.echo', 'echo'))
+      const outcome = createRoundRouter({ endpoints }).resolve(world, 'solo', 'toy.echo', 'echo')
+      expect(outcome.ok).toBe(true)
+      if (!outcome.ok) return
+      expect(outcome.row.impl).toBe('solo')
+      expect(outcome.row.gen).toBe(SOLO.payload)
+      expect(await outcome.row.link.call('toy.echo', 'echo', null, 1000)).toEqual({
+        ok: true,
+        value: null,
+      })
+    })
+
+    it('显式 pin 优先于自能力：pin 指向另一身份时解析到被依赖者', () => {
+      const world: World = {
+        defs: { ...V2.defs, ...SOLO.defs },
+        ids: {
+          dep: identityOf('dep', [genOf(V2.payload, {}, 0)], V2.payload),
+          solo: identityOf(
+            'solo',
+            [genOf(SOLO.payload, { 'toy.echo': V2.payload }, 0)],
+            SOLO.payload,
+          ),
+        },
+      }
+      const endpoints = new EndpointTable()
+      endpoints.add(rowOf('solo', SOLO.payload, 'toy.echo', 'echo'))
+      endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
+      const outcome = createRoundRouter({ endpoints }).resolve(world, 'solo', 'toy.echo', 'echo')
+      expect(outcome.ok).toBe(true)
+      if (outcome.ok) expect(outcome.row.impl).toBe('dep')
+    })
+
+    it('未 pin 且自身未声明该能力类 → unresolved_cap（与旧行为一致）', () => {
+      const world = soloWorld()
+      const router = createRoundRouter({ endpoints: new EndpointTable() })
+      expect(router.resolve(world, 'solo', 'other.cap', 'x')).toEqual({
+        ok: false,
+        error: 'unresolved_cap',
+      })
+    })
+
+    it('自身声明了该能力类但端点行缺失 → not_loaded', () => {
+      const world = soloWorld()
+      expect(
+        createRoundRouter({ endpoints: new EndpointTable() }).resolve(
+          world,
+          'solo',
+          'toy.echo',
+          'echo',
+        ),
+      ).toEqual({ ok: false, error: 'not_loaded' })
+    })
+
+    it('保留能力类 host 不走自能力：未显式 pin 值 host 仍 unresolved_cap', () => {
+      const decl: Json = { ...(SOLO_DECL as Record<string, Json>), implements: ['host'] }
+      const host = commitOf(decl, 1)
+      const world: World = {
+        defs: { ...host.defs },
+        ids: { solo: identityOf('solo', [genOf(host.payload, {}, 0)], host.payload) },
+      }
+      const endpoints = new EndpointTable()
+      endpoints.add(rowOf('solo', host.payload, 'host', 'audit'))
+      expect(createRoundRouter({ endpoints }).resolve(world, 'solo', 'host', 'audit')).toEqual({
+        ok: false,
+        error: 'unresolved_cap',
+      })
+    })
+  })
 })

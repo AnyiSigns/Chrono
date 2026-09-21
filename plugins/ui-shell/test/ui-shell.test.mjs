@@ -50,7 +50,7 @@ import {
   webDirOf,
 } from '../execute/assets.ts'
 import { FALLBACK_MESSAGES, loadMessages, lookupMessage, MESSAGE_ALIASES, MESSAGE_PREFIXES, missingPrefixes, parseMessages } from '../execute/messages.ts'
-import { themeWriteDirective } from '../execute/http-server.ts'
+import { directivesTouchConfig, startUiServer, themeWriteDirective } from '../execute/http-server.ts'
 import {
   firstFrameScript,
   injectThemeScript,
@@ -58,6 +58,7 @@ import {
   resolveTheme,
   THEME_PLACEHOLDER,
   themePrefOfConfig,
+  toConfigTheme,
 } from '../execute/theme.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -384,18 +385,43 @@ test('uiState：未登记键告警并忽略（新增键须先登记）', () => {
 
 // ---- 主题写指令防护 ----
 
-test('themeWriteDirective：tree 形态拒写、正常 body 读-改-写保留其余键', () => {
+test('themeWriteDirective：tree 形态拒写、落 config 用 day/night 词表', () => {
   assert.equal(themeWriteDirective('dark', { tree: 'abc' }), null)
   assert.equal(themeWriteDirective('dark', 'nope'), null)
-  const directive = themeWriteDirective('dark', { vendor: 'x', ui: { theme: 'light', other: 1 } })
+  const directive = themeWriteDirective('dark', { vendor: 'x', ui: { theme: 'day', other: 1 } })
   const body = directive.request.args.ops[0].args.body
   assert.equal(body.vendor, 'x')
-  assert.equal(body.ui.theme, 'dark')
+  assert.equal(body.ui.theme, 'night')
   assert.equal(body.ui.other, 1)
   assert.equal(directive.request.args.ops[1].args.id, 'config')
   // 无配置：从空 body 起写
   const fresh = themeWriteDirective('light', null)
-  assert.deepEqual(fresh.request.args.ops[0].args.body, { ui: { theme: 'light' } })
+  assert.deepEqual(fresh.request.args.ops[0].args.body, { ui: { theme: 'day' } })
+  assert.equal(themeWriteDirective('system', null).request.args.ops[0].args.body.ui.theme, 'system')
+})
+
+test('directivesTouchConfig：仅 config 身份的 add_gen 命中', () => {
+  const configWrite = {
+    kind: 'write',
+    request: {
+      op: 'batch',
+      args: {
+        ops: [
+          { op: 'put', args: { body: { vendor: 'x' } } },
+          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+        ],
+      },
+    },
+  }
+  const inputWrite = {
+    kind: 'write',
+    request: { op: 'batch', args: { ops: [{ op: 'add_gen', args: { id: 'input' } }] } },
+  }
+  assert.equal(directivesTouchConfig([configWrite]), true)
+  assert.equal(directivesTouchConfig([{ kind: 'extern', payload: { a: 1 } }]), false)
+  assert.equal(directivesTouchConfig([inputWrite]), false)
+  assert.equal(directivesTouchConfig([]), false)
+  assert.equal(directivesTouchConfig(null), false)
 })
 
 // ---- toast ----
@@ -513,8 +539,21 @@ test('主题解析与首帧脚本', () => {
   assert.equal(resolveTheme('system', true), 'dark')
   assert.equal(resolveTheme('system', false), 'light')
   assert.equal(normalizeThemePref('bogus'), 'system')
+  assert.equal(normalizeThemePref('day'), 'light')
+  assert.equal(normalizeThemePref('night'), 'dark')
+  assert.equal(themePrefOfConfig({ ui: { theme: 'day' } }), 'light')
+  assert.equal(themePrefOfConfig({ ui: { theme: 'night' } }), 'dark')
   assert.equal(themePrefOfConfig({ ui: { theme: 'dark' } }), 'dark')
   assert.equal(themePrefOfConfig({}), 'system')
+
+  // config 存储词表：light→day / dark→night / system→system；未知回落 system
+  assert.equal(toConfigTheme('light'), 'day')
+  assert.equal(toConfigTheme('dark'), 'night')
+  assert.equal(toConfigTheme('system'), 'system')
+  assert.equal(toConfigTheme('bogus'), 'system')
+  // 往返：落 config 后再读回 DOM 词表
+  assert.equal(themePrefOfConfig({ ui: { theme: toConfigTheme('dark') } }), 'dark')
+  assert.equal(themePrefOfConfig({ ui: { theme: toConfigTheme('light') } }), 'light')
 
   function run(pref, prefersDark) {
     let written = null
@@ -575,6 +614,25 @@ test('文案表：结构合法、覆盖全部前缀、未知码兜底', () => {
 
 // ---- 文案表：protocol §四 与插件裸码全覆盖 ----
 
+test('文案表：共享表承载 ui-settings 界面文案（单一文案来源）', () => {
+  const loaded = loadMessages(WEB_DIR)
+  assert.equal(loaded.fallback, false)
+  for (const code of [
+    'settings_title',
+    'settings_tab_orchestration',
+    'settings_theme_day',
+    'settings_orch_scope',
+    'settings_orch_rollback_unverified',
+    'settings_refresh_profile',
+    'settings_edit_provider',
+    'settings_secret_save',
+  ]) {
+    assert.ok(loaded.table[code] !== undefined, `${code} 未登记进共享表`)
+    assert.equal(loaded.table[code].body.length > 0, true, `${code}.body 为空`)
+  }
+  assert.equal(loaded.table.settings_orch_rollback_done, undefined, '回滚成功文案不应存在')
+})
+
 const PROTOCOL_CODES = [
   'protocol_mismatch', 'handshake_failed', 'unresolved_cap', 'not_loaded', 'stale', 'cycle',
   'writer_busy', 'unknown_command', 'unknown_run', 'bad_asset', 'asset_too_large', 'asset_missing',
@@ -594,8 +652,7 @@ const PLUGIN_BARE_CODES = [
   'notify_reconnected', 'notify_orchestration_unhealthy', 'notify_question_pending',
 ]
 
-test('文案表：protocol §四与插件裸码 lookupMessage 后不含「暂无说明」', () => {
-  const loaded = loadMessages(WEB_DIR)
+test('文案表：protocol §四与插件裸码 lookupMessage 后不含「暂无说明」', () => {  const loaded = loadMessages(WEB_DIR)
   assert.equal(loaded.fallback, false)
   for (const code of [...PROTOCOL_CODES, ...PLUGIN_BARE_CODES]) {
     const entry = lookupMessage(loaded.table, code)
@@ -812,5 +869,153 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
   } finally {
     if (child.exitCode === null) child.kill()
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ---- HTTP：主题写词表与 boot_mode 重推触发 ----
+
+function fakeServerDeps(overrides = {}) {
+  return {
+    mounts: [],
+    headless: [],
+    bridge: {
+      async configRead() {
+        return { ok: true, value: {}, code: '', message: '' }
+      },
+      async submit() {
+        return { ok: true, frame: { kind: 'accepted', run: 'r1' }, code: '', message: '' }
+      },
+    },
+    sse: new SseHub(),
+    state: () => ({ connected: true, theme: 'system', boot_mode: 'onboarding' }),
+    headlessSource: () => null,
+    applyThemePref: () => {},
+    refreshConfig: () => {},
+    trackConfigRun: () => {},
+    log: () => {},
+    ...overrides,
+  }
+}
+
+async function postJsonTo(port, path, body) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  })
+  return { status: response.status, payload: await response.json() }
+}
+
+test('/api/theme：落 config 用 day/night 词表，回包 / 运行态用 light/dark', async () => {
+  const port = await freePort()
+  let submitted = null
+  const applied = []
+  const server = await startUiServer(
+    fakeServerDeps({
+      bridge: {
+        async configRead() {
+          return { ok: true, value: { vendor: 'x', ui: { theme: 'day' } }, code: '', message: '' }
+        },
+        async submit(directives) {
+          submitted = directives
+          return { ok: true, frame: { kind: 'accepted', run: 'r1', status: 'done' }, code: '', message: '' }
+        },
+      },
+      applyThemePref: (pref) => applied.push(pref),
+    }),
+    port,
+  )
+  try {
+    const { status, payload } = await postJsonTo(port, '/api/theme', { theme: 'dark' })
+    assert.equal(status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.theme, 'dark')
+    assert.deepEqual(applied, ['dark'])
+    const body = submitted[0].request.args.ops[0].args.body
+    assert.equal(body.vendor, 'x')
+    assert.equal(body.ui.theme, 'night')
+  } finally {
+    await server.close()
+  }
+})
+
+test('/api/submit：config 写记 run 待终局重推，无 run 时立即重推', async () => {
+  const port = await freePort()
+  let refreshes = 0
+  const tracked = []
+  const configWrite = {
+    kind: 'write',
+    request: {
+      op: 'batch',
+      args: {
+        ops: [
+          { op: 'put', args: { body: { vendor: 'deepseek' } } },
+          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+        ],
+      },
+    },
+  }
+  const server = await startUiServer(
+    fakeServerDeps({
+      refreshConfig: () => {
+        refreshes += 1
+      },
+      trackConfigRun: (run) => tracked.push(run),
+    }),
+    port,
+  )
+  try {
+    const configResult = await postJsonTo(port, '/api/submit', { directives: [configWrite] })
+    assert.equal(configResult.status, 202)
+    assert.deepEqual(tracked, ['r1'])
+    assert.equal(refreshes, 0)
+    const otherResult = await postJsonTo(port, '/api/submit', {
+      directive: { kind: 'extern', payload: { a: 1 } },
+    })
+    assert.equal(otherResult.status, 202)
+    assert.deepEqual(tracked, ['r1'])
+    assert.equal(refreshes, 0)
+  } finally {
+    await server.close()
+  }
+})
+
+test('/api/submit：config 写回帧已终局（result / 无 run）时立即重推', async () => {
+  const port = await freePort()
+  let refreshes = 0
+  const configWrite = {
+    kind: 'write',
+    request: {
+      op: 'batch',
+      args: {
+        ops: [
+          { op: 'put', args: { body: { vendor: 'deepseek' } } },
+          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+        ],
+      },
+    },
+  }
+  const server = await startUiServer(
+    fakeServerDeps({
+      bridge: {
+        async configRead() {
+          return { ok: true, value: {}, code: '', message: '' }
+        },
+        async submit() {
+          return { ok: true, frame: { kind: 'result', run: 'r9', status: 'done' }, code: '', message: '' }
+        },
+      },
+      refreshConfig: () => {
+        refreshes += 1
+      },
+    }),
+    port,
+  )
+  try {
+    const result = await postJsonTo(port, '/api/submit', { directives: [configWrite] })
+    assert.equal(result.status, 202)
+    assert.equal(refreshes, 1)
+  } finally {
+    await server.close()
   }
 })

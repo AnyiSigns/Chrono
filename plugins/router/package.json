@@ -1,0 +1,10 @@
+{
+  "name": "router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "模型 / 能力选择（选别名端口名）：纯判定 select，无 pins、无模型调用、不读投影",
+  "scripts": {
+    "test": "node --test"
+  }
+}

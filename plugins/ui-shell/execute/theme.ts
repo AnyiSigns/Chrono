@@ -43,3 +43,14 @@ export function themePrefOfConfig(value: Json): string {
   if (!isRecord(ui)) return 'system'
   return normalizeThemePref(ui['theme'])
 }
+
+/**
+ * DOM 主题偏好（`light` / `dark` / `system`）→ config 存储语义（`day` / `night` / `system`）。
+ * 壳的 DOM 属性 / SSE 载荷 / 运行态一律用 light / dark，只有落 config 时换 config 词表。
+ */
+export function toConfigTheme(pref: string): string {
+  const normalized = normalizeThemePref(pref)
+  if (normalized === 'light') return 'day'
+  if (normalized === 'dark') return 'night'
+  return 'system'
+}

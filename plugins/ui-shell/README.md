@@ -23,7 +23,7 @@ GET  /assets/lib/<name>.js    壳页面共享前端库（ui-state / toast / them
 GET  /assets/headless/<id>.js headless 入口（经 host.source.read 取字节、同源服务，不占 slot）
 GET  /p/<id>/*                挂载表内 id → 反代子应用端口；表外 id（如 mcp）→ 宿主 forward 帧
 GET  /events                  SSE：宿主事件原样重播 + 壳状态 + 壳合成断连 / 重连事件
-POST /api/theme               写 config.ui.theme（读-改-写，经入站写指令）
+POST /api/theme               写 config.ui.theme（读-改-写；落 config 用 day/night/system 词表）
 POST /api/submit              转入站 submit（body 含 directive(s) + thread）
 POST /api/command             转入站 command（body 含 name / args + thread）
 POST /api/asset               转入站 asset.put（body 含 mime / bytes(base64)）
@@ -78,7 +78,13 @@ api = {
 ## 无配置判据
 
 壳经入站 `command config.read` 取返回值：无 `vendor` 键 ⇒ `uiState.boot_mode='onboarding'`；
-含 `vendor` ⇒ `'ready'`。壳自身不读投影。
+含 `vendor` ⇒ `'ready'`。壳自身不读投影。`boot_mode` 写者恒为壳（#15），其它插件只订阅。
+
+重推触发点（壳内部）：初次连接与重连（`config.read` 读回）、启动后延迟首读、
+`/api/submit` 命中 config 写（`add_gen` 的 `id === 'config'`）——写回 `accepted` 时记下 run，
+run 终局（`run.finished` / 终局 result 帧）后读回，写同步返回时立即读回；重推经 `shell.state`
+广播，壳页面收到后重跑判据并广播 `uiState.boot_mode`。主题词表：DOM / SSE / 运行态用
+`light` / `dark` / `system`，只有落 config 时换 `day` / `night` / `system`。
 
 ## 全局 toast
 

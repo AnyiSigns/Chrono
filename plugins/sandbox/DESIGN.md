@@ -76,11 +76,11 @@ grant 只放宽**被批准的那一次**，判定顺序固定（任一不符即�
 exec(bag) -> { exit_code, stdout, stderr, truncated, duration_ms, artifacts? }
 ```
 
-- **`exec` args 增 `env` 通道（2026-09-20 修订）**：键值表下传子进程环境；宿主端口审计对 args 顶层 `env` 值脱敏（H19，待落地）；#29 密钥经此通道。
+- **`exec` args 增 `env` 通道（2026-09-20 修订）**：键值表下传子进程环境；宿主端口审计对 args 顶层 `env` 值脱敏（H19，已落地）；#29 密钥经此通道。
 
 - **一次性**：一次 `exec` 一进程（或一容器），无 stdin 交互；cwd = `bag.workspace_root`（由 #27 解析后 bag 传，见 #41）；#28 / #29 反向调 #25 时把 `workspace_root` 随 args 透传（本插件服务**不读投影**，D8）；临时目录住宿主侧 ③、结束清理。
 - 超时 / 超内存 / 超输出 → 杀**进程树**（native：Job Object / 进程组；docker：`--rm` + kill）。
-- **stdout / stderr 截断**到 `output_max`；明文密钥不出现在审计（密钥经 #24 句柄 → **`exec` args 的 `env` 字段**注入子进程环境，不落 args 明文；端口审计对 `env` 值脱敏 = H19，待落地）（2026-09-20 修订）。
+- **stdout / stderr 截断**到 `output_max`；明文密钥不出现在审计（密钥经 #24 句柄 → **`exec` args 的 `env` 字段**注入子进程环境，不落 args 明文；端口审计对 `env` 值脱敏 = H19，已落地）（2026-09-20 修订）。
 - 临时产物 / 端口 / pid **不进世界**；产物引用若需回写由调用工具声明。
 
 ## 结构化操作 `fsop`（S2，2026-09-19 展开）

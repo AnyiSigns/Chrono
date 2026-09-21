@@ -113,7 +113,7 @@
 ## 读取契约
 
 - 投影取 `ctx.ids.input.body.slots[<thread_id>]`（缺省键 `_main`）；`slot.kind === "idle"` 即空闲。
-- **写回者 = 消费该槽的写类命令的终局计划**（不限于 #11）：#11 清 `chat.message` / `session.new` / **`session.select`** / `session.rename` / **`session.delete` / `session.restore` / `session.branch`**；#41 清 `workspace.add` / `workspace.remove`；**#17 的 `model.discover` 入口 term 清 `model.probe`**（只读命令，入口 term 直接返回含清槽的 `$directives`）；**#17 S12 `memory.edit` 清 `memory.edit`**（写类无参命令，2026-09-20 修订）；**#32 清 `approval.decide`**；**#48 清 `question.answer`**（裁决 / 作答计划内同批清槽，故 #32/#48 需 `+ 1` 读槽）。**无论成败都要清槽**，否则残留槽会让下一回合 #11 判定「非法槽 kind」。
+- **写回者 = 消费该槽的写类命令的终局计划**（不限于 #11）：#11 清 `chat.message` / `session.new` / **`session.select`** / `session.rename` / **`session.delete` / `session.restore` / `session.branch`**；#41 清 `workspace.add` / `workspace.remove`；**#17 的 `model.discover` 服务**（入口 term 读 `input` body 传服务，服务返回含清槽 `$directives` 的**终局计划**——2026-09-21 修订：清槽从入口 term 下沉到服务计划）；**#17 S12 `memory.edit` 清 `memory.edit`**（写类无参命令，2026-09-20 修订）；**#32 清 `approval.decide`**；**#48 清 `question.answer`**（裁决 / 作答计划内同批清槽，故 #32/#48 需 `+ 1` 读槽）。**无论成败都要清槽**，否则残留槽会让下一回合 #11 判定「非法槽 kind」。
 - 读判据共八处：**#11**（槽 kind 分支）、**#13**（拼 messages）、**#14**（空槽幂等）、**#16 / #17 / #39 / #41 / #48**（各自命令入口 term 读槽 kind）。
 
 ## 并发语义（2026-09-20 修订）

@@ -337,7 +337,7 @@
 - **共享 token**：shell 提供 `/assets/tokens.v1.css`；子应用引用该版本化路径，不各自复制。
 - **事件**：**每个 slot 应用自持入站客户端连接**（见上「slot 应用契约」——独立包 / 身份 / 进程 / 端口，各自连宿主入站面）；浏览器不能直连宿主本地 socket，故各子应用由**自己的服务**经其 `/events` 把宿主广播的 `event` 原样重播给本页（`impl` 作命名空间）。**壳的 `/events` 为宿主事件重播与壳合成事件（`shell.disconnected` / `shell.reconnected` / `shell.state`）的同源桥**，子应用**可选用**（不强制经壳；需要壳合成事件或免自建服务时用壳桥，否则用自己的连接）。跨 slot 的**世界/状态派生同步**（如 39 审批条 <-> 18 消息流 <-> 40 输入卡）走宿主事件；跨 slot 的**纯视图态同步**（`active_thread` 等）走 `api.uiState`（见上，不占事件通道）。**后端插件不投递事件**（宿主不解释 `topic`，见 `protocol.md` §2.5）。事件来源三类：**插件服务**（`model.delta` = #12、`tool.start/delta/end` = #27、`context.assembled` = #13、`approval.*` = #32、`thread.*` / `workflow.step` / `group.message` = #11、`orchestration.unhealthy` = #44、`question.pending` = #48）与**宿主自身**（`run.started` / `run.finished`，`impl = "host"`，见 `host.md` §五 宿主事件面）与**壳合成**（`shell.disconnected` / `shell.reconnected`——壳在宿主连接断开 / 重连时经 `/events` 注入，2026-09-20 修订）。
   - **事件按线程作用域消费（写死）**：run / 流式类事件（`model.delta` / `tool.*` / `context.assembled` / `run.*`）载荷**必须带 `run` 与 `thread`**；子应用只处理属于当前视图线程的事件。真并发下不按线程过滤，会把后台线程的流 / 用量串进当前视图。
-  - **事件载荷与来源总表（2026-09-20 修订）**：**全部载荷必带 `thread`**；**run 级事件（`run.*` / `model.delta` / `tool.*` / `context.assembled`）另必带 `run`**（来源 = 服务协议帧 `env:{run,thread,now}`，H16 待落地）——`thread.*` / `approval.*` / `question.pending` 等数据变更类通知不是 run 级、只带 `thread`。UI 按线程过滤是写死口径。
+  - **事件载荷与来源总表（2026-09-20 修订）**：**全部载荷必带 `thread`**；**run 级事件（`run.*` / `model.delta` / `tool.*` / `context.assembled`）另必带 `run`**（来源 = 服务协议帧 `env:{run,thread,now}`，H16 已落地）——`thread.*` / `approval.*` / `question.pending` 等数据变更类通知不是 run 级、只带 `thread`。UI 按线程过滤是写死口径。
 
     | 事件 | emitter | 载荷要点 |
     | --- | --- | --- |

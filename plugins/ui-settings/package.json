@@ -1,0 +1,10 @@
+{
+  "name": "ui-settings",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "引导页 + 设置模态（通用 / 模型 / 插件 / 技能 / 记忆 / 编排 / 关于）：overlay 槽子应用，另持入口 term 与只读命令",
+  "scripts": {
+    "test": "node --test"
+  }
+}

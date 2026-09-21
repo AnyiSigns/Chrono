@@ -431,9 +431,15 @@ async function importHeadless(id) {
 // ---- 无配置判据 ----
 
 let bootModePending = false
+let bootModeDirty = false
 
 async function detectBootMode() {
-  if (bootModePending) return
+  if (bootModePending) {
+    // 读回在途时又来一次触发（如 config 写落账后的 shell.state 重推）：标记后串行补跑，
+    // 保证最后一次判据用的是最新 config。
+    bootModeDirty = true
+    return
+  }
   bootModePending = true
   try {
     const result = await api.command('config.read')
@@ -450,6 +456,10 @@ async function detectBootMode() {
     }
   } finally {
     bootModePending = false
+    if (bootModeDirty) {
+      bootModeDirty = false
+      void detectBootMode()
+    }
   }
 }
 

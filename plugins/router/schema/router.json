@@ -1,0 +1,20 @@
+{
+  "title": "router（模型 / 能力选择别名清单）",
+  "description": "身份数据契约：形状冻结为 {primary, aliases}。primary = 本插件声明的默认别名端口名（调用方须有同名 pin），默认 model；aliases = 备选别名端口名清单（每项是备选身份声明的能力类），v1 为空数组占位，出现备选实现时写数据世代 body 填入。方法面（非身份数据）：router.select 的 args 为 {candidates, failure?, aliases?, primary?}——candidates 必填（调用方自己 pins 的候选端口名清单，顺序即偏好序），failure 可选（失败码，v1 接受但不参与判定、不回传），aliases / primary 可选（缺省回落本身份数据 body，再回落本 schema 默认）；返回选中的端口名（字符串，必在 candidates 内），candidates 里既无 primary 也无任何被声明的别名时回结构化错误值 {ok:false, error:{code:'no_candidate', message}}。select 是纯判定：不发起 eff、不调模型、不读投影。",
+  "type": "object",
+  "required": ["primary", "aliases"],
+  "additionalProperties": true,
+  "properties": {
+    "primary": {
+      "type": "string",
+      "default": "model",
+      "description": "本插件声明的默认别名端口名；调用方须有同名 pin。缺省 model。"
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "备选别名端口名清单（降级链，顺序即偏好序）。v1 为空数组占位。"
+    }
+  }
+}

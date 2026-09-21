@@ -1,0 +1,10 @@
+{
+  "name": "compress",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "压缩引擎：summarize（会话摘要 → L1）/ compact（上下文压缩）/ extract（抽 2–3 条 → L2），mode 可纯算法或语义",
+  "scripts": {
+    "test": "node --test"
+  }
+}

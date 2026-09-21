@@ -475,5 +475,541 @@
   "unknown": {
     "title": "出现问题",
     "body": "错误码 {code} 暂无说明。重试可再试一次。"
+  },
+  "settings_title": {
+    "title": "设置",
+    "body": "设置"
+  },
+  "settings_close": {
+    "title": "关闭设置",
+    "body": "关闭设置"
+  },
+  "settings_loading_more": {
+    "title": "仍在读取…",
+    "body": "仍在读取…"
+  },
+  "settings_retry": {
+    "title": "重试",
+    "body": "重试"
+  },
+  "settings_empty": {
+    "title": "暂无内容",
+    "body": "暂无内容"
+  },
+  "settings_dependency_missing": {
+    "title": "依赖未就绪",
+    "body": "依赖未就绪"
+  },
+  "settings_dependency_missing_hint": {
+    "title": "所需身份尚未就绪，相关视图暂不可用。",
+    "body": "所需身份尚未就绪，相关视图暂不可用。"
+  },
+  "settings_saved": {
+    "title": "已保存",
+    "body": "已保存"
+  },
+  "settings_tab_general": {
+    "title": "通用",
+    "body": "通用"
+  },
+  "settings_tab_model": {
+    "title": "模型",
+    "body": "模型"
+  },
+  "settings_tab_plugins": {
+    "title": "插件",
+    "body": "插件"
+  },
+  "settings_tab_skills": {
+    "title": "技能",
+    "body": "技能"
+  },
+  "settings_tab_memory": {
+    "title": "记忆",
+    "body": "记忆"
+  },
+  "settings_tab_orchestration": {
+    "title": "编排",
+    "body": "编排"
+  },
+  "settings_tab_about": {
+    "title": "关于",
+    "body": "关于"
+  },
+  "settings_theme": {
+    "title": "主题",
+    "body": "主题"
+  },
+  "settings_theme_day": {
+    "title": "日间",
+    "body": "日间"
+  },
+  "settings_theme_night": {
+    "title": "夜间",
+    "body": "夜间"
+  },
+  "settings_theme_system": {
+    "title": "系统",
+    "body": "系统"
+  },
+  "settings_language": {
+    "title": "语言",
+    "body": "语言"
+  },
+  "settings_language_locked": {
+    "title": "多语言切换后置",
+    "body": "多语言切换后置"
+  },
+  "settings_notify": {
+    "title": "通知",
+    "body": "通知"
+  },
+  "settings_notify_permission": {
+    "title": "浏览器通知权限",
+    "body": "浏览器通知权限"
+  },
+  "settings_notify_granted": {
+    "title": "已授权",
+    "body": "已授权"
+  },
+  "settings_notify_default": {
+    "title": "未授权",
+    "body": "未授权"
+  },
+  "settings_notify_denied": {
+    "title": "已拒绝",
+    "body": "已拒绝"
+  },
+  "settings_notify_unsupported": {
+    "title": "当前浏览器不支持通知",
+    "body": "当前浏览器不支持通知"
+  },
+  "settings_notify_request": {
+    "title": "请求授权",
+    "body": "请求授权"
+  },
+  "settings_import": {
+    "title": "导入",
+    "body": "导入"
+  },
+  "settings_export": {
+    "title": "导出",
+    "body": "导出"
+  },
+  "settings_import_bad_json": {
+    "title": "文件不是合法的 JSON。检查后重试。",
+    "body": "文件不是合法的 JSON。检查后重试。"
+  },
+  "settings_import_bad_shape": {
+    "title": "文件不是有效的配置结构。检查后重试。",
+    "body": "文件不是有效的配置结构。检查后重试。"
+  },
+  "settings_notify_approval_pending": {
+    "title": "待审批",
+    "body": "待审批"
+  },
+  "settings_notify_run_finished": {
+    "title": "回合完成",
+    "body": "回合完成"
+  },
+  "settings_notify_run_failed": {
+    "title": "回合失败",
+    "body": "回合失败"
+  },
+  "settings_notify_model_error": {
+    "title": "模型错误",
+    "body": "模型错误"
+  },
+  "settings_notify_disconnected": {
+    "title": "断线",
+    "body": "断线"
+  },
+  "settings_notify_orchestration_change": {
+    "title": "编排变更",
+    "body": "编排变更"
+  },
+  "settings_notify_plugin_write": {
+    "title": "插件写入",
+    "body": "插件写入"
+  },
+  "settings_notify_orchestration_unhealthy": {
+    "title": "编排连续失败",
+    "body": "编排连续失败"
+  },
+  "settings_notify_question_pending": {
+    "title": "提问待作答",
+    "body": "提问待作答"
+  },
+  "settings_notify_only_when_unfocused": {
+    "title": "仅窗口无焦点时",
+    "body": "仅窗口无焦点时"
+  },
+  "settings_models_saved": {
+    "title": "已保存的厂商",
+    "body": "已保存的厂商"
+  },
+  "settings_models_templates": {
+    "title": "厂商模板 / 自定义",
+    "body": "厂商模板 / 自定义"
+  },
+  "settings_vendor": {
+    "title": "厂商",
+    "body": "厂商"
+  },
+  "settings_custom": {
+    "title": "自定义厂商",
+    "body": "自定义厂商"
+  },
+  "settings_protocol": {
+    "title": "协议",
+    "body": "协议"
+  },
+  "settings_base_url": {
+    "title": "地址",
+    "body": "地址"
+  },
+  "settings_auth_ref": {
+    "title": "密钥引用",
+    "body": "密钥引用"
+  },
+  "settings_auth_kind": {
+    "title": "引用类型",
+    "body": "引用类型"
+  },
+  "settings_auth_name": {
+    "title": "引用名",
+    "body": "引用名"
+  },
+  "settings_secret_value": {
+    "title": "密钥值",
+    "body": "密钥值"
+  },
+  "settings_secret_placeholder": {
+    "title": "只写本地，不进世界",
+    "body": "只写本地，不进世界"
+  },
+  "settings_secret_present": {
+    "title": "已读到",
+    "body": "已读到"
+  },
+  "settings_secret_absent": {
+    "title": "未读到",
+    "body": "未读到"
+  },
+  "settings_secret_update": {
+    "title": "更新密钥",
+    "body": "更新密钥"
+  },
+  "settings_secret_save": {
+    "title": "保存密钥",
+    "body": "保存密钥"
+  },
+  "settings_secret_saved": {
+    "title": "密钥已保存",
+    "body": "密钥已保存"
+  },
+  "settings_refresh_profile": {
+    "title": "重拉档案",
+    "body": "重拉档案"
+  },
+  "settings_edit_provider": {
+    "title": "编辑",
+    "body": "编辑"
+  },
+  "settings_save_edit": {
+    "title": "保存修改",
+    "body": "保存修改"
+  },
+  "settings_fetch_models": {
+    "title": "获取模型",
+    "body": "获取模型"
+  },
+  "settings_fetching": {
+    "title": "获取中…",
+    "body": "获取中…"
+  },
+  "settings_models_pick": {
+    "title": "勾选模型",
+    "body": "勾选模型"
+  },
+  "settings_default_model": {
+    "title": "默认模型",
+    "body": "默认模型"
+  },
+  "settings_complete": {
+    "title": "完成并进入",
+    "body": "完成并进入"
+  },
+  "settings_completing": {
+    "title": "完成中…",
+    "body": "完成中…"
+  },
+  "settings_new_provider": {
+    "title": "新建厂商",
+    "body": "新建厂商"
+  },
+  "settings_remove_provider": {
+    "title": "删除",
+    "body": "删除"
+  },
+  "settings_confirm": {
+    "title": "确认",
+    "body": "确认"
+  },
+  "settings_cancel": {
+    "title": "取消",
+    "body": "取消"
+  },
+  "settings_reasoning": {
+    "title": "推理强度",
+    "body": "推理强度"
+  },
+  "settings_temperature": {
+    "title": "temperature",
+    "body": "temperature"
+  },
+  "settings_max_tokens": {
+    "title": "max tokens",
+    "body": "max tokens"
+  },
+  "settings_save_params": {
+    "title": "保存参数",
+    "body": "保存参数"
+  },
+  "settings_no_provider": {
+    "title": "暂无厂商",
+    "body": "暂无厂商"
+  },
+  "settings_no_provider_hint": {
+    "title": "从下方模板或自定义厂商新建一个连接。",
+    "body": "从下方模板或自定义厂商新建一个连接。"
+  },
+  "settings_required": {
+    "title": "请先填写必填项。",
+    "body": "请先填写必填项。"
+  },
+  "settings_bad_url": {
+    "title": "地址格式不正确。",
+    "body": "地址格式不正确。"
+  },
+  "settings_secret_failed": {
+    "title": "密钥写入失败。",
+    "body": "密钥写入失败。"
+  },
+  "settings_plugins_active": {
+    "title": "已装载",
+    "body": "已装载"
+  },
+  "settings_plugins_retired": {
+    "title": "已退役",
+    "body": "已退役"
+  },
+  "settings_empty_plugins": {
+    "title": "暂无插件",
+    "body": "暂无插件"
+  },
+  "settings_empty_plugins_hint": {
+    "title": "世界里还没有身份。",
+    "body": "世界里还没有身份。"
+  },
+  "settings_about_version": {
+    "title": "版本",
+    "body": "版本"
+  },
+  "settings_about_host": {
+    "title": "宿主地址",
+    "body": "宿主地址"
+  },
+  "settings_about_plugins": {
+    "title": "插件数",
+    "body": "插件数"
+  },
+  "settings_skills_new": {
+    "title": "新建技能",
+    "body": "新建技能"
+  },
+  "settings_skills_name": {
+    "title": "名称",
+    "body": "名称"
+  },
+  "settings_skills_description": {
+    "title": "说明",
+    "body": "说明"
+  },
+  "settings_skills_keywords": {
+    "title": "关键词",
+    "body": "关键词"
+  },
+  "settings_skills_file_globs": {
+    "title": "文件匹配",
+    "body": "文件匹配"
+  },
+  "settings_skills_explicit": {
+    "title": "显式点名",
+    "body": "显式点名"
+  },
+  "settings_skills_scope": {
+    "title": "作用域",
+    "body": "作用域"
+  },
+  "settings_skills_scope_global": {
+    "title": "全局",
+    "body": "全局"
+  },
+  "settings_skills_scope_workspace": {
+    "title": "本工作区",
+    "body": "本工作区"
+  },
+  "settings_skills_body": {
+    "title": "正文",
+    "body": "正文"
+  },
+  "settings_skills_save": {
+    "title": "保存技能",
+    "body": "保存技能"
+  },
+  "settings_skills_edit": {
+    "title": "编辑",
+    "body": "编辑"
+  },
+  "settings_skills_delete": {
+    "title": "删除",
+    "body": "删除"
+  },
+  "settings_skills_enable": {
+    "title": "启用",
+    "body": "启用"
+  },
+  "settings_skills_disable": {
+    "title": "停用",
+    "body": "停用"
+  },
+  "settings_empty_skills": {
+    "title": "暂无技能",
+    "body": "暂无技能"
+  },
+  "settings_empty_skills_hint": {
+    "title": "新建一份技能，或等待后续导入。",
+    "body": "新建一份技能，或等待后续导入。"
+  },
+  "settings_memory_pending": {
+    "title": "记忆视图待升级",
+    "body": "记忆视图待升级"
+  },
+  "settings_memory_pending_hint": {
+    "title": "记忆浏览 / 搜索 / 编辑依赖记忆族身份，将在其就绪后开放。",
+    "body": "记忆浏览 / 搜索 / 编辑依赖记忆族身份，将在其就绪后开放。"
+  },
+  "settings_orch_graph": {
+    "title": "图",
+    "body": "图"
+  },
+  "settings_orch_scopes": {
+    "title": "Scope 名录",
+    "body": "Scope 名录"
+  },
+  "settings_orch_health": {
+    "title": "编排健康",
+    "body": "编排健康"
+  },
+  "settings_orch_ledger": {
+    "title": "进化台账",
+    "body": "进化台账"
+  },
+  "settings_orch_healthy": {
+    "title": "健康",
+    "body": "健康"
+  },
+  "settings_orch_warning": {
+    "title": "近期有失败",
+    "body": "近期有失败"
+  },
+  "settings_orch_unhealthy": {
+    "title": "连续失败超阈值",
+    "body": "连续失败超阈值"
+  },
+  "settings_orch_consecutive": {
+    "title": "连续失败 {count} 次",
+    "body": "连续失败 {count} 次"
+  },
+  "settings_orch_threshold": {
+    "title": "阈值 {count}",
+    "body": "阈值 {count}"
+  },
+  "settings_orch_threshold_loop": {
+    "title": "来自编排策略",
+    "body": "来自编排策略"
+  },
+  "settings_orch_threshold_default": {
+    "title": "默认值",
+    "body": "默认值"
+  },
+  "settings_orch_rollback": {
+    "title": "回滚到上一世代",
+    "body": "回滚到上一世代"
+  },
+  "settings_orch_rollback_confirm": {
+    "title": "确认回滚？",
+    "body": "确认回滚？"
+  },
+  "settings_orch_rollback_unverified": {
+    "title": "回滚未验证",
+    "body": "回滚未验证"
+  },
+  "settings_orch_rollback_failed": {
+    "title": "回滚提交失败。",
+    "body": "回滚提交失败。"
+  },
+  "settings_orch_no_graph": {
+    "title": "暂无图",
+    "body": "暂无图"
+  },
+  "settings_orch_no_scopes": {
+    "title": "暂无 Scope",
+    "body": "暂无 Scope"
+  },
+  "settings_orch_no_ledger": {
+    "title": "暂无台账",
+    "body": "暂无台账"
+  },
+  "settings_orch_contract": {
+    "title": "契约",
+    "body": "契约"
+  },
+  "settings_orch_scope": {
+    "title": "作用域",
+    "body": "作用域"
+  },
+  "settings_orch_scope_global": {
+    "title": "全局",
+    "body": "全局"
+  },
+  "settings_orch_persona": {
+    "title": "人格",
+    "body": "人格"
+  },
+  "settings_orch_autonomy": {
+    "title": "自治",
+    "body": "自治"
+  },
+  "settings_orch_links": {
+    "title": "关联",
+    "body": "关联"
+  },
+  "settings_orch_success": {
+    "title": "成功率",
+    "body": "成功率"
+  },
+  "settings_orch_verdicts": {
+    "title": "判定",
+    "body": "判定"
+  },
+  "settings_orch_proposals": {
+    "title": "提案",
+    "body": "提案"
+  },
+  "settings_orch_evidence": {
+    "title": "证据",
+    "body": "证据"
   }
 }

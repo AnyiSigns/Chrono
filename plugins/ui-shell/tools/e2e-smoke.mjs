@@ -252,7 +252,7 @@ async function main() {
     assert.equal(configWritten.status, 'done', `config 写入未完成：${JSON.stringify(configWritten)}`)
     console.log('config 默认 body 写入：done')
 
-    // 主题：读-改-写 config.ui.theme，并经 config.read 复核
+    // 主题：读-改-写 config.ui.theme（config 词表 day/night，DOM 词表 light/dark），并经 config.read 复核
     const themed = await httpCall(port, 'POST', '/api/theme', { theme: 'dark' })
     assert.equal(themed.status, 200, themed.body)
     assert.equal(JSON.parse(themed.body).ok, true, themed.body)
@@ -262,7 +262,7 @@ async function main() {
       const response = await httpCall(port, 'POST', '/api/command', { name: 'config.read', args: null })
       const parsed = JSON.parse(response.body)
       themeValue = parsed.ok ? parsed.value : null
-      if (themeValue && themeValue.ui && themeValue.ui.theme === 'dark') break
+      if (themeValue && themeValue.ui && themeValue.ui.theme === 'night') break
       if (Date.now() > themeDeadline) throw new Error(`theme 未落账：${response.body}`)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
     }

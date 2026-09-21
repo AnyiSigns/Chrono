@@ -29,7 +29,7 @@
 
 - **caps 形状与 #25 一致**（`{fs:{read,write}, net}`，2026-09-19 对齐——原 `"fs":"workspace-rw"` / `"net":"deny"` 字符串形态与 #25 冻结形状不符）：`default_caps` 是**声明上限**，实际执行取「声明 ∩ 当前权限档」（#25 强制）；`timeout_ms` / `mem_mb` / `cpu_ms` 超限由 #25 报 `timeout` / `oom` / `cpu_exceeded`。
 - **错误码**（`invoke` 返回）：`fs_denied`（#25 档位拒）/ `net_denied`（网络越档被拒，#25）/ `sandbox_unsupported`（平台无实现）/ `timeout` / `oom` / `cpu_exceeded` / `output_max` / `procs_max` / `nonzero_exit`（命令非 0，结果仍回，带 `exit_code`）/ `code_unsupported_language`（不在白名单）（资源上限码与 #25 对齐，2026-09-20 修订）。
-- **密钥注入（2026-09-20 重写）**：`auth_ref` **不由模型工具 args 提供**（工具 `argsSchema` 无该字段——**模型不可自选密钥**）；`bag.auth_ref` 由 **#14 入口 term** 从 **`#2`** 读出（§1.14）；本插件 **`port.call #24 resolve`** 得明文 → 经 **#25 `exec` 的 `env` 字段**下传子进程（宿主端口审计对 `env` 值脱敏 = H19，待落地）；**义务：不写入 args / 结果 / 日志**。句柄有效期覆盖整个调用（含 #12 重试，若适用）。
+- **密钥注入（2026-09-20 重写）**：`auth_ref` **不由模型工具 args 提供**（工具 `argsSchema` 无该字段——**模型不可自选密钥**）；`bag.auth_ref` 由 **#14 入口 term** 从 **`#2`** 读出（§1.14）；本插件 **`port.call #24 resolve`** 得明文 → 经 **#25 `exec` 的 `env` 字段**下传子进程（宿主端口审计对 `env` 值脱敏 = H19，已落地）；**义务：不写入 args / 结果 / 日志**。句柄有效期覆盖整个调用（含 #12 重试，若适用）。
 
 > **并入后的口径**：`mode` 只区分"输入形态"，不区分隔离等级与审批档——两者都走 25、都过 26、都落同一种审计 def。
 
