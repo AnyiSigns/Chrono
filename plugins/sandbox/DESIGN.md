@@ -9,7 +9,7 @@
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["sandbox"]`，`methods: {sandbox:["exec","fsop","capabilities"]}`（`capabilities` 原名 `probe`，避与协议握手 `probe` 撞名；`fsop` = S2 结构化文件操作面，见下） |
 | 命令 | 无 |
-| schema | `schema/sandbox.json`（实现选择 `impl` / 资源缺省；**4 档 → fs 范围映射表不住 schema**——住**本身份数据世代 body**，`bag.sandbox_tiers` 由 #14 入口 term 读出传入，§1.14；热改 = 数据换代，schema 是身份契约出生即冻结）（2026-09-20 修订） |
+| schema | `schema/sandbox.json`（实现选择 `impl` / 资源缺省；**4 档 → fs 范围映射表不住 schema**——住**本身份数据世代 body**，`bag.sandbox_tiers` 由 #14 入口 term 读出传入，§1.14；热改 = 数据换代，schema 是身份契约出生即冻结）（2026-09-20 修订）；schema 顶层 `method_timeouts` 声明 `sandbox.exec` 120000 / `sandbox.fsop` 60000（宿主方法级超时，**跨插件前置补齐 / 版本提升**——否则长 exec 被 30s 缺省截断） |
 | 机制 | 见下「4 档 / caps / 实现 / exec / 网络 / 平台」 |
 | 边界 | 不做：工具语义（归 28–31）/ **升级判定**（归 26，本插件**永不发升级、只 `fs_denied`**；realpath 判越界而 #26 未升级 ⇒ **fail-closed 拒绝**，两判不一致时拒绝优先）（2026-09-20 修订）/ 审批等待（归 33）/ 网络策略决策（不设默认，见「网络」）/ 长驻交互会话（归 31 自管） |
 | 验收 | 1) 资源上限生效（超时 / 内存 / 输出截断 / 进程数）；2) **四档 fs 范围按表强制**（进程内 realpath + 免竞态打开；OS 级隔离由 Docker 后端提供）（auto 全过 / severe 工作区 RW / review 工作区只读 / deny 全拒）（2026-09-20 修订）；3) severe 下工作区外 / 危险操作升级弹卡，**批准后凭一次性 `caps.grant`（绑定 call_id）放行该次**、`deny` 不执行；4) 换实现（native ↔ docker）不改 28–31；5) 明文密钥不进审计；6) 平台不支持时 `sandbox_unsupported` 明确；7) 临时产物清理、不落世界；8) **`fsop` 六 op 结构化**、`replace` 原子读改写且 `old` 非唯一 / `expected_hash` 不符 → `edit_conflict`、**逐路径档位强制在 #25**（#28 只声明）、二进制回 `binary_unsupported` |

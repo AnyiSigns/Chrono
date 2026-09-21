@@ -7,8 +7,8 @@
 | 依赖 | `->` 24（pins：密钥解析）；`+` 2、4–10（**eff 路径由调用方入口 term（#14 / #17 / #33）读出随 bag 传入（§1.14）；periodic 路径由 `schema.periodic.reads` 注入；服务不读投影**）（2026-09-20 修订）；`<-` 14、17（pins）、19、22、33、34、49 |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["model"]`，`methods: {model:["chat","complete","vendors","discover","profile","sync"]}` |
-| 命令 | `plugin.json.commands: []`（无命令面）；**方法 `sync`**（宿主 periodic 直接调；`schema/resilience.json` 顶层 `periodic:[{method:"sync", every_ms, reads:{"config":["ids","config","body"], "vendors":[…]}}]`——reads 声明所需 #2 / #4–10 投影路径）（2026-09-20 修订）——其余命令面在 17（#40 按名调用 `model.profile`） |
-| schema | `schema/request.json` / `schema/response.json` / `schema/discover.json` / `schema/profile.json` / `schema/resilience.json`（顶层含 `periodic`（`sync`）与 `method_timeouts`（`model.chat` / `model.complete` 大上限，H17））（2026-09-20 修订） |
+| 命令 | `plugin.json.commands: []`（无命令面）；**方法 `sync`**（宿主 periodic 直接调；`schema/protocol.json` 顶层 `periodic:[{method:"sync", every_ms, reads:{"config":["ids","config","body"], "vendors":[…]}}]`——reads 声明所需 #2 / #4–10 投影路径）（2026-09-20 修订）——其余命令面在 17（#40 按名调用 `model.profile`） |
+| schema | `schema/protocol.json`（**单文件**：能力方法 request·result 形状 + `delta_event` + 自用 `resilience`；顶层含宿主消费键 `periodic`（`method:"sync"`）与 `method_timeouts`（`model.chat` / `model.complete` 大上限，H17））（2026-09-20 修订） |
 | 机制 | 见下「chat / 推理 / 流式与 usage / 韧性 / discover / profile·sync / vendors」 |
 | 边界 | 不做：降级链（归 34）/ 落账 / **密钥解析（一律归 24）** / 厂商适配数据（归 4–10；本插件只按 `sdk` / `quirks` 机械解释）/ 直接写世界 / 图拓扑（归 33） |
 | 验收 | 1) 各 `impl`（protocol / sdk）真调用；2) 流式不重不漏；3) 韧性生效（瞬时错误重试、429 退避、流断重连、超时）；4) `discover` / `profile` 结构化错误；5) 推理默认开启：有档位传参、无值用模型默认；6) `profile` 只写所选模型且可回放；7) 换实现不改调用方；8) 世界无明文密钥 |
@@ -68,7 +68,7 @@ complete(bag)：同 chat 的连接 / 密钥（eff 24）/ 韧性路径，但 **�
 | 项 | 口径 |
 | --- | --- |
 | 瞬时重试 | 网络错误 / 5xx / 流断 → 重试上限 `max_retries`（schema）；4xx 不重试（429 除外） |
-| 退避 | 指数退避 + 可选抖动（默认**关**，保审计可预期）；参数住 `schema/resilience.json` |
+| 退避 | 指数退避 + 可选抖动（默认**关**，保审计可预期）；参数住 `schema/protocol.json` |
 | 限流 | 429 → 尊重 `Retry-After` + 每 provider 令牌桶（**插件 ③ 目录**（`CHRONO_PLUGIN_STATE`，H4），可重算）（2026-09-20 修订）；超上限结构化失败 |
 | 流断重连 | SSE 断开 → **v1 一律整请求重试（受上限）；按 index resume 的厂商扩展后置（须给协议依据）**（2026-09-20 修订） |
 | 超时 | 单次调用超时已落地（`--call-timeout-ms` / `CHRONO_CALL_TIMEOUT_MS`）；超时与连接 / 帧 / 进程死亡同归「没执行」 |
@@ -78,7 +78,7 @@ complete(bag)：同 chat 的连接 / 密钥（eff 24）/ 韧性路径，但 **�
 
 | 方法 | 输入 | 输出 | 落世界 |
 | --- | --- | --- | --- |
-| `discover` | args `{url, auth_ref}`（由 #17 入口 term 从 `model.probe` 槽读出后传入）（2026-09-20 修订） | 规范化模型 id 列表（`GET {base_url}{models_path}` + 鉴权） | 否 |
+| `discover` | args `{url, auth_ref}`（由 #17 入口 term 从 `model.probe` 槽读出后传入）（2026-09-20 修订） | 规范化模型 id 列表（去重、排序、剥 `models/` 前缀；`GET {base_url}{models_path}` + 鉴权） | 否 |
 | `profile` | `{vendor, ids}` | 拉 models.dev → 只取所选模型 → 写 `#2 config` 的**写计划**（`context_window` / `max_output` / `reasoning` / `modalities`；落盘前把社区布尔 `true` 展开为该 vendor 的 `default_reasoning` 数组，无则缺键——转换责任在本插件）（2026-09-20 修订） | 是（计划） |
 | `sync` | 周期触发 | 同 `profile`（对已选模型批量刷新） | 是（计划） |
 | `vendors` | — | 枚举 `vendor-*` 模板，每项 `{identity, default_base_url, default_auth_ref_name, default_reasoning}`（模板清单由 #17 入口 term 读 `#4–10` body 随 args 传入（§1.14），供 #17 S1 预填）（2026-09-20 修订） | 否 |
@@ -97,7 +97,7 @@ complete(bag)：同 chat 的连接 / 密钥（eff 24）/ 韧性路径，但 **�
 
 ## 宿主能力（定时触发，H6 已落地）
 
-- **定时触发**：宿主按插件 `schema` 顶层 `periodic` 声明（`{method, every_ms, reads?}`）构造一次 run、直接调方法 `sync`（`model.sync`）（2026-09-20 修订）；`reads` 投影片段机械注入 bag。宿主能力已就位；本插件尚未实现，验收待插件落地。
+- **定时触发**：宿主按插件 `schema` 顶层 `periodic` 声明（`{method, every_ms, reads?}`）构造一次 run、直接调方法 `sync`（2026-09-20 修订）；`reads` 投影片段机械注入 bag。宿主能力已就位，**本插件 `sync` 已实现**（`plugin.json.methods` 含 `sync`，schema 顶层 `periodic` 用裸方法名 `"sync"`；宿主按裸方法名在 `decl.methods` 匹配）。
 
 ## 跨插件登记
 

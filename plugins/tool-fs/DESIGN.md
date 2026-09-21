@@ -20,8 +20,8 @@
 | 工具名 | 幂等 | `caps.fs` | args（要点） | 结果 |
 | --- | --- | --- | --- | --- |
 | `read` | ✗ | read | `path`（相对 `workspace_root`）/ `offset?` / `limit?` | `{text, total_lines, truncated}`（行窗口；行号可选） |
-| `edit` | ✗ | write | `path` / `old` / `new` / `replace_all?` | `{created?, replaced, bytes_written, added, removed, patch}`（`patch` = unified diff，供对比渲染；**`added`/`removed`/`patch` 由本插件合成——对 old/new 内容算 diff**）（2026-09-20 修订） |
-| `glob` | ✗ | read | `pattern` / `path?`（映射 fsop `base`）/ `ignore?` / `limit?` | `{paths:[…], truncated}`（按最近修改排序） |
+| `edit` | ✗ | write | `path` / `old` / `new` / `replace_all?` | `{created?, replaced, bytes_written, added, removed, patch}`（`patch` = unified diff，供对比渲染；替换分支的 `added`/`removed`/`patch` 由 `fsop.replace` 算出后透传，新建分支由本插件合成；`bytes_written` 替换分支按 `new` 的 UTF-8 字节数合成）（2026-09-20 修订） |
+| `glob` | ✗ | read | `pattern` / `path?`（映射 fsop `base`）/ `ignore?` / `limit?` | `{paths:[…], truncated}`（按路径字典序） |
 | `grep` | ✗ | read | `pattern`（字面 / 正则）/ `glob?` / `path?`（映射 fsop `base`）/ `ignore?` / `limit?` | `{matches:[{path,line,text}], truncated}` |
 
 ## 渲染（`describe.render`，本轮定）
@@ -29,13 +29,15 @@
 | 工具 | `form` | `label` | `summary`（折叠态） | `tone` | `detail`（展开态） |
 | --- | --- | --- | --- | --- | --- |
 | `read` | **`line`** | `read` | `{path}` | — | 无（消息流里一行「read 文件名」，不可展开） |
-| `edit` | `card` | `edit` | `{path}  +{result.added} -{result.removed}` | `plain` | `{kind:"diff", patch}`（**添加 / 删除 / 修改对比**） |
-| `glob` | `card` | `glob` | `{pattern}` | **`ghost`** | `{kind:"paths", paths}` |
-| `grep` | `card` | `grep` | `{pattern}`（有 `glob` 时 `{pattern}  {glob}`） | **`ghost`** | `{kind:"matches", matches}` |
+| `edit` | `card` | `edit` | `{path}  +{result.added} -{result.removed}` | `plain` | `{kind:"diff"}`（**添加 / 删除 / 修改对比**） |
+| `glob` | `card` | `glob` | `{pattern}` | **`ghost`** | `{kind:"paths"}` |
+| `grep` | `card` | `grep` | `{pattern}  {glob}` | **`ghost`** | `{kind:"matches"}` |
 
 - **`read` 是一行不是卡片**：只在消息流里留一行「read 文件名」，不折叠、不展开（读文件的结果不占展示面积）。**`form:"line"` 时 `tone` 忽略**（故 `read` 的 `tone` 记 `—`）。
 - **`edit` 默认收缩**：前面 `edit`，后面文件名 + 变更行数（`+added -removed`）；**展开显示改动区域并做对比**（新增 / 删除 / 修改逐行标色），数据来自结果里的 `patch`（统一 diff）。
 - **`grep` / `glob` 用近乎透明卡片**（`tone:"ghost"`）：默认收缩，`grep` 前面跟 agent 输入的参数（pattern / glob），展开显示工具输出（`grep` = 命中列表，`glob` = 文件列表）。
+- **`detail` 是渲染器载荷（裸 `kind`）**：`{field}` / `{result.field}` 模板文法只适用于 `summary`；`detail` 只声明渲染器种类（`diff` / `paths` / `matches`），数据由渲染器按 `kind` 从结果取。
+- **`glob` 按路径字典序**：`fsop.list` 契约即字典序，`mtime` 不参与确定性保证；字典序确定、可回放，故不按最近修改排序。
 
 - **`edit` 的两种形态**：`old` 非空 ⇒ **精确替换**（`old` 必须唯一命中，否则 `edit_conflict`；`replace_all:true` 时全部替换）；`old` 为空且文件不存在 ⇒ **新建**（`new` 为初始内容）。这样「读 + 写」由 `read` / `edit` 两个工具承担，不另设 `write`。
 - **幂等（2026-09-20 修订）**：`read` / `glob` / `grep` 标 `idempotent:false`（文件可变——**不进宿主结果缓存**）；`edit` 永不缓存、永不 memo。
@@ -43,7 +45,7 @@
 
 ## 路径与范围（本插件独有职责）
 
-- **两种输入都合法**：相对路径（基准 `bag.workspace_root`）与**绝对路径**（含区外）；`..` 段按解析规则规范化，**不直接判错**。形态非法（空串 / NUL / 非法字符）→ `bad_path`（机械拒，不触盘）。
+- **两种输入都合法**：相对路径（基准 `bag.workspace_root`）与**绝对路径**（含区外）；`..` 段按解析规则规范化，**不直接判错**。形态非法（空串 / NUL / 控制字符 / 平台非法字符 / Windows 保留设备名 / ADS `file:stream` / 尾随点或空格）→ `bad_path`（机械拒，不触盘）。
 - **判定目标落在哪**：realpath 后与 `bag.workspace_root` 比对（防符号链接逃逸）——
   在根内 = **区内**（`caps.fs.* = "workspace"`）；在根外 = **区外**（`caps.fs.* = "full"`）。**区外不是非法**，是另一档范围。
 - **区外不由本插件说了算**：范围与档位由 #25 强制、升级由 #26 判（见下「区外读写」）；本插件只做机械的"路径 → 区内 / 区外"归类与结果结构化。
@@ -71,7 +73,7 @@
 - **区外（`severe` 档）升级**：由 #26 判 `escalate`（在 #27 派发前）；批准后凭**一次性 `caps.grant`**（绑定 `call_id`）随 `invoke` 传入 → 本插件**透传**给 #25 放行**本次**；`grant` 不进世界、不可重放为常设权限。
 - `review` 档 = 工作区只读 ⇒ 区内 `edit` 与**全部区外访问** `fs_denied`；`deny` 档全拒。
 - 换 #25 实现（native / docker）本插件零改动。
-- **工具 → `fsop` op 映射（S2 已展开）**：`read` → `fsop.read`；`edit` → `fsop.replace`（`old` 非空）/ `fsop.write`（`old` 空且文件不存在 = 新建）；`glob` → `fsop.list`；`grep` → `fsop.grep`（`stat` 供路径存在性判定）；**`glob` / `grep` 的 `path?` → `fsop` 的 `base`，`ignore` 原样传**（2026-09-20 修订）。**路径形态校验（`bad_path`）与结果结构化在本插件**；**`realpath` / 区内·区外强制 / 原子读改写 / `edit_conflict` 在 #25**（强制点唯一，#28 的归类只是声明）。
+- **工具 → `fsop` op 映射（S2 已展开）**：`read` → `fsop.read`；`edit` → `fsop.replace`（`old` 非空）/ `fsop.write`（`old` 空且文件不存在 = 新建，写带空内容的 `expected_hash` 收口 `stat`→`write` 竞态，并透传沙箱回的 `created`）；`glob` → `fsop.list`；`grep` → `fsop.grep`（`stat` 供路径存在性判定）；**`glob` / `grep` 的 `path?` → `fsop` 的 `base`，`ignore` 原样传**（2026-09-20 修订）。**路径形态校验（`bad_path`）与结果结构化在本插件**；**`realpath` / 区内·区外强制 / 原子读改写 / `edit_conflict` 在 #25**（强制点唯一，#28 的归类只是声明）。
 
 ## 大小与二进制
 
@@ -83,7 +85,7 @@
 
 | 码 | 触发 |
 | --- | --- |
-| `bad_path` | 形态非法（空串 / NUL / 非法字符）——**`..` / 绝对路径不再算错** |
+| `bad_path` | 形态非法（空串 / NUL / 控制字符 / 平台非法字符 / Windows 保留设备名 / ADS `file:stream` / 尾随点或空格）——**`..` / 绝对路径不再算错** |
 | `fs_denied` | 档位范围外（`review` 写 / `review`·`deny` 区外 / `deny` 全部） |
 | `workspace_missing` | `workspace_root` 缺失或目录已删 |
 | `path_not_found` / `not_a_directory` | 目标不存在 / 类型不符 |

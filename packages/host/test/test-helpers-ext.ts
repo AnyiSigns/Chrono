@@ -26,6 +26,84 @@ export const FIXTURE_SERVICE_MAIN = readFileSync(
   'utf8',
 )
 
+/**
+ * 反向调用夹具服务：配了 `reversePort` 时先发 `port.call` 到目标，再把
+ * `{env, forwarded, argsEnv}` 回给宿主；否则回 `{env, args, pid}`。用于验证
+ * 反向转发 / 端口审计 / 方法级超时；帧编解码与宿主同形。
+ */
+export const REVERSE_SERVICE_MAIN = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+let config = {};
+try {
+  config = JSON.parse(fs.readFileSync(path.join(process.cwd(), "service-config.json"), "utf8"));
+} catch (err) {
+  if (err.code !== "ENOENT") process.stderr.write("[reverse-toy] bad service-config.json");
+}
+function plugin() {
+  return JSON.parse(fs.readFileSync(path.join(process.cwd(), "plugin.json"), "utf8"));
+}
+function frame(msg) {
+  const body = Buffer.from(JSON.stringify(msg), "utf8");
+  const head = Buffer.allocUnsafe(4);
+  head.writeUInt32BE(body.length, 0);
+  process.stdout.write(Buffer.concat([head, body]));
+}
+function argsEnvOf(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+  return args.env === undefined ? null : args.env;
+}
+let seq = 0;
+const pending = new Map();
+function onCall(msg) {
+  const env = msg.env === undefined ? null : msg.env;
+  if (!config.reversePort) {
+    frame({ v: "1", id: msg.id, kind: "result", ok: true, value: { env: env, args: msg.args === undefined ? null : msg.args, pid: process.pid } });
+    return;
+  }
+  const id = "pc-" + (++seq);
+  const args = config.reverseArgs === undefined ? (msg.args === undefined ? null : msg.args) : config.reverseArgs;
+  pending.set(id, { callId: msg.id, env: env, argsEnv: argsEnvOf(msg.args) });
+  frame({ v: "1", id: id, kind: "port.call", port: config.reversePort, method: config.reverseMethod || "echo", args: args });
+}
+function onPort(id, value) {
+  const waiting = pending.get(id);
+  if (waiting === undefined) return;
+  pending.delete(id);
+  frame({ v: "1", id: waiting.callId, kind: "result", ok: true, value: { env: waiting.env, forwarded: value, argsEnv: waiting.argsEnv } });
+}
+function handle(msg) {
+  if (!msg || typeof msg !== "object") return;
+  switch (msg.kind) {
+    case "hello": {
+      const p = plugin();
+      frame(Object.assign({ id: msg.id, kind: "manifest" }, { v: "1", identity: p.identity, implements: p.implements, methods: p.methods, protocol: p.protocol, state: p.state }));
+      return;
+    }
+    case "probe": frame({ id: msg.id, kind: "pong", ok: true }); return;
+    case "reload": frame({ v: "1", id: msg.id, kind: "ack" }); return;
+    case "drain": frame({ v: "1", id: msg.id, kind: "bye" }); return;
+    case "call": onCall(msg); return;
+    case "port.result": onPort(msg.id, msg.value === undefined ? null : msg.value); return;
+    case "port.error": onPort(msg.id, { error: msg.error === undefined ? null : msg.error }); return;
+  }
+}
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+  while (buffer.length >= 4) {
+    const length = buffer.readUInt32BE(0);
+    if (buffer.length < 4 + length) break;
+    const body = buffer.subarray(4, 4 + length).toString("utf8");
+    buffer = buffer.subarray(4 + length);
+    try { handle(JSON.parse(body)); } catch (err) { process.stderr.write("[reverse-toy] bad frame: " + err.message); }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
+process.stdin.on("error", () => process.exit(0));
+`
+
 export interface PackageSpec {
   identity: string
   /** 包目录名（缺省 = identity）；同一身份多版本并存时用它避免目录互相覆盖。 */

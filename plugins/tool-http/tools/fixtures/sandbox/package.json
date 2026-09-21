@@ -1,0 +1,7 @@
+{
+  "name": "sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "E2E 测试替身：为 tool-http 的 sandbox pin 提供一个可解析的身份"
+}

@@ -1,0 +1,109 @@
+{
+  "title": "tool-fs（文件工具）",
+  "description": "身份自述 / 数据契约：描述 tool-fs 能力类两方法 describe / invoke 的入参与结果形状，以及工具开关、大小与行窗口缺省、二进制策略、默认忽略表兜底。忽略表正式住本身份数据世代 body（由调用方随 bag.ignore 传入）；schema 出生即冻结，只作身份契约与缺省说明。本插件服务不读投影、不直接触盘：tier / workspace_root / caps / grant / ignore 全由调用方随 bag 传入，触盘经反向调用 sandbox.fsop。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "tools_enabled": {
+      "type": "object",
+      "description": "工具开关：关掉的工具不进 describe 清单、invoke 一律 unknown_tool。",
+      "additionalProperties": false,
+      "properties": {
+        "read": { "type": "boolean" },
+        "edit": { "type": "boolean" },
+        "glob": { "type": "boolean" },
+        "grep": { "type": "boolean" }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "大小与行窗口缺省；未随 args 给出时由本插件补入转发给 sandbox.fsop。",
+      "additionalProperties": false,
+      "properties": {
+        "read_limit": { "type": "integer", "minimum": 1, "default": 2000 },
+        "list_limit": { "type": "integer", "minimum": 1, "default": 200 },
+        "grep_limit": { "type": "integer", "minimum": 1, "default": 100 },
+        "output_max": { "type": "integer", "minimum": 1, "default": 1048576 },
+        "timeout_ms": { "type": "integer", "minimum": 0, "default": 30000 },
+        "mem_mb": { "type": "integer", "minimum": 0, "default": 1024 },
+        "procs_max": { "type": "integer", "minimum": 0, "default": 1 }
+      }
+    },
+    "default_ignore": {
+      "type": "array",
+      "description": "默认忽略表兜底：bag.ignore / args.ignore 都缺省时用于 glob / grep；正式忽略表住身份数据世代 body。",
+      "default": [".git", "node_modules", "target", "__pycache__", ".venv"],
+      "items": { "type": "string" }
+    },
+    "binary_policy": {
+      "type": "object",
+      "description": "二进制与大文件策略：v1 文本路径完整，命中二进制回 binary_unsupported；二进制字节通道经 host.asset.put/get（契约就位，v1 未启用）。",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "enum": ["inline"] },
+        "binary": { "enum": ["binary_unsupported"] },
+        "asset_channel": { "enum": ["host.asset.put/get"] }
+      }
+    },
+    "describe_result": {
+      "type": "object",
+      "description": "describe 的结果：一次回报全部工具（name / 四要素 / argsSchema / caps / idempotent / render）。",
+      "required": ["tools"],
+      "additionalProperties": false,
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "invoke_bag": {
+      "type": "object",
+      "description": "invoke 的 bag：工具名 + args + 执行根 + 档位 + 声明 caps + 可选一次性 grant / 忽略表。",
+      "required": ["tool", "args"],
+      "additionalProperties": true,
+      "properties": {
+        "tool": { "enum": ["read", "edit", "glob", "grep"] },
+        "args": { "type": "object" },
+        "workspace_root": { "type": ["string", "null"] },
+        "tier": { "enum": ["auto", "severe", "review", "deny", "null"] },
+        "caps": { "type": "object" },
+        "grant": { "type": "object" },
+        "ignore": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "invoke_result": {
+      "type": "object",
+      "description": "invoke 结果：成功 {ok:true, result}，失败 {ok:false, error:{code, message}}；sandbox 错误原样透传。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "type": "object" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "bad_path",
+                "fs_denied",
+                "workspace_missing",
+                "path_not_found",
+                "not_a_directory",
+                "edit_conflict",
+                "too_large",
+                "binary_unsupported",
+                "output_truncated",
+                "tool_failed",
+                "tool_timeout",
+                "unknown_tool",
+                "bad_args",
+                "transport_failed"
+              ]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

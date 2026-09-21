@@ -1,0 +1,175 @@
+{
+  "title": "tool-shell（命令 / 代码执行工具）",
+  "description": "身份自述 / 数据契约：描述工具 shell 的声明（描述四要素 + modes + 语言白名单 + default_caps）与 tool-shell 能力类两方法 describe / invoke 的入参、结果形状。default_caps 是声明上限，实际执行取「声明 ∩ 当前权限档」（由 sandbox 强制）；tier / workspace_root / caps / grant / sandbox_tiers 全由调用方随 bag 传入，本插件服务不读投影、不直接起进程：执行全部经反向调用 sandbox.exec。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "tool-shell.invoke": 120000
+  },
+  "properties": {
+    "tool": {
+      "type": "object",
+      "description": "工具声明：描述四要素缺一即 bad_tool_decl；param_semantics 覆盖 argsSchema 的必填参数。",
+      "required": [
+        "name",
+        "intent",
+        "when_to_use",
+        "param_semantics",
+        "boundaries",
+        "modes",
+        "languages",
+        "default_caps"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "const": "shell", "description": "对模型暴露的调用名（全局唯一）。" },
+        "intent": { "type": "string", "description": "行为意图：这工具做什么。" },
+        "when_to_use": { "type": "string", "description": "使用时机：什么情形该用它。" },
+        "param_semantics": {
+          "type": "object",
+          "description": "参数语义：逐参数含义 / 单位 / 缺省。",
+          "required": ["mode", "input", "language"],
+          "additionalProperties": true,
+          "properties": {
+            "mode": { "type": "string", "description": "输入形态：command 跑一条命令；code 跑脚本 / 表达式。" },
+            "input": { "type": "string", "description": "命令串或代码片段。" },
+            "language": { "type": "string", "description": "mode=code 时的语言（白名单见 languages）。" }
+          }
+        },
+        "boundaries": { "type": "string", "description": "使用边界：不做什么、该换哪个工具。" },
+        "modes": {
+          "type": "array",
+          "description": "输入形态分档：只区分输入形态，不区分隔离等级与审批档。",
+          "items": { "enum": ["command", "code"] }
+        },
+        "languages": {
+          "type": "array",
+          "description": "mode=code 支持的语言白名单（v1）。",
+          "items": { "enum": ["javascript", "python", "shell"] }
+        },
+        "default_caps": {
+          "type": "object",
+          "description": "声明上限（与 sandbox caps 形状一致，含 fs.read）；实际执行取「声明 ∩ 当前权限档」。",
+          "required": ["fs", "net", "cpu_ms", "mem_mb", "timeout_ms", "output_max", "procs_max"],
+          "additionalProperties": false,
+          "properties": {
+            "fs": {
+              "type": "object",
+              "required": ["read", "write"],
+              "additionalProperties": false,
+              "properties": {
+                "read": { "enum": ["none", "workspace", "full"] },
+                "write": { "enum": ["none", "workspace", "full"] }
+              }
+            },
+            "net": { "enum": ["none", "limited", "all"] },
+            "cpu_ms": { "type": "integer", "minimum": 0 },
+            "mem_mb": { "type": "integer", "minimum": 0 },
+            "timeout_ms": { "type": "integer", "minimum": 0 },
+            "output_max": { "type": "integer", "minimum": 1 },
+            "procs_max": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "describe_result": {
+      "type": "object",
+      "description": "describe 的结果：一次回报本插件暴露的全部工具（本插件只有一个 shell）。",
+      "required": ["tools"],
+      "additionalProperties": false,
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "invoke_bag": {
+      "type": "object",
+      "description": "invoke 的 bag：工具名 + 工具 args + 执行根 / 档位 / 声明 caps + 可选一次性 grant / 档位表 / 密钥引用。auth_ref 不由模型提供。",
+      "required": ["tool", "args"],
+      "additionalProperties": true,
+      "properties": {
+        "tool": { "const": "shell" },
+        "args": {
+          "type": "object",
+          "required": ["input"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["command", "code"] },
+            "input": { "type": "string", "minLength": 1 },
+            "language": { "enum": ["javascript", "python", "shell"] }
+          }
+        },
+        "workspace_root": { "type": ["string", "null"] },
+        "tier": { "type": ["string", "null"], "enum": ["auto", "severe", "review", "deny", null] },
+        "caps": { "type": "object" },
+        "grant": { "type": "object" },
+        "sandbox_tiers": { "type": "object" },
+        "auth_ref": {
+          "type": "object",
+          "description": "密钥引用（由调用方入口 term 从 config 读出随 bag 传入）；解析结果只经 exec 的 env 下传子进程。",
+          "required": ["name"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "enum": ["local", "env"] },
+            "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+          }
+        }
+      }
+    },
+    "invoke_result": {
+      "type": "object",
+      "description": "invoke 结果：成功 {ok:true, result}；失败 {ok:false, error:{code, message}}，命令非零退出 / 资源超限被杀时另带 result（含 exit_code）。sandbox 错误原样透传。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": {
+          "type": "object",
+          "description": "执行结果：kind 由输入形态定（command→terminal / code→json），code 形态另带 value（stdout 的 JSON 解析）。",
+          "required": ["kind", "exit_code", "stdout", "stderr", "truncated"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "enum": ["terminal", "json"] },
+            "exit_code": { "type": ["integer", "null"] },
+            "stdout": { "type": "string" },
+            "stderr": { "type": "string" },
+            "truncated": { "type": "boolean" },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "language": { "enum": ["javascript", "python", "shell"] },
+            "value": {}
+          }
+        },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "bad_args",
+                "unknown_tool",
+                "code_unsupported_language",
+                "bad_auth_ref",
+                "secret_missing",
+                "secret_unreadable",
+                "fs_denied",
+                "net_denied",
+                "sandbox_unsupported",
+                "sandbox_setup_failed",
+                "timeout",
+                "oom",
+                "cpu_exceeded",
+                "output_max",
+                "procs_max",
+                "nonzero_exit",
+                "tool_failed",
+                "tool_timeout",
+                "transport_failed"
+              ]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

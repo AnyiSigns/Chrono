@@ -1,0 +1,10 @@
+{
+  "name": "tool-http",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "联网检索与抓取工具提供者：多免费源 websearch（去重 + RRF 合并）与 webfetch（HTML→markdown）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

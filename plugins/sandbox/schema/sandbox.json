@@ -3,6 +3,10 @@
   "description": "身份自述 / 数据契约：描述 sandbox 能力类三方法 exec / fsop / capabilities 的入参与结果形状。四档 fs/net 映射表不住本 schema（schema 出生即冻结），住本身份数据世代 body（bag.sandbox_tiers）；本插件服务不读投影，tier / workspace_root / caps / sandbox_tiers 全由调用方入口 term 随 bag 传入。",
   "type": "object",
   "additionalProperties": true,
+  "method_timeouts": {
+    "sandbox.exec": 120000,
+    "sandbox.fsop": 60000
+  },
   "properties": {
     "caps": {
       "type": "object",

@@ -54,7 +54,7 @@ agent 改系统自身的**唯一**路径经本插件派发，两个管理面职�
     "boundaries": "…",                 // 使用边界：不做什么、该换哪个工具
     "description": "…",                // 模型可见文本（= 四要素拼装；提供者可直给，缺省由 #27 拼）
     "argsSchema": { … },               // JSON Schema 白名单子集（与命令 argsSchema 同一方言，`plugins.md` §二）
-    "caps": { "fs": { "read": "workspace", "write": "none" }, "net": false,
+    "caps": { "fs": { "read": "workspace", "write": "none" }, "net": "none",
               "timeout_ms": 30000, "mem_mb": 1024, "output_max": 1048576, "procs_max": 32 },
     "idempotent": true,                // 只读类 true；写类 / 模型调用 / 有会话类 false
     "render": { … },                   // 可选：工具卡渲染描述符（见下「工具卡渲染」）
@@ -65,6 +65,7 @@ agent 改系统自身的**唯一**路径经本插件派发，两个管理面职�
   **为什么**：模型选工具靠的是「什么时候用 + 用了会怎样 + 边界在哪」，只给名字与一句摘要会诱发误用；四要素也是**系统提示词里禁写工具标识符**的配套——工具的语义只住在工具描述里，不住提示词里（见 #33「系统提示词」）。
   **例外（外部 MCP 工具）**：四要素由 MCP `description` / `inputSchema.description` 兜底、缺项**不拒**（见 #37）；硬校验只对内置提供者。
 - `caps` 形状与 #25 一致（**`{fs:{read,write}, net}` 对象形、含 `fs.read`**；不得按缺少 `fs.read` 的旧形状声明，见 D11）；`idempotent` 驱动宿主结果缓存（见下）。
+- **`caps.net` 冻结为字符串 scope（本轮定）**：`net ∈ "none" | "limited" | "all" | "unset"`（与 #25 `sandbox` 的 `tiers.rs` 解析一致——它只认字符串 `none`/`limited`/`all`/`unset`）；**不得用布尔 `true`/`false`**（旧 `false` 等价于 `"none"`、旧 `true` 不再有合法含义）。`fs` 仍是 `{read,write}` 对象形（`"none"|"workspace"|"full"`）。`unset` = 未声明（由 #25 按档位范围回落），显式声明用 `"none"`。工具提供者 `describe` 回的 `caps.net` 必须是上述字符串之一。
 - **工具名登记（本轮定）**：#28 `read` / `edit` / `glob` / `grep`；#29 `shell`；#30 `websearch` / `webfetch`（**多个免费源 · 零配置 · 无 API key**）；#31 `webbrowser`；#37 外部 MCP 工具（动态，来自投影；工具名**命名空间化 `mcp.<server>.<tool>`**——#37 侧产出即带前缀，`list` 做全局唯一性校验，2026-09-20 修订）；#42 `plugin.list` / `plugin.read` / `plugin.validate` / `plugin.write`、#45 `orchestration.list` / `orchestration.read` / `orchestration.validate` / `orchestration.propose`（**管理面工具名命名空间化**，否则裸 `read` 与 #28 撞名）；**#44 `record`**（编排工具：落 `class:'user_request'` 证据，供 #45 `propose` 引用 `evidence_id`；见 #44「record」）；**线程控制** `subagent.send` / `subagent.status`（派发到 #11 `deliver` / 投影读）、`subagent.resume` / `subagent.terminate`（转交**宿主能力类 `host`**：`host.thread.resume` / `host.thread.terminate`，run 生命周期，见 D7 / `docs/plans/threads-design.md` §三）；**#47 `todo.write` / `todo.read`**；**#48 `question`**；记忆工具（#19 / #21 / #22 / #23，见 §1.12）。**模型只认工具名，不认提供者身份**——换提供者实现不改模型侧。
 
 ### `invoke(bag) -> 结果`

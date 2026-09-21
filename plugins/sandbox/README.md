@@ -8,6 +8,7 @@
 - 启动：`node execute/launch.mjs`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 状态档：`recomputable`。
 - 实现语言：Rust（源码 + `Cargo.toml` 入世，`target/` 与二进制走宿主侧依赖缓存）。
+- 方法级超时：schema 顶层 `method_timeouts` 声明 `sandbox.exec` 120000 / `sandbox.fsop` 60000——宿主按声明覆盖 30s 缺省等待上限，长命令与大批量 fsop 不被截断。
 
 ## 方法契约
 

@@ -1,0 +1,28 @@
+{
+  "identity": "sandbox",
+  "schema": "schema/sandbox.json",
+  "implements": ["sandbox"],
+  "methods": {
+    "sandbox": ["exec", "fsop", "capabilities"]
+  },
+  "pins": {},
+  "start": "",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "sandbox.capabilities",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [{ "kind": "schema", "path": "schema/" }],
+  "commands": []
+}

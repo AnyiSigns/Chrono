@@ -8,10 +8,10 @@
 | 成员 | execute, schema（无 terms：服务经**反向帧 `port.call`** 调 #25，`docs/protocol.md` §2.4） |
 | 能力类·方法 | `implements: ["tool-http"]`，`methods: {"tool-http":["describe","invoke"]}`（**类名 = 身份名**；`describe` 回工具名 `websearch` / `webfetch`，见 `plugins/tools/DESIGN.md`「`tool` 端口契约」） |
 | 命令 | 无 |
-| schema | `schema/tool-http.json`（免费源清单与开关 / 每源超时 / 结果条数 / 响应大小上限 / User-Agent / 是否遵循 `robots.txt`；可热改） |
+| schema | `schema/tool-http.json`（免费源清单与开关 / 每源超时 / 结果条数 / 响应大小上限 / User-Agent / 是否遵循 `robots.txt`；可热改；顶层 `method_timeouts` 声明 `tool-http.invoke` 120000——宿主按声明覆盖 30s 缺省） |
 | 机制 | 见下「`websearch` / `webfetch` / 网络与隔离」 |
 | 边界 | 不做：绕过 guard / sandbox / **有会话 / 执行 JS 渲染（归 31 `webbrowser`）** / 工具语义判定（归 26）/ 派发（归 27）/ 写世界（只回结果）/ **接入任何需 API key 或账号的搜索源**（与「零配置」冲突，见下） |
-| 验收 | 1) `websearch` 至少两源可用、结果去重合并且确定排序；2) 单源失败不整体失败（返回可用结果 + 标记失败源）；3) 全源失败才 `all_sources_failed`；4) `webfetch` 的 HTML 正文提取与 markdown 转换确定；5) `caps.net` 被 #25 按档钳制，越界 `net_denied`；6) **零配置可跑**：不设任何环境变量 / 不填任何 key 即可检索；7) 明文密钥不出现在 args / 结果 / 审计；8) 换源清单不改代码 |
+| 验收 | 1) `websearch` 至少两源可用、结果去重合并且确定排序；2) 单源失败不整体失败（返回可用结果 + 标记失败源）；3) 全源失败才 `all_sources_failed`；4) `webfetch` 的 HTML 正文提取与 markdown 转换确定；5) `caps.net` 被 #25 按档钳制，越界 `net_denied`；6) **零 API key / 账号 / 环境变量**可跑：不接任何需 key / 账号 / 环境变量的源（**不承诺零运行前置**——fetcher 由沙箱镜像提供，见「fetcher 命令契约」）；7) 明文密钥不出现在 args / 结果 / 审计；8) 换源清单不改代码 |
 | 状态 | 细节设计（2026-09-19）：按 `tool` 端口契约展开；工具集按用户口径定为 `websearch` / `webfetch`；**联网检索为「完全免费 + 零配置」**（无 API key、无账号、无环境变量）；**pins 更正**：因此不含 `24`（见「跨插件登记」） |
 
 ## `websearch`
@@ -48,7 +48,7 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 - **流程**：GET → 跟随重定向（上限住 schema）→ 按 `content-type` 分流：
   `text/html` → 正文提取 + 转 markdown（`format:"raw"` 则原样）；`application/json` / `text/*` → 原样；
   其它二进制 → 经 **`host.asset.put` 存资产、引用进结果**（**本插件 pin host**，S1 已落地）；分块等后置场景保留 `binary_unsupported`（2026-09-20 修订）。
-- 响应体 ≤ `output_max`，超限截断并标记 `truncated`；`robots.txt` 遵循与否住 schema。
+- 文本响应体 ≤ `output_max`，超限（含被 #25 截断）截断并标记 `truncated`；二进制超限或被截断回 `too_large`（不存资产）；`robots.txt` 遵循与否住 schema。
 
 ## fetcher 命令契约（2026-09-20 修订）
 
@@ -56,11 +56,17 @@ webfetch(bag.args = { url, format? })   // format = "markdown"（缺省）| "tex
 
 ```
 fetcher --url <url> --method <GET|POST> [--header k:v …] --timeout <ms> --max-size <bytes>
-  -> stdout: 响应体（受 output_max 截断）/ stderr: 错误
+        --max-redirs <n> --meta
+  -> stdout: 首行元数据 JSON {"status","content_type","url","truncated","body_encoding":"base64"}
+             其余为 base64 响应体
+  -> stderr: 错误文本；退出码非 0 表示传输失败
 ```
 
-- 本插件把工具 args（URL / method / headers / 超时 / 大小上限）映射为上述参数；`#25` 按 `caps.net` 四档钳制（`none` / `limited`（声明 hosts 白名单）/ `all`），越档 `net_denied`（错误码已登记 `protocol.md` §四）。
+- 响应体 **base64 化**（≈1.33×）以便二进制安全穿越协议帧；`--meta` 是本插件与 fetcher 的约定（**实现口径**：首行元数据 + base64 体，不是「裸响应体」）。
+- 本插件把工具 args（URL / method / headers / 超时 / 大小上限 / 重定向上限）映射为上述参数；`#25` 按 `caps.net` 四档钳制（`none` / `limited`（声明 hosts 白名单）/ `all`），越档 `net_denied`（错误码已登记 `protocol.md` §四）。
+- **大小与截断（写死）**：`--max-size` 取 `output_max`，但 base64 膨胀后 stdout 会被 #25 的 `output_max` 再截断；故 `fetchUrl` **必须合并 #25 exec 的 `truncated`**（fetcher 元数据的 `truncated` 只反映自身 `--max-size`）。文本超限截断并标记 `truncated`；**二进制一旦截断显式回 `too_large`、不存资产**（否则会存下被截断的字节）。
 - 二进制响应经 `host.asset.put` 存资产、引用进结果（本插件 pin host）。
+- **运行前置（写死）**：fetcher 由**沙箱镜像提供**（本插件不自带、不 pin 具体实现）；镜像缺该命令时 exec 非 0 / 输出缺元数据 → `fetch_failed`，沙箱前置失败（exec 未起）原样透传 `sandbox_setup_failed`。本插件的「零配置」只承诺**零 API key / 账号 / 环境变量**，不承诺零运行前置。
 
 ## 渲染（`describe.render`，本轮定）
 
@@ -82,13 +88,19 @@ fetcher --url <url> --method <GET|POST> [--header k:v …] --timeout <ms> --max-
 
 | 码 | 触发 |
 | --- | --- |
-| `bad_url` | URL 形态非法 / 非 http(s) / 内网地址（按 schema 策略） |
-| `net_denied` | `caps.net` 未授权 / 档位拒绝（#25） |
-| `fetch_failed` | DNS / 连接 / TLS 失败 |
+| `bad_args` | args 形态非法（query / url 缺失或类型不符） |
+| `bad_url` | URL 形态非法 / 非 http(s) / 内网地址（按 schema 策略）；含**重定向后落到内网**的最终 URL |
+| `unknown_tool` | `invoke` 的 `tool` 不是 `websearch` / `webfetch` |
+| `net_denied` | `caps.net` 未授权 / 档位拒绝（#25 原样透传） |
+| `fetch_failed` | DNS / 连接 / TLS 失败；fetcher 非零退出 / 输出缺元数据 / base64 非法；**沙箱 exec 被超限杀时 `oom` / `cpu_exceeded` / `procs_max` / `output_max` 归一到此码** |
+| `sandbox_setup_failed` | 沙箱前置失败（exec 未起）——**原样透传**，不归一 |
 | `http_status` | 4xx / 5xx（附 status，非传输错） |
-| `too_large` / `binary_unsupported` | 超上限 / 二进制（v1 不支持内联） |
-| `all_sources_failed` | `websearch` 全源失败 |
-| `tool_timeout` | 超 #25 / 宿主调用超时（原样透传） |
+| `too_large` | 二进制响应超上限**或被截断**（不存资产） |
+| `binary_unsupported` | 资产存取不可用 / 失败（`host.asset.put` 失败） |
+| `robots_disallowed` | `robots.txt` 禁止抓取该路径（含跟随重定向后的最终 URL） |
+| `all_sources_failed` | `websearch` 全源失败（附 `sources_failed`） |
+| `tool_timeout` | 沙箱 `timeout` / 反向调用 / 宿主调用超时（原样透传） |
+| `tool_failed` | `invoke` 顶层兜底：未归类的异常转结构化错误（不炸本轮） |
 
 ## 跨插件登记
 

@@ -1,0 +1,13 @@
+{
+  "name": "model-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "唯一模型 IO 服务：三协议 HTTP + SSE、厂商 SDK、调用韧性与发现 / 档案同步",
+  "dependencies": {
+    "@google/genai": "2.23.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

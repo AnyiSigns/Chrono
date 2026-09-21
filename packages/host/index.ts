@@ -21,6 +21,7 @@ export type {
   VerifyReport,
 } from './offline.ts'
 export type { AssetGcReport, AssetRef } from './assets.ts'
+export type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
 export type { PluginEntry } from './assembly/index.ts'
 export { hostPaths, resolveRoot, socketPath } from './paths.ts'
 export type { HostPaths } from './paths.ts'

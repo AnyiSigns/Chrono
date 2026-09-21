@@ -3,6 +3,7 @@
 // 纯函数：host 入口与 boot start 共用同一份，避免两处解析漂移；非法值 fail-closed。
 
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/run-loop.ts'
+import { MAX_CALL_TIMEOUT_MS } from './service-link.ts'
 
 /** 入口 flag 语法（boot CLI 与宿主入口共用同一份解析，避免语义漂移）。 */
 export interface EntryOptions {
@@ -46,14 +47,14 @@ export function parseEntryArgv(argv: string[]): EntryOptions {
 
 /**
  * 解析调用超时（毫秒）。
- * @param explicit `--call-timeout-ms` 的值；给出但非法（含空串）→ 抛 `bad_call_timeout`
+ * @param explicit `--call-timeout-ms` 的值；给出但非法（含空串 / 非正整数 / 超过计时器硬上限）→ 抛 `bad_call_timeout`
  * @param env `CHRONO_CALL_TIMEOUT_MS` 的值；空串视为未设置
  */
 export function resolveCallTimeoutMs(explicit?: string, env?: string): number {
   const raw = explicit ?? (env !== undefined && env.length > 0 ? env : undefined)
   if (raw === undefined) return DEFAULT_CALL_TIMEOUT_MS
   const value = Number(raw)
-  if (!Number.isInteger(value) || value <= 0) {
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_CALL_TIMEOUT_MS) {
     throw new Error(`bad_call_timeout: ${raw}`)
   }
   return value

@@ -48,8 +48,8 @@ describe('F7 调用超时解析（显式 > env > 常量）', () => {
     expect(resolveCallTimeoutMs(undefined, '2500')).toBe(2500)
   })
 
-  it('非法值 fail-closed：0 / 负 / 小数 / 非数 / 显式空串', () => {
-    for (const bad of ['0', '-1', '1.5', 'abc', '']) {
+  it('非法值 fail-closed：0 / 负 / 小数 / 非数 / 显式空串 / 超计时器上限', () => {
+    for (const bad of ['0', '-1', '1.5', 'abc', '', '2147483648', '1e300']) {
       expect(() => resolveCallTimeoutMs(bad)).toThrow('bad_call_timeout')
     }
     expect(() => resolveCallTimeoutMs(undefined, '-5')).toThrow('bad_call_timeout')

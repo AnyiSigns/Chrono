@@ -1,0 +1,170 @@
+{
+  "title": "model-protocol（模型 IO 服务）",
+  "description": "身份自述 / 数据契约：能力类 model 的六个方法（chat / complete / vendors / discover / profile / sync）的入参与回包形状，以及本插件自用的韧性参数。宿主只读顶层 periodic 与 method_timeouts 两个机械消费键，其余键归本插件自用（宿主不认识业务）。本插件无世界数据，方法不写世界，只回结果 / 写计划。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "chat_request": {
+      "type": "object",
+      "required": ["config", "messages"],
+      "additionalProperties": true,
+      "properties": {
+        "config": { "type": "object", "description": "连接实例：{ base_url, auth_ref:{kind,name}, model, params:{temperature,max_tokens,reasoning}, protocol?, quirks }；由调用方入口 term 装配后随 bag 传入。" },
+        "messages": { "type": "array", "description": "对话消息 [{role, content, tool_call_id?, tool_calls?}]；system 角色按 quirks.system_role 归一。" },
+        "tools": { "type": "array", "description": "可选工具声明，原样编进请求。" },
+        "tool_choice": { "description": "可选工具选择策略，原样编进请求。" },
+        "resilience": { "type": "object", "description": "可选：本次调用的韧性覆盖（max_retries / backoff_ms / backoff_max_ms / request_timeout_ms / token_bucket）；缺省取本 schema 的 resilience。" }
+      }
+    },
+    "chat_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "text": { "type": "string", "description": "最终文本（累积全部流式分片）。" },
+        "reasoning": { "type": "string", "description": "推理文本（reasoning_response_field 命中的字段）；无则缺键。" },
+        "tool_calls": { "type": "array", "description": "工具调用 [{id, name, arguments}]，arguments 为解析后的对象（解析失败时为原字符串）。" },
+        "usage": { "type": "object", "description": "归一用量 {prompt_tokens, completion_tokens, total_tokens}；无则 null。" },
+        "model": { "type": "string" },
+        "protocol": { "type": "string" },
+        "stop_reason": { "type": "string", "description": "厂商停止原因（有则回带）。" },
+        "error": { "type": "object", "description": "失败时 {code, message}，成功时缺键。" }
+      }
+    },
+    "complete_request": {
+      "type": "object",
+      "description": "同 chat_request，但非流式、不发 model.delta。",
+      "additionalProperties": true
+    },
+    "complete_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "text": { "type": "string" },
+        "usage": { "type": "object", "description": "{prompt_tokens, completion_tokens, total_tokens}；无则 null。" },
+        "error": { "type": "object" }
+      }
+    },
+    "delta_event": {
+      "type": "object",
+      "description": "上行事件 topic = model.delta 的载荷：run / thread 自协议帧 env 读取，其余为分片。",
+      "additionalProperties": true,
+      "properties": {
+        "run": { "description": "回合 id（env.run，可为 null）。" },
+        "thread": { "description": "发起者 thread（env.thread，可为 null）。" },
+        "model": { "type": "string" },
+        "protocol": { "type": "string" },
+        "text": { "type": "string", "description": "本次新增文本分片。" },
+        "reasoning": { "type": "string", "description": "本次新增推理分片。" },
+        "tool_call": { "type": "object", "description": "工具调用分片 {index, id?, name?, arguments_delta?}。" },
+        "usage": { "type": "object", "description": "本次出现的用量（有则带）。" },
+        "done": { "type": "boolean", "description": "终止分片标记。" }
+      }
+    },
+    "discover_request": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": true,
+      "properties": {
+        "url": { "type": "string", "description": "厂商 base_url。" },
+        "auth_ref": { "type": "object", "description": "可选密钥引用 {kind:'local'|'env', name}，经 secrets.resolve 解析。" },
+        "models_path": { "type": "string", "description": "可选模型列表相对路径；缺省 /models。" },
+        "protocol": { "type": "string", "description": "可选鉴权方言（三协议之一）；缺省 openai-chat。" },
+        "resilience": { "type": "object" }
+      }
+    },
+    "discover_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "models": { "type": "array", "description": "规范化模型 id 列表（去重、排序、剥 models/ 前缀）。" },
+        "error": { "type": "object", "description": "{code, message}；code ∈ discover_auth_failed / discover_bad_url / discover_unsupported / discover_network。" }
+      }
+    },
+    "profile_request": {
+      "type": "object",
+      "required": ["vendor", "ids"],
+      "additionalProperties": true,
+      "properties": {
+        "vendor": { "type": "string", "description": "厂商身份名（vendor-* 或去前缀名）。" },
+        "ids": { "type": "array", "description": "所选模型 id 列表（只写这些）。" },
+        "config": { "type": "object", "description": "当前 config 身份整份 body（写-改-写与去重基准）；缺省则只回档案值、不产写计划。" },
+        "source_url": { "type": "string", "description": "可选 models.dev 源覆盖（测试 / 镜像）。" },
+        "resilience": { "type": "object" }
+      }
+    },
+    "profile_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "changed": { "type": "boolean" },
+        "models": { "type": "object", "description": "计算出的模型元数据（id → {context_window, max_output, reasoning?, modalities?}）。" },
+        "error": { "type": "object", "description": "{code, message}；code ∈ profile_network / profile_bad_source / profile_vendor_unknown。" }
+      }
+    },
+    "sync_bag": {
+      "type": "object",
+      "description": "宿主 periodic 机械注入：config = config 身份 body；vendor-* = 各厂商模板 body。服务不读投影。",
+      "additionalProperties": true,
+      "properties": {
+        "config": { "type": "object" },
+        "source_url": { "type": "string", "description": "可选 models.dev 源覆盖。" }
+      }
+    },
+    "vendors_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "vendors": {
+          "description": "厂商模板 body：数组 [{identity, body}] 或 [{sdk, ...}]，或对象 { \"vendor-openai\": <body> }。",
+          "type": "array"
+        }
+      }
+    },
+    "vendors_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "vendors": {
+          "type": "array",
+          "description": "每项 {identity, default_base_url, default_auth_ref_name, default_reasoning}。",
+          "items": { "type": "object" }
+        }
+      }
+    }
+  },
+  "resilience": {
+    "max_retries": 2,
+    "backoff_ms": 200,
+    "backoff_max_ms": 5000,
+    "jitter": false,
+    "request_timeout_ms": 300000,
+    "connect_timeout_ms": 30000,
+    "token_bucket": { "capacity": 8, "refill_per_sec": 1 },
+    "models_dev_url": "https://models.dev/api.json"
+  },
+  "periodic": [
+    {
+      "method": "sync",
+      "every_ms": 86400000,
+      "reads": {
+        "config": ["ids", "config", "body"],
+        "vendor-openai": ["ids", "vendor-openai", "body"],
+        "vendor-deepseek": ["ids", "vendor-deepseek", "body"],
+        "vendor-dashscope": ["ids", "vendor-dashscope", "body"],
+        "vendor-google": ["ids", "vendor-google", "body"],
+        "vendor-zai": ["ids", "vendor-zai", "body"],
+        "vendor-kimi": ["ids", "vendor-kimi", "body"],
+        "vendor-custom": ["ids", "vendor-custom", "body"]
+      }
+    }
+  ],
+  "method_timeouts": {
+    "model.chat": 600000,
+    "model.complete": 120000
+  }
+}

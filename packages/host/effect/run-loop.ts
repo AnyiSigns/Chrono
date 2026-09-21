@@ -8,6 +8,7 @@ import { ServiceChannelError } from '../service-link.ts'
 import type { CallEnv } from '../wire.ts'
 import { callEffect, commitAudit } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
+import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
 import { WorldWriter } from '../writer.ts'
 import type { RoundRouter } from './route.ts'
 import type {
@@ -125,7 +126,7 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   const emitter = input.owners[index]
   if (emitter === undefined) return undefined
   const router = input.router
-  const timeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+  const baseTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
   const signal = input.signal
   // 调用帧 env：本回合 run id / 发起者 thread / 宿主固定时钟（按轮固定，取轮首值）
   const env: CallEnv = {
@@ -136,6 +137,9 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   return async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
+    // 等待上限按**目标身份**的 schema 方法级声明覆盖；无声明回落到进程级 / 常量
+    const timeoutMs =
+      resolveMethodTimeoutMs(world, routed.row.impl, eff.port, eff.method) ?? baseTimeoutMs
     try {
       const response = await routed.row.link.call(
         eff.port,

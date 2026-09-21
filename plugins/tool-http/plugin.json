@@ -1,0 +1,34 @@
+{
+  "identity": "tool-http",
+  "schema": "schema/tool-http.json",
+  "implements": ["tool-http"],
+  "methods": {
+    "tool-http": ["describe", "invoke"]
+  },
+  "pins": {
+    "sandbox": "sandbox",
+    "host": "host"
+  },
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "tool-http.describe",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

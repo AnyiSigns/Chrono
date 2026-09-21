@@ -8,7 +8,7 @@
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["tool-shell"]`，`methods: {"tool-shell":["describe","invoke"]}`（**类名 = 身份名**，见 `plugins/tools/DESIGN.md`「`tool` 端口契约」；`describe` 回工具名 `shell`） |
 | 命令 | 无 |
-| schema | `schema/tool-shell.json`（工具描述四要素 + `modes` + 语言白名单 + 默认 `caps`） |
+| schema | `schema/tool-shell.json`（工具描述四要素 + `modes` + 语言白名单 + 默认 `caps`；顶层 `method_timeouts` 声明 `tool-shell.invoke` 120000——宿主按声明覆盖 30s 缺省，长命令不被截断） |
 | 机制 | `invoke(bag)` -> 经 25 在隔离环境执行；`mode:"command"` 跑一条命令、`mode:"code"` 跑一段脚本 / 表达式并按结构化结果回；临时产物不落世界 |
 | 边界 | 不做：绕过 guard / sandbox / 工具语义判定（归 26）/ 交互式会话（归 31 浏览器）/ **结构化文件读写与路径白名单（归 28 `tool-fs`）** |
 | 验收 | 1) 同输入同结果（除环境本身）；2) 命令与代码两种模式共用同一隔离与审计路径；3) 明文密钥不出现在审计；4) 加新执行类工具不改 27 |
@@ -46,4 +46,4 @@
 - **默认收缩**：前面 `shell`，后面 agent 输入的命令；**过长截断**（单行 + 省略号，悬停看全量）。
 - **展开 = 终端结果**：等宽 `terminal` 渲染器，stdout / stderr 分色、末尾一行退出码。
 - **动态输出（后置登记，2026-09-20 修订）**：v1 = 执行结束后**一次性完整输出**（**#25 `exec` 无流式通道**）；流式增量（命令跑得久时把 stdout 分片经宿主 `event` 发 `tool.delta {call_id, seq, chunk}` → #18 在展开的卡里边跑边追加；`tool.end` 收尾）**后置（登记）**。
-- `mode:"code"` 的结构化结果按 `{kind:"json"}` 渲染（同卡、同标签，`detail.kind` 由结果形态定）。
+- `mode:"code"` 的结构化结果（`result.value`）按 `{kind:"json"}` 渲染（同卡、同标签）；`describe.render.detail` 是**单工具静态 detail**（`terminal`），不随输入形态 / 结果形态切换。

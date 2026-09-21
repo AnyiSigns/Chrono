@@ -1,0 +1,34 @@
+{
+  "identity": "tool-fs",
+  "schema": "schema/tool-fs.json",
+  "implements": ["tool-fs"],
+  "methods": {
+    "tool-fs": ["describe", "invoke"]
+  },
+  "pins": {
+    "sandbox": "sandbox",
+    "host": "host"
+  },
+  "start": "node execute/launch.mjs",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "tool-fs.describe",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

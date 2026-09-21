@@ -1,0 +1,172 @@
+{
+  "title": "tool-http（联网检索与抓取）",
+  "description": "身份自述 / 数据契约：描述 websearch 与 webfetch 的入参、结果形状，以及可热改的运行配置。配置默认值住本文件的 defaults；运行时优先用本身份数据世代 body（调用方随 bag 传入），缺省回落本文件。schema 出生即冻结，改配置走数据换代。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "tool-http.invoke": 120000
+  },
+  "properties": {
+    "websearch_request": {
+      "type": "object",
+      "description": "websearch 的 args：query 必填；count / sources / fresh 可选。",
+      "required": ["query"],
+      "additionalProperties": false,
+      "properties": {
+        "query": { "type": "string", "description": "检索词。" },
+        "count": { "type": "integer", "minimum": 1, "description": "结果条数上限；缺省取配置 top_n。" },
+        "sources": {
+          "type": "array",
+          "description": "只查这些源（按源 id 或名字匹配）；缺省查全部启用源。",
+          "items": { "type": "string" }
+        },
+        "fresh": { "type": "boolean", "description": "新鲜度提示；服务无缓存，仅作调用意图标记。" }
+      }
+    },
+    "websearch_result": {
+      "type": "object",
+      "description": "websearch 的结果：合并排序后的条目与源使用情况。",
+      "required": ["results", "sources_used", "sources_failed"],
+      "additionalProperties": true,
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "url", "snippet", "source", "rank"],
+            "additionalProperties": true,
+            "properties": {
+              "title": { "type": "string" },
+              "url": { "type": "string", "description": "规范化后的 URL。" },
+              "snippet": { "type": "string" },
+              "source": { "type": "string", "description": "贡献该条目的源名。" },
+              "rank": { "type": "integer", "minimum": 1, "description": "合并后的名次。" }
+            }
+          }
+        },
+        "sources_used": { "type": "array", "items": { "type": "string" } },
+        "sources_failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "code"],
+            "additionalProperties": true,
+            "properties": {
+              "source": { "type": "string" },
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "webfetch_request": {
+      "type": "object",
+      "description": "webfetch 的 args：url 必填；format 可选。",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "description": "http(s) URL。" },
+        "format": { "enum": ["markdown", "text", "raw"], "description": "HTML 输出形态；缺省 markdown。" }
+      }
+    },
+    "webfetch_result": {
+      "type": "object",
+      "description": "webfetch 的结果：正文 / 原样内容，或二进制资产引用。",
+      "required": ["url", "status", "content_type", "content", "truncated"],
+      "additionalProperties": true,
+      "properties": {
+        "url": { "type": "string", "description": "最终 URL（跟随重定向后）。" },
+        "status": { "type": "integer", "description": "HTTP 状态码。" },
+        "content_type": { "type": "string" },
+        "content": { "type": "string", "description": "文本内容；二进制时为空串。" },
+        "truncated": { "type": "boolean" },
+        "asset": {
+          "type": "object",
+          "description": "二进制响应体存资产后的引用。",
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "asset" },
+            "sha256": { "type": "string" },
+            "mime": { "type": "string" },
+            "size": { "type": "integer" }
+          }
+        }
+      }
+    }
+  },
+  "defaults": {
+    "version": 1,
+    "rrf_k": 60,
+    "top_n": 10,
+    "output_max": 1048576,
+    "user_agent": "chrono-tool-http/1.0",
+    "obey_robots": true,
+    "redirect_max": 5,
+    "block_private_hosts": true,
+    "fetcher_cmd": "fetcher",
+    "source_timeout_ms": 8000,
+    "sources": [
+      {
+        "id": "duckduckgo-html",
+        "name": "DuckDuckGo HTML",
+        "kind": "html",
+        "parse": "ddg-html",
+        "enabled": true,
+        "endpoint": "https://html.duckduckgo.com/html/",
+        "query_param": "q",
+        "timeout_ms": 8000
+      },
+      {
+        "id": "duckduckgo-lite",
+        "name": "DuckDuckGo Lite",
+        "kind": "html",
+        "parse": "ddg-lite",
+        "enabled": true,
+        "endpoint": "https://lite.duckduckgo.com/lite/",
+        "query_param": "q",
+        "timeout_ms": 8000
+      },
+      {
+        "id": "bing",
+        "name": "Bing",
+        "kind": "html",
+        "parse": "bing",
+        "enabled": true,
+        "endpoint": "https://www.bing.com/search",
+        "query_param": "q",
+        "timeout_ms": 8000
+      },
+      {
+        "id": "mojeek",
+        "name": "Mojeek",
+        "kind": "html",
+        "parse": "mojeek",
+        "enabled": true,
+        "endpoint": "https://www.mojeek.com/search",
+        "query_param": "q",
+        "timeout_ms": 8000
+      },
+      {
+        "id": "searxng",
+        "name": "SearXNG",
+        "kind": "searxng",
+        "parse": "searxng",
+        "enabled": true,
+        "instances": ["https://searx.be", "https://searxng.site"],
+        "query_param": "q",
+        "timeout_ms": 8000
+      },
+      {
+        "id": "wikipedia",
+        "name": "Wikipedia API",
+        "kind": "wikipedia",
+        "parse": "wikipedia-json",
+        "enabled": true,
+        "endpoint": "https://en.wikipedia.org/w/api.php",
+        "language": "en",
+        "timeout_ms": 8000
+      }
+    ]
+  }
+}

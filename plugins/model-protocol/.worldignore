@@ -1,0 +1,5 @@
+# 测试、本地工具与依赖目录不入世界
+test/
+tools/
+node_modules/
+target/

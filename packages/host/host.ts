@@ -25,6 +25,10 @@ import {
 import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
 import { PeriodicScheduler } from './periodic.ts'
 import type { PeriodicEntry, PeriodicRead } from './periodic.ts'
+import { readMethodTimeouts, resolveMethodTimeoutMs } from './method-timeouts.ts'
+import { PortAuditRing, redactPortArgs } from './port-audit.ts'
+import type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
+import { InvalidDeclLog } from './invalid-decl-log.ts'
 import { appendJournal, acquireLock, loadAnchor, readJournal, releaseLock } from './ledger/index.ts'
 import { DEFAULT_COMPACT_TAIL_ENTRIES, compactWorld } from './compact.ts'
 import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
@@ -51,6 +55,8 @@ export interface HostOptions {
   compactTailEntries?: number
   /** 服务启动包装器（宿主侧最小沙箱形态）：只前置到 spawn 命令行；缺省无（零行为变化）。 */
   startWrapper?: string
+  /** 端口审计落点（反向 `port.call`）：缺省写宿主侧有界内存环形缓冲。 */
+  portAuditSink?: PortAuditSink
 }
 
 export interface HostHandle {
@@ -60,6 +66,11 @@ export interface HostHandle {
   stop: () => Promise<void>
   /** 插件事件透传入口：只广播给已连接客户端，不落账、不推进。 */
   emitEvent: (impl: string, topic: string, payload: Json) => void
+  /**
+   * 端口审计只读快照（时间正序、有界）：反向 `port.call` 的宿主侧取证，
+   * 不进世界、不写链、不参与重放。注入 `portAuditSink` 时仍同时写入本快照。
+   */
+  portAuditRecords: () => PortAuditRecord[]
 }
 
 /** 发起者未给 limits 时的宿主默认预算。 */
@@ -288,9 +299,57 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     appendJournal(paths.journalFile, entries)
   }
 
-  let runtime: AssemblyRuntimeHandle | undefined
+  /**
+   * 端口审计落点：缺省写有界环形缓冲（`HostHandle.portAuditRecords` 可读）；
+   * 注入 sink 时同时写入快照与 sink（sink 抛错由调用处的 try/catch 隔离，不阻断转发）。
+   */
+  const portAuditRing = new PortAuditRing()
+  const injectedPortAuditSink = options.portAuditSink
+  const portAudit: PortAuditSink =
+    injectedPortAuditSink === undefined
+      ? portAuditRing
+      : {
+          record: (record) => {
+            portAuditRing.record(record)
+            injectedPortAuditSink.record(record)
+          },
+        }
+
   /** H6 定时触发：按各插件 schema 的 `periodic` 声明调度周期 run；停机时清空。 */
   let periodic: PeriodicScheduler | undefined
+  /** 周期声明非法条目：每次 `sync` 收集后按身份签名去重（声明修好再变坏可重记）。 */
+  const periodicInvalidBuffer: { identity: string; reason: string }[] = []
+  const periodicInvalid = new InvalidDeclLog((identity, reason) => {
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'dep',
+      event: 'periodic_invalid',
+      impl: identity,
+      reason,
+    })
+  })
+  /** 周期声明对齐：`sync` 期间收集非法条目，结束后按签名去重记录。 */
+  const syncPeriodic = (world: World): void => {
+    periodicInvalidBuffer.length = 0
+    periodic?.sync(world)
+    periodicInvalid.report(periodicInvalidBuffer)
+  }
+
+  /** 方法级超时声明非法：按身份签名去重，声明变化才重记（不永久屏蔽）。 */
+  const methodTimeoutInvalid = new InvalidDeclLog((identity, reason) => {
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'dep',
+      event: 'method_timeout_invalid',
+      impl: identity,
+      reason,
+    })
+  })
+  const reportMethodTimeouts = (world: World): void => {
+    methodTimeoutInvalid.report(readMethodTimeouts(world).invalid)
+  }
+
+  let runtime: AssemblyRuntimeHandle | undefined
   /** 在途 run（并发推进中）：停机时先等它们落定；`cancel{run}` 按 `runs` 表中止。 */
   const inflight = new Set<Promise<void>>()
   /** 在册 run（含并发推进中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
@@ -314,7 +373,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       if (runtime === undefined || advancedHead.seq <= appliedSeq) return
       appliedSeq = advancedHead.seq
       await runtime.applyWorld(advancedWorld)
-      if (!stopping) periodic?.sync(advancedWorld)
+      if (!stopping) {
+        syncPeriodic(advancedWorld)
+        reportMethodTimeouts(advancedWorld)
+      }
     })
     runtimeChain = next.then(
       () => undefined,
@@ -340,15 +402,27 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const routed = router.resolve(snapshot.world, impl, port, method)
     if (!routed.ok) return { ok: false, code: routed.error, message: routed.error }
     const callEnv: CallEnv = env ?? { run: null, thread: null, now: nextNow() }
+    // 端口审计：env 值脱敏后只落宿主侧内存面（不进世界、不写链）；旁路失败不影响转发
     try {
-      return await routed.row.link.call(
+      portAudit.record({
+        at: Date.now(),
+        from: impl,
+        target: routed.row.impl,
         port,
         method,
-        args,
-        options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-        undefined,
-        callEnv,
-      )
+        args: redactPortArgs(args),
+        run: callEnv.run,
+        thread: callEnv.thread,
+      })
+    } catch {
+      // 审计落点异常不阻断反向调用（旁路取证，非业务通道）
+    }
+    const timeoutMs =
+      resolveMethodTimeoutMs(snapshot.world, routed.row.impl, port, method) ??
+      options.callTimeoutMs ??
+      DEFAULT_CALL_TIMEOUT_MS
+    try {
+      return await routed.row.link.call(port, method, args, timeoutMs, undefined, callEnv)
     } catch {
       return { ok: false, code: 'transport_failed', message: 'port.call transport failed' }
     }
@@ -485,7 +559,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         cap,
         entry.method,
         bag,
-        options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+        resolveMethodTimeoutMs(world, entry.identity, cap, entry.method) ??
+          options.callTimeoutMs ??
+          DEFAULT_CALL_TIMEOUT_MS,
         signal,
         { run: runId, thread: null, now: nextNow() },
       )
@@ -1195,24 +1271,13 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       },
     })
     // H6 定时触发：装配就绪后按各插件 schema 的 periodic 声明排程；声明变更随 applyWorld 增量对齐
-    // 同一 (身份, 原因) 只记一条证据，避免每轮落账都刷运维日志（每条都 fsync）
-    const periodicInvalidLogged = new Set<string>()
+    // 非法条目由 syncPeriodic 按签名去重记录（每条都 fsync，避免每轮落账重复刷）
     periodic = new PeriodicScheduler({
       onFire: firePeriodic,
-      onInvalid: (identity, reason) => {
-        const key = `${identity}\u0000${reason}`
-        if (periodicInvalidLogged.has(key)) return
-        periodicInvalidLogged.add(key)
-        appendLifecycle(paths.lifecycleFile, {
-          at: Date.now(),
-          kind: 'dep',
-          event: 'periodic_invalid',
-          impl: identity,
-          reason,
-        })
-      },
+      onInvalid: (identity, reason) => periodicInvalidBuffer.push({ identity, reason }),
     })
-    periodic.sync(writer.snapshot().world)
+    syncPeriodic(writer.snapshot().world)
+    reportMethodTimeouts(writer.snapshot().world)
     await listen(server, address)
   } catch (err) {
     // 启动失败不泄漏：停周期调度与已起服务、关监听、释放锁
@@ -1239,5 +1304,6 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     socket: address,
     stop,
     emitEvent: broadcast,
+    portAuditRecords: () => portAuditRing.records(),
   }
 }

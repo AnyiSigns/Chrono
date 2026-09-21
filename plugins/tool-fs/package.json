@@ -1,0 +1,10 @@
+{
+  "name": "tool-fs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "文件工具（Rust）：read / edit / glob / grep，路径与范围归类在本插件，触盘全部经 sandbox.fsop 反向调用",
+  "scripts": {
+    "test": "cargo test"
+  }
+}

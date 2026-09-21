@@ -208,14 +208,12 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **调用超时**：常量缺省 30s（`DEFAULT_CALL_TIMEOUT_MS`）；进程级默认读 `CHRONO_CALL_TIMEOUT_MS`，
   `boot start --call-timeout-ms <ms>`（或宿主入口 `--call-timeout-ms`）显式覆盖——优先级 **CLI > env > 常量**；
   非法值启动即拒（`bad_call_timeout`），`boot start` 打印生效值。超时与连接 / 帧 / 进程死亡同归「没执行」。
-- **方法级超时覆盖（`method_timeouts`，待落地）**：插件 `schema` 顶层可选 `method_timeouts: {"<能力类>.<方法>": ms}`
+- **方法级超时覆盖（`method_timeouts`）**：插件 `schema` 顶层可选 `method_timeouts: {"<能力类>.<方法>": ms}`
   （键也可省能力类前缀、按方法名全局匹配该插件声明），宿主按声明为**本插件被调方法**覆盖等待上限——
-  优先级 **方法级 > 进程级 > 常量**；缺省不设。声明非法（非正整数 / 键不属本插件声明）→ 装载期记运维日志
-  `dep.periodic_invalid` 同路口径、按无覆盖处理（不炸宿主）。用途：长回合方法（`loop-policy.interpret`）、
-  流式模型调用（`model.chat`）声明大上限，避免被 30s 缺省截断。**反向调用（`port.call`）同样按目标插件的方法级声明覆盖**。
-  **当前状态（2026-09-20）**：**宿主尚未消费该键**（`packages/host` 无 `method_timeouts` 解析），上文为设计口径；
-  阻塞对象 = 声明该键的插件（`model-protocol` 的 `model.chat` / `model.complete`、`loop-policy` 的 `interpret`）
-  在实现前一律受 30s 缺省约束，长调用会被截断。属后续波次，勿按既成事实引用。
+  优先级 **方法级 > 进程级 > 常量**；缺省不设。声明非法（非对象 / 键为空或 JS 原型键 / 值非正整数 / 值超计时器硬上限 `2**31-1`，超限会被 `setTimeout` 溢出成 1ms）→
+  装载期记运维日志 `dep.method_timeout_invalid`、按无覆盖处理（不炸宿主）。用途：长回合方法（`loop-policy.interpret`）、
+  流式模型调用（`model.chat`）声明大上限，避免被 30s 缺省截断。**正向效果调用与反向调用（`port.call`）都按目标身份的方法级声明覆盖**，
+  周期方法条目直接调用同规；解析落点 `packages/host/method-timeouts.ts`（`resolveMethodTimeoutMs` 按世界对象缓存声明，不重复读 schema）。
 - **失败作数据回灌**：endpoint **有响应**（`result` 或 `error`）→ `EffResult{ok:true, value}` 回灌（`error` 时 `value` 是错误描述），
   term 可据此分支（降级链）；只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
 - **真取消（`cancel{run}`）**：中止在途 / 排队的 run——丢弃尚未执行的部分（含 plan 产出的 directives）、
@@ -346,7 +344,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **受保护 `pins` 不可删（入世校验）**：跨代比对 `pins`（按被依赖身份名，值即 `decl.pins` 的依赖名），若新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval`）的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：#42 的可见性过滤是黑名单，攻击面在**依赖关系**——agent 可写一个不 pin `#25` 的 `tool-fs` 让四档 fs 强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `#42 validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
 - **密钥本地存储面**：入站 `secrets.put {name, value}` / `secrets.delete {name}`——宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**；与 `asset.*` 并列。服务 `#24 secrets`。
 - **效果审计脱敏 + 体积截断**：`EffectAudit.result` 对发出者 + `port=secrets` + `method=resolve` 按白名单替换为 `{name, kind, has}`（不含本体）；对 `host` 批量方法（`asset.get` / `source.read` / `audit`）结果超过 `MAX_AUDIT_RESULT_BYTES`（64 KiB）时只落 `{truncated:true, size}`——否则 8 MiB 资产 / 拷入既往审计记录的 `audit` 会把 defs / journal / 审计索引撑爆（调用方仍拿完整结果）。
-- **反向调用 `env` 值脱敏（端口审计，待落地）**：设计口径为——反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（目标服务照收原值）——密钥经 `exec` 的 `env` 通道（#29 → #25）下传时不落宿主侧日志。与 `secrets.resolve` 的世界审计脱敏同路、两处口径。**当前状态（2026-09-20）**：**宿主尚未实现值替换**（`packages/host/test/host-env.test.ts` 明确断言反向调用 args 顶层 `env` 原样透传），上文为设计口径；阻塞对象 = 经 `exec` `env` 通道下传密钥的插件（#29 工具族密钥 / #12 模型调用），在实现前其 `env` 值会进宿主侧端口审计。属后续波次，勿按既成事实引用。
+- **反向调用 `env` 值脱敏（端口审计）**：反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性；目标服务照收原值）——密钥经 `exec` 的 `env` 通道（#29 → #25）下传时不落宿主侧记录。与 `secrets.resolve` 的世界审计脱敏同路、两处口径。**端口审计与 `EffectAudit` 分流**：不进世界、不写链、不参与重放。**落点**：`packages/host/port-audit.ts`——宿主侧有界内存环形缓冲 `PortAuditRing`（容量常量 `PORT_AUDIT_CAPACITY` = 256，满即覆盖最旧），宿主 options `portAuditSink` 可注入 sink 覆盖（库调用方 / 测试；注入时记录**同时**写入缺省环形缓冲，sink 抛错只隔离该旁路、不阻断转发）；`HostHandle.portAuditRecords()` 暴露该环形缓冲的**只读快照**（时间正序、有界，缺省读取面，无需注入 sink）；记录形状 `PortAuditRecord = { at, from, target, port, method, args, run, thread }`（`from` = 发起服务身份、`target` = 路由解析出的目标身份、`args` 已脱敏）。
 - **插件源码读面**：`host.source.read { identity, path } -> { path, content(base64), size }`——把某身份的源码 `tree` / `blob` 按路径读给插件（世界 ① 有源码，投影不含 `tree` / `blob`）。服务 #42 `plugin-admin` 的 `read`（被可见性过滤排除者 → `hidden_identity`，本插件先过滤、不调宿主）。
 - **插件 ③ 目录**（`state/plugins/<id>/`）：插件缓存 / 向量索引 / 水位等可重算产物落此，宿主统一 GC。服务 #21 向量索引、#22 查询向量缓存、#23 sweep 水位、#31 浏览器会话、#41 最近打开、#44 基线缓存。**落地口径**：起服务前宿主为本身份 `mkdir` 该目录，并以环境变量 **`CHRONO_PLUGIN_STATE`** 注入 spawn env（**只注入本身份路径**；宿主不认识目录内容）。**这是路径约定、不是 fs 隔离**——v1 无沙箱，插件进程仍可直接读其它路径。**GC**：宿主启动时（抢锁后、装配前）机械删除目录名 **∉ `world.ids`** 的顶层项（`retire` 只置 `active=null`、id 仍在 `world.ids` ⇒ **目录保留**）；失败不致命、不阻锁释放。身份名必须是**安全单段名**（拒绝含 `/`、`\`、盘符、`.`/`..`、控制字符、Windows 非法字符 / 保留设备名（`CON` 等）、尾随点/空格、JS 原型键（`__proto__` / `constructor` / `prototype`）与保留名 `host`），否则既会路径穿越、又会被 GC 误删；**入世与起服务边界都校验**（运行期写指令也能造 id）。
 - **非 TS 插件与原生子组件物化（H15）**：插件包入世只含**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；编译产物 / 依赖目录 / 原生扩展（`node_modules` / `target/` / 二进制 / `*.node`）**走宿主侧 ③ 依赖缓存**，宿主物化时按清单恢复；宿主仍只按 `plugin.json.start` 起服务。**落地口径**：物化后、spawn 前按清单派发恢复——`package.json` 有依赖 / 锁文件 → `npm ci`（仅当 `package-lock.json` / `npm-shrinkwrap.json`）或 `npm install`（yarn / pnpm / bun 锁回落 install）；`Cargo.toml` → `cargo build --release`；`binding.gyp` → `npm rebuild`。缓存住 `state/deps/`（npm 下载缓存 `state/deps/npm`、Rust `CARGO_TARGET_DIR=state/deps/cargo-target`）；`node_modules` / `target` 落**物化目录**（③，内容寻址复用）。恢复完成后在物化目录写 `.chrono-deps-ok` 标记，标记在则跳过（**以标记而非 `node_modules` 存在性判完成**，半恢复可自愈）；恢复失败 → 服务启动失败 `service.start_failed` reason `deps_failed`。**恢复命令借 shell 解析**（win32 上 `npm` 是 `.cmd` 包装脚本，`shell:false` 会 `EINVAL`）并**前置同一 `startWrapper`**——依赖安装会跑插件声明的 lifecycle 脚本，不能成为绕过沙箱的口子。整服务 Rust：#20 / #22 / #25 / #28 / #41 / #44；原生子组件：#13（Rust tokenizer，进程内、TS 主体）。
@@ -398,7 +396,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   | `kind` | `event` | 载荷 | 触发 |
   | --- | --- | --- | --- |
   | `host` | `start` / `stop` / `start_failed` | `reason?` | 宿主自起停 / 启动选项非法 |
-  | `dep` | `cycle` / `stale` / `drift` / `retired` / `periodic_invalid` | `impl`, `cap?`, `reason?` | 装配解析 / 依赖退役 / 周期声明非法 |
+  | `dep` | `cycle` / `stale` / `drift` / `retired` / `periodic_invalid` / `method_timeout_invalid` | `impl`, `cap?`, `reason?` | 装配解析 / 依赖退役 / 周期与方法级超时声明非法 |
   | `handshake` | `failed` / `extra_dropped` | `impl`, `gen`, `caps?` | 握手校验 |
   | `service` | `start_failed` / `exit` / `restart_exhausted` | `impl`, `gen`, `reason?` | 起服务 / 进程 |
 

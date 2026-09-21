@@ -1,0 +1,6 @@
+{
+  "title": "sandbox（E2E 测试替身）",
+  "description": "仅用于工具包 E2E：提供 sandbox 身份供 tool-http 的 pins 解析；不承载真实隔离执行。",
+  "type": "object",
+  "additionalProperties": true
+}

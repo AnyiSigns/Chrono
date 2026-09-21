@@ -1,0 +1,10 @@
+{
+  "name": "tool-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "命令 / 代码执行工具（TS）：单工具 shell，两种输入形态 command / code，执行全部经反向调用 sandbox.exec",
+  "scripts": {
+    "test": "node --test"
+  }
+}

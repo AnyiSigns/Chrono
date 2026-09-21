@@ -1,0 +1,123 @@
+{
+  "title": "tool-browser（浏览器自动化）",
+  "description": "身份自述 / 数据契约：描述 tool-browser 能力类两方法 describe / invoke 的入参与结果形状，以及引擎选型、无头、视口、超时、会话空闲回收、截图格式与下载开关的缺省。引擎 impl 住本 schema（schema 出生即冻结），服务启动时读取一次作默认配置。本插件服务不读投影、不写世界：tier / caps / grant / sandbox_tiers 全由调用方随 bag 传入；浏览器进程由本插件直接 spawn 自管，caps.net 声明级钳制按档位映射在本插件内完成。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "tool-browser.invoke": 120000
+  },
+  "properties": {
+    "engine": {
+      "type": "object",
+      "description": "浏览器引擎选型：playwright（自带 Chromium）或 cdp（连系统浏览器）；惰性加载，不可用即 browser_unsupported。",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "enum": ["playwright", "cdp"],
+          "description": "引擎实现名。",
+          "default": "playwright"
+        },
+        "headless": {
+          "type": "boolean",
+          "description": "是否无头运行。",
+          "default": true
+        },
+        "browser_path": {
+          "type": "string",
+          "description": "cdp 引擎使用的浏览器可执行文件路径；缺省按平台探测。",
+          "default": ""
+        }
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "description": "默认视口；open 的 args.viewport 可覆盖。",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "default": 1280 },
+        "height": { "type": "integer", "minimum": 1, "default": 720 }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "description": "导航 / 单动作 / 会话空闲回收的超时（毫秒）。",
+      "additionalProperties": false,
+      "properties": {
+        "navigation_ms": { "type": "integer", "minimum": 1, "default": 30000 },
+        "action_ms": { "type": "integer", "minimum": 1, "default": 10000 },
+        "session_idle_ms": { "type": "integer", "minimum": 1, "default": 300000 }
+      }
+    },
+    "screenshot": {
+      "type": "object",
+      "description": "截图缺省格式；字节经 host.asset.put 存资产、引用进结果。",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "enum": ["png", "jpeg"], "default": "png" }
+      }
+    },
+    "download": {
+      "type": "object",
+      "description": "是否允许下载；v1 下载落资产面，不开工作区写入。",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "type": "boolean", "default": false }
+      }
+    },
+    "describe_result": {
+      "type": "object",
+      "description": "describe 的结果：一次回报全部工具（name / 四要素 / argsSchema / caps / idempotent / render / modes）。",
+      "required": ["tools"],
+      "additionalProperties": false,
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "invoke_bag": {
+      "type": "object",
+      "description": "invoke 的 bag：工具名 + args + 可选档位 / 声明 caps / 档位映射。浏览器不经 sandbox.exec，故不声明、不消费一次性 grant。",
+      "required": ["tool", "args"],
+      "additionalProperties": true,
+      "properties": {
+        "tool": { "enum": ["webbrowser"] },
+        "args": { "type": "object" },
+        "tier": { "enum": ["auto", "severe", "review", "deny", null] },
+        "caps": { "type": "object" },
+        "sandbox_tiers": { "type": "object" }
+      }
+    },
+    "invoke_result": {
+      "type": "object",
+      "description": "invoke 结果：成功 {ok:true, result}，失败 {ok:false, error:{code, message}}。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "type": "object" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "session_not_found",
+                "navigate_failed",
+                "http_status",
+                "element_not_found",
+                "net_denied",
+                "browser_unsupported",
+                "binary_unsupported",
+                "tool_timeout",
+                "tool_failed",
+                "unknown_tool",
+                "bad_args"
+              ]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "model-stub",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "确定性 model 实现（测试夹具）：同输入同输出，供离线验收与 CI",
+  "scripts": {
+    "test": "node --test"
+  }
+}
