@@ -80,6 +80,18 @@ describe('入世守卫：声明路径逃逸包根 → bad_plugin_decl', () => {
           firstOf(decl.members).path = '/abs/'
         },
       },
+      {
+        label: "exclusive='port'（非数组）",
+        patch: (decl) => {
+          decl.exclusive = 'port'
+        },
+      },
+      {
+        label: "exclusive=['gpu']（未知资源类，宿主无法保证换人序安全）",
+        patch: (decl) => {
+          decl.exclusive = ['gpu']
+        },
+      },
     ]
 
     for (const testCase of cases) {

@@ -38,8 +38,10 @@ import {
   waitForExit,
 } from './supervision.ts'
 import { isSafeIdentityName } from './identity-name.ts'
+import { swapService } from './swap.ts'
 import type { ServiceRuntime } from './supervision.ts'
-import type { LifecycleKind, LifecycleRecord } from '../lifecycle.ts'
+import type { SwapHost } from './swap.ts'
+import type { LifecycleFields, LifecycleKind, LifecycleRecord } from '../lifecycle.ts'
 import { stale } from '../../kernel/index.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
@@ -99,8 +101,6 @@ export interface StartAssemblyOptions {
   ) => Promise<CallResponse>
 }
 
-type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
-
 class AssemblyRuntime implements AssemblyRuntimeHandle {
   readonly endpoints = new EndpointTable()
   order: string[] = []
@@ -131,6 +131,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly loadedIds = new Set<string>()
   private readonly services = new Map<string, ServiceRuntime>()
   private readonly pendingRestarts = new Set<Promise<void>>()
+  /** 换人序所需能力的闭包视图，交 `swap.ts` 用；不暴露运行时私有状态。 */
+  private readonly swapHost: SwapHost
   private stopping = false
 
   constructor(options: StartAssemblyOptions) {
@@ -152,6 +154,26 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.onPortCall = options.onPortCall
     this.plan = computeAssemblyPlan(options.world)
     this.ownerIndex = buildOwnerIndex(options.world)
+    this.swapHost = {
+      isStopping: () => this.stopping,
+      isIsolated: (id) => this.isolated.has(id),
+      serviceOf: (id) => this.services.get(id),
+      adoptService: (service) => {
+        this.services.set(service.id, service)
+        this.registerEndpoints(service)
+        this.startHealth(service)
+      },
+      removeService: (id, service) => {
+        if (this.services.get(id) === service) this.services.delete(id)
+      },
+      launch: (id, gen, decl) => this.launch(id, gen, decl),
+      rekeyEndpoints: (service, gen, decl) => this.rekeyEndpoints(service, gen, decl),
+      clearRestart: (service) => this.clearRestart(service),
+      recordStartFailure: (id, gen, err) => this.recordStartFailure(id, gen, err),
+      stopSuperseded: (service, reason) => this.stopSuperseded(service, reason),
+      scheduleGenerationRetry: (carrier, gen, decl) =>
+        this.scheduleGenerationRetry(carrier, gen, decl),
+    }
   }
 
   /**
@@ -446,7 +468,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       }
       // reload 未确认：保守按代码换代（起新服务 + 旧服务 drain），不把旧进程当已热更新
     }
-    await this.swapService(id, oldService, newCodeGen.payload, newDecl.decl)
+    await swapService(this.swapHost, id, oldService, newCodeGen.payload, newDecl.decl)
   }
 
   /** 数据换代：通知服务新世代并等 ack；超时 / 通道断返回 false（交调用方保守处理）。 */
@@ -471,48 +493,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.startHealth(service)
   }
 
-  /**
-   * 代码换代：物化 + 起新服务 + 握手 → 新端点半表先挂（新 run 立即路由新 gen）→
-   * 旧服务 drain（期间健康探针缺席）→ 超时强杀；旧 gen 端点行在旧进程收尾时摘除。
-   * 新服务起不来 → 新世代不激活：旧进程继续服务（端点行换到新世代键，路由仍命中旧进程），
-   * 失败只记运维日志；旧进程退出后按新世代重试。
-   */
-  private async swapService(
-    id: string,
-    oldService: ServiceRuntime,
-    newGen: Hash,
-    newDecl: PluginDecl,
-  ): Promise<void> {
-    // 先阻断旧服务的重启排程：换代期间旧 gen 不得借崩溃重启复活
-    this.clearRestart(oldService)
-    let next: ServiceRuntime
-    try {
-      next = await this.launch(id, newGen, newDecl)
-    } catch (err) {
-      // 新世代不激活：构建 / 启动失败只记运维日志，旧进程继续服务（端点行换到新世代键，
-      // 路由仍命中旧进程），依赖者不受影响；待旧进程退出时按新世代重试，成功即真正激活。
-      this.recordStartFailure(id, newGen, err)
-      this.rekeyEndpoints(oldService, newGen, newDecl)
-      return
-    }
-    if (this.stopping || this.isolated.has(id)) {
-      stopChild(next.proc, next.link)
-      await waitForExit(next.proc, 2_000)
-      return
-    }
-    if (this.services.get(id) !== oldService) {
-      // 防御：旧服务已被别的路径替换；新服务不得顶掉更新的实例
-      stopChild(next.proc, next.link)
-      await waitForExit(next.proc, 2_000)
-      return
-    }
-    oldService.draining = true // 先停健康探针与退出重启
-    this.services.set(id, next)
-    this.registerEndpoints(next)
-    this.startHealth(next)
-    await this.stopSuperseded(oldService, 'superseded')
-  }
-
   /** 排空并停掉被换代取代的服务（不重启）；退出路径记 service.exit。 */
   private async stopSuperseded(service: ServiceRuntime, reason: string): Promise<void> {
     this.clearHealth(service)
@@ -535,6 +515,22 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (this.services.get(id) === service) this.services.delete(id)
     await this.stopSuperseded(service, reason)
     this.endpoints.removeIdentity(id)
+  }
+
+  /**
+   * 独占序下旧服务已 drain、新世代起不来：把该身份的换代失败转入「无服务但保留世代」
+   * （端点缺席 → 调用得 `not_loaded`），按 `restart` 策略重试新世代。
+   * 不复活已 drain 的旧进程——那会让运行服务停在旧代码世代，违反「不拿更旧世代顶上」。
+   * 复用崩溃重启路径（`attemptRestart`）避免两套重启机：已退场的旧 `ServiceRuntime` 只剩
+   * 策略与计时状态，就地改写成新世代的载体即可；重试超限同样记 `restart_exhausted` 并隔离分支。
+   */
+  private scheduleGenerationRetry(carrier: ServiceRuntime, gen: Hash, decl: PluginDecl): void {
+    carrier.gen = gen
+    carrier.decl = decl
+    carrier.restart = parseRestart(decl.restart)
+    carrier.health = parseHealth(decl.health)
+    carrier.attempts = 0
+    this.countRestartAttempt(carrier)
   }
 
   /** 运行期新起的身份补进停机序（反序停机时一并 drain）。 */

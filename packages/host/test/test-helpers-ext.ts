@@ -114,6 +114,8 @@ export interface PackageSpec {
   start?: string
   /** 显式构建声明；省略则不写 `build` 字段（回落宿主旧探测）。 */
   build?: Array<{ cmd: string; args: string[] }>
+  /** 独占资源声明；省略则不写 `exclusive` 字段（无独占资源）。 */
+  exclusive?: string[]
   protocol?: string
   restart?: Record<string, unknown>
   health?: Record<string, unknown>
@@ -131,7 +133,7 @@ export interface PackageSpec {
 }
 
 /**
- * 在临时 root 下写一个完整插件包（契约 13 字段：`build` 缺省省略、其余齐全；CommonJS 信封）。
+ * 在临时 root 下写一个完整插件包（契约 14 字段：`build` / `exclusive` 缺省省略、其余齐全；CommonJS 信封）。
  * 返回包根绝对路径；同名身份重复调用会覆盖已有文件（换代测试用）。
  */
 export function writeTempPackage(root: string, spec: PackageSpec): string {
@@ -147,6 +149,7 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
     pins: spec.pins ?? {},
     start,
     ...(spec.build === undefined ? {} : { build: spec.build }),
+    ...(spec.exclusive === undefined ? {} : { exclusive: spec.exclusive }),
     protocol: spec.protocol ?? '1',
     restart: spec.restart ?? {
       policy: 'on-exit',

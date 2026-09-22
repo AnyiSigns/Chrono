@@ -123,6 +123,33 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     }
   })
 
+  it('exclusive 省略 → ok:true 且 exclusive 为 []（无独占资源）', () => {
+    const result = parsePluginDecl(baseDecl())
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.exclusive).toEqual([])
+  })
+
+  it('exclusive 合法（port）→ ok:true 且解析出资源类', () => {
+    const result = parsePluginDecl(baseDecl({ exclusive: ['port'] }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.exclusive).toEqual(['port'])
+  })
+
+  it('exclusive 空数组 → ok:true 且 exclusive 为 []（显式无独占资源）', () => {
+    const result = parsePluginDecl(baseDecl({ exclusive: [] }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.exclusive).toEqual([])
+  })
+
+  it('exclusive 非数组 / 项非字符串 / 空串 / 未知资源类 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ exclusive: 'port' })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: null })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: [1] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: [''] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: ['gpu'] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: ['port', 'gpu'] })).ok).toBe(false)
+  })
+
   it('state 非 recomputable（如 durable）→ ok:false', () => {
     expect(parsePluginDecl(baseDecl({ state: 'durable' })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ state: 'ephemeral' })).ok).toBe(false)

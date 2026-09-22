@@ -9,6 +9,7 @@
     { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },
     { "cmd": "npm", "args": ["run", "build"] }
   ],
+  "exclusive": ["port"],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

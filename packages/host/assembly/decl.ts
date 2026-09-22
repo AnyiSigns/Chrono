@@ -44,6 +44,12 @@ export interface PluginDecl {
    * 空数组是合法声明：显式表示「无需构建」，不回落探测。
    */
   build: PluginBuildStep[] | null
+  /**
+   * 独占资源声明：元素为资源类名（v1 只认 `port`）。非空 = 本插件的服务实例独占该资源、
+   * 新旧实例不能并存（如固定端口），宿主换代时先 drain 旧服务再起新服务；空 = 无独占资源。
+   * 描述的是「占用事实」，不指定宿主调度机制。
+   */
+  exclusive: string[]
   protocol: string
   restart: Json
   health: Json
@@ -161,7 +167,28 @@ function parseBuild(v: Json | undefined): PluginBuildStep[] | null | undefined {
 }
 
 /**
- * 宿主侧 `plugin.json` 元 schema：13 个字段一个不少、类型正确、枚举合法
+ * 独占资源类名白名单：v1 只认 `port`（绑定固定端口 / 地址的服务）。
+ * 未列入的资源类宿主无法判定换人序是否安全，故显式拒绝（fail-closed），不静默当无声明处理。
+ */
+const EXCLUSIVE_RESOURCE_KINDS: ReadonlySet<string> = new Set(['port'])
+
+/**
+ * 解析 `exclusive` 声明：缺失 → `undefined`（无独占资源）；畸形 → `null`（入世拒）。
+ * 每项是一个资源类名，只查形态与白名单，不查该资源是否真的被占用（语义不在本层）。
+ */
+function parseExclusive(v: Json | undefined): string[] | null | undefined {
+  if (v === undefined) return undefined
+  if (!Array.isArray(v)) return null
+  const out: string[] = []
+  for (const item of v) {
+    if (typeof item !== 'string' || !EXCLUSIVE_RESOURCE_KINDS.has(item)) return null
+    out.push(item)
+  }
+  return out
+}
+
+/**
+ * 宿主侧 `plugin.json` 元 schema：14 个字段一个不少、类型正确、枚举合法
  * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
  * `build` 可省略（回落宿主旧探测），显式声明则逐令牌过 shell 安全白名单。
@@ -172,6 +199,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
   const commands = parseCommands(value['commands'])
   const members = parseMembers(value['members'])
   const build = parseBuild(value['build'])
+  const exclusive = parseExclusive(value['exclusive'])
   // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
   const rawSchema = value['schema']
   const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
@@ -190,7 +218,8 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     value['state'] === 'recomputable' &&
     members !== null &&
     commands !== null &&
-    build !== null
+    build !== null &&
+    exclusive !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
   return {
     ok: true,
@@ -202,6 +231,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       pins: value['pins'] as Record<string, string>,
       start: value['start'] as string,
       build: build ?? null,
+      exclusive: exclusive ?? [],
       protocol: value['protocol'] as string,
       restart: value['restart'] as Json,
       health: value['health'] as Json,
@@ -342,7 +372,11 @@ export function assemblyGen(world: World, identityId: string): Gen | null {
  * 读身份装配世代的 `plugin.json`（G7 A1）：数据世代不参与声明解析；
  * 无代码世代 / 装配世代的 `plugin.json` 不可解析 → null（fail-closed，不回落更旧世代）。
  */
-export function readPluginDecl(world: World, identityId: string, blobsDir?: string): DeclRead | null {
+export function readPluginDecl(
+  world: World,
+  identityId: string,
+  blobsDir?: string,
+): DeclRead | null {
   const identity = world.ids[identityId]
   if (!identity || identity.active === null) return null
   const gen = assemblyGen(world, identityId)

@@ -24,6 +24,9 @@ export interface LifecycleRecord {
   run?: string
 }
 
+/** 记一条事件时调用方给出的字段：`at` / `kind` / `event` 由落点补齐。 */
+export type LifecycleFields = Omit<LifecycleRecord, 'at' | 'kind' | 'event'>
+
 /** 追加一条生命周期事件；文件不存在则连同父目录一起创建。 */
 export function appendLifecycle(file: string, event: Json): void {
   mkdirSync(dirname(file), { recursive: true })

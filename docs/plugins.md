@@ -22,7 +22,7 @@
 ```
 <plugin-package>/                 # 一个 npm 包（仓库 plugins/<name>/ 或 node_modules/<pkg>，同形）
 ├── package.json     npm 信封：name / version / 依赖 / scripts（宿主不解释，入 ① 作源码）
-├── plugin.json      插件契约：13 字段（`schema` / `build` 可省略；宿主解释、入世进 ①；与信封无关）
+├── plugin.json      插件契约：14 字段（`schema` / `build` / `exclusive` 可省略；宿主解释、入世进 ①；与信封无关）
 ├── README.md        自述（人读）
 ├── .worldignore     入世排除表（可选；宿主读，自身不入 ①）
 ├── test/            测试文件（**不入 ①**）
@@ -62,6 +62,7 @@
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`） |
 | `build` | **构建声明**（宿主只执行、不解释语言，与 `start` 同性质）：`[{ cmd, args }]`，每步一条命令；物化后、`start` 前按序执行。**可省略**：字段缺失 = 回落宿主存量探测（`package.json` 依赖 / 锁 → npm、`Cargo.toml` → `cargo build --release`），供尚未迁移的插件兼容；**声明了（含空数组）就只跑声明的**——空数组 = 显式「无需构建」。`cmd` 与每个 `args` 令牌必须过 shell 安全白名单（`[A-Za-z0-9_./:@,+-]`）：命令经 `shell:true` 解析，令牌含空白 / 引号 / shell 元字符即入世拒 `bad_plugin_decl`。环境变量（`npm_config_cache` / `CARGO_TARGET_DIR` 等）由宿主注入，不写进声明；产物落点分共享型与随世代型两种合法形态（见 §三 红线 5） |
+| `exclusive` | **独占资源声明**（描述占用事实，不指定宿主调度机制）：`["<资源类>"]`，v1 只认 `port`（绑定固定端口 / 地址的服务）。**可省略**（缺省 = 无独占资源）。非空 = 本插件的服务实例**独占该资源、新旧实例不能并存**；宿主据此在**代码换代**时改为「先 drain 旧服务 → 再起新服务」（接受该身份短暂空窗），缺省则保持零空窗的「先起新 → 切端点 → drain 旧」。**以新世代声明为准**（声明描述新实例的占用事实）。元素非字符串 / 空串 / 未知资源类即入世拒 `bad_plugin_decl`（宿主无法判定未知资源类的换人序是否安全，故 fail-closed）。与 `build` 同性质：插件声明事实，宿主决定调度——以后换调度策略不必改插件（见 `host.md` §五 装配） |
 | `protocol` | 服务协议版本 |
 | `restart` | 重启策略：`policy` = `on-exit`（缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；`backoff` = `none` / `fixed` / `exponential`（缺省 `exponential`）、`backoff_ms` / `backoff_max_ms` 退避参数；`max` 重启上限；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；`drain_ms` 排空期限。v1 默认 `backoff=exponential`、`backoff_ms=500`、`backoff_max_ms=30000`、`max=5`、`window_ms=60000`、`drain_ms=5000` |
 | `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费（v1 默认 10000 / 2000）；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
@@ -126,7 +127,8 @@
 | 改什么 | 机制 | 进程 |
 | --- | --- | --- |
 | 数据（term / 参数 / 配置） | 宿主重取 def、换缓存 | **不动** |
-| 代码 | 起新服务 → 握手 → 端点表原子切换 → 旧服务 drain | 换 |
+| 代码（缺省，无独占资源） | 起新服务 → 握手 → 端点表原子切换 → 旧服务 drain（零空窗） | 换 |
+| 代码（`exclusive` 声明独占资源） | 先 drain 旧服务 → 再起新服务 → 端点切换（该身份短暂空窗） | 换 |
 
 - 一次 run **锚定世代**，换代只在 **run 边界**生效。
 - **不做**原地热补丁（破坏"旧世代源码还在、回滚 = 一个记账动作"，`kernel.md` §八）。
@@ -149,10 +151,10 @@
 
 - 一个 npm 包：`package.json`（npm 信封）+ `plugin.json`（机器契约）、`README.md`（人读自述）、
   `execute/`（执行件）、`terms/`（判定数据）、`schema/`（声明 schema）、`.worldignore`（可选：入世排除表）。
-- `plugin.json` 的 13 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
-  `protocol` / `restart` / `health` / `state` / `members` / `commands`。
-  **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；`build` 可省略（回落宿主存量探测）。
-  其余 11 个字段一个不少。
+- `plugin.json` 的 14 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
+  `exclusive` / `protocol` / `restart` / `health` / `state` / `members` / `commands`。
+  **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；`build` 可省略（回落宿主存量探测）；
+  `exclusive` 可省略（无独占资源，走零空窗换代）。其余 11 个字段一个不少。
 
 **行为**（§三 十条红线）
 
