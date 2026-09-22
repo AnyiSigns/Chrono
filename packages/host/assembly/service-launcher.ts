@@ -89,7 +89,8 @@ export async function launchService(
       throw new ServiceStartError('deps_failed')
     }
   }
-  // 依赖恢复 / 构建先于 spawn：失败时尚未起进程，按启动失败分类传播
+  // 依赖恢复 / 构建先于 spawn：失败时尚未起进程，按启动失败分类传播。
+  // 构建耗时不计入握手窗口：握手计时从 spawn 之后才起（见下方 raceStartup），慢构建不会报 timeout。
   if (deps.restore !== undefined) {
     try {
       await deps.restore(cwd, decl)
@@ -132,6 +133,7 @@ export async function launchService(
   })
   let manifest: ServiceManifest
   try {
+    // 握手超时窗口从此刻开始：只覆盖 spawn 之后的协议往返，不含上面的物化 / 构建。
     manifest = await raceStartup(link, child, deps.handshakeTimeoutMs)
   } catch (err) {
     stopChild(child, link)

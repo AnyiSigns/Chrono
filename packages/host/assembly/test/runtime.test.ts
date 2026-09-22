@@ -3,6 +3,7 @@ import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startAssembly } from '../runtime.ts'
 import type { AssemblyRuntimeHandle, StartAssemblyOptions } from '../runtime.ts'
+import type { PluginDecl } from '../decl.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
 import { hostPaths } from '../../paths.ts'
@@ -1017,4 +1018,163 @@ describe('装配运行时 startAssembly', () => {
     ).toBe(false)
     expect(handle.loaded().map((x) => x.id)).not.toContain('toy-iso-y')
   }, 20000)
+
+  it('装配按依赖层并发：同层无依赖身份在构建阶段重叠', async () => {
+    const aRoot = writeTempPackage(root, {
+      identity: 'toy-conc-a',
+      start: 'node execute/main.js',
+      implements: ['toy.conc.a'],
+    })
+    const bRoot = writeTempPackage(root, {
+      identity: 'toy-conc-b',
+      start: 'node execute/main.js',
+      implements: ['toy.conc.b'],
+    })
+    let active = 0
+    let maxActive = 0
+    let entered = 0
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const restore = async (): Promise<void> => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      entered += 1
+      if (entered >= 2) release()
+      // 有界等待：若分层错误导致两项不重叠，最多等 3s 后按实际 maxActive 判定失败
+      await Promise.race([gate, new Promise((resolve) => setTimeout(resolve, 3000))])
+      active -= 1
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-conc-a', path: aRoot },
+        { name: 'toy-conc-b', path: bRoot },
+      ],
+      { restore },
+    )
+    expect(maxActive).toBe(2)
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-conc-a', 'toy-conc-b'])
+  }, 15000)
+
+  it('装配按依赖层顺序：被依赖者的构建完成后依赖者才开跑', async () => {
+    const baseRoot = writeTempPackage(root, {
+      identity: 'toy-lay-base',
+      start: 'node execute/main.js',
+      implements: ['toy.lay.base'],
+    })
+    const leafRoot = writeTempPackage(root, {
+      identity: 'toy-lay-leaf',
+      start: 'node execute/main.js',
+      implements: ['toy.lay.leaf'],
+      pins: { base: 'toy-lay-base' },
+    })
+    const events: string[] = []
+    const restore = async (_cwd: string, decl: PluginDecl): Promise<void> => {
+      events.push(`${decl.identity}:start`)
+      if (decl.identity === 'toy-lay-base') {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+      events.push(`${decl.identity}:end`)
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-lay-base', path: baseRoot },
+        { name: 'toy-lay-leaf', path: leafRoot },
+      ],
+      { restore },
+    )
+    expect(events.indexOf('toy-lay-base:end')).toBeLessThan(events.indexOf('toy-lay-leaf:start'))
+    expect(handle.order).toEqual(['toy-lay-base', 'toy-lay-leaf'])
+  }, 15000)
+
+  it('同层并发上限生效：startConcurrency=1 → 构建不重叠', async () => {
+    const aRoot = writeTempPackage(root, {
+      identity: 'toy-cap-a',
+      start: 'node execute/main.js',
+      implements: ['toy.cap.a'],
+    })
+    const bRoot = writeTempPackage(root, {
+      identity: 'toy-cap-b',
+      start: 'node execute/main.js',
+      implements: ['toy.cap.b'],
+    })
+    let active = 0
+    let maxActive = 0
+    const restore = async (): Promise<void> => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      active -= 1
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-cap-a', path: aRoot },
+        { name: 'toy-cap-b', path: bRoot },
+      ],
+      { restore, startConcurrency: 1 },
+    )
+    expect(maxActive).toBe(1)
+    expect(handle.loaded()).toHaveLength(2)
+  }, 15000)
+
+  it('构建耗时不计入握手超时：慢构建 + 短握手超时仍正常装载', async () => {
+    const slowRoot = writeTempPackage(root, {
+      identity: 'toy-slowbuild',
+      start: 'node execute/main.js',
+      implements: ['toy.slowbuild'],
+    })
+    const restore = async (): Promise<void> => {
+      // 构建耗时 3s > 握手超时 1.5s：若构建计入握手窗口，这里必报 timeout
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+    }
+    const { handle } = await startWorld([{ name: 'toy-slowbuild', path: slowRoot }], {
+      restore,
+      handshakeTimeoutMs: 1500,
+    })
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-slowbuild'])
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'start_failed' && r.reason === 'timeout',
+      ),
+    ).toBe(false)
+  }, 15000)
+
+  it('装配期构建失败（deps_failed）→ 该身份及依赖者隔离，独立插件不受影响', async () => {
+    const badRoot = writeTempPackage(root, {
+      identity: 'toy-buildfail',
+      start: 'node execute/main.js',
+      implements: ['toy.buildfail'],
+      build: [{ cmd: 'node', args: ['execute/fail.js'] }],
+      files: { 'execute/fail.js': 'process.exit(1)\n' },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-buildfan',
+      start: 'node execute/main.js',
+      implements: ['toy.buildfan'],
+      pins: { dep: 'toy-buildfail' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-buildfail', path: badRoot },
+      { name: 'toy-buildfan', path: fanRoot },
+    ])
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-alpha'])
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-buildfail',
+        reason: 'deps_failed',
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-buildfan' }),
+    )
+  }, 15000)
 })

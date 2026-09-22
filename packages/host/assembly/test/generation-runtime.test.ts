@@ -393,7 +393,7 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
     expect(records.some((r) => r.event === 'start_failed' && r.impl === 'toy-gen')).toBe(false)
   }, 15000)
 
-  it('新 active 握手失败：handshake.failed + 发出者反向隔离，旧服务停掉（绝不回落）', async () => {
+  it('新 active 握手失败：新世代不激活，旧服务继续服务（失败只记日志、不隔离依赖者）', async () => {
     const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
       serviceConfig: { manifest: { identity: 'toy-gen-wrong' } },
     })
@@ -411,26 +411,22 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
         gen: brokenGen,
       }),
     )
-    expect(records).toContainEqual(
-      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-caller' }),
-    )
-    expect(records).toContainEqual(
-      expect.objectContaining({
-        kind: 'service',
-        event: 'exit',
-        impl: 'toy-gen',
-        gen: okGen,
-        reason: 'isolated',
-      }),
-    )
-    // 换代未完成：不回落旧世代（无 superseded 接管），旧端点 / 新端点都不在表
-    expect(records.some((r) => r.reason === 'superseded')).toBe(false)
-    expect(handle.loaded()).toEqual([])
-    expect(handle.endpoints.list()).toEqual([])
-    await waitFor(() => !isPidAlive(oldPid), '旧服务停掉（不回落）', 5000)
+    // 新世代不激活：旧进程仍在，端点行换到新世代键后仍可调用
+    expect(isPidAlive(oldPid)).toBe(true)
+    const row = handle.endpoints.get('toy-gen', brokenGen, 'toy.gen', 'echo')
+    expect(row).not.toBeNull()
+    expect(row!.pid).toBe(oldPid)
+    expect((await row!.link.call('toy.gen', 'echo', {}, 2000)).ok).toBe(true)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: brokenGen, service: true })
+    // 依赖者不受影响：不隔离、无 dep.stale、仍装载
+    expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
+    expect(handle.loaded().some((x) => x.id === 'toy-caller')).toBe(true)
+    expect(
+      records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-gen'),
+    ).toBe(false)
   }, 15000)
 
-  it('新 active 进程起不来（start_failed）：同样反向隔离，旧服务停掉（绝不回落）', async () => {
+  it('新 active 进程起不来（start_failed）：新世代不激活，旧服务继续服务', async () => {
     const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
       start: 'node execute/nope.js',
       files: { 'execute/nope.js': 'process.exit(1)\n' },
@@ -449,11 +445,39 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
         gen: brokenGen,
       }),
     )
+    expect(isPidAlive(oldPid)).toBe(true)
+    const row = handle.endpoints.get('toy-gen', brokenGen, 'toy.gen', 'echo')
+    expect(row).not.toBeNull()
+    expect(row!.pid).toBe(oldPid)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: brokenGen, service: true })
+    expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
+  }, 15000)
+
+  it('新 active 构建失败（deps_failed）：新世代不激活，旧服务继续服务', async () => {
+    const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
+      build: [{ cmd: 'node', args: ['execute/build-fail.js'] }],
+      files: { 'execute/build-fail.js': 'process.exit(1)\n' },
+    })
+    const handle = await startWorld(world)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: okGen, service: true })
+    const oldPid = handle.endpoints.get('toy-gen', okGen, 'toy.gen', 'echo')!.pid
+
+    await handle.applyWorld(step(world, head, 'set_active', { id: 'toy-gen', active: brokenGen }))
+
     expect(records).toContainEqual(
-      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-caller' }),
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-gen',
+        gen: brokenGen,
+        reason: 'deps_failed',
+      }),
     )
-    expect(handle.loaded()).toEqual([])
-    expect(handle.endpoints.list()).toEqual([])
-    await waitFor(() => !isPidAlive(oldPid), '旧服务停掉（不回落）', 5000)
+    expect(isPidAlive(oldPid)).toBe(true)
+    const row = handle.endpoints.get('toy-gen', brokenGen, 'toy.gen', 'echo')
+    expect(row).not.toBeNull()
+    expect(row!.pid).toBe(oldPid)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: brokenGen, service: true })
+    expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
   }, 15000)
 })

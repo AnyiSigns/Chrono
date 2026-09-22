@@ -1,6 +1,7 @@
 // 装配运行时：装配计划 → 实际服务进程（物化 / 握手 / 健康重启 / 换代跟随 / 停机）。
 // 只读世界：不写链、不改 active；生命周期事件经注入的 log 落运维日志（state/lifecycle.log）。
 // 坏分支只隔离：握手不过 / 重启超限 / 依赖退役 → 该身份及其依赖者标 not_loaded，其余照常。
+// 例外（换代跟随）：新代码世代构建 / 启动失败不隔离——新世代不激活，旧进程继续服务。
 // A6 换代跟随：链头推进后比对世界，本插件自身**代码世代**换代才动作——数据热生效（reload/ack，
 // 进程不动）/ 代码起新服务（旧服务 drain）；依赖换代不重装（A1 重解析路由），依赖退役则隔离。
 // G7 A1：数据世代（同身份混合世代）变化不触发跟随 / 隔离 / 服务动作。
@@ -12,6 +13,11 @@ import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import { classifyGenerationChange } from './generation.ts'
 import { launchService } from './service-launcher.ts'
+import {
+  DEFAULT_START_CONCURRENCY,
+  computeStartLayers,
+  runWithConcurrency,
+} from './start-layers.ts'
 import { restoreDependencies } from './deps.ts'
 import { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
 import { resolvePluginSourceRoot } from './ingest.ts'
@@ -68,6 +74,8 @@ export interface StartAssemblyOptions {
   handshakeTimeoutMs?: number
   /** 测试可注入更短的 reload/ack 超时；缺省 10s。 */
   reloadTimeoutMs?: number
+  /** 装配同层并发上限；缺省 `DEFAULT_START_CONCURRENCY`，测试可注入 1 或更大以观测重叠。 */
+  startConcurrency?: number
   /** 服务启动包装器（宿主侧最小沙箱形态）；缺省无（零行为变化）。 */
   startWrapper?: string
   /** 依赖缓存目录；缺省由 root 派生的 `state/deps`。 */
@@ -103,6 +111,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly onEvent?: (impl: string, topic: string, payload: Json) => void
   private readonly handshakeTimeoutMs: number
   private readonly reloadTimeoutMs: number
+  private readonly startConcurrency: number
   private readonly startWrapper: string | undefined
   private readonly restore: (cwd: string, decl: PluginDecl) => Promise<void>
   private readonly sourceRoot: (identity: string) => string | null
@@ -130,6 +139,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.onEvent = options.onEvent
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
     this.reloadTimeoutMs = options.reloadTimeoutMs ?? DEFAULT_RELOAD_TIMEOUT_MS
+    this.startConcurrency = options.startConcurrency ?? DEFAULT_START_CONCURRENCY
     this.startWrapper = options.startWrapper
     this.paths = hostPaths(options.root)
     this.blobsDir = options.blobsDir ?? this.paths.blobsDir
@@ -182,8 +192,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.record('dep', event.kind, { impl: event.id })
     }
     this.buildDependencyMaps()
-    for (const id of this.plan.order) {
-      await this.startIdentity(id)
+    // 按依赖层起：同层无依赖边可并发（带上限），层间顺序保证被依赖者先起。
+    // 某身份失败时其反向可达的依赖者（必在更晚的层）会在本层结束前被标隔离，
+    // 故后续层的 dep 判定仍读到一致的装载状态，不出现半更新。
+    const layers = computeStartLayers(this.plan.order, this.depsOf)
+    for (const layer of layers) {
+      await runWithConcurrency(layer, this.startConcurrency, (id) => this.startIdentity(id))
     }
     this.order = [...this.plan.order]
   }
@@ -326,13 +340,18 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
   }
 
-  private handleStartFailure(id: string, gen: Hash, err: unknown): void {
+  /** 记一条起服务 / 握手失败；是否隔离由调用方决定（装配期隔离，换代失败保留旧世代）。 */
+  private recordStartFailure(id: string, gen: Hash, err: unknown): void {
     const failure = classifyStartFailure(err)
     if (failure.event === 'handshake') {
       this.record('handshake', 'failed', { impl: id, gen })
     } else {
       this.record('service', 'start_failed', { impl: id, gen, reason: failure.reason })
     }
+  }
+
+  private handleStartFailure(id: string, gen: Hash, err: unknown): void {
+    this.recordStartFailure(id, gen, err)
     this.isolateStartFailure(id)
   }
 
@@ -369,14 +388,15 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   /**
    * 单个身份自身**代码世代**换代后的跟随（A6 + G7 A1）：
    * 数据变化 → reload/ack（进程不动）；代码变化 → 起新服务、旧服务 drain；
-   * 全新身份 → 按装配同路起（依赖未装载则隔离）；新代码世代装载失败 → 隔离该分支（不回旧世代）。
-   * 数据世代只影响投影读侧，不进本路径。
+   * 全新身份 → 按装配同路起（依赖未装载则隔离）；新代码世代构建 / 启动失败 → 新世代不激活，
+   * 旧服务继续服务（失败只记运维日志）。数据世代只影响投影读侧，不进本路径。
    */
   private async followGeneration(prev: World, next: World, id: string): Promise<void> {
     if (this.stopping || this.isolated.has(id)) return
     const identity = next.ids[id]
     const newCodeGen = assemblyGen(next, id)
-    const newDecl = newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
+    const newDecl =
+      newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
     const payloadDef = newCodeGen === null ? undefined : next.defs[newCodeGen.payload]
     if (
       identity === undefined ||
@@ -417,13 +437,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.noteRuntimeStart(id)
       return
     }
-    if (
-      classifyGenerationChange(prev, oldCodeGen, next, newCodeGen, this.blobsDir) === 'data'
-    ) {
+    if (classifyGenerationChange(prev, oldCodeGen, next, newCodeGen, this.blobsDir) === 'data') {
       const reloaded = await this.tryReload(oldService, newCodeGen.payload)
       if (this.stopping || this.isolated.has(id)) return
       if (reloaded) {
-        this.rekeyEndpoints(oldService, newCodeGen, newDecl.decl)
+        this.rekeyEndpoints(oldService, newCodeGen.payload, newDecl.decl)
         return
       }
       // reload 未确认：保守按代码换代（起新服务 + 旧服务 drain），不把旧进程当已热更新
@@ -441,11 +459,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
   }
 
-  /** 数据换代后的端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。 */
-  private rekeyEndpoints(service: ServiceRuntime, gen: Gen, decl: PluginDecl): void {
+  /** 端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。 */
+  private rekeyEndpoints(service: ServiceRuntime, gen: Hash, decl: PluginDecl): void {
     this.endpoints.removeGeneration(service.id, service.gen)
     this.clearHealth(service)
-    service.gen = gen.payload
+    service.gen = gen
     service.decl = decl
     service.restart = parseRestart(decl.restart)
     service.health = parseHealth(decl.health)
@@ -456,7 +474,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   /**
    * 代码换代：物化 + 起新服务 + 握手 → 新端点半表先挂（新 run 立即路由新 gen）→
    * 旧服务 drain（期间健康探针缺席）→ 超时强杀；旧 gen 端点行在旧进程收尾时摘除。
-   * 新服务起不来 → 隔离该分支（绝不回落旧世代）。
+   * 新服务起不来 → 新世代不激活：旧进程继续服务（端点行换到新世代键，路由仍命中旧进程），
+   * 失败只记运维日志；旧进程退出后按新世代重试。
    */
   private async swapService(
     id: string,
@@ -470,7 +489,10 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     try {
       next = await this.launch(id, newGen, newDecl)
     } catch (err) {
-      this.handleStartFailure(id, newGen, err)
+      // 新世代不激活：构建 / 启动失败只记运维日志，旧进程继续服务（端点行换到新世代键，
+      // 路由仍命中旧进程），依赖者不受影响；待旧进程退出时按新世代重试，成功即真正激活。
+      this.recordStartFailure(id, newGen, err)
+      this.rekeyEndpoints(oldService, newGen, newDecl)
       return
     }
     if (this.stopping || this.isolated.has(id)) {
