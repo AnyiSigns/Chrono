@@ -921,7 +921,7 @@ function fakeServerDeps(overrides = {}) {
 async function postJsonTo(port, path, body) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: `http://127.0.0.1:${port}` },
     body: JSON.stringify(body ?? {}),
   })
   return { status: response.status, payload: await response.json() }

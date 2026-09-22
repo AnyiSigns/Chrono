@@ -58,7 +58,11 @@ function freePort() {
 function httpCall(port, method, path, body) {
   return new Promise((resolveCall, reject) => {
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8')
-    const headers = payload === null ? {} : { 'content-type': 'application/json', 'content-length': payload.length }
+    const headers = { origin: `http://127.0.0.1:${port}` }
+    if (payload !== null) {
+      headers['content-type'] = 'application/json'
+      headers['content-length'] = payload.length
+    }
     const req = httpRequest({ host: '127.0.0.1', port, method, path, headers }, (res) => {
       const chunks = []
       res.on('data', (chunk) => chunks.push(chunk))

@@ -7,6 +7,7 @@ import type { IncomingMessage, Server, ServerResponse, Socket } from 'node:http'
 import { Bridge } from './bridge.ts'
 import { approvalStateRecord, encodeSseRecord, SseHub } from './events.ts'
 import { log as defaultLog } from './frames.ts'
+import { guardInboundRequest } from './inbound-guard.ts'
 import { routeOf } from './routes.ts'
 import type { Route } from './routes.ts'
 import { readWebFile, webDirOf } from './static.ts'
@@ -178,8 +179,10 @@ export function startUiServer(deps: UiServerDeps, port: number): Promise<UiServe
   const log = deps.log ?? defaultLog
   const webDir = deps.webDir ?? webDirOf()
   const sockets = new Set<Socket>()
+  // 校验 Host / Origin 要用实际监听端口（允许调用方传 0 由系统分配）。
+  let boundPort = port
   const server = createServer((req, res) => {
-    void handleRequest(deps, webDir, req, res, log)
+    void handleRequest(deps, webDir, req, res, log, boundPort)
   })
   server.on('connection', (socket: Socket) => {
     sockets.add(socket)
@@ -190,9 +193,11 @@ export function startUiServer(deps: UiServerDeps, port: number): Promise<UiServe
     server.once('error', onError)
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError)
+      const address = server.address()
+      if (address !== null && typeof address === 'object') boundPort = address.port
       resolve({
         server,
-        port,
+        port: boundPort,
         close: () =>
           new Promise<void>((done) => {
             for (const socket of sockets) socket.destroy()
@@ -210,7 +215,17 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   log: (line: string) => void,
+  port: number,
 ): Promise<void> {
+  const rejection = guardInboundRequest(req, port)
+  if (rejection !== null) {
+    sendJson(res, rejection.status, {
+      ok: false,
+      code: rejection.code,
+      message: rejection.message,
+    })
+    return
+  }
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const route = routeOf(req.method ?? 'GET', url.pathname)
   try {

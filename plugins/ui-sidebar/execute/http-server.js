@@ -4,6 +4,7 @@
 import { createServer } from 'node:http'
 import { encodeSseRecord, sidebarStateRecord, SseHub } from './events.js'
 import { log as defaultLog } from './frames.js'
+import { guardInboundRequest } from './inbound-guard.js'
 import { routeOf } from './routes.js'
 import { readWebFile, webDirOf } from './static.js'
 import { isRecord } from './types.js'
@@ -159,8 +160,10 @@ export function startUiServer(deps, port) {
   const log = deps.log ?? defaultLog
   const webDir = deps.webDir ?? webDirOf()
   const sockets = new Set()
+  // 校验 Host / Origin 要用实际监听端口（允许调用方传 0 由系统分配）。
+  let boundPort = port
   const server = createServer((req, res) => {
-    void handleRequest(deps, webDir, req, res, log)
+    void handleRequest(deps, webDir, req, res, log, boundPort)
   })
   server.on('connection', (socket) => {
     sockets.add(socket)
@@ -171,9 +174,11 @@ export function startUiServer(deps, port) {
     server.once('error', onError)
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError)
+      const address = server.address()
+      if (address !== null && typeof address === 'object') boundPort = address.port
       resolve({
         server,
-        port,
+        port: boundPort,
         close: () =>
           new Promise((done) => {
             for (const socket of sockets) socket.destroy()
@@ -185,7 +190,12 @@ export function startUiServer(deps, port) {
   })
 }
 
-async function handleRequest(deps, webDir, req, res, log) {
+async function handleRequest(deps, webDir, req, res, log, port) {
+  const rejection = guardInboundRequest(req, port)
+  if (rejection !== null) {
+    sendJson(res, rejection.status, { ok: false, code: rejection.code, message: rejection.message })
+    return
+  }
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const route = routeOf(req.method ?? 'GET', url.pathname)
   try {

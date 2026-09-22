@@ -17,8 +17,14 @@ export function proxyRequest(
   rest: string,
 ): void {
   const headers: { [key: string]: string | string[] | undefined } = { ...req.headers }
+  // 子应用自带入站校验：Host 由本反代按目标端口重写（删掉后 Node 依 host/port 自动生成），
+  // Origin 则改写成目标子应用自己的源——浏览器带的 Origin 指向壳端口，对子应用是跨源，
+  // 若原样透传会被子应用拒绝；改写后既让正常请求按同源通过，也不放行任何伪造源。
   delete headers['host']
   delete headers['connection']
+  if (headers['origin'] !== undefined) {
+    headers['origin'] = `http://127.0.0.1:${target.port}`
+  }
   const proxyReq = httpRequest(
     {
       host: target.host ?? '127.0.0.1',
