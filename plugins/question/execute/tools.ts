@@ -1,5 +1,5 @@
 // 工具面自述（`question.describe` 的输出）与问题载荷规范化 / 交互卡描述符。
-// 工具名 = `question`；四要素必填；render.detail.kind = `question`（#18 交互渲染器，字段口径见 DESIGN「渲染」）。
+// 工具名 = `question`；四要素必填；render.detail.kind = `question`（#18 交互渲染器，字段口径见「渲染」契约）。
 // caps 与 #25 一致（对象形 fs + 字符串 net）；写类 / 有会话类工具 idempotent:false。
 
 import { asArray, asString, isRecord } from './plan.ts'
@@ -153,7 +153,7 @@ function cardSummary(item: Rec): string {
   return 'question'
 }
 
-/** 交互卡描述符（随 invoke 结果返回，由 #33 落消息 part 进 #11）：字段口径见 DESIGN「渲染」。 */
+/** 交互卡描述符（随 invoke 结果返回，由 #33 落消息 part 进 #11）：字段口径见「渲染」契约。 */
 export function renderCard(item: Rec): Rec {
   return {
     form: 'card',

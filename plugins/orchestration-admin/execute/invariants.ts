@@ -1,6 +1,5 @@
 // 机械闸之二：六条图不变量 + 四条演化规则。
-// 规则以 plugins/loop-policy/DESIGN.md「三、图与六条不变量」「九、演化口径」与
-// docs/plans/agent-graph-design.md §6.4 / §9.2 为准；本插件本地复刻 dry-run（已知实现重复，权威以 #33 为准）。
+// 规则以 #33 契约（图与六条不变量 / 演化口径）为准；本插件本地复刻 dry-run（已知实现重复，权威以 #33 为准）。
 
 import { H } from './hash.ts'
 import {

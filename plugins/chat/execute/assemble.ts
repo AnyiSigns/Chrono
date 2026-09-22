@@ -1,4 +1,4 @@
-// interpret bag / title args 装配（纯函数）：入口 term 只传投影切片，服务按 §1.14 总表装配。
+// interpret bag / title args 装配（纯函数）：入口 term 只传投影切片，服务按 bag 装配契约装配。
 // 下游消费者：#33 `loop-policy.interpret`（一次 bag 覆盖全部节点；#33 再按节点分发）、
 // #49 `session-title.generate`（首条消息标题段 args）。装配只做读取与机械拼装，不做写。
 // 服务不读投影：世界数据由入口 term 读出随 args / ids 传入。
@@ -259,7 +259,7 @@ export interface InterpretBagInput {
 }
 
 /**
- * 装配 #33 `interpret` 的 bag（§1.14 `chat.send` 行）：一次覆盖全部节点所需切片。
+ * 装配 #33 `interpret` 的 bag（`chat.send` 契约）：一次覆盖全部节点所需切片。
  * 仅当对应身份在投影里才落键；缺省身份由 #33 回落包内种子 / 内建兜底。
  */
 export function buildInterpretBag(params: InterpretBagInput): Rec {

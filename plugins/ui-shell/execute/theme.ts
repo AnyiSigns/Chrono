@@ -1,4 +1,4 @@
-// 主题：偏好归一 / 解析 + 首帧防闪脚本（ui-design §16.13）。
+// 主题：偏好归一 / 解析 + 首帧防闪脚本。
 // 首帧脚本按 config 主题 + `prefers-color-scheme` 在 tokens 加载前写 `<html data-theme>`；
 // config 未就绪时先用系统偏好，就绪后由壳页面一次性校正。解析函数与浏览器侧共用同一实现。
 

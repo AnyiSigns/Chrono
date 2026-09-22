@@ -5,7 +5,7 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 /** 普通对象（非数组、非 null）。 */
 export type Rec = { [key: string]: Json }
 
-/** resolve 的结构化失败码（与 DESIGN 口径一致）。 */
+/** resolve 的结构化失败码（与契约口径一致）。 */
 export type SecretErrorCode = 'secret_missing' | 'secret_unreadable' | 'bad_auth_ref'
 
 /** 领域错误：带固定码，由 main 转成协议 error 帧；消息不含值、不含文件内容。 */

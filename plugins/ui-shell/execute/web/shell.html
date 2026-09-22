@@ -47,7 +47,7 @@
     #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
     #slot-overlay > * { pointer-events: auto; }
     body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }
-    /* <1024：消息列退化为「全宽 − 边距」（ui-design §4 响应式表） */
+    /* <1024：消息列退化为「全宽 − 边距」（响应式断点） */
     body.shell-narrow #slot-main { --msg-max-w: 100%; }
     ::selection { background: var(--c-selection); color: var(--c-text); }
 

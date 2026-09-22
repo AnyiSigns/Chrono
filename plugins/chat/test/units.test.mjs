@@ -104,7 +104,7 @@ test('defHashOf：裸哈希 / {def} 引用 / 非法', () => {
   assert.equal(defHashOf({ def: 'nope' }), null)
 })
 
-test('buildInterpretBag：§1.14 全键装配 + 记忆 / 会话 / 图 / 门禁切片', () => {
+test('buildInterpretBag：全键装配 + 记忆 / 会话 / 图 / 门禁切片', () => {
   const ids = idsFixture({ agent: 'agent-a' })
   const wiring = loadWiring()
   const bag = buildInterpretBag({

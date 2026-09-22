@@ -1,4 +1,4 @@
-// 壳 SSE：`GET /events` 的事件流编码与广播中心（docs/protocol.md §2.5 / ui-design §15）。
+// 壳 SSE：`GET /events` 的事件流编码与广播中心（docs/protocol.md §2.5）。
 // 宿主事件原样重播（`impl` 命名空间）+ 壳自身状态（连接态 / 主题）+ 壳合成事件
 // `shell.disconnected` / `shell.reconnected`（断连 / 重连时注入）。
 
@@ -27,7 +27,7 @@ export function shellStateRecord(connected: boolean, theme: string): SseRecord {
   return { impl: SHELL_IMPL, topic: 'shell.state', payload: { connected, theme } }
 }
 
-/** 壳合成事件：断连 / 重连（ui-design §15 登记；#38 消费）。 */
+/** 壳合成事件：断连 / 重连。 */
 export function syntheticEventsFor(
   prevConnected: boolean,
   nextConnected: boolean,

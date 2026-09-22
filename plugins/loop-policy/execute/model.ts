@@ -1,5 +1,5 @@
 // 图六类条目的机械读取与规范化：把随 bag 传入的图数据归一成可执行的模型。
-// 服务不读投影：所有输入来自 bag / args（由调用方入口 term 装配）。形状以 plugins/loop-policy/DESIGN.md 为准。
+// 服务不读投影：所有输入来自 bag / args（由调用方入口 term 装配）。形状以本插件契约为准。
 // 链式条目（{tail,count} + refs 闭包）与已解析数组两种形态都接受。
 
 import { asStringArray, defHashOf, isRecord, numberField } from './plan.ts'

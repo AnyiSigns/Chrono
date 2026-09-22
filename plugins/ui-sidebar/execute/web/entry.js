@@ -683,7 +683,7 @@ export async function mount(root, api) {
     menuAnchor = null
   }
 
-  /** `Esc` 关闭：把焦点归还触发按钮（ui-design §16.2），点外部关闭不抢焦点。 */
+  /** `Esc` 关闭：把焦点归还触发按钮（全局 UI 规范），点外部关闭不抢焦点。 */
   function closeMenuAndRestoreFocus() {
     const anchor = menuAnchor
     closeMenu()

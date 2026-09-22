@@ -23,7 +23,7 @@ const PERMISSION_DESC = {
   deny: 'composer_permission_deny_desc',
 }
 
-/** 权限档 → linear 图标名（ui-design §8 映射）。 */
+/** 权限档 → linear 图标名。 */
 const PERMISSION_ICON = { auto: 'zap', severe: 'shield-alert', review: 'eye', deny: 'ban' }
 
 /** 上下文用量阈值（与组装侧的 75% 压缩提示同阈值）。 */

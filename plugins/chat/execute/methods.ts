@@ -1,7 +1,7 @@
 // 能力类 `chat` 的方法表：send（回合启动）/ history（展示历史窗口）/ resume（跨 run 续跑）。
 // 管道已换代：#14 不再自持 context.build → model.chat → session.commit 静态段序，改为
 // `port.call loop-policy.interpret`（一次 bag 覆盖全部节点；#33 自驱解释器再按节点分发）。
-// 本服务只负责 bag 装配（§1.14 总表）、首条消息 title 旁路段与计划机械合并。
+// 本服务只负责 bag 装配（bag 装配契约）、首条消息 title 旁路段与计划机械合并。
 // 入口 term 只传投影切片；服务不读投影、不写链、不自取时钟（now 一律取 env）。
 
 import {

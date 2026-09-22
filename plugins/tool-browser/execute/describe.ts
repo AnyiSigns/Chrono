@@ -1,5 +1,5 @@
 // 工具面自述（`tool-browser.describe` 的输出）：单工具 `webbrowser` + 描述四要素 + argsSchema + caps + render。
-// 形状对齐 `plugins/tools/DESIGN.md`「`tool` 端口契约」：四要素必填非空、`param_semantics` 覆盖必填参数、
+// 形状对齐「`tool` 端口契约」：四要素必填非空、`param_semantics` 覆盖必填参数、
 // `caps` 对象形含 `fs.read`；render 的 `detail.kind` 必须静态（单工具只能声明一个展开态渲染器）。
 
 import type { Json } from './types.ts'

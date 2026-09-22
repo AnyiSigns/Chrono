@@ -1,5 +1,5 @@
 // 机械闸之一：闭合 / 类型 / publish 偏序 / 端口 ⊆ pins。
-// 规则以 plugins/loop-policy/DESIGN.md「三、图与六条不变量」「八、状态通信与隔离」为准。
+// 规则以 #33 契约（图与六条不变量 / 状态通信与隔离）为准。
 
 import {
   asArray,

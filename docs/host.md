@@ -219,8 +219,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **方法级超时覆盖（`method_timeouts`）**：插件 `schema` 顶层可选 `method_timeouts: {"<能力类>.<方法>": ms}`
   （键也可省能力类前缀、按方法名全局匹配该插件声明），宿主按声明为**本插件被调方法**覆盖等待上限——
   优先级 **方法级 > 进程级 > 常量**；缺省不设。声明非法（非对象 / 键为空或 JS 原型键 / 值非正整数 / 值超计时器硬上限 `2**31-1`，超限会被 `setTimeout` 溢出成 1ms）→
-  装载期记运维日志 `dep.method_timeout_invalid`、按无覆盖处理（不炸宿主）。用途：长回合方法（`loop-policy.interpret`）、
-  流式模型调用（`model.chat`）声明大上限，避免被 30s 缺省截断。**正向效果调用与反向调用（`port.call`）都按目标身份的方法级声明覆盖**，
+  装载期记运维日志 `dep.method_timeout_invalid`、按无覆盖处理（不炸宿主）。用途：长回合方法、
+  流式模型调用声明大上限，避免被 30s 缺省截断。**正向效果调用与反向调用（`port.call`）都按目标身份的方法级声明覆盖**，
   周期方法条目直接调用同规；解析落点 `packages/host/method-timeouts.ts`（`resolveMethodTimeoutMs` 按世界对象缓存声明，不重复读 schema）。
 - **失败作数据回灌**：endpoint **有响应**（`result` 或 `error`）→ `EffResult{ok:true, value}` 回灌（`error` 时 `value` 是错误描述），
   term 可据此分支（降级链）；只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
@@ -232,7 +232,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **只读审计面**：宿主按回合（`run`）/ 身份（`emitter`）/ 结局（`outcome`）查询 `EffectAudit`
   （入站 `audit`；seq 降序、缺省 100 条、上限 1000）；索引在启动时由**基础世界索引 + journal 尾段**重建、
   运行期随审计落链增量补齐；
-  **只读**：不写链、不推进、不参与哈希；#17 S13 编排健康 / #44 指标层 / #37 审计视图共用（查询语义见 `protocol.md` §三）。
+  **只读**：不写链、不推进、不参与哈希（查询语义见 `protocol.md` §三）。
 - 审计 def 进 ① `defs`——它要被 `ref` 指到，必须可寻址。
 - **审计 `put` 是宿主对 `commit` 的直接调用**（`kernel.md` 导出 `commit`）——宿主侧唯一不经 `run` directive 的直写，
   为的是让 `ref` 指向的审计 def 在业务写之前就已可寻址。`kernel.md` §二「唯一调用 commit 的地方 = `run`」指内核**模块内部**依赖，不含宿主外部调用。
@@ -255,7 +255,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   **继承产出它的 eval 的属主**（不按 entry 反查属主）。
   **eval 可按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<命令名>', args}` 代替 `entry` 哈希——
   宿主按命令声明解析入口 def（与命令面同路、机械），属主即命令声明方；term 拿不到他人 def 哈希时用它
-  （如 #32 / #48 的裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留；`entry` 与 `command`
+  （如裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留；`entry` 与 `command`
   不可同条并存、也不可都缺（否则 `bad_directive`）；命令名解析不到 → `refused`（reason `unknown_command`，与命令面同码）。
 - **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计 `put` 推进 head 但不回改该轮 `ctx`），
   **`write` 每条单独一轮**（其 `expect_pos` = 该轮轮首链头；要原子写多份用一条 `batch`），`extern` 中性可随邻段。
@@ -294,9 +294,9 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   `gens` **不含履历**（`adopted` / `born`；与 `world_rev` 摘要口径一致）；`body` = **最近数据世代的 payload def
   body**（宿主解析；无数据世代则回落 active 世代 def body；都无则 `null`）；
   `pins` = **当前代码世代声明里的 `pins` 表**（逻辑端点名 → **被依赖身份名**字面值，宿主入世时已知；无代码世代则 `null`）——
-  机械、来自声明，供调用方入口 term 装配 bag（如 #45 `validate` 判「端口 ⊆ pins」）；
+  机械、来自声明，供调用方入口 term 装配 bag（如校验「端口 ⊆ pins」）；
   **不给 `defs` 表**（哈希键静态不可达）、**不含源码 tree/blob**。按引用构造，O(#身份)，不深拷贝。
-- **投影引用闭包**：`body` 里的显式标记 `{"def":hash}`（单键、值须 64 位小写 hex）由宿主构造投影时跟随**传递闭包**，把可达 def body 放进 `ids.<id>.refs`（`{ <hash>: <body> }`）。**全量返回、不按窗口截断**：`next_before` 恒为 `null`，翻页窗口由调用方（`chat.history` 入口 term）在 `refs` 上按 `before` / `limit` 切片——展示历史完整性不受宿主上限约束。无标记的身份 `refs` 为空对象。`refCap`（`DEFAULT_REF_CAP`）只是防异常数据撑爆投影的**硬安全上限**，正常会话远低于此。服务 `#11` 消息链、`#21` 条目、`#35` 链式 tail、`#33` 六类条目、`#43` 四类 tail。
+- **投影引用闭包**：`body` 里的显式标记 `{"def":hash}`（单键、值须 64 位小写 hex）由宿主构造投影时跟随**传递闭包**，把可达 def body 放进 `ids.<id>.refs`（`{ <hash>: <body> }`）。**全量返回、不按窗口截断**：`next_before` 恒为 `null`，翻页窗口由调用方入口 term 在 `refs` 上按 `before` / `limit` 切片——展示完整性不受宿主上限约束。无标记的身份 `refs` 为空对象。`refCap`（`DEFAULT_REF_CAP`）只是防异常数据撑爆投影的**硬安全上限**，正常数据量远低于此。
 - **注入规则（三路统一）**：eval 的 `ctx` **字段缺省 ⇒ 宿主投影；显式给出（含 `null`）⇒ 原样透传**
   （客户端提交 / 命令 / plan 同规）。投影**按需构造**：含 eval 的轮构造一次、该轮 eval 共享（轮内 eval 不推进世界），
   **以该轮开头的世界为准**；write 轮不构造。
@@ -320,9 +320,9 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 **写者**
 
 - **同一时刻只有一个写者**；`verify` / `replay` 也持锁（日志可能正被写，读到半条会误判）。
-- **锁粒度（2026-09-19，threads-design）**：锁从「run 全程持有」**收窄为「commit 期间持有」**——run 可并发推进 eval / 等待效果，只在落账那一刻串行。**run 级并发**：多个 run 同时活动，并发只在 run 之间，每个 run 内部单 pending 不变。
-- **提交队列 + 乐观校验**：各 run 的 `commit` 进**单一提交队列**，宿主按**到达序串行**出账（仲裁序 = journal `seq`，不新增字段）；提交时校验 base `worldRev`（`expect_pos` 单链头 CAS），冲突 ⇒ 按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改、重试占新 `seq`）。`#1 input` 是 per-thread 键控（`body.slots[<thread_id>]`；**v1 已知限制**：整值 `put` 下不同键并非真正可交换——同线程键写者唯一（#40 待发队列串行）、服务侧清槽的整份 body 取自入口 term 的轮首 ctx（权威）；跨线程 / 跨客户端并发仍 last-write-wins）；`#2 config` 用户级共享只读，写罕见且 last-write-wins。入站 `submit` **accept 仍 FIFO、不抢占**（§七）；被 accept 的多个 run 可并行推进 eval，只在 commit 排队。
-  - **v1 落地口径**：落账段（内核 `run` + journal append）在单一串行链内**无 await**，write directive 的 `expect_pos` 在段内机械锚到当前链头——即「在新链头上重放同一条 directive」，故结构上不产生 `pos_conflict`，乐观重试路径暂不触发。语义等价于 append-only 写（`put` / `add_gen` 等内容寻址 op）可安全 rebase；**读-改-写共享身份 body 的并发写仍是 last-write-wins**（`#1` 靠 per-thread 键控化解；共享 body 的真冲突检测 / 重提交后置）。审计 `put` 与业务写同段串行，追加序 = `seq` 链序；在途 run 的效果路由锚定**本 run 段内所见的世界**（不跟随其他 run 的后续落账）。
+- **锁粒度**：锁从「run 全程持有」**收窄为「commit 期间持有」**——run 可并发推进 eval / 等待效果，只在落账那一刻串行。**run 级并发**：多个 run 同时活动，并发只在 run 之间，每个 run 内部单 pending 不变。
+- **提交队列 + 乐观校验**：各 run 的 `commit` 进**单一提交队列**，宿主按**到达序串行**出账（仲裁序 = journal `seq`，不新增字段）；提交时校验 base `worldRev`（`expect_pos` 单链头 CAS），冲突 ⇒ 按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改、重试占新 `seq`）。按 per-thread 键控的身份 body（`body.slots[<thread_id>]`；**v1 已知限制**：整值 `put` 下不同键并非真正可交换——同线程键写者唯一、服务侧清槽的整份 body 取自入口 term 的轮首 ctx（权威）；跨线程 / 跨客户端并发仍 last-write-wins）；用户级共享身份以读为主，写罕见且 last-write-wins。入站 `submit` **accept 仍 FIFO、不抢占**（§七）；被 accept 的多个 run 可并行推进 eval，只在 commit 排队。
+  - **v1 落地口径**：落账段（内核 `run` + journal append）在单一串行链内**无 await**，write directive 的 `expect_pos` 在段内机械锚到当前链头——即「在新链头上重放同一条 directive」，故结构上不产生 `pos_conflict`，乐观重试路径暂不触发。语义等价于 append-only 写（`put` / `add_gen` 等内容寻址 op）可安全 rebase；**读-改-写共享身份 body 的并发写仍是 last-write-wins**（键控身份靠 per-thread 键控化解；共享 body 的真冲突检测 / 重提交后置）。审计 `put` 与业务写同段串行，追加序 = `seq` 链序；在途 run 的效果路由锚定**本 run 段内所见的世界**（不跟随其他 run 的后续落账）。
 - **停机序列**（`boot stop`）：按**反拓扑序**逐个 `drain` 服务（依赖者先停）→ 落盘 `fsync`（journal 本已 append-only）→ 释放锁 → 退出。停机**不写链、不改 active**。
 - **压缩**：宿主在**启动时**尾段达到阈值（`DEFAULT_COMPACT_TAIL_ENTRIES`）或离线 `boot compact` 时执行——
   ① 在链头追加快照 entry（`op:'snapshot'`，`args = { world_rev }`，应用时自校，锚不歪）；② 快照前的 entry 归档进
@@ -350,45 +350,45 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 > 以下为宿主动词，不改内核。投影闭包见「投影」；并发见「写者」。
 
 - **投影引用闭包**：见「投影」。`{"def":hash}` 跟随传递闭包进 `ids.<id>.refs`；**全量返回**（`next_before` 恒 `null`，翻页由调用方在 `refs` 上切片），`refCap` 仅硬安全上限。
-- **受保护 `pins` 不可删（入世校验）**：跨代比对 `pins`（按被依赖身份名，值即 `decl.pins` 的依赖名），若新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval`）的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：#42 的可见性过滤是黑名单，攻击面在**依赖关系**——agent 可写一个不 pin `#25` 的 `tool-fs` 让四档 fs 强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `#42 validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
-- **密钥本地存储面**：入站 `secrets.put {name, value}` / `secrets.delete {name}`——宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**；与 `asset.*` 并列。服务 `#24 secrets`。
+- **受保护 `pins` 不可删（入世校验）**：跨代比对 `pins`（按被依赖身份名，值即 `decl.pins` 的依赖名），若新世代删除了对**受保护身份**的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：依赖关系是攻击面——新世代可借删 `pins` 让上层强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
+- **密钥本地存储面**：入站 `secrets.put {name, value}` / `secrets.delete {name}`——宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**；与 `asset.*` 并列。
 - **效果审计脱敏 + 体积截断**：`EffectAudit.result` 对发出者 + `port=secrets` + `method=resolve` 按白名单替换为 `{name, kind, has}`（不含本体）；对 `host` 批量方法（`asset.get` / `source.read` / `audit`）结果超过 `MAX_AUDIT_RESULT_BYTES`（64 KiB）时只落 `{truncated:true, size}`——否则 8 MiB 资产 / 拷入既往审计记录的 `audit` 会把 defs / journal / 审计索引撑爆（调用方仍拿完整结果）。
-- **反向调用 `env` 值脱敏（端口审计）**：反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性；目标服务照收原值）——密钥经 `exec` 的 `env` 通道（#29 → #25）下传时不落宿主侧记录。与 `secrets.resolve` 的世界审计脱敏同路、两处口径。**端口审计与 `EffectAudit` 分流**：不进世界、不写链、不参与重放。**落点**：`packages/host/port-audit.ts`——宿主侧有界内存环形缓冲 `PortAuditRing`（容量常量 `PORT_AUDIT_CAPACITY` = 256，满即覆盖最旧），宿主 options `portAuditSink` 可注入 sink 覆盖（库调用方 / 测试；注入时记录**同时**写入缺省环形缓冲，sink 抛错只隔离该旁路、不阻断转发）；`HostHandle.portAuditRecords()` 暴露该环形缓冲的**只读快照**（时间正序、有界，缺省读取面，无需注入 sink）；记录形状 `PortAuditRecord = { at, from, target, port, method, args, run, thread }`（`from` = 发起服务身份、`target` = 路由解析出的目标身份、`args` 已脱敏）。
-- **插件源码读面**：`host.source.read { identity, path } -> { path, content(base64), size }`——把某身份的源码 `tree` / `blob` 按路径读给插件（世界 ① 有源码，投影不含 `tree` / `blob`）。服务 #42 `plugin-admin` 的 `read`（被可见性过滤排除者 → `hidden_identity`，本插件先过滤、不调宿主）。
-- **插件 ③ 目录**（`state/plugins/<id>/`）：插件缓存 / 向量索引 / 水位等可重算产物落此，宿主统一 GC。服务 #21 向量索引、#22 查询向量缓存、#23 sweep 水位、#31 浏览器会话、#41 最近打开、#44 基线缓存。**落地口径**：起服务前宿主为本身份 `mkdir` 该目录，并以环境变量 **`CHRONO_PLUGIN_STATE`** 注入 spawn env（**只注入本身份路径**；宿主不认识目录内容）。**这是路径约定、不是 fs 隔离**——v1 无沙箱，插件进程仍可直接读其它路径。**GC**：宿主启动时（抢锁后、装配前）机械删除目录名 **∉ `world.ids`** 的顶层项（`retire` 只置 `active=null`、id 仍在 `world.ids` ⇒ **目录保留**）；失败不致命、不阻锁释放。身份名必须是**安全单段名**（拒绝含 `/`、`\`、盘符、`.`/`..`、控制字符、Windows 非法字符 / 保留设备名（`CON` 等）、尾随点/空格、JS 原型键（`__proto__` / `constructor` / `prototype`）与保留名 `host`），否则既会路径穿越、又会被 GC 误删；**入世与起服务边界都校验**（运行期写指令也能造 id）。
-- **非 TS 插件与原生子组件物化（H15）**：插件包入世只含**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；编译产物 / 依赖目录 / 原生扩展（`node_modules` / `target/` / 二进制 / `*.node`）**走宿主侧 ③ 依赖缓存**，宿主物化时按清单恢复；宿主仍只按 `plugin.json.start` 起服务。**落地口径**：物化后、spawn 前按清单派发恢复——`package.json` 有依赖 / 锁文件 → `npm ci`（仅当 `package-lock.json` / `npm-shrinkwrap.json`）或 `npm install`（yarn / pnpm / bun 锁回落 install）；`Cargo.toml` → `cargo build --release`；`binding.gyp` → `npm rebuild`。缓存住 `state/deps/`（npm 下载缓存 `state/deps/npm`、Rust `CARGO_TARGET_DIR=state/deps/cargo-target`）；`node_modules` / `target` 落**物化目录**（③，内容寻址复用）。恢复完成后在物化目录写 `.chrono-deps-ok` 标记，标记在则跳过（**以标记而非 `node_modules` 存在性判完成**，半恢复可自愈）；恢复失败 → 服务启动失败 `service.start_failed` reason `deps_failed`。**恢复命令借 shell 解析**（win32 上 `npm` 是 `.cmd` 包装脚本，`shell:false` 会 `EINVAL`）并**前置同一 `startWrapper`**——依赖安装会跑插件声明的 lifecycle 脚本，不能成为绕过沙箱的口子。整服务 Rust：#20 / #22 / #25 / #28 / #41 / #44；原生子组件：#13（Rust tokenizer，进程内、TS 主体）。
+- **反向调用 `env` 值脱敏（端口审计）**：反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性；目标服务照收原值）——密钥经执行请求的 `env` 通道下传时不落宿主侧记录。与 `secrets.resolve` 的世界审计脱敏同路、两处口径。**端口审计与 `EffectAudit` 分流**：不进世界、不写链、不参与重放。**落点**：`packages/host/port-audit.ts`——宿主侧有界内存环形缓冲 `PortAuditRing`（容量常量 `PORT_AUDIT_CAPACITY` = 256，满即覆盖最旧），宿主 options `portAuditSink` 可注入 sink 覆盖（库调用方 / 测试；注入时记录**同时**写入缺省环形缓冲，sink 抛错只隔离该旁路、不阻断转发）；`HostHandle.portAuditRecords()` 暴露该环形缓冲的**只读快照**（时间正序、有界，缺省读取面，无需注入 sink）；记录形状 `PortAuditRecord = { at, from, target, port, method, args, run, thread }`（`from` = 发起服务身份、`target` = 路由解析出的目标身份、`args` 已脱敏）。
+- **插件源码读面**：`host.source.read { identity, path } -> { path, content(base64), size }`——把某身份的源码 `tree` / `blob` 按路径读给插件（世界 ① 有源码，投影不含 `tree` / `blob`）。可见性过滤由调用方负责，宿主不做。
+- **插件 ③ 目录**（`state/plugins/<id>/`）：插件缓存 / 向量索引 / 水位等可重算产物落此，宿主统一 GC。**落地口径**：起服务前宿主为本身份 `mkdir` 该目录，并以环境变量 **`CHRONO_PLUGIN_STATE`** 注入 spawn env（**只注入本身份路径**；宿主不认识目录内容）。**这是路径约定、不是 fs 隔离**——v1 无沙箱，插件进程仍可直接读其它路径。**GC**：宿主启动时（抢锁后、装配前）机械删除目录名 **∉ `world.ids`** 的顶层项（`retire` 只置 `active=null`、id 仍在 `world.ids` ⇒ **目录保留**）；失败不致命、不阻锁释放。身份名必须是**安全单段名**（拒绝含 `/`、`\`、盘符、`.`/`..`、控制字符、Windows 非法字符 / 保留设备名（`CON` 等）、尾随点/空格、JS 原型键（`__proto__` / `constructor` / `prototype`）与保留名 `host`），否则既会路径穿越、又会被 GC 误删；**入世与起服务边界都校验**（运行期写指令也能造 id）。
+- **非 TS 插件与原生子组件物化**：插件包入世只含**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；编译产物 / 依赖目录 / 原生扩展（`node_modules` / `target/` / 二进制 / `*.node`）**走宿主侧 ③ 依赖缓存**，宿主物化时按清单恢复；宿主仍只按 `plugin.json.start` 起服务。**落地口径**：物化后、spawn 前按清单派发恢复——`package.json` 有依赖 / 锁文件 → `npm ci`（仅当 `package-lock.json` / `npm-shrinkwrap.json`）或 `npm install`（yarn / pnpm / bun 锁回落 install）；`Cargo.toml` → `cargo build --release`；`binding.gyp` → `npm rebuild`。缓存住 `state/deps/`（npm 下载缓存 `state/deps/npm`、Rust `CARGO_TARGET_DIR=state/deps/cargo-target`）；`node_modules` / `target` 落**物化目录**（③，内容寻址复用）。恢复完成后在物化目录写 `.chrono-deps-ok` 标记，标记在则跳过（**以标记而非 `node_modules` 存在性判完成**，半恢复可自愈）；恢复失败 → 服务启动失败 `service.start_failed` reason `deps_failed`。**恢复命令借 shell 解析**（win32 上 `npm` 是 `.cmd` 包装脚本，`shell:false` 会 `EINVAL`）并**前置同一 `startWrapper`**——依赖安装会跑插件声明的 lifecycle 脚本，不能成为绕过沙箱的口子。
 - **投递目录大资产直拷（`assets_manifest`）**：插件 `schema` 顶层可选 `assets_manifest: [{ path, sha256, size }]`
   ——声明「被 `.worldignore` 排除、但构建 / 运行需要」的大资产（模型权重、tokenizer 等）。宿主物化时按清单
   **从投递包源目录**（`state/plugins.json` 解析到的包路径）把文件复制到物化目录对应路径，按 `sha256` 校验；
   源文件缺失 / 校验失败 → `service.start_failed` reason `deps_failed`（与依赖恢复同口径）。宿主不触网、不认识资产内容；
-  ③ 可重算性 = 「源目录 + 世界源码」可重算（源目录本身丢失则不可重算，须重新投递——插件 DESIGN 须如实登记）。
-  服务 #20 的 granite-97m 权重 / tokenizer 走此路（`include_bytes!` 构建期输入由直拷满足）。
-- **按队列项游标触发新 run**：`#32` / `#48` 的 `enqueue` **正常返回**（那轮不是 `waiting`）；正确形状是本 run 正常结束、`item` 带 resume 游标（`iter`/`cursor`/slots 引用），裁决 / 作答落账后**续跑（v1 = 裁决 / 作答命令的入口 term 产 `{command:'chat.resume'}` 计划，经 plan 通道按命令名解析起后续轮——见 §五 落账「plan eval 按命令名」）**。与内核 `waiting` 续跑（同 `run_id`/`directives`/`now`）**不是同一机制**。
+  ③ 可重算性 = 「源目录 + 世界源码」可重算（源目录本身丢失则不可重算，须重新投递——插件自述须如实登记）。
+  构建期输入（如模型权重 / tokenizer）走此路（`include_bytes!` 等构建期输入由直拷满足）。
+- **按队列项游标触发新 run**：`enqueue` 类方法**正常返回**（那轮不是 `waiting`）；正确形状是本 run 正常结束、`item` 带 resume 游标（`iter`/`cursor`/slots 引用），裁决 / 作答落账后**续跑（v1 = 裁决 / 作答命令的入口 term 产「按命令名续跑」计划，经 plan 通道按命令名解析起后续轮——见 §五 落账「plan eval 按命令名」）**。与内核 `waiting` 续跑（同 `run_id`/`directives`/`now`）**不是同一机制**。
 - **定时触发**：宿主按插件 `schema` 的**顶层 `periodic` 数组**声明周期起一次 run。每条声明 `{ command | method, every_ms, reads? }`：
   - `command` 条目按该身份声明的入口 term 构造一次 `eval` run（与命令同路）；`method` 条目**直接调该服务方法**（能力类由声明里含该方法者定），方法返回的**计划值 `{"$directives":[...]}` 由宿主按该身份落账**（无计划值 = 本拍无写，按 `done` 收口）。
   - `reads` 是 `{ <bag 键>: <投影字面路径> }`；宿主按路径**机械取用**投影片段放进 `bag`（无 `reads` → `null`），**服务不读投影**。
   - 周期 run 记宿主 `run.started` / `run.finished`（`thread` 恒 `null`）；单条目上一拍未结束则跳过本拍；声明非法只记 `dep.periodic_invalid` 运维日志、不阻断其余；声明变更随 `applyWorld` 增量对齐（计时器不因每轮落账重置）。
-  - 服务 #12 的 `sync` 方法（models.dev 定期后台同步）、**#23 `memory-consolidate` 的 `sweep` / `consolidate`**、**#32 `approval` 的 `sweep`**、**#44 `evolve-metrics` 的 `sweep` / `aggregate`**、#37 的 `mcp.discover` 方法（周期住各插件 schema）。
-- **插件入站转发**：`#37 mcp` 的后端入站面经 `#15` 主端口同源反代（`/p/<id>/*`），壳不自连插件服务，由宿主把入站帧转发到目标服务（保「唯一主端口」）。入站帧 = `forward { identity, command, args? }`：宿主按 `command` 解析入口 term、**要求其属主 = `identity`**（否则 `unknown_command`），构造一次 run（`initiator = "forward"`）；即「入站帧按 #37 声明的入口 term 构造一次 run」（入站翻译产命令 + 写槽计划，服务无写通道）。命令名由壳侧 `/p/<id>/*` 映射提供；宿主不认识业务，只做机械路由与身份约束。
-- **入世校验 dry-run 面**：`host.validate_package { files } -> { ok, errors: [{code, path, message}], result_hash }`——`files` 是 `{ <包内路径>: <text 字符串 | {text} | {base64}> }`（路径必须安全单段、禁逃逸；base64 只收规范编码）。宿主把候选树落临时目录（③，用后即删）后**复用 `seed` / `pack` 同一套 `planPack`** dry-run（`plugin.json` 字段形状（`schema` 可省略）/ 包内路径约束 / `argsSchema` 方言 / 受保护 `pins` 完整性 / term 环 / `.worldignore`），**不写世界**；`result_hash = H(规范化候选树)`（= 该候选树的 `commit` 哈希；`planPack` 未通过时为 `null`）。服务 #42 `plugin-admin` 的 `validate`；#42 `write` 必须携带该 `result_hash`（缺 → `validate_required`）。
-- **服务侧资产存取面**：`host.asset.put { mime, bytes(base64) } -> { kind:'asset', sha256, mime, size }` / `host.asset.get { sha256 } -> { bytes(base64), mime, size }`（缺失 → `asset_missing`）——字节按内容寻址住 `state/assets/<sha256>`（④ 不可重算、**不进世界、不参与重放**）；服务经**反向调用**读写字节，返回的引用由调用方写进世界数据。规范 base64、原始字节上限 **8 MiB**（与入站 `asset.put` 同口径），更大走分块（后置）。服务 #28 二进制读写、#30 二进制响应、#31 截图；工具在本插件实现前回 `binary_unsupported`。
+  - 周期声明住各插件 schema（如后台同步 / sweep / aggregate 类方法）。
+- **插件入站转发**：前端壳可经主端口同源反代（`/p/<id>/*`）把入站帧转发到目标插件服务（保「唯一主端口」，壳不自连插件服务）。入站帧 = `forward { identity, command, args? }`：宿主按 `command` 解析入口 term、**要求其属主 = `identity`**（否则 `unknown_command`），构造一次 run（`initiator = "forward"`）；即「入站帧按声明的入口 term 构造一次 run」（入站翻译产命令 + 写槽计划，服务无写通道）。命令名由壳侧 `/p/<id>/*` 映射提供；宿主不认识业务，只做机械路由与身份约束。
+- **入世校验 dry-run 面**：`host.validate_package { files } -> { ok, errors: [{code, path, message}], result_hash }`——`files` 是 `{ <包内路径>: <text 字符串 | {text} | {base64}> }`（路径必须安全单段、禁逃逸；base64 只收规范编码）。宿主把候选树落临时目录（③，用后即删）后**复用 `seed` / `pack` 同一套 `planPack`** dry-run（`plugin.json` 字段形状（`schema` 可省略）/ 包内路径约束 / `argsSchema` 方言 / 受保护 `pins` 完整性 / term 环 / `.worldignore`），**不写世界**；`result_hash = H(规范化候选树)`（= 该候选树的 `commit` 哈希；`planPack` 未通过时为 `null`）。调用方写身份前必须携带该 `result_hash`（缺 → `validate_required`）。
+- **服务侧资产存取面**：`host.asset.put { mime, bytes(base64) } -> { kind:'asset', sha256, mime, size }` / `host.asset.get { sha256 } -> { bytes(base64), mime, size }`（缺失 → `asset_missing`）——字节按内容寻址住 `state/assets/<sha256>`（④ 不可重算、**不进世界、不参与重放**）；服务经**反向调用**读写字节，返回的引用由调用方写进世界数据。规范 base64、原始字节上限 **8 MiB**（与入站 `asset.put` 同口径），更大走分块（后置）。供插件读写二进制字节（能力未实现时调用方可回 `binary_unsupported`）。
 - **宿主保留能力类 `host`**：宿主暴露保留身份名 `host`（**不进世界**），`pins` 值为 `host` 的项在入世解析时绑定到**宿主自身**（受保护 `pins` 校验同样认它）。方法：
   - `thread.resume { entry, args?, thread? } -> { run }` / `thread.terminate { run } -> { ok }`（run 生命周期）。`terminate` 等价 `cancel{run}`（未知 → `unknown_run`）；`resume` 是**宿主通用原语**——起一次 detached run（无 socket、结果不回流、事件照广播），`initiator` = 调用方 emitter，宿主**不认识游标语义**（游标由调用方放进 `args`）；detached run `caps:{}`、`thread` 缺省 `null`，并发上限 `MAX_DETACHED_RUNS`（超限 `too_many_runs`）。
   - `audit { filter?, limit? } -> { records, truncated }`（只读审计面，供服务读 `EffectAudit`；`filter` 与入站 `audit` 同形，seq 降序、缺省 100、上限 1000）；
-  - `identities {} -> { list: [{ id, active, implements, commands }] }`（只读**身份清单面**：宿主从世界 + 各身份当前代码世代声明机械读出；#42 `plugin.list` 的数据源。不含 `pins` 明细——pins 在投影 `ids.<id>.pins`）；
-  - `source.read { identity, path } -> { path, content(base64), size }`（只读源码读面，供 #42 `plugin.read`；投影不含 `tree`/`blob`，见「插件源码读面」）；
+  - `identities {} -> { list: [{ id, active, implements, commands }] }`（只读**身份清单面**：宿主从世界 + 各身份当前代码世代声明机械读出。不含 `pins` 明细——pins 在投影 `ids.<id>.pins`）；
+  - `source.read { identity, path } -> { path, content(base64), size }`（只读源码读面；投影不含 `tree`/`blob`，见「插件源码读面」）；
   - `validate_package { files } -> { ok, errors, result_hash }`（见上「入世校验 dry-run 面」）；
   - `asset.put` / `asset.get`（见上「服务侧资产存取面」）。
-  #27 线程控制、#42 `validate`、#28/#30/#31 字节存取、#43/#44 审计读面共用；宿主不解释业务，只做机械路由与内容寻址。**v1 受信面**：无方法级鉴权——任何 pin `host` 的插件都可 `audit` / `source.read` / `asset.get` / `thread.terminate`（过滤责任在上层 #42，宿主不强制）。
+  保留能力类供上层插件共用；宿主不解释业务，只做机械路由与内容寻址。**v1 受信面**：无方法级鉴权——任何 pin `host` 的插件都可 `audit` / `source.read` / `asset.get` / `thread.terminate`（过滤责任在调用方，宿主不强制）。
   - **host pin 的运行期限制**：`host` 字面量只在**入世（`seed` / `pack`，走 `batch` 子操作）**成立；**裸运行期顶层 `add_gen` / `put` / `graft` 不接受 host pin**（内核 pin 形态要求 64-hex），宿主对顶层 host pin 提前 `bad_directive`（`batch` 子操作内仍保留字面量）。数据世代通常 `pins:{}`，故 v1 不受影响。
-- **线程控制面**：`thread.send` / `thread.status` → **#11 `session` 服务**（`deliver` 能力方法 + 投影读，见 `plugins/session/DESIGN.md`）；`thread.resume` / `thread.terminate` → **宿主保留能力类 `host`**（run 生命周期，与审批 resume 同源；`#27` 以工具名 `subagent.resume` / `subagent.terminate` 暴露）。**宿主不直造 #11 body**（保「载体不认识业务」）。
+- **线程控制面**：`thread.resume` / `thread.terminate` → **宿主保留能力类 `host`**（run 生命周期）；线程数据面（发送 / 状态）由上层服务提供，宿主不直造其 body（保「载体不认识业务」）。
 - **run 级并发 + 提交队列 + 乐观校验**：见「写者」；锁收窄为 commit 期间，多 run 同时活动，提交队列串行落账（仲裁序 = `seq`）。v1 在串行段内重锚 `expect_pos`，等价于 append-only 写的安全 rebase（详见「写者 · v1 落地口径」）；`worldRev`/`expect_pos` CAS 冲突重试路径保留为契约、暂不触发。
-- **宿主事件面（2026-09-19 登记）**：宿主自身在 **run 生命周期**广播事件——`run.started`（受理并开始推进）/ `run.finished`（收口，`status ∈ done/refused/idle/cancelled`；**异常路径也必发**，status 记 `refused`）；`run.started` 与 `run.finished` **严格成对、恰好一次**。载荷**必带 `run` / `thread` / `status` / `reasons`**（`reasons` 取自该 run 收口 `observations` 末条 `kind:'refused'` 的 `reasons`，无则 `[]`；`status=refused` 时说明收口原因），与插件 `event` 同路经入站面广播给已连接客户端（`impl = "host"`），**不落账、不推进、不进世界、不进运维日志**。`thread` 来自发起者提交时的可选字段（原样回带、**不校验**，是展示标签非安全边界）；detached run 恒 `thread:null`。用途：UI 侧栏运行角标、composer 发送/终止形态、`#38` 回合完成通知。宿主**不解释业务**，只广播自身 run 的起止。
+- **宿主事件面（2026-09-19 登记）**：宿主自身在 **run 生命周期**广播事件——`run.started`（受理并开始推进）/ `run.finished`（收口，`status ∈ done/refused/idle/cancelled`；**异常路径也必发**，status 记 `refused`）；`run.started` 与 `run.finished` **严格成对、恰好一次**。载荷**必带 `run` / `thread` / `status` / `reasons`**（`reasons` 取自该 run 收口 `observations` 末条 `kind:'refused'` 的 `reasons`，无则 `[]`；`status=refused` 时说明收口原因），与插件 `event` 同路经入站面广播给已连接客户端（`impl = "host"`），**不落账、不推进、不进世界、不进运维日志**。`thread` 来自发起者提交时的可选字段（原样回带、**不校验**，是展示标签非安全边界）；detached run 恒 `thread:null`。用途：UI 运行角标、发送 / 终止形态、回合完成通知。宿主**不解释业务**，只广播自身 run 的起止。
 
 **其它**
 
 - 插件服务只允许持有**可重算状态（③）**；④ 不可重算必须显式声明——v1 无 ④ 声明形态（`plugin.json.state` 仍只允许 `recomputable`；④ 档随需要它的首个不可重算服务后置，与下面的数据引用不是同一层）。
-- 密钥不进世界：世界数据只存引用 `auth_ref = {kind:'local'|'env', name}`（由 `#2` / `#24` 冻结；`local` 读宿主侧用户本地文件，`env` 读进程环境）。本体不进世界、不进审计、不进 config 导出；重放只复现引用、不复现密钥。这是**身份 body 字段**，不是 `plugin.json` 的 ④ 状态档。
+- 密钥不进世界：世界数据只存引用 `auth_ref = {kind:'local'|'env', name}`（引用形状由身份数据契约冻结；`local` 读宿主侧用户本地文件，`env` 读进程环境）。本体不进世界、不进审计、不进 config 导出；重放只复现引用、不复现密钥。这是**身份 body 字段**，不是 `plugin.json` 的 ④ 状态档。
 - **服务断连自退出**：插件服务检测到与宿主连接断开（**stdin EOF / 管道断开**）即**自退出**（服务协议义务，见 `docs/protocol.md` §2.7）——避免宿主崩溃后孤儿进程占端点。
 - 判定 / **决策路由** / 评分 / 门禁写成 term；**能力解析路由**不是判定，是宿主的机械解析（见「路由」）。
   取用 / 效果执行 / 装载在宿主（`kernel.md` §十）。

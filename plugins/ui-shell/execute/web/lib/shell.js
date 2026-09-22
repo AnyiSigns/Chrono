@@ -294,7 +294,7 @@ if (bannerRetry !== null) {
 
 function renderToasts() {
   if (toastRoot === null) return
-  // DOM 序兜底（ui-design §16.11）：toast 与 lightbox 同为 --z-70，把 toast 容器移到
+  // DOM 序兜底：toast 与 lightbox 同为 --z-70，把 toast 容器移到
   // <body> 末端，恒晚于子应用内后插入的 lightbox，确保 toast 在其之上可见。
   document.body.appendChild(toastRoot)
   const visible = toastQueue.visible()

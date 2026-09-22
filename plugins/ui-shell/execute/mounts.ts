@@ -25,7 +25,7 @@ export const HEADLESS_FILE = 'ui-headless.json'
 export const DEFAULT_UI_PORT = 8787
 export const PROXY_PREFIX = '/p/'
 
-/** 默认挂载表（ui-design §15）：一插件一 slot，增删改表不改壳代码。 */
+/** 默认挂载表：一插件一 slot，增删改表不改壳代码。 */
 export const DEFAULT_MOUNTS: MountEntry[] = [
   { id: 'ui-sidebar', path: '/p/ui-sidebar/', slot: 'sidebar', port: 8791 },
   { id: 'ui-chat', path: '/p/ui-chat/', slot: 'main', port: 8788 },

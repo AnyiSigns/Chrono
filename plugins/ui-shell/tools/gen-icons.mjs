@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUT = resolve(HERE, '..', 'execute', 'web', 'icons.v1.svg')
 
-// 登记名（ui-design §8）→ Lucide 现行名（个别图标在 Lucide 新版改过名）。
+// 登记名 → Lucide 现行名（个别图标在 Lucide 新版改过名）。
 const ICONS = {
   'arrow-up': 'arrow-up',
   square: 'square',

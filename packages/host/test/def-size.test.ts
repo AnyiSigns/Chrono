@@ -1,6 +1,6 @@
 // G3 def 大小实测：256KB inline 附件（base64）/ 文本上限的可行性——
 // 量出 H / commit / 落盘行字节 / 全量重放的现实成本，喂给 G4（资产面）与 #1（input）定稿。
-// 断言取宽松上限（防病态回归）；精确数值随测试输出记录到 draft-design.md 门禁表。
+// 断言取宽松上限（防病态回归）；精确数值随测试输出记录。
 
 import { describe, expect, it, afterEach } from 'vitest'
 import { join } from 'node:path'

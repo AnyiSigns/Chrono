@@ -30,7 +30,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 ```
 
 - 段序归 loop-policy 图数据（改图 = 数据换代热生效）；本包不再持静态管道。
-- 服务按装配总表装配 interpret bag：`input` / `config` / `tier` / `memories` / `session` / `graph` /
+- 服务按 bag 装配契约装配 interpret bag：`input` / `config` / `tier` / `memories` / `session` / `graph` /
   `persona` / `skills` / `workspace_root` / `evidence` / `todo` / `guard_rules` / `sandbox_tiers` /
   `tools_bindings` / `mcp_tools` 等（缺对应身份即省略，由 loop-policy 回落种子 / 内建兜底）。
 - interpret 段与 title 段返回的 `$directives` **按段序机械合并**为顶层 `$directives`（数组拼接，不构造新 JSON 对象）。

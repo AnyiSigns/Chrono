@@ -136,6 +136,6 @@ methods / start / members / `pins.host` 解析到宿主保留能力类）、`per
 - **`sweep` 的「新索引」形状**：在 `trace` 对象上追加 `retained` / `dropped` / `swept_at` 字段（`tail` / `count`
   仍按 `evolution` schema）；过期条目的 def 仍在链上（① 档既定代价）。待 evolution / loop-policy 落地后可与台账端再对齐。
 - **`step.refusal` 的归因**需 `bag.refusal_codes`（拒绝码 → 归因）提供；缺省只用 `trace.refused_at`（自带归因）。
-- **periodic.reads 路径与 DESIGN 字面不同**：链式条目在投影 `refs` 闭包（`ids.<id>.refs`）里，只读
+- **periodic.reads 路径与契约字面不同**：链式条目在投影 `refs` 闭包（`ids.<id>.refs`）里，只读
   `body` 拿不到条目，故本 schema 读整份身份投影（`aggregate`：`["ids","evolution"]` + `["ids","loop-policy"]`；
-  `sweep`：`["ids","evolution"]`）。服务同时兼容 DESIGN 的 `body` / `refs` 分开传形状，待 loop-policy 落地后对齐。
+  `sweep`：`["ids","evolution"]`）。服务同时兼容契约的 `body` / `refs` 分开传形状，待 loop-policy 落地后对齐。

@@ -2,7 +2,7 @@
 // 四条硬约束（写期机械校验，不满足直接拒）：evidence_ids 必填非空 / fork-only 带 derived_from /
 // 携带上次 validate 的结果哈希 / 额度受 #33 thresholds（用户显式请求不占额度）。
 // 计划顺序：put(候选图 def) + put(writes[].payload def) → put(提案) + put(新 evolution body) + add_gen(evolution)。
-// 跨身份 writes[] 形状按 DESIGN「跨身份采纳」：采纳阶段才由 #33 展开 add_gen(<identity>)，本插件不执行。
+// 跨身份 writes[] 形状按「跨身份采纳」契约：采纳阶段才由 #33 展开 add_gen(<identity>)，本插件不执行。
 
 import { resolveLimits } from './config.ts'
 import { validateBag } from './gate.ts'

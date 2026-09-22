@@ -94,7 +94,7 @@ export function assembleDiscoverArgs(inputBody: Json): Rec | null {
 
 /**
  * 清 `model.probe` 槽的整份输入 body：只把 `_main` 置 `{kind:'idle'}`，其余线程键原样。
- * 与 `plugins/input/DESIGN.md` §读取契约「写回者 = 消费该槽的写类命令的终局计划」一致。
+ * 与读取契约「写回者 = 消费该槽的写类命令的终局计划」一致。
  */
 export function clearSlotBody(inputBody: Json): Rec {
   const base: Rec = isRecord(inputBody) ? { ...inputBody } : {}

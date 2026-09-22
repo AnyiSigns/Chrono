@@ -216,7 +216,7 @@ KernelOutput = { world, journal, head, pending, observations, status, usage }
 
 三条设计语义：**整次调用原子**（拒绝/等待/空闲返回的是输入世界、日志为空，克隆体只服务于 done）；**等待从不返回部分世界**（不捕获续体，结果由输入回灌，从入口重跑，走到同一 `eff` 取 `results[id]`）；**推荐一条 write 一个调用**（要原子写多份用一条 `batch`，这是 batch 的主要用途）。
 
-**run 级并发（2026-09-19，threads-design）**：多个 run 可同时活动——并发**只在 run 之间**，每个 run 内部仍是单 pending（eval 内不并行）。这是**宿主侧**改动（提交队列 + 乐观校验，见 `host.md` §五 写者），**不动内核 `run` 的语义**：`run` 仍是纯函数、单 pending、`expect_pos` 单链头 CAS。宿主把各 run 的 `commit` 进单一提交队列串行落账，冲突（base `worldRev` 不符）时按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改，重试占新 `seq`、入账可辨）。仲裁序 = journal `seq`（链序），**无需在 `Entry`/`Op` 加新字段**。§十四边界 5「单链 CAS、不做多链合并」不变——并发 run 都写**同一条单链**。
+**run 级并发**：多个 run 可同时活动——并发**只在 run 之间**，每个 run 内部仍是单 pending（eval 内不并行）。这是**宿主侧**改动（提交队列 + 乐观校验，见 `host.md` §五 写者），**不动内核 `run` 的语义**：`run` 仍是纯函数、单 pending、`expect_pos` 单链头 CAS。宿主把各 run 的 `commit` 进单一提交队列串行落账，冲突（base `worldRev` 不符）时按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改，重试占新 `seq`、入账可辨）。仲裁序 = journal `seq`（链序），**无需在 `Entry`/`Op` 加新字段**。§十四边界 5「单链 CAS、不做多链合并」不变——并发 run 都写**同一条单链**。
 
 效果身份 `eff_id = H({run, i, n})`：`i` 是 directive 序号，`n` 是该次求值内效果序号——序号要带，否则一次调用内多次求值碰撞。不捕获续体的代价：单 pending 是严格求值下界（同时挂起多个语义上不可能）；一个 directive 内 k 个效果 ⇒ 总成本 O(k²)（每次续跑重放前缀），由 `limits.gas` 封顶不会失控但按期付。纪律：效果放叶子、长循环拆多 directive（`i` 不同 ⇒ 各自前缀更短）。门外逃生舱（宿主侧，不破不捕获续体）：真正贵的是重复触碰真实端口而非重放纯计算，效果身份确定 ⇒ 宿主可按 `(port, method, canonicalJson(args))` 缓存幂等端口结果，把外效应摊平到 O(k)；但宿主不能"从第 k 个效果续跑内核"——那需捕获续体。
 

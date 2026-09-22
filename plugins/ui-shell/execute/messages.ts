@@ -13,7 +13,7 @@ export interface MessageEntry {
   action?: string
 }
 
-/** 文案表须覆盖的插件错误码前缀（ui-design §15 文案表）。 */
+/** 文案表须覆盖的插件错误码前缀。 */
 export const MESSAGE_PREFIXES = [
   'ui_',
   'model_',

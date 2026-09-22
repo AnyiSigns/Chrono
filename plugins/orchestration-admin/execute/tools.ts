@@ -1,6 +1,6 @@
 // 工具面自述（`orchestration-admin.describe` 的输出）：四个工具 + 描述四要素 + 工具卡 render 描述符。
 // 工具名命名空间化 `orchestration.*`（否则裸 read / write 与其它工具撞名，破「工具名全局唯一」）；
-// render 按 DESIGN「渲染」表：四个工具都 `solid`，propose 展开看 diff。
+// render 按「渲染」表：四个工具都 `solid`，propose 展开看 diff。
 
 import type { Json, Rec } from './types.ts'
 

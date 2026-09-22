@@ -83,7 +83,7 @@ pub fn handle_control(message: &Value) -> Option<Value> {
 }
 
 /// `reveal` 目标路径：只按 `args.workspace` id 在随 args 传入的 body 里解析。
-/// 不接受未校验的 `args.path`——DESIGN 只声明 `{workspace}`，路径真源是 workspace body。
+/// 不接受未校验的 `args.path`——契约只声明 `{workspace}`，路径真源是 workspace body。
 fn reveal_path(args: &Value) -> Result<String, (String, String)> {
     let id = args
         .get("workspace")

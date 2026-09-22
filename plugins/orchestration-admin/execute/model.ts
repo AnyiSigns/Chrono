@@ -1,5 +1,5 @@
 // 图六类条目 / pins / 台账的机械读取与规范化：把随 bag 传入的图数据归一成可校验的模型。
-// 服务不读投影：所有输入来自 bag / args（由 #33 装配）。形状以 plugins/loop-policy/DESIGN.md 为准。
+// 服务不读投影：所有输入来自 bag / args（由 #33 装配）。形状以 #33 契约为准。
 
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'

@@ -1,7 +1,7 @@
 // 工具面自述（`todo.describe` 的输出）：两个工具 + 描述四要素 + 工具卡 render 描述符。
 // `todo.write` 走 describe / invoke；`todo.read` 是能力类工具绑定、method 缺省 = 投影读
 // （清单数据由调用方入口 term 读本插件投影后随 bag 传入，本服务不自读投影），故带 binding 标记。
-// render 形状对齐 plugins/tools/DESIGN.md「工具卡渲染」；caps 与 sandbox 同形（无 fs、无 net）。
+// render 形状对齐「工具卡渲染」契约；caps 与 sandbox 同形（无 fs、无 net）。
 
 import type { Json, Rec } from './types.ts'
 
@@ -15,7 +15,7 @@ const NO_CAPS: Rec = {
   procs_max: 1,
 }
 
-/** 工具卡 render 描述符（DESIGN 的 card 模板）。 */
+/** 工具卡 render 描述符（card 模板）。 */
 const TODO_RENDER: Rec = {
   form: 'card',
   label: 'todo',

@@ -15,7 +15,7 @@ import {
   startService,
 } from './driver.mjs'
 
-/** §1.14 `chat.send` 行要求的 interpret bag 键。 */
+/** `chat.send` 要求的 interpret bag 键。 */
 const BAG_KEYS = [
   'input',
   'config',

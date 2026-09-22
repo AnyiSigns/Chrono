@@ -10,7 +10,7 @@ export function createUiState() {
   const listeners = new Map()
 
   function set(key, value) {
-    // 键空间由壳登记；未登记键告警并忽略（DESIGN「新增键须先登记」）。
+    // 键空间由壳登记；未登记键告警并忽略（新增键须先登记）。
     if (!UI_STATE_KEYS.includes(key)) {
       if (typeof console !== 'undefined' && typeof console.warn === 'function') {
         console.warn(`uiState: 未登记的状态键「${key}」已忽略；新增键须先在 UI_STATE_KEYS 登记`)

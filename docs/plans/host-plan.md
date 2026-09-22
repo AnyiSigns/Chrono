@@ -447,7 +447,7 @@ project(world, head):                      # 宿主只读视图；按引用构�
 
 ## 插件前置第三批落地（H6 / H8 / H13；H3 / S1 随 H14）
 
-> 与 `docs/plans/draft-design.md` §1.13 对应；载体改动，不改内核、不给插件开特例。
+> 载体改动，不改内核、不给插件开特例。
 
 - **H13 `host.validate_package`（已落地）**：`packages/host/validate-package.ts` 把 `files`（`{ <包内路径>: text | {text} | {base64} }`，路径安全单段校验）落临时目录后**复用 `assembly` 的 `planPack`** dry-run（`plugin.json` 12 字段 / 路径约束 / `argsSchema` 方言 / 受保护 `pins` / term 环 / `.worldignore`），返回 `{ok, errors, result_hash}`；`result_hash` = 候选树 `commit` 哈希（`planPack` 未通过时 → null）。接线在 `host-capability.ts`（`runtimeDir` 注入）；测试见 `test/host-capability.test.ts`。
 - **H6 定时触发（已落地）**：`packages/host/periodic.ts` 读身份 `schema` def body 顶层 `periodic` 数组（`{command|method, every_ms, reads?}`）并增量排程（`setInterval` unref、单条目并发去重、声明变更随 `applyWorld` 对齐、停机清空）；`host.ts` 的 `runPeriodicEntry` 起 run——命令条目按入口 term 起 `eval`，方法条目直接调端点方法并把返回的 `$directives` 经 `effect` 新导出 `parsePlanDirectives` 落账；`reads` 由 `buildPeriodicBag` 机械取投影片段。周期 run 发宿主 `run.started` / `run.finished`（`thread:null`）。测试见 `test/host-periodic.test.ts`。

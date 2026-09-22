@@ -116,7 +116,7 @@
 宿主 → 发起者   result   { run, status, observations }        # run 结束时推；status ∈ done/refused/idle/cancelled
 发起者 → 宿主   cancel   { v, id, run }                       → accepted { id }   # 真取消该 run（≠ stop 停宿主）
 发起者 → 宿主   command  { v, id, name, args, caps, limits, thread? }  → result { id, ... }
-发起者 → 宿主   forward  { v, id, identity, command, args?, caps?, limits?, thread? } → result { id, ... }  # 插件入站转发（H8）
+发起者 → 宿主   forward  { v, id, identity, command, args?, caps?, limits?, thread? } → result { id, ... }  # 插件入站转发
 发起者 → 宿主   commands { v, id }                           → list { id, commands: [...] }
 发起者 → 宿主   audit    { v, id, filter? }                  → audits { id, records, truncated }  # 只读审计面
 发起者 → 宿主   asset.put { v, id, mime, bytes }             → asset.ref { id, ref }   # 字节直写资产区（不进世界）
@@ -145,7 +145,7 @@
 - `audit` 是**只读审计面**：按 `run`（回合）/ `emitter`（发出者身份）/ `outcome` 过滤 `EffectAudit`，
   机械 AND、**seq 降序取最新 `limit` 条**（缺省 100、上限 1000）；`records` 形状
   `{seq, at, by, body}`，`body = {kind:'effect_audit', request, result, port, method, outcome, run, emitter}`。
-  只读：不写链、不推进、不参与哈希（#17 S13 编排健康 / #44 指标层 / #37 审计视图共用）。非法过滤（未知键 / 类型不符 /
+  只读：不写链、不推进、不参与哈希。非法过滤（未知键 / 类型不符 /
   `outcome` 不在词表 / `limit` 越界）→ `error{code:'bad_directive'}`。
 - **命令是具名入口的糖**：宿主按声明把 `name` 解析成入口 def，机械校验 `args`，构造
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
@@ -189,14 +189,14 @@
 | `bad_term_ref` | 入世时 `$ref` 指向包内不存在的成员 | `host.md` §五 源码 |
 | `identity_mismatch` | `pack --identity` 与包内 `plugin.json.identity` 不一致 | `host.md` §五 入世路径 |
 | `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval`）的引用（入世整批拒） | `host.md` §五 源码 |
-| `hidden_identity` | #42 `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/DESIGN.md` |
-| `validate_required` | #42 / #45 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/DESIGN.md` |
+| `hidden_identity` | #42 `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/README.md` |
+| `validate_required` | #42 / #45 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/README.md` |
 | `restart_exhausted` | 崩溃重启超过 `restart` 上限 | `host.md` §五 装配 |
 | `bad_start_wrapper` | 启动包装器非法值（空 / 含 NUL / 换行） | `host.md` §五 服务启动包装器 |
 | `bad_call_timeout` | 调用超时选项非法值 | `host.md` §五 效果 |
-| `picker_unavailable` | 无图形会话，原生目录选择器不可用 | `plugins/workspace/DESIGN.md` |
+| `picker_unavailable` | 无图形会话，原生目录选择器不可用 | `plugins/workspace/README.md` |
 | `not_found` | `host.source.read` 路径不存在 / 指向目录 | `host.md` §五 宿主扩展面 |
-| `net_denied` | `sandbox` 网络档位拒绝（`caps.net` 越档） | `plugins/sandbox/DESIGN.md` |
+| `net_denied` | `sandbox` 网络档位拒绝（`caps.net` 越档） | `plugins/sandbox/README.md` |
 | `internal` | 宿主内部错误 | — |
 
 - **注**：`refused` 的 `reasons` 由内核给出（如 `eff_error` / `pos_conflict` / `bad_term` / `gas_exhausted` 等），本表只列宿主 / 协议层错误码；`transport_failed` 是宿主对"效果未执行"（管道 / 帧 / 进程死亡 / 未解析 / 超时）的归类。

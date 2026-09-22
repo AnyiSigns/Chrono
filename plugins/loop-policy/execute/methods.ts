@@ -1,4 +1,4 @@
-// 能力类 `loop-policy` 的唯一方法 `interpret`：入口 #14 入口 term eff 本方法（bag 装配归 #14，§1.14）。
+// 能力类 `loop-policy` 的唯一方法 `interpret`：入口 #14 入口 term eff 本方法（bag 装配归 #14）。
 // 服务自驱：读图数据 → 解释器顺序推进 → 回合尾写 trace / 队列项 / 提案扫描 → 返回计划交 #14 合并上提。
 // 服务不读投影、不写链、不自取时钟（now 取 env）；同输入同输出（LLM 项除外，eff_log 回灌配对下等价）。
 

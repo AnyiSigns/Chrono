@@ -1,5 +1,5 @@
 // `context-window` 服务内部类型：协议帧、调用帧 env、规范消息模型、policy、bag。
-// 规范消息模型与 DESIGN.md「规范消息模型」一致（字段名用 camelCase，方言化后才落厂商字段名）。
+// 规范消息模型（字段名用 camelCase，方言化后才落厂商字段名）。
 
 /** 内核口径的 JSON 值（协议帧载荷）。 */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }

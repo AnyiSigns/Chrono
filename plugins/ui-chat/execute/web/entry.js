@@ -541,7 +541,7 @@ export async function mount(root, api) {
         return
       }
       if (event.key !== 'Tab') return
-      // 焦点陷阱：Tab 在 overlay 内循环，焦点不滞留背景（ui-design §16.2）。
+      // 焦点陷阱：Tab 在 overlay 内循环，焦点不滞留背景。
       const focusables = overlay.querySelectorAll(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
       )

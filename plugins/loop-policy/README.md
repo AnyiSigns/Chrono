@@ -101,7 +101,7 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 **与 orchestration-admin 对拍（2026-09-21 已完成）**：`test/parity.test.mjs` 对同一 bag 同时跑权威 `validateGraphData` 与 orchestration-admin
 `validateBag`，逐项断言规则 / 错误码 / 结果哈希一致。对拍修正一处口径：不变量 4 的写档 fs 判据改为**声明式**
 （显式声明 `caps.fs.write` 非 `'none'` 才算高危，且在 `effects.ports` 之外也据 `caps.fs.write` 判定，使
-`tool.dispatch`（端口 `tools`、写档）受约束，与 DESIGN §三 一致）。已同步修正 `plugins/orchestration-admin/**`
+`tool.dispatch`（端口 `tools`、写档）受约束，与 #33 契约一致）。已同步修正 `plugins/orchestration-admin/**`
 并在两处 README 登记。
 
 ## trace / eff_log 与审批 / 提问往返
@@ -153,12 +153,12 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 ## 未决 / 偏离（明写）
 
 - **chat bag / `bag.resume` 接口（已落地）**：`chat.send` / `chat.resume` 的入口 term 经自能力路由 eff `loop-policy.interpret`。
-  本插件按装配总表与 DESIGN 定义并容错接受：`bag.input`（槽或归一）、`bag.slots`、`bag.refs`/`bag.graph_refs`、
+  本插件按 bag 装配契约定义并容错接受：`bag.input`（槽或归一）、`bag.slots`、`bag.refs`/`bag.graph_refs`、
   `bag.resume = {cursor, thread, payload}`（也接受 cursor 直接作 resume、`payload.verdict` 或 `resume.verdict`）。
 - **context-window `extra_messages` 为登记项**：同一 `interpret` 内 iter 间产物（工具结果 / verify 报告 / 提问答案）经服务内存
   `extra_messages` 随 `context.assemble` bag 传入，需 context-window 在 `bag` 接受该键并追加到 messages 尾部（未改 context-window，仅登记）。
-- **sink 延后收口**：DESIGN 字面为每个 iter 都到 `commit`；本实现将 sink 延后到 loop 终止 / 拒绝短路时执行一次，
-  以保「回合尾一次写」且不重复提交用户消息 / 清槽。属对 DESIGN 的解释性收敛，已在 README 登记。
+- **sink 延后收口**：契约字面为每个 iter 都到 `commit`；本实现将 sink 延后到 loop 终止 / 拒绝短路时执行一次，
+  以保「回合尾一次写」且不重复提交用户消息 / 清槽。属对契约的解释性收敛，已在 README 登记。
 - **`post` 失败码**：全局拒绝码表无独立 post 码，本插件用 `capability_mismatch`（graph）承载「Scope 产出不合契约」。
 - **不变量 4 写期判据**：图数据无工具名，故写期按端口名 + **声明式写档 `caps.fs.write`** 机械近似；更精确的
   `(port, tool)` 判据归运行时（`guard.judge` 逐 call）。composite 子图递归生效。
