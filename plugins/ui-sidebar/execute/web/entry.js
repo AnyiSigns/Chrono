@@ -78,11 +78,10 @@ export async function mount(root, api) {
     loading: true,
     error: null,
     status: null,
-    connected: false,
+    connected: typeof api.events?.connected === 'function' ? api.events.connected() : false,
   }
 
   let disposed = false
-  let source = null
   let drag = null
   let tooltipTimer = null
   let flyoutTimer = null
@@ -794,29 +793,16 @@ export async function mount(root, api) {
     await postJson('api/submit', { directives })
   }
 
-  // ---- 事件订阅 ----
+  // ---- 事件订阅（壳事件总线） ----
 
   function connectEvents() {
-    try {
-      source = new EventSource(new URL('events', BASE).href)
-    } catch {
-      return
-    }
-    source.onmessage = (event) => {
-      let record
-      try {
-        record = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      handleRecord(record)
-    }
+    return typeof api.events?.onAny === 'function' ? api.events.onAny(handleRecord) : () => {}
   }
 
   function handleRecord(record) {
     if (!isRecord(record)) return
     const payload = isRecord(record.payload) ? record.payload : {}
-    if (record.topic === 'sidebar.state') {
+    if (record.topic === 'shell.state') {
       state.connected = payload.connected === true
       return
     }
@@ -878,14 +864,14 @@ export async function mount(root, api) {
 
   // ---- 启动 ----
 
-  connectEvents()
+  const closeEvents = connectEvents()
   applyViewport()
   await loadAll()
 
   return {
     unmount() {
       disposed = true
-      if (source !== null) source.close()
+      closeEvents()
       for (const timer of [tooltipTimer, flyoutTimer, reloadTimer, confirmTimer, widthTimer, statusTimer]) {
         if (timer !== null) clearTimeout(timer)
       }

@@ -50,7 +50,6 @@ import { Bridge, commandFrame, extractValue, interpretResponse, submitFrame } fr
 import { DEFAULT_CHAT_PORT, parsePort, resolvePort } from '../execute/port.ts'
 import { routeOf } from '../execute/routes.ts'
 import { readWebFile, WEB_FILE_RE } from '../execute/static.ts'
-import { encodeSseRecord, SseHub } from '../execute/events.ts'
 import { slotWriteDirective } from '../execute/http-server.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -483,12 +482,12 @@ test('入站桥帧构造与值提取', () => {
 
 // ---- 路由 / 端口 / 静态 ----
 
-test('路由判定：静态模块 / events / api 动词门禁', () => {
+test('路由判定：静态模块 / api 动词门禁；/events 已并入壳总线', () => {
   assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
   assert.deepEqual(routeOf('GET', '/markdown.js'), { kind: 'web', name: 'markdown.js' })
   assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'events')
-  assert.equal(routeOf('GET', '/api/state').kind, 'api-state')
+  assert.equal(routeOf('GET', '/events').kind, 'not-found')
+  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
   assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
   assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
   assert.equal(routeOf('POST', '/api/question/answer').kind, 'api-question-answer')
@@ -516,18 +515,6 @@ test('输入槽写指令：只覆盖本线程键', () => {
   const body = directive.request.args.ops[0].args.body
   assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
   assert.equal(directive.request.args.ops[1].args.id, 'input')
-})
-
-test('SSE 记录编码与广播', () => {
-  assert.equal(
-    encodeSseRecord({ impl: 'model-protocol', topic: 'model.delta', payload: { thread: 't' } }),
-    'data: {"impl":"model-protocol","topic":"model.delta","payload":{"thread":"t"}}\n\n',
-  )
-  const hub = new SseHub()
-  const chunks = []
-  hub.add({ write: (chunk) => chunks.push(chunk) })
-  hub.hostEvent('host', 'run.finished', { run: 'r' })
-  assert.equal(chunks.length, 1)
 })
 
 // ---- 文案表 ----

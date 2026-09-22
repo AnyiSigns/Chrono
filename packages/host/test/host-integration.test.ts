@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { createServer, connect as netConnect } from 'node:net'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
@@ -13,9 +13,7 @@ import {
   FIXTURE_ALPHA,
   FIXTURE_BETA,
   FIXTURE_SERVICE_MAIN,
-  isPidAlive,
   readLifecycle,
-  waitFor,
   waitForLifecycle,
   writeTempPackage,
 } from './test-helpers-ext.ts'
@@ -342,10 +340,8 @@ describe('宿主集成（入站面）', () => {
         await new Promise<void>((resolve) => blocker.close(() => resolve()))
       }
 
-      // 服务进程已随失败清理退出，无遗留
-      const pid = Number.parseInt(readFileSync(pidFile, 'utf8'), 10)
-      expect(Number.isInteger(pid)).toBe(true)
-      await waitFor(() => !isPidAlive(pid), `启动失败后服务进程退出 pid=${pid}`, 5000)
+      // 监听先于装配：listen 失败时尚未起任何服务，pid 文件不应出现，故无遗留服务进程
+      expect(existsSync(pidFile)).toBe(false)
 
       // 锁已释放，可再抢
       const lock = acquireLock(hostPaths(root).lockFile, Date.now())

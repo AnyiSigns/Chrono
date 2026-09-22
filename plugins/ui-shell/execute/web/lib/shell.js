@@ -8,6 +8,9 @@ import { normalizeThemePref, resolveTheme } from './theme.js'
 import { deriveBootMode } from './boot-mode.js'
 
 const CONTRACT_VERSION = '1'
+/** slot / headless 装载上限：模块抓取从严（连接被挤占时会一直 pending），mount 运行放宽到与宿主调用超时同量级。 */
+const MOUNT_IMPORT_TIMEOUT_MS = 10000
+const MOUNT_RUN_TIMEOUT_MS = 30000
 const BOOTSTRAP =
   typeof window.__CHRONO_SHELL__ === 'object' && window.__CHRONO_SHELL__ !== null
     ? window.__CHRONO_SHELL__
@@ -365,6 +368,23 @@ function isUnreachable(err) {
   return /Failed to fetch|dynamically imported module|NetworkError|502|404/i.test(text)
 }
 
+/** 给一个 promise 加上限；超时以错误结算（调用方按失败隔离）。 */
+function withTimeout(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('mount timeout')), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
 function renderSlotFailure(root, code, entry) {
   const card = document.createElement('div')
   card.className = 'shell-slot-failed'
@@ -388,7 +408,7 @@ async function mountEntry(entry) {
   const root = document.getElementById(`slot-${entry.slot}`)
   if (root === null) return
   try {
-    const module = await import(`/p/${entry.id}/entry.js`)
+    const module = await withTimeout(import(`/p/${entry.id}/entry.js`), MOUNT_IMPORT_TIMEOUT_MS)
     if (module.contract !== undefined && module.contract !== CONTRACT_VERSION) {
       renderSlotFailure(root, 'ui_version_mismatch', entry)
       return
@@ -397,7 +417,7 @@ async function mountEntry(entry) {
       renderSlotFailure(root, 'ui_boot_failed', entry)
       return
     }
-    await module.mount(root, { ...api, slot: entry.slot })
+    await withTimeout(module.mount(root, { ...api, slot: entry.slot }), MOUNT_RUN_TIMEOUT_MS)
   } catch (err) {
     renderSlotFailure(root, isUnreachable(err) ? 'ui_unreachable' : 'ui_boot_failed', entry)
   }
@@ -409,8 +429,10 @@ async function mountAll() {
   await Promise.allSettled(
     headless.map(async (entry) => {
       try {
-        const module = await importHeadless(entry.id)
-        if (typeof module.mount === 'function') await module.mount(api)
+        const module = await withTimeout(importHeadless(entry.id), MOUNT_IMPORT_TIMEOUT_MS)
+        if (typeof module.mount === 'function') {
+          await withTimeout(module.mount(api), MOUNT_RUN_TIMEOUT_MS)
+        }
       } catch {
         // headless 加载失败不影响 slot
       }

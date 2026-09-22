@@ -470,20 +470,19 @@ async function main() {
     assert.equal(configWritten.status, 'done', `写默认 body 未完成：${JSON.stringify(configWritten)}`)
     console.log(`默认 body：done（${defaultBodies.map(([id]) => id).join(', ')}）`)
 
-    // 5) 子应用 HTTP 就绪 + 入站连接
+    // 5) 子应用 HTTP 就绪
     const stateDeadline = Date.now() + 20000
     for (;;) {
       try {
-        const response = await httpCall(port, 'GET', '/api/state')
-        const state = JSON.parse(response.body)
-        if (state.ok === true && state.connected === true) break
+        const response = await httpCall(port, 'GET', '/entry.js')
+        if (response.status === 200) break
       } catch {
         // 尚未监听
       }
-      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 /api/state connected（port=${port}）`)
+      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 HTTP 监听（port=${port}）`)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
     }
-    console.log('子应用 HTTP + 入站连接：ok')
+    console.log('子应用 HTTP：ok')
 
     // 6) 入口与静态模块 / 穿越
     const entry = await httpCall(port, 'GET', '/entry.js')
@@ -604,7 +603,7 @@ async function main() {
     const graphBody = JSON.parse(graph.body)
     assert.equal(graphBody.value, null, graph.body)
     assert.equal(graphBody.status, 'refused', graph.body)
-    const afterGraph = await httpCall(port, 'GET', '/api/state')
+    const afterGraph = await httpCall(port, 'GET', '/entry.js')
     assert.equal(afterGraph.status, 200)
     console.log('未就位依赖：ok（orchestration.graph refused，进程未崩）')
 

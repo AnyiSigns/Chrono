@@ -1,10 +1,10 @@
-// 本插件子应用 HTTP 服务：静态浏览器模块 + 自己的 `/events` SSE + 只读命令入站桥。
-// 只做转译与静态服务，不认识业务；绑定 127.0.0.1。浏览器不直连本端口，壳反代 `/p/ui-threads/*`。
+// 本插件子应用 HTTP 服务：静态浏览器模块 + 只读命令入站桥。
+// 事件统一走壳 `/events` 总线，本端口不再提供 SSE；绑定 127.0.0.1，浏览器不直连本端口。
+// 浏览器经壳反代 `/p/ui-threads/*` 访问本端口。
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse, Socket } from 'node:http'
 import { Bridge } from './bridge.ts'
-import { connectionStateRecord, SseHub, THREADS_IMPL } from './events.ts'
 import { log as defaultLog } from './frames.ts'
 import { guardInboundRequest } from './inbound-guard.ts'
 import { routeOf } from './routes.ts'
@@ -17,8 +17,6 @@ const MAX_BODY_BYTES = 12 * 1024 * 1024
 
 export interface UiServerDeps {
   bridge: Bridge
-  sse: SseHub
-  connected: () => boolean
   webDir?: string
   log?: (line: string) => void
 }
@@ -102,23 +100,6 @@ async function handleCommand(
   })
 }
 
-function handleEvents(deps: UiServerDeps, req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
-  })
-  res.write(': connected\n\n')
-  deps.sse.add(res)
-  res.write(`data: ${JSON.stringify(connectionStateRecord(deps.connected()))}\n\n`)
-  const cleanup = (): void => {
-    deps.sse.remove(res)
-  }
-  req.on('close', cleanup)
-  req.on('error', cleanup)
-}
-
 function serveWeb(webDir: string, route: Extract<Route, { kind: 'web' }>, res: ServerResponse): void {
   const source = readWebFile(webDir, route.name)
   if (source === null) {
@@ -190,14 +171,8 @@ async function handleRequest(
       case 'web':
         serveWeb(webDir, route, res)
         return
-      case 'events':
-        handleEvents(deps, req, res)
-        return
       case 'api-command':
         await handleCommand(deps, req, res)
-        return
-      case 'api-state':
-        sendJson(res, 200, { ok: true, connected: deps.connected(), impl: THREADS_IMPL })
         return
       default:
         sendJson(res, 404, { ok: false, code: 'not_found', message: url.pathname })

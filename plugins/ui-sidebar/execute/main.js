@@ -5,7 +5,6 @@
 
 import { readFileSync } from 'node:fs'
 import { Bridge } from './bridge.js'
-import { SseHub } from './events.js'
 import { createFrameDecoder, log, writeFrame } from './frames.js'
 import { startUiServer } from './http-server.js'
 import { InboundClient } from './inbound.js'
@@ -40,9 +39,7 @@ function manifest() {
 }
 
 const root = rootFromPluginState(process.env, process.cwd())
-const sse = new SseHub()
 
-let connected = false
 let uiServer = null
 let exiting = false
 
@@ -78,15 +75,6 @@ function waitForCalls(deadlineMs) {
 const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
-  onEvent: (impl, topic, payload) => sse.hostEvent(impl, topic, payload),
-  onFrame: (frame) => {
-    const topic = typeof frame['run'] === 'string' ? 'run.result' : 'host.frame'
-    sse.broadcast({ impl: IDENTITY, topic, payload: frame })
-  },
-  onConnectionChange: (next) => {
-    connected = next
-    sse.broadcast({ impl: IDENTITY, topic: 'sidebar.state', payload: { connected } })
-  },
 })
 const bridge = new Bridge(inbound)
 
@@ -233,7 +221,7 @@ inbound.start()
 
 const uiPort = resolvePort(process.env)
 startUiServer(
-  { bridge, sse, connected: () => connected, identity: IDENTITY, log },
+  { bridge, log },
   uiPort,
 ).then(
   (server) => {

@@ -71,7 +71,7 @@ export async function mount(root, api) {
     liveTools: new Map(),
     group: { unreadIds: new Set(), anchorIndex: -1, anchorEl: null },
     workflowStep: null,
-    connected: false,
+    connected: typeof api.events?.connected === 'function' ? api.events.connected() : false,
   }
 
   let streamTimer = null
@@ -662,30 +662,15 @@ export async function mount(root, api) {
     })
   }
 
-  // ---- 事件 ----
+  // ---- 事件（壳事件总线） ----
 
-  let source = null
   function connectEvents() {
-    try {
-      source = new EventSource(new URL('events', BASE).href)
-    } catch {
-      return
-    }
-    source.onmessage = (event) => {
-      let record
-      try {
-        record = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      if (record === null || typeof record !== 'object') return
-      handleRecord(record)
-    }
+    return typeof api.events?.onAny === 'function' ? api.events.onAny(handleRecord) : () => {}
   }
 
   function handleRecord(record) {
     const payload = record.payload !== null && typeof record.payload === 'object' ? record.payload : {}
-    if (record.topic === 'chat.state') {
+    if (record.topic === 'shell.state') {
       const wasConnected = state.connected
       state.connected = payload.connected === true
       // 首屏若在入站连接建立前拉过历史：连上后自动补拉一次（禁静默无限等待）。
@@ -759,14 +744,14 @@ export async function mount(root, api) {
   const initialThread = typeof api.uiState?.get === 'function' ? api.uiState.get('active_thread') : undefined
   state.viewThread = typeof initialThread === 'string' && initialThread.length > 0 ? initialThread : null
 
-  connectEvents()
+  const closeEvents = connectEvents()
   await loadHistory(state.viewThread)
 
   return {
     unmount() {
       disposed = true
       offThread()
-      if (source !== null) source.close()
+      closeEvents()
       if (streamTimer !== null) clearTimeout(streamTimer)
       if (announceTimer !== null) clearTimeout(announceTimer)
       if (loadingTimer !== null) clearTimeout(loadingTimer)

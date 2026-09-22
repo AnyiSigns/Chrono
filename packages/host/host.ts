@@ -303,6 +303,11 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const clients = new Set<Socket>()
   let stopping = false
   let router: RoundRouter | undefined
+  // 入站监听先于装配：服务连上后可能在装配完成前发起反向调用，这里挂起等待路由就绪。
+  let routerReadyResolve: (() => void) | undefined
+  const routerReady = new Promise<void>((resolve) => {
+    routerReadyResolve = resolve
+  })
 
   const address = socketPath(root)
   mkdirSync(paths.sockDir, { recursive: true })
@@ -407,6 +412,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       if (runtime === undefined || advancedHead.seq <= appliedSeq) return
       appliedSeq = advancedHead.seq
       await runtime.applyWorld(advancedWorld)
+      // 世代已跟随：广播给全部服务，供缓存型读侧（如壳的 headless 字节）失效重取。
+      broadcast('host', 'gen.changed', { seq: advancedHead.seq })
       if (!stopping) {
         syncPeriodic(advancedWorld)
         reportMethodTimeouts(advancedWorld)
@@ -510,6 +517,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     args: Json,
     env: CallEnv | undefined,
   ): Promise<CallResponse> => {
+    if (router === undefined) {
+      // 装配尚未完成：监听先于装配，服务可能已连上并发起反向调用，等路由就绪再转发。
+      await routerReady
+    }
     if (router === undefined) return { ok: false, code: 'not_loaded', message: 'router not ready' }
     const snapshot = writer.snapshot()
     const routed = router.resolve(snapshot.world, impl, port, method)
@@ -1368,6 +1379,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
 
   try {
     appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
+    // 入站面先于装配监听：服务 spawn 后即可连上，不再于装配期反复撞 ENOENT；
+    // 装配完成前的反向调用由 handlePortCall 挂起等 routerReady。
+    await listen(server, address)
     runtime = await startAssembly({
       root,
       world: writer.snapshot().world,
@@ -1412,6 +1426,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         })
       },
     })
+    routerReadyResolve?.()
     // H6 定时触发：装配就绪后按各插件 schema 的 periodic 声明排程；声明变更随 applyWorld 增量对齐
     // 非法条目由 syncPeriodic 按签名去重记录（每条都 fsync，避免每轮落账重复刷）
     periodic = new PeriodicScheduler({
@@ -1420,7 +1435,6 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     })
     syncPeriodic(writer.snapshot().world)
     reportMethodTimeouts(writer.snapshot().world)
-    await listen(server, address)
     // 源码 watcher：默认关；只监听、不落账——变动经宿主落账互斥段提交，再交装配跟随。
     // 挂在装配就绪之后：回调依赖 runtime（跟随换代）与 router（新服务调用），
     // 且开监听即意味着宿主已可用，此时才开始监听源码。

@@ -1166,9 +1166,9 @@ export async function mount(root, api) {
     renderError()
   }
 
-  // ---- 事件（自己服务的 SSE；按线程过滤） ----
+  // ---- 事件（壳事件总线；按线程过滤） ----
 
-  const closeEvents = connectEvents((record) => {
+  const closeEvents = connectEvents(api, (record) => {
     const payload = isRecord(record.payload) ? record.payload : {}
     if (record.topic === 'run.started') {
       const tracked = runs.trackRunStarted(tracking, runIdOf(payload), runKeyOf(payload))

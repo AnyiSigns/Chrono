@@ -3,13 +3,13 @@
 对话页的**线程顶栏**：常态 0 高度，鼠标进入顶部热区才 overlay 展开线程标签
 （对话 → 会话标题 / 子代理 / 群聊 / 工作流，外加「待办 N」位），点击切换当前视图线程。
 本插件是 `topbar` 槽子应用，独立包 / 独立进程 / 独立端口，自带浏览器静态资源、
-自己的入站客户端连接、自己的 `/events` SSE。
+自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。
 
 - 能力类：`ui-threads`（`ping` 健康占位 + `threads.state` 标签装配；UI 插件统一 `ui-<身份名>`、互不 pin）。
 - `pins`：无（不发 `eff`）；只读命令按名经入站面调用，切换只走壳的 `api.uiState`。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`，宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / SSE / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
+- 运行时零 npm 依赖：HTTP / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
 
 ## 提供哪些命令
 
@@ -57,10 +57,10 @@
 ```
 GET /entry.js     → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
 GET /<name>.js    → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务）
-GET /events       → 本插件自己的 SSE：宿主事件原样重播（impl 命名空间）+ 本插件连接态
 POST /api/command → 入站 command（只读命令 `threads.state`）
-GET  /api/state   → 本插件入站连接态
 ```
+
+- 事件不经本端口：浏览器侧经壳 `api.events` 订阅宿主事件与 `shell.state` 连接态。
 
 - 视图层模块：入口编排 `entry.js`；纯逻辑 `threads-model.js`（线程树 / 隔离 / 角标，服务侧装配共用）、
   `hover-intent.js`（hover 延时状态机）、`unread.js`（未读计数）、`bridge-state.js`（`active_thread` 单桥）、

@@ -50,7 +50,7 @@ export async function mount(root, api) {
     lastBatch: null,
     decided: new Set(),
     confirm: createConfirmState(),
-    connected: false,
+    connected: typeof api.events?.connected === 'function' ? api.events.connected() : false,
     announced: -1,
   }
 
@@ -462,8 +462,8 @@ export async function mount(root, api) {
 
   // ---- 事件 / 计时 ----
 
-  const closeEvents = connectEvents((record) => {
-    if (record.topic === 'ui-approval.state') {
+  const closeEvents = connectEvents(api, (record) => {
+    if (record.topic === 'shell.state') {
       const payload = record.payload !== null && typeof record.payload === 'object' ? record.payload : {}
       const wasConnected = state.connected
       state.connected = payload.connected === true

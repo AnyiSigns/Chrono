@@ -2,13 +2,13 @@
 
 对话页的**全能内容渲染面**：markdown / 流式 / 图像 / 视频 / 音频 / 文件卡 / 工具卡 /
 question 交互卡，以及按线程 `kind` 分派的群聊与工作流步骤卡。本插件是独立包 / 独立进程 /
-独立端口，自带浏览器静态资源、自己的入站客户端连接、自己的 `/events` SSE。
+独立端口，自带浏览器静态资源、自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。
 
 - 能力类：`ui-chat`（`ping` 占位，UI 插件统一 `ui-<身份名>`、互不 pin）。
 - `pins`：无（不发 `eff`）；命令 / 提交一律按名经入站面。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`，宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / SSE / socket / markdown / 消毒 / 窗口化 / lightbox 全自实现。
+- 运行时零 npm 依赖：HTTP / socket / markdown / 消毒 / 窗口化 / lightbox 全自实现。
 
 ## 渲染源与数据获取路径
 
@@ -25,12 +25,10 @@ question 交互卡，以及按线程 `kind` 分派的群聊与工作流步骤卡
 ```
 GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
 GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务，不自打包）
-GET /events     → 本插件自己的 SSE：把宿主事件原样重播给本页
 POST /api/command          → 入站 command（chat.history / input.read / question.answer / chat.send…）
 POST /api/submit           → 入站 submit（directive(s) + thread）
 POST /api/question/answer  → 读-改-写 input 槽 + 按名调 question.answer（写走入站面）
 GET  /api/asset?sha256=…   → 入站 asset.get，直接回原始字节（媒体元素 src 用）
-GET  /api/state            → 本插件入站连接态
 ```
 
 - 浏览器侧 `api` 由壳提供；本插件只借用 `api.uiState`（`active_thread` 线程切换），
@@ -56,7 +54,7 @@ GET  /api/state            → 本插件入站连接态
 
 ## 事件过滤口径
 
-- 本插件服务订阅宿主事件并经自己的 `/events` 原样重播（`impl` / `topic` 不改名）。
+- 浏览器经壳 `api.events` 订阅宿主事件（`impl` / `topic` 不改名），不再经本端口 SSE。
 - 浏览器按 **`payload.thread === 当前视图线程`** 过滤（写死，`history-model.js#matchesThread`）：
   - 有 `active_thread` 时严格相等；
   - 无 `active_thread` 时视图线程视为主线程，接受 `null` 与 `_main`。

@@ -2,14 +2,14 @@
 
 底部输入区子应用（slot = `composer`）：文本输入 + 附件 + 模型 / 推理强度 / 权限档 +
 发送 / 终止，以及输入卡下方的上下文用量行。本插件是独立包 / 独立进程 / 独立端口，
-自带浏览器静态资源、自己的入站客户端连接、自己的 `/events` SSE。
+自带浏览器静态资源、自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。
 
 - 能力类：`ui-composer`（`ping` 占位，UI 插件统一 `ui-<身份名>`、互不 pin）。
 - `pins`：无（不发 `eff`）；命令 / 提交一律按名经入站面（`input.read` / `config.read` /
   `chat.send` / `model.profile`）。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / SSE / socket / 静态服务全自实现。
+- 运行时零 npm 依赖：HTTP / socket / 静态服务全自实现。
 
 ## 数据路径
 
@@ -40,13 +40,12 @@
 ```
 GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
 GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务，不自打包）
-GET /events     → 本插件自己的 SSE：把宿主事件原样重播给本页
 POST /api/command → 入站 command（input.read / config.read / chat.send / model.profile…）
 POST /api/submit  → 入站 submit（directive(s) + thread）
 POST /api/cancel  → 入站 cancel（终止指定 run）
 GET  /api/asset/<sha256>[/<mime>] → 入站 asset.get，直接回原始字节（缩略图 src 用）
                                   （走路径段而非查询串：壳反代 `/p/<id>/*` 不保留查询串）
-GET  /api/state   → 本插件入站连接态
+```
 ```
 
 - 浏览器侧 `api` 由壳提供；本插件借用 `api.uiState`（`active_thread` 跨 slot 视图态）与

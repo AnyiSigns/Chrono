@@ -4,7 +4,6 @@
 
 import { readFileSync } from 'node:fs'
 import { Bridge } from './bridge.ts'
-import { SseHub } from './events.ts'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { startUiServer } from './http-server.ts'
 import type { UiServer } from './http-server.ts'
@@ -47,24 +46,14 @@ function manifest(): Rec {
 }
 
 const root = rootFromPluginState(process.env, process.cwd())
-const sse = new SseHub()
 const handlers = createHandlers({ identity: IDENTITY })
 
-let connected = false
 let uiServer: UiServer | null = null
 let exiting = false
 
 const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
-  onEvent: (impl, topic, payload) => sse.hostEvent(impl, topic, payload),
-  onFrame: (frame) => {
-    sse.broadcast({ impl: IDENTITY, topic: 'threads.frame', payload: frame as unknown as Json })
-  },
-  onConnectionChange: (next) => {
-    connected = next
-    sse.broadcast({ impl: IDENTITY, topic: 'threads.connection', payload: { connected } })
-  },
 })
 const bridge = new Bridge(inbound)
 
@@ -194,8 +183,6 @@ const uiPort = resolvePort(process.env)
 startUiServer(
   {
     bridge,
-    sse,
-    connected: () => connected,
     log,
   },
   uiPort,

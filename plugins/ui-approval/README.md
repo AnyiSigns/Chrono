@@ -2,7 +2,7 @@
 
 Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（计数 / 等待计时 / 整批裁决），
 按条目种类选卡片模板并提交裁决。独立包 / 独立进程 / 独立端口，自带浏览器静态资源、
-自己的入站客户端连接、自己的 `/events` SSE。本插件不做判定、不做审批流程本体、不做对话视图。
+自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。本插件不做判定、不做审批流程本体、不做对话视图。
 
 - 能力类：`ui-approval`（`ping` 健康占位 + `list` / `decide` / `decide_all` 三个服务方法；
   UI 插件统一 `ui-<身份名>`、互不 pin）。
@@ -11,7 +11,7 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema** —— 省略 `plugin.json.schema`，
   宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / SSE / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
+- 运行时零 npm 依赖：HTTP / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
 
 ## 提供哪些命令
 
@@ -56,11 +56,11 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 ```
 GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
 GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务）
-GET /events     → 本插件自己的 SSE：宿主事件原样重播（impl 命名空间）+ 本插件连接态
 POST /api/command → 入站 command（三条命令）
 POST /api/submit  → 入站 submit（裁决前写槽的 batch）
-GET  /api/state   → 本插件入站连接态
 ```
+
+- 事件不经本端口：浏览器侧经壳 `api.events` 订阅宿主事件与 `shell.state` 连接态。
 
 - 视图层模块拆分：入口编排 `entry.js`；纯模型 `model.js`（模板选择 / 摘要视图 / 影子指标 /
   计时格式 / 二次确认状态机 / verdict 映射）；入站网络 `client.js`；事件 `sse.js`；

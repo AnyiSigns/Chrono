@@ -55,7 +55,7 @@ export async function mount(root, api) {
     activeThread: null,
     knownCurrent: null,
     unread: {},
-    connected: false,
+    connected: typeof api.events?.connected === 'function' ? api.events.connected() : false,
     error: null,
     loading: false,
     todoOpen: false,
@@ -65,7 +65,6 @@ export async function mount(root, api) {
   let hoverTimer = null
   let reloadTimer = null
   let disposed = false
-  let source = null
 
   // ---- DOM 骨架（常态 0 高度；overlay 展开，不推挤布局） ----
 
@@ -261,29 +260,15 @@ export async function mount(root, api) {
     }, 120)
   }
 
-  // ---- 事件（自己服务的 SSE；impl / topic 原样重播） ----
+  // ---- 事件（壳事件总线；impl / topic 原样重播） ----
 
   function connectEvents() {
-    try {
-      source = new EventSource(new URL('events', BASE).href)
-    } catch {
-      return
-    }
-    source.onmessage = (event) => {
-      let record
-      try {
-        record = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      if (record === null || typeof record !== 'object') return
-      handleRecord(record)
-    }
+    return typeof api.events?.onAny === 'function' ? api.events.onAny(handleRecord) : () => {}
   }
 
   function handleRecord(record) {
     const payload = record.payload !== null && typeof record.payload === 'object' ? record.payload : {}
-    if (record.topic === 'threads.connection') {
+    if (record.topic === 'shell.state') {
       const wasConnected = state.connected
       state.connected = payload.connected === true
       if (state.connected && !wasConnected && state.error !== null) void load()
@@ -318,14 +303,14 @@ export async function mount(root, api) {
   const initialThread = typeof api.uiState?.get === 'function' ? api.uiState.get('active_thread') : undefined
   state.activeThread = typeof initialThread === 'string' && initialThread.length > 0 ? initialThread : null
 
-  connectEvents()
+  const closeEvents = connectEvents()
   await load()
 
   return {
     unmount() {
       disposed = true
       offThread()
-      if (source !== null) source.close()
+      closeEvents()
       if (hoverTimer !== null) clearTimeout(hoverTimer)
       if (reloadTimer !== null) clearTimeout(reloadTimer)
       root.replaceChildren()

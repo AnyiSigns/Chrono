@@ -470,7 +470,7 @@ export async function mount(root, api) {
   if (notifyView !== null && notifyView !== undefined && typeof notifyView.addEventListener === 'function') {
     notifyView.addEventListener('chrono-notify:state', onNotifyState)
   }
-  const closeEvents = connectEvents(ctx)
+  const closeEvents = connectEvents(api, ctx)
 
   return {
     unmount() {

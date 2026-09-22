@@ -2,7 +2,7 @@
 
 Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义厂商同一流程）与设置七页
 （通用 / 模型 / 插件 / 技能 / 记忆 / 编排 / 关于）。本插件是 `overlay` 槽子应用，独立包 /
-独立进程 / 独立端口，自带浏览器静态资源、自己的入站客户端连接、自己的 `/events` SSE。
+独立进程 / 独立端口，自带浏览器静态资源、自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。
 本插件另持**编排健康判定**（住本插件 execute 服务）与**回滚入口**，判定不住编排图身份内（图被改坏时回滚入口
 不能也在图里）。
 
@@ -14,7 +14,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema** —— 省略 `plugin.json.schema`，
   宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / SSE / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
+- 运行时零 npm 依赖：HTTP / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
 
 ## 提供哪些命令
 
@@ -109,7 +109,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
   `chrono-notify:state`），设置页不直接读 `Notification.permission`；`default` 显
   [请求授权]（用户手势触发浏览器授权），`denied` 给站点设置指引；未授权 / 已拒绝时开关置灰。
 - **只读页**：加载呼吸条（>8s 追加「仍在读取…」）、空态、行内错误 + [重试]，无空白页。
-- **事件**：页面订阅本插件自己的 `/events` SSE（unmount 时关闭），编排健康更新无需进入编排 tab 即可刷新
+- **事件**：页面经壳 `api.events` 订阅宿主事件（unmount 时退订），编排健康更新无需进入编排 tab 即可刷新
   tab 角标；模态打开时焦点移入对话框、背景 `aria-hidden`，`Esc` 关闭并归还焦点。
 
 ## 子应用入口契约
@@ -117,12 +117,10 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 ```
 GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
 GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务）
-GET /events     → 本插件自己的 SSE：宿主事件原样重播（impl 命名空间）+ 本插件连接态（页面订阅）
 POST /api/command        → 入站 command（只读命令）
 POST /api/submit         → 入站 submit（directive(s) + thread）
 POST /api/secrets/put    → 入站 secrets.put（密钥本体直写本地文件）
 POST /api/secrets/delete → 入站 secrets.delete
-GET  /api/state          → 本插件入站连接态
 ```
 
 视图层模块拆分为：入口编排 `entry.js`；纯模型 `config-model.js` / `onboarding.js` / `notify.js` /

@@ -1,14 +1,13 @@
 // HTTP 路由判定（纯函数，便于单测）：本插件子应用端口上的全部入口。
-// 浏览器经壳反代 `/p/ui-threads/*` 到本端口；静态模块与 `/events`、`/api/*` 都在此判定。
+// 浏览器经壳反代 `/p/ui-threads/*` 到本端口；静态模块与 `/api/*` 都在此判定。
+// 事件统一走壳 `/events` 总线，本端口不再提供 SSE。
 
 import { WEB_FILE_RE } from './static.ts'
 
 export type Route =
   | { kind: 'entry' }
   | { kind: 'web'; name: string }
-  | { kind: 'events' }
   | { kind: 'api-command' }
-  | { kind: 'api-state' }
   | { kind: 'not-found' }
 
 function decodeSegment(segment: string): string | null {
@@ -23,8 +22,6 @@ function decodeSegment(segment: string): string | null {
 export function routeOf(method: string, pathname: string): Route {
   const verb = method.toUpperCase()
   if (pathname === '/entry.js') return verb === 'GET' || verb === 'HEAD' ? { kind: 'entry' } : { kind: 'not-found' }
-  if (pathname === '/events') return verb === 'GET' ? { kind: 'events' } : { kind: 'not-found' }
-  if (pathname === '/api/state') return verb === 'GET' ? { kind: 'api-state' } : { kind: 'not-found' }
   if (pathname === '/api/command') return verb === 'POST' ? { kind: 'api-command' } : { kind: 'not-found' }
   if (pathname.startsWith('/') && !pathname.slice(1).includes('/')) {
     const name = decodeSegment(pathname.slice(1))

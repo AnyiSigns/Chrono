@@ -1,5 +1,5 @@
 // 服务层测试（node --test）：投影装配纯函数、各命令的服务装配与反向调用 args、
-// per-thread 槽键控、软删 / 恢复计划上提、错误收口、帧 / 路由 / 端口 / 静态 / SSE / 入站桥，
+// per-thread 槽键控、软删 / 恢复计划上提、错误收口、帧 / 路由 / 端口 / 静态 / 入站桥，
 // 以及服务协议级（hello → manifest / ping / probe / drain → bye / EOF 自退出）。
 
 import { test } from 'node:test'
@@ -28,7 +28,6 @@ import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan 
 import { DEFAULT_SIDEBAR_PORT, parsePort, resolvePort } from '../execute/port.js'
 import { routeOf } from '../execute/routes.js'
 import { readWebFile, WEB_FILE_RE } from '../execute/static.js'
-import { encodeSseRecord, sidebarStateRecord, SseHub } from '../execute/events.js'
 import { BadArgsError } from '../execute/types.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -273,12 +272,12 @@ test('入站桥帧构造、回包解释与计划解包', () => {
   assert.deepEqual(unwrapPlan({ plain: 1 }), { plain: 1 })
 })
 
-test('路由判定：静态 / events / api 动词门禁（含 cancel）', () => {
+test('路由判定：静态 / api 动词门禁（含 cancel）；/events 已并入壳总线', () => {
   assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
   assert.deepEqual(routeOf('GET', '/badges.js'), { kind: 'web', name: 'badges.js' })
   assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'events')
-  assert.equal(routeOf('GET', '/api/state').kind, 'api-state')
+  assert.equal(routeOf('GET', '/events').kind, 'not-found')
+  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
   assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
   assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
   assert.equal(routeOf('POST', '/api/cancel').kind, 'api-cancel')
@@ -297,17 +296,6 @@ test('端口推导与静态白名单', () => {
   assert.equal(readWebFile(WEB, 'entry.js').includes('export async function mount'), true)
   assert.equal(readWebFile(WEB, 'nope.js'), null)
   assert.equal(readWebFile(WEB, '../plugin.json'), null)
-})
-
-test('SSE 记录编码与广播、连接态命名空间由身份传入', () => {
-  assert.equal(encodeSseRecord({ impl: 'host', topic: 'run.finished', payload: { run: 'r' } }), 'data: {"impl":"host","topic":"run.finished","payload":{"run":"r"}}\n\n')
-  const hub = new SseHub()
-  const chunks = []
-  hub.add({ write: (chunk) => chunks.push(chunk) })
-  hub.hostEvent('host', 'run.finished', { run: 'r' })
-  assert.equal(chunks.length, 1)
-  assert.deepEqual(sidebarStateRecord(false, 'ui-sidebar'), { impl: 'ui-sidebar', topic: 'sidebar.state', payload: { connected: false } })
-  assert.equal(sidebarStateRecord(true, 'renamed').impl, 'renamed')
 })
 
 // ---- 服务协议级 ----

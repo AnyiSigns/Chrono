@@ -86,6 +86,12 @@ const inbound = new InboundClient({
   log,
   onEvent: (impl, topic, payload) => {
     sse.hostEvent(impl, topic, payload)
+    if (impl === 'host' && topic === 'gen.changed') {
+      // 世代已跟随：headless 入口字节按世代重算，清缓存并重取，避免长期供旧字节。
+      headlessCache.clear()
+      void refreshHeadless()
+      return
+    }
     if (topic === 'run.finished' && isRecord(payload) && typeof payload['run'] === 'string') {
       finishConfigRun(payload['run'])
     }

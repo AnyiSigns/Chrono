@@ -1,10 +1,9 @@
-// 本插件子应用 HTTP 服务：静态浏览器模块 + 自己的 `/events` SSE + 入站桥（command / submit / secrets）。
-// 只做转译与静态服务，不认识业务；绑定 127.0.0.1。浏览器不直连本端口，壳反代 `/p/ui-settings/*`。
+// 本插件子应用 HTTP 服务：静态浏览器模块 + 入站桥（command / submit / secrets）。
+// 事件统一走壳 `/events` 总线，本端口不再提供 SSE；绑定 127.0.0.1，浏览器不直连本端口。
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse, Socket } from 'node:http'
 import { Bridge } from './bridge.ts'
-import { encodeSseRecord, settingsStateRecord, SseHub } from './events.ts'
 import { log as defaultLog } from './frames.ts'
 import { guardInboundRequest } from './inbound-guard.ts'
 import { routeOf } from './routes.ts'
@@ -17,10 +16,6 @@ const MAX_BODY_BYTES = 12 * 1024 * 1024
 
 export interface UiServerDeps {
   bridge: Bridge
-  sse: SseHub
-  connected: () => boolean
-  /** 本插件身份（来自 plugin.json），作事件命名空间与 `/api/state` 自述。 */
-  identity: string
   webDir?: string
   log?: (line: string) => void
 }
@@ -198,23 +193,6 @@ async function handleSecretsDelete(
   sendJson(res, 200, { ok: true, name })
 }
 
-function handleEvents(deps: UiServerDeps, req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
-  })
-  res.write(': connected\n\n')
-  deps.sse.add(res)
-  res.write(encodeSseRecord(settingsStateRecord(deps.connected(), deps.identity)))
-  const cleanup = (): void => {
-    deps.sse.remove(res)
-  }
-  req.on('close', cleanup)
-  req.on('error', cleanup)
-}
-
 function serveWeb(webDir: string, route: Extract<Route, { kind: 'web' }>, res: ServerResponse): void {
   const source = readWebFile(webDir, route.name)
   if (source === null) {
@@ -286,9 +264,6 @@ async function handleRequest(
       case 'web':
         serveWeb(webDir, route, res)
         return
-      case 'events':
-        handleEvents(deps, req, res)
-        return
       case 'api-command':
         await handleCommand(deps, req, res)
         return
@@ -300,9 +275,6 @@ async function handleRequest(
         return
       case 'api-secrets-delete':
         await handleSecretsDelete(deps, req, res)
-        return
-      case 'api-state':
-        sendJson(res, 200, { ok: true, connected: deps.connected(), impl: deps.identity })
         return
       default:
         sendJson(res, 404, { ok: false, code: 'not_found', message: url.pathname })

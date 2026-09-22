@@ -19,7 +19,6 @@ import {
 import { DEFAULT_COMPOSER_PORT, parsePort, resolvePort } from '../execute/port.ts'
 import { routeOf } from '../execute/routes.ts'
 import { readWebFile, WEB_FILE_RE, webDirOf } from '../execute/static.ts'
-import { composerStateRecord, encodeSseRecord, SseHub } from '../execute/events.ts'
 import { startUiServer } from '../execute/http-server.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -62,12 +61,12 @@ function httpCall(port, method, path, body) {
   })
 }
 
-test('路由判定：静态模块 / events / api 动词门禁', () => {
+test('路由判定：静态模块 / api 动词门禁；/events 已并入壳总线', () => {
   assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
   assert.deepEqual(routeOf('GET', '/model.js'), { kind: 'web', name: 'model.js' })
   assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'events')
-  assert.equal(routeOf('GET', '/api/state').kind, 'api-state')
+  assert.equal(routeOf('GET', '/events').kind, 'not-found')
+  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
   assert.deepEqual(routeOf('GET', '/api/asset'), {
     kind: 'api-asset-get',
     sha256: null,
@@ -157,25 +156,7 @@ test('端口推导与静态文件白名单', () => {
   assert.equal(webDirOf().endsWith('web\\') || webDirOf().endsWith('web/'), true)
 })
 
-test('SSE 记录编码与本插件连接态', () => {
-  assert.equal(
-    encodeSseRecord({ impl: 'host', topic: 'run.started', payload: { run: 'r', thread: 't' } }),
-    'data: {"impl":"host","topic":"run.started","payload":{"run":"r","thread":"t"}}\n\n',
-  )
-  assert.deepEqual(composerStateRecord(true), {
-    impl: 'ui-composer',
-    topic: 'composer.state',
-    payload: { connected: true },
-  })
-  const hub = new SseHub()
-  const chunks = []
-  hub.add({ write: (chunk) => chunks.push(chunk) })
-  hub.hostEvent('host', 'run.finished', { run: 'r' })
-  assert.equal(chunks.length, 1)
-  assert.equal(hub.count(), 1)
-})
-
-test('HTTP 处理器（假 Transport）：command / submit / cancel / asset / state / 静态', async () => {
+test('HTTP 处理器（假 Transport）：command / submit / cancel / asset / 静态', async () => {
   const frames = []
   const transport = {
     isConnected: () => true,
@@ -223,10 +204,7 @@ test('HTTP 处理器（假 Transport）：command / submit / cancel / asset / st
   }
   const bridge = new Bridge(transport)
   const port = await freePort()
-  const server = await startUiServer(
-    { bridge, sse: new SseHub(), connected: () => true, log: () => {} },
-    port,
-  )
+  const server = await startUiServer({ bridge, log: () => {} }, port)
   try {
     const command = await httpCall(port, 'POST', '/api/command', {
       name: 'config.read',
@@ -261,7 +239,7 @@ test('HTTP 处理器（假 Transport）：command / submit / cancel / asset / st
     assert.match(String(assetPath.headers['content-type']), /image\/png/)
 
     const state = await httpCall(port, 'GET', '/api/state')
-    assert.deepEqual(JSON.parse(state.body), { ok: true, connected: true, impl: 'ui-composer' })
+    assert.equal(state.status, 404)
 
     const entry = await httpCall(port, 'GET', '/entry.js')
     assert.equal(entry.status, 200)
@@ -293,10 +271,7 @@ test('命令不可用：error 回帧 → HTTP 502 结构化错误（不崩）', 
   }
   const bridge = new Bridge(transport)
   const port = await freePort()
-  const server = await startUiServer(
-    { bridge, sse: new SseHub(), connected: () => false, log: () => {} },
-    port,
-  )
+  const server = await startUiServer({ bridge, log: () => {} }, port)
   try {
     const response = await httpCall(port, 'POST', '/api/command', {
       name: 'input.read',

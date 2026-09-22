@@ -191,20 +191,19 @@ async function main() {
     assert.deepEqual(listValue.items, [], JSON.stringify(listValue))
     console.log('approval.list：ok（空队列，服务反向调 #32 成功）')
 
-    // 7) 子应用 HTTP 就绪 + 入站连接
+    // 7) 子应用 HTTP 就绪
     const stateDeadline = Date.now() + 20000
     for (;;) {
       try {
-        const response = await httpCall(port, 'GET', '/api/state')
-        const state = JSON.parse(response.body)
-        if (state.ok === true && state.connected === true) break
+        const response = await httpCall(port, 'GET', '/entry.js')
+        if (response.status === 200) break
       } catch {
         // 尚未监听
       }
-      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 /api/state connected（port=${port}）`)
+      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 HTTP 监听（port=${port}）`)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
     }
-    console.log('子应用 HTTP + 入站连接：ok')
+    console.log('子应用 HTTP：ok')
 
     // 8) 入口与静态模块 / 穿越
     const entry = await httpCall(port, 'GET', '/entry.js')

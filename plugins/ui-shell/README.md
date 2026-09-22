@@ -78,6 +78,9 @@ api = {
   `ui_version_mismatch` + 手动重试），不影响其它 slot。
 - 事件按 `impl` 命名空间；壳合成事件 `shell.disconnected` / `shell.reconnected` 与壳状态
   `shell.state` 同经 `/events` 下发。
+- **事件总线唯一**：浏览器对壳只维持这一条 `/events` SSE；子应用与 headless 一律经
+  `api.events` 订阅，不再各自开私有 SSE（HTTP/1.1 每源并发上限 6，多子应用各开一条会挤占模块 / 资源请求）。
+  插件服务若需自报事件，走协议 `event` 帧经宿主广播、壳转发，命名空间仍是原始 `impl`。
 
 ## 无配置判据
 

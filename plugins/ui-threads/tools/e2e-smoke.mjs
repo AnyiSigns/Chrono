@@ -5,7 +5,7 @@
 // 失败路径同样 stop；用法：node plugins/ui-threads/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { get as httpGet, request as httpRequest } from 'node:http'
+import { request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -76,48 +76,6 @@ function httpCall(port, method, path, body) {
     if (payload !== null) req.write(payload)
     req.end()
   })
-}
-
-/** 打开 SSE 流：`ready` 在响应到达时兑现，`result` 在匹配 predicate 的记录出现时兑现。 */
-function openSse(port, predicate, timeoutMs = 10000) {
-  let markReady
-  const ready = new Promise((resolveReady) => {
-    markReady = resolveReady
-  })
-  const result = new Promise((resolveResult, reject) => {
-    const req = httpGet({ host: '127.0.0.1', port, path: '/events' }, (res) => {
-      markReady()
-      let buffer = ''
-      const timer = setTimeout(() => {
-        req.destroy()
-        reject(new Error(`SSE 超时；已收到：${buffer.slice(0, 800)}`))
-      }, timeoutMs)
-      res.on('data', (chunk) => {
-        buffer += chunk.toString('utf8')
-        const records = buffer
-          .split('\n\n')
-          .map((part) => {
-            const line = part.split('\n').find((entry) => entry.startsWith('data: '))
-            if (line === undefined) return null
-            try {
-              return JSON.parse(line.slice('data: '.length))
-            } catch {
-              return null
-            }
-          })
-          .filter((record) => record !== null)
-        const found = records.find(predicate)
-        if (found !== undefined) {
-          clearTimeout(timer)
-          req.destroy()
-          resolveResult({ records, found })
-        }
-      })
-      res.on('error', () => {})
-    })
-    req.on('error', reject)
-  })
-  return { ready, result }
 }
 
 async function waitFor(predicate, label, timeoutMs = 20000) {
@@ -220,16 +178,15 @@ async function main() {
     const stateDeadline = Date.now() + 20000
     for (;;) {
       try {
-        const response = await httpCall(port, 'GET', '/api/state')
-        const state = JSON.parse(response.body)
-        if (state.ok === true && state.connected === true) break
+        const response = await httpCall(port, 'GET', '/entry.js')
+        if (response.status === 200) break
       } catch {
         // 尚未监听
       }
-      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 /api/state connected（port=${port}）`)
+      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 HTTP 监听（port=${port}）`)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
     }
-    console.log('子应用 HTTP + 入站连接：ok')
+    console.log('子应用 HTTP：ok')
 
     const entry = await httpCall(port, 'GET', '/entry.js')
     assert.equal(entry.status, 200)
@@ -250,14 +207,6 @@ async function main() {
     assert.equal(value.ok, true, state.body)
     assert.ok(Array.isArray(value.tags), state.body)
     console.log(`threads.state：ok（标签 ${value.tags.length} 个，current=${JSON.stringify(value.current)}）`)
-
-    // SSE：宿主 run 事件经本插件转发（input.read 命令 run）
-    const sse = openSse(port, (record) => record.topic === 'run.started' || record.topic === 'run.finished')
-    await sse.ready
-    await httpCall(port, 'POST', '/api/command', { name: 'input.read', args: null })
-    const sseResult = await sse.result
-    assert.equal(sseResult.found.impl, 'host')
-    console.log(`SSE：ok（收到宿主事件 ${sseResult.found.topic}）`)
 
     const status = boot(root, ['status'], env)
     boot(root, ['stop'], env)

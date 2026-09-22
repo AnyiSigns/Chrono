@@ -106,7 +106,6 @@ import {
 import { DEFAULT_SETTINGS_PORT, parsePort, resolvePort } from '../execute/port.ts'
 import { routeOf } from '../execute/routes.ts'
 import { readWebFile, WEB_FILE_RE } from '../execute/static.ts'
-import { encodeSseRecord, settingsStateRecord, SseHub } from '../execute/events.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -1018,12 +1017,12 @@ test('入站桥帧构造、回包解释与计划解包', () => {
   assert.deepEqual(unwrapPlan({ plain: 1 }), { plain: 1 })
 })
 
-test('路由判定：静态 / events / api 动词门禁', () => {
+test('路由判定：静态 / api 动词门禁；/events 已并入壳总线', () => {
   assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
   assert.deepEqual(routeOf('GET', '/config-model.js'), { kind: 'web', name: 'config-model.js' })
   assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'events')
-  assert.equal(routeOf('GET', '/api/state').kind, 'api-state')
+  assert.equal(routeOf('GET', '/events').kind, 'not-found')
+  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
   assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
   assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
   assert.equal(routeOf('POST', '/api/secrets/put').kind, 'api-secrets-put')
@@ -1043,27 +1042,6 @@ test('端口推导与静态白名单', () => {
   assert.equal(readWebFile(WEB, 'entry.js').includes('export async function mount'), true)
   assert.equal(readWebFile(WEB, 'nope.js'), null)
   assert.equal(readWebFile(WEB, '../plugin.json'), null)
-})
-
-test('SSE 记录编码与广播', () => {
-  assert.equal(
-    encodeSseRecord({ impl: 'host', topic: 'run.finished', payload: { run: 'r' } }),
-    'data: {"impl":"host","topic":"run.finished","payload":{"run":"r"}}\n\n',
-  )
-  const hub = new SseHub()
-  const chunks = []
-  hub.add({ write: (chunk) => chunks.push(chunk) })
-  hub.hostEvent('host', 'run.finished', { run: 'r' })
-  assert.equal(chunks.length, 1)
-})
-
-test('连接态事件命名空间由插件身份传入，不硬编码', () => {
-  assert.deepEqual(settingsStateRecord(false, 'ui-settings'), {
-    impl: 'ui-settings',
-    topic: 'settings.state',
-    payload: { connected: false },
-  })
-  assert.equal(settingsStateRecord(true, 'renamed-plugin').impl, 'renamed-plugin')
 })
 
 // ---- 服务协议级 ----

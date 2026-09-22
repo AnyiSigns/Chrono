@@ -1,8 +1,7 @@
-// 本插件子应用 HTTP 服务：静态浏览器模块 + 自己的 `/events` SSE + 入站桥（command / submit / cancel）。
-// 只做转译与静态服务，不认识业务；绑定 127.0.0.1。浏览器不直连本端口，壳反代 `/p/ui-sidebar/*`。
+// 本插件子应用 HTTP 服务：静态浏览器模块 + 入站桥（command / submit / cancel）。
+// 事件统一走壳 `/events` 总线，本端口不再提供 SSE；绑定 127.0.0.1，浏览器不直连本端口。
 
 import { createServer } from 'node:http'
-import { encodeSseRecord, sidebarStateRecord, SseHub } from './events.js'
 import { log as defaultLog } from './frames.js'
 import { guardInboundRequest } from './inbound-guard.js'
 import { routeOf } from './routes.js'
@@ -131,21 +130,6 @@ async function handleCancel(deps, req, res) {
   sendJson(res, 202, { ok: true, run })
 }
 
-function handleEvents(deps, req, res) {
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
-  })
-  res.write(': connected\n\n')
-  deps.sse.add(res)
-  res.write(encodeSseRecord(sidebarStateRecord(deps.connected(), deps.identity)))
-  const cleanup = () => deps.sse.remove(res)
-  req.on('close', cleanup)
-  req.on('error', cleanup)
-}
-
 function serveWeb(webDir, name, res) {
   const source = readWebFile(webDir, name)
   if (source === null) {
@@ -206,9 +190,6 @@ async function handleRequest(deps, webDir, req, res, log, port) {
       case 'web':
         serveWeb(webDir, route.name, res)
         return
-      case 'events':
-        handleEvents(deps, req, res)
-        return
       case 'api-command':
         await handleCommand(deps, req, res)
         return
@@ -217,9 +198,6 @@ async function handleRequest(deps, webDir, req, res, log, port) {
         return
       case 'api-cancel':
         await handleCancel(deps, req, res)
-        return
-      case 'api-state':
-        sendJson(res, 200, { ok: true, connected: deps.connected(), impl: deps.identity })
         return
       default:
         sendJson(res, 404, { ok: false, code: 'not_found', message: url.pathname })
@@ -231,5 +209,3 @@ async function handleRequest(deps, webDir, req, res, log, port) {
     else res.destroy()
   }
 }
-
-export { SseHub }

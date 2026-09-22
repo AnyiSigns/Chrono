@@ -1,11 +1,10 @@
 // 集成测试（node --test）：起真实服务（execute/main.ts），对一条假宿主 hub 的本地 socket。
-// 覆盖：hello → manifest、probe → pong、command / submit 经入站桥真实往返、宿主事件经 /events 转发、
-// drain → bye、EOF 自退出。
+// 覆盖：hello → manifest、probe → pong、command / submit 经入站桥真实往返、drain → bye、EOF 自退出。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { get as httpGet, request as httpRequest } from 'node:http'
+import { request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -57,47 +56,6 @@ function httpCall(port, method, path, body) {
     if (payload !== null) req.write(payload)
     req.end()
   })
-}
-
-function openSse(port, predicate, timeoutMs = 10000) {
-  let markReady
-  const ready = new Promise((resolveReady) => {
-    markReady = resolveReady
-  })
-  const result = new Promise((resolveResult, reject) => {
-    const req = httpGet({ host: '127.0.0.1', port, path: '/events' }, (res) => {
-      markReady()
-      let buffer = ''
-      const timer = setTimeout(() => {
-        req.destroy()
-        reject(new Error(`SSE timeout; got: ${buffer.slice(0, 600)}`))
-      }, timeoutMs)
-      res.on('data', (chunk) => {
-        buffer += chunk.toString('utf8')
-        const records = buffer
-          .split('\n\n')
-          .map((part) => {
-            const line = part.split('\n').find((entry) => entry.startsWith('data: '))
-            if (line === undefined) return null
-            try {
-              return JSON.parse(line.slice('data: '.length))
-            } catch {
-              return null
-            }
-          })
-          .filter((record) => record !== null)
-        const found = records.find(predicate)
-        if (found !== undefined) {
-          clearTimeout(timer)
-          req.destroy()
-          resolveResult(found)
-        }
-      })
-      res.on('error', () => {})
-    })
-    req.on('error', reject)
-  })
-  return { ready, result }
 }
 
 /** 假宿主 hub：监听入站 socket，按帧 kind 回包；可主动发 `event`。 */
@@ -225,7 +183,7 @@ test('真实服务：hello/probe、command/submit 入站往返、事件转发、
   })
   const { child, messages, waitForMessage } = spawnService(root, port)
   try {
-    const hubSocket = await hub.connected
+    await hub.connected
 
     child.stdin.write(
       encodeFrame({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-composer', gen: 'g' }),
@@ -255,8 +213,8 @@ test('真实服务：hello/probe、command/submit 入站往返、事件转发、
 
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
-        const state = JSON.parse((await httpCall(port, 'GET', '/api/state')).body)
-        if (state.connected === true) break
+        const entry = await httpCall(port, 'GET', '/entry.js')
+        if (entry.status === 200) break
       } catch {
         // not listening yet
       }
@@ -285,22 +243,6 @@ test('真实服务：hello/probe、command/submit 入站往返、事件转发、
     assert.equal(submit.status, 202, submit.body)
     assert.equal(JSON.parse(submit.body).run, 'run-1')
     assert.ok(hub.received.some((frame) => frame.kind === 'submit' && frame.thread === 't1'))
-
-    // 宿主事件经本插件 /events 原样转发
-    const sse = openSse(port, (record) => record.topic === 'run.started')
-    await sse.ready
-    hubSocket.write(
-      encodeFrame({
-        v: '1',
-        kind: 'event',
-        impl: 'host',
-        topic: 'run.started',
-        payload: { run: 'r1', thread: '_main' },
-      }),
-    )
-    const record = await sse.result
-    assert.equal(record.impl, 'host')
-    assert.deepEqual(record.payload, { run: 'r1', thread: '_main' })
 
     // drain → bye
     child.stdin.write(encodeFrame({ v: '1', id: 'd1', kind: 'drain', deadline_ms: 100 }))
