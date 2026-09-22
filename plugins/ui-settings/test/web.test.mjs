@@ -9,6 +9,8 @@ import { dirname, join, resolve } from 'node:path'
 
 import {
   applyTemplate,
+  chooseEntry,
+  CUSTOM_AUTH_REF_NAME,
   CUSTOM_TEMPLATE_IDENTITY,
   defaultOnboarding,
   formToValue,
@@ -101,6 +103,7 @@ test('表单初始态 / 预填 / 写值（模板只是预填来源）', () => {
   assert.equal(form.templateIdentity, '')
   assert.equal(form.vendor, 'vendor-custom')
   assert.equal(form.protocol, 'openai-chat')
+  assert.equal(form.auth_kind, 'local', '取值面固定本地（不进界面）')
 
   form.templates = vendorTemplates({
     'vendor-deepseek': {
@@ -117,13 +120,41 @@ test('表单初始态 / 预填 / 写值（模板只是预填来源）', () => {
   assert.equal(form.vendor, 'vendor-custom')
   assert.equal(form.key, 'custom')
   assert.equal(form.base_url, '')
+  assert.equal(form.auth_name, CUSTOM_AUTH_REF_NAME, '自定义给默认引用名')
 
-  const value = formToValue({ ...form, templateIdentity: 'custom', protocol: 'anthropic-messages', auth_kind: 'local', auth_name: 'A', selected: ['m1'], model: 'm1' })
+  const value = formToValue({ ...form, templateIdentity: 'custom', protocol: 'anthropic-messages', auth_kind: 'local', auth_name: 'A', selected: ['m1'] })
   assert.equal(value.protocol, 'anthropic-messages')
   assert.deepEqual(value.auth_ref, { kind: 'local', name: 'A' })
   assert.deepEqual(value.models, ['m1'])
+  assert.equal(value.model, undefined, '写值不带默认模型')
   const preset = formToValue({ ...form, templateIdentity: 'vendor-deepseek' })
   assert.equal(preset.protocol, undefined, '预设厂商不带 protocol')
+})
+
+test('新建入口：模板取首个模板预填，自定义清空并给默认引用名', () => {
+  const form = defaultOnboarding()
+  form.templates = vendorTemplates({
+    'vendor-deepseek': {
+      body: { sdk: 'deepseek', default_base_url: 'https://api.deepseek.com/v1', default_auth_ref_name: 'K' },
+    },
+    'vendor-openai': {
+      body: { sdk: 'openai', default_base_url: 'https://api.openai.com/v1', default_auth_ref_name: 'OPENAI_API_KEY' },
+    },
+  })
+  chooseEntry(form, 'custom')
+  assert.equal(form.templateIdentity, 'custom')
+  assert.equal(form.key, 'custom')
+  assert.equal(form.base_url, '')
+  assert.equal(form.auth_name, CUSTOM_AUTH_REF_NAME)
+  chooseEntry(form, 'template')
+  assert.equal(form.templateIdentity, 'vendor-deepseek', '取排序首个模板')
+  assert.equal(form.key, 'deepseek')
+  assert.equal(form.base_url, 'https://api.deepseek.com/v1')
+  assert.equal(form.auth_name, 'K')
+
+  const empty = defaultOnboarding()
+  chooseEntry(empty, 'template')
+  assert.equal(empty.templateIdentity, 'custom', '无模板时模板入口回落自定义，不抛')
 })
 
 test('列表文本回填与解析互逆（splitList / listText）', () => {
@@ -132,7 +163,7 @@ test('列表文本回填与解析互逆（splitList / listText）', () => {
   assert.deepEqual(splitList(listText(['a', 'b'])), ['a', 'b'])
 })
 
-test('编辑表单：已保存厂商 → 预填 base_url / auth_ref，模型原样保留', () => {
+test('编辑表单：已保存厂商 → 预填 base_url，模型原样保留', () => {
   assert.equal(defaultOnboarding().mode, 'form')
   const form = onboardingFromEntry('deepseek', {
     name: 'DeepSeek',
@@ -145,14 +176,10 @@ test('编辑表单：已保存厂商 → 预填 base_url / auth_ref，模型原�
   assert.equal(form.editKey, 'deepseek')
   assert.equal(form.key, 'deepseek')
   assert.equal(form.base_url, 'https://api.deepseek.com/v1')
-  assert.equal(form.auth_kind, 'local')
-  assert.equal(form.auth_name, 'DEEPSEEK_API_KEY')
   assert.deepEqual(form.models, ['a'])
-  assert.equal(form.model, 'a')
   const blank = onboardingFromEntry('custom', null)
   assert.equal(blank.mode, 'edit')
   assert.equal(blank.base_url, '')
-  assert.equal(blank.auth_kind, 'env')
 })
 
 test('界面文案单一来源：编排新增键登记在共享表，本地仅骨架兜底', () => {  const table = sharedTable()
@@ -162,11 +189,13 @@ test('界面文案单一来源：编排新增键登记在共享表，本地仅�
     'settings_orch_links',
     'settings_orch_rollback_failed',
     'settings_orch_rollback_unverified',
-    'settings_refresh_profile',
     'settings_edit_provider',
     'settings_secret_save',
     'settings_secret_update',
     'settings_save_edit',
+    'settings_api_key',
+    'settings_custom_model',
+    'settings_add_model',
   ]) {
     assert.equal(lookupMessage(table, code).body.includes(code), false, `${code} 未入共享表`)
   }

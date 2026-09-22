@@ -25,7 +25,6 @@ import {
   removeProvider,
   setNotify,
   setParams,
-  setSelection,
   setUiField,
   slotWriteDirective,
   themeCardOf,
@@ -34,12 +33,11 @@ import {
   vendorKeyOf,
 } from '../execute/web/config-model.js'
 import {
+  addModelIds,
   buildProbeSlot,
   CUSTOM_PROTOCOLS,
-  defaultModelChoice,
   discoverErrorCode,
   discoverModels,
-  isConfigured,
   templatePrefill,
   validateOnboarding,
   vendorTemplates,
@@ -79,7 +77,7 @@ import {
   upsertSkill,
 } from '../execute/web/settings-model.js'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
-import { commitProviderEdit, refreshProvider, saveProviderSecret } from '../execute/web/provider-actions.js'
+import { commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.js'
 
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.ts'
 import {
@@ -141,7 +139,8 @@ test('config 读-改-写：厂商增删改、选择、参数、UI 字段', () =>
   assert.equal(providerList(added).length, 1)
   assert.deepEqual(enabledModelIds(added.providers.deepseek), ['deepseek-chat', 'deepseek-reasoner'])
 
-  const selected = setSelection(added, 'deepseek', 'deepseek-chat')
+  // 当前选择由对话输入框写：此处直接构造带 vendor / model 的 config 验证删除清选择
+  const selected = { ...added, vendor: 'deepseek', model: 'deepseek-chat' }
   assert.equal(selected.vendor, 'deepseek')
   assert.equal(selected.model, 'deepseek-chat')
 
@@ -237,7 +236,6 @@ test('引导表单校验：必填 / URL 形态 / 模型在勾选内', () => {
     base_url: 'https://api.deepseek.com/v1',
     auth_ref: { kind: 'env', name: 'K' },
     models: ['m1'],
-    model: 'm1',
   }
   assert.equal(validateOnboarding(good), null)
   assert.equal(validateOnboarding({ ...good, base_url: '' }), 'settings_required')
@@ -245,27 +243,29 @@ test('引导表单校验：必填 / URL 形态 / 模型在勾选内', () => {
   assert.equal(validateOnboarding({ ...good, base_url: 'not a url' }), 'settings_bad_url')
   assert.equal(validateOnboarding({ ...good, auth_ref: { kind: 'env', name: '' } }), 'settings_required')
   assert.equal(validateOnboarding({ ...good, models: [] }), 'settings_required')
-  assert.equal(validateOnboarding({ ...good, model: 'other' }), 'settings_required')
   assert.deepEqual(CUSTOM_PROTOCOLS, ['openai-chat', 'openai-responses', 'anthropic-messages'])
-  assert.equal(defaultModelChoice(['a', 'b'], 'b'), 'b')
-  assert.equal(defaultModelChoice(['a', 'b'], 'z'), 'a')
-  assert.equal(defaultModelChoice([], 'z'), '')
-  assert.equal(isConfigured({ vendor: 'deepseek' }), true)
-  assert.equal(isConfigured({}), false)
 })
 
-test('引导完成：写 config 合并厂商与选择', () => {
+test('自定义模型 id：逗号 / 空格分隔，去重、排序并默认勾选', () => {
+  const form = { models: ['m1'], selected: ['m1'] }
+  assert.deepEqual(addModelIds(form, 'm2, m3  m1'), ['m2', 'm3'])
+  assert.deepEqual(form.models, ['m1', 'm2', 'm3'])
+  assert.deepEqual(form.selected, ['m1', 'm2', 'm3'])
+  assert.deepEqual(addModelIds(form, ''), [])
+  assert.deepEqual(addModelIds(form, '  '), [])
+})
+
+test('引导完成：写 config 合并厂商（不写当前选择）', () => {
   const form = {
     vendor: 'vendor-deepseek',
     key: 'deepseek',
     base_url: 'https://api.deepseek.com/v1',
     auth_ref: { kind: 'env', name: 'DEEPSEEK_API_KEY' },
     models: ['deepseek-chat'],
-    model: 'deepseek-chat',
   }
   const body = buildOnboardingConfig(emptyConfig(), form)
-  assert.equal(body.vendor, 'deepseek')
-  assert.equal(body.model, 'deepseek-chat')
+  assert.equal(body.vendor, undefined, '不写当前选择：由对话输入框选模型时写')
+  assert.equal(body.model, undefined)
   assert.equal(body.providers.deepseek.base_url, 'https://api.deepseek.com/v1')
   assert.equal(body.providers.deepseek.auth_ref.name, 'DEEPSEEK_API_KEY')
   assert.deepEqual(Object.keys(body.providers.deepseek.models), ['deepseek-chat'])
@@ -834,7 +834,7 @@ test('技能表单 → 条目（触发字段 / scope）', () => {
   assert.deepEqual(splitList(undefined), [])
 })
 
-// ---- 厂商动作（编辑 / 重拉档案 / 密钥更新）----
+// ---- 厂商动作（编辑 / 密钥更新 / 获取模型）----
 
 /** 最小假 ctx：只记录写入与命令调用，驱动 provider-actions 的纯动作。 */
 function fakeProviderCtx(config) {
@@ -861,7 +861,7 @@ function fakeProviderCtx(config) {
   return { ctx, writes, calls }
 }
 
-test('编辑：只改 base_url / auth_ref，模型与档案元数据原样保留', async () => {
+test('编辑：只改 base_url，密钥 / 模型与档案元数据原样保留', async () => {
   const entry = {
     name: 'DeepSeek',
     base_url: 'https://old/v1',
@@ -869,11 +869,11 @@ test('编辑：只改 base_url / auth_ref，模型与档案元数据原样保留
     models: { a: { enabled: true, context_window: 1000 } },
   }
   const { ctx, writes } = fakeProviderCtx({ version: 1, providers: { deepseek: entry } })
-  const form = { mode: 'edit', editKey: 'deepseek', base_url: 'https://new/v1', auth_kind: 'local', auth_name: 'NEW_KEY', busy: false, error: null }
+  const form = { mode: 'edit', editKey: 'deepseek', base_url: 'https://new/v1', busy: false, error: null }
   assert.equal(await commitProviderEdit(ctx, form, 'deepseek'), true)
   const saved = ctx.state.config.providers.deepseek
   assert.equal(saved.base_url, 'https://new/v1')
-  assert.deepEqual(saved.auth_ref, { kind: 'local', name: 'NEW_KEY' })
+  assert.deepEqual(saved.auth_ref, { kind: 'env', name: 'K' }, '密钥引用原样保留')
   assert.deepEqual(saved.models, { a: { enabled: true, context_window: 1000 } })
   assert.equal(writes[0].key, 'provider:deepseek')
   assert.equal(ctx.state.providerForm, null)
@@ -881,7 +881,7 @@ test('编辑：只改 base_url / auth_ref，模型与档案元数据原样保留
 
 test('编辑：地址非法即拒，不写 config', async () => {
   const { ctx, writes } = fakeProviderCtx({ version: 1, providers: { deepseek: { base_url: 'https://old/v1' } } })
-  const form = { mode: 'edit', editKey: 'deepseek', base_url: 'ftp://x', auth_kind: 'env', auth_name: 'K', busy: false, error: null }
+  const form = { mode: 'edit', editKey: 'deepseek', base_url: 'ftp://x', busy: false, error: null }
   assert.equal(await commitProviderEdit(ctx, form, 'deepseek'), false)
   assert.equal(writes.length, 0)
   assert.equal(form.error.code, 'settings_bad_url')
@@ -895,19 +895,85 @@ test('密钥更新：经入站 secrets.put 后刷新状态点，不落 state', a
   assert.equal(JSON.stringify(ctx.state).includes('top-secret'), false, '密钥本体不得进 state')
 })
 
-test('重拉档案：先设为当前选择再调 model.profile，读回 config', async () => {
-  const { ctx, calls, writes } = fakeProviderCtx({
-    version: 1,
-    vendor: 'other',
-    model: 'x',
-    providers: { deepseek: { models: { a: { enabled: true } } } },
-  })
-  assert.equal(await refreshProvider(ctx, 'deepseek'), true)
-  assert.equal(ctx.state.config.vendor, 'deepseek')
-  assert.equal(ctx.state.config.model, 'a')
-  assert.equal(writes[0].key, 'provider:deepseek')
-  assert.ok(calls.some((call) => call.name === 'model.profile'))
-  assert.ok(calls.some((call) => call.name === 'config.read'))
+/** 获取模型的假 ctx：记录 secrets.put / 写指令 / 命令调用。 */
+function fakeFetchCtx(discover) {
+  const puts = []
+  const writes = []
+  const calls = []
+  const ctx = {
+    state: {},
+    text: (code) => code,
+    render: () => {},
+    threadKey: '_main',
+    armLoadingNote: () => {},
+    clearLoadingNote: () => {},
+    postJson: async (path, body) => {
+      puts.push({ path, body })
+      return { ok: true }
+    },
+    readSlots: async () => ({ _main: { kind: 'idle' } }),
+    applyWrite: async (directive) => {
+      writes.push(directive)
+      return { ok: true }
+    },
+    runCommand: async (name, args) => {
+      calls.push({ name, args })
+      if (name === 'model.discover') return discover
+      return { ok: true, value: null }
+    },
+  }
+  return { ctx, puts, writes, calls }
+}
+
+/** 获取模型表单（自定义 + 本地取值面）。 */
+function fetchForm(overrides = {}) {
+  return {
+    mode: 'form',
+    templateIdentity: 'custom',
+    protocol: 'openai-chat',
+    base_url: 'https://api.example.com/v1',
+    auth_kind: 'local',
+    auth_name: 'K',
+    secret_value: 'top-secret',
+    models: [],
+    selected: [],
+    error: null,
+    loading: false,
+    loadingNote: false,
+    ...overrides,
+  }
+}
+
+test('获取模型：本地取值面先落密钥，再写探测槽并发现（默认全勾选）', async () => {
+  const { ctx, puts, writes, calls } = fakeFetchCtx({ ok: true, value: { ok: true, models: ['m1', 'm2'] } })
+  const form = fetchForm()
+  await fetchModels(ctx, form)
+  assert.deepEqual(puts, [{ path: 'api/secrets/put', body: { name: 'K', value: 'top-secret' } }])
+  assert.equal(writes.length, 1, '写一次探测槽')
+  assert.ok(calls.some((call) => call.name === 'model.discover'))
+  assert.deepEqual(form.models, ['m1', 'm2'])
+  assert.deepEqual(form.selected, ['m1', 'm2'])
+  assert.equal(form.error, null)
+  assert.equal(form.loading, false)
+})
+
+test('获取模型：保留手填自定义 id；env 取值面不落本地密钥；密钥落盘失败即收口', async () => {
+  const manualRun = fakeFetchCtx({ ok: true, value: { ok: true, models: ['m2'] } })
+  const manualForm = fetchForm({ models: ['custom-x'], selected: ['custom-x'] })
+  await fetchModels(manualRun.ctx, manualForm)
+  assert.deepEqual(manualForm.models, ['custom-x', 'm2'], '手填 id 与发现结果合并')
+  assert.deepEqual(manualForm.selected, ['custom-x', 'm2'])
+
+  const envRun = fakeFetchCtx({ ok: true, value: { ok: true, models: ['m1'] } })
+  await fetchModels(envRun.ctx, fetchForm({ auth_kind: 'env', secret_value: 'x' }))
+  assert.deepEqual(envRun.puts, [], 'env 不写本地密钥')
+
+  const failRun = fakeFetchCtx({ ok: true, value: { ok: true, models: ['m1'] } })
+  failRun.ctx.postJson = async () => ({ ok: false, code: 'bad_directive' })
+  const form = fetchForm()
+  await fetchModels(failRun.ctx, form)
+  assert.equal(form.error.code, 'settings_secret_failed')
+  assert.equal(failRun.writes.length, 0, '密钥未落盘则不探测')
 })
 
 // ---- 文案 ----

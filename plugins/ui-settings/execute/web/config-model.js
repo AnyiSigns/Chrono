@@ -88,14 +88,6 @@ export function removeProvider(config, key) {
   return base
 }
 
-/** 设置当前选择（vendor / model）。 */
-export function setSelection(config, key, model) {
-  const base = isRecord(config) ? clone(config) : emptyConfig()
-  base.vendor = key
-  base.model = model
-  return base
-}
-
 /** 合并写入 `params` 字段（只覆盖给出的键）。 */
 export function setParams(config, params) {
   const base = isRecord(config) ? clone(config) : emptyConfig()
@@ -129,13 +121,13 @@ export function notifyOf(config) {
 
 /**
  * 引导完成：把表单合并进 config body。
- * 表单 `{vendor, key?, protocol?, base_url, auth_ref:{kind,name}, models:[…], model, params?}`。
+ * 表单 `{vendor, key?, protocol?, base_url, auth_ref:{kind,name}, models:[…], params?}`。
+ * 不写当前选择（`vendor` / `model`）：当前模型由对话输入框选择时写。
  */
 export function buildOnboardingConfig(existing, form) {
   const key = typeof form.key === 'string' && form.key.length > 0 ? form.key : vendorKeyOf(form.vendor)
   const withProvider = upsertProvider(existing, key, providerEntry({ ...form, key }))
-  const withSelection = setSelection(withProvider, key, form.model)
-  return isRecord(form.params) ? setParams(withSelection, form.params) : withSelection
+  return isRecord(form.params) ? setParams(withProvider, form.params) : withProvider
 }
 
 /** 一条 batch 写指令：put 整值 + add_gen 绑定身份（四字段全必填、占位符指回 put）。 */

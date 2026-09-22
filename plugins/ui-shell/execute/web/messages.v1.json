@@ -653,40 +653,32 @@
     "body": "已保存的厂商"
   },
   "settings_models_templates": {
-    "title": "厂商模板 / 自定义",
-    "body": "厂商模板 / 自定义"
+    "title": "厂商",
+    "body": "厂商"
   },
   "settings_vendor": {
     "title": "厂商",
     "body": "厂商"
   },
-  "settings_custom": {
-    "title": "自定义厂商",
-    "body": "自定义厂商"
+  "settings_add_provider": {
+    "title": "添加厂商",
+    "body": "添加厂商"
+  },
+  "settings_add_custom_provider": {
+    "title": "添加自定义厂商",
+    "body": "添加自定义厂商"
   },
   "settings_protocol": {
-    "title": "协议",
-    "body": "协议"
+    "title": "protocol",
+    "body": "protocol"
   },
   "settings_base_url": {
-    "title": "地址",
-    "body": "地址"
+    "title": "url",
+    "body": "url"
   },
-  "settings_auth_ref": {
-    "title": "密钥引用",
-    "body": "密钥引用"
-  },
-  "settings_auth_kind": {
-    "title": "引用类型",
-    "body": "引用类型"
-  },
-  "settings_auth_name": {
-    "title": "引用名",
-    "body": "引用名"
-  },
-  "settings_secret_value": {
-    "title": "密钥值",
-    "body": "密钥值"
+  "settings_api_key": {
+    "title": "key",
+    "body": "key"
   },
   "settings_secret_placeholder": {
     "title": "只写本地，不进世界",
@@ -712,10 +704,6 @@
     "title": "密钥已保存",
     "body": "密钥已保存"
   },
-  "settings_refresh_profile": {
-    "title": "重拉档案",
-    "body": "重拉档案"
-  },
   "settings_edit_provider": {
     "title": "编辑",
     "body": "编辑"
@@ -736,9 +724,17 @@
     "title": "勾选模型",
     "body": "勾选模型"
   },
-  "settings_default_model": {
-    "title": "默认模型",
-    "body": "默认模型"
+  "settings_custom_model": {
+    "title": "自定义模型",
+    "body": "自定义模型"
+  },
+  "settings_custom_model_placeholder": {
+    "title": "输入模型 id，逗号或换行分隔",
+    "body": "输入模型 id，逗号或换行分隔"
+  },
+  "settings_add_model": {
+    "title": "添加",
+    "body": "添加"
   },
   "settings_complete": {
     "title": "完成并进入",
@@ -748,9 +744,9 @@
     "title": "完成中…",
     "body": "完成中…"
   },
-  "settings_new_provider": {
-    "title": "新建厂商",
-    "body": "新建厂商"
+  "settings_back": {
+    "title": "返回",
+    "body": "返回"
   },
   "settings_remove_provider": {
     "title": "删除",

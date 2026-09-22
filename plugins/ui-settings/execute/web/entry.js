@@ -7,7 +7,7 @@ import { ensureStyles } from './styles.js'
 import { el, icon, iconButton, clear } from './dom.js'
 import { formatText, loadMessages, messageText } from './messages.js'
 import { batchWriteDirective, configWriteDirective } from './config-model.js'
-import { applyTemplate, defaultOnboarding } from './onboarding.js'
+import { applyTemplate, chooseEntry, defaultOnboarding } from './onboarding.js'
 import { HEALTH_OK, healthView } from './health.js'
 import { TABS, normalizeTab } from './settings-model.js'
 import { blockLoading, errorBar } from './ui-parts.js'
@@ -22,7 +22,7 @@ import { renderAbout } from './view-about.js'
 import { currentThemePref, setTheme } from './theme-actions.js'
 import { handleNotifyState, loadNotify, requestPermission } from './notify-actions.js'
 import { exportConfig, importConfig } from './config-io.js'
-import { commitProvider, commitProviderEdit, fetchModels, refreshProvider, saveProviderSecret } from './provider-actions.js'
+import { commitProvider, commitProviderEdit, fetchModels, saveProviderSecret } from './provider-actions.js'
 import { loadHealth, loadOrchestration, loadTab, loadVendors } from './data-load.js'
 import { doMemoryEdit, doMemorySearch } from './memory-actions.js'
 import { applyWrite, postJson, readSlots, runCommand } from './client.js'
@@ -383,7 +383,6 @@ export async function mount(root, api) {
       const form = state.onboarding
       if (form === null) return
       form.templates = templates
-      if (form.templateIdentity === '') applyTemplate(form, 'custom')
       render()
       focusFirst()
     })()
@@ -425,11 +424,11 @@ export async function mount(root, api) {
     doRollback,
     defaultOnboarding,
     applyTemplate,
+    chooseEntry,
     currentThemePref: () => currentThemePref(ctx),
     setTheme: (card) => setTheme(ctx, card),
     commitProvider: (form, options) => commitProvider(ctx, form, options),
     commitProviderEdit: (form, key) => commitProviderEdit(ctx, form, key),
-    refreshProvider: (key) => refreshProvider(ctx, key),
     saveProviderSecret: (name, value, key) => saveProviderSecret(ctx, name, value, key),
     fetchModels: (form) => fetchModels(ctx, form),
     loadTab: (tab) => loadTab(ctx, tab),

@@ -6,6 +6,9 @@ import { enabledModelIds, isRecord, vendorKeyOf } from './config-model.js'
 /** 三个自定义基础协议（config 里自定义厂商的 `protocol`）。 */
 export const CUSTOM_PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic-messages']
 
+/** 自定义厂商的默认密钥引用名（用户不填名时按此落本地，避免主路径强迫用户造名）。 */
+export const CUSTOM_AUTH_REF_NAME = 'CUSTOM_API_KEY'
+
 /** 厂商模板身份中代表「自定义」的一项（表单里由显式 custom 选项承担，不再重复列出）。 */
 export const CUSTOM_TEMPLATE_IDENTITY = 'vendor-custom'
 
@@ -70,12 +73,11 @@ export function defaultOnboarding() {
     key: 'custom',
     protocol: CUSTOM_PROTOCOLS[0],
     base_url: '',
-    auth_kind: 'env',
+    auth_kind: 'local',
     auth_name: '',
     secret_value: '',
     models: [],
     selected: [],
-    model: '',
     error: null,
     busy: false,
     loading: false,
@@ -84,11 +86,10 @@ export function defaultOnboarding() {
 }
 
 /**
- * 已保存厂商 → 编辑表单（改 `base_url` / `auth_ref`，模型与档案元数据原样保留）。
- * 编辑模式只渲染地址与密钥引用，不重跑模板 / 发现流程。
+ * 已保存厂商 → 编辑表单（只改 `base_url`；模型 / 密钥 / 档案元数据原样保留）。
+ * 编辑模式只渲染地址，不重跑模板 / 发现流程。
  */
 export function onboardingFromEntry(key, entry) {
-  const auth = isRecord(entry) && isRecord(entry.auth_ref) ? entry.auth_ref : {}
   const models = enabledModelIds(entry)
   return {
     ...defaultOnboarding(),
@@ -98,12 +99,19 @@ export function onboardingFromEntry(key, entry) {
     key,
     protocol: isRecord(entry) && typeof entry.protocol === 'string' ? entry.protocol : CUSTOM_PROTOCOLS[0],
     base_url: isRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : '',
-    auth_kind: auth.kind === 'local' ? 'local' : 'env',
-    auth_name: typeof auth.name === 'string' ? auth.name : '',
     models,
     selected: models.slice(),
-    model: models.length > 0 ? models[0] : '',
   }
+}
+
+/** 选新建入口：模板 → 取首个模板预填；自定义 → 清空预填并给默认引用名。 */
+export function chooseEntry(form, entry) {
+  if (entry === 'custom') {
+    applyTemplate(form, 'custom')
+    return
+  }
+  const first = selectableTemplates(form.templates)[0]
+  applyTemplate(form, first === undefined ? 'custom' : first.identity)
 }
 
 /** 切换模板：自定义清空预填，预设模板按 body 预填（模板只是预填来源）。 */
@@ -111,7 +119,7 @@ export function applyTemplate(form, identity) {
   form.templateIdentity = identity === 'custom' ? 'custom' : identity
   const prefill =
     identity === 'custom'
-      ? { key: 'custom', base_url: '', auth_ref_name: '', sdk: '' }
+      ? { key: 'custom', base_url: '', auth_ref_name: CUSTOM_AUTH_REF_NAME, sdk: '' }
       : templatePrefill(form.templates, identity)
   form.vendor = identity === 'custom' ? CUSTOM_TEMPLATE_IDENTITY : identity
   form.key = prefill.key || 'custom'
@@ -119,11 +127,28 @@ export function applyTemplate(form, identity) {
   form.auth_name = prefill.auth_ref_name
   form.models = []
   form.selected = []
-  form.model = ''
   form.error = null
 }
 
-/** 表单 → 引导写值（`auth_ref` 只存引用，不存密钥本体）。 */
+/** 追加自定义模型 id（逗号 / 空格 / 换行分隔）：去重、排序并默认勾选；返回新增项。 */
+export function addModelIds(form, text) {
+  if (typeof text !== 'string' || text.trim().length === 0) return []
+  const known = new Set(form.models)
+  const added = []
+  for (const raw of text.split(/[\s,，]+/)) {
+    const id = raw.trim()
+    if (id.length === 0 || known.has(id)) continue
+    known.add(id)
+    added.push(id)
+  }
+  if (added.length > 0) {
+    form.models = [...form.models, ...added].sort()
+    form.selected = [...form.selected, ...added].sort()
+  }
+  return added
+}
+
+/** 表单 → 引导写值（`auth_ref` 只存引用，不存密钥本体；模型只存勾选项）。 */
 export function formToValue(form) {
   return {
     vendor: form.vendor,
@@ -132,7 +157,6 @@ export function formToValue(form) {
     base_url: form.base_url,
     auth_ref: { kind: form.auth_kind, name: form.auth_name },
     models: form.selected,
-    model: form.model,
   }
 }
 
@@ -209,18 +233,5 @@ export function validateOnboarding(form) {
   const auth = validateAuthRef(form.auth_ref)
   if (auth !== null) return auth
   if (!Array.isArray(form.models) || form.models.length === 0) return ONBOARDING_REQUIRED
-  if (typeof form.model !== 'string' || form.model.length === 0) return ONBOARDING_REQUIRED
-  if (!form.models.includes(form.model)) return ONBOARDING_REQUIRED
   return null
-}
-
-/** 默认模型选择：保留旧选择（若仍在列表内），否则取列表首项。 */
-export function defaultModelChoice(models, previous) {
-  if (typeof previous === 'string' && models.includes(previous)) return previous
-  return models.length > 0 ? models[0] : ''
-}
-
-/** 是否已配置：config body 有 `vendor` 键（壳判「无配置」同口径）。 */
-export function isConfigured(config) {
-  return isRecord(config) && typeof config.vendor === 'string' && config.vendor.length > 0
 }

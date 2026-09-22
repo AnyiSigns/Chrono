@@ -321,6 +321,17 @@ export async function mount(root, api) {
       return vendor.length > 0 && model !== null ? `${vendor}::${model}` : null
     },
     select: (value) => void selectModel(value),
+    // 引导 / 新建厂商在挂载后才写 config：打开下拉前重读一次，免得模型列表停在挂载时的空态。
+    onTrigger: (event, dd) => {
+      if (dd.state.open) {
+        closeOverlays(false)
+        return
+      }
+      closeOverlays(false)
+      void refreshConfig().then(() => {
+        if (!disposed) showDropdown(dd)
+      })
+    },
   })
 
   const reasoningDd = createDropdown({
@@ -841,6 +852,16 @@ export async function mount(root, api) {
     renderToolbar()
     renderSend()
     await ensureReasoning()
+  }
+
+  /** 轻量重读：只刷新模型列表与当前选择，不触发推理档拉取（供打开模型下拉前用）。 */
+  async function refreshConfig() {
+    const config = await readConfig()
+    if (disposed || config === null) return
+    state.config = config
+    state.model = currentModelOf(config)
+    state.permission = normalizePermission(config.permission)
+    renderToolbar()
   }
 
   function applyReasoningOptions(options) {

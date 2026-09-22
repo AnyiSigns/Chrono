@@ -84,6 +84,12 @@ export const STYLE_TEXT = `
 .settings-guide-title { font-size: var(--font-size-xl); font-weight: var(--weight-strong); margin-bottom: var(--space-4); }
 .settings-guide-intro { color: var(--c-text-2); font-size: var(--font-size-sm); margin-bottom: var(--space-24); }
 .settings-guide-actions { display: flex; justify-content: flex-end; gap: var(--space-8); margin-top: var(--space-24); }
+.settings-add-row { display: flex; gap: var(--space-8); }
+.settings-add-btn { flex: 1 1 0; justify-content: center; border-style: dashed; color: var(--c-text-2); }
+.settings-add-btn:hover { border-color: var(--c-text-3); color: var(--c-text); }
+.settings-add-btn:disabled { border-style: dashed; }
+.settings-custom-model { display: flex; align-items: center; gap: var(--space-8); flex: 1 1 auto; }
+.settings-custom-model .settings-input { flex: 1 1 auto; }
 .settings-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .settings-model-picks { display: flex; flex-direction: column; gap: var(--space-4); max-height: var(--settings-picks-max-h); overflow: auto; }
 .settings-check { display: flex; align-items: center; gap: var(--space-8); min-height: 24px; font-size: var(--font-size-sm); }

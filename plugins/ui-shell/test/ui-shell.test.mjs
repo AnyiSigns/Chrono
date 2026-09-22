@@ -160,9 +160,13 @@ test('Bridge：命令回包取值 / configRead / submit accepted', async () => {
   assert.equal(sent[2].kind, 'cancel')
 })
 
-test('无配置判据：config.read 返回值两路', () => {
-  assert.equal(deriveBootMode({ vendor: 'deepseek' }), 'ready')
-  assert.equal(deriveBootMode({ vendor: null }), 'ready')
+test('无配置判据：config.read 返回值里有没有已启用模型条目', () => {
+  assert.equal(deriveBootMode({ providers: { deepseek: { models: { a: { enabled: true } } } } }), 'ready')
+  assert.equal(deriveBootMode({ providers: { deepseek: { models: { a: {} } } } }), 'ready', '缺 enabled 视为启用')
+  assert.equal(deriveBootMode({ providers: { deepseek: { models: { a: { enabled: false } } } } }), 'onboarding')
+  assert.equal(deriveBootMode({ providers: { deepseek: { models: {} } } }), 'onboarding')
+  assert.equal(deriveBootMode({ providers: {} }), 'onboarding')
+  assert.equal(deriveBootMode({ vendor: 'deepseek' }), 'onboarding', '只写 vendor 不算已配置')
   assert.equal(deriveBootMode({}), 'onboarding')
   assert.equal(deriveBootMode(null), 'onboarding')
   assert.equal(deriveBootMode({ tree: 'x', meta: {} }), 'onboarding')
@@ -639,7 +643,6 @@ test('文案表：共享表承载 ui-settings 界面文案（单一文案来源�
     'settings_theme_day',
     'settings_orch_scope',
     'settings_orch_rollback_unverified',
-    'settings_refresh_profile',
     'settings_edit_provider',
     'settings_secret_save',
   ]) {

@@ -77,14 +77,13 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 - **通用页**：主题三卡片（日间 / 夜间 / 系统，config 用户语义 `day` / `night` / `system`），
   切换经壳的 `api.theme.set` 一次落 config（不再客户端二次直写），`boot_mode` 由壳读 config 重推；
   语言行置灰只读、通知分组、配置导入 / 导出。
-- **模型页**：上区已保存厂商（增删改 / 切默认模型 / **重拉档案** / **每厂商密钥更新** / 密钥引用状态），
-  下区模板与自定义新建；厂商模板优先取 `model.vendors`（不可用时回落身份投影）；`model.profile` 无参调用
+- **模型页**：上区已保存厂商（编辑地址 / 每厂商密钥更新 / 删除），
+  下区模板与自定义两条入口新建；厂商模板优先取 `model.vendors`（不可用时回落身份投影）；`model.profile` 无参调用
   （服务从投影装配）；`model.discover` 的 `model.probe` 清槽由服务返回的计划携带，客户端不再清。
-  - **重拉档案**：先把该厂商设为当前选择（可回放），再调 `model.profile` 刷新
-    `context_window` / `max_output` / `reasoning` / `modalities` 落 config。
-  - **密钥更新**：每厂商一个掩码输入，经入站 `secrets.put` 直写本地（不回显本体、不进世界 / 导出 / 审计），
-    保存后刷新 `secrets.status` 状态点。
-  - **改（编辑）**：与引导页同一表单形态，只改 `base_url` / `auth_ref`，模型与档案元数据原样保留。
+  - **当前模型不在本页选**：由对话输入框选择模型时写 `config.vendor` / `config.model`；本页只维护厂商与模型目录。
+  - **密钥**：新建时一个密钥输入框（内部固定 `local` + 自动引用名，不进界面），经入站 `secrets.put` 直写本地
+    （不进世界 / 导出 / 审计）；每厂商另有掩码输入可更新密钥，保存后刷新 `secrets.status` 状态点。
+  - **改（编辑）**：只改 `base_url`，密钥 / 模型 / 档案元数据原样保留。
 - **编排页**：健康区直接渲染 `orchestration.health` 的结构化结果（状态 / 连续计数 / 阈值 / 拒绝码 / 回滚目标），
   不再在浏览器侧计数比阈值；**进化台账**由健康结果随带的 `ledger`（`verdicts` / `proposals` / `evidence`
   三条 tail，采纳与拒绝都在）渲染，判定行显 `proposal_id` + `evidence_id` 并可点击下钻到提案 / 证据 / trace；
