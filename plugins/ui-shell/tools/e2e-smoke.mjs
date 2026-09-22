@@ -193,7 +193,7 @@ async function main() {
     assert.equal(tokens.status, 200)
     assert.match(tokens.body, /--c-bg/)
     assert.match(tokens.body, /--z-toast/)
-    const icons = await httpCall(port, 'GET', '/assets/icons.v1.svg')
+    const icons = await httpCall(port, 'GET', '/assets/icons.v2.svg')
     assert.equal(icons.status, 200)
     assert.match(icons.body, /<symbol id="alert-triangle"/)
     const messages = await httpCall(port, 'GET', '/assets/messages.v1.json')

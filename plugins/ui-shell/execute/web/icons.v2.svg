@@ -1,6 +1,6 @@
-<!-- icons.v1.svg —— 线性图标 sprite（Lucide 按需子集，MIT）。
+<!-- icons.v2.svg —— 线性图标 sprite（Lucide 按需子集，MIT）。
      24×24 viewBox、stroke 1.5、round cap/join、currentColor；业务插件以
-     <use href="/assets/icons.v1.svg#<name>"> 引用，禁止内嵌图标或 emoji。 -->
+     <use href="/assets/icons.v2.svg#<name>"> 引用，禁止内嵌图标或 emoji。 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
   <symbol id="arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
   <symbol id="square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol>

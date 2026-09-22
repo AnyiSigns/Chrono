@@ -16,7 +16,7 @@ S6 断线横幅与全局 toast。壳不渲染业务面板、不做业务判定�
 ```
 GET  /                        壳页面（S0 启动 → 各 slot 淡入）
 GET  /assets/tokens.v1.css    共享设计 token（唯一来源，无组件样式）
-GET  /assets/icons.v1.svg     线性图标 sprite（Lucide 子集，唯一来源）
+GET  /assets/icons.v2.svg     线性图标 sprite（Lucide 子集，唯一来源）
 GET  /assets/messages.v1.json 错误码 → 人话文案表（唯一来源）
 GET  /favicon.svg             站点图标（字母 C 字标）
 GET  /assets/lib/<name>.js    壳页面共享前端库（ui-state / toast / theme / boot-mode / shell）
@@ -34,6 +34,10 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 
 `/p/<id>/<cmd>` 表外路径映射为命令名：路径段以 `.` 连接并保证带 `<id>.` 前缀
 （`/p/mcp/discover` → `mcp.discover`，`/p/mcp/tools/list` → `mcp.tools.list`）。
+
+壳自有的页面 / 静态 / 模块响应一律 `cache-control: no-store`：降级内容（如空 sprite）若被
+浏览器启发式缓存，`<use href="/assets/icons.v2.svg#…">` 会长期解析不到目标而静默留白。
+降级不阻塞功能，但会落一行 `asset fallback: <name>` 日志（`serveAsset`）。
 
 ## 挂载表与 headless 清单
 
@@ -103,9 +107,13 @@ hover 暂停、可关闭；`aria-live` 按 tone 取 `status` / `alert`。
 
 ## 图标 sprite 维护
 
-`execute/web/icons.v1.svg` 只含全局设计语言登记的子集，24×24 viewBox、stroke 1.5、
-round cap/join、`currentColor`。业务插件以 `<use href="/assets/icons.v1.svg#<name>">` 引用，
+`execute/web/icons.v2.svg` 只含全局设计语言登记的子集，24×24 viewBox、stroke 1.5、
+round cap/join、`currentColor`。业务插件以 `<use href="/assets/icons.v2.svg#<name>">` 引用，
 禁止内嵌图标或 emoji。重新生成：`node tools/gen-icons.mjs <lucide-static 包目录>`。
+
+图标子集有增删时按内容升版文件名（`icons.v2.svg` → `icons.v3.svg`，同步 `routes.ts` /
+`http-server.ts` / `assets.ts` / `gen-icons.mjs` 与各插件 `dom.js` 的引用）：新 URL 绕开
+浏览器里可能残留的旧副本，是 `no-store` 之外的第二道保险。
 
 ## 运行
 

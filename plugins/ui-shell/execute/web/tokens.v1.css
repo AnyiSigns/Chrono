@@ -33,9 +33,11 @@
   --font-size-md: 14px;
   --font-size-lg: 16px;
   --font-size-xl: 18px;
+  --font-size-2xl: 22px;
   --leading-body: 22px;
   --leading-code: 20px;
   --weight-regular: 400;
+  --weight-medium: 500;
   --weight-strong: 600;
 
   /* §4 间距与布局 */
@@ -56,7 +58,6 @@
   --settings-w: clamp(640px, 65vw, 1120px);
   --settings-h: 86vh;
   --settings-nav-w: 160px;
-  --guide-max-w: 640px;
   --dock-max-h: 40vh;
   --composer-max-h: 30vh;
   --main-min-h: 120px;
@@ -69,6 +70,7 @@
 
   /* §6 边框与层级 */
   --shadow-pop: 0 4px 16px rgba(0, 0, 0, .10);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 12px -6px rgba(0, 0, 0, .10);
   --glass-blur: 12px;
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--c-accent) 8%, transparent);
 
@@ -113,6 +115,7 @@
   --c-info-bg: rgba(142, 155, 212, .12);
   --c-glass: rgba(30, 29, 27, .84);
   --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .30), 0 4px 12px -6px rgba(0, 0, 0, .40);
 }
 
 @media (prefers-color-scheme: dark) {

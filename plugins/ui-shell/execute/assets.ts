@@ -52,7 +52,7 @@ export function loadTokens(webDir: string): AssetContent {
 }
 
 export function loadIcons(webDir: string): AssetContent {
-  return readAsset(webDir, 'icons.v1.svg', EMPTY_SPRITE)
+  return readAsset(webDir, 'icons.v2.svg', EMPTY_SPRITE)
 }
 
 export function loadFavicon(webDir: string): AssetContent {

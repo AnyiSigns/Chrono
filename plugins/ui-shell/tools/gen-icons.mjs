@@ -1,4 +1,4 @@
-// 生成 `execute/web/icons.v1.svg`：从 lucide-static 的 `icon-nodes.json` 抽取 §8 登记子集，
+// 生成 `execute/web/icons.v2.svg`：从 lucide-static 的 `icon-nodes.json` 抽取 §8 登记子集，
 // 统一 24×24 viewBox、stroke 1.5、round cap/join、currentColor，打成 sprite。
 // 用法：node plugins/ui-shell/tools/gen-icons.mjs <lucide-static 包目录>
 // 生成物随包入世；本工具与 lucide-static 都是构建期依赖，运行期零依赖。
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const OUT = resolve(HERE, '..', 'execute', 'web', 'icons.v1.svg')
+const OUT = resolve(HERE, '..', 'execute', 'web', 'icons.v2.svg')
 
 // 登记名 → Lucide 现行名（个别图标在 Lucide 新版改过名）。
 const ICONS = {
@@ -91,9 +91,9 @@ function main() {
     )
   }
   const svg = [
-    '<!-- icons.v1.svg —— 线性图标 sprite（Lucide 按需子集，MIT）。',
+    '<!-- icons.v2.svg —— 线性图标 sprite（Lucide 按需子集，MIT）。',
     '     24×24 viewBox、stroke 1.5、round cap/join、currentColor；业务插件以',
-    '     <use href="/assets/icons.v1.svg#<name>"> 引用，禁止内嵌图标或 emoji。 -->',
+    '     <use href="/assets/icons.v2.svg#<name>"> 引用，禁止内嵌图标或 emoji。 -->',
     '<svg xmlns="http://www.w3.org/2000/svg" style="display:none">',
     ...symbols,
     '</svg>',

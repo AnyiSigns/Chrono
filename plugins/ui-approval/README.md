@@ -65,7 +65,7 @@ GET  /api/state   → 本插件入站连接态
 - 视图层模块拆分：入口编排 `entry.js`；纯模型 `model.js`（模板选择 / 摘要视图 / 影子指标 /
   计时格式 / 二次确认状态机 / verdict 映射）；入站网络 `client.js`；事件 `sse.js`；
   渲染小件 `dom.js` / `styles.js`；文案 `messages.js`。
-- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v1.svg`
+- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`
   （线性图标 sprite）、`/assets/messages.v1.json`（错误码人话）；组件样式只引 token，
   零硬编码色值、无内嵌图标与 emoji。
 - 端口默认 `8789`（`CHRONO_UI_PORT_UI_APPROVAL` 可覆盖），绑定 `127.0.0.1`；浏览器经壳

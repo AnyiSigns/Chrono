@@ -17,7 +17,8 @@ function isLabelable(node) {
   return tag === 'input' || tag === 'select' || tag === 'textarea'
 }
 
-/** 表单字段：label + 控件；可标控件用 `for`，复合控件退化为分组 `aria-label`。`required` 只加视觉标记与 `aria-required`。 */
+/** 表单字段：label + 控件；可标控件用 `for`，复合控件退化为分组 `aria-label`。`required` 只加视觉标记与 `aria-required`。
+ *  `options.frame(control)` 可给控件包一层壳（如自定义下拉箭头），标签仍关联内层控件。 */
 export function field(ctx, label, control, options = {}) {
   let labelNode
   if (isLabelable(control)) {
@@ -31,7 +32,8 @@ export function field(ctx, label, control, options = {}) {
   if (options.required === true) {
     labelNode.appendChild(el(ctx.doc, 'span', { class: 'settings-required-mark', text: '*', attrs: { 'aria-hidden': 'true' } }))
   }
-  return el(ctx.doc, 'div', { class: 'settings-field' }, [labelNode, control])
+  const controlNode = typeof options.frame === 'function' ? options.frame(control) : control
+  return el(ctx.doc, 'div', { class: 'settings-field' }, [labelNode, controlNode])
 }
 
 /** 行式只读 / 控件行：label 左、控件右；可标控件自动建立标签关联。 */

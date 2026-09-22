@@ -492,9 +492,13 @@
     "title": "开始使用",
     "body": "开始使用"
   },
-  "settings_onboarding_intro": {
-    "title": "连接一个模型厂商即可开始。带 * 的为必填项。",
-    "body": "连接一个模型厂商即可开始。带 * 的为必填项。"
+  "settings_onboarding_welcome": {
+    "title": "接入第一个模型",
+    "body": "接入第一个模型"
+  },
+  "settings_onboarding_subtitle": {
+    "title": "连接模型厂商，勾选要用的模型，即可开始对话",
+    "body": "连接模型厂商，勾选要用的模型，即可开始对话"
   },
   "settings_section_connection": {
     "title": "连接",
@@ -505,16 +509,28 @@
     "body": "模型"
   },
   "settings_empty_models": {
-    "title": "尚未获取模型",
-    "body": "尚未获取模型"
+    "title": "还没有模型",
+    "body": "还没有模型"
   },
-  "settings_empty_models_hint": {
-    "title": "点「获取模型」拉取，或直接填自定义模型 id。",
-    "body": "点「获取模型」拉取，或直接填自定义模型 id。"
+  "settings_empty_filter": {
+    "title": "没有匹配的模型",
+    "body": "没有匹配的模型"
   },
-  "settings_need_model": {
-    "title": "先勾选或添加至少一个模型。",
-    "body": "先勾选或添加至少一个模型。"
+  "settings_models_selected": {
+    "title": "已选 {count} / {total}",
+    "body": "已选 {count} / {total}"
+  },
+  "settings_models_select_all": {
+    "title": "全选",
+    "body": "全选"
+  },
+  "settings_models_clear": {
+    "title": "清空",
+    "body": "清空"
+  },
+  "settings_model_filter": {
+    "title": "筛选模型 id",
+    "body": "筛选模型 id"
   },
   "settings_loading_more": {
     "title": "仍在读取…",
@@ -693,16 +709,16 @@
     "body": "添加厂商"
   },
   "settings_add_provider_hint": {
-    "title": "用内置厂商模板预填地址与密钥引用。",
-    "body": "用内置厂商模板预填地址与密钥引用。"
+    "title": "预置模板，填入地址与密钥即可",
+    "body": "预置模板，填入地址与密钥即可"
   },
   "settings_add_custom_provider": {
     "title": "添加自定义厂商",
     "body": "添加自定义厂商"
   },
   "settings_add_custom_provider_hint": {
-    "title": "自行选择协议并填写地址。",
-    "body": "自行选择协议并填写地址。"
+    "title": "自选协议，手动填写地址与密钥",
+    "body": "自选协议，手动填写地址与密钥"
   },
   "settings_protocol": {
     "title": "protocol",
@@ -777,8 +793,8 @@
     "body": "自定义模型"
   },
   "settings_custom_model_more": {
-    "title": "手动添加模型 id",
-    "body": "手动添加模型 id"
+    "title": "手动添加",
+    "body": "手动添加"
   },
   "settings_custom_model_placeholder": {
     "title": "输入模型 id，逗号或换行分隔",

@@ -632,7 +632,7 @@ export async function mount(root, api) {
     const machine = createCopyState()
     const use = button.querySelector('use')
     const setIcon = (name) => {
-      if (use !== null) use.setAttribute('href', `/assets/icons.v1.svg#${name}`)
+      if (use !== null) use.setAttribute('href', `/assets/icons.v2.svg#${name}`)
     }
     button.addEventListener('click', async () => {
       const text = messageText(def)

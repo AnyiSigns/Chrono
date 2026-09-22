@@ -43,6 +43,8 @@ function sendText(res: ServerResponse, status: number, text: string, contentType
   res.writeHead(status, {
     'content-type': contentType,
     'content-length': Buffer.byteLength(text),
+    // 本地静态一律禁缓存：模块被启发式缓存会让改动与修复长期不生效。
+    'cache-control': 'no-store',
   })
   res.end(text)
 }

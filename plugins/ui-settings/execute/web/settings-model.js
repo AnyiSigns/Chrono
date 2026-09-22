@@ -3,7 +3,7 @@
 import { clone, isRecord } from './config-model.js'
 import { shortHash } from './health.js'
 
-/** 左侧 tab（图标名取自 icons.v1.svg 的登记子集）。 */
+/** 左侧 tab（图标名取自 icons.v2.svg 的登记子集）。 */
 export const TABS = [
   { id: 'general', icon: 'settings' },
   { id: 'model', icon: 'cpu' },

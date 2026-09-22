@@ -104,7 +104,7 @@ async function postJson(path, body) {
 const api = {
   tokens: {
     css: '/assets/tokens.v1.css',
-    icons: '/assets/icons.v1.svg',
+    icons: '/assets/icons.v2.svg',
     messages: '/assets/messages.v1.json',
   },
   theme: {

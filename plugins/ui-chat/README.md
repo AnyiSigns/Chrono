@@ -35,7 +35,7 @@ GET  /api/state            → 本插件入站连接态
 
 - 浏览器侧 `api` 由壳提供；本插件只借用 `api.uiState`（`active_thread` 线程切换），
   其余命令 / 提交 / 资产走**本插件自己的入站连接**（失败隔离：本 slot 内错误占位 + 重试）。
-- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v1.svg`（图标）、
+- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`（图标）、
   `/assets/messages.v1.json`（错误码人话）；零硬编码色值。
 
 ## 渲染器清单

@@ -8,7 +8,7 @@ import type { Json, Rec } from './types.ts'
 
 export const ASSET_NAMES = [
   'tokens.v1.css',
-  'icons.v1.svg',
+  'icons.v2.svg',
   'messages.v1.json',
   'favicon.svg',
 ] as const
@@ -42,7 +42,7 @@ function decodeSegment(segment: string): string | null {
 function assetRoute(name: string): Route | null {
   if (name === 'favicon.svg') return { kind: 'asset', name: 'favicon.svg' }
   if (name === 'tokens.v1.css') return { kind: 'asset', name: 'tokens.v1.css' }
-  if (name === 'icons.v1.svg') return { kind: 'asset', name: 'icons.v1.svg' }
+  if (name === 'icons.v2.svg') return { kind: 'asset', name: 'icons.v2.svg' }
   if (name === 'messages.v1.json') return { kind: 'asset', name: 'messages.v1.json' }
   return null
 }

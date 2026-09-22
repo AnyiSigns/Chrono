@@ -52,7 +52,7 @@ export function icon(doc, name, size = 16, label = '') {
     svg.setAttribute('aria-hidden', 'true')
   }
   const use = doc.createElementNS('http://www.w3.org/2000/svg', 'use')
-  use.setAttribute('href', `/assets/icons.v1.svg#${name}`)
+  use.setAttribute('href', `/assets/icons.v2.svg#${name}`)
   svg.appendChild(use)
   return svg
 }

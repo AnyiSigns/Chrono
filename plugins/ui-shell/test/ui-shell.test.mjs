@@ -320,7 +320,7 @@ test('路由：表内反代 vs 表外 forward', () => {
 test('路由：页面 / 静态 / 事件 / api 动词门禁', () => {
   assert.equal(routeOf('GET', '/', []).kind, 'shell-page')
   assert.deepEqual(routeOf('GET', '/assets/tokens.v1.css', []), { kind: 'asset', name: 'tokens.v1.css' })
-  assert.deepEqual(routeOf('GET', '/assets/icons.v1.svg', []), { kind: 'asset', name: 'icons.v1.svg' })
+  assert.deepEqual(routeOf('GET', '/assets/icons.v2.svg', []), { kind: 'asset', name: 'icons.v2.svg' })
   assert.deepEqual(routeOf('GET', '/assets/messages.v1.json', []), { kind: 'asset', name: 'messages.v1.json' })
   assert.deepEqual(routeOf('GET', '/favicon.svg', []), { kind: 'asset', name: 'favicon.svg' })
   assert.deepEqual(routeOf('GET', '/assets/lib/toast.js', []), { kind: 'lib', name: 'toast.js' })
@@ -733,7 +733,7 @@ const REQUIRED_ICONS = [
   'folder-open', 'chevron-right', 'more-horizontal', 'search', 'trash-2', 'git-branch', 'undo-2',
 ]
 
-test('icons.v1.svg：登记子集齐全、24×24、stroke 1.5、无 emoji', () => {
+test('icons.v2.svg：登记子集齐全、24×24、stroke 1.5、无 emoji', () => {
   const svg = loadIcons(WEB_DIR).text
   for (const name of REQUIRED_ICONS) {
     assert.ok(svg.includes(`<symbol id="${name}"`), `缺图标 ${name}`)
@@ -926,6 +926,41 @@ async function postJsonTo(port, path, body) {
   })
   return { status: response.status, payload: await response.json() }
 }
+
+test('壳静态资源：no-store 且 sprite 可解析目标', async () => {
+  const port = await freePort()
+  const server = await startUiServer(fakeServerDeps(), port)
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/assets/icons.v2.svg`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    assert.match(await response.text(), /<symbol id="sparkles"/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('壳静态资源：降级留痕（缺 sprite 时落日志，且同样 no-store）', async () => {
+  const port = await freePort()
+  const lines = []
+  const emptyWebDir = mkdtempSync(join(tmpdir(), 'chrono-ui-assets-'))
+  try {
+    const server = await startUiServer(
+      fakeServerDeps({ webDir: emptyWebDir, log: (line) => lines.push(line) }),
+      port,
+    )
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/assets/icons.v2.svg`)
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('cache-control'), 'no-store')
+      assert.deepEqual(lines, ['asset fallback: icons.v2.svg'])
+    } finally {
+      await server.close()
+    }
+  } finally {
+    rmSync(emptyWebDir, { recursive: true, force: true })
+  }
+})
 
 test('/api/theme：落 config 用 day/night 词表，回包 / 运行态用 light/dark', async () => {
   const port = await freePort()

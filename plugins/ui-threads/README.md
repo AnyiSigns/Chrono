@@ -65,7 +65,7 @@ GET  /api/state   → 本插件入站连接态
 - 视图层模块：入口编排 `entry.js`；纯逻辑 `threads-model.js`（线程树 / 隔离 / 角标，服务侧装配共用）、
   `hover-intent.js`（hover 延时状态机）、`unread.js`（未读计数）、`bridge-state.js`（`active_thread` 单桥）、
   `messages.js`（文案单一来源）；渲染 `styles.js` / `dom.js`。
-- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v1.svg`（线性图标）；
+- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`（线性图标）；
   组件样式只引 token，零硬编码色值、无内嵌图标与 emoji。
 - 端口默认 `8793`（`CHRONO_UI_PORT_UI_THREADS` 可覆盖），绑定 `127.0.0.1`；浏览器经壳反代
   `/p/ui-threads/*` 访问，本插件不自开对外端口。

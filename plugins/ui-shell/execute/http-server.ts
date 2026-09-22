@@ -71,7 +71,7 @@ export function injectBootstrap(html: string, data: Json): string {
 
 const CONTENT_TYPES: { [name: string]: string } = {
   'tokens.v1.css': 'text/css; charset=utf-8',
-  'icons.v1.svg': 'image/svg+xml; charset=utf-8',
+  'icons.v2.svg': 'image/svg+xml; charset=utf-8',
   'messages.v1.json': 'application/json; charset=utf-8',
   'favicon.svg': 'image/svg+xml; charset=utf-8',
 }
@@ -91,6 +91,9 @@ function sendText(res: ServerResponse, status: number, text: string, contentType
   res.writeHead(status, {
     'content-type': contentType,
     'content-length': Buffer.byteLength(text),
+    // 壳自有静态一律禁缓存：降级内容（如空 sprite）若被浏览器启发式缓存，
+    // 页面上的 `<use href="/assets/icons.v2.svg#…">` 会长期解析不到目标而静默留白。
+    'cache-control': 'no-store',
   })
   res.end(text)
 }
@@ -428,9 +431,11 @@ function serveAsset(
 ): void {
   let content: AssetContent
   if (route.name === 'tokens.v1.css') content = loadTokens(webDir)
-  else if (route.name === 'icons.v1.svg') content = loadIcons(webDir)
+  else if (route.name === 'icons.v2.svg') content = loadIcons(webDir)
   else if (route.name === 'favicon.svg') content = loadFavicon(webDir)
   else content = readAsset(webDir, 'messages.v1.json', JSON.stringify(FALLBACK_MESSAGES, null, 2))
+  // 降级不阻塞功能，但必须留痕：否则图标 / token 静默变空很难定位。
+  if (content.fallback) (deps.log ?? defaultLog)(`asset fallback: ${route.name}`)
   sendText(res, 200, content.text, CONTENT_TYPES[route.name] ?? 'application/octet-stream')
 }
 
