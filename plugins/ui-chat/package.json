@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "全能内容渲染面（对话页消息流）：markdown / 流式 / 媒体 / 工具卡 / question 交互卡 / 线程视图",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/ui-chat.test.mjs"
   }

@@ -4,6 +4,20 @@
   "private": true,
   "type": "module",
   "description": "本地向量化（Rust）：granite-97m int8 ONNX 推理 + 真实 tokenizer 窗口切块；无 npm 依赖，权重内嵌二进制，编译走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "granite-97m/",
+    "!granite-97m/model_quint8_avx2.onnx",
+    "!granite-97m/tokenizer.json",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "cargo test"
   }

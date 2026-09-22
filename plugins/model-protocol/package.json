@@ -7,6 +7,15 @@
   "dependencies": {
     "@google/genai": "2.23.0"
   },
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

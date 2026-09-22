@@ -3,5 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "形状示例插件（非真实能力插件；npm 信封，宿主不解释）"
+  "description": "形状示例插件（非真实能力插件；npm 信封，宿主不解释）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "terms/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" }
 }

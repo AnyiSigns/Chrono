@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "长期记忆本体：条目各自成 def + 链式 tail（chunks 只存偏移），向量索引住宿主侧 ③ 可重算；方法 put / read / search",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

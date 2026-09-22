@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "工具调用语义门（纯函数）：逐 call 判 allow / escalate / deny，规则住本身份数据世代 body",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "侧边栏子应用：工作区分组 + 会话列表 + 会话管理 + 状态角标；slot 应用，自带服务与命令入口 term",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "terms/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

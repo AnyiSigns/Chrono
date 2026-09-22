@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "按会话键控的待办清单：todo.write 整表替换产写计划、todo.read 读调用方传入的投影数据",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/todo.test.mjs test/todo-read.test.mjs"
   }

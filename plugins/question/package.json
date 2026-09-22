@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "agent 向用户提问并等待回答：工具 question 入队 + 命令 question.answer 续跑，队列进世界",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "terms/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/question.test.mjs"
   }

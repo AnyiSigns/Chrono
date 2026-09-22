@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "浏览器自动化工具：会话化导航 / 元素交互 / 文本抽取 / 截图，引擎可换、进程自管",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

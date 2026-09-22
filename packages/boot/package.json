@@ -4,6 +4,13 @@
   "private": true,
   "type": "module",
   "description": "CLI 薄壳（genesis 常量）：start / 客户端命令 / 离线命令",
+  "files": [
+    "package.json",
+    "README.md",
+    "main.ts",
+    "tsconfig.json"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",

@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "浏览器唯一入口（主端口 + 入站桥）+ 布局壳 + 设计资源唯一来源",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/ui-shell.test.mjs"
   }

@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "入站面客户端库：connect / submit / command / 收 event",
+  "files": [
+    "package.json",
+    "README.md",
+    "index.ts",
+    "frame.ts",
+    "protocol.ts",
+    "socket.ts",
+    "tsconfig.json"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",

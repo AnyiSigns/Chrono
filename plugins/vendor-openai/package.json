@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "厂商适配模板数据身份（OpenAI；sdk=openai；无服务、无 pins、无命令）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "审批停靠带（dock 槽子应用）：展示待审批队列、按 kind 选卡片模板、提交裁决并拼续跑计划",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "terms/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

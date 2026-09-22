@@ -72,6 +72,19 @@
 
 二进制**统一走构建**：随包投递的预编译二进制仅作 `assets_manifest` 的复制源，物化以构建产物为准；二进制与权重都不进世界。
 
+## 模型按需获取（npm 打包现状）
+
+`granite-97m/model_quint8_avx2.onnx`（≈98 MB）与 `granite-97m/tokenizer.json`（≈25 MB）是构建期 `include_bytes!` 的输入，不参与运行时读取。仓库内两者位于 `granite-97m/` 且被 git 跟踪；`package.json` 的 `files` 白名单已把两者排除，故 npm 安装得到的包不含它们（`config.json` / `modules.json` / `sentence_bert_config.json` / `special_tokens_map.json` / `tokenizer_config.json` / `1_Pooling_config.json` / `LICENSE` 等小文件仍随包）。
+
+现状与缺口：
+
+- 现状：宿主物化阶段按 `schema/embedding.json` 顶层 `assets_manifest` 登记的 `{path, sha256, size}`，从投递包源目录直拷两个文件到物化目录；该源目录目前由仓库内的 `granite-97m/` 充当。npm 包不再提供这个源目录。
+- 缺口一（获取渠道）：没有下载 / 拉取逻辑，也没有登记模型的远程来源（URL、镜像、版本号）。npm 包消费者无法仅凭包内容得到权重与 tokenizer。
+- 缺口二（完整性口径）：`assets_manifest` 已带 sha256 与 size，可作为获取后的校验依据，但缺少「获取 → 校验 → 落到投递源目录」的落位约定。
+- 缺口三（缺失行为）：宿主对投递源目录缺文件的失败语义已有（`deps_failed`），但缺少按需获取的触发点与缓存位置约定。
+
+后续需补：一个模型获取步骤（下载源与版本登记、sha256 校验、落位到物化可读的投递源目录）以及宿主侧的缺失检测；在此之前，npm 包只覆盖源码与清单，模型须由包外提供。
+
 ## 服务协议
 
 `docs/protocol.md` §二：`hello` / `manifest` / `call` / `result` / `error` / `reload` / `drain` / `bye` / `probe` / `pong`。

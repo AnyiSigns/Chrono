@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "进化台账数据身份（trace / evidence / proposals / verdicts 四条链式索引；无服务、无 pins、无命令）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

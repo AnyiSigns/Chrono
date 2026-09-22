@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "短期记忆数据身份（L1 会话摘要 + L2 工作区累积；无服务、无 pins、无 eff）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

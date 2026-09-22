@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "底部输入卡（composer 槽子应用）：文本 + 附件 + 模型 / 推理强度 / 权限档 + 发送 / 终止 + 上下文用量行",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

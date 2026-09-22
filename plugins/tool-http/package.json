@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "联网检索与抓取工具提供者：多免费源 websearch（去重 + RRF 合并）与 webfetch（HTML→markdown）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

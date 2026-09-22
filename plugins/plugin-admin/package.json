@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "agent 的插件管理面：列 / 读 / 校验 / 写插件源码，写只产计划",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/plugin-admin.test.mjs"
   }

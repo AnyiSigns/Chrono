@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "系统通知 headless 前端（浏览器侧 Notification；无服务、零 schema、members 仅 terms）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "terms/",
+    "web/"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test"
   }

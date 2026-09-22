@@ -4,6 +4,17 @@
   "private": true,
   "type": "module",
   "description": "工作区（Rust）：列表进世界 + 路径校验 + 系统原生目录选择器 pick + 文件管理器 reveal + 最近打开（③）；无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": { "node": ">=24" },
   "scripts": {
     "test": "cargo test"
   }
