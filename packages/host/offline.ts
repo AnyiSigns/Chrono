@@ -20,6 +20,7 @@ import {
 } from './ledger/index.ts'
 import type { BaseAuditRef } from './ledger/index.ts'
 import { auditRecordOf } from './audit.ts'
+import { putBlob } from './blobs.ts'
 import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
 import { compactWorld } from './compact.ts'
@@ -81,6 +82,8 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
         args: { ops: plan.ops },
         by: 'seed',
       }
+      // 字节先于链落 CAS：commit 拒绝时至多留孤儿字节（离线 GC 清理），世界分文未动
+      for (const blob of plan.blobs) putBlob(paths.blobsDir, blob.bytes)
       const outcome = commit(anchor.head, anchor.world, request, Date.now())
       if (!outcome.verdict.ok) {
         items.push({ name: entry.name, status: 'failed', reasons: outcome.verdict.reasons })
@@ -123,7 +126,7 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
   if (!lock.ok) throw new Error('writer_busy')
   try {
     let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const planned = planPack(anchor.world, resolve(root, dir), identity)
+    const planned = planPack(anchor.world, resolve(root, dir), identity, paths.blobsDir)
     if (!planned.ok) {
       return {
         ok: false,
@@ -152,6 +155,8 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
       args: { ops: plan.ops },
       by: 'pack',
     }
+    // 字节先于链落 CAS：commit 拒绝时至多留孤儿字节（离线 GC 清理），世界分文未动
+    for (const blob of plan.blobs) putBlob(paths.blobsDir, blob.bytes)
     const outcome = commit(anchor.head, anchor.world, request, Date.now())
     if (!outcome.verdict.ok) {
       return {

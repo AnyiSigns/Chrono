@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
+import { blobPointerOf, blobSha256 } from '../blobs.ts'
 import type { Json } from '../../kernel/index.ts'
 
 /** 通用排除：依赖（宿主侧 ③）与版本库元数据——宿主只内置这两个名字。 */
@@ -16,11 +17,18 @@ const WORLDIGNORE_FILE = '.worldignore'
 /** 物化目录的宿主标记文件名：标记不属于源码树，打包时恒排除。 */
 export const MATERIALIZE_MARKER = '.chrono-materialized'
 
+export interface PackedBlob {
+  sha256: string
+  bytes: Buffer
+}
+
 export interface PackedSource {
   ops: Json[]
   rootTreeIndex: number
   rootTreeHash: string
   fileCount: number
+  /** 待落 CAS 的原始字节（按 sha256 去重）；dry-run 由调用方决定是否落盘。 */
+  blobs: PackedBlob[]
 }
 
 export type WorldignoreRead = { ok: true; patterns: string[][] } | { ok: false }
@@ -81,11 +89,25 @@ export function isIgnored(relSegments: string[], patterns: string[][]): boolean 
 /** 打包一个目录：返回批内 put 子操作（文件在前、目录在后）与根 tree 的真实哈希。 */
 export function packSourceDir(absDir: string, patterns: string[][] = []): PackedSource {
   const ops: Json[] = []
-  const root = packDir(absDir, ops, [], patterns)
-  return { ops, rootTreeIndex: root.index, rootTreeHash: root.hash, fileCount: root.fileCount }
+  // 同内容去重：同一份字节在包内出现多次只回传一次，落 CAS 幂等且不重复搬运
+  const blobs = new Map<string, Buffer>()
+  const root = packDir(absDir, ops, [], patterns, blobs)
+  return {
+    ops,
+    rootTreeIndex: root.index,
+    rootTreeHash: root.hash,
+    fileCount: root.fileCount,
+    blobs: [...blobs.entries()].map(([sha256, bytes]) => ({ sha256, bytes })),
+  }
 }
 
-function packDir(dir: string, ops: Json[], rel: string[], patterns: string[][]): DirResult {
+function packDir(
+  dir: string,
+  ops: Json[],
+  rel: string[],
+  patterns: string[][],
+  blobs: Map<string, Buffer>,
+): DirResult {
   const entries: TreeEntry[] = []
   const placeholderEntries: Json[] = []
   let fileCount = 0
@@ -98,20 +120,19 @@ function packDir(dir: string, ops: Json[], rel: string[], patterns: string[][]):
     if (isIgnored(relPath, patterns)) continue
     const abs = join(dir, dirent.name)
     if (dirent.isDirectory()) {
-      const child = packDir(abs, ops, relPath, patterns)
+      const child = packDir(abs, ops, relPath, patterns, blobs)
       entries.push({ name: dirent.name, mode: 'dir', hash: child.hash })
       placeholderEntries.push({ name: dirent.name, mode: 'dir', hash: { $n: child.index } })
       fileCount += child.fileCount
     } else if (dirent.isFile()) {
-      // 文本 blob = UTF-8 逐字节可逆；否则存 base64，保住非文本资产
+      // 字节本体外迁 CAS，链上只留 pointer def（摘要 + 长度）；文本与二进制同形，不再 base64
       const raw = readFileSync(abs)
-      const text = raw.toString('utf8')
-      const def = Buffer.from(text, 'utf8').equals(raw)
-        ? { body: text }
-        : { body: raw.toString('base64'), enc: 'base64' }
+      const sha256 = blobSha256(raw)
+      const def = { body: blobPointerOf(sha256, raw.length) }
       const hash = H(def as unknown as Json)
       const index = ops.length
       ops.push({ op: 'put', args: def as unknown as Json })
+      if (!blobs.has(sha256)) blobs.set(sha256, raw)
       entries.push({ name: dirent.name, mode: 'file', hash })
       placeholderEntries.push({ name: dirent.name, mode: 'file', hash: { $n: index } })
       fileCount += 1

@@ -20,6 +20,7 @@ import {
 } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
+import type { PackedBlob } from './source.ts'
 import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from './term-refs.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
@@ -55,6 +56,8 @@ export interface IngestPlan {
   schemaHash: Hash
   /** 同源码已 active：不产生任何子操作。 */
   unchanged: boolean
+  /** 待落 CAS 的源码字节（按 sha256 去重）；调用方在 `commit` 前落盘，dry-run 不落。 */
+  blobs: PackedBlob[]
 }
 
 export type IngestResult = { ok: true; plan: IngestPlan } | { ok: false; reasons: string[] }
@@ -87,7 +90,12 @@ const PROTECTED_PIN_IDENTITIES: ReadonlySet<string> = new Set([
  * 不依赖 `active`：retired 身份重入世同样按最近代码世代比对，否则「退役→重入世」可绕过保护。
  * 身份不存在 / 无代码世代 → 无从比对，放行；有代码世代但声明读不出 → fail-closed 拒。
  */
-function removedProtectedPin(world: World, identity: string, decl: PluginDecl): boolean {
+function removedProtectedPin(
+  world: World,
+  identity: string,
+  decl: PluginDecl,
+  blobsDir: string | undefined,
+): boolean {
   const record = Object.hasOwn(world.ids, identity) ? world.ids[identity] : undefined
   if (record === undefined) return false
   let codeGen: Gen | null = null
@@ -98,7 +106,7 @@ function removedProtectedPin(world: World, identity: string, decl: PluginDecl): 
     }
   }
   if (codeGen === null) return false
-  const previous = readPluginDeclOfGen(world, codeGen)
+  const previous = readPluginDeclOfGen(world, codeGen, blobsDir)
   if (previous === null) return true
   const nextPins = new Set(Object.values(decl.pins))
   for (const depId of Object.values(previous.decl.pins)) {
@@ -272,6 +280,7 @@ function planIdentity(
   schemaIndex: number,
   commitHash: Hash,
   schemaHash: Hash,
+  blobs: PackedBlob[],
 ): IngestPlan {
   const isNewIdentity = !Object.hasOwn(world.ids, identity)
   if (isNewIdentity) {
@@ -281,14 +290,19 @@ function planIdentity(
     op: 'add_gen',
     args: { id: identity, payload: { $n: commitIndex }, pins, sig: { $n: commitIndex } },
   })
-  return { identity, ops, isNewIdentity, commitHash, schemaHash, unchanged: false }
+  return { identity, ops, isNewIdentity, commitHash, schemaHash, unchanged: false, blobs }
 }
 
 /**
  * 已解析包根的入世核心：`identity` 缺省取 `plugin.json.identity`（seed 路径）；
  * `pack` 显式给出身份名时必须与包内声明**一致**（命名即契约，单源），不一致即拒。
  */
-function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: string): IngestResult {
+function planIngestAtRoot(
+  world: World,
+  pkgRoot: string,
+  identityOverride: string | undefined,
+  blobsDir: string | undefined,
+): IngestResult {
   const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
   if (rawDecl === undefined) return { ok: false, reasons: ['missing_plugin_json'] }
   const parsed = parsePluginDecl(rawDecl)
@@ -301,7 +315,7 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
   if (!isSafeIdentityName(identity)) return { ok: false, reasons: ['bad_plugin_decl'] }
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
 
-  if (removedProtectedPin(world, identity, decl)) {
+  if (removedProtectedPin(world, identity, decl, blobsDir)) {
     return { ok: false, reasons: ['protected_pin_removed'] }
   }
 
@@ -371,6 +385,7 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
         commitHash,
         schemaHash,
         unchanged: true,
+        blobs: [],
       },
     }
   }
@@ -385,6 +400,7 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
       schemaIndex,
       commitHash,
       schemaHash,
+      packed.blobs,
     ),
   }
 }
@@ -393,7 +409,7 @@ function planIngestAtRoot(world: World, pkgRoot: string, identityOverride?: stri
 export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
   const pkgRoot = resolvePackageRoot(entry, root)
   if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
-  return planIngestAtRoot(world, pkgRoot)
+  return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir)
 }
 
 /** 名级依赖节点：清单项解析出的身份名与它 pin 的依赖身份名（`host` 保留能力除外）。 */
@@ -450,14 +466,20 @@ export function orderEntriesForSeed(root: string, entries: PluginEntry[]): Plugi
  * 手动 / 程序化入世一个目录（`boot pack` 的纯计划面）：与 seed 共用同一打包核心
  * （`packSourceDir` + `.worldignore` + 通用排除），故同一目录同一身份产出同一 tree / commit 哈希。
  * `identity` 缺省取 `plugin.json.identity`；显式给出时作为世界身份与 `commit.meta.name`。
+ * `blobsDir` 供读取旧世代的 pointer 声明（受保护引脚比对）；调用方按自己的根目录给出。
  */
-export function planPack(world: World, dir: string, identity?: string): IngestResult {
+export function planPack(
+  world: World,
+  dir: string,
+  identity?: string,
+  blobsDir?: string,
+): IngestResult {
   const pkgRoot = resolve(dir)
   if (!existsSync(pkgRoot)) return { ok: false, reasons: ['package_not_found'] }
   if (!existsSync(join(pkgRoot, 'plugin.json'))) {
     return { ok: false, reasons: ['missing_plugin_json'] }
   }
-  return planIngestAtRoot(world, pkgRoot, identity)
+  return planIngestAtRoot(world, pkgRoot, identity, blobsDir)
 }
 
 /**

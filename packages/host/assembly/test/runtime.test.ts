@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startAssembly } from '../runtime.ts'
 import type { AssemblyRuntimeHandle, StartAssemblyOptions } from '../runtime.ts'
@@ -709,6 +709,8 @@ describe('装配运行时 startAssembly', () => {
       identity: string
     }
     pluginJson.identity = 'toy-hijacked'
+    // 源码文件物化时置只读；篡改须先解写位（等价于服务强行绕过只读保护）
+    chmodSync(join(materialized, 'plugin.json'), 0o666)
     writeFileSync(join(materialized, 'plugin.json'), JSON.stringify(pluginJson, null, 2))
     await waitFor(
       () =>
@@ -987,6 +989,8 @@ describe('装配运行时 startAssembly', () => {
       hostPaths(root).materializedDir,
       world.ids['toy-iso-y'].active as Hash,
     )
+    // 源码文件物化时置只读；篡改须先解写位（等价于服务强行绕过只读保护）
+    chmodSync(join(materialized, 'service-config.json'), 0o666)
     writeFileSync(join(materialized, 'service-config.json'), JSON.stringify({ helloMode: 'stall' }))
 
     // X 退出 → 隔离 Y（Y 正处于 relaunch 握手在途窗口内）

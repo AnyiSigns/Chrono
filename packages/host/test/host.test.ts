@@ -4,6 +4,7 @@ import type { HostHandle } from '../host.ts'
 import { join } from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../test/test-helpers.ts'
+import { hostPaths } from '../paths.ts'
 import { runSeed } from '../offline.ts'
 
 describe('宿主 host', () => {
@@ -105,7 +106,7 @@ describe('宿主 host', () => {
     const { listCommands } = require('../assembly/index.ts')
     const { H } = require('../../kernel/index.ts')
     const anchor = loadAnchor(join(root, 'state', 'world', 'journal.jsonl'))
-    const commands = listCommands(anchor.world)
+    const commands = listCommands(anchor.world, hostPaths(root).blobsDir)
     const toyEff = commands.find((c: any) => c.name === 'toy.eff')
     expect(toyEff).toBeDefined()
     const toyEffHash = toyEff!.entry

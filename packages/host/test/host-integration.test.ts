@@ -246,7 +246,9 @@ describe('宿主集成（入站面）', () => {
     expect(report.ok).toBe(true)
     const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
     const commitHash = world.ids['toy-alpha'].active as string
-    const rootDir = materializeCommit(world, commitHash, hostPaths(root).materializedDir)
+    const rootDir = materializeCommit(world, commitHash, hostPaths(root).materializedDir, {
+      blobsDir: hostPaths(root).blobsDir,
+    })
     expect(rootDir).not.toBeNull()
     expect(existsSync(join(rootDir as string, 'test', 'sample.test.js'))).toBe(false)
     expect(existsSync(join(rootDir as string, 'test'))).toBe(false)

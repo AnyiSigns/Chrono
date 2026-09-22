@@ -53,9 +53,10 @@ export function classifyGenerationChange(
   oldGen: Gen,
   next: World,
   newGen: Gen,
+  blobsDir?: string,
 ): GenerationChange {
-  const oldRead = readPluginDeclOfGen(prev, oldGen)
-  const newRead = readPluginDeclOfGen(next, newGen)
+  const oldRead = readPluginDeclOfGen(prev, oldGen, blobsDir)
+  const newRead = readPluginDeclOfGen(next, newGen, blobsDir)
   if (oldRead === null || newRead === null) return 'code'
   const before = memberRefs(prev, oldRead.tree, oldRead.decl.members)
   const after = memberRefs(next, newRead.tree, newRead.decl.members)

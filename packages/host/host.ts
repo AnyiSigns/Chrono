@@ -244,7 +244,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   let ctxCache: { head: Hash | null; view: Json } | undefined
   const cachedProjection = (world: World, head: Head): Json => {
     if (ctxCache !== undefined && ctxCache.head === head.hash) return ctxCache.view
-    const view = projectBaseOnly(world, head)
+    const view = projectBaseOnly(world, head, { blobsDir: paths.blobsDir })
     ctxCache = { head: head.hash, view }
     return view
   }
@@ -436,7 +436,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     world: World,
     name: string,
   ): { entry: Hash; identity: string } | undefined => {
-    const command = resolveCommand(world, name)
+    const command = resolveCommand(world, name, paths.blobsDir)
     return command === null ? undefined : { entry: command.entry, identity: command.identity }
   }
 
@@ -550,12 +550,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     if (runtime === undefined) return { status: 'refused', reasons: [] }
     const snapshot = writer.snapshot()
     const world = snapshot.world
-    const declRead = readPluginDecl(world, entry.identity)
+    const declRead = readPluginDecl(world, entry.identity, paths.blobsDir)
     if (declRead === null) return { status: 'refused', reasons: [] }
     const bag = buildPeriodicBag(cachedProjection(world, snapshot.head), entry.reads)
     let directives: DirectiveDraft[]
     if (entry.command !== undefined) {
-      const command = resolveCommand(world, entry.command)
+      const command = resolveCommand(world, entry.command, paths.blobsDir)
       if (command === null || command.identity !== entry.identity) {
         return { status: 'refused', reasons: [] }
       }
@@ -624,7 +624,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     try {
       // 入站直提 eval 的属主：命令入口哈希 → 声明身份；解析不到则不路由（A1 不猜）
       const entryOwners = new Map<string, string>()
-      for (const command of listCommands(writer.snapshot().world)) {
+      for (const command of listCommands(writer.snapshot().world, paths.blobsDir)) {
         if (!entryOwners.has(command.entry)) entryOwners.set(command.entry, command.identity)
       }
       const outcome = await runSubmission({
@@ -712,7 +712,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       return
     }
-    const command = resolveCommand(writer.snapshot().world, message.name)
+    const command = resolveCommand(writer.snapshot().world, message.name, paths.blobsDir)
     if (command === null) {
       send(socket, {
         v: PROTOCOL_VERSION,
@@ -801,7 +801,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       return
     }
-    const command = resolveCommand(writer.snapshot().world, message.command)
+    const command = resolveCommand(writer.snapshot().world, message.command, paths.blobsDir)
     if (command === null || command.identity !== message.identity) {
       send(socket, {
         v: PROTOCOL_VERSION,
@@ -1210,7 +1210,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         return
       }
       case 'commands': {
-        const commands = listCommands(writer.snapshot().world).map((command) => ({
+        const commands = listCommands(writer.snapshot().world, paths.blobsDir).map((command) => ({
           identity: command.identity,
           name: command.name,
           entry: command.entry,
@@ -1256,12 +1256,15 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       onPortCall: handlePortCall,
       startWrapper: options.startWrapper,
       depsDir: paths.depsDir,
+      blobsDir: paths.blobsDir,
     })
     const driftLogged = new Set<string>()
     router = createRoundRouter({
       endpoints: runtime.endpoints,
+      blobsDir: paths.blobsDir,
       host: createHostCapability({
         assetsDir: paths.assetsDir,
+        blobsDir: paths.blobsDir,
         runtimeDir: paths.runtimeDir,
         audits,
         world: () => writer.snapshot().world,

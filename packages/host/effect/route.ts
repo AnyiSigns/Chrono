@@ -32,6 +32,8 @@ export type HostCapabilityCall = (
 
 export interface RouterOptions {
   endpoints: EndpointTable
+  /** 源码 CAS 目录：解析身份声明（pointer blob）时经它读文本。 */
+  blobsDir?: string
   /** pin 哈希与依赖当前 active 不一致：漂移证据（每次解析都可能触发，去重归调用方），不阻塞调用。 */
   onDrift?: (emitter: string, cap: string, gen: Hash) => void
   /** 宿主保留能力类派发器；缺省时 `host` 路由 → `not_loaded`（未接线，不猜）。 */
@@ -93,7 +95,7 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     const key = `${id}\u0000${gen}`
     const cached = implementsCache.get(key)
     if (cached !== undefined) return cached
-    const decl = readPluginDecl(world, id)?.decl ?? null
+    const decl = readPluginDecl(world, id, options.blobsDir)?.decl ?? null
     const caps = decl === null ? null : new Set(decl.implements)
     implementsCache.set(key, caps)
     return caps

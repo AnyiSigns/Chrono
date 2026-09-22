@@ -2,6 +2,7 @@
 // 只解释 `plugin.json` 形状，不校验语义；其余包内文件一律是源码 blob。
 
 import { H } from '../../kernel/index.ts'
+import { getBlob, isBlobPointer } from '../blobs.ts'
 import { replaceTermRefs } from './term-refs.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
@@ -200,23 +201,41 @@ export function resolveTreeEntry(
   return null
 }
 
-/** 沿 tree 解析包内相对路径，返回文件文本；路径不存在或不是文件返回 null。 */
-export function resolveTreeBlob(world: World, treeHash: Hash, relPath: string): string | null {
+/**
+ * 沿 tree 解析包内相对路径，返回文件文本；路径不存在或不是文件返回 null。
+ * 文本 blob 有两种形态：inline（旧世界，body 为字符串）与 pointer（body 为内容引用，
+ * 经 `blobsDir` 读 CAS 字节）。pointer 字节 UTF-8 往返不一致（二进制资产）→ 不参与 JSON 解析。
+ * `blobsDir` 缺失而遇 pointer → null（fail-closed，不猜内容）。
+ */
+export function resolveTreeBlob(
+  world: World,
+  treeHash: Hash,
+  relPath: string,
+  blobsDir?: string,
+): string | null {
   const entry = resolveTreeEntry(world, treeHash, relPath)
   if (entry === null || entry.mode !== 'file') return null
   const blob = world.defs[entry.hash]
-  if (typeof blob?.body !== 'string') return null
+  const body = blob?.body
+  if (isBlobPointer(body)) {
+    if (blobsDir === undefined) return null
+    const read = getBlob(blobsDir, body)
+    if (!read.ok) return null
+    const text = read.bytes.toString('utf8')
+    return Buffer.from(text, 'utf8').equals(read.bytes) ? text : null
+  }
+  if (typeof body !== 'string') return null
   // base64 blob 是字节资产，不是文本；不参与 JSON 解析
   if ((blob as { enc?: Json }).enc === 'base64') return null
-  return blob.body
+  return body
 }
 
 /** 读指定世代的 `plugin.json`；缺任一步返回 null（供换代比对按旧世代读声明）。 */
-export function readPluginDeclOfGen(world: World, gen: Gen): DeclRead | null {
+export function readPluginDeclOfGen(world: World, gen: Gen, blobsDir?: string): DeclRead | null {
   const commit = world.defs[gen.payload]
   const tree = (commit?.body as { tree?: Json } | undefined)?.tree
   if (typeof tree !== 'string') return null
-  const text = resolveTreeBlob(world, tree, 'plugin.json')
+  const text = resolveTreeBlob(world, tree, 'plugin.json', blobsDir)
   if (text === null) return null
   let parsed: Json
   try {
@@ -278,12 +297,12 @@ export function assemblyGen(world: World, identityId: string): Gen | null {
  * 读身份装配世代的 `plugin.json`（G7 A1）：数据世代不参与声明解析；
  * 无代码世代 / 装配世代的 `plugin.json` 不可解析 → null（fail-closed，不回落更旧世代）。
  */
-export function readPluginDecl(world: World, identityId: string): DeclRead | null {
+export function readPluginDecl(world: World, identityId: string, blobsDir?: string): DeclRead | null {
   const identity = world.ids[identityId]
   if (!identity || identity.active === null) return null
   const gen = assemblyGen(world, identityId)
   if (gen === null) return null
-  return readPluginDeclOfGen(world, gen)
+  return readPluginDeclOfGen(world, gen, blobsDir)
 }
 
 /** term def 的规范构造：body = AST、sig = 世代签名；读侧与入世侧共用同一构造。 */
@@ -292,8 +311,13 @@ export function termDefOf(ast: Json, sig: Hash): { body: Json; sig: Hash } {
 }
 
 /** 沿 tree 读一个 JSON 文件；缺失或非 JSON 返回 undefined。 */
-export function resolveTreeJson(world: World, treeHash: Hash, relPath: string): Json | undefined {
-  const text = resolveTreeBlob(world, treeHash, relPath)
+export function resolveTreeJson(
+  world: World,
+  treeHash: Hash,
+  relPath: string,
+  blobsDir?: string,
+): Json | undefined {
+  const text = resolveTreeBlob(world, treeHash, relPath, blobsDir)
   if (text === null) return undefined
   try {
     return JSON.parse(text) as Json
@@ -307,14 +331,20 @@ export function resolveTreeJson(world: World, treeHash: Hash, relPath: string): 
  * 递归把 `$ref` 占位符替换成 callee def 哈希，`sig` 为本世代签名。
  * 缺失 / 坏引用 / 成环返回 null（入世侧已把成环整包拒，此处只作防御）。
  */
-function resolveTermHash(world: World, treeHash: Hash, relPath: string, sig: Hash): Hash | null {
+function resolveTermHash(
+  world: World,
+  treeHash: Hash,
+  relPath: string,
+  sig: Hash,
+  blobsDir?: string,
+): Hash | null {
   const memo = new Map<string, Hash>()
   const visiting = new Set<string>()
   const resolve = (current: string): Hash | null => {
     const cached = memo.get(current)
     if (cached !== undefined) return cached
     if (visiting.has(current)) return null
-    const ast = resolveTreeJson(world, treeHash, current)
+    const ast = resolveTreeJson(world, treeHash, current, blobsDir)
     if (ast === undefined) return null
     visiting.add(current)
     const replaced = replaceTermRefs(ast, (ref) => resolve(ref))
@@ -328,19 +358,19 @@ function resolveTermHash(world: World, treeHash: Hash, relPath: string, sig: Has
 }
 
 /** 列出世界里所有身份的具名命令；无法解析声明的身份跳过。 */
-export function listCommands(world: World): CommandDecl[] {
+export function listCommands(world: World, blobsDir?: string): CommandDecl[] {
   const out: CommandDecl[] = []
   for (const identityId of Object.keys(world.ids).sort()) {
-    const read = readPluginDecl(world, identityId)
+    const read = readPluginDecl(world, identityId, blobsDir)
     if (!read) continue
     for (const cmd of read.decl.commands) {
-      const entry = resolveTermHash(world, read.tree, cmd.entry, read.gen.sig)
+      const entry = resolveTermHash(world, read.tree, cmd.entry, read.gen.sig, blobsDir)
       if (entry === null) continue
       const argsSchema =
         cmd.argsSchema === undefined
           ? null
           : (() => {
-              const schema = resolveTreeJson(world, read.tree, cmd.argsSchema as string)
+              const schema = resolveTreeJson(world, read.tree, cmd.argsSchema as string, blobsDir)
               return schema === undefined ? null : H({ body: schema } as unknown as Json)
             })()
       out.push({
@@ -355,8 +385,8 @@ export function listCommands(world: World): CommandDecl[] {
 }
 
 /** 按命令名解析到入口 def；重名取身份 id 字典序最小者。 */
-export function resolveCommand(world: World, name: string): CommandDecl | null {
-  for (const cmd of listCommands(world)) {
+export function resolveCommand(world: World, name: string, blobsDir?: string): CommandDecl | null {
+  for (const cmd of listCommands(world, blobsDir)) {
     if (cmd.name === name) return cmd
   }
   return null

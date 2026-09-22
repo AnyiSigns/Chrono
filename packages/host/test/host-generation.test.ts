@@ -12,6 +12,7 @@ import type { HostHandle } from '../host.ts'
 import { runReplay, runSeed, runVerify } from '../offline.ts'
 import { loadAnchor, readJournal, verifyFull } from '../ledger/index.ts'
 import { hostPaths } from '../paths.ts'
+import { getBlob, isBlobPointer, putBlob } from '../blobs.ts'
 import { H } from '../../kernel/index.ts'
 import type { Directive, Entry, Hash, Json, Op, World } from '../../kernel/index.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
@@ -131,8 +132,20 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
       mode: string
       hash: Hash
     }
-    const mainBody = world.defs[mainEntry.hash].body as string
-    const blob = { body: `${mainBody}\n// v2\n` }
+    // 新形态是 pointer（经 CAS 读字节），旧形态是 inline 字符串；两者都支持
+    const blobsDir = hostPaths(root).blobsDir
+    const mainBody = world.defs[mainEntry.hash].body
+    let original: Buffer
+    if (isBlobPointer(mainBody)) {
+      const read = getBlob(blobsDir, mainBody)
+      if (!read.ok) throw new Error('main.js blob missing')
+      original = read.bytes
+    } else {
+      original = Buffer.from(mainBody as string, 'utf8')
+    }
+    const put = putBlob(blobsDir, Buffer.concat([original, Buffer.from('\n// v2\n', 'utf8')]))
+    if (!put.ok) throw new Error('bad blob')
+    const blob = { body: put.pointer }
     const blobHash = H(blob)
     const execTree = { body: { entries: [{ name: 'main.js', mode: 'file', hash: blobHash }] } }
     const execTreeHash = H(execTree)

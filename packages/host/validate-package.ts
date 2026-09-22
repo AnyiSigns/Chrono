@@ -78,11 +78,13 @@ function errorOf(reason: string): ValidateError {
 /**
  * 对一份候选包源码树跑入世机械校验，返回错误列表与规范化树哈希；不写世界。
  * `files` 形状非法（非对象 / 路径逃逸 / 值形态不符）→ `accepted:false`（调用方按 `bad_directive` 收口）。
+ * `blobsDir` 仅供读取旧世代的 pointer 声明；候选包字节一律不落 CAS（dry-run）。
  */
 export function validatePackage(
   world: World,
   runtimeDir: string,
   files: Json,
+  blobsDir?: string,
 ): ValidatePackageOutcome {
   if (typeof files !== 'object' || files === null || Array.isArray(files)) {
     return { accepted: false, message: 'validate_package expects { files }' }
@@ -103,7 +105,7 @@ export function validatePackage(
       mkdirSync(dirname(abs), { recursive: true })
       writeFileSync(abs, bytes)
     }
-    const plan = planPack(world, dir)
+    const plan = planPack(world, dir, undefined, blobsDir)
     if (!plan.ok) {
       return {
         accepted: true,

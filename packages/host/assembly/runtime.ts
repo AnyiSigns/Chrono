@@ -72,6 +72,8 @@ export interface StartAssemblyOptions {
   startWrapper?: string
   /** 依赖缓存目录；缺省由 root 派生的 `state/deps`。 */
   depsDir?: string
+  /** 源码 CAS 目录；缺省由 root 派生的 `state/blobs`。 */
+  blobsDir?: string
   /** 物化后的依赖恢复；缺省按清单绑定 `restoreDependencies`，测试可注入桩。 */
   restore?: (cwd: string) => Promise<void>
   /**
@@ -112,6 +114,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     env: CallEnv | undefined,
   ) => Promise<CallResponse>
   private readonly paths: HostPaths
+  private readonly blobsDir: string
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
   private readonly dependents = new Map<string, string[]>()
@@ -129,6 +132,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.reloadTimeoutMs = options.reloadTimeoutMs ?? DEFAULT_RELOAD_TIMEOUT_MS
     this.startWrapper = options.startWrapper
     this.paths = hostPaths(options.root)
+    this.blobsDir = options.blobsDir ?? this.paths.blobsDir
     const depsDir = options.depsDir ?? this.paths.depsDir
     this.restore =
       options.restore ?? ((cwd) => restoreDependencies(cwd, depsDir, undefined, this.startWrapper))
@@ -280,7 +284,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.isolated.add(id)
       return
     }
-    const read = readPluginDecl(this.world, id)
+    const read = readPluginDecl(this.world, id, this.blobsDir)
     if (read === null) {
       this.record('service', 'start_failed', { impl: id, reason: 'bad_plugin_decl' })
       this.isolated.add(id)
@@ -371,7 +375,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (this.stopping || this.isolated.has(id)) return
     const identity = next.ids[id]
     const newCodeGen = assemblyGen(next, id)
-    const newDecl = newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen)
+    const newDecl = newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
     const payloadDef = newCodeGen === null ? undefined : next.defs[newCodeGen.payload]
     if (
       identity === undefined ||
@@ -412,7 +416,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.noteRuntimeStart(id)
       return
     }
-    if (classifyGenerationChange(prev, oldCodeGen, next, newCodeGen) === 'data') {
+    if (
+      classifyGenerationChange(prev, oldCodeGen, next, newCodeGen, this.blobsDir) === 'data'
+    ) {
       const reloaded = await this.tryReload(oldService, newCodeGen.payload)
       if (this.stopping || this.isolated.has(id)) return
       if (reloaded) {
@@ -534,6 +540,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       {
         world: this.world,
         materializedDir: this.paths.materializedDir,
+        blobsDir: this.blobsDir,
         handshakeTimeoutMs: this.handshakeTimeoutMs,
         pluginStateDir: resolve(this.paths.pluginsDir, id),
         startWrapper: this.startWrapper,

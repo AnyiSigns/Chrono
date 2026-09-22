@@ -11,6 +11,7 @@ export interface HostPaths {
   runtimeDir: string
   sockDir: string
   assetsDir: string
+  blobsDir: string
   pluginsDir: string
   materializedDir: string
   depsDir: string
@@ -42,6 +43,8 @@ export function hostPaths(root: string): HostPaths {
     runtimeDir,
     sockDir,
     assetsDir: resolve(stateDir, 'assets'),
+    // 源码字节内容寻址区：与 assets 机械同构（64-hex、只增、离线 GC），保留策略不同
+    blobsDir: resolve(stateDir, 'blobs'),
     // 插件 ③ 目录：`<id>/` 承载插件可重算产物，宿主统一 GC
     pluginsDir: resolve(stateDir, 'plugins'),
     materializedDir: resolve(runtimeDir, 'materialized'),

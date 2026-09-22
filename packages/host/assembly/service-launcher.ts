@@ -24,6 +24,8 @@ import type { Hash, Json, World } from '../../kernel/index.ts'
 export interface ServiceLauncherDeps {
   world: World
   materializedDir: string
+  /** 源码 CAS 目录：物化 pointer blob 时经它共享字节；inline 旧世界可省。 */
+  blobsDir?: string
   handshakeTimeoutMs: number
   /**
    * 该身份的插件 ③ 目录（`state/plugins/<id>/`）：宿主保证存在并以 `CHRONO_PLUGIN_STATE`
@@ -73,7 +75,9 @@ export async function launchService(
   gen: Hash,
   decl: PluginDecl,
 ): Promise<ServiceRuntime> {
-  const cwd = materializeCommit(deps.world, gen, deps.materializedDir)
+  const cwd = materializeCommit(deps.world, gen, deps.materializedDir, {
+    blobsDir: deps.blobsDir,
+  })
   if (cwd === null) throw new ServiceStartError('materialize_failed')
   // 大资产直拷先于依赖恢复：构建期输入（如 Rust include_bytes!）须在构建前就位
   if (deps.copyAssets !== undefined) {

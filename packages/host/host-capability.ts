@@ -3,6 +3,7 @@
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
 import { readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
+import { getBlob, isBlobPointer } from './blobs.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
 import type { AuditIndex, AuditReport } from './audit.ts'
@@ -13,6 +14,8 @@ import type { Hash, Json, World } from '../kernel/index.ts'
 
 export interface HostCapabilityDeps {
   assetsDir: string
+  /** 源码 CAS 目录：`source.read` 解析 pointer blob 时经它读字节。 */
+  blobsDir: string
   /** 宿主运行态目录（③）：`validate_package` 的候选文件临时落点，用后即删。 */
   runtimeDir: string
   /** 只读审计索引（启动时重建、运行期增量补齐）。 */
@@ -84,11 +87,17 @@ function assetGetCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult 
   return { ok: true, value: { bytes: result.bytes, mime: result.mime, size: result.size } }
 }
 
-/** 读一个 blob 的 base64 内容与字节长度：文本 blob 现编码，base64 blob 原样。 */
+/** 读一个 blob 的 base64 内容与字节长度：pointer 经 CAS，inline 文本现编码、base64 原样。 */
 function blobBytes(
   def: { body?: Json; enc?: Json } | undefined,
+  blobsDir: string,
 ): { content: string; size: number } | null {
   const body = def?.body
+  if (isBlobPointer(body)) {
+    const read = getBlob(blobsDir, body)
+    if (!read.ok) return null
+    return { content: read.bytes.toString('base64'), size: read.bytes.length }
+  }
   if (typeof body !== 'string') return null
   if (def?.enc === 'base64') return { content: body, size: Buffer.from(body, 'base64').length }
   return {
@@ -105,7 +114,7 @@ function identitiesCall(deps: HostCapabilityDeps): EndpointCallResult {
   const world = deps.world()
   const list: Json[] = []
   for (const id of Object.keys(world.ids).sort()) {
-    const read = readPluginDecl(world, id)
+    const read = readPluginDecl(world, id, deps.blobsDir)
     list.push({
       id,
       active: world.ids[id].active,
@@ -125,11 +134,11 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
     return bad('not_found', 'source.read expects { identity, path }')
   }
   const world = deps.world()
-  const read = readPluginDecl(world, identity)
+  const read = readPluginDecl(world, identity, deps.blobsDir)
   if (read === null) return bad('not_found', identity)
   const entry = resolveTreeEntry(world, read.tree, path)
   if (entry === null || entry.mode !== 'file') return bad('not_found', path)
-  const bytes = blobBytes(world.defs[entry.hash] as { body?: Json; enc?: Json } | undefined)
+  const bytes = blobBytes(world.defs[entry.hash] as { body?: Json; enc?: Json } | undefined, deps.blobsDir)
   if (bytes === null) return bad('not_found', path)
   return { ok: true, value: { path, content: bytes.content, size: bytes.size } }
 }
@@ -138,7 +147,7 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
 function validatePackageCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
   const files = record === null ? undefined : record['files']
-  const outcome = validatePackage(deps.world(), deps.runtimeDir, files ?? null)
+  const outcome = validatePackage(deps.world(), deps.runtimeDir, files ?? null, deps.blobsDir)
   if (!outcome.accepted) return bad('bad_directive', outcome.message)
   return { ok: true, value: outcome.report as unknown as Json }
 }

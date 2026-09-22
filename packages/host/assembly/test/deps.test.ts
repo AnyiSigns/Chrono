@@ -206,7 +206,7 @@ describe('依赖恢复接入 launchService', () => {
     const report = runSeed(root, [{ name: 'toy-deps', path: pkgRoot }])
     expect(report.ok).toBe(true)
     const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
-    const read = readPluginDecl(world, 'toy-deps')
+    const read = readPluginDecl(world, 'toy-deps', hostPaths(root).blobsDir)
     expect(read).not.toBeNull()
 
     let restoreCalled = false
@@ -214,6 +214,7 @@ describe('依赖恢复接入 launchService', () => {
       {
         world,
         materializedDir: hostPaths(root).materializedDir,
+        blobsDir: hostPaths(root).blobsDir,
         handshakeTimeoutMs: 1_000,
         restore: async () => {
           restoreCalled = true

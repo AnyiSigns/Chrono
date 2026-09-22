@@ -67,6 +67,8 @@ export const DEFAULT_REF_CAP = 1000
 export interface ProjectionOptions {
   /** 覆盖 `DEFAULT_REF_CAP`（测试用）。 */
   refCap?: number
+  /** 源码 CAS 目录：解析身份声明（pointer blob）取 `pins` 时经它读文本。 */
+  blobsDir?: string
 }
 
 /**
@@ -91,7 +93,7 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
     const bodyHash = dataGen?.payload ?? active
     const body = bodyHash === null ? null : (world.defs[bodyHash]?.body ?? null)
     // pins = 当前代码世代声明里的表（逻辑端点名 → 被依赖身份名字面值）；无代码世代 → null
-    const decl = readPluginDecl(world, id)
+    const decl = readPluginDecl(world, id, options?.blobsDir)
     ids[id] = {
       active,
       gens: identity.gens.map((gen) => ({ seq: gen.seq, payload: gen.payload })),

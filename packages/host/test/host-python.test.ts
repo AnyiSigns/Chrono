@@ -252,7 +252,9 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(runSeed(root, [{ name: 'toy-python', path: pkg }]).ok).toBe(true)
     const world = loadAnchor(journalFile()).world
     const commitHash = world.ids['toy-python'].active as string
-    const rootDir = materializeCommit(world, commitHash, hostPaths(root).materializedDir)
+    const rootDir = materializeCommit(world, commitHash, hostPaths(root).materializedDir, {
+      blobsDir: hostPaths(root).blobsDir,
+    })
     expect(rootDir).not.toBeNull()
     expect(existsSync(join(rootDir as string, 'execute', 'main.py'))).toBe(true)
     expect(readFileSync(join(rootDir as string, 'execute', 'main.py'), 'utf8')).toContain(

@@ -6,7 +6,9 @@ import { join } from 'node:path'
 import { MAX_DETACHED_RUNS, startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
-import { readJournal } from '../ledger/index.ts'
+import { readJournal, loadAnchor } from '../ledger/index.ts'
+import { resolveTreeEntry } from '../assembly/index.ts'
+import { isBlobPointer } from '../blobs.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 import { FIXTURE_ALPHA, waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -202,6 +204,14 @@ describe('H14 宿主保留能力类 host', () => {
 
   it('source.read：读回源码 blob（base64）；目录 / 不存在 → not_found', async () => {
     seedHost()
+    // 入世已是 pointer 形态：源码读面必须经 CAS 解析
+    const world = loadAnchor(journalFile()).world
+    const commitHash = world.ids['toy-host'].active as string
+    const tree = (world.defs[commitHash].body as { tree: string }).tree
+    const entry = resolveTreeEntry(world, tree, 'plugin.json')
+    expect(entry).not.toBeNull()
+    expect(isBlobPointer(world.defs[entry!.hash].body)).toBe(true)
+
     const handle = await startHost({ root })
     handles.push(handle)
     const client = await connect({ root, timeoutMs: 3000 })

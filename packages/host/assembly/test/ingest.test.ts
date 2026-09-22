@@ -9,6 +9,7 @@ import {
 } from '../index.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
+import { hostPaths } from '../../paths.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import { writeTempPackage } from '../../test/test-helpers-ext.ts'
 
@@ -214,15 +215,15 @@ describe('装配 assembly', () => {
         expect(report.ok).toBe(true)
 
         const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
-        const commands = listCommands(world)
+        const commands = listCommands(world, hostPaths(root).blobsDir)
         const dot = commands.find((c) => c.name === 'toy.dot')
         const mid = commands.find((c) => c.name === 'toy.mid')
         expect(dot).toBeDefined()
         expect(mid).toBeDefined()
         // 两种写法规范化后指向同一 term def
         expect(dot!.entry).toBe(mid!.entry)
-        expect(resolveCommand(world, 'toy.dot')).not.toBeNull()
-        expect(resolveCommand(world, 'toy.mid')).not.toBeNull()
+        expect(resolveCommand(world, 'toy.dot', hostPaths(root).blobsDir)).not.toBeNull()
+        expect(resolveCommand(world, 'toy.mid', hostPaths(root).blobsDir)).not.toBeNull()
       } finally {
         await cleanupTempRoot(root)
       }

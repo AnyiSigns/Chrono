@@ -4,6 +4,7 @@ import { listCommands } from '../index.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
+import { hostPaths } from '../../paths.ts'
 import { writeTempPackage, FIXTURE_ALPHA } from '../../test/test-helpers-ext.ts'
 import { H } from '../../../kernel/index.ts'
 import type { Json } from '../../../kernel/index.ts'
@@ -137,7 +138,7 @@ describe('term $ref 占位符', () => {
       expect('pins' in barDef).toBe(false)
       expect(barDef.body).toEqual(['c', fooHash])
 
-      const commands = listCommands(world)
+      const commands = listCommands(world, hostPaths(root).blobsDir)
       const cmd = commands.find((c) => c.name === 'toy.term')
       expect(cmd).toBeDefined()
       expect(cmd!.entry).toBe(bazHash)
