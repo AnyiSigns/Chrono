@@ -139,6 +139,46 @@ describe('CLI 薄壳 boot', () => {
     expect(existsSync(join(assetsDir, orphan))).toBe(false)
   })
 
+  it('blobs gc：回收世界无引用的源码 CAS 字节（离线 CLI 命令）', async () => {
+    const blobsDir = join(root, 'state', 'blobs')
+    mkdirSync(blobsDir, { recursive: true })
+    const orphan = 'b'.repeat(64)
+    writeFileSync(join(blobsDir, orphan), 'orphan')
+    const result = await runBoot(['blobs', 'gc', '--root', root])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as {
+      scanned: number
+      removed: string[]
+      kept: number
+      failed: unknown[]
+    }
+    expect(report.scanned).toBe(1)
+    expect(report.removed).toEqual([orphan])
+    expect(report.kept).toBe(0)
+    expect(report.failed).toEqual([])
+    expect(existsSync(join(blobsDir, orphan))).toBe(false)
+  })
+
+  it('materialized gc：回收保留集外的物化目录（离线 CLI 命令）', async () => {
+    const materializedDir = join(root, 'state', 'runtime', 'materialized')
+    mkdirSync(materializedDir, { recursive: true })
+    const orphan = 'c'.repeat(64)
+    mkdirSync(join(materializedDir, orphan), { recursive: true })
+    const result = await runBoot(['materialized', 'gc', '--root', root])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as {
+      scanned: number
+      removed: string[]
+      kept: number
+      failed: unknown[]
+    }
+    expect(report.scanned).toBe(1)
+    expect(report.removed).toEqual([orphan])
+    expect(report.kept).toBe(0)
+    expect(report.failed).toEqual([])
+    expect(existsSync(join(materializedDir, orphan))).toBe(false)
+  })
+
   it('start 非法超时 → 退出码 1、报 bad_call_timeout、不起宿主', async () => {
     const bad = await runBoot(['start', '--root', root, '--call-timeout-ms', 'abc'])
     expect(bad.code).toBe(1)

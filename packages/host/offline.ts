@@ -4,8 +4,14 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
-import { orderEntriesForSeed, planIngest, planPack, readPluginManifest } from './assembly/index.ts'
-import type { PluginEntry } from './assembly/index.ts'
+import {
+  gcMaterialized,
+  orderEntriesForSeed,
+  planIngest,
+  planPack,
+  readPluginManifest,
+} from './assembly/index.ts'
+import type { MaterializedGcReport, PluginEntry } from './assembly/index.ts'
 import {
   acquireLock,
   appendJournal,
@@ -20,7 +26,8 @@ import {
 } from './ledger/index.ts'
 import type { BaseAuditRef } from './ledger/index.ts'
 import { auditRecordOf } from './audit.ts'
-import { putBlob } from './blobs.ts'
+import { collectBlobRefs, gcBlobs, putBlob } from './blobs.ts'
+import type { BlobGcReport } from './blobs.ts'
 import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
 import { compactWorld } from './compact.ts'
@@ -213,6 +220,38 @@ export function runAssetGc(root: string): AssetGcReport {
   try {
     const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
     return gcAssets(paths.assetsDir, collectAssetRefs(world))
+  } finally {
+    releaseLock(paths.lockFile)
+  }
+}
+
+/**
+ * 源码 blob 可达性回收（④ 不可重算）：离线持锁，删世界**全部世代**无引用的 CAS 字节。
+ * 与 `assets gc` 同规不在启动时自动跑；入世被拒但已落盘的孤儿字节由此清理。
+ */
+export function runBlobGc(root: string): BlobGcReport {
+  const paths = hostPaths(root)
+  const lock = acquireLock(paths.lockFile, Date.now())
+  if (!lock.ok) throw new Error('writer_busy')
+  try {
+    const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
+    return gcBlobs(paths.blobsDir, collectBlobRefs(world))
+  } finally {
+    releaseLock(paths.lockFile)
+  }
+}
+
+/**
+ * 物化目录回收（③ 可重算）：离线持锁，按每身份 active 代码世代 + 前 N 代保留；
+ * 其余目录删除后仍可由「指针 def + CAS 字节」重建。
+ */
+export function runMaterializedGc(root: string): MaterializedGcReport {
+  const paths = hostPaths(root)
+  const lock = acquireLock(paths.lockFile, Date.now())
+  if (!lock.ok) throw new Error('writer_busy')
+  try {
+    const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
+    return gcMaterialized(paths.materializedDir, world)
   } finally {
     releaseLock(paths.lockFile)
   }

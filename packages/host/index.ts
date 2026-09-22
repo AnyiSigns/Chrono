@@ -6,7 +6,9 @@ export type { HostHandle, HostOptions } from './host.ts'
 export {
   readPluginManifest,
   runAssetGc,
+  runBlobGc,
   runCompact,
+  runMaterializedGc,
   runPack,
   runReplay,
   runSeed,
@@ -21,6 +23,8 @@ export type {
   VerifyReport,
 } from './offline.ts'
 export type { AssetGcReport, AssetRef } from './assets.ts'
+export type { BlobGcReport } from './blobs.ts'
+export type { MaterializedGcReport } from './assembly/index.ts'
 export type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
 export type { PluginEntry } from './assembly/index.ts'
 export { hostPaths, resolveRoot, socketPath } from './paths.ts'

@@ -13,7 +13,9 @@ import {
   resolveRoot,
   resolveStartWrapper,
   runAssetGc,
+  runBlobGc,
   runCompact,
+  runMaterializedGc,
   runPack,
   runReplay,
   runSeed,
@@ -36,6 +38,8 @@ const RESERVED = new Set([
   'commands',
   'audit',
   'assets',
+  'blobs',
+  'materialized',
   'help',
 ])
 
@@ -78,6 +82,8 @@ function helpText(): string {
     '  replay                      全量重放并给出内容摘要',
     '  compact                     压缩：追加快照 + 冷段归档 + 写基础世界',
     '  assets gc                   回收资产区里世界无引用的字节',
+    '  blobs gc                    回收源码 CAS 里世界全部世代无引用的字节',
+    '  materialized gc             回收物化目录（每身份保留 active 代码世代 + 前 N 代）',
     '',
     '  help                        本说明',
   ].join('\n')
@@ -226,6 +232,16 @@ async function main(): Promise<void> {
     case 'assets': {
       if (args[0] !== 'gc') throw new Error(`unknown_command: assets ${args[0] ?? ''}`)
       print(runAssetGc(root))
+      return
+    }
+    case 'blobs': {
+      if (args[0] !== 'gc') throw new Error(`unknown_command: blobs ${args[0] ?? ''}`)
+      print(runBlobGc(root))
+      return
+    }
+    case 'materialized': {
+      if (args[0] !== 'gc') throw new Error(`unknown_command: materialized ${args[0] ?? ''}`)
+      print(runMaterializedGc(root))
       return
     }
     default:

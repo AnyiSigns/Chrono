@@ -86,6 +86,8 @@ const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'compact',
   'audit',
   'assets',
+  'blobs',
+  'materialized',
 ])
 
 function parseCommands(v: Json | undefined): PluginCommand[] | null {

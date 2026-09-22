@@ -11,7 +11,9 @@ import {
   copyFileSync,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -20,6 +22,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { blobFile, isBlobPointer } from '../blobs.ts'
+import { assemblyGen, isCodeGen } from './decl.ts'
 import { MATERIALIZE_MARKER } from './source.ts'
 import type { BlobPointer } from '../blobs.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
@@ -166,4 +169,93 @@ function setReadOnly(file: string): void {
   } catch {
     // 只读置位是共享安全的前提，但文件系统不支持时不影响物化结果本身
   }
+}
+
+/**
+ * active 之外额外保留的前代码世代数。前 N 代只是缓存命中优化，**不是回滚前提**：
+ * 被回收的世代仍可由「① 的指针 def + CAS 字节」重建，故回收绝不改变回滚承诺。
+ */
+export const MATERIALIZED_KEEP_GENERATIONS = 5
+
+export interface MaterializedGcReport {
+  /** 扫描到的 64-hex 目录数。 */
+  scanned: number
+  /** 被删的世代目录名（排序）。 */
+  removed: string[]
+  /** 保留集内的目录数。 */
+  kept: number
+  /** 删不掉的项（含原因），由调用方落运维日志，不阻断。 */
+  failed: { name: string; reason: string }[]
+}
+
+/**
+ * 每身份的物化保留集：active 代码世代 + 前 `keepGenerations` 个代码世代。
+ * active 为数据世代或 `null`（retired）时，装配口径回落最近代码世代（与 `assemblyGen` 一致）。
+ * 身份无代码世代 → 不保留（无对应物化目录）。
+ */
+export function materializedKeepSet(
+  world: World,
+  keepGenerations = MATERIALIZED_KEEP_GENERATIONS,
+): Set<string> {
+  const keep = new Set<string>()
+  for (const id of Object.keys(world.ids)) {
+    const identity = world.ids[id]
+    if (identity === undefined) continue
+    const codeIndices: number[] = []
+    for (let i = 0; i < identity.gens.length; i++) {
+      if (isCodeGen(world, identity.gens[i])) codeIndices.push(i)
+    }
+    if (codeIndices.length === 0) continue
+    const anchor = assemblyGen(world, id)
+    let position = codeIndices.length - 1
+    if (anchor !== null) {
+      const index = identity.gens.findIndex((gen) => gen.payload === anchor.payload)
+      const found = codeIndices.indexOf(index)
+      if (found >= 0) position = found
+    }
+    const from = Math.max(0, position - keepGenerations)
+    for (let i = from; i <= position; i++) keep.add(identity.gens[codeIndices[i]].payload)
+  }
+  return keep
+}
+
+/**
+ * 回收物化目录（③ 可重算）：只删 64-hex 命名的目录，跳过 staging（`.tmp-` 后缀）与意外内容；
+ * 符号链接不跟进。删不掉只记 `failed`（Windows 只读硬链接目录可能需先解属性），不阻断调用方。
+ */
+export function gcMaterialized(
+  materializedDir: string,
+  world: World,
+  keepGenerations = MATERIALIZED_KEEP_GENERATIONS,
+): MaterializedGcReport {
+  const keep = materializedKeepSet(world, keepGenerations)
+  if (!existsSync(materializedDir)) return { scanned: 0, removed: [], kept: 0, failed: [] }
+  const removed: string[] = []
+  const failed: { name: string; reason: string }[] = []
+  let scanned = 0
+  let kept = 0
+  for (const name of readdirSync(materializedDir)) {
+    const target = blobFile(materializedDir, name)
+    if (target === null) continue
+    // 只认真实目录：staging 目录名带后缀、非目录项一律跳过，避免误删意外内容
+    let isDirectory = false
+    try {
+      isDirectory = lstatSync(target).isDirectory()
+    } catch {
+      continue
+    }
+    if (!isDirectory) continue
+    scanned += 1
+    if (keep.has(name)) {
+      kept += 1
+      continue
+    }
+    try {
+      rmSync(target, { recursive: true, force: true })
+      removed.push(name)
+    } catch (err) {
+      failed.push({ name, reason: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return { scanned, removed: removed.sort(), kept, failed }
 }

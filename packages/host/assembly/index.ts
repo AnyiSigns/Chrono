@@ -42,6 +42,12 @@ export {
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
 export { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
 export type { AssetManifestEntry, AssetsManifestRead } from './assets-manifest.ts'
-export { materializeCommit } from './materialize.ts'
+export {
+  gcMaterialized,
+  MATERIALIZED_KEEP_GENERATIONS,
+  materializeCommit,
+  materializedKeepSet,
+} from './materialize.ts'
+export type { MaterializedGcReport } from './materialize.ts'
 export { startAssembly } from './runtime.ts'
 export type { AssemblyRuntimeHandle, LoadedIdentity, StartAssemblyOptions } from './runtime.ts'

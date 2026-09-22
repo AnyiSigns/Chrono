@@ -7,6 +7,7 @@ import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
 import {
   assemblyGen,
+  gcMaterialized,
   listCommands,
   readPluginDecl,
   resolveCommand,
@@ -260,6 +261,27 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // 缓存可重算，GC 失败不致命：记一条运维日志后继续启动，不因此中断也不影响锁的释放。
   try {
     gcPluginState(paths.pluginsDir, writer.snapshot().world)
+  } catch (err) {
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: 'gc_failed',
+      reason: err instanceof Error ? err.message : String(err),
+    })
+  }
+  // 物化目录（③ 可重算）统一 GC：抢锁后、装配前，每身份保留 active 代码世代 + 前 N 代。
+  // 被回收的世代仍可由「指针 def + CAS 字节」重建，故回收不承担回滚承诺；绝不在 run 中删。
+  // 删不掉不致命：记一条运维日志后继续启动（Windows 只读硬链接目录可能需要先解属性）。
+  try {
+    const report = gcMaterialized(paths.materializedDir, writer.snapshot().world)
+    if (report.failed.length > 0) {
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'gc_failed',
+        reason: `materialized:${report.failed.length}`,
+      })
+    }
   } catch (err) {
     appendLifecycle(paths.lifecycleFile, {
       at: Date.now(),
