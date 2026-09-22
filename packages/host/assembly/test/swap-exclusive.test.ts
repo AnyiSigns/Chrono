@@ -1,7 +1,7 @@
 // 换代换人序测试：声明独占资源的插件先 drain 旧再起新，缺省插件保持零空窗重叠序。
 // 直接打 startAssembly（不经入站面）：世界推进用内核 commit 在独占副本上构造。
-// 换人序的观测点：注入 `restore`（物化后、spawn 前的构建钩子），在它里面读旧进程是否还活着——
-// 重叠序下构建时旧进程必在跑，独占序下必已退场，这是两种序的机械分界。
+// 独占序把不占资源的准备阶段（物化 / 构建）提前到 drain 之前：注入 `restore`（构建钩子）读旧进程是否还活着——
+// 重叠序与独占序下构建时旧进程都仍在跑；两序的分界移到 spawn 阶段（由 swap.test.ts 的调用序单测机械固化）。
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import { commit, cloneWorld } from '../../../kernel/index.ts'
 import type { Gen, Hash, Head, Json, World } from '../../../kernel/index.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import {
+  FIXTURE_SERVICE_MAIN,
   isPidAlive,
   waitFor,
   waitForQuiescence,
@@ -128,7 +129,7 @@ describe('换代换人序（独占资源声明）', () => {
     return records.filter((r) => r.kind === 'service' && r.event === 'exit' && r.impl === impl)
   }
 
-  it('声明独占资源 → 先 drain 旧再起新：新世代构建时旧进程已退场', async () => {
+  it('声明独占资源 → 准备（构建）提前到旧实例仍在服务时，完成后才 drain 并 spawn', async () => {
     const identity = 'toy-excl'
     const { world, head, v1, v2 } = seedTwoGens(
       identity,
@@ -136,9 +137,9 @@ describe('换代换人序（独占资源声明）', () => {
       { exclusive: ['port'] },
     )
     let oldPid = -1
-    let oldAliveAtBuild: boolean | null = null
+    let oldAliveAtPrepare: boolean | null = null
     const restore = async (cwd: string): Promise<void> => {
-      if (cwd.endsWith(v2)) oldAliveAtBuild = isPidAlive(oldPid)
+      if (cwd.endsWith(v2)) oldAliveAtPrepare = isPidAlive(oldPid)
     }
     const handle = await startWorld(world, { restore })
     oldPid = handle.endpoints.get(identity, v1, 'toy.gen', 'echo')!.pid
@@ -146,8 +147,8 @@ describe('换代换人序（独占资源声明）', () => {
 
     await handle.applyWorld(step(world, head, 'set_active', { id: identity, active: v2 }))
 
-    // 独占序的机械分界：构建新世代时旧进程必须已经退出
-    expect(oldAliveAtBuild).toBe(false)
+    // 构建不占独占资源：准备阶段旧进程仍在服务；drain 与 spawn 的先后由 swap.test.ts 的调用序单测固化
+    expect(oldAliveAtPrepare).toBe(true)
     await waitFor(() => !isPidAlive(oldPid), '旧服务 drain 后退出', 5000)
     const row = handle.endpoints.get(identity, v2, 'toy.gen', 'echo')
     expect(row).not.toBeNull()
@@ -179,35 +180,30 @@ describe('换代换人序（独占资源声明）', () => {
     expect(serviceStops(identity)[0].reason).toBe('superseded')
   }, 15000)
 
-  it('独占序下新世代起不来：无服务但保留世代，按 restart 重试新世代成功', async () => {
-    const identity = 'toy-exclretry'
-    const restart = {
-      policy: 'on-exit',
-      backoff: 'fixed',
-      backoff_ms: 600,
-      max: 3,
-      window_ms: 60000,
-      drain_ms: 200,
-    }
+  it('独占序下准备阶段失败：旧实例仍在服务，端点换新世代键，不 drain 不重试', async () => {
+    const identity = 'toy-exclprep'
     const { world, head, v1, v2 } = seedTwoGens(
       identity,
-      { exclusive: ['port'], restart },
-      { exclusive: ['port'], restart },
+      { exclusive: ['port'] },
+      { exclusive: ['port'] },
     )
-    let v2Builds = 0
     const restore = async (cwd: string): Promise<void> => {
-      if (!cwd.endsWith(v2)) return
-      v2Builds += 1
-      // 首次新世代构建失败（瞬时），重试时成功
-      if (v2Builds === 1) throw new Error('transient build failure')
+      if (cwd.endsWith(v2)) throw new Error('transient build failure')
     }
     const handle = await startWorld(world, { restore })
     const oldPid = handle.endpoints.get(identity, v1, 'toy.gen', 'echo')!.pid
 
     await handle.applyWorld(step(world, head, 'set_active', { id: identity, active: v2 }))
 
-    // 旧服务已 drain（不复活）：该身份转入「无服务但保留世代」，端点缺席
-    expect(isPidAlive(oldPid)).toBe(false)
+    // 新世代未激活、旧实例未退场：端点行换到新世代键，仍指向旧进程
+    expect(isPidAlive(oldPid)).toBe(true)
+    const row = handle.endpoints.get(identity, v2, 'toy.gen', 'echo')
+    expect(row).not.toBeNull()
+    expect(row!.pid).toBe(oldPid)
+    expect(handle.endpoints.get(identity, v1, 'toy.gen', 'echo')).toBeNull()
+    expect(handle.loaded()).toContainEqual({ id: identity, gen: v2, service: true })
+    // 未 drain：无 service.exit；未转重试：无 restart_exhausted
+    expect(serviceStops(identity)).toHaveLength(0)
     expect(records).toContainEqual(
       expect.objectContaining({
         kind: 'service',
@@ -217,6 +213,56 @@ describe('换代换人序（独占资源声明）', () => {
         reason: 'deps_failed',
       }),
     )
+    expect(records.some((r) => r.event === 'restart_exhausted')).toBe(false)
+  }, 15000)
+
+  it('独占序下 spawn 阶段瞬时失败：无服务但保留世代，按 restart 重试新世代成功', async () => {
+    const identity = 'toy-exclretry'
+    const restart = {
+      policy: 'on-exit',
+      backoff: 'fixed',
+      backoff_ms: 600,
+      max: 3,
+      window_ms: 60000,
+      drain_ms: 200,
+    }
+    // v2 首次 spawn 写标记并退出 1（spawn 阶段瞬时失败），重试时标记已在则正常握手。
+    // 用 IIFE 隔离变量名：fixture 服务脚本自身也声明 fs / path，顶层重复声明会直接语法错。
+    const spawnFailOnce = [
+      ';(() => {',
+      "  const fs = require('node:fs');",
+      "  const path = require('node:path');",
+      "  const marker = path.join(process.env.CHRONO_PLUGIN_STATE, 'spawn-failed-once');",
+      "  if (!fs.existsSync(marker)) { fs.writeFileSync(marker, '1'); process.exit(1); }",
+      '})();',
+      '',
+    ].join('\n')
+    const { world, head, v1, v2 } = seedTwoGens(
+      identity,
+      {
+        exclusive: ['port'],
+        restart,
+        files: { 'execute/main.js': spawnFailOnce + FIXTURE_SERVICE_MAIN },
+      },
+      { exclusive: ['port'], restart },
+    )
+    const handle = await startWorld(world)
+    const oldPid = handle.endpoints.get(identity, v1, 'toy.gen', 'echo')!.pid
+
+    await handle.applyWorld(step(world, head, 'set_active', { id: identity, active: v2 }))
+
+    // 旧服务已 drain（不复活）：该身份转入「无服务但保留世代」，端点缺席
+    expect(isPidAlive(oldPid)).toBe(false)
+    expect(
+      records.some(
+        (r) =>
+          r.kind === 'service' &&
+          r.event === 'start_failed' &&
+          r.impl === identity &&
+          r.gen === v2 &&
+          (r.reason === 'closed' || r.reason?.startsWith('exited')),
+      ),
+    ).toBe(true)
     expect(handle.loaded()).toContainEqual({ id: identity, gen: v2, service: false })
     expect(handle.endpoints.get(identity, v2, 'toy.gen', 'echo')).toBeNull()
     expect(handle.endpoints.get(identity, v1, 'toy.gen', 'echo')).toBeNull()
@@ -230,11 +276,10 @@ describe('换代换人序（独占资源声明）', () => {
       '重试后新世代端点重挂',
       8000,
     )
-    expect(v2Builds).toBe(2)
     expect(handle.loaded()).toContainEqual({ id: identity, gen: v2, service: true })
   }, 15000)
 
-  it('独占序下新世代持续起不来：重试超限 → restart_exhausted + 分支隔离', async () => {
+  it('独占序下 spawn 阶段持续失败：重试超限 → restart_exhausted + 分支隔离', async () => {
     const identity = 'toy-exclfail'
     const restart = {
       policy: 'on-exit',
@@ -245,13 +290,10 @@ describe('换代换人序（独占资源声明）', () => {
     }
     const { world, head, v1, v2 } = seedTwoGens(
       identity,
-      { exclusive: ['port'], restart },
+      { exclusive: ['port'], restart, start: 'node execute/missing-service.js' },
       { exclusive: ['port'], restart },
     )
-    const restore = async (cwd: string): Promise<void> => {
-      if (cwd.endsWith(v2)) throw new Error('persistent build failure')
-    }
-    const handle = await startWorld(world, { restore })
+    const handle = await startWorld(world)
     const oldPid = handle.endpoints.get(identity, v1, 'toy.gen', 'echo')!.pid
 
     await handle.applyWorld(step(world, head, 'set_active', { id: identity, active: v2 }))

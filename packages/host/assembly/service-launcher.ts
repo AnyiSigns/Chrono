@@ -1,4 +1,6 @@
 // 起服务编排：物化 → spawn（stdio 管道）→ hello/manifest → 形态校验 → 组装 ServiceRuntime 并挂退出监听。
+// 拆成准备（物化 + 资产直拷 + 依赖恢复 / 构建）与 spawn（起进程 + 握手）两个阶段：
+// 准备阶段不占端口等独占资源，独占序可在 drain 旧实例之前先做完，把换代空窗压到「spawn + 握手」。
 // 只做「起一个」，不含健康 / 重启 / 隔离（那些在 runtime.ts 的监督逻辑里）。
 
 import { spawn } from 'node:child_process'
@@ -69,13 +71,23 @@ export function composeStartCommand(start: string, wrapper?: string): string {
   return wrapper === undefined ? start : `${wrapper} ${start}`
 }
 
-/** 物化并拉起一个服务实例；起不来（物化 / spawn / 先死 / 握手不过）即抛错并清理。 */
-export async function launchService(
+/**
+ * 准备阶段产物：物化目录。准备阶段只读写物化目录与宿主侧依赖缓存，不 spawn 进程、不占独占资源，
+ * 故独占序可在旧实例仍在服务时先做完；spawn 阶段直接拿它作 cwd，避免重复物化。
+ */
+export interface PreparedService {
+  cwd: string
+}
+
+/**
+ * 准备阶段：物化 + 大资产直拷 + 依赖恢复 / 构建，返回物化目录。
+ * 不 spawn 进程、不占端口；失败时尚未起进程，按启动失败分类传播（`materialize_failed` / `deps_failed`）。
+ */
+export async function prepareService(
   deps: ServiceLauncherDeps,
-  id: string,
   gen: Hash,
   decl: PluginDecl,
-): Promise<ServiceRuntime> {
+): Promise<PreparedService> {
   const cwd = materializeCommit(deps.world, gen, deps.materializedDir, {
     blobsDir: deps.blobsDir,
   })
@@ -90,7 +102,6 @@ export async function launchService(
     }
   }
   // 依赖恢复 / 构建先于 spawn：失败时尚未起进程，按启动失败分类传播。
-  // 构建耗时不计入握手窗口：握手计时从 spawn 之后才起（见下方 raceStartup），慢构建不会报 timeout。
   if (deps.restore !== undefined) {
     try {
       await deps.restore(cwd, decl)
@@ -99,6 +110,21 @@ export async function launchService(
       throw new ServiceStartError('deps_failed')
     }
   }
+  return { cwd }
+}
+
+/**
+ * spawn 阶段：在准备好的物化目录里起进程并握手；起不来（spawn / 先死 / 握手不过）即抛错并清理。
+ * 握手超时窗口从此刻开始：只覆盖 spawn 之后的协议往返，不含准备阶段的物化 / 构建（见下方 raceStartup）。
+ */
+export async function spawnService(
+  deps: ServiceLauncherDeps,
+  id: string,
+  gen: Hash,
+  decl: PluginDecl,
+  prepared: PreparedService,
+): Promise<ServiceRuntime> {
+  const cwd = prepared.cwd
   // 插件 ③ 目录按身份创建并只注入本身份：不同身份互不可见彼此缓存目录
   const pluginStateDir = deps.pluginStateDir
   if (pluginStateDir !== undefined) mkdirSync(pluginStateDir, { recursive: true })
@@ -133,7 +159,7 @@ export async function launchService(
   })
   let manifest: ServiceManifest
   try {
-    // 握手超时窗口从此刻开始：只覆盖 spawn 之后的协议往返，不含上面的物化 / 构建。
+    // 握手超时窗口从此刻开始：只覆盖 spawn 之后的协议往返，不含准备阶段的物化 / 构建。
     manifest = await raceStartup(link, child, deps.handshakeTimeoutMs)
   } catch (err) {
     stopChild(child, link)
@@ -172,6 +198,17 @@ export async function launchService(
     deps.onExit(runtime, exitReason(child.exitCode, child.signalCode))
   }
   return runtime
+}
+
+/** 一次性起服务：准备 + spawn。缺省（重叠）序与装配期等不拆分阶段调用方沿用此入口。 */
+export async function launchService(
+  deps: ServiceLauncherDeps,
+  id: string,
+  gen: Hash,
+  decl: PluginDecl,
+): Promise<ServiceRuntime> {
+  const prepared = await prepareService(deps, gen, decl)
+  return spawnService(deps, id, gen, decl, prepared)
 }
 
 /** 握手与「进程先死」竞速：谁先发生谁定结果。 */

@@ -426,7 +426,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const recordLifecycle = (record: LifecycleRecord): void => {
     appendLifecycle(paths.lifecycleFile, record as unknown as Json)
     if (record.gen === undefined) return
-    if (record.kind === 'service' && record.event === 'start_failed') followFailedGens.add(record.gen)
+    if (record.kind === 'service' && record.event === 'start_failed')
+      followFailedGens.add(record.gen)
     if (record.kind === 'handshake' && record.event === 'failed') followFailedGens.add(record.gen)
   }
 
@@ -479,9 +480,22 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     })
     watchLog(
       failed
-        ? `watcher: ${outcome.identity} 新世代构建 / 启动失败，旧版本继续服务`
+        ? followFailureLine(outcome.identity)
         : `watcher: ${outcome.identity} 检测到改动 → 已重建并接管（gen ${outcome.gen.slice(0, 12)}）`,
     )
+  }
+
+  /**
+   * 换代跟随失败的实况提示：准备阶段失败时旧实例仍在服务（端点已换新世代键）；
+   * 独占序 drain 后的 spawn / 握手失败则已无旧实例，该身份转入「无服务但保留世代」按 `restart` 重试。
+   * 按运行态实况区分，不笼统说「旧版本继续服务」。
+   */
+  const followFailureLine = (identity: string): string => {
+    const running =
+      runtime?.loaded().some((entry) => entry.id === identity && entry.service) ?? false
+    return running
+      ? `watcher: ${identity} 新世代构建 / 启动失败，旧版本继续服务`
+      : `watcher: ${identity} 新世代启动失败，当前无可用服务（按 restart 策略重试）`
   }
 
   /**

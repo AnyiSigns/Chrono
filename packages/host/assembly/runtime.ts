@@ -12,7 +12,8 @@ import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import { classifyGenerationChange } from './generation.ts'
-import { launchService } from './service-launcher.ts'
+import { launchService, prepareService, spawnService } from './service-launcher.ts'
+import type { PreparedService, ServiceLauncherDeps } from './service-launcher.ts'
 import {
   DEFAULT_START_CONCURRENCY,
   computeStartLayers,
@@ -167,6 +168,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         if (this.services.get(id) === service) this.services.delete(id)
       },
       launch: (id, gen, decl) => this.launch(id, gen, decl),
+      prepare: (id, gen, decl) => this.prepare(id, gen, decl),
+      launchPrepared: (id, gen, decl, prepared) => this.launchPrepared(id, gen, decl, prepared),
       rekeyEndpoints: (service, gen, decl) => this.rekeyEndpoints(service, gen, decl),
       clearRestart: (service) => this.clearRestart(service),
       recordStartFailure: (id, gen, err) => this.recordStartFailure(id, gen, err),
@@ -548,37 +551,69 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.isolateAll(reached)
   }
 
+  /** 起服务公共依赖：spawn 阶段与一次性入口共用；`copyAssets` 有记账副作用，另由准备入口单独绑定。 */
+  private launcherDeps(id: string): ServiceLauncherDeps {
+    return {
+      world: this.world,
+      materializedDir: this.paths.materializedDir,
+      blobsDir: this.blobsDir,
+      handshakeTimeoutMs: this.handshakeTimeoutMs,
+      pluginStateDir: resolve(this.paths.pluginsDir, id),
+      startWrapper: this.startWrapper,
+      restore: this.restore,
+      onPortCall:
+        this.onPortCall === undefined
+          ? undefined
+          : (port, method, args, env) => this.onPortCall!(id, port, method, args, env),
+      onServiceEvent: this.onEvent,
+      onExtraDropped: (impl, extraGen, caps) =>
+        this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),
+      onChannelClosed: (service, reason) => this.handleChannelClosed(service, reason),
+      onExit: (service, reason) => this.handleProcessExit(service, reason),
+    }
+  }
+
+  /** 身份名不安全时拒绝起服务（路径穿越 / 非法目录名），否则 `state/plugins/<id>/` 会逃出插件区。 */
+  private rejectUnsafeIdentity(id: string, gen: Hash): boolean {
+    if (isSafeIdentityName(id)) return false
+    this.record('service', 'start_failed', { impl: id, gen, reason: 'bad_identity' })
+    return true
+  }
+
   private launch(id: string, gen: Hash, decl: PluginDecl): Promise<ServiceRuntime> {
     // 运行期写指令可造任意 id；身份名不安全（路径穿越 / 非法目录名）时拒绝起服务，
     // 否则 `state/plugins/<id>/` 会逃出插件区、被当可写状态交给插件进程。
-    if (!isSafeIdentityName(id)) {
-      this.record('service', 'start_failed', { impl: id, gen, reason: 'bad_identity' })
+    if (this.rejectUnsafeIdentity(id, gen)) {
       return Promise.reject(new ServiceStartError('bad_identity'))
     }
     return launchService(
-      {
-        world: this.world,
-        materializedDir: this.paths.materializedDir,
-        blobsDir: this.blobsDir,
-        handshakeTimeoutMs: this.handshakeTimeoutMs,
-        pluginStateDir: resolve(this.paths.pluginsDir, id),
-        startWrapper: this.startWrapper,
-        restore: this.restore,
-        copyAssets: this.assetsCopyOf(id),
-        onPortCall:
-          this.onPortCall === undefined
-            ? undefined
-            : (port, method, args, env) => this.onPortCall!(id, port, method, args, env),
-        onServiceEvent: this.onEvent,
-        onExtraDropped: (impl, extraGen, caps) =>
-          this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),
-        onChannelClosed: (service, reason) => this.handleChannelClosed(service, reason),
-        onExit: (service, reason) => this.handleProcessExit(service, reason),
-      },
+      { ...this.launcherDeps(id), copyAssets: this.assetsCopyOf(id) },
       id,
       gen,
       decl,
     )
+  }
+
+  /** 准备阶段：物化 + 资产直拷 + 依赖恢复 / 构建；不 spawn，独占序可在 drain 旧实例前先调。 */
+  private prepare(id: string, gen: Hash, decl: PluginDecl): Promise<PreparedService> {
+    if (this.rejectUnsafeIdentity(id, gen)) {
+      return Promise.reject(new ServiceStartError('bad_identity'))
+    }
+    return prepareService(
+      { ...this.launcherDeps(id), copyAssets: this.assetsCopyOf(id) },
+      gen,
+      decl,
+    )
+  }
+
+  /** spawn 阶段：在准备产物上起进程并握手（不再物化）。 */
+  private launchPrepared(
+    id: string,
+    gen: Hash,
+    decl: PluginDecl,
+    prepared: PreparedService,
+  ): Promise<ServiceRuntime> {
+    return spawnService(this.launcherDeps(id), id, gen, decl, prepared)
   }
 
   /**
