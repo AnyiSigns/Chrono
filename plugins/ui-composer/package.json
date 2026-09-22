@@ -1,0 +1,10 @@
+{
+  "name": "ui-composer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "底部输入卡（composer 槽子应用）：文本 + 附件 + 模型 / 推理强度 / 权限档 + 发送 / 终止 + 上下文用量行",
+  "scripts": {
+    "test": "node --test"
+  }
+}
