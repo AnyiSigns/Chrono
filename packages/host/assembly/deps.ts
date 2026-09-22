@@ -97,6 +97,8 @@ export async function restoreDependencies(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     npm_config_cache: join(depsDir, 'npm'),
+    // npm 12 默认 allow-remote=none，会让含依赖插件的 npm ci 拒绝拉取远端包而 deps_failed
+    npm_config_allow_remote: 'all',
     CARGO_TARGET_DIR: join(depsDir, 'cargo-target'),
   }
   const execute =

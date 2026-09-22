@@ -396,6 +396,56 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
   return planIngestAtRoot(world, pkgRoot)
 }
 
+/** 名级依赖节点：清单项解析出的身份名与它 pin 的依赖身份名（`host` 保留能力除外）。 */
+interface SeedNode {
+  index: number
+  identity: string
+  deps: string[]
+}
+
+/** 读一个清单项的身份与依赖名；包 / 声明读不出时身份回落清单项名、依赖为空（不阻塞排序）。 */
+function readSeedNode(root: string, entry: PluginEntry, index: number): SeedNode {
+  const pkgRoot = resolvePackageRoot(entry, root)
+  const rawDecl = pkgRoot === null ? undefined : readJsonFile(join(pkgRoot, 'plugin.json'))
+  if (rawDecl === undefined) return { index, identity: entry.name, deps: [] }
+  const parsed = parsePluginDecl(rawDecl)
+  if (!parsed.ok) return { index, identity: entry.name, deps: [] }
+  const deps = Object.values(parsed.decl.pins).filter((dep) => dep !== HOST_CAPABILITY)
+  return { index, identity: parsed.decl.identity, deps }
+}
+
+/**
+ * 入世排序（名级）：按 `plugin.json.pins` 把清单重排为「被依赖者先入世」，一次收敛。
+ * 依赖身份此刻可能尚未入世（pin 解析发生在入世时），故只能按声明里的身份名建图，不查世界；
+ * 图按「身份名 → 清单下标」解析，身份名与清单项名都参与，取先到者。
+ * 引脚指向清单外 / 自身者不建边；清单内成环时环成员保持清单原序，由入世期按 `unresolved_pin` fail-closed 报出。
+ */
+export function orderEntriesForSeed(root: string, entries: PluginEntry[]): PluginEntry[] {
+  if (entries.length <= 1) return entries
+  const nodes = entries.map((entry, index) => readSeedNode(root, entry, index))
+  const indexByName = new Map<string, number>()
+  for (const node of nodes) {
+    if (!indexByName.has(node.identity)) indexByName.set(node.identity, node.index)
+    const entryName = entries[node.index].name
+    if (!indexByName.has(entryName)) indexByName.set(entryName, node.index)
+  }
+  const ready = (node: SeedNode, done: Set<number>): boolean =>
+    node.deps.every((dep) => {
+      const target = indexByName.get(dep)
+      return target === undefined || target === node.index || done.has(target)
+    })
+  const order: PluginEntry[] = []
+  const done = new Set<number>()
+  while (order.length < entries.length) {
+    const node = nodes.find((candidate) => !done.has(candidate.index) && ready(candidate, done))
+    if (node === undefined) break // 剩余项成环：原序附加
+    done.add(node.index)
+    order.push(entries[node.index])
+  }
+  for (const node of nodes) if (!done.has(node.index)) order.push(entries[node.index])
+  return order
+}
+
 /**
  * 手动 / 程序化入世一个目录（`boot pack` 的纯计划面）：与 seed 共用同一打包核心
  * （`packSourceDir` + `.worldignore` + 通用排除），故同一目录同一身份产出同一 tree / commit 哈希。

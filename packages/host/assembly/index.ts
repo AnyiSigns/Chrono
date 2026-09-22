@@ -32,7 +32,13 @@ export { classifyGenerationChange } from './generation.ts'
 export type { GenerationChange } from './generation.ts'
 export { validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
-export { planIngest, planPack, readPluginManifest, resolvePluginSourceRoot } from './ingest.ts'
+export {
+  orderEntriesForSeed,
+  planIngest,
+  planPack,
+  readPluginManifest,
+  resolvePluginSourceRoot,
+} from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
 export { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
 export type { AssetManifestEntry, AssetsManifestRead } from './assets-manifest.ts'

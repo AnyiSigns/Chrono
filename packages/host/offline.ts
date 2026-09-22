@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
-import { planIngest, planPack, readPluginManifest } from './assembly/index.ts'
+import { orderEntriesForSeed, planIngest, planPack, readPluginManifest } from './assembly/index.ts'
 import type { PluginEntry } from './assembly/index.ts'
 import {
   acquireLock,
@@ -54,13 +54,13 @@ export interface ReplayReport {
   worldRev: Hash
 }
 
-/** 入世：逐个插件包构造原子 batch 并直写 commit；每个插件各自原子。 */
+/** 入世：按 pins 名级序（被依赖者先）逐个插件包构造原子 batch 并直写 commit；每个插件各自原子。 */
 export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   const paths = hostPaths(root)
   const lock = acquireLock(paths.lockFile, Date.now())
   if (!lock.ok) throw new Error('writer_busy')
   try {
-    const entries = explicit ?? readPluginManifest(root)
+    const entries = orderEntriesForSeed(root, explicit ?? readPluginManifest(root))
     let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const items: SeedItem[] = []
     for (const entry of entries) {

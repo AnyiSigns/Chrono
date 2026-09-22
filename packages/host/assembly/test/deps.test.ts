@@ -131,6 +131,7 @@ describe('依赖恢复 restoreDependencies', () => {
     expect(calls[0].args).toEqual(['install', '--no-audit', '--no-fund'])
     expect(calls[0].cwd).toBe(cwd)
     expect(calls[0].env['npm_config_cache']).toBe(join(depsDir, 'npm'))
+    expect(calls[0].env['npm_config_allow_remote']).toBe('all')
     expect(calls[1].env['CARGO_TARGET_DIR']).toBe(join(depsDir, 'cargo-target'))
     // 全部步骤成功 → 恢复完成标记落盘
     expect(existsSync(join(cwd, '.chrono-deps-ok'))).toBe(true)

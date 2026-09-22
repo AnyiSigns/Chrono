@@ -1,7 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { writeFileSync } from 'node:fs'
 import { runSeed, runVerify, runReplay, readPluginManifest } from '../offline.ts'
 import { join } from 'node:path'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../test/test-helpers.ts'
+import { writeTempPackage } from '../test/test-helpers-ext.ts'
 
 describe('离线命令', () => {
   let root: string
@@ -48,6 +50,27 @@ describe('离线命令', () => {
     const report = runSeed(root)
     const toy = report.items.find((i) => i.name === 'toy')
     expect(toy!.status).toBe('unchanged')
+  })
+
+  it('runSeed 按 pins 名级排序：依赖者先登记也一次入世', () => {
+    const depRoot = writeTempPackage(root, { identity: 'dep', omitSchema: true, start: '' })
+    const consumerRoot = writeTempPackage(root, {
+      identity: 'consumer',
+      omitSchema: true,
+      start: '',
+      pins: { dep: 'dep' },
+    })
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([
+        { name: 'consumer', path: consumerRoot },
+        { name: 'dep', path: depRoot },
+      ]),
+    )
+    const report = runSeed(root)
+    expect(report.ok).toBe(true)
+    expect(report.items.find((i) => i.name === 'dep')!.status).toBe('seeded')
+    expect(report.items.find((i) => i.name === 'consumer')!.status).toBe('seeded')
   })
 
   it('readPluginManifest 缺文件返回空数组', async () => {
