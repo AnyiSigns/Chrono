@@ -60,8 +60,12 @@ export interface UiServer {
 /** 壳页面引导数据注入点（壳页面里以本注释占位，服务端替换为 JSON）。 */
 export const BOOTSTRAP_PLACEHOLDER = '/*__CHRONO_BOOTSTRAP__*/'
 
+/**
+ * 注入引导数据。壳页面写成 `= /*占位*\/{};`：占位符后紧跟 `{}` 作未注入时的兜底默认值，
+ * 故连同 `{}` 一起替换，避免留下两个相邻对象字面量（语法错误）；函数式替换防 `$` 序列被解释。
+ */
 export function injectBootstrap(html: string, data: Json): string {
-  return html.replace(BOOTSTRAP_PLACEHOLDER, JSON.stringify(data))
+  return html.replace(`${BOOTSTRAP_PLACEHOLDER}{}`, () => JSON.stringify(data))
 }
 
 const CONTENT_TYPES: { [name: string]: string } = {

@@ -50,7 +50,7 @@ import {
   webDirOf,
 } from '../execute/assets.ts'
 import { FALLBACK_MESSAGES, loadMessages, lookupMessage, MESSAGE_ALIASES, MESSAGE_PREFIXES, missingPrefixes, parseMessages } from '../execute/messages.ts'
-import { directivesTouchConfig, startUiServer, themeWriteDirective } from '../execute/http-server.ts'
+import { BOOTSTRAP_PLACEHOLDER, directivesTouchConfig, injectBootstrap, startUiServer, themeWriteDirective } from '../execute/http-server.ts'
 import {
   firstFrameScript,
   injectThemeScript,
@@ -582,6 +582,21 @@ test('主题解析与首帧脚本', () => {
     true,
   )
   assert.match(injectThemeScript('<head></head>', 'dark'), /<head><script>/)
+})
+
+test('壳页面模板：主题占位符与引导占位符未被 `<script>` 包裹，注入后脚本可求值', () => {
+  const html = readFileSync(join(WEB_DIR, 'shell.html'), 'utf8')
+  // 主题占位符注入的是完整 `<script>…</script>`，模板不得再包一层（否则嵌套脚本为语法错误）
+  assert.equal(html.includes(`<script>${THEME_PLACEHOLDER}`), false)
+  assert.ok(html.includes(THEME_PLACEHOLDER))
+  // 引导占位符后紧跟 `{}` 兜底；注入时连同 `{}` 一起替换，避免留下相邻对象字面量
+  assert.ok(html.includes(`${BOOTSTRAP_PLACEHOLDER}{}`))
+  const injected = injectBootstrap(html, { mounts: [{ id: 'ui-chat' }], headless: [], theme: 'system' })
+  assert.equal(injected.includes('}{'), false)
+  const match = injected.match(/window\.__CHRONO_SHELL__ = ([^;]+);/)
+  assert.ok(match !== null)
+  const value = new Function(`return ${match[1]}`)()
+  assert.deepEqual(value, { mounts: [{ id: 'ui-chat' }], headless: [], theme: 'system' })
 })
 
 // ---- 文案表 ----
