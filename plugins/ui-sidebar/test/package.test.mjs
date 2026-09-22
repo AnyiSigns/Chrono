@@ -42,7 +42,7 @@ const COMMAND_NAMES = [
 test('plugin.json 省略 schema 且其余字段齐全', () => {
   const decl = readJson('plugin.json')
   assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  const expected = ['identity', 'implements', 'methods', 'pins', 'start', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
+  const expected = ['identity', 'implements', 'methods', 'pins', 'start', 'exclusive', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
   assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
   assert.equal(decl.identity, 'ui-sidebar')
   assert.equal(decl.start, 'node execute/main.js')

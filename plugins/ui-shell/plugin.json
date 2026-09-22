@@ -9,6 +9,7 @@
     "host": "host"
   },
   "start": "node execute/main.ts",
+  "exclusive": ["port"],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

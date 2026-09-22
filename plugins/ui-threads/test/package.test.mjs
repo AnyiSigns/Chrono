@@ -20,6 +20,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'methods',
     'pins',
     'start',
+    'exclusive',
     'protocol',
     'restart',
     'health',
