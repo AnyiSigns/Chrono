@@ -597,6 +597,7 @@ test('文案表：结构合法、覆盖全部前缀、未知码兜底', () => {
     )
   }
   assert.equal(typeof loaded.table.unknown.title, 'string')
+  assert.equal(typeof loaded.table.shell_toast_close.body, 'string')
   const unknown = lookupMessage(loaded.table, 'no_such_code')
   assert.match(unknown.body, /no_such_code/)
 
@@ -740,6 +741,8 @@ test('壳页面细节：toast DOM 序、无死代码、响应式与 ::selection�
   assert.equal(/const SLOTS\b/.test(shellJs), false, 'SLOTS 死代码应删除')
   assert.equal(/const mounted\b/.test(shellJs), false, 'mounted 死代码应删除')
   assert.equal(FALLBACK_MESSAGES.shell_tokens_fallback !== undefined, true)
+  assert.equal(FALLBACK_MESSAGES.shell_toast_close.body, '关闭')
+  assert.match(shellJs, /msg\('shell_toast_close'\)\.body/)
 
   const html = readFileSync(join(WEB_DIR, 'shell.html'), 'utf8')
   assert.match(html, /::selection/)

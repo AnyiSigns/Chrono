@@ -24,6 +24,7 @@ import { handleNotifyState, loadNotify, requestPermission } from './notify-actio
 import { exportConfig, importConfig } from './config-io.js'
 import { commitProvider, commitProviderEdit, fetchModels, refreshProvider, saveProviderSecret } from './provider-actions.js'
 import { loadHealth, loadOrchestration, loadTab, loadVendors } from './data-load.js'
+import { doMemoryEdit, doMemorySearch } from './memory-actions.js'
 import { applyWrite, postJson, readSlots, runCommand } from './client.js'
 import { connectEvents } from './sse.js'
 
@@ -58,6 +59,21 @@ export async function mount(root, api) {
     skillForm: null,
     onboarding: null,
     orch: { graph: null, scopes: null, health: null, degraded: { graph: false, scopes: false, health: false } },
+    memory: {
+      layer: 'l1',
+      workspace: '',
+      view: null,
+      viewDegraded: false,
+      query: '',
+      search: null,
+      searchDegraded: false,
+      searchBusy: false,
+      identitiesStale: false,
+      edit: null,
+      editError: null,
+      confirmDelete: null,
+      busy: false,
+    },
     ledgerOpen: null,
     rollbackConfirm: false,
     rollbackBusy: false,
@@ -419,6 +435,8 @@ export async function mount(root, api) {
     loadTab: (tab) => loadTab(ctx, tab),
     loadHealth: () => loadHealth(ctx),
     loadVendors: () => loadVendors(ctx),
+    doMemorySearch: () => doMemorySearch(ctx),
+    doMemoryEdit: (action, layer, id, patch) => doMemoryEdit(ctx, action, layer, id, patch),
     requestPermission: () => requestPermission(ctx),
     exportConfig: () => exportConfig(ctx),
     importConfig: () => importConfig(ctx),

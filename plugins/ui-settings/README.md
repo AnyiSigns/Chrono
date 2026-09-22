@@ -6,10 +6,10 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 本插件另持**编排健康判定**（住本插件 execute 服务）与**回滚入口**，判定不住编排图身份内（图被改坏时回滚入口
 不能也在图里）。
 
-- 能力类：`ui-settings`（`ping` 健康占位 + `vendors` / `profile` / `discover` / `health` 四个方法；
-  UI 插件统一 `ui-<身份名>`、互不 pin）。
-- `pins`：`{"model":"model-protocol","secrets":"secrets"}` —— 服务入口 term 发 `eff`（密钥引用状态）
-  与**服务侧反向调用**（`port.call`，模型发现 / 档案 / 厂商清单）共用；服务进程本身不读投影（投影由入口
+- 能力类：`ui-settings`（`ping` 健康占位 + `vendors` / `profile` / `discover` / `health` /
+  `view` / `search` / `edit` 七个方法；UI 插件统一 `ui-<身份名>`、互不 pin）。
+- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate"}` —— 服务入口 term 发 `eff`（密钥引用状态）
+  与**服务侧反向调用**（`port.call`，模型发现 / 档案 / 厂商清单 / 记忆浏览 / 搜索 / 编辑）共用；服务进程本身不读投影（投影由入口
   term 随 args 传入）、不发 `eff`。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema** —— 省略 `plugin.json.schema`，
   宿主提供最小默认 def）。
@@ -18,7 +18,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 
 ## 提供哪些命令
 
-全部为只读命令（写一律以客户端身份经入站面提交）：
+只读命令 + 一条写类无参命令（写一律以客户端身份经入站面提交）：
 
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
@@ -31,14 +31,22 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | `orchestration.graph` | 投影读编排图身份 | 当前 active 图的节点 / 边（只读） |
 | `orchestration.scopes` | 投影读智能体身份 | Scope 名录（只读） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail（只读，不发事件） |
+| `memory.view` | `eff ui-settings view`（读 `ctx.ids`） | 服务从短记忆 body + 记忆库 body / refs 装配 → 反向调 `memory-maintenance.view`（L1 / L2 / L3 只读） |
+| `memory.search` | `eff ui-settings search`（args，内含 UI 取回的 `ids`） | 服务装配检索真实 bag（`query` / `goal` / `workspace` / `retrieval` / `memory={body,refs}`）→ 反向调 `retrieval.search` |
+| `memory.edit` | `eff ui-settings edit`（读 `ctx.ids`） | **写类无参**：载荷先写入站槽 kind `memory.edit`；服务读槽 + 短记忆 / 记忆库投影 → 反向调 `memory-maintenance.edit`，返回计划 = 维护写子操作 + 清槽（无论成败） |
 
 - **投影读在入口 term**；服务不读投影（`ctx` 由宿主按 directive 注入 term，随 args 传入）。
-- 模型命令的装配与健康判定住服务（`execute/methods.ts`）：内核 term 语言无对象构造 / 无算术
-  （`docs/kernel.md` §十三），装配 bag 无法用 term 表达；服务经**宿主反向调用**（`port.call`）调 `model` 端口。
+- 模型与记忆命令的装配、健康判定住服务（`execute/methods.ts`）：内核 term 语言无对象构造 / 无算术
+  （`docs/kernel.md` §十三），装配 bag 无法用 term 表达；服务经**宿主反向调用**（`port.call`）调 `model` /
+  `retrieval` / `memory-maintenance` 端口。
+- **通则（入口 term 不能装配多切片 bag ⇒ 装配下沉到服务）**：`eff` 的 args 是单一 Term，无法把多个投影切片
+  （或 args 与投影）拼成一个值；凡需多切片 / 多来源的命令，入口 term 只传单一投影（最宽整份 `ctx.ids`），
+  装配住服务。`memory.search` 的查询 args 与投影无法在 term 合流，改由 UI 侧 `settings.identities` 取回
+  `ids` 随 args 传入（入口 term 传命令 args）。
 - 未就位依赖（如编排图身份）令对应命令按 `missing_path` 收口为 `refused`；页面据此显示
   「依赖未就绪」降级视图，**不因缺身份崩溃**。
-- 记忆页为**版本提升预留**：v1 不 pin 记忆族、不含 `memory.*` 命令；tab 显示依赖未就绪，
-  待记忆检索 / 记忆维护身份就位后升代开放。
+- 记忆页（S12）为**真实记忆 tab**：三档 L1 / L2 / L3 + 工作区筛选，浏览 / 搜索 / 编辑 / 删除 / 置顶经
+  `memory.view` / `memory.search` / `memory.edit` 走记忆族；写一律经记忆维护（不直写短记忆 / 记忆库）。
 
 ### 入口 term 触发本插件服务
 
@@ -47,9 +55,10 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 
 宿主 `eff` 的 `port` 解析（`packages/host/effect/route.ts`）在按发出者 `pins` 解析之外，
 **允许解析到发出者自身声明的能力类**：本插件入口 term 发 `eff ui-settings <method>` 时，
-宿主按本插件装配世代声明的能力类解析到本插件自己的端点行，无需自 pin。四条服务侧命令
-（`model.vendors` / `model.profile` / `model.discover` / `orchestration.health`）因此可用：
-入口 term 读 `ctx` 投影随 args 传入，服务装配 / 判定后经反向调用调 `model` 端口或直接回结构化结果。
+宿主按本插件装配世代声明的能力类解析到本插件自己的端点行，无需自 pin。七条服务侧命令
+（`model.vendors` / `model.profile` / `model.discover` / `orchestration.health` / `memory.view` /
+`memory.search` / `memory.edit`）因此可用：
+入口 term 读 `ctx` 投影随 args 传入，服务装配 / 判定后经反向调用调下游端口或直接回结构化结果。
 
 ## 写路径（不写世界本体）
 
@@ -81,6 +90,10 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
   三条 tail，采纳与拒绝都在）渲染，判定行显 `proposal_id` + `evidence_id` 并可点击下钻到提案 / 证据 / trace；
   Scope 名录按智能体身份 `instances` 尾链读取（`contract_id` / 人格 / 作用域 / 自治 / 关联 / 成功率，空链显空态）；
   回滚后不可验证时只显「回滚未验证」，失败落行内 danger + [重试]。
+- **记忆页（S12）**：三档 L1 / L2 / L3 + 工作区筛选；浏览（`memory.view`）显示 goal / decisions / facts /
+  open_questions / files、来源、`at`、L1 剩余 TTL、tags；搜索（`memory.search`）命中高亮、空结果显示「无匹配」；
+  编辑 / 删除 / 置顶（`memory.edit` 写类无参：先写 `memory.edit` 槽再调命令，随后重拉视图）；L1 过期行以
+  `--c-text-3` 弱化；加载（呼吸条 + >8s）/ 空 / 错误三态 + 行内 danger + [重试]。
 - **通知权限**：权限状态取通知前端发布的**同页全局**（`window.__chronoNotify` /
   `chrono-notify:state`），设置页不直接读 `Notification.permission`；`default` 显
   [请求授权]（用户手势触发浏览器授权），`denied` 给站点设置指引；未授权 / 已拒绝时开关置灰。
@@ -102,9 +115,9 @@ GET  /api/state          → 本插件入站连接态
 ```
 
 视图层模块拆分为：入口编排 `entry.js`；纯模型 `config-model.js` / `onboarding.js` / `notify.js` /
-`health.js` / `settings-model.js` / `messages.js`；入站网络 `client.js`；动作 `provider-actions.js` /
-`theme-actions.js` / `notify-actions.js` / `config-io.js` / `data-load.js` / `sse.js`；
-渲染 `view-*.js`（各 tab 一文件）+ 共用片段 `ui-parts.js` / `provider-form.js`；
+`health.js` / `settings-model.js` / `memory-model.js` / `messages.js`；入站网络 `client.js`；动作
+`provider-actions.js` / `memory-actions.js` / `theme-actions.js` / `notify-actions.js` / `config-io.js` /
+`data-load.js` / `sse.js`；渲染 `view-*.js`（各 tab 一文件）+ 共用片段 `ui-parts.js` / `provider-form.js`；
 `dom.js` / `styles.js` / `version.js`。
 
 - 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v1.svg`

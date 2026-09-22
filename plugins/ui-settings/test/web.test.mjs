@@ -21,6 +21,25 @@ import {
   vendorTemplatesFromResult,
 } from '../execute/web/onboarding.js'
 import { listText, splitList } from '../execute/web/settings-model.js'
+import {
+  editSlotPayload,
+  editTextPatch,
+  filterByWorkspace,
+  formatTtl,
+  highlightSegments,
+  layerEntries,
+  layerTitleKey,
+  MEMORY_LAYERS,
+  memoryBrowseState,
+  memorySearch,
+  memorySearchState,
+  memoryView,
+  normalizeLayer,
+  pinPatch,
+  summaryLists,
+  ttlState,
+  workspaceOptions,
+} from '../execute/web/memory-model.js'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -136,8 +155,7 @@ test('编辑表单：已保存厂商 → 预填 base_url / auth_ref，模型原�
   assert.equal(blank.auth_kind, 'env')
 })
 
-test('界面文案单一来源：编排新增键登记在共享表，本地仅骨架兜底', () => {
-  const table = sharedTable()
+test('界面文案单一来源：编排新增键登记在共享表，本地仅骨架兜底', () => {  const table = sharedTable()
   assert.ok(table !== null, '共享表应可解析')
   for (const code of [
     'settings_orch_scope',
@@ -160,4 +178,137 @@ test('界面文案单一来源：编排新增键登记在共享表，本地仅�
   assert.equal(UI_TEXT.settings_theme_day, undefined)
   assert.equal(typeof UI_TEXT.settings_title, 'string')
   assert.equal(lookupMessage(null, 'settings_orch_scope').body.includes('settings_orch_scope'), true, '非骨架键落 unknown')
+})
+
+test('记忆三档切换与工作区筛选', () => {
+  assert.deepEqual(MEMORY_LAYERS, ['l1', 'l2', 'l3'])
+  assert.equal(normalizeLayer('l2'), 'l2')
+  assert.equal(normalizeLayer('bogus'), 'l1')
+  assert.equal(layerTitleKey('l3'), 'settings_memory_layer_l3')
+
+  const view = memoryView({
+    ok: true,
+    at: 'now',
+    l1: [{ id: 'c-1', summary: { goal: 'g' } }],
+    l2: [{ id: 'w1', summary: {}, sources: ['c-1'] }],
+    l3: [
+      { id: 'm-1', text: 'a', workspace: 'w1' },
+      { id: 'm-2', text: 'b', workspace: '' },
+      null,
+    ],
+  })
+  assert.equal(view.ok, true)
+  assert.equal(view.l1.length, 1)
+  assert.equal(view.l3.length, 2, 'null 条目被过滤')
+  assert.deepEqual(layerEntries(view, 'l3').map((entry) => entry.id), ['m-1', 'm-2'])
+  assert.deepEqual(workspaceOptions(view), ['w1'])
+  assert.equal(filterByWorkspace(layerEntries(view, 'l3'), 'l3', 'w1').map((entry) => entry.id).join(','), 'm-1,m-2')
+  assert.equal(filterByWorkspace(layerEntries(view, 'l2'), 'l2', 'w1').length, 1)
+  assert.equal(filterByWorkspace(layerEntries(view, 'l2'), 'l2', '').length, 1)
+  assert.deepEqual(memoryView(null), { ok: false, at: null, l1: [], l2: [], l3: [] })
+})
+
+test('记忆 TTL 格式与过期状态', () => {
+  assert.equal(formatTtl(0), '0m')
+  assert.equal(formatTtl(30_000), '<1m')
+  assert.equal(formatTtl(45 * 60_000), '45m')
+  assert.equal(formatTtl(3 * 3_600_000 + 12 * 60_000), '3h 12m')
+  assert.equal(formatTtl(2 * 86_400_000 + 4 * 3_600_000), '2d 4h')
+  assert.equal(formatTtl(null), '')
+  assert.deepEqual(ttlState({ ttl_remaining_ms: 0 }), { expired: true, ms: 0 })
+  assert.deepEqual(ttlState({ ttl_remaining_ms: 1000 }), { expired: false, ms: 1000 })
+  assert.deepEqual(ttlState({}), { expired: false, ms: null })
+})
+
+test('记忆摘要四列表归一', () => {
+  const summary = summaryLists({ goal: 'g', facts: ['a', 1], decisions: ['d'], open_questions: [], files: ['f'] })
+  assert.equal(summary.goal, 'g')
+  assert.deepEqual(summary.facts, ['a'])
+  assert.deepEqual(summary.decisions, ['d'])
+  assert.deepEqual(summary.open_questions, [])
+  assert.deepEqual(summary.files, ['f'])
+  assert.deepEqual(summaryLists(null), { goal: '', facts: [], decisions: [], open_questions: [], files: [] })
+})
+
+test('记忆搜索归一与命中高亮 / 无匹配', () => {
+  const result = memorySearch({ ok: true, recall: [{ entry_id: 'm-1', entry_hash: 'h', text: 'Alpha note', score: 0.9, meta: {} }, null] })
+  assert.equal(result.count, 1)
+  assert.equal(result.recall[0].entry_id, 'm-1')
+  assert.deepEqual(memorySearch(null), { ok: false, recall: [], count: 0 })
+  assert.deepEqual(memorySearch({ ok: true, recall: [] }).recall, [], '无匹配 = 空 recall')
+
+  assert.deepEqual(highlightSegments('Alpha note alpha', 'alpha'), [
+    { text: 'Alpha', hit: true },
+    { text: ' note ', hit: false },
+    { text: 'alpha', hit: true },
+  ])
+  assert.deepEqual(highlightSegments('abc', ''), [{ text: 'abc', hit: false }])
+  assert.deepEqual(highlightSegments('abc', 'zzz'), [{ text: 'abc', hit: false }])
+  assert.deepEqual(highlightSegments('a.b', '.'), [
+    { text: 'a', hit: false },
+    { text: '.', hit: true },
+    { text: 'b', hit: false },
+  ], '正则元字符按字面处理')
+})
+
+test('记忆浏览 / 搜索三态判定', () => {
+  const view = memoryView({ ok: true, l1: [{ id: 'c-1' }], l2: [], l3: [{ id: 'm-1', workspace: 'w1' }] })
+  assert.equal(memoryBrowseState(view, false, 'l1', ''), 'ready')
+  assert.equal(memoryBrowseState(view, false, 'l2', ''), 'empty')
+  assert.equal(memoryBrowseState(view, false, 'l3', 'other'), 'empty', '工作区筛选后无条目 = 空')
+  assert.equal(memoryBrowseState(view, true, 'l1', ''), 'degraded')
+  assert.equal(memoryBrowseState(null, false, 'l3', ''), 'empty')
+
+  assert.equal(memorySearchState(true, false, null), 'busy')
+  assert.equal(memorySearchState(false, true, null), 'degraded')
+  assert.equal(memorySearchState(false, false, null), 'idle')
+  assert.equal(memorySearchState(false, false, { ok: true, recall: [] }), 'empty')
+  assert.equal(memorySearchState(false, false, { ok: true, recall: [{ entry_id: 'm-1', text: 'x' }] }), 'ready')
+})
+
+test('记忆编辑槽载荷与 patch', () => {  assert.deepEqual(editSlotPayload('update', 'l3', 'm-1', editTextPatch('x')), {
+    kind: 'memory.edit',
+    action: 'update',
+    layer: 'l3',
+    id: 'm-1',
+    patch: { text: 'x' },
+  })
+  assert.deepEqual(editSlotPayload('pin', 'bogus', 'm-1', pinPatch(true)), {
+    kind: 'memory.edit',
+    action: 'pin',
+    layer: 'l1',
+    id: 'm-1',
+    patch: { pinned: true },
+  })
+  assert.deepEqual(pinPatch(false), { pinned: false })
+})
+
+test('记忆新增文案登记在共享表', () => {
+  const table = sharedTable()
+  assert.ok(table !== null, '共享表应可解析')
+  for (const code of [
+    'settings_memory_layers',
+    'settings_memory_layer_l1',
+    'settings_memory_layer_l2',
+    'settings_memory_layer_l3',
+    'settings_memory_search',
+    'settings_memory_search_placeholder',
+    'settings_memory_search_failed',
+    'settings_memory_no_match',
+    'settings_memory_empty',
+    'settings_memory_empty_hint',
+    'settings_memory_load_failed',
+    'settings_memory_edit_failed',
+    'settings_memory_ttl',
+    'settings_memory_expired',
+    'settings_memory_pin',
+    'settings_memory_unpin',
+    'settings_memory_confirm_delete',
+    'settings_memory_score',
+  ]) {
+    assert.equal(lookupMessage(table, code).body.includes(code), false, `${code} 未入共享表`)
+  }
+  assert.equal(lookupMessage(table, 'settings_memory_no_match').body, '无匹配')
+  assert.equal(table.settings_memory_pending, undefined, '占位死键已移除')
+  assert.equal(table.settings_memory_pending_hint, undefined, '占位死键已移除')
 })

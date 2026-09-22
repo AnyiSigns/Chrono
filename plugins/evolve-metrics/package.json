@@ -1,0 +1,10 @@
+{
+  "name": "evolve-metrics",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "指标层（Rust）：证据聚合与失败聚类 / 影子回放 / 轨迹清理 / user_request 证据；纯计算、非 LLM、同输入同输出，无 npm 依赖，二进制走宿主依赖缓存",
+  "scripts": {
+    "test": "cargo test"
+  }
+}

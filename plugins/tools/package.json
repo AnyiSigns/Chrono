@@ -1,0 +1,10 @@
+{
+  "name": "tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工具注册与派发：维护工具目录（describe/invoke 提供者并集 + 能力类绑定表 + 外部 MCP 工具），按调用整批并发派发到具体提供者",
+  "scripts": {
+    "test": "node --test"
+  }
+}

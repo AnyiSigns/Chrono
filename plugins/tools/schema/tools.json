@@ -1,0 +1,79 @@
+{
+  "title": "tools（工具注册与派发）",
+  "description": "身份自述 / 数据契约：`tools` 能力类两个方法 list / dispatch 的入参、结果形状与私有参数（并发上限、结果缓存）。工具目录由本插件在运行时并集得出：describe/invoke 提供者各自 describe + 调用方随 bag 传入的能力类绑定表（bag.tools_bindings）+ 调用方随 bag 传入的外部 MCP 工具清单（bag.mcp_tools，取自 #37 投影）；本插件服务不读投影、无写通道，世界数据由调用方入口 term 读出后随 bag 传入。schema 出生即冻结，只留身份契约与私有参数；绑定表 / 策略数据住数据世代 body。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 4,
+      "description": "整批 dispatch 的进程内并发上限（缺省 4）。超上限的 call 排队不丢弃；单次调用可用 bag.concurrency 覆盖。"
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "结果缓存私有参数：只缓存 idempotent:true 的工具结果（写类 / 模型 chat / 有会话类永不缓存）。",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "是否启用进程内结果缓存。" },
+        "max_entries": { "type": "integer", "minimum": 1, "default": 256, "description": "缓存条目上限（LRU 近似，超限淘汰最旧）。" }
+      }
+    },
+    "list_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "list 入参（bag）：tools_bindings 与 mcp_tools 由调用方入口 term 读出后传入。",
+      "properties": {
+        "tools_bindings": { "type": "object", "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?}。" },
+        "mcp_tools": { "type": "array", "description": "外部 MCP 工具清单（#37 投影 ids.mcp.body.tools，工具名已命名空间化 mcp.<server>.<tool>）。" }
+      }
+    },
+    "dispatch_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["calls"],
+      "description": "dispatch 入参（bag）：整批 calls + 调用上下文（workspace_root / tier / caps / grant / verdicts / tools_bindings / mcp_tools）。",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "description": "整批工具调用：每项 {call_id, tool, args}。",
+          "items": {
+            "type": "object",
+            "required": ["call_id", "tool"],
+            "additionalProperties": true,
+            "properties": {
+              "call_id": { "type": "string", "description": "模型侧调用 id（结果按它保序）。" },
+              "tool": { "type": "string", "description": "工具名（全局唯一，见工具目录）。" },
+              "args": { "type": "object", "description": "该工具的参数（按工具 argsSchema 机械校验）。" }
+            }
+          }
+        },
+        "workspace_root": { "type": "string", "description": "执行根（#14 入口 term 解析后经 #33 传入）；缺失只对相对路径调用拒 workspace_missing，绝对路径仍可派发。" },
+        "tier": { "type": "string", "description": "当前权限档（#33 随 dispatch bag 下传），透传给 guard 与提供者。" },
+        "caps": { "type": "object", "description": "调用级 caps 透传；派发时以工具声明的 caps 为准。" },
+        "grant": { "type": "object", "description": "批准后的一次性 caps.grant，本插件只透传。" },
+        "verdicts": { "type": "array", "description": "调用方（#33 tool.gate）已按 call 判好的 verdict；给出则本插件跳过 guard 兜底。" }
+      }
+    },
+    "directory": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "list 的结果：{tools: [工具声明], rejected: [{name, code, message}]}。工具声明含四要素 / description / argsSchema / caps / idempotent / render 与派发所需的 provider / kind。",
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "object" } },
+        "rejected": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "dispatch_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "dispatch 的结果：{results: [{call_id, ok, result|error}]}，按 call_id 保序；本插件不落账、不冒泡 $directives（由 #33 tool.dispatch 收集）。",
+      "properties": {
+        "results": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  },
+  "method_timeouts": {
+    "tools.dispatch": 600000
+  }
+}

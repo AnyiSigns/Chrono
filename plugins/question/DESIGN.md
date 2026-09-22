@@ -19,7 +19,7 @@
 - **提问不是阻塞**：受调用超时约束，`eff` 不能等人。故走与 #32 审批同源的形状——
   ① 工具 `question` 产**写计划**：队列项进世界（`{id, run, session, thread, questions, answers:null, resume:{command:'chat.resume', args}, at, expires_at}`）；**不读 #1 槽、也不清槽**（工具不消费 #1；清槽会误擦本线程输入槽，见下「清槽只归 `question.answer`」）；
   ② 本 run **正常结束**（不是 `waiting`）；**`question.pending` 在入队计划产出时即发**（乐观通知；#38 通知与 #18 卡片以命令重拉定稿；载荷带 `run` / `thread` / 队列项 id，经宿主透传 → #38 始终通知，避免用户离开时静默挂起）（2026-09-20 修订）；
-  ③ 用户在卡上作答 → `question.answer` 入口 term 产 `[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}}), write(记答案（标 `answered`）+ 清槽)]` 续跑计划（H18；args 形状与 #14 `chat.resume` 契约一致）落账（2026-09-20 修订）；
+  ③ 用户在卡上作答 → `question.answer` 入口 term 产 `[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}, ids}), write(记答案（标 `answered`）+ 清槽)]` 续跑计划（H18；args 形状与 #14 `chat.resume` 契约一致）。**`ids` = 入口 term 传入的投影切片，原样带上**——内核 term 不能同时传 args 与投影，续跑 eval 无法再取 `["g",["ids"]]`，故由调用方携带供 #14 服务装配 interpret bag（先例见 #16 `reveal` / #17 `search`）（2026-09-20 修订）；
   ④ 宿主据队列项里的 **`resume:{command:'chat.resume', args}`** 触发**新 run**，把答案回灌给 agent（作为 `question` 工具的结果）（2026-09-20 修订）。
 - **与 #32 的区别（写死）**：审批 = **allow / deny 门禁**（改的是"能不能继续"）；question = **开放作答**（补的是"缺的信息"）。机制同源、语义不同，故分身份。
 - **过期（2026-09-20 修订）**：item 带 `expires_at`（schema 可配）；**`question.sweep` 周期清理（宿主 periodic，周期住 schema）**——过期项标 `expired`、不再等答案（清理只动索引，def 仍在链上）。
@@ -43,7 +43,7 @@
   "prev": { "def": "<上一 item 哈希>" } | null }
 ```
 
-- **`question.answer` 如何定位 item**：#1 槽 `{kind:'question.answer', id, answers}` 的 `id` = item 的确定性 id（`q-<run>-<seq>`）；入口 term 投影读 `ids.question.body`（沿 `tail` 链）解析到该 id 的 item def，把 **item 体经 args 传入**后产 **`[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}}), write(记答案（标 `answered`）+ 清槽)]`**（H18，2026-09-20 修订；args 形状与 #14 契约一致：cursor/thread 透传自 item、answers 进 payload）。**清项 = 标 `answered`（不删 def——答案要供续跑读取）**；answers 经 `chat.resume` → interpret → 作为 question 工具结果回灌 `tool.dispatch`。入口 term 投影读为 terms 成员、合法（term 直接产 directive，无需服务方法；服务**不读投影**，D8）。id 找不到（已被归档 / 已答）→ 结构化拒、不部分写。
+- **`question.answer` 如何定位 item**：#1 槽 `{kind:'question.answer', id, answers}` 的 `id` = item 的确定性 id（`q-<run>-<seq>`）；入口 term 投影读 `ids.question.body`（沿 `tail` 链）解析到该 id 的 item def，把 **item 体经 args 传入**后产 **`[eval(command:'chat.resume', args:{cursor, thread, payload:{answers}, ids}), write(记答案（标 `answered`）+ 清槽)]`**（H18，2026-09-20 修订；args 形状与 #14 契约一致：cursor/thread 透传自 item、answers 进 payload、`ids` = 入口 term 收到的投影切片原样带上）。**清项 = 标 `answered`（不删 def——答案要供续跑读取）**；answers 经 `chat.resume` → interpret → 作为 question 工具结果回灌 `tool.dispatch`。入口 term 投影读为 terms 成员、合法（term 直接产 directive，无需服务方法；服务**不读投影**，D8）。id 找不到（已被归档 / 已答）→ 结构化拒、不部分写。
 - **清槽只归 `question.answer`**：工具 `question` 的 `invoke` 不消费 #1 槽，故**不清槽**（否则擦掉本线程输入槽、本回合输入丢失）；只有 `question.answer` 命令计划在同批清 `question.answer` 槽（per-thread 键控，见 #1「清槽契约」）。
 
 ## 工具

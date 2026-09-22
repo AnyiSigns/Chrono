@@ -84,14 +84,25 @@ import { commitProviderEdit, refreshProvider, saveProviderSecret } from '../exec
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.ts'
 import {
   assembleDiscoverArgs,
+  assembleEditArgs,
   assembleProfileArgs,
+  assembleSearchBag,
   assembleVendorArgs,
+  assembleViewArgs,
+  clearMemoryEditSlots,
   clearSlotBody,
   collectVendorBodies,
   createHandlers,
+  currentSessionGoal,
+  findMemoryEditSlot,
   judgeHealth,
   ledgerLists as serviceLedgerLists,
+  maintenanceAction,
+  planPayload,
+  planWriteOps,
   probeOf,
+  projectionBody,
+  projectionRefs,
   resolveThreshold,
 } from '../execute/methods.ts'
 import { DEFAULT_SETTINGS_PORT, parsePort, resolvePort } from '../execute/port.ts'
@@ -612,6 +623,162 @@ test('服务侧台账：三条 tail 倒序随健康结果返回，采纳与拒�
   assert.deepEqual(health.ledger.verdicts.map((entry) => entry.result), ['accepted', 'rejected'])
 })
 
+// ---- 记忆命令（服务侧装配 / 桥接 / 清槽）----
+
+function memoryIds() {
+  return {
+    'short-memory': {
+      body: {
+        version: 1,
+        sessions: { 'c-1': { summary: { goal: '写排序', facts: ['f1'] }, at: '2026-01-01T00:00:00Z', expires_at: null } },
+        workspaces: { w1: { summary: { goal: 'g' }, sources: ['c-1'] } },
+      },
+    },
+    session: { body: { version: 1, current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w1' }] } },
+    'memory-store': {
+      body: { tail: null, count: 1, deleted: {}, pinned: {} },
+      refs: { h1: { id: 'm-1', text: 'alpha', meta: { source: 'manual', workspace: 'w1', tags: ['t'] }, chunks: [], prev: null } },
+    },
+    input: { body: { slots: { _main: { kind: 'idle' } } } },
+  }
+}
+
+test('memory.view 装配：从投影取 #3 body + #21 body / refs，反向调 memory-maintenance.view（只读）', async () => {
+  const ids = memoryIds()
+  assert.deepEqual(assembleViewArgs(ids), {
+    short_memory: ids['short-memory'].body,
+    memory_store: ids['memory-store'].body,
+    memory_store_refs: ids['memory-store'].refs,
+  })
+  assert.equal(projectionBody(ids, 'session').current, 'c-1')
+  assert.deepEqual(projectionRefs(ids, 'nope'), {})
+  assert.equal(projectionBody(ids, 'nope'), null)
+
+  const viewValue = { ok: true, kind: 'view', at: 'now', l1: [], l2: [], l3: [] }
+  const maintenance = fakeModel({ ok: true, value: viewValue })
+  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance })
+  const value = await handlers.view(ids, { run: null, thread: null, now: 0 })
+  assert.deepEqual(maintenance.calls, [
+    { port: 'memory-maintenance', method: 'view', args: assembleViewArgs(ids) },
+  ])
+  assert.deepEqual(value, { $directives: [{ kind: 'extern', payload: viewValue }] })
+})
+
+test('memory.search 装配：#22 真实 bag（query / goal / workspace / retrieval / memory）', async () => {
+  const ids = memoryIds()
+  const assembled = assembleSearchBag({ query: 'note', workspace: 'w1', tags: ['t'], limit: 5, ids })
+  assert.equal(assembled.ok, true)
+  assert.deepEqual(assembled.bag, {
+    query: 'note',
+    workspace: 'w1',
+    goal: '写排序',
+    retrieval: { tags: ['t'], top_k: 5 },
+    memory: { body: ids['memory-store'].body, refs: ids['memory-store'].refs },
+  })
+  assert.equal(currentSessionGoal(ids), '写排序')
+  assert.equal(currentSessionGoal({ session: { body: { current: 'x' } }, 'short-memory': { body: { sessions: {} } } }), null)
+
+  const missing = assembleSearchBag({ query: '   ' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.code, 'memory_query_required')
+
+  const searchValue = { ok: true, kind: 'search', recall: [], count: 0 }
+  const retrieval = fakeModel({ ok: true, value: searchValue })
+  const handlers = createHandlers({ identity: 'ui-settings', model: retrieval, retrieval })
+  const value = await handlers.search({ query: 'note', workspace: 'w1', tags: ['t'], limit: 5, ids }, { run: null, thread: null, now: 0 })
+  assert.deepEqual(retrieval.calls, [{ port: 'retrieval', method: 'search', args: assembled.bag }])
+  assert.deepEqual(value, { $directives: [{ kind: 'extern', payload: searchValue }] })
+
+  const failed = await handlers.search({ query: '  ' }, { run: null, thread: null, now: 0 })
+  assert.equal(failed.$directives[0].payload.error.code, 'memory_query_required')
+})
+
+test('memory.edit 槽消费 / action 对齐 / 清槽：读 #1 槽 + #3 / #21 投影，计划含清槽', async () => {
+  const ids = memoryIds()
+  const inputBody = {
+    slots: {
+      _main: { kind: 'memory.edit', action: 'update', layer: 'l3', id: 'm-1', patch: { text: 'beta' } },
+      t1: { kind: 'chat.message' },
+    },
+  }
+  const slot = findMemoryEditSlot(inputBody)
+  assert.equal(slot.id, 'm-1')
+  assert.equal(findMemoryEditSlot({ slots: { _main: { kind: 'idle' } } }), null)
+  assert.equal(maintenanceAction('update'), 'text')
+  assert.equal(maintenanceAction('delete'), 'delete')
+  assert.equal(maintenanceAction('pin'), 'pin')
+  assert.equal(maintenanceAction('bogus'), null)
+
+  const assembled = assembleEditArgs(ids, inputBody)
+  assert.equal(assembled.ok, true)
+  assert.equal(assembled.args.action, 'text')
+  assert.equal(assembled.args.slot.action, 'update')
+  assert.deepEqual(assembled.args.short_memory, ids['short-memory'].body)
+  assert.deepEqual(assembled.args.memory_store_refs, ids['memory-store'].refs)
+
+  const cleared = clearMemoryEditSlots(inputBody)
+  assert.equal(cleared.slots._main.kind, 'idle')
+  assert.equal(cleared.slots.t1.kind, 'chat.message')
+  assert.equal(inputBody.slots._main.kind, 'memory.edit', '不改入参')
+
+  const maintenancePlan = {
+    $directives: [
+      {
+        kind: 'write',
+        request: {
+          op: 'batch',
+          args: {
+            ops: [
+              { op: 'put', args: { body: { tail: null, count: 2 } } },
+              { op: 'add_gen', args: { id: 'memory-store', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+            ],
+          },
+        },
+      },
+      { kind: 'extern', payload: { ok: true, kind: 'edit', action: 'text', layer: 'l3', id: 'm-1', text: 'beta' } },
+    ],
+  }
+  assert.equal(planWriteOps(maintenancePlan).length, 2)
+  assert.equal(planWriteOps({ $directives: [{ kind: 'extern', payload: {} }] }).length, 0)
+  assert.deepEqual(planPayload(maintenancePlan), maintenancePlan.$directives[1].payload)
+  assert.deepEqual(planPayload({ plain: 1 }), { plain: 1 })
+
+  const maintenance = fakeModel({ ok: true, value: maintenancePlan })
+  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance })
+  const value = await handlers.edit({ ...ids, input: { body: inputBody } }, { run: null, thread: null, now: 0 })
+  assert.deepEqual(maintenance.calls, [
+    { port: 'memory-maintenance', method: 'edit', args: assembled.args },
+  ])
+  const ops = value.$directives[0].request.args.ops
+  assert.equal(ops.length, 4, '#23 写子操作 2 条 + 清槽 put + add_gen')
+  assert.deepEqual(ops[0], maintenancePlan.$directives[0].request.args.ops[0])
+  assert.equal(ops[2].args.body.slots._main.kind, 'idle')
+  assert.equal(ops[2].args.body.slots.t1.kind, 'chat.message')
+  assert.equal(ops[3].args.id, 'input')
+  assert.deepEqual(ops[3].args.payload, { $n: 2 })
+  assert.deepEqual(value.$directives[1], { kind: 'extern', payload: maintenancePlan.$directives[1].payload })
+})
+
+test('memory.edit 缺槽 / 端口失败：仍出清槽计划并以 extern 收口', async () => {
+  const ids = memoryIds()
+  const inputBody = { slots: { _main: { kind: 'idle' } } }
+  const maintenance = fakeModel({ ok: true, value: { $directives: [{ kind: 'extern', payload: { ok: true } }] } })
+  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance })
+  const missing = await handlers.edit({ ...ids, input: { body: inputBody } }, { run: null, thread: null, now: 0 })
+  assert.equal(missing.$directives[0].request.args.ops.length, 2, '仅清槽 put + add_gen')
+  assert.equal(missing.$directives[0].request.args.ops[0].args.body.slots._main.kind, 'idle')
+  assert.equal(missing.$directives[1].payload.error.code, 'memory_edit_slot_missing')
+  assert.equal(maintenance.calls.length, 0, '缺槽不发反向调用')
+
+  const failIds = memoryIds()
+  const failInput = { slots: { _main: { kind: 'memory.edit', action: 'delete', layer: 'l3', id: 'm-1' } } }
+  const failed = fakeModel({ ok: false, code: 'transport_failed', message: 'x' })
+  const failedHandlers = createHandlers({ identity: 'ui-settings', model: failed, maintenance: failed })
+  const value = await failedHandlers.edit({ ...failIds, input: { body: failInput } }, { run: null, thread: null, now: 0 })
+  assert.equal(value.$directives[0].request.args.ops[0].args.body.slots._main.kind, 'idle')
+  assert.equal(value.$directives[1].payload.error.code, 'transport_failed')
+})
+
 // ---- 设置页纯函数 ----
 
 test('tab 表与归一', () => {
@@ -932,7 +1099,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
     assert.deepEqual(manifest.implements, ['ui-settings'])
-    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health'] })
+    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit'] })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')
 

@@ -1,0 +1,108 @@
+{
+  "title": "memory-retrieval（记忆检索 · L3 召回）",
+  "description": "身份自述 / 数据契约：能力类 retrieval 的 search 方法入参与结果形状，以及召回策略配置（top_k / 预算 / 余弦阈值 / 时间衰减 λ / 工作区范围 / 标签 / 来源 / MMR λ / 重排开关 / 多查询开关）。这些配置是世界数据、可热改：调用方入口 term 读出后随 bag 传入（服务不读投影），本 schema 只声明形状与缺省。检索流水线：查询构造（拼 L1 goal）→ 多查询（可关）→ 向量化（embedding.embed）→ 索引检索（memory.search）→ 按 chunk 取跨查询最高分并回溯条目（memory.read）→ 工作区 / 标签 / 来源过滤 → 时间衰减 → 先衰减再卡阈值 → 去重（同条目取最高 + 与 bag.dedup_set 预去重）→ MMR（+ 可选 model.chat 语义重排，默认关）→ 按 bag.recall_budget 预算截断 → 写入 bag.recall。服务无写通道、不落账、不取时间（now 由 bag / 调用帧 env 传入）；空库返回空集不报错；模型项（多查询 / 语义重排）默认关，关闭时逐字节可回放。",
+  "type": "object",
+  "additionalProperties": true,
+  "model": {
+    "id": "granite-97m",
+    "dim": 384
+  },
+  "defaults": {
+    "top_k": 8,
+    "recall_budget": null,
+    "min_score": 0.0,
+    "decay_lambda": 0.0,
+    "workspace_scope": true,
+    "tags": [],
+    "source": [],
+    "mmr_lambda": 0.7,
+    "rerank": false,
+    "multi_query": false
+  },
+  "method_timeouts": {
+    "retrieval.search": 600000
+  },
+  "properties": {
+    "search_bag": {
+      "type": "object",
+      "description": "search 的 bag：查询双入口（顶层 query）、L1 goal、当前工作区、memory-store 身份投影的 body + refs、召回策略配置、预算、上下文去重集、宿主固定时钟，以及模型项（多查询 / 语义重排）所需的连接实例。",
+      "additionalProperties": true,
+      "properties": {
+        "query": { "type": "string", "description": "当前轮查询文本；recall 节点路径与工具路径都以顶层 query 传入（双入口在入口 term 侧区分，服务侧同形）。" },
+        "goal": { "type": "string", "description": "本会话 L1 的 goal / 摘要，拼进查询（避免查询漂移）。也接受 bag.l1.goal。" },
+        "workspace": { "type": "string", "description": "当前工作区 id；工作区范围过滤据此判定（全局条目 = meta.workspace 缺键，仍召回）。" },
+        "memory": {
+          "type": "object",
+          "description": "memory-store 身份投影：{body, refs}。服务不读投影，由调用方入口 term 读出随 bag 传入；本服务原样转发给 memory.search / memory.read。也接受顶层 memory_body / memory_refs 或 body / refs。",
+          "additionalProperties": true,
+          "properties": {
+            "body": { "type": "object", "additionalProperties": true, "description": "memory-store 身份 body（链尾 + 计数 + deleted / pinned + 模型锚）。" },
+            "refs": { "type": "object", "additionalProperties": true, "description": "投影引用闭包 {<条目 def 哈希>: <条目 body>}。" }
+          }
+        },
+        "retrieval": {
+          "type": "object",
+          "description": "召回策略配置（世界数据、可热改）；缺省见顶层 defaults。也接受顶层 options 别名。",
+          "additionalProperties": true,
+          "properties": {
+            "top_k": { "type": "integer", "minimum": 1, "description": "最终注入条目数上限（与预算取小）。" },
+            "recall_budget": { "type": "integer", "minimum": 1, "description": "召回预算；顶层 bag.recall_budget 优先。" },
+            "min_score": { "type": "number", "description": "余弦阈值：衰减后低于此值丢弃（先衰减再卡阈值）。" },
+            "decay_lambda": { "type": "number", "minimum": 0, "description": "时间衰减 λ：score × exp(-λ · age_seconds)；0 = 不衰减。" },
+            "workspace_scope": { "type": "boolean", "description": "工作区范围过滤开关，默认开（当前工作区 + 全局条目）；关闭即跨工作区召回。" },
+            "tags": { "type": "array", "items": { "type": "string" }, "description": "标签过滤：非空时保留 meta.tags 与之相交的条目。" },
+            "source": { "type": "array", "items": { "type": "string" }, "description": "来源过滤：非空时保留 meta.source 命中的条目（session / skill / manual / consolidate）。" },
+            "mmr_lambda": { "type": "number", "minimum": 0, "maximum": 1, "description": "MMR 相关度 / 多样性权衡；1.0 = 纯相关度。" },
+            "rerank": { "type": "boolean", "description": "语义重排开关（eff model.chat，listwise），默认关。" },
+            "multi_query": { "type": "boolean", "description": "多查询开关（eff model.chat 生成 2–3 个子查询），默认关。" },
+            "model": { "type": "string", "description": "向量模型 id，缺省 granite-97m。" },
+            "dim": { "type": "integer", "minimum": 1, "description": "向量维度，缺省 384。" }
+          }
+        },
+        "options": { "type": "object", "additionalProperties": true, "description": "retrieval 配置的别名。" },
+        "recall_budget": { "type": "integer", "minimum": 1, "description": "召回预算（由 loop-policy 按 thresholds 写入）；优先于 retrieval.recall_budget。" },
+        "dedup_set": { "type": "array", "items": { "type": "string" }, "description": "在上下文条目的 dedup_key 列表（与上下文调配器同口径）；据此做尽力预去重。规范化规则见 README。" },
+        "now": { "description": "宿主固定时钟（epoch 毫秒或 ISO 8601 字符串）；缺省回落调用帧 env.now。服务不取时间。" },
+        "model_config": { "type": "object", "additionalProperties": true, "description": "多查询 / 语义重排时 eff model.chat 的连接实例（{base_url, auth_ref, model, params}）；缺失时模型项降级为关闭。" }
+      }
+    },
+    "search_result": {
+      "type": "object",
+      "required": ["ok", "recall"],
+      "additionalProperties": true,
+      "description": "成功回 {ok:true, kind:'search', status:'ready', model, query, queries, recall:[{entry_hash,entry_id,chunk_index,score,score_raw,text,meta}], count, budget, stats}；空库 / 无命中回 recall:[]、不报错。服务不产写计划（结果里无 $directives）。依赖调用失败回 {ok:false, error:{code,message}}。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "search" },
+        "status": { "enum": ["ready"] },
+        "model": { "type": "object", "additionalProperties": true, "description": "{id, dim}。" },
+        "query": { "type": "string", "description": "构造后的基础查询。" },
+        "queries": { "type": "array", "items": { "type": "string" }, "description": "实际查询集（多查询开启时 >1）。" },
+        "recall": {
+          "type": "array",
+          "description": "按重排 / 预算截断后的召回条目（写入 bag.recall）。",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "entry_hash": { "type": "string" },
+              "entry_id": { "type": "string" },
+              "chunk_index": { "type": "integer", "minimum": 0 },
+              "score": { "type": "number", "description": "衰减后分数（排序用）。" },
+              "score_raw": { "type": "number", "description": "衰减前余弦分数。" },
+              "text": { "type": "string" },
+              "meta": { "type": "object", "additionalProperties": true }
+            }
+          }
+        },
+        "count": { "type": "integer", "minimum": 0 },
+        "budget": { "type": "integer", "minimum": 1 },
+        "stats": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "各阶段丢弃计数（missing / scope / tags / source / threshold / dedup）。"
+        }
+      }
+    }
+  }
+}

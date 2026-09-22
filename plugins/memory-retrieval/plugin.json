@@ -1,0 +1,36 @@
+{
+  "identity": "memory-retrieval",
+  "schema": "schema/retrieval.json",
+  "implements": ["retrieval"],
+  "methods": {
+    "retrieval": ["search"]
+  },
+  "pins": {
+    "embedding": "embedding",
+    "memory": "memory-store",
+    "model": "model-protocol"
+  },
+  "start": "node execute/launch.mjs",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "retrieval.search",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "execute", "path": "src/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

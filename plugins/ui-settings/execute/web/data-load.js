@@ -61,6 +61,10 @@ export async function loadTab(ctx, tab) {
     await withLoading(ctx, () => loadOrchestration(ctx))
     return
   }
+  if (tab === 'memory') {
+    await withLoading(ctx, () => loadMemoryView(ctx))
+    return
+  }
   ctx.state.error = null
   ctx.render()
 }
@@ -110,7 +114,6 @@ export async function loadHealth(ctx) {
   // 编排页打开时就地刷新健康区；其余情况只更新角标，避免整页重渲染丢焦点。
   if (ctx.state.tab === 'orchestration' && ctx.state.loading !== true && ctx.state.rollbackBusy !== true) ctx.render()
 }
-
 /** 编排三区数据：图 / Scope 名录 / 健康。 */
 export async function loadOrchestration(ctx) {
   const graph = await ctx.runCommand('orchestration.graph', null)
@@ -122,4 +125,14 @@ export async function loadOrchestration(ctx) {
   const health = await ctx.runCommand('orchestration.health', null)
   ctx.state.orch.health = health.ok ? health.value : null
   ctx.state.orch.degraded.health = !health.ok
+}
+
+/** 记忆浏览（只读）：`memory.view` → L1 / L2 / L3；失败置行内错误（tab 级重试）。 */
+export async function loadMemoryView(ctx) {
+  const result = await ctx.runCommand('memory.view', null)
+  const failed = !result.ok || (isRecord(result.value) && result.value.ok === false)
+  ctx.state.memory.view = failed ? null : result.value
+  ctx.state.memory.viewDegraded = failed
+  if (failed) ctx.state.error = { code: 'settings_memory_load_failed', message: '' }
+  return !failed
 }

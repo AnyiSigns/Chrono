@@ -1,0 +1,128 @@
+{
+  "title": "evolve-metrics（指标层 · 证据聚合）",
+  "description": "身份自述 / 数据契约：描述 evolve-metrics 能力类四方法 aggregate / sweep / shadow / record 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机；now 由 bag / 调用帧 env 传入），只产 kind:'evidence' 证据条目，不产提案。服务不读投影、无写通道：一切输入随 bag 由调用方入口 term（#33 路径）或宿主 periodic.reads（周期路径）传入，一切写经计划值 {\"$directives\":[…]} 交宿主落账。数值调参（聚类阈值 / 窗口长度 / 成本异常倍数 / 漂移判据 / 折叠 k / min_workspaces / 轨迹保留回合数）一律读 #33 loop-policy 的 thresholds，本 schema 不重定义。",
+  "type": "object",
+  "additionalProperties": true,
+  "periodic": [
+    {
+      "method": "sweep",
+      "every_ms": 3600000,
+      "reads": {
+        "trace": ["ids", "evolution"],
+        "verdicts": ["ids", "evolution"]
+      }
+    },
+    {
+      "method": "aggregate",
+      "every_ms": 600000,
+      "reads": {
+        "trace": ["ids", "evolution"],
+        "thresholds": ["ids", "loop-policy"]
+      }
+    }
+  ],
+  "method_timeouts": {
+    "evolve-metrics.aggregate": 120000,
+    "evolve-metrics.sweep": 120000
+  },
+  "properties": {
+    "aggregate_bag": {
+      "type": "object",
+      "description": "aggregate 的 bag。周期路径：宿主按 periodic.reads 注入 trace（evolution 身份投影，含 body + refs）与 thresholds（loop-policy 身份投影）。#33 路径：由其 bag 直接传 trace 窗口（内存条目）+ 历史窗口 + thresholds + now。两种形状都被接受。",
+      "additionalProperties": true,
+      "properties": {
+        "trace": {
+          "description": "轨迹窗口：evolution 身份投影（{body,refs}）/ evolution body / 条目数组 / {entries:[…]} 任一形状。"
+        },
+        "trace_entries": { "type": "array", "description": "显式轨迹条目数组（#33 内存路径）。" },
+        "refs": { "type": "object", "description": "投影引用闭包 {hash: body}（当 trace 只给 body 时另传）。" },
+        "thresholds": {
+          "description": "阈值表：扁平 map / {tail,count} 链 / loop-policy 身份投影 / 条目数组任一形状。"
+        },
+        "thresholds_refs": { "type": "object", "description": "阈值链的引用闭包。" },
+        "now": { "description": "宿主固定时钟（不取时间）。" },
+        "refusal_codes": { "type": "object", "description": "可选：拒绝码 → attributable_to 映射（供 step.refusal 归因；缺省只用 trace.refused_at）。" }
+      }
+    },
+    "aggregate_result": {
+      "type": "object",
+      "required": ["evidence"],
+      "additionalProperties": true,
+      "properties": {
+        "evidence": { "type": "array", "items": { "type": "object" }, "description": "本轮产出的 kind:'evidence' 条目（只证据、不提案）。" },
+        "unhealthy": { "type": "object", "description": "{fired, streak, threshold}：orchestration.unhealthy 事件触发状态。" },
+        "$directives": { "type": "array", "description": "写计划（batch：证据条目 + 新 evolution body 索引）；无证据 = 空。" }
+      }
+    },
+    "sweep_bag": {
+      "type": "object",
+      "description": "sweep 的 bag：trace 窗口 + verdicts 引用集（同一 evolution 投影）；保留回合数读 thresholds。",
+      "additionalProperties": true,
+      "properties": {
+        "trace": {},
+        "verdicts": {},
+        "referenced_trace_defs": { "type": "array", "items": { "type": "string" }, "description": "可选：直接给出的被引用轨迹 def 集。" },
+        "thresholds": {},
+        "now": {}
+      }
+    },
+    "sweep_result": {
+      "type": "object",
+      "required": ["swept", "retained"],
+      "additionalProperties": true,
+      "properties": {
+        "swept": { "type": "integer", "description": "从索引移除的过期轨迹条数。" },
+        "retained": { "type": "integer", "description": "保留的轨迹条数（含被 verdict 引用的过期轨迹）。" },
+        "referenced": { "type": "integer", "description": "被 verdict 引用而强留的轨迹条数。" },
+        "$directives": { "type": "array", "description": "清理计划（写新 evolution body 索引）；无轨迹 = 空。" }
+      }
+    },
+    "shadow_bag": {
+      "type": "object",
+      "description": "shadow 的 bag：候选新图 def + 轨迹窗口（含 directives_summary / ctx_summary / eff_log）+ 可选 expected_effs / contracts / graph 节点派发目标；历史 EffectAudit 经保留能力类 host 的 audit 方法读（补充对照源），亦可由 bag.audit 直接给。纯计算、零 token、不调任何真实端口。",
+      "additionalProperties": true,
+      "properties": {
+        "graph": { "description": "候选新图 def（{def:hash} 或图 body）或节点数组。" },
+        "contracts": { "type": "object", "description": "contract_id → {entry:{cap,method}} 或 {effects:{ports,methods}}，用于推导新图 eff 点。" },
+        "expected_effs": { "type": "array", "description": "显式期望 eff 点 [{port,method,args_hash?}]。" },
+        "trace": {},
+        "trace_entries": { "type": "array" },
+        "eff_log": { "type": "array", "description": "显式本轮 eff_log。" },
+        "audit": { "type": "array", "description": "可选：历史 EffectAudit 记录（省一次 host.audit 反向调用）。" },
+        "audit_filter": { "type": "object", "description": "host.audit 的 filter（如 {run}）。" },
+        "audit_limit": { "type": "integer" },
+        "now": {}
+      }
+    },
+    "shadow_result": {
+      "type": "object",
+      "required": ["status", "metric"],
+      "additionalProperties": true,
+      "properties": {
+        "status": { "enum": ["pass", "fail", "unverified"] },
+        "metric": { "type": "object", "description": "影子回放指标（配对源 = trace.eff_log，host.audit 为补充）。" },
+        "$directives": { "type": "array", "description": "put(指标 def) 计划，供 #33 写 verdicts.gate.shadow 引用；本插件不写链。" }
+      }
+    },
+    "record_bag": {
+      "type": "object",
+      "description": "record 的 bag：user_message_def（由 #33 派发时注入）+ workspace_id + now。纯计算、不调模型、不发 eff。",
+      "additionalProperties": true,
+      "required": ["user_message_def", "workspace_id"],
+      "properties": {
+        "user_message_def": { "description": "本回合首条用户消息 def（{def:hash} 或哈希字符串或消息 body）。" },
+        "workspace_id": { "type": "string" },
+        "now": {}
+      }
+    },
+    "record_result": {
+      "type": "object",
+      "required": ["evidence_id"],
+      "additionalProperties": true,
+      "properties": {
+        "evidence_id": { "type": "string", "description": "落成 evidence 条目的逻辑 id（class:'user_request'）。" },
+        "$directives": { "type": "array", "description": "写计划（put(证据) + put(新 evolution body) + add_gen）。" }
+      }
+    }
+  }
+}

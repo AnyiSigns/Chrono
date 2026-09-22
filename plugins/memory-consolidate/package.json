@@ -1,0 +1,10 @@
+{
+  "name": "memory-consolidate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "记忆维护（全层）：L1 TTL 清理 + L2 去重合并 + L2→L3 固化 + L3 过期/遗忘/删除计划 + agent 顺带清理候选；方法 consolidate / sweep / candidates / view / edit",
+  "scripts": {
+    "test": "node --test"
+  }
+}

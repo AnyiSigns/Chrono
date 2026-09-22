@@ -28,6 +28,10 @@
     "title": "样式降级",
     "body": "设计 token 未能加载，已用最小样式兜底。"
   },
+  "shell_toast_close": {
+    "title": "关闭提示",
+    "body": "关闭"
+  },
   "model_auth_failed": {
     "title": "模型鉴权失败",
     "body": "密钥被拒绝或已失效。检查厂商配置中的密钥，然后重试。"
@@ -892,13 +896,141 @@
     "title": "新建一份技能，或等待后续导入。",
     "body": "新建一份技能，或等待后续导入。"
   },
-  "settings_memory_pending": {
-    "title": "记忆视图待升级",
-    "body": "记忆视图待升级"
+  "settings_memory_layers": {
+    "title": "记忆层级",
+    "body": "记忆层级"
   },
-  "settings_memory_pending_hint": {
-    "title": "记忆浏览 / 搜索 / 编辑依赖记忆族身份，将在其就绪后开放。",
-    "body": "记忆浏览 / 搜索 / 编辑依赖记忆族身份，将在其就绪后开放。"
+  "settings_memory_layer_l1": {
+    "title": "L1 会话摘要",
+    "body": "L1 会话摘要"
+  },
+  "settings_memory_layer_l2": {
+    "title": "L2 工作区累积",
+    "body": "L2 工作区累积"
+  },
+  "settings_memory_layer_l3": {
+    "title": "L3 长期条目",
+    "body": "L3 长期条目"
+  },
+  "settings_memory_workspace_all": {
+    "title": "全部工作区",
+    "body": "全部工作区"
+  },
+  "settings_memory_workspace_label": {
+    "title": "工作区",
+    "body": "工作区"
+  },
+  "settings_memory_search": {
+    "title": "搜索",
+    "body": "搜索"
+  },
+  "settings_memory_search_placeholder": {
+    "title": "搜索记忆",
+    "body": "搜索记忆"
+  },
+  "settings_memory_search_failed": {
+    "title": "搜索失败，重试可再试一次。",
+    "body": "搜索失败，重试可再试一次。"
+  },
+  "settings_memory_no_match": {
+    "title": "无匹配",
+    "body": "无匹配"
+  },
+  "settings_memory_empty": {
+    "title": "暂无记忆",
+    "body": "暂无记忆"
+  },
+  "settings_memory_empty_hint": {
+    "title": "记忆由会话摘要与固化条目累积。",
+    "body": "记忆由会话摘要与固化条目累积。"
+  },
+  "settings_memory_load_failed": {
+    "title": "记忆读取失败，重试可再试一次。",
+    "body": "记忆读取失败，重试可再试一次。"
+  },
+  "settings_memory_edit_failed": {
+    "title": "记忆写入失败，重试可再试一次。",
+    "body": "记忆写入失败，重试可再试一次。"
+  },
+  "settings_memory_no_goal": {
+    "title": "（无目标）",
+    "body": "（无目标）"
+  },
+  "settings_memory_decisions": {
+    "title": "决策",
+    "body": "决策"
+  },
+  "settings_memory_facts": {
+    "title": "事实",
+    "body": "事实"
+  },
+  "settings_memory_open_questions": {
+    "title": "待解问题",
+    "body": "待解问题"
+  },
+  "settings_memory_files": {
+    "title": "文件",
+    "body": "文件"
+  },
+  "settings_memory_source": {
+    "title": "来源",
+    "body": "来源"
+  },
+  "settings_memory_sources": {
+    "title": "来源 {count}",
+    "body": "来源 {count}"
+  },
+  "settings_memory_tags": {
+    "title": "标签",
+    "body": "标签"
+  },
+  "settings_memory_weight": {
+    "title": "权重",
+    "body": "权重"
+  },
+  "settings_memory_ttl": {
+    "title": "剩余 {ttl}",
+    "body": "剩余 {ttl}"
+  },
+  "settings_memory_expired": {
+    "title": "已过期",
+    "body": "已过期"
+  },
+  "settings_memory_pinned": {
+    "title": "已置顶",
+    "body": "已置顶"
+  },
+  "settings_memory_pin": {
+    "title": "置顶",
+    "body": "置顶"
+  },
+  "settings_memory_unpin": {
+    "title": "取消置顶",
+    "body": "取消置顶"
+  },
+  "settings_memory_edit": {
+    "title": "编辑",
+    "body": "编辑"
+  },
+  "settings_memory_delete": {
+    "title": "删除",
+    "body": "删除"
+  },
+  "settings_memory_save": {
+    "title": "保存",
+    "body": "保存"
+  },
+  "settings_memory_cancel": {
+    "title": "取消",
+    "body": "取消"
+  },
+  "settings_memory_confirm_delete": {
+    "title": "确认删除",
+    "body": "确认删除"
+  },
+  "settings_memory_score": {
+    "title": "得分 {score}",
+    "body": "得分 {score}"
   },
   "settings_orch_graph": {
     "title": "图",

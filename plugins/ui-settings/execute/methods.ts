@@ -18,6 +18,10 @@ export type Handler = (args: Json, env: CallEnv) => Promise<Json> | Json
 export interface HandlerDeps {
   identity: string
   model: PortCaller
+  /** 记忆检索端口（pins `retrieval` → memory-retrieval）；缺省回落 `model`（单测便利）。 */
+  retrieval?: PortCaller
+  /** 记忆维护端口（pins `memory-maintenance` → memory-consolidate）；缺省回落 `model`。 */
+  maintenance?: PortCaller
 }
 
 // ── 模型命令的服务侧装配（纯函数，单测直调）──
@@ -98,6 +102,177 @@ export function clearSlotBody(inputBody: Json): Rec {
   slots['_main'] = { kind: 'idle' }
   base['slots'] = slots
   return base
+}
+
+// ── 记忆 tab 的服务侧装配（纯函数，单测直调）──
+// 三条记忆命令的入口 term 只传投影切片（`["g",["ids"]]`；搜索传命令 args，内含 UI 侧取回的 `ids`），
+// 服务把切片机械装配成 #23 `view` / `edit` 与 #22 `search` 的真实 args（含 `bag.memory = {body,refs}`）。
+
+/** 从传入 args 取投影 ids：搜索命令在 `args.ids`，只读 / 写类命令 args 即 ids。 */
+export function idsMapOf(args: Json): Rec {
+  if (isRecord(args) && isRecord(args['ids'])) return args['ids'] as Rec
+  return isRecord(args) ? args : {}
+}
+
+/** 投影里某身份的 `body`（无数据 / 代码世代回 null）。 */
+export function projectionBody(ids: Json, identity: string): Rec | null {
+  if (!isRecord(ids)) return null
+  const entry = ids[identity]
+  if (!isRecord(entry) || !isRecord(entry['body'])) return null
+  return entry['body'] as Rec
+}
+
+/** 投影里某身份的 `refs`（缺失回 `{}`）。 */
+export function projectionRefs(ids: Json, identity: string): Rec {
+  if (!isRecord(ids)) return {}
+  const entry = ids[identity]
+  if (!isRecord(entry) || !isRecord(entry['refs'])) return {}
+  return entry['refs'] as Rec
+}
+
+/** `memory.view` 入参：`#3` body + `#21` body / refs（#23 `view` 真实 args）。 */
+export function assembleViewArgs(ids: Json): Rec {
+  return {
+    short_memory: projectionBody(ids, 'short-memory') ?? {},
+    memory_store: projectionBody(ids, 'memory-store') ?? {},
+    memory_store_refs: projectionRefs(ids, 'memory-store'),
+  }
+}
+
+/** 本会话 L1 goal：`#11 current` → `#3 sessions[current].summary.goal`；缺失回 null。 */
+export function currentSessionGoal(ids: Json): string | null {
+  const session = projectionBody(ids, 'session')
+  const current =
+    session !== null && typeof session['current'] === 'string' ? (session['current'] as string) : null
+  if (current === null || current.length === 0) return null
+  const shortMemory = projectionBody(ids, 'short-memory')
+  if (shortMemory === null || !isRecord(shortMemory['sessions'])) return null
+  const record = (shortMemory['sessions'] as Rec)[current]
+  if (!isRecord(record) || !isRecord(record['summary'])) return null
+  const goal = (record['summary'] as Rec)['goal']
+  return typeof goal === 'string' && goal.length > 0 ? goal : null
+}
+
+/**
+ * `memory.search` 入参：#22 `retrieval.search` 真实 bag。
+ * `query` 必填；`workspace` / `tags` 走 `retrieval` 段；`limit` → `retrieval.top_k`；
+ * `goal` = 本会话 L1 goal；`memory` = `#21 {body,refs}`（`bag::memory_parts` 首选形状）。
+ */
+export function assembleSearchBag(args: Json): { ok: true; bag: Rec } | { ok: false; code: string; message: string } {
+  const record = isRecord(args) ? args : {}
+  const query = typeof record['query'] === 'string' ? (record['query'] as string) : ''
+  if (query.trim().length === 0) {
+    return { ok: false, code: 'memory_query_required', message: 'query is required' }
+  }
+  const ids = idsMapOf(args)
+  const bag: Rec = {
+    query,
+    memory: {
+      body: projectionBody(ids, 'memory-store') ?? {},
+      refs: projectionRefs(ids, 'memory-store'),
+    },
+  }
+  const workspace = typeof record['workspace'] === 'string' ? (record['workspace'] as string) : ''
+  if (workspace.length > 0) bag['workspace'] = workspace
+  const goal = currentSessionGoal(ids)
+  if (goal !== null) bag['goal'] = goal
+  const retrieval: Rec = {}
+  const tags = Array.isArray(record['tags'])
+    ? (record['tags'] as Json[]).filter((tag): tag is string => typeof tag === 'string' && tag.length > 0)
+    : []
+  if (tags.length > 0) retrieval['tags'] = tags
+  const limit =
+    typeof record['limit'] === 'number' && Number.isInteger(record['limit']) && (record['limit'] as number) > 0
+      ? (record['limit'] as number)
+      : null
+  if (limit !== null) retrieval['top_k'] = limit
+  if (Object.keys(retrieval).length > 0) bag['retrieval'] = retrieval
+  return { ok: true, bag }
+}
+
+/** `memory.edit` 槽：扫 `#1 slots` 找 `kind=memory.edit` 的槽体（多线程键取排序首个）。 */
+export function findMemoryEditSlot(inputBody: Json): Rec | null {
+  if (!isRecord(inputBody) || !isRecord(inputBody['slots'])) return null
+  const slots = inputBody['slots'] as Rec
+  for (const key of Object.keys(slots).sort()) {
+    const value = slots[key]
+    if (isRecord(value) && value['kind'] === 'memory.edit') return value
+  }
+  return null
+}
+
+/** 清 `memory.edit` 槽：把 `kind=memory.edit` 的线程键置 `idle`，其余线程键原样。 */
+export function clearMemoryEditSlots(inputBody: Json): Rec {
+  const base: Rec = isRecord(inputBody) ? { ...inputBody } : {}
+  const slots: Rec = isRecord(base['slots']) ? { ...(base['slots'] as Rec) } : {}
+  let found = false
+  for (const key of Object.keys(slots)) {
+    const value = slots[key]
+    if (isRecord(value) && value['kind'] === 'memory.edit') {
+      slots[key] = { kind: 'idle' }
+      found = true
+    }
+  }
+  if (!found) slots['_main'] = { kind: 'idle' }
+  base['slots'] = slots
+  return base
+}
+
+/** 槽 action 对齐 #23：`update` → `text`（#23 只认 `delete` / `pin` / `text`）。 */
+export function maintenanceAction(action: Json): string | null {
+  if (action === 'update') return 'text'
+  if (action === 'delete' || action === 'pin' || action === 'text') return action
+  return null
+}
+
+/**
+ * `memory.edit` 入参：`#1` 槽 + `#3` / `#21` 投影（#23 `edit` 真实 args）。
+ * 槽缺失 / action 非法回结构化失败码（调用方仍会清槽，避免残留非法槽）。
+ */
+export function assembleEditArgs(
+  ids: Json,
+  inputBody: Json,
+): { ok: true; args: Rec } | { ok: false; code: string } {
+  const slot = findMemoryEditSlot(inputBody)
+  if (slot === null) return { ok: false, code: 'memory_edit_slot_missing' }
+  const action = maintenanceAction(slot['action'])
+  if (action === null) return { ok: false, code: 'memory_edit_bad_action' }
+  return {
+    ok: true,
+    args: {
+      slot,
+      action,
+      short_memory: projectionBody(ids, 'short-memory') ?? {},
+      memory_store: projectionBody(ids, 'memory-store') ?? {},
+      memory_store_refs: projectionRefs(ids, 'memory-store'),
+    },
+  }
+}
+
+/** 从 #23 返回的计划里抽出 batch 写子操作（无 → `[]`）。 */
+export function planWriteOps(value: Json): Json[] {
+  if (!isRecord(value) || !Array.isArray(value['$directives'])) return []
+  for (const item of value['$directives']) {
+    if (!isRecord(item) || item['kind'] !== 'write' || !isRecord(item['request'])) continue
+    const request = item['request'] as Rec
+    if (request['op'] !== 'batch' || !isRecord(request['args'])) continue
+    const ops = (request['args'] as Rec)['ops']
+    if (Array.isArray(ops)) return ops as Json[]
+  }
+  return []
+}
+
+/** 从计划值取最后一条 `extern` 载荷；非计划值原样返回。 */
+export function planPayload(value: Json): Json {
+  if (!isRecord(value) || !Array.isArray(value['$directives'])) return value
+  const directives = value['$directives'] as Json[]
+  for (let index = directives.length - 1; index >= 0; index--) {
+    const item = directives[index]
+    if (isRecord(item) && item['kind'] === 'extern' && item['payload'] !== undefined) {
+      return item['payload'] as Json
+    }
+  }
+  return value
 }
 
 // ── 编排健康判定（纯函数，单测直调）──
@@ -251,6 +426,8 @@ function failure(code: string, message: string): Rec {
 
 /** 构造方法表；`deps.model` 是反向调用通道（单测注入假端口）。 */
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
+  const retrieval = deps.retrieval ?? deps.model
+  const maintenance = deps.maintenance ?? deps.model
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
 
@@ -290,5 +467,56 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
 
     /** 编排健康只读视图：入口 term 传 `ctx.ids`，服务判定（不住 #33）；浏览器只渲染。 */
     health: (args): Json => judgeHealth(args),
+
+    /**
+     * 记忆浏览（只读）：入口 term 传 `ctx.ids`，服务从 `#3` body + `#21` body / refs 装配，
+     * 反向调 `memory-maintenance.view`；命令结果 = #23 `view` 值（L1 / L2 / L3 三档）。
+     */
+    view: async (args): Promise<Json> => {
+      const outcome = await maintenance.call('memory-maintenance', 'view', assembleViewArgs(idsMapOf(args)))
+      if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
+      return externOnly(outcome.value)
+    },
+
+    /**
+     * 记忆搜索（只读）：命令 args `{query, workspace?, tags?, limit?, ids}`（`ids` = UI 侧 `settings.identities`
+     * 取回的投影），服务装配 #22 `retrieval.search` 真实 bag（`query` / `goal` / `workspace` / `retrieval` /
+     * `memory={body,refs}`），反向调 `retrieval.search`；命令结果 = #22 `search` 值（`recall`）。
+     */
+    search: async (args): Promise<Json> => {
+      const assembled = assembleSearchBag(args)
+      if (!assembled.ok) return externOnly(failure(assembled.code, assembled.message))
+      const outcome = await retrieval.call('retrieval', 'search', assembled.bag)
+      if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
+      return externOnly(outcome.value)
+    },
+
+    /**
+     * 记忆编辑（写类无参）：入口 term 传 `ctx.ids`，服务读 `memory.edit` 槽 + `#3` / `#21` 投影，
+     * 反向调 `memory-maintenance.edit`；返回计划 = #23 写子操作 + 清 `memory.edit` 槽（无论成败）+
+     * extern #23 结果。槽 action `update` 对齐为 #23 的 `text`。
+     */
+    edit: async (args): Promise<Json> => {
+      const ids = idsMapOf(args)
+      const inputBody = projectionBody(ids, 'input')
+      const assembled = assembleEditArgs(ids, inputBody)
+      let ops: Json[] = []
+      let payload: Json
+      if (!assembled.ok) {
+        payload = failure(assembled.code, assembled.code)
+      } else {
+        const outcome = await maintenance.call('memory-maintenance', 'edit', assembled.args)
+        if (outcome.ok) {
+          ops = planWriteOps(outcome.value)
+          payload = planPayload(outcome.value)
+        } else {
+          payload = failure(outcome.code, outcome.message)
+        }
+      }
+      if (!isRecord(inputBody)) return externOnly(payload)
+      const combined = [...ops, putOp(clearMemoryEditSlots(inputBody))]
+      combined.push(addGenOp('input', combined.length - 1))
+      return planOf(combined, payload)
+    },
   }
 }

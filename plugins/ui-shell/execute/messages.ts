@@ -67,6 +67,10 @@ export const FALLBACK_MESSAGES: { [code: string]: MessageEntry } = {
     title: '样式降级',
     body: '设计 token 未能加载，已用最小样式兜底。',
   },
+  shell_toast_close: {
+    title: '关闭提示',
+    body: '关闭',
+  },
 }
 
 function asMessageEntry(value: Json): MessageEntry | null {

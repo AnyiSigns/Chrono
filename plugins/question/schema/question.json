@@ -1,0 +1,83 @@
+{
+  "title": "question（向用户提问并等待回答）",
+  "description": "身份自述 / 数据契约。提问不是阻塞：工具 question 产写计划把队列项进世界（可回放、重启保留），本 run 正常结束；用户作答写 #1 槽后由命令 question.answer 的入口 term 产续跑计划（eval chat.resume + write 记答案 + 清槽）。item 各自成 def、以 prev 串成链，body 只存链头与累计入队数。宿主只读顶层 periodic 与 method_timeouts 两个机械消费键，其余键归本插件自用（宿主不认识业务）。服务不读投影、无写通道：一切世界数据由调用方入口 term 读出随 args 传入，或由宿主按 periodic.reads 机械注入 bag；服务只回写计划与上行事件，不取时间 / 随机（at / now 由 bag / env 传入），同输入同输出。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "max_questions": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 8,
+      "description": "单次提问的问题数上限；超过即结构化拒 too_many_questions（不静默截断）。"
+    },
+    "max_options": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 12,
+      "description": "单个问题的选项数上限；超过即结构化拒 too_many_options。"
+    },
+    "allow_custom": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否允许自定义输入（custom）；false 时问题声明 custom:true 即拒 custom_not_allowed。"
+    },
+    "expires_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 600000,
+      "description": "队列项 expires_at 时长（毫秒，自 at 起算）；缺省 600000（10 分钟）；写 null = 不设过期（item.expires_at 恒 null，sweep 不标）。"
+    },
+    "queue_body": {
+      "type": "object",
+      "description": "世界 body：{ version, tail, count }。tail = 最新 item def 引用 {\"def\":\"<64hex>\"} 或 null；count = 累计入队数（单调，作答 / 过期不改），item id 的 seq 取入队前的 count。",
+      "required": ["version", "tail", "count"],
+      "additionalProperties": true,
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "tail": { "type": "object", "description": "{\"def\":\"<最新 item def 哈希>\"}；null = 空队列" },
+        "count": { "type": "integer", "description": "累计入队数（单调递增）" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "description": "item def：各自成 def、prev 成链；投影引用闭包进 ids.question.refs。作答 / 过期各追加一条同 id 的新版本 def（链式追加，不整体重写、不删旧 def）。",
+      "required": ["id", "run", "thread", "questions", "answers", "prev"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "确定性 id q-<run>-<seq>（run + 入队序），非随机" },
+        "run": { "type": "string", "description": "入队时的回合 id（来自 bag / env）" },
+        "session": { "type": "string", "description": "入队时的当前会话 id（来自 bag；调用方入口 term 读 ids.session.body.current 后传入）" },
+        "thread": { "type": "string", "description": "入队时的线程 id（来自 bag）；pending 事件载荷同带" },
+        "questions": {
+          "type": "array",
+          "description": "问题数组：[{id, header, question, options[], multiple, custom}]；options 为空 = 纯开放作答",
+          "items": { "type": "object" }
+        },
+        "answers": {
+          "type": "array",
+          "description": "作答回填：[{question_id, selected[], custom?}]；未答 null",
+          "items": { "type": "object" }
+        },
+        "expired": { "type": "boolean", "description": "是否已由 question.sweep 标过期；未过期 false" },
+        "resume": { "type": "object", "description": "续跑依据 {command:'chat.resume', args:{cursor, thread}}；cursor = 调用方执行游标（不透明透传），作答 payload 由入口 term 产计划时并入；无 cursor 时 null" },
+        "at": { "type": "string", "description": "入队时间（ISO 8601，取帧 env.now 或 args.at），不取时间" },
+        "expires_at": { "type": "string", "description": "过期时间（ISO 8601，at + expires_ms）；expires_ms 为 null 时恒 null" },
+        "prev": { "type": "object", "description": "{\"def\":\"<上一 item 哈希>\"}；null = 链首" }
+      }
+    }
+  },
+  "periodic": [
+    {
+      "method": "sweep",
+      "every_ms": 60000,
+      "reads": {
+        "queue": ["ids", "question", "body"],
+        "refs": ["ids", "question", "refs"]
+      }
+    }
+  ],
+  "method_timeouts": {
+    "question.sweep": 120000
+  }
+}

@@ -9,12 +9,17 @@
       "vendors",
       "profile",
       "discover",
-      "health"
+      "health",
+      "view",
+      "search",
+      "edit"
     ]
   },
   "pins": {
     "model": "model-protocol",
-    "secrets": "secrets"
+    "secrets": "secrets",
+    "retrieval": "memory-retrieval",
+    "memory-maintenance": "memory-consolidate"
   },
   "start": "node execute/main.ts",
   "protocol": "1",
@@ -79,6 +84,18 @@
     {
       "name": "orchestration.health",
       "entry": "terms/orchestration.health.json"
+    },
+    {
+      "name": "memory.view",
+      "entry": "terms/memory.view.json"
+    },
+    {
+      "name": "memory.search",
+      "entry": "terms/memory.search.json"
+    },
+    {
+      "name": "memory.edit",
+      "entry": "terms/memory.edit.json"
     }
   ]
 }

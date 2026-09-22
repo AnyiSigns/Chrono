@@ -87,6 +87,14 @@ export const STYLE_TEXT = `
 .settings-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .settings-model-picks { display: flex; flex-direction: column; gap: var(--space-4); max-height: var(--settings-picks-max-h); overflow: auto; }
 .settings-check { display: flex; align-items: center; gap: var(--space-8); min-height: 24px; font-size: var(--font-size-sm); }
+.settings-memory-entry { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; }
+.settings-memory-field { display: flex; align-items: baseline; gap: var(--space-8); font-size: var(--font-size-xs); }
+.settings-memory-field .settings-list-meta { flex: 1 1 auto; }
+.settings-memory-edit { display: flex; align-items: center; gap: var(--space-8); }
+.settings-memory-edit .settings-input { flex: 1 1 auto; }
+.settings-memory-expired, .settings-memory-expired .settings-list-main, .settings-memory-expired .settings-list-meta { color: var(--c-text-3); }
+.settings-memory-hit { background: var(--c-selection); border-radius: var(--radius-sm); }
+.settings-memory-pinned { color: var(--c-accent); font-size: var(--font-size-xs); }
 @keyframes settings-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes settings-rise { from { opacity: 0; transform: translate(-50%, calc(-50% + 2px)); } to { opacity: 1; transform: translate(-50%, -50%); } }
 @keyframes settings-tab-fade { from { opacity: 0; } to { opacity: 1; } }

@@ -117,9 +117,10 @@ function sendError(id: string, code: string, message: string): void {
 }
 
 // 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：模型命令的装配结果经它转发给 `model` 端口；
+// 记忆命令经它转发给 `retrieval` / `memory-maintenance` 端口（宿主按发出者 pins 路由）；
 // 服务不读投影、不发 eff，跨插件只走宿主路由。应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, model: LINK })
+const HANDLERS = createHandlers({ identity: IDENTITY, model: LINK, retrieval: LINK, maintenance: LINK })
 
 function declaredMethods(port: string): string[] {
   const declared = METHODS[port]

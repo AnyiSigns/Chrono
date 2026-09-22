@@ -1,0 +1,186 @@
+{
+  "title": "memory-consolidate（记忆维护 · 全层）",
+  "description": "身份自述 / 数据契约：能力类 memory-maintenance 的五个方法（consolidate / sweep / candidates / view / edit）的 bag 与结果形状，以及本插件自用的策略参数。本插件 execute-only、无自身世界数据、无写通道：一切投影读（#3 L1/L2、#11 会话、#21 body + refs）由调用方入口 term 装配或宿主按顶层 periodic.reads 机械注入 bag，服务只收数据、回计划值 {\"$directives\":[…]}, 由宿主落账。时间由 bag / 调用帧 env 传入（不自取时钟），同输入同输出。删除 L3 = #21 body 加 deleted 条目；置顶 = body.pinned；文本编辑 = put 新条目 def + 新 body；L1 保留至 TTL 过期、由 sweep 清。",
+  "type": "object",
+  "additionalProperties": true,
+  "params": {
+    "l1_ttl_ms": 86400000,
+    "l2_capacity": 200,
+    "l3_capacity": 500,
+    "dedup_cosine_threshold": 0.9,
+    "consolidate_weight_threshold": 0.7,
+    "candidate_weight_threshold": 0.2,
+    "solidify_full_sources": 4
+  },
+  "properties": {
+    "consolidate_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "consolidate 的 bag。周期路径 = 宿主按 periodic.reads 注入 #3 body / #11 body / #21 body + refs；agent 路径 = 调用方入口 term 读出后随 args 传入。",
+      "properties": {
+        "short_memory": { "type": "object", "additionalProperties": true, "description": "#3 整份 body（sessions / workspaces）。" },
+        "session": { "type": "object", "additionalProperties": true, "description": "#11 会话 body（取 conversations[].workspace_id 归属）。" },
+        "memory_store": { "type": "object", "additionalProperties": true, "description": "#21 整份 body（tail / count / deleted / pinned / model）。" },
+        "memory_store_refs": { "type": "object", "additionalProperties": true, "description": "#21 引用闭包 hash → 条目 def。" },
+        "workspace": { "type": "string", "description": "可选：显式目标工作区（#11 无归属时的回落）。" },
+        "summarize": { "type": "boolean", "description": "需要摘要时置 true：eff #19 compress.summarize 产合并摘要（失败即明确失败、不半写）。" },
+        "high_value": { "type": "array", "items": { "type": "string" }, "description": "可选：强制固化的条目文本（绕过权重阈值）。" },
+        "item_weights": { "type": "object", "additionalProperties": true, "description": "可选：条目文本 → 固化权重（0–1）。" },
+        "embedding_model": { "type": "string" },
+        "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "weight_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "l2_capacity": { "type": "integer", "minimum": 1 },
+        "now": {}
+      }
+    },
+    "sweep_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "sweep 的 bag。cursor = 上次 sweep 水位（args 显式给出时确定性；缺省读宿主 ③ 水位文件）。",
+      "properties": {
+        "short_memory": {},
+        "memory_store": {},
+        "memory_store_refs": {},
+        "cursor": { "type": "string", "description": "增量游标（ISO at）：只扫描水位之后新增 / 变更的条目。" },
+        "l1_ttl_ms": { "type": "integer", "minimum": 1 },
+        "l2_capacity": { "type": "integer", "minimum": 1 },
+        "l3_capacity": { "type": "integer", "minimum": 1 },
+        "candidate_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "now": {}
+      }
+    },
+    "candidates_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "candidates 的 bag：只读回候选列表（L1 过期 / L2 超容量 / L3 低权重），不删、不产写。",
+      "properties": {
+        "short_memory": {},
+        "memory_store": {},
+        "memory_store_refs": {},
+        "candidate_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "now": {}
+      }
+    },
+    "view_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "view 的 bag：只读回 L1 / L2 / L3 三档；L3 字段与 #21 条目一致（at / tags / source / weight / pinned），L1 另含剩余 TTL。",
+      "properties": {
+        "short_memory": {},
+        "memory_store": {},
+        "memory_store_refs": {},
+        "now": {}
+      }
+    },
+    "edit_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "edit 的 bag：收入口 term 传入的槽体（slot）与 #3 / #21 片段 → 出计划。删除 = #21 body deleted；置顶 = body.pinned；文本编辑 = put 新条目 def + 新 body。",
+      "required": ["action", "layer", "id"],
+      "properties": {
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "enum": ["l1", "l2", "l3"] },
+        "id": { "type": "string" },
+        "patch": { "type": "object", "additionalProperties": true, "description": "pin: {pinned:false} 取消置顶；text: {text} 或 {summary}。" },
+        "slot": { "type": "object", "additionalProperties": true, "description": "可选：#1 槽体（字段同 action / layer / id / patch）。" },
+        "short_memory": {},
+        "memory_store": {},
+        "memory_store_refs": {},
+        "now": {}
+      }
+    },
+    "consolidate_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "consolidate" },
+        "merged": { "type": "array", "items": { "type": "object" } },
+        "solidified": { "type": "array", "items": { "type": "object" } },
+        "dedup": { "enum": ["vector"] },
+        "$directives": { "type": "array", "description": "写计划 batch：写 #3 L2 + 写 #21 L3；无写 = 只含 extern。" }
+      }
+    },
+    "sweep_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "sweep" },
+        "l1_deleted": { "type": "array", "items": { "type": "string" } },
+        "l2_trimmed": { "type": "array", "items": { "type": "object" } },
+        "l3_deleted": { "type": "array", "items": { "type": "object" } },
+        "cursor_next": { "type": "string" },
+        "$directives": { "type": "array" }
+      }
+    },
+    "candidates_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "candidates" },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "layer": { "enum": ["l1", "l2", "l3"] },
+              "id": { "type": "string" },
+              "reason": { "enum": ["l1_expired", "l2_over_capacity", "low_weight"] }
+            }
+          }
+        }
+      }
+    },
+    "view_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "view" },
+        "l1": { "type": "array", "items": { "type": "object" } },
+        "l2": { "type": "array", "items": { "type": "object" } },
+        "l3": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "edit_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "edit" },
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "enum": ["l1", "l2", "l3"] },
+        "id": { "type": "string" },
+        "$directives": { "type": "array" }
+      }
+    }
+  },
+  "periodic": [
+    {
+      "method": "consolidate",
+      "every_ms": 3600000,
+      "reads": {
+        "short_memory": ["ids", "short-memory", "body"],
+        "session": ["ids", "session", "body"],
+        "memory_store": ["ids", "memory-store", "body"],
+        "memory_store_refs": ["ids", "memory-store", "refs"]
+      }
+    },
+    {
+      "method": "sweep",
+      "every_ms": 1800000,
+      "reads": {
+        "short_memory": ["ids", "short-memory", "body"],
+        "memory_store": ["ids", "memory-store", "body"],
+        "memory_store_refs": ["ids", "memory-store", "refs"]
+      }
+    }
+  ],
+  "method_timeouts": {
+    "memory-maintenance.consolidate": 120000,
+    "memory-maintenance.sweep": 120000
+  }
+}

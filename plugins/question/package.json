@@ -1,0 +1,10 @@
+{
+  "name": "question",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "agent 向用户提问并等待回答：工具 question 入队 + 命令 question.answer 续跑，队列进世界",
+  "scripts": {
+    "test": "node --test test/question.test.mjs"
+  }
+}

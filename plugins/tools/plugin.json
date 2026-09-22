@@ -1,0 +1,49 @@
+{
+  "identity": "tools",
+  "schema": "schema/tools.json",
+  "implements": ["tools"],
+  "methods": {
+    "tools": ["list", "dispatch"]
+  },
+  "pins": {
+    "guard": "guard",
+    "tool-fs": "tool-fs",
+    "tool-shell": "tool-shell",
+    "tool-http": "tool-http",
+    "tool-browser": "tool-browser",
+    "mcp": "mcp",
+    "plugin-admin": "plugin-admin",
+    "orchestration-admin": "orchestration-admin",
+    "evolve-metrics": "evolve-metrics",
+    "todo": "todo",
+    "question": "question",
+    "session": "session",
+    "compress": "compress",
+    "memory": "memory-store",
+    "retrieval": "memory-retrieval",
+    "memory-maintenance": "memory-consolidate",
+    "host": "host"
+  },
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "tools.list",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

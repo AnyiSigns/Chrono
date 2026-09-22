@@ -1,0 +1,23 @@
+{
+  "title": "orchestration-admin（agent 面编排管理）",
+  "description": "身份自述 / 数据契约。本插件是服务、不持有数据世代 body：list / read / validate 的图六类条目、台账与 pins 由 #33 装配后随 bag / args 传入，服务不读投影、不发 eff；propose 只产提案条目（不产证据、不产写）。本 schema 只声明非安全参数（允许的变更类、提案条数上限、提案大小上限）；diff 上限读 #33 thresholds，不在本 schema 重定义。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "allowed_classes": {
+      "type": "array",
+      "items": { "enum": ["binding", "instance_growth", "structure", "fold"] },
+      "description": "允许的变更类（propose 的 class 必须落在其中，否则拒 bad_change_class）。缺省四类全允许。"
+    },
+    "max_proposals_per_run": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "单回合提案条数上限（额度；用户显式请求不占额度）。缺省 4。"
+    },
+    "max_proposal_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "单条提案（条目 + patch）规范序列化后的字节上限，超出 → proposal_too_large。缺省 262144（256 KiB）。"
+    }
+  }
+}

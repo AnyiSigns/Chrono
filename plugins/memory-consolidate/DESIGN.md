@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 / 身份 | 23 / `memory-consolidate`（原 `forget` 并入，本轮收敛） |
 | 职责 | 记忆维护（全层）：**L1 TTL 清理** + **L2 去重合并** + **L2→L3 固化** + **L3 过期 / 遗忘 / 删除计划** + **agent 顺带清理候选** |
-| 依赖 | `->` 19（pins：需要摘要时）、20（pins：去重向量化）、21（pins：读写 L3）；`+` 3（读 L1 / L2 投影）、11（读会话投影）、21（读 L3 投影以构造固化写计划）——**投影读由调用方入口 term 完成、经 args/bag 传入，服务自身不做 `+` 读（D8）**；`<-` **宿主周期触发（D6）**、27（记忆工具派发）；**版本提升**：#17 新增 pin（**提出方 #17**），本插件登记被依赖面（**非本插件升代**；S12 `memory.view` / `memory.edit`；提出方见 `plugins/ui-settings/DESIGN.md`）（2026-09-20 修订） |
+| 依赖 | `->` 19（pins：需要摘要时，反向调用）、20（pins：去重向量化，反向调用）、21（pins：**身份级依赖声明**，L3 数据经 bag 传入、写只产计划，**不反向调用**）；`+` 3（读 L1 / L2 投影）、11（读会话投影）、21（读 L3 投影以构造固化写计划）——**投影读由调用方入口 term 完成、经 args/bag 传入，服务自身不做 `+` 读（D8）**；`<-` **宿主周期触发（D6）**、27（记忆工具派发）；**版本提升**：#17 新增 pin（**提出方 #17**），本插件登记被依赖面（**非本插件升代**；S12 `memory.view` / `memory.edit`；提出方见 `plugins/ui-settings/DESIGN.md`）（2026-09-20 修订） |
 | 成员 | execute, schema |
 | 能力类·方法 | `implements: ["memory-maintenance"]`，`methods: {memory-maintenance:["consolidate","sweep","candidates","view","edit"]}`（**与 #21 的 `memory` 分开**：能力类名 = `pins` 端口名、单值，同名会让 #27 / #17 无法同时路由两个身份） |
 | 命令 | 无 |
@@ -31,6 +31,7 @@
 
 - **时间由 bag 传入**（服务不取时间，保可回放）；`expires_at` 比对在 `sweep` 内完成。
 - **sweep 增量**：以「上次 sweep 水位」（住宿主 ③，可重算）为游标，只扫描水位之后新增 / 变更的条目；L1 到期集合按 `expires_at` 索引（③）取，不线性扫全层，避免随库增长的全量扫描。**periodic.reads 全量注入为接受代价**（水位只省本插件扫描）；**H1 全量闭包与 refCap 兜底**（2026-09-20 修订）。
+- **水位只在无待落账删除时推进**：有删除计划时服务不写本地水位，只回 `cursor_next`，由调用方在计划落账后持久化；保证「计划未落账时同输入重跑仍出同一删除集」。显式 `args.cursor` 优先且不改本地水位（调用方完全控制游标）。（2026-09-22 修订）
 - **agent 顺带清理（已定，2026-09-20 口径统一）**：记忆工具目录暴露**具名工具 `memory.candidates`**（绑本插件 `candidates` 方法，见 `plugins/tools/DESIGN.md` 绑定表）；agent 在查看 / 保存记忆的**同一回合**顺带调用它获取候选、当场决定删 / 合并（原「返回结果一并附 candidates」的复合工具口径作废——§1.12 已统一）；真正的删除仍由 `sweep` 出计划（可回放）。
 - **两条 L3 来源**（已定，与 #21 `meta.source` 枚举 `session|skill|manual|consolidate` 对齐）：① agent 经记忆工具**显式保存**（`21` 写计划，`meta.source = "manual"`）；② `consolidate` 定期把 L2 高价值项**固化**进 L3（去重，`meta.source = "consolidate"`）。
 - **L2 `sources[]` 维护与 L1 处置（2026-09-20 补）**：L1 合并进 L2 后 L1 保留至 TTL 过期（sweep 清）；L2 合并 `sources[]` 追加来源会话 id（最新在前）；与 #19 `extract` 的去重分工：extract 只写新条目、去重归本插件。

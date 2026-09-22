@@ -33,11 +33,18 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-settings ping 占位 + 模型装配 / 健康判定方法；pins 只两条（model / secrets）', () => {
+test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；pins 四条（model / secrets / retrieval / memory-maintenance）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
-  assert.deepEqual(decl.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health'] })
-  assert.deepEqual(decl.pins, { model: 'model-protocol', secrets: 'secrets' })
+  assert.deepEqual(decl.methods, {
+    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit'],
+  })
+  assert.deepEqual(decl.pins, {
+    model: 'model-protocol',
+    secrets: 'secrets',
+    retrieval: 'memory-retrieval',
+    'memory-maintenance': 'memory-consolidate',
+  })
 })
 
 test('members = execute + term；命令入口 term 全部存在', () => {
@@ -57,6 +64,9 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'orchestration.graph',
     'orchestration.scopes',
     'orchestration.health',
+    'memory.view',
+    'memory.search',
+    'memory.edit',
   ])
   for (const command of decl.commands) {
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
@@ -79,6 +89,10 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
   assert.deepEqual(readJson('terms/orchestration.graph.json'), ['g', ['ids', 'loop-policy']])
   assert.deepEqual(readJson('terms/orchestration.scopes.json'), ['g', ['ids', 'agents']])
   assert.deepEqual(readJson('terms/orchestration.health.json'), ['eff', 'ui-settings', 'health', ['g', ['ids']]])
+  // 记忆三条：view / edit 传整份投影；search 的查询 args 与投影无法在 term 合流，传命令 args（内含 UI 取回的 ids）。
+  assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/memory.edit.json'), ['eff', 'ui-settings', 'edit', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/memory.search.json'), ['eff', 'ui-settings', 'search', ['v', 0]])
 })
 
 test('.worldignore 声明 test/ 与 tools/', () => {

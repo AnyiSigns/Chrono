@@ -1,0 +1,10 @@
+{
+  "name": "orchestration-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "agent 面编排管理：列 / 读 / 机械闸 dry-run 校验 / 产提案，提案只写台账、不产证据不产写",
+  "scripts": {
+    "test": "node --test test/orchestration-admin.test.mjs"
+  }
+}

@@ -20,6 +20,7 @@ const FALLBACK_MESSAGES = {
   ui_boot_failed: { title: '界面加载失败', body: '这个界面未能启动。', action: '重试' },
   ui_version_mismatch: { title: '界面版本不符', body: '界面与壳的契约版本不一致。', action: '重试' },
   shell_tokens_fallback: { title: '样式降级', body: '设计 token 未能加载，已用最小样式兜底。' },
+  shell_toast_close: { title: '关闭提示', body: '关闭' },
 }
 
 let messageTable = FALLBACK_MESSAGES
@@ -332,7 +333,7 @@ function renderToasts() {
       const close = document.createElement('button')
       close.type = 'button'
       close.className = 'shell-toast-close'
-      close.setAttribute('aria-label', '关闭')
+      close.setAttribute('aria-label', msg('shell_toast_close').body)
       close.textContent = '×'
       close.addEventListener('click', () => {
         toastQueue.dismiss(item.id)

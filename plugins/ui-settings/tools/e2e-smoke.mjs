@@ -1,11 +1,14 @@
 // `ui-settings` 宿主装配 + HTTP E2E（黑盒，经 boot CLI）：
-// pack 入世树核对 → 临时 root seed（配置 / 输入 / 技能 / 智能体 / 台账 / 厂商模板 / 密钥 /
-// 模型协议 / ui-settings）→ start → 轮询 loaded → 子应用 HTTP（/entry.js 与静态模块 200、
-// 穿越 404、只读命令真实往返、未就位依赖降级、技能直写、密钥直写、SSE）→ stop → verify + replay。
-// 真实模型集成（`model.discover`）读仓库根 `.env` 的 base_url / model_id；缺失或失败优雅跳过。
+// ① pins 段（离线，独立 root）：seed 记忆族真实闭包，读世界验证 `ui-settings` 的
+//    `retrieval` / `memory-maintenance` pins 已解析成被依赖身份 active 世代哈希（不再 unresolved_cap）；
+// ② HTTP 段：pack 入世树核对 → 临时 root seed（配置 / 输入 / 技能 / 智能体 / 台账 / 厂商模板 / 密钥 /
+//    模型协议 / ui-settings + 记忆族桩）→ start → 轮询 loaded → 子应用 HTTP（/entry.js 与静态模块 200、
+//    穿越 404、只读命令真实往返、未就位依赖降级、技能直写、密钥直写、SSE）→ stop → verify + replay。
+// 记忆族桩（memory-retrieval / memory-consolidate）只声明能力、`start:""`：HTTP 段不触发 Rust 物化，
+// 真 pins 解析在 ① 段以真实插件验证。真实模型集成（`model.discover`）读仓库根 `.env`；缺失或失败优雅跳过。
 // 失败路径同样尝试 stop 释放锁。用法：node plugins/ui-settings/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { get as httpGet, request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -13,6 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { packSourceDir, readWorldignore } from '../../../packages/host/assembly/source.ts'
+import { loadAnchor } from '../../../packages/host/ledger/index.ts'
+import { hostPaths } from '../../../packages/host/paths.ts'
 import { extractValue } from '../execute/bridge.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -31,6 +36,26 @@ const PACKAGES = [
   'vendor-custom',
   'secrets',
   'model-protocol',
+  'ui-settings',
+]
+
+/** 记忆族桩：只声明能力、无 start；HTTP 段不触发 Rust 物化，仅让 `ui-settings` 的 pins 可解析。 */
+const STUB_PACKAGES = [
+  ['memory-retrieval', ['retrieval'], { retrieval: ['search'] }],
+  ['memory-consolidate', ['memory-maintenance'], { 'memory-maintenance': ['view', 'edit'] }],
+]
+
+/** ① pins 段真实闭包（pins 拓扑序）：embedding / memory-store 等 Rust 包只入世、不起服务。 */
+const PINS_CLOSURE = [
+  'secrets',
+  'embedding',
+  'model-protocol',
+  'compress',
+  'memory-store',
+  'memory-retrieval',
+  'memory-consolidate',
+  'short-memory',
+  'session',
   'ui-settings',
 ]
 
@@ -224,6 +249,102 @@ function writeSlotBody(threadKey, slot) {
   }
 }
 
+/** 生成能力桩包（`start:""`、无世界数据、无成员）：只让 `ui-settings` 的 pins 可解析。 */
+function writeStubPackage(root, identity, implementsList, methods) {
+  const dir = join(root, 'stubs', identity)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'plugin.json'),
+    JSON.stringify(
+      {
+        identity,
+        implements: implementsList,
+        methods,
+        pins: {},
+        start: '',
+        protocol: '1',
+        restart: {},
+        health: {},
+        state: 'recomputable',
+        members: [],
+        commands: [],
+      },
+      null,
+      2,
+    ),
+  )
+  return dir
+}
+
+/** 代码世代（payload 指向 commit def，body.tree 存在即代码世代）；取最后一个。 */
+function latestCodeGen(identity) {
+  return [...identity.gens].reverse().find((gen) => gen.payload !== undefined) ?? null
+}function isHex64(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+/**
+ * 离线依赖兜底（仅 `CHRONO_E2E_OFFLINE=1`，供禁网沙箱）：把宿主依赖缓存 `state/deps/npm`
+ * 链到本机 npm 缓存，并让 npm 走「离线 + 统一 npmjs registry」——`npm ci` 的锁文件 resolved
+ * 指向镜像时也能从本机缓存命中。默认不启用，联网环境按宿主常规物化。
+ */
+function enableOfflineDeps(root, env) {
+  const cache =
+    process.env.npm_config_cache ??
+    (process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA ?? '', 'npm-cache')
+      : join(process.env.HOME ?? '', '.npm'))
+  if (cache.length === 0 || !existsSync(cache)) return env
+  const link = join(root, 'state', 'deps', 'npm')
+  mkdirSync(join(root, 'state', 'deps'), { recursive: true })
+  try {
+    symlinkSync(cache, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    return env
+  }
+  console.log(`离线依赖：ok（${link} -> ${cache}）`)
+  return {
+    ...env,
+    npm_config_offline: 'true',
+    npm_config_registry: 'https://registry.npmjs.org/',
+    npm_config_replace_registry_host: 'always',
+  }
+}
+
+/** ① pins 段：真实记忆族闭包 seed（不起服务），读世界验证 `ui-settings` 四条 pins 已解析。 */
+function runPinsPhase(stamp) {
+  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-pins-${stamp}`)
+  mkdirSync(join(root, 'state'), { recursive: true })
+  try {
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify(PINS_CLOSURE.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) })), null, 2),
+    )
+    const seeded = boot(root, ['seed'])
+    assert.equal(seeded.ok, true, `pins seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
+    const anchor = loadAnchor(hostPaths(root).journalFile, hostPaths(root).baseFile, hostPaths(root).coldDir)
+    const world = anchor.world
+    const identity = world.ids['ui-settings']
+    assert.ok(identity !== undefined, '世界里缺 ui-settings 身份')
+    const gen = latestCodeGen(identity)
+    assert.ok(gen !== null, 'ui-settings 无可解析代码世代')
+    for (const [name, dependency] of [
+      ['retrieval', 'memory-retrieval'],
+      ['memory-maintenance', 'memory-consolidate'],
+      ['model', 'model-protocol'],
+      ['secrets', 'secrets'],
+    ]) {
+      const resolved = gen.pins[name]
+      assert.ok(isHex64(resolved), `pins.${name} 未解析成 64 位 hex：${resolved}（不再 unresolved_cap）`)
+      assert.notEqual(resolved, dependency, `pins.${name} 仍是字面身份名`)
+      assert.equal(resolved, world.ids[dependency].active, `pins.${name} != ${dependency}.active`)
+    }
+    console.log('pins 段：ok（retrieval / memory-maintenance / model / secrets 均解析到 active 世代哈希）')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', `chrono-ui-settings-e2e-${stamp}`)
@@ -232,13 +353,17 @@ async function main() {
   const fakePort = await freePort()
   const fakeBase = `http://127.0.0.1:${fakePort}/v1`
   const fakeModel = await startFakeModelServer(root, fakePort)
-  const env = {
+  let env = {
     ...process.env,
     CHRONO_UI_PORT_UI_SETTINGS: String(port),
     CHRONO_MODELS_DEV_URL: `http://127.0.0.1:${fakePort}/models.dev.json`,
   }
+  if (process.env.CHRONO_E2E_OFFLINE === '1') env = enableOfflineDeps(root, env)
   let started = false
   try {
+    // 0) pins 段（独立 root，离线）：真实记忆族闭包 seed，验证 pins 解析（W3 升代后不再 unresolved_cap）。
+    runPinsPhase(stamp)
+
     // 1) 入世树核对：契约文件与 execute/web/terms 入世，test/ 与 tools/ 排除。
     const worldignore = readWorldignore(SETTINGS_DIR)
     assert.equal(worldignore.ok, true, '.worldignore 解析失败')
@@ -251,9 +376,14 @@ async function main() {
       'execute/main.ts',
       'execute/web/entry.js',
       'execute/web/config-model.js',
+      'execute/web/memory-model.js',
+      'execute/web/view-memory.js',
       'terms/model.discover.json',
       'terms/secrets.status.json',
       'terms/orchestration.health.json',
+      'terms/memory.view.json',
+      'terms/memory.search.json',
+      'terms/memory.edit.json',
     ]) {
       assert.ok(packedPaths.includes(required), `入世树缺 ${required}`)
     }
@@ -261,11 +391,16 @@ async function main() {
     assert.ok(!packedPaths.some((path) => path.startsWith('tools/')), '入世树含 tools/')
     console.log(`入世树：ok（${packedPaths.length} 个文件，排除 test/ 与 tools/）`)
 
-    // 2) seed（依赖先入世，pins 才解析得到）
-    writeFileSync(
-      join(root, 'state', 'plugins.json'),
-      JSON.stringify(PACKAGES.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) })), null, 2),
-    )
+    // 2) seed（依赖先入世，pins 才解析得到）；记忆族桩先于 ui-settings，避免触发 Rust 物化。
+    const pluginEntries = PACKAGES.filter((name) => name !== 'ui-settings').map((name) => ({
+      name,
+      path: join(REPO_ROOT, 'plugins', name),
+    }))
+    for (const [identity, implementsList, methods] of STUB_PACKAGES) {
+      pluginEntries.push({ name: identity, path: writeStubPackage(root, identity, implementsList, methods) })
+    }
+    pluginEntries.push({ name: 'ui-settings', path: join(REPO_ROOT, 'plugins', 'ui-settings') })
+    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify(pluginEntries, null, 2))
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, `seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
@@ -358,6 +493,7 @@ async function main() {
       'notify.js',
       'health.js',
       'settings-model.js',
+      'memory-model.js',
       'styles.js',
       'dom.js',
       'messages.js',
@@ -366,6 +502,7 @@ async function main() {
       'client.js',
       'provider-form.js',
       'provider-actions.js',
+      'memory-actions.js',
       'theme-actions.js',
       'notify-actions.js',
       'config-io.js',

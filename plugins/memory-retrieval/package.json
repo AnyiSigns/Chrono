@@ -1,0 +1,10 @@
+{
+  "name": "memory-retrieval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "L3 召回（Rust）：查询构造 / 多查询 / 向量化 / 索引检索 / 过滤 / 时间衰减 / 去重 / MMR / 预算截断，写入 bag.recall；无 npm 依赖，二进制走宿主依赖缓存",
+  "scripts": {
+    "test": "cargo test"
+  }
+}
