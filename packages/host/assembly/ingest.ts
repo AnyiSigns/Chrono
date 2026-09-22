@@ -405,6 +405,14 @@ function planIngestAtRoot(
   }
 }
 
+/**
+ * 解析一个清单项的投递包根目录（有 path 按路径、无 path 走 Node 解析）。
+ * 供只读消费者（源码 watcher 解析要盯的目录）复用，保证与入世解析同一口径；解析不到返回 null。
+ */
+export function resolveEntryRoot(root: string, entry: PluginEntry): string | null {
+  return resolvePackageRoot(entry, root)
+}
+
 /** 解析一个插件包并构造入世 batch 计划；不改世界、不落账。 */
 export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
   const pkgRoot = resolvePackageRoot(entry, root)

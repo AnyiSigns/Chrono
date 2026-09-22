@@ -2,7 +2,12 @@
 
 import { startHost } from './host.ts'
 import { appendLifecycle } from './lifecycle.ts'
-import { parseEntryArgv, resolveCallTimeoutMs, resolveStartWrapper } from './options.ts'
+import {
+  parseEntryArgv,
+  resolveCallTimeoutMs,
+  resolveStartWrapper,
+  resolveWatch,
+} from './options.ts'
 import { hostPaths, resolveRoot } from './paths.ts'
 
 try {
@@ -25,9 +30,10 @@ try {
     })
     throw err
   }
-  const handle = await startHost({ root, callTimeoutMs, startWrapper })
+  const watch = resolveWatch(parsed.watch, process.env['CHRONO_WATCH'])
+  const handle = await startHost({ root, callTimeoutMs, startWrapper, watch })
   process.stdout.write(
-    `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'}\n`,
+    `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'} watch=${watch ? 'on' : 'off'}\n`,
   )
   const shutdown = (): void => {
     void handle.stop().then(() => process.exit(0))

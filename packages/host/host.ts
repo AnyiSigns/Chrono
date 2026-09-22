@@ -38,10 +38,13 @@ import { createHostCapability } from './host-capability.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
 import { gcPluginState } from './plugin-state.ts'
 import { appendLifecycle } from './lifecycle.ts'
+import type { LifecycleRecord } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
 import { resolveStartWrapper } from './options.ts'
 import { projectBaseOnly } from './projection/index.ts'
 import { WorldWriter } from './writer.ts'
+import { reloadPlugin, startSourceWatcher } from './watch/index.ts'
+import type { SourceWatcherHandle, WatchTarget } from './watch/index.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from './wire.ts'
 import type { CallEnv, InboundMessage, Limits, OutboundMessage } from './wire.ts'
 import type { CallResponse } from './service-link.ts'
@@ -58,6 +61,13 @@ export interface HostOptions {
   startWrapper?: string
   /** 端口审计落点（反向 `port.call`）：缺省写宿主侧有界内存环形缓冲。 */
   portAuditSink?: PortAuditSink
+  /**
+   * 源码 watcher：默认关。打开后盯 `state/plugins.json` 登记的投递路径，
+   * 文件变动即自动重新入世并交装配跟随换代（开发态热更，不引入开发/生产分叉）。
+   */
+  watch?: boolean
+  /** watcher 的终端可视线（前台模式直出终端）；缺省写宿主 stdout。 */
+  watchLog?: (line: string) => void
 }
 
 export interface HostHandle {
@@ -372,6 +382,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
 
   let runtime: AssemblyRuntimeHandle | undefined
+  /** 源码 watcher（默认关）：只在显式打开时存在；停机时先停它，避免停机中途再起重建。 */
+  let watcher: SourceWatcherHandle | undefined
   /** 在途 run（并发推进中）：停机时先等它们落定；`cancel{run}` 按 `runs` 表中止。 */
   const inflight = new Set<Promise<void>>()
   /** 在册 run（含并发推进中）：`cancel{run}` 按此表中止；run 结束即摘除。 */
@@ -405,6 +417,71 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       () => undefined,
     )
     return next
+  }
+
+  /** 换代跟随失败的世代（构建 / 启动 / 握手）：watcher 据此把「旧版本继续服务」讲清楚。 */
+  const followFailedGens = new Set<string>()
+
+  /** 运维日志唯一落点；顺带记住跟随失败的世代，供 watcher 观测（只读派生，不额外写盘）。 */
+  const recordLifecycle = (record: LifecycleRecord): void => {
+    appendLifecycle(paths.lifecycleFile, record as unknown as Json)
+    if (record.gen === undefined) return
+    if (record.kind === 'service' && record.event === 'start_failed') followFailedGens.add(record.gen)
+    if (record.kind === 'handshake' && record.event === 'failed') followFailedGens.add(record.gen)
+  }
+
+  /** watcher 的终端可视线：前台模式直出终端；测试可注入收集。 */
+  const watchLog =
+    options.watchLog ??
+    ((line: string): void => {
+      process.stdout.write(`${line}\n`)
+    })
+
+  /**
+   * watcher 一次触发：重新入世（内容未变则什么都不做）→ 装配跟随。
+   * 换代走正常 `add_gen`（真 journal entry，可回滚可审计）；失败不替换在跑服务，
+   * 只记运维日志并在 stdout 说清「旧版本继续服务」。
+   */
+  const handleWatchReload = async (target: WatchTarget, changedPath: string): Promise<void> => {
+    if (stopping || runtime === undefined) return
+    const label = target.entry.name
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: 'watch_triggered',
+      impl: label,
+      reason: changedPath,
+    })
+    const outcome = await reloadPlugin(
+      { root, paths, writer, now: nextNow, applyWorld: applyWorldSerial },
+      target.entry,
+    )
+    if (outcome.status === 'failed') {
+      const reason = outcome.reasons.join('|')
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'watch_failed',
+        impl: outcome.identity ?? label,
+        reason,
+      })
+      watchLog(`watcher: ${outcome.identity ?? label} 入世失败，旧版本继续服务（${reason}）`)
+      return
+    }
+    if (outcome.status === 'unchanged') return
+    const failed = followFailedGens.has(outcome.gen)
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: failed ? 'watch_follow_failed' : 'watch_applied',
+      impl: outcome.identity,
+      gen: outcome.gen,
+    })
+    watchLog(
+      failed
+        ? `watcher: ${outcome.identity} 新世代构建 / 启动失败，旧版本继续服务`
+        : `watcher: ${outcome.identity} 检测到改动 → 已重建并接管（gen ${outcome.gen.slice(0, 12)}）`,
+    )
   }
 
   /**
@@ -913,8 +990,15 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   let stopPromise: Promise<void> | undefined
   const doStop = async (): Promise<void> => {
     stopping = true
-    // 先停周期调度：停机中途不再起新的周期 run
+    // 先停周期调度与 watcher：停机中途不再起新的周期 run / 重建
     periodic?.stop()
+    if (watcher !== undefined) {
+      try {
+        await watcher.stop()
+      } catch {
+        // watcher 停机尽力而为；锁必须释放
+      }
+    }
     try {
       appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
     } finally {
@@ -1273,7 +1357,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     runtime = await startAssembly({
       root,
       world: writer.snapshot().world,
-      log: (record) => appendLifecycle(paths.lifecycleFile, record as unknown as Json),
+      log: recordLifecycle,
       onEvent: (impl, topic, payload) => broadcast(impl, topic, payload),
       onPortCall: handlePortCall,
       startWrapper: options.startWrapper,
@@ -1323,6 +1407,31 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     syncPeriodic(writer.snapshot().world)
     reportMethodTimeouts(writer.snapshot().world)
     await listen(server, address)
+    // 源码 watcher：默认关；只监听、不落账——变动经宿主落账互斥段提交，再交装配跟随。
+    // 挂在装配就绪之后：回调依赖 runtime（跟随换代）与 router（新服务调用），
+    // 且开监听即意味着宿主已可用，此时才开始监听源码。
+    if (options.watch === true) {
+      watcher = startSourceWatcher({
+        root,
+        onReload: handleWatchReload,
+        onError: (target, reason) => {
+          appendLifecycle(paths.lifecycleFile, {
+            at: Date.now(),
+            kind: 'host',
+            event: 'watch_failed',
+            impl: target.entry.name,
+            reason,
+          })
+        },
+      })
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'watch_start',
+        reason: String(watcher.targets.length),
+      })
+      watchLog(`watcher: 已监听 ${watcher.targets.length} 个投递路径`)
+    }
   } catch (err) {
     // 启动失败不泄漏：停周期调度与已起服务、关监听、释放锁
     stopping = true

@@ -211,6 +211,19 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 配置优先级与调用超时同规：**CLI（`--start-wrapper`）> 环境（`CHRONO_START_WRAPPER`）> 无**。
 - 包装器**只影响 spawn 命令行**：不参与声明解析、不改 `plugin.json` 契约、不引入「特权插件」；非法值（空 / 纯空白 / 含 NUL 或换行）**fail-closed 拒启动**，并记一条 `host` `start_failed`（reason `bad_start_wrapper`）运维日志。
 
+**源码 watcher（热更）**
+
+- **能力归属载体**：watcher 是宿主进程内的一个能力（`packages/host/watch/`），不是独立进程、不是离线命令。理由：宿主常驻时单写者锁恒被持有，离线 `seed` 必然 `writer_busy`；运行期写入只能经宿主自己的落账路径。
+- **默认关**：生产常驻不该无条件监听文件系统；只有显式 `--watch`（宿主入口 / `boot start`）或 `CHRONO_WATCH=<真值>` 才打开，优先级 **CLI > env > 关**，无法识别的 env 值 fail-closed（`bad_watch`）。`node start.mjs watch` 是前台便捷入口。
+- **监听对象 = `state/plugins.json` 登记的投递路径**：有 `path` 走路径、无 `path` 走 Node 解析；**不按第一方 / 第三方分类**（「只有一个插件种类」），指向 `plugins/`、`fixtures/plugins/` 还是别处一视同仁。解析不到包根的条目跳过（只读目录不产生事件）。
+- **触发过滤**：与打包排除同口径——通用排除（`node_modules` / `.git`）与插件 `.worldignore` 声明项命中的路径**不触发**；`.worldignore` 自身变动触发（排除规则变了）。**这是防死循环的关键**：`dist/` 等构建产物若不过滤，一次构建写产物就会触发下一次换代、换代又重建产物，形成无限循环。
+- **静默窗口**：窗口内多次事件合并为一次重建（尾沿触发），覆盖编辑器保存的多事件与「写临时文件再 rename」。
+- **内容未变不换代**：重建先按 `planIngest` 纯规划比对内容哈希，与当前最近代码世代相同则**什么都不做**（不产生 journal entry）。
+- **换代落链**：内容变化 → 源码字节先落 CAS → 在**宿主落账互斥段**内提交一条 `batch`（身份不存在则 `add_identity` + `add_gen`）→ 链头推进后交**装配跟随**（`applyWorld`）。故 watcher 触发的换代是**真 journal entry**，可回滚可审计，不引入开发态 / 生产态分叉。
+- **代码 / 数据分流复用既有判据**：`execute` 成员变化 → 起新服务、旧服务 drain；`term` / `schema` 变化 → 热生效、进程不动（见「世代」）。新世代构建 / 启动失败**不替换在跑服务**，只记运维日志 + 在 stdout 说明「旧版本继续服务」。
+- **可观测**：每次触发记 `host` `watch_triggered`，接管记 `watch_applied`（构建 / 启动失败记 `watch_follow_failed`），入世 / 监听失败记 `watch_failed`；前台模式同时在宿主 stdout 打一行。
+- **跨平台**：`fs.watch` 的 recursive 在 Windows / macOS 稳定、Linux 自 Node 20 起可用；事件文件名无法定位（含 null）时保守按整目录触发——重建前比对内容哈希，真无变化不换代，故不会因此死循环。监听句柄故障只记 `watch_failed`，不炸宿主；停机时先停 watcher 再 drain 服务。
+
 **效果**
 
 - 效果一律经宿主；**审计先于业务写**（audit def → `request.ref`），**失败也落审计**（`execute` 必须
@@ -420,6 +433,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   | `kind` | `event` | 载荷 | 触发 |
   | --- | --- | --- | --- |
   | `host` | `start` / `stop` / `start_failed` | `reason?` | 宿主自起停 / 启动选项非法 |
+  | `host` | `watch_start` / `watch_triggered` / `watch_applied` / `watch_follow_failed` / `watch_failed` | `impl?`, `gen?`, `reason?` | 源码 watcher：开监听 / 检测到改动 / 换代接管 / 新世代构建启动失败（旧版本继续）/ 入世或监听失败 |
   | `dep` | `cycle` / `stale` / `drift` / `retired` / `periodic_invalid` / `method_timeout_invalid` | `impl`, `cap?`, `reason?` | 装配解析 / 依赖退役 / 周期与方法级超时声明非法 |
   | `handshake` | `failed` / `extra_dropped` | `impl`, `gen`, `caps?` | 握手校验 |
   | `service` | `start_failed` / `exit` / `restart_exhausted` | `impl`, `gen`, `reason?` | 起服务 / 进程 |

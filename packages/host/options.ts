@@ -1,5 +1,5 @@
-// 宿主启动选项：调用超时解析（F7）与服务启动包装器（宿主侧最小沙箱形态）。
-// 口径：显式（`--call-timeout-ms` / `--start-wrapper`）> 环境（`CHRONO_*`）> 常量 / 无。
+// 宿主启动选项：调用超时解析（F7）、服务启动包装器（宿主侧最小沙箱形态）与源码 watcher 开关。
+// 口径：显式（`--call-timeout-ms` / `--start-wrapper` / `--watch`）> 环境（`CHRONO_*`）> 常量 / 无。
 // 纯函数：host 入口与 boot start 共用同一份，避免两处解析漂移；非法值 fail-closed。
 
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/run-loop.ts'
@@ -12,6 +12,8 @@ export interface EntryOptions {
   callTimeout?: string
   /** `--start-wrapper` 的值；flag 给出但缺值 = ''（交给 `resolveStartWrapper` fail-closed）。 */
   startWrapper?: string
+  /** `--watch`：布尔旗标，出现即 true（源码 watcher，默认关）。 */
+  watch?: boolean
   rest: string[]
 }
 
@@ -25,6 +27,11 @@ export function parseEntryArgv(argv: string[]): EntryOptions {
   const out: EntryOptions = { rest: [] }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
+    // 布尔旗标不吞下一枚 token：`--watch` 后随的命令 / 路径照常进 rest
+    if (token === '--watch') {
+      out.watch = true
+      continue
+    }
     if (!ENTRY_FLAGS.has(token)) {
       out.rest.push(token)
       continue
@@ -74,4 +81,23 @@ export function resolveStartWrapper(explicit?: string, env?: string): string | u
     throw new Error(`bad_start_wrapper: ${raw}`)
   }
   return raw
+}
+
+/** 布尔真值 / 假值的接受集合（大小写与首尾空白不敏感）；其余值 fail-closed。 */
+const WATCH_TRUE = new Set(['1', 'true', 'yes', 'on'])
+const WATCH_FALSE = new Set(['0', 'false', 'no', 'off'])
+
+/**
+ * 解析源码 watcher 开关。默认关：生产常驻不该无条件监听文件系统，
+ * 只有显式 `--watch` 或 `CHRONO_WATCH=<真值>` 才打开。
+ * @param explicit `--watch` 是否出现（true = 打开）
+ * @param env `CHRONO_WATCH` 的值；空串视为未设置；无法识别的值抛 `bad_watch`（fail-closed，不静默当关）
+ */
+export function resolveWatch(explicit?: boolean, env?: string): boolean {
+  if (explicit === true) return true
+  if (env === undefined || env.length === 0) return false
+  const value = env.trim().toLowerCase()
+  if (WATCH_TRUE.has(value)) return true
+  if (WATCH_FALSE.has(value)) return false
+  throw new Error(`bad_watch: ${env}`)
 }

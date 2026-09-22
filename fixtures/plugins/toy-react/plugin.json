@@ -23,6 +23,9 @@
     "timeout_ms": 1000
   },
   "state": "recomputable",
-  "members": [{ "kind": "execute", "path": "execute/" }],
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "execute", "path": "src/" }
+  ],
   "commands": []
 }

@@ -9,10 +9,10 @@ import { blobPointerOf, blobSha256 } from '../blobs.ts'
 import type { Json } from '../../kernel/index.ts'
 
 /** 通用排除：依赖（宿主侧 ③）与版本库元数据——宿主只内置这两个名字。 */
-const EXCLUDED = new Set(['node_modules', '.git'])
+export const SOURCE_EXCLUDED_NAMES: ReadonlySet<string> = new Set(['node_modules', '.git'])
 
 /** 入世排除表文件名；自身永不进源码树。 */
-const WORLDIGNORE_FILE = '.worldignore'
+export const WORLDIGNORE_FILE = '.worldignore'
 
 /** 物化目录的宿主标记文件名：标记不属于源码树，打包时恒排除。 */
 export const MATERIALIZE_MARKER = '.chrono-materialized'
@@ -112,7 +112,7 @@ function packDir(
   const placeholderEntries: Json[] = []
   let fileCount = 0
   const dirents = readdirSync(dir, { withFileTypes: true })
-    .filter((e) => !EXCLUDED.has(e.name))
+    .filter((e) => !SOURCE_EXCLUDED_NAMES.has(e.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const dirent of dirents) {
     if (dirent.name === WORLDIGNORE_FILE || dirent.name === MATERIALIZE_MARKER) continue

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Chrono 启动器：一条命令完成「生成插件清单 → 入世 → 前台起宿主」。
-// 用法：node start.mjs [start|status|seed]（缺省 start）。
+// 用法：node start.mjs [start|watch|status|seed]（缺省 start）。
+// `watch` 与 `start` 相同，只是给宿主加 `--watch`：源码 watcher 打开，改插件源码自动换代重建。
 // 宿主前台常驻，日志直出终端；Ctrl-C 由宿主处理，其自身 drain 全部插件后退出。
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -73,11 +74,15 @@ async function probe() {
  * 本进程忽略 SIGINT/SIGTERM，Ctrl-C 只交给宿主处理（宿主自行 drain 全部插件），
  * 等子进程退出后以同码退出，避免先于 drain 结束就返回提示符。
  */
-function startHostForeground() {
-  const child = spawn(process.execPath, [HOST, '--root', ROOT, '--call-timeout-ms', '30000'], {
-    cwd: ROOT,
-    stdio: 'inherit',
-  })
+function startHostForeground(extraArgs = []) {
+  const child = spawn(
+    process.execPath,
+    [HOST, '--root', ROOT, '--call-timeout-ms', '30000', ...extraArgs],
+    {
+      cwd: ROOT,
+      stdio: 'inherit',
+    },
+  )
   const ignoreSignal = () => {}
   process.on('SIGINT', ignoreSignal)
   process.on('SIGTERM', ignoreSignal)
@@ -93,18 +98,22 @@ if (command === 'status') {
 } else if (command === 'seed') {
   ensureManifest()
   seedOnce()
-} else if (command === 'start') {
+} else if (command === 'start' || command === 'watch') {
   const running = await probe()
   if (running !== null) {
     console.log(`宿主已在运行：http://127.0.0.1:${UI_PORT}（${JSON.stringify(running)}）`)
   } else {
     ensureManifest()
     seedOnce()
-    console.log(`前台起宿主；浏览器打开 http://127.0.0.1:${UI_PORT}，Ctrl-C 停止全部插件`)
+    if (command === 'watch') {
+      console.log('前台起宿主（源码 watcher 已开）：改插件源码自动换代重建，Ctrl-C 停止全部插件')
+    } else {
+      console.log(`前台起宿主；浏览器打开 http://127.0.0.1:${UI_PORT}，Ctrl-C 停止全部插件`)
+    }
     console.log('首次会物化 Rust 子组件，就绪需数十秒到数分钟')
-    process.exitCode = await startHostForeground()
+    process.exitCode = await startHostForeground(command === 'watch' ? ['--watch'] : [])
   }
 } else {
-  console.error('用法：node start.mjs [start|status|seed]')
+  console.error('用法：node start.mjs [start|watch|status|seed]')
   process.exit(1)
 }

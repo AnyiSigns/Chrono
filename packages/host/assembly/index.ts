@@ -38,6 +38,7 @@ export {
   planIngest,
   planPack,
   readPluginManifest,
+  resolveEntryRoot,
   resolvePluginSourceRoot,
 } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'

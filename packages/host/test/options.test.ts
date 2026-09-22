@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { parseEntryArgv, resolveCallTimeoutMs, resolveStartWrapper } from '../options.ts'
+import {
+  parseEntryArgv,
+  resolveCallTimeoutMs,
+  resolveStartWrapper,
+  resolveWatch,
+} from '../options.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from '../effect/run-loop.ts'
 
 describe('入口参数解析（boot / host 共用）', () => {
@@ -31,6 +36,15 @@ describe('入口参数解析（boot / host 共用）', () => {
     expect(parseEntryArgv(['--root'])).toEqual({ rest: [] })
     expect(parseEntryArgv(['--call-timeout-ms'])).toEqual({ callTimeout: '', rest: [] })
     expect(parseEntryArgv(['--start-wrapper'])).toEqual({ startWrapper: '', rest: [] })
+  })
+
+  it('--watch 是布尔旗标：不吞下一枚 token', () => {
+    expect(parseEntryArgv(['start', '--watch', '--root', 'R'])).toEqual({
+      watch: true,
+      root: 'R',
+      rest: ['start'],
+    })
+    expect(parseEntryArgv(['start'])).toEqual({ rest: ['start'] })
   })
 })
 
@@ -75,5 +89,33 @@ describe('服务启动包装器解析（显式 > env > 无）', () => {
       expect(() => resolveStartWrapper(bad)).toThrow('bad_start_wrapper')
     }
     expect(() => resolveStartWrapper(undefined, '  ')).toThrow('bad_start_wrapper')
+  })
+})
+
+describe('源码 watcher 开关解析（显式 > env > 关）', () => {
+  it('两路都缺省 → 关（生产常驻不无条件监听文件系统）', () => {
+    expect(resolveWatch()).toBe(false)
+    expect(resolveWatch(undefined, '')).toBe(false)
+  })
+
+  it('显式 --watch 覆盖 env 的假值', () => {
+    expect(resolveWatch(true, '0')).toBe(true)
+    expect(resolveWatch(true)).toBe(true)
+  })
+
+  it('env 真值打开（大小写 / 空白不敏感）', () => {
+    for (const on of ['1', 'true', 'TRUE', ' yes ', 'On']) {
+      expect(resolveWatch(undefined, on)).toBe(true)
+    }
+  })
+
+  it('env 假值关', () => {
+    for (const off of ['0', 'false', 'NO', 'off']) {
+      expect(resolveWatch(undefined, off)).toBe(false)
+    }
+  })
+
+  it('无法识别的 env 值 fail-closed', () => {
+    expect(() => resolveWatch(undefined, 'maybe')).toThrow('bad_watch')
   })
 })

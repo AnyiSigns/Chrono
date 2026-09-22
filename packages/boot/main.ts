@@ -12,6 +12,7 @@ import {
   resolveCallTimeoutMs,
   resolveRoot,
   resolveStartWrapper,
+  resolveWatch,
   runAssetGc,
   runBlobGc,
   runCompact,
@@ -62,10 +63,11 @@ function helpText(): string {
     '用法：boot <命令> [--root <路径>] [参数]',
     '',
     '宿主：',
-    '  start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]',
+    '  start [--call-timeout-ms <ms>] [--start-wrapper <cmd>] [--watch]',
     '                              起宿主（唯一写者，后台进程）；超时缺省读',
     '                              CHRONO_CALL_TIMEOUT_MS，再缺省 30000；',
-    '                              包装器缺省读 CHRONO_START_WRAPPER，再缺省无',
+    '                              包装器缺省读 CHRONO_START_WRAPPER，再缺省无；',
+    '                              --watch 打开源码 watcher（缺省读 CHRONO_WATCH，默认关）',
     '  stop                        令宿主停机',
     '  status                      查看链头与已装载身份',
     '',
@@ -117,9 +119,11 @@ async function startHostProcess(
   root: string,
   callTimeoutMs: number,
   startWrapper: string | undefined,
+  watch: boolean,
 ): Promise<void> {
   const hostArgs = [HOST_MAIN, '--root', root, '--call-timeout-ms', String(callTimeoutMs)]
   if (startWrapper !== undefined) hostArgs.push('--start-wrapper', startWrapper)
+  if (watch) hostArgs.push('--watch')
   const child = spawn(process.execPath, hostArgs, {
     detached: true,
     stdio: 'ignore',
@@ -133,6 +137,7 @@ async function startHostProcess(
     pid: child.pid,
     call_timeout_ms: callTimeoutMs,
     start_wrapper: startWrapper ?? null,
+    watch,
   })
 }
 
@@ -179,6 +184,7 @@ async function main(): Promise<void> {
         root,
         resolveCallTimeoutMs(parsed.callTimeout, process.env['CHRONO_CALL_TIMEOUT_MS']),
         resolveStartWrapper(parsed.startWrapper, process.env['CHRONO_START_WRAPPER']),
+        resolveWatch(parsed.watch, process.env['CHRONO_WATCH']),
       )
       return
     case 'stop':
