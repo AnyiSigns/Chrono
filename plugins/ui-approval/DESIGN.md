@@ -36,7 +36,7 @@
   ] }
 ```
 
-- 命令无参：入口 term 读 `input` 槽 kind 后 eff 到 `#32`；**写类载荷先入世界**（裁决经槽 `{kind:'approval.decide', id?, verdict}`，缺 `id` = 整批）。**裁决命令（`approval.decide` / `decide_all`）的入口 term 产 `[eval(command:'chat.resume', args 含裁决), write(记裁决 + 清槽)]` 续跑计划（H18；与 #32 / #14 侧一致）**（2026-09-20 修订）。
+- 命令无参：入口 term 读 `input` 槽 kind 后 eff 到 `#32`；**写类载荷先入世界**（裁决经槽 `{kind:'approval.decide', id?, verdict}`，缺 `id` = 整批）。**裁决命令（`approval.decide` / `decide_all`）的入口 term 产 `[eval(command:'chat.resume', args:{cursor, thread, payload:{verdict}, ids}), write(记裁决 + 清槽)]` 续跑计划（H18；与 #32 / #14 侧一致）**（2026-09-20 修订）。**`ids` = 本服务入口 term 传入的投影切片，原样带上**——内核 term 不能同时传 args 与投影，续跑 eval 无法再取 `["g",["ids"]]`，故由调用方携带供 #14 服务装配 interpret bag（先例见 #16 `reveal` / #17 `search`）。
 - **卡片信息量（已定）**：默认显 tier + 工具名 + 参数**摘要**；点击条目**就地展开全量**（mono、可选中复制）；`severe` 档条目默认展开。
 
 ```

@@ -1,0 +1,160 @@
+{
+  "title": "loop-policy（图与策略数据契约）",
+  "description": "身份自述 / 数据契约：六类条目（contracts / nodes / prompts / graph / thresholds / refusal_codes）的形状。数据住本身份的数据世代 body（不在包树）；空 body 由服务回落包内种子图与默认阈值。graph 是单值不是 tail（历史版本由数据世代承载）。服务不读投影：六类条目由调用方入口 term 读投影后随 bag.graph 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "contracts": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "能力类（闭集 append-only）：条目各自成 def、带 prev 成链；tail = {\"def\":hash} 或 null。",
+      "properties": {
+        "tail": { "description": "链头 {\"def\":\"<契约条目 def 哈希>\"} 或 null。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "Scope 实例（开集，含 composite）：条目各自成 def、带 prev 成链。",
+      "properties": {
+        "tail": { "description": "链头 {\"def\":\"<Scope 条目 def 哈希>\"} 或 null。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "prompts": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "提示词（各自成 def；含保留 id system = 图级系统提示词、skill_select = 技能选用准则）。",
+      "properties": {
+        "tail": { "description": "链头 {\"def\":\"<提示词条目 def 哈希>\"} 或 null。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "required": ["def"],
+      "additionalProperties": true,
+      "description": "唯一顶层图（单值，不是 tail）。",
+      "properties": {
+        "def": { "type": "string", "description": "图 def 哈希（64 位小写 hex）。" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "阈值（热改）：条目各自成 def、带 prev 成链。字段名契约与 evolve-metrics 对齐（见 README「阈值契约」）。",
+      "properties": {
+        "tail": { "description": "链头 {\"def\":\"<阈值条目 def 哈希>\"} 或 null。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "refusal_codes": {
+      "type": "object",
+      "required": ["tail", "count"],
+      "additionalProperties": true,
+      "description": "全局拒绝码表（append-only）：条目各自成 def、带 prev 成链。",
+      "properties": {
+        "tail": { "description": "链头 {\"def\":\"<拒绝码条目 def 哈希>\"} 或 null。" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "contract_entry": {
+      "title": "契约条目",
+      "description": "能力边界：inputs / outputs / reads / publishes / pre / post / refuses / effects。契约不可变：改判定式结构 = 新 contract_id。",
+      "type": "object",
+      "required": ["contract_id"],
+      "additionalProperties": true,
+      "properties": {
+        "contract_id": { "type": "string" },
+        "role_tag": { "type": "string" },
+        "inputs": { "type": "array", "items": { "type": "object" } },
+        "outputs": { "type": "array", "items": { "type": "object" } },
+        "reads": { "type": "array", "items": { "type": "object" } },
+        "publishes": { "type": "array", "items": { "type": "string" } },
+        "pre": { "type": "string", "description": "服务内声明式规则名。" },
+        "post": { "type": "string", "description": "服务内声明式规则名（唯一 dense 信号源）。" },
+        "refuses": { "type": "array", "items": { "type": "string" } },
+        "effects": { "type": "object", "description": "{ports, methods, caps} = 权限上限。" },
+        "idempotent": { "type": "boolean" },
+        "touches_effects": { "type": "boolean" },
+        "can_delegate": { "type": "boolean" },
+        "cost": { "type": "object" },
+        "prev": { "description": "链指针 {\"def\":hash} 或 null。" }
+      }
+    },
+    "scope_entry": {
+      "title": "Scope 实例条目（节点 = agent = 作用域）",
+      "type": "object",
+      "required": ["node_id", "contract_id", "impl"],
+      "additionalProperties": true,
+      "properties": {
+        "node_id": { "type": "string" },
+        "contract_id": { "type": "string" },
+        "impl": { "enum": ["atomic", "composite"] },
+        "entry": { "type": "object", "description": "atomic：{cap, method}。" },
+        "subgraph": { "type": "object", "description": "composite：内部子图 {nodes, edges, sink}。" },
+        "bindings": { "type": "object" },
+        "autonomy": { "enum": ["L0", "L1"] },
+        "scope": { "type": "object" },
+        "links": { "type": "array", "items": { "type": "string" } },
+        "prev": { "description": "链指针 {\"def\":hash} 或 null。" }
+      }
+    },
+    "prompt_entry": {
+      "title": "提示词条目",
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "system / skill_select / 节点级提示词 id。" },
+        "text": { "type": "string" },
+        "prev": { "description": "链指针 {\"def\":hash} 或 null。" }
+      }
+    },
+    "graph_entry": {
+      "title": "唯一顶层图",
+      "type": "object",
+      "required": ["nodes", "edges", "entry_supply", "loop", "sink"],
+      "additionalProperties": true,
+      "properties": {
+        "nodes": { "type": "array", "items": { "type": "string" }, "description": "contract_id 生成序，下标 = node_index。" },
+        "edges": { "type": "array", "items": { "type": "object" }, "description": "推式条件边 {from:[u,out], to:[v,in], when?}。" },
+        "entry_supply": { "type": "array", "items": { "type": "object" } },
+        "loop": { "type": "object", "description": "{when, max_iter}。" },
+        "sink": { "type": "integer" },
+        "derived_from": { "type": "string", "description": "旧图 def 哈希（fork-only）。" }
+      }
+    },
+    "threshold_entry": {
+      "title": "阈值条目",
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "number" },
+        "prev": { "description": "链指针 {\"def\":hash} 或 null。" }
+      }
+    },
+    "refusal_entry": {
+      "title": "拒绝码条目",
+      "type": "object",
+      "required": ["code", "attributable_to"],
+      "additionalProperties": true,
+      "properties": {
+        "code": { "type": "string" },
+        "retriable": { "type": "boolean" },
+        "attributable_to": { "enum": ["node", "graph", "budget", "user"] },
+        "prev": { "description": "链指针 {\"def\":hash} 或 null。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "loop-policy.interpret": 600000
+  }
+}

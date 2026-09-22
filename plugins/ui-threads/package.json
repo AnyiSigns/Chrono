@@ -1,0 +1,10 @@
+{
+  "name": "ui-threads",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "线程顶栏：hover 展开的线程标签（对话 / 子代理 / 群聊 / 工作流 + 待办位），点击切换当前视图线程",
+  "scripts": {
+    "test": "node --test"
+  }
+}

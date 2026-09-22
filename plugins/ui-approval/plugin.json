@@ -1,0 +1,36 @@
+{
+  "identity": "ui-approval",
+  "implements": ["ui-approval"],
+  "methods": {
+    "ui-approval": ["ping", "list", "decide", "decide_all"]
+  },
+  "pins": {
+    "approval": "approval"
+  },
+  "start": "node execute/main.ts",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "ui-approval.ping",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" }
+  ],
+  "commands": [
+    { "name": "approval.list", "entry": "terms/approval.list.json" },
+    { "name": "approval.decide", "entry": "terms/approval.decide.json" },
+    { "name": "approval.decide_all", "entry": "terms/approval.decide_all.json" }
+  ]
+}

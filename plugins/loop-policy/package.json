@@ -1,0 +1,10 @@
+{
+  "name": "loop-policy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "唯一的编排插件：服务自驱图解释器（推式条件边 + 回合重入 + 审批/提问往返 + 回合尾 trace/提案扫描 + 降级判定）。",
+  "scripts": {
+    "test": "node --test"
+  }
+}

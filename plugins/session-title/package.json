@@ -1,0 +1,10 @@
+{
+  "name": "session-title",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "会话自动标题：按首条用户消息用用户配置的模型生成 ≤10 字标题，写入会话 title；非流式、旁路失败不阻塞回合",
+  "scripts": {
+    "test": "node --test"
+  }
+}

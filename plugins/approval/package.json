@@ -1,0 +1,10 @@
+{
+  "name": "approval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "审批流程与回执：待审批队列进世界、裁决语义、跨 run 续跑游标；只产写计划与上行事件",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "title": "session-title（会话自动标题）",
+  "description": "身份自述 / 数据契约：按会话首条用户消息，用调用方随 args 传入的模型连接生成不超过 10 字的标题，写入会话身份。服务不读投影、无写通道：标题写计划由会话服务的 set_title 返回、由调用方入口 term 机械合并上提；模型失败 / 超时 / 空一律确定性兜底，不报错、不阻塞主回合。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "default": "你是会话标题生成器。请依据用户的第一条消息生成一个简洁的中文标题。要求：只输出标题本身，不超过 10 个字，不要加引号、标点、解释或换行。",
+      "description": "标题生成提示词（system 消息）；住本 schema、可热改（调用方入口 term 读出身份数据后随 args.prompt 覆盖）。"
+    },
+    "max_chars": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "default": 10,
+      "description": "标题字数上限（Unicode 码点）：无论来源一律钳制到 1..10。"
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 64,
+      "description": "单次非流式补全的 max_tokens（透传给模型服务）。"
+    },
+    "fallback": {
+      "enum": ["first_message_then_default"],
+      "default": "first_message_then_default",
+      "description": "兜底策略：模型失败 / 超时 / 返回空时取首条用户消息去空白后前 max_chars 字；仍空则保留调用方给的缺省标题。"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 15000,
+      "description": "单次模型调用与会话写入的等待上限（毫秒）；超时即兜底。"
+    },
+    "generate_request": {
+      "type": "object",
+      "required": ["conversation", "first_message"],
+      "additionalProperties": true,
+      "description": "generate 入参（由调用方入口 term 装配）：会话 id、首条用户消息，以及用户配置的模型连接。",
+      "properties": {
+        "conversation": { "type": "string", "description": "目标会话 id。" },
+        "first_message": { "type": "string", "description": "本回合用户消息文本。" },
+        "vendor": { "type": "string", "description": "厂商身份名（用户配置）。" },
+        "model": { "type": "string", "description": "所选模型 id（用户配置）；本插件不内置任何模型名。" },
+        "params": { "type": "object", "description": "模型参数（temperature / max_tokens / reasoning 等），原样透传。" },
+        "title_default": { "type": "string", "description": "最终兜底标题；缺省为新建会话的缺省标题。" },
+        "prompt": { "type": "string", "description": "可选：覆盖 schema 提示词。" },
+        "max_chars": { "type": "integer", "description": "可选：覆盖字数上限（钳制 1..10）。" },
+        "max_tokens": { "type": "integer", "description": "可选：覆盖 max_tokens。" },
+        "timeout_ms": { "type": "integer", "description": "可选：覆盖超时。" }
+      }
+    },
+    "generate_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "成功时值 = 会话服务 set_title 返回的写计划 {$directives:[write(batch), extern]}，由调用方入口 term 机械合并上提；会话调用失败时回 {$directives:[extern({ok:false, error})]}（无写）。",
+      "properties": {
+        "$directives": { "type": "array", "description": "写计划条目数组（原样上提，本插件不新增 / 不改写）。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "session-title.generate": 30000
+  }
+}

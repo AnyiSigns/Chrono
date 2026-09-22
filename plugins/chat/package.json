@@ -1,0 +1,10 @@
+{
+  "name": "chat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "回合命令面 + 管道装配服务 + 接线（execute + terms + schema）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

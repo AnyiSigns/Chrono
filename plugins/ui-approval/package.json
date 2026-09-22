@@ -1,0 +1,10 @@
+{
+  "name": "ui-approval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "审批停靠带（dock 槽子应用）：展示待审批队列、按 kind 选卡片模板、提交裁决并拼续跑计划",
+  "scripts": {
+    "test": "node --test"
+  }
+}
