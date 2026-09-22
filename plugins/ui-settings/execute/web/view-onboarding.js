@@ -8,8 +8,10 @@ export function renderOnboarding(ctx) {
   const form = ctx.state.onboarding ?? ctx.defaultOnboarding()
   ctx.state.onboarding = form
   const card = el(ctx.doc, 'div', { class: 'settings-guide-card' }, [
-    el(ctx.doc, 'div', { class: 'settings-guide-title', text: ctx.text('settings_title') }),
-    el(ctx.doc, 'div', { class: 'settings-guide-intro', text: ctx.text('settings_required') }),
+    el(ctx.doc, 'div', { class: 'settings-guide-head' }, [
+      el(ctx.doc, 'div', { class: 'settings-guide-title', text: ctx.text('settings_onboarding_title') }),
+      el(ctx.doc, 'div', { class: 'settings-guide-intro', text: ctx.text('settings_onboarding_intro') }),
+    ]),
   ])
   const content = el(ctx.doc, 'div', {})
   card.appendChild(content)

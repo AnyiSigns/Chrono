@@ -17,15 +17,19 @@ function isLabelable(node) {
   return tag === 'input' || tag === 'select' || tag === 'textarea'
 }
 
-/** 表单字段：label + 控件；可标控件用 `for`，复合控件退化为分组 `aria-label`。 */
-export function field(ctx, label, control) {
+/** 表单字段：label + 控件；可标控件用 `for`，复合控件退化为分组 `aria-label`。`required` 只加视觉标记与 `aria-required`。 */
+export function field(ctx, label, control, options = {}) {
   let labelNode
   if (isLabelable(control)) {
     if (typeof control.id !== 'string' || control.id.length === 0) control.id = nextId('field')
     labelNode = el(ctx.doc, 'label', { class: 'settings-field-label', text: label, attrs: { for: control.id } })
+    if (options.required === true) control.setAttribute('aria-required', 'true')
   } else {
     labelNode = el(ctx.doc, 'span', { class: 'settings-field-label', text: label })
     if (control !== null && typeof control.setAttribute === 'function') control.setAttribute('aria-label', label)
+  }
+  if (options.required === true) {
+    labelNode.appendChild(el(ctx.doc, 'span', { class: 'settings-required-mark', text: '*', attrs: { 'aria-hidden': 'true' } }))
   }
   return el(ctx.doc, 'div', { class: 'settings-field' }, [labelNode, control])
 }

@@ -488,6 +488,34 @@
     "title": "关闭设置",
     "body": "关闭设置"
   },
+  "settings_onboarding_title": {
+    "title": "开始使用",
+    "body": "开始使用"
+  },
+  "settings_onboarding_intro": {
+    "title": "连接一个模型厂商即可开始。带 * 的为必填项。",
+    "body": "连接一个模型厂商即可开始。带 * 的为必填项。"
+  },
+  "settings_section_connection": {
+    "title": "连接",
+    "body": "连接"
+  },
+  "settings_section_models": {
+    "title": "模型",
+    "body": "模型"
+  },
+  "settings_empty_models": {
+    "title": "尚未获取模型",
+    "body": "尚未获取模型"
+  },
+  "settings_empty_models_hint": {
+    "title": "点「获取模型」拉取，或直接填自定义模型 id。",
+    "body": "点「获取模型」拉取，或直接填自定义模型 id。"
+  },
+  "settings_need_model": {
+    "title": "先勾选或添加至少一个模型。",
+    "body": "先勾选或添加至少一个模型。"
+  },
   "settings_loading_more": {
     "title": "仍在读取…",
     "body": "仍在读取…"
@@ -664,13 +692,33 @@
     "title": "添加厂商",
     "body": "添加厂商"
   },
+  "settings_add_provider_hint": {
+    "title": "用内置厂商模板预填地址与密钥引用。",
+    "body": "用内置厂商模板预填地址与密钥引用。"
+  },
   "settings_add_custom_provider": {
     "title": "添加自定义厂商",
     "body": "添加自定义厂商"
   },
+  "settings_add_custom_provider_hint": {
+    "title": "自行选择协议并填写地址。",
+    "body": "自行选择协议并填写地址。"
+  },
   "settings_protocol": {
     "title": "protocol",
     "body": "protocol"
+  },
+  "settings_protocol_openai_chat": {
+    "title": "OpenAI Completions",
+    "body": "OpenAI Completions"
+  },
+  "settings_protocol_openai_responses": {
+    "title": "OpenAI Responses",
+    "body": "OpenAI Responses"
+  },
+  "settings_protocol_anthropic_messages": {
+    "title": "Anthropic Messages",
+    "body": "Anthropic Messages"
   },
   "settings_base_url": {
     "title": "url",
@@ -727,6 +775,10 @@
   "settings_custom_model": {
     "title": "自定义模型",
     "body": "自定义模型"
+  },
+  "settings_custom_model_more": {
+    "title": "手动添加模型 id",
+    "body": "手动添加模型 id"
   },
   "settings_custom_model_placeholder": {
     "title": "输入模型 id，逗号或换行分隔",

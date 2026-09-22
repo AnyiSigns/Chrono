@@ -78,6 +78,7 @@ export function defaultOnboarding() {
     secret_value: '',
     models: [],
     selected: [],
+    customOpen: false,
     error: null,
     busy: false,
     loading: false,
