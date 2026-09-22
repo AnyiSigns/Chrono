@@ -85,12 +85,14 @@ Chrono/
 │                            seed 进临时世界，不进正式世界
 ├── experiment/              独立实验树（standalone，不接内核）
 └── state/                   宿主侧落盘（ignore；**永不进世界**）
-    ├── world/               journal 尾段 + 基础世界 + 冷段 —— **真源**：备份它 = 备份世界
+    ├── world/               journal 尾段 + 基础世界 + 冷段 —— **真源**：世界本体（源码字节不在此，见 `blobs/`）
     │   ├── journal.jsonl    快照起的尾段（append-only）
     │   ├── base.json        基础世界（快照位置 + 世界本体 + 审计索引；③ 可重算：丢了 / 与尾段不对齐即由冷段 + 尾段全链重放重建）
     │   └── cold/            冷段归档 `seg-<first>-<last>.jsonl`（快照前的前缀；移出 ≠ 删除）
+    ├── blobs/               源码字节本体 `<sha256>`（④ 不可重算；内容寻址、**只增**、离线可达性回收）—— 与 `assets/` 机械同构、保留策略不同
     ├── assets/              资产字节本体 `<sha256>`（④ 不可重算）—— **备份世界 ≠ 备份字节**，须一起备份
-    ├── runtime/             运行态表 / 工作副本 / 依赖（由 `decl.start` 安装）/ 锁 —— **③ 可重算**：删了重建
+    ├── runtime/             运行态表 / 工作副本 / 锁 —— **③ 可重算**：删了重建
+    ├── deps/                依赖 / 构建缓存（由 `decl.start` 安装；npm 缓存 `state/deps/npm`、Rust `state/deps/cargo-target`）—— **③ 可重算**：删了重建
     ├── plugins.json         插件包清单 `[{name, path?}]`：有 path 走路径、无 path 走 Node 解析（宿主侧配置，不进世界）
     └── sock/                入站面 socket —— 平台相关、不可重放
 ```
@@ -108,8 +110,9 @@ Chrono/
 - `packages/kernel` / `packages/host` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载（服务经 stdio 协议、客户端经入站面协议认识宿主，**不经源码 import**）。
 - 插件之间**可以相互依赖**（写在 `pins`），但**不相互 import**、**不互相作 npm 依赖**：调用只写能力类名，宿主按 `pins` 路由。
 - `state/` 只放宿主侧落盘，**永不进世界**，且 gitignore：
-  `state/world/` 是**真源**（备份它 = 备份世界），`state/assets/` 是**资产字节本体**（④ 不可重算，
-  备份世界 ≠ 备份字节，须一起备份），`state/runtime/` 是**可重算产物**（③），
+  `state/world/` 是**真源**，`state/blobs/` 是**源码字节本体**（④ 不可重算、只增、离线回收）、
+  `state/assets/` 是**资产字节本体**（④ 不可重算）——**备份 = `state/world/` + `state/blobs/`（+ `state/assets/`）**：
+  仅备份 `state/world/` 不再等于备份世界（源码字节在 `state/blobs/`）；`state/runtime/` 与 `state/deps/` 是**可重算产物**（③），
   `state/sock/` 是**入站面 socket**。
 
 ## 四、数据形态
@@ -384,6 +387,9 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **线程控制面**：`thread.resume` / `thread.terminate` → **宿主保留能力类 `host`**（run 生命周期）；线程数据面（发送 / 状态）由上层服务提供，宿主不直造其 body（保「载体不认识业务」）。
 - **run 级并发 + 提交队列 + 乐观校验**：见「写者」；锁收窄为 commit 期间，多 run 同时活动，提交队列串行落账（仲裁序 = `seq`）。v1 在串行段内重锚 `expect_pos`，等价于 append-only 写的安全 rebase（详见「写者 · v1 落地口径」）；`worldRev`/`expect_pos` CAS 冲突重试路径保留为契约、暂不触发。
 - **宿主事件面（2026-09-19 登记）**：宿主自身在 **run 生命周期**广播事件——`run.started`（受理并开始推进）/ `run.finished`（收口，`status ∈ done/refused/idle/cancelled`；**异常路径也必发**，status 记 `refused`）；`run.started` 与 `run.finished` **严格成对、恰好一次**。载荷**必带 `run` / `thread` / `status` / `reasons`**（`reasons` 取自该 run 收口 `observations` 末条 `kind:'refused'` 的 `reasons`，无则 `[]`；`status=refused` 时说明收口原因），与插件 `event` 同路经入站面广播给已连接客户端（`impl = "host"`），**不落账、不推进、不进世界、不进运维日志**。`thread` 来自发起者提交时的可选字段（原样回带、**不校验**，是展示标签非安全边界）；detached run 恒 `thread:null`。用途：UI 运行角标、发送 / 终止形态、回合完成通知。宿主**不解释业务**，只广播自身 run 的起止。
+- **源码 CAS（源码字节内容寻址）**：源码字节从 `defs` 外迁到内容寻址存储 `state/blobs/<sha256>`（④ 不可重算；**只增**、离线可达性回收）；① 里留下源码的**声明与内容身份**——`commit` def、`tree` def、每文件的 blob **指针 def** `{kind:'blob', sha256, size}`、term def、schema def、`sig` / `pins`。指针 def 的 `kind` 是唯一判别位（旧读取器遇对象体安全失败 `bad_blob`，不会把哈希串当内容写出）；`sha256` 兼作 CAS 文件名与读取校验，`size` 防截断；def 键 = `H(pointer def)`，与 `sha256` 不同，tree 仍引用 def 键，故 **tree / commit 的哈希结构与结构共享不变**。二进制文件同样走指针形态，CAS 存原始字节（不再 base64）。读取侧（`materialize` / 声明解析 / `source.read`）**同时支持 inline 与 pointer**，旧世界可不迁移直接跑。
+- **源码物化（指针经 CAS 解析 + 硬链接共享）**：物化对每个 pointer file entry 读 `state/blobs/<sha256>` 并校验 `size`，以**硬链接**接入物化树（同一 blob 在多个世代里指向同一 inode）；`EXDEV` / `EPERM` / `EMLINK` / 目标文件系统不支持时**回退普通复制**。共享前提是 CAS 不可变：物化时把源码文件置**只读**（POSIX `0444`、Windows 清写位），服务对物化目录的写只允许新增文件、不得覆盖源码文件。CAS 缺失 → `blob_missing`（与 `asset_missing` 同口径，属已知限制）。
+- **回收分档（`materialized` 与 `blobs`）**：`state/runtime/materialized` 是 **③ 可重算**，按「active 代码世代 + 前 N 代」回收（只删 64-hex 命名的目录、跳过 staging；触发点在启动抢锁后或离线命令，**绝不在 run 中删**）。`state/blobs/` 是 **④ 不可重算**，只做**可达性**回收——沿每个身份每个世代的 `commit.body.tree` 递归遍历 `world.defs`，删不被引用的 64-hex 文件；**离线、持锁，不在启动时自动删**（与 `assets gc` 同规）。**回滚承诺不由 `materialized` 承担**：`set_active` 指回任意世代恒可由「① 的指针 def + CAS 字节」重建，保留前 N 代只是缓存命中优化，故 blobs 的可达集覆盖**全部世代**（不是 active + N）。
 
 **其它**
 
