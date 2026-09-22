@@ -1,0 +1,26 @@
+{
+  "name": "toy-react",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React 前端验证插件（fixture）：esbuild 打包 JSX，自带 HTTP 服务投递构建产物",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "src/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "esbuild src/app.jsx --bundle --format=esm --jsx=automatic --outfile=dist/app.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

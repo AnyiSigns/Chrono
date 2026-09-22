@@ -1,0 +1,28 @@
+{
+  "identity": "toy-react",
+  "schema": "schema/plugin.schema.json",
+  "implements": ["toy.react"],
+  "methods": { "toy.react": ["ping"] },
+  "pins": {},
+  "start": "node execute/main.js",
+  "build": [
+    { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },
+    { "cmd": "npm", "args": ["run", "build"] }
+  ],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "none",
+    "max": 3,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": {
+    "probe": "toy.react.ping",
+    "interval_ms": 10000,
+    "timeout_ms": 1000
+  },
+  "state": "recomputable",
+  "members": [{ "kind": "execute", "path": "execute/" }],
+  "commands": []
+}
