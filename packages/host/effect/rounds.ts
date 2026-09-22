@@ -3,6 +3,7 @@
 // 机械填字段：id / by / ref（紧邻 eval 段最后一条 eff 的审计键）/ expect_pos（落账段内锚到当前链头）；
 // 结构 op 的 pins 按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）。
 // eval 的 ctx（A14）：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
+// plan 条目 eval 可写命令名代替入口哈希：宿主按命令声明解析入口（与命令面同路），属主即命令声明方。
 
 import { randomUUID } from 'node:crypto'
 import { HOST_CAPABILITY } from '../host-methods.ts'
@@ -22,8 +23,13 @@ import type {
 
 type Rec = { [k: string]: Json }
 
-/** 宿主侧 eval 草稿：`ctx` 字段**可缺省**——缺省 ⇒ 轮首投影；显式给出（含 null）⇒ 原样透传。 */
-export type EvalDraft = { kind: 'eval'; entry: Hash; args: Json; ctx?: Json }
+/**
+ * 宿主侧 eval 草稿：`ctx` 字段**可缺省**——缺省 ⇒ 轮首投影；显式给出（含 null）⇒ 原样透传。
+ * 入口二选一：`entry` 哈希，或 `command` 命令名（宿主按命令声明解析成入口，属主即声明方）；二者不可并存、不可都缺。
+ */
+export type EvalDraft =
+  | { kind: 'eval'; entry: Hash; args: Json; ctx?: Json }
+  | { kind: 'eval'; command: string; args: Json; ctx?: Json }
 
 /** 宿主侧 directive 输入：入站提交与 plan 物化同形（write 的 request 由宿主在分组物化时机械重填）。 */
 export type DirectiveDraft =
@@ -75,6 +81,11 @@ export interface SubmissionInput {
   signal?: AbortSignal
   /** 入站直提 directive 的属主解析（如命令入口哈希 → 身份）；解析不到 → 不路由。 */
   initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
+  /**
+   * plan 条目 eval 的命令名解析（宿主注入；effect 不认识装配）：命令名 → 入口 def + 声明方身份。
+   * 解析不到 → 该次提交 `refused`（reason `unknown_command`，与命令面同码）。
+   */
+  resolveCommand?: (world: World, name: string) => { entry: Hash; identity: string } | undefined
   /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
   ctxFor?: CtxProvider
   /** 审计 entry 落点（在落账互斥段内调用，保证账本追加序 = 链序）。 */
@@ -128,14 +139,22 @@ function materializePlanItem(
   if (!isRecord(raw)) return { ok: false, reason: 'bad_directive' }
   switch (raw['kind']) {
     case 'eval': {
-      if (typeof raw['entry'] !== 'string' || raw['entry'].length === 0) {
-        return { ok: false, reason: 'bad_directive' }
-      }
+      // 入口二选一：entry 与 command 不可同条并存、也不可都缺（否则 bad_directive）
+      const hasEntry = 'entry' in raw
+      const hasCommand = 'command' in raw
+      if (hasEntry === hasCommand) return { ok: false, reason: 'bad_directive' }
       // ctx 判定用字段存在性：缺省留给宿主投影；显式给出（含 null）原样透传
-      const directive: EvalDraft = {
-        kind: 'eval',
-        entry: raw['entry'],
-        args: raw['args'] ?? null,
+      let directive: EvalDraft
+      if (hasEntry) {
+        if (typeof raw['entry'] !== 'string' || raw['entry'].length === 0) {
+          return { ok: false, reason: 'bad_directive' }
+        }
+        directive = { kind: 'eval', entry: raw['entry'], args: raw['args'] ?? null }
+      } else {
+        if (typeof raw['command'] !== 'string' || raw['command'].length === 0) {
+          return { ok: false, reason: 'bad_directive' }
+        }
+        directive = { kind: 'eval', command: raw['command'], args: raw['args'] ?? null }
       }
       if ('ctx' in raw) directive.ctx = raw['ctx'] as Json
       return { ok: true, directive }
@@ -162,11 +181,6 @@ function materializePlanItem(
     default:
       return { ok: false, reason: 'bad_directive' }
   }
-}
-
-/** 取 eval 草稿的入口哈希；其余 kind 返回 undefined。 */
-function entryOf(directive: DirectiveDraft): Hash | undefined {
-  return directive.kind === 'eval' ? directive.entry : undefined
 }
 
 /**
@@ -205,31 +219,35 @@ export function refusedReasons(observations: Json[]): string[] {
 }
 
 /**
- * plan 通道：只认顶层 eval 观测（entry ∈ 本轮 directive 集合）value 里的保留包装。
+ * plan 通道：只认顶层 eval 观测（entry ∈ 本轮已解析 eval 集合）value 里的保留包装。
  * 多个 eval 各自产计划时按观测序拼接；其余 value 一律当普通数据。
  * plan 条目的发出者继承产出它的那条 eval 的属主。
+ *
+ * 匹配基准是**已解析的 eval 入口**（`prepareGroup` 产出的 directive）：命令形式的 eval 入口在
+ * 该阶段才由命令声明解析出来，若仍按原始 staged 草稿的 `entry` 匹配，命令形式 eval 产出的计划会被丢弃。
  */
 function pickPlan(
   observations: Json[],
-  group: StagedDirective[],
+  directives: Directive[],
+  owners: Array<string | undefined>,
 ): { ok: true; directives: StagedDirective[] } | { ok: false; reason: string } {
-  const entries = new Set(
-    group
-      .map((item) => entryOf(item.directive))
-      .filter((entry): entry is Hash => entry !== undefined),
-  )
+  const evals: Array<{ entry: Hash; owner: string | undefined }> = []
+  directives.forEach((directive, index) => {
+    if (directive.kind === 'eval') evals.push({ entry: directive.entry, owner: owners[index] })
+  })
   const out: StagedDirective[] = []
   for (const observation of observations) {
     if (!isRecord(observation)) continue
     if (observation['kind'] !== 'eval' || observation['ok'] !== true) continue
-    if (typeof observation['entry'] !== 'string' || !entries.has(observation['entry'])) continue
+    if (typeof observation['entry'] !== 'string') continue
+    const producer = evals.find((item) => item.entry === observation['entry'])
+    if (producer === undefined) continue
     const value = observation['value']
     if (!isRecord(value) || !Array.isArray(value['$directives'])) continue
-    const producer = group.find((item) => entryOf(item.directive) === observation['entry'])
     for (const raw of value['$directives']) {
       const item = materializePlanItem(raw)
       if (!item.ok) return item
-      out.push({ directive: item.directive, fromPlan: true, owner: producer?.owner })
+      out.push({ directive: item.directive, fromPlan: true, owner: producer.owner })
     }
   }
   return { ok: true, directives: out }
@@ -289,7 +307,14 @@ export function resolvePins(
 /** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐；eval 的 ctx 缺省填该轮投影（构造一次、该轮共享）。 */
 function prepareGroup(
   group: StagedDirective[],
-  context: { head: Head; ref: Hash | null; initiator: string; world: World; ctxFor?: CtxProvider },
+  context: {
+    head: Head
+    ref: Hash | null
+    initiator: string
+    world: World
+    ctxFor?: CtxProvider
+    resolveCommand?: (world: World, name: string) => { entry: Hash; identity: string } | undefined
+  },
 ):
   | { ok: true; directives: Directive[]; owners: Array<string | undefined> }
   | { ok: false; reason: string } {
@@ -311,19 +336,25 @@ function prepareGroup(
   }
   for (const item of group) {
     if (item.directive.kind === 'eval') {
+      // 命令形式：按命令声明解析入口，属主 = 命令声明方（该 eval 发出的 eff 按声明方 pins 路由）
+      let entry: Hash
+      let owner = item.owner
+      if ('command' in item.directive) {
+        const resolved = context.resolveCommand?.(context.world, item.directive.command)
+        if (resolved === undefined) return { ok: false, reason: 'unknown_command' }
+        entry = resolved.entry
+        owner = resolved.identity
+      } else {
+        entry = item.directive.entry
+      }
       // 字段存在性判定（JSON 值只能是 null / 其它，非 undefined）：缺省 ⇒ 投影；显式（含 null）⇒ 原样
       const explicit = item.directive.ctx
       const evalDirective: Extract<Directive, { kind: 'eval' }> =
         explicit !== undefined
-          ? { kind: 'eval', entry: item.directive.entry, args: item.directive.args, ctx: explicit }
-          : {
-              kind: 'eval',
-              entry: item.directive.entry,
-              args: item.directive.args,
-              ctx: ctxOf(),
-            }
+          ? { kind: 'eval', entry, args: item.directive.args, ctx: explicit }
+          : { kind: 'eval', entry, args: item.directive.args, ctx: ctxOf() }
       directives.push(evalDirective)
-      owners.push(item.owner)
+      owners.push(owner)
       continue
     }
     if (item.directive.kind === 'extern') {
@@ -410,6 +441,7 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       initiator: input.initiator,
       world: roundStart.world,
       ctxFor: input.ctxFor,
+      resolveCommand: input.resolveCommand,
     })
     if (!prepared.ok) {
       observations.push({ kind: 'refused', reasons: [prepared.reason] })
@@ -440,7 +472,7 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
     // 业务 journal 已由 runRound 在落账段内追加并推进 writer；此处只做换代跟随
     if (input.onAdvanced !== undefined) await input.onAdvanced(out.world, out.head)
     if (group.some((item) => item.directive.kind === 'eval')) ref = out.lastAuditHash
-    const plan = pickPlan(out.observations, group)
+    const plan = pickPlan(out.observations, prepared.directives, prepared.owners)
     if (!plan.ok) {
       observations.push({ kind: 'refused', reasons: [plan.reason] })
       const snap = writer.snapshot()

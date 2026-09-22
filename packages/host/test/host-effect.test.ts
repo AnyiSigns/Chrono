@@ -75,11 +75,18 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
         { name: 'toy-caller.run', entry: 'terms/run.json' },
         { name: 'toy-caller.gated', entry: 'terms/run.json', argsSchema: 'schema/args.json' },
         { name: 'toy-caller.echo', entry: 'terms/hello.json', argsSchema: 'schema/args.json' },
+        { name: 'toy-caller.nested', entry: 'terms/nested.json' },
       ],
       terms: {
         'plan.json': JSON.stringify(PLAN_TERM),
         'run.json': JSON.stringify(RUN_TERM),
         'hello.json': JSON.stringify(['c', 'hello']),
+        'nested.json': JSON.stringify([
+          'c',
+          {
+            $directives: [{ kind: 'eval', command: 'toy-caller.echo', args: { n: 1 }, ctx: null }],
+          },
+        ]),
       },
       files: { 'schema/args.json': JSON.stringify(ARGS_SCHEMA) },
     })
@@ -210,6 +217,23 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
+  })
+
+  it('plan eval 按命令名解析：命令入口 term 产 {command} 计划，宿主解析后跑该入口', async () => {
+    seedDefault()
+    const before = readJournal(journalFile()).length
+    await start()
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const result = await client.command('toy-caller.nested')
+      expect(result.status).toBe('done')
+      // 外层命令 eval 观测 + plan 内命令形式 eval 观测：后者由宿主按命令名解析入口后真正跑起来
+      const evals = result.observations.filter((o) => (o as { kind: string }).kind === 'eval')
+      expect(evals).toHaveLength(2)
+    } finally {
+      client.close()
+    }
+    expect(readJournal(journalFile()).length).toBe(before)
   })
 
   it('extern 观测原样回流、不落账、不推进 head', async () => {

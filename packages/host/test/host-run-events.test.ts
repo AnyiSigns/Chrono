@@ -23,7 +23,8 @@ vi.mock('../effect/index.ts', async (importOriginal) => {
     ...actual,
     runSubmission: (input: Parameters<typeof actual.runSubmission>[0]) =>
       input.directives.some(
-        (directive) => directive.kind === 'eval' && directive.entry === 'e'.repeat(64),
+        (directive) =>
+          directive.kind === 'eval' && 'entry' in directive && directive.entry === 'e'.repeat(64),
       )
         ? Promise.reject(new Error('injected run failure'))
         : actual.runSubmission(input),

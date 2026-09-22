@@ -26,7 +26,8 @@
 ├── README.md        自述（人读）
 ├── .worldignore     入世排除表（可选；宿主读，自身不入 ①）
 ├── test/            测试文件（**不入 ①**）
-├── execute/         执行件源码（0..n）
+├── execute/         执行件源码（0..n；含启动命令与语言运行时入口）
+├── src/             整服务 Rust 源码（0..n；与 execute/ 同为 execute 成员）
 ├── terms/           term def（0..n）
 └── schema/          声明 schema（0..n）
 # 通用排除 node_modules / .git；.worldignore 声明项另排除；契约必需文件不可排除
@@ -39,6 +40,7 @@
   入世有两条路径：`seed`（按 `state/plugins.json` 清单批量）与 `pack`（单目录手动 / 程序化，`boot pack <目录> --identity <身份名>`）；
   两者**同为入世路径、共用同一套打包规则**，故同一目录、同一身份产出相同的源码 tree 与 commit 哈希。
 - **`.worldignore`（可选）**：包内文本文件，每行一个相对路径（**按路径段前缀匹配**，故 `test/` 不误伤 `test.js`；`#` 注释、空行忽略），命中即不入 ①；不能命中契约必需文件（`plugin.json` / `package.json` / 锁 / `README.md` / `schema` / `commands` / `members` 路径本身），否则整批拒绝 `bad_worldignore`（畸形 `.worldignore`，如含 `..` 段 / 读取失败，同样拒绝）。插件用它排除构建产物 / 测试 / 语言运行时缓存（`dist/`、`.venv/`、`__pycache__/` 等）——宿主不认识语言，故不内置这些名字。
+- **整服务 Rust 插件的 `src/`**：整服务 Rust 插件把 `src/`（或 `execute/`）登记为 `execute` 成员（如 `{kind:'execute', path:'src/'}`）——机制合法且换代识别需要；包内只放源码 + `Cargo.toml`，`target/` 等编译产物走 `.worldignore` 排除、并按清单经 ③ 依赖缓存物化。
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
 - **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。**注意（口径修正）**：宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`example` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
 - **term 内 callee 引用必须无环**：`terms/` 里的 `$ref` 在入世时解析成 def 哈希；成环 → **整包入世被拒**（`term_cycle`），其他包照常。term 调用图本就是 defs DAG 的子图（`kernel.md` §十三），环 = 写错。
@@ -91,7 +93,7 @@
 
 每条都落在 `docs/host.md` §六 的不变量上（按插件侧归并），破了就是插件没写对：
 
-1. **不 import 宿主与内核、不依赖其他插件包**：`packages/host` / `packages/kernel` 既不能 import、也不能作 npm 依赖（服务代码亦不得 import `packages/client`——它 import 内核）；不算哈希、不校验、不写链；键 / 哈希 / 校验 / 写链全在宿主。对宿主的依赖只经**线协议 + `pins`**（能力类名 / 方法名，含保留类 `host`）。npm 依赖**不得**用于插件间调用（插件间只走 `pins`）。
+1. **不 import 宿主与内核、不依赖其他插件包**：`packages/host` / `packages/kernel` 既不能 import（**含 `execute/` / `src/` / `terms/` / `test/` 全部包内文件，测试亦不得豁免**，与 §1.10 验收第 3 条同口径）、也不能作 npm 依赖（服务代码亦不得 import `packages/client`——它 import 内核）；不算哈希、不校验、不写链；键 / 哈希 / 校验 / 写链全在宿主。对宿主的依赖只经**线协议 + `pins`**（能力类名 / 方法名，含保留类 `host`）。npm 依赖**不得**用于插件间调用（插件间只走 `pins`）。
 2. **只提交内容与效果请求**：`put` / `batch` 载荷 + `EffRequest`；另有 `event` 通知（宿主只透传，不落账、不推进），**不得**用它写链或索取其他插件的端点。
 3. **不与其他插件直连**：效果一律经宿主（保 `EffectAudit`）。
 4. **依赖只走 `pins`，可跨插件相互依赖（但闭包必须无环）**：A 的 `pins` 写 B 的身份（名 → 身份名，入世时解析成哈希，绑定的是**身份**不是版本）；A 的代码 / term 只写**能力类名 + 方法名**，宿主按 `pins` 路由。**不 import、不共享进程内对象、不直连**；`pins` 只记**身份级**（跨身份）依赖。term 内对同包 callee 的引用是**本身份内**的函数值：源里写占位符、入世替换成 def 哈希，不入 `pins`。漏写身份级 `pins` 会静默失效。**自能力路由不是 `pins` 项**：有 `execute` 的插件把入口 term 的 `eff` 路由进**自己的服务**（能力类 = 自身 `implements` 声明）**无需写自引用 pin**，它不构成身份级依赖、不进装配闭包、不参与受保护 `pins` 校验（见 `host.md` §五 路由）。

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
 import { WorldWriter } from '../../writer.ts'
-import { resolvePins, runSubmission } from '../rounds.ts'
+import { resolvePins, runSubmission, parsePlanDirectives } from '../rounds.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Def, Directive, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
@@ -972,5 +972,179 @@ describe('A14 eval ctx 注入（三路同规）', () => {
       (o) => (o as { kind: string; entry?: string }).entry === reader,
     )
     expect((planEval as { value: Json }).value).toBe(`${worldRev(outcome.world)}:0`)
+  })
+})
+
+describe('H18 plan eval 按命令名解析', () => {
+  /** 命令名 → 入口 def + 声明方身份（宿主注入；effect 不认识装配）。 */
+  function stubResolver(
+    table: Record<string, { entry: Hash; identity: string }>,
+  ): (world: World, name: string) => { entry: Hash; identity: string } | undefined {
+    return (_world, name) => table[name]
+  }
+
+  it('命令形式 eval：按命令声明解析入口并成功跑（pickPlan 路径）', async () => {
+    const pure = defHash(put({ body: ['c', 1] }))
+    const plan: Json = { $directives: [{ kind: 'eval', command: 'toy.echo', ctx: null }] }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({
+      [pure]: put({ body: ['c', 1] }),
+      [planner]: put({ body: ['c', plan] }),
+    })
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      resolveCommand: stubResolver({ 'toy.echo': { entry: pure, identity: 'cmd-owner' } }),
+    })
+    expect(outcome.status).toBe('done')
+    expect(outcome.observations.map((o) => (o as { kind: string }).kind)).toEqual(['eval', 'eval'])
+  })
+
+  it('命令形式 eval 产出的 $directives 冒泡落账（按已解析入口匹配，不丢计划）', async () => {
+    const inner: Json = {
+      $directives: [{ kind: 'write', request: { op: 'put', args: { body: { bubbled: true } } } }],
+    }
+    const innerTerm = defHash(put({ body: ['c', inner] }))
+    const plan: Json = { $directives: [{ kind: 'eval', command: 'inner', ctx: null }] }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({
+      [innerTerm]: put({ body: ['c', inner] }),
+      [planner]: put({ body: ['c', plan] }),
+    })
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      resolveCommand: stubResolver({ inner: { entry: innerTerm, identity: 'cmd-owner' } }),
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect(journal).toHaveLength(1)
+    expect((journal[0].args as { body: Json }).body).toEqual({ bubbled: true })
+  })
+
+  it('entry 与 command 同条并存 / 都缺 → refused:bad_directive', async () => {
+    const cases: Json[] = [
+      { $directives: [{ kind: 'eval', entry: 'a'.repeat(64), command: 'x' }] },
+      { $directives: [{ kind: 'eval' }] },
+      { $directives: [{ kind: 'eval', command: '' }] },
+    ]
+    for (const bad of cases) {
+      const planner = defHash(put({ body: ['c', bad] }))
+      const world = worldOf({ [planner]: put({ body: ['c', bad] }) })
+      const journal: Entry[] = []
+      const outcome = await runSubmission({
+        world,
+        head: { seq: -1, hash: null },
+        directives: [evalD(planner)],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'tester',
+        now: () => 1,
+        resolveCommand: stubResolver({ x: { entry: planner, identity: 'x' } }),
+        onRound: (entries) => journal.push(...entries),
+      })
+      expect(outcome.status).toBe('refused')
+      expect(journal).toEqual([])
+      expect(outcome.observations[outcome.observations.length - 1]).toEqual({
+        kind: 'refused',
+        reasons: ['bad_directive'],
+      })
+    }
+  })
+
+  it('命令名解析不到 → refused:unknown_command（与命令面同码）', async () => {
+    const plan: Json = { $directives: [{ kind: 'eval', command: 'ghost', ctx: null }] }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world: worldOf({ [planner]: put({ body: ['c', plan] }) }),
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      resolveCommand: () => undefined,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('refused')
+    expect(journal).toEqual([])
+    expect(outcome.observations[outcome.observations.length - 1]).toEqual({
+      kind: 'refused',
+      reasons: ['unknown_command'],
+    })
+  })
+
+  it('命令形式 eval 的属主 = 命令声明方：eff 按声明方身份路由', async () => {
+    const step = defHash(put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }))
+    const plan: Json = { $directives: [{ kind: 'eval', command: 'step', ctx: null }] }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({
+      [step]: put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }),
+      [planner]: put({ body: ['c', plan] }),
+    })
+    const emitters: string[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      router: fakeRouter(undefined, (emitter) => emitters.push(emitter)),
+      // 产出者属主为 producer-owner，但命令形式 eval 必须改按命令声明方路由
+      initialOwnerOf: () => 'producer-owner',
+      resolveCommand: stubResolver({ step: { entry: step, identity: 'cmd-owner' } }),
+    })
+    expect(outcome.status).toBe('done')
+    expect(emitters).toEqual(['cmd-owner'])
+  })
+
+  it('parsePlanDirectives：命令形式原样物化，经 runSubmission 解析并落账', async () => {
+    const parsed = parsePlanDirectives({
+      $directives: [{ kind: 'eval', command: 'cmd', args: { a: 1 }, ctx: null }],
+    })
+    expect(parsed).toEqual({
+      ok: true,
+      directives: [{ kind: 'eval', command: 'cmd', args: { a: 1 }, ctx: null }],
+    })
+    expect(
+      parsePlanDirectives({
+        $directives: [{ kind: 'eval', entry: 'a'.repeat(64), command: 'x' }],
+      }),
+    ).toEqual({ ok: false, reason: 'bad_directive' })
+
+    const inner: Json = {
+      $directives: [{ kind: 'write', request: { op: 'put', args: { body: { viaMethod: true } } } }],
+    }
+    const innerTerm = defHash(put({ body: ['c', inner] }))
+    const world = worldOf({ [innerTerm]: put({ body: ['c', inner] }) })
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: (parsed as { ok: true; directives: Directive[] }).directives,
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      resolveCommand: stubResolver({ cmd: { entry: innerTerm, identity: 'cmd-owner' } }),
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect(journal).toHaveLength(1)
+    expect((journal[0].args as { body: Json }).body).toEqual({ viaMethod: true })
   })
 })

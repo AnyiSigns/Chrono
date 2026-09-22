@@ -255,8 +255,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   **继承产出它的 eval 的属主**（不按 entry 反查属主）。
   **eval 可按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<命令名>', args}` 代替 `entry` 哈希——
   宿主按命令声明解析入口 def（与命令面同路、机械），属主即命令声明方；term 拿不到他人 def 哈希时用它
-  （如 #32 / #48 的裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留，两者不可同条并存（否则 `bad_directive`）。
-  **⬜ 待落地（H18）**：当前 `materializePlanItem` 只接受 `entry` 哈希，`command` 形式尚未实现（见 `draft-design.md` §1.13 H18）。
+  （如 #32 / #48 的裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留；`entry` 与 `command`
+  不可同条并存、也不可都缺（否则 `bad_directive`）；命令名解析不到 → `refused`（reason `unknown_command`，与命令面同码）。
 - **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计 `put` 推进 head 但不回改该轮 `ctx`），
   **`write` 每条单独一轮**（其 `expect_pos` = 该轮轮首链头；要原子写多份用一条 `batch`），`extern` 中性可随邻段。
 - **term 可产全部 op**（含 `add_gen` / `set_active` / `retire` / `fork` / `graft`）——自改世界是 term 的能力，

@@ -293,6 +293,8 @@ graph LR
 
 内核 `run` **无代码改动**：仍是纯函数、单 pending、`expect_pos` 单链头 CAS。`kernel.md` §十二只**登记**「宿主可并发调用多个 `run`，语义不变」。锁收窄 / 提交队列 / 乐观校验是宿主改动（H12）。
 
+> **内核前置缺口（本轮发现，不要求改内核）**：内核 term 只有八个原语，**无对象 / 列表构造**、`if` 只收 Bool（`cmp` 产 Int，动态分支不可表达）、`["g"]` 缺失即 `missing_path`。故入口 term **无法装配多切片 bag、无法按槽 kind 动态分支、无法把各段 `$directives` 合并为顶层计划值**。对策是**不扩内核原语**：把「多切片 bag 装配 / 列表切片 / 计划合并」下沉到插件自己的 `execute` 服务，入口 term 只传投影切片（`["g",["ids"]]`）——有 `execute` 的入口 term 经**自能力路由**（H21，无自引用 pin）把 `eff` 路由进本插件服务。首例见 #14 `chat`（2026-09-21）。
+
 ### B. 宿主改动（21 项）+ 跨插件契约变更（1 项）
 
 | # | 改动 | 阻塞 | 权威 |
@@ -315,7 +317,7 @@ graph LR
 | H15a | ✅ **H15 增补·投递目录大资产直拷（`assets_manifest`）**：schema 顶层 `assets_manifest: [{path, sha256, size}]`；物化时从投递包源目录复制被 `.worldignore` 排除的大资产到物化目录、按 sha256 校验；失败 `deps_failed` | **#20**（granite-97m 权重 / tokenizer，`include_bytes!` 构建期输入） | `host.md` §五 宿主扩展面；`plugins.md` §二 |
 | H16 | ✅ **调用帧 `env` 注入**：`call` / `port.call` 帧填 `env: {run, thread, now}`（机械；不改 args 语义；服务发事件 / 判 TTL 一律用它） | #12（`model.delta` 载荷）、#13（`context.assembled` / TTL）、#27（`tool.*` 载荷）、#19/#23/#26/#44（`now`） | `host.md` §五 效果；`protocol.md` §2.2 / §2.4 |
 | H17 | ✅ **方法级超时（`schema.method_timeouts`）**：按方法覆盖调用等待上限（方法级 > 进程级 > 常量；非法声明只记运维日志） | **#33（`interpret` 整回合）**、#12（`chat` / `complete` 流式） | `host.md` §五 效果；`plugins.md` §二 |
-| H18 | ⬜ **plan eval 按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<名>', args}`（宿主按命令声明解析入口，与命令面同路） | **#32/#48 跨 run 续跑**（裁决 / 作答入口 term 产 `chat.resume` 续跑计划）、#39 | `host.md` §五 落账 |
+| H18 | ✅ **plan eval 按命令名解析**：plan 条目 eval 可写 `{kind:'eval', command:'<名>', args}`（宿主按命令声明解析入口，与命令面同路；属主即命令声明方；`entry`/`command` 互斥，解析不到 `unknown_command`） | **#32/#48 跨 run 续跑**（裁决 / 作答入口 term 产 `chat.resume` 续跑计划）、#39 | `host.md` §五 落账 |
 | H19 | ✅ **反向调用 `env` 值脱敏（端口审计）**：`port.call` 转发时，宿主端口审计对 args 顶层 `env` 的值替换为 `{redacted, keys}`（目标照收原值） | **#29 密钥下传 #25 `exec`** | `host.md` §五 效果审计脱敏；`protocol.md` §2.4 |
 | H20 | ✅ **宿主只读面扩充**：`host.identities {}`（身份清单：id / active / implements / commands）+ **投影 `ids.<id>.pins`**（当前代码世代声明、名→被依赖身份名） | **#42 `plugin.list`**、**#45 `validate`（端口 ⊆ pins）**、#17 S13 | `host.md` §五 投影 / 宿主扩展面；`protocol.md` §2.4 |
 | H21 | ✅ **自能力路由（无自 pin）**：`eff` 的目标能力类不在发出者 `pins` 里、但发出者自身装配世代 `implements` 声明含它时，解析到**发出者自己的端点行**（无需自引用 pin）；显式 `pins[cap]`（含 `host`）优先，自能力仅兜底，**非跨身份依赖、不进装配闭包**。单次提交轮数上限 `MAX_SUBMISSION_ROUNDS` 防 plan 自回路挂死（超限 `refused` reason `too_many_rounds`） | **#17 ui-settings 等有 `execute` 的入口 term eff 自身服务** | `host.md` §五 路由；`plugins.md` §三 |
@@ -336,7 +338,7 @@ graph LR
 3. **H3 / H6 / H8 / H13** 可随 #42 / #12 / #37 / #42 同批落（H6 须覆盖 #23/#32/#44/#37 的周期触发，H13 服务 #42 `validate`）。
    > **进度（2026-09-20）**：**H3（随 H14 的 `host.source.read`）/ H6（`schema.periodic` 调度）/ H8（入站 `forward` 帧）/ H13（`validate_package` 复用 `planPack` dry-run）均已落地**，并有单测 / E2E 覆盖；**S1** 亦已随 H14 的 `host.asset.*` 落地。
 4. **S1 / S2 设计已展开**（见上）；**S1 已落地**（`host.asset.put/get`）。**S2 实现须在 #28 / #30 / #31 开工前落地**（属 #25 `sandbox` 插件本体），否则这些工具「能发现、跑不了」。
-5. **新增宿主扩展（2026-09-20 登记，均在对应插件开工前或同批落）**：**H16（`env` 注入，#12/#13/#27/#44 开工前）**、**H17（方法级超时，#33/#12 开工前）**、**H19（端口审计 `env` 脱敏，#29 开工前）**、**H20（`host.identities` + 投影 `pins`，#42/#45 开工前）**、**H15a（大资产直拷，#20 开工前）** 均已落地，各有单测 / E2E 覆盖；**H18（plan eval 按命令名，#32/#48 开工前）仍待落地**。
+5. **新增宿主扩展（2026-09-20 登记，均在对应插件开工前或同批落）**：**H16（`env` 注入，#12/#13/#27/#44 开工前）**、**H17（方法级超时，#33/#12 开工前）**、**H19（端口审计 `env` 脱敏，#29 开工前）**、**H20（`host.identities` + 投影 `pins`，#42/#45 开工前）**、**H15a（大资产直拷，#20 开工前）** 均已落地，各有单测 / E2E 覆盖；**H18（plan eval 按命令名，#32/#48 开工前）亦已落地**——`runSubmission` 按命令声明解析入口、属主即声明方，`entry`/`command` 互斥与 `unknown_command` 均有单测 + E2E 覆盖。
 
 > **红线**：任何插件的 `DESIGN.md` 里写了「宿主待补能力」的，其**验收不得在对应宿主改动落地前宣布通过**——只能标「契约就位、待宿主」。
 
@@ -345,11 +347,13 @@ graph LR
 ## 1.14 bag 装配总表（D8 的权威索引，2026-09-20 新增）
 
 > **口径**：有 execute 的服务不读投影；一切「服务需要的世界数据」由**调用链最上游的入口 term** 读 `ctx` 后装配进 bag / args（§1.2 第 6 条）。本表是**双侧登记的权威**：调用方在此登记读面，被调方在此对齐 `+` 需求。`eff` 的 bag 即各段 args；`#33 interpret` 的 bag 是其下游所有节点 bag 的源头（#33 再按节点分发注入）。策略 / 规则数据住**数据世代 body**、经本表同路传入。
+>
+> **通则（2026-09-21）**：**多切片 bag 装配 / 列表切片 / 计划合并一律下沉到插件 execute 服务；入口 term 只传投影切片**（`["g",["ids"]]` 或更窄的静态路径）——内核 term 无对象 / 列表构造，装不出 bag、也合并不了 `$directives`（见 §1.13 A 内核前置缺口）。有 execute 的入口 term 用**自能力路由**（H21）把 `eff` 路由进本插件服务，不写自引用 pin。
 
 | 入口（命令 / 方法） | 入口 term 装配（读 `ctx`） | bag / args 键 | 下游消费者 |
 | --- | --- | --- | --- |
 | `chat.send`（#14） | `#1` 槽（本线程）、`#2` 连接与所选模型 / `permission` 档、`#3` L1/L2、`#11` 会话（含 refs）、`#33` 六类条目、`#35` 人格、`#36` 技能候选、`#41` workspaces、`#43` 台账、`#47` 待办、`#26` guard 规则 body、`#25` 档位映射 body | `bag.input` / `bag.config` / `bag.tier` / `bag.memories` / `bag.session` / `bag.graph`（六类条目）/ `bag.persona` / `bag.skills` / `bag.workspace_root` / `bag.evidence` / `bag.todo` / `bag.guard_rules` / `bag.sandbox_tiers` | #33 `interpret`（再分发到各节点 / #27 `dispatch`） |
-| `chat.resume`（#14，H18） | 同 `chat.send` + resume 游标（来自 item）与裁决 / 作答结果 | 同上 + `bag.resume` | #33 `interpret`（恢复执行） |
+| `chat.resume`（#14，H18） | 同 `chat.send` + resume 游标（来自 item）与裁决 / 作答结果；**args 另带 `ids`（调用方 #39/#48 随 plan eval 传入的投影切片——内核 term 不能同时传 args 与投影，见 #16 `reveal` / #17 `search` 先例）** | 同上 + `bag.resume`（`{cursor,thread,payload}`） | #33 `interpret`（恢复执行） |
 | `chat.history`（#14） | `#11`（body + refs 全量） | 入口 term 直接切片返回（不经服务） | 客户端 |
 | `model.vendors` / `discover` / `profile`（#17 命令） | `#2` 当前 vendor / 所选 ids、`#4–10` 模板 body | eff args（#12 服务收） | #12 |
 | `secrets.status`（#17 命令） | 无（eff #24 `secrets.list`） | args | #24 |

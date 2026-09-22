@@ -429,6 +429,18 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
 
   /**
+   * plan 条目按命令名解析（注入 effect）：与命令面同路（`resolveCommand`），
+   * 返回入口 def + 声明方身份；effect 不认识装配。
+   */
+  const resolvePlanCommand = (
+    world: World,
+    name: string,
+  ): { entry: Hash; identity: string } | undefined => {
+    const command = resolveCommand(world, name)
+    return command === null ? undefined : { entry: command.entry, identity: command.identity }
+  }
+
+  /**
    * H9 宿主通用原语：启动一次 detached run——无 socket、结果不回流，事件照广播。
    * initiator = 调用方 emitter，directives = 单条 eval；宿主不认识游标语义（游标由调用方放进 args）。
    * 并发超 `MAX_DETACHED_RUNS` 即拒（不起新 run）；`thread` 仅随事件原样回带。
@@ -467,6 +479,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       callTimeoutMs: options.callTimeoutMs,
       signal: controller.signal,
       initialOwnerOf: () => emitter,
+      resolveCommand: resolvePlanCommand,
       ctxFor: cachedProjection,
       onAudit: persistAudit,
       onRound: persistRound,
@@ -588,6 +601,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       callTimeoutMs: options.callTimeoutMs,
       signal,
       initialOwnerOf: () => entry.identity,
+      resolveCommand: resolvePlanCommand,
       ctxFor: cachedProjection,
       onAudit: persistAudit,
       onRound: persistRound,
@@ -626,7 +640,10 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         callTimeoutMs: options.callTimeoutMs,
         signal,
         initialOwnerOf: (directive) =>
-          directive.kind === 'eval' ? entryOwners.get(directive.entry) : undefined,
+          directive.kind === 'eval' && 'entry' in directive
+            ? entryOwners.get(directive.entry)
+            : undefined,
+        resolveCommand: resolvePlanCommand,
         ctxFor: cachedProjection,
         onAudit: persistAudit,
         onRound: persistRound,
@@ -728,6 +745,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         callTimeoutMs: options.callTimeoutMs,
         signal,
         initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
+        resolveCommand: resolvePlanCommand,
         ctxFor: cachedProjection,
         onAudit: persistAudit,
         onRound: persistRound,
@@ -814,6 +832,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         callTimeoutMs: options.callTimeoutMs,
         signal,
         initialOwnerOf: () => command.identity,
+        resolveCommand: resolvePlanCommand,
         ctxFor: cachedProjection,
         onAudit: persistAudit,
         onRound: persistRound,
