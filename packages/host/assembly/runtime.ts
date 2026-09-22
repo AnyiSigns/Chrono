@@ -74,8 +74,8 @@ export interface StartAssemblyOptions {
   depsDir?: string
   /** 源码 CAS 目录；缺省由 root 派生的 `state/blobs`。 */
   blobsDir?: string
-  /** 物化后的依赖恢复；缺省按清单绑定 `restoreDependencies`，测试可注入桩。 */
-  restore?: (cwd: string) => Promise<void>
+  /** 物化后的依赖恢复 / 构建；缺省按声明绑定 `restoreDependencies`，测试可注入桩。 */
+  restore?: (cwd: string, decl: PluginDecl) => Promise<void>
   /**
    * 投递包源目录解析（大资产直拷用）：缺省按 `state/plugins.json` 解析；测试可注入。
    * 返回 null 表示该身份无已知源目录。
@@ -104,7 +104,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly handshakeTimeoutMs: number
   private readonly reloadTimeoutMs: number
   private readonly startWrapper: string | undefined
-  private readonly restore: (cwd: string) => Promise<void>
+  private readonly restore: (cwd: string, decl: PluginDecl) => Promise<void>
   private readonly sourceRoot: (identity: string) => string | null
   private readonly onPortCall?: (
     impl: string,
@@ -135,7 +135,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.blobsDir = options.blobsDir ?? this.paths.blobsDir
     const depsDir = options.depsDir ?? this.paths.depsDir
     this.restore =
-      options.restore ?? ((cwd) => restoreDependencies(cwd, depsDir, undefined, this.startWrapper))
+      options.restore ??
+      ((cwd, decl) => restoreDependencies(cwd, depsDir, decl.build, undefined, this.startWrapper))
     this.sourceRoot =
       options.sourceRoot ?? ((identity) => resolvePluginSourceRoot(this.paths.root, identity))
     this.onPortCall = options.onPortCall

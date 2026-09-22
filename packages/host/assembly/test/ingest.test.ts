@@ -138,6 +138,45 @@ describe('装配 assembly', () => {
     })
   })
 
+  describe('seed 级：build 声明门禁', () => {
+    it('build 令牌含 shell 元字符 → 整包拒 bad_plugin_decl', async () => {
+      const root = createTempRoot()
+      try {
+        const pkgRoot = writeTempPackage(root, {
+          identity: 'toy-badbuild',
+          omitSchema: true,
+          start: '',
+          members: [{ kind: 'term', path: 'terms/' }],
+          terms: { 'x.json': JSON.stringify(['c', 1]) },
+          files: {
+            'plugin.json': JSON.stringify({
+              identity: 'toy-badbuild',
+              implements: [],
+              methods: {},
+              pins: {},
+              start: '',
+              build: [{ cmd: 'cargo', args: ['build; rm -rf /'] }],
+              protocol: '1',
+              restart: {},
+              health: {},
+              state: 'recomputable',
+              members: [{ kind: 'term', path: 'terms/' }],
+              commands: [],
+            }),
+          },
+        })
+        const report = runSeed(root, [{ name: 'toy-badbuild', path: pkgRoot }])
+        expect(report.ok).toBe(false)
+        expect(report.items[0].status).toBe('failed')
+        expect(report.items[0].reasons).toContain('bad_plugin_decl')
+        const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+        expect(Object.hasOwn(world.ids, 'toy-badbuild')).toBe(false)
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+  })
+
   describe('seed 级：保留 pin host', () => {
     it("pins 值为 'host'：解析为保留字面量，不报 unresolved_pin", async () => {
       const root = createTempRoot()

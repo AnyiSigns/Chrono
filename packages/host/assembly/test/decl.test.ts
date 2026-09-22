@@ -22,7 +22,7 @@ function baseDecl(overrides: Record<string, Json> = {}): Json {
 }
 
 describe('parsePluginDecl 元 schema 严格性', () => {
-  it('合法 12 字段 decl 且 state=recomputable、member kind 合法 → ok:true', () => {
+  it('合法 decl（build 省略）且 state=recomputable、member kind 合法 → ok:true', () => {
     const result = parsePluginDecl(baseDecl())
     expect(result.ok).toBe(true)
     if (result.ok) {
@@ -60,6 +60,67 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ schema: null })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ schema: 1 })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ schema: {} })).ok).toBe(false)
+  })
+
+  it('build 省略 → ok:true 且 build 为 null（回落旧探测）', () => {
+    const result = parsePluginDecl(baseDecl())
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.build).toBeNull()
+  })
+
+  it('build 合法 → ok:true 且解析出步骤', () => {
+    const result = parsePluginDecl(
+      baseDecl({ build: [{ cmd: 'cargo', args: ['build', '--release'] }] }),
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.decl.build).toEqual([{ cmd: 'cargo', args: ['build', '--release'] }])
+    }
+  })
+
+  it('build 空数组 → ok:true 且 build 为 []（显式无需构建）', () => {
+    const result = parsePluginDecl(baseDecl({ build: [] }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.build).toEqual([])
+  })
+
+  it('build 非数组 / 项非对象 / 缺 cmd / args 非字符串数组 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ build: 'cargo' })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [1] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [{ args: ['build'] }] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [{ cmd: 'cargo' }] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [{ cmd: 'cargo', args: 'build' }] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [{ cmd: 'cargo', args: [1] }] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ build: [{ cmd: '', args: [] }] })).ok).toBe(false)
+  })
+
+  it('build 令牌含 shell 元字符 / 空白 / 引号 → ok:false（注入面入世掐断）', () => {
+    for (const bad of [
+      'build;rm -rf /',
+      'build && evil',
+      'build | evil',
+      '$(evil)',
+      '`evil`',
+      'a b',
+      '--flag="x"',
+      "a'b",
+      'a\\b',
+      'a\nb',
+      'a\0b',
+      '*',
+      '?',
+      '~',
+      '#',
+    ]) {
+      expect(
+        parsePluginDecl(baseDecl({ build: [{ cmd: 'cargo', args: [bad] }] })).ok,
+        `参数 ${JSON.stringify(bad)} 应被拒`,
+      ).toBe(false)
+      expect(
+        parsePluginDecl(baseDecl({ build: [{ cmd: bad, args: [] }] })).ok,
+        `命令 ${JSON.stringify(bad)} 应被拒`,
+      ).toBe(false)
+    }
   })
 
   it('state 非 recomputable（如 durable）→ ok:false', () => {

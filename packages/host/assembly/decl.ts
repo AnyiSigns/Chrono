@@ -17,6 +17,12 @@ export interface PluginMember {
   path: string
 }
 
+/** `plugin.json.build` 的一步：宿主只执行、不解释；`cmd` / `args` 是可直接交给 shell 的字面量。 */
+export interface PluginBuildStep {
+  cmd: string
+  args: string[]
+}
+
 /**
  * `schema` 省略 / 空串时的宿主最小默认 schema def body：无世界数据的 UI 插件可零 schema
  * （`docs/plugins.md` §二），宿主机械提供一份最小体满足内核 `Identity.schema` 必需哈希。
@@ -33,6 +39,11 @@ export interface PluginDecl {
   methods: Record<string, string[]>
   pins: Record<string, string>
   start: string
+  /**
+   * 显式构建声明（宿主只执行、不解释语言）；`null` = 字段缺失（回落宿主旧探测）。
+   * 空数组是合法声明：显式表示「无需构建」，不回落探测。
+   */
+  build: PluginBuildStep[] | null
   protocol: string
   restart: Json
   health: Json
@@ -122,15 +133,45 @@ function parseMembers(v: Json | undefined): PluginMember[] | null {
 }
 
 /**
- * 宿主侧 `plugin.json` 元 schema：其余 11 个字段一个不少、类型正确、枚举合法
+ * 构建令牌白名单：`cmd` / `args` 最终由宿主按空格拼接、经 `shell:true` 交给系统 shell
+ * （win32 上 `npm` 是 `.cmd` 包装脚本，`shell:false` 会 `EINVAL`）。任一令牌含空白、引号
+ * 或 shell 元字符（`;` `&` `|` `$` 反引号 `*` 等）都能改写命令行，故只放行构建声明实际
+ * 需要的字符集，把注入面在入世门禁掐断——比事后转义更可靠。
+ */
+const SAFE_BUILD_TOKEN = /^[A-Za-z0-9_./:@,+-]+$/
+
+/**
+ * 解析 `build` 声明：缺失 → `undefined`（回落旧探测）；畸形 → `null`（入世拒）。
+ * 每步形如 `{cmd, args}`，`cmd` 非空、`args` 为令牌白名单内的字符串数组。
+ */
+function parseBuild(v: Json | undefined): PluginBuildStep[] | null | undefined {
+  if (v === undefined) return undefined
+  if (!Array.isArray(v)) return null
+  const out: PluginBuildStep[] = []
+  for (const item of v) {
+    if (!isRecord(item)) return null
+    const cmd = item['cmd']
+    const args = item['args']
+    if (typeof cmd !== 'string' || !SAFE_BUILD_TOKEN.test(cmd)) return null
+    if (!Array.isArray(args)) return null
+    if (!args.every((arg) => typeof arg === 'string' && SAFE_BUILD_TOKEN.test(arg))) return null
+    out.push({ cmd, args: args as string[] })
+  }
+  return out
+}
+
+/**
+ * 宿主侧 `plugin.json` 元 schema：13 个字段一个不少、类型正确、枚举合法
  * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
- * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒。
+ * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
+ * `build` 可省略（回落宿主旧探测），显式声明则逐令牌过 shell 安全白名单。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
 export function parsePluginDecl(value: Json): ParseDeclResult {
   if (!isRecord(value)) return { ok: false, reasons: ['bad_plugin_decl'] }
   const commands = parseCommands(value['commands'])
   const members = parseMembers(value['members'])
+  const build = parseBuild(value['build'])
   // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
   const rawSchema = value['schema']
   const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
@@ -148,7 +189,8 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     isRecord(value['health']) &&
     value['state'] === 'recomputable' &&
     members !== null &&
-    commands !== null
+    commands !== null &&
+    build !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
   return {
     ok: true,
@@ -159,6 +201,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       methods: value['methods'] as Record<string, string[]>,
       pins: value['pins'] as Record<string, string>,
       start: value['start'] as string,
+      build: build ?? null,
       protocol: value['protocol'] as string,
       restart: value['restart'] as Json,
       health: value['health'] as Json,

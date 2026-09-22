@@ -38,10 +38,11 @@ export interface ServiceLauncherDeps {
    */
   startWrapper?: string
   /**
-   * 物化后、spawn 前的依赖恢复；缺省不恢复（由运行时按清单绑定）。
+   * 物化后、spawn 前的依赖恢复 / 构建；缺省不恢复（由运行时按声明绑定）。
+   * 传声明进去：`plugin.json.build` 决定跑什么，宿主不解释语言。
    * 抛错按启动失败传播，不启动服务。
    */
-  restore?: (cwd: string) => Promise<void>
+  restore?: (cwd: string, decl: PluginDecl) => Promise<void>
   /**
    * 物化后、依赖恢复前的投递目录大资产直拷（`assets_manifest`）；缺省不拷。
    * 必须在依赖恢复前：Rust 构建期输入（`include_bytes!`）依赖它已就位；抛错按启动失败传播。
@@ -88,10 +89,10 @@ export async function launchService(
       throw new ServiceStartError('deps_failed')
     }
   }
-  // 依赖恢复先于 spawn：失败时尚未起进程，按启动失败分类传播
+  // 依赖恢复 / 构建先于 spawn：失败时尚未起进程，按启动失败分类传播
   if (deps.restore !== undefined) {
     try {
-      await deps.restore(cwd)
+      await deps.restore(cwd, decl)
     } catch (err) {
       if (err instanceof ServiceStartError) throw err
       throw new ServiceStartError('deps_failed')

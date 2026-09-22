@@ -11,6 +11,7 @@
     "model": "model-protocol"
   },
   "start": "node execute/launch.mjs",
+  "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

@@ -23,6 +23,7 @@ export type {
   CommandDecl,
   DeclRead,
   ParseDeclResult,
+  PluginBuildStep,
   PluginCommand,
   PluginDecl,
   PluginMember,
