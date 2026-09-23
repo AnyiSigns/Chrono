@@ -25,11 +25,13 @@ export function register(ctx: SlotContext): void {
 
 - 业务状态住 React-free store（`execute/web/thread-store.ts`：`getSnapshot` / `subscribe` /
   `commit`），壳侧经 `ctx.useStore` 以 `useSyncExternalStore` 绑定；组件只渲染，不各自持业务态。
-- 叶子纯模块（markdown / sanitize / detail-renderers / tool-card / render-parts /
-  history-model / thread-store / group / workflow / windowing / date-sep / usage / copy /
-  messages / lightbox）保持零 `react` import，组件吃其产出的视图模型，不就地拼字符串。
-- markdown 正文统一经 `Markdown` 组件（`sanitizeHtml(renderMarkdown(text))` +
-  `dangerouslySetInnerHTML`，全仓唯一允许处）；流式与定稿共用该组件。
+- 叶子纯模块（markdown / markdown-cache / sanitize / detail-renderers / tool-card /
+  render-parts / history-model / thread-store / group / workflow / windowing / media /
+  date-sep / usage / copy / messages / lightbox）保持零 `react` import，组件吃其产出的
+  视图模型，不就地拼字符串。
+- markdown 正文统一经 `Markdown` 组件（`renderMarkdownIncremental` + 白名单消毒 +
+  `dangerouslySetInnerHTML`，全仓唯一允许处）；流式与定稿共用该组件。增量缓存按「不在
+  围栏内的空白行」切块，已完成前缀只解析 + 消毒一次，只有尾部未完成块随每帧重解析。
 
 ## 渲染源与数据获取路径
 
@@ -45,10 +47,16 @@ export function register(ctx: SlotContext): void {
 每线程一份视图，真源是 React-free store（`execute/web/thread-store.ts`）。渲染器只读 store；
 流式与定稿共用同一条 markdown 管线——在途回合就是消息列表末尾的一条 assistant 条目。
 
-- **快照**：`chat.history` 落地即替换权威消息段（会话 / refs / 消息 / kind）。
-- **有序增量**：`model.delta` 只追加到在途回合；store 提交后由 React 重渲染在途正文。
+- **快照**：`chat.history` 落地即替换权威消息段（会话 / refs / 消息 / kind）。历史请求带
+  单调序号，只认最新一次回包，线程切换 / 并发重拉不会用旧线程数据覆盖新视图。
+- **有序增量**：`model.delta` 只追加到在途回合。同一帧内到达的增量合帧为一次 store 提交；
+  任何非增量事件到达前先冲刷在途增量，保证「同连接内按到达顺序 fold」不被合帧打乱。
 - **定稿替换**：`run.finished`（done）把在途回合标记为定稿中，随后一次快照在同一帧内原地收口；
   `cancelled` 保留已生成部分 + 「已取消」。
+- **乐观用户消息**：回合进行中从 `chat.message` 槽读出在途用户消息并即时渲染；权威快照落地
+  即收起，避免与历史重复。用户消息不再等到回合结束才可见。
+- **错误边界**：每条消息（含流式回合、群聊气泡）各自包一层渲染异常边界，单条渲染异常降级为
+  行内提示，不冒泡崩掉整棵聊天树。
 
 客户端事件语义（`thread-store.ts` 头部与单测逐条锁住）：
 
@@ -79,7 +87,7 @@ export function register(ctx: SlotContext): void {
 | 位置 | 渲染器 | 说明 |
 | --- | --- | --- |
 | 内容 parts | `text` | 自实现 markdown + 白名单消毒（禁 script / 事件属性 / 危险 URL） |
-| | `image` / `video` / `audio` / `file` | 尺寸上限按全局 UI 设计语言；`loading="lazy"`；音视频不自动播放；点击进 lightbox / 播放器 |
+| | `image` / `video` / `audio` / `file` | 尺寸上限按全局 UI 设计语言；`loading="lazy"`；音视频不自动播放；点击进 lightbox / 播放器。资产经 `ctx.asset.get` 取字节转 blob URL（可 revoke，替代 data URL）；图片解码前探测自然尺寸并预留精确占位盒，消除懒加载跳动 |
 | 工具卡 | `form:"line"` | 一行（label + summary），不可展开 |
 | | `form:"card"` | 折叠（label + summary）→ 展开（detail） |
 | | `tone` | `ghost` / `plain` / `solid` 质感 |
@@ -101,6 +109,13 @@ export function register(ctx: SlotContext): void {
 - **run 生命周期按 run id 关联**：无关 run 的终局忽略（不触发重拉）；`origin === 'periodic'`
   的周期 run 不是对话回合，其 `run.started` 不建流、`run.finished` 不处理。
 - `thread.*` / `group.message` 触发的是一次静默快照（quiet reload，保留消息、只出顶部细呼吸条）。
+
+## 长列表窗口化
+
+> 200 条只渲染一个窗口；滚顶拉上一窗、到窗口底拉下一窗。渲染窗口上限 `MAX_WINDOW`（600）：
+> 超过即回收远端——上翻回收底部、下翻回收顶部——长历史下常驻 DOM 有界。远端回收在滚动容器
+> 里按高度差补偿滚动位置；每帧只做一种单方向 DOM 变更，补偿才准确。窗口右端未到列表末端时
+> 不算「贴底」，「↓」胶囊会先把窗口恢复到最新一窗再贴底。
 
 ## 运行
 

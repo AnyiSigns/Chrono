@@ -47,6 +47,8 @@ export const STYLE_TEXT = `
 .chat-danger-inline { display: inline-flex; align-items: center; gap: var(--space-4); color: var(--c-danger); font-size: var(--font-size-xs); }
 .chat-warning-inline { display: inline-flex; align-items: center; gap: var(--space-4); color: var(--c-warning); font-size: var(--font-size-xs); }
 .chat-media-img { display: block; max-width: 320px; max-height: 240px; border-radius: var(--radius-md); cursor: zoom-in; }
+.chat-media-frame { display: inline-block; }
+.chat-media-frame .chat-media-img { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; }
 .chat-media-video { display: block; max-width: 320px; max-height: 180px; border-radius: var(--radius-md); background: var(--c-bg); }
 .chat-video-thumb { position: relative; display: inline-block; }
 .chat-video-play { position: absolute; left: var(--space-8); bottom: var(--space-8); min-height: 24px; padding: var(--space-4) var(--space-8); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-sm); color: var(--c-text); font: inherit; font-size: var(--font-size-xs); cursor: pointer; }
@@ -136,5 +138,6 @@ export const STYLE_TEXT = `
 @media (prefers-reduced-motion: reduce) {
   .chat-breathe, .chat-cursor, .chat-group-avatar[data-current="true"] { animation: none; opacity: .4; }
   .chat-lightbox { animation: none; }
+  .chat-list, .chat-footnote, .chat-tool-chevron, .chat-anchor { transition: none; }
 }
 `

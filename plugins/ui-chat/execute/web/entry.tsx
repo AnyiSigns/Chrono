@@ -4,6 +4,7 @@
 // markdown 正文统一经 `Markdown`（全仓唯一 `dangerouslySetInnerHTML` 处）；流式与定稿同一管线。
 
 import {
+  Component,
   Fragment,
   createContext,
   useCallback,
@@ -18,11 +19,19 @@ import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 
 import { STYLE_TEXT } from './styles.ts'
-import { renderMarkdown } from './markdown.ts'
-import { sanitizeHtml } from './sanitize.ts'
+import { createMarkdownCache, renderMarkdownIncremental } from './markdown-cache.ts'
+import type { MarkdownCache } from './markdown-cache.ts'
+import { base64ToBytes, fitBox } from './media.ts'
 import { FALLBACK_MESSAGES, formatText, loadMessages, lookupMessage } from './messages.ts'
 import type { MessageTable } from './messages.ts'
-import { dataChangeTarget, isPeriodicRun, matchesThread, messageId, messageText } from './history-model.ts'
+import {
+  dataChangeTarget,
+  hasUserMessage,
+  isPeriodicRun,
+  matchesThread,
+  messageId,
+  messageText,
+} from './history-model.ts'
 import {
   applyDelta,
   applyRunStarted,
@@ -36,7 +45,7 @@ import {
   foldRunFinished,
   isStreaming,
 } from './thread-store.ts'
-import { messageViewItems, partViewModel, safeStringify } from './render-parts.ts'
+import { messageViewItems, partViewModel, pendingUserDef, safeStringify } from './render-parts.ts'
 import { toolCardViewModel } from './tool-card.ts'
 import { detailViewModel } from './detail-renderers.ts'
 import { buildDateSeparators } from './date-sep.ts'
@@ -49,10 +58,13 @@ import {
   dismissNew,
   hasOlder,
   initialWindow,
+  newerWindow,
   olderWindow,
   onNewContent,
   pillLabel,
   shouldWindow,
+  trimBottom,
+  trimTop,
 } from './windowing.ts'
 
 export const contract = '2'
@@ -74,6 +86,41 @@ function useChatEnv(): ChatEnv {
   const env = useContext(ChatCtx)
   if (env === null) throw new Error('chat env missing')
   return env
+}
+
+interface BoundaryProps {
+  children: ReactNode
+  fallback: ReactNode
+}
+
+/** 单条消息的渲染异常边界：异常在本条内收束为降级提示，不冒泡崩掉整棵聊天树。 */
+class MessageBoundary extends Component<BoundaryProps, { failed: boolean }> {
+  constructor(props: BoundaryProps) {
+    super(props)
+    this.state = { failed: false }
+  }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(): void {
+    // 已由 getDerivedStateFromError 收束；此处只吞掉，不重抛。
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? this.props.fallback : this.props.children
+  }
+}
+
+/** 边界兜底：渲染失败时的人话提示（不空白、不报错）。 */
+function RenderFallback(): ReactNode {
+  const { table } = useChatEnv()
+  return (
+    <div className="chat-system">
+      <div>{lookupMessage(table, 'chat_render_failed').body}</div>
+    </div>
+  )
 }
 
 // ---- 原子组件 ----
@@ -137,13 +184,27 @@ function IconButton({
   )
 }
 
-/** 全仓唯一 `dangerouslySetInnerHTML` 处：markdown 渲染 + 白名单消毒。 */
+/**
+ * 全仓唯一 `dangerouslySetInnerHTML` 处：markdown 渲染 + 白名单消毒。
+ * 经增量缓存（`renderMarkdownIncremental`）——流式时已完成前缀只解析一次，只重解析尾部块。
+ */
 function Markdown({ text, className }: { text: unknown; className?: string }): ReactNode {
-  const html = useMemo(() => sanitizeHtml(renderMarkdown(text)), [text])
+  const cacheRef = useRef<MarkdownCache | null>(null)
+  if (cacheRef.current === null) cacheRef.current = createMarkdownCache()
+  const html = useMemo(() => {
+    const result = renderMarkdownIncremental(text, cacheRef.current as MarkdownCache)
+    cacheRef.current = result.cache
+    return result.html
+  }, [text])
   return <div className={className ?? 'chat-md'} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-/** 资产引用 → 可显示的 URL（asset 经 `ctx.asset.get` 取 base64 转 data URL；ext 直用）。 */
+/** base64 字节 + mime → blob URL（对象 URL 由调用方 revoke）。 */
+function blobUrlFromBytes(bytes: Uint8Array, mime: string): string {
+  return URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }))
+}
+
+/** 资产引用 → 可显示的 URL（asset 经 `ctx.asset.get` 取 base64 转 blob URL；ext 直用）。 */
 function useAssetUrl(source: any, nonce: number): string | null {
   const { ctx } = useChatEnv()
   const key =
@@ -165,6 +226,7 @@ function useAssetUrl(source: any, nonce: number): string | null {
       return undefined
     }
     let alive = true
+    let created: string | null = null
     setUrl(null)
     void ctx.asset
       .get(source.sha256)
@@ -178,7 +240,12 @@ function useAssetUrl(source: any, nonce: number): string | null {
               : typeof source.mime === 'string' && source.mime.length > 0
                 ? source.mime
                 : 'application/octet-stream'
-          setUrl(`data:${mime};base64,${record.bytes}`)
+          created = blobUrlFromBytes(base64ToBytes(record.bytes), mime)
+          if (!alive) {
+            URL.revokeObjectURL(created)
+            return
+          }
+          setUrl(created)
         } else {
           setUrl(null)
         }
@@ -188,6 +255,7 @@ function useAssetUrl(source: any, nonce: number): string | null {
       })
     return () => {
       alive = false
+      if (created !== null) URL.revokeObjectURL(created)
     }
   }, [key, nonce])
   return url
@@ -210,7 +278,26 @@ function MediaImage({ source, alt }: { source: any; alt: string }): ReactNode {
   const env = useChatEnv()
   const [nonce, setNonce] = useState(0)
   const [failed, setFailed] = useState(false)
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
   const url = useAssetUrl(source, nonce)
+
+  // 解码前先探测自然尺寸，预留精确显示盒，消除懒加载解码引起的布局跳动。
+  useEffect(() => {
+    setDims(null)
+    if (url === null) return undefined
+    let alive = true
+    const probe = new Image()
+    probe.onload = () => {
+      if (alive && probe.naturalWidth > 0 && probe.naturalHeight > 0) {
+        setDims({ w: probe.naturalWidth, h: probe.naturalHeight })
+      }
+    }
+    probe.src = url
+    return () => {
+      alive = false
+    }
+  }, [url])
+
   if (url === null || failed) {
     return (
       <MediaPlaceholder
@@ -222,7 +309,7 @@ function MediaImage({ source, alt }: { source: any; alt: string }): ReactNode {
     )
   }
   const altText = alt.length > 0 ? alt : lookupMessage(env.table, 'chat_image').body
-  return (
+  const img = (
     <img
       className="chat-media-img"
       src={url}
@@ -234,6 +321,13 @@ function MediaImage({ source, alt }: { source: any; alt: string }): ReactNode {
       }}
       onError={() => setFailed(true)}
     />
+  )
+  const box = fitBox(dims, 320, 240)
+  if (box === null) return img
+  return (
+    <span className="chat-media-frame" style={{ width: box.w, height: box.h }}>
+      {img}
+    </span>
   )
 }
 
@@ -303,8 +397,10 @@ function DiffView({ vm }: { vm: any }): ReactNode {
 /** question 交互卡：单选 / 多选 / 自定义输入 / 提交；已答折叠；expired 禁用。 */
 function QuestionCard({ vm }: { vm: any }): ReactNode {
   const env = useChatEnv()
-  const [answered, setAnswered] = useState<boolean>(vm.answered)
-  const [answers, setAnswers] = useState<any[]>(vm.answers)
+  // answered / answers 从 vm 派生，本地提交只作覆盖层：快照回流（他处作答 / 重拉）不再脱节。
+  const [localAnswers, setLocalAnswers] = useState<any[] | null>(null)
+  const answered = vm.answered === true || localAnswers !== null
+  const answers = localAnswers !== null ? localAnswers : vm.answers
   const [selections, setSelections] = useState<{ [id: string]: string[] }>(() => {
     const init: { [id: string]: string[] } = {}
     for (const question of vm.questions) init[question.id] = []
@@ -318,7 +414,7 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     return (
       <div className="chat-question">
         {vm.questions.map((question: any) => {
-          const answer = answers.find((item) => item.questionId === question.id)
+          const answer = answers.find((item: any) => item.questionId === question.id)
           const parts: string[] = []
           if (answer !== undefined) parts.push(...answer.selected)
           if (answer !== undefined && answer.custom !== null && answer.custom.length > 0) parts.push(answer.custom)
@@ -370,14 +466,13 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     setSubmitting(true)
     const result = await env.submitQuestion(vm, collected)
     if (result.ok) {
-      setAnswers(
+      setLocalAnswers(
         collected.map((answer) => ({
           questionId: answer.question_id,
           selected: answer.selected,
           custom: answer.custom ?? null,
         })),
       )
-      setAnswered(true)
       return
     }
     setSubmitting(false)
@@ -551,7 +646,7 @@ function ToolCard({
   liveChunks?: string
   liveDone?: boolean
 }): ReactNode {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState<boolean | null>(null)
   if (vm.form === 'degraded') return <Markdown text={vm.text} />
   if (vm.form === 'line') {
     return (
@@ -564,7 +659,8 @@ function ToolCard({
     )
   }
   const isLive = liveChunks !== undefined
-  const expanded = isLive ? true : open
+  // live 卡默认展开但允许折叠；定稿卡默认折叠（open 未被交互时为 null）。
+  const expanded = open !== null ? open : isLive
   return (
     <div
       className={`chat-tool chat-tool-${vm.tone}`}
@@ -575,7 +671,7 @@ function ToolCard({
         type="button"
         className="chat-tool-head"
         aria-expanded={expanded}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!(open !== null ? open : isLive))}
       >
         <Icon name="chevron-right" size={16} className="chat-tool-chevron" />
         <span className="chat-tool-label">{vm.label}</span>
@@ -951,7 +1047,9 @@ function contentKey(view: any): string {
     inFlight !== null
       ? inFlight.tools.reduce((total: number, tool: any) => total + (tool.chunks ? tool.chunks.length : 0), 0)
       : -1
-  return `${view.messages.length}|${textLength}|${chunkLength}`
+  const toolCount = inFlight !== null ? inFlight.tools.length : -1
+  const doneCount = inFlight !== null ? inFlight.tools.filter((tool: any) => tool.done === true).length : -1
+  return `${view.messages.length}|${textLength}|${chunkLength}|${toolCount}|${doneCount}`
 }
 
 function App({ ctx }: { ctx: SlotContext }): ReactNode {
@@ -967,12 +1065,13 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     loading: false,
     reloading: false,
     loadingNote: false,
-    loadingOlder: false,
+    windowBusy: false,
     finalizeAnnounce: false,
     error: null,
     newMsg: { count: 0 },
     group: { unreadIds: new Set<string>(), anchorEl: null },
     workflowStep: null,
+    pendingUser: null,
     connected: false,
     sawDisconnect: false,
     slowStream: false,
@@ -982,12 +1081,37 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   })
   const [, setTick] = useState(0)
   const rerender = useCallback(() => setTick((value) => value + 1), [])
+  // 流式增量合帧：同一帧内到达的 model.delta 合并为一次 store 提交（一帧最多一次重渲染）。
+  const pendingDeltas = useRef<any[]>([])
+  const flushScheduled = useRef(false)
+  const flushDeltas = useCallback(() => {
+    if (pendingDeltas.current.length === 0) return
+    const queued = pendingDeltas.current
+    pendingDeltas.current = []
+    let next = store.getSnapshot()
+    for (const payload of queued) next = applyDelta(next, payload)
+    store.commit(next, { type: 'delta' })
+  }, [store])
+  const scheduleFlush = useCallback(() => {
+    if (flushScheduled.current) return
+    flushScheduled.current = true
+    const run = () => {
+      flushScheduled.current = false
+      flushDeltas()
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+    else setTimeout(run, 16)
+  }, [flushDeltas])
   const [liveText, setLiveText] = useState('')
   const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pendingAdjust = useRef<{ prevHeight: number; prevTop: number } | null>(null)
+  const pendingTrimTop = useRef(false)
+  const pendingTrimBottom = useRef(false)
+  const pendingScrollBottom = useRef(false)
   const lastKeyRef = useRef('')
   const disposedRef = useRef(false)
+  const requestSeq = useRef(0)
   const apiRef = useRef<any>({})
 
   const announce = useCallback((text: string) => {
@@ -1011,6 +1135,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
 
   async function loadHistory(conversationId: any, options: any = {}): Promise<void> {
     if (disposedRef.current) return
+    // 请求序号：线程切换 / 重拉并发时只认最新一次回包，避免旧线程数据覆盖新视图。
+    const seq = ++requestSeq.current
     const st = stateRef.current
     const resetView = options.resetView !== false
     const current = store.getSnapshot()
@@ -1036,8 +1162,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     const args: any =
       typeof conversationId === 'string' && conversationId.length > 0 ? { conversation: conversationId } : {}
     const result = (await ctx.command('chat.history', args, { thread: st.viewThread })) as any
-    if (disposedRef.current) return
     if (loadingTimer !== null) clearTimeout(loadingTimer)
+    if (disposedRef.current || seq !== requestSeq.current) return
     st.loading = false
     st.reloading = false
     st.loadingNote = false
@@ -1049,14 +1175,24 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       rerender()
       return
     }
-    const next = applySnapshot(store.getSnapshot(), result.value, conversationId)
+    const before = store.getSnapshot()
+    const next = applySnapshot(before, result.value, conversationId)
     const base = initialWindow(next.messages.length)
-    st.window = resetView
-      ? base
-      : { start: Math.min(st.window.start, base.start), end: next.messages.length }
+    if (resetView) {
+      st.window = base
+    } else if (st.window.end < before.messages.length) {
+      // 底部已被回收：保持裁剪，不因静默重拉把窗口拉回全量。
+      st.window = { start: st.window.start, end: Math.min(st.window.end, next.messages.length) }
+    } else {
+      st.window = { start: Math.min(st.window.start, base.start), end: next.messages.length }
+    }
     if (resetView) {
       st.group.unreadIds = new Set()
       st.workflowStep = null
+    }
+    // 快照已含该用户消息（或整屏重置）时收起乐观渲染，避免与权威历史重复。
+    if (st.pendingUser !== null) {
+      if (resetView || hasUserMessage(next.messages, messageText(st.pendingUser))) st.pendingUser = null
     }
     st.finalizeAnnounce = options.announceFinal === true
     store.commit(next, { type: 'snapshot' })
@@ -1104,6 +1240,30 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     })()
   }
 
+  /** 回合内从 `chat.message` 槽乐观渲染在途用户消息（回合结束快照即收口）。 */
+  async function loadPendingUser(): Promise<void> {
+    const st = stateRef.current
+    const thread = st.viewThread
+    const view = store.getSnapshot()
+    if (view.kind === 'group' || view.kind === 'workflow') return
+    const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
+    if (disposedRef.current || stateRef.current.viewThread !== thread) return
+    const value =
+      read !== null && read.ok === true && read.value !== null && typeof read.value === 'object' && !Array.isArray(read.value)
+        ? read.value
+        : null
+    const slots =
+      value !== null && value.slots !== null && typeof value.slots === 'object' && !Array.isArray(value.slots)
+        ? value.slots
+        : null
+    const def = pendingUserDef(slots === null ? null : slots[thread ?? '_main'])
+    if (def === null) return
+    // 权威历史已含同文用户消息（重拉 / 重复 run.started）则不乐观渲染，避免重复。
+    if (hasUserMessage(store.getSnapshot().messages, messageText(def))) return
+    st.pendingUser = def
+    rerender()
+  }
+
   function openLightbox(payload: { url: string; alt: string; thumb: HTMLElement | null }): void {
     const machine = createLightboxState()
     machine.open(payload.url, payload.alt)
@@ -1126,22 +1286,39 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   function loadOlder(): void {
     const st = stateRef.current
     const current = store.getSnapshot()
-    if (st.loadingOlder || !shouldWindow(current.messages.length) || !hasOlder(st.window)) return
+    if (st.windowBusy || !shouldWindow(current.messages.length) || !hasOlder(st.window)) return
     const el = scrollRef.current
     const prevHeight = el !== null ? el.scrollHeight : 0
     const prevTop = el !== null ? el.scrollTop : 0
-    st.loadingOlder = true
+    st.windowBusy = true
     st.window = olderWindow(st.window) ?? st.window
     pendingAdjust.current = { prevHeight, prevTop }
+    pendingTrimBottom.current = true
     rerender()
-    st.loadingOlder = false
+    // windowBusy 在布局效果里复位：一帧只允许一次窗口操作。
+  }
+
+  function loadNewer(): void {
+    const st = stateRef.current
+    const total = store.getSnapshot().messages.length
+    if (st.windowBusy || !shouldWindow(total)) return
+    const next = newerWindow(st.window, total)
+    if (next === null) return
+    st.windowBusy = true
+    st.window = next
+    pendingTrimTop.current = true
+    rerender()
   }
 
   function onScroll(): void {
     const el = scrollRef.current
     if (el === null) return
     const st = stateRef.current
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    const nearWindowBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    // 到达窗口底部但仍有更新消息：向下扩窗（贴真实底部）。
+    if (nearWindowBottom && st.window.end < store.getSnapshot().messages.length) loadNewer()
+    // 只有窗口右端已到列表末端，才算「真·贴底」。
+    const atBottom = nearWindowBottom && st.window.end >= store.getSnapshot().messages.length
     const changed = st.atBottom !== atBottom
     st.atBottom = atBottom
     if (atBottom) {
@@ -1162,6 +1339,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   }
 
   function handleRecord(record: any): void {
+    // 任何非增量事件先冲刷在途增量，保证「同连接内按到达顺序 fold」不被合帧打乱。
+    flushDeltas()
     const st = stateRef.current
     const payload = record.payload !== null && typeof record.payload === 'object' ? record.payload : {}
     if (record.topic === 'shell.state') {
@@ -1174,6 +1353,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       if (!wasConnected) {
         if (st.sawDisconnect) {
           st.sawDisconnect = false
+          st.pendingUser = null
           store.commit(dropInFlight(store.getSnapshot()), { type: 'lifecycle' })
           void apiRef.current.loadHistory(st.viewThread, { resetView: false })
         } else if (st.error !== null && st.error.code === 'ui_unreachable') {
@@ -1184,7 +1364,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
     if (record.topic === 'model.delta') {
       if (matchesThread(payload.thread, st.viewThread)) {
-        store.commit(applyDelta(store.getSnapshot(), payload), { type: 'delta' })
+        pendingDeltas.current.push(payload)
+        scheduleFlush()
       }
       return
     }
@@ -1210,6 +1391,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       if (isPeriodicRun(payload.origin)) return
       if (matchesThread(payload.thread, st.viewThread)) {
         store.commit(applyRunStarted(store.getSnapshot(), payload), { type: 'lifecycle' })
+        void apiRef.current.loadPendingUser()
       }
       return
     }
@@ -1219,7 +1401,11 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       const folded = foldRunFinished(store.getSnapshot(), payload)
       if (folded.action === 'ignore') return
       store.commit(folded.view, { type: 'lifecycle' })
-      if (folded.action === 'cancel') return
+      if (folded.action === 'cancel') {
+        st.pendingUser = null
+        rerender()
+        return
+      }
       void apiRef.current.loadHistory(st.viewThread, { resetView: false, announceFinal: true })
       return
     }
@@ -1243,8 +1429,11 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   }
 
   function onThreadChange(value: any): void {
+    // 切线程前先落地在途增量，避免旧线程已收增量丢失或跨线程错配。
+    flushDeltas()
     const st = stateRef.current
     st.viewThread = typeof value === 'string' && value.length > 0 ? value : null
+    st.pendingUser = null
     store.commit(dropInFlight(store.getSnapshot()), { type: 'lifecycle' })
     st.listOpacity = 0
     rerender()
@@ -1258,6 +1447,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   apiRef.current.loadHistory = loadHistory
   apiRef.current.handleRecord = handleRecord
   apiRef.current.onThreadChange = onThreadChange
+  apiRef.current.loadPendingUser = loadPendingUser
 
   // 首屏：拉文案表 → 订阅事件与线程 → 首次快照。
   useEffect(() => {
@@ -1338,21 +1528,49 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
   }, [view, rerender])
 
-  // 窗口上翻后按高度差还原滚动位置。
+  // 窗口滚动后的位置补偿与远端回收：每帧只做一种单方向 DOM 变更，高度差补偿才准确。
   useLayoutEffect(() => {
-    const adjust = pendingAdjust.current
-    if (adjust === null) return
-    pendingAdjust.current = null
+    const st = stateRef.current
     const el = scrollRef.current
-    if (el !== null) el.scrollTop = el.scrollHeight - adjust.prevHeight + adjust.prevTop
+    const adjust = pendingAdjust.current
+    if (adjust !== null) {
+      pendingAdjust.current = null
+      if (el !== null) el.scrollTop = el.scrollHeight - adjust.prevHeight + adjust.prevTop
+    }
+    if (pendingTrimTop.current) {
+      pendingTrimTop.current = false
+      const prevHeight = el !== null ? el.scrollHeight : 0
+      const prevTop = el !== null ? el.scrollTop : 0
+      const trimmed = trimTop(st.window)
+      if (trimmed.removed > 0) {
+        st.window = trimmed.state
+        pendingAdjust.current = { prevHeight, prevTop }
+        rerender()
+        return
+      }
+    } else if (pendingTrimBottom.current) {
+      pendingTrimBottom.current = false
+      const trimmed = trimBottom(st.window)
+      if (trimmed.removed > 0) {
+        st.window = trimmed.state
+        rerender()
+        return
+      }
+    }
+    if (pendingScrollBottom.current) {
+      pendingScrollBottom.current = false
+      scrollToBottom()
+    }
+    st.windowBusy = false
   })
 
-  // 定稿播报：一次性 aria-live，渲染后复位。
+  // 定稿播报：一次性 aria-live，渲染后复位（复位需重渲染才能真正摘除属性）。
   useEffect(() => {
     if (stateRef.current.finalizeAnnounce) {
       stateRef.current.finalizeAnnounce = false
+      rerender()
     }
-  }, [view])
+  }, [view, rerender])
 
   const st = stateRef.current
   const table = st.table
@@ -1435,9 +1653,27 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
         continue
       }
       const announce = st.finalizeAnnounce && item.entry === lastEntry && isAssistantEntry(item.entry)
-      nodes.push(<MessageItem key={messageId(item.entry)} entry={item.entry} announce={announce} />)
+      nodes.push(
+        <MessageBoundary key={messageId(item.entry)} fallback={<RenderFallback />}>
+          <MessageItem entry={item.entry} announce={announce} />
+        </MessageBoundary>,
+      )
     }
-    if (view.inFlight !== null) nodes.push(<StreamTurn key="stream" view={view} slowStream={st.slowStream} />)
+    // 在途用户消息（乐观）：仅回合进行中渲染，权威快照落地即收起。
+    if (st.pendingUser !== null && view.inFlight !== null) {
+      nodes.push(
+        <MessageBoundary key="pending-user" fallback={<RenderFallback />}>
+          <MessageItem entry={{ def: st.pendingUser }} announce={false} />
+        </MessageBoundary>,
+      )
+    }
+    if (view.inFlight !== null) {
+      nodes.push(
+        <MessageBoundary key="stream" fallback={<RenderFallback />}>
+          <StreamTurn view={view} slowStream={st.slowStream} />
+        </MessageBoundary>,
+      )
+    }
     return nodes
   }
 
@@ -1474,7 +1710,9 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
             <div className="chat-group-body">
               {item.showName ? <div className="chat-group-name">{item.speakerName}</div> : null}
               <div className="chat-group-bubble">
-                <GroupItemBody item={item} />
+                <MessageBoundary fallback={<RenderFallback />}>
+                  <GroupItemBody item={item} />
+                </MessageBoundary>
               </div>
             </div>
           </div>
@@ -1527,10 +1765,14 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   }
 
   function renderList(): ReactNode {
-    if (st.error !== null) {
-      return <ErrorBar error={st.error} onRetry={() => void loadHistory(st.viewThread)} />
-    }
-    if (st.loading) {
+    const errorBar =
+      st.error !== null ? (
+        <ErrorBar error={st.error} onRetry={() => void loadHistory(st.viewThread)} />
+      ) : null
+    // 已有内容时，历史重拉失败只提示、不清空会话：瞬时超时不应抹掉已渲染消息。
+    const hasContent = store.getSnapshot().messages.length > 0
+    if (errorBar !== null && !hasContent) return errorBar
+    if (st.loading && !hasContent) {
       return (
         <div className="chat-block-loading">
           <div className="chat-breathe" />
@@ -1538,9 +1780,14 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
         </div>
       )
     }
-    if (view.kind === 'group') return renderGroup()
-    if (view.kind === 'workflow') return renderWorkflow()
-    return renderConversation()
+    const body =
+      view.kind === 'group' ? renderGroup() : view.kind === 'workflow' ? renderWorkflow() : renderConversation()
+    return errorBar === null ? body : (
+      <>
+        {errorBar}
+        {body}
+      </>
+    )
   }
 
   const pillText = st.newMsg.count > 0 ? pillLabel(st.newMsg.count) : lookupMessage(table, 'chat_pill_more').body
@@ -1577,10 +1824,11 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
           aria-live="polite"
           aria-atomic="true"
           onClick={() => {
+            // 先恢复到最新一窗，再在渲染后贴底（窗口可能此前被远端回收）。
+            stateRef.current.window = initialWindow(store.getSnapshot().messages.length)
             stateRef.current.atBottom = true
             stateRef.current.newMsg = dismissNew()
-            const el = scrollRef.current
-            if (el !== null) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+            pendingScrollBottom.current = true
             rerender()
           }}
         >

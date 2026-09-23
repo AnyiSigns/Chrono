@@ -95,6 +95,20 @@ export function attachmentViewModel(attachment: any): any {
   }
 }
 
+/**
+ * `chat.message` 槽 → 展示用消息 def（回合内乐观渲染在途用户消息）。
+ * 槽空 / 非 chat kind / 无内容返回 null（不乐观渲染）。
+ */
+export function pendingUserDef(slot: any): any | null {
+  if (!isRec(slot) || slot.kind !== 'chat.message') return null
+  const text = typeof slot.text === 'string' ? slot.text : ''
+  const attachments = Array.isArray(slot.attachments) ? slot.attachments : []
+  if (text.length === 0 && attachments.length === 0) return null
+  const def: any = { role: 'user', parts: text.length > 0 ? [{ type: 'text', text }] : [] }
+  if (attachments.length > 0) def.attachments = attachments
+  return def
+}
+
 /** 消息 → 有序渲染项：parts（含 text）在前，attachments 在后；无 parts 时回落 content。 */
 export function messageViewItems(def: any): any[] {
   if (!isRec(def)) return []

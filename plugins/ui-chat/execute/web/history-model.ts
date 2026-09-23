@@ -106,6 +106,21 @@ export function messageId(entry: any): string {
   return typeof entry.hash === 'string' ? entry.hash : ''
 }
 
+/**
+ * 尾部若干条内是否存在同文用户消息（乐观渲染收口判定）。
+ * 定稿快照里 user 后跟 assistant，故不能只看最后一条；只看尾部避免历史深处同文误判。
+ */
+export function hasUserMessage(messages: any[], text: string, depth = 4): boolean {
+  if (!Array.isArray(messages) || text.length === 0) return false
+  return messages.slice(-depth).some(
+    (entry) =>
+      isRec(entry) &&
+      isRec(entry.def) &&
+      entry.def.role === 'user' &&
+      messageText(entry.def) === text,
+  )
+}
+
 /** 消息正文文本（供群聊 / 纯文本场景；parts 存在时优先拼 text part）。 */
 export function messageText(def: any): string {
   if (!isRec(def)) return ''

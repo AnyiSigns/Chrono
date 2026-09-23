@@ -40,6 +40,7 @@ export const UI_TEXT: { [code: string]: string } = {
   chat_answer_required: '请先作答',
   chat_system_message: '系统消息',
   chat_error: '错误',
+  chat_render_failed: '内容渲染失败',
   chat_file: '文件',
   chat_image: '图片',
   chat_agent: 'agent',

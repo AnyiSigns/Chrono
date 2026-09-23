@@ -13,11 +13,14 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import { escapeHtml, renderInline, renderMarkdown } from '../execute/web/markdown.ts'
+import { createMarkdownCache, renderMarkdownIncremental, safeBoundary } from '../execute/web/markdown-cache.ts'
+import { base64ToBytes, fitBox } from '../execute/web/media.ts'
 import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/sanitize.ts'
 import {
   currentConversationId,
   dataChangeTarget,
   finishesCurrentStream,
+  hasUserMessage,
   isPeriodicRun,
   loadConversation,
   matchesThread,
@@ -26,7 +29,7 @@ import {
   restoreMessages,
   threadKind,
 } from '../execute/web/history-model.ts'
-import { assetSource, messageViewItems, partViewModel, safeStringify } from '../execute/web/render-parts.ts'
+import { assetSource, messageViewItems, partViewModel, pendingUserDef, safeStringify } from '../execute/web/render-parts.ts'
 import { degradeText, renderSummary, toolCardViewModel, truncateSummary } from '../execute/web/tool-card.ts'
 import { computeDiff, detailViewModel, parsePatch, splitLines } from '../execute/web/detail-renderers.ts'
 import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
@@ -35,13 +38,19 @@ import { statusIcon, statusText, workflowViewModel } from '../execute/web/workfl
 import {
   createNewMessageState,
   dismissNew,
+  hasNewer,
   hasOlder,
   initialWindow,
+  MAX_WINDOW,
+  newerWindow,
   onNewContent,
   olderWindow,
   pillLabel,
   shouldWindow,
   sliceWindow,
+  trimBottom,
+  trimTop,
+  windowSize,
 } from '../execute/web/windowing.ts'
 import { buildDateSeparators, dateLabel, localDateKey } from '../execute/web/date-sep.ts'
 import { formatCount, usageText, usageTotal } from '../execute/web/usage.ts'
@@ -103,6 +112,56 @@ test('消毒：script / 事件属性 / 危险 URL 被清', () => {
   assert.equal(parseTag('!doctype'), null)
 })
 
+// ---- markdown 增量缓存 ----
+
+test('markdown 安全边界：围栏内空白行不算边界', () => {
+  assert.equal(safeBoundary('a\n\nb'), 3)
+  assert.equal(safeBoundary('a\nb'), -1)
+  assert.equal(safeBoundary('```\n\ncode\n```\n\nx'), '```\n\ncode\n```\n\n'.length)
+})
+
+test('markdown 增量缓存：与整段渲染等价，逐字符流式每步一致', () => {
+  const full = (text) => sanitizeHtml(renderMarkdown(text))
+  for (const sample of [
+    'a\n\nb',
+    '# H\n\npara\n\n- x\n- y\n\n> q',
+    '```\ncode\n\ninside\n```\n\nafter',
+    'a\nb\nc',
+    'text with `code` and [l](https://e.com)',
+  ]) {
+    const step = renderMarkdownIncremental(sample, createMarkdownCache())
+    assert.equal(step.html, full(sample), sample)
+  }
+
+  let cache = createMarkdownCache()
+  let acc = ''
+  const target = 'para one\n\npara two with **bold**\n\n```\nlet x = 1\n```\n'
+  for (const ch of target) {
+    acc += ch
+    const step = renderMarkdownIncremental(acc, cache)
+    cache = step.cache
+    assert.equal(step.html, full(acc), `step at ${JSON.stringify(acc)}`)
+  }
+  assert.ok(cache.prefix.length > 0)
+  assert.equal(cache.html, full(cache.prefix))
+
+  // 换文本 / reset：前缀失配即整体重置
+  const switched = renderMarkdownIncremental('brand new', cache)
+  assert.equal(switched.html, full('brand new'))
+  assert.equal(switched.cache.prefix, '')
+})
+
+test('媒体辅助：base64 解码与等比装箱', () => {
+  assert.deepEqual([...base64ToBytes('aGk=')], [104, 105])
+  assert.equal(base64ToBytes('').length, 0)
+  assert.equal(base64ToBytes(null).length, 0)
+  assert.deepEqual(fitBox({ w: 100, h: 50 }, 320, 240), { w: 100, h: 50 })
+  assert.deepEqual(fitBox({ w: 640, h: 480 }, 320, 240), { w: 320, h: 240 })
+  assert.deepEqual(fitBox({ w: 1000, h: 100 }, 320, 240), { w: 320, h: 32 })
+  assert.equal(fitBox(null, 320, 240), null)
+  assert.equal(fitBox({ w: 0, h: 10 }, 320, 240), null)
+})
+
 // ---- parts 分发 ----
 
 test('parts 分发：text / image / video / audio / file / tool / 未知降级', () => {
@@ -134,6 +193,17 @@ test('parts 分发：text / image / video / audio / file / tool / 未知降级',
   assert.equal(items[0].type, 'text')
   assert.equal(items[1].type, 'image')
   assert.equal(messageViewItems({ content: 'only' })[0].text, 'only')
+})
+
+test('乐观用户消息：chat.message 槽 → 展示 def', () => {
+  assert.equal(pendingUserDef(null), null)
+  assert.equal(pendingUserDef({ kind: 'other', text: 'x' }), null)
+  assert.equal(pendingUserDef({ kind: 'chat.message', text: '', attachments: [] }), null)
+  const def = pendingUserDef({ kind: 'chat.message', text: 'hi', attachments: [{ kind: 'file', name: 'a.txt' }] })
+  assert.equal(def.role, 'user')
+  assert.deepEqual(def.parts, [{ type: 'text', text: 'hi' }])
+  assert.equal(def.attachments.length, 1)
+  assert.deepEqual(pendingUserDef({ kind: 'chat.message', text: '', attachments: [{ kind: 'image' }] }).parts, [])
 })
 
 // ---- 工具卡 ----
@@ -274,6 +344,29 @@ test('entry.tsx：流式 aria-busy / 定稿 aria-live / 胶囊 aria-live / quiet
   assert.equal((source.match(/st\.loading = true/g) ?? []).length, 1)
 })
 
+test('entry.tsx：并发防护 / 合帧 / 上翻闸门 / 无调试码', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  // 只认最新一次历史回包
+  assert.match(source, /seq !== requestSeq\.current/)
+  // 流式增量合帧
+  assert.match(source, /pendingDeltas\.current\.push/)
+  assert.match(source, /requestAnimationFrame/)
+  // 增量 markdown 缓存
+  assert.match(source, /renderMarkdownIncremental/)
+  // 窗口闸门在布局效果里复位；双向回收存在
+  assert.match(source, /st\.windowBusy = false/)
+  assert.match(source, /trimTop\(st\.window\)/)
+  assert.match(source, /trimBottom\(st\.window\)/)
+  // 热路径不得残留调试码
+  assert.equal(source.includes('__dbgCounts'), false)
+  assert.equal(source.includes('__dbgRun'), false)
+  // 消息级错误边界 + 媒体改 blob URL（可 revoke）
+  assert.match(source, /class MessageBoundary/)
+  assert.match(source, /URL\.createObjectURL/)
+  assert.match(source, /URL\.revokeObjectURL/)
+  assert.equal(source.includes(';base64,'), false)
+})
+
 test('事件按 thread 过滤（写死）', () => {
   assert.equal(matchesThread('t1', 't1'), true)
   assert.equal(matchesThread('t2', 't1'), false)
@@ -375,6 +468,24 @@ test('窗口化阈值与「↓ N 条新消息」状态机', () => {
   assert.equal(hasOlder({ start: 0, end: 200 }), false)
   assert.equal(hasOlder({ start: 10, end: 200 }), true)
   assert.deepEqual(sliceWindow([1, 2, 3, 4], { start: 1, end: 3 }), [2, 3])
+  assert.equal(hasNewer({ start: 0, end: 200 }, 300), true)
+  assert.equal(hasNewer({ start: 0, end: 300 }, 300), false)
+
+  // 双向窗口：下翻扩窗 / 远端回收
+  assert.deepEqual(newerWindow({ start: 300, end: 500 }, 900), { start: 300, end: 700 })
+  assert.deepEqual(newerWindow({ start: 300, end: 800 }, 900), { start: 300, end: 900 })
+  assert.equal(newerWindow({ start: 300, end: 900 }, 900), null)
+  assert.equal(windowSize({ start: 300, end: 500 }), 200)
+  assert.deepEqual(trimBottom({ start: 0, end: MAX_WINDOW + 50 }), {
+    state: { start: 0, end: MAX_WINDOW },
+    removed: 50,
+  })
+  assert.deepEqual(trimBottom({ start: 0, end: 100 }), { state: { start: 0, end: 100 }, removed: 0 })
+  assert.deepEqual(trimTop({ start: 10, end: 10 + MAX_WINDOW + 50 }), {
+    state: { start: 60, end: 10 + MAX_WINDOW + 50 },
+    removed: 50,
+  })
+  assert.deepEqual(trimTop({ start: 0, end: 100 }), { state: { start: 0, end: 100 }, removed: 0 })
 
   let pill = createNewMessageState()
   pill = onNewContent(pill, false)
@@ -462,6 +573,22 @@ test('消息 refs 沿 prev 还原展示序；会话选择与线程 kind', () => 
   assert.equal(restoreMessages(history, { head: null }).length, 0)
   assert.equal(messageText({ content: 'x' }), 'x')
   assert.equal(messageText({ parts: [{ type: 'text', text: 'p' }] }), 'p')
+})
+
+test('乐观收口判定：尾部若干条内同文用户消息', () => {
+  const messages = [
+    { hash: 'a', def: { role: 'user', content: 'hi' } },
+    { hash: 'b', def: { role: 'assistant', content: 'yo' } },
+    { hash: 'c', def: { role: 'user', content: 'q2' } },
+    { hash: 'd', def: { role: 'assistant', content: 'a2' } },
+    { hash: 'e', def: { role: 'user', content: 'again' } },
+    { hash: 'f', def: { role: 'assistant', content: 'ok' } },
+  ]
+  assert.equal(hasUserMessage(messages, 'again'), true)
+  assert.equal(hasUserMessage(messages, 'hi'), false)
+  assert.equal(hasUserMessage(messages, 'missing'), false)
+  assert.equal(hasUserMessage([], 'x'), false)
+  assert.equal(hasUserMessage(messages, ''), false)
 })
 
 // ---- 命令不可用 ----
