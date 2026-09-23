@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
-import { badgeFor, runningRun } from './badges.ts'
+import { badgeFor, badgeForGroup, runningRun } from './badges.ts'
 import type { Badge } from './badges.ts'
 import { groupConversations, isEmptyView, matchTitle } from './sidebar-model.ts'
 import type { Conversation, ConversationGroup, Workspace } from './sidebar-model.ts'
@@ -293,15 +293,10 @@ function SessionRow({ store, snap, session }: { store: SidebarStore; snap: Sideb
   )
 }
 
-function GroupView(props: {
-  store: SidebarStore
-  snap: SidebarSnapshot
-  group: ConversationGroup
-  forceExpand: boolean
-}) {
-  const { store, snap, group, forceExpand } = props
+function GroupView(props: { store: SidebarStore; snap: SidebarSnapshot; group: ConversationGroup }) {
+  const { store, snap, group } = props
   const workspace: Workspace = group.workspace
-  const collapsed = forceExpand ? false : snap.collapsedGroups.has(workspace.id)
+  const collapsed = snap.collapsedGroups.has(workspace.id)
   const headTips = workspace.missing ? tooltipProps(store, store.text('sidebar_directory_missing')) : {}
   return (
     <div className="sb-group">
@@ -446,7 +441,7 @@ function FlyoutView({ store, snap }: { store: SidebarStore; snap: SidebarSnapsho
       onMouseLeave={() => store.hideFlyout()}
     >
       {groups.map((group) => (
-        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} forceExpand={true} />
+        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
       ))}
     </div>
   )
@@ -476,10 +471,65 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
     return () => store.attachRoot(null)
   }, [store])
 
+  // 侧栏宽度归本插件（可拖拽 + 持久化）；壳的 `#slot-sidebar` 按 `--sidebar-w-expanded` 定宽。
+  // 把有效宽度同步到槽根，避免插件根（`--sb-width`）与槽宽不一致 → 内容溢出 / 横向滚动 / 裁切。
+  useEffect(() => {
+    const host = rootRef.current?.closest('#slot-sidebar') as HTMLElement | null
+    if (host === null || host === undefined) return
+    host.style.setProperty('--sidebar-w-expanded', `${snap.width}px`)
+  }, [snap.width])
+
   const toggleLabel = snap.collapsed ? store.text('sidebar_expand') : store.text('sidebar_collapse')
 
   let listBody: ReactNode
-  if (snap.error !== null) {
+  if (snap.collapsed) {
+    // 窄栏轨道：只渲染一枚文件夹图标，悬浮其上开出全量分组 flyout（仅悬浮触发，点击不切换）；
+    // 状态点聚合所有工作区（任一目录缺失 > 全量会话最高优先级角标）。
+    // 会话行 / 名称 / 搜索 / 文案类状态不在窄栏渲染；错误态留一枚重试图标。
+    if (snap.error !== null) {
+      listBody = (
+        <div className="sb-rail-static">
+          <IconButton
+            store={store}
+            icons={snap.icons}
+            name="rotate-ccw"
+            label={store.text('sidebar_retry')}
+            onClick={() => void store.loadAll()}
+          />
+        </div>
+      )
+    } else {
+      const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
+      const badge = badgeForGroup(
+        snap.badges,
+        groups.flatMap((group) => group.sessions.map((session) => session.id)),
+      )
+      const dotKind = snap.workspaces.some((workspace) => workspace.missing) ? 'missing' : (badge?.kind ?? null)
+      const dotLabel =
+        dotKind === null
+          ? ''
+          : dotKind === 'missing'
+            ? store.text('sidebar_directory_missing')
+            : dotKind === 'unread'
+              ? store.fmt('sidebar_unread_count', { count: badge?.count ?? 0 })
+              : dotKind === 'running'
+                ? store.text('sidebar_running')
+                : dotKind === 'pending'
+                  ? store.text('sidebar_pending')
+                  : store.text('sidebar_failed')
+      listBody = (
+        <div
+          className="sb-rail-item"
+          data-open={String(snap.flyoutOpen)}
+          onMouseEnter={() => store.openFlyout()}
+          onMouseLeave={() => store.hideFlyout()}
+        >
+          <Icon icons={snap.icons} name="folder" />
+          {dotKind !== null && <span className="sb-dot sb-rail-dot" data-kind={dotKind} role="img" aria-label={dotLabel} />}
+        </div>
+      )
+    }
+  } else if (snap.error !== null) {
     listBody = (
       <div className="sb-empty">
         <div className="sb-empty-title">{snap.error}</div>
@@ -509,7 +559,7 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_no_match')} />
     } else {
       listBody = groups.map((group) => (
-        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} forceExpand={false} />
+        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
       ))
     }
   }
@@ -548,14 +598,14 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       <div className="sb-status" hidden={snap.status === null} role="status" aria-live="polite">
         {snap.status === null ? '' : snap.status}
       </div>
-      <div className="sb-list" onMouseEnter={() => store.openFlyout()} onMouseLeave={() => store.hideFlyout()}>
-        {listBody}
-      </div>
+      <div className="sb-list">{listBody}</div>
       <div className="sb-foot">
-        <button type="button" className="sb-settings" onClick={() => store.openSettings()}>
-          <Icon icons={snap.icons} name="settings" />
-          <span className="sb-label">{store.text('sidebar_settings')}</span>
-        </button>
+        {!snap.collapsed && (
+          <button type="button" className="sb-settings" onClick={() => store.openSettings()}>
+            <Icon icons={snap.icons} name="settings" />
+            <span className="sb-label">{store.text('sidebar_settings')}</span>
+          </button>
+        )}
         <button
           type="button"
           className="sb-iconbtn sb-toggle"

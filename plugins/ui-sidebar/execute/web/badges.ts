@@ -134,6 +134,26 @@ export function runningRun(state: BadgeState, conversationId: string): string | 
   return typeof run === 'string' && run.length > 0 ? run : null
 }
 
+/**
+ * 组聚合角标（窄栏轨道用）：取组内最高优先级角标；未读优先级最低、计数跨会话求和。
+ * 空组或全组无角标时返回 null。
+ */
+export function badgeForGroup(state: BadgeState, conversationIds: readonly string[]): Badge | null {
+  let top: Badge | null = null
+  let unread = 0
+  for (const id of conversationIds) {
+    const badge = badgeFor(state, id)
+    if (badge === null) continue
+    if (badge.kind === 'unread') {
+      unread += badge.count ?? 0
+      continue
+    }
+    if (top === null || BADGE_PRIORITY.indexOf(badge.kind) < BADGE_PRIORITY.indexOf(top.kind)) top = badge
+  }
+  if (top !== null) return top
+  return unread > 0 ? { kind: 'unread', count: unread } : null
+}
+
 /** 清某会话未读（选中即已读）。 */
 export function clearUnread(state: BadgeState, conversationId: string): BadgeState {
   if (!Object.prototype.hasOwnProperty.call(state.unread, conversationId)) return state

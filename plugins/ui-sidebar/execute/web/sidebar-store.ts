@@ -27,6 +27,12 @@ const THREAD = '_main'
 const TOOLTIP_DELAY_MS = 400
 const FLYOUT_OPEN_MS = 150
 const FLYOUT_CLOSE_MS = 300
+/** 浮窗顶边相对窄栏顶边的下移量。 */
+const FLYOUT_TOP_OFFSET = 8
+/** 浮窗最大高度（超出由浮窗内部滚动）。 */
+const FLYOUT_MAX_HEIGHT = 420
+/** 浮窗最小高度下限（视口极小时兜底）。 */
+const FLYOUT_MIN_HEIGHT = 120
 const RELOAD_DEBOUNCE_MS = 150
 const STATUS_CLEAR_MS = 4000
 
@@ -568,14 +574,24 @@ export class SidebarStore {
     if (this.flyoutTimer !== null) clearTimeout(this.flyoutTimer)
     this.flyoutTimer = setTimeout(() => {
       this.flyoutTimer = null
-      if (!this.snapshot.collapsed || this.disposed) return
-      const rect = this.root?.getBoundingClientRect()
-      const flyout =
-        rect === undefined
-          ? { left: 0, top: 0, maxHeight: 0 }
-          : { left: Math.round(rect.right), top: Math.round(rect.top), maxHeight: Math.round(rect.height) }
-      this.update({ flyout, flyoutOpen: true })
+      this.showFlyout()
     }, FLYOUT_OPEN_MS)
+  }
+
+  /** 浮窗定位：贴窄栏右缘，顶边下移一小段；限高取「视口余量 / 上限」较小者，超出走内部滚动。 */
+  private showFlyout(): void {
+    if (!this.snapshot.collapsed || this.disposed) return
+    const rect = this.root?.getBoundingClientRect()
+    if (rect === undefined) {
+      this.update({ flyout: { left: 0, top: 0, maxHeight: 0 }, flyoutOpen: true })
+      return
+    }
+    const top = Math.round(rect.top) + FLYOUT_TOP_OFFSET
+    const maxHeight = Math.max(
+      FLYOUT_MIN_HEIGHT,
+      Math.min(FLYOUT_MAX_HEIGHT, Math.round(window.innerHeight) - top - FLYOUT_TOP_OFFSET),
+    )
+    this.update({ flyout: { left: Math.round(rect.right), top, maxHeight }, flyoutOpen: true })
   }
 
   hideFlyout(): void {

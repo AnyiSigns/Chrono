@@ -20,6 +20,7 @@ import {
 import {
   applyEvent,
   badgeFor,
+  badgeForGroup,
   clearUnread,
   createBadgeState,
   runningRun,
@@ -189,6 +190,23 @@ test('首屏补种：从会话 status / pending / inbox 生成初值，事件态
   const withEvent = applyEvent(createBadgeState(), 'host', 'run.started', { run: 'r9', thread: 'c3' })
   const merged = seedFromHistory(withEvent, conversations)
   assert.deepEqual(badgeFor(merged, 'c3'), { kind: 'running', run: 'r9' })
+})
+
+test('组聚合角标：取组内最高优先级；未读跨会话求和；空组 / 无角标为 null', () => {
+  assert.equal(badgeForGroup(createBadgeState(), []), null)
+  assert.equal(badgeForGroup(createBadgeState(), ['c1', 'c2']), null)
+  let state = createBadgeState()
+  state = applyEvent(state, 'session', 'group.message', { thread: 'c1' })
+  state = applyEvent(state, 'session', 'group.message', { thread: 'c1' })
+  state = applyEvent(state, 'session', 'group.message', { thread: 'c2' })
+  assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'unread', count: 3 })
+  assert.deepEqual(badgeForGroup(state, ['c1']), { kind: 'unread', count: 2 })
+  state = applyEvent(state, 'host', 'run.finished', { run: 'r0', thread: 'c1', status: 'failed' })
+  assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'failed' })
+  state = applyEvent(state, 'host', 'run.started', { run: 'r1', thread: 'c2' })
+  assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'running', run: 'r1' })
+  state = applyEvent(state, 'session', 'approval.pending', { thread: 'c1' })
+  assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'pending', count: 1 })
 })
 
 // ---- 二次确认 ----
