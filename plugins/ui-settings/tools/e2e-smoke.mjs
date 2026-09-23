@@ -1,51 +1,40 @@
-// `ui-settings` 宿主装配 + HTTP E2E（黑盒，经 boot CLI）：
-// ① pins 段（离线，独立 root）：seed 记忆族真实闭包，读世界验证 `ui-settings` 的
-//    `retrieval` / `memory-maintenance` pins 已解析成被依赖身份 active 世代哈希（不再 unresolved_cap）；
-// ② HTTP 段：pack 入世树核对 → 临时 root seed（配置 / 输入 / 技能 / 智能体 / 台账 / 厂商模板 / 密钥 /
-//    模型协议 / ui-settings + 记忆族桩）→ start → 轮询 loaded → 子应用 HTTP（/entry.js 与静态模块 200、
-//    穿越 404、只读命令真实往返、未就位依赖降级、技能直写、密钥直写、SSE）→ stop → verify + replay。
-// 记忆族桩（memory-retrieval / memory-consolidate）只声明能力、`start:""`：HTTP 段不触发 Rust 物化，
-// 真 pins 解析在 ① 段以真实插件验证。真实模型集成（`model.discover`）读仓库根 `.env`；缺失或失败优雅跳过。
-// 失败路径同样尝试 stop 释放锁。用法：node plugins/ui-settings/tools/e2e-smoke.mjs
-import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { get as httpGet, request as httpRequest } from 'node:http'
-import { createServer } from 'node:net'
+// `ui-settings` 宿主装配 E2E（黑盒，经 boot CLI）。客户端半边改由插件自交付（只读命令
+// `ui-settings.client.read`）后本插件已无 HTTP 面：本脚本不起任何端口、不请求 `/entry.js`、
+// 不经 `/p/` 反代，全部断言走离线面。
+//
+// 默认（离线，无需 npm ci / 网络）：
+//   ① 入世树核对（`.worldignore`：契约文件入世，test/ / tools/ / execute/web/dist/ 排除）
+//   ② plugin.json 形态断言（零 schema、无 exclusive、client.read 只读、build = npm ci + node execute/build.mjs）
+//   ③ seed 真实 pins 闭包（记忆族 / 模型协议 / 密钥 / 会话等，pins 在入世批内解析）
+//   ④ pack（已入世 → unchanged）
+//   ⑤ client.read 路径穿越防护 + 正常读回（直调服务方法，与既有单测同口径）
+//   ⑥ entry.tsx 导出 contract / register、不再导出 mount（esbuild 擦类型后真实 import）
+//   ⑦ verify
+//
+// 可选（需 npm ci / 网络；仅 `CHRONO_E2E_BOOT=1` 时执行）：宿主 `start` 装配段
+//   （seed 记忆族桩 → start → 轮询 loaded → commands 含 ui-settings.client.read →
+//   client.read 命令真实往返 → stop → verify + replay）。默认跳过，故本脚本可离线跑通。
+//
+// 用法：node plugins/ui-settings/tools/e2e-smoke.mjs
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
+import { build } from 'esbuild'
 import { packSourceDir, readWorldignore } from '../../../packages/host/assembly/source.ts'
-import { loadAnchor } from '../../../packages/host/ledger/index.ts'
-import { hostPaths } from '../../../packages/host/paths.ts'
+import { createHandlers } from '../execute/methods.ts'
+import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
 import { extractValue } from '../execute/bridge.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const SETTINGS_DIR = join(REPO_ROOT, 'plugins', 'ui-settings')
+const WEB_DIR = join(SETTINGS_DIR, 'execute', 'web')
 
-/** 依赖先于本插件的 seed 顺序（pins 需在入世时解析到已存在的身份）。 */
-const PACKAGES = [
-  'config',
-  'input',
-  'skill',
-  'agents',
-  'evolution',
-  'vendor-deepseek',
-  'vendor-custom',
-  'secrets',
-  'model-protocol',
-  'ui-settings',
-]
-
-/** 记忆族桩：只声明能力、无 start；HTTP 段不触发 Rust 物化，仅让 `ui-settings` 的 pins 可解析。 */
-const STUB_PACKAGES = [
-  ['memory-retrieval', ['retrieval'], { retrieval: ['search'] }],
-  ['memory-consolidate', ['memory-maintenance'], { 'memory-maintenance': ['view', 'edit'] }],
-]
-
-/** ① pins 段真实闭包（pins 拓扑序）：embedding / memory-store 等 Rust 包只入世、不起服务。 */
+/** ① pins 段真实闭包（拓扑序）：记忆族 / 模型协议 / 密钥 / 会话等，pins 在 seed 批内解析。 */
 const PINS_CLOSURE = [
   'secrets',
   'embedding',
@@ -57,6 +46,25 @@ const PINS_CLOSURE = [
   'short-memory',
   'session',
   'ui-settings',
+]
+
+/** 可选 start 段的依赖（pins 需先入世）；记忆族用桩避免 Rust 物化。 */
+const BOOT_PACKAGES = [
+  'config',
+  'input',
+  'skill',
+  'agents',
+  'evolution',
+  'vendor-deepseek',
+  'vendor-custom',
+  'secrets',
+  'model-protocol',
+]
+
+/** 记忆族桩：只声明能力、无 start（仅让 `ui-settings` 的 pins 可解析）。 */
+const STUB_PACKAGES = [
+  ['memory-retrieval', ['retrieval'], { retrieval: ['search'] }],
+  ['memory-consolidate', ['memory-maintenance'], { 'memory-maintenance': ['view', 'edit'] }],
 ]
 
 function boot(root, args, env) {
@@ -80,125 +88,7 @@ function boot(root, args, env) {
   return parsed
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
-/**
- * 本地假模型端点：`/models.dev.json` 回 models.dev 档案（供 `model.profile`），
- * 其余路径回模型列表（供 `model.discover`）。让四个服务侧命令在无外网下也可确定性断言。
- * 必须住独立进程：e2e 用 `spawnSync` 跑 boot（阻塞事件循环），同进程的 HTTP 服务无法应答。
- */
-const FAKE_MODEL_SCRIPT = `
-import { createServer } from 'node:http'
-const port = Number(process.argv[2])
-const server = createServer((req, res) => {
-  const body = req.url === '/models.dev.json'
-    ? { deepseek: { models: { 'e2e-model-a': { limit: { context: 128000, output: 8192 }, reasoning: true, modalities: { input: ['text'], output: ['text'] } } } } }
-    : { data: [{ id: 'e2e-model-a' }, { id: 'e2e-model-b' }] }
-  res.writeHead(200, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(body))
-})
-server.listen(port, '127.0.0.1')
-`
-
-/** 起假模型端点子进程并等它就绪；返回子进程句柄。 */
-async function startFakeModelServer(root, port) {
-  const script = join(root, 'fake-model.mjs')
-  writeFileSync(script, FAKE_MODEL_SCRIPT)
-  const child = spawn(process.execPath, [script, String(port)], { stdio: 'ignore' })
-  const deadline = Date.now() + 10000
-  for (;;) {
-    try {
-      const response = await httpCall(port, 'GET', '/models.dev.json')
-      if (response.status === 200) return child
-    } catch {
-      // 尚未监听
-    }
-    if (Date.now() > deadline) {
-      child.kill()
-      throw new Error(`timeout: 假模型端点未就绪（port=${port}）`)
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
-  }
-}
-
-function httpCall(port, method, path, body) {
-  return new Promise((resolveCall, reject) => {
-    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8')
-    const headers = { origin: `http://127.0.0.1:${port}` }
-    if (payload !== null) {
-      headers['content-type'] = 'application/json'
-      headers['content-length'] = payload.length
-    }
-    const req = httpRequest({ host: '127.0.0.1', port, method, path, headers }, (res) => {
-      const chunks = []
-      res.on('data', (chunk) => chunks.push(chunk))
-      res.on('end', () =>
-        resolveCall({
-          status: res.statusCode,
-          headers: res.headers,
-          body: Buffer.concat(chunks).toString('utf8'),
-        }),
-      )
-    })
-    req.on('error', reject)
-    if (payload !== null) req.write(payload)
-    req.end()
-  })
-}
-
-/** 打开 SSE 流：`ready` 在响应到达时兑现，`result` 在匹配 predicate 的记录出现时兑现。 */
-function openSse(port, predicate, timeoutMs = 10000) {
-  let markReady
-  const ready = new Promise((resolveReady) => {
-    markReady = resolveReady
-  })
-  const result = new Promise((resolveResult, reject) => {
-    const req = httpGet({ host: '127.0.0.1', port, path: '/events' }, (res) => {
-      markReady()
-      let buffer = ''
-      const timer = setTimeout(() => {
-        req.destroy()
-        reject(new Error(`SSE 超时；已收到：${buffer.slice(0, 800)}`))
-      }, timeoutMs)
-      res.on('data', (chunk) => {
-        buffer += chunk.toString('utf8')
-        const records = buffer
-          .split('\n\n')
-          .map((part) => {
-            const line = part.split('\n').find((entry) => entry.startsWith('data: '))
-            if (line === undefined) return null
-            try {
-              return JSON.parse(line.slice('data: '.length))
-            } catch {
-              return null
-            }
-          })
-          .filter((record) => record !== null)
-        const found = records.find(predicate)
-        if (found !== undefined) {
-          clearTimeout(timer)
-          req.destroy()
-          resolveResult({ records, found })
-        }
-      })
-      res.on('error', () => {})
-    })
-    req.on('error', reject)
-  })
-  return { ready, result }
-}
-
-async function waitFor(predicate, label, timeoutMs = 20000) {
+async function waitFor(predicate, label, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     if (predicate()) return
@@ -229,50 +119,213 @@ function collectPackedPaths(ops, rootIndex) {
   return paths
 }
 
-/** 解析仓库根 `.env`：支持 `key=value` 与 `key:value`；缺失返回空表。 */
-function readDotEnv() {
-  const file = join(REPO_ROOT, '.env')
-  if (!existsSync(file)) return {}
-  const values = {}
-  for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const line = raw.trim()
-    if (line.length === 0 || line.startsWith('#')) continue
-    const match = line.match(/^([A-Za-z0-9_]+)\s*[:=]\s*(.+)$/)
-    if (match === null) continue
-    if (values[match[1]] === undefined) values[match[1]] = match[2].trim().replace(/^["']|["']$/g, '')
+/** ① 入世树核对：契约文件入世，test/ / tools/ / execute/web/dist/ 排除。 */
+function assertWorldTree() {
+  const worldignore = readWorldignore(SETTINGS_DIR)
+  assert.equal(worldignore.ok, true, '.worldignore 解析失败')
+  for (const pattern of [['test'], ['tools'], ['execute', 'web', 'dist']]) {
+    assert.ok(
+      worldignore.patterns.some((item) => item.join('/') === pattern.join('/')),
+      `.worldignore 缺 ${pattern.join('/')}`,
+    )
   }
-  return values
+  const source = packSourceDir(SETTINGS_DIR, worldignore.patterns)
+  const packedPaths = collectPackedPaths(source.ops, source.rootTreeIndex)
+  for (const required of [
+    'plugin.json',
+    'package.json',
+    'package-lock.json',
+    'README.md',
+    'tsconfig.json',
+    'execute/main.ts',
+    'execute/methods.ts',
+    'execute/client-read.ts',
+    'execute/build.mjs',
+    'execute/web/entry.tsx',
+    'execute/web/components/App.tsx',
+    'execute/web/view-context.ts',
+    'terms/client.read.json',
+    'terms/model.vendors.json',
+    'terms/memory.view.json',
+    'terms/secret.json',
+  ]) {
+    assert.ok(packedPaths.includes(required), `入世树缺 ${required}`)
+  }
+  assert.ok(!packedPaths.some((path) => path.startsWith('test/')), '入世树含 test/')
+  assert.ok(!packedPaths.some((path) => path.startsWith('tools/')), '入世树含 tools/')
+  assert.ok(!packedPaths.some((path) => path.startsWith('execute/web/dist/')), '入世树含构建产物 dist/')
+  assert.ok(!packedPaths.some((path) => path.startsWith('node_modules/')), '入世树含 node_modules/')
+  console.log(`入世树：ok（${packedPaths.length} 个文件，排除 test/ / tools/ / execute/web/dist/）`)
 }
 
-function writeSlotBody(threadKey, slot) {
-  return {
-    ops: [
-      { op: 'put', args: { body: { slots: { [threadKey]: slot } } } },
-      { op: 'add_gen', args: { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-    ],
+/** ② plugin.json 形态断言（契约字段，离线读）。 */
+function assertDeclaration() {
+  const decl = JSON.parse(readFileSync(join(SETTINGS_DIR, 'plugin.json'), 'utf8'))
+  assert.equal(decl.identity, 'ui-settings')
+  assert.equal(decl.start, 'node execute/main.ts')
+  assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
+  assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
+  assert.deepEqual(decl.implements, ['ui-settings'])
+  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit', 'client.read', 'secret'])
+  assert.deepEqual(decl.pins, {
+    model: 'model-protocol',
+    secrets: 'secrets',
+    retrieval: 'memory-retrieval',
+    'memory-maintenance': 'memory-consolidate',
+  })
+  assert.deepEqual(decl.members, [
+    { kind: 'execute', path: 'execute/' },
+    { kind: 'term', path: 'terms/' },
+  ])
+  const clientRead = decl.commands.find((command) => command.name === 'ui-settings.client.read')
+  assert.ok(clientRead !== undefined, 'commands 缺 ui-settings.client.read')
+  assert.equal(clientRead.readonly, true, 'ui-settings.client.read 只读')
+  assert.equal(clientRead.entry, 'terms/client.read.json')
+  for (const command of decl.commands) {
+    assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
+    assert.ok(readFileSync(join(SETTINGS_DIR, command.entry), 'utf8').length > 0, `${command.entry} 应存在`)
+  }
+  assert.ok(Array.isArray(decl.build) && decl.build.length === 2, 'build 应为两步')
+  for (const step of decl.build) {
+    assert.ok(Array.isArray(step.args), 'build 步骤应带 args')
+    for (const arg of step.args) assert.equal(arg.includes('='), false, `args 令牌不得含 '='：${arg}`)
+  }
+  assert.deepEqual(decl.build[0], { cmd: 'npm', args: ['ci'] })
+  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['execute/build.mjs'] })
+  assert.ok(existsSync(join(SETTINGS_DIR, 'execute', 'build.mjs')), '构建脚本 execute/build.mjs 应存在')
+  console.log('plugin.json：ok（零 schema、无 exclusive、client.read 只读、build = npm ci + node execute/build.mjs）')
+}
+
+/** ③ seed 真实 pins 闭包（离线）：seed 成功即 pins 在入世批内解析。 */
+function seedPinsClosure() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-seed-${stamp}`)
+  mkdirSync(join(root, 'state'), { recursive: true })
+  writeFileSync(
+    join(root, 'state', 'plugins.json'),
+    JSON.stringify(PINS_CLOSURE.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) })), null, 2),
+  )
+  const seeded = boot(root, ['seed'])
+  assert.equal(seeded.ok, true, `seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
+  const settingsItem = seeded.items.find((item) => item.name === 'ui-settings')
+  assert.ok(settingsItem !== undefined, 'seed 报告缺 ui-settings')
+  assert.equal(settingsItem.identity, 'ui-settings')
+  assert.ok(
+    settingsItem.status === 'seeded' || settingsItem.status === 'unchanged',
+    `ui-settings seed 状态异常：${settingsItem.status}`,
+  )
+  console.log(`seed：${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
+  return root
+}
+
+/** ④ pack（已入世 → unchanged；pins 已解析）。 */
+function assertPack(root) {
+  const packed = boot(root, ['pack', SETTINGS_DIR, '--identity', 'ui-settings'])
+  assert.equal(packed.ok, true, `pack 报告 ok:false：${JSON.stringify(packed)}`)
+  assert.equal(packed.identity, 'ui-settings')
+  assert.ok(packed.status === 'packed' || packed.status === 'unchanged', `pack 状态异常：${packed.status}`)
+  console.log(`pack：ok（identity=${packed.identity}，status=${packed.status}）`)
+}
+
+/** 确保客户端半边产物存在（本地 esbuild，离线）；缺失时按 build 步骤生成。 */
+function ensureBuilt() {
+  const outfile = join(WEB_DIR, 'dist', 'entry.js')
+  if (existsSync(outfile)) return outfile
+  const result = spawnSync(process.execPath, ['execute/build.mjs'], { cwd: SETTINGS_DIR, encoding: 'utf8' })
+  if (result.status !== 0) {
+    throw new Error(`构建客户端半边失败（exit ${result.status}）：${result.stderr || result.stdout}`)
+  }
+  assert.ok(existsSync(outfile), '构建后仍缺 execute/web/dist/entry.js')
+  return outfile
+}
+
+/** ⑤ client.read：路径穿越防护 + 正常读回（直调服务方法）。 */
+function assertClientRead() {
+  // 语法层防护（纯函数）。
+  assert.equal(isSafeClientPath('dist/entry.js'), true)
+  assert.equal(isSafeClientPath('a/b/c.js'), true)
+  for (const bad of ['/etc/passwd.js', 'C:/x.js', 'C:\\x.js', 'a\\b.js', '../plugin.json', 'dist/../../x.js', 'dist//x.js', './x.js', 'dist/entry.ts', '', null, 42, ['dist/entry.js']]) {
+    assert.equal(isSafeClientPath(bad), false, `应拒绝非法路径：${String(bad)}`)
+  }
+  // 解析层防护（越界返回 null）。
+  assert.equal(resolveClientPath(WEB_DIR, 'dist/entry.js'), join(WEB_DIR, 'dist', 'entry.js'))
+  assert.equal(resolveClientPath(WEB_DIR, '../plugin.json'), null)
+  assert.equal(readClientFile(WEB_DIR, '../plugin.json'), null)
+  assert.equal(readClientFile(WEB_DIR, '/etc/passwd.js'), null)
+  assert.equal(readClientFile(WEB_DIR, 'dist/missing.js'), null)
+
+  // 正常读回：产物字节（缺失时按 build 步骤本地生成，离线）。
+  ensureBuilt()
+  const text = readClientFile(WEB_DIR, 'dist/entry.js')
+  assert.equal(typeof text, 'string', 'client.read 应读回产物文本')
+  assert.ok(text.includes('export'), 'entry.js 应是 ESM 产物')
+
+  // 方法层：{path} → {path,text}；非法路径结构化失败（fail-closed）。
+  const handlers = createHandlers({ identity: 'ui-settings', model: { call: async () => ({ ok: false, code: 'x', message: '' }) } })
+  const env = { run: null, thread: null, now: 0 }
+  const read = handlers['client.read']({ path: 'dist/entry.js' }, env)
+  assert.equal(read.path, 'dist/entry.js')
+  assert.ok(read.text.includes('export'))
+  const traversal = handlers['client.read']({ path: '../plugin.json' }, env)
+  assert.equal(traversal.ok, false)
+  assert.equal(traversal.error.code, 'client_read_bad_path')
+  const missing = handlers['client.read']({ path: 'dist/missing.js' }, env)
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'client_read_missing')
+  console.log(`client.read：ok（产物 ${text.length} 字节读回；绝对 / 盘符 / 反斜杠 / .. / 空段 / 非 js 均拒绝）`)
+}
+
+/** ⑥ entry.tsx 导出 contract / register、无 mount（esbuild 擦类型 + react 桩后真实 import）。 */
+async function assertEntryExports() {
+  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-entry-${Date.now()}`)
+  mkdirSync(root, { recursive: true })
+  try {
+    const reactStub = join(root, 'react-stub.js')
+    const jsxStub = join(root, 'jsx-runtime-stub.js')
+    writeFileSync(
+      reactStub,
+      'export const useState = (v) => [typeof v === "function" ? v() : v, () => {}]\n' +
+        'export const useEffect = () => {}\n' +
+        'export const useRef = (v) => ({ current: v })\n' +
+        'export const useCallback = (f) => f\n' +
+        'export const useMemo = (f) => (typeof f === "function" ? f() : f)\n' +
+        'export const useContext = () => ({})\n' +
+        'export const createContext = (value) => ({ Provider: (props) => props.children ?? null, Consumer: null, _currentValue: value })\n' +
+        'export const cloneElement = (el) => el\n' +
+        'export const useId = () => "id"\n' +
+        'export const createElement = () => null\n' +
+        'export const Fragment = Symbol("Fragment")\n',
+    )
+    writeFileSync(jsxStub, 'export const jsx = () => null\nexport const jsxs = () => null\nexport const Fragment = Symbol("Fragment")\n')
+    const outfile = join(root, 'entry.mjs')
+    await build({
+      entryPoints: [join(WEB_DIR, 'entry.tsx')],
+      outfile,
+      bundle: true,
+      format: 'esm',
+      platform: 'neutral',
+      target: 'es2022',
+      jsx: 'automatic',
+      alias: { react: reactStub, 'react/jsx-runtime': jsxStub },
+      logLevel: 'silent',
+    })
+    const module = await import(pathToFileURL(outfile).href)
+    assert.equal(module.contract, '2')
+    assert.equal(typeof module.register, 'function')
+    assert.equal(module.mount, undefined, '客户端半边不再导出 mount')
+    console.log('entry.tsx：ok（contract = "2" + register(ctx)；无 mount）')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 }
 
-/** 生成能力桩包（`start:""`、无世界数据、无成员）：只让 `ui-settings` 的 pins 可解析。 */
 function writeStubPackage(root, identity, implementsList, methods) {
   const dir = join(root, 'stubs', identity)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'plugin.json'),
     JSON.stringify(
-      {
-        identity,
-        implements: implementsList,
-        methods,
-        pins: {},
-        start: '',
-        protocol: '1',
-        restart: {},
-        health: {},
-        state: 'recomputable',
-        members: [],
-        commands: [],
-      },
+      { identity, implements: implementsList, methods, pins: {}, start: '', protocol: '1', restart: {}, health: {}, state: 'recomputable', members: [], commands: [] },
       null,
       2,
     ),
@@ -280,472 +333,79 @@ function writeStubPackage(root, identity, implementsList, methods) {
   return dir
 }
 
-/** 代码世代（payload 指向 commit def，body.tree 存在即代码世代）；取最后一个。 */
-function latestCodeGen(identity) {
-  return [...identity.gens].reverse().find((gen) => gen.payload !== undefined) ?? null
-}function isHex64(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-}
-
 /**
- * 离线依赖兜底（仅 `CHRONO_E2E_OFFLINE=1`，供禁网沙箱）：把宿主依赖缓存 `state/deps/npm`
- * 链到本机 npm 缓存，并让 npm 走「离线 + 统一 npmjs registry」——`npm ci` 的锁文件 resolved
- * 指向镜像时也能从本机缓存命中。默认不启用，联网环境按宿主常规物化。
+ * 可选宿主装配段（需 npm ci / 网络）：`CHRONO_E2E_BOOT=1` 时执行。
+ * 客户端半边自交付后只验证命令面与只读交付，不再有 HTTP / SSE / 端口。
  */
-function enableOfflineDeps(root, env) {
-  const cache =
-    process.env.npm_config_cache ??
-    (process.platform === 'win32'
-      ? join(process.env.LOCALAPPDATA ?? '', 'npm-cache')
-      : join(process.env.HOME ?? '', '.npm'))
-  if (cache.length === 0 || !existsSync(cache)) return env
-  const link = join(root, 'state', 'deps', 'npm')
-  mkdirSync(join(root, 'state', 'deps'), { recursive: true })
-  try {
-    symlinkSync(cache, link, process.platform === 'win32' ? 'junction' : 'dir')
-  } catch {
-    return env
-  }
-  console.log(`离线依赖：ok（${link} -> ${cache}）`)
-  return {
-    ...env,
-    npm_config_offline: 'true',
-    npm_config_registry: 'https://registry.npmjs.org/',
-    npm_config_replace_registry_host: 'always',
-  }
-}
-
-/** ① pins 段：真实记忆族闭包 seed（不起服务），读世界验证 `ui-settings` 四条 pins 已解析。 */
-function runPinsPhase(stamp) {
-  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-pins-${stamp}`)
+async function runBootPhase() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-boot-${stamp}`)
   mkdirSync(join(root, 'state'), { recursive: true })
+  let started = false
   try {
-    writeFileSync(
-      join(root, 'state', 'plugins.json'),
-      JSON.stringify(PINS_CLOSURE.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) })), null, 2),
-    )
-    const seeded = boot(root, ['seed'])
-    assert.equal(seeded.ok, true, `pins seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
-    const anchor = loadAnchor(hostPaths(root).journalFile, hostPaths(root).baseFile, hostPaths(root).coldDir)
-    const world = anchor.world
-    const identity = world.ids['ui-settings']
-    assert.ok(identity !== undefined, '世界里缺 ui-settings 身份')
-    const gen = latestCodeGen(identity)
-    assert.ok(gen !== null, 'ui-settings 无可解析代码世代')
-    for (const [name, dependency] of [
-      ['retrieval', 'memory-retrieval'],
-      ['memory-maintenance', 'memory-consolidate'],
-      ['model', 'model-protocol'],
-      ['secrets', 'secrets'],
-    ]) {
-      const resolved = gen.pins[name]
-      assert.ok(isHex64(resolved), `pins.${name} 未解析成 64 位 hex：${resolved}（不再 unresolved_cap）`)
-      assert.notEqual(resolved, dependency, `pins.${name} 仍是字面身份名`)
-      assert.equal(resolved, world.ids[dependency].active, `pins.${name} != ${dependency}.active`)
+    const entries = BOOT_PACKAGES.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) }))
+    for (const [identity, implementsList, methods] of STUB_PACKAGES) {
+      entries.push({ name: identity, path: writeStubPackage(root, identity, implementsList, methods) })
     }
-    console.log('pins 段：ok（retrieval / memory-maintenance / model / secrets 均解析到 active 世代哈希）')
+    entries.push({ name: 'ui-settings', path: SETTINGS_DIR })
+    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify(entries, null, 2))
+
+    const seeded = boot(root, ['seed'])
+    assert.equal(seeded.ok, true, `boot seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
+    boot(root, ['start'])
+    started = true
+    await waitFor(() => boot(root, ['status']).loaded.some((item) => item.id === 'ui-settings'), 'ui-settings loaded', 180000)
+    const commands = boot(root, ['commands'])
+    assert.ok(JSON.stringify(commands).includes('ui-settings.client.read'), `命令面应含 ui-settings.client.read：${JSON.stringify(commands)}`)
+    const readValue = extractValue(boot(root, ['ui-settings.client.read', JSON.stringify({ path: 'dist/entry.js' })]))
+    assert.equal(readValue.path, 'dist/entry.js', JSON.stringify(readValue))
+    assert.ok(readValue.text.includes('export'), 'client.read 应回 ESM 产物')
+    const traversal = extractValue(boot(root, ['ui-settings.client.read', JSON.stringify({ path: '../plugin.json' })]))
+    assert.equal(traversal.ok, false, '穿越路径应被拒')
+    const beforeStop = boot(root, ['status'])
+    boot(root, ['stop'])
+    started = false
+    const verified = boot(root, ['verify'])
+    assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
+    const replayed = boot(root, ['replay'])
+    assert.deepEqual(replayed.head, beforeStop.world_head, 'replay 链头与 status 不一致')
+    console.log('宿主装配段（start / commands / client.read / stop / verify + replay）：ok')
   } finally {
+    if (started) {
+      try {
+        boot(root, ['stop'])
+      } catch (err) {
+        console.error(`stop 失败：${err.message}`)
+      }
+    }
     rmSync(root, { recursive: true, force: true })
   }
 }
 
 async function main() {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const root = join(tmpdir(), 'kilo', `chrono-ui-settings-e2e-${stamp}`)
-  mkdirSync(join(root, 'state'), { recursive: true })
-  const port = await freePort()
-  const fakePort = await freePort()
-  const fakeBase = `http://127.0.0.1:${fakePort}/v1`
-  const fakeModel = await startFakeModelServer(root, fakePort)
-  let env = {
-    ...process.env,
-    CHRONO_UI_PORT_UI_SETTINGS: String(port),
-    CHRONO_MODELS_DEV_URL: `http://127.0.0.1:${fakePort}/models.dev.json`,
-  }
-  if (process.env.CHRONO_E2E_OFFLINE === '1') env = enableOfflineDeps(root, env)
-  let started = false
+  // 离线面（默认全部执行）。
+  assertWorldTree()
+  assertDeclaration()
+  const seedRoot = seedPinsClosure()
   try {
-    // 0) pins 段（独立 root，离线）：真实记忆族闭包 seed，验证 pins 解析（W3 升代后不再 unresolved_cap）。
-    runPinsPhase(stamp)
-
-    // 1) 入世树核对：契约文件与 execute/web/terms 入世，test/ 与 tools/ 排除。
-    const worldignore = readWorldignore(SETTINGS_DIR)
-    assert.equal(worldignore.ok, true, '.worldignore 解析失败')
-    const source = packSourceDir(SETTINGS_DIR, worldignore.patterns)
-    const packedPaths = collectPackedPaths(source.ops, source.rootTreeIndex)
-    for (const required of [
-      'plugin.json',
-      'package.json',
-      'README.md',
-      'execute/main.ts',
-      'execute/web/entry.js',
-      'execute/web/config-model.js',
-      'execute/web/memory-model.js',
-      'execute/web/view-memory.js',
-      'terms/model.discover.json',
-      'terms/secrets.status.json',
-      'terms/orchestration.health.json',
-      'terms/memory.view.json',
-      'terms/memory.search.json',
-      'terms/memory.edit.json',
-    ]) {
-      assert.ok(packedPaths.includes(required), `入世树缺 ${required}`)
-    }
-    assert.ok(!packedPaths.some((path) => path.startsWith('test/')), '入世树含 test/')
-    assert.ok(!packedPaths.some((path) => path.startsWith('tools/')), '入世树含 tools/')
-    console.log(`入世树：ok（${packedPaths.length} 个文件，排除 test/ 与 tools/）`)
-
-    // 2) seed（依赖先入世，pins 才解析得到）；记忆族桩先于 ui-settings，避免触发 Rust 物化。
-    const pluginEntries = PACKAGES.filter((name) => name !== 'ui-settings').map((name) => ({
-      name,
-      path: join(REPO_ROOT, 'plugins', name),
-    }))
-    for (const [identity, implementsList, methods] of STUB_PACKAGES) {
-      pluginEntries.push({ name: identity, path: writeStubPackage(root, identity, implementsList, methods) })
-    }
-    pluginEntries.push({ name: 'ui-settings', path: join(REPO_ROOT, 'plugins', 'ui-settings') })
-    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify(pluginEntries, null, 2))
-    const seeded = boot(root, ['seed'])
-    assert.equal(seeded.ok, true, `seed 报告 ok:false：${JSON.stringify(seeded.items)}`)
-    console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
-
-    // 3) start + 轮询 loaded
-    boot(root, ['start'], env)
-    started = true
-    await waitFor(() => boot(root, ['status'], env).loaded.some((item) => item.id === 'ui-settings'), 'ui-settings loaded')
-    const status = boot(root, ['status'], env)
-    assert.ok(status.loaded.some((item) => item.id === 'ui-settings'), 'ui-settings 未出现在 loaded')
-    console.log(`loaded: ${status.loaded.map((item) => item.id).join(' ')}`)
-
-    // 4) 命令声明与属主
-    const commands = boot(root, ['commands'], env)
-    const health = commands.find((command) => command.name === 'orchestration.health')
-    assert.ok(health, 'commands 缺 orchestration.health')
-    assert.equal(health.identity, 'ui-settings')
-    console.log('commands：ok（orchestration.health 属主 ui-settings）')
-
-    // 4b) 写默认 body（数据世代）：config（含已保存厂商，供 model.profile）+
-    //     两家厂商模板（供 model.vendors）；否则投影 body 回落到代码世代（无模板字段）。
-    const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
-    const configBody = {
-      version: 1,
-      params: {},
-      permission: 'review',
-      ui: { theme: 'system', style: '', sidebar_width: 260 },
-      vendor: 'deepseek',
-      model: 'e2e-model-a',
-      providers: {
-        deepseek: {
-          name: 'DeepSeek',
-          base_url: fakeBase,
-          auth_ref: { kind: 'local', name: 'E2E_MODEL_KEY' },
-          models: { 'e2e-model-a': { name: 'e2e-model-a', enabled: true } },
-        },
-      },
-    }
-    const defaultBodies = [
-      ['config', configBody],
-      ['vendor-deepseek', readJson(join(REPO_ROOT, 'plugins', 'vendor-deepseek', 'tools', 'default-body.json'))],
-      ['vendor-custom', readJson(join(REPO_ROOT, 'plugins', 'vendor-custom', 'tools', 'default-body.json'))],
-    ]
-    const defaultOps = []
-    for (const [id, body] of defaultBodies) {
-      const index = defaultOps.length
-      defaultOps.push({ op: 'put', args: { body } })
-      defaultOps.push({ op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins: {} } })
-    }
-    const configPos = boot(root, ['status'], env).world_head.hash
-    const configWritten = boot(root, ['run', JSON.stringify([
-      {
-        kind: 'write',
-        request: {
-          id: 'e2e-default-bodies',
-          op: 'batch',
-          target: { expect_pos: configPos },
-          args: { ops: defaultOps },
-          by: 'e2e',
-        },
-      },
-    ])], env)
-    assert.equal(configWritten.status, 'done', `写默认 body 未完成：${JSON.stringify(configWritten)}`)
-    console.log(`默认 body：done（${defaultBodies.map(([id]) => id).join(', ')}）`)
-
-    // 5) 子应用 HTTP 就绪
-    const stateDeadline = Date.now() + 20000
-    for (;;) {
-      try {
-        const response = await httpCall(port, 'GET', '/entry.js')
-        if (response.status === 200) break
-      } catch {
-        // 尚未监听
-      }
-      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 HTTP 监听（port=${port}）`)
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
-    }
-    console.log('子应用 HTTP：ok')
-
-    // 6) 入口与静态模块 / 穿越
-    const entry = await httpCall(port, 'GET', '/entry.js')
-    assert.equal(entry.status, 200)
-    assert.match(entry.body, /export async function mount/)
-    assert.match(String(entry.headers['content-type']), /javascript/)
-    for (const name of [
-      'entry.js',
-      'config-model.js',
-      'onboarding.js',
-      'notify.js',
-      'health.js',
-      'settings-model.js',
-      'memory-model.js',
-      'styles.js',
-      'dom.js',
-      'messages.js',
-      'ui-parts.js',
-      'version.js',
-      'client.js',
-      'provider-form.js',
-      'provider-actions.js',
-      'memory-actions.js',
-      'theme-actions.js',
-      'notify-actions.js',
-      'config-io.js',
-      'data-load.js',
-      'sse.js',
-      'view-onboarding.js',
-      'view-general.js',
-      'view-model.js',
-      'view-plugins.js',
-      'view-skills.js',
-      'view-memory.js',
-      'view-orchestration.js',
-      'view-about.js',
-    ]) {
-      const response = await httpCall(port, 'GET', `/${name}`)
-      assert.equal(response.status, 200, `${name} 应 200`)
-    }
-    const traversal = await httpCall(port, 'GET', '/../plugin.json')
-    assert.equal(traversal.status, 404)
-    console.log('HTTP 静态模块：ok（视图层模块 200、穿越 404）')
-
-    // 7) 只读命令真实往返
-    const config = await httpCall(port, 'POST', '/api/command', { name: 'config.read', args: null })
-    assert.equal(config.status, 200, config.body)
-    assert.equal(JSON.parse(config.body).value.version, 1, config.body)
-
-    const identities = await httpCall(port, 'POST', '/api/command', { name: 'settings.identities', args: null })
-    assert.equal(identities.status, 200, identities.body)
-    assert.ok(JSON.parse(identities.body).value['ui-settings'], identities.body)
-    console.log('只读命令：ok（config.read / settings.identities 经宿主返回）')
-
-    // 7b) 四个服务侧命令：命令结果 = 计划末尾 extern 载荷（`extractValue`，与浏览器桥同口径）。
-    const vendors = extractValue(boot(root, ['model.vendors'], env))
-    assert.equal(vendors.ok, true, `model.vendors 非成功结果：${JSON.stringify(vendors)}`)
-    assert.ok(Array.isArray(vendors.vendors), `model.vendors 缺 vendors 列表：${JSON.stringify(vendors)}`)
-    assert.ok(
-      vendors.vendors.some((item) => item.identity === 'vendor-deepseek' && item.default_base_url === 'https://api.deepseek.com/v1'),
-      `model.vendors 未命中 vendor-deepseek 模板：${JSON.stringify(vendors)}`,
-    )
-    assert.ok(vendors.vendors.some((item) => item.identity === 'vendor-custom'), `model.vendors 缺 vendor-custom：${JSON.stringify(vendors)}`)
-    console.log(`model.vendors：ok（${vendors.vendors.length} 个模板：${vendors.vendors.map((item) => item.identity).join(', ')}）`)
-
-    const profile = extractValue(boot(root, ['model.profile'], env))
-    assert.equal(profile.ok, true, `model.profile 非成功结果：${JSON.stringify(profile)}`)
-    assert.equal(profile.changed, true, `model.profile 未报 changed：${JSON.stringify(profile)}`)
-    const profileMeta = profile.models?.['e2e-model-a']
-    assert.ok(profileMeta !== undefined, `model.profile 缺模型档案：${JSON.stringify(profile)}`)
-    assert.equal(profileMeta.context_window, 128000, JSON.stringify(profileMeta))
-    assert.equal(profileMeta.max_output, 8192, JSON.stringify(profileMeta))
-    assert.ok(Array.isArray(profileMeta.reasoning), JSON.stringify(profileMeta))
-    assert.ok(profileMeta.modalities !== undefined, JSON.stringify(profileMeta))
-    console.log('model.profile：ok（changed=true；context_window/max_output/reasoning/modalities 已装配）')
-
-    // model.discover：先写密钥 + model.probe 槽，调用后断言结果形状与清槽。
-    const modelSecret = await httpCall(port, 'POST', '/api/secrets/put', { name: 'E2E_MODEL_KEY', value: 'dummy' })
-    assert.equal(modelSecret.status, 200, modelSecret.body)
-    const probePos = boot(root, ['status'], env).world_head.hash
-    const probeWritten = boot(root, ['run', JSON.stringify([
-      {
-        kind: 'write',
-        request: {
-          id: 'e2e-model-probe',
-          op: 'batch',
-          target: { expect_pos: probePos },
-          args: writeSlotBody('_main', {
-            kind: 'model.probe',
-            url: fakeBase,
-            auth_ref: { kind: 'local', name: 'E2E_MODEL_KEY' },
-          }),
-          by: 'e2e',
-        },
-      },
-    ])], env)
-    assert.equal(probeWritten.status, 'done', `写探测槽未完成：${JSON.stringify(probeWritten)}`)
-    const discover = extractValue(boot(root, ['model.discover'], env))
-    assert.equal(discover.ok, true, `model.discover 非成功结果：${JSON.stringify(discover)}`)
-    assert.deepEqual(discover.models, ['e2e-model-a', 'e2e-model-b'], `model.discover 结果形状不符：${JSON.stringify(discover)}`)
-    const inputAfter = extractValue(boot(root, ['input.read'], env))
-    assert.equal(inputAfter.slots?._main?.kind, 'idle', `model.probe 槽未清：${JSON.stringify(inputAfter)}`)
-    console.log('model.discover：ok（命中 2 个模型；model.probe 槽已清为 idle）')
-
-    const healthResult = extractValue(boot(root, ['orchestration.health'], env))
-    assert.equal(healthResult.ok, true, `orchestration.health 非成功结果：${JSON.stringify(healthResult)}`)
-    assert.equal(healthResult.status, 'ok', JSON.stringify(healthResult))
-    assert.equal(healthResult.consecutive_refused, 0, JSON.stringify(healthResult))
-    assert.equal(healthResult.threshold_source, 'default', JSON.stringify(healthResult))
-    assert.deepEqual(healthResult.refusal_codes, [], JSON.stringify(healthResult))
-    assert.equal(healthResult.rollback, null, JSON.stringify(healthResult))
-    assert.ok(healthResult.ledger !== undefined, `orchestration.health 缺台账：${JSON.stringify(healthResult)}`)
-    console.log(`orchestration.health：ok（status=ok，threshold_source=default，台账三链：${Object.keys(healthResult.ledger).join('/')}）`)
-
-    // 8) 未就位依赖降级：编排图身份未入世 → 命令 refused、不崩
-    const graph = await httpCall(port, 'POST', '/api/command', { name: 'orchestration.graph', args: null })
-    assert.equal(graph.status, 200, graph.body)
-    const graphBody = JSON.parse(graph.body)
-    assert.equal(graphBody.value, null, graph.body)
-    assert.equal(graphBody.status, 'refused', graph.body)
-    const afterGraph = await httpCall(port, 'GET', '/entry.js')
-    assert.equal(afterGraph.status, 200)
-    console.log('未就位依赖：ok（orchestration.graph refused，进程未崩）')
-
-    // 9) 技能直写（客户端身份经入站面 submit）→ 只读命令读回
-    const skillBody = {
-      version: 1,
-      skills: [
-        {
-          id: 'e2e-skill',
-          name: 'E2E',
-          description: 'smoke',
-          triggers: { keywords: ['e2e'], file_globs: [], explicit: [] },
-          scope: { kind: 'global' },
-          body: 'demo',
-          enabled: true,
-          at: new Date().toISOString(),
-        },
-      ],
-    }
-    const skillSubmit = await httpCall(port, 'POST', '/api/submit', {
-      directives: [
-        {
-          kind: 'write',
-          request: {
-            op: 'batch',
-            args: {
-              ops: [
-                { op: 'put', args: { body: skillBody } },
-                { op: 'add_gen', args: { id: 'skill', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-              ],
-            },
-          },
-        },
-      ],
-      thread: '_main',
-    })
-    assert.equal(skillSubmit.status, 202, skillSubmit.body)
-    await waitFor(() => {
-      const result = spawnSync(
-        process.execPath,
-        [BOOT_MAIN, 'settings.skills', '--root', root],
-        { encoding: 'utf8', cwd: REPO_ROOT, env },
-      )
-      if (result.status !== 0) return false
-      try {
-        const parsed = JSON.parse(result.stdout.trim())
-        const value = parsed.observations?.[0]?.value
-        return Boolean(value && value.body && Array.isArray(value.body.skills) && value.body.skills.some((item) => item.id === 'e2e-skill'))
-      } catch {
-        return false
-      }
-    }, 'skill written and readable')
-    console.log('技能直写：ok（submit 落账后 settings.skills 读回）')
-
-    // 10) 密钥直写（不进世界）：put → 只读命令读到 has → delete
-    const secretName = 'E2E_LOCAL_SECRET'
-    const put = await httpCall(port, 'POST', '/api/secrets/put', { name: secretName, value: 'not-a-real-key' })
-    assert.equal(put.status, 200, put.body)
-    const secrets = await httpCall(port, 'POST', '/api/command', { name: 'secrets.status', args: null })
-    assert.equal(secrets.status, 200, secrets.body)
-    const secretList = JSON.parse(secrets.body).value
-    assert.ok(Array.isArray(secretList) && secretList.some((item) => item.name === secretName && item.has === true), secrets.body)
-    const del = await httpCall(port, 'POST', '/api/secrets/delete', { name: secretName })
-    assert.equal(del.status, 200, del.body)
-    console.log('密钥直写：ok（put → secrets.status 读到 → delete）')
-
-    // 11) SSE：本插件连接态事件
-    const sse = openSse(port, (record) => record.impl === 'ui-settings' && record.topic === 'settings.state')
-    await sse.ready
-    const sseResult = await sse.result
-    assert.equal(sseResult.found.impl, 'ui-settings')
-    console.log(`SSE：ok（收到 ${sseResult.found.topic}）`)
-
-    // 12) 真实模型集成（可选）：读仓库根 .env 的 base_url / model_id；缺失或失败优雅跳过。
-    const dotenv = readDotEnv()
-    if (dotenv.base_url && dotenv.model_id) {
-      try {
-        const expectPos = boot(root, ['status'], env).world_head.hash
-        const probeDirective = [
-          {
-            kind: 'write',
-            request: {
-              id: 'e2e-model-probe-real',
-              op: 'batch',
-              target: { expect_pos: expectPos },
-              args: writeSlotBody('_main', {
-                kind: 'model.probe',
-                url: dotenv.base_url,
-                auth_ref: { kind: 'local', name: 'E2E_MODEL_KEY' },
-              }),
-              by: 'e2e',
-            },
-          },
-        ]
-        const probeWritten = boot(root, ['run', JSON.stringify(probeDirective)], env)
-        assert.equal(probeWritten.status, 'done', `写探测槽未完成：${JSON.stringify(probeWritten)}`)
-        const value = extractValue(boot(root, ['model.discover'], env))
-        if (value && value.ok === true && Array.isArray(value.models) && value.models.includes(dotenv.model_id)) {
-          console.log(`真实模型集成：ok（discover 命中 ${dotenv.model_id}，共 ${value.models.length} 个模型）`)
-        } else {
-          console.log(`真实模型集成：跳过（discover 未命中 ${dotenv.model_id}：${JSON.stringify(value)}）`)
-        }
-      } catch (err) {
-        console.log(`真实模型集成：跳过（${err.message}）`)
-      }
-    } else {
-      console.log('真实模型集成：跳过（.env 缺 base_url / model_id）')
-    }
-
-    // 13) stop → verify + replay
-    const beforeStop = boot(root, ['status'], env)
-    boot(root, ['stop'], env)
-    started = false
-    const verified = boot(root, ['verify'], env)
+    assertPack(seedRoot)
+    assertClientRead()
+    await assertEntryExports()
+    const verified = boot(seedRoot, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
-    const replayed = boot(root, ['replay'], env)
-    assert.deepEqual(replayed.head, beforeStop.world_head, 'replay 链头与 status 不一致')
-    console.log('verify + replay：ok')
-
-    console.log(`E2E ok（root=${root}，port=${port}）`)
+    console.log('verify：ok')
   } finally {
-    if (started) {
-      try {
-        boot(root, ['stop'], env)
-      } catch (err) {
-        console.error(`stop 失败：${err.message}`)
-      }
-    }
-    await new Promise((resolveClose) => {
-      fakeModel.once('exit', resolveClose)
-      fakeModel.kill()
-    })
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        rmSync(root, { recursive: true, force: true })
-        break
-      } catch (err) {
-        if (attempt === 4) console.error(`清理临时 root 失败（不影响结果）：${err.message}`)
-        else await new Promise((resolveDelay) => setTimeout(resolveDelay, 300))
-      }
-    }
+    rmSync(seedRoot, { recursive: true, force: true })
   }
+
+  // 可选面：需 npm ci / 网络，显式开启才跑（默认离线跳过）。
+  if (process.env.CHRONO_E2E_BOOT === '1') {
+    await runBootPhase()
+  } else {
+    console.log('宿主装配段：跳过（需 npm ci / 网络；设 CHRONO_E2E_BOOT=1 启用）')
+  }
+
+  console.log('E2E ok（离线面）')
 }
 
 main().catch((err) => {

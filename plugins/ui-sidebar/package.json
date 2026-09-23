@@ -7,13 +7,19 @@
   "files": [
     "plugin.json",
     "package.json",
+    "package-lock.json",
     "README.md",
     ".worldignore",
+    "tsconfig.json",
     "execute/",
     "terms/"
   ],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

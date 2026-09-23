@@ -72,7 +72,7 @@ test('list：只读——反向调 #32 list，不构造任何 write', async () =
   const items = [{ id: 'ap-r-0', kind: 'tool_call', port: 'tool-shell', status: 'pending', thread: 't1', at: '2026-09-20T00:00:00.000Z', resume: null }]
   const ids = idsFixture({ _main: { kind: 'idle' } }, items)
   const approval = fakeApproval({ ok: true, value: externOnly({ ok: true, pending: 1, expired: 0, items: [...items].reverse() }) })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.list(ids, ENV)
 
   assert.equal(approval.calls.length, 1)
@@ -86,7 +86,7 @@ test('list：只读——反向调 #32 list，不构造任何 write', async () =
 
 test('list：反向调用失败收口为结构化 extern（不崩）', async () => {
   const approval = fakeApproval({ ok: false, code: 'not_loaded', message: 'x' })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.list(idsFixture({}, []), ENV)
   assert.equal(value.$directives[0].payload.ok, false)
   assert.equal(value.$directives[0].payload.error.code, 'not_loaded')
@@ -101,7 +101,7 @@ test('list：附各 item 的 shadow def body（编排变更卡片解析影子指
   const ids = idsFixture({ _main: { kind: 'idle' } }, items)
   ids.approval.refs[shadowHash] = { rounds: 4, metrics: {} }
   const approval = fakeApproval({ ok: true, value: externOnly({ ok: true, items: [...items].reverse() }) })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.list(ids, ENV)
   assert.equal(value.$directives[0].payload.refs[shadowHash].rounds, 4)
   assert.deepEqual(Object.keys(value.$directives[0].payload.refs), [shadowHash])
@@ -131,7 +131,7 @@ test('decide：读槽 → 反向调 #32 decide → 拼 [chat.resume, …#32 计�
   const slots = { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' }, _main: { kind: 'idle' } }
   const ids = idsFixture(slots, items)
   const approval = fakeApproval({ ok: true, value: approvalPlan('ap-r-0', 'approved') })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.decide(ids, ENV)
 
   assert.equal(approval.calls[0].method, 'decide')
@@ -153,7 +153,7 @@ test('decide：读槽 → 反向调 #32 decide → 拼 [chat.resume, …#32 计�
 
 test('decide：坏槽 kind 结构化拒并 per-thread 清槽（不调 #32）', async () => {
   const approval = fakeApproval({ ok: true, value: externOnly({ ok: true }) })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const ids = idsFixture({ t1: { kind: 'chat.message', text: 'x' }, t2: { kind: 'idle' } }, [])
   const value = await handlers.decide(ids, ENV)
 
@@ -169,7 +169,7 @@ test('decide：坏槽 kind 结构化拒并 per-thread 清槽（不调 #32）', a
 
 test('decide：无输入槽投影时收口为纯 extern（无可清 body）', async () => {
   const approval = fakeApproval({ ok: true, value: externOnly({ ok: true }) })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.decide({ approval: { body: { version: 1, tail: null, count: 0 }, refs: {} } }, ENV)
   assert.equal(value.$directives.length, 1)
   assert.equal(value.$directives[0].payload.error.code, 'bad_slot')
@@ -177,7 +177,7 @@ test('decide：无输入槽投影时收口为纯 extern（无可清 body）', as
 
 test('decide：反向调用失败也清槽（失败也清，防残留非法 kind）', async () => {
   const approval = fakeApproval({ ok: false, code: 'transport_failed', message: 'timeout' })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const ids = idsFixture(
     { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'deny' }, _main: { kind: 'idle' } },
     [{ id: 'ap-r-0', status: 'pending', thread: 't1', at: '2026-09-20T00:00:00.000Z', resume: null }],
@@ -196,7 +196,7 @@ test('decide_all：只对 pending 项逐条产 chat.resume，非 pending 跳过'
   ]
   const ids = idsFixture({ _main: { kind: 'approval.decide', verdict: 'deny' } }, items)
   const approval = fakeApproval({ ok: true, value: approvalPlan('ap-b', 'denied') })
-  const handlers = createHandlers({ identity: 'ui-approval', approval })
+  const handlers = createHandlers({ identity: 'ui-approval', approval, webRoot: process.cwd() })
   const value = await handlers.decide_all(ids, { run: 'r', thread: null, now: 0 })
 
   assert.equal(approval.calls[0].method, 'decide_all')

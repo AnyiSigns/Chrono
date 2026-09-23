@@ -1,6 +1,6 @@
 // `threads.state` 的服务侧装配（纯函数）：入口 term 把投影切片 `ctx.ids` 随 args 传入，
 // 本模块从传入的投影里取 #11 线程字段与 #47 待办清单，组装顶栏标签数据；服务不读投影。
-// 线程树排序 / 父会话隔离 / 角标映射住 `web/threads-model.js`（服务与浏览器共用同一份纯逻辑）。
+// 线程树排序 / 父会话隔离 / 角标映射住 `web/threads-model.ts`（服务与浏览器共用同一份纯逻辑）。
 
 import {
   activeConversations,
@@ -12,7 +12,7 @@ import {
   pendingOf,
   resolveRootMainId,
   statusOf,
-} from './web/threads-model.js'
+} from './web/threads-model.ts'
 import type { Json, Rec } from './types.ts'
 
 /** 新建会话的缺省标题（与 #11 的缺省一致）；缺省标题在顶栏显示为「对话」。 */

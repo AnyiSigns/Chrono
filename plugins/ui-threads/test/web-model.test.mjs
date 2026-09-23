@@ -1,10 +1,8 @@
 // `ui-threads` 浏览器视图层纯函数测试（node --test）：
-// hover 延时状态机、未读计数、active_thread 单桥重置、角标色调、文案兜底、入口模块契约。
+// hover 延时状态机、未读计数、active_thread 单桥重置、角标色调、文案兜底。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { dirname, join } from 'node:path'
 
 import {
   HOVER_HIDE_MS,
@@ -12,14 +10,26 @@ import {
   hoverDelay,
   isHoverOpen,
   nextHoverStatus,
-} from '../execute/web/hover-intent.js'
-import { bumpUnread, clearUnread, unreadOf } from '../execute/web/unread.js'
-import { resolveActiveThread } from '../execute/web/bridge-state.js'
-import { badgeTone, threadLabelKey } from '../execute/web/threads-model.js'
-import { formatText, lookupMessage, messageText, parseMessages, UI_TEXT } from '../execute/web/messages.js'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const ENTRY = join(HERE, '..', 'execute', 'web', 'entry.js')
+} from '../execute/web/hover-intent.ts'
+import { bumpUnread, clearUnread, unreadOf } from '../execute/web/unread.ts'
+import { resolveActiveThread } from '../execute/web/bridge-state.ts'
+import { badgeTone, threadLabelKey } from '../execute/web/threads-model.ts'
+import { formatText, lookupMessage, messageText, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
+import { FALLBACK_MESSAGES } from '../execute/web/messages.ts'
+import {
+  applyActiveThread,
+  applyLoaded,
+  applyLoadError,
+  applyUnreadBump,
+  createThreadsStore,
+  initialView,
+  normalizeThreadsData,
+  selectThread,
+  setConnected,
+  setLoading,
+  setTable,
+  toggleTodo,
+} from '../execute/web/threads-store.ts'
 
 test('hover 意图延时：150ms 出 / 300ms 收，划过与回入取消', () => {
   assert.equal(HOVER_SHOW_MS, 150)
@@ -123,9 +133,67 @@ test('文案兜底：本地界面文案、占位符代入、错误码 unknown', 
   assert.equal(parseMessages('not json'), null)
 })
 
-test('entry.js 导出 mount 且返回 unmount（模块可导入）', async () => {
-  const module = await import(pathToFileURL(ENTRY).href)
-  assert.equal(module.contract, '1')
-  assert.equal(typeof module.mount, 'function')
-  assert.ok(module.mount.length >= 2)
+test('store fold：归一防御、applyLoaded 单桥、切换清未读、未读 +1、提交通知', () => {
+  const view = initialView(FALLBACK_MESSAGES)
+  assert.deepEqual(normalizeThreadsData(null), { ok: true, current: null, root: null, tags: [], todo: null })
+
+  const loaded = applyLoaded(view, {
+    ok: true,
+    current: 'c1',
+    root: 'c1',
+    tags: [{ thread: 'c1', kind: 'main', title: '新对话', default_title: true, badge: null }],
+    todo: { conversation: 'c1', total: 2, done: 1, pending: 1, items: [{ id: 't2', text: '第二步', status: 'pending' }] },
+  })
+  assert.equal(loaded.reset, true)
+  assert.equal(loaded.view.activeThread, 'c1')
+  assert.equal(loaded.view.knownCurrent, 'c1')
+  assert.equal(loaded.view.data.tags.length, 1)
+  assert.equal(loaded.view.data.todo.pending, 1)
+  assert.equal(loaded.view.loading, false)
+  assert.equal(loaded.view.error, null)
+
+  // current 未变 → 不重置（点击子线程后保持）
+  const child = { ...loaded.view, activeThread: 'c2' }
+  const same = applyLoaded(child, { ok: true, current: 'c1', root: 'c1', tags: [], todo: null })
+  assert.equal(same.reset, false)
+  assert.equal(same.view.activeThread, 'c2')
+
+  // 未读：非当前线程 +1，当前线程不计数；切入清零
+  let bumped = applyUnreadBump(child, 'c2')
+  assert.equal(bumped.unread.c2, undefined)
+  bumped = applyUnreadBump(bumped, 'c3')
+  assert.equal(bumped.unread.c3, 1)
+  const selected = selectThread(bumped, 'c3')
+  assert.equal(selected.activeThread, 'c3')
+  assert.equal(selected.unread.c3, 0)
+  assert.equal(selected.todoOpen, false)
+
+  // 外部 uiState 写入置为当前并清零（无计数不改写；有计数清零）
+  const external = applyActiveThread(selected, 'c9')
+  assert.equal(external.activeThread, 'c9')
+  assert.equal(external.unread.c9, undefined)
+  const cleared = applyActiveThread(applyUnreadBump(selected, 'c8'), 'c8')
+  assert.equal(cleared.activeThread, 'c8')
+  assert.equal(cleared.unread.c8, 0)
+
+  // 错误 / 连接 / 待办 / 文案表
+  const failed = applyLoadError(setLoading(view, true), { code: 'ui_unreachable', message: 'x' })
+  assert.equal(failed.loading, false)
+  assert.equal(failed.error.code, 'ui_unreachable')
+  assert.equal(setConnected(view, true).connected, true)
+  assert.equal(toggleTodo(view).todoOpen, true)
+  const withTable = setTable(view, { x: { title: 't', body: 'b' } })
+  assert.equal(withTable.table.x.body, 'b')
+
+  // store：快照稳定，commit 通知订阅者
+  const store = createThreadsStore(view)
+  let notified = 0
+  const off = store.subscribe(() => { notified += 1 })
+  assert.equal(store.getSnapshot(), view)
+  store.commit(setConnected(view, true))
+  assert.equal(notified, 1)
+  assert.equal(store.getSnapshot().connected, true)
+  off()
+  store.commit(view)
+  assert.equal(notified, 1)
 })

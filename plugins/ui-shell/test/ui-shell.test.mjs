@@ -1,5 +1,5 @@
 // `ui-shell` 协议级 / 单元测试（node --test）。
-// 覆盖：入站桥帧构造与回包解析、SSE 事件重播、挂载表默认与端口覆盖、/p/<id>/* 两条判定路径、
+// 覆盖：入站桥帧构造与回包解析、SSE 事件重播、挂载表默认与老表迁移、/p/<id>/* 两条判定路径、
 // uiState 广播、无配置判据、toast 队列、静态资源降级、主题首帧脚本、文案表覆盖、资源静态校验，
 // 以及服务协议级握手 / ping / probe / drain。
 
@@ -25,7 +25,6 @@ import {
 } from '../execute/bridge.ts'
 import { syntheticEventsFor, encodeSseRecord, SseHub, shellStateRecord, SHELL_IMPL } from '../execute/sse.ts'
 import {
-  applyOverrides,
   DEFAULT_HEADLESS,
   DEFAULT_MOUNTS,
   ensureHeadless,
@@ -33,8 +32,6 @@ import {
   findMount,
   isSafeHeadlessEntry,
   normalizeHeadless,
-  normalizePortEnvKey,
-  overridePort,
   parseHeadless,
   parseMounts,
 } from '../execute/mounts.ts'
@@ -204,49 +201,57 @@ test('SSE 广播：宿主事件原样重播 + 壳状态 / 合成事件', () => {
 
 // ---- 挂载表 ----
 
-test('挂载表默认值与端口覆盖', () => {
+test('挂载表默认值：id/slot/entry 三元组，无 path/port', () => {
   assert.equal(DEFAULT_MOUNTS.length, 6)
   assert.deepEqual(
-    DEFAULT_MOUNTS.map((entry) => [entry.id, entry.slot, entry.port]),
+    DEFAULT_MOUNTS.map((entry) => [entry.id, entry.slot, entry.entry]),
     [
-      ['ui-sidebar', 'sidebar', 8791],
-      ['ui-chat', 'main', 8788],
-      ['ui-approval', 'dock', 8789],
-      ['ui-composer', 'composer', 8790],
-      ['ui-threads', 'topbar', 8793],
-      ['ui-settings', 'overlay', 8792],
+      ['ui-sidebar', 'sidebar', 'dist/entry.js'],
+      ['ui-chat', 'main', 'dist/entry.js'],
+      ['ui-approval', 'dock', 'dist/entry.js'],
+      ['ui-composer', 'composer', 'dist/entry.js'],
+      ['ui-threads', 'topbar', 'dist/entry.js'],
+      ['ui-settings', 'overlay', 'dist/entry.js'],
     ],
   )
-  assert.equal(normalizePortEnvKey('ui-chat'), 'CHRONO_UI_PORT_UI_CHAT')
-  assert.equal(overridePort('ui-chat', { CHRONO_UI_PORT_UI_CHAT: '9001' }), 9001)
-  assert.equal(overridePort('ui-chat', { 'CHRONO_UI_PORT_ui-chat': '9002' }), 9002)
-  assert.equal(overridePort('ui-chat', { CHRONO_UI_PORT_UI_CHAT: '0' }), null)
-  assert.equal(overridePort('ui-chat', {}), null)
-  const overridden = applyOverrides(DEFAULT_MOUNTS, { CHRONO_UI_PORT_UI_CHAT: '9100' })
-  assert.equal(findMount(overridden, 'ui-chat').port, 9100)
-  assert.equal(findMount(overridden, 'ui-main-missing'), null)
+  for (const entry of DEFAULT_MOUNTS) {
+    assert.equal('path' in entry, false, `${entry.id} 不应有 path`)
+    assert.equal('port' in entry, false, `${entry.id} 不应有 port`)
+  }
+  assert.equal(findMount(DEFAULT_MOUNTS, 'ui-chat').entry, 'dist/entry.js')
+  assert.equal(findMount(DEFAULT_MOUNTS, 'ui-main-missing'), null)
 })
 
 test('挂载表：启动无表生成默认、坏表回落默认、有表读表', () => {
   const stateDir = tempDir('mounts')
   try {
-    const first = ensureMounts(stateDir, {})
+    const first = ensureMounts(stateDir)
     assert.equal(first.created, true)
     assert.equal(first.mounts.length, 6)
     assert.equal(existsSync(join(stateDir, 'ui-mounts.json')), true)
 
-    const second = ensureMounts(stateDir, { CHRONO_UI_PORT_UI_CHAT: '9300' })
+    const second = ensureMounts(stateDir)
     assert.equal(second.created, false)
-    assert.equal(findMount(second.mounts, 'ui-chat').port, 9300)
+    assert.deepEqual(second.mounts, DEFAULT_MOUNTS)
 
     writeFileSync(join(stateDir, 'ui-mounts.json'), '{ not json')
-    const third = ensureMounts(stateDir, {})
+    const third = ensureMounts(stateDir)
     assert.equal(third.created, true)
     assert.equal(third.mounts.length, 6)
 
-    assert.equal(parseMounts('[{"id":"a","path":"/p/a/","slot":"main","port":1}]').length, 1)
-    assert.equal(parseMounts('[{"id":"a","path":"p/a","slot":"main","port":1}]'), null)
-    assert.equal(parseMounts('[{"id":"a","path":"/p/a/","slot":"main","port":0}]'), null)
+    // 老 state 表（带 port/path、无 entry）解析失败 → 回落默认表，即迁移
+    writeFileSync(
+      join(stateDir, 'ui-mounts.json'),
+      '[{"id":"ui-chat","path":"/p/ui-chat/","slot":"main","port":8788}]',
+    )
+    const migrated = ensureMounts(stateDir)
+    assert.equal(migrated.created, true)
+    assert.deepEqual(migrated.mounts, DEFAULT_MOUNTS)
+
+    assert.equal(parseMounts('[{"id":"a","slot":"main","entry":"dist/entry.js"}]').length, 1)
+    assert.equal(parseMounts('[{"id":"a","path":"/p/a/","slot":"main","port":1}]'), null)
+    assert.equal(parseMounts('[{"id":"a","slot":"main"}]'), null)
+    assert.equal(parseMounts('[{"id":"a","slot":"main","entry":"../x.js"}]'), null)
     assert.equal(parseMounts('[]'), null)
 
     const headless = ensureHeadless(stateDir)
@@ -336,13 +341,19 @@ test('identity.changed：仅 code 世代且身份在 headless 清单内才失效
 
 // ---- /p/<id>/* 两条判定路径 ----
 
-test('路由：表内反代 vs 表外 forward', () => {
-  const proxy = routeOf('GET', '/p/ui-chat/entry.js', DEFAULT_MOUNTS)
-  assert.deepEqual(proxy, { kind: 'proxy', id: 'ui-chat', rest: 'entry.js' })
+test('路由：表内 UI 插件无 HTTP 面（not-found）vs 表外 forward', () => {
+  assert.equal(routeOf('GET', '/p/ui-chat/entry.js', DEFAULT_MOUNTS).kind, 'not-found')
+  assert.equal(routeOf('POST', '/p/ui-chat/api/foo', DEFAULT_MOUNTS).kind, 'not-found')
   const forward = routeOf('GET', '/p/mcp/discover', DEFAULT_MOUNTS)
   assert.deepEqual(forward, { kind: 'forward', id: 'mcp', rest: 'discover' })
-  const proxyApi = routeOf('POST', '/p/ui-chat/api/foo', DEFAULT_MOUNTS)
-  assert.deepEqual(proxyApi, { kind: 'proxy', id: 'ui-chat', rest: 'api/foo' })
+})
+
+test('路由：vendor 运行时与 slot 客户端半边', () => {
+  assert.deepEqual(routeOf('GET', '/assets/vendor/react.js', []), { kind: 'vendor', name: 'react.js' })
+  assert.deepEqual(routeOf('GET', '/assets/vendor/react-dom.js', []), { kind: 'vendor', name: 'react-dom.js' })
+  assert.deepEqual(routeOf('GET', '/assets/ui/ui-chat.js', []), { kind: 'ui', id: 'ui-chat' })
+  assert.equal(routeOf('POST', '/assets/vendor/react.js', []).kind, 'not-found')
+  assert.equal(routeOf('GET', '/assets/ui/../secret.js', []).kind, 'not-found')
 })
 
 test('路由：页面 / 静态 / 事件 / api 动词门禁', () => {
@@ -938,6 +949,7 @@ function fakeServerDeps(overrides = {}) {
     sse: new SseHub(),
     state: () => ({ connected: true, theme: 'system', boot_mode: 'onboarding' }),
     headlessSource: () => null,
+    uiSource: () => null,
     applyThemePref: () => {},
     refreshConfig: () => {},
     trackConfigRun: () => {},

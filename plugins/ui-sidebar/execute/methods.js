@@ -3,6 +3,7 @@
 // 与会话 / 工作区 body，经宿主反向调用（`port.call`，见协议文档 §2.4）转给 `session` / `workspace`。
 // 依赖服务返回写计划（`$directives`）时原样上提给宿主落账；读命令返回结构化值。
 
+import { CLIENT_WEB_DIR, readClientFile } from './client-files.js'
 import { BadArgsError, asString, isRecord } from './types.js'
 import { externOnly, failure } from './plan.js'
 
@@ -127,6 +128,15 @@ export function createHandlers(deps) {
 
   return {
     ping: () => ({ pong: true, identity: deps.identity }),
+
+    /** 只读交付面：读本插件客户端半边字节（路径穿越防护见 `client-files.js`）。 */
+    clientRead: (args) => {
+      const path = isRecord(args) ? asString(args['path']) : null
+      if (path === null) throw new BadArgsError('path required')
+      const result = readClientFile(CLIENT_WEB_DIR, path)
+      if (!result.ok) throw new BadArgsError(result.code)
+      return { path: result.path, text: result.text }
+    },
 
     newConversation: sessionCommand('new_conversation', assembleSessionArgs),
     selectConversation: sessionCommand('select', assembleSessionArgs),

@@ -1,15 +1,12 @@
-// `ui-composer` 服务进程入口：服务协议帧循环 + 子应用 HTTP 服务 + 自实现入站客户端。
+// `ui-composer` 服务进程入口：服务协议帧循环（stdio）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影：渲染源经入站命令按名取回。
+// stdin EOF / 管道断开即自退出。浏览器侧经壳 api 按名调用宿主命令，本服务只负责
+// 健康占位（`ui-composer.ping`）与客户端半边产物只读交付（`ui-composer.client.read`）。
 
 import { readFileSync } from 'node:fs'
-import { Bridge } from './bridge.ts'
+import { fileURLToPath } from 'node:url'
+import { isSafeClientPath, readClientFile } from './client-read.ts'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { startUiServer } from './http-server.ts'
-import type { UiServer } from './http-server.ts'
-import { InboundClient } from './inbound.ts'
-import { resolvePort } from './port.ts'
-import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { BadArgsError, isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -34,6 +31,9 @@ const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
 const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
 const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
 
+/** 客户端半边源码目录：`execute/web/`（`path` 相对此目录解析）。 */
+const WEB_DIR = fileURLToPath(new URL('./web/', import.meta.url))
+
 function manifest(): Rec {
   return {
     v: '1',
@@ -45,16 +45,7 @@ function manifest(): Rec {
   }
 }
 
-const root = rootFromPluginState(process.env, process.cwd())
-
-let uiServer: UiServer | null = null
 let exiting = false
-
-const inbound = new InboundClient({
-  socketPath: inboundSocketPath(root),
-  log,
-})
-const bridge = new Bridge(inbound)
 
 function sendFrame(message: Json): void {
   if (exiting) return
@@ -78,11 +69,26 @@ function declaredMethods(port: string): string[] {
 }
 
 /** 本插件唯一方法：健康占位（`ui-composer.ping`）。 */
-function handlePing(): { value: Json; events: { topic: string; payload: Json }[] } {
-  return { value: { pong: true, identity: IDENTITY }, events: [] }
+function handlePing(): Json {
+  return { pong: true, identity: IDENTITY }
 }
 
-async function handleCall(message: Rec): Promise<void> {
+/** 只读交付客户端半边产物：参数 `{path}`，只接受包内相对 `.js` 路径。 */
+function handleClientRead(args: Json): Json {
+  if (!isRecord(args)) throw new BadArgsError('args must be an object')
+  const path = args['path']
+  if (!isSafeClientPath(path)) throw new BadArgsError('unsafe client path')
+  const text = readClientFile(WEB_DIR, path)
+  if (text === null) throw new Error('client file not found')
+  return { path, text }
+}
+
+const HANDLERS: { [method: string]: (args: Json) => Json } = {
+  ping: () => handlePing(),
+  'client.read': (args) => handleClientRead(args),
+}
+
+function handleCall(message: Rec): void {
   const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
   const port = message['port']
   const method = message['method']
@@ -103,9 +109,14 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'bad_args', 'args must be an object')
     return
   }
+  const handler = HANDLERS[method]
+  if (handler === undefined) {
+    sendError(id, 'unknown_method', `unknown method ${method}`)
+    return
+  }
   try {
-    const result = handlePing()
-    sendFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
+    const value = handler((args ?? null) as Json)
+    sendFrame({ v: '1', id, kind: 'result', ok: true, value })
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
@@ -119,18 +130,10 @@ async function handleCall(message: Rec): Promise<void> {
 function shutdown(): void {
   if (exiting) return
   exiting = true
-  inbound.close()
-  const server = uiServer
-  uiServer = null
-  const finish = (): void => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  setTimeout(() => process.exit(0), 10).unref?.()
 }
 
-async function handle(message: Json): Promise<void> {
+function handle(message: Json): void {
   if (!isRecord(message)) return
   switch (message['kind']) {
     case 'hello':
@@ -148,7 +151,7 @@ async function handle(message: Json): Promise<void> {
       shutdown()
       return
     case 'call':
-      await handleCall(message)
+      handleCall(message)
       return
     default:
       return
@@ -156,7 +159,6 @@ async function handle(message: Json): Promise<void> {
 }
 
 const decoder = createFrameDecoder()
-let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
   let messages: Json[]
   try {
@@ -166,31 +168,13 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
-    chain = chain
-      .then(() => handle(message))
-      .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
+    try {
+      handle(message)
+    } catch (err) {
+      log(`handle error: ${(err as Error).message}`)
+    }
   }
 })
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
 process.stdin.on('error', shutdown)
-
-inbound.start()
-
-const uiPort = resolvePort(process.env)
-startUiServer(
-  {
-    bridge,
-    log,
-  },
-  uiPort,
-).then(
-  (server) => {
-    uiServer = server
-    log(`ui-composer listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
-  },
-  (err: Error) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
-    process.exit(1)
-  },
-)

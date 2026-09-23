@@ -1,12 +1,10 @@
 // `ui-threads` 宿主装配 E2E（黑盒，经 boot CLI）：
 // pack 冒烟（并从入世源码树核验 `.worldignore`）→ 临时 root seed（ui-threads + session + todo + input）→
-// start → 轮询 loaded → 子应用 HTTP（/entry.js 与视图层模块 200、穿越 404）→
-// 只读命令 `threads.state` 真实往返 → 宿主事件经本插件 SSE 转发 → stop → verify + replay。
+// start → 轮询 loaded → 命令面含 `ui-threads.client.read` → stop → verify + replay。
+// 客户端半边改由插件自交付（只读命令 client.read），不再有子应用 HTTP 端口。
 // 失败路径同样 stop；用法：node plugins/ui-threads/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { request as httpRequest } from 'node:http'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -39,43 +37,6 @@ function boot(root, args, env) {
     throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
   }
   return parsed
-}
-
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
-function httpCall(port, method, path, body) {
-  return new Promise((resolveCall, reject) => {
-    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8')
-    const headers = { origin: `http://127.0.0.1:${port}` }
-    if (payload !== null) {
-      headers['content-type'] = 'application/json'
-      headers['content-length'] = payload.length
-    }
-    const req = httpRequest({ host: '127.0.0.1', port, method, path, headers }, (res) => {
-      const chunks = []
-      res.on('data', (chunk) => chunks.push(chunk))
-      res.on('end', () =>
-        resolveCall({
-          status: res.statusCode,
-          headers: res.headers,
-          body: Buffer.concat(chunks).toString('utf8'),
-        }),
-      )
-    })
-    req.on('error', reject)
-    if (payload !== null) req.write(payload)
-    req.end()
-  })
 }
 
 async function waitFor(predicate, label, timeoutMs = 20000) {
@@ -116,7 +77,7 @@ function journalBodies(journalPath) {
   return bodies
 }
 
-/** 核验 `.worldignore`：入世源码树的根 tree 不含 `test/` / `tools/`，含 `execute/` / `terms/`。 */
+/** 核验 `.worldignore`：入世源码树的根 tree 不含 `test/` / `tools/` / `dist`，含 `execute/` / `terms/`。 */
 function assertWorldignoreExcludes(journalPath) {
   const rootTrees = journalBodies(journalPath).filter(
     (body) =>
@@ -142,8 +103,6 @@ async function main() {
   const packRoot = join(tmpdir(), 'kilo', `chrono-ui-threads-pack-${stamp}`)
   mkdirSync(join(root, 'state'), { recursive: true })
   mkdirSync(join(packRoot, 'state'), { recursive: true })
-  const port = await freePort()
-  const env = { ...process.env, CHRONO_UI_PORT_UI_THREADS: String(port) }
   let started = false
   try {
     // 入世冒烟：单目录 pack + `.worldignore` 核验
@@ -165,64 +124,39 @@ async function main() {
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
 
-    boot(root, ['start'], env)
+    boot(root, ['start'])
     started = true
 
     await waitFor(() => {
-      const status = boot(root, ['status'], env)
+      const status = boot(root, ['status'])
       const loaded = status.loaded.map((item) => item.id)
       return ['ui-threads', 'session', 'todo', 'input'].every((id) => loaded.includes(id))
-    }, 'ui-threads + session + todo + input loaded')
+    }, 'ui-threads + session + todo + input loaded', 180000)
     console.log('start + 握手：ok（ui-threads / session / todo / input 已装载）')
 
-    const stateDeadline = Date.now() + 20000
-    for (;;) {
-      try {
-        const response = await httpCall(port, 'GET', '/entry.js')
-        if (response.status === 200) break
-      } catch {
-        // 尚未监听
-      }
-      if (Date.now() > stateDeadline) throw new Error(`timeout: 子应用 HTTP 监听（port=${port}）`)
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
-    }
-    console.log('子应用 HTTP：ok')
+    // 命令面：客户端半边自交付的只读命令已声明（产物构建成功才会装载成功）
+    const commands = boot(root, ['commands'])
+    assert.ok(
+      JSON.stringify(commands).includes('ui-threads.client.read'),
+      `命令面应含 ui-threads.client.read：${JSON.stringify(commands)}`,
+    )
+    console.log('commands：ok（ui-threads.client.read 已声明）')
 
-    const entry = await httpCall(port, 'GET', '/entry.js')
-    assert.equal(entry.status, 200)
-    assert.match(entry.body, /export async function mount/)
-    assert.match(String(entry.headers['content-type']), /javascript/)
-    for (const name of ['threads-model.js', 'hover-intent.js', 'unread.js', 'bridge-state.js', 'entry.js']) {
-      const response = await httpCall(port, 'GET', `/${name}`)
-      assert.equal(response.status, 200, `${name} 应 200`)
-    }
-    const traversal = await httpCall(port, 'GET', '/../plugin.json')
-    assert.equal(traversal.status, 404)
-    console.log('HTTP 静态模块：ok（entry.js + 视图层模块 200、穿越 404）')
-
-    // 只读命令 `threads.state`：入口 term 投影读 → 自能力路由 → 服务装配（初始无会话：空标签、不崩）
-    const state = await httpCall(port, 'POST', '/api/command', { name: 'threads.state', args: null })
-    assert.equal(state.status, 200, state.body)
-    const value = JSON.parse(state.body).value
-    assert.equal(value.ok, true, state.body)
-    assert.ok(Array.isArray(value.tags), state.body)
-    console.log(`threads.state：ok（标签 ${value.tags.length} 个，current=${JSON.stringify(value.current)}）`)
-
-    const status = boot(root, ['status'], env)
-    boot(root, ['stop'], env)
+    const status = boot(root, ['status'])
+    boot(root, ['stop'])
     started = false
 
-    const verified = boot(root, ['verify'], env)
+    const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
-    const replayed = boot(root, ['replay'], env)
+    const replayed = boot(root, ['replay'])
     assert.deepEqual(replayed.head, status.world_head, 'replay 链头与 status 不一致')
     console.log('verify + replay：ok')
 
-    console.log(`E2E ok（root=${root}，port=${port}）`)
+    console.log(`E2E ok（root=${root}）`)
   } finally {
     if (started) {
       try {
-        boot(root, ['stop'], env)
+        boot(root, ['stop'])
       } catch (err) {
         console.error(`stop 失败：${err.message}`)
       }

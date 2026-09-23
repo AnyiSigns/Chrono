@@ -106,6 +106,7 @@ test('入站面集成：伪造 Host / 跨源 / 缺 Origin / 非 JSON 被拒，�
       sse: { add() {}, remove() {} },
       state: () => ({ connected: true, theme: 'system', boot_mode: 'onboarding' }),
       headlessSource: () => null,
+      uiSource: () => null,
       applyThemePref() {},
       refreshConfig() {},
       trackConfigRun() {},

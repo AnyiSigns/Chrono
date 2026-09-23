@@ -12,7 +12,9 @@
       "health",
       "view",
       "search",
-      "edit"
+      "edit",
+      "client.read",
+      "secret"
     ]
   },
   "pins": {
@@ -22,7 +24,10 @@
     "memory-maintenance": "memory-consolidate"
   },
   "start": "node execute/main.ts",
-  "exclusive": ["port"],
+  "build": [
+    { "cmd": "npm", "args": ["ci"] },
+    { "cmd": "node", "args": ["execute/build.mjs"] }
+  ],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -105,6 +110,16 @@
     {
       "name": "memory.edit",
       "entry": "terms/memory.edit.json"
+    },
+    {
+      "name": "ui-settings.client.read",
+      "entry": "terms/client.read.json",
+      "readonly": true
+    },
+    {
+      "name": "ui-settings.secret",
+      "entry": "terms/secret.json",
+      "readonly": true
     }
   ]
 }

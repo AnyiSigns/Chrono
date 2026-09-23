@@ -2,13 +2,16 @@
   "identity": "ui-approval",
   "implements": ["ui-approval"],
   "methods": {
-    "ui-approval": ["ping", "list", "decide", "decide_all"]
+    "ui-approval": ["ping", "list", "decide", "decide_all", "client.read"]
   },
   "pins": {
     "approval": "approval"
   },
   "start": "node execute/main.ts",
-  "exclusive": ["port"],
+  "build": [
+    { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },
+    { "cmd": "node", "args": ["execute/build.mjs"] }
+  ],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -32,6 +35,7 @@
   "commands": [
     { "name": "approval.list", "entry": "terms/approval.list.json", "readonly": true },
     { "name": "approval.decide", "entry": "terms/approval.decide.json" },
-    { "name": "approval.decide_all", "entry": "terms/approval.decide_all.json" }
+    { "name": "approval.decide_all", "entry": "terms/approval.decide_all.json" },
+    { "name": "ui-approval.client.read", "entry": "terms/ui-approval.client.read.json", "readonly": true }
   ]
 }

@@ -1,19 +1,19 @@
 // `ui-chat` 纯函数视图层 + 服务协议测试（node --test）。
 // 覆盖：markdown / 消毒、parts 分发、工具卡两形态三 tone、detail.kind 全集与未知降级、
 // usage 两路、复制时序、事件线程过滤、群聊 / 步骤卡、窗口化与胶囊状态机、日期分隔、
-// lightbox 状态机、历史沿 prev 还原、命令不可用路径、路由 / 端口、服务握手 / EOF 自退出、入口导出。
+// lightbox 状态机、历史沿 prev 还原、命令不可用路径、client.read 路径穿越防护、
+// 服务握手 / EOF 自退出、入口导出。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
-import { escapeHtml, renderInline, renderMarkdown } from '../execute/web/markdown.js'
-import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/sanitize.js'
+import { escapeHtml, renderInline, renderMarkdown } from '../execute/web/markdown.ts'
+import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/sanitize.ts'
 import {
   currentConversationId,
   dataChangeTarget,
@@ -25,13 +25,13 @@ import {
   pickConversation,
   restoreMessages,
   threadKind,
-} from '../execute/web/history-model.js'
-import { assetSource, messageViewItems, partViewModel, safeStringify } from '../execute/web/render-parts.js'
-import { degradeText, renderSummary, toolCardViewModel, truncateSummary } from '../execute/web/tool-card.js'
-import { computeDiff, detailViewModel, parsePatch, splitLines } from '../execute/web/detail-renderers.js'
-import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.js'
-import { groupViewModel } from '../execute/web/group.js'
-import { statusIcon, statusText, workflowViewModel } from '../execute/web/workflow.js'
+} from '../execute/web/history-model.ts'
+import { assetSource, messageViewItems, partViewModel, safeStringify } from '../execute/web/render-parts.ts'
+import { degradeText, renderSummary, toolCardViewModel, truncateSummary } from '../execute/web/tool-card.ts'
+import { computeDiff, detailViewModel, parsePatch, splitLines } from '../execute/web/detail-renderers.ts'
+import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
+import { groupViewModel } from '../execute/web/group.ts'
+import { statusIcon, statusText, workflowViewModel } from '../execute/web/workflow.ts'
 import {
   createNewMessageState,
   dismissNew,
@@ -42,17 +42,14 @@ import {
   pillLabel,
   shouldWindow,
   sliceWindow,
-} from '../execute/web/windowing.js'
-import { buildDateSeparators, dateLabel, localDateKey } from '../execute/web/date-sep.js'
-import { formatCount, usageText, usageTotal } from '../execute/web/usage.js'
-import { COPY_HOLD_MS, createCopyState } from '../execute/web/copy.js'
-import { FALLBACK_MESSAGES, lookupMessage, messageText as uiText, parseMessages, UI_TEXT } from '../execute/web/messages.js'
+} from '../execute/web/windowing.ts'
+import { buildDateSeparators, dateLabel, localDateKey } from '../execute/web/date-sep.ts'
+import { formatCount, usageText, usageTotal } from '../execute/web/usage.ts'
+import { COPY_HOLD_MS, createCopyState } from '../execute/web/copy.ts'
+import { FALLBACK_MESSAGES, lookupMessage, messageText as uiText, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
 import { Bridge, commandFrame, extractValue, interpretResponse, submitFrame } from '../execute/bridge.ts'
-import { DEFAULT_CHAT_PORT, parsePort, resolvePort } from '../execute/port.ts'
-import { routeOf } from '../execute/routes.ts'
-import { readWebFile, WEB_FILE_RE } from '../execute/static.ts'
-import { slotWriteDirective } from '../execute/http-server.ts'
+import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -266,15 +263,15 @@ test('复制反馈：1.2s 回退 + 播报文案', () => {
 
 // ---- 事件线程过滤 ----
 
-test('entry.js：流式 aria-busy / 定稿 aria-live / 胶囊 aria-live / quiet reload 守卫', () => {
-  const source = readFileSync(join(WEB, 'entry.js'), 'utf8')
+test('entry.tsx：流式 aria-busy / 定稿 aria-live / 胶囊 aria-live / quiet reload 守卫', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
   assert.match(source, /aria-busy/)
-  assert.match(source, /'aria-live': 'polite'/)
-  assert.match(source, /'aria-atomic': 'true'/)
+  assert.match(source, /aria-live="polite"/)
+  assert.match(source, /aria-atomic="true"/)
   assert.match(source, /firstScreen/)
-  assert.match(source, /state\.reloading = true/)
+  assert.match(source, /st\.reloading = true/)
   // 首屏才块级 loading；quiet reload 不得再无条件置 loading
-  assert.equal(/state\.loading = true\n\s+state\.loadingNote = false\n\s+state\.error/.test(source), false)
+  assert.equal((source.match(/st\.loading = true/g) ?? []).length, 1)
 })
 
 test('事件按 thread 过滤（写死）', () => {
@@ -503,41 +500,34 @@ test('入站桥帧构造与值提取', () => {
   assert.equal(extractValue({ observations: [{ kind: 'extern', payload: 7 }] }), 7)
 })
 
-// ---- 路由 / 端口 / 静态 ----
+// ---- client.read 路径穿越防护与正常读回 ----
 
-test('路由判定：静态模块 / api 动词门禁；/events 已并入壳总线', () => {
-  assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
-  assert.deepEqual(routeOf('GET', '/markdown.js'), { kind: 'web', name: 'markdown.js' })
-  assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'not-found')
-  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
-  assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
-  assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
-  assert.equal(routeOf('POST', '/api/question/answer').kind, 'api-question-answer')
-  assert.equal(routeOf('GET', '/api/asset').kind, 'api-asset-get')
-  assert.equal(routeOf('GET', '/api/command').kind, 'not-found')
-  assert.equal(routeOf('GET', '/../secret.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/lib/x.js').kind, 'not-found')
+test('client.read：只接受包内相对 .js，拒绝绝对 / 盘符 / 反斜杠 / .. / 空段', () => {
+  assert.equal(isSafeClientPath('dist/entry.js'), true)
+  assert.equal(isSafeClientPath('entry.js'), true)
+  assert.equal(isSafeClientPath('/etc/passwd.js'), false)
+  assert.equal(isSafeClientPath('C:/x.js'), false)
+  assert.equal(isSafeClientPath('c:\\x.js'), false)
+  assert.equal(isSafeClientPath('..\\x.js'), false)
+  assert.equal(isSafeClientPath('../plugin.json'), false)
+  assert.equal(isSafeClientPath('dist/../../x.js'), false)
+  assert.equal(isSafeClientPath('dist//x.js'), false)
+  assert.equal(isSafeClientPath('./x.js'), false)
+  assert.equal(isSafeClientPath('dist/x.ts'), false)
+  assert.equal(isSafeClientPath(''), false)
+  assert.equal(isSafeClientPath(null), false)
+  assert.equal(isSafeClientPath(7), false)
 })
 
-test('端口推导与静态文件白名单', () => {
-  assert.equal(DEFAULT_CHAT_PORT, 8788)
-  assert.equal(resolvePort({}), 8788)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_CHAT: '9001' }), 9001)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_CHAT: '0' }), 8788)
-  assert.equal(parsePort('70000'), null)
-  assert.equal(WEB_FILE_RE.test('entry.js'), true)
-  assert.equal(WEB_FILE_RE.test('../x.js'), false)
-  assert.equal(readWebFile(WEB, 'entry.js').includes('export async function mount'), true)
-  assert.equal(readWebFile(WEB, 'nope.js'), null)
-  assert.equal(readWebFile(WEB, '../plugin.json'), null)
-})
-
-test('输入槽写指令：只覆盖本线程键', () => {
-  const directive = slotWriteDirective({ _main: { kind: 'idle' } }, 't1', { kind: 'question.answer', id: 'q', answers: [] })
-  const body = directive.request.args.ops[0].args.body
-  assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
-  assert.equal(directive.request.args.ops[1].args.id, 'input')
+test('client.read：正常读回包内文件，越界与缺失返回 null', () => {
+  const dir = tempDir('client-read')
+  mkdirSync(join(dir, 'dist'), { recursive: true })
+  writeFileSync(join(dir, 'dist', 'entry.js'), 'export const ok = 1\n', 'utf8')
+  assert.equal(readClientFile(dir, 'dist/entry.js'), 'export const ok = 1\n')
+  assert.equal(readClientFile(dir, '../secret.js'), null)
+  assert.equal(readClientFile(dir, 'dist/nope.js'), null)
+  assert.equal(resolveClientPath(dir, 'dist/entry.js'), join(dir, 'dist', 'entry.js'))
+  rmSync(dir, { recursive: true, force: true })
 })
 
 // ---- 文案表 ----
@@ -580,28 +570,14 @@ function createDecoder() {
   }
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
 test('服务协议级：hello → manifest，ping，probe，drain → bye', async () => {
   const root = tempDir('service')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-chat'),
-      CHRONO_UI_PORT_UI_CHAT: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -651,11 +627,16 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-chat')
     assert.deepEqual(manifest.implements, ['ui-chat'])
-    assert.deepEqual(manifest.methods, { 'ui-chat': ['ping'] })
+    assert.deepEqual(manifest.methods, { 'ui-chat': ['ping', 'client.read'] })
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-chat', method: 'ping', args: {} }))
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
     assert.equal(messages.find((message) => message.id === 'c1').value.pong, true)
+
+    // client.read 路径穿越：越界路径结构化 bad_args，不崩进程
+    child.stdin.write(encodeFrame({ v: '1', id: 'r1', kind: 'call', port: 'ui-chat', method: 'client.read', args: { path: '../plugin.json' } }))
+    await waitFor(() => messages.some((message) => message.id === 'r1'), 'client.read rejection')
+    assert.equal(messages.find((message) => message.id === 'r1').code, 'bad_args')
 
     child.stdin.write(encodeFrame({ v: '1', id: 'p1', kind: 'probe' }))
     await waitFor(() => messages.some((message) => message.id === 'p1'), 'pong')
@@ -673,14 +654,12 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
 
 test('服务 EOF 自退出', async () => {
   const root = tempDir('eof')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-chat'),
-      CHRONO_UI_PORT_UI_CHAT: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -712,7 +691,9 @@ test('界面人话单一来源守卫：视图层无散落硬编码文案', () =>
     '媒体加载失败', '开始新对话', '正在读取…', '提交中…', '重试', '复制', '关闭', '子代理',
     '今天', '昨天',
   ]
-  const files = readdirSync(WEB).filter((name) => name.endsWith('.js') && name !== 'messages.js')
+  const files = readdirSync(WEB).filter(
+    (name) => (name.endsWith('.ts') || name.endsWith('.tsx')) && name !== 'messages.ts',
+  )
   for (const name of files) {
     const source = readFileSync(join(WEB, name), 'utf8')
     for (const literal of blacklist) {
@@ -725,9 +706,11 @@ test('界面人话单一来源守卫：视图层无散落硬编码文案', () =>
   }
 })
 
-test('entry.js 导出 mount 且返回 unmount（模块可导入）', async () => {
-  const module = await import(pathToFileURL(join(WEB, 'entry.js')).href)
-  assert.equal(module.contract, '1')
-  assert.equal(typeof module.mount, 'function')
-  assert.ok(module.mount.length >= 2)
+test('entry.tsx 导出 contract=2 / register，且不再导出 mount', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  assert.match(source, /export const contract = '2'/)
+  assert.match(source, /export function register\(ctx: SlotContext\)/)
+  assert.equal(/export (async )?function mount\b/.test(source), false)
+  // 全仓唯一 dangerouslySetInnerHTML 处：Markdown 组件
+  assert.equal((source.match(/dangerouslySetInnerHTML=\{\{/g) ?? []).length, 1)
 })

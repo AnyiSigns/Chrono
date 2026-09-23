@@ -16,7 +16,7 @@ import {
   normalizeConversations,
   normalizeQuery,
   normalizeWorkspaces,
-} from '../execute/web/sidebar-model.js'
+} from '../execute/web/sidebar-model.ts'
 import {
   applyEvent,
   badgeFor,
@@ -25,8 +25,8 @@ import {
   runningRun,
   seedFromHistory,
   threadOf,
-} from '../execute/web/badges.js'
-import { beginConfirm, clearConfirm, confirmExpired, CONFIRM_MS, createConfirmState, isConfirming } from '../execute/web/confirm.js'
+} from '../execute/web/badges.ts'
+import { beginConfirm, clearConfirm, confirmExpired, CONFIRM_MS, createConfirmState, isConfirming } from '../execute/web/confirm.ts'
 import {
   breakpointOf,
   canResize,
@@ -38,9 +38,9 @@ import {
   WIDTH_MAX,
   WIDTH_MIN,
   widthFromDrag,
-} from '../execute/web/width.js'
-import { exportBody, exportFilename, exportJson, exportMarkdown, messageText, messagesOf, safeFilename } from '../execute/web/export.js'
-import { formatText, loadMessages, lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
+} from '../execute/web/width.ts'
+import { exportBody, exportFilename, exportJson, exportMarkdown, messageText, messagesOf, safeFilename } from '../execute/web/export.ts'
+import { formatText, loadMessages, lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')

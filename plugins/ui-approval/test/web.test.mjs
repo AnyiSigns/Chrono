@@ -29,6 +29,7 @@ import {
   KIND_PLUGIN_WRITE,
   KIND_TOOL_CALL,
   metricTone,
+  oldestPending,
   orchestrationView,
   pendingCount,
   pluginWriteView,
@@ -42,8 +43,8 @@ import {
   verdictStatus,
   viewOf,
   waitWarning,
-} from '../execute/web/model.js'
-import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
+} from '../execute/web/model.ts'
+import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
@@ -99,6 +100,18 @@ test('等待毫秒：自 item.at 起算，缺失 / 非法回 0', () => {
   assert.equal(elapsedMs(item, now), 125000)
   assert.equal(elapsedMs({}, now), 0)
   assert.equal(elapsedMs({ at: 'not-a-date' }, now), 0)
+})
+
+test('最老待审批项：只计 pending / expired，忽略非法 at', () => {
+  const items = [
+    { status: 'approved', at: '2026-09-20T00:00:00.000Z' },
+    { status: 'pending', at: '2026-09-20T00:00:30.000Z' },
+    { status: 'expired', at: '2026-09-20T00:00:10.000Z' },
+    { status: 'pending', at: 'not-a-date' },
+  ]
+  assert.equal(oldestPending(items), Date.parse('2026-09-20T00:00:10.000Z'))
+  assert.equal(oldestPending([]), null)
+  assert.equal(oldestPending(null), null)
 })
 
 test('verdict 映射：动作 → 槽词汇 → 结果态', () => {

@@ -1,20 +1,18 @@
-// `ui-approval` 服务进程入口：服务协议帧循环 + 子应用 HTTP 服务 + 自实现入站客户端。
+// `ui-approval` 服务进程入口：服务协议帧循环 + 自实现入站客户端。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影：命令的投影读在入口 term，随 args 传入；
 // 跨插件只经宿主反向调用（`port.call`，见 execute/port-link.ts）。
+// 客户端半边由插件自交付：只读命令 `ui-approval.client.read` 读包内 `execute/web/` 下的产物字节。
 
 import { readFileSync } from 'node:fs'
-import { Bridge } from './bridge.ts'
+import { fileURLToPath } from 'node:url'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { startUiServer } from './http-server.ts'
-import type { UiServer } from './http-server.ts'
 import { InboundClient } from './inbound.ts'
 import { createHandlers } from './methods.ts'
 import type { CallEnv } from './types.ts'
 import { PortLink } from './port-link.ts'
-import { resolvePort } from './port.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
-import { isRecord } from './types.ts'
+import { BadArgsError, isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
 function readPlugin(): Rec {
@@ -49,8 +47,9 @@ function manifest(): Rec {
 }
 
 const root = rootFromPluginState(process.env, process.cwd())
+/** 客户端半边根：`execute/web/`（服务按此根做包内相对路径防护）。 */
+const webRoot = fileURLToPath(new URL('./web/', import.meta.url))
 
-let uiServer: UiServer | null = null
 let exiting = false
 
 // drain 排空：协议要求「在途结束，服务发 bye」（docs/protocol.md §2.3）。
@@ -88,7 +87,6 @@ const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
 })
-const bridge = new Bridge(inbound)
 
 function sendFrame(message: Json): void {
   if (exiting) return
@@ -106,7 +104,7 @@ function sendError(id: string, code: string, message: string): void {
 // 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：队列 / 裁决的 #32 转发经它；
 // 服务不读投影、不发 eff，跨插件只走宿主路由。应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, approval: LINK })
+const HANDLERS = createHandlers({ identity: IDENTITY, approval: LINK, webRoot })
 
 function declaredMethods(port: string): string[] {
   const declared = METHODS[port]
@@ -157,6 +155,10 @@ async function handleCall(message: Rec): Promise<void> {
     const value = await handler(args ?? null, parseEnv(message['env']))
     sendFrame({ v: PROTOCOL, id, kind: 'result', ok: true, value })
   } catch (err) {
+    if (err instanceof BadArgsError) {
+      sendError(id, 'bad_args', err.message)
+      return
+    }
     log(`method ${method} failed: ${(err as Error).message}`)
     sendError(id, 'internal', 'handler failed')
   } finally {
@@ -169,14 +171,7 @@ function shutdown(): void {
   exiting = true
   LINK.failAll()
   inbound.close()
-  const server = uiServer
-  uiServer = null
-  const finish = (): void => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  setTimeout(() => process.exit(0), 10).unref?.()
 }
 
 async function handle(message: Json): Promise<void> {
@@ -233,21 +228,4 @@ process.stdin.on('close', shutdown)
 process.stdin.on('error', shutdown)
 
 inbound.start()
-
-const uiPort = resolvePort(process.env)
-startUiServer(
-  {
-    bridge,
-    log,
-  },
-  uiPort,
-).then(
-  (server) => {
-    uiServer = server
-    log(`ui-approval listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
-  },
-  (err: Error) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
-    process.exit(1)
-  },
-)
+log(`ui-approval ready (pid ${process.pid})`)

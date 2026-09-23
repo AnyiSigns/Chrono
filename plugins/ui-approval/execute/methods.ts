@@ -3,6 +3,8 @@
 // 经宿主反向调用（`port.call`，docs/protocol.md §2.4）调 `approval` 端口，并在服务内拼续跑计划。
 // 只返回值 / 计划（`$directives`），不落账、不自取时钟。
 
+import { readFileSync } from 'node:fs'
+import { resolve, sep } from 'node:path'
 import {
   asString,
   clearReject,
@@ -23,11 +25,40 @@ import {
   withExternPayload,
 } from './plan.ts'
 import type { PortCaller } from './port-link.ts'
+import { BadArgsError, isRecord } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
 
 export interface HandlerDeps {
   identity: string
   approval: PortCaller
+  /** 客户端半边根目录（`execute/web/`）：`client.read` 只在此目录内按包内相对 `.js` 路径读。 */
+  webRoot: string
+}
+
+/**
+ * 客户端半边入口路径防护：只接受包内相对 `.js` 路径。
+ * 拒绝绝对路径 / 盘符 / 反斜杠 / `..` / `.` / 空段 / 空串 / 非 `.js`。
+ */
+export function isSafeClientPath(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false
+  if (value.includes('\\') || value.includes('\u0000')) return false
+  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false
+  const segments = value.split('/')
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return false
+  return value.endsWith('.js')
+}
+
+/** 读客户端半边文件：路径防护 + 结果必须落在 `webRoot` 内；越界 / 不存在回 null。 */
+export function readClientFile(webRoot: string, path: string): { path: string; text: string } | null {
+  if (!isSafeClientPath(path)) return null
+  const root = resolve(webRoot)
+  const full = resolve(root, path)
+  if (full !== root && !full.startsWith(root + sep)) return null
+  try {
+    return { path, text: readFileSync(full, 'utf8') }
+  } catch {
+    return null
+  }
 }
 
 /** 裁决模式：单条（读槽 `id`）或整批（全部 `pending`）。 */
@@ -115,5 +146,18 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
 
     /** 整批裁决：对全部 `pending` 项给同一 verdict。 */
     decide_all: (args, env): Promise<Json> => decideCore(deps, args, env, 'all'),
+
+    /**
+     * 客户端半边交付：只读命令 `ui-approval.client.read` 的方法侧。
+     * 产物在物化目录内、被 `.worldignore` 排除，`host.source.read` 读不到，故由本服务按包内相对
+     * `.js` 路径读自己的文件回字节。路径穿越（绝对 / 盘符 / 反斜杠 / `..` / 空段）结构化拒。
+     */
+    'client.read': (args): Json => {
+      const path = isRecord(args) ? args['path'] : undefined
+      if (!isSafeClientPath(path)) throw new BadArgsError('unsafe client path')
+      const file = readClientFile(deps.webRoot, path)
+      if (file === null) throw new BadArgsError('client file unavailable')
+      return { path: file.path, text: file.text }
+    },
   }
 }

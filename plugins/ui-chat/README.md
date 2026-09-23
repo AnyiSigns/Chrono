@@ -1,40 +1,78 @@
 # ui-chat（全能内容渲染面 · 对话页消息流）
 
 对话页的**全能内容渲染面**：markdown / 流式 / 图像 / 视频 / 音频 / 文件卡 / 工具卡 /
-question 交互卡，以及按线程 `kind` 分派的群聊与工作流步骤卡。本插件是独立包 / 独立进程 /
-独立端口，自带浏览器静态资源、自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。
+question 交互卡，以及按线程 `kind` 分派的群聊与工作流步骤卡。本插件是独立包 / 独立进程，
+**不再自持端口与 HTTP 面**：浏览器侧客户端半边是一段注册进壳 `main` slot 的模块，
+事件与命令经壳 api（`ctx.events` / `ctx.command` / `ctx.submit`）走宿主。
 
-- 能力类：`ui-chat`（`ping` 占位，UI 插件统一 `ui-<身份名>`、互不 pin）。
-- `pins`：无（不发 `eff`）；命令 / 提交一律按名经入站面。
+- 能力类：`ui-chat`（`ping` 占位 + `client.read` 只读交付，UI 插件统一 `ui-<身份名>`、互不 pin）。
+- `pins`：无（不发 `eff`）；命令 / 提交一律按名经宿主命令面。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`，宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / socket / markdown / 消毒 / 窗口化 / lightbox 全自实现。
+- 运行时零 npm 依赖：markdown / 消毒 / 窗口化 / lightbox 全自实现；`esbuild` 仅构建期 devDependency。
+
+## 客户端半边契约
+
+客户端半边源码为 `execute/web/entry.tsx`，导出 `contract = '2'` 与 `register(ctx)`，
+把 `App` 注册进 `main` slot（见 `docs/ui-client-half.md` 与 `types/ui-contract.d.ts`）：
+
+```tsx
+export const contract = '2'
+export function register(ctx: SlotContext): void {
+  ctx.slots.register({ name: 'main' }, App)
+}
+```
+
+- 业务状态住 React-free store（`execute/web/thread-store.ts`：`getSnapshot` / `subscribe` /
+  `commit`），壳侧经 `ctx.useStore` 以 `useSyncExternalStore` 绑定；组件只渲染，不各自持业务态。
+- 叶子纯模块（markdown / sanitize / detail-renderers / tool-card / render-parts /
+  history-model / thread-store / group / workflow / windowing / date-sep / usage / copy /
+  messages / lightbox）保持零 `react` import，组件吃其产出的视图模型，不就地拼字符串。
+- markdown 正文统一经 `Markdown` 组件（`sanitizeHtml(renderMarkdown(text))` +
+  `dangerouslySetInnerHTML`，全仓唯一允许处）；流式与定稿共用该组件。
 
 ## 渲染源与数据获取路径
 
 **渲染源 = `session` 插件的全量消息（展示真源）**，与上下文组装视图无关：
 
-1. 浏览器调本插件 `POST /api/command`，body `{name:"chat.history", args:{conversation?}, thread?}`；
-2. 本插件服务经**自己的入站连接**发 `command` 帧（按名调用，不需 pins）；
-3. 宿主返回投影值 `{body, refs}`；入口 term 返回的 `value` 即会话 body + 引用闭包；
-4. 浏览器沿 `prev` 从 `head` 逆序还原、反转成展示序（`execute/web/history-model.js`）；
-5. `chat.history` 命令不可用时 → 行内错误占位（`unknown_command` 人话），不崩。
+1. 浏览器经壳 `ctx.command('chat.history', {conversation?}, {thread})` 调用宿主命令面；
+2. 宿主按名路由到命令声明方，返回投影值 `{body, refs}`；
+3. 浏览器沿 `prev` 从 `head` 逆序还原、反转成展示序（`execute/web/history-model.ts`）；
+4. `chat.history` 命令不可用时 → 行内错误占位（`unknown_command` 人话），不崩。
 
-## 子应用入口契约
+## 渲染管线（快照 + 有序增量 + 定稿替换）
 
-```
-GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
-GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务，不自打包）
-POST /api/command          → 入站 command（chat.history / input.read / question.answer / chat.send…）
-POST /api/submit           → 入站 submit（directive(s) + thread）
-POST /api/question/answer  → 读-改-写 input 槽 + 按名调 question.answer（写走入站面）
-GET  /api/asset?sha256=…   → 入站 asset.get，直接回原始字节（媒体元素 src 用）
-```
+每线程一份视图，真源是 React-free store（`execute/web/thread-store.ts`）。渲染器只读 store；
+流式与定稿共用同一条 markdown 管线——在途回合就是消息列表末尾的一条 assistant 条目。
 
-- 浏览器侧 `api` 由壳提供；本插件只借用 `api.uiState`（`active_thread` 线程切换），
-  其余命令 / 提交 / 资产走**本插件自己的入站连接**（失败隔离：本 slot 内错误占位 + 重试）。
-- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`（图标）、
-  `/assets/messages.v1.json`（错误码人话）；零硬编码色值。
+- **快照**：`chat.history` 落地即替换权威消息段（会话 / refs / 消息 / kind）。
+- **有序增量**：`model.delta` 只追加到在途回合；store 提交后由 React 重渲染在途正文。
+- **定稿替换**：`run.finished`（done）把在途回合标记为定稿中，随后一次快照在同一帧内原地收口；
+  `cancelled` 保留已生成部分 + 「已取消」。
+
+客户端事件语义（`thread-store.ts` 头部与单测逐条锁住）：
+
+1. 单连接有序：同一 SSE 连接内事件按到达顺序 fold，不重排。
+2. run 生命周期单调：`run.started` 建立 / 替换在途回合；`model.delta` / `tool.*` 只作用于 run 匹配的在途回合。
+3. 迟到帧丢弃：已定稿 run 的后续 delta / tool 帧丢弃，防定稿后冒出幽灵回合。
+4. 缺 started 自愈：首个 delta / tool.start 到达即建在途回合，started 丢失不丢流。
+5. 无关终局忽略：`run.finished` 无匹配在途回合即判为无关 run（写 run / 周期 run），不触发重拉。
+6. reset 语义：`model.delta.reset === true` 清空在途正文再追加（流重试重放，不重复追加）。
+7. 快照权威：快照替换权威段；在途回合只在定稿 / 取消 / 线程切换 / 重连时清除。
+8. 重连重同步：连接 false→true 且确曾断线时丢弃在途回合并强制快照重同步。
+
+## 构建与产物交付
+
+- `plugin.json.build` 声明两步：`npm ci`（按 `package-lock.json` 恢复 devDependency）与
+  `node execute/build.mjs`（脚本内调 esbuild JS API，避开 build args 白名单「不含 =」与
+  esbuild CLI 字符串选项必须 `--opt=value` 的冲突），产物落 `execute/web/dist/entry.js`。
+- 产物 `externalize` 壳 vendor（`react` / `react/jsx-runtime` / `react-dom` /
+  `react-dom/client` / `use-sync-external-store` 及其 shim），单文件输出、不做 code splitting。
+- `.worldignore` 排除 `execute/web/dist/`：产物世代内可重算，入世会污染内容哈希。
+- 产物被 `.worldignore` 排除，`host.source.read` 读不到，故由插件自己的只读命令交付：
+  `ui-chat.client.read`（`terms/client.read.json` eff 到同名方法），参数 `{path}`，
+  返回 `{path, text}`；只接受包内相对 `.js` 路径，拒绝绝对路径 / 盘符 / 反斜杠 / `..` / 空段
+  （`execute/client-read.ts`）。壳 `uiSource` 取字节后以 `/assets/ui/ui-chat.js` 同源服务。
 
 ## 渲染器清单
 
@@ -54,25 +92,28 @@ GET  /api/asset?sha256=…   → 入站 asset.get，直接回原始字节（媒�
 
 ## 事件过滤口径
 
-- 浏览器经壳 `api.events` 订阅宿主事件（`impl` / `topic` 不改名），不再经本端口 SSE。
-- 浏览器按 **`payload.thread === 当前视图线程`** 过滤（写死，`history-model.js#matchesThread`）：
+- 浏览器经壳 `ctx.events.onAny` 订阅宿主事件（`impl` / `topic` 不改名），不再有本插件端口 SSE。
+- 浏览器按 **`payload.thread === 当前视图线程`** 过滤（写死，`history-model.ts#matchesThread`）：
   - 有 `active_thread` 时严格相等；
   - 无 `active_thread` 时视图线程视为主线程，接受 `null` 与 `_main`。
-- 处理的事件：`model.delta`（流式追加）、`tool.start/delta/end`（live 工具卡）、
-  `run.started/run.finished`（呼吸条 → 定稿重拉 `chat.history`；`cancelled` 保留已生成部分 + 「已取消」）、
-  `group.message`（未读锚点）、`workflow.step`（步骤卡）、`thread.*`（重拉）。
-- **run 生命周期按 run id 关联，不把任意 run 当作自己的回合**：`run.started` 仅在匹配当前视图线程时起流；
-  `run.finished` 仅当事件 `run` 与本轮在途流一致时收束并重拉 `chat.history`，其余 run 的终局一律忽略
-  （否则任意 run 都会反复触发重拉）。`origin === 'periodic'` 的周期 run 不是对话回合，其 `run.started` 不建流。
+- 处理的事件：`model.delta`、`tool.start/delta/end`、`run.started/run.finished`、
+  `group.message`、`workflow.step`、`thread.*`、`shell.state`（连接态与重连重同步）。
+- **run 生命周期按 run id 关联**：无关 run 的终局忽略（不触发重拉）；`origin === 'periodic'`
+  的周期 run 不是对话回合，其 `run.started` 不建流、`run.finished` 不处理。
+- `thread.*` / `group.message` 触发的是一次静默快照（quiet reload，保留消息、只出顶部细呼吸条）。
 
 ## 运行
 
 ```sh
+npm install                       # 生成 / 更新 package-lock.json
 npm test                          # 纯函数视图层 + 服务协议测试（node --test）
-node tools/e2e-smoke.mjs          # 宿主装配 + HTTP E2E（pack/seed → start → HTTP → stop → verify）
+npm run typecheck                 # tsc --noEmit（include 只含 execute/web）
+node ../../tools/build-ui.mjs ui-chat   # 打包 execute/web/dist/entry.js
+node tools/e2e-smoke.mjs          # 宿主装配 E2E（pack/seed → start → 命令面 → stop → verify）
 ```
 
 ## `.worldignore`
 
-声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` /
-`execute/`（含 `execute/web/`））随源码入世。本插件无世界数据、零 schema，故无 `schema/` 目录。
+声明 `test/`、`tools/` 与 `execute/web/dist/` 不入世界；其余（`plugin.json` / `package.json` /
+`package-lock.json` / `README.md` / `execute/`（含 `execute/web/` 源码）/ `terms/`）随源码入世。
+本插件无世界数据、零 schema，故无 `schema/` 目录。

@@ -3,9 +3,14 @@
 // 服务不读投影、不发 eff；跨插件经宿主反向调用（`port.call`，docs/protocol.md §2.4）——宿主按发出者 pins 路由。
 // 只返回值 / 计划（`$directives`），不落账、不自取时钟。
 
+import { fileURLToPath } from 'node:url'
+import { isSafeClientPath, readClientFile } from './client-read.ts'
 import { addGenOp, externOnly, isRecord, planOf, putOp } from './plan.ts'
 import type { PortCaller, PortOutcome } from './port-link.ts'
 import type { Json, Rec } from './types.ts'
+
+/** 客户端半边根目录（`execute/web/`；产物落 `execute/web/dist/entry.js`）。 */
+const WEB_DIR = fileURLToPath(new URL('./web/', import.meta.url))
 
 export interface CallEnv {
   run: string | null
@@ -15,6 +20,12 @@ export interface CallEnv {
 
 export type Handler = (args: Json, env: CallEnv) => Promise<Json> | Json
 
+/** 密钥本地存储面（宿主入站 `secrets.put` / `secrets.delete`）：只直写本地文件，不进世界 / 审计。 */
+export interface SecretsChannel {
+  put(name: string, value: string): Promise<{ ok: boolean; code?: string; message?: string }>
+  delete(name: string): Promise<{ ok: boolean; code?: string; message?: string }>
+}
+
 export interface HandlerDeps {
   identity: string
   model: PortCaller
@@ -22,6 +33,8 @@ export interface HandlerDeps {
   retrieval?: PortCaller
   /** 记忆维护端口（pins `memory-maintenance` → memory-consolidate）；缺省回落 `model`。 */
   maintenance?: PortCaller
+  /** 密钥本地存储面；缺省为不可用通道（单测不涉及时不崩）。 */
+  secrets?: SecretsChannel
 }
 
 // ── 模型命令的服务侧装配（纯函数，单测直调）──
@@ -428,8 +441,44 @@ function failure(code: string, message: string): Rec {
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   const retrieval = deps.retrieval ?? deps.model
   const maintenance = deps.maintenance ?? deps.model
+  const secrets: SecretsChannel =
+    deps.secrets ?? {
+      put: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
+      delete: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
+    }
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
+
+    /**
+     * 客户端半边产物只读交付：参数 `{path}` 必须是包内相对 `.js`（路径穿越防护），
+     * 读回 `{path, text}`；非法 / 缺失以结构化失败收口。
+     */
+    'client.read': (args): Json => {
+      const path = isRecord(args) ? args['path'] : null
+      if (!isSafeClientPath(path)) return failure('client_read_bad_path', 'path must be a package-relative .js path')
+      const text = readClientFile(WEB_DIR, path)
+      if (text === null) return failure('client_read_missing', path)
+      return { path, text }
+    },
+
+    /** 密钥本地存储面：`{op:'put', name, value}` / `{op:'delete', name}`；直写本地、不进世界 / 审计。 */
+    secret: async (args): Promise<Json> => {
+      const record = isRecord(args) ? args : {}
+      const name = record['name']
+      if (typeof name !== 'string' || name.length === 0) return failure('secrets_bad_name', 'name required')
+      const op = record['op']
+      if (op === 'put') {
+        const value = record['value']
+        if (typeof value !== 'string') return failure('secrets_bad_value', 'value required')
+        const outcome = await secrets.put(name, value)
+        return outcome.ok ? { ok: true } : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
+      }
+      if (op === 'delete') {
+        const outcome = await secrets.delete(name)
+        return outcome.ok ? { ok: true } : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
+      }
+      return failure('secrets_bad_op', 'op must be put or delete')
+    },
 
     /** 厂商模板清单：入口 term 传 `ctx.ids`，服务装配后反向调 `model.vendors`，命令结果 = 其结果。 */
     vendors: async (args): Promise<Json> => {

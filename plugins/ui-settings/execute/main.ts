@@ -1,19 +1,17 @@
-// `ui-settings` 服务进程入口：服务协议帧循环 + 子应用 HTTP 服务 + 自实现入站客户端。
+// `ui-settings` 服务进程入口：服务协议帧循环 + 自实现入站客户端。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影：只读命令的投影读在入口 term，随 args 传入；
 // 服务侧另持模型命令的装配 / 桥接与编排健康判定（方法表见 execute/methods.ts），
 // 跨插件只经宿主反向调用（`port.call`，见 execute/port-link.ts）。
+// 客户端半边产物经 `<id>.client.read` 由本进程读回（HTTP 面已作废）。
 
 import { readFileSync } from 'node:fs'
 import { Bridge } from './bridge.ts'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { startUiServer } from './http-server.ts'
-import type { UiServer } from './http-server.ts'
 import { InboundClient } from './inbound.ts'
 import { createHandlers } from './methods.ts'
-import type { CallEnv } from './methods.ts'
+import type { CallEnv, SecretsChannel } from './methods.ts'
 import { PortLink } from './port-link.ts'
-import { resolvePort } from './port.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
@@ -51,7 +49,6 @@ function manifest(): Rec {
 
 const root = rootFromPluginState(process.env, process.cwd())
 
-let uiServer: UiServer | null = null
 let exiting = false
 
 // drain 排空：协议要求「在途结束，服务发 bye」（docs/protocol.md §2.3）。
@@ -108,7 +105,18 @@ function sendError(id: string, code: string, message: string): void {
 // 记忆命令经它转发给 `retrieval` / `memory-maintenance` 端口（宿主按发出者 pins 路由）；
 // 服务不读投影、不发 eff，跨插件只走宿主路由。应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, model: LINK, retrieval: LINK, maintenance: LINK })
+/** 密钥本地存储面：经本进程入站连接直发 `secrets.put` / `secrets.delete`（不进世界 / 审计）。 */
+const SECRETS: SecretsChannel = {
+  put: async (name, value) => {
+    const result = await bridge.secretsPut(name, value)
+    return result.ok ? { ok: true } : { ok: false, code: result.code, message: result.message }
+  },
+  delete: async (name) => {
+    const result = await bridge.secretsDelete(name)
+    return result.ok ? { ok: true } : { ok: false, code: result.code, message: result.message }
+  },
+}
+const HANDLERS = createHandlers({ identity: IDENTITY, model: LINK, retrieval: LINK, maintenance: LINK, secrets: SECRETS })
 
 function declaredMethods(port: string): string[] {
   const declared = METHODS[port]
@@ -171,14 +179,7 @@ function shutdown(): void {
   exiting = true
   LINK.failAll()
   inbound.close()
-  const server = uiServer
-  uiServer = null
-  const finish = (): void => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  setTimeout(() => process.exit(0), 10).unref?.()
 }
 
 async function handle(message: Json): Promise<void> {
@@ -232,21 +233,4 @@ process.stdin.on('close', shutdown)
 process.stdin.on('error', shutdown)
 
 inbound.start()
-
-const uiPort = resolvePort(process.env)
-startUiServer(
-  {
-    bridge,
-    log,
-  },
-  uiPort,
-).then(
-  (server) => {
-    uiServer = server
-    log(`ui-settings listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
-  },
-  (err: Error) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
-    process.exit(1)
-  },
-)
+log(`ui-settings service ready (pid ${process.pid})`)

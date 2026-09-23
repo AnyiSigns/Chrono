@@ -19,7 +19,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'methods',
     'pins',
     'start',
-    'exclusive',
+    'build',
     'protocol',
     'restart',
     'health',
@@ -38,7 +38,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
-    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit'],
+    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit', 'client.read', 'secret'],
   })
   assert.deepEqual(decl.pins, {
     model: 'model-protocol',
@@ -68,6 +68,8 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'memory.view',
     'memory.search',
     'memory.edit',
+    'ui-settings.client.read',
+    'ui-settings.secret',
   ])
   for (const command of decl.commands) {
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
@@ -83,6 +85,8 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'orchestration.scopes',
     'orchestration.health',
     'memory.view',
+    'ui-settings.client.read',
+    'ui-settings.secret',
   ]) {
     assert.equal(readonly[name], true, `${name} 只读`)
   }
@@ -117,21 +121,25 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
   assert.deepEqual(readJson('terms/memory.search.json'), ['eff', 'ui-settings', 'search', ['v', 0]])
 })
 
-test('.worldignore 声明 test/ 与 tools/', () => {
+test('.worldignore 声明 test/ 与 tools/ 与 execute/web/dist/', () => {
   const lines = readText('.worldignore')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'))
   assert.ok(lines.includes('test/'))
   assert.ok(lines.includes('tools/'))
+  assert.ok(lines.includes('execute/web/dist/'))
 })
 
-test('package.json 零依赖且带测试脚本', () => {
+test('package.json 零运行期依赖，devDeps 只有 esbuild，带测试与类型脚本', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies, undefined)
   assert.equal(pkg.peerDependencies, undefined)
+  assert.deepEqual(pkg.devDependencies, { esbuild: '^0.28.2' })
   assert.equal(pkg.scripts.test, 'node --test')
+  assert.equal(pkg.scripts.typecheck, 'tsc --noEmit')
+  assert.ok(pkg.files.includes('package-lock.json'))
+  assert.ok(pkg.files.includes('tsconfig.json'))
 })
 
 test('插件源码与测试不 import 宿主 / 内核 / 客户端（tools/ 冒烟脚本除外）', () => {
@@ -140,8 +148,10 @@ test('插件源码与测试不 import 宿主 / 内核 / 客户端（tools/ 冒�
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
       // `tools/e2e-smoke.mjs` 是唯一例外：冒烟脚本可 import 宿主内部模块（见 plugins.md §三）。
-      if (entry.isDirectory() && entry.name !== 'tools') walk(path)
-      else if (entry.isFile() && /\.(mjs|ts|js)$/.test(entry.name)) files.push(path)
+      if (entry.isDirectory()) {
+        if (entry.name === 'tools' || entry.name === 'node_modules' || entry.name === 'dist') continue
+        walk(path)
+      } else if (entry.isFile() && /\.(mjs|ts|js)$/.test(entry.name)) files.push(path)
     }
   }
   walk(pkgRoot)
@@ -201,12 +211,23 @@ function stripComments(source) {
   return out
 }
 
-test('web 层代码无散落中文（文案集中在 messages.js）与硬编码色值', () => {
+test('web 层代码无散落中文（文案集中在 messages.ts）与硬编码色值', () => {
   const webDir = join(pkgRoot, 'execute', 'web')
-  for (const name of readdirSync(webDir)) {
-    if (!name.endsWith('.js') || name === 'messages.js') continue
-    const source = stripComments(readFileSync(join(webDir, name), 'utf8'))
-    assert.ok(!/[\u4e00-\u9fff]/.test(source), `${name} 含散落中文文案`)
-    assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(source), `${name} 含硬编码色值`)
+  const files = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (entry.name === 'dist' || entry.name === 'node_modules') continue
+        walk(join(dir, entry.name))
+        continue
+      }
+      if (/\.(ts|tsx)$/.test(entry.name) && entry.name !== 'messages.ts') files.push(join(dir, entry.name))
+    }
+  }
+  walk(webDir)
+  for (const file of files) {
+    const source = stripComments(readFileSync(file, 'utf8'))
+    assert.ok(!/[\u4e00-\u9fff]/.test(source), `${file} 含散落中文文案`)
+    assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(source), `${file} 含硬编码色值`)
   }
 })

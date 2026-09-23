@@ -43,7 +43,7 @@ import {
   usageRatio,
   usageTone,
   usageView,
-} from '../execute/web/model.js'
+} from '../execute/web/model.ts'
 import {
   attachmentKind,
   buildAttachment,
@@ -52,7 +52,7 @@ import {
   guessMime,
   isParseable,
   normalizeRef,
-} from '../execute/web/attach.js'
+} from '../execute/web/attach.ts'
 import {
   activeIndexFor,
   closeDropdown,
@@ -61,14 +61,14 @@ import {
   moveActive,
   openDropdown,
   optionId,
-} from '../execute/web/dropdown.js'
+} from '../execute/web/dropdown.ts'
 import {
   FALLBACK_MESSAGES,
   lookupMessage,
   messageText,
   parseMessages,
   UI_TEXT,
-} from '../execute/web/messages.js'
+} from '../execute/web/messages.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')

@@ -1,36 +1,47 @@
 # ui-approval（审批停靠带）
 
 Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（计数 / 等待计时 / 整批裁决），
-按条目种类选卡片模板并提交裁决。独立包 / 独立进程 / 独立端口，自带浏览器静态资源、
-自己的入站客户端连接；事件经壳 `/events` 总线（`api.events`）订阅。本插件不做判定、不做审批流程本体、不做对话视图。
+按条目种类选卡片模板并提交裁决。独立包 / 独立进程；客户端半边注册进壳的单一 React 运行时，
+事件经壳事件总线（`api.events`）订阅。本插件不做判定、不做审批流程本体、不做对话视图。
 
-- 能力类：`ui-approval`（`ping` 健康占位 + `list` / `decide` / `decide_all` 三个服务方法；
-  UI 插件统一 `ui-<身份名>`、互不 pin）。
+- 能力类：`ui-approval`（`ping` 健康占位 + `list` / `decide` / `decide_all` 三个服务方法
+  + `client.read` 客户端半边交付方法；UI 插件统一 `ui-<身份名>`、互不 pin）。
 - `pins`：`{"approval":"approval"}` —— 服务经**宿主反向调用**（`port.call`）调审批队列
   （`list` / `decide` / `decide_all`）；服务进程本身不读投影（投影由入口 term 随 args 传入）、不发 `eff`。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema** —— 省略 `plugin.json.schema`，
   宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖：HTTP / socket 全用 Node 内置，浏览器层源码 ESM 直接服务、不自打包。
+- 自带构建：`plugin.json.build` 声明 `npm ci` + `esbuild` 打包客户端半边，产物落
+  `execute/web/dist/entry.js`（随世代产物，由 `.worldignore` 排除、不入世）。
 
 ## 提供哪些命令
-
-三条命令均**无参**，入口 term 把 `ctx.ids` 投影切片交给本插件服务，服务装配后反向调审批端口：
 
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
 | `approval.list` | `eff ui-approval list`（读 `ctx.ids`） | 服务从投影取队列 body + item 引用闭包 → 反向调 `approval.list`，结果即命令结果（只读，不构造写） |
 | `approval.decide` | `eff ui-approval decide`（读 `ctx.ids`） | 读本线程 `approval.decide` 槽 → 反向调 `approval.decide` → 拼续跑计划 |
 | `approval.decide_all` | `eff ui-approval decide_all`（读 `ctx.ids`） | 对全部 `pending` 项给同一 verdict，其余同单条 |
+| `ui-approval.client.read` | `eff ui-approval client.read`（Var 0 = 命令 args） | 只读：按包内相对 `.js` 路径读 `execute/web/` 下产物，回 `{path, text}` |
 
 - **投影读在入口 term**；服务不读投影（`ctx` 由宿主按 directive 注入 term，随 args 传入）。
 - **裁决续跑计划**：服务反向调审批端口拿到其写计划后，拼顶层 `$directives` =
   `[eval(command:'chat.resume', args:{cursor, thread, payload:{verdict}, ids}), …审批写计划]` ——
   续跑条目按被裁决项逐条产（每项各自游标 / 线程），审批写计划接在其后（记裁决 + 清槽 + extern）。
-  `chat.resume` 命令名由对话插件声明，宿主按命令名解析入口。
-- **续跑 args 为何自带 `ids`**：内核 term 不能同时传 args 与投影，续跑 eval 无法再以 `["g",["ids"]]`
-  取投影，故由调用方把**本服务入口 term 收到的投影切片**原样放进 args，供对话服务装配 interpret bag
-  （与工作区 `reveal` / 记忆 `search` 的「投影随 args 携带」写法一致）。
+- **续跑 args 为何自带 `ids`**：内核 term 不能同时传 args 与投影，续跑 eval 无法再取投影，
+  故由调用方把**本服务入口 term 收到的投影切片**原样放进 args，供对话服务装配 interpret bag。
+
+## 客户端半边（契约 v2）
+
+- 源码 `execute/web/entry.tsx`：导出 `contract = '2'` 与 `register(ctx)`；`register` 把组件注册进
+  `dock` 槽（`ctx.slots.register({name:'dock'}, Component)`）。
+- 业务状态住 React-free store（`execute/web/store.ts`）：`{getSnapshot, subscribe, …}`，网络 / 事件
+  全经壳 `ctx`（`command` / `submit` / `events`），React 只渲染。
+- 叶子纯模块 `execute/web/model.ts`（模板选择 / 摘要视图 / 影子指标 / 计时格式 / 二次确认状态机 /
+  verdict 映射 / 最老待审批项）与 `execute/web/messages.ts`（文案兜底）：零 `react` import、可直测。
+- 构建产物 `execute/web/dist/entry.js` 由 `.worldignore` 排除，`host.source.read` 读不到，
+  故经只读命令 `ui-approval.client.read` 由插件自交付；壳按 `/assets/ui/ui-approval.js` 同源服务。
+- **路径穿越防护**：`client.read` 只接受包内相对 `.js` 路径，拒绝绝对路径 / 盘符 / 反斜杠 / `..` /
+  空段 / 非 `.js`。
 
 ## 卡片与交互
 
@@ -50,37 +61,20 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 - **失败**：裁决失败在该条行内收口（danger 文字 + [重试]），条目仍留在停靠带。
 - **层级 / 质感**：停靠带用 `--z-dock`、薄玻璃（全局唯一例外，`--c-glass` + `backdrop-filter`，
   不支持时降级实色）；出入 200ms，最大高 40vh、超出内滚；无待审批项时不占高度、不渲染。
-
-## 子应用入口契约
-
-```
-GET /entry.js   → ES module，导出 mount(root, api) -> {unmount()}；另导出 contract = "1"
-GET /<name>.js  → 浏览器视图层模块（扁平白名单名，源码 ESM 直接服务）
-POST /api/command → 入站 command（三条命令）
-POST /api/submit  → 入站 submit（裁决前写槽的 batch）
-```
-
-- 事件不经本端口：浏览器侧经壳 `api.events` 订阅宿主事件与 `shell.state` 连接态。
-
-- 视图层模块拆分：入口编排 `entry.js`；纯模型 `model.js`（模板选择 / 摘要视图 / 影子指标 /
-  计时格式 / 二次确认状态机 / verdict 映射）；入站网络 `client.js`；事件 `sse.js`；
-  渲染小件 `dom.js` / `styles.js`；文案 `messages.js`。
-- 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`
-  （线性图标 sprite）、`/assets/messages.v1.json`（错误码人话）；组件样式只引 token，
-  零硬编码色值、无内嵌图标与 emoji。
-- 端口默认 `8789`（`CHRONO_UI_PORT_UI_APPROVAL` 可覆盖），绑定 `127.0.0.1`；浏览器经壳
-  反代 `/p/ui-approval/*` 访问，不直连本端口。本插件不自开对外端口。
-- 失败隔离：本 slot 加载失败只在本 slot 内渲染占位，不影响其它 slot。
+- **键盘可达 / aria**：`role="region"` + `aria-label`；展开按钮 `aria-expanded` / `aria-label`；
+  危险动作补 `aria-label`；`aria-live="assertive"` 播报待审批计数。
 
 ## 运行
 
 ```sh
-npm test                          # 纯函数模型 + 服务装配 / 协议测试（node --test）
-node tools/e2e-smoke.mjs          # 宿主装配冒烟（pack → seed → start → 声明核对 → stop → verify）
+npm install                       # 安装构建依赖（esbuild）并生成 lockfile
+npm test                          # 纯函数模型 + 服务装配 / 协议 + 客户端半边契约测试（node --test）
+npx tsc --noEmit                  # 客户端半边类型门禁
+node tools/e2e-smoke.mjs          # 宿主装配冒烟（pack → seed → start → 声明核对 → 交付 → stop → verify）
 ```
 
 ## `.worldignore`
 
-声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` /
-`execute/`（含 `execute/web/`）/ `terms/`）随源码入世。本插件无世界数据、零 schema，
-故无 `schema/` 目录。
+声明 `test/`、`tools/` 与 `execute/web/dist/` 不入世界；其余（`plugin.json` / `package.json` /
+`package-lock.json` / `README.md` / `execute/`（含 `execute/web/` 源码）/ `terms/`）随源码入世。
+本插件无世界数据、零 schema，故无 `schema/` 目录。

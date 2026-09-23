@@ -1,6 +1,7 @@
 // 挂载表与 headless 清单（③ 可重算，不进世界）。
-// 挂载表：`state/ui-mounts.json` = `[{id, path, slot, port}]`，启动无表则生成默认值；
-// 子应用端口可用 `CHRONO_UI_PORT_<ID>` 覆盖（ID 大写、非字母数字转下划线）。
+// 挂载表：`state/ui-mounts.json` = `[{id, slot, entry}]`，启动无表则生成默认值。
+// 客户端半边由插件自产自交付：壳经 `<id>.client.read` 取字节并以 `/assets/ui/<id>.js` 同源服务，无端口、无 `/p/` 反代。
+// 老 state 表（带 port/path、无 entry）解析失败自动回落默认表，即迁移。
 // headless 清单：`state/ui-headless.json` = `[{id, entry}]`，不进挂载表、不给布局位。
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -10,9 +11,9 @@ import type { Json } from './types.ts'
 
 export interface MountEntry {
   id: string
-  path: string
   slot: string
-  port: number
+  /** slot 客户端半边入口（包内相对 `.js` 路径，如 `dist/entry.js`）；壳经 `<id>.client.read` 同源服务。 */
+  entry: string
 }
 
 export interface HeadlessEntry {
@@ -22,17 +23,17 @@ export interface HeadlessEntry {
 
 export const MOUNTS_FILE = 'ui-mounts.json'
 export const HEADLESS_FILE = 'ui-headless.json'
+/** 壳自身 HTTP 端口（`CHRONO_UI_PORT`）；插件无端口。 */
 export const DEFAULT_UI_PORT = 8787
-export const PROXY_PREFIX = '/p/'
 
 /** 默认挂载表：一插件一 slot，增删改表不改壳代码。 */
 export const DEFAULT_MOUNTS: MountEntry[] = [
-  { id: 'ui-sidebar', path: '/p/ui-sidebar/', slot: 'sidebar', port: 8791 },
-  { id: 'ui-chat', path: '/p/ui-chat/', slot: 'main', port: 8788 },
-  { id: 'ui-approval', path: '/p/ui-approval/', slot: 'dock', port: 8789 },
-  { id: 'ui-composer', path: '/p/ui-composer/', slot: 'composer', port: 8790 },
-  { id: 'ui-threads', path: '/p/ui-threads/', slot: 'topbar', port: 8793 },
-  { id: 'ui-settings', path: '/p/ui-settings/', slot: 'overlay', port: 8792 },
+  { id: 'ui-sidebar', slot: 'sidebar', entry: 'dist/entry.js' },
+  { id: 'ui-chat', slot: 'main', entry: 'dist/entry.js' },
+  { id: 'ui-approval', slot: 'dock', entry: 'dist/entry.js' },
+  { id: 'ui-composer', slot: 'composer', entry: 'dist/entry.js' },
+  { id: 'ui-threads', slot: 'topbar', entry: 'dist/entry.js' },
+  { id: 'ui-settings', slot: 'overlay', entry: 'dist/entry.js' },
 ]
 
 /** 默认 headless 清单：ui-notify 不占 slot、不给端口，只提供浏览器侧入口 bundle（住 `web/`）。 */
@@ -65,49 +66,18 @@ export function headlessPath(stateDir: string): string {
   return join(stateDir, HEADLESS_FILE)
 }
 
-/** 子应用端口覆盖环境变量名：`CHRONO_UI_PORT_<ID>`（ID 大写、非字母数字转 `_`）。 */
-export function normalizePortEnvKey(id: string): string {
-  return `CHRONO_UI_PORT_${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`
-}
-
-/** 解析端口覆盖值；非法（非整数 / 越界）返回 null（忽略该覆盖）。 */
-export function parsePort(value: string | undefined): number | null {
-  if (typeof value !== 'string' || value.trim().length === 0) return null
-  const port = Number(value)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
-  return port
-}
-
-/** 按 id 取端口覆盖：先查规范化名，再查原始名（POSIX 允许带连字符的环境变量名）。 */
-export function overridePort(id: string, env: { [key: string]: string | undefined }): number | null {
-  return parsePort(env[normalizePortEnvKey(id)]) ?? parsePort(env[`CHRONO_UI_PORT_${id}`])
-}
-
-/** 对挂载表逐条应用端口覆盖（不改入参）。 */
-export function applyOverrides(
-  mounts: MountEntry[],
-  env: { [key: string]: string | undefined },
-): MountEntry[] {
-  return mounts.map((entry) => {
-    const port = overridePort(entry.id, env)
-    return port === null ? entry : { ...entry, port }
-  })
-}
-
 function validMount(value: Json): MountEntry | null {
   if (!isRecord(value)) return null
   const id = value['id']
-  const path = value['path']
   const slot = value['slot']
-  const port = value['port']
+  const entry = value['entry']
   if (typeof id !== 'string' || id.length === 0) return null
-  if (typeof path !== 'string' || !path.startsWith('/')) return null
   if (typeof slot !== 'string' || slot.length === 0) return null
-  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return null
-  return { id, path, slot, port }
+  if (typeof entry !== 'string' || !isSafeHeadlessEntry(entry)) return null
+  return { id, slot, entry }
 }
 
-/** 解析挂载表文本；形态非法返回 null（调用方回落默认值）。 */
+/** 解析挂载表文本；形态非法返回 null（调用方回落默认值，老表由此迁移）。 */
 export function parseMounts(text: string): MountEntry[] | null {
   let parsed: Json
   try {
@@ -165,19 +135,16 @@ function writeJson(path: string, value: Json): boolean {
   }
 }
 
-/** 读挂载表；无表 / 坏表则写默认值。返回的表已应用 `CHRONO_UI_PORT_<ID>` 覆盖。 */
-export function ensureMounts(
-  stateDir: string,
-  env: { [key: string]: string | undefined },
-): { mounts: MountEntry[]; created: boolean } {
+/** 读挂载表；无表 / 坏表（含带 port/path 的老表）则写默认值。 */
+export function ensureMounts(stateDir: string): { mounts: MountEntry[]; created: boolean } {
   mkdirSync(stateDir, { recursive: true })
   const path = mountsPath(stateDir)
   if (existsSync(path)) {
     const parsed = parseMounts(readFileSync(path, 'utf8'))
-    if (parsed !== null) return { mounts: applyOverrides(parsed, env), created: false }
+    if (parsed !== null) return { mounts: parsed, created: false }
   }
   writeJson(path, DEFAULT_MOUNTS as unknown as Json)
-  return { mounts: applyOverrides(DEFAULT_MOUNTS, env), created: true }
+  return { mounts: DEFAULT_MOUNTS, created: true }
 }
 
 /**

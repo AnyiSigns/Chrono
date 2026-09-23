@@ -3,7 +3,6 @@
 
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -37,19 +36,6 @@ function createDecoder() {
       return messages
     },
   }
-}
-
-/** 取一个空闲端口（避免与真实宿主 / 其它测试撞端口）。 */
-export function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
 }
 
 /** 起一个临时 root 与假入站地址（服务连不上宿主也不影响协议级测试）。 */

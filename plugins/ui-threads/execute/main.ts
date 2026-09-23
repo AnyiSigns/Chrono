@@ -1,16 +1,12 @@
-// `ui-threads` 服务进程入口：服务协议帧循环 + 子应用 HTTP 服务 + 自实现入站客户端。
-// manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
+// `ui-threads` 服务进程入口：服务协议帧循环（stdio）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影：标签数据由入口 term 读 `ctx.ids` 随 args 传入。
+// 客户端半边改由插件自交付：只读命令 `ui-threads.client.read` 由本进程读包内产物回字节。
+// 插件 HTTP 面已作废（删除 http-server / port / routes / static / inbound-guard），无独占端口。
 
 import { readFileSync } from 'node:fs'
-import { Bridge } from './bridge.ts'
+import { fileURLToPath } from 'node:url'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { startUiServer } from './http-server.ts'
-import type { UiServer } from './http-server.ts'
-import { InboundClient } from './inbound.ts'
 import { createHandlers } from './methods.ts'
-import { resolvePort } from './port.ts'
-import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -45,17 +41,11 @@ function manifest(): Rec {
   }
 }
 
-const root = rootFromPluginState(process.env, process.cwd())
-const handlers = createHandlers({ identity: IDENTITY })
+/** 客户端半边资产根目录（`execute/web/`）；`client.read` 只在此目录内解析包内相对 `.js`。 */
+const webRoot = fileURLToPath(new URL('./web/', import.meta.url))
+const handlers = createHandlers({ identity: IDENTITY, webRoot })
 
-let uiServer: UiServer | null = null
 let exiting = false
-
-const inbound = new InboundClient({
-  socketPath: inboundSocketPath(root),
-  log,
-})
-const bridge = new Bridge(inbound)
 
 function sendFrame(message: Json): void {
   if (exiting) return
@@ -121,15 +111,7 @@ function handleCall(message: Rec): void {
 function shutdown(): void {
   if (exiting) return
   exiting = true
-  inbound.close()
-  const server = uiServer
-  uiServer = null
-  const finish = (): void => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  setTimeout(() => process.exit(0), 10).unref?.()
 }
 
 function handle(message: Json): void {
@@ -176,23 +158,3 @@ process.stdin.on('data', (chunk: Buffer) => {
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
 process.stdin.on('error', shutdown)
-
-inbound.start()
-
-const uiPort = resolvePort(process.env)
-startUiServer(
-  {
-    bridge,
-    log,
-  },
-  uiPort,
-).then(
-  (server) => {
-    uiServer = server
-    log(`ui-threads listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
-  },
-  (err: Error) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
-    process.exit(1)
-  },
-)

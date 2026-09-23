@@ -2,11 +2,14 @@
   "identity": "ui-threads",
   "implements": ["ui-threads"],
   "methods": {
-    "ui-threads": ["ping", "threads.state"]
+    "ui-threads": ["ping", "threads.state", "client.read"]
   },
   "pins": {},
   "start": "node execute/main.ts",
-  "exclusive": ["port"],
+  "build": [
+    { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },
+    { "cmd": "node", "args": ["execute/build.mjs"] }
+  ],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -28,6 +31,7 @@
     { "kind": "term", "path": "terms/" }
   ],
   "commands": [
-    { "name": "threads.state", "entry": "terms/threads.state.json", "readonly": true }
+    { "name": "threads.state", "entry": "terms/threads.state.json", "readonly": true },
+    { "name": "ui-threads.client.read", "entry": "terms/ui-threads.client.read.json", "readonly": true }
   ]
 }

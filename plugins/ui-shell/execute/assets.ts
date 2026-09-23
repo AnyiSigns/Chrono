@@ -79,3 +79,15 @@ export function loadLib(webDir: string, name: string): AssetContent | null {
     return null
   }
 }
+
+/** vendor 运行时产物（`web/vendor/*.js`）白名单名；构建期由 tools/build-vendor.mjs 产出。 */
+export const VENDOR_NAME_RE = /^[a-z0-9.-]+\.js$/
+
+export function loadVendor(webDir: string, name: string): AssetContent | null {
+  if (!VENDOR_NAME_RE.test(name)) return null
+  try {
+    return { text: readFileSync(join(webDir, 'vendor', name), 'utf8'), fallback: false }
+  } catch {
+    return null
+  }
+}

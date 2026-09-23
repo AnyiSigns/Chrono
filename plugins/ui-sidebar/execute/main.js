@@ -1,16 +1,14 @@
-// `ui-sidebar` 服务进程入口：服务协议帧循环 + 子应用 HTTP 服务 + 自实现入站客户端。
+// `ui-sidebar` 服务进程入口：服务协议帧循环 + 自实现入站客户端。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影：入口 term 把 `ctx.ids` 随 args 传入，
 // 服务装配后经宿主反向调用（`port.call`）转给 `session` / `workspace`（见 execute/methods.js）。
+// 客户端半边改由插件自交付（`ui-sidebar.client.read` 读包内产物），本服务不再开 HTTP 面。
 
 import { readFileSync } from 'node:fs'
-import { Bridge } from './bridge.js'
 import { createFrameDecoder, log, writeFrame } from './frames.js'
-import { startUiServer } from './http-server.js'
 import { InboundClient } from './inbound.js'
 import { createHandlers } from './methods.js'
 import { PortLink } from './port-link.js'
-import { resolvePort } from './port.js'
 import { inboundSocketPath, rootFromPluginState } from './root.js'
 import { BadArgsError, isRecord } from './types.js'
 
@@ -40,7 +38,6 @@ function manifest() {
 
 const root = rootFromPluginState(process.env, process.cwd())
 
-let uiServer = null
 let exiting = false
 
 // drain 排空：协议要求「在途结束，服务发 bye」；调用经 stdin 串行链处理，计数与等待显式兑现该义务。
@@ -76,7 +73,6 @@ const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
 })
-const bridge = new Bridge(inbound)
 
 function sendFrame(message) {
   if (exiting) return
@@ -159,14 +155,7 @@ function shutdown() {
   exiting = true
   LINK.failAll()
   inbound.close()
-  const server = uiServer
-  uiServer = null
-  const finish = () => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  setTimeout(() => process.exit(0), 10).unref?.()
 }
 
 async function handle(message) {
@@ -218,18 +207,4 @@ process.stdin.on('close', shutdown)
 process.stdin.on('error', shutdown)
 
 inbound.start()
-
-const uiPort = resolvePort(process.env)
-startUiServer(
-  { bridge, log },
-  uiPort,
-).then(
-  (server) => {
-    uiServer = server
-    log(`ui-sidebar listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
-  },
-  (err) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
-    process.exit(1)
-  },
-)
+log(`ui-sidebar ready (pid ${process.pid})`)

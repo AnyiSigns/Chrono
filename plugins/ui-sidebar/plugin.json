@@ -4,6 +4,7 @@
   "methods": {
     "ui-sidebar": [
       "ping",
+      "clientRead",
       "newConversation",
       "selectConversation",
       "renameConversation",
@@ -22,7 +23,10 @@
     "workspace": "workspace"
   },
   "start": "node execute/main.js",
-  "exclusive": ["port"],
+  "build": [
+    { "cmd": "npm", "args": ["ci"] },
+    { "cmd": "node", "args": ["execute/build.mjs"] }
+  ],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -54,6 +58,7 @@
     { "name": "workspace.pick", "entry": "terms/workspace.pick.json" },
     { "name": "workspace.add", "entry": "terms/workspace.add.json" },
     { "name": "workspace.remove", "entry": "terms/workspace.remove.json" },
-    { "name": "workspace.reveal", "entry": "terms/workspace.reveal.json" }
+    { "name": "workspace.reveal", "entry": "terms/workspace.reveal.json" },
+    { "name": "ui-sidebar.client.read", "entry": "terms/client.read.json", "readonly": true }
   ]
 }

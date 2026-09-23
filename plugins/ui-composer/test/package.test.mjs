@@ -1,25 +1,26 @@
-// 包形状测试：零 schema、members = execute、pins 空、命令空、`.worldignore`、
-// README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
+// 包形状测试：零 schema、members = execute + term、pins 空、只读命令 client.read、
+// `.worldignore`（含 dist）、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-test('plugin.json 省略 schema 且其余字段齐全', () => {
+test('plugin.json 省略 schema / exclusive，且其余字段齐全', () => {
   const decl = readJson('plugin.json')
   assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
+  assert.equal(Object.hasOwn(decl, 'exclusive'), false, 'HTTP 面已删，不得再声明 port 独占')
   const expected = [
     'identity',
     'implements',
     'methods',
     'pins',
     'start',
-    'exclusive',
+    'build',
     'protocol',
     'restart',
     'health',
@@ -34,40 +35,55 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-composer（ping 占位）；pins 空；无命令', () => {
+test('能力类为 ui-composer（ping + client.read）；pins 空；只读交付命令', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-composer'])
-  assert.deepEqual(decl.methods, { 'ui-composer': ['ping'] })
+  assert.deepEqual(decl.methods, { 'ui-composer': ['ping', 'client.read'] })
   assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.commands, [])
-  assert.deepEqual(decl.members, [{ kind: 'execute', path: 'execute/' }])
+  assert.deepEqual(decl.members, [
+    { kind: 'execute', path: 'execute/' },
+    { kind: 'term', path: 'terms/' },
+  ])
+  assert.deepEqual(decl.commands, [
+    { name: 'ui-composer.client.read', entry: 'terms/client.read.json', readonly: true },
+  ])
   assert.equal(decl.health.probe, 'ui-composer.ping')
+  assert.deepEqual(decl.build, [
+    { cmd: 'npm', args: ['ci'] },
+    { cmd: 'node', args: ['execute/build.mjs'] },
+  ])
 })
 
-test('.worldignore 声明 test/ 与 tools/', () => {
+test('.worldignore 声明 test/ 与 tools/ 与 execute/web/dist/', () => {
   const lines = readText('.worldignore')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'))
   assert.ok(lines.includes('test/'))
   assert.ok(lines.includes('tools/'))
+  assert.ok(lines.includes('execute/web/dist/'))
 })
 
-test('package.json 零依赖且带测试脚本', () => {
+test('package.json 带构建 / 类型门禁 / 测试脚本与 esbuild devDep', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies, undefined)
   assert.equal(pkg.peerDependencies, undefined)
+  assert.equal(typeof pkg.devDependencies.esbuild, 'string')
+  assert.equal(pkg.scripts.build, 'node execute/build.mjs')
   assert.equal(pkg.scripts.test, 'node --test')
+  assert.equal(pkg.scripts.typecheck, 'tsc --noEmit')
+  assert.ok(pkg.files.includes('package-lock.json'))
+  assert.ok(pkg.files.includes('terms/'))
 })
 
 test('插件源码与测试不 import 宿主 / 内核 / 客户端（tools/ 冒烟脚本除外）', () => {
   const files = []
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'tools') continue
       const path = join(dir, entry.name)
-      if (entry.isDirectory() && entry.name !== 'tools') walk(path)
-      else if (entry.isFile() && /\.(mjs|ts|js|json)$/.test(entry.name)) files.push(path)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.isFile() && /\.(mjs|ts|js|tsx|json)$/.test(entry.name)) files.push(path)
     }
   }
   walk(pkgRoot)
@@ -128,20 +144,12 @@ function stripComments(source) {
   return out
 }
 
-test('web 层代码无散落中文（文案集中在 messages.js）与硬编码色值', () => {
+test('web 层代码无散落中文（文案集中在 messages.ts）与硬编码色值', () => {
   const webDir = join(pkgRoot, 'execute', 'web')
   for (const name of readdirSync(webDir)) {
-    if (!name.endsWith('.js') || name === 'messages.js') continue
+    if (!/\.(ts|tsx)$/.test(name) || name === 'messages.ts') continue
     const source = stripComments(readFileSync(join(webDir, name), 'utf8'))
     assert.ok(!/[\u4e00-\u9fff]/.test(source), `${name} 含散落中文文案`)
     assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(source), `${name} 含硬编码色值`)
   }
-})
-
-test('entry.js 导出 mount 且返回 unmount（模块可导入）', async () => {
-  const web = join(pkgRoot, 'execute', 'web')
-  const module = await import(pathToFileURL(join(web, 'entry.js')).href)
-  assert.equal(module.contract, '1')
-  assert.equal(typeof module.mount, 'function')
-  assert.ok(module.mount.length >= 2)
 })

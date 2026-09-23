@@ -353,7 +353,14 @@ async function main() {
     assert.equal(existsSync(headlessFile), true, '缺 state/ui-headless.json')
     const mounts = JSON.parse(readFileSync(mountsFile, 'utf8'))
     assert.equal(mounts.length, 6)
-    console.log('挂载表 / headless 清单：ok')
+    for (const entry of mounts) {
+      assert.equal(typeof entry.id, 'string', '挂载项缺 id')
+      assert.equal(typeof entry.slot, 'string', '挂载项缺 slot')
+      assert.equal(entry.entry, 'dist/entry.js', '挂载项 entry 应为 dist/entry.js')
+      assert.equal('port' in entry, false, '挂载项不应有 port')
+      assert.equal('path' in entry, false, '挂载项不应有 path')
+    }
+    console.log('挂载表 / headless 清单：ok（id/slot/entry）')
 
     console.log(`E2E ok（root=${root}，port=${port}）`)
   } finally {

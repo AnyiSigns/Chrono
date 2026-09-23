@@ -34,7 +34,8 @@
       height: 0;
       overflow: visible;
     }
-    #slot-main { flex: 1 1 auto; min-height: var(--main-min-h); overflow: auto; }
+    /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条 */
+    #slot-main { flex: 1 1 auto; min-height: var(--main-min-h); overflow: hidden; }
     #slot-dock {
       position: relative;
       z-index: var(--z-dock);
@@ -43,9 +44,13 @@
       max-height: var(--dock-max-h);
       overflow: auto;
     }
-    #slot-composer { flex: 0 1 auto; min-height: 0; max-height: var(--composer-max-h); overflow: auto; }
+    /* composer 槽不裁切：输入框自带上限自滚；槽 overflow:auto 会把绝对定位弹层卷进滚动区（裁切 + 幽灵滚动条） */
+    #slot-composer { flex: none; min-height: 0; overflow: visible; }
     #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
     #slot-overlay > * { pointer-events: auto; }
+    /* slot 客户端半边挂载容器：撑满所属 slot；topbar 高 0，交给内容自行浮出 */
+    .shell-slot-app { height: 100%; min-height: 0; }
+    #slot-topbar .shell-slot-app { height: auto; }
     body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }
     /* <1024：消息列退化为「全宽 − 边距」（响应式断点） */
     body.shell-narrow #slot-main { --msg-max-w: 100%; }
@@ -168,6 +173,17 @@
       .shell-breathe { animation: none; opacity: .4; }
     }
   </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "/assets/vendor/react.js",
+        "react/jsx-runtime": "/assets/vendor/react-jsx-runtime.js",
+        "react-dom": "/assets/vendor/react-dom.js",
+        "react-dom/client": "/assets/vendor/react-dom.js",
+        "use-sync-external-store/shim": "/assets/vendor/use-sync-external-store.js"
+      }
+    }
+  </script>
   <script>window.__CHRONO_SHELL__ = /*__CHRONO_BOOTSTRAP__*/{};</script>
 </head>
 <body>

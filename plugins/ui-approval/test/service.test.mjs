@@ -5,7 +5,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -44,26 +43,13 @@ function createDecoder() {
   }
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
-function spawnService(root, port) {
+function spawnService(root) {
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-approval'),
-      CHRONO_UI_PORT_UI_APPROVAL: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -113,15 +99,14 @@ const IDS = { approval: { body: { version: 1, tail: null, count: 0 }, refs: {} }
 
 test('服务协议级：hello → manifest，ping，probe，list 反向调用，decide 续跑计划，drain → bye', async () => {
   const root = tempDir('service')
-  const port = await freePort()
-  const { child, messages, waitFor } = spawnService(root, port)
+  const { child, messages, waitFor } = spawnService(root)
   try {
     child.stdin.write(encodeFrame({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-approval', gen: 'g' }))
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-approval')
     assert.deepEqual(manifest.implements, ['ui-approval'])
-    assert.deepEqual(manifest.methods, { 'ui-approval': ['ping', 'list', 'decide', 'decide_all'] })
+    assert.deepEqual(manifest.methods, { 'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'] })
     assert.equal(manifest.protocol, '1')
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }))
@@ -229,8 +214,7 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
 
 test('服务 EOF 自退出', async () => {
   const root = tempDir('eof')
-  const port = await freePort()
-  const { child } = spawnService(root, port)
+  const { child } = spawnService(root)
   const exit = new Promise((resolveExit) => child.once('exit', resolveExit))
   child.stdin.end()
   const code = await Promise.race([

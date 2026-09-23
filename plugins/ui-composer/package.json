@@ -7,12 +7,19 @@
   "files": [
     "plugin.json",
     "package.json",
+    "package-lock.json",
     "README.md",
     ".worldignore",
-    "execute/"
+    "execute/",
+    "terms/"
   ],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --test"
+    "build": "node execute/build.mjs",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

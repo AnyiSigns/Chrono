@@ -1,13 +1,12 @@
 // `ui-settings` 纯函数层 + 服务协议测试（node --test）。
 // 覆盖：配置读-改-写、导入校验、引导流程纯函数、通知权限解析、编排健康判定、
-// 设置页纯函数、帧构造 / 路由 / 端口 / 静态白名单、服务握手 / ping / probe / drain（等在途后 bye）/ EOF 自退出、
+// 设置页纯函数、帧构造 / client.read 路径穿越防护、服务握手 / ping / probe / drain（等在途后 bye）/ EOF 自退出、
 // 连接态事件命名空间由身份传入、入口导出。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -31,7 +30,7 @@ import {
   upsertProvider,
   validateImport,
   vendorKeyOf,
-} from '../execute/web/config-model.js'
+} from '../execute/web/config-model.ts'
 import {
   addModelIds,
   buildProbeSlot,
@@ -41,7 +40,7 @@ import {
   templatePrefill,
   validateOnboarding,
   vendorTemplates,
-} from '../execute/web/onboarding.js'
+} from '../execute/web/onboarding.ts'
 import {
   canRequestPermission,
   mergeToggles,
@@ -53,7 +52,7 @@ import {
   permissionTone,
   toggleValue,
   togglesDisabled,
-} from '../execute/web/notify.js'
+} from '../execute/web/notify.ts'
 import {
   graphView,
   healthView,
@@ -63,7 +62,7 @@ import {
   scopeList,
   shortHash,
   walkTail,
-} from '../execute/web/health.js'
+} from '../execute/web/health.ts'
 import {
   identityRows,
   normalizeTab,
@@ -75,9 +74,9 @@ import {
   TABS,
   toggleSkill,
   upsertSkill,
-} from '../execute/web/settings-model.js'
-import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
-import { commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.js'
+} from '../execute/web/settings-model.ts'
+import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
+import { commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.ts'
 
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.ts'
 import {
@@ -103,9 +102,7 @@ import {
   projectionRefs,
   resolveThreshold,
 } from '../execute/methods.ts'
-import { DEFAULT_SETTINGS_PORT, parsePort, resolvePort } from '../execute/port.ts'
-import { routeOf } from '../execute/routes.ts'
-import { readWebFile, WEB_FILE_RE } from '../execute/static.ts'
+import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -992,7 +989,7 @@ test('文案表：解析 / 未知码兜底 / 共享表单源优先、本地仅�
   assert.equal(lookupMessage(null, 'settings_orch_scope').body.includes('settings_orch_scope'), true, '非骨架键落 unknown 兜底')
 })
 
-// ---- 入站桥 / 路由 / 端口 / 静态 ----
+// ---- 入站桥 / client.read ----
 
 test('入站桥帧构造、回包解释与计划解包', () => {
   assert.deepEqual(commandFrame('i', 'model.vendors', null, { thread: 't' }), {
@@ -1017,31 +1014,49 @@ test('入站桥帧构造、回包解释与计划解包', () => {
   assert.deepEqual(unwrapPlan({ plain: 1 }), { plain: 1 })
 })
 
-test('路由判定：静态 / api 动词门禁；/events 已并入壳总线', () => {
-  assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
-  assert.deepEqual(routeOf('GET', '/config-model.js'), { kind: 'web', name: 'config-model.js' })
-  assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'not-found')
-  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
-  assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
-  assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
-  assert.equal(routeOf('POST', '/api/secrets/put').kind, 'api-secrets-put')
-  assert.equal(routeOf('POST', '/api/secrets/delete').kind, 'api-secrets-delete')
-  assert.equal(routeOf('GET', '/api/command').kind, 'not-found')
-  assert.equal(routeOf('GET', '/../plugin.json').kind, 'not-found')
+test('client.read：只接受包内相对 .js，拒绝绝对 / 盘符 / 反斜杠 / .. / 空段', () => {
+  assert.equal(isSafeClientPath('dist/entry.js'), true)
+  assert.equal(isSafeClientPath('entry.js'), true)
+  assert.equal(isSafeClientPath('/etc/passwd.js'), false)
+  assert.equal(isSafeClientPath('C:/x.js'), false)
+  assert.equal(isSafeClientPath('c:\\x.js'), false)
+  assert.equal(isSafeClientPath('..\\x.js'), false)
+  assert.equal(isSafeClientPath('../plugin.json'), false)
+  assert.equal(isSafeClientPath('dist/../../x.js'), false)
+  assert.equal(isSafeClientPath('dist//x.js'), false)
+  assert.equal(isSafeClientPath('./x.js'), false)
+  assert.equal(isSafeClientPath('dist/x.ts'), false)
+  assert.equal(isSafeClientPath(''), false)
+  assert.equal(isSafeClientPath(null), false)
+  assert.equal(isSafeClientPath(7), false)
 })
 
-test('端口推导与静态白名单', () => {
-  assert.equal(DEFAULT_SETTINGS_PORT, 8792)
-  assert.equal(resolvePort({}), 8792)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_SETTINGS: '9001' }), 9001)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_SETTINGS: '0' }), 8792)
-  assert.equal(parsePort('70000'), null)
-  assert.equal(WEB_FILE_RE.test('entry.js'), true)
-  assert.equal(WEB_FILE_RE.test('../x.js'), false)
-  assert.equal(readWebFile(WEB, 'entry.js').includes('export async function mount'), true)
-  assert.equal(readWebFile(WEB, 'nope.js'), null)
-  assert.equal(readWebFile(WEB, '../plugin.json'), null)
+test('client.read：正常读回包内文件，越界与缺失返回 null', () => {
+  const dir = tempDir('client-read')
+  mkdirSync(join(dir, 'dist'), { recursive: true })
+  writeFileSync(join(dir, 'dist', 'entry.js'), 'export const ok = 1\n')
+  assert.equal(readClientFile(dir, 'dist/entry.js'), 'export const ok = 1\n')
+  assert.equal(readClientFile(dir, '../secret.js'), null)
+  assert.equal(readClientFile(dir, 'dist/nope.js'), null)
+  assert.equal(resolveClientPath(dir, 'dist/entry.js'), join(dir, 'dist', 'entry.js'))
+  assert.equal(resolveClientPath(dir, '../x.js'), null)
+})
+
+test('client.read 方法：非法 / 缺失路径结构化失败，正常路径读回产物', () => {
+  const handlers = createHandlers({ identity: 'ui-settings', model: fakeModel({ ok: false, code: 'x', message: '' }) })
+  const env = { run: null, thread: null, now: 0 }
+  const bad = handlers['client.read']({ path: '../plugin.json' }, env)
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'client_read_bad_path')
+  const missing = handlers['client.read']({ path: 'dist/nope.js' }, env)
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'client_read_missing')
+  const built = join(WEB, 'dist', 'entry.js')
+  if (existsSync(built)) {
+    const read = handlers['client.read']({ path: 'dist/entry.js' }, env)
+    assert.equal(read.path, 'dist/entry.js')
+    assert.ok(read.text.includes('export'))
+  }
 })
 
 // ---- 服务协议级 ----
@@ -1072,28 +1087,14 @@ function createDecoder() {
   }
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
 test('服务协议级：hello → manifest，ping，probe，drain → bye', async () => {
   const root = tempDir('service')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-settings'),
-      CHRONO_UI_PORT_UI_SETTINGS: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -1143,13 +1144,20 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
     assert.deepEqual(manifest.implements, ['ui-settings'])
-    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit'] })
+    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit', 'client.read', 'secret'] })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-settings', method: 'ping', args: {} }))
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
     assert.equal(messages.find((message) => message.id === 'c1').value.pong, true)
+
+    // client.read 路径穿越：越界路径结构化失败，不崩进程。
+    child.stdin.write(
+      encodeFrame({ v: '1', id: 'r1', kind: 'call', port: 'ui-settings', method: 'client.read', args: { path: '../plugin.json' } }),
+    )
+    await waitFor(() => messages.some((message) => message.id === 'r1'), 'client.read rejection')
+    assert.equal(messages.find((message) => message.id === 'r1').value.ok, false)
 
     child.stdin.write(encodeFrame({ v: '1', id: 'p1', kind: 'probe' }))
     await waitFor(() => messages.some((message) => message.id === 'p1'), 'pong')
@@ -1220,14 +1228,12 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
 
 test('服务 EOF 自退出', async () => {
   const root = tempDir('eof')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-settings'),
-      CHRONO_UI_PORT_UI_SETTINGS: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -1243,9 +1249,16 @@ test('服务 EOF 自退出', async () => {
 
 // ---- 入口契约 ----
 
-test('entry.js 导出 mount 且返回 unmount（模块可导入）', async () => {
-  const module = await import(pathToFileURL(join(WEB, 'entry.js')).href)
-  assert.equal(module.contract, '1')
-  assert.equal(typeof module.mount, 'function')
-  assert.ok(module.mount.length >= 2)
+test('entry.tsx 导出 contract="2" 与 register，且不再导出 mount', async () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  assert.match(source, /export const contract = '2'/)
+  assert.match(source, /export function register/)
+  assert.ok(!/export (async )?function mount/.test(source), '不再导出 mount')
+  const dist = join(WEB, 'dist', 'entry.js')
+  if (existsSync(dist)) {
+    const module = await import(pathToFileURL(dist).href)
+    assert.equal(module.contract, '2')
+    assert.equal(typeof module.register, 'function')
+    assert.equal(module.mount, undefined)
+  }
 })

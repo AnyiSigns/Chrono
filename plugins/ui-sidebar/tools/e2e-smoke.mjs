@@ -75,20 +75,24 @@ function main() {
       'plugin.json',
       'package.json',
       'README.md',
+      'tsconfig.json',
       'execute/main.js',
       'execute/methods.js',
-      'execute/web/entry.js',
-      'execute/web/badges.js',
-      'execute/web/sidebar-model.js',
+      'execute/build.mjs',
+      'execute/web/entry.tsx',
+      'execute/web/badges.ts',
+      'execute/web/sidebar-model.ts',
       'terms/session.new.json',
       'terms/session.branch.json',
       'terms/workspace.reveal.json',
+      'terms/client.read.json',
     ]) {
       assert.ok(packedPaths.includes(required), `入世树缺 ${required}`)
     }
     assert.ok(!packedPaths.some((path) => path.startsWith('test/')), '入世树含 test/')
     assert.ok(!packedPaths.some((path) => path.startsWith('tools/')), '入世树含 tools/')
-    console.log(`入世树：ok（${packedPaths.length} 个文件，排除 test/ 与 tools/）`)
+    assert.ok(!packedPaths.some((path) => path.startsWith('execute/web/dist/')), '入世树含构建产物 dist/')
+    console.log(`入世树：ok（${packedPaths.length} 个文件，排除 test/ / tools/ / execute/web/dist/）`)
 
     // 2) 声明 / 命令 / pins 核对（契约字段，离线读 plugin.json）。
     const decl = JSON.parse(readFileSync(join(SIDEBAR_DIR, 'plugin.json'), 'utf8'))
@@ -113,13 +117,16 @@ function main() {
       'workspace.add',
       'workspace.remove',
       'workspace.reveal',
+      'ui-sidebar.client.read',
     ])
+    assert.equal(Object.hasOwn(decl, 'exclusive'), false, 'HTTP 面作废后不应再声明 exclusive')
+    assert.equal(decl.commands.find((command) => command.name === 'ui-sidebar.client.read').readonly, true)
     for (const command of decl.commands) {
       const term = JSON.parse(readFileSync(join(SIDEBAR_DIR, command.entry), 'utf8'))
       assert.equal(term[0], 'eff')
       assert.equal(term[1], 'ui-sidebar')
     }
-    console.log(`声明 / 命令：ok（11 条命令入口 term 齐全；pins=session+workspace）`)
+    console.log(`声明 / 命令：ok（12 条命令入口 term 齐全；pins=session+workspace）`)
 
     // 3) 批量 seed：依赖先入世，ui-sidebar 的 pins 才能在入世时解析（同一原子批内解析）。
     writeFileSync(

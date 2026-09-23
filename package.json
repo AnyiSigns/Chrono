@@ -1,0 +1,23 @@
+{
+  "name": "chrono",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Chrono",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:vendor": "node tools/build-vendor.mjs",
+    "build:ui": "node tools/build-ui.mjs",
+    "typecheck:ui": "node tools/typecheck-ui.mjs"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.9.3",
+    "use-sync-external-store": "^1.7.0"
+  }
+}

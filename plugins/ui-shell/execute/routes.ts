@@ -18,8 +18,9 @@ export type Route =
   | { kind: 'shell-page' }
   | { kind: 'asset'; name: AssetName }
   | { kind: 'lib'; name: string }
+  | { kind: 'vendor'; name: string }
+  | { kind: 'ui'; id: string }
   | { kind: 'headless'; id: string }
-  | { kind: 'proxy'; id: string; rest: string }
   | { kind: 'forward'; id: string; rest: string }
   | { kind: 'events' }
   | { kind: 'api-theme' }
@@ -68,6 +69,21 @@ export function routeOf(method: string, pathname: string, mounts: MountEntry[]):
         ? { kind: 'lib', name }
         : { kind: 'not-found' }
     }
+    if (rest.startsWith('vendor/')) {
+      const name = rest.slice('vendor/'.length)
+      return verb === 'GET' && /^[a-z0-9.-]+\.js$/.test(name)
+        ? { kind: 'vendor', name }
+        : { kind: 'not-found' }
+    }
+    if (rest.startsWith('ui/')) {
+      const file = rest.slice('ui/'.length)
+      if (verb === 'GET' && file.endsWith('.js') && file.length > 3) {
+        const id = decodeSegment(file.slice(0, -3))
+        // id 必须是安全单段（挂载表 id 形态），挡住 `..` / 分隔符等路径穿越。
+        if (id !== null && /^[A-Za-z0-9_-]+$/.test(id)) return { kind: 'ui', id }
+      }
+      return { kind: 'not-found' }
+    }
     if (rest.startsWith('headless/')) {
       const file = rest.slice('headless/'.length)
       if (verb === 'GET' && file.endsWith('.js') && file.length > 3) {
@@ -89,9 +105,10 @@ export function routeOf(method: string, pathname: string, mounts: MountEntry[]):
     const rawRest = slash < 0 ? '' : remainder.slice(slash + 1)
     const id = decodeSegment(rawId)
     if (id === null || id.length === 0) return { kind: 'not-found' }
-    const rest = rawRest
-    if (findMount(mounts, id) !== null) return { kind: 'proxy', id, rest }
-    return { kind: 'forward', id, rest }
+    // 挂载表内的 UI 插件客户端半边改由插件自交付（壳以 /assets/ui/<id>.js 同源服务），
+    // 不再有 HTTP 端口可反代；表外身份（如 mcp）仍转 forward 帧发宿主按名路由。
+    if (findMount(mounts, id) !== null) return { kind: 'not-found' }
+    return { kind: 'forward', id, rest: rawRest }
   }
 
   switch (pathname) {

@@ -9,6 +9,7 @@ import {
   loadLib,
   loadShellHtml,
   loadTokens,
+  loadVendor,
   readAsset,
   webDirOf,
 } from './assets.ts'
@@ -18,7 +19,6 @@ import { log as defaultLog } from './frames.ts'
 import { guardInboundRequest } from './inbound-guard.ts'
 import { FALLBACK_MESSAGES } from './messages.ts'
 import type { HeadlessEntry, MountEntry } from './mounts.ts'
-import { proxyRequest } from './proxy.ts'
 import { buildForwardArgs, forwardCommandName, routeOf } from './routes.ts'
 import type { Route } from './routes.ts'
 import { SseHub, shellStateRecord } from './sse.ts'
@@ -42,6 +42,8 @@ export interface UiServerDeps {
   state: () => ShellState
   /** headless 入口字节（经 host.source.read 取回并缓存）；无 → null。 */
   headlessSource: (id: string) => string | null
+  /** slot 客户端半边字节（经 host.source.read 取回并缓存，取代 /p/ 反代）；无 → null。 */
+  uiSource: (id: string) => string | null
   /** 写主题偏好后的运行态更新（缓存 + 广播）。 */
   applyThemePref: (pref: string) => void
   /** config 写落账后重推无配置判据（`boot_mode` 派生）；由服务侧读回 config 并广播。 */
@@ -510,6 +512,24 @@ async function handleRequest(
         sendText(res, 200, content.text, 'text/javascript; charset=utf-8')
         return
       }
+      case 'vendor': {
+        const content = loadVendor(webDir, route.name)
+        if (content === null) {
+          sendJson(res, 404, { ok: false, code: 'not_found', message: route.name })
+          return
+        }
+        sendText(res, 200, content.text, 'text/javascript; charset=utf-8')
+        return
+      }
+      case 'ui': {
+        const source = deps.uiSource(route.id)
+        if (source === null) {
+          sendJson(res, 404, { ok: false, code: 'not_found', message: route.id })
+          return
+        }
+        sendText(res, 200, source, 'text/javascript; charset=utf-8')
+        return
+      }
       case 'headless': {
         const source = deps.headlessSource(route.id)
         if (source === null) {
@@ -522,15 +542,6 @@ async function handleRequest(
       case 'events':
         handleEvents(deps, req, res)
         return
-      case 'proxy': {
-        const mount = deps.mounts.find((entry) => entry.id === route.id)
-        if (mount === undefined) {
-          sendJson(res, 404, { ok: false, code: 'not_found', message: route.id })
-          return
-        }
-        proxyRequest({ port: mount.port }, req, res, route.rest)
-        return
-      }
       case 'forward':
         await handleForward(deps, route, req, url, res)
         return

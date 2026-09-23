@@ -21,8 +21,8 @@ import {
   validateProbe,
   vendorTemplates,
   vendorTemplatesFromResult,
-} from '../execute/web/onboarding.js'
-import { listText, splitList } from '../execute/web/settings-model.js'
+} from '../execute/web/onboarding.ts'
+import { listText, splitList } from '../execute/web/settings-model.ts'
 import {
   editSlotPayload,
   editTextPatch,
@@ -41,8 +41,8 @@ import {
   summaryLists,
   ttlState,
   workspaceOptions,
-} from '../execute/web/memory-model.js'
-import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.js'
+} from '../execute/web/memory-model.ts'
+import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')

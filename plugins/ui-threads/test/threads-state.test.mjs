@@ -13,8 +13,8 @@ import {
   orderSubtree,
   resolveRootMainId,
   threadLabelKey,
-} from '../execute/web/threads-model.js'
-import { freePort, startService, tempRoot } from './driver.mjs'
+} from '../execute/web/threads-model.ts'
+import { startService, tempRoot } from './driver.mjs'
 
 function conversation(id, extra = {}) {
   return {
@@ -169,18 +169,23 @@ test('线程树纯函数：orderSubtree / resolveRootMainId / dataChangeTarget',
 
 test('协议级：hello → manifest，ping，threads.state，未知能力类，probe，drain → bye', async () => {
   const { env, cleanup } = tempRoot()
-  const port = await freePort()
-  const service = startService({ ...env, CHRONO_UI_PORT_UI_THREADS: String(port) })
+  const service = startService(env)
   try {
     const manifest = await service.hello()
     assert.equal(manifest.identity, 'ui-threads')
     assert.deepEqual(manifest.implements, ['ui-threads'])
-    assert.deepEqual(manifest.methods, { 'ui-threads': ['ping', 'threads.state'] })
+    assert.deepEqual(manifest.methods, { 'ui-threads': ['ping', 'threads.state', 'client.read'] })
     assert.equal(manifest.state, 'recomputable')
 
     const pong = await service.call('ping', {})
     assert.equal(pong.pong, true)
     assert.equal(pong.identity, 'ui-threads')
+
+    // client.read 路径穿越防护：非法路径 fail-closed（错误帧），不泄露包外字节
+    const traversal = await service.callRaw('client.read', { path: '../plugin.json' })
+    assert.equal(traversal.kind, 'error')
+    const absolute = await service.callRaw('client.read', { path: '/etc/passwd' })
+    assert.equal(absolute.kind, 'error')
 
     const value = await service.call('threads.state', sessionIds(twoTrees(), 'c1'))
     assert.equal(value.ok, true)
@@ -204,8 +209,7 @@ test('协议级：hello → manifest，ping，threads.state，未知能力类，
 
 test('服务 EOF 自退出', async () => {
   const { env, cleanup } = tempRoot()
-  const port = await freePort()
-  const service = startService({ ...env, CHRONO_UI_PORT_UI_THREADS: String(port) })
+  const service = startService(env)
   try {
     service.child.stdin.end()
     const code = await Promise.race([

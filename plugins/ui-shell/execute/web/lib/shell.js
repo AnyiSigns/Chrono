@@ -6,8 +6,11 @@ import { createUiState } from './ui-state.js'
 import { createToastQueue, roleForTone } from './toast.js'
 import { normalizeThemePref, resolveTheme } from './theme.js'
 import { deriveBootMode } from './boot-mode.js'
+import { createSlotHost } from './slots.js'
 
 const CONTRACT_VERSION = '1'
+/** slot 客户端半边契约版本（`register(ctx)` + `ctx.slots`）。 */
+const SLOT_CONTRACT_VERSION = '2'
 /** slot / headless 装载上限：模块抓取从严（连接被挤占时会一直 pending），mount 运行放宽到与宿主调用超时同量级。 */
 const MOUNT_IMPORT_TIMEOUT_MS = 10000
 const MOUNT_RUN_TIMEOUT_MS = 30000
@@ -161,6 +164,9 @@ const api = {
   },
   uiState,
 }
+
+// slot 宿主：插件客户端半边经 register(ctx) 注册组件；壳只提供 outlet 与 error boundary。
+const slotHost = createSlotHost({ api, msg })
 
 // ---- 事件流（宿主事件原样重播 + 壳合成事件） ----
 
@@ -404,10 +410,43 @@ function renderSlotFailure(root, code, entry) {
   root.replaceChildren(card)
 }
 
+/** 取 slot 客户端半边模块：字节缓存可能未热（首载 404），退避重试并带 cache-bust 绕开失败的模块缓存。 */
+async function importSlotEntry(id) {
+  let lastError = null
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await withTimeout(import(`/assets/ui/${id}.js?r=${attempt}`), MOUNT_IMPORT_TIMEOUT_MS)
+    } catch (err) {
+      lastError = err
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+  }
+  throw lastError ?? new Error('slot entry unavailable')
+}
+
 async function mountEntry(entry) {
   const root = document.getElementById(`slot-${entry.slot}`)
   if (root === null) return
+  const entryPath = typeof entry.entry === 'string' && entry.entry.length > 0 ? entry.entry : null
   try {
+    if (entryPath !== null) {
+      // slot 客户端半边：壳经 host.source.read 同源服务，模块把组件注册进命名 slot。
+      const module = await importSlotEntry(entry.id)
+      if (module.contract !== SLOT_CONTRACT_VERSION) {
+        renderSlotFailure(root, 'ui_version_mismatch', entry)
+        return
+      }
+      if (typeof module.register !== 'function') {
+        renderSlotFailure(root, 'ui_boot_failed', entry)
+        return
+      }
+      await withTimeout(
+        Promise.resolve(module.register(slotHost.ctxFor(entry.id))),
+        MOUNT_RUN_TIMEOUT_MS,
+      )
+      return
+    }
+    // 旧模型：插件自有端口反代 + mount(root, api)。
     const module = await withTimeout(import(`/p/${entry.id}/entry.js`), MOUNT_IMPORT_TIMEOUT_MS)
     if (module.contract !== undefined && module.contract !== CONTRACT_VERSION) {
       renderSlotFailure(root, 'ui_version_mismatch', entry)

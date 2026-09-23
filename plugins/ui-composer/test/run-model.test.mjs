@@ -13,7 +13,7 @@ import {
   isThreadBusy,
   trackRunFinished,
   trackRunStarted,
-} from '../execute/web/run-model.js'
+} from '../execute/web/run-model.ts'
 
 test('写 / 回合全序列：写落账后才等回合 run，回合结束清空忙态', () => {
   let state = createRunState()

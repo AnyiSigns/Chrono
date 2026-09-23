@@ -15,5 +15,13 @@ export interface CallEnv {
   now: number
 }
 
+/** args 形态非法（非对象 / 缺必需字段 / 不安全路径）：结构化 bad_args，不崩进程。 */
+export class BadArgsError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'BadArgsError'
+  }
+}
+
 /** 一次方法调用的产物：返回给调用方的值（计划或数据）。 */
 export type Handler = (args: Json, env: CallEnv) => Promise<Json> | Json

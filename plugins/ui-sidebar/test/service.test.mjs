@@ -1,14 +1,13 @@
 // 服务层测试（node --test）：投影装配纯函数、各命令的服务装配与反向调用 args、
-// per-thread 槽键控、软删 / 恢复计划上提、错误收口、帧 / 路由 / 端口 / 静态 / 入站桥，
+// per-thread 槽键控、软删 / 恢复计划上提、错误收口、帧 / 入站桥，
 // 以及服务协议级（hello → manifest / ping / probe / drain → bye / EOF 自退出）。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
@@ -25,15 +24,11 @@ import {
 } from '../execute/methods.js'
 import { createFrameDecoder, encodeFrame } from '../execute/frames.js'
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.js'
-import { DEFAULT_SIDEBAR_PORT, parsePort, resolvePort } from '../execute/port.js'
-import { routeOf } from '../execute/routes.js'
-import { readWebFile, WEB_FILE_RE } from '../execute/static.js'
 import { BadArgsError } from '../execute/types.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.js')
-const WEB = join(PKG_ROOT, 'execute', 'web')
 
 function tempDir(label) {
   return mkdtempSync(join(tmpdir(), `chrono-ui-sidebar-${label}-`))
@@ -252,7 +247,7 @@ test('ping 回身份占位', () => {
   assert.deepEqual(handlers.ping(), { pong: true, identity: 'ui-sidebar' })
 })
 
-// ---- 帧 / 路由 / 端口 / 静态 / SSE / 入站桥 ----
+// ---- 帧 / 入站桥 ----
 
 test('帧编解码往返', () => {
   const decoder = createFrameDecoder()
@@ -281,32 +276,6 @@ test('入站桥帧构造、回包解释与计划解包', () => {
   assert.deepEqual(unwrapPlan({ plain: 1 }), { plain: 1 })
 })
 
-test('路由判定：静态 / api 动词门禁（含 cancel）；/events 已并入壳总线', () => {
-  assert.deepEqual(routeOf('GET', '/entry.js'), { kind: 'entry' })
-  assert.deepEqual(routeOf('GET', '/badges.js'), { kind: 'web', name: 'badges.js' })
-  assert.equal(routeOf('POST', '/entry.js').kind, 'not-found')
-  assert.equal(routeOf('GET', '/events').kind, 'not-found')
-  assert.equal(routeOf('GET', '/api/state').kind, 'not-found')
-  assert.equal(routeOf('POST', '/api/command').kind, 'api-command')
-  assert.equal(routeOf('POST', '/api/submit').kind, 'api-submit')
-  assert.equal(routeOf('POST', '/api/cancel').kind, 'api-cancel')
-  assert.equal(routeOf('GET', '/api/cancel').kind, 'not-found')
-  assert.equal(routeOf('GET', '/../plugin.json').kind, 'not-found')
-})
-
-test('端口推导与静态白名单', () => {
-  assert.equal(DEFAULT_SIDEBAR_PORT, 8791)
-  assert.equal(resolvePort({}), 8791)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_SIDEBAR: '9001' }), 9001)
-  assert.equal(resolvePort({ CHRONO_UI_PORT_UI_SIDEBAR: '0' }), 8791)
-  assert.equal(parsePort('70000'), null)
-  assert.equal(WEB_FILE_RE.test('entry.js'), true)
-  assert.equal(WEB_FILE_RE.test('../x.js'), false)
-  assert.equal(readWebFile(WEB, 'entry.js').includes('export async function mount'), true)
-  assert.equal(readWebFile(WEB, 'nope.js'), null)
-  assert.equal(readWebFile(WEB, '../plugin.json'), null)
-})
-
 // ---- 服务协议级 ----
 
 function createDecoder() {
@@ -327,18 +296,6 @@ function createDecoder() {
   }
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => resolvePort(port))
-    })
-  })
-}
-
 function encode(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
   const frame = Buffer.allocUnsafe(4 + body.length)
@@ -349,14 +306,12 @@ function encode(message) {
 
 test('服务协议级：hello → manifest，ping，probe，drain → bye', async () => {
   const root = tempDir('service')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-sidebar'),
-      CHRONO_UI_PORT_UI_SIDEBAR: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -408,6 +363,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     assert.deepEqual(manifest.implements, ['ui-sidebar'])
     assert.deepEqual(manifest.methods['ui-sidebar'], [
       'ping',
+      'clientRead',
       'newConversation',
       'selectConversation',
       'renameConversation',
@@ -467,14 +423,12 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
 
 test('服务 EOF 自退出', async () => {
   const root = tempDir('eof')
-  const port = await freePort()
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     env: {
       ...process.env,
       CHRONO_ROOT: root,
       CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-sidebar'),
-      CHRONO_UI_PORT_UI_SIDEBAR: String(port),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -483,11 +437,4 @@ test('服务 EOF 自退出', async () => {
   const code = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('service did not exit on EOF')), 8000))])
   assert.equal(typeof code, 'number')
   rmSync(root, { recursive: true, force: true })
-})
-
-test('entry.js 导出 mount 且返回 unmount（模块可导入）', async () => {
-  const module = await import(pathToFileURL(join(WEB, 'entry.js')).href)
-  assert.equal(module.contract, '1')
-  assert.equal(typeof module.mount, 'function')
-  assert.ok(module.mount.length >= 2)
 })

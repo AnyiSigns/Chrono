@@ -4,14 +4,14 @@
 // 第二方向：服务发 `port.call`（反向调用 host.source.read 取 headless 入口字节）。
 
 import { readFileSync } from 'node:fs'
-import { Bridge, deriveBootMode } from './bridge.ts'
+import { Bridge, deriveBootMode, extractValue } from './bridge.ts'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { decodeSourceRead, HostLink } from './host-client.ts'
 import { startUiServer } from './http-server.ts'
 import type { ShellState, UiServer } from './http-server.ts'
 import { identityInvalidatesHeadless } from './identity-events.ts'
 import { InboundClient } from './inbound.ts'
-import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts, parsePort } from './mounts.ts'
+import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts } from './mounts.ts'
 import type { HeadlessEntry } from './mounts.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { SHELL_IMPL, shellStateRecord, SseHub } from './sse.ts'
@@ -52,13 +52,28 @@ function manifest(): Rec {
 
 const root = rootFromPluginState(process.env, process.cwd())
 const stateDir = `${root}/state`
-const { mounts } = ensureMounts(stateDir, process.env)
+const { mounts } = ensureMounts(stateDir)
 const { headless } = ensureHeadless(stateDir)
+
+/** 解析壳自身端口（`CHRONO_UI_PORT`）；非法 / 缺省返回 null（回落 `DEFAULT_UI_PORT`）。 */
+function parseShellPort(value: string | undefined): number | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+  return port
+}
 
 const sse = new SseHub()
 const host = new HostLink()
 const headlessCache = new Map<string, string>()
 const headlessIds = new Set(headless.map((entry) => entry.id))
+/** slot 客户端半边字节缓存（取代 /p/ 反代；按挂载表 entry 字段判定）。 */
+const uiCache = new Map<string, string>()
+const uiEntries = mounts.filter(
+  (entry): entry is typeof entry & { entry: string } =>
+    typeof entry.entry === 'string' && entry.entry.length > 0,
+)
+const uiIds = new Set(uiEntries.map((entry) => entry.id))
 
 let connected = false
 let hasDisconnected = false
@@ -89,11 +104,17 @@ const inbound = new InboundClient({
   onEvent: (impl, topic, payload) => {
     sse.hostEvent(impl, topic, payload)
     if (impl === 'host' && topic === 'identity.changed') {
-      // 仅本插件 headless 清单内的身份、且代码世代变化时才失效重取；数据世代与非 headless 身份不动缓存。
-      const stale = identityInvalidatesHeadless(payload, headlessIds)
-      if (stale !== null) {
-        headlessCache.delete(stale)
+      // 仅清单内身份、且代码世代变化时才失效重取；数据世代与清单外身份不动缓存。
+      const staleHeadless = identityInvalidatesHeadless(payload, headlessIds)
+      if (staleHeadless !== null) {
+        headlessCache.delete(staleHeadless)
         void refreshHeadless()
+        return
+      }
+      const staleUi = identityInvalidatesHeadless(payload, uiIds)
+      if (staleUi !== null) {
+        uiCache.delete(staleUi)
+        void refreshUi()
       }
       return
     }
@@ -116,6 +137,7 @@ const inbound = new InboundClient({
       return
     }
     void refreshHeadless()
+    void refreshUi()
     void refreshConfig()
   },
 })
@@ -152,6 +174,42 @@ async function refreshHeadless(): Promise<void> {
   }
 }
 
+/**
+ * 取单个 slot 客户端半边字节：走插件自己的 `<id>.client.read` 命令。
+ * 产物在物化目录内、被 `.worldignore` 排除，`host.source.read`（只读世界树）读不到；
+ * 由插件进程读自己的包内文件回字节，宿主只路由。
+ */
+async function fetchUi(entry: { id: string; entry: string }): Promise<string | null> {
+  const result = await bridge.command(`${entry.id}.client.read`, { path: entry.entry })
+  if (!result.ok) {
+    log(`ui ${entry.id}: client.read failed (${result.code})`)
+    return null
+  }
+  const value = extractValue(result.frame)
+  const text = isRecord(value) && typeof value['text'] === 'string' ? value['text'] : null
+  if (text === null) {
+    log(`ui ${entry.id}: client.read shape invalid`)
+    return null
+  }
+  return text
+}
+
+/** 读 slot 客户端半边字节；首载竞态失败时短暂退避重试一次。失败不缓存，下次请求 / 重连再试。 */
+async function refreshUi(): Promise<void> {
+  for (const entry of uiEntries) {
+    if (uiCache.has(entry.id)) continue
+    let text = await fetchUi(entry)
+    if (text === null) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      if (exiting) return
+      text = await fetchUi(entry)
+    }
+    if (text === null) continue
+    uiCache.set(entry.id, text)
+    log(`ui ${entry.id}: ${text.length} bytes cached`)
+  }
+}
+
 /** 经入站 `config.read` 更新无配置判据与主题偏好（服务不读投影）；变化时广播重推。 */
 async function refreshConfig(): Promise<void> {
   const read = await bridge.configRead()
@@ -169,6 +227,13 @@ function headlessSource(id: string): string | null {
   if (cached !== undefined) return cached
   // 首次未命中：触发一次异步取字节，本次请求 404，下次可得。
   if (connected) void refreshHeadless()
+  return null
+}
+
+function uiSource(id: string): string | null {
+  const cached = uiCache.get(id)
+  if (cached !== undefined) return cached
+  if (connected) void refreshUi()
   return null
 }
 
@@ -310,7 +375,7 @@ process.stdin.on('error', shutdown)
 
 inbound.start()
 
-const uiPort = parsePort(process.env['CHRONO_UI_PORT']) ?? DEFAULT_UI_PORT
+const uiPort = parseShellPort(process.env['CHRONO_UI_PORT']) ?? DEFAULT_UI_PORT
 startUiServer(
   {
     mounts,
@@ -319,6 +384,7 @@ startUiServer(
     sse,
     state: shellState,
     headlessSource,
+    uiSource,
     applyThemePref,
     refreshConfig,
     trackConfigRun,
@@ -333,6 +399,7 @@ startUiServer(
     const timer = setTimeout(() => {
       if (connected) {
         void refreshHeadless()
+        void refreshUi()
         void refreshConfig()
       }
     }, 1500)

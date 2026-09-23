@@ -2,11 +2,14 @@
   "identity": "ui-composer",
   "implements": ["ui-composer"],
   "methods": {
-    "ui-composer": ["ping"]
+    "ui-composer": ["ping", "client.read"]
   },
   "pins": {},
   "start": "node execute/main.ts",
-  "exclusive": ["port"],
+  "build": [
+    { "cmd": "npm", "args": ["ci"] },
+    { "cmd": "node", "args": ["execute/build.mjs"] }
+  ],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -23,6 +26,11 @@
     "timeout_ms": 2000
   },
   "state": "recomputable",
-  "members": [{ "kind": "execute", "path": "execute/" }],
-  "commands": []
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" }
+  ],
+  "commands": [
+    { "name": "ui-composer.client.read", "entry": "terms/client.read.json", "readonly": true }
+  ]
 }
