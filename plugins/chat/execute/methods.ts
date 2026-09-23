@@ -15,6 +15,7 @@ import {
   shouldGenerateTitle,
   slotOf,
   threadKey,
+  withConversationTitle,
 } from './assemble.ts'
 import { buildHistory, parseHistoryQuery } from './history.ts'
 import { asString, errorValue, externOnly, isErrorValue, isRecord, mergeDirectives } from './plan.ts'
@@ -101,6 +102,30 @@ async function send(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
   if (!configUsable(turn.config)) {
     return externOnly(errorValue('model_not_configured', 'config vendor/model/base_url missing'))
   }
+
+  // 首条消息：**先算标题并并入 session body**，由 `session.commit` 随消息一次性落盘。
+  // 不再把 `session.set_title` 的整份写计划合并进来——否则它会以回合起始旧基覆盖提交的 head/count。
+  let sessionBody = turn.sessionBody
+  const titleDefault = wiring.title.title_default
+  if (
+    wiring.title.when === 'first_message' &&
+    turn.conversationId !== null &&
+    shouldGenerateTitle(turn.conversation, titleDefault)
+  ) {
+    const titleArgs = buildTitleArgs({
+      conversationId: turn.conversationId,
+      firstMessage: firstMessageOf(turn.slot),
+      config: turn.config,
+      sessionBody: turn.sessionBody,
+      titleDefault,
+    })
+    const titleOutcome = await deps.port.call(TITLE_PORT, TITLE_METHOD, titleArgs)
+    // 旁路段 on_fail=ignore：传输失败 / 无标题值一律跳过，不影响主回合。
+    const title =
+      titleOutcome.ok && isRecord(titleOutcome.value) ? asString(titleOutcome.value['title']) : null
+    if (title !== null) sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
+  }
+
   const bag = buildInterpretBag({
     ids: turn.ids,
     wiring,
@@ -109,25 +134,12 @@ async function send(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
     conversationId: turn.conversationId,
     config: turn.config,
     thread: turn.thread,
+    sessionBody,
   })
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) return interpreted.failure
 
-  const segments: Json[] = [interpreted.value]
-  const titleDefault = wiring.title.title_default
-  if (wiring.title.when === 'first_message' && shouldGenerateTitle(turn.conversation, titleDefault)) {
-    const titleArgs = buildTitleArgs({
-      conversationId: turn.conversationId as string,
-      firstMessage: firstMessageOf(turn.slot),
-      config: turn.config,
-      sessionBody: turn.sessionBody,
-      titleDefault,
-    })
-    const titleOutcome = await deps.port.call(TITLE_PORT, TITLE_METHOD, titleArgs)
-    // 旁路段 on_fail=ignore：传输失败 / 无计划一律跳过，不影响主回合。
-    if (titleOutcome.ok) segments.push(titleOutcome.value)
-  }
-  const merged = mergeDirectives(segments)
+  const merged = mergeDirectives([interpreted.value])
   if ((merged['$directives'] as Json[]).length === 0) {
     return externOnly(errorValue('no_plan', 'loop-policy.interpret returned no plan'))
   }

@@ -6,7 +6,8 @@ agent 改系统自身的**唯一**路径：列插件 / 读源码 / 校验 / 写�
 - 能力类：`plugin`（`list` / `read` / `validate` / `write`）+ `plugin-admin`（`describe` / `invoke`）。
 - `pins`：`{"host":"host"}` —— 指向**保留身份 `host`**（宿主自身能力类），不是插件间依赖。
 - 数据源：`plugin.list` 走 `host.identities {}`；`plugin.read` 走 `host.source.read {identity,path}`；
-  `plugin.validate` 走 `host.validate_package {files}`。三者都是反向调用（`port.call`）。
+  `plugin.validate` 走 `host.validate_package {files}`；`plugin.write` 的源码字节走 `host.blob.put {bytes}`。
+  都是反向调用（`port.call`）。
 - 状态档：`recomputable`（③ 可重算；validate 凭据住 ③，不进世界）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行时零 npm 依赖。
@@ -44,7 +45,7 @@ key = H({ "<包内相对路径>": "<解码后字节的规范 base64>", ... })   
 批内 `{"$n":k}` 只指向更早的 `put`（内核批处理替换，规矩 A）。顺序与宿主入世（`planPack`）同构：
 
 ```text
-put(blob) × n            # 文件，非文本存 {body:<base64>, enc:"base64"}
+put(blob) × n            # 文件，指针形态 {body:{kind:"blob",sha256,size}}（与宿主入世同口径）
 put(tree)                # 自底向上，entries 按名字升序；目录 tree 在子项之后
 put(commit)              # {body:{tree, meta:{name,version}}}
 put(schema)              # plugin.json.schema 指向的文件；schema 省略时用宿主同源默认体 {"type":"object"}
@@ -60,6 +61,9 @@ add_gen                 # {id, payload:{"$n":commitIndex}, sig:同, pins}
 - 批内顺序与宿主入世（`planPack`）逐字同构：blob / tree 先，随后 commit、schema、`add_identity?`、`add_gen`。
   `add_identity` 必须在 `put(schema)` 之后（占位符只能指向更早的 `put`，规矩 A），故「先 `add_identity`」
   是概念次序、不是批内字面次序。
+- **blob 指针 + 字节落 CAS**：写计划的 blob 是**指针 def**（① 只存 `{kind:"blob",sha256,size}`），
+  字节本体经 `host.blob.put {bytes(base64)}` 先内容寻址落 ④ `state/blobs/`（幂等，按 sha256 去重）；
+  落盘失败即拒，避免指针悬空导致物化 `blob_missing`。
 - 若调用方把上次 `validate` 的 `result_hash` 随 bag 带回，则与 ③ 凭据机械比对，不符同样拒 `validate_required`。
 - 产出 `{$directives:[{kind:"write",request:{op:"batch",args:{ops}}},{kind:"extern",payload}]}`；
   **本插件不落账、不入队、不等审批**。

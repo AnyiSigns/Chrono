@@ -81,7 +81,7 @@ result_hash = H({ graph, pins, active_graph, runs_since_fork })
 对同一 bag 同时跑本副本 `validateBag` 与权威 `validateGraphData`，逐项断言 **规则清单 / 错误码 / 结果哈希**
 一致（4 组样例：种子图缺 derived_from、合法 fork、高危无审批段、缺 join + 端口未 pin）。对拍发现并修正一处口径：
 不变量 4 的写档 fs 判据改为**声明式**（显式声明 `caps.fs.write` 非 `'none'` 才算高危），并在 `effects.ports`
-之外也据 `caps.fs.write` 判定（`tool.dispatch` 端口为 `tools` 但写档 ⇒ 高危，与 #33 契约一致）。
+之外也据 `caps.fs.write` 判定（`tool.dispatch` 端口为 `tools` 但写档 ⇒ 高危，与 loop-policy 契约一致）。
 本副本仍为预检、不构成门禁证据；规则换代以 loop-policy 为准。
 
 ## `orchestration.propose`：只产提案条目

@@ -1,7 +1,6 @@
-// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）与模型 / 会话后端抽象。
-// 本插件 `pins` 含 `model` → model-protocol、`session` → session：
-// 生成标题经 `port.call model.complete`（非流式、不发 model.delta）取文本，
-// 再经 `port.call session.set_title` 取写计划原样上提。
+// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）与模型后端抽象。
+// 本插件 `pins` 含 `model` → model-protocol：生成标题经 `port.call model.complete`
+// （非流式、不发 model.delta）取文本，回标题值；不写世界（标题落盘归调用方 chat）。
 // 宿主按发出者 `pins` 路由后回 `port.result` / `port.error`（按 id 配对）。
 // 失败作数据（BackendError），不抛未捕获错误、不断通道；单测用可注入的假后端替换真实通道。
 
@@ -93,11 +92,6 @@ export interface ModelBackend {
   complete(config: Rec, messages: Json[], maxTokens: number, timeoutMs: number): Promise<Rec>
 }
 
-/** 会话后端抽象：生产环境是反向调用 `session.set_title`，单测注入假后端。 */
-export interface SessionBackend {
-  setTitle(args: Rec, timeoutMs: number): Promise<Json>
-}
-
 /** 从模型服务回包里取结构化错误码（`{ok:false, error:{code}}`）。 */
 function modelErrorCode(value: Rec): string {
   const error = value['error']
@@ -120,21 +114,6 @@ export class RemoteModel implements ModelBackend {
     if (outcome.value['ok'] === false) {
       throw new BackendError(modelErrorCode(outcome.value), 'model.complete reported failure')
     }
-    return outcome.value
-  }
-}
-
-/** `session.set_title` 的反向调用后端：成功回写计划值（原样上提）。 */
-export class RemoteSession implements SessionBackend {
-  private readonly link: PortLink
-
-  constructor(link: PortLink) {
-    this.link = link
-  }
-
-  async setTitle(args: Rec, timeoutMs: number): Promise<Json> {
-    const outcome = await this.link.call('session', 'set_title', args, timeoutMs)
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
     return outcome.value
   }
 }

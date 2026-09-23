@@ -5,6 +5,7 @@
 // 排除口径与宿主一致：通用排除 node_modules / .git + 候选包内 `.worldignore` 声明项。
 
 import { H } from './hash.ts'
+import { createHash } from 'node:crypto'
 import { isRecord } from './plan.ts'
 import { ToolError } from './types.ts'
 import type { Json, Rec } from './types.ts'
@@ -44,6 +45,8 @@ export interface PackOps {
   schemaIndex: number
   commitHash: string
   fileCount: number
+  /** 待落 CAS 的源码字节（按 sha256 去重）；调用方在返回写计划前经 `host.blob.put` 落盘。 */
+  blobs: { sha256: string; bytes: Buffer }[]
 }
 
 /** 候选文件值：文本字符串，或 `{text}` / `{base64}` 显式形态（base64 只收规范编码）。 */
@@ -207,8 +210,14 @@ interface DirPack {
   fileCount: number
 }
 
-/** 递归打包：子项先（名字升序），目录 tree 在子项之后入 ops——与宿主 packSourceDir 同序。 */
-function packDir(node: DirNode, ops: Json[]): DirPack {
+/** 原始字节摘要：sha256 十六进制（与宿主 `blobSha256` 同口径），兼作 CAS 文件名。 */
+function sha256Bytes(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/** 递归打包：子项先（名字升序），目录 tree 在子项之后入 ops——与宿主 packSourceDir 同序。
+ * 文件 blob 用**指针形态** `{kind:'blob',sha256,size}`（与宿主入世同口径），字节按 sha256 去重收集待落 CAS。 */
+function packDir(node: DirNode, ops: Json[], blobs: Map<string, Buffer>): DirPack {
   const entries: Json[] = []
   const placeholderEntries: Json[] = []
   let fileCount = 0
@@ -216,15 +225,14 @@ function packDir(node: DirNode, ops: Json[]): DirPack {
     const child = node.children.get(name)
     if (child === undefined) continue
     if (child.kind === 'dir') {
-      const packed = packDir(child, ops)
+      const packed = packDir(child, ops, blobs)
       entries.push({ name, mode: 'dir', hash: packed.hash })
       placeholderEntries.push({ name, mode: 'dir', hash: { $n: packed.index } })
       fileCount += packed.fileCount
     } else {
-      const text = child.bytes.toString('utf8')
-      const def: Json = Buffer.from(text, 'utf8').equals(child.bytes)
-        ? { body: text }
-        : { body: child.bytes.toString('base64'), enc: 'base64' }
+      const sha256 = sha256Bytes(child.bytes)
+      if (!blobs.has(sha256)) blobs.set(sha256, child.bytes)
+      const def: Json = { body: { kind: 'blob', sha256, size: child.bytes.length } }
       const hash = H(def)
       const index = ops.length
       ops.push({ op: 'put', args: def })
@@ -246,7 +254,8 @@ function packDir(node: DirNode, ops: Json[]): DirPack {
 export function buildPackOps(files: Rec, identity: string, decl: CandidateDecl): PackOps {
   const root = buildTree(files)
   const ops: Json[] = []
-  const packed = packDir(root, ops)
+  const blobs = new Map<string, Buffer>()
+  const packed = packDir(root, ops, blobs)
   const meta: Rec = { name: identity, version: decl.version }
   const commitHash = H({ body: { tree: packed.hash, meta } })
   const commitIndex = ops.length
@@ -275,5 +284,6 @@ export function buildPackOps(files: Rec, identity: string, decl: CandidateDecl):
     schemaIndex,
     commitHash,
     fileCount: packed.fileCount,
+    blobs: [...blobs.entries()].map(([sha256, bytes]) => ({ sha256, bytes })),
   }
 }

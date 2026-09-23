@@ -3,7 +3,7 @@
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
 import { readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
-import { getBlob, isBlobPointer } from './blobs.ts'
+import { getBlob, isBlobPointer, putBlob } from './blobs.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
 import type { AuditIndex, AuditReport } from './audit.ts'
@@ -85,6 +85,26 @@ function assetGetCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult 
   const result = getAsset(deps.assetsDir, sha256)
   if (!result.ok) return bad(result.code, typeof sha256 === 'string' ? sha256 : 'bad_asset')
   return { ok: true, value: { bytes: result.bytes, mime: result.mime, size: result.size } }
+}
+
+/** 单 blob 原始字节上限（与 `asset.put` 同口径：base64 ≈ 10.67MiB < 单帧 16MiB）。 */
+const MAX_BLOB_BYTES = 8 * 1024 * 1024
+
+/**
+ * `blob.put { bytes(base64) }`：把源码字节内容寻址落 CAS，回 pointer def body `{kind:'blob',sha256,size}`。
+ * 供上层（如 plugin-admin 的写计划）在 `put(pointer)` 前把字节本体交给宿主——① 只存指针，字节住 ④。
+ */
+function blobPutCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
+  const record = asRecord(args)
+  const bytes = record === null ? undefined : record['bytes']
+  if (typeof bytes !== 'string') return bad('bad_blob', 'blob.put expects { bytes(base64) }')
+  const decoded = Buffer.from(bytes, 'base64')
+  // 只收规范 base64（往返一致才认），与 asset.put 同口径
+  if (decoded.toString('base64') !== bytes) return bad('bad_blob', 'non-canonical base64')
+  if (decoded.length > MAX_BLOB_BYTES) return bad('blob_too_large', 'blob exceeds limit')
+  const result = putBlob(deps.blobsDir, decoded)
+  if (!result.ok) return bad(result.code, 'blob put rejected')
+  return { ok: true, value: result.pointer as unknown as Json }
 }
 
 /** 读一个 blob 的 base64 内容与字节长度：pointer 经 CAS，inline 文本现编码、base64 原样。 */
@@ -192,6 +212,8 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
         return assetPutCall(deps, args)
       case 'asset.get':
         return assetGetCall(deps, args)
+      case 'blob.put':
+        return blobPutCall(deps, args)
       case 'identities':
         return identitiesCall(deps)
       case 'source.read':

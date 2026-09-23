@@ -7,8 +7,11 @@
 import { writeFrame } from './frames.ts'
 import type { Json, PortCaller, PortOutcome, Rec } from './types.ts'
 
-/** 反向调用等待上限；宿主自身另有调用超时（缺省 30s），此处作通道兜底。 */
-export const PORT_CALL_TIMEOUT_MS = 30000
+/**
+ * 反向调用等待上限（通道兜底）。**必须 ≥ 被调方法的声明超时**：`loop-policy.interpret` 声明 600s
+ * （包住多次模型调用），本兜底若短于它会在模型仍在跑时先掐断整条管道。宿主侧另有按目标方法声明的超时。
+ */
+export const PORT_CALL_TIMEOUT_MS = 600000
 
 interface PendingCall {
   resolve: (outcome: PortOutcome) => void

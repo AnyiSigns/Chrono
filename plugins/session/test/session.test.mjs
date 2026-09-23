@@ -395,6 +395,35 @@ test('new_conversation：新条目 + current 指向 + opened 事件', async () =
   }
 })
 
+test('数据 body 归一：投影回落代码 body（含 tree/meta）不污染会话数据世代', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    // 无数据世代时投影 body 回落代码 commit body：含字符串 tree / meta / refs
+    const polluted = {
+      meta: { name: 'session', version: '0.0.0' },
+      tree: 'a'.repeat(64),
+      refs: { x: { id: 'm' } },
+      current: null,
+      conversations: [],
+    }
+    const plan = await drv.call('new_conversation', {
+      thread_id: 't1',
+      session: polluted,
+      slots: { slots: { t1: { kind: 'session.new' } } },
+    })
+    const body = opsFor(plan)[0].args.body
+    // 关键：数据体不得含字符串 tree（否则 isCodeGen 会把数据世代误判为代码世代）
+    assert.equal('tree' in body, false, '不得把代码体 tree 带进会话数据体')
+    assert.equal('meta' in body, false, '不得把代码体 meta 带进会话数据体')
+    assert.equal('refs' in body, false, '不得把代码体 refs 带进会话数据体')
+    assert.equal(body.version, 1)
+    assert.equal(body.conversations.length, 1)
+  } finally {
+    drv.close()
+  }
+})
+
 test('select：切 current；目标不存在 → 只清槽 + extern ok:false', async () => {
   const drv = startService()
   try {

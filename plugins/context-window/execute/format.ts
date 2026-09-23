@@ -65,6 +65,7 @@ interface FormattedMessage {
   role: string
   content: Json
   tool_call_id?: string
+  tool_calls?: Json
 }
 
 function textOnly(parts: CanonicalPart[]): boolean {
@@ -182,6 +183,10 @@ export function formatMessages(
     }
     if (message.role === 'tool' && message.toolCallId !== null) {
       formattedMessage.tool_call_id = message.toolCallId
+    }
+    // assistant 的工具调用：中性形状原样上提，由协议层（model-protocol）按方言编成厂商字段。
+    if (message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+      formattedMessage.tool_calls = message.toolCalls
     }
     formatted.push(formattedMessage as unknown as Json)
   }

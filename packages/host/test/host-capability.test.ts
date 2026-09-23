@@ -3,6 +3,7 @@
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { MAX_DETACHED_RUNS, startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
@@ -20,6 +21,7 @@ const AUDIT_TERM: Json = ['eff', 'host', 'audit', ['c', { limit: 5 }]]
 const IDENTITIES_TERM: Json = ['eff', 'host', 'identities', ['c', null]]
 const ASSET_PUT_TERM: Json = ['eff', 'host', 'asset.put', ['v', 0]]
 const ASSET_GET_TERM: Json = ['eff', 'host', 'asset.get', ['v', 0]]
+const BLOB_PUT_TERM: Json = ['eff', 'host', 'blob.put', ['v', 0]]
 const SOURCE_READ_TERM: Json = ['eff', 'host', 'source.read', ['v', 0]]
 const VALIDATE_TERM: Json = ['eff', 'host', 'validate_package', ['v', 0]]
 const TERMINATE_TERM: Json = ['eff', 'host', 'thread.terminate', ['v', 0]]
@@ -68,6 +70,7 @@ describe('H14 宿主保留能力类 host', () => {
         'identities.json': JSON.stringify(IDENTITIES_TERM),
         'assetPut.json': JSON.stringify(ASSET_PUT_TERM),
         'assetGet.json': JSON.stringify(ASSET_GET_TERM),
+        'blobPut.json': JSON.stringify(BLOB_PUT_TERM),
         'sourceRead.json': JSON.stringify(SOURCE_READ_TERM),
         'validate.json': JSON.stringify(VALIDATE_TERM),
         'terminate.json': JSON.stringify(TERMINATE_TERM),
@@ -80,6 +83,7 @@ describe('H14 宿主保留能力类 host', () => {
         { name: 'toy-host.identities', entry: 'terms/identities.json' },
         { name: 'toy-host.assetPut', entry: 'terms/assetPut.json' },
         { name: 'toy-host.assetGet', entry: 'terms/assetGet.json' },
+        { name: 'toy-host.blobPut', entry: 'terms/blobPut.json' },
         { name: 'toy-host.sourceRead', entry: 'terms/sourceRead.json' },
         { name: 'toy-host.validate', entry: 'terms/validate.json' },
         { name: 'toy-host.terminate', entry: 'terms/terminate.json' },
@@ -197,6 +201,32 @@ describe('H14 宿主保留能力类 host', () => {
         await client.command('toy-host.assetGet', { sha256: '0'.repeat(64) }),
       ) as { error: string }
       expect(missing.error).toBe('asset_missing')
+    } finally {
+      client.close()
+    }
+  })
+
+  it('blob.put：源码字节内容寻址落 CAS，回 pointer def body；非法 base64 → bad_blob', async () => {
+    seedHost()
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const payload = Buffer.from('hello source blob')
+      const pointer = valueOf(
+        await client.command('toy-host.blobPut', { bytes: payload.toString('base64') }),
+      ) as { kind: string; sha256: string; size: number }
+      expect(pointer).toMatchObject({ kind: 'blob', size: payload.length })
+      expect(pointer.sha256).toMatch(/^[0-9a-f]{64}$/)
+      // 字节本体落 state/blobs/<sha256>，与 pointer.sha256 对应
+      const file = join(root, 'state', 'blobs', pointer.sha256)
+      expect(existsSync(file)).toBe(true)
+      expect(readFileSync(file).equals(payload)).toBe(true)
+
+      const bad = valueOf(await client.command('toy-host.blobPut', { bytes: 'not base64!' })) as {
+        error: string
+      }
+      expect(bad.error).toBe('bad_blob')
     } finally {
       client.close()
     }

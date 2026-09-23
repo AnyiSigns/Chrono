@@ -19,5 +19,9 @@
   },
   "on_empty_slot": "noop",
   "on_budget": "fail",
-  "stream": { "topic": "model.delta" }
+  "stream": { "topic": "model.delta" },
+  "method_timeouts": {
+    "chat.send": 600000,
+    "chat.resume": 600000
+  }
 }

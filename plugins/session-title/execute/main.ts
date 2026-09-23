@@ -6,7 +6,7 @@
 import { loadBaseConfig } from './config.ts'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
-import { PortLink, RemoteModel, RemoteSession } from './port-link.ts'
+import { PortLink, RemoteModel } from './port-link.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError } from './types.ts'
@@ -16,7 +16,6 @@ const LINK = new PortLink((message) => writeFrame(message))
 const HANDLERS = createHandlers({
   config: loadBaseConfig(),
   model: new RemoteModel(LINK),
-  session: new RemoteSession(LINK),
 })
 
 const DECLARED_METHODS = new Set<string>(

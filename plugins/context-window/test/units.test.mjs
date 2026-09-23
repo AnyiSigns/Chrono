@@ -22,6 +22,7 @@ const {
   CACHE_MAX_ENTRIES,
 } = await import('../execute/text.ts')
 const { computeBudget } = await import('../execute/budget.ts')
+const { planHistory } = await import('../execute/history.ts')
 
 test('估算器规格向量：ASCII / CJK / 混合 / 空串 / 其他文字', () => {
   assert.equal(native.countTokens(''), 0)
@@ -81,6 +82,26 @@ test('预算建模：缺档案回落默认并标 profile_missing', () => {
   const explicit = computeBudget({ context_window: 1000, max_output: 100 }, policy)
   assert.equal(explicit.budget, 1000 - 100 - 50)
   assert.deepEqual(explicit.flags, [])
+})
+
+test('历史还原：head 为空/不在 refs 即空历史，绝不从会话级全量 refs 猜链头（防串会话）', () => {
+  // 会话级 refs 含另一会话的消息链（count 2），但本会话 head = null（尚无消息）
+  const other = { id: 'msg-other-0', role: 'user', content: '别的会话', prev: null }
+  const other2 = { id: 'msg-other-1', role: 'assistant', content: '回答', prev: { def: 'h-other-0' } }
+  const refs = { 'h-other-0': other, 'h-other-1': other2 }
+  const empty = planHistory({ session: { head: null, refs } })
+  assert.deepEqual(empty.chain, [], '本会话无 head → 历史必须为空')
+  const dangling = planHistory({ session: { head: 'h-missing', refs } })
+  assert.deepEqual(dangling.chain, [], 'head 不在 refs → 不猜链头，历史为空')
+
+  // 本会话有 head：沿 prev 还原，只含本会话链
+  const a = { id: 'msg-cur-0', role: 'user', content: 'A', prev: null }
+  const b = { id: 'msg-cur-1', role: 'assistant', content: 'B', prev: { def: 'h-cur-0' } }
+  const scoped = planHistory({ session: { head: 'h-cur-1', refs: { ...refs, 'h-cur-0': a, 'h-cur-1': b } } })
+  assert.deepEqual(
+    scoped.chain.map((entry) => entry.body.id),
+    ['msg-cur-0', 'msg-cur-1'],
+  )
 })
 
 test('缓存有界：超过上限按 LRU 淘汰，不单调增长', () => {

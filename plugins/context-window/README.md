@@ -63,6 +63,7 @@
 | `recall` | `[{ entry?, id?, content?, score? }]` | L3 召回（按 `score` 降序截断） |
 | `session` | `{ head?, refs? }` | 历史候选：`refs` = `{ <def 哈希>: <消息体> }`，沿 `prev` 还原链 |
 | `style` | `string \| { text? }` | 风格片段 |
+| `extra_messages` | `[{ role?, content?, tool_call_id?, tool_calls? }]` | 同回合 iter 间产物（assistant 承接帧 / 工具结果 / verify 报告 / 提问答案）；追加到消息尾部（source=`tool`，排在本轮输入之后；按历史额度可裁）。`tool_calls` 为中性形状，由协议层编形 |
 | `config` | `{ model?, context_window?, max_output?, sdk?, protocol?, quirks?, modalities? }` | 模型档案与厂商方言 |
 | `thread_kind` | `main \| subagent \| group \| workflow` | 线程口径（缺省 `main`） |
 | `parent_summaries` | `[{ summary, … }]` | subagent：父会话摘要 |

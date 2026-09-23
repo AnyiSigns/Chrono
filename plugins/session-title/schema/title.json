@@ -1,6 +1,6 @@
 {
   "title": "session-title（会话自动标题）",
-  "description": "身份自述 / 数据契约：按会话首条用户消息，用调用方随 args 传入的模型连接生成不超过 10 字的标题，写入会话身份。服务不读投影、无写通道：标题写计划由会话服务的 set_title 返回、由调用方入口 term 机械合并上提；模型失败 / 超时 / 空一律确定性兜底，不报错、不阻塞主回合。",
+  "description": "身份自述 / 数据契约：按会话首条用户消息，用调用方随 args 传入的模型连接生成不超过 10 字的标题，回标题值。服务不读投影、无写通道：标题落盘归调用方（chat 把标题并入传给 interpret 的 session body，由 session.commit 一次性落盘）；模型失败 / 超时 / 空一律确定性兜底，不报错、不阻塞主回合。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -31,7 +31,7 @@
       "type": "integer",
       "minimum": 1,
       "default": 15000,
-      "description": "单次模型调用与会话写入的等待上限（毫秒）；超时即兜底。"
+      "description": "单次模型调用的等待上限（毫秒）；超时即兜底。"
     },
     "generate_request": {
       "type": "object",
@@ -54,9 +54,10 @@
     "generate_result": {
       "type": "object",
       "additionalProperties": true,
-      "description": "成功时值 = 会话服务 set_title 返回的写计划 {$directives:[write(batch), extern]}，由调用方入口 term 机械合并上提；会话调用失败时回 {$directives:[extern({ok:false, error})]}（无写）。",
+      "description": "成功时值 = `{ok:true, title}`（标题值，非写计划）；调用方（chat）把 title 并入传给 interpret 的 session body，由 session.commit 落盘。缺 `conversation` / `first_message` → 结构化 `bad_args`（不跑方法）。",
       "properties": {
-        "$directives": { "type": "array", "description": "写计划条目数组（原样上提，本插件不新增 / 不改写）。" }
+        "ok": { "type": "boolean" },
+        "title": { "type": "string", "description": "生成或兜底得到的标题（Unicode 码点数 ≤ max_chars）。" }
       }
     }
   },

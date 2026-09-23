@@ -36,6 +36,7 @@ const ALL_SOURCES: Source[] = [
   'recall',
   'history',
   'style',
+  'tool',
 ]
 
 function positiveNumber(value: unknown): number | null {

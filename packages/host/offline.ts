@@ -6,6 +6,7 @@ import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
 import {
   gcMaterialized,
+  latestDataGen,
   orderEntriesForSeed,
   planIngest,
   planPack,
@@ -194,6 +195,20 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
   } finally {
     releaseLock(paths.lockFile)
   }
+}
+
+/**
+ * 只读列出「无数据世代」的身份（首启预置默认 body 的判据）：**不取写锁**，宿主运行时亦可读。
+ * 宿主是唯一写者、日志 append-only，读侧只用于判定「该身份是否已有数据世代」。
+ */
+export function unseededIdentities(root: string): string[] {
+  const paths = hostPaths(resolve(root))
+  const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+  const ids: string[] = []
+  for (const id of Object.keys(anchor.world.ids)) {
+    if (latestDataGen(anchor.world, id) === null) ids.push(id)
+  }
+  return ids.sort()
 }
 
 /** 全量校验：抢锁后读整条日志（冷段 + 尾段）校验，绝不静默读半条。 */

@@ -26,7 +26,7 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 
 ```
 loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop-policy 自驱解释器按节点分发
-  └ 首条用户消息时旁路 session-title.generate
+  └ 首条用户消息时先调 session-title.generate（标题值并入 session body，由 commit 落盘）
 ```
 
 - 段序归 loop-policy 图数据（改图 = 数据换代热生效）；本包不再持静态管道。
@@ -35,7 +35,9 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
   `tools_bindings` / `mcp_tools` 等（缺对应身份即省略，由 loop-policy 回落种子 / 内建兜底）。
 - interpret 段与 title 段返回的 `$directives` **按段序机械合并**为顶层 `$directives`（数组拼接，不构造新 JSON 对象）。
 - 首条用户消息判定：投影里当前会话 `title` 仍为缺省「新对话」且 `count == 0`。
-  标题段 `on_fail = ignore`：该段传输失败 / 无计划一律跳过，不影响主回合。
+  标题段 `on_fail = ignore`：该段传输失败 / 无标题值一律跳过，不影响主回合。
+  **标题先算并并入 session body**（`session-title.generate` 回标题值），由 `loop-policy` 的 `commit` 节点
+  随消息一次性落盘——不再合并 `set_title` 的整份写计划（否则会以旧基覆盖提交的 head/count）。
 - 空槽行为 `on_empty_slot: "noop"`；连接配置缺失 → `model_not_configured`，不派发 interpret。
 - 系统提示词 / 工具 schema 的缺省来源 = `schema/wiring.json` 的 `system_prompt` / `tools`，
   随 interpret bag 传入；loop-policy 图内 `context.assemble` 写 bag 覆盖。
@@ -50,8 +52,12 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 ## 接线数据 `schema/wiring.json`
 
 该文件既是身份自述，也是服务启动时读到的接线数据。字段：`slices` / `system_prompt` / `tools` /
-`title` / `on_empty_slot` / `on_budget` / `stream`。段序不在此（归 loop-policy 图数据）；
+`title` / `on_empty_slot` / `on_budget` / `stream` / `method_timeouts`。段序不在此（归 loop-policy 图数据）；
 `title.title_default` 声明会话缺省标题（与 session 新建会话一致）。
+
+`method_timeouts` 为 `chat.send` / `chat.resume` 声明 600s：命令端点包住 `loop-policy.interpret`
+（内含多次模型调用），不得用宿主缺省 30s 封顶；服务侧反向调用通道兜底（`PORT_CALL_TIMEOUT_MS`）
+同样取 600s，须 ≥ 被调方法声明超时。
 
 ## 怎么起
 

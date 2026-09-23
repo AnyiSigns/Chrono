@@ -1,29 +1,28 @@
 // 能力类 `session-title` 的方法表：generate。
-// 只生成标题并上提会话服务的写计划：不读投影、不落账、不自取时钟、不内置任何模型名。
+// 只生成**标题值**：不读投影、不落账、不自取时钟、不内置任何模型名、不写世界本体。
 // 模型连接与所选模型由调用方入口 term 读出随 args 传入；模型失败 / 超时 / 空一律回落，绝不报错阻塞主回合。
+// 标题落盘归调用方（chat）：把标题并入传给 interpret 的 session body，由 session.commit 一次性落盘——
+// 避免本插件另发一条整份 session 写与 commit 同回合竞争（lost update）。
 
 import { resolveConfig } from './config.ts'
 import { log } from './frames.ts'
-import { asString, errorValue, externOnly, hasDirectives, isRecord } from './plan.ts'
+import { asString, isRecord } from './plan.ts'
 import { resolveTitle } from './title.ts'
 import { BadArgsError } from './types.ts'
 import type { TitleConfig } from './config.ts'
-import type { ModelBackend, SessionBackend } from './port-link.ts'
+import type { ModelBackend } from './port-link.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
 
 /** 后端注入：生产环境是反向调用，单测注入假后端。 */
 export interface GenerateDeps {
   config: TitleConfig
   model?: ModelBackend
-  session?: SessionBackend
 }
 
 interface GenerateArgs {
-  conversation: string
   firstMessage: string
   titleDefault: string
   modelConfig: Rec | null
-  session: Rec | null
   overrides: Rec
 }
 
@@ -51,11 +50,9 @@ function parseArgs(args: Json): GenerateArgs {
   const params = isRecord(args['params']) ? args['params'] : null
   const explicitConfig = isRecord(args['config']) ? args['config'] : null
   return {
-    conversation,
     firstMessage,
     titleDefault: asString(args['title_default']) ?? DEFAULT_TITLE_DEFAULT,
     modelConfig: explicitConfig ?? buildModelConfig(args, params),
-    session: isRecord(args['session']) ? args['session'] : null,
     overrides: args,
   }
 }
@@ -76,32 +73,16 @@ async function callModel(parsed: GenerateArgs, config: TitleConfig, deps: Genera
   }
 }
 
-/** 调会话服务写入标题，原样上提其写计划；无计划 / 调用失败时回一条 extern 失败值。 */
-async function writeTitle(parsed: GenerateArgs, title: string, config: TitleConfig, deps: GenerateDeps): Promise<Json> {
-  if (deps.session === undefined) {
-    return externOnly(errorValue('session_unavailable', 'no session backend wired'))
-  }
-  const setArgs: Rec = { conversation: parsed.conversation, title }
-  if (parsed.session !== null) setArgs['session'] = parsed.session
-  try {
-    const value = await deps.session.setTitle(setArgs, config.timeoutMs)
-    if (hasDirectives(value)) return value
-    return externOnly(errorValue('set_title_failed', 'session.set_title returned no plan'))
-  } catch (err) {
-    log(`session.set_title failed: ${(err as Error).message}`)
-    return externOnly(errorValue('set_title_failed', (err as Error).message))
-  }
-}
-
+/** 生成标题值：模型失败 / 超时 / 空 → 确定性兜底；结果形状 `{ok:true, title}`。 */
 async function generate(args: Json, _env: CallEnv, deps: GenerateDeps): Promise<Json> {
   const parsed = parseArgs(args)
   const config = resolveConfig(deps.config, parsed.overrides)
   const modelText = await callModel(parsed, config, deps)
   const title = resolveTitle(modelText, parsed.firstMessage, config.maxChars, parsed.titleDefault)
-  return writeTitle(parsed, title, config, deps)
+  return { ok: true, title }
 }
 
-/** 构造方法表（依赖注入：模型与会话后端由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：模型后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: GenerateDeps): Record<string, Handler> {
   return {
     generate: (args: Json, env: CallEnv): Promise<Json> => generate(args, env, deps),

@@ -158,6 +158,15 @@ function sessionSlice(sessionBody: Rec, conversation: Rec | null, refs: Rec): Re
   return { ...sessionBody, head: headHashOf(conversation), refs }
 }
 
+/** 会话 body 的某会话条目改标题（浅拷贝，不动入参）；用于把生成的标题并入本次提交。 */
+export function withConversationTitle(sessionBody: Rec, conversationId: string, title: string): Rec {
+  const list = Array.isArray(sessionBody['conversations']) ? (sessionBody['conversations'] as Json[]) : []
+  const conversations = list.map((item) =>
+    isRecord(item) && item['id'] === conversationId ? { ...item, title } : item,
+  )
+  return { ...sessionBody, conversations }
+}
+
 /** 本轮用户消息：槽体规范化成 #13 能解析的 `{content, parts?, attachments?}`。 */
 function inputOf(slot: Json): Rec {
   const slotRec = isRecord(slot) ? slot : {}
@@ -256,6 +265,8 @@ export interface InterpretBagInput {
   conversationId: string | null
   config: Rec
   thread: string
+  /** 会话 body 覆盖（如已并入生成的标题）；缺省取投影 `ids.session.body`。 */
+  sessionBody?: Rec
 }
 
 /**
@@ -264,7 +275,7 @@ export interface InterpretBagInput {
  */
 export function buildInterpretBag(params: InterpretBagInput): Rec {
   const { ids, wiring, slot, conversation, conversationId, config, thread } = params
-  const sessionBody = bodyOf(ids, 'session') ?? {}
+  const sessionBody = params.sessionBody ?? bodyOf(ids, 'session') ?? {}
   const bag: Rec = {
     input: inputOf(slot),
     input_body: bodyOf(ids, 'input') ?? {},

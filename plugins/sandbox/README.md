@@ -84,7 +84,7 @@ health 探针名声明为 `sandbox.capabilities`（宿主健康判定实际走�
   - **子进程环境**：`env_clear` 后只注入最小白名单（`PATH` / `SystemRoot` / `TEMP` / `TMP` / `PATHEXT` / `ComSpec` 等）+ `args.env`；宿主其余环境（含密钥）不继承。
 - **linux / mac 原生**：namespace / seccomp / landlock 未实现，本机不可验证，`exec` 诚实返回 `sandbox_unsupported`（不交付假装隔离的代码）。`fsop` 为进程内校验，跨平台可用。
 - **docker 后端**：检测 `docker version`（3s 上限）；不可用 → `capabilities` 报 unavailable、`impl=docker` 时 `sandbox_unsupported`。容器调用代码（`--network` / `--read-only` / `--user` / bind mount / `--memory` / `--pids-limit`；`args.env` 以 `-e <键>` 转发、值不进 argv）已实现，但**本仓库开发机无 docker，未在本机验证**；`limited` 网络白名单未实现，一律回落 `--network none`。
-- **grant 防伪造**：本插件只做机械校验（绑定 / 一次性 / 档位 / 过期）；v1 的 bag 与模型 args 未做 provenance 隔离，伪造 grant 的防线依赖上层（#27 / #28 的可信字段边界 + 审批闸）。
+- **grant 防伪造**：本插件只做机械校验（绑定 / 一次性 / 档位 / 过期）；v1 的 bag 与模型 args 未做 provenance 隔离，伪造 grant 的防线依赖上层（tools / tool-fs 的可信字段边界 + 审批闸）。
 - **计时口径**：`duration_ms` 用系统单调时钟（`Instant`）。exec 本身是效果、结果进审计，单调计时是运行态观测、不落世界、不影响可回放。
 - **grant 消费记录**驻进程内存：服务重启后不保留（grant 短时、绑定单次调用，跨重启重放不构成常设权限）。
 

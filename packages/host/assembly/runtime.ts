@@ -661,7 +661,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private async probe(service: ServiceRuntime): Promise<void> {
-    if (this.stopping || service.handledExit || service.draining || service.healthInFlight) return
+    // 在途调用时暂停探针：服务帧循环把 `probe` 排在在途调用之后，忙时探针必超时（误杀长调用）。
+    if (
+      this.stopping ||
+      service.handledExit ||
+      service.draining ||
+      service.healthInFlight ||
+      service.link.hasInflightCall()
+    ) {
+      return
+    }
     service.healthInFlight = true
     try {
       const ok = await service.link.probe(service.health.timeoutMs)
@@ -673,9 +682,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
   }
 
-  /** 探针无回应 / `ok:false`：按服务退出路径处理（杀进程树 → 重启）。 */
+  /** 探针无回应 / `ok:false`：按服务退出路径处理（杀进程树 → 重启）。在途调用视为健康，不误杀。 */
   private markUnhealthy(service: ServiceRuntime): void {
-    if (service.handledExit || this.stopping || service.draining) return
+    if (service.handledExit || this.stopping || service.draining || service.link.hasInflightCall()) return
     service.pendingExitReason = 'health_timeout'
     terminateChild(service.proc)
     this.handleProcessExit(service, 'health_timeout')

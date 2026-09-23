@@ -13,6 +13,7 @@ export {
   runReplay,
   runSeed,
   runVerify,
+  unseededIdentities,
 } from './offline.ts'
 export type {
   CompactReport,

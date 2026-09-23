@@ -81,6 +81,27 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
     await link.drain(100, 2000)
   })
 
+  it('hasInflightCall：在途调用期间为真、结算后为假（健康探针据此暂停，避免误杀长调用）', async () => {
+    const root = createTempRoot()
+    roots.push(root)
+    const pkgRoot = writeTempPackage(root, {
+      identity: 'toy-slow',
+      implements: ['toy.slow'],
+      start: 'node execute/main.js',
+      serviceConfig: { callMode: 'silent' },
+    })
+    const child = spawnFixture(pkgRoot)
+    const link = new ServiceLink(child, { impl: 'toy-slow', gen: 'g'.repeat(64) })
+    await link.handshake(2000)
+    expect(link.hasInflightCall()).toBe(false)
+    const controller = new AbortController()
+    const pending = link.call('toy.slow', 'echo', null, 60_000, controller.signal)
+    expect(link.hasInflightCall()).toBe(true)
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
+    expect(link.hasInflightCall()).toBe(false)
+  })
+
   it('link.close() 即 stdin EOF：服务自退出（断连自退出义务）', async () => {
     const child = spawnFixture(FIXTURE_ALPHA)
     const link = new ServiceLink(child, { impl: 'toy-alpha', gen: 'g'.repeat(64) })

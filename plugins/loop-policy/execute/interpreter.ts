@@ -414,8 +414,25 @@ function applySideEffects(contractIdValue: string, output: Rec, rs: RunState): v
 }
 
 function appendToolMessages(rs: RunState, output: Rec): void {
+  const calls = Array.isArray(rs.lastCalls) ? (rs.lastCalls as Rec[]) : []
+  const message = rs.messages.length > 0 ? rs.messages[0] : null
+  // 先回灌 assistant 消息（带 tool_calls），再回灌各工具结果（带 tool_call_id）：
+  // 形成规范的 assistant(tool_calls) → tool(tool_call_id) 序列，模型才认得出「已调用并拿到结果」。
+  if (message !== null && calls.length > 0) rs.extraMessages.push(message)
   const results = Array.isArray(output['results']) ? (output['results'] as Json[]) : []
-  for (const result of results) rs.extraMessages.push({ role: 'tool', content: JSON.stringify(result) })
+  results.forEach((result, index) => {
+    const rec = isRecord(result) ? result : null
+    const fromResult = rec !== null && typeof rec['call_id'] === 'string' ? (rec['call_id'] as string) : null
+    const fromCall =
+      calls[index] !== undefined && typeof calls[index]['call_id'] === 'string'
+        ? (calls[index]['call_id'] as string)
+        : null
+    rs.extraMessages.push({
+      role: 'tool',
+      tool_call_id: fromResult ?? fromCall ?? `call-${index}`,
+      content: JSON.stringify(result),
+    })
+  })
 }
 
 function appendVerifyMessage(rs: RunState, report: Json | undefined): void {

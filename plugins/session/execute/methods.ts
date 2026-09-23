@@ -20,6 +20,7 @@ import {
   planOf,
   putOp,
   replaceConversation,
+  sessionDataOf,
   slotOf,
   summaryOf,
   threadKeyOf,
@@ -272,7 +273,7 @@ function newConversation(args: Rec, env: CallEnv): HandlerResult {
   const id = asString(args['conversation_id']) ?? `c-${now}-${conversationsOf(session).length}`
   const entry = newConversationEntry(id, workspaceId, title, at, 'main')
   const nextSession: Rec = {
-    ...session,
+    ...sessionDataOf(session),
     current: id,
     conversations: [...conversationsOf(session), entry],
   }
@@ -302,7 +303,7 @@ function select(args: Rec, env: CallEnv): HandlerResult {
   if (conversation['deleted_at'] !== null && conversation['deleted_at'] !== undefined) {
     return clearOnly(slotsBody, threadId, { ok: false, reason: 'deleted' })
   }
-  const nextSession: Rec = { ...session, current: id }
+  const nextSession: Rec = { ...sessionDataOf(session), current: id }
   const ops = [
     putOp(nextSession),
     addGenOp('session', 0),
@@ -505,7 +506,7 @@ function branch(args: Rec, env: CallEnv): HandlerResult {
   }
   const bodyIndex = ops.length
   const nextSession: Rec = {
-    ...session,
+    ...sessionDataOf(session),
     current: newId,
     conversations: [...conversationsOf(session), entry],
   }

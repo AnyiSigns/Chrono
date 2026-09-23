@@ -114,6 +114,37 @@ test('openai-chat：请求编解码（max_tokens / reasoning_field·map / auth /
   })
 })
 
+test('openai-chat：中性 tool_calls / tool_call_id 编成厂商形状（工具回灌闭环）', async () => {
+  const handler = (req, res) => {
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { role: 'assistant' } }] })
+    sseEvent(res, { choices: [{ delta: { content: 'ok' } }] })
+    sseEvent(res, { choices: [{ delta: {}, finish_reason: 'stop' }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const bag = chatBag(server.url, {
+        messages: [
+          { role: 'user', content: 'read it' },
+          { role: 'assistant', content: '', tool_calls: [{ id: 'call-9', name: 'read', arguments: { path: 'a' } }] },
+          { role: 'tool', tool_call_id: 'call-9', content: '{"ok":true}' },
+        ],
+      })
+      const result = await driver.call('chat', bag)
+      assert.equal(result.value.ok, true)
+      const body = parseBody(server.requests[0])
+      const assistant = body.messages.find((message) => message.role === 'assistant')
+      assert.deepEqual(assistant.tool_calls, [
+        { id: 'call-9', type: 'function', function: { name: 'read', arguments: '{"path":"a"}' } },
+      ])
+      const tool = body.messages.find((message) => message.role === 'tool')
+      assert.equal(tool.tool_call_id, 'call-9')
+    })
+  })
+})
+
 test('openai-chat：usage 来源 none → usage 为 null，不发 usage 事件', async () => {
   const handler = (req, res) => {
     sseHead(res)

@@ -12,6 +12,7 @@ export const HOST_METHODS: ReadonlySet<string> = new Set([
   'audit',
   'asset.put',
   'asset.get',
+  'blob.put',
   'identities',
   'source.read',
   'thread.resume',

@@ -285,6 +285,62 @@ test('配额下滚：技能超额被裁，未用额度给历史', async () => {
   }
 })
 
+test('extra_messages：iter 间工具结果追加到消息尾部（排在本轮输入之后，role=tool）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(
+      baseBag({
+        input: 'IN',
+        system_prompt: 'P',
+        extra_messages: [
+          { role: 'tool', content: JSON.stringify({ ok: true, result: 'FILE' }) },
+          { role: 'tool', content: 'verify: {"passed":true}' },
+        ],
+        config: { model: 'm1', context_window: 2000, max_output: 100 },
+      }),
+    )
+    assert.equal(value.ok, true)
+    assert.equal(value.manifest.sources.tool.count, 2)
+    const inputIndex = value.messages.findIndex((message) => message.content === 'IN')
+    const toolIndices = value.messages
+      .map((message, index) => ({ message, index }))
+      .filter((entry) => entry.message.role === 'tool')
+      .map((entry) => entry.index)
+    assert.equal(toolIndices.length, 2)
+    assert.ok(toolIndices[0] > inputIndex, '工具结果应排在本轮输入之后')
+    assert.ok(toolIndices[1] < value.messages.length, '工具结果应注入')
+  } finally {
+    drv.close()
+  }
+})
+
+test('extra_messages：assistant(tool_calls) + tool(tool_call_id) 编进消息（工具回灌闭环）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(
+      baseBag({
+        input: 'IN',
+        system_prompt: 'P',
+        extra_messages: [
+          { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }] },
+          { role: 'tool', tool_call_id: 'call-1', content: '{"ok":true}' },
+        ],
+        config: { model: 'm1', context_window: 2000, max_output: 100, protocol: 'openai-chat' },
+      }),
+    )
+    assert.equal(value.ok, true)
+    const assistant = value.messages.find((message) => message.role === 'assistant')
+    const tool = value.messages.find((message) => message.role === 'tool')
+    assert.ok(assistant, '空 content 的 assistant 承接帧不能丢')
+    assert.deepEqual(assistant.tool_calls, [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }])
+    assert.equal(tool.tool_call_id, 'call-1')
+  } finally {
+    drv.close()
+  }
+})
+
 test('atomic 组不被裁散：工具调用 + 结果同进同出', async () => {
   const drv = startService()
   try {

@@ -354,5 +354,32 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv): Ga
     })
   }
 
+  // 同回合 iter 间产物（工具结果 / verify 报告 / 提问答案）：随 bag.extra_messages 传入，追加到消息尾部。
+  // source = `tool`（不在前缀序内 ⇒ 排在本轮输入之后）；priority = 历史级（随历史额度可裁，避免 P0 无界）。
+  const extraMessages = bag['extra_messages']
+  if (Array.isArray(extraMessages)) {
+    for (const item of extraMessages) {
+      if (!isRecord(item)) continue
+      const toolCalls = Array.isArray(item['tool_calls']) ? (item['tool_calls'] as Json) : null
+      const parsed = messageParts(item)
+      // 空 content 的 assistant（只带 tool_calls）不能丢：它是工具调用的承接帧
+      if (parsed.parts.length === 0 && (toolCalls === null || toolCalls.length === 0)) continue
+      raws.push({
+        role: normalizeRole(item['role']),
+        parts: parsed.parts,
+        source: 'tool',
+        priority: PRIORITY.history,
+        at: 0,
+        atomic: false,
+        atomicGroup: null,
+        toolCallId: asString(item['tool_call_id']),
+        toolCalls,
+        from: null,
+        subject: null,
+        orderHint: next(),
+      })
+    }
+  }
+
   return { raws, flags, recallEntries, coveredUpto: history.coveredUpto, l1Valid: history.l1Valid }
 }

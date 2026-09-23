@@ -117,6 +117,8 @@ export class ServiceLink {
   private readonly onClosed?: (reason: string) => void
   /** 在途正向调用的回合信息（LIFO）：反向调用没有自带 `env`，按最近一条在途调用回带。 */
   private readonly inflightEnvs: CallEnv[] = []
+  /** 在途正向调用计数：健康探针据此暂停（服务帧循环把 probe 排在在途调用之后，忙时探针必超时）。 */
+  private inflightCalls = 0
   private closed = false
 
   constructor(child: ChildProcess, options: ServiceLinkOptions) {
@@ -153,6 +155,11 @@ export class ServiceLink {
     return isRecord(message) && message['ok'] === true
   }
 
+  /** 是否有在途正向调用：忙时健康探针应暂停（probe 会被服务排在在途调用之后）。 */
+  hasInflightCall(): boolean {
+    return this.inflightCalls > 0
+  }
+
   /**
    * 能力调用（protocol §2.2）：服务回 `result` / `error` 均为「有响应」。
    * `result` 的 `ok` 必须是 `true`、`error` 的 `ok` 必须是 `false`；形态不合抛协议损坏。
@@ -173,6 +180,7 @@ export class ServiceLink {
       fields['env'] = env as unknown as Json
       this.inflightEnvs.push(env)
     }
+    this.inflightCalls += 1
     try {
       const message = await this.request('call', fields, ['result', 'error'], timeoutMs, signal)
       const record = message as { [k: string]: Json }
@@ -185,6 +193,7 @@ export class ServiceLink {
       if (record['ok'] !== true) throw new ServiceChannelError('protocol_error')
       return { ok: true, value: (record['value'] ?? null) as Json }
     } finally {
+      this.inflightCalls -= 1
       if (env !== undefined) {
         const index = this.inflightEnvs.lastIndexOf(env)
         if (index >= 0) this.inflightEnvs.splice(index, 1)

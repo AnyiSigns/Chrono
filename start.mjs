@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Chrono 启动器：一条命令完成「生成插件清单 → 入世 → 前台起宿主」。
+// Chrono 启动器：一条命令完成「生成插件清单 → 入世 → 前台起宿主 → 首启预置默认 body」。
 // 用法：node start.mjs [start|watch|status|seed]（缺省 start）。
 // `watch` 与 `start` 相同，只是给宿主加 `--watch`：源码 watcher 打开，改插件源码自动换代重建。
+// 宿主就绪后对尚无数据世代的身份跑各自 `tools/seed-default-body.mjs`（不覆盖已有数据）。
 // 宿主前台常驻，日志直出终端；Ctrl-C 由宿主处理，其自身 drain 全部插件后退出。
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -70,6 +71,48 @@ async function probe() {
 }
 
 /**
+ * 首启预置：仅对**尚无数据世代**的身份跑各自 `tools/seed-default-body.mjs`（写默认 body）。
+ * 判据取自 `boot unseeded`（只读投影，不取写锁）；已有数据世代的身份一律跳过，不覆盖用户数据。
+ * 这样新世界开箱即用（工作区 / 权限档 / 沙箱档 / 路由别名等默认 body 就位），旧世界不受影响。
+ */
+function seedDefaultBodies() {
+  const result = spawnSync(process.execPath, [BOOT, '--root', ROOT, 'unseeded'], { cwd: ROOT, encoding: 'utf8' })
+  if (result.status !== 0) return
+  let unseeded
+  try {
+    unseeded = new Set(JSON.parse(result.stdout))
+  } catch {
+    return
+  }
+  const dir = join(ROOT, 'plugins')
+  const scripts = readdirSync(dir, { withFileTypes: true })
+    .filter((item) => item.isDirectory() && unseeded.has(item.name))
+    .map((item) => join(dir, item.name, 'tools', 'seed-default-body.mjs'))
+    .filter((script) => existsSync(script))
+  if (scripts.length === 0) return
+  console.log(`首启预置默认 body：${scripts.length} 项`)
+  for (const script of scripts) {
+    const out = spawnSync(process.execPath, [script, '--root', ROOT], { cwd: ROOT, encoding: 'utf8' })
+    if (out.status !== 0) console.warn(`  预置失败：${script}`)
+  }
+}
+
+/** 等宿主就绪后预置默认 body（异步，不阻塞前台宿主）。 */
+function bootstrapDefaultsWhenReady() {
+  void (async () => {
+    const deadline = Date.now() + 180_000
+    while (Date.now() < deadline) {
+      if ((await probe()) !== null) {
+        seedDefaultBodies()
+        return
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 500))
+    }
+    console.warn('宿主未在预期时间内就绪，跳过默认 body 预置')
+  })()
+}
+
+/**
  * 前台起宿主：stdio 继承，宿主 stdout 与插件 stderr 直出终端。
  * 本进程忽略 SIGINT/SIGTERM，Ctrl-C 只交给宿主处理（宿主自行 drain 全部插件），
  * 等子进程退出后以同码退出，避免先于 drain 结束就返回提示符。
@@ -86,6 +129,7 @@ function startHostForeground(extraArgs = []) {
   const ignoreSignal = () => {}
   process.on('SIGINT', ignoreSignal)
   process.on('SIGTERM', ignoreSignal)
+  bootstrapDefaultsWhenReady()
   return new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve(code ?? (signal !== null ? 1 : 0)))
   })

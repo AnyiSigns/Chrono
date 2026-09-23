@@ -154,24 +154,14 @@ export const INTERPRET_PLAN = {
   ],
 }
 
-export const TITLE_PLAN = {
-  $directives: [
-    {
-      kind: 'write',
-      request: {
-        op: 'batch',
-        args: { ops: [{ op: 'put', args: { body: { title: '快速排序' } } }] },
-      },
-    },
-    { kind: 'extern', payload: { ok: true, conversation: 'c-1', title: '快速排序' } },
-  ],
-}
+/** #49 session-title.generate 的回值：标题值（非写计划）。 */
+export const TITLE_VALUE = { ok: true, title: '快速排序' }
 
-/** 默认 bridge：#33 interpret 与 #49 title 两段都回成功计划。 */
+/** 默认 bridge：#33 interpret 与 #49 title 两段都回成功值。 */
 export function defaultBridge(overrides = {}) {
   const table = {
     'loop-policy.interpret': () => INTERPRET_PLAN,
-    'session-title.generate': () => TITLE_PLAN,
+    'session-title.generate': () => TITLE_VALUE,
     ...overrides,
   }
   return (port, method) => {

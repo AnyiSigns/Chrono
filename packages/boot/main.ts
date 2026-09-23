@@ -21,6 +21,7 @@ import {
   runReplay,
   runSeed,
   runVerify,
+  unseededIdentities,
 } from '../host/index.ts'
 import type { PluginEntry } from '../host/index.ts'
 import type { Directive, Json } from '../kernel/index.ts'
@@ -35,6 +36,7 @@ const RESERVED = new Set([
   'pack',
   'verify',
   'replay',
+  'unseeded',
   'compact',
   'commands',
   'audit',
@@ -82,6 +84,7 @@ function helpText(): string {
     '  pack <目录> --identity <id>  入世单个插件目录（手动 / 程序化）',
     '  verify                      全量校验 journal',
     '  replay                      全量重放并给出内容摘要',
+    '  unseeded                    列出尚无数据世代的身份（首启预置默认 body 的判据；不取写锁）',
     '  compact                     压缩：追加快照 + 冷段归档 + 写基础世界',
     '  assets gc                   回收资产区里世界无引用的字节',
     '  blobs gc                    回收源码 CAS 里世界全部世代无引用的字节',
@@ -228,6 +231,9 @@ async function main(): Promise<void> {
     }
     case 'verify':
       print(runVerify(root))
+      return
+    case 'unseeded':
+      print(unseededIdentities(root))
       return
     case 'replay':
       print(runReplay(root))

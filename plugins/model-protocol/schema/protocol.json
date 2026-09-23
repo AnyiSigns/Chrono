@@ -11,7 +11,7 @@
       "properties": {
         "config": { "type": "object", "description": "连接实例：{ base_url, auth_ref:{kind,name}, model, params:{temperature,max_tokens,reasoning}, protocol?, quirks }；由调用方入口 term 装配后随 bag 传入。" },
         "messages": { "type": "array", "description": "对话消息 [{role, content, tool_call_id?, tool_calls?}]；system 角色按 quirks.system_role 归一。" },
-        "tools": { "type": "array", "description": "可选工具声明，原样编进请求。" },
+        "tools": { "type": "array", "description": "可选工具声明：中性声明 {name, description?, argsSchema?}（按协议机械编成 function 工具）；已带非空 type 的协议原生项原样透传。缺 name 的项丢弃。" },
         "tool_choice": { "description": "可选工具选择策略，原样编进请求。" },
         "resilience": { "type": "object", "description": "可选：本次调用的韧性覆盖（max_retries / backoff_ms / backoff_max_ms / request_timeout_ms / token_bucket）；缺省取本 schema 的 resilience。" }
       }

@@ -124,6 +124,15 @@ test('分支装配：补源链 refs；工作区装配：body + slots；列表装
   assert.deepEqual(assembleWorkspaceListArgs({}), { workspaces: [] })
 })
 
+test('工作区写装配：投影回落代码 body（无 workspaces）时归一为规范空体，不误传代码体', () => {
+  const ids = idsFixture()
+  // 无数据世代：投影 body 回落代码 commit body（{meta,tree}）
+  ids.workspace = { body: { meta: { name: 'workspace', version: 1 }, tree: 'a'.repeat(64) } }
+  const write = assembleWorkspaceWriteArgs(ids, { thread: null })
+  assert.deepEqual(write.args.body, { version: 1, workspaces: [] })
+  assert.equal(Object.hasOwn(write.args.body, 'tree'), false, '不得把代码体字段带进工作区数据体')
+})
+
 test('reveal 装配：只取 id 与列表；缺 id 抛 BadArgsError', () => {
   assert.deepEqual(assembleRevealArgs({ workspace: 'w1', workspaces: [{ id: 'w1', path: '/a' }] }), {
     workspace: 'w1',

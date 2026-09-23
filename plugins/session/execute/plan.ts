@@ -79,6 +79,21 @@ export function conversationsOf(session: Rec): Json[] {
   return Array.isArray(list) ? list : []
 }
 
+/**
+ * 会话数据 body 的**规范形状**：只留数据字段（`version` / `current` / `conversations` / `messageDef`）。
+ * 投影对无数据世代的身份回落**代码 commit body**（含字符串 `tree` / `meta` / `refs`）；若原样继承，
+ * `isCodeGen`（据 `body.tree` 为字符串）会把该数据世代误判为代码世代——宿主据此对**数据变更**触发
+ * 无谓的服务换代重载。故所有会话写一律以本函数归一后的 body 为基，剥掉代码体残留。
+ */
+export function sessionDataOf(session: Rec): Rec {
+  const out: Rec = {}
+  out['version'] = session['version'] ?? 1
+  out['current'] = session['current'] ?? null
+  out['conversations'] = conversationsOf(session)
+  if (session['messageDef'] !== undefined) out['messageDef'] = session['messageDef']
+  return out
+}
+
 export function findConversation(session: Rec, id: string): Rec | null {
   for (const item of conversationsOf(session)) {
     if (isRecord(item) && item['id'] === id) return item
@@ -105,7 +120,7 @@ export function replaceConversation(session: Rec, id: string, next: Rec): Rec {
   const list = conversationsOf(session).map((item) =>
     isRecord(item) && item['id'] === id ? next : item,
   )
-  return { ...session, conversations: list }
+  return { ...sessionDataOf(session), conversations: list }
 }
 
 /** 新增或替换一条会话（按 id）。 */
@@ -115,7 +130,7 @@ export function upsertConversation(session: Rec, next: Rec): Rec {
   const conversations = exists
     ? list.map((item) => (isRecord(item) && item['id'] === next['id'] ? next : item))
     : [...list, next]
-  return { ...session, conversations }
+  return { ...sessionDataOf(session), conversations }
 }
 
 /** 线程键：args.thread_id 非空字符串，否则 `_main`。 */

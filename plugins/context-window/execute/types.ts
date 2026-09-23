@@ -22,6 +22,7 @@ export type Source =
   | 'recall'
   | 'history'
   | 'style'
+  | 'tool'
 
 /** 消息角色。 */
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
@@ -48,6 +49,8 @@ export interface RawMessage {
   atomic: boolean
   atomicGroup: number | null
   toolCallId: string | null
+  /** assistant 消息携带的工具调用（中性形状 `[{id,name,arguments}]`）；由协议层按方言编形。 */
+  toolCalls?: Json | null
   from: string | null
   subject: string | null
   orderHint: number

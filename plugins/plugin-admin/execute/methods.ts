@@ -44,6 +44,17 @@ async function hostIdentities(): Promise<IdentityInfo[]> {
   return parseIdentities(result.value)
 }
 
+/**
+ * 把候选源码字节经 `host.blob.put` 内容寻址落 CAS（幂等）。写计划的 blob 是**指针 def**
+ * （`{kind:'blob',sha256,size}`），字节本体必须先在 ④ 就位，否则物化 `blob_missing`。失败即拒。
+ */
+async function stageBlobs(blobs: { sha256: string; bytes: Buffer }[]): Promise<void> {
+  for (const blob of blobs) {
+    const result = await HOST.call('blob.put', { bytes: blob.bytes.toString('base64') })
+    if (!result.ok) throw new ToolError(result.code, result.message)
+  }
+}
+
 /** `plugin.list`：过滤可见性黑名单后的身份清单。 */
 async function listTool(_args: Rec, _env: CallEnv): Promise<Json> {
   const list = await hostIdentities()
@@ -131,6 +142,8 @@ async function writeTool(args: Rec, _env: CallEnv): Promise<Json> {
     clearValidateCache(key)
     throw new ToolError('validate_required', 'commit hash mismatch')
   }
+  // 指针 blob 的字节本体先落 CAS，再产引用它们的写计划
+  await stageBlobs(built.blobs)
 
   const identities = await hostIdentities()
   const isNew = !identities.some((entry) => entry.id === identity)

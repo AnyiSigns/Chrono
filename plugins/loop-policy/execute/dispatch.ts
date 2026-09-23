@@ -151,6 +151,15 @@ function stepOutput(value: Json): Rec {
   const checked = checkToolCalls(raw['tool_calls'])
   const message: Rec = { role: 'assistant', content: text }
   if (isRecord(raw['usage'])) message['usage'] = raw['usage']
+  // 工具调用回灌：assistant 消息须带上本轮 tool_calls（中性形状 {id,name,arguments}），
+  // 否则下一 iter 模型看不到自己的调用，会反复重调同一工具（协议层按方言编形）。
+  if (checked.calls.length > 0) {
+    message['tool_calls'] = checked.calls.map((call) => ({
+      id: call['call_id'],
+      name: call['tool'],
+      arguments: call['args'] ?? {},
+    }))
+  }
   return { ...raw, message, tool_calls: checked.calls }
 }
 

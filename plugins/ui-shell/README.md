@@ -88,7 +88,7 @@ api = {
 ## 无配置判据
 
 壳经入站 `command config.read` 取返回值：`providers` 里存在至少一个已启用模型条目 ⇒
-`uiState.boot_mode='ready'`；否则 `'onboarding'`。壳自身不读投影。`boot_mode` 写者恒为壳（#15），
+`uiState.boot_mode='ready'`；否则 `'onboarding'`。壳自身不读投影。`boot_mode` 写者恒为壳，
 其它插件只订阅。
 
 重推触发点（壳内部）：初次连接与重连（`config.read` 读回）、启动后延迟首读、

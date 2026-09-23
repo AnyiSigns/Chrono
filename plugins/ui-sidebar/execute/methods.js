@@ -59,10 +59,15 @@ export function assembleBranchArgs(ids, env) {
 /**
  * 工作区写类命令（add / remove）装配：`{body, slots, thread_id, slot}`——
  * `body` = 当前 workspaces body，`slots` = 整份输入 body（缺任一即由依赖服务 `bad_args` 拒绝）。
+ *
+ * 投影对**无数据世代**的身份回落代码 commit body（`{meta,tree}`，见宿主投影口径）；工作区尚未有数据世代时
+ * 该回落体不含 `workspaces`，直接透传会被依赖服务按「缺 workspaces body」拒收。此处归一为**规范空体**
+ * （`{version:1, workspaces:[]}`）——与「无既有工作区」的事实一致，非破坏性。
  */
 export function assembleWorkspaceWriteArgs(ids, env) {
-  const body = identityBody(ids, 'workspace')
-  if (body === null) return { ok: false, code: 'workspace_missing' }
+  const raw = identityBody(ids, 'workspace')
+  if (raw === null) return { ok: false, code: 'workspace_missing' }
+  const body = Array.isArray(raw['workspaces']) ? raw : { version: 1, workspaces: [] }
   const slots = identityBody(ids, 'input')
   if (slots === null) return { ok: false, code: 'input_missing' }
   const threadId = threadKeyOf(env)

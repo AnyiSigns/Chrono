@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { commit, EMPTY_HEAD, EMPTY_WORLD } from '../../../packages/kernel/index.ts'
 import { validatePackage } from '../../../packages/host/validate-package.ts'
+import { blobPointerOf, blobSha256 } from '../../../packages/host/blobs.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -104,6 +105,10 @@ function startService(options = {}) {
         } finally {
           rmSync(runtime, { recursive: true, force: true })
         }
+      }
+      if (method === 'blob.put') {
+        const bytes = Buffer.from(args.bytes, 'base64')
+        return { value: blobPointerOf(blobSha256(bytes), bytes.length) }
       }
       return { error: 'not_loaded', message: method }
     })
@@ -468,6 +473,10 @@ test('write：身份已存在 → 无 add_identity（只 add_gen）', async () =
         } finally {
           rmSync(runtime, { recursive: true, force: true })
         }
+      }
+      if (method === 'blob.put') {
+        const bytes = Buffer.from(args.bytes, 'base64')
+        return { value: blobPointerOf(blobSha256(bytes), bytes.length) }
       }
       return { error: 'not_loaded', message: method }
     },

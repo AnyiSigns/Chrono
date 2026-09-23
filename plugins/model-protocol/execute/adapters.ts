@@ -57,8 +57,64 @@ function applyOptional(body: Rec, ctx: RequestContext): void {
   if (typeof maxTokens === 'number') body[ctx.quirks.max_tokens_field] = maxTokens
   const reasoning = encodeReasoning(ctx.quirks, ctx.params['reasoning'])
   if (reasoning !== null) setByPath(body, reasoning.path, reasoning.value)
-  if (ctx.tools !== undefined) body['tools'] = ctx.tools
   if (ctx.tool_choice !== undefined) body['tool_choice'] = ctx.tool_choice
+}
+
+/**
+ * 工具声明归一：**协议原生**（带非空 `type`）原样透传；**中性声明**取 `name` / `description` /
+ * `argsSchema`（或 `parameters`）按协议编形。中性声明缺 `name` 即丢弃（不可寻址）。
+ * 这是宿主零业务在协议层的落点：调用方给中性工具目录，协议差异由适配器机械编成。
+ */
+function toolItems(tools: Json | undefined): Rec[] {
+  return Array.isArray(tools) ? tools.filter(isRecord) : []
+}
+
+function isNativeTool(tool: Rec): boolean {
+  return typeof tool['type'] === 'string' && tool['type'].length > 0
+}
+
+function neutralTool(tool: Rec): { name: string; description: string | null; parameters: Json } | null {
+  const name = typeof tool['name'] === 'string' ? tool['name'] : ''
+  if (name.length === 0) return null
+  const description = typeof tool['description'] === 'string' ? tool['description'] : null
+  const raw = tool['argsSchema'] !== undefined ? tool['argsSchema'] : tool['parameters']
+  const parameters = isRecord(raw) ? raw : { type: 'object' }
+  return { name, description, parameters }
+}
+
+/** openai-chat / openai-responses 的 function 工具编形。 */
+function openAiTools(tools: Json | undefined, style: 'chat' | 'responses'): Rec[] {
+  const out: Rec[] = []
+  for (const tool of toolItems(tools)) {
+    if (isNativeTool(tool)) {
+      out.push(tool)
+      continue
+    }
+    const neutral = neutralTool(tool)
+    if (neutral === null) continue
+    const fn: Rec = { name: neutral.name }
+    if (neutral.description !== null) fn['description'] = neutral.description
+    fn['parameters'] = neutral.parameters
+    out.push(style === 'chat' ? { type: 'function', function: fn } : { type: 'function', ...fn })
+  }
+  return out
+}
+
+/** anthropic-messages 的工具编形：`{name, description, input_schema}`。 */
+function anthropicTools(tools: Json | undefined): Rec[] {
+  const out: Rec[] = []
+  for (const tool of toolItems(tools)) {
+    if (isNativeTool(tool)) {
+      out.push(tool)
+      continue
+    }
+    const neutral = neutralTool(tool)
+    if (neutral === null) continue
+    const entry: Rec = { name: neutral.name, input_schema: neutral.parameters }
+    if (neutral.description !== null) entry['description'] = neutral.description
+    out.push(entry)
+  }
+  return out
 }
 
 function normalizeUsage(prompt: Json | undefined, completion: Json | undefined): Rec | null {
@@ -72,7 +128,43 @@ function normalizeUsage(prompt: Json | undefined, completion: Json | undefined):
   }
 }
 
-function mapMessages(ctx: RequestContext): Json[] {
+/**
+ * 工具调用编形（请求方向）：中性形状 `{id,name,arguments}` 按协议编成厂商字段。
+ * openai-chat / openai-responses：`{id, type:'function', function:{name, arguments:<json string>}}`；
+ * 已是原生形状（带 `type` + `function`）原样透传。
+ */
+function encodeOpenAiToolCalls(raw: Json): Json {
+  if (!Array.isArray(raw)) return raw
+  const out: Json[] = []
+  for (const item of raw) {
+    const call = asRecord(item)
+    if (call === null) continue
+    if (call['type'] === 'function' && isRecord(call['function'])) {
+      out.push(call)
+      continue
+    }
+    const args = call['arguments']
+    out.push({
+      id: call['id'] ?? null,
+      type: 'function',
+      function: {
+        name: typeof call['name'] === 'string' ? call['name'] : '',
+        arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}),
+      },
+    })
+  }
+  return out
+}
+
+/** 消息 content 统一成字符串（工具结果 / assistant 文本都是字符串；数组体序列化兜底）。 */
+function stringifyContent(content: Json | undefined): string {
+  if (typeof content === 'string') return content
+  if (content === undefined || content === null) return ''
+  return JSON.stringify(content)
+}
+
+/** openai 系消息映射：工具结果带 `tool_call_id`，assistant 的 `tool_calls` 编成 function 形状。 */
+function mapOpenAiMessages(ctx: RequestContext): Json[] {
   const mapped: Json[] = []
   for (const message of ctx.messages) {
     if (!isRecord(message)) continue
@@ -81,10 +173,50 @@ function mapMessages(ctx: RequestContext): Json[] {
     if (message['content'] !== undefined) entry['content'] = message['content']
     if (message['name'] !== undefined) entry['name'] = message['name']
     if (message['tool_call_id'] !== undefined) entry['tool_call_id'] = message['tool_call_id']
-    if (message['tool_calls'] !== undefined) entry['tool_calls'] = message['tool_calls']
+    if (message['tool_calls'] !== undefined) entry['tool_calls'] = encodeOpenAiToolCalls(message['tool_calls'])
     mapped.push(entry)
   }
   return mapped
+}
+
+/**
+ * anthropic 消息映射：工具结果编成 user 的 `tool_result` 块；assistant 的 `tool_calls` 编成 `tool_use` 块
+ * （anthropic 不用顶层 `tool_calls` / `tool_call_id` 字段）；system 由 `build` 顶层 `system` 承担，此处剔除。
+ */
+function mapAnthropicMessages(ctx: RequestContext): Json[] {
+  const mapped: Json[] = []
+  for (const message of ctx.messages) {
+    if (!isRecord(message)) continue
+    const role = typeof message['role'] === 'string' ? message['role'] : 'user'
+    if (role === ctx.quirks.system_role) continue
+    if (role === 'tool') {
+      mapped.push({
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: message['tool_call_id'] ?? '', content: stringifyContent(message['content']) },
+        ],
+      })
+      continue
+    }
+    if (role === 'assistant' && Array.isArray(message['tool_calls'])) {
+      const blocks: Json[] = []
+      const text = stringifyContent(message['content'])
+      if (text.length > 0) blocks.push({ type: 'text', text })
+      for (const item of message['tool_calls']) {
+        const call = asRecord(item)
+        if (call === null) continue
+        blocks.push({ type: 'tool_use', id: call['id'] ?? '', name: call['name'] ?? '', input: call['arguments'] ?? {} })
+      }
+      mapped.push({ role: 'assistant', content: blocks })
+      continue
+    }
+    mapped.push({ role, content: message['content'] ?? '' })
+  }
+  return mapped
+}
+
+function mapMessages(ctx: RequestContext): Json[] {
+  return ctx.quirks.protocol === 'anthropic-messages' ? mapAnthropicMessages(ctx) : mapOpenAiMessages(ctx)
 }
 
 function pushFragment(target: Rec[], fragment: Rec | null): void {
@@ -129,6 +261,8 @@ class OpenAiChatAdapter implements Adapter {
     const body: Rec = { model: ctx.model, messages: mapMessages(ctx), stream: ctx.stream }
     if (ctx.stream && ctx.quirks.stream_usage === 'final_chunk') body['stream_options'] = { include_usage: true }
     applyOptional(body, ctx)
+    const tools = openAiTools(ctx.tools, 'chat')
+    if (tools.length > 0) body['tools'] = tools
     const headers = baseHeaders(ctx.quirks, ctx.stream ? 'text/event-stream' : 'application/json')
     const auth = applyAuth(joinUrl(ctx.base_url, '/chat/completions'), ctx.quirks, ctx.secret)
     return { url: auth.url, headers: { ...headers, ...auth.headers }, body }
@@ -213,6 +347,8 @@ class OpenAiResponsesAdapter implements Adapter {
   build(ctx: RequestContext): BuiltRequest {
     const body: Rec = { model: ctx.model, input: mapMessages(ctx), stream: ctx.stream }
     applyOptional(body, ctx)
+    const tools = openAiTools(ctx.tools, 'responses')
+    if (tools.length > 0) body['tools'] = tools
     const auth = applyAuth(joinUrl(ctx.base_url, '/responses'), ctx.quirks, ctx.secret)
     const headers = baseHeaders(ctx.quirks, ctx.stream ? 'text/event-stream' : 'application/json')
     return { url: auth.url, headers: { ...headers, ...auth.headers }, body }
@@ -312,6 +448,8 @@ class AnthropicMessagesAdapter implements Adapter {
     }
     if (system.length > 0) body['system'] = system
     applyOptional(body, ctx)
+    const tools = anthropicTools(ctx.tools)
+    if (tools.length > 0) body['tools'] = tools
     const auth = applyAuth(joinUrl(ctx.base_url, '/messages'), ctx.quirks, ctx.secret)
     const headers = baseHeaders(ctx.quirks, ctx.stream ? 'text/event-stream' : 'application/json')
     return { url: auth.url, headers: { ...headers, ...auth.headers }, body }

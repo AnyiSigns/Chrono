@@ -1,13 +1,13 @@
 # session-title（会话自动标题）
 
-按会话**首条用户消息**，用**用户配置的模型**生成 **不超过 10 字**的标题，写入会话身份的 `title`。
+按会话**首条用户消息**，用**用户配置的模型**生成 **不超过 10 字**的标题并**回标题值**。
 旁路增强：模型失败 / 超时 / 返回空时确定性兜底，**不报错、不阻塞主回合**；不覆盖用户手动标题（首条判定归调用方入口 term）。
 
 - 身份：`session-title`
 - 能力类 / 方法：`session-title` → `generate`
 - 命令：无（由调用方回合管道按能力类调 `generate`，不暴露命令面）
 - 成员：`execute`（TS 服务）、`schema`（`title.json`）
-- `pins`：`model` → `model-protocol`（`model.complete` 非流式单次补全）、`session` → `session`（`set_title`）
+- `pins`：`model` → `model-protocol`（`model.complete` 非流式单次补全）
 - 状态档：`recomputable`（无本地持久状态；模型调用不重放、不缓存）
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 健康探针自述：`session-title.generate`（宿主健康判定走协议级 `probe` / `pong`，本字段仅服务自述）
@@ -21,8 +21,9 @@
 3. 后处理：取首个非空行，去首尾空白 / 引号 / 换行 / 结尾标点，再按 **Unicode 码点**硬截断到 ≤10 字
    （CJK 每字 = 1，不劈代理对）。
 4. 兜底（确定性）：模型失败 / 超时 / 返回空 → 取首条用户消息去空白后前 10 字；仍空 → 保留 `title_default`。
-5. 写入：反向调用会话服务的 `set_title {conversation, title}`，把其返回的写计划（`$directives`）**原样上提**，
-   由调用方入口 term 机械合并进顶层。本插件不构造 `put` / `add_gen`、不写世界本体。
+5. 返回：`{ok:true, title}`——标题值（非写计划）。标题落盘归调用方 `chat`：它把标题并入传给
+   `loop-policy.interpret` 的 session body，由 `session.commit` 在提交消息时一次性写入（**本插件不构造
+   `put` / `add_gen`、不写世界本体**）——这样标题与提交同基，不会出现「标题整份写覆盖提交」的竞争。
 
 ## 入参（args / bag）
 
@@ -48,13 +49,15 @@
 
 ## 结果
 
-- 成功：`{$directives:[…]}`——即会话服务 `set_title` 返回的写计划，**原样上提**，本插件不改写。
-- 会话调用失败（未就绪 / 超时 / 未返回计划）：`{$directives:[extern({ok:false, error})]}`（无写、不炸本轮）。
+- 成功：`{ok:true, title}`——标题值（生成或确定性兜底），由调用方 `chat` 并入 session body 后随提交落盘。
+- 缺 `conversation` / `first_message`：结构化 `bad_args`（不跑方法）。
+- 模型失败 / 超时 / 返回空：**不报错**，回兜底标题（不阻塞主回合）。
 
 ## 边界
 
 - 不做：标题显示（归侧栏 / 顶栏）/ 重命名 UI / 模型实现与韧性（归模型服务）/ 判定是否首条（归调用方入口 term）。
-- **不覆盖用户手动标题**：首条判定归调用方入口 term；会话服务的 `set_title` 无条件写入。
+- **不写世界**：标题落盘归调用方 `chat`（并入 session body、随 `session.commit` 落盘）。
+- **不覆盖用户手动标题**：首条判定归调用方入口 term；标题只在该判定成立时生成。
 - 不内置任何模型名；不取时间 / 随机，同输入同输出。
 - 服务不 import 宿主与内核，运行时零依赖（只用 Node 内置模块）；跨插件只走 `port.call`。
 

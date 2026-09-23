@@ -36,25 +36,6 @@ export function createDecoder() {
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
-/** 会话服务 set_title 的写计划夹具（generate 应原样上提）。 */
-export const SET_TITLE_PLAN = {
-  $directives: [
-    {
-      kind: 'write',
-      request: {
-        op: 'batch',
-        args: {
-          ops: [
-            { op: 'put', args: { body: { current: 'c-1', conversations: [{ id: 'c-1', title: 'T' }] } } },
-            { op: 'add_gen', args: { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-          ],
-        },
-      },
-    },
-    { kind: 'extern', payload: { ok: true, conversation: 'c-1', title: 'T' } },
-  ],
-}
-
 /** 启动服务并返回请求 / 反向调用接口；`bridge(port, method, args)` 应答反向调用。 */
 export function startService(options = {}) {
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -150,21 +131,6 @@ export function startService(options = {}) {
       request('call', { port: 'session-title', method, args, env }, ['result', 'error']),
     close: () => child.stdin.end(),
   }
-}
-
-/** 从计划值里取计划条目、batch 子操作与 extern 载荷。 */
-export function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-export function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-export function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
 }
 
 /** 一次 generate 的常用入参。 */

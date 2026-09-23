@@ -110,6 +110,38 @@ test('有工具路径 allow：assemble → step → gate → dispatch → verify
   }
 })
 
+test('工具调用回灌：assistant(tool_calls) → tool(tool_call_id) 进入重入 iter 的 messages', async () => {
+  const seen = []
+  const service = startService({
+    providers: {
+      'model.chat': (args) => {
+        seen.push(args.messages ?? [])
+        const hasLinkage = (args.messages ?? []).some(
+          (message) => message.role === 'assistant' && Array.isArray(message.tool_calls),
+        )
+        if (hasLinkage) return { ok: true, text: 'done', tool_calls: [], usage: {} }
+        return { ok: true, text: '', tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }], usage: {} }
+      },
+      'guard.judge': () => ({ decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
+      'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
+    },
+  })
+  try {
+    await service.interpret({ tools: [{ name: 'edit', provider: 'tool', caps: { fs: { write: 'workspace' } } }] })
+    assert.equal(seen.length, 2, '应两次模型调用（调用工具 → 结果回灌后作答）')
+    const second = seen[1]
+    const assistant = second.find((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    const tool = second.find((message) => message.role === 'tool')
+    assert.ok(assistant, 'assistant 承接帧（带 tool_calls）须回灌，否则模型会反复重调')
+    assert.equal(assistant.tool_calls[0].id, 'c1')
+    assert.equal(assistant.tool_calls[0].name, 'edit')
+    assert.deepEqual(assistant.tool_calls[0].arguments, { path: 'a.txt' })
+    assert.equal(tool.tool_call_id, 'c1', '工具结果须带 tool_call_id 与调用配对')
+  } finally {
+    service.close()
+  }
+})
+
 test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回（带游标）', async () => {
   const service = startService({
     providers: {

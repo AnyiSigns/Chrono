@@ -6,8 +6,7 @@
     "session-title": ["generate"]
   },
   "pins": {
-    "model": "model-protocol",
-    "session": "session"
+    "model": "model-protocol"
   },
   "start": "node execute/main.ts",
   "protocol": "1",

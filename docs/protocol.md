@@ -56,7 +56,8 @@
 ```
 
 - `reload` / `drain` / `probe` 均按 `id` 配对（§一）；`drain` 的 `deadline_ms` 取自 `decl.restart.drain_ms`（同一值，字段名按消息语义用 `deadline_ms`）。
-- drain 期间宿主暂停该服务的 health 探针（防 drain 中忙等被误判 `health_timeout`）。
+- **有在途调用（或 drain）时宿主暂停该服务的 health 探针**：服务帧循环把 `probe` 排在在途调用之后，忙时探针必超时，
+  若照常判定会误杀长调用（`model.chat` / `tool-shell` 等）——故在途即视为健康、不发探针；调用结束（或 drain 结束）后恢复。
 
 ### 2.4 反向调用（服务 → 宿主）
 

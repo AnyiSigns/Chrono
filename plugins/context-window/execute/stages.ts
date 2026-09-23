@@ -6,6 +6,7 @@ import type { CanonicalMessage, Source } from './types.ts'
 
 const TRUST: Record<Source, number> = {
   history: 4,
+  tool: 5,
   l1: 3,
   l2: 2,
   recall: 1,

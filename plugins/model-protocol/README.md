@@ -25,6 +25,13 @@
    - `impl=sdk`：惰性加载 `sdk_package`（当前仅 `@google/genai`）。
 3. 编请求：`messages` / `temperature` / `max_tokens`（按 `max_tokens_field`）/ `reasoning`
    （有档位经 `reasoning_map` 编进 `reasoning_field`；无值不传字段，用模型默认）/ `tools`。
+   `messages` 里的工具回灌按协议编形：`assistant` 的中性 `tool_calls: [{id,name,arguments}]` 编成
+   openai 的 `{id,type:'function',function:{name,arguments:<json>}}` / anthropic 的 `tool_use` 块；
+   `tool` 消息的 `tool_call_id` 在 openai 原样透传、在 anthropic 编成 user 的 `tool_result` 块。
+   `tools` 接受**中性声明** `{name, description?, argsSchema?}`，按协议机械编成 function 工具
+   （openai-chat / openai-responses 的 `{type:'function', function:{name, description, parameters}}`、
+   anthropic-messages 的 `{name, description, input_schema}`）；已带非空 `type` 的协议原生项原样透传，
+   缺 `name` 的项丢弃，空列表不写 `tools`。
 4. 流式逐段上行 `event(topic:"model.delta", payload:{run, thread, model, protocol, …分片})`——
    `run` / `thread` 自协议帧 `env` 读取。分片含 `text` / `reasoning` / `tool_call` / `usage` / `stop_reason` / `done`。
 5. 返回最终值 `{ok, text, reasoning?, tool_calls, usage, model, protocol, stop_reason?}`。

@@ -137,24 +137,16 @@ export function planHistory(bag: Record<string, unknown>): HistoryPlan {
     return { chain: [], coveredUpto, coveredIndex: -1, l1Valid: true }
   }
 
-  let head = typeof session['head'] === 'string' ? (session['head'] as string) : null
+  // `head` 是当前会话的链头：为空 = 本会话尚无消息（历史为空）；非空但不在 `refs` = 投影不一致。
+  // **绝不**在 refs 里猜链头——`session.refs` 是会话级全量（含其它会话的消息），猜会把别的会话历史当本会话历史。
+  const head = typeof session['head'] === 'string' ? (session['head'] as string) : null
   if (head === null || !refs.has(head)) {
-    const usedAsPrev = new Set<string>()
-    for (const body of refs.values()) {
-      const prev = isRecord(body['prev']) ? body['prev'] : null
-      if (prev !== null && typeof prev['def'] === 'string') usedAsPrev.add(prev['def'] as string)
-    }
-    for (const hash of refs.keys()) {
-      if (!usedAsPrev.has(hash)) {
-        head = hash
-        break
-      }
-    }
+    return { chain: [], coveredUpto, coveredIndex: -1, l1Valid: coveredUpto === null }
   }
 
   const reversed: { hash: string; body: Record<string, unknown> }[] = []
   const visited = new Set<string>()
-  let cursor = head
+  let cursor: string | null = head
   while (cursor !== null && refs.has(cursor) && !visited.has(cursor)) {
     visited.add(cursor)
     const body = refs.get(cursor) as Record<string, unknown>

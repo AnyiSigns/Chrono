@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   INTERPRET_PLAN,
-  TITLE_PLAN,
+  TITLE_VALUE,
   callArgs,
   defaultBridge,
   directivesOf,
@@ -53,15 +53,16 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
   assert.equal(await drv.exit, 0)
 })
 
-test('send：port.call loop-policy.interpret + 首条 title 段，bag 装配完整', async () => {
+test('send：先调 session-title.generate 再 loop-policy.interpret，标题并入 session body', async () => {
   const drv = startService({ bridge: defaultBridge() })
   try {
     await drv.hello()
     const result = await drv.call('send', idsFixture({ agent: 'agent-a' }))
     assert.equal(result.kind, 'result')
+    // 标题先算（并入 session body），再跑 interpret
     assert.deepEqual(
       drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      ['loop-policy.interpret', 'session-title.generate'],
+      ['session-title.generate', 'loop-policy.interpret'],
     )
 
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
@@ -75,6 +76,8 @@ test('send：port.call loop-policy.interpret + 首条 title 段，bag 装配完�
     assert.equal(bag.memories.l2.summary.goal, 'w')
     assert.equal(bag.session.head, 'h3')
     assert.equal(bag.session.refs.h3.id, 'm3')
+    // 生成的标题已并入传给 interpret 的 session body（由 commit 落盘）
+    assert.equal(bag.session.conversations[0].title, TITLE_VALUE.title)
     assert.equal(bag.graph.contracts.tail.def.length, 64)
     assert.equal(bag.graph.graph.def.length, 64)
     assert.equal(bag.graph.refs['a'.repeat(64)].nodes[0], 'context.assemble')
@@ -101,8 +104,8 @@ test('send：port.call loop-policy.interpret + 首条 title 段，bag 装配完�
     assert.equal(titleArgs.first_message, '帮我写一个快速排序')
     assert.equal(titleArgs.title_default, '新对话')
 
-    // 顶层 $directives = interpret 计划 + title 计划按段序机械合并
-    assert.deepEqual(directivesOf(result.value), [...INTERPRET_PLAN.$directives, ...TITLE_PLAN.$directives])
+    // 顶层 $directives = 仅 interpret 计划（标题不再单独成写）
+    assert.deepEqual(directivesOf(result.value), INTERPRET_PLAN.$directives)
   } finally {
     drv.close()
   }
@@ -198,7 +201,10 @@ test('send：interpret 传输失败 → extern loop_unavailable 收口', async (
   try {
     await drv.hello()
     const result = await drv.call('send', idsFixture())
-    assert.deepEqual(drv.portCalls.map((frame) => `${frame.port}.${frame.method}`), ['loop-policy.interpret'])
+    assert.deepEqual(
+      drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
+      ['session-title.generate', 'loop-policy.interpret'],
+    )
     assert.deepEqual(externOf(result.value), {
       ok: false,
       error: { code: 'loop_unavailable', message: 'no loop-policy' },
@@ -223,10 +229,10 @@ test('send：interpret 结构化失败值 → extern 原样收口', async () => 
   assert.equal(await drv.exit, 0)
 })
 
-test('send：title 段失败 / 无计划一律跳过，不影响主回合', async () => {
+test('send：title 段失败 / 无标题值一律跳过，不影响主回合', async () => {
   for (const titleReply of [
     { error: 'not_ready', message: 'no title service' },
-    { value: { ok: false, error: { code: 'set_title_failed', message: 'no plan' } } },
+    { value: { ok: false, error: { code: 'title_failed', message: 'no title' } } },
     { value: null },
   ]) {
     const drv = startService({
