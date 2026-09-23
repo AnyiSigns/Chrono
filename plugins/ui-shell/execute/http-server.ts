@@ -40,10 +40,10 @@ export interface UiServerDeps {
   bridge: Bridge
   sse: SseHub
   state: () => ShellState
-  /** headless 入口字节（经 host.source.read 取回并缓存）；无 → null。 */
-  headlessSource: (id: string) => string | null
-  /** slot 客户端半边字节（经 host.source.read 取回并缓存，取代 /p/ 反代）；无 → null。 */
-  uiSource: (id: string) => string | null
+  /** headless 入口字节（经 host.source.read 取回并缓存）；冷缓存时等待取回，无 → null。 */
+  headlessSource: (id: string) => Promise<string | null>
+  /** slot 客户端半边字节（经 host.source.read 取回并缓存，取代 /p/ 反代）；冷缓存时等待取回，无 → null。 */
+  uiSource: (id: string) => Promise<string | null>
   /** 写主题偏好后的运行态更新（缓存 + 广播）。 */
   applyThemePref: (pref: string) => void
   /** config 写落账后重推无配置判据（`boot_mode` 派生）；由服务侧读回 config 并广播。 */
@@ -467,6 +467,8 @@ export function startUiServer(deps: UiServerDeps, port: number): Promise<UiServe
         port: boundPort,
         close: () =>
           new Promise<void>((done) => {
+            // SSE 先优雅收尾（发终止块），再销毁其余 socket；避免浏览器报流异常中断。
+            deps.sse.closeAll?.()
             for (const socket of sockets) socket.destroy()
             sockets.clear()
             server.close(() => done())
@@ -522,7 +524,7 @@ async function handleRequest(
         return
       }
       case 'ui': {
-        const source = deps.uiSource(route.id)
+        const source = await deps.uiSource(route.id)
         if (source === null) {
           sendJson(res, 404, { ok: false, code: 'not_found', message: route.id })
           return
@@ -531,7 +533,7 @@ async function handleRequest(
         return
       }
       case 'headless': {
-        const source = deps.headlessSource(route.id)
+        const source = await deps.headlessSource(route.id)
         if (source === null) {
           sendJson(res, 404, { ok: false, code: 'not_found', message: route.id })
           return

@@ -14,6 +14,12 @@ const SLOT_CONTRACT_VERSION = '2'
 /** slot / headless 装载上限：模块抓取从严（连接被挤占时会一直 pending），mount 运行放宽到与宿主调用超时同量级。 */
 const MOUNT_IMPORT_TIMEOUT_MS = 10000
 const MOUNT_RUN_TIMEOUT_MS = 30000
+/** slot 装载失败后的后台自愈退避：1s 起、指数增长、封顶 30s（换代窗口常达数秒）。 */
+const SLOT_RETRY_BASE_MS = 1000
+const SLOT_RETRY_MAX_MS = 30000
+/** 启动就绪门禁：全部 slot 可装载前留在启动屏，静默重试；超时则落失败卡放行。 */
+const BOOT_READY_TIMEOUT_MS = 180000
+const BOOT_RETRY_DELAY_MS = 800
 const BOOTSTRAP =
   typeof window.__CHRONO_SHELL__ === 'object' && window.__CHRONO_SHELL__ !== null
     ? window.__CHRONO_SHELL__
@@ -23,6 +29,7 @@ const BOOTSTRAP =
 const FALLBACK_MESSAGES = {
   unknown: { title: '出现问题', body: '错误码 {code} 暂无说明。' },
   ui_unreachable: { title: '宿主不可达', body: '与宿主的连接已断开。', action: '重试' },
+  ui_load_failed: { title: '界面未能加载', body: '这个界面暂时不可用，正在自动重试…', action: '重试' },
   ui_boot_failed: { title: '界面加载失败', body: '这个界面未能启动。', action: '重试' },
   ui_version_mismatch: { title: '界面版本不符', body: '界面与壳的契约版本不一致。', action: '重试' },
   shell_tokens_fallback: { title: '样式降级', body: '设计 token 未能加载，已用最小样式兜底。' },
@@ -227,6 +234,7 @@ function handleShellState(payload) {
       renderToasts()
     }
     void detectBootMode()
+    retryFailedSlots()
   } else {
     showBanner()
   }
@@ -258,6 +266,7 @@ function connectEvents() {
     }
     if (record.impl === 'shell' && record.topic === 'shell.reconnected') {
       hideBanner()
+      retryFailedSlots()
     }
     dispatchEvent(record)
   }
@@ -374,6 +383,40 @@ function isUnreachable(err) {
   return /Failed to fetch|dynamically imported module|NetworkError|502|404/i.test(text)
 }
 
+// 失败 slot 的后台自愈：宿主换代 / 目标插件重启窗口内，slot 资源会短暂抓不到（404）。
+// 卡片不能永久停留——按指数退避自动重挂；宿主重连时立即重挂全部失败项。
+const failedSlots = new Map()
+
+function scheduleSlotRetry(entry) {
+  let state = failedSlots.get(entry)
+  if (state === undefined) {
+    state = { attempt: 0, timer: null }
+    failedSlots.set(entry, state)
+  }
+  if (state.timer !== null) return
+  const delay = Math.min(SLOT_RETRY_MAX_MS, SLOT_RETRY_BASE_MS * 2 ** state.attempt)
+  state.attempt += 1
+  state.timer = setTimeout(() => {
+    state.timer = null
+    void mountEntry(entry)
+  }, delay)
+}
+
+function cancelSlotRetry(entry) {
+  const state = failedSlots.get(entry)
+  if (state === undefined) return
+  if (state.timer !== null) clearTimeout(state.timer)
+  failedSlots.delete(entry)
+}
+
+/** 宿主连接恢复时立即重挂所有失败 slot（不等退避计时器）。 */
+function retryFailedSlots() {
+  for (const entry of [...failedSlots.keys()]) {
+    cancelSlotRetry(entry)
+    void mountEntry(entry)
+  }
+}
+
 /** 给一个 promise 加上限；超时以错误结算（调用方按失败隔离）。 */
 function withTimeout(promise, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -403,19 +446,27 @@ function renderSlotFailure(root, code, entry) {
   retry.type = 'button'
   retry.textContent = msg(code).action ?? msg('ui_unreachable').action ?? ''
   retry.addEventListener('click', () => {
+    cancelSlotRetry(entry)
     root.replaceChildren()
     void mountEntry(entry)
   })
   card.append(title, body, retry)
   root.replaceChildren(card)
+  // 抓不到模块多为换代窗口（宿主在跑、只是这一刻资源没就绪）：后台自动重挂，不靠用户手点。
+  if (code === 'ui_load_failed') scheduleSlotRetry(entry)
 }
+
+// 模块抓取序号：浏览器按 URL 缓存「失败的动态导入」，同一 URL 再次 import 会直接复用失败结果。
+// 因此每次重试必须换新 URL——用全局单调序号，而不是每次从 0 重新数（否则启动门禁的重试永远命中旧失败）。
+let slotImportSeq = 0
 
 /** 取 slot 客户端半边模块：字节缓存可能未热（首载 404），退避重试并带 cache-bust 绕开失败的模块缓存。 */
 async function importSlotEntry(id) {
   let lastError = null
   for (let attempt = 0; attempt < 4; attempt += 1) {
+    slotImportSeq += 1
     try {
-      return await withTimeout(import(`/assets/ui/${id}.js?r=${attempt}`), MOUNT_IMPORT_TIMEOUT_MS)
+      return await withTimeout(import(`/assets/ui/${id}.js?r=${slotImportSeq}`), MOUNT_IMPORT_TIMEOUT_MS)
     } catch (err) {
       lastError = err
       await new Promise((resolve) => setTimeout(resolve, 300))
@@ -424,46 +475,43 @@ async function importSlotEntry(id) {
   throw lastError ?? new Error('slot entry unavailable')
 }
 
-async function mountEntry(entry) {
+/** 装载一个 slot：成功返回 null，失败返回错误码。`silent` 时不渲染失败卡（启动期静默重试）。 */
+async function mountEntry(entry, silent = false) {
   const root = document.getElementById(`slot-${entry.slot}`)
-  if (root === null) return
+  if (root === null) return null
+  cancelSlotRetry(entry)
+  const fail = (code) => {
+    if (!silent) renderSlotFailure(root, code, entry)
+    return code
+  }
   const entryPath = typeof entry.entry === 'string' && entry.entry.length > 0 ? entry.entry : null
   try {
     if (entryPath !== null) {
       // slot 客户端半边：壳经 host.source.read 同源服务，模块把组件注册进命名 slot。
       const module = await importSlotEntry(entry.id)
-      if (module.contract !== SLOT_CONTRACT_VERSION) {
-        renderSlotFailure(root, 'ui_version_mismatch', entry)
-        return
-      }
-      if (typeof module.register !== 'function') {
-        renderSlotFailure(root, 'ui_boot_failed', entry)
-        return
-      }
+      if (module.contract !== SLOT_CONTRACT_VERSION) return fail('ui_version_mismatch')
+      if (typeof module.register !== 'function') return fail('ui_boot_failed')
       await withTimeout(
         Promise.resolve(module.register(slotHost.ctxFor(entry.id))),
         MOUNT_RUN_TIMEOUT_MS,
       )
-      return
+      return null
     }
     // 旧模型：插件自有端口反代 + mount(root, api)。
     const module = await withTimeout(import(`/p/${entry.id}/entry.js`), MOUNT_IMPORT_TIMEOUT_MS)
     if (module.contract !== undefined && module.contract !== CONTRACT_VERSION) {
-      renderSlotFailure(root, 'ui_version_mismatch', entry)
-      return
+      return fail('ui_version_mismatch')
     }
-    if (typeof module.mount !== 'function') {
-      renderSlotFailure(root, 'ui_boot_failed', entry)
-      return
-    }
+    if (typeof module.mount !== 'function') return fail('ui_boot_failed')
     await withTimeout(module.mount(root, { ...api, slot: entry.slot }), MOUNT_RUN_TIMEOUT_MS)
+    return null
   } catch (err) {
-    renderSlotFailure(root, isUnreachable(err) ? 'ui_unreachable' : 'ui_boot_failed', entry)
+    return fail(isUnreachable(err) ? 'ui_load_failed' : 'ui_boot_failed')
   }
 }
-async function mountAll() {
-  const entries = Array.isArray(BOOTSTRAP.mounts) ? BOOTSTRAP.mounts : []
-  await Promise.allSettled(entries.map((entry) => mountEntry(entry)))
+
+/** headless 入口装载：失败不影响 slot，也不阻塞进入。 */
+async function mountHeadless() {
   const headless = Array.isArray(BOOTSTRAP.headless) ? BOOTSTRAP.headless : []
   await Promise.allSettled(
     headless.map(async (entry) => {
@@ -479,14 +527,46 @@ async function mountAll() {
   )
 }
 
-/** 导入 headless 入口；首载 404（壳取字节未就绪）退避后带 cache-bust 重试一次。 */
+/**
+ * 启动就绪门禁：宿主按依赖分层并发起服务，壳自身层级浅、先绑定端口，故「页面能开」≠
+ * 「各 slot 就绪」。这里留在启动屏静默重试，全部 slot 装载成功才进入；永久不符的立即落卡，
+ * 超过上限的按常规失败卡放行（不无限空转）。
+ */
+async function waitForSlotsReady() {
+  const entries = Array.isArray(BOOTSTRAP.mounts) ? BOOTSTRAP.mounts : []
+  const total = entries.length
+  if (total === 0) return
+  const deadline = Date.now() + BOOT_READY_TIMEOUT_MS
+  let notReady = entries
+  while (true) {
+    const codes = await Promise.all(notReady.map((entry) => mountEntry(entry, true)))
+    const retryable = []
+    for (let index = 0; index < notReady.length; index += 1) {
+      const code = codes[index]
+      if (code === null) continue
+      // 版本不符是永久性问题：立即落卡，不参与空转
+      if (code === 'ui_version_mismatch') void mountEntry(notReady[index], false)
+      else retryable.push(notReady[index])
+    }
+    if (retryable.length === 0) return
+    if (Date.now() >= deadline) {
+      for (const entry of retryable) void mountEntry(entry, false)
+      return
+    }
+    notReady = retryable
+    await new Promise((resolve) => setTimeout(resolve, BOOT_RETRY_DELAY_MS))
+  }
+}
+
+/** 导入 headless 入口；首载 404（壳取字节未就绪）退避后换新 URL 重试一次（避开失败模块缓存）。 */
 async function importHeadless(id) {
-  const url = `/assets/headless/${id}.js`
+  slotImportSeq += 1
   try {
-    return await import(url)
+    return await import(`/assets/headless/${id}.js?r=${slotImportSeq}`)
   } catch (err) {
     await new Promise((resolve) => setTimeout(resolve, 400))
-    return await import(`${url}?retry=1`)
+    slotImportSeq += 1
+    return await import(`/assets/headless/${id}.js?r=${slotImportSeq}`)
   }
 }
 
@@ -551,7 +631,8 @@ window.addEventListener('resize', updateNarrow)
 async function boot() {
   await loadMessages()
   connectEvents()
-  await mountAll()
+  await waitForSlotsReady()
+  await mountHeadless()
   window.setTimeout(() => {
     if (splash !== null) splash.classList.add('shell-fade')
   }, 150)

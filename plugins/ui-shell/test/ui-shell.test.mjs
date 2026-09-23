@@ -199,6 +199,17 @@ test('SSE 广播：宿主事件原样重播 + 壳状态 / 合成事件', () => {
   assert.equal(hub.count(), 1)
 })
 
+test('SSE 停机收尾：closeAll 给有 end 的 sink 发终止块并清空，缺 end 不抛', () => {
+  const hub = new SseHub()
+  let ended = 0
+  hub.add({ write: () => {}, end: () => { ended += 1 } })
+  hub.add({ write: () => {} })
+  assert.equal(hub.count(), 2)
+  assert.doesNotThrow(() => hub.closeAll())
+  assert.equal(ended, 1)
+  assert.equal(hub.count(), 0)
+})
+
 // ---- 挂载表 ----
 
 test('挂载表默认值：id/slot/entry 三元组，无 path/port', () => {
@@ -349,11 +360,40 @@ test('路由：表内 UI 插件无 HTTP 面（not-found）vs 表外 forward', ()
 })
 
 test('路由：vendor 运行时与 slot 客户端半边', () => {
-  assert.deepEqual(routeOf('GET', '/assets/vendor/react.js', []), { kind: 'vendor', name: 'react.js' })
+  assert.deepEqual(routeOf('GET', '/assets/vendor/vendor.js', []), { kind: 'vendor', name: 'vendor.js' })
   assert.deepEqual(routeOf('GET', '/assets/vendor/react-dom.js', []), { kind: 'vendor', name: 'react-dom.js' })
   assert.deepEqual(routeOf('GET', '/assets/ui/ui-chat.js', []), { kind: 'ui', id: 'ui-chat' })
-  assert.equal(routeOf('POST', '/assets/vendor/react.js', []).kind, 'not-found')
+  assert.equal(routeOf('POST', '/assets/vendor/vendor.js', []).kind, 'not-found')
   assert.equal(routeOf('GET', '/assets/ui/../secret.js', []).kind, 'not-found')
+})
+
+// ---- vendor 运行时具名导出（防「只有 export default」回归） ----
+
+/** 收集一个 ESM 产物的导出名（含 `export{a as b}` 别名与 `export default`）。 */
+function exportedNames(text) {
+  const names = new Set()
+  for (const match of text.matchAll(/export\{([^}]*)\}/g)) {
+    for (const part of match[1].split(',')) {
+      const trimmed = part.trim()
+      if (trimmed.length === 0) continue
+      const alias = /\s+as\s+/.exec(trimmed)
+      names.add((alias === null ? trimmed : trimmed.slice(alias.index + alias[0].length)).trim())
+    }
+  }
+  return names
+}
+
+test('vendor 运行时：单产物暴露 react / jsx / react-dom / store 的消费方具名导出', () => {
+  const expected = [
+    'Component', 'createElement', 'Fragment',
+    'useState', 'useEffect', 'useRef', 'useSyncExternalStore',
+    'jsx', 'jsxs',
+    'createRoot', 'hydrateRoot',
+  ]
+  const names = exportedNames(readFileSync(join(WEB_DIR, 'vendor', 'vendor.js'), 'utf8'))
+  for (const name of expected) {
+    assert.equal(names.has(name), true, `vendor.js 缺少具名导出 ${name}（React 19 只发 CJS，须由 build-vendor 生成显式 ESM 包装）`)
+  }
 })
 
 test('路由：页面 / 静态 / 事件 / api 动词门禁', () => {

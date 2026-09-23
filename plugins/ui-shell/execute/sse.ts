@@ -15,6 +15,8 @@ export interface SseRecord {
 
 export interface SseSink {
   write(chunk: string): void
+  /** 优雅收尾（可选）：停机时发终止块，避免浏览器报 ERR_INCOMPLETE_CHUNKED_ENCODING。 */
+  end?(): void
 }
 
 /** 一条 SSE 数据帧（`data: <json>\n\n`）；JSON 内换行安全（单行序列化）。 */
@@ -68,6 +70,21 @@ export class SseHub {
         this.sinks.delete(sink)
       }
     }
+  }
+
+  /**
+   * 停机收尾：给所有 SSE 客户端发终止块再摘除。
+   * 直接 destroy socket 会让浏览器记 `ERR_INCOMPLETE_CHUNKED_ENCODING`；`res.end()` 是干净的流结束。
+   */
+  closeAll(): void {
+    for (const sink of [...this.sinks]) {
+      try {
+        sink.end?.()
+      } catch {
+        // 已断开：忽略
+      }
+    }
+    this.sinks.clear()
   }
 
   /** 宿主事件原样重播（impl = 上报身份 / `host`）。 */

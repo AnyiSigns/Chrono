@@ -103,7 +103,7 @@ test('入站面集成：伪造 Host / 跨源 / 缺 Origin / 非 JSON 被拒，�
           return { ok: true, frame: { kind: 'accepted', run: 'r1' }, code: '', message: '' }
         },
       },
-      sse: { add() {}, remove() {} },
+      sse: { add() {}, remove() {}, closeAll() {} },
       state: () => ({ connected: true, theme: 'system', boot_mode: 'onboarding' }),
       headlessSource: () => null,
       uiSource: () => null,

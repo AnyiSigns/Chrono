@@ -222,19 +222,41 @@ async function refreshConfig(): Promise<void> {
   if (changed) sse.broadcast(shellStateRecord(connected, themePref))
 }
 
-function headlessSource(id: string): string | null {
-  const cached = headlessCache.get(id)
-  if (cached !== undefined) return cached
-  // 首次未命中：触发一次异步取字节，本次请求 404，下次可得。
-  if (connected) void refreshHeadless()
-  return null
+/** 首载竞态（宿主刚装配 / 目标插件重启）退避重试一次；失败返回 null。 */
+async function fetchWithRetry(fetch: () => Promise<string | null>): Promise<string | null> {
+  const first = await fetch()
+  if (first !== null) return first
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  if (exiting) return null
+  return await fetch()
 }
 
-function uiSource(id: string): string | null {
+/**
+ * 取 headless 入口字节（供 `/assets/headless/<id>.js`）：冷缓存时**等待**取回再回 200，
+ * 不再「先 404、下次再来」——否则每次刷新都会先掉一批 404。取不到才 null（调用方回 404）。
+ */
+async function headlessSource(id: string): Promise<string | null> {
+  const cached = headlessCache.get(id)
+  if (cached !== undefined) return cached
+  const entry = headless.find((item) => item.id === id)
+  if (entry === undefined) return null
+  const text = await fetchWithRetry(() => fetchHeadless(entry))
+  if (text !== null) headlessCache.set(id, text)
+  return text
+}
+
+/**
+ * 取 slot 客户端半边字节（供 `/assets/ui/<id>.js`）：冷缓存时等待取回再回 200，失败才 null。
+ * 取代旧的「首次未命中即 404 + 异步预热」，避免刷新时的 404 洪峰。
+ */
+async function uiSource(id: string): Promise<string | null> {
   const cached = uiCache.get(id)
   if (cached !== undefined) return cached
-  if (connected) void refreshUi()
-  return null
+  const entry = uiEntries.find((item) => item.id === id)
+  if (entry === undefined) return null
+  const text = await fetchWithRetry(() => fetchUi(entry))
+  if (text !== null) uiCache.set(id, text)
+  return text
 }
 
 function applyThemePref(pref: string): void {

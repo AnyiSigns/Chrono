@@ -145,13 +145,28 @@
     .shell-splash-name { font-size: var(--font-size-xl); font-weight: var(--weight-strong); }
     .shell-splash-note { color: var(--c-text-2); font-size: var(--font-size-sm); }
     .shell-breathe {
-      width: 48px;
+      position: relative;
+      width: 56px;
       height: 2px;
-      border-radius: var(--radius-sm);
-      background: var(--c-text-3);
-      animation: shell-breathe 1.6s ease-in-out infinite;
+      border-radius: 999px;
+      background: var(--c-border);
+      overflow: hidden;
     }
-    @keyframes shell-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
+    .shell-breathe::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 42%;
+      border-radius: inherit;
+      background: var(--c-accent);
+      animation: shell-sweep 1.4s cubic-bezier(.4, 0, .2, 1) infinite;
+    }
+    @keyframes shell-sweep {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(340%); }
+    }
 
     .shell-slot-failed {
       margin: var(--space-16);
@@ -170,17 +185,18 @@
 
     @media (prefers-reduced-motion: reduce) {
       .shell-toast { animation: none; }
-      .shell-breathe { animation: none; opacity: .4; }
+      .shell-breathe::after { animation: none; transform: none; width: 100%; }
     }
   </style>
   <script type="importmap">
     {
       "imports": {
-        "react": "/assets/vendor/react.js",
-        "react/jsx-runtime": "/assets/vendor/react-jsx-runtime.js",
-        "react-dom": "/assets/vendor/react-dom.js",
-        "react-dom/client": "/assets/vendor/react-dom.js",
-        "use-sync-external-store/shim": "/assets/vendor/use-sync-external-store.js"
+        "react": "/assets/vendor/vendor.js",
+        "react/jsx-runtime": "/assets/vendor/vendor.js",
+        "react-dom": "/assets/vendor/vendor.js",
+        "react-dom/client": "/assets/vendor/vendor.js",
+        "use-sync-external-store": "/assets/vendor/vendor.js",
+        "use-sync-external-store/shim": "/assets/vendor/vendor.js"
       }
     }
   </script>

@@ -439,8 +439,12 @@ export async function init(win) {
   const showDescriptor = (descriptor, count) => {
     if (typeof win.Notification !== 'function') return
     const content = notificationContent(descriptor, count, messages)
-    const notification = attachHandlers(new win.Notification(content.title, { body: content.body }), win)
     const key = throttleKey(descriptor.thread, descriptor.kind)
+    // 带 tag 创建：同 key 的新通知在原位替换旧的，避免同一会话堆叠。
+    const notification = attachHandlers(
+      new win.Notification(content.title, { body: content.body, tag: key }),
+      win,
+    )
     if (descriptor.unthrottled !== true) {
       notification.onclose = () => {
         if (live.get(key) === notification) live.delete(key)
@@ -455,7 +459,16 @@ export async function init(win) {
     const key = throttleKey(descriptor.thread, descriptor.kind)
     const existing = live.get(key)
     if (existing === undefined) return
-    existing.body = notificationContent(descriptor, count, messages).body
+    // `Notification.body` 是只读 getter，不能就地改写；只能同 tag 重建替换。
+    // 先摘掉旧实例的 onclose，避免关闭旧实例时误触发一次 release。
+    existing.onclose = null
+    try {
+      existing.close()
+    } catch {
+      // 已关闭 / 平台不支持 close：忽略
+    }
+    live.delete(key)
+    showDescriptor(descriptor, count)
   }
 
   runtime = createRuntime({
