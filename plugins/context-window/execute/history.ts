@@ -43,6 +43,9 @@ export function parseRawParts(value: unknown): ParsedParts {
       }
       continue
     }
+    // 展示专用 part（工具卡 / 推理块）：只给 UI 渲染，不进模型上下文；
+    // 工具调用与结果对模型的可见性由 `extra_messages` 回灌（tool_calls / tool_call_id）保证。
+    if (type === 'tool' || type === 'reasoning') continue
     if (type === 'tool_call' || type === 'tool_use') hasToolCall = true
     parts.push(textPart(JSON.stringify(item)))
   }
@@ -73,7 +76,8 @@ export function parseAttachments(value: unknown): CanonicalPart[] {
 export function messageParts(body: Record<string, unknown>): ParsedParts {
   const parsed = parseRawParts(body['parts'])
   const parts = parsed.parts.slice()
-  if (parts.length === 0 && typeof body['content'] === 'string') {
+  // 展示专用 part 被丢弃后可能为空；此时仅在 content 非空时回落正文（空正文不留空消息）。
+  if (parts.length === 0 && typeof body['content'] === 'string' && (body['content'] as string).length > 0) {
     parts.push(textPart(body['content'] as string))
   }
   return { parts: parts.concat(parseAttachments(body['attachments'])), hasToolCall: parsed.hasToolCall }

@@ -179,6 +179,7 @@ test('parts 分发：text / image / video / audio / file / tool / 未知降级',
   const tool = partViewModel({ type: 'tool', call_id: 'c1', tool: 'read', render: { form: 'line' }, args: {}, result: {} })
   assert.equal(tool.type, 'tool')
   assert.equal(tool.callId, 'c1')
+  assert.deepEqual(partViewModel({ type: 'reasoning', text: '想一下' }), { type: 'reasoning', text: '想一下' })
   assert.equal(partViewModel({ type: 'weird', text: 'fallback' }).text, 'fallback')
   assert.match(partViewModel({ type: 'weird', x: 1 }).text, /"x"/)
   assert.deepEqual(assetSource({ kind: 'ext', url: 'https://e.com/a' }), { kind: 'ext', url: 'https://e.com/a' })
@@ -219,13 +220,29 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
     render: { form: 'card', label: 'edit', tone: 'solid', summary: '{path}  +{result.added} -{result.removed}', detail: { kind: 'diff' } },
     args: { path: 'b.ts' },
     result: { added: 3, removed: 1 },
+    status: 'ok',
   })
   assert.equal(card.form, 'card')
   assert.equal(card.tone, 'solid')
   assert.equal(card.summary, 'b.ts  +3 -1')
-  assert.deepEqual(card.detail, { kind: 'diff' })
+  // detail 描述符与结果数据合并：kind 来自描述符，数据来自结果本体。
+  assert.deepEqual(card.detail, { added: 3, removed: 1, kind: 'diff' })
+  assert.equal(card.status, 'ok')
+
+  // 无结果时只留描述符（流式中展开区无数据可渲染）。
+  assert.deepEqual(toolCardViewModel({ render: { form: 'card', detail: { kind: 'paths' } } }).detail, { kind: 'paths' })
+  // 失败卡展开区为错误人话，不再渲染空 detail。
+  const failed = toolCardViewModel({
+    tool: 'shell',
+    render: { form: 'card', label: 'shell', detail: { kind: 'terminal' } },
+    result: { code: 'denied', message: 'denied by guard' },
+    status: 'error',
+  })
+  assert.equal(failed.status, 'error')
+  assert.deepEqual(failed.detail, { kind: 'text', text: 'denied: denied by guard' })
 
   assert.equal(toolCardViewModel({ render: { form: 'card', tone: 'bogus' } }).tone, 'plain')
+  assert.equal(toolCardViewModel({ render: { form: 'card' } }).status, null)
   const degraded = toolCardViewModel({ tool: 'x', result: { text: 'plain result' } })
   assert.equal(degraded.form, 'degraded')
   assert.equal(degraded.text, 'plain result')

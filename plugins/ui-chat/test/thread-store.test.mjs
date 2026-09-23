@@ -169,8 +169,77 @@ test('工具卡 fold：有序、按 call_id 去重后置末、chunks 追加、en
   view = applyToolDelta(view, { run: 'r1', call_id: 'a', chunk: 'line2' })
   const toolA = view.inFlight.tools.find((item) => item.callId === 'a')
   assert.equal(toolA.chunks, 'line1\nline2')
-  view = applyToolEnd(view, { run: 'r1', call_id: 'a' })
+  view = applyToolEnd(view, { run: 'r1', call_id: 'a', ok: true })
   assert.equal(view.inFlight.tools.find((item) => item.callId === 'a').done, true)
+  assert.equal(view.inFlight.tools.find((item) => item.callId === 'a').ok, true)
+})
+
+test('渲染段交错：正文与工具卡按到达序排布（工具不被挤到文末）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1' })
+  view = applyDelta(view, { run: 'r1', text: '先看一下' })
+  view = applyToolStart(view, { run: 'r1', call_id: 'a', tool: 'read' })
+  view = applyDelta(view, { run: 'r1', text: '再搜一下' })
+  view = applyToolStart(view, { run: 'r1', call_id: 'b', tool: 'grep' })
+  view = applyDelta(view, { run: 'r1', text: '结论' })
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => segment.kind),
+    ['text', 'tool', 'text', 'tool', 'text'],
+  )
+  assert.equal(view.inFlight.segments[0].text, '先看一下')
+  assert.equal(view.inFlight.segments[2].text, '再搜一下')
+  // 连续正文合并为一段
+  view = applyDelta(view, { run: 'r1', text: '！' })
+  assert.equal(view.inFlight.segments.length, 5)
+  assert.equal(view.inFlight.segments[4].text, '结论！')
+  // 工具去重置末时渲染段同步置末
+  view = applyToolStart(view, { run: 'r1', call_id: 'a', tool: 'read' })
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => (segment.kind === 'tool' ? segment.callId : 'text')),
+    ['text', 'text', 'b', 'text', 'a'],
+  )
+})
+
+test('reset 重放：清空正文段、保留工具段、新正文排到末位', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1' })
+  view = applyDelta(view, { run: 'r1', text: '旧文' })
+  view = applyToolStart(view, { run: 'r1', call_id: 'a', tool: 'read' })
+  view = applyDelta(view, { run: 'r1', reset: true, text: '新文' })
+  assert.equal(view.inFlight.text, '新文')
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => segment.kind),
+    ['tool', 'text'],
+  )
+  assert.equal(view.inFlight.segments[1].text, '新文')
+})
+
+test('推理分片：累积为 reasoning 段、先于同帧正文、reset 一并清空', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1' })
+  view = applyDelta(view, { run: 'r1', reasoning: '先想' })
+  view = applyDelta(view, { run: 'r1', reasoning: '一下' })
+  view = applyDelta(view, { run: 'r1', text: '答案' })
+  assert.equal(view.inFlight.reasoning, '先想一下')
+  assert.equal(view.inFlight.text, '答案')
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => segment.kind),
+    ['reasoning', 'text'],
+  )
+  assert.equal(view.inFlight.segments[0].text, '先想一下')
+  // 同帧同时带推理与正文：推理段在前
+  view = applyRunStarted(emptyView(), { run: 'r2', thread: 't1' })
+  view = applyDelta(view, { run: 'r2', reasoning: '想', text: '答' })
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => segment.kind),
+    ['reasoning', 'text'],
+  )
+  // reset 清空正文与推理段，工具段保留
+  view = applyToolStart(view, { run: 'r2', call_id: 't', tool: 'read' })
+  view = applyDelta(view, { run: 'r2', reset: true, reasoning: '重想', text: '重答' })
+  assert.deepEqual(
+    view.inFlight.segments.map((segment) => segment.kind),
+    ['tool', 'reasoning', 'text'],
+  )
+  assert.equal(view.inFlight.reasoning, '重想')
+  assert.equal(view.inFlight.text, '重答')
 })
 
 test('线程切换：dropInFlight 不传 run 清空任意在途回合（语义 8 的一半）', () => {

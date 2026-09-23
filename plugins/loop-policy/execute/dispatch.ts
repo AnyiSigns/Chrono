@@ -2,6 +2,7 @@
 // 节点实现不在本插件（节点是各插件的 eff）；本文件只做 bag 装配、结果归一、模型失败时的降级判定。
 
 import { resolveDowngrade } from './downgrade.ts'
+import { displayParts } from './commit-parts.ts'
 import {
   contractId,
   effectsMethods,
@@ -150,6 +151,11 @@ function stepOutput(value: Json): Rec {
   const text = typeof raw['text'] === 'string' ? (raw['text'] as string) : ''
   const checked = checkToolCalls(raw['tool_calls'])
   const message: Rec = { role: 'assistant', content: text }
+  // 推理随承接帧携带，供回合落盘时作展示段；context-window 只取 role / parts / tool_calls，
+  // 该字段不参与模型上下文（见 commit-parts.ts 头注）。
+  if (typeof raw['reasoning'] === 'string' && (raw['reasoning'] as string).length > 0) {
+    message['reasoning'] = raw['reasoning']
+  }
   if (isRecord(raw['usage'])) message['usage'] = raw['usage']
   // 工具调用回灌：assistant 消息须带上本轮 tool_calls（中性形状 {id,name,arguments}），
   // 否则下一 iter 模型看不到自己的调用，会反复重调同一工具（协议层按方言编形）。
@@ -260,6 +266,14 @@ function commitBag(input: NodeDispatchInput): Rec {
   const refusal = isRecord(input.inputs['refusal']) ? (input.inputs['refusal'] as Rec) : null
   const assistant: Rec = { content: typeof message['content'] === 'string' ? message['content'] : '' }
   if (isRecord(message['usage'])) assistant['meta'] = { usage: message['usage'] }
+  // 展示 parts：推理 / 正文 / 工具卡按到达序落盘，定稿后 UI 仍能渲染工具卡与推理块。
+  // 纯文本回合不写 parts（content 已覆盖），避免历史无谓膨胀。
+  const parts = displayParts(
+    input.rs.extraMessages,
+    message,
+    Array.isArray(bag['tools']) ? (bag['tools'] as Json[]) : [],
+  )
+  if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
   const out: Rec = {
     session,
     slots,

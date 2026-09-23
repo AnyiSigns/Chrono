@@ -23,6 +23,21 @@ const {
 } = await import('../execute/text.ts')
 const { computeBudget } = await import('../execute/budget.ts')
 const { planHistory } = await import('../execute/history.ts')
+const { parseRawParts, messageParts } = await import('../execute/history.ts')
+
+test('parts 宽松解析：展示专用 tool / reasoning part 不进模型上下文', () => {
+  const parsed = parseRawParts([
+    { type: 'reasoning', text: '思考' },
+    { type: 'text', text: '正文' },
+    { type: 'tool', call_id: 'c1', tool: 'read', render: { form: 'line' }, result: {} },
+  ])
+  assert.deepEqual(parsed.parts, [{ type: 'text', text: '正文' }])
+  assert.equal(parsed.hasToolCall, false)
+  // 只剩展示 part 且 content 为空 → 空 parts（不留空消息）
+  assert.deepEqual(messageParts({ content: '', parts: [{ type: 'reasoning', text: 'x' }] }).parts, [])
+  // content 非空仍回落正文
+  assert.deepEqual(messageParts({ content: 'hi' }).parts, [{ type: 'text', text: 'hi' }])
+})
 
 test('估算器规格向量：ASCII / CJK / 混合 / 空串 / 其他文字', () => {
   assert.equal(native.countTokens(''), 0)

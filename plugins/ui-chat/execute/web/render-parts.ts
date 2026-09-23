@@ -1,5 +1,5 @@
 // 内容 parts 分发（纯函数）：把消息 def 的 `parts` / `attachments` 归一成视图模型。
-// 全能口径：text / image / video / audio / file / 工具卡；未知 part 走文本降级（不空白、不报错）。
+// 全能口径：text / reasoning / image / video / audio / file / 工具卡；未知 part 走文本降级（不空白、不报错）。
 
 import { UI_TEXT } from './messages.ts'
 
@@ -50,6 +50,7 @@ export function partViewModel(part: any): any {
   if (!isRec(part)) return { type: 'text', text: String(part ?? '') }
   const type = typeof part.type === 'string' ? part.type : 'text'
   if (type === 'text') return { type: 'text', text: textOf(part) }
+  if (type === 'reasoning') return { type: 'reasoning', text: textOf(part) }
   if (MEDIA_KINDS.has(type)) {
     return { type, source: assetSource(part), alt: typeof part.name === 'string' ? part.name : '' }
   }

@@ -21,6 +21,7 @@ export const UI_TEXT: { [code: string]: string } = {
   chat_copied: '已复制',
   chat_copy_failed: '复制失败',
   chat_generating: '仍在生成…',
+  chat_reasoning: '推理',
   chat_cancelled: '已取消',
   chat_no_more: '没有更多了',
   chat_new_messages: '以下为新消息',

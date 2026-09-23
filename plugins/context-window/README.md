@@ -30,6 +30,8 @@
   本轮输入在最后。
 - **方言格式化**：`openai-chat` / `openai-responses` / `anthropic-messages`；多模态按模型
   `modalities.input` 编 content parts，不支持该模态时降级为文本引用并标 `modality_dropped`。
+- **展示专用 part 丢弃**：历史消息 `parts` 里的 `reasoning`（推理块）/ `tool`（工具卡）段只给 UI 渲染，
+  不进模型上下文——工具调用与结果对模型的可见性由 `extra_messages` 回灌保证；丢弃后正文为空的消息不留空条目。
 - **组装清单**：每次组装发一条 `context.assembled` 事件（经宿主透传，不落账、不进世界）；
   `run` / `thread` 取自协议帧 `env`。
 - **75% 触发**：`used ≥ budget × 75%` 时追加**一条** system 压缩提示（文案住 policy）。

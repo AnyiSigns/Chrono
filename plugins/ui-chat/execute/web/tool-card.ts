@@ -10,6 +10,29 @@ function isRec(value: unknown): value is { [key: string]: any } {
 const TONES = new Set(['ghost', 'plain', 'solid'])
 const FORMS = new Set(['line', 'card'])
 
+/** 工具名 → 图标名（壳 icons 精灵表内的 id）；未登记走通用图标，工具可经 `render.icon` 覆盖。 */
+const TOOL_ICONS: { [key: string]: string } = {
+  read: 'folder-open',
+  glob: 'folder',
+  grep: 'search',
+  edit: 'pencil-line',
+  write: 'upload',
+  shell: 'monitor',
+  exec: 'monitor',
+  browser: 'eye',
+  fetch: 'eye',
+  question: 'info',
+  plugin: 'puzzle',
+  orchestration: 'git-branch',
+}
+
+/** 工具卡图标名：显式 `render.icon` 优先，否则按工具名登记，再否则通用图标。 */
+export function toolIcon(name: unknown, explicit: unknown): string {
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit
+  const key = typeof name === 'string' ? name : ''
+  return TOOL_ICONS[key] ?? 'cpu'
+}
+
 function fieldText(source: any, path: string): string {
   if (!isRec(source)) return ''
   const segments = String(path).split('.')
@@ -54,11 +77,35 @@ export function degradeText(part: any): string {
   return safeStringify(result ?? part.args ?? null)
 }
 
+/**
+ * detail 描述符 + 工具结果合并：`kind` 等描述符字段优先（来自 render.detail），
+ * 数据字段来自结果本体（如 glob 的 `paths`、shell 的 `stdout`、edit 的 `patch`）。
+ * 描述符缺数据时展开区才是空的——这正是「有结果却渲染空白」的根因。
+ */
+function mergeDetail(descriptor: any, result: any): any {
+  if (!isRec(descriptor)) return null
+  if (isRec(result)) return { ...result, ...descriptor }
+  return { ...descriptor }
+}
+
+/** 失败工具卡的展开内容：错误码 + 人话（无 result 数据可合并）。 */
+function errorDetail(result: any): any {
+  if (isRec(result)) {
+    const code = typeof result.code === 'string' ? result.code : ''
+    const message = typeof result.message === 'string' ? result.message : ''
+    const text = [code, message].filter((piece) => piece.length > 0).join(': ')
+    if (text.length > 0) return { kind: 'text', text }
+  }
+  return { kind: 'text', text: typeof result === 'string' ? result : '' }
+}
+
 /** 工具 part → 工具卡视图模型。 */
 export function toolCardViewModel(part: any): any {
   const source = isRec(part) ? part : {}
   const render = isRec(source.render) ? source.render : null
   const label = typeof render?.label === 'string' ? render.label : typeof source.tool === 'string' ? source.tool : ''
+  const status = source.status === 'ok' || source.status === 'error' ? source.status : null
+  const icon = toolIcon(source.tool, render?.icon)
   if (render === null) {
     return {
       form: 'degraded',
@@ -66,6 +113,8 @@ export function toolCardViewModel(part: any): any {
       tone: 'plain',
       summary: '',
       detail: null,
+      status,
+      icon,
       live: false,
       text: degradeText(source),
     }
@@ -78,17 +127,23 @@ export function toolCardViewModel(part: any): any {
       tone: 'plain',
       summary: '',
       detail: null,
+      status,
+      icon,
       live: false,
       text: degradeText(source),
     }
   }
   const tone = typeof render.tone === 'string' && TONES.has(render.tone) ? render.tone : 'plain'
+  const failed = status === 'error'
   return {
     form,
     label,
     tone,
     summary: truncateSummary(renderSummary(render.summary, source.args, source.result)),
-    detail: isRec(render.detail) ? render.detail : null,
+    detail: failed ? errorDetail(source.result) : mergeDetail(render.detail, source.result),
+    status,
+    icon,
+    args: source.args ?? null,
     live: render.live === true,
     text: '',
   }

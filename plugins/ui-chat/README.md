@@ -49,10 +49,13 @@ export function register(ctx: SlotContext): void {
 
 - **快照**：`chat.history` 落地即替换权威消息段（会话 / refs / 消息 / kind）。历史请求带
   单调序号，只认最新一次回包，线程切换 / 并发重拉不会用旧线程数据覆盖新视图。
-- **有序增量**：`model.delta` 只追加到在途回合。同一帧内到达的增量合帧为一次 store 提交；
-  任何非增量事件到达前先冲刷在途增量，保证「同连接内按到达顺序 fold」不被合帧打乱。
+- **有序增量**：`model.delta` 只追加到在途回合。在途回合持**到达序渲染段**（`segments`：
+  reasoning / text / tool），渲染器按段序交错展示——工具卡不会被挤到正文之后。同一帧内到达的
+  增量合帧为一次 store 提交；任何非增量事件到达前先冲刷在途增量，保证「同连接内按到达顺序 fold」
+  不被合帧打乱。
 - **定稿替换**：`run.finished`（done）把在途回合标记为定稿中，随后一次快照在同一帧内原地收口；
-  `cancelled` 保留已生成部分 + 「已取消」。
+  `cancelled` 保留已生成部分 + 「已取消」。定稿后的工具卡与推理块来自 assistant 消息的展示
+  `parts`（由 `turn.commit` 落盘），故刷新 / 切线程后仍可见。
 - **乐观用户消息**：回合进行中从 `chat.message` 槽读出在途用户消息并即时渲染；权威快照落地
   即收起，避免与历史重复。用户消息不再等到回合结束才可见。
 - **错误边界**：每条消息（含流式回合、群聊气泡）各自包一层渲染异常边界，单条渲染异常降级为
@@ -65,7 +68,7 @@ export function register(ctx: SlotContext): void {
 3. 迟到帧丢弃：已定稿 run 的后续 delta / tool 帧丢弃，防定稿后冒出幽灵回合。
 4. 缺 started 自愈：首个 delta / tool.start 到达即建在途回合，started 丢失不丢流。
 5. 无关终局忽略：`run.finished` 无匹配在途回合即判为无关 run（写 run / 周期 run），不触发重拉。
-6. reset 语义：`model.delta.reset === true` 清空在途正文再追加（流重试重放，不重复追加）。
+6. reset 语义：`model.delta.reset === true` 清空在途正文与推理段再追加（流重试重放，不重复追加）。
 7. 快照权威：快照替换权威段；在途回合只在定稿 / 取消 / 线程切换 / 重连时清除。
 8. 重连重同步：连接 false→true 且确曾断线时丢弃在途回合并强制快照重同步。
 
@@ -87,10 +90,12 @@ export function register(ctx: SlotContext): void {
 | 位置 | 渲染器 | 说明 |
 | --- | --- | --- |
 | 内容 parts | `text` | 自实现 markdown + 白名单消毒（禁 script / 事件属性 / 危险 URL） |
+| | `reasoning` | 推理折叠块：默认收起，头部「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown；只作展示，不进模型上下文 |
 | | `image` / `video` / `audio` / `file` | 尺寸上限按全局 UI 设计语言；`loading="lazy"`；音视频不自动播放；点击进 lightbox / 播放器。资产经 `ctx.asset.get` 取字节转 blob URL（可 revoke，替代 data URL）；图片解码前探测自然尺寸并预留精确占位盒，消除懒加载跳动 |
-| 工具卡 | `form:"line"` | 一行（label + summary），不可展开 |
-| | `form:"card"` | 折叠（label + summary）→ 展开（detail） |
-| | `tone` | `ghost` / `plain` / `solid` 质感 |
+| 工具卡 | `form:"line"` | 一行（图标 + label + summary），不可展开 |
+| | `form:"card"` | 折叠（图标 + label + summary + 状态角标）→ 展开（detail）；在途卡展开体只给流式输出（`live:true`）或调用参数，定稿卡展开体渲染描述符与结果合并后的 detail |
+| | `tone` | `ghost` / `plain` / `solid` 质感（line 形态仅 `solid` 留左侧强调条） |
+| | 状态角标 | 运行中呼吸点 / 成功勾 / 失败叹号（`tool.end` 的 `ok` 与定稿 `status` 驱动） |
 | | `live:true` | 收 `tool.start` 开卡、按 `call_id` 追加 `tool.delta`、`tool.end` 收尾，回合末以消息 part 定稿 |
 | | 降级 | 无 `render` / 未知 form / 未知 kind → markdown 文本降级 |
 | detail.kind | `text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / `question` | `diff` 新增绿 / 删除红 / 修改黄 + 上下文折叠；`terminal` stdout / stderr 分色 + 退出码；`question` 交互卡 |

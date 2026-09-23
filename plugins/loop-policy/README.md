@@ -159,6 +159,10 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
   `context.assemble` bag 传入，由 context-window 接受该键并追加到 messages 尾部（source=`tool`，排在本轮输入之后）。
   工具路径按**规范序列**回灌：先 `assistant` 承接帧（带中性 `tool_calls: [{id,name,arguments}]`），再逐条
   `tool` 结果（带 `tool_call_id` 与调用配对）——否则模型看不到自己的调用，会反复重调同一工具。
+- **落盘展示 parts（已落地）**：`turn.commit` 把本轮时间线（承接帧 + 工具结果）折叠成有序展示段
+  （`reasoning` / `text` / `tool`，见 `execute/commit-parts.ts`）写进 assistant 消息 `parts`，供 UI 定稿后
+  仍能渲染推理块与工具卡（含 render 描述符与结果）。纯展示数据，不进模型上下文：context-window 丢弃
+  `reasoning` / `tool` part，工具可见性仍由上面的 `extra_messages` 回灌保证。纯文本回合不写 parts。
 - **sink 延后收口**：契约字面为每个 iter 都到 `commit`；本实现将 sink 延后到 loop 终止 / 拒绝短路时执行一次，
   以保「回合尾一次写」且不重复提交用户消息 / 清槽。属对契约的解释性收敛，已在 README 登记。
 - **`post` 失败码**：全局拒绝码表无独立 post 码，本插件用 `capability_mismatch`（graph）承载「Scope 产出不合契约」。
@@ -175,7 +179,7 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 ## 运行
 
 ```sh
-npm test                    # 协议级 + 单元测试（node --test，56 例）
+npm test                    # 协议级 + 单元测试（node --test，73 例）
 node tools/e2e-smoke.mjs    # 宿主装配 E2E（pack 闭包 → seed → 离线投影 → 直连协议 → verify）
 ```
 

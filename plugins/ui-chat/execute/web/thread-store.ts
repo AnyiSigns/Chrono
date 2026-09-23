@@ -12,7 +12,7 @@
 // 5. 无关终局忽略：`run.finished` 无匹配在途回合即判定为无关 run（写 run / 周期 run /
 //    已收束 run），忽略而不重拉——「事件到达即全量重拉」正是要消除的。真正的增量全丢
 //    场景（断线）由规则 8 的重连快照兜底。
-// 6. reset 语义：`model.delta.reset === true` 清空在途回合已累积正文再追加本帧
+// 6. reset 语义：`model.delta.reset === true` 清空在途回合已累积正文与推理段再追加本帧
 //    （流重试重放；修掉旧实现重复追加的缺陷）。
 // 7. 快照权威：快照替换权威消息段（messages / conversation / refs / kind）；
 //    在途回合只由生命周期事件（定稿 / 取消 / 线程切换 / 重连）清除。
@@ -49,6 +49,10 @@ function deltaText(payload: any): string {
   return ''
 }
 
+function deltaReasoning(payload: any): string {
+  return isRec(payload) && typeof payload.reasoning === 'string' ? payload.reasoning : ''
+}
+
 /** 空视图：线程切换 / 首屏前的占位。 */
 export function emptyView(thread: string | null = null): any {
   return {
@@ -65,7 +69,28 @@ export function emptyView(thread: string | null = null): any {
 }
 
 function newInFlight(run: string | null, thread: string | null): any {
-  return { run, thread, text: '', tools: [], finalizing: false, cancelled: false }
+  // segments：到达序渲染段（reasoning / text / tool 段），渲染器按序交错展示；
+  // text / reasoning / tools 仍冗余保留（供慢流判定与 contentKey），从 segments 同步得出。
+  return {
+    run,
+    thread,
+    text: '',
+    reasoning: '',
+    tools: [],
+    segments: [],
+    finalizing: false,
+    cancelled: false,
+  }
+}
+
+/** 追加同类文本段：末段同类则合并，否则新开一段（保持到达序）。 */
+function appendSegment(segments: any[], kind: string, text: string): any[] {
+  if (text.length === 0) return segments
+  const last = segments[segments.length - 1]
+  if (last !== undefined && last.kind === kind) {
+    return [...segments.slice(0, -1), { kind, text: last.text + text }]
+  }
+  return [...segments, { kind, text }]
 }
 
 function rememberFinished(view: any, run: string | null): any {
@@ -118,17 +143,43 @@ export function applyRunStarted(view: any, payload: any): any {
   return ensureInFlight(view, run, payload)
 }
 
-/** `model.delta`：追加正文；缺 started 自愈；已定稿 run 丢弃；reset 清空重放。 */
+/**
+ * `model.delta`：追加正文与推理分片；缺 started 自愈；已定稿 run 丢弃；
+ * reset 清空正文 / 推理段重放（工具段保留）。推理分片先于同帧正文段落位（语义上推理在前）。
+ */
 export function applyDelta(view: any, payload: any): any {
   const run = runId(payload)
   if (isFinished(view, run)) return view
   const based = ensureInFlight(view, run, payload)
   const text = deltaText(payload)
-  const nextText = payload.reset === true ? text : based.inFlight.text + text
-  return { ...based, inFlight: { ...based.inFlight, text: nextText } }
+  const reasoning = deltaReasoning(payload)
+  if (payload.reset === true) {
+    const kept = based.inFlight.segments.filter(
+      (segment: any) => segment.kind !== 'text' && segment.kind !== 'reasoning',
+    )
+    const replayed = appendSegment(appendSegment(kept, 'reasoning', reasoning), 'text', text)
+    return {
+      ...based,
+      inFlight: { ...based.inFlight, text, reasoning, segments: replayed },
+    }
+  }
+  const segments = appendSegment(
+    appendSegment(based.inFlight.segments, 'reasoning', reasoning),
+    'text',
+    text,
+  )
+  return {
+    ...based,
+    inFlight: {
+      ...based.inFlight,
+      text: based.inFlight.text + text,
+      reasoning: based.inFlight.reasoning + reasoning,
+      segments,
+    },
+  }
 }
 
-/** `tool.start`：在途回合的工具卡（有序，按 call_id 去重后置末）。 */
+/** `tool.start`：在途回合的工具卡（有序，按 call_id 去重后置末；segments 同步去重置末）。 */
 export function applyToolStart(view: any, payload: any): any {
   const run = runId(payload)
   if (isFinished(view, run)) return view
@@ -143,8 +194,13 @@ export function applyToolStart(view: any, payload: any): any {
     args: payload.args ?? null,
     chunks: '',
     done: false,
+    ok: null,
   })
-  return { ...based, inFlight: { ...based.inFlight, tools } }
+  const segments = based.inFlight.segments.filter(
+    (segment: any) => !(segment.kind === 'tool' && segment.callId === callId),
+  )
+  segments.push({ kind: 'tool', callId })
+  return { ...based, inFlight: { ...based.inFlight, tools, segments } }
 }
 
 /** `tool.delta`：追加工具输出块（当前无生产者，语义先定死）。 */
@@ -161,15 +217,16 @@ export function applyToolDelta(view: any, payload: any): any {
   return { ...view, inFlight: { ...view.inFlight, tools } }
 }
 
-/** `tool.end`：标记工具卡终态。 */
+/** `tool.end`：标记工具卡终态（记录 ok 供状态图标；结果本体等定稿快照）。 */
 export function applyToolEnd(view: any, payload: any): any {
   const run = runId(payload)
   if (isFinished(view, run)) return view
   if (view.inFlight === null) return view
   const callId = callIdOf(payload)
   if (callId.length === 0) return view
+  const ok = typeof payload.ok === 'boolean' ? payload.ok : null
   const tools = view.inFlight.tools.map((item: any) =>
-    item.callId === callId ? { ...item, done: true } : item,
+    item.callId === callId ? { ...item, done: true, ok } : item,
   )
   return { ...view, inFlight: { ...view.inFlight, tools } }
 }

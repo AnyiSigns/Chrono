@@ -142,6 +142,75 @@ test('工具调用回灌：assistant(tool_calls) → tool(tool_call_id) 进入�
   }
 })
 
+test('落盘展示 parts：推理 / 正文 / 工具卡按到达序写入 commit，带 render 与结果', async () => {
+  const service = startService({
+    providers: {
+      'model.chat': (args) => {
+        const last = Array.isArray(args.messages) ? args.messages[args.messages.length - 1] : null
+        if (last && last.role === 'tool') {
+          return { ok: true, text: '收尾', reasoning: '想收尾', tool_calls: [], usage: {} }
+        }
+        return {
+          ok: true,
+          text: '先查一下',
+          reasoning: '该用 edit 改文件',
+          tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt', old: 'x', new: 'y' } }],
+          usage: {},
+        }
+      },
+      'guard.judge': () => ({ decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
+      'tools.dispatch': (args) => ({
+        results: args.calls.map((call) => ({
+          call_id: call.call_id,
+          ok: true,
+          result: { added: 1, removed: 1, patch: '@@ -1 +1 @@\n-x\n+y' },
+        })),
+      }),
+    },
+  })
+  try {
+    await service.interpret({
+      tools: [
+        {
+          name: 'edit',
+          provider: 'tool',
+          caps: { fs: { write: 'workspace' } },
+          render: { form: 'card', label: 'edit', summary: '{path}', tone: 'plain', detail: { kind: 'diff' } },
+        },
+      ],
+    })
+    const commit = service.portCalls.find((call) => call.port === 'session' && call.method === 'commit')
+    assert.ok(commit, 'session.commit 应被调用')
+    const parts = commit.args.assistant.parts
+    assert.ok(Array.isArray(parts), '落盘 assistant 应带展示 parts')
+    assert.deepEqual(parts.map((part) => part.type), ['reasoning', 'text', 'tool', 'reasoning', 'text'])
+    assert.equal(parts[0].text, '该用 edit 改文件')
+    assert.equal(parts[1].text, '先查一下')
+    assert.equal(parts[2].call_id, 'c1')
+    assert.equal(parts[2].tool, 'edit')
+    assert.equal(parts[2].status, 'ok')
+    assert.deepEqual(parts[2].result, { added: 1, removed: 1, patch: '@@ -1 +1 @@\n-x\n+y' })
+    assert.equal(parts[2].render.detail.kind, 'diff', '工具卡 render 从目录带入')
+    assert.equal(parts[3].text, '想收尾')
+    assert.equal(parts[4].text, '收尾')
+  } finally {
+    service.close()
+  }
+})
+
+test('纯文本回合不写展示 parts（content 已覆盖，历史不膨胀）', async () => {
+  const service = startService()
+  try {
+    await service.interpret({})
+    const commit = service.portCalls.find((call) => call.port === 'session' && call.method === 'commit')
+    assert.ok(commit, 'session.commit 应被调用')
+    assert.equal(commit.args.assistant.parts, undefined)
+    assert.equal(typeof commit.args.assistant.content, 'string')
+  } finally {
+    service.close()
+  }
+})
+
 test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回（带游标）', async () => {
   const service = startService({
     providers: {

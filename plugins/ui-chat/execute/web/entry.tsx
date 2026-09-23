@@ -637,52 +637,114 @@ function DetailView({ detail }: { detail: any }): ReactNode {
   }
 }
 
+/**
+ * 推理折叠块：默认收起，头部给「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown。
+ * 推理只作展示，不进模型上下文（由 context-window 丢弃）。
+ */
+function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }): ReactNode {
+  const { table } = useChatEnv()
+  const [open, setOpen] = useState(false)
+  if (text.length === 0) return null
+  return (
+    <div className="chat-reasoning" data-open={String(open)}>
+      <button
+        type="button"
+        className="chat-reasoning-head"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="brain" size={14} className="chat-reasoning-icon" />
+        <span className="chat-reasoning-label">{lookupMessage(table, 'chat_reasoning').body}</span>
+        {streaming ? (
+          <span className="chat-tool-status" data-state="running">
+            <span className="chat-tool-spin" />
+          </span>
+        ) : null}
+        <Icon name="chevron-right" size={16} className="chat-reasoning-chevron" />
+      </button>
+      {open ? (
+        <div className="chat-reasoning-body">
+          <Markdown text={text} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/** 工具卡状态角标：运行中呼吸点 / 成功勾 / 失败叹号；未知（历史卡无状态）不显示。 */
+function ToolStatus({ state }: { state: string | null }): ReactNode {
+  if (state === null) return null
+  if (state === 'running') {
+    return (
+      <span className="chat-tool-status" data-state="running">
+        <span className="chat-tool-spin" />
+      </span>
+    )
+  }
+  return (
+    <span className="chat-tool-status" data-state={state}>
+      <Icon name={state === 'ok' ? 'check' : 'alert-circle'} size={14} />
+    </span>
+  )
+}
+
+/**
+ * 工具卡：`line` 一行不可展开；`card` 折叠头 + 展开体。
+ * 在途卡（`live` 非空）结果尚未落地：展开体只给流式输出（`render.live`）或调用参数，
+ * 不渲染空 detail；定稿卡展开体渲染描述符与结果合并后的 detail。
+ */
 function ToolCard({
   vm,
-  liveChunks,
-  liveDone,
+  live,
 }: {
   vm: any
-  liveChunks?: string
-  liveDone?: boolean
+  live?: { chunks: string; done: boolean; ok: boolean | null } | null
 }): ReactNode {
   const [open, setOpen] = useState<boolean | null>(null)
   if (vm.form === 'degraded') return <Markdown text={vm.text} />
+  const streaming = live !== null && live !== undefined
+  const state = streaming
+    ? live.done !== true
+      ? 'running'
+      : live.ok === false
+        ? 'error'
+        : 'ok'
+    : vm.status
   if (vm.form === 'line') {
     return (
-      <div className={`chat-tool chat-tool-${vm.tone}`}>
-        <div className="chat-tool-line">
-          <span className="chat-tool-label">{vm.label}</span>
-          <span className="chat-tool-summary">{vm.summary}</span>
-        </div>
+      <div className="chat-tool chat-tool-line" data-tone={vm.tone}>
+        <Icon name={vm.icon} size={14} className="chat-tool-icon" />
+        <span className="chat-tool-label">{vm.label}</span>
+        <span className="chat-tool-summary">{vm.summary}</span>
+        <ToolStatus state={state} />
       </div>
     )
   }
-  const isLive = liveChunks !== undefined
-  // live 卡默认展开但允许折叠；定稿卡默认折叠（open 未被交互时为 null）。
-  const expanded = open !== null ? open : isLive
+  const liveBody = streaming && vm.live === true && live.chunks.length > 0
+  // 有流式输出的在途卡默认展开（跑完即收）；其余默认折叠（open 未被交互时为 null）。
+  const expanded = open !== null ? open : liveBody && live.done !== true
   return (
-    <div
-      className={`chat-tool chat-tool-${vm.tone}`}
-      data-open={String(expanded)}
-      data-live={isLive ? (liveDone === true ? 'done' : 'live') : undefined}
-    >
+    <div className={`chat-tool chat-tool-card chat-tool-${vm.tone}`} data-open={String(expanded)}>
       <button
         type="button"
         className="chat-tool-head"
         aria-expanded={expanded}
-        onClick={() => setOpen(!(open !== null ? open : isLive))}
+        onClick={() => setOpen(!expanded)}
       >
-        <Icon name="chevron-right" size={16} className="chat-tool-chevron" />
+        <Icon name={vm.icon} size={14} className="chat-tool-icon" />
         <span className="chat-tool-label">{vm.label}</span>
         <span className="chat-tool-summary">{vm.summary}</span>
+        <ToolStatus state={state} />
+        <Icon name="chevron-right" size={16} className="chat-tool-chevron" />
       </button>
       {expanded ? (
         <div className="chat-tool-detail">
-          {isLive ? (
+          {liveBody ? (
             <div className="chat-terminal">
-              <div className="chat-terminal-stdout">{liveChunks}</div>
+              <div className="chat-terminal-stdout">{live.chunks}</div>
             </div>
+          ) : streaming ? (
+            <pre className="chat-code-block">{safeStringify(vm.args ?? null)}</pre>
           ) : (
             <DetailView detail={vm.detail} />
           )}
@@ -746,6 +808,7 @@ function Footnote({ def, showRetry }: { def: any; showRetry: boolean }): ReactNo
 
 function RenderItem({ vm }: { vm: any }): ReactNode {
   if (vm.type === 'text') return <Markdown text={vm.text} />
+  if (vm.type === 'reasoning') return <ReasoningBlock text={vm.text} streaming={false} />
   if (vm.type === 'image') return <MediaImage source={vm.source} alt={vm.alt ?? ''} />
   if (vm.type === 'video') return <MediaVideo source={vm.source} />
   if (vm.type === 'audio') return <MediaAudio source={vm.source} />
@@ -801,16 +864,51 @@ function MessageItem({ entry, announce }: { entry: any; announce: boolean }): Re
   )
 }
 
+/** 在途工具卡：结果尚未落地，展开体只给流式输出或调用参数。 */
+function StreamToolCard({ tool }: { tool: any }): ReactNode {
+  if (tool === null || tool === undefined) return null
+  const vm = toolCardViewModel({
+    type: 'tool',
+    callId: tool.callId,
+    tool: tool.tool,
+    render: tool.render,
+    args: tool.args,
+    result: null,
+    status: null,
+  })
+  return <ToolCard vm={vm} live={{ chunks: tool.chunks, done: tool.done === true, ok: tool.ok ?? null }} />
+}
+
 function StreamTurn({ view, slowStream }: { view: any; slowStream: boolean }): ReactNode {
   const env = useChatEnv()
   const inFlight = view.inFlight
   if (inFlight === null) return null
-  const hasText = inFlight.text.length > 0
   const streaming = isStreaming(view)
-  const showNote = inFlight.cancelled === true || (!hasText && slowStream)
+  const hasOutput = inFlight.text.length > 0 || inFlight.reasoning.length > 0
+  const activeTools = inFlight.tools.some((tool: any) => tool.done !== true)
+  // 工具在跑时由卡片状态自证活动，不再叠「仍在生成」；有推理/正文即撤。
+  const showNote = inFlight.cancelled === true || (!hasOutput && slowStream && !activeTools)
+  const toolsById = new Map(inFlight.tools.map((tool: any) => [tool.callId, tool]))
+  const lastIndex = inFlight.segments.length - 1
   return (
     <div className="chat-msg chat-msg-assistant" aria-busy={inFlight.cancelled === true ? undefined : true}>
-      {hasText ? null : <div className="chat-breathe" />}
+      {inFlight.segments.length === 0 ? <div className="chat-breathe" /> : null}
+      {inFlight.segments.map((segment: any, index: number) => {
+        if (segment.kind === 'reasoning') {
+          return (
+            <ReasoningBlock key={`reasoning-${index}`} text={segment.text} streaming={streaming && index === lastIndex} />
+          )
+        }
+        if (segment.kind === 'text') {
+          return (
+            <div key={`text-${index}`} className="chat-stream-text-wrap">
+              <Markdown text={segment.text} className="chat-md chat-stream-text" />
+              {streaming && index === lastIndex ? <span className="chat-cursor" /> : null}
+            </div>
+          )
+        }
+        return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
+      })}
       {showNote ? (
         <div className="chat-workflow-meta">
           {inFlight.cancelled === true
@@ -818,25 +916,6 @@ function StreamTurn({ view, slowStream }: { view: any; slowStream: boolean }): R
             : lookupMessage(env.table, 'chat_generating').body}
         </div>
       ) : null}
-      <div className="chat-stream-text-wrap">
-        <Markdown text={inFlight.text} className="chat-md chat-stream-text" />
-        {hasText && streaming ? <span className="chat-cursor" /> : null}
-      </div>
-      {inFlight.tools.map((tool: any) => (
-        <ToolCard
-          key={tool.callId}
-          vm={toolCardViewModel({
-            type: 'tool',
-            callId: tool.callId,
-            tool: tool.tool,
-            render: tool.render,
-            args: tool.args,
-            result: null,
-          })}
-          liveChunks={tool.chunks}
-          liveDone={tool.done}
-        />
-      ))}
     </div>
   )
 }
@@ -1043,13 +1122,14 @@ function isAssistantEntry(entry: any): boolean {
 function contentKey(view: any): string {
   const inFlight = view.inFlight
   const textLength = inFlight !== null ? inFlight.text.length : -1
+  const reasoningLength = inFlight !== null ? inFlight.reasoning.length : -1
   const chunkLength =
     inFlight !== null
       ? inFlight.tools.reduce((total: number, tool: any) => total + (tool.chunks ? tool.chunks.length : 0), 0)
       : -1
   const toolCount = inFlight !== null ? inFlight.tools.length : -1
   const doneCount = inFlight !== null ? inFlight.tools.filter((tool: any) => tool.done === true).length : -1
-  return `${view.messages.length}|${textLength}|${chunkLength}|${toolCount}|${doneCount}`
+  return `${view.messages.length}|${textLength}|${reasoningLength}|${chunkLength}|${toolCount}|${doneCount}`
 }
 
 function App({ ctx }: { ctx: SlotContext }): ReactNode {
@@ -1479,18 +1559,19 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
   }, [])
 
-  // 慢流提示：8s 无首字才提示「生成中」；有正文即撤。
+  // 慢流提示：8s 无首字（正文或推理）才提示「生成中」；有输出即撤。
   const inFlightRun = view.inFlight !== null ? view.inFlight.run : null
-  const inFlightTextLength = view.inFlight !== null ? view.inFlight.text.length : 0
+  const inFlightOutputLength =
+    view.inFlight !== null ? view.inFlight.text.length + view.inFlight.reasoning.length : 0
   useEffect(() => {
-    if (inFlightRun === null && inFlightTextLength === 0) {
+    if (inFlightRun === null && inFlightOutputLength === 0) {
       if (stateRef.current.slowStream) {
         stateRef.current.slowStream = false
         rerender()
       }
       return undefined
     }
-    if (inFlightTextLength > 0) {
+    if (inFlightOutputLength > 0) {
       if (stateRef.current.slowStream) {
         stateRef.current.slowStream = false
         rerender()
@@ -1499,14 +1580,18 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
     const timer = setTimeout(() => {
       const latest = store.getSnapshot()
-      if (latest.inFlight !== null && latest.inFlight.text.length === 0) {
+      if (
+        latest.inFlight !== null &&
+        latest.inFlight.text.length === 0 &&
+        latest.inFlight.reasoning.length === 0
+      ) {
         stateRef.current.slowStream = true
         rerender()
       }
     }, 8000)
     ;(timer as any).unref?.()
     return () => clearTimeout(timer)
-  }, [inFlightRun, inFlightTextLength, rerender, store])
+  }, [inFlightRun, inFlightOutputLength, rerender, store])
 
   // 内容增长：贴底自动贴底；上滑冻结才出胶囊。
   useLayoutEffect(() => {
