@@ -49,6 +49,9 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 - `state/ui-headless.json` = `[{id, entry}]`；`entry` 为插件包内路径。headless 不进挂载表、
   不给布局位、不占端口；壳经 `host.source.read` 取字节并以同源静态路径服务。默认
   `{id:"ui-notify", entry:"web/entry.js"}`。
+- **headless 字节缓存失效**：壳按宿主 `identity.changed` **逐身份**判定——仅当该身份在 headless 清单内
+  且 `kind === 'code'`（代码世代 `active` 变，含新增 / 退役）时删除缓存并重取；`kind === 'data'`
+  （数据世代变更）不失效，因为不改入口字节。
 - 主端口默认 8787，`CHRONO_UI_PORT` 覆盖；全部绑定 `127.0.0.1`。
 
 ## 子应用契约

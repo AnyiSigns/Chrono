@@ -17,6 +17,8 @@ import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/
 import {
   currentConversationId,
   dataChangeTarget,
+  finishesCurrentStream,
+  isPeriodicRun,
   loadConversation,
   matchesThread,
   messageText,
@@ -293,6 +295,27 @@ test('数据变更类事件优先 payload.conversation，缺失才回落 payload
   // 过滤：会话匹配当前视图线程才处理
   assert.equal(matchesThread(dataChangeTarget({ conversation: 'c1' }), 'c1'), true)
   assert.equal(matchesThread(dataChangeTarget({ conversation: 'c2' }), 'c1'), false)
+})
+
+test('run.finished 仅收束本轮流式：run id 不匹配不重拉', () => {
+  const stream = { run: 'r1' }
+  assert.equal(finishesCurrentStream(stream, 'r1'), true)
+  assert.equal(finishesCurrentStream(stream, 'r2'), false)
+  assert.equal(finishesCurrentStream(null, 'r1'), false)
+  assert.equal(finishesCurrentStream(undefined, 'r1'), false)
+  assert.equal(finishesCurrentStream(stream, null), false)
+  assert.equal(finishesCurrentStream(stream, ''), false)
+  assert.equal(finishesCurrentStream(stream, undefined), false)
+  assert.equal(finishesCurrentStream(stream, 7), false)
+})
+
+test('periodic run.started 不建流；其余 origin 可建流', () => {
+  assert.equal(isPeriodicRun('periodic'), true)
+  assert.equal(isPeriodicRun('submit'), false)
+  assert.equal(isPeriodicRun('command'), false)
+  assert.equal(isPeriodicRun('forward'), false)
+  assert.equal(isPeriodicRun('detached'), false)
+  assert.equal(isPeriodicRun(undefined), false)
 })
 
 // ---- 群聊 ----

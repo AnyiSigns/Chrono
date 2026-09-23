@@ -71,6 +71,11 @@ test('members = execute + term；命令入口 term 全部存在且形状为 eff 
     assert.equal(term[1], 'ui-sidebar', `${command.entry} 应 eff 到本插件能力类（自能力路由）`)
     assert.ok(METHOD_NAMES.includes(term[2]), `${command.entry} 方法名 ${term[2]} 应在声明内`)
   }
+  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  assert.equal(readonly['workspace.list'], true, 'workspace.list 只读')
+  for (const name of COMMAND_NAMES.filter((name) => name !== 'workspace.list')) {
+    assert.equal(readonly[name], undefined, `${name} 非只读`)
+  }
 })
 
 test('入口 term 投影读 / 命令 args 口径', () => {

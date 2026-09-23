@@ -68,7 +68,7 @@
 | `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费（v1 默认 10000 / 2000）；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
 | `state` | 状态档：v1 只允许 `recomputable`（③ 可重算）；④ 不可重算的声明形态后置（随 `auth_ref`） |
 | `members` | 成员清单，每项带 `kind`（`execute` / `term` / `schema`）——「数据热生效 vs 代码起新服务」由此驱动，不按目录名 |
-| `commands` | 命令声明：`{ name, entry, argsSchema }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下 |
+| `commands` | 命令声明：`{ name, entry, argsSchema, readonly? }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下。`readonly` 可选布尔（缺省 `false`；显式非布尔入世拒）：`true` = **只读命令（纯查询）**，宿主不广播 run 生命周期事件、不落审计、不推进链头——只有确认命令不写链、不产 write / plan 时才标（产出即 `refused`、reason `readonly_violation`） |
 
 ### 命令 `argsSchema` 方言（v1 · JSON Schema 白名单子集）
 
@@ -84,6 +84,7 @@
   `integer` = `Number.isInteger`；缺键与 `null` 不同；`required` 只查键存在；`additionalProperties` 缺省 `true`。
 - **门禁在宿主、先于 run**：`argsSchema` 缺省 = 不设门；缺 `args` = `null`；不符 → `bad_args`，**不构造 directive、不落账**。
   校验器用显式栈（防深嵌套），**不执行正则、不触网、无副作用**。
+- **`commands[].readonly`（只读命令）**：缺省 `false`；`true` 声明该命令是**纯查询**——宿主**不广播** `run.started` / `run.finished`、**不落 `EffectAudit`**、不推进链头；执行产出任何 write / plan 即 `refused`（reason `readonly_violation`）。**只读是声明方责任**：宿主不做语义判定，插件须在确认命令不写链、不产计划时才标（历史 / 清单读取类纯查询命令）；显式非布尔入世拒。`forward` 帧按目标命令声明同规。
 - `Identity.schema` 用**同一方言**（身份数据契约），但宿主 v1 **不校验**身份数据——它仍是数据、非特权。
 - **schema 顶层「宿主消费键」**（宿主机械读、不认识业务；其余键归插件自用）：
   `periodic: [{ command | method, every_ms, reads? }]`（定时触发，`host.md` §五 定时触发）；

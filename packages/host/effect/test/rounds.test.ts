@@ -1148,3 +1148,75 @@ describe('H18 plan eval 按命令名解析', () => {
     expect((journal[0].args as { body: Json }).body).toEqual({ viaMethod: true })
   })
 })
+
+describe('只读提交 runSubmission（readonly）', () => {
+  it('write directive → refused readonly_violation，不落账、不推进 head', async () => {
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world: EMPTY_WORLD,
+      head: { seq: -1, hash: null },
+      directives: [writeD('put', { body: { a: 1 } })],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      readonly: true,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('refused')
+    expect(journal).toEqual([])
+    expect(outcome.head).toEqual({ seq: -1, hash: null })
+    expect(outcome.observations[outcome.observations.length - 1]).toEqual({
+      kind: 'refused',
+      reasons: ['readonly_violation'],
+    })
+  })
+
+  it('plan 产出 write → refused readonly_violation，不执行 plan', async () => {
+    const plan: Json = {
+      $directives: [{ kind: 'write', request: { op: 'put', args: { body: { planned: true } } } }],
+    }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({ [planner]: put({ body: ['c', plan] }) })
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      readonly: true,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('refused')
+    expect(journal).toEqual([])
+    expect(outcome.head).toEqual({ seq: -1, hash: null })
+    expect(outcome.observations[outcome.observations.length - 1]).toEqual({
+      kind: 'refused',
+      reasons: ['readonly_violation'],
+    })
+  })
+
+  it('只读提交 done 也不调用 onAdvanced（不跟随换代）', async () => {
+    const pure = defHash(put({ body: ['c', 1] }))
+    const world = worldOf({ [pure]: put({ body: ['c', 1] }) })
+    let advanced = 0
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(pure)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      readonly: true,
+      onAdvanced: () => {
+        advanced += 1
+      },
+    })
+    expect(outcome.status).toBe('done')
+    expect(advanced).toBe(0)
+  })
+})

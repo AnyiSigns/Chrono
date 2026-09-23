@@ -79,6 +79,12 @@ export interface SubmissionInput {
   callTimeoutMs?: number
   /** 该 run 的取消信号（G2 真取消）：取消即丢弃剩余轮（含 plan 产出的 directives）。 */
   signal?: AbortSignal
+  /**
+   * 只读提交（命令面 `readonly`）：透传 `audit:false` 给单轮，且禁止任何写——
+   * 任一内核 journal 或 plan 产出的 write directive 都以 `refused`（reason `readonly_violation`）
+   * 收口，且不触发 `onAdvanced`（不落账、不跟随换代）。缺省 false。
+   */
+  readonly?: boolean
   /** 入站直提 directive 的属主解析（如命令入口哈希 → 身份）；解析不到 → 不路由。 */
   initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
   /**
@@ -461,20 +467,38 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       router: input.router,
       callTimeoutMs: input.callTimeoutMs,
       signal: input.signal,
+      audit: input.readonly !== true,
       onAudit: input.onAudit,
       onRound: input.onRound,
     })
     observations.push(...out.observations)
+    if (input.readonly === true && out.journal.length > 0) {
+      // 只读提交不得落任何业务写：本轮已产出 journal 即违例，收口且不跟随换代
+      observations.push({ kind: 'refused', reasons: ['readonly_violation'] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
     if (out.status !== 'done') {
       // refused / idle / cancelled：本轮 waiting 期间的审计已直写推进 world / head，必须回灌（A7/A9）
       return { status: out.status, world: out.world, head: out.head, observations }
     }
-    // 业务 journal 已由 runRound 在落账段内追加并推进 writer；此处只做换代跟随
-    if (input.onAdvanced !== undefined) await input.onAdvanced(out.world, out.head)
+    // 非只读时业务 journal 已由 runRound 在落账段内追加并推进 writer；此处只做换代跟随（只读不跟随）
+    if (input.onAdvanced !== undefined && input.readonly !== true) {
+      await input.onAdvanced(out.world, out.head)
+    }
     if (group.some((item) => item.directive.kind === 'eval')) ref = out.lastAuditHash
     const plan = pickPlan(out.observations, prepared.directives, prepared.owners)
     if (!plan.ok) {
       observations.push({ kind: 'refused', reasons: [plan.reason] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    if (
+      input.readonly === true &&
+      plan.directives.some((item) => item.directive.kind === 'write')
+    ) {
+      // 只读提交不得经 plan 落写：在进入下一轮前收口（不执行、不落账）
+      observations.push({ kind: 'refused', reasons: ['readonly_violation'] })
       const snap = writer.snapshot()
       return { status: 'refused', world: snap.world, head: snap.head, observations }
     }

@@ -17,7 +17,8 @@
     {
       "name": "input.read",
       "entry": "terms/input.read.json",
-      "argsSchema": "schema/input.read.args.json"
+      "argsSchema": "schema/input.read.args.json",
+      "readonly": true
     }
   ]
 }

@@ -111,6 +111,7 @@ test('commands 只声明无参 config.read', () => {
   assert.equal(decl.commands[0].name, 'config.read')
   assert.equal(decl.commands[0].entry, 'terms/config.read.json')
   assert.equal(decl.commands[0].argsSchema, undefined)
+  assert.equal(decl.commands[0].readonly, true)
 })
 
 test('config schema 是合法 JSON 且符合白名单子集', () => {

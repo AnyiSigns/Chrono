@@ -39,6 +39,7 @@ import {
   parseMounts,
 } from '../execute/mounts.ts'
 import { buildForwardArgs, forwardCommandName, routeOf } from '../execute/routes.ts'
+import { identityInvalidatesHeadless } from '../execute/identity-events.ts'
 import { createUiState, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
 import {
@@ -304,6 +305,33 @@ test('headless 默认入口住 web/、旧路径迁移、坏值回落默认并重
   } finally {
     rmSync(stateDir, { recursive: true, force: true })
   }
+})
+
+// ---- identity.changed：headless 字节失效判定 ----
+
+test('identity.changed：仅 code 世代且身份在 headless 清单内才失效重取', () => {
+  const ids = new Set(['ui-notify', 'ui-other'])
+  assert.equal(
+    identityInvalidatesHeadless({ identity: 'ui-notify', kind: 'code', active: 'g2', prev: 'g1' }, ids),
+    'ui-notify',
+  )
+  // data 世代变化不失效
+  assert.equal(
+    identityInvalidatesHeadless({ identity: 'ui-notify', kind: 'data', active: 'g2', prev: 'g1' }, ids),
+    null,
+  )
+  // 非 headless 身份不失效
+  assert.equal(
+    identityInvalidatesHeadless({ identity: 'ui-chat', kind: 'code', active: 'g2', prev: 'g1' }, ids),
+    null,
+  )
+  assert.equal(identityInvalidatesHeadless({ identity: '', kind: 'code' }, ids), null)
+  assert.equal(identityInvalidatesHeadless({ kind: 'code' }, ids), null)
+  assert.equal(identityInvalidatesHeadless({ identity: 'ui-notify', kind: 'bogus' }, ids), null)
+  assert.equal(identityInvalidatesHeadless({ identity: 'ui-notify' }, ids), null)
+  assert.equal(identityInvalidatesHeadless(null, ids), null)
+  assert.equal(identityInvalidatesHeadless('nope', ids), null)
+  assert.equal(identityInvalidatesHeadless([{ identity: 'ui-notify', kind: 'code' }], ids), null)
 })
 
 // ---- /p/<id>/* 两条判定路径 ----

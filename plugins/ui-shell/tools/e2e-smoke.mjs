@@ -291,13 +291,9 @@ async function main() {
     assert.equal(JSON.parse(cancel.body).code, 'unknown_run')
     console.log('cancel：ok（unknown_run 透传）')
 
-    // SSE：宿主事件重播
-    const sse = openSse(port, (record) => record.topic === 'run.started' || record.topic === 'run.finished')
+    // SSE：宿主 run 生命周期事件重播（以写 input 槽的 submit run 触发；只读命令不再广播 run 事件）
+    const sse = openSse(port, (record) => record.impl === 'host' && (record.topic === 'run.started' || record.topic === 'run.finished'))
     await sse.ready
-    await httpCall(port, 'POST', '/api/command', { name: 'config.read', args: null })
-    const sseResult = await sse.result
-    assert.equal(sseResult.found.impl, 'host')
-    console.log(`SSE：ok（收到宿主事件 ${sseResult.found.topic}）`)
 
     // 写 input 槽并验证落账
     const before = boot(root, ['status'], env)
@@ -321,6 +317,9 @@ async function main() {
     const submitBody = JSON.parse(submitted.body)
     assert.equal(submitBody.ok, true, submitted.body)
     assert.equal(typeof submitBody.run, 'string')
+    const sseResult = await sse.result
+    assert.equal(sseResult.found.impl, 'host')
+    console.log(`SSE：ok（收到宿主事件 ${sseResult.found.topic}）`)
     await waitFor(() => {
       const current = boot(root, ['status'], env)
       return current.world_head.hash !== before.world_head.hash

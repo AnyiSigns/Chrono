@@ -50,7 +50,7 @@
     { "name": "session.delete", "entry": "terms/session.delete.json" },
     { "name": "session.restore", "entry": "terms/session.restore.json" },
     { "name": "session.branch", "entry": "terms/session.branch.json" },
-    { "name": "workspace.list", "entry": "terms/workspace.list.json" },
+    { "name": "workspace.list", "entry": "terms/workspace.list.json", "readonly": true },
     { "name": "workspace.pick", "entry": "terms/workspace.pick.json" },
     { "name": "workspace.add", "entry": "terms/workspace.add.json" },
     { "name": "workspace.remove", "entry": "terms/workspace.remove.json" },

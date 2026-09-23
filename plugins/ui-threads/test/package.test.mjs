@@ -52,6 +52,7 @@ test('members = execute + term；命令入口 term 存在且无参', () => {
   for (const command of decl.commands) {
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
     assert.ok(readText(command.entry).length > 0, `${command.entry} 应存在`)
+    assert.equal(command.readonly, true, `${command.name} 只读`)
   }
 })
 

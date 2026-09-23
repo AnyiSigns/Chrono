@@ -8,6 +8,9 @@ import type { Server, Socket } from 'node:net'
 import {
   assemblyGen,
   gcMaterialized,
+  isCodeGen,
+  latestCodeGen,
+  latestDataGen,
   listCommands,
   readPluginDecl,
   resolveCommand,
@@ -179,6 +182,18 @@ function capOfMethod(decl: PluginDecl, method: string): string | null {
     if (decl.methods[cap].includes(method)) return cap
   }
   return null
+}
+
+/**
+ * 身份「代码世代 active」：active 为代码世代取其自身，为数据世代取最近代码世代；
+ * retired（active null）或无代码世代 → null。数据世代变化不算代码变化。
+ */
+function codeActiveOf(world: World, identityId: string): Hash | null {
+  const identity = world.ids[identityId]
+  if (identity === undefined || identity.active === null) return null
+  const activeGen = identity.gens.find((gen) => gen.payload === identity.active)
+  if (activeGen !== undefined && isCodeGen(world, activeGen)) return identity.active
+  return latestCodeGen(world, identityId)?.payload ?? null
 }
 
 /**
@@ -406,14 +421,47 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // 换代跟随串行且单调：并发 run 的 done 可能乱序到达，只应用不比当前更旧的链头，
   // 且不并发进 applyWorld（它会改运行态端点表 / 进程）。用独立链而非落账段，避免长任务堵住提交。
   let appliedSeq = initialHead.seq
+  // 已应用的上一份世界：逐身份 diff 出 identity.changed（启动基准 = anchor.world，与装配初值一致）。
+  let appliedWorld: World = anchor.world
+  /**
+   * 通知面语义化：按身份 diff 上一份已应用世界与当前世界，只播真正变化者。
+   * 代码世代 active 变（含新增 / 退役）→ `code`；否则数据世代 payload 变 → `data`；无变化不发。
+   */
+  const broadcastIdentityChanges = (prevWorld: World, nextWorld: World): void => {
+    const ids = new Set([...Object.keys(prevWorld.ids), ...Object.keys(nextWorld.ids)])
+    for (const identity of [...ids].sort()) {
+      const prevActive = codeActiveOf(prevWorld, identity)
+      const nextActive = codeActiveOf(nextWorld, identity)
+      if (prevActive !== nextActive) {
+        broadcast('host', 'identity.changed', {
+          identity,
+          kind: 'code',
+          active: nextActive,
+          prev: prevActive,
+        })
+        continue
+      }
+      const prevData = latestDataGen(prevWorld, identity)?.payload ?? null
+      const nextData = latestDataGen(nextWorld, identity)?.payload ?? null
+      if (prevData !== nextData) {
+        broadcast('host', 'identity.changed', {
+          identity,
+          kind: 'data',
+          active: nextData,
+          prev: prevData,
+        })
+      }
+    }
+  }
   let runtimeChain: Promise<void> = Promise.resolve()
   const applyWorldSerial = (advancedWorld: World, advancedHead: Head): Promise<void> => {
     const next = runtimeChain.then(async () => {
       if (runtime === undefined || advancedHead.seq <= appliedSeq) return
       appliedSeq = advancedHead.seq
       await runtime.applyWorld(advancedWorld)
-      // 世代已跟随：广播给全部服务，供缓存型读侧（如壳的 headless 字节）失效重取。
-      broadcast('host', 'gen.changed', { seq: advancedHead.seq })
+      // 世代已跟随：逐身份广播变化，供缓存型读侧按 code / data 语义失效重取。
+      broadcastIdentityChanges(appliedWorld, advancedWorld)
+      appliedWorld = advancedWorld
       if (!stopping) {
         syncPeriodic(advancedWorld)
         reportMethodTimeouts(advancedWorld)
@@ -580,13 +628,13 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     detachedRuns.add(runId)
     const controller = new AbortController()
     runs.set(runId, controller)
-    broadcast('host', 'run.started', { run: runId, thread })
+    broadcast('host', 'run.started', { run: runId, thread, origin: 'detached' })
     let finished = false
     // 收口幂等：run.started / run.finished 严格成对、恰好一次（异常路径也以 refused 收口）
     const finish = (status: string, reasons: string[]): void => {
       if (finished) return
       finished = true
-      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons, origin: 'detached' })
     }
     const task = runSubmission({
       writer,
@@ -641,7 +689,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const runId = randomUUID()
     const controller = new AbortController()
     runs.set(runId, controller)
-    broadcast('host', 'run.started', { run: runId, thread: null })
+    broadcast('host', 'run.started', { run: runId, thread: null, origin: 'periodic' })
     let status = 'refused'
     let reasons: string[] = []
     const task: Promise<void> = runPeriodicEntry(entry, runId, controller.signal)
@@ -661,7 +709,13 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       .finally(() => {
         runs.delete(runId)
         inflight.delete(task)
-        broadcast('host', 'run.finished', { run: runId, thread: null, status, reasons })
+        broadcast('host', 'run.finished', {
+          run: runId,
+          thread: null,
+          status,
+          reasons,
+          origin: 'periodic',
+        })
       })
     inflight.add(task)
   }
@@ -742,7 +796,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     thread: string | null,
     signal: AbortSignal,
   ): Promise<void> => {
-    broadcast('host', 'run.started', { run: runId, thread })
+    broadcast('host', 'run.started', { run: runId, thread, origin: 'submit' })
     let status = 'refused'
     let reasons: string[] = []
     try {
@@ -793,7 +847,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
-      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
+      broadcast('host', 'run.finished', { run: runId, thread, status, reasons, origin: 'submit' })
     }
   }
 
@@ -850,7 +904,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const args = message.args ?? null
     if (!checkCommandArgs(socket, message.id, command, args)) return
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
-    broadcast('host', 'run.started', { run: runId, thread })
+    // 只读命令：不广播 run 生命周期事件（读不得成为回合信号），也不落审计 / 账本。
+    const readonly = command.readonly === true
+    if (!readonly) broadcast('host', 'run.started', { run: runId, thread, origin: 'command' })
     let status = 'refused'
     let reasons: string[] = []
     try {
@@ -868,6 +924,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         router,
         callTimeoutMs: options.callTimeoutMs,
         signal,
+        readonly,
         initialOwnerOf: (directive) => (directive.kind === 'eval' ? command.identity : undefined),
         resolveCommand: resolvePlanCommand,
         ctxFor: cachedProjection,
@@ -895,7 +952,15 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
-      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
+      if (!readonly) {
+        broadcast('host', 'run.finished', {
+          run: runId,
+          thread,
+          status,
+          reasons,
+          origin: 'command',
+        })
+      }
     }
   }
 
@@ -939,7 +1004,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const args = message.args ?? null
     if (!checkCommandArgs(socket, message.id, command, args)) return
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
-    broadcast('host', 'run.started', { run: runId, thread })
+    // 只读命令：不广播 run 生命周期事件（读不得成为回合信号），也不落审计 / 账本。
+    const readonly = command.readonly === true
+    if (!readonly) broadcast('host', 'run.started', { run: runId, thread, origin: 'forward' })
     let status = 'refused'
     let reasons: string[] = []
     try {
@@ -955,6 +1022,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         router,
         callTimeoutMs: options.callTimeoutMs,
         signal,
+        readonly,
         initialOwnerOf: () => command.identity,
         resolveCommand: resolvePlanCommand,
         ctxFor: cachedProjection,
@@ -981,7 +1049,15 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       throw err
     } finally {
-      broadcast('host', 'run.finished', { run: runId, thread, status, reasons })
+      if (!readonly) {
+        broadcast('host', 'run.finished', {
+          run: runId,
+          thread,
+          status,
+          reasons,
+          origin: 'forward',
+        })
+      }
     }
   }
 

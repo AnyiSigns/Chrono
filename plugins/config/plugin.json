@@ -13,5 +13,5 @@
     { "kind": "term", "path": "terms/" },
     { "kind": "schema", "path": "schema/" }
   ],
-  "commands": [{ "name": "config.read", "entry": "terms/config.read.json" }]
+  "commands": [{ "name": "config.read", "entry": "terms/config.read.json", "readonly": true }]
 }

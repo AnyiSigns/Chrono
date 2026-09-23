@@ -6,7 +6,15 @@ import { ensureStyles } from './styles.js'
 import { createRenderers } from './render-dom.js'
 import { el, icon, iconButton, clear } from './dom.js'
 import { formatText, loadMessages, lookupMessage, UI_TEXT } from './messages.js'
-import { dataChangeTarget, loadConversation, matchesThread, messageText, threadKind } from './history-model.js'
+import {
+  dataChangeTarget,
+  finishesCurrentStream,
+  isPeriodicRun,
+  loadConversation,
+  matchesThread,
+  messageText,
+  threadKind,
+} from './history-model.js'
 import { partViewModel } from './render-parts.js'
 import { toolCardViewModel } from './tool-card.js'
 import { buildDateSeparators } from './date-sep.js'
@@ -696,11 +704,14 @@ export async function mount(root, api) {
       return
     }
     if (record.topic === 'run.started') {
+      // 周期 run 不是对话回合：不建流；其余匹配线程的 run 可起流。
+      if (isPeriodicRun(payload.origin)) return
       if (matchesThread(payload.thread, state.viewThread)) beginStream(payload.run ?? null, payload.thread ?? null)
       return
     }
     if (record.topic === 'run.finished') {
-      if (!matchesThread(payload.thread, state.viewThread)) return
+      // 只有本轮流式的 run 终局才收束并重拉历史；其它 run 的终局忽略（否则会被任意 run 反复触发重拉）。
+      if (!finishesCurrentStream(state.stream, payload.run)) return
       if (payload.status === 'cancelled') {
         finishStream('cancelled')
         return

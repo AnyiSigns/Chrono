@@ -32,12 +32,14 @@
     {
       "name": "mcp.in.ping",
       "entry": "terms/mcp.in.ping.json",
-      "argsSchema": "schema/mcp.in.args.json"
+      "argsSchema": "schema/mcp.in.args.json",
+      "readonly": true
     },
     {
       "name": "mcp.in.tools_list",
       "entry": "terms/mcp.in.tools_list.json",
-      "argsSchema": "schema/mcp.in.args.json"
+      "argsSchema": "schema/mcp.in.args.json",
+      "readonly": true
     },
     {
       "name": "mcp.in.tools_call",

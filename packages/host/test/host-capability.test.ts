@@ -336,14 +336,14 @@ describe('H14 宿主保留能力类 host', () => {
           ),
         'detached run.finished',
       )
-      expect(
-        events.some(
-          (event) =>
-            event.impl === 'host' &&
-            event.topic === 'run.started' &&
-            (event.payload as { run?: string }).run === value.run,
-        ),
-      ).toBe(true)
+      const detachedStart = events.find(
+        (event) =>
+          event.impl === 'host' &&
+          event.topic === 'run.started' &&
+          (event.payload as { run?: string }).run === value.run,
+      )
+      expect(detachedStart).toBeDefined()
+      expect((detachedStart?.payload as { origin?: string }).origin).toBe('detached')
     } finally {
       client.close()
     }

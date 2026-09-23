@@ -30,7 +30,7 @@
     { "kind": "term", "path": "terms/" }
   ],
   "commands": [
-    { "name": "approval.list", "entry": "terms/approval.list.json" },
+    { "name": "approval.list", "entry": "terms/approval.list.json", "readonly": true },
     { "name": "approval.decide", "entry": "terms/approval.decide.json" },
     { "name": "approval.decide_all", "entry": "terms/approval.decide_all.json" }
   ]

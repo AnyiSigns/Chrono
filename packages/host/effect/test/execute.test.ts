@@ -176,6 +176,27 @@ describe('效果执行 executeEffect', () => {
     expect(auditBody.result).toEqual({ truncated: true, size: expect.any(Number) })
   })
 
+  it('审计请求 args 超限 → 截断为标记，保留 id/port/method，调用方 args 不变', async () => {
+    const big = { text: 'x'.repeat(70 * 1024) }
+    const eff: EffRequest = { ...mkEff('toy.echo', 'echo'), args: big }
+    const outcome = await executeEffect(eff, emptyWorld(), { ...EMPTY_HEAD }, meta())
+    expect(eff.args).toEqual(big)
+    const request = (outcome.auditEntry!.args as { body: { request: Json } }).body.request
+    expect(request).toEqual({
+      id: eff.id,
+      port: 'toy.echo',
+      method: 'echo',
+      args: { truncated: true, size: expect.any(Number) },
+    })
+  })
+
+  it('审计请求 args 未超限 → 原样保留（含 caps）', async () => {
+    const eff: EffRequest = { ...mkEff('toy.echo', 'echo'), args: { small: true } }
+    const outcome = await executeEffect(eff, emptyWorld(), { ...EMPTY_HEAD }, meta())
+    const request = (outcome.auditEntry!.args as { body: { request: Json } }).body.request
+    expect(request).toEqual(eff)
+  })
+
   it('非 host 端口的大结果不截断（审计正文保真）', async () => {
     const big = 'x'.repeat(70 * 1024)
     const outcome = await executeEffect(

@@ -83,6 +83,21 @@ export function dataChangeTarget(payload) {
   return null
 }
 
+/**
+ * 该 `run.finished` 是否收束本轮流式：仅当存在在途流且其 run 与事件 run 一致时成立。
+ * run 缺失 / 非字符串时一律不收束，避免把无关 run 的终局当成本回合结束而重拉历史。
+ */
+export function finishesCurrentStream(stream, run) {
+  if (stream === null || stream === undefined) return false
+  if (typeof run !== 'string' || run.length === 0) return false
+  return stream.run === run
+}
+
+/** 周期 run 不是对话回合：其 `run.started` 不建流。 */
+export function isPeriodicRun(origin) {
+  return origin === 'periodic'
+}
+
 /** 消息 id（无 id 时用 def 哈希兜底，供锚点 / key 使用）。 */
 export function messageId(entry) {
   if (!isRec(entry)) return ''

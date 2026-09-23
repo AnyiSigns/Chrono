@@ -61,6 +61,9 @@ GET  /api/asset?sha256=…   → 入站 asset.get，直接回原始字节（媒�
 - 处理的事件：`model.delta`（流式追加）、`tool.start/delta/end`（live 工具卡）、
   `run.started/run.finished`（呼吸条 → 定稿重拉 `chat.history`；`cancelled` 保留已生成部分 + 「已取消」）、
   `group.message`（未读锚点）、`workflow.step`（步骤卡）、`thread.*`（重拉）。
+- **run 生命周期按 run id 关联，不把任意 run 当作自己的回合**：`run.started` 仅在匹配当前视图线程时起流；
+  `run.finished` 仅当事件 `run` 与本轮在途流一致时收束并重拉 `chat.history`，其余 run 的终局一律忽略
+  （否则任意 run 都会反复触发重拉）。`origin === 'periodic'` 的周期 run 不是对话回合，其 `run.started` 不建流。
 
 ## 运行
 

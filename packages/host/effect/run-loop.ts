@@ -48,6 +48,11 @@ export interface RoundInput {
   callTimeoutMs?: number
   /** 该 run 的取消信号（G2 真取消）：abort 后不再执行挂起效果，在途调用尽力中止。 */
   signal?: AbortSignal
+  /**
+   * 是否落审计：缺省 true。false（只读提交）时效果照常路由调用，但不 `commitAudit`
+   * （不写世界、不推进 head），内核产出的业务写也不应用；`lastAuditHash` 恒 null。
+   */
+  audit?: boolean
   /** 审计 entry 的落点回调：在落账互斥段内调用（调用方负责追加进账本）。 */
   onAudit?: (entry: Entry) => void
   /** done 轮业务 journal 的落点回调：与内核提交同段调用，保证账本追加序 = 链序。 */
@@ -210,7 +215,9 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
         caps: input.caps,
         now: input.now,
       })
-      if (result.status === 'done') {
+      // 只读（audit:false）不应用任何写：内核产出的 journal 照常上浮，由轮间驱动判定只读违例；
+      // 此处不写世界、不推进 head、不回调落账。
+      if (result.status === 'done' && input.audit !== false) {
         state.world = result.world
         state.head = result.head
         input.onRound?.(result.journal)
@@ -243,6 +250,23 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
     const caller = makeCaller(input, stepped.anchored, found === null ? -1 : found.index)
     // 服务调用在互斥段之外：多个 run 的效果等待可并发
     const { result, cancelled } = await callEffect(eff, caller, input.signal)
+    if (input.audit === false) {
+      // 只读：效果照常回灌，但不落审计；取消语义保持（aborted 时按 cancelled 收口）
+      results[eff.id] = result
+      if (aborted() && result.error === 'cancelled') {
+        const snap = writer.snapshot()
+        return {
+          status: 'cancelled',
+          world: snap.world,
+          head: snap.head,
+          journal: [],
+          observations: out.observations,
+          lastAuditHash,
+        }
+      }
+      suspensions += 1
+      continue
+    }
     // 审计落账进互斥段：与内核提交共享同一链头 CAS，账本追加序 = 链序
     const executed = await writer.run((state) => {
       const outcome = commitAudit(

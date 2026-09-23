@@ -125,7 +125,7 @@
 发起者 → 宿主   secrets.delete { v, id, name }               → secrets.ok { id, name }
 发起者 → 宿主   status   { v, id }                           → state { id, world_head, world_rev, loaded: [...] }
 发起者 → 宿主   stop     { v, id }                           → accepted { id }   # 令宿主按反拓扑序 drain 后停机
-宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传 + 宿主 run 生命周期事件，广播给已连接客户端
+宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传 + 宿主 run 生命周期 / 身份世代事件，广播给已连接客户端
 ```
 
 - `run` 的语义（含 term 产 directive 的计划通道 / 分相）见 `host.md` §五「落账」与「效果」；续跑纪律见 `kernel.md` §十二。
@@ -151,12 +151,15 @@
   `{kind:'eval', entry, args}` 走一次 run。命令**不是第三条改世界的路**——判定仍是 term、写仍经落账。
 - `command` 的 `args` 由宿主按 `argsSchema`（**JSON Schema 白名单子集**，方言见 `plugins.md` §二）校验；
   不符 → `error{code:'bad_args'}`，**不跑 run、不落账**。缺省 `argsSchema` = 不设门；缺 `args` = `null`。
+- **只读命令（`commands[].readonly: true`）是纯查询**：宿主**不广播** `run.started` / `run.finished`、
+  **不落 `EffectAudit`**、不推进链头；若其执行产出任何 write / plan，宿主以 `refused`、reason `readonly_violation`
+  收口（**不落账、不执行 plan**）。声明缺省 `false`、显式非布尔入世拒（`bad_plugin_decl`）。`forward` 帧按目标命令声明同规。
 - **`forward` 是插件入站转发**：壳把 `/p/<id>/*` 转成该帧，宿主按 `command` 解析入口 term 并**要求其属主 = `identity`**（否则 `unknown_command`），构造一次 run（`initiator = "forward"`）——即宿主把入站帧转发到目标插件**自己声明**的入口，`/p/` 反代不直连插件服务（保「唯一主端口」）。`args` 校验、`result` 形状、`cancel` 与 `command` 同规；命令名由壳侧 `/p/<id>/*` 映射提供，宿主不认识业务。
 - directive 的 `eval.ctx` **字段缺省 ⇒ 宿主填入 `base_only` 投影**（形状见 `host.md` §五 投影）；显式给出（含 `null`）⇒ 原样透传；
   客户端 / 命令 / plan 三路同规。
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
 - `caps` / `limits` 由发起者给，宿主**透传不扩权**（缺省：`caps` 空表、`limits` 宿主默认预算）；`now` 由宿主固定，不由客户端给。
-- `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。**两个来源**：① 插件服务上行 `event`（§2.5，`impl` = 上报身份）；② **宿主自身**的 run 生命周期事件（`run.started` / `run.finished`，`impl = "host"`，载荷带 `run` / `thread`，见 `host.md` §五 宿主事件面）。两者对发起者同形。`thread` 来自发起者提交时的可选字段，**原样回带、不校验**（展示标签，非安全边界）；detached run（`host.thread.resume`）恒 `thread:null`、`caps:{}`，结果不回流。
+- `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。**三个来源**：① 插件服务上行 `event`（§2.5，`impl` = 上报身份）；② **宿主自身**的 run 生命周期事件（`run.started` / `run.finished`，`impl = "host"`，载荷带 `run` / `thread` / `origin`，`origin ∈ submit/command/forward/periodic/detached`，见 `host.md` §五 宿主事件面；只读命令不广播）；③ 宿主的**身份世代事件**（`identity.changed`，`impl = "host"`，载荷 `{identity, kind:'code'|'data', active, prev}`，链头推进后逐身份 diff 广播，见 `host.md` §五 通知面）。三者对发起者同形。`thread` 来自发起者提交时的可选字段，**原样回带、不校验**（展示标签，非安全边界）；detached / 周期 run 恒 `thread:null`、`caps:{}`，结果不回流。
 - `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。
 - `status` 的 `loaded` = 已装载身份清单（`id` + active `gen`），非阻塞快照、可能瞬态；`world_head` / `world_rev` = 当前链头与内容摘要（供调用方核对落账世界与重放一致，只读、不推进）。
 - 载体生命周期事件（两级 `{kind, event}`：`handshake.failed` / `dep.cycle` / `service.exit` / `service.restart_exhausted` / …）记宿主侧**运维日志**（`state/lifecycle.log`），**非本协议消息**、不进世界；协议侧只见对应错误码（§四）。
@@ -199,5 +202,5 @@
 | `net_denied` | `sandbox` 网络档位拒绝（`caps.net` 越档） | `plugins/sandbox/README.md` |
 | `internal` | 宿主内部错误 | — |
 
-- **注**：`refused` 的 `reasons` 由内核给出（如 `eff_error` / `pos_conflict` / `bad_term` / `gas_exhausted` 等），本表只列宿主 / 协议层错误码；`transport_failed` 是宿主对"效果未执行"（管道 / 帧 / 进程死亡 / 未解析 / 超时）的归类。
+- **注**：`refused` 的 `reasons` 由内核与宿主给出（内核如 `eff_error` / `pos_conflict` / `bad_term` / `gas_exhausted`；宿主如 `readonly_violation` / `too_many_rounds` / `unknown_command`），本表只列宿主 / 协议层错误码；`transport_failed` 是宿主对"效果未执行"（管道 / 帧 / 进程死亡 / 未解析 / 超时）的归类。
 

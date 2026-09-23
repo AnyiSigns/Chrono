@@ -55,6 +55,10 @@ test('members = execute + term；三条命令入口 term 全部存在且无 args
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
     assert.ok(readText(command.entry).length > 0, `${command.entry} 应存在`)
   }
+  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  assert.equal(readonly['approval.list'], true, 'approval.list 只读')
+  assert.equal(readonly['approval.decide'], undefined, 'approval.decide 非只读')
+  assert.equal(readonly['approval.decide_all'], undefined, 'approval.decide_all 非只读')
 })
 
 test('入口 term 形状：eff 到自身能力类，投影切片为 ctx.ids', () => {

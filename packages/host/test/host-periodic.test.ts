@@ -116,6 +116,7 @@ describe('H6 定时触发', () => {
           (event.payload as { thread?: string | null }).thread === null,
       )
       expect(started).toBeDefined()
+      expect((started?.payload as { origin?: string }).origin).toBe('periodic')
     } finally {
       client.close()
     }

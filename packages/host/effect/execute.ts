@@ -94,6 +94,13 @@ const HOST_BULK_METHODS: ReadonlySet<string> = new Set(['asset.get', 'source.rea
  */
 export const MAX_AUDIT_RESULT_BYTES = 64 * 1024
 
+/**
+ * 审计请求参数序列化上限：`args` 超过只落 `{truncated:true,size}`，保留 `id`/`port`/`method`。
+ * 大参数（源码 / 字节 / 审计记录）原样入账会把 defs / journal 撑爆；调用方仍拿完整 args，
+ * 只是审计正文留截断标记。
+ */
+export const MAX_AUDIT_ARGS_BYTES = 64 * 1024
+
 /** 审计正文口径：先按白名单脱敏，再对 host 批量结果做体积截断。 */
 function auditResult(eff: EffRequest, result: EffResult): Json {
   const redacted = redactAuditResult(eff, result)
@@ -101,6 +108,13 @@ function auditResult(eff: EffRequest, result: EffResult): Json {
   const size = canonicalJson(redacted).length
   if (size <= MAX_AUDIT_RESULT_BYTES) return redacted
   return { truncated: true, size }
+}
+
+/** 审计请求口径：`args` 超限即截断为标记，保留定位所需的 id / port / method。 */
+function auditRequest(eff: EffRequest): Json {
+  const size = canonicalJson(eff.args).length
+  if (size <= MAX_AUDIT_ARGS_BYTES) return eff as unknown as Json
+  return { id: eff.id, port: eff.port, method: eff.method, args: { truncated: true, size } }
 }
 
 /** 效果调用的结果与取消标记：服务调用与审计落账拆开，以便只把落账放进串行段。 */
@@ -158,7 +172,7 @@ export function commitAudit(
   const auditDef = {
     body: {
       kind: EFFECT_AUDIT_KIND,
-      request: eff as unknown as Json,
+      request: auditRequest(eff),
       result: auditResult(eff, result),
       port: eff.port,
       method: eff.method,

@@ -122,12 +122,14 @@ describe('H10 宿主 run 生命周期事件', () => {
     expect(typeof run).toBe('string')
     expect(started[0]).toMatchObject({ impl: 'host' })
     expect(startedPayload['thread']).toBe('thread-1')
+    expect(startedPayload['origin']).toBe('submit')
     expect(finished[0]).toMatchObject({ impl: 'host' })
     expect(finished[0]['payload']).toMatchObject({
       run,
       thread: 'thread-1',
       status: 'done',
       reasons: [],
+      origin: 'submit',
     })
   })
 
@@ -225,12 +227,14 @@ describe('H10 宿主 run 生命周期事件', () => {
       expect(started).toHaveLength(1)
       expect(finished).toHaveLength(1)
       const run = (started[0].payload as { run: string }).run
+      expect((started[0].payload as { origin?: string }).origin).toBe('command')
       expect(isRecord(finished[0].payload)).toBe(true)
       expect(finished[0].payload).toMatchObject({
         run,
         thread: null,
         status: 'done',
         reasons: [],
+        origin: 'command',
       })
     } finally {
       client.close()

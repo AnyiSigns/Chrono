@@ -153,6 +153,7 @@ test('commands 声明 input.read 且带 argsSchema', () => {
   assert.equal(command.name, 'input.read')
   assert.equal(command.entry, 'terms/input.read.json')
   assert.equal(command.argsSchema, 'schema/input.read.args.json')
+  assert.equal(command.readonly, true)
 })
 
 test('slot schema 是合法 JSON 且符合白名单子集', () => {

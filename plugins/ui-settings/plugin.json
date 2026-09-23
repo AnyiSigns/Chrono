@@ -52,7 +52,8 @@
   "commands": [
     {
       "name": "model.vendors",
-      "entry": "terms/model.vendors.json"
+      "entry": "terms/model.vendors.json",
+      "readonly": true
     },
     {
       "name": "model.discover",
@@ -64,31 +65,38 @@
     },
     {
       "name": "secrets.status",
-      "entry": "terms/secrets.status.json"
+      "entry": "terms/secrets.status.json",
+      "readonly": true
     },
     {
       "name": "settings.identities",
-      "entry": "terms/settings.identities.json"
+      "entry": "terms/settings.identities.json",
+      "readonly": true
     },
     {
       "name": "settings.skills",
-      "entry": "terms/settings.skills.json"
+      "entry": "terms/settings.skills.json",
+      "readonly": true
     },
     {
       "name": "orchestration.graph",
-      "entry": "terms/orchestration.graph.json"
+      "entry": "terms/orchestration.graph.json",
+      "readonly": true
     },
     {
       "name": "orchestration.scopes",
-      "entry": "terms/orchestration.scopes.json"
+      "entry": "terms/orchestration.scopes.json",
+      "readonly": true
     },
     {
       "name": "orchestration.health",
-      "entry": "terms/orchestration.health.json"
+      "entry": "terms/orchestration.health.json",
+      "readonly": true
     },
     {
       "name": "memory.view",
-      "entry": "terms/memory.view.json"
+      "entry": "terms/memory.view.json",
+      "readonly": true
     },
     {
       "name": "memory.search",

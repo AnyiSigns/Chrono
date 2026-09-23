@@ -9,6 +9,7 @@ import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { decodeSourceRead, HostLink } from './host-client.ts'
 import { startUiServer } from './http-server.ts'
 import type { ShellState, UiServer } from './http-server.ts'
+import { identityInvalidatesHeadless } from './identity-events.ts'
 import { InboundClient } from './inbound.ts'
 import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts, parsePort } from './mounts.ts'
 import type { HeadlessEntry } from './mounts.ts'
@@ -57,6 +58,7 @@ const { headless } = ensureHeadless(stateDir)
 const sse = new SseHub()
 const host = new HostLink()
 const headlessCache = new Map<string, string>()
+const headlessIds = new Set(headless.map((entry) => entry.id))
 
 let connected = false
 let hasDisconnected = false
@@ -86,10 +88,13 @@ const inbound = new InboundClient({
   log,
   onEvent: (impl, topic, payload) => {
     sse.hostEvent(impl, topic, payload)
-    if (impl === 'host' && topic === 'gen.changed') {
-      // 世代已跟随：headless 入口字节按世代重算，清缓存并重取，避免长期供旧字节。
-      headlessCache.clear()
-      void refreshHeadless()
+    if (impl === 'host' && topic === 'identity.changed') {
+      // 仅本插件 headless 清单内的身份、且代码世代变化时才失效重取；数据世代与非 headless 身份不动缓存。
+      const stale = identityInvalidatesHeadless(payload, headlessIds)
+      if (stale !== null) {
+        headlessCache.delete(stale)
+        void refreshHeadless()
+      }
       return
     }
     if (topic === 'run.finished' && isRecord(payload) && typeof payload['run'] === 'string') {

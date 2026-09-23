@@ -11,5 +11,5 @@
   "health": {},
   "state": "recomputable",
   "members": [{ "kind": "term", "path": "terms/" }],
-  "commands": [{ "name": "notify.state", "entry": "terms/notify.state.json" }]
+  "commands": [{ "name": "notify.state", "entry": "terms/notify.state.json", "readonly": true }]
 }

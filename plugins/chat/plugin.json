@@ -36,7 +36,7 @@
   ],
   "commands": [
     { "name": "chat.send", "entry": "terms/chat.send.json" },
-    { "name": "chat.history", "entry": "terms/chat.history.json" },
+    { "name": "chat.history", "entry": "terms/chat.history.json", "readonly": true },
     { "name": "chat.resume", "entry": "terms/chat.resume.json" }
   ]
 }

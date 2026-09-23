@@ -73,6 +73,27 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
     assert.ok(readText(command.entry).length > 0, `${command.entry} 应存在`)
   }
+  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  for (const name of [
+    'model.vendors',
+    'secrets.status',
+    'settings.identities',
+    'settings.skills',
+    'orchestration.graph',
+    'orchestration.scopes',
+    'orchestration.health',
+    'memory.view',
+  ]) {
+    assert.equal(readonly[name], true, `${name} 只读`)
+  }
+  for (const name of [
+    'model.discover',
+    'model.profile',
+    'memory.search',
+    'memory.edit',
+  ]) {
+    assert.equal(readonly[name], undefined, `${name} 非只读`)
+  }
 })
 
 test('入口 term 形状：投影读 / eff 端口与方法', () => {

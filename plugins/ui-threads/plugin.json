@@ -28,6 +28,6 @@
     { "kind": "term", "path": "terms/" }
   ],
   "commands": [
-    { "name": "threads.state", "entry": "terms/threads.state.json" }
+    { "name": "threads.state", "entry": "terms/threads.state.json", "readonly": true }
   ]
 }

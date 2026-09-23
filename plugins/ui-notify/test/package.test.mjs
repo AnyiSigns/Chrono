@@ -51,6 +51,7 @@ test('commands 声明 notify.state 且无 argsSchema（无参可省）', () => {
   assert.equal(commands[0].name, 'notify.state')
   assert.equal(commands[0].entry, 'terms/notify.state.json')
   assert.equal(Object.hasOwn(commands[0], 'argsSchema'), false)
+  assert.equal(commands[0].readonly, true)
 })
 
 test('入口 term 直出 config body（投影读在入口 term）', () => {

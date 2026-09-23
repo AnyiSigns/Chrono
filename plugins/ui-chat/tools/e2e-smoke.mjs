@@ -210,6 +210,10 @@ async function main() {
     assert.equal(badAsset.status, 400, badAsset.body)
     console.log('资产门禁：ok（坏 sha256 → 400）')
 
+    // SSE：宿主 run 事件经本插件转发（question.answer 内部的写槽 submit run；只读命令不再广播 run 事件）
+    const sse = openSse(port, (record) => record.impl === 'host' && (record.topic === 'run.started' || record.topic === 'run.finished'))
+    await sse.ready
+
     // question.answer 路径：写槽成功但命令不可用 → 结构化失败、不崩
     const answer = await httpCall(port, 'POST', '/api/question/answer', {
       id: 'q-1',
@@ -222,10 +226,6 @@ async function main() {
     assert.equal(answerBody.code, 'unknown_command', answer.body)
     console.log('question.answer：ok（写槽成功、命令不可用结构化失败）')
 
-    // SSE：宿主 run 事件经本插件转发（input.read 命令 run）
-    const sse = openSse(port, (record) => record.topic === 'run.started' || record.topic === 'run.finished')
-    await sse.ready
-    await httpCall(port, 'POST', '/api/command', { name: 'input.read', args: null })
     const sseResult = await sse.result
     assert.equal(sseResult.found.impl, 'host')
     console.log(`SSE：ok（收到宿主事件 ${sseResult.found.topic}）`)

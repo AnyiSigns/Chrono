@@ -10,6 +10,8 @@ export interface PluginCommand {
   name: string
   entry: string
   argsSchema?: string
+  /** 只读命令：执行不广播 run 事件、不写审计 / 账本；缺省 false。 */
+  readonly: boolean
 }
 
 export interface PluginMember {
@@ -64,6 +66,8 @@ export interface CommandDecl {
   name: string
   entry: Hash
   argsSchema: Hash | null
+  /** 只读命令：执行不广播 run 事件、不写审计 / 账本；缺省 false。 */
+  readonly: boolean
 }
 
 export interface DeclRead {
@@ -112,12 +116,16 @@ function parseCommands(v: Json | undefined): PluginCommand[] | null {
   const out: PluginCommand[] = []
   for (const item of v) {
     if (!isRecord(item)) return null
-    const { name, entry, argsSchema } = item
+    const { name, entry, argsSchema, readonly } = item
     if (typeof name !== 'string' || name.length === 0) return null
     if (RESERVED_COMMAND_NAMES.has(name)) return null
     if (typeof entry !== 'string' || entry.length === 0) return null
     if (argsSchema !== undefined && typeof argsSchema !== 'string') return null
-    out.push(argsSchema === undefined ? { name, entry } : { name, entry, argsSchema })
+    // 缺省 false；显式给出必须是布尔（非布尔入世拒，不静默转换）
+    if (readonly !== undefined && typeof readonly !== 'boolean') return null
+    const command: PluginCommand = { name, entry, readonly: readonly ?? false }
+    if (argsSchema !== undefined) command.argsSchema = argsSchema
+    out.push(command)
   }
   return out
 }
@@ -457,6 +465,7 @@ export function listCommands(world: World, blobsDir?: string): CommandDecl[] {
         name: cmd.name,
         entry,
         argsSchema,
+        readonly: cmd.readonly,
       })
     }
   }

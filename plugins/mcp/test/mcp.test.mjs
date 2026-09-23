@@ -186,6 +186,14 @@ test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 
   assert.equal(await drv.exit, 0)
 })
 
+test('命令声明只读标记：ping / tools_list 只读，tools_call 非只读', () => {
+  const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
+  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  assert.equal(readonly['mcp.in.ping'], true)
+  assert.equal(readonly['mcp.in.tools_list'], true)
+  assert.equal(readonly['mcp.in.tools_call'], undefined)
+})
+
 test('未知方法 / 未知能力类 → 结构化 error', async () => {
   const drv = startService()
   try {

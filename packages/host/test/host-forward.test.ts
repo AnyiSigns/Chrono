@@ -83,6 +83,13 @@ describe('H8 插件入站转发', () => {
           ),
         'forward run.finished',
       )
+      const finished = events.find(
+        (event) =>
+          event.impl === 'host' &&
+          event.topic === 'run.finished' &&
+          (event.payload as { thread?: string | null }).thread === null,
+      )
+      expect((finished?.payload as { origin?: string }).origin).toBe('forward')
       expect(readJournal(join(root, 'state', 'world', 'journal.jsonl')).length).toBeGreaterThan(
         before,
       )

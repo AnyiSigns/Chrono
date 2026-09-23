@@ -121,7 +121,7 @@ export interface PackageSpec {
   health?: Record<string, unknown>
   state?: string
   members?: Array<{ kind: string; path: string }>
-  commands?: Array<{ name: string; entry: string; argsSchema?: string }>
+  commands?: Array<{ name: string; entry: string; argsSchema?: string; readonly?: boolean }>
   serviceConfig?: Record<string, unknown>
   worldignore?: string[]
   files?: Record<string, string>

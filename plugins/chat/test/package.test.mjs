@@ -77,6 +77,10 @@ test('commands 声明 chat.send / chat.history / chat.resume 且入口正确', (
       ['chat.resume', 'terms/chat.resume.json'],
     ],
   )
+  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  assert.equal(readonly['chat.history'], true)
+  assert.equal(readonly['chat.send'], undefined)
+  assert.equal(readonly['chat.resume'], undefined)
 })
 
 test('wiring 切片 / title 声明 / 空槽行为（段序归 #33 图数据）', () => {

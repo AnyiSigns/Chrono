@@ -166,6 +166,37 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ identity: '' })).ok).toBe(false)
   })
 
+  it('commands readonly 缺省 → false（只读是显式声明）', () => {
+    const result = parsePluginDecl(baseDecl())
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.commands[0].readonly).toBe(false)
+  })
+
+  it('commands readonly 显式布尔 → 原样解析', () => {
+    const on = parsePluginDecl(
+      baseDecl({ commands: [{ name: 'toy.read', entry: 'terms/hello.json', readonly: true }] }),
+    )
+    expect(on.ok).toBe(true)
+    if (on.ok) expect(on.decl.commands[0].readonly).toBe(true)
+
+    const off = parsePluginDecl(
+      baseDecl({ commands: [{ name: 'toy.write', entry: 'terms/hello.json', readonly: false }] }),
+    )
+    expect(off.ok).toBe(true)
+    if (off.ok) expect(off.decl.commands[0].readonly).toBe(false)
+  })
+
+  it('commands readonly 非布尔（字符串 / null / 数字）→ ok:false（入世拒）', () => {
+    for (const bad of ['true', null, 1, 0, {}]) {
+      expect(
+        parsePluginDecl(
+          baseDecl({ commands: [{ name: 'toy.bad', entry: 'terms/hello.json', readonly: bad }] }),
+        ).ok,
+        `readonly=${JSON.stringify(bad)} 应被拒`,
+      ).toBe(false)
+    }
+  })
+
   it('commands 缺 name / entry → ok:false（回归）', () => {
     expect(
       parsePluginDecl(
