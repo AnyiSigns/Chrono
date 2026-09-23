@@ -406,6 +406,8 @@ function MenuView({ store, snap }: { store: SidebarStore; snap: SidebarSnapshot 
       className="sb-menu"
       role="menu"
       style={{ left: pos?.left ?? -9999, top: pos?.top ?? -9999, visibility: pos === null ? 'hidden' : 'visible' }}
+      onMouseEnter={() => store.openFlyout()}
+      onMouseLeave={() => store.hideFlyout()}
     >
       {items.map((item, index) => (
         <button
@@ -439,6 +441,11 @@ function FlyoutView({ store, snap }: { store: SidebarStore; snap: SidebarSnapsho
       style={{ left: flyout.left, top: flyout.top, maxHeight: flyout.maxHeight }}
       onMouseEnter={() => store.openFlyout()}
       onMouseLeave={() => store.hideFlyout()}
+      onFocus={() => store.focusFlyout()}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        store.blurFlyout()
+      }}
     >
       {groups.map((group) => (
         <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />

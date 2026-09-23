@@ -106,6 +106,10 @@ export class SidebarStore {
   private dragWidth = 0
   private tooltipTimer: ReturnType<typeof setTimeout> | null = null
   private flyoutTimer: ReturnType<typeof setTimeout> | null = null
+  /** 指针是否仍在浮窗簇（窄栏项 + 浮窗 + 子菜单）内；菜单关闭后据此判定父窗去留。 */
+  private flyoutHover = false
+  /** 焦点是否仍在浮窗簇内；键盘用户不因鼠标移出而被收起。 */
+  private flyoutFocused = false
   private reloadTimer: ReturnType<typeof setTimeout> | null = null
   private confirmTimer: ReturnType<typeof setTimeout> | null = null
   private widthTimer: ReturnType<typeof setTimeout> | null = null
@@ -371,7 +375,7 @@ export class SidebarStore {
 
   async selectSession(id: string): Promise<void> {
     this.update({ confirm: clearConfirm(), badges: clearUnread(this.snapshot.badges, id) })
-    this.hideFlyout()
+    this.closeFlyout()
     await this.writeSlot({ kind: 'session.select', conversation: id })
     await this.command('session.select', null)
     await this.loadHistory()
@@ -532,11 +536,19 @@ export class SidebarStore {
   // ---- 弹层 ----
 
   openMenu(anchor: HTMLElement | null, items: MenuItem[]): void {
+    // 菜单由浮窗内按钮开出：取消在途的浮窗收起，父窗随子菜单保活（子不先于父消失）。
+    if (this.flyoutTimer !== null) {
+      clearTimeout(this.flyoutTimer)
+      this.flyoutTimer = null
+    }
     this.update({ menu: { items, anchor } })
   }
 
   closeMenu(): void {
-    if (this.snapshot.menu !== null) this.update({ menu: null })
+    if (this.snapshot.menu === null) return
+    this.update({ menu: null })
+    // 子菜单关闭后重新判定父浮窗：指针 / 焦点均已不在浮窗簇内则一并收起。
+    if (!this.flyoutHover && !this.flyoutFocused) this.hideFlyout()
   }
 
   closeMenuAndRestoreFocus(): void {
@@ -571,11 +583,30 @@ export class SidebarStore {
 
   openFlyout(): void {
     if (!this.snapshot.collapsed) return
+    this.flyoutHover = true
     if (this.flyoutTimer !== null) clearTimeout(this.flyoutTimer)
     this.flyoutTimer = setTimeout(() => {
       this.flyoutTimer = null
       this.showFlyout()
     }, FLYOUT_OPEN_MS)
+  }
+
+  /** 浮窗簇内取得焦点：与悬浮同样保活，键盘用户不被收起。 */
+  focusFlyout(): void {
+    if (!this.snapshot.collapsed) return
+    this.flyoutFocused = true
+    if (this.flyoutTimer !== null) {
+      clearTimeout(this.flyoutTimer)
+      this.flyoutTimer = null
+    }
+    if (!this.snapshot.flyoutOpen) this.showFlyout()
+  }
+
+  /** 焦点离开浮窗簇（`relatedTarget` 不在簇内时由组件调用）。 */
+  blurFlyout(): void {
+    if (!this.flyoutFocused) return
+    this.flyoutFocused = false
+    this.hideFlyout()
   }
 
   /** 浮窗定位：贴窄栏右缘，顶边下移一小段；限高取「视口余量 / 上限」较小者，超出走内部滚动。 */
@@ -595,11 +626,27 @@ export class SidebarStore {
   }
 
   hideFlyout(): void {
+    this.flyoutHover = false
     if (this.flyoutTimer !== null) clearTimeout(this.flyoutTimer)
     this.flyoutTimer = setTimeout(() => {
       this.flyoutTimer = null
+      // 子菜单仍开着，或焦点仍在浮窗内：父窗不先于子 / 交互消失。
+      if (this.snapshot.menu !== null || this.flyoutFocused) return
       if (this.snapshot.flyoutOpen) this.update({ flyoutOpen: false })
     }, FLYOUT_CLOSE_MS)
+  }
+
+  /** 立即收起浮窗与其子菜单（选中会话等确定性收场，不等延时）。 */
+  closeFlyout(): void {
+    if (this.flyoutTimer !== null) {
+      clearTimeout(this.flyoutTimer)
+      this.flyoutTimer = null
+    }
+    this.flyoutHover = false
+    this.flyoutFocused = false
+    if (this.snapshot.flyoutOpen || this.snapshot.menu !== null) {
+      this.update({ flyoutOpen: false, menu: null })
+    }
   }
 
   // ---- 宽度拖拽 ----
