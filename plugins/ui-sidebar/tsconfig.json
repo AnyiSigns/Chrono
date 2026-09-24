@@ -11,7 +11,6 @@
     "allowJs": true,
     "checkJs": false,
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
     "paths": { "@chrono/ui-contract": ["../../types/ui-contract.d.ts"] }
   },
   "include": ["execute/web/**/*.ts", "execute/web/**/*.tsx"]
