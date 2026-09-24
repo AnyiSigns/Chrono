@@ -71,6 +71,11 @@ export function expectTurn(state: RunState, threadKey: string): RunState {
   return { ...state, expecting: { ...state.expecting, [threadKey]: true } }
 }
 
+/** 本线程是否仍在等 `chat.send` 的 run.started（供回执超时兜底判定）。 */
+export function isExpecting(state: RunState, threadKey: string): boolean {
+  return state.expecting[threadKey] === true
+}
+
 export function clearExpecting(state: RunState, threadKey: string): RunState {
   if (state.expecting[threadKey] !== true) return state
   const expecting = { ...state.expecting }

@@ -2,6 +2,7 @@
 // 全能口径：text / reasoning / image / video / audio / file / 工具卡；未知 part 走文本降级（不空白、不报错）。
 
 import { UI_TEXT } from './messages.ts'
+import { safeUrl } from './sanitize.ts'
 
 function isRec(value: unknown): value is { [key: string]: any } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -24,7 +25,8 @@ export function assetSource(part: any): any {
       }
     }
     if (candidate.kind === 'ext' && typeof candidate.url === 'string') {
-      return { kind: 'ext', url: candidate.url }
+      const url = safeUrl(candidate.url)
+      return url === null ? null : { kind: 'ext', url }
     }
     if (typeof candidate.sha256 === 'string') {
       return {

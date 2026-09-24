@@ -8,16 +8,20 @@ import {
   confirmArmed,
   CONFIRM_APPROVE_ALL,
   CONFIRM_DENY_ALL,
-  diffLabelVars,
+  diffItemKey,
+  diffItemText,
   elapsedMs,
+  fileKey,
+  fileText,
   formatWait,
+  graphDiffText,
   isPending,
+  itemPresentation,
   itemTone,
   oldestPending,
-  viewOf,
   waitWarning,
 } from './model'
-import type { DiffCounts, PluginWriteView, Rec, View } from './model'
+import type { Rec, View } from './model'
 import { formatText, messageText } from './messages'
 import { createApprovalStore } from './store'
 import type { ApprovalSnapshot, ApprovalStore } from './store'
@@ -172,26 +176,23 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
           <HeadButton kind={CONFIRM_APPROVE_ALL} count={count} tone="accent" store={store} snapshot={snapshot} t={t} />
         </div>
         {snapshot.error !== null && (
-          <div className="approval-danger-inline" data-role="batch-error">
+          <div className="approval-danger-inline" data-role="batch-error" data-source={snapshot.error.kind}>
             <span>{t('approval_failed')}</span>
             <TextButton
               label={t('approval_retry')}
               disabled={snapshot.busy.length > 0}
               onClick={() => {
-                if (snapshot.lastBatch !== null) store.submitAll(snapshot.lastBatch)
+                const error = snapshot.error
+                if (error === null) return
+                if (error.kind === 'batch' && snapshot.lastBatch !== null) store.submitAll(snapshot.lastBatch)
+                else store.load()
               }}
             />
           </div>
         )}
         <div className="approval-list">
           {pending.map((item) => (
-            <Item
-              key={typeof item.id === 'string' ? item.id : JSON.stringify(item)}
-              item={item}
-              store={store}
-              snapshot={snapshot}
-              t={t}
-            />
+            <Item key={item.id} item={item} store={store} snapshot={snapshot} t={t} />
           ))}
         </div>
       </div>
@@ -237,8 +238,9 @@ function HeadButton(props: {
 
 function Item(props: { item: Rec; store: ApprovalStore; snapshot: ApprovalSnapshot; t: T }) {
   const { item, store, snapshot, t } = props
-  const id = typeof item.id === 'string' ? item.id : ''
-  const view = viewOf(item, snapshot.refs)
+  const id: string = item.id
+  const presentation = itemPresentation(item, snapshot.refs, t)
+  const view = presentation.view
   const expanded = snapshot.expanded.includes(id)
   const busy = snapshot.busy.includes(id)
   const tone = itemTone(item)
@@ -253,8 +255,8 @@ function Item(props: { item: Rec; store: ApprovalStore; snapshot: ApprovalSnapsh
           aria-label={expanded ? t('approval_collapse') : t('approval_expand')}
           onClick={() => store.toggleExpanded(id)}
         >
-          <span className="approval-item-tool">{summaryLead(view, t)}</span>
-          <span className="approval-item-summary">{summaryText(view, t)}</span>
+          <span className="approval-item-tool">{presentation.lead}</span>
+          <span className="approval-item-summary">{presentation.summary}</span>
           {tone === 'expired' && <span className="approval-tag">{t('approval_expired_label')}</span>}
         </button>
         <span className="approval-item-actions">
@@ -316,9 +318,9 @@ function ItemDetail({ view, t }: { view: View; t: T }) {
         )}
         {view.diff !== null && (
           <>
-            <div className="approval-note">{`${t('approval_graph_diff')}：${diffLabel(view.diff, t)}`}</div>
+            <div className="approval-note">{graphDiffText(view.diff, t)}</div>
             {view.diff.items.map((entry, index) => (
-              <div className="approval-note" key={index}>
+              <div className="approval-note" key={diffItemKey(entry, index)}>
                 {diffItemText(entry)}
               </div>
             ))}
@@ -331,8 +333,8 @@ function ItemDetail({ view, t }: { view: View; t: T }) {
     return (
       <div className="approval-item-detail">
         {view.files.map((file, index) => (
-          <div className="approval-note" key={index}>
-            {typeof file.path === 'string' ? file.path : JSON.stringify(file)}
+          <div className="approval-note" key={fileKey(file, index)}>
+            {fileText(file)}
           </div>
         ))}
         {view.validate === true && (
@@ -350,36 +352,4 @@ function ItemDetail({ view, t }: { view: View; t: T }) {
     )
   }
   return <div className="approval-item-detail">{view.args || t('approval_no_args')}</div>
-}
-
-function summaryLead(view: View, t: T): string {
-  if (view.kind === 'orchestration_change') return t('approval_orchestration_change')
-  if (view.kind === 'plugin_write') return t('approval_plugin_write')
-  return view.tool !== null ? view.tool : t('approval_tool_call')
-}
-
-function summaryText(view: View, t: T): string {
-  if (view.kind === 'orchestration_change') return view.title || diffLabel(view.diff, t)
-  if (view.kind === 'plugin_write') return pluginWriteSummary(view, t)
-  return view.args || t('approval_no_args')
-}
-
-function diffLabel(diff: DiffCounts | null, t: T): string {
-  const vars = diffLabelVars(diff)
-  return vars === null ? '' : t('approval_nodes_edges', vars)
-}
-
-function pluginWriteSummary(view: PluginWriteView, t: T): string {
-  const parts: string[] = []
-  if (view.plugin !== null) parts.push(view.plugin)
-  if (view.count !== null) parts.push(t('approval_files_count', { count: view.count }))
-  if (view.validate === true) parts.push(t('approval_validate_ok'))
-  if (view.validate === false) parts.push(t('approval_validate_failed'))
-  return parts.join(' · ')
-}
-
-function diffItemText(entry: Rec): string {
-  if (typeof entry.summary === 'string') return entry.summary
-  if (typeof entry.op === 'string' && typeof entry.path === 'string') return `${entry.op} ${entry.path}`
-  return JSON.stringify(entry)
 }

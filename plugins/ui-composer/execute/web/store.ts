@@ -4,7 +4,7 @@
 
 import type { SlotContext } from '@chrono/ui-contract'
 import { createClient } from './client.ts'
-import type { IdentityRead, SubmitResult } from './client.ts'
+import type { CommandResult, IdentityRead, SubmitResult } from './client.ts'
 import {
   attachmentKind,
   buildAttachment,
@@ -30,6 +30,7 @@ import {
   mergeConfig,
   normalizePermission,
   queueCount,
+  queueEntry,
   queueOf,
   reasoningOptionsFromConfig,
   removeFromQueue,
@@ -44,6 +45,7 @@ import {
   createRunState,
   endWrite,
   expectTurn,
+  isExpecting,
   isThreadBusy,
   releaseWrite,
   trackRunFinished,
@@ -53,6 +55,16 @@ import type { RunState } from './run-model.ts'
 
 /** 等槽写 run 落账的上限；超时后仍派发，避免事件丢失把线程卡在「忙」。 */
 const WRITE_WAIT_MS = 5000
+
+/** 等 `chat.send` 的 run.started 上限；回执成功但事件一直不来时兜底解除等回合，避免线程永久忙。 */
+const EXPECT_WAIT_MS = 15000
+
+/** 壳调用异常 → 错误码（优先 Error.message，其次字符串，最后 `unknown`）。 */
+function errorOf(err: unknown): string {
+  if (err instanceof Error && err.message.length > 0) return err.message
+  if (typeof err === 'string' && err.length > 0) return err
+  return 'unknown'
+}
 
 export type ChipStatus = 'loading' | 'ready' | 'failed'
 
@@ -146,6 +158,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   let offThread: (() => void) | null = null
   let reasoningSeq = 0
   const writeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const expectTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const listeners = new Set<(snapshot: ComposerSnapshot) => void>()
 
   function buildSnapshot(): ComposerSnapshot {
@@ -290,15 +303,21 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   async function commitConfig(change: unknown): Promise<SubmitResult> {
-    const fresh = await readConfigReady()
-    if (disposed) return { ok: false, code: 'disposed', run: null }
-    // 代码世代回落 body（配置身份尚无数据世代）→ 未就绪，退避后仍如此则不写。
-    if (isCodeGenFallbackBody(fresh.body)) return { ok: false, code: 'not_loaded', run: null }
-    const base = fresh.body !== null ? fresh.body : state.config
-    if (base === null || isCodeGenFallbackBody(base)) return { ok: false, code: 'not_loaded', run: null }
-    state.config = mergeConfig(base, change)
-    publish()
-    return client.writeConfig(state.config, fresh.active)
+    try {
+      const fresh = await readConfigReady()
+      if (disposed) return { ok: false, code: 'disposed', run: null }
+      // 代码世代回落 body（配置身份尚无数据世代）→ 未就绪，退避后仍如此则不写。
+      if (isCodeGenFallbackBody(fresh.body)) return { ok: false, code: 'not_loaded', run: null }
+      const base = fresh.body !== null ? fresh.body : state.config
+      if (base === null || isCodeGenFallbackBody(base)) {
+        return { ok: false, code: 'not_loaded', run: null }
+      }
+      state.config = mergeConfig(base, change)
+      publish()
+      return await client.writeConfig(state.config, fresh.active)
+    } catch (err) {
+      return { ok: false, code: errorOf(err), run: null }
+    }
   }
 
   function applyReasoningOptions(options: string[]): void {
@@ -341,7 +360,21 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       error: null,
     }
     publish()
-    const profile = await client.fetchProfile()
+    let profile: CommandResult
+    try {
+      profile = await client.fetchProfile()
+    } catch (err) {
+      if (disposed || seq !== reasoningSeq) return
+      state.reasoning = {
+        status: 'failed',
+        options: [],
+        collapsed: false,
+        value: null,
+        error: errorOf(err),
+      }
+      publish()
+      return
+    }
     if (disposed || seq !== reasoningSeq) return
     if (!profile.ok) {
       state.reasoning = {
@@ -354,7 +387,21 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       publish()
       return
     }
-    const config = await client.readConfig()
+    let config: unknown
+    try {
+      config = await client.readConfig()
+    } catch (err) {
+      if (disposed || seq !== reasoningSeq) return
+      state.reasoning = {
+        status: 'failed',
+        options: [],
+        collapsed: false,
+        value: null,
+        error: errorOf(err),
+      }
+      publish()
+      return
+    }
     if (disposed || seq !== reasoningSeq) return
     if (config !== null) state.config = config
     const options = reasoningOptionsFromConfig(state.config)
@@ -411,6 +458,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   async function selectReasoning(value: string | null): Promise<void> {
     if (state.config === null) return
+    // 作废在途的档位拉取回包，避免旧结果覆盖用户本次选择。
+    reasoningSeq += 1
     const wrote = await commitConfig({ reasoning: value })
     if (disposed) return
     if (wrote.ok && state.reasoning.status === 'ready' && state.reasoning.options.length > 0) {
@@ -440,16 +489,48 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   // ---- 发送 / 终止 / 待发队列 ----
 
+  function clearExpectTimer(threadKey: string): void {
+    const timer = expectTimers.get(threadKey)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      expectTimers.delete(threadKey)
+    }
+  }
+
   /** 触发 `chat.send`：不等回合结束（进度由宿主事件驱动）；`transport_failed` 是长回合超时的正常现象。 */
   function dispatchSend(threadKey: string): void {
     tracking = expectTurn(tracking, threadKey)
     publish()
-    void client.triggerSend(threadKey).then((result) => {
-      if (disposed) return
+    // 回执成功也要保留 expecting 交给 run.started 认领（否则 stop 键与续发失据）；
+    // 事件长期不来时由本定时器兜底解除等回合，避免线程永久忙。
+    clearExpectTimer(threadKey)
+    const timer = setTimeout(() => {
+      expectTimers.delete(threadKey)
+      if (!isExpecting(tracking, threadKey)) return
       tracking = clearExpecting(tracking, threadKey)
-      if (!result.ok && result.code !== 'transport_failed') state.error = result.code
       publish()
-    })
+    }, EXPECT_WAIT_MS)
+    ;(timer as { unref?: () => void }).unref?.()
+    expectTimers.set(threadKey, timer)
+    void client
+      .triggerSend(threadKey)
+      .then((result) => {
+        if (disposed) return
+        // 成功、以及长回合超时（transport_failed，回合可能已在跑）都保留 expecting，
+        // 交给 run.started 认领或超时兜底；只有确定的失败才立即收回并报错。
+        if (result.ok || result.code === 'transport_failed') return
+        clearExpectTimer(threadKey)
+        tracking = clearExpecting(tracking, threadKey)
+        state.error = result.code
+        publish()
+      })
+      .catch((err) => {
+        if (disposed) return
+        clearExpectTimer(threadKey)
+        tracking = clearExpecting(tracking, threadKey)
+        state.error = errorOf(err)
+        publish()
+      })
   }
 
   function clearWriteTimer(threadKey: string): void {
@@ -508,12 +589,17 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     state.error = null
     tracking = beginWrite(tracking, threadKey)
     publish()
-    const wrote = await client.writeSlot(threadKey, slot)
+    let wrote: SubmitResult | null = null
+    try {
+      wrote = await client.writeSlot(threadKey, slot)
+    } catch (err) {
+      state.error = errorOf(err)
+    }
     if (disposed) return
     tracking = endWrite(tracking, threadKey)
     state.sending = false
-    if (!wrote.ok) {
-      state.error = wrote.code
+    if (wrote === null || !wrote.ok) {
+      if (wrote !== null) state.error = wrote.code
       publish()
       return
     }
@@ -542,12 +628,18 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     state.pending = result.queue
     publish()
     tracking = beginWrite(tracking, threadKey)
-    const wrote = await client.writeSlot(threadKey, result.message)
+    const slot = queueEntry(result.message).slot
+    let wrote: SubmitResult | null = null
+    try {
+      wrote = await client.writeSlot(threadKey, slot)
+    } catch (err) {
+      wrote = { ok: false, code: errorOf(err), run: null }
+    }
     if (disposed) return
     tracking = endWrite(tracking, threadKey)
-    if (!wrote.ok) {
+    if (wrote === null || !wrote.ok) {
       state.pending = enqueueFront(state.pending, threadKey, result.message)
-      state.error = wrote.code
+      state.error = wrote === null ? 'unknown' : wrote.code
       publish()
       return
     }
@@ -566,9 +658,13 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   function onRecord(record: { topic: string; payload: unknown }): void {
     const payload = isRecord(record.payload) ? record.payload : {}
     if (record.topic === 'run.started') {
-      const tracked = trackRunStarted(tracking, runIdOf(payload), runKeyOf(payload))
+      const key = runKeyOf(payload)
+      const tracked = trackRunStarted(tracking, runIdOf(payload), key)
       tracking = tracked.state
-      if (tracked.turnStarted && matchesThread(payload.thread, state.activeThread)) publish()
+      if (tracked.turnStarted) {
+        clearExpectTimer(key)
+        if (matchesThread(payload.thread, state.activeThread)) publish()
+      }
       return
     }
     if (record.topic === 'run.finished') {
@@ -583,6 +679,13 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       }
       // 回合 run 结束：按线程键清空（后台线程也要清），再续发该线程队列。
       if (tracked.kind === 'turn') {
+        clearExpectTimer(key)
+        // 上下文用量随回合结束作废，避免残留陈旧行。
+        if (Object.prototype.hasOwnProperty.call(state.usage, key)) {
+          const usage = { ...state.usage }
+          delete usage[key]
+          state.usage = usage
+        }
         if (matchesThread(payload.thread, state.activeThread)) publish()
         void continueQueue(key)
       }
@@ -623,6 +726,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     if (offThread !== null) offThread()
     for (const timer of writeTimers.values()) clearTimeout(timer)
     writeTimers.clear()
+    for (const timer of expectTimers.values()) clearTimeout(timer)
+    expectTimers.clear()
   }
 
   return {

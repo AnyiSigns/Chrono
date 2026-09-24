@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
+import { PortLink } from './port-link.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -43,7 +44,6 @@ function manifest(): Rec {
 
 /** 客户端半边资产根目录（`execute/web/`）；`client.read` 只在此目录内解析包内相对 `.js`。 */
 const webRoot = fileURLToPath(new URL('./web/', import.meta.url))
-const handlers = createHandlers({ identity: IDENTITY, webRoot })
 
 let exiting = false
 
@@ -55,6 +55,10 @@ function sendFrame(message: Json): void {
     log(`write frame failed: ${(err as Error).message}`)
   }
 }
+
+/** 反向调用通道（服务 → 宿主）：`host.def.read` 按需解析投影引用（只读）。 */
+const LINK = new PortLink((message) => sendFrame(message))
+const handlers = createHandlers({ identity: IDENTITY, webRoot, host: LINK })
 
 function sendError(id: string, code: string, message: string): void {
   sendFrame({ v: '1', id, kind: 'error', ok: false, code, message })
@@ -68,7 +72,7 @@ function declaredMethods(port: string): string[] {
   return []
 }
 
-function handleCall(message: Rec): void {
+async function handleCall(message: Rec): Promise<void> {
   const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
   const port = message['port']
   const method = message['method']
@@ -96,7 +100,7 @@ function handleCall(message: Rec): void {
   }
   const env = isRecord(message['env']) ? (message['env'] as Rec) : {}
   try {
-    const result = handler(args as Json, {
+    const result = await handler(args as Json, {
       run: typeof env['run'] === 'string' ? (env['run'] as string) : null,
       thread: typeof env['thread'] === 'string' ? (env['thread'] as string) : null,
       now: typeof env['now'] === 'number' ? (env['now'] as number) : 0,
@@ -111,10 +115,11 @@ function handleCall(message: Rec): void {
 function shutdown(): void {
   if (exiting) return
   exiting = true
+  LINK.failAll()
   setTimeout(() => process.exit(0), 10).unref?.()
 }
 
-function handle(message: Json): void {
+async function handle(message: Json): Promise<void> {
   if (!isRecord(message)) return
   switch (message['kind']) {
     case 'hello':
@@ -132,7 +137,7 @@ function handle(message: Json): void {
       shutdown()
       return
     case 'call':
-      handleCall(message)
+      await handleCall(message)
       return
     default:
       return
@@ -150,6 +155,8 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
+    // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把串行链堵死。
+    if (isRecord(message) && LINK.settle(message)) continue
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))

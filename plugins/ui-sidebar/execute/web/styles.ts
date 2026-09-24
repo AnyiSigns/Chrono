@@ -151,11 +151,16 @@ export const SIDEBAR_CSS = `
   height: 40px;
   margin: 0 auto;
   padding: 0;
+  border: none;
   border-radius: var(--radius-md);
+  background: transparent;
   color: var(--c-text-2);
+  font: inherit;
+  cursor: pointer;
 }
 .sb-rail-item:hover,
 .sb-rail-item[data-open="true"] { background: var(--c-selection); color: var(--c-text); }
+.sb-rail-item:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .sb-rail-dot { position: absolute; top: 6px; right: 6px; }
 .sb-rail-static { display: flex; justify-content: center; padding: var(--space-4) 0; }
 

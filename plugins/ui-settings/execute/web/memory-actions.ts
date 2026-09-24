@@ -12,6 +12,8 @@ export const SEARCH_LIMIT = 20
 export async function doMemorySearch(ctx: any): Promise<void> {
   const memory = ctx.state.memory
   const query = memory.query.trim()
+  // 每次搜索取一个序号；只有最新序号的结果才提交，慢的旧搜索不覆盖新搜索。
+  const seq = (memory.searchSeq = (memory.searchSeq ?? 0) + 1)
   if (query.length === 0) {
     memory.search = null
     memory.searchDegraded = false
@@ -25,10 +27,13 @@ export async function doMemorySearch(ctx: any): Promise<void> {
   try {
     // 投影切片（含 #21 body / refs）随 args 传入；编辑后置 stale，重取一次保证搜索看得到新条目。
     if (ctx.state.identities === null || memory.identitiesStale) {
-      ctx.state.identities = await loadIdentities(ctx)
+      const identities = await loadIdentities(ctx)
+      if (memory.searchSeq !== seq) return
+      ctx.state.identities = identities
       memory.identitiesStale = false
     }
     if (ctx.state.identities === null) {
+      if (memory.searchSeq !== seq) return
       memory.search = null
       memory.searchDegraded = true
       return
@@ -40,12 +45,15 @@ export async function doMemorySearch(ctx: any): Promise<void> {
       limit: SEARCH_LIMIT,
       ids: ctx.state.identities,
     })
+    if (memory.searchSeq !== seq) return
     const failed = !result.ok || (isRecord(result.value) && result.value.ok === false)
     memory.search = failed ? null : result.value
     memory.searchDegraded = failed
   } finally {
-    memory.searchBusy = false
-    ctx.render()
+    if (memory.searchSeq === seq) {
+      memory.searchBusy = false
+      ctx.render()
+    }
   }
 }
 

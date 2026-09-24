@@ -38,13 +38,14 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
-    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit', 'client.read', 'secret'],
+    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'],
   })
   assert.deepEqual(decl.pins, {
     model: 'model-protocol',
     secrets: 'secrets',
     retrieval: 'memory-retrieval',
     'memory-maintenance': 'memory-consolidate',
+    host: 'host',
   })
 })
 
@@ -113,7 +114,12 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
   assert.deepEqual(readJson('terms/settings.identities.json'), ['g', ['ids']])
   assert.deepEqual(readJson('terms/settings.skills.json'), ['g', ['ids', 'skill']])
   assert.deepEqual(readJson('terms/orchestration.graph.json'), ['g', ['ids', 'loop-policy']])
-  assert.deepEqual(readJson('terms/orchestration.scopes.json'), ['g', ['ids', 'agents']])
+  assert.deepEqual(readJson('terms/orchestration.scopes.json'), [
+    'eff',
+    'ui-settings',
+    'scopes',
+    ['g', ['ids', 'agents']],
+  ])
   assert.deepEqual(readJson('terms/orchestration.health.json'), ['eff', 'ui-settings', 'health', ['g', ['ids']]])
   // 记忆三条：view / edit 传整份投影；search 的查询 args 与投影无法在 term 合流，传命令 args（内含 UI 取回的 ids）。
   assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['g', ['ids']]])

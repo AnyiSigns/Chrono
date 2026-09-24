@@ -20,7 +20,8 @@
   },
   "pins": {
     "session": "session",
-    "workspace": "workspace"
+    "workspace": "workspace",
+    "host": "host"
   },
   "start": "node execute/main.js",
   "build": [

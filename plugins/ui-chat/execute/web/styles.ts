@@ -31,6 +31,7 @@ export const STYLE_TEXT = `
 .chat-md code { font-family: var(--font-mono); font-size: var(--font-size-sm); }
 .chat-md p > code, .chat-md li > code, .chat-md td > code { background: var(--c-bg); border-radius: var(--radius-sm); padding: 0 var(--space-4); }
 .chat-md a { color: var(--c-accent); }
+.chat-md img { max-width: 100%; height: auto; border-radius: var(--radius-md); cursor: zoom-in; }
 .chat-md blockquote { border-left: 3px solid var(--c-border); margin: 0 0 var(--space-8); padding-left: var(--space-12); color: var(--c-text-2); }
 .chat-md ul, .chat-md ol { margin: 0 0 var(--space-8); padding-left: var(--space-24); }
 .chat-md hr { border: none; border-top: 1px solid var(--c-border); }

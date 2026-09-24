@@ -3,9 +3,10 @@
 // 快照不可变：每个 action 返回新对象，store.commit 换引用并通知订阅者。
 
 import { resolveActiveThread } from './bridge-state.ts'
-import { bumpUnread, clearUnread } from './unread.ts'
+import { bumpUnread, clearUnread, unreadTotal } from './unread.ts'
 import type { UnreadCounts } from './unread.ts'
-import { isRecord } from './threads-model.ts'
+import { isRecord, threadLabelKey } from './threads-model.ts'
+import { formatText, messageText } from './messages.ts'
 import type { MessageTable } from './messages.ts'
 
 export interface ThreadTag {
@@ -19,7 +20,7 @@ export interface ThreadTag {
 }
 
 export interface TodoItem {
-  id: string | null
+  id: string
   text: string
   status: string
 }
@@ -87,14 +88,18 @@ function normalizeTag(raw: unknown): ThreadTag | null {
 function normalizeTodo(raw: unknown): TodoView | null {
   if (!isRecord(raw)) return null
   const items: TodoItem[] = []
+  const seen = new Set<string>()
   if (Array.isArray(raw.items)) {
-    for (const item of raw.items) {
+    for (const [index, item] of raw.items.entries()) {
       if (!isRecord(item)) continue
-      items.push({
-        id: typeof item.id === 'string' ? item.id : null,
-        text: typeof item.text === 'string' ? item.text : '',
-        status: typeof item.status === 'string' ? item.status : 'pending',
-      })
+      const text = typeof item.text === 'string' ? item.text : ''
+      const status = typeof item.status === 'string' ? item.status : 'pending'
+      const explicit = typeof item.id === 'string' && item.id.length > 0 ? item.id : null
+      // 无 id 的项按内容生成稳定键（跨重排不变）；同内容重复项再以序号消歧，保证唯一。
+      let id = explicit ?? `todo:${status}:${text}`
+      if (seen.has(id)) id = `${id}#${index}`
+      seen.add(id)
+      items.push({ id, text, status })
     }
   }
   return {
@@ -123,6 +128,26 @@ export function normalizeThreadsData(value: unknown): ThreadsData {
     tags,
     todo: normalizeTodo(value.todo),
   }
+}
+
+/** 标签显示名：真实标题优先；缺省标题 / 空标题回退到种类兜底文案（不出现空标签）。 */
+export function tagLabel(tag: ThreadTag, table: MessageTable): string {
+  if (tag.default_title !== true && tag.title.length > 0) return tag.title
+  return messageText(table, threadLabelKey(tag.kind))
+}
+
+/**
+ * `aria-live` 播报串：错误态 → 错误人话；否则「当前标签 · 未读 N」。
+ * 供标签 / 未读 / 状态变化时播报，避免空 live region 从不发声。
+ */
+export function announcementOf(view: ThreadsView): string {
+  if (view.error !== null) return messageText(view.table, view.error.code)
+  const active = view.data?.tags.find((tag) => tag.thread === view.activeThread) ?? null
+  const parts: string[] = []
+  if (active !== null) parts.push(tagLabel(active, view.table))
+  const unread = unreadTotal(view.unread)
+  if (unread > 0) parts.push(formatText(view.table, 'threads_unread', { count: unread }))
+  return parts.join(' · ')
 }
 
 /** 初始快照（表未热时用内置最小文案表）。 */

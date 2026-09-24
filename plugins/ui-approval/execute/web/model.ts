@@ -19,8 +19,26 @@ export const WAIT_WARNING_MS = 120000
 /** 宽松记录（视图模型吃未知 Json，取值处逐一收窄）。 */
 export type Rec = { [key: string]: any }
 
+/** 文案取用函数（组件把 `messageText` / `formatText` 包成同形）。 */
+export type Translator = (code: string, vars?: Record<string, unknown>) => string
+
 export function isRecord(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 只保留有稳定身份的条目：`id` 必须是非空字符串，且按 `id` 去重。
+ * 无 id 的条目无法裁决、无法作 React key；用空串当身份会让多条共享展开 / 忙碌 / 错误态并撞 key。 */
+export function identifiedItems(items: unknown): Rec[] {
+  if (!Array.isArray(items)) return []
+  const seen = new Set<string>()
+  const result: Rec[] = []
+  for (const item of items) {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length === 0) continue
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    result.push(item)
+  }
+  return result
 }
 
 /** 身份视图 → data body；非身份视图（裸 body）原样返回。 */
@@ -421,4 +439,81 @@ export function diffLabelVars(diff: DiffCounts | null): { nodes: string; edges: 
     nodes: signedOf(diff.nodesAdded) + signedOf(diff.nodesRemoved),
     edges: signedOf(diff.edgesAdded) + signedOf(diff.edgesRemoved),
   }
+}
+
+// ── 条目文案组装（组件只渲染，不就地拼串） ───────────────────────────────────
+
+/** 条目主标签：编排变更 / 插件写入 / 工具名（缺失回工具调用）。 */
+export function summaryLead(view: View, t: Translator): string {
+  if (view.kind === KIND_ORCHESTRATION_CHANGE) return t('approval_orchestration_change')
+  if (view.kind === KIND_PLUGIN_WRITE) return t('approval_plugin_write')
+  return view.tool !== null ? view.tool : t('approval_tool_call')
+}
+
+/** 条目摘要行：编排取标题 / 图 diff，插件写取插件 + 文件数 + validate，其余取参数摘要。 */
+export function summaryText(view: View, t: Translator): string {
+  if (view.kind === KIND_ORCHESTRATION_CHANGE) return view.title || diffLabel(view.diff, t)
+  if (view.kind === KIND_PLUGIN_WRITE) return pluginWriteSummary(view, t)
+  return view.args || t('approval_no_args')
+}
+
+/** 图 diff 一行文案（`{nodes} 节点 / {edges} 边`）；无 diff 回空串。 */
+export function diffLabel(diff: DiffCounts | null, t: Translator): string {
+  const vars = diffLabelVars(diff)
+  return vars === null ? '' : t('approval_nodes_edges', vars)
+}
+
+/** 图 diff 整行（标题 + 计数）；无 diff 回空串。 */
+export function graphDiffText(diff: DiffCounts | null, t: Translator): string {
+  const label = diffLabel(diff, t)
+  return label.length === 0 ? '' : `${t('approval_graph_diff')}：${label}`
+}
+
+/** 插件写入文件一行：`path`，缺失兜底 JSON。 */
+export function fileText(file: unknown): string {
+  if (isRecord(file) && typeof file.path === 'string') return file.path
+  return JSON.stringify(file)
+}
+
+/** 插件写入摘要：插件名 + 文件数 + validate 结果，`·` 分隔。 */
+export function pluginWriteSummary(view: PluginWriteView, t: Translator): string {
+  const parts: string[] = []
+  if (view.plugin !== null) parts.push(view.plugin)
+  if (view.count !== null) parts.push(t('approval_files_count', { count: view.count }))
+  if (view.validate === true) parts.push(t('approval_validate_ok'))
+  if (view.validate === false) parts.push(t('approval_validate_failed'))
+  return parts.join(' · ')
+}
+
+/** diff 条目一行文本：优先 `summary`，其次 `op path`，兜底 JSON。 */
+export function diffItemText(entry: unknown): string {
+  if (isRecord(entry)) {
+    if (typeof entry.summary === 'string') return entry.summary
+    if (typeof entry.op === 'string' && typeof entry.path === 'string') return `${entry.op} ${entry.path}`
+  }
+  return JSON.stringify(entry)
+}
+
+/** diff 条目稳定 key：`op path` 前缀 + 位置序号（同形条目也能区分）。 */
+export function diffItemKey(entry: unknown, index: number): string {
+  const op = isRecord(entry) && typeof entry.op === 'string' ? entry.op : ''
+  const path = isRecord(entry) && typeof entry.path === 'string' ? entry.path : ''
+  const stable = op.length > 0 || path.length > 0 ? `${op} ${path}` : 'item'
+  return `${stable}#${index}`
+}
+
+/** 插件写入文件稳定 key：`path` 前缀 + 位置序号（同名路径也能区分）。 */
+export function fileKey(file: unknown, index: number): string {
+  const path = isRecord(file) && typeof file.path === 'string' ? file.path : ''
+  return `${path.length > 0 ? path : 'file'}#${index}`
+}
+
+/** 条目呈现：一次算好视图与两行文案，组件直接渲染。 */
+export function itemPresentation(
+  item: unknown,
+  refs: unknown,
+  t: Translator,
+): { view: View; lead: string; summary: string } {
+  const view = viewOf(item, refs)
+  return { view, lead: summaryLead(view, t), summary: summaryText(view, t) }
 }

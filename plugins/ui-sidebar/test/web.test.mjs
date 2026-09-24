@@ -16,11 +16,14 @@ import {
   normalizeConversations,
   normalizeQuery,
   normalizeWorkspaces,
+  ungroupedConversations,
 } from '../execute/web/sidebar-model.ts'
 import {
   applyEvent,
   badgeFor,
   badgeForGroup,
+  badgeTextCode,
+  BADGE_TEXT_CODES,
   clearUnread,
   createBadgeState,
   runningRun,
@@ -87,6 +90,18 @@ test('标题本地过滤：大小写不敏感、区间高亮、空查询全命�
   assert.deepEqual(filterConversations(list, '').map((item) => item.id), ['c1', 'c2'])
 })
 
+test('标题过滤：大小写折叠改变长度时区间仍落在原串上（不越界 / 不错位）', () => {
+  // `İ` 的 toLowerCase 为两码元，旧实现按折叠串下标切片会错位。
+  const result = matchTitle('İstanbul', 'stanbul')
+  assert.equal(result.matched, true)
+  for (const [start, end] of result.ranges) {
+    assert.ok(start >= 0 && end <= 'İstanbul'.length && start < end)
+    assert.equal('İstanbul'.slice(start, end).toLowerCase(), 'stanbul')
+  }
+  // 折叠不改变长度时保持原快路径行为
+  assert.deepEqual(matchTitle('Alpha Beta', 'beta'), { matched: true, ranges: [[6, 10]] })
+})
+
 test('按工作区分组：顺序 = 工作区顺序，已移除工作区的会话随之隐藏', () => {
   const workspaces = normalizeWorkspaces([
     { id: 'w1', name: 'A', path: '/a' },
@@ -110,6 +125,22 @@ test('按工作区分组：顺序 = 工作区顺序，已移除工作区的会�
   assert.equal(isEmptyView([], [], ''), true)
   assert.equal(isEmptyView(workspaces, conversations, ''), false)
   assert.equal(isEmptyView(workspaces, [], 'x'), false)
+})
+
+test('未分组会话：null / 已移除工作区的会话显式收拢，且受查询过滤', () => {
+  const workspaces = normalizeWorkspaces([{ id: 'w1', name: 'A', path: '/a' }])
+  const conversations = normalizeConversations({
+    conversations: [
+      { id: 'c1', workspace_id: 'w1', title: 'A1' },
+      { id: 'c2', workspace_id: 'w9', title: 'removed' },
+      { id: 'c3', title: 'unbound' },
+      { id: 'c4', workspace_id: 'w1', title: 'A2' },
+    ],
+  })
+  const orphans = ungroupedConversations(workspaces, conversations, '')
+  assert.deepEqual(orphans.map((item) => item.id), ['c2', 'c3'])
+  assert.deepEqual(ungroupedConversations(workspaces, conversations, 'unb').map((item) => item.id), ['c3'])
+  assert.deepEqual(ungroupedConversations([], conversations, '').map((item) => item.id), ['c1', 'c2', 'c3', 'c4'])
 })
 
 test('消息链还原：沿 prev 从链头逆序收集再反转；断链 / 环安全', () => {
@@ -207,6 +238,45 @@ test('组聚合角标：取组内最高优先级；未读跨会话求和；空�
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'running', run: 'r1' })
   state = applyEvent(state, 'session', 'approval.pending', { thread: 'c1' })
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'pending', count: 1 })
+})
+
+test('角标文案码：种类 → 文案码单一映射，未知回 null', () => {
+  assert.equal(badgeTextCode('running'), BADGE_TEXT_CODES.running)
+  assert.equal(badgeTextCode('pending'), 'sidebar_pending')
+  assert.equal(badgeTextCode('failed'), 'sidebar_failed')
+  assert.equal(badgeTextCode('unread'), 'sidebar_unread_count')
+  assert.equal(badgeTextCode('missing'), 'sidebar_directory_missing')
+  assert.equal(badgeTextCode('bogus'), null)
+  assert.equal(badgeTextCode(null), null)
+})
+
+test('applyEvent：无实际变更时回传入参引用（供调用方免序列化判变更）', () => {
+  const state = createBadgeState()
+  // 未知 topic / 无 thread 原样返回
+  assert.equal(applyEvent(state, 'host', 'unknown.topic', { thread: 'c1' }), state)
+  assert.equal(applyEvent(state, 'host', 'run.started', {}), state)
+  // 已清零的 approval.decided 不再产生新引用
+  assert.equal(applyEvent(state, 'session', 'approval.decided', { thread: 'c1', count: 0 }), state)
+  // 有实际变更时回新引用
+  const next = applyEvent(state, 'session', 'group.message', { thread: 'c1' })
+  assert.notEqual(next, state)
+  // 重复的 run.finished（无运行记录、非失败）不产生新引用
+  assert.equal(applyEvent(state, 'host', 'run.finished', { run: 'r1', thread: 'c1', status: 'done' }), state)
+})
+
+test('首屏补种：本地已读会话的历史未读不再复活', () => {
+  const conversations = [{ id: 'c1', status: 'waiting', pending: null, inbox: { count: 5, last_seen: 1 } }]
+  assert.deepEqual(badgeFor(seedFromHistory(createBadgeState(), conversations), 'c1'), {
+    kind: 'unread',
+    count: 4,
+  })
+  const locallyRead = new Set(['c1'])
+  assert.equal(badgeFor(seedFromHistory(createBadgeState(), conversations, locallyRead), 'c1'), null)
+  // 未标记的其它会话仍照常补种
+  const both = [{ ...conversations[0] }, { id: 'c2', status: 'waiting', pending: null, inbox: { count: 2, last_seen: 0 } }]
+  const seeded = seedFromHistory(createBadgeState(), both, locallyRead)
+  assert.equal(badgeFor(seeded, 'c1'), null)
+  assert.deepEqual(badgeFor(seeded, 'c2'), { kind: 'unread', count: 2 })
 })
 
 // ---- 二次确认 ----

@@ -53,13 +53,13 @@ test('build 声明：npm ci + node execute/build.mjs，args 不含 =（shell 安
   }
 })
 
-test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；pins 只一条 approval', () => {
+test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；pins = approval + 宿主解析', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-approval'])
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
-  assert.deepEqual(decl.pins, { approval: 'approval' })
+  assert.deepEqual(decl.pins, { approval: 'approval', host: 'host' })
 })
 
 test('members = execute + term；四条命令入口 term 全部存在且无 argsSchema', () => {

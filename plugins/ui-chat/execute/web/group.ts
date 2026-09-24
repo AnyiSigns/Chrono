@@ -2,6 +2,7 @@
 // 当前发言者标记、未读锚点索引；「我」仍走用户气泡。
 
 import { messageId, messageText } from './history-model.ts'
+import { messageViewItems } from './render-parts.ts'
 import { UI_TEXT } from './messages.ts'
 
 function isRec(value: unknown): value is { [key: string]: any } {
@@ -82,6 +83,7 @@ export function groupViewModel(input: any): { items: any[]; participants: any[];
       showName: !isMe && previousSpeaker !== speaker.id,
       current: currentSpeakerId !== null && speaker.id === currentSpeakerId,
       text: messageText(def),
+      items: messageViewItems(def),
       def,
     })
     previousSpeaker = speaker.id

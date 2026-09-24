@@ -42,6 +42,11 @@ export function clone(value: any): any {
   return JSON.parse(JSON.stringify(value))
 }
 
+/** 元信息行拼接：过滤非空串后用 ` · ` 连接（组件不就地拼串）。 */
+export function joinMeta(parts: unknown[]): string {
+  return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' · ')
+}
+
 /** seed 默认 config body（与配置身份默认一致；用于「无配置」时本地兜底）。 */
 export function emptyConfig(): any {
   return {

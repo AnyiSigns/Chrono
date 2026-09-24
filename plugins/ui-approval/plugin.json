@@ -5,7 +5,8 @@
     "ui-approval": ["ping", "list", "decide", "decide_all", "client.read"]
   },
   "pins": {
-    "approval": "approval"
+    "approval": "approval",
+    "host": "host"
   },
   "start": "node execute/main.ts",
   "build": [

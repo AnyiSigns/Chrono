@@ -26,6 +26,7 @@ import {
   matchesThread,
   mergeConfig,
   mergeSlotBody,
+  messageRowLabel,
   messageSummary,
   modelsOf,
   normalizePermission,
@@ -33,6 +34,7 @@ import {
   permissionIcon,
   permissionLabelCode,
   queueCount,
+  queueEntry,
   queueOf,
   reasoningOptionsFromConfig,
   removeFromQueue,
@@ -262,6 +264,23 @@ test('队内消息摘要：文本裁剪 + 附件计数', () => {
   assert.equal(summary.count, 2)
   assert.equal(messageSummary({ text: 'x'.repeat(80) }, 10).text, `${'x'.repeat(10)}…`)
   assert.deepEqual(messageSummary(null), { text: '', count: 0 })
+})
+
+test('队内条目：包装 {id, slot} 取槽体，行文案由纯模块拼装', () => {
+  const wrapper = { id: 'c-1', slot: { kind: 'chat.message', text: 'hi', attachments: [{}, {}] } }
+  assert.deepEqual(queueEntry(wrapper), { id: 'c-1', slot: wrapper.slot })
+  assert.deepEqual(queueEntry({ kind: 'chat.message', text: 'bare' }), {
+    id: '',
+    slot: { kind: 'chat.message', text: 'bare' },
+  })
+  const t = (code, vars) => `${code}:${vars.count}`
+  assert.equal(messageRowLabel(wrapper, t), 'hi · composer_attachment:2')
+  assert.equal(
+    messageRowLabel({ id: 'c-2', slot: { text: '  ', attachments: [{}] } }, t),
+    'composer_attachment:1',
+  )
+  assert.equal(messageRowLabel({ id: 'c-3', slot: { text: 'plain' } }, t), 'plain')
+  assert.equal(messageRowLabel(null, t), '')
 })
 
 test('上下文用量：数字格式 / 阈值分档 / 明细', () => {

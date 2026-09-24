@@ -19,11 +19,16 @@ function nodeList(graphDef: any): any[] {
   const raw = Array.isArray(body.nodes) ? body.nodes : Array.isArray(body.steps) ? body.steps : []
   return raw.map((node: any, index: number) => {
     const item = isRec(node) ? node : {}
+    const nodeIndex = typeof item.node_index === 'number' ? item.node_index : index
+    const name = typeof item.name === 'string' ? item.name : typeof item.contract === 'string' ? item.contract : formatText('chat_node_name', { index: index + 1 })
+    const status = normalizeStatus(item.status)
     return {
-      index: typeof item.node_index === 'number' ? item.node_index : index,
-      name: typeof item.name === 'string' ? item.name : typeof item.contract === 'string' ? item.contract : formatText('chat_node_name', { index: index + 1 }),
+      index: nodeIndex,
+      name,
+      label: formatText('chat_node_label', { index: nodeIndex, name }),
       impl: typeof item.impl === 'string' ? item.impl : typeof item.identity === 'string' ? item.identity : '',
-      status: normalizeStatus(item.status),
+      status,
+      statusText: statusText(status),
       rejectCode: typeof item.reject_code === 'string' ? item.reject_code : typeof item.code === 'string' ? item.code : null,
     }
   })
@@ -51,6 +56,8 @@ export function workflowViewModel(input: any): any {
         : 'running'
   const failedIndex = nodes.findIndex((node: any) => node.status === 'failed')
   const failed = failedIndex >= 0 ? nodes[failedIndex] : null
+  const progressText = total > 0 ? formatText('chat_step_progress', { index: index + 1, total }) : ''
+  const statusLabel = statusText(currentStatus)
   return {
     title:
       (step !== null && typeof step.name === 'string' && step.name) ||
@@ -59,6 +66,9 @@ export function workflowViewModel(input: any): any {
     index,
     total,
     status: currentStatus,
+    statusText: statusLabel,
+    progressText,
+    metaText: [progressText, statusLabel].filter((piece) => piece.length > 0).join(' · '),
     nodes,
     failedIndex,
     rejectCode: failed !== null ? failed.rejectCode : null,

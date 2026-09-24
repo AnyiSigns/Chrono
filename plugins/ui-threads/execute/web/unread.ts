@@ -26,3 +26,13 @@ export function unreadOf(counts: UnreadCounts, thread: unknown): number {
   const value = typeof counts === 'object' && counts !== null ? counts[thread as string] : undefined
   return typeof value === 'number' && value > 0 ? value : 0
 }
+
+/** 未读总数（跨线程求和，非正忽略）。 */
+export function unreadTotal(counts: UnreadCounts): number {
+  let total = 0
+  for (const key of Object.keys(counts)) {
+    const value = counts[key]
+    if (typeof value === 'number' && value > 0) total += value
+  }
+  return total
+}

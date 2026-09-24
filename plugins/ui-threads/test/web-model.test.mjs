@@ -11,12 +11,13 @@ import {
   isHoverOpen,
   nextHoverStatus,
 } from '../execute/web/hover-intent.ts'
-import { bumpUnread, clearUnread, unreadOf } from '../execute/web/unread.ts'
+import { bumpUnread, clearUnread, unreadOf, unreadTotal } from '../execute/web/unread.ts'
 import { resolveActiveThread } from '../execute/web/bridge-state.ts'
 import { badgeTone, threadLabelKey } from '../execute/web/threads-model.ts'
 import { formatText, lookupMessage, messageText, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 import { FALLBACK_MESSAGES } from '../execute/web/messages.ts'
 import {
+  announcementOf,
   applyActiveThread,
   applyLoaded,
   applyLoadError,
@@ -28,6 +29,7 @@ import {
   setConnected,
   setLoading,
   setTable,
+  tagLabel,
   toggleTodo,
 } from '../execute/web/threads-store.ts'
 
@@ -125,12 +127,65 @@ test('角标色调与文案键映射', () => {
 
 test('文案兜底：本地界面文案、占位符代入、错误码 unknown', () => {
   assert.equal(messageText(null, 'threads_region'), UI_TEXT.threads_region)
-  assert.equal(formatText('threads_todo', { count: 3 }), '待办 3')
-  assert.equal(formatText('threads_unread', { count: 2 }), '未读 2')
+  assert.equal(formatText(null, 'threads_todo', { count: 3 }), '待办 3')
+  assert.equal(formatText(null, 'threads_unread', { count: 2 }), '未读 2')
+  // 表感知：共享表已登记时优先共享表模板
+  const shared = { threads_todo: { title: '', body: 'TODO {count}' } }
+  assert.equal(formatText(shared, 'threads_todo', { count: 4 }), 'TODO 4')
   const unknown = lookupMessage(null, 'threads_does_not_exist')
   assert.equal(unknown.body.includes('threads_does_not_exist'), true)
   assert.equal(parseMessages('{"x":{"title":"t","body":"b"}}').x.body, 'b')
   assert.equal(parseMessages('not json'), null)
+})
+
+test('未读总数：跨线程求和，非正忽略', () => {
+  assert.equal(unreadTotal({}), 0)
+  assert.equal(unreadTotal({ a: 2, b: 3, c: 0 }), 5)
+  assert.equal(unreadTotal({ a: -1, b: 4 }), 4)
+})
+
+test('标签名与 aria-live 播报：空标题回退种类文案、附未读数', () => {
+  const table = FALLBACK_MESSAGES
+  const tag = { thread: 'c1', kind: 'subagent', title: '', default_title: false, status: '', pending: { approval: 0, question: 0 }, badge: null }
+  assert.equal(tagLabel(tag, table), UI_TEXT.thread_label_subagent)
+  assert.equal(tagLabel({ ...tag, title: '真实标题' }, table), '真实标题')
+  assert.equal(tagLabel({ ...tag, title: '缺省', default_title: true }, table), UI_TEXT.thread_label_subagent)
+
+  const view = initialView(table)
+  assert.equal(announcementOf(view), '')
+  const withData = applyLoaded(view, {
+    ok: true,
+    current: 'c1',
+    root: 'c1',
+    tags: [{ thread: 'c1', kind: 'main', title: '', default_title: true, badge: 'running' }],
+    todo: null,
+  }).view
+  assert.equal(announcementOf(withData), UI_TEXT.thread_label_main)
+  const bumped = applyUnreadBump(withData, 'c2')
+  assert.equal(announcementOf(bumped), `${UI_TEXT.thread_label_main} · 未读 1`)
+  const errored = applyLoadError(view, { code: 'ui_unreachable', message: 'x' })
+  assert.equal(announcementOf(errored), messageText(table, 'ui_unreachable'))
+})
+
+test('待办归一：无 id 项生成唯一稳定键，有 id 项原样保留', () => {
+  const data = normalizeThreadsData({
+    ok: true,
+    todo: {
+      conversation: 'c1',
+      total: 3,
+      items: [
+        { id: 't1', text: '一', status: 'pending' },
+        { text: '二', status: 'completed' },
+        { text: '二', status: 'completed' },
+      ],
+    },
+  })
+  const ids = data.todo.items.map((item) => item.id)
+  assert.equal(ids[0], 't1')
+  for (const id of ids) assert.equal(typeof id, 'string')
+  assert.equal(new Set(ids).size, ids.length, 'id 应唯一')
+  assert.equal(ids[1], ids[1], '同内容重复项以序号消歧')
+  assert.notEqual(ids[1], ids[2])
 })
 
 test('store fold：归一防御、applyLoaded 单桥、切换清未读、未读 +1、提交通知', () => {

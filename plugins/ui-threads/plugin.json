@@ -4,7 +4,9 @@
   "methods": {
     "ui-threads": ["ping", "threads.state", "client.read"]
   },
-  "pins": {},
+  "pins": {
+    "host": "host"
+  },
   "start": "node execute/main.ts",
   "build": [
     { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },

@@ -5,9 +5,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
-import { badgeFor, badgeForGroup, runningRun } from './badges.ts'
+import { badgeFor, badgeForGroup, badgeTextCode, runningRun } from './badges.ts'
 import type { Badge } from './badges.ts'
-import { groupConversations, isEmptyView, matchTitle } from './sidebar-model.ts'
+import { groupConversations, isEmptyView, matchTitle, ungroupedConversations } from './sidebar-model.ts'
 import type { Conversation, ConversationGroup, Workspace } from './sidebar-model.ts'
 import { SIDEBAR_CSS } from './styles.ts'
 import { SidebarStore } from './sidebar-store.ts'
@@ -20,7 +20,11 @@ export async function register(ctx: SlotContext): Promise<void> {
   const messages = await loadMessages((url) => fetch(url), ctx.tokens.messages)
   const store = new SidebarStore(ctx, messages)
   const registered = ctx.slots.register({ name: 'sidebar' }, (props) => {
-    useEffect(() => () => store.dispose(), [])
+    // start / dispose 随挂载 / 卸载成对：错误边界卸载后重试重挂会再次 start，store 不残留 disposed。
+    useEffect(() => {
+      store.start()
+      return () => store.dispose()
+    }, [])
     return <Sidebar ctx={props.ctx} store={store} />
   })
   // 注册被拒（陈旧装载）：刚建的 store 立即 dispose，避免第二份在途。
@@ -28,7 +32,6 @@ export async function register(ctx: SlotContext): Promise<void> {
     store.dispose()
     return
   }
-  store.start()
 }
 
 function tooltipProps(store: SidebarStore, label: string): Record<string, unknown> {
@@ -115,12 +118,8 @@ function BadgeView({ store, badge }: { store: SidebarStore; badge: Badge }) {
       </div>
     )
   }
-  const label =
-    badge.kind === 'running'
-      ? store.text('sidebar_running')
-      : badge.kind === 'pending'
-        ? store.text('sidebar_pending')
-        : store.text('sidebar_failed')
+  const code = badgeTextCode(badge.kind)
+  const label = code === null ? '' : store.text(code)
   return (
     <div className="sb-badge">
       <span className="sb-dot" data-kind={badge.kind} role="img" aria-label={label} />
@@ -194,7 +193,17 @@ function RenameInput({ store, session }: { store: SidebarStore; session: Convers
   )
 }
 
-function SessionRow({ store, snap, session }: { store: SidebarStore; snap: SidebarSnapshot; session: Conversation }) {
+function SessionRow({
+  store,
+  snap,
+  session,
+  inFlyout = false,
+}: {
+  store: SidebarStore
+  snap: SidebarSnapshot
+  session: Conversation
+  inFlyout?: boolean
+}) {
   const current = store.currentId() === session.id
   const runId = runningRun(snap.badges, session.id)
   const editing = snap.editing === session.id
@@ -284,7 +293,7 @@ function SessionRow({ store, snap, session }: { store: SidebarStore; snap: Sideb
       tabIndex={0}
       role="button"
       aria-label={session.title}
-      onClick={() => void store.selectSession(session.id)}
+      onClick={() => void store.selectSession(session.id, inFlyout)}
       onDoubleClick={() => store.startRename(session)}
       onKeyDown={(event) => {
         if (event.key === 'F2') {
@@ -292,7 +301,7 @@ function SessionRow({ store, snap, session }: { store: SidebarStore; snap: Sideb
           store.startRename(session)
         } else if (event.key === 'Enter') {
           event.preventDefault()
-          void store.selectSession(session.id)
+          void store.selectSession(session.id, inFlyout)
         }
       }}
     >
@@ -301,8 +310,13 @@ function SessionRow({ store, snap, session }: { store: SidebarStore; snap: Sideb
   )
 }
 
-function GroupView(props: { store: SidebarStore; snap: SidebarSnapshot; group: ConversationGroup }) {
-  const { store, snap, group } = props
+function GroupView(props: {
+  store: SidebarStore
+  snap: SidebarSnapshot
+  group: ConversationGroup
+  inFlyout?: boolean
+}) {
+  const { store, snap, group, inFlyout = false } = props
   const workspace: Workspace = group.workspace
   const collapsed = snap.collapsedGroups.has(workspace.id)
   const headTips = workspace.missing ? tooltipProps(store, store.text('sidebar_directory_missing')) : {}
@@ -366,10 +380,37 @@ function GroupView(props: { store: SidebarStore; snap: SidebarSnapshot; group: C
       {!collapsed && (
         <div className="sb-group-body">
           {group.sessions.map((session) => (
-            <SessionRow key={session.id} store={store} snap={snap} session={session} />
+            <SessionRow key={session.id} store={store} snap={snap} session={session} inFlyout={inFlyout} />
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/** 未分组桶：`workspace_id` 缺失 / 工作区已移除的会话单列，避免静默不可见。只读，不带工作区动作。 */
+function OrphanView({
+  store,
+  snap,
+  sessions,
+  inFlyout = false,
+}: {
+  store: SidebarStore
+  snap: SidebarSnapshot
+  sessions: Conversation[]
+  inFlyout?: boolean
+}) {
+  return (
+    <div className="sb-group">
+      <div className="sb-group-head" data-missing="false">
+        <Icon icons={snap.icons} name="folder" />
+        <div className="sb-group-name">{store.text('sidebar_ungrouped')}</div>
+      </div>
+      <div className="sb-group-body">
+        {sessions.map((session) => (
+          <SessionRow key={session.id} store={store} snap={snap} session={session} inFlyout={inFlyout} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -389,19 +430,36 @@ function MenuView({ store, snap }: { store: SidebarStore; snap: SidebarSnapshot 
   const ref = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
 
+  // 位置随锚点：打开时定位，并在滚动（捕获）/ 缩放时重算，避免列表滚动后菜单脱锚。
+  useLayoutEffect(() => {
+    if (menu === null) return
+    const update = (): void => {
+      const node = ref.current
+      const anchor = menu.anchor
+      if (node === null || anchor === null) {
+        setPos(null)
+        return
+      }
+      const rect = anchor.getBoundingClientRect()
+      const menuRect = node.getBoundingClientRect()
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8))
+      const top = Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8)
+      setPos({ left: Math.round(left), top: Math.round(top) })
+    }
+    update()
+    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('scroll', update, true)
+      window.removeEventListener('resize', update)
+    }
+  }, [menu])
+
+  // 打开时把焦点移入首项（仅一次，重定位不抢焦点）。
   useLayoutEffect(() => {
     if (menu === null) return
     const node = ref.current
-    const anchor = menu.anchor
-    if (node === null || anchor === null) {
-      setPos(null)
-      return
-    }
-    const rect = anchor.getBoundingClientRect()
-    const menuRect = node.getBoundingClientRect()
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8))
-    const top = Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8)
-    setPos({ left: Math.round(left), top: Math.round(top) })
+    if (node === null) return
     const first = node.querySelector('button:not(:disabled)')
     if (first !== null && first instanceof HTMLElement) first.focus()
   }, [menu])
@@ -416,10 +474,25 @@ function MenuView({ store, snap }: { store: SidebarStore; snap: SidebarSnapshot 
       style={{ left: pos?.left ?? -9999, top: pos?.top ?? -9999, visibility: pos === null ? 'hidden' : 'visible' }}
       onMouseEnter={() => store.openFlyout()}
       onMouseLeave={() => store.hideFlyout()}
+      onKeyDown={(event) => {
+        const focusable = Array.from(
+          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'),
+        )
+        if (focusable.length === 0) return
+        const current = focusable.indexOf(document.activeElement as HTMLButtonElement)
+        let next = -1
+        if (event.key === 'ArrowDown') next = (current + 1) % focusable.length
+        else if (event.key === 'ArrowUp') next = (current - 1 + focusable.length) % focusable.length
+        else if (event.key === 'Home') next = 0
+        else if (event.key === 'End') next = focusable.length - 1
+        else return
+        event.preventDefault()
+        focusable[next].focus()
+      }}
     >
-      {items.map((item, index) => (
+      {items.map((item) => (
         <button
-          key={index}
+          key={`${item.icon}:${item.label}`}
           type="button"
           role="menuitem"
           data-danger={item.danger === true ? 'true' : undefined}
@@ -442,11 +515,12 @@ function FlyoutView({ store, snap }: { store: SidebarStore; snap: SidebarSnapsho
   if (!snap.collapsed) return null
   const flyout = snap.flyout
   const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
+  const orphans = ungroupedConversations(snap.workspaces, snap.conversations, snap.query)
   return (
     <div
       className="sb-flyout"
       data-open={String(snap.flyoutOpen)}
-      style={{ left: flyout.left, top: flyout.top, maxHeight: flyout.maxHeight }}
+      style={{ left: flyout.left, top: flyout.top, maxHeight: flyout.maxHeight, maxWidth: flyout.maxWidth }}
       onMouseEnter={() => store.openFlyout()}
       onMouseLeave={() => store.hideFlyout()}
       onFocus={() => store.focusFlyout()}
@@ -456,8 +530,9 @@ function FlyoutView({ store, snap }: { store: SidebarStore; snap: SidebarSnapsho
       }}
     >
       {groups.map((group) => (
-        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
+        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} inFlyout />
       ))}
+      {orphans.length > 0 && <OrphanView store={store} snap={snap} sessions={orphans} inFlyout />}
     </div>
   )
 }
@@ -488,10 +563,16 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
 
   // 侧栏宽度归本插件（可拖拽 + 持久化）；壳的 `#slot-sidebar` 按 `--sidebar-w-expanded` 定宽。
   // 把有效宽度同步到槽根，避免插件根（`--sb-width`）与槽宽不一致 → 内容溢出 / 横向滚动 / 裁切。
+  // 卸载 / 宽度变更时还原槽根的原值，宿主宽度变量不在本插件卸载后残留。
   useEffect(() => {
     const host = rootRef.current?.closest('#slot-sidebar') as HTMLElement | null
     if (host === null || host === undefined) return
+    const previous = host.style.getPropertyValue('--sidebar-w-expanded')
     host.style.setProperty('--sidebar-w-expanded', `${snap.width}px`)
+    return () => {
+      if (previous.length > 0) host.style.setProperty('--sidebar-w-expanded', previous)
+      else host.style.removeProperty('--sidebar-w-expanded')
+    }
   }, [snap.width])
 
   const toggleLabel = snap.collapsed ? store.text('sidebar_expand') : store.text('sidebar_collapse')
@@ -515,33 +596,39 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       )
     } else {
       const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
-      const badge = badgeForGroup(
-        snap.badges,
-        groups.flatMap((group) => group.sessions.map((session) => session.id)),
-      )
+      const orphans = ungroupedConversations(snap.workspaces, snap.conversations, snap.query)
+      const badge = badgeForGroup(snap.badges, [
+        ...groups.flatMap((group) => group.sessions.map((session) => session.id)),
+        ...orphans.map((session) => session.id),
+      ])
       const dotKind = snap.workspaces.some((workspace) => workspace.missing) ? 'missing' : (badge?.kind ?? null)
+      const dotCode = dotKind === null ? null : badgeTextCode(dotKind)
       const dotLabel =
         dotKind === null
           ? ''
-          : dotKind === 'missing'
-            ? store.text('sidebar_directory_missing')
-            : dotKind === 'unread'
-              ? store.fmt('sidebar_unread_count', { count: badge?.count ?? 0 })
-              : dotKind === 'running'
-                ? store.text('sidebar_running')
-                : dotKind === 'pending'
-                  ? store.text('sidebar_pending')
-                  : store.text('sidebar_failed')
+          : dotKind === 'unread'
+            ? store.fmt('sidebar_unread_count', { count: badge?.count ?? 0 })
+            : dotCode === null
+              ? ''
+              : store.text(dotCode)
+      const railLabel = dotLabel.length > 0 ? dotLabel : store.text('sidebar_rail_label')
       listBody = (
-        <div
+        <button
+          type="button"
           className="sb-rail-item"
           data-open={String(snap.flyoutOpen)}
+          aria-label={railLabel}
+          aria-haspopup="true"
+          aria-expanded={snap.flyoutOpen}
           onMouseEnter={() => store.openFlyout()}
           onMouseLeave={() => store.hideFlyout()}
+          onFocus={() => store.focusFlyout()}
+          onBlur={() => store.blurFlyout()}
+          onClick={() => store.focusFlyout()}
         >
           <Icon icons={snap.icons} name="folder" />
           {dotKind !== null && <span className="sb-dot sb-rail-dot" data-kind={dotKind} role="img" aria-label={dotLabel} />}
-        </div>
+        </button>
       )
     }
   } else if (snap.error !== null) {
@@ -559,7 +646,10 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
     )
   } else if (snap.loading && snap.workspaces.length === 0 && snap.conversations.length === 0) {
     listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_loading_more')} />
-  } else if (isEmptyView(snap.workspaces, snap.conversations, snap.query)) {
+  } else if (
+    isEmptyView(snap.workspaces, snap.conversations, snap.query) &&
+    ungroupedConversations(snap.workspaces, snap.conversations, snap.query).length === 0
+  ) {
     listBody = (
       <EmptyView
         store={store}
@@ -570,12 +660,22 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
     )
   } else {
     const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
-    if (snap.query.trim().length > 0 && groups.every((group) => group.sessions.length === 0)) {
+    const orphans = ungroupedConversations(snap.workspaces, snap.conversations, snap.query)
+    if (
+      snap.query.trim().length > 0 &&
+      groups.every((group) => group.sessions.length === 0) &&
+      orphans.length === 0
+    ) {
       listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_no_match')} />
     } else {
-      listBody = groups.map((group) => (
-        <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
-      ))
+      listBody = (
+        <>
+          {groups.map((group) => (
+            <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
+          ))}
+          {orphans.length > 0 && <OrphanView store={store} snap={snap} sessions={orphans} />}
+        </>
+      )
     }
   }
 
@@ -625,7 +725,8 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
           type="button"
           className="sb-iconbtn sb-toggle"
           aria-label={toggleLabel}
-          title={toggleLabel}
+          title={snap.wide ? toggleLabel : store.text('sidebar_expand_unavailable')}
+          disabled={!snap.wide}
           onClick={() => store.toggleCollapsed()}
         >
           <Icon icons={snap.icons} name={snap.collapsed ? 'panel-left' : 'panel-left-close'} label={toggleLabel} />

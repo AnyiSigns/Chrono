@@ -135,6 +135,35 @@ export function Row(props: { label: string; children: ReactNode; savedKey?: stri
   )
 }
 
+/** 统一页头：页标题 + 一行导语；每页固定结构，标题复用 tab 文案键。 */
+export function PanelHead(props: { titleKey: string; descKey: string }) {
+  const vc = useVc()
+  return (
+    <div className="settings-panel-head">
+      <div className="settings-panel-title">{vc.text(props.titleKey)}</div>
+      <div className="settings-panel-desc">{vc.text(props.descKey)}</div>
+    </div>
+  )
+}
+
+/** 拨杆开关：行内布尔开关（role="switch"）；`label` 作可及名，不显示。 */
+export function Toggle(props: { checked: boolean; label: string; disabled?: boolean; onChange: (next: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked ? 'true' : 'false'}
+      aria-label={props.label}
+      title={props.label}
+      className="settings-switch"
+      disabled={props.disabled}
+      onClick={() => props.onChange(!props.checked)}
+    >
+      <span className="settings-switch-thumb" aria-hidden="true" />
+    </button>
+  )
+}
+
 /** 分组：可选分组名 + 子节点。 */
 export function Section(props: { nameKey?: string | null; children: ReactNode }) {
   const vc = useVc()

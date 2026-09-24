@@ -101,6 +101,13 @@ function pickThread(payload, item) {
   return fromItem
 }
 
+/** 人类可读的会话标签；载荷未带 `label` 时为 null（不回落到原始 thread id）。 */
+function pickLabel(payload, item) {
+  const fromItem = item !== null && typeof item.label === 'string' && item.label.length > 0 ? item.label : null
+  if (fromItem !== null) return fromItem
+  return typeof payload.label === 'string' && payload.label.length > 0 ? payload.label : null
+}
+
 function isModelError(reasons) {
   if (!Array.isArray(reasons)) return false
   return reasons.some((reason) => {
@@ -118,9 +125,10 @@ function unhealthySummary(payload) {
 
 /**
  * 把一条壳 `/events` 记录分类成通知描述；不订阅的事件返回 null。
- * 描述：`{ kind, title, thread, summary, always, unthrottled }`。
+ * 描述：`{ kind, title, thread, label, summary, always, unthrottled }`；`label` 为人类可读会话标签，
+ * 载荷未带时为 null（正文据此决定是否加标签，不用原始 thread id）。
  * `always` = 结构 / 失败 / 断线类，不看窗口焦点也通知；
- * `unthrottled` = 结构性事件，不受 5s 合并与同屏排队约束（必须即时）。
+ * `unthrottled` = 结构性事件，不占同屏配额、不走排队（即时），但仍按 5s 窗口对同键合并。
  */
 export function classify(record) {
   const source = asRecord(record)
@@ -132,33 +140,35 @@ export function classify(record) {
       const kindSource = item ?? payload
       const kind = typeof kindSource.kind === 'string' ? kindSource.kind : null
       const thread = pickThread(payload, item)
+      const label = pickLabel(payload, item)
       const summary = firstLine(payload.summary ?? kindSource.summary ?? kindSource.method ?? '')
       if (kind === 'orchestration_change') {
-        return { kind: 'orchestration_change', code: NOTIFY_CODES.orchestration_change, title: '待审批：编排变更', thread, summary, always: true, unthrottled: false }
+        return { kind: 'orchestration_change', code: NOTIFY_CODES.orchestration_change, title: '待审批：编排变更', thread, label, summary, always: true, unthrottled: false }
       }
       if (kind === 'plugin_write') {
-        return { kind: 'plugin_write', code: NOTIFY_CODES.plugin_write, title: '待审批：插件写入', thread, summary, always: true, unthrottled: false }
+        return { kind: 'plugin_write', code: NOTIFY_CODES.plugin_write, title: '待审批：插件写入', thread, label, summary, always: true, unthrottled: false }
       }
-      return { kind: 'approval_pending', code: NOTIFY_CODES.approval_pending, title: '待审批', thread, summary, always: false, unthrottled: false }
+      return { kind: 'approval_pending', code: NOTIFY_CODES.approval_pending, title: '待审批', thread, label, summary, always: false, unthrottled: false }
     }
     case 'run.finished': {
       const thread = pickThread(payload, null)
+      const label = pickLabel(payload, null)
       const summary = firstLine(payload.summary)
       if (payload.status === 'done') {
-        return { kind: 'run_finished', code: NOTIFY_CODES.run_finished, title: '回合完成', thread, summary, always: false, unthrottled: false }
+        return { kind: 'run_finished', code: NOTIFY_CODES.run_finished, title: '回合完成', thread, label, summary, always: false, unthrottled: false }
       }
       if (payload.status === 'refused' || payload.status === 'failed') {
         if (isModelError(payload.reasons)) {
-          return { kind: 'model_error', code: NOTIFY_CODES.model_error, title: '模型错误', thread, summary, always: true, unthrottled: false }
+          return { kind: 'model_error', code: NOTIFY_CODES.model_error, title: '模型错误', thread, label, summary, always: true, unthrottled: false }
         }
-        return { kind: 'run_failed', code: NOTIFY_CODES.run_failed, title: '回合失败', thread, summary, always: true, unthrottled: false }
+        return { kind: 'run_failed', code: NOTIFY_CODES.run_failed, title: '回合失败', thread, label, summary, always: true, unthrottled: false }
       }
       return null
     }
     case 'shell.disconnected':
-      return { kind: 'disconnected', code: NOTIFY_CODES.disconnected, title: '断线', thread: null, summary: '与宿主断开，重连中…', summaryCode: NOTIFY_CODES.disconnected, always: true, unthrottled: false }
+      return { kind: 'disconnected', code: NOTIFY_CODES.disconnected, title: '断线', thread: null, label: null, summary: '与宿主断开，重连中…', summaryCode: NOTIFY_CODES.disconnected, always: true, unthrottled: false }
     case 'shell.reconnected':
-      return { kind: 'reconnected', code: NOTIFY_CODES.reconnected, title: '已重连', thread: null, summary: '已恢复与宿主的连接', summaryCode: NOTIFY_CODES.reconnected, always: true, unthrottled: false }
+      return { kind: 'reconnected', code: NOTIFY_CODES.reconnected, title: '已重连', thread: null, label: null, summary: '已恢复与宿主的连接', summaryCode: NOTIFY_CODES.reconnected, always: true, unthrottled: false }
     case 'orchestration.unhealthy': {
       const count = typeof payload.count === 'number' && Number.isFinite(payload.count) ? payload.count : typeof payload.failures === 'number' ? payload.failures : typeof payload.n === 'number' ? payload.n : null
       return {
@@ -166,6 +176,7 @@ export function classify(record) {
         code: NOTIFY_CODES.orchestration_unhealthy,
         title: '编排连续失败',
         thread: pickThread(payload, null),
+        label: pickLabel(payload, null),
         summary: unhealthySummary(payload),
         summaryCode: NOTIFY_CODES.orchestration_unhealthy,
         count,
@@ -179,6 +190,7 @@ export function classify(record) {
         code: NOTIFY_CODES.question_pending,
         title: '提问待作答',
         thread: pickThread(payload, null),
+        label: pickLabel(payload, null),
         summary: firstLine(payload.summary ?? payload.text),
         always: true,
         unthrottled: true,
@@ -231,7 +243,7 @@ export function notificationContent(descriptor, count = 1, messages = null) {
         ? summaryEntry.body.replace('{count}', String(descriptor.count))
         : summaryEntry.body.replace(/\s*\{count\}\s*/, ' ')
   }
-  let body = formatBody(descriptor.label ?? descriptor.thread ?? '', summary)
+  let body = formatBody(typeof descriptor.label === 'string' ? descriptor.label : '', summary)
   if (count > 1) body = `${body}（×${count}）`
   return { title, body }
 }
@@ -284,27 +296,54 @@ export function publishState(win, state) {
   return payload
 }
 
-/** 去重与节流：5s 窗口合并计数、同屏上限排队、结构类事件即时。 */
+/** 去重与节流：5s 窗口合并计数、同屏上限排队、结构类事件即时但有界。 */
 export class NotificationThrottle {
-  constructor({ windowMs = THROTTLE_WINDOW_MS, maxOnScreen = MAX_ON_SCREEN } = {}) {
+  constructor({ windowMs = THROTTLE_WINDOW_MS, maxOnScreen = MAX_ON_SCREEN, maxUnthrottled = MAX_ON_SCREEN } = {}) {
     this.windowMs = windowMs
     this.maxOnScreen = maxOnScreen
+    this.maxUnthrottled = maxUnthrottled
     this.windows = new Map()
     this.queue = []
     this.active = 0
   }
 
+  /** 剪除已过窗口期的记录：窗口表据此有界，不随历史键无限增长。 */
+  pruneWindows(now) {
+    for (const [key, window] of this.windows) {
+      if (now - window.firstAt >= this.windowMs) this.windows.delete(key)
+    }
+  }
+
+  /** 窗口期内已登记的结构类键数（用于封顶异键堆叠）。 */
+  countUnthrottled() {
+    let count = 0
+    for (const window of this.windows.values()) if (window.unthrottled === true) count += 1
+    return count
+  }
+
   /**
    * 受理一条描述，返回 `{ action, descriptor, count, key }`：
-   * `show` = 新建一条；`merge` = 命中 5s 窗口、计数合并到已弹的那条；`queue` = 同屏已满、排队。
+   * `show` = 新建一条；`merge` = 命中 5s 窗口、计数合并到已弹的那条；`queue` = 同屏已满、排队；
+   * `suppress` = 结构类事件异键超过上限，丢弃。
    */
   admit(descriptor, now = Date.now()) {
     const key = throttleKey(descriptor.thread, descriptor.kind)
+    this.pruneWindows(now)
+    const window = this.windows.get(key)
     if (descriptor.unthrottled === true) {
+      // 结构类不占同屏配额，但仍按 5s 窗口对同键去重，异键以 maxUnthrottled 封顶。
+      if (window !== undefined && window.unthrottled === true) {
+        window.count += 1
+        window.descriptor = descriptor
+        return { action: 'merge', descriptor, count: window.count, key }
+      }
+      if (this.countUnthrottled() >= this.maxUnthrottled) {
+        return { action: 'suppress', descriptor, count: 1, key }
+      }
+      this.windows.set(key, { firstAt: now, count: 1, descriptor, shown: true, queueItem: null, unthrottled: true })
       return { action: 'show', descriptor, count: 1, key }
     }
-    const window = this.windows.get(key)
-    if (window !== undefined && now - window.firstAt < this.windowMs) {
+    if (window !== undefined && window.unthrottled !== true && now - window.firstAt < this.windowMs) {
       window.count += 1
       // 命中窗口但原条还在排队：计数落到队列项上，弹出时带上（不丢合并计数）。
       if (window.shown !== true && window.queueItem !== null) window.queueItem.count = window.count
@@ -312,27 +351,49 @@ export class NotificationThrottle {
     }
     if (this.active < this.maxOnScreen) {
       this.active += 1
-      this.windows.set(key, { firstAt: now, count: 1, descriptor, shown: true, queueItem: null })
+      this.windows.set(key, { firstAt: now, count: 1, descriptor, shown: true, queueItem: null, unthrottled: false })
       return { action: 'show', descriptor, count: 1, key }
     }
     const queueItem = { descriptor, key, count: 1 }
     this.queue.push(queueItem)
-    this.windows.set(key, { firstAt: now, count: 1, descriptor, shown: false, queueItem })
+    this.windows.set(key, { firstAt: now, count: 1, descriptor, shown: false, queueItem, unthrottled: false })
     return { action: 'queue', descriptor, count: 1, key }
   }
 
-  /** 一条通知关闭：释放配额并取出下一条待弹（带累计计数；无则 null）。 */
-  release() {
+  /** 一条通知关闭：清理其窗口并释放配额，不弹出排队项。 */
+  close(key) {
+    if (key !== undefined) this.windows.delete(key)
     this.active = Math.max(0, this.active - 1)
+  }
+
+  /** 取出下一条排队项并占配额；无则 null。 */
+  promote() {
     const next = this.queue.shift()
     if (next === undefined) return null
     this.active += 1
+    const window = this.windows.get(next.key)
+    if (window !== undefined) {
+      window.shown = true
+      window.queueItem = null
+    }
     return { ...next.descriptor, count: next.count }
   }
 
-  /** 释放配额但不弹出（release 后门控不通过时丢弃排队项）。 */
-  discard() {
+  /** 关闭并弹出下一条（等价于 close + promote）。 */
+  release(key) {
+    this.close(key)
+    return this.promote()
+  }
+
+  /** 释放配额但不弹出（门控不通过 / 构造失败时丢弃）。 */
+  discard(key) {
+    if (key !== undefined) this.windows.delete(key)
     this.active = Math.max(0, this.active - 1)
+  }
+
+  /** 只清窗口、不动配额（结构类构造失败时回收去重记录）。 */
+  forget(key) {
+    if (key !== undefined) this.windows.delete(key)
   }
 
   activeCount() {
@@ -349,6 +410,7 @@ export function createRuntime(options = {}) {
   const throttle = new NotificationThrottle({
     windowMs: options.windowMs ?? THROTTLE_WINDOW_MS,
     maxOnScreen: options.maxOnScreen ?? MAX_ON_SCREEN,
+    maxUnthrottled: options.maxUnthrottled ?? MAX_ON_SCREEN,
   })
   const now = typeof options.now === 'function' ? options.now : () => Date.now()
   const show = typeof options.show === 'function' ? options.show : () => {}
@@ -357,6 +419,27 @@ export function createRuntime(options = {}) {
     permission: typeof options.permission === 'string' ? options.permission : 'default',
     switches: options.switches ?? DEFAULT_SWITCHES,
     focused: options.focused === true,
+  }
+
+  /** 取一条排队项并按当前状态重评门控；不满足则丢弃继续，无则 null。 */
+  function promoteNext() {
+    for (;;) {
+      const next = throttle.promote()
+      if (next === null) return null
+      const gate = evaluate(next, state)
+      if (gate.show) return next
+      throttle.discard(next.key)
+    }
+  }
+
+  /** 依次弹出排队项直到展示成功；`show` 返回 false（构造失败）时回收配额继续下一条。 */
+  function drain() {
+    for (;;) {
+      const next = promoteNext()
+      if (next === null) return null
+      if (show(next, next.count ?? 1) !== false) return next
+      throttle.discard(next.key)
+    }
   }
 
   return {
@@ -373,19 +456,22 @@ export function createRuntime(options = {}) {
       const gate = evaluate(descriptor, state)
       if (!gate.show) return { action: 'skip', reason: gate.reason, descriptor }
       const decision = throttle.admit(descriptor, now())
-      if (decision.action === 'show') show(descriptor, decision.count)
-      else if (decision.action === 'merge') update(decision.descriptor, decision.count)
+      if (decision.action === 'show') {
+        if (show(descriptor, decision.count) === false) {
+          // 展示失败（如构造抛错）：回收已受理的配额 / 去重记录，再补弹排队项。
+          if (descriptor.unthrottled === true) throttle.forget(decision.key)
+          else throttle.discard(decision.key)
+          drain()
+        }
+      } else if (decision.action === 'merge') {
+        update(decision.descriptor, decision.count)
+      }
       return { ...decision, descriptor }
     },
     /** 通知关闭后取排队项；弹出前按当前状态重评门控，不满足则丢弃并继续取下一条。 */
-    release() {
-      for (;;) {
-        const next = throttle.release()
-        if (next === null) return null
-        const gate = evaluate(next, state)
-        if (gate.show) return next
-        throttle.discard()
-      }
+    release(key) {
+      throttle.close(key)
+      return drain()
     },
     throttle,
   }
@@ -437,22 +523,34 @@ export async function init(win) {
   let runtime = null
 
   const showDescriptor = (descriptor, count) => {
-    if (typeof win.Notification !== 'function') return
+    if (typeof win.Notification !== 'function') return false
     const content = notificationContent(descriptor, count, messages)
     const key = throttleKey(descriptor.thread, descriptor.kind)
-    // 带 tag 创建：同 key 的新通知在原位替换旧的，避免同一会话堆叠。
-    const notification = attachHandlers(
-      new win.Notification(content.title, { body: content.body, tag: key }),
-      win,
-    )
+    let notification
+    try {
+      // 带 tag 创建：同 key 的新通知在原位替换旧的，避免同一会话堆叠。
+      notification = attachHandlers(
+        new win.Notification(content.title, { body: content.body, tag: key }),
+        win,
+      )
+    } catch {
+      // 构造失败（参数非法 / 平台拒绝）：交回运行时回收配额，异常不外泄。
+      return false
+    }
     if (descriptor.unthrottled !== true) {
+      // 关闭一条已占配额的通知：释放配额并弹出下一条。
       notification.onclose = () => {
         if (live.get(key) === notification) live.delete(key)
-        const next = runtime.release()
-        if (next !== null) showDescriptor(next, next.count ?? 1)
+        runtime.release(key)
       }
-      live.set(key, notification)
+    } else {
+      // 结构类不占配额，只清 live 记录（合并更新据此替换旧实例）。
+      notification.onclose = () => {
+        if (live.get(key) === notification) live.delete(key)
+      }
     }
+    live.set(key, notification)
+    return true
   }
 
   const updateDescriptor = (descriptor, count) => {
@@ -478,6 +576,13 @@ export async function init(win) {
     show: showDescriptor,
     update: updateDescriptor,
   })
+
+  // 焦点状态随窗口 focus / blur 即时刷新：排队项在关闭时重评门控也要用它，不能只靠消息到达时更新。
+  const syncFocus = () => runtime.setState({ focused: isFocused(win) })
+  if (typeof win.addEventListener === 'function') {
+    win.addEventListener('focus', syncFocus)
+    win.addEventListener('blur', syncFocus)
+  }
 
   messages = await loadMessages(win)
   switches = await loadSwitches(win)

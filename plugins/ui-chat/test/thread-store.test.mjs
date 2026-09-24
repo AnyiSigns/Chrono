@@ -97,6 +97,29 @@ test('run id 认领：缺 run 的自愈回合被 started 认领而非替换', ()
   assert.equal(view.inFlight.text, 'partial')
 })
 
+test('run id 认领（delta 路径）：自愈回合被后续 run id 认领而非替换', () => {
+  let view = applyDelta(emptyView(), { thread: 't1', text: 'partial' })
+  assert.equal(view.inFlight.run, null)
+  view = applyDelta(view, { run: 'r2', text: ' more' })
+  assert.equal(view.inFlight.run, 'r2')
+  assert.equal(view.inFlight.text, 'partial more')
+})
+
+test('tool.delta 缺 started 自愈：无在途回合时先建在途回合', () => {
+  const view = applyToolDelta(emptyView(), { run: 'r1', thread: 't1', call_id: 'a', chunk: 'x' })
+  assert.notEqual(view.inFlight, null)
+  assert.equal(view.inFlight.run, 'r1')
+})
+
+test('取消后的在途回合被权威快照清除，不再重复渲染', () => {
+  let view = applyDelta(emptyView(), { run: 'r1', text: 'half' })
+  view = foldRunFinished(view, { run: 'r1', status: 'cancelled' }).view
+  assert.equal(view.inFlight.cancelled, true)
+  const settled = applySnapshot(view, historyFixture(), 'c1')
+  assert.equal(settled.inFlight, null)
+  assert.equal(settled.messages.length, 2)
+})
+
 test('reset 清空重放：不再重复追加（语义 6）', () => {
   let view = emptyView()
   view = applyDelta(view, { run: 'r1', text: 'abc' })

@@ -1,5 +1,6 @@
 # 测试与本地工具不入世界
 test/
 tools/
+node_modules/
 # 客户端半边产物：世代内可重算，入世会污染内容哈希
 execute/web/dist/

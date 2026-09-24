@@ -141,7 +141,9 @@ const inbound = new InboundClient({
     void refreshConfig()
   },
 })
-const bridge = new Bridge(inbound)
+// 入站桥超时须 ≥ 宿主调用超时（`--call-timeout-ms`，缺省 30s）：否则长回合（`chat.send` 整回合同步执行）
+// 期间排队的 `chat.history` 会在壳侧先超时，UI 收到伪 `transport_failed`。留一点余量以收到宿主自身的超时回帧。
+const bridge = new Bridge(inbound, 35_000)
 
 /** 取单个 headless 入口字节（经 `host.source.read`）；失败返回 null。 */
 async function fetchHeadless(entry: HeadlessEntry): Promise<string | null> {

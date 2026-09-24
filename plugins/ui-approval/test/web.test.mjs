@@ -18,15 +18,23 @@ import {
   defaultExpanded,
   deltaText,
   diffCounts,
+  diffItemKey,
+  diffItemText,
+  diffLabel,
   elapsedMs,
+  fileKey,
+  fileText,
   formatCount,
   formatMetric,
   formatWait,
+  graphDiffText,
+  identifiedItems,
   identityActive,
   identityBody,
   isCodeGenFallbackBody,
   isExpired,
   isPending,
+  itemPresentation,
   itemTone,
   KIND_ORCHESTRATION_CHANGE,
   KIND_PLUGIN_WRITE,
@@ -35,12 +43,15 @@ import {
   oldestPending,
   orchestrationView,
   pendingCount,
+  pluginWriteSummary,
   pluginWriteView,
   selectTemplate,
   shadowBodyOf,
   shadowRounds,
   shadowRows,
   statusLabelCode,
+  summaryLead,
+  summaryText,
   toolCallView,
   verdictOf,
   verdictStatus,
@@ -50,6 +61,7 @@ import {
   withoutBusy,
 } from '../execute/web/model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
+import { createApprovalStore } from '../execute/web/store.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
@@ -272,4 +284,131 @@ test('忙碌键集合：每项独立加入 / 移除，互不清除；身份视�
   assert.equal(identityActive({ slots: {} }), undefined)
   assert.equal(isCodeGenFallbackBody({ tree: 'x' }), true)
   assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
+})
+
+// ── 身份过滤：无稳定 id 的条目不得共享身份 / 撞 key ─────────────────────────
+
+test('identifiedItems：只留有非空字符串 id 的条目并按 id 去重', () => {
+  const items = [
+    { id: 'a', kind: 'tool_call' },
+    { id: 'a', kind: 'tool_call' },
+    { id: 7, kind: 'tool_call' },
+    { id: '', kind: 'tool_call' },
+    { kind: 'tool_call' },
+    null,
+    'x',
+    { id: 'b', kind: 'tool_call' },
+  ]
+  assert.deepEqual(identifiedItems(items).map((item) => item.id), ['a', 'b'])
+  assert.deepEqual(identifiedItems(null), [])
+  assert.deepEqual(identifiedItems('nope'), [])
+})
+
+// ── 条目文案组装（组件只渲染纯模块产出） ───────────────────────────────────
+
+/** 测试翻译器：带变量时把变量值拼进码后（断言可预期）。 */
+function fakeT(code, vars) {
+  if (vars === undefined) return code
+  return `${code}(${Object.values(vars).join(',')})`
+}
+
+test('摘要组装：主标签 / 摘要行 / 图 diff / 插件写入', () => {
+  const tool = toolCallView({ kind: 'tool_call', port: 'tool-shell', args_ref: { summary: 'rm -rf build' } })
+  const toolView = viewOf({ kind: 'tool_call', port: 'tool-shell', args_ref: { summary: 'rm -rf build' } }, null)
+  assert.equal(summaryLead(toolView, fakeT), 'tool-shell')
+  assert.equal(summaryText(toolView, fakeT), 'rm -rf build')
+  assert.equal(summaryLead(viewOf({ kind: 'tool_call' }, null), fakeT), 'approval_tool_call')
+  assert.equal(summaryText(viewOf({ kind: 'tool_call' }, null), fakeT), 'approval_no_args')
+  assert.equal(tool.tool, 'tool-shell')
+
+  const diff = diffCounts(SHADOW)
+  assert.equal(diffLabel(diff, fakeT), 'approval_nodes_edges(+3+0,+2+1)')
+  assert.equal(diffLabel(null, fakeT), '')
+  assert.equal(graphDiffText(diff, fakeT), 'approval_graph_diff：approval_nodes_edges(+3+0,+2+1)')
+  assert.equal(graphDiffText(null, fakeT), '')
+
+  const writeItem = {
+    kind: 'plugin_write',
+    plugin: 'tool-fs',
+    files: [{ path: 'a' }],
+    validate: { ok: true },
+  }
+  const writeView = pluginWriteView(writeItem)
+  assert.equal(pluginWriteSummary(writeView, fakeT), 'tool-fs · approval_files_count(1) · approval_validate_ok')
+  assert.equal(summaryLead(viewOf(writeItem, null), fakeT), 'approval_plugin_write')
+
+  const orchView = viewOf({ kind: 'orchestration_change', args_ref: { summary: 'T' }, shadow: SHADOW }, null)
+  assert.equal(summaryLead(orchView, fakeT), 'approval_orchestration_change')
+  assert.equal(summaryText(orchView, fakeT), 'T')
+})
+
+test('itemPresentation：一次算好视图 + 两行文案', () => {
+  const item = { id: 'x', kind: 'tool_call', port: 'tool-shell', args_ref: { summary: 'ls' } }
+  const presentation = itemPresentation(item, null, fakeT)
+  assert.equal(presentation.view.kind, KIND_TOOL_CALL)
+  assert.equal(presentation.lead, 'tool-shell')
+  assert.equal(presentation.summary, 'ls')
+})
+
+test('diff / 文件行文本与稳定 key：同形条目也能区分', () => {
+  assert.equal(diffItemText({ summary: 's' }), 's')
+  assert.equal(diffItemText({ op: 'add_node', path: 'a' }), 'add_node a')
+  assert.equal(diffItemText({ other: 1 }), JSON.stringify({ other: 1 }))
+  assert.equal(diffItemKey({ op: 'add_node', path: 'a' }, 0), 'add_node a#0')
+  assert.notEqual(diffItemKey({ op: 'add_node', path: 'a' }, 0), diffItemKey({ op: 'add_node', path: 'a' }, 1))
+  assert.equal(diffItemKey({}, 2), 'item#2')
+
+  assert.equal(fileText({ path: 'execute/main.ts' }), 'execute/main.ts')
+  assert.equal(fileText({ other: 1 }), JSON.stringify({ other: 1 }))
+  assert.equal(fileKey({ path: 'plugin.json' }, 0), 'plugin.json#0')
+  assert.notEqual(fileKey({ path: 'plugin.json' }, 0), fileKey({ path: 'plugin.json' }, 1))
+  assert.equal(fileKey({}, 3), 'file#3')
+})
+
+// ── store：错误来源决定重试目标 ─────────────────────────────────────────────
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+function fakeApprovalCtx(handlers) {
+  return {
+    tokens: { messages: '/assets/messages.v1.json' },
+    events: { connected: () => true, onAny: () => () => {} },
+    command: async (name) => (Object.prototype.hasOwnProperty.call(handlers, name) ? handlers[name] : { ok: true, value: null }),
+    submit: async () => ({ ok: true, status: 'done' }),
+  }
+}
+
+test('store：列表失败记 load 源并清 lastBatch，重试重拉列表', async () => {
+  const ctx = fakeApprovalCtx({ 'approval.list': { ok: false, code: 'boom' } })
+  const store = createApprovalStore(ctx)
+  try {
+    store.load()
+    await flush()
+    const snapshot = store.getSnapshot()
+    assert.equal(snapshot.error.kind, 'load')
+    assert.equal(snapshot.error.code, 'boom')
+    assert.equal(snapshot.lastBatch, null, '列表错误清 lastBatch')
+  } finally {
+    store.dispose()
+  }
+})
+
+test('store：批裁决失败记 batch 源并保留 lastBatch 供重试', async () => {
+  const ctx = fakeApprovalCtx({
+    'approval.list': { ok: true, value: { ok: true, items: [], refs: {} } },
+    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'approval.decide_all': { ok: false, code: 'boom' },
+  })
+  const store = createApprovalStore(ctx)
+  try {
+    store.load()
+    await flush()
+    store.submitAll('approve')
+    await flush()
+    const snapshot = store.getSnapshot()
+    assert.equal(snapshot.error.kind, 'batch')
+    assert.equal(snapshot.lastBatch, 'approve')
+  } finally {
+    store.dispose()
+  }
 })

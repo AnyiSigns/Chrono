@@ -1,19 +1,46 @@
 // 编排页（编排图只读视图 + 回滚入口）：图 / Scope 名录 / 编排健康 / 进化台账。
 // 健康判定住本插件 execute 服务，本页只渲染 `orchestration.health` 的结构化结果。
 
+import { useEffect } from 'react'
 import { DependencyMissing, EmptyState, Icon, TextButton, useVc } from './ui.tsx'
-import { isRecord } from '../config-model.ts'
 import {
+  graphMeta,
   graphView,
   HEALTH_UNHEALTHY,
   HEALTH_WARNING,
   healthView,
+  ledgerDetailText,
   ledgerSummary,
+  ledgerTitle,
   scopeList,
-  shortHash,
+  scopeMeta,
 } from '../health.ts'
 
+/** 回滚二次确认的自动取消时长（与停靠带确认态同档）。 */
+const ROLLBACK_CONFIRM_TTL_MS = 3000
+
 export function OrchestrationPanel() {
+  const vc = useVc()
+  // 回滚确认态：3s 自动取消 + 点击确认按钮以外处取消。
+  useEffect(() => {
+    if (!vc.state.rollbackConfirm) return undefined
+    const timer = setTimeout(() => {
+      vc.state.rollbackConfirm = false
+      vc.render()
+    }, ROLLBACK_CONFIRM_TTL_MS)
+    const onClick = (event: any) => {
+      const target = event.target
+      if (target !== null && typeof target.closest === 'function' && target.closest('[data-rollback-armed="true"]') !== null) return
+      vc.state.rollbackConfirm = false
+      vc.render()
+    }
+    const doc = vc.doc
+    if (doc !== null && doc !== undefined) doc.addEventListener('click', onClick)
+    return () => {
+      clearTimeout(timer)
+      if (doc !== null && doc !== undefined) doc.removeEventListener('click', onClick)
+    }
+  }, [vc.state.rollbackConfirm])
   return (
     <>
       <GraphSection />
@@ -48,10 +75,11 @@ function GraphSection() {
       </div>
     )
   }
+  const meta = graphMeta(view, vc.text)
   return (
     <div className="settings-section">
       <GroupName nameKey="settings_orch_graph" />
-      <div className="settings-list-meta">{`${vc.text('settings_orch_contract')} ${shortHash(view.contractId)}`}</div>
+      <div className="settings-list-meta">{meta}</div>
       <div className="settings-list">
         {view.nodes.map((node: any) => (
           <div className="settings-list-item" key={`n${node.index}`}>
@@ -93,26 +121,12 @@ function ScopeSection() {
     <div className="settings-section">
       <GroupName nameKey="settings_orch_scopes" />
       <div className="settings-list">
-        {scopes.map((scope: any) => {
-          const meta = [
-            `${vc.text('settings_orch_contract')} ${shortHash(scope.contract_id)}`,
-            `${vc.text('settings_orch_persona')} ${scope.persona.length > 0 ? scope.persona : '-'}`,
-            `${vc.text('settings_orch_scope')} ${scope.scope === 'global' ? vc.text('settings_orch_scope_global') : scope.scope}`,
-            `${vc.text('settings_orch_autonomy')} ${scope.autonomy.length > 0 ? scope.autonomy : '-'}`,
-          ]
-          if (scope.links.length > 0) meta.push(`${vc.text('settings_orch_links')} ${scope.links}`)
-          meta.push(`${vc.text('settings_orch_success')} ${scope.success_rate === null ? '-' : `${Math.round(scope.success_rate * 100)}%`}`)
-          return (
-            <div className="settings-list-item" key={scope.id}>
-              <span className="settings-list-main">{scope.id}</span>
-              {meta.map((text, index) => (
-                <span className="settings-list-meta" key={index}>
-                  {text}
-                </span>
-              ))}
-            </div>
-          )
-        })}
+        {scopes.map((scope: any) => (
+          <div className="settings-list-item" key={`${scope.id}#${scope.index}`}>
+            <span className="settings-list-main">{scope.id}</span>
+            <span className="settings-list-meta">{scopeMeta(scope, vc.text)}</span>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -129,22 +143,6 @@ function HealthSection() {
     )
   }
   const health = healthView(vc.state.orch.health)
-  return (
-    <div className="settings-section">
-      <GroupName nameKey="settings_orch_health" />
-      <HealthRow health={health} />
-      {health.codes.length > 0 ? (
-        <div className="settings-list-meta">{health.codes.map((item: any) => `${item.code} ×${item.count}`).join(' · ')}</div>
-      ) : null}
-      <RollbackActions health={health} />
-      {vc.state.rollbackNote !== null ? <RollbackNote /> : null}
-    </div>
-  )
-}
-
-function HealthRow(props: { health: any }) {
-  const vc = useVc()
-  const health = props.health
   const tone = health.status === HEALTH_UNHEALTHY ? 'danger' : health.status === HEALTH_WARNING ? 'warning' : 'success'
   const label =
     health.status === HEALTH_UNHEALTHY
@@ -153,18 +151,45 @@ function HealthRow(props: { health: any }) {
         ? vc.text('settings_orch_warning')
         : vc.text('settings_orch_healthy')
   return (
-    <div className="settings-row">
-      <span className="settings-row-label">{label}</span>
-      <span className="settings-row-value">
-        <span className="settings-dot" data-tone={tone} />
-        <span>{vc.text('settings_orch_consecutive', { count: health.consecutive })}</span>
-        {health.threshold !== null ? (
-          <span className="settings-list-meta">{vc.text('settings_orch_threshold', { count: health.threshold })}</span>
+    <div className="settings-section">
+      <GroupName nameKey="settings_orch_health" />
+      <div className="settings-health-card">
+        <div className="settings-health-head">
+          <span className="settings-health-status">
+            <span className="settings-dot" data-tone={tone} />
+            <span>{label}</span>
+          </span>
+          <span className="settings-health-metrics">
+            <span className="settings-list-meta">{vc.text('settings_orch_consecutive', { count: health.consecutive })}</span>
+            {health.threshold !== null ? (
+              <>
+                <span className="settings-list-meta">{vc.text('settings_orch_threshold', { count: health.threshold })}</span>
+                <span className="settings-list-meta">
+                  {vc.text(health.thresholdSource === 'loop-policy' ? 'settings_orch_threshold_loop' : 'settings_orch_threshold_default')}
+                </span>
+              </>
+            ) : null}
+          </span>
+        </div>
+        {health.codes.length > 0 ? (
+          <div>
+            <div className="settings-group-name">{vc.text('settings_orch_codes')}</div>
+            <div className="settings-code-chips">
+              {health.codes.map((item: any) => (
+                <span className="settings-code-chip" key={item.code}>
+                  <span className="settings-code-chip-name">{item.code}</span>
+                  <span className="settings-code-chip-count">{`×${item.count}`}</span>
+                </span>
+              ))}
+            </div>
+          </div>
         ) : null}
-        <span className="settings-list-meta">
-          {vc.text(health.thresholdSource === 'loop-policy' ? 'settings_orch_threshold_loop' : 'settings_orch_threshold_default')}
-        </span>
-      </span>
+      </div>
+      <div className="settings-rollback">
+        <span className="settings-list-meta">{vc.text('settings_orch_rollback_hint')}</span>
+        <RollbackActions health={health} />
+      </div>
+      {vc.state.rollbackNote !== null ? <RollbackNote /> : null}
     </div>
   )
 }
@@ -173,24 +198,16 @@ function RollbackActions(props: { health: any }) {
   const vc = useVc()
   const target = props.health.rollback
   return (
-    <div className="settings-guide-actions">
+    <span data-rollback-armed={vc.state.rollbackConfirm ? 'true' : undefined}>
       <TextButton
         label={vc.state.rollbackConfirm ? vc.text('settings_orch_rollback_confirm') : vc.text('settings_orch_rollback')}
         tone="danger"
         disabled={vc.state.rollbackBusy || target === null}
-        onClick={async () => {
-          if (!vc.state.rollbackConfirm) {
-            vc.state.rollbackConfirm = true
-            vc.render()
-            return
-          }
-          vc.state.rollbackConfirm = false
-          await vc.doRollback()
-        }}
+        onClick={() => vc.requestRollback()}
       >
         {vc.state.rollbackBusy ? <span className="settings-breathe-ring" /> : null}
       </TextButton>
-    </div>
+    </span>
   )
 }
 
@@ -202,7 +219,12 @@ function RollbackNote() {
     <div className="settings-error" role="alert">
       <Icon name="alert-circle" size={16} />
       <span>{note.text}</span>
-      <TextButton label={vc.text('settings_retry')} onClick={() => void vc.doRollback()} />
+      <span data-rollback-armed={vc.state.rollbackConfirm ? 'true' : undefined}>
+        <TextButton
+          label={vc.state.rollbackConfirm ? vc.text('settings_orch_rollback_confirm') : vc.text('settings_retry')}
+          onClick={() => vc.requestRollback()}
+        />
+      </span>
     </div>
   )
 }
@@ -224,6 +246,10 @@ function LedgerSection() {
     ['evidence', 'settings_orch_evidence'],
   ]
   const any = kinds.some(([kind]) => lists[kind].length > 0)
+  const toggleLedger = (key: string, open: boolean) => {
+    vc.state.ledgerOpen = open ? null : key
+    vc.render()
+  }
   return (
     <div className="settings-section">
       <GroupName nameKey="settings_orch_ledger" />
@@ -234,20 +260,25 @@ function LedgerSection() {
           <div key={kind}>
             <GroupName nameKey={key} />
             <div className="settings-list">
-              {entries.map((entry: any) => {
+              {entries.map((entry: any, index: number) => {
                 const summary = ledgerSummary(kind, entry)
-                const detailKey = `${kind}:${summary.id}`
+                const detailKey = `${kind}:${summary.id}#${index}`
                 const open = vc.state.ledgerOpen === detailKey
                 return (
                   <div key={detailKey}>
                     <div
                       className="settings-list-item"
-                      onClick={() => {
-                        vc.state.ledgerOpen = open ? null : detailKey
-                        vc.render()
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={open ? 'true' : 'false'}
+                      onClick={() => toggleLedger(detailKey, open)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        toggleLedger(detailKey, open)
                       }}
                     >
-                      <span className="settings-list-main">{`${summary.id} · ${summary.label}`}</span>
+                      <span className="settings-list-main">{ledgerTitle(summary)}</span>
                       <span className="settings-list-meta">{summary.detail}</span>
                     </div>
                     {open ? <LedgerDetail kind={kind} entry={entry} /> : null}
@@ -265,31 +296,5 @@ function LedgerSection() {
 
 /** 逐级下钻：判定 → proposal / evidence → trace 引用；提案 → evidence；证据 → trace。 */
 function LedgerDetail(props: { kind: string; entry: any }) {
-  const entry = props.entry
-  const rows: string[] = []
-  const push = (label: string, values: any) => {
-    if (!Array.isArray(values) || values.length === 0) return
-    rows.push(`${label} ${values.join(', ')}`)
-  }
-  if (props.kind === 'verdicts') {
-    push('proposal', entry.proposal_ids)
-    push('evidence', entry.evidence_ids)
-    if (isRecord(entry.gate)) {
-      const gate = [entry.gate.mechanical, entry.gate.reason, entry.gate.human].filter(
-        (part) => typeof part === 'string' && part.length > 0,
-      )
-      if (gate.length > 0) rows.push(`gate ${gate.join(' · ')}`)
-    }
-    if (Number.isInteger(entry.adopted_gen)) rows.push(`gen ${entry.adopted_gen}`)
-  } else if (props.kind === 'proposals') {
-    push('evidence', entry.evidence_ids)
-    if (isRecord(entry.patch) && typeof entry.patch.def === 'string') rows.push(`patch ${entry.patch.def}`)
-  } else {
-    push('trace', Array.isArray(entry.traces) ? entry.traces.map((item: any) => (isRecord(item) ? item.def : null)) : [])
-    if (isRecord(entry.cluster_key) && typeof entry.cluster_key.attributable_to === 'string') {
-      rows.push(`attributable_to ${entry.cluster_key.attributable_to}`)
-    }
-  }
-  if (typeof entry.at === 'string' && entry.at.length > 0) rows.push(entry.at)
-  return <div className="settings-list-meta">{rows.length > 0 ? rows.join(' · ') : '-'}</div>
+  return <div className="settings-list-meta">{ledgerDetailText(props.kind, props.entry)}</div>
 }

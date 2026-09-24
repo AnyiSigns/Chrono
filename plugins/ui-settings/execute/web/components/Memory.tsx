@@ -4,11 +4,13 @@
 
 import { useState } from 'react'
 import { DependencyMissing, EmptyState, Icon, IconButton, Section, TextButton, useVc } from './ui.tsx'
+import { joinMeta } from '../config-model.ts'
 import {
   editTextPatch,
+  entrySummary,
   filterByWorkspace,
-  formatTtl,
   highlightSegments,
+  hitMeta,
   layerEntries,
   layerTitleKey,
   MEMORY_LAYERS,
@@ -18,7 +20,6 @@ import {
   memoryView,
   pinPatch,
   summaryLists,
-  ttlState,
   workspaceOptions,
 } from '../memory-model.ts'
 
@@ -43,7 +44,7 @@ export function MemoryPanel() {
   )
 }
 
-/** 三档切换 + 工作区筛选。 */
+/** 三档切换（分段控件）+ 工作区筛选。 */
 function LayerBar(props: { view: any }) {
   const vc = useVc()
   const memory = vc.state.memory
@@ -51,19 +52,22 @@ function LayerBar(props: { view: any }) {
     <div className="settings-row">
       <span className="settings-row-label">{vc.text('settings_memory_layers')}</span>
       <span className="settings-row-value">
-        <span className="settings-row-value">
+        <span className="settings-segment" role="group" aria-label={vc.text('settings_memory_layers')}>
           {MEMORY_LAYERS.map((layer) => (
-            <TextButton
+            <button
+              type="button"
               key={layer}
-              label={vc.text(layerTitleKey(layer))}
-              tone={memory.layer === layer ? 'accent' : undefined}
+              className="settings-segment-item"
+              aria-pressed={memory.layer === layer ? 'true' : 'false'}
               onClick={() => {
                 memory.layer = layer
                 memory.edit = null
                 memory.confirmDelete = null
                 vc.render()
               }}
-            />
+            >
+              {vc.text(layerTitleKey(layer))}
+            </button>
           ))}
         </span>
         <select
@@ -105,10 +109,9 @@ function SearchBar() {
           vc.render()
         }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            void vc.doMemorySearch()
-          }
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          if (!memory.searchBusy) void vc.doMemorySearch()
         }}
       />
       <TextButton label={vc.text('settings_memory_search')} tone="accent" disabled={memory.searchBusy} onClick={() => void vc.doMemorySearch()} />
@@ -157,9 +160,6 @@ function SearchSection() {
 function HitRow(props: { hit: any }) {
   const vc = useVc()
   const hit = props.hit
-  const meta: string[] = []
-  if (hit.entry_id.length > 0) meta.push(hit.entry_id)
-  if (hit.score !== null) meta.push(vc.text('settings_memory_score', { score: hit.score.toFixed(3) }))
   return (
     <div className="settings-list-item">
       <span className="settings-list-main">
@@ -169,7 +169,7 @@ function HitRow(props: { hit: any }) {
           </span>
         ))}
       </span>
-      <span className="settings-list-meta">{meta.join(' · ')}</span>
+      <span className="settings-list-meta">{hitMeta(hit, vc.text)}</span>
     </div>
   )
 }
@@ -218,28 +218,11 @@ function EntryRow(props: { entry: any; layer: string; rowKey: string }) {
   const vc = useVc()
   const entry = props.entry
   const layer = props.layer
-  const summary = summaryLists(entry.summary)
-  const ttl = ttlState(entry)
-  const expired = layer === 'l1' && ttl.expired
-  const mainText = layer === 'l3' ? textOf(entry.text) : summary.goal.length > 0 ? summary.goal : vc.text('settings_memory_no_goal')
-  const meta: string[] = []
-  if (typeof entry.at === 'string' && entry.at.length > 0) meta.push(entry.at)
-  if (layer === 'l1') {
-    if (ttl.ms !== null) {
-      meta.push(ttl.expired ? vc.text('settings_memory_expired') : vc.text('settings_memory_ttl', { ttl: formatTtl(ttl.ms) }))
-    }
-  }
-  if (layer === 'l2') meta.push(vc.text('settings_memory_sources', { count: Array.isArray(entry.sources) ? entry.sources.length : 0 }))
-  if (layer === 'l3') {
-    if (textOf(entry.source).length > 0) meta.push(`${vc.text('settings_memory_source')} ${entry.source}`)
-    if (textOf(entry.workspace).length > 0) meta.push(`${vc.text('settings_memory_workspace_label')} ${entry.workspace}`)
-    if (Array.isArray(entry.tags) && entry.tags.length > 0) meta.push(`${vc.text('settings_memory_tags')} ${entry.tags.join(', ')}`)
-    if (typeof entry.weight === 'number' && Number.isFinite(entry.weight)) meta.push(`${vc.text('settings_memory_weight')} ${entry.weight.toFixed(2)}`)
-  }
+  const summary = entrySummary(entry, layer, vc.text)
   return (
-    <div className={`settings-list-item${expired ? ' settings-memory-expired' : ''}`}>
-      <span className="settings-list-main">{mainText}</span>
-      <span className="settings-list-meta">{meta.join(' · ')}</span>
+    <div className={`settings-list-item${summary.expired ? ' settings-memory-expired' : ''}`}>
+      <span className="settings-list-main">{summary.mainText}</span>
+      <span className="settings-list-meta">{summary.meta}</span>
       {layer === 'l3' && entry.pinned === true ? <span className="settings-memory-pinned">{vc.text('settings_memory_pinned')}</span> : null}
       <RowActions entry={entry} layer={layer} rowKey={props.rowKey} />
     </div>
@@ -256,7 +239,7 @@ function SummaryDetail(props: { summary: any }) {
         return (
           <div className="settings-memory-field" key={key}>
             <span className="settings-field-label">{vc.text(key)}</span>
-            <span className="settings-list-meta">{values.join(' · ')}</span>
+            <span className="settings-list-meta">{joinMeta(values)}</span>
           </div>
         )
       })}

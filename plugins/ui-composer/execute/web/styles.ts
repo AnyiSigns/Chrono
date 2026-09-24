@@ -28,6 +28,7 @@ export const STYLE_TEXT = `
 }
 .composer-card {
   position: relative;
+  z-index: calc(var(--z-popover) + 1);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -127,7 +128,7 @@ export const STYLE_TEXT = `
 .composer-chip:hover .composer-chip-remove,
 .composer-chip:focus-within .composer-chip-remove { opacity: 1; }
 .composer-chip-remove:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-.composer-toolbar { display: flex; align-items: center; gap: var(--space-4); }
+.composer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-4); }
 .composer-tool-wrap { position: relative; display: inline-flex; }
 .composer-toolbar-left { display: flex; align-items: center; gap: var(--space-4); flex: 1; min-width: 0; }
 .composer-toolbar-right { display: flex; align-items: center; gap: var(--space-4); }
@@ -162,8 +163,17 @@ export const STYLE_TEXT = `
   display: inline-flex;
   align-items: center;
   gap: var(--space-4);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--c-danger);
   font-size: var(--font-size-xs);
+}
+.composer-inline-error > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .composer-inline-error[hidden] { display: none; }
 .composer-inline-retry {
@@ -217,6 +227,7 @@ export const STYLE_TEXT = `
 }
 .composer-context {
   position: relative;
+  z-index: calc(var(--z-popover) + 2);
   display: flex;
   align-items: center;
   gap: var(--space-4);

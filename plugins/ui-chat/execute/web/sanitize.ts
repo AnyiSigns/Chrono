@@ -6,12 +6,13 @@
 export const ALLOWED_TAGS = new Set([
   'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
-  'strong', 'em', 'del', 'a',
+  'strong', 'em', 'del', 'a', 'img',
 ])
 
-/** 放行的属性：`a` 只认 href / target / rel / title，其余标签只认 title。 */
+/** 放行的属性：`a` 只认 href / target / rel / title，`img` 只认 src / alt / loading / title。 */
 export const ALLOWED_ATTRS: { [tag: string]: Set<string> } = {
   a: new Set(['href', 'target', 'rel', 'title']),
+  img: new Set(['src', 'alt', 'loading', 'title']),
   '*': new Set(['title']),
 }
 
@@ -24,6 +25,9 @@ export const DROP_WITH_CONTENT = new Set([
 
 const URL_ATTRS = new Set(['href', 'src', 'xlink:href'])
 const SAFE_SCHEMES = new Set(['http', 'https', 'mailto'])
+
+/** 无闭合标签的 void 元素：丢弃时只吃掉标签本身，不能吞掉后续文档。 */
+const VOID_DROP_TAGS = new Set(['input', 'embed', 'link', 'meta', 'base'])
 
 /** 把 HTML 实体还原成字符（只处理常见形态，用于 URL 协议判定）。 */
 export function decodeEntities(text: unknown): string {
@@ -164,7 +168,9 @@ export function sanitizeHtml(html: unknown): string {
     }
     const { closing, name, attrs, selfClosing } = parsed
     if (DROP_WITH_CONTENT.has(name)) {
-      i = closing ? gt + 1 : skipElement(source, gt + 1, name)
+      // 自闭合 / void 标签没有闭合标签，只消费标签本身；否则跳过整段内容。
+      const voidTag = selfClosing || VOID_DROP_TAGS.has(name)
+      i = closing || voidTag ? gt + 1 : skipElement(source, gt + 1, name)
       continue
     }
     if (!ALLOWED_TAGS.has(name)) {

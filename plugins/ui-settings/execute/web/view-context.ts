@@ -43,12 +43,14 @@ export function initialState(): any {
     loadingCount: 0,
     loadingNote: false,
     error: null,
+    loadError: null,
     savedKey: null,
     pendingRemove: null,
     providerForm: null,
     editingProvider: null,
     skillProjection: null,
     skillForm: null,
+    skillConfirmDelete: null,
     onboarding: null,
     orch: { graph: null, scopes: null, health: null, degraded: { graph: false, scopes: false, health: false } },
     memory: {
@@ -60,6 +62,7 @@ export function initialState(): any {
       search: null,
       searchDegraded: false,
       searchBusy: false,
+      searchSeq: 0,
       identitiesStale: false,
       edit: null,
       editError: null,
@@ -85,6 +88,8 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
   /** 最近一次 `config.read` 读到的 active；写 config 时作 `expect_active`。 */
   let configActive: string | null | undefined = undefined
   const offs: (() => void)[] = []
+  let disposed = false
+  let announceTimer: any = null
 
   const vc: any = {
     api,
@@ -103,7 +108,10 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     announce: (message: string) => {
       state.liveText = ''
       store.commit()
-      setTimeout(() => {
+      if (announceTimer !== null) clearTimeout(announceTimer)
+      announceTimer = setTimeout(() => {
+        announceTimer = null
+        if (disposed) return
         state.liveText = message
         store.commit()
       }, 0)
@@ -124,9 +132,11 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
         return await api.submit(body.directives ?? body.directive, body.thread ? { thread: body.thread } : undefined)
       }
       if (path === 'api/secrets/put' || path === 'api/secrets/delete') {
-        const name = path === 'api/secrets/put' ? 'ui-settings.secrets.put' : 'ui-settings.secrets.delete'
-        const args = path === 'api/secrets/put' ? { name: body.name, value: body.value } : { name: body.name }
-        const result = await api.command(name, args)
+        const args =
+          path === 'api/secrets/put'
+            ? { op: 'put', name: body.name, value: body.value }
+            : { op: 'delete', name: body.name }
+        const result = await api.command('ui-settings.secret', args)
         if (!result.ok) return { ok: false, code: typeof result.code === 'string' ? result.code : 'unknown' }
         const value = result.value
         if (isRecord(value) && value.ok === false) {
@@ -193,15 +203,17 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     return result
   }
 
-  async function writeSkillBody(body: any, key?: string | null): Promise<void> {
+  async function writeSkillBody(body: any, key?: string | null): Promise<boolean> {
     const result = await applyWrite(batchWriteDirective('skill', body), THREAD_KEY)
     if (result.ok) {
       state.skillProjection = { body, refs: {}, active: null, gens: [] }
       state.savedKey = key ?? null
+      state.error = null
     } else {
       state.error = { code: result.code, message: '' }
     }
     vc.render()
+    return result.ok
   }
 
   function armLoadingNote(onNote: () => void): void {
@@ -241,11 +253,23 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     }
   }
 
+  /** 回滚两步走：首次调用只进入确认态，再次调用才真正执行。 */
+  function requestRollback(): void {
+    if (!state.rollbackConfirm) {
+      state.rollbackConfirm = true
+      vc.render()
+      return
+    }
+    state.rollbackConfirm = false
+    void doRollback()
+  }
+
   // ---- 开合 ----
 
   async function openSettings(): Promise<void> {
     state.mode = 'settings'
     state.error = null
+    state.loadError = null
     vc.render()
     void loadHealth(vc)
     await loadTab(vc, state.tab)
@@ -322,6 +346,7 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     armLoadingNote,
     clearLoadingNote,
     doRollback,
+    requestRollback,
     closeOverlay,
     exportConfig,
     importConfig,
@@ -347,6 +372,7 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
   // ---- 文案表（异步拉共享表，失败保留兜底） ----
 
   void loadMessages(fetch, api.tokens?.messages ?? '/assets/messages.v1.json').then((loaded: any) => {
+    if (disposed) return
     if (loaded !== null) {
       table = loaded
       store.commit()
@@ -388,6 +414,9 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
   return {
     vc,
     dispose: () => {
+      disposed = true
+      if (announceTimer !== null) clearTimeout(announceTimer)
+      announceTimer = null
       clearLoadingNote()
       for (const off of offs.splice(0)) {
         try {

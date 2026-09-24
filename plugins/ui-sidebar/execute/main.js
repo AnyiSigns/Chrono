@@ -90,7 +90,7 @@ function sendError(id, code, message) {
 // 反向调用通道（服务 → 宿主）：装配结果经它转发给 `session` / `workspace` 端口；
 // 应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, session: LINK, workspace: LINK })
+const HANDLERS = createHandlers({ identity: IDENTITY, session: LINK, workspace: LINK, host: LINK })
 
 function declaredMethods(port) {
   const declared = METHODS[port]

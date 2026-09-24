@@ -3,7 +3,7 @@
 // 未知 kind → 文本降级（不空白、不报错）。DOM 构建在 entry.tsx，本模块只出可测数据。
 
 import { assetSource, safeStringify } from './render-parts.ts'
-import { UI_TEXT } from './messages.ts'
+import { formatText, UI_TEXT } from './messages.ts'
 
 function isRec(value: unknown): value is { [key: string]: any } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -39,14 +39,14 @@ export function computeDiff(before: unknown, after: unknown, context = 3): { row
   let newLine = 1
   for (const op of ops) {
     if (op.type === 'ctx') {
-      numbered.push({ type: 'ctx', oldLine, newLine, text: op.text })
+      numbered.push({ type: 'ctx', oldLine, newLine, text: op.text, prefix: '  ' })
       oldLine += 1
       newLine += 1
     } else if (op.type === 'del') {
-      numbered.push({ type: 'del', oldLine, text: op.text })
+      numbered.push({ type: 'del', oldLine, text: op.text, prefix: '- ' })
       oldLine += 1
     } else {
-      numbered.push({ type: 'add', newLine, text: op.text })
+      numbered.push({ type: 'add', newLine, text: op.text, prefix: '+ ' })
       newLine += 1
     }
   }
@@ -55,7 +55,14 @@ export function computeDiff(before: unknown, after: unknown, context = 3): { row
     const row = numbered[i]
     const next = numbered[i + 1]
     if (row.type === 'del' && next !== undefined && next.type === 'add') {
-      paired.push({ type: 'mod', oldLine: row.oldLine, newLine: next.newLine, before: row.text, after: next.text })
+      paired.push({
+        type: 'mod',
+        oldLine: row.oldLine,
+        newLine: next.newLine,
+        before: row.text,
+        after: next.text,
+        text: formatText('chat_diff_mod', { before: row.text, after: next.text }),
+      })
       i += 1
       continue
     }
@@ -116,8 +123,9 @@ function collapseContext(rows: any[], context: number): any[] {
     if (run.length <= context * 2 + 1) {
       out.push(...run)
     } else {
+      const count = run.length - context * 2
       out.push(...run.slice(0, context))
-      out.push({ type: 'hunk', count: run.length - context * 2 })
+      out.push({ type: 'hunk', count, text: formatText('chat_diff_collapsed', { count }) })
       out.push(...run.slice(run.length - context))
     }
     i = end
@@ -143,17 +151,17 @@ export function parsePatch(patch: unknown, context = 3): { rows: any[]; truncate
     }
     if (line.startsWith('---') || line.startsWith('+++')) continue
     if (line.startsWith('+')) {
-      rows.push({ type: 'add', newLine, text: line.slice(1) })
+      rows.push({ type: 'add', newLine, text: line.slice(1), prefix: '+ ' })
       newLine += 1
       continue
     }
     if (line.startsWith('-')) {
-      rows.push({ type: 'del', oldLine, text: line.slice(1) })
+      rows.push({ type: 'del', oldLine, text: line.slice(1), prefix: '- ' })
       oldLine += 1
       continue
     }
     if (line.startsWith(' ') || line.length === 0) {
-      rows.push({ type: 'ctx', oldLine, newLine, text: line.slice(1) })
+      rows.push({ type: 'ctx', oldLine, newLine, text: line.slice(1), prefix: '  ' })
       oldLine += 1
       newLine += 1
     }
@@ -206,7 +214,14 @@ function normalizeQuestion(question: unknown): any {
 function normalizeAnswers(value: unknown): any[] {
   if (Array.isArray(value)) {
     return value.filter(isRec).map((answer) => ({
-      questionId: typeof answer.question_id === 'string' ? answer.question_id : typeof answer.id === 'string' ? answer.id : '',
+      questionId:
+        typeof answer.question_id === 'string'
+          ? answer.question_id
+          : typeof answer.questionId === 'string'
+            ? answer.questionId
+            : typeof answer.id === 'string'
+              ? answer.id
+              : '',
       selected: Array.isArray(answer.selected) ? answer.selected.map(String) : [],
       custom: typeof answer.custom === 'string' ? answer.custom : null,
     }))
@@ -221,9 +236,25 @@ function normalizeAnswers(value: unknown): any[] {
   return []
 }
 
+function answerTextOf(answer: any): string {
+  if (!isRec(answer)) return ''
+  const pieces: string[] = Array.isArray(answer.selected) ? answer.selected.map(String) : []
+  if (typeof answer.custom === 'string' && answer.custom.length > 0) pieces.push(answer.custom)
+  return pieces.join(UI_TEXT.chat_answer_sep)
+}
+
+/** 取某问题的已答文本（选中 + 自定义，顿号分隔）；兼容原始 `question_id` 与本地 `questionId` 形态。 */
+export function questionAnswerText(answers: unknown, questionId: string): string {
+  const list = normalizeAnswers(answers)
+  return answerTextOf(list.find((answer) => answer.questionId === questionId))
+}
+
 function questionViewModel(detail: any): any {
-  const questions = Array.isArray(detail.questions) ? detail.questions.map(normalizeQuestion) : []
   const answers = normalizeAnswers(detail.answers)
+  const questions = (Array.isArray(detail.questions) ? detail.questions : []).map(normalizeQuestion).map((question: any) => ({
+    ...question,
+    answerText: answerTextOf(answers.find((answer) => answer.questionId === question.id)),
+  }))
   const expired = detail.expired === true || detail.status === 'expired'
   const itemId = detail.id ?? detail.item_id ?? detail.itemId ?? null
   return {
@@ -238,8 +269,9 @@ function questionViewModel(detail: any): any {
   }
 }
 
-/** detail 描述符 → 渲染器视图模型。 */
+/** detail 描述符 → 渲染器视图模型；null / undefined 给中性空文本（不渲染字面 "null"）。 */
 export function detailViewModel(detail: unknown): any {
+  if (detail === null || detail === undefined) return { kind: 'text', text: '' }
   if (!isRec(detail)) return { kind: 'text', text: safeStringify(detail) }
   const kind = typeof detail.kind === 'string' ? detail.kind : 'text'
   switch (kind) {
@@ -279,14 +311,22 @@ export function detailViewModel(detail: unknown): any {
       }
     case 'image':
       return { kind: 'image', source: assetSource(detail) }
-    case 'terminal':
+    case 'terminal': {
+      const exitCode =
+        typeof detail.exit_code === 'number'
+          ? detail.exit_code
+          : typeof detail.exitCode === 'number'
+            ? detail.exitCode
+            : null
       return {
         kind: 'terminal',
         stdout: typeof detail.stdout === 'string' ? detail.stdout : '',
         stderr: typeof detail.stderr === 'string' ? detail.stderr : '',
-        exitCode: typeof detail.exit_code === 'number' ? detail.exit_code : typeof detail.exitCode === 'number' ? detail.exitCode : null,
+        exitCode,
+        exitText: exitCode !== null ? formatText('chat_exit_code', { code: exitCode }) : '',
         running: detail.running === true,
       }
+    }
     case 'question':
       return questionViewModel(detail)
     default:

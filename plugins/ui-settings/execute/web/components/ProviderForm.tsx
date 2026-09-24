@@ -65,7 +65,7 @@ export function ProviderForm(props: { form: any; options: any }) {
     return (
       <>
         <div className="settings-form-fields">
-          <Field label={vc.text('settings_edit_provider')} labelable={false}>
+          <Field label={vc.text('settings_vendor')} labelable={false}>
             <span className="settings-list-meta">{form.key}</span>
           </Field>
           <Field label={vc.text('settings_base_url')} required>
@@ -119,7 +119,6 @@ export function ProviderForm(props: { form: any; options: any }) {
 
   const showUrlError = (code: string | null) => {
     setUrlError(code)
-    if (code === null) form.error = form.error
   }
 
   return (

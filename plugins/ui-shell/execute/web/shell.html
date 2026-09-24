@@ -55,6 +55,18 @@
     /* <1024：消息列与输入框退化为「全宽 − 边距」（响应式断点）；设在 #shell-column 让 main / composer 同时跟随 */
     body.shell-narrow #shell-column { --msg-max-w: 100%; }
     ::selection { background: var(--c-selection); color: var(--c-text); }
+    /* 全局滚动条：与 ::selection 同类，属壳统一的基础表现；细轨道 + 圆角浮层滑块，
+       颜色由 token 派生（浅/深主题自适应），插件无需各自重写。
+       现代 Chromium 一旦设了非 auto 的 scrollbar-width/scrollbar-color 就会覆盖
+       ::-webkit-scrollbar-*，故仅对不支持 webkit 伪元素的引擎（如 Firefox）用标准属性兜底。 */
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--c-text) 16%, transparent); border: 3px solid transparent; border-radius: 999px; background-clip: content-box; }
+    *::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--c-text) 30%, transparent); background-clip: content-box; }
+    *::-webkit-scrollbar-corner { background: transparent; }
+    @supports not selector(::-webkit-scrollbar) {
+      * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--c-text) 22%, transparent) transparent; }
+    }
 
     #shell-banner {
       position: fixed;

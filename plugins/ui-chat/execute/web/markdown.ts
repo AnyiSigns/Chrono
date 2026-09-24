@@ -30,10 +30,34 @@ function matchLink(
   }
 }
 
+/** 图片文法 `![alt](url)`：与链接同构，起点多一个 `!`。 */
+function matchImage(
+  text: string,
+  start: number,
+): { alt: string; url: string; end: number } | null {
+  if (text[start] !== '!' || text[start + 1] !== '[') return null
+  const closeLabel = text.indexOf(']', start + 2)
+  if (closeLabel < 0 || text[closeLabel + 1] !== '(') return null
+  const closeUrl = text.indexOf(')', closeLabel + 2)
+  if (closeUrl < 0) return null
+  return {
+    alt: text.slice(start + 2, closeLabel),
+    url: text.slice(closeLabel + 2, closeUrl),
+    end: closeUrl + 1,
+  }
+}
+
 function renderLink(label: string, url: string): string {
   const safe = safeUrl(url)
   if (safe === null) return escapeHtml(`[${label}](${url})`)
   return `<a href="${escapeAttr(safe)}" target="_blank" rel="noopener noreferrer">${renderInline(label)}</a>`
+}
+
+/** 图片渲染：URL 过 `safeUrl`，alt 转义；危险 URL 退化为原文字面量。 */
+function renderImage(alt: string, url: string): string {
+  const safe = safeUrl(url)
+  if (safe === null) return escapeHtml(`![${alt}](${url})`)
+  return `<img src="${escapeAttr(safe)}" alt="${escapeAttr(alt)}" loading="lazy">`
 }
 
 /** 行内渲染：代码段优先，其次链接、粗体、删除线、斜体。 */
@@ -48,6 +72,14 @@ export function renderInline(text: unknown): string {
       if (end > i) {
         out += `<code>${escapeHtml(source.slice(i + 1, end))}</code>`
         i = end + 1
+        continue
+      }
+    }
+    if (ch === '!') {
+      const image = matchImage(source, i)
+      if (image !== null) {
+        out += renderImage(image.alt, image.url)
+        i = image.end
         continue
       }
     }
@@ -100,6 +132,23 @@ const HR_RE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
 const FENCE_RE = /^\s*```/
 const UL_RE = /^\s*[-*+]\s+(.*)$/
 const OL_RE = /^\s*\d+[.)]\s+(.*)$/
+
+const CURSOR_HTML = '<span class="chat-cursor"></span>'
+const LAST_BLOCK_CLOSE_RE = /<\/(p|h[1-6]|li|blockquote|pre|td|th)>$/
+
+/**
+ * 在已渲染 HTML 末尾插入流式光标，优先插进最后一个块级元素内，
+ * 使光标紧随末行而不是掉到块下方新起一行。空产物直接返回光标。
+ */
+export function injectCursor(html: unknown): string {
+  const source = String(html ?? '')
+  if (source.length === 0) return CURSOR_HTML
+  const match = LAST_BLOCK_CLOSE_RE.exec(source)
+  if (match !== null && match.index !== undefined) {
+    return `${source.slice(0, match.index)}${CURSOR_HTML}${source.slice(match.index)}`
+  }
+  return source + CURSOR_HTML
+}
 
 /** 块级渲染：字符串进、HTML 字符串出（未消毒，调用方接 sanitizeHtml）。 */
 export function renderMarkdown(source: unknown): string {

@@ -22,13 +22,15 @@ import {
   vendorTemplates,
   vendorTemplatesFromResult,
 } from '../execute/web/onboarding.ts'
-import { listText, splitList } from '../execute/web/settings-model.ts'
+import { listText, pluginSubParts, skillTitle, splitList } from '../execute/web/settings-model.ts'
 import {
   editSlotPayload,
   editTextPatch,
+  entrySummary,
   filterByWorkspace,
   formatTtl,
   highlightSegments,
+  hitMeta,
   layerEntries,
   layerTitleKey,
   MEMORY_LAYERS,
@@ -42,7 +44,11 @@ import {
   ttlState,
   workspaceOptions,
 } from '../execute/web/memory-model.ts'
+import { joinMeta } from '../execute/web/config-model.ts'
+import { graphMeta, graphView, ledgerDetailText, ledgerTitle, scopeMeta } from '../execute/web/health.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
+import { loadTab } from '../execute/web/data-load.ts'
+import { doMemorySearch } from '../execute/web/memory-actions.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
@@ -196,6 +202,19 @@ test('界面文案单一来源：编排新增键登记在共享表，本地仅�
     'settings_api_key',
     'settings_custom_model',
     'settings_add_model',
+    'settings_desc_general',
+    'settings_desc_model',
+    'settings_desc_plugins',
+    'settings_desc_skills',
+    'settings_desc_memory',
+    'settings_desc_orchestration',
+    'settings_desc_about',
+    'settings_plugins_generation',
+    'settings_plugins_deps',
+    'settings_orch_codes',
+    'settings_orch_nodes',
+    'settings_orch_edges',
+    'settings_orch_rollback_hint',
   ]) {
     assert.equal(lookupMessage(table, code).body.includes(code), false, `${code} 未入共享表`)
   }
@@ -340,4 +359,163 @@ test('记忆新增文案登记在共享表', () => {
   assert.equal(lookupMessage(table, 'settings_memory_no_match').body, '无匹配')
   assert.equal(table.settings_memory_pending, undefined, '占位死键已移除')
   assert.equal(table.settings_memory_pending_hint, undefined, '占位死键已移除')
+})
+
+// ── 组件文案组装下推到纯模块 ────────────────────────────────────────────────
+
+/** 测试翻译器：带变量时把变量值拼进码后（断言可预期）。 */
+function fakeT(code, vars) {
+  return vars === undefined ? code : `${code}(${Object.values(vars).join(',')})`
+}
+
+test('joinMeta：过滤非空串后以 ` · ` 连接', () => {
+  assert.equal(joinMeta(['a', '', null, undefined, 'b']), 'a · b')
+  assert.equal(joinMeta([]), '')
+  assert.equal(joinMeta(['', null]), '')
+})
+
+test('技能行主文本与插件副文本片段（纯模块）', () => {
+  assert.equal(skillTitle({ id: 'sk-1', name: 'A', description: 'D' }), 'A · D')
+  assert.equal(skillTitle({ id: 'sk-1' }), 'sk-1')
+  assert.equal(skillTitle({ id: 'sk-1', name: 'A' }), 'A')
+  assert.equal(skillTitle(null), '')
+
+  assert.deepEqual(pluginSubParts({ activeShort: 'abcdef01', pins: { a: 'x', b: 'y' } }, (code) => code), [
+    'settings_plugins_generation abcdef01',
+    'settings_plugins_deps a, b',
+  ])
+  assert.deepEqual(pluginSubParts({ activeShort: '', pins: {} }, (code) => code), [])
+  assert.deepEqual(pluginSubParts(null, (code) => code), [])
+})
+
+test('编排图 / Scope / 台账文案组装（纯模块）', () => {
+  const view = graphView({ body: { contract_id: 'c1', nodes: [{ contract_id: 'n1' }], edges: [{ from: 0, to: 1 }] } })
+  assert.equal(graphMeta(view, fakeT), 'settings_orch_contract c1 · settings_orch_nodes 1 · settings_orch_edges 1')
+
+  const scope = { index: 0, id: 'a2', contract_id: 'a2', persona: 'Q', scope: 'global', autonomy: 'high', links: 'l1', success_rate: 0.9 }
+  assert.equal(
+    scopeMeta(scope, fakeT),
+    'settings_orch_contract a2 · settings_orch_persona Q · settings_orch_scope settings_orch_scope_global · settings_orch_autonomy high · settings_orch_links l1 · settings_orch_success 90%',
+  )
+  assert.equal(scopeMeta({ ...scope, persona: '', autonomy: '', links: '', success_rate: null }, fakeT), 'settings_orch_contract a2 · settings_orch_persona - · settings_orch_scope settings_orch_scope_global · settings_orch_autonomy - · settings_orch_success -')
+
+  assert.equal(ledgerTitle({ id: 'v1', label: 'accepted' }), 'v1 · accepted')
+  assert.equal(
+    ledgerDetailText('verdicts', { proposal_ids: ['p1'], evidence_ids: ['e1'], gate: { mechanical: 'm' }, adopted_gen: 2, at: 'now' }),
+    'proposal p1 · evidence e1 · gate m · gen 2 · now',
+  )
+  assert.equal(ledgerDetailText('proposals', { evidence_ids: ['e1'], patch: { def: 'd' } }), 'evidence e1 · patch d')
+  assert.equal(ledgerDetailText('evidence', { traces: [{ def: 't1' }], cluster_key: { attributable_to: 'x' } }), 'trace t1 · attributable_to x')
+  assert.equal(ledgerDetailText('evidence', {}), '-')
+})
+
+test('记忆条目主行 / meta 与命中 meta 组装（纯模块）', () => {
+  const l1 = entrySummary({ id: 'c-1', at: 'now', summary: { goal: 'g' }, ttl_remaining_ms: 45 * 60_000 }, 'l1', fakeT)
+  assert.equal(l1.mainText, 'g')
+  assert.equal(l1.expired, false)
+  assert.equal(l1.meta, 'now · settings_memory_ttl(45m)')
+
+  const expired = entrySummary({ id: 'c-2', summary: {}, ttl_remaining_ms: 0 }, 'l1', fakeT)
+  assert.equal(expired.mainText, 'settings_memory_no_goal')
+  assert.equal(expired.expired, true)
+  assert.equal(expired.meta, 'settings_memory_expired')
+
+  const l3 = entrySummary({ id: 'm-1', text: 'body', source: 's', workspace: 'w', tags: ['a', 'b'], weight: 0.5 }, 'l3', fakeT)
+  assert.equal(l3.mainText, 'body')
+  assert.equal(l3.meta, 'settings_memory_source s · settings_memory_workspace_label w · settings_memory_tags a, b · settings_memory_weight 0.50')
+
+  assert.equal(hitMeta({ entry_id: 'm-1', score: 0.9 }, fakeT), 'm-1 · settings_memory_score(0.900)')
+  assert.equal(hitMeta({ entry_id: '', score: null }, fakeT), '')
+})
+
+// ── tab 装载令牌：慢的旧装载不覆盖已切走后的新状态 ─────────────────────────
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+function fakeLoadCtx(routes) {
+  return {
+    state: {
+      loading: false,
+      loadingCount: 0,
+      loadingNote: false,
+      loadError: null,
+      skillProjection: null,
+      identities: null,
+      config: null,
+      vendors: null,
+      secrets: {},
+      memory: { view: null, viewDegraded: false },
+      orch: { graph: null, scopes: null, health: null, degraded: { graph: false, scopes: false, health: false } },
+    },
+    render: () => {},
+    armLoadingNote: () => {},
+    clearLoadingNote: () => {},
+    loadVendors: async () => {},
+    runCommand: async (name) => {
+      const route = routes[name]
+      return route === undefined ? { ok: true, value: null } : route()
+    },
+  }
+}
+
+test('loadTab：慢的旧装载在切走后被丢弃', async () => {
+  let releaseSkills = null
+  const ctx = fakeLoadCtx({
+    'settings.skills': () => new Promise((resolve) => { releaseSkills = resolve }),
+    'settings.identities': async () => ({ ok: true, value: { id: 'new' } }),
+  })
+  const slow = loadTab(ctx, 'skills')
+  await flush()
+  await loadTab(ctx, 'plugins')
+  releaseSkills({ ok: true, value: { body: { version: 1, skills: [{ id: 'stale' }] } } })
+  await slow
+  assert.equal(ctx.state.skillProjection, null, '过期装载结果被丢弃')
+  assert.deepEqual(ctx.state.identities, { id: 'new' })
+})
+
+test('loadTab skills：失败置页面级 loadError；memory 失败只置降级标记', async () => {
+  const skills = fakeLoadCtx({ 'settings.skills': async () => ({ ok: false, code: 'boom' }) })
+  await loadTab(skills, 'skills')
+  assert.deepEqual(skills.state.loadError, { code: 'boom', message: '' })
+
+  const memory = fakeLoadCtx({ 'memory.view': async () => ({ ok: false, code: 'boom' }) })
+  await loadTab(memory, 'memory')
+  assert.equal(memory.state.memory.viewDegraded, true)
+  assert.equal(memory.state.memory.view, null)
+  assert.equal(memory.state.loadError, null, '记忆降级不置页面级错误')
+})
+
+// ── 搜索序号令牌：旧搜索结果不覆盖新搜索 ───────────────────────────────────
+
+test('doMemorySearch：旧搜索结果被序号令牌丢弃', async () => {
+  const pending = []
+  const ctx = {
+    state: {
+      identities: null,
+      memory: { query: '', workspace: '', search: null, searchDegraded: false, searchBusy: false, searchSeq: 0, identitiesStale: false },
+    },
+    render: () => {},
+    runCommand: async (name) => {
+      if (name === 'settings.identities') return { ok: true, value: { id: 'ids' } }
+      if (name === 'memory.search') return new Promise((resolve) => pending.push(resolve))
+      return { ok: true, value: null }
+    },
+  }
+  ctx.state.memory.query = 'first'
+  const firstRun = doMemorySearch(ctx)
+  await flush()
+  ctx.state.memory.query = 'second'
+  const secondRun = doMemorySearch(ctx)
+  await flush()
+  assert.equal(pending.length, 2)
+
+  pending[1]({ ok: true, value: { ok: true, recall: [{ entry_id: 'b', text: 'B' }] } })
+  await secondRun
+  assert.equal(ctx.state.memory.search.recall[0].entry_id, 'b')
+  assert.equal(ctx.state.memory.searchBusy, false)
+
+  pending[0]({ ok: true, value: { ok: true, recall: [{ entry_id: 'a', text: 'A' }] } })
+  await firstRun
+  assert.equal(ctx.state.memory.search.recall[0].entry_id, 'b', '旧搜索结果不覆盖新搜索')
+  assert.equal(ctx.state.memory.searchBusy, false)
 })

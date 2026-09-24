@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
-import { escapeHtml, renderInline, renderMarkdown } from '../execute/web/markdown.ts'
+import { escapeHtml, injectCursor, renderInline, renderMarkdown } from '../execute/web/markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental, safeBoundary } from '../execute/web/markdown-cache.ts'
 import { base64ToBytes, fitBox } from '../execute/web/media.ts'
 import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/sanitize.ts'
@@ -27,15 +27,17 @@ import {
   messageText,
   pickConversation,
   restoreMessages,
+  subagentHeader,
   threadKind,
 } from '../execute/web/history-model.ts'
 import { assetSource, messageViewItems, partViewModel, pendingUserDef, safeStringify } from '../execute/web/render-parts.ts'
 import { degradeText, renderSummary, toolCardViewModel, truncateSummary } from '../execute/web/tool-card.ts'
-import { computeDiff, detailViewModel, parsePatch, splitLines } from '../execute/web/detail-renderers.ts'
+import { computeDiff, detailViewModel, parsePatch, questionAnswerText, splitLines } from '../execute/web/detail-renderers.ts'
 import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
 import { groupViewModel } from '../execute/web/group.ts'
 import { statusIcon, statusText, workflowViewModel } from '../execute/web/workflow.ts'
 import {
+  clampWindow,
   createNewMessageState,
   dismissNew,
   hasNewer,
@@ -88,9 +90,28 @@ test('markdown：块级 / 行内渲染，用户文本一律转义', () => {
   assert.equal(escapeHtml('<a>&'), '&lt;a&gt;&amp;')
 })
 
+test('markdown 图片：![]() 渲染为安全 img，危险 URL 退化为字面量', () => {
+  assert.equal(renderInline('![a](https://e.com/i.png)'), '<img src="https://e.com/i.png" alt="a" loading="lazy">')
+  assert.equal(renderInline('![a](javascript:alert(1))'), '![a](javascript:alert(1))')
+  assert.equal(renderMarkdown('![x](/p.png)'), '<p><img src="/p.png" alt="x" loading="lazy"></p>')
+  // 消毒后 img 存活且无事件属性；危险 src 被剥。
+  assert.equal(sanitizeHtml(renderMarkdown('![a](https://e.com/i.png)')), '<p><img src="https://e.com/i.png" alt="a" loading="lazy"></p>')
+  assert.equal(/<img/i.test(sanitizeHtml(renderMarkdown('![a](javascript:alert(1))'))), false)
+})
+
+test('流式光标注入：优先落进末块内，空产物给裸光标', () => {
+  assert.equal(injectCursor(''), '<span class="chat-cursor"></span>')
+  assert.equal(injectCursor('<p>hi</p>'), '<p>hi<span class="chat-cursor"></span></p>')
+  assert.equal(injectCursor('<h1>t</h1>'), '<h1>t<span class="chat-cursor"></span></h1>')
+  assert.equal(injectCursor('<ul><li>a</li></ul>'), '<ul><li>a</li></ul><span class="chat-cursor"></span>')
+})
+
 test('消毒：script / 事件属性 / 危险 URL 被清', () => {
   assert.equal(sanitizeHtml('<script>alert(1)</script>'), '')
-  assert.equal(sanitizeHtml('<img src=x onerror=alert(1)>'), '')
+  // img 放行后仍只认安全属性：onerror 被剥、src 保留。
+  assert.equal(sanitizeHtml('<img src=x onerror=alert(1)>'), '<img src="x">')
+  assert.equal(sanitizeHtml('<img src="javascript:alert(1)">'), '<img>')
+  assert.equal(sanitizeHtml('<img src="https://e.com/i.png" alt="a" onerror="x">'), '<img src="https://e.com/i.png" alt="a">')
   assert.equal(sanitizeHtml('<a href="javascript:alert(1)">x</a>'), '<a>x</a>')
   assert.equal(sanitizeHtml('<a href="jav&#x61;script:alert(1)">x</a>'), '<a>x</a>')
   assert.equal(sanitizeHtml('<a href="https://e.com" onclick="x">y</a>'), '<a href="https://e.com">y</a>')
@@ -101,6 +122,13 @@ test('消毒：script / 事件属性 / 危险 URL 被清', () => {
     '<a href="https://e.com" target="_blank" rel="noopener noreferrer">y</a>',
   )
   assert.equal(sanitizeHtml('<!-- c -->x'), 'x')
+  // 自闭合 / void 的丢弃元素只吃掉标签本身，不能吞掉后续文档
+  assert.equal(sanitizeHtml('<script/>after'), 'after')
+  assert.equal(sanitizeHtml('<input/>after'), 'after')
+  assert.equal(sanitizeHtml('<embed/>after'), 'after')
+  assert.equal(sanitizeHtml('<input type="text">after'), 'after')
+  assert.equal(sanitizeHtml('<script>alert(1)</script>after'), 'after')
+  assert.equal(sanitizeHtml('before<script/>after'), 'beforeafter')
   // markdown 产物 + 消毒：恶意链接不生成可点击 <a>
   const dirty = sanitizeHtml(renderMarkdown('[x](javascript:alert(1))'))
   assert.equal(/<a\b/i.test(dirty), false)
@@ -128,6 +156,7 @@ test('markdown 增量缓存：与整段渲染等价，逐字符流式每步一�
     '```\ncode\n\ninside\n```\n\nafter',
     'a\nb\nc',
     'text with `code` and [l](https://e.com)',
+    'para\n\n![alt](https://e.com/i.png)\n\nafter',
   ]) {
     const step = renderMarkdownIncremental(sample, createMarkdownCache())
     assert.equal(step.html, full(sample), sample)
@@ -184,6 +213,9 @@ test('parts 分发：text / image / video / audio / file / tool / 未知降级',
   assert.match(partViewModel({ type: 'weird', x: 1 }).text, /"x"/)
   assert.deepEqual(assetSource({ kind: 'ext', url: 'https://e.com/a' }), { kind: 'ext', url: 'https://e.com/a' })
   assert.equal(assetSource({ sha256: 'b'.repeat(64) }).kind, 'asset')
+  // ext URL 过 safeUrl：危险协议不落地为可点击 / 可加载来源
+  assert.equal(assetSource({ kind: 'ext', url: 'javascript:alert(1)' }), null)
+  assert.equal(assetSource({ kind: 'ext', url: 'data:text/html,<b>x</b>' }), null)
 
   const items = messageViewItems({
     content: 'c',
@@ -231,6 +263,19 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
 
   // 无结果时只留描述符（流式中展开区无数据可渲染）。
   assert.deepEqual(toolCardViewModel({ render: { form: 'card', detail: { kind: 'paths' } } }).detail, { kind: 'paths' })
+  // 结果是数组（glob 直接回 paths）：挂到 items，展开区不再空白。
+  const glob = toolCardViewModel({
+    tool: 'glob',
+    render: { form: 'card', detail: { kind: 'paths' } },
+    result: ['a.ts', 'b.ts'],
+    status: 'ok',
+  })
+  assert.deepEqual(glob.detail, { kind: 'paths', items: ['a.ts', 'b.ts'] })
+  assert.deepEqual(detailViewModel(glob.detail).items, ['a.ts', 'b.ts'])
+  // 描述符缺 detail：detail 为 null，DetailView 走中性空态而非字面 "null"。
+  assert.equal(toolCardViewModel({ render: { form: 'card' } }).detail, null)
+  assert.equal(detailViewModel(null).text, '')
+  assert.equal(detailViewModel(undefined).text, '')
   // 失败卡展开区为错误人话，不再渲染空 detail。
   const failed = toolCardViewModel({
     tool: 'shell',
@@ -263,14 +308,16 @@ test('detail.kind：text / code / diff / matches / paths / list / table / json /
   const diff = detailViewModel({ kind: 'diff', before: 'a\nb\nc', after: 'a\nB\nc' })
   assert.equal(diff.kind, 'diff')
   assert.ok(diff.rows.some((row) => row.type === 'mod' && row.before === 'b' && row.after === 'B'))
-  assert.ok(diff.rows.some((row) => row.type === 'ctx'))
+  assert.ok(diff.rows.some((row) => row.type === 'mod' && row.text === '~ b → B'))
+  assert.ok(diff.rows.some((row) => row.type === 'ctx' && row.prefix === '  '))
 
   const patch = detailViewModel({ kind: 'diff', patch: '@@ -1 +1 @@\n-old\n+new' })
-  assert.ok(patch.rows.some((row) => row.type === 'add' && row.text === 'new'))
-  assert.ok(patch.rows.some((row) => row.type === 'del' && row.text === 'old'))
+  assert.ok(patch.rows.some((row) => row.type === 'add' && row.text === 'new' && row.prefix === '+ '))
+  assert.ok(patch.rows.some((row) => row.type === 'del' && row.text === 'old' && row.prefix === '- '))
 
   const collapsed = computeDiff(Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n'), Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n'))
   assert.ok(collapsed.rows.some((row) => row.type === 'hunk'))
+  assert.ok(collapsed.rows.some((row) => row.type === 'hunk' && row.text === '… 折叠 14 行 …'))
   assert.deepEqual(splitLines('a\nb'), ['a', 'b'])
 
   const matches = detailViewModel({ kind: 'matches', matches: [{ path: 'a.ts', line: 3, text: 'x' }] })
@@ -287,6 +334,7 @@ test('detail.kind：text / code / diff / matches / paths / list / table / json /
   assert.equal(terminal.stdout, 'out')
   assert.equal(terminal.stderr, 'err')
   assert.equal(terminal.exitCode, 2)
+  assert.equal(terminal.exitText, '退出码 2')
 })
 
 test('detail.kind:question：单选 / 多选 / 自定义 / 已答 / expired', () => {
@@ -312,6 +360,24 @@ test('detail.kind:question：单选 / 多选 / 自定义 / 已答 / expired', ()
 
   const expired = detailViewModel({ kind: 'question', status: 'expired', questions: [] })
   assert.equal(expired.expired, true)
+
+  // interactive:false 只读：vm 暴露 interactive，组件据此禁交互 / 提交。
+  const readOnly = detailViewModel({ kind: 'question', interactive: false, questions: [{ id: 'q1', question: 'Q' }] })
+  assert.equal(readOnly.interactive, false)
+  assert.equal(vm.interactive, true)
+
+  // 已答文本由 vm 组装（选中 + 自定义，顿号分隔）。
+  const withAnswers = detailViewModel({
+    kind: 'question',
+    questions: [{ id: 'q1', question: 'Q' }],
+    answers: [{ question_id: 'q1', selected: ['A', 'B'], custom: '其他' }],
+  })
+  assert.equal(withAnswers.questions[0].answerText, 'A、B、其他')
+
+  // 本地提交形态（camelCase questionId）与原始形态（question_id）都能取已答文本。
+  assert.equal(questionAnswerText([{ questionId: 'q1', selected: ['A'], custom: null }], 'q1'), 'A')
+  assert.equal(questionAnswerText([{ question_id: 'q1', selected: ['A'], custom: 'x' }], 'q1'), 'A、x')
+  assert.equal(questionAnswerText([], 'q1'), '')
 })
 
 // ---- usage ----
@@ -456,6 +522,28 @@ test('群聊视图模型：首字母圆标 / 连续发言人只首条显名 / �
   const streaming = groupViewModel({ conversation: { kind: 'group' }, messages, refs, streaming: true })
   assert.equal(streaming.items[3].current, true)
   assert.equal(streaming.items[1].current, false)
+
+  // 群聊项带 items 视图模型：parts + attachments 一并保留，不再只留纯文本。
+  const withAttachment = groupViewModel({
+    conversation: { kind: 'group' },
+    refs,
+    messages: [
+      {
+        hash: 'h1',
+        def: {
+          id: 'm1',
+          role: 'assistant',
+          meta: { speaker: 'agent-a' },
+          parts: [{ type: 'text', text: '看图' }],
+          attachments: [{ kind: 'image', name: 'i.png', source: { kind: 'asset', sha256: 'e'.repeat(64) } }],
+        },
+      },
+    ],
+  })
+  assert.deepEqual(
+    withAttachment.items[0].items.map((item) => item.type),
+    ['text', 'image'],
+  )
 })
 
 // ---- 工作流 ----
@@ -472,6 +560,13 @@ test('工作流步骤卡：进度 / 节点列表 / 失败节点拒绝码', () =>
   assert.equal(vm.failedIndex, 1)
   assert.equal(statusIcon('failed'), 'x')
   assert.equal(statusText('running'), '运行中')
+  // 进度 / 状态 / 节点标签由 vm 组装，组件不再就地拼字符串
+  assert.equal(vm.progressText, '第 2 / 2 步')
+  assert.equal(vm.statusText, '运行中')
+  assert.equal(vm.metaText, '第 2 / 2 步 · 运行中')
+  assert.equal(vm.nodes[0].label, '#0 A')
+  assert.equal(vm.nodes[1].label, '#1 B')
+  assert.equal(vm.nodes[1].statusText, '失败')
 })
 
 // ---- 窗口化与胶囊 ----
@@ -503,6 +598,12 @@ test('窗口化阈值与「↓ N 条新消息」状态机', () => {
     removed: 50,
   })
   assert.deepEqual(trimTop({ start: 0, end: 100 }), { state: { start: 0, end: 100 }, removed: 0 })
+
+  // 内容收缩：夹住 start/end，窗口缩到内容之前时重锚最新一窗（不切出空列表）
+  assert.deepEqual(clampWindow({ start: 100, end: 400 }, 350), { start: 100, end: 350 })
+  assert.deepEqual(clampWindow({ start: 300, end: 400 }, 200), { start: 0, end: 200 })
+  assert.deepEqual(clampWindow({ start: 0, end: 10 }, 5), { start: 0, end: 5 })
+  assert.deepEqual(clampWindow({ start: 50, end: 60 }, 0), { start: 0, end: 0 })
 
   let pill = createNewMessageState()
   pill = onNewContent(pill, false)
@@ -590,6 +691,9 @@ test('消息 refs 沿 prev 还原展示序；会话选择与线程 kind', () => 
   assert.equal(restoreMessages(history, { head: null }).length, 0)
   assert.equal(messageText({ content: 'x' }), 'x')
   assert.equal(messageText({ parts: [{ type: 'text', text: 'p' }] }), 'p')
+  // 子代理头：有父 / 无父两路
+  assert.equal(subagentHeader('子', '主'), '子 · 由 主 触发')
+  assert.equal(subagentHeader('子', ''), '子')
 })
 
 test('乐观收口判定：尾部若干条内同文用户消息', () => {

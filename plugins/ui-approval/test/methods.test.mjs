@@ -24,6 +24,8 @@ import {
   withExternPayload,
 } from '../execute/plan.ts'
 
+import { createRefHydrator } from '../execute/refs.ts'
+
 const ENV = { run: 'run-1', thread: 't1', now: 0 }
 
 /** 假审批端口：记录调用并回固定 outcome（`{ok:true,value}` / `{ok:false,code,message}`）。 */
@@ -143,7 +145,8 @@ test('decide：读槽 → 反向调 #32 decide → 拼 [chat.resume, …#32 计�
   assert.deepEqual(directives[0], {
     kind: 'eval',
     command: 'chat.resume',
-    args: { cursor: { iter: 3 }, thread: 't1', payload: { verdict: 'accept' }, ids },
+    args: { cursor: { iter: 3 }, thread: 't1', payload: { verdict: 'accept' } },
+    inject: { ids: ['ids'] },
   })
   assert.equal(directives[1].kind, 'write')
   assert.equal(directives[1].request.op, 'batch')
@@ -205,25 +208,26 @@ test('decide_all：只对 pending 项逐条产 chat.resume，非 pending 跳过'
   assert.deepEqual(evals.map((item) => item.args.cursor), ['c2', 'c1'], 'pending 项倒序逐条续跑，approved 跳过')
   assert.equal(evals[0].args.thread, 't2')
   assert.equal(evals[0].args.payload.verdict, 'deny')
-  assert.deepEqual(evals[0].args.ids, ids, '续跑 args 原样带调用方投影切片')
+  assert.equal(evals[0].args.ids, undefined, '续跑不再内嵌整份投影')
+  assert.deepEqual(evals[0].inject, { ids: ['ids'] }, '投影由宿主执行期注入')
   assert.equal(value.$directives.at(-1).kind, 'extern')
 })
 
 test('resumeDirectives：无 resume / 无 cursor 的项跳过，不伪造游标', () => {
-  const ids = idsFixture({ _main: { kind: 'idle' } }, [])
   const items = [
     { id: 'a', thread: 't1', resume: null },
     { id: 'b', thread: 't2', resume: { command: 'chat.resume', args: {} } },
     { id: 'c', resume: { command: 'chat.resume', args: { cursor: 'c3' } } },
   ]
-  const out = resumeDirectives(items, 'accept', ids)
+  const out = resumeDirectives(items, 'accept')
   assert.equal(out.length, 1)
-  assert.deepEqual(out[0].args, { cursor: 'c3', thread: '_main', payload: { verdict: 'accept' }, ids })
+  assert.deepEqual(out[0].args, { cursor: 'c3', thread: '_main', payload: { verdict: 'accept' } })
+  assert.deepEqual(out[0].inject, { ids: ['ids'] })
 })
 
 test('buildDecisionPlan：续跑条目在前、#32 计划原样接在其后', () => {
   const plan = [{ kind: 'write' }, { kind: 'extern' }]
-  const value = buildDecisionPlan([], 'accept', plan, {})
+  const value = buildDecisionPlan([], 'accept', plan)
   assert.deepEqual(value.$directives, plan)
 })
 
@@ -237,6 +241,42 @@ test('decideSlotOf：只认本线程 `approval.decide` kind', () => {
 test('assembleDecideArgs：缺输入 body 时不带 slots（仍可调 #32）', () => {
   const args = assembleDecideArgs({ approval: { body: { version: 1, tail: null, count: 0 }, refs: {} } }, '_main')
   assert.deepEqual(args, { queue: { version: 1, tail: null, count: 0 }, refs: {}, thread_id: '_main' })
+})
+
+test('refs 按需解析：哈希列表逐跳取回闭包，与内联闭包等价；缓存跨调用复用', async () => {
+  const h1 = '1'.repeat(64)
+  const h2 = '2'.repeat(64)
+  const h3 = '3'.repeat(64)
+  const defs = {
+    [h1]: { id: 'a', prev: { def: h2 } },
+    [h2]: { id: 'b', prev: { def: h3 } },
+    [h3]: { id: 'c', prev: null },
+  }
+  const calls = []
+  const hydrator = createRefHydrator(async (identity, hashes) => {
+    calls.push({ identity, hashes: [...hashes] })
+    const out = {}
+    for (const hash of hashes) if (defs[hash] !== undefined) out[hash] = defs[hash]
+    return { defs: out, missing: [], denied: [], truncated: false }
+  })
+  // 投影只回直接引用（h1）；深层 h2 / h3 由逐跳解析取回
+  const hydrated = await hydrator.hydrate('approval', [h1])
+  assert.deepEqual(hydrated, defs, '逐跳解析结果与内联闭包等价')
+  assert.deepEqual(calls, [
+    { identity: 'approval', hashes: [h1] },
+    { identity: 'approval', hashes: [h2] },
+    { identity: 'approval', hashes: [h3] },
+  ])
+
+  // 已是对象（内联闭包 / 单测直给）⇒ 原样返回，不发解析调用
+  const inline = { [h1]: defs[h1] }
+  assert.equal(await hydrator.hydrate('approval', inline), inline)
+
+  // 缓存复用：再次解析同一身份不再触发解析调用
+  calls.length = 0
+  const again = await hydrator.hydrate('approval', [h1])
+  assert.deepEqual(again, defs)
+  assert.deepEqual(calls, [], '命中进程内缓存，不再调宿主')
 })
 
 test('纯函数：verdict 归一 / 清槽只动本键', () => {

@@ -17,19 +17,29 @@ function shellThemePref(card: string): string {
   return 'system'
 }
 
+/** 主题切换结果：失败码交给调用方做行内错误呈现，本模块不直接写 `state.error`。 */
+export interface ThemeResult {
+  ok: boolean
+  code: string
+}
+
 /** 切主题：有壳走 `api.theme.set`（唯一 config 写），否则客户端直写。 */
-export async function setTheme(ctx: any, card: string): Promise<void> {
+export async function setTheme(ctx: any, card: string): Promise<ThemeResult> {
   const canShell =
     ctx.api !== null && ctx.api !== undefined && isRecord(ctx.api.theme) && typeof ctx.api.theme.set === 'function'
   if (canShell) {
-    await ctx.api.theme.set(shellThemePref(card))
+    try {
+      await ctx.api.theme.set(shellThemePref(card))
+    } catch {
+      return { ok: false, code: 'ui_unreachable' }
+    }
     ctx.state.config = setUiField(ctx.state.config ?? emptyConfig(), 'theme', card)
     ctx.markSaved('theme')
-    return
+    return { ok: true, code: '' }
   }
   if (card !== 'system' && typeof ctx.doc.defaultView?.matchMedia === 'function') {
     ctx.doc.documentElement.setAttribute('data-theme', card === 'night' ? 'dark' : 'light')
   }
   const result = await ctx.writeConfig(setUiField(ctx.state.config ?? emptyConfig(), 'theme', card), 'theme')
-  if (!result.ok) ctx.state.error = { code: result.code, message: '' }
+  return result.ok ? { ok: true, code: '' } : { ok: false, code: result.code }
 }

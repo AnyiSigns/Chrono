@@ -2,7 +2,7 @@
 // 健康判定已下沉到本插件 execute 服务（`orchestration.health`）：本模块只把服务的结构化结果
 // 归一给渲染层，不再自行计数 / 比阈值；图与 Scope 名录仍走投影尾链读取。
 
-import { isRecord } from './config-model.ts'
+import { isRecord, joinMeta } from './config-model.ts'
 
 export const HEALTH_OK = 'ok'
 export const HEALTH_WARNING = 'warning'
@@ -198,4 +198,60 @@ export function scopeList(projection: any): any[] {
       success_rate: typeof record.success_rate === 'number' ? record.success_rate : null,
     }
   })
+}
+
+/** 图 meta 行（合约短哈希 / 节点数 / 边数）；组件只渲染。 */
+export function graphMeta(view: any, t: (code: string, vars?: any) => string): string {
+  return joinMeta([
+    view.contractId !== null ? `${t('settings_orch_contract')} ${shortHash(view.contractId)}` : '',
+    `${t('settings_orch_nodes')} ${view.nodes.length}`,
+    `${t('settings_orch_edges')} ${view.edges.length}`,
+  ])
+}
+
+/** Scope meta 行（合约 / 人格 / 作用域 / 自治 / 关联 / 成功率）。 */
+export function scopeMeta(scope: any, t: (code: string, vars?: any) => string): string {
+  return joinMeta([
+    `${t('settings_orch_contract')} ${shortHash(scope.contract_id)}`,
+    `${t('settings_orch_persona')} ${scope.persona.length > 0 ? scope.persona : '-'}`,
+    `${t('settings_orch_scope')} ${scope.scope === 'global' ? t('settings_orch_scope_global') : scope.scope}`,
+    `${t('settings_orch_autonomy')} ${scope.autonomy.length > 0 ? scope.autonomy : '-'}`,
+    scope.links.length > 0 ? `${t('settings_orch_links')} ${scope.links}` : '',
+    `${t('settings_orch_success')} ${scope.success_rate === null ? '-' : `${Math.round(scope.success_rate * 100)}%`}`,
+  ])
+}
+
+/** 台账条目主行（`id · label`）。 */
+export function ledgerTitle(summary: any): string {
+  return `${summary.id} · ${summary.label}`
+}
+
+/** 台账逐级下钻明细（判定 → proposal / evidence → trace）；无内容回 `-`。 */
+export function ledgerDetailText(kind: string, entry: any): string {
+  const rows: string[] = []
+  const push = (label: string, values: any) => {
+    if (!Array.isArray(values) || values.length === 0) return
+    rows.push(`${label} ${values.join(', ')}`)
+  }
+  if (kind === 'verdicts') {
+    push('proposal', entry.proposal_ids)
+    push('evidence', entry.evidence_ids)
+    if (isRecord(entry.gate)) {
+      const gate = [entry.gate.mechanical, entry.gate.reason, entry.gate.human].filter(
+        (part) => typeof part === 'string' && part.length > 0,
+      )
+      if (gate.length > 0) rows.push(`gate ${gate.join(' · ')}`)
+    }
+    if (Number.isInteger(entry.adopted_gen)) rows.push(`gen ${entry.adopted_gen}`)
+  } else if (kind === 'proposals') {
+    push('evidence', entry.evidence_ids)
+    if (isRecord(entry.patch) && typeof entry.patch.def === 'string') rows.push(`patch ${entry.patch.def}`)
+  } else {
+    push('trace', Array.isArray(entry.traces) ? entry.traces.map((item: any) => (isRecord(item) ? item.def : null)) : [])
+    if (isRecord(entry.cluster_key) && typeof entry.cluster_key.attributable_to === 'string') {
+      rows.push(`attributable_to ${entry.cluster_key.attributable_to}`)
+    }
+  }
+  if (typeof entry.at === 'string' && entry.at.length > 0) rows.push(entry.at)
+  return rows.length > 0 ? rows.join(' · ') : '-'
 }

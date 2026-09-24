@@ -1,6 +1,6 @@
 // 设置页纯函数（node 下可 import 单测）：tab 表 / 身份只读行 / 技能清单读写。
 
-import { clone, isRecord } from './config-model.ts'
+import { clone, isRecord, joinMeta } from './config-model.ts'
 import { shortHash } from './health.ts'
 
 /** 左侧 tab（图标名取自 icons.v2.svg 的登记子集）。 */
@@ -118,4 +118,23 @@ export function splitList(value: any): string[] {
 /** 列表 → 表单回填文本（`splitList` 的逆操作，逗号分隔）。 */
 export function listText(value: any): string {
   return Array.isArray(value) ? value.join(', ') : ''
+}
+
+/** 技能行主文本：`name`（缺失回落 `id`）与 `description` 以 ` · ` 连接。 */
+export function skillTitle(skill: any): string {
+  if (!isRecord(skill)) return ''
+  const name = typeof skill.name === 'string' && skill.name.length > 0 ? skill.name : typeof skill.id === 'string' ? skill.id : ''
+  const description = typeof skill.description === 'string' ? skill.description : ''
+  return joinMeta([name, description])
+}
+
+/** 插件行副文本片段：世代短哈希 + 依赖 pins 摘要（组件用 `joinMeta` 连接）。 */
+export function pluginSubParts(row: any, t: (code: string) => string): string[] {
+  const parts: string[] = []
+  if (typeof row?.activeShort === 'string' && row.activeShort.length > 0) {
+    parts.push(`${t('settings_plugins_generation')} ${row.activeShort}`)
+  }
+  const pins = isRecord(row?.pins) ? Object.keys(row.pins) : []
+  if (pins.length > 0) parts.push(`${t('settings_plugins_deps')} ${pins.join(', ')}`)
+  return parts
 }

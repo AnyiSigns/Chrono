@@ -38,7 +38,16 @@
 
 ## 默认 body 预置（可复现）
 
-`tools/default-body.json` 是默认 body。宿主运行中时，用 `boot run` 提交一条数据世代写入
+- `tools/default-body.json`：默认 body（`{ "slots": {} }`）。
+- `tools/seed-default-body.mjs`：宿主已 `start` 时，读默认 body 并提交一条数据世代写入
+  （`put` + `add_gen`）。`start.mjs` 首启对尚无数据世代的身份自动执行；本身份必须预置，
+  否则客户端读-改-写槽时会读到代码世代回落 body 而拒写（`not_loaded`）。
+
+```
+node plugins/input/tools/seed-default-body.mjs --root <宿主根目录>
+```
+
+等价地，也可用 `boot run` 手动提交一条数据世代写入
 （把 `<root>` 换成宿主根目录，`<head>` 换成 `boot status` 报出的链头哈希）：
 
 ```

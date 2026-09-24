@@ -78,6 +78,7 @@ export async function saveProviderSecret(ctx: any, name: any, value: any, key: a
   }
   ctx.state.secrets = await loadSecrets(ctx)
   ctx.state.savedKey = key ?? null
+  ctx.state.error = null
   ctx.announce(ctx.text('settings_secret_saved'))
   ctx.render()
   return true

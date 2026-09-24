@@ -207,11 +207,31 @@ test('通知内容：标题为事件类型、合并计数附正文、无操作�
   const descriptor = classify({ topic: 'approval.pending', payload: { kind: 'tool_call', thread: 't1' } })
   const single = notificationContent(descriptor, 1)
   assert.equal(single.title, '待审批')
-  assert.equal(single.body, 't1')
+  assert.equal(single.body, '', '无人类标签时正文省略原始 thread id')
   const merged = notificationContent(descriptor, 3)
   assert.match(merged.body, /×3/)
   assert.equal(Object.hasOwn(single, 'actions'), false)
   assert.equal(Object.hasOwn(single, 'buttons'), false)
+})
+
+test('正文标签：优先人类标签，缺失则不用原始 thread id', () => {
+  const withLabel = classify({
+    topic: 'approval.pending',
+    payload: { kind: 'tool_call', thread: 't1', label: '登录修复' },
+  })
+  assert.equal(withLabel.label, '登录修复')
+  assert.equal(notificationContent(withLabel, 1).body, '登录修复')
+
+  const fromItem = classify({
+    topic: 'approval.pending',
+    payload: { item: { kind: 'tool_call', thread: 't1', label: '子代理' } },
+  })
+  assert.equal(fromItem.label, '子代理')
+  assert.equal(notificationContent(fromItem, 1).body, '子代理')
+
+  const run = classify({ topic: 'run.finished', payload: { status: 'done', thread: 't1', summary: '完成了' } })
+  assert.equal(run.label, null)
+  assert.equal(notificationContent(run, 1).body, '完成了')
 })
 
 test('通知标题 / 固定正文按 notify_* 码取自文案表，缺表回落内置', () => {

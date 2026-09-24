@@ -1,7 +1,7 @@
 // 记忆页纯函数（node 下可 import 单测）：三档切换 / 工作区筛选 / TTL 格式 / 搜索高亮 / 编辑槽载荷。
 // 只做数据归一与字符串处理，不触 DOM、不发请求；渲染在 React 组件层。
 
-import { isRecord } from './config-model.ts'
+import { isRecord, joinMeta } from './config-model.ts'
 
 /** 记忆三档（#23 `view` 的 l1 / l2 / l3）。 */
 export const MEMORY_LAYERS = ['l1', 'l2', 'l3']
@@ -164,4 +164,45 @@ export function memorySearchState(busy: any, degraded: any, result: any): string
   if (degraded) return 'degraded'
   if (result === null) return 'idle'
   return memorySearch(result).recall.length === 0 ? 'empty' : 'ready'
+}
+
+function textOf(value: any): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 条目主行 + meta 行（L1 的 TTL / L2 的来源数 / L3 的 source、workspace、tags、weight）。
+ * 组件只渲染，不就地拼串。
+ */
+export function entrySummary(entry: any, layer: any, t: (code: string, vars?: any) => string): any {
+  const key = normalizeLayer(layer)
+  const summary = summaryLists(entry?.summary)
+  const ttl = ttlState(entry)
+  const mainText =
+    key === 'l3' ? textOf(entry?.text) : summary.goal.length > 0 ? summary.goal : t('settings_memory_no_goal')
+  const parts: string[] = []
+  if (typeof entry?.at === 'string' && entry.at.length > 0) parts.push(entry.at)
+  if (key === 'l1') {
+    if (ttl.ms !== null) {
+      parts.push(ttl.expired ? t('settings_memory_expired') : t('settings_memory_ttl', { ttl: formatTtl(ttl.ms) }))
+    }
+  }
+  if (key === 'l2') {
+    parts.push(t('settings_memory_sources', { count: Array.isArray(entry?.sources) ? entry.sources.length : 0 }))
+  }
+  if (key === 'l3') {
+    if (textOf(entry?.source).length > 0) parts.push(`${t('settings_memory_source')} ${entry.source}`)
+    if (textOf(entry?.workspace).length > 0) parts.push(`${t('settings_memory_workspace_label')} ${entry.workspace}`)
+    if (Array.isArray(entry?.tags) && entry.tags.length > 0) parts.push(`${t('settings_memory_tags')} ${entry.tags.join(', ')}`)
+    if (typeof entry?.weight === 'number' && Number.isFinite(entry.weight)) parts.push(`${t('settings_memory_weight')} ${entry.weight.toFixed(2)}`)
+  }
+  return { mainText, meta: joinMeta(parts), expired: key === 'l1' && ttl.expired }
+}
+
+/** 命中行 meta（entry_id + 分数）；组件只渲染。 */
+export function hitMeta(hit: any, t: (code: string, vars?: any) => string): string {
+  const parts: string[] = []
+  if (typeof hit?.entry_id === 'string' && hit.entry_id.length > 0) parts.push(hit.entry_id)
+  if (hit?.score !== null && hit?.score !== undefined) parts.push(t('settings_memory_score', { score: hit.score.toFixed(3) }))
+  return joinMeta(parts)
 }

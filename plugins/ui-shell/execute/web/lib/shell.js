@@ -4,7 +4,8 @@
 
 import { createUiState } from './ui-state.js'
 import { createToastQueue, roleForTone } from './toast.js'
-import { normalizeThemePref, resolveTheme } from './theme.js'
+import { applyTheme as writeTheme, normalizeThemePref } from './theme.js'
+import { createToastRenderer } from './toast-dom.js'
 import { deriveBootMode } from './boot-mode.js'
 import { identityBody } from './identity-shape.js'
 import { createSlotHost } from './slots.js'
@@ -33,6 +34,8 @@ const FALLBACK_MESSAGES = {
   ui_load_failed: { title: '界面未能加载', body: '这个界面暂时不可用，正在自动重试…', action: '重试' },
   ui_boot_failed: { title: '界面加载失败', body: '这个界面未能启动。', action: '重试' },
   ui_version_mismatch: { title: '界面版本不符', body: '界面与壳的契约版本不一致。', action: '重试' },
+  shell_disconnected: { title: '与宿主断开', body: '正在重连…', action: '重试' },
+  shell_reconnected: { title: '已重新连接', body: '与宿主的连接已恢复。' },
   shell_tokens_fallback: { title: '样式降级', body: '设计 token 未能加载，已用最小样式兜底。' },
   shell_toast_close: { title: '关闭提示', body: '关闭' },
 }
@@ -83,7 +86,7 @@ function systemPrefersDark() {
 }
 
 function applyTheme() {
-  document.documentElement.setAttribute('data-theme', resolveTheme(themePref, systemPrefersDark()))
+  writeTheme(document.documentElement, themePref, systemPrefersDark())
 }
 
 applyTheme()
@@ -317,57 +320,62 @@ if (bannerRetry !== null) {
 
 // ---- 全局 toast 渲染 ----
 
-function renderToasts() {
-  if (toastRoot === null) return
-  // DOM 序兜底：toast 与 lightbox 同为 --z-70，把 toast 容器移到
-  // <body> 末端，恒晚于子应用内后插入的 lightbox，确保 toast 在其之上可见。
-  document.body.appendChild(toastRoot)
-  const visible = toastQueue.visible()
-  toastRoot.replaceChildren(
-    ...visible.map((item) => {
-      const card = document.createElement('div')
-      card.className = 'shell-toast'
-      card.dataset.tone = item.tone
-      card.setAttribute('role', roleForTone(item.tone))
-      card.addEventListener('mouseenter', () => toastQueue.hover(item.id, true))
-      card.addEventListener('mouseleave', () => toastQueue.hover(item.id, false))
-      const text = document.createElement('div')
-      text.className = 'shell-toast-text'
-      text.textContent = item.text
-      card.appendChild(text)
-      if (item.action) {
-        const label = typeof item.action === 'string' ? item.action : item.action.label
-        if (typeof label === 'string' && label.length > 0) {
-          const button = document.createElement('button')
-          button.type = 'button'
-          button.textContent = label
-          button.addEventListener('click', () => {
-            if (typeof item.action === 'object' && typeof item.action.run === 'function') {
-              try {
-                item.action.run()
-              } catch {
-                // 动作失败不改 toast 生命周期
-              }
-            }
-            toastQueue.dismiss(item.id)
-            renderToasts()
-          })
-          card.appendChild(button)
+function buildToastCard(item) {
+  const card = document.createElement('div')
+  card.className = 'shell-toast'
+  card.dataset.tone = item.tone
+  card.setAttribute('role', roleForTone(item.tone))
+  card.addEventListener('mouseenter', () => toastQueue.hover(item.id, true))
+  card.addEventListener('mouseleave', () => toastQueue.hover(item.id, false))
+  const text = document.createElement('div')
+  text.className = 'shell-toast-text'
+  text.textContent = item.text
+  card.appendChild(text)
+  if (item.action) {
+    const label = typeof item.action === 'string' ? item.action : item.action.label
+    if (typeof label === 'string' && label.length > 0) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.textContent = label
+      button.addEventListener('click', () => {
+        if (typeof item.action === 'object' && typeof item.action.run === 'function') {
+          try {
+            item.action.run()
+          } catch {
+            // 动作失败不改 toast 生命周期
+          }
         }
-      }
-      const close = document.createElement('button')
-      close.type = 'button'
-      close.className = 'shell-toast-close'
-      close.setAttribute('aria-label', msg('shell_toast_close').body)
-      close.textContent = '×'
-      close.addEventListener('click', () => {
         toastQueue.dismiss(item.id)
         renderToasts()
       })
-      card.appendChild(close)
-      return card
-    }),
-  )
+      card.appendChild(button)
+    }
+  }
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'shell-toast-close'
+  close.setAttribute('aria-label', msg('shell_toast_close').body)
+  close.textContent = '×'
+  close.addEventListener('click', () => {
+    toastQueue.dismiss(item.id)
+    renderToasts()
+  })
+  card.appendChild(close)
+  return card
+}
+
+const toastRenderer =
+  toastRoot === null
+    ? null
+    : createToastRenderer(toastRoot, buildToastCard, (id) => toastQueue.hover(id, false))
+
+function renderToasts() {
+  if (toastRenderer === null) return
+  // DOM 序兜底：toast 与 lightbox 同为 --z-70，把 toast 容器移到
+  // <body> 末端，恒晚于子应用内后插入的 lightbox，确保 toast 在其之上可见。
+  // 已在末尾时不移动：移动节点会打断焦点，也可能让 aria-live 重播。
+  if (document.body.lastElementChild !== toastRoot) document.body.appendChild(toastRoot)
+  toastRenderer.render(toastQueue.visible())
 }
 
 let lastVisibleIds = ''

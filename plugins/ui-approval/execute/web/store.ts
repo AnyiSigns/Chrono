@@ -9,6 +9,7 @@ import {
   confirmArmed,
   CONFIRM_TTL_MS,
   defaultExpanded,
+  identifiedItems,
   identityActive,
   identityBody,
   isCodeGenFallbackBody,
@@ -16,9 +17,9 @@ import {
   verdictOf,
   withBusy,
   withoutBusy,
-} from './model'
-import type { Rec } from './model'
-import { loadMessages } from './messages'
+} from './model.ts'
+import type { Rec } from './model.ts'
+import { loadMessages } from './messages.ts'
 
 /** 整批裁决的线程键（缺 `id` = 全部；槽写在本键下）。 */
 export const BATCH_THREAD = '_main'
@@ -28,12 +29,18 @@ export interface ItemError {
   action: string
 }
 
+/** 错误来源：`load`（列表拉取失败，重试应重拉列表）/ `batch`（整批裁决失败，重试应重提上一批）。 */
+export interface ApprovalError {
+  code: string
+  kind: 'load' | 'batch'
+}
+
 export interface ApprovalSnapshot {
   table: unknown
   items: Rec[]
   refs: Rec
   loading: boolean
-  error: { code: string } | null
+  error: ApprovalError | null
   expanded: string[]
   busy: string[]
   itemErrors: Record<string, ItemError>
@@ -165,21 +172,21 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
     if (disposed || seq !== loadSeq) return
     const ok = okOf(result)
     const body = ok ? (asRecord(valueOf(result)) ?? {}) : {}
-    let error: { code: string } | null = null
+    let error: ApprovalError | null = null
     if (!ok) {
-      error = { code: codeOf(result) }
+      error = { code: codeOf(result), kind: 'load' }
     } else if (body.ok === false) {
       const err = asRecord(body.error)
-      error = { code: err !== null && typeof err.code === 'string' ? err.code : 'unknown' }
+      error = { code: err !== null && typeof err.code === 'string' ? err.code : 'unknown', kind: 'load' }
     }
-    const items = Array.isArray(body.items) ? body.items.filter(isRecord) : []
+    const items = identifiedItems(body.items)
     const refs = asRecord(body.refs) ?? {}
     const expanded = [...state.expanded]
     for (const item of items) {
-      const id = typeof item.id === 'string' ? item.id : null
-      if (id !== null && defaultExpanded(item) && !expanded.includes(id)) expanded.push(id)
+      if (defaultExpanded(item) && !expanded.includes(item.id)) expanded.push(item.id)
     }
-    commit({ ...state, loading: false, error, items, refs, expanded })
+    // 列表错误意味着上一批的上下文已不可信：清 lastBatch，重试只重拉列表。
+    commit({ ...state, loading: false, error, items, refs, expanded, lastBatch: error === null ? state.lastBatch : null })
   }
 
   /** 裁决两步走：先读-改-写本线程槽，再调无参裁决命令。 */
@@ -233,7 +240,7 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
         void load()
         return
       }
-      commit({ ...state, busy: withoutBusy(state.busy, 'all'), error: { code: result.code } })
+      commit({ ...state, busy: withoutBusy(state.busy, 'all'), error: { code: result.code, kind: 'batch' } })
       return
     }
     commit({ ...state, busy: withoutBusy(state.busy, 'all') })

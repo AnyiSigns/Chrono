@@ -109,8 +109,10 @@ export function normalizeConversations(body: unknown): Conversation[] {
 }
 
 /**
- * 标题本地过滤：大小写不敏感子串匹配，返回命中标记与高亮区间（按码点下标）。
+ * 标题本地过滤：大小写不敏感子串匹配，返回命中标记与高亮区间（按原串下标）。
  * 空查询视为全部命中、无区间。
+ * 大小写折叠可能改变长度（如 `İ` → `i̇`），此时 `toLowerCase()` 的下标与原串不再一一对应，
+ * 故长度不等时改用逐位比对，保证区间始终落在原串上、不越界 / 不错位。
  */
 export function matchTitle(title: unknown, query: unknown): MatchResult {
   const text = typeof title === 'string' ? title : ''
@@ -118,12 +120,24 @@ export function matchTitle(title: unknown, query: unknown): MatchResult {
   if (needle.length === 0) return { matched: true, ranges: [] }
   const haystack = text.toLowerCase()
   const ranges: number[][] = []
+  if (haystack.length === text.length) {
+    let from = 0
+    for (;;) {
+      const index = haystack.indexOf(needle, from)
+      if (index < 0) break
+      ranges.push([index, index + needle.length])
+      from = index + needle.length
+    }
+    return { matched: ranges.length > 0, ranges }
+  }
   let from = 0
-  for (;;) {
-    const index = haystack.indexOf(needle, from)
-    if (index < 0) break
-    ranges.push([index, index + needle.length])
-    from = index + needle.length
+  while (from + needle.length <= text.length) {
+    if (text.slice(from, from + needle.length).toLowerCase() === needle) {
+      ranges.push([from, from + needle.length])
+      from += needle.length
+    } else {
+      from += 1
+    }
   }
   return { matched: ranges.length > 0, ranges }
 }
@@ -155,6 +169,22 @@ export function groupConversations(
     workspace,
     sessions: byWorkspace.get(workspace.id) ?? [],
   }))
+}
+
+/**
+ * 未分组会话：`workspace_id` 为 null（未绑定）或不在工作区列表（工作区已移除）的会话。
+ * `groupConversations` 只按已知工作区出组，这些会话会静默消失；此函数把它们显式收拢，
+ * 供视图层单列「未分组」桶，避免不可见。过滤口径与 `filterConversations` 一致。
+ */
+export function ungroupedConversations(
+  workspaces: Workspace[],
+  conversations: Conversation[],
+  query: unknown,
+): Conversation[] {
+  const known = new Set(workspaces.map((workspace) => workspace.id))
+  return filterConversations(conversations, query).filter(
+    (conversation) => conversation.workspace_id === null || !known.has(conversation.workspace_id),
+  )
 }
 
 /** 整体空态：无任何工作区，或过滤后无任何可见会话（且无查询）。 */

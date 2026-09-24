@@ -6,6 +6,8 @@
 import { fileURLToPath } from 'node:url'
 import { isSafeClientPath, readClientFile } from './client-read.ts'
 import { addGenOp, externOnly, isRecord, planOf, putOp } from './plan.ts'
+import { createRefHydrator, hydrateIds } from './refs.ts'
+import type { DefReader } from './refs.ts'
 import type { PortCaller, PortOutcome } from './port-link.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -35,6 +37,8 @@ export interface HandlerDeps {
   maintenance?: PortCaller
   /** 密钥本地存储面；缺省为不可用通道（单测不涉及时不崩）。 */
   secrets?: SecretsChannel
+  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
+  host?: PortCaller
 }
 
 // ── 模型命令的服务侧装配（纯函数，单测直调）──
@@ -446,6 +450,13 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
       put: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
       delete: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
     }
+  const read: DefReader = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
 
@@ -514,15 +525,26 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
       return planOf([putOp(clearSlotBody(inputBody)), addGenOp('input', 0)], result)
     },
 
-    /** 编排健康只读视图：入口 term 传 `ctx.ids`，服务判定（不住 #33）；浏览器只渲染。 */
-    health: (args): Json => judgeHealth(args),
+    /** 编排健康只读视图：入口 term 传 `ctx.ids`，服务按需解析台账 / 图引用后判定（不住 #33）；浏览器只渲染。 */
+    health: async (args): Promise<Json> => {
+      const ids = await hydrateIds(args, ['evolution', 'loop-policy'], hydrator)
+      return judgeHealth(ids)
+    },
+
+    /** Scope 名录切片：入口 term 传 `ids.agents`，服务按需解析实例链引用后回投影（浏览器沿 `instances` 尾链渲染）。 */
+    scopes: async (args): Promise<Json> => {
+      const projection = isRecord(args) ? args : {}
+      const refs = await hydrator.hydrate('agents', projection['refs'])
+      return { ...projection, refs }
+    },
 
     /**
      * 记忆浏览（只读）：入口 term 传 `ctx.ids`，服务从 `#3` body + `#21` body / refs 装配，
      * 反向调 `memory-maintenance.view`；命令结果 = #23 `view` 值（L1 / L2 / L3 三档）。
      */
     view: async (args): Promise<Json> => {
-      const outcome = await maintenance.call('memory-maintenance', 'view', assembleViewArgs(idsMapOf(args)))
+      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
+      const outcome = await maintenance.call('memory-maintenance', 'view', assembleViewArgs(ids))
       if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
       return externOnly(outcome.value)
     },
@@ -533,7 +555,10 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      * `memory={body,refs}`），反向调 `retrieval.search`；命令结果 = #22 `search` 值（`recall`）。
      */
     search: async (args): Promise<Json> => {
-      const assembled = assembleSearchBag(args)
+      const record = isRecord(args) ? args : {}
+      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
+      const hydratedArgs: Json = isRecord(record['ids']) ? { ...record, ids } : ids
+      const assembled = assembleSearchBag(hydratedArgs)
       if (!assembled.ok) return externOnly(failure(assembled.code, assembled.message))
       const outcome = await retrieval.call('retrieval', 'search', assembled.bag)
       if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
@@ -546,7 +571,7 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      * extern #23 结果。槽 action `update` 对齐为 #23 的 `text`。
      */
     edit: async (args): Promise<Json> => {
-      const ids = idsMapOf(args)
+      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
       const inputBody = projectionBody(ids, 'input')
       const assembled = assembleEditArgs(ids, inputBody)
       let ops: Json[] = []

@@ -42,6 +42,7 @@ import { identityActive, identityBody, isCodeGenFallbackBody } from '../execute/
 import { createSlotRegistry, normalizeTarget } from '../execute/web/lib/slot-registry.js'
 import { createSlotHost } from '../execute/web/lib/slots.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
+import { createToastRenderer } from '../execute/web/lib/toast-dom.js'
 import {
   EMPTY_SPRITE,
   loadFavicon,
@@ -680,6 +681,53 @@ test('toast aria-live：info/success = status，warning/danger = alert', () => {
   assert.equal(roleForTone('danger'), 'alert')
 })
 
+test('toast 渲染器：按 id 复用节点，只增删差集，移除项回调复位', () => {
+  function fakeNode(id) {
+    return {
+      id,
+      parent: null,
+      remove() {
+        if (this.parent === null) return
+        const index = this.parent.children.indexOf(this)
+        if (index >= 0) this.parent.children.splice(index, 1)
+        this.parent = null
+      },
+    }
+  }
+  const root = {
+    children: [],
+    appendChild(node) {
+      if (node.parent !== null) node.remove()
+      node.parent = root
+      root.children.push(node)
+    },
+  }
+  const removed = []
+  const renderer = createToastRenderer(root, (item) => fakeNode(item.id), (id) => removed.push(id))
+
+  renderer.render([{ id: 'a' }, { id: 'b' }])
+  assert.deepEqual(root.children.map((node) => node.id), ['a', 'b'])
+  const firstA = root.children[0]
+  const firstB = root.children[1]
+
+  // 新增项只追加，已有节点原样复用（hover 中的节点不被销毁）
+  renderer.render([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+  assert.deepEqual(root.children.map((node) => node.id), ['a', 'b', 'c'])
+  assert.equal(root.children[0], firstA, 'a 节点应复用而非重建')
+  assert.equal(root.children[1], firstB, 'b 节点应复用而非重建')
+
+  // 消失项只移除自身并回调；其余节点不动
+  renderer.render([{ id: 'b' }, { id: 'c' }])
+  assert.deepEqual(root.children.map((node) => node.id), ['b', 'c'])
+  assert.deepEqual(removed, ['a'])
+  assert.equal(root.children[0], firstB, 'b 节点在移除 a 后仍复用')
+
+  // 幂等：同集合再渲染不产生任何变化
+  const snapshot = root.children.slice()
+  renderer.render([{ id: 'b' }, { id: 'c' }])
+  assert.deepEqual(root.children, snapshot)
+})
+
 // ---- 静态资源降级 ----
 
 test('静态资源降级三路', () => {
@@ -937,6 +985,9 @@ test('壳页面细节：toast DOM 序、无死代码、响应式与 ::selection�
   assert.equal(/const mounted\b/.test(shellJs), false, 'mounted 死代码应删除')
   assert.equal(FALLBACK_MESSAGES.shell_tokens_fallback !== undefined, true)
   assert.equal(FALLBACK_MESSAGES.shell_toast_close.body, '关闭')
+  // 壳页面自带的最小兜底表也须含断线 / 重连码（文案表加载失败时 showBanner 取用）
+  assert.match(shellJs, /shell_disconnected:\s*\{[^}]*body:/)
+  assert.match(shellJs, /shell_reconnected:\s*\{[^}]*body:/)
   assert.match(shellJs, /msg\('shell_toast_close'\)\.body/)
 
   const html = readFileSync(join(WEB_DIR, 'shell.html'), 'utf8')

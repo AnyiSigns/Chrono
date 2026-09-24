@@ -10,6 +10,7 @@
       "profile",
       "discover",
       "health",
+      "scopes",
       "view",
       "search",
       "edit",
@@ -21,7 +22,8 @@
     "model": "model-protocol",
     "secrets": "secrets",
     "retrieval": "memory-retrieval",
-    "memory-maintenance": "memory-consolidate"
+    "memory-maintenance": "memory-consolidate",
+    "host": "host"
   },
   "start": "node execute/main.ts",
   "build": [

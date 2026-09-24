@@ -80,10 +80,11 @@ export function degradeText(part: any): string {
 /**
  * detail 描述符 + 工具结果合并：`kind` 等描述符字段优先（来自 render.detail），
  * 数据字段来自结果本体（如 glob 的 `paths`、shell 的 `stdout`、edit 的 `patch`）。
- * 描述符缺数据时展开区才是空的——这正是「有结果却渲染空白」的根因。
+ * 结果是数组（如 glob 直接回 `paths`）时挂到 `items`，否则展开区会「有结果却渲染空白」。
  */
 function mergeDetail(descriptor: any, result: any): any {
   if (!isRec(descriptor)) return null
+  if (Array.isArray(result)) return { ...descriptor, items: result }
   if (isRec(result)) return { ...result, ...descriptor }
   return { ...descriptor }
 }

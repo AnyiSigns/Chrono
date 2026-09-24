@@ -4,14 +4,19 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
+import { createRefHydrator, hydrateIds } from './refs.ts'
+import type { DefReader } from './refs.ts'
 import { assembleThreadsState } from './threads-state.ts'
 import { isRecord } from './types.ts'
+import type { PortCaller } from './port-link.ts'
 import type { Handler, Json } from './types.ts'
 
 export interface HandlerDeps {
   identity: string
   /** 浏览器客户端半边资产根目录（`execute/web/`）；`client.read` 只在此目录内解析。 */
   webRoot: string
+  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
+  host?: PortCaller
 }
 
 export interface ClientFile {
@@ -52,11 +57,21 @@ export function readClientFile(webRoot: string, path: unknown): ClientFile | nul
 
 /** 构造方法表；main.ts 校验 `port` / `method` 后取用。 */
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
+  const read: DefReader = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
   return {
     ping: (): { value: Json } => ({ value: { pong: true, identity: deps.identity } }),
 
-    /** 入口 term 传 `ctx.ids`，服务装配线程标签 + 待办标签（父会话隔离）。 */
-    'threads.state': (args): { value: Json } => ({ value: assembleThreadsState(args) }),
+    /** 入口 term 传 `ctx.ids`，服务按需解析待办引用后装配线程标签 + 待办标签（父会话隔离）。 */
+    'threads.state': async (args): Promise<{ value: Json }> => {
+      const ids = await hydrateIds(args, ['todo'], hydrator)
+      return { value: assembleThreadsState(ids) }
+    },
 
     /** 壳经 `<id>.client.read` 取客户端半边字节：`{path}` → `{path,text}`；非法路径 fail-closed。 */
     'client.read': (args): { value: Json } => {

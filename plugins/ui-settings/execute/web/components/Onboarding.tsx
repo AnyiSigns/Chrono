@@ -34,6 +34,7 @@ export function Onboarding() {
           />
         ) : (
           <ProviderForm
+            key={form.templateIdentity}
             form={form}
             options={{
               submitLabel: vc.text('settings_complete'),

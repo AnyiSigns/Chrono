@@ -19,10 +19,11 @@ import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 
 import { STYLE_TEXT } from './styles.ts'
+import { injectCursor } from './markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental } from './markdown-cache.ts'
 import type { MarkdownCache } from './markdown-cache.ts'
 import { base64ToBytes, fitBox } from './media.ts'
-import { FALLBACK_MESSAGES, formatText, loadMessages, lookupMessage } from './messages.ts'
+import { FALLBACK_MESSAGES, loadMessages, lookupMessage } from './messages.ts'
 import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
@@ -31,6 +32,7 @@ import {
   matchesThread,
   messageId,
   messageText,
+  subagentHeader,
 } from './history-model.ts'
 import {
   applyDelta,
@@ -45,16 +47,17 @@ import {
   foldRunFinished,
   isStreaming,
 } from './thread-store.ts'
-import { messageViewItems, partViewModel, pendingUserDef, safeStringify } from './render-parts.ts'
+import { messageViewItems, pendingUserDef, safeStringify } from './render-parts.ts'
 import { toolCardViewModel } from './tool-card.ts'
-import { detailViewModel } from './detail-renderers.ts'
+import { detailViewModel, questionAnswerText } from './detail-renderers.ts'
 import { buildDateSeparators } from './date-sep.ts'
 import { usageText } from './usage.ts'
 import { COPY_HOLD_MS } from './copy.ts'
 import { createLightboxState } from './lightbox.ts'
 import { groupViewModel } from './group.ts'
-import { statusIcon, statusText, workflowViewModel } from './workflow.ts'
+import { statusIcon, workflowViewModel } from './workflow.ts'
 import {
+  clampWindow,
   dismissNew,
   hasOlder,
   initialWindow,
@@ -91,16 +94,31 @@ function useChatEnv(): ChatEnv {
 interface BoundaryProps {
   children: ReactNode
   fallback: ReactNode
+  resetKey?: string
 }
 
-/** 单条消息的渲染异常边界：异常在本条内收束为降级提示，不冒泡崩掉整棵聊天树。 */
-class MessageBoundary extends Component<BoundaryProps, { failed: boolean }> {
+interface BoundaryState {
+  failed: boolean
+  resetKey: string
+}
+
+/**
+ * 单条消息的渲染异常边界：异常在本条内收束为降级提示，不冒泡崩掉整棵聊天树。
+ * `resetKey` 变化（消息身份 / 内容随快照更新）时清掉失败态，使瞬时渲染错误可恢复。
+ */
+class MessageBoundary extends Component<BoundaryProps, BoundaryState> {
   constructor(props: BoundaryProps) {
     super(props)
-    this.state = { failed: false }
+    this.state = { failed: false, resetKey: props.resetKey ?? '' }
   }
 
-  static getDerivedStateFromError(): { failed: boolean } {
+  static getDerivedStateFromProps(props: BoundaryProps, state: BoundaryState): Partial<BoundaryState> | null {
+    const resetKey = props.resetKey ?? ''
+    if (resetKey !== state.resetKey) return { failed: false, resetKey }
+    return null
+  }
+
+  static getDerivedStateFromError(): Partial<BoundaryState> {
     return { failed: true }
   }
 
@@ -187,15 +205,27 @@ function IconButton({
 /**
  * 全仓唯一 `dangerouslySetInnerHTML` 处：markdown 渲染 + 白名单消毒。
  * 经增量缓存（`renderMarkdownIncremental`）——流式时已完成前缀只解析一次，只重解析尾部块。
+ * 缓存更新走 effect，不在渲染期改 ref；`cursor` 为真时把流式光标注入产物末尾块内。
  */
-function Markdown({ text, className }: { text: unknown; className?: string }): ReactNode {
+function Markdown({
+  text,
+  className,
+  cursor = false,
+}: {
+  text: unknown
+  className?: string
+  cursor?: boolean
+}): ReactNode {
   const cacheRef = useRef<MarkdownCache | null>(null)
   if (cacheRef.current === null) cacheRef.current = createMarkdownCache()
-  const html = useMemo(() => {
-    const result = renderMarkdownIncremental(text, cacheRef.current as MarkdownCache)
+  const result = useMemo(
+    () => renderMarkdownIncremental(text, cacheRef.current as MarkdownCache),
+    [text],
+  )
+  useEffect(() => {
     cacheRef.current = result.cache
-    return result.html
-  }, [text])
+  }, [result.cache])
+  const html = cursor ? injectCursor(result.html) : result.html
   return <div className={className ?? 'chat-md'} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
@@ -333,11 +363,22 @@ function MediaImage({ source, alt }: { source: any; alt: string }): ReactNode {
 
 function MediaVideo({ source }: { source: any }): ReactNode {
   const env = useChatEnv()
-  const url = useAssetUrl(source, 0)
-  if (url === null) return <MediaPlaceholder onRetry={() => {}} />
+  const [nonce, setNonce] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const url = useAssetUrl(source, nonce)
+  if (url === null || failed) {
+    return (
+      <MediaPlaceholder
+        onRetry={() => {
+          setFailed(false)
+          setNonce((value) => value + 1)
+        }}
+      />
+    )
+  }
   return (
     <div className="chat-video-thumb">
-      <video className="chat-media-video" src={url} preload="metadata" muted />
+      <video className="chat-media-video" src={url} preload="metadata" muted onError={() => setFailed(true)} />
       <button type="button" className="chat-video-play" onClick={() => env.openVideo(url)}>
         {lookupMessage(env.table, 'chat_play_video').body}
       </button>
@@ -346,20 +387,38 @@ function MediaVideo({ source }: { source: any }): ReactNode {
 }
 
 function MediaAudio({ source }: { source: any }): ReactNode {
-  const url = useAssetUrl(source, 0)
-  if (url === null) return <MediaPlaceholder onRetry={() => {}} />
-  return <audio className="chat-media-audio" src={url} controls preload="none" />
+  const [nonce, setNonce] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const url = useAssetUrl(source, nonce)
+  if (url === null || failed) {
+    return (
+      <MediaPlaceholder
+        onRetry={() => {
+          setFailed(false)
+          setNonce((value) => value + 1)
+        }}
+      />
+    )
+  }
+  return <audio className="chat-media-audio" src={url} controls preload="none" onError={() => setFailed(true)} />
 }
 
 function FileCard({ name, source }: { name: string; source: any }): ReactNode {
-  const url = useAssetUrl(source, 0)
+  const [nonce, setNonce] = useState(0)
+  const url = useAssetUrl(source, nonce)
   const inner = (
     <>
       <Icon name="paperclip" size={16} />
       <span className="chat-file-name">{name}</span>
     </>
   )
-  if (url === null) return <div className="chat-file">{inner}</div>
+  if (url === null) {
+    // 资产取回失败给带重试的占位；ext（URL 已过 safeUrl）或非资产回落纯卡片。
+    if (source !== null && source !== undefined && source.kind === 'asset') {
+      return <MediaPlaceholder onRetry={() => setNonce((value) => value + 1)} />
+    }
+    return <div className="chat-file">{inner}</div>
+  }
   return (
     <a className="chat-file" href={url} target="_blank" rel="noopener noreferrer" download={name}>
       {inner}
@@ -371,7 +430,7 @@ function TerminalView({ vm }: { vm: any }): ReactNode {
   const children: ReactNode[] = []
   if (vm.stdout.length > 0) children.push(<div key="out" className="chat-terminal-stdout">{vm.stdout}</div>)
   if (vm.stderr.length > 0) children.push(<div key="err" className="chat-terminal-stderr">{vm.stderr}</div>)
-  if (vm.exitCode !== null) children.push(<div key="exit" className="chat-terminal-exit">{`退出码 ${vm.exitCode}`}</div>)
+  if (vm.exitText.length > 0) children.push(<div key="exit" className="chat-terminal-exit">{vm.exitText}</div>)
   if (children.length === 0) children.push(<div key="breathe" className="chat-breathe" />)
   return <div className="chat-terminal">{children}</div>
 }
@@ -381,25 +440,31 @@ function DiffView({ vm }: { vm: any }): ReactNode {
     <div className="chat-diff">
       {vm.rows.map((row: any, index: number) => {
         if (row.type === 'hunk') {
-          return <div key={index} className="chat-diff-row chat-diff-hunk">{row.text ?? `… 折叠 ${row.count} 行 …`}</div>
+          return <div key={index} className="chat-diff-row chat-diff-hunk">{row.text}</div>
         }
         if (row.type === 'mod') {
-          return <div key={index} className="chat-diff-row chat-diff-mod">{`~ ${row.before} → ${row.after}`}</div>
+          return <div key={index} className="chat-diff-row chat-diff-mod">{row.text}</div>
         }
-        if (row.type === 'add') return <div key={index} className="chat-diff-row chat-diff-add">{`+ ${row.text}`}</div>
-        if (row.type === 'del') return <div key={index} className="chat-diff-row chat-diff-del">{`- ${row.text}`}</div>
-        return <div key={index} className="chat-diff-row chat-diff-ctx">{`  ${row.text}`}</div>
+        const tone = row.type === 'add' ? 'add' : row.type === 'del' ? 'del' : 'ctx'
+        return (
+          <div key={index} className={`chat-diff-row chat-diff-${tone}`}>
+            {row.prefix}
+            {row.text}
+          </div>
+        )
       })}
     </div>
   )
 }
 
-/** question 交互卡：单选 / 多选 / 自定义输入 / 提交；已答折叠；expired 禁用。 */
+/** question 交互卡：单选 / 多选 / 自定义输入 / 提交；已答折叠；expired 禁用；interactive:false 只读。 */
 function QuestionCard({ vm }: { vm: any }): ReactNode {
   const env = useChatEnv()
   // answered / answers 从 vm 派生，本地提交只作覆盖层：快照回流（他处作答 / 重拉）不再脱节。
   const [localAnswers, setLocalAnswers] = useState<any[] | null>(null)
   const answered = vm.answered === true || localAnswers !== null
+  const readOnly = vm.interactive === false
+  // 本地提交作覆盖层，快照回流前也能显示刚提交的答案。
   const answers = localAnswers !== null ? localAnswers : vm.answers
   const [selections, setSelections] = useState<{ [id: string]: string[] }>(() => {
     const init: { [id: string]: string[] } = {}
@@ -415,18 +480,34 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   if (answered) {
     return (
       <div className="chat-question">
-        {vm.questions.map((question: any) => {
-          const answer = answers.find((item: any) => item.questionId === question.id)
-          const parts: string[] = []
-          if (answer !== undefined) parts.push(...answer.selected)
-          if (answer !== undefined && answer.custom !== null && answer.custom.length > 0) parts.push(answer.custom)
-          return (
-            <div key={question.id}>
-              <div className="chat-question-q">{question.header || question.question}</div>
-              <div className="chat-muted">{parts.join('、')}</div>
-            </div>
-          )
-        })}
+        {vm.questions.map((question: any) => (
+          <div key={question.id}>
+            <div className="chat-question-q">{question.header || question.question}</div>
+            <div className="chat-muted">{questionAnswerText(answers, question.id)}</div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  // 只读展示：不渲染选择 / 自定义输入 / 提交，避免对不可交互的问题写回答。
+  if (readOnly) {
+    return (
+      <div className="chat-question" data-readonly="true">
+        {vm.questions.map((question: any) => (
+          <div key={question.id} className="chat-question-group">
+            {question.header.length > 0 ? <div className="chat-question-q">{question.header}</div> : null}
+            <div>{question.question}</div>
+            {question.options.map((option: any) => (
+              <div key={option.label} className="chat-question-opt" aria-disabled="true">
+                <span>{option.label}</span>
+                {option.description.length > 0 ? (
+                  <span className="chat-question-opt-desc">{option.description}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
     )
   }
@@ -713,7 +794,9 @@ function ToolCard({
       ? 'running'
       : live.ok === false
         ? 'error'
-        : 'ok'
+        : live.ok === true
+          ? 'ok'
+          : null
     : vm.status
   if (vm.form === 'line') {
     return (
@@ -750,7 +833,7 @@ function ToolCard({
             </div>
           ) : streaming ? (
             <pre className="chat-code-block">{safeStringify(vm.args ?? null)}</pre>
-          ) : (
+          ) : vm.detail === null ? null : (
             <DetailView detail={vm.detail} />
           )}
         </div>
@@ -769,6 +852,15 @@ function CopyButton({ def }: { def: any }): ReactNode {
     },
     [],
   )
+  const hold = (next: 'check' | 'error') => {
+    // 每次尝试先清旧计时器：成功 / 失败都自动回退到 idle，错误态不再永久驻留。
+    if (timer.current !== null) clearTimeout(timer.current)
+    setState(next)
+    timer.current = setTimeout(() => {
+      timer.current = null
+      setState('idle')
+    }, COPY_HOLD_MS)
+  }
   return (
     <>
       <IconButton
@@ -776,13 +868,10 @@ function CopyButton({ def }: { def: any }): ReactNode {
         label={lookupMessage(env.table, 'chat_copy').body}
         dataCopy={state}
         onClick={() => {
+          if (timer.current !== null) clearTimeout(timer.current)
+          timer.current = null
           void env.copyText(def).then((result) => {
-            if (result.ok) {
-              setState('check')
-              timer.current = setTimeout(() => setState('idle'), COPY_HOLD_MS)
-            } else {
-              setState('error')
-            }
+            hold(result.ok ? 'check' : 'error')
           })
         }}
       />
@@ -906,10 +995,12 @@ function StreamTurn({ view, slowStream }: { view: any; slowStream: boolean }): R
         }
         if (segment.kind === 'text') {
           return (
-            <div key={`text-${index}`} className="chat-stream-text-wrap">
-              <Markdown text={segment.text} className="chat-md chat-stream-text" />
-              {streaming && index === lastIndex ? <span className="chat-cursor" /> : null}
-            </div>
+            <Markdown
+              key={`text-${index}`}
+              text={segment.text}
+              className="chat-md chat-stream-text"
+              cursor={streaming && index === lastIndex}
+            />
           )
         }
         return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
@@ -948,21 +1039,15 @@ function ErrorBar({ error, onRetry }: { error: any; onRetry: () => void }): Reac
 }
 
 function GroupItemBody({ item }: { item: any }): ReactNode {
-  const def = item.def
-  const parts = Array.isArray(def?.parts) && def.parts.length > 0 ? def.parts : null
-  if (parts === null) return <Markdown text={item.text} />
+  const items = Array.isArray(item.items) ? item.items : []
+  if (items.length === 0) return <Markdown text={item.text} />
   return (
     <>
-      {parts.map((part: any, index: number) => (
-        <RenderItem key={index} vm={partViewModelSafe(part)} />
+      {items.map((vm: any, index: number) => (
+        <RenderItem key={index} vm={vm} />
       ))}
     </>
   )
-}
-
-function partViewModelSafe(part: any): any {
-  // 群聊 part 与消息 parts 同形，复用 RenderItem 的视图模型口径。
-  return partViewModel(part)
 }
 
 function Lightbox({ lb, onClose }: { lb: any; onClose: () => void }): ReactNode {
@@ -1129,10 +1214,13 @@ function isCodeGenFallbackBody(body: any): boolean {
   return true
 }
 
-/** 构造写输入槽的 batch directive：只覆盖本线程键（读-改-写）。
+/** 构造写输入槽的 batch directive：保留身份 body 其余键，只覆盖本线程 slots 键（读-改-写）。
  * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
-function slotWriteDirective(slots: any, threadKey: string, slot: any, expectActive?: string | null): any {
-  const nextSlots = { ...(slots ?? {}), [threadKey]: slot }
+function slotWriteDirective(body: any, threadKey: string, slot: any, expectActive?: string | null): any {
+  const base = body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const slots =
+    base.slots !== null && typeof base.slots === 'object' && !Array.isArray(base.slots) ? base.slots : {}
+  const nextSlots = { ...slots, [threadKey]: slot }
   const addGen: any = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
   if (expectActive !== undefined) addGen.expect_active = expectActive
   return {
@@ -1141,7 +1229,7 @@ function slotWriteDirective(slots: any, threadKey: string, slot: any, expectActi
       op: 'batch',
       args: {
         ops: [
-          { op: 'put', args: { body: { slots: nextSlots } } },
+          { op: 'put', args: { body: { ...base, slots: nextSlots } } },
           { op: 'add_gen', args: addGen },
         ],
       },
@@ -1155,7 +1243,7 @@ function isAssistantEntry(entry: any): boolean {
   return role !== 'user' && role !== 'system'
 }
 
-function contentKey(view: any): string {
+function contentKey(view: any, hasPendingUser: boolean): string {
   const inFlight = view.inFlight
   const textLength = inFlight !== null ? inFlight.text.length : -1
   const reasoningLength = inFlight !== null ? inFlight.reasoning.length : -1
@@ -1165,7 +1253,8 @@ function contentKey(view: any): string {
       : -1
   const toolCount = inFlight !== null ? inFlight.tools.length : -1
   const doneCount = inFlight !== null ? inFlight.tools.filter((tool: any) => tool.done === true).length : -1
-  return `${view.messages.length}|${textLength}|${reasoningLength}|${chunkLength}|${toolCount}|${doneCount}`
+  const cancelled = inFlight !== null && inFlight.cancelled === true ? 1 : 0
+  return `${view.revision}|${view.messages.length}|${textLength}|${reasoningLength}|${chunkLength}|${toolCount}|${doneCount}|${cancelled}|${hasPendingUser ? 1 : 0}`
 }
 
 function App({ ctx }: { ctx: SlotContext }): ReactNode {
@@ -1297,8 +1386,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     if (resetView) {
       st.window = base
     } else if (st.window.end < before.messages.length) {
-      // 底部已被回收：保持裁剪，不因静默重拉把窗口拉回全量。
-      st.window = { start: st.window.start, end: Math.min(st.window.end, next.messages.length) }
+      // 底部已被回收：保持裁剪，不因静默重拉把窗口拉回全量；内容收缩时收敛窗口避免切空。
+      st.window = clampWindow(st.window, next.messages.length)
     } else {
       st.window = { start: Math.min(st.window.start, base.start), end: next.messages.length }
     }
@@ -1326,8 +1415,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     if (body === null || typeof body !== 'object' || Array.isArray(body) || isCodeGenFallbackBody(body)) {
       return { ok: false, code: 'not_loaded' }
     }
-    const slots = body.slots !== null && typeof body.slots === 'object' && !Array.isArray(body.slots) ? body.slots : {}
-    const directive = slotWriteDirective(slots, thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers }, identityActiveOf(raw))
+    const directive = slotWriteDirective(body, thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers }, identityActiveOf(raw))
     const wrote = (await ctx.submit([directive], { thread })) as any
     if (wrote === null || wrote.ok !== true) return { ok: false, code: wrote?.code ?? 'ui_unreachable' }
     const answered = (await ctx.command('question.answer', null, { thread })) as any
@@ -1393,12 +1481,13 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     rerender()
   }
 
-  function closeLightbox(): void {
+  // 稳定引用：Lightbox 的键盘 / 滚动效果依赖 onClose，若每次渲染换新会反复退订重订。
+  const closeLightbox = useCallback((): void => {
     const lb = stateRef.current.lightbox
     stateRef.current.lightbox = null
     rerender()
     if (lb !== null && lb.thumb !== null && typeof lb.thumb.focus === 'function') lb.thumb.focus()
-  }
+  }, [rerender])
 
   function loadOlder(): void {
     const st = stateRef.current
@@ -1450,7 +1539,9 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
     const anchor = st.group.anchorEl
     if (anchor !== null && anchor !== undefined) {
-      if (el.scrollTop > anchor.offsetTop + 40) anchor.style.opacity = '0'
+      // 以滚动容器自身为原点算锚点相对位置；滑过锚点 40px 隐藏，回到其上恢复。
+      const relativeTop = anchor.getBoundingClientRect().top - el.getBoundingClientRect().top
+      anchor.style.opacity = relativeTop < -40 ? '0' : '1'
     }
     if (el.scrollTop < 32) loadOlder()
   }
@@ -1554,17 +1645,24 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     store.commit(dropInFlight(store.getSnapshot()), { type: 'lifecycle' })
     st.listOpacity = 0
     rerender()
-    void apiRef.current.loadHistory(st.viewThread).then(() => {
+    const target = st.viewThread
+    const pending = apiRef.current.loadHistory(target)
+    const seq = requestSeq.current
+    void pending.then(() => {
+      // 仅当仍是最新一次请求且线程未再切换时恢复不透明，避免旧回包提前显影。
+      if (seq !== requestSeq.current || stateRef.current.viewThread !== target) return
       stateRef.current.listOpacity = 1
       rerender()
     })
   }
 
-  // 每次渲染刷新给事件处理器用的函数表（事件处理器只订阅一次，避免反复退订）。
-  apiRef.current.loadHistory = loadHistory
-  apiRef.current.handleRecord = handleRecord
-  apiRef.current.onThreadChange = onThreadChange
-  apiRef.current.loadPendingUser = loadPendingUser
+  // 每次渲染刷新给事件处理器用的函数表（事件处理器只订阅一次，避免反复退订）；改 ref 走 effect。
+  useEffect(() => {
+    apiRef.current.loadHistory = loadHistory
+    apiRef.current.handleRecord = handleRecord
+    apiRef.current.onThreadChange = onThreadChange
+    apiRef.current.loadPendingUser = loadPendingUser
+  })
 
   // 首屏：拉文案表 → 订阅事件与线程 → 首次快照。
   useEffect(() => {
@@ -1633,7 +1731,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
   // 内容增长：贴底自动贴底；上滑冻结才出胶囊。
   useLayoutEffect(() => {
     const st = stateRef.current
-    const key = contentKey(view)
+    const key = contentKey(view, st.pendingUser !== null)
     if (key !== lastKeyRef.current) {
       lastKeyRef.current = key
       if (st.atBottom) {
@@ -1735,7 +1833,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       }
       nodes.push(
         <div key="subagent" className="chat-subagent-head">
-          {parentName.length > 0 ? `${agentName} · 由 ${parentName} 触发` : agentName}
+          {subagentHeader(agentName, parentName)}
         </div>,
       )
     }
@@ -1775,8 +1873,9 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
         continue
       }
       const announce = st.finalizeAnnounce && item.entry === lastEntry && isAssistantEntry(item.entry)
+      const entryId = messageId(item.entry)
       nodes.push(
-        <MessageBoundary key={messageId(item.entry)} fallback={<RenderFallback />}>
+        <MessageBoundary key={entryId} resetKey={`${entryId}:${view.revision}`} fallback={<RenderFallback />}>
           <MessageItem entry={item.entry} announce={announce} />
         </MessageBoundary>,
       )
@@ -1784,14 +1883,14 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     // 在途用户消息（乐观）：仅回合进行中渲染，权威快照落地即收起。
     if (st.pendingUser !== null && view.inFlight !== null) {
       nodes.push(
-        <MessageBoundary key="pending-user" fallback={<RenderFallback />}>
+        <MessageBoundary key="pending-user" resetKey={`pending:${view.revision}`} fallback={<RenderFallback />}>
           <MessageItem entry={{ def: st.pendingUser }} announce={false} />
         </MessageBoundary>,
       )
     }
     if (view.inFlight !== null) {
       nodes.push(
-        <MessageBoundary key="stream" fallback={<RenderFallback />}>
+        <MessageBoundary key="stream" resetKey={`stream:${view.revision}`} fallback={<RenderFallback />}>
           <StreamTurn view={view} slowStream={st.slowStream} />
         </MessageBoundary>,
       )
@@ -1807,7 +1906,6 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       streaming: isStreaming(view),
       unreadIds: st.group.unreadIds,
     })
-    st.group.anchorEl = null
     return vm.items.map((item: any, index: number) => (
       <Fragment key={item.id || index}>
         {index === vm.anchorIndex && vm.anchorIndex >= 0 ? (
@@ -1822,7 +1920,12 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
         ) : null}
         {item.isMe ? (
           <div className="chat-msg chat-msg-user">
-            <div className="chat-bubble-user">{item.text}</div>
+            <div className="chat-bubble-user">
+              {item.items.length === 0 ? item.text : null}
+              {item.items.map((vm: any, index: number) =>
+                vm.type === 'text' ? <div key={index}>{vm.text}</div> : <RenderItem key={index} vm={vm} />,
+              )}
+            </div>
           </div>
         ) : (
           <div className="chat-group-item">
@@ -1832,7 +1935,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
             <div className="chat-group-body">
               {item.showName ? <div className="chat-group-name">{item.speakerName}</div> : null}
               <div className="chat-group-bubble">
-                <MessageBoundary fallback={<RenderFallback />}>
+                <MessageBoundary resetKey={`group:${view.revision}`} fallback={<RenderFallback />}>
                   <GroupItemBody item={item} />
                 </MessageBoundary>
               </div>
@@ -1856,10 +1959,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     return (
       <div className="chat-workflow">
         <div className="chat-workflow-title">{vm.title}</div>
-        <div className="chat-workflow-meta">
-          <span>{vm.total > 0 ? formatText('chat_step_progress', { index: vm.index + 1, total: vm.total }) : ''}</span>
-          <span>{` · ${statusText(vm.status)}`}</span>
-        </div>
+        <div className="chat-workflow-meta">{vm.metaText}</div>
         <div className="chat-workflow-track">
           <div className="chat-workflow-fill" style={fillWidth !== null ? { width: fillWidth } : undefined} />
         </div>
@@ -1868,9 +1968,9 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
           {vm.nodes.map((node: any, index: number) => (
             <div key={index} className="chat-workflow-node" data-status={node.status}>
               <Icon name={statusIcon(node.status)} size={16} />
-              <span>{`#${node.index} ${node.name}`}</span>
+              <span>{node.label}</span>
               <span className="chat-workflow-meta">{node.impl}</span>
-              <span>{statusText(node.status)}</span>
+              <span>{node.statusText}</span>
             </div>
           ))}
         </details>
@@ -1927,7 +2027,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
           onScroll={onScroll}
           onClick={(event) => {
             const target = event.target as HTMLElement
-            if (target !== null && target.tagName === 'IMG') {
+            // 只处理 markdown 正文里的图片；空态 logo 等非正文图片不弹灯箱。
+            if (target !== null && target.tagName === 'IMG' && target.closest('.chat-md') !== null) {
               const src = target.getAttribute('src')
               if (src !== null && src.length > 0) {
                 openLightbox({ url: src, alt: target.getAttribute('alt') ?? '', thumb: target })

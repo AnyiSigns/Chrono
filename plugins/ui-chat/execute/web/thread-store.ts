@@ -106,16 +106,21 @@ function isFinished(view: any, run: string | null): boolean {
   return run !== null && view.finishedRuns.includes(run)
 }
 
-/** 取（必要时新建）在途回合：run 不匹配时以新 run 替换。 */
+/** 取（必要时新建）在途回合：run 不匹配时以新 run 替换；自愈回合（run 缺失）被后续 run id 认领而非替换。 */
 function ensureInFlight(view: any, run: string | null, payload: any): any {
-  if (view.inFlight !== null && (run === null || view.inFlight.run === run)) return view
+  if (view.inFlight !== null) {
+    if (run === null || view.inFlight.run === run) return view
+    if (view.inFlight.run === null) {
+      return { ...view, inFlight: { ...view.inFlight, run } }
+    }
+  }
   return { ...view, inFlight: newInFlight(run, threadOf(payload)) }
 }
 
 /**
  * 快照：替换权威消息段。在途回合处理：
  * - 流式中（未定稿）→ 保留（增量仍在途）；
- * - 定稿中（finalizing，run 已终局等权威消息）→ 原地替换为 null（快照即权威）。
+ * - 定稿中（finalizing，run 已终局等权威消息）或已取消（cancelled）→ 原地替换为 null（快照即权威）。
  * 定稿替换因此不依赖任何外挂参数：定稿失败后下一次成功快照也会收口。
  */
 export function applySnapshot(view: any, history: any, conversationId: unknown): any {
@@ -128,7 +133,9 @@ export function applySnapshot(view: any, history: any, conversationId: unknown):
     kind: threadKind(loaded.conversation),
     messages: loaded.messages,
     inFlight:
-      view.inFlight !== null && view.inFlight.finalizing === true ? null : view.inFlight,
+      view.inFlight !== null && (view.inFlight.finalizing === true || view.inFlight.cancelled === true)
+        ? null
+        : view.inFlight,
     revision: view.revision + 1,
   }
 }
@@ -203,18 +210,18 @@ export function applyToolStart(view: any, payload: any): any {
   return { ...based, inFlight: { ...based.inFlight, tools, segments } }
 }
 
-/** `tool.delta`：追加工具输出块（当前无生产者，语义先定死）。 */
+/** `tool.delta`：追加工具输出块（缺 started 自愈，与 `tool.start` 同口径）。 */
 export function applyToolDelta(view: any, payload: any): any {
   const run = runId(payload)
   if (isFinished(view, run)) return view
-  if (view.inFlight === null) return view
+  const based = ensureInFlight(view, run, payload)
   const callId = callIdOf(payload)
   const chunk = deltaText(payload)
-  if (callId.length === 0 || chunk.length === 0) return view
-  const tools = view.inFlight.tools.map((item: any) =>
+  if (callId.length === 0 || chunk.length === 0) return based
+  const tools = based.inFlight.tools.map((item: any) =>
     item.callId === callId ? { ...item, chunks: item.chunks + chunk } : item,
   )
-  return { ...view, inFlight: { ...view.inFlight, tools } }
+  return { ...based, inFlight: { ...based.inFlight, tools } }
 }
 
 /** `tool.end`：标记工具卡终态（记录 ok 供状态图标；结果本体等定稿快照）。 */

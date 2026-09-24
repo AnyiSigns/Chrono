@@ -33,6 +33,11 @@ const FLYOUT_TOP_OFFSET = 8
 const FLYOUT_MAX_HEIGHT = 420
 /** 浮窗最小高度下限（视口极小时兜底）。 */
 const FLYOUT_MIN_HEIGHT = 120
+/** 浮窗设计宽度 / 最小宽度（视口过窄时收窄，不横向溢出）。 */
+const FLYOUT_WIDTH = 260
+const FLYOUT_MIN_WIDTH = 160
+/** 浮窗与窄栏 / 视口边缘的间隙。 */
+const FLYOUT_GAP = 8
 const RELOAD_DEBOUNCE_MS = 150
 const STATUS_CLEAR_MS = 4000
 
@@ -59,6 +64,7 @@ export interface FlyoutState {
   left: number
   top: number
   maxHeight: number
+  maxWidth: number
 }
 
 export interface SidebarSnapshot {
@@ -121,6 +127,11 @@ export class SidebarStore {
   private statusTimer: ReturnType<typeof setTimeout> | null = null
   private closeEvents: (() => void) | null = null
   private disposed = false
+  private started = false
+  /** 本地已读会话：选中即记；历史补种时不复活其未读角标。 */
+  private readonly locallyRead = new Set<string>()
+  /** 当前 tooltip 锚点元素：滚动 / 缩放时据此重算位置。 */
+  private tooltipAnchor: HTMLElement | null = null
   /** 读面请求序号：并发 loadAll / loadHistory 时旧回包不覆盖新结果。 */
   private loadSeq = 0
   private historySeq = 0
@@ -153,7 +164,7 @@ export class SidebarStore {
       connected: typeof ctx.events?.connected === 'function' ? ctx.events.connected() : false,
       menu: null,
       tooltip: null,
-      flyout: { left: 0, top: 0, maxHeight: 0 },
+      flyout: { left: 0, top: 0, maxHeight: 0, maxWidth: FLYOUT_WIDTH },
       flyoutOpen: false,
     }
   }
@@ -191,18 +202,23 @@ export class SidebarStore {
     this.root = element
   }
 
+  /** 启动（可重复：错误边界卸载后重挂会再次调用，`dispose` 不是终态）。 */
   start(): void {
-    if (this.disposed) return
+    if (this.started) return
+    this.started = true
+    this.disposed = false
     this.applyViewport()
     this.closeEvents =
       typeof this.ctx.events?.onAny === 'function' ? this.ctx.events.onAny((record) => this.handleRecord(record)) : null
     window.addEventListener('resize', this.onResize)
+    window.addEventListener('scroll', this.onScroll, true)
     document.addEventListener('click', this.onDocumentClick)
     document.addEventListener('keydown', this.onKeyDown)
     void this.loadAll()
   }
 
   dispose(): void {
+    this.started = false
     this.disposed = true
     if (this.closeEvents !== null) {
       this.closeEvents()
@@ -219,11 +235,21 @@ export class SidebarStore {
       if (timer !== null) clearTimeout(timer)
     }
     window.removeEventListener('resize', this.onResize)
+    window.removeEventListener('scroll', this.onScroll, true)
     document.removeEventListener('click', this.onDocumentClick)
     document.removeEventListener('keydown', this.onKeyDown)
   }
 
-  private onResize = (): void => this.applyViewport()
+  private onResize = (): void => {
+    this.applyViewport()
+    this.positionTooltip()
+  }
+
+  /** 滚动（捕获，含 `.sb-list` 内部滚动）：浮窗 / tooltip 贴回锚点；子菜单由组件自重算。 */
+  private onScroll = (): void => {
+    this.positionFlyout()
+    this.positionTooltip()
+  }
 
   private onDocumentClick = (): void => this.closeMenu()
 
@@ -289,7 +315,11 @@ export class SidebarStore {
     if (!result.ok) return false
     const history = result.value
     const conversations = normalizeConversations(isRecord(history) ? history['body'] : null)
-    this.update({ history, conversations, badges: seedFromHistory(this.snapshot.badges, conversations) })
+    this.update({
+      history,
+      conversations,
+      badges: seedFromHistory(this.snapshot.badges, conversations, this.locallyRead),
+    })
     return true
   }
 
@@ -332,7 +362,6 @@ export class SidebarStore {
       this.update({ connected: payload['connected'] === true })
       return
     }
-    const before = JSON.stringify(this.snapshot.badges)
     const badges = applyEvent(this.snapshot.badges, record['impl'], record['topic'], payload)
     if (
       record['topic'] === 'thread.updated' ||
@@ -342,7 +371,8 @@ export class SidebarStore {
     ) {
       this.scheduleReload()
     }
-    if (JSON.stringify(badges) !== before) this.update({ badges })
+    // `applyEvent` 无实际变更时回传入参引用，据此判变更（不再整体 JSON 序列化）。
+    if (badges !== this.snapshot.badges) this.update({ badges })
   }
 
   // ---- 视图 ----
@@ -400,10 +430,15 @@ export class SidebarStore {
 
   // ---- 会话 / 工作区动作 ----
 
-  async selectSession(id: string): Promise<void> {
+  /**
+   * 选中会话。`keepFlyout` 为真（窄栏浮窗内的行）时不收起浮窗：
+   * 双击重命名需行存活到第二次点击；浮窗随鼠标移出 / 焦点离开自然收起。
+   */
+  async selectSession(id: string, keepFlyout = false): Promise<void> {
     const seq = (this.selectSeq += 1)
+    this.locallyRead.add(id)
     this.update({ confirm: clearConfirm(), badges: clearUnread(this.snapshot.badges, id) })
-    this.closeFlyout()
+    if (!keepFlyout) this.closeFlyout()
     const wrote = await this.writeSlot({ kind: 'session.select', conversation: id })
     if (this.disposed || seq !== this.selectSeq) return
     // 写未落账（身份未就绪 / 被拒）时不再发切换命令，避免切到旧槽或空槽。
@@ -428,11 +463,13 @@ export class SidebarStore {
 
   cancelRename(): void {
     this.update({ editing: null })
+    this.releaseFlyoutIfIdle()
   }
 
   async commitRename(session: Conversation, value: unknown): Promise<void> {
     if (this.snapshot.editing !== session.id) return
     this.update({ editing: null })
+    this.releaseFlyoutIfIdle()
     const title = typeof value === 'string' ? value.trim() : ''
     if (title.length === 0 || title === session.title) return
     await this.writeSlot({ kind: 'session.rename', conversation: session.id, title })
@@ -452,18 +489,28 @@ export class SidebarStore {
 
   cancelConfirm(): void {
     this.update({ confirm: clearConfirm() })
+    this.releaseFlyoutIfIdle()
   }
 
   private scheduleConfirmRefresh(): void {
     if (this.confirmTimer !== null) clearTimeout(this.confirmTimer)
     this.confirmTimer = setTimeout(() => {
       this.confirmTimer = null
-      if (this.snapshot.confirm.key !== null) this.update({ confirm: clearConfirm() })
+      if (this.snapshot.confirm.key !== null) {
+        this.update({ confirm: clearConfirm() })
+        this.releaseFlyoutIfIdle()
+      }
     }, CONFIRM_MS + 50)
+  }
+
+  /** 就地编辑 / 确认结束后，指针与焦点均已不在浮窗簇内则收起浮窗（避免保活残留）。 */
+  private releaseFlyoutIfIdle(): void {
+    if (!this.flyoutHover && !this.flyoutFocused) this.hideFlyout()
   }
 
   async doTerminate(run: string): Promise<void> {
     this.update({ confirm: clearConfirm() })
+    this.releaseFlyoutIfIdle()
     if (typeof this.ctx.cancel === 'function') {
       await this.ctx.cancel(run)
       return
@@ -472,6 +519,7 @@ export class SidebarStore {
 
   async doDelete(session: Conversation): Promise<void> {
     this.update({ confirm: clearConfirm() })
+    this.releaseFlyoutIfIdle()
     await this.writeSlot({ kind: 'session.delete', conversation: session.id })
     await this.command('session.delete', null)
     await this.loadHistory()
@@ -555,7 +603,8 @@ export class SidebarStore {
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
-      URL.revokeObjectURL(url)
+      // 下载启动前不能撤 URL：放到下一个宏任务再撤，避免部分浏览器下载被中断。
+      setTimeout(() => URL.revokeObjectURL(url), 0)
       this.ctx.toast({ tone: 'success', text: this.text('sidebar_exported') })
     } catch {
       this.ctx.toast({ tone: 'danger', text: this.text('sidebar_export_failed') })
@@ -644,20 +693,56 @@ export class SidebarStore {
     this.hideFlyout()
   }
 
-  /** 浮窗定位：贴窄栏右缘，顶边下移一小段；限高取「视口余量 / 上限」较小者，超出走内部滚动。 */
-  private showFlyout(): void {
-    if (!this.snapshot.collapsed || this.disposed) return
+  /**
+   * 浮窗定位：贴窄栏右缘，顶边下移一小段；限高取「视口余量 / 上限」较小者，超出走内部滚动。
+   * 宽度按右侧余量收窄并夹取，保证不横向溢出视口。
+   */
+  private computeFlyout(): FlyoutState {
     const rect = this.root?.getBoundingClientRect()
-    if (rect === undefined) {
-      this.update({ flyout: { left: 0, top: 0, maxHeight: 0 }, flyoutOpen: true })
-      return
-    }
+    if (rect === undefined) return { left: 0, top: 0, maxHeight: 0, maxWidth: FLYOUT_WIDTH }
+    const right = Math.round(rect.right)
     const top = Math.round(rect.top) + FLYOUT_TOP_OFFSET
     const maxHeight = Math.max(
       FLYOUT_MIN_HEIGHT,
       Math.min(FLYOUT_MAX_HEIGHT, Math.round(window.innerHeight) - top - FLYOUT_TOP_OFFSET),
     )
-    this.update({ flyout: { left: Math.round(rect.right), top, maxHeight }, flyoutOpen: true })
+    const maxWidth = Math.max(
+      FLYOUT_MIN_WIDTH,
+      Math.min(FLYOUT_WIDTH, Math.round(window.innerWidth) - right - FLYOUT_GAP),
+    )
+    const left = Math.max(FLYOUT_GAP, Math.min(right, Math.round(window.innerWidth) - maxWidth - FLYOUT_GAP))
+    return { left, top, maxHeight, maxWidth }
+  }
+
+  private showFlyout(): void {
+    if (!this.snapshot.collapsed || this.disposed) return
+    this.update({ flyout: this.computeFlyout(), flyoutOpen: true })
+  }
+
+  /** 视口 / 滚动变化时按实时根矩形重算浮窗位置（仅开着的浮窗；位置未变不重提交通知）。 */
+  private positionFlyout(): void {
+    if (!this.snapshot.flyoutOpen || !this.snapshot.collapsed) return
+    const next = this.computeFlyout()
+    const current = this.snapshot.flyout
+    if (
+      next.left === current.left &&
+      next.top === current.top &&
+      next.maxHeight === current.maxHeight &&
+      next.maxWidth === current.maxWidth
+    ) {
+      return
+    }
+    this.update({ flyout: next })
+  }
+
+  /** 浮窗簇是否仍需保活：子菜单 / 焦点 / 就地编辑 / 二次确认（键盘触发的确认行在浮窗内）。 */
+  private flyoutKeepAlive(): boolean {
+    return (
+      this.snapshot.menu !== null ||
+      this.flyoutFocused ||
+      this.snapshot.editing !== null ||
+      this.snapshot.confirm.key !== null
+    )
   }
 
   hideFlyout(): void {
@@ -665,8 +750,8 @@ export class SidebarStore {
     if (this.flyoutTimer !== null) clearTimeout(this.flyoutTimer)
     this.flyoutTimer = setTimeout(() => {
       this.flyoutTimer = null
-      // 子菜单仍开着，或焦点仍在浮窗内：父窗不先于子 / 交互消失。
-      if (this.snapshot.menu !== null || this.flyoutFocused) return
+      // 子菜单仍开 / 焦点仍在 / 编辑或确认进行中：父窗不先于交互消失。
+      if (this.flyoutKeepAlive()) return
       if (this.snapshot.flyoutOpen) this.update({ flyoutOpen: false })
     }, FLYOUT_CLOSE_MS)
   }
@@ -753,14 +838,29 @@ export class SidebarStore {
     if (this.tooltipTimer !== null) clearTimeout(this.tooltipTimer)
     this.tooltipTimer = setTimeout(() => {
       this.tooltipTimer = null
+      this.tooltipAnchor = target
       const rect = target.getBoundingClientRect()
       this.update({ tooltip: { label, left: Math.round(rect.right + 8), top: Math.round(rect.top) } })
     }, TOOLTIP_DELAY_MS)
   }
 
+  /** 滚动 / 缩放时按实时锚点矩形重算 tooltip 位置（锚点已离树 / 位置未变则不动）。 */
+  private positionTooltip(): void {
+    const tooltip = this.snapshot.tooltip
+    if (tooltip === null) return
+    const target = this.tooltipAnchor
+    if (target === null || !document.contains(target)) return
+    const rect = target.getBoundingClientRect()
+    const left = Math.round(rect.right + 8)
+    const top = Math.round(rect.top)
+    if (tooltip.left === left && tooltip.top === top) return
+    this.update({ tooltip: { label: tooltip.label, left, top } })
+  }
+
   hideTooltip(): void {
     if (this.tooltipTimer !== null) clearTimeout(this.tooltipTimer)
     this.tooltipTimer = null
+    this.tooltipAnchor = null
     if (this.snapshot.tooltip !== null) this.update({ tooltip: null })
   }
 }

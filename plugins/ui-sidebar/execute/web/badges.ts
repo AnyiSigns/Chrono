@@ -19,6 +19,22 @@ export interface Badge {
 /** 角标种类（按优先级从高到低）。 */
 export const BADGE_PRIORITY = ['pending', 'running', 'failed', 'unread']
 
+/** 角标种类 → 文案码（单一映射，组件不再各自拼三元）。`unread` 的码含 `{count}` 占位，取用需 `fmt`。 */
+export const BADGE_TEXT_CODES: Record<string, string> = {
+  running: 'sidebar_running',
+  pending: 'sidebar_pending',
+  failed: 'sidebar_failed',
+  unread: 'sidebar_unread_count',
+  missing: 'sidebar_directory_missing',
+}
+
+/** 取角标种类对应的文案码；未知种类回 null。 */
+export function badgeTextCode(kind: unknown): string | null {
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(BADGE_TEXT_CODES, kind)
+    ? BADGE_TEXT_CODES[kind]
+    : null
+}
+
 /** 初始角标态：running 记线程→run；runs 记 run→线程（供终止与收口对账）。 */
 export function createBadgeState(): BadgeState {
   return { running: {}, runs: {}, pending: {}, failed: {}, unread: {} }
@@ -48,7 +64,10 @@ function approvalCount(pending: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 0
 }
 
-/** 归约一条事件；未知 topic 原样返回。`impl` 保留以便将来区分来源。 */
+/**
+ * 归约一条事件；未知 topic / 无实际变更时原样返回入参引用（调用方据引用相等判变更）。
+ * `impl` 保留以便将来区分来源。
+ */
 export function applyEvent(state: BadgeState, impl: unknown, topic: unknown, payload: unknown): BadgeState {
   const thread = threadOf(payload)
   if (thread === null) return state
@@ -64,48 +83,86 @@ export function applyEvent(state: BadgeState, impl: unknown, topic: unknown, pay
     }
     case 'run.finished': {
       const run = typeof record.run === 'string' && record.run.length > 0 ? record.run : null
-      if (run === null || next.running[thread] === run) delete next.running[thread]
-      if (run !== null && next.runs[run] === thread) delete next.runs[run]
-      if (record.status === 'failed') next.failed[thread] = true
-      return next
+      let changed = false
+      if ((run === null || next.running[thread] === run) && Object.prototype.hasOwnProperty.call(next.running, thread)) {
+        delete next.running[thread]
+        changed = true
+      }
+      if (run !== null && next.runs[run] === thread) {
+        delete next.runs[run]
+        changed = true
+      }
+      if (record.status === 'failed' && next.failed[thread] !== true) {
+        next.failed[thread] = true
+        changed = true
+      }
+      return changed ? next : state
     }
     case 'thread.updated': {
-      if (record.status === 'failed') next.failed[thread] = true
-      else if (typeof record.status === 'string') delete next.failed[thread]
+      let changed = false
+      if (record.status === 'failed') {
+        if (next.failed[thread] !== true) {
+          next.failed[thread] = true
+          changed = true
+        }
+      } else if (typeof record.status === 'string' && Object.prototype.hasOwnProperty.call(next.failed, thread)) {
+        delete next.failed[thread]
+        changed = true
+      }
       const approval = approvalCount(record.pending)
       if (approval === null) {
         // 未携带 pending：不动待审批态
       } else if (approval > 0) {
-        next.pending[thread] = approval
-      } else {
+        if (next.pending[thread] !== approval) {
+          next.pending[thread] = approval
+          changed = true
+        }
+      } else if (Object.prototype.hasOwnProperty.call(next.pending, thread)) {
         delete next.pending[thread]
+        changed = true
       }
       if (record.inbox !== null && typeof record.inbox === 'object') {
         const count = typeof record.inbox.count === 'number' ? record.inbox.count : 0
         const lastSeen = typeof record.inbox.last_seen === 'number' ? record.inbox.last_seen : 0
-        if (count > lastSeen) next.unread[thread] = count - lastSeen
-        else delete next.unread[thread]
+        if (count > lastSeen) {
+          const unread = count - lastSeen
+          if (next.unread[thread] !== unread) {
+            next.unread[thread] = unread
+            changed = true
+          }
+        } else if (Object.prototype.hasOwnProperty.call(next.unread, thread)) {
+          delete next.unread[thread]
+          changed = true
+        }
       }
-      return next
+      return changed ? next : state
     }
     case 'approval.pending': {
       const count = typeof record.count === 'number' && record.count > 0 ? record.count : 1
+      if (next.pending[thread] === count) return state
       next.pending[thread] = count
       return next
     }
     case 'approval.decided': {
-      if (record.count === 0) delete next.pending[thread]
-      return next
+      if (record.count === 0 && Object.prototype.hasOwnProperty.call(next.pending, thread)) {
+        delete next.pending[thread]
+        return next
+      }
+      return state
     }
     case 'group.message': {
       next.unread[thread] = (next.unread[thread] ?? 0) + 1
       return next
     }
     case 'thread.closed': {
-      delete next.running[thread]
-      delete next.pending[thread]
-      delete next.failed[thread]
-      return next
+      let changed = false
+      for (const key of ['running', 'pending', 'failed'] as const) {
+        if (Object.prototype.hasOwnProperty.call(next[key], thread)) {
+          delete next[key][thread]
+          changed = true
+        }
+      }
+      return changed ? next : state
     }
     default:
       return state
@@ -167,8 +224,13 @@ export function clearUnread(state: BadgeState, conversationId: string): BadgeSta
  * `status:"failed"` → 失败；`pending.approval` → 待审批；`inbox.count - last_seen` → 未读；
  * `status:"running"` → 运行中（run id 未知，终止按钮待 `run.started` 补齐）。
  * 已由事件给出的字段优先，不被历史覆盖。
+ * `locallyRead` 为本地已读会话集合：其历史未读不再补种（服务端 `last_seen` 未及时更新时不复活角标）。
  */
-export function seedFromHistory(state: BadgeState, conversations: any[]): BadgeState {
+export function seedFromHistory(
+  state: BadgeState,
+  conversations: any[],
+  locallyRead?: ReadonlySet<string>,
+): BadgeState {
   const next = copy(state)
   for (const conversation of conversations) {
     const id = conversation.id
@@ -182,7 +244,8 @@ export function seedFromHistory(state: BadgeState, conversations: any[]): BadgeS
     if (conversation.inbox !== null && conversation.inbox !== undefined) {
       const count = typeof conversation.inbox.count === 'number' ? conversation.inbox.count : 0
       const lastSeen = typeof conversation.inbox.last_seen === 'number' ? conversation.inbox.last_seen : 0
-      if (count > lastSeen && next.unread[id] === undefined) next.unread[id] = count - lastSeen
+      const read = locallyRead !== undefined && locallyRead.has(id)
+      if (count > lastSeen && next.unread[id] === undefined && !read) next.unread[id] = count - lastSeen
     }
   }
   return next

@@ -77,7 +77,7 @@ test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；p
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-sidebar'])
   assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES })
-  assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace' })
+  assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace', host: 'host' })
 })
 
 test('members = execute + term；命令入口 term 全部存在且形状为 eff 到本插件能力类', () => {

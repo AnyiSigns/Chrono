@@ -2,7 +2,7 @@
 // 即时保存 + 150ms 行高亮；主题切换由壳写 config（唯一一次写）。
 
 import { useRef } from 'react'
-import { EmptyState, Icon, LabeledButton, Row, Section, TextButton, useVc } from './ui.tsx'
+import { Icon, LabeledButton, Row, Section, TextButton, Toggle, useVc } from './ui.tsx'
 import { emptyConfig, setNotify } from '../config-model.ts'
 import {
   canRequestPermission,
@@ -35,8 +35,15 @@ export function GeneralPanel() {
                   type="button"
                   className="settings-theme-card"
                   aria-pressed={selected ? 'true' : 'false'}
-                  onClick={() => {
-                    void vc.setTheme(card.id).then(() => vc.render())
+                  onClick={async () => {
+                    try {
+                      const result = await vc.setTheme(card.id)
+                      vc.state.error = result.ok ? null : { code: result.code, message: '' }
+                    } catch {
+                      vc.state.error = { code: 'ui_unreachable', message: '' }
+                    } finally {
+                      vc.render()
+                    }
                   }}
                 >
                   <Icon name={card.icon} size={20} />
@@ -57,18 +64,22 @@ export function GeneralPanel() {
         <PermissionRow />
         {NOTIFY_KEYS.map((key) => (
           <Row key={key} label={vc.text(`settings_notify_${key}`)} savedKey={`notify:${key}`}>
-            <input
-              type="checkbox"
+            <Toggle
               checked={toggleValue(vc.state.notify, key)}
+              label={vc.text(`settings_notify_${key}`)}
               disabled={togglesDisabled(vc.state.permission)}
-              onChange={async (event) => {
-                const next = mergeToggles(vc.state.notify, { [key]: event.target.checked })
+              onChange={async (nextValue) => {
+                const next = mergeToggles(vc.state.notify, { [key]: nextValue })
                 const result = await vc.writeConfig(
-                  setNotify(vc.state.config ?? emptyConfig(), key, event.target.checked),
+                  setNotify(vc.state.config ?? emptyConfig(), key, nextValue),
                   `notify:${key}`,
                 )
-                if (result.ok) vc.state.notify = next
-                else vc.state.error = { code: result.code, message: '' }
+                if (result.ok) {
+                  vc.state.notify = next
+                  vc.state.error = null
+                } else {
+                  vc.state.error = { code: result.code, message: '' }
+                }
                 vc.render()
               }}
             />

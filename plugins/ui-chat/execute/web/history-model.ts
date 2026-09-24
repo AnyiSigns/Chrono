@@ -2,6 +2,8 @@
 // 会话 body 只存会话元数据 + 链头，消息 def 在 `refs` 里按 `prev` 串成链；
 // 本模块沿 `prev` 从链头逆序取回、反转成展示顺序，并按 `kind` 分派线程视图。
 
+import { formatText } from './messages.ts'
+
 function isRec(value: unknown): value is { [key: string]: any } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -96,6 +98,12 @@ export function finishesCurrentStream(stream: any, run: unknown): boolean {
 /** 周期 run 不是对话回合：其 `run.started` 不建流。 */
 export function isPeriodicRun(origin: unknown): boolean {
   return origin === 'periodic'
+}
+
+/** 子代理头文字：有父会话时 `{agent} · 由 {parent} 触发`，否则只给 agent 名。 */
+export function subagentHeader(agentName: string, parentName: string): string {
+  if (parentName.length === 0) return agentName
+  return formatText('chat_subagent_triggered', { agent: agentName, parent: parentName })
 }
 
 /** 消息 id（无 id 时用 def 哈希兜底，供锚点 / key 使用）。 */

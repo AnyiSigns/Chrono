@@ -36,11 +36,11 @@ test('plugin.json 省略 schema、无 exclusive、其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-threads（ping + threads.state + client.read）；无 pins', () => {
+test('能力类为 ui-threads（ping + threads.state + client.read）；pins = 宿主解析', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-threads'])
   assert.deepEqual(decl.methods, { 'ui-threads': ['ping', 'threads.state', 'client.read'] })
-  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.pins, { host: 'host' })
 })
 
 test('members = execute + term；命令入口 term 存在且只读、无参声明', () => {

@@ -16,7 +16,7 @@ export interface HandlerResult {
   value: Json
 }
 
-export type Handler = (args: Json, env: CallEnv) => HandlerResult
+export type Handler = (args: Json, env: CallEnv) => HandlerResult | Promise<HandlerResult>
 
 export function isRecord(value: Json | undefined): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

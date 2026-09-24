@@ -37,6 +37,75 @@ test('entry.js 通过 vm.SourceTextModule 语法编译（若运行时可提供�
   assert.doesNotThrow(() => new vm.SourceTextModule(source, { identifier: entryPath }))
 })
 
+test('窗口焦点变化即时刷新：失焦后事件可弹，重新聚焦后排队项按门控抑制', async () => {
+  const { init } = await import(entryUrl)
+  const created = []
+  const listeners = {}
+  const sources = []
+  let focused = false
+  class FakeNotification {
+    static permission = 'granted'
+    constructor(title, options) {
+      this.title = title
+      this.options = options
+      this.onclick = null
+      this.onclose = null
+      created.push(this)
+    }
+    close() {}
+  }
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url
+      this.onmessage = null
+      sources.push(this)
+    }
+  }
+  const win = {
+    Notification: FakeNotification,
+    EventSource: FakeEventSource,
+    CustomEvent: class {
+      constructor(type, initValue) {
+        this.type = type
+        this.detail = initValue?.detail
+      }
+    },
+    dispatchEvent() {},
+    document: { hasFocus: () => focused },
+    addEventListener: (type, callback) => {
+      listeners[type] = callback
+    },
+    fetch: async (url) => ({
+      ok: true,
+      json: async () => (url.includes('messages') ? {} : { ok: true, value: {} }),
+    }),
+  }
+
+  await init(win)
+  assert.equal(typeof listeners.focus, 'function', '应订阅窗口 focus')
+  assert.equal(typeof listeners.blur, 'function', '应订阅窗口 blur')
+  assert.equal(sources.length, 1)
+
+  const send = (thread) =>
+    sources[0].onmessage({
+      data: JSON.stringify({ impl: 'approval', topic: 'approval.pending', payload: { kind: 'tool_call', thread } }),
+    })
+
+  send('a')
+  send('b')
+  send('c')
+  send('d')
+  assert.equal(created.length, 3, '失焦时前三条即时弹，第四条排队')
+  assert.equal(created.map((item) => item.options.tag).join(','), 'a|approval_pending,b|approval_pending,c|approval_pending')
+
+  // 焦点变化不经过事件流：仅靠 focus / blur 订阅刷新运行时状态
+  focused = true
+  listeners.focus()
+
+  created[0].onclose()
+  assert.equal(created.length, 3, '聚焦后排队项应被门控抑制，不新增通知')
+})
+
 test('点击通知聚焦 shell，且不挂操作按钮', async () => {
   const { attachHandlers, notificationContent } = await import(entryUrl)
   let focused = false

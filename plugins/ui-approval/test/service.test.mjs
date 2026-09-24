@@ -191,7 +191,8 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
     assert.deepEqual(decideValue.$directives[0], {
       kind: 'eval',
       command: 'chat.resume',
-      args: { cursor: 'cur-1', thread: 't1', payload: { verdict: 'accept' }, ids: decideIds },
+      args: { cursor: 'cur-1', thread: 't1', payload: { verdict: 'accept' } },
+      inject: { ids: ['ids'] },
     })
     assert.equal(decideValue.$directives[1].kind, 'write')
     assert.equal(decideValue.$directives[2].payload.status, 'approved')

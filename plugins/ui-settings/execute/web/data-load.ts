@@ -35,49 +35,71 @@ async function withLoading(ctx: any, task: () => Promise<void>): Promise<void> {
   }
 }
 
-/** 按 tab 加载数据；memory 无外部读取。 */
+/** 装载令牌：每次 `loadTab` 自增；返回「本次装载是否已过期」的判定。
+ * 后发装载使先发装载过期，避免慢的旧请求覆盖用户已切走后的新状态。 */
+function nextLoadToken(ctx: any): () => boolean {
+  const seq = (ctx.loadSeq = (ctx.loadSeq ?? 0) + 1)
+  return () => ctx.loadSeq !== seq
+}
+
+/** 按 tab 加载数据；memory 无外部读取。装载结果逐段校验令牌，过期即丢弃。 */
 export async function loadTab(ctx: any, tab: string): Promise<void> {
+  const stale = nextLoadToken(ctx)
+  ctx.state.loadError = null
   if (tab === 'general') {
     await withLoading(ctx, async () => {
-      ctx.state.config = await readConfig(ctx)
+      const config = await readConfig(ctx)
+      if (stale()) return
+      ctx.state.config = config
       await loadNotify(ctx)
     })
     return
   }
   if (tab === 'model') {
     await withLoading(ctx, async () => {
-      ctx.state.config = await readConfig(ctx)
-      if (ctx.state.identities === null) ctx.state.identities = await loadIdentities(ctx)
-      ctx.state.secrets = await loadSecrets(ctx)
-      if (ctx.state.vendors === null) await ctx.loadVendors()
+      const config = await readConfig(ctx)
+      if (stale()) return
+      ctx.state.config = config
+      if (ctx.state.identities === null) {
+        const identities = await loadIdentities(ctx)
+        if (stale()) return
+        ctx.state.identities = identities
+      }
+      const secrets = await loadSecrets(ctx)
+      if (stale()) return
+      ctx.state.secrets = secrets
+      if (ctx.state.vendors === null && !stale()) await ctx.loadVendors()
     })
     return
   }
   if (tab === 'plugins' || tab === 'about') {
     await withLoading(ctx, async () => {
-      ctx.state.identities = await loadIdentities(ctx)
+      const identities = await loadIdentities(ctx)
+      if (stale()) return
+      ctx.state.identities = identities
     })
     return
   }
   if (tab === 'skills') {
     await withLoading(ctx, async () => {
       const result = await ctx.runCommand('settings.skills', null)
+      if (stale()) return
       ctx.state.skillProjection = result.ok ? result.value : null
-      if (!result.ok) ctx.state.error = { code: result.code, message: '' }
+      if (!result.ok) ctx.state.loadError = { code: result.code, message: '' }
     })
     return
   }
   if (tab === 'orchestration') {
-    await withLoading(ctx, () => loadOrchestration(ctx))
+    await withLoading(ctx, () => loadOrchestration(ctx, stale))
     return
   }
   if (tab === 'memory') {
     await withLoading(ctx, async () => {
-      await loadMemoryView(ctx)
+      await loadMemoryView(ctx, stale)
     })
     return
   }
-  ctx.state.error = null
+  ctx.state.loadError = null
   ctx.render()
 }
 
@@ -138,25 +160,28 @@ export async function loadHealth(ctx: any): Promise<void> {
   if (ctx.state.tab === 'orchestration' && ctx.state.loading !== true && ctx.state.rollbackBusy !== true) ctx.render()
 }
 
-/** 编排三区数据：图 / Scope 名录 / 健康。 */
-export async function loadOrchestration(ctx: any): Promise<void> {
+/** 编排三区数据：图 / Scope 名录 / 健康；`stale` 命中则丢弃本次结果。 */
+export async function loadOrchestration(ctx: any, stale: () => boolean = () => false): Promise<void> {
   const graph = await ctx.runCommand('orchestration.graph', null)
+  if (stale()) return
   ctx.state.orch.graph = graph.ok ? graph.value : null
   ctx.state.orch.degraded.graph = !graph.ok
   const scopes = await ctx.runCommand('orchestration.scopes', null)
+  if (stale()) return
   ctx.state.orch.scopes = scopes.ok ? scopes.value : null
   ctx.state.orch.degraded.scopes = !scopes.ok
   const health = await ctx.runCommand('orchestration.health', null)
+  if (stale()) return
   ctx.state.orch.health = health.ok ? health.value : null
   ctx.state.orch.degraded.health = !health.ok
 }
 
-/** 记忆浏览（只读）：`memory.view` → L1 / L2 / L3；失败置行内错误（tab 级重试）。 */
-export async function loadMemoryView(ctx: any): Promise<boolean> {
+/** 记忆浏览（只读）：`memory.view` → L1 / L2 / L3；失败只置降级标记，由记忆面板自身渲染降级态。 */
+export async function loadMemoryView(ctx: any, stale: () => boolean = () => false): Promise<boolean> {
   const result = await ctx.runCommand('memory.view', null)
+  if (stale()) return false
   const failed = !result.ok || (isRecord(result.value) && result.value.ok === false)
   ctx.state.memory.view = failed ? null : result.value
   ctx.state.memory.viewDegraded = failed
-  if (failed) ctx.state.error = { code: 'settings_memory_load_failed', message: '' }
   return !failed
 }

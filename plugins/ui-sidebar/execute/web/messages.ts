@@ -58,6 +58,9 @@ export const UI_TEXT: Record<string, string> = {
   sidebar_loading_more: '仍在读取…',
   sidebar_product: 'Chrono',
   sidebar_unread_count: '未读 {count}',
+  sidebar_rail_label: '会话列表',
+  sidebar_ungrouped: '未分组',
+  sidebar_expand_unavailable: '窗口过窄，无法展开',
 }
 
 const LOCALE_KEY = 'locale'

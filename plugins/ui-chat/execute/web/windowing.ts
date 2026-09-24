@@ -75,6 +75,19 @@ export function sliceWindow<T>(items: T[], state: { start: number; end: number }
   return items.slice(state.start, state.end)
 }
 
+/**
+ * 内容收缩后收敛窗口：夹住 `end` 到内容长度，并保证 `start <= end`；
+ * 窗口已被缩到内容起点之前（`start >= end`）时重锚到最新一窗，避免切出空列表。
+ */
+export function clampWindow(
+  state: { start: number; end: number },
+  total: number,
+): { start: number; end: number } {
+  const end = Math.max(0, Math.min(state.end, total))
+  if (end <= state.start) return initialWindow(total)
+  return { start: Math.min(state.start, end), end }
+}
+
 /** 新消息胶囊状态：贴底时清零，上滑冻结时累计。 */
 export function createNewMessageState(): { count: number } {
   return { count: 0 }

@@ -80,10 +80,12 @@ export function messageText(table: unknown, code: string): string {
   return lookupMessage(table, code).body
 }
 
-/** 取带占位符的界面文案模板并代入变量（`{name}` 形式）。 */
-export function formatText(code: string, vars?: { [key: string]: unknown } | null): string {
-  const template = typeof UI_TEXT[code] === 'string' ? UI_TEXT[code] : ''
-  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+/**
+ * 取带占位符的文案模板并代入变量（`{name}` 形式）。
+ * 模板经 `messageText` 取用（共享表优先、本地 `UI_TEXT` 兜底），与其它文案同一来源。
+ */
+export function formatText(table: unknown, code: string, vars?: { [key: string]: unknown } | null): string {
+  return messageText(table, code).replace(/\{(\w+)\}/g, (match, key: string) =>
     vars !== null && vars !== undefined && Object.prototype.hasOwnProperty.call(vars, key)
       ? String(vars[key])
       : match,

@@ -344,6 +344,31 @@ export function messageSummary(slot: unknown, max = 48): MessageSummary {
   return { text: clipped, count }
 }
 
+export interface QueueEntry {
+  id: string
+  slot: unknown
+}
+
+/** 队内条目拆解：`{ id, slot }` 包装取槽体；裸槽（无 `slot` 键）原样当槽体、id 为空。 */
+export function queueEntry(message: unknown): QueueEntry {
+  if (isRecord(message) && Object.prototype.hasOwnProperty.call(message, 'slot')) {
+    return { id: typeof message.id === 'string' ? message.id : '', slot: message.slot }
+  }
+  return { id: '', slot: message }
+}
+
+/** 待发弹层逐行文案：摘要文本 + 附件计数拼装成可显示字符串（组件不再就地拼）。 */
+export function messageRowLabel(
+  message: unknown,
+  t: (code: string, vars?: unknown) => string,
+  max = 48,
+): string {
+  const summary = messageSummary(queueEntry(message).slot, max)
+  if (summary.count <= 0) return summary.text
+  const attachment = t('composer_attachment', { count: summary.count })
+  return summary.text.length > 0 ? `${summary.text} · ${attachment}` : attachment
+}
+
 // ── 上下文用量（§16.10 数字格式 + 阈值分档） ───────────────────────────────
 
 function trimZero(value: number): string {

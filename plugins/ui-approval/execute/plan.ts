@@ -41,9 +41,14 @@ export function externDirective(payload: Json): Json {
   return { kind: 'extern', payload }
 }
 
-/** 一条按命令名解析的 eval 计划条目（H18：宿主按命令声明解析入口）。 */
-export function evalDirective(command: string, args: Json): Json {
-  return { kind: 'eval', command, args }
+/**
+ * 一条按命令名解析的 eval 计划条目（H18：宿主按命令声明解析入口）。
+ * `inject` = 宿主在执行期把投影片段按声明路径并入 args（键 → 投影路径）；续跑 eval 用它拿投影。
+ */
+export function evalDirective(command: string, args: Json, inject?: Rec): Json {
+  const directive: Rec = { kind: 'eval', command, args }
+  if (inject !== undefined) directive['inject'] = inject
+  return directive
 }
 
 /** 组装最终计划值：一条 batch + 一条 extern。 */
@@ -160,13 +165,12 @@ export function pendingItems(items: Rec[]): Rec[] {
 }
 
 /**
- * 拼续跑计划条目：按 item 的 `resume` 游标逐项产 `{kind:'eval', command:'chat.resume', args}`。
+ * 拼续跑计划条目：按 item 的 `resume` 游标逐项产 `{kind:'eval', command:'chat.resume', args, inject}`。
  * `cursor` 不透明透传（由 #32 item 携带）；`thread` 取 item.thread，缺省 `_main`；`payload` = 裁决；
- * `ids` = 本服务入口 term 传入的投影切片，原样带上（内核 term 不能同时传 args 与投影，
- * 续跑 eval 的 args 需自带投影供 #14 服务装配 interpret bag；先例见 #16 `reveal` / #17 `search`）。
+ * `inject: {ids: ['ids']}` 声明由**宿主在执行期**把投影切片注入 args——续跑不再自带整份投影。
  * 无 `resume` / 无 `cursor` 的项跳过（不伪造游标）。
  */
-export function resumeDirectives(items: Rec[], verdict: string, ids: Json): Json[] {
+export function resumeDirectives(items: Rec[], verdict: string): Json[] {
   const out: Json[] = []
   for (const item of items) {
     const resume = isRecord(item['resume']) ? item['resume'] : null
@@ -175,7 +179,9 @@ export function resumeDirectives(items: Rec[], verdict: string, ids: Json): Json
     const cursor = resumeArgs['cursor']
     if (cursor === null || cursor === undefined) continue
     const thread = asString(item['thread']) ?? asString(resumeArgs['thread']) ?? MAIN_THREAD
-    out.push(evalDirective('chat.resume', { cursor, thread, payload: { verdict }, ids }))
+    out.push(
+      evalDirective('chat.resume', { cursor, thread, payload: { verdict } }, { ids: ['ids'] }),
+    )
   }
   return out
 }

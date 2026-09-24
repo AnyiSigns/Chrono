@@ -1,8 +1,8 @@
 // 技能页（技能身份写入入口）：列表 + 新建 / 编辑 / 启停；客户端直写技能身份 body（put + add_gen）。
 
-import { EmptyState, Field, Section, TextButton, useVc } from './ui.tsx'
+import { EmptyState, Field, IconButton, Section, TextButton, Toggle, useVc } from './ui.tsx'
 import { isRecord } from '../config-model.ts'
-import { listText, removeSkill, skillFromForm, skillList, toggleSkill, upsertSkill } from '../settings-model.ts'
+import { listText, removeSkill, skillFromForm, skillList, skillTitle, toggleSkill, upsertSkill } from '../settings-model.ts'
 
 export function SkillsPanel() {
   const vc = useVc()
@@ -40,20 +40,20 @@ function SkillRow(props: { skill: any }) {
   const enabled = skill.enabled !== false
   return (
     <div className="settings-list-item" data-saved-key={`skill:${skill.id}`} data-saved={vc.state.savedKey === `skill:${skill.id}` ? 'true' : undefined}>
-      <span className="settings-list-main">{`${skill.name ?? skill.id} · ${skill.description ?? ''}`}</span>
-      <label className="settings-check">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={async (event) => {
-            await vc.writeSkillBody(toggleSkill(skillBody(vc), skill.id, event.target.checked), `skill:${skill.id}`)
-          }}
-        />
-        <span>{enabled ? vc.text('settings_skills_disable') : vc.text('settings_skills_enable')}</span>
-      </label>
-      <TextButton
+      <span className="settings-list-main">{skillTitle(skill)}</span>
+      <Toggle
+        checked={enabled}
+        label={vc.text(enabled ? 'settings_skills_disable' : 'settings_skills_enable')}
+        onChange={async (next) => {
+          vc.state.skillConfirmDelete = null
+          await vc.writeSkillBody(toggleSkill(skillBody(vc), skill.id, next), `skill:${skill.id}`)
+        }}
+      />
+      <IconButton
+        name="pencil"
         label={vc.text('settings_skills_edit')}
         onClick={() => {
+          vc.state.skillConfirmDelete = null
           vc.state.skillForm = {
             id: skill.id,
             name: skill.name ?? '',
@@ -69,10 +69,16 @@ function SkillRow(props: { skill: any }) {
           vc.render()
         }}
       />
-      <TextButton
-        label={vc.text('settings_skills_delete')}
-        tone="danger"
+      <IconButton
+        name="trash-2"
+        label={vc.text(vc.state.skillConfirmDelete === skill.id ? 'settings_confirm' : 'settings_skills_delete')}
         onClick={async () => {
+          if (vc.state.skillConfirmDelete !== skill.id) {
+            vc.state.skillConfirmDelete = skill.id
+            vc.render()
+            return
+          }
+          vc.state.skillConfirmDelete = null
           await vc.writeSkillBody(removeSkill(skillBody(vc), skill.id), `skill:${skill.id}`)
         }}
       />
@@ -117,6 +123,21 @@ function SkillForm(props: { form: any }) {
           <option value="workspace">{vc.text('settings_skills_scope_workspace')}</option>
         </select>
       </Field>
+      {form.scope_kind === 'workspace' ? (
+        <Field label={vc.text('settings_memory_workspace_label')}>
+          <input
+            className="settings-input settings-mono"
+            type="text"
+            value={form.workspace_id}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event) => {
+              form.workspace_id = event.target.value
+              vc.render()
+            }}
+          />
+        </Field>
+      ) : null}
       <Field label={vc.text('settings_skills_body')}>
         <textarea
           className="settings-input"
@@ -142,8 +163,11 @@ function SkillForm(props: { form: any }) {
           onClick={async () => {
             const id = form.id.length > 0 ? form.id : `sk-${Date.now().toString(36)}`
             const skill = skillFromForm(form, id, new Date().toISOString())
-            vc.state.skillForm = null
-            await vc.writeSkillBody(upsertSkill(skillBody(vc), skill), `skill:${id}`)
+            const ok = await vc.writeSkillBody(upsertSkill(skillBody(vc), skill), `skill:${id}`)
+            if (ok) {
+              vc.state.skillForm = null
+              vc.render()
+            }
           }}
         />
       </div>

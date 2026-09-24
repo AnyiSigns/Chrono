@@ -7,11 +7,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FocusEvent } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 import { FALLBACK_MESSAGES, formatText, loadMessages, messageText } from './messages.ts'
-import { badgeTone, dataChangeTarget, isRecord, threadLabelKey } from './threads-model.ts'
+import { badgeTone, dataChangeTarget, isRecord } from './threads-model.ts'
 import { hoverDelay, isHoverOpen, nextHoverStatus } from './hover-intent.ts'
 import type { HoverEvent, HoverStatus } from './hover-intent.ts'
 import { unreadOf } from './unread.ts'
 import {
+  announcementOf,
   applyActiveThread,
   applyLoadError,
   applyLoaded,
@@ -22,6 +23,7 @@ import {
   setConnected,
   setLoading,
   setTable,
+  tagLabel,
   toggleTodo,
 } from './threads-store.ts'
 import type { ThreadTag, TodoView } from './threads-store.ts'
@@ -184,12 +186,14 @@ function App({ ctx }: { ctx: SlotContext }) {
   )
 
   function renderTag(tag: ThreadTag) {
-    const label =
-      tag.default_title === true ? messageText(view.table, threadLabelKey(tag.kind)) : tag.title
+    const label = tagLabel(tag, view.table)
     const tone = badgeTone(tag.badge)
     const badgeText = tone !== null ? messageText(view.table, BADGE_TEXT_KEY[tone]) : ''
-    const aria = badgeText.length > 0 ? `${label} · ${badgeText}` : label
     const count = unreadOf(view.unread, tag.thread)
+    const ariaParts = [label]
+    if (badgeText.length > 0) ariaParts.push(badgeText)
+    if (count > 0) ariaParts.push(formatText(view.table, 'threads_unread', { count }))
+    const aria = ariaParts.join(' · ')
     return (
       <button
         key={tag.thread}
@@ -212,8 +216,8 @@ function App({ ctx }: { ctx: SlotContext }) {
     return (
       <div className="threads-todo">
         <div className="threads-todo-heading">{messageText(view.table, 'threads_todo_heading')}</div>
-        {todo.items.map((item, index) => (
-          <div className="threads-todo-item" key={item.id ?? String(index)}>
+        {todo.items.map((item) => (
+          <div className="threads-todo-item" key={item.id}>
             <span className="threads-todo-status">
               {messageText(view.table, todoStatusKey(item.status))}
             </span>
@@ -239,7 +243,7 @@ function App({ ctx }: { ctx: SlotContext }) {
     const nodes = view.data.tags.map(renderTag)
     const todo = view.data.todo
     if (todo !== null && todo.pending > 0) {
-      const label = formatText('threads_todo', { count: todo.pending })
+      const label = formatText(view.table, 'threads_todo', { count: todo.pending })
       nodes.push(
         <button
           key="todo"
@@ -277,7 +281,9 @@ function App({ ctx }: { ctx: SlotContext }) {
         <div className="threads-tags">{renderTags()}</div>
         {todo !== null && view.todoOpen ? renderTodo(todo) : null}
       </div>
-      <div className="threads-sr" aria-live="polite" aria-atomic="true" />
+      <div className="threads-sr" aria-live="polite" aria-atomic="true">
+        {announcementOf(view)}
+      </div>
     </div>
   )
 }

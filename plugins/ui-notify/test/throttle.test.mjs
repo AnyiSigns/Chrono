@@ -45,14 +45,43 @@ test('同屏最多 3 条，超出按到达顺序排队', () => {
   assert.equal(throttle.release(), null)
 })
 
-test('结构性事件不受节流：始终即时、不占同屏配额、不合并', () => {
-  const throttle = new NotificationThrottle()
-  for (let i = 0; i < 5; i++) {
-    const decision = throttle.admit(descriptor('question_pending', 't1', true, true), i)
-    assert.equal(decision.action, 'show')
-  }
-  assert.equal(throttle.activeCount(), 0)
+test('结构性事件即时、不占同屏配额，同键窗口内合并、异键超上限抑制', () => {
+  const throttle = new NotificationThrottle({ windowMs: 5000, maxUnthrottled: 2 })
+  const first = throttle.admit(descriptor('question_pending', 't1', true, true), 0)
+  assert.equal(first.action, 'show')
+  const merged = throttle.admit(descriptor('question_pending', 't1', true, true), 100)
+  assert.equal(merged.action, 'merge', '同键结构事件在窗口内合并计数')
+  assert.equal(merged.count, 2)
+  assert.equal(throttle.admit(descriptor('question_pending', 't2', true, true), 200).action, 'show')
+  assert.equal(
+    throttle.admit(descriptor('question_pending', 't3', true, true), 300).action,
+    'suppress',
+    '异键超过上限应抑制，避免无界堆叠',
+  )
+  assert.equal(throttle.activeCount(), 0, '结构事件仍不占同屏配额')
   assert.equal(throttle.queuedCount(), 0)
+})
+
+test('release 清理窗口：关闭后同键事件重新开窗而非静默合并', () => {
+  const throttle = new NotificationThrottle({ windowMs: 5000 })
+  const first = throttle.admit(descriptor('approval_pending', 't1'), 0)
+  assert.equal(first.action, 'show')
+  assert.equal(throttle.activeCount(), 1)
+  throttle.release('t1|approval_pending')
+  assert.equal(throttle.activeCount(), 0)
+  assert.equal(throttle.windows.has('t1|approval_pending'), false, 'release 应清理窗口')
+  const again = throttle.admit(descriptor('approval_pending', 't1'), 1000)
+  assert.equal(again.action, 'show', '关闭后同键事件应重新弹，而非命中旧窗口静默合并')
+  assert.equal(again.count, 1)
+})
+
+test('窗口表按窗口期剪除，不随历史键无限增长', () => {
+  const throttle = new NotificationThrottle({ windowMs: 1000 })
+  throttle.admit(descriptor('run_failed', 'a'), 0)
+  assert.equal(throttle.windows.has('a|run_failed'), true)
+  throttle.admit(descriptor('run_failed', 'b'), 5000)
+  assert.equal(throttle.windows.has('a|run_failed'), false, '过期窗口应在受理时被剪除')
+  assert.equal(throttle.windows.has('b|run_failed'), true)
 })
 
 test('thread:null 退化为 kind 键（周期 unhealthy 合并）', () => {
@@ -125,4 +154,33 @@ test('release 后重评门控：开关关闭的排队项被丢弃', () => {
   runtime.setState({ switches: { ...DEFAULT_SWITCHES, approval_pending: false } })
   assert.equal(runtime.release(), null, '门控不满足的排队项应丢弃而非弹出')
   assert.deepEqual(shown, ['a', 'b', 'c'])
+})
+
+test('构造失败不泄漏同屏配额：回收已受理配额并继续排队项', () => {
+  const shown = []
+  let fail = false
+  const runtime = createRuntime({
+    permission: 'granted',
+    focused: false,
+    maxOnScreen: 1,
+    show: (descriptor) => {
+      if (fail) return false
+      shown.push(descriptor.thread)
+      return true
+    },
+  })
+  runtime.handle({ topic: 'approval.pending', payload: { kind: 'tool_call', thread: 'a' } })
+  runtime.handle({ topic: 'approval.pending', payload: { kind: 'tool_call', thread: 'b' } })
+  assert.deepEqual(shown, ['a'])
+  assert.equal(runtime.throttle.activeCount(), 1)
+
+  fail = true
+  const next = runtime.release('a|approval_pending')
+  assert.equal(next, null, '构造失败时不应报告已弹出')
+  assert.equal(runtime.throttle.activeCount(), 0, '构造失败应释放配额，不泄漏')
+
+  fail = false
+  runtime.handle({ topic: 'approval.pending', payload: { kind: 'tool_call', thread: 'c' } })
+  assert.equal(runtime.throttle.activeCount(), 1, '配额回收后仍可正常弹')
+  assert.deepEqual(shown, ['a', 'c'])
 })

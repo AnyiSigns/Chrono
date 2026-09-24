@@ -10,6 +10,7 @@ import {
   createRunState,
   endWrite,
   expectTurn,
+  isExpecting,
   isThreadBusy,
   trackRunFinished,
   trackRunStarted,
@@ -66,6 +67,16 @@ test('竞态：写 run 落账事件先于 armWrite 时，armWrite 立即要求�
   assert.equal(armed.dispatch, true)
   assert.equal(armed.state.pendingWrite.a, undefined)
   assert.equal(armed.state.finishedRuns.w1, undefined)
+})
+
+test('isExpecting：等回合期间为真，run.started 认领或 clearExpecting 后为假', () => {
+  let state = expectTurn(createRunState(), 'a')
+  assert.equal(isExpecting(state, 'a'), true)
+  assert.equal(isExpecting(state, 'b'), false)
+  state = trackRunStarted(state, 't1', 'a').state
+  assert.equal(isExpecting(state, 'a'), false)
+  state = clearExpecting(expectTurn(createRunState(), 'a'), 'a')
+  assert.equal(isExpecting(state, 'a'), false)
 })
 
 test('expecting 被 clearExpecting 收回后，迟到的 run.started 不认领', () => {

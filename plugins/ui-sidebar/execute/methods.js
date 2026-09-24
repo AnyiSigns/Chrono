@@ -4,6 +4,7 @@
 // 依赖服务返回写计划（`$directives`）时原样上提给宿主落账；读命令返回结构化值。
 
 import { CLIENT_WEB_DIR, readClientFile } from './client-files.js'
+import { createRefHydrator, hydrateIds } from './refs.js'
 import { BadArgsError, asString, isRecord } from './types.js'
 import { externOnly, failure } from './plan.js'
 
@@ -112,6 +113,14 @@ function assemblyFailure(result) {
 
 /** 构造方法表；`deps.session` / `deps.workspace` 是反向调用通道（单测注入假端口）。 */
 export function createHandlers(deps) {
+  const read = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
+
   /** 会话类命令：装配后反向调 `session` 对应方法。 */
   const sessionCommand = (method, assemble) => (args, env) => {
     const assembled = assemble(args, env)
@@ -143,7 +152,13 @@ export function createHandlers(deps) {
     renameConversation: sessionCommand('rename', assembleSessionArgs),
     deleteConversation: sessionCommand('delete', assembleSessionArgs),
     restoreConversation: sessionCommand('restore', assembleSessionArgs),
-    branchConversation: sessionCommand('branch', assembleBranchArgs),
+    /** 分支：源链引用按需解析（投影只回引用）后再装配。 */
+    branchConversation: async (args, env) => {
+      const ids = await hydrateIds(args, ['session'], hydrator)
+      const assembled = assembleBranchArgs(ids, env)
+      if (!assembled.ok) return assemblyFailure(assembled)
+      return callPlan(deps.session, 'session', 'branch', assembled.args)
+    },
 
     listWorkspaces: (args) => callValue(deps.workspace, 'workspace', 'list', assembleWorkspaceListArgs(args)),
 

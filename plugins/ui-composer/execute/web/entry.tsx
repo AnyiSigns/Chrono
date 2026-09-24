@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,12 +33,13 @@ import {
   currentReasoningOf,
   currentVendorOf,
   isRecord,
-  messageSummary,
+  messageRowLabel,
   modelsOf,
   PERMISSIONS,
   permissionDescCode,
   permissionIcon,
   permissionLabelCode,
+  queueEntry,
   sourceRows,
   threadKeyOf,
   trimmedRows,
@@ -95,6 +97,47 @@ function Icon({
   )
 }
 
+const POPOVER_VIEWPORT_MARGIN = 8
+
+/**
+ * 弹层视口收纳：打开 / 内容变化后量取矩形，水平越界用 translateX 收进视口；
+ * 垂直越界时在 above / below 间翻转，`resize` 时重算。在绘制前执行避免抖动。
+ */
+function useClampPopover(
+  ref: RefObject<HTMLDivElement | null>,
+  open: boolean,
+  preferred: 'above' | 'below',
+  token: string,
+): void {
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!open || el === null) return undefined
+    const clamp = (): void => {
+      el.dataset.placement = preferred
+      el.style.transform = ''
+      let rect = el.getBoundingClientRect()
+      if (preferred === 'above' && rect.top < POPOVER_VIEWPORT_MARGIN) {
+        el.dataset.placement = 'below'
+        rect = el.getBoundingClientRect()
+      } else if (
+        preferred === 'below' &&
+        rect.bottom > window.innerHeight - POPOVER_VIEWPORT_MARGIN
+      ) {
+        el.dataset.placement = 'above'
+        rect = el.getBoundingClientRect()
+      }
+      const right = window.innerWidth - POPOVER_VIEWPORT_MARGIN
+      let shift = 0
+      if (rect.left < POPOVER_VIEWPORT_MARGIN) shift = POPOVER_VIEWPORT_MARGIN - rect.left
+      else if (rect.right > right) shift = right - rect.right
+      if (shift !== 0) el.style.transform = `translateX(${shift}px)`
+    }
+    clamp()
+    window.addEventListener('resize', clamp)
+    return () => window.removeEventListener('resize', clamp)
+  }, [open, preferred, token, ref])
+}
+
 interface DropdownOption {
   value: string
   label: string
@@ -123,6 +166,18 @@ function Dropdown(props: {
   onSelect: (value: string) => void
   onKey: (event: ReactKeyboardEvent<HTMLDivElement>) => void
 }): ReactNode {
+  useClampPopover(
+    props.popoverRef,
+    props.open,
+    'above',
+    `${props.options.length}:${props.selectedValue ?? ''}`,
+  )
+  // 键盘移动活动项后把它滚进可视区（弹层 max-height 内可滚动）。
+  useEffect(() => {
+    if (!props.open || props.activeIndex < 0) return
+    const active = document.getElementById(optionId(props.prefix, props.activeIndex))
+    active?.scrollIntoView({ block: 'nearest' })
+  }, [props.open, props.activeIndex, props.prefix])
   return (
     <div className="composer-tool-wrap">
       <button
@@ -200,7 +255,6 @@ function Dropdown(props: {
 /** 资产引用 → 可显示 URL（经 `ctx.asset.get` 取 base64 转 data URL）。 */
 function useAssetUrl(source: AssetRef | null): string | null {
   const { ctx } = useEnv()
-  const key = source !== null ? `${source.sha256}:${source.mime}` : ''
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
     if (source === null) {
@@ -226,7 +280,7 @@ function useAssetUrl(source: AssetRef | null): string | null {
     return () => {
       alive = false
     }
-  }, [key])
+  }, [source?.sha256, source?.mime, ctx.asset])
   return url
 }
 
@@ -288,6 +342,7 @@ function Composer(): ReactNode {
   const reasoningPopoverRef = useRef<HTMLDivElement | null>(null)
   const permissionPopoverRef = useRef<HTMLDivElement | null>(null)
   const pendingPopoverRef = useRef<HTMLDivElement | null>(null)
+  const contextTipRef = useRef<HTMLDivElement | null>(null)
   const composingRef = useRef(false)
   const tipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -537,6 +592,10 @@ function Composer(): ReactNode {
   const view = usageView(usage)
   const rows = sourceRows(usage)
   const trimmed = trimmedRows(usage)
+  const tipShown = tipVisible && (rows.length > 0 || trimmed.length > 0)
+
+  useClampPopover(pendingPopoverRef, pendingOpen, 'below', String(s.queueCount))
+  useClampPopover(contextTipRef, tipShown, 'above', `${rows.length}:${trimmed.length}`)
 
   function scheduleTip(): void {
     if (!isRecord(usage)) return
@@ -572,7 +631,11 @@ function Composer(): ReactNode {
         onFocus={() => setFocus(true)}
         onBlur={() => setFocus(false)}
         onDragOver={onDragOver}
-        onDragLeave={() => setDragover(false)}
+        onDragLeave={(event) => {
+          const next = event.relatedTarget
+          if (next instanceof Node && event.currentTarget.contains(next)) return
+          setDragover(false)
+        }}
         onDrop={onDrop}
       >
         <div className="composer-pending-wrap">
@@ -606,14 +669,8 @@ function Composer(): ReactNode {
             >
               <div className="composer-popover-title">{t('composer_pending_title')}</div>
               {s.queue.map((message, index) => {
-                const summary = messageSummary(message)
-                const label =
-                  summary.count > 0
-                    ? summary.text.length > 0
-                      ? `${summary.text} · ${t('composer_attachment', { count: summary.count })}`
-                      : t('composer_attachment', { count: summary.count })
-                    : summary.text
-                const id = isRecord(message) && typeof message.id === 'string' ? message.id : ''
+                const label = messageRowLabel(message, t)
+                const { id } = queueEntry(message)
                 return (
                   <div key={`${id}-${index}`} className="composer-popover-row">
                     <span className="composer-popover-row-text">{label}</span>
@@ -785,7 +842,7 @@ function Composer(): ReactNode {
           tabIndex={0}
           aria-live="polite"
           aria-atomic="true"
-          aria-describedby="composer-context-tip"
+          aria-describedby={tipShown ? 'composer-context-tip' : undefined}
           onMouseEnter={scheduleTip}
           onMouseLeave={hideTip}
           onFocus={scheduleTip}
@@ -796,8 +853,9 @@ function Composer(): ReactNode {
               ? t('composer_context_full', { used: view.usedText, budget: view.budgetText })
               : t('composer_context', { used: view.usedText, budget: view.budgetText })}
           </span>
-          {tipVisible && (rows.length > 0 || trimmed.length > 0) ? (
+          {tipShown ? (
             <div
+              ref={contextTipRef}
               className="composer-popover"
               data-placement="above"
               role="tooltip"
@@ -821,7 +879,7 @@ function Composer(): ReactNode {
                         ? t('composer_trimmed_reason', { reason: item.reason })
                         : label
                     return (
-                      <div key={index} className="composer-tooltip-note">
+                      <div key={`${label}-${index}`} className="composer-tooltip-note">
                         {text}
                       </div>
                     )
