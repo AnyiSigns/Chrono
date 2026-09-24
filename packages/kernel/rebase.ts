@@ -1,7 +1,8 @@
 // 压扁（rebase）：把线性补丁世代链折叠成单个整份世代，缩短补丁链。
 // 纯函数：返回新世界（新 defs 表 + 新 gens），不改入参。
 // 只折叠安全链：起点是整份世代、后续每代 base 恰好指向前一代；且链内非末代不被
-// active 指向、不被链外世代的 base / graft 指向。任一不满足即不折叠该链（保守，宁可不缩）。
+// active 指向、不被任何世代的 pins 指向、不被链外世代的 base / graft 指向。
+// 任一不满足即不折叠该链（保守，宁可不缩）。
 
 import { cloneDefs } from './defs.ts'
 import { H } from './hash.ts'
@@ -43,6 +44,26 @@ export function flattenPatches(world: World, minChain = 2): FlattenResult {
   const ids: World['ids'] = {}
   const indexMaps = new Map<string, Map<number, number>>()
   const payloadRemaps = new Map<string, Map<Hash, Hash>>()
+  // 全体世代的 pins 目标：折叠会改写世代结构，被 pin 的非末代 payload 折叠后无世代承载，
+  // 故任一链内非末代 payload 被 pin 即不折叠该链（pins 只在链内重映射，不跨身份改写）。
+  const pinnedPayloads = new Set<Hash>()
+  for (const id of Object.keys(world.ids)) {
+    for (const gen of world.ids[id].gens) {
+      for (const pin of Object.values(gen.pins)) {
+        if (typeof pin === 'string') pinnedPayloads.add(pin)
+      }
+    }
+  }
+  // 全体世代的 graft 来源（可跨身份）：链内非末代被任何世代 graft 指向即不折叠该链。
+  const graftedGens = new Map<string, Set<number>>()
+  for (const id of Object.keys(world.ids)) {
+    for (const gen of world.ids[id].gens) {
+      if (gen.graft === undefined) continue
+      const set = graftedGens.get(gen.graft.from)
+      if (set === undefined) graftedGens.set(gen.graft.from, new Set([gen.graft.gen]))
+      else set.add(gen.graft.gen)
+    }
+  }
   let flattened = 0
 
   for (const id of Object.keys(world.ids)) {
@@ -70,15 +91,12 @@ export function flattenPatches(world: World, minChain = 2): FlattenResult {
           (gen, idx) =>
             (idx < start || idx > end) && gen.base !== undefined && interior.has(gen.base),
         )
-        const externalGraft = gens.some(
-          (gen, idx) =>
-            (idx < start || idx > end) &&
-            gen.graft !== undefined &&
-            gen.graft.from === id &&
-            interior.has(gen.graft.gen),
+        const externalGraft = [...interior].some((k) => graftedGens.get(id)?.has(k) ?? false)
+        const interiorPinned = gens.some(
+          (gen, idx) => idx >= start && idx < end && pinnedPayloads.has(gen.payload),
         )
         const assembled =
-          activeInterior || externalBase || externalGraft
+          activeInterior || externalBase || externalGraft || interiorPinned
             ? null
             : assembleRun(defs, gens, start, end)
         if (assembled !== null) {

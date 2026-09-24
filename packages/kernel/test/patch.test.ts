@@ -271,6 +271,29 @@ describe('压扁 flattenPatches', () => {
     expect(flattened).toBe(0)
     expect(world.ids['u1'].gens).toHaveLength(3)
   })
+
+  it('链外 graft 指向链内非末代 → 不折叠（保守）', () => {
+    const h = linearChain()
+    const schema = h.push('put', { body: { s: 2 } }).argsHash
+    h.push('add_identity', { id: 'u2', schema })
+    const payload = h.push('put', { body: { grafted: true } }).argsHash
+    h.push('graft', { id: 'u2', payload, sig: payload, pins: {}, from: 'u1', gen: 1 })
+    const { world, flattened } = flattenPatches(h.w)
+    expect(flattened).toBe(0)
+    expect(world.ids['u1'].gens).toHaveLength(3)
+  })
+
+  it('链内非末代 payload 被 pins 指向 → 不折叠（保守）', () => {
+    const h = linearChain()
+    const interior = h.w.ids['u1'].gens[1].payload
+    const schema = h.push('put', { body: { s: 2 } }).argsHash
+    h.push('add_identity', { id: 'u2', schema })
+    const payload = h.push('put', { body: { pinned: true } }).argsHash
+    h.push('add_gen', { id: 'u2', payload, sig: payload, pins: { u1: interior } })
+    const { world, flattened } = flattenPatches(h.w)
+    expect(flattened).toBe(0)
+    expect(world.ids['u1'].gens).toHaveLength(3)
+  })
 })
 
 describe('回收协同：补丁世代 base 不悬挂', () => {

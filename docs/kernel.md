@@ -117,13 +117,13 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 
 补丁世代（`add_gen` 携带可选 `base`）把「每回合写整份 body」换成「base + 补丁」。补丁 def 的 body 形如 `{ops:[{op,path,value}…]}`，`op ∈ append|replace|delete`，`path` 是 `(str|int)[]`：`append` 列表追加 / 字符串拼接（路径不存在按值建列表）；`replace` 路径整体替换（中间容器不存在按下一段类型新建）；`delete` 删除路径（缺失即幂等成功）。组装 `assembleBody(base, ops)` 是纯函数：不改 base / 补丁，产物不共享补丁 value 引用。`base` = 同身份内基础世代的 `seq`（严格小于本世代），必须已存在且其 payload def 是合法补丁体，否则 `missing_parent` / `bad_patch`（fail-closed，世界分文不动）。`active` 对补丁世代同义：仍指向 `payload`（补丁 def 键），故 `set_active` 回滚语义不变。组装结果由**取用侧**（宿主投影）按世代链回溯算出，内核不组装、不解释 body 语义；读侧契约不变（投影仍回 `body`，另回 `data_gen` = 组装来源世代，供写方把下一世代写成补丁）。
 
-补丁口径：`argsHash` 仍是 `H(args)`（含 `base`），链哈希口径不变；`sig` 仍是世代签名 def 键（补丁 def 亦可作 sig）。`worldRev` 的 gen 摘要吃 `base`，换 base 即换内容身份。回收时补丁世代的 base 世代必须一并保留（`retainedGens` 沿 base 追加），否则组装悬挂；`flattenPatches`（压扁）把线性补丁链折叠成单个整份世代（payload = `H({body: 组装结果})`），缩短链并消除 base 依赖，compact 可按 `flattenChain` 阈值调用。
+补丁口径：`argsHash` 仍是 `H(args)`（含 `base`），链哈希口径不变；`sig` 仍是世代签名 def 键（补丁 def 亦可作 sig）。`worldRev` 的 gen 摘要吃 `base`，换 base 即换内容身份。回收时补丁世代的 base 世代必须一并保留（`retainedGens` 沿 base 追加），否则组装悬挂；`flattenPatches`（压扁）只折叠**安全链**——链内非末代不被 `active` 指向、不被任何世代的 `pins` 指向、不被链外世代的 `base` / `graft`（含跨身份）指向，满足才把线性补丁链折叠成单个整份世代（payload = `H({body: 组装结果})`），缩短链并消除 base 依赖，compact 可按 `flattenChain` 阈值调用。
 
 压缩是追加一个新基础（快照），不是丢旧段。`snapshot` 是一条普通 entry，`args = { world_rev }`，位置由自身 `seq`/`entryHash` 唯一确定；应用时自校算出的 `world_rev` 与存值不符即 `world_rev_mismatch`——快照想锚歪都锚不了。三层全是"追加"：① 追加快照 entry（世界本体宿主落盘）→ ② 宿主把快照前段移冷存储 → ③ 上层把保留内容重写进新世界。没有删除，内核也不欠 `compact` 这个 op。归档不欠内核算法，但保留集有协议：尾段引用集 ∪ 快照世界各 active 世代的闭包，沿 `pins`/`payload`/`sig`/`schema` 遍历即得（规矩 A 保证结构依赖都在 pins）；移出 ≠ 删除。
 
 基础世界的真源在宿主不在内核。快照只记凭证与位置，不携带本体；run 收到的世界是不是"这条链当前结果"，验证它等于重放全部历史不可负担，所以内核只在可按需算的凭证层面给工具（`worldRev`、`snapshot.args.world_rev`、`verify` 的 `expected.worldRev`），义务在宿主。
 
-有界化回收（`recycle.ts`）是**上层策略**而非内核新动词：compact 写 base 时按可达闭包裁掉未达 def 与窗口外世代，冷段仍留历史，`verify`/`replay` 从冷段全链照常校验。故"`replay(尾段, 快照世界)` 与全量重放逐字段相同"这一长链硬判据**仅在未回收时**成立；回收后基础世界是全量世界的子世界，宿主以 `snapshotRev`/`worldRev` 区分二者。
+有界化回收（`recycle.ts`）是**上层策略**而非内核新动词：compact 写 base 时按可达闭包裁掉未达 def 与窗口外世代，冷段仍留历史，`verify`/`replay` 从冷段全链照常校验。故"`replay(尾段, 快照世界)` 与全量重放逐字段相同"这一长链硬判据**仅在未回收时**成立；回收后基础世界是全量世界的子世界，宿主以 `snapshotRev`/`worldRev` 区分二者。`RecycleSpec` 的 `keepRoots`（根闭包）与 `keepGens`（`{id, seq}` 机械并集，内核不解释数据 / 代码语义）供上层把「投影闭包」等策略保留集下传；`keepGens` 在固定点回填前并入，故其 `pins` / `graft` / `base` 依赖一并拉入。被淘汰世代不可再被 `set_active` / `graft` / 补丁 `base` 引用（分别报 `not_a_generation` / `missing_parent`），fail-closed。
 
 ## 六、取用的三种模式
 
@@ -322,6 +322,7 @@ Eff   ["eff", port, method, args]                  Call ["call", fTerm, [T...]]
 | defs | `LAZY_DEFS`、`LazyDefsHandle`、`isLazyDefs`、`cloneDefs`、`defHas`、`defsKeys` |
 | patch | `PatchOp`、`PatchPath`、`assembleBody`、`readPatchOps` |
 | rebase | `flattenPatches`、`FlattenResult` |
+| recycle | `recycleWorld`、`RecycleSpec`、`RecycleStats`、`RecycleResult` |
 | journal | `EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter` |
 | commit | `commit`、`validate`、`entryOf`、`stale` |
 | machine | `eval`、`cmp` |

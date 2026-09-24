@@ -16,6 +16,8 @@ export interface RecycleSpec {
   genWindow: number
   /** 额外保留根：这些 def 及其可达闭包一律保留。 */
   keepRoots?: Hash[]
+  /** 额外保留世代（`{id, seq}` 机械并集）：内核只并入保留集，不解释数据 / 代码语义。 */
+  keepGens?: { id: string; seq: number }[]
   /** 淘汰根：只回收「被这些根独占」的 def，不碰未被任何根引用的孤儿 def（保守口径）。 */
   dropRoots?: Hash[]
   /** 严格口径：true = 回收保留闭包外的全部 def；false = 只回收淘汰根独有 def。 */
@@ -145,8 +147,16 @@ function addIndex(
   return true
 }
 
-/** 计算每身份的保留世代：窗口 + active + pins 固定点 + graft 来源 + 补丁 base。 */
-function retainedGens(world: World, genWindow: number): Map<string, Set<number>> {
+/**
+ * 计算每身份的保留世代：窗口 + active + 调用方显式保留集 + pins 固定点 + graft 来源 + 补丁 base。
+ * `keepGens` 是调用方的机械保留集（如投影数据世代），内核只做并集、不解释其含义；
+ * 并入发生在固定点回填之前，故其 pins / graft / base 依赖同样被拉入。
+ */
+function retainedGens(
+  world: World,
+  genWindow: number,
+  keepGens: readonly { id: string; seq: number }[],
+): Map<string, Set<number>> {
   const keep = new Map<string, Set<number>>()
   for (const id of Object.keys(world.ids)) {
     const identity = world.ids[id]
@@ -159,6 +169,7 @@ function retainedGens(world: World, genWindow: number): Map<string, Set<number>>
     }
     keep.set(id, set)
   }
+  for (const item of keepGens) addIndex(world, keep, item.id, item.seq)
   if (genWindow <= 0) return keep
   const owners = payloadOwners(world)
   let changed = true
@@ -276,7 +287,7 @@ export function recycleWorld(world: World, spec: RecycleSpec): RecycleResult {
     spec.flattenChain !== undefined && spec.flattenChain >= 2
       ? flattenPatches(world, spec.flattenChain)
       : { world, flattened: 0 }
-  const keep = retainedGens(source.world, spec.genWindow)
+  const keep = retainedGens(source.world, spec.genWindow, spec.keepGens ?? [])
   const rebuilt = rebuildIds(source.world, keep)
   remapGrafts(rebuilt.ids, rebuilt.oldToNew)
   remapBases(rebuilt.ids, rebuilt.oldToNew)
