@@ -153,7 +153,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
   private readonly dependents = new Map<string, string[]>()
-  private readonly isolated = new Set<string>()
+  /**
+   * 已隔离身份 → 隔离时所处的代码世代 payload。值为该身份在新代码世代到来时复归的判据：
+   * 新代码世代不同才可能复归（同代码世代 / 数据世代变化不复归），并需重新校验仍有效。
+   */
+  private readonly isolated = new Map<string, Hash | null>()
   private readonly loadedIds = new Set<string>()
   private readonly services = new Map<string, ServiceRuntime>()
   private readonly pendingRestarts = new Set<Promise<void>>()
@@ -367,13 +371,13 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     const deps = this.depsOf.get(id) ?? []
     if (deps.some((dep) => !this.loadedIds.has(dep))) {
       this.record('dep', 'stale', { impl: id })
-      this.isolated.add(id)
+      this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
       return
     }
     const read = readPluginDecl(this.world, id, this.blobsDir)
     if (read === null) {
       this.record('service', 'start_failed', { impl: id, reason: 'bad_plugin_decl' })
-      this.isolated.add(id)
+      this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
       return
     }
     // G7 A1：服务按「最近代码世代」起（数据世代可能正处 active，不参与物化 / 声明）
@@ -457,7 +461,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       }
       this.endpoints.removeIdentity(id)
       this.loadedIds.delete(id)
-      this.isolated.add(id)
+      this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
     }
     await Promise.allSettled(exits)
   }
@@ -469,7 +473,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    * 旧服务继续服务（失败只记运维日志）。数据世代只影响投影读侧，不进本路径。
    */
   private async followGeneration(prev: World, next: World, id: string): Promise<void> {
-    if (this.stopping || this.isolated.has(id)) return
+    if (this.stopping) return
+    // 已隔离身份：仅当新代码世代不同于隔离世代且重新校验仍有效时复归，否则保持隔离
+    if (this.isolated.has(id) && !this.rejoinIsolated(next, id)) return
     const identity = next.ids[id]
     const newCodeGen = assemblyGen(next, id)
     const newDecl =
@@ -507,6 +513,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         return
       }
       if (oldService !== undefined) await this.retireService(id, oldService, 'superseded')
+      // 无服务的数据身份：确保登记为已装载（隔离复归时服务已不在，需重新入册）
+      this.loadedIds.add(id)
       return
     }
     if (oldService === undefined) {
@@ -524,6 +532,35 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       // reload 未确认：保守按代码换代（起新服务 + 旧服务 drain），不把旧进程当已热更新
     }
     await swapService(this.swapHost, id, oldService, newCodeGen.payload, newDecl.decl)
+  }
+
+  /**
+   * 隔离身份的复归判定（仅新代码世代触发）：新代码世代须不同于隔离时记录的世代，
+   * 且新世代自身有效（声明可解析、def 完整、相对新世界不 stale）、依赖均已装载。
+   * 数据世代变化 / 同一代码世代不复归；依赖退役、成环等失效仍成立时 fail-closed 保持隔离。
+   * 复归只清隔离标记并记 `dep.rejoined`，随后由 `followGeneration` 常规路径重起（服务已缺席）。
+   */
+  private rejoinIsolated(next: World, id: string): boolean {
+    const newCodeGen = assemblyGen(next, id)
+    if (newCodeGen === null) return false
+    if (this.isolated.get(id) === newCodeGen.payload) return false
+    const identity = next.ids[id]
+    const newDecl = readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
+    const payloadDef = next.defs[newCodeGen.payload]
+    if (
+      identity === undefined ||
+      newDecl === null ||
+      payloadDef === undefined ||
+      stale(payloadDef, next, id)
+    ) {
+      return false
+    }
+    // 依赖仍须已装载：依赖退役 / 未恢复时本身份仍属坏分支，不得复归
+    const deps = this.depsOf.get(id) ?? []
+    if (deps.some((dep) => !this.loadedIds.has(dep))) return false
+    this.isolated.delete(id)
+    this.record('dep', 'rejoined', { impl: id, gen: newCodeGen.payload })
+    return true
   }
 
   /** 数据换代：通知服务新世代并等 ack；超时 / 通道断返回 false（交调用方保守处理）。 */
@@ -728,12 +765,27 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     ) {
       return
     }
+    // 启动宽限期内不发探针、不记失败：启动风暴下 CPU 被构建 / 安装挤占，此时的探针超时不是服务的问题。
+    // 重启实例的 `startedAt` 已刷新，宽限期同样覆盖重启后的启动窗口。
+    if (Date.now() - service.startedAt < service.health.gracePeriodMs) return
     service.healthInFlight = true
     try {
       const ok = await service.link.probe(service.health.timeoutMs)
-      if (!ok) await this.markUnhealthy(service)
+      if (ok) {
+        // 探针成功即视为存活：连续失败计数与重启尝试一并归零，避免累计到永久隔离
+        service.healthFailures = 0
+        service.attempts = 0
+      } else {
+        service.healthFailures += 1
+        if (service.healthFailures >= service.health.failureThreshold) {
+          await this.markUnhealthy(service)
+        }
+      }
     } catch {
-      await this.markUnhealthy(service)
+      service.healthFailures += 1
+      if (service.healthFailures >= service.health.failureThreshold) {
+        await this.markUnhealthy(service)
+      }
     } finally {
       service.healthInFlight = false
     }

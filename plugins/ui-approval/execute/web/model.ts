@@ -164,6 +164,43 @@ export function waitWarning(ms: number, threshold = WAIT_WARNING_MS): boolean {
   return Number.isFinite(ms) && ms > threshold
 }
 
+// ── 停靠带整体状态（显式区分 loading / offline / failed / empty / ready） ─────
+
+/** >8s 仍在读取的追加提示阈值（与 ui-chat / ui-settings 同档）。 */
+export const LOADING_NOTE_MS = 8000
+
+export type ApprovalStatus = 'loading' | 'offline' | 'failed' | 'empty' | 'ready'
+
+/** 插件不可达 / 传输中断的错误码：归入 offline（可重试），不当作显式业务失败。 */
+export function isUnreachableCode(code: unknown): boolean {
+  return code === 'ui_unreachable' || code === 'transport_failed'
+}
+
+export interface ApprovalStatusInput {
+  loading: boolean
+  error: { code: string; kind: string } | null
+  connected: boolean
+  itemCount: number
+}
+
+/** 停靠带状态：有可裁决项恒为 ready（错误在列表内就地显示）；无项时按连接 / 在途 / 错误区分。
+ * 连接断开优先于在途：插件不可达时不显示「读取中…」，避免与慢读混淆。 */
+export function approvalStatus(input: ApprovalStatusInput): ApprovalStatus {
+  if (input.itemCount > 0) return 'ready'
+  if (!input.connected) return 'offline'
+  if (input.loading) return 'loading'
+  if (input.error !== null) return isUnreachableCode(input.error.code) ? 'offline' : 'failed'
+  return 'empty'
+}
+
+/** 各状态的标题文案码：组件据此渲染，测试据此证明各态互不混淆；ready / empty 无标题。 */
+export function approvalStatusTextCode(status: ApprovalStatus): string | null {
+  if (status === 'loading') return 'approval_loading'
+  if (status === 'offline') return 'approval_offline'
+  if (status === 'failed') return 'approval_load_failed'
+  return null
+}
+
 // ── verdict 映射（写死：槽词汇 `accept`/`deny`，item 状态 `approved`/`denied`） ──
 
 /** 按钮动作 → 槽 verdict；未知动作回 null。 */

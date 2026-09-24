@@ -144,7 +144,7 @@ describe('宿主集成（入站面）', () => {
       identity: 'toy-event',
       start: 'node execute/main.js',
       implements: ['toy.event'],
-      health: { probe: 'toy.event.echo', interval_ms: 100, timeout_ms: 200 },
+      health: { probe: 'toy.event.echo', interval_ms: 100, timeout_ms: 200, grace_period_ms: 0 },
       serviceConfig: { eventTopic: 'ping', eventPayload: { n: 7 }, eventOnProbe: true },
     })
     const report = runSeed(root, [

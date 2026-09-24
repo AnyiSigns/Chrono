@@ -9,7 +9,7 @@ import { runSeed } from '../offline.ts'
 import { hostPaths, socketPath } from '../paths.ts'
 import { createFrameDecoder, encodeFrame } from '../wire.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
-import { readLifecycle, waitFor, writeTempPackage } from './test-helpers-ext.ts'
+import { waitFor, waitForLifecycle, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { EventMessage } from '../../client/index.ts'
 import type { Json } from '../../kernel/index.ts'
@@ -163,9 +163,13 @@ describe('H10 宿主 run 生命周期事件', () => {
       status: 'refused',
       reasons: [],
     })
-    const failed = readLifecycle(hostPaths(root).lifecycleFile).filter(
-      (entry) => entry.event === 'run_failed',
-    )
+    const failed = (
+      await waitForLifecycle(
+        hostPaths(root).lifecycleFile,
+        (entry) => entry.event === 'run_failed',
+        'run_failed 落运维日志',
+      )
+    ).filter((entry) => entry.event === 'run_failed')
     expect(failed).toHaveLength(1)
     expect(failed[0].reason).toContain('injected run failure')
   })

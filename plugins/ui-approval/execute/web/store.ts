@@ -82,6 +82,28 @@ function codeOf(result: Json): string {
   return record !== null && typeof record.code === 'string' ? record.code : 'unknown'
 }
 
+/**
+ * 裁决命令结果判定：传输失败 / run 被拒 / 业务 `{ok:false}` 都算失败，返回错误码；成功回 null。
+ * 命令返回写计划时，客户端可见值 = 计划最后一条 extern 载荷（成功 `{ok:true,…}`，收口
+ * `{ok:false,error|reason}`），故业务失败从 `value.ok` 读出；`/api/command` 对 refused 也回
+ * HTTP 200，必须再看 `status`，否则「点了没反应」会被当成功。
+ */
+function decideFailure(result: Json): string | null {
+  const record = asRecord(result)
+  if (record === null || record.ok !== true) return codeOf(result)
+  const value = asRecord(record.value)
+  if (value !== null && value.ok === false) {
+    const error = asRecord(value.error)
+    if (error !== null && typeof error.code === 'string') return error.code
+    if (typeof value.reason === 'string') return value.reason
+    return 'unknown'
+  }
+  if (value !== null && value.ok === true) return null
+  const status = record.status
+  if (typeof status === 'string' && status !== 'done') return status
+  return null
+}
+
 /** 写 `#1` 本线程键的 batch directive：`put` 整份 body + `add_gen`。
  * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
 export function slotWriteDirective(body: Json, expectActive?: string | null): Json {
@@ -200,8 +222,8 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
     if (!okOf(written)) return { ok: false, code: codeOf(written) }
     const name = typeof slot.id === 'string' && slot.id.length > 0 ? 'approval.decide' : 'approval.decide_all'
     const result = await ctx.command(name, null, { thread: threadKey })
-    const ok = okOf(result)
-    return { ok, code: ok ? '' : codeOf(result) }
+    const failure = decideFailure(result)
+    return { ok: failure === null, code: failure ?? '' }
   }
 
   async function submitItem(item: Rec, action: string): Promise<void> {

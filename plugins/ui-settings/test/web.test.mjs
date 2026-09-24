@@ -434,6 +434,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 function fakeLoadCtx(routes) {
   return {
+    doc: { defaultView: null },
     state: {
       loading: false,
       loadingCount: 0,
@@ -471,6 +472,28 @@ test('loadTab：慢的旧装载在切走后被丢弃', async () => {
   await slow
   assert.equal(ctx.state.skillProjection, null, '过期装载结果被丢弃')
   assert.deepEqual(ctx.state.identities, { id: 'new' })
+})
+
+test('loadTab general：config.read 失败置页面级 loadError，不按空态起步', async () => {
+  const ctx = fakeLoadCtx({ 'config.read': async () => ({ ok: false, code: 'boom' }) })
+  await loadTab(ctx, 'general')
+  assert.deepEqual(ctx.state.loadError, { code: 'boom', message: '' })
+  assert.equal(ctx.state.config, null)
+})
+
+test('loadTab general：读成功写 config；退避后仍回落 body 归 not_loaded', async () => {
+  const okCtx = fakeLoadCtx({
+    'config.read': async () => ({ ok: true, value: { active: 'a'.repeat(64), body: { version: 1 } } }),
+  })
+  await loadTab(okCtx, 'general')
+  assert.deepEqual(okCtx.state.config, { version: 1 })
+  assert.equal(okCtx.state.loadError, null)
+
+  const fallbackCtx = fakeLoadCtx({
+    'config.read': async () => ({ ok: true, value: { active: 'a'.repeat(64), body: { tree: 'x' } } }),
+  })
+  await loadTab(fallbackCtx, 'general')
+  assert.deepEqual(fallbackCtx.state.loadError, { code: 'not_loaded', message: '' })
 })
 
 test('loadTab skills：失败置页面级 loadError；memory 失败只置降级标记', async () => {

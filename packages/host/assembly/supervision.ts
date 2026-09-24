@@ -24,6 +24,10 @@ export interface RestartPolicy {
 export interface HealthPolicy {
   intervalMs: number
   timeoutMs: number
+  /** 连续失败阈值：连续失败达到该次数才判不健康（缺省 3，最小 1）。 */
+  failureThreshold: number
+  /** 启动宽限期：服务启动后该窗口内不发探针、不记失败（缺省 max(intervalMs, 30s)）。 */
+  gracePeriodMs: number
 }
 
 /** 一个在跑的服务实例（含监督计时与退出标记）。 */
@@ -36,6 +40,8 @@ export interface ServiceRuntime {
   pid: number
   startedAt: number
   attempts: number
+  /** 连续探针失败计数：成功即清零；达到 `health.failureThreshold` 才走退出重启。 */
+  healthFailures: number
   restart: RestartPolicy
   health: HealthPolicy
   healthTimer: NodeJS.Timeout | null
@@ -125,10 +131,13 @@ export function parseRestart(value: Json): RestartPolicy {
 
 export function parseHealth(value: Json): HealthPolicy {
   const record = asRecord(value)
-  return {
-    intervalMs: numberField(record, 'interval_ms', 10_000),
-    timeoutMs: numberField(record, 'timeout_ms', 2_000),
-  }
+  const intervalMs = numberField(record, 'interval_ms', 10_000)
+  const timeoutMs = numberField(record, 'timeout_ms', 2_000)
+  // 连续失败阈值：缺失回落 3，下限 1（旧声明只给 interval_ms / timeout_ms，自动得阈值 3）
+  const failureThreshold = Math.max(1, Math.floor(numberField(record, 'failure_threshold', 3)))
+  // 启动宽限期：缺失回落 max(intervalMs, 30s)，覆盖启动风暴；显式给 0 则关闭宽限
+  const gracePeriodMs = numberField(record, 'grace_period_ms', Math.max(intervalMs, 30_000))
+  return { intervalMs, timeoutMs, failureThreshold, gracePeriodMs }
 }
 
 export function backoffDelay(policy: RestartPolicy, attempt: number): number {

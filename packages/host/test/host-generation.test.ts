@@ -22,6 +22,7 @@ import {
   isPidAlive,
   readLifecycle,
   waitFor,
+  waitForLifecycle,
   writeTempPackage,
 } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -229,15 +230,15 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
         id: 'toy-alpha',
         gen: code.commitHash,
       })
-      expect(
-        readLifecycle(lifecycleFile()).some(
-          (r) =>
-            r.kind === 'service' &&
-            r.event === 'exit' &&
-            r.impl === 'toy-alpha' &&
-            r.reason === 'superseded',
-        ),
-      ).toBe(true)
+      await waitForLifecycle(
+        lifecycleFile(),
+        (r) =>
+          r.kind === 'service' &&
+          r.event === 'exit' &&
+          r.impl === 'toy-alpha' &&
+          r.reason === 'superseded',
+        '代码换代旧服务排空退出',
+      )
     } finally {
       client.close()
     }
@@ -441,7 +442,12 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
       // 发出者（caller）自身不动：进程未重启（pid 文件不变）、无 dep.stale / dep.retired、世代仍是原 payload
       expect(readFileSync(callerPidFile, 'utf8')).toBe(callerPid)
       expect(isPidAlive(Number.parseInt(callerPid, 10))).toBe(true)
-      const records = readLifecycle(lifecycleFile())
+      const records = await waitForLifecycle(
+        lifecycleFile(),
+        (r) =>
+          r.kind === 'dep' && r.event === 'drift' && r.impl === 'toy-caller' && r.gen === v2Gen,
+        '依赖漂移证据',
+      )
       expect(
         records.some((r) => r.kind === 'dep' && r.impl === 'toy-caller' && r.event !== 'drift'),
       ).toBe(false)
@@ -481,6 +487,13 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
       // 退役：依赖者（caller）随之隔离，两者都从 loaded 消失；服务进程退出
       expect((await client.status()).loaded).toEqual([])
       await waitFor(() => !isPidAlive(servicePid), '退役后服务进程退出', 8000)
+      await waitFor(() => {
+        const seen = readLifecycle(lifecycleFile())
+        return (
+          seen.some((r) => r.kind === 'dep' && r.event === 'retired' && r.impl === 'toy-alpha') &&
+          seen.some((r) => r.kind === 'dep' && r.event === 'retired' && r.impl === 'toy-caller')
+        )
+      }, '依赖退役落运维日志')
       const records = readLifecycle(lifecycleFile())
       expect(records).toContainEqual(
         expect.objectContaining({ kind: 'dep', event: 'retired', impl: 'toy-alpha' }),

@@ -34,6 +34,17 @@ const BAG_KEYS = [
   'mcp_tools',
 ]
 
+/** 轮询等待条件成立（驱动进程为独立进程，需等 stdout 到达）。 */
+async function waitFor(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('waitFor timeout')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
 test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
   const drv = startService()
   try {
@@ -366,6 +377,65 @@ test('send：args 非对象 → bad_args 错误帧，不崩进程', async () => 
     const after = await drv.request('probe', {}, 'pong')
     assert.equal(after.ok, true)
   } finally {
+    drv.close()
+  }
+})
+
+test('并发：只读 history 在 send 挂起于 interpret 时仍先完成', async () => {
+  let releaseInterpret
+  const gate = new Promise((resolve) => {
+    releaseInterpret = resolve
+  })
+  const drv = startService({
+    bridge: (port) => {
+      if (port === 'loop-policy') return gate.then(() => ({ value: INTERPRET_PLAN }))
+      if (port === 'session-title') return Promise.resolve({ value: TITLE_VALUE })
+      return Promise.resolve({ value: null })
+    },
+  })
+  try {
+    await drv.hello()
+    const sendPending = drv.call('send', idsFixture())
+    // 等 send 已发出 interpret 反向调用，确认其正挂在回合上
+    await waitFor(() => drv.portCalls.some((frame) => frame.port === 'loop-policy'))
+    // interpret 未回，只读 history 不应排队，须先完成
+    const historyResult = await drv.call('history', idsFixture())
+    assert.equal(historyResult.kind, 'result')
+    assert.equal(historyResult.value.conversation, 'c-1')
+    releaseInterpret()
+    const sendResult = await sendPending
+    assert.equal(sendResult.kind, 'result')
+  } finally {
+    releaseInterpret()
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('并发：非只读 call 严格串行（第二个不先于第一个完成启动）', async () => {
+  const releases = []
+  const drv = startService({
+    bridge: (port) => {
+      if (port !== 'loop-policy') return Promise.resolve({ value: null })
+      return new Promise((resolve) => {
+        releases.push(() => resolve({ value: INTERPRET_PLAN }))
+      })
+    },
+  })
+  try {
+    await drv.hello()
+    const first = drv.call('send', idsFixture({ conversation: { count: 4 } }))
+    await waitFor(() => releases.length === 1)
+    const second = drv.call('send', idsFixture({ conversation: { count: 4 } }))
+    await delay(120)
+    assert.equal(releases.length, 1, '第二个非只读 call 不应在第一个完成前启动')
+    releases[0]()
+    await first
+    await waitFor(() => releases.length === 2)
+    releases[1]()
+    await second
+  } finally {
+    for (const release of releases) release()
     drv.close()
   }
   assert.equal(await drv.exit, 0)

@@ -788,6 +788,31 @@ function Composer(): ReactNode {
               </span>
             ) : null}
 
+            {s.configStatus === 'loading' ? (
+              <span className="composer-inline-error" data-tone="muted" data-role="config-loading">
+                {t(s.configSlow ? 'composer_config_loading_more' : 'composer_config_loading')}
+              </span>
+            ) : null}
+
+            {s.configStatus === 'offline' ? (
+              <span className="composer-inline-error" data-tone="muted" data-role="config-offline">
+                {t('composer_config_offline')}
+              </span>
+            ) : null}
+
+            {s.configStatus === 'failed' ? (
+              <span className="composer-inline-error" data-role="config-failed">
+                <span>{t('composer_config_failed')}</span>
+                <button
+                  type="button"
+                  className="composer-inline-retry"
+                  onClick={() => void store.reloadConfig()}
+                >
+                  {t('composer_retry')}
+                </button>
+              </span>
+            ) : null}
+
             {s.error !== null ? (
               <span className="composer-inline-error">{t(s.error)}</span>
             ) : null}
@@ -898,15 +923,12 @@ function Composer(): ReactNode {
 
 // ---- 应用 ----
 
-function App({ ctx }: { ctx: SlotContext }): ReactNode {
-  const storeRef = useRef<ComposerStore | null>(null)
-  if (storeRef.current === null) storeRef.current = createComposerStore(ctx)
-  const store = storeRef.current
+function App({ ctx, store }: { ctx: SlotContext; store: ComposerStore }): ReactNode {
   const snapshot = ctx.useStore(store)
 
+  // 只 init，不随组件卸载 dispose：store 住 register 作用域，卸载 / 重挂需保留草稿、附件、待发队列与 RunState。
   useEffect(() => {
     void store.init()
-    return () => store.dispose()
   }, [store])
 
   const env = useMemo<Env>(
@@ -923,5 +945,10 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
 }
 
 export function register(ctx: SlotContext): void {
-  ctx.slots.register({ name: 'composer' }, App)
+  const store = createComposerStore(ctx)
+  const registered = ctx.slots.register({ name: 'composer' }, (props) => (
+    <App ctx={props.ctx} store={store} />
+  ))
+  // 注册被拒（陈旧装载）：刚建的 store 立即 dispose，避免第二份在途。
+  if (registered !== true) store.dispose()
 }

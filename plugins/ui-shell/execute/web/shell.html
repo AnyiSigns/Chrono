@@ -31,8 +31,6 @@
       position: relative;
       z-index: var(--z-topbar);
       flex: none;
-      height: 0;
-      overflow: visible;
     }
     /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条 */
     #slot-main { flex: 1 1 auto; min-height: var(--main-min-h); overflow: hidden; }
@@ -48,7 +46,7 @@
     #slot-composer { flex: none; min-height: 0; overflow: visible; }
     #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
     #slot-overlay > * { pointer-events: auto; }
-    /* slot 客户端半边挂载容器：撑满所属 slot；topbar 高 0，交给内容自行浮出 */
+    /* slot 客户端半边挂载容器：撑满所属 slot；topbar 常显占布局，高度随内容自适应 */
     .shell-slot-app { height: 100%; min-height: 0; }
     #slot-topbar .shell-slot-app { height: auto; }
     body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }

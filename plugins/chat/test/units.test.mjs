@@ -19,6 +19,7 @@ import {
 } from '../execute/assemble.ts'
 import { buildHistory, restoreChain, sliceChain, parseHistoryQuery } from '../execute/history.ts'
 import { defHashOf, directivesOf, errorValue, externOnly, isErrorValue, mergeDirectives } from '../execute/plan.ts'
+import { READONLY_METHODS, deriveReadonlyMethods } from '../execute/plugin.ts'
 import { loadWiring, sliceEnabled } from '../execute/wiring.ts'
 import { chainRefs, configFixture, idsFixture, memoryFixture } from './driver.mjs'
 
@@ -271,4 +272,24 @@ test('loadWiring：缺省与 schema 值一致（段序归 #33 图数据，本包
   assert.equal(wiring.title.title_default, '新对话')
   assert.deepEqual(memoryFixture().sessions['c-1'].summary.facts, [])
   assert.equal(configFixture().vendor, 'deepseek')
+})
+
+test('deriveReadonlyMethods：只取 readonly:true 命令的段名，非法声明忽略', () => {
+  const derived = deriveReadonlyMethods([
+    { name: 'chat.history', readonly: true },
+    { name: 'chat.send' },
+    { name: 'chat.resume', readonly: false },
+    { name: 'malformed', readonly: true },
+    { readonly: true },
+    { name: 42, readonly: true },
+    null,
+    'nope',
+  ])
+  assert.deepEqual([...derived], ['history'])
+  assert.deepEqual([...deriveReadonlyMethods(undefined)], [])
+  assert.deepEqual([...deriveReadonlyMethods({})], [])
+  // 真实声明：history 只读，send / resume 仍在串行链上
+  assert.equal(READONLY_METHODS.has('history'), true)
+  assert.equal(READONLY_METHODS.has('send'), false)
+  assert.equal(READONLY_METHODS.has('resume'), false)
 })

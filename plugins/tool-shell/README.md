@@ -48,10 +48,12 @@
 
 | 输入形态 | 解释器 | `sandbox.exec` |
 | --- | --- | --- |
-| `mode:"command"`（缺省） | win32 `cmd.exe /c <input>`；其余 `/bin/sh -c <input>` | `{cmd, args, env?, caps, tier?, workspace_root?, sandbox_tiers?, grant?}` |
+| `mode:"command"`（缺省） | PowerShell：`<shell> -NoProfile -Command <input>`（探测 `pwsh` → `pwsh-preview` → Windows `powershell.exe`） | `{cmd, args, env?, caps, tier?, workspace_root?, sandbox_tiers?, grant?}` |
 | `mode:"code"` + `javascript` | `node -e <input>` | 同上 |
 | `mode:"code"` + `python` | `python -c <input>` | 同上 |
 | `mode:"code"` + `shell` | 同 `command` | 同上 |
+
+- 命令形态统一经跨平台 PowerShell 执行，三平台同一套语法，不按平台分裂；`-NoProfile` 保证不受用户 profile 影响。解释器在服务启动时一次性探测（存在性，不校验版本）：`pwsh` → `pwsh-preview` → Windows 回落 `powershell.exe`。PowerShell Core 的二进制名跨版本恒为 `pwsh`，故比 7 新的稳定版自动命中，无需改代码。
 
 - `mode` 只区分输入形态，不区分隔离等级与审批档。
 - `code` 形态：`result.kind = "json"`，`result.value` = stdout 的 JSON 解析（非 JSON 回 `null`）；`command` 形态：`result.kind = "terminal"`。

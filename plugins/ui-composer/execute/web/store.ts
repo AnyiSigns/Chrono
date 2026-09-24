@@ -19,6 +19,7 @@ import type { MessageTable } from './messages.ts'
 import {
   buildMessageSlot,
   collapseReasoning,
+  configStatusOf,
   currentModelOf,
   currentReasoningOf,
   dequeue,
@@ -26,6 +27,7 @@ import {
   enqueueFront,
   isCodeGenFallbackBody,
   isRecord,
+  LOADING_NOTE_MS,
   matchesThread,
   mergeConfig,
   normalizePermission,
@@ -38,6 +40,7 @@ import {
   runKeyOf,
   threadKeyOf,
 } from './model.ts'
+import type { ConfigStatus } from './model.ts'
 import {
   armWrite,
   beginWrite,
@@ -97,6 +100,9 @@ export interface ComposerSnapshot {
   pending: { [threadKey: string]: unknown }
   usage: { [threadKey: string]: unknown }
   config: unknown
+  configStatus: ConfigStatus
+  configError: string | null
+  configSlow: boolean
   model: string | null
   reasoning: ReasoningState
   permission: string
@@ -122,6 +128,7 @@ export interface ComposerStore {
   expandAttachments(): void
   removePending(id: string): number
   refreshConfig(): Promise<unknown>
+  reloadConfig(): Promise<void>
   selectModel(value: string): Promise<void>
   selectReasoning(value: string | null): Promise<void>
   selectPermission(value: string): Promise<void>
@@ -145,6 +152,10 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     pending: {} as { [threadKey: string]: unknown },
     usage: {} as { [threadKey: string]: unknown },
     config: null as unknown,
+    configLoading: false,
+    configError: null as string | null,
+    configSlow: false,
+    connected: ctx.events?.connected?.() === true,
     model: null as string | null,
     reasoning: hiddenReasoning(),
     permission: 'review',
@@ -154,6 +165,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   let tracking: RunState = createRunState()
   let disposed = false
+  let started = false
+  let configTimer: ReturnType<typeof setTimeout> | null = null
   let offEvents: (() => void) | null = null
   let offThread: (() => void) | null = null
   let reasoningSeq = 0
@@ -172,6 +185,14 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       pending: state.pending,
       usage: state.usage,
       config: state.config,
+      configStatus: configStatusOf({
+        loading: state.configLoading,
+        connected: state.connected,
+        error: state.configError,
+        hasConfig: state.config !== null,
+      }),
+      configError: state.configError,
+      configSlow: state.configSlow,
       model: state.model,
       reasoning: state.reasoning,
       permission: state.permission,
@@ -413,26 +434,71 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     applyReasoningOptions(options)
   }
 
+  function clearConfigTimer(): void {
+    if (configTimer !== null) clearTimeout(configTimer)
+    configTimer = null
+  }
+
+  /** 装载配置：读失败与「读成功但配置为空」分开——失败置 configError 由行内错误条渲染，
+   * 不静默退化成空配置。>8s 追加「仍在读取…」，与 ui-chat / ui-settings 同档。 */
   async function loadConfig(): Promise<void> {
-    const config = await client.readConfig()
+    state.configLoading = true
+    state.configError = null
+    state.configSlow = false
+    publish()
+    clearConfigTimer()
+    configTimer = setTimeout(() => {
+      configTimer = null
+      if (disposed || !state.configLoading) return
+      state.configSlow = true
+      publish()
+    }, LOADING_NOTE_MS)
+    let read: IdentityRead
+    try {
+      read = await client.readConfigState()
+    } catch (err) {
+      read = { body: null, active: undefined, error: errorOf(err) }
+    }
+    clearConfigTimer()
     if (disposed) return
-    state.config = config
-    state.model = config === null ? null : currentModelOf(config)
+    state.configLoading = false
+    state.configSlow = false
+    if (read.error !== null) {
+      // 保留已读到的配置（若有），只把失败显式化，避免刷新失败抹掉可用配置。
+      state.configError = read.error
+      publish()
+      return
+    }
+    state.config = read.body
+    state.model = read.body === null ? null : currentModelOf(read.body)
     state.permission =
-      config === null ? 'review' : normalizePermission(isRecord(config) ? config.permission : null)
+      read.body === null ? 'review' : normalizePermission(isRecord(read.body) ? read.body.permission : null)
     publish()
     await ensureReasoning()
   }
 
   /** 轻量重读：只刷新模型列表与当前选择，不触发推理档拉取（供打开模型下拉前用）。 */
   async function refreshConfig(): Promise<unknown> {
-    const config = await client.readConfig()
-    if (disposed || config === null) return config
-    state.config = config
-    state.model = currentModelOf(config)
-    state.permission = normalizePermission(isRecord(config) ? config.permission : null)
+    let read: IdentityRead
+    try {
+      read = await client.readConfigState()
+    } catch (err) {
+      read = { body: null, active: undefined, error: errorOf(err) }
+    }
+    if (disposed) return read.body
+    if (read.error !== null) {
+      state.configError = read.error
+      publish()
+      return null
+    }
+    state.configError = null
+    state.config = read.body
+    if (read.body !== null) {
+      state.model = currentModelOf(read.body)
+      state.permission = normalizePermission(isRecord(read.body) ? read.body.permission : null)
+    }
     publish()
-    return config
+    return read.body
   }
 
   async function selectModel(value: string): Promise<void> {
@@ -657,6 +723,16 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   function onRecord(record: { topic: string; payload: unknown }): void {
     const payload = isRecord(record.payload) ? record.payload : {}
+    // 壳连接态：断连 / 重连经 `shell.state` 广播；恢复后若配置读取曾失败则自动重拉。
+    if (record.topic === 'shell.state') {
+      const connected = payload.connected === true
+      if (connected !== state.connected) {
+        state.connected = connected
+        publish()
+        if (connected && state.configError !== null) void loadConfig()
+      }
+      return
+    }
     if (record.topic === 'run.started') {
       const key = runKeyOf(payload)
       const tracked = trackRunStarted(tracking, runIdOf(payload), key)
@@ -704,6 +780,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   async function init(): Promise<void> {
+    // 幂等：store 住 register 作用域，卸载 / 重挂与 React 严格模式重复挂载都不重复订阅。
+    if (started) return
+    started = true
     const loaded = await loadMessages((url) => fetch(url), ctx.tokens.messages)
     if (disposed) return
     state.table = loaded
@@ -721,13 +800,17 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   function dispose(): void {
+    if (disposed) return
     disposed = true
     if (offEvents !== null) offEvents()
+    offEvents = null
     if (offThread !== null) offThread()
+    offThread = null
     for (const timer of writeTimers.values()) clearTimeout(timer)
     writeTimers.clear()
     for (const timer of expectTimers.values()) clearTimeout(timer)
     expectTimers.clear()
+    clearConfigTimer()
   }
 
   return {
@@ -752,6 +835,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     },
     removePending,
     refreshConfig,
+    reloadConfig: () => loadConfig(),
     selectModel,
     selectReasoning,
     selectPermission,

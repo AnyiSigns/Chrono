@@ -140,7 +140,7 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
       $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [], refs: {} } }],
     })
 
-    // decide：本线程槽 → 服务发 port.call approval.decide，回包后拼 [chat.resume, …]。
+    // decide：本线程槽 → 服务发 port.call approval.decide，回包后拼 [审批写, …chat.resume]。
     const decideIds = {
       input: { body: { slots: { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' } } } },
       approval: {
@@ -188,14 +188,15 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
     )
     await waitFor(() => messages.some((message) => message.id === 'd1'), 'decide result')
     const decideValue = messages.find((message) => message.id === 'd1').value
-    assert.deepEqual(decideValue.$directives[0], {
+    assert.equal(decideValue.$directives[0].kind, 'write')
+    assert.equal(decideValue.$directives[1].kind, 'extern')
+    assert.equal(decideValue.$directives[1].payload.status, 'approved')
+    assert.deepEqual(decideValue.$directives[2], {
       kind: 'eval',
       command: 'chat.resume',
       args: { cursor: 'cur-1', thread: 't1', payload: { verdict: 'accept' } },
       inject: { ids: ['ids'] },
     })
-    assert.equal(decideValue.$directives[1].kind, 'write')
-    assert.equal(decideValue.$directives[2].payload.status, 'approved')
 
     // 在途调用与 drain 连发：drain 必须等在途调用收口后才发 bye（协议 §2.3）。
     child.stdin.write(encodeFrame({ v: '1', id: 'c2', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }))

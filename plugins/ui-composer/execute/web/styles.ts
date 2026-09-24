@@ -175,6 +175,7 @@ export const STYLE_TEXT = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.composer-inline-error[data-tone="muted"] { color: var(--c-text-3); }
 .composer-inline-error[hidden] { display: none; }
 .composer-inline-retry {
   min-height: 24px;

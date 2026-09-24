@@ -118,7 +118,7 @@ test('纯函数：shadowRefsOf 只收可达 shadow body，withExternPayload 只�
   assert.deepEqual(withExternPayload({ plain: 1 }, { refs: {} }), { plain: 1 })
 })
 
-test('decide：读槽 → 反向调 #32 decide → 拼 [chat.resume, …#32 计划]', async () => {
+test('decide：读槽 → 反向调 #32 decide → 拼 [#32 计划, chat.resume]（审批写在前）', async () => {
   const items = [
     {
       id: 'ap-r-0',
@@ -141,17 +141,17 @@ test('decide：读槽 → 反向调 #32 decide → 拼 [chat.resume, …#32 计�
   assert.equal(approval.calls[0].args.thread_id, 't1')
 
   const directives = value.$directives
-  assert.equal(directives.length, 3, '[eval, #32 batch, #32 extern]')
-  assert.deepEqual(directives[0], {
+  assert.equal(directives.length, 3, '[#32 batch, #32 extern, eval]')
+  assert.equal(directives[0].kind, 'write')
+  assert.equal(directives[0].request.op, 'batch')
+  assert.equal(directives[1].kind, 'extern')
+  assert.equal(directives[1].payload.status, 'approved')
+  assert.deepEqual(directives[2], {
     kind: 'eval',
     command: 'chat.resume',
     args: { cursor: { iter: 3 }, thread: 't1', payload: { verdict: 'accept' } },
     inject: { ids: ['ids'] },
   })
-  assert.equal(directives[1].kind, 'write')
-  assert.equal(directives[1].request.op, 'batch')
-  assert.equal(directives[2].kind, 'extern')
-  assert.equal(directives[2].payload.status, 'approved')
 })
 
 test('decide：坏槽 kind 结构化拒并 per-thread 清槽（不调 #32）', async () => {
@@ -210,7 +210,8 @@ test('decide_all：只对 pending 项逐条产 chat.resume，非 pending 跳过'
   assert.equal(evals[0].args.payload.verdict, 'deny')
   assert.equal(evals[0].args.ids, undefined, '续跑不再内嵌整份投影')
   assert.deepEqual(evals[0].inject, { ids: ['ids'] }, '投影由宿主执行期注入')
-  assert.equal(value.$directives.at(-1).kind, 'extern')
+  assert.equal(value.$directives.at(-1).kind, 'eval', '续跑排在审批写之后')
+  assert.ok(value.$directives.some((item) => item.kind === 'extern'), '#32 extern 仍在内')
 })
 
 test('resumeDirectives：无 resume / 无 cursor 的项跳过，不伪造游标', () => {
@@ -225,10 +226,19 @@ test('resumeDirectives：无 resume / 无 cursor 的项跳过，不伪造游标'
   assert.deepEqual(out[0].inject, { ids: ['ids'] })
 })
 
-test('buildDecisionPlan：续跑条目在前、#32 计划原样接在其后', () => {
+test('buildDecisionPlan：#32 计划在前、续跑条目接在其后（审批写先落账）', () => {
   const plan = [{ kind: 'write' }, { kind: 'extern' }]
-  const value = buildDecisionPlan([], 'accept', plan)
-  assert.deepEqual(value.$directives, plan)
+  const withTarget = buildDecisionPlan(
+    [{ id: 'a', thread: 't1', resume: { args: { cursor: 'c1' } } }],
+    'accept',
+    plan,
+  )
+  assert.equal(withTarget.$directives[0].kind, 'write')
+  assert.equal(withTarget.$directives[1].kind, 'extern')
+  assert.equal(withTarget.$directives[2].kind, 'eval')
+  assert.equal(withTarget.$directives[2].command, 'chat.resume')
+  // 无待续跑项时退化为原计划
+  assert.deepEqual(buildDecisionPlan([], 'accept', plan).$directives, plan)
 })
 
 test('decideSlotOf：只认本线程 `approval.decide` kind', () => {

@@ -57,7 +57,7 @@ import { getAsset, putAsset } from './assets.ts'
 import { createHostCapability } from './host-capability.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
 import { gcPluginState } from './plugin-state.ts'
-import { appendLifecycle } from './lifecycle.ts'
+import { appendLifecycle, flushLifecycle, flushLifecycleSync } from './lifecycle.ts'
 import type { LifecycleRecord } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
 import { resolveStartWrapper } from './options.ts'
@@ -1205,6 +1205,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         }
       }
       releaseLock(paths.lockFile, lock.info)
+      try {
+        // 停机末点：同步排空并落稳运维日志，进程退出前事件不丢
+        flushLifecycleSync(paths.lifecycleFile)
+      } catch {
+        // 停机尽力而为；日志落稳失败不改变停机结果
+      }
     }
   }
 
@@ -1229,6 +1235,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       event: 'persist_fatal_stop',
       reason: fatal.message,
     })
+    try {
+      // 致命即停机：先落稳再发起收口，避免进程在批量窗口内退出丢事件
+      flushLifecycleSync(paths.lifecycleFile)
+    } catch {
+      // 日志落稳失败不改变致命收口
+    }
     void stop().catch(() => {
       // 停机尽力而为；失败由锁 / socket 清理逻辑兜底
     })
@@ -1568,6 +1580,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
 
   try {
     appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
+    // 启动是里程碑：立即落盘，宿主可用的那一刻 start 已可被外部观测
+    flushLifecycle(paths.lifecycleFile)
     // 入站面先于装配监听：服务 spawn 后即可连上，不再于装配期反复撞 ENOENT；
     // 装配完成前的反向调用由 handlePortCall 挂起等 routerReady。
     await listen(server, address, (err) => {
@@ -1678,6 +1692,12 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       // 未进入监听状态时 close 可能报错
     }
     releaseLock(paths.lockFile, lock.info)
+    try {
+      // 启动失败同样收口：排空并落稳运维日志，避免失败证据随进程退出丢失
+      flushLifecycleSync(paths.lifecycleFile)
+    } catch {
+      // 清理尽力而为，不遮蔽原始错误
+    }
     throw err
   }
 

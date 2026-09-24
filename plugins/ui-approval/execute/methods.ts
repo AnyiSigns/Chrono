@@ -91,12 +91,13 @@ export function decideSlotOf(ids: Json, threadKey: string): Rec | null {
 }
 
 /**
- * 顶层裁决计划：`[eval(command:'chat.resume'), …#32 计划]`。
- * 续跑条目按被裁决项逐条产（每项各自游标 / 线程；投影由宿主执行期注入，不内嵌）；
- * `#32` 计划原样接在其后（写裁决 + 清槽 + extern）。
+ * 顶层裁决计划：`[…#32 计划, eval(command:'chat.resume')]`。
+ * **审批写在前**：裁决记录（写裁决 + 清槽 + extern）必须先落账——宿主遇任一非 done 轮即丢弃剩余指令，
+ * 若把续跑排在前，续跑一失败（如未配置模型）整批收口、用户裁决被静默吞掉。
+ * 续跑条目按被裁决项逐条产（每项各自游标 / 线程；投影由宿主执行期注入，不内嵌），接在审批写之后。
  */
 export function buildDecisionPlan(targets: Rec[], verdict: string, approvalPlan: Json[]): Json {
-  return { $directives: [...resumeDirectives(targets, verdict), ...approvalPlan] }
+  return { $directives: [...approvalPlan, ...resumeDirectives(targets, verdict)] }
 }
 
 /** 单条裁决的目标项：槽里的 `id` 命中的 item；无 `id` / 找不到回空。 */

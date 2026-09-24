@@ -7,6 +7,7 @@
 export const STYLE_TEXT = `
 .chat-root { position: relative; height: 100%; min-height: var(--main-min-h); display: flex; flex-direction: column; }
 .chat-status { flex: none; height: 2px; display: flex; justify-content: center; }
+.chat-status[hidden] { display: none; }
 .chat-status .chat-breathe { width: 100%; height: 2px; }
 .chat-scroll { flex: 1 1 auto; overflow: auto; }
 .chat-list { box-sizing: border-box; min-height: 100%; max-width: var(--msg-max-w); margin: 0 auto; padding: var(--space-16); display: flex; flex-direction: column; gap: var(--msg-gap); transition: opacity var(--motion-base); }
@@ -121,6 +122,8 @@ export const STYLE_TEXT = `
 .chat-btn:disabled { opacity: .45; cursor: not-allowed; }
 .chat-breathe { width: 48px; height: 2px; border-radius: var(--radius-sm); background: var(--c-text-3); animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-breathe-inline { width: 32px; }
+/* 「正在工作」流光呼吸文字：渐层高光扫过（流光）叠加透明度脉冲（呼吸感），仅 token 取色。 */
+.chat-working { width: fit-content; font-size: var(--font-size-xs); background: linear-gradient(90deg, var(--c-text-3) 25%, var(--c-text) 50%, var(--c-text-3) 75%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: chat-shimmer 1.8s linear infinite, chat-breathe 2.4s ease-in-out infinite; }
 .chat-cursor { display: inline-block; width: 1px; height: 1em; margin-left: 1px; background: var(--c-text); vertical-align: text-bottom; animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-pill { position: absolute; left: 50%; bottom: var(--space-16); transform: translateX(-50%); padding: var(--space-4) var(--space-12); background: var(--c-accent); color: var(--c-accent-text); border: none; border-radius: 999px; font: inherit; font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; cursor: pointer; z-index: var(--z-popover); }
 .chat-pill:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
@@ -153,9 +156,11 @@ export const STYLE_TEXT = `
 .chat-lightbox-img[data-dragging="true"] { cursor: grabbing; }
 .chat-lightbox-close { position: absolute; top: var(--space-16); right: var(--space-16); color: var(--c-text); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
 @keyframes chat-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
+@keyframes chat-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes chat-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-group-avatar[data-current="true"] { animation: none; opacity: .4; }
+  .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-working, .chat-group-avatar[data-current="true"] { animation: none; }
+  .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-group-avatar[data-current="true"] { opacity: .4; }
   .chat-lightbox { animation: none; }
   .chat-list, .chat-footnote, .chat-tool-chevron, .chat-reasoning-chevron, .chat-anchor { transition: none; }
 }

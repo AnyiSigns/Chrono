@@ -7,7 +7,7 @@
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
 import { PortLink } from './port-link.ts'
-import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
+import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, READONLY_METHODS, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
 import { loadWiring } from './wiring.ts'
 import { BadArgsError } from './types.ts'
@@ -130,9 +130,21 @@ async function handle(message: Json): Promise<void> {
   }
 }
 
+/**
+ * 只读 call 判定：kind=call 且 method 由声明派生为只读。只读方法不推进状态，
+ * 可在串行链之外并发；其余帧仍走链保证到达序（send / resume 必须在链上）。
+ */
+function isReadonlyCall(message: Json): boolean {
+  if (!isRecord(message) || message['kind'] !== 'call') return false
+  const method = message['method']
+  return typeof method === 'string' && READONLY_METHODS.has(method)
+}
+
 const decoder = createFrameDecoder()
 // 串行链：保证同一连接上的消息按到达序处理；反向调用应答立即结算（不排队），
 // 否则正在 await port.result 的 call 会把链堵死。
+// 只读 call 不排队：长回合（send 整段 await interpret）会占住链，读命令若排队
+// 必被宿主侧方法超时先掐断。
 let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
   let messages: Json[]
@@ -144,6 +156,10 @@ process.stdin.on('data', (chunk: Buffer) => {
   }
   for (const message of messages) {
     if (isRecord(message) && LINK.settle(message)) continue
+    if (isReadonlyCall(message)) {
+      void handle(message).catch((err: unknown) => log(`readonly handle error: ${(err as Error).message}`))
+      continue
+    }
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))

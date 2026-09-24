@@ -150,7 +150,45 @@ export function announcementOf(view: ThreadsView): string {
   return parts.join(' · ')
 }
 
-/** 初始快照（表未热时用内置最小文案表）。 */
+// ── 顶栏整体状态（显式区分 loading / offline / failed / empty / idle / ready） ─
+
+/** >8s 仍在读取的追加提示阈值（与 ui-chat / ui-settings 同档）。 */
+export const LOADING_NOTE_MS = 8000
+
+export type ThreadsStatus = 'idle' | 'loading' | 'offline' | 'failed' | 'empty' | 'ready'
+
+/** 顶栏状态：无数据时先分连接 / 在途；有数据后空标签是 empty、有标签是 ready。
+ * 连接断开优先于在途：插件不可达时不显示「读取中…」，避免与慢读混淆。 */
+export function threadsStatusOf(view: ThreadsView): ThreadsStatus {
+  if (!view.connected && view.data === null) return 'offline'
+  if (view.error !== null) return view.connected ? 'failed' : 'offline'
+  if (view.loading && view.data === null) return 'loading'
+  if (view.data === null) return 'idle'
+  if (view.data.tags.length === 0) return 'empty'
+  return 'ready'
+}
+
+/** 非错误状态的标题文案码（failed 取 `error.code` 的人话，不在此表）；idle / ready 无标题。 */
+export function threadsStatusTextCode(status: ThreadsStatus): string | null {
+  if (status === 'loading') return 'threads_loading'
+  if (status === 'offline') return 'ui_unreachable'
+  if (status === 'empty') return 'threads_empty'
+  return null
+}
+
+/** 状态标题文本（组件只渲染，不在组件内拼串）：loading 在 >8s 时追加「仍在读取…」，
+ * failed 取错误码人话，offline 取宿主不可达人话；idle / ready 回空串。 */
+export function threadsStatusText(view: ThreadsView, status: ThreadsStatus, slow: boolean): string {
+  if (status === 'loading') {
+    const base = messageText(view.table, 'threads_loading')
+    return slow ? `${base} · ${messageText(view.table, 'threads_loading_more')}` : base
+  }
+  if (status === 'failed') return messageText(view.table, view.error?.code ?? 'unknown')
+  const code = threadsStatusTextCode(status)
+  return code === null ? '' : messageText(view.table, code)
+}
+
+/** 初始快照（表未热时用内置最小文案表）；待办清单默认收起。 */
 export function initialView(table: MessageTable): ThreadsView {
   return {
     table,
@@ -204,14 +242,13 @@ export function applyUnreadBump(view: ThreadsView, thread: unknown): ThreadsView
   return unread === view.unread ? view : { ...view, unread }
 }
 
-/** 点击标签：切换当前线程、清零未读、收起待办清单。 */
+/** 点击标签：切换当前线程、清零未读；待办清单展开态为用户选择，切换不重置。 */
 export function selectThread(view: ThreadsView, thread: unknown): ThreadsView {
   if (typeof thread !== 'string' || thread.length === 0) return view
   return {
     ...view,
     activeThread: thread,
     unread: clearUnread(view.unread, thread),
-    todoOpen: false,
   }
 }
 

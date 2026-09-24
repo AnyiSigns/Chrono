@@ -2,6 +2,8 @@
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影、无写通道；执行与密钥解析全部经反向调用。
 
+import { spawnSync } from 'node:child_process'
+
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
 import { PortLink, RemoteExec, RemoteSecrets } from './port-link.ts'
@@ -9,11 +11,31 @@ import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { ToolError, isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
+/**
+ * 解析命令形态的 PowerShell 解释器，按优先级探测：`pwsh`（PowerShell Core，二进制名跨版本恒定，
+ * 比 7 新的稳定版同名）→ `pwsh-preview`（预览版）→ `powershell.exe`（仅 Windows，系统自带 5.1）。
+ * 探测是存在性冒烟（`exit 0`），不校验版本，故更新版本无需改代码；服务启动时一次性执行，结果注入 invoke。
+ */
+function resolveShellCommand(): string {
+  const candidates =
+    process.platform === 'win32'
+      ? ['pwsh', 'pwsh-preview', 'powershell.exe']
+      : ['pwsh', 'pwsh-preview']
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate, ['-NoProfile', '-Command', 'exit 0'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    if (probe.status === 0) return candidate
+  }
+  return candidates[0]
+}
+
 const LINK = new PortLink((message) => writeFrame(message))
 const HANDLERS = createHandlers({
   exec: new RemoteExec(LINK),
   secrets: new RemoteSecrets(LINK),
-  platform: process.platform,
+  shell: resolveShellCommand(),
 })
 
 const DECLARED_METHODS = new Set<string>(

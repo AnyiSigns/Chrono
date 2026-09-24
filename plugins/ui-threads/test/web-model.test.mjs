@@ -1,16 +1,9 @@
 // `ui-threads` 浏览器视图层纯函数测试（node --test）：
-// hover 延时状态机、未读计数、active_thread 单桥重置、角标色调、文案兜底。
+// 未读计数、active_thread 单桥重置、角标色调、文案兜底、待办归一。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  HOVER_HIDE_MS,
-  HOVER_SHOW_MS,
-  hoverDelay,
-  isHoverOpen,
-  nextHoverStatus,
-} from '../execute/web/hover-intent.ts'
 import { bumpUnread, clearUnread, unreadOf, unreadTotal } from '../execute/web/unread.ts'
 import { resolveActiveThread } from '../execute/web/bridge-state.ts'
 import { badgeTone, threadLabelKey } from '../execute/web/threads-model.ts'
@@ -32,39 +25,6 @@ import {
   tagLabel,
   toggleTodo,
 } from '../execute/web/threads-store.ts'
-
-test('hover 意图延时：150ms 出 / 300ms 收，划过与回入取消', () => {
-  assert.equal(HOVER_SHOW_MS, 150)
-  assert.equal(HOVER_HIDE_MS, 300)
-
-  // 进入 → showing（排 150ms）；到点 → visible
-  let status = nextHoverStatus('hidden', 'enter')
-  assert.equal(status, 'showing')
-  assert.equal(hoverDelay(status), 150)
-  assert.equal(isHoverOpen(status), false)
-  status = nextHoverStatus(status, 'timeout')
-  assert.equal(status, 'visible')
-  assert.equal(hoverDelay(status), null)
-  assert.equal(isHoverOpen(status), true)
-
-  // 划过：showing 期间离开 → 直接 hidden（不展开、不排收起）
-  assert.equal(nextHoverStatus('showing', 'leave'), 'hidden')
-
-  // 离开 → hiding（排 300ms）；到点 → hidden
-  status = nextHoverStatus('visible', 'leave')
-  assert.equal(status, 'hiding')
-  assert.equal(hoverDelay(status), 300)
-  assert.equal(isHoverOpen(status), false)
-  assert.equal(nextHoverStatus(status, 'timeout'), 'hidden')
-
-  // 收起期间回入 → 取消收起、保持展开
-  assert.equal(nextHoverStatus('hiding', 'enter'), 'visible')
-
-  // 幂等 / 非法输入不抛错
-  assert.equal(nextHoverStatus('visible', 'enter'), 'visible')
-  assert.equal(nextHoverStatus('hidden', 'leave'), 'hidden')
-  assert.equal(nextHoverStatus('bogus', 'enter'), 'hidden')
-})
 
 test('未读计数：非当前线程 +1、切入清零、当前线程不计数', () => {
   let counts = {}
@@ -127,11 +87,11 @@ test('角标色调与文案键映射', () => {
 
 test('文案兜底：本地界面文案、占位符代入、错误码 unknown', () => {
   assert.equal(messageText(null, 'threads_region'), UI_TEXT.threads_region)
-  assert.equal(formatText(null, 'threads_todo', { count: 3 }), '待办 3')
+  assert.equal(formatText(null, 'threads_todo_progress', { done: 1, total: 7 }), '1/7 个待办已完成')
   assert.equal(formatText(null, 'threads_unread', { count: 2 }), '未读 2')
   // 表感知：共享表已登记时优先共享表模板
-  const shared = { threads_todo: { title: '', body: 'TODO {count}' } }
-  assert.equal(formatText(shared, 'threads_todo', { count: 4 }), 'TODO 4')
+  const shared = { threads_todo_progress: { title: '', body: 'TODO {done}/{total}' } }
+  assert.equal(formatText(shared, 'threads_todo_progress', { done: 2, total: 9 }), 'TODO 2/9')
   const unknown = lookupMessage(null, 'threads_does_not_exist')
   assert.equal(unknown.body.includes('threads_does_not_exist'), true)
   assert.equal(parseMessages('{"x":{"title":"t","body":"b"}}').x.body, 'b')
@@ -221,6 +181,7 @@ test('store fold：归一防御、applyLoaded 单桥、切换清未读、未读 
   const selected = selectThread(bumped, 'c3')
   assert.equal(selected.activeThread, 'c3')
   assert.equal(selected.unread.c3, 0)
+  // 待办清单默认收起，切换不重置（展开态为用户选择）
   assert.equal(selected.todoOpen, false)
 
   // 外部 uiState 写入置为当前并清零（无计数不改写；有计数清零）

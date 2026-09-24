@@ -1,5 +1,6 @@
 // `invoke`：把单工具 `shell` 映射为一次 `sandbox.exec` 反向调用。
-// 两种输入形态共用同一隔离与审计路径：command 经平台 shell，code 按语言白名单起 node / python / shell。
+// 两种输入形态共用同一隔离与审计路径：command 经 PowerShell（pwsh，Windows 缺失回落 powershell.exe），
+// code 按语言白名单起 node / python / PowerShell。
 // 密钥经 `secrets.resolve` 取明文后只经 exec 的 `env` 字段下传子进程；明文不写入 args / 结果 / 日志 / event。
 // sandbox 的错误原样透传（不吞、不改写）。
 
@@ -17,7 +18,8 @@ import type { Json, Rec } from './types.ts'
 export interface InvokeDeps {
   exec: ExecBackend
   secrets: SecretsBackend
-  platform: string
+  /** 命令形态的 PowerShell 解释器：pwsh，或 Windows 缺失 pwsh 时回落的 powershell.exe（启动时探测注入）。 */
+  shell: string
 }
 
 /** 结果面：成功 `{ok:true, result}`，失败 `{ok:false, error:{code, message}}`（非零退出 / 被杀另带 result）。 */
@@ -46,7 +48,7 @@ async function run(bag: Json, deps: InvokeDeps, callId: string | null): Promise<
     throw new ToolError('bad_args', "mode must be 'command' or 'code'")
   }
   const language = mode === 'code' ? resolveLanguage(args['language']) : null
-  const invocation = resolveInvocation(mode, input, language, deps.platform)
+  const invocation = resolveInvocation(mode, input, language, deps.shell)
   const caps = effectiveCaps(bag)
   const env = await buildEnv(bag, deps, callId)
   const outcome = await deps.exec.exec(
@@ -84,18 +86,17 @@ function resolveInvocation(
   mode: string,
   input: string,
   language: string | null,
-  platform: string,
+  shell: string,
 ): Invocation {
-  if (mode === 'command') return shellInvocation(input, platform)
+  if (mode === 'command') return shellInvocation(input, shell)
   if (language === 'javascript') return { cmd: 'node', args: ['-e', input] }
   if (language === 'python') return { cmd: 'python', args: ['-c', input] }
-  return shellInvocation(input, platform)
+  return shellInvocation(input, shell)
 }
 
-/** 平台 shell：win32 用 cmd.exe，其余用 /bin/sh。 */
-function shellInvocation(input: string, platform: string): Invocation {
-  if (platform === 'win32') return { cmd: 'cmd.exe', args: ['/c', input] }
-  return { cmd: '/bin/sh', args: ['-c', input] }
+/** 命令形态统一走 PowerShell：三平台同一套语法；解释器由调用方注入（`-NoProfile` 保证确定性）。 */
+function shellInvocation(input: string, shell: string): Invocation {
+  return { cmd: shell, args: ['-NoProfile', '-Command', input] }
 }
 
 /** 合法环境变量名：字母 / 下划线开头，后续字母数字下划线（POSIX 口径）。 */

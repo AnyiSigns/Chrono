@@ -3,7 +3,6 @@
 // 业务状态住 store（`view-context.ts`），叶子纯模型住同目录 `*.ts`（零 react import）。
 
 import type { SlotContext } from '@chrono/ui-contract'
-import { useEffect } from 'react'
 import { App, VcContext } from './components/App.tsx'
 import { createViewContext } from './view-context.ts'
 
@@ -11,9 +10,9 @@ export const contract = '2'
 
 export function register(ctx: SlotContext): void {
   const { vc, dispose } = createViewContext(ctx)
+  // 视图上下文住 register 作用域：组件卸载不 dispose，错误边界重挂后仍是同一实例。
   function Overlay(props: { ctx: SlotContext }) {
     props.ctx.useStore(vc.store)
-    useEffect(() => () => dispose(), [])
     return (
       <VcContext.Provider value={vc}>
         <App />

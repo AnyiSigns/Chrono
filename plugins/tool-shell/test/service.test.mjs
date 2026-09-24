@@ -192,7 +192,9 @@ test('invoke command 经反向 port.call 调 sandbox.exec 并回 terminal 结果
     assert.equal(result.value.result.stdout, 'hi\n')
     const execCall = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec')
     assert.ok(execCall !== undefined, '应经反向 port.call 调 sandbox.exec')
-    assert.equal(execCall.args.cmd, 'cmd.exe')
+    const expectedShell = process.platform === 'win32' ? ['pwsh', 'powershell.exe'] : ['pwsh']
+    assert.ok(expectedShell.includes(execCall.args.cmd), `shell=${execCall.args.cmd}`)
+    assert.deepEqual(execCall.args.args, ['-NoProfile', '-Command', 'echo hi'])
     assert.equal(execCall.args.tier, 'severe')
     assert.equal(execCall.call_id, result.id, '反向帧回带发起 call 帧 id')
   } finally {

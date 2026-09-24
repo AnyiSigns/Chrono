@@ -50,7 +50,11 @@ export async function loadTab(ctx: any, tab: string): Promise<void> {
     await withLoading(ctx, async () => {
       const config = await readConfig(ctx)
       if (stale()) return
-      ctx.state.config = config
+      if (!config.ok) {
+        ctx.state.loadError = { code: config.code, message: '' }
+        return
+      }
+      ctx.state.config = config.body
       await loadNotify(ctx)
     })
     return
@@ -59,7 +63,11 @@ export async function loadTab(ctx: any, tab: string): Promise<void> {
     await withLoading(ctx, async () => {
       const config = await readConfig(ctx)
       if (stale()) return
-      ctx.state.config = config
+      if (!config.ok) {
+        ctx.state.loadError = { code: config.code, message: '' }
+        return
+      }
+      ctx.state.config = config.body
       if (ctx.state.identities === null) {
         const identities = await loadIdentities(ctx)
         if (stale()) return
@@ -103,21 +111,31 @@ export async function loadTab(ctx: any, tab: string): Promise<void> {
   ctx.render()
 }
 
+export interface ConfigReadResult {
+  ok: boolean
+  body: any
+  code: string
+}
+
 /**
- * config 整值（失败 / 非对象 → null，页面按空态处理）。
- * 读到代码世代回落 body（配置身份尚无数据世代）时退避重试；仍不就绪则回 null，
- * 让页面按空态起步——绝不以回落 body 为写基。`ctx.configActive` 记读到的 active 供写用。
+ * config 整值读取：显式区分「读成功」（`ok:true`，body 可为 null = 空配置）与
+ * 「读失败 / 未就绪」（`ok:false` + code），调用方据此渲染错误而非静默空态。
+ * 读到代码世代回落 body（配置身份尚无数据世代）时退避重试；仍不就绪则回 `not_loaded`，
+ * 绝不以回落 body 为写基。`ctx.configActive` 记读到的 active 供写用。
  */
-export async function readConfig(ctx: any): Promise<any> {
+export async function readConfig(ctx: any): Promise<ConfigReadResult> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const result = await ctx.runCommand('config.read', null)
-    if (!result.ok) return null
+    if (!result.ok) {
+      const code = typeof result.code === 'string' && result.code.length > 0 ? result.code : 'unknown'
+      return { ok: false, body: null, code }
+    }
     ctx.configActive = identityActive(result.value)
     const body = identityBody(result.value)
-    if (!isCodeGenFallbackBody(body)) return isRecord(body) ? body : null
+    if (!isCodeGenFallbackBody(body)) return { ok: true, body: isRecord(body) ? body : null, code: '' }
     await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt))
   }
-  return null
+  return { ok: false, body: null, code: 'not_loaded' }
 }
 
 /** 身份投影（插件页 / 关于页 / 厂商模板兜底）。 */

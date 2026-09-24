@@ -1,7 +1,7 @@
 // 宿主进程入口：只解析根目录、调用超时、启动包装器与信号，其余全部交给 startHost。
 
 import { startHost } from './host.ts'
-import { appendLifecycle } from './lifecycle.ts'
+import { appendLifecycle, flushLifecycleSync } from './lifecycle.ts'
 import {
   parseEntryArgv,
   resolveCallTimeoutMs,
@@ -36,11 +36,25 @@ try {
     `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'} watch=${watch ? 'on' : 'off'}\n`,
   )
   const shutdown = (): void => {
-    void handle.stop().then(() => process.exit(0))
+    void handle.stop().then(() => {
+      try {
+        // 信号路径兜底：stop 已排空，这里再落稳一次，确保退出前无未写批
+        flushLifecycleSync()
+      } catch {
+        // 退出兜底尽力而为
+      }
+      process.exit(0)
+    })
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 } catch (err) {
+  try {
+    // 启动失败路径：进程即将退出，同步排空运维日志
+    flushLifecycleSync()
+  } catch {
+    // 退出兜底尽力而为
+  }
   process.stderr.write(`${(err as Error).message}\n`)
   process.exit(1)
 }

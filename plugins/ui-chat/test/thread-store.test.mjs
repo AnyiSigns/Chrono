@@ -12,12 +12,15 @@ import {
   applyToolDelta,
   applyToolEnd,
   applyToolStart,
+  clearPendingUser,
   createThreadStore,
   dropInFlight,
   emptyView,
   FINISHED_MEMORY,
   foldRunFinished,
   isStreaming,
+  reconcilePendingUser,
+  setPendingUser,
 } from '../execute/web/thread-store.ts'
 
 function historyFixture() {
@@ -34,6 +37,7 @@ test('emptyView：空视图形状', () => {
   const view = emptyView('t1')
   assert.equal(view.thread, 't1')
   assert.equal(view.inFlight, null)
+  assert.equal(view.pendingUser, null)
   assert.deepEqual(view.messages, [])
   assert.deepEqual(view.finishedRuns, [])
   assert.equal(view.kind, 'main')
@@ -288,4 +292,69 @@ test('store：getSnapshot 稳定、commit 触发订阅并带 meta、可退订', 
   off()
   store.commit(applyDelta(next, { run: 'r1', text: 'b' }), { type: 'delta' })
   assert.equal(seen.length, 1)
+})
+
+test('register 作用域：卸载 / 重挂后消息与在途流仍在，重挂快照不冲掉在途回合', () => {
+  // register 只建一次 store，组件卸载 / 重挂都复用该实例。
+  const store = createThreadStore(emptyView())
+  // 首挂：权威快照 + 在途流。
+  let view = applySnapshot(store.getSnapshot(), historyFixture(), 'c1')
+  view = applyRunStarted(view, { run: 'r1', thread: 't1' })
+  view = applyDelta(view, { run: 'r1', text: '生成中' })
+  store.commit(view, { type: 'snapshot' })
+  // 卸载后重挂：组件重新拉快照（mount effect 路径），在途回合不被快照清除。
+  const remounted = applySnapshot(store.getSnapshot(), historyFixture(), 'c1')
+  assert.equal(remounted.messages.length, 2)
+  assert.equal(remounted.inFlight.text, '生成中')
+  assert.equal(isStreaming(remounted), true)
+})
+
+test('乐观用户气泡：设置 / 清除幂等', () => {
+  const empty = emptyView()
+  assert.equal(empty.pendingUser, null)
+  assert.equal(clearPendingUser(empty), empty)
+  const def = { role: 'user', parts: [{ type: 'text', text: 'hi' }] }
+  const view = setPendingUser(empty, def)
+  assert.equal(view.pendingUser, def)
+  assert.notEqual(view, empty)
+  assert.equal(clearPendingUser(view).pendingUser, null)
+})
+
+test('乐观用户气泡：卸载 / 重挂后仍在，权威快照含同文消息时收口', () => {
+  const store = createThreadStore(emptyView())
+  // 首挂：权威快照 + 在途回合 + 乐观用户气泡（用户消息尚未落权威历史）。
+  let view = applySnapshot(store.getSnapshot(), historyFixture(), 'c1')
+  view = applyRunStarted(view, { run: 'r1', thread: 't1' })
+  view = applyDelta(view, { run: 'r1', text: '生成中' })
+  view = setPendingUser(view, { role: 'user', parts: [{ type: 'text', text: '新问题' }] })
+  store.commit(view, { type: 'snapshot' })
+  // 卸载后重挂：mount effect 重新拉快照，在途回合与乐观气泡均不被清除。
+  const remounted = reconcilePendingUser(applySnapshot(store.getSnapshot(), historyFixture(), 'c1'))
+  assert.equal(remounted.inFlight.text, '生成中')
+  assert.notEqual(remounted.pendingUser, null)
+  assert.equal(remounted.pendingUser.parts[0].text, '新问题')
+  // 正确收口：权威快照已含同文用户消息 → 乐观气泡清除，在途回合不动。
+  const settledHistory = {
+    body: { current: 'c1', conversations: [{ id: 'c1', kind: 'main', head: { def: 'h3' } }] },
+    refs: {
+      h1: { id: 'm1', role: 'user', content: 'hi', prev: null },
+      h2: { id: 'm2', role: 'assistant', content: 'yo', prev: { def: 'h1' } },
+      h3: { id: 'm3', role: 'user', content: '新问题', prev: { def: 'h2' } },
+    },
+  }
+  const settled = reconcilePendingUser(applySnapshot(remounted, settledHistory, 'c1'))
+  assert.equal(settled.pendingUser, null)
+  assert.equal(settled.inFlight.text, '生成中')
+})
+
+test('乐观用户气泡：取消 / 线程切换走显式清除', () => {
+  let view = applyDelta(emptyView(), { run: 'r1', text: 'half' })
+  view = setPendingUser(view, { role: 'user', parts: [] })
+  // 取消：终局折叠后显式清气泡。
+  const cancelled = foldRunFinished(view, { run: 'r1', status: 'cancelled' }).view
+  assert.equal(clearPendingUser(cancelled).pendingUser, null)
+  // 线程切换：在途回合与气泡同一提交清空。
+  const switched = dropInFlight(clearPendingUser(view))
+  assert.equal(switched.pendingUser, null)
+  assert.equal(switched.inFlight, null)
 })

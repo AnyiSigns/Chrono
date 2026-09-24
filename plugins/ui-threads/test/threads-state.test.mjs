@@ -14,6 +14,17 @@ import {
   resolveRootMainId,
   threadLabelKey,
 } from '../execute/web/threads-model.ts'
+import {
+  applyLoaded,
+  applyUnreadBump,
+  createThreadsStore,
+  initialView,
+  LOADING_NOTE_MS,
+  threadsStatusOf,
+  threadsStatusText,
+  threadsStatusTextCode,
+} from '../execute/web/threads-store.ts'
+import { FALLBACK_MESSAGES, messageText, UI_TEXT } from '../execute/web/messages.ts'
 import { startService, tempRoot } from './driver.mjs'
 
 function conversation(id, extra = {}) {
@@ -165,6 +176,59 @@ test('线程树纯函数：orderSubtree / resolveRootMainId / dataChangeTarget',
   assert.equal(dataChangeTarget({ conversation: 'c2' }), 'c2')
   assert.equal(dataChangeTarget({}), null)
   assert.equal(dataChangeTarget(null), null)
+})
+
+test('store 作用域：卸载 / 重挂保留标签 / 未读 / 当前线程', () => {
+  // register 作用域只建一次 store，组件卸载 / 重挂都复用该实例。
+  const store = createThreadsStore(initialView(FALLBACK_MESSAGES))
+  const loaded = applyLoaded(store.getSnapshot(), assembleThreadsState(sessionIds(twoTrees(), 'c1')))
+  store.commit(loaded.view)
+  store.commit(applyUnreadBump(store.getSnapshot(), 'c2'))
+  const before = store.getSnapshot()
+  assert.equal(before.data.tags.length, 3)
+  assert.equal(before.activeThread, 'c1')
+  assert.equal(before.unread.c2, 1)
+  // 卸载（组件退订）后重挂：store 原样复用，快照引用与内容不变。
+  assert.equal(store.getSnapshot(), before)
+})
+
+// ── 顶栏整体状态：loading / offline / failed / empty / idle / ready 互不混淆 ────
+
+test('顶栏状态判定：慢读、断连、失败、空标签、有标签各归各态', () => {
+  const initial = initialView(FALLBACK_MESSAGES)
+  const base = { ...initial, connected: true }
+  const withData = (tags) => ({ ...base, data: { ok: true, current: null, root: null, tags, todo: null } })
+  assert.equal(threadsStatusOf(initial), 'offline', '连接态未知（false）时归 offline')
+  assert.equal(threadsStatusOf(base), 'idle')
+  assert.equal(threadsStatusOf({ ...base, loading: true }), 'loading')
+  assert.equal(threadsStatusOf({ ...base, connected: false }), 'offline')
+  // 断连优先于在途：插件不可达时不显示「读取中…」。
+  assert.equal(threadsStatusOf({ ...base, loading: true, connected: false }), 'offline')
+  assert.equal(threadsStatusOf({ ...base, error: { code: 'boom', message: '' }, connected: true }), 'failed')
+  assert.equal(threadsStatusOf({ ...base, error: { code: 'boom', message: '' }, connected: false }), 'offline')
+  assert.equal(threadsStatusOf(withData([])), 'empty')
+  assert.equal(threadsStatusOf(withData([{ thread: 't1' }])), 'ready')
+  assert.equal(LOADING_NOTE_MS, 8000)
+})
+
+test('状态标题文本：各态取不同文案，loading 追加「仍在读取…」', () => {
+  assert.equal(threadsStatusTextCode('loading'), 'threads_loading')
+  assert.equal(threadsStatusTextCode('offline'), 'ui_unreachable')
+  assert.equal(threadsStatusTextCode('empty'), 'threads_empty')
+  assert.equal(threadsStatusTextCode('ready'), null)
+  assert.equal(threadsStatusTextCode('idle'), null)
+  assert.equal(UI_TEXT.threads_loading_more, '仍在读取…')
+
+  const view = initialView(FALLBACK_MESSAGES)
+  assert.equal(threadsStatusText(view, 'loading', false), UI_TEXT.threads_loading)
+  assert.equal(
+    threadsStatusText(view, 'loading', true),
+    `${UI_TEXT.threads_loading} · ${UI_TEXT.threads_loading_more}`,
+  )
+  assert.equal(threadsStatusText(view, 'empty', false), UI_TEXT.threads_empty)
+  assert.equal(threadsStatusText(view, 'offline', false), messageText(FALLBACK_MESSAGES, 'ui_unreachable'))
+  const failed = { ...view, error: { code: 'boom', message: '' } }
+  assert.equal(threadsStatusText(failed, 'failed', false), messageText(FALLBACK_MESSAGES, 'boom'))
 })
 
 test('协议级：hello → manifest，ping，threads.state，未知能力类，probe，drain → bye', async () => {

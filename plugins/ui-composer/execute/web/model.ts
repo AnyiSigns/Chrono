@@ -472,3 +472,40 @@ export function trimmedRows(usage: unknown): TrimmedRow[] {
       reason: typeof item.reason === 'string' ? item.reason : '',
     }))
 }
+
+// ── 配置读取状态（区分「空配置」与「读失败」） ────────────────────────────────
+
+/** >8s 仍在读取的追加提示阈值（与 ui-chat / ui-settings 同档）。 */
+export const LOADING_NOTE_MS = 8000
+
+export type ConfigStatus = 'loading' | 'offline' | 'failed' | 'empty' | 'ready'
+
+/** 插件不可达 / 传输中断的错误码：归入 offline（可重试），不当作显式业务失败。 */
+export function isUnreachableCode(code: unknown): boolean {
+  return code === 'ui_unreachable' || code === 'transport_failed'
+}
+
+export interface ConfigStatusInput {
+  loading: boolean
+  connected: boolean
+  error: string | null
+  hasConfig: boolean
+}
+
+/** 配置状态：读失败（failed / offline）优先于空配置，即使已读到配置也显式化，
+ * 避免刷新失败被吞；空配置（读到对象但无模型）是 ready 的正常态，与读失败互不混淆。 */
+export function configStatusOf(input: ConfigStatusInput): ConfigStatus {
+  if (!input.connected && !input.hasConfig) return 'offline'
+  if (input.error !== null) return isUnreachableCode(input.error) ? 'offline' : 'failed'
+  if (input.loading && !input.hasConfig) return 'loading'
+  if (!input.hasConfig) return 'empty'
+  return 'ready'
+}
+
+/** 各状态的提示文案码：组件据此渲染，测试据此证明各态互不混淆；ready / empty 无提示。 */
+export function configNoticeCode(status: ConfigStatus): string | null {
+  if (status === 'loading') return 'composer_config_loading'
+  if (status === 'offline') return 'composer_config_offline'
+  if (status === 'failed') return 'composer_config_failed'
+  return null
+}

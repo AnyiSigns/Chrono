@@ -18,7 +18,7 @@
 //    在途回合只由生命周期事件（定稿 / 取消 / 线程切换 / 重连）清除。
 // 8. 重连：连接 false→true 时由调用方清在途回合并强制快照重同步（断线期间增量不可信）。
 
-import { conversationList, loadConversation, threadKind } from './history-model.ts'
+import { conversationList, hasUserMessage, loadConversation, messageText, threadKind } from './history-model.ts'
 
 /** 已定稿 run 的记忆长度（丢弃迟到帧用；有界，防无界增长）。 */
 export const FINISHED_MEMORY = 32
@@ -63,6 +63,7 @@ export function emptyView(thread: string | null = null): any {
     kind: 'main',
     messages: [],
     inFlight: null,
+    pendingUser: null,
     finishedRuns: [],
     revision: 0,
   }
@@ -271,6 +272,29 @@ export function dropInFlight(view: any, run: string | null = null): any {
 /** 是否正在流式（在途且未取消）。 */
 export function isStreaming(view: any): boolean {
   return view.inFlight !== null && view.inFlight.cancelled !== true
+}
+
+/**
+ * 设置乐观用户消息（回合内展示的用户气泡）。
+ * 住 store 而非组件：组件卸载 / 重挂后同一 store 复用，气泡不随组件销毁。
+ */
+export function setPendingUser(view: any, def: any): any {
+  return { ...view, pendingUser: def }
+}
+
+/** 清除乐观用户消息（幂等：已空时原引用返回，避免无谓通知）。 */
+export function clearPendingUser(view: any): any {
+  if (view.pendingUser === null) return view
+  return { ...view, pendingUser: null }
+}
+
+/**
+ * 快照落地后收口乐观用户消息：权威历史已含同文用户消息时清除，避免与历史重复。
+ * 线程切换 / 取消 / 重连由调用方显式清除；重挂触发的快照重拉不得误清仍在途的气泡。
+ */
+export function reconcilePendingUser(view: any): any {
+  if (view.pendingUser === null) return view
+  return hasUserMessage(view.messages, messageText(view.pendingUser)) ? clearPendingUser(view) : view
 }
 
 /** React-free store：getSnapshot / subscribe / commit（commit 带 meta 供渲染器选增量路径）。 */

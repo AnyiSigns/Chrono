@@ -186,6 +186,7 @@ export async function spawnService(
     pid: child.pid ?? -1,
     startedAt: Date.now(),
     attempts: 0,
+    healthFailures: 0,
     restart: parseRestart(decl.restart),
     health: parseHealth(decl.health),
     healthTimer: null,

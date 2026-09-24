@@ -25,8 +25,9 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 
 - **投影读在入口 term**；服务不读投影（`ctx` 由宿主按 directive 注入 term，随 args 传入）。
 - **裁决续跑计划**：服务反向调审批端口拿到其写计划后，拼顶层 `$directives` =
-  `[eval(command:'chat.resume', args:{cursor, thread, payload:{verdict}, ids}), …审批写计划]` ——
-  续跑条目按被裁决项逐条产（每项各自游标 / 线程），审批写计划接在其后（记裁决 + 清槽 + extern）。
+  `[…审批写计划, eval(command:'chat.resume', args:{cursor, thread, payload:{verdict}, ids})]` ——
+  **审批写在前**（记裁决 + 清槽 + extern），续跑条目按被裁决项逐条产（每项各自游标 / 线程）接在其后。
+  宿主遇任一非 done 轮即丢弃剩余指令，若续跑排在前，续跑一失败（如未配置模型）整批收口、用户裁决被静默吞掉。
 - **续跑 args 为何自带 `ids`**：内核 term 不能同时传 args 与投影，续跑 eval 无法再取投影，
   故由调用方把**本服务入口 term 收到的投影切片**原样放进 args，供对话服务装配 interpret bag。
 
@@ -61,6 +62,11 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 - **失败**：裁决失败在该条行内收口（danger 文字 + [重试]），条目仍留在停靠带。
 - **层级 / 质感**：停靠带用 `--z-dock`、薄玻璃（全局唯一例外，`--c-glass` + `backdrop-filter`，
   不支持时降级实色）；出入 200ms，最大高 40vh、超出内滚；无待审批项时不占高度、不渲染。
+- **堆叠卡片**：`execute/web/styles.ts` 由组件注入 `<style>`（只引壳 token、零硬编码色值）；
+  队列渲染为卡片堆叠——非首卡 `margin-top` 负偏移、`nth-child` 递减 z-index 让前卡压在深卡之上，
+  按 `kind` 左侧色条（tool_call 警示 / plugin_write 危险 / orchestration_change 信息）。
+- **位置**：`.approval-root` 与 `.composer-root` 同盒（`max-width: --msg-max-w` 居中 + 两侧 `space-16`），
+  故停靠带恒在对话输入框正上方、左右边缘对齐；`dock` 槽本就位于 main 与 composer 之间。
 - **键盘可达 / aria**：`role="region"` + `aria-label`；展开按钮 `aria-expanded` / `aria-label`；
   危险动作补 `aria-label`；`aria-live="assertive"` 播报待审批计数。
 

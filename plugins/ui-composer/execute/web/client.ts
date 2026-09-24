@@ -26,10 +26,13 @@ export interface SubmitResult {
   run: string | null
 }
 
-/** 身份读值：data body + 该身份的 active（写 `add_gen` 的 `expect_active`）。 */
+/** 身份读值：data body + 该身份的 active（写 `add_gen` 的 `expect_active`）。
+ * `error` 非空表示读取本身失败（命令未 ok / 传输中断），此时 `body` 为 null；
+ * 与「读成功但 body 为空」区分，供上层渲染失败态而非静默空配置。 */
 export interface IdentityRead {
   body: unknown
   active: string | null | undefined
+  error: string | null
 }
 
 function asCommand(result: unknown): CommandResult {
@@ -81,8 +84,8 @@ export function createClient(ctx: SlotContext): ComposerClient {
   /** 读身份：命令返回整份身份视图，拆出 `body` 与 `active`。 */
   async function readIdentity(name: string, args: unknown, thread?: string): Promise<IdentityRead> {
     const result = await command(name, args, thread)
-    if (!result.ok) return { body: null, active: undefined }
-    return { body: identityBody(result.value), active: identityActive(result.value) }
+    if (!result.ok) return { body: null, active: undefined, error: result.code }
+    return { body: identityBody(result.value), active: identityActive(result.value), error: null }
   }
 
   async function readConfigState(): Promise<IdentityRead> {

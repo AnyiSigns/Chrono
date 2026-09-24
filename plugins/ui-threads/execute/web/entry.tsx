@@ -4,12 +4,10 @@
 // 标签数据经壳 `ctx.command('threads.state')` 取回；切换只写 `ctx.uiState.active_thread`。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FocusEvent } from 'react'
+import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 import { FALLBACK_MESSAGES, formatText, loadMessages, messageText } from './messages.ts'
 import { badgeTone, dataChangeTarget, isRecord } from './threads-model.ts'
-import { hoverDelay, isHoverOpen, nextHoverStatus } from './hover-intent.ts'
-import type { HoverEvent, HoverStatus } from './hover-intent.ts'
 import { unreadOf } from './unread.ts'
 import {
   announcementOf,
@@ -19,14 +17,17 @@ import {
   applyUnreadBump,
   createThreadsStore,
   initialView,
+  LOADING_NOTE_MS,
   selectThread,
   setConnected,
   setLoading,
   setTable,
   tagLabel,
+  threadsStatusOf,
+  threadsStatusText,
   toggleTodo,
 } from './threads-store.ts'
-import type { ThreadTag, TodoView } from './threads-store.ts'
+import type { ThreadTag, ThreadsStore, TodoView } from './threads-store.ts'
 import { STYLE_TEXT } from './styles.ts'
 
 const BADGE_TEXT_KEY: { [tone: string]: string } = {
@@ -36,18 +37,37 @@ const BADGE_TEXT_KEY: { [tone: string]: string } = {
   failed: 'threads_status_failed',
 }
 
-function todoStatusKey(status: string): string {
-  if (status === 'completed') return 'threads_todo_completed'
-  if (status === 'in_progress') return 'threads_todo_in_progress'
-  return 'threads_todo_pending'
+/** 待办清单出现 / 更新时「展开→收起」提示动画的保持时长（展开后停此时长再收起）。 */
+const TODO_PEEK_MS = 200
+
+/** 线性图标（壳统一 sprite）：装饰性，一律 aria-hidden。 */
+function Icon({ icons, name, size = 16, className }: { icons: string; name: string; size?: number; className?: string }): ReactNode {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <use href={`${icons}#${name}`} />
+    </svg>
+  )
 }
 
-/** 顶栏组件：hover 意图显隐 + 标签 / 待办渲染 + 事件订阅；键盘经根容器 focus 可达。 */
-function App({ ctx }: { ctx: SlotContext }) {
-  const [store] = useState(() => createThreadsStore(initialView(FALLBACK_MESSAGES)))
+/** 顶栏组件：常显标签 / 待办清单渲染 + 事件订阅；标签为原生 button，可 Tab 到达。 */
+function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
   const view = ctx.useStore(store)
-  const [open, setOpen] = useState(false)
-  const hover = useRef<{ status: HoverStatus; timer: number | null }>({ status: 'hidden', timer: null })
+  const status = threadsStatusOf(view)
+  const todo = view.data !== null ? view.data.todo : null
+  const [slow, setSlow] = useState(false)
+  const [peek, setPeek] = useState(false)
+  const todoSigRef = useRef<string | null>(null)
   const reloadTimer = useRef<number | null>(null)
   const disposed = useRef(false)
   const loadSeq = useRef(0)
@@ -90,6 +110,36 @@ function App({ ctx }: { ctx: SlotContext }) {
     }, 120)
   }, [load])
 
+  // ---- 长等待追加提示：仅在「读取中」计时，8s 后追加「仍在读取…」 ----
+  useEffect(() => {
+    if (status !== 'loading') {
+      setSlow(false)
+      return undefined
+    }
+    const timer = window.setTimeout(() => setSlow(true), LOADING_NOTE_MS)
+    return () => window.clearTimeout(timer)
+  }, [status])
+
+  // ---- 待办清单出现 / 更新：播放一次「展开→收起」peek，随后回落默认收起态 ----
+  const todoSig =
+    todo === null
+      ? null
+      : `${todo.conversation}|${todo.total}|${todo.done}|${todo.items
+          .map((item) => `${item.status}:${item.text}`)
+          .join('\u0001')}`
+  useEffect(() => {
+    if (todoSig === null) {
+      todoSigRef.current = null
+      setPeek(false)
+      return undefined
+    }
+    if (todoSigRef.current === todoSig) return undefined
+    todoSigRef.current = todoSig
+    setPeek(true)
+    const timer = window.setTimeout(() => setPeek(false), TODO_PEEK_MS)
+    return () => window.clearTimeout(timer)
+  }, [todoSig])
+
   // ---- uiState：`active_thread` 外部写入（侧栏 / 其它 slot） ----
   useEffect(() => {
     store.commit(applyActiveThread(store.getSnapshot(), ctx.uiState.get('active_thread')))
@@ -101,6 +151,8 @@ function App({ ctx }: { ctx: SlotContext }) {
   // ---- 事件（壳事件总线；impl / topic 原样重播） ----
   useEffect(() => {
     disposed.current = false
+    // 首屏校正连接态：壳在订阅前可能已广播过 `shell.state`，以当前值起步，避免误判 offline。
+    store.commit(setConnected(store.getSnapshot(), ctx.events.connected()))
     const close =
       typeof ctx.events?.onAny === 'function'
         ? ctx.events.onAny((record) => {
@@ -139,43 +191,6 @@ function App({ ctx }: { ctx: SlotContext }) {
     }
   }, [ctx, store, load, scheduleReload])
 
-  // ---- hover 意图延时（150ms 出 / 300ms 收） ----
-  const dispatchHover = useCallback((event: HoverEvent): void => {
-    const current = hover.current
-    const next = nextHoverStatus(current.status, event)
-    if (next === current.status) return
-    if (current.timer !== null) {
-      window.clearTimeout(current.timer)
-      current.timer = null
-    }
-    current.status = next
-    setOpen(isHoverOpen(next))
-    const delay = hoverDelay(next)
-    if (delay !== null) {
-      current.timer = window.setTimeout(() => {
-        current.timer = null
-        dispatchHover('timeout')
-      }, delay)
-    }
-  }, [])
-
-  useEffect(
-    () => () => {
-      if (hover.current.timer !== null) window.clearTimeout(hover.current.timer)
-    },
-    [],
-  )
-
-  function handleFocus(event: FocusEvent<HTMLDivElement>): void {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    dispatchHover('enter')
-  }
-
-  function handleBlur(event: FocusEvent<HTMLDivElement>): void {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    dispatchHover('leave')
-  }
-
   // ---- 切换：写 `active_thread`（本插件是唯一写者） ----
   const onSelect = useCallback(
     (thread: string): void => {
@@ -212,75 +227,84 @@ function App({ ctx }: { ctx: SlotContext }) {
     )
   }
 
-  function renderTodo(todo: TodoView) {
+  function renderTodo(todoView: TodoView, open: boolean) {
     return (
-      <div className="threads-todo">
-        <div className="threads-todo-heading">{messageText(view.table, 'threads_todo_heading')}</div>
-        {todo.items.map((item) => (
-          <div className="threads-todo-item" key={item.id}>
-            <span className="threads-todo-status">
-              {messageText(view.table, todoStatusKey(item.status))}
-            </span>
-            <span className="threads-todo-text">{item.text}</span>
+      <div className="threads-todo" data-open={open ? 'true' : 'false'}>
+        <button
+          type="button"
+          className="threads-todo-head"
+          aria-expanded={open}
+          onClick={() => store.commit(toggleTodo(store.getSnapshot()))}
+        >
+          <Icon icons={ctx.tokens.icons} name="check-check" size={14} className="threads-todo-icon" />
+          <span className="threads-todo-progress">
+            {formatText(view.table, 'threads_todo_progress', { done: todoView.done, total: todoView.total })}
+          </span>
+          <Icon icons={ctx.tokens.icons} name="chevron-down" size={14} className="threads-todo-chevron" />
+        </button>
+        <div className="threads-todo-body">
+          <div className="threads-todo-clip">
+            <div className="threads-todo-list">
+              {todoView.items.map((item) => (
+                <div className="threads-todo-item" data-status={item.status} key={item.id}>
+                  <span className="threads-todo-check" data-status={item.status} aria-hidden="true">
+                    {item.status === 'completed' ? (
+                      <Icon icons={ctx.tokens.icons} name="check" size={10} />
+                    ) : null}
+                  </span>
+                  <span className="threads-todo-text">{item.text}</span>
+                </div>
+              ))}
+            </div>
           </div>
-        ))}
+        </div>
       </div>
     )
   }
 
   function renderTags() {
-    if (view.error !== null) {
+    // 失败 / 不可达：给可重试的显式错误标签，不再落回「不渲染」。
+    if (status === 'offline' || status === 'failed') {
       return (
-        <button type="button" className="threads-tag" onClick={() => void load()}>
-          <span className="threads-label">{messageText(view.table, view.error.code)}</span>
+        <button type="button" className="threads-tag" data-tone="error" onClick={() => void load()}>
+          <span className="threads-label">{threadsStatusText(view, status, false)}</span>
           <span className="threads-unread">{messageText(view.table, 'threads_retry')}</span>
         </button>
       )
     }
-    if (view.data === null) {
-      return view.loading ? <span className="threads-breathe" /> : null
-    }
-    const nodes = view.data.tags.map(renderTag)
-    const todo = view.data.todo
-    if (todo !== null && todo.pending > 0) {
-      const label = formatText(view.table, 'threads_todo', { count: todo.pending })
-      nodes.push(
-        <button
-          key="todo"
-          type="button"
-          className="threads-tag"
-          data-kind="todo"
-          data-active={view.todoOpen ? 'true' : 'false'}
-          aria-label={label}
-          title={label}
-          onClick={() => store.commit(toggleTodo(store.getSnapshot()))}
-        >
-          <span className="threads-label">{label}</span>
-        </button>,
+    // 读取中：给可见文案（>8s 追加「仍在读取…」），不再是无声呼吸条。
+    if (status === 'loading') {
+      return (
+        <span className="threads-loading" data-role="loading">
+          <span className="threads-breathe" />
+          <span>{threadsStatusText(view, status, slow)}</span>
+        </span>
       )
     }
-    return nodes
+    if (status === 'empty') {
+      return <span className="threads-empty">{threadsStatusText(view, status, false)}</span>
+    }
+    if (status === 'idle' || view.data === null) return null
+    return view.data.tags.map(renderTag)
   }
 
-  const todo = view.data !== null ? view.data.todo : null
+  const tagNodes = renderTags()
+  const hasBar = tagNodes !== null || todo !== null
+  const todoOpen = view.todoOpen || peek
   return (
     <div
       className="threads-root"
-      data-open={open ? 'true' : 'false'}
       role="region"
       aria-label={messageText(view.table, 'threads_region')}
       tabIndex={0}
-      onMouseEnter={() => dispatchHover('enter')}
-      onMouseLeave={() => dispatchHover('leave')}
-      onFocus={handleFocus}
-      onBlur={handleBlur}
     >
       <style>{STYLE_TEXT}</style>
-      <div className="threads-hit" aria-hidden="true" />
-      <div className="threads-panel">
-        <div className="threads-tags">{renderTags()}</div>
-        {todo !== null && view.todoOpen ? renderTodo(todo) : null}
-      </div>
+      {hasBar ? (
+        <div className="threads-panel">
+          {tagNodes !== null ? <div className="threads-tags">{tagNodes}</div> : null}
+          {todo !== null ? renderTodo(todo, todoOpen) : null}
+        </div>
+      ) : null}
       <div className="threads-sr" aria-live="polite" aria-atomic="true">
         {announcementOf(view)}
       </div>
@@ -292,5 +316,8 @@ export const contract = '2'
 
 /** 注册进壳的 `topbar` slot；壳对每个注册组件包错误边界。 */
 export function register(ctx: SlotContext): void {
-  ctx.slots.register({ name: 'topbar' }, App)
+  // store 住 register 作用域：壳错误边界卸载后重挂复用同一实例，标签数据 / 未读 / 连接态不随组件销毁。
+  // 首屏以当前壳连接态起步，避免订阅前已广播的 `shell.state` 缺失导致误判 offline。
+  const store = createThreadsStore(setConnected(initialView(FALLBACK_MESSAGES), ctx.events.connected()))
+  ctx.slots.register({ name: 'topbar' }, (props) => <App ctx={props.ctx} store={store} />)
 }

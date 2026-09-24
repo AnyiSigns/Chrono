@@ -935,7 +935,7 @@ test('界面人话单一来源守卫：视图层无散落硬编码文案', () =>
   const blacklist = [
     '播放视频', '自定义输入', '请先作答', '系统消息', '提交', '文件', '图片', '我',
     '成功', '失败', '等待审批', '跳过', '等待', '运行中', '节点列表',
-    '以下为新消息', '没有更多了', '已复制', '复制失败', '仍在生成…', '已取消', '已超时',
+    '以下为新消息', '没有更多了', '已复制', '复制失败', '正在工作', '已取消', '已超时',
     '媒体加载失败', '开始新对话', '正在读取…', '提交中…', '重试', '复制', '关闭', '子代理',
     '今天', '昨天',
   ]
@@ -961,4 +961,18 @@ test('entry.tsx 导出 contract=2 / register，且不再导出 mount', () => {
   assert.equal(/export (async )?function mount\b/.test(source), false)
   // 全仓唯一 dangerouslySetInnerHTML 处：Markdown 组件
   assert.equal((source.match(/dangerouslySetInnerHTML=\{\{/g) ?? []).length, 1)
+})
+
+test('entry.tsx：线程 store 建在 register 作用域，组件经 props 复用同一实例', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  const registerAt = source.indexOf('export function register')
+  assert.ok(registerAt >= 0)
+  const component = source.slice(0, registerAt)
+  const register = source.slice(registerAt)
+  // 组件体不得自建 store：否则壳错误边界卸载 / 重挂即丢消息与在途流。
+  assert.equal(component.includes('createThreadStore('), false)
+  assert.match(component, /store: ReturnType<typeof createThreadStore>/)
+  // register 内只建一次，并以 props 传给组件。
+  assert.equal((register.match(/createThreadStore\(/g) ?? []).length, 1)
+  assert.match(register, /store=\{store\}/)
 })

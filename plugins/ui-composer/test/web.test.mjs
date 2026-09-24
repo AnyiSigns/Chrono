@@ -74,6 +74,7 @@ import {
   parseMessages,
   UI_TEXT,
 } from '../execute/web/messages.ts'
+import { createComposerStore } from '../execute/web/store.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
@@ -426,4 +427,71 @@ test('文案：共享表优先、本地界面文案兜底、未知码不空白',
   assert.equal(parseMessages('not json'), null)
   assert.equal(parseMessages('{"x":{"title":1}}'), null)
   assert.equal(lookupMessage(FALLBACK_MESSAGES, 'ui_unreachable').action, '重试')
+})
+
+// ---- store 生命周期（作用域提升） ----
+
+/** 最小壳 api：事件总线可手动 emit，命令按名回包，文案拉取走空 URL（失败回落内置表）。 */
+function fakeComposerCtx() {
+  const listeners = new Set()
+  return {
+    tokens: { messages: '' },
+    uiState: { get: () => undefined, subscribe: () => () => {} },
+    events: {
+      connected: () => true,
+      onAny: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    },
+    command: async (name) => {
+      if (name === 'input.read') {
+        return { ok: true, value: { active: 'a', body: { version: 1, slots: {} } } }
+      }
+      if (name === 'chat.send') return { ok: true, value: null }
+      return { ok: false, code: 'unknown', value: null }
+    },
+    submit: async () => ({ ok: true, run: 'w1' }),
+    cancel: async () => ({ ok: true, code: '' }),
+    emit: (record) => {
+      for (const listener of [...listeners]) listener(record)
+    },
+    listenerCount: () => listeners.size,
+  }
+}
+
+test('store 作用域：卸载 / 重挂保留草稿与 RunState，init 幂等不重复订阅', async () => {
+  const ctx = fakeComposerCtx()
+  // register 作用域只建一次 store。
+  const store = createComposerStore(ctx)
+  await store.init()
+  assert.equal(ctx.listenerCount(), 1)
+  // 驱动一次完整回合：槽写落账 → chat.send → run.started 认领。
+  store.setText('发送中')
+  await store.send()
+  ctx.emit({ topic: 'run.finished', payload: { thread: null, run: 'w1' } })
+  ctx.emit({ topic: 'run.started', payload: { thread: null, run: 'r1' } })
+  assert.equal(store.getSnapshot().running, true)
+  store.setText('重挂后草稿')
+  // 卸载不 dispose；重挂再 init：幂等、不重复订阅，草稿与运行态原样。
+  await store.init()
+  assert.equal(ctx.listenerCount(), 1)
+  assert.equal(store.getSnapshot().text, '重挂后草稿')
+  assert.equal(store.getSnapshot().running, true)
+  // 最终卸载：dispose 释放订阅。
+  store.dispose()
+  assert.equal(ctx.listenerCount(), 0)
+})
+
+test('entry.tsx：store 建在 register 作用域，组件经 props 复用同一实例', () => {
+  const source = readFileSync(join(HERE, '..', 'execute', 'web', 'entry.tsx'), 'utf8')
+  const registerAt = source.indexOf('export function register')
+  assert.ok(registerAt >= 0)
+  const component = source.slice(0, registerAt)
+  const register = source.slice(registerAt)
+  assert.equal(component.includes('createComposerStore('), false)
+  assert.equal((register.match(/createComposerStore\(/g) ?? []).length, 1)
+  assert.match(register, /store=\{store\}/)
+  // 组件卸载不再 dispose（否则重挂后 store 永久 disposed）。
+  assert.equal(/return \(\) => store\.dispose\(\)/.test(source), false)
 })

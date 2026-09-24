@@ -28,7 +28,7 @@ function fakeDeps(options = {}) {
   const secretCalls = []
   const secretMeta = []
   const deps = {
-    platform: options.platform ?? 'win32',
+    shell: options.shell ?? 'pwsh',
     exec: {
       async exec(args, callId, timeoutMs) {
         execCalls.push(args)
@@ -62,7 +62,7 @@ function bag(overrides = {}) {
   }
 }
 
-test('command 模式：经平台 shell 起命令，tier / workspace_root / caps / grant 透传', async () => {
+test('command 模式：经 pwsh 起命令，tier / workspace_root / caps / grant 透传', async () => {
   const { deps, execCalls } = fakeDeps({ execResult: { ...OK_OUTCOME, stdout: 'hi\n' } })
   const result = await invoke(bag(), deps)
   assert.equal(result.ok, true)
@@ -70,8 +70,8 @@ test('command 模式：经平台 shell 起命令，tier / workspace_root / caps 
   assert.equal(result.result.exit_code, 0)
   assert.equal(result.result.stdout, 'hi\n')
   assert.equal(execCalls.length, 1)
-  assert.equal(execCalls[0].cmd, 'cmd.exe')
-  assert.deepEqual(execCalls[0].args, ['/c', 'echo hi'])
+  assert.equal(execCalls[0].cmd, 'pwsh')
+  assert.deepEqual(execCalls[0].args, ['-NoProfile', '-Command', 'echo hi'])
   assert.equal(execCalls[0].tier, 'severe')
   assert.equal(execCalls[0].workspace_root, 'C:\\ws')
   assert.deepEqual(execCalls[0].caps, { fs: { read: 'workspace', write: 'workspace' }, net: 'none' })
@@ -80,28 +80,27 @@ test('command 模式：经平台 shell 起命令，tier / workspace_root / caps 
   assert.equal(execCalls[0].env, undefined)
 })
 
-test('command 模式：非 win32 用 /bin/sh -c', async () => {
-  const { deps, execCalls } = fakeDeps({ platform: 'linux' })
+test('command 模式：解释器由注入的 shell 决定（Windows 缺失 pwsh 时回落 powershell.exe）', async () => {
+  const { deps, execCalls } = fakeDeps({ shell: 'powershell.exe' })
   await invoke(bag(), deps)
-  assert.equal(execCalls[0].cmd, '/bin/sh')
-  assert.deepEqual(execCalls[0].args, ['-c', 'echo hi'])
+  assert.equal(execCalls[0].cmd, 'powershell.exe')
+  assert.deepEqual(execCalls[0].args, ['-NoProfile', '-Command', 'echo hi'])
 })
 
 test('mode 缺省 = command', async () => {
   const { deps, execCalls } = fakeDeps()
   await invoke({ tool: 'shell', args: { input: 'pwd' } }, deps)
-  assert.equal(execCalls[0].cmd, 'cmd.exe')
+  assert.equal(execCalls[0].cmd, 'pwsh')
 })
 
 test('code 模式 javascript / python / shell：按白名单选解释器', async () => {
   const cases = [
-    { language: 'javascript', platform: 'win32', cmd: 'node', args: ['-e', 'console.log(1)'] },
-    { language: 'python', platform: 'win32', cmd: 'python', args: ['-c', 'print(1)'] },
-    { language: 'shell', platform: 'win32', cmd: 'cmd.exe', args: ['/c', 'echo 1'] },
-    { language: 'shell', platform: 'linux', cmd: '/bin/sh', args: ['-c', 'echo 1'] },
+    { language: 'javascript', cmd: 'node', args: ['-e', 'console.log(1)'] },
+    { language: 'python', cmd: 'python', args: ['-c', 'print(1)'] },
+    { language: 'shell', cmd: 'pwsh', args: ['-NoProfile', '-Command', 'echo 1'] },
   ]
   for (const item of cases) {
-    const { deps, execCalls } = fakeDeps({ platform: item.platform })
+    const { deps, execCalls } = fakeDeps()
     const input = item.language === 'javascript' ? 'console.log(1)' : item.language === 'python' ? 'print(1)' : 'echo 1'
     const result = await invoke(
       { tool: 'shell', args: { mode: 'code', language: item.language, input } },

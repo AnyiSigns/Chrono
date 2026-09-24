@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { commit } from '../../kernel/index.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
+import { flushLifecycle } from '../lifecycle.ts'
 
 /** 仓库 fixtures/plugins 下两个 toy 插件的绝对路径（供 seed 进临时世界）。 */
 export const FIXTURE_ALPHA = fileURLToPath(
@@ -276,6 +277,8 @@ export interface LifeLogEntry {
 
 /** 运维日志：逐行解析规范 JSON（键序可能被排序，解析后再断言）。 */
 export function readLifecycle(file: string): LifeLogEntry[] {
+  // 进程内宿主走批量缓冲：读前先排空，保证读到的就是当前全部已记事件（子进程写入时无 sink，自然空操作）
+  flushLifecycle(file)
   if (!existsSync(file)) return []
   const text = readFileSync(file, 'utf8')
   return text

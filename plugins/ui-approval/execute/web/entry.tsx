@@ -5,6 +5,8 @@
 import { useEffect, useState } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 import {
+  approvalStatus,
+  approvalStatusTextCode,
   confirmArmed,
   CONFIRM_APPROVE_ALL,
   CONFIRM_DENY_ALL,
@@ -18,6 +20,7 @@ import {
   isPending,
   itemPresentation,
   itemTone,
+  LOADING_NOTE_MS,
   oldestPending,
   waitWarning,
 } from './model'
@@ -25,14 +28,15 @@ import type { Rec, View } from './model'
 import { formatText, messageText } from './messages'
 import { createApprovalStore } from './store'
 import type { ApprovalSnapshot, ApprovalStore } from './store'
+import { STYLE_TEXT } from './styles.ts'
 
 export const contract = '2'
 
 export function register(ctx: SlotContext): void {
   const store = createApprovalStore(ctx)
   store.start()
+  // store 住 register 作用域：组件卸载不 dispose，错误边界重挂后仍是同一实例（start 幂等，订阅不重复）。
   const registered = ctx.slots.register({ name: 'dock' }, function ApprovalDock() {
-    useEffect(() => () => store.dispose(), [])
     return <Dock ctx={ctx} store={store} />
   })
   // 注册被拒（陈旧装载）：刚 start 的 store 立即 dispose，避免第二份在途。
@@ -130,6 +134,13 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
 
   const pending = snapshot.items.filter(isPending)
   const count = pending.length
+  const status = approvalStatus({
+    loading: snapshot.loading,
+    error: snapshot.error,
+    connected: snapshot.connected,
+    itemCount: count,
+  })
+  const [slow, setSlow] = useState(false)
 
   useEffect(() => {
     if (count === 0) {
@@ -141,19 +152,47 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
     return () => clearTimeout(timer)
   }, [count, snapshot.table])
 
-  if (snapshot.loading && snapshot.items.length === 0) {
+  // 长等待追加提示：仅在「读取中」计时，8s 后追加「仍在读取…」，与 ui-chat / ui-settings 同档。
+  useEffect(() => {
+    if (status !== 'loading') {
+      setSlow(false)
+      return undefined
+    }
+    const timer = setTimeout(() => setSlow(true), LOADING_NOTE_MS)
+    return () => clearTimeout(timer)
+  }, [status])
+
+  if (status === 'loading') {
     return (
       <div className="approval-root">
+        <style>{STYLE_TEXT}</style>
         <div className="approval-dock">
-          <div className="approval-head">
-            <span className="approval-head-count">{t('approval_loading')}</span>
+          <div className="approval-loading" role="status">
+            <span className="approval-breathe-ring" />
+            <span>{t('approval_loading')}</span>
+            {slow ? <span className="approval-loading-note">{t('approval_loading_more')}</span> : null}
           </div>
         </div>
       </div>
     )
   }
-  // 无待审批项：不占高度、不渲染。
-  if (count === 0) return null
+  // 插件不可达 / 显式失败：给独立、可重试的错误条；否则空队列会把失败吞掉。
+  if (status === 'offline' || status === 'failed') {
+    const code = approvalStatusTextCode(status) ?? 'approval_load_failed'
+    return (
+      <div className="approval-root">
+        <style>{STYLE_TEXT}</style>
+        <div className="approval-dock" role="region" aria-label={t('approval_dock_label')}>
+          <div className="approval-danger-inline" data-role="dock-error" data-source={status}>
+            <span>{t(code)}</span>
+            <TextButton label={t('approval_retry')} onClick={() => store.load()} />
+          </div>
+        </div>
+      </div>
+    )
+  }
+  // 无待审批项、无错误：不占高度、不渲染。
+  if (status === 'empty') return null
 
   const oldest = oldestPending(snapshot.items)
   const waited = oldest === null ? null : elapsedMs({ at: new Date(oldest).toISOString() }, now)
@@ -162,22 +201,30 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
 
   return (
     <div className="approval-root">
+      <style>{STYLE_TEXT}</style>
       <div className="approval-dock" role="region" aria-label={t('approval_dock_label')}>
-        <div className="approval-head">
-          <span className="approval-head-count">
-            <Icon name="list" size={16} />
-            <span>{t('approval_waiting', { count })}</span>
-          </span>
-          <span className="approval-head-wait" data-warn={warn ? 'true' : 'false'}>
-            {waitText}
-          </span>
-          <span className="approval-head-spacer" />
-          <HeadButton kind={CONFIRM_DENY_ALL} count={count} tone="danger" store={store} snapshot={snapshot} t={t} />
-          <HeadButton kind={CONFIRM_APPROVE_ALL} count={count} tone="accent" store={store} snapshot={snapshot} t={t} />
-        </div>
+        {count > 0 && (
+          <div className="approval-head">
+            <span className="approval-head-count">
+              <Icon name="list" size={16} />
+              <span>{t('approval_waiting', { count })}</span>
+            </span>
+            <span className="approval-head-wait" data-warn={warn ? 'true' : 'false'}>
+              {waitText}
+            </span>
+            <span className="approval-head-spacer" />
+            <HeadButton kind={CONFIRM_DENY_ALL} count={count} tone="danger" store={store} snapshot={snapshot} t={t} />
+            <HeadButton kind={CONFIRM_APPROVE_ALL} count={count} tone="accent" store={store} snapshot={snapshot} t={t} />
+          </div>
+        )}
+        {!snapshot.connected && (
+          <div className="approval-danger-inline" data-role="offline">
+            <span>{t('approval_offline')}</span>
+          </div>
+        )}
         {snapshot.error !== null && (
           <div className="approval-danger-inline" data-role="batch-error" data-source={snapshot.error.kind}>
-            <span>{t('approval_failed')}</span>
+            <span>{t(snapshot.error.kind === 'load' ? 'approval_load_failed' : 'approval_failed')}</span>
             <TextButton
               label={t('approval_retry')}
               disabled={snapshot.busy.length > 0}
@@ -190,11 +237,13 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
             />
           </div>
         )}
-        <div className="approval-list">
-          {pending.map((item) => (
-            <Item key={item.id} item={item} store={store} snapshot={snapshot} t={t} />
-          ))}
-        </div>
+        {count > 0 && (
+          <div className="approval-list">
+            {pending.map((item) => (
+              <Item key={item.id} item={item} store={store} snapshot={snapshot} t={t} />
+            ))}
+          </div>
+        )}
       </div>
       <div className="approval-sr" aria-live="assertive" aria-atomic="true">
         {live}

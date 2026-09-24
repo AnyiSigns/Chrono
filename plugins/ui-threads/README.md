@@ -1,7 +1,8 @@
 # ui-threads（线程顶栏）
 
-对话页的**线程顶栏**：常态 0 高度，鼠标进入顶部热区才 overlay 展开线程标签
-（对话 → 会话标题 / 子代理 / 群聊 / 工作流，外加「待办 N」位），点击切换当前视图线程。
+对话页的**线程顶栏**：常显的线程标签条
+（对话 → 会话标题 / 子代理 / 群聊 / 工作流），标签行下方挂只读**待办清单面板**，
+点击标签切换当前视图线程。
 本插件是壳的 `topbar` slot 客户端半边，注册进壳的单一 React 运行时；无独立端口、无 HTTP 面，
 事件经壳 `/events` 总线（`api.events`）订阅。
 
@@ -37,7 +38,7 @@ contract = '2'；register(ctx) 把顶栏组件注册进 topbar slot；不再导�
 - 交付：产物被 `.worldignore` 排除，壳经只读命令 `ui-threads.client.read` 取字节并缓存；
   路径只接受包内相对 `.js`，拒绝绝对路径 / 盘符 / 反斜杠 / `..` / 空段。
 - 视图层模块：入口编排 `entry.tsx`；纯逻辑 `threads-model.ts`（线程树 / 隔离 / 角标，服务侧装配共用）、
-  `hover-intent.ts`（hover 延时状态机）、`unread.ts`（未读计数）、`bridge-state.ts`（`active_thread` 单桥）、
+  `unread.ts`（未读计数）、`bridge-state.ts`（`active_thread` 单桥）、
   `messages.ts`（文案单一来源）、`threads-store.ts`（React-free store + fold）；样式 `styles.ts`。
   叶子纯模块零 react import（可 grep 断言）。
 - 静态资源一律引用壳的唯一来源：`/assets/tokens.v1.css`（token）、`/assets/icons.v2.svg`（线性图标）；
@@ -51,16 +52,18 @@ contract = '2'；register(ctx) 把顶栏组件注册进 topbar slot；不再导�
   子代理 / 群聊 / 工作流各自的缺省兜底为「子代理」/「群聊」/「工作流」。
 - **按父会话隔离**：以当前 `session` `current` 上溯到的 `main` 线程为根，标签集合 = 该根 + `parent` 闭包内的线程；
   切换父会话即换一组标签，多会话并行时不混入别人的子代理。
-- **待办标签位（`todo`）**：当前父会话有未完成项（`pending` / `in_progress`）时追加「待办 N」，
-  点开显示只读清单；全部 `completed` / 清空后标签消失。
+- **待办清单面板（`todo`）**：当前父会话有未完成项（`pending` / `in_progress`）时出现在标签行下方：
+  头部为「{done}/{total} 个待办已完成」进度行（点击展开 / 收起，**默认收起**，展开态切换线程不重置），
+  条目带只读复选框（completed 打勾并划线，in_progress 中心点）；全部 `completed` / 清空后面板消失。
+  清单出现 / 更新时播放一次「展开→收起」提示动画（`TODO_PEEK_MS`，展开停留后回落默认收起态），
+  展开 / 收起用 grid 行 `0fr ↔ 1fr` + 内容淡入淡出过渡；`prefers-reduced-motion` 下取消过渡。
 - **状态角标**：待审批（`pending.approval` / `pending.question` > 0）、运行中、完成、失败——
   同源 `thread.updated` 的 `status` / `pending` 字段，**不另订宿主 `run.*`**。
 
 ## 位置与显隐
 
-- 位置：侧边栏右侧、`main` 顶部；常态 0 高度（不推挤布局），鼠标进入顶部 8px 热区才 overlay 展开，离开隐藏。
-- **hover 意图延时 150ms 出 / 300ms 收**（防鼠标划过顶部误触）；收起期间回入即取消收起。
-- 键盘：根容器可聚焦（`tabIndex`），聚焦即展开、失焦即收起，标签为原生 `<button>`，可 Tab 到达并 Enter / Space 切换；
+- 位置：侧边栏右侧、`main` 顶部；**常显**，占正常文档流（推挤消息区下移），无任何内容可显示时整栏不渲染（0 高度）。
+- 键盘：标签与待办头部均为原生 `<button>`，可 Tab 到达并 Enter / Space 触发；
   根容器 `role="region"` + `aria-label`，标签带 `aria-label` / `title`，未读与角标并入 aria 文案。
 - 层级用 `--z-topbar`；被断线横幅 / 设置模态遮罩盖住时自然不可达（无需特判）。
 

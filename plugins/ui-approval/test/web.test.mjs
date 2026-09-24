@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
+  approvalStatus,
+  approvalStatusTextCode,
   argsSummaryOf,
   armConfirm,
   clearConfirm,
@@ -34,6 +36,8 @@ import {
   isCodeGenFallbackBody,
   isExpired,
   isPending,
+  isUnreachableCode,
+  LOADING_NOTE_MS,
   itemPresentation,
   itemTone,
   KIND_ORCHESTRATION_CHANGE,
@@ -393,6 +397,56 @@ test('store：列表失败记 load 源并清 lastBatch，重试重拉列表', as
   }
 })
 
+// ── 停靠带整体状态：loading / offline / failed / empty / ready 互不混淆 ────────
+
+test('状态判定：慢读、断连、显式失败、空队列、有项各归各态', () => {
+  const base = { loading: false, error: null, connected: true, itemCount: 0 }
+  assert.equal(approvalStatus({ ...base, loading: true }), 'loading')
+  assert.equal(approvalStatus({ ...base, connected: false }), 'offline')
+  assert.equal(approvalStatus({ ...base, error: { kind: 'load', code: 'boom' } }), 'failed')
+  assert.equal(approvalStatus(base), 'empty')
+  assert.equal(approvalStatus({ ...base, itemCount: 2 }), 'ready')
+  // 断连优先于在途：插件不可达时不显示「读取中…」。
+  assert.equal(approvalStatus({ ...base, loading: true, connected: false }), 'offline')
+  // 传输中断 / 不可达归 offline，不归显式失败。
+  assert.equal(approvalStatus({ ...base, error: { kind: 'load', code: 'ui_unreachable' } }), 'offline')
+  assert.equal(approvalStatus({ ...base, error: { kind: 'load', code: 'transport_failed' } }), 'offline')
+  // 有项时错误不遮蔽列表（错误在列表内就地显示）。
+  assert.equal(approvalStatus({ ...base, itemCount: 2, error: { kind: 'batch', code: 'boom' } }), 'ready')
+  assert.equal(isUnreachableCode('transport_failed'), true)
+  assert.equal(isUnreachableCode('boom'), false)
+  assert.equal(LOADING_NOTE_MS, 8000)
+})
+
+test('状态标题码：各态取不同文案码，ready / empty 无标题', () => {
+  assert.equal(approvalStatusTextCode('loading'), 'approval_loading')
+  assert.equal(approvalStatusTextCode('offline'), 'approval_offline')
+  assert.equal(approvalStatusTextCode('failed'), 'approval_load_failed')
+  assert.equal(approvalStatusTextCode('ready'), null)
+  assert.equal(approvalStatusTextCode('empty'), null)
+  assert.equal(UI_TEXT.approval_loading_more, '仍在读取…')
+  assert.equal(typeof UI_TEXT.approval_offline, 'string')
+  assert.equal(lookupMessage(null, 'approval_offline').body, UI_TEXT.approval_offline)
+})
+
+test('store：断连快照归 offline，恢复连接后可重拉', async () => {
+  const ctx = fakeApprovalCtx({})
+  ctx.events.connected = () => false
+  const store = createApprovalStore(ctx)
+  try {
+    store.load()
+    await flush()
+    const snapshot = store.getSnapshot()
+    assert.equal(snapshot.connected, false)
+    assert.equal(
+      approvalStatus({ loading: snapshot.loading, error: snapshot.error, connected: snapshot.connected, itemCount: 0 }),
+      'offline',
+    )
+  } finally {
+    store.dispose()
+  }
+})
+
 test('store：批裁决失败记 batch 源并保留 lastBatch 供重试', async () => {
   const ctx = fakeApprovalCtx({
     'approval.list': { ok: true, value: { ok: true, items: [], refs: {} } },
@@ -408,6 +462,42 @@ test('store：批裁决失败记 batch 源并保留 lastBatch 供重试', async 
     const snapshot = store.getSnapshot()
     assert.equal(snapshot.error.kind, 'batch')
     assert.equal(snapshot.lastBatch, 'approve')
+  } finally {
+    store.dispose()
+  }
+})
+
+test('store：裁决命令业务失败（value.ok=false）记 itemErrors，不当成功', async () => {
+  const item = { id: 'ap-1', thread: 't1', kind: 'tool_call', status: 'pending' }
+  const ctx = fakeApprovalCtx({
+    'approval.list': { ok: true, value: { ok: true, items: [item], refs: {} } },
+    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'approval.decide': { ok: true, status: 'done', value: { ok: false, error: { code: 'bad_slot' } } },
+  })
+  const store = createApprovalStore(ctx)
+  try {
+    store.submitItem(item, 'approve')
+    await flush()
+    const snapshot = store.getSnapshot()
+    assert.equal(snapshot.itemErrors['ap-1'].code, 'bad_slot')
+    assert.equal(snapshot.busy.length, 0, '失败后清忙碌键')
+  } finally {
+    store.dispose()
+  }
+})
+
+test('store：裁决 run 被拒（status=refused）记 itemErrors，不当成功', async () => {
+  const item = { id: 'ap-2', thread: 't1', kind: 'tool_call', status: 'pending' }
+  const ctx = fakeApprovalCtx({
+    'approval.list': { ok: true, value: { ok: true, items: [item], refs: {} } },
+    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'approval.decide': { ok: true, status: 'refused', value: null },
+  })
+  const store = createApprovalStore(ctx)
+  try {
+    store.submitItem(item, 'approve')
+    await flush()
+    assert.equal(store.getSnapshot().itemErrors['ap-2'].code, 'refused')
   } finally {
     store.dispose()
   }

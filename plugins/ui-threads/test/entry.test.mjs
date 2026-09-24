@@ -66,3 +66,15 @@ test('叶子纯模块零 react import（entry.tsx 除外）', () => {
     )
   }
 })
+
+test('entry.tsx：store 建在 register 作用域，组件经 props 复用同一实例', () => {
+  const source = readFileSync(join(webDir, 'entry.tsx'), 'utf8')
+  const registerAt = source.indexOf('export function register')
+  assert.ok(registerAt >= 0)
+  const component = source.slice(0, registerAt)
+  const register = source.slice(registerAt)
+  // 组件体不得自建 store：否则壳错误边界卸载 / 重挂即丢标签数据 / 未读 / 连接态。
+  assert.equal(component.includes('createThreadsStore('), false)
+  assert.equal((register.match(/createThreadsStore\(/g) ?? []).length, 1)
+  assert.match(register, /store=\{store\}/)
+})

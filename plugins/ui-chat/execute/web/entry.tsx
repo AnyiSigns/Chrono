@@ -41,11 +41,14 @@ import {
   applyToolDelta,
   applyToolEnd,
   applyToolStart,
+  clearPendingUser,
   createThreadStore,
   dropInFlight,
   emptyView,
   foldRunFinished,
   isStreaming,
+  reconcilePendingUser,
+  setPendingUser,
 } from './thread-store.ts'
 import { messageViewItems, pendingUserDef, safeStringify } from './render-parts.ts'
 import { toolCardViewModel } from './tool-card.ts'
@@ -724,20 +727,22 @@ function DetailView({ detail }: { detail: any }): ReactNode {
 }
 
 /**
- * 推理折叠块：默认收起，头部给「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown。
+ * 推理折叠块：头部给「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown。
+ * 流式中默认展开、收流即收起；用户点击后以点击为准（open 非 null 时不再自动跟随）。
  * 推理只作展示，不进模型上下文（由 context-window 丢弃）。
  */
 function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }): ReactNode {
   const { table } = useChatEnv()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState<boolean | null>(null)
   if (text.length === 0) return null
+  const expanded = open !== null ? open : streaming
   return (
-    <div className="chat-reasoning" data-open={String(open)}>
+    <div className="chat-reasoning" data-open={String(expanded)}>
       <button
         type="button"
         className="chat-reasoning-head"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        aria-expanded={expanded}
+        onClick={() => setOpen(!expanded)}
       >
         <Icon name="brain" size={14} className="chat-reasoning-icon" />
         <span className="chat-reasoning-label">{lookupMessage(table, 'chat_reasoning').body}</span>
@@ -748,7 +753,7 @@ function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean 
         ) : null}
         <Icon name="chevron-right" size={16} className="chat-reasoning-chevron" />
       </button>
-      {open ? (
+      {expanded ? (
         <div className="chat-reasoning-body">
           <Markdown text={text} />
         </div>
@@ -973,20 +978,19 @@ function StreamToolCard({ tool }: { tool: any }): ReactNode {
   return <ToolCard vm={vm} live={{ chunks: tool.chunks, done: tool.done === true, ok: tool.ok ?? null }} />
 }
 
-function StreamTurn({ view, slowStream }: { view: any; slowStream: boolean }): ReactNode {
+function StreamTurn({ view }: { view: any }): ReactNode {
   const env = useChatEnv()
   const inFlight = view.inFlight
   if (inFlight === null) return null
   const streaming = isStreaming(view)
   const hasOutput = inFlight.text.length > 0 || inFlight.reasoning.length > 0
   const activeTools = inFlight.tools.some((tool: any) => tool.done !== true)
-  // 工具在跑时由卡片状态自证活动，不再叠「仍在生成」；有推理/正文即撤。
-  const showNote = inFlight.cancelled === true || (!hasOutput && slowStream && !activeTools)
+  // 尚无输出且无工具在跑时给「正在工作」流光提示；有推理/正文/工具状态自证活动即撤。
+  const showWorking = inFlight.cancelled !== true && !hasOutput && !activeTools
   const toolsById = new Map(inFlight.tools.map((tool: any) => [tool.callId, tool]))
   const lastIndex = inFlight.segments.length - 1
   return (
     <div className="chat-msg chat-msg-assistant" aria-busy={inFlight.cancelled === true ? undefined : true}>
-      {inFlight.segments.length === 0 ? <div className="chat-breathe" /> : null}
       {inFlight.segments.map((segment: any, index: number) => {
         if (segment.kind === 'reasoning') {
           return (
@@ -1005,12 +1009,11 @@ function StreamTurn({ view, slowStream }: { view: any; slowStream: boolean }): R
         }
         return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
       })}
-      {showNote ? (
-        <div className="chat-workflow-meta">
-          {inFlight.cancelled === true
-            ? lookupMessage(env.table, 'chat_cancelled').body
-            : lookupMessage(env.table, 'chat_generating').body}
-        </div>
+      {showWorking ? (
+        <div className="chat-working">{lookupMessage(env.table, 'chat_working').body}</div>
+      ) : null}
+      {inFlight.cancelled === true ? (
+        <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_cancelled').body}</div>
       ) : null}
     </div>
   )
@@ -1257,10 +1260,13 @@ function contentKey(view: any, hasPendingUser: boolean): string {
   return `${view.revision}|${view.messages.length}|${textLength}|${reasoningLength}|${chunkLength}|${toolCount}|${doneCount}|${cancelled}|${hasPendingUser ? 1 : 0}`
 }
 
-function App({ ctx }: { ctx: SlotContext }): ReactNode {
-  const storeRef = useRef<ReturnType<typeof createThreadStore> | null>(null)
-  if (storeRef.current === null) storeRef.current = createThreadStore(emptyView())
-  const store = storeRef.current
+function App({
+  ctx,
+  store,
+}: {
+  ctx: SlotContext
+  store: ReturnType<typeof createThreadStore>
+}): ReactNode {
   const view = ctx.useStore(store) as any
 
   const stateRef = useRef<any>({
@@ -1276,10 +1282,8 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     newMsg: { count: 0 },
     group: { unreadIds: new Set<string>(), anchorEl: null },
     workflowStep: null,
-    pendingUser: null,
     connected: false,
     sawDisconnect: false,
-    slowStream: false,
     table: FALLBACK_MESSAGES as MessageTable,
     lightbox: null,
     listOpacity: 1,
@@ -1381,7 +1385,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       return
     }
     const before = store.getSnapshot()
-    const next = applySnapshot(before, result.value, conversationId)
+    const next = reconcilePendingUser(applySnapshot(before, result.value, conversationId))
     const base = initialWindow(next.messages.length)
     if (resetView) {
       st.window = base
@@ -1395,10 +1399,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       st.group.unreadIds = new Set()
       st.workflowStep = null
     }
-    // 快照已含该用户消息（或整屏重置）时收起乐观渲染，避免与权威历史重复。
-    if (st.pendingUser !== null) {
-      if (resetView || hasUserMessage(next.messages, messageText(st.pendingUser))) st.pendingUser = null
-    }
+    // 乐观用户气泡由 store 收口（权威快照已含同文用户消息即清除），不随整屏重置误清。
     st.finalizeAnnounce = options.announceFinal === true
     store.commit(next, { type: 'snapshot' })
     rerender()
@@ -1449,8 +1450,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
 
   /** 回合内从 `chat.message` 槽乐观渲染在途用户消息（回合结束快照即收口）。 */
   async function loadPendingUser(): Promise<void> {
-    const st = stateRef.current
-    const thread = st.viewThread
+    const thread = stateRef.current.viewThread
     const view = store.getSnapshot()
     if (view.kind === 'group' || view.kind === 'workflow') return
     const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
@@ -1465,8 +1465,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     if (def === null) return
     // 权威历史已含同文用户消息（重拉 / 重复 run.started）则不乐观渲染，避免重复。
     if (hasUserMessage(store.getSnapshot().messages, messageText(def))) return
-    st.pendingUser = def
-    rerender()
+    store.commit(setPendingUser(store.getSnapshot(), def), { type: 'lifecycle' })
   }
 
   function openLightbox(payload: { url: string; alt: string; thumb: HTMLElement | null }): void {
@@ -1561,8 +1560,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       if (!wasConnected) {
         if (st.sawDisconnect) {
           st.sawDisconnect = false
-          st.pendingUser = null
-          store.commit(dropInFlight(store.getSnapshot()), { type: 'lifecycle' })
+          store.commit(dropInFlight(clearPendingUser(store.getSnapshot())), { type: 'lifecycle' })
           void apiRef.current.loadHistory(st.viewThread, { resetView: false })
         } else if (st.error !== null && st.error.code === 'ui_unreachable') {
           void apiRef.current.loadHistory(st.viewThread)
@@ -1608,12 +1606,11 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       if (!matchesThread(payload.thread, st.viewThread)) return
       const folded = foldRunFinished(store.getSnapshot(), payload)
       if (folded.action === 'ignore') return
-      store.commit(folded.view, { type: 'lifecycle' })
       if (folded.action === 'cancel') {
-        st.pendingUser = null
-        rerender()
+        store.commit(clearPendingUser(folded.view), { type: 'lifecycle' })
         return
       }
+      store.commit(folded.view, { type: 'lifecycle' })
       void apiRef.current.loadHistory(st.viewThread, { resetView: false, announceFinal: true })
       return
     }
@@ -1641,8 +1638,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     flushDeltas()
     const st = stateRef.current
     st.viewThread = typeof value === 'string' && value.length > 0 ? value : null
-    st.pendingUser = null
-    store.commit(dropInFlight(store.getSnapshot()), { type: 'lifecycle' })
+    store.commit(dropInFlight(clearPendingUser(store.getSnapshot())), { type: 'lifecycle' })
     st.listOpacity = 0
     rerender()
     const target = st.viewThread
@@ -1694,44 +1690,10 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     }
   }, [])
 
-  // 慢流提示：8s 无首字（正文或推理）才提示「生成中」；有输出即撤。
-  const inFlightRun = view.inFlight !== null ? view.inFlight.run : null
-  const inFlightOutputLength =
-    view.inFlight !== null ? view.inFlight.text.length + view.inFlight.reasoning.length : 0
-  useEffect(() => {
-    if (inFlightRun === null && inFlightOutputLength === 0) {
-      if (stateRef.current.slowStream) {
-        stateRef.current.slowStream = false
-        rerender()
-      }
-      return undefined
-    }
-    if (inFlightOutputLength > 0) {
-      if (stateRef.current.slowStream) {
-        stateRef.current.slowStream = false
-        rerender()
-      }
-      return undefined
-    }
-    const timer = setTimeout(() => {
-      const latest = store.getSnapshot()
-      if (
-        latest.inFlight !== null &&
-        latest.inFlight.text.length === 0 &&
-        latest.inFlight.reasoning.length === 0
-      ) {
-        stateRef.current.slowStream = true
-        rerender()
-      }
-    }, 8000)
-    ;(timer as any).unref?.()
-    return () => clearTimeout(timer)
-  }, [inFlightRun, inFlightOutputLength, rerender, store])
-
   // 内容增长：贴底自动贴底；上滑冻结才出胶囊。
   useLayoutEffect(() => {
     const st = stateRef.current
-    const key = contentKey(view, st.pendingUser !== null)
+    const key = contentKey(view, view.pendingUser !== null)
     if (key !== lastKeyRef.current) {
       lastKeyRef.current = key
       if (st.atBottom) {
@@ -1881,17 +1843,17 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
       )
     }
     // 在途用户消息（乐观）：仅回合进行中渲染，权威快照落地即收起。
-    if (st.pendingUser !== null && view.inFlight !== null) {
+    if (view.pendingUser !== null && view.inFlight !== null) {
       nodes.push(
         <MessageBoundary key="pending-user" resetKey={`pending:${view.revision}`} fallback={<RenderFallback />}>
-          <MessageItem entry={{ def: st.pendingUser }} announce={false} />
+          <MessageItem entry={{ def: view.pendingUser }} announce={false} />
         </MessageBoundary>,
       )
     }
     if (view.inFlight !== null) {
       nodes.push(
         <MessageBoundary key="stream" resetKey={`stream:${view.revision}`} fallback={<RenderFallback />}>
-          <StreamTurn view={view} slowStream={st.slowStream} />
+          <StreamTurn view={view} />
         </MessageBoundary>,
       )
     }
@@ -2067,5 +2029,7 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
 }
 
 export function register(ctx: SlotContext): void {
-  ctx.slots.register({ name: 'main' }, App)
+  // store 住 register 作用域：壳错误边界卸载后重挂复用同一实例，消息 / 在途流 / 定稿记忆不随组件销毁。
+  const store = createThreadStore(emptyView())
+  ctx.slots.register({ name: 'main' }, (props) => <App ctx={props.ctx} store={store} />)
 }

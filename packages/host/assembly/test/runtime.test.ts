@@ -29,6 +29,57 @@ type LifeRecord = {
   caps?: string[]
 }
 
+/**
+ * 探针序列服务：按 2 失败 1 成功循环应答探针，每次探针另发一条 `probe` 事件供测试计数。
+ * 成功探针必须复位连续失败计数，否则第 4 次探针即累计到阈值 3 被杀。
+ */
+const PROBE_RESET_SERVICE = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const COUNTER = path.join(process.cwd(), "probe-seq.txt");
+function readN() { try { return parseInt(fs.readFileSync(COUNTER, "utf8"), 10) || 0; } catch (e) { return 0; } }
+function frame(msg) {
+  const body = Buffer.from(JSON.stringify(msg), "utf8");
+  const head = Buffer.allocUnsafe(4);
+  head.writeUInt32BE(body.length, 0);
+  process.stdout.write(Buffer.concat([head, body]));
+}
+function handle(msg) {
+  if (!msg || typeof msg !== "object") return;
+  switch (msg.kind) {
+    case "hello": {
+      const p = JSON.parse(fs.readFileSync(path.join(process.cwd(), "plugin.json"), "utf8"));
+      frame({ id: msg.id, kind: "manifest", v: "1", identity: p.identity, implements: p.implements, methods: p.methods, protocol: p.protocol, state: p.state });
+      return;
+    }
+    case "probe": {
+      const n = readN();
+      fs.writeFileSync(COUNTER, String(n + 1));
+      frame({ v: "1", id: "evt-" + n, kind: "event", topic: "probe", payload: { n: n } });
+      frame({ id: msg.id, kind: "pong", ok: n % 3 === 2 });
+      return;
+    }
+    case "reload": frame({ v: "1", id: msg.id, kind: "ack" }); return;
+    case "drain": frame({ v: "1", id: msg.id, kind: "bye" }); return;
+    case "call": frame({ v: "1", id: msg.id, kind: "result", ok: true, value: { pid: process.pid } }); return;
+  }
+}
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+  while (buffer.length >= 4) {
+    const length = buffer.readUInt32BE(0);
+    if (buffer.length < 4 + length) break;
+    const body = buffer.subarray(4, 4 + length).toString("utf8");
+    buffer = buffer.subarray(4 + length);
+    try { handle(JSON.parse(body)); } catch (e) {}
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
+process.stdin.on("error", () => process.exit(0));
+`
+
 describe('装配运行时 startAssembly', () => {
   let root: string
   let records: LifeRecord[] = []
@@ -268,7 +319,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-probe',
       start: 'node execute/main.js',
       implements: ['toy.probe'],
-      health: { probe: 'toy.probe.echo', interval_ms: 100, timeout_ms: 100 },
+      health: { probe: 'toy.probe.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
       restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { probeFailTotal: 2 },
     })
@@ -306,7 +357,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-endpoint',
       start: 'node execute/main.js',
       implements: ['toy.endpoint'],
-      health: { probe: 'toy.endpoint.echo', interval_ms: 100, timeout_ms: 100 },
+      health: { probe: 'toy.endpoint.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
       // fixed 退避 400ms：退出到重挂之间有确定的可观测窗口
       restart: {
         policy: 'on-exit',
@@ -347,7 +398,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-silentprobe',
       start: 'node execute/main.js',
       implements: ['toy.silentprobe'],
-      health: { probe: 'toy.silentprobe.echo', interval_ms: 100, timeout_ms: 100 },
+      health: { probe: 'toy.silentprobe.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
       restart: { policy: 'on-exit', backoff: 'none', max: 1, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { probeMode: 'silent' },
     })
@@ -493,7 +544,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-event',
       start: 'node execute/main.js',
       implements: ['toy.event'],
-      health: { probe: 'toy.event.echo', interval_ms: 100, timeout_ms: 200 },
+      health: { probe: 'toy.event.echo', interval_ms: 100, timeout_ms: 200, grace_period_ms: 0 },
       serviceConfig: { eventTopic: 'ping', eventPayload: { n: 1 }, eventOnProbe: true },
     })
     const events: Array<{ impl: string; topic: string; payload: Json }> = []
@@ -607,7 +658,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-healthprobe',
       start: 'node execute/main.js',
       implements: ['toy.healthprobe'],
-      health: { probe: '', interval_ms: 100, timeout_ms: 100 },
+      health: { probe: '', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
       restart: { policy: 'on-exit', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { probeFailTotal: 1 },
     })
@@ -1176,5 +1227,257 @@ describe('装配运行时 startAssembly', () => {
     expect(records).toContainEqual(
       expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-buildfan' }),
     )
+  }, 15000)
+
+  it('连续探针失败容错：未达 failure_threshold 不杀，达到才按退出处理', async () => {
+    const twoRoot = writeTempPackage(root, {
+      identity: 'toy-health-two',
+      start: 'node execute/main.js',
+      implements: ['toy.health.two'],
+      health: {
+        probe: 'toy.health.two.echo',
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeFailTotal: 2 },
+    })
+    const threeRoot = writeTempPackage(root, {
+      identity: 'toy-health-three',
+      start: 'node execute/main.js',
+      implements: ['toy.health.three'],
+      health: {
+        probe: 'toy.health.three.echo',
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeFailTotal: 3 },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-health-two', path: twoRoot },
+      { name: 'toy-health-three', path: threeRoot },
+    ])
+    // three 连续失败 3 次 → 达阈值被杀；two 仅失败 2 次 → 始终不杀
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-health-three' &&
+            r.reason === 'health_timeout',
+        ),
+      '第三次连续失败触发退出',
+      8000,
+    )
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-health-two',
+      ),
+    ).toBe(false)
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-health-two'),
+      '未达阈值的身份仍装载',
+      8000,
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-health-three'),
+      'three 重启后恢复',
+      8000,
+    )
+    expect(
+      records.filter(
+        (r) =>
+          r.kind === 'service' &&
+          r.event === 'exit' &&
+          r.impl === 'toy-health-three' &&
+          r.reason === 'health_timeout',
+      ),
+    ).toHaveLength(1)
+  }, 15000)
+
+  it('启动宽限期内的探针失败不杀服务（对照组宽限为 0 则被杀）', async () => {
+    const holdRoot = writeTempPackage(root, {
+      identity: 'toy-grace-hold',
+      start: 'node execute/main.js',
+      implements: ['toy.grace.hold'],
+      health: {
+        probe: 'toy.grace.hold.echo',
+        interval_ms: 50,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 30000,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeMode: 'fail' },
+    })
+    const controlRoot = writeTempPackage(root, {
+      identity: 'toy-grace-kill',
+      start: 'node execute/main.js',
+      implements: ['toy.grace.kill'],
+      health: {
+        probe: 'toy.grace.kill.echo',
+        interval_ms: 50,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeMode: 'fail' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-grace-hold', path: holdRoot },
+      { name: 'toy-grace-kill', path: controlRoot },
+    ])
+    // 对照组（宽限 0）在首个探针失败即被杀，证明探针确已发出且失败会被处理
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-grace-kill' &&
+            r.reason === 'health_timeout',
+        ),
+      '对照组宽限为 0 被健康超时杀掉',
+      8000,
+    )
+    // 宽限身份同一时段内多次探针失败仍不被杀
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-grace-hold',
+      ),
+    ).toBe(false)
+    expect(handle.loaded().some((x) => x.id === 'toy-grace-hold')).toBe(true)
+  }, 15000)
+
+  it('成功探针复位连续失败计数：2 失败 1 成功循环不触发退出', async () => {
+    const resetRoot = writeTempPackage(root, {
+      identity: 'toy-probereset',
+      start: 'node execute/main.js',
+      implements: ['toy.probereset'],
+      health: {
+        probe: 'toy.probereset.echo',
+        interval_ms: 50,
+        timeout_ms: 200,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      files: { 'execute/main.js': PROBE_RESET_SERVICE },
+    })
+    const events: Array<{ impl: string; topic: string; payload: Json }> = []
+    const report = runSeed(root, [{ name: 'toy-probereset', path: resetRoot }])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({
+      root,
+      world,
+      log,
+      onEvent: (impl, topic, payload) => events.push({ impl, topic, payload }),
+    })
+    handles.push(handle)
+    // 等 9 次探针（3 个完整循环）：若成功不复位，第 4 次探针即累计到阈值 3 被杀
+    await waitFor(
+      () =>
+        events.filter((e) => e.impl === 'toy-probereset' && e.topic === 'probe').length >= 9,
+      '完成 3 个探针循环',
+      8000,
+    )
+    expect(
+      records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-probereset'),
+    ).toBe(false)
+    expect(handle.loaded().some((x) => x.id === 'toy-probereset')).toBe(true)
+  }, 15000)
+
+  it('成功探针复位重启尝试：崩溃但有健康响应则不累计到 restart_exhausted', async () => {
+    const crashRoot = writeTempPackage(root, {
+      identity: 'toy-attemptsreset',
+      start: 'node execute/main.js',
+      implements: ['toy.attemptsreset'],
+      health: {
+        probe: 'toy.attemptsreset.echo',
+        interval_ms: 50,
+        timeout_ms: 200,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 500, crashLimit: 4 },
+    })
+    const { handle } = await startWorld([{ name: 'toy-attemptsreset', path: crashRoot }])
+    // 每次崩溃前都有多次成功探针把 attempts 归零；否则第 3 次崩溃即超 max=2 被隔离
+    await waitFor(
+      () =>
+        records.filter(
+          (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-attemptsreset',
+        ).length >= 3,
+      '至少三次崩溃重启',
+      8000,
+    )
+    expect(
+      records.some(
+        (r) =>
+          r.kind === 'service' &&
+          r.event === 'restart_exhausted' &&
+          r.impl === 'toy-attemptsreset',
+      ),
+    ).toBe(false)
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-attemptsreset'),
+      '崩溃后仍装载',
+      8000,
+    )
+  }, 15000)
+
+  it('隔离身份在新代码世代到来时复归（dep.rejoined，服务重起）', async () => {
+    const v1 = writeTempPackage(root, {
+      identity: 'toy-rejoin',
+      dir: 'toy-rejoin-v1',
+      start: 'node execute/main.js',
+      implements: ['toy.rejoin'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 120 },
+    })
+    const report = runSeed(root, [{ name: 'toy-rejoin', path: v1 }])
+    expect(report.ok).toBe(true)
+    const world1 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({ root, world: world1, log })
+    handles.push(handle)
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-rejoin'),
+      'v1 退出并隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'v1 隔离落地')
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-rejoin')
+
+    // 新代码世代（健康实例，不再自杀）
+    const v2 = writeTempPackage(root, {
+      identity: 'toy-rejoin',
+      dir: 'toy-rejoin-v2',
+      start: 'node execute/main.js',
+      implements: ['toy.rejoin'],
+    })
+    expect(runSeed(root, [{ name: 'toy-rejoin', path: v2 }]).ok).toBe(true)
+    const world2 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    await handle.applyWorld(world2)
+
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'rejoined', impl: 'toy-rejoin' }),
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-rejoin'),
+      '新代码世代复归装载',
+      8000,
+    )
+    const gen2 = world2.ids['toy-rejoin'].active as Hash
+    expect(handle.endpoints.get('toy-rejoin', gen2, 'toy.rejoin', 'echo')).not.toBeNull()
   }, 15000)
 })

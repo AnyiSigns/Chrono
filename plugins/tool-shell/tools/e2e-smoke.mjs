@@ -231,6 +231,23 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     assert.equal(echo.value.result.exit_code, 0)
     assert.ok(echo.value.result.stdout.includes('chrono'), echo.value.result.stdout)
 
+    // 命令形态覆盖更多常用命令（PowerShell 5.1 / 7 同形）：管道聚合、cwd = workspace_root。
+    const pipe = await callTool('c1a', 'invoke', {
+      tool: 'shell',
+      args: { input: '1..3 | Measure-Object | Select-Object -ExpandProperty Count' },
+      ...base,
+    })
+    assert.equal(pipe.value.ok, true, JSON.stringify(pipe.value))
+    assert.ok(pipe.value.result.stdout.includes('3'), pipe.value.result.stdout)
+
+    const cwdCheck = await callTool('c1b', 'invoke', {
+      tool: 'shell',
+      args: { input: 'Write-Output (Test-Path a.txt)' },
+      ...base,
+    })
+    assert.equal(cwdCheck.value.ok, true, JSON.stringify(cwdCheck.value))
+    assert.ok(cwdCheck.value.result.stdout.includes('True'), cwdCheck.value.result.stdout)
+
     const code = await callTool('c2', 'invoke', {
       tool: 'shell',
       args: { mode: 'code', language: 'javascript', input: 'console.log(JSON.stringify({ok:true}))' },
@@ -261,8 +278,8 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     const execCall = portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec' && call.args.env)
     assert.equal(execCall.args.env.E2E_TOKEN, E2E_SECRET, '明文应只经 exec env 下传')
 
-    // 非零退出：结果仍回带 exit_code。
-    const failInput = process.platform === 'win32' ? 'exit /b 3' : 'exit 3'
+    // 非零退出：结果仍回带 exit_code（统一经 PowerShell）。
+    const failInput = 'exit 3'
     const nonzero = await callTool('c3', 'invoke', { tool: 'shell', args: { input: failInput }, ...base })
     assert.equal(nonzero.value.ok, false, JSON.stringify(nonzero.value))
     assert.equal(nonzero.value.error.code, 'nonzero_exit')
@@ -289,7 +306,7 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     assert.equal(unsupported.value.error.code, 'code_unsupported_language')
     assert.equal(portCalls.length, before, '白名单外语言不得触发 sandbox 调用')
 
-    console.log('直连协议：describe + command/code + 密钥注入 + nonzero_exit + deny 档 fs_denied + 语言白名单')
+    console.log('直连协议：describe + command（echo / 管道 / cwd）/ code + 密钥注入 + nonzero_exit + deny 档 fs_denied + 语言白名单')
   } finally {
     toolShell.stdin.end()
     sandbox.stdin.end()

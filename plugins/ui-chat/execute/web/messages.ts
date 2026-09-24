@@ -1,5 +1,5 @@
 // 文案取用：错误码人话来自壳的 `/assets/messages.v1.json`（唯一来源），未登记码走 `unknown` 兜底。
-// 非错误码的界面文案（已复制 / 仍在生成… 等）当前共享表未登记，这里以 `UI_TEXT` 作本地兜底；
+// 非错误码的界面文案（已复制 / 正在工作 等）当前共享表未登记，这里以 `UI_TEXT` 作本地兜底；
 // 共享表一旦登记同名码即自动优先——避免在本插件硬编码错误人话。
 
 export interface MessageEntry {
@@ -20,7 +20,7 @@ export const FALLBACK_MESSAGES: MessageTable = {
 export const UI_TEXT: { [code: string]: string } = {
   chat_copied: '已复制',
   chat_copy_failed: '复制失败',
-  chat_generating: '仍在生成…',
+  chat_working: '正在工作',
   chat_reasoning: '推理',
   chat_cancelled: '已取消',
   chat_no_more: '没有更多了',
