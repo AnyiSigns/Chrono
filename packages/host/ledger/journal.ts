@@ -29,7 +29,6 @@ import {
 import type { Entry, Hash, Head, Json, World } from '../../kernel/index.ts'
 import { writeFileAtomic } from './atomic.ts'
 import { readBase } from './base.ts'
-import type { BaseAuditRef } from './base.ts'
 
 export interface Anchor {
   world: World
@@ -38,8 +37,8 @@ export interface Anchor {
   entries: Entry[]
   /** 基础世界文件对应的快照位置（无 base = -1）。 */
   baseSeq: number
-  /** 基础世界文件携带的审计索引（body 由调用方从 `world.defs[hash]` 取回）。 */
-  baseAudits: BaseAuditRef[]
+  /** 基础世界是「有界化回收 / 摘审计后的子世界」：`worldRev` 与快照记录的 `snapshotRev` 不同。 */
+  pruned: boolean
   /** journal 尾文件存在撕裂尾：持锁写方须先截断到 `journalValidBytes` 再 append。 */
   journalTruncated: boolean
   /** 有效前缀字节长度（截断目标）；无截断时等于文件大小（文件不存在为 0）。 */
@@ -245,7 +244,11 @@ export function loadAnchor(file: string, baseFile?: string, coldDir?: string): A
   const base = baseFile === undefined ? null : readBase(baseFile)
   const tail = readJournalTolerant(file)
   if (base !== null && alignedWithBase(tail.entries, base.snapshot)) {
-    const world = replay(tail.entries, base.world)
+    // 有界化回收后基础世界是全量世界的子世界（worldRev 与快照记录的 snapshotRev 不同）：
+    // 快照 entry 的 world_rev 自校对不上回收世界，故跳过快照 entry、直接以基础世界为起点重放尾段。
+    // 快照 entry 仍在 journal 里，full verify（冷段 + 尾段从空世界重放）照常校验其 world_rev。
+    const pruned = base.snapshotRev !== undefined && base.snapshotRev !== base.worldRev
+    const world = replay(pruned ? tail.entries.slice(1) : tail.entries, base.world)
     const head =
       tail.entries.length > 0
         ? headOf(tail.entries)
@@ -255,7 +258,7 @@ export function loadAnchor(file: string, baseFile?: string, coldDir?: string): A
       head,
       entries: tail.entries,
       baseSeq: base.snapshot.seq,
-      baseAudits: base.audits,
+      pruned,
       journalTruncated: tail.truncated,
       journalValidBytes: tail.validBytes,
     }
@@ -266,7 +269,7 @@ export function loadAnchor(file: string, baseFile?: string, coldDir?: string): A
     head: headOf(entries),
     entries,
     baseSeq: -1,
-    baseAudits: [],
+    pruned: false,
     journalTruncated: tail.truncated,
     journalValidBytes: tail.validBytes,
   }

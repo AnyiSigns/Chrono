@@ -36,6 +36,7 @@ test('plugin.json：identity / implements / methods / pins / start / members / c
     tools: 'tools',
     router: 'router',
     'evolve-metrics': 'evolve-metrics',
+    host: 'host',
   })
   assert.equal(plugin.start, 'node execute/main.ts')
   assert.equal(plugin.schema, 'schema/graph.json')

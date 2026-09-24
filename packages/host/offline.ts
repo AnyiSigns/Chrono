@@ -17,7 +17,6 @@ import type { MaterializedGcReport, PluginEntry } from './assembly/index.ts'
 import {
   acquireLock,
   appendJournal,
-  auditRefOf,
   headOf,
   loadAnchor,
   readAllEntries,
@@ -27,16 +26,15 @@ import {
   replayFull,
   verifyFull,
 } from './ledger/index.ts'
-import type { Anchor, BaseAuditRef } from './ledger/index.ts'
-import { auditRecordOf } from './audit.ts'
+import type { Anchor } from './ledger/index.ts'
 import { collectBlobRefs, gcBlobs, putBlob } from './blobs.ts'
 import type { BlobGcReport } from './blobs.ts'
 import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
-import { compactWorld } from './compact.ts'
+import { DEFAULT_FLATTEN_CHAIN, DEFAULT_GEN_RETENTION, compactWorld } from './compact.ts'
 import { hostPaths } from './paths.ts'
 import type { HostPaths } from './paths.ts'
-import type { Hash, Head, WriteRequest } from '../kernel/index.ts'
+import type { Hash, Head, RecycleStats, WriteRequest } from '../kernel/index.ts'
 
 /** 与 assembly 同源，保留本模块导出面（`readPluginManifest` 属插件清单读面）。 */
 export { readPluginManifest }
@@ -333,10 +331,10 @@ export function runReplay(root: string): ReplayReport {
 export interface CompactReport {
   snapshot: { seq: number; hash: Hash }
   moved: number
-  audits: number
+  recycled: RecycleStats
 }
 
-/** 压缩（G6）：全链重放一次 → 追加快照 entry + 冷段归档 + 基础世界落盘。 */
+/** 压缩（G6）：全链重放一次 → 追加快照 entry + 冷段归档 + 有界化回收 + 基础世界落盘。 */
 export function runCompact(root: string): CompactReport {
   const paths = hostPaths(root)
   const lock = acquireLock(paths.lockFile, Date.now())
@@ -344,17 +342,19 @@ export function runCompact(root: string): CompactReport {
   try {
     // 压缩是写命令：先修复撕裂尾（截到有效前缀），再按严格读取全链，否则末条半截会让全链读抛错
     repairJournalTail(paths.journalFile)
-    // world / head / 审计索引按全链算；归档前缀只取当前 journal（未归档部分）——否则会把旧冷段再归档一遍
+    // world / head 按全链算；归档前缀只取当前 journal（未归档部分）——否则会把旧冷段再归档一遍
     const entries = readAllEntries(paths.journalFile, paths.coldDir)
     const world = replayFull(entries)
-    const audits: BaseAuditRef[] = []
-    for (const entry of entries) {
-      const record = auditRecordOf(entry)
-      if (record !== null) audits.push(auditRefOf(record))
-    }
     const prefix = readJournal(paths.journalFile)
-    const result = compactWorld(paths, world, headOf(entries), prefix, audits, Date.now())
-    return { ...result, audits: audits.length }
+    const result = compactWorld(paths, world, headOf(entries), prefix, Date.now(), {
+      genWindow: DEFAULT_GEN_RETENTION,
+      flattenChain: DEFAULT_FLATTEN_CHAIN,
+    })
+    return {
+      snapshot: result.snapshot,
+      moved: result.moved,
+      recycled: result.recycled,
+    }
   } finally {
     releaseLock(paths.lockFile, lock.info)
   }

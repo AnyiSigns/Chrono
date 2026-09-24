@@ -9,8 +9,8 @@ import type { GraphModel, Json, Rec } from './types.ts'
 /** 默认阈值：字段名契约与 evolve-metrics README「阈值契约」对齐；图/演化参数亦在此。 */
 export const DEFAULT_THRESHOLDS: Rec = {
   // 图与演化（loop-policy 权威）
-  max_turn_iter: 6,
-  max_steps: 64,
+  max_turn_iter: 64,
+  max_steps: 512,
   gas: 64,
   llm_chain_max: 2,
   max_graph_diff: 8,
@@ -34,6 +34,7 @@ export const DEFAULT_THRESHOLDS: Rec = {
   verify_cluster_ratio: 0.6,
   min_workspaces: 2,
   trace_retention_rounds: 50,
+  evidence_retention_rounds: 50,
   unhealthy_refused_streak: 3,
 }
 

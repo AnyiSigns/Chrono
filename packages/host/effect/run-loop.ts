@@ -6,8 +6,9 @@ import { randomUUID } from 'node:crypto'
 import { H, run } from '../../kernel/index.ts'
 import { ServiceChannelError } from '../service-link.ts'
 import type { CallEnv } from '../wire.ts'
-import { callEffect, commitAudit } from './execute.ts'
+import { buildAudit, callEffect } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
+import type { AuditDraft } from '../audit.ts'
 import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
 import { WorldWriter } from '../writer.ts'
 import type { WorldState } from '../writer.ts'
@@ -65,12 +66,12 @@ export interface RoundInput {
   /** 该 run 的取消信号（G2 真取消）：abort 后不再执行挂起效果，在途调用尽力中止。 */
   signal?: AbortSignal
   /**
-   * 是否落审计：缺省 true。false（只读提交）时效果照常路由调用，但不 `commitAudit`
-   * （不写世界、不推进 head），内核产出的业务写也不应用；`lastAuditHash` 恒 null。
+   * 是否落审计：缺省 true。false（只读提交）时效果照常路由调用，但不构造审计草稿、
+   * 不追加侧存；内核产出的业务写也不应用。
    */
   audit?: boolean
-  /** 审计 entry 的落点回调：在落账互斥段内、内存推进之前调用（调用方负责追加进账本）。 */
-  onAudit?: (entry: Entry) => void
+  /** 审计草稿的落点回调：同步调用（调用方负责追加进旁路侧存；抛错即致命）。 */
+  onAudit?: (draft: AuditDraft) => void
   /** done 轮业务 journal 的落点回调：与内核提交同段、内存推进之前调用。 */
   onRound?: (entries: Entry[]) => void
 }
@@ -81,8 +82,6 @@ export interface RoundOutcome {
   head: Head
   journal: Entry[]
   observations: Json[]
-  /** 本轮最后一条 eff 的审计 def 键；无 eff 时为 null（供 A10 填 `ref`）。 */
-  lastAuditHash: Hash | null
   /** 本轮实际物化执行的 directives / owners（供轮间驱动 pickPlan）；物化失败时为空。 */
   directives: Directive[]
   owners: Array<string | undefined>
@@ -214,7 +213,6 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
     throw new Error('runRound: provide exactly one of directives or materialize')
   }
   const results: Record<Hash, EffResult> = {}
-  let lastAuditHash: Hash | null = null
   let suspensions = 0
   let located = -1
   let emissionsInDirective = 0
@@ -249,7 +247,6 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       head: snap.head,
       journal,
       observations,
-      lastAuditHash,
       directives: resolvedDirectives(),
       owners: resolvedOwners(),
     }
@@ -347,34 +344,23 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       suspensions += 1
       continue
     }
-    // 审计落账进互斥段：与内核提交共享同一链头 CAS，账本追加序 = 链序。
-    // 先落盘（onAudit）、成功后才把克隆副本切换为当前世界/链头；失败即致命。
-    const executed = await writer.run((state) => {
-      const outcome = commitAudit(
-        eff,
-        state.world,
-        state.head,
-        {
-          by: input.initiator,
-          now: input.now,
-          run: input.runId ?? runId,
-          emitter: found === null ? undefined : resolvedOwners()[found.index],
-        },
-        result,
-        cancelled,
-      )
-      const entry = outcome.auditEntry
-      if (entry !== null && input.onAudit !== undefined) {
-        persist(() => input.onAudit?.(entry))
-      }
-      state.world = outcome.world
-      state.head = outcome.head
-      return outcome
-    })
-    results[eff.id] = executed.result
-    if (executed.auditHash !== null) lastAuditHash = executed.auditHash
-    if (aborted() && executed.result.error === 'cancelled') {
-      // 在途取消：审计已按 cancelled 落账；不续跑 —— 丢弃该 run 的剩余计划
+    // 审计走旁路侧存：不碰世界 / 链头，故不进落账互斥段；追加是同步单写者，不会与并发交错。
+    // 追加失败即致命（persist）：不允许「侧存写失败后仍继续」导致审计缺档。
+    const draft = buildAudit(
+      eff,
+      {
+        by: input.initiator,
+        now: input.now,
+        run: input.runId ?? runId,
+        emitter: found === null ? undefined : resolvedOwners()[found.index],
+      },
+      result,
+      cancelled,
+    )
+    if (input.onAudit !== undefined) persist(() => input.onAudit?.(draft))
+    results[eff.id] = result
+    if (aborted() && result.error === 'cancelled') {
+      // 在途取消：审计已按 cancelled 落侧存；不续跑 —— 丢弃该 run 的剩余计划
       return finish('cancelled', [], out.observations)
     }
     suspensions += 1

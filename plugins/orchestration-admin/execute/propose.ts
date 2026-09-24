@@ -8,7 +8,7 @@ import { resolveLimits } from './config.ts'
 import { validateBag } from './gate.ts'
 import { H, canonicalJson } from './hash.ts'
 import { asArray, asStringArray, graphDerivedFrom, graphNodes, readGraphModel } from './model.ts'
-import { isRecord, planOf, putOp } from './plan.ts'
+import { baseSeqOf, isRecord, planOf, putOp } from './plan.ts'
 import { BadArgsError, ToolError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
@@ -25,7 +25,14 @@ function evolutionBody(bag: Rec): Rec {
   const evolution = bag['evolution']
   if (isRecord(evolution)) {
     if (isRecord(evolution['body'])) return evolution['body'] as Rec
-    if (isRecord(evolution['proposals']) || typeof evolution['version'] === 'number') return evolution
+    if (isRecord(evolution['proposals']) || typeof evolution['version'] === 'number') {
+      // 入口切片把 refs 闭包与投影元数据 data_gen 并进同一层；落账 body 必须剔除，
+      // 否则每回合把闭包 / 元数据写回台账，体积无界增长。
+      const body: Rec = { ...evolution }
+      delete body['refs']
+      delete body['data_gen']
+      return body
+    }
   }
   return {
     version: 1,
@@ -151,17 +158,32 @@ export function proposeTool(bag: Rec, env: CallEnv): Json {
   const proposalHash = H({ body: proposal })
 
   const body = evolutionBody(bag)
-  const newBody: Rec = {
-    ...body,
-    version: typeof body['version'] === 'number' ? body['version'] : 1,
-    proposals: { tail: { def: proposalHash }, count: proposalsCount(bag) + 1 },
-  }
+  const newProposals: Rec = { tail: { def: proposalHash }, count: proposalsCount(bag) + 1 }
   const bodyIndex = ops.length
-  ops.push(putOp(newBody))
-  ops.push({
-    op: 'add_gen',
-    args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, pins: {} },
-  })
+  const base = baseSeqOf(bag['evolution'])
+  if (base === null) {
+    ops.push(
+      putOp({
+        ...body,
+        version: typeof body['version'] === 'number' ? body['version'] : 1,
+        proposals: newProposals,
+      }),
+    )
+    ops.push({
+      op: 'add_gen',
+      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, pins: {} },
+    })
+  } else {
+    // 补丁世代：只替换 proposals 槽（version 缺失时补一条），不重写整份台账 body
+    const patches: Json[] = []
+    if (typeof body['version'] !== 'number') patches.push({ op: 'replace', path: ['version'], value: 1 })
+    patches.push({ op: 'replace', path: ['proposals'], value: newProposals })
+    ops.push(putOp({ ops: patches }))
+    ops.push({
+      op: 'add_gen',
+      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, pins: {}, base },
+    })
+  }
 
   return planOf(ops, {
     ok: true,

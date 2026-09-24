@@ -61,10 +61,14 @@ index   ← run 与公共面            （只 re-export）
 ```
 Def      = { body: Json, pins?: Record<string, Hash>, sig?: Hash }  // put 的载荷本身；键 = H(Def)
 Gen      = { seq, payload: Hash, pins: Record<string, Hash>, sig: Hash,
-             adopted: { at, by, write: Hash }, graft?: { from: id, gen } }
+             adopted: { at, by, write: Hash }, graft?: { from: id, gen }, base?: int }
              // adopted.write = 完成采纳的那条 entry 的位置；批内 add_gen 指向外层 batch entry 的 entryHash
+             // base 存在 = 补丁世代：payload 指补丁 def，body = base 世代 body 组装后按序应用补丁；
+             // 缺省 = 整份世代：payload 指整份 body def。两种世代 active 同义（都指 payload）
 Identity = { id, schema: Hash, gens: Gen[], active: Hash|null, born: { at, by, parent? } }
 World    = { defs: Record<Hash, Def>, ids: Record<string, Identity> }
+           // defs 表可由宿主实现为惰性代理（按需从分片加载 body）：内核经 defs.ts 的 LAZY_DEFS
+           // 符号识别，克隆 / 列键 / 判存在不读 body，下标读写与普通 map 同形、语义一致
 Head     = { seq, hash: Hash|null }     // EMPTY_HEAD = { seq: -1, hash: null }
 Anchor   = { world, head }               // 校验起点；与 KernelInput.head 同形
 ```
@@ -111,9 +115,15 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 
 `batch` 是唯一的两段式。原因是一条先后依赖：批内 `add_gen` 的 `adopted.write` 语义是"完成采纳的那条 entry 的位置"，批内只可能是外层 batch entry；而外层 `entryHash` 依赖外层 `argsHash`，后者依赖全部子哈希——单趟式无解。段一不碰世界，只做占位符替换、子操作预哈希、聚合与外层定位；段二才逐子应用，失败逆序 `undo` 回滚、世界逐字节不动。占位符 `{"$n": k}` 只能指向**本批内更早的 `put`**（只有它有产物 = def 键）；日志永远存**替换前**的 args，重放必然算出同一个 `argsHash` 与同一个外层位置。顺带收益：哈希性失败在世界分文未动之前就定论。落地的 `dup` 短路也长在段一上：全 `put` 幂等批预哈希后即可定论，跳过段 2。
 
+补丁世代（`add_gen` 携带可选 `base`）把「每回合写整份 body」换成「base + 补丁」。补丁 def 的 body 形如 `{ops:[{op,path,value}…]}`，`op ∈ append|replace|delete`，`path` 是 `(str|int)[]`：`append` 列表追加 / 字符串拼接（路径不存在按值建列表）；`replace` 路径整体替换（中间容器不存在按下一段类型新建）；`delete` 删除路径（缺失即幂等成功）。组装 `assembleBody(base, ops)` 是纯函数：不改 base / 补丁，产物不共享补丁 value 引用。`base` = 同身份内基础世代的 `seq`（严格小于本世代），必须已存在且其 payload def 是合法补丁体，否则 `missing_parent` / `bad_patch`（fail-closed，世界分文不动）。`active` 对补丁世代同义：仍指向 `payload`（补丁 def 键），故 `set_active` 回滚语义不变。组装结果由**取用侧**（宿主投影）按世代链回溯算出，内核不组装、不解释 body 语义；读侧契约不变（投影仍回 `body`，另回 `data_gen` = 组装来源世代，供写方把下一世代写成补丁）。
+
+补丁口径：`argsHash` 仍是 `H(args)`（含 `base`），链哈希口径不变；`sig` 仍是世代签名 def 键（补丁 def 亦可作 sig）。`worldRev` 的 gen 摘要吃 `base`，换 base 即换内容身份。回收时补丁世代的 base 世代必须一并保留（`retainedGens` 沿 base 追加），否则组装悬挂；`flattenPatches`（压扁）把线性补丁链折叠成单个整份世代（payload = `H({body: 组装结果})`），缩短链并消除 base 依赖，compact 可按 `flattenChain` 阈值调用。
+
 压缩是追加一个新基础（快照），不是丢旧段。`snapshot` 是一条普通 entry，`args = { world_rev }`，位置由自身 `seq`/`entryHash` 唯一确定；应用时自校算出的 `world_rev` 与存值不符即 `world_rev_mismatch`——快照想锚歪都锚不了。三层全是"追加"：① 追加快照 entry（世界本体宿主落盘）→ ② 宿主把快照前段移冷存储 → ③ 上层把保留内容重写进新世界。没有删除，内核也不欠 `compact` 这个 op。归档不欠内核算法，但保留集有协议：尾段引用集 ∪ 快照世界各 active 世代的闭包，沿 `pins`/`payload`/`sig`/`schema` 遍历即得（规矩 A 保证结构依赖都在 pins）；移出 ≠ 删除。
 
 基础世界的真源在宿主不在内核。快照只记凭证与位置，不携带本体；run 收到的世界是不是"这条链当前结果"，验证它等于重放全部历史不可负担，所以内核只在可按需算的凭证层面给工具（`worldRev`、`snapshot.args.world_rev`、`verify` 的 `expected.worldRev`），义务在宿主。
+
+有界化回收（`recycle.ts`）是**上层策略**而非内核新动词：compact 写 base 时按可达闭包裁掉未达 def 与窗口外世代，冷段仍留历史，`verify`/`replay` 从冷段全链照常校验。故"`replay(尾段, 快照世界)` 与全量重放逐字段相同"这一长链硬判据**仅在未回收时**成立；回收后基础世界是全量世界的子世界，宿主以 `snapshotRev`/`worldRev` 区分二者。
 
 ## 六、取用的三种模式
 
@@ -126,6 +136,7 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 | `base_only` | 直接取宿主存的基础世界 | 即空段调用 `verify([], anchorAfter(基础,快照), {worldRev})`——唯一能校基础的入口 | ❌ 只读投影 |
 
 相关导出面（`journal.ts`）：`EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter`。
+定义表访问抽象（`defs.ts`）：`LAZY_DEFS`、`LazyDefsHandle`、`isLazyDefs`、`cloneDefs`、`defHas`、`defsKeys`——内核只经它们读 / 判存在 / 列键 / 克隆 defs 表，普通 map 与惰性代理行为一致；`cloneWorld` 与 `flattenPatches` 的复制都走 `cloneDefs`，不展开 body。
 
 成对使用是硬规则。`replay` 只重建、不校验链——它内部不查 `seq`/`prev` 衔接，只查 `applyEntry` 成功与 `argsHash` 一致。于是 `replay(尾段, 错的基础)` 不报错：尾段一条本该撞 `id_taken` 而被拒的记录，接在缺前缀基础上却成功，于是算出链上从未被授权的世界。防"接错位"的责任全在 `verify`。`base_only` 的禁则是结构性的：写要 `expect_pos`，而 `pos` 是链头哈希，基础里没有——它只能当只读投影，正当用途恰好是"上下文 = 对日志的投影"这一闭环。
 
@@ -266,7 +277,7 @@ Eff   ["eff", port, method, args]                  Call ["call", fTerm, [T...]]
 
 来自仓库内实验，绝对值随机器而变，只引用比率与量级：内核纯 JS 哈希比宿主进程内原生哈希慢 40–58×（早期更高倍数是 JIT 预热差工件）；世界必须整份在内存（`defs` 只增不减）= RAM 墙；日志自带全量载荷，盘上体积 ≈ 语料 1×；重复提交同内容成本约为一次真写的 7–9 成（判决在完整应用之后，幂等短路省幅上限一半）；链哈希 O(1)、`worldRev` O(def 数)。
 
-两堵墙：**时间墙**——大字节继续走 `put`，全量审计成本 ∝ 语料字节 ÷ 内核哈希速率；快照分界把日常重启变只付尾账（与全量重放逐字节等价），所以时间墙实际落在"完整审计"这一次。**RAM 墙**——① 档字节数无可调上限，约束形式是 `defs` 字节 ≪ 进程可用内存。四条对策都不破不变量：`dup` 短路（全 `put` 幂等批预哈希后即定论跳过段 2）；大字节不走 `put`（③④，链只承诺哈希值不承诺谁算的）；`note` 承载载荷切断"历史增长率 = 热路径增长率"；快照分界 + 归档协议把全量重放降为可选择的审计动作。字块化哈希只是止血非良止血（实测上限 1.4–1.6×）——纯 JS 实现层近乎无路，性能只能靠上面四条活路。源码留 ① 接受"每次全量审计重哈希一遍"的保险费，按真实尺度很低且被快照移出日常路径，大型仓库下真正约束是内存不是 CPU，搬出世界省的那点钱代价是放弃"代码回滚 = 一个记账动作"——不值。
+两堵墙：**时间墙**——大字节继续走 `put`，全量审计成本 ∝ 语料字节 ÷ 内核哈希速率；快照分界把日常重启变只付尾账（与全量重放逐字节等价），所以时间墙实际落在"完整审计"这一次。**RAM 墙**——① 档字节数无可调上限，约束形式是 `defs` 字节 ≪ 进程可用内存。宿主侧基础世界已按 def 分片落盘、启动按需加载（`DefStore` + 惰性 defs 代理），常驻只含清单与 LRU 命中集；但内核全量重放（从空世界重建）仍整份在内存，故这条约束对 `replay` / `verify` 全链路径依旧成立。四条对策都不破不变量：`dup` 短路（全 `put` 幂等批预哈希后即定论跳过段 2）；大字节不走 `put`（③④，链只承诺哈希值不承诺谁算的）；`note` 承载载荷切断"历史增长率 = 热路径增长率"；快照分界 + 归档协议把全量重放降为可选择的审计动作。字块化哈希只是止血非良止血（实测上限 1.4–1.6×）——纯 JS 实现层近乎无路，性能只能靠上面四条活路。源码留 ① 接受"每次全量审计重哈希一遍"的保险费，按真实尺度很低且被快照移出日常路径，大型仓库下真正约束是内存不是 CPU，搬出世界省的那点钱代价是放弃"代码回滚 = 一个记账动作"——不值。
 
 ## 十七、不变量守住什么
 
@@ -308,6 +319,9 @@ Eff   ["eff", port, method, args]                  Call ["call", fTerm, [T...]]
 |---|---|
 | value | `TYPE_ORDER`、`t`、`canonicalJson`、`deepEq` |
 | hash | `utf8`、`sha256`、`H` |
+| defs | `LAZY_DEFS`、`LazyDefsHandle`、`isLazyDefs`、`cloneDefs`、`defHas`、`defsKeys` |
+| patch | `PatchOp`、`PatchPath`、`assembleBody`、`readPatchOps` |
+| rebase | `flattenPatches`、`FlattenResult` |
 | journal | `EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter` |
 | commit | `commit`、`validate`、`entryOf`、`stale` |
 | machine | `eval`、`cmp` |

@@ -33,7 +33,7 @@ fn read_tool() -> Value {
         "intent": "读取一个文本文件的内容，可按行窗口取片段。",
         "when_to_use": "需要查看文件内容、为精确替换确认上下文，或定位某段代码时。",
         "param_semantics": {
-            "path": "文件路径：相对路径以 workspace_root 为基准，也可给绝对路径（含区外）。",
+            "path": "文件路径：相对路径以工作区根目录为基准，也可给绝对路径（可超出工作区）。",
             "offset": "起始行号（0 基）；缺省 0。",
             "limit": "读取的最大行数；缺省 2000，超上限会被截断并标记 truncated。"
         },
@@ -61,7 +61,7 @@ fn edit_tool() -> Value {
         "intent": "对文件做精确替换；old 为空且文件不存在时新建文件。",
         "when_to_use": "需要修改文件内容、或创建一个新文件时。",
         "param_semantics": {
-            "path": "文件路径：相对路径以 workspace_root 为基准，也可给绝对路径（含区外）。",
+            "path": "文件路径：相对路径以工作区根目录为基准，也可给绝对路径（可超出工作区）。",
             "old": "要被替换的原文；必须唯一命中（replace_all 为 true 时全部替换）。空串表示新建分支。",
             "new": "替换后的新文；新建分支下为新文件的初始内容。",
             "replace_all": "是否替换全部命中；缺省 false（old 非唯一即 edit_conflict）。"
@@ -98,8 +98,8 @@ fn glob_tool() -> Value {
         "when_to_use": "知道文件名 / 后缀但不知道具体位置，需要先列出候选文件时。",
         "param_semantics": {
             "pattern": "文件名 glob 模式，如 **/*.rs；不跨目录用 *，跨目录用 **。",
-            "path": "搜索基准目录；缺省 workspace_root。相对路径以 workspace_root 为基准。",
-            "ignore": "忽略模式表；缺省用身份数据世代 body 的忽略表，再缺省用内置兜底。",
+            "path": "搜索基准目录；缺省工作区根目录。相对路径以工作区根目录为基准。",
+            "ignore": "忽略模式表；缺省用内置忽略规则。",
             "limit": "返回条数上限；缺省 200，超限标记 truncated。"
         },
         "boundaries": "只按文件名找文件、返回相对路径；不读内容（找内容用 grep），不改文件。",
@@ -135,8 +135,8 @@ fn grep_tool() -> Value {
         "param_semantics": {
             "pattern": "要查找的文本或简易正则；含正则专属元字符时按正则处理。",
             "glob": "只在这些文件名模式下搜索，如 *.rs。",
-            "path": "搜索基准目录；缺省 workspace_root。相对路径以 workspace_root 为基准。",
-            "ignore": "忽略模式表；缺省用身份数据世代 body 的忽略表，再缺省用内置兜底。",
+            "path": "搜索基准目录；缺省工作区根目录。相对路径以工作区根目录为基准。",
+            "ignore": "忽略模式表；缺省用内置忽略规则。",
             "limit": "命中条数上限；缺省 100，超限标记 truncated。"
         },
         "boundaries": "只读搜索、返回命中行 {path, line, text}；不做替换（改文件用 edit），不按文件名找文件用 glob。",

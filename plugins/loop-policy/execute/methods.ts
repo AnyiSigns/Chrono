@@ -7,6 +7,8 @@ import { expandAdoption, expandRejection, ledgerEntries, scanProposals } from '.
 import { H } from './hash.ts'
 import { asString, isRecord, isoAt, nowOf, planOf } from './plan.ts'
 import { PINS } from './plugin.ts'
+import { createRefHydrator } from './refs.ts'
+import type { DefReader, RefHydrator } from './refs.ts'
 import { resolveModel } from './seed.ts'
 import { buildTraceTail } from './tail.ts'
 import { TraceRecorder } from './trace.ts'
@@ -15,6 +17,40 @@ import type { CallEnv, Handler, HandlerResult, Json, PortCaller, Rec } from './t
 
 export interface LoopPolicyDeps {
   port: PortCaller
+  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
+  host?: PortCaller
+}
+
+/** bag 里承载引用闭包的容器键 → 其 refs 所属身份（用于越权门禁）。 */
+const REF_CONTAINERS: ReadonlyArray<readonly [string, string]> = [
+  ['evolution', 'evolution'],
+  ['evidence', 'evolution'],
+  ['graph', 'loop-policy'],
+  ['graph_refs', 'loop-policy'],
+  ['approval', 'approval'],
+  ['question', 'question'],
+  ['session', 'session'],
+]
+
+/**
+ * bag 里各容器 refs（哈希列表）按需解析成闭包；已是对象则原样。
+ * `graph_refs` 直接挂在 bag 上（旧形状），其余为容器内的 `refs` 字段。
+ */
+async function hydrateBag(bag: Rec, hydrator: RefHydrator): Promise<Rec> {
+  const out: Rec = { ...bag }
+  for (const [key, identity] of REF_CONTAINERS) {
+    if (key === 'graph_refs') {
+      const refs = out[key]
+      if (Array.isArray(refs) || isRecord(refs)) out[key] = await hydrator.hydrate(identity, refs)
+      continue
+    }
+    const container = out[key]
+    if (!isRecord(container)) continue
+    const refs = container['refs']
+    if (!Array.isArray(refs) && !isRecord(refs)) continue
+    out[key] = { ...container, refs: await hydrator.hydrate(identity, refs) }
+  }
+  return out
 }
 
 function refsOf(bag: Rec): Rec {
@@ -63,9 +99,14 @@ function orchestrationResume(bag: Rec, pins: Rec, resume: Rec, env: CallEnv, at:
 }
 
 /** `interpret(bag)`：一次回合的图执行 + 回合尾写。 */
-async function interpret(args: Json, env: CallEnv, deps: LoopPolicyDeps): Promise<HandlerResult> {
+async function interpret(
+  args: Json,
+  env: CallEnv,
+  deps: LoopPolicyDeps,
+  hydrator: RefHydrator,
+): Promise<HandlerResult> {
   if (!isRecord(args)) throw new BadArgsError('bag must be an object')
-  const bag = args
+  const bag = await hydrateBag(args, hydrator)
   const refs = refsOf(bag)
   const resolved = resolveModel(bag['graph'], refs)
   const model = resolved.model
@@ -113,7 +154,15 @@ async function interpret(args: Json, env: CallEnv, deps: LoopPolicyDeps): Promis
 
 /** 构造方法表（依赖注入：反向调用通道由 main 提供）。 */
 export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
+  const read: DefReader = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
   return {
-    interpret: (args: Json, env: CallEnv): Promise<HandlerResult> => interpret(args, env, deps),
+    interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
+      interpret(args, env, deps, hydrator),
   }
 }

@@ -67,7 +67,7 @@ Chrono/
 │       ├── assembly/        装配：声明解析 / `pins` 闭包 / 拓扑 / 物化 / 起停 / 端点表 / 世代跟随
 │       │                    —— **只读世界**；不写链、不执行效果、不认识插件种类
 │       ├── effect/          效果：连接 / 调用 / 通用 run loop / 效果执行 / `EffectAudit` / 写口
-│       ├── ledger/          账本：journal 文件 / `verify` / `replay` / 基础世界 / 单写者锁
+│       ├── ledger/          账本：journal 文件 / `verify` / `replay` / 基础世界（分片 + 按需加载） / 单写者锁
 │       └── projection/      投影：`base_only` 只读投影
 ├── plugins/                 插件包的源码位置（一个插件 = 一个 npm 包；**仅位置、非分类**）
 │   └── <name>/              npm 包
@@ -87,8 +87,11 @@ Chrono/
 └── state/                   宿主侧落盘（ignore；**永不进世界**）
     ├── world/               journal 尾段 + 基础世界 + 冷段 —— **真源**：世界本体（源码字节不在此，见 `blobs/`）
     │   ├── journal.jsonl    快照起的尾段（append-only）
-    │   ├── base.json        基础世界（快照位置 + 世界本体 + 审计索引；③ 可重算：丢了 / 与尾段不对齐即由冷段 + 尾段全链重放重建）
+    │   ├── base.json        基础世界索引（快照位置 + 摘要 + ids + def 哈希清单 + 分片参数；③ 可重算）
+    │   ├── defs/            基础世界 def body 分片 `defs/<gen>/<prefix>.jsonl`（按哈希前缀分片；读时按需加载）
     │   └── cold/            冷段归档 `seg-<first>-<last>.jsonl`（快照前的前缀；移出 ≠ 删除）
+    ├── audit/               效果审计旁路侧存（不进世界、不进链、不参与重放）
+    │   └── audit.jsonl      审计记录（单文件追加 + 上限压实；有界保留窗口见「效果」）
     ├── blobs/               源码字节本体 `<sha256>`（④ 不可重算；内容寻址、**只增**、离线可达性回收）—— 与 `assets/` 机械同构、保留策略不同
     ├── assets/              资产字节本体 `<sha256>`（④ 不可重算）—— **备份世界 ≠ 备份字节**，须一起备份
     ├── runtime/             运行态表 / 工作副本 / 锁 —— **③ 可重算**：删了重建
@@ -239,11 +242,12 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 **效果**
 
-- 效果一律经宿主；**审计先于业务写**（audit def → `request.ref`），**失败也落审计**（`execute` 必须
-  try/catch，失败也 `put` 审计 def，记失败形态）。审计 def body =
+- 效果一律经宿主；**每次效果必留一条审计**（失败也留，`execute` 必须 try/catch，记失败形态）。
+  审计记录写 **`state/audit/audit.jsonl` 旁路侧存**（不进世界 `defs`、不落链、不参与哈希 / 重放），记录体 =
   `{kind:'effect_audit', request, result, port, method, outcome, run, emitter}`；
   `outcome` 机械导出：`ok`（有响应成功）/ `error`（有响应为错误）/ `transport_failed`（没执行）/
   `cancelled`（被真取消中止）；`run` = 宿主对外回合 id（`accepted{run}`）、`emitter` = 发出者身份。
+  审计不再被业务写 `ref` 指到（`write` 不落 `ref`），故效果判定 / 落账不再需要「审计先于业务写」。
 - **调用帧 `env` 注入（机械）**：宿主在**每次服务调用**（正向 `call` 与反向 `port.call` 转发）的协议帧上填 `env: { run, thread, now }`
   ——`run` = 本次回合 id（宿主分配）、`thread` = 发起者提交信封里的可选字段（原样回带、不校验；detached / 周期 run 恒 `null`）、
   `now` = 宿主固定时钟（与 `KernelInput.now` 同源）。**只填帧、不改 `args` / `bag` 语义**（`canonicalJson(args)` 缓存键与审计 args 不受影响）；
@@ -268,18 +272,23 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
    **已落账内容不回溯**。与 `stop`（停宿主）互不相干：`cancel` 只影响该 run，宿主继续运行；
    停机时宿主亦取消全部在途 / 排队 run（不把停机耗在调用超时上）。**命令 run 与 `submit` run 同规登记在册**，故同样可被 `cancel{run}` 与停机 `abort` 覆盖（命令 `result` 不带 `run`，仅审计 / 运维可见其回合 id）。
 - **只读审计面**：宿主按回合（`run`）/ 身份（`emitter`）/ 结局（`outcome`）查询 `EffectAudit`
-  （入站 `audit`；seq 降序、缺省 100 条、上限 1000）；索引在启动时由**基础世界索引 + journal 尾段**重建、
-  运行期随审计落链增量补齐；
+  （入站 `audit`；seq 降序、缺省 100 条、上限 1000）；数据源为**旁路侧存的内存索引**，
+  启动时由 `state/audit/audit.jsonl` 重建、运行期随每次效果追加增量补齐；
   **只读**：不写链、不推进、不参与哈希（查询语义见 `protocol.md` §三）。
-- 审计 def 进 ① `defs`——它要被 `ref` 指到，必须可寻址。
-- **审计 `put` 是宿主对 `commit` 的直接调用**（`kernel.md` 导出 `commit`）——宿主侧唯一不经 `run` directive 的直写，
-  为的是让 `ref` 指向的审计 def 在业务写之前就已可寻址。`kernel.md` §二「唯一调用 commit 的地方 = `run`」指内核**模块内部**依赖，不含宿主外部调用。
+- **审计旁路侧存（有界）**：单文件追加（每条一次写 + `fsync`、换行收尾）+ 上限压实；保留窗口
+  按条数（`AUDIT_MAX_RECORDS` = 10000）与近似字节（`AUDIT_MAX_BYTES` = 8 MiB）取先到者淘汰最旧，
+  磁盘超阈值（缺省为保留窗口两倍）即整文件原子重写为保留集。淘汰只影响侧存与热索引，**不触及世界状态**。
+  半写安全：启动 / 追加前容错读，末行撕裂截到有效前缀；带换行的坏行跳过（fail-open）。单写者：追加同步、
+  宿主单进程串行调用，无并发交错。落点 `packages/host/audit-store.ts`。
+- 审计 def **不再进世界**：效果执行只产审计草稿（`packages/host/effect/execute.ts` 的 `buildAudit`），
+  由宿主单写者在侧存追加；`compact` 落 base 前机械摘除历史审计 def，冷段 journal 仍留旧审计 entry
+  （full verify 从空世界重放照常可寻址），`host.audit` 读不到老 def 时返回侧存可得部分（fail-open）。
 - **`extern` 是确定性透传锚点（非效果）**：`{kind:'extern', payload}` directive 经 `run` 只原样产观测 `{kind:'extern', payload}`
   （`kernel.md` §十二）——**不写世界、不推进 head、不耗 gas、不发 `eff`、不需审计**（无 `EffRequest`，故「效果一律经宿主」不适用）；
   宿主把它原样回给发起者，不解释、不落账、不推进。用途：命令「无写返回值」（run 末尾 `extern(结果)`）、外部事件锚位。
-- `write` 的 `ref` = **触发它的那条 `eff` 的 audit 哈希**；分相后 write 轮内无 `eff`，故取**紧邻 eval 段内最后一条 `eff`** 的 audit 哈希；无前置 `eff`（如直接提交 write）时 `ref = null`。
+- `write` **不落 `ref`**（审计已迁旁路侧存，无可指向的世界 def）；`ref` 字段保留给未来的世界内引用语义。
 - `run` 照抄 `kernel.md` §十二；**只有 `done` 才落账**；续跑同 `run_id` / `now` / `directives`，
-  `results` **只增不改**；审计 `put` 会推进链头，续跑下一轮必须回灌**审计后的 `world` / `head`**。
+  `results` **只增不改**；审计不进世界、不推进链头，故续跑下一轮只需回灌**业务写后的 `world` / `head`**。
 
 **落账**
 
@@ -295,7 +304,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   宿主按命令声明解析入口 def（与命令面同路、机械），属主即命令声明方；term 拿不到他人 def 哈希时用它
   （如裁决 / 作答入口 term 产「按游标续跑」计划）。`entry` 形式保留；`entry` 与 `command`
   不可同条并存、也不可都缺（否则 `bad_directive`）；命令名解析不到 → `refused`（reason `unknown_command`，与命令面同码）。
-- **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计 `put` 推进 head 但不回改该轮 `ctx`），
+- **分相（保序）**：一轮内不混 eval 与 write——连续 eval 合一轮（eval 不推进 head；审计进侧存、不推进 head，也不回改该轮 `ctx`），
   **`write` 每条单独一轮**（其 `expect_pos` = 该轮轮首链头；要原子写多份用一条 `batch`），`extern` 中性可随邻段。
 - **term 可产全部 op**（含 `add_gen` / `set_active` / `retire` / `fork` / `graft`）——自改世界是 term 的能力，
   宿主不做 op 级限制。**v1 无 op 级鉴权**：内核不验 `by` 真实性（`kernel.md` §十四），宿主不限制 term 改哪个身份；
@@ -364,15 +373,31 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **同一时刻只有一个写者**；`verify` / `replay` 也持锁（日志可能正被写，读到半条会误判）。
 - **锁粒度**：锁从「run 全程持有」**收窄为「commit 期间持有」**——run 可并发推进 eval / 等待效果，只在落账那一刻串行。**run 级并发**：多个 run 同时活动，并发只在 run 之间，每个 run 内部单 pending 不变。
 - **提交队列 + 乐观校验**：各 run 的 `commit` 进**单一提交队列**，宿主按**到达序串行**出账（仲裁序 = journal `seq`，不新增字段）；提交时校验 base `worldRev`（`expect_pos` 单链头 CAS），冲突 ⇒ 按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改、重试占新 `seq`）。按 per-thread 键控的身份 body（`body.slots[<thread_id>]`；**v1 已知限制**：整值 `put` 下不同键并非真正可交换——同线程键写者唯一、服务侧清槽的整份 body 取自入口 term 的轮首 ctx（权威）；跨线程 / 跨客户端并发仍 last-write-wins）；用户级共享身份以读为主，写罕见且 last-write-wins。入站 `submit` **accept 仍 FIFO、不抢占**（§七）；被 accept 的多个 run 可并行推进 eval，只在 commit 排队。
-  - **v1 落地口径**：落账段（内核 `run` + journal append）在单一串行链内**无 await**，write directive 的 `expect_pos` 在段内机械锚到当前链头——即「在新链头上重放同一条 directive」，故结构上不产生 `pos_conflict`，乐观重试路径暂不触发。语义等价于 append-only 写（`put` / `add_gen` 等内容寻址 op）可安全 rebase；**读-改-写共享身份 body 的并发写仍是 last-write-wins**（键控身份靠 per-thread 键控化解；共享 body 的真冲突检测 / 重提交后置）。审计 `put` 与业务写同段串行，追加序 = `seq` 链序；在途 run 的效果路由锚定**本 run 段内所见的世界**（不跟随其他 run 的后续落账）。
+  - **v1 落地口径**：落账段（内核 `run` + journal append）在单一串行链内**无 await**，write directive 的 `expect_pos` 在段内机械锚到当前链头——即「在新链头上重放同一条 directive」，故结构上不产生 `pos_conflict`，乐观重试路径暂不触发。语义等价于 append-only 写（`put` / `add_gen` 等内容寻址 op）可安全 rebase；  **读-改-写共享身份 body 的并发写仍是 last-write-wins**（键控身份靠 per-thread 键控化解；共享 body 的真冲突检测 / 重提交后置）。审计走**旁路侧存**（不进世界、不占 `seq`），故业务写追加序 = `seq` 链序；在途 run 的效果路由锚定**本 run 段内所见的世界**（不跟随其他 run 的后续落账）。
 - **停机序列**（`boot stop`）：按**反拓扑序**逐个 `drain` 服务（依赖者先停）→ 落盘 `fsync`（journal 本已 append-only）→ 释放锁 → 退出。停机**不写链、不改 active**。
 - **压缩**：宿主在**启动时**尾段达到阈值（`DEFAULT_COMPACT_TAIL_ENTRIES`）或离线 `boot compact` 时执行——
   ① 在链头追加快照 entry（`op:'snapshot'`，`args = { world_rev }`，应用时自校，锚不歪）；② 快照前的 entry 归档进
-  `world/cold/`；③ 尾段 journal 重写为「快照 entry 起」；④ 写 `world/base.json`（世界本体 + 快照位置 + 审计索引）。
-  这是宿主**第三处直写**（与审计、seed 同类），不走 run / directive；**世界不变**，链头推进到快照位置。
-  启动取用 = 读 `base.json` + 尾段重放（不再全量重放）；`verify` / `replay` 仍读冷段 + 尾段全链校验。
+  `world/cold/`；③ 尾段 journal 重写为「快照 entry 起」；④ 写基础世界——小索引 `world/base.json`
+  （快照位置 + `worldRev` / `snapshotRev` + `ids` + def 哈希清单 + 分片参数）+ def body 分片
+  `world/defs/<gen>/<prefix>.jsonl`。
+  这是宿主**第三处直写**（与 seed 同类），不走 run / directive；链头推进到快照位置。
+  启动取用 = 读索引 + 尾段重放（不再全量重放）；`verify` / `replay` 仍读冷段 + 尾段全链校验。
   压缩幂等（离线 `compact` 只归档**当前 journal**，不重归档旧冷段）；`base.json` 缺失或与尾段不对齐
   （崩溃窗口）时**回落全链**（冷段 + 尾段按 seq 去重）重放——基础世界是派生缓存，丢了不砖化；仅其**形态损坏**才 fail-closed（`bad_base`）。
+- **分片与按需加载（读基础世界）**：`base.json` 只含小索引，def body 按 def 键前 2 位十六进制字符分片
+  （`defs/<gen>/<prefix>.jsonl`，每行 `{h,d}`；`<gen>` = 落盘世界 `worldRev` 前 16 位，内容寻址、同摘要复用）。
+  宿主侧 `DefStore` 提供 `get` / `has` / `hashes` / `getMany`：清单常驻、body 走 LRU 缓存按需读分片，
+  列键 / 判存在 / 克隆只吃清单不读 body。`loadAnchor` 读 base 时 defs 表是惰性代理，启动不再把整世界
+  body 读进内存；只有真正取 body 的操作（投影取 active / 数据世代、命令解析 schema、补丁组装等）才触发分片读。
+  写入半写安全：先落 `defs/<gen>` 代目录再原子换索引，随后清理旧代目录；读取 fail-open（缺分片 = 缺 def，
+  分片目录整体缺失 = 无基础世界，回落全链）。旧 v1 单文件（body 内联）仍可照读，下次 compact 自动升级为分片。
+- **有界化回收（写 base 时）**：写 `base.json` 前，内核 `recycleWorld` 按可达性回收 def + 裁世代窗口
+  （缺省每身份保留最近 `DEFAULT_GEN_RETENTION` 代 + active + 被 `pins` / `graft` 引用的世代），
+  并机械**摘除审计 def**（审计已迁旁路侧存，不再是世界内容 / 世界根，无 `keepRoots` / `dropRoots`）。
+  **未达 def 与审计 def 不写进新 base**；保守口径只回收「被窗口淘汰根独有」的
+  def，从未被任何根引用的业务 def 不碰（引用图不完备）。冷段归档保留历史，`verify` / `replay` 从冷段全链仍过；
+  此时基础世界是全量世界的**子世界**，`base.json` 记 `snapshotRev`（快照 entry 的全量 `world_rev`）与本体
+  `worldRev` 区分，`loadAnchor` 跳过快照 entry 自校、直接以子世界为起点重放尾段。回收失败 fail-open（退回未回收世界）。
 
 **资产**
 
@@ -394,7 +419,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **投影引用闭包**：见「投影」。`{"def":hash}` 跟随传递闭包进 `ids.<id>.refs`；**全量返回**（`next_before` 恒 `null`，翻页由调用方在 `refs` 上切片），`refCap` 仅硬安全上限。
 - **受保护 `pins` 不可删（入世校验）**：跨代比对 `pins`（按被依赖身份名，值即 `decl.pins` 的依赖名），若新世代删除了对**受保护身份**的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：依赖关系是攻击面——新世代可借删 `pins` 让上层强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
 - **密钥本地存储面**：入站 `secrets.put {name, value}` / `secrets.delete {name}`——宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**；与 `asset.*` 并列。
-- **效果审计脱敏 + 体积截断**：`EffectAudit.result` 对发出者 + `port=secrets` + `method=resolve` 按白名单替换为 `{name, kind, has}`（不含本体）；对 `host` 批量方法（`asset.get` / `source.read` / `audit`）结果超过 `MAX_AUDIT_RESULT_BYTES`（64 KiB）时只落 `{truncated:true, size}`——否则 8 MiB 资产 / 拷入既往审计记录的 `audit` 会把 defs / journal / 审计索引撑爆（调用方仍拿完整结果）。**审计 def 的 `request.args` 同样限量**：序列化超过 `MAX_AUDIT_ARGS_BYTES`（64 KiB）时只落 `{id, port, method, args:{truncated:true, size}}`（保留定位所需的 `id` / `port` / `method`；调用方仍拿完整 args，只是审计正文留截断标记）。
+- **效果审计脱敏 + 体积截断**：`EffectAudit.result` 对发出者 + `port=secrets` + `method=resolve` 按白名单替换为 `{name, kind, has}`（不含本体）；对 `host` 批量方法（`asset.get` / `source.read` / `audit`）结果超过 `MAX_AUDIT_RESULT_BYTES`（64 KiB）时只落 `{truncated:true, size}`——否则 8 MiB 资产 / 拷入既往审计记录的 `audit` 会把世界 / journal / 审计侧存撑爆（调用方仍拿完整结果）。**审计记录的 `request.args` 同样限量**：序列化超过 `MAX_AUDIT_ARGS_BYTES`（64 KiB）时只落 `{id, port, method, args:{truncated:true, size}}`（保留定位所需的 `id` / `port` / `method`；调用方仍拿完整 args，只是审计正文留截断标记）。
 - **反向调用 `env` 值脱敏（端口审计）**：反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性；目标服务照收原值）——密钥经执行请求的 `env` 通道下传时不落宿主侧记录。与 `secrets.resolve` 的世界审计脱敏同路、两处口径。**端口审计与 `EffectAudit` 分流**：不进世界、不写链、不参与重放。**落点**：`packages/host/port-audit.ts`——宿主侧有界内存环形缓冲 `PortAuditRing`（容量常量 `PORT_AUDIT_CAPACITY` = 256，满即覆盖最旧），宿主 options `portAuditSink` 可注入 sink 覆盖（库调用方 / 测试；注入时记录**同时**写入缺省环形缓冲，sink 抛错只隔离该旁路、不阻断转发）；`HostHandle.portAuditRecords()` 暴露该环形缓冲的**只读快照**（时间正序、有界，缺省读取面，无需注入 sink）；记录形状 `PortAuditRecord = { at, from, target, port, method, args, run, thread }`（`from` = 发起服务身份、`target` = 路由解析出的目标身份、`args` 已脱敏）。
 - **插件源码读面**：`host.source.read { identity, path } -> { path, content(base64), size }`——把某身份的源码 `tree` / `blob` 按路径读给插件（世界 ① 有源码，投影不含 `tree` / `blob`）。可见性过滤由调用方负责，宿主不做。
 - **插件 ③ 目录**（`state/plugins/<id>/`）：插件缓存 / 向量索引 / 水位等可重算产物落此，宿主统一 GC。**落地口径**：起服务前宿主为本身份 `mkdir` 该目录，并以环境变量 **`CHRONO_PLUGIN_STATE`** 注入 spawn env（**只注入本身份路径**；宿主不认识目录内容）。**这是路径约定、不是 fs 隔离**——v1 无沙箱，插件进程仍可直接读其它路径。**GC**：宿主启动时（抢锁后、装配前）机械删除目录名 **∉ `world.ids`** 的顶层项（`retire` 只置 `active=null`、id 仍在 `world.ids` ⇒ **目录保留**）；失败不致命、不阻锁释放。身份名必须是**安全单段名**（拒绝含 `/`、`\`、盘符、`.`/`..`、控制字符、Windows 非法字符 / 保留设备名（`CON` 等）、尾随点/空格、JS 原型键（`__proto__` / `constructor` / `prototype`）与保留名 `host`），否则既会路径穿越、又会被 GC 误删；**入世与起服务边界都校验**（运行期写指令也能造 id）。
@@ -444,7 +469,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 插件的 `event` **只透传给入站面已连接的客户端**（按 `impl` 命名空间，见 `docs/protocol.md` §三），
   不投递给其他插件（投递需要宿主理解 `kind` = 认识业务）；宿主不执行、不落账、不推进。
   宿主自身的 run 生命周期事件（`run.started` / `run.finished`）与身份世代事件（`identity.changed`，见「宿主扩展面」）同路广播，`impl = "host"`。
-- **两种「审计」分流**：`EffectAudit`（① def、在世、被 write 的 `ref` 指——强审计，内容可追溯，见「效果」）；
+- **两种「审计」分流**：`EffectAudit`（旁路侧存 `state/audit/`，有界保留、不进世界——内容可追溯，见「效果」）；
   载体生命周期事件只进**运维日志**——宿主侧持久 append-only 文件（`state/lifecycle.log`，JSONL，逐行原子写），**不进世界、不进链、不参与重放**、宿主崩溃不丢。
   运维日志不属于 ①②③④（那是世界内容分类）；它是宿主独有的操作取证。assembly 只读世界、不写链——生命周期事件落运维日志不破此界。
 - **运维日志事件 = 两级 `{ kind, event }`**（`kind` 封闭、`event` 每 kind 有规范表）——**结构上不可能撞名**：
@@ -462,8 +487,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 ## 六、载体不变量
 
-1. **唯一写口**：插件服务永不写链；写一律经内核 `commit` 的四步校验——常规走 `run` 的 write directive，审计与离线 `seed` 由宿主 / `boot` 直写 `commit`。
-2. **效果必审计**：每对 `EffRequest→EffResult` 必有 `EffectAudit` def 且被 `ref` 指到。
+1. **唯一写口**：插件服务永不写链；写一律经内核 `commit` 的四步校验——常规走 `run` 的 write directive，离线 `seed` 由 `boot` / 宿主直写 `commit`；审计写旁路侧存，不写链。
+2. **效果必审计**：每对 `EffRequest→EffResult` 必有 `EffectAudit` 记录（旁路侧存 `state/audit/`，有界保留、不进世界）。
 3. **插件间不直连**：效果一律经宿主。
 4. **运行态不进世界**：物理端点 / pid 只住宿主侧 ③。
 5. **不扩权**：`EffRequest.caps` 恒等于输入（内核保证；宿主不扩权）。

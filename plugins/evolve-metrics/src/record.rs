@@ -75,15 +75,28 @@ pub fn run(bag: &Value, env: &Value) -> Result<Value, (String, String)> {
     let mut directives = Vec::new();
     if let Some(mut body) = body {
         let mut ops = vec![plan::put_op(entry.clone())];
-        if let Some(object) = body.as_object_mut() {
-            let evidence = object.entry("evidence".to_string()).or_insert_with(|| json!({}));
-            if let Some(evidence) = evidence.as_object_mut() {
-                evidence.insert("tail".to_string(), plan::chain_ref(0));
-                evidence.insert("count".to_string(), json!(old_count + 1));
+        // 追加新证据：整体替换 evidence 索引，清掉 sweep 的窗口字段（同 aggregate）。
+        let new_evidence = json!({
+            "tail": plan::chain_ref(0),
+            "count": old_count + 1,
+        });
+        match bag::base_of(bag) {
+            Some(base) => {
+                // 补丁世代：只替换 evidence 槽，不重写整份台账 body
+                ops.push(plan::put_op(plan::patch_body(vec![plan::replace_op(
+                    json!(["evidence"]),
+                    new_evidence,
+                )])));
+                ops.push(plan::add_gen_op("evolution", 1, Some(base)));
+            }
+            None => {
+                if let Some(object) = body.as_object_mut() {
+                    object.insert("evidence".to_string(), new_evidence);
+                }
+                ops.push(plan::put_op(body));
+                ops.push(plan::add_gen_op("evolution", 1, None));
             }
         }
-        ops.push(plan::put_op(body));
-        ops.push(plan::add_gen_op("evolution", 1));
         directives.push(plan::batch_directive(ops));
     }
 
@@ -142,6 +155,31 @@ mod tests {
         assert_eq!(ops[2]["args"]["id"], "evolution");
         assert_eq!(ops[1]["args"]["body"]["evidence"]["tail"], json!({"def": {"$n": 0}}));
         assert_eq!(ops[1]["args"]["body"]["evidence"]["count"], 1);
+    }
+
+    #[test]
+    fn record_patch_generation_when_base_present() {
+        let bag = json!({
+            "user_message_def": {"def": "msg-hash"},
+            "workspace_id": "w1",
+            "evolution": {
+                "version": 1,
+                "trace": {"tail": null, "count": 0},
+                "evidence": {"tail": null, "count": 0},
+                "proposals": {"tail": null, "count": 0},
+                "verdicts": {"tail": null, "count": 0},
+                "data_gen": {"seq": 3, "payload": "a".repeat(64)}
+            }
+        });
+        let value = run(&bag, &json!({"run": "r9", "now": 3})).unwrap();
+        let ops = value["$directives"][0]["request"]["args"]["ops"]
+            .as_array()
+            .unwrap();
+        assert_eq!(ops.len(), 3);
+        assert!(ops[1]["args"]["body"]["ops"].is_array(), "应写补丁 def");
+        assert_eq!(ops[1]["args"]["body"]["ops"][0]["path"], json!(["evidence"]));
+        assert_eq!(ops[1]["args"]["body"]["ops"][0]["value"]["count"], 1);
+        assert_eq!(ops[2]["args"]["base"], 3);
     }
 
     #[test]

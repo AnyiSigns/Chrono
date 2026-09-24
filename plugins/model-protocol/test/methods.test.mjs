@@ -200,6 +200,52 @@ test('profile：写前去重（同 body 再跑只回 extern）', async () => {
   })
 })
 
+test('profile：自定义厂商按 base_url / 显示名回落到 models.dev provider，并取 reasoning_options 档位', async () => {
+  const source = {
+    kilo: {
+      name: 'Kilo Gateway',
+      models: {
+        'stepfun/step-3.7-flash:free': {
+          limit: { context: 262144, output: 262144 },
+          reasoning: true,
+          reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+          modalities: { input: ['text', 'image'], output: ['text'] },
+        },
+      },
+    },
+  }
+  const handler = (req, res) => jsonResponse(res, 200, source)
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const config = {
+        version: 1,
+        providers: {
+          custom: {
+            name: 'Kilo Gateway',
+            base_url: 'https://api.kilo.ai/api/gateway',
+            protocol: 'openai-chat',
+            models: { 'stepfun/step-3.7-flash:free': { name: 'StepFun', enabled: true } },
+          },
+        },
+      }
+      const result = await driver.call('profile', {
+        vendor: 'custom',
+        ids: ['stepfun/step-3.7-flash:free'],
+        config,
+        source_url: server.url,
+        resilience: FAST,
+      })
+      const body = planBody(result.value)
+      assert.ok(body !== null, '应产写计划')
+      const model = body.providers.custom.models['stepfun/step-3.7-flash:free']
+      assert.deepEqual(model.reasoning, ['low', 'medium', 'high'])
+      assert.equal(model.context_window, 262144)
+      // output ≥ context 的条目封顶到半个上下文，避免输入预算变负
+      assert.equal(model.max_output, 131072)
+    })
+  })
+})
+
 test('profile：未知厂商 / config 缺省 / 源非 JSON', async () => {
   const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
   await withServer(handler, async (server) => {

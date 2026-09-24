@@ -10,7 +10,7 @@ import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { readJournal } from '../ledger/index.ts'
 import { hostPaths } from '../paths.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import {
   isPidAlive,
   readLifecycle,
@@ -64,20 +64,16 @@ describe('源码 watcher 热更（默认关，显式打开）', () => {
     )
   }
 
-  /** 末条审计 entry 的 result。 */
-  function lastAuditResult(entries: Entry[]): Json | null {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const body = (entries[i].args as { body?: { request?: Json; result?: Json } }).body
-      if (body?.request !== undefined) return body.result ?? null
-    }
-    return null
+  /** 末条审计（旁路侧存）的 result。 */
+  function lastAuditResult(): Json | null {
+    const records = readAuditRecords(root)
+    const body = records[records.length - 1]?.body as { result?: Json } | undefined
+    return body?.result ?? null
   }
 
   /** 末条审计 result 的 value.pid（fixture 服务默认回值带 pid）。 */
   function lastServicePid(): number {
-    const result = lastAuditResult(readJournal(journalFile())) as {
-      value?: { pid?: number }
-    } | null
+    const result = lastAuditResult() as { value?: { pid?: number } } | null
     const pid = result?.value?.pid
     expect(typeof pid).toBe('number')
     return pid as number

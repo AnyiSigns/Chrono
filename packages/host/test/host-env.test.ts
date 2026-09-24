@@ -6,8 +6,7 @@ import { join } from 'node:path'
 import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
-import { readJournal } from '../ledger/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { EventMessage } from '../../client/index.ts'
@@ -116,6 +115,80 @@ if (config.spontaneous) {
 }
 `
 
+/** 串行反向夹具：按到达序逐条处理（`chain = chain.then`），`hold` 先等 `delay_ms` 再发 `port.call`。 */
+const SERIAL_REVERSE_MAIN = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+let config = {};
+try {
+  config = JSON.parse(fs.readFileSync(path.join(process.cwd(), "service-config.json"), "utf8"));
+} catch (err) {
+  if (err.code !== "ENOENT") process.stderr.write("[serial-toy] bad service-config.json");
+}
+function readPlugin() {
+  return JSON.parse(fs.readFileSync(path.join(process.cwd(), "plugin.json"), "utf8"));
+}
+function writeFrame(msg) {
+  const body = Buffer.from(JSON.stringify(msg), "utf8");
+  const frame = Buffer.allocUnsafe(4 + body.length);
+  frame.writeUInt32BE(body.length, 0);
+  body.copy(frame, 4);
+  process.stdout.write(frame);
+}
+let seq = 0;
+const pending = new Map();
+async function handleCall(msg) {
+  const env = msg.env === undefined ? null : msg.env;
+  const args = msg.args && typeof msg.args === "object" ? msg.args : {};
+  const delay = typeof args.delay_ms === "number" ? args.delay_ms : 0;
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  const id = "pc-" + (++seq);
+  pending.set(id, { callId: msg.id, env: env });
+  writeFrame({ v: "1", id: id, kind: "port.call", port: config.reversePort, method: config.reverseMethod || "echo", args: null });
+}
+function handle(msg) {
+  if (!msg || typeof msg !== "object") return;
+  switch (msg.kind) {
+    case "hello": writeFrame(Object.assign({ id: msg.id, kind: "manifest" }, { v: "1", identity: readPlugin().identity, implements: readPlugin().implements, methods: readPlugin().methods, protocol: readPlugin().protocol, state: readPlugin().state })); return;
+    case "probe": writeFrame({ id: msg.id, kind: "pong", ok: true }); return;
+    case "reload": writeFrame({ v: "1", id: msg.id, kind: "ack" }); return;
+    case "drain": writeFrame({ v: "1", id: msg.id, kind: "bye" }); return;
+    case "port.result": {
+      const p = pending.get(msg.id);
+      if (p === undefined) return;
+      pending.delete(msg.id);
+      writeFrame({ v: "1", id: p.callId, kind: "result", ok: true, value: { env: p.env, forwarded: msg.value === undefined ? null : msg.value } });
+      return;
+    }
+    case "port.error": {
+      const p = pending.get(msg.id);
+      if (p === undefined) return;
+      pending.delete(msg.id);
+      writeFrame({ v: "1", id: p.callId, kind: "result", ok: true, value: { env: p.env, forwarded: { error: msg.error === undefined ? null : msg.error } } });
+      return;
+    }
+  }
+}
+let buffer = Buffer.alloc(0);
+let chain = Promise.resolve();
+process.stdin.on("data", (chunk) => {
+  buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+  while (buffer.length >= 4) {
+    const length = buffer.readUInt32BE(0);
+    if (buffer.length < 4 + length) break;
+    const body = buffer.subarray(4, 4 + length).toString("utf8");
+    buffer = buffer.subarray(4 + length);
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (err) { process.stderr.write("[serial-toy] bad frame: " + err.message); continue; }
+    if (parsed && parsed.kind === "call") chain = chain.then(() => handleCall(parsed)).catch(() => {});
+    else handle(parsed);
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
+process.stdin.on("error", () => process.exit(0));
+`
+
 const ECHO_TERM: Json = ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]]
 
 interface AuditEnvRecord {
@@ -149,20 +222,17 @@ describe('H16 调用帧 env 注入', () => {
     return join(root, 'state', 'world', 'journal.jsonl')
   }
 
-  /** 从审计 def 里抽出服务回传的 `env`（`body.result.value.env`）。 */
+  /** 从审计侧存里抽出服务回传的 `env`（`body.result.value.env`）。 */
   function auditEnvs(): AuditEnvRecord[] {
     const out: AuditEnvRecord[] = []
-    for (const entry of readJournal(journalFile())) {
-      const args = entry.args as { body?: Json } | null
-      const body = args?.body
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) continue
-      const record = body as { [k: string]: Json }
-      if (record['kind'] !== 'effect_audit') continue
-      const result = record['result']
+    for (const entry of readAuditRecords(root)) {
+      const body = entry.body as { [k: string]: Json }
+      if (body['kind'] !== 'effect_audit') continue
+      const result = body['result']
       if (typeof result !== 'object' || result === null || Array.isArray(result)) continue
       const value = (result as { [k: string]: Json })['value']
       if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
-      out.push({ at: entry.at, run: record['run'], env: (value as { [k: string]: Json })['env'] })
+      out.push({ at: entry.at, run: body['run'], env: (value as { [k: string]: Json })['env'] })
     }
     return out
   }
@@ -378,6 +448,60 @@ describe('H16 调用帧 env 注入', () => {
       expect(value.forwarded.args).toEqual({ env: { secret: 's3cr3t' }, n: 7 })
       // 发起服务自身入站 args 无 env：证明目标收到的是反向调用 args，而非发起调用 args
       expect(value.argsEnv).toBeNull()
+    } finally {
+      conn.close()
+    }
+  })
+
+  it('反向 port.call 并发在途：env 取当前在处理的那条（FIFO），不被后发短调用顶掉', async () => {
+    const target = writeTempPackage(root, {
+      identity: 'toy-target',
+      implements: ['toy.target'],
+      methods: { 'toy.target': ['echo'] },
+      start: 'node execute/main.js',
+      files: { 'execute/main.js': ENV_SERVICE_MAIN },
+    })
+    const origin = writeTempPackage(root, {
+      identity: 'toy-origin',
+      implements: ['toy.origin'],
+      methods: { 'toy.origin': ['hold'] },
+      pins: { 'toy.target': 'toy-target' },
+      start: 'node execute/main.js',
+      serviceConfig: { reversePort: 'toy.target', reverseMethod: 'echo' },
+      files: { 'execute/main.js': SERIAL_REVERSE_MAIN },
+    })
+    const client = writeTempPackage(root, {
+      identity: 'toy-client',
+      pins: { 'toy.origin': 'toy-origin' },
+      start: '',
+      members: [{ kind: 'term', path: 'terms/' }],
+      terms: { 'hold.json': JSON.stringify(['eff', 'toy.origin', 'hold', ['c', { delay_ms: 250 }]]) },
+      commands: [{ name: 'toy-client.hold', entry: 'terms/hold.json' }],
+    })
+    expect(
+      runSeed(root, [
+        { name: 'toy-target', path: target },
+        { name: 'toy-origin', path: origin },
+        { name: 'toy-client', path: client },
+      ]).ok,
+    ).toBe(true)
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const conn = await connect({ root, timeoutMs: 3000 })
+    try {
+      const entry = await entryOf(conn, 'toy-client.hold')
+      // 两条并发：A 先到（服务在 250ms 延迟中），B 后到并排在 A 之后。A 的反向调用必须拿 A 的 env。
+      const [a] = await Promise.all([
+        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], { thread: 'thr-a' }),
+        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], { thread: 'thr-b' }),
+      ])
+      expect(a.status).toBe('done')
+      const value = (a.observations[0] as { value: Json }).value as {
+        env: { thread: string }
+        forwarded: { env: { thread: string } }
+      }
+      expect(value.env.thread).toBe('thr-a')
+      expect(value.forwarded.env.thread).toBe('thr-a')
     } finally {
       conn.close()
     }

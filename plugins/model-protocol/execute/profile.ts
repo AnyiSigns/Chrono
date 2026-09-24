@@ -25,10 +25,24 @@ const PROVIDER_ALIASES: Record<string, string> = {
 interface Target {
   vendor: string
   ids: string[]
+  name?: string
+  baseUrl?: string
 }
 
 function stripVendorPrefix(name: string): string {
   return name.replace(/^vendor-/, '')
+}
+
+/** 从 base_url 取主机首标签，用作 models.dev provider 候选。 */
+function hostLabel(baseUrl: string | undefined): string | null {
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0) return null
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase()
+    const label = host.split('.').filter((part) => part.length > 0 && part !== 'api' && part !== 'www')[0]
+    return label ?? null
+  } catch {
+    return null
+  }
 }
 
 /** models.dev 顶层可能是 `{ <provider>: {...} }` 或 `{ providers: {...} }`。 */
@@ -38,19 +52,38 @@ function sourceProviders(source: Json): Rec | null {
   return source
 }
 
-function resolveProviderKey(providers: Rec, vendor: string, body: Rec | null): string | null {
+function resolveProviderKey(
+  providers: Rec,
+  vendor: string,
+  body: Rec | null,
+  hints?: { name?: string; baseUrl?: string },
+): string | null {
   const candidates = new Set<string>([vendor, stripVendorPrefix(vendor)])
   if (body !== null && typeof body['sdk'] === 'string') candidates.add(body['sdk'] as string)
   for (const candidate of [...candidates]) {
     const alias = PROVIDER_ALIASES[candidate]
     if (alias !== undefined) candidates.add(alias)
   }
+  // 自定义厂商（无 sdk / 非 models.dev 键名）按显示名与 base_url 主机回落到 models.dev provider：
+  // 如 config `custom`
+  const label = hostLabel(hints?.baseUrl)
+  if (label !== null) candidates.add(label)
   for (const candidate of candidates) {
     if (providers[candidate] !== undefined) return candidate
   }
   const lowered = new Map(Object.keys(providers).map((key) => [key.toLowerCase(), key]))
   for (const candidate of candidates) {
     const hit = lowered.get(candidate.toLowerCase())
+    if (hit !== undefined) return hit
+  }
+  const name = hints?.name
+  if (typeof name === 'string' && name.length > 0) {
+    const byName = new Map(
+      Object.entries(providers)
+        .filter(([, provider]) => isRecord(provider) && typeof (provider as Rec)['name'] === 'string')
+        .map(([key, provider]) => [(provider as Rec)['name'] as string, key]),
+    )
+    const hit = byName.get(name)
     if (hit !== undefined) return hit
   }
   return null
@@ -67,14 +100,36 @@ function findVendorBody(vendorBodies: Rec, vendor: string): Rec | null {
   return null
 }
 
+/** 从 models.dev 条目的 `reasoning_options` 取 effort 档位值（low/medium/high…）。 */
+function effortValues(entry: Rec): string[] | null {
+  const options = entry['reasoning_options']
+  if (!Array.isArray(options)) return null
+  for (const option of options) {
+    if (!isRecord(option) || option['type'] !== 'effort') continue
+    const values = Array.isArray(option['values'])
+      ? (option['values'] as Json[]).filter((value): value is string => typeof value === 'string')
+      : []
+    if (values.length > 0) return values
+  }
+  return null
+}
+
 /** 从 models.dev 模型条目计算 config 身份的元数据字段。 */
 function computeMetadata(entry: Rec, vendorBody: Rec | null): Rec {
   const metadata: Rec = {}
   const limit = isRecord(entry['limit']) ? (entry['limit'] as Rec) : {}
-  if (typeof limit['context'] === 'number') metadata['context_window'] = limit['context']
-  if (typeof limit['output'] === 'number') metadata['max_output'] = limit['output']
+  const contextWindow = typeof limit['context'] === 'number' ? (limit['context'] as number) : null
+  if (contextWindow !== null) metadata['context_window'] = contextWindow
+  if (typeof limit['output'] === 'number') {
+    const output = limit['output'] as number
+    // 输出上限不能吃掉整个上下文：models.dev 偶有 `output ≥ context` 的条目（如 step-3.7-flash 262144），
+    // 而预算建模是 `context - max_output - margin`，全额预留会让输入预算变负。封顶到半个上下文，至少留一半给输入。
+    metadata['max_output'] = contextWindow !== null && output > contextWindow / 2 ? Math.floor(contextWindow / 2) : output
+  }
   const reasoning = entry['reasoning']
-  if (Array.isArray(reasoning)) metadata['reasoning'] = reasoning
+  const efforts = effortValues(entry)
+  if (efforts !== null) metadata['reasoning'] = efforts
+  else if (Array.isArray(reasoning)) metadata['reasoning'] = reasoning
   else if (reasoning === true) {
     const fallback = vendorBody === null ? undefined : vendorBody['default_reasoning']
     if (Array.isArray(fallback) && fallback.length > 0) metadata['reasoning'] = fallback
@@ -137,9 +192,27 @@ function targetsFromConfig(config: Rec): Target[] {
     if (!isRecord(provider)) continue
     const models = isRecord(provider['models']) ? (provider['models'] as Rec) : null
     if (models === null) continue
-    targets.push({ vendor, ids: Object.keys(models) })
+    const target: Target = { vendor, ids: Object.keys(models) }
+    if (typeof provider['name'] === 'string') target.name = provider['name'] as string
+    if (typeof provider['base_url'] === 'string') target.baseUrl = provider['base_url'] as string
+    targets.push(target)
   }
   return targets
+}
+
+/** 从 config 取某 provider 的显示名 / base_url，供 models.dev provider 回落匹配。 */
+function providerHints(config: Rec | null, vendor: string): { name?: string; baseUrl?: string } {
+  if (config === null) return {}
+  const providers = isRecord(config['providers']) ? (config['providers'] as Rec) : null
+  if (providers === null) return {}
+  const key = findConfigProviderKey(providers, vendor)
+  if (key === null) return {}
+  const provider = providers[key]
+  if (!isRecord(provider)) return {}
+  const hints: { name?: string; baseUrl?: string } = {}
+  if (typeof provider['name'] === 'string') hints.name = provider['name'] as string
+  if (typeof provider['base_url'] === 'string') hints.baseUrl = provider['base_url'] as string
+  return hints
 }
 
 function sourceUrl(args: Rec, policy: RetryPolicy): string {
@@ -150,7 +223,17 @@ function sourceUrl(args: Rec, policy: RetryPolicy): string {
   return policy.models_dev_url
 }
 
+/** models.dev 源进程内缓存时长。 */
+const SOURCE_CACHE_MS = 10 * 60 * 1000
+
+let sourceCache: { url: string; at: number; source: Json } | null = null
+
 async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, now: number): Promise<Json> {
+  // models.dev 索引数 MB：profile（每次界面装载都可能触发）与 periodic sync 共用进程内短缓存，
+  // 避免反复拉整份源；首拉失败不缓存，下次仍重试。
+  if (sourceCache !== null && sourceCache.url === url && now - sourceCache.at < SOURCE_CACHE_MS) {
+    return sourceCache.source
+  }
   const response = await withRetry(
     `models.dev:${url}`,
     () =>
@@ -167,11 +250,14 @@ async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, 
       }),
     { policy, limiter: deps.limiter, now },
   )
+  let source: Json
   try {
-    return JSON.parse(response.body) as Json
+    source = JSON.parse(response.body) as Json
   } catch {
     throw new ModelError('profile_bad_source', 'models.dev response is not JSON')
   }
+  sourceCache = { url, at: now, source }
+  return source
 }
 
 /** 构造写计划：无变化回 extern；有变化回 put + add_gen。 */
@@ -194,7 +280,7 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
     const source = await fetchSource(sourceUrl(args, policy), policy, deps, env.now)
     const providers = sourceProviders(source)
     if (providers === null) throw new ModelError('profile_bad_source', 'models.dev response has no providers')
-    const providerKey = resolveProviderKey(providers, vendor, findVendorBody(vendorBodies, vendor))
+    const providerKey = resolveProviderKey(providers, vendor, findVendorBody(vendorBodies, vendor), providerHints(config, vendor))
     if (providerKey === null) return errorValue('profile_vendor_unknown', `no models.dev provider for ${vendor}`)
     const provider = providers[providerKey]
     const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}
@@ -225,7 +311,7 @@ export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<
     const summary: Rec = {}
     for (const target of targetsFromConfig(config)) {
       const body = findVendorBody(vendorBodies, target.vendor)
-      const providerKey = resolveProviderKey(providers, target.vendor, body)
+      const providerKey = resolveProviderKey(providers, target.vendor, body, { name: target.name, baseUrl: target.baseUrl })
       if (providerKey === null) continue
       const provider = providers[providerKey]
       const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}

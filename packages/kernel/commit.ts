@@ -4,6 +4,7 @@
 
 import { applyEntry, entryHash } from './journal.ts'
 import { hasForm } from './commit.form.ts'
+import { defHas } from './defs.ts'
 import type {
   CommitOutcome,
   CommitResult,
@@ -20,14 +21,14 @@ type Rec = { [k: string]: Json }
 
 /** 引用检查：内核认识的字段里的每个 Hash 必须已在 defs（body 内部的引用归上层）。 */
 function checkRefs(world: World, req: WriteRequest): string | null {
-  if (req.ref !== undefined && !world.defs[req.ref]) return 'missing_ref'
+  if (req.ref !== undefined && !defHas(world.defs, req.ref)) return 'missing_ref'
   const r = req.args as Rec
   const missing = (h: Json | undefined): string | null =>
-    h === undefined ? null : world.defs[h as Hash] ? null : 'missing_ref'
+    h === undefined ? null : defHas(world.defs, h as Hash) ? null : 'missing_ref'
   const missingPins = (): string | null => {
     const pins = r['pins'] as Record<string, Hash> | undefined
     if (!pins) return null
-    for (const h of Object.values(pins)) if (!world.defs[h]) return 'missing_ref'
+    for (const h of Object.values(pins)) if (!defHas(world.defs, h)) return 'missing_ref'
     return null
   }
   switch (req.op) {

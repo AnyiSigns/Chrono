@@ -3,7 +3,7 @@
 // `denied` 落 verdicts。**只消费提案**；用户驱动提案（#45 record → propose）由此进入采纳，不再停在台账。
 
 import { validateGraphData } from './gate.ts'
-import { addGenOp, addGenRefOp, batchDirective, defHashOf, isRecord, putOp } from './plan.ts'
+import { addGenOp, addGenRefOp, baseSeqOf, batchDirective, defHashOf, isRecord, putOp } from './plan.ts'
 import type { CallEnv, GraphModel, Json, PortCaller, Rec, ServiceEvent } from './types.ts'
 
 const MAX_CHAIN = 10000
@@ -13,7 +13,14 @@ export function evolutionBody(bag: Rec): Rec {
   const evolution = bag['evolution']
   if (isRecord(evolution)) {
     if (isRecord(evolution['body'])) return evolution['body'] as Rec
-    if (isRecord(evolution['proposals']) || typeof evolution['version'] === 'number') return evolution
+    if (isRecord(evolution['proposals']) || typeof evolution['version'] === 'number') {
+      // 入口切片把 refs 闭包并进同一层（见 chat `ledgerSliceOf`）。body 是要**落账**的，
+      // 必须剔除 refs / data_gen：否则每回合把整份闭包或投影元数据写回 evolution body。
+      const body: Rec = { ...evolution }
+      delete body['refs']
+      delete body['data_gen']
+      return body
+    }
   }
   return {
     version: 1,
@@ -171,15 +178,23 @@ function verdictPlan(
   at: string,
 ): { ops: Json[]; bodyIndex: number } {
   const body = evolutionBody(bag)
-  const verdicts = isRecord(body['verdicts']) ? (body['verdicts'] as Rec) : {}
   const count = slotCount(body, 'verdicts')
   const ops: Json[] = [putOp(entry)]
-  const newBody: Rec = { ...body, version: 1, verdicts: { tail: { def: { $n: 0 } }, count: count + 1 } }
-  ops.push(putOp(newBody))
-  ops.push(addGenOp('evolution', ops.length - 1))
-  void verdicts
+  const index = ops.length
+  const newVerdicts: Rec = { tail: { def: { $n: 0 } }, count: count + 1 }
+  const base = baseSeqOf(bag['evolution'])
+  if (base === null) {
+    ops.push(putOp({ ...body, version: 1, verdicts: newVerdicts }))
+  } else {
+    // 补丁世代：只替换 verdicts 槽（version 非 1 时补一条），不重写整份台账 body
+    const patches: Json[] = []
+    if (body['version'] !== 1) patches.push({ op: 'replace', path: ['version'], value: 1 })
+    patches.push({ op: 'replace', path: ['verdicts'], value: newVerdicts })
+    ops.push(putOp({ ops: patches }))
+  }
+  ops.push(addGenOp('evolution', index, {}, base ?? undefined))
   void at
-  return { ops, bodyIndex: ops.length - 1 }
+  return { ops, bodyIndex: index }
 }
 
 function makeVerdict(proposalIds: string[], evidenceIds: string[], result: string, gate: Rec, at: string, id: string): Rec {

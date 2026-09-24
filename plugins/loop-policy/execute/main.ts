@@ -11,7 +11,7 @@ import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
 const LINK = new PortLink((message) => writeFrame(message))
-const HANDLERS = createHandlers({ port: LINK })
+const HANDLERS = createHandlers({ port: LINK, host: LINK })
 
 const DECLARED_METHODS = new Set<string>(
   Array.isArray(METHODS[IDENTITY])

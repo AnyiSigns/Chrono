@@ -10,7 +10,7 @@ import { runSeed } from '../offline.ts'
 import { headOf, loadAnchor, readJournal, replayFull, verifyFull } from '../ledger/index.ts'
 import { worldRev } from '../../kernel/index.ts'
 import type { Entry, Json } from '../../kernel/index.ts'
-import { cleanupTempRoot, createTempRoot } from './test-helpers.ts'
+import { cleanupTempRoot, createTempRoot, readAuditRecords } from './test-helpers.ts'
 import { writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 
@@ -123,12 +123,9 @@ describe('H12 run 级并发：提交串行、eval / 效果并发', () => {
 
     expect(verifyFull(entries).ok).toBe(true)
     const added = entries.slice(before)
-    // 每个 run 各一条审计 + 一条业务写
-    expect(added).toHaveLength(4)
-    const auditCount = added.filter(
-      (entry) => (entry.args as { body?: { kind?: string } }).body?.kind === 'effect_audit',
-    ).length
-    expect(auditCount).toBe(2)
+    // 审计进旁路侧存：journal 只有每个 run 的一条业务写
+    expect(added).toHaveLength(2)
+    expect(readAuditRecords(root)).toHaveLength(2)
     const bodies = added
       .map((entry) => (entry.args as { body?: { who?: string } }).body?.who)
       .filter((who): who is string => who !== undefined)
@@ -177,17 +174,18 @@ describe('H12 run 级并发：提交串行、eval / 效果并发', () => {
 
     expect(verifyFull(entries).ok).toBe(true)
     const added = entries.slice(before)
-    expect(added).toHaveLength(3)
+    // journal：慢 run 的 plan 写 + 纯写各一条（审计进侧存）
+    expect(added).toHaveLength(2)
     const fastEntry = added.find(
       (entry) => (entry.args as { body?: { who?: string } }).body?.who === 'fast',
     )
-    const slowAudit = added.find(
-      (entry) => (entry.args as { body?: { kind?: string } }).body?.kind === 'effect_audit',
+    const slowEntry = added.find(
+      (entry) => (entry.args as { body?: { who?: string } }).body?.who === 'a',
     )
-    // 纯写不等慢服务：它的 seq 必须先于慢 run 的审计落账
+    // 纯写不等慢服务：它的 seq 必须先于慢 run 的 plan 写落账
     expect(fastEntry).toBeDefined()
-    expect(slowAudit).toBeDefined()
-    expect(fastEntry!.seq).toBeLessThan(slowAudit!.seq)
+    expect(slowEntry).toBeDefined()
+    expect(fastEntry!.seq).toBeLessThan(slowEntry!.seq)
     expect(worldRev(replayFull(entries))).toBe(worldRev(loadAnchor(journalFile()).world))
   }, 30000)
 })

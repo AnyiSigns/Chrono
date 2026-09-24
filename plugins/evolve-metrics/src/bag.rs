@@ -25,6 +25,10 @@ impl TraceRef {
         string_of(&self.body, "run")
     }
 
+    pub fn id(&self) -> String {
+        string_of(&self.body, "id")
+    }
+
     pub fn steps(&self) -> &[Value] {
         self.body
             .get("steps")
@@ -84,7 +88,7 @@ pub fn trace_entries(bag: &Value) -> Vec<TraceRef> {
     } else {
         refs
     };
-    chain(&body, &refs)
+    chain_field(&body, &refs, "trace")
 }
 
 fn from_array(items: &[Value]) -> Vec<TraceRef> {
@@ -109,21 +113,52 @@ fn from_array(items: &[Value]) -> Vec<TraceRef> {
         .collect()
 }
 
-/// 沿 `body.trace.tail` + refs 闭包回溯，返回最旧 → 最新。
-/// `sweep` 写出的新 body 带 `trace.retained`（保留窗口的显式列表）：它是权威边界，
-/// 优先按它取窗口，避免仍沿 `prev` 走回被丢弃轨迹导致窗口不缩、`swept` 每拍重复。
-fn chain(body: &Value, refs: &Value) -> Vec<TraceRef> {
-    if let Some(items) = body
-        .get("trace")
-        .and_then(Value::as_array)
-    {
+/// evidence 窗口：与 trace 同源（evolution 投影 body + refs），沿 `body.evidence` 链。
+/// 显式 `evidence_entries` 数组优先；否则取 evolution 投影（`{body,refs}` 或 body 本体）走链。
+pub fn evidence_entries(bag: &Value) -> Vec<TraceRef> {
+    if let Some(items) = bag.get("evidence_entries").and_then(Value::as_array) {
         return from_array(items);
     }
-    if let Some(retained) = body
-        .get("trace")
-        .and_then(|trace| trace.get("retained"))
-        .and_then(Value::as_array)
-    {
+    let (body, refs) = evolution_projection(bag);
+    chain_field(&body, &refs, "evidence")
+}
+
+/// evolution 投影的 (body, refs)：接受 `{body,refs}` 包装或 body 本体（refs 在顶层）。
+fn evolution_projection(bag: &Value) -> (Value, Value) {
+    for key in ["evolution", "trace"] {
+        if let Some(object) = bag.get(key).and_then(Value::as_object) {
+            if object.contains_key("body") {
+                return (
+                    object.get("body").cloned().unwrap_or(Value::Null),
+                    object.get("refs").cloned().unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
+    let body = bag
+        .get("evolution")
+        .or_else(|| bag.get("trace"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let refs = bag
+        .get("refs")
+        .or_else(|| bag.get("trace_refs"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    (body, refs)
+}
+
+/// 沿 `body.<field>.tail` + refs 闭包回溯，返回最旧 → 最新。
+/// `sweep` 写出的新 body 带 `<field>.retained`（保留窗口的显式列表）：它是权威边界，
+/// 优先按它取窗口，避免仍沿 `prev` 走回被丢弃条目导致窗口不缩、`swept` 每拍重复。
+fn chain_field(body: &Value, refs: &Value, field: &str) -> Vec<TraceRef> {
+    let Some(section) = body.get(field) else {
+        return Vec::new();
+    };
+    if let Some(items) = section.as_array() {
+        return from_array(items);
+    }
+    if let Some(retained) = section.get("retained").and_then(Value::as_array) {
         let map = refs.as_object();
         return retained
             .iter()
@@ -140,9 +175,8 @@ fn chain(body: &Value, refs: &Value) -> Vec<TraceRef> {
     let Some(map) = refs.as_object() else {
         return Vec::new();
     };
-    let mut cursor = body
-        .get("trace")
-        .and_then(|trace| trace.get("tail"))
+    let mut cursor = section
+        .get("tail")
         .and_then(|tail| tail.get("def"))
         .and_then(Value::as_str)
         .map(str::to_string);
@@ -162,7 +196,7 @@ fn chain(body: &Value, refs: &Value) -> Vec<TraceRef> {
             .and_then(Value::as_str)
             .map(str::to_string);
         out.push(TraceRef {
-            def: Some(hash),
+            def: Some(hash.to_string()),
             body: entry.clone(),
         });
     }
@@ -173,6 +207,8 @@ fn chain(body: &Value, refs: &Value) -> Vec<TraceRef> {
 /// 当前 evolution body（写计划需保留 evidence / proposals / verdicts 链头）。
 /// 只认四类 tail 形状（`trace` + `evidence`）；投影 `body` 无数据世代时会回落代码世代 commit def
 /// body（`{tree,meta}`），那不是台账 body，须拒之以免写坏身份数据。
+/// 入口切片会把 `refs` 闭包并进同一层（见 chat `ledgerSliceOf`）；body 是要落账的，
+/// 必须剔除 `refs`，否则每回合把整份闭包写回 body，台账体积无界增长。
 pub fn evolution_body(bag: &Value) -> Option<Value> {
     for key in ["evolution", "trace"] {
         if let Some(value) = bag.get(key) {
@@ -182,13 +218,40 @@ pub fn evolution_body(bag: &Value) -> Option<Value> {
                 }
             }
             if is_evolution_body(value) {
-                return Some(value.clone());
+                return Some(without_refs(value.clone()));
             }
         }
     }
     bag.get("evolution_body")
         .filter(|value| is_evolution_body(value))
-        .cloned()
+        .map(|value| without_refs(value.clone()))
+}
+
+/// 剔除入口切片并入的 `refs` 闭包与投影元数据 `data_gen`（世界写入的 body 不得含它们）。
+fn without_refs(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("refs");
+        object.remove("data_gen");
+    }
+    value
+}
+
+/// 补丁世代基础下标：投影切片 `evolution.data_gen.seq`（或 `trace.data_gen.seq` / 顶层 `data_gen.seq`）。
+/// 无数据世代 → None（写整份世代，向后兼容）。
+pub fn base_of(bag: &Value) -> Option<u64> {
+    for key in ["evolution", "trace"] {
+        if let Some(seq) = bag
+            .get(key)
+            .and_then(|value| value.get("data_gen"))
+            .and_then(|data_gen| data_gen.get("seq"))
+            .and_then(Value::as_u64)
+        {
+            return Some(seq);
+        }
+    }
+    bag.get("data_gen")
+        .and_then(|data_gen| data_gen.get("seq"))
+        .and_then(Value::as_u64)
 }
 
 fn is_evolution_body(value: &Value) -> bool {
@@ -283,6 +346,24 @@ mod tests {
     }
 
     #[test]
+    fn evidence_chain_walk_is_oldest_to_newest() {
+        let bag = json!({
+            "evolution": {
+                "trace": {"tail": null, "count": 0},
+                "evidence": {"tail": {"def": "e1"}, "count": 2}
+            },
+            "refs": {
+                "e1": {"kind": "evidence", "id": "ev-1", "prev": {"def": "e0"}},
+                "e0": {"kind": "evidence", "id": "ev-0", "prev": null}
+            }
+        });
+        let entries = evidence_entries(&bag);
+        let ids: Vec<String> = entries.iter().map(TraceRef::id).collect();
+        assert_eq!(ids, vec!["ev-0", "ev-1"]);
+        assert_eq!(entries[1].def.as_deref(), Some("e1"));
+    }
+
+    #[test]
     fn retained_list_bounds_window_and_ignores_dropped_prev() {
         // sweep 写出的 body：tail 指向最新保留项，但 prev 链仍回到被丢弃轨迹；
         // `retained` 是权威边界，窗口只含保留项。
@@ -346,6 +427,41 @@ mod tests {
         // 投影 body 无数据世代时回落代码世代 commit def body（{tree,meta}），不得当台账 body。
         let bag = json!({"trace": {"body": {"tree": "abc", "meta": {"name": "evolution"}}}});
         assert!(evolution_body(&bag).is_none());
+    }
+
+    #[test]
+    fn evolution_body_strips_merged_refs() {
+        // 入口切片把 refs 闭包并进同一层；body 落账前必须剔除，否则每回合把闭包写回、无界增长。
+        let bag = json!({"evolution": {
+            "version": 1,
+            "trace": {"tail": null, "count": 0},
+            "evidence": {"tail": null, "count": 0},
+            "refs": {"a": {"x": 1}}
+        }});
+        let body = evolution_body(&bag).unwrap();
+        assert_eq!(body["version"], 1);
+        assert!(body.get("refs").is_none());
+    }
+
+    #[test]
+    fn base_of_reads_evolution_data_gen() {
+        let bag = json!({"evolution": {"data_gen": {"seq": 4, "payload": "x"}}});
+        assert_eq!(base_of(&bag), Some(4));
+        assert_eq!(base_of(&json!({})), None);
+        assert_eq!(base_of(&json!({"evolution": {"data_gen": {"seq": null}}})), None);
+    }
+
+    #[test]
+    fn evolution_body_strips_data_gen() {
+        let bag = json!({"evolution": {
+            "version": 1,
+            "trace": {"tail": null, "count": 0},
+            "evidence": {"tail": null, "count": 0},
+            "data_gen": {"seq": 2, "payload": "y"}
+        }});
+        let body = evolution_body(&bag).unwrap();
+        assert!(body.get("data_gen").is_none());
+        assert_eq!(body["version"], 1);
     }
 
     #[test]

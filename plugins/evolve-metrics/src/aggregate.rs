@@ -81,17 +81,29 @@ pub fn run(
                 ops.push(plan::put_op(entry.clone()));
             }
             let body_index = ops.len();
-            if let Some(object) = body.as_object_mut() {
-                let evidence = object
-                    .entry("evidence".to_string())
-                    .or_insert_with(|| json!({}));
-                if let Some(evidence) = evidence.as_object_mut() {
-                    evidence.insert("tail".to_string(), plan::chain_ref(body_index - 1));
-                    evidence.insert("count".to_string(), json!(old_count + entries.len() as u64));
+            // 追加新证据：整体替换 evidence 索引，清掉 sweep 写下的 retained/dropped
+            // 等窗口字段——否则旧 retained 会把新证据挡在窗口外（与 trace 尾写同口径）。
+            let new_evidence = json!({
+                "tail": plan::chain_ref(body_index - 1),
+                "count": old_count + entries.len() as u64,
+            });
+            match bag::base_of(bag) {
+                Some(base) => {
+                    // 补丁世代：只替换 evidence 槽，不重写整份台账 body
+                    ops.push(plan::put_op(plan::patch_body(vec![plan::replace_op(
+                        json!(["evidence"]),
+                        new_evidence,
+                    )])));
+                    ops.push(plan::add_gen_op("evolution", body_index, Some(base)));
+                }
+                None => {
+                    if let Some(object) = body.as_object_mut() {
+                        object.insert("evidence".to_string(), new_evidence);
+                    }
+                    ops.push(plan::put_op(body));
+                    ops.push(plan::add_gen_op("evolution", body_index, None));
                 }
             }
-            ops.push(plan::put_op(body));
-            ops.push(plan::add_gen_op("evolution", body_index));
             directives.push(plan::batch_directive(ops));
         }
     }

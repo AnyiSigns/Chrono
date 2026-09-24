@@ -1,13 +1,13 @@
 // 跨 run 续跑游标：把解释器进程内状态（iter / outputs / inputs / executed / 消息 / 派发标志）序列化，
 // 随队列项落世界（H5 / H18）；恢复时反序列化并注入裁决 / 答案。游标是服务自造的 opaque 结构，宿主不认识。
 
-import { asString, isRecord, numberField } from './plan.ts'
+import { asString, escapeRefs, isRecord, numberField, stripPlans } from './plan.ts'
 import { freshState, type IterState } from './iter-ctx.ts'
 import type { Json, Rec, RunState } from './types.ts'
 
 function serializeOutputs(map: Map<number, Rec>): Rec {
   const out: Rec = {}
-  for (const [index, value] of map) out[String(index)] = value
+  for (const [index, value] of map) out[String(index)] = escapeRefs(stripPlans(value))
   return out
 }
 

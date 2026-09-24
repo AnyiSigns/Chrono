@@ -1,6 +1,7 @@
 // 两个身份：位置哈希（entryHash，O(1)，供并发与链完整性）与内容摘要（worldRev，按需算）。
 // 从 journal.ts 点分段拆出（预算护栏）；公共面由 journal.ts 统一转口。
 
+import { defsKeys } from './defs.ts'
 import { H } from './hash.ts'
 import type { Entry, Hash, Json, World } from './types.ts'
 
@@ -30,7 +31,7 @@ export function entryHash(e: Entry): Hash {
  * @returns 64-hex 内容身份；同内容同 active 而履历不同的世界必得同值
  */
 export function worldRev(world: World): Hash {
-  const keys = Object.keys(world.defs).sort()
+  const keys = defsKeys(world.defs).slice().sort()
   const digest: Record<string, Json> = {}
   for (const key of Object.keys(world.ids)) {
     const identity = world.ids[key]
@@ -44,6 +45,7 @@ export function worldRev(world: World): Hash {
         pins: g.pins,
         sig: g.sig,
         ...(g.graft ? { graft: g.graft } : {}),
+        ...(g.base !== undefined ? { base: g.base } : {}),
       })),
     }
   }

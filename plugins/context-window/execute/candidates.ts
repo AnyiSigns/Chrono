@@ -34,6 +34,15 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/**
+ * 模型可见的工具参数 schema：优先 `schema`，其次中性声明的 `argsSchema`，缺省空对象。
+ * 只把 name / description / 参数 schema 给模型；声明里的内部字段（provider / kind / caps / render 等）不外泄。
+ */
+function modelToolSchema(tool: Record<string, unknown>): Json {
+  const raw = tool['schema'] !== undefined ? tool['schema'] : tool['argsSchema']
+  return isRecord(raw) ? (raw as Json) : { type: 'object' }
+}
+
 function memoryText(title: string, entry: Record<string, unknown>): string {
   return renderMemory(title, entry['summary'])
 }
@@ -130,11 +139,10 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv): Ga
     for (const tool of bag['tools'] as Json[]) {
       if (!isRecord(tool)) continue
       const name = asString(tool['name']) ?? ''
-      const schema = isRecord(tool['schema']) ? (tool['schema'] as Json) : tool
       const description = asString(tool['description'])
       const body: Record<string, Json> = { name }
       if (description !== null) body['description'] = description
-      if (schema !== null) body['schema'] = schema
+      body['schema'] = modelToolSchema(tool)
       raws.push({
         role: 'system',
         parts: [textPart(JSON.stringify(body))],

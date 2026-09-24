@@ -212,7 +212,7 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
   const plugin = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.equal(plugin.identity, 'question')
   assert.deepEqual(plugin.implements, ['question'])
-  assert.deepEqual(plugin.pins, {})
+  assert.deepEqual(plugin.pins, { host: 'host' })
   assert.deepEqual(plugin.methods.question, ['describe', 'invoke', 'list', 'sweep'])
   const kinds = plugin.members.map((member) => member.kind).sort()
   assert.deepEqual(kinds, ['execute', 'schema', 'term'])
@@ -516,7 +516,8 @@ test('answer：按 id 沿 tail 链定位 → eval(chat.resume) + write(记答案
     assert.deepEqual(directives[0], {
       kind: 'eval',
       command: 'chat.resume',
-      args: { cursor: 'cur-9', thread: 't1', payload: { answers: [{ question_id: 'q1', selected: ['左'] }] }, ids },
+      args: { cursor: 'cur-9', thread: 't1', payload: { answers: [{ question_id: 'q1', selected: ['左'] }] } },
+      inject: { ids: ['ids'] },
     })
     const ops = opsOf(value)
     assert.deepEqual(ops.map((op) => op.op), ['put', 'put', 'add_gen', 'put', 'add_gen'])
@@ -593,7 +594,8 @@ test('入口 term：最小求值器求值 terms/question.answer.json 得作答�
     assert.equal(outcome.ok, true, JSON.stringify(outcome))
     assert.deepEqual(outcome.value, expected)
     assert.equal(directivesOf(outcome.value)[0].command, 'chat.resume')
-    assert.deepEqual(directivesOf(outcome.value)[0].args.ids, ids, '续跑 args 原样带入口 term 投影切片')
+    assert.equal(directivesOf(outcome.value)[0].args.ids, undefined, '续跑不再内嵌整份投影')
+    assert.deepEqual(directivesOf(outcome.value)[0].inject, { ids: ['ids'] }, '投影由宿主执行期注入')
   } finally {
     drv.close()
   }

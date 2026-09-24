@@ -39,11 +39,12 @@ test('todo_incomplete：pending / in_progress 为真', () => {
   assert.equal(todoIncomplete(undefined), false)
 })
 
-test('step_post：非空 ∧ 恰有其一 ∧ tool_calls 结构合法', () => {
+test('step_post：非空 ∧（正文 / tool_calls 至少其一）∧ tool_calls 结构合法', () => {
   const ok = { ok: true, text: 'hi', tool_calls: [] }
   assert.deepEqual(evalPost('step_post', ctx({ 0: ok })), { ok: true })
   assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [] } })).reason, 'empty_output')
-  assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: 'x', tool_calls: [{ name: 'a' }] } })).reason, 'message_and_tool_calls')
+  // 同帧带前言正文与工具调用合法（assistant content + tool_calls 是常见模型行为）
+  assert.deepEqual(evalPost('step_post', ctx({ 0: { ok: true, text: 'x', tool_calls: [{ name: 'a' }] } })), { ok: true })
   assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: '', args: {} }] } })).reason, 'malformed_tool_call')
   assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: 'a', args: 'nope' }] } })).reason, 'malformed_tool_call')
   assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: 'a', args: {} }, { id: 'c', name: 'b', args: {} }] } })).reason, 'malformed_tool_call')

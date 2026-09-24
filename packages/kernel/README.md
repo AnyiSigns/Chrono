@@ -54,6 +54,7 @@ KernelOutput { world, journal, head, pending, observations, status, usage }
 | `journal.id.ts`    | 两个身份：`entryHash`（O(1)）与 `worldRev`（按需）                                               |
 | `journal.apply.ts` | `applyEntry` 逐 op 语义 + `batch` 两段式（预哈希趟 → 应用趟，失败逆序回滚）                      |
 | `journal.ts`       | `EMPTY_WORLD` / `EMPTY_HEAD` / `cloneWorld` / `pos` / `anchorAfter` / `replay` / `verify` + 转口 |
+| `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                  |
 | `commit.form.ts`   | `validate` 的形态检查（op 形状表）                                                               |
 | `commit.ts`        | `validate` / `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                               |
 | `machine.ts`       | `eval`（导出名）：8 原语分派 + `walk` / `evalCall`；`cmp` 全序                                   |
@@ -74,7 +75,7 @@ run ← 全部
 
 ## 长链与归档
 
-历史永不删除，热路径靠"追加"瘦身：宿主择时追加一条 `snapshot` entry（`args = {world_rev}`，位置即边界凭证），之前的段可移出热存储。任何归档段仍可用 `verify(段, anchorAfter(边界 entry), expected?)` 独立校验，`replay(尾段, 快照世界)` 必须与全量重放逐字段相同——这是长链安全的硬判据。
+历史永不删除，热路径靠"追加"瘦身：宿主择时追加一条 `snapshot` entry（`args = {world_rev}`，位置即边界凭证），之前的段可移出热存储。任何归档段仍可用 `verify(段, anchorAfter(边界 entry), expected?)` 独立校验，`replay(尾段, 快照世界)` 必须与全量重放逐字段相同——这是长链安全的硬判据（未启用有界化回收时；见 `recycle.ts`，回收后基础世界是子世界，冷段仍保历史供 full verify）。
 
 ## 用法（宿主最小闭环）
 

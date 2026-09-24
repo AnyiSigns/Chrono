@@ -1,8 +1,28 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+
+/** 测试用审计记录（侧存 `state/audit/audit.jsonl` 的一行）。 */
+export interface TestAuditRecord {
+  seq: number
+  at: number
+  by: string
+  body: unknown
+}
+
+/** 读审计旁路侧存（不进世界）；缺文件视为空。 */
+export function readAuditRecords(root: string): TestAuditRecord[] {
+  const file = join(root, 'state', 'audit', 'audit.jsonl')
+  if (!existsSync(file)) return []
+  const out: TestAuditRecord[] = []
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (line.length === 0) continue
+    out.push(JSON.parse(line) as TestAuditRecord)
+  }
+  return out
+}
 
 export function createTempRoot(): string {
   const root = join(tmpdir(), 'chrono-test', randomUUID())

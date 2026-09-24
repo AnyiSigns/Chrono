@@ -2,11 +2,12 @@
 // validate_package / thread.terminate / thread.resume。宿主不解释业务，只做机械路由与内容寻址。
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
-import { readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
+import { latestDataGen, readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
 import { getBlob, isBlobPointer, putBlob } from './blobs.ts'
+import { reachableDefHashes } from './projection/index.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
-import type { AuditIndex, AuditReport } from './audit.ts'
+import type { AuditQuery, AuditReport } from './audit.ts'
 import { parseAuditFilter } from './audit.ts'
 import type { EndpointCallResult } from './endpoint-table.ts'
 import type { HostCapabilityCall } from './effect/index.ts'
@@ -18,8 +19,8 @@ export interface HostCapabilityDeps {
   blobsDir: string
   /** 宿主运行态目录（③）：`validate_package` 的候选文件临时落点，用后即删。 */
   runtimeDir: string
-  /** 只读审计索引（启动时重建、运行期增量补齐）。 */
-  audits: AuditIndex
+  /** 只读审计查询面（侧存索引：启动时由侧存重建、运行期增量补齐）。 */
+  audits: AuditQuery
   /** 当前世界快照（`source.read` 用；运行期随落账推进）。 */
   world: () => World
   /** 中止一个在册 run；未知 run 返回 false。 */
@@ -145,6 +146,82 @@ function identitiesCall(deps: HostCapabilityDeps): EndpointCallResult {
   return { ok: true, value: { list } }
 }
 
+/** 单次 `def.read` 的哈希数上限（防一次拉爆帧与内存）。 */
+const DEF_READ_MAX_HASHES = 256
+
+/** 单次 `def.read` 返回 body 的字节上限（序列化后计；超出即截断并标记）。 */
+const DEF_READ_MAX_BYTES = 4 * 1024 * 1024
+
+/** 越权门禁的闭包缓存条目上限（按「身份 + 投影 body 哈希」缓存，body 不可变 ⇒ 命中可复用）。 */
+const DEF_SCOPE_CACHE_MAX = 64
+
+const HASH_PATTERN = /^[0-9a-f]{64}$/
+
+/**
+ * `def.read { identity, hashes }`：按哈希只读解析 def body——投影只回引用，消费方按需取 body。
+ * 只读、有界（单次哈希数 / 返回字节数）、越权 fail-closed：只放行从该身份投影 body 可达的 def；
+ * 形态非法直接拒，越权 / 缺失进 `denied` / `missing`，超出字节上限进 `missing` 并置 `truncated`。
+ */
+function defReadCall(
+  deps: HostCapabilityDeps,
+  args: Json,
+  scopeCache: Map<string, Set<Hash>>,
+): EndpointCallResult {
+  const record = asRecord(args)
+  const identity = record === null ? undefined : record['identity']
+  const hashes = record === null ? undefined : record['hashes']
+  if (typeof identity !== 'string' || identity.length === 0) {
+    return bad('bad_directive', 'def.read expects { identity, hashes }')
+  }
+  if (!Array.isArray(hashes)) return bad('bad_directive', 'def.read expects hashes array')
+  if (hashes.length > DEF_READ_MAX_HASHES) return bad('def_read_too_many', 'too many hashes')
+  const world = deps.world()
+  const identityEntry = world.ids[identity]
+  if (identityEntry === undefined) return bad('not_found', identity)
+  const bodyHash = latestDataGen(world, identity)?.payload ?? identityEntry.active
+  const body = bodyHash === null ? undefined : world.defs[bodyHash]?.body
+  if (bodyHash === null || body === undefined) return bad('not_found', identity)
+  const cacheKey = `${identity}\u0000${bodyHash}`
+  let allowed = scopeCache.get(cacheKey)
+  if (allowed === undefined) {
+    allowed = reachableDefHashes(world, body)
+    if (scopeCache.size >= DEF_SCOPE_CACHE_MAX) {
+      const oldest = scopeCache.keys().next().value
+      if (oldest !== undefined) scopeCache.delete(oldest)
+    }
+    scopeCache.set(cacheKey, allowed)
+  }
+  const defs: { [hash: string]: Json } = {}
+  const missing: Hash[] = []
+  const denied: Hash[] = []
+  let bytes = 0
+  let truncated = false
+  for (const raw of hashes) {
+    if (typeof raw !== 'string' || !HASH_PATTERN.test(raw)) {
+      return bad('bad_directive', 'def.read expects 64-hex hashes')
+    }
+    if (Object.hasOwn(defs, raw)) continue
+    if (!allowed.has(raw)) {
+      denied.push(raw)
+      continue
+    }
+    const def = world.defs[raw]
+    if (def === undefined) {
+      missing.push(raw)
+      continue
+    }
+    const size = JSON.stringify(def.body)?.length ?? 0
+    if (bytes + size > DEF_READ_MAX_BYTES) {
+      truncated = true
+      missing.push(raw)
+      continue
+    }
+    defs[raw] = def.body
+    bytes += size
+  }
+  return { ok: true, value: { defs, missing, denied, truncated } }
+}
+
 /** `source.read { identity, path }`：按路径读某身份源码 blob（只读；目录 / 缺失 → `not_found`）。 */
 function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
@@ -204,6 +281,7 @@ function threadResumeCall(
 
 /** 组装宿主保留能力类派发器；方法集由 `HOST_METHODS` 固定，未知方法 fail-closed。 */
 export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCall {
+  const defScopeCache = new Map<string, Set<Hash>>()
   return async (method, emitter, args) => {
     switch (method) {
       case 'audit':
@@ -214,6 +292,8 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
         return assetGetCall(deps, args)
       case 'blob.put':
         return blobPutCall(deps, args)
+      case 'def.read':
+        return defReadCall(deps, args, defScopeCache)
       case 'identities':
         return identitiesCall(deps)
       case 'source.read':

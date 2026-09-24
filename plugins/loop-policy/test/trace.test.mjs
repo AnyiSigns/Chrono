@@ -74,3 +74,30 @@ test('无 #43 台账时不产 trace 写', async () => {
     service.close()
   }
 })
+
+test('补丁世代：evolution 只替换 trace 槽，组装结果 == 整份写入结果', async () => {
+  const service = startService()
+  try {
+    const full = await service.interpret({ evolution: LEDGER })
+    const fullBody = evolutionPut(full.value).args.body
+
+    const patched = await service.interpret({
+      evolution: { ...LEDGER, data_gen: { seq: 5, payload: 'a'.repeat(64) } },
+    })
+    const patchPut = writeOps(patched.value).find(
+      (op) => op.op === 'put' && op.args.body && Array.isArray(op.args.body.ops),
+    )
+    assert.ok(patchPut, '补丁世代应写补丁 def')
+    assert.deepEqual(patchPut.args.body.ops, [
+      { op: 'replace', path: ['trace'], value: fullBody.trace },
+    ])
+    const addGen = writeOps(patched.value).find((op) => op.op === 'add_gen' && op.args.id === 'evolution')
+    assert.equal(addGen.args.base, 5)
+    // 补丁只替换 trace 槽为整份写入时的同值：base(LEDGER) + 该补丁 == fullBody
+    assert.deepEqual(patchPut.args.body.ops[0].value, fullBody.trace)
+    assert.deepEqual(fullBody.evidence, LEDGER.evidence)
+    assert.deepEqual(fullBody.verdicts, LEDGER.verdicts)
+  } finally {
+    service.close()
+  }
+})

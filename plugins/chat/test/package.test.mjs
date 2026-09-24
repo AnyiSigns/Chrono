@@ -50,6 +50,7 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     context: 'context-window',
     'session-title': 'session-title',
     'loop-policy': 'loop-policy',
+    host: 'host',
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')

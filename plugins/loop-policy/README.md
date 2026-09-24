@@ -84,7 +84,7 @@ assemble ──messages──▶ step ──tool_calls(非空)──▶ gate ─
   + 重入复合式 `dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete`。
 - 机械 `post` 四处（只做结构检查，输入面 = 本 Scope outputs/inputs/reads + thresholds + 本步 eff_log）：
   `assemble_post`（messages 非空 ∧ 末条 role ∈ user/tool/system ∧ params 为对象）、
-  `step_post`（非空 ∧ 恰有其一 ∧ tool_calls 结构合法）、
+  `step_post`（非空 ∧ 正文 / `tool_calls` 至少其一 ∧ `tool_calls` 结构合法；同帧带前言正文与工具调用合法）、
   `dispatch_post`（result 数 = call 数 ∧ 逐项 ok 布尔 ∧ 失败带 error.code）、
   `verify_post`（skipped 或 passed 布尔 + detail）。
 
@@ -145,7 +145,8 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 本插件提供 `thresholds` 默认值，**语义以 `evolve-metrics` README 阈值表为准**，字段名逐项对齐（2026-09-21 双侧登记）：
 `failure_cluster_n=3` / `post_failure_ratio=0.5` / `post_failure_min=3` / `cost_anomaly_multiple=2.0` /
 `drift_margin=0.2` / `drift_min_samples=5` / `fold_k=3` / `no_progress_n=3` / `verify_failure_n=2` /
-`verify_cluster_ratio=0.6` / `min_workspaces=2` / `trace_retention_rounds=50` / `unhealthy_refused_streak=3`。
+`verify_cluster_ratio=0.6` / `min_workspaces=2` / `trace_retention_rounds=50` / `evidence_retention_rounds=50` /
+`unhealthy_refused_streak=3`。
 图 / 演化参数（本插件权威）：`max_turn_iter` / `max_steps` / `gas` / `llm_chain_max` / `max_graph_diff` /
 `min_runs_before_fork` / `max_links` / `graph_growth_quota` / `instance_growth_quota` / `shadow_rounds` /
 `large_artifact_bytes` / `model_alias_pins`。`interpret` 把解析后的**扁平 thresholds map** 随 evolve-metrics bag 下传。

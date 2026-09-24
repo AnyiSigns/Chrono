@@ -1,5 +1,6 @@
-// `sweep`：读轨迹窗口 + verdicts 引用集 → 产清理计划（写新 evolution body 索引、不含过期条目）。
-// 保留回合数读 #33 thresholds；**不动被 verdict 引用的轨迹**（否则 verdict → proposal → evidence → trace 溯源链断）。
+// `sweep`：读轨迹窗口 + evidence 链 + verdicts/proposals 引用集 → 产清理计划
+// （写新 evolution body 索引、不含过期条目）。保留回合数读 #33 thresholds；
+// **不动被 verdict / proposal 引用的轨迹与证据**（否则 verdict → proposal → evidence → trace 溯源链断）。
 // 清理只动索引，def 仍在链上（① 档既定代价，不是删除）。纯计算、同输入同输出。
 
 use std::collections::BTreeSet;
@@ -13,62 +14,70 @@ use crate::thresholds::Thresholds;
 /// 执行 sweep。
 pub fn run(bag: &Value, env: &Value) -> Result<Value, (String, String)> {
     let traces = bag::trace_entries(bag);
+    let evidence = bag::evidence_entries(bag);
     let thresholds = Thresholds::from_bag(bag);
     let now = bag::now_of(bag, env.get("now").unwrap_or(&Value::Null));
     let retention = thresholds.count("trace_retention_rounds", 50);
+    let evidence_retention = thresholds.count("evidence_retention_rounds", 50);
     let referenced = referenced_trace_defs(bag);
+    let referenced_evidence = referenced_evidence_ids(bag);
 
-    // 保留 = 最新 retention 条 ∪ 被 verdict 引用者（无论多旧）。
-    let keep_from = traces.len().saturating_sub(retention);
-    let mut retained: Vec<&bag::TraceRef> = Vec::new();
-    let mut retained_defs: BTreeSet<String> = BTreeSet::new();
-    for (index, trace) in traces.iter().enumerate() {
-        let is_recent = index >= keep_from;
-        let is_referenced = trace
-            .def
-            .as_ref()
-            .map(|hash| referenced.contains(hash))
-            .unwrap_or(false);
-        if is_recent || is_referenced {
-            retained.push(trace);
-            if let Some(hash) = &trace.def {
-                retained_defs.insert(hash.clone());
+    // 保留 = 最新 N 条 ∪ 被引用者（无论多旧）。
+    let (retained, swept, referenced_kept) =
+        window(&traces, retention, &referenced, |trace| trace.def.clone());
+    let (retained_evidence, evidence_swept, evidence_referenced_kept) =
+        window(&evidence, evidence_retention, &referenced_evidence, |entry| {
+            let id = entry.id();
+            if id.is_empty() {
+                None
+            } else {
+                Some(id)
             }
-        }
-    }
-    let swept = traces.len() - retained.len();
-    let referenced_kept = retained_defs.intersection(&referenced).count();
+        });
 
     let body = bag::evolution_body(bag);
     let mut directives = Vec::new();
-    if !traces.is_empty() {
+    if !traces.is_empty() || !evidence.is_empty() {
         if let Some(mut body) = body {
-            let tail = retained
-                .last()
-                .and_then(|trace| trace.def.clone())
-                .map(|hash| json!({ "def": hash }))
-                .unwrap_or(Value::Null);
-            let retained_list: Vec<Value> = retained
-                .iter()
-                .filter_map(|trace| trace.def.clone())
-                .map(|hash| json!({ "def": hash }))
-                .collect();
-            if let Some(object) = body.as_object_mut() {
-                object.insert(
-                    "trace".to_string(),
-                    json!({
-                        "tail": tail,
-                        "count": retained.len(),
-                        "retained": retained_list,
-                        "dropped": swept,
-                        "swept_at": now,
-                    }),
-                );
+            match bag::base_of(bag) {
+                Some(base) => {
+                    // 补丁世代：只替换被清理的槽（trace / evidence），不重写整份台账 body
+                    let mut patches = Vec::new();
+                    if !traces.is_empty() {
+                        patches.push(plan::replace_op(
+                            json!(["trace"]),
+                            index_of(&retained, swept, &now),
+                        ));
+                    }
+                    if !evidence.is_empty() {
+                        patches.push(plan::replace_op(
+                            json!(["evidence"]),
+                            index_of(&retained_evidence, evidence_swept, &now),
+                        ));
+                    }
+                    directives.push(plan::batch_directive(vec![
+                        plan::put_op(plan::patch_body(patches)),
+                        plan::add_gen_op("evolution", 0, Some(base)),
+                    ]));
+                }
+                None => {
+                    if let Some(object) = body.as_object_mut() {
+                        if !traces.is_empty() {
+                            object.insert("trace".to_string(), index_of(&retained, swept, &now));
+                        }
+                        if !evidence.is_empty() {
+                            object.insert(
+                                "evidence".to_string(),
+                                index_of(&retained_evidence, evidence_swept, &now),
+                            );
+                        }
+                    }
+                    directives.push(plan::batch_directive(vec![
+                        plan::put_op(body),
+                        plan::add_gen_op("evolution", 0, None),
+                    ]));
+                }
             }
-            directives.push(plan::batch_directive(vec![
-                plan::put_op(body),
-                plan::add_gen_op("evolution", 0),
-            ]));
         }
     }
 
@@ -76,8 +85,78 @@ pub fn run(bag: &Value, env: &Value) -> Result<Value, (String, String)> {
     result.insert("swept".to_string(), json!(swept));
     result.insert("retained".to_string(), json!(retained.len()));
     result.insert("referenced".to_string(), json!(referenced_kept));
+    result.insert("evidence_swept".to_string(), json!(evidence_swept));
+    result.insert("evidence_retained".to_string(), json!(retained_evidence.len()));
+    result.insert("evidence_referenced".to_string(), json!(evidence_referenced_kept));
     result.insert("$directives".to_string(), Value::Array(directives));
     Ok(Value::Object(result))
+}
+
+/// 窗口：保留最新 `retention` 条 ∪ 被引用者；返回（保留项, 淘汰数, 被引用强留数）。
+fn window<'a>(
+    entries: &'a [bag::TraceRef],
+    retention: usize,
+    referenced: &BTreeSet<String>,
+    key: impl Fn(&bag::TraceRef) -> Option<String>,
+) -> (Vec<&'a bag::TraceRef>, usize, usize) {
+    let keep_from = entries.len().saturating_sub(retention);
+    let is_referenced = |entry: &bag::TraceRef| {
+        key(entry)
+            .map(|value| referenced.contains(&value))
+            .unwrap_or(false)
+    };
+    let mut retained = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if index >= keep_from || is_referenced(entry) {
+            retained.push(entry);
+        }
+    }
+    let swept = entries.len() - retained.len();
+    let referenced_kept = retained.iter().filter(|entry| is_referenced(entry)).count();
+    (retained, swept, referenced_kept)
+}
+
+/// 新索引体：链头 + 保留显式列表 + 淘汰计数（`retained` 是权威边界，防窗口不缩）。
+fn index_of(retained: &[&bag::TraceRef], swept: usize, now: &Value) -> Value {
+    let tail = retained
+        .last()
+        .and_then(|entry| entry.def.clone())
+        .map(|hash| json!({ "def": hash }))
+        .unwrap_or(Value::Null);
+    let list: Vec<Value> = retained
+        .iter()
+        .filter_map(|entry| entry.def.clone())
+        .map(|hash| json!({ "def": hash }))
+        .collect();
+    json!({
+        "tail": tail,
+        "count": retained.len(),
+        "retained": list,
+        "dropped": swept,
+        "swept_at": now,
+    })
+}
+
+/// 被 verdict / proposal 引用的 evidence 逻辑 id 集（`evidence_ids`）。
+fn referenced_evidence_ids(bag: &Value) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    if let Some(items) = bag.get("referenced_evidence_ids").and_then(Value::as_array) {
+        for item in items.iter().filter_map(Value::as_str) {
+            ids.insert(item.to_string());
+        }
+    }
+    for key in ["proposals", "verdicts"] {
+        if let Some(items) = bag.get(key).and_then(Value::as_array) {
+            for entry in items {
+                if let Some(list) = entry.get("evidence_ids").and_then(Value::as_array) {
+                    for id in list.iter().filter_map(Value::as_str) {
+                        ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
 }
 
 /// 被 verdict 引用的轨迹 def 集：显式集 ∪ verdict → evidence_ids → evidence.traces[].def。
@@ -155,6 +234,17 @@ mod tests {
         assert!(referenced.contains("t-old"));
     }
 
+    #[test]
+    fn referenced_evidence_ids_from_proposals_and_verdicts() {
+        let bag = json!({
+            "proposals": [{"kind": "proposal", "id": "pr-1", "evidence_ids": ["ev-1"]}],
+            "verdicts": [{"kind": "verdict", "id": "vd-1", "evidence_ids": ["ev-2"]}]
+        });
+        let ids = referenced_evidence_ids(&bag);
+        assert!(ids.contains("ev-1"));
+        assert!(ids.contains("ev-2"));
+    }
+
     fn body() -> Value {
         json!({
             "version": 1,
@@ -193,6 +283,64 @@ mod tests {
         assert!(retained.contains(&json!({"def": "t0"})));
         assert!(retained.contains(&json!({"def": "t2"})));
         assert_eq!(ops[0]["args"]["body"]["trace"]["dropped"], 1);
+    }
+
+    #[test]
+    fn sweep_windows_evidence_chain_keeping_referenced() {
+        let bag = json!({
+            "evolution": {
+                "version": 1,
+                "trace": {"tail": null, "count": 0},
+                "evidence": {"tail": {"def": "e2"}, "count": 3},
+                "proposals": {"tail": null, "count": 0},
+                "verdicts": {"tail": null, "count": 0}
+            },
+            "refs": {
+                "e2": {"kind": "evidence", "id": "ev-2", "prev": {"def": "e1"}},
+                "e1": {"kind": "evidence", "id": "ev-1", "prev": {"def": "e0"}},
+                "e0": {"kind": "evidence", "id": "ev-0", "prev": null}
+            },
+            "thresholds": {"evidence_retention_rounds": 1},
+            "verdicts": [{"kind": "verdict", "id": "vd-1", "evidence_ids": ["ev-0"]}]
+        });
+        let value = run(&bag, &json!({"now": 5})).unwrap();
+        assert_eq!(value["evidence_swept"], 1);
+        assert_eq!(value["evidence_retained"], 2);
+        assert_eq!(value["evidence_referenced"], 1);
+        let ops = value["$directives"][0]["request"]["args"]["ops"]
+            .as_array()
+            .unwrap();
+        let evidence = &ops[0]["args"]["body"]["evidence"];
+        assert_eq!(evidence["dropped"], 1);
+        let retained = evidence["retained"].as_array().unwrap();
+        // 被 verdict 引用的旧证据 ev-0 强留，最新 ev-2 保留，过期 ev-1 移除。
+        assert!(retained.contains(&json!({"def": "e0"})));
+        assert!(retained.contains(&json!({"def": "e2"})));
+    }
+
+    #[test]
+    fn evidence_window_uses_authoritative_retained_boundary() {
+        // 下一拍：投影仍含被丢弃的 ev-1（prev 传递闭包），但窗口以 retained 为界。
+        let bag = json!({
+            "evolution": {
+                "version": 1,
+                "trace": {"tail": null, "count": 0},
+                "evidence": {"tail": {"def": "e2"}, "count": 2,
+                    "retained": [{"def": "e0"}, {"def": "e2"}]},
+                "proposals": {"tail": null, "count": 0},
+                "verdicts": {"tail": null, "count": 0}
+            },
+            "refs": {
+                "e2": {"kind": "evidence", "id": "ev-2", "prev": {"def": "e1"}},
+                "e1": {"kind": "evidence", "id": "ev-1", "prev": {"def": "e0"}},
+                "e0": {"kind": "evidence", "id": "ev-0", "prev": null}
+            },
+            "thresholds": {"evidence_retention_rounds": 1},
+            "verdicts": [{"kind": "verdict", "id": "vd-1", "evidence_ids": ["ev-0"]}]
+        });
+        let value = run(&bag, &json!({"now": 6})).unwrap();
+        assert_eq!(value["evidence_swept"], 0);
+        assert_eq!(value["evidence_retained"], 2);
     }
 
     #[test]

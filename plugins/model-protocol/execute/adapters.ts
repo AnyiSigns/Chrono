@@ -251,10 +251,23 @@ function parseToolCalls(raw: Json | undefined): Json[] {
   /** openai-chat：`/chat/completions` + `data:` 分片。 */
 class OpenAiChatAdapter implements Adapter {
   readonly protocol = 'openai-chat'
-  private readonly reasoningField: string | null
+  private readonly reasoningFields: string[]
 
   constructor(quirks: Quirks) {
-    this.reasoningField = quirks.reasoning_response_field
+    // 未显式声明响应推理字段时，按主流 OpenAI 兼容实现回退：DeepSeek 系 `reasoning_content`、
+    // 网关 / OpenAI 系 `reasoning`、部分实现 `thinking`。显式声明则只用声明值。
+    this.reasoningFields =
+      quirks.reasoning_response_field !== null
+        ? [quirks.reasoning_response_field]
+        : ['reasoning_content', 'reasoning', 'thinking']
+  }
+
+  private pickReasoning(source: Rec): string | undefined {
+    for (const field of this.reasoningFields) {
+      const value = stringField(source, field)
+      if (value !== undefined) return value
+    }
+    return undefined
   }
 
   build(ctx: RequestContext): BuiltRequest {
@@ -285,10 +298,8 @@ class OpenAiChatAdapter implements Adapter {
     const shard: Parameters<StreamAccumulator['apply']>[0] = {}
     const text = stringField(delta, 'content')
     if (text !== undefined) shard.text = text
-    if (this.reasoningField !== null) {
-      const reasoning = stringField(delta, this.reasoningField)
-      if (reasoning !== undefined) shard.reasoning = reasoning
-    }
+    const reasoning = this.pickReasoning(delta)
+    if (reasoning !== undefined) shard.reasoning = reasoning
     if (Array.isArray(delta['tool_calls'])) {
       for (const rawCall of delta['tool_calls']) {
         const call = asRecord(rawCall)
@@ -327,8 +338,8 @@ class OpenAiChatAdapter implements Adapter {
       tool_calls: parseToolCalls(message['tool_calls']),
       usage: null,
     }
-    if (this.reasoningField !== null) {
-      const reasoning = stringField(message, this.reasoningField)
+    if (this.reasoningFields.length > 0) {
+      const reasoning = this.pickReasoning(message)
       if (reasoning !== undefined) output.reasoning = reasoning
     }
     const usage = asRecord(root['usage'])

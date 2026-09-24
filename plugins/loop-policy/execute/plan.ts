@@ -63,9 +63,20 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put（四字段全必填）。 */
-export function addGenOp(id: string, index: number, pins: Rec = {}): Json {
-  return { op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins } }
+/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
+export function addGenOp(id: string, index: number, pins: Rec = {}, base?: number): Json {
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins }
+  if (base !== undefined) args['base'] = base
+  return { op: 'add_gen', args }
+}
+
+/** 台账切片里本身份最近数据世代的下标（无数据世代 → null，写整份世代）。 */
+export function baseSeqOf(slice: Json | undefined): number | null {
+  if (!isRecord(slice)) return null
+  const dataGen = slice['data_gen']
+  if (!isRecord(dataGen)) return null
+  const seq = dataGen['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
 }
 
 /** 单条 add_gen 子操作：payload / sig 指向**已在世界**的 def 哈希（采纳阶段跨身份写）。 */
@@ -92,6 +103,37 @@ export function evalDirective(command: string, args: Json): Json {
 export function directivesOf(value: Json): Json[] {
   if (isRecord(value) && Array.isArray(value['$directives'])) return value['$directives'] as Json[]
   return []
+}
+
+/**
+ * 递归剥掉计划通道键 `$directives`：工具结果里的写计划含 `$n` 占位符，
+ * 一旦随消息展示数据 / 续跑游标落进世界，会被内核保留命名空间拒绝或误替换。
+ */
+export function stripPlans(value: Json): Json {
+  if (Array.isArray(value)) return value.map((item) => stripPlans(item))
+  if (value === null || typeof value !== 'object') return value
+  const out: Rec = {}
+  for (const [key, item] of Object.entries(value as Rec)) {
+    if (key === '$directives') continue
+    out[key] = stripPlans(item)
+  }
+  return out
+}
+
+/**
+ * 递归把数据里的 `{'$n':k}` 字面量包成内核转义 `{'$lit':…}`：工具结果 / 游标是任意 JSON，
+ * 可能恰好含 `$n` 形状；不转义会被内核当占位符替换（越界则 bad_selfref）。
+ * 内核在落账时还原 `$lit`，故世界里的数据逐字不变。
+ */
+export function escapeRefs(value: Json): Json {
+  if (Array.isArray(value)) return value.map((item) => escapeRefs(item))
+  if (value === null || typeof value !== 'object') return value
+  const record = value as Rec
+  const keys = Object.keys(record)
+  if (keys.length === 1 && keys[0] === '$n') return { $lit: { $n: record['$n'] } }
+  const out: Rec = {}
+  for (const [key, item] of Object.entries(record)) out[key] = escapeRefs(item)
+  return out
 }
 
 /**

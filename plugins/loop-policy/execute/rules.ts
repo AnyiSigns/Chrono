@@ -291,7 +291,8 @@ function stepPost(output: Rec): RuleResult {
   const rawCalls = output['tool_calls']
   const hasCalls = Array.isArray(rawCalls) && rawCalls.length > 0
   if (!hasMessage && !hasCalls) return { ok: false, reason: 'empty_output' }
-  if (hasMessage && hasCalls) return { ok: false, reason: 'message_and_tool_calls' }
+  // 同帧带前言正文与工具调用是常见模型行为（assistant content + tool_calls）：
+  // 正文随 assistant 消息回灌（见 `stepOutput` / `appendToolMessages`），不视为结构非法。
   if (hasCalls) {
     const checked = checkToolCalls(rawCalls)
     if (!checked.ok) return { ok: false, reason: checked.reason ?? 'malformed_tool_call' }

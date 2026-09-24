@@ -35,9 +35,24 @@ import { readMethodTimeouts, resolveMethodTimeoutMs } from './method-timeouts.ts
 import { PortAuditRing, redactPortArgs } from './port-audit.ts'
 import type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
 import { InvalidDeclLog } from './invalid-decl-log.ts'
-import { appendJournal, acquireLock, loadAnchor, readJournal, releaseLock } from './ledger/index.ts'
-import { DEFAULT_COMPACT_TAIL_ENTRIES, compactWorld } from './compact.ts'
-import { AuditIndex, auditRecordOf, parseAuditFilter } from './audit.ts'
+import {
+  appendJournal,
+  acquireLock,
+  loadAnchor,
+  readAllEntries,
+  readJournal,
+  releaseLock,
+  replayFull,
+} from './ledger/index.ts'
+import {
+  DEFAULT_COMPACT_TAIL_ENTRIES,
+  DEFAULT_FLATTEN_CHAIN,
+  DEFAULT_GEN_RETENTION,
+  compactWorld,
+} from './compact.ts'
+import { parseAuditFilter } from './audit.ts'
+import type { AuditDraft } from './audit.ts'
+import { AuditStore } from './audit-store.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { createHostCapability } from './host-capability.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
@@ -265,38 +280,28 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       reason: String(anchor.journalValidBytes),
     })
   }
-  /** F8 只读审计面：启动时由基础世界索引 + journal 尾段重建，运行期随审计落链增量补齐（只读）。 */
-  const audits = new AuditIndex()
-  for (const ref of anchor.baseAudits) {
-    const def = anchor.world.defs[ref.hash]
-    if (def !== undefined) {
-      audits.add({ seq: ref.seq, at: ref.at, by: ref.by, hash: ref.hash, body: def.body })
-    }
-  }
-  const collectAudits = (entries: Entry[]): void => {
-    for (const entry of entries) {
-      const record = auditRecordOf(entry)
-      if (record !== null) audits.add(record)
-    }
-  }
-  collectAudits(anchor.entries)
+  // F8 只读审计面：审计写旁路侧存（不进世界），启动时由侧存重建内存索引。
+  const audits = AuditStore.open(paths.auditFile)
   // G6 启动压缩：尾段达到阈值即追加快照 entry + 归档前缀 + 写基础世界（世界不变，链头推进到快照）。
   // 归档前缀只取**当前 journal**（未归档部分）：回落全链时 `anchor.entries` 可能是全链，不能整段再归档。
   const compactTailEntries = options.compactTailEntries ?? DEFAULT_COMPACT_TAIL_ENTRIES
+  let initialWorld: World = anchor.world
   let initialHead: Head = anchor.head
   if (compactTailEntries > 0 && anchor.entries.length >= compactTailEntries) {
-    const compacted = compactWorld(
-      paths,
-      anchor.world,
-      anchor.head,
-      readJournal(paths.journalFile),
-      audits.refs(),
-      Date.now(),
-    )
+    // 有界化回收需要**全量世界**的 world_rev（快照 entry 自校 + full verify 用），
+    // 故基础世界已被回收（子世界）时从冷段 + 尾段全链重放一次；未回收时直接用载入世界。
+    const baseWorld = anchor.pruned
+      ? replayFull(readAllEntries(paths.journalFile, paths.coldDir))
+      : anchor.world
+    const compacted = compactWorld(paths, baseWorld, anchor.head, readJournal(paths.journalFile), Date.now(), {
+      genWindow: DEFAULT_GEN_RETENTION,
+      flattenChain: DEFAULT_FLATTEN_CHAIN,
+    })
+    initialWorld = compacted.world
     initialHead = { seq: compacted.snapshot.seq, hash: compacted.snapshot.hash }
   }
   // 落账互斥段：多个 run 可并发推进，只有「追加 journal + 推进世界 / 链头」经它串行。
-  const writer = new WorldWriter({ world: anchor.world, head: initialHead })
+  const writer = new WorldWriter({ world: initialWorld, head: initialHead })
   // 投影按链头缓存：同一世界的多轮 / 多 run 复用一份闭包视图（投影只读，内核不改 ctx）。
   let ctxCache: { head: Hash | null; seq: number; view: Json } | undefined
   const cachedProjection = (world: World, head: Head): Json => {
@@ -377,9 +382,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
-  const persistAudit = (entry: Entry): void => {
-    appendJournal(paths.journalFile, [entry])
-    collectAudits([entry])
+  const persistAudit = (draft: AuditDraft): void => {
+    audits.append(draft)
   }
   const persistRound = (entries: Entry[]): void => {
     appendJournal(paths.journalFile, entries)
@@ -455,8 +459,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // 换代跟随串行且单调：并发 run 的 done 可能乱序到达，只应用不比当前更旧的链头，
   // 且不并发进 applyWorld（它会改运行态端点表 / 进程）。用独立链而非落账段，避免长任务堵住提交。
   let appliedSeq = initialHead.seq
-  // 已应用的上一份世界：逐身份 diff 出 identity.changed（启动基准 = anchor.world，与装配初值一致）。
-  let appliedWorld: World = anchor.world
+  // 已应用的上一份世界：逐身份 diff 出 identity.changed（启动基准 = writer 初值，与装配初值一致）。
+  let appliedWorld: World = initialWorld
   /**
    * 通知面语义化：按身份 diff 上一份已应用世界与当前世界，只播真正变化者。
    * 代码世代 active 变（含新增 / 退役）→ `code`；否则数据世代 payload 变 → `data`；无变化不发。

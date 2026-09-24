@@ -96,7 +96,7 @@
 
 每条都落在 `docs/host.md` §六 的不变量上（按插件侧归并），破了就是插件没写对：
 
-1. **不 import 宿主与内核、不依赖其他插件包**：`packages/host` / `packages/kernel` 既不能 import（**含 `execute/` / `src/` / `terms/` / `test/` 全部包内文件，测试亦不得豁免**）、也不能作 npm 依赖（服务代码亦不得 import `packages/client`——它 import 内核）；不算哈希、不校验、不写链；键 / 哈希 / 校验 / 写链全在宿主。对宿主的依赖只经**线协议 + `pins`**（能力类名 / 方法名，含保留类 `host`）。npm 依赖**不得**用于插件间调用（插件间只走 `pins`）。
+1. **不 import 宿主与内核、不依赖其他插件包**：`packages/host` / `packages/kernel` 既不能 import（**含 `execute/` / `src/` / `terms/` / `test/` 全部包内文件，测试亦不得豁免**）、也不能作 npm 依赖（服务代码亦不得 import `packages/client`——它 import 内核）；不算哈希、不校验、不写链；键 / 哈希 / 校验 / 写链全在宿主。对宿主的依赖只经**线协议 + `pins`**（能力类名 / 方法名，含保留类 `host`）。npm 依赖**不得**用于插件间调用（插件间只走 `pins`）。**工具链是唯一例外**：不入世的构建 / 开发脚本（`.worldignore` 排除）可 import `toolchain` 编译器——编译器零内核依赖，故不传递内核；运行期与入世内容不得 import，`toolchain` 也不进 `pins` / 路由 / 装配。
 2. **只提交内容与效果请求**：`put` / `batch` 载荷 + `EffRequest`；另有 `event` 通知（宿主只透传，不落账、不推进），**不得**用它写链或索取其他插件的端点。
 3. **不与其他插件直连**：效果一律经宿主（保 `EffectAudit`）。
 4. **依赖只走 `pins`，可跨插件相互依赖（但闭包必须无环）**：A 的 `pins` 写 B 的身份（名 → 身份名，入世时解析成哈希，绑定的是**身份**不是版本）；A 的代码 / term 只写**能力类名 + 方法名**，宿主按 `pins` 路由。**不 import、不共享进程内对象、不直连**；`pins` 只记**身份级**（跨身份）依赖。term 内对同包 callee 的引用是**本身份内**的函数值：源里写占位符、入世替换成 def 哈希，不入 `pins`。漏写身份级 `pins` 会静默失效。**自能力路由不是 `pins` 项**：有 `execute` 的插件把入口 term 的 `eff` 路由进**自己的服务**（能力类 = 自身 `implements` 声明）**无需写自引用 pin**，它不构成身份级依赖、不进装配闭包、不参与受保护 `pins` 校验（见 `host.md` §五 路由）。

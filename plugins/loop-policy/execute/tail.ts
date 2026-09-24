@@ -2,7 +2,7 @@
 // 只构造写计划；服务不写链。无 #43 台账（bag.evolution 缺失）时不产轨迹写。
 
 import { H } from './hash.ts'
-import { addGenOp, batchDirective, defHashOf, isRecord, putOp } from './plan.ts'
+import { addGenOp, baseSeqOf, batchDirective, defHashOf, isRecord, putOp } from './plan.ts'
 import { evolutionBody } from './proposals.ts'
 import type { TraceRecorder } from './trace.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
@@ -58,11 +58,24 @@ export function buildTraceTail(
     at,
   )
   entry['prev'] = prevTail === null ? null : { def: prevTail }
-  const newBody: Rec = {
-    ...body,
-    version: typeof body['version'] === 'number' ? body['version'] : 1,
-    trace: { tail: { def: { $n: 0 } }, count: slotCount(body, 'trace') + 1 },
+  const newTrace: Rec = { tail: { def: { $n: 0 } }, count: slotCount(body, 'trace') + 1 }
+  const ops: Json[] = [putOp(entry)]
+  const base = baseSeqOf(bag['evolution'])
+  if (base === null) {
+    ops.push(
+      putOp({
+        ...body,
+        version: typeof body['version'] === 'number' ? body['version'] : 1,
+        trace: newTrace,
+      }),
+    )
+  } else {
+    // 补丁世代：只替换 trace 槽（version 缺失时补一条），不重写整份台账 body
+    const patches: Json[] = []
+    if (typeof body['version'] !== 'number') patches.push({ op: 'replace', path: ['version'], value: 1 })
+    patches.push({ op: 'replace', path: ['trace'], value: newTrace })
+    ops.push(putOp({ ops: patches }))
   }
-  const ops: Json[] = [putOp(entry), putOp(newBody), addGenOp('evolution', 1)]
+  ops.push(addGenOp('evolution', 1, {}, base ?? undefined))
   return [batchDirective(ops)]
 }

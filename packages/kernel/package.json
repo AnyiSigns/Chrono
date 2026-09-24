@@ -10,6 +10,7 @@
     "tsconfig.json",
     "commit.form.ts",
     "commit.ts",
+    "defs.ts",
     "hash.ts",
     "hash.utf8.ts",
     "index.ts",
@@ -17,11 +18,16 @@
     "journal.id.ts",
     "journal.ts",
     "machine.ts",
+    "patch.ts",
+    "rebase.ts",
+    "recycle.ts",
     "run.ts",
     "types.ts",
     "value.ts"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",

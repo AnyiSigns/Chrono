@@ -283,7 +283,9 @@ function commitBag(input: NodeDispatchInput): Rec {
     assistant,
   }
   if (typeof session['current'] === 'string') out['conversation'] = session['current']
-  if (refusal !== null) out['error'] = asString(refusal['message']) ?? asString(refusal['code']) ?? 'refused'
+  // 落盘错误码取稳定拒绝码（`pre_unsat` / `capability_mismatch` …），不取内部 reason 明细：
+  // 明细（如 `last_message_role`）只进 trace，UI 按码取人话。
+  if (refusal !== null) out['error'] = asString(refusal['code']) ?? asString(refusal['message']) ?? 'refused'
   return out
 }
 

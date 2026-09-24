@@ -10,7 +10,8 @@
     "model": "model-protocol",
     "context": "context-window",
     "session-title": "session-title",
-    "loop-policy": "loop-policy"
+    "loop-policy": "loop-policy",
+    "host": "host"
   },
   "start": "node execute/main.ts",
   "protocol": "1",

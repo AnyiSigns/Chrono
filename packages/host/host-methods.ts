@@ -7,12 +7,14 @@ export const HOST_CAPABILITY = 'host'
 /**
  * 宿主保留能力类的方法集。
  * `validate_package` = 入世校验 dry-run（H13），与 `seed` / `pack` 同一套机械校验、不写世界。
+ * `def.read` = 按哈希只读解析 def body（投影只回引用，消费方按需取 body）；有界、越权 fail-closed。
  */
 export const HOST_METHODS: ReadonlySet<string> = new Set([
   'audit',
   'asset.put',
   'asset.get',
   'blob.put',
+  'def.read',
   'identities',
   'source.read',
   'thread.resume',

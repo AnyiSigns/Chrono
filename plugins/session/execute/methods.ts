@@ -18,6 +18,7 @@ import {
   nowOf,
   optionalMessageFields,
   planOf,
+  pushSessionGen,
   putOp,
   replaceConversation,
   sessionDataOf,
@@ -133,7 +134,7 @@ function commit(args: Rec, env: CallEnv): HandlerResult {
   }
   const error = asString(args['error'])
   if (error !== null) {
-    return commitError({ args, env, at, session, slotsBody, threadId, conversationId, conversation, error })
+    return commitError({ args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error })
   }
   return commitNormal({ args, env, at, session, slotsBody, threadId, conversationId, conversation, slot })
 }
@@ -198,14 +199,10 @@ function commitNormal(ctx: CommitContext): HandlerResult {
     }
   }
   const nextSession = replaceConversation(session, conversationId, nextConversation)
-  const ops = [
-    putOp(userBody),
-    putOp(assistantBody),
-    putOp(nextSession),
-    addGenOp('session', 2),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 4),
-  ]
+  const ops: Json[] = [putOp(userBody), putOp(assistantBody)]
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = []
   const kind = asString(conversation['kind']) ?? 'main'
   if (kind === 'group') {
@@ -223,31 +220,45 @@ function commitNormal(ctx: CommitContext): HandlerResult {
 }
 
 function commitError(ctx: CommitContext & { error: string }): HandlerResult {
-  const { env, at, session, slotsBody, threadId, conversationId, conversation, error } = ctx
+  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error } = ctx
   const count = countOf(conversation)
   const prevHash = headHash(conversation)
+  // 拒绝也要保住用户这条消息：回合尾一次写，用户消息此前从未落盘；
+  // 只落 system 错误会把用户输入吞掉（UI 重拉历史后整轮消失）。
+  const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
+  const slotRec = isRecord(slot) ? (slot as Rec) : null
+  const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
+  const userExtra = optionalMessageFields(userSource)
+  if (userExtra['attachments'] === undefined && Array.isArray(slotRec?.['attachments'])) {
+    userExtra['attachments'] = slotRec['attachments']
+  }
+  const userBody = messageBody(
+    'user',
+    `msg-${conversationId}-${count}`,
+    userContent,
+    prevHash === null ? null : { def: prevHash },
+    at,
+    userExtra,
+  )
   const systemBody = messageBody(
     'system',
-    `msg-${conversationId}-${count}`,
+    `msg-${conversationId}-${count + 1}`,
     error,
-    prevHash === null ? null : { def: prevHash },
+    { def: { $n: 0 } },
     at,
     { meta: { error } },
   )
   const nextConversation: Rec = {
     ...conversation,
-    head: { def: { $n: 0 } },
-    count: count + 1,
+    head: { def: { $n: 1 } },
+    count: count + 2,
     last_activity: { at, summary: summaryOf(error) },
   }
   const nextSession = replaceConversation(session, conversationId, nextConversation)
-  const ops = [
-    putOp(systemBody),
-    putOp(nextSession),
-    addGenOp('session', 1),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 3),
-  ]
+  const ops: Json[] = [putOp(userBody), putOp(systemBody)]
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     {
       topic: 'thread.updated',
@@ -277,12 +288,10 @@ function newConversation(args: Rec, env: CallEnv): HandlerResult {
     current: id,
     conversations: [...conversationsOf(session), entry],
   }
-  const ops = [
-    putOp(nextSession),
-    addGenOp('session', 0),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 2),
-  ]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     { topic: 'thread.opened', payload: { ...conversationEvent(env, id), kind: 'main' } },
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
@@ -304,12 +313,10 @@ function select(args: Rec, env: CallEnv): HandlerResult {
     return clearOnly(slotsBody, threadId, { ok: false, reason: 'deleted' })
   }
   const nextSession: Rec = { ...sessionDataOf(session), current: id }
-  const ops = [
-    putOp(nextSession),
-    addGenOp('session', 0),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 2),
-  ]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
   ]
@@ -329,12 +336,10 @@ function rename(args: Rec, env: CallEnv): HandlerResult {
   const conversation = findConversation(session, id)
   if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
   const nextSession = replaceConversation(session, id, { ...conversation, title })
-  const ops = [
-    putOp(nextSession),
-    addGenOp('session', 0),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 2),
-  ]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['title'] } },
   ]
@@ -353,7 +358,8 @@ function setTitle(args: Rec, env: CallEnv): HandlerResult {
     return { value: externOnly({ ok: false, reason: 'not_found', conversation: id }), events: [] }
   }
   const nextSession = replaceConversation(session, id, { ...conversation, title })
-  const ops = [putOp(nextSession), addGenOp('session', 0)]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['title'] } },
   ]
@@ -381,12 +387,10 @@ function deleteConversation(args: Rec, env: CallEnv): HandlerResult {
     ...replaceConversation(session, id, nextConversation),
     current: nextCurrent,
   }
-  const ops = [
-    putOp(nextSession),
-    addGenOp('session', 0),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 2),
-  ]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     {
       topic: 'thread.closed',
@@ -413,12 +417,10 @@ function restore(args: Rec, env: CallEnv): HandlerResult {
   const conversation = findConversation(session, id)
   if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
   const nextSession = replaceConversation(session, id, { ...conversation, deleted_at: null })
-  const ops = [
-    putOp(nextSession),
-    addGenOp('session', 0),
-    putOp(clearSlotsBody(slotsBody, threadId)),
-    addGenOp('input', 2),
-  ]
+  const ops: Json[] = []
+  pushSessionGen(ops, session, nextSession)
+  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['deleted_at'] } },
   ]
@@ -504,16 +506,14 @@ function branch(args: Rec, env: CallEnv): HandlerResult {
     created: at,
     deleted_at: null,
   }
-  const bodyIndex = ops.length
   const nextSession: Rec = {
     ...sessionDataOf(session),
     current: newId,
     conversations: [...conversationsOf(session), entry],
   }
-  ops.push(putOp(nextSession))
-  ops.push(addGenOp('session', bodyIndex))
+  pushSessionGen(ops, session, nextSession)
   ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', bodyIndex + 2))
+  ops.push(addGenOp('input', ops.length - 1))
   const events = [
     {
       topic: 'thread.opened',
@@ -603,7 +603,8 @@ function deliver(args: Rec, env: CallEnv): HandlerResult {
     workflow,
   }
   const nextSession = upsertConversation(session, nextConversation)
-  const ops = [putOp(inboxMessage), putOp(nextSession), addGenOp('session', 1)]
+  const ops: Json[] = [putOp(inboxMessage)]
+  pushSessionGen(ops, session, nextSession)
 
   const events = []
   const conversationKind = asString(conversation['kind']) ?? 'main'

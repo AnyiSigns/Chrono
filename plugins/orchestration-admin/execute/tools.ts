@@ -14,23 +14,23 @@ const READONLY_CAPS: Rec = {
   procs_max: 1,
 }
 
-const GRAPH_BAG: Rec = { type: 'object', description: '图六类条目包装（由 #33 装配随 bag 传入）。' }
-const EVOLUTION_BAG: Rec = { type: 'object', description: '#43 台账（trace / evidence / proposals / verdicts）。' }
-const PINS_BAG: Rec = { type: 'object', description: '投影 ids.loop-policy.pins（名 → 被依赖身份名）。' }
+const GRAPH_BAG: Rec = { type: 'object', description: '当前编排图数据。' }
+const EVOLUTION_BAG: Rec = { type: 'object', description: '变更台账（可选）。' }
+const PINS_BAG: Rec = { type: 'object', description: '依赖关系表（名 → 被依赖的插件名）。' }
 
 /** 四个工具的自述（name / 四要素 / argsSchema / caps / idempotent / render）。 */
 export const TOOLS: Json[] = [
   {
     name: 'orchestration.list',
-    intent: '列出当前 active 图的 Scope 概览、契约清单与阈值表。',
-    when_to_use: '在决定读 / 改哪一处编排之前，先看清图里有哪些 Scope、契约与阈值。',
+    intent: '列出当前生效编排图的概览、契约清单与阈值。',
+    when_to_use: '需要总览当前编排有哪些节点、契约与阈值时。',
     param_semantics: {
-      graph: '图六类条目包装（contracts / nodes / prompts / graph / thresholds / refusal_codes）。',
-      evolution: '#43 台账（可选，用于关联证据摘要）。',
-      pins: '投影 ids.loop-policy.pins；名 → 被依赖身份名。',
+      graph: '当前编排图数据。',
+      evolution: '变更台账（可选，用于关联证据摘要）。',
+      pins: '依赖关系表。',
     },
-    boundaries: '只读概览，不含条目全文；看全文用 orchestration.read，跑校验用 orchestration.validate。',
-    description: '列出 Scope 概览（node_index / contract_id / impl / scope / autonomy / links）+ 契约清单 + 阈值表。',
+    boundaries: '只读概览，不含全文；看全文用 orchestration.read，校验用 orchestration.validate。',
+    description: '列出当前编排图的概览、契约清单与阈值。',
     argsSchema: { type: 'object', properties: { graph: GRAPH_BAG, evolution: EVOLUTION_BAG, pins: PINS_BAG }, additionalProperties: true },
     caps: READONLY_CAPS,
     idempotent: true,
@@ -38,15 +38,15 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'orchestration.read',
-    intent: '读取某条目全文（契约 / Scope / 图 / 阈值 / 证据）与关联证据摘要。',
-    when_to_use: '需要查看某契约、某个 Scope 实例、整张图或阈值明细时。',
+    intent: '读取编排某一部分的全文（契约 / 节点 / 图 / 阈值 / 证据）。',
+    when_to_use: '需要查看某契约、某个节点、整张图或阈值明细时。',
     param_semantics: {
-      kind: '条目类型：contract / scope / graph / thresholds / evidence。',
-      target: '条目 id：契约 id / node_id / 阈值名 / evidence id；kind=graph 时忽略。',
-      graph: '图六类条目包装（由 #33 装配随 bag 传入）。',
+      kind: '要读的类型：contract / scope / graph / thresholds / evidence。',
+      target: '目标 id；kind=graph 时忽略。',
+      graph: '当前编排图数据。',
     },
-    boundaries: '只读单条目，不列目录；不跑机械闸（用 orchestration.validate）、不改图（用 orchestration.propose）。',
-    description: '按 kind + target 读某条目全文，附关联证据摘要。',
+    boundaries: '只读单条目，不列目录；校验用 orchestration.validate，改图用 orchestration.propose。',
+    description: '按类型与 id 读取编排某一部分的全文。',
     argsSchema: {
       type: 'object',
       properties: {
@@ -64,21 +64,21 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'orchestration.validate',
-    intent: '本地复刻 #33 机械闸 dry-run，返回错误列表与结果哈希（不 eff #33）。',
-    when_to_use: '准备提编排变更之前，先机械校验候选图是否过闭合 / 类型 / 偏序 / 端口 / 六不变量 / 四规则。',
+    intent: '预校验一份候选编排图，返回错误列表与校验结果。',
+    when_to_use: '准备提交编排变更之前，先校验候选图是否合法。',
     param_semantics: {
-      graph: '待校验的图六类条目（graph.graph 为候选图）。',
-      active_graph: '当前 active 图 body（fork 基；用于 fork-only 与 diff 上限）。',
-      pins: '投影 ids.loop-policy.pins（判端口 ⊆ pins）。',
-      runs_since_fork: '距上次 fork 的回合数（判 min_runs_before_fork）。',
+      graph: '待校验的候选编排图。',
+      active_graph: '当前生效图，用于对比。',
+      pins: '依赖关系表。',
+      runs_since_fork: '距上次分叉的回合数。',
     },
-    boundaries: '只是预检、不构成门禁证据（权威闸 = #33 写期机械闸 + #44 shadow + #32 人闸）；不改世界。',
-    description: '跑闭合 / 类型 / publish 偏序 / 端口 ⊆ pins + 六条图不变量 + 四条演化规则，回 {ok, errors, result_hash}。',
+    boundaries: '只是预检，不代表已生效；不改动编排。',
+    description: '校验候选编排图，返回 {ok, errors, result_hash}。',
     argsSchema: {
       type: 'object',
       properties: {
         graph: GRAPH_BAG,
-        active_graph: { type: 'object', description: '当前 active 图 body。' },
+        active_graph: { type: 'object', description: '当前生效图。' },
         pins: PINS_BAG,
         runs_since_fork: { type: 'integer', minimum: 0 },
       },
@@ -90,19 +90,19 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'orchestration.propose',
-    intent: '把一次编排变更落成可审计的提案条目写计划（只产提案，不产证据、不产写）。',
-    when_to_use: '已有证据支撑、且候选图已过 orchestration.validate 时，产一条 fork-only 提案交 #33 采纳阶段。',
+    intent: '提交一次编排变更提案，交用户或自动流程采纳。',
+    when_to_use: '候选图已通过 orchestration.validate、且有支撑依据时。',
     param_semantics: {
-      class: '变更类：binding / instance_growth / structure / fold。',
-      evidence_ids: '支撑证据 id 列表，必填非空（用户请求也须先经 #44 record 落证据）。',
-      graph: '候选图六类条目（graph.graph 为候选图，必须带 derived_from）。',
-      writes: '跨身份附加写（[{identity, payload}]，可为空）；payload def 先落，采纳阶段才 add_gen。',
-      target: '变更目标 {graph:{def}|null, contract_id, node_id}；缺省取当前 active 图。',
-      by: '提案来源：evolve-loop（缺省）/ user（用户显式请求，不占额度）。',
-      validate_hash: '上次 orchestration.validate 的结果哈希（同一 bag / 同一 patch），必填。',
+      class: '变更类型：binding / instance_growth / structure / fold。',
+      evidence_ids: '支撑依据 id 列表，必填非空。',
+      graph: '候选编排图。',
+      writes: '随附的附加改动（可为空）。',
+      target: '变更目标；缺省取当前生效图。',
+      by: '提案来源：evolve-loop（缺省）/ user。',
+      validate_hash: '上次 orchestration.validate 的结果哈希，必填。',
     },
-    boundaries: '只产提案条目、不产证据、不直接写图、不入人闸（人闸在采纳）；不满足四硬约束直接拒。',
-    description: '产 put(候选图 def)+put(writes[].payload def)+put(提案)+put(新 evolution body)+add_gen(evolution) 的原子写计划。',
+    boundaries: '只产提案，不直接改图；采纳由用户或自动流程决定。',
+    description: '提交编排变更提案。',
     argsSchema: {
       type: 'object',
       properties: {
@@ -112,7 +112,7 @@ export const TOOLS: Json[] = [
         writes: { type: 'array', items: { type: 'object' } },
         target: { type: 'object' },
         by: { enum: ['evolve-loop', 'user'] },
-        validate_hash: { type: 'string', description: '上次 validate 的结果哈希（64 位小写 hex）。' },
+        validate_hash: { type: 'string', description: '上次 orchestration.validate 的结果哈希。' },
       },
       required: ['class', 'evidence_ids', 'graph'],
       additionalProperties: true,

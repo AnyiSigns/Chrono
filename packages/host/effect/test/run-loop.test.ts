@@ -1,10 +1,10 @@
 import { describe, expect, it, afterEach } from 'vitest'
-import { H } from '../../../kernel/index.ts'
 import { ServiceChannelError } from '../../service-link.ts'
 import { WorldWriter } from '../../writer.ts'
 import type { SyncResult, WorldState } from '../../writer.ts'
 import { runRound } from '../run-loop.ts'
 import { resetFatal } from '../fatal.ts'
+import type { AuditDraft } from '../../audit.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Directive, EffResult, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
@@ -47,7 +47,7 @@ function fakeRouter(
 }
 
 describe('通用 run loop runRound', () => {
-  it('空 directives → idle；lastAuditHash 为 null', async () => {
+  it('空 directives → idle，不产审计', async () => {
     const outcome = await runRound({
       world: emptyWorld(),
       head: { ...EMPTY_HEAD },
@@ -60,7 +60,6 @@ describe('通用 run loop runRound', () => {
     expect(outcome.status).toBe('idle')
     expect(outcome.journal).toEqual([])
     expect(outcome.observations).toEqual([])
-    expect(outcome.lastAuditHash).toBeNull()
   })
 
   it('单条 write → done 且落 journal', async () => {
@@ -137,7 +136,7 @@ describe('通用 run loop runRound', () => {
       ids: {},
     }
     const head: Head = { ...EMPTY_HEAD }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runRound({
       world,
       head,
@@ -147,17 +146,14 @@ describe('通用 run loop runRound', () => {
       limits: LIMITS,
       initiator: 'client',
       now: NOW,
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('refused')
     expect(outcome.journal).toEqual([])
     expect(audits).toHaveLength(1)
-    expect(outcome.lastAuditHash).not.toBeNull()
-    expect(outcome.lastAuditHash).toBe(H(audits[0].args as Json))
-    // 审计哈希 = 实际落链 def 键
-    const audit = audits[0].args as { body: { result: { ok: boolean; error: string } } }
-    expect(audit.body.result.ok).toBe(false)
-    expect(audit.body.result.error).toBe('not_loaded')
+    const audit = audits[0].body as { result: { ok: boolean; error: string } }
+    expect(audit.result.ok).toBe(false)
+    expect(audit.result.error).toBe('not_loaded')
   })
 
   it('eval 挂起 + router：回灌端点值到观测，审计先于 done', async () => {
@@ -166,7 +162,7 @@ describe('通用 run loop runRound', () => {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runRound({
       world,
       head: { ...EMPTY_HEAD },
@@ -177,11 +173,10 @@ describe('通用 run loop runRound', () => {
       initiator: 'client',
       now: NOW,
       router: fakeRouter(async (port, method, args) => ({ port, method, args })),
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('done')
     expect(audits).toHaveLength(1)
-    expect(outcome.lastAuditHash).not.toBeNull()
     expect(outcome.observations).toEqual([
       {
         kind: 'eval',
@@ -190,8 +185,8 @@ describe('通用 run loop runRound', () => {
         value: { port: 'toy.echo', method: 'echo', args: { n: 1 } },
       },
     ])
-    // 审计快照的 result 与回灌一致
-    const auditResult = (audits[0].args as { body: { result: Json } }).body.result
+    // 审计草稿的 result 与回灌一致
+    const auditResult = (audits[0].body as { result: Json }).result
     expect(auditResult).toEqual({
       ok: true,
       value: { port: 'toy.echo', method: 'echo', args: { n: 1 } },
@@ -208,7 +203,7 @@ describe('通用 run loop runRound', () => {
       },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const calls: Json[] = []
     const outcome = await runRound({
       world,
@@ -223,7 +218,7 @@ describe('通用 run loop runRound', () => {
         calls.push(args)
         return args
       }),
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('done')
     expect(calls).toEqual([1, 2])
@@ -231,13 +226,13 @@ describe('通用 run loop runRound', () => {
     expect(outcome.observations).toEqual([{ kind: 'eval', entry: termHash, ok: true, value: 2 }])
   })
 
-  it('audit:false（只读）：效果照常回灌但不落审计、不推进 head、lastAuditHash 恒 null', async () => {
+  it('audit:false（只读）：效果照常回灌但不落审计、不推进 head', async () => {
     const termHash = 'th'.repeat(32)
     const world: World = {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runRound({
       world,
       head: { ...EMPTY_HEAD },
@@ -249,11 +244,10 @@ describe('通用 run loop runRound', () => {
       now: NOW,
       audit: false,
       router: fakeRouter(async (port, method, args) => ({ port, method, args })),
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('done')
     expect(audits).toEqual([])
-    expect(outcome.lastAuditHash).toBeNull()
     expect(outcome.head).toEqual(EMPTY_HEAD)
     expect(outcome.observations).toEqual([
       {
@@ -301,7 +295,7 @@ describe('通用 run loop runRound', () => {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const controller = new AbortController()
     const router: RoundRouter = {
       resolve: () => ({
@@ -338,14 +332,13 @@ describe('通用 run loop runRound', () => {
       audit: false,
       router,
       signal: controller.signal,
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     await Promise.resolve()
     controller.abort()
     const outcome = await pending
     expect(outcome.status).toBe('cancelled')
     expect(audits).toEqual([])
-    expect(outcome.lastAuditHash).toBeNull()
     expect(outcome.head).toEqual(EMPTY_HEAD)
   })
 
@@ -355,7 +348,7 @@ describe('通用 run loop runRound', () => {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const controller = new AbortController()
     const router: RoundRouter = {
       resolve: () => ({
@@ -391,7 +384,7 @@ describe('通用 run loop runRound', () => {
       now: NOW,
       router,
       signal: controller.signal,
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     await Promise.resolve()
     controller.abort()
@@ -399,8 +392,7 @@ describe('通用 run loop runRound', () => {
     expect(outcome.status).toBe('cancelled')
     expect(outcome.journal).toEqual([])
     expect(audits).toHaveLength(1)
-    const body = (audits[0].args as unknown as { body: { result: EffResult; outcome: string } })
-      .body
+    const body = audits[0].body as unknown as { result: EffResult; outcome: string }
     expect(body.result).toEqual({ ok: false, error: 'cancelled' })
     expect(body.outcome).toBe('cancelled')
   })
@@ -413,7 +405,7 @@ describe('通用 run loop runRound', () => {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runRound({
       world,
       head: { ...EMPTY_HEAD },
@@ -425,12 +417,11 @@ describe('通用 run loop runRound', () => {
       now: NOW,
       router: fakeRouter(async () => null),
       signal: controller.signal,
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('cancelled')
     expect(outcome.journal).toEqual([])
     expect(audits).toEqual([])
-    expect(outcome.lastAuditHash).toBeNull()
   })
 
   it('writer 与 world/head 同时给出 → 立即抛错（不静默取一）', async () => {
@@ -502,7 +493,7 @@ describe('通用 run loop runRound', () => {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
       ids: {},
     }
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runRound({
       world,
       head: { ...EMPTY_HEAD },
@@ -513,12 +504,12 @@ describe('通用 run loop runRound', () => {
       initiator: 'client',
       now: NOW,
       router: fakeRouter(async () => null),
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('refused')
     expect(outcome.journal).toEqual([])
     expect(audits).toHaveLength(1)
-    const auditBody = (audits[0].args as unknown as { body: { result: EffResult } }).body
+    const auditBody = audits[0].body as unknown as { result: EffResult }
     expect(auditBody.result).toEqual({ ok: false, error: 'not_loaded' })
     expect(outcome.observations[outcome.observations.length - 1]).toMatchObject({
       kind: 'refused',
@@ -561,7 +552,7 @@ describe('通用 run loop runRound', () => {
     ).rejects.toThrow('persist_failed')
   })
 
-  it('审计落账失败 fail-stop：onAudit 抛错 → 审计副本不切换、链头不动', async () => {
+  it('审计落侧存失败 fail-stop：onAudit 抛错 → 世界 / 链头不动', async () => {
     const termHash = 'th'.repeat(32)
     const world: World = {
       defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
@@ -584,7 +575,7 @@ describe('通用 run loop runRound', () => {
       }),
     ).rejects.toThrow('journal locked')
     expect(writer.snapshot().head).toEqual({ ...EMPTY_HEAD })
-    // 审计 def 未落活世界（只剩初始 term def）
+    // 审计不进世界（只剩初始 term def）
     expect(Object.keys(writer.snapshot().world.defs)).toEqual([termHash])
   })
 

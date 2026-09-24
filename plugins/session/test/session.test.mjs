@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { assembleBody } from '../../../packages/kernel/patch.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -309,7 +310,7 @@ test('commit 保留其它线程键（per-thread 只清本键）', async () => {
   }
 })
 
-test('commit 失败路径：追加独立 system 消息 def（meta.error）', async () => {
+test('commit 失败路径：用户消息 + 独立 system 消息 def（meta.error）', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -321,15 +322,18 @@ test('commit 失败路径：追加独立 system 消息 def（meta.error）', asy
       error: 'model failed',
     })
     const ops = opsFor(plan)
-    assert.equal(ops.length, 5)
-    assert.equal(ops[0].args.body.role, 'system')
-    assert.equal(ops[0].args.body.content, 'model failed')
-    assert.deepEqual(ops[0].args.body.meta, { error: 'model failed' })
-    assert.deepEqual(ops[1].args.body.conversations[0].head, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.conversations[0].count, 1)
-    assert.deepEqual(ops[2].args, { id: 'session', payload: { $n: 1 }, sig: { $n: 1 }, pins: {} })
-    assert.deepEqual(ops[3].args.body.slots, { t1: { kind: 'idle' } })
-    assert.deepEqual(ops[4].args, { id: 'input', payload: { $n: 3 }, sig: { $n: 3 }, pins: {} })
+    assert.equal(ops.length, 6)
+    assert.equal(ops[0].args.body.role, 'user')
+    assert.equal(ops[0].args.body.content, 'hi')
+    assert.equal(ops[1].args.body.role, 'system')
+    assert.equal(ops[1].args.body.content, 'model failed')
+    assert.deepEqual(ops[1].args.body.meta, { error: 'model failed' })
+    assert.deepEqual(ops[1].args.body.prev, { def: { $n: 0 } })
+    assert.deepEqual(ops[2].args.body.conversations[0].head, { def: { $n: 1 } })
+    assert.equal(ops[2].args.body.conversations[0].count, 2)
+    assert.deepEqual(ops[3].args, { id: 'session', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
+    assert.deepEqual(ops[4].args.body.slots, { t1: { kind: 'idle' } })
+    assert.deepEqual(ops[5].args, { id: 'input', payload: { $n: 4 }, sig: { $n: 4 }, pins: {} })
     assert.equal(externPayload(plan.$directives).ok, false)
     assert.equal(externPayload(plan.$directives).error, 'model failed')
     assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
@@ -747,6 +751,106 @@ test('deliver：group 追加 → group.message；workflow 位置推进 → workf
     const workflowStep = drv.events.slice(before).find((e) => e.topic === 'workflow.step')
     assert.equal(workflowStep.payload.thread, 'wf1')
     assert.equal(workflowStep.payload.node_index, 1)
+  } finally {
+    drv.close()
+  }
+})
+
+// ── 补丁世代（data_gen 存在时写补丁 + base，组装结果与整份写入等价） ────────────
+
+/** 跑同一次会话调用两次：一次整份写入、一次补丁写入，返回两者的会话 body / 补丁。 */
+async function patchEquivalence(drv, method, args, fullBodyIndex, patchDefIndex) {
+  const full = opsFor(await drv.call(method, args))
+  const fullBody = full[fullBodyIndex].args.body
+  const patched = opsFor(await drv.call(method, { ...args, session: { ...args.session, data_gen: { seq: 7, payload: H1 } } }))
+  const patchDef = patched[patchDefIndex].args.body
+  const addGen = patched[patchDefIndex + 1]
+  assert.equal(addGen.op, 'add_gen')
+  assert.equal(addGen.args.id, 'session')
+  assert.equal(addGen.args.base, 7)
+  assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
+  return { fullBody, assembled: assembleBody(args.session, patchDef.ops), patched }
+}
+
+test('补丁世代：commit 组装结果 == 整份写入结果', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const args = {
+      thread_id: 't1',
+      session: baseSession(),
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      conversation: 'c1',
+      user: { content: 'hi' },
+      assistant: { content: 'hello' },
+    }
+    const { fullBody, assembled, patched } = await patchEquivalence(drv, 'commit', args, 2, 2)
+    assert.deepEqual(assembled, fullBody)
+    // 补丁只动变更的会话条目，不重写整个 conversations 列表
+    assert.deepEqual(patched[2].args.body.ops, [
+      { op: 'replace', path: ['conversations', 0], value: fullBody.conversations[0] },
+    ])
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：rename / new_conversation 组装结果 == 整份写入结果', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const renamed = await patchEquivalence(
+      drv,
+      'rename',
+      {
+        thread_id: 't1',
+        session: baseSession(),
+        slots: { slots: { t1: { kind: 'session.rename' } } },
+        conversation: 'c1',
+        title: '改名',
+      },
+      0,
+      0,
+    )
+    assert.deepEqual(renamed.assembled, renamed.fullBody)
+
+    const created = await patchEquivalence(
+      drv,
+      'new_conversation',
+      {
+        thread_id: 't1',
+        session: baseSession(),
+        slots: { slots: { t1: { kind: 'session.new' } } },
+        title: '新会话',
+        conversation_id: 'c2',
+      },
+      0,
+      0,
+    )
+    assert.deepEqual(created.assembled, created.fullBody)
+    assert.deepEqual(
+      created.patched[0].args.body.ops.map((op) => op.op).sort(),
+      ['append', 'replace'],
+    )
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：无变更会话写回落整份（空补丁非法）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('select', {
+      thread_id: 't1',
+      session: { ...baseSession(), data_gen: { seq: 2, payload: H1 } },
+      slots: { slots: { t1: { kind: 'session.select' } } },
+      conversation: 'c1',
+    })
+    const ops = opsFor(plan)
+    assert.equal(ops[0].op, 'put')
+    assert.equal(Array.isArray(ops[0].args.body.ops), false)
+    assert.deepEqual(ops[1].args, { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
   } finally {
     drv.close()
   }

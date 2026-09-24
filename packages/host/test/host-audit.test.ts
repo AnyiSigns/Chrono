@@ -1,5 +1,5 @@
 // G5 F8 只读审计面验收：按回合（run）/ 身份（emitter）/ 结局（outcome）查询；
-// 只读（不写链、不推进）；limit + truncated；重启后由 journal 重建索引。
+// 只读（不写链、不推进）；limit + truncated；审计写旁路侧存，重启后由侧存重建索引。
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
@@ -142,7 +142,7 @@ describe('G5 F8 只读审计面（audit）', () => {
     }
   })
 
-  it('重启后由 journal 重建索引；查询只读（不写链）', async () => {
+  it('重启后由侧存重建索引；查询只读（不写链）', async () => {
     seed()
     const handle = await start()
     const client = await connect({ root, timeoutMs: 5000 })

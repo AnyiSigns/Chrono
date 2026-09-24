@@ -9,8 +9,8 @@ import { headOf, loadAnchor, readJournal, replayFull, verifyFull } from '../ledg
 import { materializeCommit } from '../assembly/index.ts'
 import { hostPaths } from '../paths.ts'
 import { H, pos, worldRev } from '../../kernel/index.ts'
-import type { Entry, Json } from '../../kernel/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import type { Json } from '../../kernel/index.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { FIXTURE_PYTHON, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 
@@ -162,14 +162,13 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(verifyFull(entries).ok).toBe(true)
     expect(headMirror).toEqual(headOf(entries))
 
-    // 审计先落：result.value 带 Python 侧身份与回显；业务写 ref 指审计 def、prev 接审计 entry
+    // 审计进旁路侧存：journal 只多一条业务写；业务写不落 ref
     const added = entries.slice(before)
-    expect(added).toHaveLength(2)
-    const audit = added[0]
-    expect(audit.op).toBe('put')
-    expect(audit.by).toBe('command')
-    const auditHash = H(audit.args as Json)
-    const auditBody = (audit.args as { body: { request: Json; result: Json } }).body
+    expect(added).toHaveLength(1)
+    const write = added[0]
+    expect(write.op).toBe('put')
+    expect(write.ref).toBeUndefined()
+    const auditBody = readAuditRecords(root)[0].body as { request: Json; result: Json }
     expect(auditBody.request).toMatchObject({
       port: 'toy.python',
       method: 'echo',
@@ -179,15 +178,10 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
       ok: true,
       value: { impl: 'toy-python', port: 'toy.python', method: 'echo', args: { n: 1 } },
     })
-    const write = added[1]
-    expect(write.ref).toBe(auditHash)
-    expect(write.prev).toBe(pos([audit]))
-    expect(write.seq).toBe(audit.seq + 1)
 
     // 重放保真（S4 已定口径）：同 journal 重放重建出的 def 与落账内容逐字相等；
     // 离线 replay / verify 用独立入口复算，链头与宿主运行态观测一致（跨运行不比 run_id / now）。
     const replayed = replayFull(entries)
-    expect(replayed.defs[auditHash]).toEqual(audit.args as Json)
     expect(replayed.defs[H(write.args as Json)]).toEqual(write.args as Json)
     const verifyReport = runVerify(root)
     expect(verifyReport.ok).toBe(true)
@@ -197,7 +191,7 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(replayReport.worldRev).toBe(worldRev(replayed))
   })
 
-  it('Python 服务静默不回帧 → 超时归 transport_failed → refused，审计落链', async () => {
+  it('Python 服务静默不回帧 → 超时归 transport_failed → refused，审计进侧存', async () => {
     const silent = pythonPackage('toy-python-silent', {
       extraFiles: { 'service-config.json': JSON.stringify({ callMode: 'silent' }) },
     })
@@ -224,17 +218,19 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     }
 
     const entries = readJournal(journalFile())
-    const added = entries.slice(before)
-    // 只有审计（无业务写）：没执行 → 无值；审计 request 钉住本轮 silent eff
-    expect(added).toHaveLength(1)
-    expect(added[0].by).toBe('command')
-    const auditBody = (added[0].args as { body: { request: Json; result: Json } }).body
+    // 审计进旁路侧存：无业务写、journal 无增
+    expect(entries.slice(before)).toHaveLength(0)
+    // 侧存 request 钉住本轮 silent eff
+    const audits = readAuditRecords(root)
+    expect(audits).toHaveLength(1)
+    expect(audits[0].by).toBe('command')
+    const auditBody = audits[0].body as { request: Json; result: Json }
     expect(auditBody.request).toMatchObject({
       port: 'toy.python',
       method: 'echo',
       args: { n: 1 },
     })
-    expect(auditResult(added[0])).toEqual({ ok: false, error: 'transport_failed' })
+    expect(auditBody.result).toEqual({ ok: false, error: 'transport_failed' })
     expect(headMirror).toEqual(headOf(entries))
     expect(verifyFull(entries).ok).toBe(true)
   })
@@ -264,9 +260,3 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(existsSync(join(rootDir as string, 'execute', '__pycache__'))).toBe(false)
   })
 })
-
-/** 审计 entry 的 result；非审计返回 null。 */
-function auditResult(entry: Entry): Json | null {
-  const body = (entry.args as { body?: { result?: Json } }).body
-  return body?.result ?? null
-}

@@ -53,10 +53,13 @@ export function computeBudget(config: Record<string, unknown> | null, policy: Po
     flags.push('profile_missing')
   }
   const margin = Math.floor(contextWindow * policy.budget.margin_ratio)
+  // 输出预留不能吃掉整个上下文：部分档案的 `max_output` 接近甚至等于 `context_window`（models.dev 偶有
+  // 此类条目），全额预留会让输入预算变负（界面显示「-13.1k」）。封顶到半个上下文，保证至少一半留给输入。
+  const reserve = Math.min(maxOutput, Math.floor(contextWindow / 2))
   return {
-    budget: contextWindow - maxOutput - margin,
+    budget: contextWindow - reserve - margin,
     context_window: contextWindow,
-    max_output: maxOutput,
+    max_output: reserve,
     margin,
     flags,
   }

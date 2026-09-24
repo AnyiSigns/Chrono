@@ -7,7 +7,7 @@ import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { readJournal } from '../ledger/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { REVERSE_SERVICE_MAIN, waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { EventMessage } from '../../client/index.ts'
@@ -137,13 +137,14 @@ describe('H19 反向调用端口审计（env 值脱敏）', () => {
     } finally {
       client.close()
     }
-    const added = readJournal(journalFile()).slice(before)
-    // 反向调用只记宿主侧端口审计：世界只多一条正向效果的 EffectAudit
-    expect(added).toHaveLength(1)
-    const body = (added[0].args as { body?: Json }).body as { kind?: string; port?: string }
+    // 反向调用只记宿主侧端口审计：journal 不变，正向效果审计进旁路侧存
+    expect(readJournal(journalFile()).length).toBe(before)
+    const audits = readAuditRecords(root)
+    expect(audits).toHaveLength(1)
+    const body = audits[0].body as { kind?: string; port?: string }
     expect(body.kind).toBe('effect_audit')
     expect(body.port).toBe('toy.origin')
-    const text = JSON.stringify(added)
+    const text = JSON.stringify(audits)
     expect(text).not.toContain(SECRET)
     expect(text).not.toContain('"redacted"')
   }, 20000)

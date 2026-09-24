@@ -428,6 +428,51 @@ test('工具结果里的写计划冒泡：#33 收集 results[].result.$directive
   }
 })
 
+test('展示 parts 剥离计划通道：工具结果取 extern 载荷、不含 $directives、$n 字面量转义', async () => {
+  const plan = {
+    $directives: [
+      { kind: 'write', request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { $n: 1 } } }] } } },
+      {
+        kind: 'extern',
+        payload: { ok: true, total: 1, items: [{ text: 'x', status: 'pending' }], note: { $n: 0 } },
+      },
+    ],
+  }
+  const service = startService({
+    providers: {
+      'model.chat': (args) => {
+        const last = Array.isArray(args.messages) ? args.messages[args.messages.length - 1] : null
+        if (last && last.role === 'tool') return { ok: true, text: '收尾', tool_calls: [], usage: {} }
+        return { ok: true, text: '', tool_calls: [{ id: 't1', name: 'todo', args: { conversation_id: 'c1' } }], usage: {} }
+      },
+      'guard.judge': () => ({ decisions: [{ index: 0, port: 'todo', tool: 'todo', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
+      'tools.dispatch': (args) => ({
+        results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: plan })),
+      }),
+    },
+  })
+  try {
+    const result = await service.interpret({ tools: [{ name: 'todo', provider: 'todo', render: { form: 'card', label: 'todo' } }] })
+    const commit = service.portCalls.find((call) => call.port === 'session' && call.method === 'commit')
+    assert.ok(commit, 'session.commit 应被调用')
+    const part = commit.args.assistant.parts.find((item) => item.type === 'tool')
+    assert.deepEqual(part.result, {
+      ok: true,
+      total: 1,
+      items: [{ text: 'x', status: 'pending' }],
+      note: { $lit: { $n: 0 } },
+    })
+    assert.equal(JSON.stringify(part.result).includes('$directives'), false, '展示结果不得带计划通道')
+    // 顶层计划照常冒泡（剥离只作用于展示数据）
+    assert.ok(
+      directivesOf(result.value).some((item) => item.kind === 'write'),
+      '工具结果计划仍冒泡到顶层',
+    )
+  } finally {
+    service.close()
+  }
+})
+
 test('机械 post：畸形 tool_call 在 agent.step 被拦，不进 #27', async () => {
   const service = startService({
     providers: {

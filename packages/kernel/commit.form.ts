@@ -87,9 +87,10 @@ const FORM_CHECKS: { [op: string]: (c: ArgShape) => boolean } = {
   add_gen: (c) => {
     if ('seq' in c.r) return false // seq 由内核分配，携带即 bad_form
     return (
-      c.exact(GEN_KEYS, ['graft', 'expect_active']) &&
+      c.exact(GEN_KEYS, ['graft', 'expect_active', 'base']) &&
       genBaseOk(c) &&
       (!('graft' in c.r) || isGraftRef(c.r['graft'])) &&
+      (!('base' in c.r) || isGenIndex(c.r['base'])) &&
       (!('expect_active' in c.r) || isHash(c.r['expect_active']) || c.r['expect_active'] === null)
     )
   },

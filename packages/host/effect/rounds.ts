@@ -1,6 +1,6 @@
 // A10 轮间驱动：done → 落账回调 → plan 通道（保留包装 `{"$directives":[...]}`）→ 分相 → 下一轮。
 // 分相：eval 连续段（可并一轮，extern 随邻）与 write（每条一轮）不共轮，保序、不重排 plan 语义。
-// 机械填字段：id / by / ref（紧邻 eval 段最后一条 eff 的审计键）/ expect_pos（落账段内锚到当前链头）；
+// 机械填字段：id / by / expect_pos（落账段内锚到当前链头）；
 // 结构 op 的 pins 按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）。
 // eval 的 ctx（A14）：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
 // plan 条目 eval 可写命令名代替入口哈希：宿主按命令声明解析入口（与命令面同路），属主即命令声明方。
@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import { resolveWriter, runRound } from './run-loop.ts'
 import { assertNotFatal } from './fatal.ts'
+import type { AuditDraft } from '../audit.ts'
 import type { WorldWriter, WorldState } from '../writer.ts'
 import type { RoundRouter } from './route.ts'
 import type {
@@ -27,10 +28,11 @@ type Rec = { [k: string]: Json }
 /**
  * 宿主侧 eval 草稿：`ctx` 字段**可缺省**——缺省 ⇒ 轮首投影；显式给出（含 null）⇒ 原样透传。
  * 入口二选一：`entry` 哈希，或 `command` 命令名（宿主按命令声明解析成入口，属主即声明方）；二者不可并存、不可都缺。
+ * `inject` = 宿主在执行期把投影片段按声明注入 args（键 → 投影路径）；续跑 eval 据此拿投影而无需自带整份。
  */
 export type EvalDraft =
-  | { kind: 'eval'; entry: Hash; args: Json; ctx?: Json }
-  | { kind: 'eval'; command: string; args: Json; ctx?: Json }
+  | { kind: 'eval'; entry: Hash; args: Json; ctx?: Json; inject?: Record<string, Json[]> }
+  | { kind: 'eval'; command: string; args: Json; ctx?: Json; inject?: Record<string, Json[]> }
 
 /** 宿主侧 directive 输入：入站提交与 plan 物化同形（write 的 request 由宿主在分组物化时机械重填）。 */
 export type DirectiveDraft =
@@ -97,8 +99,8 @@ export interface SubmissionInput {
   resolveCommand?: (world: World, name: string) => { entry: Hash; identity: string } | undefined
   /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
   ctxFor?: CtxProvider
-  /** 审计 entry 落点（在落账互斥段内调用，保证账本追加序 = 链序）。 */
-  onAudit?: (entry: Entry) => void
+  /** 审计草稿落点（同步调用，追加旁路侧存；不碰世界 / 链头）。 */
+  onAudit?: (draft: AuditDraft) => void
   /** 每轮 done 的业务 journal 落点（与内核提交同段调用，保证账本追加序 = 链序）。 */
   onRound?: (entries: Entry[]) => void
   /**
@@ -141,6 +143,26 @@ function splitPhases(staged: StagedDirective[]): StagedDirective[][] {
   return groups
 }
 
+/**
+ * 解析 eval 的 `inject` 声明：键 → 投影路径（字符串 / 整数段数组）。形态非法 → null。
+ * 只做形态检查，路径能否取到值在执行期按投影机械判定。
+ */
+function parseInject(raw: Json | undefined): Record<string, Json[]> | null {
+  if (!isRecord(raw)) return null
+  const out: Record<string, Json[]> = {}
+  for (const key of Object.keys(raw)) {
+    const path = raw[key]
+    if (!Array.isArray(path)) return null
+    for (const segment of path) {
+      if (typeof segment !== 'string' && !(typeof segment === 'number' && Number.isInteger(segment))) {
+        return null
+      }
+    }
+    out[key] = path as Json[]
+  }
+  return out
+}
+
 /** plan 里的单个 directive 形态；不合 → bad_directive（整次提交按 refused 收口）。 */
 function materializePlanItem(
   raw: Json,
@@ -166,6 +188,11 @@ function materializePlanItem(
         directive = { kind: 'eval', command: raw['command'], args: raw['args'] ?? null }
       }
       if ('ctx' in raw) directive.ctx = raw['ctx'] as Json
+      if ('inject' in raw) {
+        const inject = parseInject(raw['inject'])
+        if (inject === null) return { ok: false, reason: 'bad_directive' }
+        directive.inject = inject
+      }
       return { ok: true, directive }
     }
     case 'extern':
@@ -443,12 +470,31 @@ function recordEntryActive(
   if (op === 'retire' || op === 'add_identity' || op === 'fork') ownActive.set(id, null)
 }
 
+/** JS 原型键：注入路径段出现即拒（否则读到的是函数 / 原型，不是数据）。 */
+const UNSAFE_INJECT_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** 沿投影片段路径取值；路径不合 / 越界 / 原型键 → null（宿主只机械取用，不解释业务）。 */
+function readProjectionPath(projection: Json, path: Json[]): Json {
+  let current: Json = projection
+  for (const segment of path) {
+    if (typeof segment === 'string') {
+      if (UNSAFE_INJECT_KEYS.has(segment)) return null
+      if (!isRecord(current)) return null
+      current = current[segment] ?? null
+    } else if (typeof segment === 'number' && Array.isArray(current)) {
+      current = current[segment] ?? null
+    } else {
+      return null
+    }
+  }
+  return current
+}
+
 /** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐；eval 的 ctx 缺省填该轮投影（构造一次、该轮共享）。 */
 function prepareGroup(
   group: StagedDirective[],
   context: {
     head: Head
-    ref: Hash | null
     initiator: string
     world: World
     ownActive: ReadonlyMap<string, Hash | null>
@@ -487,12 +533,24 @@ function prepareGroup(
       } else {
         entry = item.directive.entry
       }
+      // 投影片段注入：续跑 eval 声明 `inject` 时由宿主按声明路径从该轮投影取片段并入 args，
+      // 免去调用方把整份投影内嵌进 args（投影只回引用后更小，仍由宿主按需注入）。
+      let args = item.directive.args
+      if (item.directive.inject !== undefined) {
+        if (!isRecord(args)) return { ok: false, reason: 'bad_directive' }
+        const base: Rec = { ...(args as Rec) }
+        const projection = ctxOf()
+        for (const key of Object.keys(item.directive.inject)) {
+          base[key] = readProjectionPath(projection, item.directive.inject[key])
+        }
+        args = base
+      }
       // 字段存在性判定（JSON 值只能是 null / 其它，非 undefined）：缺省 ⇒ 投影；显式（含 null）⇒ 原样
       const explicit = item.directive.ctx
       const evalDirective: Extract<Directive, { kind: 'eval' }> =
         explicit !== undefined
-          ? { kind: 'eval', entry, args: item.directive.args, ctx: explicit }
-          : { kind: 'eval', entry, args: item.directive.args, ctx: ctxOf() }
+          ? { kind: 'eval', entry, args, ctx: explicit }
+          : { kind: 'eval', entry, args, ctx: ctxOf() }
       directives.push(evalDirective)
       owners.push(owner)
       continue
@@ -534,7 +592,6 @@ function prepareGroup(
       args: injected,
       by,
     }
-    if (context.ref !== null) request.ref = context.ref
     directives.push({ kind: 'write', request })
     owners.push(undefined)
   }
@@ -566,7 +623,6 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       owner: input.initialOwnerOf?.(directive),
     })),
   )
-  let ref: Hash | null = null
   let rounds = 0
   const maxRounds = input.maxRounds ?? MAX_SUBMISSION_ROUNDS
   // 本 run 自身已落账写对身份 active 的叠加（随轮推进）：plan 的 add_gen 基准据此避免自冲突。
@@ -593,7 +649,6 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
       roundWorld = state.world
       return prepareGroup(group, {
         head: state.head,
-        ref,
         initiator: input.initiator,
         world: state.world,
         ownActive,
@@ -634,7 +689,6 @@ export async function runSubmission(input: SubmissionInput): Promise<SubmissionO
     }
     // 本 run 自身写轮结果并入基准叠加（按 journal 中身份 op 推进 active）
     recordOwnActive(out.journal, out.world, ownActive)
-    if (group.some((item) => item.directive.kind === 'eval')) ref = out.lastAuditHash
     const plan = pickPlan(out.observations, out.directives, out.owners, roundWorld ?? out.world)
     if (!plan.ok) {
       observations.push({ kind: 'refused', reasons: [plan.reason] })

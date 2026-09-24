@@ -50,11 +50,13 @@
 
 ### `sweep(bag) -> { swept, retained, referenced, $directives }`
 
-读轨迹窗口 + verdicts 引用集 → 产清理计划（写新 `evolution` body 索引、不含过期条目）。
+读轨迹窗口 + evidence 链 + verdicts/proposals 引用集 → 产清理计划（写新 `evolution` body 索引、不含过期条目）。
 
-- 保留 = 最新 `trace_retention_rounds` 条 **∪ 被 `verdict` 引用者**（无论多旧）——否则
+- 轨迹保留 = 最新 `trace_retention_rounds` 条 **∪ 被 `verdict` 引用者**（无论多旧）——否则
   `verdict → proposal → evidence → trace` 溯源链断。
-- 清理只动索引（`trace.retained` 列表），def 仍在链上（① 档既定代价，不是删除）。
+- 证据保留 = 最新 `evidence_retention_rounds` 条 **∪ 被 `verdict` / `proposal` 的 `evidence_ids` 引用者**（无论多旧）。
+- 两链同形写回 `retained` 显式列表（权威边界，防窗口不缩、`swept` 每拍重复）；清理只动索引，
+  def 仍在链上（① 档既定代价，不是删除）。
 
 ### `shadow(bag) -> { status, metric, metric_id, $directives }`
 
@@ -89,14 +91,16 @@
 | `no_progress_n` | 3 | `l1_maxed` 反复达阈 |
 | `verify_failure_n` / `verify_cluster_ratio` | 2 / 0.6 | verify 失败次数与详情聚类集中度 |
 | `min_workspaces` | 2 | 跨工作区独立出现 ⇒ 可支撑 `scope:global` |
-| `trace_retention_rounds` | 50 | `sweep` 保留回合数 |
+| `trace_retention_rounds` | 50 | `sweep` 轨迹保留回合数 |
+| `evidence_retention_rounds` | 50 | `sweep` 证据保留回合数 |
 | `unhealthy_refused_streak` | 3 | 连续 `refused` 收口触发 `orchestration.unhealthy` |
 
 > **已与 loop-policy 对齐（2026-09-21）**：上表字段名与缺省值已由 loop-policy `loop-policy` 落地确认——
-> `plugins/loop-policy/execute/seed.ts` 的 `DEFAULT_THRESHOLDS` 逐项包含本表全部 13 个字段名且缺省值一致
+> `plugins/loop-policy/execute/seed.ts` 的 `DEFAULT_THRESHOLDS` 逐项包含本表全部 14 个字段名且缺省值一致
 > （`failure_cluster_n=3`、`post_failure_ratio=0.5`、`post_failure_min=3`、`cost_anomaly_multiple=2.0`、
 > `drift_margin=0.2`、`drift_min_samples=5`、`fold_k=3`、`no_progress_n=3`、`verify_failure_n=2`、
-> `verify_cluster_ratio=0.6`、`min_workspaces=2`、`trace_retention_rounds=50`、`unhealthy_refused_streak=3`）。
+> `verify_cluster_ratio=0.6`、`min_workspaces=2`、`trace_retention_rounds=50`、`evidence_retention_rounds=50`、
+> `unhealthy_refused_streak=3`）。
 > loop-policy `interpret` 把解析后的**扁平 thresholds map** 随 `evolve-metrics` bag 下传（`aggregate` / `shadow`），
 > 本服务直接读扁平 map。字段名/语义以本表为准；loop-policy 只提供默认值，不重定义语义。
 
@@ -133,8 +137,9 @@ methods / start / members / `pins.host` 解析到宿主保留能力类）、`per
 - **`shadow` 的新图 eff 点推导**依赖调用方给出 `expected_effs` 或 `graph.nodes` + `contracts`；
   给不出时 fail-closed 记 `unverified`（不假装 pass）。v1 配对只按 `(port, method, args_hash)` 与
   `trace.eff_log` 对齐，未消费 `directives_summary` / `ctx_summary`（待 loop-policy 解释器落地后可与图重放对齐）。
-- **`sweep` 的「新索引」形状**：在 `trace` 对象上追加 `retained` / `dropped` / `swept_at` 字段（`tail` / `count`
-  仍按 `evolution` schema）；过期条目的 def 仍在链上（① 档既定代价）。待 evolution / loop-policy 落地后可与台账端再对齐。
+- **`sweep` 的「新索引」形状**：在 `trace` 与 `evidence` 对象上追加 `retained` / `dropped` / `swept_at` 字段
+  （`tail` / `count` 仍按 `evolution` schema）；`aggregate` / `record` 追加新证据时整体替换 `evidence` 索引以清掉
+  过期窗口字段。过期条目的 def 仍在链上（① 档既定代价），由宿主 compact 的有界化回收按可达性清出热 base。
 - **`step.refusal` 的归因**需 `bag.refusal_codes`（拒绝码 → 归因）提供；缺省只用 `trace.refused_at`（自带归因）。
 - **periodic.reads 路径与契约字面不同**：链式条目在投影 `refs` 闭包（`ids.<id>.refs`）里，只读
   `body` 拿不到条目，故本 schema 读整份身份投影（`aggregate`：`["ids","evolution"]` + `["ids","loop-policy"]`；

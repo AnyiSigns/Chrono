@@ -37,12 +37,8 @@ function websearchTool(): Rec {
       sources: '只查这些源，可选；按源 id 或名字匹配，缺省查全部启用源。',
       fresh: '新鲜度提示，可选布尔；服务无缓存，仅作调用意图标记。',
     },
-    boundaries:
-      '只做无状态检索，不抓取正文（改用 webfetch）；需 API key 或账号的源一律不接；不写世界。',
-    description:
-      '在多个免费检索源上并行检索：intent 是拿回一份去重合并后的结果列表；' +
-      'when_to_use 是没有现成 URL 时的公网检索；参数含 query（必填）与可选 count / sources / fresh；' +
-      'boundaries 是不执行 JS、不持会话、不接需密钥的源。',
+    boundaries: '只做无状态检索，不抓取正文（改用 webfetch）。',
+    description: '在多个免费检索源上并行检索，返回去重合并后的结果列表。',
     argsSchema: WEBSEARCH_ARGS_SCHEMA,
     caps: defaultCaps(NET_WEBSEARCH),
     idempotent: true,
@@ -66,11 +62,8 @@ function webfetchTool(): Rec {
       url: '要抓取的 http(s) URL，必填；内网地址按配置策略拒绝。',
       format: 'HTML 输出形态，可选：markdown（缺省）/ text / raw。',
     },
-    boundaries:
-      '只做无状态抓取，不执行 JS、不持会话；有会话或需渲染的页面改用浏览器工具；不写世界。',
-    description:
-      '抓取单个 URL：intent 是取回正文或原样内容；when_to_use 是已有具体 URL 时；' +
-      '参数含 url（必填）与可选 format；boundaries 是不渲染 JS、不持会话、二进制只回资产引用。',
+    boundaries: '只做无状态抓取，不执行 JS、不持会话；有会话或需渲染的页面改用 webbrowser。',
+    description: '抓取单个 http(s) URL 的正文内容。',
     argsSchema: WEBFETCH_ARGS_SCHEMA,
     caps: defaultCaps(NET_WEBFETCH),
     idempotent: true,

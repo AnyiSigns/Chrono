@@ -3,6 +3,7 @@
 
 import { KernelError } from './types.ts'
 import type { Def, Entry, Head, Hash, Identity, World } from './types.ts'
+import { cloneDefs } from './defs.ts'
 import { applyEntry } from './journal.apply.ts'
 import { entryHash, worldRev } from './journal.id.ts'
 
@@ -19,7 +20,8 @@ export const EMPTY_HEAD: Head = Object.freeze({ seq: -1, hash: null })
 
 /**
  * 只复制"会被就地改写的层"，不是深拷贝：`Def` / `Gen` 元素按不可变共享。
- * 于是整体成本 = 一次 `cloneWorld` + 每条 entry O(1)。
+ * defs 表经 `cloneDefs` 复制——惰性表走廉价克隆（共享底层分片、只复制可写覆盖层），
+ * 普通表浅拷贝；两种表行为一致。于是整体成本 = 一次 `cloneWorld` + 每条 entry O(1)。
  */
 export function cloneWorld(w: World): World {
   const ids: World['ids'] = {}
@@ -27,7 +29,7 @@ export function cloneWorld(w: World): World {
     const identity = w.ids[key]
     ids[key] = { ...identity, gens: [...identity.gens] }
   }
-  return { defs: { ...w.defs }, ids }
+  return { defs: cloneDefs(w.defs), ids }
 }
 
 /**

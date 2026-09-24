@@ -5,13 +5,18 @@
 
 import { readFileSync } from 'node:fs'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { HANDLERS } from './methods.ts'
+import { createHandlers } from './methods.ts'
+import { PortLink } from './port-link.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, ServiceEvent } from './types.ts'
 import type { Rec } from './plan.ts'
 
 const CAPABILITY = 'question'
+
+/** 反向调用通道（服务 → 宿主）：`host.def.read` 按需解析投影引用（只读）。 */
+const LINK = new PortLink((message) => sendFrame(message))
+const HANDLERS = createHandlers({ host: LINK })
 
 function readPlugin(): Rec {
   try {
@@ -153,6 +158,7 @@ async function handle(message: Json): Promise<void> {
 function shutdown(): void {
   if (exiting) return
   exiting = true
+  LINK.failAll()
   setTimeout(() => process.exit(0), 10).unref?.()
 }
 
@@ -167,6 +173,8 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
+    // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把串行链堵死。
+    if (isRecord(message) && LINK.settle(message)) continue
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))

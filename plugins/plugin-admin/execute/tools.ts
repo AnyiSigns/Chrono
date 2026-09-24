@@ -14,23 +14,21 @@ const READONLY_CAPS: Rec = {
   procs_max: 1,
 }
 
-const IDENTITY_ARG: Rec = { type: 'string', description: '目标插件身份名（世界里的 id）。' }
+const IDENTITY_ARG: Rec = { type: 'string', description: '目标插件名。' }
 const FILES_ARG: Rec = {
   type: 'object',
-  description: '候选源码树：包内相对路径 → 文本字符串或 {text}/{base64}。',
+  description: '候选源码树：包内相对路径 → 文本内容。',
 }
 
 /** 四个工具的自述（name / 四要素 / argsSchema / caps / idempotent / render）。 */
 export const TOOLS: Json[] = [
   {
     name: 'plugin.list',
-    intent: '列出世界里的插件身份清单（已按可见性过滤）。',
-    when_to_use: '在决定读 / 改哪个插件之前，先看清有哪些身份、各自实现了什么能力与命令。',
+    intent: '列出可管理的插件。',
+    when_to_use: '需要了解有哪些插件、各自提供什么能力时。',
     param_semantics: {},
-    boundaries:
-      '只读清单，不含 pins 明细与源码；可见性黑名单（sandbox 与自身）永远不出现。要看源码用 plugin.read。',
-    description:
-      '列出可见插件身份（id / active / implements / commands）；sandbox 与 plugin-admin 自身被隐藏。',
+    boundaries: '只列清单，不含源码；查看源码用 plugin.read。',
+    description: '列出可管理的插件（id / active / implements / commands）。',
     argsSchema: { type: 'object', properties: {}, additionalProperties: true },
     caps: READONLY_CAPS,
     idempotent: true,
@@ -38,15 +36,14 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'plugin.read',
-    intent: '读取某个插件身份的源码文件内容。',
+    intent: '读取某个插件的源码文件内容。',
     when_to_use: '需要查看某插件实现、定位要修改的文件时。',
     param_semantics: {
-      identity: '目标插件身份名；命中可见性黑名单（sandbox / plugin-admin）一律 hidden_identity。',
-      path: '包内相对路径（如 execute/main.ts）；目录或缺失 → not_found。',
+      identity: '目标插件名。',
+      path: '包内相对路径（如 execute/main.ts）。',
     },
-    boundaries:
-      '只读单文件，不列目录、不返回 tree/blob 结构；隐藏身份不调宿主、直接拒。改源码用 plugin.write。',
-    description: '按路径读某插件身份的一个源码文件，返回 base64 内容与字节数。',
+    boundaries: '只读单个文件，不列目录；改源码用 plugin.write。',
+    description: '按路径读取某插件的一个源码文件，返回内容与字节数。',
     argsSchema: {
       type: 'object',
       properties: { identity: IDENTITY_ARG, path: { type: 'string', description: '包内相对路径。' } },
@@ -65,15 +62,14 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'plugin.validate',
-    intent: '对候选插件包跑宿主入世机械校验 dry-run，返回错误列表与结果哈希。',
-    when_to_use: '准备写插件源码之前，先机械校验候选包是否可入世。',
+    intent: '校验一份候选插件源码是否可安装，返回错误列表与校验结果。',
+    when_to_use: '准备提交插件源码改动之前，先校验候选包。',
     param_semantics: {
-      identity: '候选包的身份名，须与候选 plugin.json.identity 一致；黑名单身份一律 hidden_identity。',
-      files: '候选源码树（路径 → 文本 / {text} / {base64}）。',
+      identity: '候选插件名，须与候选包内声明一致。',
+      files: '候选源码树（路径 → 文本）。',
     },
-    boundaries:
-      '只校验、不写世界；校验通过的 result_hash 会缓存到宿主 ③，供 plugin.write 机械比对。写用 plugin.write。',
-    description: '转发宿主入世校验 dry-run，返回 {ok, errors, result_hash} 并把结果哈希写入 ③ 缓存。',
+    boundaries: '只校验、不改动任何插件；提交改动用 plugin.write。',
+    description: '校验候选插件源码，返回 {ok, errors, result_hash}。',
     argsSchema: {
       type: 'object',
       properties: { identity: IDENTITY_ARG, files: FILES_ARG },
@@ -92,15 +88,14 @@ export const TOOLS: Json[] = [
   },
   {
     name: 'plugin.write',
-    intent: '为候选插件源码产出世界写计划（不直接写）。',
-    when_to_use: '候选包已通过 plugin.validate、且确要推进该身份代码换代时。',
+    intent: '提交候选插件源码改动（须先通过 plugin.validate）。',
+    when_to_use: '候选包已通过 plugin.validate、确要推进该插件更新时。',
     param_semantics: {
-      identity: '目标身份名，须与候选 plugin.json.identity 一致；黑名单身份一律 hidden_identity。',
-      files: '候选源码树，须与上一次 plugin.validate 的同一棵树。',
+      identity: '目标插件名，须与候选包内声明一致。',
+      files: '候选源码树，须与上一次 plugin.validate 的一致。',
     },
-    boundaries:
-      '只产写计划，不落账、不审批；缺上一次 validate 的 ③ 凭据 → validate_required。写计划经调用方落账。',
-    description: '产出 put(blob/tree/commit) + add_identity?/add_gen 的原子 batch 写计划。',
+    boundaries: '须先通过 plugin.validate，否则报 validate_required。',
+    description: '提交候选插件源码改动。',
     argsSchema: {
       type: 'object',
       properties: { identity: IDENTITY_ARG, files: FILES_ARG },

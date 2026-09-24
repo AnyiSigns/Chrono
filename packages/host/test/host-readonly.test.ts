@@ -8,7 +8,7 @@ import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { readJournal } from '../ledger/index.ts'
 import { refusedReasons } from '../effect/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { EventMessage } from '../../client/index.ts'
@@ -91,7 +91,7 @@ describe('只读命令', () => {
     }
   })
 
-  it('非只读命令：照常广播 run 事件（origin=command）并落审计推进 head', async () => {
+  it('非只读命令：照常广播 run 事件（origin=command），审计进侧存、不推进 head', async () => {
     seed()
     const handle = await startHost({ root })
     handles.push(handle)
@@ -110,7 +110,9 @@ describe('只读命令', () => {
       const finished = events.find((event) => event.topic === 'run.finished')
       expect((started?.payload as { origin?: string }).origin).toBe('command')
       expect((finished?.payload as { origin?: string }).origin).toBe('command')
-      expect((await client.status()).world_head).not.toEqual(before)
+      // 审计进旁路侧存：不推进链头
+      expect(readAuditRecords(root)).toHaveLength(1)
+      expect((await client.status()).world_head).toEqual(before)
     } finally {
       client.close()
     }

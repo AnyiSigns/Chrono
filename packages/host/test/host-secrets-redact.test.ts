@@ -1,16 +1,16 @@
 // H7 效果审计脱敏：port=secrets + method=resolve 的审计 result 只落 {name, kind, has}，
-// 明文（短时句柄）不进审计正文；调用方仍拿真实值。
+// 明文（短时句柄）不进审计正文；调用方仍拿真实值。审计写旁路侧存（不进世界 / journal）。
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
-import { readJournal } from '../ledger/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
-import type { Entry, Json } from '../../kernel/index.ts'
+import { hostPaths } from '../paths.ts'
+import type { Json } from '../../kernel/index.ts'
 
 const SECRET = 'SECRET-PLAINTEXT-TOKEN'
 
@@ -42,10 +42,6 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     await cleanupTempRoot(root)
   })
 
-  function journalFile(): string {
-    return join(root, 'state', 'world', 'journal.jsonl')
-  }
-
   function seedSecrets(callValue: Json | undefined, callMode?: string): void {
     const impl = writeTempPackage(root, {
       identity: 'secrets-impl',
@@ -71,17 +67,17 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     ).toBe(true)
   }
 
-  function auditEntryOf(entries: Entry[]): { body: { result: Json; outcome: string } } {
-    const audit = entries.find(
-      (entry) => (entry.args as { body?: { port?: string } }).body?.port === 'secrets',
+  /** 侧存里 port=secrets 的审计正文。 */
+  function secretsAuditBody(): { result: Json; outcome: string } {
+    const record = readAuditRecords(root).find(
+      (item) => (item.body as { port?: string }).port === 'secrets',
     )
-    expect(audit).toBeDefined()
-    return audit!.args as unknown as { body: { result: Json; outcome: string } }
+    expect(record).toBeDefined()
+    return (record as { body: { result: Json; outcome: string } }).body
   }
 
   it('成功：审计 result = {name, kind, has:true}，不含明文；调用方仍拿真实句柄', async () => {
     seedSecrets({ token: SECRET })
-    const before = readJournal(journalFile()).length
     const handle = await startHost({ root })
     handles.push(handle)
     const client = await connect({ root, timeoutMs: 3000 })
@@ -93,16 +89,16 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     } finally {
       client.close()
     }
-    const added = readJournal(journalFile()).slice(before)
-    expect(JSON.stringify(added)).not.toContain(SECRET)
-    const body = auditEntryOf(added).body
+    // 明文不进任何落盘面：journal 与审计侧存都不含
+    expect(readFileSync(hostPaths(root).journalFile, 'utf8')).not.toContain(SECRET)
+    expect(readFileSync(hostPaths(root).auditFile, 'utf8')).not.toContain(SECRET)
+    const body = secretsAuditBody()
     expect(body.result).toEqual({ name: 'API_KEY', kind: 'local', has: true })
     expect(body.outcome).toBe('ok')
   })
 
   it('服务回 error：审计 result 记 {name, kind, has:false}', async () => {
     seedSecrets(undefined, 'error')
-    const before = readJournal(journalFile()).length
     const handle = await startHost({ root })
     handles.push(handle)
     const client = await connect({ root, timeoutMs: 3000 })
@@ -112,8 +108,7 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     } finally {
       client.close()
     }
-    const added = readJournal(journalFile()).slice(before)
-    const body = auditEntryOf(added).body
+    const body = secretsAuditBody()
     expect(body.result).toEqual({ name: 'API_KEY', kind: 'local', has: false })
     expect(body.outcome).toBe('error')
   })

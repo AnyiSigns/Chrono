@@ -123,8 +123,8 @@ const SRC_DIR = decodeURIComponent(
   (import.meta as unknown as { url: string }).url.replace(/^file:\/\/\//, ''),
 ).replace(/\/test\/[^/]*$/, '/')
 const RUNTIME_FILES =
-  'index.ts types.ts value.ts hash.ts hash.utf8.ts journal.ts journal.id.ts journal.apply.ts ' +
-  'commit.ts commit.form.ts machine.ts run.ts'
+  'index.ts types.ts value.ts hash.ts hash.utf8.ts defs.ts patch.ts rebase.ts journal.ts journal.id.ts ' +
+  'journal.apply.ts commit.ts commit.form.ts machine.ts recycle.ts run.ts'
 function runtimeSources(): [string, string][] {
   return (readdirSync(SRC_DIR) as string[])
     .filter(

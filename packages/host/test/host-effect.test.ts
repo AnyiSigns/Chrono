@@ -14,8 +14,8 @@ import {
 } from '../ledger/index.ts'
 import { hostPaths } from '../paths.ts'
 import { H, pos } from '../../kernel/index.ts'
-import type { Entry, Json } from '../../kernel/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import type { Json } from '../../kernel/index.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { FIXTURE_ALPHA, waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 
@@ -40,7 +40,7 @@ const ARGS_SCHEMA: Json = {
   additionalProperties: false,
 }
 
-describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
+describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
   let root: string
   const handles: HostHandle[] = []
 
@@ -106,7 +106,14 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     expect(report.ok).toBe(true)
   }
 
-  it('命令走 eff：审计先落、值回灌、plan 写带 ref、链完整可校验、status 与账本一致', async () => {
+  /** 侧存里最后一条审计的正文。 */
+  function lastAuditBody(): { [k: string]: Json } {
+    const records = readAuditRecords(root)
+    expect(records.length).toBeGreaterThan(0)
+    return records[records.length - 1].body as { [k: string]: Json }
+  }
+
+  it('命令走 eff：审计进侧存、值回灌、业务写不落 ref、链完整可校验、status 与账本一致', async () => {
     seedDefault()
     const before = readJournal(journalFile()).length
     await start()
@@ -127,30 +134,24 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     expect(verifyFull(entries).ok).toBe(true)
     // 宿主运行态链头与账本独立复算一致（不依赖内存 replay 与自身对比）
     expect(headMirror).toEqual(headOf(entries))
+    // 审计不进 journal：本次只多一条业务写
     const added = entries.slice(before)
-    expect(added).toHaveLength(2)
-    const audit = added[0]
-    expect(audit.op).toBe('put')
-    expect(audit.by).toBe('command')
-    const auditHash = H(audit.args as Json)
-    const auditBody = (audit.args as { body: { request: Json; result: Json } }).body
-    expect(auditBody.request).toMatchObject({ port: 'toy.alpha', method: 'echo', args: { n: 1 } })
-    expect(auditBody.result).toMatchObject({
+    expect(added).toHaveLength(1)
+    const write = added[0]
+    expect(write.op).toBe('put')
+    expect(write.ref).toBeUndefined()
+    const auditBody = lastAuditBody()
+    expect(auditBody['request']).toMatchObject({ port: 'toy.alpha', method: 'echo', args: { n: 1 } })
+    expect(auditBody['result']).toMatchObject({
       ok: true,
       value: { impl: 'toy-alpha', port: 'toy.alpha', method: 'echo' },
     })
-    // 业务写指纹：ref 指审计 def、prev 接审计 entry、seq 连续
-    const write = added[1]
-    expect(write.ref).toBe(auditHash)
-    expect(write.prev).toBe(pos([audit]))
-    expect(write.seq).toBe(audit.seq + 1)
-    // 从空世界重放：审计 def 与业务写 def 都可寻址（世界内容按条目重建）
+    // 从空世界重放：业务写 def 可寻址（审计不再是世界内容）
     const replayed = loadAnchor(journalFile()).world
-    expect(replayed.defs[auditHash]).toBeDefined()
     expect(replayed.defs[H(write.args as Json)]).toBeDefined()
   })
 
-  it('refused 后继续提交：新写接在审计之后，链不分叉', async () => {
+  it('refused 后继续提交：审计只进侧存，链不分叉', async () => {
     const silent = writeTempPackage(root, {
       identity: 'toy-silent',
       implements: ['toy.alpha'],
@@ -167,11 +168,11 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     try {
       const refused = await client.command('toy-caller.run')
       expect(refused.status).toBe('refused')
-      // 审计已落链（refused 轮的 head 必须回灌到宿主）
+      // refused 轮：审计进侧存，journal 不变、链头不动
       const afterRefused = readJournal(journalFile())
-      expect(afterRefused).toHaveLength(before + 1)
-      const audit = afterRefused[afterRefused.length - 1]
-      // 下一次提交：写必须续在审计 entry 之后，宿主 status 不能落后
+      expect(afterRefused).toHaveLength(before)
+      expect(lastAuditBody()['outcome']).toBe('transport_failed')
+      // 下一次提交：写续在链上，宿主 status 不能落后
       const next = await client.submit([
         {
           kind: 'write',
@@ -190,8 +191,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       expect(verifyFull(entries).ok).toBe(true)
       expect(status.world_head).toEqual(headOf(entries))
       const write = entries[entries.length - 1]
-      expect(write.prev).toBe(pos([audit]))
-      expect(write.seq).toBe(audit.seq + 1)
+      expect(write.ref).toBeUndefined()
     } finally {
       client.close()
     }
@@ -213,7 +213,8 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       expect(readJournal(journalFile()).length).toBe(before)
       const ok = await client.command('toy-caller.gated', { n: 1 })
       expect(ok.status).toBe('done')
-      expect(readJournal(journalFile()).length).toBe(before + 2)
+      // 只有 plan 的业务写进 journal（审计进侧存）
+      expect(readJournal(journalFile()).length).toBe(before + 1)
     } finally {
       client.close()
     }
@@ -260,15 +261,12 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       { name: 'toy-noncap', path: noncap },
       { name: 'toy-caller', path: writeCaller({ 'toy.alpha': 'toy-noncap' }) },
     ])
-    const before = readJournal(journalFile()).length
     await start()
     const client = await connect({ root, timeoutMs: 3000 })
     try {
       const first = await client.command('toy-caller.run')
       expect(first.status).toBe('refused')
-      let entries = readJournal(journalFile())
-      expect(entries).toHaveLength(before + 1)
-      expect(auditResult(entries[entries.length - 1])).toEqual({ ok: false, error: 'not_loaded' })
+      expect(lastAuditBody()['result']).toEqual({ ok: false, error: 'not_loaded' })
 
       const retired = await client.submit([
         {
@@ -283,14 +281,10 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
         },
       ])
       expect(retired.status).toBe('done')
-      entries = readJournal(journalFile())
-      const mark = entries.length
 
       const second = await client.command('toy-caller.run')
       expect(second.status).toBe('refused')
-      entries = readJournal(journalFile())
-      expect(entries).toHaveLength(mark + 1)
-      expect(auditResult(entries[entries.length - 1])).toEqual({ ok: false, error: 'stale' })
+      expect(lastAuditBody()['result']).toEqual({ ok: false, error: 'stale' })
     } finally {
       client.close()
     }
@@ -324,7 +318,6 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     expect(runSeed(root, [{ name: 'toy-alpha-2', path: impl2 }]).ok).toBe(true)
 
     // 第一世代：pins → toy-alpha
-    let before = readJournal(journalFile()).length
     await start()
     let client = await connect({ root, timeoutMs: 3000 })
     try {
@@ -332,8 +325,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
-    let added = readJournal(journalFile()).slice(before)
-    expect(auditImpl(added)).toBe('toy-alpha')
+    expect(lastAuditImpl()).toBe('toy-alpha')
 
     // 换代：同一 term 源，只改 pins 指向 toy-alpha-2，重新入世
     const callerV2 = writeCaller({ 'toy.alpha': 'toy-alpha-2' })
@@ -341,7 +333,6 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     await handles[handles.length - 1].stop()
     expect(runSeed(root, [{ name: 'toy-caller', path: callerV2 }]).ok).toBe(true)
 
-    before = readJournal(journalFile()).length
     await start()
     client = await connect({ root, timeoutMs: 3000 })
     try {
@@ -349,8 +340,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
-    added = readJournal(journalFile()).slice(before)
-    expect(auditImpl(added)).toBe('toy-alpha-2')
+    expect(lastAuditImpl()).toBe('toy-alpha-2')
   }, 30000)
 
   it('服务回 error → 数据回灌；静默超时 → transport_failed 且 refused', async () => {
@@ -372,7 +362,6 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
         { name: 'toy-caller', path: writeCaller({ 'toy.alpha': 'toy-denied' }) },
       ]).ok,
     ).toBe(true)
-    const deniedBefore = readJournal(journalFile()).length
     await start({ callTimeoutMs: 500 })
     let client = await connect({ root, timeoutMs: 3000 })
     try {
@@ -380,9 +369,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
-    let added = readJournal(journalFile()).slice(deniedBefore)
-    expect(added).toHaveLength(2)
-    expect(auditResult(added[0])).toEqual({
+    expect(lastAuditBody()['result']).toEqual({
       ok: true,
       value: { error: 'toy.denied', message: 'nope' },
     })
@@ -408,10 +395,9 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
-    added = readJournal(journalFile()).slice(before)
-    // 只有审计（无业务写）
-    expect(added).toHaveLength(1)
-    expect(auditResult(added[0])).toEqual({ ok: false, error: 'transport_failed' })
+    // 无业务写（审计只进侧存）
+    expect(readJournal(journalFile()).length).toBe(before)
+    expect(lastAuditBody()['result']).toEqual({ ok: false, error: 'transport_failed' })
   }, 30000)
 
   it('并发提交串行化：两条写同链、无 pos_conflict', async () => {
@@ -459,7 +445,7 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
     expect(entries[entries.length - 1].prev).toBe(pos(entries.slice(0, entries.length - 1)))
   })
 
-  it('停机 abort 在途 command run：审计按 cancelled 落账、plan 写丢弃、锁可再抢', async () => {
+  it('停机 abort 在途 command run：审计按 cancelled 进侧存、plan 写丢弃、锁可再抢', async () => {
     const delayed = writeTempPackage(root, {
       identity: 'toy-delayed',
       implements: ['toy.alpha'],
@@ -486,11 +472,9 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       stopper.close()
     }
     expect(result?.status).toBe('cancelled')
-    // command run 被停机 abort：仅一条 cancelled 审计落账，plan 的业务写丢弃
-    const added = readJournal(journalFile()).slice(before)
-    expect(added).toHaveLength(1)
-    const body = (added[0].args as unknown as { body?: { outcome?: string } }).body
-    expect(body?.outcome).toBe('cancelled')
+    // command run 被停机 abort：仅一条 cancelled 审计进侧存，plan 的业务写丢弃
+    expect(readJournal(journalFile()).length).toBe(before)
+    expect(lastAuditBody()['outcome']).toBe('cancelled')
     // 停机完成后锁可再抢
     const lockFile = hostPaths(root).lockFile
     await waitFor(
@@ -504,19 +488,11 @@ describe('S4 效果：eff → 审计 → 回灌 → 落账', () => {
       10000,
     )
   }, 30000)
-})
 
-/** 审计 entry 的 result；非审计返回 null。 */
-function auditResult(entry: Entry): Json | null {
-  const body = (entry.args as { body?: { result?: Json } }).body
-  return body?.result ?? null
-}
-
-/** 从新增 entries 里取审计 result 的被调实现名。 */
-function auditImpl(entries: Entry[]): string | null {
-  for (const entry of entries) {
-    const result = auditResult(entry) as { value?: { impl?: string } } | null
-    if (typeof result?.value?.impl === 'string') return result.value.impl
+  /** 侧存里最后一条审计的被调实现名。 */
+  function lastAuditImpl(): string | null {
+    const body = lastAuditBody()
+    const result = body['result'] as { value?: { impl?: string } } | undefined
+    return typeof result?.value?.impl === 'string' ? result.value.impl : null
   }
-  return null
-}
+})

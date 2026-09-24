@@ -27,6 +27,10 @@ export const PROTOCOL_DEFAULTS: Record<string, Rec> = {
     impl: 'protocol',
     auth_style: 'bearer',
     system_role: 'system',
+    // 现代 OpenAI 兼容端点的推理档位字段；仅当所选模型有档位（models.dev `reasoning_options`）时才会传，
+    // 厂商显式 quirks 优先覆盖。
+    reasoning_field: 'reasoning_effort',
+    reasoning_map: { low: 'low', medium: 'medium', high: 'high' },
     max_tokens_field: 'max_tokens',
     models_path: '/models',
     stream_usage: 'final_chunk',

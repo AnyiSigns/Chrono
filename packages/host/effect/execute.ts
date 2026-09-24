@@ -1,28 +1,10 @@
-// 效果执行：每次 EffRequest → EffResult 必留一条 EffectAudit def，并被业务写的 ref 指到。
-// 审计 def 由宿主直接提交（不经 run directive），以保证它在业务写之前就可寻址。
-// 端点调用由调用方注入（A1 路由 + 服务协议 call）；未注入或调用未执行 → 不解析形态。
+// 效果执行：每次 EffRequest → EffResult 必留一条审计草稿（旁路侧存，不进世界 def、不落链）。
+// 审计由调用方在取得结果后交给侧存追加；端点调用由调用方注入（A1 路由 + 服务协议 call）。
+// 未注入或调用未执行 → 不解析形态，仍记 transport_failed 审计。
 
-import { H, canonicalJson, commit } from '../../kernel/index.ts'
-import type {
-  EffRequest,
-  EffResult,
-  Entry,
-  Hash,
-  Head,
-  Json,
-  World,
-  WriteRequest,
-} from '../../kernel/index.ts'
-
-export interface ExecuteOutcome {
-  result: EffResult
-  world: World
-  head: Head
-  /** 审计 def 键（= H(Def)）；审计写入失败时为 null。 */
-  auditHash: Hash | null
-  /** 审计 entry；幂等命中时为 null（def 已在世界，仍可被 ref 指到）。 */
-  auditEntry: Entry | null
-}
+import { canonicalJson } from '../../kernel/index.ts'
+import type { EffRequest, EffResult, Json } from '../../kernel/index.ts'
+import type { AuditDraft } from '../audit.ts'
 
 /**
  * 端点调用器：由调用方（run loop）按 A1 路由后注入；返回值一律是数据，
@@ -30,11 +12,11 @@ export interface ExecuteOutcome {
  */
 export type EndpointCaller = (eff: EffRequest) => Promise<EffResult>
 
-/** 审计元信息：entry 的 `by` / `at` 与审计 def 内的 `run` / `emitter`（F8 只读面按此过滤）。 */
+/** 审计元信息：记录的时间戳 / 发起者，以及审计正文里的 `run` / `emitter`（F8 只读面按此过滤）。 */
 export interface AuditMeta {
-  /** 发起者（审计 entry 的 `by`）。 */
+  /** 发起者（审计记录的 `by`）。 */
   by: string
-  /** 该轮固定时间戳（审计 entry 的 `at`）。 */
+  /** 该轮固定时间戳（审计记录的 `at`）。 */
   now: number
   /** 本 run 的 run id（`accepted{run}` 同值）；不传记 null。 */
   run?: string
@@ -43,7 +25,7 @@ export interface AuditMeta {
 }
 
 /**
- * 审计结局（G2 起随审计 def 落账；#37 审计视图 / #54 监控按此过滤）：
+ * 审计结局（随审计正文落侧存；#37 审计视图 / #54 监控按此过滤）：
  * - `ok`：端点有响应且为成功值；
  * - `error`：端点有响应但为错误（`value.error`，term 可据值分支）；
  * - `transport_failed`：没执行（未解析 / 连接 / 帧 / 进程死亡 / 超时）；
@@ -53,7 +35,7 @@ export const AUDIT_OUTCOMES = ['ok', 'error', 'transport_failed', 'cancelled'] a
 
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number]
 
-/** 审计 def 的保留判别键（机械识别审计 entry）。 */
+/** 审计正文的保留判别键（机械识别审计记录）。 */
 export const EFFECT_AUDIT_KIND = 'effect_audit'
 
 function deriveOutcome(result: EffResult): AuditOutcome {
@@ -84,27 +66,26 @@ function redactAuditResult(eff: EffRequest, result: EffResult): Json {
   return { name, kind, has: deriveOutcome(result) === 'ok' }
 }
 
-/** host 批量返回方法：结果可能极大（字节 / 源码 / 审计记录）。 */
-const HOST_BULK_METHODS: ReadonlySet<string> = new Set(['asset.get', 'source.read', 'audit'])
-
 /**
  * 审计结果序列化上限：超过只落 `{truncated:true,size}`。
- * `host.asset.get`（8 MiB ≈ 10.7 MiB base64）与 `host.audit`（会拷入既往审计记录、超线性增长）
- * 若原样入账，会把 defs / journal / 审计索引撑爆；调用方仍拿到完整结果，只是审计正文留截断标记。
+ * 任意端口的返回值都可能极大——`host.asset.get`（8 MiB ≈ 10.7 MiB base64）、`host.audit`
+ * （拷入既往审计记录、超线性增长）、以及 `ui-approval.decide` / `chat.resume` 这类把整段
+ * 续跑游标放进计划值的命令。原样入账会把侧存 / 审计索引撑爆，并在写入时同步序列化多兆字节
+ * 而卡住宿主事件循环（进而触发全服务健康超时误杀）。
+ * 调用方仍拿到完整结果，只是审计正文留截断标记。
  */
 export const MAX_AUDIT_RESULT_BYTES = 64 * 1024
 
 /**
  * 审计请求参数序列化上限：`args` 超过只落 `{truncated:true,size}`，保留 `id`/`port`/`method`。
- * 大参数（源码 / 字节 / 审计记录）原样入账会把 defs / journal 撑爆；调用方仍拿完整 args，
+ * 大参数（源码 / 字节 / 审计记录）原样入账会把侧存撑爆；调用方仍拿完整 args，
  * 只是审计正文留截断标记。
  */
 export const MAX_AUDIT_ARGS_BYTES = 64 * 1024
 
-/** 审计正文口径：先按白名单脱敏，再对 host 批量结果做体积截断。 */
+/** 审计正文口径：先按白名单脱敏，再对结果做**全端口**体积截断。 */
 function auditResult(eff: EffRequest, result: EffResult): Json {
   const redacted = redactAuditResult(eff, result)
-  if (eff.port !== 'host' || !HOST_BULK_METHODS.has(eff.method)) return redacted
   const size = canonicalJson(redacted).length
   if (size <= MAX_AUDIT_RESULT_BYTES) return redacted
   return { truncated: true, size }
@@ -117,7 +98,7 @@ function auditRequest(eff: EffRequest): Json {
   return { id: eff.id, port: eff.port, method: eff.method, args: { truncated: true, size } }
 }
 
-/** 效果调用的结果与取消标记：服务调用与审计落账拆开，以便只把落账放进串行段。 */
+/** 效果调用的结果与取消标记：服务调用与审计草稿构造拆开，便于调用方各自放置。 */
 export interface EffectCall {
   result: EffResult
   /** signal 已中止且结果记为 cancelled（审计 outcome 走 `cancelled`）。 */
@@ -151,26 +132,23 @@ export async function callEffect(
 }
 
 /**
- * 把一次效果结局落成审计：构造审计 def、按 `head.hash` 作 `expect_pos` 提交。
- * 在**克隆副本**上提交并返回该副本：落盘（账本追加）成功前不触碰活世界，
- * 调用方须在互斥段内调用（独占 world），落盘成功后再切换 `state.world/head`。
+ * 构造一次效果的审计草稿（纯函数，不碰世界 / 链头 / 侧存）。
+ * `seq` 由侧存在追加时分配；调用方须在结果取得后、由单写者串行交给侧存。
  * @param eff 待解效果
- * @param world 当前世界（只读；提交在副本上完成）
- * @param head 当前链头
  * @param meta 审计元信息（by / now / run / emitter）
  * @param result 已取得的调用结果
  * @param cancelled 是否记为取消（outcome = `cancelled`）
  */
-export function commitAudit(
+export function buildAudit(
   eff: EffRequest,
-  world: World,
-  head: Head,
   meta: AuditMeta,
   result: EffResult,
   cancelled: boolean,
-): ExecuteOutcome {
+): AuditDraft {
   const auditOutcome: AuditOutcome = cancelled ? 'cancelled' : deriveOutcome(result)
-  const auditDef = {
+  return {
+    at: meta.now,
+    by: meta.by,
     body: {
       kind: EFFECT_AUDIT_KIND,
       request: auditRequest(eff),
@@ -182,49 +160,22 @@ export function commitAudit(
       emitter: meta.emitter ?? null,
     },
   }
-  const auditHash = H(auditDef as unknown as Json)
-  const request: WriteRequest = {
-    id: `audit-${eff.id}`,
-    op: 'put',
-    target: { expect_pos: head.hash },
-    args: auditDef as unknown as Json,
-    by: meta.by,
-  }
-  // 就地 commit 会先改活世界、后由调用方落盘；落盘失败即内存/磁盘分叉。
-  // 故在独占副本上提交，只有调用方落盘成功后才把该副本切换为当前世界。
-  // 审计写恒为 put（不触 ids）：只克隆 defs 层、ids 按引用共享，避免每次审计深拷全部身份 / 世代，
-  // 也让按 ids 缓存的读侧（路由 ownerIndex / 方法级超时）跨审计命中。
-  const next: World = { defs: { ...world.defs }, ids: world.ids }
-  const outcome = commit(head, next, request, meta.now)
-  if (!outcome.verdict.ok) {
-    return { result, world: next, head, auditHash: null, auditEntry: null }
-  }
-  const nextHead: Head = outcome.entry
-    ? { seq: outcome.entry.seq, hash: outcome.hash as Hash }
-    : head
-  return { result, world: next, head: nextHead, auditHash, auditEntry: outcome.entry }
 }
 
 /**
- * 执行一次效果并落审计（`callEffect` + `commitAudit` 的便捷组合）。
- * **仅供测试 / 单轮场景**：生产 run loop 必须分开调用两个原语，把落账放进宿主串行段
- * （`run-loop.ts` 的 writer 纪律），直接用它会把 `commitAudit` 落到互斥段之外。
- * 世界按副本演化（`commitAudit` 克隆 defs 层）：`world` 入参只读，结果世界经返回值给出。
+ * 执行一次效果并构造审计草稿（`callEffect` + `buildAudit` 的便捷组合）。
+ * **仅供测试 / 单轮场景**：生产 run loop 必须分开调用两个原语，把侧存追加放进宿主单写者序列。
  * @param eff 待解效果
- * @param world 当前世界（只读；提交在副本上完成）
- * @param head 当前链头
  * @param meta 审计元信息（by / now / run / emitter）
  * @param call 端点调用器；缺省 = 无路由（记 `not_loaded`）
  * @param signal 该 run 的取消信号：中止且结果是 `{ok:false,error:'cancelled'}` 时 outcome 记 `cancelled`
  */
 export async function executeEffect(
   eff: EffRequest,
-  world: World,
-  head: Head,
   meta: AuditMeta,
   call?: EndpointCaller,
   signal?: AbortSignal,
-): Promise<ExecuteOutcome> {
+): Promise<{ result: EffResult; audit: AuditDraft }> {
   const { result, cancelled } = await callEffect(eff, call, signal)
-  return commitAudit(eff, world, head, meta, result, cancelled)
+  return { result, audit: buildAudit(eff, meta, result, cancelled) }
 }

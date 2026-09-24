@@ -14,7 +14,8 @@
     "approval": "approval",
     "tools": "tools",
     "router": "router",
-    "evolve-metrics": "evolve-metrics"
+    "evolve-metrics": "evolve-metrics",
+    "host": "host"
   },
   "start": "node execute/main.ts",
   "protocol": "1",

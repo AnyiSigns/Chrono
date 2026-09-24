@@ -57,9 +57,14 @@ export function batchDirective(ops: Json[]): Json {
   return { kind: 'write', request: { op: 'batch', args: { ops } } }
 }
 
-/** 一条按命令名解析入口的 eval 计划条目（宿主 plan 通道，H18）。 */
-export function evalCommandDirective(command: string, args: Json): Json {
-  return { kind: 'eval', command, args }
+/**
+ * 一条按命令名解析入口的 eval 计划条目（宿主 plan 通道，H18）。
+ * `inject` = 宿主在执行期把投影片段按声明路径并入 args（键 → 投影路径）；续跑 eval 用它拿投影。
+ */
+export function evalCommandDirective(command: string, args: Json, inject?: Rec): Json {
+  const directive: Rec = { kind: 'eval', command, args }
+  if (inject !== undefined) directive['inject'] = inject
+  return directive
 }
 
 /** 一条 extern 透传计划条目（不写世界、不推进）。 */

@@ -285,6 +285,20 @@ describe('batch：原子性、$n、两段式', () => {
     }
   })
 
+  it('$lit 转义：包裹的数据里 $n 原样落盘，同批占位符照常替换', () => {
+    const h = harness()
+    const r = asOk(
+      h.apply('batch', {
+        ops: [
+          { op: 'put', args: { body: { i: 1 } } },
+          { op: 'put', args: { body: { literal: { $lit: { $n: 0 } }, ref: { $n: 0 } } } },
+        ],
+      }).r,
+    )
+    expect(r.written.length).toBe(2)
+    expect(h.w.defs[r.written[1]]).toEqual({ body: { literal: { $n: 0 }, ref: r.written[0] } })
+  })
+
   it('子操作全是已存在 put → 整批 isNoop；argsHash = 子对聚合', () => {
     const h = harness()
     const writtenDef: Json = { body: { n: 1 } }

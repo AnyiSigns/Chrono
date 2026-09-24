@@ -14,6 +14,7 @@ const RUNTIME_FILES = [
   'value.ts',
   'hash.ts',
   'hash.utf8.ts',
+  'defs.ts',
   'journal.ts',
   'journal.id.ts',
   'journal.apply.ts',

@@ -2,8 +2,10 @@
 // 点分段拆分（预算护栏）：两个身份在 journal.id.ts，世界常量与重放/校验在 journal.ts。
 // 别名契约：只改调用方独占的世界副本，**绝不改传入的 Entry**。
 
+import { defHas } from './defs.ts'
 import { H } from './hash.ts'
 import { entryHash, worldRev } from './journal.id.ts'
+import { readPatchOps } from './patch.ts'
 import { KernelError } from './types.ts'
 import type { Def, Entry, Gen, Hash, Identity, Json, Op, World } from './types.ts'
 
@@ -41,7 +43,7 @@ function applyOp(
   switch (e.op) {
     case 'put': {
       const argsHash = H(e.args) // 键与 argsHash 是同一个值
-      if (w.defs[argsHash]) return ok(w, true, argsHash, [])
+      if (defHas(w.defs, argsHash)) return ok(w, true, argsHash, [])
       if (undo) undo.push({ t: 'defs-new', k: argsHash }) // put 只新增键（同键必幂等命中）
       w.defs[argsHash] = e.args as unknown as Def // 原样入世界（不复制，O(1)）；此后视为不可变
       return ok(w, false, argsHash, [argsHash])
@@ -112,7 +114,7 @@ function applyNewIdentity(
   const s = e.args as { id: string; schema: Hash; parent?: string }
   const argsHash = H(e.args)
   if (w.ids[s.id]) throw new KernelError('id_taken')
-  if (!w.defs[s.schema]) throw new KernelError('missing_ref')
+  if (!defHas(w.defs, s.schema)) throw new KernelError('missing_ref')
   if (s.parent !== undefined && !w.ids[s.parent]) throw new KernelError('missing_parent')
   if (isFork && s.parent === undefined) throw new KernelError('missing_parent')
   recId(w, undo, s.id)
@@ -154,6 +156,7 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
     payload: Hash
     pins?: Record<string, Hash>
     sig: Hash
+    base?: number
     from?: string
     gen?: number
     expect_active?: Hash | null
@@ -164,7 +167,17 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
   if (Object.hasOwn(s, 'expect_active') && identity.active !== s.expect_active) {
     throw new KernelError('stale_active')
   }
-  if (!w.defs[s.payload] || !w.defs[s.sig]) throw new KernelError('missing_ref')
+  if (!defHas(w.defs, s.payload) || !defHas(w.defs, s.sig)) throw new KernelError('missing_ref')
+  // 补丁世代：base 必须是同身份内已存在的世代下标；payload def 必须是合法补丁体。
+  // 两查都在改动世界之前（fail-closed），任一不过整条 entry 不落地。
+  let base: number | undefined
+  if (!isGraft && s.base !== undefined) {
+    if (!Number.isInteger(s.base) || s.base < 0 || s.base >= identity.gens.length) {
+      throw new KernelError('missing_parent')
+    }
+    if (readPatchOps(w.defs[s.payload].body) === null) throw new KernelError('bad_patch')
+    base = s.base
+  }
   let graft: Gen['graft'] | undefined
   if (isGraft) {
     const src = s.from === undefined ? undefined : w.ids[s.from]
@@ -181,6 +194,7 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
     sig: s.sig,
     adopted: { at: e.at, by: e.by, write: adoptedBy ?? entryHash({ ...e, argsHash }) },
     graft,
+    ...(base !== undefined ? { base } : {}),
   })
   identity.active = s.payload // add_gen 同时激活
   return ok(w, false, argsHash, [])
@@ -217,7 +231,7 @@ function applyBatch(
   // 跳过段 2（重试不重付 apply 账）。判决与走段 2 的定论逐字段一致（isNoop=true、written=[]）。
   // 边界写死：含任何非 put（或嵌套 batch）的批仍走段 2——非 put 的 isNoop 不由键存在性决定。
   // 空批在 every() 下平凡成立：与段 2 的空转定论相同。段 1 的哈希账不可免（链格式）。
-  if (opsList.every((s, k) => s.op === 'put' && Boolean(w.defs[hashes[k]]))) {
+  if (opsList.every((s, k) => s.op === 'put' && defHas(w.defs, hashes[k]))) {
     return ok(w, true, argsHash, [])
   }
   // 段 2：真实应用。undo 收集沿嵌套链共享（收紧批局部回滚，令外层回滚可覆盖已提交的
@@ -288,6 +302,9 @@ function hashOnly(op: Op, args: Json): Hash {
 /**
  * batch 占位符替换：`{'$n': k}` 只能指向**本批内更早**且有产物（put）的子操作；
  * 返回**新对象**，不回写入参——日志里存的永远是替换前的 args。
+ *
+ * 数据里若要出现 `{'$n':k}` 字面量（工具结果 / 术语 AST / 模型入参等任意 JSON 都可能有），
+ * 用转义包裹 `{'$lit': v}` 落盘：`v` 按数据原样保留、其中的 `$n` 不再当占位符。
  */
 export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
   if (Array.isArray(v)) return v.map((x) => substitute(x, acc, k))
@@ -301,10 +318,31 @@ export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
     }
     return acc[j] as Hash
   }
+  if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
   const out: { [key: string]: Json } = {}
   for (const key of keys) {
     const sv = substitute(record[key], acc, k)
     if (sv !== undefined) out[key] = sv
   }
   return out
+}
+
+/**
+ * 转义包裹 `{'$lit': v}` 的还原：`v` 是**数据**，其中的 `$n` 不再当占位符；
+ * 只继续还原嵌套的 `$lit`（若要落数据 `{'$lit':…}` 本身，须再包一层）。
+ */
+function literal(v: Json): Json {
+  if (Array.isArray(v)) return v.map((x) => literal(x))
+  if (v === null || typeof v !== 'object') return v
+  const record = v as { [key: string]: Json }
+  const keys = Object.keys(record)
+  if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
+  const out: { [key: string]: Json } = {}
+  for (const key of keys) out[key] = literal(record[key])
+  return out
+}
+
+/** 把任意数据包成转义形态（写方用：数据里带 `{'$n':k}` 字面量时避免被内核当占位符替换）。 */
+export function asLiteral(v: Json): Json {
+  return { $lit: v }
 }

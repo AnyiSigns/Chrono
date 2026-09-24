@@ -29,6 +29,7 @@ boot ──→ client ──→ kernel
 - `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins`（见
   [`docs/plugins.md`](../docs/plugins.md)）。
 - 加插件**不改** `packages/` 任何文件：插件包住 `plugins/<name>/` 或 `node_modules/`，由 `state/plugins.json` 列出。
+- `toolchain/` 是作者侧**构建期**工具：`packages/` 任何包**不得依赖**它；插件仅不入世的构建 / 开发脚本可 import 其编译器；它至多依赖内核（仅测试器入口），不进运行路径。
 
 ## 一次调用的数据流
 
@@ -55,6 +56,7 @@ Chrono/
 ├── docs/             设计文档（kernel.md 唯一权威）+ plans/（计划，不参与设计口径）
 ├── packages/         本目录：kernel / client / boot / host
 ├── plugins/          插件包源码位置（一个插件 = 一个 npm 包；位置非分类）
+├── toolchain/        第一方作者工具（构建期，非运行时；运行时不得依赖）
 ├── fixtures/plugins/ toy 插件（仅测试 / 开发；seed 进临时世界，不进正式世界）
 ├── experiment/       独立实验树（standalone，不接内核）
 └── state/            宿主侧落盘（gitignore；永不进世界）

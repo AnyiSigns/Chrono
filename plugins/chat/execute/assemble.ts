@@ -153,9 +153,12 @@ function memoriesOf(ids: Json, conversation: Rec | null, wiring: Wiring): Rec {
   return out
 }
 
-/** `#11` 会话切片：body 字段 + 当前会话链头 + 全量 refs（供 #13 沿 prev 还原）。 */
-function sessionSlice(sessionBody: Rec, conversation: Rec | null, refs: Rec): Rec {
-  return { ...sessionBody, head: headHashOf(conversation), refs }
+/**
+ * `#11` 会话切片：body 字段 + 当前会话链头 + 全量 refs（供 #13 沿 prev 还原）
+ * + `data_gen`（写方据此把下一世代写成补丁世代；无数据世代为 null）。
+ */
+function sessionSlice(sessionBody: Rec, conversation: Rec | null, refs: Rec, dataGen: Json): Rec {
+  return { ...sessionBody, head: headHashOf(conversation), refs, data_gen: dataGen }
 }
 
 /** 会话 body 的某会话条目改标题（浅拷贝，不动入参）；用于把生成的标题并入本次提交。 */
@@ -200,11 +203,12 @@ export function graphSliceOf(ids: Json): Rec | null {
   return { ...body, refs: refsOf(ids, 'loop-policy') }
 }
 
-/** `#43 evolution` 台账切片：四类链 body + refs 闭包。 */
+/** `#43 evolution` 台账切片：四类链 body + refs 闭包 + data_gen（写方据此写补丁世代）。 */
 export function ledgerSliceOf(ids: Json): Rec | null {
   const body = bodyOf(ids, 'evolution')
   if (body === null) return null
-  return { ...body, refs: refsOf(ids, 'evolution') }
+  const entry = entryOf(ids, 'evolution')
+  return { ...body, refs: refsOf(ids, 'evolution'), data_gen: entry !== null && entry['data_gen'] !== undefined ? entry['data_gen'] : null }
 }
 
 /** 执行根：当前会话 `workspace_id` → `#41 workspace` body 的 path。 */
@@ -276,13 +280,15 @@ export interface InterpretBagInput {
 export function buildInterpretBag(params: InterpretBagInput): Rec {
   const { ids, wiring, slot, conversation, conversationId, config, thread } = params
   const sessionBody = params.sessionBody ?? bodyOf(ids, 'session') ?? {}
+  const sessionEntry = entryOf(ids, 'session')
+  const sessionDataGen = sessionEntry !== null && sessionEntry['data_gen'] !== undefined ? sessionEntry['data_gen'] : null
   const bag: Rec = {
     input: inputOf(slot),
     input_body: bodyOf(ids, 'input') ?? {},
     config,
     thread,
     thread_kind: conversation !== null ? asString(conversation['kind']) ?? 'main' : 'main',
-    session: sessionSlice(sessionBody, conversation, refsOf(ids, 'session')),
+    session: sessionSlice(sessionBody, conversation, refsOf(ids, 'session'), sessionDataGen),
   }
   const tier = tierOf(ids)
   if (tier !== null) bag['tier'] = tier

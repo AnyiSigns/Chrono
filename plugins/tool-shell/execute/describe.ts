@@ -34,8 +34,8 @@ function shellTool(): Rec {
       language: "mode=code 时的语言，取白名单之一（javascript / python / shell）。",
     },
     boundaries:
-      '不做结构化文件读写（找文件用 glob、读文件用 read、改文件用 edit）；不绕过 guard / sandbox；不做交互式会话。',
-    description: '在隔离环境执行命令或代码；返回 {kind, exit_code, stdout, stderr, truncated}。',
+      '不做结构化文件读写（找文件用 glob、读文件用 read、改文件用 edit）；不做交互式会话。',
+    description: '执行命令或代码片段，返回退出码与标准输出。',
     argsSchema: {
       type: 'object',
       properties: {

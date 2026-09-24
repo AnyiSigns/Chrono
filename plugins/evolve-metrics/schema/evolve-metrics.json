@@ -1,6 +1,6 @@
 {
   "title": "evolve-metrics（指标层 · 证据聚合）",
-  "description": "身份自述 / 数据契约：描述 evolve-metrics 能力类四方法 aggregate / sweep / shadow / record 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机；now 由 bag / 调用帧 env 传入），只产 kind:'evidence' 证据条目，不产提案。服务不读投影、无写通道：一切输入随 bag 由调用方入口 term（#33 路径）或宿主 periodic.reads（周期路径）传入，一切写经计划值 {\"$directives\":[…]} 交宿主落账。数值调参（聚类阈值 / 窗口长度 / 成本异常倍数 / 漂移判据 / 折叠 k / min_workspaces / 轨迹保留回合数）一律读 #33 loop-policy 的 thresholds，本 schema 不重定义。",
+  "description": "身份自述 / 数据契约：描述 evolve-metrics 能力类四方法 aggregate / sweep / shadow / record 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机；now 由 bag / 调用帧 env 传入），只产 kind:'evidence' 证据条目，不产提案。服务不读投影、无写通道：一切输入随 bag 由调用方入口 term（#33 路径）或宿主 periodic.reads（周期路径）传入，一切写经计划值 {\"$directives\":[…]} 交宿主落账。数值调参（聚类阈值 / 窗口长度 / 成本异常倍数 / 漂移判据 / 折叠 k / min_workspaces / 轨迹与证据保留回合数）一律读 #33 loop-policy 的 thresholds，本 schema 不重定义。",
   "type": "object",
   "additionalProperties": true,
   "periodic": [

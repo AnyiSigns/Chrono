@@ -23,7 +23,7 @@ const {
   CACHE_MAX_ENTRIES,
 } = await import('../execute/text.ts')
 const { canonicalize } = await import('../execute/normalize.ts')
-const { computeBudget } = await import('../execute/budget.ts')
+const { computeBudget, allocate } = await import('../execute/budget.ts')
 const { planHistory } = await import('../execute/history.ts')
 const { parseRawParts, messageParts } = await import('../execute/history.ts')
 
@@ -149,6 +149,15 @@ test('预算建模：缺档案回落默认并标 profile_missing', () => {
   const explicit = computeBudget({ context_window: 1000, max_output: 100 }, policy)
   assert.equal(explicit.budget, 1000 - 100 - 50)
   assert.deepEqual(explicit.flags, [])
+  // max_output ≥ context（models.dev 偶有此类条目）：输出预留封顶到半上下文，输入预算不为负
+  const capped = computeBudget({ context_window: 1000, max_output: 2000 }, policy)
+  assert.equal(capped.max_output, 500)
+  assert.equal(capped.budget, 1000 - 500 - 50)
+})
+
+test('预算分配：budget ≤ 0 走 budget_exceeded 结构化错误（防御性兜底）', () => {
+  const result = allocate([], 0, defaultPolicy())
+  assert.equal(result.error?.code, 'budget_exceeded')
 })
 
 test('历史还原：head 为空/不在 refs 即空历史，绝不从会话级全量 refs 猜链头（防串会话）', () => {

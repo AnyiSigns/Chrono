@@ -10,6 +10,7 @@
     "tsconfig.json",
     "assets.ts",
     "audit.ts",
+    "audit-store.ts",
     "compact.ts",
     "endpoint-table.ts",
     "host-capability.ts",

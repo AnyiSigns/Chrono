@@ -27,14 +27,14 @@ const TODO_RENDER: Rec = {
 const ITEM_SCHEMA: Rec = {
   type: 'object',
   properties: {
-    id: { type: 'string', description: '条目 id；缺省由服务按 会话 id + 下标 派生。' },
+    id: { type: 'string', description: '条目 id；缺省按会话 id 与下标派生。' },
     text: { type: 'string', minLength: 1, description: '条目正文。' },
     status: {
       enum: ['pending', 'in_progress', 'completed'],
       description: '条目状态；缺省 pending。',
     },
-    priority: { type: 'number', description: '可选优先级（数值越小越优先，语义归调用方）。' },
-    at: { type: 'string', description: '该条目的时间（ISO 8601）；缺省继承 args.at。' },
+    priority: { type: 'number', description: '可选优先级（数值越小越优先）。' },
+    at: { type: 'string', description: '该条目的时间（ISO 8601）；缺省沿用本批缺省时间。' },
   },
   required: ['text'],
   additionalProperties: true,
@@ -44,20 +44,16 @@ const ITEM_SCHEMA: Rec = {
 export const TOOLS: Json[] = [
   {
     name: 'todo.write',
-    intent: '整表替换当前会话的待办清单，把清单持久化进世界（每条一次可回放的世界写）。',
-    when_to_use:
-      '需要新增 / 更新 / 删除待办项，或把清单显式收尾（全部 completed / 清空）以便图收口时。',
+    intent: '更新当前会话的待办清单，用新清单整体替换旧清单。',
+    when_to_use: '需要新增、更新、删除待办项，或把清单整体收尾（全部完成 / 清空）时。',
     param_semantics: {
-      conversation_id:
-        '目标会话 id（由调用方入口 term 读 session 投影的 current 后传入）；只改这个会话键。',
-      items: '完整条目数组（整表替换，不是增量）；传空数组即清空本会话清单。',
-      at: '本批条目的缺省时间（调用方入口 term 由帧 env.now 提供）；服务不取时间。',
-      body: '当前待办 body（调用方入口 term 读本插件投影后传入），用于保留其它会话键。',
+      conversation_id: '目标会话 id；只改这个会话的清单。',
+      items: '完整条目数组，整体替换而非增量；传空数组即清空。',
+      at: '本批条目的缺省时间（ISO 8601）。',
+      body: '当前清单数据，用于保留其它会话的条目。',
     },
-    boundaries:
-      '整表替换、只改本会话键；不判定任务是否真做完、不写其它身份、不长期保存知识；不做增量合并。',
-    description:
-      '整表替换当前会话的待办清单：产出 新条目 defs（prev 串成新链）+ 本会话键的新 body + add_gen 的原子写计划。',
+    boundaries: '整体替换、只改本会话；不判定任务是否真完成、不做增量合并。',
+    description: '更新当前会话的待办清单：整体替换，返回更新后的清单。',
     argsSchema: {
       type: 'object',
       properties: {
@@ -67,8 +63,8 @@ export const TOOLS: Json[] = [
           description: '完整条目数组；空数组 = 清空本会话清单。',
           items: ITEM_SCHEMA,
         },
-        at: { type: 'string', description: '条目缺省时间（ISO 8601）；服务不取时间。' },
-        body: { type: 'object', description: '当前待办 body，用于保留其它会话键。' },
+        at: { type: 'string', description: '条目缺省时间（ISO 8601）。' },
+        body: { type: 'object', description: '当前清单数据，用于保留其它会话的条目。' },
       },
       required: ['conversation_id', 'items'],
       additionalProperties: true,
@@ -82,12 +78,10 @@ export const TOOLS: Json[] = [
     intent: '读取当前会话的待办清单条目与完成情况。',
     when_to_use: '需要查看当前待办项、完成进度，或在更新前确认现有清单时。',
     param_semantics: {
-      conversation_id: '目标会话 id（由调用方入口 term 读 session 投影的 current 后传入）。',
+      conversation_id: '目标会话 id。',
     },
-    boundaries:
-      '只读、幂等；本服务不读投影，清单数据由调用方入口 term 随 bag 传入；不做完成判定、不写世界。',
-    description:
-      '从调用方传入的本插件投影数据里解析目标会话的条目链，返回 {items, total, done}。',
+    boundaries: '只读，不改清单、不做完成判定。',
+    description: '读取当前会话的待办清单，返回 {items, total, done}。',
     argsSchema: {
       type: 'object',
       properties: {

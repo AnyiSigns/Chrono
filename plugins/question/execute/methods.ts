@@ -31,28 +31,35 @@ import {
   putOp,
   queueOf,
   refOf,
-  refsOf,
 } from './plan.ts'
+import { createRefHydrator } from './refs.ts'
+import type { DefReader, RefHydrator } from './refs.ts'
 import { describeValue, normalizeQuestions, renderCard } from './tools.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, ServiceEvent } from './types.ts'
+import type { PortCaller } from './port-link.ts'
 import type { Rec } from './plan.ts'
 
 const CONFIG = resolveConfig()
+
+/** 服务依赖：宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
+export interface QuestionDeps {
+  host?: PortCaller
+}
 
 function requireRecord(value: Json | undefined, field: string): Rec {
   if (!isRecord(value)) throw new BadArgsError(`${field} must be an object`)
   return value
 }
 
-/** 投影里的队列条目：`{body, refs}`；缺省回落空队列 / 空引用。 */
-function queueView(projection: Json | undefined): { queue: Rec; refs: Rec } {
+/** 投影里的队列条目：`{body, refs}`；缺省回落空队列 / 空引用。`refs` 可为哈希列表（待解析）。 */
+function queueView(projection: Json | undefined): { queue: Rec; refs: Json } {
   if (!isRecord(projection)) return { queue: queueOf({}), refs: {} }
   const body = projection['body']
   const refs = projection['refs']
   return {
     queue: isRecord(body) ? body : queueOf({}),
-    refs: isRecord(refs) ? refs : {},
+    refs: refs ?? {},
   }
 }
 
@@ -74,11 +81,11 @@ function sessionIdOf(bag: Rec): string | null {
 }
 
 /** 兼容三种入参形态：`{question:{body,refs}}` / 周期 bag `{queue,refs}` / 投影 `{body,refs}`。 */
-function readQueueArgs(args: Rec): { queue: Rec; refs: Rec } {
+function readQueueArgs(args: Rec): { queue: Rec; refs: Json } {
   const question = args['question']
   if (isRecord(question)) return queueView(question)
-  if (isRecord(args['queue']) || isRecord(args['refs'])) {
-    return { queue: queueOf(args), refs: refsOf(args) }
+  if (isRecord(args['queue']) || isRecord(args['refs']) || Array.isArray(args['refs'])) {
+    return { queue: queueOf(args), refs: args['refs'] ?? {} }
   }
   return queueView(args)
 }
@@ -164,7 +171,7 @@ function rejectWithClear(slotsBody: Rec | null, threadKey: string, code: string,
   return { value: planOf(ops, payload), events: [] }
 }
 
-function answerCommand(ids: Rec): HandlerResult {
+async function answerCommand(ids: Rec, hydrator: RefHydrator): Promise<HandlerResult> {
   const inputProjection = ids['input']
   const inputBody = isRecord(inputProjection) && isRecord(inputProjection['body'])
     ? (inputProjection['body'] as Rec)
@@ -183,7 +190,9 @@ function answerCommand(ids: Rec): HandlerResult {
     return rejectWithClear(inputBody, found.threadKey, 'missing_answers', 'slot.answers required')
   }
 
-  const { queue, refs } = queueView(ids['question'])
+  const view = queueView(ids['question'])
+  const queue = view.queue
+  const refs = await hydrator.hydrate('question', view.refs)
   const located = locateItem(queue, refs, id)
   if (located === null) {
     return rejectWithClear(inputBody, found.threadKey, 'not_found', id)
@@ -205,7 +214,12 @@ function answerCommand(ids: Rec): HandlerResult {
     addGenOp('input', 3),
   ]
   const directives: Json[] = [
-    evalCommandDirective('chat.resume', { cursor, thread, payload: { answers }, ids }),
+    // 续跑不再自带整份投影：`inject` 声明由宿主执行期把投影切片并入 args。
+    evalCommandDirective(
+      'chat.resume',
+      { cursor, thread, payload: { answers } },
+      { ids: ['ids'] },
+    ),
     { kind: 'write', request: { op: 'batch', args: { ops } } },
     externDirective({ ok: true, status: 'answered', id, thread, at }),
   ]
@@ -213,9 +227,13 @@ function answerCommand(ids: Rec): HandlerResult {
 }
 
 /** `question.invoke`：按有无 `tool` 分流工具调用 / 作答命令入口。 */
-function invoke(args: Rec, env: CallEnv): HandlerResult {
+async function invoke(
+  args: Rec,
+  env: CallEnv,
+  hydrator: RefHydrator,
+): Promise<HandlerResult> {
   const tool = asString(args['tool'])
-  if (tool === null) return answerCommand(args)
+  if (tool === null) return answerCommand(args, hydrator)
   if (tool !== 'question') {
     return {
       value: { ok: false, error: { code: 'unknown_tool', message: tool } },
@@ -228,9 +246,9 @@ function invoke(args: Rec, env: CallEnv): HandlerResult {
 
 // ── list（只读） ───────────────────────────────────────────────────────────
 
-function list(args: Rec): HandlerResult {
+async function list(args: Rec, hydrator: RefHydrator): Promise<HandlerResult> {
   const { queue, refs } = readQueueArgs(args)
-  const items = itemsFromChain(queue, refs)
+  const items = itemsFromChain(queue, await hydrator.hydrate('question', refs))
   const answered = items.filter((item) => item['answers'] !== null).length
   const expired = items.filter((item) => item['expired'] === true).length
   return {
@@ -258,9 +276,9 @@ function isExpired(item: Rec, now: number): boolean {
 }
 
 /** 过期项标 `expired`：链式追加同 id 新版本 def（旧 def 仍在链上），只动 tail，不改 count。 */
-function sweep(args: Rec, env: CallEnv): HandlerResult {
+async function sweep(args: Rec, env: CallEnv, hydrator: RefHydrator): Promise<HandlerResult> {
   const { queue, refs } = readQueueArgs(args)
-  const items = itemsFromChain(queue, refs)
+  const items = itemsFromChain(queue, await hydrator.hydrate('question', refs))
   const now = nowOf(env)
   const targets = [...items].reverse().filter((item) => isExpired(item, now))
   if (targets.length === 0) {
@@ -281,9 +299,19 @@ function sweep(args: Rec, env: CallEnv): HandlerResult {
 
 // ── 方法表 ─────────────────────────────────────────────────────────────────
 
-export const HANDLERS: Record<string, Handler> = {
-  describe: () => describe(),
-  invoke: (args, env) => invoke(requireRecord(args, 'args'), env),
-  list: (args) => list(requireRecord(args, 'args')),
-  sweep: (args, env) => sweep(requireRecord(args, 'args'), env),
+/** 构造方法表：`deps.host` 为宿主只读解析通道（按需解析投影引用）。 */
+export function createHandlers(deps: QuestionDeps): Record<string, Handler> {
+  const read: DefReader = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
+  return {
+    describe: () => describe(),
+    invoke: (args, env) => invoke(requireRecord(args, 'args'), env, hydrator),
+    list: (args) => list(requireRecord(args, 'args'), hydrator),
+    sweep: (args, env) => sweep(requireRecord(args, 'args'), env, hydrator),
+  }
 }

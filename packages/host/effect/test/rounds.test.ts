@@ -3,6 +3,7 @@ import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
 import { WorldWriter } from '../../writer.ts'
 import type { SyncResult, WorldState } from '../../writer.ts'
 import { resolvePins, runSubmission, parsePlanDirectives } from '../rounds.ts'
+import type { AuditDraft } from '../../audit.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Def, Directive, Entry, Hash, Head, Json, Op, World } from '../../../kernel/index.ts'
@@ -193,7 +194,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect((outcome.observations[1] as { kind: string }).kind).toBe('write')
   })
 
-  it('eff → 审计 → 回灌 → plan 写：写条目的 ref = 紧邻 eval 段最后一条 eff 的审计键', async () => {
+  it('eff → 审计侧存 → 回灌 → plan 写：业务写不落 ref，审计不进世界', async () => {
     const plan: Json = {
       $directives: [
         { kind: 'write', request: { op: 'put', args: { body: { first: true } } } },
@@ -208,7 +209,7 @@ describe('A10 轮间驱动 runSubmission', () => {
       [callee]: put({ body: ['c', plan] }),
       [term]: put({ body: ['call', ['c', callee], [['eff', 'toy.echo', 'echo', ['c', 1]]]] }),
     })
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const journal: Entry[] = []
     const outcome = await runSubmission({
       world,
@@ -220,17 +221,16 @@ describe('A10 轮间驱动 runSubmission', () => {
       now: () => 1,
       router: fakeRouter(),
       initialOwnerOf: () => 'caller',
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
       onRound: (entries) => journal.push(...entries),
     })
     expect(outcome.status).toBe('done')
     expect(audits).toHaveLength(1)
-    const auditHash = H(audits[0].args as Json)
     expect(journal).toHaveLength(2)
-    expect(journal[0].ref).toBe(auditHash)
-    expect(journal[1].ref).toBe(auditHash)
-    // 审计先落：两条业务写 prev 接在审计条目之后
-    expect(journal[0].prev).toBe(pos([audits[0]]))
+    // 审计走旁路侧存：业务写不落 ref，也不接在审计条目之后
+    expect(journal[0].ref).toBeUndefined()
+    expect(journal[1].ref).toBeUndefined()
+    expect(journal[0].prev).toBeNull()
   })
 
   it('extern 随邻并保序：eval+extern 同轮、write 另轮', async () => {
@@ -538,7 +538,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect(ops[0].args.pins['toy.echo']).toBe(active)
   })
 
-  it('eval 段多条 eff：plan 写的 ref = 紧邻 eval 段最后一条 eff 的审计键', async () => {
+  it('eval 段多条 eff：各次调用均产审计草稿，plan 写不落 ref', async () => {
     const plan: Json = {
       $directives: [{ kind: 'write', request: { op: 'put', args: { body: { after: 2 } } } }],
     }
@@ -553,7 +553,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     ]
     const term = defHash(put({ body }))
     const world = worldOf({ [callee]: put({ body: ['c', plan] }), [term]: put({ body }) })
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const journal: Entry[] = []
     const outcome = await runSubmission({
       world,
@@ -565,13 +565,13 @@ describe('A10 轮间驱动 runSubmission', () => {
       now: () => 1,
       router: fakeRouter(),
       initialOwnerOf: () => 'caller',
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
       onRound: (entries) => journal.push(...entries),
     })
     expect(outcome.status).toBe('done')
     expect(audits).toHaveLength(2)
     expect(journal).toHaveLength(1)
-    expect(journal[0].ref).toBe(H(audits[1].args as Json))
+    expect(journal[0].ref).toBeUndefined()
   })
 
   it('plan 写：id 幂等键非空且逐条唯一；args 原样落地', async () => {
@@ -638,10 +638,10 @@ describe('A10 轮间驱动 runSubmission', () => {
     }
   })
 
-  it('refused 轮：返回的 head 已随审计推进（下一次提交可续链）', async () => {
+  it('refused 轮：审计只进侧存，世界 / 链头不推进', async () => {
     const termHash = 'ef'.repeat(32)
     const world = worldOf({ [termHash]: put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }) })
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     const outcome = await runSubmission({
       world,
       head: { seq: -1, hash: null },
@@ -654,12 +654,12 @@ describe('A10 轮间驱动 runSubmission', () => {
         throw new Error('pipe closed')
       }),
       initialOwnerOf: () => 'caller',
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
     })
     expect(outcome.status).toBe('refused')
     expect(audits).toHaveLength(1)
-    expect(outcome.head.hash).toBe(pos([audits[0]]))
-    expect(outcome.world.defs[H(audits[0].args as Json)]).toBeDefined()
+    expect(outcome.head).toEqual({ seq: -1, hash: null })
+    expect(Object.keys(outcome.world.defs)).toEqual([termHash])
   })
 
   it('重放一致：内存 commit 的结束世界 = 按发生序重放条目（非自证）', async () => {
@@ -679,9 +679,8 @@ describe('A10 轮间驱动 runSubmission', () => {
         ],
       }),
     })
-    const audits: Entry[] = []
     const rounds: Entry[] = []
-    // 基线快照：审计 commit 会就地改世界，对比重放须从快照起（defs 不可变，浅拷即可）
+    // 基线快照：业务写就地改世界，对比重放须从快照起（defs 不可变，浅拷即可）
     const base: World = { defs: { ...world.defs }, ids: { ...world.ids } }
     const outcome = await runSubmission({
       world,
@@ -691,12 +690,10 @@ describe('A10 轮间驱动 runSubmission', () => {
       limits: LIMITS,
       initiator: 'tester',
       now: () => 1,
-      onAudit: (entry) => audits.push(entry),
       onRound: (entries) => rounds.push(...entries),
     })
-    const all = [...audits, ...rounds].sort((a, b) => a.seq - b.seq)
-    expect(all.length).toBeGreaterThan(0)
-    expect(worldRev(outcome.world)).toBe(worldRev(replay(all, base)))
+    expect(rounds.length).toBeGreaterThan(0)
+    expect(worldRev(outcome.world)).toBe(worldRev(replay(rounds, base)))
   })
 })
 
@@ -862,7 +859,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     expect(outcome.status).toBe('done')
   })
 
-  it('轮内 eff 的审计推进 head，但不回改该轮 ctx', async () => {
+  it('轮内 eff 的审计只进侧存，不推进 head，也不回改该轮 ctx', async () => {
     const callee = defHash(put({ body: ['g', ['head', 'seq']] }))
     const main = defHash(
       put({ body: ['call', ['c', callee], [['eff', 'toy.echo', 'echo', ['c', 1]]]] }),
@@ -871,7 +868,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
       [callee]: put({ body: ['g', ['head', 'seq']] }),
       [main]: put({ body: ['call', ['c', callee], [['eff', 'toy.echo', 'echo', ['c', 1]]]] }),
     })
-    const audits: Entry[] = []
+    const audits: AuditDraft[] = []
     let calls = 0
     const outcome = await runSubmission({
       world,
@@ -883,16 +880,16 @@ describe('A14 eval ctx 注入（三路同规）', () => {
       now: () => 1,
       router: fakeRouter(),
       initialOwnerOf: () => 'caller',
-      onAudit: (entry) => audits.push(entry),
+      onAudit: (draft) => audits.push(draft),
       ctxFor: (_w, h) => {
         calls += 1
         return { head: { seq: h.seq, hash: h.hash } }
       },
     })
     expect(outcome.status).toBe('done')
-    // 审计已推进链头（0），但 ctx 仍报该轮轮首（-1）
+    // 审计走旁路侧存，链头不动（-1），ctx 仍报该轮轮首（-1）
     expect(audits).toHaveLength(1)
-    expect(outcome.head.seq).toBe(0)
+    expect(outcome.head.seq).toBe(-1)
     expect((outcome.observations[0] as { value: Json }).value).toBe(-1)
     expect(calls).toBe(1)
   })
@@ -954,6 +951,60 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     })
     // 产出者轮构造一次；plan 条目显式 null 不构造
     expect(calls).toBe(3)
+  })
+
+  it('inject：宿主按声明路径把投影片段并入 args（续跑不再自带整份投影）', async () => {
+    const reader = defHash(put({ body: ['v', 0] }))
+    const world = worldOf({ [reader]: put({ body: ['v', 0] }) })
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        {
+          kind: 'eval',
+          entry: reader,
+          args: { cursor: 'c-1' },
+          ctx: null,
+          inject: { ids: ['ids'], session: ['ids', 'sess', 'body'] },
+        },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => ({ ids: { sess: { body: { current: 'c-1' } } } }),
+    })
+    expect(outcome.status).toBe('done')
+    expect((outcome.observations[0] as { value: Json }).value).toEqual({
+      cursor: 'c-1',
+      ids: { sess: { body: { current: 'c-1' } } },
+      session: { current: 'c-1' },
+    })
+  })
+
+  it('inject 形态非法（args 非对象 / 路径非数组）→ refused:bad_directive', async () => {
+    const reader = defHash(put({ body: ['v', 0] }))
+    const world = worldOf({ [reader]: put({ body: ['v', 0] }) })
+    const badArgs = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [{ kind: 'eval', entry: reader, args: null, inject: { ids: ['ids'] } }],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: () => ({ ids: {} }),
+    })
+    expect(badArgs.status).toBe('refused')
+    expect(badArgs.observations[badArgs.observations.length - 1]).toMatchObject({
+      kind: 'refused',
+      reasons: ['bad_directive'],
+    })
+
+    const plan = parsePlanDirectives({
+      $directives: [{ kind: 'eval', entry: reader, inject: { ids: 'ids' } }],
+    })
+    expect(plan).toEqual({ ok: false, reason: 'bad_directive' })
   })
 
   it('plan 轮取自身轮首 world / head：plan 先落 write，随后的 plan eval 吃到写后世界', async () => {

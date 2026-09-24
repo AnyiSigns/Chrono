@@ -18,6 +18,15 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
+/** 台账切片里本身份最近数据世代的下标（无数据世代 → null，写整份世代）。 */
+export function baseSeqOf(slice: Json | undefined): number | null {
+  if (!isRecord(slice)) return null
+  const dataGen = slice['data_gen']
+  if (!isRecord(dataGen)) return null
+  const seq = dataGen['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
 /** 一条原子 batch write 计划条目。 */
 export function batchDirective(ops: Json[]): Json {
   return { kind: 'write', request: { op: 'batch', args: { ops } } }

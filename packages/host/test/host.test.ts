@@ -3,7 +3,12 @@ import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { join } from 'node:path'
 import { writeFileSync } from 'node:fs'
-import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../test/test-helpers.ts'
+import {
+  createTempRoot,
+  createToyPlugin,
+  cleanupTempRoot,
+  readAuditRecords,
+} from '../test/test-helpers.ts'
 import { hostPaths } from '../paths.ts'
 import { runSeed } from '../offline.ts'
 
@@ -98,13 +103,12 @@ describe('宿主 host', () => {
     }
   })
 
-  it('submit [eval(toy-eff)] → refused:eff_error，且 journal 文件真实多一条审计 entry（ref 留空）', async () => {
+  it('submit [eval(toy-eff)] → refused:eff_error，审计进旁路侧存、journal 不变', async () => {
     const report = runSeed(root)
     expect(report.ok).toBe(true)
 
-    const { loadAnchor, readJournal, replayFull } = require('../ledger/index.ts')
+    const { loadAnchor, readJournal } = require('../ledger/index.ts')
     const { listCommands } = require('../assembly/index.ts')
-    const { H } = require('../../kernel/index.ts')
     const anchor = loadAnchor(join(root, 'state', 'world', 'journal.jsonl'))
     const commands = listCommands(anchor.world, hostPaths(root).blobsDir)
     const toyEff = commands.find((c: any) => c.name === 'toy.eff')
@@ -128,20 +132,15 @@ describe('宿主 host', () => {
         reasons: expect.arrayContaining(['eff_error']),
       })
 
-      const afterEntries = readJournal(journalFile)
-      expect(afterEntries.length).toBe(beforeCount + 1)
-      const newEntry = afterEntries[afterEntries.length - 1]
-      expect(newEntry.op).toBe('put')
-      expect(newEntry.by).toBe('client')
-      expect(newEntry.ref).toBeUndefined()
+      // 审计不进 journal；侧存留一条
+      expect(readJournal(journalFile).length).toBe(beforeCount)
+      const audits = readAuditRecords(root)
+      expect(audits).toHaveLength(1)
+      expect(audits[0].by).toBe('client')
       // S4：toy-eff 的 eff 目标是自身声明的能力类 toy.echo（无自 pin）→ 走自能力路由；
       // toy 无 execute 成员（start 空）→ 无端点行 → not_loaded，内核归 eff_error
-      const auditBody = (newEntry.args as { body: { result: { ok: boolean; error: string } } }).body
+      const auditBody = audits[0].body as { result: { ok: boolean; error: string } }
       expect(auditBody.result).toEqual({ ok: false, error: 'not_loaded' })
-
-      const auditHash = H(newEntry.args as any)
-      const replayed = replayFull(afterEntries)
-      expect(replayed.defs[auditHash]).toBeDefined()
     } finally {
       client.close()
     }

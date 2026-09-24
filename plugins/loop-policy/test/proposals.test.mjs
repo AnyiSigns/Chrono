@@ -3,7 +3,24 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService, writeOps } from './driver.mjs'
 import { H } from '../execute/hash.ts'
+import { evolutionBody } from '../execute/proposals.ts'
 import { seedModel } from '../execute/seed.ts'
+
+test('evolutionBody：剔除入口切片并入的 refs（防每回合把闭包写回台账）', () => {
+  const body = evolutionBody({
+    evolution: {
+      version: 1,
+      trace: { tail: null, count: 0 },
+      evidence: { tail: null, count: 0 },
+      proposals: { tail: null, count: 0 },
+      verdicts: { tail: null, count: 0 },
+      refs: { ['a'.repeat(64)]: { kind: 'evidence' } },
+    },
+  })
+  assert.equal(body['refs'], undefined)
+  assert.equal(body['version'], 1)
+  assert.deepEqual(body['trace'], { tail: null, count: 0 })
+})
 
 function ledgerBody(proposalHash, verdictCount = 0) {
   return {
@@ -95,6 +112,37 @@ test('提案扫描：机械闸不过（无 derived_from）→ 落拒绝 verdict�
     assert.equal(verdict.args.body.result, 'rejected')
     assert.equal(verdict.args.body.gate.mechanical, 'fail')
     assert.equal(verdict.args.body.gate.reason, 'fork_only')
+  } finally {
+    service.close()
+  }
+})
+
+test('补丁世代：verdict 只替换 verdicts 槽，组装结果 == 整份写入结果', async () => {
+  const { bag } = buildBag({ withDerivedFrom: false })
+  const service = startService()
+  try {
+    const full = await service.interpret(bag)
+    const fullBody = writeOps(full.value).find(
+      (op) => op.op === 'put' && op.args.body?.verdicts?.count === 1,
+    ).args.body
+
+    const withGen = { ...bag.evolution, data_gen: { seq: 2, payload: 'b'.repeat(64) } }
+    const patched = await service.interpret({ ...bag, evolution: withGen })
+    const ops = writeOps(patched.value)
+    const patchPut = ops.find(
+      (op) => op.op === 'put' && op.args.body?.ops?.some((patch) => patch.path?.[0] === 'verdicts'),
+    )
+    assert.ok(patchPut, '补丁世代应写 verdicts 补丁 def')
+    const addGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'evolution')
+    assert.equal(addGen.args.base, 2)
+    assert.deepEqual(patchPut.args.body.ops, [
+      { op: 'replace', path: ['verdicts'], value: fullBody.verdicts },
+    ])
+    // base = withGen 的台账 body；补丁只替换 verdicts 槽为整份写入时的同值 → 组装结果 == fullBody
+    const baseBody = evolutionBody({ evolution: withGen })
+    assert.deepEqual(baseBody.trace, fullBody.trace)
+    assert.deepEqual(baseBody.evidence, fullBody.evidence)
+    assert.deepEqual(baseBody.proposals, fullBody.proposals)
   } finally {
     service.close()
   }

@@ -40,6 +40,7 @@ test('默认阈值覆盖 evolve-metrics 阈值契约字段名', () => {
     'verify_cluster_ratio',
     'min_workspaces',
     'trace_retention_rounds',
+    'evidence_retention_rounds',
     'unhealthy_refused_streak',
   ]) {
     assert.equal(typeof DEFAULT_THRESHOLDS[name], 'number', `缺阈值 ${name}`)

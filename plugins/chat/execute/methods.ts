@@ -19,14 +19,44 @@ import {
 } from './assemble.ts'
 import { buildHistory, parseHistoryQuery } from './history.ts'
 import { asString, errorValue, externOnly, isErrorValue, isRecord, mergeDirectives } from './plan.ts'
+import { createRefHydrator } from './refs.ts'
+import type { DefReader, RefHydrator } from './refs.ts'
 import { BadArgsError } from './types.ts'
 import type { Wiring } from './wiring.ts'
 import type { CallEnv, Handler, Json, PortCaller, Rec } from './types.ts'
 
-/** 服务依赖：反向调用通道 + 生效接线（单测可注入假端口）。 */
+/** 服务依赖：反向调用通道 + 生效接线（单测可注入假端口）；`host` 为只读解析通道（缺省只吃已解析 refs）。 */
 export interface ChatDeps {
   port: PortCaller
   wiring: Wiring
+  host?: PortCaller
+}
+
+/** 投影里 refs 会被本服务消费的身份（其余身份只读 body，无需解析引用）。 */
+const REF_IDENTITIES = [
+  'session',
+  'loop-policy',
+  'evolution',
+  'approval',
+  'question',
+  'todo',
+  'agents',
+] as const
+
+/** 把投影切片里各身份的 refs（哈希列表）按需解析成闭包；已是对象则原样。 */
+async function hydrateIds(
+  ids: Json,
+  hydrator: RefHydrator,
+  identities: readonly string[] = REF_IDENTITIES,
+): Promise<Json> {
+  if (!isRecord(ids)) return ids
+  const out: Rec = { ...ids }
+  for (const identity of identities) {
+    const entry = out[identity]
+    if (!isRecord(entry)) continue
+    out[identity] = { ...entry, refs: await hydrator.hydrate(identity, entry['refs']) }
+  }
+  return out
 }
 
 /** 槽 kind：只有 `chat.message` 跑管道。 */
@@ -86,8 +116,13 @@ async function callInterpret(deps: ChatDeps, bag: Rec): Promise<InterpretOutcome
  * 回合启动：读本线程槽 kind → 空槽 / 非 chat kind 幂等 no-op；
  * 否则装配 interpret bag 派发 #33，再把首条消息的 title 旁路段按段序合并。
  */
-async function send(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
-  const ids = args
+async function send(
+  args: Json,
+  env: CallEnv,
+  deps: ChatDeps,
+  hydrator: RefHydrator,
+): Promise<Json> {
+  const ids = await hydrateIds(args, hydrator)
   if (!isRecord(ids)) throw new BadArgsError('ids must be an object')
   const wiring = deps.wiring
   const thread = threadKey(env.thread)
@@ -147,8 +182,10 @@ async function send(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
 }
 
 /** 展示历史：从投影 `session` 沿 `prev` 还原链，按 `{conversation, before, limit}` 切窗。 */
-function history(args: Json, env: CallEnv): Json {
-  const ids = isRecord(args) && isRecord(args['ids']) ? args['ids'] : args
+async function history(args: Json, env: CallEnv, hydrator: RefHydrator): Promise<Json> {
+  const raw = isRecord(args) && isRecord(args['ids']) ? args['ids'] : args
+  if (!isRecord(raw)) throw new BadArgsError('ids must be an object')
+  const ids = await hydrateIds(raw, hydrator, ['session'])
   if (!isRecord(ids)) throw new BadArgsError('ids must be an object')
   const sessionBody = bodyOf(ids, 'session') ?? {}
   const refs = refsOf(ids, 'session')
@@ -167,11 +204,16 @@ function history(args: Json, env: CallEnv): Json {
  * （内核 term 不能同时传 args 与投影，这是既定变通，见 reveal / search 先例）。
  * 装配与 send 相同的 interpret bag，另加 `bag.resume={cursor,thread,payload}` 交 #33 恢复执行。
  */
-async function resume(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
+async function resume(
+  args: Json,
+  env: CallEnv,
+  deps: ChatDeps,
+  hydrator: RefHydrator,
+): Promise<Json> {
   if (!isRecord(args)) throw new BadArgsError('resume args must be an object')
   const cursor = args['cursor']
   if (!isRecord(cursor)) throw new BadArgsError('cursor must be an object')
-  const ids = isRecord(args['ids']) ? args['ids'] : {}
+  const ids = isRecord(args['ids']) ? await hydrateIds(args['ids'], hydrator) : {}
   const thread = threadKey(asString(args['thread']) ?? env.thread)
   const payload = isRecord(args['payload']) ? args['payload'] : null
 
@@ -206,9 +248,16 @@ async function resume(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
 
 /** 构造方法表（依赖注入：反向调用通道与接线由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: ChatDeps): Record<string, Handler> {
+  const read: DefReader = async (identity, hashes) => {
+    if (deps.host === undefined) return null
+    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
+    if (!outcome.ok) return null
+    return isRecord(outcome.value) ? outcome.value : null
+  }
+  const hydrator = createRefHydrator(read)
   return {
-    send: (args: Json, env: CallEnv): Promise<Json> => send(args, env, deps),
-    history: (args: Json, env: CallEnv): Json => history(args, env),
-    resume: (args: Json, env: CallEnv): Promise<Json> => resume(args, env, deps),
+    send: (args: Json, env: CallEnv): Promise<Json> => send(args, env, deps, hydrator),
+    history: (args: Json, env: CallEnv): Promise<Json> => history(args, env, hydrator),
+    resume: (args: Json, env: CallEnv): Promise<Json> => resume(args, env, deps, hydrator),
   }
 }

@@ -15,7 +15,7 @@ import { hostPaths } from '../paths.ts'
 import { getBlob, isBlobPointer, putBlob } from '../blobs.ts'
 import { H } from '../../kernel/index.ts'
 import type { Directive, Entry, Hash, Json, Op, World } from '../../kernel/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import {
   FIXTURE_ALPHA,
   FIXTURE_SERVICE_MAIN,
@@ -77,20 +77,16 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
     })
   }
 
-  /** 末条审计 entry 的 result。 */
-  function lastAuditResult(entries: Entry[]): Json | null {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const body = (entries[i].args as { body?: { request?: Json; result?: Json } }).body
-      if (body?.request !== undefined) return body.result ?? null
-    }
-    return null
+  /** 末条审计（旁路侧存）的 result。 */
+  function lastAuditResult(): Json | null {
+    const records = readAuditRecords(root)
+    const body = records[records.length - 1]?.body as { result?: Json } | undefined
+    return body?.result ?? null
   }
 
   /** 末条审计 result 的 value.pid（默认回值带 pid）。 */
   function lastServicePid(): number {
-    const result = lastAuditResult(readJournal(journalFile())) as {
-      value?: { pid?: number }
-    } | null
+    const result = lastAuditResult() as { value?: { pid?: number } } | null
     const pid = result?.value?.pid
     expect(typeof pid).toBe('number')
     return pid as number
@@ -367,7 +363,7 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
         'eval',
       ])
       // 后续 eval 的 eff 回灌值来自 v2 服务（换代在轮间已落地、端点已挂新 gen）
-      expect(lastAuditResult(readJournal(journalFile()))).toMatchObject({
+      expect(lastAuditResult()).toMatchObject({
         ok: true,
         value: { version: 'v2' },
       })
@@ -419,7 +415,7 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
     const client = await connect({ root, timeoutMs: 3000 })
     try {
       expect((await client.command('toy-caller.run')).status).toBe('done')
-      expect(lastAuditResult(readJournal(journalFile()))).toMatchObject({
+      expect(lastAuditResult()).toMatchObject({
         ok: true,
         value: { version: 'v1' },
       })
@@ -437,7 +433,7 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
       ])
       expect(swap.status).toBe('done')
       expect((await client.command('toy-caller.run')).status).toBe('done')
-      expect(lastAuditResult(readJournal(journalFile()))).toMatchObject({
+      expect(lastAuditResult()).toMatchObject({
         ok: true,
         value: { version: 'v2' },
       })
@@ -502,8 +498,9 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
         reasons: ['eff_error'],
       })
       const entries = readJournal(journalFile())
-      expect(entries).toHaveLength(before + 1)
-      expect(lastAuditResult(entries)).toEqual({ ok: false, error: 'stale' })
+      // 审计进侧存：refused 轮 journal 不增
+      expect(entries).toHaveLength(before)
+      expect(lastAuditResult()).toEqual({ ok: false, error: 'stale' })
     } finally {
       client.close()
     }

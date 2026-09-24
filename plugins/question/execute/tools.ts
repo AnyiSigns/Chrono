@@ -64,17 +64,15 @@ function argsSchema(config: QuestionConfig): Rec {
 export function describeValue(config: QuestionConfig): Json {
   const tool: Rec = {
     name: 'question',
-    intent: '向用户提出一个或多个问题并等待作答；本回合正常结束，用户作答后由续跑把答案回灌为本次工具调用的结果。',
+    intent: '向用户提出一个或多个问题并等待作答。',
     when_to_use:
       '需要用户补充信息、在若干方案里做选择、或确认 agent 无法自行决定的事项时。',
     param_semantics: {
       questions:
         '问题数组，每项 {id, header, question, options[], multiple, custom}；options 为空即纯开放作答，multiple 允许多选，custom 允许自定义输入。',
     },
-    boundaries:
-      '不阻塞等待、不自动作答、不做审批门禁（审批归 approval）、不写其他身份；一次提问本回合即结束，答案在后续回合回灌。',
-    description:
-      '向用户提问并等待回答：把问题队列项写入世界后本回合结束；用户作答后续跑，答案作为本工具结果回灌。',
+    boundaries: '不自动作答、不做审批；提问后本回合结束，答案在后续回合返回。',
+    description: '向用户提问并等待回答。',
     argsSchema: argsSchema(config),
     caps: CAPS,
     idempotent: false,

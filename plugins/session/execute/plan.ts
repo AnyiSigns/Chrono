@@ -48,9 +48,102 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put（四字段全必填）。 */
-export function addGenOp(id: string, index: number): Json {
-  return { op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins: {} } }
+/**
+ * 单条 add_gen 子操作：payload / sig 指向同批更早的 put。
+ * `base` 存在即补丁世代（base = 同身份基础世代下标）；缺省为整份世代。
+ */
+export function addGenOp(id: string, index: number, base?: number): Json {
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
+  if (base !== undefined) args['base'] = base
+  return { op: 'add_gen', args }
+}
+
+/** 投影切片里本身份最近数据世代的下标（无数据世代 → null，写整份世代）。 */
+export function baseSeqOf(session: Rec): number | null {
+  const dataGen = session['data_gen']
+  if (!isRecord(dataGen)) return null
+  const seq = dataGen['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** JSON 结构相等（与内核 canonical 口径一致的简化版：键序无关、类型严格）。 */
+function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((item, index) => jsonEqual(item, b[index]))
+  }
+  if (isRecord(a) || isRecord(b)) {
+    if (!isRecord(a) || !isRecord(b)) return false
+    const keysA = Object.keys(a)
+    const keysB = Object.keys(b)
+    if (keysA.length !== keysB.length) return false
+    return keysA.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+  }
+  return false
+}
+
+/**
+ * 会话 body 的补丁：以 base 为起点把 prev 变换为 next。
+ * conversations 按 id 对齐：缺者删除（降序，防索引漂移）、变者按位替换、新者追加；
+ * 其余顶层字段逐个 replace / delete。补丁语义保证组装结果与直接写整份 next 逐字段一致。
+ */
+export function sessionPatches(prev: Rec, next: Rec): Json[] {
+  const ops: Json[] = []
+  const prevList = conversationsOf(prev)
+  const nextList = conversationsOf(next)
+  const prevIndexById = new Map<string, number>()
+  prevList.forEach((item, index) => {
+    if (isRecord(item) && typeof item['id'] === 'string') prevIndexById.set(item['id'], index)
+  })
+  const nextIds = new Set<string>()
+  nextList.forEach((item) => {
+    if (isRecord(item) && typeof item['id'] === 'string') nextIds.add(item['id'])
+  })
+  const deleted = [...prevIndexById.entries()]
+    .filter(([id]) => !nextIds.has(id))
+    .map(([, index]) => index)
+    .sort((a, b) => b - a)
+  for (const index of deleted) ops.push({ op: 'delete', path: ['conversations', index] })
+  const deletedBelow = (index: number): number => deleted.filter((item) => item < index).length
+  nextList.forEach((item) => {
+    const id = isRecord(item) && typeof item['id'] === 'string' ? item['id'] : null
+    const prevIndex = id === null ? undefined : prevIndexById.get(id)
+    if (prevIndex === undefined) {
+      ops.push({ op: 'append', path: ['conversations'], value: item })
+    } else if (!jsonEqual(prevList[prevIndex], item)) {
+      ops.push({ op: 'replace', path: ['conversations', prevIndex - deletedBelow(prevIndex)], value: item })
+    }
+  })
+  for (const key of Object.keys(next)) {
+    if (key === 'conversations') continue
+    if (!jsonEqual(prev[key], next[key])) ops.push({ op: 'replace', path: [key], value: next[key] })
+  }
+  for (const key of Object.keys(prev)) {
+    if (key === 'conversations' || Object.hasOwn(next, key)) continue
+    ops.push({ op: 'delete', path: [key] })
+  }
+  return ops
+}
+
+/**
+ * 追加会话世代的写子操作：有数据世代（baseSeq）写补丁世代，否则写整份世代。
+ * 调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
+ */
+export function pushSessionGen(ops: Json[], session: Rec, nextSession: Rec): void {
+  const base = baseSeqOf(session)
+  const index = ops.length
+  if (base !== null) {
+    const patches = sessionPatches(sessionDataOf(session), nextSession)
+    // 无变更（空补丁）时回落整份世代：补丁体不允许空 ops，且行为与旧整份写一致（仍产新世代）
+    if (patches.length > 0) {
+      ops.push(putOp({ ops: patches }))
+      ops.push(addGenOp('session', index, base))
+      return
+    }
+  }
+  ops.push(putOp(nextSession))
+  ops.push(addGenOp('session', index))
 }
 
 /** 一条原子 batch write 计划条目。 */

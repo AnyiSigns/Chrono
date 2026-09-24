@@ -242,15 +242,16 @@ test('budget_impossible：P0 + P1 超预算（结构化错误值，非崩溃）'
   }
 })
 
-test('budget_exceeded：退化预算（≤ 0）走结构化错误', async () => {
+test('退化预算：max_output ≥ context 时输出预留封顶半上下文（不再出现负预算）', async () => {
   const drv = startService()
   try {
     await drv.hello()
     const value = await drv.build(
       baseBag({ config: { model: 'm1', context_window: 100, max_output: 100 } }),
     )
-    assert.equal(value.ok, false)
-    assert.equal(value.code, 'budget_exceeded')
+    assert.equal(value.ok, true)
+    assert.equal(value.manifest.budget, 100 - 50 - 5)
+    assert.equal(value.params.max_output, 50)
   } finally {
     drv.close()
   }

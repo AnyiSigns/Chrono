@@ -5,7 +5,9 @@
   "methods": {
     "question": ["describe", "invoke", "list", "sweep"]
   },
-  "pins": {},
+  "pins": {
+    "host": "host"
+  },
   "start": "node execute/main.ts",
   "protocol": "1",
   "restart": {

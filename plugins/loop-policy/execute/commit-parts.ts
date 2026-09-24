@@ -4,6 +4,7 @@
 // 纯展示数据，不进模型上下文：context-window 丢弃 reasoning / tool part（只取 text 段），
 // 工具调用与结果对模型的可见性由 `extra_messages` 回灌（message.tool_calls / tool_call_id）保证。
 
+import { escapeRefs, stripPlans } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 
 function isRec(value: unknown): value is Rec {
@@ -12,6 +13,20 @@ function isRec(value: unknown): value is Rec {
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/**
+ * 工具结果的展示形态：计划值取其中 `extern` 载荷（业务数据在末尾 extern 里），
+ * 再剥计划通道 `$directives`、转义残留的 `$n` 字面量——展示数据落进世界前必须与内核占位符消歧。
+ */
+function displayResult(value: Json): Json {
+  if (isRec(value) && Array.isArray(value['$directives'])) {
+    const extern = (value['$directives'] as Json[]).find(
+      (directive) => isRec(directive) && directive['kind'] === 'extern' && isRec(directive['payload']),
+    )
+    return escapeRefs(stripPlans(isRec(extern) ? (extern['payload'] as Json) : {}))
+  }
+  return escapeRefs(stripPlans(value))
 }
 
 /** 工具名 → render 描述符（来自 bag.tools 目录 decl；未登记 / 无 render 返回 null）。 */
@@ -78,7 +93,10 @@ export function displayParts(timeline: Json[], finalMessage: Rec | null, tools: 
       const part = callId !== null ? toolPartByCall.get(callId) : undefined
       if (part === undefined || result === null) continue
       part['status'] = result['ok'] === true ? 'ok' : 'error'
-      part['result'] = result['ok'] === true ? (result['result'] ?? null) : (result['error'] ?? result['result'] ?? null)
+      part['result'] =
+        result['ok'] === true
+          ? displayResult(result['result'] ?? null)
+          : displayResult(result['error'] ?? result['result'] ?? null)
     }
   }
 

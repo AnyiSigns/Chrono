@@ -9,7 +9,7 @@ import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { readJournal, verifyFull } from '../ledger/index.ts'
-import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, readAuditRecords } from './test-helpers.ts'
 import { waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { Json } from '../../kernel/index.ts'
@@ -125,12 +125,14 @@ describe('G2 真取消（cancel{run}）', () => {
 
       const entries = readJournal(journalFile())
       expect(verifyFull(entries).ok).toBe(true)
-      const added = entries.slice(before)
-      expect(added).toHaveLength(1)
-      const body = (added[0].args as unknown as { body: { result: Json; outcome: string } }).body
+      // 审计进旁路侧存：journal 不增
+      expect(entries.slice(before)).toHaveLength(0)
+      const records = readAuditRecords(root)
+      expect(records).toHaveLength(1)
+      const body = records[0].body as { result: Json; outcome: string }
       expect(body.result).toEqual({ ok: false, error: 'cancelled' })
       expect(body.outcome).toBe('cancelled')
-      expect(added[0].by).toBe('client')
+      expect(records[0].by).toBe('client')
     } finally {
       client.close()
     }
@@ -159,12 +161,12 @@ describe('G2 真取消（cancel{run}）', () => {
       expect((await second).status).toBe('cancelled')
       const entries = readJournal(journalFile())
       expect(verifyFull(entries).ok).toBe(true)
-      const added = entries.slice(before)
-      // 两个 run 各留一条 cancelled 审计；无业务写
-      expect(added).toHaveLength(2)
-      for (const item of added) {
-        const body = (item.args as unknown as { body: { outcome: string } }).body
-        expect(body.outcome).toBe('cancelled')
+      // 无业务写进 journal；两个 run 各留一条 cancelled 审计进侧存
+      expect(entries.slice(before)).toHaveLength(0)
+      const records = readAuditRecords(root)
+      expect(records).toHaveLength(2)
+      for (const item of records) {
+        expect((item.body as { outcome: string }).outcome).toBe('cancelled')
       }
     } finally {
       client.close()
@@ -177,7 +179,8 @@ describe('G2 真取消（cancel{run}）', () => {
     const handle = await startHost({ root, callTimeoutMs: 60_000 })
     handles.push(handle)
     const client = await connect({ root, timeoutMs: 5000 })
-    const pending = client.command('toy-caller.run.slow')
+    // 停机先于 result 帧到达就断连 → 命令 promise 会以 connection_closed 拒绝；就地吞掉，避免未处理拒绝
+    const pending = client.command('toy-caller.run.slow').catch(() => undefined)
     try {
       // plan 的业务写先落链：command run 已在途（随后进入 30s 慢 eff）
       await waitFor(() => readJournal(journalFile()).length > before, 'command plan write')
@@ -188,8 +191,8 @@ describe('G2 真取消（cancel{run}）', () => {
     } finally {
       client.close()
     }
-    // 停机可能先于 result 帧到达就断连：两种收口都算，不允许长时间挂起
-    await pending.catch(() => undefined)
+    // 两种收口都算，不允许长时间挂起
+    await pending
   })
 
   it('未知 / 已结束的 run：fail-closed（unknown_run）', async () => {

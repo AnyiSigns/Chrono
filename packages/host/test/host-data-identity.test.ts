@@ -16,7 +16,7 @@ import { getBlob, isBlobPointer, putBlob } from '../blobs.ts'
 import { projectBaseOnly } from '../projection/index.ts'
 import { H, worldRev } from '../../kernel/index.ts'
 import type { Directive, Entry, Hash, Json, Op, World } from '../../kernel/index.ts'
-import { createTempRoot, cleanupTempRoot, createToyPlugin } from './test-helpers.ts'
+import { createTempRoot, cleanupTempRoot, createToyPlugin, readAuditRecords } from './test-helpers.ts'
 import {
   FIXTURE_ALPHA,
   isPidAlive,
@@ -132,19 +132,15 @@ describe('G7 数据身份的存放与读取（A1 同身份混合世代）', () =
     })
   }
 
-  /** 末条审计 entry 的 result（取服务 pid 用）。 */
-  function lastAuditResult(entries: Entry[]): Json | null {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const body = (entries[i].args as { body?: { request?: Json; result?: Json } }).body
-      if (body?.request !== undefined) return body.result ?? null
-    }
-    return null
+  /** 末条审计（旁路侧存）的 result（取服务 pid 用）。 */
+  function lastAuditResult(): Json | null {
+    const records = readAuditRecords(root)
+    const body = records[records.length - 1]?.body as { result?: Json } | undefined
+    return body?.result ?? null
   }
 
   function lastServicePid(): number {
-    const result = lastAuditResult(readJournal(journalFile())) as {
-      value?: { pid?: number }
-    } | null
+    const result = lastAuditResult() as { value?: { pid?: number } } | null
     const pid = result?.value?.pid
     expect(typeof pid).toBe('number')
     return pid as number

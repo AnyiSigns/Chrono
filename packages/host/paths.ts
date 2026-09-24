@@ -18,6 +18,10 @@ export interface HostPaths {
   journalFile: string
   baseFile: string
   coldDir: string
+  /** 审计旁路侧存目录（不进世界）。 */
+  auditDir: string
+  /** 审计旁路侧存单文件（追加 + 上限压实）。 */
+  auditFile: string
   lockFile: string
   lifecycleFile: string
   pluginsFile: string
@@ -52,6 +56,9 @@ export function hostPaths(root: string): HostPaths {
     journalFile: resolve(worldDir, 'journal.jsonl'),
     baseFile: resolve(worldDir, 'base.json'),
     coldDir: resolve(worldDir, 'cold'),
+    // 效果审计旁路侧存：不进世界、不进链、不参与重放
+    auditDir: resolve(stateDir, 'audit'),
+    auditFile: resolve(stateDir, 'audit', 'audit.jsonl'),
     lockFile: resolve(runtimeDir, 'lock.json'),
     lifecycleFile: resolve(stateDir, 'lifecycle.log'),
     pluginsFile: resolve(stateDir, 'plugins.json'),

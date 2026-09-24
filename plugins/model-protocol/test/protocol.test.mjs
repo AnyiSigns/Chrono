@@ -114,6 +114,30 @@ test('openai-chat：请求编解码（max_tokens / reasoning_field·map / auth /
   })
 })
 
+test('openai-chat：未声明 reasoning_response_field 时回退解析 reasoning / reasoning_content / thinking', async () => {
+  const handler = (req, res) => {
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { role: 'assistant' } }] })
+    sseEvent(res, { choices: [{ delta: { reasoning: '想' } }] })
+    sseEvent(res, { choices: [{ delta: { reasoning: '一' } }] })
+    sseEvent(res, { choices: [{ delta: { content: '答' } }] })
+    sseEvent(res, { choices: [{ delta: {}, finish_reason: 'stop' }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      // 网关 / 自定义厂商：无 reasoning_response_field 声明
+      const quirks = { ...configFor('').quirks, reasoning_response_field: null }
+      const bag = chatBag(server.url, { config: { quirks }, resilience: FAST })
+      const result = await driver.call('chat', bag)
+      assert.equal(result.value.text, '答')
+      assert.equal(result.value.reasoning, '想一')
+      assert.equal(deltas(driver, 'reasoning').join(''), '想一')
+    })
+  })
+})
+
 test('openai-chat：中性 tool_calls / tool_call_id 编成厂商形状（工具回灌闭环）', async () => {
   const handler = (req, res) => {
     sseHead(res)

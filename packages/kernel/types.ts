@@ -23,6 +23,10 @@ export interface Gen {
   adopted: { at: number; by: string; write: string } // at/by = 该 Entry；
   // write = 完成采纳的 entry 位置：普通 add_gen = 自身 entryHash；batch 内 = 外层 batch entry 位置
   graft?: { from: string; gen: number } // from = 来源身份 id；gen = 该身份 gens 下标
+  // 补丁世代：base = 同身份内基础世代的下标（seq）。存在即「补丁世代」——
+  // payload 指向补丁 def（body = {ops:[…]}），组装 = base 世代 body + 补丁按序应用；
+  // 不存在即「整份世代」——payload 指向整份 body def。active 对两种世代同义（都指 payload）。
+  base?: number
 }
 
 export interface Identity {

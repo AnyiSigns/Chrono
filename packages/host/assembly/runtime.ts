@@ -53,6 +53,30 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
 /** 数据换代 `reload` 等 `ack` 的上限；超时按装载失败保守改走起新服务。 */
 const DEFAULT_RELOAD_TIMEOUT_MS = 10_000
 
+/**
+ * 宿主事件循环延迟（ms）监视：探针超时若发生在宿主自身卡顿期间（多兆字节提交 / GC / 同步哈希），
+ * 全服务会**同时**报超时——据此杀服务会把一次卡顿放大成级联重启、丢掉在途回合。
+ * 延迟高于探针超时即判定「宿主卡顿」，暂停探针与误杀判定。
+ */
+let eventLoopLagMs = 0
+let lagMonitor: NodeJS.Timeout | null = null
+
+function ensureLagMonitor(): void {
+  if (lagMonitor !== null) return
+  const intervalMs = 1000
+  let last = Date.now()
+  lagMonitor = setInterval(() => {
+    const now = Date.now()
+    eventLoopLagMs = Math.max(0, now - last - intervalMs)
+    last = now
+  }, intervalMs)
+  lagMonitor.unref?.()
+}
+
+function hostLagging(timeoutMs: number): boolean {
+  return eventLoopLagMs > timeoutMs
+}
+
 /** 已装载身份（供 `status.loaded`）：数据身份（无服务）也在列。 */
 export interface LoadedIdentity {
   id: string
@@ -691,13 +715,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private async probe(service: ServiceRuntime): Promise<void> {
+    ensureLagMonitor()
     // 在途调用时暂停探针：服务帧循环把 `probe` 排在在途调用之后，忙时探针必超时（误杀长调用）。
+    // 宿主自身卡顿（事件循环延迟 > 探针超时）时同样暂停：此时的超时不是服务的问题。
     if (
       this.stopping ||
       service.handledExit ||
       service.draining ||
       service.healthInFlight ||
-      service.link.hasInflightCall()
+      service.link.hasInflightCall() ||
+      hostLagging(service.health.timeoutMs)
     ) {
       return
     }
@@ -719,6 +746,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private async markUnhealthy(service: ServiceRuntime): Promise<void> {
     if (service.handledExit || this.stopping || service.draining || service.link.hasInflightCall())
       return
+    // 宿主卡顿导致的超时不据此杀服务：延迟高于探针超时说明是宿主自身被拖住，不是服务哑了。
+    if (hostLagging(service.health.timeoutMs)) return
     service.pendingExitReason = 'health_timeout'
     terminateChild(service.proc)
     await waitForExit(service.proc, EXIT_WAIT_MS)
