@@ -1,13 +1,1 @@
-[
-    "eff",
-    "ui-settings",
-    "discover",
-    [
-        "g",
-        [
-            "ids",
-            "input",
-            "body"
-        ]
-    ]
-]
+["eff", "ui-settings", "discover", ["g", ["ids", "input"]]]

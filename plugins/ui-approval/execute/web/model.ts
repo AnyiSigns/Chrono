@@ -53,6 +53,12 @@ export function identityActive(value: unknown): string | null | undefined {
   return typeof active === 'string' || active === null ? active : undefined
 }
 
+/** 身份视图 → data_gen（`{seq,payload}` 或 null）；非身份视图 / 形状不符回 undefined。 */
+export function identityDataGen(value: unknown): unknown {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'data_gen')) return undefined
+  return value.data_gen
+}
+
 /** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
 const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
 

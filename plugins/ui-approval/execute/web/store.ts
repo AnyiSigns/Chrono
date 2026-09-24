@@ -12,6 +12,7 @@ import {
   identifiedItems,
   identityActive,
   identityBody,
+  identityDataGen,
   isCodeGenFallbackBody,
   isRecord,
   verdictOf,
@@ -104,18 +105,58 @@ function decideFailure(result: Json): string | null {
   return null
 }
 
-/** 写 `#1` 本线程键的 batch directive：`put` 整份 body + `add_gen`。
+/** `data_gen.seq`（非负整数）；缺失 / 非法回 null。 */
+function dataGenSeq(value: unknown): number | null {
+  if (!isRecord(value)) return null
+  const seq = value.seq
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** 输入槽补丁：按线程键 `replace ['slots', key]` / `delete ['slots', key]`。 */
+function slotPatches(prev: Rec, next: Rec): Json[] {
+  const prevSlots = isRecord(prev.slots) ? prev.slots : {}
+  const nextSlots = isRecord(next.slots) ? next.slots : {}
+  const ops: Json[] = []
+  for (const key of Object.keys(nextSlots)) {
+    if (JSON.stringify(prevSlots[key]) !== JSON.stringify(nextSlots[key])) {
+      ops.push({ op: 'replace', path: ['slots', key], value: nextSlots[key] })
+    }
+  }
+  for (const key of Object.keys(prevSlots)) {
+    if (Object.prototype.hasOwnProperty.call(nextSlots, key)) continue
+    ops.push({ op: 'delete', path: ['slots', key] })
+  }
+  return ops
+}
+
+/** 写 `#1` 本线程键的 batch directive：有数据世代则写补丁 + `base`，否则 `put` 整份 body + `add_gen`。
  * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
-export function slotWriteDirective(body: Json, expectActive?: string | null): Json {
+export function slotWriteDirective(
+  prev: Json,
+  next: Json,
+  expectActive?: string | null,
+  dataGen?: unknown,
+): Json {
   const addGen: Rec = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
   if (expectActive !== undefined) addGen.expect_active = expectActive
+  const base = dataGenSeq(dataGen)
+  if (base !== null && isRecord(prev) && isRecord(next)) {
+    const patches = slotPatches(prev, next)
+    if (patches.length > 0) {
+      addGen.base = base
+      return {
+        kind: 'write',
+        request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { ops: patches } } }, { op: 'add_gen', args: addGen }] } },
+      }
+    }
+  }
   return {
     kind: 'write',
     request: {
       op: 'batch',
       args: {
         ops: [
-          { op: 'put', args: { body } },
+          { op: 'put', args: { body: next } },
           { op: 'add_gen', args: addGen },
         ],
       },
@@ -218,7 +259,10 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
     // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
     if (!isRecord(body) || isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
     const slots = isRecord(body.slots) ? { ...body.slots, [threadKey]: slot } : { [threadKey]: slot }
-    const written = await ctx.submit([slotWriteDirective({ ...body, slots }, identityActive(valueOf(read)))], { thread: threadKey })
+    const written = await ctx.submit(
+      [slotWriteDirective(body, { ...body, slots }, identityActive(valueOf(read)), identityDataGen(valueOf(read)))],
+      { thread: threadKey },
+    )
     if (!okOf(written)) return { ok: false, code: codeOf(written) }
     const name = typeof slot.id === 'string' && slot.id.length > 0 ? 'approval.decide' : 'approval.decide_all'
     const result = await ctx.command(name, null, { thread: threadKey })

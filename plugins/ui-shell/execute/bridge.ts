@@ -4,7 +4,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { deriveBootMode } from './web/lib/boot-mode.js'
-import { identityActive, identityBody } from './web/lib/identity-shape.js'
+import { identityActive, identityBody, identityDataGen } from './web/lib/identity-shape.js'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -196,6 +196,7 @@ export class Bridge {
     ok: boolean
     value: Json
     active: string | null | undefined
+    dataGen: Json
     code: string
     message: string
   }> {
@@ -205,6 +206,7 @@ export class Bridge {
       ok: result.ok,
       value: identityBody(raw),
       active: identityActive(raw),
+      dataGen: identityDataGen(raw) ?? null,
       code: result.code,
       message: result.message,
     }

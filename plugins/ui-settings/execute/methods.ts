@@ -5,7 +5,7 @@
 
 import { fileURLToPath } from 'node:url'
 import { isSafeClientPath, readClientFile } from './client-read.ts'
-import { addGenOp, externOnly, isRecord, planOf, putOp } from './plan.ts'
+import { baseSeqOf, externOnly, isRecord, planOf, pushInputGen } from './plan.ts'
 import { createRefHydrator, hydrateIds } from './refs.ts'
 import type { DefReader } from './refs.ts'
 import type { PortCaller, PortOutcome } from './port-link.ts'
@@ -82,10 +82,10 @@ export function assembleProfileArgs(ids: Json): { ok: true; args: Rec } | { ok: 
   const provider = isRecord(providers[vendor]) ? (providers[vendor] as Rec) : null
   const models = provider !== null && isRecord(provider['models']) ? (provider['models'] as Rec) : {}
   const selected = Object.keys(models)
-  return {
-    ok: true,
-    args: { vendor, ids: selected, config, vendors: collectVendorBodies(ids) },
-  }
+  const args: Rec = { vendor, ids: selected, config, vendors: collectVendorBodies(ids) }
+  const configGen = projectionDataGen(ids, 'config')
+  if (configGen !== null) args['config_data_gen'] = configGen
+  return { ok: true, args }
 }
 
 /** 从输入槽 body 取 `model.probe` 载荷（`ctx.ids.input.body.slots._main`）；非探测槽回 null。 */
@@ -147,13 +147,26 @@ export function projectionRefs(ids: Json, identity: string): Rec {
   return entry['refs'] as Rec
 }
 
+/** 投影里某身份的 `data_gen`（写方据此把下一世代写成补丁世代；缺失回 null）。 */
+export function projectionDataGen(ids: Json, identity: string): Json {
+  if (!isRecord(ids)) return null
+  const entry = ids[identity]
+  if (!isRecord(entry) || entry['data_gen'] === undefined) return null
+  return entry['data_gen'] as Json
+}
+
 /** `memory.view` 入参：`#3` body + `#21` body / refs（#23 `view` 真实 args）。 */
 export function assembleViewArgs(ids: Json): Rec {
-  return {
+  const args: Rec = {
     short_memory: projectionBody(ids, 'short-memory') ?? {},
     memory_store: projectionBody(ids, 'memory-store') ?? {},
     memory_store_refs: projectionRefs(ids, 'memory-store'),
   }
+  const shortGen = projectionDataGen(ids, 'short-memory')
+  if (shortGen !== null) args['short_memory_data_gen'] = shortGen
+  const storeGen = projectionDataGen(ids, 'memory-store')
+  if (storeGen !== null) args['memory_store_data_gen'] = storeGen
+  return args
 }
 
 /** 本会话 L1 goal：`#11 current` → `#3 sessions[current].summary.goal`；缺失回 null。 */
@@ -254,16 +267,18 @@ export function assembleEditArgs(
   if (slot === null) return { ok: false, code: 'memory_edit_slot_missing' }
   const action = maintenanceAction(slot['action'])
   if (action === null) return { ok: false, code: 'memory_edit_bad_action' }
-  return {
-    ok: true,
-    args: {
-      slot,
-      action,
-      short_memory: projectionBody(ids, 'short-memory') ?? {},
-      memory_store: projectionBody(ids, 'memory-store') ?? {},
-      memory_store_refs: projectionRefs(ids, 'memory-store'),
-    },
+  const args: Rec = {
+    slot,
+    action,
+    short_memory: projectionBody(ids, 'short-memory') ?? {},
+    memory_store: projectionBody(ids, 'memory-store') ?? {},
+    memory_store_refs: projectionRefs(ids, 'memory-store'),
   }
+  const shortGen = projectionDataGen(ids, 'short-memory')
+  if (shortGen !== null) args['short_memory_data_gen'] = shortGen
+  const storeGen = projectionDataGen(ids, 'memory-store')
+  if (storeGen !== null) args['memory_store_data_gen'] = storeGen
+  return { ok: true, args }
 }
 
 /** 从 #23 返回的计划里抽出 batch 写子操作（无 → `[]`）。 */
@@ -512,7 +527,8 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      * 返回计划 = 清 `model.probe` 槽（无论成败）+ extern discover 结果（命令结果 = discover 结果）。
      */
     discover: async (args): Promise<Json> => {
-      const inputBody = args
+      const slice: Rec = isRecord(args) ? args : {}
+      const inputBody = isRecord(slice['body']) ? slice['body'] : slice
       const probeArgs = assembleDiscoverArgs(inputBody)
       let result: Json
       if (probeArgs === null) {
@@ -522,7 +538,11 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
         result = outcome.ok ? outcome.value : failure(outcome.code, outcome.message)
       }
       if (!isRecord(inputBody)) return externOnly(result)
-      return planOf([putOp(clearSlotBody(inputBody)), addGenOp('input', 0)], result)
+      const inputSlice: Rec = { ...inputBody }
+      if (slice['data_gen'] !== undefined) inputSlice['data_gen'] = slice['data_gen']
+      const ops: Json[] = []
+      pushInputGen(ops, inputSlice, clearSlotBody(inputBody), baseSeqOf(inputSlice))
+      return planOf(ops, result)
     },
 
     /** 编排健康只读视图：入口 term 传 `ctx.ids`，服务按需解析台账 / 图引用后判定（不住 #33）；浏览器只渲染。 */
@@ -588,9 +608,11 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
         }
       }
       if (!isRecord(inputBody)) return externOnly(payload)
-      const combined = [...ops, putOp(clearMemoryEditSlots(inputBody))]
-      combined.push(addGenOp('input', combined.length - 1))
-      return planOf(combined, payload)
+      const inputSlice: Rec = { ...inputBody }
+      const inputDataGen = projectionDataGen(ids, 'input')
+      if (inputDataGen !== null) inputSlice['data_gen'] = inputDataGen
+      pushInputGen(ops, inputSlice, clearMemoryEditSlots(inputBody), baseSeqOf(inputSlice))
+      return planOf(ops, payload)
     },
   }
 }

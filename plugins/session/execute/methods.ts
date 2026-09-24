@@ -2,10 +2,8 @@
 // 每个方法都把调用方入口 term 读出的世界数据（会话 body / 槽体 / refs）经 args 收进来。
 
 import {
-  addGenOp,
   asArray,
   asString,
-  clearSlotsBody,
   conversationEvent,
   conversationsOf,
   countOf,
@@ -18,6 +16,7 @@ import {
   nowOf,
   optionalMessageFields,
   planOf,
+  pushInputGen,
   pushSessionGen,
   putOp,
   replaceConversation,
@@ -62,7 +61,8 @@ function inboxOf(conversation: Rec): Rec {
 
 /** 只清槽的失败计划：非法槽 kind / 目标不存在等，无业务写。 */
 function clearOnly(slotsBody: Rec, threadId: string, payload: Json): HandlerResult {
-  const ops = [putOp(clearSlotsBody(slotsBody, threadId)), addGenOp('input', 0)]
+  const ops: Json[] = []
+  pushInputGen(ops, slotsBody, threadId)
   return { value: planOf(ops, payload), events: [] }
 }
 
@@ -201,8 +201,7 @@ function commitNormal(ctx: CommitContext): HandlerResult {
   const nextSession = replaceConversation(session, conversationId, nextConversation)
   const ops: Json[] = [putOp(userBody), putOp(assistantBody)]
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = []
   const kind = asString(conversation['kind']) ?? 'main'
   if (kind === 'group') {
@@ -257,8 +256,7 @@ function commitError(ctx: CommitContext & { error: string }): HandlerResult {
   const nextSession = replaceConversation(session, conversationId, nextConversation)
   const ops: Json[] = [putOp(userBody), putOp(systemBody)]
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     {
       topic: 'thread.updated',
@@ -290,8 +288,7 @@ function newConversation(args: Rec, env: CallEnv): HandlerResult {
   }
   const ops: Json[] = []
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     { topic: 'thread.opened', payload: { ...conversationEvent(env, id), kind: 'main' } },
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
@@ -315,8 +312,7 @@ function select(args: Rec, env: CallEnv): HandlerResult {
   const nextSession: Rec = { ...sessionDataOf(session), current: id }
   const ops: Json[] = []
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
   ]
@@ -338,8 +334,7 @@ function rename(args: Rec, env: CallEnv): HandlerResult {
   const nextSession = replaceConversation(session, id, { ...conversation, title })
   const ops: Json[] = []
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['title'] } },
   ]
@@ -389,8 +384,7 @@ function deleteConversation(args: Rec, env: CallEnv): HandlerResult {
   }
   const ops: Json[] = []
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     {
       topic: 'thread.closed',
@@ -419,8 +413,7 @@ function restore(args: Rec, env: CallEnv): HandlerResult {
   const nextSession = replaceConversation(session, id, { ...conversation, deleted_at: null })
   const ops: Json[] = []
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['deleted_at'] } },
   ]
@@ -512,8 +505,7 @@ function branch(args: Rec, env: CallEnv): HandlerResult {
     conversations: [...conversationsOf(session), entry],
   }
   pushSessionGen(ops, session, nextSession)
-  ops.push(putOp(clearSlotsBody(slotsBody, threadId)))
-  ops.push(addGenOp('input', ops.length - 1))
+  pushInputGen(ops, slotsBody, threadId)
   const events = [
     {
       topic: 'thread.opened',

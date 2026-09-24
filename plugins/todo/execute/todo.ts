@@ -1,7 +1,7 @@
 // 待办清单的纯逻辑：把整表条目构造成「条目 def 链 + 本会话键新 body + add_gen」写计划，
 // 以及从调用方传入的投影数据里解析某会话的条目链。不读投影、不落账、不自取时间。
 
-import { addGenOp, asArray, asString, isRecord, planOf, putOp } from './plan.ts'
+import { asArray, asString, baseSeqOf, isRecord, planOf, pushBodyGen, putOp } from './plan.ts'
 import { BadArgsError, ToolError } from './types.ts'
 import type { Json, Rec } from './types.ts'
 import type { TodoLimits } from './config.ts'
@@ -86,6 +86,16 @@ function mergeConversation(body: Rec, conversationId: string, items: Rec): Rec {
   return { ...body, conversations }
 }
 
+/** 数据 body 的规范形状：剥离入口切片并进来的投影元数据（`data_gen` / `refs`），只留身份数据字段。 */
+function stripMeta(body: Rec): Rec {
+  const out: Rec = {}
+  for (const key of Object.keys(body)) {
+    if (key === 'data_gen' || key === 'refs') continue
+    out[key] = body[key]
+  }
+  return out
+}
+
 /**
  * `todo.write` 的写计划：条目按输入顺序各自成 def、`prev` 串成新链（首条 prev = null），
  * body 只替换本会话键（tail 指新链头、count = 条数），再 `add_gen('todo', put(body))`。
@@ -119,11 +129,10 @@ export function buildWritePlan(args: Rec, data: Json | undefined, limits: TodoLi
     if (item.priority !== undefined) body['priority'] = item.priority
     ops.push(putOp(body))
   })
-  const bodyIndex = ops.length
   const tail: Json = normalized.length > 0 ? { def: { $n: normalized.length - 1 } } : null
-  const nextBody = mergeConversation(extractBody(data), conversationId, { tail, count: normalized.length })
-  ops.push(putOp(nextBody))
-  ops.push(addGenOp('todo', bodyIndex))
+  const prevBody = stripMeta(extractBody(data))
+  const nextBody = mergeConversation(prevBody, conversationId, { tail, count: normalized.length })
+  pushBodyGen(ops, 'todo', prevBody, nextBody, baseSeqOf(isRecord(data) ? data : {}))
 
   const summaryItems = normalized.map((item) => {
     const out: Rec = { id: item.id, text: item.text, status: item.status }

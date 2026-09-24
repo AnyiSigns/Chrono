@@ -26,9 +26,78 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put（四字段全必填）。 */
-export function addGenOp(id: string, index: number): Json {
-  return { op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins: {} } }
+/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
+export function addGenOp(id: string, index: number, base?: number): Json {
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
+  if (base !== undefined) args['base'] = base
+  return { op: 'add_gen', args }
+}
+
+/** `data_gen` 视图里的 `seq`（非负整数）；缺失 / 非法回 null。 */
+export function dataGenSeqOf(value: Json | undefined): number | null {
+  if (!isRecord(value)) return null
+  const seq = value['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** 数据世代基准：切片上的 `data_gen.seq`；无 → null，写整份世代。 */
+export function baseSeqOf(slice: Rec): number | null {
+  return dataGenSeqOf(slice['data_gen'])
+}
+
+/** JSON 结构相等（键序无关、类型严格）。 */
+function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((item, index) => jsonEqual(item, b[index]))
+  }
+  if (isRecord(a) || isRecord(b)) {
+    if (!isRecord(a) || !isRecord(b)) return false
+    const keysA = Object.keys(a)
+    const keysB = Object.keys(b)
+    if (keysA.length !== keysB.length) return false
+    return keysA.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+  }
+  return false
+}
+
+/** 输入 body 的规范形状：只留 `slots`（剥离入口切片并进来的 `data_gen` / `refs`）。 */
+export function inputDataOf(slice: Rec): Rec {
+  return { slots: isRecord(slice['slots']) ? (slice['slots'] as Rec) : {} }
+}
+
+/** 输入槽补丁：按线程键 `replace ['slots', key]` / `delete ['slots', key]`。 */
+function slotPatches(prev: Rec, next: Rec): Json[] {
+  const prevSlots = isRecord(prev['slots']) ? (prev['slots'] as Rec) : {}
+  const nextSlots = isRecord(next['slots']) ? (next['slots'] as Rec) : {}
+  const ops: Json[] = []
+  for (const key of Object.keys(nextSlots)) {
+    if (!jsonEqual(prevSlots[key], nextSlots[key])) ops.push({ op: 'replace', path: ['slots', key], value: nextSlots[key] })
+  }
+  for (const key of Object.keys(prevSlots)) {
+    if (key in nextSlots) continue
+    ops.push({ op: 'delete', path: ['slots', key] })
+  }
+  return ops
+}
+
+/**
+ * 追加输入世代的写子操作：有数据世代（`slice.data_gen`）且槽确有变化 ⇒ 写 `slots[<key>]` 补丁世代；
+ * 否则回落整份世代。`next` 为清槽后的目标 body。
+ */
+export function pushInputGen(ops: Json[], slice: Rec, next: Rec, base: number | null): void {
+  const index = ops.length
+  if (base !== null) {
+    const patches = slotPatches(inputDataOf(slice), next)
+    if (patches.length > 0) {
+      ops.push(putOp({ ops: patches }))
+      ops.push(addGenOp('input', index, base))
+      return
+    }
+  }
+  ops.push(putOp(next))
+  ops.push(addGenOp('input', index))
 }
 
 /** 一条原子 batch write 计划条目。 */
@@ -74,6 +143,24 @@ export function inputBodyOf(ids: Json): Rec | null {
   const input = ids['input']
   if (!isRecord(input) || !isRecord(input['body'])) return null
   return input['body']
+}
+
+/** 投影切片 `ids.<identity>.data_gen`；缺失回 null。 */
+export function dataGenOf(ids: Json, identity: string): Json {
+  if (!isRecord(ids)) return null
+  const entry = ids[identity]
+  if (!isRecord(entry) || entry['data_gen'] === undefined) return null
+  return entry['data_gen'] as Json
+}
+
+/** 输入切片：body + 投影元数据 `data_gen`（写补丁世代用）；缺失 body → null。 */
+export function inputSliceOf(ids: Json): Rec | null {
+  const body = inputBodyOf(ids)
+  if (body === null) return null
+  const slice: Rec = { ...body }
+  const dataGen = dataGenOf(ids, 'input')
+  if (dataGen !== null) slice['data_gen'] = dataGen
+  return slice
 }
 
 /** 本线程槽体：`body.slots[threadKey]`；缺失 / 非法回 null。 */
@@ -186,10 +273,12 @@ export function resumeDirectives(items: Rec[], verdict: string): Json[] {
   return out
 }
 
-/** 失败收口：清本线程槽（若给了 body）+ 结构化 extern，不产业务写。 */
-export function clearReject(inputBody: Rec | null, threadKey: string, reason: string): Json {
-  if (inputBody === null) return externOnly(failure(reason, reason))
-  return planOf([putOp(clearSlotsBody(inputBody, threadKey)), addGenOp('input', 0)], failure(reason, reason))
+/** 失败收口：清本线程槽（若给了输入切片）+ 结构化 extern，不产业务写。 */
+export function clearReject(inputSlice: Rec | null, threadKey: string, reason: string): Json {
+  if (inputSlice === null) return externOnly(failure(reason, reason))
+  const ops: Json[] = []
+  pushInputGen(ops, inputSlice, clearSlotsBody(inputSlice, threadKey), baseSeqOf(inputSlice))
+  return planOf(ops, failure(reason, reason))
 }
 
 /** 取计划值里的 `$directives`；非计划回 null。 */

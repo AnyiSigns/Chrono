@@ -42,6 +42,19 @@ function planBody(value) {
   return write === undefined ? null : write.request.args.ops[0].args.body
 }
 
+/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') delete node[last]
+    else node[last] = structuredClone(op.value)
+  }
+  return doc
+}
+
 const MODELS_DEV = {
   deepseek: {
     models: {
@@ -175,6 +188,32 @@ test('profile：只写所选模型、布尔 true 展开 default_reasoning、其�
       const ops = writeDirective(result.value).request.args.ops
       assert.deepEqual(ops[1], { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } })
       assert.equal(externPayload(result.value).changed, true)
+    })
+  })
+})
+
+test('补丁世代：profile 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+  const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const args = {
+        vendor: 'vendor-deepseek',
+        ids: ['deepseek-chat'],
+        config: baseConfig(),
+        vendors: { 'vendor-deepseek': VENDOR_BODY },
+        source_url: server.url,
+        resilience: FAST,
+      }
+      const full = await driver.call('profile', args)
+      const fullBody = planBody(full.value)
+      const patched = await driver.call('profile', {
+        ...args,
+        config_data_gen: { seq: 4, payload: 'a'.repeat(64) },
+      })
+      const ops = writeDirective(patched.value).request.args.ops
+      assert.equal(ops[1].args.base, 4)
+      assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
+      assert.deepEqual(applyOps(baseConfig(), ops[0].args.body.ops), fullBody)
     })
   })
 })

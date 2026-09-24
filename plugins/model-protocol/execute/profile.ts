@@ -4,7 +4,7 @@
 
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest } from './http.ts'
-import { addGenOp, canonicalEqual, deepClone, externOnly, isRecord, planOf, putOp } from './plan.ts'
+import { canonicalEqual, dataGenSeqOf, deepClone, externOnly, isRecord, planOf, pushBodyGen } from './plan.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
 import { BadArgsError } from './types.ts'
@@ -260,10 +260,12 @@ async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, 
   return source
 }
 
-/** 构造写计划：无变化回 extern；有变化回 put + add_gen。 */
-function planValue(changed: boolean, newConfig: Rec | null, metadata: Rec): Json {
+/** 构造写计划：无变化回 extern；有变化回补丁（有数据世代）/ 整份 put + add_gen。 */
+function planValue(changed: boolean, prev: Rec, newConfig: Rec | null, metadata: Rec, base: number | null): Json {
   if (!changed || newConfig === null) return externOnly({ ok: true, changed: false, models: metadata })
-  return planOf([putOp(newConfig), addGenOp('config', 0)], { ok: true, changed: true, models: metadata })
+  const ops: Json[] = []
+  pushBodyGen(ops, 'config', prev, newConfig, base)
+  return planOf(ops, { ok: true, changed: true, models: metadata })
 }
 
 /** profile：只刷新调用方所选模型；config 缺省时只回档案值、不产写计划。 */
@@ -288,7 +290,7 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
     if (config === null) return { ok: true, changed: false, models: metadata, write: false }
     const updated = applyMetadata(config, { vendor, ids }, metadata)
     const changed = !canonicalEqual(updated, config)
-    return planValue(changed, updated, metadata)
+    return planValue(changed, config, updated, metadata, dataGenSeqOf(args['config_data_gen']))
   } catch (err) {
     if (err instanceof BadArgsError) throw err
     if (err instanceof ModelError) return errorValue(err.code, err.message)
@@ -320,7 +322,7 @@ export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<
       updated = applyMetadata(updated, target, metadata)
     }
     const changed = !canonicalEqual(updated, config)
-    return planValue(changed, updated, summary)
+    return planValue(changed, config, updated, summary, dataGenSeqOf(bag['config_data_gen']))
   } catch (err) {
     if (err instanceof BadArgsError) throw err
     if (err instanceof ModelError) return errorValue(err.code, err.message)

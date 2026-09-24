@@ -204,7 +204,7 @@ test('槽载荷与写指令：只覆盖本线程键', () => {
   assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
   assert.equal(body.slots.t1.text, 'hi')
 
-  const directive = slotWriteDirective(body)
+  const directive = slotWriteDirective({ slots: {} }, body)
   assert.equal(directive.kind, 'write')
   assert.equal(directive.request.op, 'batch')
   assert.deepEqual(directive.request.args.ops[1].args, {
@@ -215,17 +215,30 @@ test('槽载荷与写指令：只覆盖本线程键', () => {
   })
   assert.deepEqual(directive.request.args.ops[0].args.body, body)
 
-  const configDirective = configWriteDirective({ version: 1 })
+  const configDirective = configWriteDirective({}, { version: 1 })
   assert.equal(configDirective.request.args.ops[1].args.id, 'config')
+})
+
+test('写指令补丁世代：有 data_gen 写补丁 + base；空改动回落整份', () => {
+  const prev = { slots: { t1: { kind: 'chat.message', text: 'hi' } } }
+  const next = { slots: { t1: { kind: 'idle' } } }
+  const patched = slotWriteDirective(prev, next, undefined, { seq: 4, payload: 'a'.repeat(64) })
+  const ops = patched.request.args.ops
+  assert.equal(ops[1].args.base, 4)
+  assert.deepEqual(ops[0].args.body.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
+
+  const empty = configWriteDirective(prev, prev, undefined, { seq: 4 })
+  assert.equal(empty.request.args.ops[1].args.base, undefined)
+  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
 })
 
 test('写指令：expect_active 显式条件写；身份视图拆 body/active', () => {
   const hash = 'c'.repeat(64)
-  const slotWrite = slotWriteDirective({ slots: {} }, hash)
+  const slotWrite = slotWriteDirective({ slots: {} }, { slots: {} }, hash)
   assert.equal(slotWrite.request.args.ops[1].args.expect_active, hash)
-  const slotOmitted = slotWriteDirective({ slots: {} })
+  const slotOmitted = slotWriteDirective({ slots: {} }, { slots: {} })
   assert.equal('expect_active' in slotOmitted.request.args.ops[1].args, false)
-  const configWrite = configWriteDirective({ version: 1 }, null)
+  const configWrite = configWriteDirective({}, { version: 1 }, null)
   assert.equal(configWrite.request.args.ops[1].args.expect_active, null)
 
   const view = { active: hash, body: { version: 1 } }

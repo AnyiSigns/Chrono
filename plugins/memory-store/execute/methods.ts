@@ -5,9 +5,9 @@
 
 import { log } from './frames.ts'
 import {
-  addGenOp,
   asString,
   asStringList,
+  baseSeqOf,
   errorValue,
   externOnly,
   integerField,
@@ -15,6 +15,7 @@ import {
   nowOf,
   numberField,
   planOf,
+  pushBodyGen,
   putOp,
 } from './plan.ts'
 import { IDENTITY } from './plugin.ts'
@@ -340,7 +341,8 @@ async function put(args: Json, env: CallEnv, deps: MemoryDeps, state: IndexState
     prev: tailHashOf(ctx.body),
   })
   const newBody = buildBody({ body: ctx.body, entryIndex: 0, anchor: { id: state.modelId, dim: state.dim } })
-  const ops = [putOp(entry), putOp(newBody), addGenOp(IDENTITY, 1)]
+  const ops: Json[] = [putOp(entry)]
+  pushBodyGen(ops, IDENTITY, ctx.body, newBody, baseSeqOf(isRecord(args) ? args : {}))
   return planOf(ops, {
     ok: true,
     kind: 'put',

@@ -16,6 +16,23 @@ const MAX_HOPS = 10000
 /** 单次解析请求的哈希数上限（与宿主 `def.read` 上限一致，超出则分批）。 */
 const MAX_READ_BATCH = 256
 
+/** 不可用哈希清单的硬上限（防异常数据撑爆错误载荷）。 */
+const MAX_UNAVAILABLE = 64
+
+/**
+ * 解析闭包时存在不可用 def（缺失 / 越权）的结构化错误：
+ * 本次已处理（进入 `seen`）但最终不在 `out` 的哈希即不可用；闭包不完整时 fail-closed，不静默空。
+ */
+export class DefUnavailableError extends Error {
+  readonly code = 'def_unavailable'
+  readonly hashes: string[]
+  constructor(hashes: string[]) {
+    super(`def unavailable: ${hashes.join(', ')}`)
+    this.name = 'DefUnavailableError'
+    this.hashes = hashes
+  }
+}
+
 /** 收集一段 JSON 里直接出现的 `{"def":hash}` 标记（64hex）。 */
 function collectMarkers(value: Json, out: string[]): void {
   if (isRecord(value)) {
@@ -77,6 +94,13 @@ export function createRefHydrator(read: DefReader): RefHydrator {
         collectMarkers(body, queue)
       }
     }
+    const unavailable: string[] = []
+    for (const hash of seen) {
+      if (Object.hasOwn(out, hash)) continue
+      unavailable.push(hash)
+      if (unavailable.length >= MAX_UNAVAILABLE) break
+    }
+    if (unavailable.length > 0) throw new DefUnavailableError(unavailable)
     return out
   }
   return { hydrate }

@@ -38,7 +38,7 @@ import {
 import { buildForwardArgs, forwardCommandName, routeOf } from '../execute/routes.ts'
 import { identityInvalidatesHeadless } from '../execute/identity-events.ts'
 import { createUiState, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
-import { identityActive, identityBody, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
+import { identityActive, identityBody, identityDataGen, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
 import { createSlotRegistry, normalizeTarget } from '../execute/web/lib/slot-registry.js'
 import { createSlotHost } from '../execute/web/lib/slots.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
@@ -1305,4 +1305,27 @@ test('/api/submit：config 写回帧已终局（result / 无 run）时立即重�
   } finally {
     await server.close()
   }
+})
+
+test('主题写指令：有 data_gen 写 config 补丁 + base；空改动回落整份', () => {
+  const config = { version: 1, ui: { theme: 'day', sidebar_width: 240 } }
+  const full = themeWriteDirective('night', config)
+  assert.equal(full.request.args.ops.length, 2)
+  assert.equal(Array.isArray(full.request.args.ops[0].args.body.ops), false)
+
+  const patched = themeWriteDirective('night', config, undefined, { seq: 9, payload: 'a'.repeat(64) })
+  const ops = patched.request.args.ops
+  assert.equal(ops[1].args.base, 9)
+  assert.deepEqual(ops[0].args.body.ops, [
+    { op: 'replace', path: ['ui'], value: { theme: 'night', sidebar_width: 240 } },
+  ])
+
+  // 空改动（主题未变）回落整份世代，不带 base。
+  const empty = themeWriteDirective('day', config, undefined, { seq: 9, payload: 'a'.repeat(64) })
+  assert.equal(empty.request.args.ops[1].args.base, undefined)
+  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
+
+  // 身份视图拆 data_gen。
+  assert.deepEqual(identityDataGen({ active: null, body: config, data_gen: { seq: 9 } }), { seq: 9 })
+  assert.equal(identityDataGen({ version: 1 }), undefined)
 })

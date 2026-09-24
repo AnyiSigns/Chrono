@@ -32,6 +32,14 @@ export function identityRefs(ids, id) {
   return isRecord(entry['refs']) ? entry['refs'] : {}
 }
 
+/** 投影里某身份的 data_gen（写方据此把下一世代写成补丁世代）；缺失回 null。 */
+export function identityDataGen(ids, id) {
+  if (!isRecord(ids)) return null
+  const entry = ids[id]
+  if (!isRecord(entry) || entry['data_gen'] === undefined) return null
+  return entry['data_gen']
+}
+
 /** 输入 body 里本线程的槽体；缺失返回 null。 */
 export function slotOf(inputBody, threadId) {
   if (!isRecord(inputBody) || !isRecord(inputBody['slots'])) return null
@@ -48,7 +56,17 @@ export function assembleSessionArgs(ids, env) {
   const slots = identityBody(ids, 'input')
   if (slots === null) return { ok: false, code: 'input_missing' }
   const threadId = threadKeyOf(env)
-  return { ok: true, args: { session, slots, thread_id: threadId, slot: slotOf(slots, threadId) } }
+  // 身份切片并入 `data_gen`（有则写补丁世代；session 服务按 `sessionDataOf` 归一、忽略元数据）。
+  const sessionSlice = { ...session }
+  const sessionGen = identityDataGen(ids, 'session')
+  if (sessionGen !== null) sessionSlice['data_gen'] = sessionGen
+  const slotsSlice = { ...slots }
+  const slotsGen = identityDataGen(ids, 'input')
+  if (slotsGen !== null) slotsSlice['data_gen'] = slotsGen
+  return {
+    ok: true,
+    args: { session: sessionSlice, slots: slotsSlice, thread_id: threadId, slot: slotOf(slots, threadId) },
+  }
 }
 
 /** 分支装配：在会话类公共装配上补源链 `refs`（`session.branch` 需要沿 prev 还原链）。 */
@@ -73,7 +91,12 @@ export function assembleWorkspaceWriteArgs(ids, env) {
   const slots = identityBody(ids, 'input')
   if (slots === null) return { ok: false, code: 'input_missing' }
   const threadId = threadKeyOf(env)
-  return { ok: true, args: { body, slots, thread_id: threadId, slot: slotOf(slots, threadId) } }
+  const args = { body, slots, thread_id: threadId, slot: slotOf(slots, threadId) }
+  const bodyGen = identityDataGen(ids, 'workspace')
+  if (bodyGen !== null) args['body_data_gen'] = bodyGen
+  const slotsGen = identityDataGen(ids, 'input')
+  if (slotsGen !== null) args['slots_data_gen'] = slotsGen
+  return { ok: true, args }
 }
 
 /** `workspace.list` 装配：把当前 workspaces 列表交给依赖服务逐项 stat 标注 `missing`。 */

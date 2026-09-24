@@ -10,7 +10,16 @@ import type { ConfirmState } from './confirm.ts'
 import { exportBody, exportFilename, messagesOf } from './export.ts'
 import { formatText, messageText } from './messages.ts'
 import type { MessageTable } from './messages.ts'
-import { isRecord, identityActive, identityBody, isCodeGenFallbackBody, normalizeConversations, normalizeWorkspaces } from './sidebar-model.ts'
+import {
+  isRecord,
+  identityActive,
+  identityBody,
+  identityDataGen,
+  identityWriteDirective,
+  isCodeGenFallbackBody,
+  normalizeConversations,
+  normalizeWorkspaces,
+} from './sidebar-model.ts'
 import type { Conversation, Workspace } from './sidebar-model.ts'
 import {
   canResize,
@@ -277,25 +286,9 @@ export class SidebarStore {
     const body = identityBody(read.value)
     // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
     if (!isRecord(body) || isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
-    const active = identityActive(read.value)
     const slots = isRecord(body['slots']) ? { ...body['slots'], [THREAD]: slot } : { [THREAD]: slot }
-    const addGen: any = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
-    if (active !== undefined) addGen.expect_active = active
-    const directives = [
-      {
-        kind: 'write',
-        request: {
-          op: 'batch',
-          args: {
-            ops: [
-              { op: 'put', args: { body: { ...body, slots } } },
-              { op: 'add_gen', args: addGen },
-            ],
-          },
-        },
-      },
-    ]
-    return this.ctx.submit(directives as any, { thread: THREAD })
+    const directive = identityWriteDirective('input', body, { ...body, slots }, identityActive(read.value), identityDataGen(read.value))
+    return this.ctx.submit([directive] as any, { thread: THREAD })
   }
 
   private async loadWorkspaces(): Promise<boolean> {
@@ -808,27 +801,11 @@ export class SidebarStore {
     const config = identityBody(result.value)
     // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
     if (!isRecord(config) || isCodeGenFallbackBody(config)) return
-    const active = identityActive(result.value)
     const ui = isRecord(config['ui']) ? { ...config['ui'] } : {}
     ui['sidebar_width'] = clampWidth(this.snapshot.storedWidth)
     const body = { ...config, ui }
-    const addGen: any = { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
-    if (active !== undefined) addGen.expect_active = active
-    const directives = [
-      {
-        kind: 'write',
-        request: {
-          op: 'batch',
-          args: {
-            ops: [
-              { op: 'put', args: { body } },
-              { op: 'add_gen', args: addGen },
-            ],
-          },
-        },
-      },
-    ]
-    await this.ctx.submit(directives as any)
+    const directive = identityWriteDirective('config', config, body, identityActive(result.value), identityDataGen(result.value))
+    await this.ctx.submit([directive] as any)
   }
 
   // ---- 提示 ----

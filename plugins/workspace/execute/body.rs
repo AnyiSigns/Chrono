@@ -249,11 +249,89 @@ fn put_op(body: Value) -> Value {
     json!({ "op": "put", "args": { "body": body } })
 }
 
-/// 单条 add_gen：payload / sig 指向同批更早的 put（`$n` 0 基、四字段全必填）。
-fn add_gen_op(id: &str, index: usize) -> Value {
-    json!({ "op": "add_gen", "args": {
+/// 单条 add_gen：payload / sig 指向同批更早的 put（`$n` 0 基、四字段全必填）；`base` 存在即补丁世代。
+fn add_gen_op(id: &str, index: usize, base: Option<u64>) -> Value {
+    let mut args = json!({
         "id": id, "payload": { "$n": index }, "sig": { "$n": index }, "pins": {}
-    } })
+    });
+    if let Some(base) = base {
+        args["base"] = json!(base);
+    }
+    json!({ "op": "add_gen", "args": args })
+}
+
+/// `data_gen.seq`（非负整数）；缺失 / 非法回 None。
+fn data_gen_seq(value: Option<&Value>) -> Option<u64> {
+    value.and_then(|gen| gen.get("seq")).and_then(Value::as_u64)
+}
+
+/// 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。
+fn top_level_patches(prev: &Value, next: &Value) -> Vec<Value> {
+    let mut ops = Vec::new();
+    if let (Some(prev_obj), Some(next_obj)) = (prev.as_object(), next.as_object()) {
+        for (key, value) in next_obj {
+            if prev_obj.get(key) != Some(value) {
+                ops.push(json!({ "op": "replace", "path": [key], "value": value }));
+            }
+        }
+        for key in prev_obj.keys() {
+            if !next_obj.contains_key(key) {
+                ops.push(json!({ "op": "delete", "path": [key] }));
+            }
+        }
+    }
+    ops
+}
+
+/// 输入槽补丁：按线程键 `replace ["slots", key]` / `delete ["slots", key]`。
+fn slot_patches(prev: &Value, next: &Value) -> Vec<Value> {
+    let mut ops = Vec::new();
+    if let (Some(prev_slots), Some(next_slots)) = (
+        prev.get("slots").and_then(Value::as_object),
+        next.get("slots").and_then(Value::as_object),
+    ) {
+        for (key, value) in next_slots {
+            if prev_slots.get(key) != Some(value) {
+                ops.push(json!({ "op": "replace", "path": ["slots", key], "value": value }));
+            }
+        }
+        for key in prev_slots.keys() {
+            if !next_slots.contains_key(key) {
+                ops.push(json!({ "op": "delete", "path": ["slots", key] }));
+            }
+        }
+    }
+    ops
+}
+
+/// 追加数据 body 写：有 base 且补丁非空 → put(补丁) + add_gen(base)；否则整份 put + add_gen。
+fn push_body_gen(ops: &mut Vec<Value>, id: &str, prev: &Value, next: Value, base: Option<u64>) {
+    let index = ops.len();
+    if let Some(base) = base {
+        let patches = top_level_patches(prev, &next);
+        if !patches.is_empty() {
+            ops.push(put_op(json!({ "ops": patches })));
+            ops.push(add_gen_op(id, index, Some(base)));
+            return;
+        }
+    }
+    ops.push(put_op(next));
+    ops.push(add_gen_op(id, index, None));
+}
+
+/// 追加输入清槽写：有 base 且槽有变化 → put(slots 补丁) + add_gen(base)；否则整份 put + add_gen。
+fn push_input_gen(ops: &mut Vec<Value>, prev: &Value, next: Value, base: Option<u64>) {
+    let index = ops.len();
+    if let Some(base) = base {
+        let patches = slot_patches(prev, &next);
+        if !patches.is_empty() {
+            ops.push(put_op(json!({ "ops": patches })));
+            ops.push(add_gen_op("input", index, Some(base)));
+            return;
+        }
+    }
+    ops.push(put_op(next));
+    ops.push(add_gen_op("input", index, None));
 }
 
 fn batch_directive(ops: Vec<Value>) -> Value {
@@ -322,10 +400,9 @@ pub fn add_plan(args: &Value, fs: &dyn Fs) -> Result<Value, (String, String)> {
         .any(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str()))
     {
         let idle = clear_slots(&slots, &thread);
-        return Ok(plan(
-            vec![put_op(idle), add_gen_op("input", 0)],
-            AddError::WorkspaceExists(id).payload(),
-        ));
+        let mut ops = Vec::new();
+        push_input_gen(&mut ops, &slots, idle, data_gen_seq(args.get("slots_data_gen")));
+        return Ok(plan(ops, AddError::WorkspaceExists(id).payload()));
     }
 
     match validate_add(fs, &path, &workspaces) {
@@ -333,24 +410,25 @@ pub fn add_plan(args: &Value, fs: &dyn Fs) -> Result<Value, (String, String)> {
             let name = name_arg.unwrap_or_else(|| basename(&real));
             let mut list = workspaces;
             list.push(json!({ "id": id, "name": name, "path": real }));
+            let prev_body = body.clone();
             set_workspaces(&mut body, list);
             let idle = clear_slots(&slots, &thread);
-            Ok(plan(
-                vec![
-                    put_op(body),
-                    add_gen_op("workspace", 0),
-                    put_op(idle),
-                    add_gen_op("input", 2),
-                ],
-                json!({ "ok": true, "workspace": id }),
-            ))
+            let mut ops = Vec::new();
+            push_body_gen(
+                &mut ops,
+                "workspace",
+                &prev_body,
+                body,
+                data_gen_seq(args.get("body_data_gen")),
+            );
+            push_input_gen(&mut ops, &slots, idle, data_gen_seq(args.get("slots_data_gen")));
+            Ok(plan(ops, json!({ "ok": true, "workspace": id })))
         }
         Err(err) => {
             let idle = clear_slots(&slots, &thread);
-            Ok(plan(
-                vec![put_op(idle), add_gen_op("input", 0)],
-                err.payload(),
-            ))
+            let mut ops = Vec::new();
+            push_input_gen(&mut ops, &slots, idle, data_gen_seq(args.get("slots_data_gen")));
+            Ok(plan(ops, err.payload()))
         }
     }
 }
@@ -383,15 +461,20 @@ pub fn remove_plan(args: &Value) -> Result<Value, (String, String)> {
         .filter(|item| item.get("id").and_then(Value::as_str) != Some(id.as_str()))
         .collect();
     let removed = filtered.len() < before;
+    let prev_body = body.clone();
     set_workspaces(&mut body, filtered);
     let idle = clear_slots(&slots, &thread);
+    let mut ops = Vec::new();
+    push_body_gen(
+        &mut ops,
+        "workspace",
+        &prev_body,
+        body,
+        data_gen_seq(args.get("body_data_gen")),
+    );
+    push_input_gen(&mut ops, &slots, idle, data_gen_seq(args.get("slots_data_gen")));
     Ok(plan(
-        vec![
-            put_op(body),
-            add_gen_op("workspace", 0),
-            put_op(idle),
-            add_gen_op("input", 2),
-        ],
+        ops,
         json!({ "ok": true, "workspace": id, "removed": removed }),
     ))
 }
@@ -777,6 +860,95 @@ mod tests {
         let ops = value["$directives"][0]["request"]["args"]["ops"].as_array().unwrap();
         assert_eq!(ops.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 测试内联最小补丁组装：replace / delete（顶层与 slots 键）。
+    fn apply_ops(base: &Value, ops: &[Value]) -> Value {
+        let mut doc = base.clone();
+        for op in ops {
+            let path = op["path"].as_array().unwrap();
+            let mut node = &mut doc;
+            for step in &path[..path.len() - 1] {
+                node = node.get_mut(step.as_str().unwrap()).unwrap();
+            }
+            let last = path[path.len() - 1].as_str().unwrap();
+            if op["op"] == "delete" {
+                node.as_object_mut().unwrap().remove(last);
+            } else {
+                node[last] = op["value"].clone();
+            }
+        }
+        doc
+    }
+
+    #[test]
+    fn add_with_data_gen_writes_patches_and_base() {
+        let dir = temp_dir("add-patch");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let body = body_with(vec![]);
+        let mut args = add_args("ws-p", &target.to_string_lossy(), None, &body);
+        // 让本线程槽确实有变化（workspace.add → idle），才能产输入补丁。
+        args["slots"]["slots"]["_main"] = args["slot"].clone();
+        let prev_slots = args["slots"].clone();
+        args["body_data_gen"] = json!({ "seq": 5, "payload": "a".repeat(64) });
+        args["slots_data_gen"] = json!({ "seq": 7, "payload": "b".repeat(64) });
+
+        let value = add_plan(&args, &RealFs).unwrap();
+        let ops = value["$directives"][0]["request"]["args"]["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 4);
+        assert_eq!(ops[1]["args"]["id"], "workspace");
+        assert_eq!(ops[1]["args"]["base"], json!(5));
+        assert_eq!(ops[3]["args"]["id"], "input");
+        assert_eq!(ops[3]["args"]["base"], json!(7));
+        // 补丁组装结果 == 目标整份 body（同内容旧 / 新形态逐字段一致）。
+        let next_body = apply_ops(&body, ops[0]["args"]["body"]["ops"].as_array().unwrap());
+        assert_eq!(next_body["workspaces"][0]["id"], "ws-p");
+        let next_slots = apply_ops(&prev_slots, ops[2]["args"]["body"]["ops"].as_array().unwrap());
+        assert_eq!(next_slots["slots"]["_main"], json!({ "kind": "idle" }));
+        assert_eq!(next_slots["slots"]["other"], json!({ "kind": "chat.message" }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_empty_input_change_falls_back_to_full() {
+        let dir = temp_dir("add-patch-empty");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let body = body_with(vec![]);
+        // 默认 add_args 的本线程槽已是 idle → 清槽空改动，回落整份世代。
+        let mut args = add_args("ws-e", &target.to_string_lossy(), None, &body);
+        args["slots_data_gen"] = json!({ "seq": 7, "payload": "b".repeat(64) });
+        let value = add_plan(&args, &RealFs).unwrap();
+        let ops = value["$directives"][0]["request"]["args"]["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 4);
+        assert!(ops[3]["args"].get("base").is_none());
+        assert!(ops[2]["args"]["body"].get("ops").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_with_data_gen_writes_patches_and_base() {
+        let body = body_with(vec![
+            json!({ "id": "keep", "name": "Keep", "path": "/keep" }),
+            json!({ "id": "drop", "name": "Drop", "path": "/drop" }),
+        ]);
+        let mut args = json!({
+            "slot": { "kind": "workspace.remove", "workspace": "drop" },
+            "body": body.clone(),
+            "slots": { "slots": { "_main": { "kind": "workspace.remove" }, "other": { "kind": "idle" } } },
+            "thread_id": "_main"
+        });
+        args["body_data_gen"] = json!({ "seq": 3, "payload": "c".repeat(64) });
+        args["slots_data_gen"] = json!({ "seq": 4, "payload": "d".repeat(64) });
+        let value = remove_plan(&args).unwrap();
+        let ops = value["$directives"][0]["request"]["args"]["ops"].as_array().unwrap();
+        assert_eq!(ops[1]["args"]["base"], json!(3));
+        assert_eq!(ops[3]["args"]["base"], json!(4));
+        let next_body = apply_ops(&body, ops[0]["args"]["body"]["ops"].as_array().unwrap());
+        let list = next_body["workspaces"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "keep");
     }
 
     #[test]

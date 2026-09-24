@@ -17,6 +17,19 @@ import {
 
 const MODEL = { id: 'granite-97m', dim: DIM }
 
+/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') delete node[last]
+    else node[last] = structuredClone(op.value)
+  }
+  return doc
+}
+
 /** 组装一份世界快照：链尾 + 条目（hash → def）。 */
 function snapshot(tail, entries, overrides = {}) {
   const refs = {}
@@ -66,6 +79,31 @@ test('空库：read 回 null；search 重建后就绪且命中为空', async () 
     const ready = await waitReady(drv, { query_vector: testVector('x'), body: {}, refs: {} })
     assert.deepEqual(ready.value.hits, [])
     assert.equal(ready.value.model.id, 'granite-97m')
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const body = { tail: null, count: 0, deleted: {}, pinned: {} }
+    const full = await drv.call('put', { text: 'alpha', body, refs: {} })
+    const fullBody = opsOf(full.value)[1].args.body
+
+    const patched = await drv.call('put', {
+      text: 'alpha',
+      body,
+      refs: {},
+      data_gen: { seq: 2, payload: 'a'.repeat(64) },
+    })
+    const ops = opsOf(patched.value)
+    assert.equal(ops.length, 3)
+    assert.equal(ops[2].args.base, 2)
+    const patchDef = ops[1].args.body
+    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
+    assert.deepEqual(applyOps(body, patchDef.ops), fullBody)
   } finally {
     drv.close()
   }

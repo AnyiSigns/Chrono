@@ -7,6 +7,7 @@
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
 import { PortLink } from './port-link.ts'
+import { DefUnavailableError } from './refs.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, READONLY_METHODS, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
 import { loadWiring } from './wiring.ts'
@@ -90,6 +91,10 @@ async function handleCall(message: Rec): Promise<void> {
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
+      return
+    }
+    if (err instanceof DefUnavailableError) {
+      sendError(id, 'def_unavailable', err.message)
       return
     }
     log(`method ${method} failed: ${(err as Error).message}`)

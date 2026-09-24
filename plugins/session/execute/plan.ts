@@ -242,12 +242,39 @@ export function slotOf(args: Rec, threadId: string): Json | undefined {
 }
 
 /**
+ * 输入 body 的**规范形状**：只留 `slots`。入口切片可能把 `data_gen` / `refs` 等投影元数据并进同一层，
+ * 直接继承会把它们写回世界 body；故所有输入写一律以本函数归一后的 body 为基。
+ */
+export function inputDataOf(slice: Rec): Rec {
+  return { slots: isRecord(slice['slots']) ? (slice['slots'] as Rec) : {} }
+}
+
+/**
  * 清槽：per-thread 键控——只把本线程键置 `{kind:'idle'}`，其余键原样保留。
- * 返回**新对象**，不改入参（入参是轮首投影的整份 body）。
+ * 返回**新对象**，不改入参（入参是轮首投影的整份 body / 入口切片）。
  */
 export function clearSlotsBody(slotsBody: Rec, threadId: string): Rec {
   const slots = isRecord(slotsBody['slots']) ? (slotsBody['slots'] as Rec) : {}
-  return { ...slotsBody, slots: { ...slots, [threadId]: { kind: 'idle' } } }
+  return { slots: { ...slots, [threadId]: { kind: 'idle' } } }
+}
+
+/**
+ * 追加输入世代的写子操作：有数据世代（`slice.data_gen`）且本线程槽确有变化 ⇒ 写 `replace ['slots', <thread>]`
+ * 补丁世代；否则回落整份世代。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
+ */
+export function pushInputGen(ops: Json[], slice: Rec, threadId: string): void {
+  const index = ops.length
+  const base = baseSeqOf(slice)
+  const prev = inputDataOf(slice)
+  const slots = isRecord(prev['slots']) ? (prev['slots'] as Rec) : {}
+  const nextSlot: Json = { kind: 'idle' }
+  if (base !== null && !jsonEqual(slots[threadId], nextSlot)) {
+    ops.push(putOp({ ops: [{ op: 'replace', path: ['slots', threadId], value: nextSlot }] }))
+    ops.push(addGenOp('input', index, base))
+    return
+  }
+  ops.push(putOp(clearSlotsBody(slice, threadId)))
+  ops.push(addGenOp('input', index))
 }
 
 /** 一条消息 def body。`prev` 为 null / 字面 `{def:hash}` / 批内占位 `{def:{$n:k}}`。 */

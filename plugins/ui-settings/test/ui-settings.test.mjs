@@ -107,6 +107,7 @@ import {
   resolveThreshold,
 } from '../execute/methods.ts'
 import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
+import { DefUnavailableError } from '../execute/refs.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -590,6 +591,18 @@ test('服务侧发现装配与清槽：读 model.probe，计划清 _main 保留�
   assert.equal(missing.$directives[0].request.args.ops[0].args.body.slots._main.kind, 'idle')
   assert.equal(missing.$directives[1].payload.ok, false)
   assert.equal(missing.$directives[1].payload.error.code, 'model_probe_missing')
+
+  // 有数据世代：清槽写 input 补丁 + base（入口切片形态 `{body, data_gen}`）。
+  const patched = await handlers.discover(
+    { body: inputBody, data_gen: { seq: 5, payload: 'a'.repeat(64) } },
+    { run: null, thread: null, now: 0 },
+  )
+  const patchOps = patched.$directives[0].request.args.ops
+  assert.equal(patchOps[1].args.id, 'input')
+  assert.equal(patchOps[1].args.base, 5)
+  assert.deepEqual(patchOps[0].args.body.ops, [
+    { op: 'replace', path: ['slots', '_main'], value: { kind: 'idle' } },
+  ])
 })
 
 test('服务侧健康判定：计数 / 阈值 / 拒绝码 / 回滚目标 / 缺编排图降级', () => {
@@ -779,6 +792,48 @@ test('memory.edit 槽消费 / action 对齐 / 清槽：读 #1 槽 + #3 / #21 投
   assert.equal(ops[3].args.id, 'input')
   assert.deepEqual(ops[3].args.payload, { $n: 2 })
   assert.deepEqual(value.$directives[1], { kind: 'extern', payload: maintenancePlan.$directives[1].payload })
+})
+
+test('补丁世代：memory.edit 清槽有 data_gen 写 input 补丁 + base；身份 data_gen 透传 #23', async () => {
+  const ids = memoryIds()
+  ids['short-memory'].data_gen = { seq: 7, payload: 'a'.repeat(64) }
+  ids['memory-store'].data_gen = { seq: 8, payload: 'b'.repeat(64) }
+  const inputBody = {
+    slots: {
+      _main: { kind: 'memory.edit', action: 'delete', layer: 'l3', id: 'm-1' },
+      t1: { kind: 'chat.message' },
+    },
+  }
+  const maintenancePlan = {
+    $directives: [
+      {
+        kind: 'write',
+        request: {
+          op: 'batch',
+          args: {
+            ops: [
+              { op: 'put', args: { body: { tail: null, count: 1 } } },
+              { op: 'add_gen', args: { id: 'memory-store', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+            ],
+          },
+        },
+      },
+      { kind: 'extern', payload: { ok: true, kind: 'edit' } },
+    ],
+  }
+  const maintenance = fakeModel({ ok: true, value: maintenancePlan })
+  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance })
+  const value = await handlers.edit(
+    { ...ids, input: { body: inputBody, data_gen: { seq: 6, payload: 'c'.repeat(64) } } },
+    { run: null, thread: null, now: 0 },
+  )
+  assert.deepEqual(maintenance.calls[0].args.short_memory_data_gen, { seq: 7, payload: 'a'.repeat(64) })
+  assert.deepEqual(maintenance.calls[0].args.memory_store_data_gen, { seq: 8, payload: 'b'.repeat(64) })
+  const ops = value.$directives[0].request.args.ops
+  const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
+  assert.equal(inputGen.args.base, 6)
+  const patchDef = ops[ops.indexOf(inputGen) - 1].args.body
+  assert.deepEqual(patchDef.ops, [{ op: 'replace', path: ['slots', '_main'], value: { kind: 'idle' } }])
 })
 
 test('memory.edit 缺槽 / 端口失败：仍出清槽计划并以 extern 收口', async () => {
@@ -1454,6 +1509,38 @@ test('并发方法脱链：只读方法在写类方法在途时仍立即派发�
     service.send({ v: '1', id: portCalls('profile')[settled + 1].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
     await service.waitFor(() => service.messages.some((message) => message.id === 'pf3'), 'pf3 result')
     assert.ok(service.messages.some((message) => message.id === 'pf2'), 'pf2 结果已回')
+  } finally {
+    if (service.child.exitCode === null) service.child.kill()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('引用不可用：hydrate 抛 def_unavailable；服务帧映射同码', async () => {
+  const hash = 'a'.repeat(64)
+  const failingHost = { call: async () => ({ ok: false, code: 'denied', message: 'denied' }) }
+  const handlers = createHandlers({ identity: 'ui-settings', host: failingHost })
+  await assert.rejects(handlers.scopes({ refs: [hash] }, { run: null, thread: null, now: 0 }), (err) => {
+    assert.ok(err instanceof DefUnavailableError)
+    assert.equal(err.code, 'def_unavailable')
+    return true
+  })
+
+  const root = tempDir('def-unavailable')
+  const service = startService(root)
+  try {
+    service.send({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-settings', gen: 'g' })
+    await service.waitFor(() => service.messages.some((message) => message.kind === 'manifest'), 'manifest')
+    service.send({ v: '1', id: 'sc1', kind: 'call', port: 'ui-settings', method: 'scopes', args: { refs: [hash] } })
+    await service.waitFor(
+      () => service.messages.some((message) => message.kind === 'port.call' && message.method === 'def.read'),
+      'def.read port.call',
+    )
+    const call = service.messages.find((message) => message.kind === 'port.call' && message.method === 'def.read')
+    service.send({ v: '1', id: call.id, kind: 'port.error', ok: false, error: 'denied', message: 'denied' })
+    await service.waitFor(() => service.messages.some((message) => message.id === 'sc1'), 'scopes response')
+    const response = service.messages.find((message) => message.id === 'sc1')
+    assert.equal(response.kind, 'error')
+    assert.equal(response.code, 'def_unavailable')
   } finally {
     if (service.child.exitCode === null) service.child.kill()
     rmSync(root, { recursive: true, force: true })

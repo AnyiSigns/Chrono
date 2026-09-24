@@ -47,6 +47,89 @@ export function identityActive(value: unknown): string | null | undefined {
   return typeof active === 'string' || active === null ? active : undefined
 }
 
+/** 身份视图 → data_gen（`{seq,payload}` 或 null）；非身份视图 / 形状不符回 undefined。 */
+export function identityDataGen(value: unknown): unknown {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'data_gen')) return undefined
+  return value.data_gen
+}
+
+/** `data_gen.seq`（非负整数）；缺失 / 非法回 null。 */
+function dataGenSeq(value: unknown): number | null {
+  if (!isRecord(value)) return null
+  const seq = value.seq
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。 */
+function bodyPatches(prev: { [key: string]: any }, next: { [key: string]: any }): any[] {
+  const ops: any[] = []
+  for (const key of Object.keys(next)) {
+    if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
+      ops.push({ op: 'replace', path: [key], value: next[key] })
+    }
+  }
+  for (const key of Object.keys(prev)) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) continue
+    ops.push({ op: 'delete', path: [key] })
+  }
+  return ops
+}
+
+/** 输入槽补丁：按线程键 `replace ["slots", key]` / `delete ["slots", key]`。 */
+function slotPatches(prev: { [key: string]: any }, next: { [key: string]: any }): any[] {
+  const prevSlots = isRecord(prev.slots) ? prev.slots : {}
+  const nextSlots = isRecord(next.slots) ? next.slots : {}
+  const ops: any[] = []
+  for (const key of Object.keys(nextSlots)) {
+    if (JSON.stringify(prevSlots[key]) !== JSON.stringify(nextSlots[key])) {
+      ops.push({ op: 'replace', path: ['slots', key], value: nextSlots[key] })
+    }
+  }
+  for (const key of Object.keys(prevSlots)) {
+    if (Object.prototype.hasOwnProperty.call(nextSlots, key)) continue
+    ops.push({ op: 'delete', path: ['slots', key] })
+  }
+  return ops
+}
+
+/**
+ * 身份写指令：有数据世代（`dataGen.seq`）且补丁非空 ⇒ `put({ops}) + add_gen(base)`；
+ * 否则 `put` 整份 next + `add_gen`。`expectActive` 仅在读回身份视图时携带（显式条件写）。
+ */
+export function identityWriteDirective(
+  identity: string,
+  prev: unknown,
+  next: { [key: string]: any },
+  expectActive?: string | null,
+  dataGen?: unknown,
+): any {
+  const addGen: any = { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) addGen.expect_active = expectActive
+  const base = dataGenSeq(dataGen)
+  if (base !== null && isRecord(prev)) {
+    const patches = identity === 'input' ? slotPatches(prev, next) : bodyPatches(prev, next)
+    if (patches.length > 0) {
+      addGen.base = base
+      return {
+        kind: 'write',
+        request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { ops: patches } } }, { op: 'add_gen', args: addGen }] } },
+      }
+    }
+  }
+  return {
+    kind: 'write',
+    request: {
+      op: 'batch',
+      args: {
+        ops: [
+          { op: 'put', args: { body: next } },
+          { op: 'add_gen', args: addGen },
+        ],
+      },
+    },
+  }
+}
+
 /** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
 const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
 

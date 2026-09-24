@@ -6,15 +6,15 @@
 import { dedupNewItems } from './dedup.ts'
 import type { DedupOptions } from './dedup.ts'
 import {
-  addGenOp,
   asString,
+  dataGenSeqOf,
   errorValue,
   externOnly,
   isRecord,
   isoAt,
   nowOf,
   planOf,
-  putOp,
+  pushBodyGen,
   uniqueStrings,
 } from './plan.ts'
 import { semanticSummary } from './semantic.ts'
@@ -61,6 +61,8 @@ interface Context {
   embeddingModel: string
   at: string
   expiresAt: string
+  /** #3 短记忆的数据世代下标（写补丁世代用；无 → null 写整份）。 */
+  base: number | null
 }
 
 interface Requirements {
@@ -114,6 +116,7 @@ function parseContext(args: Json, env: CallEnv, requirements: Requirements): Con
     embeddingModel: typeof rawModel === 'string' ? rawModel : DEFAULT_EMBEDDING_MODEL,
     at: isoAt(now),
     expiresAt: isoAt(now + TTL_MS),
+    base: dataGenSeqOf(args['memory_data_gen']) ?? dataGenSeqOf(args['short_memory_data_gen']),
   }
 }
 
@@ -248,7 +251,8 @@ async function summarize(args: Json, env: CallEnv, deps: CompressDeps): Promise<
   const resolved = await resolveSummary(ctx, deps)
   if ('error' in resolved) return errorValue(resolved.error.code, resolved.error.message)
   const l1 = await updateL1(ctx.memory, ctx.conversation as string, resolved.summary, ctx, makeDedup(deps, ctx))
-  const ops = [putOp(l1.memory), addGenOp('short-memory', 0)]
+  const ops: Json[] = []
+  pushBodyGen(ops, 'short-memory', ctx.memory, l1.memory, ctx.base)
   return planOf(ops, {
     ok: true,
     kind: 'summarize',
@@ -270,7 +274,8 @@ async function compact(args: Json, env: CallEnv, deps: CompressDeps): Promise<Js
   const memory = extracted.insufficient
     ? l1.memory
     : updateL2(l1.memory, ctx.workspace as string, resolved.summary, extracted.items, ctx)
-  const ops = [putOp(memory), addGenOp('short-memory', 0)]
+  const ops: Json[] = []
+  pushBodyGen(ops, 'short-memory', ctx.memory, memory, ctx.base)
   const payload: Rec = {
     ok: true,
     kind: 'compact',
@@ -305,7 +310,8 @@ async function extract(args: Json, env: CallEnv, deps: CompressDeps): Promise<Js
     })
   }
   const memory = updateL2(ctx.memory, ctx.workspace as string, source, extracted.items, ctx)
-  const ops = [putOp(memory), addGenOp('short-memory', 0)]
+  const ops: Json[] = []
+  pushBodyGen(ops, 'short-memory', ctx.memory, memory, ctx.base)
   return planOf(ops, {
     ok: true,
     kind: 'extract',

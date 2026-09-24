@@ -837,6 +837,58 @@ test('补丁世代：rename / new_conversation 组装结果 == 整份写入结�
   }
 })
 
+test('补丁世代：input 清槽写 replace [slots, thread] + base=data_gen.seq', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const slots = {
+      slots: { t1: { kind: 'chat.message', text: 'hi' }, t2: { kind: 'idle' } },
+      data_gen: { seq: 5, payload: H1 },
+    }
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: baseSession(),
+      slots,
+      conversation: 'c1',
+      user: { content: 'hi' },
+      assistant: { content: 'hello' },
+    })
+    const ops = opsFor(plan)
+    const inputGenIndex = ops.findIndex((op) => op.op === 'add_gen' && op.args.id === 'input')
+    assert.equal(ops[inputGenIndex].args.base, 5)
+    const patchDef = ops[inputGenIndex - 1]
+    assert.deepEqual(patchDef.args.body.ops, [
+      { op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } },
+    ])
+    assert.deepEqual(assembleBody({ slots: slots.slots }, patchDef.args.body.ops), {
+      slots: { t1: { kind: 'idle' }, t2: { kind: 'idle' } },
+    })
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：input 空改动（本线程已 idle）回落整份', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: baseSession(),
+      slots: { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 5, payload: H1 } },
+      conversation: 'c1',
+      user: { content: 'hi' },
+      assistant: { content: 'hello' },
+    })
+    const ops = opsFor(plan)
+    const inputGenIndex = ops.findIndex((op) => op.op === 'add_gen' && op.args.id === 'input')
+    assert.equal(ops[inputGenIndex].args.base, undefined)
+    assert.equal(Array.isArray(ops[inputGenIndex - 1].args.body.ops), false)
+  } finally {
+    drv.close()
+  }
+})
+
 test('补丁世代：无变更会话写回落整份（空补丁非法）', async () => {
   const drv = startService()
   try {

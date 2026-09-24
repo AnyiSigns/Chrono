@@ -5,7 +5,7 @@
 import { emitEvent } from './events.ts'
 import { log } from './frames.ts'
 import { COMMANDS, IDENTITY } from './plugin.ts'
-import { addGenOp, externOnly, isRecord, planOf, putOp } from './plan.ts'
+import { baseSeqOf, externOnly, isRecord, planOf, pushBodyGen } from './plan.ts'
 import { McpRegistry } from './registry.ts'
 import { SecretsLink } from './secrets-link.ts'
 import { BadArgsError } from './types.ts'
@@ -50,7 +50,8 @@ async function discover(args: Json, _env: CallEnv, callId: string | null): Promi
   if (!outcome.changed) {
     return { value: externOnly({ ok: true, changed: false, ...outcome.summary }) }
   }
-  const ops: Json[] = [putOp(outcome.body), addGenOp(IDENTITY, 0)]
+  const ops: Json[] = []
+  pushBodyGen(ops, IDENTITY, isRecord(bag['servers']) ? bag['servers'] : {}, outcome.body, baseSeqOf(bag))
   return { value: planOf(ops, { ok: true, changed: true, ...outcome.summary }) }
 }
 

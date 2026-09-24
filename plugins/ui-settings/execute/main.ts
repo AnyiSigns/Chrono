@@ -12,6 +12,7 @@ import { InboundClient } from './inbound.ts'
 import { createHandlers } from './methods.ts'
 import type { CallEnv, SecretsChannel } from './methods.ts'
 import { PortLink } from './port-link.ts'
+import { DefUnavailableError } from './refs.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
@@ -186,6 +187,10 @@ async function handleCall(message: Rec): Promise<void> {
     const value = await handler(args ?? null, parseEnv(message['env']))
     sendFrame({ v: PROTOCOL, id, kind: 'result', ok: true, value })
   } catch (err) {
+    if (err instanceof DefUnavailableError) {
+      sendError(id, 'def_unavailable', err.message)
+      return
+    }
     log(`method ${method} failed: ${(err as Error).message}`)
     sendError(id, 'internal', 'handler failed')
   } finally {

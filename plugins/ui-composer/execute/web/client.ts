@@ -7,6 +7,7 @@ import {
   configWriteDirective,
   identityActive,
   identityBody,
+  identityDataGen,
   isCodeGenFallbackBody,
   isRecord,
   mergeSlotBody,
@@ -32,6 +33,7 @@ export interface SubmitResult {
 export interface IdentityRead {
   body: unknown
   active: string | null | undefined
+  dataGen: unknown
   error: string | null
 }
 
@@ -63,7 +65,7 @@ function asSubmit(result: unknown): SubmitResult {
 export interface ComposerClient {
   readConfig(): Promise<unknown>
   readConfigState(): Promise<IdentityRead>
-  writeConfig(body: unknown, expectActive?: string | null, thread?: string): Promise<SubmitResult>
+  writeConfig(prev: unknown, next: unknown, expectActive?: string | null, dataGen?: unknown, thread?: string): Promise<SubmitResult>
   writeSlot(threadKey: string, slot: unknown): Promise<SubmitResult>
   triggerSend(threadKey: string): Promise<CommandResult>
   cancelRun(run: string): Promise<{ ok: boolean; code: string }>
@@ -84,8 +86,13 @@ export function createClient(ctx: SlotContext): ComposerClient {
   /** 读身份：命令返回整份身份视图，拆出 `body` 与 `active`。 */
   async function readIdentity(name: string, args: unknown, thread?: string): Promise<IdentityRead> {
     const result = await command(name, args, thread)
-    if (!result.ok) return { body: null, active: undefined, error: result.code }
-    return { body: identityBody(result.value), active: identityActive(result.value), error: null }
+    if (!result.ok) return { body: null, active: undefined, dataGen: undefined, error: result.code }
+    return {
+      body: identityBody(result.value),
+      active: identityActive(result.value),
+      dataGen: identityDataGen(result.value),
+      error: null,
+    }
   }
 
   async function readConfigState(): Promise<IdentityRead> {
@@ -99,15 +106,15 @@ export function createClient(ctx: SlotContext): ComposerClient {
   return {
     readConfig,
     readConfigState,
-    writeConfig: (body, expectActive, thread) =>
-      submitDirectives([configWriteDirective(body as never, expectActive)], thread),
+    writeConfig: (prev, next, expectActive, dataGen, thread) =>
+      submitDirectives([configWriteDirective(prev, next as never, expectActive, dataGen)], thread),
     async writeSlot(threadKey, slot) {
       const read = await readIdentity('input.read', { thread: threadKey }, threadKey)
       if (read.body === null) return { ok: false, code: 'not_loaded', run: null }
       // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
       if (isCodeGenFallbackBody(read.body)) return { ok: false, code: 'not_loaded', run: null }
       const merged = mergeSlotBody(read.body, threadKey, slot as never)
-      return submitDirectives([slotWriteDirective(merged, read.active)], threadKey)
+      return submitDirectives([slotWriteDirective(read.body, merged as never, read.active, read.dataGen)], threadKey)
     },
     triggerSend: (threadKey) => command('chat.send', null, threadKey),
     async cancelRun(run) {

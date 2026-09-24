@@ -8,10 +8,12 @@ import { resolve, sep } from 'node:path'
 import {
   asString,
   clearReject,
+  dataGenOf,
   directivesOf,
   externOnly,
   failure,
   inputBodyOf,
+  inputSliceOf,
   itemById,
   itemsFromChain,
   MAIN_THREAD,
@@ -80,7 +82,12 @@ export function assembleListArgs(ids: Json, refs?: Rec): Rec {
 export function assembleDecideArgs(ids: Json, threadKey: string, refs?: Rec): Rec {
   const inputBody = inputBodyOf(ids)
   const args: Rec = { queue: queueOf(ids), refs: refs ?? refsOf(ids), thread_id: threadKey }
-  if (inputBody !== null) args['slots'] = inputBody
+  const approvalGen = dataGenOf(ids, 'approval')
+  if (approvalGen !== null) args['data_gen'] = approvalGen
+  if (inputBody !== null) {
+    const inputGen = dataGenOf(ids, 'input')
+    args['slots'] = inputGen === null ? inputBody : { ...inputBody, data_gen: inputGen }
+  }
   return args
 }
 
@@ -118,10 +125,10 @@ async function decideCore(
 ): Promise<Json> {
   const ids = args
   const threadKey = asString(env.thread) ?? MAIN_THREAD
-  const inputBody = inputBodyOf(ids)
+  const inputSlice = inputSliceOf(ids)
   const slot = decideSlotOf(ids, threadKey)
   const verdict = slot === null ? null : normalizeVerdict(slot['verdict'])
-  if (verdict === null) return clearReject(inputBody, threadKey, 'bad_slot')
+  if (verdict === null) return clearReject(inputSlice, threadKey, 'bad_slot')
 
   const queue = queueOf(ids)
   const refs = await hydrate(refsOf(ids))
@@ -129,9 +136,9 @@ async function decideCore(
   const targets = mode === 'all' ? pendingItems(items) : singleTarget(items, slot as Rec)
   const method = mode === 'all' ? 'decide_all' : 'decide'
   const outcome = await deps.approval.call('approval', method, assembleDecideArgs(ids, threadKey, refs))
-  if (!outcome.ok) return clearReject(inputBody, threadKey, outcome.code)
+  if (!outcome.ok) return clearReject(inputSlice, threadKey, outcome.code)
   const approvalPlan = directivesOf(outcome.value)
-  if (approvalPlan === null) return clearReject(inputBody, threadKey, 'bad_plan')
+  if (approvalPlan === null) return clearReject(inputSlice, threadKey, 'bad_plan')
   return buildDecisionPlan(targets, verdict, approvalPlan)
 }
 

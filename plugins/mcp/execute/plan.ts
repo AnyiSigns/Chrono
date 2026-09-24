@@ -13,9 +13,59 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put（四字段全必填）。 */
-export function addGenOp(id: string, index: number): Json {
-  return { op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins: {} } }
+/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
+export function addGenOp(id: string, index: number, base?: number): Json {
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
+  if (base !== undefined) args['base'] = base
+  return { op: 'add_gen', args }
+}
+
+/** `data_gen` 视图里的 `seq`（非负整数）；缺失 / 非法回 null。 */
+export function dataGenSeqOf(value: Json | undefined): number | null {
+  if (!isRecord(value)) return null
+  const seq = value['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** 数据世代基准：切片上的 `data_gen.seq`（含 `body.data_gen` 包裹形态）；无 → null，写整份世代。 */
+export function baseSeqOf(slice: Rec): number | null {
+  for (const candidate of [slice, isRecord(slice['body']) ? (slice['body'] as Rec) : null]) {
+    if (candidate === null) continue
+    const seq = dataGenSeqOf(candidate['data_gen'])
+    if (seq !== null) return seq
+  }
+  return null
+}
+
+/** 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。 */
+export function bodyPatches(prev: Rec, next: Rec): Json[] {
+  const ops: Json[] = []
+  for (const key of Object.keys(next)) {
+    if (!canonicalEqual(prev[key], next[key])) ops.push({ op: 'replace', path: [key], value: next[key] })
+  }
+  for (const key of Object.keys(prev)) {
+    if (key in next) continue
+    ops.push({ op: 'delete', path: [key] })
+  }
+  return ops
+}
+
+/**
+ * 追加数据世代的写子操作：有数据世代（base）且补丁非空 ⇒ put(补丁) + add_gen(base)；
+ * 否则整份 put + add_gen。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
+ */
+export function pushBodyGen(ops: Json[], id: string, prev: Rec, next: Rec, base: number | null): void {
+  const index = ops.length
+  if (base !== null) {
+    const patches = bodyPatches(prev, next)
+    if (patches.length > 0) {
+      ops.push(putOp({ ops: patches }))
+      ops.push(addGenOp(id, index, base))
+      return
+    }
+  }
+  ops.push(putOp(next))
+  ops.push(addGenOp(id, index))
 }
 
 /** 一条原子 batch write 计划条目。 */

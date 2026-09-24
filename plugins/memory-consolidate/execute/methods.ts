@@ -5,15 +5,16 @@
 
 import { resolveParams } from './config.ts'
 import {
-  addGenOp,
   asString,
   asStringList,
+  dataGenSeqOf,
   errorValue,
   externOnly,
   isRecord,
   isoAt,
   nowOf,
   planOf,
+  pushBodyGen,
   putOp,
   uniqueStrings,
 } from './plan.ts'
@@ -56,6 +57,10 @@ interface Context {
   model: string
   at: string
   now: number
+  /** #3 短记忆的数据世代下标（写补丁世代用；无 → null 写整份）。 */
+  shortBase: number | null
+  /** #21 记忆库的数据世代下标（写补丁世代用；无 → null 写整份）。 */
+  storeBase: number | null
 }
 
 function toFailure(err: unknown): { code: string; message: string } {
@@ -78,6 +83,12 @@ function parseContext(args: Json, env: CallEnv): Context {
     model: asString(args['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
     at: isoAt(now),
     now,
+    shortBase:
+      dataGenSeqOf(args['short_memory_data_gen']) ??
+      (isRecord(args['short_memory']) ? dataGenSeqOf(args['short_memory']['data_gen']) : null),
+    storeBase:
+      dataGenSeqOf(args['memory_store_data_gen']) ??
+      (isRecord(args['memory_store']) ? dataGenSeqOf(args['memory_store']['data_gen']) : null),
   }
 }
 
@@ -120,21 +131,19 @@ function buildEntry(input: {
 }
 
 /** 追加 L3 条目写（entry def → 新 body → add_gen），占位符按批内下标机械接链。 */
-function appendL3(ops: Json[], body: Rec, entries: Rec[]): void {
+function appendL3(ops: Json[], body: Rec, entries: Rec[], base: number | null): void {
   let prev: Json = tailHashOf(body)
   for (const entry of entries) {
     ops.push(putOp({ ...entry, prev: prev === null ? null : { def: prev } }))
     prev = { $n: ops.length - 1 }
   }
   const next = memoryStoreBody({ body, tailRef: prev, count: countOf(body) + entries.length })
-  ops.push(putOp(next))
-  ops.push(addGenOp('memory-store', ops.length - 1))
+  pushBodyGen(ops, 'memory-store', body, next, base)
 }
 
 /** 只写 #21 body（删除 / 置顶 / 编辑的 body 变更路径）。 */
-function appendL3Body(ops: Json[], body: Rec): void {
-  ops.push(putOp(body))
-  ops.push(addGenOp('memory-store', ops.length - 1))
+function appendL3Body(ops: Json[], prev: Rec, next: Rec, base: number | null): void {
+  pushBodyGen(ops, 'memory-store', prev, next, base)
 }
 
 /** #11 会话 → 工作区归属（按 conversations[].workspace_id）。 */
@@ -354,10 +363,9 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
 
   const ops: Json[] = []
   if (shortChanged) {
-    ops.push(putOp({ ...ctx.shortMemory, workspaces: nextWorkspaces }))
-    ops.push(addGenOp('short-memory', ops.length - 1))
+    pushBodyGen(ops, 'short-memory', ctx.shortMemory, { ...ctx.shortMemory, workspaces: nextWorkspaces }, ctx.shortBase)
   }
-  if (entries.length > 0) appendL3(ops, ctx.memoryStore, entries)
+  if (entries.length > 0) appendL3(ops, ctx.memoryStore, entries, ctx.storeBase)
 
   return planOf(ops, {
     ok: true,
@@ -467,20 +475,27 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
 
   const ops: Json[] = []
   if (shortChanged) {
-    ops.push(putOp({ ...ctx.shortMemory, sessions: nextSessions, workspaces: nextWorkspaces }))
-    ops.push(addGenOp('short-memory', ops.length - 1))
+    pushBodyGen(
+      ops,
+      'short-memory',
+      ctx.shortMemory,
+      { ...ctx.shortMemory, sessions: nextSessions, workspaces: nextWorkspaces },
+      ctx.shortBase,
+    )
   }
   if (l3Changed) {
     const deleted = { ...(isRecord(ctx.memoryStore['deleted']) ? (ctx.memoryStore['deleted'] as Rec) : {}) }
     for (const item of l3Deleted) deleted[item.id] = ctx.at
     appendL3Body(
       ops,
+      ctx.memoryStore,
       memoryStoreBody({
         body: ctx.memoryStore,
         tailRef: tailHashOf(ctx.memoryStore),
         count: countOf(ctx.memoryStore),
         deleted,
       }),
+      ctx.storeBase,
     )
   }
 
@@ -612,12 +627,14 @@ async function editL3(
     deleted[id] = ctx.at
     appendL3Body(
       ops,
+      ctx.memoryStore,
       memoryStoreBody({
         body: ctx.memoryStore,
         tailRef: tailHashOf(ctx.memoryStore),
         count: countOf(ctx.memoryStore),
         deleted,
       }),
+      ctx.storeBase,
     )
     return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, deleted_at: ctx.at })
   }
@@ -627,12 +644,14 @@ async function editL3(
     else pinned[id] = true
     appendL3Body(
       ops,
+      ctx.memoryStore,
       memoryStoreBody({
         body: ctx.memoryStore,
         tailRef: tailHashOf(ctx.memoryStore),
         count: countOf(ctx.memoryStore),
         pinned,
       }),
+      ctx.storeBase,
     )
     return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, pinned: patch['pinned'] !== false })
   }
@@ -647,8 +666,7 @@ async function editL3(
     tailRef: { $n: 0 },
     count: countOf(ctx.memoryStore) + 1,
   })
-  ops.push(putOp(next))
-  ops.push(addGenOp('memory-store', 1))
+  pushBodyGen(ops, 'memory-store', ctx.memoryStore, next, ctx.storeBase)
   return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, text })
 }
 
@@ -669,7 +687,9 @@ function editShort(ctx: Context, action: string, layer: string, id: string, patc
     const body: Rec = isL1
       ? { ...ctx.shortMemory, sessions: next }
       : { ...ctx.shortMemory, workspaces: next }
-    return planOf([putOp(body), addGenOp('short-memory', 0)], {
+    const ops: Json[] = []
+    pushBodyGen(ops, 'short-memory', ctx.shortMemory, body, ctx.shortBase)
+    return planOf(ops, {
       ok: true,
       kind: 'edit',
       action,
@@ -688,7 +708,9 @@ function editShort(ctx: Context, action: string, layer: string, id: string, patc
   const body: Rec = isL1
     ? { ...ctx.shortMemory, sessions: next }
     : { ...ctx.shortMemory, workspaces: next }
-  return planOf([putOp(body), addGenOp('short-memory', 0)], {
+  const ops: Json[] = []
+  pushBodyGen(ops, 'short-memory', ctx.shortMemory, body, ctx.shortBase)
+  return planOf(ops, {
     ok: true,
     kind: 'edit',
     action,

@@ -51,9 +51,71 @@ export function putOp(body: Json): Json {
   return { op: 'put', args: { body } }
 }
 
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put（四字段全必填）。 */
-export function addGenOp(id: string, index: number): Json {
-  return { op: 'add_gen', args: { id, payload: { $n: index }, sig: { $n: index }, pins: {} } }
+/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
+export function addGenOp(id: string, index: number, base?: number): Json {
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
+  if (base !== undefined) args['base'] = base
+  return { op: 'add_gen', args }
+}
+
+/** JSON 结构相等（键序无关、类型严格）。 */
+function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((item, index) => jsonEqual(item, b[index]))
+  }
+  if (isRecord(a) || isRecord(b)) {
+    if (!isRecord(a) || !isRecord(b)) return false
+    const keysA = Object.keys(a)
+    const keysB = Object.keys(b)
+    if (keysA.length !== keysB.length) return false
+    return keysA.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
+  }
+  return false
+}
+
+/** 数据世代基准：切片上的 `data_gen.seq`（含 `body.data_gen` 包裹形态）；无 → null，写整份世代。 */
+export function baseSeqOf(slice: Rec): number | null {
+  for (const candidate of [slice, isRecord(slice['body']) ? (slice['body'] as Rec) : null]) {
+    if (candidate === null) continue
+    const dataGen = candidate['data_gen']
+    if (!isRecord(dataGen)) continue
+    const seq = dataGen['seq']
+    if (typeof seq === 'number' && Number.isInteger(seq) && seq >= 0) return seq
+  }
+  return null
+}
+
+/** 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。 */
+export function bodyPatches(prev: Rec, next: Rec): Json[] {
+  const ops: Json[] = []
+  for (const key of Object.keys(next)) {
+    if (!jsonEqual(prev[key], next[key])) ops.push({ op: 'replace', path: [key], value: next[key] })
+  }
+  for (const key of Object.keys(prev)) {
+    if (key in next) continue
+    ops.push({ op: 'delete', path: [key] })
+  }
+  return ops
+}
+
+/**
+ * 追加数据世代的写子操作：有数据世代（base）且补丁非空 ⇒ put(补丁) + add_gen(base)；
+ * 否则整份 put + add_gen。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
+ */
+export function pushBodyGen(ops: Json[], id: string, prev: Rec, next: Rec, base: number | null): void {
+  const index = ops.length
+  if (base !== null) {
+    const patches = bodyPatches(prev, next)
+    if (patches.length > 0) {
+      ops.push(putOp({ ops: patches }))
+      ops.push(addGenOp(id, index, base))
+      return
+    }
+  }
+  ops.push(putOp(next))
+  ops.push(addGenOp(id, index))
 }
 
 /** 一条原子 batch write 计划条目。 */
@@ -105,12 +167,38 @@ export function slotOf(args: Rec, threadId: string): Json | undefined {
 }
 
 /**
+ * 输入 body 的规范形状：只留 `slots`（剥离入口切片并进来的 `data_gen` / `refs`）。
+ */
+export function inputDataOf(slice: Rec): Rec {
+  return { slots: isRecord(slice['slots']) ? (slice['slots'] as Rec) : {} }
+}
+
+/**
  * 清槽：per-thread 键控——只把本线程键置 `{kind:'idle'}`，其余键原样保留。
- * 返回**新对象**，不改入参（入参是轮首投影的整份 body）。
+ * 返回**新对象**，不改入参（入参是轮首投影的整份 body / 入口切片）。
  */
 export function clearSlotsBody(slotsBody: Rec, threadId: string): Rec {
   const slots = isRecord(slotsBody['slots']) ? (slotsBody['slots'] as Rec) : {}
-  return { ...slotsBody, slots: { ...slots, [threadId]: { kind: 'idle' } } }
+  return { slots: { ...slots, [threadId]: { kind: 'idle' } } }
+}
+
+/**
+ * 追加输入世代的写子操作：有数据世代（`slice.data_gen`）且本线程槽确有变化 ⇒ 写 `replace ['slots', <thread>]`
+ * 补丁世代；否则回落整份世代。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
+ */
+export function pushInputGen(ops: Json[], slice: Rec, threadId: string): void {
+  const index = ops.length
+  const base = baseSeqOf(slice)
+  const prev = inputDataOf(slice)
+  const slots = isRecord(prev['slots']) ? (prev['slots'] as Rec) : {}
+  const nextSlot: Json = { kind: 'idle' }
+  if (base !== null && !jsonEqual(slots[threadId], nextSlot)) {
+    ops.push(putOp({ ops: [{ op: 'replace', path: ['slots', threadId], value: nextSlot }] }))
+    ops.push(addGenOp('input', index, base))
+    return
+  }
+  ops.push(putOp(clearSlotsBody(slice, threadId)))
+  ops.push(addGenOp('input', index))
 }
 
 // ── 队列 body / item 链 ─────────────────────────────────────────────────────

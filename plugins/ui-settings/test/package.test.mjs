@@ -116,7 +116,7 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
     'eff',
     'ui-settings',
     'discover',
-    ['g', ['ids', 'input', 'body']],
+    ['g', ['ids', 'input']],
   ])
   assert.deepEqual(readJson('terms/model.profile.json'), ['eff', 'ui-settings', 'profile', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/secrets.status.json'), ['eff', 'secrets', 'list', ['c', null]])

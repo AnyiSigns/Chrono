@@ -13,6 +13,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 // 红线断言（包形状）；本包 test 脚本按文件显式列出，故在此引入使其随 npm test 执行。
 import './package.test.mjs'
+import { createHandlers } from '../execute/methods.ts'
+import { pushInputGen } from '../execute/plan.ts'
+import { DefUnavailableError } from '../execute/refs.ts'
 
 // ── 测试内联最小内核助手（测试不得 import 宿主与内核包） ──────────────────────
 
@@ -39,6 +42,23 @@ function walk(value, path) {
   let current = value
   for (const step of path) current = current[step]
   return current
+}
+
+/** 最小补丁组装（测试内联，避免引用内核包）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') {
+      if (Array.isArray(node)) node.splice(last, 1)
+      else delete node[last]
+    } else {
+      node[last] = structuredClone(op.value)
+    }
+  }
+  return doc
 }
 
 /** 最小求值器：只覆盖本测试用到的 `c` / `g` / `v` / `eff`（eff 走 env.results 回灌）。 */
@@ -102,16 +122,22 @@ function createDecoder() {
   }
 }
 
-function startService() {
+function startService(options = {}) {
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
+  const portCalls = []
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
       if (message.kind === 'event') {
         events.push(message)
+        continue
+      }
+      if (message.kind === 'port.call') {
+        portCalls.push(message)
+        options.onPortCall?.(message, (reply) => child.stdin.write(encodeFrame(reply)))
         continue
       }
       const handler = pending.get(message.id)
@@ -596,6 +622,110 @@ test('入口 term：最小求值器求值 terms/question.answer.json 得作答�
     assert.equal(directivesOf(outcome.value)[0].command, 'chat.resume')
     assert.equal(directivesOf(outcome.value)[0].args.ids, undefined, '续跑不再内嵌整份投影')
     assert.deepEqual(directivesOf(outcome.value)[0].inject, { ids: ['ids'] }, '投影由宿主执行期注入')
+  } finally {
+    drv.close()
+  }
+})
+
+// ── 引用不可用（def_unavailable） ───────────────────────────────────────────
+
+test('hydrate：mock read 缺失 / 越权 → 抛 def_unavailable', async () => {
+  const failingHost = { call: async () => ({ ok: false, code: 'denied', message: 'denied' }) }
+  const handlers = createHandlers({ host: failingHost })
+  await assert.rejects(
+    handlers.list({ queue: { version: 1, tail: null, count: 0 }, refs: [H1] }, FIXED_ENV),
+    (err) => {
+      assert.ok(err instanceof DefUnavailableError)
+      assert.equal(err.code, 'def_unavailable')
+      assert.deepEqual(err.hashes, [H1])
+      return true
+    },
+  )
+})
+
+// ── 补丁世代（有 data_gen 时写补丁 + base；组装结果 == 整份写入） ─────────────
+
+test('补丁世代：enqueue 队列 body 写补丁 + base', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const queue = { version: 1, tail: null, count: 0 }
+    const value = await drv.call('invoke', {
+      tool: 'question',
+      args: { questions: [question()] },
+      question: { body: queue, refs: {} },
+      data_gen: { seq: 4, payload: H1 },
+      run: 'r1',
+      thread: 't1',
+      at: '2023-11-14T22:13:20.000Z',
+    })
+    const ops = opsOf(value.result)
+    const patchDef = ops[1].args.body
+    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
+    assert.equal(ops[2].args.id, 'question')
+    assert.equal(ops[2].args.base, 4)
+    assert.deepEqual(applyOps(queue, patchDef.ops), { version: 1, tail: { def: { $n: 0 } }, count: 1 })
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：answer 队列 + input 清槽各自补丁 + base', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const item = itemFixture()
+    const ids = {
+      input: {
+        body: { slots: { t1: { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 'q1', selected: ['右'] }] } } },
+        data_gen: { seq: 11, payload: H1 },
+      },
+      question: {
+        body: { version: 1, tail: { def: H1 }, count: 1 },
+        refs: { [H1]: item },
+        data_gen: { seq: 12, payload: H2 },
+      },
+    }
+    const value = await drv.call('invoke', ids)
+    const write = directivesOf(value).find((directive) => directive.kind === 'write')
+    const ops = write.request.args.ops
+    const questionGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'question')
+    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
+    assert.equal(questionGen.args.base, 12)
+    assert.equal(inputGen.args.base, 11)
+    const inputPatch = ops[ops.indexOf(inputGen) - 1].args.body
+    assert.deepEqual(inputPatch.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：input 空改动（已 idle）回落整份', () => {
+  const ops = []
+  pushInputGen(ops, { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 5, payload: H1 } }, 't1')
+  assert.equal(ops[1].args.base, undefined)
+  assert.equal(Array.isArray(ops[0].args.body.ops), false)
+})
+
+test('服务帧：引用不可用回 def_unavailable 帧', async () => {
+  const drv = startService({
+    onPortCall: (message, reply) =>
+      reply({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'denied', message: 'denied' }),
+  })
+  try {
+    await drv.hello()
+    const message = await drv.request(
+      'call',
+      {
+        port: 'question',
+        method: 'list',
+        args: { queue: { version: 1, tail: null, count: 0 }, refs: [H1] },
+        env: FIXED_ENV,
+      },
+      ['result', 'error'],
+    )
+    assert.equal(message.kind, 'error')
+    assert.equal(message.code, 'def_unavailable')
   } finally {
     drv.close()
   }

@@ -121,6 +121,28 @@ function pickString(record: Rec | null, key: string): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/** `data_gen.seq`（非负整数）；缺失 / 非法回 null。 */
+function dataGenSeqOf(value: Json | undefined): number | null {
+  if (!isRecord(value)) return null
+  const seq = value['seq']
+  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
+}
+
+/** 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。 */
+function topLevelPatches(prev: Rec, next: Rec): Json[] {
+  const ops: Json[] = []
+  for (const key of Object.keys(next)) {
+    if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
+      ops.push({ op: 'replace', path: [key], value: next[key] })
+    }
+  }
+  for (const key of Object.keys(prev)) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) continue
+    ops.push({ op: 'delete', path: [key] })
+  }
+  return ops
+}
+
 /**
  * 构造主题写指令：读-改-写 config body（per-user 共享、写罕见）。
  * 拿到的是代码世代回落 body（`tree` 为字符串且不含数据侧特征键，非 config 数据）——拒绝写并返回 null，
@@ -128,7 +150,12 @@ function pickString(record: Rec | null, key: string): string | null {
  * `expectActive` 为读回身份视图的 `active`（64hex 或 null）：显式条件写，
  * 陈旧读（读到后世界已换代）由内核 `stale_active` 拒写；`undefined` 表示无从得知，省略该键。
  */
-export function themeWriteDirective(pref: string, configBody: Json, expectActive?: string | null): Json | null {
+export function themeWriteDirective(
+  pref: string,
+  configBody: Json,
+  expectActive?: string | null,
+  dataGen?: Json,
+): Json | null {
   if (configBody !== null && !isRecord(configBody)) return null
   if (isCodeGenFallbackBody(configBody)) return null
   const base = isRecord(configBody) ? configBody : {}
@@ -136,6 +163,20 @@ export function themeWriteDirective(pref: string, configBody: Json, expectActive
   const merged: Rec = { ...base, ui: { ...ui, theme: toConfigTheme(pref) } }
   const addGen: Rec = { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
   if (expectActive !== undefined) addGen['expect_active'] = expectActive
+  const seq = dataGenSeqOf(dataGen)
+  if (seq !== null) {
+    const patches = topLevelPatches(base, merged)
+    if (patches.length > 0) {
+      addGen['base'] = seq
+      return {
+        kind: 'write',
+        request: {
+          op: 'batch',
+          args: { ops: [{ op: 'put', args: { body: { ops: patches } } }, { op: 'add_gen', args: addGen }] },
+        },
+      }
+    }
+  }
   return {
     kind: 'write',
     request: {
@@ -191,7 +232,7 @@ async function handleTheme(
     sendJson(res, 503, { ok: false, code: read.code || 'ui_unreachable', message: read.message })
     return
   }
-  const directive = themeWriteDirective(pref, read.value, read.active)
+  const directive = themeWriteDirective(pref, read.value, read.active, read.dataGen)
   if (directive === null) {
     sendJson(res, 409, { ok: false, code: 'bad_directive', message: 'config body shape unsupported' })
     return

@@ -19,6 +19,7 @@ import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 
 import { STYLE_TEXT } from './styles.ts'
+import { slotWriteDirective } from './slot-write.ts'
 import { injectCursor } from './markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental } from './markdown-cache.ts'
 import type { MarkdownCache } from './markdown-cache.ts'
@@ -1203,6 +1204,12 @@ function identityActiveOf(value: any): string | null | undefined {
   return typeof active === 'string' || active === null ? active : undefined
 }
 
+/** 身份视图 → data_gen（`{seq,payload}` 或 null）；非身份视图 / 形状不符回 undefined。 */
+function identityDataGenOf(value: any): any {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, 'data_gen')) return undefined
+  return value.data_gen
+}
+
 /** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
 const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
 
@@ -1215,29 +1222,6 @@ function isCodeGenFallbackBody(body: any): boolean {
     if (Object.prototype.hasOwnProperty.call(body, key)) return false
   }
   return true
-}
-
-/** 构造写输入槽的 batch directive：保留身份 body 其余键，只覆盖本线程 slots 键（读-改-写）。
- * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
-function slotWriteDirective(body: any, threadKey: string, slot: any, expectActive?: string | null): any {
-  const base = body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}
-  const slots =
-    base.slots !== null && typeof base.slots === 'object' && !Array.isArray(base.slots) ? base.slots : {}
-  const nextSlots = { ...slots, [threadKey]: slot }
-  const addGen: any = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
-  if (expectActive !== undefined) addGen.expect_active = expectActive
-  return {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body: { ...base, slots: nextSlots } } },
-          { op: 'add_gen', args: addGen },
-        ],
-      },
-    },
-  }
 }
 
 function isAssistantEntry(entry: any): boolean {
@@ -1416,7 +1400,13 @@ function App({
     if (body === null || typeof body !== 'object' || Array.isArray(body) || isCodeGenFallbackBody(body)) {
       return { ok: false, code: 'not_loaded' }
     }
-    const directive = slotWriteDirective(body, thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers }, identityActiveOf(raw))
+    const directive = slotWriteDirective(
+      body,
+      thread ?? '_main',
+      { kind: 'question.answer', id: vm.itemId, answers },
+      identityActiveOf(raw),
+      identityDataGenOf(raw),
+    )
     const wrote = (await ctx.submit([directive], { thread })) as any
     if (wrote === null || wrote.ok !== true) return { ok: false, code: wrote?.code ?? 'ui_unreachable' }
     const answered = (await ctx.command('question.answer', null, { thread })) as any

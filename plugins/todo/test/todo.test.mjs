@@ -4,6 +4,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { AT, EMPTY_HEAD, EMPTY_WORLD, H, externOf, opsOf, runBatch, startService } from './driver.mjs'
+
+/** 最小补丁组装（测试内联，避免引用内核包）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') {
+      if (Array.isArray(node)) node.splice(last, 1)
+      else delete node[last]
+    } else {
+      node[last] = structuredClone(op.value)
+    }
+  }
+  return doc
+}
 // 红线断言（包形状）；本包 test 脚本按文件显式列出，故在此引入使其随 npm test 执行。
 import './package.test.mjs'
 
@@ -133,6 +150,58 @@ test('write：条目各自成 def + prev 串链 + 本会话键新 body + add_gen
     assert.equal(payload.total, 2)
     assert.equal(payload.done, 0)
     assert.equal(payload.items.length, 2)
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：有 data_gen 时写补丁 + base，组装结果 == 整份写入', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const prevBody = { conversations: { c2: { items: { tail: null, count: 0 } } } }
+    const result = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: { conversation_id: 'c1', at: AT, items: [{ text: '写文档' }] },
+      todo: { body: prevBody, data_gen: { seq: 4, payload: H('gen-4') } },
+    })
+    assert.equal(result.ok, true, JSON.stringify(result))
+    const ops = opsOf(result.result)
+    assert.equal(ops.length, 3)
+    const patchDef = ops[1].args.body
+    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
+    const addGen = ops[2]
+    assert.equal(addGen.args.id, 'todo')
+    assert.equal(addGen.args.base, 4)
+    // 补丁组装结果 == 目标整份 body（同内容旧 / 新形态逐字段一致）
+    assert.deepEqual(applyOps(prevBody, patchDef.ops), {
+      conversations: {
+        c2: { items: { tail: null, count: 0 } },
+        c1: { items: { tail: { def: { $n: 0 } }, count: 1 } },
+      },
+    })
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：空改动（本会话已是目标内容）回落整份', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const result = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: { conversation_id: 'c1', items: [] },
+      todo: {
+        body: { conversations: { c1: { items: { tail: null, count: 0 } } } },
+        data_gen: { seq: 4, payload: H('gen-4') },
+      },
+    })
+    const ops = opsOf(result.result)
+    assert.equal(ops.length, 2)
+    assert.equal(ops[1].args.id, 'todo')
+    assert.equal(ops[1].args.base, undefined)
+    assert.equal(Array.isArray(ops[0].args.body.ops), false)
   } finally {
     drv.close()
   }

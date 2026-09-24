@@ -335,7 +335,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       }
       state.config = mergeConfig(base, change)
       publish()
-      return await client.writeConfig(state.config, fresh.active)
+      return await client.writeConfig(fresh.body, state.config, fresh.active, fresh.dataGen)
     } catch (err) {
       return { ok: false, code: errorOf(err), run: null }
     }
@@ -457,7 +457,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     try {
       read = await client.readConfigState()
     } catch (err) {
-      read = { body: null, active: undefined, error: errorOf(err) }
+      read = { body: null, active: undefined, dataGen: undefined, error: errorOf(err) }
     }
     clearConfigTimer()
     if (disposed) return
@@ -483,7 +483,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     try {
       read = await client.readConfigState()
     } catch (err) {
-      read = { body: null, active: undefined, error: errorOf(err) }
+      read = { body: null, active: undefined, dataGen: undefined, error: errorOf(err) }
     }
     if (disposed) return read.body
     if (read.error !== null) {

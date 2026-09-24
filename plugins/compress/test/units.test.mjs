@@ -19,6 +19,19 @@ import {
 import { BadArgsError } from '../execute/types.ts'
 import { memoryFixture, opsOf, externOf, directivesOf } from './driver.mjs'
 
+/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') delete node[last]
+    else node[last] = structuredClone(op.value)
+  }
+  return doc
+}
+
 const ENV = { run: 'r', thread: 't', now: 1_700_000_000_000 }
 const EXPIRES = new Date(1_700_000_000_000 + TTL_MS).toISOString()
 
@@ -169,6 +182,49 @@ test('summarize（algorithmic）：写计划 put + add_gen，保留其他会话 
   assert.equal(payload.ok, true)
   assert.equal(payload.kind, 'summarize')
   assert.equal(payload.covered_upto, 'msg-9')
+})
+
+test('补丁世代：summarize 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+  const handlers = createHandlers({})
+  const memory = memoryFixture()
+  const full = await handlers.summarize(
+    { memory, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
+    ENV,
+  )
+  const fullBody = opsOf(full)[0].args.body
+  const value = await handlers.summarize(
+    {
+      memory,
+      conversation: 'c-1',
+      covered_upto: 'msg-9',
+      goal: 'G',
+      facts: ['f1', 'f2'],
+      memory_data_gen: { seq: 3, payload: 'a'.repeat(64) },
+    },
+    ENV,
+  )
+  const ops = opsOf(value)
+  assert.equal(ops[1].args.base, 3)
+  assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
+  assert.deepEqual(applyOps(memory, ops[0].args.body.ops), fullBody)
+})
+
+test('补丁世代：summarize 空改动回落整份', async () => {
+  const handlers = createHandlers({})
+  const memory = memoryFixture()
+  // 同输入第二次：目标内容与既有 L1 一致 → 补丁为空 → 回落整份。
+  const first = await handlers.summarize(
+    { memory, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
+    ENV,
+  )
+  const next = opsOf(first)[0].args.body
+  const second = await handlers.summarize(
+    { memory: next, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'], memory_data_gen: { seq: 3 } },
+    ENV,
+  )
+  const ops = opsOf(second)
+  assert.equal(ops[1].args.base, undefined)
+  assert.equal(Array.isArray(ops[0].args.body.ops), false)
 })
 
 test('summarize：缺 memory / conversation → BadArgsError', async () => {

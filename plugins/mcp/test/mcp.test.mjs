@@ -140,6 +140,19 @@ function discoverBag(input) {
   return { servers: body }
 }
 
+/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') delete node[last]
+    else node[last] = structuredClone(op.value)
+  }
+  return doc
+}
+
 function planBody(result) {
   const directives = result.value.$directives
   const write = directives.find((item) => item.kind === 'write')
@@ -304,6 +317,27 @@ test('discover 含 confirmed 服务器 → put(body)+add_gen(mcp) 计划、命�
     assert.deepEqual(described.value.tools, [])
   } finally {
     drv.close()
+  }
+})
+
+test('补丁世代：discover 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+  const fullDrv = startService()
+  const patchDrv = startService()
+  try {
+    await fullDrv.hello()
+    await patchDrv.hello()
+    const fullResult = await fullDrv.call('discover', discoverBag([serverEntry('srv', 'ok')]))
+    const fullBody = fullResult.value.$directives[0].request.args.ops[0].args.body
+
+    const bag = { ...discoverBag([serverEntry('srv', 'ok')]), data_gen: { seq: 3, payload: 'a'.repeat(64) } }
+    const patchResult = await patchDrv.call('discover', bag)
+    const ops = patchResult.value.$directives[0].request.args.ops
+    assert.equal(ops[1].args.base, 3)
+    assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
+    assert.deepEqual(applyOps(bag.servers, ops[0].args.body.ops), fullBody)
+  } finally {
+    fullDrv.close()
+    patchDrv.close()
   }
 })
 

@@ -5,6 +5,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+
+/** 最小补丁组装（测试内联，避免引用内核包）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') {
+      if (Array.isArray(node)) node.splice(last, 1)
+      else delete node[last]
+    } else {
+      node[last] = structuredClone(op.value)
+    }
+  }
+  return doc
+}
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
@@ -658,6 +675,87 @@ test('enqueue：明文 args 不被内联（只留摘要 / 资产引用）', asyn
     assert.equal('args' in item, false)
     assert.equal(JSON.stringify(item).includes('sk-live'), false)
     assert.deepEqual(item.args_ref, { summary: 'rm -rf /' })
+  } finally {
+    drv.close()
+  }
+})
+
+// ── 补丁世代（有 data_gen 时写补丁 + base；组装结果 == 整份写入） ─────────────
+
+test('补丁世代：enqueue 队列 body 写补丁 + base=data_gen.seq', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const queue = emptyQueue()
+    const plan = await drv.call('enqueue', {
+      queue,
+      refs: {},
+      data_gen: { seq: 3, payload: H1 },
+      kind: 'tool_call',
+      port: 'tool-shell',
+      method: 'invoke',
+      run: 'r1',
+      thread: 't1',
+      at: AT,
+    })
+    const ops = opsOf(plan)
+    assert.equal(ops.length, 3)
+    const patchDef = ops[1].args.body
+    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
+    assert.equal(ops[2].args.id, 'approval')
+    assert.equal(ops[2].args.base, 3)
+    assert.deepEqual(applyOps(queue, patchDef.ops), { version: 1, tail: { def: { $n: 0 } }, count: 1 })
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：decide 队列 + input 清槽各自补丁 + base', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const queue = { version: 1, tail: { def: H1 }, count: 1 }
+    const plan = await drv.call('decide', {
+      queue,
+      refs: { [H1]: { id: 'ap-r1-0', kind: 'tool_call', status: 'pending', thread: 't1', prev: null } },
+      data_gen: { seq: 6, payload: H2 },
+      thread_id: 't1',
+      id: 'ap-r1-0',
+      verdict: 'accept',
+      at: AT,
+      slots: {
+        slots: { t1: { kind: 'approval.decide', id: 'ap-r1-0', verdict: 'accept' } },
+        data_gen: { seq: 9, payload: H1 },
+      },
+    })
+    const ops = opsOf(plan)
+    const approvalGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'approval')
+    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
+    assert.equal(approvalGen.args.base, 6)
+    assert.equal(inputGen.args.base, 9)
+    const inputPatch = ops[ops.indexOf(inputGen) - 1].args.body
+    assert.deepEqual(inputPatch.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：input 空改动（已 idle）回落整份', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('decide', {
+      queue: { version: 1, tail: null, count: 0 },
+      refs: {},
+      slots: { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 9, payload: H1 } },
+      thread_id: 't1',
+      id: 'missing',
+      verdict: 'accept',
+    })
+    const ops = opsOf(plan)
+    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
+    assert.equal(inputGen.args.base, undefined)
+    assert.equal(Array.isArray(ops[ops.indexOf(inputGen) - 1].args.body.ops), false)
   } finally {
     drv.close()
   }

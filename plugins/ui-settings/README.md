@@ -20,13 +20,13 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
 | `model.vendors` | `eff ui-settings vendors`（读 `ctx.ids`） | 服务装配厂商模板 body → 反向调 `model.vendors` |
-| `model.discover` | `eff ui-settings discover`（读 `ctx.ids.input.body`） | 服务读 `model.probe` 槽 → 反向调 `model.discover`，返回计划：清槽（无论成败）+ extern 结果 |
+| `model.discover` | `eff ui-settings discover`（读 `ctx.ids.input`） | 服务读 `model.probe` 槽 → 反向调 `model.discover`，返回计划：清槽（无论成败，有数据世代则写补丁）+ extern 结果 |
 | `model.profile` | `eff ui-settings profile`（读 `ctx.ids`） | 服务从 config 身份 body + 厂商模板身份 body 装配 → 反向调 `model.profile`（返回其写计划） |
 | `secrets.status` | `eff secrets.list` | 本地密钥引用名状态（只回 `{name,has}`，不回本体） |
 | `settings.identities` | 投影读 `ctx.ids` | 身份名 / 状态 / 世代短哈希（插件页与关于页） |
 | `settings.skills` | 投影读技能身份 body | 技能清单（技能页） |
 | `orchestration.graph` | 投影读编排图身份 | 当前 active 图的节点 / 边（只读） |
-| `orchestration.scopes` | 投影读智能体身份 | Scope 名录（只读） |
+| `orchestration.scopes` | `eff ui-settings scopes`（读 `ctx.ids.agents`） | eff 服务方法：按需解析投影 refs 后回 Scope 名录（只读查询，仍标 `readonly`） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail |
 | `memory.view` | `eff ui-settings view`（读 `ctx.ids`） | 装配短记忆 body + 记忆库 body / refs → 反向调 `memory-maintenance.view` |
 | `memory.search` | `eff ui-settings search`（args，内含 UI 取回的 `ids`） | 装配检索真实 bag → 反向调 `retrieval.search` |

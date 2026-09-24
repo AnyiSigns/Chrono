@@ -65,10 +65,28 @@ import {
   withoutBusy,
 } from '../execute/web/model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
-import { createApprovalStore } from '../execute/web/store.ts'
+import { createApprovalStore, slotWriteDirective } from '../execute/web/store.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
+
+test('输入槽写指令：有 data_gen 写补丁 + base；空改动回落整份', () => {
+  const prev = { slots: { t1: { kind: 'approval.decide', id: 'a1', verdict: 'accept' } } }
+  const next = { slots: { t1: { kind: 'idle' } } }
+  const patched = slotWriteDirective(prev, next, undefined, { seq: 6, payload: 'a'.repeat(64) })
+  const ops = patched.request.args.ops
+  assert.equal(ops[1].args.id, 'input')
+  assert.equal(ops[1].args.base, 6)
+  assert.deepEqual(ops[0].args.body.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
+
+  const full = slotWriteDirective(prev, next)
+  assert.equal(full.request.args.ops[1].args.base, undefined)
+  assert.equal(Array.isArray(full.request.args.ops[0].args.body.ops), false)
+
+  const empty = slotWriteDirective(next, next, undefined, { seq: 6 })
+  assert.equal(empty.request.args.ops[1].args.base, undefined)
+  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
+})
 
 function sharedTable() {
   return parseMessages(readFileSync(SHARED_MESSAGES, 'utf8'))

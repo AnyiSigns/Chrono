@@ -4,11 +4,10 @@
 
 import { approvalPolicy } from './config.ts'
 import {
-  addGenOp,
   asCount,
   asString,
+  baseSeqOf,
   buildResume,
-  clearSlotsBody,
   countOf,
   defHashOf,
   externOnly,
@@ -22,6 +21,8 @@ import {
   normalizeShadow,
   nowOf,
   planOf,
+  pushBodyGen,
+  pushInputGen,
   putOp,
   queueOf,
   refOf,
@@ -47,10 +48,10 @@ function prevOf(queue: Rec): Json {
   return hash === null ? null : refOf(hash)
 }
 
-/** 可选清槽两条 op；无 slots（不该发生）时不构造写。 */
-function clearOps(slotsBody: Rec | null, threadKey: string, putIndex: number): Json[] {
-  if (slotsBody === null) return []
-  return [putOp(clearSlotsBody(slotsBody, threadKey)), addGenOp('input', putIndex)]
+/** 追加清槽写子操作；无 slots（不该发生）时不构造写。 */
+function clearOps(ops: Json[], slotsBody: Rec | null, threadKey: string): void {
+  if (slotsBody === null) return
+  pushInputGen(ops, slotsBody, threadKey)
 }
 
 /** 失败收口：清本线程槽（若给了 slots）+ 结构化 extern，不产业务写。 */
@@ -62,7 +63,8 @@ function rejectWithClear(
   if (slotsBody === null) {
     return { value: externOnly({ ok: false, reason }), events: [] }
   }
-  const ops = clearOps(slotsBody, threadKey, 0)
+  const ops: Json[] = []
+  clearOps(ops, slotsBody, threadKey)
   return { value: planOf(ops, { ok: false, reason }), events: [] }
 }
 
@@ -113,11 +115,8 @@ function enqueue(args: Rec, env: CallEnv): HandlerResult {
     shadow: kind === 'orchestration_change' ? normalizeShadow(args['shadow']) : null,
     prev: prevOf(queue),
   }
-  const ops = [
-    putOp(item),
-    putOp({ ...queue, version: 1, tail: { def: { $n: 0 } }, count: seq + 1 }),
-    addGenOp('approval', 1),
-  ]
+  const ops: Json[] = [putOp(item)]
+  pushBodyGen(ops, 'approval', queue, { ...queue, version: 1, tail: { def: { $n: 0 } }, count: seq + 1 }, baseSeqOf(args))
   const events: ServiceEvent[] = [
     {
       topic: 'approval.pending',
@@ -194,12 +193,9 @@ function decide(args: Rec, env: CallEnv): HandlerResult {
 
   const at = asString(args['at']) ?? isoAt(nowOf(env))
   const updated: Rec = { ...target, status, decided_at: at, by: 'user', prev: prevOf(queue) }
-  const ops = [
-    putOp(updated),
-    putOp({ ...queue, version: 1, tail: { def: { $n: 0 } } }),
-    addGenOp('approval', 1),
-    ...clearOps(slotsBody, clearKey, 3),
-  ]
+  const ops: Json[] = [putOp(updated)]
+  pushBodyGen(ops, 'approval', queue, { ...queue, version: 1, tail: { def: { $n: 0 } } }, baseSeqOf(args))
+  clearOps(ops, slotsBody, clearKey)
   const events: ServiceEvent[] = [
     {
       topic: 'approval.decided',
@@ -249,9 +245,14 @@ function decideAll(args: Rec, env: CallEnv): HandlerResult {
     })
   })
   const bodyIndex = ops.length
-  ops.push(putOp({ ...queue, version: 1, tail: { def: { $n: bodyIndex - 1 } }, count: countOf(queue) }))
-  ops.push(addGenOp('approval', bodyIndex))
-  ops.push(...clearOps(slotsBody, threadKey, bodyIndex + 2))
+  pushBodyGen(
+    ops,
+    'approval',
+    queue,
+    { ...queue, version: 1, tail: { def: { $n: bodyIndex - 1 } }, count: countOf(queue) },
+    baseSeqOf(args),
+  )
+  clearOps(ops, slotsBody, threadKey)
   const value = planOf(ops, { ok: true, ids: targets.map((item) => item['id']), status, verdict })
   return { value, events }
 }
@@ -296,8 +297,7 @@ function sweep(args: Rec, env: CallEnv): HandlerResult {
   })
   const bodyIndex = ops.length
   const tail = kept.length === 0 ? null : { def: { $n: bodyIndex - 1 } }
-  ops.push(putOp({ version: 1, tail, count: countOf(queue) }))
-  ops.push(addGenOp('approval', bodyIndex))
+  pushBodyGen(ops, 'approval', queue, { version: 1, tail, count: countOf(queue) }, baseSeqOf(args))
   const value = planOf(ops, {
     ok: true,
     changed: true,

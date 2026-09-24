@@ -20,6 +20,19 @@ import {
 const AT = new Date(FIXED_ENV.now).toISOString()
 const HASH = 'a'.repeat(64)
 
+/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
+function applyOps(base, ops) {
+  const doc = structuredClone(base)
+  for (const op of ops) {
+    let node = doc
+    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'delete') delete node[last]
+    else node[last] = structuredClone(op.value)
+  }
+  return doc
+}
+
 /** 合并测试用的显式向量：f2 两会话重复（同向量）→ 去重；其余正交。 */
 const MERGE_VECTORS = {
   f1: vec({ 0: 1 }),
@@ -440,6 +453,54 @@ test('edit：delete / pin / text 三种动作计划形状', async () => {
     assert.deepEqual(textOps[1].args.body.tail.def, { $n: 0 })
     assert.equal(textOps[1].args.body.count, 2)
     assert.equal(textOps[2].args.payload.$n, 1)
+  } finally {
+    drv.close()
+  }
+})
+
+test('补丁世代：edit 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+  const store = memoryStoreWith({ id: 'm-1', text: 'old' })
+  const drv = startService()
+  try {
+    await drv.hello()
+    const base = { memory_store: store.body, memory_store_refs: store.refs }
+    const full = await drv.call('edit', { action: 'delete', layer: 'l3', id: 'm-1', ...base })
+    const fullBody = opsOf(full.value)[0].args.body
+
+    const patched = await drv.call('edit', {
+      action: 'delete',
+      layer: 'l3',
+      id: 'm-1',
+      ...base,
+      memory_store_data_gen: { seq: 5, payload: 'a'.repeat(64) },
+    })
+    const ops = opsOf(patched.value)
+    assert.equal(ops[1].args.base, 5)
+    assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
+    assert.deepEqual(applyOps(store.body, ops[0].args.body.ops), fullBody)
+
+    // short-memory 侧：L1 删除补丁 + base。
+    const shortFull = await drv.call('edit', {
+      action: 'delete',
+      layer: 'l1',
+      id: 'c-1',
+      short_memory: shortMemoryFixture(),
+      memory_store: memoryStoreFixture(),
+      memory_store_refs: {},
+    })
+    const shortFullBody = opsOf(shortFull.value)[0].args.body
+    const shortPatched = await drv.call('edit', {
+      action: 'delete',
+      layer: 'l1',
+      id: 'c-1',
+      short_memory: shortMemoryFixture(),
+      memory_store: memoryStoreFixture(),
+      memory_store_refs: {},
+      short_memory_data_gen: { seq: 8, payload: 'b'.repeat(64) },
+    })
+    const shortOps = opsOf(shortPatched.value)
+    assert.equal(shortOps[1].args.base, 8)
+    assert.deepEqual(applyOps(shortMemoryFixture(), shortOps[0].args.body.ops), shortFullBody)
   } finally {
     drv.close()
   }

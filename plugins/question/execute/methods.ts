@@ -11,12 +11,11 @@
 
 import { resolveConfig } from './config.ts'
 import {
-  addGenOp,
   asArray,
   asCount,
   asString,
+  baseSeqOf,
   buildResume,
-  clearSlotsBody,
   countOf,
   evalCommandDirective,
   externDirective,
@@ -28,6 +27,8 @@ import {
   nowOf,
   planOf,
   prevOf,
+  pushBodyGen,
+  pushInputGen,
   putOp,
   queueOf,
   refOf,
@@ -139,11 +140,8 @@ function enqueue(params: Rec, bag: Rec, env: CallEnv): HandlerResult {
     expires_at: expiresAt,
     prev: prevOf(queue),
   }
-  const ops = [
-    putOp(item),
-    putOp({ ...queue, version: 1, tail: { def: { $n: 0 } }, count: count + 1 }),
-    addGenOp('question', 1),
-  ]
+  const ops: Json[] = [putOp(item)]
+  pushBodyGen(ops, 'question', queue, { ...queue, version: 1, tail: { def: { $n: 0 } }, count: count + 1 }, baseSeqOf(bag))
   const events: ServiceEvent[] = [
     {
       topic: 'question.pending',
@@ -163,11 +161,20 @@ function enqueue(params: Rec, bag: Rec, env: CallEnv): HandlerResult {
 
 // ── invoke ②：命令 question.answer（作答续跑） ──────────────────────────────
 
+/** 输入切片：body + 投影元数据 `data_gen`（写补丁世代用）；缺失 body → null。 */
+function inputSliceOf(projection: Json | undefined, body: Rec | null): Rec | null {
+  if (body === null) return null
+  const slice: Rec = { ...body }
+  if (isRecord(projection) && projection['data_gen'] !== undefined) slice['data_gen'] = projection['data_gen']
+  return slice
+}
+
 /** 失败收口：清本线程槽（若给了 slots）+ 结构化 extern，不产业务写。 */
 function rejectWithClear(slotsBody: Rec | null, threadKey: string, code: string, message: string): HandlerResult {
   const payload: Rec = { ok: false, error: { code, message } }
   if (slotsBody === null) return { value: externOnly(payload), events: [] }
-  const ops = [putOp(clearSlotsBody(slotsBody, threadKey)), addGenOp('input', 0)]
+  const ops: Json[] = []
+  pushInputGen(ops, slotsBody, threadKey)
   return { value: planOf(ops, payload), events: [] }
 }
 
@@ -176,6 +183,7 @@ async function answerCommand(ids: Rec, hydrator: RefHydrator): Promise<HandlerRe
   const inputBody = isRecord(inputProjection) && isRecord(inputProjection['body'])
     ? (inputProjection['body'] as Rec)
     : null
+  const inputSlice = inputSliceOf(inputProjection, inputBody)
   const found = findAnswerSlot(inputBody)
   if (found === null) {
     return {
@@ -185,9 +193,9 @@ async function answerCommand(ids: Rec, hydrator: RefHydrator): Promise<HandlerRe
   }
   const id = asString(found.slot['id'])
   const answers = asArray(found.slot['answers'])
-  if (id === null) return rejectWithClear(inputBody, found.threadKey, 'missing_id', 'slot.id required')
+  if (id === null) return rejectWithClear(inputSlice, found.threadKey, 'missing_id', 'slot.id required')
   if (answers === null) {
-    return rejectWithClear(inputBody, found.threadKey, 'missing_answers', 'slot.answers required')
+    return rejectWithClear(inputSlice, found.threadKey, 'missing_answers', 'slot.answers required')
   }
 
   const view = queueView(ids['question'])
@@ -195,7 +203,7 @@ async function answerCommand(ids: Rec, hydrator: RefHydrator): Promise<HandlerRe
   const refs = await hydrator.hydrate('question', view.refs)
   const located = locateItem(queue, refs, id)
   if (located === null) {
-    return rejectWithClear(inputBody, found.threadKey, 'not_found', id)
+    return rejectWithClear(inputSlice, found.threadKey, 'not_found', id)
   }
 
   const item = located.item
@@ -206,13 +214,15 @@ async function answerCommand(ids: Rec, hydrator: RefHydrator): Promise<HandlerRe
   const at = asString(item['at'])
 
   const updated: Rec = { ...item, answers, prev: refOf(located.hash) }
-  const ops = [
-    putOp(updated),
-    putOp({ ...queue, version: 1, tail: { def: { $n: 0 } }, count: countOf(queue) }),
-    addGenOp('question', 1),
-    putOp(clearSlotsBody(inputBody as Rec, found.threadKey)),
-    addGenOp('input', 3),
-  ]
+  const ops: Json[] = [putOp(updated)]
+  pushBodyGen(
+    ops,
+    'question',
+    queue,
+    { ...queue, version: 1, tail: { def: { $n: 0 } }, count: countOf(queue) },
+    baseSeqOf(isRecord(ids['question']) ? (ids['question'] as Rec) : {}),
+  )
+  pushInputGen(ops, inputSlice ?? (inputBody as Rec), found.threadKey)
   const directives: Json[] = [
     // 续跑不再自带整份投影：`inject` 声明由宿主执行期把投影切片并入 args。
     evalCommandDirective(
@@ -291,9 +301,7 @@ async function sweep(args: Rec, env: CallEnv, hydrator: RefHydrator): Promise<Ha
     ops.push(putOp({ ...item, expired: true, prev }))
     prev = { def: { $n: index } }
   }
-  const bodyIndex = ops.length
-  ops.push(putOp({ ...queue, version: 1, tail: prev, count: countOf(queue) }))
-  ops.push(addGenOp('question', bodyIndex))
+  pushBodyGen(ops, 'question', queue, { ...queue, version: 1, tail: prev, count: countOf(queue) }, baseSeqOf(args))
   return { value: planOf(ops, { ok: true, changed: true, expired: targets.length }), events: [] }
 }
 
