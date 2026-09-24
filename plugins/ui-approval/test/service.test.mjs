@@ -97,6 +97,28 @@ function spawnService(root) {
 
 const IDS = { approval: { body: { version: 1, tail: null, count: 0 }, refs: {} } }
 
+/** 合法单条裁决投影：链上 decide 需借此抵达 approval.decide 反向调用后阻塞。 */
+const DECIDE_IDS = {
+  input: { body: { slots: { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' } } } },
+  approval: {
+    body: { version: 1, tail: { def: 'a'.repeat(64) }, count: 1 },
+    refs: {
+      ['a'.repeat(64)]: {
+        id: 'ap-r-0',
+        status: 'pending',
+        thread: 't1',
+        at: '2026-09-20T00:00:00.000Z',
+        resume: { command: 'chat.resume', args: { cursor: 'cur-1', thread: 't1' } },
+        prev: null,
+      },
+    },
+  },
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
 test('服务协议级：hello → manifest，ping，probe，list 反向调用，decide 续跑计划，drain → bye', async () => {
   const root = tempDir('service')
   const { child, messages, waitFor } = spawnService(root)
@@ -208,6 +230,79 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
       '在途调用结果应先于 bye',
     )
     await new Promise((resolveExit) => child.once('exit', resolveExit))
+  } finally {
+    if (child.exitCode === null) child.kill()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('并发安全声明：list 在链上方法在途时先完成；链上方法严格串行', async () => {
+  const root = tempDir('concurrent')
+  const { child, messages, waitFor } = spawnService(root)
+  try {
+    // 链上 decide 阻塞在 approval.decide 的反向调用上：不回应答，令其保持「在途」。
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'd1',
+        kind: 'call',
+        port: 'ui-approval',
+        method: 'decide',
+        args: DECIDE_IDS,
+        env: { run: 'r', thread: 't1', now: 0 },
+      }),
+    )
+    await waitFor(
+      () => messages.some((message) => message.kind === 'port.call' && message.method === 'decide'),
+      'decide port.call',
+    )
+
+    // 链上 ping 排在 decide 之后：decide 收口前不得产出 ping 结果（串行证明）。
+    child.stdin.write(
+      encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }),
+    )
+    await sleep(200)
+    assert.equal(messages.some((message) => message.id === 'c1'), false, '链上 ping 必须等 decide 收口')
+
+    // 并发 list：链被 decide 堵住时仍应立即发出 approval.list 反向调用。
+    child.stdin.write(
+      encodeFrame({ v: '1', id: 'l1', kind: 'call', port: 'ui-approval', method: 'list', args: IDS }),
+    )
+    await waitFor(
+      () => messages.some((message) => message.kind === 'port.call' && message.method === 'list'),
+      'list port.call',
+    )
+    const listCall = messages.find((message) => message.kind === 'port.call' && message.method === 'list')
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: listCall.id,
+        kind: 'port.result',
+        ok: true,
+        value: { $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [] } }] },
+      }),
+    )
+    await waitFor(() => messages.some((message) => message.id === 'l1'), 'list result')
+    assert.equal(messages.some((message) => message.id === 'd1'), false, 'list 完成时链上 decide 仍在途')
+
+    // 收口 decide 后，链上 ping 才继续，结果按到达序产出。
+    const decideCall = messages.find((message) => message.kind === 'port.call' && message.method === 'decide')
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: decideCall.id,
+        kind: 'port.result',
+        ok: true,
+        value: { $directives: [{ kind: 'extern', payload: { ok: true, id: 'ap-r-0', status: 'approved' } }] },
+      }),
+    )
+    await waitFor(() => messages.some((message) => message.id === 'd1'), 'decide result')
+    await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
+    assert.ok(
+      messages.findIndex((message) => message.id === 'd1') <
+        messages.findIndex((message) => message.id === 'c1'),
+      '链上结果按到达序产出',
+    )
   } finally {
     if (child.exitCode === null) child.kill()
     rmSync(root, { recursive: true, force: true })

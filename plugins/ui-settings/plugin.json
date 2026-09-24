@@ -18,6 +18,14 @@
       "secret"
     ]
   },
+  "concurrent_methods": [
+    "vendors",
+    "health",
+    "scopes",
+    "view",
+    "search",
+    "client.read"
+  ],
   "pins": {
     "model": "model-protocol",
     "secrets": "secrets",

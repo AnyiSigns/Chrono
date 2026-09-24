@@ -4,6 +4,7 @@
   "methods": {
     "ui-approval": ["ping", "list", "decide", "decide_all", "client.read"]
   },
+  "concurrent_methods": ["list", "client.read"],
   "pins": {
     "approval": "approval",
     "host": "host"

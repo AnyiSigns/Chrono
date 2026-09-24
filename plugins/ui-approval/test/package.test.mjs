@@ -18,6 +18,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'identity',
     'implements',
     'methods',
+    'concurrent_methods',
     'pins',
     'start',
     'build',
@@ -60,6 +61,18 @@ test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read�
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
   assert.deepEqual(decl.pins, { approval: 'approval', host: 'host' })
+})
+
+test('并发安全声明只含纯只读方法：list / client.read；裁决与控制方法留在串行链', () => {
+  const decl = readJson('plugin.json')
+  assert.deepEqual(decl.concurrent_methods, ['list', 'client.read'])
+  const declared = new Set(decl.methods['ui-approval'])
+  for (const method of decl.concurrent_methods) {
+    assert.ok(declared.has(method), `并发声明的方法须已声明：${method}`)
+  }
+  for (const excluded of ['decide', 'decide_all', 'ping']) {
+    assert.ok(!decl.concurrent_methods.includes(excluded), `${excluded} 发世界写计划 / 属控制面，不得并发`)
+  }
 })
 
 test('members = execute + term；四条命令入口 term 全部存在且无 argsSchema', () => {

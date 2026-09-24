@@ -17,6 +17,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'identity',
     'implements',
     'methods',
+    'concurrent_methods',
     'pins',
     'start',
     'build',
@@ -47,6 +48,14 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
     'memory-maintenance': 'memory-consolidate',
     host: 'host',
   })
+})
+
+test('并发方法白名单只含纯只读方法，写计划 / 副作用 / 控制面方法不得入内', () => {
+  const decl = readJson('plugin.json')
+  assert.deepEqual(decl.concurrent_methods, ['vendors', 'health', 'scopes', 'view', 'search', 'client.read'])
+  for (const name of ['profile', 'discover', 'edit', 'secret', 'ping']) {
+    assert.ok(!decl.concurrent_methods.includes(name), `${name} 不得脱链（写计划 / 副作用 / 控制面）`)
+  }
 })
 
 test('members = execute + term；命令入口 term 全部存在', () => {

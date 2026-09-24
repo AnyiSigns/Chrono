@@ -35,6 +35,12 @@ const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
 const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
 const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
 const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
+// 允许脱离串行链派发的方法白名单（plugin.json `concurrent_methods`）。
+const CONCURRENT = new Set(
+  Array.isArray(PLUGIN['concurrent_methods'])
+    ? (PLUGIN['concurrent_methods'] as Json[]).filter((item): item is string => typeof item === 'string')
+    : [],
+)
 
 function manifest(): Rec {
   return {
@@ -124,6 +130,19 @@ function declaredMethods(port: string): string[] {
     return declared.filter((item): item is string => typeof item === 'string')
   }
   return []
+}
+
+/**
+ * 该帧是否应脱离串行链派发。只有 plugin.json `concurrent_methods` 白名单里的 `call` 脱链：
+ * 这些处理器全是只读（无写计划、无本地副作用），彼此与其它命令无共享可变状态，可安全并行；
+ * 其余帧保持到达序串行。不能以命令 `readonly` 标记作依据——`readonly` 只描述入口 term 是否发写指令，
+ * 与服务侧处理器是否无副作用 / 无写计划不是同一口径：`profile` 非 readonly 且回写 `config`，
+ * `secret` 标了 readonly 却有本地写副作用，二者脱链都会与写路径竞态。
+ */
+function isConcurrentCall(message: Json): boolean {
+  if (!isRecord(message) || message['kind'] !== 'call') return false
+  const method = message['method']
+  return typeof method === 'string' && CONCURRENT.has(method)
 }
 
 /** 帧 `env`：宿主填写、机械；缺失回落 `{run:null, thread:null, now:0}`（服务绝不自取时钟）。 */
@@ -223,6 +242,12 @@ process.stdin.on('data', (chunk: Buffer) => {
   for (const message of messages) {
     // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把串行链堵死。
     if (isRecord(message) && LINK.settle(message)) continue
+    // 只读方法脱链派发：其反向调用可能长时间挂起（模型 / 记忆后端），若占着串行链会让其余命令全部排队、
+    // 直至壳的入站桥超时。脱链调用仍走 handleCall，故 beginCall / endCall 照常计数，drain 仍会等它们收口。
+    if (isConcurrentCall(message)) {
+      void handle(message).catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
+      continue
+    }
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))

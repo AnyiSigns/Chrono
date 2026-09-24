@@ -1364,6 +1364,102 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
   }
 })
 
+/** 起一个服务进程并封装出帧等待，供并发派发测试驱动 stdin / stdout。 */
+function startService(root) {
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    env: {
+      ...process.env,
+      CHRONO_ROOT: root,
+      CHRONO_PLUGIN_STATE: join(root, 'state', 'plugins', 'ui-settings'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const decoder = createDecoder()
+  const messages = []
+  const waiters = []
+  const stderr = []
+  child.stdout.on('data', (chunk) => {
+    for (const message of decoder.push(chunk)) {
+      messages.push(message)
+      for (const waiter of [...waiters]) waiter()
+    }
+  })
+  child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
+  const send = (message) => child.stdin.write(encodeFrame(message))
+  function waitFor(predicate, label, timeoutMs = 10000) {
+    return new Promise((resolveWait, rejectWait) => {
+      const deadline = Date.now() + timeoutMs
+      const check = () => {
+        if (predicate()) {
+          resolveWait()
+          return
+        }
+        if (Date.now() > deadline) {
+          rejectWait(new Error(`timeout waiting ${label}; stderr=${stderr.join('')}`))
+          return
+        }
+        const waiter = () => {
+          const index = waiters.indexOf(waiter)
+          if (index >= 0) waiters.splice(index, 1)
+          check()
+        }
+        waiters.push(waiter)
+        setTimeout(() => {
+          const index = waiters.indexOf(waiter)
+          if (index >= 0) waiters.splice(index, 1)
+          check()
+        }, 50).unref?.()
+      }
+      check()
+    })
+  }
+  return { child, send, waitFor, messages, stderr }
+}
+
+test('并发方法脱链：只读方法在写类方法在途时仍立即派发并完成；其余方法仍严格串行', async () => {
+  const root = tempDir('concurrent')
+  const service = startService(root)
+  // profile 是串行（写类）方法：反向调 model.profile 后停在其应答前，用于制造「在途」。
+  const profileArgs = {
+    config: {
+      body: { version: 1, vendor: 'deepseek', providers: { deepseek: { models: { m1: { enabled: true } } } } },
+    },
+  }
+  const portCalls = (method) => service.messages.filter((message) => message.kind === 'port.call' && message.method === method)
+  try {
+    // (a) profile 在途（其 port.call 未应答）时，vendors 脱链立即派发并完成。
+    service.send({ v: '1', id: 'pf1', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
+    await service.waitFor(() => portCalls('profile').length === 1, 'profile port.call')
+    service.send({ v: '1', id: 'vd1', kind: 'call', port: 'ui-settings', method: 'vendors', args: {} })
+    await service.waitFor(() => portCalls('vendors').length === 1, 'vendors port.call while profile in flight')
+    service.send({ v: '1', id: portCalls('vendors')[0].id, kind: 'port.result', ok: true, value: { ok: true, vendors: [] } })
+    await service.waitFor(() => service.messages.some((message) => message.id === 'vd1'), 'vendors result')
+    assert.ok(
+      !service.messages.some((message) => message.id === 'pf1'),
+      'profile 未应答前其结果不得出现：vendors 与 profile 并行而非排队',
+    )
+    service.send({ v: '1', id: portCalls('profile')[0].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
+    await service.waitFor(() => service.messages.some((message) => message.id === 'pf1'), 'profile result')
+
+    // (b) 串行方法：第二个 profile 在第一个收口前不得派发（保持到达序）。
+    const settled = portCalls('profile').length
+    service.send({ v: '1', id: 'pf2', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
+    service.send({ v: '1', id: 'pf3', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
+    await service.waitFor(() => portCalls('profile').length === settled + 1, 'pf2 port.call')
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
+    assert.equal(portCalls('profile').length, settled + 1, 'pf3 必须等 pf2 收口后才派发')
+    service.send({ v: '1', id: portCalls('profile')[settled].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
+    await service.waitFor(() => portCalls('profile').length === settled + 2, 'pf3 port.call after pf2 settles')
+    service.send({ v: '1', id: portCalls('profile')[settled + 1].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
+    await service.waitFor(() => service.messages.some((message) => message.id === 'pf3'), 'pf3 result')
+    assert.ok(service.messages.some((message) => message.id === 'pf2'), 'pf2 结果已回')
+  } finally {
+    if (service.child.exitCode === null) service.child.kill()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('服务 EOF 自退出', async () => {
   const root = tempDir('eof')
   const child = spawn(process.execPath, [ENTRY], {

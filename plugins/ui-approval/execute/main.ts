@@ -34,6 +34,13 @@ const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
 const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
 const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
 const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
+// 并发安全方法声明：仅对「纯只读、无插件内可变状态」的方法生效（list 反查 #32、client.read 读包内文件）。
+// 不能据 `readonly` 推断：那是「世界写入」声明而非纯度声明，`decide` 亦为只读入口却发写计划。
+const CONCURRENT_METHODS = new Set(
+  Array.isArray(PLUGIN['concurrent_methods'])
+    ? (PLUGIN['concurrent_methods'] as Json[]).filter((item): item is string => typeof item === 'string')
+    : [],
+)
 
 function manifest(): Rec {
   return {
@@ -205,6 +212,15 @@ async function handle(message: Json): Promise<void> {
   }
 }
 
+/** 是否为声明为并发安全的方法调用；只认 `call` 帧，声明集见 plugin.json `concurrent_methods`。 */
+function isConcurrentCall(message: Rec): boolean {
+  return (
+    message['kind'] === 'call' &&
+    typeof message['method'] === 'string' &&
+    CONCURRENT_METHODS.has(message['method'])
+  )
+}
+
 const decoder = createFrameDecoder()
 let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
@@ -218,6 +234,15 @@ process.stdin.on('data', (chunk: Buffer) => {
   for (const message of messages) {
     // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把串行链堵死。
     if (isRecord(message) && LINK.settle(message)) continue
+    // 声明的纯只读方法不排串行链：它们不写插件内状态、不发世界写计划，却会反向调用长跑的
+    // 相邻端口（如 approval 的 sweep 占住通道）。若也排链，一次长跑会连带堵死本插件整个命令面，
+    // 壳桥 35s 等待超时后审批停靠带空渲染。其余帧仍按到达序严格串行；在途计数照常经 handleCall。
+    if (isRecord(message) && isConcurrentCall(message)) {
+      void handle(message).catch((err: unknown) =>
+        log(`concurrent handle error: ${(err as Error).message}`),
+      )
+      continue
+    }
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
