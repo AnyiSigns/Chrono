@@ -5,15 +5,20 @@
 // - .composer-tool-wrap 必须 position:relative —— 弹层锚点；缺失时绝对定位的 .composer-popover
 //   会相对 .composer-card 解析，菜单脱锚（2026-09 事故的根因）。
 // - .composer-input 的 max-height 不复用槽位总高 token：30vh 含工具行 / 附件行，直接复用必溢出。
+// - .composer-root 限宽居中 + 两侧 space-16：与 ui-chat 的 .chat-list（max-width: --msg-max-w，
+//   padding: space-16）同盒，卡片边缘与消息文字边缘对齐；窄屏 --msg-max-w 由壳改为 100% 时一并跟随。
+// - 工具行图标统一 16px（--icon-sm），发送键是唯一 20px 图标 + 圆形实色钮：主操作与其余幽灵按钮分层；
+//   幽灵按钮基色压到 --c-text-2、hover 回 --c-text，避免整行同强度造成的嘈杂感。
+// - 模型 / 推理强度触发器不带前置图标（纯文本 + 折叠箭头），权限触发器保留档位图标。
 
 export const STYLE_TEXT = `
 .composer-root {
   position: relative;
-  padding: var(--space-8) var(--space-12) var(--space-12);
+  box-sizing: border-box;
+  max-width: var(--msg-max-w);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-16) var(--space-12);
   font-family: var(--font-sans);
-}
-@media (min-width: 768px) {
-  .composer-root { padding-left: var(--space-16); padding-right: var(--space-16); }
 }
 .composer-mask {
   position: fixed;
@@ -134,19 +139,20 @@ export const STYLE_TEXT = `
   min-height: 32px;
   padding: 0 var(--space-8);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--c-text);
+  color: var(--c-text-2);
   font: inherit;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-sm);
   cursor: pointer;
-  transition: background-color var(--motion-fast);
+  transition: background-color var(--motion-fast), color var(--motion-fast);
 }
-.composer-tool:hover { background: var(--c-selection); }
+.composer-tool:hover { background: var(--c-selection); color: var(--c-text); }
 .composer-tool:active { background: var(--c-border); }
 .composer-tool:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .composer-tool:disabled { opacity: .45; cursor: not-allowed; }
 .composer-tool[hidden] { display: none; }
+.composer-tool-icon { display: inline-flex; align-items: center; }
 .composer-tool-value { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-tool-chevron { color: var(--c-text-3); }
 @media (max-width: 479px) {
@@ -182,10 +188,11 @@ export const STYLE_TEXT = `
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: 50%;
   background: var(--c-accent);
   color: var(--c-accent-text);
   cursor: pointer;
+  transition: filter var(--motion-fast), opacity var(--motion-fast);
 }
 .composer-send:hover { filter: brightness(1.06); }
 .composer-send:active { filter: brightness(.94); }

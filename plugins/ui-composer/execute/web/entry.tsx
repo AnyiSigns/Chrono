@@ -106,7 +106,7 @@ function Dropdown(props: {
   prefix: string
   label: string
   align?: 'end'
-  iconName: string
+  iconName?: string
   valueText: string
   triggerTitle: string
   disabled: boolean
@@ -137,17 +137,19 @@ function Dropdown(props: {
         disabled={props.disabled}
         onClick={props.onTrigger}
       >
-        <span className="composer-tool-icon">
-          {props.fetching === true ? (
+        {props.fetching === true ? (
+          <span className="composer-tool-icon">
             <span className="composer-chip-breathe" />
-          ) : (
-            <Icon name={props.iconName} size={20} />
-          )}
-        </span>
+          </span>
+        ) : typeof props.iconName === 'string' && props.iconName.length > 0 ? (
+          <span className="composer-tool-icon">
+            <Icon name={props.iconName} size={16} />
+          </span>
+        ) : null}
         <span className="composer-tool-value">{props.valueText}</span>
         {props.chevronHidden === true ? null : (
           <span className="composer-tool-chevron">
-            <Icon name="chevron-down" size={16} />
+            <Icon name="chevron-down" size={14} />
           </span>
         )}
       </button>
@@ -674,13 +676,12 @@ function Composer(): ReactNode {
               title={t('composer_attach')}
               onClick={() => fileRef.current?.click()}
             >
-              <Icon name="plus" size={20} />
+              <Icon name="plus" size={16} />
             </button>
 
             <Dropdown
               prefix="composer-model"
               label={t('composer_model')}
-              iconName="cpu"
               valueText={modelValueText}
               triggerTitle={`${t('composer_model')} ${modelValueText}`}
               disabled={s.config === null}
@@ -699,7 +700,6 @@ function Composer(): ReactNode {
               <Dropdown
                 prefix="composer-reasoning"
                 label={t('composer_reasoning')}
-                iconName="gauge"
                 valueText={reasoningValueText}
                 triggerTitle={`${t('composer_reasoning')} ${reasoningValueText}`}
                 disabled={s.reasoning.status !== 'ready' || s.config === null}
@@ -771,7 +771,7 @@ function Composer(): ReactNode {
                 <Icon name="arrow-up" size={20} />
               </span>
               <span className="composer-send-icon" data-icon="stop">
-                <Icon name="square" size={20} />
+                <Icon name="square" size={16} />
               </span>
             </button>
           </div>

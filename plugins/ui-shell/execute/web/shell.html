@@ -52,8 +52,8 @@
     .shell-slot-app { height: 100%; min-height: 0; }
     #slot-topbar .shell-slot-app { height: auto; }
     body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }
-    /* <1024：消息列退化为「全宽 − 边距」（响应式断点） */
-    body.shell-narrow #slot-main { --msg-max-w: 100%; }
+    /* <1024：消息列与输入框退化为「全宽 − 边距」（响应式断点）；设在 #shell-column 让 main / composer 同时跟随 */
+    body.shell-narrow #shell-column { --msg-max-w: 100%; }
     ::selection { background: var(--c-selection); color: var(--c-text); }
 
     #shell-banner {
