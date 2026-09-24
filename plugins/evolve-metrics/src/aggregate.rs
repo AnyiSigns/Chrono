@@ -180,6 +180,34 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_patch_generation_uses_bag_base_single_add_gen() {
+        // 有数据世代时写补丁世代：单次调用只产一条 batch / 一个 evolution add_gen，base = bag 数据世代。
+        // 同回合多次调用须由调用方按身份合并（本服务无跨调用回合状态）。
+        let mut body = body();
+        body["data_gen"] = json!({"seq": 6, "payload": "a".repeat(64)});
+        let bag = json!({
+            "trace_entries": [
+                {"kind": "trace", "run": "r1", "workspace_id": "w1", "outcome": "refused",
+                 "refused_at": {"node_index": 1, "code": "capability_mismatch", "attributable_to": "graph"}},
+                {"kind": "trace", "run": "r2", "workspace_id": "w1", "outcome": "refused",
+                 "refused_at": {"node_index": 1, "code": "capability_mismatch", "attributable_to": "graph"}}
+            ],
+            "thresholds": {"failure_cluster_n": 2},
+            "evolution": body
+        });
+        let events = CapturingEventSink::new();
+        let state = MemoryStateStore::new();
+        let value = run(&bag, &json!({"now": 1}), &events, &state).unwrap();
+        let directives = value["$directives"].as_array().unwrap();
+        assert_eq!(directives.len(), 1, "单次调用只产一条写 directive");
+        let ops = directives[0]["request"]["args"]["ops"].as_array().unwrap();
+        let add_gens: Vec<&Value> = ops.iter().filter(|op| op["op"] == "add_gen").collect();
+        assert_eq!(add_gens.len(), 1, "单次调用只产一个 add_gen");
+        assert_eq!(add_gens[0]["args"]["id"], "evolution");
+        assert_eq!(add_gens[0]["args"]["base"], 6, "base 指向 bag 的数据世代");
+    }
+
+    #[test]
     fn aggregate_emits_unhealthy_event_when_threshold_reached() {
         let bag = json!({
             "trace_entries": [

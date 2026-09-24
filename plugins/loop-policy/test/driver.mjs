@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { H } from '../execute/hash.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
@@ -196,4 +197,72 @@ export function writeOps(value) {
     }
   }
   return ops
+}
+
+/** 取所有 write 计划，各返回其 ops 数组（保留批次边界）。 */
+export function writeBatches(value) {
+  const batches = []
+  for (const directive of directivesOf(value)) {
+    if (directive.kind === 'write' && directive.request?.args && Array.isArray(directive.request.args.ops)) {
+      batches.push(directive.request.args.ops)
+    }
+  }
+  return batches
+}
+
+/** 批内 `$n` 替换（宿主内核 substitute 口径）；越界 / 指向非 put 即抛。 */
+function substitute(value, acc, k) {
+  if (Array.isArray(value)) return value.map((item) => substitute(item, acc, k))
+  if (value === null || typeof value !== 'object') return value
+  const keys = Object.keys(value)
+  if (keys.length === 1 && keys[0] === '$n') {
+    const j = value.$n
+    if (!Number.isInteger(j) || j < 0 || j >= k || acc[j] === null) throw new Error(`bad_selfref ${j} at ${k}`)
+    return acc[j]
+  }
+  const out = {}
+  for (const key of keys) out[key] = substitute(value[key], acc, k)
+  return out
+}
+
+/** 按内核 argsHash 口径解析一批 ops：`$n` 替换 + 每条 def 键（put 才有产物）。 */
+export function resolveBatch(ops) {
+  const acc = []
+  const out = []
+  for (let k = 0; k < ops.length; k++) {
+    const args = substitute(ops[k].args, acc, k)
+    const hash = H(args)
+    out.push({ op: ops[k].op, args, hash })
+    acc.push(ops[k].op === 'put' ? hash : null)
+  }
+  return out
+}
+
+/** 宿主投影 assembleGenBody 的补丁组装口径（本插件补丁只用 replace）。 */
+export function assemblePatch(baseBody, patches) {
+  const doc = JSON.parse(JSON.stringify(baseBody))
+  for (const patch of patches) {
+    if (patch.op !== 'replace') continue
+    let node = doc
+    for (let i = 0; i < patch.path.length - 1; i++) node = node[patch.path[i]]
+    node[patch.path[patch.path.length - 1]] = JSON.parse(JSON.stringify(patch.value))
+  }
+  return doc
+}
+
+/**
+ * 组装一批 write ops 里的 evolution 世代（宿主投影口径）：
+ * 整份世代取 payload def body；补丁世代取 baseBody 组装后按序应用补丁。
+ * 返回 `{ body, defs, addGen, patchOps }`（无 add_gen 时 body 为 null）。
+ */
+export function assembleEvolutionBatch(batch, baseBody) {
+  const resolved = resolveBatch(batch)
+  const defs = {}
+  for (const item of resolved) if (item.op === 'put') defs[item.hash] = item.args.body
+  const addGen = resolved.find((item) => item.op === 'add_gen' && item.args.id === 'evolution') ?? null
+  if (addGen === null) return { body: null, defs, addGen: null, patchOps: null }
+  const defBody = defs[addGen.args.payload]
+  if (addGen.args.base === undefined) return { body: defBody, defs, addGen, patchOps: null }
+  const patchOps = defBody?.ops ?? null
+  return { body: patchOps === null ? null : assemblePatch(baseBody, patchOps), defs, addGen, patchOps }
 }

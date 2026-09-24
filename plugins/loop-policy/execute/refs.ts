@@ -7,6 +7,25 @@ import type { Json, Rec } from './types.ts'
 /** 只读解析通道：按身份 + 哈希列表取 `{defs, missing, denied}`；失败回 null。 */
 export type DefReader = (identity: string, hashes: string[]) => Promise<Rec | null>
 
+/**
+ * 引用闭包不完整：宿主 `def.read` 对部分哈希回 `missing` / `denied`，缓存拿不到 body。
+ * 调用方据此重解析或拒绝，不得静默产出不完整闭包。
+ */
+export class DefUnavailableError extends Error {
+  code: string
+  hashes: string[]
+
+  constructor(hashes: string[]) {
+    super(`def unavailable: ${hashes.length}`)
+    this.name = 'DefUnavailableError'
+    this.code = 'def_unavailable'
+    this.hashes = hashes
+  }
+}
+
+/** 不可用哈希上限（防异常数据撑爆错误帧）。 */
+const MAX_UNAVAILABLE = 64
+
 /** 进程内缓存条目上限（body 内容寻址不可变，命中即复用）。 */
 const MAX_CACHE = 4096
 
@@ -77,6 +96,9 @@ export function createRefHydrator(read: DefReader): RefHydrator {
         collectMarkers(body, queue)
       }
     }
+    // 已进入 seen（本次已处理）但最终不在 out（缓存无 body）的哈希 = 闭包不完整，fail-closed。
+    const unavailable = [...seen].filter((hash) => !Object.hasOwn(out, hash)).slice(0, MAX_UNAVAILABLE)
+    if (unavailable.length > 0) throw new DefUnavailableError(unavailable)
     return out
   }
   return { hydrate }

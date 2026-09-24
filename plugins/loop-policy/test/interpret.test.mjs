@@ -2,9 +2,11 @@
 // 机械 post、verify 分档、拒绝短路、max_turn_iter、scope 过滤、提问往返。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startService, directivesOf, writeOps, portError } from './driver.mjs'
+import { startService, directivesOf, writeOps, writeBatches, assembleEvolutionBatch, portError } from './driver.mjs'
 import { seedModel } from '../execute/seed.ts'
 import { patchQuestionAnswer } from '../execute/cursor.ts'
+import { evolutionBody, ledgerEntries } from '../execute/proposals.ts'
+import { H } from '../execute/hash.ts'
 
 /** 递归找 `resume.command==='chat.resume'` 的续跑游标（#48 队列项写计划里的那份）。 */
 function findResumeCursor(value) {
@@ -914,6 +916,64 @@ test('dispatchBag 透传 grant：#27 收到一次性 caps.grant', async () => {
     })
     const dispatchCall = service.portCalls.find((call) => call.port === 'tools' && call.method === 'dispatch')
     assert.deepEqual(dispatchCall.args.grant, { call_id: 'c1', tier: 'severe' })
+  } finally {
+    service.close()
+  }
+})
+
+test('同回合产 trace + verdict：合并为单世代，组装 body 同时含新 trace 与新 verdicts', async () => {
+  const seed = seedModel()
+  const candidate = JSON.parse(JSON.stringify(seed.graph))
+  const graphHash = H(candidate)
+  const proposal = {
+    kind: 'proposal',
+    id: 'pr-1',
+    class: 'structure',
+    evidence_ids: [],
+    target: { graph: { def: graphHash }, contract_id: null, node_id: null },
+    patch: { def: graphHash, graph: { def: graphHash }, writes: [] },
+    by: 'evolve-loop',
+    at: '2026-09-20T00:00:00.000Z',
+    prev: null,
+  }
+  const proposalHash = H(proposal)
+  const evolution = {
+    version: 1,
+    trace: { tail: null, count: 0 },
+    evidence: { tail: null, count: 0 },
+    proposals: { tail: { def: proposalHash }, count: 1 },
+    verdicts: { tail: null, count: 0 },
+    data_gen: { seq: 4, payload: 'a'.repeat(64) },
+  }
+  const bag = {
+    graph: {
+      contracts: seed.contracts,
+      nodes: seed.nodes,
+      prompts: seed.prompts,
+      graph: seed.graph,
+      thresholds: seed.thresholds,
+      refusal_codes: seed.refusalCodes,
+    },
+    evolution,
+    refs: { [graphHash]: candidate, [proposalHash]: proposal },
+  }
+  const service = startService()
+  try {
+    const result = await service.interpret(bag)
+    const batch = writeBatches(result.value).find((ops) =>
+      ops.some((op) => op.op === 'add_gen' && op.args.id === 'evolution'),
+    )
+    assert.ok(batch, '应产 evolution 世代')
+    const addGens = batch.filter((op) => op.op === 'add_gen' && op.args.id === 'evolution')
+    assert.equal(addGens.length, 1, '同回合只新增一个世代')
+    assert.equal(addGens[0].args.base, 4, 'base 指向回合初数据世代')
+    const assembled = assembleEvolutionBatch(batch, evolutionBody({ evolution }))
+    assert.equal(assembled.body.trace.count, 1, '组装 body 含新 trace')
+    assert.equal(assembled.body.verdicts.count, 1, '组装 body 含新 verdicts')
+    // 组装后 body + 同批 defs 作闭包：两条链头都可经 prev 到达。
+    const ledger = { evolution: { ...assembled.body, refs: assembled.defs }, refs: assembled.defs }
+    assert.equal(ledgerEntries(ledger, 'trace').length, 1)
+    assert.equal(ledgerEntries(ledger, 'verdicts').length, 1)
   } finally {
     service.close()
   }

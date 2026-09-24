@@ -26,6 +26,17 @@
 服务无写通道：一切写经计划值 `{"$directives":[…]}` 交宿主落账（周期方法条目由宿主按该身份落账）。
 批内 `$n`（0 基）指向同批更早 `put` 的 def 键，故新台账 body 的链头可引用同批 put 的条目。
 
+### 同回合写合并约束
+
+`aggregate` / `sweep` / `record` 都写 `evolution` 身份，均以 bag 里的 `data_gen.seq` 为补丁 `base`。
+单次调用只产**一条** `batch`（一个 `add_gen`）；服务无跨调用回合状态，无法自行把同回合多次调用合并：
+
+- `aggregate` / `sweep` 由宿主 `periodic` 逐条触发，每次触发是**独立 run**（单条目 `onFire`），不会同回合互相写。
+- `record` 经工具绑定派发（`idempotent:false`），同一回合至多派发一次；调用方不得对同一回合重复派发 `record`。
+
+若未来允许同回合多次调用写 `evolution` 的方法，须由调用方（tools / loop-policy）按身份把多次写合并为**单个世代**
+（与 loop-policy 的 trace / verdicts 同法）；否则第二条补丁仍以回合初 base 组装、丢掉第一条改动的槽位。
+
 ### `aggregate(bag) -> { evidence, unhealthy, $directives }`
 
 读轨迹窗口 → 产七类证据 → 返回写计划（`batch`：证据条目 + 新 `evolution` body 索引）。

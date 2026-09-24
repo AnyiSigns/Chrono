@@ -3,9 +3,9 @@
 // 服务不读投影、不写链、不自取时钟（now 取 env）；同输入同输出（LLM 项除外，eff_log 回灌配对下等价）。
 
 import { interpretGraph } from './interpreter.ts'
-import { expandAdoption, expandRejection, ledgerEntries, scanProposals } from './proposals.ts'
+import { evolutionBody, expandAdoption, expandRejection, ledgerEntries, scanProposals } from './proposals.ts'
 import { H } from './hash.ts'
-import { asString, isRecord, isoAt, nowOf, planOf } from './plan.ts'
+import { asString, baseSeqOf, isRecord, isoAt, nowOf, planOf, RoundPatches } from './plan.ts'
 import { PINS } from './plugin.ts'
 import { createRefHydrator } from './refs.ts'
 import type { DefReader, RefHydrator } from './refs.ts'
@@ -75,7 +75,14 @@ function resumeVerdict(resume: Rec): string | null {
   return asString(payload['verdict']) ?? asString(payload['decision'])
 }
 
-/** `orchestration_change` 裁决续跑：approved ⇒ 按 patch.writes[] 展开采纳；denied ⇒ 落拒绝 verdict。 */
+/** 回合累积器：evolution 回合初 body + 最近数据世代下标。 */
+function newRound(bag: Rec): RoundPatches {
+  return new RoundPatches(
+    new Map([['evolution', { body: evolutionBody(bag), base: baseSeqOf(bag['evolution']) }]]),
+  )
+}
+
+/** `orchestration_change` 裁决续跑：approved ⇒ 按 patch.writes[] 登记采纳；denied ⇒ 登记拒绝 verdict。 */
 function orchestrationResume(bag: Rec, pins: Rec, resume: Rec, env: CallEnv, at: string): Json {
   const cursor = isRecord(resume['cursor']) ? (resume['cursor'] as Rec) : {}
   const proposalIds = Array.isArray(cursor['proposal_ids'])
@@ -83,15 +90,16 @@ function orchestrationResume(bag: Rec, pins: Rec, resume: Rec, env: CallEnv, at:
     : []
   const proposals = ledgerEntries(bag, 'proposals')
   const verdict = resumeVerdict(resume)
+  const round = newRound(bag)
   if (verdict === 'approved' || verdict === 'accept') {
-    const directives: Json[] = []
     for (const id of proposalIds) {
       const proposal = proposals.find((item) => item['id'] === id)
-      if (proposal !== undefined) for (const directive of expandAdoption(bag, proposal, pins, at, env.run)) directives.push(directive)
+      if (proposal !== undefined) expandAdoption(bag, proposal, pins, at, env.run, round)
     }
-    return planOf(directives, { ok: true, kind: 'adopt', proposal_ids: proposalIds })
+    return planOf(round.finalize(), { ok: true, kind: 'adopt', proposal_ids: proposalIds })
   }
-  return planOf(expandRejection(bag, proposalIds, at, env.run, 'human_denied'), {
+  expandRejection(bag, proposalIds, at, env.run, 'human_denied', round)
+  return planOf(round.finalize(), {
     ok: true,
     kind: 'reject',
     proposal_ids: proposalIds,
@@ -123,7 +131,8 @@ async function interpret(
   const result = await interpretGraph({ bag, env, model, pins, port: deps.port, trace, resume })
   events.push(...result.events)
   const graphHash = H(model.graph)
-  const tail = buildTraceTail(bag, trace, result.directives, env, graphHash, at)
+  const round = newRound(bag)
+  buildTraceTail(bag, trace, result.directives, env, graphHash, at, round)
   let proposalDirectives: Json[] = []
   if (result.pending === null) {
     const scan = await scanProposals({
@@ -135,11 +144,13 @@ async function interpret(
       run: env.run,
       workspaceId: asString(bag['workspace_id']),
       at,
+      round,
     })
     proposalDirectives = scan.directives
     events.push(...scan.events)
   }
-  const all: Json[] = [...result.directives, ...tail, ...proposalDirectives]
+  // 同回合的 trace / verdicts 合并为一个 evolution 世代；影子指标等其它写仍在各自批次。
+  const all: Json[] = [...result.directives, ...proposalDirectives, ...round.finalize()]
   const summary: Rec = {
     ...result.summary,
     fell_back: resolved.fellBack,

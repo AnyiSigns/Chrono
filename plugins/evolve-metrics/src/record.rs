@@ -183,6 +183,31 @@ mod tests {
     }
 
     #[test]
+    fn record_emits_one_evolution_generation_per_call() {
+        // 单次调用只产一条 batch / 一个 evolution add_gen；同回合多次调用须由调用方按身份合并。
+        let bag = json!({
+            "user_message_def": {"def": "msg-hash"},
+            "workspace_id": "w1",
+            "evolution": {
+                "version": 1,
+                "trace": {"tail": null, "count": 0},
+                "evidence": {"tail": null, "count": 0},
+                "proposals": {"tail": null, "count": 0},
+                "verdicts": {"tail": null, "count": 0},
+                "data_gen": {"seq": 9, "payload": "a".repeat(64)}
+            }
+        });
+        let value = run(&bag, &json!({"run": "r9"})).unwrap();
+        let directives = value["$directives"].as_array().unwrap();
+        assert_eq!(directives.len(), 1, "单次调用只产一条写 directive");
+        let ops = directives[0]["request"]["args"]["ops"].as_array().unwrap();
+        let add_gens: Vec<&Value> = ops.iter().filter(|op| op["op"] == "add_gen").collect();
+        assert_eq!(add_gens.len(), 1, "单次调用只产一个 add_gen");
+        assert_eq!(add_gens[0]["args"]["id"], "evolution");
+        assert_eq!(add_gens[0]["args"]["base"], 9, "base 指向 bag 的数据世代");
+    }
+
+    #[test]
     fn record_is_deterministic() {
         let bag = json!({
             "user_message_def": {"def": "msg-hash"},

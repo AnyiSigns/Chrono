@@ -387,4 +387,28 @@ mod tests {
         assert_eq!(value["swept"], 0);
         assert!(value["$directives"].as_array().unwrap().is_empty());
     }
+
+    #[test]
+    fn sweep_patch_generation_uses_bag_base_single_add_gen() {
+        // 有数据世代时写补丁世代：单次调用只产一条 batch / 一个 evolution add_gen，base = bag 数据世代。
+        // 同回合多次调用须由调用方按身份合并（本服务无跨调用回合状态）。
+        let mut body = body();
+        body["data_gen"] = json!({"seq": 4, "payload": "a".repeat(64)});
+        let bag = json!({
+            "trace_entries": [
+                {"kind": "trace", "run": "old", "workspace_id": "w1", "outcome": "done", "def": "t0"},
+                {"kind": "trace", "run": "new", "workspace_id": "w1", "outcome": "done", "def": "t1"}
+            ],
+            "thresholds": {"trace_retention_rounds": 1},
+            "evolution": body
+        });
+        let value = run(&bag, &json!({"now": 1})).unwrap();
+        let directives = value["$directives"].as_array().unwrap();
+        assert_eq!(directives.len(), 1, "单次调用只产一条写 directive");
+        let ops = directives[0]["request"]["args"]["ops"].as_array().unwrap();
+        let add_gens: Vec<&Value> = ops.iter().filter(|op| op["op"] == "add_gen").collect();
+        assert_eq!(add_gens.len(), 1, "单次调用只产一个 add_gen");
+        assert_eq!(add_gens[0]["args"]["id"], "evolution");
+        assert_eq!(add_gens[0]["args"]["base"], 4, "base 指向 bag 的数据世代");
+    }
 }

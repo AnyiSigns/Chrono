@@ -3,7 +3,8 @@
 // `denied` 落 verdicts。**只消费提案**；用户驱动提案（#45 record → propose）由此进入采纳，不再停在台账。
 
 import { validateGraphData } from './gate.ts'
-import { addGenOp, addGenRefOp, baseSeqOf, batchDirective, defHashOf, isRecord, putOp } from './plan.ts'
+import { defHashOf, isRecord } from './plan.ts'
+import type { RoundPatches } from './plan.ts'
 import type { CallEnv, GraphModel, Json, PortCaller, Rec, ServiceEvent } from './types.ts'
 
 const MAX_CHAIN = 10000
@@ -37,13 +38,6 @@ export function ledgerRefs(bag: Rec): Rec {
   if (isRecord(evolution) && isRecord(evolution['refs'])) return evolution['refs'] as Rec
   if (isRecord(bag['refs'])) return bag['refs'] as Rec
   return {}
-}
-
-function slotCount(body: Rec, kind: string): number {
-  const slot = body[kind]
-  if (!isRecord(slot)) return 0
-  const count = slot['count']
-  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? count : 0
 }
 
 /** 沿 `prev` 从某类 tail 回溯，返回 newest→oldest 条目。 */
@@ -102,6 +96,8 @@ export interface ProposalScanInput {
   run: string | null
   workspaceId: string | null
   at: string
+  /** 回合累积器：verdict 登记进累积器，与 trace 合并为单个世代。 */
+  round: RoundPatches
 }
 
 export interface ProposalScanResult {
@@ -171,32 +167,7 @@ async function gateProposal(input: ProposalScanInput, proposal: Rec): Promise<Ga
   return { ok: true, errors, shadow, shadowDirectives }
 }
 
-/** 构造 verdict 条目 + 台账写计划（含 evidence_ids / proposal_ids / gate / result）。 */
-function verdictPlan(
-  bag: Rec,
-  entry: Rec,
-  at: string,
-): { ops: Json[]; bodyIndex: number } {
-  const body = evolutionBody(bag)
-  const count = slotCount(body, 'verdicts')
-  const ops: Json[] = [putOp(entry)]
-  const index = ops.length
-  const newVerdicts: Rec = { tail: { def: { $n: 0 } }, count: count + 1 }
-  const base = baseSeqOf(bag['evolution'])
-  if (base === null) {
-    ops.push(putOp({ ...body, version: 1, verdicts: newVerdicts }))
-  } else {
-    // 补丁世代：只替换 verdicts 槽（version 非 1 时补一条），不重写整份台账 body
-    const patches: Json[] = []
-    if (body['version'] !== 1) patches.push({ op: 'replace', path: ['version'], value: 1 })
-    patches.push({ op: 'replace', path: ['verdicts'], value: newVerdicts })
-    ops.push(putOp({ ops: patches }))
-  }
-  ops.push(addGenOp('evolution', index, {}, base ?? undefined))
-  void at
-  return { ops, bodyIndex: index }
-}
-
+/** 构造 verdict 条目；`prev` 由回合累积器串到该槽上一登记条目（或回合初 tail）。 */
 function makeVerdict(proposalIds: string[], evidenceIds: string[], result: string, gate: Rec, at: string, id: string): Rec {
   return {
     kind: 'verdict',
@@ -227,8 +198,7 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
     for (const directive of gated.shadowDirectives) directives.push(directive)
     if (!gated.ok) {
       const verdict = makeVerdict([id], evidenceIds, 'rejected', { mechanical: 'fail', reason: gated.errors[0]?.['code'] ?? null, shadow: null, human: null }, input.at, `vd-${input.run ?? 'run'}-${id}`)
-      const plan = verdictPlan(input.bag, verdict, input.at)
-      directives.push(batchDirective(plan.ops))
+      input.round.stage('evolution', 'verdicts', verdict)
       continue
     }
     const outcome = await input.port.call('approval', 'enqueue', {
@@ -254,22 +224,27 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
     }
     // enqueue 传输失败：不吞，落拒绝 verdict 以便可审计。
     const verdict = makeVerdict([id], evidenceIds, 'rejected', { mechanical: 'pass', reason: 'approval_unavailable', shadow: gated.shadow, human: null }, input.at, `vd-${input.run ?? 'run'}-${id}`)
-    const plan = verdictPlan(input.bag, verdict, input.at)
-    directives.push(batchDirective(plan.ops))
+    input.round.stage('evolution', 'verdicts', verdict)
   }
   return { directives, pending: null, events }
 }
 
-/** 采纳：按 `patch.writes[]` 展开 `add_gen`（图 + 跨身份写），并落 accepted verdict。 */
-export function expandAdoption(bag: Rec, proposal: Rec, pins: Rec, at: string, run: string | null): Json[] {
+/** 采纳：按 `patch.writes[]` 登记 `add_gen`（图 + 跨身份写），并登记 accepted verdict。 */
+export function expandAdoption(
+  bag: Rec,
+  proposal: Rec,
+  pins: Rec,
+  at: string,
+  run: string | null,
+  round: RoundPatches,
+): void {
   const refs = ledgerRefs(bag)
   const graph = candidateGraph(proposal, refs)
   const patch = isRecord(proposal['patch']) ? (proposal['patch'] as Rec) : {}
   const graphHash = defHashOf(patch['graph']) ?? defHashOf(patch)
-  const ops: Json[] = []
   if (graph !== null && graphHash !== null) {
     // 图 def 已在世界（propose 已 put）；采纳 = 对 loop-policy 自身数据世代 add_gen。
-    ops.push(addGenRefOp('loop-policy', graphHash, pins))
+    round.addRef('loop-policy', graphHash, pins)
   }
   const writes = Array.isArray(patch['writes']) ? (patch['writes'] as Json[]) : []
   for (const write of writes) {
@@ -278,19 +253,24 @@ export function expandAdoption(bag: Rec, proposal: Rec, pins: Rec, at: string, r
     const payload = write['payload']
     const hash = defHashOf(payload)
     if (typeof identity === 'string' && identity.length > 0 && hash !== null) {
-      ops.push(addGenRefOp(identity, hash, {}))
+      round.addRef(identity, hash, {})
     }
   }
   const id = typeof proposal['id'] === 'string' ? proposal['id'] : 'pr-?'
   const evidenceIds = stringList(proposal['evidence_ids'])
   const verdict = makeVerdict([id], evidenceIds, 'accepted', { mechanical: 'pass', reason: null, shadow: null, human: 'approved' }, at, `vd-${run ?? 'run'}-${id}`)
-  const plan = verdictPlan(bag, verdict, at)
-  for (const op of plan.ops) ops.push(op)
-  return [batchDirective(ops)]
+  round.stage('evolution', 'verdicts', verdict)
 }
 
-/** 拒绝：落 rejected verdict。 */
-export function expandRejection(bag: Rec, proposalIds: string[], at: string, run: string | null, reason: string): Json[] {
+/** 拒绝：登记 rejected verdict。 */
+export function expandRejection(
+  bag: Rec,
+  proposalIds: string[],
+  at: string,
+  run: string | null,
+  reason: string,
+  round: RoundPatches,
+): void {
   const evidenceIds: string[] = []
   const byId = new Map<string, Rec>()
   for (const proposal of ledgerEntries(bag, 'proposals')) {
@@ -302,6 +282,5 @@ export function expandRejection(bag: Rec, proposalIds: string[], at: string, run
     if (proposal !== undefined) evidenceIds.push(...stringList(proposal['evidence_ids']))
   }
   const verdict = makeVerdict(proposalIds, evidenceIds, 'rejected', { mechanical: 'pass', reason, shadow: null, human: 'denied' }, at, `vd-${run ?? 'run'}-${proposalIds[0] ?? '?'}`)
-  const plan = verdictPlan(bag, verdict, at)
-  return [batchDirective(plan.ops)]
+  round.stage('evolution', 'verdicts', verdict)
 }

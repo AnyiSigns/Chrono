@@ -1,9 +1,9 @@
 // 提案扫描与采纳（§14）：机械闸 → shadow → approval → 采纳 / 拒绝。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startService, writeOps } from './driver.mjs'
+import { startService, writeOps, writeBatches, assembleEvolutionBatch } from './driver.mjs'
 import { H } from '../execute/hash.ts'
-import { evolutionBody } from '../execute/proposals.ts'
+import { evolutionBody, ledgerEntries } from '../execute/proposals.ts'
 import { seedModel } from '../execute/seed.ts'
 
 test('evolutionBody：剔除入口切片并入的 refs（防每回合把闭包写回台账）', () => {
@@ -117,14 +117,17 @@ test('提案扫描：机械闸不过（无 derived_from）→ 落拒绝 verdict�
   }
 })
 
-test('补丁世代：verdict 只替换 verdicts 槽，组装结果 == 整份写入结果', async () => {
+test('补丁世代：同回合 trace + verdict 合并为单世代，组装结果 == 整份写入结果', async () => {
   const { bag } = buildBag({ withDerivedFrom: false })
   const service = startService()
   try {
     const full = await service.interpret(bag)
-    const fullBody = writeOps(full.value).find(
-      (op) => op.op === 'put' && op.args.body?.verdicts?.count === 1,
-    ).args.body
+    const fullBatch = writeBatches(full.value).find((ops) => ops.some((op) => op.op === 'add_gen' && op.args.id === 'evolution'))
+    assert.ok(fullBatch, '整份世代应产 evolution add_gen')
+    const fullAssembled = assembleEvolutionBatch(fullBatch, evolutionBody({ evolution: bag.evolution }))
+    assert.ok(fullAssembled.addGen, '整份世代应有 add_gen')
+    assert.equal(fullAssembled.addGen.args.base, undefined, '无数据世代写整份')
+    const fullBody = fullAssembled.body
 
     const withGen = { ...bag.evolution, data_gen: { seq: 2, payload: 'b'.repeat(64) } }
     const patched = await service.interpret({ ...bag, evolution: withGen })
@@ -132,17 +135,82 @@ test('补丁世代：verdict 只替换 verdicts 槽，组装结果 == 整份写�
     const patchPut = ops.find(
       (op) => op.op === 'put' && op.args.body?.ops?.some((patch) => patch.path?.[0] === 'verdicts'),
     )
-    assert.ok(patchPut, '补丁世代应写 verdicts 补丁 def')
-    const addGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'evolution')
-    assert.equal(addGen.args.base, 2)
-    assert.deepEqual(patchPut.args.body.ops, [
-      { op: 'replace', path: ['verdicts'], value: fullBody.verdicts },
-    ])
-    // base = withGen 的台账 body；补丁只替换 verdicts 槽为整份写入时的同值 → 组装结果 == fullBody
+    assert.ok(patchPut, '补丁世代应写补丁 def')
+    const addGen = ops.filter((op) => op.op === 'add_gen' && op.args.id === 'evolution')
+    assert.equal(addGen.length, 1, '同回合该身份只新增一个世代')
+    assert.equal(addGen[0].args.base, 2, 'base 指向回合初数据世代')
+
     const baseBody = evolutionBody({ evolution: withGen })
-    assert.deepEqual(baseBody.trace, fullBody.trace)
-    assert.deepEqual(baseBody.evidence, fullBody.evidence)
-    assert.deepEqual(baseBody.proposals, fullBody.proposals)
+    const base = evolutionBody({ evolution: bag.evolution })
+    const patchedBatch = writeBatches(patched.value).find((batch) => batch.some((op) => op.op === 'add_gen' && op.args.id === 'evolution'))
+    const assembled = assembleEvolutionBatch(patchedBatch, baseBody)
+    assert.deepEqual(assembled.body, fullBody, 'base + 补丁组装结果 == 整份写入结果')
+    // 补丁同时覆盖本回合改动的两个槽；未改动槽（evidence / proposals）保持回合初值。
+    assert.deepEqual(patchPut.args.body.ops.map((patch) => patch.path[0]), ['trace', 'verdicts'])
+    assert.deepEqual(assembled.body.evidence, base.evidence)
+    assert.deepEqual(assembled.body.proposals, base.proposals)
+  } finally {
+    service.close()
+  }
+})
+
+test('同回合两提案拒绝：两条 verdict 经 prev 链均可 ledgerEntries 到达、只新增一个世代', async () => {
+  const seed = seedModel()
+  const candidate = JSON.parse(JSON.stringify(seed.graph))
+  const graphHash = H(candidate)
+  const proposalOf = (id, prev) => ({
+    kind: 'proposal',
+    id,
+    class: 'structure',
+    evidence_ids: [],
+    target: { graph: { def: graphHash }, contract_id: null, node_id: null },
+    patch: { def: graphHash, graph: { def: graphHash }, writes: [] },
+    by: 'evolve-loop',
+    at: '2026-09-20T00:00:00.000Z',
+    prev,
+  })
+  const first = proposalOf('pr-a', null)
+  const firstHash = H(first)
+  const second = proposalOf('pr-b', { def: firstHash })
+  const secondHash = H(second)
+  const evolution = {
+    version: 1,
+    trace: { tail: null, count: 0 },
+    evidence: { tail: null, count: 0 },
+    proposals: { tail: { def: secondHash }, count: 2 },
+    verdicts: { tail: null, count: 0 },
+    data_gen: { seq: 3, payload: 'c'.repeat(64) },
+  }
+  const bag = {
+    graph: {
+      contracts: seed.contracts,
+      nodes: seed.nodes,
+      prompts: seed.prompts,
+      graph: seed.graph,
+      thresholds: seed.thresholds,
+      refusal_codes: seed.refusalCodes,
+    },
+    evolution,
+    refs: { [graphHash]: candidate, [firstHash]: first, [secondHash]: second },
+  }
+  const service = startService()
+  try {
+    const result = await service.interpret(bag)
+    const batch = writeBatches(result.value).find((ops) => ops.some((op) => op.op === 'add_gen' && op.args.id === 'evolution'))
+    assert.ok(batch, '应产 evolution 世代')
+    const addGens = batch.filter((op) => op.op === 'add_gen' && op.args.id === 'evolution')
+    assert.equal(addGens.length, 1, '同回合两提案只新增一个世代')
+    assert.equal(addGens[0].args.base, 3)
+    const assembled = assembleEvolutionBatch(batch, evolutionBody({ evolution }))
+    assert.equal(assembled.body.verdicts.count, 2, '两条 verdict 都进槽')
+    // 用组装后的 body + 同批 defs 作闭包，验证 prev 链两条都可到达。
+    const ledger = { evolution: { ...assembled.body, refs: assembled.defs }, refs: assembled.defs }
+    const verdicts = ledgerEntries(ledger, 'verdicts')
+    assert.equal(verdicts.length, 2, '两条 verdict 均经 prev 链可达')
+    const ids = new Set(verdicts.flatMap((verdict) => verdict.proposal_ids ?? []))
+    assert.deepEqual([...ids].sort(), ['pr-a', 'pr-b'])
+    assert.equal(verdicts[0].prev.def, H({ body: verdicts[1] }), 'prev 指向上一登记 verdict')
+    assert.equal(verdicts[1].prev, null, '首条 prev 回落到回合初 tail(null)')
   } finally {
     service.close()
   }

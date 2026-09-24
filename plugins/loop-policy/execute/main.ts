@@ -7,6 +7,7 @@ import { createHandlers } from './methods.ts'
 import { PortLink } from './port-link.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
+import { DefUnavailableError } from './refs.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
@@ -83,6 +84,10 @@ async function handleCall(message: Rec): Promise<void> {
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
+      return
+    }
+    if (err instanceof DefUnavailableError) {
+      sendError(id, 'def_unavailable', `def unavailable: ${err.hashes.length}`)
       return
     }
     log(`method ${method} failed: ${(err as Error).message}`)

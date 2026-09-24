@@ -79,6 +79,155 @@ export function baseSeqOf(slice: Json | undefined): number | null {
   return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
 }
 
+/** 回合初某身份的切片：`body` 是回合初组装 body，`base` 是最近数据世代下标（无 → null）。 */
+export interface RoundBase {
+  body: Rec
+  base: number | null
+}
+
+/** 槽位计数：`{tail,count}` 取 count；数组取长度；缺失 / 非法 → 0。 */
+function slotCountOf(body: Rec, slot: string): number {
+  const section = body[slot]
+  if (Array.isArray(section)) return section.length
+  if (!isRecord(section)) return 0
+  const count = section['count']
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? count : 0
+}
+
+/** 槽位链头：`{tail}` 的 tail；数组 / 缺失 → null。 */
+function slotTailOf(body: Rec, slot: string): Json {
+  const section = body[slot]
+  if (!isRecord(section)) return null
+  return section['tail'] ?? null
+}
+
+interface RoundSlotState {
+  baseTail: Json
+  baseCount: number
+  /** 本回合该槽已登记条目的 put 下标（登记序）。 */
+  indices: number[]
+}
+
+interface RoundIdentityState {
+  base: RoundBase
+  slots: Map<string, RoundSlotState>
+  extra: Json[]
+}
+
+interface RoundRefGen {
+  id: string
+  hash: string
+  pins: Rec
+}
+
+/**
+ * 回合内按身份累积补丁：同回合多次写合并为**单个世代**。
+ *
+ * 宿主对每条 write 单独起一轮，若 trace / verdicts 各自以回合初 base 产 batch，第二条补丁组装时
+ * 仍以回合初 base 为准、丢掉第一条改动的槽位。累积器把同回合的条目与补丁攒在一起，
+ * `finalize` 每身份只产一条 `add_gen`，并把 `$n` 下标与槽位 `count` / `tail` 修正到最终批次位置。
+ *
+ * - `stage`：登记一条待落条目，`prev` 串到该槽上一登记条目（或回合初 tail），返回其 put 占位下标；
+ * - `patch`：追加身份级额外补丁 ops（槽位 replace 由 `finalize` 统一生成）；
+ * - `addRef`：登记一条直接引用**已在世界** def 的 `add_gen`（采纳跨身份写）；
+ * - `finalize`：条目按登记序排在批次最前（下标即登记序），再逐身份产
+ *   `put(entries…) + put({ops:merged}) + add_gen(id, patchIndex, pins, base)`；
+ *   无数据世代（base null）回落整份世代。
+ */
+export class RoundPatches {
+  private readonly bases: Map<string, RoundBase>
+  private readonly identities = new Map<string, RoundIdentityState>()
+  private readonly refs: RoundRefGen[] = []
+  private readonly staged: { identity: string; slot: string; body: Rec }[] = []
+
+  constructor(bases: Map<string, RoundBase>) {
+    this.bases = bases
+  }
+
+  private identityOf(identity: string): RoundIdentityState {
+    const existing = this.identities.get(identity)
+    if (existing !== undefined) return existing
+    const base = this.bases.get(identity)
+    if (base === undefined) throw new Error(`RoundPatches: unknown identity ${identity}`)
+    const state: RoundIdentityState = { base, slots: new Map(), extra: [] }
+    this.identities.set(identity, state)
+    return state
+  }
+
+  /** 登记一条待落条目：`prev` 串到该槽上一登记条目（或回合初 tail）；返回其 put 占位下标。 */
+  stage(identity: string, slot: string, entryBody: Rec): number {
+    const state = this.identityOf(identity)
+    let slotState = state.slots.get(slot)
+    if (slotState === undefined) {
+      slotState = {
+        baseTail: slotTailOf(state.base.body, slot),
+        baseCount: slotCountOf(state.base.body, slot),
+        indices: [],
+      }
+      state.slots.set(slot, slotState)
+    }
+    const previous = slotState.indices
+    entryBody['prev'] =
+      previous.length === 0
+        ? slotState.baseTail
+        : { def: { $n: previous[previous.length - 1] } }
+    const index = this.staged.length
+    this.staged.push({ identity, slot, body: entryBody })
+    slotState.indices.push(index)
+    return index
+  }
+
+  /** 追加身份级额外补丁 ops（如 version 修正）。 */
+  patch(identity: string, ops: Json[]): void {
+    this.identityOf(identity).extra.push(...ops)
+  }
+
+  /** 登记一条直接引用已在世界 def 的 `add_gen`（采纳跨身份写）。 */
+  addRef(id: string, hash: string, pins: Rec): void {
+    this.refs.push({ id, hash, pins })
+  }
+
+  /** 空累积 → 空数组；否则一条原子 batch directive。 */
+  finalize(): Json[] {
+    if (this.staged.length === 0 && this.refs.length === 0) return []
+    const ops: Json[] = []
+    // 条目按登记序排在批次最前，故 stage 返回的占位下标即最终 put 下标。
+    for (const entry of this.staged) ops.push(putOp(entry.body))
+    for (const [identity, state] of this.identities) {
+      const slotPatches: Json[] = []
+      for (const [slot, slotState] of state.slots) {
+        if (slotState.indices.length === 0) continue
+        const tailIndex = slotState.indices[slotState.indices.length - 1]
+        slotPatches.push({
+          op: 'replace',
+          path: [slot],
+          value: { tail: { def: { $n: tailIndex } }, count: slotState.baseCount + slotState.indices.length },
+        })
+      }
+      if (slotPatches.length === 0) continue
+      if (state.base.base !== null) {
+        const patches: Json[] = [...state.extra]
+        if (state.base.body['version'] !== 1) patches.unshift({ op: 'replace', path: ['version'], value: 1 })
+        for (const patch of slotPatches) patches.push(patch)
+        const patchIndex = ops.length
+        ops.push(putOp({ ops: patches }))
+        ops.push(addGenOp(identity, patchIndex, {}, state.base.base))
+      } else {
+        const fullBody: Rec = { ...state.base.body, version: 1 }
+        for (const patch of slotPatches) {
+          const path = patch['path']
+          if (Array.isArray(path) && typeof path[0] === 'string') fullBody[path[0]] = patch['value'] as Json
+        }
+        const fullIndex = ops.length
+        ops.push(putOp(fullBody))
+        ops.push(addGenOp(identity, fullIndex))
+      }
+    }
+    for (const ref of this.refs) ops.push(addGenRefOp(ref.id, ref.hash, ref.pins))
+    return [batchDirective(ops)]
+  }
+}
+
 /** 单条 add_gen 子操作：payload / sig 指向**已在世界**的 def 哈希（采纳阶段跨身份写）。 */
 export function addGenRefOp(id: string, hash: string, pins: Rec = {}): Json {
   return { op: 'add_gen', args: { id, payload: { def: hash }, sig: { def: hash }, pins } }
