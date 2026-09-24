@@ -122,8 +122,14 @@ export const STYLE_TEXT = `
 .chat-btn:disabled { opacity: .45; cursor: not-allowed; }
 .chat-breathe { width: 48px; height: 2px; border-radius: var(--radius-sm); background: var(--c-text-3); animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-breathe-inline { width: 32px; }
-/* 「正在工作」流光呼吸文字：渐层高光扫过（流光）叠加透明度脉冲（呼吸感），仅 token 取色。 */
-.chat-working { width: fit-content; font-size: var(--font-size-xs); background: linear-gradient(90deg, var(--c-text-3) 25%, var(--c-text) 50%, var(--c-text-3) 75%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: chat-shimmer 1.8s linear infinite, chat-breathe 2.4s ease-in-out infinite; }
+/* 「正在工作」流光呼吸文字：灰↔强调色渐层高光扫过（流光）叠加透明度脉冲（呼吸感）。
+   流式回合全程常驻（回合结束即随在途回合消失），右侧带秒级计时。 */
+.chat-working { display: flex; align-items: baseline; gap: var(--space-4); width: fit-content;
+  font-size: var(--font-size-sm);
+  background: linear-gradient(90deg, var(--c-text-3) 25%, var(--c-accent) 50%, var(--c-text-3) 75%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: chat-shimmer 1.8s linear infinite, chat-breathe 2.4s ease-in-out infinite; }
+.chat-working-time { font-variant-numeric: tabular-nums; }
 .chat-cursor { display: inline-block; width: 1px; height: 1em; margin-left: 1px; background: var(--c-text); vertical-align: text-bottom; animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-pill { position: absolute; left: 50%; bottom: var(--space-16); transform: translateX(-50%); padding: var(--space-4) var(--space-12); background: var(--c-accent); color: var(--c-accent-text); border: none; border-radius: 999px; font: inherit; font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; cursor: pointer; z-index: var(--z-popover); }
 .chat-pill:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }

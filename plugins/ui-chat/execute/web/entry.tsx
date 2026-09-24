@@ -979,15 +979,34 @@ function StreamToolCard({ tool }: { tool: any }): ReactNode {
   return <ToolCard vm={vm} live={{ chunks: tool.chunks, done: tool.done === true, ok: tool.ok ?? null }} />
 }
 
+/** 流式回合的秒级计时：active 期间从 0 每秒步进，非 active 归零；计时器随组件卸载清理。 */
+function useElapsedSeconds(active: boolean): number {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    if (!active) return undefined
+    const started = Date.now()
+    setSeconds(0)
+    const timer = window.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  return seconds
+}
+
+/** 秒数 → `m:ss`。 */
+function formatElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 function StreamTurn({ view }: { view: any }): ReactNode {
   const env = useChatEnv()
+  const streaming = isStreaming(view)
+  const seconds = useElapsedSeconds(streaming)
   const inFlight = view.inFlight
   if (inFlight === null) return null
-  const streaming = isStreaming(view)
-  const hasOutput = inFlight.text.length > 0 || inFlight.reasoning.length > 0
-  const activeTools = inFlight.tools.some((tool: any) => tool.done !== true)
-  // 尚无输出且无工具在跑时给「正在工作」流光提示；有推理/正文/工具状态自证活动即撤。
-  const showWorking = inFlight.cancelled !== true && !hasOutput && !activeTools
   const toolsById = new Map(inFlight.tools.map((tool: any) => [tool.callId, tool]))
   const lastIndex = inFlight.segments.length - 1
   return (
@@ -1010,12 +1029,14 @@ function StreamTurn({ view }: { view: any }): ReactNode {
         }
         return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
       })}
-      {showWorking ? (
-        <div className="chat-working">{lookupMessage(env.table, 'chat_working').body}</div>
-      ) : null}
-      {inFlight.cancelled === true ? (
+      {streaming ? (
+        <div className="chat-working">
+          <span>{lookupMessage(env.table, 'chat_working').body}</span>
+          <span className="chat-working-time">{formatElapsed(seconds)}</span>
+        </div>
+      ) : (
         <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_cancelled').body}</div>
-      ) : null}
+      )}
     </div>
   )
 }
