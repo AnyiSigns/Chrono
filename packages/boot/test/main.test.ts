@@ -126,6 +126,16 @@ describe('CLI 薄壳 boot', () => {
     expect(existsSync(join(root, 'state', 'world', 'base.json'))).toBe(true)
   })
 
+  it('compact --strict / CHRONO_COMPACT_STRICT：开关生效，非法 env fail-closed', async () => {
+    const cli = await runBoot(['compact', '--strict', '--root', root])
+    expect(cli.code).toBe(0)
+    const env = await runBoot(['compact', '--root', root], { CHRONO_COMPACT_STRICT: 'true' })
+    expect(env.code).toBe(0)
+    const bad = await runBoot(['compact', '--root', root], { CHRONO_COMPACT_STRICT: 'nope' })
+    expect(bad.code).toBe(1)
+    expect(bad.stderr).toContain('bad_compact_strict')
+  })
+
   it('assets gc：回收无引用字节（离线 CLI 命令）', async () => {
     const assetsDir = join(root, 'state', 'assets')
     mkdirSync(assetsDir, { recursive: true })

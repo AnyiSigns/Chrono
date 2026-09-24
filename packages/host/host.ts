@@ -53,6 +53,7 @@ import {
 import { parseAuditFilter } from './audit.ts'
 import type { AuditDraft } from './audit.ts'
 import { AuditStore } from './audit-store.ts'
+import { backfillAuditStore, readAuditBackfillMeta } from './audit-backfill.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { createHostCapability } from './host-capability.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
@@ -268,7 +269,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     }
   }
 
-  const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+  const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir, {
+    migrateLegacy: true,
+  })
   // 撕裂尾修复：容错读已丢弃末条半截 entry，这里在持锁下把文件截到有效前缀，
   // 否则下一次 append 会把新 entry 粘在残行上，被后续容错读当末行丢弃、终致 journal 永久损坏。
   if (anchor.journalTruncated) {
@@ -282,6 +285,16 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   }
   // F8 只读审计面：审计写旁路侧存（不进世界），启动时由侧存重建内存索引。
   const audits = AuditStore.open(paths.auditFile)
+  // D2 历史审计一次性回填：升级前写入的审计 def 从未进侧存，首启扫描全链 + base world defs 导入
+  // （受保留窗口约束，`state/audit/meta.json` 标记幂等）。回填是旁路：失败不阻断启动，下次再试。
+  // 已回填则跳过整链读，不付冷段 / 尾段的读盘成本。
+  if (readAuditBackfillMeta(paths.auditMetaFile) === null) {
+    try {
+      backfillAuditStore(paths, anchor.world, readAllEntries(paths.journalFile, paths.coldDir), audits)
+    } catch {
+      // 回填失败只损失历史审计可见性，不影响世界 / 链 / 启动
+    }
+  }
   // G6 启动压缩：尾段达到阈值即追加快照 entry + 归档前缀 + 写基础世界（世界不变，链头推进到快照）。
   // 归档前缀只取**当前 journal**（未归档部分）：回落全链时 `anchor.entries` 可能是全链，不能整段再归档。
   const compactTailEntries = options.compactTailEntries ?? DEFAULT_COMPACT_TAIL_ENTRIES

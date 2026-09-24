@@ -18,17 +18,7 @@ import { dirname } from 'node:path'
  * `mode` 可选：给出即按它落盘权限（如密钥文件 `0o600`）；Windows 不支持 POSIX 权限，忽略 mode 不报错。
  */
 export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: number): void {
-  mkdirSync(dirname(file), { recursive: true })
-  const temp = `${file}.tmp-${randomUUID()}`
-  const fd = openSync(temp, 'w', mode ?? 0o666)
-  try {
-    if (typeof data === 'string') writeSync(fd, data)
-    else writeSync(fd, data)
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  renameSync(temp, file)
+  writeFileStaged(file, data, mode)
   if (mode !== undefined && process.platform !== 'win32') {
     try {
       // 显式 chmod：open 的 mode 受 umask 削减，收紧权限须再确认一次
@@ -40,8 +30,27 @@ export function writeFileAtomic(file: string, data: string | Uint8Array, mode?: 
   fsyncDir(dirname(file))
 }
 
+/**
+ * 批量落盘的底层步骤：temp → fsync 文件 → rename，**不 fsync 目录**。
+ * 调用方在全部文件 rename 后调 `fsyncDir` 一次，把 N 次目录 fsync 合并为一次（compact 分片写入用）。
+ * 每文件 fsync 保留：数据持久化不可省。
+ */
+export function writeFileStaged(file: string, data: string | Uint8Array, mode?: number): void {
+  mkdirSync(dirname(file), { recursive: true })
+  const temp = `${file}.tmp-${randomUUID()}`
+  const fd = openSync(temp, 'w', mode ?? 0o666)
+  try {
+    if (typeof data === 'string') writeSync(fd, data)
+    else writeSync(fd, data)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(temp, file)
+}
+
 /** 目录 fsync：Windows 不支持目录句柄 fsync，失败即忽略（尽力而为）。 */
-function fsyncDir(dir: string): void {
+export function fsyncDir(dir: string): void {
   let fd: number | undefined
   try {
     fd = openSync(dir, 'r')

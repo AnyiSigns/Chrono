@@ -12,6 +12,7 @@ import {
   hostPaths,
   parseEntryArgv,
   resolveCallTimeoutMs,
+  resolveCompactStrict,
   resolveRoot,
   resolveStartWrapper,
   resolveWatch,
@@ -87,7 +88,8 @@ function helpText(): string {
     '  verify                      全量校验 journal',
     '  replay                      全量重放并给出内容摘要',
     '  unseeded                    列出尚无数据世代的身份（首启预置默认 body 的判据；不取写锁）',
-    '  compact                     压缩：追加快照 + 冷段归档 + 写基础世界',
+    '  compact [--strict]           压缩：追加快照 + 冷段归档 + 写基础世界（--strict 严格回收，',
+    '                              缺省读 CHRONO_COMPACT_STRICT，默认保守）',
     '  assets gc                   回收资产区里世界无引用的字节',
     '  blobs gc                    回收源码 CAS 里世界全部世代无引用的字节',
     '  materialized gc             回收物化目录（每身份保留 active 代码世代 + 前 N 代）',
@@ -280,9 +282,14 @@ async function main(): Promise<void> {
     case 'replay':
       print(runReplay(root))
       return
-    case 'compact':
-      print(runCompact(root))
+    case 'compact': {
+      const strict = resolveCompactStrict(
+        args.includes('--strict'),
+        process.env['CHRONO_COMPACT_STRICT'],
+      )
+      print(runCompact(root, { strict }))
       return
+    }
     case 'assets': {
       if (args[0] !== 'gc') throw new Error(`unknown_command: assets ${args[0] ?? ''}`)
       print(runAssetGc(root))

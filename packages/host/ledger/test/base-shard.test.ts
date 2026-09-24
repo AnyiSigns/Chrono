@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { H, canonicalJson, cloneWorld, worldRev } from '../../../kernel/index.ts'
 import type { Def, Hash, Json, World } from '../../../kernel/index.ts'
 import { DefStore, createLazyDefs, readBase, writeBase } from '../index.ts'
+import { loadAnchor } from '../index.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 
 /** 造一个只有 defs、无身份的世界；每个 body 的键 = H({body})。 */
@@ -142,6 +143,51 @@ describe('基础世界分片（v2）', () => {
     const key = Object.keys(world.defs)[0] as Hash
     expect(base!.world.defs[key]).toEqual(world.defs[key])
   })
+
+  it('E1：readBase 不 eager 自校；verify() 惰性算摘要、幂等且零分片读', () => {
+    const { baseFile } = newRoot()
+    const world = worldWithDefs([{ a: 1 }, { b: 2 }])
+    writeBase(baseFile, { snapshot: SNAPSHOT, world })
+    // 篡改 worldRev：readBase 仍返回（不 eager 自校），首次 verify 才 fail-closed
+    const tampered = JSON.parse(readFileSync(baseFile, 'utf8')) as Record<string, unknown>
+    tampered['worldRev'] = 'f'.repeat(64)
+    writeFileSync(baseFile, JSON.stringify(tampered))
+    const bad = readBase(baseFile)!
+    expect(bad).not.toBeNull()
+    expect(() => bad.verify()).toThrow('bad_base')
+
+    // 正常 base：verify 通过后可重复调用（缓存 / 幂等），且摘要只吃键、零分片读
+    writeBase(baseFile, { snapshot: SNAPSHOT, world })
+    const good = readBase(baseFile)!
+    expect(good.store!.stats.loads).toBe(0)
+    expect(() => good.verify()).not.toThrow()
+    expect(good.store!.stats.loads).toBe(0)
+    expect(() => good.verify()).not.toThrow()
+    expect(good.store!.stats.loads).toBe(0)
+  })
+
+  it('E4：读到 v1 base 时以同一 snapshot/world/worldRev 迁移为 v2，head/worldRev 不变', () => {
+    const { root, baseFile } = newRoot()
+    const world = worldWithDefs([{ a: 1 }, { b: 2 }])
+    const rev = worldRev(world)
+    const snapshot = { seq: 5, hash: 'c'.repeat(64) }
+    writeFileSync(
+      baseFile,
+      JSON.stringify({ v: 1, snapshot, worldRev: rev, snapshotRev: rev, world }),
+    )
+    const journal = join(root, 'state', 'world', 'journal.jsonl')
+    const anchor = loadAnchor(journal, baseFile, undefined, { migrateLegacy: true })
+    expect(anchor.baseSeq).toBe(5)
+    expect(anchor.head).toEqual(snapshot)
+    expect(worldRev(anchor.world)).toBe(rev)
+
+    const migrated = JSON.parse(readFileSync(baseFile, 'utf8')) as Record<string, unknown>
+    expect(migrated['v']).toBe(2)
+    expect(migrated['world']).toBeUndefined()
+    expect(migrated['worldRev']).toBe(rev)
+    expect(migrated['snapshotRev']).toBe(rev)
+    expect(migrated['defs']).toHaveLength(2)
+  })
 })
 
 describe('DefStore LRU', () => {
@@ -198,6 +244,38 @@ describe('DefStore LRU', () => {
     const many = store.getMany(same)
     expect(many.size).toBe(2)
     expect(store.stats.loads).toBe(1)
+  })
+
+  it('字节预算：超限淘汰最旧；单 def 超上限不缓存（大 def 不撑爆）', () => {
+    const root = createTempRoot()
+    roots.push(root)
+    const dir = join(root, 'defs')
+    mkdirSync(dir, { recursive: true })
+    const keys = ['aa', 'bb'].map((prefix) => (prefix + '0'.repeat(62)) as Hash)
+    for (const key of keys) {
+      writeFileSync(
+        join(dir, `${key.slice(0, 2)}.jsonl`),
+        canonicalJson({ h: key, d: { body: { key } } }) + '\n',
+      )
+    }
+    // 每 body ≈ 74B；字节上限 100 → 两条装不下，取第二条即淘汰第一条
+    const store = new DefStore({ dir, shard: 2, hashes: keys, cacheLimit: 100, cacheBytesLimit: 100 })
+    store.get(keys[0])
+    expect(store.cached()).toBe(1)
+    store.get(keys[1])
+    expect(store.cached()).toBe(1)
+    expect(store.cachedBytes()).toBeLessThanOrEqual(100)
+    expect(store.get(keys[0])).toEqual({ body: { key: keys[0] } }) // 已淘汰：重读
+
+    // 单 def 超字节上限：能取到但不入缓存
+    const huge = ('cc' + '0'.repeat(62)) as Hash
+    writeFileSync(
+      join(dir, 'cc.jsonl'),
+      canonicalJson({ h: huge, d: { body: { text: 'x'.repeat(500) } } }) + '\n',
+    )
+    const big = new DefStore({ dir, shard: 2, hashes: [huge], cacheLimit: 100, cacheBytesLimit: 100 })
+    expect(big.get(huge)).toEqual({ body: { text: 'x'.repeat(500) } })
+    expect(big.cached()).toBe(0)
   })
 })
 

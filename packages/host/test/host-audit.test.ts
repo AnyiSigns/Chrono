@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
-import { readJournal } from '../ledger/index.ts'
+import { appendJournal, loadAnchor, readJournal } from '../ledger/index.ts'
+import { commit } from '../../kernel/index.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 import { FIXTURE_ALPHA, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -165,6 +166,39 @@ describe('G5 F8 只读审计面（audit）', () => {
       expect((await client2.status()).world_head.hash).not.toBeNull()
     } finally {
       client2.close()
+    }
+  })
+
+  it('升级后首启一次性回填历史审计：host.audit 查到旧审计 def', async () => {
+    seed()
+    // 手工追一条历史审计 put entry（模拟旧 journal：审计曾进世界、未进侧存）
+    const anchor = loadAnchor(journalFile())
+    const body = { kind: 'effect_audit', run: 'legacy-run', emitter: 'legacy', outcome: 'ok' }
+    const outcome = commit(
+      anchor.head,
+      anchor.world,
+      {
+        id: 'legacy-audit',
+        op: 'put',
+        target: { expect_pos: anchor.head.hash },
+        args: { body },
+        by: 'host',
+      },
+      1234,
+    )
+    expect(outcome.verdict.ok).toBe(true)
+    appendJournal(journalFile(), [outcome.entry!])
+
+    await start()
+    const client = await connect({ root, timeoutMs: 5000 })
+    try {
+      const report = await client.audit({ run: 'legacy-run' })
+      expect(report.records).toHaveLength(1)
+      expect(bodyOf(report.records[0])).toMatchObject({ emitter: 'legacy', outcome: 'ok' })
+      // 回填不写链：journal 只多出那条手工 entry，运行期查询不再追加
+      expect(readJournal(journalFile()).length).toBe(anchor.entries.length + 1)
+    } finally {
+      client.close()
     }
   })
 })

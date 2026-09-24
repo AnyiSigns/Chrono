@@ -22,6 +22,8 @@ export interface HostPaths {
   auditDir: string
   /** 审计旁路侧存单文件（追加 + 上限压实）。 */
   auditFile: string
+  /** 审计历史回填标记（`{backfilled, throughEntrySeq}`；缺省视为未回填）。 */
+  auditMetaFile: string
   lockFile: string
   lifecycleFile: string
   pluginsFile: string
@@ -59,6 +61,7 @@ export function hostPaths(root: string): HostPaths {
     // 效果审计旁路侧存：不进世界、不进链、不参与重放
     auditDir: resolve(stateDir, 'audit'),
     auditFile: resolve(stateDir, 'audit', 'audit.jsonl'),
+    auditMetaFile: resolve(stateDir, 'audit', 'meta.json'),
     lockFile: resolve(runtimeDir, 'lock.json'),
     lifecycleFile: resolve(stateDir, 'lifecycle.log'),
     pluginsFile: resolve(stateDir, 'plugins.json'),

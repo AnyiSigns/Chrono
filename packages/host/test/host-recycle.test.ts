@@ -21,7 +21,9 @@ import {
 import { loadAnchor } from '../ledger/index.ts'
 import { AuditIndex } from '../audit.ts'
 import { compactWorld } from '../compact.ts'
+import { runCompact } from '../offline.ts'
 import { hostPaths } from '../paths.ts'
+import { latestDataGen } from '../assembly/index.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 
 function auditRecord(
@@ -149,6 +151,12 @@ describe('compact 有界化回收', () => {
     const tail = loadAnchor(journalFile(), baseFile(), coldDir())
     expect(tail.pruned).toBe(true)
     expect(worldRev(tail.world)).toBe(worldRev(result.world))
+    // A3：回收后 base 的 snapshotRev（快照 entry 的全量摘要）与本体 worldRev（子世界摘要）刻意不同；
+    // loadAnchor 据二者不等跳过快照 entry 自校，以子世界为起点重放尾段（tail.head 正确）
+    const base = readBase(baseFile())!
+    expect(base.snapshotRev).not.toBe(base.worldRev)
+    expect(base.snapshotRev).toBe(worldRev(replayFull(readAllEntries(journalFile(), coldDir()))))
+    expect(tail.head.seq).toBe(base.snapshot.seq)
     // 全链（冷段 + 尾段）从空世界重放：快照 entry 的全量 world_rev 自校仍过
     expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
   })
@@ -159,6 +167,64 @@ describe('compact 有界化回收', () => {
     expect(result.world.defs[fx.orphan]).toBeUndefined()
     expect(result.world.defs[fx.audit]).toBeUndefined()
     expect(result.world.defs[fx.gens[2]]).toBeDefined()
+  })
+
+  it('A2：runCompact 默认保守保留孤儿 def，strict 开关回收', () => {
+    const fx = fixture()
+    runCompact(root)
+    let base = readBase(baseFile())!
+    expect(base.world.defs[fx.orphan]).toBeDefined()
+    runCompact(root, { strict: true })
+    base = readBase(baseFile())!
+    expect(base.world.defs[fx.orphan]).toBeUndefined()
+    expect(base.world.defs[fx.gens[2]]).toBeDefined()
+    expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
+  })
+
+  it('B2：窗口外数据世代及其 {"def":hash} 闭包保留，投影 body 恒在 base', () => {
+    const world = { defs: {}, ids: {} } as World
+    let head: Head = { ...EMPTY_HEAD }
+    const entries: Entry[] = []
+    const push = (op: Op, args: Json): Hash => {
+      const outcome = commit(
+        head,
+        world,
+        { id: `d-${entries.length}`, op, target: { expect_pos: head.hash }, args, by: 't' },
+        1000 + entries.length,
+      )
+      if (!outcome.verdict.ok || outcome.entry === null || outcome.hash === null) {
+        throw new Error(`commit failed: ${outcome.verdict.reasons.join(',')}`)
+      }
+      head = { seq: outcome.entry.seq, hash: outcome.hash as Hash }
+      entries.push(outcome.entry)
+      return outcome.entry.argsHash
+    }
+    const schema = push('put', { body: { schema: true } })
+    const leaf = push('put', { body: { leaf: true } })
+    const data = push('put', { body: { data: 1, ref: { def: leaf } } })
+    push('add_identity', { id: 'x', schema })
+    push('add_gen', { id: 'x', payload: data, pins: {}, sig: schema })
+    // 数据世代后接两个代码世代（payload body 带 tree）→ genWindow=1 时数据世代落窗口外
+    const code1 = push('put', { body: { tree: 'a'.repeat(64) } })
+    push('add_gen', { id: 'x', payload: code1, pins: {}, sig: schema })
+    const code2 = push('put', { body: { tree: 'b'.repeat(64) } })
+    push('add_gen', { id: 'x', payload: code2, pins: {}, sig: schema })
+    appendJournal(journalFile(), entries)
+
+    const all = readJournal(journalFile())
+    const result = compactWorld(hostPaths(root), replayFull(all), head, all, Date.now(), {
+      genWindow: 1,
+    })
+    // 数据世代 + 其闭包 def 保留；窗口内只留末代代码世代
+    expect(result.world.ids.x.gens.some((g) => g.payload === data)).toBe(true)
+    expect(result.world.ids.x.gens.some((g) => g.payload === code1)).toBe(false)
+    expect(result.world.defs[data]).toBeDefined()
+    expect(result.world.defs[leaf]).toBeDefined()
+    expect(latestDataGen(result.world, 'x')?.payload).toBe(data)
+
+    const tail = loadAnchor(journalFile(), baseFile(), coldDir())
+    expect(worldRev(tail.world)).toBe(worldRev(result.world))
+    expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
   })
 
   it('回收后 base 可续写：以回收世界为起点 append 新 entry，重载与全链 verify 一致', () => {

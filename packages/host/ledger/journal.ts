@@ -28,7 +28,7 @@ import {
 } from '../../kernel/index.ts'
 import type { Entry, Hash, Head, Json, World } from '../../kernel/index.ts'
 import { writeFileAtomic } from './atomic.ts'
-import { readBase } from './base.ts'
+import { LEGACY_BASE_VERSION, readBase, writeBase } from './base.ts'
 
 export interface Anchor {
   world: World
@@ -238,10 +238,31 @@ function dedupeBySeq(entries: Entry[]): Entry[] {
  * @param file journal 文件
  * @param baseFile 基础世界文件；缺省 = 不启用基础世界（测试 / 纯日志场景）
  * @param coldDir 冷段目录；缺省 = journal 同级的 `cold/`
+ * @param options `migrateLegacy` = 读到 v1 单文件 base 时以同一 snapshot/world/worldRev 落 v2
+ *   （不新增 entry、不改链头）；仅在可写上下文（启动 / 离线持锁）置真。
  */
-export function loadAnchor(file: string, baseFile?: string, coldDir?: string): Anchor {
+export function loadAnchor(
+  file: string,
+  baseFile?: string,
+  coldDir?: string,
+  options?: { migrateLegacy?: boolean },
+): Anchor {
   const cold = coldDir ?? join(dirname(file), 'cold')
   const base = baseFile === undefined ? null : readBase(baseFile)
+  // 接驳校验：读 base 不 eager 自校，首次需要摘要处（此处）按需 verify，不符即 bad_base（fail-closed）
+  if (base !== null) base.verify()
+  if (base !== null && base.v === LEGACY_BASE_VERSION && options?.migrateLegacy === true) {
+    // 读时迁移：同 snapshot / world / worldRev 落 v2（不新增 entry、不改链头）；迁移失败不阻断载入
+    try {
+      writeBase(baseFile as string, {
+        snapshot: base.snapshot,
+        world: base.world,
+        ...(base.snapshotRev !== undefined ? { snapshotRev: base.snapshotRev } : {}),
+      })
+    } catch {
+      // 迁移是缓存形态优化：失败仍以 v1 内联世界照常载入，下次再试
+    }
+  }
   const tail = readJournalTolerant(file)
   if (base !== null && alignedWithBase(tail.entries, base.snapshot)) {
     // 有界化回收后基础世界是全量世界的子世界（worldRev 与快照记录的 snapshotRev 不同）：

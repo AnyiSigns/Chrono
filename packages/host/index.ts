@@ -16,6 +16,7 @@ export {
   unseededIdentities,
 } from './offline.ts'
 export type {
+  CompactOptions,
   CompactReport,
   PackReport,
   ReplayReport,
@@ -30,7 +31,13 @@ export type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
 export type { PluginEntry } from './assembly/index.ts'
 export { hostPaths, resolveRoot, socketPath } from './paths.ts'
 export type { HostPaths } from './paths.ts'
-export { parseEntryArgv, resolveCallTimeoutMs, resolveStartWrapper, resolveWatch } from './options.ts'
+export {
+  parseEntryArgv,
+  resolveCallTimeoutMs,
+  resolveCompactStrict,
+  resolveStartWrapper,
+  resolveWatch,
+} from './options.ts'
 export type { EntryOptions } from './options.ts'
 export { PROTOCOL_VERSION } from './wire.ts'
 export type { InboundMessage, Limits, OutboundMessage } from './wire.ts'

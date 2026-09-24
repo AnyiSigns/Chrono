@@ -4,11 +4,14 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { H } from '../../kernel/index.ts'
+import type { Entry, Hash, Json, World } from '../../kernel/index.ts'
 import { AuditIndex } from '../audit.ts'
 import type { AuditFilter, AuditRecord } from '../audit.ts'
 import { AuditStore } from '../audit-store.ts'
+import { backfillAuditStore, readAuditBackfillMeta } from '../audit-backfill.ts'
+import { hostPaths } from '../paths.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
-import type { Json } from '../../kernel/index.ts'
 
 describe('AuditStore 旁路侧存', () => {
   let root: string
@@ -147,5 +150,79 @@ describe('AuditStore 旁路侧存', () => {
     expect(existsSync(file)).toBe(false)
     store.append(draft('a'))
     expect(existsSync(file)).toBe(true)
+  })
+})
+
+describe('历史审计一次性回填', () => {
+  let root: string
+  beforeEach(() => {
+    root = createTempRoot()
+  })
+  afterEach(async () => {
+    await cleanupTempRoot(root)
+  })
+
+  function auditDef(run: string): { def: { body: Json }; key: Hash } {
+    const def = { body: { kind: 'effect_audit', run, emitter: 'toy', outcome: 'ok' } }
+    return { def, key: H(def as unknown as Json) }
+  }
+
+  function putEntry(seq: number, at: number, by: string, def: { body: Json }): Entry {
+    return {
+      seq,
+      prev: null,
+      op: 'put',
+      args: def as unknown as Json,
+      argsHash: H(def as unknown as Json),
+      by,
+      at,
+    }
+  }
+
+  it('扫 entry 的 put args 回填侧存、写 meta、二次调用幂等', () => {
+    const paths = hostPaths(root)
+    const a = auditDef('r-old')
+    const world: World = { defs: { [a.key]: a.def }, ids: {} }
+    const entry = putEntry(3, 111, 'host', a.def)
+    const store = AuditStore.open(paths.auditFile)
+    const report = backfillAuditStore(paths, world, [entry], store)
+    expect(report.backfilled).toBe(1)
+    expect(store.records()).toHaveLength(1)
+    expect(store.records()[0]).toMatchObject({ seq: 0, at: 111, by: 'host' })
+    expect((store.records()[0].body as { run: string }).run).toBe('r-old')
+    expect(readAuditBackfillMeta(paths.auditMetaFile)).toEqual({
+      backfilled: true,
+      throughEntrySeq: 3,
+    })
+    // 幂等：再次调用不重复追加；重载侧存仍见
+    expect(backfillAuditStore(paths, world, [entry], store).backfilled).toBe(0)
+    expect(store.records()).toHaveLength(1)
+    expect(AuditStore.open(paths.auditFile).size()).toBe(1)
+  })
+
+  it('仅存于 base world 的审计 def（无对应 entry）也回填', () => {
+    const paths = hostPaths(root)
+    const a = auditDef('r-base')
+    const world: World = { defs: { [a.key]: a.def }, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    expect(backfillAuditStore(paths, world, [], store).backfilled).toBe(1)
+    expect(store.records()).toHaveLength(1)
+    expect((store.records()[0].body as { run: string }).run).toBe('r-base')
+  })
+
+  it('窗口裁剪：按 entry seq 升序重建，超出保留窗口从新到旧取', () => {
+    const paths = hostPaths(root)
+    const defs: Record<Hash, { body: Json }> = {}
+    const entries: Entry[] = []
+    for (let i = 0; i < 5; i++) {
+      const a = auditDef(`r-${i}`)
+      defs[a.key] = a.def
+      entries.push(putEntry(i, 1000 + i, 'host', a.def))
+    }
+    const world: World = { defs, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    const report = backfillAuditStore(paths, world, entries, store, { maxRecords: 2 })
+    expect(report.backfilled).toBe(2)
+    expect(store.records().map((r) => (r.body as { run: string }).run)).toEqual(['r-3', 'r-4'])
   })
 })

@@ -91,7 +91,8 @@ Chrono/
     │   ├── defs/            基础世界 def body 分片 `defs/<gen>/<prefix>.jsonl`（按哈希前缀分片；读时按需加载）
     │   └── cold/            冷段归档 `seg-<first>-<last>.jsonl`（快照前的前缀；移出 ≠ 删除）
     ├── audit/               效果审计旁路侧存（不进世界、不进链、不参与重放）
-    │   └── audit.jsonl      审计记录（单文件追加 + 上限压实；有界保留窗口见「效果」）
+    │   ├── audit.jsonl      审计记录（单文件追加 + 上限压实；有界保留窗口见「效果」）
+    │   └── meta.json        历史审计回填标记（`{backfilled, throughEntrySeq}`；缺省视为未回填）
     ├── blobs/               源码字节本体 `<sha256>`（④ 不可重算；内容寻址、**只增**、离线可达性回收）—— 与 `assets/` 机械同构、保留策略不同
     ├── assets/              资产字节本体 `<sha256>`（④ 不可重算）—— **备份世界 ≠ 备份字节**，须一起备份
     ├── runtime/             运行态表 / 工作副本 / 锁 —— **③ 可重算**：删了重建
@@ -275,11 +276,16 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   （入站 `audit`；seq 降序、缺省 100 条、上限 1000）；数据源为**旁路侧存的内存索引**，
   启动时由 `state/audit/audit.jsonl` 重建、运行期随每次效果追加增量补齐；
   **只读**：不写链、不推进、不参与哈希（查询语义见 `protocol.md` §三）。
+  `AuditRecord.seq` 是**侧存到达序**（侧存单调计数，非 journal `Entry.seq`），按效果完成序分配、
+  跨并发 run 非确定，不属状态链、不参与重放。
 - **审计旁路侧存（有界）**：单文件追加（每条一次写 + `fsync`、换行收尾）+ 上限压实；保留窗口
   按条数（`AUDIT_MAX_RECORDS` = 10000）与近似字节（`AUDIT_MAX_BYTES` = 8 MiB）取先到者淘汰最旧，
   磁盘超阈值（缺省为保留窗口两倍）即整文件原子重写为保留集。淘汰只影响侧存与热索引，**不触及世界状态**。
   半写安全：启动 / 追加前容错读，末行撕裂截到有效前缀；带换行的坏行跳过（fail-open）。单写者：追加同步、
   宿主单进程串行调用，无并发交错。落点 `packages/host/audit-store.ts`。
+  **升级回填**：升级前写入的审计 def 从未进侧存，首启（宿主启动 / 离线 `compact`，持锁）一次性扫
+  base world defs 与冷段 / 尾段 entry 的 `put` args 重建记录（受上述保留窗口约束，从新到旧取），
+  写 `state/audit/meta.json` 标记幂等；超出窗口的历史不回填（已知取舍）。
 - 审计 def **不再进世界**：效果执行只产审计草稿（`packages/host/effect/execute.ts` 的 `buildAudit`），
   由宿主单写者在侧存追加；`compact` 落 base 前机械摘除历史审计 def，冷段 journal 仍留旧审计 entry
   （full verify 从空世界重放照常可寻址），`host.audit` 读不到老 def 时返回侧存可得部分（fail-open）。
@@ -384,18 +390,29 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   启动取用 = 读索引 + 尾段重放（不再全量重放）；`verify` / `replay` 仍读冷段 + 尾段全链校验。
   压缩幂等（离线 `compact` 只归档**当前 journal**，不重归档旧冷段）；`base.json` 缺失或与尾段不对齐
   （崩溃窗口）时**回落全链**（冷段 + 尾段按 seq 去重）重放——基础世界是派生缓存，丢了不砖化；仅其**形态损坏**才 fail-closed（`bad_base`）。
+  离线 `boot compact` 支持 `--strict`（严格回收，缺省读 `CHRONO_COMPACT_STRICT`，默认保守）；
+  strict 仅在世界未使用 `{"def":hash}` 标记之外的哈希引用（引用图完备）时安全，故只离线 / 显式启用。
 - **分片与按需加载（读基础世界）**：`base.json` 只含小索引，def body 按 def 键前 2 位十六进制字符分片
   （`defs/<gen>/<prefix>.jsonl`，每行 `{h,d}`；`<gen>` = 落盘世界 `worldRev` 前 16 位，内容寻址、同摘要复用）。
   宿主侧 `DefStore` 提供 `get` / `has` / `hashes` / `getMany`：清单常驻、body 走 LRU 缓存按需读分片，
-  列键 / 判存在 / 克隆只吃清单不读 body。`loadAnchor` 读 base 时 defs 表是惰性代理，启动不再把整世界
-  body 读进内存；只有真正取 body 的操作（投影取 active / 数据世代、命令解析 schema、补丁组装等）才触发分片读。
-  写入半写安全：先落 `defs/<gen>` 代目录再原子换索引，随后清理旧代目录；读取 fail-open（缺分片 = 缺 def，
-  分片目录整体缺失 = 无基础世界，回落全链）。旧 v1 单文件（body 内联）仍可照读，下次 compact 自动升级为分片。
+  列键 / 判存在 / 克隆只吃清单不读 body。LRU 同时受**条数**与**近似字节**（`JSON.stringify(body).length`，
+  缺省 64 MiB）预算约束，单 def 超字节上限不入缓存、整片字节超预算只缓存请求项（防大 body 撑爆 / 抖动）。
+  `loadAnchor` 读 base 时 defs 表是惰性代理，启动不再把整世界 body 读进内存；只有真正取 body 的操作
+  （投影取 active / 数据世代、命令解析 schema、补丁组装等）才触发分片读。
+  写入半写安全：先落 `defs/<gen>` 代目录再原子换索引，随后清理旧代目录；分片批量落盘时**逐文件 fsync 保留、
+  目录 fsync 合并为 rename 后一次**（`writeBase`）。读取 fail-open（缺分片 = 缺 def，分片目录整体缺失 = 无基础世界，回落全链）。
+  内容自校**惰性化**：`readBase` 不再 eager 算 `worldRev`，`BaseFile.verify()` 首次调用才算并按 `(file, mtimeMs, size)`
+  缓存；`loadAnchor` 接驳处按需调用，不符即 `bad_base`（fail-closed，正常路径本就需要摘要，行为等价）。
+  旧 v1 单文件（body 内联）仍可照读，且**读到即迁移**：可写上下文（启动 / 离线持锁）以同一 `snapshot` / `world` /
+  `worldRev` 落 v2（不新增 entry、不改链头）；迁移失败仍以 v1 照常载入，下次再试。
 - **有界化回收（写 base 时）**：写 `base.json` 前，内核 `recycleWorld` 按可达性回收 def + 裁世代窗口
   （缺省每身份保留最近 `DEFAULT_GEN_RETENTION` 代 + active + 被 `pins` / `graft` 引用的世代），
-  并机械**摘除审计 def**（审计已迁旁路侧存，不再是世界内容 / 世界根，无 `keepRoots` / `dropRoots`）。
+  并机械**摘除审计 def**（审计已迁旁路侧存，不再是世界内容 / 世界根，不靠 `dropRoots` 摘除）。
+  **投影保留**：宿主按各身份 `latestDataGen` 把**最近数据世代**连同其 `{"def":hash}` 闭包哈希并入 `keepGens` / `keepRoots`
+  下传——投影 `body` 取数据世代组装结果，落在窗口外被裁会让跨轮续跑取到不完整闭包而落 `denied`，故默认恒保留。
   **未达 def 与审计 def 不写进新 base**；保守口径只回收「被窗口淘汰根独有」的
-  def，从未被任何根引用的业务 def 不碰（引用图不完备）。冷段归档保留历史，`verify` / `replay` 从冷段全链仍过；
+  def，从未被任何根引用的业务 def 不碰（引用图不完备）；`strict`（离线 / 显式开关）才回收保留闭包外的全部 def。
+  被淘汰世代不可再被 `set_active` / `graft` / 补丁 `base` 引用（fail-closed）。冷段归档保留历史，`verify` / `replay` 从冷段全链仍过；
   此时基础世界是全量世界的**子世界**，`base.json` 记 `snapshotRev`（快照 entry 的全量 `world_rev`）与本体
   `worldRev` 区分，`loadAnchor` 跳过快照 entry 自校、直接以子世界为起点重放尾段。回收失败 fail-open（退回未回收世界）。
 

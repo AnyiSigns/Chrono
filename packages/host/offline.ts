@@ -32,6 +32,8 @@ import type { BlobGcReport } from './blobs.ts'
 import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
 import { DEFAULT_FLATTEN_CHAIN, DEFAULT_GEN_RETENTION, compactWorld } from './compact.ts'
+import { AuditStore } from './audit-store.ts'
+import { backfillAuditStore, readAuditBackfillMeta } from './audit-backfill.ts'
 import { hostPaths } from './paths.ts'
 import type { HostPaths } from './paths.ts'
 import type { Hash, Head, RecycleStats, WriteRequest } from '../kernel/index.ts'
@@ -79,7 +81,9 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   if (!lock.ok) throw new Error('writer_busy')
   try {
     const entries = orderEntriesForSeed(root, explicit ?? readPluginManifest(root))
-    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir, {
+      migrateLegacy: true,
+    })
     repairTruncatedJournal(paths, anchor)
     const items: SeedItem[] = []
     for (const entry of entries) {
@@ -143,7 +147,9 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
   const lock = acquireLock(paths.lockFile, Date.now())
   if (!lock.ok) throw new Error('writer_busy')
   try {
-    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir, {
+      migrateLegacy: true,
+    })
     repairTruncatedJournal(paths, anchor)
     const planned = planPack(anchor.world, resolve(root, dir), identity, paths.blobsDir)
     if (!planned.ok) {
@@ -334,8 +340,16 @@ export interface CompactReport {
   recycled: RecycleStats
 }
 
+export interface CompactOptions {
+  /**
+   * 严格回收：不在保留闭包内的一律回收（含孤儿 def）。仅离线 / 显式启用，默认保守。
+   * 仅在世界未使用 `{"def":hash}` 标记之外的哈希引用（引用图完备）时安全。
+   */
+  strict?: boolean
+}
+
 /** 压缩（G6）：全链重放一次 → 追加快照 entry + 冷段归档 + 有界化回收 + 基础世界落盘。 */
-export function runCompact(root: string): CompactReport {
+export function runCompact(root: string, options: CompactOptions = {}): CompactReport {
   const paths = hostPaths(root)
   const lock = acquireLock(paths.lockFile, Date.now())
   if (!lock.ok) throw new Error('writer_busy')
@@ -345,10 +359,19 @@ export function runCompact(root: string): CompactReport {
     // world / head 按全链算；归档前缀只取当前 journal（未归档部分）——否则会把旧冷段再归档一遍
     const entries = readAllEntries(paths.journalFile, paths.coldDir)
     const world = replayFull(entries)
+    // D2 历史审计一次性回填（与宿主首启同路，持锁时执行）：旁路失败不阻断压缩；已回填则跳过
+    if (readAuditBackfillMeta(paths.auditMetaFile) === null) {
+      try {
+        backfillAuditStore(paths, world, entries, AuditStore.open(paths.auditFile))
+      } catch {
+        // 回填失败只损失历史审计可见性，下次压缩 / 启动再试
+      }
+    }
     const prefix = readJournal(paths.journalFile)
     const result = compactWorld(paths, world, headOf(entries), prefix, Date.now(), {
       genWindow: DEFAULT_GEN_RETENTION,
       flattenChain: DEFAULT_FLATTEN_CHAIN,
+      strict: options.strict === true,
     })
     return {
       snapshot: result.snapshot,

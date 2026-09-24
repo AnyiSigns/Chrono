@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   parseEntryArgv,
   resolveCallTimeoutMs,
+  resolveCompactStrict,
   resolveStartWrapper,
   resolveWatch,
 } from '../options.ts'
@@ -117,5 +118,25 @@ describe('源码 watcher 开关解析（显式 > env > 关）', () => {
 
   it('无法识别的 env 值 fail-closed', () => {
     expect(() => resolveWatch(undefined, 'maybe')).toThrow('bad_watch')
+  })
+})
+
+describe('严格回收开关解析（显式 > env > 关）', () => {
+  it('两路都缺省 → 关（strict 仅引用图完备时安全，默认保守）', () => {
+    expect(resolveCompactStrict()).toBe(false)
+    expect(resolveCompactStrict(undefined, '')).toBe(false)
+  })
+
+  it('显式 --strict 覆盖 env 的假值', () => {
+    expect(resolveCompactStrict(true, '0')).toBe(true)
+  })
+
+  it('env 真值打开 / 假值关', () => {
+    for (const on of ['1', 'true', 'On']) expect(resolveCompactStrict(undefined, on)).toBe(true)
+    for (const off of ['0', 'false', 'off']) expect(resolveCompactStrict(undefined, off)).toBe(false)
+  })
+
+  it('无法识别的 env 值 fail-closed', () => {
+    expect(() => resolveCompactStrict(undefined, 'maybe')).toThrow('bad_compact_strict')
   })
 })

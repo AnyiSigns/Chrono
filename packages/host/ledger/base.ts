@@ -11,11 +11,19 @@
 // 读侧：形态 / 内容摘要自校不符即 `bad_base`；分片目录整体缺失视作无基础世界（回落全链）。
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { canonicalJson, defsKeys, worldRev } from '../../kernel/index.ts'
 import type { Def, Hash, Json, World } from '../../kernel/index.ts'
-import { writeFileAtomic } from './atomic.ts'
+import { fsyncDir, writeFileAtomic, writeFileStaged } from './atomic.ts'
 import { DefStore, createLazyDefs } from './def-store.ts'
 
 /** 当前基础世界格式版本（v2 = 索引 + 分片）。 */
@@ -39,6 +47,46 @@ export interface BaseFile {
   world: World
   /** v2 分片存储句柄（仅内存态；测试 / 诊断可读其加载统计）。旧格式无此字段。 */
   store?: DefStore
+  /**
+   * 惰性内容自校：首次调用算 `worldRev` 并与记值比对，不符抛 `bad_base`；同进程内按
+   * `(file, mtimeMs, size)` 缓存通过结果，重复读不重算。`readBase` 不再 eager 自校，
+   * 校验点（`loadAnchor` 接驳）按需调用——正常路径本就需要摘要，行为等价。
+   */
+  verify: () => void
+}
+
+/** 已通过自校的 base 文件缓存：key = `file\0mtimeMs\0size`，value = 已验证的 worldRev。 */
+const verifiedBases = new Map<string, Hash>()
+
+/** 自校缓存键：按文件 + mtime + size 判同一份内容；取不到 stat 则不用缓存（返回 null）。 */
+function verifyKey(file: string): string | null {
+  try {
+    const stat = statSync(file)
+    return `${file}\u0000${stat.mtimeMs}\u0000${stat.size}`
+  } catch {
+    return null
+  }
+}
+
+/** 惰性自校闭包：命中缓存或算得摘要相符即通过，不符抛 `bad_base`。 */
+function makeVerify(key: string | null, world: World, expected: Hash): () => void {
+  let verified = false
+  return () => {
+    if (verified) return
+    if (key !== null && verifiedBases.get(key) === expected) {
+      verified = true
+      return
+    }
+    let actual: Hash
+    try {
+      actual = worldRev(world)
+    } catch {
+      throw new Error('bad_base')
+    }
+    if (actual !== expected) throw new Error('bad_base')
+    if (key !== null) verifiedBases.set(key, expected)
+    verified = true
+  }
 }
 
 function isRecord(value: unknown): value is { [k: string]: unknown } {
@@ -59,13 +107,13 @@ export function readBase(file: string): BaseFile | null {
     throw new Error('bad_base')
   }
   if (!isRecord(parsed)) throw new Error('bad_base')
-  if (parsed['v'] === LEGACY_BASE_VERSION) return readLegacy(parsed)
+  if (parsed['v'] === LEGACY_BASE_VERSION) return readLegacy(file, parsed)
   if (parsed['v'] === BASE_VERSION) return readSharded(file, parsed)
   throw new Error('bad_base')
 }
 
-/** 旧单文件（v1）：body 内联在 `world`，整份读入；内容摘要自校不符即 `bad_base`。 */
-function readLegacy(parsed: { [k: string]: unknown }): BaseFile {
+/** 旧单文件（v1）：body 内联在 `world`，整份读入；内容摘要自校延后到 `verify()`（fail-closed）。 */
+function readLegacy(file: string, parsed: { [k: string]: unknown }): BaseFile {
   const snapshot = parsed['snapshot']
   const world = parsed['world']
   if (
@@ -81,15 +129,15 @@ function readLegacy(parsed: { [k: string]: unknown }): BaseFile {
   }
   const snapshotRev = parsed['snapshotRev']
   if (snapshotRev !== undefined && typeof snapshotRev !== 'string') throw new Error('bad_base')
-  const base: BaseFile = {
+  const typedWorld = world as unknown as World
+  return {
     v: LEGACY_BASE_VERSION,
     snapshot: { seq: snapshot['seq'], hash: snapshot['hash'] },
     worldRev: parsed['worldRev'],
     ...(typeof snapshotRev === 'string' ? { snapshotRev } : {}),
-    world: world as unknown as World,
+    world: typedWorld,
+    verify: makeVerify(verifyKey(file), typedWorld, parsed['worldRev']),
   }
-  selfCheck(base)
-  return base
 }
 
 /** 分片（v2）：索引小文件 + `defs/<gen>/<prefix>.jsonl`；世界为惰性 defs 表。 */
@@ -122,24 +170,15 @@ function readSharded(file: string, parsed: { [k: string]: unknown }): BaseFile |
   // 分片目录整体丢失（缓存被清）：视作无基础世界，回落全链重放，不砖化
   if (!existsSync(dir)) return null
   const store = new DefStore({ dir, shard, hashes: hashes as Hash[] })
-  const base: BaseFile = {
+  const world: World = { defs: createLazyDefs(store), ids: ids as unknown as World['ids'] }
+  return {
     v: BASE_VERSION,
     snapshot: { seq: snapshot['seq'], hash: snapshot['hash'] },
     worldRev: parsed['worldRev'],
     ...(typeof snapshotRev === 'string' ? { snapshotRev } : {}),
-    world: { defs: createLazyDefs(store), ids: ids as unknown as World['ids'] },
+    world,
     store,
-  }
-  selfCheck(base)
-  return base
-}
-
-/** 内容自校：世界本体须与记的 world_rev 一致（防半截 / 手改）；畸形 world 一律映射为 bad_base。 */
-function selfCheck(base: BaseFile): void {
-  try {
-    if (worldRev(base.world) !== base.worldRev) throw new Error('bad_base')
-  } catch {
-    throw new Error('bad_base')
+    verify: makeVerify(verifyKey(file), world, parsed['worldRev']),
   }
 }
 
@@ -210,13 +249,16 @@ function writeDefShards(baseDir: string, world: World, manifest: Hash[], rev: Ha
       const lines = hashes.map((hash) =>
         canonicalJson({ h: hash, d: world.defs[hash] as unknown as Json }),
       )
-      writeFileAtomic(join(staging, `${prefix}.jsonl`), lines.join('\n') + '\n')
+      // 批量写入：逐文件 fsync 保留（数据持久化不可省），目录 fsync 合并为 rename 后一次
+      writeFileStaged(join(staging, `${prefix}.jsonl`), lines.join('\n') + '\n')
     }
+    fsyncDir(staging)
     if (existsSync(finalDir)) {
       rmSync(staging, { recursive: true, force: true })
       return genId
     }
     renameSync(staging, finalDir)
+    fsyncDir(root)
   } catch (err) {
     rmSync(staging, { recursive: true, force: true })
     if (existsSync(finalDir)) return genId

@@ -101,3 +101,18 @@ export function resolveWatch(explicit?: boolean, env?: string): boolean {
   if (WATCH_FALSE.has(value)) return false
   throw new Error(`bad_watch: ${env}`)
 }
+
+/**
+ * 解析严格回收开关（离线 `compact --strict`）。默认关：strict 仅在世界引用图完备时安全，
+ * 只有显式 `--strict` 或 `CHRONO_COMPACT_STRICT=<真值>` 才打开。
+ * @param explicit `--strict` 是否出现（true = 打开）
+ * @param env `CHRONO_COMPACT_STRICT` 的值；空串视为未设置；无法识别的值抛 `bad_compact_strict`（fail-closed）
+ */
+export function resolveCompactStrict(explicit?: boolean, env?: string): boolean {
+  if (explicit === true) return true
+  if (env === undefined || env.length === 0) return false
+  const value = env.trim().toLowerCase()
+  if (WATCH_TRUE.has(value)) return true
+  if (WATCH_FALSE.has(value)) return false
+  throw new Error(`bad_compact_strict: ${env}`)
+}

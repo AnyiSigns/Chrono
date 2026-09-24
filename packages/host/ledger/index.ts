@@ -17,7 +17,7 @@ export {
 export type { Anchor, JournalRead, VerifyReport } from './journal.ts'
 export { readBase, writeBase, BASE_VERSION, LEGACY_BASE_VERSION, BASE_SHARD } from './base.ts'
 export type { BaseFile } from './base.ts'
-export { DefStore, createLazyDefs, DEFAULT_DEF_CACHE } from './def-store.ts'
+export { DefStore, createLazyDefs, DEFAULT_DEF_CACHE, DEFAULT_DEF_CACHE_BYTES } from './def-store.ts'
 export type { DefStoreOptions, DefStoreStats } from './def-store.ts'
 export { acquireLock, isProcessAlive, readLock, releaseLock } from './lock.ts'
 export type { LockAcquired, LockBusy, LockInfo } from './lock.ts'
