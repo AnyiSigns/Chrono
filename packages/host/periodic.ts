@@ -30,7 +30,6 @@ interface Scheduled {
   entry: PeriodicEntry
   signature: string
   timer: NodeJS.Timeout
-  inFlight: boolean
 }
 
 function isRecord(value: Json | undefined): value is { [k: string]: Json } {
@@ -115,6 +114,8 @@ function signatureOf(entry: PeriodicEntry): string {
  */
 export class PeriodicScheduler {
   private readonly scheduled = new Map<string, Scheduled>()
+  /** 在途 key 集合：按 key 去重，`sync` 删旧建新不触碰，故不会击穿（同 key 不会并发触发两次）。 */
+  private readonly inFlight = new Set<string>()
   private readonly deps: PeriodicSchedulerDeps
   private stopped = false
 
@@ -150,7 +151,6 @@ export class PeriodicScheduler {
         entry: next.entry,
         signature: next.signature,
         timer,
-        inFlight: false,
       })
     }
   }
@@ -163,18 +163,17 @@ export class PeriodicScheduler {
 
   private fire(key: string): void {
     const current = this.scheduled.get(key)
-    // 条目可能已在 sync / stop 时移除；单条目并发去重：上一拍未结束则跳过本拍
-    if (current === undefined || current.inFlight) return
-    current.inFlight = true
+    // 条目可能已在 sync / stop 时移除；按 key 去重：上一拍未结束则跳过本拍（sync 删旧建新也不击穿）
+    if (current === undefined || this.inFlight.has(key)) return
+    this.inFlight.add(key)
     // onFire 同步抛错不得逃出计时器回调（否则进程级未捕获异常）；收进 promise 链
     Promise.resolve()
       .then(() => this.deps.onFire(current.entry))
       .catch(() => {
-        // 触发失败由宿主 onFire 自行记录；这里只保证 inFlight 复位
+        // 触发失败由宿主 onFire 自行记录；这里只保证在途标记复位
       })
       .finally(() => {
-        const latest = this.scheduled.get(key)
-        if (latest !== undefined) latest.inFlight = false
+        this.inFlight.delete(key)
       })
   }
 }

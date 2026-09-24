@@ -64,7 +64,7 @@ test('schema/tool-shell.json 声明工具四要素、nullable tier 与方法级�
   const tier = schema.properties.invoke_bag.properties.tier
   assert.deepEqual(tier.type, ['string', 'null'])
   assert.ok(!tier.enum.includes('null'), 'tier 不应把字符串 "null" 当枚举值')
-  assert.deepEqual(schema.method_timeouts, { 'tool-shell.invoke': 120000 })
+  assert.deepEqual(schema.method_timeouts, { 'tool-shell.invoke': 130000 })
 })
 
 test('execute/ 源码齐全', () => {

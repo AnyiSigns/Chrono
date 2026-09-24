@@ -188,8 +188,8 @@ test('input.read argsSchema 符合白名单子集且声明可选 thread', () => 
   assert.equal(args.required, undefined)
 })
 
-test('terms 是 JSON AST 且直出 input body', () => {
-  assert.deepEqual(readJson('terms/input.read.json'), ['g', ['ids', 'input', 'body']])
+test('terms 是 JSON AST 且直出 input 身份视图（含 active 与 body）', () => {
+  assert.deepEqual(readJson('terms/input.read.json'), ['g', ['ids', 'input']])
 })
 
 test('tools/default-body.json 形状为 {slots:{}}', () => {

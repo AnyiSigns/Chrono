@@ -141,6 +141,9 @@ type Waiter = (message: OutboundMessage | null) => void
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
+/** 早到结果缓冲上限：结果先于等待者到达时暂存，无界会随长驻连接单调增长。 */
+const MAX_BUFFERED_RESULTS = 1024
+
 class HostClient implements Client {
   private readonly socket: Socket
   private readonly timeoutMs: number
@@ -293,6 +296,11 @@ class HostClient implements Client {
     this.socket.destroy()
   }
 
+  /** 测试用：当前暂存的早到结果条数。 */
+  bufferedResultCount(): number {
+    return this.bufferedResults.size
+  }
+
   private awaitRun(
     run: string,
   ): Promise<Extract<OutboundMessage, { kind: 'result'; run: string }>> {
@@ -301,6 +309,8 @@ class HostClient implements Client {
       this.bufferedResults.delete(run)
       return Promise.resolve(buffered as Extract<OutboundMessage, { kind: 'result'; run: string }>)
     }
+    // 连接已断（含同批未知 kind 触发 failAll 后）时，等 30s 超时没有意义：立即以 connection_closed 收口。
+    if (this.socket.destroyed) return Promise.reject(new ClientError('connection_closed'))
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.runWaiters.delete(run)
@@ -318,6 +328,8 @@ class HostClient implements Client {
   }
 
   private once<T extends OutboundMessage>(id: string): Promise<T> {
+    // 连接已断时不再注册等待器：否则等满超时才失败，且期间该 id 永远不会到达。
+    if (this.socket.destroyed) return Promise.reject(new ClientError('connection_closed'))
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.idWaiters.delete(id)
@@ -353,14 +365,25 @@ class HostClient implements Client {
       return
     }
     for (const raw of raws) {
-      this.dispatch(raw as unknown as OutboundMessage)
+      try {
+        this.dispatch(raw as unknown as OutboundMessage)
+      } catch (err) {
+        // 单条消息的派发失败不得中断后续消息、更不得冒成未捕获异常
+        this.reportHandlerError(err)
+      }
     }
   }
 
   private dispatch(message: OutboundMessage): void {
     if (message.kind === 'event') {
+      const event = { impl: message.impl, topic: message.topic, payload: message.payload }
       for (const handler of this.eventHandlers) {
-        handler({ impl: message.impl, topic: message.topic, payload: message.payload })
+        try {
+          handler(event)
+        } catch (err) {
+          // 用户 handler 抛错只影响自身：后续 handler 照常收到事件，进程不崩
+          this.reportHandlerError(err)
+        }
       }
       return
     }
@@ -370,6 +393,18 @@ class HostClient implements Client {
         this.runWaiters.delete(message.run)
         waiter(message)
       } else {
+        // 有界暂存：超限淘汰最旧（Map 插入序），避免无人认领的结果无界堆积
+        if (
+          !this.bufferedResults.has(message.run) &&
+          this.bufferedResults.size >= MAX_BUFFERED_RESULTS
+        ) {
+          const oldest = this.bufferedResults.keys().next().value
+          if (oldest !== undefined) {
+            this.bufferedResults.delete(oldest)
+            // 淘汰不静默：被淘汰的 run 结果将无人认领（后续 awaitRun 只能超时），留痕便于诊断。
+            console.error('[client] buffered result evicted (buffer full):', oldest)
+          }
+        }
         this.bufferedResults.set(message.run, message)
       }
       return
@@ -389,11 +424,17 @@ class HostClient implements Client {
     }
   }
 
+  /** 用户 handler / 单条派发的异常只记录，不向 socket 监听器冒泡。 */
+  private reportHandlerError(err: unknown): void {
+    console.error('[client] handler error:', err)
+  }
+
   private failAll(): void {
     for (const waiter of this.idWaiters.values()) waiter(null)
     this.idWaiters.clear()
     for (const waiter of this.runWaiters.values()) waiter(null)
     this.runWaiters.clear()
+    this.bufferedResults.clear()
   }
 }
 
@@ -405,10 +446,24 @@ export function connect(options: ClientOptions = {}): Promise<Client> {
   return new Promise((resolve, reject) => {
     const socket = netConnect(address)
     const client = new HostClient(socket, timeoutMs)
-    socket.once('connect', () => resolve(client))
+    // 建连超时：对端接受但不完成连接时不得永久挂起；连上后解除空闲超时
+    socket.setTimeout(timeoutMs, () => {
+      client.close()
+      reject(new ClientError('connect_timeout'))
+    })
+    socket.once('connect', () => {
+      socket.setTimeout(0)
+      resolve(client)
+    })
     socket.once('error', (err) => {
+      socket.setTimeout(0)
       client.close()
       reject(err)
     })
   })
+}
+
+/** 测试用：查询连接内部暂存的早到结果条数。 */
+export function bufferedResultCount(client: Client): number {
+  return client instanceof HostClient ? client.bufferedResultCount() : 0
 }

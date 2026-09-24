@@ -83,6 +83,8 @@ async function swapOverlap(
     // 新世代不激活：构建 / 启动失败只记运维日志，旧进程继续服务（端点行换到新世代键，
     // 路由仍命中旧进程），依赖者不受影响；待旧进程退出时按新世代重试，成功即真正激活。
     host.recordStartFailure(id, newGen, err)
+    // 停机 / 已隔离：不得再把端点换到新世代键（会复活已下线身份的端点）
+    if (host.isStopping() || host.isIsolated(id)) return
     host.rekeyEndpoints(oldService, newGen, newDecl)
     return
   }
@@ -126,6 +128,8 @@ async function swapExclusive(
   } catch (err) {
     // 旧实例仍在服务：不激活新世代，端点行换到新世代键（路由仍命中旧进程），失败只记运维日志
     host.recordStartFailure(id, newGen, err)
+    // 停机 / 已隔离：不得再把端点换到新世代键（会复活已下线身份的端点）
+    if (host.isStopping() || host.isIsolated(id)) return
     host.rekeyEndpoints(oldService, newGen, newDecl)
     return
   }

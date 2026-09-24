@@ -151,10 +151,11 @@ export async function callEffect(
 }
 
 /**
- * 把一次效果结局落成审计：构造审计 def、按 `head.hash` 作 `expect_pos` 提交并就地推进世界。
- * 调用方须在互斥段内调用（独占 world），并自行回填链头。
+ * 把一次效果结局落成审计：构造审计 def、按 `head.hash` 作 `expect_pos` 提交。
+ * 在**克隆副本**上提交并返回该副本：落盘（账本追加）成功前不触碰活世界，
+ * 调用方须在互斥段内调用（独占 world），落盘成功后再切换 `state.world/head`。
  * @param eff 待解效果
- * @param world 当前世界（就地演化）
+ * @param world 当前世界（只读；提交在副本上完成）
  * @param head 当前链头
  * @param meta 审计元信息（by / now / run / emitter）
  * @param result 已取得的调用结果
@@ -189,23 +190,28 @@ export function commitAudit(
     args: auditDef as unknown as Json,
     by: meta.by,
   }
-  const outcome = commit(head, world, request, meta.now)
+  // 就地 commit 会先改活世界、后由调用方落盘；落盘失败即内存/磁盘分叉。
+  // 故在独占副本上提交，只有调用方落盘成功后才把该副本切换为当前世界。
+  // 审计写恒为 put（不触 ids）：只克隆 defs 层、ids 按引用共享，避免每次审计深拷全部身份 / 世代，
+  // 也让按 ids 缓存的读侧（路由 ownerIndex / 方法级超时）跨审计命中。
+  const next: World = { defs: { ...world.defs }, ids: world.ids }
+  const outcome = commit(head, next, request, meta.now)
   if (!outcome.verdict.ok) {
-    return { result, world, head, auditHash: null, auditEntry: null }
+    return { result, world: next, head, auditHash: null, auditEntry: null }
   }
   const nextHead: Head = outcome.entry
     ? { seq: outcome.entry.seq, hash: outcome.hash as Hash }
     : head
-  return { result, world, head: nextHead, auditHash, auditEntry: outcome.entry }
+  return { result, world: next, head: nextHead, auditHash, auditEntry: outcome.entry }
 }
 
 /**
  * 执行一次效果并落审计（`callEffect` + `commitAudit` 的便捷组合）。
  * **仅供测试 / 单轮场景**：生产 run loop 必须分开调用两个原语，把落账放进宿主串行段
  * （`run-loop.ts` 的 writer 纪律），直接用它会把 `commitAudit` 落到互斥段之外。
- * 世界与链头按引用就地演化（commit 语义）：调用方必须独占 world。
+ * 世界按副本演化（`commitAudit` 克隆 defs 层）：`world` 入参只读，结果世界经返回值给出。
  * @param eff 待解效果
- * @param world 当前世界（就地演化）
+ * @param world 当前世界（只读；提交在副本上完成）
  * @param head 当前链头
  * @param meta 审计元信息（by / now / run / emitter）
  * @param call 端点调用器；缺省 = 无路由（记 `not_loaded`）

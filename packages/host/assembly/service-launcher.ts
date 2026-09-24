@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
 import { ServiceLink } from '../service-link.ts'
 import {
+  EXIT_WAIT_MS,
   exitReason,
   HandshakeFailedError,
   manifestCovers,
@@ -16,6 +17,7 @@ import {
   parseRestart,
   ServiceStartError,
   stopChild,
+  waitForExit,
 } from './supervision.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { PluginDecl } from './decl.ts'
@@ -163,10 +165,13 @@ export async function spawnService(
     manifest = await raceStartup(link, child, deps.handshakeTimeoutMs)
   } catch (err) {
     stopChild(child, link)
+    // terminate 后有界等进程退出再抛出，避免握手失败留下未回收的服务进程
+    await waitForExit(child, EXIT_WAIT_MS)
     throw err
   }
   if (!manifestCovers(decl, manifest)) {
     stopChild(child, link)
+    await waitForExit(child, EXIT_WAIT_MS)
     throw new HandshakeFailedError()
   }
   const extras = manifest.implements.filter((cap) => !decl.implements.includes(cap))

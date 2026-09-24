@@ -69,4 +69,20 @@ describe('runWithConcurrency', () => {
     })
     expect(called).toBe(false)
   })
+
+  it('limit 为 NaN 不静默跳过整层：全部任务仍执行', async () => {
+    const seen: number[] = []
+    await runWithConcurrency([1, 2, 3], Number.NaN, async (item) => {
+      seen.push(item)
+    })
+    expect(seen.sort()).toEqual([1, 2, 3])
+  })
+
+  it('limit 为 Infinity 按不限并发处理：全部任务执行', async () => {
+    const seen: number[] = []
+    await runWithConcurrency([1, 2, 3], Number.POSITIVE_INFINITY, async (item) => {
+      seen.push(item)
+    })
+    expect(seen.sort()).toEqual([1, 2, 3])
+  })
 })

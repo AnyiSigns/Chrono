@@ -212,4 +212,14 @@ describe('效果执行 executeEffect', () => {
     const auditBody = (outcome.auditEntry!.args as { body: { result: Json } }).body
     expect(auditBody.result).toEqual({ ok: true, value: { text: big } })
   })
+
+  it('审计在克隆副本上提交：活世界对象不被就地改写', async () => {
+    const world = emptyWorld()
+    const outcome = await executeEffect(mkEff(), world, { ...EMPTY_HEAD }, meta())
+    expect(outcome.auditEntry).not.toBeNull()
+    // 原世界分文未动；审计落在返回的副本上
+    expect(Object.keys(world.defs)).toHaveLength(0)
+    expect(outcome.world).not.toBe(world)
+    expect(Object.keys(outcome.world.defs)).toHaveLength(1)
+  })
 })

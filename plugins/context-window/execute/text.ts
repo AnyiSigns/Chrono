@@ -1,5 +1,5 @@
 // 文本规范化、记忆渲染、token 计数缓存与前缀和。
-// 计数缓存按消息 def 键（历史 = ref 哈希；合成消息 = 规范化 dedup_key）缓存，避免每轮全量重算；
+// 计数缓存按消息 def 键（历史 = ref 哈希；合成消息 = 原始内容键）缓存，避免每轮全量重算；
 // 前缀和用于历史窗口 / atomic 组的区间求和不重复遍历。
 
 import { countTokens } from './native.ts'
@@ -50,6 +50,17 @@ export function computeContentKey(parts: CanonicalPart[]): string {
 }
 
 /**
+ * 计数缓存键（原始内容，不规范化）：必须与实际计数输入（`partsText` 的原文 + 资产数）同口径，
+ * 否则规范化等价的文本会共用缓存而互相串计数。前缀 `t\u0001` 与历史 def 哈希（十六进制）区隔。
+ */
+export function computeTokenKey(parts: CanonicalPart[]): string {
+  const pieces = parts.map((part) =>
+    part.type === 'text' ? part.text : `${part.type}:${part.asset.sha256}`,
+  )
+  return `t\u0001${pieces.join('\u0001')}`
+}
+
+/**
  * 计数 / 规范化缓存容量上限：超过即淘汰最久未用条目（LRU 近似，Map 插入序）。
  * 缓存键含历史 def 哈希，长驻服务若不设限会随会话单调增长。
  */
@@ -73,7 +84,7 @@ const tokenCache = new Map<string, number>()
 
 /**
  * 计数一个消息的 tokens：文本走原生 tokenizer，资产引用按 1 token/个计。
- * `cacheKey` = 消息 def 键（历史 ref 哈希或 dedup_key）；命中缓存直接返回。
+ * `cacheKey` 必须与计数输入同口径：历史用 def 哈希，合成消息用 `computeTokenKey`；命中缓存直接返回。
  */
 export function countParts(parts: CanonicalPart[], cacheKey: string): number {
   const cached = tokenCache.get(cacheKey)

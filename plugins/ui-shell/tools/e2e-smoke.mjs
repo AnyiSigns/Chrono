@@ -265,7 +265,7 @@ async function main() {
     for (;;) {
       const response = await httpCall(port, 'POST', '/api/command', { name: 'config.read', args: null })
       const parsed = JSON.parse(response.body)
-      themeValue = parsed.ok ? parsed.value : null
+      themeValue = parsed.ok && parsed.value ? parsed.value.body : null
       if (themeValue && themeValue.ui && themeValue.ui.theme === 'night') break
       if (Date.now() > themeDeadline) throw new Error(`theme 未落账：${response.body}`)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))

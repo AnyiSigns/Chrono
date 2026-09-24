@@ -1,6 +1,9 @@
 // 逻辑级单元测试：纯函数与二进制索引格式（不 spawn 服务）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { MinHeap } from '../execute/heap.ts'
 import {
   appendRecords,
@@ -8,7 +11,9 @@ import {
   dot,
   encodeIndex,
   indexFilePath,
+  loadIndex,
   normalize,
+  saveIndex,
   topK,
 } from '../execute/vector-index.ts'
 import {
@@ -93,6 +98,47 @@ test('二进制索引：appendRecords 追加', () => {
 test('indexFilePath：model / dim 进文件名且净化非法字符', () => {
   assert.ok(indexFilePath('/s', 'granite-97m', 384).endsWith('index-granite-97m-384.bin'))
   assert.ok(indexFilePath('/s', 'a/b:c', 2).endsWith('index-a_b_c-2.bin'))
+})
+
+test('saveIndex：原子替换（临时文件 + rename），无临时残留；loadIndex 往返', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'msidx-'))
+  try {
+    const data = {
+      modelId: 'granite-97m',
+      dim: 2,
+      count: 1,
+      records: [{ entryId: 'm-1', chunkIndex: 0, vector: [1, 0] }],
+    }
+    saveIndex(dir, data)
+    assert.deepEqual(loadIndex(dir, 'granite-97m', 2), data)
+    assert.deepEqual(readdirSync(dir), ['index-granite-97m-2.bin'])
+
+    // 覆盖写：替换旧文件，仍无 .tmp 残留
+    saveIndex(dir, { ...data, count: 2 })
+    assert.equal(loadIndex(dir, 'granite-97m', 2).count, 2)
+    assert.deepEqual(readdirSync(dir), ['index-granite-97m-2.bin'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('saveIndex：机会式回收过期 .tmp，保留新鲜临时文件', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'msidx-tmp-'))
+  try {
+    const stale = join(dir, 'index-granite-97m-2.bin.999.0.tmp')
+    const fresh = join(dir, 'index-granite-97m-2.bin.111.0.tmp')
+    writeFileSync(stale, 'old')
+    writeFileSync(fresh, 'new')
+    const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000
+    utimesSync(stale, old, old)
+    saveIndex(dir, { modelId: 'granite-97m', dim: 2, count: 1, records: [] })
+    assert.deepEqual(readdirSync(dir).sort(), [
+      'index-granite-97m-2.bin',
+      'index-granite-97m-2.bin.111.0.tmp',
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('store：链式遍历从新到旧、环即停；deleted 过滤；id 解析', () => {

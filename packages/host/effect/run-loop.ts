@@ -10,6 +10,8 @@ import { callEffect, commitAudit } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
 import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
 import { WorldWriter } from '../writer.ts'
+import type { WorldState } from '../writer.ts'
+import { assertNotFatal, markFatal } from './fatal.ts'
 import type { RoundRouter } from './route.ts'
 import type {
   Directive,
@@ -25,15 +27,29 @@ import type {
 /** 效果调用缺省超时；`plugin.json` 无此字段，宿主常量（调用未完成 → 传输层失败）。 */
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000
 
+/** 轮内物化结果：在落账段内用该段世界解析 pins / 构造 ctx / 解析命令。 */
+export type RoundMaterialize = (
+  state: WorldState,
+) =>
+  | { ok: true; directives: Directive[]; owners: Array<string | undefined> }
+  | { ok: false; reason: string }
+
 export interface RoundInput {
   /** 起始世界 / 链头：与 `writer` 二者其一（都缺或同时给出 → 抛错）。 */
   world?: World
   head?: Head
   /** 落账互斥段：内核 run 与审计提交都在它内部执行；与 `world` + `head` 二者其一。 */
   writer?: WorldWriter
-  directives: Directive[]
+  /** 已物化 directives（与 `materialize` 二选一，且不可都缺）。 */
+  directives?: Directive[]
   /** 逐 directive 的发出者身份（与 directives 同序）：宿主构造 directive 时已知（A1）。 */
   owners?: ReadonlyArray<string | undefined>
+  /**
+   * 落账段内物化：用段内 `state.world/state.head` 解析 pins / 构造 eval ctx / 解析命令，
+   * 令判定世界 = 路由世界 = 提交世界；物化失败按该轮 `refused` 收口（不冒泡成 internal）。
+   * 与 `directives` 二选一。
+   */
+  materialize?: RoundMaterialize
   caps: Record<string, boolean>
   limits: { gas: number; depth: number }
   /** 发起者：写进审计 entry 的 `by`。 */
@@ -53,9 +69,9 @@ export interface RoundInput {
    * （不写世界、不推进 head），内核产出的业务写也不应用；`lastAuditHash` 恒 null。
    */
   audit?: boolean
-  /** 审计 entry 的落点回调：在落账互斥段内调用（调用方负责追加进账本）。 */
+  /** 审计 entry 的落点回调：在落账互斥段内、内存推进之前调用（调用方负责追加进账本）。 */
   onAudit?: (entry: Entry) => void
-  /** done 轮业务 journal 的落点回调：与内核提交同段调用，保证账本追加序 = 链序。 */
+  /** done 轮业务 journal 的落点回调：与内核提交同段、内存推进之前调用。 */
   onRound?: (entries: Entry[]) => void
 }
 
@@ -67,6 +83,9 @@ export interface RoundOutcome {
   observations: Json[]
   /** 本轮最后一条 eff 的审计 def 键；无 eff 时为 null（供 A10 填 `ref`）。 */
   lastAuditHash: Hash | null
+  /** 本轮实际物化执行的 directives / owners（供轮间驱动 pickPlan）；物化失败时为空。 */
+  directives: Directive[]
+  owners: Array<string | undefined>
 }
 
 /** 单次提交内允许的挂起次数上限：防实现缺陷导致死循环，正常远低于此。 */
@@ -123,12 +142,18 @@ function locateDirective(
 }
 
 /** 按 A1 把 pending eff 解析到端点并调用；解析失败 / 传输失败都是数据（EffResult）。 */
-function makeCaller(input: RoundInput, world: World, index: number): EndpointCaller | undefined {
-  if (input.router === undefined || input.owners === undefined) return undefined
+function makeCaller(
+  input: RoundInput,
+  world: World,
+  index: number,
+  directives: Directive[],
+  owners: ReadonlyArray<string | undefined> | undefined,
+): EndpointCaller | undefined {
+  if (input.router === undefined || owners === undefined) return undefined
   if (index < 0) return undefined
-  const directive = input.directives[index]
-  if (directive.kind !== 'eval') return undefined
-  const emitter = input.owners[index]
+  const directive = directives[index]
+  if (directive === undefined || directive.kind !== 'eval') return undefined
+  const emitter = owners[index]
   if (emitter === undefined) return undefined
   const router = input.router
   const baseTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
@@ -142,9 +167,12 @@ function makeCaller(input: RoundInput, world: World, index: number): EndpointCal
   return async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
-    // 等待上限按**目标身份**的 schema 方法级声明覆盖；无声明回落到进程级 / 常量
+    // 等待上限按**目标身份**的 schema 方法级声明覆盖；无声明回落到进程级 / 常量。
+    // 解析世界与路由同代：路由注入 liveWorld 时按活世界解析，超时声明也取同一 getter 的结果。
+    const resolutionWorld = router.resolutionWorld?.(world) ?? world
     const timeoutMs =
-      resolveMethodTimeoutMs(world, routed.row.impl, eff.port, eff.method) ?? baseTimeoutMs
+      resolveMethodTimeoutMs(resolutionWorld, routed.row.impl, eff.port, eff.method) ??
+      baseTimeoutMs
     try {
       const response = await routed.row.link.call(
         eff.port,
@@ -179,37 +207,85 @@ function anchorWrites(directives: Directive[], headHash: Hash | null): Directive
 
 /** 跑一轮：同一 run_id / now，results 只增不改；审计在挂起期间即时落链。 */
 export async function runRound(input: RoundInput): Promise<RoundOutcome> {
+  assertNotFatal()
   const runId = randomUUID()
   const writer = resolveWriter(input)
+  if ((input.directives === undefined) === (input.materialize === undefined)) {
+    throw new Error('runRound: provide exactly one of directives or materialize')
+  }
   const results: Record<Hash, EffResult> = {}
   let lastAuditHash: Hash | null = null
   let suspensions = 0
   let located = -1
   let emissionsInDirective = 0
+  // 物化结果：materialize 模式在首个落账段内解析一次，后续挂起步骤复用（ctx 该轮只构造一次）
+  let prepared: { directives: Directive[]; owners: Array<string | undefined> } | null = null
   // 取消判定包一层：signal 是外部可变对象，裸比较会被 TS 按前一次判定收窄（假阴性）
   const aborted = (): boolean => input.signal?.aborted === true
+  const resolvedDirectives = (): Directive[] => prepared?.directives ?? input.directives ?? []
+  const resolvedOwners = (): Array<string | undefined> =>
+    prepared?.owners ?? (input.owners === undefined ? [] : [...input.owners])
+  /**
+   * 落账：先追加账本，失败即标记致命并抛出——不允许「落盘失败后内存照推进」导致分叉。
+   * 抛出的异常会穿透 writer.run，run 整体失败；致命态由 `fatal.ts` 拒绝后续提交。
+   */
+  const persist = (write: () => void): void => {
+    try {
+      write()
+    } catch (err) {
+      markFatal(err)
+      throw err
+    }
+  }
+  const finish = (
+    status: RoundOutcome['status'],
+    journal: Entry[],
+    observations: Json[],
+  ): RoundOutcome => {
+    const snap = writer.snapshot()
+    return {
+      status,
+      world: snap.world,
+      head: snap.head,
+      journal,
+      observations,
+      lastAuditHash,
+      directives: resolvedDirectives(),
+      owners: resolvedOwners(),
+    }
+  }
   for (let step = 0; step < MAX_SUSPENSIONS; step++) {
     if (aborted()) {
       // 挂起前已取消（含排到该 run 才轮到的取消）：不跑内核、不落审计 —— 该 run 整体丢弃
-      const snap = writer.snapshot()
-      return {
-        status: 'cancelled',
-        world: snap.world,
-        head: snap.head,
-        journal: [],
-        observations: [],
-        lastAuditHash,
-      }
+      return finish('cancelled', [], [])
     }
     // 内核 run 与 done 落账同段：段内无 await，expect_pos 不会与并发提交交错。
     // 段内当前 world 即本 run 锚定的世界视图：路由用它，而不是段后可能已被并发推进的快照。
     const stepped = await writer.run((state) => {
       const anchored = state.world
+      // 段内复核取消：signal 是外部可变对象，排到本段才被 abort 的 run 不得落该轮业务写
+      if (aborted()) return { kind: 'cancelled' as const, anchored }
+      if (input.materialize !== undefined && prepared === null) {
+        const made = input.materialize({ world: state.world, head: state.head })
+        if (!made.ok) {
+          return { kind: 'refused' as const, reason: made.reason, anchored }
+        }
+        prepared = { directives: made.directives, owners: made.owners }
+      }
+      const directives = prepared?.directives ?? input.directives
+      if (directives === undefined) {
+        throw new Error('runRound: provide directives or materialize')
+      }
+      // 同轮至多一条 write：`anchorWrites` 给同轮所有 write 锚同一 expect_pos，第二条必 pos_conflict。
+      // 分相（rounds.splitPhases）保证每条 write 独占一轮；此处对直接调用 fail-closed。
+      if (directives.filter((directive) => directive.kind === 'write').length > 1) {
+        return { kind: 'refused' as const, reason: 'bad_directive', anchored }
+      }
       const result = run({
         world: state.world,
         head: state.head,
         run: runId,
-        directives: anchorWrites(input.directives, state.head.hash),
+        directives: anchorWrites(directives, state.head.hash),
         results,
         limits: input.limits,
         caps: input.caps,
@@ -218,28 +294,34 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       // 只读（audit:false）不应用任何写：内核产出的 journal 照常上浮，由轮间驱动判定只读违例；
       // 此处不写世界、不推进 head、不回调落账。
       if (result.status === 'done' && input.audit !== false) {
+        // 先回调落盘，成功后推进内存世界 / 链头；落盘失败即致命（见 persist）
+        persist(() => input.onRound?.(result.journal))
         state.world = result.world
         state.head = result.head
-        input.onRound?.(result.journal)
       }
-      return { result, anchored }
+      return { kind: 'ran' as const, result, anchored }
     })
+    if (stepped.kind === 'cancelled') {
+      return finish('cancelled', [], [])
+    }
+    if (stepped.kind === 'refused') {
+      return finish('refused', [], [{ kind: 'refused', reasons: [stepped.reason] }])
+    }
     const out = stepped.result
     if (out.status !== 'waiting') {
-      const snap = writer.snapshot()
-      return {
-        status: out.status,
-        world: snap.world,
-        head: snap.head,
-        journal: out.journal,
-        observations: out.observations,
-        lastAuditHash,
-      }
+      return finish(out.status, out.journal, out.observations)
     }
     const eff = out.pending as EffRequest
     const completed = out.observations.length
     const hintN = located === completed ? emissionsInDirective : 0
-    const found = locateDirective(runId, eff.id, input.directives, suspensions, completed, hintN)
+    const found = locateDirective(
+      runId,
+      eff.id,
+      resolvedDirectives(),
+      suspensions,
+      completed,
+      hintN,
+    )
     if (found === null) {
       located = -1
       emissionsInDirective = 0
@@ -247,27 +329,26 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       located = found.index
       emissionsInDirective = found.n + 1
     }
-    const caller = makeCaller(input, stepped.anchored, found === null ? -1 : found.index)
+    const caller = makeCaller(
+      input,
+      stepped.anchored,
+      found === null ? -1 : found.index,
+      resolvedDirectives(),
+      resolvedOwners(),
+    )
     // 服务调用在互斥段之外：多个 run 的效果等待可并发
     const { result, cancelled } = await callEffect(eff, caller, input.signal)
     if (input.audit === false) {
       // 只读：效果照常回灌，但不落审计；取消语义保持（aborted 时按 cancelled 收口）
       results[eff.id] = result
       if (aborted() && result.error === 'cancelled') {
-        const snap = writer.snapshot()
-        return {
-          status: 'cancelled',
-          world: snap.world,
-          head: snap.head,
-          journal: [],
-          observations: out.observations,
-          lastAuditHash,
-        }
+        return finish('cancelled', [], out.observations)
       }
       suspensions += 1
       continue
     }
-    // 审计落账进互斥段：与内核提交共享同一链头 CAS，账本追加序 = 链序
+    // 审计落账进互斥段：与内核提交共享同一链头 CAS，账本追加序 = 链序。
+    // 先落盘（onAudit）、成功后才把克隆副本切换为当前世界/链头；失败即致命。
     const executed = await writer.run((state) => {
       const outcome = commitAudit(
         eff,
@@ -277,41 +358,26 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
           by: input.initiator,
           now: input.now,
           run: input.runId ?? runId,
-          emitter: found === null ? undefined : input.owners?.[found.index],
+          emitter: found === null ? undefined : resolvedOwners()[found.index],
         },
         result,
         cancelled,
       )
+      const entry = outcome.auditEntry
+      if (entry !== null && input.onAudit !== undefined) {
+        persist(() => input.onAudit?.(entry))
+      }
       state.world = outcome.world
       state.head = outcome.head
-      if (outcome.auditEntry !== null && input.onAudit !== undefined) {
-        input.onAudit(outcome.auditEntry)
-      }
       return outcome
     })
     results[eff.id] = executed.result
     if (executed.auditHash !== null) lastAuditHash = executed.auditHash
     if (aborted() && executed.result.error === 'cancelled') {
       // 在途取消：审计已按 cancelled 落账；不续跑 —— 丢弃该 run 的剩余计划
-      const snap = writer.snapshot()
-      return {
-        status: 'cancelled',
-        world: snap.world,
-        head: snap.head,
-        journal: [],
-        observations: out.observations,
-        lastAuditHash,
-      }
+      return finish('cancelled', [], out.observations)
     }
     suspensions += 1
   }
-  const snap = writer.snapshot()
-  return {
-    status: 'refused',
-    world: snap.world,
-    head: snap.head,
-    journal: [],
-    observations: [{ kind: 'refused', reasons: ['too_many_suspensions'] }],
-    lastAuditHash,
-  }
+  return finish('refused', [], [{ kind: 'refused', reasons: ['too_many_suspensions'] }])
 }

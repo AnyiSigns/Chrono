@@ -392,10 +392,9 @@ test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不�
     )
     const result = await drv.call('discover', discoverBag([entry]))
     assert.equal(planBody(result).tools.length, 3)
-    assert.ok(
-      drv.portCalls.some((call) => call.port === 'secrets' && call.method === 'resolve'),
-      '应经反向 port.call 调 secrets.resolve',
-    )
+    const secretsCall = drv.portCalls.find((call) => call.port === 'secrets' && call.method === 'resolve')
+    assert.ok(secretsCall !== undefined, '应经反向 port.call 调 secrets.resolve')
+    assert.equal(secretsCall.call_id, result.id, '反向帧回带发起 call 帧 id')
     assert.equal(
       JSON.stringify(result.value).includes('secret-value-123'),
       false,

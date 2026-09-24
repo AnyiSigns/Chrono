@@ -4,6 +4,12 @@
 // sandbox 的错误原样透传（不吞、不改写）。
 
 import { DEFAULT_CAPS, LANGUAGES } from './describe.ts'
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  MAX_CAPS_TIMEOUT_MS,
+  REVERSE_TIMEOUT_MARGIN_MS,
+  TIMER_MAX_MS,
+} from './port-link.ts'
 import { ToolError, isRecord } from './types.ts'
 import type { ExecBackend, SecretsBackend } from './port-link.ts'
 import type { Json, Rec } from './types.ts'
@@ -15,9 +21,9 @@ export interface InvokeDeps {
 }
 
 /** 结果面：成功 `{ok:true, result}`，失败 `{ok:false, error:{code, message}}`（非零退出 / 被杀另带 result）。 */
-export async function invoke(bag: Json, deps: InvokeDeps): Promise<Json> {
+export async function invoke(bag: Json, deps: InvokeDeps, callId: string | null = null): Promise<Json> {
   try {
-    return await run(bag, deps)
+    return await run(bag, deps, callId)
   } catch (err) {
     if (err instanceof ToolError) {
       return { ok: false, error: { code: err.code, message: err.message } }
@@ -26,7 +32,7 @@ export async function invoke(bag: Json, deps: InvokeDeps): Promise<Json> {
   }
 }
 
-async function run(bag: Json, deps: InvokeDeps): Promise<Json> {
+async function run(bag: Json, deps: InvokeDeps, callId: string | null): Promise<Json> {
   if (!isRecord(bag)) throw new ToolError('bad_args', 'invoke bag must be an object')
   if (bag['tool'] !== 'shell') throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
   const args = bag['args']
@@ -41,9 +47,25 @@ async function run(bag: Json, deps: InvokeDeps): Promise<Json> {
   }
   const language = mode === 'code' ? resolveLanguage(args['language']) : null
   const invocation = resolveInvocation(mode, input, language, deps.platform)
-  const env = await buildEnv(bag, deps)
-  const outcome = await deps.exec.exec(buildExecArgs(bag, invocation, env))
+  const caps = effectiveCaps(bag)
+  const env = await buildEnv(bag, deps, callId)
+  const outcome = await deps.exec.exec(
+    buildExecArgs(bag, invocation, env, caps),
+    callId,
+    capsTimeoutMs(caps) + REVERSE_TIMEOUT_MARGIN_MS,
+  )
   return executionResult(mode, language, outcome)
+}
+
+/**
+ * 反向等待按声明执行超时推导：未声明 timeout_ms 时回落通道兜底，避免固定 30s 先断；
+ * 并 clamp 到宿主预算内（`host > reverse > exec`），声明再大也不击穿宿主正向超时。
+ */
+function capsTimeoutMs(caps: Rec): number {
+  const raw = caps['timeout_ms']
+  const declared =
+    typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CALL_TIMEOUT_MS
+  return Math.min(declared, MAX_CAPS_TIMEOUT_MS, TIMER_MAX_MS)
 }
 
 function resolveLanguage(raw: Json | undefined): string {
@@ -80,7 +102,7 @@ function shellInvocation(input: string, platform: string): Invocation {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** 密钥注入：解析 `bag.auth_ref` 得明文，只挂到 exec 的 `env`（键 = 引用名）。 */
-async function buildEnv(bag: Rec, deps: InvokeDeps): Promise<Rec> {
+async function buildEnv(bag: Rec, deps: InvokeDeps, callId: string | null): Promise<Rec> {
   const env: Rec = {}
   const authRef = bag['auth_ref']
   if (authRef === undefined) return env
@@ -89,16 +111,16 @@ async function buildEnv(bag: Rec, deps: InvokeDeps): Promise<Rec> {
   if (typeof name !== 'string' || !ENV_NAME.test(name)) {
     throw new ToolError('bad_auth_ref', 'auth_ref.name must be a valid environment variable name')
   }
-  const plaintext = await deps.secrets.resolve(authRef)
+  const plaintext = await deps.secrets.resolve(authRef, callId)
   env[name] = plaintext
   return env
 }
 
-function buildExecArgs(bag: Rec, invocation: Invocation, env: Rec): Rec {
+function buildExecArgs(bag: Rec, invocation: Invocation, env: Rec, caps: Rec): Rec {
   const execArgs: Rec = {
     cmd: invocation.cmd,
     args: invocation.args,
-    caps: effectiveCaps(bag),
+    caps,
   }
   for (const key of ['tier', 'workspace_root', 'sandbox_tiers', 'grant']) {
     const value = bag[key]

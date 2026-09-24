@@ -8,11 +8,13 @@ export {
   readAllEntries,
   readColdEntries,
   readJournal,
+  readJournalTolerant,
+  repairJournalTail,
   replayFull,
   verifyFull,
   writeJournalAtomic,
 } from './journal.ts'
-export type { Anchor, VerifyReport } from './journal.ts'
+export type { Anchor, JournalRead, VerifyReport } from './journal.ts'
 export { auditRefOf, readBase, writeBase, BASE_VERSION } from './base.ts'
 export type { BaseAuditRef, BaseFile } from './base.ts'
 export { acquireLock, isProcessAlive, readLock, releaseLock } from './lock.ts'

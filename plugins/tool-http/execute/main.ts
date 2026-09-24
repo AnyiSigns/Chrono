@@ -78,7 +78,7 @@ async function handleCall(message: Rec): Promise<void> {
   }
   let value: Json
   try {
-    value = await handler(args, parseEnv(message['env']))
+    value = await handler(args, parseEnv(message['env']), id)
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)

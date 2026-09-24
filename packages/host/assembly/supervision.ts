@@ -8,6 +8,9 @@ import type { ServiceLink, ServiceManifest } from '../service-link.ts'
 import type { PluginDecl } from './decl.ts'
 import type { Hash, Json } from '../../kernel/index.ts'
 
+/** terminate 后等待进程真正退出的有界窗口：结算 / 继续前先等它落定，避免遗留孤儿进程。 */
+export const EXIT_WAIT_MS = 2_000
+
 export interface RestartPolicy {
   policy: 'on-exit' | 'never'
   backoff: 'none' | 'fixed' | 'exponential'

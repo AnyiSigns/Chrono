@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use crate::frames;
 use crate::port::{
-    EmbeddingPort, MemoryPort, ModelPort, PortLink, Ports, RemoteEmbedding, RemoteMemory,
-    RemoteModel, SharedWriter,
+    CurrentCallIdGuard, EmbeddingPort, MemoryPort, ModelPort, PortLink, Ports, RemoteEmbedding,
+    RemoteMemory, RemoteModel, SharedWriter,
 };
 use crate::retrieve;
 use crate::state::{FileStateStore, StateStore};
@@ -96,6 +96,9 @@ pub fn handle_call(
 
 fn call_response(message: &Value, ctx: &ServiceCtx) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
+    // 每 call 独立线程：记下本线程正在处理的正向帧 id，供反向调用回带 `call_id`；
+    // 守卫在返回 / panic 时清空，避免线程复用时残留。
+    let _call_id_guard = CurrentCallIdGuard::set(id.as_str().map(str::to_string));
     let port = message.get("port").and_then(Value::as_str).unwrap_or("");
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let args = message.get("args").cloned().unwrap_or(Value::Null);
@@ -137,6 +140,39 @@ fn wait_for_inflight(inflight: &Arc<(Mutex<usize>, Condvar)>, deadline_ms: u64) 
     }
 }
 
+/// 在途调用上限：超过即回结构化错误，避免无界 `thread::spawn` 耗尽资源。
+const MAX_INFLIGHT: usize = 128;
+
+/// 在途调用计数守卫：构造时自增，`Drop` 时持锁自减并唤醒 `drain`。
+/// 必须在 `spawn` 前构造并 move 进线程——否则子线程可能在自增前完成，计数不归零。
+struct InflightGuard {
+    inflight: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl InflightGuard {
+    /// 未达上限时自增并返回守卫；已达上限返回 `None`（调用方回 `overloaded`，不 spawn）。
+    fn try_acquire(inflight: Arc<(Mutex<usize>, Condvar)>) -> Option<Self> {
+        {
+            let (lock, _) = &*inflight;
+            let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *count >= MAX_INFLIGHT {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(Self { inflight })
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.inflight;
+        let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *count = count.saturating_sub(1);
+        cvar.notify_all();
+    }
+}
+
 /// `call` 独立线程执行（可能等待反向调用），控制帧不被阻塞；在途计数用于 `drain`。
 fn spawn_call(
     message: Value,
@@ -144,18 +180,22 @@ fn spawn_call(
     inflight: Arc<(Mutex<usize>, Condvar)>,
     ctx: Arc<ServiceCtx>,
 ) {
-    {
-        let (lock, _) = &*inflight;
-        *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
-    }
-    thread::spawn(move || {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let Some(guard) = InflightGuard::try_acquire(Arc::clone(&inflight)) else {
+        frames::log("call rejected: inflight limit reached");
+        write_shared(&shared, &error_frame(&id, "overloaded", "inflight limit reached"));
+        return;
+    };
+    let fallback = Arc::clone(&shared);
+    if let Err(err) = thread::Builder::new().spawn(move || {
         let response = call_response(&message, &ctx);
         write_shared(&shared, &response);
-        let (lock, cvar) = &*inflight;
-        let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *count = count.saturating_sub(1);
-        cvar.notify_all();
-    });
+        // guard 随闭包结束（或 spawn 失败）而 Drop：计数必归零。
+        drop(guard);
+    }) {
+        frames::log(&format!("spawn call failed: {err}"));
+        write_shared(&fallback, &error_frame(&id, "spawn_failed", &err.to_string()));
+    }
 }
 
 /// `drain`：等在途结束（或到期限）再回 `bye`。
@@ -285,6 +325,16 @@ mod tests {
     }
 
     #[test]
+    fn call_response_clears_current_call_id_after_return() {
+        let _ = call_response(
+            &json!({"kind":"call","id":"c-9","port":"retrieval","method":"search","args":{}}),
+            &test_ctx(),
+        );
+        // 处理期由守卫记录、返回后清空，避免线程复用时残留。
+        assert_eq!(crate::port::current_call_id(), None);
+    }
+
+    #[test]
     fn search_call_returns_empty_recall() {
         let value =
             handle_call("search", &json!({"query": "note"}), &json!({}), &test_ctx()).unwrap();
@@ -346,6 +396,18 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn inflight_guard_bounds_concurrent_calls() {
+        let inflight: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_INFLIGHT {
+            guards.push(InflightGuard::try_acquire(Arc::clone(&inflight)).expect("under limit"));
+        }
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_none());
+        drop(guards.pop());
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_some());
     }
 
     fn drain_frames(sink: &Arc<Mutex<Vec<u8>>>) -> Vec<Value> {

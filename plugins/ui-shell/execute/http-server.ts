@@ -16,6 +16,7 @@ import {
 import type { AssetContent } from './assets.ts'
 import { Bridge, extractValue } from './bridge.ts'
 import { log as defaultLog } from './frames.ts'
+import { isCodeGenFallbackBody } from './web/lib/identity-shape.js'
 import { guardInboundRequest } from './inbound-guard.ts'
 import { FALLBACK_MESSAGES } from './messages.ts'
 import type { HeadlessEntry, MountEntry } from './mounts.ts'
@@ -122,15 +123,19 @@ function pickString(record: Rec | null, key: string): string | null {
 
 /**
  * 构造主题写指令：读-改-写 config body（per-user 共享、写罕见）。
- * 含 `tree` 键表示拿到的是代码世代回落 body（非 config 数据）——拒绝写并返回 null，
+ * 拿到的是代码世代回落 body（`tree` 为字符串且不含数据侧特征键，非 config 数据）——拒绝写并返回 null，
  * 避免把整份配置重置成 `{ui:{theme}}` 擦掉既有配置。
+ * `expectActive` 为读回身份视图的 `active`（64hex 或 null）：显式条件写，
+ * 陈旧读（读到后世界已换代）由内核 `stale_active` 拒写；`undefined` 表示无从得知，省略该键。
  */
-export function themeWriteDirective(pref: string, configBody: Json): Json | null {
+export function themeWriteDirective(pref: string, configBody: Json, expectActive?: string | null): Json | null {
   if (configBody !== null && !isRecord(configBody)) return null
-  if (isRecord(configBody) && Object.prototype.hasOwnProperty.call(configBody, 'tree')) return null
+  if (isCodeGenFallbackBody(configBody)) return null
   const base = isRecord(configBody) ? configBody : {}
   const ui = isRecord(base['ui']) ? (base['ui'] as Rec) : {}
   const merged: Rec = { ...base, ui: { ...ui, theme: toConfigTheme(pref) } }
+  const addGen: Rec = { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) addGen['expect_active'] = expectActive
   return {
     kind: 'write',
     request: {
@@ -138,7 +143,7 @@ export function themeWriteDirective(pref: string, configBody: Json): Json | null
       args: {
         ops: [
           { op: 'put', args: { body: merged } },
-          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGen },
         ],
       },
     },
@@ -186,7 +191,7 @@ async function handleTheme(
     sendJson(res, 503, { ok: false, code: read.code || 'ui_unreachable', message: read.message })
     return
   }
-  const directive = themeWriteDirective(pref, read.value)
+  const directive = themeWriteDirective(pref, read.value, read.active)
   if (directive === null) {
     sendJson(res, 409, { ok: false, code: 'bad_directive', message: 'config body shape unsupported' })
     return

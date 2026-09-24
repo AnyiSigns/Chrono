@@ -2,7 +2,7 @@
 // 装配与效果边界由此汇合：本文件只做接线与派发，不解释命令语义。
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, truncateSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
 import {
@@ -22,10 +22,12 @@ import type { AssemblyRuntimeHandle, CommandDecl, PluginDecl } from './assembly/
 import {
   DEFAULT_CALL_TIMEOUT_MS,
   createRoundRouter,
+  fatalError,
   parsePlanDirectives,
   refusedReasons,
   runSubmission,
 } from './effect/index.ts'
+import { markFatal } from './effect/fatal.ts'
 import type { DirectiveDraft, RoundRouter } from './effect/index.ts'
 import { PeriodicScheduler } from './periodic.ts'
 import type { PeriodicEntry, PeriodicRead } from './periodic.ts'
@@ -212,12 +214,18 @@ function commandArgsIssue(
   return validateArgs(schemaDef.body, args) ? 'ok' : 'bad_args'
 }
 
-function listen(server: Server, address: string): Promise<void> {
+function listen(
+  server: Server,
+  address: string,
+  onRuntimeError: (err: Error) => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (err: Error): void => reject(err)
     server.once('error', onError)
     server.listen(address, () => {
       server.removeListener('error', onError)
+      // 运行期 accept 级错误：挂常驻监听（记录 + 按停机序列收口），不得摘成无监听
+      server.on('error', onRuntimeError)
       resolve()
     })
   })
@@ -233,7 +241,30 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const lock = acquireLock(paths.lockFile, startedAt)
   if (!lock.ok) throw new Error('writer_busy')
 
+  /**
+   * 运维日志安全写入：日志是旁路，写失败不得在 catch / 事件监听器内抛成未捕获异常，
+   * 也不得破坏 run.started / run.finished 的成对收口（致命 / 停机路径尤其如此）。
+   */
+  const safeAppendLifecycle = (record: LifecycleRecord): void => {
+    try {
+      appendLifecycle(paths.lifecycleFile, record as unknown as Json)
+    } catch {
+      // 日志写不进去只损失可观测性，不影响主流程
+    }
+  }
+
   const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+  // 撕裂尾修复：容错读已丢弃末条半截 entry，这里在持锁下把文件截到有效前缀，
+  // 否则下一次 append 会把新 entry 粘在残行上，被后续容错读当末行丢弃、终致 journal 永久损坏。
+  if (anchor.journalTruncated) {
+    truncateSync(paths.journalFile, anchor.journalValidBytes)
+    safeAppendLifecycle({
+      at: Date.now(),
+      kind: 'host',
+      event: 'journal_tail_repaired',
+      reason: String(anchor.journalValidBytes),
+    })
+  }
   /** F8 只读审计面：启动时由基础世界索引 + journal 尾段重建，运行期随审计落链增量补齐（只读）。 */
   const audits = new AuditIndex()
   for (const ref of anchor.baseAudits) {
@@ -267,11 +298,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // 落账互斥段：多个 run 可并发推进，只有「追加 journal + 推进世界 / 链头」经它串行。
   const writer = new WorldWriter({ world: anchor.world, head: initialHead })
   // 投影按链头缓存：同一世界的多轮 / 多 run 复用一份闭包视图（投影只读，内核不改 ctx）。
-  let ctxCache: { head: Hash | null; view: Json } | undefined
+  let ctxCache: { head: Hash | null; seq: number; view: Json } | undefined
   const cachedProjection = (world: World, head: Head): Json => {
     if (ctxCache !== undefined && ctxCache.head === head.hash) return ctxCache.view
     const view = projectBaseOnly(world, head, { blobsDir: paths.blobsDir })
-    ctxCache = { head: head.hash, view }
+    // 单条缓存只被「不更旧」的链头覆盖：并发的陈旧 head 调用不得挤掉更新的缓存（否则后续新 head 全 miss）
+    if (ctxCache === undefined || head.seq >= ctxCache.seq) {
+      ctxCache = { head: head.hash, seq: head.seq, view }
+    }
     return view
   }
   // `world_rev` 是全量摘要（O(#defs)）：按链头缓存，避免每次 `status` 轮询都阻塞事件循环重算。
@@ -457,8 +491,23 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const applyWorldSerial = (advancedWorld: World, advancedHead: Head): Promise<void> => {
     const next = runtimeChain.then(async () => {
       if (runtime === undefined || advancedHead.seq <= appliedSeq) return
+      try {
+        await runtime.applyWorld(advancedWorld)
+      } catch (err) {
+        // 跟随失败不推进 appliedSeq / appliedWorld。注意：**不会自动重试同一链头**——
+        // 只有后续落账推进到更高链头再次调用 applyWorldSerial 时，才会从 appliedWorld 重新 diff
+        // 并重试变更身份（幂等重试）。且 runtime 已完成的副作用（起 / 停服务）不回滚，
+        // 失败窗口内运行态可能与世界短暂不一致，由下一次跟随收敛（残留风险，见 runtime.applyWorld）。
+        safeAppendLifecycle({
+          at: Date.now(),
+          kind: 'host',
+          event: 'follow_failed',
+          reason: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
+      // 成功后才推进：appliedSeq / appliedWorld / 广播 三者一致前进
       appliedSeq = advancedHead.seq
-      await runtime.applyWorld(advancedWorld)
       // 世代已跟随：逐身份广播变化，供缓存型读侧按 code / data 语义失效重取。
       broadcastIdentityChanges(appliedWorld, advancedWorld)
       appliedWorld = advancedWorld
@@ -479,7 +528,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
 
   /** 运维日志唯一落点；顺带记住跟随失败的世代，供 watcher 观测（只读派生，不额外写盘）。 */
   const recordLifecycle = (record: LifecycleRecord): void => {
-    appendLifecycle(paths.lifecycleFile, record as unknown as Json)
+    safeAppendLifecycle(record)
     if (record.gen === undefined) return
     if (record.kind === 'service' && record.event === 'start_failed')
       followFailedGens.add(record.gen)
@@ -501,7 +550,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const handleWatchReload = async (target: WatchTarget, changedPath: string): Promise<void> => {
     if (stopping || runtime === undefined) return
     const label = target.entry.name
-    appendLifecycle(paths.lifecycleFile, {
+    safeAppendLifecycle({
       at: Date.now(),
       kind: 'host',
       event: 'watch_triggered',
@@ -509,12 +558,20 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       reason: changedPath,
     })
     const outcome = await reloadPlugin(
-      { root, paths, writer, now: nextNow, applyWorld: applyWorldSerial },
+      {
+        root,
+        paths,
+        writer,
+        now: nextNow,
+        applyWorld: applyWorldSerial,
+        // 落账（appendJournal）失败是 fail-stop：标记进程级致命，由 escalateFatal 收口停机
+        onPersistFailure: markFatal,
+      },
       target.entry,
     )
     if (outcome.status === 'failed') {
       const reason = outcome.reasons.join('|')
-      appendLifecycle(paths.lifecycleFile, {
+      safeAppendLifecycle({
         at: Date.now(),
         kind: 'host',
         event: 'watch_failed',
@@ -522,11 +579,16 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         reason,
       })
       watchLog(`watcher: ${outcome.identity ?? label} 入世失败，旧版本继续服务（${reason}）`)
+      // 普通拒绝时 fatalError() 为空，escalateFatal 是空操作；落账失败则停机
+      escalateFatal()
       return
     }
     if (outcome.status === 'unchanged') return
     const failed = followFailedGens.has(outcome.gen)
-    appendLifecycle(paths.lifecycleFile, {
+    // 一次性消费：本次跟随实况已据实报出；同一世代若再次失败会在下次跟随重新记入，
+    // 避免只增不减（曾失败后又被重试成功的世代不再被永久误报为失败）。
+    followFailedGens.delete(outcome.gen)
+    safeAppendLifecycle({
       at: Date.now(),
       kind: 'host',
       event: failed ? 'watch_follow_failed' : 'watch_applied',
@@ -634,6 +696,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const finish = (status: string, reasons: string[]): void => {
       if (finished) return
       finished = true
+      // 先摘 run 再广播：结果已定，之后 cancel 不再命中（避免 accepted 后无实际效果）
+      runs.delete(runId)
       broadcast('host', 'run.finished', { run: runId, thread, status, reasons, origin: 'detached' })
     }
     const task = runSubmission({
@@ -662,13 +726,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       .catch((err: unknown) => {
         // detached run 无调用方等待：先广播 run.finished{refused} 收口，错误只进运维日志
-        appendLifecycle(paths.lifecycleFile, {
+        safeAppendLifecycle({
           at: Date.now(),
           kind: 'host',
           event: 'run_failed',
           run: runId,
           reason: err instanceof Error ? err.message : String(err),
         })
+        escalateFatal()
         finish('refused', [])
       })
       .finally(() => {
@@ -698,13 +763,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         reasons = outcome.reasons
       })
       .catch((err: unknown) => {
-        appendLifecycle(paths.lifecycleFile, {
+        safeAppendLifecycle({
           at: Date.now(),
           kind: 'host',
           event: 'run_failed',
           run: runId,
           reason: err instanceof Error ? err.message : String(err),
         })
+        escalateFatal()
       })
       .finally(() => {
         runs.delete(runId)
@@ -829,6 +895,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       status = outcome.status
       reasons = refusedReasons(outcome.observations)
+      // 先摘 run 再发 result：结果已定，之后 cancel 不再命中（避免 accepted 后无实际效果）
+      runs.delete(runId)
       send(socket, {
         v: PROTOCOL_VERSION,
         kind: 'result',
@@ -837,13 +905,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         observations: outcome.observations,
       })
     } catch (err) {
-      appendLifecycle(paths.lifecycleFile, {
+      safeAppendLifecycle({
         at: Date.now(),
         kind: 'host',
         event: 'run_failed',
         run: runId,
         reason: err instanceof Error ? err.message : String(err),
       })
+      escalateFatal()
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
@@ -934,6 +1003,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       status = outcome.status
       reasons = refusedReasons(outcome.observations)
+      // 先摘 run 再发 result：结果已定，之后 cancel 不再命中（避免 accepted 后无实际效果）
+      runs.delete(runId)
       send(socket, {
         v: PROTOCOL_VERSION,
         id: message.id,
@@ -942,13 +1013,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         observations: outcome.observations,
       })
     } catch (err) {
-      appendLifecycle(paths.lifecycleFile, {
+      safeAppendLifecycle({
         at: Date.now(),
         kind: 'host',
         event: 'run_failed',
         run: runId,
         reason: err instanceof Error ? err.message : String(err),
       })
+      escalateFatal()
       throw err
     } finally {
       // run.started / run.finished 严格成对、恰好一次：异常路径也以 refused 收口
@@ -1032,6 +1104,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
       })
       status = outcome.status
       reasons = refusedReasons(outcome.observations)
+      // 先摘 run 再发 result：结果已定，之后 cancel 不再命中（避免 accepted 后无实际效果）
+      runs.delete(runId)
       send(socket, {
         v: PROTOCOL_VERSION,
         id: message.id,
@@ -1040,13 +1114,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         observations: outcome.observations,
       })
     } catch (err) {
-      appendLifecycle(paths.lifecycleFile, {
+      safeAppendLifecycle({
         at: Date.now(),
         kind: 'host',
         event: 'run_failed',
         run: runId,
         reason: err instanceof Error ? err.message : String(err),
       })
+      escalateFatal()
       throw err
     } finally {
       if (!readonly) {
@@ -1125,7 +1200,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           // socket 文件可能已被外部清理；停机不因此失败
         }
       }
-      releaseLock(paths.lockFile)
+      releaseLock(paths.lockFile, lock.info)
     }
   }
 
@@ -1133,6 +1208,26 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   const stop = (): Promise<void> => {
     if (stopPromise === undefined) stopPromise = doStop()
     return stopPromise
+  }
+
+  /**
+   * 落账致命态收口：run 抛错后若 `fatalError()` 非空（账本追加失败，内存世界已与磁盘分叉），
+   * 记一条运维日志并把致命态升级为停机——继续服务只会让分叉随每轮提交放大。
+   * `stop` 幂等，多个 run 同时致命也只停机一次；非致命错误（业务 / 传输）不进此路径。
+   */
+  const escalateFatal = (): void => {
+    const fatal = fatalError()
+    if (fatal === null) return
+    // 本函数常在 catch / error 监听器内调用：日志写失败不得再抛成未捕获异常，停机也必须照常发起
+    safeAppendLifecycle({
+      at: Date.now(),
+      kind: 'host',
+      event: 'persist_fatal_stop',
+      reason: fatal.message,
+    })
+    void stop().catch(() => {
+      // 停机尽力而为；失败由锁 / socket 清理逻辑兜底
+    })
   }
 
   const dispatch = (socket: Socket, message: InboundMessage): void => {
@@ -1442,11 +1537,25 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         return
       }
       case 'stop': {
+        // 同步置停机态：stop 经 setImmediate 延迟执行，窗口内不得再受理新 run（否则 accepted 后实际不跑）
+        stopping = true
         send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'accepted' })
         setImmediate(() => {
           stop().catch(() => {
             // 停机尽力而为；失败由锁 / socket 清理逻辑兜底
           })
+        })
+        return
+      }
+      default: {
+        // 未知 kind：fail-closed 回错，不静默无响应（TS 视联合类型已穷尽，运行时仍可能收到畸形 kind）
+        const unknown = message as unknown as { id?: unknown; kind?: unknown }
+        send(socket, {
+          v: PROTOCOL_VERSION,
+          id: typeof unknown.id === 'string' ? unknown.id : '',
+          kind: 'error',
+          code: 'bad_directive',
+          message: `unknown kind: ${String(unknown.kind)}`,
         })
         return
       }
@@ -1457,7 +1566,16 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
     // 入站面先于装配监听：服务 spawn 后即可连上，不再于装配期反复撞 ENOENT；
     // 装配完成前的反向调用由 handlePortCall 挂起等 routerReady。
-    await listen(server, address)
+    await listen(server, address, (err) => {
+      safeAppendLifecycle({
+        at: Date.now(),
+        kind: 'host',
+        event: 'listen_error',
+        reason: err.message,
+      })
+      // 运行期监听错误：按停机序列收口，不崩宿主
+      void stop()
+    })
     runtime = await startAssembly({
       root,
       world: writer.snapshot().world,
@@ -1472,6 +1590,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     router = createRoundRouter({
       endpoints: runtime.endpoints,
       blobsDir: paths.blobsDir,
+      // 路由解析按「已应用世界」而非 run 锚定世界：端点表由 runtime.applyWorld 按该世界换代换键，
+      // 锚定旧世代会在并发换代后解析到已被摘除的世代键（假 not_loaded）；appliedWorld 与端点表同代。
+      liveWorld: () => appliedWorld,
       host: createHostCapability({
         assetsDir: paths.assetsDir,
         blobsDir: paths.blobsDir,
@@ -1519,7 +1640,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
         root,
         onReload: handleWatchReload,
         onError: (target, reason) => {
-          appendLifecycle(paths.lifecycleFile, {
+          safeAppendLifecycle({
             at: Date.now(),
             kind: 'host',
             event: 'watch_failed',
@@ -1552,7 +1673,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     } catch {
       // 未进入监听状态时 close 可能报错
     }
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
     throw err
   }
 

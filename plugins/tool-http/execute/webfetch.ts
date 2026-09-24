@@ -4,6 +4,7 @@
 
 import { NET_WEBFETCH } from './caps.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
+import { DEFAULT_CALL_TIMEOUT_MS, REVERSE_TIMEOUT_MARGIN_MS } from './reverse.ts'
 import { htmlToMarkdown, htmlToText } from './html.ts'
 import { isPrivateHost, parseHttpUrl } from './url.ts'
 import { fail, isRec, ok } from './types.ts'
@@ -64,7 +65,12 @@ async function storeBinary(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   const mime = contentType.length > 0 ? contentType : 'application/octet-stream'
-  const outcome = await ctx.backend.assetPut({ mime, bytes: bytes.toString('base64') })
+  // 反向等待加余量：宿主 `host.asset.put` 面回落 30s，等值会让反向等待先于宿主结算。
+  const outcome = await ctx.backend.assetPut(
+    { mime, bytes: bytes.toString('base64') },
+    ctx.callId,
+    DEFAULT_CALL_TIMEOUT_MS + REVERSE_TIMEOUT_MARGIN_MS,
+  )
   if (!outcome.ok) {
     return fail('binary_unsupported', outcome.message, { status })
   }

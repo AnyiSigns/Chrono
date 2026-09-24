@@ -24,7 +24,7 @@ export class SecretsLink {
   private readonly pending = new Map<string, PendingCall>()
 
   /** 解析一条 `auth_ref`；失败作数据回结构化错误（不抛错）。 */
-  async resolve(authRef: Rec): Promise<SecretResult> {
+  async resolve(authRef: Rec, callId: string | null = null): Promise<SecretResult> {
     const id = `mcp-pc-${randomUUID()}`
     const response = await new Promise<
       { ok: true; value: Json } | { ok: false; code: string; message: string }
@@ -35,14 +35,16 @@ export class SecretsLink {
       }, SECRETS_CALL_TIMEOUT_MS)
       timer.unref?.()
       this.pending.set(id, { resolve, timer })
-      writeFrame({
+      const frame: Rec = {
         v: '1',
         id,
         kind: 'port.call',
         port: 'secrets',
         method: 'resolve',
         args: { auth_ref: authRef },
-      })
+      }
+      if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
+      writeFrame(frame)
     })
     if (!response.ok) return response
     if (typeof response.value !== 'string' || response.value.length === 0) {

@@ -4,6 +4,7 @@
 
 import { BrowserUnsupportedError, assertWaitWithinTimeout, mimeForFormat } from './types.ts'
 import { ToolError } from '../types.ts'
+import type { CreationHandle } from '../creation.ts'
 import type { BrowserEngine, EngineConfig, ExtractResult, NavigateResult, ScreenshotResult } from './types.ts'
 
 interface PwResponse {
@@ -177,7 +178,7 @@ export class PlaywrightEngine implements BrowserEngine {
 }
 
 /** 惰性加载 playwright 并开一个页面。 */
-export async function loadPlaywright(config: EngineConfig): Promise<BrowserEngine> {
+export async function loadPlaywright(config: EngineConfig, handle: CreationHandle): Promise<BrowserEngine> {
   let module: PwModule
   try {
     module = (await import('playwright')) as unknown as PwModule
@@ -193,6 +194,9 @@ export async function loadPlaywright(config: EngineConfig): Promise<BrowserEngin
   } catch (err) {
     throw new BrowserUnsupportedError(`playwright chromium launch failed: ${(err as Error).message}`)
   }
+  // 浏览器已起：登记同步硬杀句柄；若建引擎途中已被 abort，register 会立即关闭它。
+  handle.register({ kill: () => void browser.close().catch(() => undefined) })
+  if (handle.isAborted) throw new BrowserUnsupportedError('playwright launch aborted')
   let context: PwContext
   try {
     context = await browser.newContext({

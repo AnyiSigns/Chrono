@@ -89,12 +89,12 @@ function main() {
     console.log('write defaults: done')
 
     const inputRead = boot(root, ['input.read'])
-    const inputBody = inputRead.observations[0].value
+    const inputBody = inputRead.observations[0].value.body
     assert.deepEqual(inputBody, { slots: {} })
     console.log('input.read: ok')
 
     const configRead = boot(root, ['config.read'])
-    const configBody = configRead.observations[0].value
+    const configBody = configRead.observations[0].value.body
     assert.equal(configBody.version, 1)
     assert.equal(configBody.permission, 'review')
     assert.equal(configBody.ui.theme, 'system')

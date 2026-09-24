@@ -2,6 +2,7 @@
 // 与宿主进程互斥（同一把单写者锁）；seed 是宿主侧直写 commit 的入世路径。
 
 import { randomUUID } from 'node:crypto'
+import { statSync, truncateSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { commit, worldRev } from '../kernel/index.ts'
 import {
@@ -22,10 +23,11 @@ import {
   readAllEntries,
   readJournal,
   releaseLock,
+  repairJournalTail,
   replayFull,
   verifyFull,
 } from './ledger/index.ts'
-import type { BaseAuditRef } from './ledger/index.ts'
+import type { Anchor, BaseAuditRef } from './ledger/index.ts'
 import { auditRecordOf } from './audit.ts'
 import { collectBlobRefs, gcBlobs, putBlob } from './blobs.ts'
 import type { BlobGcReport } from './blobs.ts'
@@ -33,6 +35,7 @@ import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
 import { compactWorld } from './compact.ts'
 import { hostPaths } from './paths.ts'
+import type { HostPaths } from './paths.ts'
 import type { Hash, Head, WriteRequest } from '../kernel/index.ts'
 
 /** 与 assembly 同源，保留本模块导出面（`readPluginManifest` 属插件清单读面）。 */
@@ -63,6 +66,14 @@ export interface ReplayReport {
   worldRev: Hash
 }
 
+/**
+ * 持锁写命令在 append 前修复 journal 撕裂尾：容错读已丢弃末条半截 entry，
+ * 这里把文件截到有效前缀，避免后续 append 把新 entry 粘在残行上（否则 journal 永久损坏）。
+ */
+function repairTruncatedJournal(paths: HostPaths, anchor: Anchor): void {
+  if (anchor.journalTruncated) truncateSync(paths.journalFile, anchor.journalValidBytes)
+}
+
 /** 入世：按 pins 名级序（被依赖者先）逐个插件包构造原子 batch 并直写 commit；每个插件各自原子。 */
 export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   const paths = hostPaths(root)
@@ -71,6 +82,7 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   try {
     const entries = orderEntriesForSeed(root, explicit ?? readPluginManifest(root))
     let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    repairTruncatedJournal(paths, anchor)
     const items: SeedItem[] = []
     for (const entry of entries) {
       const planned = planIngest(anchor.world, root, entry)
@@ -109,7 +121,7 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
     }
     return { ok: items.every((item) => item.status !== 'failed'), items, head: anchor.head }
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -134,6 +146,7 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
   if (!lock.ok) throw new Error('writer_busy')
   try {
     let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    repairTruncatedJournal(paths, anchor)
     const planned = planPack(anchor.world, resolve(root, dir), identity, paths.blobsDir)
     if (!planned.ok) {
       return {
@@ -193,7 +206,39 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
       head: anchor.head,
     }
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
+  }
+}
+
+/** 无锁只读的并发容忍：宿主 append 与读并发时撕裂尾由容错读丢弃；短退避重试等写者落定。 */
+const UNSEEDED_READ_ATTEMPTS = 3
+const UNSEEDED_READ_BACKOFF_MS = 20
+
+function journalSize(file: string): number {
+  try {
+    return statSync(file).size
+  } catch {
+    return 0
+  }
+}
+
+/** 同步短睡：`unseededIdentities` 是同步只读入口，退避不能走 await。 */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * 无锁读锚点：读前读后比对 journal 大小，不一致说明宿主正在 append，短退避重试；
+ * 有上限后按最后一次读取结果返回（撕裂尾已由 `loadAnchor` 的容错读丢弃，无锁只读不修复文件）。
+ */
+function loadAnchorStable(paths: HostPaths): Anchor {
+  for (let attempt = 0; ; attempt++) {
+    const before = journalSize(paths.journalFile)
+    const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    if (before === journalSize(paths.journalFile) || attempt >= UNSEEDED_READ_ATTEMPTS - 1) {
+      return anchor
+    }
+    sleepSync(UNSEEDED_READ_BACKOFF_MS)
   }
 }
 
@@ -203,7 +248,7 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
  */
 export function unseededIdentities(root: string): string[] {
   const paths = hostPaths(resolve(root))
-  const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+  const anchor = loadAnchorStable(paths)
   const ids: string[] = []
   for (const id of Object.keys(anchor.world.ids)) {
     if (latestDataGen(anchor.world, id) === null) ids.push(id)
@@ -219,7 +264,7 @@ export function runVerify(root: string): VerifyReport {
   try {
     return verifyFull(readAllEntries(paths.journalFile, paths.coldDir))
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -236,7 +281,7 @@ export function runAssetGc(root: string): AssetGcReport {
     const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
     return gcAssets(paths.assetsDir, collectAssetRefs(world))
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -252,7 +297,7 @@ export function runBlobGc(root: string): BlobGcReport {
     const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
     return gcBlobs(paths.blobsDir, collectBlobRefs(world))
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -268,7 +313,7 @@ export function runMaterializedGc(root: string): MaterializedGcReport {
     const world = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir).world
     return gcMaterialized(paths.materializedDir, world)
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -281,7 +326,7 @@ export function runReplay(root: string): ReplayReport {
     const entries = readAllEntries(paths.journalFile, paths.coldDir)
     return { head: headOf(entries), worldRev: worldRev(replayFull(entries)) }
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }
 
@@ -297,6 +342,8 @@ export function runCompact(root: string): CompactReport {
   const lock = acquireLock(paths.lockFile, Date.now())
   if (!lock.ok) throw new Error('writer_busy')
   try {
+    // 压缩是写命令：先修复撕裂尾（截到有效前缀），再按严格读取全链，否则末条半截会让全链读抛错
+    repairJournalTail(paths.journalFile)
     // world / head / 审计索引按全链算；归档前缀只取当前 journal（未归档部分）——否则会把旧冷段再归档一遍
     const entries = readAllEntries(paths.journalFile, paths.coldDir)
     const world = replayFull(entries)
@@ -309,6 +356,6 @@ export function runCompact(root: string): CompactReport {
     const result = compactWorld(paths, world, headOf(entries), prefix, audits, Date.now())
     return { ...result, audits: audits.length }
   } finally {
-    releaseLock(paths.lockFile)
+    releaseLock(paths.lockFile, lock.info)
   }
 }

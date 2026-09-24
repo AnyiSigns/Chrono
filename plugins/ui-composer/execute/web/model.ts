@@ -51,6 +51,34 @@ export function isRecord(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+// ── 身份读值形状（config.read / input.read 返回整份身份视图） ───────────────
+
+/** 身份视图 → data body；非身份视图（裸 body）原样返回。 */
+export function identityBody(value: unknown): unknown {
+  return isRecord(value) && Object.prototype.hasOwnProperty.call(value, 'body') ? value.body : value
+}
+
+/** 身份视图 → active（64hex 或 null）；非身份视图 / 形状不符回 undefined（不注入 expect_active）。 */
+export function identityActive(value: unknown): string | null | undefined {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'active')) return undefined
+  const active = value.active
+  return typeof active === 'string' || active === null ? active : undefined
+}
+
+/** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
+const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
+
+/** 代码世代回落 body 判据：拿到的是 active（commit）def body，非身份数据，拒写。
+ * commit def body 形如 `{ tree, meta }`；只判顶层含 `tree` 会误伤顶层恰好含 `tree` 的合法数据，
+ * 故要求 `tree` 为字符串且不含任一数据侧特征键。 */
+export function isCodeGenFallbackBody(body: unknown): boolean {
+  if (!isRecord(body) || typeof body.tree !== 'string') return false
+  for (const key of DATA_SIDE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) return false
+  }
+  return true
+}
+
 // ── 线程键 ────────────────────────────────────────────────────────────────
 
 /** 视图线程 → 槽键：非空字符串原样，否则 `_main`。 */
@@ -216,8 +244,15 @@ export function mergeSlotBody(body: unknown, threadKey: string, slot: Json): Rec
   return { ...base, slots }
 }
 
+/** `add_gen` 子操作：`expect_active` 仅在读回身份视图（有 active）时携带。 */
+function addGenArgs(identity: string, expectActive?: string | null): Rec {
+  const args: Rec = { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) args.expect_active = expectActive
+  return args
+}
+
 /** `input` 槽写指令：整份 `put` + `add_gen`（同一批）。 */
-export function slotWriteDirective(body: Json): Rec {
+export function slotWriteDirective(body: Json, expectActive?: string | null): Rec {
   return {
     kind: 'write',
     request: {
@@ -225,7 +260,7 @@ export function slotWriteDirective(body: Json): Rec {
       args: {
         ops: [
           { op: 'put', args: { body } },
-          { op: 'add_gen', args: { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGenArgs('input', expectActive) },
         ],
       },
     },
@@ -233,7 +268,7 @@ export function slotWriteDirective(body: Json): Rec {
 }
 
 /** `config` 写指令：整份 `put` + `add_gen`（同一批）。 */
-export function configWriteDirective(body: Json): Rec {
+export function configWriteDirective(body: Json, expectActive?: string | null): Rec {
   return {
     kind: 'write',
     request: {
@@ -241,7 +276,7 @@ export function configWriteDirective(body: Json): Rec {
       args: {
         ops: [
           { op: 'put', args: { body } },
-          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGenArgs('config', expectActive) },
         ],
       },
     },

@@ -1,26 +1,36 @@
 // 设置页数据加载：按 tab 拉只读命令 / config / 密钥状态；只读页统一加载呼吸条 + >8s 文案。
 // 命令经壳 api.command（按名路由）；失败置行内错误，不空白、不弹窗。
 
-import { isRecord } from './config-model.ts'
+import { identityActive, identityBody, isCodeGenFallbackBody, isRecord } from './config-model.ts'
 import { vendorTemplates, vendorTemplatesFromResult } from './onboarding.ts'
 import { loadNotify } from './notify-actions.ts'
 
-/** 包一层加载态：呼吸条 + >8s 追加「仍在读取…」，结束统一收口。 */
+/** 包一层加载态：呼吸条 + >8s 追加「仍在读取…」，结束统一收口。
+ * 用计数归属并发加载：后发请求不提前收掉先发请求的加载态，全部结束才收口；
+ * >8s 提示只在首个加载起计时、后续并发不重置（否则后发请求会把已亮起的提示压掉且不再恢复）。 */
 async function withLoading(ctx: any, task: () => Promise<void>): Promise<void> {
+  const first = (ctx.state.loadingCount ?? 0) === 0
+  ctx.state.loadingCount = (ctx.state.loadingCount ?? 0) + 1
   ctx.state.loading = true
-  ctx.state.loadingNote = false
+  if (first) {
+    ctx.state.loadingNote = false
+    ctx.armLoadingNote(() => {
+      if (ctx.state.loading) {
+        ctx.state.loadingNote = true
+        ctx.render()
+      }
+    })
+  }
   ctx.render()
-  ctx.armLoadingNote(() => {
-    if (ctx.state.loading) {
-      ctx.state.loadingNote = true
-      ctx.render()
-    }
-  })
   try {
     await task()
   } finally {
-    ctx.state.loading = false
-    ctx.clearLoadingNote()
+    ctx.state.loadingCount = Math.max(0, (ctx.state.loadingCount ?? 1) - 1)
+    if (ctx.state.loadingCount === 0) {
+      ctx.state.loading = false
+      ctx.state.loadingNote = false
+      ctx.clearLoadingNote()
+    }
     ctx.render()
   }
 }
@@ -71,10 +81,21 @@ export async function loadTab(ctx: any, tab: string): Promise<void> {
   ctx.render()
 }
 
-/** config 整值（失败 / 非对象 → null，页面按空态处理）。 */
+/**
+ * config 整值（失败 / 非对象 → null，页面按空态处理）。
+ * 读到代码世代回落 body（配置身份尚无数据世代）时退避重试；仍不就绪则回 null，
+ * 让页面按空态起步——绝不以回落 body 为写基。`ctx.configActive` 记读到的 active 供写用。
+ */
 export async function readConfig(ctx: any): Promise<any> {
-  const result = await ctx.runCommand('config.read', null)
-  return result.ok && isRecord(result.value) ? result.value : null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await ctx.runCommand('config.read', null)
+    if (!result.ok) return null
+    ctx.configActive = identityActive(result.value)
+    const body = identityBody(result.value)
+    if (!isCodeGenFallbackBody(body)) return isRecord(body) ? body : null
+    await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt))
+  }
+  return null
 }
 
 /** 身份投影（插件页 / 关于页 / 厂商模板兜底）。 */

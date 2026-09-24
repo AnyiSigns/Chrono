@@ -4,7 +4,7 @@
   "type": "object",
   "additionalProperties": true,
   "method_timeouts": {
-    "tool-shell.invoke": 120000
+    "tool-shell.invoke": 130000
   },
   "properties": {
     "tool": {

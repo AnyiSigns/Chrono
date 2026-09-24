@@ -5,6 +5,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { invoke } from '../execute/invoke.ts'
 import { DEFAULT_CAPS } from '../execute/describe.ts'
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  HOST_METHOD_TIMEOUT_MS,
+  MAX_CAPS_TIMEOUT_MS,
+  REVERSE_TIMEOUT_MARGIN_MS,
+} from '../execute/port-link.ts'
 import { ToolError } from '../execute/types.ts'
 
 const OK_OUTCOME = {
@@ -18,25 +24,29 @@ const OK_OUTCOME = {
 
 function fakeDeps(options = {}) {
   const execCalls = []
+  const execMeta = []
   const secretCalls = []
+  const secretMeta = []
   const deps = {
     platform: options.platform ?? 'win32',
     exec: {
-      async exec(args) {
+      async exec(args, callId, timeoutMs) {
         execCalls.push(args)
+        execMeta.push({ callId, timeoutMs })
         if (options.execError) throw options.execError
         return options.execResult ?? OK_OUTCOME
       },
     },
     secrets: {
-      async resolve(authRef) {
+      async resolve(authRef, callId) {
         secretCalls.push(authRef)
+        secretMeta.push({ callId })
         if (options.secretError) throw options.secretError
         return options.secretValue ?? 'secret-value'
       },
     },
   }
-  return { deps, execCalls, secretCalls }
+  return { deps, execCalls, execMeta, secretCalls, secretMeta }
 }
 
 function bag(overrides = {}) {
@@ -224,4 +234,40 @@ test('auth_ref.name 非法环境变量名 → bad_auth_ref，且不调 secrets /
     assert.equal(secretCalls.length, 0)
     assert.equal(execCalls.length, 0)
   }
+})
+
+// ── 反向等待超时与 call_id 回带 ─────────────────────────────────────────────
+
+test('反向等待按声明 timeout_ms 加固定余量，并回带发起 call 帧 id', async () => {
+  const { deps, execMeta } = fakeDeps()
+  await invoke(bag({ caps: { timeout_ms: 12000 } }), deps, 'call-7')
+  assert.equal(execMeta[0].callId, 'call-7')
+  assert.equal(execMeta[0].timeoutMs, 12000 + REVERSE_TIMEOUT_MARGIN_MS)
+})
+
+test('未声明 caps 时反向等待按工具声明 timeout_ms 加余量', async () => {
+  const { deps, execMeta } = fakeDeps()
+  await invoke({ tool: 'shell', args: { input: 'echo' } }, deps)
+  assert.equal(execMeta[0].timeoutMs, DEFAULT_CAPS.timeout_ms + REVERSE_TIMEOUT_MARGIN_MS)
+})
+
+test('声明 caps 但缺 timeout_ms 时回落通道兜底加余量', async () => {
+  const { deps, execMeta } = fakeDeps()
+  await invoke(bag({ caps: { net: 'none' } }), deps)
+  assert.equal(execMeta[0].timeoutMs, DEFAULT_CALL_TIMEOUT_MS + REVERSE_TIMEOUT_MARGIN_MS)
+})
+
+test('声明超预算的 timeout_ms 被 clamp 在宿主预算内：host > reverse > exec', async () => {
+  const { deps, execMeta } = fakeDeps()
+  await invoke(bag({ caps: { timeout_ms: 999999 } }), deps)
+  const reverse = MAX_CAPS_TIMEOUT_MS + REVERSE_TIMEOUT_MARGIN_MS
+  assert.equal(execMeta[0].timeoutMs, reverse)
+  assert.ok(reverse < HOST_METHOD_TIMEOUT_MS, '反向等待必须小于宿主正向超时')
+  assert.ok(MAX_CAPS_TIMEOUT_MS < reverse, '执行预算必须小于反向等待')
+})
+
+test('auth_ref 的 secrets.resolve 回带发起 call 帧 id', async () => {
+  const { deps, secretMeta } = fakeDeps()
+  await invoke(bag({ auth_ref: { kind: 'local', name: 'TOKEN' } }), deps, 'call-9')
+  assert.equal(secretMeta[0].callId, 'call-9')
 })

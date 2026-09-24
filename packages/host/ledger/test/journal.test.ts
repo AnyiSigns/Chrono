@@ -1,5 +1,16 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { appendJournal, headOf, loadAnchor, readJournal, replayFull, verifyFull } from '../index.ts'
+import {
+  appendJournal,
+  headOf,
+  loadAnchor,
+  readAllEntries,
+  readJournal,
+  readJournalTolerant,
+  repairJournalTail,
+  replayFull,
+  verifyFull,
+} from '../index.ts'
+import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../test/test-helpers.ts'
 
@@ -77,5 +88,63 @@ describe('账本 journal', () => {
     const entries = readJournal(file)
     expect(entries).toHaveLength(2)
     expect(headOf(entries).seq).toBe(2)
+  })
+
+  it('容错读：末行半截 JSON 被丢弃并报告截断位置，前面的 entry 保留', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    const validBytes = statSync(file).size
+    appendFileSync(file, '{"seq":3,"prev":')
+    const read = readJournalTolerant(file)
+    expect(read.entries).toHaveLength(2)
+    expect(read.truncated).toBe(true)
+    expect(read.validBytes).toBe(validBytes)
+  })
+
+  it('严格读：末行半截 JSON 也抛（verify / replay 不得静默丢末条）', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    appendFileSync(file, '{"seq":3,"prev":')
+    expect(() => readJournal(file)).toThrow()
+    expect(() => readAllEntries(file, join(root, 'state', 'world', 'cold'))).toThrow()
+  })
+
+  it('repairJournalTail：截断撕裂尾到有效前缀，之后 append 不粘行', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    const validBytes = statSync(file).size
+    appendFileSync(file, '{"seq":3,"prev":')
+    const repaired = repairJournalTail(file)
+    expect(repaired.truncated).toBe(true)
+    expect(statSync(file).size).toBe(validBytes)
+    const e3 = mkEntry(3, e2.argsHash, 'put', { body: { v: 3 } })
+    appendJournal(file, [e3])
+    const entries = readJournal(file)
+    expect(entries).toHaveLength(3)
+    expect(headOf(entries).seq).toBe(3)
+  })
+
+  it('appendJournal 守卫：文件以半截行结尾（未换行）时拒追加，不粘行', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    appendJournal(file, [e1])
+    appendFileSync(file, '{"seq":2,"prev":')
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    expect(() => appendJournal(file, [e2])).toThrow('journal_torn_tail')
+  })
+
+  it('中间行损坏仍抛：不得静默读半条', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    const e3 = mkEntry(3, e2.argsHash, 'put', { body: { v: 3 } })
+    appendJournal(file, [e1, e2, e3])
+    const lines = readFileSync(file, 'utf8').split('\n')
+    lines[1] = '{"broken":'
+    writeFileSync(file, lines.join('\n'))
+    expect(() => readJournal(file)).toThrow()
+    // 带换行的中间损坏即便容错读也抛（只有末段无换行的撕裂尾才容错）
+    expect(() => readJournalTolerant(file)).toThrow()
   })
 })

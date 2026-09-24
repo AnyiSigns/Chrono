@@ -18,7 +18,7 @@ export const REVERSE = new ReverseLink()
 const BACKEND = createReverseBackend(REVERSE)
 
 /** 从 invoke bag 组装调用上下文。 */
-export function buildContext(bag: Rec): ToolContext {
+export function buildContext(bag: Rec, callId: string | null = null): ToolContext {
   return {
     config: mergeConfig(bag['config']),
     caps: isRec(bag['caps']) ? bag['caps'] : undefined,
@@ -27,31 +27,32 @@ export function buildContext(bag: Rec): ToolContext {
     sandboxTiers: bag['sandbox_tiers'],
     grant: bag['grant'],
     backend: BACKEND,
+    callId,
   }
 }
 
 /** invoke 入口：按工具名路由到 websearch / webfetch；异常兜底转结构化错误（不炸本轮）。 */
-export async function invoke(args: Json): Promise<ToolResult> {
+export async function invoke(args: Json, callId: string | null = null): Promise<ToolResult> {
   try {
-    return await dispatch(args)
+    return await dispatch(args, callId)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return fail('tool_failed', message.length > 0 ? message : 'invoke failed')
   }
 }
 
-async function dispatch(args: Json): Promise<ToolResult> {
+async function dispatch(args: Json, callId: string | null): Promise<ToolResult> {
   const bag = isRec(args) ? args : {}
   const tool = bag['tool']
   if (typeof tool !== 'string' || tool.length === 0) return fail('bad_args', 'tool is required')
   const toolArgs = bag['args'] ?? {}
-  const ctx = buildContext(bag)
+  const ctx = buildContext(bag, callId)
   if (tool === 'websearch') return websearch(toolArgs, ctx)
   if (tool === 'webfetch') return webfetch(toolArgs, ctx)
   return fail('unknown_tool', `unknown tool ${tool}`)
 }
 
-export const HANDLERS: Record<string, (args: Json, env: CallEnv) => Promise<Json>> = {
+export const HANDLERS: Record<string, (args: Json, env: CallEnv, callId: string | null) => Promise<Json>> = {
   describe: async () => describeTools() as unknown as Json,
-  invoke: async (args) => (await invoke(args)) as unknown as Json,
+  invoke: async (args, _env, callId) => (await invoke(args, callId)) as unknown as Json,
 }

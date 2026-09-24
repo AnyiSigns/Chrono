@@ -26,7 +26,18 @@ export interface ReloadDeps {
   now: () => number
   /** 链头推进后的装配跟随；宿主注入 `applyWorldSerial`，保证换代跟随串行且单调。 */
   applyWorld: (world: World, head: Head) => Promise<void>
+  /**
+   * 落账（`appendJournal`）失败的收口：宿主注入致命标记（fail-stop）；
+   * 缺省不标记，只把失败当普通拒绝返回。
+   */
+  onPersistFailure?: (err: unknown) => void
 }
+
+/** 落账段内的定论：与外部 `ReloadOutcome` 分离，携带提交产物供段外交装配跟随。 */
+type SegmentOutcome =
+  | { kind: 'unchanged'; identity: string }
+  | { kind: 'failed'; identity: string | null; reasons: string[] }
+  | { kind: 'committed'; identity: string; gen: Hash; world: World; head: Head }
 
 /**
  * 重新入世一个投递目录：
@@ -34,18 +45,33 @@ export interface ReloadDeps {
  * 不同 → 字节先落 CAS、再在落账互斥段内提交 `batch`（身份不存在则 `add_identity` + `add_gen`），
  * 链头推进后交装配跟随（代码换代重起进程、数据换代热生效）。
  * 提交被拒 → `failed`，世界分文未动（至多留孤儿 CAS 字节，离线 GC 清理）。
+ *
+ * 规划（`planIngest` + `putBlob`，皆同步 IO）默认在**段外**预规划，缩短落账互斥段的持锁时间；
+ * 段内以当前世界为准校验，世界已变（并发落账）才在段内重规划，保证 pins / unchanged / `id_taken`
+ * 判定用段内当前世界。局限：`planIngest` 读源码树用 `readFileStable`（读前后 stat 比对），
+ * 仍是 TOCTOU——打包中途的写入可能被读成混合版本；内容哈希自洽，调用方按结果处理，不追求原子快照。
  */
 export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promise<ReloadOutcome> {
-  const planned = planIngest(deps.writer.snapshot().world, deps.root, entry)
-  if (!planned.ok) return { status: 'failed', identity: null, reasons: planned.reasons }
-  const plan = planned.plan
-  if (plan.unchanged) return { status: 'unchanged', identity: plan.identity }
-
-  // 字节先于链落 CAS：提交拒绝时至多留孤儿字节，世界分文未动（与 seed / pack 同规）
-  for (const blob of plan.blobs) putBlob(deps.paths.blobsDir, blob.bytes)
-
-  const outcome = await deps.writer.run((state) => {
+  // 段外预规划：读源码树是重同步 IO，放段内会长时间占住落账互斥段、拖慢其它提交。
+  // 字节也先落 CAS（内容寻址、幂等）；段内世界未变即复用该预规划。
+  const preWorld = deps.writer.snapshot().world
+  const preplanned = planIngest(preWorld, deps.root, entry)
+  if (preplanned.ok && !preplanned.plan.unchanged) {
+    for (const blob of preplanned.plan.blobs) putBlob(deps.paths.blobsDir, blob.bytes)
+  }
+  const outcome = await deps.writer.run<SegmentOutcome>((state) => {
     try {
+      let planned = preplanned
+      if (!preplanned.ok || state.world !== preWorld) {
+        planned = planIngest(state.world, deps.root, entry)
+        if (planned.ok && !planned.plan.unchanged) {
+          for (const blob of planned.plan.blobs) putBlob(deps.paths.blobsDir, blob.bytes)
+        }
+      }
+      if (!planned.ok) return { kind: 'failed', identity: null, reasons: planned.reasons }
+      const plan = planned.plan
+      if (plan.unchanged) return { kind: 'unchanged', identity: plan.identity }
+
       const request: WriteRequest = {
         id: `watch-${randomUUID()}`,
         op: 'batch',
@@ -58,24 +84,41 @@ export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promis
       const nextWorld = cloneWorld(state.world)
       const committed = commit(state.head, nextWorld, request, deps.now())
       if (!committed.verdict.ok) {
-        return { ok: false as const, reasons: committed.verdict.reasons }
+        return { kind: 'failed', identity: plan.identity, reasons: committed.verdict.reasons }
       }
       if (committed.entry === null) {
         // 幂等命中（内容其实未变）：世界未动
-        return { ok: true as const, wrote: false, world: state.world, head: state.head }
+        return { kind: 'unchanged', identity: plan.identity }
       }
-      appendJournal(deps.paths.journalFile, [committed.entry])
+      try {
+        appendJournal(deps.paths.journalFile, [committed.entry])
+      } catch (err) {
+        // 落账失败是 fail-stop：内存世界尚未推进（下一行才改 state.world），但账本已不可写，
+        // 交宿主标记致命并停机，避免后续提交继续以内存为准造成分叉。
+        deps.onPersistFailure?.(err)
+        throw err
+      }
       state.world = nextWorld
       state.head = { seq: committed.entry.seq, hash: committed.hash as Hash }
-      return { ok: true as const, wrote: true, world: nextWorld, head: state.head }
+      return {
+        kind: 'committed',
+        identity: plan.identity,
+        gen: plan.commitHash,
+        world: nextWorld,
+        head: state.head,
+      }
     } catch (err) {
-      return { ok: false as const, reasons: [err instanceof Error ? err.message : String(err)] }
+      return {
+        kind: 'failed',
+        identity: null,
+        reasons: [err instanceof Error ? err.message : String(err)],
+      }
     }
   })
-  if (!outcome.ok) {
-    return { status: 'failed', identity: plan.identity, reasons: outcome.reasons }
+  if (outcome.kind === 'failed') {
+    return { status: 'failed', identity: outcome.identity, reasons: outcome.reasons }
   }
-  if (!outcome.wrote) return { status: 'unchanged', identity: plan.identity }
+  if (outcome.kind === 'unchanged') return { status: 'unchanged', identity: outcome.identity }
   await deps.applyWorld(outcome.world, outcome.head)
-  return { status: 'committed', identity: plan.identity, gen: plan.commitHash }
+  return { status: 'committed', identity: outcome.identity, gen: outcome.gen }
 }

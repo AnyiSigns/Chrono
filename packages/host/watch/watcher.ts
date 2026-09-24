@@ -66,10 +66,11 @@ export function startSourceWatcher(options: SourceWatcherOptions): SourceWatcher
   const watchers: FSWatcher[] = []
   const debouncers: Debouncer[] = []
   let stopped = false
-  // 重建串行：同一目标的事件合并后按序执行，不并发进入世 / 落账
-  let chain: Promise<void> = Promise.resolve()
+  // 每目标一条重建链：同目标事件合并后按序执行、不重入；不同目标互不阻塞（落账段内规划保证一致性）
+  const chains: Array<() => Promise<void>> = []
   for (const target of targets) {
     let lastPath = ''
+    let chain: Promise<void> = Promise.resolve()
     const debouncer = new Debouncer(debounceMs, () => {
       if (stopped) return
       const changed = lastPath
@@ -83,6 +84,7 @@ export function startSourceWatcher(options: SourceWatcherOptions): SourceWatcher
           options.onError?.(target, err instanceof Error ? err.message : String(err))
         })
     })
+    chains.push(() => chain)
     debouncers.push(debouncer)
     try {
       const watcher = watch(target.dir, { recursive: true }, (_event, filename) => {
@@ -122,7 +124,7 @@ export function startSourceWatcher(options: SourceWatcherOptions): SourceWatcher
         // 句柄可能已被平台回收：关闭失败不阻断停机
       }
     }
-    await chain
+    await Promise.allSettled(chains.map((current) => current()))
   }
   return { targets, stop }
 }

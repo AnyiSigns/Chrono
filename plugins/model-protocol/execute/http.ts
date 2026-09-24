@@ -17,7 +17,15 @@ export interface HttpOptions {
   now: number
   /** 非 2xx 归类；缺省按模型错误词表（429 带 Retry-After）。 */
   classify?: (status: number, headers: Rec, body: string) => Error
+  /**
+   * `httpStream` 未消费兜底 TTL（毫秒）：resolve 后调用方迟迟不迭代时，到点销毁上游 socket。
+   * 缺省 {@link UNCONSUMED_STREAM_TTL_MS}；首次迭代即解除兜底。
+   */
+  unconsumed_ttl_ms?: number
 }
+
+/** 未消费流兜底 TTL 缺省值：足够调用方排队迭代，又不至于让遗弃的流长期占用 socket。 */
+export const UNCONSUMED_STREAM_TTL_MS = 30_000
 
 export interface HttpResult {
   status: number
@@ -76,7 +84,7 @@ function openRequest(options: HttpOptions, onResponse: ResponseHandler, onError:
       headers,
     },
     (res) => {
-      settled = true
+      // 不在响应头处封死错误通道：body 阶段的 socket 超时 / 断连仍须经 onError 结算（结算方幂等）。
       onResponse(res)
     },
   )
@@ -93,22 +101,39 @@ export function httpRequest(options: HttpOptions): Promise<HttpResult> {
   return new Promise<HttpResult>((resolve, reject) => {
     const classify =
       options.classify ?? ((status, headers, body) => defaultClassify(status, headers, body, options.now))
+    let settled = false
+    const fail = (err: unknown): void => {
+      if (settled) return
+      settled = true
+      reject(err instanceof ModelError ? err : toNetworkError(err as Error))
+    }
+    const succeed = (result: HttpResult): void => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
     openRequest(
       options,
       (res) => {
         const chunks: Buffer[] = []
         res.on('data', (chunk: Buffer) => chunks.push(chunk))
-        res.on('error', (err: Error) => reject(toNetworkError(err)))
+        res.on('error', fail)
+        // 响应体读完前连接关闭（未 complete）即明确失败，避免 body 阶段悬挂。
+        res.on('close', () => {
+          if (!res.complete) {
+            fail(new ModelError('model_network_error', 'response closed before completion', { retryable: true }))
+          }
+        })
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf8')
           const headers = normalizeHeaders(res.headers)
           const status = res.statusCode ?? 0
           const failure = status >= 200 && status < 300 ? null : classify(status, headers, body)
-          if (failure !== null) reject(failure)
-          else resolve({ status, headers, body })
+          if (failure !== null) fail(failure)
+          else succeed({ status, headers, body })
         })
       },
-      reject,
+      fail,
     )
   })
 }
@@ -118,6 +143,12 @@ export function httpStream(options: HttpOptions): Promise<HttpStream> {
   return new Promise<HttpStream>((resolve, reject) => {
     const classify =
       options.classify ?? ((status, headers, body) => defaultClassify(status, headers, body, options.now))
+    let settled = false
+    const fail = (err: unknown): void => {
+      if (settled) return
+      settled = true
+      reject(err instanceof ModelError ? err : toNetworkError(err as Error))
+    }
     openRequest(
       options,
       (res) => {
@@ -126,19 +157,49 @@ export function httpStream(options: HttpOptions): Promise<HttpStream> {
         if (status < 200 || status >= 300) {
           const chunks: Buffer[] = []
           res.on('data', (chunk: Buffer) => chunks.push(chunk))
-          res.on('end', () => reject(classify(status, headers, Buffer.concat(chunks).toString('utf8'))))
-          res.on('error', (err: Error) => reject(toNetworkError(err)))
+          res.on('end', () => fail(classify(status, headers, Buffer.concat(chunks).toString('utf8'))))
+          res.on('error', fail)
+          res.on('close', () => {
+            if (!res.complete) {
+              fail(new ModelError('model_network_error', 'response closed before completion', { retryable: true }))
+            }
+          })
           return
         }
-        resolve({ status, headers, chunks: readStream(res) })
+        settled = true
+        // 迭代前 error 监听：否则响应在调用方迭代前出错会因无监听者冒成未捕获异常（已销毁状态由 readStream 起始判定兜住）。
+        res.on('error', () => {})
+        // 未消费兜底：调用方拿到流后若从不迭代，readStream 的 finally 永不执行，socket 会一直挂着；
+        // 到点销毁上游，迭代一旦开始即解除兜底（正常结束 / 提前退出由 close 或 finally 清理）。
+        let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+          res.destroy()
+        }, options.unconsumed_ttl_ms ?? UNCONSUMED_STREAM_TTL_MS)
+        timer.unref?.()
+        res.once('close', () => {
+          if (timer !== null) {
+            clearTimeout(timer)
+            timer = null
+          }
+        })
+        resolve({
+          status,
+          headers,
+          chunks: readStream(res, () => {
+            if (timer !== null) {
+              clearTimeout(timer)
+              timer = null
+            }
+          }),
+        })
       },
-      reject,
+      fail,
     )
   })
 }
 
-/** 把响应体转成文本分片异步生成器；提前断开抛 model_stream_broken。 */
-async function* readStream(res: http.IncomingMessage): AsyncGenerator<string> {
+/** 把响应体转成文本分片异步生成器；提前断开抛 model_stream_broken。`onStart` 在首次迭代时回调。 */
+async function* readStream(res: http.IncomingMessage, onStart?: () => void): AsyncGenerator<string> {
+  onStart?.()
   const queue: string[] = []
   let done = false
   let failure: Error | null = null
@@ -149,6 +210,9 @@ async function* readStream(res: http.IncomingMessage): AsyncGenerator<string> {
       wake = null
     }
   }
+  // 生成器惰性执行：监听器挂上之前响应可能已结束 / 断开，先按流状态补齐，避免永久等待。
+  if (res.readableEnded) done = true
+  else if (res.destroyed) failure = new ModelError('model_stream_broken', 'stream closed early', { retryable: true })
   // 多字节字符可能跨 TCP 块：用 StringDecoder 按字节流解码，避免逐块 toString 截断字符
   const decoder = new StringDecoder('utf8')
   res.on('data', (chunk: Buffer) => {
@@ -172,15 +236,20 @@ async function* readStream(res: http.IncomingMessage): AsyncGenerator<string> {
     failure = new ModelError('model_stream_broken', err.message, { retryable: true })
     notify()
   })
-  for (;;) {
-    if (queue.length > 0) {
-      yield queue.shift() as string
-      continue
+  try {
+    for (;;) {
+      if (queue.length > 0) {
+        yield queue.shift() as string
+        continue
+      }
+      if (failure !== null) throw failure
+      if (done) return
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
     }
-    if (failure !== null) throw failure
-    if (done) return
-    await new Promise<void>((resolve) => {
-      wake = resolve
-    })
+  } finally {
+    // 消费方提前退出（break / 抛错 / 生成器被弃）时销毁响应，释放 socket，避免重试期间多路流并存。
+    if (!done) res.destroy()
   }
 }

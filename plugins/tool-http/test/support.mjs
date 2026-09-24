@@ -169,6 +169,7 @@ export function makeCtx(config, backend, overrides = {}) {
     sandboxTiers: undefined,
     grant: undefined,
     backend,
+    callId: null,
     ...overrides,
   }
 }

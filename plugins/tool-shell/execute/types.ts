@@ -21,5 +21,5 @@ export class ToolError extends Error {
   }
 }
 
-/** 一个方法：args 进、值出。 */
-export type Handler = (args: Json) => Promise<Json>
+/** 一个方法：args 进、值出；callId 为正在处理的那条 call 帧 id（反向调用回带用）。 */
+export type Handler = (args: Json, callId: string | null) => Promise<Json>

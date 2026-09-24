@@ -20,6 +20,9 @@ import {
   enqueue,
   enqueueFront,
   formatCount,
+  identityActive,
+  identityBody,
+  isCodeGenFallbackBody,
   matchesThread,
   mergeConfig,
   mergeSlotBody,
@@ -211,6 +214,23 @@ test('槽载荷与写指令：只覆盖本线程键', () => {
 
   const configDirective = configWriteDirective({ version: 1 })
   assert.equal(configDirective.request.args.ops[1].args.id, 'config')
+})
+
+test('写指令：expect_active 显式条件写；身份视图拆 body/active', () => {
+  const hash = 'c'.repeat(64)
+  const slotWrite = slotWriteDirective({ slots: {} }, hash)
+  assert.equal(slotWrite.request.args.ops[1].args.expect_active, hash)
+  const slotOmitted = slotWriteDirective({ slots: {} })
+  assert.equal('expect_active' in slotOmitted.request.args.ops[1].args, false)
+  const configWrite = configWriteDirective({ version: 1 }, null)
+  assert.equal(configWrite.request.args.ops[1].args.expect_active, null)
+
+  const view = { active: hash, body: { version: 1 } }
+  assert.deepEqual(identityBody(view), { version: 1 })
+  assert.equal(identityActive(view), hash)
+  assert.equal(identityActive({ version: 1 }), undefined)
+  assert.equal(isCodeGenFallbackBody({ tree: 'x' }), true)
+  assert.equal(isCodeGenFallbackBody({ version: 1 }), false)
 })
 
 test('待发队列：per-thread 入队 / 出队 / 移除 / 放回队首', () => {

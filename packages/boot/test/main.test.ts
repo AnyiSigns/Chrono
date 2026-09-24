@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { runSeed, runVerify, runReplay } from '../../host/index.ts'
+import { runSeed, runVerify, runReplay, startHost } from '../../host/index.ts'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../host/test/test-helpers.ts'
 import { killProcessTree } from '../../host/test/test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -177,6 +177,19 @@ describe('CLI 薄壳 boot', () => {
     expect(report.kept).toBe(0)
     expect(report.failed).toEqual([])
     expect(existsSync(join(materializedDir, orphan))).toBe(false)
+  })
+
+  it('start：已有宿主运行时再 start → start_failed，不谎报 ok / 死 pid', async () => {
+    runSeed(root)
+    const handle = await startHost({ root })
+    try {
+      const again = await runBoot(['start', '--root', root])
+      expect(again.code).toBe(1)
+      expect(again.stdout).toBe('')
+      expect(again.stderr).toContain('start_failed')
+    } finally {
+      await handle.stop()
+    }
   })
 
   it('start 非法超时 → 退出码 1、报 bad_call_timeout、不起宿主', async () => {

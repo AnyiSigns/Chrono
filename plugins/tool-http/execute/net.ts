@@ -1,8 +1,9 @@
 // 抓取出口：把抓取意图映射为 fetcher 参数，经隔离执行跑，再解析响应。
 // 隔离执行按 caps.net 四档钳制，越档回 net_denied——本层原样透传，不改写。
 
-import { execCaps } from './caps.ts'
+import { execBudgetMs, execCaps } from './caps.ts'
 import { buildFetcherCommand, parseFetcherStdout } from './fetcher.ts'
+import { REVERSE_TIMEOUT_MARGIN_MS } from './reverse.ts'
 import { robotsAllows } from './robots.ts'
 import { isRec } from './types.ts'
 import { isPrivateHost, originOf, parseHttpUrl } from './url.ts'
@@ -32,10 +33,13 @@ function stringOf(value: Json | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** 组装隔离执行的 bag：命令 + 参数 + caps + 调用方透传的档位 / 执行根 / grant。 */
-export function makeExecBag(ctx: ToolContext, spec: FetchSpec, net: string): Rec {
+/**
+ * 组装隔离执行的 bag：命令 + 参数 + caps + 调用方透传的档位 / 执行根 / grant。
+ * `budgetMs` 由调用方按 `execBudgetMs` 算出并同时用于反向等待，保证二者同源。
+ */
+export function makeExecBag(ctx: ToolContext, spec: FetchSpec, net: string, budgetMs: number): Rec {
   const { cmd, args } = buildFetcherCommand(ctx.config.fetcher_cmd, spec)
-  const bag: Rec = { cmd, args, caps: execCaps(ctx.caps, net, ctx.config.output_max) }
+  const bag: Rec = { cmd, args, caps: execCaps(ctx.caps, net, ctx.config.output_max, budgetMs) }
   if (ctx.tier !== undefined) bag['tier'] = ctx.tier
   if (ctx.workspaceRoot !== undefined) bag['workspace_root'] = ctx.workspaceRoot
   if (ctx.sandboxTiers !== undefined) bag['sandbox_tiers'] = ctx.sandboxTiers
@@ -50,7 +54,13 @@ export async function fetchUrl(
   net: string,
   options: FetchOptions = {},
 ): Promise<FetchOutcome> {
-  const outcome = await ctx.backend.exec(makeExecBag(ctx, spec, net))
+  // 执行预算与反向等待同源：取 spec 抓取超时与 caps.timeout_ms 的较大者，再 clamp 在宿主预算内。
+  const budgetMs = execBudgetMs(ctx.caps, spec.timeoutMs)
+  const outcome = await ctx.backend.exec(
+    makeExecBag(ctx, spec, net, budgetMs),
+    ctx.callId,
+    budgetMs + REVERSE_TIMEOUT_MARGIN_MS,
+  )
   if (!outcome.ok) return { ok: false, code: outcome.code, message: outcome.message }
   if (!isRec(outcome.value)) {
     return { ok: false, code: 'fetch_failed', message: 'exec returned a non-object value' }

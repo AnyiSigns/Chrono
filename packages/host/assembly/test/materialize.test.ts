@@ -1,5 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { materializeCommit } from '../materialize.ts'
 import type { BlobLinker } from '../materialize.ts'
@@ -153,6 +161,29 @@ describe('物化 materializeCommit', () => {
     )
   })
 
+  it('暂存目录名含随机 UUID（pid + 时间戳不再碰撞）', () => {
+    const report = runSeed(root, [{ name: 'toy-alpha', path: FIXTURE_ALPHA }])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const commitHash = world.ids['toy-alpha'].active as Hash
+    let stagingName = ''
+    const capture: BlobLinker = (source, dest) => {
+      if (stagingName === '') {
+        stagingName = dest.split(/[\\/]/).find((segment) => segment.includes('.tmp-')) ?? ''
+      }
+      linkSync(source, dest)
+    }
+    const rootDir = materializeCommit(world, commitHash, paths().materializedDir, {
+      blobsDir: paths().blobsDir,
+      linker: capture,
+    })
+    expect(rootDir).not.toBeNull()
+    expect(stagingName).toMatch(
+      /\.tmp-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )
+    expect(existsSync(rootDir as string)).toBe(true)
+  })
+
   it('commit 缺失 → null，不抛错', () => {
     const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
     const matDir = paths().materializedDir
@@ -268,9 +299,9 @@ describe('物化 materializeCommit', () => {
     const emptyCas = join(root, 'state', 'empty-blobs')
     mkdirSync(emptyCas, { recursive: true })
     const matDir = paths().materializedDir
-    expect(() =>
-      materializeCommit(world, commitHash, matDir, { blobsDir: emptyCas }),
-    ).toThrow('blob_missing')
+    expect(() => materializeCommit(world, commitHash, matDir, { blobsDir: emptyCas })).toThrow(
+      'blob_missing',
+    )
     expect(existsSync(join(matDir, commitHash))).toBe(false)
   })
 

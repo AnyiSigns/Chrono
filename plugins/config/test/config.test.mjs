@@ -133,8 +133,8 @@ test('config schema 关键字段齐全', () => {
   assert.deepEqual(schema.properties.params.properties.reasoning.type, 'string')
 })
 
-test('terms 是 JSON AST 且直出 config body', () => {
-  assert.deepEqual(readJson('terms/config.read.json'), ['g', ['ids', 'config', 'body']])
+test('terms 是 JSON AST 且直出 config 身份视图（含 active 与 body）', () => {
+  assert.deepEqual(readJson('terms/config.read.json'), ['g', ['ids', 'config']])
 })
 
 test('tools/default-body.json 是可落地的默认 body', () => {

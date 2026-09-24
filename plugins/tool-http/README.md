@@ -11,7 +11,8 @@
 - 能力类：`tool-http`；方法：`describe` / `invoke`。
 - `pins`：`sandbox`（网络出口与钳制）、`host`（二进制资产存取）。
 - 命令：无。状态档：`recomputable`。服务不读投影、不取时间 / 随机、不写世界。
-- 方法级超时：schema 顶层 `method_timeouts` 声明 `tool-http.invoke` 120000，避免多源检索被宿主 30s 缺省截断。
+- 方法级超时：schema 顶层 `method_timeouts` 声明 `tool-http.invoke` 130000，避免多源检索被宿主 30s 缺省截断；
+  反向等待与传给 sandbox 的 `caps.timeout_ms` 同源（取抓取超时与 caps 的较大者），并 clamp 在宿主预算内（`host > reverse > exec`）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 
 ## `websearch`

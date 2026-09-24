@@ -2,6 +2,7 @@
 // 不可用即明确 browser_unsupported；单测注入假引擎覆盖全部 action 与会话生命周期。
 
 import type { ViewportConfig } from '../config.ts'
+import type { CreationHandle } from '../creation.ts'
 import { ToolError } from '../types.ts'
 
 /** 引擎实例化配置（来自 schema 缺省 + open 的视口覆盖）。 */
@@ -65,8 +66,11 @@ export function assertWaitWithinTimeout(ms: number | undefined, actionTimeoutMs:
   }
 }
 
-/** 引擎加载器：按配置造一个已就绪的引擎实例。 */
-export type EngineLoader = (config: EngineConfig) => Promise<BrowserEngine>
+/**
+ * 引擎加载器：按配置造一个已就绪的引擎实例。
+ * `handle` 用于登记建引擎途中可同步硬杀的中间态（如已 spawn 的浏览器子进程）。
+ */
+export type EngineLoader = (config: EngineConfig, handle: CreationHandle) => Promise<BrowserEngine>
 
 /** 引擎 / 平台不可用：明确失败，不静默降级。 */
 export class BrowserUnsupportedError extends Error {

@@ -2,12 +2,14 @@
 // 只做参数解析与转发，不认识任何业务语义。
 
 import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../client/index.ts'
 import type { AuditFilter, Client } from '../client/index.ts'
 import {
+  hostPaths,
   parseEntryArgv,
   resolveCallTimeoutMs,
   resolveRoot,
@@ -103,13 +105,52 @@ async function withClient<T>(root: string, fn: (client: Client) => Promise<T>): 
   }
 }
 
-async function waitForHost(root: string, timeoutMs: number): Promise<void> {
+/** 本次子进程是否已退出 / 起进程失败；在 spawn 后立即挂监听，避免漏掉瞬时退出。 */
+interface ChildOutcome {
+  error: Error | null
+  exit: { code: number | null; signal: NodeJS.Signals | null } | null
+}
+
+function watchChild(child: ChildProcess): ChildOutcome {
+  const outcome: ChildOutcome = { error: null, exit: null }
+  child.once('error', (err) => {
+    outcome.error = err
+  })
+  child.once('exit', (code, signal) => {
+    outcome.exit = { code, signal }
+  })
+  return outcome
+}
+
+/** 锁文件持有者 pid：所连宿主即本子进程的判据（协议面不含 pid）。 */
+function lockHolderPid(root: string): number | null {
+  try {
+    const parsed = JSON.parse(readFileSync(hostPaths(root).lockFile, 'utf8')) as { pid?: unknown }
+    return typeof parsed.pid === 'number' ? parsed.pid : null
+  } catch {
+    return null
+  }
+}
+
+async function waitForHost(
+  root: string,
+  timeoutMs: number,
+  child: ChildProcess,
+  outcome: ChildOutcome,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    if (outcome.error !== null) throw outcome.error
+    if (outcome.exit !== null) {
+      // 子进程先退出（锁被旧宿主占用 / 启动即败）：不得连到旧宿主谎报本次成功
+      throw new Error(
+        `start_failed: host process exited before ready (code=${outcome.exit.code}, signal=${outcome.exit.signal})`,
+      )
+    }
     try {
       const client = await connect({ root, timeoutMs: 500 })
       client.close()
-      return
+      if (lockHolderPid(root) === child.pid) return
     } catch {
       // 宿主尚未就绪：退避后重试，直到超时
     }
@@ -132,8 +173,9 @@ async function startHostProcess(
     stdio: 'ignore',
     cwd: root,
   })
+  const outcome = watchChild(child)
   child.unref()
-  await waitForHost(root, 10_000)
+  await waitForHost(root, 10_000, child, outcome)
   print({
     ok: true,
     root,

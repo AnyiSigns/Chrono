@@ -46,7 +46,9 @@ export async function runWithConcurrency<T>(
 ): Promise<void> {
   if (items.length === 0) return
   const queue = [...items]
-  const width = Math.max(1, Math.min(Math.floor(limit), queue.length))
+  // NaN / 其它非有限上限会让 worker 数为 0、整层静默跳过；非法值收口为 1（Infinity 仍按不限并发处理）
+  const capped = Number.isFinite(limit) ? Math.floor(limit) : limit === Infinity ? queue.length : 1
+  const width = Math.max(1, Math.min(capped, queue.length))
   const workers = Array.from({ length: width }, async () => {
     while (queue.length > 0) {
       const item = queue.shift() as T

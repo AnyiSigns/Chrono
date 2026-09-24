@@ -20,6 +20,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { blobFile, isBlobPointer } from '../blobs.ts'
 import { assemblyGen, isCodeGen } from './decl.ts'
@@ -74,7 +75,8 @@ export function materializeCommit(
     linker: options.linker ?? linkSync,
   }
   mkdirSync(materializedDir, { recursive: true })
-  const staging = `${target}.tmp-${process.pid}-${Date.now()}`
+  // 暂存目录名带随机 UUID：pid + 毫秒时间戳在并发 / 快速连续物化下可能碰撞
+  const staging = `${target}.tmp-${process.pid}-${randomUUID()}`
   try {
     writeTree(world, tree, staging, context)
     writeFileSync(join(staging, MATERIALIZE_MARKER), commitHash)

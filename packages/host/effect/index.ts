@@ -11,7 +11,8 @@ export type {
   RouterOptions,
 } from './route.ts'
 export { DEFAULT_CALL_TIMEOUT_MS, runRound } from './run-loop.ts'
-export type { RoundInput, RoundOutcome } from './run-loop.ts'
+export type { RoundInput, RoundMaterialize, RoundOutcome } from './run-loop.ts'
+export { assertNotFatal, fatalError, PersistFatalError } from './fatal.ts'
 export {
   runSubmission,
   parsePlanDirectives,

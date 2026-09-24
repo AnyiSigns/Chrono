@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   DIM,
+  defaultBridge,
   directivesOf,
   externOf,
   opsOf,
@@ -309,6 +310,111 @@ test('形态非法 / 维度不符 / 未知方法 / 未知能力类 → 结构化
       (await drv.request('call', { port: 'other', method: 'read', args: {} }, 'error')).code,
       'unresolved_cap',
     )
+  } finally {
+    drv.close()
+  }
+})
+
+/** 手工条目 def（不 spawn 服务即可组装快照，用于制造索引落后）。 */
+function makeEntry(id, text, prev = null) {
+  return {
+    id,
+    text,
+    meta: { source: 'manual', at: '2020-01-01T00:00:00.000Z', tags: [] },
+    chunks: [{ index: 0, start: 0, end: [...text].length }],
+    prev: prev === null ? null : { def: prev },
+  }
+}
+
+test('索引重建竞态：后台旧重建不覆盖 put 已追加的索引，且陈旧在途构建不被 put 复用', async () => {
+  let releaseAlphaEmbed
+  const alphaGate = new Promise((resolveGate) => {
+    releaseAlphaEmbed = resolveGate
+  })
+  // 只卡住「仅 alpha」的重建（旧快照 S1）；新快照 / 新条目照常立即完成。
+  const bridge = (port, method, args) => {
+    if (port === 'embedding' && method === 'embed') {
+      const texts = Array.isArray(args?.texts) ? args.texts : []
+      if (texts.length === 1 && texts[0] === 'alpha') {
+        return alphaGate.then(() => defaultBridge(port, method, args))
+      }
+    }
+    return Promise.resolve(defaultBridge(port, method, args))
+  }
+
+  const entryA = makeEntry('m-a', 'alpha')
+  const entryB = makeEntry('m-b', 'beta', 'hA')
+  const snapA = snapshot('hA', [{ hash: 'hA', entry: entryA }])
+  const snapB = snapshot('hB', [
+    { hash: 'hA', entry: entryA },
+    { hash: 'hB', entry: entryB },
+  ])
+
+  const drv = startService({ bridge })
+  try {
+    await drv.hello()
+    // 后台重建 P 基于旧快照 S1（count=1），embed 被卡住 → 在途
+    const first = await drv.call('search', {
+      query_vector: testVector('alpha'),
+      top_k: 5,
+      body: snapA.body,
+      refs: snapA.refs,
+    })
+    assert.equal(first.value.status, 'index_building')
+
+    // put 用新快照 S2（count=2）：不得复用 count=1 的在途构建
+    const putPromise = drv.call('put', { text: 'gamma', body: snapB.body, refs: snapB.refs })
+    releaseAlphaEmbed()
+    const putC = await putPromise
+    assert.equal(externOf(putC.value).saved, true)
+
+    // 放行后的旧重建（count=1）不得覆盖已含 beta 的索引
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50))
+    const ready = await waitReady(drv, {
+      query_vector: testVector('beta'),
+      top_k: 5,
+      body: snapB.body,
+      refs: snapB.refs,
+    })
+    const hashes = ready.value.hits.map((hit) => hit.entry_hash)
+    assert.ok(hashes.includes('hB'), `索引不应永久缺 beta 条目：${JSON.stringify(ready.value.hits)}`)
+    assert.ok(hashes.includes('hA'))
+  } finally {
+    drv.close()
+  }
+})
+
+test('索引计数超前（未落账 put）不掩盖世界追加：records 未覆盖 body 链即强制重建', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const putA = await drv.call('put', { text: 'alpha', body: {}, refs: {} })
+    const entryA = opsOf(putA.value)[0].args.body
+    const snapA = snapshot('hA', [{ hash: 'hA', entry: entryA }])
+    const readyA = await waitReady(drv, {
+      query_vector: testVector('alpha'),
+      top_k: 5,
+      body: snapA.body,
+      refs: snapA.refs,
+    })
+    assert.equal(readyA.value.hits[0].entry_hash, 'hA')
+
+    // 两次未落账 put：index.count 被抬到 3，而 body 仍 count=1
+    await drv.call('put', { text: 'beta', body: snapA.body, refs: snapA.refs })
+    await drv.call('put', { text: 'gamma', body: snapA.body, refs: snapA.refs })
+
+    // 世界另有写者追加 delta（body count=2，链 alpha → delta）；未落账 put 的条目不在链上
+    const entryD = makeEntry('m-d', 'delta', 'hA')
+    const snapD = snapshot('hD', [
+      { hash: 'hA', entry: entryA },
+      { hash: 'hD', entry: entryD },
+    ])
+    const args = { query_vector: testVector('delta'), top_k: 5, body: snapD.body, refs: snapD.refs }
+    const first = await drv.call('search', args)
+    // 计数超前但 records 不覆盖 delta → 触发重建（先回「索引构建中」）
+    assert.equal(first.value.status, 'index_building')
+    const rebuilt = await waitReady(drv, args)
+    assert.equal(rebuilt.value.hits[0].entry_hash, 'hD')
   } finally {
     drv.close()
   }

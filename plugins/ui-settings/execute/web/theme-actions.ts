@@ -30,5 +30,6 @@ export async function setTheme(ctx: any, card: string): Promise<void> {
   if (card !== 'system' && typeof ctx.doc.defaultView?.matchMedia === 'function') {
     ctx.doc.documentElement.setAttribute('data-theme', card === 'night' ? 'dark' : 'light')
   }
-  await ctx.writeConfig(setUiField(ctx.state.config ?? emptyConfig(), 'theme', card), 'theme')
+  const result = await ctx.writeConfig(setUiField(ctx.state.config ?? emptyConfig(), 'theme', card), 'theme')
+  if (!result.ok) ctx.state.error = { code: result.code, message: '' }
 }

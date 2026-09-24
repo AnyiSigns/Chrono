@@ -54,8 +54,13 @@ export interface RawMessage {
   from: string | null
   subject: string | null
   orderHint: number
-  /** 消息 def 键（历史 = ref 哈希；合成消息缺省）：计数 / 规范化缓存的键。 */
+  /** 消息 def 键（历史 = ref 哈希；合成消息缺省）：规范化缓存键。 */
   defKey?: string | null
+  /**
+   * 计数 / 规范化缓存键覆盖：parts 相对 def 内容被改写（如 group 线程给历史加发言者前缀）时，
+   * 用改写后 parts 的 `computeTokenKey` 定键，保证键与计数输入同口径，避免与未改写形态串计数。
+   */
+  tokenKey?: string | null
 }
 
 /** 规范消息（结构化 + 计数后的组装单元）。 */
@@ -63,6 +68,7 @@ export interface CanonicalMessage extends RawMessage {
   tokens: number
   dedupKey: string
   conflictKey: string
+  /** 计数缓存键：历史 = def 哈希；合成消息 = 原始内容键（见 `computeTokenKey`）。 */
   cacheKey: string
   /** 仅规范化内容（不含角色）：跨来源去重（记忆 vs 历史丢记忆副本）用。 */
   contentKey: string

@@ -19,7 +19,15 @@ export const contract = '2'
 export async function register(ctx: SlotContext): Promise<void> {
   const messages = await loadMessages((url) => fetch(url), ctx.tokens.messages)
   const store = new SidebarStore(ctx, messages)
-  ctx.slots.register({ name: 'sidebar' }, (props) => <Sidebar ctx={props.ctx} store={store} />)
+  const registered = ctx.slots.register({ name: 'sidebar' }, (props) => {
+    useEffect(() => () => store.dispose(), [])
+    return <Sidebar ctx={props.ctx} store={store} />
+  })
+  // 注册被拒（陈旧装载）：刚建的 store 立即 dispose，避免第二份在途。
+  if (registered !== true) {
+    store.dispose()
+    return
+  }
   store.start()
 }
 

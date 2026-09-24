@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::describe;
 use crate::frames;
 use crate::invoke;
-use crate::port::{FsopBackend, PortLink, RemoteFsop, SharedWriter};
+use crate::port::{CurrentCallIdGuard, FsopBackend, PortLink, RemoteFsop, SharedWriter};
 
 /// 身份名 = 能力类名（类名 = 身份名）。
 pub const IDENTITY: &str = "tool-fs";
@@ -76,6 +76,9 @@ pub fn handle_call(
 
 fn call_response(message: &Value, backend: &dyn FsopBackend) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
+    // 每 call 独立线程：记下本线程正在处理的正向帧 id，供反向调用回带 `call_id`；
+    // 守卫在返回 / panic 时清空，避免线程复用时残留。
+    let _call_id_guard = CurrentCallIdGuard::set(id.as_str().map(str::to_string));
     let port = message.get("port").and_then(Value::as_str).unwrap_or("");
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let args = message.get("args").cloned().unwrap_or(Value::Null);
@@ -116,6 +119,39 @@ fn wait_for_inflight(inflight: &Arc<(Mutex<usize>, Condvar)>, deadline_ms: u64) 
     }
 }
 
+/// 在途调用上限：超过即回结构化错误，避免无界 `thread::spawn` 耗尽资源。
+const MAX_INFLIGHT: usize = 128;
+
+/// 在途调用计数守卫：构造时自增，`Drop` 时持锁自减并唤醒 `drain`。
+/// 必须在 `spawn` 前构造并 move 进线程——否则子线程可能在自增前完成，计数不归零。
+struct InflightGuard {
+    inflight: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl InflightGuard {
+    /// 未达上限时自增并返回守卫；已达上限返回 `None`（调用方回 `overloaded`，不 spawn）。
+    fn try_acquire(inflight: Arc<(Mutex<usize>, Condvar)>) -> Option<Self> {
+        {
+            let (lock, _) = &*inflight;
+            let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *count >= MAX_INFLIGHT {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(Self { inflight })
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.inflight;
+        let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *count = count.saturating_sub(1);
+        cvar.notify_all();
+    }
+}
+
 /// `call` 独立线程执行（可能等待反向调用），控制帧不被阻塞；在途计数用于 `drain`。
 fn spawn_call(
     message: Value,
@@ -123,18 +159,22 @@ fn spawn_call(
     inflight: Arc<(Mutex<usize>, Condvar)>,
     backend: Arc<dyn FsopBackend>,
 ) {
-    {
-        let (lock, _) = &*inflight;
-        *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
-    }
-    thread::spawn(move || {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let Some(guard) = InflightGuard::try_acquire(Arc::clone(&inflight)) else {
+        frames::log("call rejected: inflight limit reached");
+        write_shared(&shared, &error_frame(&id, "overloaded", "inflight limit reached"));
+        return;
+    };
+    let fallback = Arc::clone(&shared);
+    if let Err(err) = thread::Builder::new().spawn(move || {
         let response = call_response(&message, &*backend);
         write_shared(&shared, &response);
-        let (lock, cvar) = &*inflight;
-        let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *count = count.saturating_sub(1);
-        cvar.notify_all();
-    });
+        // guard 随闭包结束（或 spawn 失败）而 Drop：计数必归零。
+        drop(guard);
+    }) {
+        frames::log(&format!("spawn call failed: {err}"));
+        write_shared(&fallback, &error_frame(&id, "spawn_failed", &err.to_string()));
+    }
 }
 
 /// `drain`：等在途结束（或到期限）再回 `bye`。
@@ -228,6 +268,18 @@ mod tests {
     fn capture() -> (Capture, Arc<Mutex<Vec<u8>>>) {
         let sink = Arc::new(Mutex::new(Vec::new()));
         (Capture(Arc::clone(&sink)), sink)
+    }
+
+    #[test]
+    fn inflight_guard_bounds_concurrent_calls() {
+        let inflight: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_INFLIGHT {
+            guards.push(InflightGuard::try_acquire(Arc::clone(&inflight)).expect("under limit"));
+        }
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_none());
+        drop(guards.pop());
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_some());
     }
 
     fn drain_frames(sink: &Arc<Mutex<Vec<u8>>>) -> Vec<Value> {
@@ -392,6 +444,48 @@ mod tests {
         assert!(
             result_index < bye_index,
             "bye 必须先等在途 call 结算：{frames:?}"
+        );
+    }
+
+    /// 后端 panic：在途线程 unwind 时守卫 Drop，`drain` 仍能结算并回 `bye`（不悬挂）。
+    struct PanickingBackend;
+
+    impl FsopBackend for PanickingBackend {
+        fn fsop(&self, _bag: &Value) -> Result<Value, ToolError> {
+            panic!("backend boom");
+        }
+    }
+
+    #[test]
+    fn panicking_call_releases_inflight_for_drain() {
+        let mut input = encode_frame(&json!({
+            "v":"1","id":"c1","kind":"call","port":"tool-fs","method":"invoke",
+            "args":{"tool":"read","args":{"path":"a.txt"},"workspace_root":"C:\\ws"},
+        }))
+        .unwrap();
+        input.extend_from_slice(
+            &encode_frame(&json!({"v":"1","id":"d1","kind":"drain","deadline_ms":2000})).unwrap(),
+        );
+        let (writer, sink) = capture();
+        let shared: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
+        let link = Arc::new(PortLink::new(Arc::clone(&shared)));
+        let backend: Arc<dyn FsopBackend> = Arc::new(PanickingBackend);
+        // 计时：panic 线程 unwind 时守卫 Drop 必归零，`drain` 应立即结算。
+        // 若计数泄漏，`wait_for_inflight` 会等到 deadline（2000ms）才回 bye——故用到达耗时区分。
+        let start = Instant::now();
+        let handle = thread::spawn(move || {
+            run_loop_with(std::io::Cursor::new(input), shared, link, backend);
+        });
+        handle.join().unwrap();
+        let elapsed = start.elapsed();
+        let frames = drain_frames(&sink);
+        assert!(
+            frames.iter().any(|frame| frame["kind"] == "bye"),
+            "drain 应在 panic 线程结算后回 bye：{frames:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "panic 后计数应已归零，bye 不得等到 deadline（耗时 {elapsed:?}）：{frames:?}"
         );
     }
 }

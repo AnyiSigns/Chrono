@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { BrowserUnsupportedError, assertWaitWithinTimeout, mimeForFormat } from './types.ts'
 import { CdpConnection } from './cdp-connection.ts'
 import { ToolError } from '../types.ts'
+import type { CreationHandle } from '../creation.ts'
 import type { BrowserEngine, EngineConfig, ExtractResult, NavigateResult, ScreenshotResult } from './types.ts'
 import type { Json, Rec } from '../types.ts'
 
@@ -64,7 +65,11 @@ function profileRoot(config: EngineConfig): string {
 }
 
 /** spawn 浏览器并等它打印 DevTools 端点。 */
-async function launchBrowser(executable: string, config: EngineConfig): Promise<{ child: ChildProcess; wsUrl: string; profileDir: string }> {
+async function launchBrowser(
+  executable: string,
+  config: EngineConfig,
+  handle: CreationHandle,
+): Promise<{ child: ChildProcess; wsUrl: string; profileDir: string }> {
   const profileDir = mkdtempSync(join(profileRoot(config), 'session-'))
   const args = [
     '--remote-debugging-port=0',
@@ -78,6 +83,21 @@ async function launchBrowser(executable: string, config: EngineConfig): Promise<
   ]
   if (config.headless) args.unshift('--headless=new')
   const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
+  // 浏览器子进程已 spawn：登记同步硬杀句柄（杀进程 + 清 profile）；建引擎途中 abort 也能触达。
+  handle.register({
+    kill: () => {
+      try {
+        child.kill()
+      } catch {
+        // 已退出：忽略
+      }
+      try {
+        rmSync(profileDir, { recursive: true, force: true })
+      } catch {
+        // profile 目录可能已清理
+      }
+    },
+  })
   const wsUrl = await new Promise<string>((resolve, reject) => {
     let buffered = ''
     const timer = setTimeout(() => {
@@ -344,9 +364,9 @@ export class CdpEngine implements BrowserEngine {
 }
 
 /** 探测系统浏览器、spawn、连上 CDP 并开一个页面。 */
-export async function loadCdp(config: EngineConfig): Promise<BrowserEngine> {
+export async function loadCdp(config: EngineConfig, handle: CreationHandle): Promise<BrowserEngine> {
   const executable = findBrowser(config)
-  const { child, wsUrl, profileDir } = await launchBrowser(executable, config)
+  const { child, wsUrl, profileDir } = await launchBrowser(executable, config, handle)
   let connection: CdpConnection
   try {
     connection = await CdpConnection.connect(wsUrl, CONNECT_TIMEOUT_MS)
@@ -355,6 +375,8 @@ export async function loadCdp(config: EngineConfig): Promise<BrowserEngine> {
     rmSync(profileDir, { recursive: true, force: true })
     throw err
   }
+  // 连接已建立：登记同步关闭，建引擎途中 abort 时一并断开。
+  handle.register({ kill: () => connection.close() })
   try {
     const target = (await connection.send('Target.createTarget', { url: 'about:blank' })) as Rec
     const targetId = target['targetId']

@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach } from 'vitest'
 import { H } from '../../../kernel/index.ts'
 import { ServiceChannelError } from '../../service-link.ts'
 import { WorldWriter } from '../../writer.ts'
+import type { SyncResult, WorldState } from '../../writer.ts'
 import { runRound } from '../run-loop.ts'
+import { resetFatal } from '../fatal.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
 import type { Directive, EffResult, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
@@ -10,6 +12,11 @@ import type { Directive, EffResult, Entry, Hash, Head, Json, World } from '../..
 const EMPTY_HEAD: Head = { seq: -1, hash: null }
 const NOW = 1000
 const LIMITS = { gas: 1_000_000, depth: 64 }
+
+afterEach(() => {
+  // 落账致命态是进程级：每个用例后复位，避免污染同文件其余用例
+  resetFatal()
+})
 
 function emptyWorld(): World {
   return { defs: {}, ids: {} }
@@ -83,6 +90,44 @@ describe('通用 run loop runRound', () => {
     expect(outcome.journal).toHaveLength(1)
     expect(outcome.journal[0].op).toBe('put')
     expect(outcome.head.hash).not.toBeNull()
+  })
+
+  it('同轮多条 write → refused:bad_directive，不落 journal、不推进 head', async () => {
+    const writer = new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } })
+    const outcome = await runRound({
+      writer,
+      directives: [
+        {
+          kind: 'write',
+          request: {
+            id: 'w1',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { a: 1 } },
+            by: 'client',
+          },
+        },
+        {
+          kind: 'write',
+          request: {
+            id: 'w2',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { b: 2 } },
+            by: 'client',
+          },
+        },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+    })
+    expect(outcome.status).toBe('refused')
+    expect(outcome.journal).toEqual([])
+    expect(outcome.observations).toEqual([{ kind: 'refused', reasons: ['bad_directive'] }])
+    expect(writer.snapshot().head).toEqual({ ...EMPTY_HEAD })
+    expect(Object.keys(writer.snapshot().world.defs)).toEqual([])
   })
 
   it('eval 挂起但无 router / 属主 → refused，不落业务 journal，审计已落', async () => {
@@ -479,5 +524,163 @@ describe('通用 run loop runRound', () => {
       kind: 'refused',
       reasons: ['eff_error'],
     })
+  })
+
+  it('落账失败 fail-stop：onRound 抛错 → 不推进内存、后续 run 入口即拒', async () => {
+    const writer = new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } })
+    await expect(
+      runRound({
+        writer,
+        directives: [
+          {
+            kind: 'write',
+            request: {
+              id: 'w1',
+              op: 'put',
+              target: { expect_pos: null },
+              args: { body: { v: 1 } },
+              by: 'client',
+            },
+          },
+        ],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'client',
+        now: NOW,
+        onRound: () => {
+          throw new Error('disk full')
+        },
+      }),
+    ).rejects.toThrow('disk full')
+    // 落盘失败不得切换内存世界 / 链头
+    expect(Object.keys(writer.snapshot().world.defs)).toEqual([])
+    expect(writer.snapshot().head).toEqual({ ...EMPTY_HEAD })
+    // 致命态：后续 run 不再接受提交
+    await expect(
+      runRound({ writer, directives: [], caps: {}, limits: LIMITS, initiator: 'client', now: NOW }),
+    ).rejects.toThrow('persist_failed')
+  })
+
+  it('审计落账失败 fail-stop：onAudit 抛错 → 审计副本不切换、链头不动', async () => {
+    const termHash = 'th'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
+      ids: {},
+    }
+    const writer = new WorldWriter({ world, head: { ...EMPTY_HEAD } })
+    await expect(
+      runRound({
+        writer,
+        directives: [evalDirective(termHash)],
+        owners: ['toy-owner'],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'client',
+        now: NOW,
+        router: fakeRouter(async () => null),
+        onAudit: () => {
+          throw new Error('journal locked')
+        },
+      }),
+    ).rejects.toThrow('journal locked')
+    expect(writer.snapshot().head).toEqual({ ...EMPTY_HEAD })
+    // 审计 def 未落活世界（只剩初始 term def）
+    expect(Object.keys(writer.snapshot().world.defs)).toEqual([termHash])
+  })
+
+  it('段内复核取消：排到落账段才 abort → 不落该轮业务写', async () => {
+    const controller = new AbortController()
+    class AbortOnRunWriter extends WorldWriter {
+      override run<T>(fn: (state: WorldState) => SyncResult<T>): Promise<T> {
+        controller.abort()
+        return super.run(fn)
+      }
+    }
+    const writer = new AbortOnRunWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } })
+    const outcome = await runRound({
+      writer,
+      directives: [
+        {
+          kind: 'write',
+          request: {
+            id: 'w1',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { v: 1 } },
+            by: 'client',
+          },
+        },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      signal: controller.signal,
+    })
+    expect(outcome.status).toBe('cancelled')
+    expect(outcome.journal).toEqual([])
+    expect(writer.snapshot().head).toEqual({ ...EMPTY_HEAD })
+    expect(Object.keys(writer.snapshot().world.defs)).toEqual([])
+  })
+
+  it('方法级超时与路由同解析世界：resolutionWorld 提供活世界时按它取声明', async () => {
+    const termHash = 'ab'.repeat(32)
+    const schemaOld = 's1'.repeat(32)
+    const schemaLive = 's2'.repeat(32)
+    const active = 'x'.repeat(64)
+    const identity = (schema: Hash): World['ids'][string] => ({
+      id: 'toy',
+      schema,
+      gens: [],
+      active,
+      born: { at: 1, by: 'seed' },
+    })
+    const anchored: World = {
+      defs: {
+        [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] },
+        [schemaOld]: { body: { type: 'object' } },
+      },
+      ids: { toy: identity(schemaOld) },
+    }
+    // 活世界给目标身份的 schema 声明方法级超时 1234ms
+    const live: World = {
+      defs: {
+        [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] },
+        [schemaLive]: { body: { type: 'object', method_timeouts: { echo: 1234 } } },
+      },
+      ids: { toy: identity(schemaLive) },
+    }
+    const timeouts: number[] = []
+    const row = {
+      impl: 'toy',
+      gen: 'g'.repeat(64),
+      cap: 'toy.echo',
+      method: 'echo',
+      transport: 'stdio',
+      pid: 1,
+      link: {
+        call: async (_port: string, _method: string, _args: Json, timeoutMs: number) => {
+          timeouts.push(timeoutMs)
+          return { ok: true, value: null }
+        },
+      },
+    } as unknown as EndpointRow
+    const router: RoundRouter = {
+      resolve: () => ({ ok: true, row }),
+      resolutionWorld: () => live,
+    }
+    const outcome = await runRound({
+      world: anchored,
+      head: { ...EMPTY_HEAD },
+      directives: [evalDirective(termHash)],
+      owners: ['toy'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router,
+    })
+    expect(outcome.status).toBe('done')
+    expect(timeouts).toEqual([1234])
   })
 })

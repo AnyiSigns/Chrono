@@ -2,12 +2,51 @@
 // 令牌桶状态落 `CHRONO_PLUGIN_STATE` ③ 目录（可重算）；目录缺失 / 不可读写时安全降级为进程内存。
 // 时间一律取调用帧 env.now（不自取时钟）；退避等待用真实定时器，但等待时长不影响世界内容。
 
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { basename, dirname, join } from 'node:path'
 import { ModelError } from './errors.ts'
 import { isRecord } from './plan.ts'
 import { schemaConfig } from './plugin.ts'
 import type { Json, Rec } from './types.ts'
+
+/** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
+const STALE_TEMP_MS = 60 * 60 * 1000
+
+/** 机会式回收：清理同目录中本模块遗留的过期临时文件，避免崩溃残留的 `.tmp` 堆积。 */
+function sweepStaleTemps(dir: string, prefix: string): void {
+  try {
+    const cutoff = Date.now() - STALE_TEMP_MS
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue
+      const full = join(dir, name)
+      try {
+        if (statSync(full).mtimeMs < cutoff) rmSync(full, { force: true })
+      } catch {
+        // 单文件 stat / 删除失败不影响本次写入
+      }
+    }
+  } catch {
+    // 目录不可读：跳过回收
+  }
+}
+
+/** 原子写：先写同目录唯一临时文件再 rename 替换，读方永不看到半截 JSON。 */
+function writeFileAtomic(file: string, data: string): void {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    sweepStaleTemps(dirname(file), `${basename(file)}.`)
+    writeFileSync(temporary, data, 'utf8')
+    renameSync(temporary, file)
+  } catch (err) {
+    try {
+      rmSync(temporary, { force: true })
+    } catch {
+      // 临时文件清理失败不掩盖原始错误
+    }
+    throw err
+  }
+}
 
 export interface RetryPolicy {
   max_retries: number
@@ -142,7 +181,7 @@ export class RateLimiter {
       for (const [provider, value] of this.state) {
         payload[provider] = { tokens: value.tokens, updated_at: value.updated_at, cooldown_until: value.cooldown_until }
       }
-      writeFileSync(this.file, JSON.stringify(payload), 'utf8')
+      writeFileAtomic(this.file, JSON.stringify(payload))
     } catch {
       // ③ 目录不存在 / 不可写：安全降级为进程内存。
     }

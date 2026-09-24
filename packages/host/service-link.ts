@@ -115,9 +115,13 @@ export class ServiceLink {
     env: CallEnv | undefined,
   ) => Promise<CallResponse>
   private readonly onClosed?: (reason: string) => void
-  /** 在途正向调用的回合信息（LIFO）：反向调用没有自带 `env`，按最近一条在途调用回带。 */
-  private readonly inflightEnvs: CallEnv[] = []
-  /** 在途正向调用计数：健康探针据此暂停（服务帧循环把 probe 排在在途调用之后，忙时探针必超时）。 */
+  /**
+   * 在途正向调用的回合信息：帧 id → env。反向调用自带 `call_id`（= 该正向帧 id）时精确配对；
+   * 未带时回落「最早已登记未结算」的 best-effort（Map 保插入序，队首即最早在途）。
+   * 响应到达时在 `onMessage` 内同步摘除（处理同 chunk 后续消息之前）；超时 / 取消 / 断连同样摘除。
+   */
+  private readonly inflightEnvs = new Map<string, CallEnv>()
+  /** 在途正向调用 / 控制请求计数：健康探针据此暂停（probe 会被服务排在在途请求之后，忙时必超时）。 */
   private inflightCalls = 0
   private closed = false
 
@@ -155,7 +159,7 @@ export class ServiceLink {
     return isRecord(message) && message['ok'] === true
   }
 
-  /** 是否有在途正向调用：忙时健康探针应暂停（probe 会被服务排在在途调用之后）。 */
+  /** 是否有在途正向调用 / 控制请求：忙时健康探针应暂停（probe 会被服务排在在途请求之后）。 */
   hasInflightCall(): boolean {
     return this.inflightCalls > 0
   }
@@ -174,15 +178,19 @@ export class ServiceLink {
     signal?: AbortSignal,
     env?: CallEnv,
   ): Promise<CallResponse> {
-    // 帧上填 `env`（不改 args 语义）；同时在途登记，供本连接的反向调用回带同一回合
+    // 帧上填 `env`（不改 args 语义）；同时在途登记，供本连接的反向调用按帧 id 回带同一回合
     const fields: { [k: string]: Json } = { port, method, args }
-    if (env !== undefined) {
-      fields['env'] = env as unknown as Json
-      this.inflightEnvs.push(env)
-    }
+    if (env !== undefined) fields['env'] = env as unknown as Json
     this.inflightCalls += 1
     try {
-      const message = await this.request('call', fields, ['result', 'error'], timeoutMs, signal)
+      const message = await this.request(
+        'call',
+        fields,
+        ['result', 'error'],
+        timeoutMs,
+        signal,
+        env,
+      )
       const record = message as { [k: string]: Json }
       if (record['kind'] === 'error') {
         if (record['ok'] !== false) throw new ServiceChannelError('protocol_error')
@@ -194,21 +202,28 @@ export class ServiceLink {
       return { ok: true, value: (record['value'] ?? null) as Json }
     } finally {
       this.inflightCalls -= 1
-      if (env !== undefined) {
-        const index = this.inflightEnvs.lastIndexOf(env)
-        if (index >= 0) this.inflightEnvs.splice(index, 1)
-      }
     }
   }
 
   /** 数据换代热生效：通知服务新世代，服务回 ack（进程不动）。 */
   async reload(gen: string, timeoutMs: number): Promise<void> {
-    await this.request('reload', { gen }, 'ack', timeoutMs)
+    // 计入在途：长 reload 期间健康探针须暂停（probe 排在 reload 之后，否则误判空闲 / 超时误杀）
+    this.inflightCalls += 1
+    try {
+      await this.request('reload', { gen }, 'ack', timeoutMs)
+    } finally {
+      this.inflightCalls -= 1
+    }
   }
 
   /** 排空：在途结束后服务回 bye。 */
   async drain(deadlineMs: number, timeoutMs: number): Promise<void> {
-    await this.request('drain', { deadline_ms: deadlineMs }, 'bye', timeoutMs)
+    this.inflightCalls += 1
+    try {
+      await this.request('drain', { deadline_ms: deadlineMs }, 'bye', timeoutMs)
+    } finally {
+      this.inflightCalls -= 1
+    }
   }
 
   /** 宿主主动关闭通道（end stdin，触发服务「断连自退出」义务）。 */
@@ -230,6 +245,7 @@ export class ServiceLink {
     expect: string | readonly string[],
     timeoutMs: number,
     signal?: AbortSignal,
+    env?: CallEnv,
   ): Promise<Json> {
     const stdin = this.child.stdin
     if (this.closed || stdin === null || stdin === undefined || stdin.destroyed) {
@@ -237,13 +253,14 @@ export class ServiceLink {
     }
     const id = randomUUID()
     return new Promise<Json>((resolve, reject) => {
-      // settle 只生效一次：清计时器、摘 abort 监听（防同一 signal 跨多次调用累积监听）
+      // settle 只生效一次：清计时器、摘 abort 监听、摘反向回带 env（防同一 signal 跨多次调用累积监听）
       let settled = false
       const cleanup = (): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
+        this.inflightEnvs.delete(id)
       }
       const onAbort = (): void => {
         if (settled) return
@@ -251,11 +268,14 @@ export class ServiceLink {
         cleanup()
         reject(new ServiceChannelError('cancelled'))
       }
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        cleanup()
-        reject(new ServiceChannelError('timeout'))
-      }, Math.min(timeoutMs, MAX_CALL_TIMEOUT_MS))
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(id)
+          cleanup()
+          reject(new ServiceChannelError('timeout'))
+        },
+        Math.min(timeoutMs, MAX_CALL_TIMEOUT_MS),
+      )
       timer.unref?.()
       if (signal !== undefined) {
         if (signal.aborted) {
@@ -267,6 +287,8 @@ export class ServiceLink {
         signal.addEventListener('abort', onAbort, { once: true })
       }
       this.pending.set(id, { expect, resolve, reject, cleanup })
+      // 按帧 id 登记反向回带 env：登记先于写帧，服务在同一 chunk 内先发 port.call 也能命中
+      if (env !== undefined) this.inflightEnvs.set(id, env)
       stdin.write(
         encodeFrame({ v: SERVICE_PROTOCOL_VERSION, id, kind, ...fields } as Json),
         (err) => {
@@ -314,6 +336,7 @@ export class ServiceLink {
     const pending = this.pending.get(id)
     if (pending === undefined) return
     this.pending.delete(id)
+    // 同步摘除该帧的 env：处理同 chunk 后续消息（含 port.call）之前，本调用已不再「在途」
     pending.cleanup()
     const expected = Array.isArray(pending.expect)
       ? pending.expect.includes(message['kind'] as string)
@@ -342,8 +365,12 @@ export class ServiceLink {
       })
       return
     }
+    // env 精确配对：服务回带 `call_id`（= 该正向帧 id）时只认精确命中——命中用其 env，
+    // 未命中返回 undefined 交宿主补时钟，不回落队首（否则并发在途会串台）。
+    // 仅当完全不带 `call_id`（旧服务）才回落「最早已登记未结算」的 best-effort。
+    const callId = message['call_id']
     const env =
-      this.inflightEnvs.length === 0 ? undefined : this.inflightEnvs[this.inflightEnvs.length - 1]
+      typeof callId === 'string' ? this.inflightEnvs.get(callId) : this.earliestInflightEnv()
     let response: CallResponse
     try {
       response = await this.onPortCall(port, method, (message['args'] ?? null) as Json, env)
@@ -351,6 +378,12 @@ export class ServiceLink {
       response = { ok: false, code: 'transport_failed', message: 'port.call failed' }
     }
     this.writePortResponse(id, response)
+  }
+
+  /** 最早已登记未结算的正向调用 env（Map 保插入序）；无在途 → undefined。 */
+  private earliestInflightEnv(): CallEnv | undefined {
+    for (const env of this.inflightEnvs.values()) return env
+    return undefined
   }
 
   private writePortResponse(id: string, response: CallResponse): void {

@@ -135,18 +135,54 @@ fn call_response(message: &Value) -> Value {
 
 fn wait_for_inflight(inflight: &Arc<(Mutex<usize>, Condvar)>, deadline_ms: u64) {
     let (lock, cvar) = &**inflight;
-    let mut count = lock.lock().expect("inflight poisoned");
+    let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let deadline = Instant::now() + Duration::from_millis(deadline_ms);
     while *count > 0 {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        let (next, timeout) = cvar.wait_timeout(count, remaining).expect("inflight poisoned");
+        let (next, timeout) = match cvar.wait_timeout(count, remaining) {
+            Ok(pair) => pair,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         count = next;
         if timeout.timed_out() {
             break;
         }
+    }
+}
+
+/// 在途调用上限：超过即回结构化错误，避免无界 `thread::spawn` 耗尽资源。
+const MAX_INFLIGHT: usize = 128;
+
+/// 在途调用计数守卫：构造时自增，`Drop` 时持锁自减并唤醒 `drain`。
+/// 必须在 `spawn` 前构造并 move 进线程——否则子线程可能在自增前完成，计数不归零。
+struct InflightGuard {
+    inflight: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl InflightGuard {
+    /// 未达上限时自增并返回守卫；已达上限返回 `None`（调用方回 `overloaded`，不 spawn）。
+    fn try_acquire(inflight: Arc<(Mutex<usize>, Condvar)>) -> Option<Self> {
+        {
+            let (lock, _) = &*inflight;
+            let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *count >= MAX_INFLIGHT {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(Self { inflight })
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.inflight;
+        let mut count = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *count = count.saturating_sub(1);
+        cvar.notify_all();
     }
 }
 
@@ -165,22 +201,35 @@ pub fn run_loop<R: Read, W: Write + Send + 'static>(mut reader: R, writer: W) {
         };
         match message.get("kind").and_then(Value::as_str).unwrap_or("") {
             "call" => {
-                {
-                    let (lock, _) = &*inflight;
-                    *lock.lock().expect("inflight poisoned") += 1;
-                }
-                let out = Arc::clone(&out);
-                let inflight = Arc::clone(&inflight);
-                thread::spawn(move || {
-                    let response = call_response(&message);
-                    if let Ok(mut guard) = out.lock() {
-                        let _ = frames::write_frame(&mut *guard, &response);
+                let id = message.get("id").cloned().unwrap_or(Value::Null);
+                let Some(guard) = InflightGuard::try_acquire(Arc::clone(&inflight)) else {
+                    frames::log("call rejected: inflight limit reached");
+                    if let Ok(mut writer) = out.lock() {
+                        let _ = frames::write_frame(
+                            &mut *writer,
+                            &error_frame(&id, "overloaded", "inflight limit reached"),
+                        );
                     }
-                    let (lock, cvar) = &*inflight;
-                    let mut count = lock.lock().expect("inflight poisoned");
-                    *count = count.saturating_sub(1);
-                    cvar.notify_all();
-                });
+                    continue;
+                };
+                let out = Arc::clone(&out);
+                let fallback = Arc::clone(&out);
+                if let Err(err) = thread::Builder::new().spawn(move || {
+                    let response = call_response(&message);
+                    if let Ok(mut writer) = out.lock() {
+                        let _ = frames::write_frame(&mut *writer, &response);
+                    }
+                    // guard 随闭包结束（或 spawn 失败）而 Drop：计数必归零。
+                    drop(guard);
+                }) {
+                    frames::log(&format!("spawn call failed: {err}"));
+                    if let Ok(mut writer) = fallback.lock() {
+                        let _ = frames::write_frame(
+                            &mut *writer,
+                            &error_frame(&id, "spawn_failed", &err.to_string()),
+                        );
+                    }
+                }
             }
             "drain" => {
                 let id = message.get("id").cloned().unwrap_or(Value::Null);
@@ -305,6 +354,18 @@ mod tests {
         let pong = frames::read_frame(&mut cursor).unwrap().unwrap();
         assert_eq!(pong["kind"], "pong");
         assert!(frames::read_frame(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn inflight_guard_bounds_concurrent_calls() {
+        let inflight: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_INFLIGHT {
+            guards.push(InflightGuard::try_acquire(Arc::clone(&inflight)).expect("under limit"));
+        }
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_none());
+        drop(guards.pop());
+        assert!(InflightGuard::try_acquire(Arc::clone(&inflight)).is_some());
     }
 
     /// 测试用共享写端：把 run_loop 的输出收进内存。

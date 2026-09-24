@@ -88,7 +88,7 @@ export function makeFakeEngine(options = {}) {
 }
 
 /** 环境变量注入点：`CHRONO_BROWSER_ENGINE_MODULE` 指向本模块时按配置造假引擎。 */
-export async function createEngine(_config) {
+export async function createEngine(_config, _handle) {
   return makeFakeEngine()
 }
 

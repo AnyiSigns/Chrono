@@ -9,7 +9,7 @@ import type { Json, Rec } from './types.ts'
 
 /** 反向调用通道：把一条 `port.call` 发出并等待应答值。 */
 export interface PortLink {
-  call(port: string, method: string, args: Json): Promise<Json>
+  call(port: string, method: string, args: Json, callId?: string | null): Promise<Json>
 }
 
 interface Pending {
@@ -31,7 +31,7 @@ export class StdioPortLink implements PortLink {
     this.timeoutMs = timeoutMs
   }
 
-  call(port: string, method: string, args: Json): Promise<Json> {
+  call(port: string, method: string, args: Json, callId: string | null = null): Promise<Json> {
     const id = `tool-browser-${(this.seq += 1)}`
     return new Promise<Json>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -39,8 +39,10 @@ export class StdioPortLink implements PortLink {
         reject(new ToolError('tool_timeout', `${port}.${method} did not answer in time`))
       }, this.timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
+      const frame: Rec = { v: '1', id, kind: 'port.call', port, method, args }
+      if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
       try {
-        writeFrame({ v: '1', id, kind: 'port.call', port, method, args })
+        writeFrame(frame)
       } catch (err) {
         clearTimeout(timer)
         this.pending.delete(id)

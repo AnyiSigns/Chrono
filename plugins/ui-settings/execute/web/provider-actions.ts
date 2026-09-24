@@ -5,8 +5,8 @@ import {
   buildOnboardingConfig,
   configWriteDirective,
   emptyConfig,
+  isCodeGenFallbackBody,
   providerList,
-  slotWriteDirective,
   upsertProvider,
 } from './config-model.ts'
 import {
@@ -41,7 +41,13 @@ export async function commitProvider(ctx: any, form: any, options: any = {}): Pr
       }
     }
     const nextConfig = buildOnboardingConfig(ctx.state.config ?? emptyConfig(), value)
-    const wrote = await ctx.applyWrite(configWriteDirective(nextConfig))
+    if (isCodeGenFallbackBody(nextConfig)) {
+      form.error = { code: 'not_loaded', message: '' }
+      return false
+    }
+    // 写前重读 active：闭包里的 active 仅当次有效，陈旧读会被内核 `stale_active` 拒写。
+    await ctx.refreshConfigActive()
+    const wrote = await ctx.applyWrite(configWriteDirective(nextConfig, ctx.configActive))
     if (!wrote.ok) {
       form.error = { code: wrote.code, message: '' }
       return false
@@ -133,9 +139,8 @@ export async function fetchModels(ctx: any, form: any): Promise<void> {
         return
       }
     }
-    const slots = await ctx.readSlots()
     const probe = buildProbeSlot(formToValue(form))
-    const wrote = await ctx.applyWrite(slotWriteDirective(slots, ctx.threadKey, probe))
+    const wrote = await ctx.writeSlot(probe)
     if (!wrote.ok) {
       form.error = { code: wrote.code, message: '' }
       return

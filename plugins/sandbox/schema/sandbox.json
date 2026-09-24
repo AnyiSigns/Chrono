@@ -4,7 +4,7 @@
   "type": "object",
   "additionalProperties": true,
   "method_timeouts": {
-    "sandbox.exec": 120000,
+    "sandbox.exec": 130000,
     "sandbox.fsop": 60000
   },
   "properties": {

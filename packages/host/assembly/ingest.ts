@@ -413,11 +413,19 @@ export function resolveEntryRoot(root: string, entry: PluginEntry): string | nul
   return resolvePackageRoot(entry, root)
 }
 
-/** 解析一个插件包并构造入世 batch 计划；不改世界、不落账。 */
+/**
+ * 解析一个插件包并构造入世 batch 计划；不改世界、不落账。
+ * 读失败（文件在打包中途被删 / 目录消失 / 权限变化）按 `{ok:false,reasons}` 返回，
+ * 交调用方走 `failed` 分支，而不是抛错被 watcher 归为自身故障。
+ */
 export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
-  const pkgRoot = resolvePackageRoot(entry, root)
-  if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
-  return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir)
+  try {
+    const pkgRoot = resolvePackageRoot(entry, root)
+    if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
+    return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir)
+  } catch {
+    return { ok: false, reasons: ['source_read_failed'] }
+  }
 }
 
 /** 名级依赖节点：清单项解析出的身份名与它 pin 的依赖身份名（`host` 保留能力除外）。 */
@@ -482,12 +490,16 @@ export function planPack(
   identity?: string,
   blobsDir?: string,
 ): IngestResult {
-  const pkgRoot = resolve(dir)
-  if (!existsSync(pkgRoot)) return { ok: false, reasons: ['package_not_found'] }
-  if (!existsSync(join(pkgRoot, 'plugin.json'))) {
-    return { ok: false, reasons: ['missing_plugin_json'] }
+  try {
+    const pkgRoot = resolve(dir)
+    if (!existsSync(pkgRoot)) return { ok: false, reasons: ['package_not_found'] }
+    if (!existsSync(join(pkgRoot, 'plugin.json'))) {
+      return { ok: false, reasons: ['missing_plugin_json'] }
+    }
+    return planIngestAtRoot(world, pkgRoot, identity, blobsDir)
+  } catch {
+    return { ok: false, reasons: ['source_read_failed'] }
   }
-  return planIngestAtRoot(world, pkgRoot, identity, blobsDir)
 }
 
 /**

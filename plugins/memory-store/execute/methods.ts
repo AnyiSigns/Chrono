@@ -47,9 +47,19 @@ export interface MemoryDeps {
   embedding: EmbeddingBackend
 }
 
+interface BuildTask {
+  promise: Promise<IndexData>
+  /** 构建所用 body 的条目数：兑现时据此判断是否落后于当前内存索引。 */
+  count: number
+  /** 是否由 force 发起：force 调用不得复用未 force 的在途构建。 */
+  force: boolean
+  /** 由覆盖判据失败发起：兑现时允许覆盖「计数超前」的内存索引（否则世界追加被永久掩盖）。 */
+  authoritative: boolean
+}
+
 interface IndexState {
   data: IndexData | null
-  building: Promise<IndexData> | null
+  building: BuildTask | null
   modelId: string
   dim: number
   stateDir: string | null
@@ -81,8 +91,30 @@ function modelJson(state: IndexState): Rec {
 }
 
 /**
+ * body 链上的存活条目（有非空文本者）是否都被索引 `records` 覆盖。
+ * 未落账 put 会把 `index.count` 抬到超过 `body.count`；此时若世界另有写者追加条目，
+ * 单看计数会误判「不落后」，故用覆盖判据兜底：链上条目在 records 中缺席即索引与 body 链不一致。
+ */
+function indexCoversBody(index: IndexData, body: Rec, refs: Rec): boolean {
+  const covered = new Set(index.records.map((record) => record.entryId))
+  for (const { entry } of linkedEntries(body, refs)) {
+    if (isDeleted(body, entry)) continue
+    const id = entryIdOf(entry)
+    if (id === null) continue
+    const text = typeof entry['text'] === 'string' ? (entry['text'] as string) : ''
+    if (text.length === 0) continue
+    if (!covered.has(id)) return false
+  }
+  return true
+}
+
+/**
  * 取索引：就绪且未落后即回内存索引；否则按 `block` 决定等待重建或立即回 null（「索引构建中」）。
- * 落后判据 = `index.count < body.count`（其它写者直接加条目时触发重建；未落账的 put 造成的超前不回退）。
+ * 落后判据 = `index.count < body.count`；计数相等即就绪（保留「未落账 put 超前不回退」语义）。
+ * 计数超前（未落账 put 抬高）时再核验 `records` 是否覆盖 body 链：覆盖则沿用，不覆盖即强制重建，
+ * 否则世界追加会被超前计数永久掩盖。
+ * 在途构建仅当覆盖目标 body 且（非 force 调用或本身为 force）时复用；force 不得复用未 force 的在途构建。
+ * 构建兑现只在「不落后于当前内存索引」时覆盖：put 已就地追加 / 换代的索引不被旧构建回退。
  */
 async function ensureIndex(
   state: IndexState,
@@ -91,21 +123,37 @@ async function ensureIndex(
   refs: Rec,
   options: EnsureOptions,
 ): Promise<IndexData | null> {
-  const stale = state.data !== null && state.data.count < countOf(body)
-  if (!options.force && state.data !== null && !stale) return state.data
-  if (options.force) state.data = null
-  if (state.building !== null) {
-    return options.block ? state.building : null
+  const targetCount = countOf(body)
+  let coverageFailed = false
+  if (!options.force && state.data !== null) {
+    if (state.data.count === targetCount) return state.data
+    if (state.data.count > targetCount) {
+      if (indexCoversBody(state.data, body, refs)) return state.data
+      coverageFailed = true
+    }
   }
+
+  // 覆盖失败视同 force：不得复用基于旧 body 的在途构建，必须按当前 body 重建。
+  const mustRebuild = options.force || coverageFailed
+  const inFlight = state.building
+  const reusable =
+    inFlight !== null && inFlight.count >= targetCount && (!mustRebuild || inFlight.force)
+  if (reusable) return options.block ? inFlight.promise : null
+
   const promise = rebuildIndex(state, deps, body, refs)
-  state.building = promise
+  const task: BuildTask = { promise, count: targetCount, force: options.force, authoritative: coverageFailed }
+  state.building = task
   promise.then(
     (data) => {
-      state.data = data
-      state.building = null
+      const current = state.building === task
+      if (current) state.building = null
+      // 被更新构建取代的旧构建不覆盖；authoritative 构建可覆盖「计数超前」的索引（否则世界追加被永久掩盖）。
+      if (state.data === null || data.count >= state.data.count || (current && task.authoritative)) {
+        state.data = data
+      }
     },
     (err: unknown) => {
-      state.building = null
+      if (state.building === task) state.building = null
       log(`index rebuild failed: ${toFailure(err).code} ${toFailure(err).message}`)
     },
   )
@@ -121,7 +169,9 @@ async function rebuildIndex(state: IndexState, deps: MemoryDeps, body: Rec, refs
     const id = entryIdOf(entry)
     const text = typeof entry['text'] === 'string' ? (entry['text'] as string) : ''
     if (id === null || text.length === 0) continue
-    const chunks = await deps.embedding.chunk(text)
+    let chunks = await deps.embedding.chunk(text)
+    // 与 put 同口径：chunk 为空时兜底整段一块，保证每条有文本的存活条目都有 records（覆盖判据成立）。
+    if (chunks.length === 0) chunks = [{ index: 0, start: 0, end: [...text].length, text }]
     for (const chunk of chunks) {
       texts.push(chunk.text)
       meta.push({ entryId: id, chunkIndex: chunk.index })
@@ -238,6 +288,18 @@ async function put(args: Json, env: CallEnv, deps: MemoryDeps, state: IndexState
     return errorValue(toFailure(err).code, toFailure(err).message)
   }
 
+  // embedding 期间可能已有重建 / 追加落定：以当前内存索引为准，落后于 body 即重建后再用。
+  if (state.data === null || state.data.count < countOf(ctx.body)) {
+    try {
+      index = await ensureIndex(state, deps, ctx.body, ctx.refs, { block: true, force: true })
+    } catch (err) {
+      return errorValue(toFailure(err).code, toFailure(err).message)
+    }
+    if (index === null) return errorValue('index_unavailable', 'index rebuild did not complete')
+  } else {
+    index = state.data
+  }
+
   const live = liveIdToHash(ctx.body, ctx.refs)
   const duplicate = findDuplicate(index, vectors, (id) => live.get(id) ?? null, ctx.threshold)
   if (duplicate !== null) {
@@ -251,16 +313,23 @@ async function put(args: Json, env: CallEnv, deps: MemoryDeps, state: IndexState
     })
   }
 
+  // copy-on-write 追加：不改写共享索引对象，避免与在途重建的兑现相互覆盖。
+  // count 取「索引现有计数与 body 计数」的较大者 +1：未落账 put 造成的超前不回退。
+  const nextIndex: IndexData = {
+    ...index,
+    records: [...index.records],
+    count: Math.max(index.count, countOf(ctx.body)) + 1,
+  }
   appendRecords(
-    index,
+    nextIndex,
     chunks.map((chunk, position) => ({
       entryId: ctx.id,
       chunkIndex: chunk.index,
       vector: vectors[position],
     })),
   )
-  index.count = countOf(ctx.body) + 1
-  saveIndex(state.stateDir, index)
+  saveIndex(state.stateDir, nextIndex)
+  state.data = nextIndex
 
   const entry = buildEntry({
     id: ctx.id,

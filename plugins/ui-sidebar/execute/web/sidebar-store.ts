@@ -10,7 +10,7 @@ import type { ConfirmState } from './confirm.ts'
 import { exportBody, exportFilename, messagesOf } from './export.ts'
 import { formatText, messageText } from './messages.ts'
 import type { MessageTable } from './messages.ts'
-import { isRecord, normalizeConversations, normalizeWorkspaces } from './sidebar-model.ts'
+import { isRecord, identityActive, identityBody, isCodeGenFallbackBody, normalizeConversations, normalizeWorkspaces } from './sidebar-model.ts'
 import type { Conversation, Workspace } from './sidebar-model.ts'
 import {
   canResize,
@@ -96,6 +96,11 @@ interface CommandResult {
   message?: string
 }
 
+/** 写回包是否落账：`ok:true` 且非 `refused`（未就绪 / 拒写回 `{ok:false}`）。 */
+function isWriteAccepted(result: unknown): boolean {
+  return isRecord(result) && result['ok'] === true && result['status'] !== 'refused'
+}
+
 /** 侧栏 store：状态归约 + 命令编排 + 浮层定位。 */
 export class SidebarStore {
   private readonly ctx: SlotContext
@@ -116,6 +121,11 @@ export class SidebarStore {
   private statusTimer: ReturnType<typeof setTimeout> | null = null
   private closeEvents: (() => void) | null = null
   private disposed = false
+  /** 读面请求序号：并发 loadAll / loadHistory 时旧回包不覆盖新结果。 */
+  private loadSeq = 0
+  private historySeq = 0
+  /** 会话切换序号：并发 selectSession 时旧回包不抢先改状态。 */
+  private selectSeq = 0
 
   constructor(ctx: SlotContext, messages: MessageTable) {
     this.ctx = ctx
@@ -237,8 +247,14 @@ export class SidebarStore {
 
   private async writeSlot(slot: any): Promise<unknown> {
     const read = await this.command('input.read', { thread: THREAD })
-    const body = read.ok && isRecord(read.value) ? read.value : { slots: {} }
+    if (!read.ok) return { ok: false, code: 'not_loaded' }
+    const body = identityBody(read.value)
+    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
+    if (!isRecord(body) || isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
+    const active = identityActive(read.value)
     const slots = isRecord(body['slots']) ? { ...body['slots'], [THREAD]: slot } : { [THREAD]: slot }
+    const addGen: any = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+    if (active !== undefined) addGen.expect_active = active
     const directives = [
       {
         kind: 'write',
@@ -247,7 +263,7 @@ export class SidebarStore {
           args: {
             ops: [
               { op: 'put', args: { body: { ...body, slots } } },
-              { op: 'add_gen', args: { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+              { op: 'add_gen', args: addGen },
             ],
           },
         },
@@ -257,14 +273,19 @@ export class SidebarStore {
   }
 
   private async loadWorkspaces(): Promise<boolean> {
+    const seq = this.loadSeq
     const result = await this.command('workspace.list', null)
+    // 并发 loadAll：旧回包不覆盖新一轮已落的状态。
+    if (seq !== this.loadSeq) return true
     if (!result.ok) return false
     this.update({ workspaces: normalizeWorkspaces(result.value) })
     return true
   }
 
   private async loadHistory(): Promise<boolean> {
+    const seq = (this.historySeq += 1)
     const result = await this.command('chat.history', {})
+    if (seq !== this.historySeq) return true
     if (!result.ok) return false
     const history = result.value
     const conversations = normalizeConversations(isRecord(history) ? history['body'] : null)
@@ -273,9 +294,14 @@ export class SidebarStore {
   }
 
   private async loadStoredWidth(): Promise<void> {
+    const seq = this.loadSeq
     const result = await this.command('config.read', null)
-    if (!result.ok || !isRecord(result.value)) return
-    const ui = isRecord(result.value['ui']) ? result.value['ui'] : null
+    // 并发 loadAll：旧回包不覆盖新一轮已落的状态。
+    if (seq !== this.loadSeq) return
+    if (!result.ok) return
+    const config = identityBody(result.value)
+    if (!isRecord(config) || isCodeGenFallbackBody(config)) return
+    const ui = isRecord(config['ui']) ? config['ui'] : null
     if (ui !== null && typeof ui['sidebar_width'] === 'number') {
       this.update({ storedWidth: clampWidth(ui['sidebar_width']) })
     }
@@ -283,9 +309,10 @@ export class SidebarStore {
 
   async loadAll(): Promise<void> {
     if (this.disposed) return
+    const seq = (this.loadSeq += 1)
     this.update({ loading: true, error: null })
     const [workspacesOk, historyOk] = await Promise.all([this.loadWorkspaces(), this.loadHistory(), this.loadStoredWidth()])
-    if (this.disposed) return
+    if (this.disposed || seq !== this.loadSeq) return
     this.update({ loading: false, error: !workspacesOk || !historyOk ? this.text('sidebar_dependency_missing') : null })
     this.applyViewport()
   }
@@ -374,10 +401,18 @@ export class SidebarStore {
   // ---- 会话 / 工作区动作 ----
 
   async selectSession(id: string): Promise<void> {
+    const seq = (this.selectSeq += 1)
     this.update({ confirm: clearConfirm(), badges: clearUnread(this.snapshot.badges, id) })
     this.closeFlyout()
-    await this.writeSlot({ kind: 'session.select', conversation: id })
+    const wrote = await this.writeSlot({ kind: 'session.select', conversation: id })
+    if (this.disposed || seq !== this.selectSeq) return
+    // 写未落账（身份未就绪 / 被拒）时不再发切换命令，避免切到旧槽或空槽。
+    if (!isWriteAccepted(wrote)) {
+      this.setStatus(this.text('sidebar_dependency_missing'))
+      return
+    }
     await this.command('session.select', null)
+    if (this.disposed || seq !== this.selectSeq) return
     await this.loadHistory()
   }
 
@@ -684,11 +719,16 @@ export class SidebarStore {
 
   private async persistWidth(): Promise<void> {
     const result = await this.command('config.read', null)
-    if (!result.ok || !isRecord(result.value)) return
-    const config = result.value
+    if (!result.ok) return
+    const config = identityBody(result.value)
+    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
+    if (!isRecord(config) || isCodeGenFallbackBody(config)) return
+    const active = identityActive(result.value)
     const ui = isRecord(config['ui']) ? { ...config['ui'] } : {}
     ui['sidebar_width'] = clampWidth(this.snapshot.storedWidth)
     const body = { ...config, ui }
+    const addGen: any = { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+    if (active !== undefined) addGen.expect_active = active
     const directives = [
       {
         kind: 'write',
@@ -697,7 +737,7 @@ export class SidebarStore {
           args: {
             ops: [
               { op: 'put', args: { body } },
-              { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+              { op: 'add_gen', args: addGen },
             ],
           },
         },

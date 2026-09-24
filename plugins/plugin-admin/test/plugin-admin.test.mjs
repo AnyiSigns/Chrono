@@ -6,13 +6,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { commit, EMPTY_HEAD, EMPTY_WORLD } from '../../../packages/kernel/index.ts'
 import { validatePackage } from '../../../packages/host/validate-package.ts'
 import { blobPointerOf, blobSha256 } from '../../../packages/host/blobs.ts'
+import { readValidateCache, writeValidateCache } from '../execute/state.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -685,5 +686,26 @@ test('未知能力 / 方法 / 非对象 args → 结构化错误，不崩进程'
   } finally {
     drv.close()
     drv.cleanup()
+  }
+})
+
+// ── ③ 凭据缓存原子写 ────────────────────────────────────────────────────────
+
+test('validate 凭据原子写：不留临时文件，内容可读回', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-admin-state-atomic-'))
+  const previous = process.env.CHRONO_PLUGIN_STATE
+  process.env.CHRONO_PLUGIN_STATE = dir
+  try {
+    const key = 'a'.repeat(64)
+    writeValidateCache(key, { identity: 'candidate', result_hash: 'b'.repeat(64), at: 123 })
+    // 临时文件已被 rename 消耗：目录里只剩最终文件
+    assert.deepEqual(readdirSync(join(dir, 'validate')), [`${key}.json`])
+    const entry = readValidateCache(key)
+    assert.equal(entry.identity, 'candidate')
+    assert.equal(entry.result_hash, 'b'.repeat(64))
+  } finally {
+    if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
+    else process.env.CHRONO_PLUGIN_STATE = previous
+    rmSync(dir, { recursive: true, force: true })
   }
 })

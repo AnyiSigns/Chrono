@@ -18,6 +18,9 @@ import {
   emptyConfig,
   enabledModelIds,
   exportJson,
+  identityActive,
+  identityBody,
+  isCodeGenFallbackBody,
   notifyOf,
   providerEntry,
   providerList,
@@ -76,7 +79,8 @@ import {
   upsertSkill,
 } from '../execute/web/settings-model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
-import { commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.ts'
+import { commitProvider, commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.ts'
+import { createViewContext } from '../execute/web/view-context.ts'
 
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.ts'
 import {
@@ -166,6 +170,28 @@ test('batch 写指令：put 整值 + add_gen 绑定身份，占位符指回 put'
   assert.deepEqual(ops[1].args.payload, { $n: 0 })
   assert.deepEqual(ops[1].args.sig, { $n: 0 })
   assert.equal(batchWriteDirective('skill', { version: 1 }).request.args.ops[1].args.id, 'skill')
+})
+
+test('写指令：expect_active 显式条件写；身份视图拆 body/active', () => {
+  const hash = 'd'.repeat(64)
+  const withActive = configWriteDirective(emptyConfig(), hash)
+  assert.equal(withActive.request.args.ops[1].args.expect_active, hash)
+  const withNull = configWriteDirective(emptyConfig(), null)
+  assert.equal(withNull.request.args.ops[1].args.expect_active, null)
+  const omitted = configWriteDirective(emptyConfig())
+  assert.equal('expect_active' in omitted.request.args.ops[1].args, false)
+
+  const view = { active: hash, body: { version: 1 } }
+  assert.deepEqual(identityBody(view), { version: 1 })
+  assert.equal(identityActive(view), hash)
+  assert.equal(identityActive({ version: 1 }), undefined)
+  assert.equal(isCodeGenFallbackBody({ tree: 'x' }), true)
+  assert.equal(isCodeGenFallbackBody({ tree: 'x', meta: {} }), true)
+  assert.equal(isCodeGenFallbackBody({ version: 1 }), false)
+  // 顶层恰好含 tree 的合法 config 不误伤（config schema 允许额外键）
+  assert.equal(isCodeGenFallbackBody({ ...emptyConfig(), tree: 'note' }), false)
+  assert.equal(isCodeGenFallbackBody({ tree: 1 }), false, 'tree 非字符串不判为代码世代 def')
+  assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
 })
 
 test('输入槽写指令：只覆盖本线程键（清槽由服务计划携带）', () => {
@@ -908,6 +934,10 @@ function fakeFetchCtx(discover) {
       return { ok: true }
     },
     readSlots: async () => ({ _main: { kind: 'idle' } }),
+    writeSlot: async (slot) => {
+      const slots = await ctx.readSlots()
+      return ctx.applyWrite(slotWriteDirective(slots, ctx.threadKey, slot))
+    },
     applyWrite: async (directive) => {
       writes.push(directive)
       return { ok: true }
@@ -970,6 +1000,114 @@ test('获取模型：保留手填自定义 id；env 取值面不落本地密钥�
   await fetchModels(failRun.ctx, form)
   assert.equal(form.error.code, 'settings_secret_failed')
   assert.equal(failRun.writes.length, 0, '密钥未落盘则不探测')
+})
+
+// ---- active 重读（写 config 的条件写）----
+
+test('config 连写：写前重读 active，第二次写用重读到的 active（陈旧 active 不再静默拒写）', async () => {
+  const first = { active: 'a'.repeat(64), body: emptyConfig() }
+  const second = { active: 'b'.repeat(64), body: emptyConfig() }
+  const views = [first, second]
+  const submitted = []
+  let reads = 0
+  const api = {
+    tokens: {},
+    command: async (name) => {
+      if (name === 'config.read') {
+        const view = views[Math.min(reads, views.length - 1)]
+        reads += 1
+        return { ok: true, status: 'done', value: view }
+      }
+      return { ok: true, value: null }
+    },
+    submit: async (directives) => {
+      submitted.push(directives)
+      return { ok: true, status: 'done' }
+    },
+  }
+  const { vc, dispose } = createViewContext(api)
+  try {
+    assert.equal((await vc.writeConfig(first.body, 'k1')).ok, true)
+    assert.equal((await vc.writeConfig(second.body, 'k2')).ok, true)
+    assert.equal(reads, 2, '每次写前各重读一次 config.read')
+    assert.equal(submitted[0][0].request.args.ops[1].args.expect_active, first.active)
+    assert.equal(submitted[1][0].request.args.ops[1].args.expect_active, second.active, '第二次写用重读到的 active')
+  } finally {
+    dispose()
+  }
+})
+
+test('config 写失败：写前重读 active 失败保留原值，不因重读异常中断写', async () => {
+  const body = emptyConfig()
+  const submitted = []
+  let reads = 0
+  const api = {
+    tokens: {},
+    command: async (name) => {
+      if (name === 'config.read') {
+        reads += 1
+        return { ok: false, code: 'ui_unreachable', value: null }
+      }
+      return { ok: true, value: null }
+    },
+    submit: async (directives) => {
+      submitted.push(directives)
+      return { ok: true, status: 'done' }
+    },
+  }
+  const { vc, dispose } = createViewContext(api)
+  try {
+    assert.equal((await vc.writeConfig(body, 'k')).ok, true)
+    assert.equal(reads, 1)
+    assert.equal('expect_active' in submitted[0][0].request.args.ops[1].args, false, '读不到 active 则省略条件键')
+  } finally {
+    dispose()
+  }
+})
+
+test('新建厂商：写前重读 active 并以之条件写 config', async () => {
+  const active = 'c'.repeat(64)
+  const applied = []
+  const calls = []
+  const ctx = {
+    state: { config: emptyConfig() },
+    configActive: undefined,
+    text: (code) => code,
+    render: () => {},
+    announce: () => {},
+    closeOverlay: () => {},
+    refreshConfigActive: async () => {
+      calls.push('refresh')
+      ctx.configActive = active
+    },
+    applyWrite: async (directive) => {
+      applied.push(directive)
+      return { ok: true }
+    },
+    postJson: async (path) => {
+      calls.push(path)
+      return { ok: true }
+    },
+  }
+  const form = {
+    mode: 'form',
+    templateIdentity: 'custom',
+    vendor: 'vendor-custom',
+    key: 'custom',
+    protocol: 'openai-chat',
+    base_url: 'https://api.example.com/v1',
+    auth_kind: 'env',
+    auth_name: 'K',
+    secret_value: '',
+    models: ['m1'],
+    selected: ['m1'],
+    error: null,
+    busy: false,
+  }
+  assert.equal(await commitProvider(ctx, form), true)
+  assert.ok(calls.includes('refresh'), '写前重读 active')
+  assert.equal(applied[0].request.args.ops[1].args.expect_active, active)
+  assert.equal(ctx.state.config.providers.custom.base_url, 'https://api.example.com/v1')
 })
 
 // ---- 文案 ----

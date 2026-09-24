@@ -7,8 +7,7 @@ import type { Server, Socket } from 'node:net'
 import { connect, ClientError } from '../index.ts'
 import { resolveRoot, socketPath } from '../socket.ts'
 import { createTempRoot, cleanupTempRoot } from '../../host/test/test-helpers.ts'
-
-const MAX_FRAME_BYTES = 16 * 1024 * 1024
+import { MAX_FRAME_BYTES } from '../../host/wire.ts'
 
 describe('客户端入站面异常收口', () => {
   let root: string | null = null

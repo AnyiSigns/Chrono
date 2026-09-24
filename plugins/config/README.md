@@ -18,7 +18,9 @@
 
 ## 提供哪些命令
 
-- `config.read`（只读，纯 term，无参）：入口 term 直出投影里的整份 `body`（`ctx.ids.config.body`）。
+- `config.read`（只读，纯 term，无参）：入口 term 直出投影里的整份 config 身份视图
+  （`ctx.ids.config`，含 `active` / `gens` / `body` / `pins` / `refs`）。调用方取 `body` 为配置本体，
+  取 `active` 作写 `add_gen` 时的 `expect_active`（两次往返的陈旧读据此条件拒写）。
   - 不触发 eff、不推进链。
 
 ## 怎么起

@@ -3,13 +3,37 @@
 // 记录 = {entryId, chunkIndex, vector}：put 时条目 def 哈希未知（占位符由内核替换），
 // 故索引存**条目逻辑 id**，查询时经传入 refs 的 id → hash 解析出 entry_hash 再返回。
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { MinHeap } from './heap.ts'
 
 const MAGIC = Buffer.from('CMSIDX01', 'ascii')
 const VERSION = 1
 const HASH_LENGTH = 32
+
+/** 进程内写序号：与 pid 一起防同一目标文件的临时名相撞。 */
+let writeSeq = 0
+
+/** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
+const STALE_TEMP_MS = 60 * 60 * 1000
+
+/** 机会式回收：清理同目录中本模块遗留的过期临时文件，避免崩溃残留的 `.tmp` 堆积。 */
+function sweepStaleTemps(dir: string, prefix: string): void {
+  try {
+    const cutoff = Date.now() - STALE_TEMP_MS
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue
+      const full = join(dir, name)
+      try {
+        if (statSync(full).mtimeMs < cutoff) unlinkSync(full)
+      } catch {
+        // 单文件 stat / 删除失败不影响本次写入
+      }
+    }
+  } catch {
+    // 目录不可读：跳过回收
+  }
+}
 
 export interface IndexRecord {
   entryId: string
@@ -148,14 +172,25 @@ export function loadIndex(stateDir: string | null, modelId: string, dim: number)
   }
 }
 
-/** 写索引文件；无 ③ 目录（未注入 env）时静默跳过，索引只驻内存。 */
+/**
+ * 原子写索引文件：先写同目录临时文件，再 `rename` 替换（同目录内原子），避免读到半截文件。
+ * 无 ③ 目录（未注入 env）时静默跳过，索引只驻内存；失败不致命（可重算，下次重建重试）。
+ */
 export function saveIndex(stateDir: string | null, data: IndexData): void {
   if (stateDir === null) return
+  const target = indexFilePath(stateDir, data.modelId, data.dim)
+  const temp = `${target}.${process.pid}.${writeSeq++}.tmp`
   try {
     mkdirSync(stateDir, { recursive: true })
-    writeFileSync(indexFilePath(stateDir, data.modelId, data.dim), encodeIndex(data))
+    sweepStaleTemps(stateDir, `${basename(target)}.`)
+    writeFileSync(temp, encodeIndex(data))
+    renameSync(temp, target)
   } catch {
-    // ③ 可重算：落盘失败不致命，内存索引继续服务；下次重建重试
+    try {
+      unlinkSync(temp)
+    } catch {
+      // 临时文件可能尚未创建或已被 rename 消费：忽略
+    }
   }
 }
 

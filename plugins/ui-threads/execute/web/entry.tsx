@@ -48,6 +48,7 @@ function App({ ctx }: { ctx: SlotContext }) {
   const hover = useRef<{ status: HoverStatus; timer: number | null }>({ status: 'hidden', timer: null })
   const reloadTimer = useRef<number | null>(null)
   const disposed = useRef(false)
+  const loadSeq = useRef(0)
 
   // ---- 文案表（壳唯一来源；失败用内置最小表） ----
   useEffect(() => {
@@ -62,9 +63,10 @@ function App({ ctx }: { ctx: SlotContext }) {
 
   // ---- 数据：只读命令 `threads.state`（壳 api.command） ----
   const load = useCallback(async (): Promise<void> => {
+    const seq = (loadSeq.current += 1)
     store.commit(setLoading(store.getSnapshot(), true))
     const result = await ctx.command('threads.state', null)
-    if (disposed.current) return
+    if (disposed.current || seq !== loadSeq.current) return
     if (!isRecord(result) || result.ok !== true) {
       const code = isRecord(result) && typeof result.code === 'string' ? result.code : 'unknown'
       const message = isRecord(result) && typeof result.message === 'string' ? result.message : ''

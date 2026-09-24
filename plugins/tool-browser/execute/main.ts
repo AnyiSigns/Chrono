@@ -88,7 +88,7 @@ async function handleCall(message: Rec): Promise<void> {
   const env = parseEnv(message['env'])
   let value: Json
   try {
-    value = method === 'describe' ? describe() : await invoke(args ?? null, { sessions: SESSIONS, link: LINK }, env)
+    value = method === 'describe' ? describe() : await invoke(args ?? null, { sessions: SESSIONS, link: LINK }, env, id)
   } catch (err) {
     if (err instanceof BadArgsError || err instanceof ToolError) {
       sendError(id, 'bad_args', err.message)

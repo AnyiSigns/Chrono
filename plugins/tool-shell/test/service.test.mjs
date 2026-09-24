@@ -194,6 +194,7 @@ test('invoke command 经反向 port.call 调 sandbox.exec 并回 terminal 结果
     assert.ok(execCall !== undefined, '应经反向 port.call 调 sandbox.exec')
     assert.equal(execCall.args.cmd, 'cmd.exe')
     assert.equal(execCall.args.tier, 'severe')
+    assert.equal(execCall.call_id, result.id, '反向帧回带发起 call 帧 id')
   } finally {
     drv.close()
   }
@@ -228,6 +229,7 @@ test('invoke 的 auth_ref 经 secrets.resolve；明文只出现在 exec env，�
     const secretsCall = drv.portCalls.find((call) => call.port === 'secrets')
     assert.ok(secretsCall !== undefined, '应经反向 port.call 调 secrets.resolve')
     assert.deepEqual(secretsCall.args.auth_ref, { kind: 'local', name: 'TOKEN' })
+    assert.equal(secretsCall.call_id, result.id, 'secrets 反向帧回带发起 call 帧 id')
     const execCall = drv.portCalls.find((call) => call.port === 'sandbox')
     assert.deepEqual(execCall.args.env, { TOKEN: secret })
     assert.equal(JSON.stringify(result.value).includes(secret), false, '明文不得进结果')

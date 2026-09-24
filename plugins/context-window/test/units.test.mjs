@@ -15,12 +15,14 @@ const {
   rangeSum,
   computeDedupKey,
   computeContentKey,
+  computeTokenKey,
   normalizeText,
   countParts,
   cachedDedupKey,
   cacheSizes,
   CACHE_MAX_ENTRIES,
 } = await import('../execute/text.ts')
+const { canonicalize } = await import('../execute/normalize.ts')
 const { computeBudget } = await import('../execute/budget.ts')
 const { planHistory } = await import('../execute/history.ts')
 const { parseRawParts, messageParts } = await import('../execute/history.ts')
@@ -86,6 +88,56 @@ test('规范化键：空白差异等价；角色参与 dedup_key、不参与 con
   assert.equal(computeDedupKey('user', parts), computeDedupKey('user', [{ type: 'text', text: 'a b' }]))
   assert.notEqual(computeDedupKey('user', parts), computeDedupKey('system', parts))
   assert.equal(computeContentKey(parts), computeContentKey([{ type: 'text', text: 'a b' }]))
+})
+
+test('计数缓存键按原始内容：规范化等价不得共用计数缓存', () => {
+  const base = {
+    source: 'input',
+    priority: 0,
+    at: 0,
+    atomic: false,
+    atomicGroup: null,
+    toolCallId: null,
+    from: null,
+    subject: null,
+    orderHint: 0,
+  }
+  const spaced = canonicalize([
+    { ...base, role: 'user', parts: [{ type: 'text', text: 'hello   world' }] },
+  ])[0]
+  const single = canonicalize([
+    { ...base, role: 'user', parts: [{ type: 'text', text: 'hello world' }] },
+  ])[0]
+  // 去重键同（规范化等价），但计数缓存键必须按原始文本区分，避免串计数
+  assert.equal(spaced.dedupKey, single.dedupKey)
+  assert.notEqual(spaced.cacheKey, single.cacheKey)
+  // 资产参与计数键：同文本但资产不同不得共用
+  const image = { type: 'image', asset: { sha256: 'a'.repeat(64), mime: 'image/png' }, name: null }
+  assert.notEqual(computeTokenKey([{ type: 'text', text: 'x' }]), computeTokenKey([{ type: 'text', text: 'x' }, image]))
+})
+
+test('改写 parts 的 tokenKey 与 def 键区隔：同 def 改写后不复用旧计数 / dedup', () => {
+  const base = {
+    source: 'history',
+    priority: 4,
+    at: 0,
+    atomic: false,
+    atomicGroup: null,
+    toolCallId: null,
+    from: null,
+    subject: null,
+    orderHint: 0,
+  }
+  const original = canonicalize([
+    { ...base, role: 'assistant', parts: [{ type: 'text', text: 'hi all' }], defKey: 'h1' },
+  ])[0]
+  const rewrittenParts = [{ type: 'text', text: 'alice: hi all' }]
+  const rewritten = canonicalize([
+    { ...base, role: 'assistant', parts: rewrittenParts, defKey: 'h1', tokenKey: computeTokenKey(rewrittenParts) },
+  ])[0]
+  assert.equal(rewritten.tokens, countParts(rewrittenParts, computeTokenKey(rewrittenParts)))
+  assert.notEqual(rewritten.tokens, original.tokens)
+  assert.notEqual(rewritten.dedupKey, original.dedupKey)
 })
 
 test('预算建模：缺档案回落默认并标 profile_missing', () => {

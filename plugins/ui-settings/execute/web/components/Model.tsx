@@ -65,7 +65,8 @@ function ProviderRow(props: { item: any }) {
             return
           }
           vc.state.pendingRemove = null
-          await vc.writeConfig(removeProvider(vc.state.config ?? {}, key), `provider:${key}`)
+          const result = await vc.writeConfig(removeProvider(vc.state.config ?? {}, key), `provider:${key}`)
+          if (!result.ok) vc.state.error = { code: result.code, message: '' }
           vc.render()
         }}
       />

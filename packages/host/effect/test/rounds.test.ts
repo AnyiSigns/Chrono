@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
 import { WorldWriter } from '../../writer.ts'
+import type { SyncResult, WorldState } from '../../writer.ts'
 import { resolvePins, runSubmission, parsePlanDirectives } from '../rounds.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
-import type { Def, Directive, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
+import type { Def, Directive, Entry, Hash, Head, Json, Op, World } from '../../../kernel/index.ts'
 
 const LIMITS = { gas: 1_000_000, depth: 64 }
 
@@ -58,8 +59,27 @@ function evalD(entry: Hash): Directive {
   return { kind: 'eval', entry, args: null, ctx: null }
 }
 
-function writeD(op: 'put', args: Json): Directive {
+function writeD(op: Op, args: Json): Directive {
   return { kind: 'write', request: { id: '', op, target: { expect_pos: null }, args, by: '' } }
+}
+
+/** 构造一个单世代、active 可配的身份。 */
+function identityOf(id: string, active: Hash, schema = 's'.repeat(64)): World['ids'][string] {
+  return {
+    id,
+    schema,
+    gens: [
+      {
+        seq: 0,
+        payload: active,
+        pins: {},
+        sig: schema,
+        adopted: { at: 1, by: 'seed', write: active },
+      },
+    ],
+    active,
+    born: { at: 1, by: 'seed' },
+  }
 }
 
 describe('A10 轮间驱动 runSubmission', () => {
@@ -1218,5 +1238,314 @@ describe('只读提交 runSubmission（readonly）', () => {
     })
     expect(outcome.status).toBe('done')
     expect(advanced).toBe(0)
+  })
+})
+
+describe('add_gen expect_active 注入与落账段物化', () => {
+  it('直提 add_gen：expect_active = 该轮基准世界目标身份的 active', async () => {
+    const active = 'a'.repeat(64)
+    const payload = 'b'.repeat(64)
+    const world = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [payload]: put({ body: { gen: 2 } }),
+    })
+    world.ids['dep'] = identityOf('dep', active)
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {} })],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect((journal[0].args as { expect_active?: Hash }).expect_active).toBe(active)
+  })
+
+  it('显式 expect_active 不被覆盖（陈旧读以显式值为准 → stale_active）', async () => {
+    const active = 'a'.repeat(64)
+    const payload = 'b'.repeat(64)
+    const world = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [payload]: put({ body: { gen: 2 } }),
+    })
+    world.ids['dep'] = identityOf('dep', active)
+    // 显式给 payload（≠ 基准 active）：若被覆盖成 active 会成功；正确实现透传 → 内核判 stale_active
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {}, expect_active: payload }),
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+    })
+    expect(outcome.status).toBe('refused')
+    expect(outcome.observations[outcome.observations.length - 1]).toMatchObject({
+      kind: 'refused',
+      reasons: ['stale_active'],
+    })
+  })
+
+  it('batch 内新建身份的 add_gen：基准世界无此身份 → expect_active = null', async () => {
+    const schema = 'c'.repeat(64)
+    const payload = 'b'.repeat(64)
+    const world = worldOf({
+      [schema]: put({ body: { type: 'object' } }),
+      [payload]: put({ body: { gen: 2 } }),
+    })
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        writeD('batch', {
+          ops: [
+            { op: 'add_identity', args: { id: 'fresh', schema } },
+            { op: 'add_gen', args: { id: 'fresh', payload, sig: payload, pins: {} } },
+          ],
+        }),
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    const ops = (journal[0].args as { ops: Array<{ args: { expect_active?: Hash | null } }> }).ops
+    expect(ops[1].args.expect_active).toBeNull()
+  })
+
+  it('plan add_gen 基准 = 产出该计划的 eval 所在轮世界：并发换代 → stale_active', async () => {
+    const active = 'a'.repeat(64)
+    const payload = 'b'.repeat(64)
+    const concurrent = 'd'.repeat(64)
+    const plan: Json = {
+      $directives: [
+        {
+          kind: 'write',
+          request: { op: 'add_gen', args: { id: 'dep', payload, sig: payload, pins: {} } },
+        },
+      ],
+    }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const base = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [payload]: put({ body: { gen: 2 } }),
+      [concurrent]: put({ body: { gen: 3 } }),
+      [planner]: put({ body: ['c', plan] }),
+    })
+    base.ids['dep'] = identityOf('dep', active)
+    // 模拟并发提交：第二段（plan 写轮）前把 dep.active 推到 concurrent
+    const advanced: World = { defs: { ...base.defs }, ids: { ...base.ids } }
+    advanced.ids['dep'] = identityOf('dep', concurrent)
+    class AdvanceBeforeSecondWriter extends WorldWriter {
+      private calls = 0
+      override run<T>(fn: (state: WorldState) => SyncResult<T>): Promise<T> {
+        return super.run((state) => {
+          this.calls += 1
+          if (this.calls === 2) state.world = advanced
+          return fn(state)
+        })
+      }
+    }
+    const writer = new AdvanceBeforeSecondWriter({ world: base, head: { seq: -1, hash: null } })
+    const outcome = await runSubmission({
+      writer,
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+    })
+    expect(outcome.status).toBe('refused')
+    expect(outcome.observations[outcome.observations.length - 1]).toMatchObject({
+      kind: 'refused',
+      reasons: ['stale_active'],
+    })
+  })
+
+  it('同 plan 两条 add_gen 同一身份：本 run 先前写并入基准，避免自冲突', async () => {
+    const active = 'a'.repeat(64)
+    const p1 = 'b'.repeat(64)
+    const p2 = 'c'.repeat(64)
+    const plan: Json = {
+      $directives: [
+        {
+          kind: 'write',
+          request: { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1, pins: {} } },
+        },
+        {
+          kind: 'write',
+          request: { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+        },
+      ],
+    }
+    const planner = defHash(put({ body: ['c', plan] }))
+    const world = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [p1]: put({ body: { gen: 2 } }),
+      [p2]: put({ body: { gen: 3 } }),
+      [planner]: put({ body: ['c', plan] }),
+    })
+    world.ids['dep'] = identityOf('dep', active)
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [evalD(planner)],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect(journal).toHaveLength(2)
+    expect((journal[0].args as { expect_active?: Hash }).expect_active).toBe(active)
+    expect((journal[1].args as { expect_active?: Hash }).expect_active).toBe(p1)
+  })
+
+  it('物化下沉到落账段：pins 与 ctx 用段内世界（快照已偏斜也不误判）', async () => {
+    const active = 'a'.repeat(64)
+    const reader = defHash(put({ body: ['g', ['marker']] }))
+    const base = worldOf({
+      [reader]: put({ body: ['g', ['marker']] }),
+      [active]: put({ body: { gen: 1 } }),
+    })
+    const advanced: World = { defs: { ...base.defs }, ids: { dep: identityOf('dep', active) } }
+    class SwapWorldWriter extends WorldWriter {
+      override run<T>(fn: (state: WorldState) => SyncResult<T>): Promise<T> {
+        return super.run((state) => {
+          state.world = advanced
+          return fn(state)
+        })
+      }
+    }
+    const writer = new SwapWorldWriter({ world: base, head: { seq: -1, hash: null } })
+    const worlds: World[] = []
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      writer,
+      directives: [
+        writeD('put', { body: { withPins: true }, pins: { 'toy.echo': 'dep' } }),
+        { kind: 'eval', entry: reader, args: null },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      ctxFor: (w) => {
+        worlds.push(w)
+        return { marker: 'm' }
+      },
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    // pins 在段内世界解析到 dep.active（快照世界无 dep，若用快照会 unresolved_pin）
+    expect((journal[0].args as { pins: Record<string, Hash> }).pins['toy.echo']).toBe(active)
+    // ctx 也用段内世界构造
+    expect(worlds).toEqual([advanced])
+    const evalObservation = outcome.observations.find(
+      (o) => (o as { kind: string }).kind === 'eval',
+    )
+    expect((evalObservation as { value: Json }).value).toBe('m')
+  })
+
+  it('batch 内同 id 双 add_gen：批内叠加推进 expect_active，不误判 stale_active', async () => {
+    const active = 'a'.repeat(64)
+    const p1 = 'b'.repeat(64)
+    const p2 = 'c'.repeat(64)
+    const world = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [p1]: put({ body: { gen: 2 } }),
+      [p2]: put({ body: { gen: 3 } }),
+    })
+    world.ids['dep'] = identityOf('dep', active)
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        writeD('batch', {
+          ops: [
+            { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1, pins: {} } },
+            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+          ],
+        }),
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect(journal).toHaveLength(1)
+    const ops = (journal[0].args as { ops: Array<{ args: { expect_active?: Hash | null } }> }).ops
+    expect(ops[0].args.expect_active).toBe(active)
+    expect(ops[1].args.expect_active).toBe(p1)
+  })
+
+  it('batch 内 set_active 后 add_gen：expect_active 取 set_active 推进后的 active', async () => {
+    const active = 'a'.repeat(64)
+    const p1 = 'b'.repeat(64)
+    const p2 = 'c'.repeat(64)
+    const world = worldOf({
+      [active]: put({ body: { gen: 1 } }),
+      [p1]: put({ body: { gen: 2 } }),
+      [p2]: put({ body: { gen: 3 } }),
+    })
+    const schema = 's'.repeat(64)
+    world.ids['dep'] = {
+      id: 'dep',
+      schema,
+      gens: [
+        {
+          seq: 0,
+          payload: active,
+          pins: {},
+          sig: schema,
+          adopted: { at: 1, by: 'seed', write: active },
+        },
+        {
+          seq: 1,
+          payload: p1,
+          pins: {},
+          sig: schema,
+          adopted: { at: 1, by: 'seed', write: p1 },
+        },
+      ],
+      active,
+      born: { at: 1, by: 'seed' },
+    }
+    const journal: Entry[] = []
+    const outcome = await runSubmission({
+      world,
+      head: { seq: -1, hash: null },
+      directives: [
+        writeD('batch', {
+          ops: [
+            { op: 'set_active', args: { id: 'dep', active: p1 } },
+            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+          ],
+        }),
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      onRound: (entries) => journal.push(...entries),
+    })
+    expect(outcome.status).toBe('done')
+    expect(journal).toHaveLength(1)
+    const ops = (journal[0].args as { ops: Array<{ args: { expect_active?: Hash | null } }> }).ops
+    expect(ops[1].args.expect_active).toBe(p1)
   })
 })

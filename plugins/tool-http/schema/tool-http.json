@@ -4,7 +4,7 @@
   "type": "object",
   "additionalProperties": true,
   "method_timeouts": {
-    "tool-http.invoke": 120000
+    "tool-http.invoke": 130000
   },
   "properties": {
     "websearch_request": {

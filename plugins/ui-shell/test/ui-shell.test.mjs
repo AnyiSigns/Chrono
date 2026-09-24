@@ -38,6 +38,9 @@ import {
 import { buildForwardArgs, forwardCommandName, routeOf } from '../execute/routes.ts'
 import { identityInvalidatesHeadless } from '../execute/identity-events.ts'
 import { createUiState, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
+import { identityActive, identityBody, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
+import { createSlotRegistry, normalizeTarget } from '../execute/web/lib/slot-registry.js'
+import { createSlotHost } from '../execute/web/lib/slots.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
 import {
   EMPTY_SPRITE,
@@ -126,6 +129,26 @@ test('extractValue：eval 观测的 value / extern 观测的 payload', () => {
   assert.deepEqual(extractValue({ observations: [{ kind: 'extern', payload: 7 }] }), 7)
   assert.equal(extractValue({ observations: [{ kind: 'refused', reasons: [] }] }), null)
   assert.equal(extractValue(null), null)
+})
+
+test('extractValue：计划值取最后一条 extern 载荷（读命令 term 回写计划）', () => {
+  const plan = {
+    observations: [
+      {
+        kind: 'eval',
+        ok: true,
+        value: {
+          $directives: [
+            { kind: 'write', request: { op: 'batch', args: { ops: [] } } },
+            { kind: 'extern', payload: [{ id: 'w1', name: 'A', path: '/a', missing: false }] },
+          ],
+        },
+      },
+      { kind: 'extern', payload: [{ id: 'w1', name: 'A', path: '/a', missing: false }] },
+    ],
+  }
+  assert.deepEqual(extractValue(plan), [{ id: 'w1', name: 'A', path: '/a', missing: false }])
+  assert.equal(extractValue({ observations: [{ kind: 'eval', value: { $directives: [{ kind: 'write' }] } }] }), null)
 })
 
 test('Bridge：命令回包取值 / configRead / submit accepted', async () => {
@@ -483,8 +506,83 @@ test('themeWriteDirective：tree 形态拒写、落 config 用 day/night 词表'
   assert.equal(themeWriteDirective('system', null).request.args.ops[0].args.body.ui.theme, 'system')
 })
 
-test('directivesTouchConfig：仅 config 身份的 add_gen 命中', () => {
-  const configWrite = {
+test('themeWriteDirective：expect_active 显式条件写（undefined 省略 / null 保留）', () => {
+  const hash = 'a'.repeat(64)
+  const withActive = themeWriteDirective('dark', { vendor: 'x' }, hash)
+  assert.equal(withActive.request.args.ops[1].args.expect_active, hash)
+  const withNull = themeWriteDirective('dark', { vendor: 'x' }, null)
+  assert.equal(withNull.request.args.ops[1].args.expect_active, null)
+  const omitted = themeWriteDirective('dark', { vendor: 'x' })
+  assert.equal('expect_active' in omitted.request.args.ops[1].args, false)
+  // tree 回落 body 仍拒写（与 expect_active 无关）
+  assert.equal(themeWriteDirective('dark', { tree: 'x' }, hash), null)
+})
+
+test('identity-shape：身份视图拆 body/active、tree 回落判据、裸 body 兼容', () => {
+  const hash = 'b'.repeat(64)
+  const view = { active: hash, gens: [], body: { slots: {} }, pins: null, refs: {} }
+  assert.deepEqual(identityBody(view), { slots: {} })
+  assert.equal(identityActive(view), hash)
+  assert.equal(identityActive({ active: null }), null)
+  assert.equal(identityActive({ vendor: 'x' }), undefined, '裸 body 无从得知 active → undefined')
+  assert.deepEqual(identityBody({ vendor: 'x' }), { vendor: 'x' })
+  assert.equal(isCodeGenFallbackBody({ tree: 'x', meta: {} }), true)
+  assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
+  assert.equal(isCodeGenFallbackBody(null), false)
+})
+
+// ---- slot 注册簿 ----
+
+test('slot 注册簿：目标归一 / epoch 拒绝 / 幂等替换 / 移除 / outlet 绑定', () => {
+  assert.deepEqual(normalizeTarget('main'), { name: 'main', children: [] })
+  assert.deepEqual(normalizeTarget({ name: 'dock', children: ['a', '', 'b', 3] }), { name: 'dock', children: ['a', 'b'] })
+  assert.equal(normalizeTarget({ name: '' }), null)
+  assert.equal(normalizeTarget(null), null)
+
+  let epoch = 5
+  const registry = createSlotRegistry({ currentEpoch: () => epoch })
+  assert.equal(registry.entries('main').length, 0)
+  assert.equal(registry.register('p1', 'main', 5, { Component: () => null }).ok, true)
+  assert.equal(registry.entries('main').length, 1)
+  // 幂等：同插件同 slot 再注册 → 旧条目随 removed 交回，条目数不变
+  const again = registry.register('p1', 'main', 5, { Component: () => null })
+  assert.equal(again.ok, true)
+  assert.equal(again.removed.length, 1)
+  assert.equal(registry.entries('main').length, 1)
+  // epoch 陈旧 → 拒，且不改条目表
+  epoch = 6
+  assert.equal(registry.register('p1', 'main', 5, { Component: () => null }).reason, 'stale')
+  assert.equal(registry.entries('main').length, 1)
+  // 非法目标 → 拒
+  assert.equal(registry.register('p1', null, 6, {}).reason, 'bad_target')
+  // remove
+  assert.equal(registry.remove('p1', 'main').length, 1)
+  assert.equal(registry.entries('main').length, 0)
+  assert.equal(registry.remove('p1', 'main').length, 0)
+  // outlet 元素绑定
+  const el = { id: 'x' }
+  assert.equal(registry.setElement('main', el).element, el)
+  assert.equal(registry.elementOf('main'), el)
+})
+
+test('slot 宿主：无 DOM 时 register 只入簿不渲染，非法组件 / 陈旧 epoch 被拒', () => {
+  let epoch = 1
+  const logs = []
+  const host = createSlotHost({
+    api: {},
+    msg: () => ({ title: 't', body: 'b', action: 'a' }),
+    currentEpoch: () => epoch,
+    log: (line) => logs.push(line),
+  })
+  assert.equal(host.register('p1', 'main', () => null, 1), true)
+  assert.equal(host.register('p1', 'main', () => null, 1), true, '幂等重挂仍成功')
+  epoch = 2
+  assert.equal(host.register('p1', 'main', () => null, 1), false, '陈旧装载被拒')
+  assert.equal(host.register('p1', 'main', null, 2), false, '组件非函数被拒')
+  assert.ok(logs.some((line) => line.includes('stale')))
+})
+
+test('directivesTouchConfig：仅 config 身份的 add_gen 命中', () => {  const configWrite = {
     kind: 'write',
     request: {
       op: 'batch',
@@ -843,6 +941,8 @@ test('壳页面细节：toast DOM 序、无死代码、响应式与 ::selection�
 
   const html = readFileSync(join(WEB_DIR, 'shell.html'), 'utf8')
   assert.match(html, /::selection/)
+  assert.match(html, /scrollbar-width: thin/)
+  assert.match(html, /::-webkit-scrollbar-thumb/)
   assert.match(html, /flex: 0 3 auto/)
   assert.match(html, /--msg-max-w: 100%/)
   assert.match(html, /#shell-banner-retry[\s\S]*?min-height: 24px/)

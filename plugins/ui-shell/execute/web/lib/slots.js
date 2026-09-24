@@ -7,28 +7,18 @@
 // `name` 为目标 slot；`children` 声明本组件提供的子 slot（组件内用 `ctx.slots.Outlet` 落位）。
 // 顶层 slot（sidebar / main / dock / composer / topbar / overlay）直接映射到壳页面的
 // `[data-slot="<name>"]` 元素；嵌套 slot 由父组件的 `<Outlet name="…"/>` 创建。
+//
+// 纯簿记（目标归一 / epoch 拒绝 / 幂等替换 / outlet 绑定）在 `slot-registry.js`，可脱离浏览器单测；
+// 本文件只在其上挂 React 渲染与错误边界。
 
 import { Component, createElement, useEffect, useRef, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createSlotRegistry, normalizeTarget } from './slot-registry.js'
+
+export { normalizeTarget }
 
 /** 顶层 slot 名（壳页面已提供 outlet 元素）。 */
 export const TOP_SLOTS = ['sidebar', 'main', 'dock', 'composer', 'topbar', 'overlay']
-
-function isName(value) {
-  return typeof value === 'string' && value.length > 0
-}
-
-/** 目标归一：字符串或 `{name, children}` 都接受。 */
-function normalizeTarget(target) {
-  if (isName(target)) return { name: target, children: [] }
-  if (target !== null && typeof target === 'object' && isName(target.name)) {
-    const children = Array.isArray(target.children)
-      ? target.children.filter((item) => isName(item))
-      : []
-    return { name: target.name, children }
-  }
-  return null
-}
 
 /** 每 slot 的 error boundary：抛错只坏本 slot，渲染占位卡 + 重试。 */
 class SlotErrorBoundary extends Component {
@@ -68,7 +58,7 @@ class SlotErrorBoundary extends Component {
 /** 父组件用来落位子 slot 的 outlet：挂载后把 DOM 元素交给注册表，卸载时交还。 */
 function makeOutlet(host) {
   return function Outlet(props) {
-    const name = isName(props.name) ? props.name : ''
+    const name = typeof props.name === 'string' ? props.name : ''
     const ref = useRef(null)
     useEffect(() => {
       if (name.length === 0) return undefined
@@ -81,21 +71,12 @@ function makeOutlet(host) {
 
 /**
  * 建 slot 宿主。`options.msg(code)` 取文案；`options.api` 为壳 api（注入各插件 ctx）。
- * 返回 `{ ctxFor(pluginId), register(pluginId, target, Component) }`。
+ * 返回 `{ ctxFor(pluginId), register(pluginId, target, Component), Outlet, attachOutlet, detachOutlet }`。
  */
 export function createSlotHost(options) {
-  const slots = new Map()
   const msg = typeof options.msg === 'function' ? options.msg : () => ({ title: '', body: '', action: '' })
   const api = options.api ?? {}
-
-  function slotOf(name) {
-    let slot = slots.get(name)
-    if (slot === undefined) {
-      slot = { name, element: null, entries: [] }
-      slots.set(name, slot)
-    }
-    return slot
-  }
+  const registry = createSlotRegistry({ currentEpoch: options.currentEpoch })
 
   function topElement(name) {
     if (typeof document === 'undefined') return null
@@ -132,13 +113,13 @@ export function createSlotHost(options) {
         },
         onRetry: () => renderEntry(slot, entry),
       },
-      createElement(entry.Component, { ctx: entry.ctx }),
+      createElement(entry.payload.Component, { ctx: entry.payload.ctx }),
     )
     entry.container.root.render(surface)
   }
 
   function flush(name) {
-    const slot = slotOf(name)
+    const slot = registry.slotOf(name)
     if (slot.element === null) return
     for (const entry of slot.entries) {
       if (entry.mounted === true) continue
@@ -147,35 +128,41 @@ export function createSlotHost(options) {
     }
   }
 
-  function register(pluginId, target, Component) {
-    const normalized = normalizeTarget(target)
-    if (normalized === null || typeof Component !== 'function') {
+  /** 卸一个条目：卸载其 React 根（触发组件 cleanup，如 store.dispose）。 */
+  function disposeEntry(entry) {
+    if (entry.container !== null) {
+      detachElement(entry.container)
+      entry.container = null
+    }
+    entry.mounted = false
+  }
+
+  function register(pluginId, target, Component, epoch) {
+    if (typeof Component !== 'function') {
       if (typeof options.log === 'function') options.log(`slot register rejected: ${pluginId}`)
       return false
     }
-    for (const child of normalized.children) slotOf(child)
-    const slot = slotOf(normalized.name)
-    slot.entries.push({
-      pluginId,
-      Component,
-      ctx: ctxFor(pluginId),
-      container: null,
-      mounted: false,
-    })
-    if (slot.element === null) slot.element = topElement(normalized.name)
-    flush(normalized.name)
+    const outcome = registry.register(pluginId, target, epoch, { Component, ctx: ctxFor(pluginId) })
+    if (!outcome.ok) {
+      if (typeof options.log === 'function') options.log(`slot register ${outcome.reason}: ${pluginId}`)
+      return false
+    }
+    // 幂等：同插件同 slot 的旧条目由注册簿移出，这里卸其 React 根。
+    for (const old of outcome.removed) disposeEntry(old)
+    if (registry.elementOf(outcome.name) === null) {
+      registry.setElement(outcome.name, topElement(outcome.name))
+    }
+    flush(outcome.name)
     return true
   }
 
   function attachOutlet(name, element) {
-    const slot = slotOf(name)
-    slot.element = element
+    registry.setElement(name, element)
     flush(name)
   }
 
   function detachOutlet(name) {
-    const slot = slots.get(name)
-    if (slot === undefined) return
+    const slot = registry.slotOf(name)
     slot.element = null
     for (const entry of slot.entries) {
       if (entry.container !== null) detachElement(entry.container)
@@ -199,13 +186,13 @@ export function createSlotHost(options) {
     )
   }
 
-  function ctxFor(pluginId) {
+  function ctxFor(pluginId, epoch) {
     return {
       ...api,
       pluginId,
       useStore,
       slots: {
-        register: (target, Component) => register(pluginId, target, Component),
+        register: (target, Component) => register(pluginId, target, Component, epoch),
         Outlet,
       },
     }

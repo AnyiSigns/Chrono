@@ -80,7 +80,7 @@ async function handleCall(message: Rec): Promise<void> {
   const env = parseEnv(message['env'])
   let result
   try {
-    result = await handler(args ?? null, env)
+    result = await handler(args ?? null, env, id)
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
@@ -93,7 +93,7 @@ async function handleCall(message: Rec): Promise<void> {
   sendFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
 }
 
-/** 停机：终止全部外部子进程，然后退出（先让协议帧写完）。 */
+/** 停机：终止全部外部子进程，然后退出（等在途建连落地 + 关闭完成再退）。 */
 function shutdown(): void {
   if (exiting) return
   exiting = true
@@ -102,13 +102,23 @@ function shutdown(): void {
   } catch (err) {
     log(`secrets failAll failed: ${(err as Error).message}`)
   }
-  try {
-    REGISTRY.closeAll()
-  } catch (err) {
-    log(`closeAll failed: ${(err as Error).message}`)
-  }
-  setTimeout(() => process.exit(0), 10).unref?.()
+  const exit = (): void => process.exit(0)
+  REGISTRY.closeAll().then(exit, exit)
+  // 兜底：关闭卡住时也强制退出（不阻断停机）。
+  setTimeout(exit, 5000)
 }
+
+// 信号 / 退出兜底：SIGTERM / SIGINT 走优雅停机（SIGKILL 到点强杀），
+// `exit` 同步硬杀残留外部子进程（覆盖 process.exit 与硬杀路径，不泄漏进程）。
+process.on('SIGTERM', () => {
+  log('received SIGTERM; shutting down')
+  shutdown()
+})
+process.on('SIGINT', () => {
+  log('received SIGINT; shutting down')
+  shutdown()
+})
+process.on('exit', () => REGISTRY.killAllSync())
 
 async function handle(message: Json): Promise<void> {
   if (!isRecord(message)) return

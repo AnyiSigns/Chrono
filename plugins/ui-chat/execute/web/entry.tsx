@@ -409,6 +409,8 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   const [customs, setCustoms] = useState<{ [id: string]: string }>({})
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // 同步闩：state 更新是异步的，双击会在同一渲染帧内穿透 submitting 检查。
+  const submittingRef = useRef(false)
 
   if (answered) {
     return (
@@ -448,7 +450,8 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   }
 
   const submit = async () => {
-    if (vm.expired || submitting) return
+    if (vm.expired || submittingRef.current) return
+    submittingRef.current = true
     const collected: any[] = []
     for (const question of vm.questions) {
       const selected = selections[question.id] ?? []
@@ -459,6 +462,7 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
       collected.push(answer)
     }
     if (collected.length === 0) {
+      submittingRef.current = false
       setError(lookupMessage(env.table, 'chat_answer_required').body)
       return
     }
@@ -475,6 +479,7 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
       )
       return
     }
+    submittingRef.current = false
     setSubmitting(false)
     setError(lookupMessage(env.table, result.code ?? 'unknown').body)
   }
@@ -1096,9 +1101,40 @@ function Lightbox({ lb, onClose }: { lb: any; onClose: () => void }): ReactNode 
 
 // ---- 应用 ----
 
-/** 构造写输入槽的 batch directive：只覆盖本线程键（读-改-写）。 */
-function slotWriteDirective(slots: any, threadKey: string, slot: any): any {
+/** 身份视图 → data body；非身份视图（裸 body）原样返回。 */
+function identityBodyOf(value: any): any {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, 'body')
+    ? value.body
+    : value
+}
+
+/** 身份视图 → active（64hex 或 null）；非身份视图 / 形状不符回 undefined。 */
+function identityActiveOf(value: any): string | null | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, 'active')) return undefined
+  const active = value.active
+  return typeof active === 'string' || active === null ? active : undefined
+}
+
+/** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
+const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
+
+/** 代码世代回落 body 判据：拿到的是 active（commit）def body，非身份数据，拒写。
+ * commit def body 形如 `{ tree, meta }`；只判顶层含 `tree` 会误伤顶层恰好含 `tree` 的合法数据，
+ * 故要求 `tree` 为字符串且不含任一数据侧特征键。 */
+function isCodeGenFallbackBody(body: any): boolean {
+  if (body === null || typeof body !== 'object' || Array.isArray(body) || typeof body.tree !== 'string') return false
+  for (const key of DATA_SIDE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) return false
+  }
+  return true
+}
+
+/** 构造写输入槽的 batch directive：只覆盖本线程键（读-改-写）。
+ * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
+function slotWriteDirective(slots: any, threadKey: string, slot: any, expectActive?: string | null): any {
   const nextSlots = { ...(slots ?? {}), [threadKey]: slot }
+  const addGen: any = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) addGen.expect_active = expectActive
   return {
     kind: 'write',
     request: {
@@ -1106,7 +1142,7 @@ function slotWriteDirective(slots: any, threadKey: string, slot: any): any {
       args: {
         ops: [
           { op: 'put', args: { body: { slots: nextSlots } } },
-          { op: 'add_gen', args: { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGen },
         ],
       },
     },
@@ -1284,11 +1320,14 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     if (vm.itemId === null) return { ok: false, code: 'bad_args' }
     const thread = stateRef.current.viewThread
     const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
-    const slots =
-      read !== null && read.ok === true && read.value !== null && typeof read.value === 'object' && !Array.isArray(read.value) && read.value.slots !== null && typeof read.value.slots === 'object'
-        ? read.value.slots
-        : {}
-    const directive = slotWriteDirective(slots, thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers })
+    const raw = read !== null && read.ok === true ? read.value : null
+    const body = identityBodyOf(raw)
+    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
+    if (body === null || typeof body !== 'object' || Array.isArray(body) || isCodeGenFallbackBody(body)) {
+      return { ok: false, code: 'not_loaded' }
+    }
+    const slots = body.slots !== null && typeof body.slots === 'object' && !Array.isArray(body.slots) ? body.slots : {}
+    const directive = slotWriteDirective(slots, thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers }, identityActiveOf(raw))
     const wrote = (await ctx.submit([directive], { thread })) as any
     if (wrote === null || wrote.ok !== true) return { ok: false, code: wrote?.code ?? 'ui_unreachable' }
     const answered = (await ctx.command('question.answer', null, { thread })) as any
@@ -1328,13 +1367,11 @@ function App({ ctx }: { ctx: SlotContext }): ReactNode {
     if (view.kind === 'group' || view.kind === 'workflow') return
     const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
     if (disposedRef.current || stateRef.current.viewThread !== thread) return
-    const value =
-      read !== null && read.ok === true && read.value !== null && typeof read.value === 'object' && !Array.isArray(read.value)
-        ? read.value
-        : null
+    const raw = read !== null && read.ok === true ? read.value : null
+    const body = identityBodyOf(raw)
     const slots =
-      value !== null && value.slots !== null && typeof value.slots === 'object' && !Array.isArray(value.slots)
-        ? value.slots
+      body !== null && typeof body === 'object' && !Array.isArray(body) && body.slots !== null && typeof body.slots === 'object' && !Array.isArray(body.slots)
+        ? body.slots
         : null
     const def = pendingUserDef(slots === null ? null : slots[thread ?? '_main'])
     if (def === null) return

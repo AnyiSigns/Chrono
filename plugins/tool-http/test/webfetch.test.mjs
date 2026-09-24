@@ -4,6 +4,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { webfetch } from '../execute/webfetch.ts'
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  HOST_METHOD_TIMEOUT_MS,
+  MAX_EXEC_BUDGET_MS,
+  REVERSE_TIMEOUT_MARGIN_MS,
+} from '../execute/reverse.ts'
 import { execFail, execOk, execOkTruncated, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
 
 const ARTICLE =
@@ -168,4 +174,82 @@ test('robots 对重定向后的最终 URL 复查：最终路径被禁 → robots
   const result = await webfetch({ url: 'https://page.test/a' }, ctx)
   assert.equal(result.ok, false)
   assert.equal(result.error.code, 'robots_disallowed')
+})
+
+// ── 反向调用的 call_id 回带与超时推导 ──────────────────────────────────────
+
+test('反向等待与 sandbox caps.timeout_ms 同源：取 spec 与 caps 的较大者加余量', async () => {
+  const seen = []
+  const backend = {
+    async exec(bag, callId, timeoutMs) {
+      seen.push({ bag, callId, timeoutMs })
+      return execOk(fetcherStdout({ contentType: 'text/plain', body: 'ok' }))
+    },
+    async assetPut() {
+      throw new Error('assetPut should not be called')
+    },
+  }
+  // 无声明 caps：sandbox 默认 timeout_ms = 30000 > source_timeout_ms 8000，预算取 30000。
+  const ctx = makeCtx(testConfig({ source_timeout_ms: 8000 }), backend, { callId: 'call-9' })
+  const result = await webfetch({ url: 'https://page.test/' }, ctx)
+  assert.equal(result.ok, true)
+  assert.equal(seen[0].callId, 'call-9')
+  assert.equal(seen[0].bag.caps.timeout_ms, DEFAULT_CALL_TIMEOUT_MS)
+  assert.equal(seen[0].timeoutMs, DEFAULT_CALL_TIMEOUT_MS + REVERSE_TIMEOUT_MARGIN_MS)
+})
+
+test('声明 caps.timeout_ms 大于抓取超时时预算随 caps：反向等待与 caps 仍同源', async () => {
+  const seen = []
+  const backend = {
+    async exec(bag, callId, timeoutMs) {
+      seen.push({ bag, callId, timeoutMs })
+      return execOk(fetcherStdout({ contentType: 'text/plain', body: 'ok' }))
+    },
+    async assetPut() {
+      throw new Error('assetPut should not be called')
+    },
+  }
+  const ctx = makeCtx(testConfig({ source_timeout_ms: 8000 }), backend, {
+    callId: 'call-10',
+    caps: { net: 'all', timeout_ms: 60000 },
+  })
+  await webfetch({ url: 'https://page.test/' }, ctx)
+  assert.equal(seen[0].bag.caps.timeout_ms, 60000)
+  assert.equal(seen[0].timeoutMs, 60000 + REVERSE_TIMEOUT_MARGIN_MS)
+})
+
+test('声明超预算的 caps.timeout_ms 被 clamp：host > reverse > exec', async () => {
+  const seen = []
+  const backend = {
+    async exec(bag, callId, timeoutMs) {
+      seen.push({ bag, callId, timeoutMs })
+      return execOk(fetcherStdout({ contentType: 'text/plain', body: 'ok' }))
+    },
+    async assetPut() {
+      throw new Error('assetPut should not be called')
+    },
+  }
+  const ctx = makeCtx(testConfig(), backend, { caps: { net: 'all', timeout_ms: 999999 } })
+  await webfetch({ url: 'https://page.test/' }, ctx)
+  assert.equal(seen[0].bag.caps.timeout_ms, MAX_EXEC_BUDGET_MS)
+  assert.equal(seen[0].timeoutMs, MAX_EXEC_BUDGET_MS + REVERSE_TIMEOUT_MARGIN_MS)
+  assert.ok(seen[0].timeoutMs < HOST_METHOD_TIMEOUT_MS, '反向等待必须小于宿主正向超时')
+})
+
+test('二进制资产存取回带 callId 且反向等待带余量', async () => {
+  const seen = []
+  const backend = {
+    async exec() {
+      return execOk(fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([1, 2, 3]) }))
+    },
+    async assetPut(input, callId, timeoutMs) {
+      seen.push({ input, callId, timeoutMs })
+      return { ok: true, value: { kind: 'asset', sha256: 'ab'.repeat(32), mime: input.mime, size: 3 } }
+    },
+  }
+  const ctx = makeCtx(testConfig(), backend, { callId: 'call-11' })
+  const result = await webfetch({ url: 'https://bin.test/' }, ctx)
+  assert.equal(result.ok, true)
+  assert.equal(seen[0].callId, 'call-11')
+  assert.equal(seen[0].timeoutMs, DEFAULT_CALL_TIMEOUT_MS + REVERSE_TIMEOUT_MARGIN_MS)
 })

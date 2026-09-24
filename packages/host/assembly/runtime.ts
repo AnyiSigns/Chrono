@@ -29,6 +29,7 @@ import type { CallEnv } from '../wire.ts'
 import type { HostPaths } from '../paths.ts'
 import type { AssemblyPlan } from './closure.ts'
 import {
+  EXIT_WAIT_MS,
   ServiceStartError,
   backoffDelay,
   classifyStartFailure,
@@ -208,8 +209,19 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       // 代码世代变化才跟随；数据世代变化（beforeCode === afterCode）不动作
       if (beforeCode !== afterCode || beforeActive === null) changed.push(id)
     }
-    for (const id of changed) await this.followGeneration(prev, next, id)
-    for (const id of retired) this.retireBranch(id)
+    try {
+      for (const id of changed) await this.followGeneration(prev, next, id)
+      for (const id of retired) await this.retireBranch(id)
+    } catch (err) {
+      // 跟随未全部成功：世界与索引回到 prev，使「从已应用世界 diff」在下次调用时仍视这些身份为待跟随。
+      // 注意：本方法**不会自动重试同一链头**，也**不回滚已完成的部分副作用**（已起 / 已停的服务）；
+      // 只有当宿主再次以更高链头调用 applyWorld 时，才会从 prev 重新 diff 并重试变更身份。
+      // 故失败窗口内运行态可能与世界短暂不一致，属已知残留风险，由下一次跟随收敛。
+      this.world = prev
+      this.ownerIndex = buildOwnerIndex(prev)
+      this.buildDependencyMaps()
+      throw err
+    }
   }
 
   async start(): Promise<void> {
@@ -240,28 +252,38 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   async stop(): Promise<void> {
     if (this.stopping) return
     this.stopping = true
-    for (const id of [...this.order].reverse()) {
-      const service = this.services.get(id)
-      if (service === undefined) continue
-      this.services.delete(id)
-      this.clearHealth(service)
-      this.clearRestart(service)
-      service.draining = true
-      if (service.handledExit) continue
-      service.handledExit = true
-      try {
-        await service.link.drain(service.restart.drainMs, service.restart.drainMs + 1_000)
-        stopChild(service.proc, service.link)
-      } catch {
-        stopChild(service.proc, service.link)
-        this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'drain_timeout' })
-      }
-      await waitForExit(service.proc, 2_000)
-    }
+    // 多服务并发 teardown：各服务的 drain / 终止 / 等退出相互独立，串行等待会把停机最坏拖成 N×EXIT_WAIT_MS。
+    // 状态变更（从 services 摘除、清计时器）在各 stopService 的同步段按停机序依次完成，随后才并发等待。
+    const teardown = [...this.order].reverse().map((id) => this.stopService(id))
+    await Promise.allSettled(teardown)
     // 等在途重启落地（其内部会看到 stopping 并停掉刚起的服务），再清表
     await Promise.allSettled([...this.pendingRestarts])
     this.endpoints.clear()
     this.loadedIds.clear()
+  }
+
+  /** 停机单个服务：排空 → 终止 → 有界等退出；已受理退出的只等退出。 */
+  private async stopService(id: string): Promise<void> {
+    const service = this.services.get(id)
+    if (service === undefined) return
+    this.services.delete(id)
+    this.clearHealth(service)
+    this.clearRestart(service)
+    service.draining = true
+    if (service.handledExit) {
+      // 退出已受理：仍等它真正落定再继续，避免停机返回时残留未回收进程
+      await waitForExit(service.proc, EXIT_WAIT_MS)
+      return
+    }
+    service.handledExit = true
+    try {
+      await service.link.drain(service.restart.drainMs, service.restart.drainMs + 1_000)
+      stopChild(service.proc, service.link)
+    } catch {
+      stopChild(service.proc, service.link)
+      this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'drain_timeout' })
+    }
+    await waitForExit(service.proc, EXIT_WAIT_MS)
   }
 
   private record(kind: LifecycleKind, event: string, fields: LifecycleFields = {}): void {
@@ -341,7 +363,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
           gen: gen.payload,
           reason: 'missing_start_command',
         })
-        this.isolateStartFailure(id)
+        await this.isolateStartFailure(id)
         return
       }
       this.loadedIds.add(id)
@@ -353,7 +375,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       if (this.stopping || this.isolated.has(id)) {
         if (!this.stopping) this.record('dep', 'stale', { impl: id })
         stopChild(service.proc, service.link)
-        await waitForExit(service.proc, 2_000)
+        await waitForExit(service.proc, EXIT_WAIT_MS)
         return
       }
       this.services.set(id, service)
@@ -361,7 +383,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.registerEndpoints(service)
       this.startHealth(service)
     } catch (err) {
-      this.handleStartFailure(id, gen.payload, err)
+      await this.handleStartFailure(id, gen.payload, err)
     }
   }
 
@@ -375,22 +397,26 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
   }
 
-  private handleStartFailure(id: string, gen: Hash, err: unknown): void {
+  private async handleStartFailure(id: string, gen: Hash, err: unknown): Promise<void> {
     this.recordStartFailure(id, gen, err)
-    this.isolateStartFailure(id)
+    await this.isolateStartFailure(id)
   }
 
   /** 起服务失败 / 坏声明的分支隔离：该身份 + 反向可达依赖者。 */
-  private isolateStartFailure(id: string): void {
+  private async isolateStartFailure(id: string): Promise<void> {
     const reached = this.reverseReachable([id])
     for (const other of reached) {
       if (other !== id) this.record('dep', 'stale', { impl: other })
     }
-    this.isolateAll(reached)
+    await this.isolateAll(reached)
   }
 
-  /** 下线一批身份：停服务、摘端点、移出已装载、标记隔离（坏分支只隔离，绝不回落）。 */
-  private isolateAll(ids: Iterable<string>): void {
+  /**
+   * 下线一批身份：停服务、摘端点、移出已装载、标记隔离（坏分支只隔离，绝不回落）。
+   * terminate 后统一有界 `waitForExit` 再结算；状态变更同步完成，退出回收在末尾一并等待。
+   */
+  private async isolateAll(ids: Iterable<string>): Promise<void> {
+    const exits: Promise<void>[] = []
     for (const id of ids) {
       const service = this.services.get(id)
       if (service !== undefined) {
@@ -402,12 +428,14 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
           service.handledExit = true
           stopChild(service.proc, service.link)
           this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'isolated' })
+          exits.push(waitForExit(service.proc, EXIT_WAIT_MS))
         }
       }
       this.endpoints.removeIdentity(id)
       this.loadedIds.delete(id)
       this.isolated.add(id)
     }
+    await Promise.allSettled(exits)
   }
 
   /**
@@ -431,7 +459,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       stale(payloadDef, next, id)
     ) {
       this.record('dep', 'stale', { impl: id })
-      this.isolateAll(this.reverseReachable([id]))
+      await this.isolateAll(this.reverseReachable([id]))
       return
     }
     const oldCodeGen = assemblyGen(prev, id)
@@ -451,7 +479,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
           gen: newCodeGen.payload,
           reason: 'missing_start_command',
         })
-        this.isolateAll(this.reverseReachable([id]))
+        await this.isolateAll(this.reverseReachable([id]))
         return
       }
       if (oldService !== undefined) await this.retireService(id, oldService, 'superseded')
@@ -486,6 +514,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 
   /** 端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。 */
   private rekeyEndpoints(service: ServiceRuntime, gen: Hash, decl: PluginDecl): void {
+    // 纵深防御：停机 / 已隔离后不得重挂端点（调用方已守卫，此处再挡一层）
+    if (this.stopping || this.isolated.has(service.id)) return
     this.endpoints.removeGeneration(service.id, service.gen)
     this.clearHealth(service)
     service.gen = gen
@@ -510,7 +540,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.endpoints.removeGeneration(service.id, service.gen)
     this.record('service', 'exit', { impl: service.id, gen: service.gen, reason: drainReason })
     stopChild(service.proc, service.link)
-    await waitForExit(service.proc, 2_000)
+    await waitForExit(service.proc, EXIT_WAIT_MS)
   }
 
   /** 新世代无执行件：旧服务按换代路径退场，身份保留为数据身份。 */
@@ -543,12 +573,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   /** 依赖退役（retire / set_active(null)）：反向可达的发出者及其依赖者一并隔离，不回落。 */
-  private retireBranch(seed: string): void {
+  private async retireBranch(seed: string): Promise<void> {
     const reached = this.reverseReachable([seed])
     for (const id of [...reached].sort()) {
       this.record('dep', 'retired', { impl: id })
     }
-    this.isolateAll(reached)
+    await this.isolateAll(reached)
   }
 
   /** 起服务公共依赖：spawn 阶段与一次性入口共用；`copyAssets` 有记账副作用，另由准备入口单独绑定。 */
@@ -674,19 +704,24 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     service.healthInFlight = true
     try {
       const ok = await service.link.probe(service.health.timeoutMs)
-      if (!ok) this.markUnhealthy(service)
+      if (!ok) await this.markUnhealthy(service)
     } catch {
-      this.markUnhealthy(service)
+      await this.markUnhealthy(service)
     } finally {
       service.healthInFlight = false
     }
   }
 
-  /** 探针无回应 / `ok:false`：按服务退出路径处理（杀进程树 → 重启）。在途调用视为健康，不误杀。 */
-  private markUnhealthy(service: ServiceRuntime): void {
-    if (service.handledExit || this.stopping || service.draining || service.link.hasInflightCall()) return
+  /**
+   * 探针无回应 / `ok:false`：按服务退出路径处理（杀进程树 → 重启）。在途调用视为健康，不误杀。
+   * terminate 后有界 `waitForExit` 再结算；`healthInFlight` 在整个探针期间为真，挡住重入。
+   */
+  private async markUnhealthy(service: ServiceRuntime): Promise<void> {
+    if (service.handledExit || this.stopping || service.draining || service.link.hasInflightCall())
+      return
     service.pendingExitReason = 'health_timeout'
     terminateChild(service.proc)
+    await waitForExit(service.proc, EXIT_WAIT_MS)
     this.handleProcessExit(service, 'health_timeout')
   }
 
@@ -723,9 +758,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     })
     // 已被换代取代（自身 active 不再是本 gen）→ 不重启旧世代（A6：绝不回落）
     if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
-    // 声明 never：不重启，退出即隔离该分支
+    // 声明 never：不重启，退出即隔离该分支（退出监听无法 await，隔离内部的退出回收自成一体）
     if (service.restart.policy === 'never') {
-      this.isolateBranch(service.id)
+      void this.isolateBranch(service.id)
       return
     }
     // 稳定复位只看【本次真实运行时长】：活过 window 才清零；握手成功与否不复位
@@ -744,7 +779,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     service.attempts += 1
     if (service.attempts > service.restart.max) {
       this.record('service', 'restart_exhausted', { impl: service.id, gen: service.gen })
-      this.isolateBranch(service.id)
+      void this.isolateBranch(service.id)
       return
     }
     const delay = backoffDelay(service.restart, service.attempts)
@@ -766,12 +801,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       // 重启窗口内该身份可能已被隔离 / 换代：不得复活
       if (this.stopping || this.isolated.has(service.id)) {
         stopChild(next.proc, next.link)
-        await waitForExit(next.proc, 2_000)
+        await waitForExit(next.proc, EXIT_WAIT_MS)
         return
       }
       if (this.assemblyGenOf(service.id)?.payload !== service.gen) {
         stopChild(next.proc, next.link)
-        await waitForExit(next.proc, 2_000)
+        await waitForExit(next.proc, EXIT_WAIT_MS)
         return
       }
       next.attempts = service.attempts
@@ -798,8 +833,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   /** 隔离坏分支：种子 + 反向可达依赖者下线（停服务、清端点、移出已装载）。 */
-  private isolateBranch(seed: string): void {
-    this.isolateAll(this.reverseReachable([seed]))
+  private async isolateBranch(seed: string): Promise<void> {
+    await this.isolateAll(this.reverseReachable([seed]))
   }
 
   private clearHealth(service: ServiceRuntime): void {

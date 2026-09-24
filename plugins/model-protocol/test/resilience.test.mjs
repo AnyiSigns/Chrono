@@ -2,7 +2,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RateLimiter, rateLimitFile, withRetry } from '../execute/resilience.ts'
@@ -93,5 +93,23 @@ test('rateLimitFile：CHRONO_PLUGIN_STATE 缺省 / 空串 → null（纯内存�
   } finally {
     if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
     else process.env.CHRONO_PLUGIN_STATE = previous
+  }
+})
+
+test('rateLimitFile：写入为原子替换，不留临时文件', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mp-atomic-'))
+  const previous = process.env.CHRONO_PLUGIN_STATE
+  process.env.CHRONO_PLUGIN_STATE = dir
+  try {
+    const file = rateLimitFile()
+    const limiter = new RateLimiter(file)
+    limiter.acquire('provider-y', 1000, POLICY)
+    const entries = readdirSync(dir)
+    assert.deepEqual(entries, ['rate-limit.json'])
+    assert.equal(typeof JSON.parse(readFileSync(file, 'utf8'))['provider-y'].tokens, 'number')
+  } finally {
+    if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
+    else process.env.CHRONO_PLUGIN_STATE = previous
+    rmSync(dir, { recursive: true, force: true })
   }
 })

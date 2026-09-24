@@ -6,6 +6,7 @@ import { createUiState } from './ui-state.js'
 import { createToastQueue, roleForTone } from './toast.js'
 import { normalizeThemePref, resolveTheme } from './theme.js'
 import { deriveBootMode } from './boot-mode.js'
+import { identityBody } from './identity-shape.js'
 import { createSlotHost } from './slots.js'
 
 const CONTRACT_VERSION = '1'
@@ -173,7 +174,13 @@ const api = {
 }
 
 // slot 宿主：插件客户端半边经 register(ctx) 注册组件；壳只提供 outlet 与 error boundary。
-const slotHost = createSlotHost({ api, msg })
+// `mountEpoch` 记每个 entry 的当前装载代号：超时重挂会换新代号，迟到的 register 据此被丢弃。
+const mountEpoch = new Map()
+const slotHost = createSlotHost({
+  api,
+  msg,
+  currentEpoch: (id) => mountEpoch.get(id),
+})
 
 // ---- 事件流（宿主事件原样重播 + 壳合成事件） ----
 
@@ -386,6 +393,10 @@ function isUnreachable(err) {
 // 失败 slot 的后台自愈：宿主换代 / 目标插件重启窗口内，slot 资源会短暂抓不到（404）。
 // 卡片不能永久停留——按指数退避自动重挂；宿主重连时立即重挂全部失败项。
 const failedSlots = new Map()
+/** 在途装载表：同一 entry 不并发二次装载（键 = entry 对象）。 */
+const inFlightMounts = new Map()
+/** 装载代号：每次实际装载自增，用于丢弃超时后迟到的 register。 */
+let mountSeq = 0
 
 function scheduleSlotRetry(entry) {
   let state = failedSlots.get(entry)
@@ -477,9 +488,24 @@ async function importSlotEntry(id) {
 
 /** 装载一个 slot：成功返回 null，失败返回错误码。`silent` 时不渲染失败卡（启动期静默重试）。 */
 async function mountEntry(entry, silent = false) {
+  // 同一 entry 不并发二次装载：在途时复用同一 promise（超时重挂也排队，避免双份 register）。
+  const pending = inFlightMounts.get(entry)
+  if (pending !== undefined) return pending
+  const task = doMountEntry(entry, silent)
+  inFlightMounts.set(entry, task)
+  try {
+    return await task
+  } finally {
+    inFlightMounts.delete(entry)
+  }
+}
+
+async function doMountEntry(entry, silent = false) {
   const root = document.getElementById(`slot-${entry.slot}`)
   if (root === null) return null
   cancelSlotRetry(entry)
+  const epoch = (mountSeq += 1)
+  mountEpoch.set(entry.id, epoch)
   const fail = (code) => {
     if (!silent) renderSlotFailure(root, code, entry)
     return code
@@ -491,10 +517,8 @@ async function mountEntry(entry, silent = false) {
       const module = await importSlotEntry(entry.id)
       if (module.contract !== SLOT_CONTRACT_VERSION) return fail('ui_version_mismatch')
       if (typeof module.register !== 'function') return fail('ui_boot_failed')
-      await withTimeout(
-        Promise.resolve(module.register(slotHost.ctxFor(entry.id))),
-        MOUNT_RUN_TIMEOUT_MS,
-      )
+      // register 内部按装载代号拒绝陈旧注册；迟到的 store.start 由插件在注册失败时自行 dispose。
+      await withTimeout(Promise.resolve(module.register(slotHost.ctxFor(entry.id, epoch))), MOUNT_RUN_TIMEOUT_MS)
       return null
     }
     // 旧模型：插件自有端口反代 + mount(root, api)。
@@ -586,8 +610,8 @@ async function detectBootMode() {
   try {
     const result = await api.command('config.read')
     if (result.ok) {
-      uiState.set('boot_mode', deriveBootMode(result.value))
-      const config = result.value
+      const config = identityBody(result.value)
+      uiState.set('boot_mode', deriveBootMode(config))
       if (!themeTouched && config && typeof config === 'object' && config.ui && config.ui.theme) {
         const pref = normalizeThemePref(config.ui.theme)
         if (pref !== themePref) {

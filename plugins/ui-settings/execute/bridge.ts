@@ -97,7 +97,11 @@ export function extractValue(frame: Rec | null): Json {
   return null
 }
 
-/** 计划值取最后一条 `extern` 载荷；非计划值原样返回。 */
+/**
+ * 计划值取最后一条 `extern` 载荷；非计划值原样返回。
+ * `$directives` 是入站协议的保留计划标记：命令入口 term 回写计划是统一契约，故按值形状解包，
+ * 不按命令名收窄——收窄需要维护命令白名单，且新命令一旦回计划就会被漏解。
+ */
 export function unwrapPlan(value: Json): Json {
   if (!isRecord(value) || !Array.isArray(value['$directives'])) return value
   for (let index = value['$directives'].length - 1; index >= 0; index--) {

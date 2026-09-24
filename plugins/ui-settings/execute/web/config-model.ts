@@ -11,6 +11,32 @@ export function isRecord(value: any): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** 身份视图 → data body；非身份视图（裸 body）原样返回。 */
+export function identityBody(value: any): any {
+  return isRecord(value) && Object.prototype.hasOwnProperty.call(value, 'body') ? value.body : value
+}
+
+/** 身份视图 → active（64hex 或 null）；非身份视图 / 形状不符回 undefined（不注入 expect_active）。 */
+export function identityActive(value: any): string | null | undefined {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'active')) return undefined
+  const active = value.active
+  return typeof active === 'string' || active === null ? active : undefined
+}
+
+/** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
+const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
+
+/** 代码世代回落 body 判据：拿到的是 active（commit）def body，非身份数据，拒写。
+ * commit def body 形如 `{ tree, meta }`；只判顶层含 `tree` 会误伤顶层恰好含 `tree` 的合法数据
+ * （config schema 允许额外键），故要求 `tree` 为字符串且不含任一数据侧特征键。 */
+export function isCodeGenFallbackBody(body: any): boolean {
+  if (!isRecord(body) || typeof body.tree !== 'string') return false
+  for (const key of DATA_SIDE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) return false
+  }
+  return true
+}
+
 /** 结构克隆（JSON 值）。 */
 export function clone(value: any): any {
   return JSON.parse(JSON.stringify(value))
@@ -130,8 +156,11 @@ export function buildOnboardingConfig(existing: any, form: any): any {
   return isRecord(form.params) ? setParams(withProvider, form.params) : withProvider
 }
 
-/** 一条 batch 写指令：put 整值 + add_gen 绑定身份（四字段全必填、占位符指回 put）。 */
-export function batchWriteDirective(identity: string, body: any): any {
+/** 一条 batch 写指令：put 整值 + add_gen 绑定身份（四字段全必填、占位符指回 put）。
+ * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
+export function batchWriteDirective(identity: string, body: any, expectActive?: string | null): any {
+  const addGen: any = { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) addGen.expect_active = expectActive
   return {
     kind: 'write',
     request: {
@@ -139,7 +168,7 @@ export function batchWriteDirective(identity: string, body: any): any {
       args: {
         ops: [
           { op: 'put', args: { body } },
-          { op: 'add_gen', args: { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGen },
         ],
       },
     },
@@ -147,14 +176,14 @@ export function batchWriteDirective(identity: string, body: any): any {
 }
 
 /** config 整值写指令。 */
-export function configWriteDirective(body: any): any {
-  return batchWriteDirective(CONFIG_ID, body)
+export function configWriteDirective(body: any, expectActive?: string | null): any {
+  return batchWriteDirective(CONFIG_ID, body, expectActive)
 }
 
 /** 写输入槽：只覆盖本线程键（读-改-写，其余键原样）。 */
-export function slotWriteDirective(slots: any, threadKey: string, slot: any): any {
+export function slotWriteDirective(slots: any, threadKey: string, slot: any, expectActive?: string | null): any {
   const nextSlots = { ...(isRecord(slots) ? slots : {}), [threadKey]: slot }
-  return batchWriteDirective(INPUT_ID, { slots: nextSlots })
+  return batchWriteDirective(INPUT_ID, { slots: nextSlots }, expectActive)
 }
 
 /** 导出 JSON 文本（整份 body，`auth_ref` 只有引用名、无明文）。 */

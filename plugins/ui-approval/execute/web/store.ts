@@ -9,8 +9,13 @@ import {
   confirmArmed,
   CONFIRM_TTL_MS,
   defaultExpanded,
+  identityActive,
+  identityBody,
+  isCodeGenFallbackBody,
   isRecord,
   verdictOf,
+  withBusy,
+  withoutBusy,
 } from './model'
 import type { Rec } from './model'
 import { loadMessages } from './messages'
@@ -30,7 +35,7 @@ export interface ApprovalSnapshot {
   loading: boolean
   error: { code: string } | null
   expanded: string[]
-  busy: string | null
+  busy: string[]
   itemErrors: Record<string, ItemError>
   lastBatch: string | null
   decided: string[]
@@ -70,8 +75,11 @@ function codeOf(result: Json): string {
   return record !== null && typeof record.code === 'string' ? record.code : 'unknown'
 }
 
-/** 写 `#1` 本线程键的 batch directive：`put` 整份 body + `add_gen`。 */
-export function slotWriteDirective(body: Json): Json {
+/** 写 `#1` 本线程键的 batch directive：`put` 整份 body + `add_gen`。
+ * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
+export function slotWriteDirective(body: Json, expectActive?: string | null): Json {
+  const addGen: Rec = { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
+  if (expectActive !== undefined) addGen.expect_active = expectActive
   return {
     kind: 'write',
     request: {
@@ -79,7 +87,7 @@ export function slotWriteDirective(body: Json): Json {
       args: {
         ops: [
           { op: 'put', args: { body } },
-          { op: 'add_gen', args: { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+          { op: 'add_gen', args: addGen },
         ],
       },
     },
@@ -95,7 +103,7 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
     loading: true,
     error: null,
     expanded: [],
-    busy: null,
+    busy: [],
     itemErrors: {},
     lastBatch: null,
     decided: [],
@@ -104,6 +112,7 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
   }
   const listeners = new Set<(snapshot: ApprovalSnapshot) => void>()
   let disposed = false
+  let loadSeq = 0
   let confirmTimer: ReturnType<typeof setTimeout> | null = null
   let closeEvents: (() => void) | null = null
 
@@ -151,8 +160,9 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
   }
 
   async function load(): Promise<void> {
+    const seq = (loadSeq += 1)
     const result = await ctx.command('approval.list', null)
-    if (disposed) return
+    if (disposed || seq !== loadSeq) return
     const ok = okOf(result)
     const body = ok ? (asRecord(valueOf(result)) ?? {}) : {}
     let error: { code: string } | null = null
@@ -175,10 +185,11 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
   /** 裁决两步走：先读-改-写本线程槽，再调无参裁决命令。 */
   async function decide(threadKey: string, slot: Rec): Promise<{ ok: boolean; code: string }> {
     const read = await ctx.command('input.read', null, { thread: threadKey })
-    const body = asRecord(valueOf(read))
-    if (body === null) return { ok: false, code: 'input_unavailable' }
+    const body = identityBody(valueOf(read))
+    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
+    if (!isRecord(body) || isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
     const slots = isRecord(body.slots) ? { ...body.slots, [threadKey]: slot } : { [threadKey]: slot }
-    const written = await ctx.submit([slotWriteDirective({ ...body, slots })], { thread: threadKey })
+    const written = await ctx.submit([slotWriteDirective({ ...body, slots }, identityActive(valueOf(read)))], { thread: threadKey })
     if (!okOf(written)) return { ok: false, code: codeOf(written) }
     const name = typeof slot.id === 'string' && slot.id.length > 0 ? 'approval.decide' : 'approval.decide_all'
     const result = await ctx.command(name, null, { thread: threadKey })
@@ -192,40 +203,40 @@ export function createApprovalStore(ctx: SlotContext): ApprovalStore {
     if (verdict === null || id.length === 0) return
     const itemErrors = { ...state.itemErrors }
     delete itemErrors[id]
-    commit({ ...state, busy: id, itemErrors })
+    commit({ ...state, busy: withBusy(state.busy, id), itemErrors })
     const threadKey = typeof item.thread === 'string' && item.thread.length > 0 ? item.thread : BATCH_THREAD
     const result = await decide(threadKey, { kind: 'approval.decide', id, verdict })
     if (disposed) return
     if (!result.ok) {
       // 续跑回合可能超出命令等待上限；已收到 `approval.decided` 的条目按成功处理，不显假失败。
       if (state.decided.includes(id)) {
-        commit({ ...state, busy: null })
+        commit({ ...state, busy: withoutBusy(state.busy, id) })
         void load()
         return
       }
-      commit({ ...state, busy: null, itemErrors: { ...state.itemErrors, [id]: { code: result.code, action } } })
+      commit({ ...state, busy: withoutBusy(state.busy, id), itemErrors: { ...state.itemErrors, [id]: { code: result.code, action } } })
       return
     }
-    commit({ ...state, busy: null })
+    commit({ ...state, busy: withoutBusy(state.busy, id) })
     void load()
   }
 
   async function submitAll(action: string): Promise<void> {
     const verdict = verdictOf(action)
     if (verdict === null) return
-    commit({ ...state, busy: 'all', error: null, lastBatch: action })
+    commit({ ...state, busy: withBusy(state.busy, 'all'), error: null, lastBatch: action })
     const result = await decide(BATCH_THREAD, { kind: 'approval.decide', verdict })
     if (disposed) return
     if (!result.ok) {
       if (state.decided.length > 0) {
-        commit({ ...state, busy: null })
+        commit({ ...state, busy: withoutBusy(state.busy, 'all') })
         void load()
         return
       }
-      commit({ ...state, busy: null, error: { code: result.code } })
+      commit({ ...state, busy: withoutBusy(state.busy, 'all'), error: { code: result.code } })
       return
     }
-    commit({ ...state, busy: null })
+    commit({ ...state, busy: withoutBusy(state.busy, 'all') })
     void load()
   }
 

@@ -22,6 +22,9 @@ import {
   formatCount,
   formatMetric,
   formatWait,
+  identityActive,
+  identityBody,
+  isCodeGenFallbackBody,
   isExpired,
   isPending,
   itemTone,
@@ -43,6 +46,8 @@ import {
   verdictStatus,
   viewOf,
   waitWarning,
+  withBusy,
+  withoutBusy,
 } from '../execute/web/model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
@@ -247,4 +252,24 @@ test('文案：共享表优先、本地骨架兜底、未知码不空白', () =>
   assert.equal(lookupMessage(null, 'approval_waiting').body, UI_TEXT.approval_waiting)
   assert.equal(lookupMessage(null, 'no_such_code').body.includes('no_such_code'), true)
   assert.equal(parseMessages('not json'), null)
+})
+
+test('忙碌键集合：每项独立加入 / 移除，互不清除；身份视图拆 body/active', () => {
+  let busy = []
+  busy = withBusy(busy, 'a')
+  busy = withBusy(busy, 'b')
+  assert.deepEqual(busy, ['a', 'b'])
+  busy = withBusy(busy, 'a')
+  assert.deepEqual(busy, ['a', 'b'], '重复加入幂等')
+  busy = withoutBusy(busy, 'a')
+  assert.deepEqual(busy, ['b'], '移除 a 不影响 b')
+  assert.deepEqual(withoutBusy(busy, 'x'), ['b'], '移除不存在键不变')
+
+  const hash = 'e'.repeat(64)
+  const view = { active: hash, body: { slots: {} } }
+  assert.deepEqual(identityBody(view), { slots: {} })
+  assert.equal(identityActive(view), hash)
+  assert.equal(identityActive({ slots: {} }), undefined)
+  assert.equal(isCodeGenFallbackBody({ tree: 'x' }), true)
+  assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
 })

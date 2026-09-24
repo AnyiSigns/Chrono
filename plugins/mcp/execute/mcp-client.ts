@@ -89,7 +89,7 @@ export class McpConnection {
   /** spawn 子进程并完成 MCP `initialize` 握手；失败抛错（由调用方计失败 / 隔离）。 */
   async connect(): Promise<void> {
     if (this.alive) return
-    this.closing = false
+    if (this.closing) throw new Error('mcp_connection_closed')
     this.torn = false
     this.buffer = ''
     const env: NodeJS.ProcessEnv = { ...process.env, ...(this.config.env ?? {}) }
@@ -139,13 +139,20 @@ export class McpConnection {
     return this.request('tools/call', { name, arguments: args ?? {} })
   }
 
-  /** 终止子进程：先关 stdin（EOF，服务器应自退），宽限期内不退则强杀。 */
-  close(): void {
+  /**
+   * 终止子进程：先关 stdin（EOF，服务器应自退），宽限期内不退则 `SIGKILL`，
+   * 并等真实 `exit` 才结算——忽略 SIGTERM / EOF 的 server 不会在父进程退出后成孤儿。
+   * 定时器不 `unref`，避免进程提前退出令强杀落空。
+   */
+  async close(): Promise<void> {
     this.closing = true
     this.rejectPending('mcp_connection_closed')
     const child = this.child
     this.child = null
-    if (child === null) return
+    if (child === null || child.exitCode !== null) return
+    const exited = new Promise<void>((resolve) => {
+      child.once('exit', () => resolve())
+    })
     try {
       child.stdin?.end()
     } catch {
@@ -153,13 +160,27 @@ export class McpConnection {
     }
     const timer = setTimeout(() => {
       try {
-        child.kill()
+        child.kill('SIGKILL')
       } catch {
         // 进程已退出：忽略
       }
     }, MCP_CLOSE_GRACE_MS)
-    timer.unref?.()
-    child.once('exit', () => clearTimeout(timer))
+    await exited
+    clearTimeout(timer)
+  }
+
+  /** 同步硬杀（进程 `exit` / 信号兜底）：发 `SIGKILL` 并拒绝在途请求，不等待退出。 */
+  kill(): void {
+    this.closing = true
+    this.rejectPending('mcp_connection_closed')
+    const child = this.child
+    this.child = null
+    if (child === null || child.exitCode !== null) return
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // 进程已退出：忽略
+    }
   }
 
   private onStdout(chunk: string): void {

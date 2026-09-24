@@ -193,6 +193,25 @@ test('会话行为：open → navigate → click → extract → screenshot → 
   }
 })
 
+test('反向 port.call 回带发起 call 帧 id（call_id）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const opened = await drv.call('invoke', bag({ action: 'open' }))
+    const capabilities = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'capabilities')
+    assert.ok(capabilities !== undefined, '应经反向 port.call 咨询 sandbox.capabilities')
+    assert.equal(capabilities.call_id, opened.id)
+
+    const session = opened.value.result.session
+    const shot = await drv.call('invoke', bag({ action: 'screenshot', session }))
+    const put = drv.portCalls.find((call) => call.port === 'host' && call.method === 'asset.put')
+    assert.ok(put !== undefined, '应经反向 port.call 调 host.asset.put')
+    assert.equal(put.call_id, shot.id)
+  } finally {
+    drv.close()
+  }
+})
+
 test('引擎不可用 → browser_unsupported（明确失败，不静默降级）', async () => {
   const drv = startService({ CHRONO_BROWSER_ENGINE_MODULE: join(HERE, 'does-not-exist.mjs') })
   try {

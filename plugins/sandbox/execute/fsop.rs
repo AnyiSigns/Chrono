@@ -2,12 +2,17 @@
 // 强制点在**本插件**：realpath 解析 + 与 `workspace_root` 前缀比对（Windows 大小写不敏感、
 // `\\?\` 前缀归一、junction / reparse point 由 canonicalize 解析）；取「声明 caps ∩ 当前档」后执行；
 // 一次性 `caps.grant` 绑定 `{call_id, op, path, tier, expires}` 校验后放宽**本次**（`deny` 档不放宽）。
-// 诚实口径：进程内校验，非 OS 级隔离（Docker 后端才真隔离）。
+// 写路径把「读校验 → rename」纳入进程内写互斥（与 grant 存储分开的一把 `Mutex`；生产入口 `fsop()`
+// 另持全局 grant 存储锁已串行化，收益边界见 `write_lock`），并在 rename 前对目标再读复核，
+// 收口 `write` / `replace` 的 TOCTOU。
+// 诚实口径：进程内 best-effort，非 OS 级隔离——`exec` 可跑任意命令绕过本锁直接改文件，故只作兜底
+// （Docker 后端才真隔离）。
 // 确定性：遍历按路径字典序、不取时间、不用随机；`stat.mtime` 取自文件系统、不参与确定性保证。
 
 use std::fs;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
@@ -138,7 +143,9 @@ impl FsContext {
 
 /// fsop 入口：使用进程内一次性 grant 记录。
 pub fn fsop(bag: &Value, now: f64) -> Value {
-    let mut store = grant::global_store().lock().expect("grant store poisoned");
+    let mut store = grant::global_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     fsop_with_store(bag, now, &mut store)
 }
 
@@ -679,10 +686,13 @@ fn op_write(
     let expected = arg_str(args, "expected_hash");
     let create = arg_bool(args, "create");
     let hash = sha256_hex(data.as_bytes());
+    // 写互斥：读校验与 rename 同处一个临界区；`exec` 绕过本锁的并发改写由 rename 前复核兜底。
+    let _guard = write_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if exists {
         if !canon.is_file() {
             return Err(not_a_directory("expected a file"));
         }
+        let mut base: Option<Vec<u8>> = None;
         if let Some(expected) = expected {
             let meta = fs::metadata(&canon).map_err(map_io_error)?;
             if meta.len() as usize > context.output_max {
@@ -696,17 +706,16 @@ fn op_write(
             if sha256_hex(&current) != expected {
                 return Err(edit_conflict("expected_hash mismatch"));
             }
+            base = Some(current);
         }
         // 临时文件 + rename：不跟随目标路径上的符号链接（rename 替换链接本身）。
-        atomic_write(&canon, data.as_bytes())
-            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+        atomic_write_verified(&canon, data.as_bytes(), base.as_deref())?;
         Ok(json!({ "bytes_written": data.len(), "created": false, "hash": hash }))
     } else {
         if !create {
             return Err(path_not_found("file does not exist (create=false)"));
         }
-        atomic_write(&canon, data.as_bytes())
-            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+        atomic_write_verified(&canon, data.as_bytes(), None)?;
         Ok(json!({ "bytes_written": data.len(), "created": true, "hash": hash }))
     }
 }
@@ -734,7 +743,10 @@ fn op_replace(
     if !canon.is_file() {
         return Err(not_a_directory("expected a file"));
     }
-    // 读前按 metadata 判上限，避免把超大文件整份读进内存。
+    // 写互斥：读校验 → 替换计算 → rename 同一临界区；`exec` 绕过本锁的并发改写由 rename 前复核兜底。
+    let guard = write_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 上限预检纳入临界区：避免预检与读之间的并发增长把超大文件整份读进内存；
+    // 读本身再按上限截断二次兜底（文件在 metadata 与 read 之间增长时仍不越界）。
     let meta = fs::metadata(&canon).map_err(map_io_error)?;
     if meta.len() as usize > context.output_max {
         return Err(too_large(format!(
@@ -743,7 +755,13 @@ fn op_replace(
             context.output_max
         )));
     }
-    let current = read_verified(&canon)?;
+    let (current, capped) = read_verified_capped(&canon, context.output_max)?;
+    if capped {
+        return Err(too_large(format!(
+            "file exceeds output_max {}",
+            context.output_max
+        )));
+    }
     if has_nul(&current) {
         return Err(binary_unsupported("file contains NUL bytes"));
     }
@@ -774,8 +792,9 @@ fn op_replace(
             context.output_max
         )));
     }
-    atomic_write(&canon, next.as_bytes())
-        .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+    atomic_write_verified(&canon, next.as_bytes(), Some(&current))?;
+    // rename 已完成，patch 合成不再触盘：先放锁，避免大片段 diff 长时间占用写互斥。
+    drop(guard);
 
     let (added_per, removed_per, diff_lines) = line_diff(old, new);
     let mut patch = String::new();
@@ -800,8 +819,18 @@ fn op_replace(
     }))
 }
 
-/// 原子写：同目录临时文件 + rename 覆盖，避免半截文件；临时名带进程内序号防并发相撞。
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// fsop 写互斥：与 grant 存储分开的一把进程内锁，串行化「读校验 → rename」临界区。
+/// 收益边界：生产入口 `fsop()` 已持全局 grant 存储锁，把全部 fsop 串行化，故本锁在生产路径下冗余；
+/// 保留它是为让 `fsop_with_store`（测试 / 未来按 store 解耦）不依赖 grant 存储实现细节也能保证临界区。
+/// 进程内 best-effort，非 OS 级隔离：`exec` 不受此锁约束（见 `atomic_write_verified` 的复核兜底）。
+fn write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 原子写 + rename 前复核：`base` 非 None 时，rename 前重读目标，与 `base` 不符即 `edit_conflict`。
+/// 进程内 best-effort：`exec` 可跑任意命令绕过 fsop 写锁，本复核是兜底而非 OS 级隔离。
+fn atomic_write_verified(path: &Path, bytes: &[u8], base: Option<&[u8]>) -> Result<(), FsError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -812,13 +841,34 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".{name}.chrono-tmp-{}-{seq}", std::process::id()));
     {
-        let mut file = fs::File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        let mut file = fs::File::create(&temp)
+            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+        file.write_all(bytes)
+            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+        file.sync_all()
+            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+    }
+    if let Some(base) = base {
+        // 区分「读失败」与「内容不符」：外部占用导致读失败是环境问题（sandbox_setup_failed），
+        // 只有真正读到且与 base 不符才是 edit_conflict。
+        match fs::read(path) {
+            Ok(current) if current.as_slice() == base => {}
+            Ok(_) => {
+                let _ = fs::remove_file(&temp);
+                return Err(edit_conflict("file changed between read and rename"));
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&temp);
+                return Err(FsError::new(
+                    "sandbox_setup_failed",
+                    format!("cannot re-read target before rename: {err}"),
+                ));
+            }
+        }
     }
     fs::rename(&temp, path).map_err(|err| {
         let _ = fs::remove_file(&temp);
-        err
+        FsError::new("sandbox_setup_failed", err.to_string())
     })
 }
 
@@ -1367,7 +1417,7 @@ mod tests {
             return;
         }
         // 直接对链接路径原子写：rename 替换链接本身，不写穿到区外目标。
-        atomic_write(&link, b"changed").unwrap();
+        atomic_write_verified(&link, b"changed", None).unwrap();
         assert_eq!(fs::read_to_string(&secret).unwrap(), "original");
         assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(fs::read_to_string(&link).unwrap(), "changed");
@@ -1471,5 +1521,76 @@ mod tests {
         // Windows 下大小写不敏感：大写根仍判区内；非 Windows 由 canonicalize 归一。
         let result = call(&raw);
         assert_eq!(result["ok"], true, "{result}");
+    }
+
+    #[test]
+    fn concurrent_expected_hash_replace_serializes() {
+        let dir = TempDir::new("toctou");
+        dir.write("f.txt", "base\n");
+        let expected = sha256_hex(b"base\n");
+        let results: Vec<Value> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2u32)
+                .map(|index| {
+                    let root = dir.path.clone();
+                    let expected = expected.clone();
+                    scope.spawn(move || {
+                        let bag = json!({
+                            "op": "replace", "path": "f.txt",
+                            "args": {
+                                "old": "base", "new": format!("v{index}"),
+                                "expected_hash": expected,
+                            },
+                            "tier": "severe",
+                            "workspace_root": root.to_string_lossy(),
+                            "caps": full_caps(),
+                            "sandbox_tiers": crate::tiers::builtin_tiers().to_value(),
+                        });
+                        let mut store = GrantStore::new();
+                        fsop_with_store(&bag, 0.0, &mut store)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+        // 同一 expected_hash 的并发替换：写锁串行化后恰一个成功，另一个读到的已非 base。
+        let succeeded = results.iter().filter(|result| result["ok"] == true).count();
+        let conflicted = results
+            .iter()
+            .filter(|result| result["code"] == "edit_conflict")
+            .count();
+        assert_eq!(succeeded, 1, "{results:?}");
+        assert_eq!(conflicted, 1, "{results:?}");
+    }
+
+    #[test]
+    fn atomic_write_verified_read_failure_is_setup_error() {
+        let dir = TempDir::new("verify-read-fail");
+        // base 非 None 但目标不可读（不存在）：属环境问题，回 sandbox_setup_failed，不误判为内容已变。
+        let target = dir.path.join("missing.txt");
+        let err = atomic_write_verified(&target, b"next", Some(b"base")).unwrap_err();
+        assert_eq!(err.code, "sandbox_setup_failed");
+        assert!(!target.exists());
+        let leftovers: Vec<_> = fs::read_dir(&dir.path)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains("chrono-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn atomic_write_verified_rejects_stale_base() {
+        let dir = TempDir::new("verify-base");
+        let target = dir.write("f.txt", "current");
+        // rename 前复核发现目标已非读取时的内容：拒写，目标保持原样。
+        let err = atomic_write_verified(&target, b"next", Some(b"stale")).unwrap_err();
+        assert_eq!(err.code, "edit_conflict");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "current");
+        // base 命中则正常替换。
+        atomic_write_verified(&target, b"next", Some(b"current")).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "next");
     }
 }

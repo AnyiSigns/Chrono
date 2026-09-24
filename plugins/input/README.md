@@ -16,7 +16,9 @@
 
 ## 提供哪些命令
 
-- `input.read`（只读，纯 term）：入口 term 直出投影里的整份 `body`（`ctx.ids.input.body`）。
+- `input.read`（只读，纯 term）：入口 term 直出投影里的整份 input 身份视图
+  （`ctx.ids.input`，含 `active` / `gens` / `body` / `pins` / `refs`）。调用方取 `body` 为槽本体，
+  取 `active` 作写 `add_gen` 时的 `expect_active`（两次往返的陈旧读据此条件拒写）。
   - args：可选 `{ thread?: string }`，只做声明校验；**本命令不按 thread 过滤**，取用留给调用方。
   - 不触发 eff、不推进链。
 

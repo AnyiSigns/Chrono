@@ -7,7 +7,8 @@ MCP（Model Context Protocol）适配器：**出站**接入外部 MCP 服务器�
 - `pins`：`{"secrets":"secrets"}`（spawn 前解析 `env` 里的 `auth_ref` 引用；不反向依赖 `tools`，避免成环）。
 - `+`（投影读）：**服务不读投影**——出站清单由宿主周期 `periodic` 按 schema 声明机械注入 `bag`。
 - 状态档：`recomputable`（子进程表住内存，可重算；不落世界）。
-- 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出并终止全部外部子进程）。
+- 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF / `SIGTERM` / `SIGINT` 即自退出并终止全部外部子进程；
+  宽限期到点发 `SIGKILL` 并等真实退出，`process.on('exit')` 再同步硬杀兜底，忽略 SIGTERM 的 server 也不留孤儿）。
 - 运行时零 npm 依赖：MCP stdio 客户端自己实现，不引 SDK。
 
 ## 出站（主体）

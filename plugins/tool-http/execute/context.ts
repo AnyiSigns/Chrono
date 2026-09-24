@@ -13,4 +13,6 @@ export interface ToolContext {
   sandboxTiers: Json | undefined
   grant: Json | undefined
   backend: HttpBackend
+  /** 正在处理的那条 call 帧 id；反向 port.call 回带用（无则 null）。 */
+  callId: string | null
 }

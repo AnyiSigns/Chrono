@@ -10,6 +10,6 @@ import type { Handler, Json } from './types.ts'
 export function createHandlers(deps: InvokeDeps): Record<string, Handler> {
   return {
     describe: async (): Promise<Json> => describeTools(),
-    invoke: (args: Json): Promise<Json> => invoke(args, deps),
+    invoke: (args: Json, callId: string | null): Promise<Json> => invoke(args, deps, callId),
   }
 }

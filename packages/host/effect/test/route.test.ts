@@ -353,4 +353,55 @@ describe('A1 路由 createRoundRouter', () => {
       })
     })
   })
+
+  describe('A1 路由缓存与世代偏斜', () => {
+    it('声明读不出不缓存 null：补齐 def 后同世界重试成功', () => {
+      const world = makeWorld({ 'toy.echo': V2.payload })
+      const endpoints = new EndpointTable()
+      endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
+      const router = createRoundRouter({ endpoints })
+      const blob = H({ body: JSON.stringify(DECL) })
+      const saved = world.defs[blob]
+      delete world.defs[blob]
+      expect(router.resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
+        ok: false,
+        error: 'not_loaded',
+      })
+      world.defs[blob] = saved
+      expect(router.resolve(world, 'caller', 'toy.echo', 'echo').ok).toBe(true)
+    })
+
+    it('liveWorld：解析世界与活端点表同代，消除锚定旧世代偏斜', () => {
+      const anchored = makeWorld({ 'toy.echo': V1.payload }, V1.payload, V1)
+      const live = makeWorld({ 'toy.echo': V1.payload }, V2.payload, V2)
+      const endpoints = new EndpointTable()
+      endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
+      // 不注入 liveWorld：锚定世界 dep.active=V1，端点表只有 V2 行 → not_loaded
+      expect(
+        createRoundRouter({ endpoints }).resolve(anchored, 'caller', 'toy.echo', 'echo'),
+      ).toEqual({ ok: false, error: 'not_loaded' })
+      // 注入 liveWorld：解析按活世界 dep.active=V2 → 命中 V2 行
+      const routed = createRoundRouter({ endpoints, liveWorld: () => live }).resolve(
+        anchored,
+        'caller',
+        'toy.echo',
+        'echo',
+      )
+      expect(routed.ok).toBe(true)
+      if (routed.ok) expect(routed.row.gen).toBe(V2.payload)
+    })
+
+    it('resolutionWorld：暴露路由采用的解析世界，与 liveWorld 同源', () => {
+      const anchored = makeWorld({ 'toy.echo': V1.payload }, V1.payload, V1)
+      const live = makeWorld({ 'toy.echo': V1.payload }, V2.payload, V2)
+      const router = createRoundRouter({
+        endpoints: new EndpointTable(),
+        liveWorld: () => live,
+      })
+      expect(router.resolutionWorld?.(anchored)).toBe(live)
+      // 未注入 liveWorld：解析世界 = 传入的锚定世界
+      const plain = createRoundRouter({ endpoints: new EndpointTable() })
+      expect(plain.resolutionWorld?.(anchored)).toBe(anchored)
+    })
+  })
 })

@@ -693,6 +693,30 @@ test('thread_kind=group：群聊 transcript 带发言者名 + 人格 + 议题', 
   }
 })
 
+test('group 跨 build 计数一致：改写前缀后不复用未改写 def 的计数缓存', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const session = chainOf([{ id: 'g1', role: 'assistant', content: 'hi all', from: 'alice' }])
+    // 先按 main 口径（不改写）建一次，def 键进入计数缓存
+    const main = await drv.build(
+      baseBag({ thread_kind: 'main', input: 'IN', system_prompt: 'P', session }),
+    )
+    // 再按 group 口径（加 'alice: ' 前缀）建一次；计数键须与改写后内容同口径
+    const group = await drv.build(
+      baseBag({ thread_kind: 'group', input: 'IN', system_prompt: 'P', session }),
+    )
+    assert.ok(textMessages(main).includes('hi all'))
+    assert.ok(textMessages(group).includes('alice: hi all'))
+    assert.ok(
+      group.manifest.sources.history.tokens > main.manifest.sources.history.tokens,
+      `改写前缀应增加计数：main=${main.manifest.sources.history.tokens} group=${group.manifest.sources.history.tokens}`,
+    )
+  } finally {
+    drv.close()
+  }
+})
+
 test('thread_kind=workflow：不组装消息历史', async () => {
   const drv = startService()
   try {

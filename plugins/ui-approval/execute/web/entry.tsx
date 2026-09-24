@@ -27,9 +27,12 @@ export const contract = '2'
 export function register(ctx: SlotContext): void {
   const store = createApprovalStore(ctx)
   store.start()
-  ctx.slots.register({ name: 'dock' }, function ApprovalDock() {
+  const registered = ctx.slots.register({ name: 'dock' }, function ApprovalDock() {
+    useEffect(() => () => store.dispose(), [])
     return <Dock ctx={ctx} store={store} />
   })
+  // 注册被拒（陈旧装载）：刚 start 的 store 立即 dispose，避免第二份在途。
+  if (registered !== true) store.dispose()
 }
 
 type T = (code: string, vars?: Record<string, unknown>) => string
@@ -173,7 +176,7 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
             <span>{t('approval_failed')}</span>
             <TextButton
               label={t('approval_retry')}
-              disabled={snapshot.busy !== null}
+              disabled={snapshot.busy.length > 0}
               onClick={() => {
                 if (snapshot.lastBatch !== null) store.submitAll(snapshot.lastBatch)
               }}
@@ -221,9 +224,9 @@ function HeadButton(props: {
     <TextButton
       label={label}
       tone={tone}
-      busy={snapshot.busy === 'all'}
+      busy={snapshot.busy.includes('all')}
       busyLabel={t('approval_submitting')}
-      disabled={snapshot.busy !== null}
+      disabled={snapshot.busy.length > 0}
       armed={armed}
       title={denyAll ? t('approval_all_deny_hint') : undefined}
       ariaLabel={denyAll ? `${t('approval_all_deny')}，${t('approval_all_deny_hint')}` : undefined}
@@ -237,7 +240,7 @@ function Item(props: { item: Rec; store: ApprovalStore; snapshot: ApprovalSnapsh
   const id = typeof item.id === 'string' ? item.id : ''
   const view = viewOf(item, snapshot.refs)
   const expanded = snapshot.expanded.includes(id)
-  const busy = snapshot.busy === id
+  const busy = snapshot.busy.includes(id)
   const tone = itemTone(item)
   const error = snapshot.itemErrors[id]
   return (

@@ -32,7 +32,7 @@ import {
 } from './memory.ts'
 import type { LiveEntry } from './memory.ts'
 import { chunkText, dedupByCosine } from './vectors.ts'
-import { readWatermark, writeWatermark } from './watermark.ts'
+import { atOrBefore, readWatermark, writeWatermark } from './watermark.ts'
 import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
 import type { CompressBackend, EmbeddingBackend } from './port-link.ts'
@@ -422,7 +422,7 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
   const selected = new Set<string>()
   for (const entry of live) {
     if (pinned[entry.id] === true) continue
-    if (cursor !== null && entry.at !== '' && entry.at <= cursor) continue
+    if (cursor !== null && entry.at !== '' && atOrBefore(entry.at, cursor)) continue
     const weight = entry.weight ?? 1
     if (weight < ctx.params.candidateThreshold) {
       l3Deleted.push({ id: entry.id, reason: 'low_weight', weight, at: entry.at })

@@ -76,7 +76,7 @@ async function handleCall(message: Rec): Promise<void> {
   }
   let value: Json
   try {
-    value = await handler(args ?? null)
+    value = await handler(args ?? null, id)
   } catch (err) {
     if (err instanceof ToolError) {
       sendError(id, err.code, err.message)

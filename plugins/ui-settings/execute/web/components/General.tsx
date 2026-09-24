@@ -63,8 +63,12 @@ export function GeneralPanel() {
               disabled={togglesDisabled(vc.state.permission)}
               onChange={async (event) => {
                 const next = mergeToggles(vc.state.notify, { [key]: event.target.checked })
-                await vc.writeConfig(setNotify(vc.state.config ?? emptyConfig(), key, event.target.checked), `notify:${key}`)
-                vc.state.notify = next
+                const result = await vc.writeConfig(
+                  setNotify(vc.state.config ?? emptyConfig(), key, event.target.checked),
+                  `notify:${key}`,
+                )
+                if (result.ok) vc.state.notify = next
+                else vc.state.error = { code: result.code, message: '' }
                 vc.render()
               }}
             />

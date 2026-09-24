@@ -3,7 +3,7 @@
 // L2 / 上一会话 L1 / 本会话 L1 / 技能 / L3 召回 / 历史 / 风格；线程口径按 bag.thread_kind 调输入。
 
 import { atomicGroups, messageParts, normalizeRole, planHistory } from './history.ts'
-import { isRecord, parseAt, parseExpiresAt, renderMemory } from './text.ts'
+import { computeTokenKey, isRecord, parseAt, parseExpiresAt, renderMemory } from './text.ts'
 import type { CallEnv, CanonicalPart, Json, RawMessage } from './types.ts'
 
 /** 优先级常量：数值越小越优先、越不可裁。 */
@@ -310,8 +310,12 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv): Ga
       const from =
         threadKind === 'group' ? asString(entry.body['from']) ?? asString(entry.body['speaker']) : null
       let parts = messageParts(entry.body).parts
+      // group 改写 parts（加发言者前缀）后内容已不同于 def：计数 / 规范化缓存键须按改写后内容定，
+      // 否则同一 def 在「改写 / 未改写」两形态间串计数与 dedup。
+      let tokenKey: string | null = null
       if (from !== null && parts.length > 0 && parts[0]?.type === 'text') {
         parts = [{ type: 'text', text: `${from}: ${(parts[0] as { text: string }).text}` }, ...parts.slice(1)]
+        tokenKey = computeTokenKey(parts)
       }
       raws.push({
         role: normalizeRole(entry.body['role']),
@@ -326,6 +330,7 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv): Ga
         subject: null,
         orderHint: index,
         defKey: entry.hash,
+        ...(tokenKey === null ? {} : { tokenKey }),
       })
     })
   }

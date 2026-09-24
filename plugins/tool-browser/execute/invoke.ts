@@ -60,13 +60,13 @@ function errorShape(err: unknown): Rec {
 }
 
 /** 声明级 net 钳制 + 咨询 sandbox 强制面；任何错误原样透传（fail-closed）。 */
-async function guardNet(ctx: InvokeContext, tier: string | null, caps: Json | undefined, sandboxTiers: Json | undefined): Promise<void> {
+async function guardNet(ctx: InvokeContext, tier: string | null, caps: Json | undefined, sandboxTiers: Json | undefined, callId: string | null): Promise<void> {
   assertNetAllowed(tier, caps, sandboxTiers)
   // 消费 sandbox 自述：本插件不走 sandbox.exec，net 只能做声明级钳制，故
   // `enforcement.net = "declaration"` 是与本模型一致的强制口径。若 sandbox 自述
   // 明确「不强制 net」（none），则无任何 net 强制基础，fail-closed 拒绝；
   // 自述缺失 / 未知（老 sandbox）以本插件声明级判定为准，不静默吞掉错误。
-  const capabilities = await ctx.link.call('sandbox', 'capabilities', {})
+  const capabilities = await ctx.link.call('sandbox', 'capabilities', {}, callId)
   if (sandboxNetEnforcement(capabilities) === 'none') {
     throw new ToolError('net_denied', 'sandbox reports no net enforcement')
   }
@@ -79,10 +79,10 @@ interface CallScope {
 }
 
 /** 取会话（未知 / 过期即 session_not_found），再过 net 钳制。 */
-async function withSession(args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope) {
+async function withSession(args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null) {
   const id = requiredString(args, 'session')
   const record = ctx.sessions.get(id, env.now)
-  await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers)
+  await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId)
   return record
 }
 
@@ -96,10 +96,10 @@ function assetError(err: unknown): ToolError {
   return new ToolError('tool_failed', `asset put failed: ${(err as Error).message ?? 'unknown error'}`)
 }
 
-async function putAsset(link: PortLink, mime: string, bytes: Buffer): Promise<Json> {
+async function putAsset(link: PortLink, mime: string, bytes: Buffer, callId: string | null): Promise<Json> {
   let value: Json
   try {
-    value = await link.call('host', 'asset.put', { mime, bytes: bytes.toString('base64') })
+    value = await link.call('host', 'asset.put', { mime, bytes: bytes.toString('base64') }, callId)
   } catch (err) {
     throw assetError(err)
   }
@@ -112,15 +112,15 @@ async function putAsset(link: PortLink, mime: string, bytes: Buffer): Promise<Js
   }
 }
 
-async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope): Promise<Json> {
+async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null): Promise<Json> {
   switch (action) {
     case 'open': {
-      await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers)
+      await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId)
       const session = await ctx.sessions.open(env.run, env.now, viewportOf(args))
       return { session }
     }
     case 'navigate': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       const url = requiredString(args, 'url')
       if (!/^https?:\/\//i.test(url)) throw new ToolError('navigate_failed', `unsupported url: ${url}`)
       const result = await record.engine.navigate(url, optionalString(args, 'wait_until'))
@@ -128,19 +128,19 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
       return { status: result.status, url: result.url, title: result.title }
     }
     case 'click': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.click(requiredString(args, 'selector'))
       ctx.sessions.touch(record.id, env.now)
       return { ok: true }
     }
     case 'type': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.type(requiredString(args, 'selector'), requiredString(args, 'text'), optionalBoolean(args, 'submit'))
       ctx.sessions.touch(record.id, env.now)
       return { ok: true }
     }
     case 'press': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.press(requiredString(args, 'key'))
       ctx.sessions.touch(record.id, env.now)
       return { ok: true }
@@ -149,24 +149,24 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
       const selector = optionalString(args, 'selector')
       const ms = optionalInt(args, 'ms')
       if (selector === undefined && ms === undefined) throw new ToolError('bad_args', 'wait_for requires selector or ms')
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.waitFor(selector, ms)
       ctx.sessions.touch(record.id, env.now)
       return { ok: true }
     }
     case 'extract': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       const attr = optionalString(args, 'attr')
       const result = await record.engine.extract(optionalString(args, 'selector'), attr)
       ctx.sessions.touch(record.id, env.now)
       return attr === undefined ? { text: result.text ?? '' } : { value: result.value ?? '' }
     }
     case 'screenshot': {
-      const record = await withSession(args, ctx, env, scope)
+      const record = await withSession(args, ctx, env, scope, callId)
       const format = optionalString(args, 'format')
       const shot = await record.engine.screenshot(optionalBoolean(args, 'full_page') ?? false, format)
       ctx.sessions.touch(record.id, env.now)
-      return { asset: await putAsset(ctx.link, shot.mime, shot.bytes) }
+      return { asset: await putAsset(ctx.link, shot.mime, shot.bytes, callId) }
     }
     case 'close': {
       const id = requiredString(args, 'session')
@@ -179,7 +179,7 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
 }
 
 /** invoke 入口：成功 `{ok:true, result}`，失败 `{ok:false, error:{code, message}}`。 */
-export async function invoke(bag: Json, ctx: InvokeContext, env: CallEnv): Promise<Json> {
+export async function invoke(bag: Json, ctx: InvokeContext, env: CallEnv, callId: string | null = null): Promise<Json> {
   try {
     if (!isRecord(bag)) throw new ToolError('bad_args', 'invoke bag must be an object')
     if (bag['tool'] !== TOOL_NAME) throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
@@ -191,7 +191,7 @@ export async function invoke(bag: Json, ctx: InvokeContext, env: CallEnv): Promi
       caps: bag['caps'],
       sandboxTiers: bag['sandbox_tiers'],
     }
-    return { ok: true, result: await dispatchAction(action, args, ctx, env, scope) }
+    return { ok: true, result: await dispatchAction(action, args, ctx, env, scope, callId) }
   } catch (err) {
     return { ok: false, error: errorShape(err) }
   }

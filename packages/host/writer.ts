@@ -10,6 +10,18 @@ export interface WorldState {
   head: Head
 }
 
+/** thenable 判定：段回调返回 Promise 即视为违反「段内禁 await」。 */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
+}
+
+/** 段回调的同步返回值：`T` 为 thenable 时归 `never`，编译期即拒 async 回调。 */
+export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T
+
 export class WorldWriter {
   private state: WorldState
   private tail: Promise<unknown> = Promise.resolve()
@@ -24,12 +36,20 @@ export class WorldWriter {
   }
 
   /**
-   * 串行执行 fn：同一时刻至多一段，前一段（含其返回的 promise）落定后才开始下一段。
+   * 串行执行 fn：同一时刻至多一段，前一段落定后才开始下一段。
+   * fn 必须**同步**：段内出现 await 会让段与段交错，`expect_pos` 单链头 CAS 不再成立；
+   * 运行时护栏在 fn 返回 thenable 时立即抛错（不静默把 await 引入落账段）。
    * fn 对 `state` 的修改即成为新的当前世界 / 链头；fn 抛错只让本次 run 落定失败，
    * 不阻塞后续段（互斥链始终向前）。
    */
-  run<T>(fn: (state: WorldState) => T | Promise<T>): Promise<T> {
-    const next = this.tail.then(() => fn(this.state))
+  run<T>(fn: (state: WorldState) => SyncResult<T>): Promise<T> {
+    const next = this.tail.then(() => {
+      const result = fn(this.state) as T
+      if (isThenable(result)) {
+        throw new Error('WorldWriter.run: fn must be synchronous (thenable returned)')
+      }
+      return result
+    })
     this.tail = next.then(
       () => undefined,
       () => undefined,

@@ -15,7 +15,7 @@ import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
 export const SECRETS = new SecretsLink()
 
 /** 子进程表住内存（③ 可重算）；drain / 退出时由 main.ts 调 closeAll 终止全部外部子进程。 */
-export const REGISTRY = new McpRegistry(log, emitEvent, (authRef) => SECRETS.resolve(authRef))
+export const REGISTRY = new McpRegistry(log, emitEvent, (authRef, callId) => SECRETS.resolve(authRef, callId))
 
 /** 本插件自述（不回外部工具清单——清单权威 = 数据世代 body 投影）。 */
 function describeValue(): Json {
@@ -44,9 +44,9 @@ async function describe(_args: Json, _env: CallEnv): Promise<HandlerResult> {
  * `discover(bag)`：bag.servers = 整个 body（宿主 periodic `reads` 机械注入）。
  * 有变化 → 返回 `put(新 body) + add_gen(mcp)` 写计划；无变化且未置脏 → 只回 extern。
  */
-async function discover(args: Json, _env: CallEnv): Promise<HandlerResult> {
+async function discover(args: Json, _env: CallEnv, callId: string | null): Promise<HandlerResult> {
   const bag: Rec = isRecord(args) ? args : {}
-  const outcome = await REGISTRY.discover(bag['servers'])
+  const outcome = await REGISTRY.discover(bag['servers'], callId)
   if (!outcome.changed) {
     return { value: externOnly({ ok: true, changed: false, ...outcome.summary }) }
   }
@@ -55,12 +55,12 @@ async function discover(args: Json, _env: CallEnv): Promise<HandlerResult> {
 }
 
 /** `invoke(bag)`：bag = `{tool:"mcp.<server>.<tool>", tool_args}` → 路由到对应子进程。 */
-async function invoke(args: Json, _env: CallEnv): Promise<HandlerResult> {
+async function invoke(args: Json, _env: CallEnv, callId: string | null): Promise<HandlerResult> {
   if (!isRecord(args)) throw new BadArgsError('args must be an object')
   const tool = args['tool']
   if (typeof tool !== 'string' || tool.length === 0) throw new BadArgsError('tool required')
   const toolArgs = args['tool_args'] ?? args['args'] ?? args['arguments'] ?? {}
-  const value = await REGISTRY.invoke(tool, toolArgs)
+  const value = await REGISTRY.invoke(tool, toolArgs, callId)
   return { value }
 }
 

@@ -2,7 +2,7 @@
 // 排除 = 通用排除（node_modules / .git）+ 插件 `.worldignore` 声明项；宿主不内置语言 / 构建名字。
 // 同时给出占位符形式的批内 ops 与真实哈希（供去重 / 身份引用），两者内容同构。
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { blobPointerOf, blobSha256 } from '../blobs.ts'
@@ -86,6 +86,20 @@ export function isIgnored(relSegments: string[], patterns: string[][]): boolean 
   )
 }
 
+/**
+ * 稳定读文件：读前读后 stat 比对 size/mtime，不一致说明写入方正在改，重试一次；
+ * 仍不一致取最后一次读取（内容哈希会随读取字节自洽，调用方按结果处理）。
+ */
+function readFileStable(abs: string): Buffer {
+  for (let attempt = 0; ; attempt++) {
+    const before = statSync(abs)
+    const bytes = readFileSync(abs)
+    const after = statSync(abs)
+    if (before.size === after.size && before.mtimeMs === after.mtimeMs) return bytes
+    if (attempt >= 1) return bytes
+  }
+}
+
 /** 打包一个目录：返回批内 put 子操作（文件在前、目录在后）与根 tree 的真实哈希。 */
 export function packSourceDir(absDir: string, patterns: string[][] = []): PackedSource {
   const ops: Json[] = []
@@ -126,7 +140,7 @@ function packDir(
       fileCount += child.fileCount
     } else if (dirent.isFile()) {
       // 字节本体外迁 CAS，链上只留 pointer def（摘要 + 长度）；文本与二进制同形，不再 base64
-      const raw = readFileSync(abs)
+      const raw = readFileStable(abs)
       const sha256 = blobSha256(raw)
       const def = { body: blobPointerOf(sha256, raw.length) }
       const hash = H(def as unknown as Json)

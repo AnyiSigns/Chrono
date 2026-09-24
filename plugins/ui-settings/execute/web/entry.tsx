@@ -13,12 +13,14 @@ export function register(ctx: SlotContext): void {
   const { vc, dispose } = createViewContext(ctx)
   function Overlay(props: { ctx: SlotContext }) {
     props.ctx.useStore(vc.store)
-    useEffect(() => dispose, [])
+    useEffect(() => () => dispose(), [])
     return (
       <VcContext.Provider value={vc}>
         <App />
       </VcContext.Provider>
     )
   }
-  ctx.slots.register({ name: 'overlay' }, Overlay)
+  const registered = ctx.slots.register({ name: 'overlay' }, Overlay)
+  // 注册被拒（陈旧装载）：刚建的视图上下文立即 dispose，避免第二份在途。
+  if (registered !== true) dispose()
 }

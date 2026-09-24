@@ -9,7 +9,8 @@
 - `pins`：`secrets`（`auth_ref` 解析）、`sandbox`（隔离执行）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 状态档：`recomputable`。运行时零 npm 依赖。
-- 方法级超时：schema 顶层 `method_timeouts` 声明 `tool-shell.invoke` 120000，避免长命令被宿主 30s 缺省截断。
+- 方法级超时：schema 顶层 `method_timeouts` 声明 `tool-shell.invoke` 130000，避免长命令被宿主 30s 缺省截断；
+  反向等待按声明 `timeout_ms` 加余量并 clamp 在宿主预算内（`host 130000 > reverse ≤ 129999 > exec`）。
 
 ## 工具声明（`describe`）
 

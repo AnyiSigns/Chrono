@@ -1,7 +1,7 @@
 // 记忆页动作：搜索（只读）+ 编辑 / 删除 / 置顶（写类无参：写 `memory.edit` 槽 → 调命令 → 重拉视图）。
 // 命令失败落行内 danger + 重试；不弹窗、不空白。搜索需要的投影切片经 `settings.identities` 取回随 args 传入。
 
-import { isRecord, slotWriteDirective } from './config-model.ts'
+import { isRecord } from './config-model.ts'
 import { editSlotPayload } from './memory-model.ts'
 import { loadIdentities, loadMemoryView } from './data-load.ts'
 
@@ -57,8 +57,7 @@ export async function doMemoryEdit(ctx: any, action: string, layer: string, id: 
   memory.confirmDelete = null
   ctx.render()
   try {
-    const slots = await ctx.readSlots()
-    const wrote = await ctx.applyWrite(slotWriteDirective(slots, ctx.threadKey, editSlotPayload(action, layer, id, patch)))
+    const wrote = await ctx.writeSlot(editSlotPayload(action, layer, id, patch))
     if (!wrote.ok) {
       memory.editError = { action, layer, id, patch, code: 'settings_memory_edit_failed' }
       return false

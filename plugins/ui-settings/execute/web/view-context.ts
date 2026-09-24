@@ -7,7 +7,11 @@ import {
   configWriteDirective,
   emptyConfig,
   exportJson,
+  identityActive,
+  identityBody,
+  isCodeGenFallbackBody,
   isRecord,
+  slotWriteDirective,
   validateImport,
 } from './config-model.ts'
 import { applyTemplate, chooseEntry, defaultOnboarding } from './onboarding.ts'
@@ -36,6 +40,7 @@ export function initialState(): any {
     notify: null,
     permission: 'unknown',
     loading: false,
+    loadingCount: 0,
     loadingNote: false,
     error: null,
     savedKey: null,
@@ -77,6 +82,8 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
   const state = initialState()
   let table: any = FALLBACK_MESSAGES
   let loadingTimer: any = null
+  /** 最近一次 `config.read` 读到的 active；写 config 时作 `expect_active`。 */
+  let configActive: string | null | undefined = undefined
   const offs: (() => void)[] = []
 
   const vc: any = {
@@ -85,6 +92,12 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     store,
     state,
     threadKey: THREAD_KEY,
+    get configActive(): string | null | undefined {
+      return configActive
+    },
+    set configActive(value: string | null | undefined) {
+      configActive = value
+    },
     text: (code: string, vars?: any) => (vars === undefined ? messageText(table, code) : formatText(table, code, vars)),
     render: () => store.commit(),
     announce: (message: string) => {
@@ -143,14 +156,35 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     return { ok: true }
   }
 
-  async function readSlots(threadKey: string = THREAD_KEY): Promise<any> {
+  async function readSlotsState(threadKey: string): Promise<{ body: any; active: string | null | undefined }> {
     const result = await runCommand('input.read', { thread: threadKey })
-    if (!result.ok || !isRecord(result.value) || !isRecord(result.value.slots)) return {}
-    return result.value.slots
+    if (!result.ok) return { body: null, active: undefined }
+    return { body: identityBody(result.value), active: identityActive(result.value) }
+  }
+
+  /** 写 config 前重读 active：读到的 active 仅当次有效，写前重取最新身份视图，
+   * 避免用陈旧 active 被内核 `stale_active` 静默拒写。读失败保留原值。 */
+  async function refreshConfigActive(): Promise<void> {
+    const result = await runCommand('config.read', null)
+    if (!result.ok) return
+    configActive = identityActive(result.value)
+  }
+
+  /** 槽写：读-改-写本线程键；读到代码世代回落 body 则回未就绪，不写坏身份。 */
+  async function writeSlot(slot: any, threadKey: string = THREAD_KEY): Promise<any> {
+    const read = await readSlotsState(threadKey)
+    if (!isRecord(read.body) || isCodeGenFallbackBody(read.body)) {
+      return { ok: false, code: 'not_loaded' }
+    }
+    const slots = isRecord(read.body.slots) ? read.body.slots : {}
+    return applyWrite(slotWriteDirective(slots, threadKey, slot, read.active), threadKey)
   }
 
   async function writeConfig(body: any, key?: string | null): Promise<any> {
-    const result = await applyWrite(configWriteDirective(body), THREAD_KEY)
+    // 拒 tree 基：绝不把代码世代回落 body 当配置数据写回。
+    if (isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
+    await refreshConfigActive()
+    const result = await applyWrite(configWriteDirective(body, configActive), THREAD_KEY)
     if (result.ok) {
       state.config = body
       state.savedKey = key ?? null
@@ -281,8 +315,9 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     postJson,
     runCommand,
     applyWrite,
-    readSlots,
+    writeSlot,
     writeConfig,
+    refreshConfigActive,
     writeSkillBody,
     armLoadingNote,
     clearLoadingNote,

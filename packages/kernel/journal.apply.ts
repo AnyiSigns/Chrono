@@ -25,7 +25,8 @@ export type ApplyOutcome =
  * @param adoptedBy 仅 batch 内层用：外层真实位置，写入 `adopted.write`（两段式）
  * @returns ok:true 带世界与本次写入的 def 键；ok:false 仅 batch 子操作失败可达
  * @throws KernelError 单 op 语义违例（'id_taken' / 'missing_ref' / 'not_a_generation' /
- *   'bad_selfref' / 'world_rev_mismatch' / 'missing_parent' / 'no_identity' / 'bad_form'）
+ *   'stale_active' / 'bad_selfref' / 'world_rev_mismatch' / 'missing_parent' / 'no_identity' /
+ *   'bad_form'）
  */
 export function applyEntry(w: World, e: Entry, adoptedBy?: Hash): ApplyOutcome {
   return applyOp(w, e, adoptedBy, undefined)
@@ -155,10 +156,14 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
     sig: Hash
     from?: string
     gen?: number
+    expect_active?: Hash | null
   }
   const argsHash = H(e.args)
   const identity = w.ids[s.id]
   if (!identity) throw new KernelError('no_identity')
+  if (Object.hasOwn(s, 'expect_active') && identity.active !== s.expect_active) {
+    throw new KernelError('stale_active')
+  }
   if (!w.defs[s.payload] || !w.defs[s.sig]) throw new KernelError('missing_ref')
   let graft: Gen['graft'] | undefined
   if (isGraft) {

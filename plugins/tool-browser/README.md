@@ -8,7 +8,8 @@
   截图字节经 `host.asset.put` 存资产。**浏览器进程本插件自管，不经 `sandbox.exec`。**
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF / 管道断开即自退出并关闭全部会话）。
 - 停机：`SIGTERM` / `SIGINT` 走优雅停机（关闭全部会话后退出）；`process.on('exit')` 同步 `killAllSync` 兜底，
-  硬杀残留浏览器子进程（不泄漏进程）。
+  硬杀残留浏览器子进程——**含建引擎途中尚未入册的在途引擎**（工厂在 spawn 后把可同步终止的句柄登记进
+  建引擎句柄，`killAllSync` 直接触达，不泄漏进程）。
 - 状态档：`recomputable`（会话表住进程内，可重算；不落世界）。
 - 无命令面、无 `terms/`；运行时零 npm 依赖。
 
@@ -55,8 +56,8 @@
 - `playwright`：惰性 `import('playwright')`，用其自带 Chromium；未安装即 `browser_unsupported`（不内置、不假装有浏览器）。
 - `cdp`：探测系统浏览器（配置 `engine.browser_path` > 环境变量 `CHRONO_BROWSER_PATH` > 平台候选路径）后 spawn，
   经 CDP（Node 内建全局 `WebSocket`）驱动一个页面；找不到浏览器即 `browser_unsupported`。
-- **引擎注入点**：环境变量 `CHRONO_BROWSER_ENGINE_MODULE` 指向一个导出 `createEngine(config)` 的模块时改用它
-  （引擎外部扩展 / 测试注入；模块住包外，不入世界）。
+- **引擎注入点**：环境变量 `CHRONO_BROWSER_ENGINE_MODULE` 指向一个导出 `createEngine(config, handle)` 的模块时改用它
+  （引擎外部扩展 / 测试注入；模块住包外，不入世界）；`handle` 用于登记建引擎途中可同步硬杀的中间态。
 
 引擎只暴露会话内的页面动作面，换引擎不改工具名与 args；`describe` / `invoke` 与模型侧不受影响。
 

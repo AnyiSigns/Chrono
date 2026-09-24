@@ -27,8 +27,9 @@
 
 1. 浏览器经壳 api 调命令（`ctx.command(name, args, {thread})`），宿主按名路由回投影值。
 2. 写经壳 api `ctx.submit(directives, {thread})`。
-3. 读-改-写：`input.read` 取回整份 `body.slots`，只覆盖本线程键（`active_thread`，缺省 `_main`）
-   后整份 `put` + `add_gen`；`config.read` 取回整份配置，只改本插件负责的字段后整份 `put` + `add_gen`。
+3. 读-改-写：`input.read` 取回整份身份视图，用 `body.slots` 只覆盖本线程键（`active_thread`，缺省 `_main`）
+   后整份 `put` + `add_gen`（读到的 `active` 作 `expect_active`）；`config.read` 同理取回整份配置 body，
+   只改本插件负责的字段后整份 `put` + `add_gen`。读到代码世代回落 body（含 `tree` 键）时回未就绪并退避重试。
 4. 发送 = 写 `chat.message` 槽（`text` + `attachments`）后调无参命令 `chat.send`，信封带
    `thread = active_thread`；终止 = `ctx.cancel(run)`，`run` 取自匹配当前线程的 `run.started`。
 5. 附件字节经壳 `ctx.asset.put(mime, bytes)` 入库，世界只存 `{kind:'asset',sha256,mime,size}`

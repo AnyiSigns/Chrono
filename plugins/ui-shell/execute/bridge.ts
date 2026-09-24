@@ -4,6 +4,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { deriveBootMode } from './web/lib/boot-mode.js'
+import { identityActive, identityBody } from './web/lib/identity-shape.js'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -96,7 +97,11 @@ export function interpretResponse(result: InboundResult): InboundResult {
   return { ok: true, frame, code: '', message: '' }
 }
 
-/** 从命令 / submit 回帧取业务值：eval 观测的 value，或 extern 观测的 payload。 */
+/**
+ * 从命令 / submit 回帧取业务值：eval 观测的 value，或 extern 观测的 payload。
+ * 命令入口 term 返回写计划（`{$directives:[…]}`）时，业务数据在最后一条 `extern` 条目里，
+ * 写条目由宿主自动落账；此处取 extern 载荷作客户端可见值（与插件服务侧 bridge 口径一致）。
+ */
 export function extractValue(frame: Rec | null): Json {
   if (frame === null) return null
   const observations = frame['observations']
@@ -104,10 +109,26 @@ export function extractValue(frame: Rec | null): Json {
   for (const observation of observations) {
     if (!isRecord(observation)) continue
     if (observation['kind'] === 'eval' && observation['value'] !== undefined) {
-      return observation['value'] as Json
+      return unwrapPlan(observation['value'] as Json)
     }
     if (observation['kind'] === 'extern' && observation['payload'] !== undefined) {
       return observation['payload'] as Json
+    }
+  }
+  return null
+}
+
+/**
+ * 计划值取最后一条 `extern` 载荷；非计划值原样返回（无 extern 条目回 null）。
+ * `$directives` 是入站协议的保留计划标记：命令入口 term 回写计划是统一契约，故按值形状解包，
+ * 不按命令名收窄——收窄需要维护命令白名单，且新命令一旦回计划就会被漏解。
+ */
+export function unwrapPlan(value: Json): Json {
+  if (!isRecord(value) || !Array.isArray(value['$directives'])) return value
+  for (let index = value['$directives'].length - 1; index >= 0; index--) {
+    const item = value['$directives'][index]
+    if (isRecord(item) && item['kind'] === 'extern' && item['payload'] !== undefined) {
+      return item['payload'] as Json
     }
   }
   return null
@@ -119,7 +140,8 @@ export function newRequestId(prefix = 'ui-shell'): string {
 }
 
 /**
- * 无配置判据：`config.read` 返回值含 `vendor` 键 ⇒ 引导完成（`ready`），否则 `onboarding`。
+ * 无配置判据：`config.read` 返回值里存在至少一个已启用模型条目（`providers.*.models.*` 且
+ * `enabled !== false`）⇒ 引导完成（`ready`），否则 `onboarding`。
  * 壳自身不读投影，判据只来自命令返回值。实现与浏览器侧共用 `web/lib/boot-mode.js`。
  */
 
@@ -165,12 +187,24 @@ export class Bridge {
     return this.send(cancelFrame(newRequestId(), run))
   }
 
-  /** 读 config body（`config.read` 命令）；无配置判据与主题读改写的共同数据源。 */
-  async configRead(): Promise<{ ok: boolean; value: Json; code: string; message: string }> {
+  /**
+   * 读 config（`config.read` 命令）：命令返回整份 config 身份视图，
+   * 这里拆出 `body`（配置本体，无配置判据 / 主题读改写的共同数据源）与 `active`
+   * （写 `add_gen` 的 `expect_active`）。
+   */
+  async configRead(): Promise<{
+    ok: boolean
+    value: Json
+    active: string | null | undefined
+    code: string
+    message: string
+  }> {
     const result = await this.command('config.read', null)
+    const raw = result.ok ? extractValue(result.frame) : null
     return {
       ok: result.ok,
-      value: result.ok ? extractValue(result.frame) : null,
+      value: identityBody(raw),
+      active: identityActive(raw),
       code: result.code,
       message: result.message,
     }

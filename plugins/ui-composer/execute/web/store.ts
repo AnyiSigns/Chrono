@@ -4,7 +4,7 @@
 
 import type { SlotContext } from '@chrono/ui-contract'
 import { createClient } from './client.ts'
-import type { SubmitResult } from './client.ts'
+import type { IdentityRead, SubmitResult } from './client.ts'
 import {
   attachmentKind,
   buildAttachment,
@@ -24,6 +24,7 @@ import {
   dequeue,
   enqueue,
   enqueueFront,
+  isCodeGenFallbackBody,
   isRecord,
   matchesThread,
   mergeConfig,
@@ -143,6 +144,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   let disposed = false
   let offEvents: (() => void) | null = null
   let offThread: (() => void) | null = null
+  let reasoningSeq = 0
   const writeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const listeners = new Set<(snapshot: ComposerSnapshot) => void>()
 
@@ -201,8 +203,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     })
   }
 
-  function clearSentInput(sent: Chip[]): void {
-    state.text = ''
+  function clearSentInput(sent: Chip[], sentText: string): void {
+    // 跨 await 期间用户可能已输入新文本：仅当文本仍等于发送时快照才清空。
+    if (state.text === sentText) state.text = ''
     const sentIds = new Set(sent.map((chip) => chip.id))
     state.attachments = state.attachments.filter((chip) => !sentIds.has(chip.id))
   }
@@ -274,15 +277,28 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   /**
    * 写配置的公共路径：先 `config.read` 读回最新整份 body，只改本插件负责的字段，再整值 `put` + `add_gen`。
    * 不基于本地缓存写——否则会把同进程内其它写者（主题 / 侧栏宽度）的改动整份覆盖掉。
+   * 读回 `active` 作 `expect_active`：两次往返间世界换代则内核 `stale_active` 拒写。
    */
+  async function readConfigReady(): Promise<IdentityRead> {
+    let read = await client.readConfigState()
+    for (let attempt = 0; attempt < 3 && isCodeGenFallbackBody(read.body); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt))
+      if (disposed) return read
+      read = await client.readConfigState()
+    }
+    return read
+  }
+
   async function commitConfig(change: unknown): Promise<SubmitResult> {
-    const fresh = await client.readConfig()
+    const fresh = await readConfigReady()
     if (disposed) return { ok: false, code: 'disposed', run: null }
-    const base = fresh !== null ? fresh : state.config
-    if (base === null) return { ok: false, code: 'input_unavailable', run: null }
+    // 代码世代回落 body（配置身份尚无数据世代）→ 未就绪，退避后仍如此则不写。
+    if (isCodeGenFallbackBody(fresh.body)) return { ok: false, code: 'not_loaded', run: null }
+    const base = fresh.body !== null ? fresh.body : state.config
+    if (base === null || isCodeGenFallbackBody(base)) return { ok: false, code: 'not_loaded', run: null }
     state.config = mergeConfig(base, change)
     publish()
-    return client.writeConfig(state.config)
+    return client.writeConfig(state.config, fresh.active)
   }
 
   function applyReasoningOptions(options: string[]): void {
@@ -305,6 +321,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   async function ensureReasoning(): Promise<void> {
+    // 请求序号：模型 / 配置在拉取期间可能已切换，旧回包不得覆盖新状态。
+    const seq = (reasoningSeq += 1)
     if (state.config === null || state.model === null) {
       state.reasoning = hiddenReasoning()
       publish()
@@ -324,7 +342,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     }
     publish()
     const profile = await client.fetchProfile()
-    if (disposed) return
+    if (disposed || seq !== reasoningSeq) return
     if (!profile.ok) {
       state.reasoning = {
         status: 'failed',
@@ -337,7 +355,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       return
     }
     const config = await client.readConfig()
-    if (disposed) return
+    if (disposed || seq !== reasoningSeq) return
     if (config !== null) state.config = config
     const options = reasoningOptionsFromConfig(state.config)
     if (options === null || options.length === 0) {
@@ -478,10 +496,11 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       (chip) => chip.status === 'ready' && chip.source !== null,
     )
     if (state.text.trim().length === 0 && ready.length === 0) return
+    const sentText = state.text
     const slot = buildMessageSlot(state.text, ready.map(toAttachment))
     if (isThreadBusy(tracking, threadKey)) {
       state.pending = enqueue(state.pending, threadKey, { id: nextId(), slot })
-      clearSentInput(ready)
+      clearSentInput(ready, sentText)
       publish()
       return
     }
@@ -498,7 +517,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       publish()
       return
     }
-    clearSentInput(ready)
+    clearSentInput(ready, sentText)
     publish()
     armSend(threadKey, wrote.run)
   }

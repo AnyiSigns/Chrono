@@ -5,11 +5,14 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  readSync,
+  truncateSync,
   writeSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -37,6 +40,10 @@ export interface Anchor {
   baseSeq: number
   /** 基础世界文件携带的审计索引（body 由调用方从 `world.defs[hash]` 取回）。 */
   baseAudits: BaseAuditRef[]
+  /** journal 尾文件存在撕裂尾：持锁写方须先截断到 `journalValidBytes` 再 append。 */
+  journalTruncated: boolean
+  /** 有效前缀字节长度（截断目标）；无截断时等于文件大小（文件不存在为 0）。 */
+  journalValidBytes: number
 }
 
 export interface VerifyReport {
@@ -53,7 +60,19 @@ export function headOf(entries: Entry[]): Head {
   return { seq: last.seq, hash: pos(entries) as Hash }
 }
 
-/** 读入 journal：每行一条 entry 的规范 JSON；缺文件视为空账。 */
+/** 容错读结果：有效前缀 + 是否截断 + 截断处字节偏移。 */
+export interface JournalRead {
+  entries: Entry[]
+  /** 末行撕裂（无换行的半截 JSON）被丢弃：持锁写方须先截断到 `validBytes` 再 append。 */
+  truncated: boolean
+  /** 有效前缀的字节长度（含末条完整行的换行）；无截断时等于文件大小。 */
+  validBytes: number
+}
+
+/**
+ * 严格读：每行一条 entry 的规范 JSON；缺文件视为空账。
+ * 任何非空行解析失败（含末行）都抛——用于 verify / replay / 冷段，完整性判定不得静默丢条目。
+ */
 export function readJournal(file: string): Entry[] {
   if (!existsSync(file)) return []
   const text = readFileSync(file, 'utf8')
@@ -65,10 +84,60 @@ export function readJournal(file: string): Entry[] {
   return entries
 }
 
-/** 追加 entries 并 fsync；空数组不产生任何落盘。 */
+/**
+ * 容错读：追加是「整段一次写」，崩溃只可能留下**最后一条**非空行的半截（无换行结尾）。
+ * 末段无换行且解析失败视为撕裂尾丢弃，并报告有效前缀字节数供写方截断；
+ * 带换行的行解析失败仍是真损坏（含末行），中间行同理，一律抛。用于启动 / append 路径。
+ */
+export function readJournalTolerant(file: string): JournalRead {
+  if (!existsSync(file)) return { entries: [], truncated: false, validBytes: 0 }
+  const bytes = readFileSync(file)
+  const entries: Entry[] = []
+  let validBytes = 0
+  let start = 0
+  while (start < bytes.length) {
+    const newline = bytes.indexOf(0x0a, start)
+    const lineEnd = newline === -1 ? bytes.length : newline + 1
+    if (newline === -1) {
+      // 末段无换行：空段视为正常收尾；非空且解析失败即撕裂尾
+      if (start < bytes.length) {
+        const line = bytes.subarray(start, bytes.length).toString('utf8')
+        try {
+          entries.push(JSON.parse(line) as Entry)
+          validBytes = bytes.length
+        } catch {
+          return { entries, truncated: true, validBytes }
+        }
+      }
+      break
+    }
+    const line = bytes.subarray(start, newline).toString('utf8')
+    if (line.length > 0) entries.push(JSON.parse(line) as Entry)
+    validBytes = lineEnd
+    start = lineEnd
+  }
+  return { entries, truncated: false, validBytes }
+}
+
+/**
+ * 持锁写方在 append 前调用：容错读尾文件，检测到撕裂尾即截断到有效前缀。
+ * 返回容错读结果（有效条目已排除撕裂尾）供调用方复用，避免重复读。
+ */
+export function repairJournalTail(file: string): JournalRead {
+  const read = readJournalTolerant(file)
+  if (read.truncated) truncateSync(file, read.validBytes)
+  return read
+}
+
+/**
+ * 追加 entries 并 fsync；空数组不产生任何落盘。
+ * 追加前校验文件以 `\n` 结尾（非空时）：否则上一条是撕裂尾，直接追加会把新 entry 粘在残行上
+ * 而被后续容错读当末行丢弃、终致 journal 永久损坏。调用方须先 `repairJournalTail` 截断。
+ */
 export function appendJournal(file: string, entries: Entry[]): void {
   if (entries.length === 0) return
   mkdirSync(dirname(file), { recursive: true })
+  assertJournalAppendable(file)
   const payload = entries.map((e) => canonicalJson(e as unknown as Json)).join('\n') + '\n'
   const fd = openSync(file, 'a')
   try {
@@ -76,6 +145,30 @@ export function appendJournal(file: string, entries: Entry[]): void {
     fsyncSync(fd)
   } finally {
     closeSync(fd)
+  }
+}
+
+/** 追加前守卫：非空文件末字节必须是换行，否则抛 `journal_torn_tail`（fail-closed，不粘行）。 */
+function assertJournalAppendable(file: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(file, 'r')
+    const size = fstatSync(fd).size
+    if (size === 0) return
+    const tail = Buffer.alloc(1)
+    readSync(fd, tail, 0, 1, size - 1)
+    if (tail[0] !== 0x0a) throw new Error('journal_torn_tail')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        // 已关闭
+      }
+    }
   }
 }
 
@@ -142,6 +235,7 @@ function dedupeBySeq(entries: Entry[]): Entry[] {
  * 取用世界（G6）：base 与 journal 尾段对齐时只读「快照起的尾段」并接在基础世界上重放；
  * base 缺失 / 与尾段不对齐（崩溃窗口）时回落**全链**（冷段 + 尾段，按 seq 去重）从空世界重放——
  * 基础世界文件是派生缓存，丢了不丢数据。base 形态损坏（`readBase` 抛 `bad_base`）仍 fail-closed。
+ * 尾文件按容错读：撕裂尾被排除并回报在 `journalTruncated` / `journalValidBytes`，交持锁写方截断。
  * @param file journal 文件
  * @param baseFile 基础世界文件；缺省 = 不启用基础世界（测试 / 纯日志场景）
  * @param coldDir 冷段目录；缺省 = journal 同级的 `cold/`
@@ -149,20 +243,32 @@ function dedupeBySeq(entries: Entry[]): Entry[] {
 export function loadAnchor(file: string, baseFile?: string, coldDir?: string): Anchor {
   const cold = coldDir ?? join(dirname(file), 'cold')
   const base = baseFile === undefined ? null : readBase(baseFile)
-  const journal = readJournal(file)
-  if (base !== null && alignedWithBase(journal, base.snapshot)) {
-    const world = replay(journal, base.world)
+  const tail = readJournalTolerant(file)
+  if (base !== null && alignedWithBase(tail.entries, base.snapshot)) {
+    const world = replay(tail.entries, base.world)
     const head =
-      journal.length > 0 ? headOf(journal) : { seq: base.snapshot.seq, hash: base.snapshot.hash }
-    return { world, head, entries: journal, baseSeq: base.snapshot.seq, baseAudits: base.audits }
+      tail.entries.length > 0
+        ? headOf(tail.entries)
+        : { seq: base.snapshot.seq, hash: base.snapshot.hash }
+    return {
+      world,
+      head,
+      entries: tail.entries,
+      baseSeq: base.snapshot.seq,
+      baseAudits: base.audits,
+      journalTruncated: tail.truncated,
+      journalValidBytes: tail.validBytes,
+    }
   }
-  const entries = readAllEntries(file, cold)
+  const entries = dedupeBySeq([...readColdEntries(cold), ...tail.entries])
   return {
     world: replay(entries, EMPTY_WORLD),
     head: headOf(entries),
     entries,
     baseSeq: -1,
     baseAudits: [],
+    journalTruncated: tail.truncated,
+    journalValidBytes: tail.validBytes,
   }
 }
 
