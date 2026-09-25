@@ -1,6 +1,6 @@
 {
   "title": "input slot（用户意图信箱 · per-thread）",
-  "description": "per-thread 键控寄存器：body = {slots:{<thread_id>}}；客户端整值写入该线程键，回合读取，由消费该槽的写类命令的终局计划以 idle 世代清该键。缺省线程键 `_main`。形态校验归写入端（宿主不校验身份数据）。",
+  "description": "per-thread 键控寄存器：body = {slots:{<thread_id>}}；运行记录住服务自有持久存储（④ CHRONO_PLUGIN_DATA/slots.jsonl），不进世界、不产数据世代；本 schema 是身份自述 / 数据契约。客户端经 `input.write` 命令整值写入该线程键，回合经 `input.read` 读取，消费方以 `input.clear` 置 idle。缺省线程键 `_main`。形态校验归写入端（宿主不校验身份数据）。",
   "type": "object",
   "required": ["slots"],
   "additionalProperties": true,

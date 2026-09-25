@@ -1,0 +1,18 @@
+{
+  "title": "input.write 参数",
+  "description": "写本线程槽：覆盖 slots[thread]（thread 缺省取帧 env.thread，再缺省 `_main`）。形态校验归写入端，本 schema 只做宿主侧 argsSchema 机械校验。",
+  "type": "object",
+  "required": ["slot"],
+  "additionalProperties": false,
+  "properties": {
+    "thread": {
+      "type": "string",
+      "description": "目标线程 id；缺省 = 帧 env.thread，再缺省 `_main`。"
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "槽 body（平铺形态，`kind` 判别）；写入端负责形态校验。"
+    }
+  }
+}

@@ -1,48 +1,36 @@
-// 能力类 `session` 的九个方法：只构造写计划 + 事件，不读投影、不落账、不自取时钟。
-// 每个方法都把调用方入口 term 读出的世界数据（会话 body / 槽体 / refs）经 args 收进来。
+// 能力类 `session` 的方法：会话运行记录（消息链 + 会话元数据）写**自有持久存储**（④），
+// 不再构造世界写计划、不读投影。写即时落盘（边跑边追加），每条消息盖回合 id 供幂等收敛。
+// 服务仍不读投影、不自取时钟（`now` 取调用帧 `env.now`）；槽清理由 input 服务承担。
 
+import { SessionStore } from './store.ts'
+import type { Rec } from './store.ts'
 import {
   asArray,
   asString,
   conversationEvent,
   conversationsOf,
-  countOf,
-  externOnly,
-  findConversation,
-  headHash,
   isRecord,
   isoAt,
   messageBody,
   nowOf,
   optionalMessageFields,
-  planOf,
-  pushInputGen,
-  pushSessionGen,
-  putOp,
-  replaceConversation,
-  sessionDataOf,
-  slotOf,
   summaryOf,
   threadKeyOf,
-  upsertConversation,
 } from './plan.ts'
 import { BadArgsError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, Json } from './types.ts'
-import type { Rec } from './plan.ts'
+import type { CallEnv, Handler, HandlerResult, Json, PortCaller } from './types.ts'
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'terminated'])
+
+/** 服务依赖：反向调用通道（清输入槽）+ 会话存储。 */
+export interface SessionDeps {
+  port: PortCaller
+  store: SessionStore
+}
 
 function requireRecord(value: Json | undefined, field: string): Rec {
   if (!isRecord(value)) throw new BadArgsError(`${field} must be an object`)
   return value
-}
-
-function requireSession(args: Rec): Rec {
-  return requireRecord(args['session'], 'session')
-}
-
-function requireSlots(args: Rec): Rec {
-  return requireRecord(args['slots'], 'slots')
 }
 
 function slotKind(slot: Json | undefined): string | null {
@@ -59,22 +47,34 @@ function inboxOf(conversation: Rec): Rec {
   return isRecord(conversation['inbox']) ? (conversation['inbox'] as Rec) : {}
 }
 
-/** 只清槽的失败计划：非法槽 kind / 目标不存在等，无业务写。 */
-function clearOnly(slotsBody: Rec, threadId: string, payload: Json): HandlerResult {
-  const ops: Json[] = []
-  pushInputGen(ops, slotsBody, threadId)
-  return { value: planOf(ops, payload), events: [] }
+/** 本线程槽体：args.slot 优先，否则取 args.slots.slots[threadId]。 */
+function slotOf(args: Rec, threadId: string): Json | undefined {
+  if (args['slot'] !== undefined) return args['slot']
+  const slots = args['slots']
+  if (!isRecord(slots)) return undefined
+  const body = slots['slots']
+  if (!isRecord(body)) return undefined
+  return body[threadId]
 }
 
-/** 槽驱动的通用入口：校验 args 必备字段，解析线程键、槽体与槽 kind。 */
-function slotContext(args: Rec): { session: Rec; slotsBody: Rec; threadId: string; slot: Json | undefined } {
-  const threadId = threadKeyOf(args)
-  return {
-    session: requireSession(args),
-    slotsBody: requireSlots(args),
-    threadId,
-    slot: slotOf(args, threadId),
-  }
+/** 消息 id：同回合同角色恒定（续跑 / 重试幂等收敛）；无回合时按序数生成。 */
+function messageId(conv: string, run: string | null, ordinal: number, role: string): string {
+  return run !== null ? `msg-${conv}-${run}-${role}` : `msg-${conv}-${ordinal}-${role}`
+}
+
+/** 只清槽的失败计划（无业务写）：把本线程槽置 idle 交 input 服务。 */
+async function clearSlot(deps: SessionDeps, threadId: string): Promise<void> {
+  await deps.port.call('input', 'clear', { thread_id: threadId })
+}
+
+function fail(deps: SessionDeps, threadId: string, payload: Json): HandlerResult {
+  void clearSlot(deps, threadId)
+  return { value: payload, events: [] }
+}
+
+/** 槽驱动的通用入口：解析线程键、槽体与槽 kind。 */
+function slotContext(args: Rec): { threadId: string; slot: Json | undefined } {
+  return { threadId: threadKeyOf(args), slot: slotOf(args, threadKeyOf(args)) }
 }
 
 function newConversationEntry(
@@ -97,16 +97,14 @@ function newConversationEntry(
     status: 'waiting',
     last_activity: null,
     pending: { approval: 0, question: 0 },
-    head: null,
-    count: 0,
     created: at,
     deleted_at: null,
   }
 }
 
 /** 软删后的 current 回退：同工作区最近一条未删会话（无则 null）。 */
-function fallbackCurrent(session: Rec, removed: Rec, removedId: string): string | null {
-  const list = conversationsOf(session)
+function fallbackCurrent(store: SessionStore, removed: Rec, removedId: string): string | null {
+  const list = store.body()['conversations'] as Json[]
   const workspace = removed['workspace_id'] ?? null
   for (let i = list.length - 1; i >= 0; i--) {
     const item = list[i]
@@ -120,84 +118,66 @@ function fallbackCurrent(session: Rec, removed: Rec, removedId: string): string 
 
 // ── commit ────────────────────────────────────────────────────────────────
 
-/** 自动建会话的缺省标题（与 `session.new` 一致）。 */
 const DEFAULT_TITLE = '新对话'
 
-function commit(args: Rec, env: CallEnv): HandlerResult {
+async function commit(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
   const at = isoAt(now)
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'chat.message') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
-  const requested = asString(args['conversation']) ?? asString(session['current'])
+  const store = deps.store
+  const requested = asString(args['conversation']) ?? store.currentId()
   let conversationId = requested
-  let conversation = conversationId === null ? null : findConversation(session, conversationId)
+  let conversation = conversationId === null ? null : store.conversation(conversationId)
   let created = false
   if (conversation === null || conversationId === null) {
-    // 无当前会话：按 `new_conversation` 规格原子建 main 会话（发送即开新会话，与消息同世代落盘）。
     const spec = isRecord(args['new_conversation']) ? (args['new_conversation'] as Rec) : null
     const id = spec === null ? null : asString(spec['id'])
     const workspaceId = spec === null ? null : asString(spec['workspace_id'])
     if (spec === null || id === null || workspaceId === null) {
-      return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
+      return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
     }
     conversation = newConversationEntry(id, workspaceId, asString(spec['title']) ?? DEFAULT_TITLE, at, 'main')
     conversationId = id
     created = true
   }
-  const context: CommitContext = {
-    args,
-    env,
-    at,
-    session,
-    slotsBody,
-    threadId,
-    conversationId,
-    conversation,
-    slot,
-    created,
-    append: args['append'] === true,
-  }
+  const append = args['append'] === true
   const error = asString(args['error'])
-  if (error !== null) return commitError({ ...context, error })
-  return commitNormal(context)
+  const result = error !== null
+    ? commitError({ args, env, at, deps, threadId, conversationId, conversation, slot, error, created, append })
+    : commitNormal({ args, env, at, deps, threadId, conversationId, conversation, slot, created, append })
+  await clearSlot(deps, threadId)
+  return result
 }
 
-interface CommitContext {
+interface CommitInput {
   args: Rec
   env: CallEnv
   at: string
-  session: Rec
-  slotsBody: Rec
+  deps: SessionDeps
   threadId: string
   conversationId: string
   conversation: Rec
   slot?: Json
-  /** 本回合由 `new_conversation` 新建会话（事件补 `thread.opened`、`changed` 含 `current`）。 */
   created: boolean
-  /** 续跑追加：只写助手 / 系统消息（用户消息已在上一次收口落账），`prev` 直接接当前链头。 */
   append: boolean
 }
 
-function commitNormal(ctx: CommitContext): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, created, append } = ctx
-  const count = countOf(conversation)
-  const prevHash = headHash(conversation)
+function commitNormal(ctx: CommitInput): HandlerResult {
+  const { args, env, at, deps, threadId, conversationId, conversation, slot, created, append } = ctx
+  const store = deps.store
+  const run = env.run
+  const count = store.messagesOf(conversationId).length
+  const last = store.messagesOf(conversationId)[count - 1] ?? null
+  const prevId = last !== null ? asString(last['id']) : null
   const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
   const assistant = requireRecord(args['assistant'], 'assistant')
   const slotRec = isRecord(slot) ? (slot as Rec) : null
   const assistantContent = asString(assistant['content']) ?? ''
-  // 追加模式：用户消息已在上一轮收口（挂起收口 / 首轮收口）落账，本轮只追加助手消息。
-  const assistantBody = messageBody(
-    'assistant',
-    `msg-${conversationId}-${append ? count : count + 1}`,
-    assistantContent,
-    append ? (prevHash === null ? null : { def: prevHash }) : { def: { $n: 0 } },
-    at,
-    optionalMessageFields(assistant),
-  )
-  const ops: Json[] = []
+
+  store.turnOpen(run, conversationId)
   let userBody: Rec | null = null
   if (!append) {
     const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
@@ -207,24 +187,32 @@ function commitNormal(ctx: CommitContext): HandlerResult {
     }
     userBody = messageBody(
       'user',
-      `msg-${conversationId}-${count}`,
+      messageId(conversationId, run, count, 'user'),
       userContent,
-      prevHash === null ? null : { def: prevHash },
+      prevId === null ? null : { def: prevId },
       at,
       userExtra,
     )
-    ops.push(putOp(userBody))
+    store.appendMessage(run, conversationId, userBody)
   }
-  ops.push(putOp(assistantBody))
+  const assistantBody = messageBody(
+    'assistant',
+    messageId(conversationId, run, count + (append ? 0 : 1), 'assistant'),
+    assistantContent,
+    append
+      ? prevId === null ? null : { def: prevId }
+      : { def: userBody === null ? prevId : (userBody['id'] as string) },
+    at,
+    optionalMessageFields(assistant),
+  )
+  store.appendMessage(run, conversationId, assistantBody)
+
   const inbox = inboxOf(conversation)
   const inboxCount = numberField(inbox, 'count') ?? 0
   const lastSeenArg = numberField(args, 'last_seen')
-  // status 缺省保留原值：不得写入 null（schema 枚举不含 null）
   const status = asString(args['status']) ?? asString(conversation['status'])
   const nextConversation: Rec = {
     ...conversation,
-    head: { def: { $n: append ? 0 : 1 } },
-    count: count + (append ? 1 : 2),
     last_activity: { at, summary: summaryOf(assistantContent) },
   }
   if (status !== null) nextConversation['status'] = status
@@ -234,11 +222,11 @@ function commitNormal(ctx: CommitContext): HandlerResult {
       last_seen: Math.max(numberField(inbox, 'last_seen') ?? 0, lastSeenArg ?? inboxCount),
     }
   }
-  const baseSession = upsertConversation(session, nextConversation)
-  // 自动建会话：current 指向新会话（既有会话的 commit 不动 current）。
-  const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  store.upsertConversation(run, nextConversation)
+  if (created) store.setCurrent(run, conversationId)
+  store.turnClose(run)
+
+  const finalCount = store.messagesOf(conversationId).length
   const events = []
   const kind = asString(conversation['kind']) ?? 'main'
   if (created) {
@@ -257,26 +245,22 @@ function commitNormal(ctx: CommitContext): HandlerResult {
       changed: created ? ['current', 'head', 'count', 'last_activity'] : ['head', 'count', 'last_activity'],
     },
   })
-  const value = planOf(ops, { ok: true, reply: assistantBody, conversation: conversationId, count: count + (append ? 1 : 2) })
-  return { value, events }
+  void threadId
+  return {
+    value: { ok: true, reply: assistantBody, conversation: conversationId, count: finalCount },
+    events,
+  }
 }
 
-function commitError(ctx: CommitContext & { error: string }): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error, created, append } = ctx
-  const count = countOf(conversation)
-  const prevHash = headHash(conversation)
-  const systemBody = messageBody(
-    'system',
-    `msg-${conversationId}-${append ? count : count + 1}`,
-    error,
-    append ? (prevHash === null ? null : { def: prevHash }) : { def: { $n: 0 } },
-    at,
-    { meta: { error } },
-  )
-  const ops: Json[] = []
+function commitError(ctx: CommitInput & { error: string }): HandlerResult {
+  const { args, env, at, deps, conversationId, conversation, slot, error, created, append } = ctx
+  const store = deps.store
+  const run = env.run
+  const count = store.messagesOf(conversationId).length
+  const last = store.messagesOf(conversationId)[count - 1] ?? null
+  const prevId = last !== null ? asString(last['id']) : null
+  store.turnOpen(run, conversationId)
   if (!append) {
-    // 拒绝也要保住用户这条消息：回合尾一次写，用户消息此前从未落盘；
-    // 只落 system 错误会把用户输入吞掉（UI 重拉历史后整轮消失）。
     const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
     const slotRec = isRecord(slot) ? (slot as Rec) : null
     const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
@@ -286,25 +270,32 @@ function commitError(ctx: CommitContext & { error: string }): HandlerResult {
     }
     const userBody = messageBody(
       'user',
-      `msg-${conversationId}-${count}`,
+      messageId(conversationId, run, count, 'user'),
       userContent,
-      prevHash === null ? null : { def: prevHash },
+      prevId === null ? null : { def: prevId },
       at,
       userExtra,
     )
-    ops.push(putOp(userBody))
+    store.appendMessage(run, conversationId, userBody)
   }
-  ops.push(putOp(systemBody))
+  const lastAfterUser = store.messagesOf(conversationId)
+  const systemPrev = lastAfterUser.length > 0 ? asString(lastAfterUser[lastAfterUser.length - 1]['id']) : null
+  const systemBody = messageBody(
+    'system',
+    messageId(conversationId, run, count + (append ? 0 : 1), 'system'),
+    error,
+    systemPrev === null ? null : { def: systemPrev },
+    at,
+    { meta: { error } },
+  )
+  store.appendMessage(run, conversationId, systemBody)
   const nextConversation: Rec = {
     ...conversation,
-    head: { def: { $n: append ? 0 : 1 } },
-    count: count + (append ? 1 : 2),
     last_activity: { at, summary: summaryOf(error) },
   }
-  const baseSession = upsertConversation(session, nextConversation)
-  const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  store.upsertConversation(run, nextConversation)
+  if (created) store.setCurrent(run, conversationId)
+  store.turnClose(run)
   const events = []
   if (created) {
     events.push({
@@ -319,128 +310,115 @@ function commitError(ctx: CommitContext & { error: string }): HandlerResult {
       changed: created ? ['current', 'head', 'count', 'last_activity'] : ['head', 'count', 'last_activity'],
     },
   })
-  const value = planOf(ops, { ok: false, error, conversation: conversationId })
-  return { value, events }
+  return { value: { ok: false, error, conversation: conversationId }, events }
 }
 
 // ── new_conversation / select / rename / set_title ─────────────────────────
 
-function newConversation(args: Rec, env: CallEnv): HandlerResult {
+async function newConversation(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
   const at = isoAt(now)
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.new') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
+  const store = deps.store
   const workspaceId = asString(args['workspace_id']) ?? asString(slotRec?.['workspace_id'])
-  const title = asString(args['title']) ?? '新对话'
-  const id = asString(args['conversation_id']) ?? `c-${now}-${conversationsOf(session).length}`
+  const title = asString(args['title']) ?? DEFAULT_TITLE
+  const id = asString(args['conversation_id']) ?? `c-${now}-${conversationsOf(store.body()).length}`
   const entry = newConversationEntry(id, workspaceId, title, at, 'main')
-  const nextSession: Rec = {
-    ...sessionDataOf(session),
-    current: id,
-    conversations: [...conversationsOf(session), entry],
-  }
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  store.upsertConversation(env.run, entry)
+  store.setCurrent(env.run, id)
+  await clearSlot(deps, threadId)
   const events = [
     { topic: 'thread.opened', payload: { ...conversationEvent(env, id), kind: 'main' } },
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: id }), events }
+  return { value: { ok: true, conversation: id }, events }
 }
 
-function select(args: Rec, env: CallEnv): HandlerResult {
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+async function select(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.select') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? asString(session['current'])
-  if (id === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
-  const conversation = findConversation(session, id)
-  if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
+  const store = deps.store
+  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? store.currentId()
+  if (id === null) return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
+  const conversation = store.conversation(id)
+  if (conversation === null) return fail(deps, threadId, { ok: false, reason: 'not_found' })
   if (conversation['deleted_at'] !== null && conversation['deleted_at'] !== undefined) {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'deleted' })
+    return fail(deps, threadId, { ok: false, reason: 'deleted' })
   }
-  const nextSession: Rec = { ...sessionDataOf(session), current: id }
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  store.setCurrent(env.run, id)
+  await clearSlot(deps, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['current'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: id }), events }
+  return { value: { ok: true, conversation: id }, events }
 }
 
-function rename(args: Rec, env: CallEnv): HandlerResult {
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+async function rename(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.rename') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? asString(session['current'])
+  const store = deps.store
+  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? store.currentId()
   const title = asString(args['title']) ?? asString(slotRec?.['title'])
-  if (id === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
-  if (title === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'missing_title' })
-  const conversation = findConversation(session, id)
-  if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
-  const nextSession = replaceConversation(session, id, { ...conversation, title })
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  if (id === null) return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
+  if (title === null) return fail(deps, threadId, { ok: false, reason: 'missing_title' })
+  const conversation = store.conversation(id)
+  if (conversation === null) return fail(deps, threadId, { ok: false, reason: 'not_found' })
+  store.upsertConversation(env.run, { ...conversation, title })
+  await clearSlot(deps, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['title'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: id, title }), events }
+  return { value: { ok: true, conversation: id, title }, events }
 }
 
-/** 服务调用路径：args 驱动、不经输入槽、不清槽；无条件写入（首条判定在调用方入口 term）。 */
-function setTitle(args: Rec, env: CallEnv): HandlerResult {
-  const session = requireSession(args)
+/** 服务调用路径：args 驱动、不经输入槽、不清槽。 */
+function setTitle(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
   const id = asString(args['conversation'])
   const title = asString(args['title'])
   if (id === null) throw new BadArgsError('conversation required')
   if (title === null) throw new BadArgsError('title required')
-  const conversation = findConversation(session, id)
+  const store = deps.store
+  const conversation = store.conversation(id)
   if (conversation === null) {
-    return { value: externOnly({ ok: false, reason: 'not_found', conversation: id }), events: [] }
+    return { value: { ok: false, reason: 'not_found', conversation: id }, events: [] }
   }
-  const nextSession = replaceConversation(session, id, { ...conversation, title })
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
+  store.upsertConversation(env.run, { ...conversation, title })
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['title'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: id, title }), events }
+  return { value: { ok: true, conversation: id, title }, events }
 }
 
 // ── delete / restore / branch ──────────────────────────────────────────────
 
-function deleteConversation(args: Rec, env: CallEnv): HandlerResult {
+async function deleteConversation(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
   const at = isoAt(now)
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.delete') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? asString(session['current'])
-  if (id === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
-  const conversation = findConversation(session, id)
-  if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
-  const nextConversation: Rec = { ...conversation, deleted_at: at }
-  const currentChanged = asString(session['current']) === id
-  const nextCurrent = currentChanged ? fallbackCurrent(session, conversation, id) : (session['current'] ?? null)
-  const nextSession: Rec = {
-    ...replaceConversation(session, id, nextConversation),
-    current: nextCurrent,
-  }
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  const store = deps.store
+  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? store.currentId()
+  if (id === null) return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
+  const conversation = store.conversation(id)
+  if (conversation === null) return fail(deps, threadId, { ok: false, reason: 'not_found' })
+  const currentChanged = store.currentId() === id
+  store.softDelete(env.run, id, at)
+  const nextCurrent = currentChanged ? fallbackCurrent(store, conversation, id) : store.currentId()
+  if (currentChanged) store.setCurrent(env.run, nextCurrent)
+  await clearSlot(deps, threadId)
   const events = [
     {
       topic: 'thread.closed',
@@ -453,95 +431,62 @@ function deleteConversation(args: Rec, env: CallEnv): HandlerResult {
       payload: { ...conversationEvent(env, nextCurrent), changed: ['current'] },
     })
   }
-  return { value: planOf(ops, { ok: true, conversation: id, current: nextCurrent }), events }
+  return { value: { ok: true, conversation: id, current: nextCurrent }, events }
 }
 
-function restore(args: Rec, env: CallEnv): HandlerResult {
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+async function restore(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.restore') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? asString(session['current'])
-  if (id === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
-  const conversation = findConversation(session, id)
-  if (conversation === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
-  const nextSession = replaceConversation(session, id, { ...conversation, deleted_at: null })
-  const ops: Json[] = []
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  const store = deps.store
+  const id = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? store.currentId()
+  if (id === null) return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
+  const conversation = store.conversation(id)
+  if (conversation === null) return fail(deps, threadId, { ok: false, reason: 'not_found' })
+  store.restore(env.run, id)
+  await clearSlot(deps, threadId)
   const events = [
     { topic: 'thread.updated', payload: { ...conversationEvent(env, id), changed: ['deleted_at'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: id }), events }
+  return { value: { ok: true, conversation: id }, events }
 }
 
-/** 把源消息引用解析成 refs 里的 def 哈希：优先当哈希键，否则按消息 id 找。 */
-function resolveMessageHash(refs: Rec, ref: string): string | null {
-  if (Object.hasOwn(refs, ref) && isRecord(refs[ref])) return ref
-  for (const hash of Object.keys(refs)) {
-    const body = refs[hash]
-    if (isRecord(body) && body['id'] === ref) return hash
-  }
-  return null
-}
-
-/** 沿 prev 链从链头回溯到链首，返回 oldest→newest 中截至目标消息的前缀；不在链上返回 null。 */
-function chainTo(refs: Rec, head: string | null, target: string): string[] | null {
-  if (head === null) return null
-  const backwards: string[] = []
-  const seen = new Set<string>()
-  let current: string | null = head
-  while (current !== null) {
-    if (seen.has(current)) return null
-    seen.add(current)
-    const body = refs[current]
-    if (!isRecord(body)) return null
-    backwards.push(current)
-    const prev = body['prev']
-    current = isRecord(prev) && typeof prev['def'] === 'string' ? prev['def'] : null
-  }
-  const forward = backwards.reverse()
-  const index = forward.indexOf(target)
-  if (index < 0) return null
-  return forward.slice(0, index + 1)
-}
-
-function branch(args: Rec, env: CallEnv): HandlerResult {
+/** 分支：把源会话链截至目标消息的窗口拷进新会话（新 id、prev 重建）。 */
+async function branch(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
   const at = isoAt(now)
-  const { session, slotsBody, threadId, slot } = slotContext(args)
+  const { threadId, slot } = slotContext(args)
   if (slotKind(slot) !== 'session.branch') {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
+    return fail(deps, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const sourceId = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? asString(session['current'])
+  const store = deps.store
+  const sourceId = asString(args['conversation']) ?? asString(slotRec?.['conversation']) ?? store.currentId()
   const messageRef = asString(args['message']) ?? asString(slotRec?.['message'])
-  if (sourceId === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
-  if (messageRef === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'missing_message' })
-  const source = findConversation(session, sourceId)
-  if (source === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'not_found' })
-  const refs = isRecord(args['refs']) ? (args['refs'] as Rec) : {}
-  const targetHash = resolveMessageHash(refs, messageRef)
-  if (targetHash === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'message_not_found' })
-  const chain = chainTo(refs, headHash(source), targetHash)
-  if (chain === null) return clearOnly(slotsBody, threadId, { ok: false, reason: 'message_not_in_chain' })
-
-  const newId = asString(args['conversation_id']) ?? `c-${now}-${conversationsOf(session).length}`
-  const ops: Json[] = []
-  chain.forEach((hash, index) => {
-    const body = refs[hash]
-    const prev = index === 0 ? null : { def: { $n: index - 1 } }
-    ops.push(putOp({ ...(body as Rec), prev }))
+  if (sourceId === null) return fail(deps, threadId, { ok: false, reason: 'no_conversation' })
+  if (messageRef === null) return fail(deps, threadId, { ok: false, reason: 'missing_message' })
+  const source = store.conversation(sourceId)
+  if (source === null) return fail(deps, threadId, { ok: false, reason: 'not_found' })
+  const sourceMessages = store.messagesOf(sourceId)
+  const targetIndex = sourceMessages.findIndex(
+    (msg) => msg['id'] === messageRef,
+  )
+  if (targetIndex < 0) return fail(deps, threadId, { ok: false, reason: 'message_not_found' })
+  const window = sourceMessages.slice(0, targetIndex + 1)
+  const newId = asString(args['conversation_id']) ?? `c-${now}-${conversationsOf(store.body()).length}`
+  store.turnOpen(env.run, newId)
+  window.forEach((msg, index) => {
+    const prev = index === 0 ? null : { def: `msg-${newId}-${index - 1}-branch` }
+    store.appendMessage(env.run, newId, { ...msg, id: `msg-${newId}-${index}-branch`, prev })
   })
-  const lastIndex = chain.length - 1
   const entry: Rec = {
     id: newId,
     workspace_id: source['workspace_id'] ?? null,
     title: `${asString(source['title']) ?? '新对话'}（分支）`,
     kind: asString(source['kind']) ?? 'main',
     parent: { def: sourceId },
-    // 分支源消息：消息 id 或 def 哈希（与入参 message 同形），随会话条目持久化
     source_message: messageRef,
     agent: source['agent'] ?? null,
     participants: asArray(source['participants']) ?? [],
@@ -550,26 +495,21 @@ function branch(args: Rec, env: CallEnv): HandlerResult {
     status: 'waiting',
     last_activity: null,
     pending: { approval: 0, question: 0 },
-    head: lastIndex >= 0 ? { def: { $n: lastIndex } } : null,
-    count: chain.length,
     created: at,
     deleted_at: null,
   }
-  const nextSession: Rec = {
-    ...sessionDataOf(session),
-    current: newId,
-    conversations: [...conversationsOf(session), entry],
-  }
-  pushSessionGen(ops, session, nextSession)
-  pushInputGen(ops, slotsBody, threadId)
+  store.upsertConversation(env.run, entry)
+  store.setCurrent(env.run, newId)
+  store.turnClose(env.run)
+  await clearSlot(deps, threadId)
   const events = [
     {
       topic: 'thread.opened',
-      payload: { ...conversationEvent(env, newId), kind: entry['kind'], source: sourceId, message: targetHash },
+      payload: { ...conversationEvent(env, newId), kind: entry['kind'], source: sourceId, message: messageRef },
     },
     { topic: 'thread.updated', payload: { ...conversationEvent(env, newId), changed: ['current'] } },
   ]
-  return { value: planOf(ops, { ok: true, conversation: newId, count: chain.length }), events }
+  return { value: { ok: true, conversation: newId, count: window.length }, events }
 }
 
 // ── deliver（跨线程投递） ───────────────────────────────────────────────────
@@ -579,19 +519,18 @@ function workflowPosition(workflow: Json | undefined): { node_index: number | nu
   return { node_index: numberField(workflow as Rec, 'node_index'), iter: numberField(workflow as Rec, 'iter') }
 }
 
-function deliver(args: Rec, env: CallEnv): HandlerResult {
+async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
   const at = isoAt(now)
-  const session = requireSession(args)
   const to = asString(args['to'])
   const kind = asString(args['kind'])
   if (to === null) throw new BadArgsError('to required')
   if (kind === null) throw new BadArgsError('kind required')
   if (!Object.hasOwn(args, 'body')) throw new BadArgsError('body required')
   const messageBodyValue: Json = args['body'] ?? null
-  const refs = asArray(args['refs'])
+  const store = deps.store
 
-  const existing = findConversation(session, to)
+  const existing = store.conversation(to)
   const isNew = existing === null
   const conversation: Rec =
     existing ??
@@ -608,8 +547,6 @@ function deliver(args: Rec, env: CallEnv): HandlerResult {
       status: asString(args['status']) ?? 'running',
       last_activity: null,
       pending: isRecord(args['pending']) ? args['pending'] : { approval: 0, question: 0 },
-      head: null,
-      count: 0,
       created: at,
       deleted_at: null,
     }
@@ -629,7 +566,7 @@ function deliver(args: Rec, env: CallEnv): HandlerResult {
     at,
     prev: prevTail === null ? null : { def: prevTail },
   }
-  if (refs !== null) inboxMessage['refs'] = refs
+  store.appendMessage(env.run, `${to}#inbox`, inboxMessage)
 
   const previousStatus = asString(conversation['status'])
   const status = asString(args['status']) ?? previousStatus
@@ -644,15 +581,13 @@ function deliver(args: Rec, env: CallEnv): HandlerResult {
 
   const nextConversation: Rec = {
     ...conversation,
-    inbox: { tail: { def: { $n: 0 } }, count: seq, last_seen: lastSeen },
+    inbox: { tail: { def: inboxMessage['id'] }, count: seq, last_seen: lastSeen },
     status,
     last_activity: lastActivity,
     pending,
     workflow,
   }
-  const nextSession = upsertConversation(session, nextConversation)
-  const ops: Json[] = [putOp(inboxMessage)]
-  pushSessionGen(ops, session, nextSession)
+  store.upsertConversation(env.run, nextConversation)
 
   const events = []
   const conversationKind = asString(conversation['kind']) ?? 'main'
@@ -679,20 +614,56 @@ function deliver(args: Rec, env: CallEnv): HandlerResult {
   if (status !== null && TERMINAL_STATUSES.has(status) && status !== previousStatus) {
     events.push({ topic: 'thread.closed', payload: { ...conversationEvent(env, to), status } })
   }
-  const value = planOf(ops, { ok: true, to, seq, status, kind })
-  return { value, events }
+  return { value: { ok: true, to, seq, status, kind }, events }
+}
+
+// ── read / history（服务读自有存储） ────────────────────────────────────────
+
+function read(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
+  void env
+  const convId = isRecord(args) ? asString(args['conversation']) : null
+  const store = deps.store
+  return {
+    value: {
+      ...store.slice(convId),
+      pending_turns: store.pendingTurns(),
+    },
+    events: [],
+  }
+}
+
+function history(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
+  const record = isRecord(args) ? args : {}
+  const query = {
+    conversation: asString(record['conversation']) ?? asString(env.thread) ?? deps.store.currentId(),
+    before: asString(record['before']),
+    limit: typeof record['limit'] === 'number' && Number.isInteger(record['limit']) && record['limit'] > 0
+      ? (record['limit'] as number)
+      : null,
+  }
+  return { value: deps.store.history(query.conversation, query.before, query.limit), events: [] }
 }
 
 // ── 方法表 ─────────────────────────────────────────────────────────────────
 
-export const HANDLERS: Record<string, Handler> = {
-  commit,
-  new_conversation: newConversation,
-  select,
-  rename,
-  set_title: setTitle,
-  delete: deleteConversation,
-  restore,
-  branch,
-  deliver,
+/** 构造方法表（依赖注入：反向调用通道 + 会话存储）。 */
+export function createHandlers(deps: SessionDeps): Record<string, Handler> {
+  return {
+    commit: (args, env) => commit(requireArgs(args), env, deps),
+    new_conversation: (args, env) => newConversation(requireArgs(args), env, deps),
+    select: (args, env) => select(requireArgs(args), env, deps),
+    rename: (args, env) => rename(requireArgs(args), env, deps),
+    set_title: (args, env) => setTitle(requireArgs(args), env, deps),
+    delete: (args, env) => deleteConversation(requireArgs(args), env, deps),
+    restore: (args, env) => restore(requireArgs(args), env, deps),
+    branch: (args, env) => branch(requireArgs(args), env, deps),
+    deliver: (args, env) => deliver(requireArgs(args), env, deps),
+    read: (args, env) => read(args, env, deps),
+    history: (args, env) => history(args, env, deps),
+  }
+}
+
+function requireArgs(args: Json): Rec {
+  if (!isRecord(args)) throw new BadArgsError('args must be an object')
+  return args
 }

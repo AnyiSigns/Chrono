@@ -19,7 +19,7 @@ import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 
 import { STYLE_TEXT } from './styles.ts'
-import { slotWriteDirective } from './slot-write.ts'
+import { slotWriteCommand } from './slot-write.ts'
 import { injectCursor } from './markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental } from './markdown-cache.ts'
 import type { MarkdownCache } from './markdown-cache.ts'
@@ -1297,33 +1297,6 @@ function identityBodyOf(value: any): any {
     : value
 }
 
-/** 身份视图 → active（64hex 或 null）；非身份视图 / 形状不符回 undefined。 */
-function identityActiveOf(value: any): string | null | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, 'active')) return undefined
-  const active = value.active
-  return typeof active === 'string' || active === null ? active : undefined
-}
-
-/** 身份视图 → data_gen（`{seq,payload}` 或 null）；非身份视图 / 形状不符回 undefined。 */
-function identityDataGenOf(value: any): any {
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, 'data_gen')) return undefined
-  return value.data_gen
-}
-
-/** 身份数据侧特征键：出现任一即视为数据 body，不判为代码世代回落。 */
-const DATA_SIDE_KEYS = ['version', 'params', 'permission', 'ui', 'providers', 'slots']
-
-/** 代码世代回落 body 判据：拿到的是 active（commit）def body，非身份数据，拒写。
- * commit def body 形如 `{ tree, meta }`；只判顶层含 `tree` 会误伤顶层恰好含 `tree` 的合法数据，
- * 故要求 `tree` 为字符串且不含任一数据侧特征键。 */
-function isCodeGenFallbackBody(body: any): boolean {
-  if (body === null || typeof body !== 'object' || Array.isArray(body) || typeof body.tree !== 'string') return false
-  for (const key of DATA_SIDE_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(body, key)) return false
-  }
-  return true
-}
-
 function isAssistantEntry(entry: any): boolean {
   const def = entry !== null && typeof entry === 'object' ? entry.def : null
   const role = def !== null && typeof def.role === 'string' ? def.role : 'assistant'
@@ -1496,21 +1469,9 @@ function App({
   async function submitQuestion(vm: any, answers: any[]): Promise<{ ok: boolean; code?: string }> {
     if (vm.itemId === null) return { ok: false, code: 'bad_args' }
     const thread = stateRef.current.viewThread
-    const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
-    const raw = read !== null && read.ok === true ? read.value : null
-    const body = identityBodyOf(raw)
-    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
-    if (body === null || typeof body !== 'object' || Array.isArray(body) || isCodeGenFallbackBody(body)) {
-      return { ok: false, code: 'not_loaded' }
-    }
-    const directive = slotWriteDirective(
-      body,
-      thread ?? '_main',
-      { kind: 'question.answer', id: vm.itemId, answers },
-      identityActiveOf(raw),
-      identityDataGenOf(raw),
-    )
-    const wrote = (await ctx.submit([directive], { thread })) as any
+    // 输入槽已出世界：写走 input 服务命令（服务写自有存储），不再提交世界 directive。
+    const command = slotWriteCommand(thread ?? '_main', { kind: 'question.answer', id: vm.itemId, answers })
+    const wrote = (await ctx.command(command.name, command.args, { thread })) as any
     if (wrote === null || wrote.ok !== true) return { ok: false, code: wrote?.code ?? 'ui_unreachable' }
     const answered = (await ctx.command('question.answer', null, { thread })) as any
     if (answered === null || answered.ok !== true) return { ok: false, code: answered?.code ?? 'unknown' }

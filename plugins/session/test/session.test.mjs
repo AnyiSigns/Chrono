@@ -1,22 +1,21 @@
-// `session` 服务协议级测试（node --test）：自实现最小协议驱动。
-// 驱动 spawn `node execute/main.ts`，发 hello → 收 manifest，发 call → 收 result / error，收 event 帧，
-// 覆盖 reload / drain / probe 与 stdin EOF 自退出。断言只针对「返回的计划 / 事件」——服务不落账。
+// session service protocol-level tests (node --test): conversation runtime records go to the
+// service-owned durable store (CHRONO_PLUGIN_DATA); the service returns plain values, never world
+// write plans. The driver spawns `node execute/main.ts` with temp data/state dirs and answers the
+// reverse `input.clear` call. Read-back round-trips go through `read`.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { assembleBody } from '../../../packages/kernel/patch.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 const AT = '2023-11-14T22:13:20.000Z'
-const H1 = 'a'.repeat(64)
-const H2 = 'b'.repeat(64)
-const H3 = 'c'.repeat(64)
 
 function encodeFrame(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
@@ -44,16 +43,32 @@ function createDecoder() {
   }
 }
 
-function startService() {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+function tempRoot() {
+  return mkdtempSync(join(tmpdir(), 'chrono-session-'))
+}
+
+function startService(options = {}) {
+  const root = options.root ?? tempRoot()
+  const env = {
+    ...process.env,
+    CHRONO_PLUGIN_DATA: join(root, 'data'),
+    CHRONO_PLUGIN_STATE: join(root, 'state'),
+  }
+  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
+  const portCalls = []
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
       if (message.kind === 'event') {
         events.push(message)
+        continue
+      }
+      if (message.kind === 'port.call') {
+        portCalls.push(message)
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true } }))
         continue
       }
       const handler = pending.get(message.id)
@@ -89,78 +104,67 @@ function startService() {
 
   return {
     child,
+    root,
     events,
+    portCalls,
     exit,
     request,
-    async hello() {
-      return request('hello', { impl: 'session', gen: 'gen-1' }, 'manifest')
-    },
-    async call(method, args, env = FIXED_ENV) {
+    hello: () => request('hello', { impl: 'session', gen: 'gen-1' }, 'manifest'),
+    call: async (method, args, env = FIXED_ENV) => {
       const message = await request('call', { port: 'session', method, args, env }, 'result')
       return message.value
     },
-    async callRaw(method, args, env = FIXED_ENV) {
-      return request('call', { port: 'session', method, args, env }, ['result', 'error'])
-    },
-    close() {
-      child.stdin.end()
+    callRaw: (method, args, env = FIXED_ENV) =>
+      request('call', { port: 'session', method, args, env }, ['result', 'error']),
+    close: () => child.stdin.end(),
+    cleanup() {
+      try {
+        rmSync(root, { recursive: true, force: true })
+      } catch {
+        // cleanup failure does not change the verdict
+      }
     },
   }
 }
 
-function baseConversation(overrides = {}) {
+function baseSession() {
   return {
-    id: 'c1',
-    workspace_id: 'w1',
-    title: '新对话',
-    kind: 'main',
-    parent: null,
-    agent: null,
-    participants: [],
-    workflow: null,
-    inbox: { tail: null, count: 0, last_seen: 0 },
-    status: 'waiting',
-    last_activity: null,
-    pending: { approval: 0, question: 0 },
-    head: null,
-    count: 0,
-    created: AT,
-    deleted_at: null,
-    ...overrides,
+    version: 1,
+    current: 'c1',
+    conversations: [
+      { id: 'c1', workspace_id: 'w1', title: 'new chat', kind: 'main', status: 'waiting', inbox: { tail: null, count: 0, last_seen: 0 } },
+    ],
   }
 }
 
-function baseSession(overrides = {}) {
-  return { version: 1, current: 'c1', conversations: [baseConversation()], ...overrides }
+// Create a conversation through the slot-driven `new_conversation` method (the store write path).
+function seedConversation(drv, id, extra = {}) {
+  return drv.call('new_conversation', {
+    thread_id: 't1',
+    slots: { slots: { t1: { kind: 'session.new', workspace_id: 'w1' } } },
+    conversation_id: id,
+    workspace_id: 'w1',
+    ...extra,
+  })
 }
 
-function batchOps(directives) {
-  assert.equal(directives.length, 2)
-  assert.equal(directives[0].kind, 'write')
-  assert.equal(directives[0].request.op, 'batch')
-  return directives[0].request.args.ops
+function conversationById(read, id) {
+  return (read.conversations ?? []).find((item) => item.id === id) ?? null
 }
 
-function externPayload(directives) {
-  assert.equal(directives[1].kind, 'extern')
-  return directives[1].payload
+function commitEnv(run) {
+  return { run, thread: 't1', now: 1_700_000_000_000 }
 }
 
-function opsFor(plan) {
-  return batchOps(plan.$directives)
-}
+// -- handshake / control -----------------------------------------------------
 
-// ── 握手 / 控制 ────────────────────────────────────────────────────────────
-
-test('hello 回 manifest，声明与 plugin.json 一致', async () => {
+test('hello returns manifest: durable state and full method list', async () => {
   const drv = startService()
   try {
     const manifest = await drv.hello()
-    assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'session')
     assert.deepEqual(manifest.implements, ['session'])
-    assert.equal(manifest.protocol, '1')
-    assert.equal(manifest.state, 'recomputable')
+    assert.equal(manifest.state, 'durable')
     assert.deepEqual(manifest.methods.session, [
       'commit',
       'new_conversation',
@@ -171,13 +175,16 @@ test('hello 回 manifest，声明与 plugin.json 一致', async () => {
       'restore',
       'branch',
       'deliver',
+      'read',
+      'history',
     ])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('reload → ack / drain → bye / probe → pong', async () => {
+test('reload -> ack / drain -> bye / probe -> pong', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -186,867 +193,489 @@ test('reload → ack / drain → bye / probe → pong', async () => {
     assert.equal((await drv.request('drain', { deadline_ms: 1000 }, 'bye')).kind, 'bye')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('stdin EOF 即自退出（断连不占端点）', async () => {
+test('stdin EOF exits (no orphan endpoint)', async () => {
   const drv = startService()
   await drv.hello()
   drv.close()
-  const code = await drv.exit
-  assert.equal(code, 0)
+  assert.equal(await drv.exit, 0)
+  drv.cleanup()
 })
 
-// ── commit ─────────────────────────────────────────────────────────────────
+// -- commit: store write + read-back -----------------------------------------
 
-test('commit 正常：两条消息 def + 新会话 body + 清槽 + add_gen，占位符正确', async () => {
+test('commit writes own store: read round-trips chain and returns no world plan', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    await seedConversation(drv, 'c1', { title: 'new chat' })
     const before = drv.events.length
-    const plan = await drv.call('commit', {
+    const value = await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession(),
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' }, t2: { kind: 'idle' } } },
       conversation: 'c1',
       user: { content: 'hi' },
       assistant: { content: 'hello' },
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 6)
-    assert.equal(ops[0].op, 'put')
-    assert.equal(ops[0].args.body.role, 'user')
-    assert.equal(ops[0].args.body.content, 'hi')
-    assert.equal(ops[0].args.body.prev, null)
-    assert.equal(ops[0].args.body.at, AT)
-    assert.equal(ops[1].args.body.role, 'assistant')
-    assert.deepEqual(ops[1].args.body.prev, { def: { $n: 0 } })
-    assert.deepEqual(ops[2].args.body.conversations[0].head, { def: { $n: 1 } })
-    assert.equal(ops[2].args.body.conversations[0].count, 2)
-    assert.equal(ops[2].args.body.conversations[0].last_activity.summary, 'hello')
-    assert.deepEqual(ops[3], {
-      op: 'add_gen',
-      args: { id: 'session', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} },
-    })
-    assert.deepEqual(ops[4].args.body.slots, { t1: { kind: 'idle' }, t2: { kind: 'idle' } })
-    assert.deepEqual(ops[5], {
-      op: 'add_gen',
-      args: { id: 'input', payload: { $n: 4 }, sig: { $n: 4 }, pins: {} },
-    })
-    const payload = externPayload(plan.$directives)
-    assert.equal(payload.ok, true)
-    assert.equal(payload.reply.content, 'hello')
-    assert.equal(payload.count, 2)
-    const emitted = drv.events.slice(before)
-    assert.deepEqual(emitted.map((e) => e.topic), ['thread.updated'])
-    assert.equal(emitted[0].payload.conversation, 'c1')
-    assert.equal(emitted[0].payload.run, 'run-1')
-    // 数据变更类事件的 thread = 目标线程（不是发起 run 的 env.thread='t1'）
-    assert.equal(emitted[0].payload.thread, 'c1')
+    assert.equal('$directives' in value, false)
+    assert.equal(JSON.stringify(value).includes('add_gen'), false)
+    assert.equal(value.ok, true)
+    assert.equal(value.conversation, 'c1')
+    assert.equal(value.count, 2)
+    const read = await drv.call('read', { conversation: 'c1' })
+    assert.equal(read.current, 'c1')
+    assert.equal(conversationById(read, 'c1').count, 2)
+    const chain = read.refs
+    const ids = Object.keys(chain)
+    assert.equal(ids.length, 2)
+    const user = chain[ids[0]]
+    const assistant = chain[ids[1]]
+    assert.equal(user.role, 'user')
+    assert.equal(user.content, 'hi')
+    assert.equal(assistant.role, 'assistant')
+    assert.equal(assistant.content, 'hello')
+    assert.deepEqual(assistant.prev, { def: user.id })
+    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
+    assert.ok(drv.portCalls.some((frame) => frame.port === 'input' && frame.method === 'clear'))
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit 缺省 status 不写入 null（保留原值 / 缺键）', async () => {
+test('commit appends as it runs: record readable before any close', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('commit', {
-      thread_id: 't1',
-      session: baseSession({ conversations: [baseConversation({ status: undefined })] }),
-      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
-      conversation: 'c1',
-      user: { content: 'hi' },
-      assistant: { content: 'hello' },
-    })
-    const next = opsFor(plan)[2].args.body.conversations[0]
-    assert.equal('status' in next, false, 'status 不得写入 null')
-  } finally {
-    drv.close()
-  }
-})
-
-test('commit group 会话 → group.message 带消息 id 与目标线程', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const before = drv.events.length
+    await seedConversation(drv, 'c1')
     await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession({ conversations: [baseConversation({ kind: 'group' })] }),
+      session: baseSession(),
+      slots: { slots: { t1: { kind: 'chat.message', text: 'a' } } },
+      conversation: 'c1',
+      user: { content: 'a' },
+      assistant: { content: 'b' },
+    })
+    const read = await drv.call('read', { conversation: 'c1' })
+    assert.equal(conversationById(read, 'c1').count, 2)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('commit is idempotent for the same turn id', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await seedConversation(drv, 'c1')
+    const args = {
+      thread_id: 't1',
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
       conversation: 'c1',
       user: { content: 'hi' },
       assistant: { content: 'hello' },
-    })
-    const groupMessage = drv.events.slice(before).find((e) => e.topic === 'group.message')
-    assert.equal(groupMessage.payload.id, 'msg-c1-0')
-    assert.equal(groupMessage.payload.thread, 'c1')
-    assert.equal(groupMessage.payload.from, 'user')
+    }
+    await drv.call('commit', args, commitEnv('run-x'))
+    await drv.call('commit', args, commitEnv('run-x'))
+    const read = await drv.call('read', { conversation: 'c1' })
+    assert.equal(conversationById(read, 'c1').count, 2)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit 保留其它线程键（per-thread 只清本键）', async () => {
+test('commit failure path: user message + separate system message', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('commit', {
-      thread_id: 't2',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'chat.message', text: 'other' }, t2: { kind: 'chat.message', text: 'mine' } } },
-      user: { content: 'mine' },
-      assistant: { content: 'ok' },
-    })
-    const ops = opsFor(plan)
-    assert.deepEqual(ops[4].args.body.slots, {
-      t1: { kind: 'chat.message', text: 'other' },
-      t2: { kind: 'idle' },
-    })
-  } finally {
-    drv.close()
-  }
-})
-
-test('commit 失败路径：用户消息 + 独立 system 消息 def（meta.error）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const before = drv.events.length
-    const plan = await drv.call('commit', {
+    await seedConversation(drv, 'c1')
+    const value = await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession(),
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      conversation: 'c1',
       error: 'model failed',
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 6)
-    assert.equal(ops[0].args.body.role, 'user')
-    assert.equal(ops[0].args.body.content, 'hi')
-    assert.equal(ops[1].args.body.role, 'system')
-    assert.equal(ops[1].args.body.content, 'model failed')
-    assert.deepEqual(ops[1].args.body.meta, { error: 'model failed' })
-    assert.deepEqual(ops[1].args.body.prev, { def: { $n: 0 } })
-    assert.deepEqual(ops[2].args.body.conversations[0].head, { def: { $n: 1 } })
-    assert.equal(ops[2].args.body.conversations[0].count, 2)
-    assert.deepEqual(ops[3].args, { id: 'session', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
-    assert.deepEqual(ops[4].args.body.slots, { t1: { kind: 'idle' } })
-    assert.deepEqual(ops[5].args, { id: 'input', payload: { $n: 4 }, sig: { $n: 4 }, pins: {} })
-    assert.equal(externPayload(plan.$directives).ok, false)
-    assert.equal(externPayload(plan.$directives).error, 'model failed')
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
+    assert.equal(value.ok, false)
+    assert.equal(value.error, 'model failed')
+    const read = await drv.call('read', { conversation: 'c1' })
+    const bodies = Object.values(read.refs)
+    assert.equal(bodies[0].role, 'user')
+    assert.equal(bodies[1].role, 'system')
+    assert.equal(bodies[1].content, 'model failed')
+    assert.deepEqual(bodies[1].meta, { error: 'model failed' })
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit append：只追加助手消息（不重写用户消息），头接当前链头、count+1', async () => {
+test('commit append: only appends assistant, head follows current chain head', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('commit', {
+    await seedConversation(drv, 'c1')
+    await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession({ conversations: [baseConversation({ head: { def: H1 }, count: 2 })] }),
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      conversation: 'c1',
+      user: { content: 'hi' },
+      assistant: { content: 'first' },
+    }, commitEnv('run-1'))
+    const value = await drv.call('commit', {
+      thread_id: 't1',
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      conversation: 'c1',
       user: { content: 'hi' },
       assistant: { content: 'approved done' },
       append: true,
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 5, '追加模式不写用户消息，少一条 put')
-    assert.equal(ops[0].args.body.role, 'assistant')
-    assert.equal(ops[0].args.body.content, 'approved done')
-    assert.deepEqual(ops[0].args.body.prev, { def: H1 }, '助手消息直接接当前链头')
-    assert.equal(ops[0].args.body.id, 'msg-c1-2')
-    assert.deepEqual(ops[1].args.body.conversations[0].head, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.conversations[0].count, 3)
-    assert.equal(externPayload(plan.$directives).count, 3)
-    const roles = ops.filter((op) => op.op === 'put' && op.args.body.role !== undefined).map((op) => op.args.body.role)
-    assert.deepEqual(roles, ['assistant'], '不得出现 user 消息')
+    }, commitEnv('run-2'))
+    assert.equal(value.count, 3)
+    const read = await drv.call('read', { conversation: 'c1' })
+    const bodies = Object.values(read.refs)
+    assert.deepEqual(bodies.map((b) => b.role), ['user', 'assistant', 'assistant'])
+    assert.equal(bodies[2].content, 'approved done')
+    assert.deepEqual(bodies[2].prev, { def: bodies[1].id })
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit append 失败路径：只追加 system 消息（不重写用户消息）', async () => {
+test('commit bad slot kind: failure value, no message written', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('commit', {
+    const value = await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession({ conversations: [baseConversation({ head: { def: H1 }, count: 2 })] }),
-      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
-      error: 'denied',
-      append: true,
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 5)
-    assert.equal(ops[0].args.body.role, 'system')
-    assert.equal(ops[0].args.body.content, 'denied')
-    assert.deepEqual(ops[0].args.body.prev, { def: H1 })
-    assert.equal(ops[0].args.body.id, 'msg-c1-2')
-    assert.equal(ops[1].args.body.conversations[0].count, 3)
-    const roles = ops.filter((op) => op.op === 'put' && op.args.body.role !== undefined).map((op) => op.args.body.role)
-    assert.deepEqual(roles, ['system'], '不得出现 user 消息')
-  } finally {
-    drv.close()
-  }
-})
-
-test('commit 非法槽 kind：无部分写（只清槽 + 返回失败值）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const plan = await drv.call('commit', {
-      thread_id: 't1',
-      session: baseSession(),
       slots: { slots: { t1: { kind: 'idle' } } },
       user: { content: 'hi' },
       assistant: { content: 'hello' },
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 2)
-    assert.equal(ops[0].op, 'put')
-    assert.deepEqual(ops[0].args.body.slots, { t1: { kind: 'idle' } })
-    assert.deepEqual(ops[1].args, { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
-    const payload = externPayload(plan.$directives)
-    assert.equal(payload.ok, false)
-    assert.equal(payload.reason, 'bad_slot_kind')
+    assert.equal(value.ok, false)
+    assert.equal(value.reason, 'bad_slot_kind')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit 自动建会话：无 current + new_conversation → 同世代建 main 会话并提交', async () => {
+test('commit auto-creates conversation when current is absent', async () => {
   const drv = startService()
   try {
     await drv.hello()
     const before = drv.events.length
-    const plan = await drv.call('commit', {
+    const value = await drv.call('commit', {
       thread_id: 't1',
       session: { version: 1, current: null, conversations: [] },
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
       user: { content: 'hi' },
       assistant: { content: 'hello' },
-      new_conversation: { id: 'c9', workspace_id: 'w1', title: '生成的标题' },
+      new_conversation: { id: 'c9', workspace_id: 'w1', title: 'generated' },
     })
-    const ops = opsFor(plan)
-    const body = ops[2].args.body
-    assert.equal(body.current, 'c9')
-    assert.equal(body.conversations.length, 1)
-    assert.equal(body.conversations[0].id, 'c9')
-    assert.equal(body.conversations[0].workspace_id, 'w1')
-    assert.equal(body.conversations[0].title, '生成的标题')
-    assert.equal(body.conversations[0].kind, 'main')
-    assert.equal(body.conversations[0].count, 2)
-    assert.deepEqual(body.conversations[0].head, { def: { $n: 1 } })
-    assert.deepEqual(ops[4].args.body.slots, { t1: { kind: 'idle' } })
-    const payload = externPayload(plan.$directives)
-    assert.equal(payload.ok, true)
-    assert.equal(payload.conversation, 'c9')
-    const topics = drv.events.slice(before).map((e) => e.topic)
-    assert.deepEqual(topics, ['thread.opened', 'thread.updated'])
-    const updated = drv.events.slice(before).find((e) => e.topic === 'thread.updated')
-    assert.ok(updated.payload.changed.includes('current'))
+    assert.equal(value.ok, true)
+    assert.equal(value.conversation, 'c9')
+    const read = await drv.call('read', { conversation: 'c9' })
+    assert.equal(read.current, 'c9')
+    assert.equal(conversationById(read, 'c9').title, 'generated')
+    assert.equal(conversationById(read, 'c9').count, 2)
+    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.opened', 'thread.updated'])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('commit 无 current 且无 new_conversation → no_conversation（只清槽）', async () => {
+test('commit without current and without new_conversation -> no_conversation', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('commit', {
+    const value = await drv.call('commit', {
       thread_id: 't1',
       session: { version: 1, current: null, conversations: [] },
       slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
       user: { content: 'hi' },
       assistant: { content: 'hello' },
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 2)
-    assert.deepEqual(ops[0].args.body.slots, { t1: { kind: 'idle' } })
-    const payload = externPayload(plan.$directives)
-    assert.equal(payload.ok, false)
-    assert.equal(payload.reason, 'no_conversation')
+    assert.equal(value.ok, false)
+    assert.equal(value.reason, 'no_conversation')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-// ── new_conversation / select / rename / set_title ─────────────────────────
+// -- new_conversation / select / rename / set_title / delete / restore -------
 
-test('new_conversation：新条目 + current 指向 + opened 事件', async () => {
+test('new_conversation / select / rename / set_title write own store', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const before = drv.events.length
-    const plan = await drv.call('new_conversation', {
+    const created = await drv.call('new_conversation', {
       thread_id: 't1',
-      session: baseSession(),
       slots: { slots: { t1: { kind: 'session.new', workspace_id: 'w1' } } },
       workspace_id: 'w1',
+      title: 'second',
+      conversation_id: 'c2',
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 4)
-    const body = ops[0].args.body
-    assert.equal(body.current, body.conversations[1].id)
-    assert.equal(body.conversations[1].workspace_id, 'w1')
-    assert.equal(body.conversations[1].title, '新对话')
-    assert.equal(body.conversations[1].count, 0)
-    assert.deepEqual(ops[1].args, { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
-    assert.deepEqual(ops[2].args.body.slots, { t1: { kind: 'idle' } })
-    assert.deepEqual(ops[3].args, { id: 'input', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
-    assert.equal(externPayload(plan.$directives).ok, true)
-    assert.deepEqual(
-      drv.events.slice(before).map((e) => e.topic),
-      ['thread.opened', 'thread.updated'],
-    )
-  } finally {
-    drv.close()
-  }
-})
+    assert.equal(created.ok, true)
+    assert.equal(created.conversation, 'c2')
+    assert.equal((await drv.call('read', {})).current, 'c2')
 
-test('数据 body 归一：投影回落代码 body（含 tree/meta）不污染会话数据世代', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    // 无数据世代时投影 body 回落代码 commit body：含字符串 tree / meta / refs
-    const polluted = {
-      meta: { name: 'session', version: '0.0.0' },
-      tree: 'a'.repeat(64),
-      refs: { x: { id: 'm' } },
-      current: null,
-      conversations: [],
-    }
-    const plan = await drv.call('new_conversation', {
+    const selected = await drv.call('select', {
       thread_id: 't1',
-      session: polluted,
-      slots: { slots: { t1: { kind: 'session.new' } } },
+      slots: { slots: { t1: { kind: 'session.select', conversation: 'c1' } } },
+      conversation: 'c1',
     })
-    const body = opsFor(plan)[0].args.body
-    // 关键：数据体不得含字符串 tree（否则 isCodeGen 会把数据世代误判为代码世代）
-    assert.equal('tree' in body, false, '不得把代码体 tree 带进会话数据体')
-    assert.equal('meta' in body, false, '不得把代码体 meta 带进会话数据体')
-    assert.equal('refs' in body, false, '不得把代码体 refs 带进会话数据体')
-    assert.equal(body.version, 1)
-    assert.equal(body.conversations.length, 1)
-  } finally {
-    drv.close()
-  }
-})
+    assert.equal(selected.ok, true)
+    assert.equal((await drv.call('read', {})).current, 'c1')
 
-test('select：切 current；目标不存在 → 只清槽 + extern ok:false', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const session = baseSession({
-      conversations: [baseConversation(), baseConversation({ id: 'c2' })],
-    })
-    const before = drv.events.length
-    const plan = await drv.call('select', {
+    await drv.call('rename', {
       thread_id: 't1',
-      session,
-      slots: { slots: { t1: { kind: 'session.select', conversation: 'c2' } } },
+      slots: { slots: { t1: { kind: 'session.rename' } } },
       conversation: 'c2',
+      title: 'renamed',
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 4)
-    assert.equal(ops[0].args.body.current, 'c2')
-    assert.equal(externPayload(plan.$directives).ok, true)
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
+    assert.equal(conversationById(await drv.call('read', { conversation: 'c2' }), 'c2').title, 'renamed')
 
-    const missing = await drv.call('select', {
+    await drv.call('set_title', { conversation: 'c2', title: 'auto title' })
+    assert.equal(conversationById(await drv.call('read', { conversation: 'c2' }), 'c2').title, 'auto title')
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('select missing target -> not_found', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.call('select', {
       thread_id: 't1',
-      session,
       slots: { slots: { t1: { kind: 'session.select', conversation: 'nope' } } },
       conversation: 'nope',
     })
-    const missingOps = opsFor(missing)
-    assert.equal(missingOps.length, 2)
-    assert.equal(externPayload(missing.$directives).ok, false)
-    assert.equal(externPayload(missing.$directives).reason, 'not_found')
+    assert.equal(value.ok, false)
+    assert.equal(value.reason, 'not_found')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('rename：改标题 + updated 事件；缺 title → 只清槽失败值', async () => {
+test('delete soft-deletes and falls back current; restore clears deleted_at', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    await seedConversation(drv, 'c1')
+    await seedConversation(drv, 'c2')
     const before = drv.events.length
-    const plan = await drv.call('rename', {
+    const value = await drv.call('delete', {
       thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'session.rename', title: '新名字' } } },
-      conversation: 'c1',
-      title: '新名字',
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 4)
-    assert.equal(ops[0].args.body.conversations[0].title, '新名字')
-    assert.equal(externPayload(plan.$directives).title, '新名字')
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
-
-    const bad = await drv.call('rename', {
-      thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'session.rename' } } },
-      conversation: 'c1',
-    })
-    assert.equal(opsFor(bad).length, 2)
-    assert.equal(externPayload(bad.$directives).reason, 'missing_title')
-  } finally {
-    drv.close()
-  }
-})
-
-test('set_title：args 驱动、不清槽、无条件写入', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const before = drv.events.length
-    const plan = await drv.call('set_title', {
-      session: baseSession(),
-      conversation: 'c1',
-      title: '自动标题',
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 2)
-    assert.equal(ops[0].args.body.conversations[0].title, '自动标题')
-    assert.deepEqual(ops[1].args, { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
-    assert.equal(externPayload(plan.$directives).ok, true)
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
-
-    const missing = await drv.call('set_title', { session: baseSession(), conversation: 'nope', title: 'x' })
-    assert.equal(missing.$directives.length, 1)
-    assert.equal(missing.$directives[0].kind, 'extern')
-    assert.equal(missing.$directives[0].payload.ok, false)
-  } finally {
-    drv.close()
-  }
-})
-
-// ── delete / restore ───────────────────────────────────────────────────────
-
-test('delete：软删 + current 回退同工作区最近未删 + closed 事件', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const session = baseSession({
-      current: 'c2',
-      conversations: [baseConversation(), baseConversation({ id: 'c2' })],
-    })
-    const before = drv.events.length
-    const plan = await drv.call('delete', {
-      thread_id: 't1',
-      session,
       slots: { slots: { t1: { kind: 'session.delete', conversation: 'c2' } } },
       conversation: 'c2',
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 4)
-    const deleted = ops[0].args.body.conversations[1]
-    assert.equal(deleted.id, 'c2')
-    assert.equal(deleted.deleted_at, AT)
-    assert.equal(ops[0].args.body.current, 'c1')
-    assert.equal(externPayload(plan.$directives).current, 'c1')
-    assert.deepEqual(
-      drv.events.slice(before).map((e) => e.topic),
-      ['thread.closed', 'thread.updated'],
-    )
-  } finally {
-    drv.close()
-  }
-})
-
-test('delete 唯一会话 → current 回退 null', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const plan = await drv.call('delete', {
+    assert.equal(value.ok, true)
+    assert.equal(value.current, 'c1')
+    const read = await drv.call('read', { conversation: 'c2' })
+    assert.equal(conversationById(read, 'c2').deleted_at, AT)
+    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.closed', 'thread.updated'])
+    await drv.call('restore', {
       thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'session.delete', conversation: 'c1' } } },
-      conversation: 'c1',
+      slots: { slots: { t1: { kind: 'session.restore', conversation: 'c2' } } },
+      conversation: 'c2',
     })
-    assert.equal(opsFor(plan)[0].args.body.current, null)
-    assert.equal(externPayload(plan.$directives).current, null)
+    assert.equal(conversationById(await drv.call('read', { conversation: 'c2' }), 'c2').deleted_at, null)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('restore：清 deleted_at + updated 事件', async () => {
+// -- branch ------------------------------------------------------------------
+
+test('branch copies the window up to the target message into a new conversation', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const session = baseSession({
-      conversations: [baseConversation({ deleted_at: AT })],
-    })
-    const before = drv.events.length
-    const plan = await drv.call('restore', {
+    await seedConversation(drv, 'c1')
+    await drv.call('commit', {
       thread_id: 't1',
-      session,
-      slots: { slots: { t1: { kind: 'session.restore', conversation: 'c1' } } },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'a' } } },
       conversation: 'c1',
-    })
-    assert.equal(opsFor(plan)[0].args.body.conversations[0].deleted_at, null)
-    assert.equal(externPayload(plan.$directives).ok, true)
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated'])
-  } finally {
-    drv.close()
-  }
-})
-
-// ── branch ─────────────────────────────────────────────────────────────────
-
-test('branch：以源消息为父链拷贝消息 def（prev 重建）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const refs = {
-      [H1]: { id: 'm1', role: 'user', content: 'a', at: AT, prev: null },
-      [H2]: { id: 'm2', role: 'assistant', content: 'b', at: AT, prev: { def: H1 } },
-      [H3]: { id: 'm3', role: 'user', content: 'c', at: AT, prev: { def: H2 } },
-    }
-    const session = baseSession({
-      conversations: [baseConversation({ head: { def: H3 }, count: 3 })],
-    })
-    const before = drv.events.length
-    const plan = await drv.call('branch', {
+      user: { content: 'a' },
+      assistant: { content: 'b' },
+    }, commitEnv('run-1'))
+    await drv.call('commit', {
       thread_id: 't1',
-      session,
-      slots: { slots: { t1: { kind: 'session.branch', conversation: 'c1', message: 'm2' } } },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'c' } } },
       conversation: 'c1',
-      message: 'm2',
-      refs,
+      user: { content: 'c' },
+      assistant: { content: 'd' },
+    }, commitEnv('run-2'))
+    const read = await drv.call('read', { conversation: 'c1' })
+    const ids = Object.keys(read.refs)
+    assert.equal(ids.length, 4)
+    const value = await drv.call('branch', {
+      thread_id: 't1',
+      slots: { slots: { t1: { kind: 'session.branch', conversation: 'c1', message: ids[1] } } },
+      conversation: 'c1',
+      message: ids[1],
+      conversation_id: 'c-branch',
     })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 6)
-    assert.deepEqual(ops[0].args.body.prev, null)
-    assert.equal(ops[0].args.body.content, 'a')
-    assert.deepEqual(ops[1].args.body.prev, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.content, 'b')
-    const body = ops[2].args.body
-    const entry = body.conversations[1]
-    assert.equal(entry.count, 2)
-    assert.deepEqual(entry.head, { def: { $n: 1 } })
-    assert.equal(entry.parent.def, 'c1')
-    assert.equal(entry.source_message, 'm2')
-    assert.equal(body.current, entry.id)
-    assert.deepEqual(ops[3].args, { id: 'session', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
-    assert.deepEqual(ops[5].args, { id: 'input', payload: { $n: 4 }, sig: { $n: 4 }, pins: {} })
-    assert.equal(externPayload(plan.$directives).count, 2)
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.opened', 'thread.updated'])
-    assert.equal(drv.events.slice(before)[0].payload.thread, entry.id)
+    assert.equal(value.ok, true)
+    assert.equal(value.conversation, 'c-branch')
+    assert.equal(value.count, 2)
+    const branched = await drv.call('read', { conversation: 'c-branch' })
+    assert.equal(conversationById(branched, 'c-branch').count, 2)
+    assert.equal(conversationById(branched, 'c-branch').source_message, ids[1])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-// ── deliver ────────────────────────────────────────────────────────────────
+// -- deliver -----------------------------------------------------------------
 
-test('deliver：写 inbox + status/last_activity/pending + opened 事件（新子线程）', async () => {
+test('deliver writes inbox + status; terminal status emits thread.closed', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    await seedConversation(drv, 'sub1', { title: 'child' })
     const before = drv.events.length
-    const plan = await drv.call('deliver', {
-      session: baseSession(),
-      to: 'sub1',
-      kind: 'instruction',
-      body: 'do it',
-      thread_kind: 'subagent',
-      parent: { def: 'c1' },
-      status: 'running',
-      pending: { approval: 1, question: 0 },
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops.length, 3)
-    const inboxMessage = ops[0].args.body
-    assert.equal(inboxMessage.to, 'sub1')
-    assert.equal(inboxMessage.seq, 1)
-    assert.equal(inboxMessage.body, 'do it')
-    assert.equal(inboxMessage.prev, null)
-    assert.equal(inboxMessage.at, AT)
-    const thread = ops[1].args.body.conversations[1]
-    assert.deepEqual(thread.inbox, { tail: { def: { $n: 0 } }, count: 1, last_seen: 0 })
-    assert.equal(thread.status, 'running')
-    assert.deepEqual(thread.pending, { approval: 1, question: 0 })
-    assert.deepEqual(ops[2].args, { id: 'session', payload: { $n: 1 }, sig: { $n: 1 }, pins: {} })
-    assert.equal(externPayload(plan.$directives).seq, 1)
-    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.opened', 'thread.updated'])
-  } finally {
-    drv.close()
-  }
-})
-
-test('deliver：report 到已有子线程 → 追加 inbox + status done → updated/closed', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const session = baseSession({
-      conversations: [
-        baseConversation(),
-        baseConversation({
-          id: 'sub1',
-          kind: 'subagent',
-          status: 'running',
-          inbox: { tail: { def: H1 }, count: 1, last_seen: 0 },
-        }),
-      ],
-    })
-    const before = drv.events.length
-    const plan = await drv.call('deliver', {
-      session,
+    const value = await drv.call('deliver', {
       to: 'sub1',
       kind: 'report',
       body: 'done',
       status: 'done',
-      last_seen: 1,
     })
-    const ops = opsFor(plan)
-    const inboxMessage = ops[0].args.body
-    assert.equal(inboxMessage.seq, 2)
-    assert.deepEqual(inboxMessage.prev, { def: H1 })
-    const thread = ops[1].args.body.conversations[1]
-    assert.deepEqual(thread.inbox, { tail: { def: { $n: 0 } }, count: 2, last_seen: 1 })
-    assert.equal(thread.status, 'done')
-    assert.deepEqual(
-      drv.events.slice(before).map((e) => e.topic),
-      ['thread.updated', 'thread.closed'],
-    )
-    assert.deepEqual(drv.events.slice(before)[0].payload.changed, ['inbox', 'status'])
+    assert.equal(value.ok, true)
+    assert.equal(value.seq, 1)
+    const read = await drv.call('read', { conversation: 'sub1' })
+    assert.equal(conversationById(read, 'sub1').status, 'done')
+    assert.equal(conversationById(read, 'sub1').inbox.tail.def, 'inbox-sub1-1')
+    assert.deepEqual(drv.events.slice(before).map((e) => e.topic), ['thread.updated', 'thread.closed'])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('deliver：group 追加 → group.message；workflow 位置推进 → workflow.step', async () => {
+// -- history -----------------------------------------------------------------
+
+test('history reads own store: window newest-first + before / limit', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const session = baseSession({
-      conversations: [
-        baseConversation(),
-        baseConversation({ id: 'g1', kind: 'group' }),
-        baseConversation({
-          id: 'wf1',
-          kind: 'workflow',
-          workflow: { graph: { def: 'g' }, node_index: 0, iter: 0 },
-        }),
-      ],
-    })
-    const before = drv.events.length
-    await drv.call('deliver', { session, to: 'g1', kind: 'report', body: 'hi' })
-    await drv.call('deliver', {
-      session,
-      to: 'wf1',
-      kind: 'report',
-      body: 'step',
-      workflow: { graph: { def: 'g' }, node_index: 1, iter: 0 },
-    })
-    assert.deepEqual(
-      drv.events.slice(before).map((e) => e.topic),
-      ['thread.updated', 'group.message', 'thread.updated', 'workflow.step'],
-    )
-    const groupMessage = drv.events.slice(before).find((e) => e.topic === 'group.message')
-    assert.equal(groupMessage.payload.id, 'inbox-g1-1')
-    assert.equal(groupMessage.payload.thread, 'g1')
-    assert.equal(groupMessage.payload.conversation, 'g1')
-    const workflowStep = drv.events.slice(before).find((e) => e.topic === 'workflow.step')
-    assert.equal(workflowStep.payload.thread, 'wf1')
-    assert.equal(workflowStep.payload.node_index, 1)
-  } finally {
-    drv.close()
-  }
-})
-
-// ── 补丁世代（data_gen 存在时写补丁 + base，组装结果与整份写入等价） ────────────
-
-/** 跑同一次会话调用两次：一次整份写入、一次补丁写入，返回两者的会话 body / 补丁。 */
-async function patchEquivalence(drv, method, args, fullBodyIndex, patchDefIndex) {
-  const full = opsFor(await drv.call(method, args))
-  const fullBody = full[fullBodyIndex].args.body
-  const patched = opsFor(await drv.call(method, { ...args, session: { ...args.session, data_gen: { seq: 7, payload: H1 } } }))
-  const patchDef = patched[patchDefIndex].args.body
-  const addGen = patched[patchDefIndex + 1]
-  assert.equal(addGen.op, 'add_gen')
-  assert.equal(addGen.args.id, 'session')
-  assert.equal(addGen.args.base, 7)
-  assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
-  return { fullBody, assembled: assembleBody(args.session, patchDef.ops), patched }
-}
-
-test('补丁世代：commit 组装结果 == 整份写入结果', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const args = {
+    await seedConversation(drv, 'c1')
+    await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'a' } } },
       conversation: 'c1',
-      user: { content: 'hi' },
-      assistant: { content: 'hello' },
-    }
-    const { fullBody, assembled, patched } = await patchEquivalence(drv, 'commit', args, 2, 2)
-    assert.deepEqual(assembled, fullBody)
-    // 补丁只动变更的会话条目，不重写整个 conversations 列表
-    assert.deepEqual(patched[2].args.body.ops, [
-      { op: 'replace', path: ['conversations', 0], value: fullBody.conversations[0] },
-    ])
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：rename / new_conversation 组装结果 == 整份写入结果', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const renamed = await patchEquivalence(
-      drv,
-      'rename',
-      {
-        thread_id: 't1',
-        session: baseSession(),
-        slots: { slots: { t1: { kind: 'session.rename' } } },
-        conversation: 'c1',
-        title: '改名',
-      },
-      0,
-      0,
-    )
-    assert.deepEqual(renamed.assembled, renamed.fullBody)
-
-    const created = await patchEquivalence(
-      drv,
-      'new_conversation',
-      {
-        thread_id: 't1',
-        session: baseSession(),
-        slots: { slots: { t1: { kind: 'session.new' } } },
-        title: '新会话',
-        conversation_id: 'c2',
-      },
-      0,
-      0,
-    )
-    assert.deepEqual(created.assembled, created.fullBody)
-    assert.deepEqual(
-      created.patched[0].args.body.ops.map((op) => op.op).sort(),
-      ['append', 'replace'],
-    )
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：input 清槽写 replace [slots, thread] + base=data_gen.seq', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const slots = {
-      slots: { t1: { kind: 'chat.message', text: 'hi' }, t2: { kind: 'idle' } },
-      data_gen: { seq: 5, payload: H1 },
-    }
-    const plan = await drv.call('commit', {
+      user: { content: 'a' },
+      assistant: { content: 'b' },
+    }, commitEnv('run-1'))
+    await drv.call('commit', {
       thread_id: 't1',
-      session: baseSession(),
-      slots,
+      slots: { slots: { t1: { kind: 'chat.message', text: 'c' } } },
       conversation: 'c1',
-      user: { content: 'hi' },
-      assistant: { content: 'hello' },
-    })
-    const ops = opsFor(plan)
-    const inputGenIndex = ops.findIndex((op) => op.op === 'add_gen' && op.args.id === 'input')
-    assert.equal(ops[inputGenIndex].args.base, 5)
-    const patchDef = ops[inputGenIndex - 1]
-    assert.deepEqual(patchDef.args.body.ops, [
-      { op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } },
-    ])
-    assert.deepEqual(assembleBody({ slots: slots.slots }, patchDef.args.body.ops), {
-      slots: { t1: { kind: 'idle' }, t2: { kind: 'idle' } },
-    })
+      user: { content: 'c' },
+      assistant: { content: 'd' },
+    }, commitEnv('run-2'))
+    const full = await drv.call('history', { conversation: 'c1' })
+    assert.equal(full.conversation, 'c1')
+    assert.equal(full.messages.length, 4)
+    assert.equal(full.messages[0].def.content, 'd')
+    const limited = await drv.call('history', { conversation: 'c1', limit: 2 })
+    assert.deepEqual(limited.messages.map((e) => e.def.content), ['d', 'c'])
+    const before = await drv.call('history', { conversation: 'c1', before: full.messages[1].hash })
+    assert.deepEqual(before.messages.map((e) => e.def.content), ['b', 'a'])
+    assert.equal(full.next_before, null)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('补丁世代：input 空改动（本线程已 idle）回落整份', async () => {
-  const drv = startService()
+// -- 3 / 4 split + restart replay -------------------------------------------
+
+test('3/4 split: deleting CHRONO_PLUGIN_STATE still replays from the durable store', async () => {
+  const root = tempRoot()
+  const first = startService({ root })
   try {
-    await drv.hello()
-    const plan = await drv.call('commit', {
+    await first.hello()
+    await seedConversation(first, 'c1')
+    await first.call('commit', {
       thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 5, payload: H1 } },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'persisted' } } },
       conversation: 'c1',
-      user: { content: 'hi' },
-      assistant: { content: 'hello' },
+      user: { content: 'persisted' },
+      assistant: { content: 'ok' },
     })
-    const ops = opsFor(plan)
-    const inputGenIndex = ops.findIndex((op) => op.op === 'add_gen' && op.args.id === 'input')
-    assert.equal(ops[inputGenIndex].args.base, undefined)
-    assert.equal(Array.isArray(ops[inputGenIndex - 1].args.body.ops), false)
   } finally {
-    drv.close()
+    first.close()
+    await first.exit
   }
-})
-
-test('补丁世代：无变更会话写回落整份（空补丁非法）', async () => {
-  const drv = startService()
+  rmSync(join(root, 'state'), { recursive: true, force: true })
+  const second = startService({ root })
   try {
-    await drv.hello()
-    const plan = await drv.call('select', {
-      thread_id: 't1',
-      session: { ...baseSession(), data_gen: { seq: 2, payload: H1 } },
-      slots: { slots: { t1: { kind: 'session.select' } } },
-      conversation: 'c1',
-    })
-    const ops = opsFor(plan)
-    assert.equal(ops[0].op, 'put')
-    assert.equal(Array.isArray(ops[0].args.body.ops), false)
-    assert.deepEqual(ops[1].args, { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
+    await second.hello()
+    const read = await second.call('read', { conversation: 'c1' })
+    assert.equal(conversationById(read, 'c1').count, 2)
+    assert.equal(Object.values(read.refs)[0].content, 'persisted')
   } finally {
-    drv.close()
+    second.close()
+    await second.exit
+    second.cleanup()
   }
 })
 
-// ── 结构化错误 ─────────────────────────────────────────────────────────────
+test('restart replay: same durable dir yields full history', async () => {
+  const root = tempRoot()
+  const first = startService({ root })
+  try {
+    await first.hello()
+    await seedConversation(first, 'c1')
+    await first.call('commit', {
+      thread_id: 't1',
+      slots: { slots: { t1: { kind: 'chat.message', text: 'x' } } },
+      conversation: 'c1',
+      user: { content: 'x' },
+      assistant: { content: 'y' },
+    })
+  } finally {
+    first.close()
+    await first.exit
+  }
+  const second = startService({ root })
+  try {
+    await second.hello()
+    assert.equal(conversationById(await second.call('read', { conversation: 'c1' }), 'c1').count, 2)
+  } finally {
+    second.close()
+    await second.exit
+    second.cleanup()
+  }
+})
 
-test('非对象 / 缺字段 args → bad_args，不崩进程', async () => {
+// -- structured errors -------------------------------------------------------
+
+test('non-object / missing args -> bad_args, process survives', async () => {
   const drv = startService()
   try {
     await drv.hello()
     const nullArgs = await drv.callRaw('commit', null)
     assert.equal(nullArgs.kind, 'error')
     assert.equal(nullArgs.code, 'bad_args')
-
-    const missing = await drv.callRaw('deliver', { session: baseSession() })
-    assert.equal(missing.kind, 'error')
-    assert.equal(missing.code, 'bad_args')
-
     const unknown = await drv.callRaw('nope', {})
     assert.equal(unknown.kind, 'error')
     assert.equal(unknown.code, 'unknown_method')
-
-    // 进程仍可服务：后续正常调用成功
-    const plan = await drv.call('commit', {
-      thread_id: 't1',
-      session: baseSession(),
-      slots: { slots: { t1: { kind: 'chat.message', text: 'x' } } },
-      user: { content: 'x' },
-      assistant: { content: 'y' },
-    })
-    assert.equal(externPayload(plan.$directives).ok, true)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })

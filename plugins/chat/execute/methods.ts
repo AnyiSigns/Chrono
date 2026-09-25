@@ -12,14 +12,12 @@ import {
   findConversation,
   firstMessageOf,
   modelConfigOf,
-  refsOf,
   shouldGenerateTitle,
   slotOf,
   threadKey,
   withConversationTitle,
   workspaceKnown,
 } from './assemble.ts'
-import { buildHistory, parseHistoryQuery } from './history.ts'
 import { asString, errorValue, externOnly, isErrorValue, isRecord, mergeDirectives } from './plan.ts'
 import { createRefHydrator } from './refs.ts'
 import type { DefReader, RefHydrator } from './refs.ts'
@@ -63,6 +61,28 @@ async function hydrateIds(
 
 /** 槽 kind：只有 `chat.message` 跑管道。 */
 const CHAT_MESSAGE = 'chat.message'
+
+/** 运行记录 owner 身份（消息链 / 输入槽已出世界，改经 `eff` 问 owner）。 */
+const SESSION_PORT = 'session'
+const SESSION_READ = 'read'
+const INPUT_PORT = 'input'
+const INPUT_READ = 'read'
+
+/**
+ * 从 owner 服务取会话切片与输入槽，覆盖投影里的同名身份条目。
+ * 消息链 / 输入槽已出世界（不产 `write` directive），服务读自有持久存储后返回。
+ * 取不到时回落空切片（缺省身份由下游回落种子 / 内建兜底），不阻塞主回合。
+ */
+async function withOwnerSlices(deps: ChatDeps, ids: Json, env: CallEnv, thread: string): Promise<Json> {
+  const base: Rec = isRecord(ids) ? { ...ids } : {}
+  const sessionOutcome = await deps.port.call(SESSION_PORT, SESSION_READ, {})
+  const session = sessionOutcome.ok && isRecord(sessionOutcome.value) ? sessionOutcome.value : { version: 1, current: null, conversations: [] }
+  const inputOutcome = await deps.port.call(INPUT_PORT, INPUT_READ, { thread })
+  const input = inputOutcome.ok && isRecord(inputOutcome.value) ? inputOutcome.value : { slots: {} }
+  base[SESSION_PORT] = { body: session, refs: isRecord(session['refs']) ? session['refs'] : {}, data_gen: null }
+  base[INPUT_PORT] = { body: input }
+  return base
+}
 
 /** #33 图解释器入口（编排唯一的 eff）。 */
 const LOOP_PORT = 'loop-policy'
@@ -124,10 +144,11 @@ async function send(
   deps: ChatDeps,
   hydrator: RefHydrator,
 ): Promise<Json> {
-  const ids = await hydrateIds(args, hydrator)
-  if (!isRecord(ids)) throw new BadArgsError('ids must be an object')
+  const projected = await hydrateIds(args, hydrator)
+  if (!isRecord(projected)) throw new BadArgsError('ids must be an object')
   const wiring = deps.wiring
   const thread = threadKey(env.thread)
+  const ids = await withOwnerSlices(deps, projected, env, thread)
   const slot = slotOf(ids, thread)
   if (!isRecord(slot) || slot['kind'] !== CHAT_MESSAGE) {
     return wiring.on_empty_slot === 'error'
@@ -185,9 +206,13 @@ async function send(
     const title =
       titleOutcome.ok && isRecord(titleOutcome.value) ? asString(titleOutcome.value['title']) : null
     if (title !== null) {
-      // 新建会话：标题随 `new_conversation` 交 commit 建会话时落；既有会话：并入本次提交的 body。
+      // 新建会话：标题随 `new_conversation` 交 commit 建会话时落；
+      // 既有会话：标题**写 owner 服务**（session.set_title 写自有存储），并并入本次 interpret 的 body 供本回合视图。
       if (newConversation !== null) newConversation['title'] = title
-      else sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
+      else {
+        sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
+        await deps.port.call(SESSION_PORT, 'set_title', { conversation: turn.conversationId, title })
+      }
     }
   }
 
@@ -212,21 +237,17 @@ async function send(
   return merged
 }
 
-/** 展示历史：从投影 `session` 沿 `prev` 还原链，按 `{conversation, before, limit}` 切窗。 */
-async function history(args: Json, env: CallEnv, hydrator: RefHydrator): Promise<Json> {
-  const raw = isRecord(args) && isRecord(args['ids']) ? args['ids'] : args
-  if (!isRecord(raw)) throw new BadArgsError('ids must be an object')
-  const ids = await hydrateIds(raw, hydrator, ['session'])
-  if (!isRecord(ids)) throw new BadArgsError('ids must be an object')
-  const sessionBody = bodyOf(ids, 'session') ?? {}
-  const refs = refsOf(ids, 'session')
-  const query = parseHistoryQuery(args)
-  const conversation = query.conversation ?? asString(env.thread) ?? asString(sessionBody['current'])
-  return buildHistory(sessionBody, refs, {
-    conversation,
-    before: query.before,
-    limit: query.limit,
+/** 展示历史：问 `session` 服务取自有存储还原的窗口（不再读投影 refs / 逐跳 hydrator）。 */
+async function history(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
+  const record = isRecord(args) ? args : {}
+  const outcome = await deps.port.call(SESSION_PORT, 'history', {
+    conversation: asString(record['conversation']),
+    before: asString(record['before']),
+    limit: typeof record['limit'] === 'number' ? record['limit'] : null,
   })
+  if (!outcome.ok) return errorValue('session_unavailable', outcome.message)
+  if (isErrorValue(outcome.value)) return outcome.value
+  return outcome.value
 }
 
 /**
@@ -244,8 +265,9 @@ async function resume(
   if (!isRecord(args)) throw new BadArgsError('resume args must be an object')
   const cursor = args['cursor']
   if (!isRecord(cursor)) throw new BadArgsError('cursor must be an object')
-  const ids = isRecord(args['ids']) ? await hydrateIds(args['ids'], hydrator) : {}
+  const projected = isRecord(args['ids']) ? await hydrateIds(args['ids'], hydrator) : {}
   const thread = threadKey(asString(args['thread']) ?? env.thread)
+  const ids = await withOwnerSlices(deps, projected, env, thread)
   const payload = isRecord(args['payload']) ? args['payload'] : null
 
   const sessionBody = bodyOf(ids, 'session') ?? {}
@@ -288,7 +310,7 @@ export function createHandlers(deps: ChatDeps): Record<string, Handler> {
   const hydrator = createRefHydrator(read)
   return {
     send: (args: Json, env: CallEnv): Promise<Json> => send(args, env, deps, hydrator),
-    history: (args: Json, env: CallEnv): Promise<Json> => history(args, env, hydrator),
+    history: (args: Json, env: CallEnv): Promise<Json> => history(args, env, deps),
     resume: (args: Json, env: CallEnv): Promise<Json> => resume(args, env, deps, hydrator),
   }
 }

@@ -12,10 +12,14 @@
       "delete",
       "restore",
       "branch",
-      "deliver"
+      "deliver",
+      "read",
+      "history"
     ]
   },
-  "pins": {},
+  "pins": {
+    "input": "input"
+  },
   "start": "node execute/main.ts",
   "protocol": "1",
   "restart": {
@@ -32,7 +36,8 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
+  "exclusive": ["data"],
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "term", "path": "terms/" },

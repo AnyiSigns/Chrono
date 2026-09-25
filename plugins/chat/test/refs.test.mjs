@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRefHydrator, DefUnavailableError } from '../execute/refs.ts'
-import { startService, FIXED_ENV } from './driver.mjs'
+import { defaultBridge, idsFixture, startService, FIXED_ENV } from './driver.mjs'
 
 const H1 = 'a'.repeat(64)
 const H2 = 'b'.repeat(64)
@@ -35,20 +35,19 @@ test('hydrate：可取回时返回闭包；refs 已是对象 / 非数组行为�
   assert.deepEqual(await hydrator.hydrate('session', 7), {})
 })
 
-test('服务帧：引用不可用回 def_unavailable，不再静默空闭包', async () => {
+test('service frame: unavailable referenced def -> def_unavailable, not a silent empty closure', async () => {
   const drv = startService({
     bridge: (port, method) =>
       port === 'host' && method === 'def.read'
         ? Promise.resolve({ error: 'denied', message: 'denied' })
-        : Promise.resolve({ value: null }),
+        : defaultBridge()(port, method),
   })
   try {
     await drv.hello()
-    const message = await drv.call(
-      'history',
-      { ids: { session: { body: { version: 1, current: 'c1', conversations: [] }, refs: [H1] } } },
-      FIXED_ENV,
-    )
+    const ids = idsFixture()
+    // A definition identity still hydrates hash-list refs through host.def.read.
+    ids.todo = { body: { conversations: {} }, refs: [H1] }
+    const message = await drv.call('send', ids, FIXED_ENV)
     assert.equal(message.kind, 'error')
     assert.equal(message.code, 'def_unavailable')
   } finally {

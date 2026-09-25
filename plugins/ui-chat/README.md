@@ -38,9 +38,13 @@ export function register(ctx: SlotContext): void {
 **渲染源 = `session` 插件的全量消息（展示真源）**，与上下文组装视图无关：
 
 1. 浏览器经壳 `ctx.command('chat.history', {conversation?}, {thread})` 调用宿主命令面；
-2. 宿主按名路由到命令声明方，返回投影值 `{body, refs}`；
-3. 浏览器沿 `prev` 从 `head` 逆序还原、反转成展示序（`execute/web/history-model.ts`）；
+2. `chat.history` 反向调用 `session.history`，由 `session` 服务读**自有持久存储**返回
+   `{messages, body, refs}`（`messages` 为新 → 旧窗口）；
+3. 浏览器用 `messages` 反转成展示序（`execute/web/history-model.ts`；旧 `refs` 路径保留为兼容回落）；
 4. `chat.history` 命令不可用时 → 行内错误占位（`unknown_command` 人话），不崩。
+
+**输入槽写走命令**：槽已出世界，`question.answer` 等写槽经 `ctx.command('input.write', {thread, slot})`
+交给 `input` 服务（服务写自有存储）；不再提交世界写 directive（`execute/web/slot-write.ts` 构造命令）。
 
 ## 渲染管线（快照 + 有序增量 + 定稿替换）
 

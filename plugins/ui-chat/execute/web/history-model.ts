@@ -40,8 +40,14 @@ export function threadKind(conversation: any): string {
   return typeof kind === 'string' && kind.length > 0 ? kind : 'main'
 }
 
-/** 沿 `prev` 还原展示序：返回 `[{hash, def}]`（旧 → 新）。 */
+/**
+ * 展示序消息：`chat.history` 由 `session` 服务读自有存储后返回 `messages`（新 → 旧），
+ * 本函数反转为旧 → 新。旧路径（投影 `refs` + `prev` 还原）保留为兼容回落。
+ */
 export function restoreMessages(history: any, conversation: any): any[] {
+  if (isRec(history) && Array.isArray(history.messages)) {
+    return history.messages.slice().reverse()
+  }
   const refs = isRec(history) && isRec(history.refs) ? history.refs : {}
   const messages: any[] = []
   if (!isRec(conversation) || !isRec(conversation.head)) return messages

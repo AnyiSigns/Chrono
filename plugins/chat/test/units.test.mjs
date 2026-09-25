@@ -17,11 +17,10 @@ import {
   todoSliceOf,
   workspaceOf,
 } from '../execute/assemble.ts'
-import { buildHistory, restoreChain, sliceChain, parseHistoryQuery } from '../execute/history.ts'
 import { defHashOf, directivesOf, errorValue, externOnly, isErrorValue, mergeDirectives } from '../execute/plan.ts'
 import { READONLY_METHODS, deriveReadonlyMethods } from '../execute/plugin.ts'
 import { loadWiring, sliceEnabled } from '../execute/wiring.ts'
-import { chainRefs, configFixture, idsFixture, memoryFixture } from './driver.mjs'
+import { configFixture, idsFixture, memoryFixture } from './driver.mjs'
 
 test('modelConfigOf：从 #2 config 解析连接实例 + 档案 + 风格来源', () => {
   const ids = idsFixture()
@@ -208,61 +207,6 @@ test('isErrorValue / externOnly：结构化失败以 extern 收口', () => {
   assert.deepEqual(externOnly(errorValue('x', 'y')).$directives, [
     { kind: 'extern', payload: { ok: false, error: { code: 'x', message: 'y' } } },
   ])
-})
-
-test('restoreChain / sliceChain：沿 prev 还原（新→旧）+ before / limit 切片', () => {
-  const refs = chainRefs()
-  const conversation = { head: { def: 'h3' } }
-  const chain = restoreChain(refs, conversation)
-  assert.deepEqual(chain.map((entry) => entry.body.id), ['m3', 'm2', 'm1'])
-  assert.deepEqual(sliceChain(chain, null, 2).map((entry) => entry.body.id), ['m3', 'm2'])
-  assert.deepEqual(sliceChain(chain, 'm3', null).map((entry) => entry.body.id), ['m2', 'm1'])
-  assert.deepEqual(sliceChain(chain, 'h2', 1).map((entry) => entry.body.id), ['m1'])
-})
-
-test('parseHistoryQuery：conversation / before / limit 形态', () => {
-  assert.deepEqual(parseHistoryQuery({ conversation: 'c-2', before: 'm3', limit: 2 }), {
-    conversation: 'c-2',
-    before: 'm3',
-    limit: 2,
-  })
-  assert.deepEqual(parseHistoryQuery(null), { conversation: null, before: null, limit: null })
-  assert.equal(parseHistoryQuery({ limit: 0 }).limit, null)
-})
-
-test('buildHistory：缺省 conversation=current，窗口 + body/refs 全量返回', () => {
-  const body = { version: 1, current: 'c-1', conversations: [{ id: 'c-1', head: { def: 'h3' } }] }
-  const refs = chainRefs()
-  const full = buildHistory(body, refs, { conversation: null, before: null, limit: null })
-  assert.equal(full.conversation, 'c-1')
-  assert.equal(full.next_before, null)
-  assert.deepEqual(full.messages.map((entry) => entry.body.id), ['m3', 'm2', 'm1'])
-  assert.equal(full.body.current, 'c-1')
-  assert.equal(full.refs.h1.id, 'm1')
-})
-
-test('buildHistory：conversation 指定 + limit 截断 + before 更旧窗', () => {
-  const body = {
-    version: 1,
-    current: 'c-1',
-    conversations: [
-      { id: 'c-1', head: { def: 'h3' } },
-      { id: 'c-2', head: { def: 'h2' } },
-    ],
-  }
-  const refs = chainRefs()
-  assert.deepEqual(
-    buildHistory(body, refs, { conversation: 'c-2', before: null, limit: null }).messages.map((e) => e.body.id),
-    ['m2', 'm1'],
-  )
-  assert.deepEqual(
-    buildHistory(body, refs, { conversation: null, before: null, limit: 2 }).messages.map((e) => e.body.id),
-    ['m3', 'm2'],
-  )
-  assert.deepEqual(
-    buildHistory(body, refs, { conversation: null, before: 'm3', limit: null }).messages.map((e) => e.body.id),
-    ['m2', 'm1'],
-  )
 })
 
 test('loadWiring：缺省与 schema 值一致（段序归 #33 图数据，本包不再持 pipeline）', () => {

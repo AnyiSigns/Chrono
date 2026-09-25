@@ -7,20 +7,24 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 ## 身份与依赖
 
 - 身份：`chat`；`implements: ["chat"]`、`methods: { chat: ["send", "history", "resume"] }`、`start: "node execute/main.ts"`。
-- `pins`：`session` → `session`、`model` → `model-protocol`、`context` → `context-window`、
+- `pins`：`session` → `session`、`input` → `input`、`model` → `model-protocol`、`context` → `context-window`、
   `session-title` → `session-title`、`loop-policy` → `loop-policy`。
 - 入口 term 是**自能力路由**（无自引用 pin）：
-  `["eff","chat","send",["g",["ids"]]]` / `["eff","chat","history",["g",["ids"]]]` /
-  `["eff","chat","resume",["v",0]]`——前两者只把投影切片交给自己的服务，`resume` 收调用方随 plan eval 传入的 args。
+  `["eff","chat","send",["g",["ids"]]]` / `["eff","chat","history",["v",0]]` /
+  `["eff","chat","resume",["v",0]]`——`send` 只把投影切片（定义 / 判定数据）交给自己的服务，
+  `history` / `resume` 收调用方随命令 / plan eval 传入的 args。
 - 服务不读投影、不写链、不自取时钟（`now` 用调用帧 `env.now`）：世界数据由入口 term 读出随 args 传入。
+- **运行记录改问 owner**：`input`（输入槽）与 `session`（消息链 / 会话元数据）已出世界，
+  服务在 `send` / `resume` 时经反向调用 `input.read` / `session.read` 取回，覆盖投影里的同名身份条目；
+  `history` 直接反向调用 `session.history`（不再读投影 `refs`、不再逐跳 hydrator 还原）。
 
 ## 命令
 
 | 命令 | 语义 |
 | --- | --- |
-| `chat.send`（无参） | 服务按 `call` 帧 `env.thread` 取线程键，读投影 `ids.input.body.slots[<thread>]` 的 kind：`chat.message` → 跑管道；空槽 / `idle` / 非 chat kind → 幂等 no-op（`extern{ok:true,noop:true}`，不触发任何下游 eff）。 |
-| `chat.history` | **v1 契约**：入口 term 只传投影 `["g",["ids"]]`，服务读 `ids.session` 的 `body` + 全量 `refs`，沿 `prev` 从链头还原展示序并**整体返回**（`messages` 全链 + `body` + `refs`）；客户端沿 `prev` 自行还原与切窗。命令 args `{conversation,before,limit}` 到不了服务；服务侧 `parseHistoryQuery` / `sliceChain` 切片能力保留为后置。**不触发下游 eff、不写链**——声明为**只读命令**（`readonly: true`），宿主不广播其 `run.started` / `run.finished`、不落审计、不推进链头。 |
-| `chat.resume`（args `{cursor, thread, payload?, ids?}`） | 跨 run 续跑：装配与 send 相同的 interpret bag，另加 `bag.resume={cursor,thread,payload}` 交 loop-policy 恢复执行，合并计划返回。**`ids` = 调用方随 plan eval 传入的投影切片**（内核 term 不能同时传 args 与投影）。 |
+| `chat.send`（无参） | 服务按 `call` 帧 `env.thread` 取线程键，反向调用 `input.read` 取本线程槽 kind：`chat.message` → 跑管道；空槽 / `idle` / 非 chat kind → 幂等 no-op（`extern{ok:true,noop:true}`，不触发下游 eff）。 |
+| `chat.history` | 反向调用 `session.history({conversation,before,limit})`，返回服务读自有存储还原的窗口（`messages` 新→旧 + `body` + `refs`）；**不读投影 `refs`、不逐跳 hydrator 还原**。**不触发下游写、不写链**——声明为**只读命令**（`readonly: true`），宿主不广播其 `run.started` / `run.finished`、不落审计、不推进链头。 |
+| `chat.resume`（args `{cursor, thread, payload?, ids?}`） | 跨 run 续跑：装配与 send 相同的 interpret bag（`input` / `session` 同样问 owner），另加 `bag.resume={cursor,thread,payload}` 交 loop-policy 恢复执行，合并计划返回。**`ids` = 调用方随 plan eval 传入的投影切片**（内核 term 不能同时传 args 与投影）。 |
 
 管道（`chat.send` 的 `chat.message` 分支）：
 

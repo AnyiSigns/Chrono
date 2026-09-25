@@ -7,6 +7,7 @@
   },
   "pins": {
     "session": "session",
+    "input": "input",
     "model": "model-protocol",
     "context": "context-window",
     "session-title": "session-title",

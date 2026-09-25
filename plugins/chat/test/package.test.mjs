@@ -46,6 +46,7 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume'] })
   assert.deepEqual(decl.pins, {
     session: 'session',
+    input: 'input',
     model: 'model-protocol',
     context: 'context-window',
     'session-title': 'session-title',
@@ -108,11 +109,11 @@ test('wiring 切片 / title 声明 / 空槽行为（段序归 #33 图数据）',
   assert.deepEqual(wiring.stream, { topic: 'model.delta' })
 })
 
-test('入口 term：send/history 自能力 eff + 投影切片，resume 收 eval args', () => {
+test('入口 term：send 自能力 eff + 投影切片，history 收 args（owner 读），resume 收 eval args', () => {
   const send = readJson('terms/chat.send.json')
   assert.deepEqual(send, ['eff', 'chat', 'send', ['g', ['ids']]])
   const history = readJson('terms/chat.history.json')
-  assert.deepEqual(history, ['eff', 'chat', 'history', ['g', ['ids']]])
+  assert.deepEqual(history, ['eff', 'chat', 'history', ['v', 0]])
   const resume = readJson('terms/chat.resume.json')
   assert.deepEqual(resume, ['eff', 'chat', 'resume', ['v', 0]])
 })

@@ -29,6 +29,7 @@ const PLUGIN_ORDER = [
   'sandbox',
   'embedding',
   'model-protocol',
+  'input',
   'session',
   'context-window',
   'guard',
@@ -56,15 +57,17 @@ const PLUGIN_ORDER = [
 
 const EXPECTED_PINS = {
   session: 'session',
+  input: 'input',
   model: 'model-protocol',
   context: 'context-window',
   'session-title': 'session-title',
   'loop-policy': 'loop-policy',
+  host: 'host',
 }
 
 const EXPECTED_TERMS = {
   'chat.send': ['eff', 'chat', 'send', ['g', ['ids']]],
-  'chat.history': ['eff', 'chat', 'history', ['g', ['ids']]],
+  'chat.history': ['eff', 'chat', 'history', ['v', 0]],
   'chat.resume': ['eff', 'chat', 'resume', ['v', 0]],
 }
 
@@ -116,18 +119,19 @@ function main() {
 
   const paths = hostPaths(root)
   const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-  const projection = projectBaseOnly(anchor.world, anchor.head)
+  const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
   for (const identity of PLUGIN_ORDER) {
     assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
   }
   assert.deepEqual(projection.ids['chat'].pins, EXPECTED_PINS, 'chat pins 应解析为身份名（含 loop-policy）')
   for (const target of Object.values(EXPECTED_PINS)) {
+    if (target === 'host') continue
     assert.ok(projection.ids[target], `pins 目标缺身份 ${target}`)
   }
   console.log('离线投影：chat pins 五项（含 loop-policy）解析通过')
 
   // 声明：execute + term + schema；implements / methods / start 就位
-  const decl = readPluginDecl(anchor.world, 'chat')
+  const decl = readPluginDecl(anchor.world, 'chat', paths.blobsDir)
   assert.ok(decl !== null, 'chat 声明应可解析')
   assert.equal(decl.decl.identity, 'chat')
   assert.deepEqual(decl.decl.implements, ['chat'])
@@ -145,7 +149,7 @@ function main() {
   console.log('声明：implements/methods（含 resume）/start/members 通过')
 
   // 命令入口可解析（宿主按声明解析到 def 哈希），入口 term 是 H21 自能力 eff
-  const commands = listCommands(anchor.world).filter((command) => command.identity === 'chat')
+  const commands = listCommands(anchor.world, paths.blobsDir).filter((command) => command.identity === 'chat')
   assert.deepEqual(
     commands.map((command) => command.name).sort(),
     ['chat.history', 'chat.resume', 'chat.send'],

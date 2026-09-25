@@ -157,9 +157,58 @@ export const INTERPRET_PLAN = {
 /** #49 session-title.generate 的回值：标题值（非写计划）。 */
 export const TITLE_VALUE = { ok: true, title: '快速排序' }
 
-/** 默认 bridge：#33 interpret 与 #49 title 两段都回成功值。 */
-export function defaultBridge(overrides = {}) {
+/** 默认输入槽体（owner `input.read` 回值）。 */
+export const DEFAULT_INPUT_BODY = { slots: { t1: { kind: 'chat.message', text: '帮我写一个快速排序' } } }
+
+/** 默认会话切片（owner `session.read` 回值）：消息链在服务自有存储，不在投影。 */
+export function sessionSliceFixture(overrides = {}) {
+  const conversation = {
+    id: 'c-1',
+    title: '新对话',
+    count: 0,
+    kind: 'main',
+    workspace_id: 'w-1',
+    agent: null,
+    head: { def: 'h3' },
+  }
+  return {
+    version: 1,
+    current: 'c-1',
+    conversations: [conversation],
+    head: 'h3',
+    refs: chainRefs(),
+    data_gen: null,
+    ...overrides,
+  }
+}
+
+/** 默认 `session.history` 回值（窗口新→旧）。 */
+export function historyFixture() {
+  const refs = chainRefs()
+  return {
+    conversation: 'c-1',
+    before: null,
+    limit: null,
+    messages: [
+      { hash: 'h3', def: refs.h3 },
+      { hash: 'h2', def: refs.h2 },
+      { hash: 'h1', def: refs.h1 },
+    ],
+    next_before: null,
+    body: sessionSliceFixture(),
+    refs,
+  }
+}
+
+/**
+ * 默认 bridge：#33 interpret / #49 title / owner `session.read`、`input.read`、`session.history`。
+ * `owners` 可覆盖 owner 回值（如空槽 / 无当前会话），供各测试按需注入。
+ */
+export function defaultBridge(overrides = {}, owners = {}) {
   const table = {
+    'session.read': () => owners.session ?? sessionSliceFixture(),
+    'input.read': () => owners.input ?? DEFAULT_INPUT_BODY,
+    'session.history': () => owners.history ?? historyFixture(),
     'loop-policy.interpret': () => INTERPRET_PLAN,
     'session-title.generate': () => TITLE_VALUE,
     ...overrides,
