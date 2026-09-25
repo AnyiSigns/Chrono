@@ -6,6 +6,7 @@ import {
   configWriteDirective,
   emptyConfig,
   isCodeGenFallbackBody,
+  isRecord,
   providerList,
   upsertProvider,
 } from './config-model.ts'
@@ -13,6 +14,7 @@ import {
   buildProbeSlot,
   discoverErrorCode,
   discoverModels,
+  formAuthRef,
   formToValue,
   validateBaseUrl,
   validateOnboarding,
@@ -33,8 +35,10 @@ export async function commitProvider(ctx: any, form: any, options: any = {}): Pr
   form.error = null
   ctx.render()
   try {
-    if (form.secret_value.length > 0) {
-      const saved = await ctx.postJson('api/secrets/put', { name: form.auth_name, value: form.secret_value })
+    // 空 key = 匿名：不落 secret，provider 也不带 auth_ref（Kilo 等 free / 匿名端点可用）。
+    const ref = formAuthRef(form)
+    if (ref !== null && ref.kind === 'local' && form.secret_value.length > 0) {
+      const saved = await ctx.postJson('api/secrets/put', { name: ref.name, value: form.secret_value })
       if (saved.ok !== true) {
         form.error = { code: 'settings_secret_failed', message: '' }
         return false
@@ -63,8 +67,9 @@ export async function commitProvider(ctx: any, form: any, options: any = {}): Pr
   }
 }
 
-/** 每厂商密钥更新：经入站面 `secrets.put` 直写本地（不进世界 / 导出 / 审计），随后刷新状态点。 */
-export async function saveProviderSecret(ctx: any, name: any, value: any, key: any): Promise<boolean> {
+/** 每厂商密钥更新：经入站面 `secrets.put` 直写本地（不进世界 / 导出 / 审计），随后刷新状态点。
+ * 该厂商若仍是匿名（无 `auth_ref`），同步补上本地引用，否则密钥不生效。 */
+export async function saveProviderSecret(ctx: any, name: any, value: any, providerKey: any): Promise<boolean> {
   if (typeof name !== 'string' || name.length === 0 || typeof value !== 'string' || value.length === 0) {
     ctx.state.error = { code: 'settings_required', message: '' }
     ctx.render()
@@ -76,8 +81,19 @@ export async function saveProviderSecret(ctx: any, name: any, value: any, key: a
     ctx.render()
     return false
   }
+  const config = ctx.state.config ?? emptyConfig()
+  const entry = providerList(config).find((item: any) => item.key === providerKey)?.entry
+  if (entry !== undefined && !isRecord(entry.auth_ref)) {
+    const next = upsertProvider(config, providerKey, { ...entry, auth_ref: { kind: 'local', name } })
+    const wrote = await ctx.writeConfig(next, `provider:${providerKey}`)
+    if (!wrote.ok) {
+      ctx.state.error = { code: wrote.code, message: '' }
+      ctx.render()
+      return false
+    }
+  }
   ctx.state.secrets = await loadSecrets(ctx)
-  ctx.state.savedKey = key ?? null
+  ctx.state.savedKey = `provider:${providerKey}`
   ctx.state.error = null
   ctx.announce(ctx.text('settings_secret_saved'))
   ctx.render()
@@ -132,9 +148,10 @@ export async function fetchModels(ctx: any, form: any): Promise<void> {
     }
   })
   try {
-    // `local` 引用由宿主本地文件解析：探测前先落密钥，否则 discover 取不到值。
-    if (form.auth_kind === 'local' && form.secret_value.length > 0) {
-      const saved = await ctx.postJson('api/secrets/put', { name: form.auth_name, value: form.secret_value })
+    // `local` 引用由宿主本地文件解析：探测前先落密钥，否则 discover 取不到值；空 key = 匿名，不落。
+    const ref = formAuthRef(form)
+    if (ref !== null && ref.kind === 'local' && form.secret_value.length > 0) {
+      const saved = await ctx.postJson('api/secrets/put', { name: ref.name, value: form.secret_value })
       if (saved.ok !== true) {
         form.error = { code: 'settings_secret_failed', message: '' }
         return

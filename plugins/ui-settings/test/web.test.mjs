@@ -13,6 +13,7 @@ import {
   CUSTOM_AUTH_REF_NAME,
   CUSTOM_TEMPLATE_IDENTITY,
   defaultOnboarding,
+  formAuthRef,
   formToValue,
   onboardingFromEntry,
   selectableTemplates,
@@ -97,11 +98,35 @@ test('表单校验共用件：地址形态 / 密钥引用 / 探测前置', () =>
   assert.equal(validateAuthRef({ kind: 'local', name: 'K' }), null)
   assert.equal(validateAuthRef({ kind: 'env', name: '' }), 'settings_required')
   assert.equal(validateAuthRef({ kind: 'bogus', name: 'K' }), 'settings_required')
-  assert.equal(validateAuthRef(null), 'settings_required')
+  assert.equal(validateAuthRef(null), null, '无引用 = 匿名，放行')
+  assert.equal(validateAuthRef(undefined), null, '无引用 = 匿名，放行')
 
   assert.equal(validateProbe({ base_url: 'https://x', auth_kind: 'env', auth_name: 'K' }), null)
   assert.equal(validateProbe({ base_url: '', auth_kind: 'env', auth_name: 'K' }), 'settings_required')
-  assert.equal(validateProbe({ base_url: 'https://x', auth_kind: 'env', auth_name: '' }), 'settings_required')
+  assert.equal(
+    validateProbe({ base_url: 'https://x', auth_kind: 'local', auth_name: '', secret_value: '' }),
+    null,
+    '空 key = 匿名，探测放行',
+  )
+})
+
+test('密钥引用按「是否有值」决定：空 key 走匿名（不引用 secret）', () => {
+  assert.equal(formAuthRef({ auth_kind: 'local', auth_name: 'A', secret_value: '' }), null)
+  assert.deepEqual(formAuthRef({ auth_kind: 'local', auth_name: 'A', secret_value: 'sk' }), {
+    kind: 'local',
+    name: 'A',
+  })
+  assert.deepEqual(formAuthRef({ auth_kind: 'local', auth_name: '', secret_value: 'sk' }), {
+    kind: 'local',
+    name: CUSTOM_AUTH_REF_NAME,
+  })
+  assert.equal(formAuthRef({ auth_kind: 'env', auth_name: '', secret_value: '' }), null)
+  assert.deepEqual(formAuthRef({ auth_kind: 'env', auth_name: 'ENV_K', secret_value: '' }), {
+    kind: 'env',
+    name: 'ENV_K',
+  })
+  const anon = formToValue({ vendor: 'vendor-custom', key: 'custom', base_url: 'u', selected: [], auth_kind: 'local', auth_name: 'A', secret_value: '' })
+  assert.equal(anon.auth_ref, null, '空 key 写值不带 auth_ref')
 })
 
 test('表单初始态 / 预填 / 写值（模板只是预填来源）', () => {
@@ -128,11 +153,13 @@ test('表单初始态 / 预填 / 写值（模板只是预填来源）', () => {
   assert.equal(form.base_url, '')
   assert.equal(form.auth_name, CUSTOM_AUTH_REF_NAME, '自定义给默认引用名')
 
-  const value = formToValue({ ...form, templateIdentity: 'custom', protocol: 'anthropic-messages', auth_kind: 'local', auth_name: 'A', selected: ['m1'] })
+  const value = formToValue({ ...form, templateIdentity: 'custom', protocol: 'anthropic-messages', auth_kind: 'local', auth_name: 'A', secret_value: 'sk', selected: ['m1'] })
   assert.equal(value.protocol, 'anthropic-messages')
   assert.deepEqual(value.auth_ref, { kind: 'local', name: 'A' })
   assert.deepEqual(value.models, ['m1'])
   assert.equal(value.model, undefined, '写值不带默认模型')
+  const anon = formToValue({ ...form, templateIdentity: 'custom', auth_kind: 'local', auth_name: 'A', secret_value: '', selected: ['m1'] })
+  assert.equal(anon.auth_ref, null, '空 key = 匿名')
   const preset = formToValue({ ...form, templateIdentity: 'vendor-deepseek' })
   assert.equal(preset.protocol, undefined, '预设厂商不带 protocol')
 })

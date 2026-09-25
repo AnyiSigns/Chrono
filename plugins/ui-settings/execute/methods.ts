@@ -96,15 +96,15 @@ export function probeOf(inputBody: Json): Rec | null {
   return slot
 }
 
-/** `model.discover` 入参：`{url, auth_ref, protocol?}`；缺 url / auth_ref 回 null。 */
+/** `model.discover` 入参：`{url, auth_ref?, protocol?}`；缺 url 回 null；无 `auth_ref` = 匿名，照发。 */
 export function assembleDiscoverArgs(inputBody: Json): Rec | null {
   const probe = probeOf(inputBody)
   if (probe === null) return null
   const url = probe['url']
-  const authRef = probe['auth_ref']
   if (typeof url !== 'string' || url.length === 0) return null
-  if (!isRecord(authRef)) return null
-  const args: Rec = { url, auth_ref: authRef }
+  const args: Rec = { url }
+  const authRef = probe['auth_ref']
+  if (isRecord(authRef)) args['auth_ref'] = authRef
   if (typeof probe['protocol'] === 'string' && probe['protocol'].length > 0) args['protocol'] = probe['protocol']
   return args
 }

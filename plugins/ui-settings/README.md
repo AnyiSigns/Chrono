@@ -46,6 +46,9 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 - **密钥**：浏览器半边经 `ui-settings.secret` 命令代理，服务进程经入站 `secrets.put` /
   `secrets.delete` 直写用户本地文件（不进世界、不进导出、不进审计）；世界数据只存引用
   `auth_ref = {kind:'local'|'env', name}`。
+- **密钥可空**：key 为空即匿名——probe 与保存的 provider 都不带 `auth_ref`，模型协议不发鉴权头
+  （Kilo 等 free / 匿名端点无需 key 即可发现与调用）；需要 key 的厂商 discover 回 `discover_auth_failed`
+  提示填写。已保存厂商若原本匿名，在卡片里补存密钥时会同步补上本地 `auth_ref` 引用。
 - **编排回滚**：入站面直接提交 `set_active`（指回编排图的上一数据世代），走二次确认。
 
 ## 客户端半边（契约 '2'）

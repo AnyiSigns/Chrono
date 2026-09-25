@@ -885,6 +885,10 @@
     "title": "未配置",
     "body": "未配置"
   },
+  "settings_secret_anonymous": {
+    "title": "匿名",
+    "body": "匿名（无需密钥）"
+  },
   "settings_secret_update": {
     "title": "更新密钥",
     "body": "更新密钥"

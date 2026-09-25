@@ -81,7 +81,7 @@ export function enabledModelIds(entry: any): string[] {
   })
 }
 
-/** 构造一个厂商连接实例（只存 auth_ref，不存密钥本体）。 */
+/** 构造一个厂商连接实例（只存 auth_ref，不存密钥本体；无引用 = 匿名，省略 auth_ref）。 */
 export function providerEntry(form: any): any {
   const models: Record<string, any> = {}
   for (const id of Array.isArray(form.models) ? form.models : []) {
@@ -91,8 +91,10 @@ export function providerEntry(form: any): any {
   const entry: any = {
     name: typeof form.name === 'string' && form.name.length > 0 ? form.name : form.key,
     base_url: form.base_url,
-    auth_ref: { kind: form.auth_ref.kind, name: form.auth_ref.name },
     models,
+  }
+  if (isRecord(form.auth_ref) && typeof form.auth_ref.name === 'string' && form.auth_ref.name.length > 0) {
+    entry.auth_ref = { kind: form.auth_ref.kind, name: form.auth_ref.name }
   }
   if (typeof form.protocol === 'string' && form.protocol.length > 0) entry.protocol = form.protocol
   return entry

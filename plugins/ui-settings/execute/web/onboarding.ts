@@ -149,6 +149,19 @@ export function addModelIds(form: any, text: any): string[] {
   return added
 }
 
+/**
+ * 表单 → 密钥引用（`auth_ref`）：env 需填名；local 需填值（空值 = 匿名，不引用任何 secret）。
+ * 无引用时回 `null`，调用方据此不发鉴权头（Kilo 等匿名 / free 端点无需 key）。
+ */
+export function formAuthRef(form: any): any {
+  const name = typeof form.auth_name === 'string' ? form.auth_name : ''
+  if (form.auth_kind === 'env') return name.length > 0 ? { kind: 'env', name } : null
+  if (typeof form.secret_value === 'string' && form.secret_value.length > 0) {
+    return { kind: 'local', name: name.length > 0 ? name : CUSTOM_AUTH_REF_NAME }
+  }
+  return null
+}
+
 /** 表单 → 引导写值（`auth_ref` 只存引用，不存密钥本体；模型只存勾选项）。 */
 export function formToValue(form: any): any {
   return {
@@ -156,7 +169,7 @@ export function formToValue(form: any): any {
     key: form.key,
     protocol: form.templateIdentity === 'custom' ? form.protocol : undefined,
     base_url: form.base_url,
-    auth_ref: { kind: form.auth_kind, name: form.auth_name },
+    auth_ref: formAuthRef(form),
     models: form.selected,
   }
 }
@@ -170,10 +183,11 @@ export function templatePrefill(templates: any, identity: string): any {
 
 /**
  * 构造 `model.probe` 槽体（模型协议身份 `discover` 的入参真源）。
- * `auth_ref` 只存引用（kind + name），不存密钥本体。
+ * `auth_ref` 只存引用（kind + name），不存密钥本体；无引用（空 key / 匿名）时省略。
  */
 export function buildProbeSlot(form: any): any {
-  const slot: any = { kind: 'model.probe', url: form.base_url, auth_ref: { kind: form.auth_ref.kind, name: form.auth_ref.name } }
+  const slot: any = { kind: 'model.probe', url: form.base_url }
+  if (isRecord(form.auth_ref)) slot.auth_ref = { kind: form.auth_ref.kind, name: form.auth_ref.name }
   if (typeof form.protocol === 'string' && form.protocol.length > 0) slot.protocol = form.protocol
   return slot
 }
@@ -212,8 +226,9 @@ export function validateBaseUrl(value: any): string | null {
   return null
 }
 
-/** 密钥引用校验：须为 `{kind:'local'|'env', name}` 且 name 非空。 */
+/** 密钥引用校验：无引用（null / undefined）= 匿名，放行；有引用须为 `{kind:'local'|'env', name}` 且 name 非空。 */
 export function validateAuthRef(value: any): string | null {
+  if (value === null || value === undefined) return null
   if (!isRecord(value) || typeof value.name !== 'string' || value.name.length === 0) {
     return ONBOARDING_REQUIRED
   }
@@ -221,11 +236,11 @@ export function validateAuthRef(value: any): string | null {
   return null
 }
 
-/** 探测前置校验：地址形态 + 引用名（获取模型尚不需要模型列表）。 */
+/** 探测前置校验：地址形态 + 密钥引用（空 key 走匿名，不拦）。 */
 export function validateProbe(form: any): string | null {
   const base = validateBaseUrl(form.base_url)
   if (base !== null) return base
-  return validateAuthRef({ kind: form.auth_kind, name: form.auth_name })
+  return validateAuthRef(formAuthRef(form))
 }
 
 export function validateOnboarding(form: any): string | null {

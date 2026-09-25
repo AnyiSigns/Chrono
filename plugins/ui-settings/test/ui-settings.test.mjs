@@ -135,6 +135,14 @@ test('config 读-改-写：厂商增删改、选择、参数、UI 字段', () =>
   assert.equal(entry.protocol, undefined)
   assert.deepEqual(Object.keys(entry.models), ['deepseek-chat', 'deepseek-reasoner'])
 
+  const anon = providerEntry({
+    key: 'kilo',
+    base_url: 'https://api.kilo.ai/api/gateway',
+    auth_ref: null,
+    models: ['m'],
+  })
+  assert.equal(Object.hasOwn(anon, 'auth_ref'), false, '空 key = 匿名，不写 auth_ref')
+
   const added = upsertProvider(base, 'deepseek', entry)
   assert.equal(base.providers.deepseek, undefined, '不改入参')
   assert.equal(providerList(added).length, 1)
@@ -245,6 +253,8 @@ test('探测槽 / 模型列表归一 / 发现错误码', () => {
   assert.deepEqual(slot, { kind: 'model.probe', url: 'https://api.deepseek.com/v1', auth_ref: { kind: 'env', name: 'K' }, protocol: 'openai-chat' })
   const envSlot = buildProbeSlot({ base_url: 'u', auth_ref: { kind: 'local', name: 'K' } })
   assert.equal(Object.hasOwn(envSlot, 'protocol'), false, '预设厂商不带 protocol')
+  const anonSlot = buildProbeSlot({ base_url: 'https://api.kilo.ai/api/gateway' })
+  assert.equal(Object.hasOwn(anonSlot, 'auth_ref'), false, '匿名 probe 不带 auth_ref')
 
   assert.deepEqual(discoverModels({ ok: true, models: ['b', 'a', 'a'] }), ['a', 'b'])
   assert.deepEqual(discoverModels({ ok: false, error: { code: 'discover_bad_url' } }), [])
@@ -265,6 +275,7 @@ test('引导表单校验：必填 / URL 形态 / 模型在勾选内', () => {
   assert.equal(validateOnboarding({ ...good, base_url: 'ftp://x' }), 'settings_bad_url')
   assert.equal(validateOnboarding({ ...good, base_url: 'not a url' }), 'settings_bad_url')
   assert.equal(validateOnboarding({ ...good, auth_ref: { kind: 'env', name: '' } }), 'settings_required')
+  assert.equal(validateOnboarding({ ...good, auth_ref: null }), null, '匿名（无 auth_ref）放行')
   assert.equal(validateOnboarding({ ...good, models: [] }), 'settings_required')
   assert.deepEqual(CUSTOM_PROTOCOLS, ['openai-chat', 'openai-responses', 'anthropic-messages'])
 })
@@ -570,6 +581,11 @@ test('服务侧发现装配与清槽：读 model.probe，计划清 _main 保留�
     },
   }
   assert.deepEqual(assembleDiscoverArgs(inputBody), { url: 'https://x/v1', auth_ref: { kind: 'env', name: 'K' } })
+  assert.deepEqual(
+    assembleDiscoverArgs({ slots: { _main: { kind: 'model.probe', url: 'https://api.kilo.ai/api/gateway' } } }),
+    { url: 'https://api.kilo.ai/api/gateway' },
+    '匿名 probe（无 auth_ref）照发，不带鉴权',
+  )
   assert.equal(probeOf({ slots: {} }), null)
   const cleared = clearSlotBody(inputBody)
   assert.equal(cleared.slots._main.kind, 'idle')
@@ -966,10 +982,20 @@ test('编辑：地址非法即拒，不写 config', async () => {
 
 test('密钥更新：经入站 secrets.put 后刷新状态点，不落 state', async () => {
   const { ctx } = fakeProviderCtx({ version: 1, providers: {} })
-  assert.equal(await saveProviderSecret(ctx, 'K', 'top-secret', 'provider:deepseek'), true)
+  assert.equal(await saveProviderSecret(ctx, 'K', 'top-secret', 'deepseek'), true)
   assert.equal(ctx.state.secrets.K, true)
   assert.equal(ctx.state.savedKey, 'provider:deepseek')
   assert.equal(JSON.stringify(ctx.state).includes('top-secret'), false, '密钥本体不得进 state')
+})
+
+test('密钥更新：匿名厂商补上本地 auth_ref 引用，密钥才生效', async () => {
+  const { ctx, writes } = fakeProviderCtx({
+    version: 1,
+    providers: { kilo: { base_url: 'https://api.kilo.ai/api/gateway', models: { m: { enabled: true } } } },
+  })
+  assert.equal(await saveProviderSecret(ctx, 'CUSTOM_API_KEY', 'sk-x', 'kilo'), true)
+  assert.deepEqual(writes[0].body.providers.kilo.auth_ref, { kind: 'local', name: 'CUSTOM_API_KEY' })
+  assert.equal(ctx.state.savedKey, 'provider:kilo')
 })
 
 /** 获取模型的假 ctx：记录 secrets.put / 写指令 / 命令调用。 */

@@ -8,7 +8,7 @@ import { resolveConfig } from './config.ts'
 import { log } from './frames.ts'
 import { asString, isRecord } from './plan.ts'
 import { resolveTitle } from './title.ts'
-import { BadArgsError } from './types.ts'
+import { BackendError, BadArgsError } from './types.ts'
 import type { TitleConfig } from './config.ts'
 import type { ModelBackend } from './port-link.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
@@ -68,7 +68,9 @@ async function callModel(parsed: GenerateArgs, config: TitleConfig, deps: Genera
     const result = await deps.model.complete(parsed.modelConfig, messages, config.maxTokens, config.timeoutMs)
     return asString(result['text'])
   } catch (err) {
-    log(`model.complete failed: ${(err as Error).message}`)
+    // 带上结构化码：`model.complete reported failure` 本身不含原因，码（model_auth_failed / model_network_error …）才是可诊断信息。
+    const code = err instanceof BackendError ? `${err.code}: ` : ''
+    log(`model.complete failed: ${code}${(err as Error).message}`)
     return null
   }
 }

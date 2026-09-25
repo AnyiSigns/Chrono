@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { EmptyState, Section, TextButton, useVc } from './ui.tsx'
 import { isRecord, providerList, removeProvider } from '../config-model.ts'
-import { onboardingFromEntry } from '../onboarding.ts'
+import { CUSTOM_AUTH_REF_NAME, onboardingFromEntry } from '../onboarding.ts'
 import { ProviderEntry, ProviderForm } from './ProviderForm.tsx'
 
 export function ModelPanel() {
@@ -98,8 +98,9 @@ function ProviderCard(props: { item: any }) {
   const key = props.item.key
   const entry = props.item.entry
   const ref = isRecord(entry.auth_ref) ? entry.auth_ref : {}
-  const refName = typeof ref.name === 'string' ? ref.name : ''
-  const hasSecret = vc.state.secrets[refName] === true
+  const hasRef = typeof ref.name === 'string' && ref.name.length > 0
+  const refName = hasRef ? (ref.name as string) : CUSTOM_AUTH_REF_NAME
+  const hasSecret = hasRef && vc.state.secrets[refName] === true
   const pending = vc.state.pendingRemove === key
   const [secretOpen, setSecretOpen] = useState(false)
   return (
@@ -113,7 +114,11 @@ function ProviderCard(props: { item: any }) {
           <span className="settings-provider-name">{key}</span>
           <span className="settings-dot" data-tone={hasSecret ? 'success' : 'muted'} />
           <span className="settings-list-meta">
-            {hasSecret ? vc.text('settings_secret_present') : vc.text('settings_secret_absent')}
+            {!hasRef
+              ? vc.text('settings_secret_anonymous')
+              : hasSecret
+                ? vc.text('settings_secret_present')
+                : vc.text('settings_secret_absent')}
           </span>
         </span>
         <span className="settings-provider-actions">
@@ -183,7 +188,7 @@ function SecretEditor(props: { refName: string; providerKey: string; onClose: ()
         label={vc.text('settings_secret_save')}
         onClick={async () => {
           // 失败保留已输入值（行内错误条由 TabContent 呈现），用户可直接改后重试。
-          const saved = await vc.saveProviderSecret(props.refName, value, `provider:${props.providerKey}`)
+          const saved = await vc.saveProviderSecret(props.refName, value, props.providerKey)
           if (saved) close()
         }}
       />
