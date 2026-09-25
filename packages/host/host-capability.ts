@@ -4,7 +4,7 @@
 
 import { latestDataGen, readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
 import { getBlob, isBlobPointer, putBlob } from './blobs.ts'
-import { reachableDefHashes } from './projection/index.ts'
+import { assembleIdentityBody, reachableDefHashes } from './projection/index.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
 import type { AuditQuery, AuditReport } from './audit.ts'
@@ -178,10 +178,10 @@ function defReadCall(
   const world = deps.world()
   const identityEntry = world.ids[identity]
   if (identityEntry === undefined) return bad('not_found', identity)
-  const bodyHash = latestDataGen(world, identity)?.payload ?? identityEntry.active
-  const body = bodyHash === null ? undefined : world.defs[bodyHash]?.body
-  if (bodyHash === null || body === undefined) return bad('not_found', identity)
-  const cacheKey = `${identity}\u0000${bodyHash}`
+  // 越权门禁按**组装后的 body** 计算可达 def：补丁世代的 payload 是补丁 def，直接拿它会漏掉 base 上的引用。
+  const body = assembleIdentityBody(world, identity)
+  if (body === null) return bad('not_found', identity)
+  const cacheKey = `${identity}\u0000${latestDataGen(world, identity)?.payload ?? identityEntry.active ?? ''}`
   let allowed = scopeCache.get(cacheKey)
   if (allowed === undefined) {
     allowed = reachableDefHashes(world, body)

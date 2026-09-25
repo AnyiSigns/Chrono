@@ -2,6 +2,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService, writeOps } from './driver.mjs'
+import { RoundPatches } from '../execute/plan.ts'
+import { H } from '../execute/hash.ts'
 
 const LEDGER = {
   version: 1,
@@ -73,6 +75,42 @@ test('无 #43 台账时不产 trace 写', async () => {
   } finally {
     service.close()
   }
+})
+
+test('trace 摘要落成 def：引用为 {def}、可解析、且为不含正文的轻量摘要', async () => {
+  const service = startService()
+  try {
+    const result = await service.interpret({ evolution: LEDGER })
+    const ops = writeOps(result.value)
+    const entry = ops.find((op) => op.op === 'put' && op.args.body.kind === 'trace').args.body
+    assert.match(entry.directives_summary.def, /^[0-9a-f]{64}$/)
+    assert.match(entry.ctx_summary.def, /^[0-9a-f]{64}$/)
+    const byHash = new Map(
+      ops.filter((op) => op.op === 'put').map((op) => [H({ body: op.args.body }), op.args.body]),
+    )
+    const directives = byHash.get(entry.directives_summary.def)
+    const ctx = byHash.get(entry.ctx_summary.def)
+    assert.ok(directives, 'directives_summary def 应随批次落账')
+    assert.ok(ctx, 'ctx_summary def 应随批次落账')
+    assert.equal(typeof directives.count, 'number')
+    assert.ok(Array.isArray(directives.items))
+    assert.ok(!JSON.stringify(directives).includes('"content"'), '摘要不含消息正文')
+    assert.ok('workspace_id' in ctx && !('input' in ctx), 'ctx 摘要不含输入正文')
+  } finally {
+    service.close()
+  }
+})
+
+test('RoundPatches.stageDef：返回哈希 == H({body})，finalize 含该 def 的 put', () => {
+  const round = new RoundPatches(new Map([['evolution', { body: LEDGER, base: 0 }]]))
+  const body = { workspace_id: 'w1', thread: null, input: 'hi', session: null }
+  const hash = round.stageDef(body)
+  assert.equal(hash, H({ body }))
+  const ops = writeOps({ $directives: round.finalize() })
+  assert.ok(
+    ops.some((op) => op.op === 'put' && op.args.body.workspace_id === 'w1'),
+    '摘要 def 应落账',
+  )
 })
 
 test('补丁世代：evolution 只替换 trace 槽，组装结果 == 整份写入结果', async () => {

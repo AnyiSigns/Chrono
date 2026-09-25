@@ -83,8 +83,8 @@ export class TraceRecorder {
     this.linkTaken.push({ from, to_contract: toContract, reason })
   }
 
-  /** 构造 trace 条目 body（prev 由调用方补）。 */
-  buildEntry(meta: TraceMeta, directives: Json[], ctxSummary: Json, at: string): Rec {
+  /** 构造 trace 条目 body（prev 由调用方补）；摘要以 `{def}` 引用传入（正文由调用方落成 def）。 */
+  buildEntry(meta: TraceMeta, directivesSummary: Json, ctxSummary: Json, at: string): Rec {
     const lastEff = this.effLog.length > 0 ? this.effLog[this.effLog.length - 1] : null
     return {
       kind: 'trace',
@@ -94,7 +94,7 @@ export class TraceRecorder {
       graph: meta.graph,
       steps: this.steps,
       eff_log: this.effLog,
-      directives_summary: directives.length > 0 ? { def: safeHash(directives) } : null,
+      directives_summary: directivesSummary,
       ctx_summary: ctxSummary,
       refused_at: this.refusedAt,
       branch_not_taken: this.branchNotTaken,

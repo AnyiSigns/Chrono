@@ -112,8 +112,8 @@
             }
           }
         },
-        "directives_summary": { "description": "本次 run directives 摘要：{\"def\":hash} 或 null（影子回放数据载体）。" },
-        "ctx_summary": { "description": "轮首投影 ctx 摘要：{\"def\":hash} 或 null（影子回放数据载体）。" },
+        "directives_summary": { "description": "本次 run directives 轻量摘要：{\"def\":hash} 或 null（影子回放数据载体）。body = {count, items:[{kind, op?, ops?:[{op, id?, path?}]}]}，只留结构、不含消息正文。" },
+        "ctx_summary": { "description": "轮首投影 ctx 轻量摘要：{\"def\":hash} 或 null（影子回放数据载体）。body = {workspace_id, thread, session}，不含输入正文。" },
         "refused_at": {
           "type": "object",
           "additionalProperties": true,

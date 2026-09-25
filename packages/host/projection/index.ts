@@ -122,6 +122,21 @@ function assembleGenBody(
   return assembled
 }
 
+/**
+ * 组装某身份最近数据世代的 body（整份世代取 payload def body；补丁世代取 base 世代组装后按序应用补丁）；
+ * 无数据世代回落 active（代码 / commit）def body；组装失败回 null（fail-closed）。
+ * 投影与只读解析（`host.def.read` 的越权门禁）共用此口径，避免把补丁 def 当成 body。
+ */
+export function assembleIdentityBody(world: World, identityId: string): Json | null {
+  const identity = world.ids[identityId]
+  if (identity === undefined) return null
+  const dataGen = latestDataGen(world, identityId)
+  if (dataGen === null) {
+    return identity.active === null ? null : (world.defs[identity.active]?.body ?? null)
+  }
+  return assembleGenBody(world, identity.gens, dataGen.seq, [])
+}
+
 export interface ProjectionOptions {
   /** 覆盖 `DEFAULT_REF_CAP`（测试用）。 */
   refCap?: number
@@ -150,10 +165,9 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
     const identity = world.ids[id]
     const active = identity.active
     const dataGen = latestDataGen(world, id)
-    const memo: (Json | null | undefined)[] = []
     // body = 最近数据世代的组装结果；无数据世代回落 active（代码 / commit def body）。
     // data_gen = 组装来源世代（写方据此把下一世代写成补丁世代：base = data_gen.seq）。
-    const body = dataGen === null ? (active === null ? null : (world.defs[active]?.body ?? null)) : assembleGenBody(world, identity.gens, dataGen.seq, memo)
+    const body = assembleIdentityBody(world, id)
     const dataGenView: Json | null = dataGen !== null && body !== null ? { seq: dataGen.seq, payload: dataGen.payload } : null
     // pins = 当前代码世代声明里的表（逻辑端点名 → 被依赖身份名字面值）；无代码世代 → null
     const decl = readPluginDecl(world, id, options?.blobsDir)

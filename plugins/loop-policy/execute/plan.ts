@@ -2,6 +2,7 @@
 // 计划条目形状与宿主计划通道一致：`{kind:'write', request:{op, args}}` / `{kind:'extern', payload}` /
 // `{kind:'eval', command, args}`（H18，续跑）；占位符 `{"$n":k}` 只指向同批更早的 `put`（内核批处理替换）。
 
+import { H } from './hash.ts'
 import type { Json, Rec } from './types.ts'
 
 /** def 键形状：64 位小写十六进制。 */
@@ -138,6 +139,7 @@ export class RoundPatches {
   private readonly bases: Map<string, RoundBase>
   private readonly identities = new Map<string, RoundIdentityState>()
   private readonly refs: RoundRefGen[] = []
+  private readonly defs: Json[] = []
   private readonly staged: { identity: string; slot: string; body: Rec }[] = []
 
   constructor(bases: Map<string, RoundBase>) {
@@ -187,9 +189,20 @@ export class RoundPatches {
     this.refs.push({ id, hash, pins })
   }
 
+  /**
+   * 登记一条任意 def 落账（影子回放摘要等），返回其 def 哈希。
+   * 哈希口径 = 内核 put 的 argsHash（`H({body})`）；body 里的 `$n` 字面量经 `escapeRefs` 转义，
+   * 内核落账还原后世界里的数据逐字不变，故引用可被投影闭包解析。
+   */
+  stageDef(body: Json): string {
+    const hash = H({ body })
+    this.defs.push(escapeRefs(body))
+    return hash
+  }
+
   /** 空累积 → 空数组；否则一条原子 batch directive。 */
   finalize(): Json[] {
-    if (this.staged.length === 0 && this.refs.length === 0) return []
+    if (this.staged.length === 0 && this.refs.length === 0 && this.defs.length === 0) return []
     const ops: Json[] = []
     // 条目按登记序排在批次最前，故 stage 返回的占位下标即最终 put 下标。
     for (const entry of this.staged) ops.push(putOp(entry.body))
@@ -224,6 +237,7 @@ export class RoundPatches {
       }
     }
     for (const ref of this.refs) ops.push(addGenRefOp(ref.id, ref.hash, ref.pins))
+    for (const body of this.defs) ops.push(putOp(body))
     return [batchDirective(ops)]
   }
 }

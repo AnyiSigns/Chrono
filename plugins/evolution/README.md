@@ -22,6 +22,7 @@
     **`evidence_ids` 必填且非空**（无证据提案直接拒）。
   - `verdict`：`{ kind:"verdict", id, proposal_ids[], evidence_ids[], result, gate, adopted_gen, at, prev }`。
 - 轨迹只存**摘要 + 引用**，正文不重复存；从 `verdict` 可反查 `proposal` → `evidence` → `trace` → `eff_log`（全链可溯源）。
+- `directives_summary` / `ctx_summary` 是**轻量摘要 def 引用**（`{def}`）：`directives_summary` body = `{count, items:[{kind, op?, ops?:[{op, id?, path?}]}]}`，`ctx_summary` body = `{workspace_id, thread, session}`；均只留结构、不含消息正文。
 - 条目 body 里的 `{ "def": hash }` 标记由宿主投影闭包解析进 `ids.evolution.refs`。
 - 形态校验归写入端（宿主 v1 不校验身份数据）。
 

@@ -50,6 +50,39 @@ function capability(world: World) {
   })
 }
 
+const BASE: Hash = '3'.repeat(64)
+const PATCH: Hash = '4'.repeat(64)
+
+/** 补丁世代身份：gen0 整份 body（含 M2 标记），gen1 只 replace 一个标量字段。 */
+function patchWorldOf(): World {
+  return {
+    defs: {
+      [BASE]: { body: { head: { def: M2 }, note: 'a' } },
+      [PATCH]: { body: { ops: [{ op: 'replace', path: ['note'], value: 'b' }] } },
+      [M2]: { body: { role: 'user', prev: null } },
+    },
+    ids: {
+      sess: {
+        id: 'sess',
+        schema: 's'.repeat(64),
+        gens: [
+          { seq: 0, payload: BASE, pins: {}, sig: BASE, adopted: { at: 1, by: 'seed', write: 'w-0' } },
+          {
+            seq: 1,
+            payload: PATCH,
+            pins: {},
+            sig: PATCH,
+            base: 0,
+            adopted: { at: 2, by: 'seed', write: 'w-1' },
+          },
+        ],
+        active: PATCH,
+        born: { at: 1, by: 'seed' },
+      },
+    },
+  }
+}
+
 async function read(world: World, args: Json) {
   return capability(world)('def.read', 'sess', args, 1000)
 }
@@ -100,5 +133,14 @@ describe('host.def.read 只读解析', () => {
     const before = JSON.stringify(world)
     await read(world, { identity: 'sess', hashes: [M1, M2] })
     expect(JSON.stringify(world)).toBe(before)
+  })
+
+  it('补丁世代：越权门禁按组装后 body 计算，base 上的引用可达（不误判越权）', async () => {
+    const result = await read(patchWorldOf(), { identity: 'sess', hashes: [M2] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const value = result.value as { defs: { [hash: string]: Json }; denied: Hash[] }
+    expect(value.defs[M2]).toEqual({ role: 'user', prev: null })
+    expect(value.denied).toEqual([])
   })
 })
