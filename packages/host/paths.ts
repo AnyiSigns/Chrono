@@ -13,6 +13,8 @@ export interface HostPaths {
   assetsDir: string
   blobsDir: string
   pluginsDir: string
+  /** 插件 ④ 目录根：`data/<id>/` 承载 owner 插件的不可重算运行记录，进备份、只按身份消失回收。 */
+  dataDir: string
   materializedDir: string
   depsDir: string
   journalFile: string
@@ -53,6 +55,8 @@ export function hostPaths(root: string): HostPaths {
     blobsDir: resolve(stateDir, 'blobs'),
     // 插件 ③ 目录：`<id>/` 承载插件可重算产物，宿主统一 GC
     pluginsDir: resolve(stateDir, 'plugins'),
+    // 插件 ④ 目录根：`<id>/` 承载插件不可重算运行记录，宿主只建目录 / 注入路径 / 按身份回收
+    dataDir: resolve(stateDir, 'data'),
     materializedDir: resolve(runtimeDir, 'materialized'),
     depsDir: resolve(stateDir, 'deps'),
     journalFile: resolve(worldDir, 'journal.jsonl'),

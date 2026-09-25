@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startAssembly } from '../runtime.ts'
 import type { AssemblyRuntimeHandle, StartAssemblyOptions } from '../runtime.ts'
@@ -18,7 +18,7 @@ import {
   waitForQuiescence,
   writeTempPackage,
 } from '../../test/test-helpers-ext.ts'
-import { H } from '../../../kernel/index.ts'
+import { H, cloneWorld, commit } from '../../../kernel/index.ts'
 import type { Gen, Hash, Identity, Json, World } from '../../../kernel/index.ts'
 
 type LifeRecord = {
@@ -1479,5 +1479,65 @@ describe('装配运行时 startAssembly', () => {
     )
     const gen2 = world2.ids['toy-rejoin'].active as Hash
     expect(handle.endpoints.get('toy-rejoin', gen2, 'toy.rejoin', 'echo')).not.toBeNull()
+  }, 15000)
+
+  it("声明 exclusive:['data'] + state:'durable' → 换代走独占序（准备先于 drain），④ 目录跨代保留", async () => {
+    const identity = 'toy-data-excl'
+    const base = {
+      implements: ['toy.data'],
+      methods: { 'toy.data': ['echo'] },
+      start: 'node execute/main.js',
+      members: [{ kind: 'execute', path: 'execute/' }],
+      state: 'durable',
+      exclusive: ['data'],
+    }
+    // 先 seed v2、后 seed v1 ⇒ v1 active、v2 在案（与 swap-exclusive 同法）
+    const v2Root = writeTempPackage(root, {
+      identity,
+      dir: `${identity}-v2`,
+      ...base,
+      files: { 'execute/extra.js': '// v2\n' },
+    })
+    expect(runSeed(root, [{ name: identity, path: v2Root }]).ok).toBe(true)
+    const v1Root = writeTempPackage(root, { identity, dir: `${identity}-v1`, ...base })
+    expect(runSeed(root, [{ name: identity, path: v1Root }]).ok).toBe(true)
+    const anchor = loadAnchor(join(root, 'state', 'world', 'journal.jsonl'))
+    const world = anchor.world
+    const v1 = world.ids[identity].active as Hash
+    const v2 = world.ids[identity].gens[0].payload
+
+    let oldPid = -1
+    let oldAliveAtPrepare: boolean | null = null
+    const restore = async (cwd: string): Promise<void> => {
+      if (cwd.endsWith(v2)) oldAliveAtPrepare = isPidAlive(oldPid)
+    }
+    const handle = await startAssembly({ root, world, log, restore })
+    handles.push(handle)
+    oldPid = handle.endpoints.get(identity, v1, 'toy.data', 'echo')!.pid
+    expect(isPidAlive(oldPid)).toBe(true)
+
+    const next = cloneWorld(world)
+    const outcome = commit(
+      anchor.head,
+      next,
+      {
+        id: 't',
+        op: 'set_active',
+        target: { expect_pos: anchor.head.hash },
+        args: { id: identity, active: v2 },
+        by: 'test',
+      },
+      Date.now(),
+    )
+    expect(outcome.verdict.ok).toBe(true)
+    await handle.applyWorld(next)
+
+    // 独占序：准备（构建 / 物化）在旧实例仍服务时完成，随后才 drain 旧、spawn 新
+    expect(oldAliveAtPrepare).toBe(true)
+    await waitFor(() => !isPidAlive(oldPid), '旧服务 drain 后退出', 5000)
+    expect(handle.endpoints.get(identity, v2, 'toy.data', 'echo')).not.toBeNull()
+    expect(handle.endpoints.get(identity, v1, 'toy.data', 'echo')).toBeNull()
+    // ④ 目录按身份命名：代码换代不碰它
+    expect(existsSync(join(root, 'state', 'data', identity))).toBe(true)
   }, 15000)
 })

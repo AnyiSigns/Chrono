@@ -650,6 +650,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       blobsDir: this.blobsDir,
       handshakeTimeoutMs: this.handshakeTimeoutMs,
       pluginStateDir: resolve(this.paths.pluginsDir, id),
+      pluginDataRoot: this.paths.dataDir,
       startWrapper: this.startWrapper,
       restore: this.restore,
       onPortCall:
@@ -692,6 +693,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
     return prepareService(
       { ...this.launcherDeps(id), copyAssets: this.assetsCopyOf(id) },
+      id,
       gen,
       decl,
     )

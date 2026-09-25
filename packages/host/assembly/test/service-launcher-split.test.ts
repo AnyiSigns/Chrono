@@ -98,7 +98,7 @@ describe('起服务阶段拆分', () => {
 
   it('拆分入口：准备一次物化，spawn 复用 cwd 不重复物化', async () => {
     const { world, gen, decl } = seedOne('toy-split')
-    const prepared: PreparedService = await prepareService(deps(world), gen, decl)
+    const prepared: PreparedService = await prepareService(deps(world), 'toy-split', gen, decl)
     expect(prepared.cwd.endsWith(gen)).toBe(true)
     expect(counters.materialize).toBe(1)
 
@@ -114,7 +114,7 @@ describe('起服务阶段拆分', () => {
   it('准备阶段失败分类：物化失败 → materialize_failed', async () => {
     const { world, decl } = seedOne('toy-split')
     const missing = '0'.repeat(64) as Hash
-    expect(await classifyRejection(prepareService(deps(world), missing, decl))).toEqual({
+    expect(await classifyRejection(prepareService(deps(world), 'toy-split', missing, decl))).toEqual({
       event: 'service',
       reason: 'materialize_failed',
     })
@@ -125,7 +125,7 @@ describe('起服务阶段拆分', () => {
     const restore = async (): Promise<void> => {
       throw new Error('build exploded')
     }
-    expect(await classifyRejection(prepareService(deps(world, { restore }), gen, decl))).toEqual({
+    expect(await classifyRejection(prepareService(deps(world, { restore }), 'toy-split', gen, decl))).toEqual({
       event: 'service',
       reason: 'deps_failed',
     })
@@ -136,7 +136,7 @@ describe('起服务阶段拆分', () => {
     const copyAssets = (): void => {
       throw new Error('copy exploded')
     }
-    expect(await classifyRejection(prepareService(deps(world, { copyAssets }), gen, decl))).toEqual(
+    expect(await classifyRejection(prepareService(deps(world, { copyAssets }), 'toy-split', gen, decl))).toEqual(
       {
         event: 'service',
         reason: 'deps_failed',
@@ -146,7 +146,7 @@ describe('起服务阶段拆分', () => {
 
   it('spawn 阶段失败分类：进程先死 → service 失败（closed / exited，准备成功也拦得住）', async () => {
     const { world, gen, decl } = seedOne('toy-split')
-    const prepared = await prepareService(deps(world), gen, decl)
+    const prepared = await prepareService(deps(world), 'toy-split', gen, decl)
     writeFileSync(join(prepared.cwd, 'fail.js'), 'process.exit(1)\n')
     const failDecl = { ...decl, start: 'node fail.js' } as PluginDecl
     const failure = await classifyRejection(
@@ -161,7 +161,7 @@ describe('起服务阶段拆分', () => {
 
   it('spawn 阶段失败分类：握手超时 → timeout', async () => {
     const { world, gen, decl } = seedOne('toy-split')
-    const prepared = await prepareService(deps(world), gen, decl)
+    const prepared = await prepareService(deps(world), 'toy-split', gen, decl)
     writeFileSync(join(prepared.cwd, 'hang.js'), 'setTimeout(() => {}, 60000)\n')
     const hangDecl = { ...decl, start: 'node hang.js' } as PluginDecl
     expect(

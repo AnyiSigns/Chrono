@@ -5,7 +5,7 @@
 // - 回收后 base 可载入（pruned 子世界）、全链 verify 仍过、续写仍可校验。
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EMPTY_HEAD, commit, worldRev } from '../../kernel/index.ts'
 import type { Entry, Hash, Head, Op, Json, World } from '../../kernel/index.ts'
@@ -23,7 +23,8 @@ import { AuditIndex } from '../audit.ts'
 import { compactWorld } from '../compact.ts'
 import { runCompact } from '../offline.ts'
 import { hostPaths } from '../paths.ts'
-import { latestDataGen } from '../assembly/index.ts'
+import { gcMaterialized, latestDataGen } from '../assembly/index.ts'
+import { ensurePluginDataDir, gcPluginData } from '../plugin-data.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 
 function auditRecord(
@@ -295,5 +296,69 @@ describe('base 审计字段兼容', () => {
     parsed['audits'] = [{ seq: 1, at: 1, by: 'host', hash: 'd'.repeat(64) }] // 不在 defs
     writeFileSync(baseFile, JSON.stringify(parsed))
     expect(() => readBase(baseFile)).not.toThrow()
+  })
+})
+
+/** 身份 known 两个代码世代、active 指回第一代：模拟代码换代 + `set_active` 回滚后 id 仍在 world.ids。 */
+function codeWorldWithRollback(): World {
+  const genA = '1'.repeat(64)
+  const genB = '2'.repeat(64)
+  const sig = 's'.repeat(64)
+  return {
+    defs: {
+      [genA]: { body: { tree: 'a'.repeat(64) } },
+      [genB]: { body: { tree: 'b'.repeat(64) } },
+    },
+    ids: {
+      known: {
+        id: 'known',
+        schema: sig,
+        gens: [
+          { seq: 1, payload: genA, pins: {}, sig, adopted: { at: 0, by: '', write: '' } },
+          { seq: 2, payload: genB, pins: {}, sig, adopted: { at: 0, by: '', write: '' } },
+        ],
+        active: genA,
+        born: { at: 0, by: '' },
+      },
+    },
+  } as unknown as World
+}
+
+describe('插件 ④ 目录回收（state/data）', () => {
+  let root: string
+  beforeEach(() => {
+    root = createTempRoot()
+  })
+  afterEach(async () => {
+    await cleanupTempRoot(root)
+  })
+
+  it('id 在 world.ids 即保留（代码换代 / set_active 回滚后），id 消失即删；不参与窗口回收', () => {
+    const dataRoot = join(root, 'state', 'data')
+    const sentinel = join(dataRoot, 'known', 'records.bin')
+    ensurePluginDataDir(dataRoot, 'known')
+    writeFileSync(sentinel, 'run-records')
+    ensurePluginDataDir(dataRoot, 'ghost')
+    writeFileSync(join(dataRoot, 'ghost', 'records.bin'), 'stale')
+
+    const world = codeWorldWithRollback()
+
+    // 世代窗口回收只碰物化目录：旧代码世代物化目录被删，④ 目录不参与、不受影响。
+    const materializedDir = join(root, 'state', 'runtime', 'materialized')
+    mkdirSync(join(materializedDir, '2'.repeat(64)), { recursive: true })
+    const mat = gcMaterialized(materializedDir, world, 0)
+    expect(mat.removed).toEqual(['2'.repeat(64)])
+    expect(existsSync(sentinel)).toBe(true)
+
+    const report = gcPluginData(dataRoot, world)
+    expect(report.removed).toEqual(['ghost'])
+    expect(report.failed).toEqual([])
+    expect(existsSync(sentinel)).toBe(true)
+    expect(existsSync(join(dataRoot, 'ghost'))).toBe(false)
+
+    // id 从 world.ids 消失 → 顶层目录被删
+    const after = gcPluginData(dataRoot, { defs: {}, ids: {} } as unknown as World)
+    expect(after.removed).toEqual(['known'])
+    expect(existsSync(join(dataRoot, 'known'))).toBe(false)
   })
 })

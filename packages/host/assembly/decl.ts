@@ -47,9 +47,9 @@ export interface PluginDecl {
    */
   build: PluginBuildStep[] | null
   /**
-   * 独占资源声明：元素为资源类名（v1 只认 `port`）。非空 = 本插件的服务实例独占该资源、
-   * 新旧实例不能并存（如固定端口），宿主换代时先 drain 旧服务再起新服务；空 = 无独占资源。
-   * 描述的是「占用事实」，不指定宿主调度机制。
+   * 独占资源声明：元素为资源类名（认 `port` 与 `data`）。非空 = 本插件的服务实例独占该资源、
+   * 新旧实例不能并存（如固定端口、单写句柄的持久存储），宿主换代时先 drain 旧服务再起新服务；
+   * 空 = 无独占资源。描述的是「占用事实」，不指定宿主调度机制。
    */
   exclusive: string[]
   protocol: string
@@ -175,10 +175,11 @@ function parseBuild(v: Json | undefined): PluginBuildStep[] | null | undefined {
 }
 
 /**
- * 独占资源类名白名单：v1 只认 `port`（绑定固定端口 / 地址的服务）。
- * 未列入的资源类宿主无法判定换人序是否安全，故显式拒绝（fail-closed），不静默当无声明处理。
+ * 独占资源类名白名单：认 `port`（绑定固定端口 / 地址的服务）与 `data`（新旧实例不能并存打开
+ * 同一份持久存储）。未列入的资源类宿主无法判定换人序是否安全，故显式拒绝（fail-closed），
+ * 不静默当无声明处理。
  */
-const EXCLUSIVE_RESOURCE_KINDS: ReadonlySet<string> = new Set(['port'])
+const EXCLUSIVE_RESOURCE_KINDS: ReadonlySet<string> = new Set(['port', 'data'])
 
 /**
  * 解析 `exclusive` 声明：缺失 → `undefined`（无独占资源）；畸形 → `null`（入世拒）。
@@ -197,7 +198,7 @@ function parseExclusive(v: Json | undefined): string[] | null | undefined {
 
 /**
  * 宿主侧 `plugin.json` 元 schema：14 个字段一个不少、类型正确、枚举合法
- * （`state` 只认 `recomputable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
+ * （`state` 两档：`recomputable` / `durable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
  * `build` 可省略（回落宿主旧探测），显式声明则逐令牌过 shell 安全白名单。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
@@ -211,6 +212,8 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
   // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
   const rawSchema = value['schema']
   const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
+  const state = value['state']
+  const stateOk = state === 'recomputable' || state === 'durable'
   const ok =
     typeof value['identity'] === 'string' &&
     value['identity'].length > 0 &&
@@ -223,12 +226,17 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     typeof value['protocol'] === 'string' &&
     isRecord(value['restart']) &&
     isRecord(value['health']) &&
-    value['state'] === 'recomputable' &&
+    stateOk &&
     members !== null &&
     commands !== null &&
     build !== null &&
     exclusive !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
+  // 交叉校验（按声明判，不看运行期目录是否已建）：声明独占 `data` 却非 `durable` 是自相矛盾——
+  // 没有持久目录却声明独占持久存储，宿主无法给出对应的换人序语义。
+  if ((exclusive ?? []).includes('data') && state !== 'durable') {
+    return { ok: false, reasons: ['bad_plugin_decl'] }
+  }
   return {
     ok: true,
     decl: {

@@ -58,6 +58,7 @@ import { getAsset, putAsset } from './assets.ts'
 import { createHostCapability } from './host-capability.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
 import { gcPluginState } from './plugin-state.ts'
+import { gcPluginData } from './plugin-data.ts'
 import { appendLifecycle, flushLifecycle, flushLifecycleSync } from './lifecycle.ts'
 import type { LifecycleRecord } from './lifecycle.ts'
 import { hostPaths, socketPath } from './paths.ts'
@@ -338,6 +339,26 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
   // 缓存可重算，GC 失败不致命：记一条运维日志后继续启动，不因此中断也不影响锁的释放。
   try {
     gcPluginState(paths.pluginsDir, writer.snapshot().world)
+  } catch (err) {
+    appendLifecycle(paths.lifecycleFile, {
+      at: Date.now(),
+      kind: 'host',
+      event: 'gc_failed',
+      reason: err instanceof Error ? err.message : String(err),
+    })
+  }
+  // 插件 ④ 目录统一 GC：与 ③ 分开处理，同样只删目录名 ∉ world.ids 的顶层项。
+  // ④ 是不可重算真源、不参与「active + 前 N 代」窗口回收；单项删不掉只记运维日志，不阻锁释放。
+  try {
+    const report = gcPluginData(paths.dataDir, writer.snapshot().world)
+    if (report.failed.length > 0) {
+      appendLifecycle(paths.lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'gc_failed',
+        reason: `data:${report.failed.length}`,
+      })
+    }
   } catch (err) {
     appendLifecycle(paths.lifecycleFile, {
       at: Date.now(),

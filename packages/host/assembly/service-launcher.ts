@@ -8,6 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
 import { ServiceLink } from '../service-link.ts'
+import { ensurePluginDataDir } from '../plugin-data.ts'
 import {
   EXIT_WAIT_MS,
   exitReason,
@@ -36,6 +37,11 @@ export interface ServiceLauncherDeps {
    * 注入 spawn env；宿主不认识目录内容，只统一 GC。
    */
   pluginStateDir?: string
+  /**
+   * 插件 ④ 目录根（`state/data/`）：声明 `durable` 的身份在准备阶段建本身份目录
+   * （`state/data/<id>/`）并以 `CHRONO_PLUGIN_DATA` 注入 spawn env；未声明者不建目录、不注入。
+   */
+  pluginDataRoot?: string
   /**
    * 宿主侧服务启动包装器（最小沙箱形态）：只前置到 spawn 命令行，未配置 = 现状。
    * 宿主不认识语言，也不据此改声明 / 契约。
@@ -74,19 +80,24 @@ export function composeStartCommand(start: string, wrapper?: string): string {
 }
 
 /**
- * 准备阶段产物：物化目录。准备阶段只读写物化目录与宿主侧依赖缓存，不 spawn 进程、不占独占资源，
+ * 准备阶段产物：物化目录 + 声明 `durable` 时的本身份持久目录。
+ * 准备阶段只读写物化目录与宿主侧依赖缓存，不 spawn 进程、不占独占资源，
  * 故独占序可在旧实例仍在服务时先做完；spawn 阶段直接拿它作 cwd，避免重复物化。
  */
 export interface PreparedService {
   cwd: string
+  /** 声明 `durable` 时已建好的本身份持久目录；否则 `undefined`（未声明不建目录）。 */
+  dataDir?: string
 }
 
 /**
- * 准备阶段：物化 + 大资产直拷 + 依赖恢复 / 构建，返回物化目录。
+ * 准备阶段：物化 + 大资产直拷 + 依赖恢复 / 构建 + ④ 目录建目录，返回准备产物。
  * 不 spawn 进程、不占端口；失败时尚未起进程，按启动失败分类传播（`materialize_failed` / `deps_failed`）。
+ * ④ 目录在此阶段建（不占独占资源），独占序可在 drain 旧实例前先完成。
  */
 export async function prepareService(
   deps: ServiceLauncherDeps,
+  id: string,
   gen: Hash,
   decl: PluginDecl,
 ): Promise<PreparedService> {
@@ -112,6 +123,10 @@ export async function prepareService(
       throw new ServiceStartError('deps_failed')
     }
   }
+  // ④ 目录：声明 `durable` 才建；未声明者不建目录（不给隐式持久层）。
+  if (decl.state === 'durable' && deps.pluginDataRoot !== undefined) {
+    return { cwd, dataDir: ensurePluginDataDir(deps.pluginDataRoot, id) }
+  }
   return { cwd }
 }
 
@@ -130,10 +145,11 @@ export async function spawnService(
   // 插件 ③ 目录按身份创建并只注入本身份：不同身份互不可见彼此缓存目录
   const pluginStateDir = deps.pluginStateDir
   if (pluginStateDir !== undefined) mkdirSync(pluginStateDir, { recursive: true })
-  const env =
-    pluginStateDir === undefined
-      ? process.env
-      : { ...process.env, CHRONO_PLUGIN_STATE: pluginStateDir }
+  // ③ 与 ④ 两个变量都注入、互不替代：③ 可重算（可随时删），④ 不可重算（跨代存活、进备份）。
+  // ④ 目录已在准备阶段建好（`prepared.dataDir`）；未声明 `durable` 时两者皆不注入。
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  if (pluginStateDir !== undefined) env['CHRONO_PLUGIN_STATE'] = pluginStateDir
+  if (prepared.dataDir !== undefined) env['CHRONO_PLUGIN_DATA'] = prepared.dataDir
   const child = spawn(composeStartCommand(decl.start, deps.startWrapper), {
     cwd,
     shell: true,
@@ -213,7 +229,7 @@ export async function launchService(
   gen: Hash,
   decl: PluginDecl,
 ): Promise<ServiceRuntime> {
-  const prepared = await prepareService(deps, gen, decl)
+  const prepared = await prepareService(deps, id, gen, decl)
   return spawnService(deps, id, gen, decl, prepared)
 }
 

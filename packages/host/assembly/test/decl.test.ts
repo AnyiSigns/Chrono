@@ -150,10 +150,33 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ exclusive: ['port', 'gpu'] })).ok).toBe(false)
   })
 
-  it('state 非 recomputable（如 durable）→ ok:false', () => {
-    expect(parsePluginDecl(baseDecl({ state: 'durable' })).ok).toBe(false)
+  it('state 两档：recomputable / durable 通过，其余拒', () => {
+    expect(parsePluginDecl(baseDecl({ state: 'recomputable' })).ok).toBe(true)
+    expect(parsePluginDecl(baseDecl({ state: 'durable' })).ok).toBe(true)
     expect(parsePluginDecl(baseDecl({ state: 'ephemeral' })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ state: '' })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ state: 'weird' })).ok).toBe(false)
+  })
+
+  it("exclusive:['data'] + durable → ok:true 且解析出资源类", () => {
+    const result = parsePluginDecl(baseDecl({ exclusive: ['data'], state: 'durable' }))
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.decl.exclusive).toEqual(['data'])
+      expect(result.decl.state).toBe('durable')
+    }
+  })
+
+  it("exclusive:['data'] + recomputable（含缺省）→ ok:false（声明自相矛盾）", () => {
+    expect(parsePluginDecl(baseDecl({ exclusive: ['data'], state: 'recomputable' })).ok).toBe(false)
+    // 缺省 state = recomputable，同样拒
+    expect(parsePluginDecl(baseDecl({ exclusive: ['data'] })).ok).toBe(false)
+  })
+
+  it("exclusive 含 data 与未知资源类 → ok:false（未知类仍 fail-closed）", () => {
+    expect(
+      parsePluginDecl(baseDecl({ exclusive: ['data', 'gpu'], state: 'durable' })).ok,
+    ).toBe(false)
   })
 
   it('member kind 非法（如 binary）→ ok:false', () => {
