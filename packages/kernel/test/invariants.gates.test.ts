@@ -423,15 +423,57 @@ describe('终止性：固定种子随机 term 全部三态返回', () => {
   function rndTerm(rnd: () => number, budget: number, hashes: Hash[]): TermT {
     if (budget <= 0) return ['c', pick(LEAVES, rnd)] as TermT
     const sub = (): TermT => rndTerm(rnd, budget - 1, hashes)
-    switch (pick(['c', 'v', 'g', 'cmp', 'if', 'fold', 'eff', 'call', 'let', 'zz'], rnd)) {
+    switch (
+      pick(
+        [
+          'c',
+          'v',
+          'g',
+          'get',
+          'getOr',
+          'cmp',
+          'pred',
+          'if',
+          'fold',
+          'eff',
+          'call',
+          'arith',
+          'list',
+          'obj',
+          'let',
+          'zz',
+        ],
+        rnd,
+      )
+    ) {
       case 'c':
         return ['c', pick(LEAVES, rnd)] as TermT
       case 'v':
         return ['v', pick([0, 1, -1, 2, 2.5, J('a')], rnd) as Json] as TermT
       case 'g':
         return ['g', pick([[], ['a'], ['a', 1], [0], ['nope'], 'bad'], rnd) as Json] as TermT
+      case 'get':
+        return [
+          'get',
+          sub(),
+          pick([[], ['a'], ['a', 0], ['nope'], 'bad'], rnd) as Json,
+        ] as TermT
+      case 'getOr':
+        return [
+          'getOr',
+          sub(),
+          pick([[], ['a'], ['a', 0], ['nope'], 'bad'], rnd) as Json,
+          sub(),
+        ] as TermT
       case 'cmp':
         return ['cmp', sub(), sub()] as TermT
+      case 'pred':
+        return [
+          'pred',
+          pick(['lt', 'le', 'gt', 'ge', 'eq', 'ne', 'zz'], rnd),
+          sub(),
+          sub(),
+        ] as TermT
       case 'if':
         return ['if', sub(), sub(), sub()] as TermT
       case 'fold':
@@ -440,6 +482,17 @@ describe('终止性：固定种子随机 term 全部三态返回', () => {
         return ['eff', pick(['p', 'fs'], rnd), pick(['read'], rnd), sub()] as TermT
       case 'call':
         return ['call', sub(), pick([[sub()], [sub(), sub()], J('not-list')], rnd)] as TermT
+      case 'arith':
+        return [
+          'arith',
+          pick(['add', 'sub', 'mul', 'div', 'zz'], rnd),
+          sub(),
+          sub(),
+        ] as TermT
+      case 'list':
+        return ['list', pick([[sub()], [sub(), sub()], J('not-list')], rnd)] as TermT
+      case 'obj':
+        return ['obj', pick([{ a: sub() }, { b: sub(), c: sub() }, J('not-record')], rnd)] as TermT
       default:
         return [pick(['let', 'zz', 'C', ''], rnd), 1] as unknown as TermT
     }

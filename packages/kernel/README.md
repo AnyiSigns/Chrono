@@ -9,7 +9,7 @@
 | 机制     | 一句话                                                                |
 | -------- | --------------------------------------------------------------------- |
 | 值层     | JSON 值 + 类型格 + 规范序列化 + 内容哈希——可比较、可锚定              |
-| 归约机   | 8 原语的项求值 + gas / depth 预算——世界内容（含一切判定标准）可被执行 |
+| 归约机   | 14 原语的项求值 + gas / depth 预算——世界内容（含一切判定标准）可被执行 |
 | 日志     | append-only 哈希链 + 可参数化重放——可归因、可退回任意版本             |
 | 唯一写口 | 机械校验 + 恰好单次应用——非法内容进不来，谱系与依附不变量守得住       |
 
@@ -57,7 +57,7 @@ KernelOutput { world, journal, head, pending, observations, status, usage }
 | `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                  |
 | `commit.form.ts`   | `validate` 的形态检查（op 形状表）                                                               |
 | `commit.ts`        | `validate` / `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                               |
-| `machine.ts`       | `eval`（导出名）：8 原语分派 + `walk` / `evalCall`；`cmp` 全序                                   |
+| `machine.ts`       | `eval`（导出名）：14 原语分派 + `walk` / `evalCall`；`cmp` 全序 / `pred` 谓词 / `get`·`getOr` 投影 / `arith`·`list`·`obj` 构造 |
 | `run.ts`           | 编排：`run` / `observationsOf`；唯一调用 `commit` 之处，错误只在此收口                           |
 | `index.ts`         | 只 re-export、无逻辑；公共面的全部形状                                                           |
 

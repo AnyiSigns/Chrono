@@ -58,9 +58,9 @@ const susp = (r: Res): Susp => {
 }
 const ev = (t: unknown, e: EnvT) => evaluate(asTerm(t), e)
 
-// ── 8 原语各一正一反 ────────────────────
+// ── 14 原语各一正一反 ────────────────────
 
-describe('8 原语各一正一反', () => {
+describe('14 原语各一正一反', () => {
   it('c：Const 取值 / 元数不合 bad_term', () => {
     expect(okv(ev(constNode(7), envOf()))).toBe(7)
     expect(err(ev(asTerm(['c', 1, 2]), envOf()))).toBe('bad_term')
@@ -69,6 +69,13 @@ describe('8 原语各一正一反', () => {
     const e = envOf({ ctx: { a: { b: [10, 20] } } as unknown as Json })
     expect(okv(ev(asTerm(['g', ['a', 'b', 1]]), e))).toBe(20)
     expect(err(ev(asTerm(['g', ['a', 'nope']]), e))).toBe('missing_path')
+  })
+  it('get：对任意值沿静态 path 投影 / 缺失 missing_path', () => {
+    const args = [{ score: 7 }] as unknown as Json[]
+    expect(okv(ev(asTerm(['get', ['v', 0], ['score']]), envOf({ args })))).toBe(7)
+    expect(okv(ev(asTerm(['get', ['v', 0], []]), envOf({ args })))).toEqual({ score: 7 })
+    expect(err(ev(asTerm(['get', ['v', 0], ['nope']]), envOf({ args })))).toBe('missing_path')
+    expect(err(ev(asTerm(['get', ['v', 0], ['score'], 1]), envOf()))).toBe('bad_term')
   })
   it('v：按位取实参 / 越界与非整数 bad_var', () => {
     const e = envOf({ args: ['x'] as unknown as Json[] })
@@ -79,6 +86,26 @@ describe('8 原语各一正一反', () => {
   it('cmp：全序比较 / 元数不合 bad_term', () => {
     expect(okv(ev(asTerm(['cmp', constNode(1), constNode(2)]), envOf()))).toBe(-1)
     expect(err(ev(asTerm(['cmp', constNode(1)]), envOf()))).toBe('bad_term')
+  })
+  it('pred：谓词产 Bool / 未知 op 与元数不合 bad_term', () => {
+    expect(okv(ev(asTerm(['pred', 'lt', constNode(1), constNode(2)]), envOf()))).toBe(true)
+    expect(okv(ev(asTerm(['pred', 'le', constNode(2), constNode(2)]), envOf()))).toBe(true)
+    expect(okv(ev(asTerm(['pred', 'gt', constNode(2), constNode(1)]), envOf()))).toBe(true)
+    expect(okv(ev(asTerm(['pred', 'ge', constNode(1), constNode(2)]), envOf()))).toBe(false)
+    expect(okv(ev(asTerm(['pred', 'eq', constNode('a'), constNode('a')]), envOf()))).toBe(true)
+    expect(okv(ev(asTerm(['pred', 'ne', constNode(1), constNode(1)]), envOf()))).toBe(false)
+    expect(err(ev(asTerm(['pred', 'zz', constNode(1), constNode(1)]), envOf()))).toBe('bad_term')
+    expect(err(ev(asTerm(['pred', 'lt', constNode(1)]), envOf()))).toBe('bad_term')
+  })
+  it('pred → if：比较结果驱动分支（判定核的桥）', () => {
+    const t = asTerm([
+      'if',
+      ['pred', 'lt', ['v', 0], ['v', 1]],
+      constNode('yes'),
+      constNode('no'),
+    ])
+    expect(okv(ev(t, envOf({ args: [1, 2] as unknown as Json[] })))).toBe('yes')
+    expect(okv(ev(t, envOf({ args: [2, 1] as unknown as Json[] })))).toBe('no')
   })
   it('if：条件真取 then（不预求 else）/ 元数不合 bad_term', () => {
     const e = envOf({ ctx: { p: 1 } as unknown as Json })
@@ -104,6 +131,83 @@ describe('8 原语各一正一反', () => {
     const { env, h } = defOf(asTerm(['v', 0]) as unknown as Json)
     expect(okv(ev(asTerm(['call', constNode(h), [constNode(42)]]), env))).toBe(42)
     expect(err(ev(asTerm(['call', constNode(h), constNode([1])]), env))).toBe('bad_term')
+  })
+  it('getOr：缺失取默认 / 命中取值 / 默认惰性 / path 非数组 bad_term', () => {
+    const args = [{ score: 7 }] as unknown as Json[]
+    const e = envOf({ args })
+    expect(okv(ev(asTerm(['getOr', ['v', 0], ['nope'], constNode('d')]), e))).toBe('d')
+    expect(okv(ev(asTerm(['getOr', ['v', 0], ['score'], constNode('d')]), e))).toBe(7)
+    // 命中时默认项不求值（含 missing_path 的默认项不应触发）
+    expect(okv(ev(asTerm(['getOr', ['v', 0], ['score'], ['g', ['boom']]]), e))).toBe(7)
+    expect(err(ev(asTerm(['getOr', ['v', 0], 'bad', constNode(1)]), e))).toBe('bad_term')
+  })
+  it('arith：add/sub/mul 有限数 / 非数与非有限结果 bad_arith', () => {
+    expect(okv(ev(asTerm(['arith', 'add', constNode(2), constNode(3)]), envOf()))).toBe(5)
+    expect(okv(ev(asTerm(['arith', 'sub', constNode(2), constNode(5)]), envOf()))).toBe(-3)
+    expect(okv(ev(asTerm(['arith', 'mul', constNode(4), constNode(3)]), envOf()))).toBe(12)
+    expect(err(ev(asTerm(['arith', 'add', constNode('a'), constNode(1)]), envOf()))).toBe(
+      'bad_arith',
+    )
+    const big = Number.MAX_VALUE
+    expect(err(ev(asTerm(['arith', 'mul', constNode(big), constNode(2)]), envOf()))).toBe(
+      'bad_arith',
+    )
+    expect(err(ev(asTerm(['arith', 'div', constNode(1), constNode(2)]), envOf()))).toBe('bad_term')
+  })
+  it('list：逐项构造 / 非数组 bad_term', () => {
+    expect(okv(ev(asTerm(['list', [constNode(1), ['v', 0]]]), envOf({ args: [2] as unknown as Json[] })))).toEqual([1, 2])
+    expect(err(ev(asTerm(['list', constNode(1)]), envOf()))).toBe('bad_term')
+  })
+  it('obj：逐字段构造（键升序）/ 非记录 bad_term', () => {
+    expect(okv(ev(asTerm(['obj', { b: constNode(2), a: constNode(1) }]), envOf()))).toEqual({
+      a: 1,
+      b: 2,
+    })
+    expect(err(ev(asTerm(['obj', constNode(1)]), envOf()))).toBe('bad_term')
+  })
+  it('arith 结果入 cmp 全序：可直接比较', () => {
+    const t = asTerm([
+      'pred',
+      'lt',
+      ['arith', 'add', constNode(1), constNode(2)],
+      constNode(4),
+    ])
+    expect(okv(ev(t, envOf()))).toBe(true)
+  })
+})
+
+// ── 失败节点定位（at / def / callAt）────────────────────
+
+describe('失败节点定位（at / def / callAt）', () => {
+  it('同 def 内：at 指向失败节点路径', () => {
+    const r = ev(asTerm(['if', constNode(true), ['g', ['boom']], constNode(1)]), envOf())
+    expect(r).toMatchObject({ ok: false, error: 'missing_path', at: [2] })
+  })
+  it('嵌套：pred 的 a 缺失 → at=[2]', () => {
+    const r = ev(asTerm(['pred', 'eq', ['g', ['x']], constNode(1)]), envOf())
+    expect(r).toMatchObject({ ok: false, error: 'missing_path', at: [2] })
+  })
+  it('跨 def：at 相对被调 term，def=callee 哈希，callAt=调用点', () => {
+    const body = asTerm(['if', constNode(true), ['g', ['boom']], constNode(1)]) as unknown as Json
+    const { env, h } = defOf(body)
+    const r = ev(asTerm(['call', constNode(h), []]), env)
+    expect(r).toMatchObject({ ok: false, error: 'missing_path', at: [2], def: h, callAt: [] })
+  })
+  it('bad_fun：无 def，at 指向调用节点', () => {
+    const r = ev(asTerm(['call', constNode('nope'), []]), envOf())
+    expect(r).toMatchObject({ ok: false, error: 'bad_fun', at: [] })
+  })
+  it('arith 操作数缺失 → at 指向该操作数；obj 字段缺失 → at 指向该字段', () => {
+    expect(ev(asTerm(['arith', 'add', ['g', ['x']], constNode(1)]), envOf())).toMatchObject({
+      ok: false,
+      error: 'missing_path',
+      at: [2],
+    })
+    expect(ev(asTerm(['obj', { a: ['g', ['x']] }]), envOf())).toMatchObject({
+      ok: false,
+      error: 'missing_path',
+      at: [1, 'a'],
+    })
   })
 })
 
@@ -407,8 +511,16 @@ describe('错误码表逐码触发', () => {
   it('missing_ref：函数侧合格式但 defs 无', () => {
     expect(codeOf(asTerm(['call', constNode('a'.repeat(64)), []]), envOf())).toBe('missing_ref')
   })
-  it('bad_term：头不在 8 原语名单', () => {
+  it('bad_term：头不在 14 原语名单', () => {
     expect(codeOf(asTerm(['let', []]), envOf())).toBe('bad_term')
+  })
+  it('bad_arith：算术结果非有限 / 操作数非数', () => {
+    expect(
+      codeOf(asTerm(['arith', 'mul', constNode(Number.MAX_VALUE), constNode(2)]), envOf()),
+    ).toBe('bad_arith')
+    expect(codeOf(asTerm(['arith', 'add', constNode(true), constNode(1)]), envOf())).toBe(
+      'bad_arith',
+    )
   })
   it('eff_error：已回灌的 results[id].ok === false', () => {
     const id = H({ run: RUN, i: 0, n: 0 } as unknown as Json)

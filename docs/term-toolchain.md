@@ -7,10 +7,10 @@
 
 ## 一、问题
 
-归约机与 8 原语已在内核就位，但生产世界里没有任何判定以 term 形态存在——判定全部写在插件的 `execute/` 服务代码里。原因有二：
+归约机与原语已在内核就位，但生产世界里没有任何判定以 term 形态存在——判定全部写在插件的 `execute/` 服务代码里。原因有二：
 
-1. **表达力缺口**：`cmp` 产出 `Int`（-1/0/1），`if` 要求条件为 `Bool`，而没有任何原语把比较结果变成 `Bool`。`if a < b then X else Y` 写不出来，判定无法表达为 term。
-2. **作者面缺口**：即便补上判定核，判定仍要手写 8 原语的 JSON AST——无类型、无 IDE、无调试、无测试工具。第一方尚难维护，第三方作者会被挡在门外。
+1. **表达力缺口**：`cmp` 产出 `Int`（-1/0/1），`if` 要求条件为 `Bool`，而没有任何原语把比较结果变成 `Bool`。`if a < b then X else Y` 写不出来，判定无法表达为 term；且 `g` 只读 `ctx`，判定无法读取运行时值的字段。
+2. **作者面缺口**：即便补上判定核，判定仍要手写原语的 JSON AST——无类型、无 IDE、无调试、无测试工具。第一方尚难维护，第三方作者会被挡在门外。
 
 本设计只解决第二个缺口（作者面）并给出第一个缺口（判定核）的设计口径；两者共同构成「判定作为数据」这条路线的前置。
 
@@ -25,7 +25,7 @@
 ```
 
 - **源**：作者表达判定的表面形式。两种形态共用同一语义，编译到同一 AST（见 §三）。
-- **编译**：写期发生，纯函数、确定性。产物是数据（8 原语 AST），与手写 term 同路重放。
+- **编译**：写期发生，纯函数、确定性。产物是数据（原语 AST），与手写 term 同路重放。
 - **term AST**：入世界的 `Def.body`。运行期只有它，编译器不在运行路径上。
 
 **边界（硬）**：
@@ -42,21 +42,22 @@
 
 ### 3.1 糖化 JSON（规范中间格式）
 
-JSON 里的表达式对象，比 8 原语高一层，编译期机械降级：
+糖化 JSON 是带 `k` 判别位的表达式对象，比原语高一层，编译期机械降级（完整规范见 `toolchain/spec.md`）：
 
 ```
-{ "lit": <Json> }                     → ["c", <Json>]
-{ "ctx": <Path> }                     → ["g", <Path>]
-{ "arg": <int> }                      → ["v", <int>]
-{ "let": [[name, expr], ...], "in": expr }   → 写期宏展开（替换，不产生原语）
-{ "if": cond, "then": a, "else": b }  → ["if", <cond>, <a>, <b>]
-{ "pred": op, "a": x, "b": y }        → 判定核谓词（见 §五）
-{ "call": ref, "args": [expr...] }    → ["call", <callee 哈希>, [<args>...]]
-{ "eff": port, "method": args }       → ["eff", port, method, <args>]
-{ "fold": coll, "init": e, "step": ref } → ["fold", <coll>, <e>, <step 哈希>]
+{ k:'lit', v }                   → ["c", v]
+{ k:'ctx', path }                → ["g", path]
+{ k:'get', of, path }            → ["get", of, path]
+{ k:'arg', i }                   → ["v", i]
+{ k:'if', cond, then, else }     → ["if", cond, then, else]
+{ k:'pred', op, a, b }           → ["pred", op, a, b]（见 §五）
+{ k:'fold', coll, init, step }   → ["fold", coll, init, ["c", { $ref: step }]]
+{ k:'call', ref, args }          → ["call", ["c", { $ref: ref }], args]
+{ k:'eff', port, method, args }  → ["eff", port, method, args]
+{ k:'let', ... }                 → 写期宏展开（替换，不产生原语）
 ```
 
-- `call` / `fold` 的函数侧写**包内相对路径**（`terms/foo.json`），入世时由宿主按 `plugins.md` A0b 的 `$ref` 机制机械替换成 callee def 哈希。糖化层的 `ref` 与 A0b 的 `$ref` 是同一机制。
+- `fold.step` / `call.ref` 的函数侧写**包内相对路径**（`terms/foo.json`），降级时包成 `["c", { $ref: path }]`；入世时由宿主按 `plugins.md` A0b 的 `$ref` 机制机械替换成 callee def 哈希，得 `["c", <hash>]`。糖化层的 `ref` 与 A0b 的 `$ref` 是同一机制。
 - 糖化 JSON 是**跨语言的稳定交换格式**：任何语言的 builder 都产出它，任何语言的读者都能读它。它不含实现细节，只含判定语义。
 
 ### 3.2 宿主语言 builder（类型化写期宏）
@@ -84,6 +85,7 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
 | --- | --- | --- |
 | `lit` | `["c", v]` | 字面量 |
 | `ctx` | `["g", path]` | 静态字面路径；缺失抛 `missing_path` |
+| `get` | `["get", of, path]` | 对任意值沿静态 path 投影；缺失抛 `missing_path` |
 | `arg` | `["v", i]` | 位置参数 |
 | `let` | — | 写期宏：以替换展开，不产生原语；重复出现按哈希共享（同名 `let` 只展开一次） |
 | `if` | `["if", cond, a, b]` | 惰性，只求一支；`cond` 必须产 `Bool` |
@@ -100,20 +102,24 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
 
 ---
 
-## 五、内核依赖：判定核补全
+## 五、内核依赖：判定核补全（谓词桥 + 值投影）
 
-工具链的 `if`/`pred` 依赖内核补上「比较 → 布尔」这座桥。这是**内核公共面变更**，须先裁决。
+工具链依赖内核补两处：`if`/`pred` 依赖「比较 → 布尔」这座桥，`get` 依赖「值投影」。两处都是**内核公共面变更**，须先裁决。
 
-现状（`machine.ts`）：`cmp` 返回 `Int`（-1/0/1），`if` 要求 `t(cond) === 'Bool'`，二者之间无原语。
+现状（`machine.ts`）：`cmp` 返回 `Int`（-1/0/1），`if` 要求 `t(cond) === 'Bool'`，二者之间无原语；且 `g` 只读 `ctx`，没有任何原语能读取运行时值的字段。
 
 两个方案：
 
-- **方案甲（推荐）：新增布尔谓词原语**。如 `["pred", op, a, b]`（op ∈ `lt`/`le`/`gt`/`ge`/`eq`/`ne`），返回 `Bool`，复用 `cmp` 的全序口径。显式、无隐式转换，符合 `value.ts`「不做隐式转换」的口径。代价：原语数由 8 变 9，`kernel.md` / `README.md` 相关表述须同步。
-- **方案乙：放宽 `if` 接受 `Int`**（0 假、非 0 真）。保持 8 原语。代价：引入真值语义，与「无隐式转换」的既有口径相抵；`cmp` 结果可直接作条件，但语义隐式。
+- **方案甲（推荐）：新增布尔谓词原语**。如 `["pred", op, a, b]`（op ∈ `lt`/`le`/`gt`/`ge`/`eq`/`ne`），返回 `Bool`，复用 `cmp` 的全序口径。显式、无隐式转换，符合 `value.ts`「不做隐式转换」的口径。代价：原语数由 8 变 10（连同 §5.2 的 `get`），`kernel.md` / `README.md` 相关表述须同步。
+- **方案乙：放宽 `if` 接受 `Int`**（0 假、非 0 真）。保持原语数不变。代价：引入真值语义，与「无隐式转换」的既有口径相抵；`cmp` 结果可直接作条件，但语义隐式。
 
 两方案都是**加语义**（老日志里这些输入本就报错），向后兼容：老实现遇新原语报 `bad_term`、遇新条件类型报 `bad_cond`，拒绝执行而非算错——满足「原语只增不改语义」（`kernel.md` §十三）。
 
 工具链按裁决结果定 `pred` 的降级目标；`if` 的 `cond` 必须产 `Bool` 的口径不变。
+
+### 5.2 值投影 `get`
+
+`g` 的根固定是 `ctx`（静态），判定读不到运行时值的字段（如 `item.score`），任何结构化数据上的选择都写不出。故补 `["get", value, path]`：对任意值沿静态 path 投影，复用与 `g` 同一的 `walk` 口径，与 `g` 对称（`g` 的根是 `ctx`，`get` 的根是任意值）。缺失 / 穿标量抛 `missing_path`；空 path 返回该值本身。同为加法式扩展，向后兼容。工具链的 `get` 糖化据此降级。
 
 ---
 
@@ -124,7 +130,7 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
 编译期机械检查，不过即拒编译（fail-closed）：
 
 - 形态：未知糖化键、缺必填键、类型不符。
-- 路径：`ctx` 路径为非空 `(str|int)` 数组。
+- 路径：`ctx` / `get` 路径为 `(str|int)` 数组（空数组合法：`g` 得整个 `ctx`，`get` 得该值本身）。
 - 引用：`call`/`fold` 的 `ref` 指向包内存在的 term；无环（与 A0b 的 `term_cycle` 同口径，工具链提前检出）。
 - 效果：`eff` 的 `port` 必须是插件自身 `implements` 或 `pins` 里的能力类；`method` 必须在该能力的 `methods` 声明内。跨身份调用只能经 `eff`，本身份内才可 `call`（`plugins.md` §三 红线 4）。
 - 边界：不得出现算术/构造/递归形态（本就不提供语法，校验兜底）。
@@ -132,7 +138,9 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
 
 ### 6.2 错误定位
 
-编译产物携带**源映射**（AST 节点 → 源位置），放在产物之外（如 `.map` 旁文件，不入世界）。运行期错误码（`bad_term` / `bad_var` / `missing_path` / `bad_fun` / `missing_ref` / `gas` / `depth` / `eff_error`）经源映射回落到源行，供作者定位。源映射不入 ①（它是作者侧派生物）。
+- **静态错误**（校验器）带**源 JSON 指针**，直接定位到糖化节点。
+- **运行期错误**：机器在错误里带失败节点路径 `at`（当前 def 内）、`def`（失败发生在被调 term 内时的被调 def 哈希）、`callAt`（调用点路径）。`testkit.runTerm` 原样透出；`explainError(program, termPath, error)` 据此映射回**糖化源指针**（`{ term, pointer, approx }`）。
+- `approx: true` 表示因 `let`/`bind` 写期展开等原因，指针只到最近的可见节点。工具链不在 term 里插桩（不改判定数据与哈希）。
 
 ### 6.3 确定性
 
@@ -162,7 +170,7 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
   3. `toolchain` **至多依赖内核**（仅测试器入口，见 §七），不进运行路径。
 - **`toolchain` 不是插件、不是身份**：不进 ①、不进 `state/plugins.json`、不参与 `pins`/路由/装配/生命周期。其产物作为**属主插件的数据**入世。
 - **源的位置**：判定源住插件包内（如 `terms/` 下的糖化 JSON 或构建脚本）。源与产物同包、随包入世与否由 `members` 声明决定。
-- **产物**：编译产出的 8 原语 term（`terms/*.json`）是运行期产物，入 ①。源映射与构建脚本是作者侧派生物，可不入世（`.worldignore` 声明）。
+- **产物**：编译产出的原语 term（`terms/*.json`）是运行期产物，入 ①。源映射与构建脚本是作者侧派生物，可不入世（`.worldignore` 声明）。
 - **构建步骤**：编译作为插件 `plugin.json.build` 的一步（宿主只执行、不解释，与现有构建声明同性质）。宿主不认识源 DSL，只跑声明的命令。
 - **入世校验**：宿主 `validate_package` 的 dry-run 仍只做机械校验（形态 / `$ref` 环 / 路径安全），不解释糖化语义；语义校验在工具链侧完成。
 - **跨语言**：糖化 JSON 是交换格式，多语言 builder 产出同一格式、同一 AST，判定语义不随语言分叉。
@@ -177,5 +185,5 @@ const body = t.if(t.pred('lt', t.arg(0), t.lit(10)), t.eff('fs', 'read', t.ctx([
 - 不把编译器放进宿主或内核；`toolchain` 不进 `packages/`。
 - 不把源映射、构建脚本塞进 ①。
 - 不做可视化判定编辑器（后置，若需要再单独立项）。
-- 不改 8 原语既有语义（判定核补全只加不改，见 §五）。
+- 不改原语既有语义（判定核补全只加不改，见 §五）。
 - 不承诺「判定可表达一切逻辑」——term 的定位是选择与编排，不是通用计算。

@@ -146,6 +146,12 @@ export interface KernelOutput {
 // ── 错误形态────────────────────────────────
 export class KernelError extends Error {
   readonly code: string
+  /** 失败节点路径（从当前 def 入口起）；由最近的 evalNode 记入。 */
+  at?: Path
+  /** 失败发生在被调 term 内时：被调 def 哈希。 */
+  def?: Hash
+  /** 进入被调 term 的调用点路径（在调用者 def 内）。 */
+  callAt?: Path
   constructor(code: string) {
     super(code)
     this.code = code

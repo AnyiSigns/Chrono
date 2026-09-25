@@ -339,7 +339,7 @@ describe('观测形状 = observationsOf 公共面对拍（eval / bad_term / refu
     expect(o.status).toBe('done')
     expect(lastObs(o)).toEqual(observationsOf(d, { kind: 'eval', r } as OutEval) as Json)
   })
-  it('defs[entry].body 非 8 原语 → refused bad_term；回灌 ok:false → refused eff_error', () => {
+  it('defs[entry].body 非 14 原语 → refused bad_term；回灌 ok:false → refused eff_error', () => {
     const sb = seedDef(['let', 1])
     const badTermInput = input({ world: sb.world, head: sb.head, directives: [evalDir(sb.key)] })
     const badTermRun = run(badTermInput)
