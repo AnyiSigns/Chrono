@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { createDecoder, encodeFrame, externOf, startService } from './driver.mjs'
+import { createDecoder, encodeFrame, startService } from './driver.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
@@ -97,7 +97,6 @@ test('semantic 模式经真实模型服务出摘要（默认跳过；CHRONO_REAL
   try {
     await drv.hello()
     const result = await drv.call('summarize', {
-      memory: { version: 1, sessions: {}, workspaces: {} },
       conversation: 'c-real',
       mode: 'semantic',
       model_config: {
@@ -119,9 +118,9 @@ test('semantic 模式经真实模型服务出摘要（默认跳过；CHRONO_REAL
         { role: 'assistant', content: '收到，我会据此压缩。' },
       ],
     })
-    const payload = externOf(result.value)
+    const payload = result.value
     assert.equal(result.kind, 'result', `真实模型调用未回 result：${JSON.stringify(result)}`)
-    assert.notEqual(payload, null, `真实模型回包缺 extern payload：${JSON.stringify(result.value)}`)
+    assert.notEqual(payload, null, `真实模型回包缺 payload：${JSON.stringify(result.value)}`)
     assert.equal(payload.ok, true, `真实模型调用失败（不得静默跳过）：${JSON.stringify(result.value)}`)
     assert.equal(payload.kind, 'summarize')
     assert.ok(payload.summary.goal.length > 0, '真实模型应产出非空 goal')

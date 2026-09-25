@@ -232,11 +232,14 @@ export function workspaceKnown(ids: Json, workspaceId: string): boolean {
   return list.some((item) => isRecord(item) && item['id'] === workspaceId)
 }
 
-/** `#47 todo` 门禁切片：当前会话条目沿链还原为 `{items:[…]}`（供 #33 `todo_incomplete`）。 */
+/** `#47 todo` 门禁切片：当前会话条目（owner 服务读自有存储后回 `{items:[…]}`；供 #33 `todo_incomplete`）。 */
 export function todoSliceOf(ids: Json, conversationId: string | null): Rec | null {
   if (conversationId === null) return null
   const body = bodyOf(ids, 'todo')
-  if (body === null || !isRecord(body['conversations'])) return null
+  if (body === null) return null
+  if (Array.isArray(body['items'])) return { items: body['items'] }
+  // 兼容旧链式投影（存量世界世代）：沿链还原。
+  if (!isRecord(body['conversations'])) return null
   const slot = (body['conversations'] as Rec)[conversationId]
   if (!isRecord(slot)) return { items: [] }
   const refs = refsOf(ids, 'todo')

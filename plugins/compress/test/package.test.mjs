@@ -31,7 +31,7 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/compress.json')
   assert.deepEqual(decl.implements, ['compress'])
   assert.deepEqual(decl.methods, { compress: ['summarize', 'compact', 'extract'] })
-  assert.deepEqual(decl.pins, { model: 'model-protocol', embedding: 'embedding' })
+  assert.deepEqual(decl.pins, { model: 'model-protocol', embedding: 'embedding', 'short-memory': 'short-memory' })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

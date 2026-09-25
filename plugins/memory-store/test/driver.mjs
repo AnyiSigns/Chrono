@@ -1,5 +1,6 @@
 // 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
 // 并自动应答反向调用 `port.call`（模拟宿主侧路由；默认桥接确定性假向量化后端，可注入 bridge）。
+// 可选注入 `dataDir`（④ CHRONO_PLUGIN_DATA）与 `stateDir`（③ CHRONO_PLUGIN_STATE），用于持久化 / 分界测试。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -82,6 +83,8 @@ export function startService(options = {}) {
   const env = { ...process.env }
   if (options.stateDir !== undefined) env.CHRONO_PLUGIN_STATE = options.stateDir
   else delete env.CHRONO_PLUGIN_STATE
+  if (options.dataDir !== undefined) env.CHRONO_PLUGIN_DATA = options.dataDir
+  else delete env.CHRONO_PLUGIN_DATA
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
   const decoder = createDecoder()
   const pending = new Map()
@@ -171,21 +174,6 @@ export function startService(options = {}) {
       request('call', { port: 'memory', method, args, env }, ['result', 'error']),
     close: () => child.stdin.end(),
   }
-}
-
-/** 从计划值里取 batch 子操作与 extern 载荷。 */
-export function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-export function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-export function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
 }
 
 /** 轮询 search 直到索引就绪（或超时）。 */

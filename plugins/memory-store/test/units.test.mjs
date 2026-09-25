@@ -174,8 +174,8 @@ test('store：buildEntry / buildBody / deriveEntryId / meta / weight', () => {
   assert.equal(entry.weight, 0.5)
   assert.deepEqual(entry.chunks, [{ index: 0, start: 0, end: 5 }])
 
-  const body = buildBody({ body: { count: 2, deleted: { x: 'at' }, pinned: { y: true } }, entryIndex: 0, anchor: { id: 'm', dim: 2 } })
-  assert.deepEqual(body.tail, { def: { $n: 0 } })
+  const body = buildBody({ body: { count: 2, deleted: { x: 'at' }, pinned: { y: true } }, tailId: 'm-9', count: 3, anchor: { id: 'm', dim: 2 } })
+  assert.deepEqual(body.tail, { def: 'm-9' })
   assert.equal(body.count, 3)
   assert.deepEqual(body.deleted, { x: 'at' })
   assert.deepEqual(body.pinned, { y: true })

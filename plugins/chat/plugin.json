@@ -12,6 +12,8 @@
     "context": "context-window",
     "session-title": "session-title",
     "loop-policy": "loop-policy",
+    "short-memory": "short-memory",
+    "todo": "todo",
     "host": "host"
   },
   "start": "node execute/main.ts",

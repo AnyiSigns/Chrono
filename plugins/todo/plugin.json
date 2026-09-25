@@ -5,7 +5,9 @@
   "methods": {
     "todo": ["describe", "invoke"]
   },
-  "pins": {},
+  "pins": {
+    "storage-kv": "storage-kv"
+  },
   "start": "node execute/main.ts",
   "protocol": "1",
   "restart": {
@@ -22,7 +24,7 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "schema", "path": "schema/" }

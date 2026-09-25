@@ -62,15 +62,19 @@ async function hydrateIds(
 /** 槽 kind：只有 `chat.message` 跑管道。 */
 const CHAT_MESSAGE = 'chat.message'
 
-/** 运行记录 owner 身份（消息链 / 输入槽已出世界，改经 `eff` 问 owner）。 */
+/** 运行记录 owner 身份（消息链 / 输入槽 / 短期记忆 / 待办已出世界，改经 `eff` 问 owner）。 */
 const SESSION_PORT = 'session'
 const SESSION_READ = 'read'
 const INPUT_PORT = 'input'
 const INPUT_READ = 'read'
+const SHORT_MEMORY_PORT = 'short-memory'
+const SHORT_MEMORY_READ = 'read'
+const TODO_PORT = 'todo'
+const TODO_INVOKE = 'invoke'
 
 /**
- * 从 owner 服务取会话切片与输入槽，覆盖投影里的同名身份条目。
- * 消息链 / 输入槽已出世界（不产 `write` directive），服务读自有持久存储后返回。
+ * 从 owner 服务取会话切片、输入槽、短期记忆与当前会话待办，覆盖投影里的同名身份条目。
+ * 消息链 / 输入槽 / L1-L2 / 待办已出世界（不产 `write` directive），服务读自有持久存储后返回。
  * 取不到时回落空切片（缺省身份由下游回落种子 / 内建兜底），不阻塞主回合。
  */
 async function withOwnerSlices(deps: ChatDeps, ids: Json, env: CallEnv, thread: string): Promise<Json> {
@@ -81,6 +85,21 @@ async function withOwnerSlices(deps: ChatDeps, ids: Json, env: CallEnv, thread: 
   const input = inputOutcome.ok && isRecord(inputOutcome.value) ? inputOutcome.value : { slots: {} }
   base[SESSION_PORT] = { body: session, refs: isRecord(session['refs']) ? session['refs'] : {}, data_gen: null }
   base[INPUT_PORT] = { body: input }
+
+  const memoryOutcome = await deps.port.call(SHORT_MEMORY_PORT, SHORT_MEMORY_READ, {})
+  const memory = memoryOutcome.ok && isRecord(memoryOutcome.value) ? memoryOutcome.value : { version: 1, sessions: {}, workspaces: {} }
+  base[SHORT_MEMORY_PORT] = { body: memory }
+
+  const conversationId = asString(session['current'])
+  const todoOutcome =
+    conversationId === null
+      ? null
+      : await deps.port.call(TODO_PORT, TODO_INVOKE, { tool: 'todo.read', session_id: conversationId })
+  const todoResult =
+    todoOutcome !== null && todoOutcome.ok && isRecord(todoOutcome.value) && todoOutcome.value['ok'] === true && isRecord(todoOutcome.value['result'])
+      ? (todoOutcome.value['result'] as Rec)
+      : { items: [] }
+  base[TODO_PORT] = { body: todoResult }
   return base
 }
 

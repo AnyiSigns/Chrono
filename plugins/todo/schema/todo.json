@@ -1,15 +1,9 @@
 {
   "title": "todo（按会话键控的待办清单）",
-  "description": "身份自述 / 数据契约。清单住世界、按会话键控：body 顶层 conversations 以会话 id 为键，每个会话的条目各自成 def、以 prev 串成链，会话键只存链头 tail 与条数 count。body 与条目 def 的引用都用显式标记 {\"def\":\"<64hex>\"}，宿主按引用闭包把它们放进投影 refs。顶层 max_items / max_text_length / statuses 是服务读的限额与枚举（schema 成员变化属数据、可热改）；宿主 v1 不校验身份数据，本 schema 是身份自述。",
+  "description": "身份自述 / 数据契约。清单本体是运行记录，已出世界：住 owner 委托存储（storage-kv，按 env.emitter 分命名空间），键 `conv:<会话 id>` = {run, at, items:[{id,text,status,priority?,at?}]}，键 `turn:<回合 id>` = {state,conv}。本 schema 只留服务读的限额与枚举（定义 / 判定数据，住世界；schema 成员变化属数据、可热改）；宿主 v1 不校验身份数据。",
   "type": "object",
-  "required": ["conversations"],
   "additionalProperties": true,
   "properties": {
-    "conversations": {
-      "type": "object",
-      "description": "会话 id → 本会话清单；无待办的会话不落键。每个值形如 {items:{tail:{def:\"<64hex>\"}|null, count}}：tail = 最新条目 def 引用（null = 本会话清单为空），count = 本会话条目条数（非负整数）。键为动态会话 id，故此处 additionalProperties 只能声明为 true（白名单子集不允许对象形 additionalProperties）。",
-      "additionalProperties": true
-    },
     "max_items": {
       "type": "integer",
       "minimum": 1,

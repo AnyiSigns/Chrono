@@ -27,6 +27,7 @@ const DECL_FIELDS = [
   'methods',
   'pins',
   'start',
+  'exclusive',
   'protocol',
   'restart',
   'health',
@@ -35,17 +36,18 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 12 字段齐全且形态合法', () => {
+test('plugin.json 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'memory-store')
   assert.equal(decl.schema, 'schema/memory.json')
   assert.deepEqual(decl.implements, ['memory'])
-  assert.deepEqual(decl.methods, { memory: ['put', 'read', 'search'] })
+  assert.deepEqual(decl.methods, { memory: ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'] })
   assert.deepEqual(decl.pins, { embedding: 'embedding' })
   assert.equal(decl.start, 'node execute/main.ts')
+  assert.deepEqual(decl.exclusive, ['data'])
   assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
+  assert.equal(decl.state, 'durable')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
     { kind: 'schema', path: 'schema/' },
@@ -88,6 +90,7 @@ test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件
     'plan.ts',
     'plugin.ts',
     'port-link.ts',
+    'persist.ts',
     'store.ts',
     'types.ts',
     'vector-index.ts',

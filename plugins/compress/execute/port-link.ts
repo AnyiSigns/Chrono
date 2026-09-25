@@ -150,3 +150,32 @@ export class RemoteEmbedding implements EmbeddingBackend {
     return vectors
   }
 }
+
+/** 短期记忆 owner 后端抽象：生产环境是反向调用 `short-memory.read` / `apply`，单测注入假后端。 */
+export interface ShortMemoryBackend {
+  read(): Promise<Rec>
+  apply(args: Rec): Promise<Rec>
+}
+
+/** `short-memory` 的反向调用后端：读整份 L1 / L2，逐键置 / 删写回。 */
+export class RemoteShortMemory implements ShortMemoryBackend {
+  private readonly link: PortLink
+
+  constructor(link: PortLink) {
+    this.link = link
+  }
+
+  async read(): Promise<Rec> {
+    const outcome = await this.link.call('short-memory', 'read', {})
+    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
+    if (!isRecord(outcome.value)) throw new BackendError('short_memory_bad_result', 'short-memory.read returned a non-object')
+    return outcome.value
+  }
+
+  async apply(args: Rec): Promise<Rec> {
+    const outcome = await this.link.call('short-memory', 'apply', args)
+    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
+    if (!isRecord(outcome.value)) throw new BackendError('short_memory_bad_result', 'short-memory.apply returned a non-object')
+    return outcome.value
+  }
+}

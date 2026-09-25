@@ -1,6 +1,6 @@
 {
   "title": "memory-store（长期记忆本体）",
-  "description": "身份自述 / 数据契约：L3 长期记忆条目各自成 def、经链式 tail 串联（body 只存链尾与计数，不列全部条目哈希）；条目含 chunks 偏移（只存偏移不重复存文本）。向量本体不进世界，索引住宿主侧 ③（state/plugins/memory-store/index-<model>-<dim>.bin，可重算）。写一律经写计划落账：put 回去重后的写计划（条目 def + 新 body + add_gen），read / search 只读不回计划。服务不读投影：body + refs 由调用方入口 term 读出随 args 传入。deleted / pinned 过滤写死为契约，读取方（含本插件 read / search）必须遵守。",
+  "description": "身份自述 / 数据契约。L3 长期记忆条目与 body 是运行记录，已出世界：住本服务自有持久存储（④ CHRONO_PLUGIN_DATA/memory.jsonl，追加日志）。条目经链式 tail → prev（按条目 id 串联）；chunks 只存偏移，文本由 text 切片派生。向量本体不进 ④，索引住 ③ CHRONO_PLUGIN_STATE/index-<model>-<dim>.bin，可由 ④ 重算、删掉可重建。写（put / append / delete / pin / edit）即时落自有存储，不产世界写计划；read / search / list 只读。deleted / pinned 过滤写死为契约，读取方（含本插件 read / search / list）必须遵守。服务不读投影。",
   "type": "object",
   "additionalProperties": true,
   "model": {
@@ -11,9 +11,9 @@
     "body": {
       "type": "object",
       "additionalProperties": true,
-      "description": "memory-store 身份 body：链尾 + 计数 + 逻辑删除 / 置顶集合 + 索引版本锚。",
+      "description": "存储内 body（④ 重放得到）：链尾 + 计数 + 逻辑删除 / 置顶集合 + 索引版本锚。",
       "properties": {
-        "tail": { "type": "object", "additionalProperties": true, "description": "{def: <最新条目 def 哈希>} 或 null。" },
+        "tail": { "type": "object", "additionalProperties": true, "description": "{def: <最新条目 id>} 或 null。" },
         "count": { "type": "integer", "minimum": 0, "description": "累计写入条目数（删除不递减）。" },
         "deleted": { "type": "object", "additionalProperties": true, "description": "{<条目 id>: <删除时间 at>}；读取方必须据此过滤。" },
         "pinned": { "type": "object", "additionalProperties": true, "description": "{<条目 id>: true}；淘汰时跳过。" },
@@ -31,9 +31,9 @@
     "entry": {
       "type": "object",
       "additionalProperties": true,
-      "description": "条目 def：各自成 def、内容寻址；chunks 只存偏移，文本由 text 切片派生。",
+      "description": "条目：id 为链键与 deleted / pinned 键；chunks 只存偏移，文本由 text 切片派生。",
       "properties": {
-        "id": { "type": "string", "description": "条目逻辑 id（m-…），deleted / pinned 以此为键。" },
+        "id": { "type": "string", "description": "条目逻辑 id（m-…）。" },
         "text": { "type": "string" },
         "meta": {
           "type": "object",
@@ -59,28 +59,26 @@
             }
           }
         },
-        "prev": { "type": "object", "additionalProperties": true, "description": "{def: <上一条目哈希>} 或 null。" }
+        "prev": { "type": "object", "additionalProperties": true, "description": "{def: <上一条目 id>} 或 null。" }
       }
     },
     "put_request": {
       "type": "object",
-      "required": ["text", "body", "refs"],
+      "required": ["text"],
       "additionalProperties": true,
-      "description": "put 入参：agent 显式保存经记忆工具派发。body + refs 由调用方入口 term 读出传入。",
+      "description": "put 入参：agent 显式保存经记忆工具派发。去重后直接写自有存储。",
       "properties": {
         "text": { "type": "string", "minLength": 1 },
         "meta": { "type": "object", "additionalProperties": true },
         "weight": { "type": "number", "minimum": 0, "maximum": 1 },
         "id": { "type": "string" },
-        "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
-        "body": { "type": "object", "additionalProperties": true },
-        "refs": { "type": "object", "additionalProperties": true }
+        "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     },
     "put_result": {
       "type": "object",
       "additionalProperties": true,
-      "description": "成功时 {$directives:[batch(write put(条目 def)+put(新 body)+add_gen), extern({ok:true,kind:'put',saved:…})]}；重复回只含 extern 的计划（saved:false, duplicate_of）；失败回 {ok:false, error:{code,message}}。",
+      "description": "成功回 {ok:true,kind:'put',saved:true,id,count,chunks,dedup:'vector',model}；重复回 {ok:true,saved:false,duplicate:true,duplicate_of}；失败回 {ok:false,error:{code,message}}。不产 $directives。",
       "properties": {
         "ok": { "type": "boolean" },
         "kind": { "const": "put" },
@@ -91,12 +89,9 @@
     },
     "read_request": {
       "type": "object",
-      "required": ["body", "refs"],
       "additionalProperties": true,
-      "description": "read 入参：按 hash 或 hashes 从传入的 refs 取条目；deleted 条目按契约过滤为 null。消费方 = 检索插件（按 search 的 entry_hash 取正文）。",
+      "description": "read 入参：按 id（hash / hashes）从自有存储取条目；deleted 条目按契约过滤为 null。消费方 = 检索插件（按 search 的 entry_hash 取正文）。",
       "properties": {
-        "body": { "type": "object", "additionalProperties": true },
-        "refs": { "type": "object", "additionalProperties": true },
         "hash": { "type": "string" },
         "hashes": { "type": "array", "items": { "type": "string" } }
       }
@@ -112,21 +107,19 @@
     },
     "search_request": {
       "type": "object",
-      "required": ["query_vector", "body", "refs"],
+      "required": ["query_vector"],
       "additionalProperties": true,
-      "description": "search 入参：在 ③ 索引上暴力余弦（dim 384 归一 ⇒ 点积）。query_vector 由调用方经向量化服务算出；body + refs 供索引重建与 deleted 过滤。",
+      "description": "search 入参：在 ③ 索引上暴力余弦（dim 384 归一 ⇒ 点积）。query_vector 由调用方经向量化服务算出；索引缺失 / 落后即由 ④ 重建。",
       "properties": {
         "query_vector": { "type": "array", "items": { "type": "number" } },
         "top_k": { "type": "integer", "minimum": 1 },
-        "rebuild": { "type": "boolean" },
-        "body": { "type": "object", "additionalProperties": true },
-        "refs": { "type": "object", "additionalProperties": true }
+        "rebuild": { "type": "boolean" }
       }
     },
     "search_result": {
       "type": "object",
       "additionalProperties": true,
-      "description": "索引就绪回 {ok:true,kind:'search',status:'ready',model,hits:[{entry_hash,chunk_index,score}]}（chunk 级命中，按 score 降序、同分按 entry_hash/chunk_index 定序）；重建中回 {ok:true,kind:'search',status:'index_building',hits:[]}；形态 / 维度不符回 {ok:false,error:{code,message}}。",
+      "description": "索引就绪回 {ok:true,kind:'search',status:'ready',model,hits:[{entry_hash,chunk_index,score}]}；重建中回 {ok:true,kind:'search',status:'index_building',hits:[]}；形态 / 维度不符回 {ok:false,error:{code,message}}。",
       "properties": {
         "ok": { "type": "boolean" },
         "kind": { "const": "search" },
@@ -144,10 +137,59 @@
           }
         }
       }
+    },
+    "list_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "list 回 {ok:true,kind:'list',entries:[{id,text,meta,weight}],count}（存活条目，新→旧）；供记忆维护读取与去重。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "list" }
+      }
+    },
+    "append_request": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": true,
+      "description": "append 入参：批量追加条目（记忆维护固化用）。每项 {id?,text,meta?,weight?}；服务算 chunks / 向量后写自有存储并增量入索引。",
+      "properties": {
+        "entries": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+      }
+    },
+    "delete_request": {
+      "type": "object",
+      "required": ["ids"],
+      "additionalProperties": true,
+      "description": "delete 入参：{ids:[…]} 逻辑删除（body.deleted）；链上条目不动。",
+      "properties": {
+        "ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "pin_request": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": true,
+      "description": "pin 入参：{id, pinned?}（缺省置顶；pinned:false 取消）。",
+      "properties": {
+        "id": { "type": "string" },
+        "pinned": { "type": "boolean" }
+      }
+    },
+    "edit_request": {
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": true,
+      "description": "edit 入参：{id, text, meta?, weight?} 同 id 覆盖条目（保留链位置），重算 chunks / 向量并替换索引记录。",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string", "minLength": 1 }
+      }
     }
   },
   "method_timeouts": {
     "memory.put": 600000,
-    "memory.search": 600000
+    "memory.search": 600000,
+    "memory.append": 600000,
+    "memory.edit": 600000
   }
 }

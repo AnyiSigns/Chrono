@@ -1,30 +1,38 @@
-// `compress` 服务进程入口：宿主服务协议帧循环（docs/protocol.md §二）。
+// `short-memory` 服务进程入口：服务协议帧循环（docs/protocol.md §二）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影、无写通道；读-改-写所需的世界数据由调用方随 args 传入。
-// 反向调用（model.chat / embedding.embed）走 `port.call`，应答帧立即结算（不排队）。
+// stdin EOF / 管道断开即自退出。L1 / L2 已出世界：写即时落自有持久存储（④），读从自有存储取。
 
+import { readFileSync } from 'node:fs'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
-import { PortLink, RemoteEmbedding, RemoteModel, RemoteShortMemory } from './port-link.ts'
-import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
-import { BadArgsError } from './types.ts'
+import { ShortMemoryStore } from './persist.ts'
+import { BadArgsError, ToolError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
-const LINK = new PortLink((message) => writeFrame(message))
-const HANDLERS = createHandlers({
-  model: new RemoteModel(LINK),
-  embedding: new RemoteEmbedding(LINK),
-  shortMemory: new RemoteShortMemory(LINK),
-})
+const CAPABILITY = 'short-memory'
 
-const DECLARED_METHODS = new Set<string>(
-  Array.isArray(METHODS[IDENTITY])
-    ? (METHODS[IDENTITY] as Json[]).filter((item): item is string => typeof item === 'string')
-    : Object.keys(HANDLERS),
-)
+function readPlugin(): Rec {
+  try {
+    const text = readFileSync(new URL('../plugin.json', import.meta.url), 'utf8')
+    const parsed = JSON.parse(text) as Json
+    if (isRecord(parsed)) return parsed
+  } catch (err) {
+    log(`cannot read plugin.json: ${(err as Error).message}`)
+  }
+  return {}
+}
 
-let exiting = false
+const PLUGIN = readPlugin()
+const IDENTITY = typeof PLUGIN['identity'] === 'string' ? (PLUGIN['identity'] as string) : CAPABILITY
+const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
+  ? (PLUGIN['implements'] as Json[]).filter((item): item is string => typeof item === 'string')
+  : [CAPABILITY]
+const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
+const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
+const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
+
+const HANDLERS = createHandlers({ store: ShortMemoryStore.open() })
 
 function manifest(): Rec {
   return {
@@ -37,20 +45,10 @@ function manifest(): Rec {
   }
 }
 
-function sendFrame(message: Json): void {
-  if (exiting) return
-  try {
-    writeFrame(message)
-  } catch (err) {
-    log(`write frame failed: ${(err as Error).message}`)
-  }
-}
-
 function sendError(id: string, code: string, message: string): void {
-  sendFrame({ v: '1', id, kind: 'error', ok: false, code, message })
+  writeFrame({ v: '1', id, kind: 'error', ok: false, code, message })
 }
 
-/** 帧 env：宿主填写、机械；缺失回落 `{run:null, thread:null, now:0}`（服务绝不自取时钟）。 */
 function parseEnv(raw: Json | undefined): CallEnv {
   if (!isRecord(raw)) return { run: null, thread: null, now: 0 }
   return {
@@ -58,6 +56,14 @@ function parseEnv(raw: Json | undefined): CallEnv {
     thread: typeof raw['thread'] === 'string' ? raw['thread'] : null,
     now: typeof raw['now'] === 'number' && Number.isFinite(raw['now']) ? raw['now'] : 0,
   }
+}
+
+function declaredMethods(port: string): string[] {
+  const declared = METHODS[port]
+  if (Array.isArray(declared)) {
+    return declared.filter((item): item is string => typeof item === 'string')
+  }
+  return Object.keys(HANDLERS)
 }
 
 async function handleCall(message: Rec): Promise<void> {
@@ -72,7 +78,7 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'unresolved_cap', `unknown capability ${port}`)
     return
   }
-  if (!DECLARED_METHODS.has(method)) {
+  if (!declaredMethods(port).includes(method)) {
     sendError(id, 'unknown_method', `unknown method ${method}`)
     return
   }
@@ -86,43 +92,40 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'bad_args', 'args must be an object')
     return
   }
+  let result
   try {
-    const value = await handler(args ?? null, parseEnv(message['env']))
-    sendFrame({ v: '1', id, kind: 'result', ok: true, value })
+    result = await handler(args ?? null, parseEnv(message['env']))
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
       return
     }
+    if (err instanceof ToolError) {
+      sendError(id, err.code, err.message)
+      return
+    }
     log(`method ${method} failed: ${(err as Error).message}`)
     sendError(id, 'internal', 'handler failed')
+    return
   }
-}
-
-/** 停机：未结算的反向调用作数据失败，然后退出（先让协议帧写完）。 */
-function shutdown(): void {
-  if (exiting) return
-  exiting = true
-  LINK.failAll()
-  setTimeout(() => process.exit(0), 10).unref?.()
+  writeFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
 }
 
 async function handle(message: Json): Promise<void> {
   if (!isRecord(message)) return
   switch (message['kind']) {
     case 'hello':
-      sendFrame({ id: message['id'], kind: 'manifest', ...manifest() })
+      writeFrame({ id: message['id'], kind: 'manifest', ...manifest() })
       return
     case 'probe':
-      sendFrame({ v: '1', id: message['id'], kind: 'pong', ok: true })
+      writeFrame({ v: '1', id: message['id'], kind: 'pong', ok: true })
       return
     case 'reload':
       log(`reload gen=${typeof message['gen'] === 'string' ? message['gen'] : '?'}`)
-      sendFrame({ v: '1', id: message['id'], kind: 'ack' })
+      writeFrame({ v: '1', id: message['id'], kind: 'ack' })
       return
     case 'drain':
-      sendFrame({ v: '1', id: message['id'], kind: 'bye' })
-      shutdown()
+      writeFrame({ v: '1', id: message['id'], kind: 'bye' })
       return
     case 'call':
       await handleCall(message)
@@ -133,8 +136,6 @@ async function handle(message: Json): Promise<void> {
 }
 
 const decoder = createFrameDecoder()
-// 串行链：保证同一连接上的消息按到达序处理；反向调用应答立即结算（不排队），
-// 否则正在 await port.result 的 call 会把链堵死。
 let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
   let messages: Json[]
@@ -145,14 +146,13 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
-    if (isRecord(message) && LINK.settle(message)) continue
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
   }
 })
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.stdin.on('error', shutdown)
+process.stdin.on('end', () => process.exit(0))
+process.stdin.on('close', () => process.exit(0))
+process.stdin.on('error', () => process.exit(0))
 
 log(`service started (pid ${process.pid})`)

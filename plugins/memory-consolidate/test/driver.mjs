@@ -1,5 +1,7 @@
 // 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
-// 并自动应答反向调用 `port.call`（模拟宿主侧路由；默认桥接确定性假 #20 / #19 后端，可注入 bridge）。
+// 并自动应答反向调用 `port.call`（模拟宿主侧路由；可注入 bridge）。
+// 内置内存假 owner 服务：short-memory（read/apply）、memory-store（list/append/delete/pin/edit）、
+// session（read）；compress.summarize 与 embedding.chunk/embed 走可配置假后端。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -64,7 +66,121 @@ export function vectorFor(text, options = {}) {
   return vector
 }
 
-/** 默认假后端：chunk 整段一块；embed 回确定性向量；summarize 回可配置 summary。 */
+/** #3 body：两会话同属 w-1 + 一个已有工作区记忆（用于验证合并 / 去重 / sources 追加）。 */
+export function shortMemoryFixture() {
+  return {
+    version: 1,
+    sessions: {
+      'c-1': {
+        summary: { goal: 'G1', decisions: [], facts: ['f1', 'f2'], open_questions: [], files: [], next_steps: [] },
+        covered_upto: 'm1',
+        at: '2020-01-01T00:00:00.000Z',
+        expires_at: '2020-01-02T00:00:00.000Z',
+      },
+      'c-2': {
+        summary: { goal: 'G2', decisions: [], facts: ['f2', 'f3'], open_questions: [], files: [], next_steps: [] },
+        covered_upto: 'm2',
+        at: '2020-01-02T00:00:00.000Z',
+        expires_at: '2020-01-03T00:00:00.000Z',
+      },
+    },
+    workspaces: {
+      'w-1': {
+        summary: { goal: 'WG', decisions: [], facts: ['old'], open_questions: [], files: [] },
+        sources: ['c-0'],
+        at: '2020-01-01T00:00:00.000Z',
+      },
+    },
+  }
+}
+
+/** #11 body：会话 → 工作区归属。 */
+export function sessionFixture() {
+  return {
+    current: 'c-1',
+    conversations: [
+      { id: 'c-1', workspace_id: 'w-1' },
+      { id: 'c-2', workspace_id: 'w-1' },
+    ],
+  }
+}
+
+/** 内存假 short-memory：read / apply。 */
+export function createFakeShortMemory(initial = {}) {
+  const memory = structuredClone({ version: 1, sessions: {}, workspaces: {}, ...initial })
+  return {
+    memory,
+    apply(args) {
+      for (const [id, record] of Object.entries(args?.set_sessions ?? {})) {
+        if (record === null) delete memory.sessions[id]
+        else memory.sessions[id] = record
+      }
+      for (const id of args?.del_sessions ?? []) delete memory.sessions[id]
+      for (const [id, record] of Object.entries(args?.set_workspaces ?? {})) {
+        if (record === null) delete memory.workspaces[id]
+        else memory.workspaces[id] = record
+      }
+      for (const id of args?.del_workspaces ?? []) delete memory.workspaces[id]
+      return { ok: true, changed: 1 }
+    },
+  }
+}
+
+/** 内存假 memory-store：list / append / delete / pin / edit。 */
+export function createFakeMemory(initialEntries = [], initialPinned = {}) {
+  const entries = structuredClone(initialEntries)
+  const pinned = { ...initialPinned }
+  return {
+    entries,
+    pinned,
+    call(method, args) {
+      if (method === 'list') {
+        return { ok: true, kind: 'list', entries: structuredClone(entries), count: entries.length, pinned: { ...pinned } }
+      }
+      if (method === 'append') {
+        const added = []
+        for (const entry of args?.entries ?? []) {
+          const existing = entries.find((item) => item.id === entry.id)
+          if (existing !== undefined) continue
+          entries.push(structuredClone(entry))
+          added.push(entry.id)
+        }
+        return { ok: true, kind: 'append', added, count: entries.length }
+      }
+      if (method === 'delete') {
+        for (const id of args?.ids ?? []) {
+          const index = entries.findIndex((item) => item.id === id)
+          if (index >= 0) entries.splice(index, 1)
+        }
+        return { ok: true, kind: 'delete', deleted: args?.ids ?? [] }
+      }
+      if (method === 'pin') {
+        if (args?.pinned === false) delete pinned[args.id]
+        else pinned[args.id] = true
+        return { ok: true, kind: 'pin', id: args.id, pinned: args.pinned !== false }
+      }
+      if (method === 'edit') {
+        const entry = entries.find((item) => item.id === args?.id)
+        if (entry === undefined) return { ok: false, kind: 'edit', id: args?.id, reason: 'not_found' }
+        entry.text = args.text
+        return { ok: true, kind: 'edit', id: args.id, text: args.text }
+      }
+      return undefined
+    },
+  }
+}
+
+/** #21 单条目（用于 L3 去重 / 淘汰 / 编辑）。 */
+export function memoryEntry(entry = {}) {
+  return {
+    id: entry.id ?? 'm-1',
+    text: entry.text ?? 'text',
+    meta: { source: 'manual', workspace: 'w-1', at: entry.at ?? '2023-01-01T00:00:00.000Z', tags: entry.tags ?? [] },
+    weight: entry.weight ?? null,
+  }
+}
+
+/** 默认假后端：chunk / embed / summarize / owner 服务。 */
 export function defaultBridge(options = {}) {
   return (port, method, args) => {
     if (port === 'embedding' && method === 'chunk') {
@@ -83,9 +199,7 @@ export function defaultBridge(options = {}) {
     }
     if (port === 'compress' && method === 'summarize') {
       const summary = options.summary ?? { goal: 'merged-goal', facts: [] }
-      return {
-        value: { $directives: [{ kind: 'extern', payload: { ok: true, kind: 'summarize', summary } }] },
-      }
+      return { value: { ok: true, kind: 'summarize', summary } }
     }
     return { error: 'not_ready', message: 'no resolver' }
   }
@@ -102,7 +216,11 @@ export function startService(options = {}) {
   const frames = []
   const portCalls = []
   const stderr = []
-  const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(defaultBridge(options)(port, method, args)))
+  const shortMemory = options.shortMemory ?? createFakeShortMemory(options.memory)
+  const memory = options.memoryStore ?? createFakeMemory(options.entries, options.pinned)
+  const session = options.session ?? sessionFixture()
+  const fallback = defaultBridge(options)
+  const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
 
   child.stdout.on('data', (chunk) => {
@@ -111,7 +229,21 @@ export function startService(options = {}) {
       if (message.kind === 'port.call') {
         portCalls.push(message)
         Promise.resolve()
-          .then(() => bridge(message.port, message.method, message.args))
+          .then(() => {
+            if (message.port === 'short-memory') {
+              if (message.method === 'read') return { value: structuredClone(shortMemory.memory) }
+              if (message.method === 'apply') return { value: shortMemory.apply(message.args ?? {}) }
+            }
+            if (message.port === 'memory') {
+              const outcome = memory.call(message.method, message.args ?? {})
+              if (outcome === undefined) return { error: 'unknown_method', message: message.method }
+              return { value: outcome }
+            }
+            if (message.port === 'session' && message.method === 'read') {
+              return { value: structuredClone(session) }
+            }
+            return bridge(message.port, message.method, message.args)
+          })
           .then((outcome) => {
             if (!child.stdin.writable) return
             const frame = outcome.error
@@ -180,94 +312,11 @@ export function startService(options = {}) {
     portCalls,
     stderr,
     request,
+    shortMemory,
+    memory,
     hello: () => request('hello', { impl: 'memory-consolidate', gen: 'gen-1' }, 'manifest'),
     call: (method, args, env = FIXED_ENV) =>
       request('call', { port: 'memory-maintenance', method, args, env }, ['result', 'error']),
     close: () => child.stdin.end(),
   }
-}
-
-/** #3 body：两会话同属 w-1 + 一个已有工作区记忆（用于验证合并 / 去重 / sources 追加）。 */
-export function shortMemoryFixture() {
-  return {
-    version: 1,
-    sessions: {
-      'c-1': {
-        summary: { goal: 'G1', decisions: [], facts: ['f1', 'f2'], open_questions: [], files: [], next_steps: [] },
-        covered_upto: 'm1',
-        at: '2020-01-01T00:00:00.000Z',
-        expires_at: '2020-01-02T00:00:00.000Z',
-      },
-      'c-2': {
-        summary: { goal: 'G2', decisions: [], facts: ['f2', 'f3'], open_questions: [], files: [], next_steps: [] },
-        covered_upto: 'm2',
-        at: '2020-01-02T00:00:00.000Z',
-        expires_at: '2020-01-03T00:00:00.000Z',
-      },
-    },
-    workspaces: {
-      'w-1': {
-        summary: { goal: 'WG', decisions: [], facts: ['old'], open_questions: [], files: [] },
-        sources: ['c-0'],
-        at: '2020-01-01T00:00:00.000Z',
-      },
-    },
-  }
-}
-
-/** #11 body：会话 → 工作区归属。 */
-export function sessionFixture() {
-  return {
-    current: 'c-1',
-    conversations: [
-      { id: 'c-1', workspace_id: 'w-1' },
-      { id: 'c-2', workspace_id: 'w-1' },
-    ],
-  }
-}
-
-/** #21 body（空链）。 */
-export function memoryStoreFixture() {
-  return { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: 'granite-97m', dim: 384 } }
-}
-
-/** #21 单条目 body + refs（用于 L3 去重 / 淘汰 / 编辑）。 */
-export function memoryStoreWith(entry, overrides = {}) {
-  const hash = 'a'.repeat(64)
-  return {
-    body: {
-      tail: { def: hash },
-      count: 1,
-      deleted: {},
-      pinned: {},
-      model: { id: 'granite-97m', dim: 384 },
-      ...overrides,
-    },
-    refs: {
-      [hash]: {
-        id: entry.id ?? 'm-1',
-        text: entry.text ?? 'text',
-        meta: { source: 'manual', workspace: 'w-1', at: entry.at ?? '2023-01-01T00:00:00.000Z', tags: entry.tags ?? [] },
-        weight: entry.weight,
-        chunks: [],
-        prev: null,
-      },
-    },
-    hash,
-  }
-}
-
-/** 从计划值里取 batch 子操作与 extern 载荷。 */
-export function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-export function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-export function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
 }

@@ -1,42 +1,33 @@
 // 能力类 `memory-maintenance` 的方法表：consolidate / sweep / candidates / view / edit。
-// 只构造写计划（`$directives`）与结果值，不读投影、不落账、不自取时钟。
-// #3 L1/L2、#11 会话、#21 body + refs 由调用方入口 term / 宿主 periodic.reads 装配进 args（服务不读投影）。
-// 去重 / 切块经反向调用 #20；需要摘要时经反向调用 #19（失败即明确失败、不半写）。
+// L1/L2（short-memory）与 L3（memory-store）都是运行记录，已出世界：本服务经反向调用读写 owner 服务，
+// 不再构造世界写计划。去重 / 切块经反向调用 `embedding`；需要摘要时经反向调用 `compress`（persist:false）。
+// sweep 水位住宿主侧 ③（可重算）；服务不自取时钟。
 
 import { resolveParams } from './config.ts'
+import type { MaintenanceParams } from './config.ts'
 import {
   asString,
   asStringList,
-  dataGenSeqOf,
   errorValue,
-  externOnly,
   isRecord,
   isoAt,
   nowOf,
-  planOf,
-  pushBodyGen,
-  putOp,
   uniqueStrings,
 } from './plan.ts'
-import type { MaintenanceParams } from './config.ts'
 import {
-  asShortMemory,
-  countOf,
   deriveEntryId,
-  liveEntries,
   parseIso,
   recordAt,
   sessionsOf,
   stringArray,
-  tailHashOf,
   workspacesOf,
 } from './memory.ts'
 import type { LiveEntry } from './memory.ts'
-import { chunkText, dedupByCosine } from './vectors.ts'
+import { dedupByCosine } from './vectors.ts'
 import { atOrBefore, readWatermark, writeWatermark } from './watermark.ts'
 import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
-import type { CompressBackend, EmbeddingBackend } from './port-link.ts'
+import type { CompressBackend, EmbeddingBackend, MemoryBackend, SessionBackend, ShortMemoryBackend } from './port-link.ts'
 
 const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
 const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
@@ -45,22 +36,21 @@ const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
 export interface MaintenanceDeps {
   embedding: EmbeddingBackend
   compress: CompressBackend
+  shortMemory: ShortMemoryBackend
+  memory: MemoryBackend
+  session: SessionBackend
 }
 
 interface Context {
   args: Rec
   shortMemory: Rec
   session: Rec
-  memoryStore: Rec
-  refs: Rec
+  entries: LiveEntry[]
+  pinned: Rec
   params: MaintenanceParams
   model: string
   at: string
   now: number
-  /** #3 短记忆的数据世代下标（写补丁世代用；无 → null 写整份）。 */
-  shortBase: number | null
-  /** #21 记忆库的数据世代下标（写补丁世代用；无 → null 写整份）。 */
-  storeBase: number | null
 }
 
 function toFailure(err: unknown): { code: string; message: string } {
@@ -69,81 +59,39 @@ function toFailure(err: unknown): { code: string; message: string } {
   return { code: 'internal', message: err instanceof Error ? err.message : 'memory-maintenance failed' }
 }
 
-/** 解析 args（bag）为上下文；形态非法抛 `BadArgsError`（结构化 `bad_args`）。 */
-function parseContext(args: Json, env: CallEnv): Context {
-  if (!isRecord(args)) throw new BadArgsError('args must be an object')
-  const now = nowOf(env, args)
+/** 读 L1/L2（short-memory）、L3 存活条目 + pinned（memory-store）、会话归属（session）。 */
+async function loadState(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Context> {
+  const record = isRecord(args) ? args : {}
+  const shortMemory = await deps.shortMemory.read()
+  const session = await deps.session.read()
+  const listed = await deps.memory.list()
+  const rawEntries = Array.isArray(listed['entries']) ? (listed['entries'] as Json[]) : []
+  const entries: LiveEntry[] = []
+  for (const item of rawEntries) {
+    if (!isRecord(item) || typeof item['id'] !== 'string') continue
+    const meta = isRecord(item['meta']) ? (item['meta'] as Rec) : {}
+    entries.push({
+      hash: item['id'] as string,
+      id: item['id'] as string,
+      text: typeof item['text'] === 'string' ? (item['text'] as string) : '',
+      meta,
+      weight: typeof item['weight'] === 'number' ? (item['weight'] as number) : undefined,
+      at: asString(meta['at']) ?? '',
+    })
+  }
+  const pinned = isRecord(listed['pinned']) ? (listed['pinned'] as Rec) : {}
+  const now = nowOf(env, record)
   return {
-    args,
-    shortMemory: asShortMemory(args['short_memory']),
-    session: isRecord(args['session']) ? (args['session'] as Rec) : {},
-    memoryStore: isRecord(args['memory_store']) ? (args['memory_store'] as Rec) : {},
-    refs: isRecord(args['memory_store_refs']) ? (args['memory_store_refs'] as Rec) : {},
-    params: resolveParams(args),
-    model: asString(args['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
+    args: record,
+    shortMemory,
+    session,
+    entries,
+    pinned,
+    params: resolveParams(record),
+    model: asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
     at: isoAt(now),
     now,
-    shortBase:
-      dataGenSeqOf(args['short_memory_data_gen']) ??
-      (isRecord(args['short_memory']) ? dataGenSeqOf(args['short_memory']['data_gen']) : null),
-    storeBase:
-      dataGenSeqOf(args['memory_store_data_gen']) ??
-      (isRecord(args['memory_store']) ? dataGenSeqOf(args['memory_store']['data_gen']) : null),
   }
-}
-
-/** #21 新 body：保留 tail / count / deleted / pinned / model，按写入改对应字段。 */
-function memoryStoreBody(input: {
-  body: Rec
-  tailRef: Json
-  count: number
-  deleted?: Rec
-  pinned?: Rec
-}): Rec {
-  const body: Rec = {
-    tail: input.tailRef === null ? null : { def: input.tailRef },
-    count: input.count,
-    deleted: input.deleted ?? (isRecord(input.body['deleted']) ? (input.body['deleted'] as Rec) : {}),
-    pinned: input.pinned ?? (isRecord(input.body['pinned']) ? (input.body['pinned'] as Rec) : {}),
-  }
-  if (isRecord(input.body['model'])) body['model'] = input.body['model']
-  return body
-}
-
-/** #21 条目 def（chunks 只存偏移；prev 为字面哈希或批内占位符）。 */
-function buildEntry(input: {
-  id: string
-  text: string
-  meta: Rec
-  weight: number | undefined
-  chunks: Array<{ index: number; start: number; end: number }>
-  prev: Json
-}): Rec {
-  const entry: Rec = {
-    id: input.id,
-    text: input.text,
-    meta: input.meta,
-    chunks: input.chunks.map((chunk) => ({ index: chunk.index, start: chunk.start, end: chunk.end })),
-    prev: input.prev === null ? null : { def: input.prev },
-  }
-  if (input.weight !== undefined) entry['weight'] = input.weight
-  return entry
-}
-
-/** 追加 L3 条目写（entry def → 新 body → add_gen），占位符按批内下标机械接链。 */
-function appendL3(ops: Json[], body: Rec, entries: Rec[], base: number | null): void {
-  let prev: Json = tailHashOf(body)
-  for (const entry of entries) {
-    ops.push(putOp({ ...entry, prev: prev === null ? null : { def: prev } }))
-    prev = { $n: ops.length - 1 }
-  }
-  const next = memoryStoreBody({ body, tailRef: prev, count: countOf(body) + entries.length })
-  pushBodyGen(ops, 'memory-store', body, next, base)
-}
-
-/** 只写 #21 body（删除 / 置顶 / 编辑的 body 变更路径）。 */
-function appendL3Body(ops: Json[], prev: Rec, next: Rec, base: number | null): void {
-  pushBodyGen(ops, 'memory-store', prev, next, base)
 }
 
 /** #11 会话 → 工作区归属（按 conversations[].workspace_id）。 */
@@ -185,7 +133,7 @@ interface L1Record {
   summary: Rec
 }
 
-/** 分组 L1：按工作区归属；无归属（#11 未映射且无显式 workspace）的会话跳过，不盲合并。 */
+/** 分组 L1：按工作区归属；无归属（会话未映射且无显式 workspace）的会话跳过，不盲合并。 */
 function groupL1(ctx: Context): Map<string, L1Record[]> {
   const sessions = sessionsOf(ctx.shortMemory)
   const wsMap = conversationWorkspaceMap(ctx.session)
@@ -210,7 +158,7 @@ function groupL1(ctx: Context): Map<string, L1Record[]> {
   return groups
 }
 
-/** 需要摘要时 eff #19：把合并后的列表交给 compress.summarize，取回结构化 goal / facts。 */
+/** 需要摘要时 eff #19：把合并后的列表交给 compress.summarize（persist:false，只算不写）。 */
 async function summarizeWorkspace(
   ctx: Context,
   deps: MaintenanceDeps,
@@ -220,10 +168,10 @@ async function summarizeWorkspace(
 ): Promise<{ goal: string; facts: string[] } | { error: { code: string; message: string } }> {
   try {
     const payload = await deps.compress.summarize({
-      memory: ctx.shortMemory,
       conversation: l1s[0]?.id ?? '',
       workspace,
       mode: 'algorithmic',
+      persist: false,
       goal: asString(merged['goal']) ?? '',
       facts: stringArray(merged['facts']),
       decisions: stringArray(merged['decisions']),
@@ -238,17 +186,18 @@ async function summarizeWorkspace(
   }
 }
 
-/** L1 合并进 L2（去重向量由 #20 提供）→ L2 高价值项固化进 L3 → 产计划。 */
+/** L1 合并进 L2（去重向量由 #20 提供）→ L2 高价值项固化进 L3 → 写 owner 服务。 */
 async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = parseContext(args, env)
-  const summarize = args['summarize'] === true
+  const ctx = await loadState(args, env, deps)
+  const summarize = ctx.args['summarize'] === true
   const groups = groupL1(ctx)
   if (groups.size === 0) {
-    return externOnly({ ok: true, kind: 'consolidate', at: ctx.at, no_input: true, merged: [], solidified: [] })
+    return { ok: true, kind: 'consolidate', at: ctx.at, no_input: true, merged: [], solidified: [] }
   }
 
   const existingWorkspaces = workspacesOf(ctx.shortMemory)
   const nextWorkspaces: Rec = { ...existingWorkspaces }
+  const changedWorkspaces: Rec = {}
   const mergedPayload: Rec[] = []
   const sourcesByWorkspace = new Map<string, string[]>()
   const nextSummaries = new Map<string, Rec>()
@@ -301,6 +250,7 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
     const nextL2: Rec = { ...existingL2, summary: nextSummary, sources, at: ctx.at }
     if (l2Changed(existingL2, nextL2)) {
       nextWorkspaces[workspace] = nextL2
+      changedWorkspaces[workspace] = nextL2
       mergedPayload.push({ workspace, facts: stringArray(nextSummary['facts']).length, sources: added })
     }
   }
@@ -326,11 +276,10 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
     }
   }
 
-  const existingEntries = liveEntries(ctx.memoryStore, ctx.refs)
   let toAdd: Array<{ workspace: string; text: string; weight: number }> = []
   if (candidates.length > 0) {
     const items = [
-      ...existingEntries.map((entry) => ({ key: `l3:${entry.id}`, text: entry.text, at: entry.at, priority: 0 })),
+      ...ctx.entries.map((entry) => ({ key: `l3:${entry.id}`, text: entry.text, at: entry.at, priority: 0 })),
       ...candidates.map((candidate) => ({
         key: `new:${candidate.workspace}:${candidate.text}`,
         text: candidate.text,
@@ -344,30 +293,24 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
   }
 
   if (!shortChanged && toAdd.length === 0) {
-    return externOnly({ ok: true, kind: 'consolidate', at: ctx.at, merged: [], solidified: [], no_change: true })
+    return { ok: true, kind: 'consolidate', at: ctx.at, merged: [], solidified: [], no_change: true }
   }
 
   const entries: Rec[] = []
   const solidifiedPayload: Rec[] = []
   for (const candidate of toAdd) {
-    const chunks = await chunkText(candidate.text, deps.embedding)
     const id = deriveEntryId(candidate.workspace, candidate.text, ctx.at)
     const sources = sourcesByWorkspace.get(candidate.workspace) ?? []
     const meta: Rec = { source: 'consolidate', workspace: candidate.workspace, at: ctx.at, tags: [] }
     if (sources.length > 0) meta['session'] = sources[0]
-    entries.push(
-      buildEntry({ id, text: candidate.text, meta, weight: candidate.weight, chunks, prev: null }),
-    )
+    entries.push({ id, text: candidate.text, meta, weight: candidate.weight })
     solidifiedPayload.push({ id, workspace: candidate.workspace, weight: candidate.weight, text: candidate.text })
   }
 
-  const ops: Json[] = []
-  if (shortChanged) {
-    pushBodyGen(ops, 'short-memory', ctx.shortMemory, { ...ctx.shortMemory, workspaces: nextWorkspaces }, ctx.shortBase)
-  }
-  if (entries.length > 0) appendL3(ops, ctx.memoryStore, entries, ctx.storeBase)
+  if (shortChanged) await deps.shortMemory.apply({ set_workspaces: changedWorkspaces })
+  if (entries.length > 0) await deps.memory.append({ entries })
 
-  return planOf(ops, {
+  return {
     ok: true,
     kind: 'consolidate',
     at: ctx.at,
@@ -375,61 +318,46 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
     summary_used: summarize,
     merged: mergedPayload,
     solidified: solidifiedPayload,
-  })
+  }
 }
 
-/** 待删 L1（到期 24h）/ L2（超容量）/ L3（低权重、超容量，跳过 pinned）→ 产删除计划。 */
-async function sweep(args: Json, env: CallEnv): Promise<Json> {
-  const ctx = parseContext(args, env)
-  const explicitCursor = asString(args['cursor'])
+/** 待删 L1（到期 24h）/ L2（超容量）/ L3（低权重、超容量，跳过 pinned）→ 写 owner 服务。 */
+async function sweep(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
+  const ctx = await loadState(args, env, deps)
+  const explicitCursor = asString(ctx.args['cursor'])
   const cursor = explicitCursor ?? readWatermark()
 
   const sessions = sessionsOf(ctx.shortMemory)
-  const nextSessions: Rec = {}
   const l1Deleted: string[] = []
   for (const conversationId of Object.keys(sessions).sort()) {
     const record = sessions[conversationId]
-    if (!isRecord(record)) {
-      nextSessions[conversationId] = record
-      continue
-    }
+    if (!isRecord(record)) continue
     const expiresAt = parseIso(record['expires_at'])
     const at = parseIso(record['at'])
     const deadline = expiresAt ?? (at === null ? null : at + ctx.params.l1TtlMs)
-    if (deadline !== null && deadline <= ctx.now) {
-      l1Deleted.push(conversationId)
-      continue
-    }
-    nextSessions[conversationId] = record
+    if (deadline !== null && deadline <= ctx.now) l1Deleted.push(conversationId)
   }
 
   const workspaces = workspacesOf(ctx.shortMemory)
-  const nextWorkspaces: Rec = {}
+  const trimmedWorkspaces: Rec = {}
   const l2Trimmed: Rec[] = []
   for (const workspace of Object.keys(workspaces).sort()) {
     const record = workspaces[workspace]
-    if (!isRecord(record)) {
-      nextWorkspaces[workspace] = record
-      continue
-    }
+    if (!isRecord(record)) continue
     const summary = isRecord(record['summary']) ? (record['summary'] as Rec) : {}
     const facts = stringArray(summary['facts'])
     if (facts.length > ctx.params.l2Capacity) {
       const keep = facts.slice(facts.length - ctx.params.l2Capacity)
       l2Trimmed.push({ workspace, removed: facts.length - keep.length })
-      nextWorkspaces[workspace] = { ...record, summary: { ...summary, facts: keep } }
-    } else {
-      nextWorkspaces[workspace] = record
+      trimmedWorkspaces[workspace] = { ...record, summary: { ...summary, facts: keep } }
     }
   }
   const shortChanged = l1Deleted.length > 0 || l2Trimmed.length > 0
 
-  const live = liveEntries(ctx.memoryStore, ctx.refs)
-  const pinned = isRecord(ctx.memoryStore['pinned']) ? (ctx.memoryStore['pinned'] as Rec) : {}
   const l3Deleted: Array<{ id: string; reason: string; weight: number; at: string }> = []
   const selected = new Set<string>()
-  for (const entry of live) {
-    if (pinned[entry.id] === true) continue
+  for (const entry of ctx.entries) {
+    if (ctx.pinned[entry.id] === true) continue
     if (cursor !== null && entry.at !== '' && atOrBefore(entry.at, cursor)) continue
     const weight = entry.weight ?? 1
     if (weight < ctx.params.candidateThreshold) {
@@ -437,10 +365,10 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
       selected.add(entry.id)
     }
   }
-  const need = live.length - l3Deleted.length - ctx.params.l3Capacity
+  const need = ctx.entries.length - l3Deleted.length - ctx.params.l3Capacity
   if (need > 0) {
-    const rest = live
-      .filter((entry) => pinned[entry.id] !== true && !selected.has(entry.id))
+    const rest = ctx.entries
+      .filter((entry) => ctx.pinned[entry.id] !== true && !selected.has(entry.id))
       .sort((left, right) => {
         const lw = left.weight ?? 1
         const rw = right.weight ?? 1
@@ -458,7 +386,7 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
     // 无写计划可落账：此时推进水位安全（没有待落账删除会被跳过）。
     // 调用方显式给 cursor 时不改本地水位，避免污染后续无 cursor 的调用。
     if (explicitCursor === null) writeWatermark(ctx.at)
-    return externOnly({
+    return {
       ok: true,
       kind: 'sweep',
       at: ctx.at,
@@ -467,39 +395,19 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
       l3_deleted: [],
       cursor_next: ctx.at,
       no_changes: true,
-    })
+    }
   }
 
-  // 有写计划：水位不在此处推进——计划未落账时，同输入重跑必须仍产出同一删除集。
-  // 新水位随 `cursor_next` 返回，由调用方在计划落账后自行持久化。
-
-  const ops: Json[] = []
+  // 有写：水位不在此处推进——写入失败时同输入重跑必须仍产出同一删除集。
   if (shortChanged) {
-    pushBodyGen(
-      ops,
-      'short-memory',
-      ctx.shortMemory,
-      { ...ctx.shortMemory, sessions: nextSessions, workspaces: nextWorkspaces },
-      ctx.shortBase,
-    )
+    const applyArgs: Rec = {}
+    if (l1Deleted.length > 0) applyArgs['del_sessions'] = l1Deleted
+    if (l2Trimmed.length > 0) applyArgs['set_workspaces'] = trimmedWorkspaces
+    await deps.shortMemory.apply(applyArgs)
   }
-  if (l3Changed) {
-    const deleted = { ...(isRecord(ctx.memoryStore['deleted']) ? (ctx.memoryStore['deleted'] as Rec) : {}) }
-    for (const item of l3Deleted) deleted[item.id] = ctx.at
-    appendL3Body(
-      ops,
-      ctx.memoryStore,
-      memoryStoreBody({
-        body: ctx.memoryStore,
-        tailRef: tailHashOf(ctx.memoryStore),
-        count: countOf(ctx.memoryStore),
-        deleted,
-      }),
-      ctx.storeBase,
-    )
-  }
+  if (l3Changed) await deps.memory.remove({ ids: l3Deleted.map((item) => item.id), at: ctx.at })
 
-  return planOf(ops, {
+  return {
     ok: true,
     kind: 'sweep',
     at: ctx.at,
@@ -507,12 +415,12 @@ async function sweep(args: Json, env: CallEnv): Promise<Json> {
     l2_trimmed: l2Trimmed,
     l3_deleted: l3Deleted.map((item) => ({ id: item.id, reason: item.reason })),
     cursor_next: ctx.at,
-  })
+  }
 }
 
-/** 只读：回「过期 / 低价值」候选列表，不删、不产写。 */
-async function candidates(args: Json, env: CallEnv): Promise<Json> {
-  const ctx = parseContext(args, env)
+/** 只读：回「过期 / 低价值」候选列表，不删、不写。 */
+async function candidates(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
+  const ctx = await loadState(args, env, deps)
   const out: Rec[] = []
   const sessions = sessionsOf(ctx.shortMemory)
   for (const conversationId of Object.keys(sessions).sort()) {
@@ -541,9 +449,8 @@ async function candidates(args: Json, env: CallEnv): Promise<Json> {
       })
     }
   }
-  const pinned = isRecord(ctx.memoryStore['pinned']) ? (ctx.memoryStore['pinned'] as Rec) : {}
-  for (const entry of liveEntries(ctx.memoryStore, ctx.refs)) {
-    if (pinned[entry.id] === true) continue
+  for (const entry of ctx.entries) {
+    if (ctx.pinned[entry.id] === true) continue
     const weight = entry.weight ?? 1
     if (weight < ctx.params.candidateThreshold) {
       out.push({
@@ -560,8 +467,8 @@ async function candidates(args: Json, env: CallEnv): Promise<Json> {
 }
 
 /** 只读：回 L1 / L2 / L3 三档（L3 字段与 #21 条目一致 + L1 剩余 TTL）。 */
-async function view(args: Json, env: CallEnv): Promise<Json> {
-  const ctx = parseContext(args, env)
+async function view(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
+  const ctx = await loadState(args, env, deps)
   const l1: Rec[] = []
   const sessions = sessionsOf(ctx.shortMemory)
   for (const conversationId of Object.keys(sessions).sort()) {
@@ -590,8 +497,7 @@ async function view(args: Json, env: CallEnv): Promise<Json> {
       sources: stringArray(record['sources']),
     })
   }
-  const pinned = isRecord(ctx.memoryStore['pinned']) ? (ctx.memoryStore['pinned'] as Rec) : {}
-  const l3 = liveEntries(ctx.memoryStore, ctx.refs).map((entry) => ({
+  const l3 = ctx.entries.map((entry) => ({
     id: entry.id,
     text: entry.text,
     at: entry.at,
@@ -599,7 +505,7 @@ async function view(args: Json, env: CallEnv): Promise<Json> {
     source: asString(entry.meta['source']),
     workspace: asString(entry.meta['workspace']),
     weight: entry.weight ?? null,
-    pinned: pinned[entry.id] === true,
+    pinned: ctx.pinned[entry.id] === true,
   }))
   return { ok: true, kind: 'view', at: ctx.at, l1, l2, l3 }
 }
@@ -608,95 +514,42 @@ function findEntry(entries: LiveEntry[], id: string): LiveEntry | null {
   return entries.find((entry) => entry.id === id) ?? null
 }
 
-/** L3 编辑：删除 = body.deleted；置顶 = body.pinned；文本编辑 = put 新条目 def + 新 body。 */
-async function editL3(
-  ctx: Context,
-  action: string,
-  id: string,
-  patch: Rec,
-  deps: MaintenanceDeps,
-): Promise<Json> {
-  const entries = liveEntries(ctx.memoryStore, ctx.refs)
-  const existing = findEntry(entries, id)
+/** L3 编辑：删除 / 置顶 / 文本编辑经反向调用 memory-store 写自有存储。 */
+async function editL3(ctx: Context, action: string, id: string, patch: Rec, deps: MaintenanceDeps): Promise<Json> {
+  const existing = findEntry(ctx.entries, id)
   if (existing === null) {
-    return externOnly({ ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' })
+    return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
   }
-  const ops: Json[] = []
   if (action === 'delete') {
-    const deleted = { ...(isRecord(ctx.memoryStore['deleted']) ? (ctx.memoryStore['deleted'] as Rec) : {}) }
-    deleted[id] = ctx.at
-    appendL3Body(
-      ops,
-      ctx.memoryStore,
-      memoryStoreBody({
-        body: ctx.memoryStore,
-        tailRef: tailHashOf(ctx.memoryStore),
-        count: countOf(ctx.memoryStore),
-        deleted,
-      }),
-      ctx.storeBase,
-    )
-    return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, deleted_at: ctx.at })
+    await deps.memory.remove({ ids: [id], at: ctx.at })
+    return { ok: true, kind: 'edit', action, layer: 'l3', id, deleted_at: ctx.at }
   }
   if (action === 'pin') {
-    const pinned = { ...(isRecord(ctx.memoryStore['pinned']) ? (ctx.memoryStore['pinned'] as Rec) : {}) }
-    if (patch['pinned'] === false) delete pinned[id]
-    else pinned[id] = true
-    appendL3Body(
-      ops,
-      ctx.memoryStore,
-      memoryStoreBody({
-        body: ctx.memoryStore,
-        tailRef: tailHashOf(ctx.memoryStore),
-        count: countOf(ctx.memoryStore),
-        pinned,
-      }),
-      ctx.storeBase,
-    )
-    return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, pinned: patch['pinned'] !== false })
+    const pinned = patch['pinned'] !== false
+    await deps.memory.pin({ id, pinned })
+    return { ok: true, kind: 'edit', action, layer: 'l3', id, pinned }
   }
   const text = asString(patch['text'])
   if (text === null) throw new BadArgsError('patch.text is required for text edit')
-  const chunks = await chunkText(text, deps.embedding)
-  const meta: Rec = { ...existing.meta, at: ctx.at }
-  const entry = buildEntry({ id, text, meta, weight: existing.weight, chunks, prev: null })
-  ops.push(putOp({ ...entry, prev: tailHashOf(ctx.memoryStore) === null ? null : { def: tailHashOf(ctx.memoryStore) } }))
-  const next = memoryStoreBody({
-    body: ctx.memoryStore,
-    tailRef: { $n: 0 },
-    count: countOf(ctx.memoryStore) + 1,
-  })
-  pushBodyGen(ops, 'memory-store', ctx.memoryStore, next, ctx.storeBase)
-  return planOf(ops, { ok: true, kind: 'edit', action, layer: 'l3', id, text })
+  const result = await deps.memory.edit({ id, text, meta: { ...existing.meta, at: ctx.at }, weight: existing.weight })
+  if (result['ok'] === false) return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
+  return { ok: true, kind: 'edit', action, layer: 'l3', id, text }
 }
 
 /** L1 / L2 编辑：删除整条；文本编辑合并 summary（置顶对 #3 不适用）。 */
-function editShort(ctx: Context, action: string, layer: string, id: string, patch: Rec): Json {
+async function editShort(ctx: Context, action: string, layer: string, id: string, patch: Rec, deps: MaintenanceDeps): Promise<Json> {
   const isL1 = layer === 'l1'
   const container = isL1 ? sessionsOf(ctx.shortMemory) : workspacesOf(ctx.shortMemory)
   const existing = container[id]
   if (!isRecord(existing)) {
-    return externOnly({ ok: false, kind: 'edit', layer, id, reason: 'not_found' })
+    return { ok: false, kind: 'edit', layer, id, reason: 'not_found' }
   }
   if (action === 'pin') {
-    return externOnly({ ok: false, kind: 'edit', layer, id, reason: 'unsupported_layer' })
+    return { ok: false, kind: 'edit', layer, id, reason: 'unsupported_layer' }
   }
   if (action === 'delete') {
-    const next: Rec = { ...container }
-    delete next[id]
-    const body: Rec = isL1
-      ? { ...ctx.shortMemory, sessions: next }
-      : { ...ctx.shortMemory, workspaces: next }
-    const ops: Json[] = []
-    pushBodyGen(ops, 'short-memory', ctx.shortMemory, body, ctx.shortBase)
-    return planOf(ops, {
-      ok: true,
-      kind: 'edit',
-      action,
-      layer,
-      id,
-      deleted_at: ctx.at,
-    })
+    await deps.shortMemory.apply(isL1 ? { del_sessions: [id] } : { del_workspaces: [id] })
+    return { ok: true, kind: 'edit', action, layer, id, deleted_at: ctx.at }
   }
   const summary = isRecord(existing['summary']) ? (existing['summary'] as Rec) : {}
   const incoming = isRecord(patch['summary']) ? (patch['summary'] as Rec) : {}
@@ -704,29 +557,18 @@ function editShort(ctx: Context, action: string, layer: string, id: string, patc
   const text = asString(patch['text'])
   if (text !== null) nextSummary['goal'] = text
   const nextRecord: Rec = { ...existing, summary: nextSummary }
-  const next: Rec = { ...container, [id]: nextRecord }
-  const body: Rec = isL1
-    ? { ...ctx.shortMemory, sessions: next }
-    : { ...ctx.shortMemory, workspaces: next }
-  const ops: Json[] = []
-  pushBodyGen(ops, 'short-memory', ctx.shortMemory, body, ctx.shortBase)
-  return planOf(ops, {
-    ok: true,
-    kind: 'edit',
-    action,
-    layer,
-    id,
-  })
+  await deps.shortMemory.apply(isL1 ? { set_sessions: { [id]: nextRecord } } : { set_workspaces: { [id]: nextRecord } })
+  return { ok: true, kind: 'edit', action, layer, id }
 }
 
-/** UI / agent 的改 / 删 / 置顶：收入口 term 传入的槽体与 #3 / #21 片段 → 出计划。 */
+/** UI / agent 的改 / 删 / 置顶：经反向调用读写 owner 服务。 */
 async function edit(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = parseContext(args, env)
-  const slot = isRecord(args['slot']) ? (args['slot'] as Rec) : {}
-  const action = asString(args['action']) ?? asString(slot['action'])
-  const layer = asString(args['layer']) ?? asString(slot['layer'])
-  const id = asString(args['id']) ?? asString(slot['id'])
-  const patch = isRecord(args['patch']) ? (args['patch'] as Rec) : isRecord(slot['patch']) ? (slot['patch'] as Rec) : {}
+  const ctx = await loadState(args, env, deps)
+  const slot = isRecord(ctx.args['slot']) ? (ctx.args['slot'] as Rec) : {}
+  const action = asString(ctx.args['action']) ?? asString(slot['action'])
+  const layer = asString(ctx.args['layer']) ?? asString(slot['layer'])
+  const id = asString(ctx.args['id']) ?? asString(slot['id'])
+  const patch = isRecord(ctx.args['patch']) ? (ctx.args['patch'] as Rec) : isRecord(slot['patch']) ? (slot['patch'] as Rec) : {}
   if (action === null || layer === null || id === null) {
     throw new BadArgsError('action, layer and id are required')
   }
@@ -737,7 +579,7 @@ async function edit(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Js
     throw new BadArgsError('layer must be l1 / l2 / l3')
   }
   if (layer === 'l3') return editL3(ctx, action, id, patch, deps)
-  return editShort(ctx, action, layer, id, patch)
+  return editShort(ctx, action, layer, id, patch, deps)
 }
 
 /** 失败作数据：后端不可用 / 内部异常回结构化错误（BadArgsError 继续上抛为 bad_args）。 */
@@ -751,13 +593,13 @@ async function guard(run: () => Promise<Json>): Promise<Json> {
   }
 }
 
-/** 构造方法表（依赖注入：向量化 / 摘要后端由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：向量化 / 摘要 / owner 服务后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: MaintenanceDeps): Record<string, Handler> {
   return {
     consolidate: (args: Json, env: CallEnv): Promise<Json> => guard(() => consolidate(args, env, deps)),
-    sweep: (args: Json, env: CallEnv): Promise<Json> => guard(() => sweep(args, env)),
-    candidates: (args: Json, env: CallEnv): Promise<Json> => guard(() => candidates(args, env)),
-    view: (args: Json, env: CallEnv): Promise<Json> => guard(() => view(args, env)),
+    sweep: (args: Json, env: CallEnv): Promise<Json> => guard(() => sweep(args, env, deps)),
+    candidates: (args: Json, env: CallEnv): Promise<Json> => guard(() => candidates(args, env, deps)),
+    view: (args: Json, env: CallEnv): Promise<Json> => guard(() => view(args, env, deps)),
     edit: (args: Json, env: CallEnv): Promise<Json> => guard(() => edit(args, env, deps)),
   }
 }

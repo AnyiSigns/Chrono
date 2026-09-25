@@ -1,14 +1,32 @@
 {
   "identity": "short-memory",
   "schema": "schema/short-memory.json",
-  "implements": [],
-  "methods": {},
+  "implements": ["short-memory"],
+  "methods": {
+    "short-memory": ["read", "read_session", "read_workspace", "apply", "pending"]
+  },
   "pins": {},
-  "start": "",
+  "start": "node execute/main.ts",
+  "exclusive": ["data"],
   "protocol": "1",
-  "restart": {},
-  "health": {},
-  "state": "recomputable",
-  "members": [{ "kind": "schema", "path": "schema/" }],
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "short-memory.read",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "durable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
   "commands": []
 }

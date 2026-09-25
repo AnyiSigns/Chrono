@@ -17,19 +17,30 @@ import {
   truncate,
 } from '../execute/summary.ts'
 import { BadArgsError } from '../execute/types.ts'
-import { memoryFixture, opsOf, externOf, directivesOf } from './driver.mjs'
+import { memoryFixture } from './driver.mjs'
 
-/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
-function applyOps(base, ops) {
-  const doc = structuredClone(base)
-  for (const op of ops) {
-    let node = doc
-    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
-    const last = op.path[op.path.length - 1]
-    if (op.op === 'delete') delete node[last]
-    else node[last] = structuredClone(op.value)
+/** 内存假 short-memory 后端：read 回整份、apply 逐键置 / 删。 */
+function fakeShortMemory(initial = memoryFixture()) {
+  const memory = structuredClone(initial)
+  return {
+    memory,
+    backend: {
+      read: async () => structuredClone(memory),
+      apply: async (args) => {
+        for (const [id, record] of Object.entries(args?.set_sessions ?? {})) {
+          if (record === null) delete memory.sessions[id]
+          else memory.sessions[id] = record
+        }
+        for (const id of args?.del_sessions ?? []) delete memory.sessions[id]
+        for (const [id, record] of Object.entries(args?.set_workspaces ?? {})) {
+          if (record === null) delete memory.workspaces[id]
+          else memory.workspaces[id] = record
+        }
+        for (const id of args?.del_workspaces ?? []) delete memory.workspaces[id]
+        return { ok: true, changed: 1 }
+      },
+    },
   }
-  return doc
 }
 
 const ENV = { run: 'r', thread: 't', now: 1_700_000_000_000 }
@@ -61,7 +72,6 @@ test('truncate 按 Unicode 码点截断，不劈代理对', () => {
   const cut = truncate(astral, 1)
   assert.equal(cut, '😀')
   assert.equal(Array.from(cut).length, 1)
-  // 对照：UTF-16 码元切分会得到孤立高代理项
   assert.notEqual(cut, astral.slice(0, 1))
   assert.equal(astral.slice(0, 1), '\uD83D')
 })
@@ -107,7 +117,6 @@ test('mergeSummaryLists：去重后追加、goal 新值优先', async () => {
   assert.deepEqual(merged.summary.facts, ['a', 'b', 'c'])
   assert.equal(merged.dedup, 'text')
 
-  // 混合路径：任一次判定走了向量即报 vector（与 combineDedup 同口径）
   const mixed = await mergeSummaryLists(existing, incoming, async (items, reference) => ({
     accepted: items.filter((item) => !reference.includes(item)),
     dedup: items.length > 0 && reference.length > 0 ? 'vector' : 'text',
@@ -162,158 +171,95 @@ test('semanticSummary：模型出 JSON 即用；解析失败 / 缺 config 回结
   assert.equal(missing.error.code, 'model_config_required')
 })
 
-test('summarize（algorithmic）：写计划 put + add_gen，保留其他会话 / 工作区', async () => {
-  const handlers = createHandlers({})
-  const memory = memoryFixture()
+test('summarize（algorithmic）：写 L1 到 short-memory，保留其他会话 / 工作区', async () => {
+  const store = fakeShortMemory()
+  const handlers = createHandlers({ shortMemory: store.backend })
   const value = await handlers.summarize(
-    { memory, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
+    { conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
     ENV,
   )
-  const ops = opsOf(value)
-  assert.deepEqual(ops.map((op) => op.op), ['put', 'add_gen'])
-  assert.equal(ops[1].args.id, 'short-memory')
-  const body = ops[0].args.body
-  assert.equal(body.sessions['c-1'].summary.goal, 'G')
-  assert.equal(body.sessions['c-1'].covered_upto, 'msg-9')
-  assert.equal(body.sessions['c-1'].expires_at, EXPIRES)
-  assert.deepEqual(body.sessions['c-keep'], memory.sessions['c-keep'])
-  assert.deepEqual(body.workspaces, memory.workspaces)
-  const payload = externOf(value)
-  assert.equal(payload.ok, true)
-  assert.equal(payload.kind, 'summarize')
-  assert.equal(payload.covered_upto, 'msg-9')
+  assert.equal(value.ok, true)
+  assert.equal(value.kind, 'summarize')
+  assert.equal(value.covered_upto, 'msg-9')
+  assert.equal(store.memory.sessions['c-1'].summary.goal, 'G')
+  assert.equal(store.memory.sessions['c-1'].covered_upto, 'msg-9')
+  assert.equal(store.memory.sessions['c-1'].expires_at, EXPIRES)
+  assert.deepEqual(store.memory.sessions['c-keep'], memoryFixture().sessions['c-keep'])
+  assert.deepEqual(store.memory.workspaces, memoryFixture().workspaces)
+  assert.equal(value.$directives, undefined)
 })
 
-test('补丁世代：summarize 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
-  const handlers = createHandlers({})
-  const memory = memoryFixture()
-  const full = await handlers.summarize(
-    { memory, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
-    ENV,
-  )
-  const fullBody = opsOf(full)[0].args.body
-  const value = await handlers.summarize(
-    {
-      memory,
-      conversation: 'c-1',
-      covered_upto: 'msg-9',
-      goal: 'G',
-      facts: ['f1', 'f2'],
-      memory_data_gen: { seq: 3, payload: 'a'.repeat(64) },
-    },
-    ENV,
-  )
-  const ops = opsOf(value)
-  assert.equal(ops[1].args.base, 3)
-  assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
-  assert.deepEqual(applyOps(memory, ops[0].args.body.ops), fullBody)
-})
-
-test('补丁世代：summarize 空改动回落整份', async () => {
-  const handlers = createHandlers({})
-  const memory = memoryFixture()
-  // 同输入第二次：目标内容与既有 L1 一致 → 补丁为空 → 回落整份。
-  const first = await handlers.summarize(
-    { memory, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
-    ENV,
-  )
-  const next = opsOf(first)[0].args.body
-  const second = await handlers.summarize(
-    { memory: next, conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'], memory_data_gen: { seq: 3 } },
-    ENV,
-  )
-  const ops = opsOf(second)
-  assert.equal(ops[1].args.base, undefined)
-  assert.equal(Array.isArray(ops[0].args.body.ops), false)
-})
-
-test('summarize：缺 memory / conversation → BadArgsError', async () => {
-  const handlers = createHandlers({})
-  await assert.rejects(() => handlers.summarize({ conversation: 'c' }, ENV), BadArgsError)
-  await assert.rejects(() => handlers.summarize({ memory: memoryFixture() }, ENV), BadArgsError)
+test('summarize：缺 conversation → BadArgsError', async () => {
+  const store = fakeShortMemory()
+  const handlers = createHandlers({ shortMemory: store.backend })
+  await assert.rejects(() => handlers.summarize({}, ENV), BadArgsError)
 })
 
 test('compact：写 L1 并触发 extract 写 L2（2–3 条）', async () => {
-  const handlers = createHandlers({})
+  const store = fakeShortMemory()
+  const handlers = createHandlers({ shortMemory: store.backend })
   const value = await handlers.compact(
-    {
-      memory: memoryFixture(),
-      conversation: 'c-1',
-      workspace: 'w-1',
-      goal: 'G',
-      facts: ['one', 'two', 'three'],
-      decisions: ['decide'],
-    },
+    { conversation: 'c-1', workspace: 'w-1', goal: 'G', facts: ['one', 'two', 'three'], decisions: ['decide'] },
     ENV,
   )
-  const body = opsOf(value)[0].args.body
-  assert.equal(body.sessions['c-1'].summary.goal, 'G')
-  const items = body.workspaces['w-1'].summary.facts
+  assert.equal(store.memory.sessions['c-1'].summary.goal, 'G')
+  const items = store.memory.workspaces['w-1'].summary.facts
   assert.ok(items.length >= 2 && items.length <= 3, `items=${items.length}`)
-  assert.deepEqual(body.workspaces['w-keep'], memoryFixture().workspaces['w-keep'])
-  const payload = externOf(value)
-  assert.equal(payload.kind, 'compact')
-  assert.ok(payload.items.length >= 2 && payload.items.length <= 3)
+  assert.deepEqual(store.memory.workspaces['w-keep'], memoryFixture().workspaces['w-keep'])
+  assert.equal(value.kind, 'compact')
+  assert.ok(value.items.length >= 2 && value.items.length <= 3)
 })
 
-test('extract：2–3 条不重复；全重复只回 extern', async () => {
-  const handlers = createHandlers({})
-  const memory = memoryFixture()
-  memory.workspaces['w-1'] = {
+test('extract：2–3 条不重复；全重复回 all_duplicate', async () => {
+  const store = fakeShortMemory()
+  store.memory.workspaces['w-1'] = {
     summary: { goal: '', decisions: [], facts: ['dup', 'dup2'], open_questions: [], files: [] },
     sources: [],
     at: '2020-01-01T00:00:00.000Z',
   }
-  const value = await handlers.extract({ memory, workspace: 'w-1', summary: { facts: ['dup', 'dup2', 'new1', 'new2', 'new3'] } }, ENV)
-  const items = externOf(value).items
-  assert.deepEqual(items, ['new1', 'new2', 'new3'])
+  const handlers = createHandlers({ shortMemory: store.backend })
+  const value = await handlers.extract({ workspace: 'w-1', summary: { facts: ['dup', 'dup2', 'new1', 'new2', 'new3'] } }, ENV)
+  assert.deepEqual(value.items, ['new1', 'new2', 'new3'])
 
-  const dupOnly = await handlers.extract({ memory, workspace: 'w-1', summary: { facts: ['dup', 'dup2'] }, session_slice: [] }, ENV)
-  assert.deepEqual(directivesOf(dupOnly).map((item) => item.kind), ['extern'])
-  assert.equal(externOf(dupOnly).reason, 'all_duplicate')
+  const dupOnly = await handlers.extract({ workspace: 'w-1', summary: { facts: ['dup', 'dup2'] }, session_slice: [] }, ENV)
+  assert.equal(dupOnly.reason, 'all_duplicate')
 })
 
 test('extract：候选不足 2 条 → insufficient_content', async () => {
-  const handlers = createHandlers({})
-  const value = await handlers.extract({ memory: memoryFixture(), workspace: 'w-1', summary: { facts: [] } }, ENV)
+  const store = fakeShortMemory()
+  const handlers = createHandlers({ shortMemory: store.backend })
+  const value = await handlers.extract({ workspace: 'w-1', summary: { facts: [] } }, ENV)
   assert.equal(value.ok, false)
   assert.equal(value.error.code, 'insufficient_content')
-  assert.equal(value.$directives, undefined)
 })
 
 test('semantic 模式：经注入模型后端出摘要；模型失败作数据', async () => {
+  const store = fakeShortMemory()
   const model = { chat: async () => ({ ok: true, text: JSON.stringify({ goal: 'M', facts: ['mf1', 'mf2'] }) }) }
-  const handlers = createHandlers({ model })
-  const value = await handlers.summarize(
-    { memory: memoryFixture(), conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } },
-    ENV,
-  )
-  assert.equal(externOf(value).summary.goal, 'M')
+  const handlers = createHandlers({ shortMemory: store.backend, model })
+  const value = await handlers.summarize({ conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } }, ENV)
+  assert.equal(value.summary.goal, 'M')
 
-  const failing = createHandlers({ model: { chat: async () => { throw new Error('boom') } } })
-  const failed = await failing.summarize(
-    { memory: memoryFixture(), conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } },
-    ENV,
-  )
+  const failing = createHandlers({ shortMemory: fakeShortMemory().backend, model: { chat: async () => { throw new Error('boom') } } })
+  const failed = await failing.summarize({ conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } }, ENV)
   assert.equal(failed.ok, false)
   assert.equal(failed.$directives, undefined)
 })
 
 test('target_length 一致作用于 semantic 输出与既有 L1', async () => {
-  const model = { chat: async () => ({ ok: true, text: JSON.stringify({ goal: 'aaaaaa', facts: ['bbbbbb'] }) }) }
-  const handlers = createHandlers({ model })
-  const memory = memoryFixture()
-  memory.sessions['c-1'] = {
+  const store = fakeShortMemory()
+  store.memory.sessions['c-1'] = {
     summary: { goal: '', decisions: [], facts: ['oldfactlong'], open_questions: [], files: [], next_steps: [] },
     covered_upto: null,
     at: '2020-01-01T00:00:00.000Z',
     expires_at: '2020-01-02T00:00:00.000Z',
   }
+  const model = { chat: async () => ({ ok: true, text: JSON.stringify({ goal: 'aaaaaa', facts: ['bbbbbb'] }) }) }
+  const handlers = createHandlers({ shortMemory: store.backend, model })
   const value = await handlers.summarize(
-    { memory, conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' }, target_length: 3 },
+    { conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' }, target_length: 3 },
     ENV,
   )
-  const payload = externOf(value)
-  assert.equal(payload.summary.goal, 'aaa')
-  assert.deepEqual(payload.summary.facts, ['old', 'bbb'])
+  assert.equal(value.summary.goal, 'aaa')
+  assert.deepEqual(value.summary.facts, ['old', 'bbb'])
 })

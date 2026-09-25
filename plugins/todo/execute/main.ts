@@ -1,10 +1,13 @@
 // `todo` 服务进程入口：服务协议帧循环（docs/protocol.md §二）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影、无写通道：方法只返回值 / 写计划。
+// stdin EOF / 管道断开即自退出。清单本体已出世界：写即时落委托存储（storage-kv），读从自有存储取。
+// 反向调用（storage-kv.*）走 `port.call`，应答帧立即结算（不排队）。
 
 import { readFileSync } from 'node:fs'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { PORT_HANDLERS } from './methods.ts'
+import { createHandlers } from './methods.ts'
+import { PortLink, RemoteStorage } from './port-link.ts'
+import { TodoStore } from './store.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError, ToolError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
@@ -30,6 +33,9 @@ const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
 const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
 const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
 const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
+
+const LINK = new PortLink((message) => writeFrame(message))
+const HANDLERS = createHandlers({ store: new TodoStore(new RemoteStorage(LINK)) })
 
 function manifest(): Rec {
   return {
@@ -61,7 +67,7 @@ function declaredMethods(port: string): string[] {
   if (Array.isArray(declared)) {
     return declared.filter((item): item is string => typeof item === 'string')
   }
-  return Object.keys(PORT_HANDLERS[port] ?? {})
+  return Object.keys(HANDLERS)
 }
 
 async function handleCall(message: Rec): Promise<void> {
@@ -80,7 +86,7 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'unknown_method', `unknown method ${method}`)
     return
   }
-  const handler = PORT_HANDLERS[port]?.[method]
+  const handler = HANDLERS[method]
   if (handler === undefined) {
     sendError(id, 'unknown_method', `unknown method ${method}`)
     return
@@ -110,6 +116,12 @@ async function handleCall(message: Rec): Promise<void> {
   writeFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
 }
 
+/** 停机：未结算的反向调用作数据失败，然后退出。 */
+function shutdown(): void {
+  LINK.failAll()
+  setTimeout(() => process.exit(0), 10).unref?.()
+}
+
 async function handle(message: Json): Promise<void> {
   if (!isRecord(message)) return
   switch (message['kind']) {
@@ -125,6 +137,7 @@ async function handle(message: Json): Promise<void> {
       return
     case 'drain':
       writeFrame({ v: '1', id: message['id'], kind: 'bye' })
+      shutdown()
       return
     case 'call':
       await handleCall(message)
@@ -135,6 +148,8 @@ async function handle(message: Json): Promise<void> {
 }
 
 const decoder = createFrameDecoder()
+// 串行链：保证同一连接上的消息按到达序处理；反向调用应答立即结算（不排队），
+// 否则正在 await port.result 的 call 会把链堵死。
 let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
   let messages: Json[]
@@ -145,13 +160,14 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
+    if (isRecord(message) && LINK.settle(message)) continue
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
   }
 })
-process.stdin.on('end', () => process.exit(0))
-process.stdin.on('close', () => process.exit(0))
-process.stdin.on('error', () => process.exit(0))
+process.stdin.on('end', shutdown)
+process.stdin.on('close', shutdown)
+process.stdin.on('error', shutdown)
 
 log(`service started (pid ${process.pid})`)

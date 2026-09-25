@@ -3,12 +3,13 @@
   "schema": "schema/memory.json",
   "implements": ["memory"],
   "methods": {
-    "memory": ["put", "read", "search"]
+    "memory": ["put", "read", "search", "list", "append", "delete", "pin", "edit"]
   },
   "pins": {
     "embedding": "embedding"
   },
   "start": "node execute/main.ts",
+  "exclusive": ["data"],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -24,7 +25,7 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "schema", "path": "schema/" }

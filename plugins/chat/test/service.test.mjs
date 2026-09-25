@@ -80,7 +80,7 @@ test('send: reads owners, then title, then interpret; bag carries owner session/
     assert.equal(result.kind, 'result')
     assert.deepEqual(
       drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      ['session.read', 'input.read', 'session-title.generate', 'session.set_title', 'loop-policy.interpret'],
+      ['session.read', 'input.read', 'short-memory.read', 'todo.invoke', 'session-title.generate', 'session.set_title', 'loop-policy.interpret'],
     )
 
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
@@ -117,10 +117,10 @@ test('send: definition slices omitted when identity absent from projection', asy
   const drv = startService({ bridge: defaultBridge() })
   try {
     await drv.hello()
-    const ids = idsFixture({ omit: ['guard', 'sandbox', 'tools', 'mcp', 'evolution', 'todo', 'workspace', 'agents', 'skill'] })
+    const ids = idsFixture({ omit: ['guard', 'sandbox', 'tools', 'mcp', 'evolution', 'workspace', 'agents', 'skill'] })
     await drv.call('send', ids)
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
-    for (const key of ['guard_rules', 'sandbox_tiers', 'tools_bindings', 'mcp_tools', 'evidence', 'todo', 'workspace_root', 'persona', 'skills']) {
+    for (const key of ['guard_rules', 'sandbox_tiers', 'tools_bindings', 'mcp_tools', 'evidence', 'workspace_root', 'persona', 'skills']) {
       assert.equal(Object.hasOwn(bag, key), false, `absent identity should not add ${key}`)
     }
     assert.ok(Object.hasOwn(bag, 'graph'), 'graph still present')

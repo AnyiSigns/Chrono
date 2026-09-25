@@ -24,18 +24,6 @@ export interface LinkedEntry {
   entry: Rec
 }
 
-/** 传入的 body 必须是对象；deleted / pinned 缺省按空表。 */
-export function asBody(value: Json | undefined): Rec {
-  if (!isRecord(value)) throw new BadArgsError('body must be an object')
-  return value
-}
-
-/** 传入的 refs 必须是对象（hash → def body）。 */
-export function asRefs(value: Json | undefined): Rec {
-  if (!isRecord(value)) throw new BadArgsError('refs must be an object')
-  return value
-}
-
 /** body.count（缺省 0）。 */
 export function countOf(body: Rec): number {
   const count = body['count']
@@ -155,11 +143,16 @@ export function buildEntry(input: {
   return entry
 }
 
-/** 构造新 body：tail 指向同批条目 def（占位符）、count+1、保留 deleted / pinned、锚刷新为当前 schema。 */
-export function buildBody(input: { body: Rec; entryIndex: number; anchor: { id: string; dim: number } }): Rec {
+/** 构造新 body：tail 指向新链尾条目 id、count 显式给出、保留 deleted / pinned、锚刷新为当前 schema。 */
+export function buildBody(input: {
+  body: Rec
+  tailId: string
+  count: number
+  anchor: { id: string; dim: number }
+}): Rec {
   return {
-    tail: { def: { $n: input.entryIndex } },
-    count: countOf(input.body) + 1,
+    tail: { def: input.tailId },
+    count: input.count,
     deleted: isRecord(input.body['deleted']) ? input.body['deleted'] : {},
     pinned: isRecord(input.body['pinned']) ? input.body['pinned'] : {},
     model: { id: input.anchor.id, dim: input.anchor.dim },

@@ -44,7 +44,13 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.deepEqual(decl.methods, {
     'memory-maintenance': ['consolidate', 'sweep', 'candidates', 'view', 'edit'],
   })
-  assert.deepEqual(decl.pins, { compress: 'compress', embedding: 'embedding', memory: 'memory-store' })
+  assert.deepEqual(decl.pins, {
+    compress: 'compress',
+    embedding: 'embedding',
+    memory: 'memory-store',
+    'short-memory': 'short-memory',
+    session: 'session',
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
@@ -56,7 +62,7 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.equal(decl.health.probe, 'memory-maintenance.view')
 })
 
-test('schema：策略参数 + periodic 两拍 + reads 注入 #3/#11/#21 投影片段', () => {
+test('schema：策略参数 + periodic 两拍（owner 数据由服务自读，无投影 reads）', () => {
   const schema = readJson('schema/memory-maintenance.json')
   assert.equal(schema.type, 'object')
   const params = schema.params
@@ -72,15 +78,8 @@ test('schema：策略参数 + periodic 两拍 + reads 注入 #3/#11/#21 投影�
   for (const entry of schema.periodic) {
     assert.equal(typeof entry.every_ms, 'number')
     assert.ok(entry.every_ms > 0)
+    assert.equal(entry.reads, undefined, 'owner 数据由服务自读，不应再有投影 reads')
   }
-  const consolidate = schema.periodic[0].reads
-  assert.deepEqual(consolidate.short_memory, ['ids', 'short-memory', 'body'])
-  assert.deepEqual(consolidate.session, ['ids', 'session', 'body'])
-  assert.deepEqual(consolidate.memory_store, ['ids', 'memory-store', 'body'])
-  assert.deepEqual(consolidate.memory_store_refs, ['ids', 'memory-store', 'refs'])
-  const sweep = schema.periodic[1].reads
-  assert.deepEqual(sweep.short_memory, ['ids', 'short-memory', 'body'])
-  assert.deepEqual(sweep.memory_store_refs, ['ids', 'memory-store', 'refs'])
   assert.equal(schema.method_timeouts['memory-maintenance.consolidate'], 120000)
 })
 

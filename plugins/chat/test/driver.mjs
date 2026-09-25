@@ -160,6 +160,9 @@ export const TITLE_VALUE = { ok: true, title: '快速排序' }
 /** 默认输入槽体（owner `input.read` 回值）。 */
 export const DEFAULT_INPUT_BODY = { slots: { t1: { kind: 'chat.message', text: '帮我写一个快速排序' } } }
 
+/** 默认当前会话待办（owner `todo.invoke` 的 `todo.read` 回值）。 */
+export const DEFAULT_TODO_RESULT = { items: [{ id: 't1', text: '写排序', status: 'pending' }], total: 1, done: 0 }
+
 /** 默认会话切片（owner `session.read` 回值）：消息链在服务自有存储，不在投影。 */
 export function sessionSliceFixture(overrides = {}) {
   const conversation = {
@@ -208,6 +211,8 @@ export function defaultBridge(overrides = {}, owners = {}) {
   const table = {
     'session.read': () => owners.session ?? sessionSliceFixture(),
     'input.read': () => owners.input ?? DEFAULT_INPUT_BODY,
+    'short-memory.read': () => owners.memory ?? memoryFixture(),
+    'todo.invoke': () => ({ ok: true, result: owners.todo ?? DEFAULT_TODO_RESULT }),
     'session.history': () => owners.history ?? historyFixture(),
     'loop-policy.interpret': () => INTERPRET_PLAN,
     'session-title.generate': () => TITLE_VALUE,

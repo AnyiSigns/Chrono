@@ -1,20 +1,17 @@
 // 能力类 `compress` 的方法表：summarize / compact / extract。
-// 只构造写计划（`$directives`）与结果值，不读投影、不落账、不自取时钟。
-// 短期记忆现状（memory）与会话切片（session_slice）由调用方随 args / bag 传入——读-改-写，绝不盲写。
-// semantic 模式经反向调用 model.chat；去重向量经反向调用 embedding.embed（失败回落文本去重）。
+// 压缩产物（L1 / L2 摘要）是运行记录，已出世界：住 `short-memory` owner 服务自有存储（④）。
+// 本服务经 `port.call short-memory.read` 取现状、算合并结果后 `port.call short-memory.apply` 写回；
+// 读-改-写、绝不盲写整份。semantic 模式经反向调用 model.chat；去重向量经反向调用 embedding.embed。
+// `persist:false` 时只算不写（供 memory-consolidate 纯计算摘要用）。
 
 import { dedupNewItems } from './dedup.ts'
 import type { DedupOptions } from './dedup.ts'
 import {
   asString,
-  dataGenSeqOf,
   errorValue,
-  externOnly,
   isRecord,
   isoAt,
   nowOf,
-  planOf,
-  pushBodyGen,
   uniqueStrings,
 } from './plan.ts'
 import { semanticSummary } from './semantic.ts'
@@ -31,7 +28,7 @@ import {
 import type { DedupFn, Summary } from './summary.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
-import type { EmbeddingBackend, ModelBackend } from './port-link.ts'
+import type { EmbeddingBackend, ModelBackend, ShortMemoryBackend } from './port-link.ts'
 
 /** L1 TTL：24h（`expires_at = at + 24h`）。 */
 export const TTL_MS = 24 * 60 * 60 * 1000
@@ -46,6 +43,7 @@ const MODES = new Set(['algorithmic', 'semantic'])
 export interface CompressDeps {
   model?: ModelBackend
   embedding?: EmbeddingBackend
+  shortMemory: ShortMemoryBackend
 }
 
 interface Context {
@@ -61,8 +59,7 @@ interface Context {
   embeddingModel: string
   at: string
   expiresAt: string
-  /** #3 短记忆的数据世代下标（写补丁世代用；无 → null 写整份）。 */
-  base: number | null
+  persist: boolean
 }
 
 interface Requirements {
@@ -84,11 +81,9 @@ function numberField(value: Json | undefined, field: string, fallback: number, m
   return value
 }
 
-/** 解析 args（bag）为上下文；形态非法抛 `BadArgsError`（结构化 `bad_args`）。 */
-function parseContext(args: Json, env: CallEnv, requirements: Requirements): Context {
+/** 解析 args 为上下文（memory 由调用方先读 owner 服务后传入）；形态非法抛 `BadArgsError`。 */
+function parseContext(args: Json, env: CallEnv, memory: Rec, requirements: Requirements): Context {
   if (!isRecord(args)) throw new BadArgsError('args must be an object')
-  const memory = args['memory']
-  if (!isRecord(memory)) throw new BadArgsError('memory must be an object')
   const rawMode = args['mode']
   if (rawMode !== undefined && rawMode !== null && (typeof rawMode !== 'string' || !MODES.has(rawMode))) {
     throw new BadArgsError('mode must be algorithmic or semantic')
@@ -116,7 +111,7 @@ function parseContext(args: Json, env: CallEnv, requirements: Requirements): Con
     embeddingModel: typeof rawModel === 'string' ? rawModel : DEFAULT_EMBEDDING_MODEL,
     at: isoAt(now),
     expiresAt: isoAt(now + TTL_MS),
-    base: dataGenSeqOf(args['memory_data_gen']) ?? dataGenSeqOf(args['short_memory_data_gen']),
+    persist: args['persist'] !== false,
   }
 }
 
@@ -158,32 +153,26 @@ function currentL1Summary(memory: Rec, conversation: string | null, targetLength
   return truncateSummary(parseSummary(recordAt(sessionsOf(memory), conversation)['summary']), targetLength)
 }
 
-/** 写回 L1：合并摘要 + 前进 `covered_upto` + 刷新 `at` / `expires_at`。 */
+/** 写回 L1：合并摘要 + 前进 `covered_upto` + 刷新 `at` / `expires_at`。返回新 L1 记录。 */
 async function updateL1(
   memory: Rec,
   conversation: string,
   incoming: Summary,
   ctx: Context,
   dedup: DedupFn,
-): Promise<{ memory: Rec; summary: Summary; dedup: 'vector' | 'text'; coveredUpto: Json }> {
-  const sessions = sessionsOf(memory)
-  const existingL1 = recordAt(sessions, conversation)
+): Promise<{ record: Rec; summary: Summary; dedup: 'vector' | 'text'; coveredUpto: Json }> {
+  const existingL1 = recordAt(sessionsOf(memory), conversation)
   const existing = truncateSummary(parseSummary(existingL1['summary']), ctx.targetLength)
   const merged = await mergeSummaryLists(existing, incoming, dedup)
   const coveredUpto = ctx.coveredUpto ?? (existingL1['covered_upto'] ?? null)
-  const l1: Rec = {
+  const record: Rec = {
     ...existingL1,
     summary: summaryToJson(merged.summary),
     covered_upto: coveredUpto,
     at: ctx.at,
     expires_at: ctx.expiresAt,
   }
-  return {
-    memory: { ...memory, sessions: { ...sessions, [conversation]: l1 } },
-    summary: merged.summary,
-    dedup: merged.dedup,
-    coveredUpto,
-  }
+  return { record, summary: merged.summary, dedup: merged.dedup, coveredUpto }
 }
 
 /** 抽取候选池：压缩产物的 facts / decisions，不足 2 条时由切片按句补足。 */
@@ -215,10 +204,9 @@ async function extractItemsFromSource(
   return { items: result.accepted.slice(0, ctx.extractItems), dedup: result.dedup, insufficient: false }
 }
 
-/** 写回 L2：抽取项并入 facts，追加来源会话，刷新 `at`。 */
+/** 写回 L2：抽取项并入 facts，追加来源会话，刷新 `at`。返回新 L2 记录。 */
 function updateL2(memory: Rec, workspace: string, source: Summary, items: string[], ctx: Context): Rec {
-  const workspaces = workspacesOf(memory)
-  const existingL2 = recordAt(workspaces, workspace)
+  const existingL2 = recordAt(workspacesOf(memory), workspace)
   const existingSummary = truncateSummary(parseSummary(existingL2['summary']), ctx.targetLength)
   const merged: Summary = {
     ...existingSummary,
@@ -226,8 +214,7 @@ function updateL2(memory: Rec, workspace: string, source: Summary, items: string
     facts: [...existingSummary.facts, ...items],
   }
   const sources = uniqueStrings([...stringArray(existingL2['sources']), ctx.conversation ?? ''])
-  const l2: Rec = { ...existingL2, summary: summaryToL2Json(merged), sources, at: ctx.at }
-  return { ...memory, workspaces: { ...workspaces, [workspace]: l2 } }
+  return { ...existingL2, summary: summaryToL2Json(merged), sources, at: ctx.at }
 }
 
 /** 摘要来源：algorithmic 由结构化字段 / 切片派生；semantic 反向调模型（失败作数据）。 */
@@ -247,13 +234,15 @@ async function resolveSummary(
 }
 
 async function summarize(args: Json, env: CallEnv, deps: CompressDeps): Promise<Json> {
-  const ctx = parseContext(args, env, { conversation: true, workspace: false })
+  const memory = await deps.shortMemory.read()
+  const ctx = parseContext(args, env, memory, { conversation: true, workspace: false })
   const resolved = await resolveSummary(ctx, deps)
   if ('error' in resolved) return errorValue(resolved.error.code, resolved.error.message)
-  const l1 = await updateL1(ctx.memory, ctx.conversation as string, resolved.summary, ctx, makeDedup(deps, ctx))
-  const ops: Json[] = []
-  pushBodyGen(ops, 'short-memory', ctx.memory, l1.memory, ctx.base)
-  return planOf(ops, {
+  const l1 = await updateL1(memory, ctx.conversation as string, resolved.summary, ctx, makeDedup(deps, ctx))
+  if (ctx.persist) {
+    await deps.shortMemory.apply({ set_sessions: { [ctx.conversation as string]: l1.record } })
+  }
+  return {
     ok: true,
     kind: 'summarize',
     conversation: ctx.conversation,
@@ -261,21 +250,24 @@ async function summarize(args: Json, env: CallEnv, deps: CompressDeps): Promise<
     expires_at: ctx.expiresAt,
     summary: summaryToJson(l1.summary),
     dedup: l1.dedup,
-  })
+  }
 }
 
 async function compact(args: Json, env: CallEnv, deps: CompressDeps): Promise<Json> {
-  const ctx = parseContext(args, env, { conversation: true, workspace: true })
+  const memory = await deps.shortMemory.read()
+  const ctx = parseContext(args, env, memory, { conversation: true, workspace: true })
   const resolved = await resolveSummary(ctx, deps)
   if ('error' in resolved) return errorValue(resolved.error.code, resolved.error.message)
   const dedup = makeDedup(deps, ctx)
-  const l1 = await updateL1(ctx.memory, ctx.conversation as string, resolved.summary, ctx, dedup)
-  const extracted = await extractItemsFromSource(resolved.summary, l1.memory, ctx.workspace as string, ctx, dedup)
-  const memory = extracted.insufficient
-    ? l1.memory
-    : updateL2(l1.memory, ctx.workspace as string, resolved.summary, extracted.items, ctx)
-  const ops: Json[] = []
-  pushBodyGen(ops, 'short-memory', ctx.memory, memory, ctx.base)
+  const l1 = await updateL1(memory, ctx.conversation as string, resolved.summary, ctx, dedup)
+  const extracted = await extractItemsFromSource(resolved.summary, memory, ctx.workspace as string, ctx, dedup)
+  let l2: Rec | null = null
+  if (!extracted.insufficient) l2 = updateL2(memory, ctx.workspace as string, resolved.summary, extracted.items, ctx)
+  if (ctx.persist) {
+    const applyArgs: Rec = { set_sessions: { [ctx.conversation as string]: l1.record } }
+    if (l2 !== null) applyArgs['set_workspaces'] = { [ctx.workspace as string]: l2 }
+    await deps.shortMemory.apply(applyArgs)
+  }
   const payload: Rec = {
     ok: true,
     kind: 'compact',
@@ -288,40 +280,42 @@ async function compact(args: Json, env: CallEnv, deps: CompressDeps): Promise<Js
     dedup: combineDedup(l1.dedup, extracted.dedup),
   }
   if (extracted.insufficient) payload['extract_skipped'] = 'insufficient_content'
-  return planOf(ops, payload)
+  return payload
 }
 
 async function extract(args: Json, env: CallEnv, deps: CompressDeps): Promise<Json> {
-  const ctx = parseContext(args, env, { conversation: false, workspace: true })
+  const memory = await deps.shortMemory.read()
+  const ctx = parseContext(args, env, memory, { conversation: false, workspace: true })
   const source = summaryFromSource(ctx.args, ctx.targetLength, ctx.extractItems)
   const dedup = makeDedup(deps, ctx)
-  const extracted = await extractItemsFromSource(source, ctx.memory, ctx.workspace as string, ctx, dedup)
+  const extracted = await extractItemsFromSource(source, memory, ctx.workspace as string, ctx, dedup)
   if (extracted.insufficient) {
     return errorValue('insufficient_content', 'not enough distinct items to extract 2-3')
   }
   if (extracted.items.length === 0) {
-    return externOnly({
+    return {
       ok: true,
       kind: 'extract',
       workspace: ctx.workspace,
       items: [],
       dedup: extracted.dedup,
       reason: 'all_duplicate',
-    })
+    }
   }
-  const memory = updateL2(ctx.memory, ctx.workspace as string, source, extracted.items, ctx)
-  const ops: Json[] = []
-  pushBodyGen(ops, 'short-memory', ctx.memory, memory, ctx.base)
-  return planOf(ops, {
+  const l2 = updateL2(memory, ctx.workspace as string, source, extracted.items, ctx)
+  if (ctx.persist) {
+    await deps.shortMemory.apply({ set_workspaces: { [ctx.workspace as string]: l2 } })
+  }
+  return {
     ok: true,
     kind: 'extract',
     workspace: ctx.workspace,
     items: extracted.items,
     dedup: extracted.dedup,
-  })
+  }
 }
 
-/** 构造方法表（依赖注入：模型与向量化后端由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：模型 / 向量化 / 短期记忆后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: CompressDeps): Record<string, Handler> {
   return {
     summarize: (args: Json, env: CallEnv): Promise<Json> => summarize(args, env, deps),

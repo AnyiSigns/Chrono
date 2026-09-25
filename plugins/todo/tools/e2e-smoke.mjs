@@ -17,6 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const TODO_DIR = join(REPO_ROOT, 'plugins', 'todo')
+const STORAGE_KV_DIR = join(REPO_ROOT, 'plugins', 'storage-kv')
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -65,8 +66,9 @@ function checkDeclaration() {
   assert.equal(decl.identity, 'todo')
   assert.deepEqual(decl.implements, ['todo'])
   assert.deepEqual(decl.methods, { todo: ['describe', 'invoke'] })
-  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.pins, { 'storage-kv': 'storage-kv' })
   assert.equal(decl.start, 'node execute/main.ts')
+  assert.equal(decl.state, 'durable')
   assert.deepEqual(
     decl.members.map((member) => member.kind).sort(),
     ['execute', 'schema'],
@@ -84,11 +86,21 @@ async function main() {
   mkdirSync(join(root, 'state'), { recursive: true })
   let started = false
   try {
+    const packedStorage = boot(root, ['pack', STORAGE_KV_DIR, '--identity', 'storage-kv'])
+    assert.equal(packedStorage.ok, true, `pack storage-kv 报告 ok:false`)
+    console.log(`pack storage-kv: ${packedStorage.status}`)
+
     const packed = boot(root, ['pack', TODO_DIR, '--identity', 'todo'])
     assert.equal(packed.ok, true, `pack todo 报告 ok:false`)
     console.log(`pack todo: ${packed.status}`)
 
-    writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify([{ name: 'todo', path: TODO_DIR }]))
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([
+        { name: 'storage-kv', path: STORAGE_KV_DIR },
+        { name: 'todo', path: TODO_DIR },
+      ]),
+    )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)

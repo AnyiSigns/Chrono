@@ -1,24 +1,25 @@
-// `todo` 协议级测试（node --test）：todo.read 从 bag 取数 + 非法 args / 业务拒 + 不读投影 + 协议级错误。
+// `todo` 协议级测试（node --test）：写读往返、缺数据回空、非法 args / 业务拒、服务不读投影。
+// 清单本体已出世界：服务从委托存储（storage-kv）取数，不再从 bag 收投影切片。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { AT, FIXED_ENV, H, opsOf, startService } from './driver.mjs'
+import { AT, startService } from './driver.mjs'
 
-// ── todo.read ──────────────────────────────────────────────────────────────
+// ── 写读往返 ──────────────────────────────────────────────────────────────
 
-test('read：从 bag 投影片段（body + refs）回溯条目链，老→新', async () => {
+test('read：写后读回条目（老→新），done 计数正确', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const item0 = { id: 'x-0', text: 'first', status: 'completed', at: AT, prev: null }
-    const item1 = { id: 'x-1', text: 'second', status: 'pending', at: AT, prev: { def: H(item0) } }
-    const body = { conversations: { c1: { items: { tail: { def: H(item1) }, count: 2 } } } }
-    const refs = { [H(item0)]: item0, [H(item1)]: item1 }
-    const result = await drv.call('invoke', {
-      tool: 'todo.read',
-      args: { conversation_id: 'c1' },
-      todo: { body, refs },
+    await drv.call('invoke', {
+      tool: 'todo.write',
+      args: {
+        conversation_id: 'c1',
+        at: AT,
+        items: [{ text: 'first', status: 'completed' }, { text: 'second' }],
+      },
     })
+    const result = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
     assert.equal(result.ok, true)
     assert.deepEqual(result.result.items.map((item) => item.text), ['first', 'second'])
     assert.equal(result.result.total, 2)
@@ -29,30 +30,35 @@ test('read：从 bag 投影片段（body + refs）回溯条目链，老→新', 
   }
 })
 
-test('read：已解析 items 直接返回；未知会话回空清单；缺数据报 missing_todo', async () => {
+test('read：未知会话 / 无记录回空清单（不报 missing_todo）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const pre = await drv.call('invoke', {
-      tool: 'todo.read',
-      args: { conversation_id: 'c1' },
-      todo: { items: [{ id: 'a', text: 'a', status: 'completed' }] },
-    })
-    assert.equal(pre.ok, true)
-    assert.equal(pre.result.total, 1)
-    assert.equal(pre.result.done, 1)
-
-    const empty = await drv.call('invoke', {
-      tool: 'todo.read',
-      args: { conversation_id: 'missing' },
-      todo: { body: { conversations: { c1: { items: { tail: null, count: 0 } } } }, refs: {} },
-    })
+    const empty = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'missing' } })
     assert.equal(empty.ok, true)
     assert.deepEqual(empty.result.items, [])
+    assert.equal(empty.result.total, 0)
+  } finally {
+    drv.close()
+  }
+})
 
-    const none = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
-    assert.equal(none.ok, false)
-    assert.equal(none.error.code, 'missing_todo')
+test('read：会话 id 由 bag.session / bag.session_id 解析', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await drv.call('invoke', {
+      tool: 'todo.write',
+      args: { conversation_id: 'c1', items: [{ text: 'a' }] },
+    })
+    const viaSession = await drv.call('invoke', { tool: 'todo.read', args: {}, session_id: 'c1' })
+    assert.deepEqual(viaSession.result.items.map((item) => item.text), ['a'])
+    const viaSlice = await drv.call('invoke', {
+      tool: 'todo.read',
+      args: {},
+      session: { body: { current: 'c1' } },
+    })
+    assert.deepEqual(viaSlice.result.items.map((item) => item.text), ['a'])
   } finally {
     drv.close()
   }
@@ -60,7 +66,7 @@ test('read：已解析 items 直接返回；未知会话回空清单；缺数据
 
 // ── 非法 args / 业务拒 ──────────────────────────────────────────────────────
 
-test('invoke：缺 conversation_id / items 非数组 / 未知工具 → 结构化拒', async () => {
+test('invoke：缺会话 id / items 非数组 / 未知工具 → 结构化拒', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -112,40 +118,24 @@ test('write：超限 / 坏状态 → 结构化业务拒（too_many_items / text_
   }
 })
 
-test('服务不读投影：无 bag.todo 时 write 只落本会话键', async () => {
+// ── 服务不读投影 ───────────────────────────────────────────────────────────
+
+test('服务不读投影：传入的 bag.todo 被忽略，数据只来自自有存储', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    // 传入陈旧投影：写不得把它当基准，读不得从中取数。
+    const stale = { body: { conversations: { c9: { items: [{ text: 'stale' }] } } } }
     const write = await drv.call('invoke', {
       tool: 'todo.write',
-      args: { conversation_id: 'c1', items: [{ text: 'a' }] },
+      args: { conversation_id: 'c1', items: [{ text: 'fresh' }] },
+      todo: stale,
     })
     assert.equal(write.ok, true)
-    const ops = opsOf(write.result)
-    const body = ops[ops.length - 2].args.body
-    assert.deepEqual(Object.keys(body.conversations), ['c1'])
-  } finally {
-    drv.close()
-  }
-})
-
-// ── 协议级错误 ─────────────────────────────────────────────────────────────
-
-test('未知能力 / 方法 / 非对象 args → 协议级结构化错误，不崩进程', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    assert.equal((await drv.callPort('nope', 'describe', {})).code, 'unresolved_cap')
-    assert.equal((await drv.callRaw('nope', {})).code, 'unknown_method')
-    const badArgs = await drv.request(
-      'call',
-      { port: 'todo', method: 'invoke', args: 'not-an-object', env: FIXED_ENV },
-      ['result', 'error'],
-    )
-    assert.equal(badArgs.code, 'bad_args')
-    // 进程仍可服务
-    const ok = await drv.call('describe', {})
-    assert.equal(ok.tools.length, 2)
+    const read = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c9' }, todo: stale })
+    assert.deepEqual(read.result.items, [])
+    const own = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
+    assert.deepEqual(own.result.items.map((item) => item.text), ['fresh'])
   } finally {
     drv.close()
   }

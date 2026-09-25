@@ -8,7 +8,9 @@
   "pins": {
     "compress": "compress",
     "embedding": "embedding",
-    "memory": "memory-store"
+    "memory": "memory-store",
+    "short-memory": "short-memory",
+    "session": "session"
   },
   "start": "node execute/main.ts",
   "protocol": "1",

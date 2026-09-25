@@ -1,5 +1,6 @@
 // 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
 // 并自动应答反向调用 `port.call`（模拟宿主侧路由；可注入同步或异步 bridge）。
+// 内置内存假 `short-memory`：`short-memory.read` 回当前 L1/L2 body，`apply` 逐键置 / 删。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -36,6 +37,52 @@ export function createDecoder() {
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
+/** 一份最小 short-memory body（含另一会话 / 工作区，用于验证不盲写抹掉）。 */
+export function memoryFixture(overrides = {}) {
+  return {
+    version: 1,
+    sessions: {
+      'c-keep': {
+        summary: { goal: 'keep', decisions: [], facts: ['kept'], open_questions: [], files: [], next_steps: [] },
+        covered_upto: 'msg-keep',
+        at: '2020-01-01T00:00:00.000Z',
+        expires_at: '2020-01-02T00:00:00.000Z',
+      },
+    },
+    workspaces: {
+      'w-keep': { summary: { goal: 'wkeep', decisions: [], facts: ['wkept'], open_questions: [], files: [] }, sources: ['c-keep'], at: '2020-01-01T00:00:00.000Z' },
+    },
+    ...overrides,
+  }
+}
+
+/** 内存假 short-memory：read / apply；`apply` 按 set_* / del_* 逐键改。 */
+export function createFakeShortMemory(initial = memoryFixture()) {
+  const memory = structuredClone(initial)
+  return {
+    memory,
+    apply(args) {
+      const setSessions = args?.set_sessions
+      if (setSessions && typeof setSessions === 'object') {
+        for (const [id, record] of Object.entries(setSessions)) {
+          if (record === null) delete memory.sessions[id]
+          else memory.sessions[id] = record
+        }
+      }
+      for (const id of args?.del_sessions ?? []) delete memory.sessions[id]
+      const setWorkspaces = args?.set_workspaces
+      if (setWorkspaces && typeof setWorkspaces === 'object') {
+        for (const [id, record] of Object.entries(setWorkspaces)) {
+          if (record === null) delete memory.workspaces[id]
+          else memory.workspaces[id] = record
+        }
+      }
+      for (const id of args?.del_workspaces ?? []) delete memory.workspaces[id]
+      return { ok: true, changed: 1 }
+    },
+  }
+}
+
 /** 启动服务并返回请求 / 反向调用接口；`bridge(port, method, args)` 应答反向调用。 */
 export function startService(options = {}) {
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -44,6 +91,7 @@ export function startService(options = {}) {
   const events = []
   const portCalls = []
   const stderr = []
+  const shortMemory = options.shortMemory ?? createFakeShortMemory(options.memory)
   const fallback = options.resolvePort ?? (() => ({ error: 'not_ready', message: 'no resolver' }))
   const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
@@ -57,7 +105,15 @@ export function startService(options = {}) {
       if (message.kind === 'port.call') {
         portCalls.push(message)
         Promise.resolve()
-          .then(() => bridge(message.port, message.method, message.args))
+          .then(() => {
+            if (message.port === 'short-memory' && message.method === 'read') {
+              return { value: structuredClone(shortMemory.memory) }
+            }
+            if (message.port === 'short-memory' && message.method === 'apply') {
+              return { value: shortMemory.apply(message.args ?? {}) }
+            }
+            return bridge(message.port, message.method, message.args)
+          })
           .then((outcome) => {
             const frame = outcome.error
               ? {
@@ -125,43 +181,10 @@ export function startService(options = {}) {
     portCalls,
     stderr,
     request,
+    shortMemory,
     hello: () => request('hello', { impl: 'compress', gen: 'gen-1' }, 'manifest'),
     call: (method, args, env = FIXED_ENV) =>
       request('call', { port: 'compress', method, args, env }, ['result', 'error']),
     close: () => child.stdin.end(),
   }
-}
-
-/** 一份最小 short-memory body（含另一会话 / 工作区，用于验证不盲写抹掉）。 */
-export function memoryFixture(overrides = {}) {
-  return {
-    version: 1,
-    sessions: {
-      'c-keep': {
-        summary: { goal: 'keep', decisions: [], facts: ['kept'], open_questions: [], files: [], next_steps: [] },
-        covered_upto: 'msg-keep',
-        at: '2020-01-01T00:00:00.000Z',
-        expires_at: '2020-01-02T00:00:00.000Z',
-      },
-    },
-    workspaces: {
-      'w-keep': { summary: { goal: 'wkeep', decisions: [], facts: ['wkept'], open_questions: [], files: [] }, sources: ['c-keep'], at: '2020-01-01T00:00:00.000Z' },
-    },
-    ...overrides,
-  }
-}
-
-/** 从计划值里取 batch 子操作与 extern 载荷。 */
-export function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-export function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-export function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
 }

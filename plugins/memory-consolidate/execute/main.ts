@@ -6,14 +6,20 @@
 
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
-import { PortLink, RemoteCompress, RemoteEmbedding } from './port-link.ts'
+import { PortLink, RemoteCompress, RemoteEmbedding, RemoteMemory, RemoteSession, RemoteShortMemory } from './port-link.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
 const LINK = new PortLink((message) => writeFrame(message))
-const HANDLERS = createHandlers({ embedding: new RemoteEmbedding(LINK), compress: new RemoteCompress(LINK) })
+const HANDLERS = createHandlers({
+  embedding: new RemoteEmbedding(LINK),
+  compress: new RemoteCompress(LINK),
+  shortMemory: new RemoteShortMemory(LINK),
+  memory: new RemoteMemory(LINK),
+  session: new RemoteSession(LINK),
+})
 
 const DECLARED_METHODS = new Set<string>(
   Array.isArray(METHODS[IDENTITY])

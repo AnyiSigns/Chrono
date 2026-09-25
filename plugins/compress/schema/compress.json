@@ -1,6 +1,6 @@
 {
   "title": "compress（压缩引擎：摘要 / 上下文压缩 / 抽取）",
-  "description": "身份自述 / 数据契约：三种压缩方法 summarize / compact / extract 的入参与结果形状，以及本插件自用的参数默认值（mode / 目标长度 / 去重阈值 / 抽取条数 2..3）。75% 触发阈值不住本 schema（触发判定归上下文调配器）；本插件只按调用执行、不判定该不该压。服务不读投影、不写世界：写一律回计划（put 合并后的 short-memory body + add_gen）；短期记忆现状与会话切片由调用方随 args / bag 传入。",
+  "description": "身份自述 / 数据契约：三种压缩方法 summarize / compact / extract 的入参与结果形状，以及本插件自用的参数默认值（mode / 目标长度 / 去重阈值 / 抽取条数 2..3）。75% 触发阈值不住本 schema（触发判定归上下文调配器）；本插件只按调用执行、不判定该不该压。压缩产物（L1/L2）已出世界：本服务经反向调用 short-memory.read / apply 读写 owner 存储，不读投影、不产世界写计划。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -48,33 +48,32 @@
     },
     "summarize_request": {
       "type": "object",
-      "required": ["memory", "conversation"],
+      "required": ["conversation"],
       "additionalProperties": true,
-      "description": "summarize 入参：读-改-写所需的短期记忆整份 body + 会话 id + 结构化摘要字段（agent 工具 args 直带）；会话切片与 model_config 由调用方随 bag 传入。",
+      "description": "summarize 入参：会话 id + 结构化摘要字段（agent 工具 args 直带）；短期记忆现状由服务自读 short-memory，会话切片与 model_config 由调用方随 bag 传入。",
       "properties": {
-        "memory": { "type": "object", "description": "short-memory 身份整份 body（读-改-写基准，不得盲写）。" },
         "conversation": { "type": "string", "description": "会话 id（L1 键）。" },
-        "covered_upto": { "description": "已压缩到的最后一条消息 id（由调用方入口 term 从会话投影算出）。" },
+        "covered_upto": { "description": "已压缩到的最后一条消息 id（由调用方入口 term 从会话链算出）。" },
         "session_slice": { "type": "array", "description": "covered_upto 之后的会话切片 [{role, content}]；algorithmic 派生与 semantic prompt 用。" },
         "model_config": { "type": "object", "description": "semantic 模式调模型服务的连接实例（原样透传）。" }
       }
     },
     "compact_request": {
       "type": "object",
-      "required": ["memory", "conversation", "workspace"],
+      "required": ["conversation", "workspace"],
       "additionalProperties": true,
       "description": "compact 入参：同 summarize，另需工作区 id（触发 extract 写 L2）。"
     },
     "extract_request": {
       "type": "object",
-      "required": ["memory", "workspace"],
+      "required": ["workspace"],
       "additionalProperties": true,
       "description": "extract 入参：压缩产物（summary 或扁平结构化字段）+ 工作区 id；产出 2–3 条高价值项写 L2。"
     },
     "compress_result": {
       "type": "object",
       "additionalProperties": true,
-      "description": "成功时值形如 {$directives:[batch(write put+add_gen), extern({ok:true,…})]}；语义失败 / 内容不足回 {ok:false, error:{code, message}}（作数据，不炸本轮）。",
+      "description": "成功时回 {ok:true, kind, items?, summary?, dedup, …}（写已即时落 short-memory，不产 $directives）；语义失败 / 内容不足回 {ok:false, error:{code, message}}（作数据，不炸本轮）。",
       "properties": {
         "ok": { "type": "boolean" },
         "kind": { "enum": ["summarize", "compact", "extract"] },

@@ -7,7 +7,8 @@
   },
   "pins": {
     "model": "model-protocol",
-    "embedding": "embedding"
+    "embedding": "embedding",
+    "short-memory": "short-memory"
   },
   "start": "node execute/main.ts",
   "protocol": "1",
