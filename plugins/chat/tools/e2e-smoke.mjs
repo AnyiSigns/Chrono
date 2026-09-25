@@ -26,32 +26,37 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 // 故按 loop-policy 的 pins 闭包一并 pack，最后补 session-title 与 chat。
 const PLUGIN_ORDER = [
   'secrets',
+  'config',
   'sandbox',
   'embedding',
-  'model-protocol',
-  'input',
-  'session',
+  'storage-kv',
   'context-window',
   'guard',
-  'approval',
   'router',
   'orchestration-admin',
-  'todo',
-  'question',
-  'memory-store',
-  'compress',
-  'memory-retrieval',
-  'memory-consolidate',
+  'evolve-metrics',
+  'plugin-admin',
+  'short-memory',
+  'input',
+  'model-protocol',
   'tool-fs',
   'tool-shell',
   'tool-http',
   'tool-browser',
+  'memory-store',
+  'todo',
+  'question',
+  'approval',
+  'workspace',
+  'skill',
+  'session',
+  'session-title',
+  'compress',
+  'memory-retrieval',
+  'memory-consolidate',
   'mcp',
-  'plugin-admin',
-  'evolve-metrics',
   'tools',
   'loop-policy',
-  'session-title',
   'chat',
 ]
 
@@ -62,6 +67,12 @@ const EXPECTED_PINS = {
   context: 'context-window',
   'session-title': 'session-title',
   'loop-policy': 'loop-policy',
+  'short-memory': 'short-memory',
+  todo: 'todo',
+  config: 'config',
+  mcp: 'mcp',
+  workspace: 'workspace',
+  skill: 'skill',
   host: 'host',
 }
 
@@ -128,7 +139,7 @@ function main() {
     if (target === 'host') continue
     assert.ok(projection.ids[target], `pins 目标缺身份 ${target}`)
   }
-  console.log('离线投影：chat pins 五项（含 loop-policy）解析通过')
+  console.log('离线投影：chat pins 全量（含 loop-policy / 记忆族 / 配置）解析通过')
 
   // 声明：execute + term + schema；implements / methods / start 就位
   const decl = readPluginDecl(anchor.world, 'chat', paths.blobsDir)

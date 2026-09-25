@@ -1,5 +1,5 @@
 // 预置 config 默认 body（数据世代）：读同目录 default-body.json，经 boot run 提交一条原子 batch。
-// 前置：宿主已 start（唯一写者）；本脚本只做确定性构造与提交，可重复执行（同内容命中幂等短路）。
+// 前置：宿主已 start（世界单写者）；本脚本只做确定性构造与提交，可重复执行（同内容命中幂等短路）。
 // 用法：node plugins/config/tools/seed-default-body.mjs --root <宿主根目录>
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'

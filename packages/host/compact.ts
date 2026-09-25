@@ -33,9 +33,9 @@ export interface CompactRetention {
   strict?: boolean
   /** 补丁链压扁阈值：>=2 时把线性补丁世代链折叠成整份世代（缩短链）。 */
   flattenChain?: number
-  /** 显式额外保留世代（缺省由 `compactWorld` 按各身份最近数据世代算出）。 */
+  /** 显式额外保留世代（缺省由 `compactWorld` 按各身份最近定义数据世代算出）。 */
   keepGens?: { id: string; seq: number }[]
-  /** 显式额外保留根（缺省由 `compactWorld` 算出数据世代 payload 及其闭包哈希）。 */
+  /** 显式额外保留根（缺省由 `compactWorld` 算出定义数据世代 payload 及其闭包哈希）。 */
   keepRoots?: Hash[]
 }
 
@@ -49,7 +49,8 @@ export interface CompactResult {
 
 /**
  * 各身份最近数据世代的保留集：投影 `body` 取它（`projection/index.ts`），
- * 若其落在世代窗口外被裁，跨轮续跑会取到不完整闭包而落 `denied`，故 compact 恒保留。
+ * 若其落在世代窗口外被裁，读侧会取到不完整闭包而落 `denied`，故 compact 恒保留。
+ * 运行记录已出世界，世界里的数据世代只剩定义数据，故保留集只覆盖定义数据世代。
  * 只按身份机械枚举，不解释 body 语义。
  */
 function dataGenKeepGens(world: World): { id: string; seq: number }[] {
@@ -62,7 +63,7 @@ function dataGenKeepGens(world: World): { id: string; seq: number }[] {
 }
 
 /**
- * 数据世代 payload + 其 `{"def":hash}` 闭包哈希：投影 `body` 及闭包恒在 base。
+ * 定义数据世代 payload + 其 `{"def":hash}` 闭包哈希：投影 `body` 及闭包恒在 base。
  * 补丁数据世代的 base 链由内核 `retainedGens` 沿 `base` 一并保留，其 payload 闭包同样覆盖。
  */
 function dataGenKeepRoots(world: World): Hash[] {

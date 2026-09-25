@@ -69,7 +69,7 @@ function helpText(): string {
     '',
     '宿主：',
     '  start [--call-timeout-ms <ms>] [--start-wrapper <cmd>] [--watch]',
-    '                              起宿主（唯一写者，后台进程）；超时缺省读',
+    '                              起宿主（世界单写者，后台进程）；超时缺省读',
     '                              CHRONO_CALL_TIMEOUT_MS，再缺省 30000；',
     '                              包装器缺省读 CHRONO_START_WRAPPER，再缺省无；',
     '                              --watch 打开源码 watcher（缺省读 CHRONO_WATCH，默认关）',

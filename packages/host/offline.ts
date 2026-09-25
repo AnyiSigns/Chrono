@@ -248,7 +248,7 @@ function loadAnchorStable(paths: HostPaths): Anchor {
 
 /**
  * 只读列出「无数据世代」的身份（首启预置默认 body 的判据）：**不取写锁**，宿主运行时亦可读。
- * 宿主是唯一写者、日志 append-only，读侧只用于判定「该身份是否已有数据世代」。
+ * 宿主持世界单写者锁、日志 append-only，读侧只用于判定「该身份是否已有数据世代」。
  */
 export function unseededIdentities(root: string): string[] {
   const paths = hostPaths(resolve(root))

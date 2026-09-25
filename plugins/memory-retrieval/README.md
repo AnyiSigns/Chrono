@@ -47,12 +47,15 @@ L3 长期记忆的**召回服务**（Rust）：构造查询 → 向量化 → �
 | `query` | string | 查询文本（双入口在入口 term 侧区分，服务侧同形）。 |
 | `goal` | string | 本会话 L1 goal / 摘要，拼进查询；也接受 `bag.l1.goal`。 |
 | `workspace` | string | 当前工作区 id；工作区范围过滤据此判定。 |
-| `memory` | `{ body, refs }` | **`memory-store` 身份投影**：`body` = 身份 body（链尾 + 计数 + `deleted` / `pinned` + 模型锚），`refs` = 引用闭包 `{<条目 def 哈希>: <条目 body>}`。本服务原样转发给 `memory.search` / `memory.read`。也接受 `memory_body` / `memory_refs` 或顶层 `body` / `refs`。 |
 | `retrieval` | object | 召回策略配置（可热改）；也接受 `options` 别名。 |
 | `recall_budget` | integer | 召回预算（由 `loop-policy` 按 `thresholds` 写入）；优先于 `retrieval.recall_budget`。 |
 | `dedup_set` | string[] | 在上下文条目的 `dedup_key` 列表（与上下文调配器同口径）。 |
 | `now` | number \| string | 宿主固定时钟（epoch 毫秒或 ISO 8601）；缺省回落调用帧 `env.now`。 |
 | `model_config` | object | 多查询 / 语义重排时 `model.chat` 的连接实例；缺失时模型项降级为关闭。 |
+
+- **L3 条目与索引不随 bag 传入**：`memory-store` 已把条目迁出世界、自持自有存储，
+  本服务经 `memory` pin 反向调 `memory.search(query_vector, top_k)` / `memory.read(hashes)` 取，
+  故 bag 不再有 `memory` / `body` / `refs` 切片键。
 
 **`retrieval` 配置**（缺省见 `schema/retrieval.json` 顶层 `defaults`）：
 
@@ -93,8 +96,8 @@ L3 长期记忆的**召回服务**（Rust）：构造查询 → 向量化 → �
 
 ## 与调用方的关系
 
-- `loop-policy` 的 `recall` 节点（图版本插入后）与记忆工具路径 eff 本服务 `search`，bag 带当前轮文本 / 工作区 / 预算 /
-  `memory-store` 投影；召回先于组装，结果写入 `bag.recall` 供上下文调配器读取（调配器不 eff 本服务）。
+- `loop-policy` 的 `recall` 节点（图版本插入后）与记忆工具路径 eff 本服务 `search`，bag 带当前轮文本 / 工作区 / 预算；
+  召回先于组装，结果写入 `bag.recall` 供上下文调配器读取（调配器不 eff 本服务）。
 - 语义重排 / 多查询打开时，该次召回的模型输出不参与重放（已知限制，与 `model-protocol` 同口径）。
 
 ## 测试与 E2E

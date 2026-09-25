@@ -1,6 +1,6 @@
 // ③ 可重算缓存（住宿主侧 `state/plugins/evolve-metrics/`，经 `CHRONO_PLUGIN_STATE` 注入）。
 // 只缓存「可由轨迹窗口重算」的基线统计；命中与未命中输出逐字节一致（计算是确定性的）。
-// 缓存丢失只影响一次重算，不影响正确性——故本插件只允许 ③（state: recomputable）。
+// 缓存丢失只影响一次重算，不影响正确性——故本插件声明 ③（state: recomputable）。
 
 use std::collections::BTreeMap;
 use std::fs;

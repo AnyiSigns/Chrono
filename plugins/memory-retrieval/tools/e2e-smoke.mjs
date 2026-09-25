@@ -13,13 +13,14 @@ import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
+import { getBlob, isBlobPointer } from '../../../packages/host/blobs.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 
-/** pins 拓扑序：被依赖者先入世（memory-store 依赖 embedding；model-protocol 依赖 secrets）。 */
-const PACK_ORDER = ['embedding', 'secrets', 'memory-store', 'model-protocol', 'memory-retrieval']
+/** pins 拓扑序：被依赖者先入世（memory-store 依赖 embedding；model-protocol 依赖 secrets / config）。 */
+const PACK_ORDER = ['embedding', 'secrets', 'config', 'memory-store', 'model-protocol', 'memory-retrieval']
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -52,10 +53,13 @@ function collectTreePaths(world, treeHash, prefix = '', out = new Map()) {
   return out
 }
 
-function readBlob(world, hash) {
-  const body = world.defs[hash]?.body
-  assert.equal(typeof body, 'string', `blob ${hash} 不是文本`)
-  return body
+/** 读源码文件文本：链上 pointer def → CAS 字节（源码已外迁 `state/blobs/`）。 */
+function readBlob(world, hash, blobsDir) {
+  const pointer = world.defs[hash]?.body
+  assert.ok(isBlobPointer(pointer), `blob ${hash} 不是 pointer def`)
+  const result = getBlob(blobsDir, pointer)
+  assert.equal(result.ok, true, `blob ${hash} 读取失败`)
+  return result.bytes.toString('utf8')
 }
 
 function latestCodeGen(identity) {
@@ -94,7 +98,7 @@ function main() {
   const gen = latestCodeGen(identity)
   assert.ok(gen !== null, 'memory-retrieval 无可解析代码世代')
   const tree = collectTreePaths(world, world.defs[gen.payload].body.tree)
-  const decl = JSON.parse(readBlob(world, tree.get('plugin.json')))
+  const decl = JSON.parse(readBlob(world, tree.get('plugin.json'), paths.blobsDir))
   assert.equal(decl.identity, 'memory-retrieval')
   assert.deepEqual(decl.implements, ['retrieval'])
   assert.deepEqual(decl.methods.retrieval, ['search'])

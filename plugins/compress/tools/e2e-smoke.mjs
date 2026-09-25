@@ -1,7 +1,8 @@
 // `compress` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读）：
-// pack 依赖链（secrets → model-protocol → embedding → short-memory → compress）→ seed
-// → 离线读投影确认五身份在册（pins 解析通过）→ 直连 compress 服务协议，把反向调用桥接到内存假后端
-// → 覆盖 summarize / compact / extract / semantic 与写计划形状。
+// pack 依赖链（secrets → config → embedding → short-memory → model-protocol → compress）→ seed
+// → 离线读投影确认六身份在册（pins 解析通过）→ 直连 compress 服务协议，把反向调用桥接到内存假后端
+// → 覆盖 summarize / compact / extract / semantic：读 owner（short-memory.read）、写 owner
+// （short-memory.apply），返回值即结果（不再产世界写计划）。
 // 说明：**不执行 `boot start`**——embedding 是 Rust 服务，物化需 cargo build 与约百 MB 权重（宿主侧 ③），
 // 与本次「声明与协议就位」验收无关，故跳过；pack / seed 已覆盖插件声明、pins 与 .worldignore 的宿主门禁。
 // 用法：node plugins/compress/tools/e2e-smoke.mjs
@@ -20,9 +21,10 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIRS = [
   ['secrets', join(REPO_ROOT, 'plugins', 'secrets')],
-  ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
+  ['config', join(REPO_ROOT, 'plugins', 'config')],
   ['embedding', join(REPO_ROOT, 'plugins', 'embedding')],
   ['short-memory', join(REPO_ROOT, 'plugins', 'short-memory')],
+  ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
   ['compress', join(REPO_ROOT, 'plugins', 'compress')],
 ]
 
@@ -111,22 +113,9 @@ function memoryFixture() {
   }
 }
 
-function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
-}
-
 /**
  * 直连 compress 服务 stdio，把 `port.call` 桥接到内存假后端：
+ * `short-memory.read` 回 fixture、`short-memory.apply` 记录并回 `{ok:true}`；
  * `embedding.embed` 回错误（去重回落文本）；`model.chat` 回确定性 JSON（semantic 路径）。
  */
 async function directProtocolSmoke(entry) {
@@ -136,10 +125,21 @@ async function directProtocolSmoke(entry) {
   })
   const next = frameReader(child)
   const portCalls = []
+  const applied = []
+  const state = { memory: memoryFixture() }
   const env = { run: 'e2e', thread: null, now: 1_700_000_000_000 }
 
   async function bridge(message) {
     portCalls.push(message)
+    if (message.port === 'short-memory' && message.method === 'read') {
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: state.memory }))
+      return
+    }
+    if (message.port === 'short-memory' && message.method === 'apply') {
+      applied.push(message.args)
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, changed: 1 } }))
+      return
+    }
     if (message.port === 'model' && message.method === 'chat') {
       const value = { ok: true, text: JSON.stringify({ goal: 'semantic-goal', facts: ['sf1', 'sf2'] }) }
       child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
@@ -176,54 +176,56 @@ async function directProtocolSmoke(entry) {
     assert.equal(manifest.identity, 'compress')
     assert.deepEqual(manifest.methods.compress, ['summarize', 'compact', 'extract'])
 
-    const memory = memoryFixture()
     const summarized = await call('s1', 'summarize', {
-      memory,
       conversation: 'c-1',
       covered_upto: 'msg-9',
       goal: 'G',
       facts: ['f1', 'f2'],
     })
     assert.equal(summarized.kind, 'result', JSON.stringify(summarized))
-    const summaryOps = opsOf(summarized.value)
-    assert.deepEqual(summaryOps.map((op) => op.op), ['put', 'add_gen'])
-    assert.equal(summaryOps[1].args.id, 'short-memory')
-    assert.equal(summaryOps[0].args.body.sessions['c-1'].summary.goal, 'G')
-    assert.deepEqual(summaryOps[0].args.body.sessions['c-keep'], memory.sessions['c-keep'])
-    assert.equal(externOf(summarized.value).dedup, 'text')
+    assert.equal(summarized.value.$directives, undefined, '不再产世界写计划')
+    assert.equal(summarized.value.kind, 'summarize')
+    assert.equal(summarized.value.summary.goal, 'G')
+    assert.equal(summarized.value.dedup, 'text')
+    assert.equal(applied.length, 1, 'summarize 应写 owner 一次')
+    assert.equal(applied[0].set_sessions['c-1'].summary.goal, 'G')
+    assert.equal(applied[0].set_sessions['c-keep'], undefined, '不盲写其它会话')
 
     const compacted = await call('s2', 'compact', {
-      memory,
       conversation: 'c-1',
       workspace: 'w-1',
       goal: 'G',
       facts: ['one', 'two', 'three'],
       decisions: ['decide'],
     })
-    const compactBody = opsOf(compacted.value)[0].args.body
-    const items = compactBody.workspaces['w-1'].summary.facts
-    assert.ok(items.length >= 2 && items.length <= 3, `compact items=${items.length}`)
-    assert.equal(externOf(compacted.value).kind, 'compact')
+    assert.equal(compacted.value.kind, 'compact')
+    assert.ok(compacted.value.items.length >= 2 && compacted.value.items.length <= 3, `compact items=${compacted.value.items.length}`)
+    const compactApply = applied[applied.length - 1]
+    assert.ok(compactApply.set_sessions['c-1'] !== undefined, 'compact 写 L1')
+    assert.ok(compactApply.set_workspaces['w-1'] !== undefined, 'compact 写 L2')
 
     const semantic = await call('s3', 'summarize', {
-      memory,
       conversation: 'c-1',
       mode: 'semantic',
       model_config: { base_url: 'https://example.invalid', model: 'm', quirks: { impl: 'protocol', protocol: 'openai-chat' } },
       session_slice: [{ role: 'user', content: 'hi' }],
     })
-    assert.equal(externOf(semantic.value).summary.goal, 'semantic-goal')
-    assert.ok(portCalls.some((callFrame) => callFrame.port === 'model' && callFrame.method === 'chat'))
+    assert.equal(semantic.value.summary.goal, 'semantic-goal')
+    assert.ok(portCalls.some((frame) => frame.port === 'model' && frame.method === 'chat'))
 
+    state.memory = {
+      version: 1,
+      sessions: {},
+      workspaces: { 'w-1': { summary: { facts: ['dup', 'dup2'] }, sources: [], at: '2020-01-01T00:00:00.000Z' } },
+    }
     const duplicate = await call('s4', 'extract', {
-      memory: { version: 1, sessions: {}, workspaces: { 'w-1': { summary: { facts: ['dup', 'dup2'] }, sources: [], at: '2020-01-01T00:00:00.000Z' } } },
       workspace: 'w-1',
       summary: { facts: ['dup', 'dup2'] },
     })
-    assert.deepEqual(directivesOf(duplicate.value).map((item) => item.kind), ['extern'])
-    assert.equal(externOf(duplicate.value).reason, 'all_duplicate')
+    assert.equal(duplicate.value.$directives, undefined)
+    assert.equal(duplicate.value.reason, 'all_duplicate')
 
-    console.log('直连协议：summarize / compact / extract / semantic + 写计划形状 + 不盲写其他会话')
+    console.log('直连协议：summarize / compact / extract / semantic 读 owner + 写 owner + 结果值 + 不盲写其他会话')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -248,7 +250,7 @@ async function main() {
 
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
-    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部五身份')
+    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部六身份')
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
 
     const paths = hostPaths(root)
@@ -257,7 +259,7 @@ async function main() {
     for (const [identity] of PLUGIN_DIRS) {
       assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
     }
-    console.log('离线投影：五身份在册（compress pins 解析通过）')
+    console.log('离线投影：六身份在册（compress pins 解析通过）')
 
     await directProtocolSmoke(join(REPO_ROOT, 'plugins', 'compress', 'execute', 'main.ts'))
 

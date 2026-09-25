@@ -164,13 +164,6 @@ fn refs() -> BTreeMap<String, Value> {
     entries
 }
 
-fn memory_body() -> Value {
-    json!({
-        "tail": {"def": "e2"}, "count": 2, "deleted": {}, "pinned": {},
-        "model": {"id": "granite-97m", "dim": 384},
-    })
-}
-
 fn bridge(hits: Vec<Value>) -> Bridge {
     Bridge {
         hits,
@@ -198,10 +191,10 @@ fn default_hits() -> Vec<Value> {
 }
 
 fn bag(extra: Value) -> Value {
+    // L3 条目与索引由 `memory-store` owner 自持：bag 不再传 memory 切片。
     let mut bag = json!({
         "query": "note",
         "workspace": "w1",
-        "memory": {"body": memory_body(), "refs": refs()},
         "retrieval": {"mmr_lambda": 1.0},
     });
     if let (Some(base), Some(extra)) = (bag.as_object_mut(), extra.as_object()) {

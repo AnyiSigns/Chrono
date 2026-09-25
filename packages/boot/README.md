@@ -23,7 +23,7 @@ node packages/boot/main.ts <命令> [--root <路径>] [参数]
 
 | 分类   | 命令                                                     | 说明                                                                                                                                     |
 | ------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| 宿主   | `start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]` | 起宿主（唯一写者，后台进程），就绪后打印 `{ok, root, pid, call_timeout_ms, start_wrapper}`                                               |
+| 宿主   | `start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]` | 起宿主（世界单写者，后台进程），就绪后打印 `{ok, root, pid, call_timeout_ms, start_wrapper}`                                               |
 | 客户端 | `stop`                                                   | 令宿主按反拓扑序 drain 后停机                                                                                                            |
 | 客户端 | `status`                                                 | 链头与已装载身份清单                                                                                                                     |
 | 客户端 | `run <directives-json\|@文件>`                           | 提交 directives 跑一轮，打印 `{run, status, observations}`                                                                               |

@@ -1,5 +1,5 @@
 // 入世计划：把插件包源码树变成一条原子 batch 的子操作序列（纯计划，不落账）。
-// 计划由调用方（离线 seed）交给唯一写口提交；assembly 只读世界、不写链。
+// 计划由调用方（离线 seed）交给世界写口提交；assembly 只读世界、不写链。
 // 排除与 term `$ref` 替换都在本层做：宿主只做机械解析，不认识语义。
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -73,15 +73,18 @@ const LOCK_FILES = [
 ]
 
 /**
- * 受保护身份（住宿主侧、不进世界，故连代码换代也改不动）：新世代删除对它们的 `pins` 引用即整批拒。
- * 理由：可见性过滤是黑名单，攻击面在依赖关系——agent 可写一个不 pin `sandbox` 的 `tool-fs` 让强制失效。
- * 这是纯机械的「旧世代有、新世代没了」比对，宿主不认识业务。
+ * 受保护身份（保护名单住宿主侧、不进世界，故连代码换代也改不动）：新世代删除对它们的 `pins` 引用即整批拒。
+ * 理由：可见性过滤是黑名单，攻击面在依赖关系——agent 可写一个不 pin `sandbox` 的 `tool-fs` 让强制失效；
+ * 委托持久化同理，删掉对存储服务的 `pins` 会让写入静默失效。这是纯机械的「旧世代有、新世代没了」比对，宿主不认识业务。
+ * 覆盖范围与既有受保护身份同：只覆盖入世（`seed` / `pack` / `validate_package`），裸运行期顶层 `add_gen` 不经入世门禁。
  */
 const PROTECTED_PIN_IDENTITIES: ReadonlySet<string> = new Set([
   'sandbox',
   'guard',
   'secrets',
   'approval',
+  'storage-sql',
+  'storage-kv',
 ])
 
 /**

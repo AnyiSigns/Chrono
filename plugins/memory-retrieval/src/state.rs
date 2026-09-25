@@ -1,6 +1,6 @@
 // ③ 可重算缓存（住宿主侧 `state/plugins/memory-retrieval/`，经 `CHRONO_PLUGIN_STATE` 注入）。
 // 只缓存查询向量（可由文本 + 模型重算）；命中与未命中输出逐字节一致（向量化确定）。
-// 缓存丢失只影响一次重算，不影响正确性——故本插件只允许 ③（state: recomputable）。
+// 缓存丢失只影响一次重算，不影响正确性——故本插件声明 ③（state: recomputable）。
 
 use std::collections::BTreeMap;
 use std::fs;

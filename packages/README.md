@@ -1,7 +1,7 @@
 # Chrono 载体实现（packages）
 
 `packages/` 是 Chrono 的实现面，四个包：内核是纯函数库（无 IO、不装载、不执行效果）；宿主是唯一常驻进程与
-唯一写者（内部再分装配 / 效果 / 账本 / 投影四个子包）；CLI 是 genesis 常量薄壳；客户端库是连入站面的唯一入口。
+世界单写者（内部再分装配 / 效果 / 账本 / 投影四个子包）；CLI 是 genesis 常量薄壳；客户端库是连入站面的唯一入口。
 设计与口径以 [`docs/kernel.md`](../docs/kernel.md)（内核）与 [`docs/host.md`](../docs/host.md)（载体）为准；
 本目录各包自述见下表。
 
@@ -9,8 +9,8 @@
 
 | 包        | 是什么                                                                           | 入口                            | 自述                                   |
 | --------- | -------------------------------------------------------------------------------- | ------------------------------- | -------------------------------------- |
-| `kernel/` | 内核：值层 / 归约机 / 哈希链日志 / 唯一写口；纯函数、无 IO、不装载、不执行效果   | `kernel/index.ts`               | [`kernel/README.md`](kernel/README.md) |
-| `host/`   | 载体宿主：装配 / 效果 / 账本 / 投影；一个常驻进程、唯一写者                      | `host/index.ts`、`host/main.ts` | [`host/README.md`](host/README.md)     |
+| `kernel/` | 内核：值层 / 归约机 / 哈希链日志 / 世界写口；纯函数、无 IO、不装载、不执行效果   | `kernel/index.ts`               | [`kernel/README.md`](kernel/README.md) |
+| `host/`   | 载体宿主：装配 / 效果 / 账本 / 投影；一个常驻进程、世界单写者                    | `host/index.ts`、`host/main.ts` | [`host/README.md`](host/README.md)     |
 | `client/` | 入站面客户端库：connect / submit / command / commands / status / stop / 收 event | `client/index.ts`               | [`client/README.md`](client/README.md) |
 | `boot/`   | CLI 薄壳（genesis 常量）：`start` 起宿主，其余命令连宿主或离线执行               | `boot/main.ts`                  | [`boot/README.md`](boot/README.md)     |
 
@@ -43,7 +43,7 @@ CLI / UI / 测试 / 以客户端身份连入的插件
         ▼                                   ▼
   服务子进程（stdio） ←── call / result ── 服务协议（host/service-link.ts）
         │
-  账本 ledger：state/world/journal.jsonl ← 唯一写口（内核 commit）
+  账本 ledger：state/world/journal.jsonl ← 世界写口（内核 commit）
 ```
 
 - 插件服务 = 宿主 spawn 的子进程：协议帧走 stdout、日志走 stderr（[`docs/protocol.md`](../docs/protocol.md) §一 / §二）。
@@ -76,7 +76,7 @@ npm test             # vitest
 
 ```
 node packages/boot/main.ts seed fixtures/plugins/toy-alpha   # 离线入世（宿主未运行）
-node packages/boot/main.ts start                             # 起宿主（唯一写者，后台进程）
+node packages/boot/main.ts start                             # 起宿主（世界单写者，后台进程）
 node packages/boot/main.ts status                            # 链头 + 已装载身份
 node packages/boot/main.ts stop                              # 反拓扑序 drain 后停机
 ```

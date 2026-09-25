@@ -165,7 +165,7 @@ ok = (m.v == <服务协议版本>)                     # 信封版本不符同�
  and (m.identity == decl.identity)
  and covers(m.implements, decl.implements)     # 不得少
  and covers(m.methods, decl.methods)
- and (m.state == decl.state)                   # v1 只允许 recomputable
+ and (m.state == decl.state)                   # 状态档按声明比对（recomputable / durable）
 if !ok: kill(proc); lifecycle_log(handshake.failed, proc); mark(reverse_reachable(proc.id), not_loaded)   # 该插件及其依赖者
 # manifest 不是 JSON / 回错消息种类（protocol_error）同归 handshake.failed；起服务 / 通道类失败记 service.start_failed
 # 多出来的能力（m.implements \ decl.implements）不登记：端点表只按 decl.implements 建行；多余项丢弃 + lifecycle_log(handshake.extra_dropped, proc)
@@ -256,10 +256,10 @@ execute(eff):
 - 审计与业务写 v1 **分两条 entry**；合成 `batch` 会让 `ref` 语义变复杂，后置。
 - 审计 `put` 会推进链头：续跑下一轮必须用**审计后的 `world` / `head`**（A9）。
 
-### A8 · 单写者保证
+### A8 · 世界单写者保证
 
 ```
-acquire():                                      # 跨平台单写者锁（本地 socket 即鉴权，单机）
+acquire():                                      # 跨平台世界单写者锁（本地 socket 即鉴权，单机）
   if exists(state/runtime/lock):
       if alive(read(state/runtime/lock).pid): fail(writer_busy)   # POSIX: kill -0；Windows: OpenProcess+GetExitCodeProcess
       else: clear(state/runtime/lock)           # 死锁清理
@@ -433,7 +433,7 @@ project(world, head):                      # 宿主只读视图；按引用构�
 | **S4 `effect`**            | A1 路由；A10 判定 → 落账；`eff` → 执行 → A7 审计 → 回灌 → 续跑 → `done`（A9）；extern 透传；**A13 命令 `args` 按 `argsSchema` 校验**（JSON Schema 白名单子集，坏参 → `bad_args`，S1 遗留）                                                                                                                  | 换 toy 服务实现，调用方与 term 不改；挂起→审计→回灌→续跑逐字节可重放；分相正确（eval/write 不共轮、write 每条一轮）；extern 观测原样回流；坏参在装配 / 执行前被拒；白名单外关键词入世 `bad_args_schema` 拒包                            |
 | **S4.5 跨语言**            | 一个**非 JS**（如 Python）toy 插件包：`package.json` + `plugin.json` + `execute/main.py`（读写 **stdin/stdout**；服务协议最小面：4 字节长度帧 + `hello`/`manifest` + `call`/`result`/`error` + `probe`/`pong` + `drain`/`bye` + `reload`/`ack`）+ `schema/` + `README`                                      | 只加该插件包（`state/plugins.json` 加一行 + 包就位）、**不改载体一行** → 被连接 → 握手 → `call`/`result` → 回灌 → 落账；挂起→审计→回灌→续跑逐字节可重放。**这就是「宿主不认识语言 / npm 只是信封」的证明**                              |
 | **S4.6 投影（base_only）** | A14：`projection` 包（宿主只读视图）；v1 基础世界 = **当前世界**（无快照 ⇒ 全量重放结果）；形状 = `{head, world_rev, ids:{<id>:{active, gens, body}}}`；eval 的 `ctx` **缺省即投影、显式透传**（三路统一） | term 经 `["g",["ids",<id>,"body"]]` 读当前世界投影；投影只读、不写链、不推进 head、不参与哈希 |
-| **S5 世代跟随**            | A6 换代 + 退役隔离；A8 单写者锁                                                                                                                                                                                                                                                                             | `add_gen` / `set_active` 生效；旧服务排空退出；依赖换代不改发出者进程（A1 重解析）；依赖退役 → 隔离发出者（不回落）；运维日志有对应条目；双写者被拒                                                                                     |
+| **S5 世代跟随**            | A6 换代 + 退役隔离；A8 世界单写者锁                                                                                                                                                                                                                                                                             | `add_gen` / `set_active` 生效；旧服务排空退出；依赖换代不改发出者进程（A1 重解析）；依赖退役 → 隔离发出者（不回落）；运维日志有对应条目；双写者被拒                                                                                     |
 
 - **S4.5 环境前提**：非 JS 运行时（如 Python）——服务协议走 **stdio**（读写 stdin/stdout），**无需 named pipe / socket**（「端点地址注入」问题随 stdio 消失）。
 - 一个非 JS toy 即可，不必每个都跨语言。

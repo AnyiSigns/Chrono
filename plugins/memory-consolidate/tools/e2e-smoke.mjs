@@ -1,7 +1,8 @@
 // `memory-consolidate` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读）：
-// pack 依赖链（secrets → model-protocol → embedding → short-memory → compress → session → memory-store → memory-consolidate）
-// → seed → 离线读投影确认八身份在册（pins 解析通过）→ 直连 memory-consolidate 服务协议，把反向调用
-// 桥接到内存假 #20 / #19 后端 → 覆盖 consolidate / sweep / candidates / view 与写计划形状。
+// pack 依赖链（secrets → config → embedding → short-memory → model-protocol → input → compress →
+// memory-store → session → memory-consolidate）→ seed → 离线读投影确认十身份在册（pins 解析通过）
+// → 直连 memory-consolidate 服务协议，把反向调用桥接到内存假 owner / #20 / #19 后端
+// → 覆盖 consolidate / sweep / candidates / view / edit：读 owner、算结果、写 owner，返回值为结果值。
 // 说明：**不执行 `boot start`**——embedding 是 Rust 服务，物化需 cargo build 与约百 MB 权重（宿主侧 ③），
 // 与本次「声明与协议就位」验收无关，故跳过；pack / seed 已覆盖插件声明、pins 与 .worldignore 的宿主门禁。
 // 用法：node plugins/memory-consolidate/tools/e2e-smoke.mjs
@@ -20,12 +21,14 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIRS = [
   ['secrets', join(REPO_ROOT, 'plugins', 'secrets')],
-  ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
+  ['config', join(REPO_ROOT, 'plugins', 'config')],
   ['embedding', join(REPO_ROOT, 'plugins', 'embedding')],
   ['short-memory', join(REPO_ROOT, 'plugins', 'short-memory')],
+  ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
+  ['input', join(REPO_ROOT, 'plugins', 'input')],
   ['compress', join(REPO_ROOT, 'plugins', 'compress')],
-  ['session', join(REPO_ROOT, 'plugins', 'session')],
   ['memory-store', join(REPO_ROOT, 'plugins', 'memory-store')],
+  ['session', join(REPO_ROOT, 'plugins', 'session')],
   ['memory-consolidate', join(REPO_ROOT, 'plugins', 'memory-consolidate')],
 ]
 
@@ -119,20 +122,6 @@ function shortMemoryFixture() {
   }
 }
 
-function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
-}
-
 /** 递归收集某 commit 源码树内的全部路径（验证 `.worldignore` 排除生效）。 */
 function collectTreePaths(world, rootHash, prefix = '') {
   const body = world.defs[rootHash]?.body
@@ -147,7 +136,7 @@ function collectTreePaths(world, rootHash, prefix = '') {
   return paths
 }
 
-/** 直连 memory-consolidate 服务 stdio，把 `port.call` 桥接到内存假 #20 / #19 后端。 */
+/** 直连 memory-consolidate 服务 stdio，把 `port.call` 桥接到内存假 owner / #20 / #19 后端。 */
 async function directProtocolSmoke(entry) {
   const child = spawn(process.execPath, [entry], {
     cwd: dirname(dirname(entry)),
@@ -155,7 +144,9 @@ async function directProtocolSmoke(entry) {
   })
   const next = frameReader(child)
   const portCalls = []
+  const applied = []
   const env = { run: 'e2e', thread: null, now: NOW }
+  const state = { shortMemory: shortMemoryFixture() }
 
   async function bridge(message) {
     portCalls.push(message)
@@ -179,6 +170,28 @@ async function directProtocolSmoke(entry) {
         return vector
       })
       child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { model: 'granite-97m', dim: 8, vectors } }))
+      return
+    }
+    if (message.port === 'short-memory' && message.method === 'read') {
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: state.shortMemory }))
+      return
+    }
+    if (message.port === 'short-memory' && message.method === 'apply') {
+      applied.push(message.args)
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, changed: 1 } }))
+      return
+    }
+    if (message.port === 'session' && message.method === 'read') {
+      const value = { version: 1, current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w-1' }] }
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+      return
+    }
+    if (message.port === 'memory' && message.method === 'list') {
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, kind: 'list', entries: [], count: 0, pinned: {} } }))
+      return
+    }
+    if (message.port === 'memory' && message.method === 'append') {
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, kind: 'append', added: [], count: 0 } }))
       return
     }
     if (message.port === 'compress' && message.method === 'summarize') {
@@ -217,46 +230,36 @@ async function directProtocolSmoke(entry) {
     assert.equal(manifest.identity, 'memory-consolidate')
     assert.deepEqual(manifest.methods['memory-maintenance'], ['consolidate', 'sweep', 'candidates', 'view', 'edit'])
 
-    const consolidated = await call('c1', 'consolidate', {
-      short_memory: shortMemoryFixture(),
-      session: { current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w-1' }] },
-      memory_store: { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: 'granite-97m', dim: 384 } },
-      memory_store_refs: {},
-      weight_threshold: 1,
-    })
+    const consolidated = await call('c1', 'consolidate', { weight_threshold: 1 })
     assert.equal(consolidated.kind, 'result', JSON.stringify(consolidated))
-    const consolidatedOps = opsOf(consolidated.value)
-    assert.deepEqual(consolidatedOps.map((op) => op.op), ['put', 'add_gen'])
-    assert.equal(consolidatedOps[1].args.id, 'short-memory')
-    assert.deepEqual(consolidatedOps[0].args.body.workspaces['w-1'].sources, ['c-1', 'c-0'])
-    assert.equal(externOf(consolidated.value).dedup, 'vector')
+    assert.equal(consolidated.value.$directives, undefined, '不再产世界写计划')
+    assert.equal(consolidated.value.kind, 'consolidate')
+    assert.equal(consolidated.value.dedup, 'vector')
+    const consolidatedApply = applied[applied.length - 1]
+    assert.deepEqual(consolidatedApply.set_workspaces['w-1'].sources, ['c-1', 'c-0'])
 
-    const swept = await call('c2', 'sweep', {
-      short_memory: shortMemoryFixture(),
-      memory_store: { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: 'granite-97m', dim: 384 } },
-      memory_store_refs: {},
-    })
-    assert.deepEqual(externOf(swept.value).l1_deleted, ['c-1'])
-    assert.deepEqual(opsOf(swept.value).map((op) => op.op), ['put', 'add_gen'])
+    const swept = await call('c2', 'sweep', {})
+    assert.deepEqual(swept.value.l1_deleted, ['c-1'])
+    assert.deepEqual(applied[applied.length - 1].del_sessions, ['c-1'])
 
-    const candidates = await call('c3', 'candidates', {
-      short_memory: shortMemoryFixture(),
-      memory_store: { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: 'granite-97m', dim: 384 } },
-      memory_store_refs: {},
-    })
+    const candidates = await call('c3', 'candidates', {})
     assert.equal(candidates.value.$directives, undefined)
+    assert.equal(candidates.value.kind, 'candidates')
     assert.equal(candidates.value.candidates[0].reason, 'l1_expired')
 
-    const viewed = await call('c4', 'view', {
-      short_memory: shortMemoryFixture(),
-      memory_store: { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: 'granite-97m', dim: 384 } },
-      memory_store_refs: {},
-    })
+    const viewed = await call('c4', 'view', {})
     assert.equal(viewed.value.kind, 'view')
     assert.equal(viewed.value.l1.length, 1)
-    assert.ok(portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'))
 
-    console.log('直连协议：consolidate / sweep / candidates / view + 写计划形状')
+    const edited = await call('c5', 'edit', { action: 'delete', layer: 'l3', id: 'missing' })
+    assert.equal(edited.value.ok, false)
+    assert.equal(edited.value.reason, 'not_found')
+
+    assert.ok(portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'))
+    assert.ok(portCalls.some((frame) => frame.port === 'short-memory' && frame.method === 'read'))
+    assert.ok(portCalls.some((frame) => frame.port === 'session' && frame.method === 'read'))
+    assert.ok(portCalls.some((frame) => frame.port === 'memory' && frame.method === 'list'))
+    console.log('直连协议：consolidate / sweep / candidates / view / edit 读 owner + 写 owner + 结果值')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -281,18 +284,23 @@ async function main() {
 
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
-    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部八身份')
+    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部十身份')
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     for (const [identity] of PLUGIN_DIRS) {
       assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
     }
-    const consolidatePins = projection.ids['memory-consolidate'].pins
-    assert.deepEqual(consolidatePins, { compress: 'compress', embedding: 'embedding', memory: 'memory-store' })
-    console.log('离线投影：八身份在册（memory-consolidate pins 解析通过）')
+    assert.deepEqual(projection.ids['memory-consolidate'].pins, {
+      compress: 'compress',
+      embedding: 'embedding',
+      memory: 'memory-store',
+      'short-memory': 'short-memory',
+      session: 'session',
+    })
+    console.log('离线投影：十身份在册（memory-consolidate pins 解析通过）')
 
     // `.worldignore` 门禁：源码树含 execute / schema / plugin.json，不含 test / tools。
     const commitHash = anchor.world.ids['memory-consolidate'].active

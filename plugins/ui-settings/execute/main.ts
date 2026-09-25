@@ -130,7 +130,7 @@ const HANDLERS = createHandlers({
   maintenance: LINK,
   session: LINK,
   shortMemory: LINK,
-  memoryStore: LINK,
+  input: LINK,
   config: LINK,
   secrets: SECRETS,
   host: LINK,

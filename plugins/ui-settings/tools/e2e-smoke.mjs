@@ -37,14 +37,17 @@ const WEB_DIR = join(SETTINGS_DIR, 'execute', 'web')
 /** ① pins 段真实闭包（拓扑序）：记忆族 / 模型协议 / 密钥 / 会话等，pins 在 seed 批内解析。 */
 const PINS_CLOSURE = [
   'secrets',
+  'config',
   'embedding',
+  'short-memory',
   'model-protocol',
   'compress',
   'memory-store',
-  'memory-retrieval',
-  'memory-consolidate',
-  'short-memory',
+  'input',
   'session',
+  'memory-retrieval',
+  'skill',
+  'memory-consolidate',
   'ui-settings',
 ]
 
@@ -166,12 +169,18 @@ function assertDeclaration() {
   assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
   assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
   assert.deepEqual(decl.implements, ['ui-settings'])
-  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'view', 'search', 'edit', 'client.read', 'secret'])
+  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'])
   assert.deepEqual(decl.pins, {
     model: 'model-protocol',
     secrets: 'secrets',
     retrieval: 'memory-retrieval',
     'memory-maintenance': 'memory-consolidate',
+    session: 'session',
+    'short-memory': 'short-memory',
+    input: 'input',
+    skill: 'skill',
+    config: 'config',
+    host: 'host',
   })
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },

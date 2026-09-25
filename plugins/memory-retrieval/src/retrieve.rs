@@ -45,12 +45,7 @@ pub fn run(
     let queries = build_queries(&config, &query, bag, ports);
     let vectors = embed_texts(&queries, &config, ports, state).map_err(into_error)?;
 
-    let (body, refs) = bag::memory_parts(bag);
-    if body.is_null() && refs.is_null() {
-        return Ok(empty_result(&config, &query, queries));
-    }
-
-    let hits = match search_all(&vectors, &config, &body, &refs, ports).map_err(into_error)? {
+    let hits = match search_all(&vectors, &config, ports).map_err(into_error)? {
         SearchOutcome::Hits(hits) => hits,
         // #21 冷索引首查回 `status:'index_building'`：不静默当空集，回结构化「索引构建中」。
         SearchOutcome::IndexBuilding => {
@@ -62,7 +57,7 @@ pub fn run(
         .iter()
         .map(|entry| entry.entry_hash.clone())
         .collect();
-    let entries = read_entries(&hashes, &body, &refs, ports);
+    let entries = read_entries(&hashes, ports);
 
     let mut stats = Stats::default();
     let candidates = build_candidates(&grouped, &entries, &mut stats);
@@ -301,11 +296,10 @@ enum SearchOutcome {
 }
 
 /// 每查询索引检索，再按 chunk 取跨查询最高分归并。
+/// `memory-store` owner 自行持有条目与索引，故只传查询向量与 top_k，不传投影切片。
 fn search_all(
     vectors: &[Vec<f64>],
     config: &RetrievalConfig,
-    body: &Value,
-    refs: &Value,
     ports: &Ports<'_>,
 ) -> Result<SearchOutcome, ServiceError> {
     let per_query = config::per_query_top_k(config, vectors.len());
@@ -314,8 +308,6 @@ fn search_all(
         let args = json!({
             "query_vector": vector,
             "top_k": per_query,
-            "body": body,
-            "refs": refs,
         });
         let value = ports.memory.search(args)?;
         if value.get("ok").and_then(Value::as_bool) == Some(false) {
@@ -356,16 +348,11 @@ fn parse_hits(value: &Value) -> Vec<ChunkHit> {
 }
 
 /// chunk → entry 回溯：批量调 memory.read 取条目正文；失败 / 缺失按未命中处理。
-fn read_entries(
-    hashes: &[String],
-    body: &Value,
-    refs: &Value,
-    ports: &Ports<'_>,
-) -> BTreeMap<String, Value> {
+fn read_entries(hashes: &[String], ports: &Ports<'_>) -> BTreeMap<String, Value> {
     if hashes.is_empty() {
         return BTreeMap::new();
     }
-    let args = json!({ "hashes": hashes, "body": body, "refs": refs });
+    let args = json!({ "hashes": hashes });
     let Ok(value) = ports.memory.read(args) else {
         return BTreeMap::new();
     };
@@ -730,10 +717,6 @@ mod tests {
     }
 
     fn run_with(bag: &Value, memory: &FakeMemory) -> Value {
-        let mut full = bag.clone();
-        if full.get("memory").is_none() {
-            full["memory"] = json!({"body": {"count": 0}, "refs": {}});
-        }
         let embedding = FakeEmbedding::new(4);
         let model = FakeModel::new("[]");
         let ports = Ports {
@@ -741,7 +724,7 @@ mod tests {
             memory,
             model: &model,
         };
-        run(&full, &json!({}), &ports, &MemoryStateStore::new()).unwrap()
+        run(bag, &json!({}), &ports, &MemoryStateStore::new()).unwrap()
     }
 
     fn hashes(value: &Value) -> Vec<String> {
@@ -794,7 +777,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_memory_parts_return_empty() {
+    fn bag_without_memory_slice_still_queries_owner() {
+        // L3 切片不再随 bag 传入：bag 无 memory 键时仍应问 memory-store owner 并召回。
         let embedding = FakeEmbedding::new(4);
         let model = FakeModel::new("[]");
         let memory = memory();
@@ -804,13 +788,13 @@ mod tests {
             model: &model,
         };
         let value = run(
-            &json!({"query": "note"}),
+            &json!({"query": "note", "retrieval": {"mmr_lambda": 1.0, "workspace_scope": false}}),
             &json!({}),
             &ports,
             &MemoryStateStore::new(),
         )
         .unwrap();
-        assert_eq!(value["count"], 0);
+        assert_eq!(hashes(&value), vec!["e2", "e1"]);
     }
 
     #[test]

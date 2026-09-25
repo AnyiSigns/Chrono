@@ -1,5 +1,6 @@
-// bag 解析：把调用方入口 term 注入的投影片段归一成纯计算可用的形状。
-// 服务不读投影，只认 bag 里的值：查询 / L1 goal / 工作区 / memory-store 投影 / 去重集 / 时钟 / 模型连接。
+// bag 解析：把调用方入口 term 注入的值归一成纯计算可用的形状。
+// 服务不读投影，只认 bag 里的值：查询 / L1 goal / 工作区 / 去重集 / 时钟 / 模型连接；
+// L3 条目与索引由 `memory-store` owner 自持，本服务经 `memory` pin 反向调用，不经 bag 传切片。
 
 use std::collections::BTreeSet;
 
@@ -33,25 +34,6 @@ pub fn workspace_of(bag: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
-}
-
-/// memory-store 投影 `{body, refs}`：优先 `bag.memory`，其次 `memory_body` / `memory_refs`，
-/// 再次顶层 `body` / `refs`。缺失回 `Value::Null`。
-pub fn memory_parts(bag: &Value) -> (Value, Value) {
-    if let Some(memory) = bag.get("memory").and_then(Value::as_object) {
-        let body = memory.get("body").cloned().unwrap_or(Value::Null);
-        let refs = memory.get("refs").cloned().unwrap_or(Value::Null);
-        return (body, refs);
-    }
-    if bag.get("memory_body").is_some() || bag.get("memory_refs").is_some() {
-        let body = bag.get("memory_body").cloned().unwrap_or(Value::Null);
-        let refs = bag.get("memory_refs").cloned().unwrap_or(Value::Null);
-        return (body, refs);
-    }
-    (
-        bag.get("body").cloned().unwrap_or(Value::Null),
-        bag.get("refs").cloned().unwrap_or(Value::Null),
-    )
 }
 
 /// 上下文去重集：`bag.dedup_set` 的字符串项；非字符串忽略。
@@ -107,27 +89,6 @@ mod tests {
     #[test]
     fn goal_falls_back_to_l1() {
         assert_eq!(goal_of(&json!({"l1": {"goal": "g"}})), "g");
-    }
-
-    #[test]
-    fn memory_prefers_nested_shape() {
-        let bag = json!({"memory": {"body": {"count": 1}, "refs": {"h": {}}}});
-        let (body, refs) = memory_parts(&bag);
-        assert_eq!(body["count"], 1);
-        assert!(refs.get("h").is_some());
-    }
-
-    #[test]
-    fn memory_accepts_flat_shape() {
-        let bag = json!({"body": {"count": 2}, "refs": {}});
-        let (body, _) = memory_parts(&bag);
-        assert_eq!(body["count"], 2);
-    }
-
-    #[test]
-    fn missing_memory_is_null() {
-        let (body, refs) = memory_parts(&json!({}));
-        assert!(body.is_null() && refs.is_null());
     }
 
     #[test]

@@ -48,7 +48,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
     'memory-maintenance': 'memory-consolidate',
     session: 'session',
     'short-memory': 'short-memory',
-    'memory-store': 'memory-store',
+    input: 'input',
     skill: 'skill',
     config: 'config',
     host: 'host',
@@ -121,7 +121,7 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
     'eff',
     'ui-settings',
     'discover',
-    ['g', ['ids', 'input']],
+    ['c', null],
   ])
   assert.deepEqual(readJson('terms/model.profile.json'), ['eff', 'ui-settings', 'profile', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/secrets.status.json'), ['eff', 'secrets', 'list', ['c', null]])
@@ -135,9 +135,9 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
     ['g', ['ids', 'agents']],
   ])
   assert.deepEqual(readJson('terms/orchestration.health.json'), ['eff', 'ui-settings', 'health', ['g', ['ids']]])
-  // 记忆三条：view / edit 传整份投影；search 的查询 args 与投影无法在 term 合流，传命令 args（内含 UI 取回的 ids）。
-  assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/memory.edit.json'), ['eff', 'ui-settings', 'edit', ['g', ['ids']]])
+  // 记忆三条：view / edit 无参（owner 数据由下游服务自读）；search 传命令 args（查询条件）。
+  assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['c', null]])
+  assert.deepEqual(readJson('terms/memory.edit.json'), ['eff', 'ui-settings', 'edit', ['c', null]])
   assert.deepEqual(readJson('terms/memory.search.json'), ['eff', 'ui-settings', 'search', ['v', 0]])
 })
 

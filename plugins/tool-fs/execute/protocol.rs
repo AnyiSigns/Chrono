@@ -18,7 +18,7 @@ use crate::port::{CurrentCallIdGuard, FsopBackend, PortLink, RemoteFsop, SharedW
 pub const IDENTITY: &str = "tool-fs";
 /// 协议版本。
 pub const PROTOCOL: &str = "1";
-/// 状态档：v1 只允许可重算。
+/// 状态档：③ 可重算。
 pub const STATE: &str = "recomputable";
 
 const METHODS: [&str; 2] = ["describe", "invoke"];

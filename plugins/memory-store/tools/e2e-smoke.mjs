@@ -1,7 +1,8 @@
 // `memory-store` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读）：
 // pack 依赖链（embedding → memory-store）→ seed → 离线读投影确认两身份在册、pins 解析通过
 // → 校验 `.worldignore` 门禁（test/ / tools/ 未入源码树，契约与成员文件在册）
-// → 直连 memory-store 服务协议，把反向调用桥接到内存假向量化后端 → 覆盖 put / read / search 与写计划形状。
+// → 直连 memory-store 服务协议，把反向调用桥接到内存假向量化后端
+// → 覆盖 put / read / search / delete：条目与 body 写自有持久存储（④），重启后仍可读回；返回值为结果值。
 // 说明：**不执行 `boot start`**——embedding 是 Rust 服务，物化需 cargo build 与约百 MB 权重（宿主侧 ③），
 // 与本次「声明与协议就位」验收无关，故跳过；pack / seed 已覆盖插件声明、pins 与 .worldignore 的宿主门禁。
 // 用法：node plugins/memory-store/tools/e2e-smoke.mjs
@@ -23,6 +24,7 @@ const PLUGIN_DIRS = [
   ['memory-store', join(REPO_ROOT, 'plugins', 'memory-store')],
 ]
 const DIM = 384
+const ENV = { run: 'e2e', thread: null, now: 1_700_000_000_000 }
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -109,20 +111,6 @@ function testVector(text) {
   return vector
 }
 
-function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
-function externOf(value) {
-  const extern = directivesOf(value).find((item) => item.kind === 'extern')
-  return extern?.payload ?? null
-}
-
 /** 递归收集某身份源码树里的文件 / 目录路径（投影不含 tree / blob，故直接读世界 defs）。 */
 function collectSourcePaths(world, identity) {
   const active = world.ids[identity]?.active
@@ -144,15 +132,14 @@ function collectSourcePaths(world, identity) {
 }
 
 /** 直连 memory-store 服务 stdio，把 `port.call` 桥接到内存假向量化后端。 */
-async function directProtocolSmoke(entry, stateDir) {
+async function openSession(entry, dataDir, stateDir) {
   const child = spawn(process.execPath, [entry], {
     cwd: dirname(dirname(entry)),
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, CHRONO_PLUGIN_STATE: stateDir },
+    env: { ...process.env, CHRONO_PLUGIN_DATA: dataDir, CHRONO_PLUGIN_STATE: stateDir },
   })
   const next = frameReader(child)
   const portCalls = []
-  const env = { run: 'e2e', thread: null, now: 1_700_000_000_000 }
 
   function bridge(message) {
     portCalls.push(message)
@@ -181,7 +168,7 @@ async function directProtocolSmoke(entry, stateDir) {
   }
 
   async function call(id, method, args) {
-    child.stdin.write(encodeFrame({ v: '1', id, kind: 'call', port: 'memory', method, args, env }))
+    child.stdin.write(encodeFrame({ v: '1', id, kind: 'call', port: 'memory', method, args, env: ENV }))
     for (;;) {
       const message = await next()
       if (message.kind === 'port.call') {
@@ -192,51 +179,68 @@ async function directProtocolSmoke(entry, stateDir) {
     }
   }
 
+  child.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'memory-store' }))
+  const manifest = await next()
+  return {
+    manifest,
+    portCalls,
+    call,
+    close: async () => {
+      child.stdin.end()
+      await waitExit(child)
+    },
+  }
+}
+
+async function directProtocolSmoke(entry, dataDir, stateDir) {
+  let entryId = null
+  const first = await openSession(entry, dataDir, stateDir)
   try {
-    child.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'memory-store' }))
-    const manifest = await next()
-    assert.equal(manifest.kind, 'manifest', 'memory-store hello 应回 manifest')
-    assert.equal(manifest.identity, 'memory-store')
-    assert.deepEqual(manifest.methods.memory, ['put', 'read', 'search'])
+    assert.equal(first.manifest.kind, 'manifest', 'memory-store hello 应回 manifest')
+    assert.equal(first.manifest.identity, 'memory-store')
+    assert.deepEqual(first.manifest.methods.memory, ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'])
 
-    const put = await call('p1', 'put', { text: 'alpha', body: {}, refs: {} })
+    const put = await first.call('p1', 'put', { text: 'alpha' })
     assert.equal(put.kind, 'result', JSON.stringify(put))
-    const ops = opsOf(put.value)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'put', 'add_gen'])
-    assert.deepEqual(ops[1].args.body.tail, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.count, 1)
-    assert.equal(ops[2].args.id, 'memory-store')
-    assert.equal(externOf(put.value).saved, true)
-    const entryA = ops[0].args.body
+    assert.equal(put.value.$directives, undefined, '运行记录不产世界写计划')
+    assert.equal(put.value.ok, true)
+    assert.equal(put.value.saved, true)
+    assert.equal(put.value.count, 1)
+    entryId = put.value.id
+    assert.ok(typeof entryId === 'string' && entryId.length > 0)
 
-    const body = {
-      tail: { def: 'hA' },
-      count: 1,
-      deleted: {},
-      pinned: {},
-      model: { id: 'granite-97m', dim: DIM },
-    }
-    const refs = { hA: entryA }
-
-    const read = await call('r1', 'read', { body, refs, hashes: ['hA', 'h-missing'] })
+    const read = await first.call('r1', 'read', { hashes: [entryId, 'h-missing'] })
     assert.equal(read.value.entries[0].entry.text, 'alpha')
     assert.deepEqual(read.value.missing, ['h-missing'])
 
-    const search = await call('s1', 'search', { query_vector: testVector('alpha'), top_k: 3, body, refs })
+    const search = await first.call('s1', 'search', { query_vector: testVector('alpha'), top_k: 3 })
     assert.equal(search.value.status, 'ready', JSON.stringify(search.value))
-    assert.equal(search.value.hits[0].entry_hash, 'hA')
+    assert.equal(search.value.hits[0].entry_hash, entryId)
     assert.equal(search.value.hits[0].score, 1)
 
-    const deleted = { ...body, deleted: { [entryA.id]: '2020-01-01T00:00:00.000Z' } }
-    const filtered = await call('s2', 'search', { query_vector: testVector('alpha'), top_k: 3, body: deleted, refs })
-    assert.deepEqual(filtered.value.hits, [])
+    const list = await first.call('l1', 'list', {})
+    assert.deepEqual(list.value.entries.map((item) => item.id), [entryId])
 
-    assert.ok(portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'chunk'))
-    assert.ok(portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'))
-    console.log('直连协议：put / read / search + 写计划形状 + deleted 过滤')
+    assert.ok(first.portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'chunk'))
+    assert.ok(first.portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'))
+    console.log('直连协议：put / read / search / list + 结果值 + 不产世界写计划')
   } finally {
-    child.stdin.end()
-    await waitExit(child)
+    await first.close()
+  }
+
+  // 重启（同一 ④ 目录）：条目与 body 从追加日志重放，仍可读回。
+  const second = await openSession(entry, dataDir, stateDir)
+  try {
+    const read = await second.call('r2', 'read', { hashes: [entryId] })
+    assert.equal(read.value.entries[0].entry.text, 'alpha', '重启后应能读回条目（④ 持久化）')
+
+    const removed = await second.call('d1', 'delete', { ids: [entryId], at: '2020-01-01T00:00:00.000Z' })
+    assert.deepEqual(removed.value.deleted, [entryId])
+    const filtered = await second.call('s2', 'search', { query_vector: testVector('alpha'), top_k: 3 })
+    assert.deepEqual(filtered.value.hits, [], '逻辑删除后不再命中')
+    console.log('重启读回：④ 追加日志重放；delete 后 search 过滤')
+  } finally {
+    await second.close()
   }
 }
 
@@ -263,7 +267,7 @@ async function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     for (const [identity] of PLUGIN_DIRS) {
       assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
     }
@@ -282,6 +286,7 @@ async function main() {
 
     await directProtocolSmoke(
       join(REPO_ROOT, 'plugins', 'memory-store', 'execute', 'main.ts'),
+      join(root, 'data', 'memory-store'),
       join(root, 'state', 'plugins', 'memory-store'),
     )
 

@@ -8,7 +8,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 
 - 能力类：`ui-settings`（`ping` 健康占位 + `vendors` / `profile` / `discover` / `health` /
   `view` / `search` / `edit` 七个装配方法 + `client.read` 客户端半边交付 + `secret` 密钥本地写入代理）。
-- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate","session":"session","short-memory":"short-memory","memory-store":"memory-store","skill":"skill","config":"config"}`。
+- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate","session":"session","short-memory":"short-memory","input":"input","skill":"skill","config":"config"}`。
 - 状态档：`recomputable`（无世界数据，零 schema）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行期零 npm 依赖；客户端半边源码为 `.ts` / `.tsx`，由 `plugin.json.build` 自打包。
@@ -20,7 +20,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
 | `model.vendors` | `eff ui-settings vendors`（读 `ctx.ids`） | 服务装配厂商模板 body → 反向调 `model.vendors` |
-| `model.discover` | `eff ui-settings discover`（读 `ctx.ids.input`） | 服务读 `model.probe` 槽 → 反向调 `model.discover`，返回计划：清槽（无论成败，有数据世代则写补丁）+ extern 结果 |
+| `model.discover` | `eff ui-settings discover`（无参） | 服务经 `input` owner 读 `model.probe` 槽 → 反向调 `model.discover`，经 owner 清槽（无论成败），返回 extern 结果 |
 | `model.profile` | `eff ui-settings profile`（读 `ctx.ids`） | 服务从 config 身份 body + 厂商模板身份 body 装配 → 反向调 `model.profile`（返回其写计划） |
 | `secrets.status` | `eff secrets.list` | 本地密钥引用名状态（只回 `{name,has}`，不回本体） |
 | `settings.identities` | 投影读 `ctx.ids` | 身份名 / 状态 / 世代短哈希（插件页与关于页） |
@@ -28,16 +28,17 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | `orchestration.graph` | 投影读编排图身份 | 当前 active 图的节点 / 边（只读） |
 | `orchestration.scopes` | `eff ui-settings scopes`（读 `ctx.ids.agents`） | eff 服务方法：按需解析投影 refs 后回 Scope 名录（只读查询，仍标 `readonly`） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail |
-| `memory.view` | `eff ui-settings view`（读 `ctx.ids`） | 装配短记忆 body + 记忆库 body / refs → 反向调 `memory-maintenance.view` |
+| `memory.view` | `eff ui-settings view`（无参） | 反向调 `memory-maintenance.view`（L1 / L2 / L3 由维护服务自问 owner） |
 | `memory.search` | `eff ui-settings search`（args，内含 UI 取回的 `ids`） | 装配检索真实 bag → 反向调 `retrieval.search` |
-| `memory.edit` | `eff ui-settings edit`（读 `ctx.ids`） | 写类无参：读 `memory.edit` 槽 → 反向调 `memory-maintenance.edit`，返回维护写子操作 + 清槽计划 |
+| `memory.edit` | `eff ui-settings edit`（无参） | 写类无参：经 `input` owner 读 `memory.edit` 槽 → 反向调 `memory-maintenance.edit`，经 owner 清槽，返回 extern 结果 |
 | `ui-settings.client.read` | `eff ui-settings client.read`（args `{path}`） | 只读交付客户端半边产物字节；参数限包内相对 `.js`，路径穿越防护 |
 | `ui-settings.secret` | `eff ui-settings secret`（args `{op,name,value?}`） | 密钥本地写入代理：经本进程入站连接直发 `secrets.put` / `secrets.delete`，不进世界 / 审计 |
 
 - **投影读在入口 term**；服务不读投影（随 args 传入）。模型与记忆命令的装配、健康判定住服务
   （`execute/methods.ts`），经宿主反向调用（`port.call`）调下游端口。
-- **跨批读侧**：`session` / `short-memory` / `memory-store` / `skill` / `config` 的运行记录已出世界，
-  记忆浏览 / 搜索 / 编辑与模型档案装配改经 `eff` 问 owner（`config` 还用于技能写回后刷新）。
+- **跨批读侧**：`session` / `short-memory` / `input` / `skill` / `config` 的运行记录已出世界，
+  记忆浏览 / 搜索 / 编辑、模型探测槽消费与模型档案装配改经 `eff` 问 owner（`config` 还用于技能写回后刷新）；
+  L3 本体由 `memory-retrieval` 自己经 `memory` pin 问 `memory-store`，本插件不再拼该切片。
 - 未就位依赖（如编排图身份）令对应命令按 `missing_path` 收口为 `refused`；页面据此显示
   「依赖未就绪」降级视图，不因缺身份崩溃。
 
@@ -46,7 +47,8 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 - **config 写**：经 `config.write` 命令（`{body}` 整份替换）写 config owner 自有持久存储；
   判定阈值（`permission` / `params`）由 owner 服务在变化时镜像进世界。
 - **技能写**：经 `skill.write` 命令（`{body}` 整份）写技能 owner 自有持久存储。
-- **输入槽写**：经 `input.write` 命令（`{thread, slot}`）写 input owner 自有持久存储。
+- **输入槽写**：经 `input.write` 命令（`{thread, slot}`）写 input owner 自有持久存储；
+  `model.discover` / `memory.edit` 消费槽后经 `input.clear` 把对应线程键置 idle（不再产世界清槽计划）。
 - **密钥**：浏览器半边经 `ui-settings.secret` 命令代理，服务进程经入站 `secrets.put` /
   `secrets.delete` 直写用户本地文件（不进世界、不进导出、不进审计）；世界数据只存引用
   `auth_ref = {kind:'local'|'env', name}`。

@@ -182,7 +182,7 @@ describe('compact 有界化回收', () => {
     expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
   })
 
-  it('B2：窗口外数据世代及其 {"def":hash} 闭包保留，投影 body 恒在 base', () => {
+  it('B2：窗口外定义数据世代及其 {"def":hash} 闭包保留，投影 body 恒在 base', () => {
     const world = { defs: {}, ids: {} } as World
     let head: Head = { ...EMPTY_HEAD }
     const entries: Entry[] = []
@@ -225,6 +225,56 @@ describe('compact 有界化回收', () => {
 
     const tail = loadAnchor(journalFile(), baseFile(), coldDir())
     expect(worldRev(tail.world)).toBe(worldRev(result.world))
+    expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
+  })
+
+  it('B2 收窄：保留只覆盖最近定义数据世代，更旧数据世代及其闭包随窗口淘汰', () => {
+    const world = { defs: {}, ids: {} } as World
+    let head: Head = { ...EMPTY_HEAD }
+    const entries: Entry[] = []
+    const push = (op: Op, args: Json): Hash => {
+      const outcome = commit(
+        head,
+        world,
+        { id: `e-${entries.length}`, op, target: { expect_pos: head.hash }, args, by: 't' },
+        1000 + entries.length,
+      )
+      if (!outcome.verdict.ok || outcome.entry === null || outcome.hash === null) {
+        throw new Error(`commit failed: ${outcome.verdict.reasons.join(',')}`)
+      }
+      head = { seq: outcome.entry.seq, hash: outcome.hash as Hash }
+      entries.push(outcome.entry)
+      return outcome.entry.argsHash
+    }
+    const schema = push('put', { body: { schema: true } })
+    const oldLeaf = push('put', { body: { leaf: 'old' } })
+    const oldData = push('put', { body: { data: 1, ref: { def: oldLeaf } } })
+    const newLeaf = push('put', { body: { leaf: 'new' } })
+    const newData = push('put', { body: { data: 2, ref: { def: newLeaf } } })
+    push('add_identity', { id: 'x', schema })
+    push('add_gen', { id: 'x', payload: oldData, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: newData, pins: {}, sig: schema })
+    // 两个代码世代把两个数据世代都挤出窗口（genWindow=1 只留末代）
+    const code1 = push('put', { body: { tree: 'a'.repeat(64) } })
+    push('add_gen', { id: 'x', payload: code1, pins: {}, sig: schema })
+    const code2 = push('put', { body: { tree: 'b'.repeat(64) } })
+    push('add_gen', { id: 'x', payload: code2, pins: {}, sig: schema })
+    appendJournal(journalFile(), entries)
+
+    const all = readJournal(journalFile())
+    const result = compactWorld(hostPaths(root), replayFull(all), head, all, Date.now(), {
+      genWindow: 1,
+      strict: true,
+    })
+    // 只保留最近定义数据世代；更旧数据世代不在保留集
+    expect(result.world.ids.x.gens.some((g) => g.payload === newData)).toBe(true)
+    expect(result.world.ids.x.gens.some((g) => g.payload === oldData)).toBe(false)
+    expect(latestDataGen(result.world, 'x')?.payload).toBe(newData)
+    // strict：保留集只含最近数据世代及其闭包，更旧闭包被回收
+    expect(result.world.defs[newData]).toBeDefined()
+    expect(result.world.defs[newLeaf]).toBeDefined()
+    expect(result.world.defs[oldData]).toBeUndefined()
+    expect(result.world.defs[oldLeaf]).toBeUndefined()
     expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
   })
 

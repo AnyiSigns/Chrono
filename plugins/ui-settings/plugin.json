@@ -33,7 +33,7 @@
     "memory-maintenance": "memory-consolidate",
     "session": "session",
     "short-memory": "short-memory",
-    "memory-store": "memory-store",
+    "input": "input",
     "skill": "skill",
     "config": "config",
     "host": "host"

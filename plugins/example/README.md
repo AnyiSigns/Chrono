@@ -33,7 +33,7 @@ plugins/example/
 
 ## 状态档
 
-`state: "recomputable"`（③ 可重算；v1 只允许此值）。
+`state: "recomputable"`（③ 可重算）。
 
 ## 另注
 

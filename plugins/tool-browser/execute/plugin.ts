@@ -7,7 +7,7 @@ import type { Json, Rec } from './types.ts'
 export const IDENTITY = 'tool-browser'
 /** 协议版本。 */
 export const PROTOCOL = '1'
-/** 状态档：v1 只允许可重算。 */
+/** 状态档：③ 可重算。 */
 export const STATE = 'recomputable'
 
 function isRecord(value: Json | undefined): value is Rec {
