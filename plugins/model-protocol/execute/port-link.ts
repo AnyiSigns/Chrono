@@ -37,14 +37,15 @@ export class PortLink {
     })
   }
 
-  /** 宿主侧应答入口：`port.result` / `port.error` 按 id 结算；返回是否已消费该帧。 */
+  /** 宿主侧应答入口：`port.result` / `port.error` 按 id 结算；返回是否已消费该帧。
+   * 只有本链登记过该 id 才消费——多链（secrets / config）共存时，未登记不得吞掉他链的应答。 */
   settle(message: Rec): boolean {
     const kind = message['kind']
     if (kind !== 'port.result' && kind !== 'port.error') return false
     const id = message['id']
-    if (typeof id !== 'string') return true
+    if (typeof id !== 'string') return false
     const entry = this.pending.get(id)
-    if (entry === undefined) return true
+    if (entry === undefined) return false
     this.pending.delete(id)
     clearTimeout(entry.timer)
     if (kind === 'port.result') {

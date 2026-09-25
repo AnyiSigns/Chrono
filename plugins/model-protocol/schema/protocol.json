@@ -150,17 +150,7 @@
   "periodic": [
     {
       "method": "sync",
-      "every_ms": 86400000,
-      "reads": {
-        "config": ["ids", "config", "body"],
-        "vendor-openai": ["ids", "vendor-openai", "body"],
-        "vendor-deepseek": ["ids", "vendor-deepseek", "body"],
-        "vendor-dashscope": ["ids", "vendor-dashscope", "body"],
-        "vendor-google": ["ids", "vendor-google", "body"],
-        "vendor-zai": ["ids", "vendor-zai", "body"],
-        "vendor-kimi": ["ids", "vendor-kimi", "body"],
-        "vendor-custom": ["ids", "vendor-custom", "body"]
-      }
+      "every_ms": 86400000
     }
   ],
   "method_timeouts": {

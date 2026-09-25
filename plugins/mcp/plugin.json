@@ -3,10 +3,11 @@
   "schema": "schema/mcp.json",
   "implements": ["mcp"],
   "methods": {
-    "mcp": ["describe", "invoke", "discover"]
+    "mcp": ["describe", "invoke", "discover", "read", "write"]
   },
   "pins": { "secrets": "secrets" },
   "start": "node execute/main.ts",
+  "exclusive": ["data"],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -22,7 +23,7 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "term", "path": "terms/" },

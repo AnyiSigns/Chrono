@@ -3,7 +3,6 @@
 
 import {
   buildOnboardingConfig,
-  configWriteDirective,
   emptyConfig,
   isCodeGenFallbackBody,
   isRecord,
@@ -49,9 +48,7 @@ export async function commitProvider(ctx: any, form: any, options: any = {}): Pr
       form.error = { code: 'not_loaded', message: '' }
       return false
     }
-    // 写前重读 active：闭包里的 active 仅当次有效，陈旧读会被内核 `stale_active` 拒写。
-    await ctx.refreshConfigActive()
-    const wrote = await ctx.applyWrite(configWriteDirective(nextConfig, ctx.configActive))
+    const wrote = await ctx.writeConfig(nextConfig)
     if (!wrote.ok) {
       form.error = { code: wrote.code, message: '' }
       return false

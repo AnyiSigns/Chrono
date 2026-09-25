@@ -1,7 +1,8 @@
-// `workspace` 宿主装配 E2E（重点验证 H15 Rust 物化链路 + 写计划方言）：
-// 临时 root → pack workspace + input → seed（入世）→ start（物化 + cargo build + launch.mjs 拉起 + 握手）
-// → 轮询 status 确认 loaded → seed 默认 body → 协议直连驱动 list / add（args 带槽体、输入 body 与 workspaces body）
-// → 把服务返回的计划经 boot run 落账 → stop → verify + replay → 离线读投影断言 body 与 per-thread 清槽。
+// `workspace` 宿主装配 E2E（重点验证 H15 Rust 物化链路 + 清单出世界）：
+// 临时 root → pack workspace + input → seed（入世）→ 离线 seed 默认清单（写 owner ④ 追加日志）
+// → start（物化 + cargo build + launch.mjs 拉起 + 握手）→ 轮询 status 确认 loaded
+// → 协议直连驱动 read / list / add（服务读写自有存储，返回结果值而非世界写计划）
+// → 断言 ④ 追加日志含新增工作区、世界投影无 workspace 清单 → stop → verify + replay。
 // 首跑 cargo 需编译（crates 已缓存），`boot start` 的 10s 就绪等待可能先超时——宿主是 detached 进程，
 // 仍在后台装配，故超时后转轮询（失败路径也 stop，释放单写者锁）。
 // 用法：node plugins/workspace/tools/e2e-smoke.mjs
@@ -74,11 +75,11 @@ function frame(message) {
   return Buffer.concat([header, body])
 }
 
-/** 协议直连的临时客户端：独立 spawn 一份服务实例，只为取方法返回值 / 计划。 */
-function startService(exe, stateDir) {
+/** 协议直连的临时客户端：独立 spawn 一份服务实例（注入 ④ / ③），只为取方法返回值。 */
+function startService(exe, stateDir, dataDir) {
   const child = spawn(exe, [], {
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, CHRONO_PLUGIN_STATE: stateDir },
+    env: { ...process.env, CHRONO_PLUGIN_STATE: stateDir, CHRONO_PLUGIN_DATA: dataDir },
     windowsHide: true,
   })
   let buffer = Buffer.alloc(0)
@@ -135,26 +136,6 @@ function readProjection(root) {
   return projectBaseOnly(anchor.world, anchor.head)
 }
 
-/** 计划条目 → 可直接提交的 directives：write 机械填 id / by / expect_pos，extern 原样。 */
-function planToDirectives(plan, head) {
-  const items = plan.$directives
-  assert.ok(Array.isArray(items), '计划缺少 $directives 数组')
-  return items.map((item, index) => {
-    if (item.kind === 'write') {
-      return {
-        kind: 'write',
-        request: {
-          ...item.request,
-          id: `e2e-plan-${index}`,
-          target: { expect_pos: head },
-          by: 'e2e-smoke',
-        },
-      }
-    }
-    return item
-  })
-}
-
 async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', `chrono-workspace-e2e-${stamp}`)
@@ -175,6 +156,18 @@ async function main() {
     assert.equal(seededWorld.ok, true, 'seed 报告 ok:false')
     console.log(`seed：${seededWorld.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
 
+    // 离线 seed 默认清单：写 owner ④ 追加日志（宿主未启动，无并发写者）。
+    const seededBody = spawnSync(process.execPath, [SEED_SCRIPT, '--root', root], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    })
+    if (seededBody.status !== 0) {
+      throw new Error(`seed 脚本失败（exit ${seededBody.status}）：${seededBody.stderr || seededBody.stdout}`)
+    }
+    const seeded = JSON.parse(seededBody.stdout.trim())
+    assert.equal(seeded.ok, true, 'seed 脚本报告 ok:false')
+    console.log(`seed 默认清单：workspace_id=${seeded.workspace_id} path=${seeded.path}`)
+
     try {
       boot(root, ['start'])
       console.log('start：宿主就绪')
@@ -191,82 +184,69 @@ async function main() {
     assert.ok(existsSync(binPath), `缓存二进制缺失：${binPath}`)
     console.log(`H15：二进制就位（${binPath}）`)
 
-    const seededBody = spawnSync(process.execPath, [SEED_SCRIPT, '--root', root], {
-      encoding: 'utf8',
-      cwd: REPO_ROOT,
-    })
-    if (seededBody.status !== 0) {
-      throw new Error(`seed 脚本失败（exit ${seededBody.status}）：${seededBody.stderr || seededBody.stdout}`)
-    }
-    const seeded = JSON.parse(seededBody.stdout.trim())
-    assert.equal(seeded.ok, true, 'seed 脚本报告 ok:false')
-    console.log(`seed 默认 body：workspace_id=${seeded.workspace_id} path=${seeded.path}`)
-
-    const before = readProjection(root)
-    const workspacesBody = before.ids.workspace.body
-    assert.equal(workspacesBody.workspaces.length, 1)
-    assert.equal(workspacesBody.workspaces[0].id, seeded.workspace_id)
-
-    service = startService(binPath, join(root, 'state', 'plugins', 'workspace'))
+    const paths = hostPaths(root)
+    const dataDir = join(paths.dataDir, 'workspace')
+    const stateDir = join(root, 'state', 'plugins', 'workspace')
+    service = startService(binPath, stateDir, dataDir)
     const hello = await service.request({ kind: 'hello', impl: 'workspace' })
     assert.equal(hello.kind, 'manifest')
     assert.equal(hello.identity, 'workspace')
-    assert.deepEqual(hello.methods.workspace, ['list', 'pick', 'add', 'remove', 'reveal'])
+    assert.deepEqual(hello.methods.workspace, ['list', 'read', 'pick', 'add', 'remove', 'reveal'])
+    assert.equal(hello.state, 'durable')
+
+    const readReply = await service.request({
+      kind: 'call',
+      port: 'workspace',
+      method: 'read',
+      args: {},
+      env: { run: 'e2e', thread: '_main', now: 0 },
+    })
+    assert.equal(readReply.ok, true)
+    assert.equal(readReply.value.workspaces.length, 1)
+    assert.equal(readReply.value.workspaces[0].id, seeded.workspace_id)
 
     const listReply = await service.request({
       kind: 'call',
       port: 'workspace',
       method: 'list',
-      args: workspacesBody,
+      args: {},
       env: { run: 'e2e', thread: '_main', now: 0 },
     })
     assert.equal(listReply.ok, true)
     assert.equal(listReply.value.length, 1)
     assert.equal(listReply.value[0].id, seeded.workspace_id)
     assert.equal(listReply.value[0].missing, false)
-    console.log('协议直连 list：ok（missing=false）')
+    console.log('协议直连 read / list：ok（missing=false）')
 
     const addReply = await service.request({
       kind: 'call',
       port: 'workspace',
       method: 'add',
-      args: {
-        slot: { kind: 'workspace.add', workspace: 'ws-added', path: addedDir },
-        slots: { slots: { _main: { kind: 'workspace.add' }, other: { kind: 'chat.message' } } },
-        body: workspacesBody,
-        thread_id: '_main',
-      },
+      args: { slot: { kind: 'workspace.add', workspace: 'ws-added', path: addedDir } },
       env: { run: 'e2e', thread: '_main', now: 0 },
     })
     assert.equal(addReply.ok, true, `add 返回 error：${JSON.stringify(addReply)}`)
-    const plan = addReply.value
-    const ops = plan.$directives[0].request.args.ops
-    assert.equal(plan.$directives.length, 2)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'add_gen', 'put', 'add_gen'])
-    assert.equal(ops[1].args.id, 'workspace')
-    assert.deepEqual(ops[1].args.payload, { $n: 0 })
-    assert.equal(ops[3].args.id, 'input')
-    assert.deepEqual(ops[3].args.payload, { $n: 2 })
-    assert.deepEqual(plan.$directives[1].payload, { ok: true, workspace: 'ws-added' })
-    console.log('协议直连 add：计划 ops 序与占位符 ok')
+    assert.deepEqual(addReply.value, { ok: true, workspace: 'ws-added' })
+    console.log('协议直连 add：返回结果值（无世界写计划）ok')
 
-    const head = boot(root, ['status']).world_head.hash
-    const runResult = boot(root, ['run', JSON.stringify(planToDirectives(plan, head))])
-    assert.equal(runResult.status, 'done', `落账未完成：${JSON.stringify(runResult)}`)
-    console.log('boot run：计划落账 ok')
-
-    const after = readProjection(root)
-    const list = after.ids.workspace.body.workspaces
-    assert.equal(list.length, 2, '工作区列表未追加')
-    const added = list.find((item) => item.id === 'ws-added')
-    assert.ok(added !== undefined, '未找到新增工作区')
+    const logFile = join(dataDir, 'workspace.jsonl')
+    assert.equal(existsSync(logFile), true, '④ 追加日志应存在')
+    const records = readFileSync(logFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const last = records[records.length - 1]
+    assert.equal(last.t, 'body')
+    assert.equal(last.body.workspaces.length, 2)
+    const added = last.body.workspaces.find((item) => item.id === 'ws-added')
     const expectedPath = stripVerbatim(realpathSync.native(addedDir))
     assert.equal(added.path.toLowerCase(), expectedPath.toLowerCase())
     assert.equal(added.name, 'added-ws')
-    assert.equal(list[0].id, seeded.workspace_id, '既有条目应保留且顺序在前')
-    assert.deepEqual(after.ids.input.body.slots._main, { kind: 'idle' })
-    assert.deepEqual(after.ids.input.body.slots.other, { kind: 'chat.message' })
-    console.log('离线投影：workspaces body 已追加、per-thread 清槽正确')
+    assert.equal(last.body.workspaces[0].id, seeded.workspace_id, '既有条目应保留且顺序在前')
+    console.log('④ 追加日志：清单已追加、既有条目保留 ok')
+
+    // 世界投影无 workspace 清单（已出世界）。
+    const projection = readProjection(root)
+    const body = projection.ids.workspace?.body
+    assert.equal(body === undefined || body === null || body.workspaces === undefined, true, 'workspace 清单不应进世界')
+    console.log('离线投影：workspace 清单未进世界 ok')
 
     boot(root, ['stop'])
     started = false
@@ -274,7 +254,7 @@ async function main() {
     const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
     const replayed = boot(root, ['replay'])
-    assert.deepEqual(replayed.head, after.head, 'replay 链头与落账后投影不一致')
+    assert.equal(replayed.ok, true, `replay 失败：${JSON.stringify(replayed)}`)
     console.log('verify + replay：ok')
 
     console.log(`E2E ok（root=${root}）`)

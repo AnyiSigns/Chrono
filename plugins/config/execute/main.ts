@@ -1,23 +1,38 @@
-// `model-protocol` 服务进程入口：宿主服务协议帧循环（docs/protocol.md §二）。
+// `config` 服务进程入口：服务协议帧循环（docs/protocol.md §二）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影、无写通道；世界 / 结果 / args 不取时间随机
-// （重试等待与可选抖动只影响时延，不进入世界内容）。
+// stdin EOF / 管道断开即自退出。用户配置 / 界面配置已出世界：写即时落自有持久存储（④），读从自有存储取。
 
-import { errorValue, ModelError } from './errors.ts'
+import { readFileSync } from 'node:fs'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { CONFIG, HANDLERS, SECRETS } from './methods.ts'
-import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
+import { createHandlers } from './methods.ts'
 import { isRecord } from './plan.ts'
+import { ConfigStore } from './store.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 
-const DECLARED_METHODS = new Set<string>(
-  Array.isArray(METHODS[IDENTITY])
-    ? (METHODS[IDENTITY] as Json[]).filter((item): item is string => typeof item === 'string')
-    : Object.keys(HANDLERS),
-)
+const CAPABILITY = 'config'
 
-let exiting = false
+function readPlugin(): Rec {
+  try {
+    const text = readFileSync(new URL('../plugin.json', import.meta.url), 'utf8')
+    const parsed = JSON.parse(text) as Json
+    if (isRecord(parsed)) return parsed
+  } catch (err) {
+    log(`cannot read plugin.json: ${(err as Error).message}`)
+  }
+  return {}
+}
+
+const PLUGIN = readPlugin()
+const IDENTITY = typeof PLUGIN['identity'] === 'string' ? (PLUGIN['identity'] as string) : CAPABILITY
+const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
+  ? (PLUGIN['implements'] as Json[]).filter((item): item is string => typeof item === 'string')
+  : [CAPABILITY]
+const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
+const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
+const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
+
+const HANDLERS = createHandlers({ store: ConfigStore.open() })
 
 function manifest(): Rec {
   return {
@@ -30,17 +45,8 @@ function manifest(): Rec {
   }
 }
 
-function sendFrame(message: Json): void {
-  if (exiting) return
-  try {
-    writeFrame(message)
-  } catch (err) {
-    log(`write frame failed: ${(err as Error).message}`)
-  }
-}
-
 function sendError(id: string, code: string, message: string): void {
-  sendFrame({ v: '1', id, kind: 'error', ok: false, code, message })
+  writeFrame({ v: '1', id, kind: 'error', ok: false, code, message })
 }
 
 function parseEnv(raw: Json | undefined): CallEnv {
@@ -50,6 +56,14 @@ function parseEnv(raw: Json | undefined): CallEnv {
     thread: typeof raw['thread'] === 'string' ? raw['thread'] : null,
     now: typeof raw['now'] === 'number' && Number.isFinite(raw['now']) ? raw['now'] : 0,
   }
+}
+
+function declaredMethods(port: string): string[] {
+  const declared = METHODS[port]
+  if (Array.isArray(declared)) {
+    return declared.filter((item): item is string => typeof item === 'string')
+  }
+  return Object.keys(HANDLERS)
 }
 
 async function handleCall(message: Rec): Promise<void> {
@@ -64,7 +78,7 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'unresolved_cap', `unknown capability ${port}`)
     return
   }
-  if (!DECLARED_METHODS.has(method)) {
+  if (!declaredMethods(port).includes(method)) {
     sendError(id, 'unknown_method', `unknown method ${method}`)
     return
   }
@@ -78,51 +92,36 @@ async function handleCall(message: Rec): Promise<void> {
     sendError(id, 'bad_args', 'args must be an object')
     return
   }
+  let result
   try {
-    const result = await handler(args ?? null, parseEnv(message['env']))
-    sendFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
+    result = await handler(args ?? null, parseEnv(message['env']))
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
       return
     }
-    if (err instanceof ModelError) {
-      sendFrame({ v: '1', id, kind: 'result', ok: true, value: errorValue(err.code, err.message) })
-      return
-    }
     log(`method ${method} failed: ${(err as Error).message}`)
     sendError(id, 'internal', 'handler failed')
+    return
   }
-}
-
-function shutdown(): void {
-  if (exiting) return
-  exiting = true
-  try {
-    SECRETS.failAll()
-    CONFIG.failAll()
-  } catch (err) {
-    log(`link failAll failed: ${(err as Error).message}`)
-  }
-  setTimeout(() => process.exit(0), 10).unref?.()
+  writeFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
 }
 
 async function handle(message: Json): Promise<void> {
   if (!isRecord(message)) return
   switch (message['kind']) {
     case 'hello':
-      sendFrame({ id: message['id'], kind: 'manifest', ...manifest() })
+      writeFrame({ id: message['id'], kind: 'manifest', ...manifest() })
       return
     case 'probe':
-      sendFrame({ v: '1', id: message['id'], kind: 'pong', ok: true })
+      writeFrame({ v: '1', id: message['id'], kind: 'pong', ok: true })
       return
     case 'reload':
       log(`reload gen=${typeof message['gen'] === 'string' ? message['gen'] : '?'}`)
-      sendFrame({ v: '1', id: message['id'], kind: 'ack' })
+      writeFrame({ v: '1', id: message['id'], kind: 'ack' })
       return
     case 'drain':
-      sendFrame({ v: '1', id: message['id'], kind: 'bye' })
-      shutdown()
+      writeFrame({ v: '1', id: message['id'], kind: 'bye' })
       return
     case 'call':
       await handleCall(message)
@@ -133,7 +132,6 @@ async function handle(message: Json): Promise<void> {
 }
 
 const decoder = createFrameDecoder()
-// 串行链：保证同一连接上的消息按到达序处理。
 let chain: Promise<void> = Promise.resolve()
 process.stdin.on('data', (chunk: Buffer) => {
   let messages: Json[]
@@ -144,15 +142,13 @@ process.stdin.on('data', (chunk: Buffer) => {
     return
   }
   for (const message of messages) {
-    // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把链堵死。
-    if (isRecord(message) && (SECRETS.settle(message) || CONFIG.settle(message))) continue
     chain = chain
       .then(() => handle(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
   }
 })
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.stdin.on('error', shutdown)
+process.stdin.on('end', () => process.exit(0))
+process.stdin.on('close', () => process.exit(0))
+process.stdin.on('error', () => process.exit(0))
 
 log(`service started (pid ${process.pid})`)

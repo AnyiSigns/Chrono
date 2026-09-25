@@ -1,0 +1,14 @@
+{
+  "title": "config.write 入参",
+  "description": "配置补丁：只带要改的字段（深合并；`null` 删除该键）。ui / providers / vendor / model 属运行记录写自有存储；permission / params 属判定阈值，变化时额外镜像进世界。",
+  "type": "object",
+  "required": ["patch"],
+  "additionalProperties": false,
+  "properties": {
+    "patch": {
+      "type": "object",
+      "description": "补丁对象；键路径深合并。",
+      "additionalProperties": true
+    }
+  }
+}

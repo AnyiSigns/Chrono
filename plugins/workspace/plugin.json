@@ -3,11 +3,12 @@
   "schema": "schema/workspace.json",
   "implements": ["workspace"],
   "methods": {
-    "workspace": ["list", "pick", "add", "remove", "reveal"]
+    "workspace": ["list", "read", "pick", "add", "remove", "reveal"]
   },
   "pins": {},
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
+  "exclusive": ["data"],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -23,7 +24,7 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "schema", "path": "schema/" }

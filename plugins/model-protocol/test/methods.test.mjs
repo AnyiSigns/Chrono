@@ -42,6 +42,12 @@ function planBody(value) {
   return write === undefined ? null : write.request.args.ops[0].args.body
 }
 
+/** 最近一次 `config.write` 反向调用的 body（运行记录已出世界，档案写走 owner 命令）。 */
+function lastConfigWrite(driver) {
+  const call = [...driver.portCalls].reverse().find((item) => item.port === 'config' && item.method === 'write')
+  return call === undefined ? null : call.args.body
+}
+
 /** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
 function applyOps(base, ops) {
   const doc = structuredClone(base)
@@ -172,8 +178,8 @@ test('profile：只写所选模型、布尔 true 展开 default_reasoning、其�
         resilience: FAST,
       }
       const result = await driver.call('profile', args)
-      const body = planBody(result.value)
-      assert.ok(body !== null, '应产写计划')
+      const body = lastConfigWrite(driver)
+      assert.ok(body !== null, '应经 config.write 写 owner')
       const models = body.providers.deepseek.models
       assert.deepEqual(models['deepseek-chat'].context_window, 64000)
       assert.deepEqual(models['deepseek-chat'].max_output, 8000)
@@ -185,40 +191,32 @@ test('profile：只写所选模型、布尔 true 展开 default_reasoning、其�
       assert.equal(models.missing, undefined, '源里没有的模型不新增')
       assert.equal(body.providers.deepseek.models['deepseek-chat'].enabled, true)
 
-      const ops = writeDirective(result.value).request.args.ops
-      assert.deepEqual(ops[1], { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } })
+      assert.equal(writeDirective(result.value), undefined, '不产世界写计划')
       assert.equal(externPayload(result.value).changed, true)
     })
   })
 })
 
-test('补丁世代：profile 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
+test('profile：经 config.write 写整份 body（无世界写计划 / 无补丁世代）', async () => {
   const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const args = {
+      const result = await driver.call('profile', {
         vendor: 'vendor-deepseek',
         ids: ['deepseek-chat'],
         config: baseConfig(),
         vendors: { 'vendor-deepseek': VENDOR_BODY },
         source_url: server.url,
         resilience: FAST,
-      }
-      const full = await driver.call('profile', args)
-      const fullBody = planBody(full.value)
-      const patched = await driver.call('profile', {
-        ...args,
-        config_data_gen: { seq: 4, payload: 'a'.repeat(64) },
       })
-      const ops = writeDirective(patched.value).request.args.ops
-      assert.equal(ops[1].args.base, 4)
-      assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
-      assert.deepEqual(applyOps(baseConfig(), ops[0].args.body.ops), fullBody)
+      assert.equal(writeDirective(result.value), undefined, '不产世界写计划')
+      const body = lastConfigWrite(driver)
+      assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, ['low', 'medium', 'high'])
     })
   })
 })
 
-test('profile：写前去重（同 body 再跑只回 extern）', async () => {
+test('profile：写前去重（同 body 再跑只回 extern、不再写）', async () => {
   const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
@@ -231,10 +229,17 @@ test('profile：写前去重（同 body 再跑只回 extern）', async () => {
         resilience: FAST,
       }
       const first = await driver.call('profile', args)
-      const updated = planBody(first.value)
+      const updated = lastConfigWrite(driver)
+      assert.ok(updated !== null)
+      const writesAfterFirst = driver.portCalls.filter((item) => item.port === 'config' && item.method === 'write').length
       const second = await driver.call('profile', { ...args, config: updated })
       assert.equal(writeDirective(second.value), undefined)
       assert.equal(externPayload(second.value).changed, false)
+      assert.equal(
+        driver.portCalls.filter((item) => item.port === 'config' && item.method === 'write').length,
+        writesAfterFirst,
+        '无变化不写',
+      )
     })
   })
 })
@@ -274,8 +279,8 @@ test('profile：自定义厂商按 base_url / 显示名回落到 models.dev prov
         source_url: server.url,
         resilience: FAST,
       })
-      const body = planBody(result.value)
-      assert.ok(body !== null, '应产写计划')
+      const body = lastConfigWrite(driver)
+      assert.ok(body !== null, '应经 config.write 写 owner')
       const model = body.providers.custom.models['stepfun/step-3.7-flash:free']
       assert.deepEqual(model.reasoning, ['low', 'medium', 'high'])
       assert.equal(model.context_window, 262144)
@@ -326,8 +331,8 @@ test('sync：对 config 内全部已选模型批量刷新，无变化不产写�
     await withService({}, async (driver) => {
       const bag = { config: baseConfig(), 'vendor-deepseek': VENDOR_BODY, source_url: server.url, resilience: FAST }
       const first = await driver.call('sync', bag)
-      const body = planBody(first.value)
-      assert.ok(body !== null)
+      const body = lastConfigWrite(driver)
+      assert.ok(body !== null, '应经 config.write 写 owner')
       assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, ['low', 'medium', 'high'])
       assert.equal(body.providers.deepseek.models['deepseek-r1'].reasoning, undefined)
       const second = await driver.call('sync', { ...bag, config: body })

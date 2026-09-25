@@ -1,14 +1,44 @@
 {
   "identity": "skill",
   "schema": "schema/skill.json",
-  "implements": [],
-  "methods": {},
+  "implements": ["skill"],
+  "methods": {
+    "skill": ["read", "write"]
+  },
   "pins": {},
-  "start": "",
+  "start": "node execute/main.ts",
   "protocol": "1",
-  "restart": {},
-  "health": {},
-  "state": "recomputable",
-  "members": [{ "kind": "schema", "path": "schema/" }],
-  "commands": []
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "probe": "skill.read",
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "durable",
+  "exclusive": ["data"],
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": [
+    {
+      "name": "skill.read",
+      "entry": "terms/skill.read.json",
+      "readonly": true
+    },
+    {
+      "name": "skill.write",
+      "entry": "terms/skill.write.json",
+      "argsSchema": "schema/skill.write.args.json"
+    }
+  ]
 }

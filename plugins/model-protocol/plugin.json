@@ -5,7 +5,7 @@
   "methods": {
     "model": ["chat", "complete", "vendors", "discover", "profile", "sync"]
   },
-  "pins": { "secrets": "secrets" },
+  "pins": { "secrets": "secrets", "config": "config" },
   "start": "node execute/main.ts",
   "protocol": "1",
   "restart": {

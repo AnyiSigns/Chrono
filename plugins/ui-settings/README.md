@@ -8,7 +8,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 
 - 能力类：`ui-settings`（`ping` 健康占位 + `vendors` / `profile` / `discover` / `health` /
   `view` / `search` / `edit` 七个装配方法 + `client.read` 客户端半边交付 + `secret` 密钥本地写入代理）。
-- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate"}`。
+- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate","session":"session","short-memory":"short-memory","memory-store":"memory-store","skill":"skill","config":"config"}`。
 - 状态档：`recomputable`（无世界数据，零 schema）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行期零 npm 依赖；客户端半边源码为 `.ts` / `.tsx`，由 `plugin.json.build` 自打包。
@@ -24,7 +24,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | `model.profile` | `eff ui-settings profile`（读 `ctx.ids`） | 服务从 config 身份 body + 厂商模板身份 body 装配 → 反向调 `model.profile`（返回其写计划） |
 | `secrets.status` | `eff secrets.list` | 本地密钥引用名状态（只回 `{name,has}`，不回本体） |
 | `settings.identities` | 投影读 `ctx.ids` | 身份名 / 状态 / 世代短哈希（插件页与关于页） |
-| `settings.skills` | 投影读技能身份 body | 技能清单（技能页） |
+| `settings.skills` | `eff skill read`（读 `ctx.ids.skill` 作基线） | 技能清单（技能页）；技能运行记录已出世界，经 owner 服务读回 |
 | `orchestration.graph` | 投影读编排图身份 | 当前 active 图的节点 / 边（只读） |
 | `orchestration.scopes` | `eff ui-settings scopes`（读 `ctx.ids.agents`） | eff 服务方法：按需解析投影 refs 后回 Scope 名录（只读查询，仍标 `readonly`） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail |
@@ -36,13 +36,17 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 
 - **投影读在入口 term**；服务不读投影（随 args 传入）。模型与记忆命令的装配、健康判定住服务
   （`execute/methods.ts`），经宿主反向调用（`port.call`）调下游端口。
+- **跨批读侧**：`session` / `short-memory` / `memory-store` / `skill` / `config` 的运行记录已出世界，
+  记忆浏览 / 搜索 / 编辑与模型档案装配改经 `eff` 问 owner（`config` 还用于技能写回后刷新）。
 - 未就位依赖（如编排图身份）令对应命令按 `missing_path` 收口为 `refused`；页面据此显示
   「依赖未就绪」降级视图，不因缺身份崩溃。
 
 ## 写路径
 
-- **config 直写**：整值 `put` + `add_gen` 原子 batch，经入站面 `submit`（客户端身份）。
-- **技能直写**：技能页同样以 batch 直写技能身份 body。
+- **config 写**：经 `config.write` 命令（`{body}` 整份替换）写 config owner 自有持久存储；
+  判定阈值（`permission` / `params`）由 owner 服务在变化时镜像进世界。
+- **技能写**：经 `skill.write` 命令（`{body}` 整份）写技能 owner 自有持久存储。
+- **输入槽写**：经 `input.write` 命令（`{thread, slot}`）写 input owner 自有持久存储。
 - **密钥**：浏览器半边经 `ui-settings.secret` 命令代理，服务进程经入站 `secrets.put` /
   `secrets.delete` 直写用户本地文件（不进世界、不进导出、不进审计）；世界数据只存引用
   `auth_ref = {kind:'local'|'env', name}`。

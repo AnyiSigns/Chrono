@@ -1,0 +1,14 @@
+{
+  "title": "skill.write 入参",
+  "description": "整份技能清单（`{ body: { version, skills } }` 或裸 body）：技能清单是运行记录，写自有持久存储。",
+  "type": "object",
+  "required": ["body"],
+  "additionalProperties": false,
+  "properties": {
+    "body": {
+      "type": "object",
+      "description": "整份 skill body；`skills[]` 必填。",
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,8 +1,8 @@
 ﻿// `mcp` 服务协议级测试（node --test）：自实现最小协议驱动 + 最小 MCP 测试服务器。
 // 驱动 spawn `node execute/main.ts`，发 hello → 收 manifest，发 call → 收 result / error，收集 event。
-// 覆盖：握手 / 控制 / 未知方法 / EOF 自退出；discover 计划形状（put + add_gen + extern）；
-// confirmed=false 不 spawn；四要素兜底与 render；invoke 路由与结构化错误；退出重连；
-// list_changed 只置脏（下一拍才写）；drain 终止子进程。
+// 覆盖：握手 / 控制 / 未知方法 / EOF 自退出；清单出世界（read / write 往返、discover 只写自有存储、
+// 不产世界写计划）；confirmed=false 不 spawn；四要素兜底与 render；invoke 路由与结构化错误；
+// 退出重连；list_changed 下一拍重拉；drain 终止子进程；④ 追加日志重放。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,7 +45,8 @@ function createDecoder() {
 }
 
 function startService(options = {}) {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+  const env = { ...process.env, ...(options.env ?? {}) }
+  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
@@ -134,30 +135,30 @@ function serverEntry(id, mode, extra = {}, extraArgs = []) {
   }
 }
 
-/** 服务器数组 → 空 body；整份 body → 原样（模拟宿主 periodic 把整份投影 body 注入 bag）。 */
-function discoverBag(input) {
-  const body = Array.isArray(input) ? { version: 1, servers: input, tools: [] } : input
-  return { servers: body }
+function bodyOf(servers, tools = []) {
+  return { version: 1, servers, tools }
 }
 
-/** 最小补丁组装（测试内联）：replace / delete 两种 op。 */
-function applyOps(base, ops) {
-  const doc = structuredClone(base)
-  for (const op of ops) {
-    let node = doc
-    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
-    const last = op.path[op.path.length - 1]
-    if (op.op === 'delete') delete node[last]
-    else node[last] = structuredClone(op.value)
-  }
-  return doc
+/** 先把清单写进 owner 自有存储（出世界），再 discover 读取它。 */
+async function seed(drv, servers, tools = []) {
+  const result = await drv.call('write', { body: bodyOf(servers, tools) })
+  assert.equal(result.kind, 'result')
+  assert.equal(result.value.ok, true)
 }
 
-function planBody(result) {
-  const directives = result.value.$directives
-  const write = directives.find((item) => item.kind === 'write')
-  if (write === undefined) return null
-  return write.request.args.ops[0].args.body
+/** 读回整份清单（owner 自有存储）。 */
+async function readBody(drv) {
+  const result = await drv.call('read', {})
+  assert.equal(result.kind, 'result')
+  return result.value
+}
+
+/** discover 结果里唯一一条 extern 指令的载荷。 */
+function externOf(result) {
+  assert.equal(result.kind, 'result')
+  assert.equal(result.value.$directives.length, 1)
+  assert.equal(result.value.$directives[0].kind, 'extern')
+  return result.value.$directives[0].payload
 }
 
 async function delay(ms) {
@@ -187,9 +188,9 @@ test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'mcp')
     assert.deepEqual(manifest.implements, ['mcp'])
-    assert.deepEqual(manifest.methods.mcp, ['describe', 'invoke', 'discover'])
+    assert.deepEqual(manifest.methods.mcp, ['describe', 'invoke', 'discover', 'read', 'write'])
     assert.equal(manifest.protocol, '1')
-    assert.equal(manifest.state, 'recomputable')
+    assert.equal(manifest.state, 'durable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
     assert.equal((await drv.request('probe', {}, 'pong')).ok, true)
     assert.equal((await drv.request('drain', { deadline_ms: 1000 }, 'bye')).kind, 'bye')
@@ -228,7 +229,7 @@ test('describe 只回本插件自述，不回外部工具清单', async () => {
     assert.equal(described.kind, 'result')
     assert.deepEqual(described.value.tools, [])
     assert.equal(described.value.adapter.identity, 'mcp')
-    assert.equal(described.value.adapter.tool_source, 'projection:ids.mcp.body.tools')
+    assert.equal(described.value.adapter.tool_source, 'service:mcp.read')
     assert.deepEqual(described.value.adapter.inbound_v1.commands, [
       'mcp.in.ping',
       'mcp.in.tools_list',
@@ -239,43 +240,65 @@ test('describe 只回本插件自述，不回外部工具清单', async () => {
   }
 })
 
-// ── discover：计划形状 / 空清单 / 四要素 / render ──────────────────────────
+// ── read / write：清单出世界的往返 ────────────────────────────────────────
 
-test('discover 空清单 → 只回 extern，无写计划', async () => {
+test('read 空存储 → 空清单；write 后 read 往返一致', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const result = await drv.call('discover', discoverBag([]))
-    assert.equal(result.kind, 'result')
-    assert.equal(result.value.$directives.length, 1)
-    assert.equal(result.value.$directives[0].kind, 'extern')
-    assert.equal(result.value.$directives[0].payload.changed, false)
-    assert.equal(result.value.$directives[0].payload.tools, 0)
+    assert.deepEqual(await readBody(drv), { version: 1, servers: [], tools: [] })
+    const entry = serverEntry('srv', 'ok')
+    await seed(drv, [entry])
+    const body = await readBody(drv)
+    assert.equal(body.version, 1)
+    assert.equal(body.servers.length, 1)
+    assert.equal(body.servers[0].id, 'srv')
+    // 同内容重复写幂等短路。
+    const again = await drv.call('write', { body: bodyOf([entry]) })
+    assert.equal(again.value.changed, false)
   } finally {
     drv.close()
   }
 })
 
-test('discover 含 confirmed 服务器 → put(body)+add_gen(mcp) 计划、命名空间化、四要素与 render', async () => {
+test('write 形态非法 → bad_args', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const result = await drv.call('discover', discoverBag([serverEntry('srv', 'ok')]))
-    const directives = result.value.$directives
-    assert.equal(directives.length, 2)
+    const bad = await drv.call('write', { body: { version: 1, servers: [] } })
+    assert.equal(bad.kind, 'error')
+    assert.equal(bad.code, 'bad_args')
+  } finally {
+    drv.close()
+  }
+})
 
-    const write = directives[0]
-    assert.equal(write.kind, 'write')
-    assert.equal(write.request.op, 'batch')
-    const ops = write.request.args.ops
-    assert.equal(ops.length, 2)
-    assert.equal(ops[0].op, 'put')
-    assert.deepEqual(ops[1], {
-      op: 'add_gen',
-      args: { id: 'mcp', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} },
-    })
+// ── discover：写自有存储、不产世界写计划 ───────────────────────────────────
 
-    const body = ops[0].args.body
+test('discover 空清单 → 只回 extern，无写计划', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const result = await drv.call('discover', {})
+    const payload = externOf(result)
+    assert.equal(payload.changed, false)
+    assert.equal(payload.tools, 0)
+  } finally {
+    drv.close()
+  }
+})
+
+test('discover 含 confirmed 服务器 → 写自有存储、命名空间化、四要素与 render、无世界写计划', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await seed(drv, [serverEntry('srv', 'ok')])
+    const result = await drv.call('discover', {})
+    const payload = externOf(result)
+    assert.equal(payload.changed, true)
+    assert.equal(payload.tools, 3)
+
+    const body = await readBody(drv)
     assert.equal(body.version, 1)
     assert.deepEqual(
       body.tools.map((tool) => tool.name).sort(),
@@ -299,20 +322,13 @@ test('discover 含 confirmed 服务器 → put(body)+add_gen(mcp) 计划、命�
       detail: { kind: 'json' },
       live: false,
     })
-
-    // 易变运行态不写回 body：只保留配置（含 confirmed）
+    // 易变运行态不写回清单：只保留配置（含 confirmed）
     assert.equal(body.servers[0].connected, undefined)
     assert.equal(body.servers[0].tool_count, undefined)
     assert.equal(body.servers[0].failures, undefined)
     assert.equal(body.servers[0].confirmed, true)
-
-    const extern = directives[1]
-    assert.equal(extern.kind, 'extern')
-    assert.equal(extern.payload.changed, true)
-    assert.equal(extern.payload.tools, 3)
     assert.ok(drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'discovered'))
 
-    // describe 仍不回外部工具清单（权威 = body 投影）
     const described = await drv.call('describe', {})
     assert.deepEqual(described.value.tools, [])
   } finally {
@@ -320,33 +336,13 @@ test('discover 含 confirmed 服务器 → put(body)+add_gen(mcp) 计划、命�
   }
 })
 
-test('补丁世代：discover 有 data_gen 写补丁 + base，组装结果 == 整份写入', async () => {
-  const fullDrv = startService()
-  const patchDrv = startService()
-  try {
-    await fullDrv.hello()
-    await patchDrv.hello()
-    const fullResult = await fullDrv.call('discover', discoverBag([serverEntry('srv', 'ok')]))
-    const fullBody = fullResult.value.$directives[0].request.args.ops[0].args.body
-
-    const bag = { ...discoverBag([serverEntry('srv', 'ok')]), data_gen: { seq: 3, payload: 'a'.repeat(64) } }
-    const patchResult = await patchDrv.call('discover', bag)
-    const ops = patchResult.value.$directives[0].request.args.ops
-    assert.equal(ops[1].args.base, 3)
-    assert.ok(Array.isArray(ops[0].args.body.ops) && ops[0].args.body.ops.length > 0)
-    assert.deepEqual(applyOps(bag.servers, ops[0].args.body.ops), fullBody)
-  } finally {
-    fullDrv.close()
-    patchDrv.close()
-  }
-})
-
 test('四要素兜底：MCP 无 description 时用中性文案；inputSchema 参数无描述时用「参数 <名>」', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const result = await drv.call('discover', discoverBag([serverEntry('srv', 'minimal')]))
-    const body = planBody(result)
+    await seed(drv, [serverEntry('srv', 'minimal')])
+    await drv.call('discover', {})
+    const body = await readBody(drv)
     const bare = body.tools[0]
     assert.equal(bare.name, 'mcp.srv.bare')
     assert.equal(bare.intent, '调用外部 MCP 工具 bare')
@@ -362,8 +358,9 @@ test('render detail.kind：image 标注映射为 image', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const result = await drv.call('discover', discoverBag([serverEntry('srv', 'image')]))
-    const body = planBody(result)
+    await seed(drv, [serverEntry('srv', 'image')])
+    await drv.call('discover', {})
+    const body = await readBody(drv)
     const echo = body.tools.find((tool) => tool.tool === 'echo')
     assert.equal(echo.render.detail.kind, 'image')
   } finally {
@@ -376,14 +373,11 @@ test('confirmed=false → 不 spawn、条目只登记', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const entry = serverEntry('srv', 'ok', { confirmed: false }, [`--marker=${marker}`])
-    const result = await drv.call('discover', discoverBag([entry]))
-    // 输入已是 body 内容：配置无易变态 → 无变化，只回 extern（无需写回）
-    assert.equal(result.value.$directives.length, 1)
-    assert.equal(result.value.$directives[0].kind, 'extern')
-    assert.equal(result.value.$directives[0].payload.tools, 0)
+    await seed(drv, [serverEntry('srv', 'ok', { confirmed: false }, [`--marker=${marker}`])])
+    const result = await drv.call('discover', {})
+    const payload = externOf(result)
+    assert.equal(payload.tools, 0)
     assert.equal(existsSync(marker), false)
-    // 条目已登记：invoke 回未确认
     const invoked = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
     assert.equal(invoked.value.error.code, 'mcp_server_unconfirmed')
   } finally {
@@ -391,23 +385,19 @@ test('confirmed=false → 不 spawn、条目只登记', async () => {
   }
 })
 
-test('同一状态重复 discover 不产生新 add_gen（易变运行态不写回 body）', async () => {
+test('同一状态重复 discover 不写回（易变运行态不写清单）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const first = await drv.call('discover', discoverBag([serverEntry('srv', 'ok')]))
-    const body1 = planBody(first)
-    assert.ok(body1 !== null)
-    const second = await drv.call('discover', discoverBag(body1))
-    assert.equal(second.value.$directives.length, 1)
-    assert.equal(second.value.$directives[0].kind, 'extern')
-    assert.equal(second.value.$directives[0].payload.changed, false)
+    await seed(drv, [serverEntry('srv', 'ok')])
+    assert.equal(externOf(await drv.call('discover', {})).changed, true)
+    assert.equal(externOf(await drv.call('discover', {})).changed, false)
   } finally {
     drv.close()
   }
 })
 
-test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不进计划', async () => {
+test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不进存储', async () => {
   const envMarker = markerPath('authref-env')
   const drv = startService({
     secretsResolver: (method, args) => {
@@ -424,16 +414,14 @@ test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不�
       { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } },
       [`--env-marker=${envMarker}`],
     )
-    const result = await drv.call('discover', discoverBag([entry]))
-    assert.equal(planBody(result).tools.length, 3)
+    await seed(drv, [entry])
+    const result = await drv.call('discover', {})
+    assert.equal(externOf(result).tools, 3)
     const secretsCall = drv.portCalls.find((call) => call.port === 'secrets' && call.method === 'resolve')
     assert.ok(secretsCall !== undefined, '应经反向 port.call 调 secrets.resolve')
     assert.equal(secretsCall.call_id, result.id, '反向帧回带发起 call 帧 id')
-    assert.equal(
-      JSON.stringify(result.value).includes('secret-value-123'),
-      false,
-      '明文不得进计划 / 返回值',
-    )
+    const stored = JSON.stringify(await readBody(drv))
+    assert.equal(stored.includes('secret-value-123'), false, '明文不得进存储 / 返回值')
     assert.equal(readFileSync(envMarker, 'utf8'), 'secret-value-123')
   } finally {
     drv.close()
@@ -451,10 +439,9 @@ test('env.auth_ref 解析失败 → 计入连接失败，不 spawn', async () =>
       'ok',
       { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } },
     )
-    const result = await drv.call('discover', discoverBag([entry]))
-    assert.equal(result.value.$directives.length, 1)
-    assert.equal(result.value.$directives[0].kind, 'extern')
-    assert.equal(result.value.$directives[0].payload.tools, 0)
+    await seed(drv, [entry])
+    const payload = externOf(await drv.call('discover', {}))
+    assert.equal(payload.tools, 0)
     assert.ok(
       drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'connect_failed'),
     )
@@ -471,7 +458,8 @@ test('invoke 路由到子进程 tools/call；未知 / 未确认 / 形态非法 �
   const drv = startService()
   try {
     await drv.hello()
-    await drv.call('discover', discoverBag([serverEntry('srv', 'ok')]))
+    await seed(drv, [serverEntry('srv', 'ok')])
+    await drv.call('discover', {})
 
     const echo = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: { message: 'hi' } })
     assert.equal(echo.value.ok, true)
@@ -491,7 +479,8 @@ test('invoke 路由到子进程 tools/call；未知 / 未确认 / 形态非法 �
     assert.equal(badArgs.kind, 'error')
     assert.equal(badArgs.code, 'bad_args')
 
-    await drv.call('discover', discoverBag([serverEntry('srv', 'ok', { confirmed: false })]))
+    await seed(drv, [serverEntry('srv', 'ok', { confirmed: false })])
+    await drv.call('discover', {})
     const unconfirmed = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
     assert.equal(unconfirmed.value.error.code, 'mcp_server_unconfirmed')
   } finally {
@@ -505,22 +494,20 @@ test('子进程退出 → 下一拍 discover 重连重拉', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const first = await drv.call('discover', discoverBag([serverEntry('srv', 'once')]))
-    const body1 = planBody(first)
-    assert.equal(body1.tools.length, 3)
+    await seed(drv, [serverEntry('srv', 'once')])
+    await drv.call('discover', {})
+    assert.equal((await readBody(drv)).tools.length, 3)
 
     await waitFor(
       () => drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'exited'),
       'server exited event',
     )
 
-    const second = await drv.call('discover', discoverBag(body1))
-    // 重连重拉成功：工具清单不变 → body 无变化，不产新世代（只回 extern）
-    assert.equal(second.value.$directives.length, 1)
-    assert.equal(second.value.$directives[0].kind, 'extern')
-    assert.equal(second.value.$directives[0].payload.tools, 3)
+    // 重连重拉成功：工具清单不变 → 清单无变化，不写回（changed=false）
+    const payload = externOf(await drv.call('discover', {}))
+    assert.equal(payload.tools, 3)
+    assert.equal(payload.changed, false)
 
-    // 重连后 invoke 仍可用
     const echo = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: { message: 'x' } })
     assert.equal(echo.value.ok, true)
   } finally {
@@ -532,43 +519,36 @@ test('连续失败超限 → 隔离该条目（工具摘除、invoke 回结构�
   const drv = startService()
   try {
     await drv.hello()
-    const input = [serverEntry('srv', 'die')]
+    await seed(drv, [serverEntry('srv', 'die')])
     let last = null
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      last = await drv.call('discover', discoverBag(input))
+      last = externOf(await drv.call('discover', {}))
     }
-    assert.equal(last.value.$directives[0].kind, 'extern')
-    assert.equal(last.value.$directives[0].payload.isolated, 1)
+    assert.equal(last.isolated, 1)
 
     const isolated = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
     assert.equal(isolated.value.ok, false)
     assert.equal(isolated.value.error.code, 'mcp_server_isolated')
 
     // 隔离状态留内存：后续 discover 仍隔离（不再 spawn）
-    const again = await drv.call('discover', discoverBag(input))
-    assert.equal(again.value.$directives[0].payload.isolated, 1)
+    assert.equal(externOf(await drv.call('discover', {})).isolated, 1)
   } finally {
     drv.close()
   }
 })
 
-// ── tools/list_changed：只置脏，下一拍才写 ─────────────────────────────────
+// ── tools/list_changed：下一拍重拉 ─────────────────────────────────────────
 
-test('tools/list_changed：下一拍 discover 重拉；清单未变则不产新世代', async () => {
+test('tools/list_changed：下一拍 discover 重拉；清单未变则不写回', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const first = await drv.call('discover', discoverBag([serverEntry('srv', 'dirty_once')]))
-    const body1 = planBody(first)
-    assert.equal(body1.tools.length, 3)
+    await seed(drv, [serverEntry('srv', 'dirty_once')])
+    await drv.call('discover', {})
+    assert.equal((await readBody(drv)).tools.length, 3)
 
-    // 等通知到达（服务内部记录，不产计划、不发 run）
     await delay(200)
-
-    const second = await drv.call('discover', discoverBag(body1))
-    assert.equal(second.value.$directives.length, 1)
-    assert.equal(second.value.$directives[0].kind, 'extern')
-    assert.equal(second.value.$directives[0].payload.changed, false)
+    assert.equal(externOf(await drv.call('discover', {})).changed, false)
   } finally {
     drv.close()
   }
@@ -578,22 +558,49 @@ test('listchanged：下一次 discover 拉到新工具清单', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const first = await drv.call('discover', discoverBag([serverEntry('srv', 'listchanged')]))
-    const body1 = planBody(first)
+    await seed(drv, [serverEntry('srv', 'listchanged')])
+    await drv.call('discover', {})
     assert.deepEqual(
-      body1.tools.map((tool) => tool.name),
+      (await readBody(drv)).tools.map((tool) => tool.name),
       ['mcp.srv.echo'],
     )
     await delay(200)
-    const second = await drv.call('discover', discoverBag(body1))
-    const body2 = planBody(second)
+    await drv.call('discover', {})
     assert.deepEqual(
-      body2.tools.map((tool) => tool.name).sort(),
+      (await readBody(drv)).tools.map((tool) => tool.name).sort(),
       ['mcp.srv.echo', 'mcp.srv.extra'],
     )
   } finally {
     drv.close()
   }
+})
+
+// ── ④ 追加日志重放 ────────────────────────────────────────────────────────
+
+test('④ 追加日志：新进程重放读回上次写入的清单', async () => {
+  const dir = join(tmpdir(), 'kilo', `mcp-store-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  mkdirSync(dir, { recursive: true })
+  const first = startService({ env: { CHRONO_PLUGIN_DATA: dir } })
+  try {
+    await first.hello()
+    await seed(first, [serverEntry('srv', 'ok')])
+    await first.call('discover', {})
+    assert.equal((await readBody(first)).tools.length, 3)
+  } finally {
+    first.close()
+  }
+  await first.exit
+
+  const second = startService({ env: { CHRONO_PLUGIN_DATA: dir } })
+  try {
+    await second.hello()
+    const body = await readBody(second)
+    assert.equal(body.servers[0].id, 'srv')
+    assert.equal(body.tools.length, 3)
+  } finally {
+    second.close()
+  }
+  await second.exit
 })
 
 // ── drain 终止全部子进程 ───────────────────────────────────────────────────
@@ -603,8 +610,8 @@ test('drain 终止全部外部子进程', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const entry = serverEntry('srv', 'ok', {}, [`--marker=${marker}`])
-    await drv.call('discover', discoverBag([entry]))
+    await seed(drv, [serverEntry('srv', 'ok', {}, [`--marker=${marker}`])])
+    await drv.call('discover', {})
     assert.equal(existsSync(marker), true)
 
     assert.equal((await drv.request('drain', { deadline_ms: 1000 }, 'bye')).kind, 'bye')

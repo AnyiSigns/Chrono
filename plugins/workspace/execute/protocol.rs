@@ -1,5 +1,6 @@
 // `workspace` 服务进程协议面（docs/protocol.md §二）：握手 / manifest / call / 控制 / EOF 自退出。
-// stdout 只发协议帧，日志走 stderr；服务不读投影、无写通道：所需世界数据全由调用方随 args 传入。
+// stdout 只发协议帧，日志走 stderr。清单已出世界：住自有持久存储（store.rs），本服务读写自有存储，
+// 不再构造世界写计划；输入槽清理由调用方（ui-sidebar）经 input 服务承担。
 // `call` 在独立线程执行（pick 会阻塞在对话框上），控制帧（probe / reload / drain）不被阻塞。
 
 use std::io::{Read, Write};
@@ -15,15 +16,16 @@ use crate::pick;
 use crate::platform::{SystemOpener, SystemPicker};
 use crate::recent;
 use crate::reveal;
+use crate::store::Store;
 
 /// 身份名 = 能力类名（类名 = 身份名）。
 pub const IDENTITY: &str = "workspace";
 /// 协议版本。
 pub const PROTOCOL: &str = "1";
-/// 状态档：v1 只允许可重算。
-pub const STATE: &str = "recomputable";
+/// 状态档：清单出世界，落 ④ 不可重算。
+pub const STATE: &str = "durable";
 
-const METHODS: [&str; 5] = ["list", "pick", "add", "remove", "reveal"];
+const METHODS: [&str; 6] = ["list", "read", "pick", "add", "remove", "reveal"];
 
 /// 调用帧的 `env`（宿主填写，机械）。本服务不落世界、不发事件，`run` / `thread` 仅原样留存备用。
 #[derive(Clone, Debug, Default)]
@@ -82,43 +84,53 @@ pub fn handle_control(message: &Value) -> Option<Value> {
     }
 }
 
-/// `reveal` 目标路径：只按 `args.workspace` id 在随 args 传入的 body 里解析。
-/// 不接受未校验的 `args.path`——契约只声明 `{workspace}`，路径真源是 workspace body。
-fn reveal_path(args: &Value) -> Result<String, (String, String)> {
+/// `reveal` 目标路径：只按 `args.workspace` id 在自有存储的清单里解析。
+/// 不接受未校验的 `args.path`——契约只声明 `{workspace}`，路径真源是 owner 清单。
+fn reveal_path(workspaces: &[Value], args: &Value) -> Result<String, (String, String)> {
     let id = args
         .get("workspace")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ("bad_args".to_string(), "reveal requires a workspace id".to_string()))?;
-    body::workspace_path(args, id).ok_or_else(|| {
+    body::workspace_path(workspaces, id).ok_or_else(|| {
         (
             "bad_args".to_string(),
-            "reveal requires a workspace id resolvable in the passed body".to_string(),
+            "reveal requires a workspace id resolvable in the owner list".to_string(),
         )
     })
 }
 
-/// 处理 `call`：方法分派 + 结构化错误码。
-pub fn handle_call(method: &str, args: &Value, _env: &CallEnv) -> Result<Value, (String, String)> {
+/// 处理 `call`：方法分派 + 结构化错误码。写类方法即时落自有存储（边跑边追加）。
+pub fn handle_call(
+    method: &str,
+    args: &Value,
+    env: &CallEnv,
+    store: &mut Store,
+) -> Result<Value, (String, String)> {
     let state = recent::state_dir();
     match method {
-        "list" => Ok(body::list_value(args, &RealFs)),
+        "list" => Ok(body::list_value(&store.workspaces(), &RealFs)),
+        "read" => Ok(store.body().clone()),
         "pick" => pick::pick_value(&SystemPicker, state.as_deref()),
-        "add" => body::add_plan(args, &RealFs),
-        "remove" => body::remove_plan(args),
+        "add" => {
+            let (list, payload) = body::add_value(&RealFs, args, &store.workspaces())?;
+            store.write(env.run.as_deref(), json!({ "version": 1, "workspaces": list }));
+            Ok(payload)
+        }
+        "remove" => {
+            let (list, payload) = body::remove_value(args, &store.workspaces())?;
+            store.write(env.run.as_deref(), json!({ "version": 1, "workspaces": list }));
+            Ok(payload)
+        }
         "reveal" => {
-            let path = reveal_path(args)?;
-            Ok(reveal::reveal_value(
-                &SystemOpener,
-                &path,
-                state.as_deref(),
-            ))
+            let path = reveal_path(&store.workspaces(), args)?;
+            Ok(reveal::reveal_value(&SystemOpener, &path, state.as_deref()))
         }
         other => Err(("unknown_method".to_string(), format!("unknown method {other}"))),
     }
 }
 
-fn call_response(message: &Value) -> Value {
+fn call_response(message: &Value, store: &Arc<Mutex<Store>>) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let port = message.get("port").and_then(Value::as_str).unwrap_or("");
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
@@ -127,7 +139,10 @@ fn call_response(message: &Value) -> Value {
     if port != IDENTITY {
         return error_frame(&id, "unresolved_cap", &format!("unknown capability {port}"));
     }
-    match handle_call(method, &args, &env) {
+    let Ok(mut guard) = store.lock() else {
+        return error_frame(&id, "internal", "store lock poisoned");
+    };
+    match handle_call(method, &args, &env, &mut guard) {
         Ok(value) => json!({ "v": PROTOCOL, "id": id, "kind": "result", "ok": true, "value": value }),
         Err((code, message)) => error_frame(&id, &code, &message),
     }
@@ -189,6 +204,7 @@ impl Drop for InflightGuard {
 /// 帧循环：`call` 独立线程执行；`drain` 等在途结束再 `bye`；EOF（stdin 断开）即自退出。
 pub fn run_loop<R: Read, W: Write + Send + 'static>(mut reader: R, writer: W) {
     let out = Arc::new(Mutex::new(writer));
+    let store = Arc::new(Mutex::new(Store::open()));
     let inflight: Arc<(Mutex<usize>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
     loop {
         let message = match frames::read_frame(&mut reader) {
@@ -214,8 +230,9 @@ pub fn run_loop<R: Read, W: Write + Send + 'static>(mut reader: R, writer: W) {
                 };
                 let out = Arc::clone(&out);
                 let fallback = Arc::clone(&out);
+                let store = Arc::clone(&store);
                 if let Err(err) = thread::Builder::new().spawn(move || {
-                    let response = call_response(&message);
+                    let response = call_response(&message, &store);
                     if let Ok(mut writer) = out.lock() {
                         let _ = frames::write_frame(&mut *writer, &response);
                     }
@@ -259,6 +276,13 @@ mod tests {
     use super::*;
     use crate::frames::encode_frame;
 
+    fn memory_store() -> Store {
+        Store::memory(json!({
+            "version": 1,
+            "workspaces": [ { "id": "w1", "name": "One", "path": "C:\\ws" } ],
+        }))
+    }
+
     #[test]
     fn manifest_matches_declaration() {
         let value = manifest();
@@ -266,9 +290,9 @@ mod tests {
         assert_eq!(value["implements"], json!(["workspace"]));
         assert_eq!(
             value["methods"]["workspace"],
-            json!(["list", "pick", "add", "remove", "reveal"])
+            json!(["list", "read", "pick", "add", "remove", "reveal"])
         );
-        assert_eq!(value["state"], "recomputable");
+        assert_eq!(value["state"], "durable");
     }
 
     #[test]
@@ -294,20 +318,45 @@ mod tests {
 
     #[test]
     fn unknown_method_is_structured_error() {
-        let err = handle_call("nope", &json!({}), &CallEnv::default()).unwrap_err();
+        let mut store = memory_store();
+        let err = handle_call("nope", &json!({}), &CallEnv::default(), &mut store).unwrap_err();
         assert_eq!(err.0, "unknown_method");
     }
 
     #[test]
-    fn list_with_empty_body_is_empty_array() {
-        let value = handle_call("list", &json!({}), &CallEnv::default()).unwrap();
-        assert_eq!(value, json!([]));
+    fn read_returns_owner_body() {
+        let mut store = memory_store();
+        let value = handle_call("read", &json!({}), &CallEnv::default(), &mut store).unwrap();
+        assert_eq!(value["workspaces"][0]["id"], "w1");
+    }
+
+    #[test]
+    fn add_writes_store() {
+        let mut store = Store::memory(json!({ "version": 1, "workspaces": [] }));
+        let target = std::env::temp_dir().join(format!("chrono-ws-proto-{}", std::process::id()));
+        std::fs::create_dir_all(&target).unwrap();
+        let args = json!({ "slot": { "kind": "workspace.add", "workspace": "w9", "path": target.to_string_lossy() } });
+        let value = handle_call("add", &args, &CallEnv::default(), &mut store).unwrap();
+        assert_eq!(value["ok"], true);
+        assert_eq!(store.workspaces()[0]["id"], "w9");
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn remove_writes_store() {
+        let mut store = memory_store();
+        let args = json!({ "slot": { "kind": "workspace.remove", "workspace": "w1" } });
+        let value = handle_call("remove", &args, &CallEnv::default(), &mut store).unwrap();
+        assert_eq!(value["removed"], true);
+        assert!(store.workspaces().is_empty());
     }
 
     #[test]
     fn unknown_capability_is_unresolved() {
+        let store = Arc::new(Mutex::new(memory_store()));
         let response = call_response(
             &json!({"kind":"call","id":"c1","port":"other","method":"list","args":{}}),
+            &store,
         );
         assert_eq!(response["kind"], "error");
         assert_eq!(response["code"], "unresolved_cap");
@@ -315,7 +364,8 @@ mod tests {
 
     #[test]
     fn reveal_without_resolvable_workspace_is_bad_args() {
-        let err = handle_call("reveal", &json!({"workspace": "w"}), &CallEnv::default())
+        let mut store = memory_store();
+        let err = handle_call("reveal", &json!({"workspace": "w"}), &CallEnv::default(), &mut store)
             .unwrap_err();
         assert_eq!(err.0, "bad_args");
         // 未校验的 args.path 不再被接受。
@@ -323,18 +373,16 @@ mod tests {
             "reveal",
             &json!({"workspace": "w", "path": "C:\\anywhere"}),
             &CallEnv::default(),
+            &mut store,
         )
         .unwrap_err();
         assert_eq!(err.0, "bad_args");
     }
 
     #[test]
-    fn reveal_path_resolves_from_body() {
-        let args = json!({
-            "workspace": "w1",
-            "body": { "version": 1, "workspaces": [ { "id": "w1", "path": "C:\\ws" } ] },
-        });
-        assert_eq!(reveal_path(&args).unwrap(), "C:\\ws");
+    fn reveal_path_resolves_from_owner_list() {
+        let workspaces = vec![json!({ "id": "w1", "path": "C:\\ws" })];
+        assert_eq!(reveal_path(&workspaces, &json!({ "workspace": "w1" })).unwrap(), "C:\\ws");
     }
 
     #[test]

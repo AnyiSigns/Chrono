@@ -71,6 +71,14 @@ const SHORT_MEMORY_PORT = 'short-memory'
 const SHORT_MEMORY_READ = 'read'
 const TODO_PORT = 'todo'
 const TODO_INVOKE = 'invoke'
+const CONFIG_PORT = 'config'
+const CONFIG_READ = 'read'
+const MCP_PORT = 'mcp'
+const MCP_READ = 'read'
+const WORKSPACE_PORT = 'workspace'
+const WORKSPACE_READ = 'read'
+const SKILL_PORT = 'skill'
+const SKILL_READ = 'read'
 
 /**
  * 从 owner 服务取会话切片、输入槽、短期记忆与当前会话待办，覆盖投影里的同名身份条目。
@@ -100,6 +108,22 @@ async function withOwnerSlices(deps: ChatDeps, ids: Json, env: CallEnv, thread: 
       ? (todoOutcome.value['result'] as Rec)
       : { items: [] }
   base[TODO_PORT] = { body: todoResult }
+
+  // 用户配置 / 界面配置已出世界：问 config owner（世界切片作基线，服务合并自有存储后回整份视图）。
+  const configOutcome = await deps.port.call(CONFIG_PORT, CONFIG_READ, isRecord(base[CONFIG_PORT]) ? base[CONFIG_PORT] : {})
+  if (configOutcome.ok && isRecord(configOutcome.value)) base[CONFIG_PORT] = configOutcome.value
+
+  // MCP 清单（服务器 + 工具）已出世界：问 mcp owner。
+  const mcpOutcome = await deps.port.call(MCP_PORT, MCP_READ, {})
+  if (mcpOutcome.ok && isRecord(mcpOutcome.value)) base[MCP_PORT] = { body: mcpOutcome.value }
+
+  // 工作区清单已出世界：问 workspace owner（`workspace_root` 由 bag 装配运行时读 owner）。
+  const workspaceOutcome = await deps.port.call(WORKSPACE_PORT, WORKSPACE_READ, {})
+  if (workspaceOutcome.ok && isRecord(workspaceOutcome.value)) base[WORKSPACE_PORT] = { body: workspaceOutcome.value }
+
+  // 技能清单已出世界：问 skill owner。
+  const skillOutcome = await deps.port.call(SKILL_PORT, SKILL_READ, {})
+  if (skillOutcome.ok && isRecord(skillOutcome.value)) base[SKILL_PORT] = { body: skillOutcome.value }
   return base
 }
 

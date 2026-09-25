@@ -12,9 +12,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
-  batchWriteDirective,
   buildOnboardingConfig,
-  configWriteDirective,
+  configWriteCommand,
   emptyConfig,
   enabledModelIds,
   exportJson,
@@ -28,7 +27,8 @@ import {
   setNotify,
   setParams,
   setUiField,
-  slotWriteDirective,
+  skillWriteCommand,
+  slotWriteCommand,
   themeCardOf,
   upsertProvider,
   validateImport,
@@ -168,28 +168,20 @@ test('config 读-改-写：厂商增删改、选择、参数、UI 字段', () =>
   assert.equal(removed.model, undefined)
 })
 
-test('batch 写指令：put 整值 + add_gen 绑定身份，占位符指回 put', () => {
-  const directive = configWriteDirective(emptyConfig())
-  assert.equal(directive.kind, 'write')
-  assert.equal(directive.request.op, 'batch')
-  const ops = directive.request.args.ops
-  assert.equal(ops[0].op, 'put')
-  assert.equal(ops[1].op, 'add_gen')
-  assert.equal(ops[1].args.id, 'config')
-  assert.deepEqual(ops[1].args.payload, { $n: 0 })
-  assert.deepEqual(ops[1].args.sig, { $n: 0 })
-  assert.equal(batchWriteDirective('skill', { version: 1 }).request.args.ops[1].args.id, 'skill')
+test('写口命令：config / input / skill 各回 owner 命令名与 args（运行记录出世界）', () => {
+  const config = configWriteCommand(emptyConfig())
+  assert.equal(config.name, 'config.write')
+  assert.equal(config.args.body.version, emptyConfig().version)
+  const slot = slotWriteCommand('t1', { kind: 'model.probe', url: 'u' })
+  assert.deepEqual(slot, { name: 'input.write', args: { thread: 't1', slot: { kind: 'model.probe', url: 'u' } } })
+  assert.deepEqual(skillWriteCommand({ version: 1, skills: [] }), {
+    name: 'skill.write',
+    args: { body: { version: 1, skills: [] } },
+  })
 })
 
-test('写指令：expect_active 显式条件写；身份视图拆 body/active', () => {
+test('身份视图拆 body/active；代码世代回落 body 判定', () => {
   const hash = 'd'.repeat(64)
-  const withActive = configWriteDirective(emptyConfig(), hash)
-  assert.equal(withActive.request.args.ops[1].args.expect_active, hash)
-  const withNull = configWriteDirective(emptyConfig(), null)
-  assert.equal(withNull.request.args.ops[1].args.expect_active, null)
-  const omitted = configWriteDirective(emptyConfig())
-  assert.equal('expect_active' in omitted.request.args.ops[1].args, false)
-
   const view = { active: hash, body: { version: 1 } }
   assert.deepEqual(identityBody(view), { version: 1 })
   assert.equal(identityActive(view), hash)
@@ -201,15 +193,6 @@ test('写指令：expect_active 显式条件写；身份视图拆 body/active', 
   assert.equal(isCodeGenFallbackBody({ ...emptyConfig(), tree: 'note' }), false)
   assert.equal(isCodeGenFallbackBody({ tree: 1 }), false, 'tree 非字符串不判为代码世代 def')
   assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
-})
-
-test('输入槽写指令：只覆盖本线程键（清槽由服务计划携带）', () => {
-  const slots = { _main: { kind: 'chat.message' }, t1: { kind: 'idle' } }
-  const write = slotWriteDirective(slots, 't1', { kind: 'model.probe', url: 'u' })
-  const body = write.request.args.ops[0].args.body
-  assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
-  assert.equal(body.slots._main.kind, 'chat.message', '其它线程键原样')
-  assert.equal(body.slots.t1.kind, 'model.probe')
 })
 
 test('配置导入：合法通过，坏 JSON / 缺字段 / 坏枚举被拒', () => {
@@ -715,6 +698,53 @@ test('memory.view 装配：从投影取 #3 body + #21 body / refs，反向调 me
   assert.deepEqual(value, { $directives: [{ kind: 'extern', payload: viewValue }] })
 })
 
+test('记忆读侧跨批修复：view / search 经 eff 问 short-memory / memory-store / session owner', async () => {
+  const makePort = (value) => {
+    const calls = []
+    return {
+      calls,
+      call: async (port, method, args) => {
+        calls.push({ port, method, args })
+        return { ok: true, value }
+      },
+    }
+  }
+  const viewValue = { ok: true, kind: 'view', at: 'now', l1: [], l2: [], l3: [] }
+  const maintenance = makePort(viewValue)
+  const shortOwner = makePort({ version: 1, sessions: { 'c-1': { summary: { goal: 'owner-goal' } } } })
+  const storeOwner = makePort({ version: 1, items: [] })
+  const handlers = createHandlers({
+    identity: 'ui-settings',
+    model: makePort(null),
+    maintenance,
+    shortMemory: shortOwner,
+    memoryStore: storeOwner,
+    session: makePort({ version: 1, current: 'c-1', conversations: [] }),
+  })
+  // 投影里记忆为空（W3 已迁出），owner 有数据：装配必须用 owner 的。
+  await handlers.view({ 'short-memory': { body: {} }, 'memory-store': { body: {}, refs: {} } }, { run: null, thread: null, now: 0 })
+  assert.ok(shortOwner.calls.some((call) => call.method === 'read'), '应问 short-memory owner')
+  assert.ok(storeOwner.calls.some((call) => call.method === 'read'), '应问 memory-store owner')
+  const viewCall = maintenance.calls.find((call) => call.method === 'view')
+  assert.equal(viewCall.args.short_memory.sessions['c-1'].summary.goal, 'owner-goal')
+  assert.equal(viewCall.args.memory_store.version, 1)
+
+  const retrieval = makePort({ ok: true, kind: 'search', recall: [], count: 0 })
+  const searchHandlers = createHandlers({
+    identity: 'ui-settings',
+    model: makePort(null),
+    retrieval,
+    shortMemory: makePort({ version: 1, sessions: { 'c-1': { summary: { goal: 'owner-goal' } } } }),
+    memoryStore: makePort({ version: 1, items: [] }),
+    session: makePort({ version: 1, current: 'c-1' }),
+  })
+  await searchHandlers.search({ query: 'q', ids: { 'memory-store': { body: {}, refs: {} } } }, { run: null, thread: null, now: 0 })
+  const searchCall = retrieval.calls[0]
+  assert.equal(searchCall.method, 'search')
+  assert.equal(searchCall.args.goal, 'owner-goal', 'goal 从 session / short-memory owner 读')
+  assert.equal(searchCall.args.memory.body.version, 1, 'memory 从 memory-store owner 读')
+})
+
 test('memory.search 装配：#22 真实 bag（query / goal / workspace / retrieval / memory）', async () => {
   const ids = memoryIds()
   const assembled = assembleSearchBag({ query: 'note', workspace: 'w1', tags: ['t'], limit: 5, ids })
@@ -1014,13 +1044,9 @@ function fakeFetchCtx(discover) {
       puts.push({ path, body })
       return { ok: true }
     },
-    readSlots: async () => ({ _main: { kind: 'idle' } }),
     writeSlot: async (slot) => {
-      const slots = await ctx.readSlots()
-      return ctx.applyWrite(slotWriteDirective(slots, ctx.threadKey, slot))
-    },
-    applyWrite: async (directive) => {
-      writes.push(directive)
+      const built = slotWriteCommand(ctx.threadKey, slot)
+      writes.push(built)
       return { ok: true }
     },
     runCommand: async (name, args) => {
@@ -1085,21 +1111,14 @@ test('获取模型：保留手填自定义 id；env 取值面不落本地密钥�
 
 // ---- active 重读（写 config 的条件写）----
 
-test('config 连写：写前重读 active，第二次写用重读到的 active（陈旧 active 不再静默拒写）', async () => {
-  const first = { active: 'a'.repeat(64), body: emptyConfig() }
-  const second = { active: 'b'.repeat(64), body: emptyConfig() }
-  const views = [first, second]
+test('config 写：经 config.write 命令写 owner 自有存储（无世界提交）', async () => {
+  const calls = []
   const submitted = []
-  let reads = 0
   const api = {
     tokens: {},
-    command: async (name) => {
-      if (name === 'config.read') {
-        const view = views[Math.min(reads, views.length - 1)]
-        reads += 1
-        return { ok: true, status: 'done', value: view }
-      }
-      return { ok: true, value: null }
+    command: async (name, args) => {
+      calls.push({ name, args })
+      return { ok: true, status: 'done', value: { ok: true } }
     },
     submit: async (directives) => {
       submitted.push(directives)
@@ -1108,61 +1127,42 @@ test('config 连写：写前重读 active，第二次写用重读到的 active�
   }
   const { vc, dispose } = createViewContext(api)
   try {
-    assert.equal((await vc.writeConfig(first.body, 'k1')).ok, true)
-    assert.equal((await vc.writeConfig(second.body, 'k2')).ok, true)
-    assert.equal(reads, 2, '每次写前各重读一次 config.read')
-    assert.equal(submitted[0][0].request.args.ops[1].args.expect_active, first.active)
-    assert.equal(submitted[1][0].request.args.ops[1].args.expect_active, second.active, '第二次写用重读到的 active')
-  } finally {
-    dispose()
-  }
-})
-
-test('config 写失败：写前重读 active 失败保留原值，不因重读异常中断写', async () => {
-  const body = emptyConfig()
-  const submitted = []
-  let reads = 0
-  const api = {
-    tokens: {},
-    command: async (name) => {
-      if (name === 'config.read') {
-        reads += 1
-        return { ok: false, code: 'ui_unreachable', value: null }
-      }
-      return { ok: true, value: null }
-    },
-    submit: async (directives) => {
-      submitted.push(directives)
-      return { ok: true, status: 'done' }
-    },
-  }
-  const { vc, dispose } = createViewContext(api)
-  try {
+    const body = emptyConfig()
     assert.equal((await vc.writeConfig(body, 'k')).ok, true)
-    assert.equal(reads, 1)
-    assert.equal('expect_active' in submitted[0][0].request.args.ops[1].args, false, '读不到 active 则省略条件键')
+    assert.deepEqual(calls.map((call) => call.name), ['config.write'])
+    assert.equal(calls[0].args.body.version, body.version)
+    assert.equal(submitted.length, 0, '不再提交世界写指令')
   } finally {
     dispose()
   }
 })
 
-test('新建厂商：写前重读 active 并以之条件写 config', async () => {
-  const active = 'c'.repeat(64)
+test('config 写失败：命令回失败时 writeConfig 回 ok:false', async () => {
+  const api = {
+    tokens: {},
+    command: async () => ({ ok: false, code: 'ui_unreachable', value: null }),
+    submit: async () => ({ ok: true, status: 'done' }),
+  }
+  const { vc, dispose } = createViewContext(api)
+  try {
+    const result = await vc.writeConfig(emptyConfig(), 'k')
+    assert.equal(result.ok, false)
+  } finally {
+    dispose()
+  }
+})
+
+test('新建厂商：经 config.write 命令写自有存储', async () => {
   const applied = []
   const calls = []
   const ctx = {
     state: { config: emptyConfig() },
-    configActive: undefined,
     text: (code) => code,
     render: () => {},
     announce: () => {},
     closeOverlay: () => {},
-    refreshConfigActive: async () => {
-      calls.push('refresh')
-      ctx.configActive = active
-    },
-    applyWrite: async (directive) => {
-      applied.push(directive)
+    writeConfig: async (body) => {
+      applied.push(configWriteCommand(body))
       return { ok: true }
     },
     postJson: async (path) => {
@@ -1186,8 +1186,8 @@ test('新建厂商：写前重读 active 并以之条件写 config', async () =>
     busy: false,
   }
   assert.equal(await commitProvider(ctx, form), true)
-  assert.ok(calls.includes('refresh'), '写前重读 active')
-  assert.equal(applied[0].request.args.ops[1].args.expect_active, active)
+  assert.equal(applied[0].name, 'config.write')
+  assert.equal(applied[0].args.body.providers.custom.base_url, 'https://api.example.com/v1')
   assert.equal(ctx.state.config.providers.custom.base_url, 'https://api.example.com/v1')
 })
 
@@ -1508,6 +1508,16 @@ test('并发方法脱链：只读方法在写类方法在途时仍立即派发�
     },
   }
   const portCalls = (method) => service.messages.filter((message) => message.kind === 'port.call' && message.method === method)
+  // 档案装配现在先问 config owner（config.read）：自动应答，聚焦 profile 串行 / 脱链语义。
+  const answeredReads = new Set()
+  const autoAnswerReads = () => {
+    for (const message of service.messages) {
+      if (message.kind !== 'port.call' || message.method !== 'read' || answeredReads.has(message.id)) continue
+      answeredReads.add(message.id)
+      service.send({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { body: profileArgs.config.body } })
+    }
+  }
+  const autoTimer = setInterval(autoAnswerReads, 20)
   try {
     // (a) profile 在途（其 port.call 未应答）时，vendors 脱链立即派发并完成。
     service.send({ v: '1', id: 'pf1', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
@@ -1536,6 +1546,7 @@ test('并发方法脱链：只读方法在写类方法在途时仍立即派发�
     await service.waitFor(() => service.messages.some((message) => message.id === 'pf3'), 'pf3 result')
     assert.ok(service.messages.some((message) => message.id === 'pf2'), 'pf2 结果已回')
   } finally {
+    clearInterval(autoTimer)
     if (service.child.exitCode === null) service.child.kill()
     rmSync(root, { recursive: true, force: true })
   }

@@ -48,7 +48,16 @@ export function startService(options = {}) {
   const events = []
   const portCalls = []
   const stderr = []
-  const secretsResolver = options.secretsResolver ?? (() => ({ error: 'secret_missing', message: 'no resolver' }))
+  // 默认应答：secrets 端口不可用；config 端口写成功、读不可用（sync 回落 bag.config）。
+  const secretsResolver =
+    options.secretsResolver ??
+    ((port, method) => {
+      if (port === 'config') {
+        if (method === 'write') return { value: { ok: true, changed: true } }
+        return { error: 'not_available', message: 'no config owner in test' }
+      }
+      return { error: 'secret_missing', message: 'no resolver' }
+    })
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {

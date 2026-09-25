@@ -3,15 +3,14 @@
 // 原 `entry.js` 的编排（开合 / 订阅 / 渲染调度）整体搬到这里，DOM 构建层改由 React 组件承担。
 
 import {
-  batchWriteDirective,
-  configWriteDirective,
+  configWriteCommand,
   emptyConfig,
   exportJson,
-  identityActive,
   identityBody,
   isCodeGenFallbackBody,
   isRecord,
-  slotWriteDirective,
+  skillWriteCommand,
+  slotWriteCommand,
   validateImport,
 } from './config-model.ts'
 import { applyTemplate, chooseEntry, defaultOnboarding } from './onboarding.ts'
@@ -166,35 +165,18 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     return { ok: true }
   }
 
-  async function readSlotsState(threadKey: string): Promise<{ body: any; active: string | null | undefined }> {
-    const result = await runCommand('input.read', { thread: threadKey })
-    if (!result.ok) return { body: null, active: undefined }
-    return { body: identityBody(result.value), active: identityActive(result.value) }
-  }
-
-  /** 写 config 前重读 active：读到的 active 仅当次有效，写前重取最新身份视图，
-   * 避免用陈旧 active 被内核 `stale_active` 静默拒写。读失败保留原值。 */
-  async function refreshConfigActive(): Promise<void> {
-    const result = await runCommand('config.read', null)
-    if (!result.ok) return
-    configActive = identityActive(result.value)
-  }
-
-  /** 槽写：读-改-写本线程键；读到代码世代回落 body 则回未就绪，不写坏身份。 */
+  /** 槽写：`input.write` 命令（输入槽已出世界，服务按线程键写自有持久存储）。 */
   async function writeSlot(slot: any, threadKey: string = THREAD_KEY): Promise<any> {
-    const read = await readSlotsState(threadKey)
-    if (!isRecord(read.body) || isCodeGenFallbackBody(read.body)) {
-      return { ok: false, code: 'not_loaded' }
-    }
-    const slots = isRecord(read.body.slots) ? read.body.slots : {}
-    return applyWrite(slotWriteDirective(slots, threadKey, slot, read.active), threadKey)
+    const built = slotWriteCommand(threadKey, slot)
+    return runCommand(built.name, built.args)
   }
 
+  /** config 写：`config.write` 命令（整份 body 交 owner 服务读-改-写自有存储）。 */
   async function writeConfig(body: any, key?: string | null): Promise<any> {
     // 拒 tree 基：绝不把代码世代回落 body 当配置数据写回。
     if (isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
-    await refreshConfigActive()
-    const result = await applyWrite(configWriteDirective(body, configActive), THREAD_KEY)
+    const built = configWriteCommand(body)
+    const result = await runCommand(built.name, built.args)
     if (result.ok) {
       state.config = body
       state.savedKey = key ?? null
@@ -204,7 +186,8 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
   }
 
   async function writeSkillBody(body: any, key?: string | null): Promise<boolean> {
-    const result = await applyWrite(batchWriteDirective('skill', body), THREAD_KEY)
+    const built = skillWriteCommand(body)
+    const result = await runCommand(built.name, built.args)
     if (result.ok) {
       state.skillProjection = { body, refs: {}, active: null, gens: [] }
       state.savedKey = key ?? null
@@ -341,7 +324,6 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     applyWrite,
     writeSlot,
     writeConfig,
-    refreshConfigActive,
     writeSkillBody,
     armLoadingNote,
     clearLoadingNote,

@@ -46,6 +46,11 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
     secrets: 'secrets',
     retrieval: 'memory-retrieval',
     'memory-maintenance': 'memory-consolidate',
+    session: 'session',
+    'short-memory': 'short-memory',
+    'memory-store': 'memory-store',
+    skill: 'skill',
+    config: 'config',
     host: 'host',
   })
 })
@@ -121,7 +126,7 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
   assert.deepEqual(readJson('terms/model.profile.json'), ['eff', 'ui-settings', 'profile', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/secrets.status.json'), ['eff', 'secrets', 'list', ['c', null]])
   assert.deepEqual(readJson('terms/settings.identities.json'), ['g', ['ids']])
-  assert.deepEqual(readJson('terms/settings.skills.json'), ['g', ['ids', 'skill']])
+  assert.deepEqual(readJson('terms/settings.skills.json'), ['eff', 'skill', 'read', ['g', ['ids', 'skill']]])
   assert.deepEqual(readJson('terms/orchestration.graph.json'), ['g', ['ids', 'loop-policy']])
   assert.deepEqual(readJson('terms/orchestration.scopes.json'), [
     'eff',

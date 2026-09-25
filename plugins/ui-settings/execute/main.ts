@@ -123,7 +123,18 @@ const SECRETS: SecretsChannel = {
     return result.ok ? { ok: true } : { ok: false, code: result.code, message: result.message }
   },
 }
-const HANDLERS = createHandlers({ identity: IDENTITY, model: LINK, retrieval: LINK, maintenance: LINK, secrets: SECRETS, host: LINK })
+const HANDLERS = createHandlers({
+  identity: IDENTITY,
+  model: LINK,
+  retrieval: LINK,
+  maintenance: LINK,
+  session: LINK,
+  shortMemory: LINK,
+  memoryStore: LINK,
+  config: LINK,
+  secrets: SECRETS,
+  host: LINK,
+})
 
 function declaredMethods(port: string): string[] {
   const declared = METHODS[port]

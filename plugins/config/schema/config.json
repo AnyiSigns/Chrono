@@ -1,6 +1,6 @@
 {
   "title": "config（用户模型配置）",
-  "description": "用户配置单一真源：厂商连接实例 + 模型目录与元数据 + 参数 / 权限档 / 主题 / 语言 / 侧栏宽度 + 当前选择。缺键语义由写入端维护（宿主不校验身份数据）。",
+  "description": "用户配置单一真源：厂商连接实例 + 模型目录与元数据 + 参数 / 权限档 / 主题 / 语言 / 侧栏宽度 + 当前选择。运行记录（ui / providers / vendor / model）已出世界，住本服务自有持久存储（④ CHRONO_PLUGIN_DATA/config.jsonl），经 config.read / config.write 读写；判定阈值（permission / params）在变化时额外镜像进世界。缺键语义由写入端维护（宿主不校验身份数据）。",
   "type": "object",
   "required": ["version", "params", "permission", "ui", "providers"],
   "additionalProperties": true,

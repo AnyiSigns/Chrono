@@ -1,12 +1,12 @@
 // `mcp` 宿主装配 E2E（黑盒，经 boot CLI + 协议直连本服务）：
-// 临时 root → seed → boot start → 轮询 loaded → seed 默认 body（空清单）
-// → 协议直连驱动 discover（bag.servers = 含测试 MCP 服务器的整份 body）
-// → 返回计划经 `boot run` 落账 → stop → verify + replay
-// → 离线读投影确认 ids.mcp.body.tools 的命名空间化工具清单与 render。
+// 临时 root → seed → boot start → 轮询 loaded → 声明命令核对
+// → 直连本服务（CHRONO_PLUGIN_DATA 指向宿主 ④ 目录）write 服务器清单 + discover
+// → 断言清单落 ④ 追加日志、无世界写计划；stop → verify + replay
+// → 离线读投影确认 mcp 身份无运行记录 body（清单已出世界）。
 // 失败路径也 stop，释放单写者锁。
 // 用法：node plugins/mcp/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -20,7 +20,6 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const MCP_DIR = join(REPO_ROOT, 'plugins', 'mcp')
 const SECRETS_DIR = join(REPO_ROOT, 'plugins', 'secrets')
-const SEED_SCRIPT = join(MCP_DIR, 'tools', 'seed-default-body.mjs')
 const FAKE_SERVER = join(MCP_DIR, 'test', 'fake-mcp-server.mjs')
 
 function boot(root, args) {
@@ -41,17 +40,6 @@ function boot(root, args) {
     throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
   }
   return parsed
-}
-
-function runSeedBody(root) {
-  const result = spawnSync(process.execPath, [SEED_SCRIPT, '--root', root], {
-    encoding: 'utf8',
-    cwd: REPO_ROOT,
-  })
-  if (result.status !== 0) {
-    throw new Error(`seed 脚本失败（exit ${result.status}）：${result.stderr || result.stdout}`)
-  }
-  return JSON.parse(result.stdout.trim())
 }
 
 function encodeFrame(message) {
@@ -80,12 +68,13 @@ function createDecoder() {
   }
 }
 
-/** 直连本服务：hello → call discover，收集 event，返回结果值。 */
-function callDiscover(bag) {
+/** 直连本服务（注入 CHRONO_PLUGIN_DATA）：write 清单 → discover → read，返回结果与事件。 */
+function driveService(dataDir, body) {
   return new Promise((resolveCall, rejectCall) => {
     const child = spawn(process.execPath, ['execute/main.ts'], {
       cwd: MCP_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, CHRONO_PLUGIN_DATA: dataDir },
     })
     const decoder = createDecoder()
     const pending = new Map()
@@ -125,19 +114,24 @@ function callDiscover(bag) {
     }
     ;(async () => {
       await request('hello', { impl: 'mcp', gen: 'e2e' }, 'manifest')
-      const result = await request(
+      const written = await request(
         'call',
-        {
-          port: 'mcp',
-          method: 'discover',
-          args: bag,
-          env: { run: 'e2e-run', thread: null, now: 0 },
-        },
+        { port: 'mcp', method: 'write', args: { body }, env: { run: 'e2e-run', thread: null, now: 0 } },
+        'result',
+      )
+      const discovered = await request(
+        'call',
+        { port: 'mcp', method: 'discover', args: {}, env: { run: 'e2e-run', thread: null, now: 0 } },
+        'result',
+      )
+      const read = await request(
+        'call',
+        { port: 'mcp', method: 'read', args: {}, env: { run: 'e2e-run', thread: null, now: 0 } },
         'result',
       )
       clearTimeout(timer)
       child.stdin.end()
-      resolveCall({ value: result.value, events })
+      resolveCall({ written: written.value, discovered: discovered.value, read: read.value, events })
     })().catch((err) => {
       clearTimeout(timer)
       child.kill()
@@ -153,10 +147,6 @@ function serverEntry() {
     args: [FAKE_SERVER, '--mode=ok'],
     confirmed: true,
   }
-}
-
-function discoverBag(servers) {
-  return { servers: { version: 1, servers, tools: [] } }
 }
 
 async function waitFor(predicate, label, timeoutMs = 15000) {
@@ -204,7 +194,6 @@ async function main() {
     }
     console.log('入站命令声明：ok')
 
-    // 入站 v1 最小能力面：入口 term 经宿主命令面返回 MCP 形状信封
     const listResult = boot(root, [
       'mcp.in.tools_list',
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
@@ -218,29 +207,33 @@ async function main() {
     assert.equal(callResult.observations[0].value.error.message, 'not_available_in_v1')
     console.log('入站 v1 最小能力面：ok')
 
-    const seededBody = runSeedBody(root)
-    assert.equal(seededBody.ok, true, 'seed 脚本报告 ok:false')
-    console.log(`seed 默认 body：${seededBody.status}`)
-
-    const beforeStatus = boot(root, ['status'])
-    const { value, events } = await callDiscover(discoverBag([serverEntry()]))
-    const directives = value.$directives
-    assert.equal(directives.length, 2, 'discover 应回 batch + extern')
-    assert.equal(directives[0].kind, 'write')
-    assert.equal(directives[0].request.op, 'batch')
-    const ops = directives[0].request.args.ops
-    assert.equal(ops[0].op, 'put')
-    assert.equal(ops[1].op, 'add_gen')
-    assert.equal(ops[1].args.id, 'mcp')
+    // 清单出世界：直连本服务写清单 + discover，落 ④ 追加日志。
+    const paths = hostPaths(root)
+    const dataDir = join(paths.dataDir, 'mcp')
+    const { written, discovered, read, events } = await driveService(dataDir, {
+      version: 1,
+      servers: [serverEntry()],
+      tools: [],
+    })
+    assert.equal(written.ok, true, 'write 未成功')
+    assert.equal(discovered.$directives.length, 1, 'discover 应只回 extern（无世界写计划）')
+    assert.equal(discovered.$directives[0].kind, 'extern')
+    assert.equal(discovered.$directives[0].payload.changed, true)
+    assert.equal(read.servers[0].id, 'fake')
+    assert.deepEqual(
+      read.tools.map((tool) => tool.name).sort(),
+      ['mcp.fake.add', 'mcp.fake.boom', 'mcp.fake.echo'],
+    )
+    const echo = read.tools.find((tool) => tool.name === 'mcp.fake.echo')
+    assert.equal(echo.intent, '回显输入文本')
+    assert.equal(echo.boundaries, '由外部 MCP 服务器定义')
+    assert.equal(echo.render.detail.kind, 'json')
     assert.ok(events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'discovered'))
-    console.log(`discover 计划：${ops.length} ops + extern`)
-
-    const landed = boot(root, ['run', JSON.stringify(directives)])
-    assert.equal(landed.status, 'done', `计划落账未完成：${JSON.stringify(landed)}`)
-    console.log('计划落账：done')
-
-    const afterStatus = boot(root, ['status'])
-    assert.notDeepEqual(afterStatus.world_head, beforeStatus.world_head, '落账后链头应推进')
+    const logFile = join(dataDir, 'mcp.jsonl')
+    assert.equal(existsSync(logFile), true, '④ 追加日志应存在')
+    const records = readFileSync(logFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    assert.ok(records.some((record) => record.t === 'body' && record.run === 'e2e-run'))
+    console.log('清单出世界：write/discover/read 往返 + ④ 追加日志 ok')
 
     boot(root, ['stop'])
     started = false
@@ -248,27 +241,15 @@ async function main() {
     const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
     const replayed = boot(root, ['replay'])
-    assert.deepEqual(replayed.head, afterStatus.world_head, 'replay 链头与落账后 status 不一致')
+    assert.ok(replayed !== null && (replayed.ok === true || replayed.head !== undefined), `replay 失败：${JSON.stringify(replayed)}`)
     console.log('verify + replay：ok')
 
-    // 离线读投影：ids.mcp.body 的工具清单
-    const paths = hostPaths(root)
+    // 离线读投影：mcp 身份无运行记录 body（清单已出世界）。
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const projection = projectBaseOnly(anchor.world, anchor.head)
-    const body = projection.ids.mcp.body
-    assert.equal(body.version, 1)
-    assert.equal(body.servers[0].id, 'fake')
-    assert.equal(body.servers[0].connected, undefined, '易变运行态不得写回 body')
-    assert.equal(body.servers[0].tool_count, undefined, '易变运行态不得写回 body')
-    assert.equal(body.servers[0].confirmed, true)
-    const names = body.tools.map((tool) => tool.name).sort()
-    assert.deepEqual(names, ['mcp.fake.add', 'mcp.fake.boom', 'mcp.fake.echo'])
-    const echo = body.tools.find((tool) => tool.name === 'mcp.fake.echo')
-    assert.equal(echo.intent, '回显输入文本')
-    assert.equal(echo.boundaries, '由外部 MCP 服务器定义')
-    assert.equal(echo.render.detail.kind, 'json')
-    assert.equal(echo.idempotent, false)
-    console.log('离线投影：ids.mcp.body.tools 命名空间化工具清单正确')
+    const body = projection.ids.mcp?.body
+    assert.equal(body === undefined || body === null || body.servers === undefined, true, 'mcp 清单不应进世界')
+    console.log('离线投影：mcp 清单未进世界 ok')
 
     console.log(`E2E ok（root=${root}）`)
   } finally {

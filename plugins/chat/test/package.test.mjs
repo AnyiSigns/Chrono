@@ -53,6 +53,10 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     'loop-policy': 'loop-policy',
     'short-memory': 'short-memory',
     todo: 'todo',
+    config: 'config',
+    mcp: 'mcp',
+    workspace: 'workspace',
+    skill: 'skill',
     host: 'host',
   })
   assert.equal(decl.start, 'node execute/main.ts')

@@ -39,6 +39,51 @@ export interface HandlerDeps {
   secrets?: SecretsChannel
   /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
   host?: PortCaller
+  /** 会话 owner（pins `session`）：会话链已出世界，`memory.search` 的 goal 从 owner 读。 */
+  session?: PortCaller
+  /** 短期记忆 owner（pins `short-memory`）：L1 / L2 已出世界，记忆浏览 / 编辑经 `eff` 问 owner。 */
+  shortMemory?: PortCaller
+  /** 长期记忆 owner（pins `memory-store`）：L3 已出世界，记忆浏览 / 搜索 / 编辑经 `eff` 问 owner。 */
+  memoryStore?: PortCaller
+  /** 用户配置 owner（pins `config`）：config 运行记录已出世界，模型档案装配经 `eff` 问 owner。 */
+  config?: PortCaller
+}
+
+/** 把已出世界的 config owner 数据注入投影切片（模型档案装配用；取不到时保留投影原值）。 */
+async function withConfigOwner(deps: HandlerDeps, ids: Json): Promise<Rec> {
+  const base: Rec = isRecord(ids) ? { ...ids } : {}
+  if (deps.config === undefined) return base
+  const outcome = await deps.config.call('config', 'read', {})
+  if (outcome.ok && isRecord(outcome.value) && isRecord(outcome.value['body'])) {
+    base['config'] = { body: outcome.value['body'] }
+  }
+  return base
+}
+
+/**
+ * 把已出世界的记忆 / 会话 owner 数据注入投影切片：`short-memory` / `memory-store` / `session`
+ * 的运行记录已不住投影，读侧改经 `eff` 问 owner（取不到时保留投影原值，不阻塞）。
+ */
+async function withMemoryOwners(deps: HandlerDeps, ids: Json): Promise<Rec> {
+  const base: Rec = isRecord(ids) ? { ...ids } : {}
+  if (deps.shortMemory !== undefined) {
+    const outcome = await deps.shortMemory.call('short-memory', 'read', {})
+    if (outcome.ok && isRecord(outcome.value)) base['short-memory'] = { body: outcome.value }
+  }
+  if (deps.memoryStore !== undefined) {
+    const outcome = await deps.memoryStore.call('memory-store', 'read', {})
+    if (outcome.ok && isRecord(outcome.value)) base['memory-store'] = { body: outcome.value, refs: {} }
+  }
+  if (deps.session !== undefined) {
+    const outcome = await deps.session.call('session', 'read', {})
+    if (outcome.ok && isRecord(outcome.value)) {
+      base['session'] = {
+        body: outcome.value,
+        refs: isRecord(outcome.value['refs']) ? outcome.value['refs'] : {},
+      }
+    }
+  }
+  return base
 }
 
 // ── 模型命令的服务侧装配（纯函数，单测直调）──
@@ -82,10 +127,7 @@ export function assembleProfileArgs(ids: Json): { ok: true; args: Rec } | { ok: 
   const provider = isRecord(providers[vendor]) ? (providers[vendor] as Rec) : null
   const models = provider !== null && isRecord(provider['models']) ? (provider['models'] as Rec) : {}
   const selected = Object.keys(models)
-  const args: Rec = { vendor, ids: selected, config, vendors: collectVendorBodies(ids) }
-  const configGen = projectionDataGen(ids, 'config')
-  if (configGen !== null) args['config_data_gen'] = configGen
-  return { ok: true, args }
+  return { ok: true, args: { vendor, ids: selected, config, vendors: collectVendorBodies(ids) } }
 }
 
 /** 从输入槽 body 取 `model.probe` 载荷（`ctx.ids.input.body.slots._main`）；非探测槽回 null。 */
@@ -513,9 +555,9 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
       return externOnly(outcome.value)
     },
 
-    /** 模型档案：入口 term 传 `ctx.ids`，服务从 `#2 config` + `#4–10` body 装配，反向调 `model.profile`。 */
+    /** 模型档案：入口 term 传 `ctx.ids`，服务从 owner 取 `#2 config` + `#4–10` body 装配，反向调 `model.profile`。 */
     profile: async (args): Promise<Json> => {
-      const assembled = assembleProfileArgs(args)
+      const assembled = assembleProfileArgs(await withConfigOwner(deps, args))
       if (!assembled.ok) return failure(assembled.code, assembled.code)
       const outcome = await deps.model.call('model', 'profile', assembled.args)
       if (!outcome.ok) return failure(outcome.code, outcome.message)
@@ -563,7 +605,7 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      * 反向调 `memory-maintenance.view`；命令结果 = #23 `view` 值（L1 / L2 / L3 三档）。
      */
     view: async (args): Promise<Json> => {
-      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
+      const ids = await hydrateIds(await withMemoryOwners(deps, idsMapOf(args)), ['memory-store'], hydrator)
       const outcome = await maintenance.call('memory-maintenance', 'view', assembleViewArgs(ids))
       if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
       return externOnly(outcome.value)
@@ -576,7 +618,7 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      */
     search: async (args): Promise<Json> => {
       const record = isRecord(args) ? args : {}
-      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
+      const ids = await hydrateIds(await withMemoryOwners(deps, idsMapOf(args)), ['memory-store'], hydrator)
       const hydratedArgs: Json = isRecord(record['ids']) ? { ...record, ids } : ids
       const assembled = assembleSearchBag(hydratedArgs)
       if (!assembled.ok) return externOnly(failure(assembled.code, assembled.message))
@@ -591,7 +633,7 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      * extern #23 结果。槽 action `update` 对齐为 #23 的 `text`。
      */
     edit: async (args): Promise<Json> => {
-      const ids = await hydrateIds(idsMapOf(args), ['memory-store'], hydrator)
+      const ids = await hydrateIds(await withMemoryOwners(deps, idsMapOf(args)), ['memory-store'], hydrator)
       const inputBody = projectionBody(ids, 'input')
       const assembled = assembleEditArgs(ids, inputBody)
       let ops: Json[] = []

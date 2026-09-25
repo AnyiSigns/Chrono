@@ -1,18 +1,25 @@
-// profile / sync：拉 models.dev -> 只取所选模型 -> 产 config 身份的写计划（put 整份 body + add_gen）。
-// 落盘前把社区布尔 true 展开为该 vendor 的 default_reasoning 数组（无则缺键）；写前去重（无变化不产写计划）。
-// sync 由宿主 periodic 直接调，bag 由 schema.periodic.reads 机械注入；服务不读投影、不联网以外的世界。
+// profile / sync：拉 models.dev -> 只取所选模型 -> 经 `config.write` 写 config owner 自有存储。
+// 落盘前把社区布尔 true 展开为该 vendor 的 default_reasoning 数组（无则缺键）；写前去重（无变化不写）。
+// 运行记录已出世界：profile 的 config 随 args 传入（调用方读 owner），sync 由本服务经 `config.read` 问 owner；
+// 服务不读投影、不联网以外的世界。
 
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest } from './http.ts'
-import { canonicalEqual, dataGenSeqOf, deepClone, externOnly, isRecord, planOf, pushBodyGen } from './plan.ts'
+import { canonicalEqual, deepClone, externOnly, isRecord } from './plan.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
 import { collectVendorBodies } from './vendors.ts'
 
+/** 反向调用通道（`config.read` / `config.write`）；单测可注入假端口。 */
+export interface ConfigPort {
+  call(port: string, method: string, args: Rec): Promise<{ ok: true; value: Json } | { ok: false; code: string; message: string }>
+}
+
 export interface ProfileDeps {
   limiter: RateLimiter
+  config: ConfigPort
 }
 
 const MANAGED_KEYS = ['context_window', 'max_output', 'reasoning', 'modalities'] as const
@@ -260,12 +267,14 @@ async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, 
   return source
 }
 
-/** 构造写计划：无变化回 extern；有变化回补丁（有数据世代）/ 整份 put + add_gen。 */
-function planValue(changed: boolean, prev: Rec, newConfig: Rec | null, metadata: Rec, base: number | null): Json {
+/** 无变化回 extern；有变化经 `config.write` 写 owner 自有存储，再回 extern 摘要。 */
+async function persist(deps: ProfileDeps, changed: boolean, newConfig: Rec | null, metadata: Rec): Promise<Json> {
   if (!changed || newConfig === null) return externOnly({ ok: true, changed: false, models: metadata })
-  const ops: Json[] = []
-  pushBodyGen(ops, 'config', prev, newConfig, base)
-  return planOf(ops, { ok: true, changed: true, models: metadata })
+  const outcome = await deps.config.call('config', 'write', { body: newConfig })
+  if (!outcome.ok) {
+    return externOnly({ ok: false, changed: false, error: { code: outcome.code, message: outcome.message }, models: metadata })
+  }
+  return externOnly({ ok: true, changed: true, models: metadata })
 }
 
 /** profile：只刷新调用方所选模型；config 缺省时只回档案值、不产写计划。 */
@@ -290,7 +299,7 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
     if (config === null) return { ok: true, changed: false, models: metadata, write: false }
     const updated = applyMetadata(config, { vendor, ids }, metadata)
     const changed = !canonicalEqual(updated, config)
-    return planValue(changed, config, updated, metadata, dataGenSeqOf(args['config_data_gen']))
+    return persist(deps, changed, updated, metadata)
   } catch (err) {
     if (err instanceof BadArgsError) throw err
     if (err instanceof ModelError) return errorValue(err.code, err.message)
@@ -298,10 +307,12 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
   }
 }
 
-/** sync：对 config 里已选的全部模型批量刷新（宿主 periodic 直调）。 */
+/** sync：对 config 里已选的全部模型批量刷新（宿主 periodic 直调；config 经 `config.read` 问 owner）。 */
 export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<Json> {
   if (!isRecord(bag)) throw new BadArgsError('bag must be an object')
-  const config = pickConfig(bag)
+  const read = await deps.config.call('config', 'read', {})
+  const fromOwner = read.ok && isRecord(read.value) && isRecord(read.value['body']) ? (read.value['body'] as Rec) : null
+  const config = fromOwner ?? pickConfig(bag)
   if (config === null) return externOnly({ ok: true, changed: false, models: {} })
   const vendorBodies = collectVendorBodies(bag)
   const policy = resolvePolicy(bag['resilience'])
@@ -322,7 +333,7 @@ export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<
       updated = applyMetadata(updated, target, metadata)
     }
     const changed = !canonicalEqual(updated, config)
-    return planValue(changed, config, updated, summary, dataGenSeqOf(bag['config_data_gen']))
+    return persist(deps, changed, updated, summary)
   } catch (err) {
     if (err instanceof BadArgsError) throw err
     if (err instanceof ModelError) return errorValue(err.code, err.message)

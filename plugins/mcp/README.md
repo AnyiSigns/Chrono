@@ -3,20 +3,34 @@
 MCP（Model Context Protocol）适配器：**出站**接入外部 MCP 服务器、把它们的工具注册进工具目录；
 **入站**把本产品能力以 MCP 形式暴露给外部 agent（v1 = 契约就位、能力面待后续波次接线）。
 
-- 能力类：`mcp`；方法：`describe` / `invoke` / `discover`。
+- 能力类：`mcp`；方法：`describe` / `invoke` / `discover` / `read` / `write`。
 - `pins`：`{"secrets":"secrets"}`（spawn 前解析 `env` 里的 `auth_ref` 引用；不反向依赖 `tools`，避免成环）。
-- `+`（投影读）：**服务不读投影**——出站清单由宿主周期 `periodic` 按 schema 声明机械注入 `bag`。
-- 状态档：`recomputable`（子进程表住内存，可重算；不落世界）。
+- `+`（投影读）：**服务不读投影**——清单已出世界，住本服务自有持久存储（④ `CHRONO_PLUGIN_DATA`），`discover` 读自有存储。
+- 状态档：`durable`（④ 不可重算；清单跨代存活、进备份、只按身份消失回收）；`exclusive: ["data"]`。
+- 子进程表与易变运行态（`connected` / `failures` / `tool_count` / `isolated` / `isolation` / `last_error`）仍住服务进程内存（③ 可重算）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF / `SIGTERM` / `SIGINT` 即自退出并终止全部外部子进程；
   宽限期到点发 `SIGKILL` 并等真实退出，`process.on('exit')` 再同步硬杀兜底，忽略 SIGTERM 的 server 也不留孤儿）。
 - 运行时零 npm 依赖：MCP stdio 客户端自己实现，不引 SDK。
 
+## 逐字段判定（定义 / 判定 vs 运行记录）
+
+判据两问：**回滚该不该带上它**、**判定 / 门禁 / 重放要不要从世界读它**。两问皆否 → 运行记录，出世界。
+
+| 字段 | 判定 | 理由 |
+| --- | --- | --- |
+| `version` | 运行记录（出世界） | 存储格式版本；回滚不该带；判定不从世界读 |
+| `servers[].id` / `command` / `args` / `env` / `cwd` / `confirmed` / `trusted` / `restart` | 运行记录（出世界） | 外部 MCP 服务器清单 = 用户配置；门禁经 `bag.mcp_tools` / `bag.tools` 运行时读 owner，不从世界读 |
+| `tools[]`（含 `argsSchema` / `caps`） | 运行记录（出世界） | 发现到的外部工具清单；工具目录与 net 判定经 `bag.mcp_tools` 运行时读 owner，不从世界读 |
+| ③ `connected` / `failures` / `tool_count` / `isolated` / `isolation` / `last_error` | ③ 可重算（不进 ④） | 易变运行态，删了可重算 |
+
+**结论**：清单无留在世界的字段；留在世界的是 `Identity.schema`（数据契约 def）。
+
 ## 出站（主体）
 
-外部 MCP 服务器清单住**本身份数据世代 body**（投影 `ids.mcp.body.servers`）。宿主按
-`schema/mcp.json` 顶层 `periodic` 声明每 5 分钟直调本服务 `discover`，`reads` 把整个 body
-注入 `bag.servers`；`discover` 重新发现后把**新 body**（含 `servers` 状态 + `tools` 工具清单）
-以**写计划**返回（`put` + `add_gen`），由宿主落账——**服务无写通道**。
+外部 MCP 服务器清单住**本服务自有持久存储**（④ `CHRONO_PLUGIN_DATA/mcp.jsonl`，追加日志），
+经 `mcp.read` / `mcp.write` 读写。宿主按 `schema/mcp.json` 顶层 `periodic` 声明每 5 分钟直调本服务
+`discover`（**无 `reads`**）；`discover` 读自有存储的 `servers`，重新发现后把**新清单**写回自有存储
+（边跑边追加），只回 `extern` 摘要——**不产世界写计划、不占 `seq`、不改 `worldRev`**。
 
 - **只连已确认条目**：服务器条目须 `confirmed:true` 才 spawn；未确认条目只登记、不连接。
 - **MCP stdio 传输**：按 MCP 规范以**换行分隔的 JSON-RPC 消息**（每行一条、UTF-8、不得内嵌换行）
@@ -38,26 +52,30 @@ MCP（Model Context Protocol）适配器：**出站**接入外部 MCP 服务器�
 
 ## `describe(bag)`
 
-只回**本插件自述**，不回外部工具清单（清单权威 = 数据世代 body 投影）：
+只回**本插件自述**，不回外部工具清单（清单权威 = owner 自有存储 `mcp.read`）：
 
 ```jsonc
 { "tools": [],
   "adapter": { "identity": "mcp", "dynamic": true, "namespace": "mcp.<server>.<tool>",
-               "tool_source": "projection:ids.mcp.body.tools",
+               "tool_source": "service:mcp.read",
                "inbound_v1": { "commands": ["mcp.in.ping", "mcp.in.tools_list", "mcp.in.tools_call"],
                                "note": "契约就位、能力面待后续波次接线" } } }
 ```
 
-## `discover(bag)`
+## `discover()`
 
 ```jsonc
-// bag.servers = 整个 body（宿主 periodic reads:{"servers":["ids","mcp","body"]}）
-// 返回：{$directives:[{kind:"write",request:{op:"batch",args:{ops:[put(body),add_gen(mcp)]}}},
-//                    {kind:"extern",payload:{ok,changed,servers,tools,isolated}}]}
+// 读自有存储的 servers → 重新发现 → 有变化写回自有存储（边跑边追加）
+// 返回：{$directives:[{kind:"extern",payload:{ok,changed,servers,tools,isolated}}]}
 ```
 
-- 空清单 / 无变化且未置脏 → 只回 `extern`（无写计划）。
-- `put` 的 body 形状见 `schema/mcp.json`；`add_gen` 的 `payload` / `sig` 用 `{"$n":0}` 指向同批 `put`。
+- 空清单 / 无变化且未置脏 → 只回 `extern`（不写存储）。
+- 清单 body 形状见 `schema/mcp.json`；`write` 的入参为整份 body（或包一层 `{body}`）。
+
+## `read()` / `write(bag)`
+
+- `read`：回整份清单 `{version, servers, tools}`（owner 存储为空时回空体）。
+- `write`：整份替换清单（`servers[]` / `tools[]` 必填）；内容未变短路，返回 `{ok, changed}`。
 
 ## `invoke(bag)`
 
@@ -89,7 +107,7 @@ MCP（Model Context Protocol）适配器：**出站**接入外部 MCP 服务器�
 > **入站 v1 = 契约就位、能力面待后续波次接线**：本产品能力以 MCP 暴露的完整形态依赖后续波次
 > （工具目录等）。当前入口 term 只返回最小能力面；`id` 回带等由壳 / 后续波次接线。
 
-## body 形状（数据世代）
+## 清单形状（owner 自有存储）
 
 ```jsonc
 {
@@ -114,15 +132,23 @@ MCP（Model Context Protocol）适配器：**出站**接入外部 MCP 服务器�
 }
 ```
 
-- 密钥不进世界：服务器 `env` 的值可为 `auth_ref = {kind:'local'|'env', name}` 引用，本体由
-  `secrets.resolve` 在 spawn 前解析后注入同名子进程环境变量（明文不进日志 / 世界 / 计划 / event）。
-- `tools` 的权威是**本身份数据世代 body 投影**，由工具目录入口 term 读出随 bag 传给 `tools` 插件。
+- 密钥不进存储明文：服务器 `env` 的值可为 `auth_ref = {kind:'local'|'env', name}` 引用，本体由
+  `secrets.resolve` 在 spawn 前解析后注入同名子进程环境变量（明文不进日志 / 存储 / 计划 / event）。
+- `tools` 的权威是**owner 自有存储**（`mcp.read`）；调用方（chat 装配 interpret bag）经 `eff` 问 owner 后随 `bag.mcp_tools` 传给 `tools` 插件。
+
+## 存储引擎与落点（自写）
+
+- ④ 落点：`CHRONO_PLUGIN_DATA/mcp.jsonl`，单文件追加日志（每条一次 append + fsync，换行收尾）。
+  记录 `{t:'body', run, body}`；启动重放取最后一条 body，末行半写撕裂 / 坏行跳过（fail-open）。
+- **边跑边追加**：`discover` 有变化即写一条记录，不攒批；同内容重复写幂等短路；每条记录盖回合 id（`run`）。
+- **存量不搬**：存储从空开始，旧世界世代留在链上但不再被读。
+- **清理责任**：自写存储；owner 退役时宿主按身份回收删除 `state/data/mcp/`，无需额外清理方法。
 
 ## 运行
 
 ```sh
 npm test                                  # 协议级测试（node --test）
-node tools/e2e-smoke.mjs                  # 宿主装配 E2E（seed → start → discover → 落账 → verify/replay → 离线投影）
+node tools/e2e-smoke.mjs                  # 宿主装配 E2E（seed → start → 直连 write/discover → ④ 日志 → verify/replay）
 ```
 
 ## `.worldignore`

@@ -3,8 +3,6 @@
 // 本模块只构造新的 config body 与 directive，不触 DOM、不发请求。
 
 /** 身份 id 常量（模块内部用）。 */
-const CONFIG_ID = 'config'
-const INPUT_ID = 'input'
 
 /** 判断普通对象（非数组 / 非 null）。 */
 export function isRecord(value: any): value is Record<string, any> {
@@ -163,34 +161,19 @@ export function buildOnboardingConfig(existing: any, form: any): any {
   return isRecord(form.params) ? setParams(withProvider, form.params) : withProvider
 }
 
-/** 一条 batch 写指令：put 整值 + add_gen 绑定身份（四字段全必填、占位符指回 put）。
- * `expectActive` 为读回身份视图的 active：显式条件写，陈旧读由内核 `stale_active` 拒写。 */
-export function batchWriteDirective(identity: string, body: any, expectActive?: string | null): any {
-  const addGen: any = { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
-  if (expectActive !== undefined) addGen.expect_active = expectActive
-  return {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body } },
-          { op: 'add_gen', args: addGen },
-        ],
-      },
-    },
-  }
+/** config 写口：`config.write` 命令（服务按整份 body 读-改-写自有持久存储）。 */
+export function configWriteCommand(body: any): { name: string; args: any } {
+  return { name: 'config.write', args: { body } }
 }
 
-/** config 整值写指令。 */
-export function configWriteDirective(body: any, expectActive?: string | null): any {
-  return batchWriteDirective(CONFIG_ID, body, expectActive)
+/** 输入槽写口：`input.write` 命令（服务按线程键写自有持久存储）。 */
+export function slotWriteCommand(threadKey: string, slot: any): { name: string; args: any } {
+  return { name: 'input.write', args: { thread: threadKey, slot: slot ?? null } }
 }
 
-/** 写输入槽：只覆盖本线程键（读-改-写，其余键原样）。 */
-export function slotWriteDirective(slots: any, threadKey: string, slot: any, expectActive?: string | null): any {
-  const nextSlots = { ...(isRecord(slots) ? slots : {}), [threadKey]: slot }
-  return batchWriteDirective(INPUT_ID, { slots: nextSlots }, expectActive)
+/** 技能清单写口：`skill.write` 命令（整份清单写自有持久存储）。 */
+export function skillWriteCommand(body: any): { name: string; args: any } {
+  return { name: 'skill.write', args: { body } }
 }
 
 /** 导出 JSON 文本（整份 body，`auth_ref` 只有引用名、无明文）。 */

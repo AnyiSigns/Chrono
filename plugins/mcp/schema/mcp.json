@@ -1,6 +1,6 @@
 {
   "title": "mcp（MCP 适配器 · 双向）",
-  "description": "身份自述 / 数据契约：本身份数据世代 body 同时承载外部 MCP 服务器清单（servers）与发现到的外部工具清单（tools，命名空间化 mcp.<server>.<tool>）。服务器条目须 confirmed:true 才 spawn；未确认条目只登记不连接。外部工具清单的权威 = 本 body.tools（投影 ids.mcp.body），describe 只回本插件自述。宿主按顶层 periodic 直调 mcp.discover 刷新（reads 注入整个 body）。",
+  "description": "身份自述 / 数据契约：清单（服务器配置 servers + 发现到的外部工具 tools，命名空间化 mcp.<server>.<tool>）是运行记录，已出世界，住本服务自有持久存储（④ CHRONO_PLUGIN_DATA），经 `mcp.read` / `mcp.write` 读写。服务器条目须 confirmed:true 才 spawn；未确认条目只登记不连接。describe 只回本插件自述；宿主按顶层 periodic 直调 mcp.discover 刷新（服务读自有存储，不经投影）。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -87,9 +87,9 @@
         }
       }
     },
-    "discover_bag": {
+    "write_bag": {
       "type": "object",
-      "description": "（非 body 字段）mcp.discover 的入参：{servers: <整个 body>}（宿主 periodic reads 机械注入）。",
+      "description": "（非 body 字段）mcp.write 的入参：整份清单 body（或包一层 {body}）；servers[] 与 tools[] 必填。",
       "additionalProperties": true
     },
     "invoke_bag": {
@@ -106,8 +106,7 @@
   "periodic": [
     {
       "method": "mcp.discover",
-      "every_ms": 300000,
-      "reads": { "servers": ["ids", "mcp", "body"] }
+      "every_ms": 300000
     }
   ],
   "method_timeouts": {

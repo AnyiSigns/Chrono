@@ -80,7 +80,19 @@ test('send: reads owners, then title, then interpret; bag carries owner session/
     assert.equal(result.kind, 'result')
     assert.deepEqual(
       drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      ['session.read', 'input.read', 'short-memory.read', 'todo.invoke', 'session-title.generate', 'session.set_title', 'loop-policy.interpret'],
+      [
+        'session.read',
+        'input.read',
+        'short-memory.read',
+        'todo.invoke',
+        'config.read',
+        'mcp.read',
+        'workspace.read',
+        'skill.read',
+        'session-title.generate',
+        'session.set_title',
+        'loop-policy.interpret',
+      ],
     )
 
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')

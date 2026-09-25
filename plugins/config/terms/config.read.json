@@ -1,1 +1,1 @@
-["g", ["ids", "config"]]
+["eff", "config", "read", ["g", ["ids", "config"]]]

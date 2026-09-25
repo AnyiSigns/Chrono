@@ -9,6 +9,7 @@ mod platform;
 mod protocol;
 mod recent;
 mod reveal;
+mod store;
 #[cfg(windows)]
 mod win32;
 

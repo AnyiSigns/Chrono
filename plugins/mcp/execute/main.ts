@@ -4,11 +4,16 @@
 // 服务不读投影、无写通道：方法只返回值 / 写计划与事件。
 
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
-import { HANDLERS, REGISTRY, SECRETS } from './methods.ts'
+import { createHandlers, REGISTRY, SECRETS } from './methods.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './plugin.ts'
 import { isRecord } from './plan.ts'
+import { McpStore } from './store.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
+
+/** 清单自有持久存储（④ `CHRONO_PLUGIN_DATA`）；进程内单例。 */
+const STORE = McpStore.open()
+const HANDLERS = createHandlers({ store: STORE })
 
 const DECLARED_METHODS = new Set<string>(
   Array.isArray(METHODS[IDENTITY])

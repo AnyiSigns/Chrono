@@ -1,11 +1,14 @@
-// config 包形状 / 内容测试（零依赖，node --test）。
+// config 包形状 / 内容测试 + 服务级读写往返（零依赖，node --test）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ENTRY = join(pkgRoot, 'execute', 'main.ts')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
@@ -20,6 +23,7 @@ const DECL_FIELDS = [
   'restart',
   'health',
   'state',
+  'exclusive',
   'members',
   'commands',
 ]
@@ -86,36 +90,45 @@ function assertWhitelist(schema, where) {
   }
 }
 
-test('plugin.json 12 字段齐全且形态合法', () => {
+// ---- 包形状 ----
+
+test('plugin.json 字段齐全且形态合法（服务身份）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'config')
   assert.equal(decl.schema, 'schema/config.json')
-  assert.deepEqual(decl.implements, [])
-  assert.deepEqual(decl.methods, {})
+  assert.deepEqual(decl.implements, ['config'])
+  assert.deepEqual(decl.methods, { config: ['read', 'write'] })
   assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, '')
+  assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(typeof decl.restart, 'object')
   assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.state, 'recomputable')
+  assert.equal(decl.state, 'durable')
+  assert.deepEqual(decl.exclusive, ['data'])
   assert.deepEqual(decl.members, [
+    { kind: 'execute', path: 'execute/' },
     { kind: 'term', path: 'terms/' },
     { kind: 'schema', path: 'schema/' },
   ])
 })
 
-test('commands 只声明无参 config.read', () => {
+test('commands 声明 config.read（只读）+ config.write（补丁）', () => {
   const decl = readJson('plugin.json')
-  assert.equal(decl.commands.length, 1)
-  assert.equal(decl.commands[0].name, 'config.read')
-  assert.equal(decl.commands[0].entry, 'terms/config.read.json')
-  assert.equal(decl.commands[0].argsSchema, undefined)
-  assert.equal(decl.commands[0].readonly, true)
+  const byName = Object.fromEntries(decl.commands.map((command) => [command.name, command]))
+  assert.deepEqual(byName['config.read'], {
+    name: 'config.read',
+    entry: 'terms/config.read.json',
+    readonly: true,
+  })
+  assert.equal(byName['config.write'].entry, 'terms/config.write.json')
+  assert.equal(byName['config.write'].argsSchema, 'schema/config.write.args.json')
+  assert.equal(byName['config.write'].readonly, undefined)
 })
 
 test('config schema 是合法 JSON 且符合白名单子集', () => {
   assertWhitelist(readJson('schema/config.json'), 'config.schema')
+  assertWhitelist(readJson('schema/config.write.args.json'), 'config.write.args')
 })
 
 test('config schema 关键字段齐全', () => {
@@ -133,8 +146,9 @@ test('config schema 关键字段齐全', () => {
   assert.deepEqual(schema.properties.params.properties.reasoning.type, 'string')
 })
 
-test('terms 是 JSON AST 且直出 config 身份视图（含 active 与 body）', () => {
-  assert.deepEqual(readJson('terms/config.read.json'), ['g', ['ids', 'config']])
+test('terms：config.read 取世界切片问 owner；config.write 传命令 args', () => {
+  assert.deepEqual(readJson('terms/config.read.json'), ['eff', 'config', 'read', ['g', ['ids', 'config']]])
+  assert.deepEqual(readJson('terms/config.write.json'), ['eff', 'config', 'write', ['v', 0]])
 })
 
 test('tools/default-body.json 是可落地的默认 body', () => {
@@ -170,4 +184,166 @@ test('README 存在且不含计划编号 / 计划文档引用', () => {
   assert.ok(!/#\d/.test(readme), 'README 含计划编号样式 #<数字>')
   assert.ok(!readme.includes('docs/plans'), 'README 引用了计划文档')
   assert.ok(!/-plan\.md/.test(readme), 'README 引用了计划文档')
+})
+
+// ---- 服务级：读写往返 / 阈值镜像 / 幂等 / 重放 ----
+
+function encodeFrame(message) {
+  const body = Buffer.from(JSON.stringify(message), 'utf8')
+  const frame = Buffer.allocUnsafe(4 + body.length)
+  frame.writeUInt32BE(body.length, 0)
+  body.copy(frame, 4)
+  return frame
+}
+
+function createDecoder() {
+  let buffered = Buffer.alloc(0)
+  return {
+    push(chunk) {
+      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
+      const messages = []
+      while (buffered.length >= 4) {
+        const length = buffered.readUInt32BE(0)
+        if (buffered.length < 4 + length) break
+        const body = buffered.subarray(4, 4 + length).toString('utf8')
+        buffered = buffered.subarray(4 + length)
+        messages.push(JSON.parse(body))
+      }
+      return messages
+    },
+  }
+}
+
+function startService(env = {}) {
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: pkgRoot,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
+  const decoder = createDecoder()
+  const pending = new Map()
+  child.stdout.on('data', (chunk) => {
+    for (const message of decoder.push(chunk)) {
+      const handler = pending.get(message.id)
+      if (handler !== undefined) {
+        pending.delete(message.id)
+        handler(message)
+      }
+    }
+  })
+  child.stderr.on('data', () => {})
+  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
+  let seq = 0
+  const request = (kind, fields, expect) =>
+    new Promise((resolveRequest, rejectRequest) => {
+      seq += 1
+      const id = `cfg-${seq}`
+      const timer = setTimeout(() => rejectRequest(new Error(`timeout ${kind}`)), 8000)
+      pending.set(id, (message) => {
+        clearTimeout(timer)
+        if (message.kind !== expect) {
+          rejectRequest(new Error(`expected ${expect} got ${message.kind}: ${JSON.stringify(message)}`))
+          return
+        }
+        resolveRequest(message)
+      })
+      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
+    })
+  return {
+    hello: () => request('hello', { impl: 'config', gen: 'g' }, 'manifest'),
+    read: (args) =>
+      request('call', { port: 'config', method: 'read', args, env: { run: 'r1', thread: null, now: 0 } }, 'result'),
+    write: (patch) =>
+      request(
+        'call',
+        { port: 'config', method: 'write', args: { patch }, env: { run: 'r1', thread: null, now: 0 } },
+        'result',
+      ),
+    close: () => child.stdin.end(),
+    exit,
+  }
+}
+
+const WORLD = { version: 1, permission: 'review', params: {}, ui: { theme: 'system' } }
+
+test('read 合并世界基线；write 运行记录不产世界写计划', async () => {
+  const drv = startService()
+  try {
+    const manifest = await drv.hello()
+    assert.deepEqual(manifest.methods.config, ['read', 'write'])
+    assert.equal(manifest.state, 'durable')
+
+    const first = await drv.read({ body: WORLD, active: null })
+    assert.equal(first.value.body.permission, 'review')
+    assert.equal(first.value.body.ui.theme, 'system')
+
+    // 界面偏好（运行记录）→ 只落 ④，不产世界写计划
+    const written = await drv.write({ ui: { theme: 'night' } })
+    assert.deepEqual(written.value, { ok: true, changed: true })
+    const after = await drv.read({ body: WORLD, active: null })
+    assert.equal(after.value.body.ui.theme, 'night')
+    assert.equal(after.value.body.permission, 'review')
+
+    // 同值重复写幂等
+    const again = await drv.write({ ui: { theme: 'night' } })
+    assert.deepEqual(again.value, { ok: true, changed: false })
+  } finally {
+    drv.close()
+  }
+  await drv.exit
+})
+
+test('write 阈值变化 → 返回世界写计划镜像 permission / params', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await drv.read({ body: WORLD, active: null })
+    const plan = await drv.write({ permission: 'deny' })
+    const directives = plan.value.$directives
+    assert.equal(directives.length, 1)
+    assert.equal(directives[0].kind, 'write')
+    const ops = directives[0].request.args.ops
+    assert.equal(ops[0].op, 'put')
+    assert.deepEqual(ops[0].args.body, { version: 1, permission: 'deny', params: {} })
+    assert.deepEqual(ops[1], {
+      op: 'add_gen',
+      args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} },
+    })
+    // 补丁深合并：params 子键合并、null 删键
+    const patched = await drv.write({ params: { reasoning: 'high' } })
+    assert.equal(patched.value.$directives[0].request.args.ops[0].args.body.params.reasoning, 'high')
+    const removed = await drv.write({ params: { reasoning: null } })
+    assert.equal(
+      Object.hasOwn(removed.value.$directives[0].request.args.ops[0].args.body.params, 'reasoning'),
+      false,
+    )
+  } finally {
+    drv.close()
+  }
+  await drv.exit
+})
+
+test('④ 追加日志：新进程重放读回上次写入', async () => {
+  const dir = join(tmpdir(), 'kilo', `config-store-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  mkdirSync(dir, { recursive: true })
+  const first = startService({ CHRONO_PLUGIN_DATA: dir })
+  try {
+    await first.hello()
+    await first.read({ body: WORLD, active: null })
+    await first.write({ vendor: 'deepseek', ui: { theme: 'night' } })
+  } finally {
+    first.close()
+  }
+  await first.exit
+
+  const second = startService({ CHRONO_PLUGIN_DATA: dir })
+  try {
+    await second.hello()
+    const view = await second.read({ body: WORLD, active: null })
+    assert.equal(view.value.body.vendor, 'deepseek')
+    assert.equal(view.value.body.ui.theme, 'night')
+  } finally {
+    second.close()
+  }
+  await second.exit
 })
