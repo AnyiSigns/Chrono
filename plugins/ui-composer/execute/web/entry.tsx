@@ -813,6 +813,12 @@ function Composer(): ReactNode {
               </span>
             ) : null}
 
+            {s.activeWorkspace === null ? (
+              <span className="composer-inline-error" data-role="need-workspace">
+                {t('composer_need_workspace')}
+              </span>
+            ) : null}
+
             {s.error !== null ? (
               <span className="composer-inline-error">{t(s.error)}</span>
             ) : null}

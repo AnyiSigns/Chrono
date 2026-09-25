@@ -120,6 +120,9 @@ function fallbackCurrent(session: Rec, removed: Rec, removedId: string): string 
 
 // ── commit ────────────────────────────────────────────────────────────────
 
+/** 自动建会话的缺省标题（与 `session.new` 一致）。 */
+const DEFAULT_TITLE = '新对话'
+
 function commit(args: Rec, env: CallEnv): HandlerResult {
   const now = nowOf(env)
   const at = isoAt(now)
@@ -127,16 +130,37 @@ function commit(args: Rec, env: CallEnv): HandlerResult {
   if (slotKind(slot) !== 'chat.message') {
     return clearOnly(slotsBody, threadId, { ok: false, reason: 'bad_slot_kind', kind: slotKind(slot) })
   }
-  const conversationId = asString(args['conversation']) ?? asString(session['current'])
-  const conversation = conversationId === null ? null : findConversation(session, conversationId)
+  const requested = asString(args['conversation']) ?? asString(session['current'])
+  let conversationId = requested
+  let conversation = conversationId === null ? null : findConversation(session, conversationId)
+  let created = false
   if (conversation === null || conversationId === null) {
-    return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
+    // 无当前会话：按 `new_conversation` 规格原子建 main 会话（发送即开新会话，与消息同世代落盘）。
+    const spec = isRecord(args['new_conversation']) ? (args['new_conversation'] as Rec) : null
+    const id = spec === null ? null : asString(spec['id'])
+    const workspaceId = spec === null ? null : asString(spec['workspace_id'])
+    if (spec === null || id === null || workspaceId === null) {
+      return clearOnly(slotsBody, threadId, { ok: false, reason: 'no_conversation' })
+    }
+    conversation = newConversationEntry(id, workspaceId, asString(spec['title']) ?? DEFAULT_TITLE, at, 'main')
+    conversationId = id
+    created = true
+  }
+  const context: CommitContext = {
+    args,
+    env,
+    at,
+    session,
+    slotsBody,
+    threadId,
+    conversationId,
+    conversation,
+    slot,
+    created,
   }
   const error = asString(args['error'])
-  if (error !== null) {
-    return commitError({ args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error })
-  }
-  return commitNormal({ args, env, at, session, slotsBody, threadId, conversationId, conversation, slot })
+  if (error !== null) return commitError({ ...context, error })
+  return commitNormal(context)
 }
 
 interface CommitContext {
@@ -149,10 +173,12 @@ interface CommitContext {
   conversationId: string
   conversation: Rec
   slot?: Json
+  /** 本回合由 `new_conversation` 新建会话（事件补 `thread.opened`、`changed` 含 `current`）。 */
+  created: boolean
 }
 
 function commitNormal(ctx: CommitContext): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot } = ctx
+  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, created } = ctx
   const count = countOf(conversation)
   const prevHash = headHash(conversation)
   const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
@@ -198,12 +224,17 @@ function commitNormal(ctx: CommitContext): HandlerResult {
       last_seen: Math.max(numberField(inbox, 'last_seen') ?? 0, lastSeenArg ?? inboxCount),
     }
   }
-  const nextSession = replaceConversation(session, conversationId, nextConversation)
+  const baseSession = upsertConversation(session, nextConversation)
+  // 自动建会话：current 指向新会话（既有会话的 commit 不动 current）。
+  const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
   const ops: Json[] = [putOp(userBody), putOp(assistantBody)]
   pushSessionGen(ops, session, nextSession)
   pushInputGen(ops, slotsBody, threadId)
   const events = []
   const kind = asString(conversation['kind']) ?? 'main'
+  if (created) {
+    events.push({ topic: 'thread.opened', payload: { ...conversationEvent(env, conversationId), kind } })
+  }
   if (kind === 'group') {
     events.push({
       topic: 'group.message',
@@ -212,14 +243,17 @@ function commitNormal(ctx: CommitContext): HandlerResult {
   }
   events.push({
     topic: 'thread.updated',
-    payload: { ...conversationEvent(env, conversationId), changed: ['head', 'count', 'last_activity'] },
+    payload: {
+      ...conversationEvent(env, conversationId),
+      changed: created ? ['current', 'head', 'count', 'last_activity'] : ['head', 'count', 'last_activity'],
+    },
   })
   const value = planOf(ops, { ok: true, reply: assistantBody, conversation: conversationId, count: count + 2 })
   return { value, events }
 }
 
 function commitError(ctx: CommitContext & { error: string }): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error } = ctx
+  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error, created } = ctx
   const count = countOf(conversation)
   const prevHash = headHash(conversation)
   // 拒绝也要保住用户这条消息：回合尾一次写，用户消息此前从未落盘；
@@ -253,16 +287,25 @@ function commitError(ctx: CommitContext & { error: string }): HandlerResult {
     count: count + 2,
     last_activity: { at, summary: summaryOf(error) },
   }
-  const nextSession = replaceConversation(session, conversationId, nextConversation)
+  const baseSession = upsertConversation(session, nextConversation)
+  const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
   const ops: Json[] = [putOp(userBody), putOp(systemBody)]
   pushSessionGen(ops, session, nextSession)
   pushInputGen(ops, slotsBody, threadId)
-  const events = [
-    {
-      topic: 'thread.updated',
-      payload: { ...conversationEvent(env, conversationId), changed: ['head', 'count', 'last_activity'] },
+  const events = []
+  if (created) {
+    events.push({
+      topic: 'thread.opened',
+      payload: { ...conversationEvent(env, conversationId), kind: asString(conversation['kind']) ?? 'main' },
+    })
+  }
+  events.push({
+    topic: 'thread.updated',
+    payload: {
+      ...conversationEvent(env, conversationId),
+      changed: created ? ['current', 'head', 'count', 'last_activity'] : ['head', 'count', 'last_activity'],
     },
-  ]
+  })
   const value = planOf(ops, { ok: false, error, conversation: conversationId })
   return { value, events }
 }

@@ -279,6 +279,50 @@ test('send：连接配置缺失 → model_not_configured，不派发 interpret',
   assert.equal(await drv.exit, 0)
 })
 
+test('send：无当前会话 + 槽带 workspace_id / conversation_id → 建会话并透传 new_conversation', async () => {
+  const drv = startService({ bridge: defaultBridge() })
+  try {
+    await drv.hello()
+    const ids = idsFixture({
+      sessionBody: { version: 1, current: null, conversations: [] },
+      slot: { kind: 'chat.message', text: '第一条', workspace_id: 'w-1', conversation_id: 'c-9' },
+    })
+    const result = await drv.call('send', ids)
+    assert.equal(result.kind, 'result')
+    const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
+    assert.equal(bag.session_id, 'c-9')
+    assert.equal(bag.workspace_id, 'w-1')
+    assert.equal(bag.workspace_root, 'C:/ws/w-1')
+    assert.deepEqual(bag.new_conversation, { id: 'c-9', workspace_id: 'w-1', title: TITLE_VALUE.title })
+    const titleArgs = callArgs(drv.portCalls, 'session-title', 'generate')
+    assert.equal(titleArgs.conversation, 'c-9')
+    assert.equal(titleArgs.first_message, '第一条')
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send：无当前会话且槽缺 workspace_id → workspace_missing，不派发 interpret', async () => {
+  const drv = startService({ bridge: defaultBridge() })
+  try {
+    await drv.hello()
+    const ids = idsFixture({
+      sessionBody: { version: 1, current: null, conversations: [] },
+      slot: { kind: 'chat.message', text: '第一条' },
+    })
+    const result = await drv.call('send', ids)
+    assert.deepEqual(externOf(result.value), {
+      ok: false,
+      error: { code: 'workspace_missing', message: 'workspace_id required to start a conversation' },
+    })
+    assert.equal(drv.portCalls.length, 0)
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
 test('resume：从 args.ids 装配 interpret bag + bag.resume 透传 + 计划合并', async () => {
   const drv = startService({ bridge: defaultBridge() })
   try {

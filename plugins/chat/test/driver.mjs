@@ -376,7 +376,7 @@ export function idsFixture(overrides = {}) {
     config: { body: overrides.configBody ?? configFixture() },
     'short-memory': { body: overrides.memoryBody ?? memoryFixture() },
     session: {
-      body: { version: 1, current: 'c-1', conversations: [conversation] },
+      body: overrides.sessionBody ?? { version: 1, current: 'c-1', conversations: [conversation] },
       refs: overrides.refs ?? chainRefs(),
     },
     'loop-policy': overrides.loopPolicy ?? loopPolicyFixture(),

@@ -43,7 +43,8 @@
           "type": "string",
           "description": "目标会话 id；缺键 = 当前会话（kind=session.select / session.delete / session.restore / session.branch 的目标）"
         },
-        "workspace_id": { "type": "string", "description": "kind=session.new；新会话所属工作区 id" },
+        "workspace_id": { "type": "string", "description": "kind=session.new / chat.message；新会话所属工作区 id（chat.message 仅在无当前会话、自动建会话时取用）" },
+        "conversation_id": { "type": "string", "description": "kind=session.new / chat.message；新会话 id；缺省由消费方生成" },
         "title": { "type": "string", "description": "kind=session.rename" },
         "message": { "type": "string", "description": "kind=session.branch；源消息 id（以它为父链分叉）" },
         "workspace": {

@@ -2,7 +2,7 @@
 // 刷新即丢、不落世界、不占事件通道；壳只做键值广播，不认识业务。
 
 /** 已登记的状态键（新增键须先登记）。 */
-export const UI_STATE_KEYS = ['active_thread', 'boot_mode', 'settings_open']
+export const UI_STATE_KEYS = ['active_thread', 'active_workspace', 'boot_mode', 'settings_open']
 
 /** 创建一份壳内存态；get / set / subscribe 三面。 */
 export function createUiState() {

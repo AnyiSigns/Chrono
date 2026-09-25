@@ -225,6 +225,13 @@ export function workspaceOf(ids: Json, conversation: Rec | null): { id: string |
   return { id: workspaceId, root: null }
 }
 
+/** 工作区 id 是否在 `workspace` body 列表中（自动建会话前的归属校验）。 */
+export function workspaceKnown(ids: Json, workspaceId: string): boolean {
+  const body = bodyOf(ids, 'workspace')
+  const list = body !== null && Array.isArray(body['workspaces']) ? body['workspaces'] : []
+  return list.some((item) => isRecord(item) && item['id'] === workspaceId)
+}
+
 /** `#47 todo` 门禁切片：当前会话条目沿链还原为 `{items:[…]}`（供 #33 `todo_incomplete`）。 */
 export function todoSliceOf(ids: Json, conversationId: string | null): Rec | null {
   if (conversationId === null) return null

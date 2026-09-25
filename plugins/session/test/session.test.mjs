@@ -366,6 +366,64 @@ test('commit 非法槽 kind：无部分写（只清槽 + 返回失败值）', as
   }
 })
 
+test('commit 自动建会话：无 current + new_conversation → 同世代建 main 会话并提交', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const before = drv.events.length
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: { version: 1, current: null, conversations: [] },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      user: { content: 'hi' },
+      assistant: { content: 'hello' },
+      new_conversation: { id: 'c9', workspace_id: 'w1', title: '生成的标题' },
+    })
+    const ops = opsFor(plan)
+    const body = ops[2].args.body
+    assert.equal(body.current, 'c9')
+    assert.equal(body.conversations.length, 1)
+    assert.equal(body.conversations[0].id, 'c9')
+    assert.equal(body.conversations[0].workspace_id, 'w1')
+    assert.equal(body.conversations[0].title, '生成的标题')
+    assert.equal(body.conversations[0].kind, 'main')
+    assert.equal(body.conversations[0].count, 2)
+    assert.deepEqual(body.conversations[0].head, { def: { $n: 1 } })
+    assert.deepEqual(ops[4].args.body.slots, { t1: { kind: 'idle' } })
+    const payload = externPayload(plan.$directives)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.conversation, 'c9')
+    const topics = drv.events.slice(before).map((e) => e.topic)
+    assert.deepEqual(topics, ['thread.opened', 'thread.updated'])
+    const updated = drv.events.slice(before).find((e) => e.topic === 'thread.updated')
+    assert.ok(updated.payload.changed.includes('current'))
+  } finally {
+    drv.close()
+  }
+})
+
+test('commit 无 current 且无 new_conversation → no_conversation（只清槽）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: { version: 1, current: null, conversations: [] },
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      user: { content: 'hi' },
+      assistant: { content: 'hello' },
+    })
+    const ops = opsFor(plan)
+    assert.equal(ops.length, 2)
+    assert.deepEqual(ops[0].args.body.slots, { t1: { kind: 'idle' } })
+    const payload = externPayload(plan.$directives)
+    assert.equal(payload.ok, false)
+    assert.equal(payload.reason, 'no_conversation')
+  } finally {
+    drv.close()
+  }
+})
+
 // ── new_conversation / select / rename / set_title ─────────────────────────
 
 test('new_conversation：新条目 + current 指向 + opened 事件', async () => {

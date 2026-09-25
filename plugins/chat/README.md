@@ -39,6 +39,9 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
   **标题先算并并入 session body**（`session-title.generate` 回标题值），由 `loop-policy` 的 `commit` 节点
   随消息一次性落盘——不再合并 `set_title` 的整份写计划（否则会以旧基覆盖提交的 head/count）。
 - 空槽行为 `on_empty_slot: "noop"`；连接配置缺失 → `model_not_configured`，不派发 interpret。
+- **无当前会话时自动建会话**：槽带 `workspace_id` 时，服务按槽内 `conversation_id`（缺省生成）装配一个
+  main 会话，标题照常在此回合生成并随 `bag.new_conversation` 交 `session.commit` 同世代落盘；
+  槽缺 `workspace_id` / 工作区不存在 → `workspace_missing`，不派发 interpret。
 - 系统提示词 / 工具 schema 的缺省来源 = `schema/wiring.json` 的 `system_prompt` / `tools`，
   随 interpret bag 传入；loop-policy 图内 `context.assemble` 写 bag 覆盖。
 

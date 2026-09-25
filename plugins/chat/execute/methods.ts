@@ -8,6 +8,7 @@ import {
   buildInterpretBag,
   buildTitleArgs,
   bodyOf,
+  conversationsOf,
   findConversation,
   firstMessageOf,
   modelConfigOf,
@@ -16,6 +17,7 @@ import {
   slotOf,
   threadKey,
   withConversationTitle,
+  workspaceKnown,
 } from './assemble.ts'
 import { buildHistory, parseHistoryQuery } from './history.ts'
 import { asString, errorValue, externOnly, isErrorValue, isRecord, mergeDirectives } from './plan.ts'
@@ -138,6 +140,30 @@ async function send(
     return externOnly(errorValue('model_not_configured', 'config vendor/model/base_url missing'))
   }
 
+  // 无当前会话：按槽内 `workspace_id` / `conversation_id` 装配一个 main 会话，
+  // 由 `session.commit` 随消息同世代原子建（发送即开新会话；标题也在此回合生成）。
+  let newConversation: Rec | null = null
+  if (turn.conversationId === null) {
+    const slotRec = isRecord(turn.slot) ? turn.slot : {}
+    const workspaceId = asString(slotRec['workspace_id'])
+    if (workspaceId === null || !workspaceKnown(turn.ids, workspaceId)) {
+      return externOnly(errorValue('workspace_missing', 'workspace_id required to start a conversation'))
+    }
+    const conversationId =
+      asString(slotRec['conversation_id']) ??
+      `c-${env.now}-${conversationsOf(turn.sessionBody).length}`
+    turn.conversationId = conversationId
+    turn.conversation = {
+      id: conversationId,
+      workspace_id: workspaceId,
+      kind: 'main',
+      title: wiring.title.title_default,
+      count: 0,
+      head: null,
+    }
+    newConversation = { id: conversationId, workspace_id: workspaceId }
+  }
+
   // 首条消息：**先算标题并并入 session body**，由 `session.commit` 随消息一次性落盘。
   // 不再把 `session.set_title` 的整份写计划合并进来——否则它会以回合起始旧基覆盖提交的 head/count。
   let sessionBody = turn.sessionBody
@@ -158,7 +184,11 @@ async function send(
     // 旁路段 on_fail=ignore：传输失败 / 无标题值一律跳过，不影响主回合。
     const title =
       titleOutcome.ok && isRecord(titleOutcome.value) ? asString(titleOutcome.value['title']) : null
-    if (title !== null) sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
+    if (title !== null) {
+      // 新建会话：标题随 `new_conversation` 交 commit 建会话时落；既有会话：并入本次提交的 body。
+      if (newConversation !== null) newConversation['title'] = title
+      else sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
+    }
   }
 
   const bag = buildInterpretBag({
@@ -171,6 +201,7 @@ async function send(
     thread: turn.thread,
     sessionBody,
   })
+  if (newConversation !== null) bag['new_conversation'] = newConversation
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) return interpreted.failure
 

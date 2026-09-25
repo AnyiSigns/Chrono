@@ -32,6 +32,10 @@
    只改本插件负责的字段后整份 `put` + `add_gen`。读到代码世代回落 body（含 `tree` 键）时回未就绪并退避重试。
 4. 发送 = 写 `chat.message` 槽（`text` + `attachments`）后调无参命令 `chat.send`，信封带
    `thread = active_thread`；终止 = `ctx.cancel(run)`，`run` 取自匹配当前线程的 `run.started`。
+   - **前置门禁**：`uiState.active_workspace` 为 `null`（无工作区）→ 提示「请先添加工作目录」；模型未配置 →
+     提示「请先选择模型」；两者都不落回合。
+   - **无当前会话自动建线程**：`active_thread` 为空时以新 id 乐观置 `active_thread`，槽带
+     `workspace_id`（取 `active_workspace`）与 `conversation_id`（新 id），由 `chat.send` 落账时原子建会话。
 5. 附件字节经壳 `ctx.asset.put(mime, bytes)` 入库，世界只存 `{kind:'asset',sha256,mime,size}`
    引用；可解析的文本格式额外内联 `text`。缩略图经 `ctx.asset.get(sha256)` 转 data URL。
 

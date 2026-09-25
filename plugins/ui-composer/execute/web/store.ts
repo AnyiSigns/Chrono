@@ -94,6 +94,8 @@ export interface ReasoningState {
 export interface ComposerSnapshot {
   table: MessageTable
   activeThread: string | null
+  /** 壳 `uiState.active_workspace`：`undefined` = 未就绪（不拦），`null` = 无工作区，string = 当前工作区 id。 */
+  activeWorkspace: string | null | undefined
   text: string
   attachments: Chip[]
   attachExpanded: boolean
@@ -146,6 +148,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   const state = {
     table: FALLBACK_MESSAGES as MessageTable,
     activeThread: null as string | null,
+    activeWorkspace: undefined as string | null | undefined,
     text: '',
     attachments: [] as Chip[],
     attachExpanded: false,
@@ -169,6 +172,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   let configTimer: ReturnType<typeof setTimeout> | null = null
   let offEvents: (() => void) | null = null
   let offThread: (() => void) | null = null
+  let offWorkspace: (() => void) | null = null
   let reasoningSeq = 0
   const writeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const expectTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -179,6 +183,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     return {
       table: state.table,
       activeThread: state.activeThread,
+      activeWorkspace: state.activeWorkspace,
       text: state.text,
       attachments: state.attachments,
       attachExpanded: state.attachExpanded,
@@ -638,13 +643,33 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   async function send(): Promise<void> {
     if (state.sending) return
-    const threadKey = threadKeyOf(state.activeThread)
+    // 前置门禁：无工作区 / 未选模型不发，回内联提示而不落一个必然失败的空回合。
+    if (state.activeWorkspace === null) {
+      state.error = 'composer_need_workspace'
+      publish()
+      return
+    }
+    if (state.model === null) {
+      state.error = 'composer_need_model'
+      publish()
+      return
+    }
     const ready = state.attachments.filter(
       (chip) => chip.status === 'ready' && chip.source !== null,
     )
     if (state.text.trim().length === 0 && ready.length === 0) return
+    // 无当前会话：以新 id 乐观建会话（chat.send 落账时按槽内 workspace_id / conversation_id 原子建）。
+    const creating = state.activeThread === null
+    const threadKey = creating ? nextId() : threadKeyOf(state.activeThread)
+    if (creating) {
+      state.activeThread = threadKey
+      if (typeof ctx.uiState?.set === 'function') ctx.uiState.set('active_thread', threadKey)
+    }
     const sentText = state.text
-    const slot = buildMessageSlot(state.text, ready.map(toAttachment))
+    const slot = buildMessageSlot(state.text, ready.map(toAttachment), {
+      workspaceId: state.activeWorkspace,
+      conversationId: creating ? threadKey : null,
+    })
     if (isThreadBusy(tracking, threadKey)) {
       state.pending = enqueue(state.pending, threadKey, { id: nextId(), slot })
       clearSentInput(ready, sentText)
@@ -666,6 +691,10 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     state.sending = false
     if (wrote === null || !wrote.ok) {
       if (wrote !== null) state.error = wrote.code
+      if (creating) {
+        state.activeThread = null
+        if (typeof ctx.uiState?.set === 'function') ctx.uiState.set('active_thread', null)
+      }
       publish()
       return
     }
@@ -779,6 +808,16 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     publish()
   }
 
+  function applyActiveWorkspace(value: unknown): void {
+    state.activeWorkspace =
+      value === undefined
+        ? undefined
+        : typeof value === 'string' && value.length > 0
+          ? value
+          : null
+    publish()
+  }
+
   async function init(): Promise<void> {
     // 幂等：store 住 register 作用域，卸载 / 重挂与 React 严格模式重复挂载都不重复订阅。
     if (started) return
@@ -789,8 +828,17 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     const initial =
       typeof ctx.uiState?.get === 'function' ? ctx.uiState.get('active_thread') : undefined
     state.activeThread = typeof initial === 'string' && initial.length > 0 ? initial : null
+    const initialWorkspace =
+      typeof ctx.uiState?.get === 'function' ? ctx.uiState.get('active_workspace') : undefined
+    state.activeWorkspace =
+      initialWorkspace === undefined
+        ? undefined
+        : typeof initialWorkspace === 'string' && initialWorkspace.length > 0
+          ? initialWorkspace
+          : null
     if (typeof ctx.uiState?.subscribe === 'function') {
       offThread = ctx.uiState.subscribe('active_thread', applyActiveThread)
+      offWorkspace = ctx.uiState.subscribe('active_workspace', applyActiveWorkspace)
     }
     if (typeof ctx.events?.onAny === 'function') {
       offEvents = ctx.events.onAny((record) => onRecord(record))
@@ -806,6 +854,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     offEvents = null
     if (offThread !== null) offThread()
     offThread = null
+    if (offWorkspace !== null) offWorkspace()
+    offWorkspace = null
     for (const timer of writeTimers.values()) clearTimeout(timer)
     writeTimers.clear()
     for (const timer of expectTimers.values()) clearTimeout(timer)

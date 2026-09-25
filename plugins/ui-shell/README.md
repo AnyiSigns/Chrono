@@ -75,7 +75,7 @@ api = {
 }
 ```
 
-- `uiState` 键空间（壳登记）：`active_thread` / `boot_mode` / `settings_open`。纯前端内存态，
+- `uiState` 键空间（壳登记）：`active_thread` / `active_workspace` / `boot_mode` / `settings_open`。纯前端内存态，
   跨 slot 广播，刷新即丢，不落世界。新增键先登记。
 - 失败隔离：子应用加载失败只在自身 slot 内渲染占位卡（`ui_unreachable` / `ui_boot_failed` /
   `ui_version_mismatch` + 手动重试），不影响其它 slot。

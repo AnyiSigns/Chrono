@@ -42,6 +42,8 @@ export const UI_TEXT: { [code: string]: string } = {
   composer_permission_review_desc: '只读工作区',
   composer_permission_deny_desc: '全部拒绝',
   composer_no_model: '未配置模型',
+  composer_need_workspace: '请先添加工作目录',
+  composer_need_model: '请先选择模型',
   composer_config_loading: '配置读取中…',
   composer_config_loading_more: '仍在读取…',
   composer_config_failed: '配置读取失败。重试可再试一次。',

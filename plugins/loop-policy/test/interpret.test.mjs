@@ -213,6 +213,19 @@ test('纯文本回合不写展示 parts（content 已覆盖，历史不膨胀）
   }
 })
 
+test('commit 透传 new_conversation（无当前会话自动建会话）', async () => {
+  const service = startService()
+  try {
+    const spec = { id: 'c9', workspace_id: 'w1', title: '生成的标题' }
+    await service.interpret({ new_conversation: spec })
+    const commit = service.portCalls.find((call) => call.port === 'session' && call.method === 'commit')
+    assert.ok(commit, 'session.commit 应被调用')
+    assert.deepEqual(commit.args.new_conversation, spec)
+  } finally {
+    service.close()
+  }
+})
+
 test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回（带游标）', async () => {
   const service = startService({
     providers: {

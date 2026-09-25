@@ -233,13 +233,27 @@ export function permissionIcon(value: unknown): string {
 
 // ── 槽与配置写指令 ────────────────────────────────────────────────────────
 
-/** `chat.message` 槽体（发送时写入 `slots[thread]`）。 */
-export function buildMessageSlot(text: unknown, attachments: unknown): Rec {
-  return {
+/** `chat.message` 槽体（发送时写入 `slots[thread]`）。
+ * `target` 非空时附 `workspace_id`（无当前会话时自动建会话的归属）与 `conversation_id`（自动建会话 id）。 */
+export function buildMessageSlot(
+  text: unknown,
+  attachments: unknown,
+  target?: { workspaceId?: string | null; conversationId?: string | null },
+): Rec {
+  const slot: Rec = {
     kind: 'chat.message',
     text: typeof text === 'string' ? text : '',
     attachments: Array.isArray(attachments) ? (attachments as Json[]) : [],
   }
+  if (target !== undefined) {
+    if (typeof target.workspaceId === 'string' && target.workspaceId.length > 0) {
+      slot['workspace_id'] = target.workspaceId
+    }
+    if (typeof target.conversationId === 'string' && target.conversationId.length > 0) {
+      slot['conversation_id'] = target.conversationId
+    }
+  }
+  return slot
 }
 
 /** 读-改-写：只覆盖本线程键，其余线程键原样保留。 */

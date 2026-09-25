@@ -454,8 +454,8 @@ test('forward 命令名映射与 args 构造', () => {
 
 // ---- uiState ----
 
-test('uiState：三键、广播、退订、刷新即丢', () => {
-  assert.deepEqual(UI_STATE_KEYS, ['active_thread', 'boot_mode', 'settings_open'])
+test('uiState：四键、广播、退订、刷新即丢', () => {
+  assert.deepEqual(UI_STATE_KEYS, ['active_thread', 'active_workspace', 'boot_mode', 'settings_open'])
   const state = createUiState()
   const seen = []
   const off = state.subscribe('active_thread', (value) => seen.push(value))

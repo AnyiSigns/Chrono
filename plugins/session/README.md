@@ -36,6 +36,7 @@
 | `slots` | object，必填 | 轮首整份输入 body（`{slots:{...}}`） |
 | `slot` | object，可缺 | 本线程槽体；缺省取 `slots.slots[thread_id]`。`kind` 必须为 `chat.message` |
 | `conversation` | string，可缺 | 目标会话；缺省 `session.current` |
+| `new_conversation` | object，可缺 | 无当前会话时的自动建会话规格 `{id, workspace_id, title?}`；存在则同世代原子建 main 会话并置 `current` |
 | `user` | object，可缺 | `{content?, parts?, attachments?, meta?}`；`content` 缺省回落 `slot.text`，`attachments` 缺省回落 `slot.attachments` |
 | `assistant` | object，必填（非失败路径） | `{content?, parts?, attachments?, meta?}`，即本轮回复 |
 | `error` | string，可缺 | 失败路径：非空则追加**独立 system 消息 def**（`meta.error`），不写 user / assistant |
@@ -46,6 +47,7 @@
 - 失败路径：`put(system, meta.error)` → `put(新会话 body, head={"def":{"$n":0}}, count+1)` → `add_gen(session, {"$n":1})` → 清槽两条。
 - `extern.payload`：正常 `{ok:true, reply:<assistant 消息 body>, conversation, count}`；失败 `{ok:false, error}`。
 - 非法槽 kind / 目标会话不存在：**无部分写**——只 `put(清槽)` + `add_gen(input)`，`extern{ok:false, reason}`。
+- 无 `current` / 目标会话不存在：带 `new_conversation` 则同世代原子建 main 会话（`upsertConversation` + `current` 指向；事件补 `thread.opened`、`changed` 含 `current`）再提交；否则 `no_conversation`。
 
 ### `new_conversation`
 

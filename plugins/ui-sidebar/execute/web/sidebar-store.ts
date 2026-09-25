@@ -313,6 +313,7 @@ export class SidebarStore {
       conversations,
       badges: seedFromHistory(this.snapshot.badges, conversations, this.locallyRead),
     })
+    this.syncActiveWorkspace()
     return true
   }
 
@@ -337,6 +338,7 @@ export class SidebarStore {
     const [workspacesOk, historyOk] = await Promise.all([this.loadWorkspaces(), this.loadHistory(), this.loadStoredWidth()])
     if (this.disposed || seq !== this.loadSeq) return
     this.update({ loading: false, error: !workspacesOk || !historyOk ? this.text('sidebar_dependency_missing') : null })
+    this.syncActiveWorkspace()
     this.applyViewport()
   }
 
@@ -374,6 +376,30 @@ export class SidebarStore {
     const history = this.snapshot.history
     const body = isRecord(history) && isRecord(history['body']) ? history['body'] : null
     return body !== null && typeof body['current'] === 'string' ? body['current'] : null
+  }
+
+  /**
+   * 把「当前工作区」同步到壳 `uiState.active_workspace`（供 composer 判定能否发送与新会话归属）：
+   * 有当前会话取该会话的 `workspace_id`，否则取列表最后一项（最近添加）；无工作区置 `null`。
+   */
+  private syncActiveWorkspace(): void {
+    const uiState = this.ctx.uiState
+    if (uiState === undefined || typeof uiState.set !== 'function') return
+    const workspaces = this.snapshot.workspaces
+    if (workspaces.length === 0) {
+      uiState.set('active_workspace', null)
+      return
+    }
+    const current = this.currentId()
+    const conversation =
+      current === null ? undefined : this.snapshot.conversations.find((item) => item.id === current)
+    const fromConversation =
+      conversation !== undefined &&
+      conversation.workspace_id !== null &&
+      workspaces.some((item) => item.id === conversation.workspace_id)
+        ? conversation.workspace_id
+        : null
+    uiState.set('active_workspace', fromConversation ?? workspaces[workspaces.length - 1]!.id)
   }
 
   confirming(key: string): boolean {

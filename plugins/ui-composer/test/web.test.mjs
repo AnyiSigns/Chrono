@@ -199,6 +199,18 @@ test('槽载荷与写指令：只覆盖本线程键', () => {
     text: '',
     attachments: [],
   })
+  assert.deepEqual(buildMessageSlot('hi', [], { workspaceId: 'w1', conversationId: 'c9' }), {
+    kind: 'chat.message',
+    text: 'hi',
+    attachments: [],
+    workspace_id: 'w1',
+    conversation_id: 'c9',
+  })
+  assert.deepEqual(buildMessageSlot('hi', [], { workspaceId: null, conversationId: null }), {
+    kind: 'chat.message',
+    text: 'hi',
+    attachments: [],
+  })
 
   const body = mergeSlotBody({ slots: { _main: { kind: 'idle' } } }, 't1', slot)
   assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
@@ -447,9 +459,23 @@ test('文案：共享表优先、本地界面文案兜底、未知码不空白',
 /** 最小壳 api：事件总线可手动 emit，命令按名回包，文案拉取走空 URL（失败回落内置表）。 */
 function fakeComposerCtx() {
   const listeners = new Set()
+  const uiValues = new Map()
+  const uiSubs = new Map()
   return {
     tokens: { messages: '' },
-    uiState: { get: () => undefined, subscribe: () => () => {} },
+    uiState: {
+      get: (key) => uiValues.get(key),
+      set: (key, value) => {
+        uiValues.set(key, value)
+        for (const callback of uiSubs.get(key) ?? []) callback(value)
+      },
+      subscribe: (key, callback) => {
+        const set = uiSubs.get(key) ?? new Set()
+        set.add(callback)
+        uiSubs.set(key, set)
+        return () => set.delete(callback)
+      },
+    },
     events: {
       connected: () => true,
       onAny: (listener) => {
@@ -460,6 +486,9 @@ function fakeComposerCtx() {
     command: async (name) => {
       if (name === 'input.read') {
         return { ok: true, value: { active: 'a', body: { version: 1, slots: {} } } }
+      }
+      if (name === 'config.read') {
+        return { ok: true, value: { active: 'a', body: { version: 1, vendor: 'v', model: 'm' } } }
       }
       if (name === 'chat.send') return { ok: true, value: null }
       return { ok: false, code: 'unknown', value: null }
@@ -479,11 +508,13 @@ test('store 作用域：卸载 / 重挂保留草稿与 RunState，init 幂等不
   const store = createComposerStore(ctx)
   await store.init()
   assert.equal(ctx.listenerCount(), 1)
-  // 驱动一次完整回合：槽写落账 → chat.send → run.started 认领。
+  // 驱动一次完整回合：无当前会话 → 自动建线程（写 uiState.active_thread）→ 槽写落账 → chat.send → run.started 认领。
   store.setText('发送中')
   await store.send()
-  ctx.emit({ topic: 'run.finished', payload: { thread: null, run: 'w1' } })
-  ctx.emit({ topic: 'run.started', payload: { thread: null, run: 'r1' } })
+  const thread = ctx.uiState.get('active_thread')
+  assert.equal(typeof thread, 'string')
+  ctx.emit({ topic: 'run.finished', payload: { thread, run: 'w1' } })
+  ctx.emit({ topic: 'run.started', payload: { thread, run: 'r1' } })
   assert.equal(store.getSnapshot().running, true)
   store.setText('重挂后草稿')
   // 卸载不 dispose；重挂再 init：幂等、不重复订阅，草稿与运行态原样。
