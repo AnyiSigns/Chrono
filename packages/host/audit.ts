@@ -5,6 +5,7 @@
 
 import type { Json } from '../kernel/index.ts'
 import { AUDIT_OUTCOMES } from './effect/execute.ts'
+import { HOST_CAPABILITY } from './host-methods.ts'
 
 /** 一条审计记录：侧存持久化与只读面返回的最小形状（`seq` 为侧存单调序）。 */
 export interface AuditRecord {
@@ -43,14 +44,75 @@ export interface AuditQuery {
 export const AUDIT_DEFAULT_LIMIT = 100
 export const AUDIT_MAX_LIMIT = 1000
 
-/** 审计侧存保留窗口（条数）：超出即淘汰最旧记录（连同磁盘段）。 */
+/** 单档保留窗口缺省（条数）：不分档 / 显式覆盖时使用。 */
 export const AUDIT_MAX_RECORDS = 10_000
-/** 审计侧存保留窗口（近似字节，按 body 的 JSON 长度计）：与条数上限任一超出即淘汰。 */
+/** 单档保留窗口缺省（近似字节，按 body 的 JSON 长度计）：与条数上限任一超出即淘汰。 */
 export const AUDIT_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * 审计保留档：一档一组条数 / 字节预算，档内最旧先走。
+ * 分档的动机是**隔离高频数据端口**——单一高频端口会把全局窗口冲干净，挤掉模型 / 工具调用的审计。
+ */
+export interface AuditTier {
+  /** 档名（诊断 / 测试用）。 */
+  name: string
+  /** 端口命中即归此档（按序取首个命中；皆不中归末档 default）。 */
+  matches: (port: Json | undefined) => boolean
+  maxRecords: number
+  maxBytes: number
+}
+
+export const AUDIT_TIER_HOST = 'host'
+export const AUDIT_TIER_MODEL = 'model'
+export const AUDIT_TIER_TOOL = 'tool'
+export const AUDIT_TIER_DATA = 'data'
+export const AUDIT_TIER_DEFAULT = 'default'
+
+/** 端口是否属于某能力类族：精确名、`<base>.<method>` 或 `<base>-<name>` 前缀。 */
+function isPortFamily(port: Json | undefined, base: string): boolean {
+  return (
+    port === base ||
+    (typeof port === 'string' && (port.startsWith(`${base}.`) || port.startsWith(`${base}-`)))
+  )
+}
+
+/**
+ * 缺省分档表：高频数据端口（存储服务，`storage-*`）独立占档，不与模型 / 工具 / `host` 争窗口；
+ * 其余端口归 default 档。总预算 ≈ 8000 条 / 5.5 MiB，与单档窗口同量级，但各档互不挤占。
+ */
+export const AUDIT_TIERS: readonly AuditTier[] = [
+  {
+    name: AUDIT_TIER_HOST,
+    matches: (port) => port === HOST_CAPABILITY,
+    maxRecords: 500,
+    maxBytes: 512 * 1024,
+  },
+  {
+    name: AUDIT_TIER_MODEL,
+    matches: (port) => isPortFamily(port, 'model'),
+    maxRecords: 1500,
+    maxBytes: 1024 * 1024,
+  },
+  {
+    name: AUDIT_TIER_TOOL,
+    matches: (port) => isPortFamily(port, 'tool'),
+    maxRecords: 2000,
+    maxBytes: 1536 * 1024,
+  },
+  {
+    name: AUDIT_TIER_DATA,
+    matches: (port) => isPortFamily(port, 'storage'),
+    maxRecords: 3000,
+    maxBytes: 2 * 1024 * 1024,
+  },
+  { name: AUDIT_TIER_DEFAULT, matches: () => true, maxRecords: 1000, maxBytes: 512 * 1024 },
+]
 
 export interface AuditIndexOptions {
   maxRecords?: number
   maxBytes?: number
+  /** 按端口分档的保留预算；给定时覆盖 `maxRecords` / `maxBytes`（缺省用 `AUDIT_TIERS`）。 */
+  tiers?: readonly AuditTier[]
 }
 
 /** 记录体量近似：body 的规范 JSON 字符数（审计体量小，够用且无额外依赖）。 */
@@ -97,47 +159,74 @@ export function parseAuditFilter(value: Json | undefined): AuditFilter | null {
   return filter
 }
 
+/** 一档的保留状态：档内队列（seq 升序）+ 逻辑队首淘汰指针 + 已计字节。 */
+interface AuditTierState {
+  name: string
+  matches: (port: Json | undefined) => boolean
+  maxRecords: number
+  maxBytes: number
+  log: AuditRecord[]
+  /** 逻辑队首（档内保留窗口淘汰指针）：避免每次淘汰都 O(n) 挪移；超阈值时压实一次。 */
+  head: number
+  bytes: number
+}
+
 /**
- * 审计内存索引：全量 log（无过滤查询）+ run / emitter / outcome 三个次级索引
- * （有过滤时先取候选集，避免在稀疏过滤下全表倒扫）。
- * 有界化：超过保留窗口（条数 / 字节）即淘汰最旧记录；淘汰只丢热索引，侧存由 `AuditStore` 同步压实。
+ * 审计内存索引：run / emitter / outcome 三个次级索引（有过滤时先取候选集，避免稀疏过滤下全表倒扫），
+ * 保留窗口**按端口分档**（每档各自条数 / 字节预算，档内最旧先走；不分档时退化为单档全局窗口）。
+ * 淘汰只丢热索引，侧存由 `AuditStore` 同步压实。
  */
 export class AuditIndex {
-  private readonly log: AuditRecord[] = []
+  private readonly tiers: AuditTierState[]
   private readonly byRun = new Map<string, Set<AuditRecord>>()
   private readonly byEmitter = new Map<string, Set<AuditRecord>>()
   private readonly byOutcome = new Map<string, Set<AuditRecord>>()
-  private readonly maxRecords: number
-  private readonly maxBytes: number
-  private bytes = 0
-  /** 逻辑队首（保留窗口淘汰指针）：避免每次淘汰都 O(n) 挪移；超阈值时压实一次。 */
-  private head = 0
   /** 自上次查询后是否发生过淘汰（侧存据此决定是否压实）。 */
   private evicted = false
 
   constructor(options: AuditIndexOptions = {}) {
-    this.maxRecords = options.maxRecords ?? AUDIT_MAX_RECORDS
-    this.maxBytes = options.maxBytes ?? AUDIT_MAX_BYTES
+    if (options.tiers !== undefined) {
+      this.tiers = options.tiers.map((tier) => makeTier(tier))
+    } else {
+      // 不分档：单档全局窗口，档匹配恒真（保持既有全局保留口径）
+      this.tiers = [
+        makeTier({
+          name: 'all',
+          matches: () => true,
+          maxRecords: options.maxRecords ?? AUDIT_MAX_RECORDS,
+          maxBytes: options.maxBytes ?? AUDIT_MAX_BYTES,
+        }),
+      ]
+    }
   }
 
   add(record: AuditRecord): void {
-    this.log.push(record)
+    const tier = this.tierOf(record.body)
+    tier.log.push(record)
+    tier.bytes += bodyBytes(record.body)
     const body = record.body as { [k: string]: Json }
     indexPush(this.byRun, body['run'], record)
     indexPush(this.byEmitter, body['emitter'], record)
     indexPush(this.byOutcome, body['outcome'], record)
-    this.bytes += bodyBytes(record.body)
-    this.evict()
+    this.evict(tier)
   }
 
   /** 保留窗口内的记录（时间正序，浅拷贝数组）。 */
   records(): readonly AuditRecord[] {
-    return this.log.slice(this.head)
+    if (this.tiers.length === 1) return this.tiers[0].log.slice(this.tiers[0].head)
+    const out: AuditRecord[] = []
+    for (const tier of this.tiers) {
+      for (let i = tier.head; i < tier.log.length; i++) out.push(tier.log[i])
+    }
+    out.sort((a, b) => a.seq - b.seq)
+    return out
   }
 
-  /** 保留窗口内的条数。 */
+  /** 保留窗口内的条数（各档之和）。 */
   size(): number {
-    return this.log.length - this.head
+    let total = 0
+    for (const tier of this.tiers) total += tier.log.length - tier.head
+    return total
   }
 
   /** 取上次 `clearEvicted` 以来是否发生过淘汰。 */
@@ -171,22 +260,31 @@ export class AuditIndex {
     return { records, truncated }
   }
 
-  /** 保留窗口淘汰：条数 / 字节任一超出即从最旧起逐条移除（O(1) 队首指针，超阈值压实一次）。 */
-  private evict(): void {
-    while (this.log.length - this.head > this.maxRecords || this.bytes > this.maxBytes) {
-      const record = this.log[this.head]
+  /** 端口归档：按序取首个命中；皆不中归末档（缺省表末档恒真）。 */
+  private tierOf(body: Json): AuditTierState {
+    const port = isRecord(body) ? body['port'] : undefined
+    for (const tier of this.tiers) {
+      if (tier.matches(port)) return tier
+    }
+    return this.tiers[this.tiers.length - 1]
+  }
+
+  /** 档内淘汰：条数 / 字节任一超出即从最旧起逐条移除（O(1) 队首指针，超阈值压实一次）。 */
+  private evict(tier: AuditTierState): void {
+    while (tier.log.length - tier.head > tier.maxRecords || tier.bytes > tier.maxBytes) {
+      const record = tier.log[tier.head]
       if (record === undefined) break
-      this.head += 1
-      this.bytes -= bodyBytes(record.body)
+      tier.head += 1
+      tier.bytes -= bodyBytes(record.body)
       this.evicted = true
       indexRemove(this.byRun, record.body as { [k: string]: Json }, 'run', record)
       indexRemove(this.byEmitter, record.body as { [k: string]: Json }, 'emitter', record)
       indexRemove(this.byOutcome, record.body as { [k: string]: Json }, 'outcome', record)
     }
     // 压实：已淘汰前缀不再需要，裁掉防数组无界（仅当占比过半，摊薄 O(n)）
-    if (this.head > 1024 && this.head > this.log.length / 2) {
-      this.log.splice(0, this.head)
-      this.head = 0
+    if (tier.head > 1024 && tier.head > tier.log.length / 2) {
+      tier.log.splice(0, tier.head)
+      tier.head = 0
     }
   }
 
@@ -194,7 +292,19 @@ export class AuditIndex {
     if (filter.run !== undefined) return [...(this.byRun.get(filter.run) ?? [])]
     if (filter.emitter !== undefined) return [...(this.byEmitter.get(filter.emitter) ?? [])]
     if (filter.outcome !== undefined) return [...(this.byOutcome.get(filter.outcome) ?? [])]
-    return this.log.slice(this.head)
+    return this.records()
+  }
+}
+
+function makeTier(tier: AuditTier): AuditTierState {
+  return {
+    name: tier.name,
+    matches: tier.matches,
+    maxRecords: tier.maxRecords,
+    maxBytes: tier.maxBytes,
+    log: [],
+    head: 0,
+    bytes: 0,
   }
 }
 

@@ -1,6 +1,6 @@
 // 效果审计旁路侧存：审计记录写 `state/audit/audit.jsonl`（不进世界、不进链、不参与重放）。
-// 单文件追加 + 上限压实：条数 / 字节超保留窗口即淘汰最旧；再写满一个保留窗口（条数或字节）即整文件
-// 原子重写为保留集，故磁盘至多 ≈ 保留集 + 一个窗口，恒有界。
+// 单文件追加 + 上限压实：保留窗口**按端口分档**（每档各自条数 / 字节预算，档内最旧先走；见 `audit.ts`），
+// 再写满各档预算之和（条数或字节）即整文件原子重写为保留集，故磁盘至多 ≈ 保留集 + 一个总窗口，恒有界。
 // 半写安全：每条一次写 + fsync 且以换行收尾；启动 / 追加前容错读，末行撕裂即截到有效前缀。
 // 单写者：追加是同步的，宿主单进程串行调用，故无并发交错。
 
@@ -19,15 +19,19 @@ import {
 import { dirname } from 'node:path'
 import { canonicalJson } from '../kernel/index.ts'
 import type { Json } from '../kernel/index.ts'
-import { AUDIT_MAX_BYTES, AUDIT_MAX_RECORDS, AuditIndex } from './audit.ts'
-import type { AuditDraft, AuditFilter, AuditReport, AuditRecord } from './audit.ts'
+import { AUDIT_MAX_BYTES, AUDIT_MAX_RECORDS, AUDIT_TIERS, AuditIndex } from './audit.ts'
+import type { AuditDraft, AuditFilter, AuditReport, AuditRecord, AuditTier } from './audit.ts'
 import { writeFileAtomic } from './ledger/atomic.ts'
 
 export interface AuditStoreOptions {
+  /** 不分档时的单档条数窗口；给定 `maxRecords` / `maxBytes` 即退化为单档全局窗口（测试 / 兼容用）。 */
   maxRecords?: number
+  /** 不分档时的单档字节窗口。 */
   maxBytes?: number
-  /** 覆盖磁盘压实的字节触发阈值；缺省 = 保留窗口字节（`maxBytes`）。 */
+  /** 覆盖磁盘压实的字节触发阈值；缺省 = 各档字节预算之和（不分档时为 `maxBytes`）。 */
   maxFileBytes?: number
+  /** 覆盖分档表；缺省 `AUDIT_TIERS`。给定即按端口分档。 */
+  tiers?: readonly AuditTier[]
 }
 
 interface TolerantRead {
@@ -40,6 +44,13 @@ interface TolerantRead {
 
 function isRecord(value: unknown): value is { [k: string]: Json } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 各档预算之和（磁盘压实触发阈值）。 */
+function sumTiers(tiers: readonly AuditTier[], key: 'maxRecords' | 'maxBytes'): number {
+  let total = 0
+  for (const tier of tiers) total += tier[key]
+  return total
 }
 
 /** 机械识别一条侧存记录：seq / at 为数字、by 为字符串、body 为 JSON 对象。 */
@@ -141,9 +152,21 @@ export class AuditStore {
 
   /** 打开侧存：缺文件视为空；撕裂尾截到有效前缀；超保留窗口即压实。 */
   static open(file: string, options: AuditStoreOptions = {}): AuditStore {
-    const maxBytes = options.maxBytes ?? AUDIT_MAX_BYTES
-    const maxRecords = options.maxRecords ?? AUDIT_MAX_RECORDS
-    const index = new AuditIndex({ maxRecords, maxBytes })
+    // 显式给 maxRecords / maxBytes（且未给 tiers）⇒ 单档全局窗口（测试 / 兼容）；否则按端口分档。
+    const globalOverride =
+      options.tiers === undefined &&
+      (options.maxRecords !== undefined || options.maxBytes !== undefined)
+    const tiers = globalOverride ? undefined : (options.tiers ?? AUDIT_TIERS)
+    const index =
+      tiers === undefined
+        ? new AuditIndex({ maxRecords: options.maxRecords, maxBytes: options.maxBytes })
+        : new AuditIndex({ tiers })
+    const maxRecords =
+      tiers === undefined
+        ? (options.maxRecords ?? AUDIT_MAX_RECORDS)
+        : sumTiers(tiers, 'maxRecords')
+    const maxBytes =
+      tiers === undefined ? (options.maxBytes ?? AUDIT_MAX_BYTES) : sumTiers(tiers, 'maxBytes')
     let nextSeq = 0
     if (existsSync(file)) {
       const read = readTolerant(file)

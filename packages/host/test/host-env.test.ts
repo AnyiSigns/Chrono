@@ -47,6 +47,13 @@ let portSeq = 0;
 const pendingPorts = new Map();
 function handleCall(msg) {
   const env = msg.env === undefined ? null : msg.env;
+  if (config.emitEnvEvent) {
+    writeFrame({ v: "1", id: "evt-env-" + msg.id, kind: "event", topic: "call.env", payload: { env: env } });
+  }
+  if (config.callValue !== undefined) {
+    writeFrame({ v: "1", id: msg.id, kind: "result", ok: true, value: config.callValue });
+    return;
+  }
   if (config.errorCode) {
     writeFrame({ v: "1", id: msg.id, kind: "error", ok: false, code: config.errorCode, message: config.errorCode });
     return;
@@ -287,10 +294,12 @@ describe('H16 调用帧 env 注入', () => {
       )
       expect(result.status).toBe('done')
       const value = (result.observations[0] as { value: Json }).value as {
-        env: { run: string; thread: string; now: number }
+        env: { run: string; thread: string; now: number; emitter: string | null }
       }
       expect(value.env.run).toBe(result.run)
       expect(value.env.thread).toBe('thr-a')
+      // 正向调用：env.emitter = 发出者身份（该 directive 属主 = toy-client，与审计 emitter 同源）
+      expect(value.env.emitter).toBe('toy-client')
       const audit = auditEnvs().find((record) => record.run === result.run)
       expect(audit).toBeDefined()
       expect(value.env.now).toBe(audit?.at)
@@ -324,9 +333,12 @@ describe('H16 调用帧 env 注入', () => {
       const env = auditEnvs().find((record) => record.run === value.run)?.env as {
         run: string
         thread: string | null
+        emitter: string | null
       }
       expect(env.run).toBe(value.run)
       expect(env.thread).toBeNull()
+      // detached run 的发出者身份 = 触发它的命令属主（toy-host.resume）
+      expect(env.emitter).toBe('toy-host')
     } finally {
       client.close()
     }
@@ -380,9 +392,54 @@ describe('H16 调用帧 env 注入', () => {
       const env = auditEnvs().find((record) => record.run === run)?.env as {
         run: string
         thread: string | null
+        emitter: string | null
       }
       expect(env.run).toBe(run)
       expect(env.thread).toBeNull()
+      // 周期命令 run 的发出者身份 = 声明该命令的身份
+      expect(env.emitter).toBe('toy-periodic')
+    } finally {
+      client.close()
+    }
+  })
+
+  it('周期方法条目：宿主自身发起的方法调用 env.emitter = host', async () => {
+    const method = writeTempPackage(root, {
+      identity: 'toy-periodic-method',
+      implements: ['toy.periodic'],
+      methods: { 'toy.periodic': ['tick'] },
+      start: 'node execute/main.js',
+      // 回空计划（本拍无写，按 done 收口）；同时把收到的 env 经 event 回传，供断言
+      serviceConfig: { callValue: { $directives: [] }, emitEnvEvent: true },
+      files: { 'execute/main.js': ENV_SERVICE_MAIN },
+      schema: { type: 'object', periodic: [{ method: 'tick', every_ms: 60 }] },
+    })
+    expect(runSeed(root, [{ name: 'toy-periodic-method', path: method }]).ok).toBe(true)
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    const events: EventMessage[] = []
+    client.onEvent((event) => events.push(event))
+    try {
+      await waitFor(
+        () =>
+          events.some(
+            (event) => event.impl === 'toy-periodic-method' && event.topic === 'call.env',
+          ),
+        'periodic method call.env',
+      )
+      const event = events.find(
+        (item) => item.impl === 'toy-periodic-method' && item.topic === 'call.env',
+      )
+      const env = (
+        event?.payload as {
+          env: { run: string | null; thread: string | null; emitter: string | null }
+        }
+      ).env
+      // 宿主自身发起的方法调用无 directive 属主，发出者身份记宿主保留身份 host
+      expect(env.emitter).toBe('host')
+      expect(env.thread).toBeNull()
+      expect(typeof env.run).toBe('string')
     } finally {
       client.close()
     }
@@ -435,8 +492,11 @@ describe('H16 调用帧 env 注入', () => {
       )
       expect(result.status).toBe('done')
       const value = (result.observations[0] as { value: Json }).value as {
-        env: { run: string; thread: string; now: number }
-        forwarded: { env: { run: string; thread: string; now: number }; args: Json }
+        env: { run: string; thread: string; now: number; emitter: string | null }
+        forwarded: {
+          env: { run: string; thread: string; now: number; emitter: string | null }
+          args: Json
+        }
         argsEnv: Json
       }
       // 发起服务与目标服务拿到同一 run / thread / now
@@ -444,6 +504,9 @@ describe('H16 调用帧 env 注入', () => {
       expect(value.forwarded.env.thread).toBe('thr-r')
       expect(value.forwarded.env.now).toBe(value.env.now)
       expect(value.env.run).toBe(result.run)
+      // 正向帧 emitter = 发出者身份；反向转发帧 emitter = 发起该反向调用的服务身份
+      expect(value.env.emitter).toBe('toy-client')
+      expect(value.forwarded.env.emitter).toBe('toy-origin')
       // args 顶层 env 字段原样透传给目标（宿主端口审计的值脱敏尚未实现，不做值替换）
       expect(value.forwarded.args).toEqual({ env: { secret: 's3cr3t' }, n: 7 })
       // 发起服务自身入站 args 无 env：证明目标收到的是反向调用 args，而非发起调用 args
@@ -497,11 +560,12 @@ describe('H16 调用帧 env 注入', () => {
       ])
       expect(a.status).toBe('done')
       const value = (a.observations[0] as { value: Json }).value as {
-        env: { thread: string }
-        forwarded: { env: { thread: string } }
+        env: { thread: string; emitter: string | null }
+        forwarded: { env: { thread: string; emitter: string | null } }
       }
       expect(value.env.thread).toBe('thr-a')
       expect(value.forwarded.env.thread).toBe('thr-a')
+      expect(value.forwarded.env.emitter).toBe('toy-origin')
     } finally {
       conn.close()
     }
@@ -625,10 +689,14 @@ describe('H16 调用帧 env 注入', () => {
       const probe = events.find(
         (event) => event.impl === 'toy-origin' && event.topic === 'port.probe',
       )
-      const payload = probe?.payload as { env: { run: Json; thread: Json; now: number } }
+      const payload = probe?.payload as {
+        env: { run: Json; thread: Json; now: number; emitter: Json }
+      }
       expect(payload.env.run).toBeNull()
       expect(payload.env.thread).toBeNull()
       expect(payload.env.now).toBeGreaterThan(0)
+      // 无在途正向调用时 run/thread 记 null，但 emitter 仍是发起该反向调用的服务身份
+      expect(payload.env.emitter).toBe('toy-origin')
     } finally {
       conn.close()
     }

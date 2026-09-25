@@ -157,11 +157,13 @@ function makeCaller(
   const router = input.router
   const baseTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
   const signal = input.signal
-  // 调用帧 env：本回合 run id / 发起者 thread / 宿主固定时钟（按轮固定，取轮首值）
+  // 调用帧 env：本回合 run id / 发起者 thread / 宿主固定时钟（按轮固定，取轮首值）/ 发出者身份。
+  // `emitter` 与审计 `emitter` 同源（都是该 directive 的属主），不另算一份。
   const env: CallEnv = {
     run: input.runId ?? null,
     thread: input.thread ?? null,
     now: input.now,
+    emitter,
   }
   return async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)

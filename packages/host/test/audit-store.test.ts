@@ -6,8 +6,16 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import type { Entry, Hash, Json, World } from '../../kernel/index.ts'
-import { AuditIndex } from '../audit.ts'
-import type { AuditFilter, AuditRecord } from '../audit.ts'
+import {
+  AUDIT_TIERS,
+  AUDIT_TIER_DATA,
+  AUDIT_TIER_DEFAULT,
+  AUDIT_TIER_HOST,
+  AUDIT_TIER_MODEL,
+  AUDIT_TIER_TOOL,
+  AuditIndex,
+} from '../audit.ts'
+import type { AuditFilter, AuditRecord, AuditTier } from '../audit.ts'
 import { AuditStore } from '../audit-store.ts'
 import { backfillAuditStore, readAuditBackfillMeta } from '../audit-backfill.ts'
 import { hostPaths } from '../paths.ts'
@@ -31,6 +39,14 @@ describe('AuditStore 旁路侧存', () => {
       at: 1000,
       by: 'host',
       body: { kind: 'effect_audit', run, emitter, outcome },
+    }
+  }
+
+  function draftPort(port: string, run: string): { at: number; by: string; body: Json } {
+    return {
+      at: 1000,
+      by: 'host',
+      body: { kind: 'effect_audit', run, emitter: 'toy', outcome: 'ok', port },
     }
   }
 
@@ -72,6 +88,68 @@ describe('AuditStore 旁路侧存', () => {
     store.append(draft('a'))
     expect(store.records()).toEqual([])
     expect(store.size()).toBe(0)
+  })
+
+  it('按端口分档：单端口刷满不挤掉其他端口的记录；档内仍按最旧淘汰', () => {
+    const tiers: AuditTier[] = [
+      {
+        name: 'data',
+        matches: (port) => port === 'storage-sql',
+        maxRecords: 3,
+        maxBytes: 1_000_000,
+      },
+      { name: 'default', matches: () => true, maxRecords: 5, maxBytes: 1_000_000 },
+    ]
+    const store = AuditStore.open(file, { tiers })
+    // 先放两条模型记录（default 档）
+    store.append(draftPort('model', 'm0'))
+    store.append(draftPort('model', 'm1'))
+    // 数据端口刷满自己的档（预算 3 条），挤掉的是本档最旧，不碰 default 档
+    for (let i = 0; i < 6; i++) store.append(draftPort('storage-sql', `d${i}`))
+    const runs = store.records().map((record) => (record.body as { run: string }).run)
+    expect(runs).toContain('m0')
+    expect(runs).toContain('m1')
+    // 档内淘汰仍按最旧：只留最后 3 条
+    expect(runs.filter((run) => run.startsWith('d'))).toEqual(['d3', 'd4', 'd5'])
+  })
+
+  it('缺省分档表：数据端口独立于模型 / 工具 / host 档', () => {
+    const byName = Object.fromEntries(AUDIT_TIERS.map((tier) => [tier.name, tier]))
+    expect(byName[AUDIT_TIER_DATA].matches('storage-sql')).toBe(true)
+    expect(byName[AUDIT_TIER_DATA].matches('storage-kv')).toBe(true)
+    expect(byName[AUDIT_TIER_MODEL].matches('model')).toBe(true)
+    expect(byName[AUDIT_TIER_TOOL].matches('tool-fs')).toBe(true)
+    expect(byName[AUDIT_TIER_HOST].matches('host')).toBe(true)
+    // 数据端口不落模型 / 工具 / host 档（各档互不挤占）
+    expect(byName[AUDIT_TIER_MODEL].matches('storage-sql')).toBe(false)
+    expect(byName[AUDIT_TIER_TOOL].matches('storage-sql')).toBe(false)
+    expect(byName[AUDIT_TIER_HOST].matches('storage-sql')).toBe(false)
+    // 未命中任何专档的端口归 default 档
+    expect(byName[AUDIT_TIER_DEFAULT].matches('approval')).toBe(true)
+    expect(byName[AUDIT_TIER_DEFAULT].matches(undefined)).toBe(true)
+  })
+
+  it('分档记录载入重放：磁盘超各档预算即按档压实', () => {
+    const tiers: AuditTier[] = [
+      {
+        name: 'data',
+        matches: (port) => port === 'storage-sql',
+        maxRecords: 2,
+        maxBytes: 1_000_000,
+      },
+      { name: 'default', matches: () => true, maxRecords: 2, maxBytes: 1_000_000 },
+    ]
+    const store = AuditStore.open(file, { tiers })
+    store.append(draftPort('model', 'm0'))
+    store.append(draftPort('model', 'm1'))
+    store.append(draftPort('model', 'm2'))
+    store.append(draftPort('storage-sql', 'd0'))
+    store.append(draftPort('storage-sql', 'd1'))
+    store.append(draftPort('storage-sql', 'd2'))
+    const reopened = AuditStore.open(file, { tiers })
+    const runs = reopened.records().map((record) => (record.body as { run: string }).run)
+    expect(runs).toEqual(['m1', 'm2', 'd1', 'd2'])
+    expect(lines()).toBe(4)
   })
 
   it('磁盘压实阈值：超阈值即整文件重写为保留集', () => {

@@ -14,13 +14,16 @@ export interface Limits {
 
 /**
  * 服务调用帧的 `env`（宿主填写，机械）：本回合 run id / 发起者提交信封的 `thread`
- * （原样回带、不校验；detached / 周期 run 恒 `null`）/ 宿主固定时钟。
+ * （原样回带、不校验；detached / 周期 run 恒 `null`）/ 宿主固定时钟 / 发出者身份。
  * 只填帧，不改 `args` 语义；服务发事件载荷、判 TTL 一律用它，不得自取时间。
+ * `emitter` 由宿主解析填写、调用方无从伪造：正向调用 = 发出者身份（与审计 `emitter` 同源），
+ * 反向 `port.call` 转发 = 发起该反向调用的服务身份，宿主自身发起的调用记 `host`。
  */
 export interface CallEnv {
   run: string | null
   thread: string | null
   now: number
+  emitter: string | null
 }
 
 /** 发起者 → 宿主。 */

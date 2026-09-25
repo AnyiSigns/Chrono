@@ -56,6 +56,7 @@ import { AuditStore } from './audit-store.ts'
 import { backfillAuditStore, readAuditBackfillMeta } from './audit-backfill.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { createHostCapability } from './host-capability.ts'
+import { HOST_CAPABILITY } from './host-methods.ts'
 import { deleteSecret, isValidSecretName, putSecret } from './secrets.ts'
 import { gcPluginState } from './plugin-state.ts'
 import { gcPluginData } from './plugin-data.ts'
@@ -673,7 +674,14 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const snapshot = writer.snapshot()
     const routed = router.resolve(snapshot.world, impl, port, method)
     if (!routed.ok) return { ok: false, code: routed.error, message: routed.error }
-    const callEnv: CallEnv = env ?? { run: null, thread: null, now: nextNow() }
+    // 反向调用帧的 env：run / thread 取发起服务在途正向调用的回合信息（无在途补宿主时钟），
+    // emitter = 发起该反向调用的服务身份（与正向调用帧的「发出者身份」口径一致）。
+    const callEnv: CallEnv = {
+      run: env?.run ?? null,
+      thread: env?.thread ?? null,
+      now: env?.now ?? nextNow(),
+      emitter: impl,
+    }
     // 端口审计：env 值脱敏后只落宿主侧内存面（不进世界、不写链）；旁路失败不影响转发
     try {
       portAudit.record({
@@ -858,7 +866,8 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           options.callTimeoutMs ??
           DEFAULT_CALL_TIMEOUT_MS,
         signal,
-        { run: runId, thread: null, now: nextNow() },
+        // 宿主自身发起的方法调用：无 directive 属主，发出者身份记宿主保留身份 `host`
+        { run: runId, thread: null, now: nextNow(), emitter: HOST_CAPABILITY },
       )
       if (!called.ok) return { status: 'refused', reasons: [] }
       const plan = parsePlanDirectives(called.value)
