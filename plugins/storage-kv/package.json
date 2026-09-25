@@ -1,0 +1,19 @@
+{
+  "name": "storage-kv",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "第一方文件 / 文档型存储服务：按调用帧 env.emitter 分目录的追加日志 KV，零原生依赖",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

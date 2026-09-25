@@ -1,0 +1,19 @@
+{
+  "name": "storage-sql",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "第一方关系型存储服务：按调用帧 env.emitter 分库的 SQLite（WAL），粗粒度建表 / 查询 / 写入 / 事务批",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

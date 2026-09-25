@@ -1,0 +1,5 @@
+{
+  "type": "object",
+  "title": "storage-kv",
+  "description": "storage-kv 身份无世界数据：运行数据落 ④ state/data/storage-kv/，世界内不持有 body"
+}
