@@ -160,20 +160,74 @@ function hasRelativePath(args: Rec): boolean {
   return false
 }
 
+/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
+function netScope(value: Json | undefined): string {
+  return value === 'limited' || value === 'all' ? value : 'none'
+}
+
+/** 工具声明的 net 需求：从目录条目的 caps.net 取（只认 none / limited / all；缺失 / 畸形按 none）。 */
+function declaredNetOf(entry: CallEntry): string {
+  const caps = entry.entry?.decl['caps']
+  return isRecord(caps) ? netScope(caps['net']) : 'none'
+}
+
+/** 内建档位 net 映射（sandbox body 缺失时兜底；与 sandbox tools/default-body.json 同形）。 */
+const BUILTIN_TIER_NET: Record<string, string> = {
+  auto: 'all',
+  severe: 'limited',
+  review: 'none',
+  deny: 'none',
+}
+
+/** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
+function tierNetOf(tier: Json | undefined, sandboxTiers: Json | undefined): string {
+  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
+  if (typeof tier === 'string' && isRecord(tiers)) {
+    const entry = tiers[tier]
+    if (isRecord(entry)) {
+      const declared = entry['net']
+      if (declared === 'none' || declared === 'limited' || declared === 'all') return declared
+    }
+  }
+  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
+  return 'none'
+}
+
+/**
+ * 批级裁决字符串归一：调用方（loop-policy 的 gate）经边只传裁决字符串，消费侧必须按同码理解——
+ * 否则字符串被当「无裁决」而静默放行，门禁形同虚设。未知码 fail-closed 为 deny。
+ */
+function batchVerdictOf(value: string): string {
+  if (value === 'allow' || value === 'approved') return 'allow'
+  if (value === 'escalate' || value === 'pending' || value === 'needs_approval') return 'escalate'
+  return 'deny'
+}
+
 /** 批级判定：有 verdicts 直接消费（跳过 guard），否则兜底批级一次调 guard.judge；取最严。 */
 async function resolveBatchVerdict(bag: Rec, entries: CallEntry[], deps: DispatchDeps): Promise<string> {
   const judged = entries.filter((entry) => entry.entry !== null && entry.preError === null)
   if (judged.length === 0) return 'allow'
 
   const verdicts = bag['verdicts']
+  if (typeof verdicts === 'string') return batchVerdictOf(verdicts)
   if (verdicts !== undefined && verdicts !== null) {
+    // 形态不符的 verdicts 不静默当「无裁决」：fail-closed 为 deny，避免畸形输入放行越档调用。
+    if (!Array.isArray(verdicts) && !isRecord(verdicts)) return 'deny'
     const list = normalizeVerdicts(verdicts)
     return strictest(judged.map((entry) => matchVerdict(list, entry)))
   }
 
+  // 兜底判定也必须带上 net 判定输入（工具声明 net + 当前档 net 范围），否则 guard 的 net 越档检查
+  // 因输入缺失恒判 allow——工具声明侧的 net 没带上，越档调用会被静默派发（门禁未生效）。
   const outcome = await deps.link.call('guard', 'judge', {
-    calls: judged.map((entry) => ({ port: entry.entry?.provider ?? '', tool: entry.tool, args: entry.args })),
+    calls: judged.map((entry) => ({
+      port: entry.entry?.provider ?? '',
+      tool: entry.tool,
+      args: entry.args,
+      net: declaredNetOf(entry),
+    })),
     tier: bag['tier'] ?? null,
+    tier_net: tierNetOf(bag['tier'], bag['sandbox_tiers']),
     workspace_root: bag['workspace_root'] ?? null,
     guard_rules: bag['guard_rules'] ?? null,
   })
