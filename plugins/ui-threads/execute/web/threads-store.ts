@@ -168,11 +168,10 @@ export function threadsStatusOf(view: ThreadsView): ThreadsStatus {
   return 'ready'
 }
 
-/** 非错误状态的标题文案码（failed 取 `error.code` 的人话，不在此表）；idle / ready 无标题。 */
+/** 非错误状态的标题文案码（failed 取 `error.code` 的人话，不在此表）；idle / empty / ready 无标题。 */
 export function threadsStatusTextCode(status: ThreadsStatus): string | null {
   if (status === 'loading') return 'threads_loading'
   if (status === 'offline') return 'ui_unreachable'
-  if (status === 'empty') return 'threads_empty'
   return null
 }
 

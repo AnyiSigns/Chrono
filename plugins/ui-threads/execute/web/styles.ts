@@ -5,7 +5,7 @@
 export const STYLE_TEXT = `
 .threads-root { display: flex; flex-direction: column; }
 .threads-root:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-.threads-panel { padding: var(--space-12) var(--space-16); background: var(--c-surface);
+.threads-panel { padding: var(--space-16); background: var(--c-surface);
   border-bottom: 1px solid var(--c-border); }
 .threads-tags { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
 .threads-tag { position: relative; display: inline-flex; align-items: center; gap: var(--space-4);
@@ -58,8 +58,6 @@ export const STYLE_TEXT = `
 .threads-todo-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .threads-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .threads-loading { display: inline-flex; align-items: center; gap: var(--space-8); min-height: 24px;
-  color: var(--c-text-3); font-size: var(--font-size-sm); }
-.threads-empty { display: inline-flex; align-items: center; min-height: 24px; padding: 0 var(--space-8);
   color: var(--c-text-3); font-size: var(--font-size-sm); }
 .threads-tag[data-tone="error"] { color: var(--c-danger); }
 .threads-tag[data-tone="error"]:hover { background: var(--c-danger-bg); color: var(--c-danger); }

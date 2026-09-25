@@ -29,7 +29,6 @@ export const UI_TEXT: { [code: string]: string } = {
   threads_unread: '未读 {count}',
   threads_loading: '读取中…',
   threads_loading_more: '仍在读取…',
-  threads_empty: '暂无线程',
   threads_retry: '重试',
   threads_status_running: '运行中',
   threads_status_pending: '待审批',

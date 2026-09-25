@@ -214,7 +214,7 @@ test('顶栏状态判定：慢读、断连、失败、空标签、有标签各�
 test('状态标题文本：各态取不同文案，loading 追加「仍在读取…」', () => {
   assert.equal(threadsStatusTextCode('loading'), 'threads_loading')
   assert.equal(threadsStatusTextCode('offline'), 'ui_unreachable')
-  assert.equal(threadsStatusTextCode('empty'), 'threads_empty')
+  assert.equal(threadsStatusTextCode('empty'), null)
   assert.equal(threadsStatusTextCode('ready'), null)
   assert.equal(threadsStatusTextCode('idle'), null)
   assert.equal(UI_TEXT.threads_loading_more, '仍在读取…')
@@ -225,7 +225,7 @@ test('状态标题文本：各态取不同文案，loading 追加「仍在读取
     threadsStatusText(view, 'loading', true),
     `${UI_TEXT.threads_loading} · ${UI_TEXT.threads_loading_more}`,
   )
-  assert.equal(threadsStatusText(view, 'empty', false), UI_TEXT.threads_empty)
+  assert.equal(threadsStatusText(view, 'empty', false), '')
   assert.equal(threadsStatusText(view, 'offline', false), messageText(FALLBACK_MESSAGES, 'ui_unreachable'))
   const failed = { ...view, error: { code: 'boom', message: '' } }
   assert.equal(threadsStatusText(failed, 'failed', false), messageText(FALLBACK_MESSAGES, 'boom'))

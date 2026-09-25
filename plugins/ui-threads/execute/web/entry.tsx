@@ -281,10 +281,7 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
         </span>
       )
     }
-    if (status === 'empty') {
-      return <span className="threads-empty">{threadsStatusText(view, status, false)}</span>
-    }
-    if (status === 'idle' || view.data === null) return null
+    if (status === 'empty' || status === 'idle' || view.data === null) return null
     return view.data.tags.map(renderTag)
   }
 
