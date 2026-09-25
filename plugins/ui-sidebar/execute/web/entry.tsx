@@ -647,7 +647,7 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
   } else if (snap.loading && snap.workspaces.length === 0 && snap.conversations.length === 0) {
     listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_loading_more')} />
   } else if (
-    isEmptyView(snap.workspaces, snap.conversations, snap.query) &&
+    isEmptyView(snap.workspaces) &&
     ungroupedConversations(snap.workspaces, snap.conversations, snap.query).length === 0
   ) {
     listBody = (

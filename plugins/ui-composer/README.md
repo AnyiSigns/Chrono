@@ -47,7 +47,9 @@
   计数随 `active_thread` 切换，刷新即丢；每条可移除。
 - **上下文用量行**：数据源为宿主事件 `context.assembled`（按线程过滤取当前线程最近一次）。
   形如 `上下文 42k / 128k`（`tabular-nums`）；<75% 次级字、≥75% warning 前景字、
-  ≥100% danger 前景字 + 「上下文已满」。无事件时不渲染该行；只读、不做压缩动作。
+  ≥100% danger 前景字 + 「上下文已满」。该行常驻渲染：无事件时隐形占位（`visibility:hidden`，
+  高度与有数据一致），回合起止切换不再推拉输入卡；回合结束后保留最近一次组装的用量常显，
+  至下次 `context.assembled` 刷新；只读、不做压缩动作。
 - **推理强度**：选项先读用户配置（`providers.<vendor>.models.<model>.reasoning`）；配置缺档位时
   按名调 `model.profile` 拉档案并落配置；档案也缺档位则隐藏按钮；档位值全同时折叠为单开关。
 - **权限档**：四档 `auto` / `severe` / `review` / `deny`，全局写配置 `permission`。

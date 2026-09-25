@@ -785,12 +785,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       // 回合 run 结束：按线程键清空（后台线程也要清），再续发该线程队列。
       if (tracked.kind === 'turn') {
         clearExpectTimer(key)
-        // 上下文用量随回合结束作废，避免残留陈旧行。
-        if (Object.prototype.hasOwnProperty.call(state.usage, key)) {
-          const usage = { ...state.usage }
-          delete usage[key]
-          state.usage = usage
-        }
+        // 上下文用量保留至下次 context.assembled 刷新：回合结束后仍常显，避免 token 行闪烁。
         if (matchesThread(payload.thread, state.activeThread)) publish()
         void continueQueue(key)
       }

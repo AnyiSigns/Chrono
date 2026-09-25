@@ -15,6 +15,28 @@ function requireString(args: Rec, key: string): string {
   return value
 }
 
+/**
+ * 会话 id：工具参数 `conversation_id` 只作内部显式覆盖（不进 argsSchema，模型看不到、不会传），
+ * 正常路径由系统从 bag 取——`session_id` 直给，或 `session` 为字符串 / 投影切片
+ * `{body:{current}}`（入口 term 读 `ids.session.body.current` 后传入）。模型无法指定其它会话。
+ */
+function sessionIdOf(toolArgs: Rec, bag: Rec): string | null {
+  const direct = toolArgs['conversation_id']
+  if (typeof direct === 'string' && direct.length > 0) return direct
+  const sessionId = bag['session_id']
+  if (typeof sessionId === 'string' && sessionId.length > 0) return sessionId
+  const session = bag['session']
+  if (typeof session === 'string' && session.length > 0) return session
+  if (isRecord(session)) {
+    const body = isRecord(session['body']) ? (session['body'] as Rec) : session
+    const current = body['current']
+    if (typeof current === 'string' && current.length > 0) return current
+    const id = body['id']
+    if (typeof id === 'string' && id.length > 0) return id
+  }
+  return null
+}
+
 /** 待办投影数据的来源：bag.todo 优先，其次工具参数里的 todo / body。 */
 function pickTodoData(toolArgs: Rec, bag: Rec): Json | undefined {
   if (bag['todo'] !== undefined) return bag['todo']
@@ -35,12 +57,20 @@ function writeTool(toolArgs: Rec, bag: Rec): Json {
     const bagAt = bag['at']
     if (typeof bagAt === 'string' && bagAt.length > 0) args['at'] = bagAt
   }
+  const conversationId = sessionIdOf(toolArgs, bag)
+  if (conversationId === null) {
+    throw new BadArgsError('conversation id not provided by caller')
+  }
+  args['conversation_id'] = conversationId
   return buildWritePlan(args, pickTodoData(toolArgs, bag), resolveLimits())
 }
 
 /** `todo.read`：从 bag 数据里解析目标会话条目链；服务不自读投影。 */
 function readTool(toolArgs: Rec, bag: Rec): Json {
-  const conversationId = requireString(toolArgs, 'conversation_id')
+  const conversationId = sessionIdOf(toolArgs, bag)
+  if (conversationId === null) {
+    throw new BadArgsError('conversation id not provided by caller')
+  }
   const resolved = resolveItems(pickTodoData(toolArgs, bag), conversationId)
   return { items: resolved.items, total: resolved.total, done: resolved.done }
 }

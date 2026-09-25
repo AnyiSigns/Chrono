@@ -1,6 +1,6 @@
 // 工具面自述（`todo.describe` 的输出）：两个工具 + 描述四要素 + 工具卡 render 描述符。
-// `todo.write` 走 describe / invoke；`todo.read` 是能力类工具绑定、method 缺省 = 投影读
-// （清单数据由调用方入口 term 读本插件投影后随 bag 传入，本服务不自读投影），故带 binding 标记。
+// `todo.write` / `todo.read` 都走 describe / invoke；清单数据由调用方入口 term 读本插件投影后随 bag 传入
+// （bag.todo），服务不自读投影。`conversation_id` 不由模型提供，服务从 bag 的当前会话自动解析。
 // render 形状对齐「工具卡渲染」契约；caps 与 sandbox 同形（无 fs、无 net）。
 
 import type { Json, Rec } from './types.ts'
@@ -47,7 +47,6 @@ export const TOOLS: Json[] = [
     intent: '更新当前会话的待办清单，用新清单整体替换旧清单。',
     when_to_use: '需要新增、更新、删除待办项，或把清单整体收尾（全部完成 / 清空）时。',
     param_semantics: {
-      conversation_id: '目标会话 id；只改这个会话的清单。',
       items: '完整条目数组，整体替换而非增量；传空数组即清空。',
       at: '本批条目的缺省时间（ISO 8601）。',
       body: '当前清单数据，用于保留其它会话的条目。',
@@ -57,7 +56,6 @@ export const TOOLS: Json[] = [
     argsSchema: {
       type: 'object',
       properties: {
-        conversation_id: { type: 'string', minLength: 1, description: '目标会话 id。' },
         items: {
           type: 'array',
           description: '完整条目数组；空数组 = 清空本会话清单。',
@@ -66,7 +64,7 @@ export const TOOLS: Json[] = [
         at: { type: 'string', description: '条目缺省时间（ISO 8601）。' },
         body: { type: 'object', description: '当前清单数据，用于保留其它会话的条目。' },
       },
-      required: ['conversation_id', 'items'],
+      required: ['items'],
       additionalProperties: true,
     },
     caps: NO_CAPS,
@@ -77,23 +75,17 @@ export const TOOLS: Json[] = [
     name: 'todo.read',
     intent: '读取当前会话的待办清单条目与完成情况。',
     when_to_use: '需要查看当前待办项、完成进度，或在更新前确认现有清单时。',
-    param_semantics: {
-      conversation_id: '目标会话 id。',
-    },
+    param_semantics: {},
     boundaries: '只读，不改清单、不做完成判定。',
     description: '读取当前会话的待办清单，返回 {items, total, done}。',
     argsSchema: {
       type: 'object',
-      properties: {
-        conversation_id: { type: 'string', minLength: 1, description: '目标会话 id。' },
-      },
-      required: ['conversation_id'],
+      properties: {},
       additionalProperties: true,
     },
     caps: NO_CAPS,
     idempotent: true,
     render: TODO_RENDER,
-    binding: { class: 'todo', method: null },
   },
 ]
 

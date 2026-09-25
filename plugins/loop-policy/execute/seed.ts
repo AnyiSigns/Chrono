@@ -13,6 +13,7 @@ export const DEFAULT_THRESHOLDS: Rec = {
   max_steps: 512,
   gas: 64,
   llm_chain_max: 2,
+  post_retry_max: 2,
   max_graph_diff: 8,
   min_runs_before_fork: 3,
   max_links: 4,
@@ -43,6 +44,8 @@ export const SEED_REFUSAL_CODES: Rec[] = [
   { code: 'pre_unsat', retriable: false, attributable_to: 'node' },
   { code: 'input_insufficient', retriable: true, attributable_to: 'graph' },
   { code: 'capability_mismatch', retriable: false, attributable_to: 'graph' },
+  // 模型偶发空产出（无正文、无工具调用）：非图的能力错配，可重跑本步。
+  { code: 'empty_output', retriable: true, attributable_to: 'node' },
   { code: 'budget', retriable: false, attributable_to: 'budget' },
   { code: 'undeclared_read', retriable: false, attributable_to: 'node' },
   { code: 'downstream_refusal', retriable: false, attributable_to: 'graph' },
@@ -307,6 +310,7 @@ export const SEED_PROMPTS: Rec = {
     text:
       '你是 Chrono 的编排智能体。行为准则：先理解意图再行动；需要外部信息或落地改动时用可用能力完成，' +
       '做完给结论、不要罗列过程；遇到无法自行决定的事项就向用户提问并等待；失败要收口并说明原因。' +
+      '要继续行动时必须实际调用能力，不要只描述计划或「下一步」就停；只有任务确实完成、或确需用户决定时才给结论。' +
       '产品事实：这是一个本地优先的个人智能体工作台，能力边界由当前工作区与权限档决定；' +
       '硬约束：只谈意图与结果，不输出任何具体能力标识、调用步骤或参数。',
   },
@@ -359,6 +363,17 @@ export interface ResolvedModel {
   fellBack: boolean
 }
 
+/** 拒绝码表 append-only：保留图上已有条目，补进包内种子新增码（老图无需重 seed 即获新码）。 */
+function mergeRefusalCodes(provided: Rec[]): Rec[] {
+  if (provided.length === 0) return SEED_REFUSAL_CODES
+  const seen = new Set(provided.map((entry) => entry['code']))
+  const merged = [...provided]
+  for (const entry of SEED_REFUSAL_CODES) {
+    if (!seen.has(entry['code'])) merged.push(entry)
+  }
+  return merged
+}
+
 /**
  * 解析随 bag 传入的图数据；空 body / 解析失败 / 图不可执行 ⇒ 回落包内种子图。
  * 各缺类条目按类回落种子；阈值与默认值合流（缺名补默认）。
@@ -381,7 +396,7 @@ export function resolveModel(raw: Json | undefined, refs: Rec): ResolvedModel {
       prompts: { ...SEED_PROMPTS, ...provided.prompts },
       graph: provided.graph,
       thresholds: { ...DEFAULT_THRESHOLDS, ...provided.thresholds },
-      refusalCodes: provided.refusalCodes.length > 0 ? provided.refusalCodes : SEED_REFUSAL_CODES,
+      refusalCodes: mergeRefusalCodes(provided.refusalCodes),
     },
     fellBack: false,
   }

@@ -95,8 +95,8 @@ test('describe：两工具 + 四要素 + argsSchema + caps（无 fs / 无 net）
     const read = tools.find((tool) => tool.name === 'todo.read')
     assert.equal(write.idempotent, false)
     assert.equal(read.idempotent, true)
-    // todo.read = 能力类工具绑定、method 缺省 = 投影读
-    assert.deepEqual(read.binding, { class: 'todo', method: null })
+    // todo.read 与 todo.write 同为 describe / invoke：数据由调用方随 bag.todo 传入，服务不自读投影。
+    assert.equal(read.binding, undefined)
   } finally {
     drv.close()
   }

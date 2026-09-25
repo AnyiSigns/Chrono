@@ -270,11 +270,13 @@ export function ungroupedConversations(
   )
 }
 
-/** 整体空态：无任何工作区，或过滤后无任何可见会话（且无查询）。 */
-export function isEmptyView(workspaces: unknown[], conversations: unknown[], query: unknown): boolean {
-  if (workspaces.length === 0) return true
-  if (normalizeQuery(query).length > 0) return false
-  return conversations.length === 0
+/**
+ * 整体空态：**只有没有任何工作区时**才算空。有工作区就渲染工作区列表——
+ * 会话为空只是各组为空，不应把工作区列表一并藏掉（删光会话后仍要能看见 / 进入工作区）。
+ * 过滤无结果另走 `sidebar_no_match`（视图层按 query 判定），不归此函数。
+ */
+export function isEmptyView(workspaces: unknown[]): boolean {
+  return workspaces.length === 0
 }
 
 /**

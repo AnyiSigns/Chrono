@@ -60,8 +60,20 @@ function errorShape(err: unknown): Rec {
 }
 
 /** 声明级 net 钳制 + 咨询 sandbox 强制面；任何错误原样透传（fail-closed）。 */
-async function guardNet(ctx: InvokeContext, tier: string | null, caps: Json | undefined, sandboxTiers: Json | undefined, callId: string | null): Promise<void> {
-  assertNetAllowed(tier, caps, sandboxTiers)
+async function guardNet(
+  ctx: InvokeContext,
+  tier: string | null,
+  caps: Json | undefined,
+  sandboxTiers: Json | undefined,
+  callId: string | null,
+  grant: Json | undefined,
+): Promise<void> {
+  // 一次性 net 放宽（#33 approvalGrant 签发）：call_id 匹配且 net 范围覆盖时放行本次。
+  const grantNet =
+    isRecord(grant) && (callId === null || grant['call_id'] === callId)
+      ? parseNetScope(grant['net'])
+      : null
+  assertNetAllowed(tier, caps, sandboxTiers, grantNet)
   // 消费 sandbox 自述：本插件不走 sandbox.exec，net 只能做声明级钳制，故
   // `enforcement.net = "declaration"` 是与本模型一致的强制口径。若 sandbox 自述
   // 明确「不强制 net」（none），则无任何 net 强制基础，fail-closed 拒绝；
@@ -72,17 +84,23 @@ async function guardNet(ctx: InvokeContext, tier: string | null, caps: Json | un
   }
 }
 
+/** grant.net → 规范范围；非 none / limited / all 一律 null（视为未放宽）。 */
+function parseNetScope(value: Json | undefined): 'none' | 'limited' | 'all' | null {
+  return value === 'none' || value === 'limited' || value === 'all' ? value : null
+}
+
 interface CallScope {
   tier: string | null
   caps: Json | undefined
   sandboxTiers: Json | undefined
+  grant: Json | undefined
 }
 
 /** 取会话（未知 / 过期即 session_not_found），再过 net 钳制。 */
 async function withSession(args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null) {
   const id = requiredString(args, 'session')
   const record = ctx.sessions.get(id, env.now)
-  await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId)
+  await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId, scope.grant)
   return record
 }
 
@@ -115,7 +133,7 @@ async function putAsset(link: PortLink, mime: string, bytes: Buffer, callId: str
 async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null): Promise<Json> {
   switch (action) {
     case 'open': {
-      await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId)
+      await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId, scope.grant)
       const session = await ctx.sessions.open(env.run, env.now, viewportOf(args))
       return { session }
     }
@@ -190,6 +208,7 @@ export async function invoke(bag: Json, ctx: InvokeContext, env: CallEnv, callId
       tier: typeof bag['tier'] === 'string' ? bag['tier'] : null,
       caps: bag['caps'],
       sandboxTiers: bag['sandbox_tiers'],
+      grant: bag['grant'],
     }
     return { ok: true, result: await dispatchAction(action, args, ctx, env, scope, callId) }
   } catch (err) {

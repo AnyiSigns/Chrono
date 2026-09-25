@@ -98,12 +98,59 @@ function modelBag(input: NodeDispatchInput): Rec {
   return out
 }
 
-/** 工具门禁 bag：按 call 逐项判（整批）。 */
+/** 内建档位 net 映射（sandbox body 缺失时的兜底；与 sandbox tools/default-body.json 同形）。 */
+const BUILTIN_TIER_NET: Record<string, string> = {
+  auto: 'all',
+  severe: 'limited',
+  review: 'none',
+  deny: 'none',
+}
+
+/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
+export function netScopeOf(value: Json | undefined): string {
+  return value === 'limited' || value === 'all' ? value : 'none'
+}
+
+/** 某工具声明的 net 需求：从工具目录（bag.tools）按名查 caps.net；查不到按 none。 */
+export function declaredNetOf(tool: string, tools: Json[]): string {
+  for (const item of tools) {
+    if (!isRecord(item) || item['name'] !== tool) continue
+    const caps = item['caps']
+    return isRecord(caps) ? netScopeOf(caps['net']) : 'none'
+  }
+  return 'none'
+}
+
+/** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
+export function tierNetOf(tier: Json | undefined, sandboxTiers: Json | undefined): string {
+  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
+  if (typeof tier === 'string' && isRecord(tiers)) {
+    const entry = tiers[tier]
+    if (isRecord(entry)) {
+      const declared = entry['net']
+      if (declared === 'none' || declared === 'limited' || declared === 'all') return declared
+    }
+  }
+  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
+  return 'none'
+}
+
+/** 工具门禁 bag：按 call 逐项判（整批），并带上各 call 声明的 net 与当前档 net 范围供 guard 裁决。 */
 function gateBag(input: NodeDispatchInput): Rec {
   const calls = Array.isArray(input.rs.lastCalls) ? input.rs.lastCalls : []
+  const tools = Array.isArray(input.bag['tools']) ? (input.bag['tools'] as Json[]) : []
   return {
-    calls: calls.map((call) => ({ port: call['port'] ?? '', tool: call['tool'] ?? '', args: call['args'] ?? {} })),
+    calls: calls.map((call) => {
+      const tool = typeof call['tool'] === 'string' ? (call['tool'] as string) : ''
+      return {
+        port: call['port'] ?? '',
+        tool: call['tool'] ?? '',
+        args: call['args'] ?? {},
+        net: declaredNetOf(tool, tools),
+      }
+    }),
     tier: input.bag['tier'] ?? null,
+    tier_net: tierNetOf(input.bag['tier'], input.bag['sandbox_tiers']),
     workspace_root: input.bag['workspace_root'] ?? null,
     guard_rules: input.bag['guard_rules'] ?? null,
   }
@@ -123,6 +170,9 @@ function dispatchBag(input: NodeDispatchInput, verdict: Json | null): Rec {
     'tier',
     'grant',
     'question',
+    'session',
+    'session_id',
+    'todo',
   ])
   out['calls'] = Array.isArray(input.rs.lastCalls) ? input.rs.lastCalls : []
   if (verdict !== null) out['verdicts'] = verdict

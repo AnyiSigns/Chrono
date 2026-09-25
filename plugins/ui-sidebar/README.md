@@ -20,6 +20,7 @@ Chrono
 - **写类命令载荷先入槽**：`session.*` 与 `workspace.add` / `workspace.remove` 的载荷先写输入槽（per-thread 键控），命令无参触发；服务把槽体与当前 body 一起交给依赖服务，由其返回清槽写计划。`workspace.reveal` 是纯动作，走命令 `args`（不写世界、不经槽）。
 - **客户端半边**：`execute/web/entry.tsx` 导出 `contract = '2'` 与 `register(ctx)`，把 React 组件注册进 `sidebar` slot；业务状态住 React-free store（`execute/web/sidebar-store.ts`），叶子纯模块（`sidebar-model` / `badges` / `width` / `export` / `messages` / `confirm`）零 react import。功能：工作区分组 + 会话列表（会话读面 = `chat.history` 返回的会话 body）+ 按工作区新建 + 就地重命名 + 添加 / 移除工作目录 + `[⋯]` 菜单（打开 / 移除 / 重命名 / 导出 / 分支 / 删除）+ 目录缺失态 + 空态；会话项状态角标（运行中 / 待审批 / 失败 / 未读）随宿主事件更新；可终止非当前线程 run（`ctx.cancel(run)`，就地二次确认）；软删 + 撤销 toast；标题本地过滤搜索；导出 markdown / JSON（客户端生成，不写世界）；底部 [设置] 写 `ctx.uiState` 的 `settings_open`、[展开|收缩]；宽度可拉伸 220–420（松手防抖写回用户配置的 `ui.sidebar_width`）；收缩态是独立轨道布局而非宽栏裁切：只渲染品牌、添加工作目录、一枚文件夹图标（悬浮开出全量分组 flyout——顶边略下移、限高且随视口收敛，超出走内部滚动但不显滚动条；状态点聚合所有工作区——任一目录缺失红点优先，否则取全量会话最高优先级角标）与展开按钮，搜索、设置、会话行与文案类状态均不渲染；窄屏强制收缩（不引入抽屉）。
 - **当前工作区同步**：会话 / 工作区载入后把 `uiState.active_workspace` 置为当前会话的 `workspace_id`（无当前会话则取列表最后一项即最近添加；无工作区置 `null`），供 composer 判定能否发送与新会话归属。
+- **空态口径**：整体空态**只在没有任何工作区时**出现（`sidebar-model.isEmptyView` 只看 `workspaces`）。有工作区即渲染工作区列表——删光会话后各组为空但仍可见 / 可进入工作区，不会把工作区列表一并藏掉；搜索无结果另走「无匹配」态。
 
 ## 怎么起
 

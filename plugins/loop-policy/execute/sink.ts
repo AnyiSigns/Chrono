@@ -36,7 +36,16 @@ export async function runSink(
     return
   }
   const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, sink)
-  let sinkInputs = refusal !== null ? { refusal } : gatherInputs(sink, edges, ctx)
+  // 拒绝短路不丢弃本回合已产出的内容：把最后一步的助手消息一并交 commit，正文/推理/工具卡照常落盘，
+  // 只额外补 `error` 码；否则流式时看得到、重载后整回合「记录全没」。
+  let sinkInputs: Rec
+  if (refusal !== null) {
+    sinkInputs = { refusal }
+    const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
+    if (lastMessage !== null) sinkInputs['message'] = lastMessage
+  } else {
+    sinkInputs = gatherInputs(sink, edges, ctx)
+  }
   if (refusal === null && sinkInputs['refusal'] !== undefined) {
     const artifact = normalizeRefusalInput(sinkInputs['refusal'], model)
     sinkInputs = { ...sinkInputs, refusal: artifact }

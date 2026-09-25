@@ -486,7 +486,7 @@ export interface UsageView {
   full: boolean
 }
 
-/** 用量视图：无 `used` / `budget` 数字回 null（不渲染该行）。 */
+/** 用量视图：无 `used` / `budget` 数字回 null（该行隐形占位，不显示内容）。 */
 export function usageView(usage: unknown): UsageView | null {
   if (!isRecord(usage)) return null
   const used = typeof usage.used === 'number' && Number.isFinite(usage.used) ? usage.used : null

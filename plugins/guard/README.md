@@ -47,11 +47,12 @@
 | `dangerous_pattern` | 命中危险操作模式（`rule` = 模式 id）。 |
 | `mcp_untrusted` | 外部 MCP 工具，服务器未经 `confirmed && trusted`（`rule` = 服务器名 / 工具名）。 |
 | `structural_write` | 结构写高危（`rule` = `port.tool`）。 |
+| `net_outside_tier` | 工具声明的 `caps.net` 超出当前档 net 范围（`rule` = 声明范围 none/limited/all）。 |
 | `undeclared_capability` | `port` 不在规则的能力白名单内。 |
 | `forbidden_call` | `(port, tool)` 在明确禁止清单内。 |
 | `bad_call` | call 形态非法（非对象 / `port` 或 `tool` 缺失）。 |
 
-判定优先级（先命中先定）：`deny`（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP → 危险模式 → 工作区外 → `allow`。
+判定优先级（先命中先定）：`deny`（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP → 危险模式 → 工作区外 → net 越档 → `allow`。
 
 ## 默认启发式与档位
 
@@ -60,9 +61,12 @@
 - **危险操作模式**：递归删除、提权 / 改权限、管道下载后执行、改注册表 / 系统服务、格式化 / 分区、
   持久化改环境变量 → `escalate`（模式清单住规则数据）。
 - **外部 MCP**：`port = mcp` 的工具默认 `escalate`；规则里 `confirmed && trusted` 的服务器例外。
-- **网络出站**：不判（交沙箱 `caps.net`）。
+- **net 越档**：调用方（编排层 `gateBag`）把每个 call 声明的 `caps.net` 与当前档 net 范围随 `calls[].net` /
+  `bag.tier_net` 传入，本插件只做序比较（none < limited < all）与裁决：声明超出档位范围 → `escalate`
+  （`net` 段可关 / 改裁决）。批准后由编排层签发一次性 `caps.grant`（`op:"exec"` + `net`）放行本次；
+  真正的强制面在 sandbox / 工具自身。`auto` 档 net=all 本就不越档。
 - **结构写高危**：`(plugin-admin, plugin.write)` 与 `(orchestration-admin, orchestration.propose)` → `escalate`。
-- **档位开关**（`guard_rules.tiers`）：`auto` 档直落（结构写 / 危险模式 / 工作区外不弹卡），
+- **档位开关**（`guard_rules.tiers`）：`auto` 档直落（结构写 / 危险模式 / 工作区外 / net 越档不弹卡），
   但 **MCP 在 `auto` 档也 `escalate`**；`severe` / `review` / `deny` 升级全开。
   缺省 / 未知档位按 fail-closed（升级全开）。
 

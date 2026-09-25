@@ -4,7 +4,7 @@
 本插件是**服务**，不读投影、无写通道：`todo.write` 只产写计划，`todo.read` 只解析调用方传入的投影数据。
 
 - 能力类：`todo`（`describe` / `invoke`）。
-- 工具：`todo.write`（幂等 ✗，整表替换，产写计划）/ `todo.read`（幂等 ✓，能力类工具绑定、method 缺省 = 投影读）。
+- 工具：`todo.write`（幂等 ✗，整表替换，产写计划）/ `todo.read`（幂等 ✓，读调用方传入的数据）。
 - `pins`：`{}`（无身份级依赖、不发 `eff`）。
 - 成员：`execute` + `schema`；无命令。
 - 状态档：`recomputable`（③ 可重算）。
@@ -27,7 +27,7 @@ body 顶层 `conversations` 以会话 id 为键，每个会话只存链头与条
 
 ## `todo.write`（整表替换）
 
-入参（`todo.invoke` 的 `args.args`）：`conversation_id`（必填）、`items`（必填，完整条目数组）、
+入参（`todo.invoke` 的 `args.args`）：`items`（必填，完整条目数组）、
 `at`（条目缺省时间，调用方入口 term 由帧 `env.now` 提供；服务**不取时间**）。
 `todo.invoke` 的 bag 里可带 `todo`（调用方入口 term 读本插件投影后传入）与 `at`。
 
@@ -43,14 +43,14 @@ body 顶层 `conversations` 以会话 id 为键，每个会话只存链头与条
 - **空数组 = 清空**：只 `put(tail:null, count:0)` + `add_gen`，无条目 def。
 - **旧 def 仍留世界 `defs` 上**（内容寻址、append-only），故历史可回放；服务不删 def。
 - 门禁：条数超 `max_items` → `too_many_items`；文本超 `max_text_length`（Unicode 码点）→ `text_too_long`；
-  状态不在 `statuses` → `bad_status`；缺 `conversation_id` / `items` 非数组 → `bad_args`。
+  状态不在 `statuses` → `bad_status`；`items` 非数组 → `bad_args`；会话 id 缺失（调用方未传 `bag.session`）→ `bad_args`。
 - 产出 `{$directives:[{kind:"write",request:{op:"batch",args:{ops}}},{kind:"extern",payload}]}`；
   **本插件不落账、不入队、不等审批**。
 
-## `todo.read`（投影读）
+## `todo.read`（读调用方数据）
 
-`todo.read` 是**能力类工具绑定、method 缺省 = 投影读**：清单数据由**调用方入口 term**（chat 入口装配 `bag.todo` /
-ui-threads `threads.state` 直读）读本插件投影后随 bag 传入，**本服务不自读投影**。入参 `conversation_id`（必填）。
+`todo.read` 与 `todo.write` 同为 describe / invoke：清单数据由**调用方入口 term**（chat 入口装配 `bag.todo` /
+ui-threads `threads.state` 直读）读本插件投影后随 bag 传入，**本服务不自读投影**。
 
 - 接受的 bag 数据形态：已解析的 `{items}`，或投影片段 `{body, refs}` / 裸 body（经 `refs` 回溯条目链）。
 - 返回 `{items, total, done}`（条目老→新，与写入顺序一致；不含链式 `prev`）；无该会话条目回空清单；
@@ -58,15 +58,16 @@ ui-threads `threads.state` 直读）读本插件投影后随 bag 传入，**本�
 
 ## 会话 id 与投影数据来源
 
-- `conversation_id` 由调用方入口 term 读 `ctx.ids.session.body.current` 后随 args 传入。
+- 会话 id 由服务从 bag 解析：`bag.session_id` 直给，或 `bag.session` 为字符串 / 投影切片
+  `{body:{current}}`（调用方入口 term 读 `ctx.ids.session.body.current` 后随 bag 传入）。
+- **模型看不到 `conversation_id` 参数**（不在 `argsSchema`），无法指定其它会话；内部测试可经 `args.conversation_id` 显式覆盖。
 - 待办投影（`bag.todo`）由调用方入口 term 读 `ctx.ids.todo.body` + `ctx.ids.todo.refs` 后随 bag 传入。
 - 服务**不读投影、不收 `ctx`**；无 bag 数据时 `todo.read` 报 `missing_todo`、`todo.write` 只落本会话键。
 
 ## 工具面（`todo.describe`）
 
 两个工具各带**描述四要素**（`intent` / `when_to_use` / `param_semantics` / `boundaries`）与工具卡 `render` 描述符；
-`caps` 与 sandbox 同形（`fs:{read:"none",write:"none"}`、`net:"none"`，不触盘、不触网）。`todo.read` 另带
-`binding:{class:"todo",method:null}` 标明其为投影读绑定。`todo.invoke {tool, args, todo?, at?}` 按工具名派发，
+`caps` 与 sandbox 同形（`fs:{read:"none",write:"none"}`、`net:"none"`，不触盘、不触网）。`todo.invoke {tool, args, todo?, at?}` 按工具名派发，
 业务失败回 `{ok:false,error:{code,message}}`。
 
 | 工具 | `form` | `label` | `summary` | `tone` | `detail.kind` | `idempotent` |
@@ -79,7 +80,7 @@ ui-threads `threads.state` 直读）读本插件投影后随 bag 传入，**本�
 - `tools`：按工具类 `todo` 派发；工具名 `todo.write` / `todo.read`。
 - `loop-policy`：收口门禁 `todo_incomplete` 读 `bag.todo`（有 `pending` / `in_progress` 项 ⇒ 不收口、继续 loop）。
 - `ui-threads`：顶栏待办标签位（按父会话隔离）。
-- `session`：清单按 `conversations[<conversation_id>]` 键控；当前会话 id 由调用方入口 term 读投影后经 args 传入。
+- `session`：清单按 `conversations[<conversation_id>]` 键控；当前会话 id 由服务从 `bag.session` / `bag.session_id` 解析。
 
 ## 结构化错误码
 

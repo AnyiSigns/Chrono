@@ -24,7 +24,7 @@ import { injectCursor } from './markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental } from './markdown-cache.ts'
 import type { MarkdownCache } from './markdown-cache.ts'
 import { base64ToBytes, fitBox } from './media.ts'
-import { FALLBACK_MESSAGES, loadMessages, lookupMessage } from './messages.ts'
+import { FALLBACK_MESSAGES, formatText, loadMessages, lookupMessage } from './messages.ts'
 import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
@@ -462,7 +462,11 @@ function DiffView({ vm }: { vm: any }): ReactNode {
   )
 }
 
-/** question 交互卡：单选 / 多选 / 自定义输入 / 提交；已答折叠；expired 禁用；interactive:false 只读。 */
+/**
+ * question 交互卡：逐题向导。题目与选项全部由模型给出，系统只额外提供「自定义答案」输入。
+ * 逐题推进（第 i / N 个问题）、上一题 / 下一题、忽略（跳过本题）、末题提交；已答折叠；
+ * expired 禁用；interactive:false 只读。
+ */
 function QuestionCard({ vm }: { vm: any }): ReactNode {
   const env = useChatEnv()
   // answered / answers 从 vm 派生，本地提交只作覆盖层：快照回流（他处作答 / 重拉）不再脱节。
@@ -471,9 +475,11 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   const readOnly = vm.interactive === false
   // 本地提交作覆盖层，快照回流前也能显示刚提交的答案。
   const answers = localAnswers !== null ? localAnswers : vm.answers
+  const questions: any[] = Array.isArray(vm.questions) ? vm.questions : []
+  const [step, setStep] = useState(0)
   const [selections, setSelections] = useState<{ [id: string]: string[] }>(() => {
     const init: { [id: string]: string[] } = {}
-    for (const question of vm.questions) init[question.id] = []
+    for (const question of questions) init[question.id] = []
     return init
   })
   const [customs, setCustoms] = useState<{ [id: string]: string }>({})
@@ -485,7 +491,7 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   if (answered) {
     return (
       <div className="chat-question">
-        {vm.questions.map((question: any) => (
+        {questions.map((question: any) => (
           <div key={question.id}>
             <div className="chat-question-q">{question.header || question.question}</div>
             <div className="chat-muted">{questionAnswerText(answers, question.id)}</div>
@@ -499,7 +505,7 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   if (readOnly) {
     return (
       <div className="chat-question" data-readonly="true">
-        {vm.questions.map((question: any) => (
+        {questions.map((question: any) => (
           <div key={question.id} className="chat-question-group">
             {question.header.length > 0 ? <div className="chat-question-q">{question.header}</div> : null}
             <div>{question.question}</div>
@@ -517,11 +523,16 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     )
   }
 
+  const total = questions.length
+  if (total === 0) return <div className="chat-question" data-readonly="true" />
+  const current = questions[Math.min(step, total - 1)]
+  const isLast = step >= total - 1
+
   const toggle = (question: any, label: string) => {
     if (vm.expired) return
-    setSelections((current) => {
+    setSelections((currentSelections) => {
       const next: { [id: string]: string[] } = {}
-      for (const key of Object.keys(current)) next[key] = [...current[key]]
+      for (const key of Object.keys(currentSelections)) next[key] = [...currentSelections[key]]
       const set = new Set(next[question.id] ?? [])
       if (question.multiple) {
         if (set.has(label)) set.delete(label)
@@ -535,11 +546,17 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     })
   }
 
-  const submit = async () => {
-    if (vm.expired || submittingRef.current) return
-    submittingRef.current = true
+  const goTo = (next: number) => {
+    if (next < 0 || next >= total) return
+    setError(null)
+    setStep(next)
+  }
+
+  /** 收集作答；`excludeId` 用于忽略本题时排除它。空答的问题不入列。 */
+  const collect = (excludeId?: string): any[] => {
     const collected: any[] = []
-    for (const question of vm.questions) {
+    for (const question of questions) {
+      if (question.id === excludeId) continue
       const selected = selections[question.id] ?? []
       const custom = (customs[question.id] ?? '').trim()
       if (selected.length === 0 && custom.length === 0) continue
@@ -547,11 +564,17 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
       if (custom.length > 0) answer.custom = custom
       collected.push(answer)
     }
-    if (collected.length === 0) {
-      submittingRef.current = false
+    return collected
+  }
+
+  const submit = async (excludeId?: string, allowEmpty = false) => {
+    if (vm.expired || submittingRef.current) return
+    const collected = collect(excludeId)
+    if (collected.length === 0 && !allowEmpty) {
       setError(lookupMessage(env.table, 'chat_answer_required').body)
       return
     }
+    submittingRef.current = true
     setError(null)
     setSubmitting(true)
     const result = await env.submitQuestion(vm, collected)
@@ -570,6 +593,19 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     setError(lookupMessage(env.table, result.code ?? 'unknown').body)
   }
 
+  /** 忽略本题：清掉本题作答后推进；末题则直接提交其余作答。 */
+  const ignoreCurrent = () => {
+    if (vm.expired || submittingRef.current) return
+    setSelections((currentSelections) => ({ ...currentSelections, [current.id]: [] }))
+    setCustoms((currentCustoms) => ({ ...currentCustoms, [current.id]: '' }))
+    if (!isLast) {
+      goTo(step + 1)
+      return
+    }
+    // 忽略本题：末题时即便其余全空也提交（question.answer 接受空 answers），让 agent 继续。
+    void submit(current.id, true)
+  }
+
   return (
     <div className="chat-question" data-expired={String(vm.expired)}>
       {vm.expired ? (
@@ -578,72 +614,106 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
           <span>{lookupMessage(env.table, 'chat_expired').body}</span>
         </div>
       ) : null}
-      {vm.questions.map((question: any) => (
-        <div
-          key={question.id}
-          className="chat-question-group"
-          role={question.multiple ? 'group' : 'radiogroup'}
-          aria-label={question.header || question.question}
-        >
-          {question.header.length > 0 ? <div className="chat-question-q">{question.header}</div> : null}
-          <div>{question.question}</div>
-          {question.options.map((option: any) => {
-            const checked = (selections[question.id] ?? []).includes(option.label)
-            return (
-              <div
-                key={option.label}
-                className="chat-question-opt"
-                role={question.multiple ? 'checkbox' : 'radio'}
-                tabIndex={vm.expired ? -1 : 0}
-                aria-checked={checked}
-                aria-disabled={vm.expired}
-                onClick={() => toggle(question, option.label)}
-                onKeyDown={(event) => {
-                  if (event.key === ' ' || event.key === 'Spacebar') {
-                    event.preventDefault()
-                    toggle(question, option.label)
-                  } else if (event.key === 'Enter') {
-                    event.preventDefault()
-                    void submit()
-                  }
-                }}
-              >
-                <span>{option.label}</span>
-                {option.description.length > 0 ? (
-                  <span className="chat-question-opt-desc">{option.description}</span>
-                ) : null}
-              </div>
-            )
-          })}
-          {question.custom ? (
-            <input
-              className="chat-question-input"
-              type="text"
-              placeholder={lookupMessage(env.table, 'chat_custom_input').body}
-              aria-label={`${lookupMessage(env.table, 'chat_custom_answer').body}：${question.header || question.question}`}
-              disabled={vm.expired}
-              value={customs[question.id] ?? ''}
-              onChange={(event) =>
-                setCustoms((current) => ({ ...current, [question.id]: event.target.value }))
-              }
+      <div className="chat-question-nav">
+        <span className="chat-question-progress">
+          {formatText('chat_question_progress', { index: step + 1, total })}
+        </span>
+        <div className="chat-question-nav-btns">
+          <button
+            type="button"
+            className="chat-question-nav-btn"
+            disabled={vm.expired || step <= 0}
+            aria-label={lookupMessage(env.table, 'chat_prev_question').body}
+            onClick={() => goTo(step - 1)}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="chat-question-nav-btn"
+            disabled={vm.expired || isLast}
+            aria-label={lookupMessage(env.table, 'chat_next_question').body}
+            onClick={() => goTo(step + 1)}
+          >
+            ›
+          </button>
+        </div>
+      </div>
+      <div
+        className="chat-question-group"
+        role={current.multiple ? 'group' : 'radiogroup'}
+        aria-label={current.header || current.question}
+      >
+        {current.header.length > 0 ? <div className="chat-question-q">{current.header}</div> : null}
+        <div>{current.question}</div>
+        {current.options.map((option: any) => {
+          const checked = (selections[current.id] ?? []).includes(option.label)
+          return (
+            <div
+              key={option.label}
+              className="chat-question-opt"
+              role={current.multiple ? 'checkbox' : 'radio'}
+              tabIndex={vm.expired ? -1 : 0}
+              aria-checked={checked}
+              aria-disabled={vm.expired}
+              onClick={() => toggle(current, option.label)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
+                if (event.key === ' ' || event.key === 'Spacebar') {
                   event.preventDefault()
-                  void submit()
+                  toggle(current, option.label)
+                } else if (event.key === 'Enter') {
+                  event.preventDefault()
+                  if (isLast) void submit()
+                  else goTo(step + 1)
                 }
               }}
-            />
-          ) : null}
-        </div>
-      ))}
+            >
+              <span>{option.label}</span>
+              {option.description.length > 0 ? (
+                <span className="chat-question-opt-desc">{option.description}</span>
+              ) : null}
+            </div>
+          )
+        })}
+        <input
+          className="chat-question-input"
+          type="text"
+          placeholder={lookupMessage(env.table, 'chat_custom_input').body}
+          aria-label={`${lookupMessage(env.table, 'chat_custom_answer').body}：${current.header || current.question}`}
+          disabled={vm.expired}
+          value={customs[current.id] ?? ''}
+          onChange={(event) =>
+            setCustoms((currentCustoms) => ({ ...currentCustoms, [current.id]: event.target.value }))
+          }
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              if (isLast) void submit()
+              else goTo(step + 1)
+            }
+          }}
+        />
+      </div>
       <div className="chat-question-actions">
+        <button
+          type="button"
+          className="chat-btn"
+          disabled={vm.expired || submitting}
+          onClick={ignoreCurrent}
+        >
+          {lookupMessage(env.table, 'chat_ignore').body}
+        </button>
         <button
           type="button"
           className="chat-btn chat-btn-accent"
           disabled={vm.expired || submitting}
-          onClick={() => void submit()}
+          onClick={() => (isLast ? void submit() : goTo(step + 1))}
         >
-          {submitting ? lookupMessage(env.table, 'chat_submitting').body : lookupMessage(env.table, 'chat_submit').body}
+          {submitting
+            ? lookupMessage(env.table, 'chat_submitting').body
+            : isLast
+              ? lookupMessage(env.table, 'chat_submit').body
+              : lookupMessage(env.table, 'chat_next').body}
         </button>
         {error !== null ? <span className="chat-danger-inline">{error}</span> : null}
       </div>
@@ -1418,6 +1488,9 @@ function App({
     store.commit(next, { type: 'snapshot' })
     rerender()
     if (resetView) scrollToBottom()
+    // 首屏 / 重拉后补渲染在途用户消息：run 暂停在审批 / 提问时槽仍留 `chat.message`、
+    // 而权威历史尚未提交该消息，只在 run.started 拉会漏——重载后整条用户消息就「记录全没」。
+    void loadPendingUser()
   }
 
   async function submitQuestion(vm: any, answers: any[]): Promise<{ ok: boolean; code?: string }> {

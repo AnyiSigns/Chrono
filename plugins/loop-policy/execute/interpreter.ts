@@ -2,7 +2,7 @@
 // 推式条件边 + 拒绝短路到 sink + 回合重入（Graph.loop）+ MAX_STEPS/gas 自限 + 审批/提问跨 run 续跑。
 // 游标是服务进程内状态（跨 run 续跑时序列化进队列项游标落世界）。
 
-import { dispatchNode, toCalls } from './dispatch.ts'
+import { dispatchNode, netScopeOf, toCalls } from './dispatch.ts'
 import {
   contractId,
   contractIndex,
@@ -16,7 +16,7 @@ import {
 } from './model.ts'
 import { buildView } from './gate.ts'
 import { asString, directivesOf, isRecord, nestedDirectivesOf, numberField } from './plan.ts'
-import { attributionOf } from './seed.ts'
+import { attributionOf, retriableOf } from './seed.ts'
 import { evalPost, evalPre, evalWhen } from './rules.ts'
 import { selectInstance } from './scope.ts'
 import {
@@ -162,6 +162,11 @@ function countRemaining(ids: string[], iter: IterState, sink: number): number {
   return count
 }
 
+/** post 失败原因 → 拒绝码：模型空产出可重试；其余按能力错配（不可重试）。 */
+function postRefusalCode(reason: string): string {
+  return reason === 'empty_output' ? 'empty_output' : 'capability_mismatch'
+}
+
 /** 求值 pre → 选实例 → 派发 → 求值 post；拒绝短路。 */
 async function runNode(
   input: InterpretInput,
@@ -191,8 +196,6 @@ async function runNode(
     return { refusal: refusalArtifact(model, 'scope_mismatch', `no instance for ${ids[index]}`), pending: null }
   }
   const step = trace.startStep(index, rs.iter, ids[index], chosen.chosen_instance, chosen.chosen_agent)
-  const effBefore = trace.effLog.length
-  rs.steps += 1
   // 审批 / 提问需把跨 run 游标随队列项落世界：派发前把游标放进 bag（approval.enqueue / #48 question 读 args.cursor）。
   const preContractId = contractId(contract)
   let pendingCursor: Rec | null = null
@@ -204,46 +207,56 @@ async function runNode(
     const questionCall = firstQuestionCall(Array.isArray(rs.lastCalls) ? rs.lastCalls : [])
     if (questionCall !== null) bag['cursor'] = graphCursor('question', index, rs, iter, questionCall, bag['input'])
   }
-  const result = await dispatchNode({
-    nodeIndex: index,
-    iter: rs.iter,
-    contract,
-    instance: chosen,
-    inputs: iter.inputs.get(index) ?? {},
-    bag,
-    model,
-    pins,
-    rs,
-    env,
-    port: input.port,
-    trace,
-  })
-  trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])
 
-  if (result.outcome === 'transport_failed') {
+  // post 不过：可重试码（如模型偶发空产出）重跑本节点，达上限才收口为拒绝；其余立即拒绝。
+  const postRetryMax = numericThreshold(model.thresholds, 'post_retry_max', 2)
+  let output: Rec = {}
+  for (let attempt = 0; ; attempt++) {
+    const effBefore = trace.effLog.length
+    rs.steps += 1
+    const result = await dispatchNode({
+      nodeIndex: index,
+      iter: rs.iter,
+      contract,
+      instance: chosen,
+      inputs: iter.inputs.get(index) ?? {},
+      bag,
+      model,
+      pins,
+      rs,
+      env,
+      port: input.port,
+      trace,
+    })
+    trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])
+
+    if (result.outcome === 'transport_failed') {
+      step['verdict'] = 'fail'
+      step['refusal'] = 'transport_failed'
+      trace.refuse(index, rs.iter, 'transport_failed', attributionOf(model, 'transport_failed'))
+      return { refusal: refusalArtifact(model, 'transport_failed', result.code ?? 'transport_failed'), pending: null }
+    }
+    if (result.outcome === 'error') {
+      const code = result.code ?? 'downstream_refusal'
+      step['verdict'] = 'fail'
+      step['refusal'] = code
+      trace.refuse(index, rs.iter, code, attributionOf(model, code))
+      return { refusal: refusalArtifact(model, code, `node ${ids[index]} failed`), pending: null }
+    }
+
+    output = isRecord(result.value) ? (result.value as Rec) : { value: result.value }
+    applySideEffects(ids[index], output, rs)
+    // post 的输入面含本 Scope outputs：先落槽再求值，不过则短路（不产产物）。
+    iter.outputs.set(index, output)
+    const post = evalPost(contractPost(contract), ruleCtx(rs, model, bag, iter, trace.effLog, index))
+    if (post.ok) break
+    const reason = post.reason ?? 'post_failed'
+    const code = postRefusalCode(reason)
+    if (retriableOf(model, code) && attempt < postRetryMax) continue
     step['verdict'] = 'fail'
-    step['refusal'] = 'transport_failed'
-    trace.refuse(index, rs.iter, 'transport_failed', attributionOf(model, 'transport_failed'))
-    return { refusal: refusalArtifact(model, 'transport_failed', result.code ?? 'transport_failed'), pending: null }
-  }
-  if (result.outcome === 'error') {
-    const code = result.code ?? 'downstream_refusal'
-    step['verdict'] = 'fail'
-    step['refusal'] = code
+    step['post_failed'] = reason
     trace.refuse(index, rs.iter, code, attributionOf(model, code))
-    return { refusal: refusalArtifact(model, code, `node ${ids[index]} failed`), pending: null }
-  }
-
-  const output = isRecord(result.value) ? (result.value as Rec) : { value: result.value }
-  applySideEffects(ids[index], output, rs)
-  // post 的输入面含本 Scope outputs：先落槽再求值，不过则短路（不产产物）。
-  iter.outputs.set(index, output)
-  const post = evalPost(contractPost(contract), ruleCtx(rs, model, bag, iter, trace.effLog, index))
-  if (!post.ok) {
-    step['verdict'] = 'fail'
-    step['post_failed'] = post.reason ?? 'post_failed'
-    trace.refuse(index, rs.iter, 'capability_mismatch', attributionOf(model, 'capability_mismatch'))
-    return { refusal: refusalArtifact(model, 'capability_mismatch', post.reason ?? 'post_failed'), pending: null }
+    return { refusal: refusalArtifact(model, code, reason), pending: null }
   }
   iter.executed.add(index)
   for (const directive of directivesOf(output)) directives.push(directive)
@@ -326,7 +339,8 @@ function escalatedCall(cursor: Rec, rs: RunState): Rec | null {
 
 /**
  * 裁决批准后构造一次性 `caps.grant`（形状与 #25 `sandbox` 消费口径一致：`call_id` / `op` / `paths` /
- * `fs` / `tier` / `expires`）。`paths` 为空 = 不适用；`fs` 只声明本次 op 所需维度（未声明不放宽）。
+ * `fs` / `net` / `tier` / `expires`）。`paths` 为空 = 不适用；`fs` / `net` 只声明本次所需维度（未声明不放宽）。
+ * net 越档升级批准时，签发 `op:"exec"` + `net:<声明范围>`，供 sandbox exec / tool-browser 本插件侧放行本次。
  */
 function approvalGrant(bag: Rec, env: CallEnv, rs: RunState, cursor: Rec): Rec | null {
   const call = escalatedCall(cursor, rs)
@@ -334,7 +348,8 @@ function approvalGrant(bag: Rec, env: CallEnv, rs: RunState, cursor: Rec): Rec |
   const callId = asString(call['call_id'])
   if (callId === null) return null
   const args = isRecord(call['args']) ? (call['args'] as Rec) : {}
-  const mapped = fsopOpOf(asString(call['tool']) ?? '', args)
+  const tool = asString(call['tool']) ?? ''
+  const mapped = fsopOpOf(tool, args)
   const path = asString(args['path'])
   const now = numberField(env.now) ?? numberField(bag['now']) ?? 0
   const grant: Rec = {
@@ -345,7 +360,33 @@ function approvalGrant(bag: Rec, env: CallEnv, rs: RunState, cursor: Rec): Rec |
   if (mapped !== null) grant['op'] = mapped.op
   if (path !== null) grant['paths'] = [path]
   if (mapped !== null) grant['fs'] = mapped.write ? { write: 'full' } : { read: 'full' }
+  // net 越档：从游标里升级裁决的 rule 取声明范围（resume 时 bag 无目录，不能反查 caps），
+  // 随批准签发 net 放宽；sandbox 只认绑定 `exec` 的 grant，fs 未映射时补上。
+  const netEscalation = netEscalationOf(cursor, rs)
+  if (netEscalation !== null) {
+    grant['net'] = netEscalation.net
+    if (grant['op'] === undefined) grant['op'] = 'exec'
+  }
   return grant
+}
+
+/** 首个升级裁决若是 net 越档，返回其声明 net 范围（与 `escalatedCall` 取同一条，避免张冠李戴）。 */
+function netEscalationOf(cursor: Rec, rs: RunState): { call: Rec; net: string } | null {
+  const calls = Array.isArray(rs.lastCalls) ? rs.lastCalls : []
+  const outputs = isRecord(cursor['outputs']) ? (cursor['outputs'] as Rec) : {}
+  for (const value of Object.values(outputs)) {
+    if (!isRecord(value) || !Array.isArray(value['decisions'])) continue
+    for (const decision of value['decisions'] as Json[]) {
+      if (!isRecord(decision) || decision['verdict'] !== 'escalate') continue
+      // 只看首个升级项（与 escalatedCall 同选）：不是 net 越档即返回 null。
+      if (decision['reason'] !== 'net_outside_tier') return null
+      const index = numberField(decision['index']) ?? -1
+      const call = calls[index]
+      if (isRecord(call)) return { call, net: netScopeOf(decision['rule']) }
+      return null
+    }
+  }
+  return null
 }
 
 function firstQuestionCall(calls: Rec[]): string | null {

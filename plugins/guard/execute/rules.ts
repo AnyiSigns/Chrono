@@ -9,6 +9,8 @@ export interface TierPolicy {
   danger: boolean
   mcp: boolean
   structural: boolean
+  /** net 越档是否升级（auto 档为 false：其 net=all，本就不越档）。 */
+  net: boolean
 }
 
 export interface WorkspaceRule {
@@ -51,6 +53,12 @@ export interface DenyRule {
   allowed_ports: string[] | null
 }
 
+/** net 越档规则：工具声明的 net 需求超出当前档位 net 范围时的裁决（默认升级审批）。 */
+export interface NetRule {
+  enabled: boolean
+  verdict: Verdict
+}
+
 export interface Rules {
   version: number
   tiers: Record<string, TierPolicy>
@@ -59,6 +67,7 @@ export interface Rules {
   mcp: McpRule
   structural_writes: StructuralRule[]
   deny: DenyRule
+  net: NetRule
 }
 
 /** 未知 / 缺失档位按 fail-closed：升级判定一律开启（不因档位缺失而静默放行）。 */
@@ -67,16 +76,17 @@ export const FAIL_CLOSED_TIER: TierPolicy = {
   danger: true,
   mcp: true,
   structural: true,
+  net: true,
 }
 
 /** 内建默认启发式（结构化形态见 tools/default-body.json）。 */
 export const DEFAULT_RULES: Rules = {
   version: 1,
   tiers: {
-    auto: { outside: false, danger: false, mcp: true, structural: false },
-    severe: { outside: true, danger: true, mcp: true, structural: true },
-    review: { outside: true, danger: true, mcp: true, structural: true },
-    deny: { outside: true, danger: true, mcp: true, structural: true },
+    auto: { outside: false, danger: false, mcp: true, structural: false, net: false },
+    severe: { outside: true, danger: true, mcp: true, structural: true, net: true },
+    review: { outside: true, danger: true, mcp: true, structural: true, net: true },
+    deny: { outside: true, danger: true, mcp: true, structural: true, net: true },
   },
   workspace: {
     enabled: true,
@@ -163,6 +173,10 @@ export const DEFAULT_RULES: Rules = {
     calls: [],
     allowed_ports: null,
   },
+  net: {
+    enabled: true,
+    verdict: 'escalate',
+  },
 }
 
 function isRecord(value: Json | undefined): value is Rec {
@@ -189,6 +203,7 @@ function parseTierPolicy(value: Json | undefined, fallback: TierPolicy): TierPol
     danger: boolOr(value['danger'], fallback.danger),
     mcp: boolOr(value['mcp'], fallback.mcp),
     structural: boolOr(value['structural'], fallback.structural),
+    net: boolOr(value['net'], fallback.net),
   }
 }
 
@@ -299,6 +314,15 @@ function parseDeny(value: Json | undefined): DenyRule {
   return { calls, allowed_ports: allowedPorts }
 }
 
+/** 解析 net 规则段：缺省回落内建（enabled + escalate）。 */
+function parseNet(value: Json | undefined): NetRule {
+  if (!isRecord(value)) return DEFAULT_RULES.net
+  return {
+    enabled: boolOr(value['enabled'], DEFAULT_RULES.net.enabled),
+    verdict: asVerdict(value['verdict'], DEFAULT_RULES.net.verdict),
+  }
+}
+
 /** 解析 bag.guard_rules：非对象（缺省）用内建默认；逐段合并，段缺省回落默认。 */
 export function parseRules(raw: Json | undefined): Rules {
   if (!isRecord(raw)) return DEFAULT_RULES
@@ -310,5 +334,6 @@ export function parseRules(raw: Json | undefined): Rules {
     mcp: parseMcp(raw['mcp']),
     structural_writes: parseStructural(raw['structural_writes']),
     deny: parseDeny(raw['deny']),
+    net: parseNet(raw['net']),
   }
 }

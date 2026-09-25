@@ -68,10 +68,19 @@ export function sandboxNetEnforcement(value: Json | undefined): string | null {
   return typeof net === 'string' && net.length > 0 ? net : null
 }
 
-/** 声明 net 是否在档位范围内；越档即 net_denied。 */
-export function assertNetAllowed(tier: string | null, caps: Json | undefined, sandboxTiers: Json | undefined): void {
+/**
+ * 声明 net 是否在档位范围内；越档即 net_denied。
+ * `grantNet` = 经审批签发的一次性 net 放宽（#33 approvalGrant）；其范围覆盖声明时放行本次。
+ */
+export function assertNetAllowed(
+  tier: string | null,
+  caps: Json | undefined,
+  sandboxTiers: Json | undefined,
+  grantNet: NetScope | null = null,
+): void {
   const required = declaredNetScope(caps)
   if (required === 'none') return
+  if (grantNet !== null && netRank(grantNet) >= netRank(required)) return
   const allowed = tierNetScope(tier, sandboxTiers)
   if (netRank(required) > netRank(allowed)) {
     throw new ToolError('net_denied', `declared net ${required} exceeds tier net ${allowed}`)

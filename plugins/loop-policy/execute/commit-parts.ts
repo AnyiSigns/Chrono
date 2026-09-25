@@ -93,10 +93,15 @@ export function displayParts(timeline: Json[], finalMessage: Rec | null, tools: 
       const part = callId !== null ? toolPartByCall.get(callId) : undefined
       if (part === undefined || result === null) continue
       part['status'] = result['ok'] === true ? 'ok' : 'error'
-      part['result'] =
+      const displayed =
         result['ok'] === true
           ? displayResult(result['result'] ?? null)
           : displayResult(result['error'] ?? result['result'] ?? null)
+      part['result'] = displayed
+      // 提供者可随结果自带动态 render 描述符（如 question 的题干/选项/答案快照）：
+      // 它比目录里的静态 render 更具体，落 part 时覆盖之，UI 只按 part.render 画。
+      const dynamicRender = isRec(displayed) && isRec(displayed['render']) ? displayed['render'] : null
+      if (dynamicRender !== null) part['render'] = dynamicRender
     }
   }
 

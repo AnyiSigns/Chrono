@@ -10,6 +10,8 @@
 // - 工具行图标统一 16px（--icon-sm），发送键是唯一 20px 图标 + 圆形实色钮：主操作与其余幽灵按钮分层；
 //   幽灵按钮基色压到 --c-text-2、hover 回 --c-text，避免整行同强度造成的嘈杂感。
 // - 模型 / 推理强度触发器不带前置图标（纯文本 + 折叠箭头），权限触发器保留档位图标。
+// - .composer-context 常驻（无数据 data-empty + visibility:hidden）：用量行出现 / 消失曾推拉输入卡
+//   上下抖动；隐形占位保持行高，占位行也收 pointer 事件，不会误触 tooltip。
 
 export const STYLE_TEXT = `
 .composer-root {
@@ -17,7 +19,7 @@ export const STYLE_TEXT = `
   box-sizing: border-box;
   max-width: var(--msg-max-w);
   margin: 0 auto;
-  padding: var(--space-8) var(--space-16) var(--space-12);
+  padding: var(--space-8) var(--space-16) 2px;
   font-family: var(--font-sans);
 }
 .composer-mask {
@@ -36,18 +38,18 @@ export const STYLE_TEXT = `
   background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-lift);
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .composer-card:hover { border-color: var(--c-text-3); }
 .composer-card[data-focus="true"] {
   border-color: var(--c-text-3);
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--focus-ring), var(--shadow-lift);
   animation: composer-focus-in var(--motion-base);
 }
 @keyframes composer-focus-in {
-  from { box-shadow: 0 0 0 0 transparent; }
-  to { box-shadow: var(--focus-ring); }
+  from { box-shadow: 0 0 0 0 transparent, var(--shadow-lift); }
+  to { box-shadow: var(--focus-ring), var(--shadow-lift); }
 }
 .composer-card[data-dragover="true"] { border-color: var(--c-text-3); }
 .composer-input {
@@ -238,6 +240,7 @@ export const STYLE_TEXT = `
   font-variant-numeric: tabular-nums;
 }
 .composer-context[hidden] { display: none; }
+.composer-context[data-empty="true"] { visibility: hidden; }
 .composer-context[data-tone="warning"] { color: var(--c-warning); }
 .composer-context[data-tone="danger"] { color: var(--c-danger); }
 .composer-pending-wrap {

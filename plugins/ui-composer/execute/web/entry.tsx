@@ -866,61 +866,64 @@ function Composer(): ReactNode {
         </div>
       </div>
 
-      {view !== null ? (
-        <div
-          className="composer-context"
-          data-tone={view.tone}
-          tabIndex={0}
-          aria-live="polite"
-          aria-atomic="true"
-          aria-describedby={tipShown ? 'composer-context-tip' : undefined}
-          onMouseEnter={scheduleTip}
-          onMouseLeave={hideTip}
-          onFocus={scheduleTip}
-          onBlur={hideTip}
-        >
-          <span className="composer-context-text">
-            {view.full
+      {/* 用量行常驻：无数据时隐形占位（data-empty），占位高度与有数据一致，
+          回合起止切换不再推拉输入卡。 */}
+      <div
+        className="composer-context"
+        data-tone={view !== null ? view.tone : undefined}
+        data-empty={view === null ? 'true' : undefined}
+        tabIndex={view !== null ? 0 : undefined}
+        aria-live="polite"
+        aria-atomic="true"
+        aria-describedby={tipShown ? 'composer-context-tip' : undefined}
+        onMouseEnter={scheduleTip}
+        onMouseLeave={hideTip}
+        onFocus={scheduleTip}
+        onBlur={hideTip}
+      >
+        <span className="composer-context-text">
+          {view === null
+            ? ' '
+            : view.full
               ? t('composer_context_full', { used: view.usedText, budget: view.budgetText })
               : t('composer_context', { used: view.usedText, budget: view.budgetText })}
-          </span>
-          {tipShown ? (
-            <div
-              ref={contextTipRef}
-              className="composer-popover"
-              data-placement="above"
-              role="tooltip"
-              id="composer-context-tip"
-            >
-              {rows.map((row) => (
-                <div key={row.key} className="composer-tooltip-row">
-                  <span>{row.code !== null ? t(row.code) : row.key}</span>
-                  <span>{row.text}</span>
+        </span>
+        {tipShown ? (
+          <div
+            ref={contextTipRef}
+            className="composer-popover"
+            data-placement="above"
+            role="tooltip"
+            id="composer-context-tip"
+          >
+            {rows.map((row) => (
+              <div key={row.key} className="composer-tooltip-row">
+                <span>{row.code !== null ? t(row.code) : row.key}</span>
+                <span>{row.text}</span>
+              </div>
+            ))}
+            {trimmed.length > 0 ? (
+              <>
+                <div className="composer-tooltip-note">
+                  {t('composer_trimmed', { count: trimmed.length })}
                 </div>
-              ))}
-              {trimmed.length > 0 ? (
-                <>
-                  <div className="composer-tooltip-note">
-                    {t('composer_trimmed', { count: trimmed.length })}
-                  </div>
-                  {trimmed.map((item, index) => {
-                    const label = item.label.length > 0 ? item.label : t('composer_trimmed')
-                    const text =
-                      item.reason.length > 0
-                        ? t('composer_trimmed_reason', { reason: item.reason })
-                        : label
-                    return (
-                      <div key={`${label}-${index}`} className="composer-tooltip-note">
-                        {text}
-                      </div>
-                    )
-                  })}
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+                {trimmed.map((item, index) => {
+                  const label = item.label.length > 0 ? item.label : t('composer_trimmed')
+                  const text =
+                    item.reason.length > 0
+                      ? t('composer_trimmed_reason', { reason: item.reason })
+                      : label
+                  return (
+                    <div key={`${label}-${index}`} className="composer-tooltip-note">
+                      {text}
+                    </div>
+                  )
+                })}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
 
       <input ref={fileRef} type="file" multiple hidden onChange={onFileChange} />
     </div>

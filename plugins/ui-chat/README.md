@@ -98,10 +98,15 @@ export function register(ctx: SlotContext): void {
 | | 状态角标 | 运行中呼吸点 / 成功勾 / 失败叹号（`tool.end` 的 `ok` 与定稿 `status` 驱动） |
 | | `live:true` | 收 `tool.start` 开卡、按 `call_id` 追加 `tool.delta`、`tool.end` 收尾，回合末以消息 part 定稿 |
 | | 降级 | 无 `render` / 未知 form / 未知 kind → markdown 文本降级 |
-| detail.kind | `text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / `question` | `diff` 新增绿 / 删除红 / 修改黄 + 上下文折叠；`terminal` stdout / stderr 分色 + 退出码；`question` 交互卡 |
+| | 动态 render | 定稿时若工具结果自带 `render` 描述符（如 question 的题干 / 选项 / 答案快照），落 part 时覆盖目录里的静态 render，UI 只按 `part.render` 画 |
+| detail.kind | `text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / `question` | `diff` 新增绿 / 删除红 / 修改黄 + 上下文折叠；`terminal` stdout / stderr 分色 + 退出码；`question` 交互卡（逐题向导） |
 | 线程视图 | `main` / `subagent` | 普通消息流（子代理顶部人格头） |
 | | `group` | 首字母圆标 + 名、连续发言人只首条显名、当前发言者呼吸环、未读锚点 |
 | | `workflow` | 步骤卡：当前步骤 + 第 i/N 步 + 状态三重编码 + 1px 进度条；展开只读节点列表；失败节点拒绝码 + 重试 |
+
+`detail.kind:"question"` 的交互卡为**逐题向导**：题目与选项全部由模型给出，系统只额外提供「自定义答案」输入；
+按「第 i / N 个问题」逐题推进，支持上一题 / 下一题、忽略（跳过本题）、末题提交；已答折叠、`expired` 禁用、
+`interactive:false` 只读。
 
 ## 事件过滤口径
 

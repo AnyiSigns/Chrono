@@ -35,14 +35,14 @@
 ### 2.2 能力调用
 
 ```
-宿主 → 服务   call   { v, id, port, method, args, env }
+宿主 → 服务   call   { v, id, port, method, args, env }   # env = { run, thread, now, emitter }
 服务 → 宿主   result { id, ok: true, value }
 服务 → 宿主   error  { id, ok: false, code, message }
 ```
 
 `port` 是**逻辑名**（不是哈希）——宿主已在路由时按发出者 `pins` 解析到本服务；它必须是本服务**声明的能力类**。
 
-- **`env`（宿主填写，机械）**：`{ run, thread, now }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。
+- **`env`（宿主填写，机械）**：`{ run, thread, now, emitter }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟、**发出者身份**。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。`emitter` 由宿主解析填写、调用方无从伪造，是被调服务按 owner 分命名空间的**唯一合法依据**（存储类服务据此分库）；宿主保留身份的调用记 `host`。**不得**改用调用方自报的 namespace 参数。
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
   只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
 - 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `boot start --call-timeout-ms` 可配；**被调方可按插件 `schema.method_timeouts` 按方法覆盖**，见 `host.md` §五 效果）。
@@ -73,7 +73,7 @@
 
 - **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins` 解析
   （与 §2.2 的 host→service `call` 同一路由口径，见 `host.md` §五「路由」）。
-- **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`）。
+- **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now, emitter}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`，`emitter` = 发起该反向调用的服务身份）。
   发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如 `#29` 把密钥下传 `#25` `exec`）：宿主原样透传给目标、
   **端口审计里对值脱敏**（`{redacted:true, keys:[…]}`，见 `host.md` §五「反向调用 `env` 值脱敏」）。
 - 解析不到 → `port.error{code:'unresolved_cap'}`；目标未就绪 → `not_loaded`；目标返回 `error` 时原样回
@@ -100,7 +100,7 @@
 
 ### 2.6 服务协议禁止
 
-- **不得**发 `write` / `put` / `commit` 类消息——唯一写口在宿主。
+- **不得**发 `write` / `put` / `commit` 类消息——**改世界**的写口在宿主（世界那一处写者唯一，见 `host.md` §五「写入落点」）。服务写自有持久存储（声明 `state:"durable"`，见 `plugins.md` §三 红线 7）不经本协议、不是写链。
 - **不得**索取其他插件的物理端点——插件间不直连。
 - `manifest` **不得**声明超出 `plugin.json` 的能力——多出来的不登记（不扩权）。
 
@@ -192,7 +192,7 @@
 | `term_cycle` | 入世时同包 term `$ref` 成环（该包整批拒） | `host.md` §五 源码 |
 | `bad_term_ref` | 入世时 `$ref` 指向包内不存在的成员 | `host.md` §五 源码 |
 | `identity_mismatch` | `pack --identity` 与包内 `plugin.json.identity` 不一致 | `host.md` §五 入世路径 |
-| `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval`）的引用（入世整批拒） | `host.md` §五 源码 |
+| `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval` / 存储类身份）的引用（入世整批拒） | `host.md` §五 源码 |
 | `hidden_identity` | #42 `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/README.md` |
 | `validate_required` | #42 / #45 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/README.md` |
 | `restart_exhausted` | 崩溃重启超过 `restart` 上限 | `host.md` §五 装配 |

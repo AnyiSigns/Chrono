@@ -47,8 +47,10 @@
 4. **工具目录（`context.assemble` 前置）**：调用方未预置目录时经 `port.call` `tools.list`（带 `tools_bindings` / `mcp_tools`）
    取目录写进 `bag.tools`（模型上下文可见）与 `bag.directory`（`tool.dispatch` 复用同一目录）；空数组不再被当作「预建空目录」。
 5. **pre → 派发 → post**：`pre` 不过 ⇒ `pre_unsat`（node）短路；`port.call` 传输失败 ⇒ `transport_failed`（node）；
-   节点业务错误 ⇒ 原码或 `downstream_refusal`；`post` 不过 ⇒ `capability_mismatch`（graph）。
-   拒绝一律**短路到 sink**（`trace.refused_at` 可还原：`{node_index, iter, code, attributable_to}`）。
+   节点业务错误 ⇒ 原码或 `downstream_refusal`；`post` 不过 ⇒ 按 reason 取码：模型空产出 ⇒ `empty_output`（node，可重试），
+   其余 ⇒ `capability_mismatch`（graph）。**可重试码**（`retriable:true`）在 `post_retry_max` 上限内**重跑本节点**，达上限才收口拒绝。
+   拒绝一律**短路到 sink**（`trace.refused_at` 可还原：`{node_index, iter, code, attributable_to}`）；拒绝路径把最后一步助手消息
+   一并交 sink，本回合已产出的正文 / 推理 / 工具卡照常落盘（只补 `error` 码），不再「记录全没」。
 6. **重入**：回合尾按 `Graph.loop.when` 判定；`question_pending` 优先 ⇒ 本 run 正常结束（不 loop）；
    派发过工具 / verify 失败 / `todo_incomplete` ⇒ 继续 loop。达 `max_turn_iter` / `max_steps` 仍要派发 ⇒ 落 **`budget`** 码（不静默截断）。
 7. **sink 延后收口**：sink 在每个 iter 内不执行，只在 loop 终止 / 拒绝短路时执行一次 ⇒「回合尾一次写」
@@ -65,7 +67,7 @@
 | `prompts` | 链式 tail / 对象映射；`system`（行为准则 + 产品事实、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词 |
 | `graph` | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from | 种子图 |
 | `thresholds` | 链式 tail / 扁平 map / 条目数组；字段名契约见下 | `DEFAULT_THRESHOLDS` |
-| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十三码 |
+| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十四码（含 `empty_output`，可重试） |
 
 ## 种子图（七节点 / 十一入边）
 
@@ -115,11 +117,13 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 - **提问往返**：`tool.dispatch` 遇 `question` 工具 ⇒ 游标随 dispatch bag 交 question（item 落世界）⇒ `question_pending` 为真 ⇒
   本 run 正常结束（不 loop）；作答后经 `chat.resume` 恢复：把答案回灌为 question 工具结果、视作本 iter 派发过工具、追加工具消息后重入。
 - **一次性 `caps.grant` 契约（本插件签发，sandbox 消费）**：裁决 `approved` 恢复派发时，按被批准的 call 构造
-  `{call_id, op, paths, fs, tier, expires}` 随 `tool.dispatch` bag 下传（tools 透传 → 提供者 → sandbox），派发完成即从 bag 摘除
+  `{call_id, op, paths, fs, net, tier, expires}` 随 `tool.dispatch` bag 下传（tools 透传 → 提供者 → sandbox），派发完成即从 bag 摘除
   （不泄漏到后续 iter）。**形状以实现为准**（`plugins/sandbox/execute/grant.rs` 消费 `bag.grant` / `bag.caps.grant`：
   `call_id` 必填；`op` 须等于本次 `fsop` op；目标路径须落在 `paths`（**空 = 不适用**）；`fs` 只声明本次 op 维度
-  （未声明不放宽、不回落 full）；`tier` 须等于当前档；`expires` 用帧 `env.now` 判；同 `call_id` 消费一次即拒）。
-  `op` 映射（与 tool-fs 契约对齐）：`read→read` / `glob→list` / `grep→grep` / `edit→replace`（`old` 非空）/ `write`（`old` 空）。
+  （未声明不放宽、不回落 full）；`net` 为 net 越档批准的范围（none/limited/all，消费一次）；`tier` 须等于当前档；
+  `expires` 用帧 `env.now` 判；同 `call_id` 消费一次即拒）。
+  `op` 映射（与 tool-fs 契约对齐）：`read→read` / `glob→list` / `grep→grep` / `edit→replace`（`old` 非空）/ `write`（`old` 空）；
+  net 越档升级（`net_outside_tier`）且无 fs op 映射时补 `op:"exec"`，使 sandbox exec 能消费 net 放宽。
 - **游标契约（本插件自造 opaque 结构，宿主不认识）**：`{kind:'approval'|'question'|'orchestration_change', iter, node_index,
   outputs, inputs, executed, messages, extra_messages, slots, shared, dispatched_tools, question_pending, verify_failed, last_calls, steps, original_input, call_id?}`。
   `original_input` = 本轮 `bag.input`（原始用户消息）：作答 / 裁决时刻的槽已换成 `approval.decide` / `question.answer`，
@@ -166,7 +170,8 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
   `reasoning` / `tool` part，工具可见性仍由上面的 `extra_messages` 回灌保证。纯文本回合不写 parts。
 - **sink 延后收口**：契约字面为每个 iter 都到 `commit`；本实现将 sink 延后到 loop 终止 / 拒绝短路时执行一次，
   以保「回合尾一次写」且不重复提交用户消息 / 清槽。属对契约的解释性收敛，已在 README 登记。
-- **`post` 失败码**：全局拒绝码表无独立 post 码，本插件用 `capability_mismatch`（graph）承载「Scope 产出不合契约」。
+- **`post` 失败码**：`step_post` 的「模型空产出（无正文、无工具调用）」用独立可重试码 `empty_output`（node，按 `post_retry_max` 重跑本步）；其余 Scope 产出不合契约仍用 `capability_mismatch`（graph，不可重试）。
+- **拒绝码表 append-only 合流**：解析图数据时保留图上已有码，并补进包内种子新增码（老图无需重 seed 即获新码）。
 - **不变量 4 写期判据**：图数据无工具名，故写期按端口名 + **声明式写档 `caps.fs.write`** 机械近似；更精确的
   `(port, tool)` 判据归运行时（`guard.judge` 逐 call）。composite 子图递归生效。
 - **`join` / `recall` 为词汇占位**：`join` 是纯函数（同键取最新，不发 eff）；`recall` 的 `retrieval.search` bag 形状为

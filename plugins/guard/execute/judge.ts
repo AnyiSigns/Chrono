@@ -11,6 +11,18 @@ function isRecord(value: Json | undefined): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** net 范围序：none < limited < all（与 sandbox / tool-browser 同口径）。 */
+const NET_RANK: Record<string, number> = { none: 0, limited: 1, all: 2 }
+
+function netRank(scope: string): number {
+  return NET_RANK[scope] ?? 0
+}
+
+/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
+function netScope(value: Json | undefined): string {
+  return value === 'limited' || value === 'all' ? value : 'none'
+}
+
 function tierPolicy(rules: Rules, tier: string | null): TierPolicy {
   if (tier !== null && Object.hasOwn(rules.tiers, tier)) return rules.tiers[tier]
   return FAIL_CLOSED_TIER
@@ -117,7 +129,7 @@ function serverOf(call: Rec): string | null {
 
 /**
  * 判定优先级（先命中先定）：deny（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP →
- * 危险模式 → 工作区外 → allow。各 escalate 类别按当前档的 tier 策略开关；
+ * 危险模式 → 工作区外 → net 越档 → allow。各 escalate 类别按当前档的 tier 策略开关；
  * 关（如 auto 档）即直落 allow。
  */
 function judgeCall(
@@ -126,6 +138,7 @@ function judgeCall(
   rules: Rules,
   tier: TierPolicy,
   workspaceRoot: string | null,
+  tierNet: string,
 ): Decision {
   if (!isRecord(call)) {
     return { index, port: '', tool: '', verdict: 'deny', reason: 'bad_call' }
@@ -186,10 +199,20 @@ function judgeCall(
     }
   }
 
+  // net 越档：调用方（#33 gateBag）把工具声明的 net 与当前档 net 范围随 call / bag 传入，
+  // 本插件只做序比较与裁决；真正的强制面在 sandbox / 工具自身（grant 放行见 #33 approvalGrant）。
+  if (rules.net.enabled && tier.net) {
+    const required = netScope(call['net'])
+    if (required !== 'none' && netRank(required) > netRank(tierNet)) {
+      if (rules.net.verdict === 'allow') return { index, port, tool, verdict: 'allow', reason: 'allowed' }
+      return { index, port, tool, verdict: rules.net.verdict, reason: 'net_outside_tier', rule: required }
+    }
+  }
+
   return { index, port, tool, verdict: 'allow', reason: 'allowed' }
 }
 
-/** judge(bag)：bag = `{calls, tier?, workspace_root?, guard_rules?}` → 逐 call 判定 + 计数。 */
+/** judge(bag)：bag = `{calls, tier?, tier_net?, workspace_root?, guard_rules?}` → 逐 call 判定 + 计数。 */
 export function judge(bag: Json): JudgeResult {
   if (!isRecord(bag)) throw new BadArgsError('bag must be an object')
   const rules = parseRules(bag['guard_rules'])
@@ -202,8 +225,10 @@ export function judge(bag: Json): JudgeResult {
   const tier = typeof bag['tier'] === 'string' ? bag['tier'] : null
   const policy = tierPolicy(rules, tier)
   const workspaceRoot = typeof bag['workspace_root'] === 'string' ? bag['workspace_root'] : null
+  // 档位 net 范围由调用方算好随 bag 传入；缺失按 none fail-closed（不静默放行越档）。
+  const tierNet = netScope(bag['tier_net'])
 
-  const decisions = calls.map((call, index) => judgeCall(call, index, rules, policy, workspaceRoot))
+  const decisions = calls.map((call, index) => judgeCall(call, index, rules, policy, workspaceRoot, tierNet))
   const summary = { allow: 0, escalate: 0, deny: 0 }
   for (const decision of decisions) summary[decision.verdict] += 1
   return { decisions, summary }

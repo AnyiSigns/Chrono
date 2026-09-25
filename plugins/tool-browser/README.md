@@ -69,6 +69,8 @@
   同口径；布尔 / 畸形按未声明处理，与 sandbox `parse_caps` 一致）。浏览器可导航任意 host，**需求是 `all`**。
 - 按 `bag.tier` + `bag.sandbox_tiers`（身份数据世代 body，缺省回落与 sandbox 内建同形的映射）算当前档的 net 范围；
   `all` 需求下 `severe`(limited) / `review` / `deny` 越档 → `net_denied`；未知 / 缺失档位 fail-closed 全拒。
+  net 越档在编排门禁（`guard.judge` 的 `net_outside_tier`）可升级审批：批准后编排层签发一次性 `bag.grant`
+  （`net` 覆盖声明、`call_id` 匹配），本插件在声明级钳制前先看 grant——覆盖即放行本次，消费后不再放宽。
 - 需要联网的动作前，经反向 `port.call` 咨询 `sandbox.capabilities`（强制面可用性），并**消费**其
   `enforcement.net` 自述：自述为 `none`（不强制 net）时 fail-closed 拒绝；自述缺失 / 未知以本插件判定为准。
   该调用返回的错误原样透传。
@@ -76,7 +78,8 @@
 > **登记**：sandbox **无独立「查 net」方法**（`capabilities` 只自述强制面），真正的 net 判定在本插件内完成。
 > **已知取舍**：`limited` 档的 hosts 白名单对浏览器动态导航无法逐 host 强制——`limited` 对动态导航**无 host 语义**，
 > 故只做**声明级**钳制（与「实现尽力」口径一致）；真实网络隔离不在本插件内做。
-> **`bag.grant` 不适用**：浏览器进程本插件自管、不经 `sandbox.exec`，一次性 grant 无法放宽 net；schema 不声明、运行期不消费、也不透传。
+> **`bag.grant` 的消费**：浏览器进程本插件自管、不经 `sandbox.exec`，故 grant 的 `net` 由本插件在声明级钳制处消费
+> （按 `call_id` 匹配、范围覆盖即放行本次）；`fs` / `paths` 等维度不适用。
 
 ## 截图与资产
 

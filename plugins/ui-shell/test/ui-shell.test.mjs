@@ -926,7 +926,7 @@ const REQUIRED_TOKENS = [
   '--space-4', '--space-8', '--space-12', '--space-16', '--space-24', '--space-32',
   '--sidebar-w-expanded', '--sidebar-w-collapsed', '--sidebar-w-min', '--sidebar-w-max',
   '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl',
-  '--shadow-pop', '--glass-blur', '--focus-ring',
+  '--shadow-pop', '--shadow-soft', '--shadow-lift', '--glass-blur', '--focus-ring',
   '--motion-fast', '--motion-base', '--motion-slow',
   '--icon-sm', '--icon-md',
   '--z-topbar', '--z-popover', '--z-dock', '--z-banner', '--z-modal', '--z-toast', '--z-lightbox',

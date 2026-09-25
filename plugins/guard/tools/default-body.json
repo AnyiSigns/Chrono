@@ -1,10 +1,10 @@
 {
   "version": 1,
   "tiers": {
-    "auto": { "outside": false, "danger": false, "mcp": true, "structural": false },
-    "severe": { "outside": true, "danger": true, "mcp": true, "structural": true },
-    "review": { "outside": true, "danger": true, "mcp": true, "structural": true },
-    "deny": { "outside": true, "danger": true, "mcp": true, "structural": true }
+    "auto": { "outside": false, "danger": false, "mcp": true, "structural": false, "net": false },
+    "severe": { "outside": true, "danger": true, "mcp": true, "structural": true, "net": true },
+    "review": { "outside": true, "danger": true, "mcp": true, "structural": true, "net": true },
+    "deny": { "outside": true, "danger": true, "mcp": true, "structural": true, "net": true }
   },
   "workspace": {
     "enabled": true,
@@ -104,5 +104,9 @@
   "deny": {
     "calls": [],
     "allowed_ports": null
+  },
+  "net": {
+    "enabled": true,
+    "verdict": "escalate"
   }
 }
