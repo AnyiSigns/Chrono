@@ -29,6 +29,7 @@ import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
   hasUserMessage,
+  isChatTurnRun,
   isPeriodicRun,
   matchesThread,
   messageId,
@@ -994,11 +995,12 @@ function useElapsedSeconds(active: boolean): number {
   return seconds
 }
 
-/** 秒数 → `m:ss`。 */
+/** 秒数 → 不足 1 分钟给 `5s`，之后给 `1m 5s`。 */
 function formatElapsed(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${totalSeconds}s`
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
+  return `${minutes}m ${seconds}s`
 }
 
 function StreamTurn({ view }: { view: any }): ReactNode {
@@ -1031,7 +1033,14 @@ function StreamTurn({ view }: { view: any }): ReactNode {
       })}
       {streaming ? (
         <div className="chat-working">
-          <span>{lookupMessage(env.table, 'chat_working').body}</span>
+          <span>
+            {lookupMessage(env.table, 'chat_working').body}
+            <span className="chat-working-dots" aria-hidden="true">
+              <span>.</span>
+              <span>.</span>
+              <span>.</span>
+            </span>
+          </span>
           <span className="chat-working-time">{formatElapsed(seconds)}</span>
         </div>
       ) : (
@@ -1605,7 +1614,7 @@ function App({
       return
     }
     if (record.topic === 'run.started') {
-      if (isPeriodicRun(payload.origin)) return
+      if (!isChatTurnRun(payload)) return
       if (matchesThread(payload.thread, st.viewThread)) {
         store.commit(applyRunStarted(store.getSnapshot(), payload), { type: 'lifecycle' })
         void apiRef.current.loadPendingUser()

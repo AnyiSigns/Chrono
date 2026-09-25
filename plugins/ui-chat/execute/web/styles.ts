@@ -122,14 +122,25 @@ export const STYLE_TEXT = `
 .chat-btn:disabled { opacity: .45; cursor: not-allowed; }
 .chat-breathe { width: 48px; height: 2px; border-radius: var(--radius-sm); background: var(--c-text-3); animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-breathe-inline { width: 32px; }
-/* 「正在工作」流光呼吸文字：灰↔强调色渐层高光扫过（流光）叠加透明度脉冲（呼吸感）。
-   流式回合全程常驻（回合结束即随在途回合消失），右侧带秒级计时。 */
-.chat-working { display: flex; align-items: baseline; gap: var(--space-4); width: fit-content;
-  font-size: var(--font-size-sm);
-  background: linear-gradient(90deg, var(--c-text-3) 25%, var(--c-accent) 50%, var(--c-text-3) 75%);
-  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: chat-shimmer 1.8s linear infinite, chat-breathe 2.4s ease-in-out infinite; }
+/* 「正在工作」银色流光：中灰底 + 浅银高光带自左向右扫过（流光）+ 透明度脉冲（呼吸感）；
+   纯灰阶、不引入强调色。字号与消息正文一致（.chat-md）。流式回合全程常驻，右侧带秒级计时。 */
+.chat-working { --working-base: var(--c-text-2);
+  --working-hi: color-mix(in srgb, var(--c-text-2) 40%, var(--c-bg));
+  display: flex; align-items: baseline; gap: var(--space-4); width: fit-content;
+  font-size: var(--font-size-md); line-height: var(--leading-body);
+  background: linear-gradient(90deg,
+    var(--working-base) 0%, var(--working-base) 34%,
+    var(--working-hi) 50%,
+    var(--working-base) 66%, var(--working-base) 100%);
+  background-size: 200% 100%; background-repeat: no-repeat;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: chat-shimmer 2.4s linear infinite, chat-working-pulse 2.6s ease-in-out infinite; }
 .chat-working-time { font-variant-numeric: tabular-nums; }
+/* 省略号：三个点依次明灭（点用自身灰色，不参与父层渐变裁切，保证可见）。 */
+.chat-working-dots { display: inline-flex; margin-left: 1px; color: var(--c-text-3); }
+.chat-working-dots > span { animation: chat-dot 1.4s ease-in-out infinite; }
+.chat-working-dots > span:nth-child(2) { animation-delay: .2s; }
+.chat-working-dots > span:nth-child(3) { animation-delay: .4s; }
 .chat-cursor { display: inline-block; width: 1px; height: 1em; margin-left: 1px; background: var(--c-text); vertical-align: text-bottom; animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-pill { position: absolute; left: 50%; bottom: var(--space-16); transform: translateX(-50%); padding: var(--space-4) var(--space-12); background: var(--c-accent); color: var(--c-accent-text); border: none; border-radius: 999px; font: inherit; font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; cursor: pointer; z-index: var(--z-popover); }
 .chat-pill:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
@@ -162,10 +173,13 @@ export const STYLE_TEXT = `
 .chat-lightbox-img[data-dragging="true"] { cursor: grabbing; }
 .chat-lightbox-close { position: absolute; top: var(--space-16); right: var(--space-16); color: var(--c-text); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
 @keyframes chat-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
-@keyframes chat-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes chat-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+@keyframes chat-working-pulse { 0%, 100% { opacity: .8; } 50% { opacity: 1; } }
+@keyframes chat-dot { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 @keyframes chat-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-working, .chat-group-avatar[data-current="true"] { animation: none; }
+  /* 呼吸条 / 光标 / 旋转为位移动效，减少动态时停用；「正在工作」仅色彩与透明度变化，保留以维持可辨识度。 */
+  .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-group-avatar[data-current="true"] { animation: none; }
   .chat-breathe, .chat-cursor, .chat-tool-spin, .chat-group-avatar[data-current="true"] { opacity: .4; }
   .chat-lightbox { animation: none; }
   .chat-list, .chat-footnote, .chat-tool-chevron, .chat-reasoning-chevron, .chat-anchor { transition: none; }

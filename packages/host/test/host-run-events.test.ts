@@ -1,5 +1,6 @@
 // H10 宿主 run 生命周期事件：run.started / run.finished 经入站广播（impl=host，不落账、不推进），
-// 载荷带 run / thread / status / reasons；submit 的 thread 原样回带，缺省为 null。
+// 载荷带 run / thread / status / reasons；submit 的 thread 原样回带，缺省为 null；
+// command / forward 另带 name = 目标命令名。
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { connect as netConnect } from 'node:net'
@@ -232,6 +233,7 @@ describe('H10 宿主 run 生命周期事件', () => {
       expect(finished).toHaveLength(1)
       const run = (started[0].payload as { run: string }).run
       expect((started[0].payload as { origin?: string }).origin).toBe('command')
+      expect((started[0].payload as { name?: string }).name).toBe('toy-run.hello')
       expect(isRecord(finished[0].payload)).toBe(true)
       expect(finished[0].payload).toMatchObject({
         run,
@@ -239,6 +241,7 @@ describe('H10 宿主 run 生命周期事件', () => {
         status: 'done',
         reasons: [],
         origin: 'command',
+        name: 'toy-run.hello',
       })
     } finally {
       client.close()

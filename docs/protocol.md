@@ -160,7 +160,7 @@
   客户端 / 命令 / plan 三路同规。
 - `commands` 只读声明，供 `boot help` 用（客户端没有世界，必须问宿主）。
 - `caps` / `limits` 由发起者给，宿主**透传不扩权**（缺省：`caps` 空表、`limits` 宿主默认预算）；`now` 由宿主固定，不由客户端给。
-- `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。**三个来源**：① 插件服务上行 `event`（§2.5，`impl` = 上报身份）；② **宿主自身**的 run 生命周期事件（`run.started` / `run.finished`，`impl = "host"`，载荷带 `run` / `thread` / `origin`，`origin ∈ submit/command/forward/periodic/detached`，见 `host.md` §五 宿主事件面；只读命令不广播）；③ 宿主的**身份世代事件**（`identity.changed`，`impl = "host"`，载荷 `{identity, kind:'code'|'data', active, prev}`，链头推进后逐身份 diff 广播，见 `host.md` §五 通知面）。三者对发起者同形。`thread` 来自发起者提交时的可选字段，**原样回带、不校验**（展示标签，非安全边界）；detached / 周期 run 恒 `thread:null`、`caps:{}`，结果不回流。
+- `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。**三个来源**：① 插件服务上行 `event`（§2.5，`impl` = 上报身份）；② **宿主自身**的 run 生命周期事件（`run.started` / `run.finished`，`impl = "host"`，载荷带 `run` / `thread` / `origin`（`command` / `forward` 另带 `name` = 目标命令名），`origin ∈ submit/command/forward/periodic/detached`，见 `host.md` §五 宿主事件面；只读命令不广播）；③ 宿主的**身份世代事件**（`identity.changed`，`impl = "host"`，载荷 `{identity, kind:'code'|'data', active, prev}`，链头推进后逐身份 diff 广播，见 `host.md` §五 通知面）。三者对发起者同形。`thread` 来自发起者提交时的可选字段，**原样回带、不校验**（展示标签，非安全边界）；detached / 周期 run 恒 `thread:null`、`caps:{}`，结果不回流。
 - `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。
 - `status` 的 `loaded` = 已装载身份清单（`id` + active `gen`），非阻塞快照、可能瞬态；`world_head` / `world_rev` = 当前链头与内容摘要（供调用方核对落账世界与重放一致，只读、不推进）。
 - 载体生命周期事件（两级 `{kind, event}`：`handshake.failed` / `dep.cycle` / `service.exit` / `service.restart_exhausted` / …）记宿主侧**运维日志**（`state/lifecycle.log`），**非本协议消息**、不进世界；协议侧只见对应错误码（§四）。

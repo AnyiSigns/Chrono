@@ -992,7 +992,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     // 只读命令：不广播 run 生命周期事件（读不得成为回合信号），也不落审计 / 账本。
     const readonly = command.readonly === true
-    if (!readonly) broadcast('host', 'run.started', { run: runId, thread, origin: 'command' })
+    if (!readonly) {
+      broadcast('host', 'run.started', { run: runId, thread, origin: 'command', name: message.name })
+    }
     let status = 'refused'
     let reasons: string[] = []
     try {
@@ -1048,6 +1050,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           status,
           reasons,
           origin: 'command',
+          name: message.name,
         })
       }
     }
@@ -1095,7 +1098,9 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
     const directives: DirectiveDraft[] = [{ kind: 'eval', entry: command.entry, args }]
     // 只读命令：不广播 run 生命周期事件（读不得成为回合信号），也不落审计 / 账本。
     const readonly = command.readonly === true
-    if (!readonly) broadcast('host', 'run.started', { run: runId, thread, origin: 'forward' })
+    if (!readonly) {
+      broadcast('host', 'run.started', { run: runId, thread, origin: 'forward', name: message.command })
+    }
     let status = 'refused'
     let reasons: string[] = []
     try {
@@ -1148,6 +1153,7 @@ export async function startHost(options: HostOptions): Promise<HostHandle> {
           status,
           reasons,
           origin: 'forward',
+          name: message.command,
         })
       }
     }

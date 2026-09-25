@@ -111,8 +111,10 @@ export function register(ctx: SlotContext): void {
   - 无 `active_thread` 时视图线程视为主线程，接受 `null` 与 `_main`。
 - 处理的事件：`model.delta`、`tool.start/delta/end`、`run.started/run.finished`、
   `group.message`、`workflow.step`、`thread.*`、`shell.state`（连接态与重连重同步）。
-- **run 生命周期按 run id 关联**：无关 run 的终局忽略（不触发重拉）；`origin === 'periodic'`
-  的周期 run 不是对话回合，其 `run.started` 不建流、`run.finished` 不处理。
+- **run 生命周期按 run id 关联**：只有对话回合命令（`name ∈ chat.send/chat.resume`）的
+  `run.started` 建流——管理命令 / 槽写 run 不建流（`origin` 的 `command` 同时覆盖对话回合与
+  管理命令，须看 `name`）；`run.finished` 按 run id 关联在途回合收束（无关终局忽略、不重拉），
+  周期 run 不处理。
 - `thread.*` / `group.message` 触发的是一次静默快照（quiet reload，保留消息、只出顶部细呼吸条）。
 
 ## 长列表窗口化

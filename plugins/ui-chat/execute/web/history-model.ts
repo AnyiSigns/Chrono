@@ -95,9 +95,19 @@ export function finishesCurrentStream(stream: any, run: unknown): boolean {
   return stream.run === run
 }
 
-/** 周期 run 不是对话回合：其 `run.started` 不建流。 */
+/** 周期 run 不是对话回合：其 `run.finished` 不处理。 */
 export function isPeriodicRun(origin: unknown): boolean {
   return origin === 'periodic'
+}
+
+/** 对话回合命令：只有这些命令产生真正的流式对话回合，管理命令 / 槽写 run 不建流。 */
+const CHAT_TURN_COMMANDS = ['chat.send', 'chat.resume']
+
+/** 该 run 是否为对话回合：按宿主 run 生命周期载荷里的命令名判定。 */
+export function isChatTurnRun(payload: unknown): boolean {
+  if (!isRec(payload)) return false
+  const name = payload.name
+  return typeof name === 'string' && CHAT_TURN_COMMANDS.includes(name)
 }
 
 /** 子代理头文字：有父会话时 `{agent} · 由 {parent} 触发`，否则只给 agent 名。 */
