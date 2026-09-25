@@ -342,6 +342,59 @@ test('commit 失败路径：用户消息 + 独立 system 消息 def（meta.error
   }
 })
 
+test('commit append：只追加助手消息（不重写用户消息），头接当前链头、count+1', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: baseSession({ conversations: [baseConversation({ head: { def: H1 }, count: 2 })] }),
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      user: { content: 'hi' },
+      assistant: { content: 'approved done' },
+      append: true,
+    })
+    const ops = opsFor(plan)
+    assert.equal(ops.length, 5, '追加模式不写用户消息，少一条 put')
+    assert.equal(ops[0].args.body.role, 'assistant')
+    assert.equal(ops[0].args.body.content, 'approved done')
+    assert.deepEqual(ops[0].args.body.prev, { def: H1 }, '助手消息直接接当前链头')
+    assert.equal(ops[0].args.body.id, 'msg-c1-2')
+    assert.deepEqual(ops[1].args.body.conversations[0].head, { def: { $n: 0 } })
+    assert.equal(ops[1].args.body.conversations[0].count, 3)
+    assert.equal(externPayload(plan.$directives).count, 3)
+    const roles = ops.filter((op) => op.op === 'put' && op.args.body.role !== undefined).map((op) => op.args.body.role)
+    assert.deepEqual(roles, ['assistant'], '不得出现 user 消息')
+  } finally {
+    drv.close()
+  }
+})
+
+test('commit append 失败路径：只追加 system 消息（不重写用户消息）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const plan = await drv.call('commit', {
+      thread_id: 't1',
+      session: baseSession({ conversations: [baseConversation({ head: { def: H1 }, count: 2 })] }),
+      slots: { slots: { t1: { kind: 'chat.message', text: 'hi' } } },
+      error: 'denied',
+      append: true,
+    })
+    const ops = opsFor(plan)
+    assert.equal(ops.length, 5)
+    assert.equal(ops[0].args.body.role, 'system')
+    assert.equal(ops[0].args.body.content, 'denied')
+    assert.deepEqual(ops[0].args.body.prev, { def: H1 })
+    assert.equal(ops[0].args.body.id, 'msg-c1-2')
+    assert.equal(ops[1].args.body.conversations[0].count, 3)
+    const roles = ops.filter((op) => op.op === 'put' && op.args.body.role !== undefined).map((op) => op.args.body.role)
+    assert.deepEqual(roles, ['system'], '不得出现 user 消息')
+  } finally {
+    drv.close()
+  }
+})
+
 test('commit 非法槽 kind：无部分写（只清槽 + 返回失败值）', async () => {
   const drv = startService()
   try {

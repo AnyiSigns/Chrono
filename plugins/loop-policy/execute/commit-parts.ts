@@ -63,28 +63,7 @@ export function displayParts(timeline: Json[], finalMessage: Rec | null, tools: 
   for (const item of timeline) {
     if (!isRec(item)) continue
     if (item['role'] === 'assistant') {
-      const reasoning = str(item['reasoning'])
-      if (reasoning !== null) parts.push({ type: 'reasoning', text: reasoning })
-      const content = str(item['content'])
-      if (content !== null) parts.push({ type: 'text', text: content })
-      const calls = Array.isArray(item['tool_calls']) ? (item['tool_calls'] as Json[]) : []
-      for (const call of calls) {
-        if (!isRec(call)) continue
-        const callId = str(call['id'])
-        if (callId === null) continue
-        const tool = str(call['name']) ?? ''
-        const part: Rec = {
-          type: 'tool',
-          call_id: callId,
-          tool,
-          args: call['arguments'] ?? null,
-          render: renders.get(tool) ?? null,
-          result: null,
-          status: null,
-        }
-        parts.push(part)
-        toolPartByCall.set(callId, part)
-      }
+      renderAssistant(item, parts, toolPartByCall, renders)
       continue
     }
     if (item['role'] === 'tool') {
@@ -105,11 +84,34 @@ export function displayParts(timeline: Json[], finalMessage: Rec | null, tools: 
     }
   }
 
-  if (finalMessage !== null) {
-    const reasoning = str(finalMessage['reasoning'])
-    if (reasoning !== null) parts.push({ type: 'reasoning', text: reasoning })
-    const content = str(finalMessage['content'])
-    if (content !== null) parts.push({ type: 'text', text: content })
-  }
+  // 终止助手消息也按同一口径渲染：挂起回合的终止消息带 tool_calls（审批未决），
+  // 其工具卡须落盘（结果 / 状态留空），否则「已发生的助手消息」在历史里只剩正文。
+  if (finalMessage !== null) renderAssistant(finalMessage, parts, toolPartByCall, renders)
   return parts
+}
+
+/** 渲染一条 assistant 消息为展示段（reasoning / text / 工具占位段）。 */
+function renderAssistant(message: Rec, parts: Json[], toolPartByCall: Map<string, Rec>, renders: Map<string, Json>): void {
+  const reasoning = str(message['reasoning'])
+  if (reasoning !== null) parts.push({ type: 'reasoning', text: reasoning })
+  const content = str(message['content'])
+  if (content !== null) parts.push({ type: 'text', text: content })
+  const calls = Array.isArray(message['tool_calls']) ? (message['tool_calls'] as Json[]) : []
+  for (const call of calls) {
+    if (!isRec(call)) continue
+    const callId = str(call['id'])
+    if (callId === null) continue
+    const tool = str(call['name']) ?? ''
+    const part: Rec = {
+      type: 'tool',
+      call_id: callId,
+      tool,
+      args: call['arguments'] ?? null,
+      render: renders.get(tool) ?? null,
+      result: null,
+      status: null,
+    }
+    parts.push(part)
+    toolPartByCall.set(callId, part)
+  }
 }

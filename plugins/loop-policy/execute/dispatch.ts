@@ -324,6 +324,7 @@ function commitBag(input: NodeDispatchInput): Rec {
     Array.isArray(bag['tools']) ? (bag['tools'] as Json[]) : [],
   )
   if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
+  const pending = isRecord(input.inputs['pending']) ? (input.inputs['pending'] as Rec) : null
   const out: Rec = {
     session,
     slots,
@@ -335,6 +336,9 @@ function commitBag(input: NodeDispatchInput): Rec {
   if (typeof session['current'] === 'string') out['conversation'] = session['current']
   // 无当前会话的自动建会话规格（由 chat 装配）：随 commit 透传给 session 原子建 main 会话。
   if (isRecord(bag['new_conversation'])) out['new_conversation'] = bag['new_conversation']
+  // 挂起收口带挂起原因 + resume 游标；续跑收口只追加助手 / 系统消息（用户消息已落账）。
+  if (pending !== null) out['pending'] = pending
+  if (bag['append_commit'] === true) out['append'] = true
   // 落盘错误码取稳定拒绝码（`pre_unsat` / `capability_mismatch` …），不取内部 reason 明细：
   // 明细（如 `last_message_role`）只进 trace，UI 按码取人话。
   if (refusal !== null) out['error'] = asString(refusal['code']) ?? asString(refusal['message']) ?? 'refused'

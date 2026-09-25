@@ -157,6 +157,7 @@ function commit(args: Rec, env: CallEnv): HandlerResult {
     conversation,
     slot,
     created,
+    append: args['append'] === true,
   }
   const error = asString(args['error'])
   if (error !== null) return commitError({ ...context, error })
@@ -175,37 +176,46 @@ interface CommitContext {
   slot?: Json
   /** 本回合由 `new_conversation` 新建会话（事件补 `thread.opened`、`changed` 含 `current`）。 */
   created: boolean
+  /** 续跑追加：只写助手 / 系统消息（用户消息已在上一次收口落账），`prev` 直接接当前链头。 */
+  append: boolean
 }
 
 function commitNormal(ctx: CommitContext): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, created } = ctx
+  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, created, append } = ctx
   const count = countOf(conversation)
   const prevHash = headHash(conversation)
   const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
   const assistant = requireRecord(args['assistant'], 'assistant')
   const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
   const assistantContent = asString(assistant['content']) ?? ''
-  const userExtra = optionalMessageFields(userSource)
-  if (userExtra['attachments'] === undefined && Array.isArray(slotRec?.['attachments'])) {
-    userExtra['attachments'] = slotRec['attachments']
-  }
-  const userBody = messageBody(
-    'user',
-    `msg-${conversationId}-${count}`,
-    userContent,
-    prevHash === null ? null : { def: prevHash },
-    at,
-    userExtra,
-  )
+  // 追加模式：用户消息已在上一轮收口（挂起收口 / 首轮收口）落账，本轮只追加助手消息。
   const assistantBody = messageBody(
     'assistant',
-    `msg-${conversationId}-${count + 1}`,
+    `msg-${conversationId}-${append ? count : count + 1}`,
     assistantContent,
-    { def: { $n: 0 } },
+    append ? (prevHash === null ? null : { def: prevHash }) : { def: { $n: 0 } },
     at,
     optionalMessageFields(assistant),
   )
+  const ops: Json[] = []
+  let userBody: Rec | null = null
+  if (!append) {
+    const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
+    const userExtra = optionalMessageFields(userSource)
+    if (userExtra['attachments'] === undefined && Array.isArray(slotRec?.['attachments'])) {
+      userExtra['attachments'] = slotRec['attachments']
+    }
+    userBody = messageBody(
+      'user',
+      `msg-${conversationId}-${count}`,
+      userContent,
+      prevHash === null ? null : { def: prevHash },
+      at,
+      userExtra,
+    )
+    ops.push(putOp(userBody))
+  }
+  ops.push(putOp(assistantBody))
   const inbox = inboxOf(conversation)
   const inboxCount = numberField(inbox, 'count') ?? 0
   const lastSeenArg = numberField(args, 'last_seen')
@@ -213,8 +223,8 @@ function commitNormal(ctx: CommitContext): HandlerResult {
   const status = asString(args['status']) ?? asString(conversation['status'])
   const nextConversation: Rec = {
     ...conversation,
-    head: { def: { $n: 1 } },
-    count: count + 2,
+    head: { def: { $n: append ? 0 : 1 } },
+    count: count + (append ? 1 : 2),
     last_activity: { at, summary: summaryOf(assistantContent) },
   }
   if (status !== null) nextConversation['status'] = status
@@ -227,7 +237,6 @@ function commitNormal(ctx: CommitContext): HandlerResult {
   const baseSession = upsertConversation(session, nextConversation)
   // 自动建会话：current 指向新会话（既有会话的 commit 不动 current）。
   const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
-  const ops: Json[] = [putOp(userBody), putOp(assistantBody)]
   pushSessionGen(ops, session, nextSession)
   pushInputGen(ops, slotsBody, threadId)
   const events = []
@@ -235,7 +244,7 @@ function commitNormal(ctx: CommitContext): HandlerResult {
   if (created) {
     events.push({ topic: 'thread.opened', payload: { ...conversationEvent(env, conversationId), kind } })
   }
-  if (kind === 'group') {
+  if (kind === 'group' && userBody !== null) {
     events.push({
       topic: 'group.message',
       payload: { ...conversationEvent(env, conversationId), id: userBody['id'], seq: count, from: 'user' },
@@ -248,48 +257,52 @@ function commitNormal(ctx: CommitContext): HandlerResult {
       changed: created ? ['current', 'head', 'count', 'last_activity'] : ['head', 'count', 'last_activity'],
     },
   })
-  const value = planOf(ops, { ok: true, reply: assistantBody, conversation: conversationId, count: count + 2 })
+  const value = planOf(ops, { ok: true, reply: assistantBody, conversation: conversationId, count: count + (append ? 1 : 2) })
   return { value, events }
 }
 
 function commitError(ctx: CommitContext & { error: string }): HandlerResult {
-  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error, created } = ctx
+  const { args, env, at, session, slotsBody, threadId, conversationId, conversation, slot, error, created, append } = ctx
   const count = countOf(conversation)
   const prevHash = headHash(conversation)
-  // 拒绝也要保住用户这条消息：回合尾一次写，用户消息此前从未落盘；
-  // 只落 system 错误会把用户输入吞掉（UI 重拉历史后整轮消失）。
-  const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
-  const slotRec = isRecord(slot) ? (slot as Rec) : null
-  const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
-  const userExtra = optionalMessageFields(userSource)
-  if (userExtra['attachments'] === undefined && Array.isArray(slotRec?.['attachments'])) {
-    userExtra['attachments'] = slotRec['attachments']
-  }
-  const userBody = messageBody(
-    'user',
-    `msg-${conversationId}-${count}`,
-    userContent,
-    prevHash === null ? null : { def: prevHash },
-    at,
-    userExtra,
-  )
   const systemBody = messageBody(
     'system',
-    `msg-${conversationId}-${count + 1}`,
+    `msg-${conversationId}-${append ? count : count + 1}`,
     error,
-    { def: { $n: 0 } },
+    append ? (prevHash === null ? null : { def: prevHash }) : { def: { $n: 0 } },
     at,
     { meta: { error } },
   )
+  const ops: Json[] = []
+  if (!append) {
+    // 拒绝也要保住用户这条消息：回合尾一次写，用户消息此前从未落盘；
+    // 只落 system 错误会把用户输入吞掉（UI 重拉历史后整轮消失）。
+    const userSource = isRecord(args['user']) ? (args['user'] as Rec) : null
+    const slotRec = isRecord(slot) ? (slot as Rec) : null
+    const userContent = asString(userSource?.['content']) ?? asString(slotRec?.['text']) ?? ''
+    const userExtra = optionalMessageFields(userSource)
+    if (userExtra['attachments'] === undefined && Array.isArray(slotRec?.['attachments'])) {
+      userExtra['attachments'] = slotRec['attachments']
+    }
+    const userBody = messageBody(
+      'user',
+      `msg-${conversationId}-${count}`,
+      userContent,
+      prevHash === null ? null : { def: prevHash },
+      at,
+      userExtra,
+    )
+    ops.push(putOp(userBody))
+  }
+  ops.push(putOp(systemBody))
   const nextConversation: Rec = {
     ...conversation,
-    head: { def: { $n: 1 } },
-    count: count + 2,
+    head: { def: { $n: append ? 0 : 1 } },
+    count: count + (append ? 1 : 2),
     last_activity: { at, summary: summaryOf(error) },
   }
   const baseSession = upsertConversation(session, nextConversation)
   const nextSession = created ? { ...baseSession, current: conversationId } : baseSession
-  const ops: Json[] = [putOp(userBody), putOp(systemBody)]
   pushSessionGen(ops, session, nextSession)
   pushInputGen(ops, slotsBody, threadId)
   const events = []

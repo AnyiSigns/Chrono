@@ -32,7 +32,7 @@ import {
   type IterState,
 } from './iter-ctx.ts'
 import { graphCursor, patchQuestionAnswer, resumePayload, resumeVerdict, restoreState } from './cursor.ts'
-import { runSink, summaryOfRun } from './sink.ts'
+import { runSink, runSuspend, summaryOfRun } from './sink.ts'
 import type { CallEnv, Json, Rec, RunState, ServiceEvent } from './types.ts'
 
 interface IterResult {
@@ -70,6 +70,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     // 续跑优先用游标内原始输入：作答 / 裁决那一刻的槽已是 approval.decide / question.answer，
     // 直接用会丢原始用户消息（游标随队列项落世界，opaque，不透明）。
     if (pendingCursor['original_input'] !== undefined) bag['input'] = pendingCursor['original_input']
+    // 续跑收口只追加助手 / 系统消息：本回合的用户消息已在挂起收口（或首轮收口）落账，重写即重复。
+    bag['append_commit'] = true
     const nodeIndex = numberField(pendingCursor['node_index']) ?? 0
     if (pendingCursor['kind'] === 'approval') {
       const verdict = resumeVerdict(input.resume) ?? 'denied'
@@ -95,6 +97,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   for (;;) {
     const result = await runIter(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives)
     if (result.pending !== null) {
+      // 显式挂起收口：先把本轮已发生的用户 / 助手消息与已执行工具结果落账，再以 `ended:'pending'` 收口。
+      await runSuspend(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, result.pending)
       return { directives, events, pending: result.pending, summary: summaryOfRun(rs, result.pending), state: rs, ended: 'pending' }
     }
     if (result.refused !== null) {

@@ -226,7 +226,7 @@ test('commit 透传 new_conversation（无当前会话自动建会话）', async
   }
 })
 
-test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回（带游标）', async () => {
+test('有工具路径 escalate：approval.wait 入队 ⇒ 显式挂起收口（带游标，先落账本轮）', async () => {
   const service = startService({
     providers: {
       'model.chat': () => ({ ok: true, text: '', tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }], usage: {} }),
@@ -236,7 +236,8 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回�
   try {
     const result = await service.interpret({})
     assert.equal(result.kind, 'result', JSON.stringify(result))
-    assert.deepEqual(portSequence(service), ['tools.list', 'context.build', 'model.chat', 'guard.judge', 'approval.enqueue'])
+    // 入队后显式挂起收口：session.commit 落账本轮已发生事实，不走静默 sink。
+    assert.deepEqual(portSequence(service), ['tools.list', 'context.build', 'model.chat', 'guard.judge', 'approval.enqueue', 'session.commit'])
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'pending')
     assert.equal(summary.pending, 'approval')
@@ -246,6 +247,8 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 本 run 正常返回�
     assert.equal(enqueue.args.cursor.kind, 'approval', '游标应随队列项落世界')
     assert.ok(Array.isArray(enqueue.args.cursor.executed))
     assert.equal(enqueue.args.cursor.original_input, null)
+    const commit = service.portCalls.find((call) => call.port === 'session' && call.method === 'commit')
+    assert.equal(commit.args.pending.reason, 'approval', '挂起收口带挂起原因')
     // approval.pending 事件只由 #32 发；#33 不再重复发。
     assert.equal(service.events.some((event) => event.topic === 'approval.pending'), false)
   } finally {
