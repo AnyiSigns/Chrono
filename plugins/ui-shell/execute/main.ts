@@ -1,6 +1,7 @@
 // `ui-shell` 服务进程入口：服务协议帧循环 + 主端口 HTTP 服务 + 自实现入站客户端。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影：无配置判据与主题改写都经入站 `config.read` 命令返回值。
+// stdin EOF / 管道断开即自退出。服务不读投影：无配置判据经入站 `config.read` 命令返回值，
+// 主题偏好写经 `config.write` 命令（运行记录出世界，config owner 写自有存储）。
 // 第二方向：服务发 `port.call`（反向调用 host.source.read 取 headless 入口字节）。
 
 import { readFileSync } from 'node:fs'
@@ -86,18 +87,6 @@ function shellState(): ShellState {
   return { connected, theme: themePref, boot_mode: bootMode }
 }
 
-/** 写 config 的 run（`submit` 回 accepted 时写尚未落账）；run 终局后重推无配置判据。 */
-const configRuns = new Set<string>()
-
-function trackConfigRun(run: string): void {
-  configRuns.add(run)
-}
-
-function finishConfigRun(run: string): void {
-  if (!configRuns.delete(run)) return
-  void refreshConfig()
-}
-
 const inbound = new InboundClient({
   socketPath: inboundSocketPath(root),
   log,
@@ -118,15 +107,11 @@ const inbound = new InboundClient({
       }
       return
     }
-    if (topic === 'run.finished' && isRecord(payload) && typeof payload['run'] === 'string') {
-      finishConfigRun(payload['run'])
-    }
   },
   onFrame: (frame) => {
     const run = typeof frame['run'] === 'string' ? (frame['run'] as string) : null
     const topic = run === null ? 'host.frame' : 'run.result'
     sse.broadcast({ impl: SHELL_IMPL, topic, payload: frame as unknown as Json })
-    if (run !== null) finishConfigRun(run)
   },
   onConnectionChange: (next) => {
     const prev = connected
@@ -410,8 +395,6 @@ startUiServer(
     headlessSource,
     uiSource,
     applyThemePref,
-    refreshConfig,
-    trackConfigRun,
     log,
   },
   uiPort,

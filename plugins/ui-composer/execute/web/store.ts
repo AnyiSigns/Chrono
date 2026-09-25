@@ -19,6 +19,7 @@ import type { MessageTable } from './messages.ts'
 import {
   buildMessageSlot,
   collapseReasoning,
+  configPatch,
   configStatusOf,
   currentModelOf,
   currentReasoningOf,
@@ -314,9 +315,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   // ---- 配置（模型 / 推理强度 / 权限） ----
 
   /**
-   * 写配置的公共路径：先 `config.read` 读回最新整份 body，只改本插件负责的字段，再整值 `put` + `add_gen`。
-   * 不基于本地缓存写——否则会把同进程内其它写者（主题 / 侧栏宽度）的改动整份覆盖掉。
-   * 读回 `active` 作 `expect_active`：两次往返间世界换代则内核 `stale_active` 拒写。
+   * 写配置的公共路径：`config.write` 命令，只带本插件负责的字段（补丁），
+   * 读-改-写归 config owner 服务（不再整值 put + add_gen，不再基于本地缓存覆盖）。
+   * 读回 body 只为确保配置已就绪（代码世代回落体 → 未就绪，退避后仍如此则不写）。
    */
   async function readConfigReady(): Promise<IdentityRead> {
     let read = await client.readConfigState()
@@ -333,14 +334,12 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       const fresh = await readConfigReady()
       if (disposed) return { ok: false, code: 'disposed', run: null }
       // 代码世代回落 body（配置身份尚无数据世代）→ 未就绪，退避后仍如此则不写。
-      if (isCodeGenFallbackBody(fresh.body)) return { ok: false, code: 'not_loaded', run: null }
-      const base = fresh.body !== null ? fresh.body : state.config
-      if (base === null || isCodeGenFallbackBody(base)) {
+      if (fresh.body === null || isCodeGenFallbackBody(fresh.body)) {
         return { ok: false, code: 'not_loaded', run: null }
       }
-      state.config = mergeConfig(base, change)
+      state.config = mergeConfig(fresh.body, change)
       publish()
-      return await client.writeConfig(fresh.body, state.config, fresh.active, fresh.dataGen)
+      return await client.writeConfig(configPatch(change))
     } catch (err) {
       return { ok: false, code: errorOf(err), run: null }
     }

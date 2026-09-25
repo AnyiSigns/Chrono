@@ -1,17 +1,14 @@
-// 本插件命令 / 提交薄封装：全部走壳 api（`ctx.command` / `ctx.submit` / `ctx.cancel`），
-// 不再自建 HTTP 面。只做「帧形状 → 结构化结果」的归一，不触 DOM。
-// 读-改-写只覆盖本线程键（per-thread 键控）。
+// 本插件命令薄封装：全部走壳 api（`ctx.command` / `ctx.cancel`），不再自建 HTTP 面。
+// 只做「帧形状 → 结构化结果」的归一，不触 DOM。运行记录出世界：槽 / 配置写走 owner 命令。
 
 import type { SlotContext } from '@chrono/ui-contract'
 import {
-  configWriteDirective,
+  configWriteCommand,
   identityActive,
   identityBody,
   identityDataGen,
-  isCodeGenFallbackBody,
   isRecord,
-  mergeSlotBody,
-  slotWriteDirective,
+  slotWriteCommand,
 } from './model.ts'
 
 export interface CommandResult {
@@ -65,7 +62,7 @@ function asSubmit(result: unknown): SubmitResult {
 export interface ComposerClient {
   readConfig(): Promise<unknown>
   readConfigState(): Promise<IdentityRead>
-  writeConfig(prev: unknown, next: unknown, expectActive?: string | null, dataGen?: unknown, thread?: string): Promise<SubmitResult>
+  writeConfig(patch: unknown, thread?: string): Promise<SubmitResult>
   writeSlot(threadKey: string, slot: unknown): Promise<SubmitResult>
   triggerSend(threadKey: string): Promise<CommandResult>
   cancelRun(run: string): Promise<{ ok: boolean; code: string }>
@@ -76,11 +73,6 @@ export function createClient(ctx: SlotContext): ComposerClient {
   async function command(name: string, args: unknown, thread?: string): Promise<CommandResult> {
     const options = typeof thread === 'string' ? { thread } : undefined
     return asCommand(await ctx.command(name, args as never, options))
-  }
-
-  async function submitDirectives(directives: unknown, thread?: string): Promise<SubmitResult> {
-    const options = typeof thread === 'string' ? { thread } : undefined
-    return asSubmit(await ctx.submit(directives as never, options))
   }
 
   /** 读身份：命令返回整份身份视图，拆出 `body` 与 `active`。 */
@@ -106,15 +98,15 @@ export function createClient(ctx: SlotContext): ComposerClient {
   return {
     readConfig,
     readConfigState,
-    writeConfig: (prev, next, expectActive, dataGen, thread) =>
-      submitDirectives([configWriteDirective(prev, next as never, expectActive, dataGen)], thread),
+    /** 配置写口：`config.write` 命令，服务按补丁读-改-写自有持久存储（不再整值 put + add_gen）。 */
+    async writeConfig(patch, thread) {
+      const built = configWriteCommand(isRecord(patch) ? patch : {})
+      return asSubmit(await command(built.name, built.args, thread))
+    },
+    /** 输入槽写口：`input.write` 命令，服务按线程键写自有持久存储（不再构造世界写 directive）。 */
     async writeSlot(threadKey, slot) {
-      const read = await readIdentity('input.read', { thread: threadKey }, threadKey)
-      if (read.body === null) return { ok: false, code: 'not_loaded', run: null }
-      // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
-      if (isCodeGenFallbackBody(read.body)) return { ok: false, code: 'not_loaded', run: null }
-      const merged = mergeSlotBody(read.body, threadKey, slot as never)
-      return submitDirectives([slotWriteDirective(read.body, merged as never, read.active, read.dataGen)], threadKey)
+      const built = slotWriteCommand(threadKey, slot)
+      return asSubmit(await command(built.name, built.args, threadKey))
     },
     triggerSend: (threadKey) => command('chat.send', null, threadKey),
     async cancelRun(run) {

@@ -8,16 +8,16 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
+  configWriteCommand,
   conversationMessages,
   filterConversations,
   groupConversations,
-  identityDataGen,
-  identityWriteDirective,
   isEmptyView,
   matchTitle,
   normalizeConversations,
   normalizeQuery,
   normalizeWorkspaces,
+  slotWriteCommand,
   ungroupedConversations,
 } from '../execute/web/sidebar-model.ts'
 import {
@@ -358,25 +358,19 @@ test('文案表：解析 / 未知码兜底 / 共享表优先、本地骨架兜�
   assert.equal(lookupMessage(null, 'sidebar_unknown_key').body.includes('sidebar_unknown_key'), true)
 })
 
-test('身份写指令：有 data_gen 写补丁 + base；无 / 空改动回落整份', () => {
-  const prev = { slots: { _main: { kind: 'chat.message', text: 'hi' } } }
-  const next = { slots: { _main: { kind: 'idle' } } }
-  const patched = identityWriteDirective('input', prev, next, undefined, { seq: 5, payload: 'a'.repeat(64) })
-  const ops = patched.request.args.ops
-  assert.equal(ops[1].args.id, 'input')
-  assert.equal(ops[1].args.base, 5)
-  assert.deepEqual(ops[0].args.body.ops, [{ op: 'replace', path: ['slots', '_main'], value: { kind: 'idle' } }])
-
-  const full = identityWriteDirective('input', prev, next)
-  assert.equal(full.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(full.request.args.ops[0].args.body.ops), false)
-
-  const empty = identityWriteDirective('input', next, next, undefined, { seq: 5 })
-  assert.equal(empty.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
-
-  assert.deepEqual(identityDataGen({ body: next, data_gen: { seq: 5 } }), { seq: 5 })
-  assert.equal(identityDataGen(next), undefined)
+test('写口命令：槽 / 配置写走 owner 命令，不构造世界写 directive', () => {
+  const slot = { kind: 'idle' }
+  assert.deepEqual(slotWriteCommand('_main', slot), {
+    name: 'input.write',
+    args: { thread: '_main', slot },
+  })
+  assert.deepEqual(configWriteCommand({ ui: { sidebar_width: 240 } }), {
+    name: 'config.write',
+    args: { patch: { ui: { sidebar_width: 240 } } },
+  })
+  const all = JSON.stringify([slotWriteCommand('_main', slot), configWriteCommand({})])
+  assert.equal(all.includes('add_gen'), false)
+  assert.equal(all.includes('$directives'), false)
 })
 
 test('loadMessages：拉取失败回落内置最小表', async () => {

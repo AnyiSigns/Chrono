@@ -108,8 +108,6 @@ test('入站面集成：伪造 Host / 跨源 / 缺 Origin / 非 JSON 被拒，�
       headlessSource: () => null,
       uiSource: () => null,
       applyThemePref() {},
-      refreshConfig() {},
-      trackConfigRun() {},
       log: () => {},
     },
     port,

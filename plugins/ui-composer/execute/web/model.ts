@@ -1,5 +1,5 @@
 // 输入卡浏览器侧纯模型：配置合并 / 模型与推理档位推导 / 待发队列迁移 /
-// 上下文用量格式与阈值 / 槽与配置写指令构造 / 权限四档。只做数据变换，不触 DOM、不触网络。
+// 上下文用量格式与阈值 / 槽与配置写口命令构造 / 权限四档。只做数据变换，不触 DOM、不触网络。
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 type Rec = { [key: string]: Json }
@@ -256,104 +256,31 @@ export function buildMessageSlot(
   return slot
 }
 
-/** 读-改-写：只覆盖本线程键，其余线程键原样保留。 */
-export function mergeSlotBody(body: unknown, threadKey: string, slot: Json): Rec {
-  const base = isRecord(body) ? body : {}
-  const slots: Rec = isRecord(base.slots) ? { ...base.slots } : {}
-  slots[threadKey] = slot
-  return { ...base, slots }
-}
-
-/** `add_gen` 子操作：`expect_active` 仅在读回身份视图（有 active）时携带；`base` 存在即补丁世代。 */
-function addGenArgs(identity: string, expectActive?: string | null, base?: number | null): Rec {
-  const args: Rec = { id: identity, payload: { $n: 0 }, sig: { $n: 0 }, pins: {} }
-  if (expectActive !== undefined) args.expect_active = expectActive
-  if (base !== undefined && base !== null) args.base = base
-  return args
-}
-
-/** `data_gen.seq`（非负整数）；缺失 / 非法回 null。 */
-function dataGenSeq(value: unknown): number | null {
-  if (!isRecord(value)) return null
-  const seq = value.seq
-  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
-}
-
-/** 顶层字段补丁：变者 replace、缺者 delete；不变者不产 op。 */
-function bodyPatches(prev: { [key: string]: Json }, next: { [key: string]: Json }): Json[] {
-  const ops: Json[] = []
-  for (const key of Object.keys(next)) {
-    if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
-      ops.push({ op: 'replace', path: [key], value: next[key] })
-    }
+/**
+ * 配置补丁：只带本插件负责的字段（vendor / model / permission / reasoning）。
+ * 输入槽与配置都是运行记录，已出世界——写口改为 owner 服务命令（`input.write` / `config.write`），
+ * 不再构造世界写 directive；`reasoning` 非字符串表示删除该键（服务侧按 `null` 删除）。
+ */
+export function configPatch(change: unknown): Rec {
+  const patch: Rec = {}
+  if (!isRecord(change)) return patch
+  if (typeof change.vendor === 'string') patch.vendor = change.vendor
+  if (typeof change.model === 'string') patch.model = change.model
+  if (typeof change.permission === 'string') patch.permission = change.permission
+  if (Object.prototype.hasOwnProperty.call(change, 'reasoning')) {
+    patch.params = { reasoning: typeof change.reasoning === 'string' ? change.reasoning : null }
   }
-  for (const key of Object.keys(prev)) {
-    if (Object.prototype.hasOwnProperty.call(next, key)) continue
-    ops.push({ op: 'delete', path: [key] })
-  }
-  return ops
+  return patch
 }
 
-/** 输入槽补丁：按线程键 `replace ["slots", key]` / `delete ["slots", key]`。 */
-function slotPatches(prev: { [key: string]: Json }, next: { [key: string]: Json }): Json[] {
-  const prevSlots = isRecord(prev.slots) ? prev.slots : {}
-  const nextSlots = isRecord(next.slots) ? next.slots : {}
-  const ops: Json[] = []
-  for (const key of Object.keys(nextSlots)) {
-    if (JSON.stringify(prevSlots[key]) !== JSON.stringify(nextSlots[key])) {
-      ops.push({ op: 'replace', path: ['slots', key], value: nextSlots[key] })
-    }
-  }
-  for (const key of Object.keys(prevSlots)) {
-    if (Object.prototype.hasOwnProperty.call(nextSlots, key)) continue
-    ops.push({ op: 'delete', path: ['slots', key] })
-  }
-  return ops
+/** 输入槽写口：`input` owner 的 `input.write` 命令（服务写自有持久存储）。 */
+export function slotWriteCommand(threadKey: string, slot: unknown): { name: string; args: Rec } {
+  return { name: 'input.write', args: { thread: threadKey, slot: (slot ?? null) as Json } }
 }
 
-/** 身份写指令：有数据世代（`dataGen.seq`）且补丁非空 ⇒ `put({ops}) + add_gen(base)`；否则整份 put。 */
-export function writeDirective(
-  identity: string,
-  prev: unknown,
-  next: Json,
-  expectActive?: string | null,
-  dataGen?: unknown,
-): Rec {
-  const base = dataGenSeq(dataGen)
-  if (base !== null && isRecord(prev) && isRecord(next)) {
-    const patches = identity === 'input' ? slotPatches(prev, next) : bodyPatches(prev, next)
-    if (patches.length > 0) {
-      return {
-        kind: 'write',
-        request: {
-          op: 'batch',
-          args: { ops: [{ op: 'put', args: { body: { ops: patches } } }, { op: 'add_gen', args: addGenArgs(identity, expectActive, base) }] },
-        },
-      }
-    }
-  }
-  return {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body: next } },
-          { op: 'add_gen', args: addGenArgs(identity, expectActive) },
-        ],
-      },
-    },
-  }
-}
-
-/** `input` 槽写指令：有数据世代则补丁 + `base`，否则整份 `put` + `add_gen`（同一批）。 */
-export function slotWriteDirective(prev: unknown, next: Json, expectActive?: string | null, dataGen?: unknown): Rec {
-  return writeDirective('input', prev, next, expectActive, dataGen)
-}
-
-/** `config` 写指令：有数据世代则补丁 + `base`，否则整份 `put` + `add_gen`（同一批）。 */
-export function configWriteDirective(prev: unknown, next: Json, expectActive?: string | null, dataGen?: unknown): Rec {
-  return writeDirective('config', prev, next, expectActive, dataGen)
+/** 配置写口：`config` owner 的 `config.write` 命令（服务按补丁读-改-写自有持久存储）。 */
+export function configWriteCommand(patch: Rec): { name: string; args: Rec } {
+  return { name: 'config.write', args: { patch } }
 }
 
 // ── 待发队列（内存、per-thread 键控） ──────────────────────────────────────

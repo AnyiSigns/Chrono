@@ -68,6 +68,19 @@ add_gen                 # {id, payload:{"$n":commitIndex}, sig:同, pins}
 - 产出 `{$directives:[{kind:"write",request:{op:"batch",args:{ops}}},{kind:"extern",payload}]}`；
   **本插件不落账、不入队、不等审批**。
 
+## 运行记录判定（本批不迁移）
+
+判据两问：**回滚该不该带上它**、**判定 / 门禁 / 重放要不要从世界读它**。
+
+| 数据 | 判定 | 理由 |
+| --- | --- | --- |
+| `plugin.write` 的写计划（blob / tree / commit / schema / `add_identity` / `add_gen`） | **定义（留世界）** | 插件源码世代即定义本体；回滚要带上、装配 / 重放要从世界读它 |
+| `plugin.validate` 的 `result_hash` 凭据 | **可重算缓存（留 ③）** | 已住 `CHRONO_PLUGIN_STATE`，不进世界；删了可重算 |
+| 可见性黑名单（`sandbox` / `plugin-admin`） | **代码常量（留包内）** | 随代码入世；放世界数据等于可被其它写路径 `add_gen` 绕过 |
+
+**结论**：本插件**无运行记录出世界**——它没有界面偏好，`plugin.write` 是定义平面写方（正确留世界），
+黑名单是代码而非世界数据。故本批不改 `methods.ts` / `visibility.ts` 的写路径，只补本判定表。
+
 ## 工具面（`plugin-admin.describe`）
 
 四个工具（全局唯一名）各带**描述四要素**（`intent` / `when_to_use` / `param_semantics` / `boundaries`）

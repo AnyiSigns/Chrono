@@ -21,6 +21,7 @@
   "pins": {
     "session": "session",
     "workspace": "workspace",
+    "input": "input",
     "host": "host"
   },
   "start": "node execute/main.js",

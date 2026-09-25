@@ -11,14 +11,13 @@ import { exportBody, exportFilename, messagesOf } from './export.ts'
 import { formatText, messageText } from './messages.ts'
 import type { MessageTable } from './messages.ts'
 import {
+  configWriteCommand,
   isRecord,
-  identityActive,
   identityBody,
-  identityDataGen,
-  identityWriteDirective,
   isCodeGenFallbackBody,
   normalizeConversations,
   normalizeWorkspaces,
+  slotWriteCommand,
 } from './sidebar-model.ts'
 import type { Conversation, Workspace } from './sidebar-model.ts'
 import {
@@ -281,14 +280,9 @@ export class SidebarStore {
   }
 
   private async writeSlot(slot: any): Promise<unknown> {
-    const read = await this.command('input.read', { thread: THREAD })
-    if (!read.ok) return { ok: false, code: 'not_loaded' }
-    const body = identityBody(read.value)
-    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
-    if (!isRecord(body) || isCodeGenFallbackBody(body)) return { ok: false, code: 'not_loaded' }
-    const slots = isRecord(body['slots']) ? { ...body['slots'], [THREAD]: slot } : { [THREAD]: slot }
-    const directive = identityWriteDirective('input', body, { ...body, slots }, identityActive(read.value), identityDataGen(read.value))
-    return this.ctx.submit([directive] as any, { thread: THREAD })
+    // 输入槽是运行记录，已出世界：写走 `input.write` 命令（服务按线程键写自有持久存储）。
+    const built = slotWriteCommand(THREAD, slot)
+    return this.command(built.name, built.args)
   }
 
   private async loadWorkspaces(): Promise<boolean> {
@@ -822,16 +816,9 @@ export class SidebarStore {
   }
 
   private async persistWidth(): Promise<void> {
-    const result = await this.command('config.read', null)
-    if (!result.ok) return
-    const config = identityBody(result.value)
-    // 读到代码世代回落 body（无数据世代）→ 未就绪，拒写以免污染身份。
-    if (!isRecord(config) || isCodeGenFallbackBody(config)) return
-    const ui = isRecord(config['ui']) ? { ...config['ui'] } : {}
-    ui['sidebar_width'] = clampWidth(this.snapshot.storedWidth)
-    const body = { ...config, ui }
-    const directive = identityWriteDirective('config', config, body, identityActive(result.value), identityDataGen(result.value))
-    await this.ctx.submit([directive] as any)
+    // 侧栏宽度是运行记录（界面偏好），已出世界：写走 `config.write` 命令（只带补丁，读-改-写归 owner）。
+    const built = configWriteCommand({ ui: { sidebar_width: clampWidth(this.snapshot.storedWidth) } })
+    await this.command(built.name, built.args)
   }
 
   // ---- 提示 ----

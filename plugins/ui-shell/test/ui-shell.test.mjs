@@ -38,7 +38,7 @@ import {
 import { buildForwardArgs, forwardCommandName, routeOf } from '../execute/routes.ts'
 import { identityInvalidatesHeadless } from '../execute/identity-events.ts'
 import { createUiState, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
-import { identityActive, identityBody, identityDataGen, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
+import { identityActive, identityBody, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
 import { createSlotRegistry, normalizeTarget } from '../execute/web/lib/slot-registry.js'
 import { createSlotHost } from '../execute/web/lib/slots.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
@@ -52,7 +52,7 @@ import {
   webDirOf,
 } from '../execute/assets.ts'
 import { FALLBACK_MESSAGES, loadMessages, lookupMessage, MESSAGE_ALIASES, MESSAGE_PREFIXES, missingPrefixes, parseMessages } from '../execute/messages.ts'
-import { BOOTSTRAP_PLACEHOLDER, directivesTouchConfig, injectBootstrap, startUiServer, themeWriteDirective } from '../execute/http-server.ts'
+import { BOOTSTRAP_PLACEHOLDER, injectBootstrap, startUiServer } from '../execute/http-server.ts'
 import {
   firstFrameScript,
   injectThemeScript,
@@ -490,33 +490,24 @@ test('uiState：未登记键告警并忽略（新增键须先登记）', () => {
   assert.equal(state.set('boot_mode', 'ready'), true)
 })
 
-// ---- 主题写指令防护 ----
+// ---- 主题写口（运行记录出世界） ----
 
-test('themeWriteDirective：tree 形态拒写、落 config 用 day/night 词表', () => {
-  assert.equal(themeWriteDirective('dark', { tree: 'abc' }), null)
-  assert.equal(themeWriteDirective('dark', 'nope'), null)
-  const directive = themeWriteDirective('dark', { vendor: 'x', ui: { theme: 'day', other: 1 } })
-  const body = directive.request.args.ops[0].args.body
-  assert.equal(body.vendor, 'x')
-  assert.equal(body.ui.theme, 'night')
-  assert.equal(body.ui.other, 1)
-  assert.equal(directive.request.args.ops[1].args.id, 'config')
-  // 无配置：从空 body 起写
-  const fresh = themeWriteDirective('light', null)
-  assert.deepEqual(fresh.request.args.ops[0].args.body, { ui: { theme: 'day' } })
-  assert.equal(themeWriteDirective('system', null).request.args.ops[0].args.body.ui.theme, 'system')
-})
-
-test('themeWriteDirective：expect_active 显式条件写（undefined 省略 / null 保留）', () => {
-  const hash = 'a'.repeat(64)
-  const withActive = themeWriteDirective('dark', { vendor: 'x' }, hash)
-  assert.equal(withActive.request.args.ops[1].args.expect_active, hash)
-  const withNull = themeWriteDirective('dark', { vendor: 'x' }, null)
-  assert.equal(withNull.request.args.ops[1].args.expect_active, null)
-  const omitted = themeWriteDirective('dark', { vendor: 'x' })
-  assert.equal('expect_active' in omitted.request.args.ops[1].args, false)
-  // tree 回落 body 仍拒写（与 expect_active 无关）
-  assert.equal(themeWriteDirective('dark', { tree: 'x' }, hash), null)
+test('主题写口：走 config.write 命令且只带补丁，不构造世界写 directive', () => {
+  const calls = []
+  const fakeBridge = {
+    async command(name, args) {
+      calls.push({ name, args })
+      return { ok: true, frame: { kind: 'result', status: 'done' }, code: '', message: '' }
+    },
+  }
+  // 直接复用 handleTheme 的命令形状：与 http-server 内一致（命令名 + patch.ui.theme）。
+  const pref = normalizeThemePref('night')
+  const patch = { ui: { theme: toConfigTheme(pref) } }
+  return fakeBridge.command('config.write', { patch }).then(() => {
+    assert.deepEqual(calls, [{ name: 'config.write', args: { patch: { ui: { theme: 'night' } } } }])
+    assert.equal(JSON.stringify(calls).includes('add_gen'), false)
+    assert.equal(JSON.stringify(calls).includes('$directives'), false)
+  })
 })
 
 test('identity-shape：身份视图拆 body/active、tree 回落判据、裸 body 兼容', () => {
@@ -581,29 +572,6 @@ test('slot 宿主：无 DOM 时 register 只入簿不渲染，非法组件 / 陈
   assert.equal(host.register('p1', 'main', () => null, 1), false, '陈旧装载被拒')
   assert.equal(host.register('p1', 'main', null, 2), false, '组件非函数被拒')
   assert.ok(logs.some((line) => line.includes('stale')))
-})
-
-test('directivesTouchConfig：仅 config 身份的 add_gen 命中', () => {  const configWrite = {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body: { vendor: 'x' } } },
-          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-        ],
-      },
-    },
-  }
-  const inputWrite = {
-    kind: 'write',
-    request: { op: 'batch', args: { ops: [{ op: 'add_gen', args: { id: 'input' } }] } },
-  }
-  assert.equal(directivesTouchConfig([configWrite]), true)
-  assert.equal(directivesTouchConfig([{ kind: 'extern', payload: { a: 1 } }]), false)
-  assert.equal(directivesTouchConfig([inputWrite]), false)
-  assert.equal(directivesTouchConfig([]), false)
-  assert.equal(directivesTouchConfig(null), false)
 })
 
 // ---- toast ----
@@ -1133,6 +1101,9 @@ function fakeServerDeps(overrides = {}) {
       async configRead() {
         return { ok: true, value: {}, code: '', message: '' }
       },
+      async command() {
+        return { ok: true, frame: { kind: 'result', status: 'done' }, code: '', message: '' }
+      },
       async submit() {
         return { ok: true, frame: { kind: 'accepted', run: 'r1' }, code: '', message: '' }
       },
@@ -1142,8 +1113,6 @@ function fakeServerDeps(overrides = {}) {
     headlessSource: () => null,
     uiSource: () => null,
     applyThemePref: () => {},
-    refreshConfig: () => {},
-    trackConfigRun: () => {},
     log: () => {},
     ...overrides,
   }
@@ -1193,19 +1162,16 @@ test('壳静态资源：降级留痕（缺 sprite 时落日志，且同样 no-st
   }
 })
 
-test('/api/theme：落 config 用 day/night 词表，回包 / 运行态用 light/dark', async () => {
+test('/api/theme：走 config.write 命令用 day/night 词表，回包 / 运行态用 light/dark', async () => {
   const port = await freePort()
-  let submitted = null
+  const commands = []
   const applied = []
   const server = await startUiServer(
     fakeServerDeps({
       bridge: {
-        async configRead() {
-          return { ok: true, value: { vendor: 'x', ui: { theme: 'day' } }, code: '', message: '' }
-        },
-        async submit(directives) {
-          submitted = directives
-          return { ok: true, frame: { kind: 'accepted', run: 'r1', status: 'done' }, code: '', message: '' }
+        async command(name, args) {
+          commands.push({ name, args })
+          return { ok: true, frame: { kind: 'result', status: 'done' }, code: '', message: '' }
         },
       },
       applyThemePref: (pref) => applied.push(pref),
@@ -1218,114 +1184,38 @@ test('/api/theme：落 config 用 day/night 词表，回包 / 运行态用 light
     assert.equal(payload.ok, true)
     assert.equal(payload.theme, 'dark')
     assert.deepEqual(applied, ['dark'])
-    const body = submitted[0].request.args.ops[0].args.body
-    assert.equal(body.vendor, 'x')
-    assert.equal(body.ui.theme, 'night')
+    assert.deepEqual(commands, [
+      { name: 'config.write', args: { patch: { ui: { theme: 'night' } } } },
+    ])
+    assert.equal(JSON.stringify(commands).includes('add_gen'), false)
+    assert.equal(JSON.stringify(commands).includes('$directives'), false)
   } finally {
     await server.close()
   }
 })
 
-test('/api/submit：config 写记 run 待终局重推，无 run 时立即重推', async () => {
+test('/api/submit：原样转发 directives，不解释是否写 config', async () => {
   const port = await freePort()
-  let refreshes = 0
-  const tracked = []
-  const configWrite = {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body: { vendor: 'deepseek' } } },
-          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-        ],
-      },
-    },
-  }
-  const server = await startUiServer(
-    fakeServerDeps({
-      refreshConfig: () => {
-        refreshes += 1
-      },
-      trackConfigRun: (run) => tracked.push(run),
-    }),
-    port,
-  )
-  try {
-    const configResult = await postJsonTo(port, '/api/submit', { directives: [configWrite] })
-    assert.equal(configResult.status, 202)
-    assert.deepEqual(tracked, ['r1'])
-    assert.equal(refreshes, 0)
-    const otherResult = await postJsonTo(port, '/api/submit', {
-      directive: { kind: 'extern', payload: { a: 1 } },
-    })
-    assert.equal(otherResult.status, 202)
-    assert.deepEqual(tracked, ['r1'])
-    assert.equal(refreshes, 0)
-  } finally {
-    await server.close()
-  }
-})
-
-test('/api/submit：config 写回帧已终局（result / 无 run）时立即重推', async () => {
-  const port = await freePort()
-  let refreshes = 0
-  const configWrite = {
-    kind: 'write',
-    request: {
-      op: 'batch',
-      args: {
-        ops: [
-          { op: 'put', args: { body: { vendor: 'deepseek' } } },
-          { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-        ],
-      },
-    },
-  }
+  const submitted = []
   const server = await startUiServer(
     fakeServerDeps({
       bridge: {
-        async configRead() {
-          return { ok: true, value: {}, code: '', message: '' }
+        async submit(directives) {
+          submitted.push(directives)
+          return { ok: true, frame: { kind: 'accepted', run: 'r1' }, code: '', message: '' }
         },
-        async submit() {
-          return { ok: true, frame: { kind: 'result', run: 'r9', status: 'done' }, code: '', message: '' }
-        },
-      },
-      refreshConfig: () => {
-        refreshes += 1
       },
     }),
     port,
   )
   try {
-    const result = await postJsonTo(port, '/api/submit', { directives: [configWrite] })
+    const result = await postJsonTo(port, '/api/submit', {
+      directives: [{ kind: 'extern', payload: { a: 1 } }],
+    })
     assert.equal(result.status, 202)
-    assert.equal(refreshes, 1)
+    assert.equal(submitted.length, 1)
+    assert.deepEqual(submitted[0], [{ kind: 'extern', payload: { a: 1 } }])
   } finally {
     await server.close()
   }
-})
-
-test('主题写指令：有 data_gen 写 config 补丁 + base；空改动回落整份', () => {
-  const config = { version: 1, ui: { theme: 'day', sidebar_width: 240 } }
-  const full = themeWriteDirective('night', config)
-  assert.equal(full.request.args.ops.length, 2)
-  assert.equal(Array.isArray(full.request.args.ops[0].args.body.ops), false)
-
-  const patched = themeWriteDirective('night', config, undefined, { seq: 9, payload: 'a'.repeat(64) })
-  const ops = patched.request.args.ops
-  assert.equal(ops[1].args.base, 9)
-  assert.deepEqual(ops[0].args.body.ops, [
-    { op: 'replace', path: ['ui'], value: { theme: 'night', sidebar_width: 240 } },
-  ])
-
-  // 空改动（主题未变）回落整份世代，不带 base。
-  const empty = themeWriteDirective('day', config, undefined, { seq: 9, payload: 'a'.repeat(64) })
-  assert.equal(empty.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
-
-  // 身份视图拆 data_gen。
-  assert.deepEqual(identityDataGen({ active: null, body: config, data_gen: { seq: 9 } }), { seq: 9 })
-  assert.equal(identityDataGen({ version: 1 }), undefined)
 })

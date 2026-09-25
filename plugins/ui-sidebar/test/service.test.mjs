@@ -15,7 +15,6 @@ import {
   assembleRevealArgs,
   assembleSessionArgs,
   assembleWorkspaceListArgs,
-  assembleWorkspaceWriteArgs,
   createHandlers,
   identityBody,
   identityRefs,
@@ -89,7 +88,8 @@ test('投影取用：identityBody / identityRefs / slotOf / threadKeyOf', () => 
 
 test('会话装配：{session, slots, thread_id, slot}；缺身份即失败码', () => {
   const ids = idsFixture()
-  const assembled = assembleSessionArgs(ids, { thread: null })
+  const input = { body: ids.input.body, slot: ids.input.body.slots._main }
+  const assembled = assembleSessionArgs(ids, { thread: null }, input)
   assert.equal(assembled.ok, true)
   assert.deepEqual(assembled.args, {
     session: ids.session.body,
@@ -97,56 +97,45 @@ test('会话装配：{session, slots, thread_id, slot}；缺身份即失败码',
     thread_id: '_main',
     slot: ids.input.body.slots._main,
   })
-  const threaded = assembleSessionArgs(ids, { thread: 't1' })
+  const threaded = assembleSessionArgs(ids, { thread: 't1' }, {
+    body: ids.input.body,
+    slot: ids.input.body.slots.t1,
+  })
   assert.equal(threaded.args.thread_id, 't1')
   assert.deepEqual(threaded.args.slot, { kind: 'session.select', conversation: 'c1' })
-  assert.equal(assembleSessionArgs({}, { thread: null }).code, 'session_missing')
-  assert.equal(assembleSessionArgs({ session: { body: {} } }, { thread: null }).code, 'input_missing')
+  assert.equal(assembleSessionArgs({}, { thread: null }, input).code, 'session_missing')
+  assert.equal(assembleSessionArgs({ session: { body: {} } }, { thread: null }, null).code, 'input_missing')
 })
 
-test('分支装配：补源链 refs；工作区装配：body + slots；列表装配：workspaces', () => {
+test('分支装配：补源链 refs；列表装配：服务读自有存储（无参）', () => {
   const ids = idsFixture()
-  const branch = assembleBranchArgs(ids, { thread: null })
+  const input = { body: ids.input.body, slot: ids.input.body.slots._main }
+  const branch = assembleBranchArgs(ids, { thread: null }, input)
   assert.deepEqual(branch.args.refs, ids.session.refs)
-  const write = assembleWorkspaceWriteArgs(ids, { thread: null })
-  assert.deepEqual(write.args, {
-    body: ids.workspace.body,
-    slots: ids.input.body,
-    thread_id: '_main',
-    slot: ids.input.body.slots._main,
-  })
-  assert.deepEqual(assembleWorkspaceListArgs(ids), { workspaces: ids.workspace.body.workspaces })
-  assert.deepEqual(assembleWorkspaceListArgs({}), { workspaces: [] })
+  assert.deepEqual(assembleWorkspaceListArgs(ids), {})
+  assert.deepEqual(assembleWorkspaceListArgs({}), {})
 })
 
-test('工作区写装配：投影回落代码 body（无 workspaces）时归一为规范空体，不误传代码体', () => {
-  const ids = idsFixture()
-  // 无数据世代：投影 body 回落代码 commit body（{meta,tree}）
-  ids.workspace = { body: { meta: { name: 'workspace', version: 1 }, tree: 'a'.repeat(64) } }
-  const write = assembleWorkspaceWriteArgs(ids, { thread: null })
-  assert.deepEqual(write.args.body, { version: 1, workspaces: [] })
-  assert.equal(Object.hasOwn(write.args.body, 'tree'), false, '不得把代码体字段带进工作区数据体')
-})
-
-test('reveal 装配：只取 id 与列表；缺 id 抛 BadArgsError', () => {
+test('reveal 装配：只取 id；缺 id 抛 BadArgsError', () => {
   assert.deepEqual(assembleRevealArgs({ workspace: 'w1', workspaces: [{ id: 'w1', path: '/a' }] }), {
     workspace: 'w1',
-    workspaces: [{ id: 'w1', path: '/a' }],
   })
-  assert.deepEqual(assembleRevealArgs({ workspace: 'w1' }), { workspace: 'w1', workspaces: [] })
+  assert.deepEqual(assembleRevealArgs({ workspace: 'w1' }), { workspace: 'w1' })
   assert.throws(() => assembleRevealArgs({}), BadArgsError)
   assert.throws(() => assembleRevealArgs(null), BadArgsError)
 })
 
 // ---- 方法处理器：服务装配 + 反向调用 args ----
 
-test('newConversation：装配槽体后反向调 session.new_conversation，计划原样上提', async () => {
+test('newConversation：从 input 服务读槽后装配，反向调 session.new_conversation，结果原样上提', async () => {
   const ids = idsFixture()
   const plan = sessionPlan({ ok: true, conversation: 'c2' })
   const session = recordingPort({ ok: true, value: plan })
   const workspace = recordingPort({ ok: true, value: null })
-  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace })
+  const input = recordingPort({ ok: true, value: ids.input.body })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace, input })
   const value = await handlers.newConversation(ids, { run: 'r', thread: null, now: 0 })
+  assert.deepEqual(input.calls, [{ port: 'input', method: 'read', args: {} }])
   assert.deepEqual(session.calls, [
     {
       port: 'session',
@@ -172,7 +161,8 @@ test('select / rename / delete / restore：各自反向调同名 session 方法'
   ]) {
     const plan = sessionPlan({ ok: true, method })
     const session = recordingPort({ ok: true, value: plan })
-    const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+    const input = recordingPort({ ok: true, value: ids.input.body })
+    const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }), input })
     const value = await handlers[handler](ids, { run: null, thread: null, now: 0 })
     assert.equal(session.calls.length, 1)
     assert.equal(session.calls[0].port, 'session')
@@ -184,7 +174,8 @@ test('select / rename / delete / restore：各自反向调同名 session 方法'
 test('branch：反向调 session.branch 且携带 refs', async () => {
   const ids = idsFixture()
   const session = recordingPort({ ok: true, value: sessionPlan({ ok: true, conversation: 'c9' }) })
-  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+  const input = recordingPort({ ok: true, value: ids.input.body })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }), input })
   await handlers.branchConversation(ids, { run: null, thread: null, now: 0 })
   assert.equal(session.calls[0].method, 'branch')
   assert.deepEqual(session.calls[0].args.refs, ids.session.refs)
@@ -193,24 +184,30 @@ test('branch：反向调 session.branch 且携带 refs', async () => {
 test('per-thread 槽键控：env.thread 决定 thread_id 与所读槽键（缺省 _main）', async () => {
   const ids = idsFixture()
   const session = recordingPort({ ok: true, value: sessionPlan({ ok: true }) })
-  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+  const input = recordingPort({ ok: true, value: ids.input.body })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }), input })
   await handlers.selectConversation(ids, { run: null, thread: 't1', now: 0 })
   assert.equal(session.calls[0].args.thread_id, 't1')
   assert.deepEqual(session.calls[0].args.slot, { kind: 'session.select', conversation: 'c1' })
 })
 
-test('工作区写类：add / remove 反向调 workspace，携带 body + slots', async () => {
+test('工作区写类：add / remove 从 input 服务读槽 → 反向调 workspace → 经 input.clear 清槽', async () => {
   const ids = idsFixture()
-  const workspace = recordingPort({ ok: true, value: sessionPlan({ ok: true, workspace: 'w1' }) })
-  const handlers = createHandlers({ identity: 'ui-sidebar', session: recordingPort({ ok: true, value: null }), workspace })
+  const workspace = recordingPort({ ok: true, value: { ok: true, workspace: 'w1' } })
+  const input = recordingPort({ ok: true, value: { slots: { _main: { kind: 'workspace.add', path: '/a' } } } })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session: recordingPort({ ok: true, value: null }), workspace, input })
   await handlers.addWorkspace(ids, { run: null, thread: null, now: 0 })
+  assert.deepEqual(input.calls[0], { port: 'input', method: 'read', args: { thread: '_main' } })
   assert.deepEqual(workspace.calls[0], {
     port: 'workspace',
     method: 'add',
-    args: { body: ids.workspace.body, slots: ids.input.body, thread_id: '_main', slot: ids.input.body.slots._main },
+    args: { slot: { kind: 'workspace.add', path: '/a' }, thread_id: '_main' },
   })
+  assert.deepEqual(input.calls[1], { port: 'input', method: 'clear', args: { thread_id: '_main' } })
   await handlers.removeWorkspace(ids, { run: null, thread: null, now: 0 })
   assert.equal(workspace.calls[1].method, 'remove')
+  assert.deepEqual(input.calls[2], { port: 'input', method: 'read', args: { thread: '_main' } })
+  assert.deepEqual(input.calls[3], { port: 'input', method: 'clear', args: { thread_id: '_main' } })
 })
 
 test('读命令与纯动作：list / pick / reveal 反向调用并外包 extern', async () => {
@@ -218,7 +215,7 @@ test('读命令与纯动作：list / pick / reveal 反向调用并外包 extern'
   const workspace = recordingPort({ ok: true, value: [{ id: 'w1', name: 'A', path: '/a', missing: false }] })
   const handlers = createHandlers({ identity: 'ui-sidebar', session: recordingPort({ ok: true, value: null }), workspace })
   const list = await handlers.listWorkspaces(ids, { run: null, thread: null, now: 0 })
-  assert.deepEqual(workspace.calls[0], { port: 'workspace', method: 'list', args: { workspaces: ids.workspace.body.workspaces } })
+  assert.deepEqual(workspace.calls[0], { port: 'workspace', method: 'list', args: {} })
   assert.deepEqual(list, { $directives: [{ kind: 'extern', payload: [{ id: 'w1', name: 'A', path: '/a', missing: false }] }] })
   await handlers.pickWorkspace(null, { run: null, thread: null, now: 0 })
   assert.deepEqual(workspace.calls[1], { port: 'workspace', method: 'pick', args: {} })
@@ -226,7 +223,7 @@ test('读命令与纯动作：list / pick / reveal 反向调用并外包 extern'
   assert.deepEqual(workspace.calls[2], {
     port: 'workspace',
     method: 'reveal',
-    args: { workspace: 'w1', workspaces: [{ id: 'w1', path: '/a' }] },
+    args: { workspace: 'w1' },
   })
 })
 
@@ -238,7 +235,9 @@ test('装配失败 / 反向调用失败：只回 extern 错误，不构造写计
   assert.equal(missing.$directives[0].payload.error.code, 'session_missing')
 
   const ids = idsFixture()
-  const value = await handlers.selectConversation(ids, { run: null, thread: null, now: 0 })
+  const input = recordingPort({ ok: true, value: ids.input.body })
+  const threaded = createHandlers({ identity: 'ui-sidebar', session: failed, workspace: failed, input })
+  const value = await threaded.selectConversation(ids, { run: null, thread: null, now: 0 })
   assert.equal(value.$directives[0].payload.error.code, 'not_loaded')
 })
 
@@ -382,7 +381,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping')
     assert.equal(messages.find((message) => message.id === 'c1').value.pong, true)
 
-    // 反向调用：newConversation 发 port.call session.new_conversation。
+    // 反向调用：newConversation 先问 input.read 取本线程槽，再发 session.new_conversation。
     child.stdin.write(
       encode({
         v: '1',
@@ -397,8 +396,21 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
         },
       }),
     )
-    await waitFor(() => messages.some((message) => message.kind === 'port.call'), 'port.call')
-    const portCall = messages.find((message) => message.kind === 'port.call')
+    await waitFor(() => messages.filter((message) => message.kind === 'port.call').length >= 1, 'input.read port.call')
+    const inputCall = messages.filter((message) => message.kind === 'port.call')[0]
+    assert.equal(inputCall.port, 'input')
+    assert.equal(inputCall.method, 'read')
+    child.stdin.write(
+      encode({
+        v: '1',
+        id: inputCall.id,
+        kind: 'port.result',
+        ok: true,
+        value: { slots: { _main: { kind: 'session.new', workspace_id: 'w1' } } },
+      }),
+    )
+    await waitFor(() => messages.filter((message) => message.kind === 'port.call').length >= 2, 'session port.call')
+    const portCall = messages.filter((message) => message.kind === 'port.call')[1]
     assert.equal(portCall.port, 'session')
     assert.equal(portCall.method, 'new_conversation')
     assert.equal(portCall.args.thread_id, '_main')

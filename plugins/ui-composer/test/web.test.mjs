@@ -1,5 +1,5 @@
 // 浏览器视图层纯函数测试（node --test）：配置合并、模型 / 推理档位推导与塌缩、
-// 待发队列迁移、槽 / 配置写指令、上下文用量格式与阈值、附件分类、下拉键盘状态机、文案兜底。
+// 待发队列迁移、槽 / 配置写口命令、上下文用量格式与阈值、附件分类、下拉键盘状态机、文案兜底。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -12,7 +12,8 @@ import {
   PERMISSIONS,
   buildMessageSlot,
   collapseReasoning,
-  configWriteDirective,
+  configPatch,
+  configWriteCommand,
   currentModelOf,
   currentReasoningOf,
   currentVendorOf,
@@ -25,7 +26,6 @@ import {
   isCodeGenFallbackBody,
   matchesThread,
   mergeConfig,
-  mergeSlotBody,
   messageRowLabel,
   messageSummary,
   modelsOf,
@@ -40,7 +40,7 @@ import {
   removeFromQueue,
   runIdOf,
   runKeyOf,
-  slotWriteDirective,
+  slotWriteCommand,
   sourceRows,
   threadKeyOf,
   trimmedRows,
@@ -212,47 +212,30 @@ test('槽载荷与写指令：只覆盖本线程键', () => {
     attachments: [],
   })
 
-  const body = mergeSlotBody({ slots: { _main: { kind: 'idle' } } }, 't1', slot)
-  assert.deepEqual(Object.keys(body.slots).sort(), ['_main', 't1'])
-  assert.equal(body.slots.t1.text, 'hi')
+  const slotCmd = slotWriteCommand('t1', slot)
+  assert.deepEqual(slotCmd, { name: 'input.write', args: { thread: 't1', slot } })
+  assert.equal(JSON.stringify(slotCmd).includes('add_gen'), false, '不再构造世界写 directive')
+  assert.equal(JSON.stringify(slotCmd).includes('$directives'), false)
+})
 
-  const directive = slotWriteDirective({ slots: {} }, body)
-  assert.equal(directive.kind, 'write')
-  assert.equal(directive.request.op, 'batch')
-  assert.deepEqual(directive.request.args.ops[1].args, {
-    id: 'input',
-    payload: { $n: 0 },
-    sig: { $n: 0 },
-    pins: {},
+test('配置写口：补丁只带本插件负责字段；reasoning 非字符串即删除', () => {
+  assert.deepEqual(configPatch({ vendor: 'v', model: 'm', permission: 'auto', reasoning: 'high' }), {
+    vendor: 'v',
+    model: 'm',
+    permission: 'auto',
+    params: { reasoning: 'high' },
   })
-  assert.deepEqual(directive.request.args.ops[0].args.body, body)
-
-  const configDirective = configWriteDirective({}, { version: 1 })
-  assert.equal(configDirective.request.args.ops[1].args.id, 'config')
+  assert.deepEqual(configPatch({ reasoning: null }), { params: { reasoning: null } })
+  assert.deepEqual(configPatch({ reasoning: 3 }), { params: { reasoning: null } })
+  assert.deepEqual(configPatch({}), {})
+  assert.deepEqual(configPatch(null), {})
+  const cmd = configWriteCommand({ ui: { theme: 'night' } })
+  assert.deepEqual(cmd, { name: 'config.write', args: { patch: { ui: { theme: 'night' } } } })
+  assert.equal(JSON.stringify(cmd).includes('add_gen'), false)
 })
 
-test('写指令补丁世代：有 data_gen 写补丁 + base；空改动回落整份', () => {
-  const prev = { slots: { t1: { kind: 'chat.message', text: 'hi' } } }
-  const next = { slots: { t1: { kind: 'idle' } } }
-  const patched = slotWriteDirective(prev, next, undefined, { seq: 4, payload: 'a'.repeat(64) })
-  const ops = patched.request.args.ops
-  assert.equal(ops[1].args.base, 4)
-  assert.deepEqual(ops[0].args.body.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
-
-  const empty = configWriteDirective(prev, prev, undefined, { seq: 4 })
-  assert.equal(empty.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
-})
-
-test('写指令：expect_active 显式条件写；身份视图拆 body/active', () => {
+test('身份视图拆 body/active；代码世代回落判据', () => {
   const hash = 'c'.repeat(64)
-  const slotWrite = slotWriteDirective({ slots: {} }, { slots: {} }, hash)
-  assert.equal(slotWrite.request.args.ops[1].args.expect_active, hash)
-  const slotOmitted = slotWriteDirective({ slots: {} }, { slots: {} })
-  assert.equal('expect_active' in slotOmitted.request.args.ops[1].args, false)
-  const configWrite = configWriteDirective({}, { version: 1 }, null)
-  assert.equal(configWrite.request.args.ops[1].args.expect_active, null)
-
   const view = { active: hash, body: { version: 1 } }
   assert.deepEqual(identityBody(view), { version: 1 })
   assert.equal(identityActive(view), hash)
@@ -487,9 +470,11 @@ function fakeComposerCtx() {
       if (name === 'input.read') {
         return { ok: true, value: { active: 'a', body: { version: 1, slots: {} } } }
       }
+      if (name === 'input.write') return { ok: true, value: { ok: true, thread: 't' } }
       if (name === 'config.read') {
         return { ok: true, value: { active: 'a', body: { version: 1, vendor: 'v', model: 'm' } } }
       }
+      if (name === 'config.write') return { ok: true, value: { ok: true } }
       if (name === 'chat.send') return { ok: true, value: null }
       return { ok: false, code: 'unknown', value: null }
     },

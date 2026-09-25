@@ -73,11 +73,11 @@ test('构建声明：npm ci + esbuild 打包脚本，令牌过白名单且不含
   assert.match(script, /dist\/entry\.js/, '构建脚本产物应为 dist/entry.js')
 })
 
-test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；pins 两条（session / workspace）', () => {
+test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；pins 三条（session / workspace / input）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-sidebar'])
   assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES })
-  assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace', host: 'host' })
+  assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace', input: 'input', host: 'host' })
 })
 
 test('members = execute + term；命令入口 term 全部存在且形状为 eff 到本插件能力类', () => {

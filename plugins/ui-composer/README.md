@@ -5,8 +5,7 @@
 业务状态住 React-free store；服务半边只做健康占位与客户端半边产物只读交付。
 
 - 能力类：`ui-composer`（方法 `ping`、`client.read`；UI 插件统一 `ui-<身份名>`、互不 pin）。
-- `pins`：无（不发 `eff`）；命令 / 提交经壳 api 按名调（`ctx.command` / `ctx.submit` /
-  `ctx.cancel`），不再自建 HTTP 面。
+- `pins`：无（不发 `eff`）；命令经壳 api 按名调（`ctx.command` / `ctx.cancel`），不再自建 HTTP 面。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 构建：`npm ci` + `node execute/build.mjs`（esbuild JS API，externalize 壳 vendor），
@@ -25,11 +24,13 @@
 
 ## 数据路径
 
-1. 浏览器经壳 api 调命令（`ctx.command(name, args, {thread})`），宿主按名路由回投影值。
-2. 写经壳 api `ctx.submit(directives, {thread})`。
-3. 读-改-写：`input.read` 取回整份身份视图，用 `body.slots` 只覆盖本线程键（`active_thread`，缺省 `_main`）
-   后整份 `put` + `add_gen`（读到的 `active` 作 `expect_active`）；`config.read` 同理取回整份配置 body，
-   只改本插件负责的字段后整份 `put` + `add_gen`。读到代码世代回落 body（含 `tree` 键）时回未就绪并退避重试。
+1. 浏览器经壳 api 调命令（`ctx.command(name, args, {thread})`），宿主按名路由。
+2. 运行记录出世界：输入槽与配置**不再构造世界写 directive**（`ctx.submit` 调用为 0）。
+3. **输入槽写口** = `input.write` 命令（`input` owner 写自有持久存储）：`{thread, slot}`，同线程键覆盖即幂等。
+   **配置写口** = `config.write` 命令（`config` owner 按补丁读-改-写自有持久存储）：只带本插件负责的字段
+   （`vendor` / `model` / `permission` / `params.reasoning`），不整份覆盖，故不与主题 / 侧栏宽度的写入互相擦除。
+   命令构造器住 `execute/web/model.ts`（`slotWriteCommand` / `configWriteCommand`），客户端薄封装住 `client.ts`。
+   配置读取仍走只读命令 `config.read`（读到代码世代回落 body 时回未就绪并退避重试）。
 4. 发送 = 写 `chat.message` 槽（`text` + `attachments`）后调无参命令 `chat.send`，信封带
    `thread = active_thread`；终止 = `ctx.cancel(run)`，`run` 取自匹配当前线程的 `run.started`。
    - **前置门禁**：`uiState.active_workspace` 为 `null`（无工作区）→ 提示「请先添加工作目录」；模型未配置 →
@@ -38,6 +39,19 @@
      `workspace_id`（取 `active_workspace`）与 `conversation_id`（新 id），由 `chat.send` 落账时原子建会话。
 5. 附件字节经壳 `ctx.asset.put(mime, bytes)` 入库，世界只存 `{kind:'asset',sha256,mime,size}`
    引用；可解析的文本格式额外内联 `text`。缩略图经 `ctx.asset.get(sha256)` 转 data URL。
+
+## 逐字段判定（本批出世界）
+
+| 字段 | 判定 | 理由 / 写口 |
+| --- | --- | --- |
+| 输入槽 `slots[<thread>]`（`chat.message` 草稿） | 运行记录（出世界） | 用户意图；回滚不该带。写口 = `input.write` |
+| `config.vendor` / `config.model`（当前选择） | 运行记录（出世界） | 用户选择；判定由 owner 读。写口 = `config.write` |
+| `config.params.reasoning` | 运行记录（出世界） | 推理档位选择。写口 = `config.write`（`null` 表示删除） |
+| `config.permission` | **定义 / 判定（留世界）** | 沙箱强制 / 门禁判升级要从世界读；**不随本插件外迁**，仍由 `config` owner 写世界 |
+| `config.providers` / `params` 其余字段 | 定义 / 判定（留世界） | 模型目录与阈值是判定输入，归 `config` owner |
+
+**注**：`config.permission` 是判定输入（`sandbox` / `guard` 读），本批**不**迁出世界；`config.write` 补丁
+若触及它，由 `config` owner 把判定阈值镜像进世界。本插件是写方、非 owner，不声明 `state: durable`。
 
 ## 待发队列与上下文用量
 
