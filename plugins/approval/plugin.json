@@ -22,7 +22,8 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
+  "exclusive": ["data"],
   "members": [
     { "kind": "execute", "path": "execute/" },
     { "kind": "schema", "path": "schema/" }

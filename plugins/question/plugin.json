@@ -6,7 +6,7 @@
     "question": ["describe", "invoke", "list", "sweep"]
   },
   "pins": {
-    "host": "host"
+    "input": "input"
   },
   "start": "node execute/main.ts",
   "protocol": "1",
@@ -24,7 +24,8 @@
     "interval_ms": 10000,
     "timeout_ms": 2000
   },
-  "state": "recomputable",
+  "state": "durable",
+  "exclusive": ["data"],
   "members": [
     { "kind": "term", "path": "terms/" },
     { "kind": "execute", "path": "execute/" },

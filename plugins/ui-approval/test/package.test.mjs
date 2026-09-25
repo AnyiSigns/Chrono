@@ -60,7 +60,7 @@ test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read�
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
-  assert.deepEqual(decl.pins, { approval: 'approval', host: 'host' })
+  assert.deepEqual(decl.pins, { approval: 'approval', input: 'input' })
 })
 
 test('并发安全声明只含纯只读方法：list / client.read；裁决与控制方法留在串行链', () => {
@@ -97,13 +97,14 @@ test('members = execute + term；四条命令入口 term 全部存在且无 args
 })
 
 test('入口 term 形状：eff 到自身能力类；client.read 用 Var 0 取命令 args', () => {
+  // list 读投影切片（影子指标 body）；decide / decide_all 不再传投影（槽由服务经 input.read 取）。
   assert.deepEqual(readJson('terms/approval.list.json'), ['eff', 'ui-approval', 'list', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/approval.decide.json'), ['eff', 'ui-approval', 'decide', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/approval.decide.json'), ['eff', 'ui-approval', 'decide', ['c', null]])
   assert.deepEqual(readJson('terms/approval.decide_all.json'), [
     'eff',
     'ui-approval',
     'decide_all',
-    ['g', ['ids']],
+    ['c', null],
   ])
   assert.deepEqual(readJson('terms/ui-approval.client.read.json'), [
     'eff',

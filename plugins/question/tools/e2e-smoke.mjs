@@ -57,7 +57,10 @@ async function main() {
   try {
     writeFileSync(
       join(root, 'state', 'plugins.json'),
-      JSON.stringify([{ name: 'question', path: QUESTION_DIR }]),
+      JSON.stringify([
+        { name: 'question', path: QUESTION_DIR },
+        { name: 'input', path: join(REPO_ROOT, 'plugins', 'input') },
+      ]),
     )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
@@ -102,12 +105,12 @@ async function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const question = projection.ids['question']
     assert.ok(question, '投影缺 question')
-    assert.deepEqual(question.pins, {}, 'question 无 pins')
+    assert.deepEqual(question.pins, { input: 'input' }, 'question pin input（作答槽 owner）')
     assert.ok(question.gens.length >= 1, 'question 应有代码世代')
-    console.log('离线投影：身份与世代正确、无 pins')
+    console.log('离线投影：身份与世代正确、pins 指向 input')
 
     console.log(`E2E ok（root=${root}）`)
     console.log('注：作答续跑（chat.resume / 记答案 / 清槽）依赖 #14/#33/#1，见文件头说明。')

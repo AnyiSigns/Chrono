@@ -1,16 +1,20 @@
 // `approval` 服务进程入口：服务协议帧循环（docs/protocol.md §二）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影、无写通道：方法只返回写计划与事件。
+// stdin EOF / 管道断开即自退出。服务不读投影、无写链通道：队列与游标写自有持久存储，方法只返回 extern 与事件。
 
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { IDENTITY, IMPLEMENTS, METHODS, PROTOCOL, STATE } from './config.ts'
-import { HANDLERS } from './methods.ts'
+import { createHandlers } from './methods.ts'
+import { ApprovalStore } from './store.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json } from './types.ts'
 import type { Rec } from './plan.ts'
 
 const CAPABILITY = 'approval'
+
+const STORE = ApprovalStore.open()
+const HANDLERS = createHandlers({ store: STORE })
 
 const DECLARED_METHODS = new Set<string>(
   Array.isArray(METHODS[CAPABILITY])

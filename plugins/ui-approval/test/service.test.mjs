@@ -1,5 +1,5 @@
 // 服务协议级测试（node --test）：hello → manifest、ping、probe、list 的反向调用、
-// decide 的续跑计划拼接、drain → bye（等在途）、EOF 自退出。
+// decide 的续跑计划拼接（经 input.read / approval.decide / input.clear）、drain → bye（等在途）、EOF 自退出。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -95,24 +95,10 @@ function spawnService(root) {
   return { child, messages, waitFor }
 }
 
-const IDS = { approval: { body: { version: 1, tail: null, count: 0 }, refs: {} } }
+const SLOT = { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' }
 
-/** 合法单条裁决投影：链上 decide 需借此抵达 approval.decide 反向调用后阻塞。 */
-const DECIDE_IDS = {
-  input: { body: { slots: { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' } } } },
-  approval: {
-    body: { version: 1, tail: { def: 'a'.repeat(64) }, count: 1 },
-    refs: {
-      ['a'.repeat(64)]: {
-        id: 'ap-r-0',
-        status: 'pending',
-        thread: 't1',
-        at: '2026-09-20T00:00:00.000Z',
-        resume: { command: 'chat.resume', args: { cursor: 'cur-1', thread: 't1' } },
-        prev: null,
-      },
-    },
-  },
+function replyPort(child, message, value) {
+  child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
 }
 
 function sleep(ms) {
@@ -139,81 +125,50 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
     await waitFor(() => messages.some((message) => message.id === 'p1'), 'pong')
     assert.equal(messages.find((message) => message.id === 'p1').kind, 'pong')
 
-    // list：入口 term 传投影切片 → 服务发 port.call approval.list。
-    child.stdin.write(
-      encodeFrame({ v: '1', id: 'l1', kind: 'call', port: 'ui-approval', method: 'list', args: IDS }),
-    )
+    // list：入口 term 传投影切片 → 服务发 port.call approval.list（无切片参数）。
+    child.stdin.write(encodeFrame({ v: '1', id: 'l1', kind: 'call', port: 'ui-approval', method: 'list', args: {} }))
     await waitFor(() => messages.some((message) => message.kind === 'port.call'), 'port.call list')
     const listCall = messages.find((message) => message.kind === 'port.call')
     assert.equal(listCall.port, 'approval')
     assert.equal(listCall.method, 'list')
-    assert.deepEqual(listCall.args, { queue: { version: 1, tail: null, count: 0 }, refs: {} })
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: listCall.id,
-        kind: 'port.result',
-        ok: true,
-        value: { $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [] } }] },
-      }),
-    )
+    assert.deepEqual(listCall.args, {})
+    replyPort(child, listCall, { $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [] } }] })
     await waitFor(() => messages.some((message) => message.id === 'l1'), 'list result')
     assert.deepEqual(messages.find((message) => message.id === 'l1').value, {
       $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [], refs: {} } }],
     })
 
-    // decide：本线程槽 → 服务发 port.call approval.decide，回包后拼 [审批写, …chat.resume]。
-    const decideIds = {
-      input: { body: { slots: { t1: { kind: 'approval.decide', id: 'ap-r-0', verdict: 'accept' } } } },
-      approval: {
-        body: { version: 1, tail: { def: 'a'.repeat(64) }, count: 1 },
-        refs: {
-          ['a'.repeat(64)]: {
-            id: 'ap-r-0',
-            status: 'pending',
-            thread: 't1',
-            at: '2026-09-20T00:00:00.000Z',
-            resume: { command: 'chat.resume', args: { cursor: 'cur-1', thread: 't1' } },
-            prev: null,
-          },
-        },
-      },
-    }
+    // decide：input.read 取槽 → approval.decide → input.clear → 拼 [审批 extern, chat.resume]。
     child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: 'd1',
-        kind: 'call',
-        port: 'ui-approval',
-        method: 'decide',
-        args: decideIds,
-        env: { run: 'r', thread: 't1', now: 0 },
-      }),
+      encodeFrame({ v: '1', id: 'd1', kind: 'call', port: 'ui-approval', method: 'decide', args: null, env: { run: 'r', thread: 't1', now: 0 } }),
     )
-    await waitFor(() => messages.filter((message) => message.kind === 'port.call').length >= 2, 'port.call decide')
-    const decideCall = messages.filter((message) => message.kind === 'port.call')[1]
-    assert.equal(decideCall.method, 'decide')
-    assert.equal(decideCall.args.thread_id, 't1')
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: decideCall.id,
-        kind: 'port.result',
-        ok: true,
-        value: {
-          $directives: [
-            { kind: 'write', request: { op: 'batch', args: { ops: [] } } },
-            { kind: 'extern', payload: { ok: true, id: 'ap-r-0', status: 'approved' } },
-          ],
-        },
-      }),
-    )
+    await waitFor(() => messages.some((message) => message.kind === 'port.call' && message.method === 'read'), 'input.read')
+    const readCall = messages.find((message) => message.kind === 'port.call' && message.method === 'read')
+    assert.equal(readCall.port, 'input')
+    assert.deepEqual(readCall.args, { thread: 't1' })
+    replyPort(child, readCall, { slots: { t1: SLOT }, thread: 't1', slot: SLOT })
+
+    await waitFor(() => messages.some((message) => message.kind === 'port.call' && message.method === 'decide'), 'approval.decide')
+    const decideCall = messages.find((message) => message.kind === 'port.call' && message.method === 'decide')
+    assert.equal(decideCall.port, 'approval')
+    assert.deepEqual(decideCall.args, { thread_id: 't1', verdict: 'accept', id: 'ap-r-0' })
+    replyPort(child, decideCall, {
+      $directives: [
+        { kind: 'extern', payload: { ok: true, id: 'ap-r-0', status: 'approved', verdict: 'accept', thread: 't1', resume: { command: 'chat.resume', args: { cursor: 'cur-1', thread: 't1' } } } },
+      ],
+    })
+
+    await waitFor(() => messages.some((message) => message.kind === 'port.call' && message.method === 'clear'), 'input.clear')
+    const clearCall = messages.find((message) => message.kind === 'port.call' && message.method === 'clear')
+    assert.equal(clearCall.port, 'input')
+    assert.deepEqual(clearCall.args, { thread_id: 't1' })
+    replyPort(child, clearCall, { ok: true, thread: 't1' })
+
     await waitFor(() => messages.some((message) => message.id === 'd1'), 'decide result')
     const decideValue = messages.find((message) => message.id === 'd1').value
-    assert.equal(decideValue.$directives[0].kind, 'write')
-    assert.equal(decideValue.$directives[1].kind, 'extern')
-    assert.equal(decideValue.$directives[1].payload.status, 'approved')
-    assert.deepEqual(decideValue.$directives[2], {
+    assert.equal(decideValue.$directives[0].kind, 'extern')
+    assert.equal(decideValue.$directives[0].payload.status, 'approved')
+    assert.deepEqual(decideValue.$directives[1], {
       kind: 'eval',
       command: 'chat.resume',
       args: { cursor: 'cur-1', thread: 't1', payload: { verdict: 'accept' } },
@@ -242,60 +197,38 @@ test('并发安全声明：list 在链上方法在途时先完成；链上方法
   try {
     // 链上 decide 阻塞在 approval.decide 的反向调用上：不回应答，令其保持「在途」。
     child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: 'd1',
-        kind: 'call',
-        port: 'ui-approval',
-        method: 'decide',
-        args: DECIDE_IDS,
-        env: { run: 'r', thread: 't1', now: 0 },
-      }),
+      encodeFrame({ v: '1', id: 'd1', kind: 'call', port: 'ui-approval', method: 'decide', args: null, env: { run: 'r', thread: 't1', now: 0 } }),
     )
+    await waitFor(() => messages.some((message) => message.kind === 'port.call' && message.method === 'read'), 'input.read')
+    const readCall = messages.find((message) => message.kind === 'port.call' && message.method === 'read')
+    replyPort(child, readCall, { slots: { t1: SLOT }, thread: 't1', slot: SLOT })
     await waitFor(
       () => messages.some((message) => message.kind === 'port.call' && message.method === 'decide'),
       'decide port.call',
     )
 
     // 链上 ping 排在 decide 之后：decide 收口前不得产出 ping 结果（串行证明）。
-    child.stdin.write(
-      encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }),
-    )
+    child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }))
     await sleep(200)
     assert.equal(messages.some((message) => message.id === 'c1'), false, '链上 ping 必须等 decide 收口')
 
     // 并发 list：链被 decide 堵住时仍应立即发出 approval.list 反向调用。
-    child.stdin.write(
-      encodeFrame({ v: '1', id: 'l1', kind: 'call', port: 'ui-approval', method: 'list', args: IDS }),
-    )
+    child.stdin.write(encodeFrame({ v: '1', id: 'l1', kind: 'call', port: 'ui-approval', method: 'list', args: {} }))
     await waitFor(
       () => messages.some((message) => message.kind === 'port.call' && message.method === 'list'),
       'list port.call',
     )
     const listCall = messages.find((message) => message.kind === 'port.call' && message.method === 'list')
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: listCall.id,
-        kind: 'port.result',
-        ok: true,
-        value: { $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [] } }] },
-      }),
-    )
+    replyPort(child, listCall, { $directives: [{ kind: 'extern', payload: { ok: true, pending: 0, items: [] } }] })
     await waitFor(() => messages.some((message) => message.id === 'l1'), 'list result')
     assert.equal(messages.some((message) => message.id === 'd1'), false, 'list 完成时链上 decide 仍在途')
 
     // 收口 decide 后，链上 ping 才继续，结果按到达序产出。
     const decideCall = messages.find((message) => message.kind === 'port.call' && message.method === 'decide')
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: decideCall.id,
-        kind: 'port.result',
-        ok: true,
-        value: { $directives: [{ kind: 'extern', payload: { ok: true, id: 'ap-r-0', status: 'approved' } }] },
-      }),
-    )
+    replyPort(child, decideCall, { $directives: [{ kind: 'extern', payload: { ok: true, id: 'ap-r-0', status: 'approved' } }] })
+    await waitFor(() => messages.some((message) => message.kind === 'port.call' && message.method === 'clear'), 'input.clear')
+    const clearCall = messages.find((message) => message.kind === 'port.call' && message.method === 'clear')
+    replyPort(child, clearCall, { ok: true, thread: 't1' })
     await waitFor(() => messages.some((message) => message.id === 'd1'), 'decide result')
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
     assert.ok(

@@ -67,7 +67,7 @@ test('client.read 方法：正常读回 {path,text}，穿越 / 缺参结构化 b
   try {
     mkdirSync(join(root, 'dist'), { recursive: true })
     writeFileSync(join(root, 'dist', 'entry.js'), 'export const contract = "2"\n')
-    const handlers = createHandlers({ identity: 'ui-approval', approval: fakeApproval(), webRoot: root })
+    const handlers = createHandlers({ identity: 'ui-approval', approval: fakeApproval(), input: fakeApproval(), webRoot: root })
     assert.deepEqual(await handlers['client.read']({ path: 'dist/entry.js' }, ENV), {
       path: 'dist/entry.js',
       text: 'export const contract = "2"\n',

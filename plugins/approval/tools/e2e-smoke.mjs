@@ -94,33 +94,17 @@ function directivesOf(value) {
   return Array.isArray(value?.$directives) ? value.$directives : []
 }
 
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
-}
-
 function externOf(value) {
   const extern = directivesOf(value).find((item) => item.kind === 'extern')
   return extern?.payload ?? null
 }
 
-function hashOf(n) {
-  return n.toString(16).padStart(64, '0')
-}
-
-/** 沿 item 链构造 `{queue, refs}`（oldest→newest 入参）。 */
-function chainOf(items) {
-  const refs = {}
-  const hashes = []
-  let prev = null
-  items.forEach((item, index) => {
-    const defHash = hashOf(index + 1)
-    refs[defHash] = { ...item, prev }
-    hashes.push(defHash)
-    prev = { def: defHash }
-  })
-  const tail = hashes.length === 0 ? null : { def: hashes[hashes.length - 1] }
-  return { queue: { version: 1, tail, count: items.length }, refs, hashes }
+/** 世界不新增世代的机械证据：返回值里不得出现任何 write / add_gen。 */
+function assertNoWorldWrite(value) {
+  for (const directive of directivesOf(value)) {
+    assert.notEqual(directive.kind, 'write', `不应产世界写：${JSON.stringify(directive)}`)
+    assert.equal(JSON.stringify(directive).includes('add_gen'), false, '不应出现 add_gen')
+  }
 }
 
 /** 从代码树收集全部文件路径（tree def = {entries:[{name,mode,hash}]}）。 */
@@ -165,76 +149,46 @@ async function directProtocolSmoke(entry) {
     assert.deepEqual(manifest.methods.approval, ['enqueue', 'list', 'decide', 'decide_all', 'sweep'])
 
     const enqueued = await call('e1', 'enqueue', {
-      queue: { version: 1, tail: null, count: 0 },
-      refs: {},
       kind: 'tool_call',
       port: 'tool-shell',
       args_ref: { summary: 'rm -rf build' },
       tier: 'severe',
       run: 'e2e-run',
       thread: 't1',
-      cursor: { iter: 3 },
+      cursor: { node_index: 3 },
       at: AT,
     })
     assert.equal(enqueued.kind, 'result', JSON.stringify(enqueued))
-    const enqueueOps = opsOf(enqueued.value)
-    assert.deepEqual(enqueueOps.map((op) => op.op), ['put', 'put', 'add_gen'])
-    assert.equal(enqueueOps[0].args.body.id, 'ap-e2e-run-0')
-    assert.deepEqual(enqueueOps[0].args.body.resume, {
-      command: 'chat.resume',
-      args: { cursor: { iter: 3 }, thread: 't1' },
-    })
-    assert.equal(enqueueOps[0].args.body.thread, 't1')
-    assert.deepEqual(enqueueOps[1].args.body.tail, { def: { $n: 0 } })
+    assertNoWorldWrite(enqueued.value)
+    const enqueuePayload = externOf(enqueued.value)
+    assert.equal(enqueuePayload.ok, true)
+    assert.equal(enqueuePayload.id, 'ap-e2e-run-0')
+    assert.equal(enqueuePayload.count, 1)
     const pending = events.find((event) => event.topic === 'approval.pending')
     assert.ok(pending, 'enqueue 应即发 approval.pending')
     assert.equal(pending.payload.kind, 'tool_call')
 
-    const chain = chainOf([
-      {
-        id: 'ap-e2e-run-0',
-        kind: 'tool_call',
-        port: 'tool-shell',
-        method: 'invoke',
-        args_ref: { summary: 'rm -rf build' },
-        tier: 'severe',
-        workspace_id: null,
-        run: 'e2e-run',
-        thread: 't1',
-        at: AT,
-        status: 'pending',
-        decided_at: null,
-        by: null,
-        resume: { command: 'chat.resume', args: { cursor: { iter: 3 }, thread: 't1' } },
-        shadow: null,
-      },
-    ])
-    const listed = await call('e2', 'list', { queue: chain.queue, refs: chain.refs })
+    const listed = await call('e2', 'list', {})
+    const item = externOf(listed.value).items[0]
+    assert.equal(item.id, 'ap-e2e-run-0')
+    assert.equal(item.thread, 't1')
+    assert.deepEqual(item.resume, { command: 'chat.resume', args: { cursor: { node_index: 3 }, thread: 't1' } })
     assert.equal(externOf(listed.value).pending, 1)
 
-    const decided = await call('e3', 'decide', {
-      queue: chain.queue,
-      refs: chain.refs,
-      slots: { slots: { t1: { kind: 'approval.decide', id: 'ap-e2e-run-0', verdict: 'accept' } } },
-      thread_id: 't1',
-      id: 'ap-e2e-run-0',
-      verdict: 'accept',
-      at: AT,
-    })
+    const decided = await call('e3', 'decide', { id: 'ap-e2e-run-0', verdict: 'accept', thread_id: 't1', at: AT })
+    assertNoWorldWrite(decided.value)
     assert.equal(externOf(decided.value).status, 'approved')
+    assert.deepEqual(externOf(decided.value).resume, { command: 'chat.resume', args: { cursor: { node_index: 3 }, thread: 't1' } })
     assert.equal(directivesOf(decided.value).some((item) => item.kind === 'eval'), false)
     assert.ok(events.some((event) => event.topic === 'approval.decided'))
 
-    const swept = await call(
-      'e4',
-      'sweep',
-      { queue: chain.queue, refs: chain.refs },
-      { run: null, thread: null, now: FIXED_NOW + 11 * 60 * 1000 },
-    )
+    // 再入队一条 pending，供超时 sweep（已裁决项不因超时改变）。
+    await call('e4', 'enqueue', { kind: 'tool_call', run: 'e2e-run', thread: 't1', cursor: { node_index: 9 }, at: AT })
+    const swept = await call('e5', 'sweep', {}, { run: null, thread: null, now: FIXED_NOW + 11 * 60 * 1000 })
     assert.equal(externOf(swept.value).expired, 1)
-    assert.equal(opsOf(swept.value)[0].args.body.status, 'expired')
+    assert.equal(externOf((await call('e6', 'list', {})).value).items[1].status, 'expired')
 
-    console.log('直连协议：enqueue / list / decide / sweep + 写计划形状 + 事件时机')
+    console.log('直连协议：enqueue / list / decide / sweep + 自有存储 + 事件时机')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -261,7 +215,7 @@ async function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const identity = projection.ids.approval
     assert.ok(identity, '投影缺 approval 身份')
     assert.equal(identity.pins && Object.keys(identity.pins).length, 0, 'approval 应无 pins')
@@ -288,7 +242,13 @@ async function main() {
 
     boot(root, ['start'])
     started = true
-    const status = boot(root, ['status'])
+    // 服务握手是异步的：轮询 status 直到 approval 装载（或超时）。
+    let status = boot(root, ['status'])
+    const deadline = Date.now() + 30000
+    while (!status.loaded.some((item) => item.id === 'approval') && Date.now() < deadline) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
+      status = boot(root, ['status'])
+    }
     assert.ok(
       status.loaded.some((item) => item.id === 'approval'),
       'approval 服务应完成握手装载',

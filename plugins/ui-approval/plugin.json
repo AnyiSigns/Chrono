@@ -7,7 +7,7 @@
   "concurrent_methods": ["list", "client.read"],
   "pins": {
     "approval": "approval",
-    "host": "host"
+    "input": "input"
   },
   "start": "node execute/main.ts",
   "build": [

@@ -31,9 +31,6 @@ import {
   formatWait,
   graphDiffText,
   identifiedItems,
-  identityActive,
-  identityBody,
-  isCodeGenFallbackBody,
   isExpired,
   isPending,
   isUnreachableCode,
@@ -65,28 +62,10 @@ import {
   withoutBusy,
 } from '../execute/web/model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
-import { createApprovalStore, slotWriteDirective } from '../execute/web/store.ts'
+import { createApprovalStore } from '../execute/web/store.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SHARED_MESSAGES = resolve(HERE, '..', '..', 'ui-shell', 'execute', 'web', 'messages.v1.json')
-
-test('输入槽写指令：有 data_gen 写补丁 + base；空改动回落整份', () => {
-  const prev = { slots: { t1: { kind: 'approval.decide', id: 'a1', verdict: 'accept' } } }
-  const next = { slots: { t1: { kind: 'idle' } } }
-  const patched = slotWriteDirective(prev, next, undefined, { seq: 6, payload: 'a'.repeat(64) })
-  const ops = patched.request.args.ops
-  assert.equal(ops[1].args.id, 'input')
-  assert.equal(ops[1].args.base, 6)
-  assert.deepEqual(ops[0].args.body.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
-
-  const full = slotWriteDirective(prev, next)
-  assert.equal(full.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(full.request.args.ops[0].args.body.ops), false)
-
-  const empty = slotWriteDirective(next, next, undefined, { seq: 6 })
-  assert.equal(empty.request.args.ops[1].args.base, undefined)
-  assert.equal(Array.isArray(empty.request.args.ops[0].args.body.ops), false)
-})
 
 function sharedTable() {
   return parseMessages(readFileSync(SHARED_MESSAGES, 'utf8'))
@@ -288,7 +267,7 @@ test('文案：共享表优先、本地骨架兜底、未知码不空白', () =>
   assert.equal(parseMessages('not json'), null)
 })
 
-test('忙碌键集合：每项独立加入 / 移除，互不清除；身份视图拆 body/active', () => {
+test('忙碌键集合：每项独立加入 / 移除，互不清除', () => {
   let busy = []
   busy = withBusy(busy, 'a')
   busy = withBusy(busy, 'b')
@@ -298,14 +277,6 @@ test('忙碌键集合：每项独立加入 / 移除，互不清除；身份视�
   busy = withoutBusy(busy, 'a')
   assert.deepEqual(busy, ['b'], '移除 a 不影响 b')
   assert.deepEqual(withoutBusy(busy, 'x'), ['b'], '移除不存在键不变')
-
-  const hash = 'e'.repeat(64)
-  const view = { active: hash, body: { slots: {} } }
-  assert.deepEqual(identityBody(view), { slots: {} })
-  assert.equal(identityActive(view), hash)
-  assert.equal(identityActive({ slots: {} }), undefined)
-  assert.equal(isCodeGenFallbackBody({ tree: 'x' }), true)
-  assert.equal(isCodeGenFallbackBody({ slots: {} }), false)
 })
 
 // ── 身份过滤：无稳定 id 的条目不得共享身份 / 撞 key ─────────────────────────
@@ -468,7 +439,7 @@ test('store：断连快照归 offline，恢复连接后可重拉', async () => {
 test('store：批裁决失败记 batch 源并保留 lastBatch 供重试', async () => {
   const ctx = fakeApprovalCtx({
     'approval.list': { ok: true, value: { ok: true, items: [], refs: {} } },
-    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'input.write': { ok: true, value: { ok: true, thread: 't1' } },
     'approval.decide_all': { ok: false, code: 'boom' },
   })
   const store = createApprovalStore(ctx)
@@ -489,7 +460,7 @@ test('store：裁决命令业务失败（value.ok=false）记 itemErrors，不�
   const item = { id: 'ap-1', thread: 't1', kind: 'tool_call', status: 'pending' }
   const ctx = fakeApprovalCtx({
     'approval.list': { ok: true, value: { ok: true, items: [item], refs: {} } },
-    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'input.write': { ok: true, value: { ok: true, thread: 't1' } },
     'approval.decide': { ok: true, status: 'done', value: { ok: false, error: { code: 'bad_slot' } } },
   })
   const store = createApprovalStore(ctx)
@@ -508,7 +479,7 @@ test('store：裁决 run 被拒（status=refused）记 itemErrors，不当成功
   const item = { id: 'ap-2', thread: 't1', kind: 'tool_call', status: 'pending' }
   const ctx = fakeApprovalCtx({
     'approval.list': { ok: true, value: { ok: true, items: [item], refs: {} } },
-    'input.read': { ok: true, value: { active: 'a'.repeat(64), body: { slots: {} } } },
+    'input.write': { ok: true, value: { ok: true, thread: 't1' } },
     'approval.decide': { ok: true, status: 'refused', value: null },
   })
   const store = createApprovalStore(ctx)

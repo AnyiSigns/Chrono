@@ -111,7 +111,7 @@ function sendError(id: string, code: string, message: string): void {
 // 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：队列 / 裁决的 #32 转发经它；
 // 服务不读投影、不发 eff，跨插件只走宿主路由。应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, approval: LINK, host: LINK, webRoot })
+const HANDLERS = createHandlers({ identity: IDENTITY, approval: LINK, input: LINK, webRoot })
 
 function declaredMethods(port: string): string[] {
   const declared = METHODS[port]

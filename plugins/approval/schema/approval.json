@@ -1,6 +1,6 @@
 {
   "title": "approval（审批流程与回执）",
-  "description": "身份自述 / 数据契约。待审批队列进世界（可回放、重启保留），item 各自成 def、以 prev 串成链，body 只存链头与累计入队数。宿主只读顶层 periodic 与 method_timeouts 两个机械消费键，其余顶层键（timeout_ms / capacity / policy）归本插件自用（宿主不认识业务）。服务不读投影、无写通道：一切世界数据由调用方入口 term 读出随 args 传入，或由宿主按 periodic.reads 机械注入 bag；服务只回写计划与上行事件。本插件只按 kind 分类存储与回执，不做判定、不做渲染、不做工具派发，不自动裁决。",
+  "description": "身份自述 / 数据契约。待审批队列与裁决回执是运行记录，住服务自有持久存储（④ CHRONO_PLUGIN_DATA），不进世界——不产 write directive、不占 seq、不改 worldRev。item 含 resume 游标（不透明透传），随队列项持久化，跨宿主重启仍可裁决续跑。宿主只读顶层 periodic 与 method_timeouts 两个机械消费键，其余顶层键（timeout_ms / capacity / policy）归本插件自用（宿主不认识业务）。服务不读投影、无写链通道：队列与游标读自有存储，方法只回 extern 与上行事件。本插件只按 kind 分类存储与回执，不做判定、不做渲染、不做工具派发，不自动裁决。",
   "type": "object",
   "additionalProperties": true,
   "timeout_ms": 600000,
@@ -28,24 +28,14 @@
         "archive_keep": { "type": "integer" }
       }
     },
-    "queue_body": {
-      "type": "object",
-      "description": "世界 body：{ version, tail, count }。tail = 最新 item def 引用 {\"def\":\"<64hex>\"} 或 null；count = 累计入队数（单调，裁决 / 过期 / 归档不改），item id 的 seq 取入队前的 count。",
-      "required": ["version", "tail", "count"],
-      "additionalProperties": true,
-      "properties": {
-        "version": { "type": "integer", "const": 1 },
-        "tail": { "type": "object", "description": "{\"def\":\"<最新 item def 哈希>\"}；null = 空队列" },
-        "count": { "type": "integer", "description": "累计入队数（单调递增）" }
-      }
-    },
     "item": {
       "type": "object",
-      "description": "item def：各自成 def、prev 成链；投影引用闭包进 ids.approval.refs。裁决 / 过期各追加一条同 id 的新版本 def（链式追加，不整体重写）。",
-      "required": ["id", "kind", "status", "prev"],
+      "description": "队列项（住服务自有持久存储）：id = ap-<run>-<seq>；同回合同 op_key 重复入队幂等收敛。裁决 / 过期追加同 id 的新版本（存储内覆盖，非链式追加）。",
+      "required": ["id", "kind", "status"],
       "additionalProperties": true,
       "properties": {
         "id": { "type": "string", "description": "确定性 id ap-<run>-<seq>（run + 入队序），非随机" },
+        "op_key": { "type": "string", "description": "幂等键（run + 审批节点序），同回合同节点重复入队收敛到同一条" },
         "kind": { "enum": ["tool_call", "orchestration_change", "plugin_write"], "description": "待审批种类；判据 = (port, 工具名)，由调用方随 enqueue args 传入" },
         "port": { "type": "string", "description": "实际提供者能力类名：tool_call → tool-fs / tool-shell / tool-http / tool-browser / mcp；orchestration_change → orchestration-admin；plugin_write → plugin-admin" },
         "method": { "type": "string", "description": "调用方法名；缺省 invoke" },
@@ -58,20 +48,15 @@
         "status": { "enum": ["pending", "approved", "denied", "expired"], "description": "pending → approved / denied（裁决）；pending → expired（超时，不自动裁决）" },
         "decided_at": { "type": "string", "description": "裁决时间（ISO 8601）；未裁决 null" },
         "by": { "enum": ["user"], "description": "裁决者；未裁决 null" },
-        "resume": { "type": "object", "description": "续跑依据 {command:'chat.resume', args:{cursor, thread}}；cursor = 调用方执行游标（不透明透传），裁决 payload 由裁决命令入口 term 产计划时并入" },
-        "shadow": { "type": "object", "description": "仅 orchestration_change：影子回放指标 def 引用；其余 kind 为 null" },
-        "prev": { "type": "object", "description": "{\"def\":\"<上一 item 哈希>\"}；null = 链首" }
+        "resume": { "type": "object", "description": "续跑依据 {command:'chat.resume', args:{cursor, thread}}；cursor = 调用方执行游标（不透明透传），随队列项持久化，跨宿主重启可续跑" },
+        "shadow": { "type": "object", "description": "仅 orchestration_change：影子回放指标 def 引用；其余 kind 为 null" }
       }
     }
   },
   "periodic": [
     {
       "method": "sweep",
-      "every_ms": 60000,
-      "reads": {
-        "queue": ["ids", "approval", "body"],
-        "refs": ["ids", "approval", "refs"]
-      }
+      "every_ms": 60000
     }
   ],
   "method_timeouts": {

@@ -15,6 +15,6 @@
   ],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --test test/question.test.mjs"
+    "test": "node --test"
   }
 }

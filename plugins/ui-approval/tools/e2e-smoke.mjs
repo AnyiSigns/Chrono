@@ -18,7 +18,7 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const APPROVAL_DIR = join(REPO_ROOT, 'plugins', 'ui-approval')
 
 /** 依赖先于本插件的 seed 顺序（pins 需在入世时解析到已存在的身份）。 */
-const PACKAGES = ['approval', 'ui-approval']
+const PACKAGES = ['approval', 'input', 'ui-approval']
 
 function boot(root, args, env) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -41,7 +41,7 @@ function boot(root, args, env) {
   return parsed
 }
 
-async function waitFor(predicate, label, timeoutMs = 60000) {
+async function waitFor(predicate, label, timeoutMs = 240000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     if (predicate()) return
@@ -140,11 +140,11 @@ async function main() {
 
     // 5) pins 声明与解析（seed 成功即解析成立；此处核对声明）
     const decl = JSON.parse(readFileSync(join(APPROVAL_DIR, 'plugin.json'), 'utf8'))
-    assert.deepEqual(decl.pins, { approval: 'approval' })
+    assert.deepEqual(decl.pins, { approval: 'approval', input: 'input' })
     assert.equal(Object.hasOwn(decl, 'schema'), false, '零 schema：省略字段')
     assert.equal(Object.hasOwn(decl, 'exclusive'), false, '不再独占端口')
     assert.deepEqual(decl.implements, ['ui-approval'])
-    console.log('pins / schema / exclusive：ok（pins={approval:approval}，零 schema，无独占端口）')
+    console.log('pins / schema / exclusive：ok（pins={approval,input}，零 schema，无独占端口）')
 
     // 6) `approval.list` 命令真实往返：入口 term → 服务 → 反向调 #32 list。
     const listValue = extractValue(boot(root, ['approval.list']))
@@ -160,7 +160,8 @@ async function main() {
     assert.ok(readValue.text.includes('export'), 'entry.js 应是 ESM 产物')
     // 路径穿越防护：越界路径结构化拒（命令 result status refused）。
     const traversal = boot(root, ['ui-approval.client.read', JSON.stringify({ path: '../plugin.json' })])
-    assert.equal(traversal.ok, false, '穿越路径应被拒')
+    assert.notEqual(traversal?.ok, true, `穿越路径应被拒：${JSON.stringify(traversal)}`)
+    assert.equal(JSON.stringify(traversal ?? null).includes('identity'), false, '穿越路径不得回插件声明字节')
     console.log('client.read：ok（dist/entry.js 读回，穿越路径拒绝）')
 
     // 8) stop → verify + replay

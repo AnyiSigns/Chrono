@@ -1,6 +1,6 @@
 {
   "title": "question.answer 参数",
-  "description": "作答命令参数。载荷不住这里：待作答问题队列项 id 与 answers 先经入站面写进 #1 槽 {kind:'question.answer', id, answers}，入口 term 读 ctx.ids 后交服务。故本 schema 只作声明门禁，不设必填；不写 type（缺 args = null，而白名单子集无法表达「可空 object」）。",
+  "description": "作答命令参数。载荷不住这里：待作答问题队列项 id 与 answers 先经入站面写进 input 服务自有存储的本线程槽 {kind:'question.answer', id, answers}，服务经反向调用 input.read 取槽（入口 term 传 null，不再读投影）。故本 schema 只作声明门禁，不设必填；不写 type（缺 args = null，而白名单子集无法表达「可空 object」）。",
   "additionalProperties": false,
   "properties": {
     "thread": {

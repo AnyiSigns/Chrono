@@ -1,25 +1,19 @@
-// `question` 服务协议级测试（node --test）：自实现最小协议驱动，spawn `node execute/main.ts`。
-// 覆盖 describe 四要素 / render / caps；invoke 入队计划形状（item 链式 prev、resume 游标、不清槽）；
-// question.pending 在入队计划产出时发；list 读队列；sweep 标 expired；
-// 作答命令路径（按 id 沿 tail 链定位 → 产续跑计划 + 清槽，per-thread 键控）；
-// 并用测试内联的最小求值器求值 terms/question.answer.json（预置 eff 回灌），验证入口 term 形状与占位正确。
+// `question` 服务协议级测试（node --test）：自实现最小协议驱动，spawn `node execute/main.ts`（注入临时 ④/③ 目录）。
+// 覆盖 describe 四要素 / render / caps；invoke 入队（写自有存储、无世界写）；question.pending 事件；
+// list 读队列；sweep 标 expired；作答命令路径（反向调 input.read / input.clear → 产续跑计划）；
+// 并用测试内联的最小求值器求值 terms/question.answer.json（预置 eff 回灌），验证入口 term 形状。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-// 红线断言（包形状）；本包 test 脚本按文件显式列出，故在此引入使其随 npm test 执行。
-import './package.test.mjs'
-import { createHandlers } from '../execute/methods.ts'
-import { pushInputGen } from '../execute/plan.ts'
-import { DefUnavailableError } from '../execute/refs.ts'
 
 // ── 测试内联最小内核助手（测试不得 import 宿主与内核包） ──────────────────────
 
-/** 规范序列化：键升序、剔除 undefined 键、-0 归一（与内核 canonicalJson 同口径）。 */
 function canonical(value) {
   if (value === undefined) throw new Error('undefined')
   if (value === null) return 'null'
@@ -33,7 +27,6 @@ function canonical(value) {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
 }
 
-/** 内容哈希：hex(sha256(utf8(canonicalJson(v))))，全 64 个十六进制字符。 */
 function H(value) {
   return createHash('sha256').update(canonical(value), 'utf8').digest('hex')
 }
@@ -42,23 +35,6 @@ function walk(value, path) {
   let current = value
   for (const step of path) current = current[step]
   return current
-}
-
-/** 最小补丁组装（测试内联，避免引用内核包）：replace / delete 两种 op。 */
-function applyOps(base, ops) {
-  const doc = structuredClone(base)
-  for (const op of ops) {
-    let node = doc
-    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
-    const last = op.path[op.path.length - 1]
-    if (op.op === 'delete') {
-      if (Array.isArray(node)) node.splice(last, 1)
-      else delete node[last]
-    } else {
-      node[last] = structuredClone(op.value)
-    }
-  }
-  return doc
 }
 
 /** 最小求值器：只覆盖本测试用到的 `c` / `g` / `v` / `eff`（eff 走 env.results 回灌）。 */
@@ -70,6 +46,7 @@ function evalNode(term, env) {
   if (tag === 'v') return env.args[term[1]]
   if (tag === 'eff') {
     const argValue = evalNode(term[3], env)
+    void argValue
     const id = H({ run: env.run, i: env.i, n: env.n })
     env.n += 1
     const result = env.results[id]
@@ -92,8 +69,6 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
-const H1 = 'a'.repeat(64)
-const H2 = 'b'.repeat(64)
 const PAST = 1_600_000_000_000
 
 function encodeFrame(message) {
@@ -123,7 +98,16 @@ function createDecoder() {
 }
 
 function startService(options = {}) {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+  const root = options.root ?? mkdtempSync(join(tmpdir(), 'question-svc-'))
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    env: {
+      ...process.env,
+      CHRONO_PLUGIN_DATA: join(root, 'data'),
+      CHRONO_PLUGIN_STATE: join(root, 'state'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
@@ -174,22 +158,20 @@ function startService(options = {}) {
   return {
     child,
     events,
+    portCalls,
     exit,
+    root,
     request,
     hello: () => request('hello', { impl: 'question', gen: 'gen-1' }, 'manifest'),
     call: async (method, args, env = FIXED_ENV) =>
       (await request('call', { port: 'question', method, args, env }, ['result', 'error'])).value,
     close: () => child.stdin.end(),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
   }
 }
 
 function directivesOf(value) {
   return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  return Array.isArray(batch?.request?.args?.ops) ? batch.request.args.ops : []
 }
 
 function externOf(value) {
@@ -201,26 +183,9 @@ function question(id = 'q1', extra = {}) {
   return { id, header: '顶栏位置', question: '放哪里？', options: [{ label: '左' }, { label: '右' }], multiple: false, custom: true, ...extra }
 }
 
-function itemFixture(overrides = {}) {
-  return {
-    id: 'q-run-1-0',
-    run: 'run-1',
-    session: 'c1',
-    thread: 't1',
-    questions: [question()],
-    answers: null,
-    expired: false,
-    resume: { command: 'chat.resume', args: { cursor: 'cur-9', thread: 't1' } },
-    at: '2023-11-14T22:13:20.000Z',
-    expires_at: null,
-    prev: null,
-    ...overrides,
-  }
-}
-
 // ── 握手 / 声明 ────────────────────────────────────────────────────────────
 
-test('hello 回 manifest：能力类与方法声明与 plugin.json 一致', async () => {
+test('hello 回 manifest：能力类与方法声明与 plugin.json 一致（durable）', async () => {
   const drv = startService()
   try {
     const manifest = await drv.hello()
@@ -228,9 +193,10 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致', asyn
     assert.deepEqual(manifest.implements, ['question'])
     assert.deepEqual(manifest.methods.question, ['describe', 'invoke', 'list', 'sweep'])
     assert.equal(manifest.protocol, '1')
-    assert.equal(manifest.state, 'recomputable')
+    assert.equal(manifest.state, 'durable')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -238,7 +204,9 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
   const plugin = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.equal(plugin.identity, 'question')
   assert.deepEqual(plugin.implements, ['question'])
-  assert.deepEqual(plugin.pins, { host: 'host' })
+  assert.deepEqual(plugin.pins, { input: 'input' })
+  assert.equal(plugin.state, 'durable')
+  assert.deepEqual(plugin.exclusive, ['data'])
   assert.deepEqual(plugin.methods.question, ['describe', 'invoke', 'list', 'sweep'])
   const kinds = plugin.members.map((member) => member.kind).sort()
   assert.deepEqual(kinds, ['execute', 'schema', 'term'])
@@ -248,16 +216,15 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
 
   const schema = JSON.parse(readFileSync(join(PKG_ROOT, 'schema', 'question.json'), 'utf8'))
   assert.equal(schema.periodic[0].method, 'sweep')
-  assert.equal(schema.periodic[0].reads.queue.join('.'), 'ids.question.body')
-  assert.equal(schema.periodic[0].reads.refs.join('.'), 'ids.question.refs')
+  assert.equal(schema.periodic[0].reads, undefined, '队列出世界，不再注入投影切片')
 
   const worldignore = readFileSync(join(PKG_ROOT, '.worldignore'), 'utf8')
   assert.match(worldignore, /^test\/$/m)
   assert.match(worldignore, /^tools\/$/m)
 
-  // 入口 term：eff 自身 invoke、args = ctx.ids（投影读在 term，服务不读投影）
+  // 入口 term：eff 自身 invoke，args = null（槽由服务经 input.read 取，不再传投影）
   const term = JSON.parse(readFileSync(join(PKG_ROOT, 'terms', 'question.answer.json'), 'utf8'))
-  assert.deepEqual(term, ['eff', 'question', 'invoke', ['g', ['ids']]])
+  assert.deepEqual(term, ['eff', 'question', 'invoke', ['c', null]])
 })
 
 // ── describe ───────────────────────────────────────────────────────────────
@@ -284,12 +251,13 @@ test('describe：工具 question + 四要素 + render.detail.kind=question + cap
     assert.equal(tool.render.detail.kind, 'question')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── invoke 入队 ─────────────────────────────────────────────────────────────
 
-test('invoke(question)：入队计划 item 链式 prev / resume 游标 / 不清槽 + pending 事件', async () => {
+test('invoke(question)：入队写自有存储 + resume 游标 + pending 事件，无世界写', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -298,37 +266,31 @@ test('invoke(question)：入队计划 item 链式 prev / resume 游标 / 不清�
       args: { questions: [question()] },
       session: 'c1',
       thread: 't1',
-      cursor: 'cur-1',
+      cursor: { node_index: 4, call_id: 'c1' },
       run: 'run-1',
-      queue: { version: 1, tail: null, count: 0 },
     })
     assert.equal(value.ok, true)
-    const plan = value.result
-    const ops = opsOf(plan)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'put', 'add_gen'])
-    const item = ops[0].args.body
+    assert.equal(value.result.ok, true)
+    assert.equal(value.result.status, 'pending')
+    assert.equal(value.result.id, 'q-run-1-0')
+    assert.equal(value.result.count, 1)
+    assert.equal(value.result.render.detail.kind, 'question')
+    assert.equal(value.result.render.detail.id, 'q-run-1-0')
+    assert.equal(value.result.render.detail.expired, false)
+    assert.equal(value.result.render.detail.answers, null)
+    // 工具不产世界写：结果里不得出现 $directives / add_gen。
+    assert.equal(JSON.stringify(value.result).includes('$directives'), false)
+    assert.equal(JSON.stringify(value.result).includes('add_gen'), false)
+
+    const listed = await drv.call('list', {})
+    const item = externOf(listed).items[0]
     assert.equal(item.id, 'q-run-1-0')
-    assert.equal(item.prev, null)
-    assert.equal(item.answers, null)
-    assert.equal(item.expired, false)
     assert.equal(item.session, 'c1')
     assert.equal(item.thread, 't1')
-    assert.deepEqual(item.resume, { command: 'chat.resume', args: { cursor: 'cur-1', thread: 't1' } })
+    assert.equal(item.answers, null)
+    assert.equal(item.expired, false)
+    assert.deepEqual(item.resume, { command: 'chat.resume', args: { cursor: { node_index: 4, call_id: 'c1' }, thread: 't1' } })
     assert.equal(item.expires_at, '2023-11-14T22:23:20.000Z')
-    assert.deepEqual(ops[1].args.body.tail, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.count, 1)
-    assert.equal(ops[2].args.id, 'question')
-    assert.deepEqual(ops[2].args.payload, { $n: 1 })
-    // 工具不消费 #1 槽：计划里不得出现对 input 的写
-    assert.equal(ops.some((op) => op.args?.id === 'input'), false)
-
-    const payload = externOf(plan)
-    assert.equal(payload.ok, true)
-    assert.equal(payload.status, 'pending')
-    assert.equal(payload.render.detail.kind, 'question')
-    assert.equal(payload.render.detail.id, 'q-run-1-0')
-    assert.equal(payload.render.detail.expired, false)
-    assert.equal(payload.render.detail.answers, null)
 
     const pending = drv.events.find((event) => event.topic === 'question.pending')
     assert.ok(pending, '应发 question.pending')
@@ -337,74 +299,59 @@ test('invoke(question)：入队计划 item 链式 prev / resume 游标 / 不清�
     assert.equal(pending.payload.id, 'q-run-1-0')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('invoke(question)：session 取会话 id（投影切片 / session_id 直给），非 null', async () => {
+test('invoke(question)：同回合同节点重复入队幂等收敛（不重复计数）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const slice = await drv.call('invoke', {
+    const args = {
+      tool: 'question',
+      args: { questions: [question()] },
+      thread: 't1',
+      cursor: { node_index: 4, call_id: 'c1' },
+      run: 'run-1',
+    }
+    const first = await drv.call('invoke', args)
+    const second = await drv.call('invoke', args)
+    assert.equal(second.result.id, first.result.id)
+    assert.equal(second.result.count, 1)
+    assert.equal(externOf(await drv.call('list', {})).count, 1)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('invoke(question)：session 取会话 id（切片 / session_id 直给），非 null', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await drv.call('invoke', {
       tool: 'question',
       args: { questions: [question()] },
       session: { body: { current: 'c-9', conversations: [] }, refs: {} },
       thread: 't1',
       cursor: 'cur-5',
-      queue: { version: 1, tail: null, count: 0 },
+      run: 'run-1',
     })
-    assert.equal(opsOf(slice.result)[0].args.body.session, 'c-9')
+    assert.equal(externOf(await drv.call('list', {})).items[0].session, 'c-9')
 
-    const direct = await drv.call('invoke', {
+    await drv.call('invoke', {
       tool: 'question',
       args: { questions: [question()] },
       session_id: 'c-7',
       thread: 't1',
       cursor: 'cur-6',
-      queue: { version: 1, tail: null, count: 0 },
+      run: 'run-1',
     })
-    assert.equal(opsOf(direct.result)[0].args.body.session, 'c-7')
+    const items = externOf(await drv.call('list', {})).items
+    assert.equal(items[1].session, 'c-7')
   } finally {
     drv.close()
-  }
-})
-
-test('invoke(question)：已有队列 → item.prev 指链头、seq 取入队前 count', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.call('invoke', {
-      tool: 'question',
-      args: { questions: [question()] },
-      thread: 't1',
-      cursor: 'cur-2',
-      queue: { version: 1, tail: { def: H1 }, count: 3 },
-    })
-    const ops = opsOf(value.result)
-    assert.equal(ops[0].args.body.id, 'q-run-1-3')
-    assert.deepEqual(ops[0].args.body.prev, { def: H1 })
-    assert.equal(ops[1].args.body.count, 4)
-  } finally {
-    drv.close()
-  }
-})
-
-test('invoke(question)：接受 {question:{body,refs}} 切片（#33 dispatch bag 转发形状），不重置队列', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.call('invoke', {
-      tool: 'question',
-      args: { questions: [question()] },
-      thread: 't1',
-      cursor: 'cur-4',
-      question: { body: { version: 1, tail: { def: H1 }, count: 3 }, refs: {} },
-    })
-    const ops = opsOf(value.result)
-    assert.equal(ops[0].args.body.id, 'q-run-1-3')
-    assert.deepEqual(ops[0].args.body.prev, { def: H1 })
-    assert.equal(ops[1].args.body.count, 4)
-  } finally {
-    drv.close()
+    drv.cleanup()
   }
 })
 
@@ -412,7 +359,7 @@ test('invoke(question)：多问题 / 多选 / 自定义输入都保留', async (
   const drv = startService()
   try {
     await drv.hello()
-    const value = await drv.call('invoke', {
+    await drv.call('invoke', {
       tool: 'question',
       args: {
         questions: [
@@ -422,9 +369,9 @@ test('invoke(question)：多问题 / 多选 / 自定义输入都保留', async (
       },
       thread: 't1',
       cursor: 'cur-3',
-      queue: { version: 1, tail: null, count: 0 },
+      run: 'run-1',
     })
-    const questions = opsOf(value.result)[0].args.body.questions
+    const questions = externOf(await drv.call('list', {})).items[0].questions
     assert.equal(questions.length, 2)
     assert.equal(questions[0].multiple, true)
     assert.equal(questions[0].custom, true)
@@ -432,6 +379,7 @@ test('invoke(question)：多问题 / 多选 / 自定义输入都保留', async (
     assert.equal(questions[1].multiple, false)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -442,168 +390,171 @@ test('invoke(question)：越界 / 缺字段回结构化错误、不产写', asyn
     const tooMany = await drv.call('invoke', {
       tool: 'question',
       args: { questions: Array.from({ length: 9 }, (_, index) => question(`q${index}`)) },
-      queue: { version: 1, tail: null, count: 0 },
     })
     assert.equal(tooMany.ok, false)
     assert.equal(tooMany.error.code, 'too_many_questions')
 
-    const noId = await drv.call('invoke', {
-      tool: 'question',
-      args: { questions: [{ question: 'Q?' }] },
-      queue: { version: 1, tail: null, count: 0 },
-    })
+    const noId = await drv.call('invoke', { tool: 'question', args: { questions: [{ question: 'Q?' }] } })
     assert.equal(noId.error.code, 'missing_question_id')
 
     const unknown = await drv.call('invoke', { tool: 'nope', args: {} })
     assert.equal(unknown.ok, false)
     assert.equal(unknown.error.code, 'unknown_tool')
+
+    assert.equal(externOf(await drv.call('list', {})).count, 0, '非法入队不落账')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── list ───────────────────────────────────────────────────────────────────
 
-test('list：读队列，新版本在前、返回 oldest→newest', async () => {
+test('list：读队列，返回 oldest→newest，统计 answered/expired', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const answered = itemFixture({ id: 'q-run-1-1', answers: [{ question_id: 'q1', selected: ['左'] }], prev: { def: H1 } })
-    const value = await drv.call('list', {
-      question: { body: { version: 1, tail: { def: H2 }, count: 2 }, refs: { [H1]: itemFixture(), [H2]: answered } },
-    })
+    await drv.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'c0', run: 'run-1' })
+    await drv.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'c1', run: 'run-1' })
+    const value = await drv.call('list', {})
     const payload = externOf(value)
     assert.equal(payload.count, 2)
     assert.deepEqual(payload.items.map((item) => item.id), ['q-run-1-0', 'q-run-1-1'])
-    assert.equal(payload.answered, 1)
+    assert.equal(payload.answered, 0)
+    assert.equal(payload.expired, 0)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── sweep ──────────────────────────────────────────────────────────────────
 
-test('sweep：过期项标 expired（链式追加、count 不变），未到期不动', async () => {
+test('sweep：过期项标 expired（count 不变），未到期不动', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const expired = itemFixture({ id: 'q-run-1-0', expires_at: new Date(PAST).toISOString() })
-    const fresh = itemFixture({ id: 'q-run-1-1', expires_at: new Date(PAST + 10_000_000).toISOString(), prev: { def: H1 } })
-    const value = await drv.call(
-      'sweep',
-      {
-        queue: { version: 1, tail: { def: H2 }, count: 2 },
-        refs: { [H1]: expired, [H2]: fresh },
-      },
-      { run: null, thread: null, now: PAST + 1 },
+    await drv.call(
+      'invoke',
+      { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'c0', run: 'run-1', at: new Date(PAST).toISOString() },
+      { run: 'run-1', thread: 't1', now: PAST },
     )
-    const payload = externOf(value)
-    assert.equal(payload.expired, 1)
-    const ops = opsOf(value)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'put', 'add_gen'])
-    assert.equal(ops[0].args.body.id, 'q-run-1-0')
-    assert.equal(ops[0].args.body.expired, true)
-    assert.deepEqual(ops[0].args.body.prev, { def: H2 })
-    assert.deepEqual(ops[1].args.body.tail, { def: { $n: 0 } })
-    assert.equal(ops[1].args.body.count, 2)
+    await drv.call(
+      'invoke',
+      { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'c1', run: 'run-1', at: new Date(PAST + 10_000_000).toISOString() },
+      { run: 'run-1', thread: 't1', now: PAST + 10_000_000 },
+    )
+    const value = await drv.call('sweep', {}, { run: null, thread: null, now: PAST + 1_000_000 })
+    assert.equal(externOf(value).expired, 1)
+    const items = externOf(await drv.call('list', {})).items
+    assert.equal(items[0].expired, true)
+    assert.equal(items[1].expired, false)
+    assert.equal(externOf(await drv.call('list', {})).count, 2)
 
-    const none = await drv.call(
-      'sweep',
-      { queue: { version: 1, tail: { def: H2 }, count: 2 }, refs: { [H1]: expired, [H2]: fresh } },
-      { run: null, thread: null, now: PAST - 1 },
-    )
+    const none = await drv.call('sweep', {}, { run: null, thread: null, now: PAST - 1 })
     assert.equal(externOf(none).changed, false)
     assert.equal(directivesOf(none).some((item) => item.kind === 'write'), false)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── 作答命令路径 ───────────────────────────────────────────────────────────
 
-test('answer：按 id 沿 tail 链定位 → eval(chat.resume) + write(记答案 + 清槽，per-thread)', async () => {
-  const drv = startService()
+function answerPortCall(message, reply) {
+  if (message.method === 'read') {
+    const slot = { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 'q1', selected: ['左'] }] }
+    reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { slots: { t1: slot }, thread: 't1', slot } })
+    return
+  }
+  reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, thread: 't1' } })
+}
+
+test('answer：反向调 input.read 取槽 → 写回答案 → input.clear → eval(chat.resume) + extern', async () => {
+  const drv = startService({ onPortCall: answerPortCall })
   try {
     await drv.hello()
-    const item = itemFixture()
-    const inputBody = {
-      slots: {
-        t1: { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 'q1', selected: ['左'] }] },
-        other: { kind: 'chat.message', text: 'keep' },
-      },
-    }
-    const ids = {
-      input: { body: inputBody },
-      question: { body: { version: 1, tail: { def: H1 }, count: 1 }, refs: { [H1]: item } },
-    }
-    const value = await drv.call('invoke', ids)
+    await drv.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: { node_index: 4, call_id: 'c1' }, run: 'run-1' })
+    const value = await drv.call('invoke', null, { run: 'r2', thread: 't1', now: 1_700_000_000_000 })
     const directives = directivesOf(value)
-    assert.deepEqual(directives.map((item) => item.kind), ['eval', 'write', 'extern'])
+    assert.deepEqual(directives.map((item) => item.kind), ['eval', 'extern'])
     assert.deepEqual(directives[0], {
       kind: 'eval',
       command: 'chat.resume',
-      args: { cursor: 'cur-9', thread: 't1', payload: { answers: [{ question_id: 'q1', selected: ['左'] }] } },
+      args: { cursor: { node_index: 4, call_id: 'c1' }, thread: 't1', payload: { answers: [{ question_id: 'q1', selected: ['左'] }] } },
       inject: { ids: ['ids'] },
     })
-    const ops = opsOf(value)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'put', 'add_gen', 'put', 'add_gen'])
-    assert.deepEqual(ops[0].args.body.answers, [{ question_id: 'q1', selected: ['左'] }])
-    assert.deepEqual(ops[0].args.body.prev, { def: H1 })
-    assert.equal(ops[1].args.body.count, 1)
-    assert.equal(ops[2].args.id, 'question')
-    // 清槽：只清本线程键，其余键原样
-    assert.deepEqual(ops[3].args.body.slots.t1, { kind: 'idle' })
-    assert.deepEqual(ops[3].args.body.slots.other, { kind: 'chat.message', text: 'keep' })
-    assert.equal(ops[4].args.id, 'input')
     assert.equal(externOf(value).status, 'answered')
+    assert.equal(externOf(value).id, 'q-run-1-0')
+
+    // 反向调用：input.read 取槽 + input.clear 清槽。
+    assert.deepEqual(drv.portCalls.map((call) => `${call.port}.${call.method}`), ['input.read', 'input.clear'])
+    // 答案已写回自有存储。
+    const item = externOf(await drv.call('list', {})).items[0]
+    assert.deepEqual(item.answers, [{ question_id: 'q1', selected: ['左'] }])
+    assert.equal(externOf(await drv.call('list', {})).answered, 1)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('answer：无槽 → no_slot 且不写；id 找不到 → 结构化拒 + 清本线程槽', async () => {
-  const drv = startService()
+test('answer：无槽 → no_slot；id 找不到 → not_found + 清槽', async () => {
+  const drv = startService({
+    onPortCall: (message, reply) => {
+      if (message.method === 'read') {
+        reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { slots: { t1: { kind: 'idle' } }, thread: 't1', slot: { kind: 'idle' } } })
+        return
+      }
+      reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, thread: 't1' } })
+    },
+  })
   try {
     await drv.hello()
-    const noSlot = await drv.call('invoke', { input: { body: { slots: { t1: { kind: 'idle' } } } } })
+    const noSlot = await drv.call('invoke', null, { run: 'r2', thread: 't1', now: 0 })
     assert.equal(externOf(noSlot).error.code, 'no_slot')
     assert.equal(directivesOf(noSlot).some((item) => item.kind === 'write'), false)
-
-    const missing = await drv.call('invoke', {
-      input: { body: { slots: { t1: { kind: 'question.answer', id: 'q-missing', answers: [] } } } },
-      question: { body: { version: 1, tail: { def: H1 }, count: 1 }, refs: { [H1]: itemFixture() } },
-    })
-    assert.equal(externOf(missing).error.code, 'not_found')
-    const ops = opsOf(missing)
-    assert.deepEqual(ops.map((op) => op.op), ['put', 'add_gen'])
-    assert.deepEqual(ops[0].args.body.slots.t1, { kind: 'idle' })
-    assert.equal(ops[1].args.id, 'input')
+    assert.deepEqual(drv.portCalls.map((call) => call.method), ['read'], '无槽不调 clear')
   } finally {
     drv.close()
+    drv.cleanup()
+  }
+
+  const drv2 = startService({
+    onPortCall: (message, reply) => {
+      if (message.method === 'read') {
+        const slot = { kind: 'question.answer', id: 'q-missing', answers: [] }
+        reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { slots: { t1: slot }, thread: 't1', slot } })
+        return
+      }
+      reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, thread: 't1' } })
+    },
+  })
+  try {
+    await drv2.hello()
+    const missing = await drv2.call('invoke', null, { run: 'r2', thread: 't1', now: 0 })
+    assert.equal(externOf(missing).error.code, 'not_found')
+    assert.deepEqual(drv2.portCalls.map((call) => call.method), ['read', 'clear'], '找不到项也清槽')
+  } finally {
+    drv2.close()
+    drv2.cleanup()
   }
 })
 
 // ── 入口 term 真求值（预置 eff 回灌） ──────────────────────────────────────
 
 test('入口 term：最小求值器求值 terms/question.answer.json 得作答续跑计划', async () => {
-  const drv = startService()
+  const drv = startService({ onPortCall: answerPortCall })
   try {
     await drv.hello()
-    const item = itemFixture()
-    const ids = {
-      input: {
-        body: {
-          slots: { t1: { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 'q1', selected: ['右'] }] } },
-        },
-      },
-      question: { body: { version: 1, tail: { def: H1 }, count: 1 }, refs: { [H1]: item } },
-    }
-    const expected = await drv.call('invoke', ids)
+    await drv.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: { node_index: 4, call_id: 'c1' }, run: 'run-1' })
+    const expected = await drv.call('invoke', null, { run: 'r2', thread: 't1', now: 1_700_000_000_000 })
     const term = JSON.parse(readFileSync(join(PKG_ROOT, 'terms', 'question.answer.json'), 'utf8'))
 
     const effId = H({ run: 'run-1', i: 0, n: 0 })
     const env = {
-      ctx: { ids },
+      ctx: {},
       args: [],
       defs: {},
       results: { [effId]: { ok: true, value: expected } },
@@ -624,109 +575,41 @@ test('入口 term：最小求值器求值 terms/question.answer.json 得作答�
     assert.deepEqual(directivesOf(outcome.value)[0].inject, { ids: ['ids'] }, '投影由宿主执行期注入')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-// ── 引用不可用（def_unavailable） ───────────────────────────────────────────
+// ── 跨宿主重启续跑（持久化游标） ────────────────────────────────────────────
 
-test('hydrate：mock read 缺失 / 越权 → 抛 def_unavailable', async () => {
-  const failingHost = { call: async () => ({ ok: false, code: 'denied', message: 'denied' }) }
-  const handlers = createHandlers({ host: failingHost })
-  await assert.rejects(
-    handlers.list({ queue: { version: 1, tail: null, count: 0 }, refs: [H1] }, FIXED_ENV),
-    (err) => {
-      assert.ok(err instanceof DefUnavailableError)
-      assert.equal(err.code, 'def_unavailable')
-      assert.deepEqual(err.hashes, [H1])
-      return true
-    },
-  )
-})
-
-// ── 补丁世代（有 data_gen 时写补丁 + base；组装结果 == 整份写入） ─────────────
-
-test('补丁世代：enqueue 队列 body 写补丁 + base', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const queue = { version: 1, tail: null, count: 0 }
-    const value = await drv.call('invoke', {
-      tool: 'question',
-      args: { questions: [question()] },
-      question: { body: queue, refs: {} },
-      data_gen: { seq: 4, payload: H1 },
-      run: 'r1',
-      thread: 't1',
-      at: '2023-11-14T22:13:20.000Z',
-    })
-    const ops = opsOf(value.result)
-    const patchDef = ops[1].args.body
-    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
-    assert.equal(ops[2].args.id, 'question')
-    assert.equal(ops[2].args.base, 4)
-    assert.deepEqual(applyOps(queue, patchDef.ops), { version: 1, tail: { def: { $n: 0 } }, count: 1 })
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：answer 队列 + input 清槽各自补丁 + base', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const item = itemFixture()
-    const ids = {
-      input: {
-        body: { slots: { t1: { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 'q1', selected: ['右'] }] } } },
-        data_gen: { seq: 11, payload: H1 },
-      },
-      question: {
-        body: { version: 1, tail: { def: H1 }, count: 1 },
-        refs: { [H1]: item },
-        data_gen: { seq: 12, payload: H2 },
-      },
-    }
-    const value = await drv.call('invoke', ids)
-    const write = directivesOf(value).find((directive) => directive.kind === 'write')
-    const ops = write.request.args.ops
-    const questionGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'question')
-    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
-    assert.equal(questionGen.args.base, 12)
-    assert.equal(inputGen.args.base, 11)
-    const inputPatch = ops[ops.indexOf(inputGen) - 1].args.body
-    assert.deepEqual(inputPatch.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：input 空改动（已 idle）回落整份', () => {
-  const ops = []
-  pushInputGen(ops, { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 5, payload: H1 } }, 't1')
-  assert.equal(ops[1].args.base, undefined)
-  assert.equal(Array.isArray(ops[0].args.body.ops), false)
-})
-
-test('服务帧：引用不可用回 def_unavailable 帧', async () => {
-  const drv = startService({
-    onPortCall: (message, reply) =>
-      reply({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'denied', message: 'denied' }),
+test('跨重启续跑：重启后从持久化游标仍可作答续跑', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'question-restart-'))
+  const first = startService({ root })
+  await first.hello()
+  await first.call('invoke', {
+    tool: 'question',
+    args: { questions: [question()] },
+    thread: 't1',
+    cursor: { node_index: 4, call_id: 'c1' },
+    run: 'run-1',
   })
+  first.close()
+  await first.exit
+
+  const second = startService({ root, onPortCall: answerPortCall })
   try {
-    await drv.hello()
-    const message = await drv.request(
-      'call',
-      {
-        port: 'question',
-        method: 'list',
-        args: { queue: { version: 1, tail: null, count: 0 }, refs: [H1] },
-        env: FIXED_ENV,
-      },
-      ['result', 'error'],
-    )
-    assert.equal(message.kind, 'error')
-    assert.equal(message.code, 'def_unavailable')
+    await second.hello()
+    const item = externOf(await second.call('list', {})).items[0]
+    assert.equal(item.id, 'q-run-1-0', '重启后重放仍见原队列项')
+    assert.deepEqual(item.resume, {
+      command: 'chat.resume',
+      args: { cursor: { node_index: 4, call_id: 'c1' }, thread: 't1' },
+    }, '持久化游标跨重启可取回')
+
+    const value = await second.call('invoke', null, { run: 'r2', thread: 't1', now: 1_700_000_000_000 })
+    assert.equal(directivesOf(value)[0].command, 'chat.resume')
+    assert.deepEqual(directivesOf(value)[0].args.cursor, { node_index: 4, call_id: 'c1' }, '重启后仍可据游标续跑')
   } finally {
-    drv.close()
+    second.close()
+    second.cleanup()
   }
 })

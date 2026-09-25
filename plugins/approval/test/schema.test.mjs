@@ -64,7 +64,7 @@ function schemaWorld(schema) {
   }
 }
 
-test('schema periodic：sweep 按裸方法名解析，reads 指向 approval body/refs', () => {
+test('schema periodic：sweep 按裸方法名解析，不再注入投影片段（读自有存储）', () => {
   const schema = JSON.parse(readFileSync(join(PKG_ROOT, 'schema', 'approval.json'), 'utf8'))
   const { entries, invalid } = readPeriodicEntries(schemaWorld(schema))
   assert.deepEqual(invalid, [])
@@ -72,9 +72,7 @@ test('schema periodic：sweep 按裸方法名解析，reads 指向 approval body
   assert.equal(entries[0].method, 'sweep')
   assert.equal(entries[0].command, undefined)
   assert.equal(entries[0].everyMs > 0, true)
-  const byKey = Object.fromEntries(entries[0].reads.map((read) => [read.key, read.path]))
-  assert.deepEqual(byKey.queue, ['ids', 'approval', 'body'])
-  assert.deepEqual(byKey.refs, ['ids', 'approval', 'refs'])
+  assert.deepEqual(entries[0].reads, [], '队列出世界，宿主不再注入投影切片')
 })
 
 test('schema：默认超时 10 分钟、容量与裁决策略就位', () => {

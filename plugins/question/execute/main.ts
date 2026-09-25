@@ -1,13 +1,13 @@
 // `question` 服务进程入口：服务协议帧循环（docs/protocol.md §二）。
 // manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影、无写通道、无 pins（不发反向调用）：
-// 方法只返回值 / 写计划，入队时上行 `question.pending` 事件。
+// stdin EOF / 管道断开即自退出。服务不读投影、无写链通道：队列与游标写自有持久存储；
+// 作答槽经反向调用 `input.read` / `input.clear` 读写（槽属 `input` 身份）。
 
 import { readFileSync } from 'node:fs'
 import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { createHandlers } from './methods.ts'
 import { PortLink } from './port-link.ts'
-import { DefUnavailableError } from './refs.ts'
+import { QuestionStore } from './store.ts'
 import { isRecord } from './plan.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Json, ServiceEvent } from './types.ts'
@@ -15,9 +15,9 @@ import type { Rec } from './plan.ts'
 
 const CAPABILITY = 'question'
 
-/** 反向调用通道（服务 → 宿主）：`host.def.read` 按需解析投影引用（只读）。 */
+/** 反向调用通道（服务 → 宿主）：`input.read` / `input.clear` 读写本线程作答槽。 */
 const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ host: LINK })
+const HANDLERS = createHandlers({ store: QuestionStore.open(), input: LINK })
 
 function readPlugin(): Rec {
   try {
@@ -121,10 +121,6 @@ async function handleCall(message: Rec): Promise<void> {
   } catch (err) {
     if (err instanceof BadArgsError) {
       sendError(id, 'bad_args', err.message)
-      return
-    }
-    if (err instanceof DefUnavailableError) {
-      sendError(id, 'def_unavailable', err.message)
       return
     }
     log(`method ${method} failed: ${(err as Error).message}`)

@@ -1,117 +1,30 @@
-// 计划构造与共享纯函数：只返回写计划（`$directives`）与数据，不落账、不读投影。
-// 计划条目形状与宿主计划通道一致：`{kind:'eval', command, args}` / `{kind:'write', request:{op, args}}` /
-// `{kind:'extern', payload}`；占位符 `{"$n":k}` 只指向同批更早的 `put`（内核批处理替换）。
+// 共享纯函数：续跑计划条目拼接、影子引用收集、extern 载荷合并。服务不读投影、不构造世界写计划——
+// 队列由 `approval` 自有存储持有；本插件只按裁决结果拼 `chat.resume` 续跑条目。
 
 import { isRecord } from './types.ts'
 import type { Json } from './types.ts'
 
 export type Rec = { [key: string]: Json }
 
-/** 缺省线程键（per-thread 键控：写 / 清槽只动本键）。 */
+/** 缺省线程键。 */
 export const MAIN_THREAD = '_main'
-
-/** 遍历 item 链的硬上限（防坏数据成环）。 */
-export const MAX_CHAIN = 10000
 
 export function asString(value: Json | undefined): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-export function asCount(value: Json | undefined): number | null {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
-}
-
-/** 单条 put 子操作。 */
-export function putOp(body: Json): Json {
-  return { op: 'put', args: { body } }
-}
-
-/** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
-export function addGenOp(id: string, index: number, base?: number): Json {
-  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
-  if (base !== undefined) args['base'] = base
-  return { op: 'add_gen', args }
-}
-
-/** `data_gen` 视图里的 `seq`（非负整数）；缺失 / 非法回 null。 */
-export function dataGenSeqOf(value: Json | undefined): number | null {
-  if (!isRecord(value)) return null
-  const seq = value['seq']
-  return typeof seq === 'number' && Number.isInteger(seq) && seq >= 0 ? seq : null
-}
-
-/** 数据世代基准：切片上的 `data_gen.seq`；无 → null，写整份世代。 */
-export function baseSeqOf(slice: Rec): number | null {
-  return dataGenSeqOf(slice['data_gen'])
-}
-
-/** JSON 结构相等（键序无关、类型严格）。 */
-function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
-  if (a === b) return true
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
-    return a.every((item, index) => jsonEqual(item, b[index]))
-  }
-  if (isRecord(a) || isRecord(b)) {
-    if (!isRecord(a) || !isRecord(b)) return false
-    const keysA = Object.keys(a)
-    const keysB = Object.keys(b)
-    if (keysA.length !== keysB.length) return false
-    return keysA.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]))
-  }
-  return false
-}
-
-/** 输入 body 的规范形状：只留 `slots`（剥离入口切片并进来的 `data_gen` / `refs`）。 */
-export function inputDataOf(slice: Rec): Rec {
-  return { slots: isRecord(slice['slots']) ? (slice['slots'] as Rec) : {} }
-}
-
-/** 输入槽补丁：按线程键 `replace ['slots', key]` / `delete ['slots', key]`。 */
-function slotPatches(prev: Rec, next: Rec): Json[] {
-  const prevSlots = isRecord(prev['slots']) ? (prev['slots'] as Rec) : {}
-  const nextSlots = isRecord(next['slots']) ? (next['slots'] as Rec) : {}
-  const ops: Json[] = []
-  for (const key of Object.keys(nextSlots)) {
-    if (!jsonEqual(prevSlots[key], nextSlots[key])) ops.push({ op: 'replace', path: ['slots', key], value: nextSlots[key] })
-  }
-  for (const key of Object.keys(prevSlots)) {
-    if (key in nextSlots) continue
-    ops.push({ op: 'delete', path: ['slots', key] })
-  }
-  return ops
-}
-
-/**
- * 追加输入世代的写子操作：有数据世代（`slice.data_gen`）且槽确有变化 ⇒ 写 `slots[<key>]` 补丁世代；
- * 否则回落整份世代。`next` 为清槽后的目标 body。
- */
-export function pushInputGen(ops: Json[], slice: Rec, next: Rec, base: number | null): void {
-  const index = ops.length
-  if (base !== null) {
-    const patches = slotPatches(inputDataOf(slice), next)
-    if (patches.length > 0) {
-      ops.push(putOp({ ops: patches }))
-      ops.push(addGenOp('input', index, base))
-      return
-    }
-  }
-  ops.push(putOp(next))
-  ops.push(addGenOp('input', index))
-}
-
-/** 一条原子 batch write 计划条目。 */
-export function batchDirective(ops: Json[]): Json {
-  return { kind: 'write', request: { op: 'batch', args: { ops } } }
-}
-
-/** 一条 extern 透传计划条目（不写世界、不推进）。 */
+/** 一条 `extern` 透传计划条目（不写世界、不推进）。 */
 export function externDirective(payload: Json): Json {
   return { kind: 'extern', payload }
 }
 
+/** 无业务写时的计划值：只有一条 extern。 */
+export function externOnly(payload: Json): Json {
+  return { $directives: [externDirective(payload)] }
+}
+
 /**
- * 一条按命令名解析的 eval 计划条目（H18：宿主按命令声明解析入口）。
+ * 一条按命令名解析的 eval 计划条目：宿主按命令声明解析入口。
  * `inject` = 宿主在执行期把投影片段按声明路径并入 args（键 → 投影路径）；续跑 eval 用它拿投影。
  */
 export function evalDirective(command: string, args: Json, inject?: Rec): Json {
@@ -120,124 +33,9 @@ export function evalDirective(command: string, args: Json, inject?: Rec): Json {
   return directive
 }
 
-/** 组装最终计划值：一条 batch + 一条 extern。 */
-export function planOf(ops: Json[], payload: Json): Json {
-  return { $directives: [batchDirective(ops), externDirective(payload)] }
-}
-
-/** 无业务写时的计划值：只有一条 extern（不构造空 batch）。 */
-export function externOnly(payload: Json): Json {
-  return { $directives: [externDirective(payload)] }
-}
-
 /** 结构化失败值（`{ok:false, error:{code, message}}`）。 */
 export function failure(code: string, message: string): Rec {
   return { ok: false, error: { code, message } }
-}
-
-// ── 投影切片（`ids`）→ 输入槽 / 审批队列 ─────────────────────────────────────
-
-/** `ids.input.body`；缺失 / 非法回 null。 */
-export function inputBodyOf(ids: Json): Rec | null {
-  if (!isRecord(ids)) return null
-  const input = ids['input']
-  if (!isRecord(input) || !isRecord(input['body'])) return null
-  return input['body']
-}
-
-/** 投影切片 `ids.<identity>.data_gen`；缺失回 null。 */
-export function dataGenOf(ids: Json, identity: string): Json {
-  if (!isRecord(ids)) return null
-  const entry = ids[identity]
-  if (!isRecord(entry) || entry['data_gen'] === undefined) return null
-  return entry['data_gen'] as Json
-}
-
-/** 输入切片：body + 投影元数据 `data_gen`（写补丁世代用）；缺失 body → null。 */
-export function inputSliceOf(ids: Json): Rec | null {
-  const body = inputBodyOf(ids)
-  if (body === null) return null
-  const slice: Rec = { ...body }
-  const dataGen = dataGenOf(ids, 'input')
-  if (dataGen !== null) slice['data_gen'] = dataGen
-  return slice
-}
-
-/** 本线程槽体：`body.slots[threadKey]`；缺失 / 非法回 null。 */
-export function slotOf(inputBody: Json, threadKey: string): Rec | null {
-  if (!isRecord(inputBody) || !isRecord(inputBody['slots'])) return null
-  const slot = (inputBody['slots'] as Rec)[threadKey]
-  return isRecord(slot) ? slot : null
-}
-
-/**
- * 清槽：per-thread 键控——只把本线程键置 `{kind:'idle'}`，其余键原样保留。
- * 返回**新对象**，不改入参（入参是轮首投影的整份 body）。
- */
-export function clearSlotsBody(inputBody: Rec, threadKey: string): Rec {
-  const slots = isRecord(inputBody['slots']) ? (inputBody['slots'] as Rec) : {}
-  return { ...inputBody, slots: { ...slots, [threadKey]: { kind: 'idle' } } }
-}
-
-/** `ids.approval.body`（队列 body）；缺失 / 非法回落空队列。 */
-export function queueOf(ids: Json): Rec {
-  if (isRecord(ids)) {
-    const approval = ids['approval']
-    if (isRecord(approval) && isRecord(approval['body'])) return approval['body']
-  }
-  return { version: 1, tail: null, count: 0 }
-}
-
-/** `ids.approval.refs`（item 引用闭包）；缺失 / 非法返回空表。 */
-export function refsOf(ids: Json): Rec {
-  if (isRecord(ids)) {
-    const approval = ids['approval']
-    if (isRecord(approval) && isRecord(approval['refs'])) return approval['refs']
-  }
-  return {}
-}
-
-/** def 引用 / 裸哈希 → 哈希；形态非法回 null。 */
-function defHashOf(value: Json | undefined): string | null {
-  if (typeof value === 'string') return /^[0-9a-f]{64}$/.test(value) ? value : null
-  if (!isRecord(value)) return null
-  const hash = value['def']
-  return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash) ? hash : null
-}
-
-/**
- * 沿 `prev` 链从 `queue.tail` 回溯，按 id 去重（**新版本在前**，故首个出现即最新版本）。
- * 返回 newest→oldest 的 item body 数组；坏引用 / 成环即停。
- */
-export function itemsFromChain(queue: Rec, refs: Rec): Rec[] {
-  const items: Rec[] = []
-  const seen = new Set<string>()
-  let current = defHashOf(queue['tail'])
-  let guard = 0
-  while (current !== null && guard < MAX_CHAIN) {
-    guard += 1
-    const body = refs[current]
-    if (!isRecord(body)) break
-    const id = asString(body['id'])
-    if (id !== null && !seen.has(id)) {
-      seen.add(id)
-      items.push(body)
-    }
-    current = defHashOf(body['prev'])
-  }
-  return items
-}
-
-/** 按 id 找最新版本 item；找不到返回 null。 */
-export function itemById(items: Rec[], id: string): Rec | null {
-  for (const item of items) {
-    if (item['id'] === id) return item
-  }
-  return null
-}
-
-export function statusOf(item: Rec): string | null {
-  return asString(item['status'])
 }
 
 /** 槽 verdict 词汇（写死 `accept` / `deny`）；其它值回 null。 */
@@ -246,48 +44,44 @@ export function normalizeVerdict(value: Json | undefined): string | null {
   return verdict === 'accept' || verdict === 'deny' ? verdict : null
 }
 
-/** 待裁决项（`pending`），新版本在前（与 #32 `decide_all` 的取项口径一致）。 */
-export function pendingItems(items: Rec[]): Rec[] {
-  return items.filter((item) => statusOf(item) === 'pending')
-}
-
-/**
- * 拼续跑计划条目：按 item 的 `resume` 游标逐项产 `{kind:'eval', command:'chat.resume', args, inject}`。
- * `cursor` 不透明透传（由 #32 item 携带）；`thread` 取 item.thread，缺省 `_main`；`payload` = 裁决；
- * `inject: {ids: ['ids']}` 声明由**宿主在执行期**把投影切片注入 args——续跑不再自带整份投影。
- * 无 `resume` / 无 `cursor` 的项跳过（不伪造游标）。
- */
-export function resumeDirectives(items: Rec[], verdict: string): Json[] {
-  const out: Json[] = []
-  for (const item of items) {
-    const resume = isRecord(item['resume']) ? item['resume'] : null
-    const resumeArgs = resume !== null && isRecord(resume['args']) ? resume['args'] : null
-    if (resumeArgs === null || !Object.hasOwn(resumeArgs, 'cursor')) continue
-    const cursor = resumeArgs['cursor']
-    if (cursor === null || cursor === undefined) continue
-    const thread = asString(item['thread']) ?? asString(resumeArgs['thread']) ?? MAIN_THREAD
-    out.push(
-      evalDirective('chat.resume', { cursor, thread, payload: { verdict } }, { ids: ['ids'] }),
-    )
-  }
-  return out
-}
-
-/** 失败收口：清本线程槽（若给了输入切片）+ 结构化 extern，不产业务写。 */
-export function clearReject(inputSlice: Rec | null, threadKey: string, reason: string): Json {
-  if (inputSlice === null) return externOnly(failure(reason, reason))
-  const ops: Json[] = []
-  pushInputGen(ops, inputSlice, clearSlotsBody(inputSlice, threadKey), baseSeqOf(inputSlice))
-  return planOf(ops, failure(reason, reason))
-}
-
 /** 取计划值里的 `$directives`；非计划回 null。 */
 export function directivesOf(value: Json): Json[] | null {
   if (!isRecord(value) || !Array.isArray(value['$directives'])) return null
   return value['$directives']
 }
 
-/** 收集各 item 的 `shadow` def body（`refs` 闭包里可达者），供 UI 解析影子指标。 */
+/** 取计划值最后一条 `extern` 的载荷；无回 null。 */
+export function externPayloadOf(value: Json): Rec | null {
+  const directives = directivesOf(value)
+  if (directives === null) return null
+  for (let index = directives.length - 1; index >= 0; index--) {
+    const item = directives[index]
+    if (isRecord(item) && item['kind'] === 'extern' && isRecord(item['payload'])) return item['payload'] as Rec
+  }
+  return null
+}
+
+/**
+ * 拼续跑计划条目：按 `approval` 回执里的 `resumes`（`{id, thread, resume}`）逐项产
+ * `{kind:'eval', command:'chat.resume', args, inject}`。`cursor` 不透明透传；`payload` = 裁决；
+ * `inject: {ids: ['ids']}` 声明由**宿主在执行期**把投影切片注入 args——续跑不再自带整份投影。
+ * 无 `resume` / 无 `cursor` 的项跳过（不伪造游标）。
+ */
+export function resumeDirectives(targets: Rec[], verdict: string): Json[] {
+  const out: Json[] = []
+  for (const target of targets) {
+    const resume = isRecord(target['resume']) ? target['resume'] : null
+    const resumeArgs = resume !== null && isRecord(resume['args']) ? resume['args'] : null
+    if (resumeArgs === null || !Object.hasOwn(resumeArgs, 'cursor')) continue
+    const cursor = resumeArgs['cursor']
+    if (cursor === null || cursor === undefined) continue
+    const thread = asString(target['thread']) ?? asString(resumeArgs['thread']) ?? MAIN_THREAD
+    out.push(evalDirective('chat.resume', { cursor, thread, payload: { verdict } }, { ids: ['ids'] }))
+  }
+  return out
+}
+
+/** 收集各 item 的 `shadow` def body（跨身份 `refs` 闭包里可达者），供 UI 解析影子指标。 */
 export function shadowRefsOf(items: Rec[], refs: Rec): Rec {
   const out: Rec = {}
   for (const item of items) {
@@ -314,6 +108,30 @@ export function withExternPayload(value: Json, extra: Rec): Json {
     }
   }
   return value
+}
+
+/**
+ * 汇总投影切片里各身份的 `refs` 闭包（队列已出世界，影子指标 def 仍可达于 `evolution` / `loop-policy` 等
+ * 判定平面身份；UI 只读展示，不改变判定）。
+ */
+export function allRefsOf(ids: Json): Rec {
+  const out: Rec = {}
+  if (!isRecord(ids)) return out
+  for (const entry of Object.values(ids)) {
+    if (!isRecord(entry)) continue
+    const refs = entry['refs']
+    if (!isRecord(refs)) continue
+    for (const [hash, body] of Object.entries(refs)) out[hash] = body
+  }
+  return out
+}
+
+/** 从计划值取队列项（`approval.list` 回执 extern 载荷的 `items`）。 */
+export function itemsOf(value: Json): Rec[] {
+  const payload = externPayloadOf(value)
+  const items = payload === null ? null : payload['items']
+  if (!Array.isArray(items)) return []
+  return items.filter(isRecord)
 }
 
 export { isRecord }

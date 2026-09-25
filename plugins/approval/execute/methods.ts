@@ -1,85 +1,52 @@
-// 能力类 `approval` 的五个方法：只构造写计划 + 事件，不读投影、不落账、不自取时钟。
-// 调用方入口 term 读出的世界数据（队列 body / item 引用闭包 / 输入槽整份 slots）经 args 传入；
-// 周期 `sweep` 的所需投影片段由宿主按 schema.periodic.reads 机械注入 bag。服务不读投影。
+// 能力类 `approval` 的五个方法：队列与裁决回执写自有持久存储（④），返回的 `$directives` 只含 `extern`。
+// 服务不读投影、不构造世界写计划、不自取时钟：队列与 resume 游标由本身份持久化，调用方不再传切片。
+// 周期 `sweep` 的所需数据也来自自有存储（不再由宿主注入投影片段）。
 
 import { approvalPolicy } from './config.ts'
+import { approvalId, MAIN_THREAD, type ApprovalStore, type Rec } from './store.ts'
 import {
-  asCount,
   asString,
-  baseSeqOf,
   buildResume,
-  countOf,
-  defHashOf,
   externOnly,
-  isoAt,
   isRecord,
-  itemById,
-  itemsFromChain,
-  MAIN_THREAD,
+  isoAt,
   normalizeArgsRef,
   normalizeKind,
   normalizeShadow,
   nowOf,
-  planOf,
-  pushBodyGen,
-  pushInputGen,
-  putOp,
-  queueOf,
-  refOf,
-  refsOf,
   resolvePort,
-  slotOf,
   statusOf,
   threadKeyOf,
   verdictToStatus,
 } from './plan.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, ServiceEvent } from './types.ts'
-import type { Rec } from './plan.ts'
+
+export interface ApprovalDeps {
+  store: ApprovalStore
+}
 
 function requireRecord(value: Json | undefined, field: string): Rec {
   if (!isRecord(value)) throw new BadArgsError(`${field} must be an object`)
   return value
 }
 
-/** 目标 item 的链上位置：`{def: <tail 哈希>}` 或 null。 */
-function prevOf(queue: Rec): Json {
-  const hash = defHashOf(queue['tail'])
-  return hash === null ? null : refOf(hash)
-}
-
-/** 追加清槽写子操作；无 slots（不该发生）时不构造写。 */
-function clearOps(ops: Json[], slotsBody: Rec | null, threadKey: string): void {
-  if (slotsBody === null) return
-  pushInputGen(ops, slotsBody, threadKey)
-}
-
-/** 失败收口：清本线程槽（若给了 slots）+ 结构化 extern，不产业务写。 */
-function rejectWithClear(
-  slotsBody: Rec | null,
-  threadKey: string,
-  reason: string,
-): HandlerResult {
-  if (slotsBody === null) {
-    return { value: externOnly({ ok: false, reason }), events: [] }
-  }
-  const ops: Json[] = []
-  clearOps(ops, slotsBody, threadKey)
-  return { value: planOf(ops, { ok: false, reason }), events: [] }
+/** 幂等键：同回合同一审批节点的重复入队收敛到同一条。取游标里的稳定小字段，不落整份游标。 */
+function opKeyOf(run: string, cursor: Json | undefined): string {
+  if (!isRecord(cursor)) return `${run}:approval`
+  const nodeIndex = cursor['node_index']
+  return typeof nodeIndex === 'number' ? `${run}:approval:${nodeIndex}` : `${run}:approval`
 }
 
 // ── enqueue ────────────────────────────────────────────────────────────────
 
-function enqueue(args: Rec, env: CallEnv): HandlerResult {
+function enqueue(args: Rec, env: CallEnv, store: ApprovalStore): HandlerResult {
   const kind = normalizeKind(args['kind'])
   if (kind === null) {
     throw new BadArgsError('kind must be tool_call / orchestration_change / plugin_write')
   }
-  const queue = queueOf(args)
-  const refs = refsOf(args)
-  const items = itemsFromChain(queue, refs)
   const policy = approvalPolicy(args)
-
+  const items = store.itemsInOrder()
   const counted = items.filter((item) => {
     const status = statusOf(item)
     if (policy.capacityScope === 'live') return status === 'pending' || status === 'expired'
@@ -95,10 +62,20 @@ function enqueue(args: Rec, env: CallEnv): HandlerResult {
   const run = asString(args['run']) ?? env.run ?? 'run'
   const thread = asString(args['thread']) ?? env.thread ?? MAIN_THREAD
   const at = asString(args['at']) ?? isoAt(nowOf(env))
-  const seq = countOf(queue)
-  const id = `ap-${run}-${seq}`
+  const opKey = opKeyOf(run, args['cursor'])
+
+  const existing = store.findByOpKey(opKey)
+  if (existing !== null) {
+    return {
+      value: externOnly({ ok: true, id: existing['id'], count: store.count(), pending: counted }),
+      events: [],
+    }
+  }
+
+  const id = approvalId(run, store.count())
   const item: Rec = {
     id,
+    op_key: opKey,
     kind,
     port: resolvePort(kind, args['port']),
     method: asString(args['method']) ?? 'invoke',
@@ -113,10 +90,11 @@ function enqueue(args: Rec, env: CallEnv): HandlerResult {
     by: null,
     resume: buildResume(args, thread),
     shadow: kind === 'orchestration_change' ? normalizeShadow(args['shadow']) : null,
-    prev: prevOf(queue),
   }
-  const ops: Json[] = [putOp(item)]
-  pushBodyGen(ops, 'approval', queue, { ...queue, version: 1, tail: { def: { $n: 0 } }, count: seq + 1 }, baseSeqOf(args))
+  store.turnOpen(run)
+  store.appendItem(run, item)
+  store.turnClose(run)
+
   const events: ServiceEvent[] = [
     {
       topic: 'approval.pending',
@@ -128,20 +106,19 @@ function enqueue(args: Rec, env: CallEnv): HandlerResult {
         port: item['port'],
         tier: item['tier'],
         at,
-        count: seq + 1,
+        count: store.count(),
       },
     },
   ]
-  const value = planOf(ops, { ok: true, id, count: seq + 1, pending: counted + 1 })
+  const value = externOnly({ ok: true, id, count: store.count(), pending: counted + 1 })
   return { value, events }
 }
 
 // ── list（只读） ───────────────────────────────────────────────────────────
 
-function list(args: Rec): HandlerResult {
-  const queue = queueOf(args)
-  const refs = refsOf(args)
-  const items = itemsFromChain(queue, refs)
+function list(args: Rec, store: ApprovalStore): HandlerResult {
+  void args
+  const items = store.itemsInOrder()
   const pending = items.filter((item) => statusOf(item) === 'pending').length
   const expired = items.filter((item) => statusOf(item) === 'expired').length
   const decided = items.filter((item) => {
@@ -151,12 +128,12 @@ function list(args: Rec): HandlerResult {
   return {
     value: externOnly({
       ok: true,
-      version: asCount(queue['version']) ?? 1,
-      count: countOf(queue),
+      version: 1,
+      count: store.count(),
       pending,
       expired,
       decided,
-      items: [...items].reverse(),
+      items,
     }),
     events: [],
   }
@@ -164,38 +141,21 @@ function list(args: Rec): HandlerResult {
 
 // ── decide / decide_all ────────────────────────────────────────────────────
 
-/** 从 args 或本线程 `approval.decide` 槽取裁决字段。 */
-function decisionFields(
-  args: Rec,
-  threadKey: string,
-): { id: string | null; verdict: string | null } {
-  const slot = slotOf(args, threadKey)
-  const slotRec = isRecord(slot) && slot['kind'] === 'approval.decide' ? slot : null
-  const id = asString(args['id']) ?? (slotRec === null ? null : asString(slotRec['id']))
-  const verdict = asString(args['verdict']) ?? (slotRec === null ? null : asString(slotRec['verdict']))
-  return { id, verdict }
-}
-
-function decide(args: Rec, env: CallEnv): HandlerResult {
-  const queue = queueOf(args)
-  const refs = refsOf(args)
-  const items = itemsFromChain(queue, refs)
-  const threadKey = threadKeyOf(args)
-  const { id, verdict } = decisionFields(args, threadKey)
+function decide(args: Rec, env: CallEnv, store: ApprovalStore): HandlerResult {
+  const id = asString(args['id'])
+  const verdict = asString(args['verdict'])
   const status = verdictToStatus(verdict)
-  const slotsBody = isRecord(args['slots']) ? (args['slots'] as Rec) : null
-  const target = id === null ? null : itemById(items, id)
-  const clearKey = asString(args['thread_id']) ?? (target === null ? null : asString(target['thread'])) ?? MAIN_THREAD
+  if (id === null) return { value: externOnly({ ok: false, reason: 'missing_id' }), events: [] }
+  if (status === null) return { value: externOnly({ ok: false, reason: 'bad_verdict' }), events: [] }
+  const target = store.get(id)
+  if (target === null) return { value: externOnly({ ok: false, reason: 'not_found' }), events: [] }
 
-  if (id === null) return rejectWithClear(slotsBody, clearKey, 'missing_id')
-  if (status === null) return rejectWithClear(slotsBody, clearKey, 'bad_verdict')
-  if (target === null) return rejectWithClear(slotsBody, clearKey, 'not_found')
-
+  const run = env.run
   const at = asString(args['at']) ?? isoAt(nowOf(env))
-  const updated: Rec = { ...target, status, decided_at: at, by: 'user', prev: prevOf(queue) }
-  const ops: Json[] = [putOp(updated)]
-  pushBodyGen(ops, 'approval', queue, { ...queue, version: 1, tail: { def: { $n: 0 } } }, baseSeqOf(args))
-  clearOps(ops, slotsBody, clearKey)
+  const updated: Rec = { ...target, status, decided_at: at, by: 'user' }
+  store.turnOpen(run)
+  store.updateItem(run, updated)
+  store.turnClose(run)
   const events: ServiceEvent[] = [
     {
       topic: 'approval.decided',
@@ -209,29 +169,30 @@ function decide(args: Rec, env: CallEnv): HandlerResult {
       },
     },
   ]
-  return { value: planOf(ops, { ok: true, id, status, verdict }), events }
+  return {
+    value: externOnly({
+      ok: true,
+      id,
+      status,
+      verdict,
+      thread: asString(target['thread']),
+      resume: target['resume'] ?? null,
+    }),
+    events,
+  }
 }
 
-function decideAll(args: Rec, env: CallEnv): HandlerResult {
-  const queue = queueOf(args)
-  const refs = refsOf(args)
-  const items = itemsFromChain(queue, refs)
-  const threadKey = threadKeyOf(args)
-  const { verdict } = decisionFields(args, threadKey)
+function decideAll(args: Rec, env: CallEnv, store: ApprovalStore): HandlerResult {
+  const verdict = asString(args['verdict'])
   const status = verdictToStatus(verdict)
-  const slotsBody = isRecord(args['slots']) ? (args['slots'] as Rec) : null
+  if (status === null) return { value: externOnly({ ok: false, reason: 'bad_verdict' }), events: [] }
+  const targets = store.itemsInOrder().filter((item) => statusOf(item) === 'pending')
+  if (targets.length === 0) return { value: externOnly({ ok: false, reason: 'no_pending' }), events: [] }
 
-  if (status === null) return rejectWithClear(slotsBody, threadKey, 'bad_verdict')
-  const targets = items.filter((item) => statusOf(item) === 'pending').reverse()
-  if (targets.length === 0) return rejectWithClear(slotsBody, threadKey, 'no_pending')
-
+  const run = env.run
   const at = asString(args['at']) ?? isoAt(nowOf(env))
-  const ops: Json[] = []
   const events: ServiceEvent[] = []
-  let prev: Json = prevOf(queue)
-  targets.forEach((target, index) => {
-    ops.push(putOp({ ...target, status, decided_at: at, by: 'user', prev }))
-    prev = { def: { $n: index } }
+  const updated = targets.map((target) => {
     events.push({
       topic: 'approval.decided',
       payload: {
@@ -243,77 +204,79 @@ function decideAll(args: Rec, env: CallEnv): HandlerResult {
         verdict,
       },
     })
+    return { ...target, status, decided_at: at, by: 'user' }
   })
-  const bodyIndex = ops.length
-  pushBodyGen(
-    ops,
-    'approval',
-    queue,
-    { ...queue, version: 1, tail: { def: { $n: bodyIndex - 1 } }, count: countOf(queue) },
-    baseSeqOf(args),
-  )
-  clearOps(ops, slotsBody, threadKey)
-  const value = planOf(ops, { ok: true, ids: targets.map((item) => item['id']), status, verdict })
-  return { value, events }
+  store.turnOpen(run)
+  store.updateItems(run, updated)
+  store.turnClose(run)
+  return {
+    value: externOnly({
+      ok: true,
+      ids: targets.map((target) => target['id']),
+      status,
+      verdict,
+      resumes: targets.map((target) => ({
+        id: target['id'],
+        thread: asString(target['thread']),
+        resume: target['resume'] ?? null,
+      })),
+    }),
+    events,
+  }
 }
 
 // ── sweep（宿主周期方法） ───────────────────────────────────────────────────
 
-function sweep(args: Rec, env: CallEnv): HandlerResult {
-  const queue = queueOf(args)
-  const refs = refsOf(args)
-  const items = itemsFromChain(queue, refs)
+function sweep(args: Rec, env: CallEnv, store: ApprovalStore): HandlerResult {
   const policy = approvalPolicy(args)
   const now = nowOf(env)
-  const ordered = [...items].reverse()
+  const items = store.itemsInOrder()
 
-  let expiredCount = 0
-  const updated = ordered.map((item) => {
-    if (statusOf(item) !== 'pending' || policy.timeoutMs === null) return item
+  const expiredUpdates: Rec[] = []
+  for (const item of items) {
+    if (statusOf(item) !== 'pending' || policy.timeoutMs === null) continue
     const atMs = Date.parse(asString(item['at']) ?? '')
-    if (!Number.isFinite(atMs) || now - atMs < policy.timeoutMs) return item
-    expiredCount += 1
-    return { ...item, status: 'expired' }
-  })
+    if (!Number.isFinite(atMs) || now - atMs < policy.timeoutMs) continue
+    expiredUpdates.push({ ...item, status: 'expired' })
+  }
 
-  const nonPending = updated.filter((item) => statusOf(item) !== 'pending')
+  const nonPending = items.filter((item) => statusOf(item) !== 'pending')
   const dropCount = Math.max(0, nonPending.length - policy.archiveKeep)
-  const dropped = new Set(nonPending.slice(0, dropCount).map((item) => asString(item['id'])))
-  const kept = updated.filter(
-    (item) => statusOf(item) === 'pending' || !dropped.has(asString(item['id'])),
-  )
+  const dropped = nonPending.slice(0, dropCount).map((item) => asString(item['id']) as string)
 
-  if (expiredCount === 0 && dropCount === 0) {
+  if (expiredUpdates.length === 0 && dropped.length === 0) {
     return {
-      value: externOnly({ ok: true, changed: false, expired: 0, archived: 0, retained: kept.length }),
+      value: externOnly({ ok: true, changed: false, expired: 0, archived: 0, retained: items.length }),
       events: [],
     }
   }
 
-  const ops: Json[] = []
-  kept.forEach((item, index) => {
-    const prev = index === 0 ? null : { def: { $n: index - 1 } }
-    ops.push(putOp({ ...item, prev }))
-  })
-  const bodyIndex = ops.length
-  const tail = kept.length === 0 ? null : { def: { $n: bodyIndex - 1 } }
-  pushBodyGen(ops, 'approval', queue, { version: 1, tail, count: countOf(queue) }, baseSeqOf(args))
-  const value = planOf(ops, {
-    ok: true,
-    changed: true,
-    expired: expiredCount,
-    archived: dropCount,
-    retained: kept.length,
-  })
-  return { value, events: [] }
+  const run = env.run
+  store.turnOpen(run)
+  store.updateItems(run, expiredUpdates)
+  store.dropItems(run, dropped)
+  store.turnClose(run)
+  return {
+    value: externOnly({
+      ok: true,
+      changed: true,
+      expired: expiredUpdates.length,
+      archived: dropped.length,
+      retained: items.length - dropped.length,
+    }),
+    events: [],
+  }
 }
 
 // ── 方法表 ─────────────────────────────────────────────────────────────────
 
-export const HANDLERS: Record<string, Handler> = {
-  enqueue: (args, env) => enqueue(requireRecord(args, 'args'), env),
-  list: (args) => list(requireRecord(args, 'args')),
-  decide: (args, env) => decide(requireRecord(args, 'args'), env),
-  decide_all: (args, env) => decideAll(requireRecord(args, 'args'), env),
-  sweep: (args, env) => sweep(requireRecord(args, 'args'), env),
+export function createHandlers(deps: ApprovalDeps): Record<string, Handler> {
+  return {
+    enqueue: (args, env) => enqueue(requireRecord(args, 'args'), env, deps.store),
+    // list 只读且不依赖参数：缺省 / null args 视为空对象（健康探针等无参调用）。
+    list: (args) => list(isRecord(args) ? args : {}, deps.store),
+    decide: (args, env) => decide(requireRecord(args, 'args'), env, deps.store),
+    decide_all: (args, env) => decideAll(requireRecord(args, 'args'), env, deps.store),
+    sweep: (args, env) => sweep(requireRecord(args, 'args'), env, deps.store),
+  }
 }

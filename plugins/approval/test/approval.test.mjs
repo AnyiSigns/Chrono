@@ -1,27 +1,13 @@
 // `approval` 服务协议级测试（node --test）：自实现最小协议驱动。
-// 驱动 spawn `node execute/main.ts`，发 hello → 收 manifest，发 call → 收 result / error，收 event 帧，
-// 覆盖 reload / drain / probe 与 stdin EOF 自退出。断言只针对「返回的计划 / 事件」——服务不落账、不读投影。
+// 驱动 spawn `node execute/main.ts`（注入临时 ④/③ 目录），发 hello → 收 manifest，发 call → 收 result / error，
+// 收 event 帧，覆盖 reload / drain / probe 与 stdin EOF 自退出。
+// 断言只针对「返回值 / 事件」——队列写自有存储，服务不产世界写 directive（无 write / add_gen）。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-
-/** 最小补丁组装（测试内联，避免引用内核包）：replace / delete 两种 op。 */
-function applyOps(base, ops) {
-  const doc = structuredClone(base)
-  for (const op of ops) {
-    let node = doc
-    for (let i = 0; i < op.path.length - 1; i++) node = node[op.path[i]]
-    const last = op.path[op.path.length - 1]
-    if (op.op === 'delete') {
-      if (Array.isArray(node)) node.splice(last, 1)
-      else delete node[last]
-    } else {
-      node[last] = structuredClone(op.value)
-    }
-  }
-  return doc
-}
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
@@ -33,10 +19,6 @@ const AT = '2023-11-14T22:13:20.000Z'
 const AT_LATE = '2023-11-14T22:25:00.000Z'
 const H1 = 'a'.repeat(64)
 const H2 = 'b'.repeat(64)
-
-function hashOf(n) {
-  return n.toString(16).padStart(64, '0')
-}
 
 function encodeFrame(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
@@ -64,8 +46,17 @@ function createDecoder() {
   }
 }
 
-function startService() {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+function startService(rootOverride) {
+  const root = rootOverride ?? mkdtempSync(join(tmpdir(), 'approval-svc-'))
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    env: {
+      ...process.env,
+      CHRONO_PLUGIN_DATA: join(root, 'data'),
+      CHRONO_PLUGIN_STATE: join(root, 'state'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
@@ -111,6 +102,7 @@ function startService() {
     child,
     events,
     exit,
+    root,
     request,
     async hello() {
       return request('hello', { impl: 'approval', gen: 'gen-1' }, 'manifest')
@@ -125,37 +117,14 @@ function startService() {
     close() {
       child.stdin.end()
     },
+    cleanup() {
+      rmSync(root, { recursive: true, force: true })
+    },
   }
 }
 
-/** 由 oldest→newest 的 item 列表构造 `{queue, refs, hashes}`（prev 成链）。 */
-function chainOf(items) {
-  const refs = {}
-  const hashes = []
-  let prev = null
-  items.forEach((item, index) => {
-    const defHash = hashOf(index + 1)
-    refs[defHash] = { ...item, prev }
-    hashes.push(defHash)
-    prev = { def: defHash }
-  })
-  const tail = hashes.length === 0 ? null : { def: hashes[hashes.length - 1] }
-  return { queue: { version: 1, tail, count: items.length }, refs, hashes }
-}
-
-function emptyQueue() {
-  return { version: 1, tail: null, count: 0 }
-}
-
 function directivesOf(value) {
-  return value.$directives
-}
-
-function opsOf(value) {
-  const batch = directivesOf(value).find((item) => item.kind === 'write')
-  assert.ok(batch, 'expected a write batch directive')
-  assert.equal(batch.request.op, 'batch')
-  return batch.request.args.ops
+  return Array.isArray(value?.$directives) ? value.$directives : []
 }
 
 function externOf(value) {
@@ -164,30 +133,17 @@ function externOf(value) {
   return extern.payload
 }
 
-function pendingItem(overrides = {}) {
-  return {
-    id: 'ap-r1-0',
-    kind: 'tool_call',
-    port: 'tool-shell',
-    method: 'invoke',
-    args_ref: { summary: 'rm -rf' },
-    tier: 'severe',
-    workspace_id: 'w1',
-    run: 'r1',
-    thread: 't1',
-    at: AT,
-    status: 'pending',
-    decided_at: null,
-    by: null,
-    resume: { command: 'chat.resume', args: { cursor: { iter: 2 }, thread: 't1' } },
-    shadow: null,
-    ...overrides,
+/** 世界不新增世代的机械证据：返回值里不得出现任何 write / add_gen。 */
+function assertNoWorldWrite(value) {
+  for (const directive of directivesOf(value)) {
+    assert.notEqual(directive.kind, 'write', `不应产世界写：${JSON.stringify(directive)}`)
+    assert.equal(JSON.stringify(directive).includes('add_gen'), false, '不应出现 add_gen')
   }
 }
 
 // ── 握手 / 控制 ────────────────────────────────────────────────────────────
 
-test('hello 回 manifest，声明与 plugin.json 一致', async () => {
+test('hello 回 manifest，声明与 plugin.json 一致（durable）', async () => {
   const drv = startService()
   try {
     const manifest = await drv.hello()
@@ -195,10 +151,11 @@ test('hello 回 manifest，声明与 plugin.json 一致', async () => {
     assert.equal(manifest.identity, 'approval')
     assert.deepEqual(manifest.implements, ['approval'])
     assert.equal(manifest.protocol, '1')
-    assert.equal(manifest.state, 'recomputable')
+    assert.equal(manifest.state, 'durable')
     assert.deepEqual(manifest.methods.approval, ['enqueue', 'list', 'decide', 'decide_all', 'sweep'])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -211,6 +168,7 @@ test('reload → ack / drain → bye / probe → pong', async () => {
     assert.equal((await drv.request('drain', { deadline_ms: 1000 }, 'bye')).kind, 'bye')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -220,18 +178,17 @@ test('stdin EOF 即自退出（断连不占端点）', async () => {
   drv.close()
   const code = await drv.exit
   assert.equal(code, 0)
+  drv.cleanup()
 })
 
 // ── enqueue ────────────────────────────────────────────────────────────────
 
-test('enqueue：item 链 + resume 游标 + thread + 乐观 pending 事件', async () => {
+test('enqueue：item 写自有存储 + resume 游标 + 乐观 pending 事件，无世界写', async () => {
   const drv = startService()
   try {
     await drv.hello()
     const before = drv.events.length
-    const plan = await drv.call('enqueue', {
-      queue: emptyQueue(),
-      refs: {},
+    const value = await drv.call('enqueue', {
       kind: 'tool_call',
       port: 'tool-shell',
       method: 'invoke',
@@ -240,12 +197,18 @@ test('enqueue：item 链 + resume 游标 + thread + 乐观 pending 事件', asyn
       workspace_id: 'w1',
       run: 'r1',
       thread: 't1',
-      cursor: { iter: 2 },
+      cursor: { node_index: 3 },
       at: AT,
     })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 3)
-    const item = ops[0].args.body
+    assertNoWorldWrite(value)
+    const payload = externOf(value)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.id, 'ap-r1-0')
+    assert.equal(payload.count, 1)
+    assert.equal(payload.pending, 1)
+
+    const listed = await drv.call('list', {})
+    const item = externOf(listed).items[0]
     assert.equal(item.id, 'ap-r1-0')
     assert.equal(item.kind, 'tool_call')
     assert.equal(item.port, 'tool-shell')
@@ -261,16 +224,10 @@ test('enqueue：item 链 + resume 游标 + thread + 乐观 pending 事件', asyn
     assert.equal(item.by, null)
     assert.deepEqual(item.resume, {
       command: 'chat.resume',
-      args: { cursor: { iter: 2 }, thread: 't1' },
+      args: { cursor: { node_index: 3 }, thread: 't1' },
     })
     assert.equal(item.shadow, null)
-    assert.equal(item.prev, null)
-    assert.deepEqual(ops[1].args.body, { version: 1, tail: { def: { $n: 0 } }, count: 1 })
-    assert.deepEqual(ops[2].args, { id: 'approval', payload: { $n: 1 }, sig: { $n: 1 }, pins: {} })
-    const payload = externOf(plan)
-    assert.equal(payload.ok, true)
-    assert.equal(payload.id, 'ap-r1-0')
-    assert.equal(payload.count, 1)
+
     const emitted = drv.events.slice(before)
     assert.deepEqual(emitted.map((e) => e.topic), ['approval.pending'])
     assert.equal(emitted[0].payload.kind, 'tool_call')
@@ -279,29 +236,32 @@ test('enqueue：item 链 + resume 游标 + thread + 乐观 pending 事件', asyn
     assert.equal(emitted[0].payload.at, AT)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('enqueue：后续入队链到当前 tail，count 递增、id 取入队序', async () => {
+test('enqueue：同回合同节点重复入队幂等收敛（不重复计数、不重复事件）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs, hashes } = chainOf([pendingItem()])
-    const plan = await drv.call('enqueue', {
-      queue: { ...queue, count: 1 },
-      refs,
+    const args = {
       kind: 'tool_call',
-      port: 'tool-fs',
-      run: 'r2',
+      port: 'tool-shell',
+      run: 'r1',
       thread: 't1',
+      cursor: { node_index: 3 },
       at: AT,
-    })
-    const ops = opsOf(plan)
-    assert.equal(ops[0].args.body.id, 'ap-r2-1')
-    assert.deepEqual(ops[0].args.body.prev, { def: hashes[0] })
-    assert.equal(ops[1].args.body.count, 2)
+    }
+    const first = await drv.call('enqueue', args)
+    const before = drv.events.length
+    const second = await drv.call('enqueue', args)
+    assert.equal(externOf(second).id, externOf(first).id, '重复入队收敛到同一条')
+    assert.equal(externOf(second).count, 1)
+    assert.equal(drv.events.length, before, '幂等重放不重复发事件')
+    assert.equal(externOf(await drv.call('list', {})).count, 1)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -309,90 +269,83 @@ test('enqueue：队列满 → 结构化拒，无写（不静默丢）', async ()
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([pendingItem()])
-    const plan = await drv.call('enqueue', {
-      queue,
-      refs,
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', at: AT, cursor: { node_index: 1 } })
+    const value = await drv.call('enqueue', {
       kind: 'tool_call',
       capacity: 1,
       run: 'r2',
       thread: 't1',
+      at: AT,
+      cursor: { node_index: 1 },
     })
-    assert.equal(directivesOf(plan).length, 1)
-    assert.equal(directivesOf(plan)[0].kind, 'extern')
-    const payload = externOf(plan)
+    assert.equal(directivesOf(value).length, 1)
+    assert.equal(directivesOf(value)[0].kind, 'extern')
+    const payload = externOf(value)
     assert.equal(payload.ok, false)
     assert.equal(payload.reason, 'queue_full')
     assert.equal(payload.capacity, 1)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── list ───────────────────────────────────────────────────────────────────
 
-test('list：只读回队列（含 pending/expired），不产写', async () => {
+test('list：只读回队列（含 pending/expired/decided），不产写', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([
-      pendingItem({ id: 'ap-r1-0' }),
-      pendingItem({ id: 'ap-r1-1', status: 'expired', at: AT }),
-      pendingItem({ id: 'ap-r1-2', status: 'approved', decided_at: AT_LATE, by: 'user' }),
-    ])
-    const plan = await drv.call('list', { queue, refs })
-    assert.equal(directivesOf(plan).length, 1)
-    assert.equal(directivesOf(plan)[0].kind, 'extern')
-    const payload = externOf(plan)
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', at: AT, cursor: { node_index: 0 } })
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', at: AT, cursor: { node_index: 1 } })
+    await drv.call('decide', { id: 'ap-r1-0', verdict: 'accept', at: AT_LATE })
+    const value = await drv.call('list', {})
+    assert.equal(directivesOf(value).length, 1)
+    assert.equal(directivesOf(value)[0].kind, 'extern')
+    const payload = externOf(value)
     assert.equal(payload.ok, true)
     assert.equal(payload.pending, 1)
-    assert.equal(payload.expired, 1)
     assert.equal(payload.decided, 1)
-    assert.deepEqual(payload.items.map((item) => item.id), ['ap-r1-0', 'ap-r1-1', 'ap-r1-2'])
+    assert.deepEqual(payload.items.map((item) => item.id), ['ap-r1-0', 'ap-r1-1'])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
 // ── decide / decide_all ────────────────────────────────────────────────────
 
-test('decide accept：状态迁移 approved + per-thread 清槽 + decided 事件，不产 chat.resume', async () => {
+test('decide accept：状态迁移 approved + decided 事件 + 回执带 resume，不产世界写 / chat.resume', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs, hashes } = chainOf([pendingItem()])
+    await drv.call('enqueue', {
+      kind: 'tool_call',
+      run: 'r1',
+      thread: 't1',
+      cursor: { node_index: 3 },
+      at: AT,
+    })
     const before = drv.events.length
-    const plan = await drv.call('decide', {
-      queue,
-      refs,
-      slots: {
-        slots: {
-          t1: { kind: 'approval.decide', id: 'ap-r1-0', verdict: 'accept' },
-          t2: { kind: 'chat.message', text: 'other' },
-        },
-      },
-      thread_id: 't1',
-      id: 'ap-r1-0',
-      verdict: 'accept',
-      at: AT_LATE,
+    const value = await drv.call('decide', { id: 'ap-r1-0', verdict: 'accept', thread_id: 't1', at: AT_LATE })
+    assertNoWorldWrite(value)
+    const payload = externOf(value)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.id, 'ap-r1-0')
+    assert.equal(payload.status, 'approved')
+    assert.equal(payload.verdict, 'accept')
+    assert.equal(payload.thread, 't1')
+    assert.deepEqual(payload.resume, {
+      command: 'chat.resume',
+      args: { cursor: { node_index: 3 }, thread: 't1' },
     })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 5)
-    const updated = ops[0].args.body
-    assert.equal(updated.id, 'ap-r1-0')
-    assert.equal(updated.status, 'approved')
-    assert.equal(updated.decided_at, AT_LATE)
-    assert.equal(updated.by, 'user')
-    assert.deepEqual(updated.prev, { def: hashes[0] })
-    assert.deepEqual(ops[1].args.body, { version: 1, tail: { def: { $n: 0 } }, count: 1 })
-    assert.deepEqual(ops[2].args, { id: 'approval', payload: { $n: 1 }, sig: { $n: 1 }, pins: {} })
-    assert.deepEqual(ops[3].args.body.slots, {
-      t1: { kind: 'idle' },
-      t2: { kind: 'chat.message', text: 'other' },
-    })
-    assert.deepEqual(ops[4].args, { id: 'input', payload: { $n: 3 }, sig: { $n: 3 }, pins: {} })
-    assert.equal(externOf(plan).status, 'approved')
-    assert.equal(directivesOf(plan).some((item) => item.kind === 'eval'), false)
+    assert.equal(directivesOf(value).some((item) => item.kind === 'eval'), false)
+
+    const item = externOf(await drv.call('list', {})).items[0]
+    assert.equal(item.status, 'approved')
+    assert.equal(item.decided_at, AT_LATE)
+    assert.equal(item.by, 'user')
+
     const emitted = drv.events.slice(before)
     assert.deepEqual(emitted.map((e) => e.topic), ['approval.decided'])
     assert.equal(emitted[0].payload.status, 'approved')
@@ -401,6 +354,7 @@ test('decide accept：状态迁移 approved + per-thread 清槽 + decided 事件
     assert.equal(emitted[0].payload.thread, 't1')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -408,123 +362,76 @@ test('decide deny：状态迁移 denied；映射写死 accept/deny → approved/
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([pendingItem()])
-    const plan = await drv.call('decide', {
-      queue,
-      refs,
-      slots: { slots: { t1: { kind: 'approval.decide', id: 'ap-r1-0', verdict: 'deny' } } },
-      thread_id: 't1',
-      id: 'ap-r1-0',
-      verdict: 'deny',
-      at: AT_LATE,
-    })
-    assert.equal(opsOf(plan)[0].args.body.status, 'denied')
-    assert.equal(externOf(plan).status, 'denied')
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 3 }, at: AT })
+    const value = await drv.call('decide', { id: 'ap-r1-0', verdict: 'deny', at: AT_LATE })
+    assert.equal(externOf(value).status, 'denied')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('decide：目标不存在 / 缺 id / 坏 verdict → 清槽 + 结构化拒，无部分写', async () => {
+test('decide：目标不存在 / 缺 id / 坏 verdict → 结构化拒，无部分写', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([pendingItem()])
-    const slots = { slots: { t1: { kind: 'approval.decide', id: 'ap-r1-0', verdict: 'accept' } } }
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 3 }, at: AT })
 
-    const missing = await drv.call('decide', {
-      queue,
-      refs,
-      slots,
-      thread_id: 't1',
-      id: 'nope',
-      verdict: 'accept',
-      at: AT_LATE,
-    })
-    const missingOps = opsOf(missing)
-    assert.equal(missingOps.length, 2)
-    assert.deepEqual(missingOps[0].args.body.slots, { t1: { kind: 'idle' } })
-    assert.deepEqual(missingOps[1].args, { id: 'input', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} })
-    assert.equal(externOf(missing).ok, false)
-    assert.equal(externOf(missing).reason, 'not_found')
+    const missing = externOf(await drv.call('decide', { id: 'nope', verdict: 'accept', at: AT_LATE }))
+    assert.equal(missing.ok, false)
+    assert.equal(missing.reason, 'not_found')
 
-    const badVerdict = await drv.call('decide', {
-      queue,
-      refs,
-      slots,
-      thread_id: 't1',
-      id: 'ap-r1-0',
-      verdict: 'maybe',
-      at: AT_LATE,
-    })
-    assert.equal(externOf(badVerdict).reason, 'bad_verdict')
+    const badVerdict = externOf(await drv.call('decide', { id: 'ap-r1-0', verdict: 'maybe', at: AT_LATE }))
+    assert.equal(badVerdict.reason, 'bad_verdict')
 
-    const noSlots = await drv.call('decide', { queue, refs, id: 'nope', verdict: 'accept', at: AT_LATE })
-    assert.equal(directivesOf(noSlots).length, 1)
-    assert.equal(directivesOf(noSlots)[0].kind, 'extern')
-    assert.equal(externOf(noSlots).reason, 'not_found')
+    const missingId = externOf(await drv.call('decide', { verdict: 'accept', at: AT_LATE }))
+    assert.equal(missingId.reason, 'missing_id')
+
+    // 未裁决项仍是 pending。
+    assert.equal(externOf(await drv.call('list', {})).items[0].status, 'pending')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('decide_all：对当前 pending 批量同 verdict，逐项 decided 事件 + 清槽', async () => {
+test('decide_all：对当前 pending 批量同 verdict，逐项 decided 事件 + 回执带 resumes', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs, hashes } = chainOf([
-      pendingItem({ id: 'ap-r1-0', thread: 't1' }),
-      pendingItem({ id: 'ap-r1-1', thread: 't2' }),
-      pendingItem({ id: 'ap-r1-2', status: 'approved', decided_at: AT_LATE, by: 'user' }),
-    ])
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 0 }, at: AT })
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't2', cursor: { node_index: 1 }, at: AT })
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't3', cursor: { node_index: 2 }, at: AT })
+    await drv.call('decide', { id: 'ap-r1-0', verdict: 'accept', at: AT_LATE })
+
     const before = drv.events.length
-    const plan = await drv.call('decide_all', {
-      queue,
-      refs,
-      slots: { slots: { _main: { kind: 'approval.decide', verdict: 'deny' } } },
-      thread_id: '_main',
-      verdict: 'deny',
-      at: AT_LATE,
-    })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 6)
-    assert.equal(ops[0].args.body.id, 'ap-r1-0')
-    assert.equal(ops[0].args.body.status, 'denied')
-    assert.deepEqual(ops[0].args.body.prev, { def: hashes[2] })
-    assert.equal(ops[1].args.body.id, 'ap-r1-1')
-    assert.equal(ops[1].args.body.status, 'denied')
-    assert.deepEqual(ops[1].args.body.prev, { def: { $n: 0 } })
-    assert.deepEqual(ops[2].args.body.tail, { def: { $n: 1 } })
-    assert.deepEqual(ops[3].args, { id: 'approval', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
-    assert.deepEqual(ops[4].args.body.slots, { _main: { kind: 'idle' } })
-    assert.deepEqual(ops[5].args, { id: 'input', payload: { $n: 4 }, sig: { $n: 4 }, pins: {} })
-    assert.deepEqual(externOf(plan).ids, ['ap-r1-0', 'ap-r1-1'])
+    const value = await drv.call('decide_all', { verdict: 'deny', thread_id: '_main', at: AT_LATE })
+    assertNoWorldWrite(value)
+    const payload = externOf(value)
+    assert.deepEqual(payload.ids, ['ap-r1-1', 'ap-r1-2'])
+    assert.equal(payload.status, 'denied')
+    assert.equal(payload.resumes.length, 2)
+    assert.deepEqual(payload.resumes.map((entry) => entry.thread), ['t2', 't3'])
+
     const emitted = drv.events.slice(before)
     assert.deepEqual(emitted.map((e) => e.topic), ['approval.decided', 'approval.decided'])
-    assert.deepEqual(emitted.map((e) => e.payload.id), ['ap-r1-0', 'ap-r1-1'])
+    assert.deepEqual(emitted.map((e) => e.payload.id), ['ap-r1-1', 'ap-r1-2'])
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('decide_all：无 pending → 清槽 + 结构化拒', async () => {
+test('decide_all：无 pending → 结构化拒', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([
-      pendingItem({ id: 'ap-r1-0', status: 'approved', decided_at: AT_LATE, by: 'user' }),
-    ])
-    const plan = await drv.call('decide_all', {
-      queue,
-      refs,
-      slots: { slots: { _main: { kind: 'approval.decide', verdict: 'deny' } } },
-      thread_id: '_main',
-      verdict: 'deny',
-    })
-    assert.equal(externOf(plan).ok, false)
-    assert.equal(externOf(plan).reason, 'no_pending')
+    const value = await drv.call('decide_all', { verdict: 'deny', thread_id: '_main' })
+    assert.equal(externOf(value).ok, false)
+    assert.equal(externOf(value).reason, 'no_pending')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -534,27 +441,20 @@ test('sweep：超时只标 expired、不自动裁决、不发终局事件', asyn
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([pendingItem()])
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 3 }, at: AT })
     const before = drv.events.length
-    const plan = await drv.call('sweep', { queue, refs }, {
-      run: null,
-      thread: null,
-      now: Date.parse(AT) + 11 * 60 * 1000,
-    })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 3)
-    const expired = ops[0].args.body
-    assert.equal(expired.status, 'expired')
-    assert.equal(expired.decided_at, null)
-    assert.equal(expired.by, null)
-    assert.deepEqual(ops[1].args.body, { version: 1, tail: { def: { $n: 0 } }, count: 1 })
-    assert.deepEqual(ops[2].args, { id: 'approval', payload: { $n: 1 }, sig: { $n: 1 }, pins: {} })
-    const payload = externOf(plan)
+    const value = await drv.call('sweep', {}, { run: null, thread: null, now: Date.parse(AT) + 11 * 60 * 1000 })
+    const payload = externOf(value)
     assert.equal(payload.expired, 1)
     assert.equal(payload.archived, 0)
+    const item = externOf(await drv.call('list', {})).items[0]
+    assert.equal(item.status, 'expired')
+    assert.equal(item.decided_at, null)
+    assert.equal(item.by, null)
     assert.equal(drv.events.length, before)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -562,49 +462,36 @@ test('sweep：未超时 / 无归档 → 无写（只回结果）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([pendingItem()])
-    const plan = await drv.call('sweep', { queue, refs }, {
-      run: null,
-      thread: null,
-      now: Date.parse(AT) + 1000,
-    })
-    assert.equal(directivesOf(plan).length, 1)
-    assert.equal(directivesOf(plan)[0].kind, 'extern')
-    assert.equal(externOf(plan).changed, false)
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 3 }, at: AT })
+    const value = await drv.call('sweep', {}, { run: null, thread: null, now: Date.parse(AT) + 1000 })
+    assert.equal(directivesOf(value).length, 1)
+    assert.equal(externOf(value).changed, false)
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
-test('sweep：终局/过期项按容量归档（写新索引），不删 pending', async () => {
+test('sweep：终局/过期项按容量归档，不删 pending', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const { queue, refs } = chainOf([
-      pendingItem({ id: 'ap-r1-0', status: 'approved', decided_at: AT_LATE, by: 'user' }),
-      pendingItem({ id: 'ap-r1-1', status: 'approved', decided_at: AT_LATE, by: 'user' }),
-      pendingItem({ id: 'ap-r1-2' }),
-    ])
-    const plan = await drv.call('sweep', { queue, refs, archive_keep: 1 }, {
-      run: null,
-      thread: null,
-      now: Date.parse(AT) + 1000,
-    })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 4)
-    const kept = ops.slice(0, 2).map((op) => op.args.body)
-    assert.deepEqual(kept.map((item) => item.id), ['ap-r1-1', 'ap-r1-2'])
-    assert.equal(kept[0].prev, null)
-    assert.deepEqual(kept[1].prev, { def: { $n: 0 } })
-    assert.deepEqual(ops[2].args.body, { version: 1, tail: { def: { $n: 1 } }, count: 3 })
-    assert.deepEqual(ops[3].args, { id: 'approval', payload: { $n: 2 }, sig: { $n: 2 }, pins: {} })
-    const payload = externOf(plan)
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't1', cursor: { node_index: 0 }, at: AT })
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't2', cursor: { node_index: 1 }, at: AT })
+    await drv.call('enqueue', { kind: 'tool_call', run: 'r1', thread: 't3', cursor: { node_index: 2 }, at: AT })
+    await drv.call('decide', { id: 'ap-r1-0', verdict: 'accept', at: AT_LATE })
+    await drv.call('decide', { id: 'ap-r1-1', verdict: 'accept', at: AT_LATE })
+
+    const value = await drv.call('sweep', { archive_keep: 1 }, { run: null, thread: null, now: Date.parse(AT) + 1000 })
+    const payload = externOf(value)
     assert.equal(payload.archived, 1)
     assert.equal(payload.retained, 2)
-    // pending 未被归档、未被裁决
-    assert.equal(kept[1].status, 'pending')
+    const items = externOf(await drv.call('list', {})).items
+    assert.deepEqual(items.map((item) => item.id), ['ap-r1-1', 'ap-r1-2'])
+    assert.equal(items[1].status, 'pending', 'pending 未被归档')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -614,45 +501,34 @@ test('三种 kind：port 默认与 shadow 只挂 orchestration_change', async ()
   const drv = startService()
   try {
     await drv.hello()
-    const orchestration = await drv.call('enqueue', {
-      queue: emptyQueue(),
-      refs: {},
+    await drv.call('enqueue', {
       kind: 'orchestration_change',
       shadow: { def: H2 },
       run: 'r1',
       thread: 't1',
+      cursor: { node_index: 0 },
       at: AT,
     })
-    const orchestrationItem = opsOf(orchestration)[0].args.body
-    assert.equal(orchestrationItem.port, 'orchestration-admin')
-    assert.deepEqual(orchestrationItem.shadow, { def: H2 })
-
-    const pluginWrite = await drv.call('enqueue', {
-      queue: emptyQueue(),
-      refs: {},
+    await drv.call('enqueue', {
       kind: 'plugin_write',
       args_ref: { summary: 'tool-fs 3 files' },
-      run: 'r2',
+      run: 'r1',
       thread: 't1',
+      cursor: { node_index: 1 },
       at: AT,
     })
-    const pluginItem = opsOf(pluginWrite)[0].args.body
-    assert.equal(pluginItem.port, 'plugin-admin')
-    assert.equal(pluginItem.shadow, null)
-    assert.deepEqual(pluginItem.args_ref, { summary: 'tool-fs 3 files' })
+    await drv.call('enqueue', { kind: 'tool_call', port: 'tool-fs', run: 'r1', thread: 't1', cursor: { node_index: 2 }, at: AT })
 
-    const toolCall = await drv.call('enqueue', {
-      queue: emptyQueue(),
-      refs: {},
-      kind: 'tool_call',
-      port: 'tool-fs',
-      run: 'r3',
-      thread: 't1',
-      at: AT,
-    })
-    assert.equal(opsOf(toolCall)[0].args.body.port, 'tool-fs')
+    const items = externOf(await drv.call('list', {})).items
+    assert.equal(items[0].port, 'orchestration-admin')
+    assert.deepEqual(items[0].shadow, { def: H2 })
+    assert.equal(items[1].port, 'plugin-admin')
+    assert.equal(items[1].shadow, null)
+    assert.deepEqual(items[1].args_ref, { summary: 'tool-fs 3 files' })
+    assert.equal(items[2].port, 'tool-fs')
   } finally {
     drv.close()
+    drv.cleanup()
   }
 })
 
@@ -660,104 +536,23 @@ test('enqueue：明文 args 不被内联（只留摘要 / 资产引用）', asyn
   const drv = startService()
   try {
     await drv.hello()
-    const plan = await drv.call('enqueue', {
-      queue: emptyQueue(),
-      refs: {},
+    await drv.call('enqueue', {
       kind: 'tool_call',
       port: 'tool-shell',
       args: { command: 'rm -rf /', secret: 'sk-live' },
       args_ref: { summary: 'rm -rf /' },
       run: 'r1',
       thread: 't1',
+      cursor: { node_index: 0 },
       at: AT,
     })
-    const item = opsOf(plan)[0].args.body
+    const item = externOf(await drv.call('list', {})).items[0]
     assert.equal('args' in item, false)
     assert.equal(JSON.stringify(item).includes('sk-live'), false)
     assert.deepEqual(item.args_ref, { summary: 'rm -rf /' })
   } finally {
     drv.close()
-  }
-})
-
-// ── 补丁世代（有 data_gen 时写补丁 + base；组装结果 == 整份写入） ─────────────
-
-test('补丁世代：enqueue 队列 body 写补丁 + base=data_gen.seq', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const queue = emptyQueue()
-    const plan = await drv.call('enqueue', {
-      queue,
-      refs: {},
-      data_gen: { seq: 3, payload: H1 },
-      kind: 'tool_call',
-      port: 'tool-shell',
-      method: 'invoke',
-      run: 'r1',
-      thread: 't1',
-      at: AT,
-    })
-    const ops = opsOf(plan)
-    assert.equal(ops.length, 3)
-    const patchDef = ops[1].args.body
-    assert.ok(Array.isArray(patchDef.ops) && patchDef.ops.length > 0)
-    assert.equal(ops[2].args.id, 'approval')
-    assert.equal(ops[2].args.base, 3)
-    assert.deepEqual(applyOps(queue, patchDef.ops), { version: 1, tail: { def: { $n: 0 } }, count: 1 })
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：decide 队列 + input 清槽各自补丁 + base', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const queue = { version: 1, tail: { def: H1 }, count: 1 }
-    const plan = await drv.call('decide', {
-      queue,
-      refs: { [H1]: { id: 'ap-r1-0', kind: 'tool_call', status: 'pending', thread: 't1', prev: null } },
-      data_gen: { seq: 6, payload: H2 },
-      thread_id: 't1',
-      id: 'ap-r1-0',
-      verdict: 'accept',
-      at: AT,
-      slots: {
-        slots: { t1: { kind: 'approval.decide', id: 'ap-r1-0', verdict: 'accept' } },
-        data_gen: { seq: 9, payload: H1 },
-      },
-    })
-    const ops = opsOf(plan)
-    const approvalGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'approval')
-    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
-    assert.equal(approvalGen.args.base, 6)
-    assert.equal(inputGen.args.base, 9)
-    const inputPatch = ops[ops.indexOf(inputGen) - 1].args.body
-    assert.deepEqual(inputPatch.ops, [{ op: 'replace', path: ['slots', 't1'], value: { kind: 'idle' } }])
-  } finally {
-    drv.close()
-  }
-})
-
-test('补丁世代：input 空改动（已 idle）回落整份', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const plan = await drv.call('decide', {
-      queue: { version: 1, tail: null, count: 0 },
-      refs: {},
-      slots: { slots: { t1: { kind: 'idle' } }, data_gen: { seq: 9, payload: H1 } },
-      thread_id: 't1',
-      id: 'missing',
-      verdict: 'accept',
-    })
-    const ops = opsOf(plan)
-    const inputGen = ops.find((op) => op.op === 'add_gen' && op.args.id === 'input')
-    assert.equal(inputGen.args.base, undefined)
-    assert.equal(Array.isArray(ops[ops.indexOf(inputGen) - 1].args.body.ops), false)
-  } finally {
-    drv.close()
+    drv.cleanup()
   }
 })
 
@@ -771,7 +566,7 @@ test('非对象 / 缺字段 args → bad_args，不崩进程', async () => {
     assert.equal(nullArgs.kind, 'error')
     assert.equal(nullArgs.code, 'bad_args')
 
-    const missingKind = await drv.callRaw('enqueue', { queue: emptyQueue(), refs: {} })
+    const missingKind = await drv.callRaw('enqueue', {})
     assert.equal(missingKind.kind, 'error')
     assert.equal(missingKind.code, 'bad_args')
 
@@ -780,9 +575,51 @@ test('非对象 / 缺字段 args → bad_args，不崩进程', async () => {
     assert.equal(unknown.code, 'unknown_method')
 
     // 进程仍可服务：后续正常调用成功
-    const plan = await drv.call('list', { queue: emptyQueue(), refs: {} })
-    assert.equal(externOf(plan).ok, true)
+    const value = await drv.call('list', {})
+    assert.equal(externOf(value).ok, true)
   } finally {
     drv.close()
+    drv.cleanup()
+  }
+})
+
+// ── 跨宿主重启续跑（持久化游标） ────────────────────────────────────────────
+
+test('跨重启续跑：重启后从持久化游标仍可裁决续跑（与挂起收口一致）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'approval-restart-'))
+  const first = startService(root)
+  try {
+    await first.hello()
+    await first.call('enqueue', {
+      kind: 'tool_call',
+      port: 'tool-shell',
+      run: 'r1',
+      thread: 't1',
+      cursor: { node_index: 3 },
+      at: AT,
+    })
+    first.close()
+    await first.exit
+  } finally {
+    // 首个进程已退出；root 留给第二个进程重放。
+  }
+
+  const second = startService(root)
+  try {
+    await second.hello()
+    const item = externOf(await second.call('list', {})).items[0]
+    assert.equal(item.id, 'ap-r1-0', '重启后重放仍见原队列项')
+    assert.deepEqual(item.resume, {
+      command: 'chat.resume',
+      args: { cursor: { node_index: 3 }, thread: 't1' },
+    }, '持久化游标跨重启可取回')
+
+    const decided = await second.call('decide', { id: 'ap-r1-0', verdict: 'accept', thread_id: 't1', at: AT_LATE })
+    const payload = externOf(decided)
+    assert.equal(payload.status, 'approved')
+    assert.deepEqual(payload.resume.args.cursor, { node_index: 3 }, '重启后仍可据游标裁决续跑')
+  } finally {
+    second.close()
+    second.cleanup()
   }
 })
