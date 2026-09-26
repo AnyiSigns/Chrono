@@ -4,11 +4,11 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
+import type { PortCaller } from 'plugin-sdk'
 import { createRefHydrator, hydrateIds } from './refs.ts'
 import type { DefReader } from './refs.ts'
 import { assembleThreadsState } from './threads-state.ts'
 import { isRecord } from './types.ts'
-import type { PortCaller } from './port-link.ts'
 import type { Handler, Json } from './types.ts'
 
 export interface HandlerDeps {
@@ -65,20 +65,20 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   }
   const hydrator = createRefHydrator(read)
   return {
-    ping: (): { value: Json } => ({ value: { pong: true, identity: deps.identity } }),
+    ping: (): { value: Json; events: [] } => ({ value: { pong: true, identity: deps.identity }, events: [] }),
 
     /** 入口 term 传 `ctx.ids`，服务按需解析待办引用后装配线程标签 + 待办标签（父会话隔离）。 */
-    'threads.state': async (args): Promise<{ value: Json }> => {
+    'threads.state': async (args): Promise<{ value: Json; events: [] }> => {
       const ids = await hydrateIds(args, ['todo'], hydrator)
-      return { value: assembleThreadsState(ids) }
+      return { value: assembleThreadsState(ids), events: [] }
     },
 
     /** 壳经 `<id>.client.read` 取客户端半边字节：`{path}` → `{path,text}`；非法路径 fail-closed。 */
-    'client.read': (args): { value: Json } => {
+    'client.read': (args): { value: Json; events: [] } => {
       const path = isRecord(args) ? args['path'] : null
       const file = readClientFile(deps.webRoot, path)
       if (file === null) throw new Error(`client.read refused: ${String(path)}`)
-      return { value: { path: file.path, text: file.text } }
+      return { value: { path: file.path, text: file.text }, events: [] }
     },
   }
 }

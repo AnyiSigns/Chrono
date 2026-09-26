@@ -3,7 +3,7 @@
 // 之前先造一个句柄交给引擎工厂：工厂在拿到可同步终止的中间态（如已 spawn 的浏览器子进程）时
 // 经 `register` 登记，`killAllSync` 在 `exit` 里同步触达——否则建引擎途中退出会留下孤儿浏览器。
 
-import { log } from './frames.ts'
+import { log } from './log.ts'
 
 /** 可同步硬杀的句柄（浏览器子进程 / 引擎实例）。 */
 export interface Killable {

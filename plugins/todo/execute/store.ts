@@ -3,8 +3,8 @@
 // 边跑边追加：写先落 open 标记、再落数据并置 closed；中途崩留下的 open 标记即中断残留，可辨。
 // 同会话重复写同值幂等；同回合重复写同值幂等。存量不搬，存储从空开始。
 
-import { isRecord } from './plan.ts'
-import type { Json } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 import type { StorageBackend } from './port-link.ts'
 
 const CONV_PREFIX = 'conv:'

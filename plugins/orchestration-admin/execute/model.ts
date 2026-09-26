@@ -2,7 +2,7 @@
 // 服务不读投影：所有输入来自 bag / args（由 #33 装配）。形状以 #33 契约为准。
 
 import { isRecord } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 export interface GraphModel {
   contracts: Rec[]

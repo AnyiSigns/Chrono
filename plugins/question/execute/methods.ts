@@ -22,8 +22,7 @@ import {
 } from './plan.ts'
 import { questionId, type QuestionStore } from './store.ts'
 import { describeValue, normalizeQuestions, renderCard } from './tools.ts'
-import type { CallEnv, Handler, HandlerResult, Json, ServiceEvent } from './types.ts'
-import type { PortCaller } from './port-link.ts'
+import type { CallEnv, Handler, HandlerResult, Json, PortCaller, ServiceEvent } from 'plugin-sdk'
 
 const CONFIG = resolveConfig()
 

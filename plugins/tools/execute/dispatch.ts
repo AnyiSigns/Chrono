@@ -2,15 +2,14 @@
 // 并发扇出到提供者（describe/invoke 提供者走 invoke；绑定项走能力类方法或投影读）。
 // 本插件只返回 results，不落账、不冒泡 $directives；提供者错误原样透传。
 
+import { canonicalJson, isRecord } from 'plugin-sdk'
+import type { CallEnv, Json, PortCaller, PortOutcome, Rec } from 'plugin-sdk'
 import type { ResultCache } from './cache.ts'
 import { resolveCacheEnabled, resolveConcurrency } from './config.ts'
 import { buildDirectory, directoryFromJson } from './directory.ts'
 import type { Directory, ToolEntry } from './directory.ts'
-import { canonicalJson } from './json.ts'
-import type { PortLink, PortOutcome } from './port-link.ts'
 import { validateArgs } from './schema-validate.ts'
-import { BadArgsError, isRecord } from './types.ts'
-import type { CallEnv, Json, Rec } from './types.ts'
+import { BadArgsError } from './types.ts'
 
 /** 派发上下文键：不进提供者 bag（工具声明 caps 会覆盖调用级 caps）。 */
 const CONTROL_KEYS = new Set([
@@ -31,7 +30,7 @@ const CONTROL_KEYS = new Set([
 const PATH_KEYS = ['path', 'base', 'cwd', 'file', 'dir', 'directory', 'root']
 
 export interface DispatchDeps {
-  link: PortLink
+  link: PortCaller
   emit: (topic: string, payload: Json) => void
   pins: string[]
   concurrency: number

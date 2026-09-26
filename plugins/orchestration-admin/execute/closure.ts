@@ -16,7 +16,7 @@ import {
   type GraphModel,
 } from './model.ts'
 import { buildTopology, hasCycle, reaches, type Topology } from './topology.ts'
-import type { Rec } from './types.ts'
+import type { Rec } from 'plugin-sdk'
 
 export interface GateError {
   code: string

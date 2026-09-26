@@ -2,9 +2,9 @@
 // 回 `{identity, default_base_url, default_auth_ref_name, default_reasoning}` 列表，供引导页预填。
 // 本插件只读入参、不读投影、不联网。
 
+import { BadArgsError } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
-import { BadArgsError } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 收集厂商模板为 `{ identity: body }`：支持数组 [{identity, body}] / [{sdk,...}] / 对象 / 顶层 vendor-* 键。 */
 export function collectVendorBodies(args: Rec): Rec {

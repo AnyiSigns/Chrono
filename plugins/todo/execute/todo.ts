@@ -1,9 +1,10 @@
 // 待办清单的纯逻辑：参数规范化、限额 / 枚举门禁、对外条目形状。
 // 清单本体已出世界（住 owner 委托存储），本文件不构造写计划、不读投影、不自取时间。
 
+import { BadArgsError } from 'plugin-sdk'
 import { asArray, asString, isRecord } from './plan.ts'
-import { BadArgsError, ToolError } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import { ToolError } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 import type { TodoLimits } from './config.ts'
 
 export interface ResolvedItems {

@@ -4,7 +4,7 @@
 
 import { asArray, asString, isRecord } from './plan.ts'
 import type { QuestionConfig } from './config.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 能力声明（无 fs / net：本工具只产写计划与事件，不触文件与网络）。 */
 const CAPS: Rec = {

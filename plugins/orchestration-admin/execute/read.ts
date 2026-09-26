@@ -16,7 +16,7 @@ import {
   readGraphModel,
 } from './model.ts'
 import { isRecord } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 台账条目（#33 装配已解析的数组形态；无则空）。 */
 function ledgerEntries(bag: Rec, kind: string): Rec[] {

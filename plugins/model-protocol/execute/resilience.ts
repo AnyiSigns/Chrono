@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'node:path'
 import { ModelError } from './errors.ts'
 import { isRecord } from './plan.ts'
 import { schemaConfig } from './plugin.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
 const STALE_TEMP_MS = 60 * 60 * 1000
@@ -189,8 +189,8 @@ export class RateLimiter {
 }
 
 /** 状态文件路径：`CHRONO_PLUGIN_STATE` 存在时用之，否则 null（纯内存）。 */
-export function rateLimitFile(): string | null {
-  const dir = process.env['CHRONO_PLUGIN_STATE']
+export function rateLimitFile(env: Record<string, string | undefined> = process.env): string | null {
+  const dir = env['CHRONO_PLUGIN_STATE']
   if (typeof dir !== 'string' || dir.length === 0) return null
   return join(dir, 'rate-limit.json')
 }

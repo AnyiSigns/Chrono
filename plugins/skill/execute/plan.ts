@@ -1,11 +1,8 @@
 // 技能清单是运行记录（内联清单 + 结构化触发 + 作用域），已出世界。
-// 本文件只提供 JSON 形态判定与合并纯函数，不构造世界写计划。
+// 本文件只提供 JSON 合并纯函数，不构造世界写计划。
 
-import type { Json, Rec } from './types.ts'
-
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+import { isRecord } from 'plugin-sdk'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 深合并：`null` 值删除该键；两值皆对象则递归；否则整值替换。返回新对象，不改入参。 */
 export function applyPatch(base: Rec, patch: Rec): Rec {

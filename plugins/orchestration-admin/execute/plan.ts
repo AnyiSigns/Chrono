@@ -2,16 +2,10 @@
 // 计划条目形状与宿主计划通道一致：`{kind:'write', request:{op:'batch', args:{ops}}}` / `{kind:'extern', payload}`；
 // 占位符 `{"$n":k}` 只指向同批更早的 `put`（内核批处理替换，规矩 A）。
 
-import type { CallEnv, Json, Rec } from './types.ts'
+import { isRecord, nowOf } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** 帧 env 的固定时钟；env 缺失时回落 0，绝不自取时钟。 */
-export function nowOf(env: CallEnv): number {
-  return typeof env.now === 'number' && Number.isFinite(env.now) ? env.now : 0
-}
+export { isRecord, nowOf }
 
 /** 单条 put 子操作：def 内容包在 `body` 键里（与内核 put 形状 / 投影 `def.body` 口径一致）。 */
 export function putOp(body: Json): Json {

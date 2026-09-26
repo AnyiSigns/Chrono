@@ -1,24 +1,10 @@
-// 规范 JSON 序列化与结构相等：缓存键（canonicalJson）与 enum / const 判定（deepEq）共用。
-// 与内核同口径（一种值模型、键序确定），但不 import 内核——本模块自带实现。
+// 结构相等判定（enum / const 共用）；规范序列化由 plugin-sdk 提供（与内核同口径）。
+// 本模块只保留插件自用的 `deepEq`，不 import 宿主与内核。
 
-import { isRecord } from './types.ts'
-import type { Json } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 
-function stringify(value: Json | undefined): string {
-  if (value === undefined) return 'null'
-  if (value === null) return 'null'
-  if (Array.isArray(value)) return `[${value.map((item) => stringify(item)).join(',')}]`
-  if (isRecord(value)) {
-    const keys = Object.keys(value).sort()
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${stringify(value[key])}`).join(',')}}`
-  }
-  return JSON.stringify(value) as string
-}
-
-/** 规范序列化：对象键排序、无空白；同值恒同串（作缓存键）。 */
-export function canonicalJson(value: Json): string {
-  return stringify(value)
-}
+export { canonicalJson } from 'plugin-sdk'
 
 /** 结构相等：数组逐项、对象逐键（键集相同且值相等）。 */
 export function deepEq(left: Json, right: Json): boolean {

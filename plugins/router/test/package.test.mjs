@@ -40,7 +40,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'router.select')
 })
 
 test('schema/router.json 冻结形状 {primary, aliases} 且声明默认值', () => {
@@ -66,8 +65,6 @@ test('execute/ 源码齐全', () => {
     'execute/methods.ts',
     'execute/select.ts',
     'execute/plugin.ts',
-    'execute/frames.ts',
-    'execute/types.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
 })

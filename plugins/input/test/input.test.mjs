@@ -4,11 +4,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
@@ -92,86 +92,24 @@ function assertWhitelist(schema, where) {
   }
 }
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
 function startService(options = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'chrono-input-'))
-  const env = {
-    ...process.env,
-    CHRONO_PLUGIN_DATA: join(root, 'data'),
-    CHRONO_PLUGIN_STATE: join(root, 'state'),
-  }
-  const child = spawn(process.execPath, [ENTRY], { cwd: pkgRoot, stdio: ['pipe', 'pipe', 'pipe'], env })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
+  const drv = startSdkService({
+    entry: ENTRY,
+    cwd: pkgRoot,
+    env: {
+      CHRONO_PLUGIN_DATA: join(root, 'data'),
+      CHRONO_PLUGIN_STATE: join(root, 'state'),
+    },
   })
-  child.stderr.on('data', () => {})
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 5000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  }
   return {
     root,
-    exit,
-    request,
-    hello: () => request('hello', { impl: 'input', gen: 'gen-1' }, 'manifest'),
-    call: async (method, args, env = FIXED_ENV) => {
-      const message = await request('call', { port: 'input', method, args, env }, 'result')
-      return message.value
-    },
-    callRaw: (method, args, env = FIXED_ENV) =>
-      request('call', { port: 'input', method, args, env }, ['result', 'error']),
-    close: () => child.stdin.end(),
+    exit: drv.exit,
+    request: drv.request,
+    hello: () => drv.hello('input'),
+    call: async (method, args, env = FIXED_ENV) => (await drv.call('input', method, args, env)).value,
+    callRaw: (method, args, env = FIXED_ENV) => drv.call('input', method, args, env),
+    close: () => drv.close(),
     cleanup() {
       try {
         rmSync(root, { recursive: true, force: true })

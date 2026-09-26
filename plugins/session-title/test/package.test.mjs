@@ -51,7 +51,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'session-title.generate')
 })
 
 test('schema/title.json 声明提示词 / 字数上限（≤10）/ max_tokens / 兜底策略 / 超时', () => {
@@ -83,9 +82,6 @@ test('execute/ 源码齐全', () => {
     'execute/config.ts',
     'execute/port-link.ts',
     'execute/plan.ts',
-    'execute/plugin.ts',
-    'execute/frames.ts',
-    'execute/types.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
 })

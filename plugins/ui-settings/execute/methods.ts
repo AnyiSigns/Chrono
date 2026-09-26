@@ -8,7 +8,7 @@ import { isSafeClientPath, readClientFile } from './client-read.ts'
 import { externOnly, isRecord } from './plan.ts'
 import { createRefHydrator, hydrateIds } from './refs.ts'
 import type { DefReader } from './refs.ts'
-import type { PortCaller } from './port-link.ts'
+import type { PortCaller } from 'plugin-sdk'
 import type { Json, Rec } from './types.ts'
 
 /** 客户端半边根目录（`execute/web/`；产物落 `execute/web/dist/entry.js`）。 */

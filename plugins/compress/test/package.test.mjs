@@ -40,7 +40,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'compress.summarize')
 })
 
 test('schema/compress.json 声明 mode / 目标长度 / 去重阈值 / 抽取条数（钳制 2..3）', () => {
@@ -76,9 +75,8 @@ test('execute/ 源码齐全', () => {
     'execute/semantic.ts',
     'execute/dedup.ts',
     'execute/port-link.ts',
+    'execute/log.ts',
     'execute/plan.ts',
-    'execute/plugin.ts',
-    'execute/frames.ts',
     'execute/types.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)

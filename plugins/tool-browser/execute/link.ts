@@ -3,7 +3,8 @@
 // 宿主按发出者 `pins` 路由后回 `port.result` / `port.error`（按 id 配对）。
 // 失败作数据（ToolError），不抛穿帧循环；单测注入假 link 替换真实通道。
 
-import { log, writeFrame } from './frames.ts'
+import { SERVICE_PROTOCOL_VERSION, writeFrame } from 'plugin-sdk'
+import { log } from './log.ts'
 import { ToolError } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -21,14 +22,16 @@ interface Pending {
 /** 反向调用等待上限；宿主自身另有调用超时，此处作通道兜底。 */
 export const DEFAULT_CALL_TIMEOUT_MS = 30000
 
-/** 走 stdio 协议帧的反向调用通道；`settle` 由帧循环在收到应答时调用。 */
+/** 走协议帧的反向调用通道；`settle` 由帧循环在收到应答时调用。 */
 export class StdioPortLink implements PortLink {
   private readonly pending = new Map<string, Pending>()
   private readonly timeoutMs: number
+  private readonly write: (message: Json) => void
   private seq = 0
 
-  constructor(timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS) {
+  constructor(timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS, write: (message: Json) => void = writeFrame) {
     this.timeoutMs = timeoutMs
+    this.write = write
   }
 
   call(port: string, method: string, args: Json, callId: string | null = null): Promise<Json> {
@@ -39,10 +42,10 @@ export class StdioPortLink implements PortLink {
         reject(new ToolError('tool_timeout', `${port}.${method} did not answer in time`))
       }, this.timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      const frame: Rec = { v: '1', id, kind: 'port.call', port, method, args }
+      const frame: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args }
       if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
       try {
-        writeFrame(frame)
+        this.write(frame)
       } catch (err) {
         clearTimeout(timer)
         this.pending.delete(id)

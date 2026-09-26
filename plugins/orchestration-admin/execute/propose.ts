@@ -9,8 +9,9 @@ import { validateBag } from './gate.ts'
 import { H, canonicalJson } from './hash.ts'
 import { asArray, asStringArray, graphDerivedFrom, graphNodes, readGraphModel } from './model.ts'
 import { baseSeqOf, isRecord, planOf, putOp } from './plan.ts'
-import { BadArgsError, ToolError } from './types.ts'
-import type { CallEnv, Json, Rec } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import { ToolError } from './types.ts'
+import type { CallEnv, Json, Rec } from 'plugin-sdk'
 
 const LIMITS = resolveLimits()
 

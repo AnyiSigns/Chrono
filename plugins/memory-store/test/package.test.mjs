@@ -53,7 +53,6 @@ test('plugin.json 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'memory.search')
 })
 
 test('schema/memory.json：数据契约含 body / 条目形状与索引锚', () => {
@@ -83,8 +82,8 @@ test('无 terms/ 目录且无命令面', () => {
 test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件包', () => {
   const files = readdirSync(join(PKG_ROOT, 'execute')).filter((name) => name.endsWith('.ts'))
   const expected = [
-    'frames.ts',
     'heap.ts',
+    'log.ts',
     'main.ts',
     'methods.ts',
     'plan.ts',

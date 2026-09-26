@@ -9,7 +9,7 @@ import type { Handler, Json } from './types.ts'
 /** 构造方法表（依赖注入：执行与密钥后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: InvokeDeps): Record<string, Handler> {
   return {
-    describe: async (): Promise<Json> => describeTools(),
-    invoke: (args: Json, callId: string | null): Promise<Json> => invoke(args, deps, callId),
+    describe: () => ({ value: describeTools(), events: [] }),
+    invoke: async (args: Json): Promise<{ value: Json; events: [] }> => ({ value: await invoke(args, deps), events: [] }),
   }
 }

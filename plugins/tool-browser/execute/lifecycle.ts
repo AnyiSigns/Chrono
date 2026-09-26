@@ -1,7 +1,7 @@
 // 进程生命周期：SIGTERM / SIGINT 优雅停机 + `exit` 同步硬杀兜底（关闭全部会话，不泄漏浏览器进程）。
 // 抽成纯函数便于单测：注入进程对象（生产传 process），断言信号 / 退出各自触发对应停机动作。
 
-import { log } from './frames.ts'
+import { log } from './log.ts'
 
 /** 停机目标：优雅停机 + 同步硬杀兜底。 */
 export interface ShutdownTarget {

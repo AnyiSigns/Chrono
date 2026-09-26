@@ -2,10 +2,16 @@
 // 计划条目形状与宿主计划通道一致：`{kind:'write', request:{op, args}}` / `{kind:'extern', payload}`；
 // 占位符 `{"$n":k}` 只指向同批更早的 `put`（内核批处理替换）。
 
-import type { Json, Rec } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json, Rec } from 'plugin-sdk'
 
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+export { isRecord }
+
+/** 从 bag / config 里取 `auth_ref`；非引用返回 null。 */
+export function authRefOf(container: Json | undefined): Rec | null {
+  if (!isRecord(container)) return null
+  const ref = container['auth_ref']
+  return isRecord(ref) ? ref : null
 }
 
 /** 单条 put 子操作。 */

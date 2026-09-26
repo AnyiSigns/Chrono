@@ -3,9 +3,11 @@
 // 调用方入口 term 若把身份数据读出随 args 传入，可按次覆盖（热改路径）。
 
 import { readFileSync } from 'node:fs'
-import { log } from './frames.ts'
-import { asString, isRecord, positiveInt } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import { asString, isRecord, makeLogger } from 'plugin-sdk'
+import { positiveInt } from './plan.ts'
+import type { Json, Rec } from 'plugin-sdk'
+
+const log = makeLogger('session-title')
 
 /** 字数上限硬顶：任何来源的配置都不得超过它（Unicode 码点）。 */
 export const HARD_MAX_CHARS = 10

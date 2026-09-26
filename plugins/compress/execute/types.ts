@@ -12,13 +12,7 @@ export interface CallEnv {
   now: number
 }
 
-/** args 形态非法：结构化 `bad_args`，不崩进程。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'
 
 /** 反向调用后端失败：带结构化码，调用方据此降级或作数据回灌。 */
 export class BackendError extends Error {

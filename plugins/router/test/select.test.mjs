@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseSelect, select } from '../execute/select.ts'
-import { BadArgsError } from '../execute/types.ts'
+import { BadArgsError } from 'plugin-sdk'
 
 const DEFAULTS = { primary: 'model', aliases: [] }
 const run = (args, defaults = DEFAULTS) => select(parseSelect(args, defaults))

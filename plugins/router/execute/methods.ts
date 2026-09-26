@@ -3,10 +3,10 @@
 
 import { DEFAULT_ALIASES, DEFAULT_ALIAS_PRIMARY } from './plugin.ts'
 import { parseSelect, select } from './select.ts'
-import type { Handler, Json } from './types.ts'
+import type { Handler, Json } from 'plugin-sdk'
 
 const DEFAULTS = { primary: DEFAULT_ALIAS_PRIMARY, aliases: DEFAULT_ALIASES }
 
 export const HANDLERS: Record<string, Handler> = {
-  select: (args: Json): Json => select(parseSelect(args, DEFAULTS)),
+  select: (args: Json) => ({ value: select(parseSelect(args, DEFAULTS)), events: [] }),
 }

@@ -2,8 +2,8 @@
 // 不发起 eff、不调模型、不读投影、不取时间、不用随机——同输入同输出（可回放）。
 // 无别名候选时恒返回主名（机械 no-op）；返回的端口名必在候选清单内，否则结构化错误。
 
-import { BadArgsError } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 一次选择的解析结果（别名清单与主名已由调用方 / schema 默认合流）。 */
 export interface SelectInput {

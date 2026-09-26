@@ -8,7 +8,7 @@ import { checkEvolution, checkInvariants } from './invariants.ts'
 import { H } from './hash.ts'
 import { readGraphModel } from './model.ts'
 import { isRecord } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 export interface ValidateResult {
   ok: boolean

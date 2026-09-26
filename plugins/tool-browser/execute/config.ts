@@ -2,7 +2,7 @@
 // schema 出生即冻结，改动随代码换代；配置只作缺省，运行期不热读。
 
 import { readFileSync } from 'node:fs'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import { resolveStateDir } from './state-dir.ts'
 import type { Json, Rec } from './types.ts'
 

@@ -5,8 +5,9 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BadArgsError, StoreError } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import { StoreError } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 单次调用载荷上限：大字节不入帧，二进制走 host.asset 后只把引用存进来。 */
 export const MAX_PAYLOAD_BYTES = 256 * 1024

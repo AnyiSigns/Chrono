@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
@@ -24,31 +25,7 @@ export function ensureNative() {
   }
 }
 
-export function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-export function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
+export { encodeFrame, createDecoder }
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 

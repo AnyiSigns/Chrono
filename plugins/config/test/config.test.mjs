@@ -1,11 +1,11 @@
 // config 包形状 / 内容测试 + 服务级读写往返（零依赖，node --test）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(pkgRoot, 'execute', 'main.ts')
@@ -188,79 +188,15 @@ test('README 存在且不含计划编号 / 计划文档引用', () => {
 
 // ---- 服务级：读写往返 / 阈值镜像 / 幂等 / 重放 ----
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
 function startService(env = {}) {
-  const child = spawn(process.execPath, [ENTRY], {
-    cwd: pkgRoot,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...env },
-  })
-  const decoder = createDecoder()
-  const pending = new Map()
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', () => {})
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  let seq = 0
-  const request = (kind, fields, expect) =>
-    new Promise((resolveRequest, rejectRequest) => {
-      seq += 1
-      const id = `cfg-${seq}`
-      const timer = setTimeout(() => rejectRequest(new Error(`timeout ${kind}`)), 8000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (message.kind !== expect) {
-          rejectRequest(new Error(`expected ${expect} got ${message.kind}: ${JSON.stringify(message)}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
+  const drv = startSdkService({ entry: ENTRY, cwd: pkgRoot, env })
+  const callEnv = { run: 'r1', thread: null, now: 0 }
   return {
-    hello: () => request('hello', { impl: 'config', gen: 'g' }, 'manifest'),
-    read: (args) =>
-      request('call', { port: 'config', method: 'read', args, env: { run: 'r1', thread: null, now: 0 } }, 'result'),
-    write: (patch) =>
-      request(
-        'call',
-        { port: 'config', method: 'write', args: { patch }, env: { run: 'r1', thread: null, now: 0 } },
-        'result',
-      ),
-    close: () => child.stdin.end(),
-    exit,
+    hello: () => drv.hello('config'),
+    read: (args) => drv.call('config', 'read', args, callEnv),
+    write: (patch) => drv.call('config', 'write', { patch }, callEnv),
+    close: () => drv.close(),
+    exit: drv.exit,
   }
 }
 

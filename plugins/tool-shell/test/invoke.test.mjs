@@ -10,7 +10,7 @@ import {
   HOST_METHOD_TIMEOUT_MS,
   MAX_CAPS_TIMEOUT_MS,
   REVERSE_TIMEOUT_MARGIN_MS,
-} from '../execute/port-link.ts'
+} from '../execute/backends.ts'
 import { ToolError } from '../execute/types.ts'
 
 const OK_OUTCOME = {
@@ -26,27 +26,25 @@ function fakeDeps(options = {}) {
   const execCalls = []
   const execMeta = []
   const secretCalls = []
-  const secretMeta = []
   const deps = {
     shell: options.shell ?? 'pwsh',
     exec: {
-      async exec(args, callId, timeoutMs) {
+      async exec(args, timeoutMs) {
         execCalls.push(args)
-        execMeta.push({ callId, timeoutMs })
+        execMeta.push({ timeoutMs })
         if (options.execError) throw options.execError
         return options.execResult ?? OK_OUTCOME
       },
     },
     secrets: {
-      async resolve(authRef, callId) {
+      async resolve(authRef) {
         secretCalls.push(authRef)
-        secretMeta.push({ callId })
         if (options.secretError) throw options.secretError
         return options.secretValue ?? 'secret-value'
       },
     },
   }
-  return { deps, execCalls, execMeta, secretCalls, secretMeta }
+  return { deps, execCalls, execMeta, secretCalls }
 }
 
 function bag(overrides = {}) {
@@ -235,12 +233,11 @@ test('auth_ref.name 非法环境变量名 → bad_auth_ref，且不调 secrets /
   }
 })
 
-// ── 反向等待超时与 call_id 回带 ─────────────────────────────────────────────
+// ── 反向等待超时 ────────────────────────────────────────────────────────────
 
-test('反向等待按声明 timeout_ms 加固定余量，并回带发起 call 帧 id', async () => {
+test('反向等待按声明 timeout_ms 加固定余量', async () => {
   const { deps, execMeta } = fakeDeps()
-  await invoke(bag({ caps: { timeout_ms: 12000 } }), deps, 'call-7')
-  assert.equal(execMeta[0].callId, 'call-7')
+  await invoke(bag({ caps: { timeout_ms: 12000 } }), deps)
   assert.equal(execMeta[0].timeoutMs, 12000 + REVERSE_TIMEOUT_MARGIN_MS)
 })
 
@@ -263,10 +260,4 @@ test('声明超预算的 timeout_ms 被 clamp 在宿主预算内：host > revers
   assert.equal(execMeta[0].timeoutMs, reverse)
   assert.ok(reverse < HOST_METHOD_TIMEOUT_MS, '反向等待必须小于宿主正向超时')
   assert.ok(MAX_CAPS_TIMEOUT_MS < reverse, '执行预算必须小于反向等待')
-})
-
-test('auth_ref 的 secrets.resolve 回带发起 call 帧 id', async () => {
-  const { deps, secretMeta } = fakeDeps()
-  await invoke(bag({ auth_ref: { kind: 'local', name: 'TOKEN' } }), deps, 'call-9')
-  assert.equal(secretMeta[0].callId, 'call-9')
 })

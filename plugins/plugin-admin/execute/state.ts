@@ -6,8 +6,8 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, wri
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { stateDir } from './config.ts'
-import { isRecord } from './plan.ts'
-import type { Rec } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Rec } from 'plugin-sdk'
 
 /** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
 const STALE_TEMP_MS = 60 * 60 * 1000

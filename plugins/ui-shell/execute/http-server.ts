@@ -15,7 +15,7 @@ import {
 } from './assets.ts'
 import type { AssetContent } from './assets.ts'
 import { Bridge, extractValue } from './bridge.ts'
-import { log as defaultLog } from './frames.ts'
+import { log as defaultLog } from './log.ts'
 import { guardInboundRequest } from './inbound-guard.ts'
 import { FALLBACK_MESSAGES } from './messages.ts'
 import type { HeadlessEntry, MountEntry } from './mounts.ts'

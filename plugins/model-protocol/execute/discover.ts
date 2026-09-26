@@ -3,17 +3,15 @@
 
 import { ModelError } from './errors.ts'
 import { httpRequest } from './http.ts'
-import { isRecord } from './plan.ts'
-import { authRefOf } from './port-link.ts'
-import type { PortLink } from './port-link.ts'
+import { authRefOf, isRecord } from './plan.ts'
 import { applyAuth, joinUrl, normalizeQuirks } from './quirks.ts'
 import { resolvePolicy, withRetry } from './resilience.ts'
 import type { RateLimiter } from './resilience.ts'
-import { BadArgsError } from './types.ts'
-import type { CallEnv, Json } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import type { CallEnv, Json, PortCaller } from 'plugin-sdk'
 
 export interface DiscoverDeps {
-  secrets: PortLink
+  secrets: PortCaller
   limiter: RateLimiter
 }
 

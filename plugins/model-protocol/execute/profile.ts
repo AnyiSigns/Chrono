@@ -8,18 +8,13 @@ import { httpRequest } from './http.ts'
 import { canonicalEqual, deepClone, externOnly, isRecord } from './plan.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
-import { BadArgsError } from './types.ts'
-import type { CallEnv, Json, Rec } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 import { collectVendorBodies } from './vendors.ts'
-
-/** 反向调用通道（`config.read` / `config.write`）；单测可注入假端口。 */
-export interface ConfigPort {
-  call(port: string, method: string, args: Rec): Promise<{ ok: true; value: Json } | { ok: false; code: string; message: string }>
-}
 
 export interface ProfileDeps {
   limiter: RateLimiter
-  config: ConfigPort
+  config: PortCaller
 }
 
 const MANAGED_KEYS = ['context_window', 'max_output', 'reasoning', 'modalities'] as const

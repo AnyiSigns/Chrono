@@ -4,13 +4,14 @@
 // → 计划经 `boot run` 落账 → stop → verify + replay → 离线读投影确认 config 元数据。
 // 失败路径也 stop，释放单写者锁。
 // 用法：node plugins/model-protocol/tools/e2e-smoke.mjs
-import { spawn, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
+import { startService as startSdkService } from 'plugin-sdk'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
 import { projectBaseOnly } from '../../../packages/host/projection/index.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
@@ -41,90 +42,23 @@ function boot(root, args) {
   return parsed
 }
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
 /** 直连本服务：hello → call，收集 event，并自动应答反向 port.call（模拟宿主侧路由）。 */
-function callMethod(method, args) {
-  return new Promise((resolveCall, rejectCall) => {
-    const child = spawn(process.execPath, ['execute/main.ts'], { cwd: MODEL_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CHRONO_PLUGIN_STATE: '' } })
-    const decoder = createDecoder()
-    const pending = new Map()
-    const events = []
-    const portCalls = []
-    const timer = setTimeout(() => {
-      child.kill()
-      rejectCall(new Error(`方法 ${method} 超时`))
-    }, 15000)
-    child.stdout.on('data', (chunk) => {
-      for (const message of decoder.push(chunk)) {
-        if (message.kind === 'event') {
-          events.push(message)
-          continue
-        }
-        if (message.kind === 'port.call') {
-          portCalls.push(message)
-          child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: SECRET_VALUE }))
-          continue
-        }
-        const handler = pending.get(message.id)
-        if (handler !== undefined) {
-          pending.delete(message.id)
-          handler(message)
-        }
-      }
-    })
-    child.stderr.on('data', () => {})
-    let seq = 0
-    function request(kind, fields, expect) {
-      seq += 1
-      const id = `e2e-${seq}`
-      return new Promise((resolveRequest, rejectRequest) => {
-        pending.set(id, (message) => {
-          if (message.kind !== expect) {
-            rejectRequest(new Error(`expected ${expect} got ${message.kind}: ${JSON.stringify(message)}`))
-            return
-          }
-          resolveRequest(message)
-        })
-        child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-      })
-    }
-    ;(async () => {
-      await request('hello', { impl: 'model-protocol', gen: 'e2e' }, 'manifest')
-      const result = await request('call', { port: 'model', method, args, env: { run: 'e2e-run', thread: null, now: 0 } }, 'result')
-      clearTimeout(timer)
-      child.stdin.end()
-      resolveCall({ value: result.value, events, portCalls })
-    })().catch((err) => {
-      clearTimeout(timer)
-      child.kill()
-      rejectCall(err)
-    })
+async function callMethod(method, args) {
+  const drv = startSdkService({
+    entry: join(MODEL_DIR, 'execute', 'main.ts'),
+    cwd: MODEL_DIR,
+    env: { CHRONO_PLUGIN_STATE: '' },
+    timeoutMs: 15000,
+    onPortCall: () => ({ ok: true, value: SECRET_VALUE }),
   })
+  try {
+    await drv.hello('model-protocol')
+    const result = await drv.call('model', method, args, { run: 'e2e-run', thread: null, now: 0 })
+    return { value: result.value, events: drv.events, portCalls: drv.portCalls }
+  } finally {
+    drv.close()
+    await drv.exit
+  }
 }
 
 /** 本地假模型端点：三协议只用到 openai-chat + /models + /api.json（models.dev 源）。 */

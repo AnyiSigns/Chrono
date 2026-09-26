@@ -5,7 +5,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import { ModelError, classifyHttpStatus, parseRetryAfter } from './errors.ts'
-import type { Rec } from './types.ts'
+import type { Rec } from 'plugin-sdk'
 
 export interface HttpOptions {
   method: 'GET' | 'POST'

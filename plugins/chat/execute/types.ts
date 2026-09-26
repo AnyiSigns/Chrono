@@ -13,13 +13,7 @@ export interface CallEnv {
   now: number
 }
 
-/** args 形态非法：结构化 `bad_args`，不崩进程。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'
 
 /** 反向调用后端失败：带结构化码，调用方据此兜底或作数据回灌。 */
 export class BackendError extends Error {
@@ -32,13 +26,7 @@ export class BackendError extends Error {
   }
 }
 
-/** 反向调用结果：成功带值，失败带结构化码（失败作数据，不炸本轮）。 */
-export type PortOutcome = { ok: true; value: Json } | { ok: false; code: string; message: string }
-
-/** 反向调用抽象：生产环境是 PortLink，单测注入假端口。 */
-export interface PortCaller {
-  call(port: string, method: string, args: Rec): Promise<PortOutcome>
-}
+export type { PortCaller, PortOutcome } from 'plugin-sdk'
 
 /** 一个方法：args 进、值出（异步：send 要反向调用下游服务）。 */
 export type Handler = (args: Json, env: CallEnv) => Promise<Json> | Json

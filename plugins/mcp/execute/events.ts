@@ -1,7 +1,8 @@
 // 服务上行事件出口（docs/protocol.md §2.5）：宿主只透传、不落账、不推进。
 // 子进程生命周期事件不依附某次调用的返回值，故经持久出口直接上行（两次调用之间退出也能上报）。
 
-import { log, writeFrame } from './frames.ts'
+import { writeFrame } from 'plugin-sdk'
+import { log } from './log.ts'
 import type { Json } from './types.ts'
 
 let seq = 0

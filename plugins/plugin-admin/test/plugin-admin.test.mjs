@@ -5,11 +5,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 import { commit, EMPTY_HEAD, EMPTY_WORLD } from '../../../packages/kernel/index.ts'
 import { validatePackage } from '../../../packages/host/validate-package.ts'
 import { blobPointerOf, blobSha256 } from '../../../packages/host/blobs.ts'
@@ -21,32 +21,6 @@ const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 const H1 = 'a'.repeat(64)
 const H2 = 'b'.repeat(64)
-
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
 
 /** 候选包（扁平 + 一个 execute/ 子目录；pin host 以覆盖保留身份路径）。 */
 function candidate(identity = 'candidate', extra = {}) {
@@ -114,91 +88,37 @@ function startService(options = {}) {
       return { error: 'not_loaded', message: method }
     })
 
-  const child = spawn(process.execPath, [ENTRY], {
+  const drv = startSdkService({
+    entry: ENTRY,
     cwd: PKG_ROOT,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CHRONO_PLUGIN_STATE: stateDir },
+    env: { CHRONO_PLUGIN_STATE: stateDir },
+    onPortCall: (message) => {
+      calls.push({ port: message.port, method: message.method, args: message.args })
+      const outcome = handler(message.port, message.method, message.args)
+      if (outcome.error) return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+      return { ok: true, value: outcome.value }
+    },
   })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const events = []
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      if (message.kind === 'event') {
-        events.push(message)
-        continue
-      }
-      if (message.kind === 'port.call') {
-        calls.push({ port: message.port, method: message.method, args: message.args })
-        const outcome = handler(message.port, message.method, message.args)
-        const frame = outcome.error
-          ? {
-              v: '1',
-              id: message.id,
-              kind: 'port.error',
-              ok: false,
-              error: outcome.error,
-              message: outcome.message ?? outcome.error,
-            }
-          : { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value }
-        child.stdin.write(encodeFrame(frame))
-        continue
-      }
-      const handlerForId = pending.get(message.id)
-      if (handlerForId !== undefined) {
-        pending.delete(message.id)
-        handlerForId(message)
-      }
-    }
-  })
-  child.stderr.on('data', () => {})
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 8000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  }
 
   return {
-    child,
+    child: drv.child,
     stateDir,
     calls,
-    events,
-    exit,
-    request,
-    async hello() {
-      return request('hello', { impl: 'plugin-admin', gen: 'gen-1' }, 'manifest')
-    },
+    events: drv.events,
+    exit: drv.exit,
+    request: drv.request,
+    hello: () => drv.hello('plugin-admin'),
     async call(port, method, args, env = FIXED_ENV) {
-      const message = await request('call', { port, method, args, env }, 'result')
+      const message = await drv.call(port, method, args, env)
       return message.value
     },
-    async callRaw(port, method, args, env = FIXED_ENV) {
-      return request('call', { port, method, args, env }, ['result', 'error'])
-    },
+    callRaw: (port, method, args, env = FIXED_ENV) => drv.call(port, method, args, env),
     close() {
-      child.stdin.end()
+      drv.close()
     },
     cleanup() {
       try {
-        child.kill()
+        drv.child.kill()
       } catch {
         // 已退出
       }

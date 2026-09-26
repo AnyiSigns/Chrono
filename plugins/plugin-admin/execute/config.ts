@@ -4,8 +4,8 @@
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isRecord } from './plan.ts'
-import type { Json } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 
 /** 缺省源码总字节上限（schema 未声明 / 不可读时）。 */
 export const DEFAULT_MAX_SOURCE_BYTES = 4 * 1024 * 1024

@@ -2,7 +2,7 @@
 // 工具名命名空间化 `orchestration.*`（否则裸 read / write 与其它工具撞名，破「工具名全局唯一」）；
 // render 按「渲染」表：四个工具都 `solid`，propose 展开看 diff。
 
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 能力声明（与 #25 一致：`{fs:{read,write}, net}` 对象形、含 fs.read；net 为字符串 scope）。 */
 const READONLY_CAPS: Rec = {

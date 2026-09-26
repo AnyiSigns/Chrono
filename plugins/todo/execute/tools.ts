@@ -3,7 +3,7 @@
 // （bag.todo），服务不自读投影。`conversation_id` 不由模型提供，服务从 bag 的当前会话自动解析。
 // render 形状对齐「工具卡渲染」契约；caps 与 sandbox 同形（无 fs、无 net）。
 
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 能力声明：对象形 fs + 字符串 net scope（不触盘、不触网）。 */
 const NO_CAPS: Rec = {

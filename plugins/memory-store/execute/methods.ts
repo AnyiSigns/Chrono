@@ -3,7 +3,7 @@
 // 向量索引仍是 ③（`CHRONO_PLUGIN_STATE`）——可由 ④ 重算，删掉可重建；服务不读投影、不自取时钟。
 // put 去重后直接写自有存储；read / search 只读；list / append / delete / pin / edit 供记忆维护调用。
 
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import {
   errorValue,
   integerField,

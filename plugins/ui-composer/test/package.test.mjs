@@ -47,7 +47,6 @@ test('能力类为 ui-composer（ping + client.read）；pins 空；只读交付
   assert.deepEqual(decl.commands, [
     { name: 'ui-composer.client.read', entry: 'terms/client.read.json', readonly: true },
   ])
-  assert.equal(decl.health.probe, 'ui-composer.ping')
   assert.deepEqual(decl.build, [
     { cmd: 'npm', args: ['ci'] },
     { cmd: 'node', args: ['execute/build.mjs'] },

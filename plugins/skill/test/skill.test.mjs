@@ -1,11 +1,11 @@
 // skill 包形状 / 内容测试 + 服务级读写往返（零依赖，node --test）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(pkgRoot, 'execute', 'main.ts')
@@ -192,80 +192,17 @@ test('README 存在且不含计划编号 / 计划文档引用', () => {
 
 // ---- 服务级：读写往返 / 幂等 / 重放 ----
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
+const CALL_ENV = { run: 'r1', thread: null, now: 0 }
 
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
+/** SDK 驱动适配：能力类固定，read / write 直接按方法名调用。 */
+function drive(env = {}) {
+  const drv = startSdkService({ entry: ENTRY, cwd: pkgRoot, env })
   return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
-function startService(env = {}) {
-  const child = spawn(process.execPath, [ENTRY], {
-    cwd: pkgRoot,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...env },
-  })
-  const decoder = createDecoder()
-  const pending = new Map()
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', () => {})
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  let seq = 0
-  const request = (kind, fields, expect) =>
-    new Promise((resolveRequest, rejectRequest) => {
-      seq += 1
-      const id = `sk-${seq}`
-      const expected = Array.isArray(expect) ? expect : [expect]
-      const timer = setTimeout(() => rejectRequest(new Error(`timeout ${kind}`)), 8000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  return {
-    hello: () => request('hello', { impl: 'skill', gen: 'g' }, 'manifest'),
-    read: (args) =>
-      request('call', { port: 'skill', method: 'read', args, env: { run: 'r1', thread: null, now: 0 } }, 'result'),
+    ...drv,
+    hello: () => drv.hello('skill'),
+    read: (args) => drv.request('call', { port: 'skill', method: 'read', args, env: CALL_ENV }, 'result'),
     write: (body) =>
-      request(
-        'call',
-        { port: 'skill', method: 'write', args: { body }, env: { run: 'r1', thread: null, now: 0 } },
-        ['result', 'error'],
-      ),
-    close: () => child.stdin.end(),
-    exit,
+      drv.request('call', { port: 'skill', method: 'write', args: { body }, env: CALL_ENV }, ['result', 'error']),
   }
 }
 
@@ -275,7 +212,7 @@ const SKILLS = {
 }
 
 test('read 合并世界基线；write 写自有存储、幂等短路', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     const manifest = await drv.hello()
     assert.deepEqual(manifest.methods.skill, ['read', 'write'])
@@ -299,7 +236,7 @@ test('read 合并世界基线；write 写自有存储、幂等短路', async () 
 })
 
 test('write 形态非法 → bad_args', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     const bad = await drv.write({ version: 1 })
@@ -314,7 +251,7 @@ test('write 形态非法 → bad_args', async () => {
 test('④ 追加日志：新进程重放读回上次写入', async () => {
   const dir = join(tmpdir(), 'kilo', `skill-store-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   mkdirSync(dir, { recursive: true })
-  const first = startService({ CHRONO_PLUGIN_DATA: dir })
+  const first = drive({ CHRONO_PLUGIN_DATA: dir })
   try {
     await first.hello()
     await first.write(SKILLS)
@@ -323,7 +260,7 @@ test('④ 追加日志：新进程重放读回上次写入', async () => {
   }
   await first.exit
 
-  const second = startService({ CHRONO_PLUGIN_DATA: dir })
+  const second = drive({ CHRONO_PLUGIN_DATA: dir })
   try {
     await second.hello()
     const view = await second.read({})

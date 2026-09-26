@@ -6,9 +6,9 @@
 
 import { H } from './hash.ts'
 import { createHash } from 'node:crypto'
-import { isRecord } from './plan.ts'
+import { isRecord } from 'plugin-sdk'
 import { ToolError } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 const EXCLUDED = new Set(['node_modules', '.git'])
 const WORLDIGNORE_FILE = '.worldignore'

@@ -23,7 +23,7 @@ import {
 import { isRecord } from './plan.ts'
 import { reachableSet, reaches, topoOrder } from './topology.ts'
 import { buildView, gateError, type GateError, type GraphView } from './closure.ts'
-import type { Rec } from './types.ts'
+import type { Rec } from 'plugin-sdk'
 
 /** 高危端口（实际判据 = (port=提供者能力类名, 工具名)；此处按端口粒度机械近似，见 README「已知重复与偏离」）。 */
 const HIGH_RISK_PORTS = new Set(['exec', 'plugin-admin', 'orchestration-admin'])

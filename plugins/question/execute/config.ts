@@ -2,8 +2,8 @@
 // schema 是身份自述（数据契约），读它不触投影、不写世界；文件缺失 / 形态非法回落缺省。
 
 import { readFileSync } from 'node:fs'
-import { isRecord } from './plan.ts'
-import type { Json } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 
 /** 缺省单次问题数上限。 */
 export const DEFAULT_MAX_QUESTIONS = 8

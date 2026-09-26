@@ -1,6 +1,7 @@
 // 引用按需解析：投影只回引用（`{"def":hash}` 直接标记的哈希列表），服务沿标记逐跳调宿主只读
 // `host.def.read` 取 body，进程内有界缓存。`refs` 已是对象（调用方 / 单测直接给闭包）时原样返回。
 
+import { ServiceError } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -11,14 +12,12 @@ export type DefReader = (identity: string, hashes: string[]) => Promise<Rec | nu
  * 引用闭包不完整：宿主 `def.read` 对部分哈希回 `missing` / `denied`，缓存拿不到 body。
  * 调用方据此重解析或拒绝，不得静默产出不完整闭包。
  */
-export class DefUnavailableError extends Error {
-  code: string
-  hashes: string[]
+export class DefUnavailableError extends ServiceError {
+  readonly hashes: string[]
 
   constructor(hashes: string[]) {
-    super(`def unavailable: ${hashes.length}`)
+    super('def_unavailable', `def unavailable: ${hashes.length}`)
     this.name = 'DefUnavailableError'
-    this.code = 'def_unavailable'
     this.hashes = hashes
   }
 }

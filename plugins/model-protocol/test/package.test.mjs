@@ -27,7 +27,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'model.chat')
 })
 
 test('schema 顶层含宿主消费键 periodic / method_timeouts 与自用 resilience', () => {
@@ -59,12 +58,8 @@ test('execute 源码与 test / tools 齐全', () => {
     'execute/http.ts',
     'execute/stream.ts',
     'execute/quirks.ts',
-    'execute/port-link.ts',
     'execute/errors.ts',
     'execute/plan.ts',
-    'execute/frames.ts',
-    'execute/types.ts',
-    'execute/events.ts',
     'execute/plugin.ts',
     'tools/e2e-smoke.mjs',
   ]

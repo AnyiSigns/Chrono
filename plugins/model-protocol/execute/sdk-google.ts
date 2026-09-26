@@ -6,7 +6,7 @@ import { ModelError } from './errors.ts'
 import { encodeReasoning, setByPath } from './quirks.ts'
 import type { Quirks } from './quirks.ts'
 import { StreamAccumulator } from './stream.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 import type { ModelOutput } from './adapters.ts'
 
 const SUPPORTED_SDK = '@google/genai'

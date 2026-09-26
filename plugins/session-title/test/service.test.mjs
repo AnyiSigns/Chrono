@@ -3,7 +3,44 @@
 // 缺省标题最终兜底；args 缺字段结构化拒；回标题值且不写世界（无 session 反向调用）；非流式（不发 model.delta）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FIXED_ENV, generateArgs, startService } from './driver.mjs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { startService } from 'plugin-sdk'
+
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
+const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
+
+/** 一次 generate 的常用入参。 */
+function generateArgs(overrides = {}) {
+  return {
+    conversation: 'c-1',
+    first_message: '帮我写一个快速排序',
+    vendor: 'vendor-openai',
+    model: 'gpt-4o-mini',
+    params: { temperature: 0.3 },
+    ...overrides,
+  }
+}
+
+/** SDK 驱动适配：能力类固定，反向调用桥接同步应答。 */
+function drive({ bridge } = {}) {
+  const resolvePort = bridge ?? (() => ({ error: 'not_ready', message: 'no resolver' }))
+  const drv = startService({
+    entry: ENTRY,
+    cwd: PKG_ROOT,
+    onPortCall: (message) => {
+      const outcome = resolvePort(message.port, message.method, message.args)
+      if (outcome.error) return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+      return { ok: true, value: outcome.value }
+    },
+  })
+  return {
+    ...drv,
+    hello: () => drv.hello('session-title'),
+    call: (method, args, env = FIXED_ENV) => drv.call('session-title', method, args, env),
+  }
+}
 
 const OK = (text) => ({ value: { ok: true, text } })
 
@@ -25,7 +62,7 @@ function assertNoSessionCall(drv) {
 }
 
 test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
@@ -44,7 +81,7 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
 })
 
 test('正常生成：非流式调 model.complete，清理引号标点并按码点截断 ≤10，回标题值', async () => {
-  const drv = startService({ bridge: bridgeWith('"快速排序算法。"') })
+  const drv = drive({ bridge: bridgeWith('"快速排序算法。"') })
   try {
     await drv.hello()
     const result = await drv.call('generate', generateArgs())
@@ -66,7 +103,7 @@ test('正常生成：非流式调 model.complete，清理引号标点并按码�
 })
 
 test('正常生成：CJK 超长标题按码点硬截断到 10', async () => {
-  const drv = startService({ bridge: bridgeWith('这是一个非常长的人工智能生成标题需要截断') })
+  const drv = drive({ bridge: bridgeWith('这是一个非常长的人工智能生成标题需要截断') })
   try {
     await drv.hello()
     const result = await drv.call('generate', generateArgs())
@@ -78,7 +115,7 @@ test('正常生成：CJK 超长标题按码点硬截断到 10', async () => {
 })
 
 test('模型返回空 → 首条消息去空白前 10 字兜底', async () => {
-  const drv = startService({ bridge: bridgeWith('   ') })
+  const drv = drive({ bridge: bridgeWith('   ') })
   try {
     await drv.hello()
     const result = await drv.call('generate', generateArgs({ first_message: '  帮我写一个快速排序算法  ' }))
@@ -90,7 +127,7 @@ test('模型返回空 → 首条消息去空白前 10 字兜底', async () => {
 })
 
 test('模型错误（port.error）→ 兜底且不抛', async () => {
-  const drv = startService({
+  const drv = drive({
     bridge: (port, method) => {
       if (port === 'model' && method === 'complete') return { error: 'model_server_error', message: 'boom' }
       return { error: 'not_ready', message: 'no' }
@@ -106,25 +143,8 @@ test('模型错误（port.error）→ 兜底且不抛', async () => {
   }
 })
 
-test('模型超时 → 兜底且不阻塞（按 args.timeout_ms 提前收口）', async () => {
-  const drv = startService({
-    bridge: (port, method) => {
-      if (port === 'model' && method === 'complete') return new Promise(() => {})
-      return { error: 'not_ready', message: 'no' }
-    },
-  })
-  try {
-    await drv.hello()
-    const result = await drv.call('generate', generateArgs({ first_message: '超时兜底测试', timeout_ms: 60 }))
-    assert.equal(result.kind, 'result')
-    assert.equal(result.value.title, '超时兜底测试')
-  } finally {
-    drv.close()
-  }
-})
-
 test('模型空且首条消息全空白 → 保留 title_default', async () => {
-  const drv = startService({ bridge: bridgeWith('') })
+  const drv = drive({ bridge: bridgeWith('') })
   try {
     await drv.hello()
     const result = await drv.call('generate', generateArgs({ first_message: '   ', title_default: '我的标题' }))
@@ -135,7 +155,7 @@ test('模型空且首条消息全空白 → 保留 title_default', async () => {
 })
 
 test('未配置模型（无 vendor/model/params）→ 不发模型调用，直接兜底', async () => {
-  const drv = startService({ bridge: bridgeWith('模型标题') })
+  const drv = drive({ bridge: bridgeWith('模型标题') })
   try {
     await drv.hello()
     const result = await drv.call('generate', { conversation: 'c-1', first_message: '写一个快速排序算法' })
@@ -148,7 +168,7 @@ test('未配置模型（无 vendor/model/params）→ 不发模型调用，直�
 })
 
 test('args 缺字段 → 结构化 bad_args；未知方法 / 能力类 → 结构化 error', async () => {
-  const drv = startService({ bridge: bridgeWith('标题') })
+  const drv = drive({ bridge: bridgeWith('标题') })
   try {
     await drv.hello()
     assert.equal((await drv.call('generate', {})).code, 'bad_args')

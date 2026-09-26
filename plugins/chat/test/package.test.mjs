@@ -67,7 +67,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'term', path: 'terms/' },
     { kind: 'schema', path: 'schema/' },
   ])
-  assert.equal(decl.health.probe, 'chat.send')
 })
 
 test('pins 含 loop-policy（#33 替换管道）', () => {

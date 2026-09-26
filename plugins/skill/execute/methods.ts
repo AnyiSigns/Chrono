@@ -2,10 +2,10 @@
 // 技能清单是运行记录，已出世界：写即时落自有持久存储（④），读从自有存储取（世界遗留 body 作基线合并）。
 // 服务不读投影（世界切片随 args 传入）、不自取时钟。
 
-import { applyPatch, isRecord } from './plan.ts'
+import { BadArgsError, isRecord } from 'plugin-sdk'
+import { applyPatch } from './plan.ts'
 import { SkillStore } from './store.ts'
-import { BadArgsError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
 
 export interface SkillDeps {
   store: SkillStore
@@ -34,10 +34,10 @@ function write(args: Json, env: CallEnv, deps: SkillDeps): Json {
   return { ok: true, changed }
 }
 
-/** 构造方法表（依赖注入：存储由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：存储由入口提供，便于测试与确定性）。 */
 export function createHandlers(deps: SkillDeps): Record<string, Handler> {
   return {
-    read: (args: Json, env: CallEnv): Promise<HandlerResult> => Promise.resolve({ value: read(args, env, deps) }),
-    write: (args: Json, env: CallEnv): Promise<HandlerResult> => Promise.resolve({ value: write(args, env, deps) }),
+    read: (args: Json, env: CallEnv): HandlerResult => ({ value: read(args, env, deps), events: [] }),
+    write: (args: Json, env: CallEnv): HandlerResult => ({ value: write(args, env, deps), events: [] }),
   }
 }

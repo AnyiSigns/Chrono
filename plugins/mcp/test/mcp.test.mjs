@@ -11,38 +11,13 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
-const FAKE = join(HERE, 'fake-mcp-server.mjs')
+const FAKE = join(PKG_ROOT, 'tools', 'fake-mcp-server.mjs')
 const MARKER_DIR = join(tmpdir(), 'kilo')
-
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
 
 function startService(options = {}) {
   const env = { ...process.env, ...(options.env ?? {}) }

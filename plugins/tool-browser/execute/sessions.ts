@@ -3,7 +3,7 @@
 // `close` 显式关、服务退出 / 断连全关——不泄漏浏览器进程。
 
 import { CreationHandle } from './creation.ts'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import { ToolError } from './types.ts'
 import type { BrowserEngine, EngineConfig } from './engine/types.ts'
 import type { ViewportConfig } from './config.ts'

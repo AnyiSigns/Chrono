@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { cleanModelTitle, fallbackTitle, normalizeWhitespace, resolveTitle, truncateCodePoints } from '../execute/title.ts'
 import { HARD_MAX_CHARS, loadBaseConfig, resolveConfig } from '../execute/config.ts'
+import { BackendError, RemoteModel } from '../execute/port-link.ts'
 
 test('truncateCodePoints：按码点截断，CJK 每字 = 1、不劈代理对', () => {
   assert.equal(truncateCodePoints('你好世界', 2), '你好')
@@ -50,4 +51,15 @@ test('resolveConfig：args 覆盖可调项，字数上限钳制到 1..10', () =>
   assert.equal(overridden.prompt, 'P')
   assert.equal(resolveConfig(base, { max_chars: 999 }).maxChars, HARD_MAX_CHARS)
   assert.equal(resolveConfig(base, { max_chars: 0 }).maxChars, base.maxChars)
+})
+
+test('RemoteModel：单次调用超时作结构化失败（按 timeoutMs 提前收口）', async () => {
+  const neverResolving = { call: () => new Promise(() => {}) }
+  const model = new RemoteModel(neverResolving)
+  const started = Date.now()
+  await assert.rejects(
+    model.complete({ vendor: 'v', model: 'm' }, [{ role: 'user', content: 'x' }], 8, 30),
+    (err) => err instanceof BackendError && err.code === 'transport_failed',
+  )
+  assert.ok(Date.now() - started < 2000, '超时应提前收口而非等待宿主超时')
 })

@@ -18,13 +18,7 @@ export interface ServiceEvent {
   payload: Json
 }
 
-/** 反向调用结果：成功带值，失败带结构化码（失败作数据，不炸本轮）。 */
-export type PortOutcome = { ok: true; value: Json } | { ok: false; code: string; message: string }
-
-/** 反向调用抽象：生产环境是 PortLink，单测注入假端口。 */
-export interface PortCaller {
-  call(port: string, method: string, args: Rec): Promise<PortOutcome>
-}
+export type { PortCaller, PortOutcome } from 'plugin-sdk'
 
 /** 一次方法调用的产物：返回值 + 随计划上行事件。 */
 export interface HandlerResult {
@@ -34,13 +28,7 @@ export interface HandlerResult {
 
 export type Handler = (args: Json, env: CallEnv) => Promise<HandlerResult>
 
-/** args 形态非法（非对象 / 缺必需字段）：结构化 bad_args，不崩进程、不产计划。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'
 
 /** 反向调用后端失败：带结构化码，调用方据此降级或作数据回灌。 */
 export class BackendError extends Error {

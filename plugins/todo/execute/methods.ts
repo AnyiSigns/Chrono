@@ -2,13 +2,14 @@
 // 清单本体已出世界：写即时落委托存储（storage-kv，按 env.emitter 分命名空间），读从自有存储取；
 // 不再产世界写计划、不再从 bag 收投影切片。会话 id 仍由调用方经 bag / args 给出（模型看不到）。
 
+import { BadArgsError } from 'plugin-sdk'
 import { resolveLimits } from './config.ts'
 import { asString, isRecord } from './plan.ts'
 import type { TodoStore } from './store.ts'
 import { normalizeItems, summarize } from './todo.ts'
 import { describeValue } from './tools.ts'
-import { BadArgsError, ToolError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
+import { ToolError } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
 
 /** 服务依赖：委托存储（单测注入假后端）。 */
 export interface TodoDeps {
@@ -101,9 +102,11 @@ export function createHandlers(deps: TodoDeps): Record<string, Handler> {
   return {
     describe: async (args: Json, env: CallEnv): Promise<HandlerResult> => ({
       value: describeTool(isRecord(args) ? args : {}, env),
+      events: [],
     }),
     invoke: async (args: Json, env: CallEnv): Promise<HandlerResult> => ({
       value: await invokeTool(isRecord(args) ? args : {}, env, deps),
+      events: [],
     }),
   }
 }

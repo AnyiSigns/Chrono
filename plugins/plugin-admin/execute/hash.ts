@@ -3,7 +3,7 @@
 // 故此处规范序列化与 packages/kernel/value.ts 的 canonicalJson 保持同口径（键升序、剔 undefined、-0→0）。
 
 import { createHash } from 'node:crypto'
-import type { Json } from './types.ts'
+import type { Json } from 'plugin-sdk'
 
 function typeTag(v: Json | undefined): 'none' | 'bool' | 'num' | 'str' | 'list' | 'json' {
   if (typeof v === 'boolean') return 'bool'

@@ -6,7 +6,7 @@
 
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Json, Rec } from './types.ts'
+import type { Rec } from 'plugin-sdk'
 
 export interface TurnMark {
   run: string
@@ -144,5 +144,3 @@ export class ShortMemoryStore {
     return out.sort()
   }
 }
-
-export type { Json }

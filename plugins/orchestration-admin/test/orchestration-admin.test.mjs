@@ -3,7 +3,9 @@
 // describe 四要素、invoke 派发；并断言服务不发 eff / 不产证据。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startService } from './driver.mjs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 import { H } from '../execute/hash.ts'
 import {
   bag,
@@ -17,6 +19,15 @@ import {
 } from './fixtures.mjs'
 // 红线断言（包形状）；本包 test 脚本按文件显式列出，故在此引入使其随 npm test 执行。
 import './package.test.mjs'
+
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
+
+/** SDK 驱动适配：能力类由调用方按端口传入，握手实现名固定。 */
+function startService() {
+  const drv = startSdkService({ entry: ENTRY, cwd: PKG_ROOT, timeoutMs: 15000 })
+  return { ...drv, hello: () => drv.hello('orchestration-admin') }
+}
 
 function errorsOf(value) {
   return value.errors.map((error) => error.code)

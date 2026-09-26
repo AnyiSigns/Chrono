@@ -1,6 +1,7 @@
 // 引用按需解析：投影只回引用（`{"def":hash}` 直接标记的哈希列表），服务沿标记逐跳调宿主只读
 // `host.def.read` 取 body，进程内有界缓存。`refs` 已是对象（调用方 / 单测直接给闭包）时原样返回。
 
+import { ServiceError } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -23,11 +24,10 @@ const MAX_UNAVAILABLE = 64
  * 解析闭包时存在不可用 def（缺失 / 越权）的结构化错误：
  * 本次已处理（进入 `seen`）但最终不在 `out` 的哈希即不可用；闭包不完整时 fail-closed，不静默空。
  */
-export class DefUnavailableError extends Error {
-  readonly code = 'def_unavailable'
+export class DefUnavailableError extends ServiceError {
   readonly hashes: string[]
   constructor(hashes: string[]) {
-    super(`def unavailable: ${hashes.join(', ')}`)
+    super('def_unavailable', `def unavailable: ${hashes.join(', ')}`)
     this.name = 'DefUnavailableError'
     this.hashes = hashes
   }

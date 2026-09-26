@@ -8,7 +8,6 @@ import type { DispatchDeps } from './dispatch.ts'
 import { PINS } from './plugin.ts'
 import { BadArgsError, isRecord } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
-
 export interface ToolsDeps {
   link: DispatchDeps['link']
   emit: DispatchDeps['emit']
@@ -41,9 +40,13 @@ export function createHandlers(deps: ToolsDeps): Record<string, Handler> {
     cacheEnabled: deps.cacheEnabled,
   }
   return {
-    list: async (args: Json, _env: CallEnv): Promise<HandlerResult> => ({ value: await listTool(args, deps, pins) }),
+    list: async (args: Json, _env: CallEnv): Promise<HandlerResult> => ({
+      value: await listTool(args, deps, pins),
+      events: [],
+    }),
     dispatch: async (args: Json, env: CallEnv): Promise<HandlerResult> => ({
       value: await dispatchBag(args, env, dispatchDeps),
+      events: [],
     }),
   }
 }

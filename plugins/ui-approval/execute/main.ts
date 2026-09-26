@@ -1,216 +1,45 @@
-// `ui-approval` 服务进程入口：服务协议帧循环 + 自实现入站客户端。
-// manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影：命令的投影读在入口 term，随 args 传入；
-// 跨插件只经宿主反向调用（`port.call`，见 execute/port-link.ts）。
-// 客户端半边由插件自交付：只读命令 `ui-approval.client.read` 读包内 `execute/web/` 下的产物字节。
+// `ui-approval` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
+// manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
+// 声明的只读方法脱串行链派发（SDK intercept），其余帧由 SDK 按到达序串行；跨插件只走反向调用。
 
-import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createFrameDecoder, log, writeFrame } from './frames.ts'
+
+import {
+  BadArgsError,
+  PortLink,
+  SERVICE_PROTOCOL_VERSION,
+  createService as createSdkService,
+  declaredMethods,
+  deriveManifest,
+  isDirectRun,
+  isRecord,
+  makeLogger,
+  packageRootOf,
+  parseCallEnv,
+  readPluginJson,
+  runStdio,
+} from 'plugin-sdk'
+import type { HandlerResult, Json, Rec, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 import { InboundClient } from './inbound.ts'
 import { createHandlers } from './methods.ts'
-import type { CallEnv } from './types.ts'
-import { PortLink } from './port-link.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
-import { BadArgsError, isRecord } from './types.ts'
-import type { Json, Rec } from './types.ts'
 
-function readPlugin(): Rec {
-  try {
-    const text = readFileSync(new URL('../plugin.json', import.meta.url), 'utf8')
-    const parsed = JSON.parse(text) as Json
-    if (isRecord(parsed)) return parsed
-  } catch (err) {
-    log(`cannot read plugin.json: ${(err as Error).message}`)
-  }
-  return {}
-}
-
-const PLUGIN = readPlugin()
-const IDENTITY = typeof PLUGIN['identity'] === 'string' ? (PLUGIN['identity'] as string) : 'ui-approval'
-const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
-  ? (PLUGIN['implements'] as Json[]).filter((item): item is string => typeof item === 'string')
-  : ['ui-approval']
-const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
-const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
-const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
-// 并发安全方法声明：仅对「纯只读、无插件内可变状态」的方法生效（list 反查 #32、client.read 读包内文件）。
-// 不能据 `readonly` 推断：那是「世界写入」声明而非纯度声明，`decide` 亦为只读入口却发写计划。
-const CONCURRENT_METHODS = new Set(
+const CAPABILITY = 'ui-approval'
+const LOG = makeLogger('ui-approval')
+const PLUGIN = readPluginJson(packageRootOf(import.meta.url))
+const MANIFEST = deriveManifest(PLUGIN, CAPABILITY, 'recomputable')
+// 并发安全方法声明：仅对「纯只读、无插件内可变状态」的方法生效（list 反查、client.read 读包内文件）。
+const CONCURRENT_METHODS = new Set<string>(
   Array.isArray(PLUGIN['concurrent_methods'])
     ? (PLUGIN['concurrent_methods'] as Json[]).filter((item): item is string => typeof item === 'string')
     : [],
 )
 
-function manifest(): Rec {
-  return {
-    v: PROTOCOL,
-    identity: IDENTITY,
-    implements: IMPLEMENTS,
-    methods: METHODS,
-    protocol: PROTOCOL,
-    state: STATE,
-  }
-}
-
 const root = rootFromPluginState(process.env, process.cwd())
 /** 客户端半边根：`execute/web/`（服务按此根做包内相对路径防护）。 */
-const webRoot = fileURLToPath(new URL('./web/', import.meta.url))
+const WEB_ROOT = fileURLToPath(new URL('./web/', import.meta.url))
 
-let exiting = false
-
-// drain 排空：协议要求「在途结束，服务发 bye」（docs/protocol.md §2.3）。
-// 调用经 stdin 串行链处理，故 drain 到达时通常已无在途；计数与等待是为显式兑现该义务。
-let inFlightCalls = 0
-const callIdleWaiters: (() => void)[] = []
-
-function beginCall(): void {
-  inFlightCalls += 1
-}
-
-function endCall(): void {
-  inFlightCalls -= 1
-  if (inFlightCalls > 0) return
-  while (callIdleWaiters.length > 0) {
-    const notify = callIdleWaiters.shift() as () => void
-    notify()
-  }
-}
-
-/** 等在途调用结束；超 `deadlineMs` 强制放行（排空期限由宿主 `restart.drain_ms` 给定）。 */
-function waitForCalls(deadlineMs: number): Promise<void> {
-  if (inFlightCalls === 0) return Promise.resolve()
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, deadlineMs)
-    timer.unref?.()
-    callIdleWaiters.push(() => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
-}
-
-const inbound = new InboundClient({
-  socketPath: inboundSocketPath(root),
-  log,
-})
-
-function sendFrame(message: Json): void {
-  if (exiting) return
-  try {
-    writeFrame(message)
-  } catch (err) {
-    log(`write frame failed: ${(err as Error).message}`)
-  }
-}
-
-function sendError(id: string, code: string, message: string): void {
-  sendFrame({ v: PROTOCOL, id, kind: 'error', ok: false, code, message })
-}
-
-// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：队列 / 裁决的 #32 转发经它；
-// 服务不读投影、不发 eff，跨插件只走宿主路由。应答帧在 stdin 帧循环里立即结算（不排队，防堵死串行链）。
-const LINK = new PortLink((message) => sendFrame(message))
-const HANDLERS = createHandlers({ identity: IDENTITY, approval: LINK, input: LINK, webRoot })
-
-function declaredMethods(port: string): string[] {
-  const declared = METHODS[port]
-  if (Array.isArray(declared)) {
-    return declared.filter((item): item is string => typeof item === 'string')
-  }
-  return []
-}
-
-/** 帧 `env`：宿主填写、机械；缺失回落 `{run:null, thread:null, now:0}`（服务绝不自取时钟）。 */
-function parseEnv(raw: Json | undefined): CallEnv {
-  if (!isRecord(raw)) return { run: null, thread: null, now: 0 }
-  return {
-    run: typeof raw['run'] === 'string' ? raw['run'] : null,
-    thread: typeof raw['thread'] === 'string' ? raw['thread'] : null,
-    now: typeof raw['now'] === 'number' && Number.isFinite(raw['now']) ? raw['now'] : 0,
-  }
-}
-
-async function handleCall(message: Rec): Promise<void> {
-  const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
-  const port = message['port']
-  const method = message['method']
-  if (typeof port !== 'string' || typeof method !== 'string') {
-    sendError(id, 'bad_args', 'port and method must be strings')
-    return
-  }
-  if (!IMPLEMENTS.includes(port)) {
-    sendError(id, 'unresolved_cap', `unknown capability ${port}`)
-    return
-  }
-  if (!declaredMethods(port).includes(method)) {
-    sendError(id, 'unknown_method', `unknown method ${method}`)
-    return
-  }
-  const args = message['args']
-  if (args !== undefined && args !== null && !isRecord(args)) {
-    sendError(id, 'bad_args', 'args must be an object')
-    return
-  }
-  const handler = HANDLERS[method]
-  if (handler === undefined) {
-    sendError(id, 'unknown_method', `unknown method ${method}`)
-    return
-  }
-  beginCall()
-  try {
-    const value = await handler(args ?? null, parseEnv(message['env']))
-    sendFrame({ v: PROTOCOL, id, kind: 'result', ok: true, value })
-  } catch (err) {
-    if (err instanceof BadArgsError) {
-      sendError(id, 'bad_args', err.message)
-      return
-    }
-    log(`method ${method} failed: ${(err as Error).message}`)
-    sendError(id, 'internal', 'handler failed')
-  } finally {
-    endCall()
-  }
-}
-
-function shutdown(): void {
-  if (exiting) return
-  exiting = true
-  LINK.failAll()
-  inbound.close()
-  setTimeout(() => process.exit(0), 10).unref?.()
-}
-
-async function handle(message: Json): Promise<void> {
-  if (!isRecord(message)) return
-  switch (message['kind']) {
-    case 'hello':
-      sendFrame({ id: message['id'], kind: 'manifest', ...manifest() })
-      return
-    case 'probe':
-      sendFrame({ v: PROTOCOL, id: message['id'], kind: 'pong', ok: true })
-      return
-    case 'reload':
-      log(`reload gen=${typeof message['gen'] === 'string' ? message['gen'] : '?'}`)
-      sendFrame({ v: PROTOCOL, id: message['id'], kind: 'ack' })
-      return
-    case 'drain': {
-      const deadlineMs =
-        typeof message['deadline_ms'] === 'number' && message['deadline_ms'] >= 0
-          ? message['deadline_ms']
-          : 5000
-      await waitForCalls(deadlineMs)
-      sendFrame({ v: PROTOCOL, id: message['id'], kind: 'bye' })
-      shutdown()
-      return
-    }
-    case 'call':
-      await handleCall(message)
-      return
-    default:
-      return
-  }
-}
+const inbound = new InboundClient({ socketPath: inboundSocketPath(root), log: LOG })
 
 /** 是否为声明为并发安全的方法调用；只认 `call` 帧，声明集见 plugin.json `concurrent_methods`。 */
 function isConcurrentCall(message: Rec): boolean {
@@ -221,36 +50,104 @@ function isConcurrentCall(message: Rec): boolean {
   )
 }
 
-const decoder = createFrameDecoder()
-let chain: Promise<void> = Promise.resolve()
-process.stdin.on('data', (chunk: Buffer) => {
-  let messages: Json[]
-  try {
-    messages = decoder.push(chunk)
-  } catch (err) {
-    log(`bad frame: ${(err as Error).message}`)
-    return
-  }
-  for (const message of messages) {
-    // 反向调用应答立即结算（不排队）：否则正在 await port.result 的 call 会把串行链堵死。
-    if (isRecord(message) && LINK.settle(message)) continue
-    // 声明的纯只读方法不排串行链：它们不写插件内状态、不发世界写计划，却会反向调用长跑的
-    // 相邻端口（如 approval 的 sweep 占住通道）。若也排链，一次长跑会连带堵死本插件整个命令面，
-    // 壳桥 35s 等待超时后审批停靠带空渲染。其余帧仍按到达序严格串行；在途计数照常经 handleCall。
-    if (isRecord(message) && isConcurrentCall(message)) {
-      void handle(message).catch((err: unknown) =>
-        log(`concurrent handle error: ${(err as Error).message}`),
-      )
-      continue
+/** 构造服务实例：反向调用通道（approval / input）与入站客户端由本插件提供。 */
+function build(ctx: ServiceFactoryContext): ServiceInstance {
+  const link = new PortLink({ write: ctx.emit, idPrefix: 'ui-approval' })
+  const rawHandlers = createHandlers({
+    identity: CAPABILITY,
+    approval: link,
+    input: link,
+    webRoot: WEB_ROOT,
+  })
+  const declared = declaredMethods(MANIFEST, CAPABILITY, rawHandlers)
+
+  const send = (message: Json): void => {
+    try {
+      ctx.emit(message)
+    } catch (err) {
+      LOG(`write frame failed: ${(err as Error).message}`)
     }
-    chain = chain
-      .then(() => handle(message))
-      .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
   }
-})
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.stdin.on('error', shutdown)
+  const sendError = (id: string, code: string, message: string): void => {
+    send({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'error', ok: false, code, message })
+  }
+
+  /** 脱链派发一条并发安全调用：门禁与错误映射同 SDK 派发器，但不等串行链。 */
+  async function dispatchConcurrent(message: Rec): Promise<void> {
+    const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
+    const port = message['port']
+    const method = message['method']
+    if (typeof port !== 'string' || typeof method !== 'string') {
+      sendError(id, 'bad_args', 'port and method must be strings')
+      return
+    }
+    if (!MANIFEST.implements.includes(port)) {
+      sendError(id, 'unresolved_cap', `unknown capability ${port}`)
+      return
+    }
+    if (!declared.has(method)) {
+      sendError(id, 'unknown_method', `unknown method ${method}`)
+      return
+    }
+    const handler = rawHandlers[method]
+    if (handler === undefined) {
+      sendError(id, 'unknown_method', `unknown method ${method}`)
+      return
+    }
+    const args = message['args']
+    if (args !== undefined && args !== null && !isRecord(args)) {
+      sendError(id, 'bad_args', 'args must be an object')
+      return
+    }
+    try {
+      const value = await handler(args ?? null, parseCallEnv(message['env']))
+      send({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'result', ok: true, value })
+    } catch (err) {
+      if (err instanceof BadArgsError) {
+        sendError(id, 'bad_args', err.message)
+        return
+      }
+      LOG(`method ${method} failed: ${(err as Error).message}`)
+      sendError(id, 'internal', 'handler failed')
+    }
+  }
+
+  const handlers: Record<string, (args: Json, env: import('plugin-sdk').CallEnv) => Promise<HandlerResult>> = {}
+  for (const [name, handler] of Object.entries(rawHandlers)) {
+    handlers[name] = async (args, env) => ({ value: await handler(args, env), events: [] })
+  }
+
+  const close = (): void => {
+    link.failAll()
+    inbound.close()
+  }
+
+  return createSdkService({
+    pluginRoot: packageRootOf(import.meta.url),
+    capability: CAPABILITY,
+    handlers,
+    emit: ctx.emit,
+    log: LOG,
+    intercept: (message) => {
+      if (link.settle(message)) return true
+      // 声明的纯只读方法不排串行链：它们不写插件内状态、不发世界写计划，却会反向调用长跑的
+      // 相邻端口（如 approval 的 sweep 占住通道）。若也排链，一次长跑会连带堵死本插件整个命令面。
+      if (isConcurrentCall(message)) {
+        void dispatchConcurrent(message)
+        return true
+      }
+      return false
+    },
+    onDrain: close,
+    onClose: close,
+    drainExitMs: 10,
+  })
+}
+
+export const createService = build
+
+if (isDirectRun(import.meta.url)) {
+  runStdio(build, { log: LOG })
+}
 
 inbound.start()
-log(`ui-approval ready (pid ${process.pid})`)

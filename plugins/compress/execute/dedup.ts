@@ -3,7 +3,7 @@
 // 纯函数 + 一个可选后端：同文本同向量（向量化确定性）⇒ 同输入同输出。
 
 import { normalizeText, uniqueStrings } from './plan.ts'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import type { EmbeddingBackend } from './port-link.ts'
 
 /** 去重选项：无后端（或后端失败）时只做精确文本去重。 */

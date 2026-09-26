@@ -13,14 +13,9 @@ export interface CallEnv {
 
 export interface HandlerResult {
   value: Json
+  events: { topic: string; payload: Json }[]
 }
 
 export type Handler = (args: Json, env: CallEnv) => Promise<HandlerResult>
 
-/** args 形态非法（非对象 / 缺必需字段）：结构化 bad_args，不崩进程、不产写。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'

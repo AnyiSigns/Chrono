@@ -1,7 +1,7 @@
 // `quirks` 声明式机械解释（规范源：厂商适配插件；本插件只按 impl 分派有界适配器，不加厂商分支）。
 // 三协议自带默认怪癖，厂商 quirks 只覆盖差异、缺省取协议默认。
 
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 
 export interface Quirks {

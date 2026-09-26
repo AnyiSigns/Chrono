@@ -3,7 +3,7 @@
 // `port.result` / `port.error`（按原 id 配对）。失败一律作数据，不抛错、不断通道。
 
 import { randomUUID } from 'node:crypto'
-import { writeFrame } from './frames.ts'
+import { SERVICE_PROTOCOL_VERSION, writeFrame } from 'plugin-sdk'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -43,7 +43,7 @@ export class HostLink {
       }, this.timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, timer })
-      writeFrame({ v: '1', id, kind: 'port.call', port: HOST_PORT, method, args })
+      writeFrame({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port: HOST_PORT, method, args })
     })
   }
 

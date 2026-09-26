@@ -78,9 +78,8 @@ test('schema error.code 闭集与 ERROR_CODES 一致', () => {
 test('execute 源码齐全', () => {
   const files = [
     'execute/main.ts',
-    'execute/frames.ts',
+    'execute/log.ts',
     'execute/types.ts',
-    'execute/plugin.ts',
     'execute/config.ts',
     'execute/state-dir.ts',
     'execute/link.ts',

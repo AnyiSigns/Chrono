@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs'
 import { asStringArray } from './model.ts'
 import { isRecord } from './plan.ts'
-import type { Json } from './types.ts'
+import type { Json } from 'plugin-sdk'
 
 export const DEFAULT_ALLOWED_CLASSES = ['binding', 'instance_growth', 'structure', 'fold']
 export const DEFAULT_MAX_PROPOSALS_PER_RUN = 4

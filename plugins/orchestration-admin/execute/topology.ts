@@ -1,7 +1,7 @@
 // 图拓扑工具：邻接表 / 可达性 / 环检测 / 拓扑序 / 出入度。纯函数，无副作用。
 // 供机械闸的闭合、publish 偏序、审批段可达性、llm_chain_max 折算共用。
 
-import type { Rec } from './types.ts'
+import type { Rec } from 'plugin-sdk'
 
 export interface Topology {
   n: number

@@ -2,7 +2,7 @@
 // 工具名带 `plugin.` 前缀全局唯一；render 形状对齐「工具卡渲染」契约。
 // 高危写类 `plugin.write` 用 solid（实底），只读类同色以标明同一管理面。
 
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 能力声明（与执行件能力声明同形：`{fs:{read,write}, net}` 对象形）。 */
 const READONLY_CAPS: Rec = {

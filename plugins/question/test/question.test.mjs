@@ -6,11 +6,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 
 // ── 测试内联最小内核助手（测试不得 import 宿主与内核包） ──────────────────────
 
@@ -71,101 +71,35 @@ const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 const PAST = 1_600_000_000_000
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
+/**
+ * SDK 驱动适配：能力类固定；反向调用仍以 `onPortCall(message, reply)` 回调口径注入，
+ * 同步 reply 转成 SDK 驱动的应答形状。
+ */
 function startService(options = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'question-svc-'))
-  const child = spawn(process.execPath, [ENTRY], {
+  let reply = null
+  const drv = startSdkService({
+    entry: ENTRY,
     cwd: PKG_ROOT,
     env: {
-      ...process.env,
       CHRONO_PLUGIN_DATA: join(root, 'data'),
       CHRONO_PLUGIN_STATE: join(root, 'state'),
     },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const events = []
-  const portCalls = []
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      if (message.kind === 'event') {
-        events.push(message)
-        continue
-      }
-      if (message.kind === 'port.call') {
-        portCalls.push(message)
-        options.onPortCall?.(message, (reply) => child.stdin.write(encodeFrame(reply)))
-        continue
-      }
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', () => {})
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 8000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
+    onPortCall: (message) => {
+      reply = null
+      options.onPortCall?.(message, (frame) => {
+        reply = frame
       })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  }
-
+      if (reply === null) return { ok: true, value: null }
+      if (reply.kind === 'port.error') return { ok: false, code: reply.error, message: reply.message }
+      return { ok: true, value: reply.value }
+    },
+  })
   return {
-    child,
-    events,
-    portCalls,
-    exit,
+    ...drv,
     root,
-    request,
-    hello: () => request('hello', { impl: 'question', gen: 'gen-1' }, 'manifest'),
-    call: async (method, args, env = FIXED_ENV) =>
-      (await request('call', { port: 'question', method, args, env }, ['result', 'error'])).value,
-    close: () => child.stdin.end(),
+    hello: () => drv.hello('question'),
+    call: async (method, args, env = FIXED_ENV) => (await drv.call('question', method, args, env)).value,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   }
 }

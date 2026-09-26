@@ -10,9 +10,9 @@ import {
   MAX_CAPS_TIMEOUT_MS,
   REVERSE_TIMEOUT_MARGIN_MS,
   TIMER_MAX_MS,
-} from './port-link.ts'
+} from './backends.ts'
 import { ToolError, isRecord } from './types.ts'
-import type { ExecBackend, SecretsBackend } from './port-link.ts'
+import type { ExecBackend, SecretsBackend } from './backends.ts'
 import type { Json, Rec } from './types.ts'
 
 export interface InvokeDeps {
@@ -23,9 +23,9 @@ export interface InvokeDeps {
 }
 
 /** 结果面：成功 `{ok:true, result}`，失败 `{ok:false, error:{code, message}}`（非零退出 / 被杀另带 result）。 */
-export async function invoke(bag: Json, deps: InvokeDeps, callId: string | null = null): Promise<Json> {
+export async function invoke(bag: Json, deps: InvokeDeps): Promise<Json> {
   try {
-    return await run(bag, deps, callId)
+    return await run(bag, deps)
   } catch (err) {
     if (err instanceof ToolError) {
       return { ok: false, error: { code: err.code, message: err.message } }
@@ -34,7 +34,7 @@ export async function invoke(bag: Json, deps: InvokeDeps, callId: string | null 
   }
 }
 
-async function run(bag: Json, deps: InvokeDeps, callId: string | null): Promise<Json> {
+async function run(bag: Json, deps: InvokeDeps): Promise<Json> {
   if (!isRecord(bag)) throw new ToolError('bad_args', 'invoke bag must be an object')
   if (bag['tool'] !== 'shell') throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
   const args = bag['args']
@@ -50,10 +50,9 @@ async function run(bag: Json, deps: InvokeDeps, callId: string | null): Promise<
   const language = mode === 'code' ? resolveLanguage(args['language']) : null
   const invocation = resolveInvocation(mode, input, language, deps.shell)
   const caps = effectiveCaps(bag)
-  const env = await buildEnv(bag, deps, callId)
+  const env = await buildEnv(bag, deps)
   const outcome = await deps.exec.exec(
     buildExecArgs(bag, invocation, env, caps),
-    callId,
     capsTimeoutMs(caps) + REVERSE_TIMEOUT_MARGIN_MS,
   )
   return executionResult(mode, language, outcome)
@@ -103,7 +102,7 @@ function shellInvocation(input: string, shell: string): Invocation {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** 密钥注入：解析 `bag.auth_ref` 得明文，只挂到 exec 的 `env`（键 = 引用名）。 */
-async function buildEnv(bag: Rec, deps: InvokeDeps, callId: string | null): Promise<Rec> {
+async function buildEnv(bag: Rec, deps: InvokeDeps): Promise<Rec> {
   const env: Rec = {}
   const authRef = bag['auth_ref']
   if (authRef === undefined) return env
@@ -112,7 +111,7 @@ async function buildEnv(bag: Rec, deps: InvokeDeps, callId: string | null): Prom
   if (typeof name !== 'string' || !ENV_NAME.test(name)) {
     throw new ToolError('bad_auth_ref', 'auth_ref.name must be a valid environment variable name')
   }
-  const plaintext = await deps.secrets.resolve(authRef, callId)
+  const plaintext = await deps.secrets.resolve(authRef)
   env[name] = plaintext
   return env
 }

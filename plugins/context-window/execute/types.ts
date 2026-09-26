@@ -143,5 +143,4 @@ export interface AssemblyManifest {
   flags: string[]
 }
 
-/** 参数错误（对应协议 error 帧 `bad_args`）。 */
-export class BadArgsError extends Error {}
+export { BadArgsError } from 'plugin-sdk'

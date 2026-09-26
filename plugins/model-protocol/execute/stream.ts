@@ -2,7 +2,7 @@
 // usage 来源由厂商 `stream_usage` 决定，适配器已归一到 {prompt_tokens, completion_tokens, total_tokens}。
 
 import { isRecord } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 /** 适配器解析出的归一化分片。 */
 export interface Shard {

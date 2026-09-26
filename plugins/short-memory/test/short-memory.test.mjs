@@ -6,14 +6,26 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { ShortMemoryStore } from '../execute/persist.ts'
-import { startService } from './driver.mjs'
+import { startService as startSdkService } from 'plugin-sdk'
 
-const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
+const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 const AT = new Date(1_700_000_000_000).toISOString()
+
+/** SDK 驱动适配：能力类固定，方法名直接调用。 */
+function drive() {
+  const drv = startSdkService({ entry: ENTRY, cwd: PKG_ROOT })
+  return {
+    ...drv,
+    hello: () => drv.hello('short-memory'),
+    call: (method, args, env = FIXED_ENV) => drv.call('short-memory', method, args, env),
+  }
+}
 
 test('plugin.json 字段齐全且形态合法（durable + 独占 data）', () => {
   const decl = readJson('plugin.json')
@@ -35,14 +47,14 @@ test('plugin.json 字段齐全且形态合法（durable + 独占 data）', () =>
 
 test('execute/ 不 import 宿主 / 内核 / client；README 不含计划编号', () => {
   const forbidden = /packages\/(host|kernel|client)/
-  for (const file of ['frames.ts', 'main.ts', 'methods.ts', 'persist.ts', 'plan.ts', 'types.ts']) {
+  for (const file of ['main.ts', 'methods.ts', 'persist.ts', 'plan.ts']) {
     assert.equal(forbidden.test(readText(join('execute', file))), false, `${file} 出现宿主 / 内核 / client 引用`)
   }
   assert.equal(/#\d/.test(readText('README.md')), false, 'README 含计划编号样式')
 })
 
 test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.identity, 'short-memory')
@@ -58,7 +70,7 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
 })
 
 test('apply / read 往返：L1 与 L2 分别落位；不产世界写计划', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     const applied = await drv.call('apply', {
@@ -83,7 +95,7 @@ test('apply / read 往返：L1 与 L2 分别落位；不产世界写计划', asy
 })
 
 test('apply：删除键、重复写幂等', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     const args = { set_sessions: { 'c-1': { summary: { facts: ['f'] }, at: AT } } }
@@ -124,7 +136,7 @@ test('边跑边追加 + 中断残留可辨（store 级）', () => {
 })
 
 test('形态非法 / 未知方法 → 结构化错误', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     assert.equal((await drv.call('read_session', {})).code, 'bad_args')

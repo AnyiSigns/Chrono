@@ -13,8 +13,9 @@ import {
   readFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { canonicalEqual, isRecord } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import { canonicalEqual } from './plan.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 function appendRecord(path: string | null, record: Rec): void {
   if (path === null) return

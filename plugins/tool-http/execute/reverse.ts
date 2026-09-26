@@ -1,7 +1,7 @@
 // 反向调用链接：服务发 `port.call`，宿主按发出者 pins 路由后回 `port.result` / `port.error`（按 id 配对）。
 // 本插件用它调隔离执行与资产存取；调用 id 只用于配对，不影响结果。
 
-import { writeFrame } from './frames.ts'
+import { SERVICE_PROTOCOL_VERSION, writeFrame } from 'plugin-sdk'
 import type { CallOutcome } from './backend.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -49,7 +49,7 @@ export class ReverseLink {
       }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, timer })
-      const frame: Rec = { v: '1', id, kind: 'port.call', port, method, args }
+      const frame: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args }
       if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
       try {
         writeFrame(frame)

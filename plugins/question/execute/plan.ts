@@ -1,33 +1,14 @@
 // 共享纯函数：字段规范化与计划值构造。服务不读投影、不落账、不构造世界写计划——
 // 队列与游标写自有持久存储（`store.ts`），返回的 `$directives` 只含续跑 `eval` 与 `extern`（观测）。
 
-import type { CallEnv, Json } from './types.ts'
+import { asString, isRecord, nowOf } from 'plugin-sdk'
+import type { Json, Rec } from 'plugin-sdk'
 
-/** 缺省线程键（per-thread 键控）。 */
-export const MAIN_THREAD = '_main'
-
-export type Rec = { [key: string]: Json }
-
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-export function asString(value: Json | undefined): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null
-}
+export { asString, isRecord, nowOf }
+export type { Rec }
 
 export function asArray(value: Json | undefined): Json[] | null {
   return Array.isArray(value) ? value : null
-}
-
-/** 非负整数；缺失 / 非法返回 null。 */
-export function asCount(value: Json | undefined): number | null {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
-}
-
-/** 帧 env 的固定时钟；env 缺失（不该发生）时回落 0，绝不自取时钟。 */
-export function nowOf(env: CallEnv): number {
-  return typeof env.now === 'number' && Number.isFinite(env.now) ? env.now : 0
 }
 
 /** 宿主时钟（毫秒）→ ISO 8601 字符串；纯格式化，不取当前时间。 */

@@ -92,8 +92,8 @@ export function createHandlers(deps: ConfigDeps): Record<string, Handler> {
   const state = createState()
   return {
     read: (args: Json, env: CallEnv): Promise<HandlerResult> =>
-      Promise.resolve({ value: read(args, env, deps, state) }),
+      Promise.resolve({ value: read(args, env, deps, state), events: [] }),
     write: (args: Json, env: CallEnv): Promise<HandlerResult> =>
-      Promise.resolve({ value: write(args, env, deps, state) }),
+      Promise.resolve({ value: write(args, env, deps, state), events: [] }),
   }
 }

@@ -4,7 +4,7 @@
 // 明文只活在调用方内存，绝不进日志 / 世界 / 计划。
 
 import { randomUUID } from 'node:crypto'
-import { writeFrame } from './frames.ts'
+import { writeFrame } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 

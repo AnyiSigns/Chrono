@@ -2,19 +2,17 @@
 // 数据源与机械校验全经反向调用（port.call）交宿主：本服务不读投影、无写通道，write 只产计划。
 // 可见性黑名单先过滤、后调宿主；validate 的 result_hash 缓存到 ③，write 机械比对后才产计划。
 
+import { BadArgsError } from 'plugin-sdk'
 import { resolveLimits } from './config.ts'
-import { HostLink, parseIdentities } from './host.ts'
+import { parseIdentities } from './host.ts'
 import { candidateKey, buildPackOps, measureFiles, parseCandidateDecl } from './pack.ts'
 import { isRecord, nowOf, planOf } from './plan.ts'
 import { clearValidateCache, readValidateCache, writeValidateCache } from './state.ts'
 import { describeValue } from './tools.ts'
 import { isHidden } from './visibility.ts'
-import { BadArgsError, ToolError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, HostResult, Json, Rec } from './types.ts'
-import type { IdentityInfo } from './host.ts'
-
-/** 本连接的反向调用登记表；main.ts 收到 port.result / port.error 时调 `HOST.resolve`。 */
-export const HOST = new HostLink()
+import { ToolError } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
+import type { HostCaller, IdentityInfo } from './host.ts'
 
 const LIMITS = resolveLimits()
 
@@ -38,8 +36,8 @@ function enforceLimits(files: Rec): void {
   }
 }
 
-async function hostIdentities(): Promise<IdentityInfo[]> {
-  const result = await HOST.call('identities', {})
+async function hostIdentities(host: HostCaller): Promise<IdentityInfo[]> {
+  const result = await host.call('identities', {})
   if (!result.ok) throw new ToolError(result.code, result.message)
   return parseIdentities(result.value)
 }
@@ -48,36 +46,36 @@ async function hostIdentities(): Promise<IdentityInfo[]> {
  * 把候选源码字节经 `host.blob.put` 内容寻址落 CAS（幂等）。写计划的 blob 是**指针 def**
  * （`{kind:'blob',sha256,size}`），字节本体必须先在 ④ 就位，否则物化 `blob_missing`。失败即拒。
  */
-async function stageBlobs(blobs: { sha256: string; bytes: Buffer }[]): Promise<void> {
+async function stageBlobs(host: HostCaller, blobs: { sha256: string; bytes: Buffer }[]): Promise<void> {
   for (const blob of blobs) {
-    const result = await HOST.call('blob.put', { bytes: blob.bytes.toString('base64') })
+    const result = await host.call('blob.put', { bytes: blob.bytes.toString('base64') })
     if (!result.ok) throw new ToolError(result.code, result.message)
   }
 }
 
 /** `plugin.list`：过滤可见性黑名单后的身份清单。 */
-async function listTool(_args: Rec, _env: CallEnv): Promise<Json> {
-  const list = await hostIdentities()
+async function listTool(host: HostCaller, _args: Rec, _env: CallEnv): Promise<Json> {
+  const list = await hostIdentities(host)
   return { list: list.filter((entry) => !isHidden(entry.id)) as unknown as Json[] }
 }
 
 /** `plugin.read`：黑名单先拒（不调宿主），否则转发 host.source.read。 */
-async function readTool(args: Rec, _env: CallEnv): Promise<Json> {
+async function readTool(host: HostCaller, args: Rec, _env: CallEnv): Promise<Json> {
   const identity = requireString(args, 'identity')
   const path = requireString(args, 'path')
   if (isHidden(identity)) throw new ToolError('hidden_identity', identity)
-  const result: HostResult = await HOST.call('source.read', { identity, path })
+  const result = await host.call('source.read', { identity, path })
   if (!result.ok) throw new ToolError(result.code, result.message)
   return result.value
 }
 
 /** `plugin.validate`：转发宿主 dry-run，并把 result_hash 写入 ③（键 = 候选树规范化哈希）。 */
-async function validateTool(args: Rec, env: CallEnv): Promise<Json> {
+async function validateTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Json> {
   const identity = requireString(args, 'identity')
   const files = requireFiles(args)
   if (isHidden(identity)) throw new ToolError('hidden_identity', identity)
   enforceLimits(files)
-  const result = await HOST.call('validate_package', { files })
+  const result = await host.call('validate_package', { files })
   if (!result.ok) throw new ToolError(result.code, result.message)
   const report = isRecord(result.value) ? result.value : {}
   const ok = report['ok'] === true
@@ -118,7 +116,7 @@ function resolvePins(
  * → `validate_required`；通过后按宿主入世同序产 put(blob)×n + put(tree) + put(commit) +
  * put(schema) + add_identity? + add_gen，批内 `{"$n":k}` 占位串起。
  */
-async function writeTool(args: Rec, _env: CallEnv): Promise<Json> {
+async function writeTool(host: HostCaller, args: Rec, _env: CallEnv): Promise<Json> {
   const identity = requireString(args, 'identity')
   const files = requireFiles(args)
   if (isHidden(identity)) throw new ToolError('hidden_identity', identity)
@@ -143,9 +141,9 @@ async function writeTool(args: Rec, _env: CallEnv): Promise<Json> {
     throw new ToolError('validate_required', 'commit hash mismatch')
   }
   // 指针 blob 的字节本体先落 CAS，再产引用它们的写计划
-  await stageBlobs(built.blobs)
+  await stageBlobs(host, built.blobs)
 
-  const identities = await hostIdentities()
+  const identities = await hostIdentities(host)
   const isNew = !identities.some((entry) => entry.id === identity)
   const pins = resolvePins(decl.pins, identities)
 
@@ -179,11 +177,11 @@ async function describeTool(_args: Rec, _env: CallEnv): Promise<Json> {
 }
 
 /** `plugin-admin.invoke`：按工具名派发；业务失败作 `{ok:false,error}` 值（不炸本轮）。 */
-async function invokeTool(args: Rec, env: CallEnv): Promise<Json> {
+async function invokeTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Json> {
   const tool = requireString(args, 'tool')
   const toolArgs = isRecord(args['args']) ? (args['args'] as Rec) : {}
   try {
-    const value = await dispatch(tool, toolArgs, env)
+    const value = await dispatch(host, tool, toolArgs, env)
     return { ok: true, result: value }
   } catch (err) {
     if (err instanceof ToolError) {
@@ -197,16 +195,16 @@ async function invokeTool(args: Rec, env: CallEnv): Promise<Json> {
 }
 
 /** 工具名 → 实现（invoke 的派发表；未知工具 `unknown_tool`）。 */
-async function dispatch(tool: string, args: Rec, env: CallEnv): Promise<Json> {
+async function dispatch(host: HostCaller, tool: string, args: Rec, env: CallEnv): Promise<Json> {
   switch (tool) {
     case 'plugin.list':
-      return listTool(args, env)
+      return listTool(host, args, env)
     case 'plugin.read':
-      return readTool(args, env)
+      return readTool(host, args, env)
     case 'plugin.validate':
-      return validateTool(args, env)
+      return validateTool(host, args, env)
     case 'plugin.write':
-      return writeTool(args, env)
+      return writeTool(host, args, env)
     default:
       throw new ToolError('unknown_tool', tool)
   }
@@ -215,20 +213,18 @@ async function dispatch(tool: string, args: Rec, env: CallEnv): Promise<Json> {
 function wrap(fn: (args: Rec, env: CallEnv) => Promise<Json>): Handler {
   return async (args: Json, env: CallEnv): Promise<HandlerResult> => {
     const record: Rec = isRecord(args) ? args : {}
-    return { value: await fn(record, env) }
+    return { value: await fn(record, env), events: [] }
   }
 }
 
-/** 按端口分组的方法表：main.ts 校验 `port` / `method` 后取用。 */
-export const PORT_HANDLERS: Record<string, Record<string, Handler>> = {
-  plugin: {
-    list: wrap(listTool),
-    read: wrap(readTool),
-    validate: wrap(validateTool),
-    write: wrap(writeTool),
-  },
-  'plugin-admin': {
-    describe: wrap(describeTool),
-    invoke: wrap(invokeTool),
-  },
+/** 构造两能力类的扁平方法表：SDK 派发器按方法名取用（能力类门禁由 manifest.implements 承担）。 */
+export function createHandlers(host: HostCaller): Record<string, Handler> {
+  return {
+    list: wrap((args, env) => listTool(host, args, env)),
+    read: wrap((args, env) => readTool(host, args, env)),
+    validate: wrap((args, env) => validateTool(host, args, env)),
+    write: wrap((args, env) => writeTool(host, args, env)),
+    describe: wrap((args, env) => describeTool(args, env)),
+    invoke: wrap((args, env) => invokeTool(host, args, env)),
+  }
 }

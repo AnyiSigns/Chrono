@@ -4,14 +4,15 @@
 // 标题落盘归调用方（chat）：把标题并入传给 interpret 的 session body，由 session.commit 一次性落盘——
 // 避免本插件另发一条整份 session 写与 commit 同回合竞争（lost update）。
 
+import { BadArgsError, asString, isRecord, makeLogger } from 'plugin-sdk'
 import { resolveConfig } from './config.ts'
-import { log } from './frames.ts'
-import { asString, isRecord } from './plan.ts'
+import { BackendError } from './port-link.ts'
 import { resolveTitle } from './title.ts'
-import { BackendError, BadArgsError } from './types.ts'
 import type { TitleConfig } from './config.ts'
 import type { ModelBackend } from './port-link.ts'
-import type { CallEnv, Handler, Json, Rec } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
+
+const log = makeLogger('session-title')
 
 /** 后端注入：生产环境是反向调用，单测注入假后端。 */
 export interface GenerateDeps {
@@ -84,9 +85,12 @@ async function generate(args: Json, _env: CallEnv, deps: GenerateDeps): Promise<
   return { ok: true, title }
 }
 
-/** 构造方法表（依赖注入：模型后端由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：模型后端由入口提供，便于测试与确定性）。 */
 export function createHandlers(deps: GenerateDeps): Record<string, Handler> {
   return {
-    generate: (args: Json, env: CallEnv): Promise<Json> => generate(args, env, deps),
+    generate: async (args: Json, env: CallEnv): Promise<HandlerResult> => ({
+      value: await generate(args, env, deps),
+      events: [],
+    }),
   }
 }

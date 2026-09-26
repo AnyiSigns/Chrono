@@ -1,55 +1,30 @@
-// `ui-shell` 服务进程入口：服务协议帧循环 + 主端口 HTTP 服务 + 自实现入站客户端。
-// manifest 从同包 plugin.json 派生（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
-// stdin EOF / 管道断开即自退出。服务不读投影：无配置判据经入站 `config.read` 命令返回值，
-// 主题偏好写经 `config.write` 命令（运行记录出世界，config owner 写自有存储）。
-// 第二方向：服务发 `port.call`（反向调用 host.source.read 取 headless 入口字节）。
+// `ui-shell` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
+// manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
+// 另起主端口 HTTP 服务 + 自实现入站客户端；反向调用经 `host.source.read` 取 headless 入口字节。
 
-import { readFileSync } from 'node:fs'
+import {
+  createService as createSdkService,
+  isDirectRun,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
+import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 import { Bridge, deriveBootMode, extractValue } from './bridge.ts'
-import { createFrameDecoder, log, writeFrame } from './frames.ts'
 import { decodeSourceRead, HostLink } from './host-client.ts'
 import { startUiServer } from './http-server.ts'
 import type { ShellState, UiServer } from './http-server.ts'
 import { identityInvalidatesHeadless } from './identity-events.ts'
 import { InboundClient } from './inbound.ts'
+import { log } from './log.ts'
 import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts } from './mounts.ts'
 import type { HeadlessEntry } from './mounts.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { SHELL_IMPL, shellStateRecord, SseHub } from './sse.ts'
 import { normalizeThemePref, themePrefOfConfig } from './theme.ts'
-import { BadArgsError, isRecord } from './types.ts'
-import type { CallEnv, Json, Rec } from './types.ts'
+import { isRecord } from './types.ts'
+import type { Json } from './types.ts'
 
-function readPlugin(): Rec {
-  try {
-    const text = readFileSync(new URL('../plugin.json', import.meta.url), 'utf8')
-    const parsed = JSON.parse(text) as Json
-    if (isRecord(parsed)) return parsed
-  } catch (err) {
-    log(`cannot read plugin.json: ${(err as Error).message}`)
-  }
-  return {}
-}
-
-const PLUGIN = readPlugin()
-const IDENTITY = typeof PLUGIN['identity'] === 'string' ? (PLUGIN['identity'] as string) : 'ui-shell'
-const IMPLEMENTS = Array.isArray(PLUGIN['implements'])
-  ? (PLUGIN['implements'] as Json[]).filter((item): item is string => typeof item === 'string')
-  : ['ui-shell']
-const METHODS = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
-const PROTOCOL = typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
-const STATE = typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
-
-function manifest(): Rec {
-  return {
-    v: '1',
-    identity: IDENTITY,
-    implements: IMPLEMENTS,
-    methods: METHODS,
-    protocol: PROTOCOL,
-    state: STATE,
-  }
-}
+const CAPABILITY = 'ui-shell'
 
 const root = rootFromPluginState(process.env, process.cwd())
 const stateDir = `${root}/state`
@@ -251,75 +226,6 @@ function applyThemePref(pref: string): void {
   sse.broadcast(shellStateRecord(connected, themePref))
 }
 
-function sendFrame(message: Json): void {
-  if (exiting) return
-  try {
-    writeFrame(message)
-  } catch (err) {
-    log(`write frame failed: ${(err as Error).message}`)
-  }
-}
-
-function sendError(id: string, code: string, message: string): void {
-  sendFrame({ v: '1', id, kind: 'error', ok: false, code, message })
-}
-
-function parseEnv(raw: Json | undefined): CallEnv {
-  if (!isRecord(raw)) return { run: null, thread: null, now: 0 }
-  return {
-    run: typeof raw['run'] === 'string' ? raw['run'] : null,
-    thread: typeof raw['thread'] === 'string' ? raw['thread'] : null,
-    now: typeof raw['now'] === 'number' && Number.isFinite(raw['now']) ? raw['now'] : 0,
-  }
-}
-
-function declaredMethods(port: string): string[] {
-  const declared = METHODS[port]
-  if (Array.isArray(declared)) {
-    return declared.filter((item): item is string => typeof item === 'string')
-  }
-  return []
-}
-
-/** 本插件唯一方法：健康占位（`ui-shell.ping`）。 */
-function handlePing(): { value: Json; events: { topic: string; payload: Json }[] } {
-  return { value: { pong: true, identity: IDENTITY }, events: [] }
-}
-
-async function handleCall(message: Rec): Promise<void> {
-  const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
-  const port = message['port']
-  const method = message['method']
-  if (typeof port !== 'string' || typeof method !== 'string') {
-    sendError(id, 'bad_args', 'port and method must be strings')
-    return
-  }
-  if (!IMPLEMENTS.includes(port)) {
-    sendError(id, 'unresolved_cap', `unknown capability ${port}`)
-    return
-  }
-  if (!declaredMethods(port).includes(method)) {
-    sendError(id, 'unknown_method', `unknown method ${method}`)
-    return
-  }
-  const args = message['args']
-  if (args !== undefined && args !== null && !isRecord(args)) {
-    sendError(id, 'bad_args', 'args must be an object')
-    return
-  }
-  try {
-    const result = handlePing()
-    sendFrame({ v: '1', id, kind: 'result', ok: true, value: result.value })
-  } catch (err) {
-    if (err instanceof BadArgsError) {
-      sendError(id, 'bad_args', err.message)
-      return
-    }
-    log(`method ${method} failed: ${(err as Error).message}`)
-    sendError(id, 'internal', 'handler failed')
-  }
-}
-
 function shutdown(): void {
   if (exiting) return
   exiting = true
@@ -335,52 +241,27 @@ function shutdown(): void {
   }
 }
 
-async function handle(message: Json): Promise<void> {
-  if (!isRecord(message)) return
-  if (host.resolve(message)) return
-  switch (message['kind']) {
-    case 'hello':
-      sendFrame({ id: message['id'], kind: 'manifest', ...manifest() })
-      return
-    case 'probe':
-      sendFrame({ v: '1', id: message['id'], kind: 'pong', ok: true })
-      return
-    case 'reload':
-      log(`reload gen=${typeof message['gen'] === 'string' ? message['gen'] : '?'}`)
-      sendFrame({ v: '1', id: message['id'], kind: 'ack' })
-      return
-    case 'drain':
-      sendFrame({ v: '1', id: message['id'], kind: 'bye' })
-      shutdown()
-      return
-    case 'call':
-      await handleCall(message)
-      return
-    default:
-      return
-  }
+/** 构造服务实例：唯一方法为健康占位；反向调用应答经 `host.resolve` 结算。 */
+function build(ctx: ServiceFactoryContext): ServiceInstance {
+  return createSdkService({
+    pluginRoot: packageRootOf(import.meta.url),
+    capability: CAPABILITY,
+    handlers: {
+      ping: () => ({ value: { pong: true, identity: CAPABILITY }, events: [] }),
+    },
+    emit: ctx.emit,
+    log,
+    intercept: (message) => host.resolve(message),
+    onDrain: () => shutdown(),
+    onClose: () => shutdown(),
+  })
 }
 
-const decoder = createFrameDecoder()
-let chain: Promise<void> = Promise.resolve()
-process.stdin.on('data', (chunk: Buffer) => {
-  let messages: Json[]
-  try {
-    messages = decoder.push(chunk)
-  } catch (err) {
-    log(`bad frame: ${(err as Error).message}`)
-    return
-  }
-  for (const message of messages) {
-    if (isRecord(message) && host.resolve(message)) continue
-    chain = chain
-      .then(() => handle(message))
-      .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
-  }
-})
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.stdin.on('error', shutdown)
+export const createService = build
+
+if (isDirectRun(import.meta.url)) {
+  runStdio(build, { log })
+}
 
 inbound.start()
 

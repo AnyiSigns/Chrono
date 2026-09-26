@@ -4,11 +4,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { startService as startSdkService } from 'plugin-sdk'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -23,83 +23,15 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
-
 function startService() {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', () => {})
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 5000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  }
-
+  const drv = startSdkService({ entry: ENTRY, cwd: PKG_ROOT })
   return {
-    child,
-    exit,
-    request,
-    async hello() {
-      return request('hello', { impl: 'guard', gen: 'gen-1' }, 'manifest')
-    },
-    async judge(bag) {
-      return request('call', { port: 'guard', method: 'judge', args: bag, env: { run: null, thread: null, now: 0 } }, ['result', 'error'])
-    },
-    close() {
-      child.stdin.end()
-    },
+    child: drv.child,
+    exit: drv.exit,
+    request: drv.request,
+    hello: () => drv.hello('guard'),
+    judge: (bag) => drv.call('guard', 'judge', bag, { run: null, thread: null, now: 0 }),
+    close: () => drv.close(),
   }
 }
 

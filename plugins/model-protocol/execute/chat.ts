@@ -7,9 +7,7 @@ import { getAdapter } from './adapters.ts'
 import type { ModelOutput, RequestContext } from './adapters.ts'
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest, httpStream } from './http.ts'
-import { isRecord } from './plan.ts'
-import { authRefOf } from './port-link.ts'
-import type { PortLink } from './port-link.ts'
+import { authRefOf, isRecord } from './plan.ts'
 import { normalizeQuirks } from './quirks.ts'
 import type { Quirks } from './quirks.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
@@ -17,11 +15,11 @@ import type { RetryPolicy } from './resilience.ts'
 import { createSseParser, StreamAccumulator } from './stream.ts'
 import { googleChat, googleComplete } from './sdk-google.ts'
 import type { SdkCallInput } from './sdk-google.ts'
-import { BadArgsError } from './types.ts'
-import type { CallEnv, Json, Rec } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 
 export interface ChatDeps {
-  secrets: PortLink
+  secrets: PortCaller
   limiter: RateLimiter
   emit: (topic: string, payload: Json) => void
 }
@@ -67,7 +65,7 @@ export function parseChatBag(bag: Json): ParsedChat {
 }
 
 /** 解析密钥：失败作数据（结构化错误码原样回灌）。 */
-async function resolveSecret(parsed: ParsedChat, secrets: PortLink): Promise<string | null> {
+async function resolveSecret(parsed: ParsedChat, secrets: PortCaller): Promise<string | null> {
   if (parsed.authRef === null) return null
   const outcome = await secrets.call('secrets', 'resolve', { auth_ref: parsed.authRef })
   if (!outcome.ok) throw new ModelError('model_auth_failed', `secret resolve failed: ${outcome.code}`)

@@ -18,8 +18,6 @@ import { join } from 'node:path'
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Rec = { [key: string]: Json }
 
-export const MAIN_THREAD = '_main'
-
 function isRecord(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

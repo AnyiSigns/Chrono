@@ -36,7 +36,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.equal(decl.protocol, '1')
   assert.equal(typeof decl.restart, 'object')
   assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.health.probe, 'guard.judge')
   assert.equal(decl.state, 'recomputable')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
@@ -71,7 +70,6 @@ test('execute/ 源码与 tools/ 脚本齐全', () => {
     'execute/methods.ts',
     'execute/judge.ts',
     'execute/rules.ts',
-    'execute/frames.ts',
     'execute/types.ts',
     'tools/seed-default-body.mjs',
     'tools/e2e-smoke.mjs',

@@ -1,21 +1,40 @@
-// storage-kv 服务协议级测试（node --test）：自实现最小协议驱动，spawn `node execute/main.ts`。
+// storage-kv 服务协议级测试（node --test）：SDK 驱动 spawn `node execute/main.ts`。
 // 覆盖包形状、握手、方法级读写往返、批量、按 emitter 分目录隔离、启动迁移幂等、
 // 撕裂尾恢复、跨重启持久、丢弃命名空间。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { PKG_ROOT, startService } from './driver.mjs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { startService } from 'plugin-sdk'
+
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 
 function tempData() {
   return mkdtempSync(join(tmpdir(), 'storage-kv-'))
 }
 
+/** 把 SDK 驱动适配成本插件测试口径：能力类固定、`emitter` 显式给出以验证分目录。 */
+function wrap(drv) {
+  return {
+    ...drv,
+    hello: () => drv.hello('storage-kv'),
+    call: (method, args, emitter = null) =>
+      drv.call('storage-kv', method, args, {
+        run: null,
+        thread: null,
+        now: 1_700_000_000_000,
+        emitter,
+      }),
+  }
+}
+
 async function withService(dataDir, fn) {
-  const drv = startService({ dataDir })
+  const drv = startService({ entry: ENTRY, cwd: PKG_ROOT, env: { CHRONO_PLUGIN_DATA: dataDir } })
   try {
-    return await fn(drv)
+    return await fn(wrap(drv))
   } finally {
     drv.close()
     await drv.exit

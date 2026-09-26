@@ -2,8 +2,8 @@
 // 文件缺失 / 形态非法回落常量；不 import 宿主，故只按本包 schema 的顶层键读。
 
 import { readFileSync } from 'node:fs'
-import { isRecord } from './plan.ts'
-import type { Json } from './types.ts'
+import { isRecord } from 'plugin-sdk'
+import type { Json } from 'plugin-sdk'
 
 /** 缺省单会话条目条数上限（schema 未声明 / 不可读时）。 */
 export const DEFAULT_MAX_ITEMS = 200

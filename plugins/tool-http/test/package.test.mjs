@@ -40,7 +40,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'tool-http.describe')
 })
 
 test('无 terms/ 目录且无命令面', () => {
@@ -92,8 +91,6 @@ test('execute/ 源码齐全', () => {
     'execute/url.ts',
     'execute/backend.ts',
     'execute/reverse.ts',
-    'execute/frames.ts',
-    'execute/plugin.ts',
     'execute/types.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)

@@ -104,7 +104,10 @@ test('execute/ 不 import 宿主 / 内核 / client，也不 import 其他插件�
     const imports = [...text.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((match) => match[1])
     for (const specifier of imports) {
       assert.ok(
-        specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('node:'),
+        specifier.startsWith('./') ||
+          specifier.startsWith('../') ||
+          specifier.startsWith('node:') ||
+          specifier === 'plugin-sdk',
         `${file} 不应 import ${specifier}`,
       )
       assert.equal(/packages\/(host|kernel|client)/.test(specifier), false, `${file} 不应 import 宿主 / 内核`)

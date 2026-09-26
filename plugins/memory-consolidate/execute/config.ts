@@ -3,7 +3,7 @@
 // 数值一律有界；非法 / 缺失回落缺省，不炸服务。
 
 import { readFileSync } from 'node:fs'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import { integerField, isRecord, numberField } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 

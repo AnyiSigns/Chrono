@@ -3,7 +3,7 @@
 // 只返回值 / 事件；不落账、不读投影、不自取时钟。子进程生命周期事件经 events.ts 的持久出口上行。
 
 import { emitEvent } from './events.ts'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import { COMMANDS, IDENTITY } from './plugin.ts'
 import { externOnly, isRecord } from './plan.ts'
 import { McpRegistry } from './registry.ts'

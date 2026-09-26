@@ -29,13 +29,7 @@ export interface JudgeResult {
   summary: JudgeSummary
 }
 
-/** args（bag）形态非法：结构化 bad_args，不崩进程。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'
 
 /** 一个方法：args 进、值出。 */
 export type Handler = (args: Json) => Json

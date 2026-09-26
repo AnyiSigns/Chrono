@@ -2,13 +2,14 @@
 // 输入全部来自 bag（#33 装配）；服务不读投影、无写通道、不发 eff：validate 是本地复刻 dry-run，
 // propose 只返回写计划（提案条目），宿主落账。invoke 按工具名内部派发到 orchestration.*。
 
+import { BadArgsError } from 'plugin-sdk'
 import { validateBag } from './gate.ts'
 import { isRecord } from './plan.ts'
 import { proposeTool } from './propose.ts'
 import { listTool, readTool } from './read.ts'
 import { describeValue } from './tools.ts'
-import { BadArgsError, ToolError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
+import { ToolError } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
 
 function bagOf(args: Json): Rec {
   return isRecord(args) ? args : {}
@@ -16,7 +17,7 @@ function bagOf(args: Json): Rec {
 
 function wrap(fn: (bag: Rec, env: CallEnv) => Json | Promise<Json>): Handler {
   return async (args: Json, env: CallEnv): Promise<HandlerResult> => {
-    return { value: await fn(bagOf(args), env) }
+    return { value: await fn(bagOf(args), env), events: [] }
   }
 }
 
@@ -59,16 +60,14 @@ function invokeTool(bag: Rec, env: CallEnv): Json {
   }
 }
 
-/** 按端口分组的方法表：main.ts 校验 `port` / `method` 后取用。 */
-export const PORT_HANDLERS: Record<string, Record<string, Handler>> = {
-  orchestration: {
+/** 构造两能力类的扁平方法表：SDK 派发器按方法名取用（能力类门禁由 manifest.implements 承担）。 */
+export function createHandlers(): Record<string, Handler> {
+  return {
     list: wrap((bag) => listTool(bag)),
     read: wrap((bag) => readTool(bag)),
     validate: wrap((bag) => validateBag(bag)),
     propose: wrap((bag, env) => proposeTool(bag, env)),
-  },
-  'orchestration-admin': {
     describe: wrap(() => describeTool()),
     invoke: wrap((bag, env) => invokeTool(bag, env)),
-  },
+  }
 }

@@ -2,12 +2,9 @@
 // + 外部 MCP 工具（调用方随 bag 传入的 #37 投影清单）。做四要素 / argsSchema 白名单 / caps 形状校验
 // 与工具名全局唯一性校验；不合规项不进目录（`bad_tool_decl`），并在 rejected 里留诊断。
 
-import { canonicalJson } from './json.ts'
-import { toolsOf } from './port-link.ts'
-import type { PortLink } from './port-link.ts'
+import { canonicalJson, isRecord } from 'plugin-sdk'
+import type { Json, PortCaller, Rec } from 'plugin-sdk'
 import { defaultCaps, normalizeCaps, sanitizeArgsSchema, validateArgsSchema } from './schema-validate.ts'
-import { isRecord } from './types.ts'
-import type { Json, Rec } from './types.ts'
 
 /** 无 describe / invoke 的绑定提供者端口（走能力类方法绑定）。 */
 const BINDING_PORTS = new Set(['session', 'compress', 'memory', 'retrieval', 'memory-maintenance', 'evolve-metrics'])
@@ -46,7 +43,14 @@ export interface Directory {
 export interface BuildInput {
   pins: string[]
   bag: Rec
-  link: PortLink
+  link: PortCaller
+}
+
+/** 从 `{tools:[...]}` 形态的 describe 结果里取工具数组；形态不符回空。 */
+export function toolsOf(value: Json): Json[] {
+  if (!isRecord(value)) return []
+  const tools = value['tools']
+  return Array.isArray(tools) ? tools : []
 }
 
 /** describe/invoke 提供者端口 = pins 去掉绑定提供者与非工具提供者。 */

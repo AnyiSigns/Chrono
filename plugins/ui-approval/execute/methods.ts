@@ -19,7 +19,7 @@ import {
   withExternPayload,
 } from './plan.ts'
 import type { Rec } from './plan.ts'
-import type { PortCaller } from './port-link.ts'
+import type { PortCaller } from 'plugin-sdk'
 import { BadArgsError, isRecord } from './types.ts'
 import type { CallEnv, Handler, Json } from './types.ts'
 

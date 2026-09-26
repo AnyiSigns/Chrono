@@ -1,9 +1,10 @@
 // 方法分发表：args 形态门禁 + 命名空间参数拒绝，然后派给存储引擎。
 // 命名空间一律取调用帧 `env.emitter`；调用方自报的 namespace / owner / db 等参数可伪造，直接拒。
 
-import { BadArgsError, StoreError } from './types.ts'
+import { BadArgsError } from 'plugin-sdk'
+import { StoreError } from './types.ts'
 import { KvEngine, resolveOwner } from './engine.ts'
-import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
 
 /** 调用方不得自报命名空间：这些键出现即拒，而不是静默忽略。 */
 const FORBIDDEN_NAMESPACE_KEYS = ['namespace', 'ns', 'owner', 'emitter', 'database', 'db', 'path']
@@ -28,19 +29,19 @@ export function createHandlers(engine: KvEngine): Record<string, Handler> {
     const owner = resolveOwner(env.emitter)
     switch (method) {
       case 'get':
-        return { value: engine.get(owner, args) }
+        return { value: engine.get(owner, args), events: [] }
       case 'put':
-        return { value: engine.put(owner, args) }
+        return { value: engine.put(owner, args), events: [] }
       case 'delete':
-        return { value: engine.delete(owner, args) }
+        return { value: engine.delete(owner, args), events: [] }
       case 'list':
-        return { value: engine.list(owner, args) }
+        return { value: engine.list(owner, args), events: [] }
       case 'batch':
-        return { value: engine.batch(owner, args) }
+        return { value: engine.batch(owner, args), events: [] }
       case 'info':
-        return { value: engine.info(owner) }
+        return { value: engine.info(owner), events: [] }
       case 'dropNamespace':
-        return { value: engine.dropNamespace(owner) }
+        return { value: engine.dropNamespace(owner), events: [] }
       default:
         throw new StoreError('unknown_method', method)
     }

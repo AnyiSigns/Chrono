@@ -6,7 +6,7 @@
 
 import { connect } from 'node:net'
 import type { Socket } from 'node:net'
-import { createFrameDecoder, encodeFrame } from './frames.ts'
+import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 import type { InboundResult, Transport } from './bridge.ts'

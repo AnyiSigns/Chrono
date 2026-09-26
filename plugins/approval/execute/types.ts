@@ -23,10 +23,4 @@ export interface HandlerResult {
 
 export type Handler = (args: Json, env: CallEnv) => HandlerResult
 
-/** args 形态非法（非对象 / 缺必需字段）：结构化 bad_args，不崩进程、不产计划。 */
-export class BadArgsError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'BadArgsError'
-  }
-}
+export { BadArgsError } from 'plugin-sdk'

@@ -1,7 +1,7 @@
 // 结构化错误：模型 IO 的失败以数据回灌调用方（协议帧仍 result、value 为 {ok:false,error}）。
 // 错误码取固定词表，机械可测；retryable 决定韧性层是否重试。
 
-import type { Json } from './types.ts'
+import type { Json } from 'plugin-sdk'
 
 export type ModelErrorCode =
   | 'model_auth_failed'

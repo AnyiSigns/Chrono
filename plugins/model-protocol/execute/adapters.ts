@@ -6,7 +6,7 @@ import { ModelError } from './errors.ts'
 import { applyAuth, encodeReasoning, joinUrl, setByPath } from './quirks.ts'
 import type { Quirks } from './quirks.ts'
 import { asRecord, stringField, StreamAccumulator } from './stream.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec } from 'plugin-sdk'
 
 export interface RequestContext {
   base_url: string

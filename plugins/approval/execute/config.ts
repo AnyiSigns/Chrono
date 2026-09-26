@@ -1,13 +1,13 @@
-// 从同包 `plugin.json` 与 `schema/approval.json` 派生服务自述与自用参数
-// （服务自述与声明一致；服务不 import 宿主与内核）。读不到时回落安全缺省，保证服务仍能起。
+// 从同包 `schema/approval.json` 派生自用参数（服务不 import 宿主与内核）。
+// 读不到时回落安全缺省，保证服务仍能起。
 // 调用方可经 bag / args 覆盖超时 / 容量 / 归档保留数（缺省读 schema）。
 
 import { readFileSync } from 'node:fs'
-import { log } from './frames.ts'
+import { makeLogger } from 'plugin-sdk'
 import { isRecord, type Rec } from './plan.ts'
 import type { Json } from './types.ts'
 
-const CAPABILITY = 'approval'
+const log = makeLogger('approval')
 const DEFAULT_TIMEOUT_MS = 600000
 const DEFAULT_CAPACITY = 64
 
@@ -22,23 +22,7 @@ function readJson(relative: string): Rec {
   return {}
 }
 
-const PLUGIN = readJson('../plugin.json')
 const SCHEMA = readJson('../schema/approval.json')
-
-export const IDENTITY: string =
-  typeof PLUGIN['identity'] === 'string' ? (PLUGIN['identity'] as string) : CAPABILITY
-
-export const IMPLEMENTS: string[] = Array.isArray(PLUGIN['implements'])
-  ? (PLUGIN['implements'] as Json[]).filter((item): item is string => typeof item === 'string')
-  : [CAPABILITY]
-
-export const METHODS: Rec = isRecord(PLUGIN['methods']) ? (PLUGIN['methods'] as Rec) : {}
-
-export const PROTOCOL: string =
-  typeof PLUGIN['protocol'] === 'string' ? (PLUGIN['protocol'] as string) : '1'
-
-export const STATE: string =
-  typeof PLUGIN['state'] === 'string' ? (PLUGIN['state'] as string) : 'recomputable'
 
 export interface ApprovalPolicy {
   timeoutMs: number | null

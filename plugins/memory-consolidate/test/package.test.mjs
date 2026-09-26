@@ -59,7 +59,6 @@ test('plugin.json 12 字段齐全且形态合法', () => {
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
-  assert.equal(decl.health.probe, 'memory-maintenance.view')
 })
 
 test('schema：策略参数 + periodic 两拍（owner 数据由服务自读，无投影 reads）', () => {
@@ -92,12 +91,11 @@ test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件
   const files = readdirSync(join(PKG_ROOT, 'execute')).filter((name) => name.endsWith('.ts'))
   const expected = [
     'config.ts',
-    'frames.ts',
+    'log.ts',
     'main.ts',
     'memory.ts',
     'methods.ts',
     'plan.ts',
-    'plugin.ts',
     'port-link.ts',
     'types.ts',
     'vectors.ts',

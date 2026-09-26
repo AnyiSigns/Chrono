@@ -113,13 +113,13 @@ test('README 存在且不含计划编号 / 计划文档引用', () => {
 })
 
 test('execute/ 不 import 宿主 / 内核 / 其他插件包', () => {
-  for (const file of ['frames.ts', 'engine.ts', 'methods.ts', 'main.ts', 'types.ts']) {
+  for (const file of ['engine.ts', 'methods.ts', 'main.ts', 'types.ts']) {
     const text = readText(join('execute', file))
     assert.ok(!text.includes('packages/host'), `${file} 引用宿主`)
     assert.ok(!text.includes('packages/kernel'), `${file} 引用内核`)
     for (const match of text.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
       const spec = match[1]
-      assert.ok(spec.startsWith('.') || spec.startsWith('node:'), `${file} 非法依赖 ${spec}`)
+      assert.ok(spec.startsWith('.') || spec.startsWith('node:') || spec === 'plugin-sdk', `${file} 非法依赖 ${spec}`)
     }
   }
 })

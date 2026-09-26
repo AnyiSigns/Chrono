@@ -3,7 +3,7 @@
 // 服务只读自身包内 schema，不读世界投影。段序归 #33 图数据（本包不再持静态管道）。
 
 import { readFileSync } from 'node:fs'
-import { log } from './frames.ts'
+import { log } from './log.ts'
 import { asString, isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 

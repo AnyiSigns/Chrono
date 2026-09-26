@@ -2,10 +2,10 @@
 // L1 / L2 摘要已出世界：写即时落自有持久存储（④，边跑边追加），读从自有存储取。
 // 服务不读投影、不产世界写计划、不自取时钟；跨身份的写方（compress / memory-consolidate）经能力调用问它。
 
+import { BadArgsError } from 'plugin-sdk'
 import { asString, isRecord } from './plan.ts'
 import { ShortMemoryStore } from './persist.ts'
-import { BadArgsError } from './types.ts'
-import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
+import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
 
 /** 服务依赖：自有存储（单测注入）。 */
 export interface ShortMemoryDeps {
@@ -70,26 +70,16 @@ function apply(args: Rec, env: CallEnv, deps: ShortMemoryDeps): Json {
   store.turnOpen(env.run)
   let changed = 0
   for (const [id, record] of Object.entries(setSessions)) {
-    if (record === null) {
-      store.setL1(env.run, id, null)
-      changed += 1
-    } else {
-      store.setL1(env.run, id, record)
-      changed += 1
-    }
+    store.setL1(env.run, id, record === null ? null : record)
+    changed += 1
   }
   for (const id of delSessions) {
     store.setL1(env.run, id, null)
     changed += 1
   }
   for (const [id, record] of Object.entries(setWorkspaces)) {
-    if (record === null) {
-      store.setL2(env.run, id, null)
-      changed += 1
-    } else {
-      store.setL2(env.run, id, record)
-      changed += 1
-    }
+    store.setL2(env.run, id, record === null ? null : record)
+    changed += 1
   }
   for (const id of delWorkspaces) {
     store.setL2(env.run, id, null)
@@ -104,11 +94,12 @@ function pending(_args: Rec, _env: CallEnv, deps: ShortMemoryDeps): Json {
   return { turns: deps.store.pendingTurns() }
 }
 
-/** 构造方法表（依赖注入：存储由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：存储由入口提供，便于测试与确定性）。 */
 export function createHandlers(deps: ShortMemoryDeps): Record<string, Handler> {
   const wrap = (fn: (args: Rec, env: CallEnv) => Json): Handler => {
-    return async (args: Json, env: CallEnv): Promise<HandlerResult> => ({
+    return (args: Json, env: CallEnv): HandlerResult => ({
       value: fn(isRecord(args) ? args : {}, env),
+      events: [],
     })
   }
   return {

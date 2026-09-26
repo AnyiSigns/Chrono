@@ -20,7 +20,7 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const MCP_DIR = join(REPO_ROOT, 'plugins', 'mcp')
 const SECRETS_DIR = join(REPO_ROOT, 'plugins', 'secrets')
-const FAKE_SERVER = join(MCP_DIR, 'test', 'fake-mcp-server.mjs')
+const FAKE_SERVER = join(MCP_DIR, 'tools', 'fake-mcp-server.mjs')
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
