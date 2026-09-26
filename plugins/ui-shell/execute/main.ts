@@ -23,7 +23,7 @@ import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { SHELL_IMPL, shellStateRecord, SseHub } from './sse.ts'
 import { normalizeThemePref, themePrefOfConfig } from './theme.ts'
 import { isRecord } from './types.ts'
-import type { Json } from './types.ts'
+import type { Json, Rec } from './types.ts'
 
 const CAPABILITY = 'ui-shell'
 
@@ -53,6 +53,8 @@ const uiEntries = mounts.filter(
     typeof entry.entry === 'string' && entry.entry.length > 0,
 )
 const uiIds = new Set(uiEntries.map((entry) => entry.id))
+/** 冷启动竞态等待上限：目标插件服务可能晚于壳就绪（物化 / 构建 / 起进程）。 */
+const COLD_START_DEADLINE_MS = 30_000
 
 let connected = false
 let hasDisconnected = false
@@ -153,7 +155,8 @@ async function fetchUi(entry: { id: string; entry: string }): Promise<string | n
   const value = extractValue(result.frame)
   const text = isRecord(value) && typeof value['text'] === 'string' ? value['text'] : null
   if (text === null) {
-    log(`ui ${entry.id}: client.read shape invalid`)
+    // 服务尚未就绪（eff 未解析）是冷启动常态，交由重试等待；形状确有问题才记日志。
+    if (!isRefusedFrame(result.frame)) log(`ui ${entry.id}: client.read shape invalid`)
     return null
   }
   return text
@@ -187,13 +190,34 @@ async function refreshConfig(): Promise<void> {
   if (changed) sse.broadcast(shellStateRecord(connected, themePref))
 }
 
-/** 首载竞态（宿主刚装配 / 目标插件重启）退避重试一次；失败返回 null。 */
-async function fetchWithRetry(fetch: () => Promise<string | null>): Promise<string | null> {
-  const first = await fetch()
-  if (first !== null) return first
-  await new Promise((resolve) => setTimeout(resolve, 300))
-  if (exiting) return null
-  return await fetch()
+/** 结果帧是否为拒绝（`eff_error` 等）：冷启动期服务未就绪即属此类，应重试而非报错。 */
+function isRefusedFrame(frame: Rec | null): boolean {
+  if (frame === null) return false
+  const observations = frame['observations']
+  return (
+    Array.isArray(observations) &&
+    observations.some((item) => isRecord(item) && item['kind'] === 'refused')
+  )
+}
+
+/**
+ * 首载竞态（宿主刚装配 / 目标插件重启）退避重试至截止时间；失败返回 null 并记一条日志。
+ * 冷启动时目标服务可能晚于壳就绪，单次重试窗口不足，故按指数退避等待。
+ */
+async function fetchWithRetry(label: string, fetch: () => Promise<string | null>): Promise<string | null> {
+  const deadline = Date.now() + COLD_START_DEADLINE_MS
+  let delay = 200
+  for (;;) {
+    const text = await fetch()
+    if (text !== null) return text
+    if (exiting) return null
+    if (Date.now() >= deadline) {
+      log(`${label}: not ready after ${Math.round(COLD_START_DEADLINE_MS / 1000)}s`)
+      return null
+    }
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    delay = Math.min(delay * 2, 2000)
+  }
 }
 
 /**
@@ -205,7 +229,7 @@ async function headlessSource(id: string): Promise<string | null> {
   if (cached !== undefined) return cached
   const entry = headless.find((item) => item.id === id)
   if (entry === undefined) return null
-  const text = await fetchWithRetry(() => fetchHeadless(entry))
+  const text = await fetchWithRetry(`headless ${id}`, () => fetchHeadless(entry))
   if (text !== null) headlessCache.set(id, text)
   return text
 }
@@ -219,7 +243,7 @@ async function uiSource(id: string): Promise<string | null> {
   if (cached !== undefined) return cached
   const entry = uiEntries.find((item) => item.id === id)
   if (entry === undefined) return null
-  const text = await fetchWithRetry(() => fetchUi(entry))
+  const text = await fetchWithRetry(`ui ${id}`, () => fetchUi(entry))
   if (text !== null) uiCache.set(id, text)
   return text
 }

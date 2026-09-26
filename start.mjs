@@ -6,7 +6,7 @@
 // 宿主前台常驻，日志直出终端；Ctrl-C 由宿主处理，其自身 drain 全部插件后退出。
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -56,6 +56,7 @@ function ensureManifest() {
         item.isDirectory() && item.name !== 'example' && existsSync(join(dir, item.name, 'plugin.json')),
     )
     .map((item) => ({ name: item.name, path: `plugins/${item.name}` }))
+  mkdirSync(dirname(MANIFEST), { recursive: true })
   writeFileSync(MANIFEST, `${JSON.stringify(entries, null, 2)}\n`)
   console.log(`已生成 state/plugins.json：${entries.length} 项`)
 }
