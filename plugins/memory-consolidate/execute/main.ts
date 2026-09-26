@@ -30,10 +30,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: sdkHandlers,
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => link.settle(message),
-    onDrain: () => link.failAll(),
-    onClose: () => link.failAll(),
-    drainExitMs: 10,
+    portLinks: [link],
   })
 }
 

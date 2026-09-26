@@ -3,6 +3,7 @@
 // 另起主端口 HTTP 服务 + 自实现入站客户端；反向调用经 `host.source.read` 取 headless 入口字节。
 
 import {
+  PortLink,
   createService as createSdkService,
   isDirectRun,
   packageRootOf,
@@ -10,7 +11,7 @@ import {
 } from 'plugin-sdk'
 import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 import { Bridge, deriveBootMode, extractValue } from './bridge.ts'
-import { decodeSourceRead, HostLink } from './host-client.ts'
+import { decodeSourceRead } from './host-client.ts'
 import { startUiServer } from './http-server.ts'
 import type { ShellState, UiServer } from './http-server.ts'
 import { identityInvalidatesHeadless } from './identity-events.ts'
@@ -40,7 +41,9 @@ function parseShellPort(value: string | undefined): number | null {
 }
 
 const sse = new SseHub()
-const host = new HostLink()
+/** 服务 → 宿主发帧出口；build 拿到 ctx.emit 后接入（模块级函数在装配后才发起反向调用）。 */
+let emitFrame: (message: Json) => void = () => {}
+const host = new PortLink({ write: (message) => emitFrame(message), idPrefix: 'ui-shell-pc' })
 const headlessCache = new Map<string, string>()
 const headlessIds = new Set(headless.map((entry) => entry.id))
 /** slot 客户端半边字节缓存（取代 /p/ 反代；按挂载表 entry 字段判定）。 */
@@ -107,7 +110,7 @@ const bridge = new Bridge(inbound, 35_000)
 
 /** 取单个 headless 入口字节（经 `host.source.read`）；失败返回 null。 */
 async function fetchHeadless(entry: HeadlessEntry): Promise<string | null> {
-  const result = await host.call('source.read', { identity: entry.id, path: entry.entry })
+  const result = await host.call('host', 'source.read', { identity: entry.id, path: entry.entry })
   if (!result.ok) {
     log(`headless ${entry.id}: source.read failed (${result.code})`)
     return null
@@ -226,23 +229,23 @@ function applyThemePref(pref: string): void {
   sse.broadcast(shellStateRecord(connected, themePref))
 }
 
-function shutdown(): void {
-  if (exiting) return
+/** 停机：关入站连接与主端口；返回的 promise 落地后由 stdio 形态收口退出（inproc / worker 由宿主 teardown）。 */
+function shutdown(): Promise<void> {
+  if (exiting) return Promise.resolve()
   exiting = true
   inbound.close()
-  host.failAll('transport_failed')
   const server = uiServer
   uiServer = null
-  const finish = (): void => setTimeout(() => process.exit(0), 10).unref?.()
-  if (server !== null) {
-    void server.close().then(finish, finish)
-  } else {
-    finish()
-  }
+  if (server === null) return Promise.resolve()
+  return server.close().then(
+    () => undefined,
+    () => undefined,
+  )
 }
 
-/** 构造服务实例：唯一方法为健康占位；反向调用应答经 `host.resolve` 结算。 */
+/** 构造服务实例：唯一方法为健康占位；反向调用应答由 SDK 的 `portLinks` 结算。 */
 function build(ctx: ServiceFactoryContext): ServiceInstance {
+  emitFrame = ctx.emit
   return createSdkService({
     pluginRoot: packageRootOf(import.meta.url),
     capability: CAPABILITY,
@@ -251,9 +254,11 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     },
     emit: ctx.emit,
     log,
-    intercept: (message) => host.resolve(message),
+    portLinks: [host],
     onDrain: () => shutdown(),
-    onClose: () => shutdown(),
+    onClose: () => {
+      void shutdown()
+    },
   })
 }
 

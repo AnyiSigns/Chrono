@@ -2,25 +2,17 @@
 // 清单（服务器配置 + 发现到的外部工具）已出世界：写即时落自有持久存储（④，边跑边追加），读从自有存储取。
 // 只返回值 / 事件；不落账、不读投影、不自取时钟。子进程生命周期事件经 events.ts 的持久出口上行。
 
-import { emitEvent } from './events.ts'
-import { log } from './log.ts'
 import { COMMANDS, IDENTITY } from './plugin.ts'
 import { externOnly, isRecord } from './plan.ts'
-import { McpRegistry } from './registry.ts'
-import { SecretsLink } from './secrets-link.ts'
+import type { McpRegistry } from './registry.ts'
 import { emptyBody, McpStore } from './store.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, Rec } from './types.ts'
 
-/** 反向调用链（服务 → 宿主 → secrets）：解析 auth_ref，明文只进子进程 env。 */
-export const SECRETS = new SecretsLink()
-
-/** 子进程表住内存（③ 可重算）；drain / 退出时由 main.ts 调 closeAll 终止全部外部子进程。 */
-export const REGISTRY = new McpRegistry(log, emitEvent, (authRef, callId) => SECRETS.resolve(authRef, callId))
-
-/** 服务依赖：自有清单存储（main 注入；单测可注入假存储）。 */
+/** 服务依赖：自有清单存储与外部服务器注册表（main 注入；单测可注入假实现）。 */
 export interface McpDeps {
   store: McpStore
+  registry: McpRegistry
 }
 
 /** 本插件自述（不回外部工具清单——清单权威 = owner 自有存储 `mcp.read`）。 */
@@ -68,7 +60,7 @@ async function describe(_args: Json, _env: CallEnv): Promise<HandlerResult> {
  */
 async function discover(_args: Json, env: CallEnv, deps: McpDeps, callId: string | null): Promise<HandlerResult> {
   const current = deps.store.read()
-  const outcome = await REGISTRY.discover(current, callId)
+  const outcome = await deps.registry.discover(current, callId)
   if (!outcome.changed) {
     return { value: externOnly({ ok: true, changed: false, ...outcome.summary }) }
   }
@@ -77,16 +69,16 @@ async function discover(_args: Json, env: CallEnv, deps: McpDeps, callId: string
 }
 
 /** `invoke(bag)`：bag = `{tool:"mcp.<server>.<tool>", tool_args}` → 路由到对应子进程。 */
-async function invoke(args: Json, _env: CallEnv, callId: string | null): Promise<HandlerResult> {
+async function invoke(args: Json, _env: CallEnv, deps: McpDeps, callId: string | null): Promise<HandlerResult> {
   if (!isRecord(args)) throw new BadArgsError('args must be an object')
   const tool = args['tool']
   if (typeof tool !== 'string' || tool.length === 0) throw new BadArgsError('tool required')
   const toolArgs = args['tool_args'] ?? args['args'] ?? args['arguments'] ?? {}
-  const value = await REGISTRY.invoke(tool, toolArgs, callId)
+  const value = await deps.registry.invoke(tool, toolArgs, callId)
   return { value }
 }
 
-/** 构造方法表（依赖注入：清单存储由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：清单存储与注册表由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: McpDeps): Record<string, Handler> {
   return {
     describe,
@@ -94,7 +86,8 @@ export function createHandlers(deps: McpDeps): Record<string, Handler> {
     write: (args: Json, env: CallEnv): Promise<HandlerResult> => Promise.resolve({ value: write(args, env, deps) }),
     discover: (args: Json, env: CallEnv, callId: string | null): Promise<HandlerResult> =>
       discover(args, env, deps, callId),
-    invoke,
+    invoke: (args: Json, env: CallEnv, callId: string | null): Promise<HandlerResult> =>
+      invoke(args, env, deps, callId),
   }
 }
 

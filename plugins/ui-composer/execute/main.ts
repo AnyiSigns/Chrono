@@ -43,7 +43,6 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     },
     emit: ctx.emit,
     log: LOG,
-    drainExitMs: 10,
   })
 }
 

@@ -1,6 +1,7 @@
 // 服务派发器与三形态入口：stdio 下起帧循环，inproc / worker 下由宿主 import 后直调。
 // 同一份派发逻辑，故三种 transport 对同一组调用产出逐字节一致的结果与事件。
 // manifest 从同包 plugin.json 派生；能力 / 方法 / args 形态门禁与错误映射集中在此。
+// 反向调用通道、并发方法声明、多能力类门禁与 drain 收口均由本模块吸收，插件只写方法实现。
 
 import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -8,11 +9,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseCallEnv } from './env.ts'
 import { isRecord } from './json.ts'
 import { declaredMethods, deriveManifest, readPluginJson } from './manifest.ts'
+import { settlePortLinks } from './port-link.ts'
 import { createFrameDecoder, writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'
 import { BadArgsError, ServiceError } from './types.ts'
 import type { Json, Rec } from './json.ts'
+import type { PortLink } from './port-link.ts'
 import type { ServiceManifest } from './manifest.ts'
-import type { Handler, ServiceEvent } from './types.ts'
+import type { CallContext, CallEnv, Handler, ServiceEvent } from './types.ts'
 
 /** 宿主 loader 传给同语言入口的上下文（与 assembly/service-host.ts 的 ServiceFactoryContext 同形）。 */
 export interface ServiceFactoryContext {
@@ -25,7 +28,7 @@ export interface ServiceFactoryContext {
 export interface ServiceConfig {
   /** 插件包根目录（含 `plugin.json`）。 */
   pluginRoot: string
-  /** 本服务的能力类名（缺声明时的回落）。 */
+  /** 本服务的能力类名（缺声明时的回落；门禁按帧内 `port` 逐能力类判定）。 */
   capability: string
   /** 方法表：方法名 → 处理器。 */
   handlers: Record<string, Handler>
@@ -35,14 +38,24 @@ export interface ServiceConfig {
   defaultState?: string
   /** 日志出口（stderr）；缺省以 identity 为前缀。 */
   log?: (line: string) => void
-  /** 帧进入派发前的拦截（反向应答结算等）；返回 true 表示已消费。 */
+  /**
+   * 反向调用通道：SDK 自动结算其应答帧（`port.result` / `port.error`），
+   * 并在 `drain` / 通道关闭时 `failAll`，插件无需自写 `intercept` 结算。
+   */
+  portLinks?: PortLink[]
+  /**
+   * 并发安全方法：这些方法的 `call` 脱出串行链、彼此可并发。
+   * 缺省读同包 `plugin.json` 的 `concurrent_methods`；两者皆无则全部串行。
+   */
+  concurrentMethods?: string[]
+  /** 帧进入派发前的拦截（插件自有扩展面）；返回 true 表示已消费。 */
   intercept?: (message: Rec) => boolean
-  /** `drain` 帧后的清理钩子（结算在途反向调用等）。 */
-  onDrain?: () => void
+  /** `reload` 帧钩子：数据热生效时重载插件自有配置；在回 `ack` 前调用。 */
+  onReload?: (gen: string) => void
+  /** `drain` 帧后的清理钩子（可异步；SDK 等它落地后才收口）。 */
+  onDrain?: () => void | Promise<void>
   /** 通道关闭 / stdin EOF 时的清理钩子。 */
   onClose?: () => void
-  /** `drain` 后延迟自退出的毫秒数；缺省不自退出（由 stdin EOF 收口）。 */
-  drainExitMs?: number
   /** 事件帧 id 前缀；缺省 `<identity>-evt`。 */
   eventIdPrefix?: string
 }
@@ -51,6 +64,8 @@ export interface ServiceConfig {
 export interface ServiceInstance {
   receive(message: Json): void
   close(): void
+  /** `drain` 清理完成后 resolve；stdio 形态据此在 `bye` 后收口退出。 */
+  readonly drained?: Promise<void>
 }
 
 /** 日志出口工厂：统一 `[<prefix>] ` 前缀，日志只走 stderr。 */
@@ -81,6 +96,13 @@ export function isDirectRun(importMetaUrl: string): boolean {
   return argv1 !== undefined && importMetaUrl === pathToFileURL(argv1).href
 }
 
+/** 取字符串数组；形态不合回落空表。 */
+function stringList(value: Json | undefined): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : []
+}
+
 /**
  * 构造一个与 transport 无关的服务实例。
  * stdio 由 `runStdio` 喂入 stdin 帧；inproc / worker 由宿主把帧交给 `receive`。
@@ -88,12 +110,22 @@ export function isDirectRun(importMetaUrl: string): boolean {
 export function createService(config: ServiceConfig): ServiceInstance {
   const plugin = readPluginJson(config.pluginRoot)
   const manifest = deriveManifest(plugin, config.capability, config.defaultState ?? 'recomputable')
-  const declared = declaredMethods(manifest, config.capability, config.handlers)
+  const declaredCache = new Map<string, Set<string>>()
+  const portLinks = config.portLinks ?? []
+  const concurrentMethods = new Set<string>(
+    config.concurrentMethods ?? stringList(plugin['concurrent_methods']),
+  )
   const emit = config.emit
   const log = config.log ?? makeLogger(manifest.identity)
   const eventIdPrefix = config.eventIdPrefix ?? `${manifest.identity}-evt`
   let eventSeq = 0
   let chain: Promise<void> = Promise.resolve()
+  let resolveDrained: () => void = () => {}
+  const drained = new Promise<void>((resolve) => {
+    resolveDrained = resolve
+  })
+  /** 脱链并发调用的在途集合：drain 前等它们落地。 */
+  const inflight = new Set<Promise<void>>()
 
   function sendError(id: string, code: string, message: string): void {
     emit({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'error', ok: false, code, message })
@@ -112,6 +144,25 @@ export function createService(config: ServiceConfig): ServiceInstance {
     }
   }
 
+  /** 某能力类声明的方法集：plugin.json 按能力类声明优先，缺声明回落处理器表键集。 */
+  function declaredFor(port: string): Set<string> {
+    let set = declaredCache.get(port)
+    if (set === undefined) {
+      set = declaredMethods(manifest, port, config.handlers)
+      declaredCache.set(port, set)
+    }
+    return set
+  }
+
+  /** 帧是否声明为并发安全方法调用：只认 `call` 帧；声明集来自 `concurrent_methods`。 */
+  function isConcurrentCall(message: Rec): boolean {
+    return (
+      message['kind'] === 'call' &&
+      typeof message['method'] === 'string' &&
+      concurrentMethods.has(message['method'])
+    )
+  }
+
   async function handleCall(message: Rec): Promise<void> {
     const id = typeof message['id'] === 'string' ? (message['id'] as string) : ''
     const port = message['port']
@@ -124,7 +175,7 @@ export function createService(config: ServiceConfig): ServiceInstance {
       sendError(id, 'unresolved_cap', `unknown capability ${port}`)
       return
     }
-    if (!declared.has(method)) {
+    if (!declaredFor(port).has(method)) {
       sendError(id, 'unknown_method', `unknown method ${method}`)
       return
     }
@@ -139,8 +190,9 @@ export function createService(config: ServiceConfig): ServiceInstance {
       return
     }
     const env = parseCallEnv(message['env'])
+    const call: CallContext = { callId: id, port, method, env }
     try {
-      const result = await handler(rawArgs ?? null, env)
+      const result = await handler(rawArgs ?? null, env, call)
       sendEvents(result.events)
       emit({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'result', ok: true, value: result.value })
     } catch (err) {
@@ -157,6 +209,25 @@ export function createService(config: ServiceConfig): ServiceInstance {
     }
   }
 
+  /** 脱链并发调用：不排串行链，但登记在途供 drain 等待。 */
+  function dispatchConcurrent(message: Rec): void {
+    const pending = handleCall(message)
+    inflight.add(pending)
+    void pending.finally(() => inflight.delete(pending))
+  }
+
+  async function handleDrain(message: Rec): Promise<void> {
+    await Promise.allSettled([...inflight])
+    emit({ v: SERVICE_PROTOCOL_VERSION, id: message['id'], kind: 'bye' })
+    for (const link of portLinks) link.failAll()
+    try {
+      await config.onDrain?.()
+    } catch (err) {
+      log(`onDrain failed: ${(err as Error).message}`)
+    }
+    resolveDrained()
+  }
+
   function handleOne(message: Rec): void | Promise<void> {
     switch (message['kind']) {
       case 'hello':
@@ -166,16 +237,12 @@ export function createService(config: ServiceConfig): ServiceInstance {
         emit({ v: SERVICE_PROTOCOL_VERSION, id: message['id'], kind: 'pong', ok: true })
         return
       case 'reload':
+        config.onReload?.(typeof message['gen'] === 'string' ? message['gen'] : '')
         log(`reload gen=${typeof message['gen'] === 'string' ? message['gen'] : '?'}`)
         emit({ v: SERVICE_PROTOCOL_VERSION, id: message['id'], kind: 'ack' })
         return
       case 'drain':
-        emit({ v: SERVICE_PROTOCOL_VERSION, id: message['id'], kind: 'bye' })
-        config.onDrain?.()
-        if (config.drainExitMs !== undefined) {
-          setTimeout(() => process.exit(0), config.drainExitMs).unref?.()
-        }
-        return
+        return handleDrain(message)
       case 'call':
         return handleCall(message)
       default:
@@ -185,7 +252,12 @@ export function createService(config: ServiceConfig): ServiceInstance {
 
   function handle(message: Json): void {
     if (!isRecord(message)) return
+    if (portLinks.length > 0 && settlePortLinks(portLinks, message)) return
     if (config.intercept?.(message) === true) return
+    if (isConcurrentCall(message)) {
+      dispatchConcurrent(message)
+      return
+    }
     chain = chain
       .then(() => handleOne(message))
       .catch((err: unknown) => log(`handle error: ${(err as Error).message}`))
@@ -196,35 +268,69 @@ export function createService(config: ServiceConfig): ServiceInstance {
       handle(message)
     },
     close(): void {
+      for (const link of portLinks) link.failAll()
       config.onClose?.()
     },
+    drained,
   }
+}
+
+/** stdio 形态选项。 */
+export interface RunStdioOptions {
+  /** 日志出口。 */
+  log?: (line: string) => void
+  /**
+   * 坏帧（坏 JSON / 超长帧）处理：`ignore`（缺省）记日志后继续，`exit` fail-closed 退出非 0。
+   * 缺省保持存量行为；需要「协议损坏即退出」的服务显式选 `exit`。
+   */
+  onMalformedFrame?: 'ignore' | 'exit'
 }
 
 /**
  * stdio 形态入口：起 stdin 帧循环、stdout 只发协议帧，stdin EOF / 管道断开即自退出。
+ * 收到 `bye`（drain 收口）后，等实例的 drain 清理落地再退出——进程生命周期归本形态，
+ * 故 inproc / worker 的 `createService` 不退出进程（由宿主的执行体 teardown 负责）。
  * @param build 用 stdio 出口与进程 env 构造服务实例的工厂
- * @param options 日志出口
+ * @param options 日志出口与坏帧处理
  */
 export function runStdio(
   build: (ctx: ServiceFactoryContext) => ServiceInstance,
-  options: { log?: (line: string) => void } = {},
+  options: RunStdioOptions = {},
 ): void {
   const log = options.log ?? makeLogger('service')
-  const instance = build({ emit: writeFrame, env: loaderEnvFromProcess() })
+  const failClosed = options.onMalformedFrame === 'exit'
+  let instance: ServiceInstance | null = null
+  let closing = false
+  const emit = (message: Json): void => {
+    if (instance !== null && !closing && isRecord(message) && message['kind'] === 'bye') {
+      closing = true
+      const done = instance.drained ?? Promise.resolve()
+      void done.then(
+        () => process.exit(0),
+        () => process.exit(0),
+      )
+    }
+    writeFrame(message)
+  }
+  instance = build({ emit, env: loaderEnvFromProcess() })
   const decoder = createFrameDecoder()
   process.stdin.on('data', (chunk: Buffer) => {
-    let messages: Json[]
-    try {
-      messages = decoder.push(chunk)
-    } catch (err) {
-      log(`bad frame: ${(err as Error).message}`)
-      return
+    // 坏 JSON 帧已被解码器消费，重试可继续解同块内剩余帧；超长帧未被消费，不可重试。
+    let pending: Buffer | null = chunk
+    while (pending !== null) {
+      try {
+        const messages = decoder.push(pending)
+        for (const message of messages) instance?.receive(message)
+        pending = null
+      } catch (err) {
+        log(`bad frame: ${(err as Error).message}`)
+        if (failClosed) process.exit(1)
+        pending = (err as Error).message === 'frame_too_large' ? null : Buffer.alloc(0)
+      }
     }
-    for (const message of messages) instance.receive(message)
   })
   process.stdin.on('end', () => {
-    instance.close()
+    instance?.close()
     process.exit(0)
   })
   process.stdin.on('close', () => process.exit(0))

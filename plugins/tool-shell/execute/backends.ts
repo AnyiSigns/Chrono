@@ -3,7 +3,7 @@
 // 以及 `sandbox.exec` / `secrets.resolve` 的后端适配。失败作数据（ToolError），不抛未捕获错误、不断通道。
 
 import { PortLink, isRecord } from 'plugin-sdk'
-import type { Json, PortOutcome, Rec } from 'plugin-sdk'
+import type { Json, Rec } from 'plugin-sdk'
 import { ToolError } from './types.ts'
 
 /** 反向调用等待上限；宿主自身另有调用超时（缺省 30s），此处作通道兜底。 */
@@ -24,31 +24,9 @@ export const MAX_CAPS_TIMEOUT_MS = HOST_METHOD_TIMEOUT_MS - REVERSE_TIMEOUT_MARG
 /** Node 定时器可接受的最大延时；超过会溢出为 1ms（反向等待必须 clamp 在此之下）。 */
 export const TIMER_MAX_MS = 2 ** 31 - 1
 
-/** 通道兜底：SDK PortLink 的单次等待设在上界之上，逐次超时由调用方 race 控制。 */
+/** 通道兜底：逐次等待由调用方经 `PortLink.call` 的 `timeoutMs` 覆盖，通道缺省设在上界。 */
 export function createLink(write: (message: Json) => void): PortLink {
   return new PortLink({ write, idPrefix: 'tool-shell', timeoutMs: HOST_METHOD_TIMEOUT_MS })
-}
-
-/** 单次反向等待：超时作数据失败（码 `tool_timeout`），不悬挂。 */
-async function callWithTimeout(
-  link: PortLink,
-  port: string,
-  method: string,
-  args: Rec,
-  timeoutMs: number,
-): Promise<PortOutcome> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const expired = new Promise<PortOutcome>((resolve) => {
-    timer = setTimeout(() => {
-      resolve({ ok: false, code: 'tool_timeout', message: `${port}.${method} did not answer in time` })
-    }, timeoutMs)
-    timer.unref?.()
-  })
-  try {
-    return await Promise.race([link.call(port, method, args), expired])
-  } finally {
-    clearTimeout(timer)
-  }
 }
 
 /** 执行后端抽象：生产环境是反向调用 `sandbox.exec`，单测注入假后端。 */
@@ -70,7 +48,7 @@ export class RemoteExec implements ExecBackend {
   }
 
   async exec(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
-    const outcome = await callWithTimeout(this.link, 'sandbox', 'exec', args, timeoutMs)
+    const outcome = await this.link.call('sandbox', 'exec', args, { timeoutMs })
     if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
     if (!isRecord(outcome.value)) throw new ToolError('tool_failed', 'sandbox.exec returned a non-object')
     return outcome.value
@@ -86,7 +64,9 @@ export class RemoteSecrets implements SecretsBackend {
   }
 
   async resolve(authRef: Rec): Promise<string> {
-    const outcome = await callWithTimeout(this.link, 'secrets', 'resolve', { auth_ref: authRef }, DEFAULT_CALL_TIMEOUT_MS)
+    const outcome = await this.link.call('secrets', 'resolve', { auth_ref: authRef }, {
+      timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+    })
     if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
     if (typeof outcome.value !== 'string' || outcome.value.length === 0) {
       throw new ToolError('secret_missing', 'secrets.resolve returned no value')

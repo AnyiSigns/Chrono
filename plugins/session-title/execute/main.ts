@@ -21,9 +21,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers({ config: loadBaseConfig(), model: new RemoteModel(link) }),
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => link.settle(message),
-    onDrain: () => link.failAll(),
-    onClose: () => link.failAll(),
+    portLinks: [link],
   })
 }
 

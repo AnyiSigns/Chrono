@@ -21,9 +21,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers({ store: new TodoStore(new RemoteStorage(link)) }),
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => link.settle(message),
-    onDrain: () => link.failAll(),
-    onClose: () => link.failAll(),
+    portLinks: [link],
   })
 }
 

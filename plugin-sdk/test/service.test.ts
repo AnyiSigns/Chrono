@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createService } from '../service.ts'
+import { PortLink } from '../port-link.ts'
 import { BadArgsError, ServiceError } from '../types.ts'
 import type { Json, Rec } from '../json.ts'
 import type { Handler } from '../types.ts'
@@ -86,7 +87,11 @@ describe('服务派发器', () => {
     const root = pluginRoot()
     try {
       let drained = 0
-      const { instance, sent } = build(root, { onDrain: () => (drained += 1) })
+      const { instance, sent } = build(root, {
+        onDrain: () => {
+          drained += 1
+        },
+      })
       instance.receive({ id: 'p', kind: 'probe' })
       instance.receive({ id: 'r', kind: 'reload', gen: 'g2' })
       instance.receive({ id: 'd', kind: 'drain', deadline_ms: 100 })
@@ -208,6 +213,125 @@ describe('服务派发器', () => {
       await new Promise((resolve) => setTimeout(resolve, 5))
       expect(consumed).toHaveLength(1)
       expect(sent).toHaveLength(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('call 身份上下文：callId / port / method / env 传入处理器', async () => {
+    const root = pluginRoot()
+    try {
+      let seen: Rec | null = null
+      const { instance } = build(root, {
+        handlers: {
+          echo: (args, env, call) => {
+            seen = { args, env, call } as unknown as Rec
+            return { value: null, events: [] }
+          },
+        },
+      })
+      instance.receive({
+        v: '1',
+        id: 'call-9',
+        kind: 'call',
+        port: 'toy',
+        method: 'echo',
+        args: { a: 1 },
+        env: { run: 'r', thread: null, now: 5, emitter: 'caller' },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(seen).not.toBeNull()
+      const call = (seen as unknown as Rec)['call'] as Rec
+      expect(call['callId']).toBe('call-9')
+      expect(call['port']).toBe('toy')
+      expect(call['method']).toBe('echo')
+      expect((call['env'] as Rec)['run']).toBe('r')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('多能力类门禁：按帧内 port 取各自声明的方法集', async () => {
+    const root = pluginRoot({
+      implements: ['alpha', 'beta'],
+      methods: { alpha: ['a'], beta: ['b'] },
+    })
+    try {
+      const sent: Rec[] = []
+      const instance = createService({
+        pluginRoot: root,
+        capability: 'alpha',
+        emit: (message) => sent.push(message as Rec),
+        handlers: {
+          a: () => ({ value: 'a', events: [] }),
+          b: () => ({ value: 'b', events: [] }),
+        },
+      })
+      instance.receive({ v: '1', id: 'c1', kind: 'call', port: 'beta', method: 'b', args: {} })
+      instance.receive({ v: '1', id: 'c2', kind: 'call', port: 'alpha', method: 'b', args: {} })
+      instance.receive({ v: '1', id: 'c3', kind: 'call', port: 'beta', method: 'a', args: {} })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(sent.map((message) => [message['kind'], message['value'] ?? message['code']])).toEqual([
+        ['result', 'b'],
+        ['error', 'unknown_method'],
+        ['error', 'unknown_method'],
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('concurrent_methods 脱链派发：长调用挂起时并发方法仍可完成', async () => {
+    const root = pluginRoot({ methods: { toy: ['echo', 'slow'] } })
+    try {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const sent: Rec[] = []
+      const instance = createService({
+        pluginRoot: root,
+        capability: 'toy',
+        concurrentMethods: ['echo'],
+        emit: (message) => sent.push(message as Rec),
+        handlers: {
+          slow: async () => {
+            await gate
+            return { value: 'slow', events: [] }
+          },
+          echo: () => ({ value: 'echo', events: [] }),
+        },
+      })
+      // slow 排串行链并挂起；echo 声明并发，应立即完成而不等 slow。
+      instance.receive({ v: '1', id: 's', kind: 'call', port: 'toy', method: 'slow', args: {} })
+      instance.receive({ v: '1', id: 'e', kind: 'call', port: 'toy', method: 'echo', args: {} })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(sent.map((message) => message['id'])).toEqual(['e'])
+      release()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(sent.map((message) => message['id']).sort()).toEqual(['e', 's'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('portLinks 自动结算反向应答，并在 drain / close 时 failAll', async () => {
+    const root = pluginRoot()
+    try {
+      const frames: Rec[] = []
+      const link = new PortLink({
+        write: (message) => frames.push(message as Rec),
+        idPrefix: 'toy',
+      })
+      const { instance } = build(root, { portLinks: [link] })
+      const pending = link.call('dep', 'ping', {})
+      const frameId = frames[0]['id'] as string
+      instance.receive({ v: '1', kind: 'port.result', id: frameId, ok: true, value: 1 })
+      expect(await pending).toEqual({ ok: true, value: 1 })
+      const held = link.call('dep', 'ping', {})
+      instance.receive({ v: '1', id: 'd', kind: 'drain', deadline_ms: 100 })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(await held).toEqual({ ok: false, code: 'transport_failed', message: 'link closed' })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

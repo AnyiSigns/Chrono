@@ -8,10 +8,9 @@ import { HostLink } from './host.ts'
 import { createHandlers } from './methods.ts'
 import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
-// 多能力类插件：SDK 的 capability 只用于方法门禁的单键回落。本插件 plugin.json 声明了
-// `plugin` 与 `plugin-admin` 两个能力类，故传一个非 methods 键的值，使门禁回落为处理器表键集
-// （两能力类方法的并集）；能力类归属仍由 plugin.json.implements 决定。
-const CAPABILITY = 'plugin+plugin-admin'
+// 多能力类插件：门禁按帧内 `port` 逐能力类取 plugin.json.methods 的方法集；
+// capability 只作缺声明时的回落，取主能力类即可。
+const CAPABILITY = 'plugin'
 const LOG = makeLogger('plugin-admin')
 
 /** 构造服务实例：反向调用通道 + 宿主调用包装，均由本插件提供。 */
@@ -23,9 +22,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers(new HostLink(link)),
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => link.settle(message),
-    onDrain: () => link.failAll('transport_failed'),
-    onClose: () => link.failAll('transport_failed'),
+    portLinks: [link],
   })
 }
 

@@ -5,6 +5,7 @@
   "methods": {
     "chat": ["send", "history", "resume"]
   },
+  "concurrent_methods": ["history"],
   "pins": {
     "session": "session",
     "input": "input",

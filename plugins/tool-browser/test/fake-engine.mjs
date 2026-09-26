@@ -92,36 +92,41 @@ export async function createEngine(_config, _handle) {
   return makeFakeEngine()
 }
 
-/** 造一个假反向调用通道：默认应答 capabilities 与 asset.put，可注入错误。 */
+/** 造一个假 SDK 反向调用通道：默认应答 capabilities 与 asset.put，可注入结构化失败。 */
 export function makeFakeLink(options = {}) {
   const calls = []
   return {
     calls,
-    async call(port, method, args) {
-      calls.push({ port, method, args })
+    async call(port, method, args, callOptions = {}) {
+      calls.push({ port, method, args, callId: callOptions.callId ?? null })
       if (port === 'sandbox' && method === 'capabilities') {
-        if (options.sandboxError !== undefined) throw options.sandboxError
-        return (
-          options.capabilities ?? {
-            platform: 'test',
-            implementations: [],
-            default_impl: 'native',
-            enforcement: { fsop: 'in_process', exec_fs: 'none', net: 'declaration' },
-          }
-        )
-      }
-      if (port === 'host' && method === 'asset.put') {
-        if (options.assetError !== undefined) throw options.assetError
-        if (options.asset !== undefined) return options.asset
-        const bytes = Buffer.from(args.bytes, 'base64')
+        if (options.sandboxError !== undefined) return { ok: false, ...options.sandboxError }
         return {
-          kind: 'asset',
-          sha256: createHash('sha256').update(bytes).digest('hex'),
-          mime: args.mime,
-          size: bytes.length,
+          ok: true,
+          value:
+            options.capabilities ?? {
+              platform: 'test',
+              implementations: [],
+              default_impl: 'native',
+              enforcement: { fsop: 'in_process', exec_fs: 'none', net: 'declaration' },
+            },
         }
       }
-      throw new ToolError('unresolved_cap', `no fake handler for ${port}.${method}`)
+      if (port === 'host' && method === 'asset.put') {
+        if (options.assetError !== undefined) return { ok: false, ...options.assetError }
+        if (options.asset !== undefined) return { ok: true, value: options.asset }
+        const bytes = Buffer.from(args.bytes, 'base64')
+        return {
+          ok: true,
+          value: {
+            kind: 'asset',
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            mime: args.mime,
+            size: bytes.length,
+          },
+        }
+      }
+      return { ok: false, code: 'unresolved_cap', message: `no fake handler for ${port}.${method}` }
     },
   }
 }

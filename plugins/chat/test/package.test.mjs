@@ -27,6 +27,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'concurrent_methods',
   'pins',
   'start',
   'protocol',
@@ -44,6 +45,7 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/wiring.json')
   assert.deepEqual(decl.implements, ['chat'])
   assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume'] })
+  assert.deepEqual(decl.concurrent_methods, ['history'])
   assert.deepEqual(decl.pins, {
     session: 'session',
     input: 'input',

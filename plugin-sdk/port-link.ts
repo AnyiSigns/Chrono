@@ -23,6 +23,14 @@ export interface PortLinkOptions {
   idPrefix?: string
 }
 
+/** 单次反向调用的覆盖项：回带发起帧 id 与本次等待上限。 */
+export interface PortCallOptions {
+  /** 发起 `call` 帧 id；宿主据此把本次反向调用归属到正确回合（并发在途不串台）。 */
+  callId?: string | null
+  /** 本次等待上限；缺省用通道构造时的 `timeoutMs`。 */
+  timeoutMs?: number
+}
+
 /** 反向调用通道：`call` 发 `port.call`，`settle` 结算宿主回帧。 */
 export class PortLink implements PortCaller {
   private readonly pending = new Map<string, PendingCall>()
@@ -37,18 +45,22 @@ export class PortLink implements PortCaller {
     this.idPrefix = options.idPrefix ?? 'port'
   }
 
-  call(port: string, method: string, args: Rec): Promise<PortOutcome> {
+  call(port: string, method: string, args: Rec, options: PortCallOptions = {}): Promise<PortOutcome> {
     this.seq += 1
     const id = `${this.idPrefix}-${this.seq}`
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs
     return new Promise<PortOutcome>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         resolve({ ok: false, code: 'transport_failed', message: `${port}.${method} timeout` })
-      }, this.timeoutMs)
+      }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, timer })
+      const frame: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args }
+      const callId = options.callId
+      if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
       try {
-        this.write({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args })
+        this.write(frame)
       } catch (err) {
         clearTimeout(timer)
         this.pending.delete(id)
@@ -57,14 +69,17 @@ export class PortLink implements PortCaller {
     })
   }
 
-  /** 宿主侧应答入口：`port.result` / `port.error` 按 id 结算；返回是否已消费该帧。 */
+  /**
+   * 宿主侧应答入口：`port.result` / `port.error` 按 id 结算；返回是否已消费该帧。
+   * 只认本通道登记过的 id——多条反向通道共存时各链只结算自己的应答，不吞并他人。
+   */
   settle(message: Rec): boolean {
     const kind = message['kind']
     if (kind !== 'port.result' && kind !== 'port.error') return false
     const id = message['id']
-    if (typeof id !== 'string') return true
+    if (typeof id !== 'string') return false
     const entry = this.pending.get(id)
-    if (entry === undefined) return true
+    if (entry === undefined) return false
     this.pending.delete(id)
     clearTimeout(entry.timer)
     if (kind === 'port.result') {
@@ -87,4 +102,15 @@ export class PortLink implements PortCaller {
     }
     this.pending.clear()
   }
+}
+
+/**
+ * 依次尝试用多条反向通道结算同一帧：命中即返回 true（该帧归其登记通道）。
+ * 多条链共存时由 `createService` 的 `portLinks` 调用，无需插件自写逐一结算。
+ */
+export function settlePortLinks(links: readonly PortLink[], message: Rec): boolean {
+  for (const link of links) {
+    if (link.settle(message)) return true
+  }
+  return false
 }

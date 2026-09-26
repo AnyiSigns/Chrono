@@ -7,7 +7,7 @@ import { BrowserUnsupportedError } from './engine/types.ts'
 import { assertNetAllowed, sandboxNetEnforcement } from './net.ts'
 import { BadArgsError, ERROR_CODES, ToolError } from './types.ts'
 import type { CallEnv, Json, Rec } from './types.ts'
-import type { PortLink } from './link.ts'
+import type { PortLink } from 'plugin-sdk'
 import type { SessionManager } from './sessions.ts'
 
 /** invoke 依赖：会话表 + 反向调用通道（生产走 stdio，单测注入假 link）。 */
@@ -78,8 +78,9 @@ async function guardNet(
   // `enforcement.net = "declaration"` 是与本模型一致的强制口径。若 sandbox 自述
   // 明确「不强制 net」（none），则无任何 net 强制基础，fail-closed 拒绝；
   // 自述缺失 / 未知（老 sandbox）以本插件声明级判定为准，不静默吞掉错误。
-  const capabilities = await ctx.link.call('sandbox', 'capabilities', {}, callId)
-  if (sandboxNetEnforcement(capabilities) === 'none') {
+  const outcome = await ctx.link.call('sandbox', 'capabilities', {}, { callId })
+  if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
+  if (sandboxNetEnforcement(outcome.value) === 'none') {
     throw new ToolError('net_denied', 'sandbox reports no net enforcement')
   }
 }
@@ -117,7 +118,14 @@ function assetError(err: unknown): ToolError {
 async function putAsset(link: PortLink, mime: string, bytes: Buffer, callId: string | null): Promise<Json> {
   let value: Json
   try {
-    value = await link.call('host', 'asset.put', { mime, bytes: bytes.toString('base64') }, callId)
+    const outcome = await link.call(
+      'host',
+      'asset.put',
+      { mime, bytes: bytes.toString('base64') },
+      { callId },
+    )
+    if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
+    value = outcome.value
   } catch (err) {
     throw assetError(err)
   }

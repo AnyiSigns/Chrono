@@ -785,7 +785,7 @@ test('错误不崩进程：坏 args / 未知方法后仍可正常服务', async 
   }
 })
 
-test('坏帧（非法 JSON）→ 帧循环记日志后继续服务（帧循环归 SDK）', async () => {
+test('坏帧（非法 JSON）→ fail-closed 退出非 0（与原生服务同口径）', async () => {
   const drv = startService()
   await drv.hello()
   const body = Buffer.from('{not json', 'utf8')
@@ -793,7 +793,5 @@ test('坏帧（非法 JSON）→ 帧循环记日志后继续服务（帧循环�
   frame.writeUInt32BE(body.length, 0)
   body.copy(frame, 4)
   drv.child.stdin.write(frame)
-  assert.equal((await drv.request('probe', {}, 'pong')).ok, true)
-  drv.close()
-  assert.equal(await drv.exit, 0)
+  assert.equal(await drv.exit, 1)
 })

@@ -26,8 +26,8 @@ export {
   isErrorValue,
   mergeDirectives,
 } from './plan.ts'
-export { PORT_CALL_TIMEOUT_MS, PortLink } from './port-link.ts'
-export type { PortLinkOptions } from './port-link.ts'
+export { PORT_CALL_TIMEOUT_MS, PortLink, settlePortLinks } from './port-link.ts'
+export type { PortCallOptions, PortLinkOptions } from './port-link.ts'
 export {
   createService,
   isDirectRun,
@@ -36,9 +36,15 @@ export {
   packageRootOf,
   runStdio,
 } from './service.ts'
-export type { ServiceConfig, ServiceFactoryContext, ServiceInstance } from './service.ts'
+export type {
+  RunStdioOptions,
+  ServiceConfig,
+  ServiceFactoryContext,
+  ServiceInstance,
+} from './service.ts'
 export { BadArgsError, ServiceError } from './types.ts'
 export type {
+  CallContext,
   CallEnv,
   Handler,
   HandlerResult,

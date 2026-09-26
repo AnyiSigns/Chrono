@@ -64,6 +64,7 @@
 | `schema` | 身份**自述 / 数据契约**：指向包内 `schema/` 里的文件（如 `schema/plugin.schema.json`）；入世解析成 `Identity.schema` 哈希。它是**数据、非特权**（`kernel.md` §四）；宿主对 `plugin.json` 形状的元校验另有一份宿主侧 schema。**可省略**：无世界数据的 UI 插件可**零 schema**（直接省略字段，不得以 `null` 占位）；省略时宿主机械提供最小默认 schema def `{"type":"object"}` 作 `Identity.schema` 哈希（内核要求身份必有 schema），不解释业务 |
 | `implements` | 提供的能力类（能力类名） |
 | `methods` | 能力类 → 方法名 |
+| `concurrent_methods` | **可省略**：声明为并发安全的方法名数组（SDK 消费）。这些方法的 `call` 脱出服务串行链、彼此可并发；缺省 = 全部串行。只对「纯查询、无插件内可变状态、不发世界写计划」的方法声明，误声明会破坏有先后依赖的状态 |
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`）。`transport` 为 `inproc` / `worker` 时，`start` 是**同语言入口模块路径**（相对物化目录，如 `execute/main.mjs`），不是 shell 命令 |
 | `transport` | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。**可省略**（缺省 = `stdio`，存量行为不变）。`stdio` 下宿主 spawn 子进程并接管其 stdin/stdout；`inproc` 下宿主把 `start` 指向的同语言入口**动态载入宿主进程同一线程**直调；`worker` 下宿主用 `worker_threads` 载入该入口（独立堆、结构化克隆通信）——三者都**不开端口**，`inproc` / `worker` 也**不走 stdio**。`inproc` / `worker` 之间**无缺省**，须显式声明其一，且只对同语言（TS/JS）入口成立：`start` 含空白 / 逃逸路径 / 非 JS 扩展名即入世拒 `bad_plugin_decl`。**代价**：`inproc` 与宿主同线程，插件崩溃会**带走宿主**（`worker` 有独立堆，崩溃只收该分支），故 `inproc` 默认不推荐。同进程插件一律载入宿主进程（或其起的 worker），**不存在「插件宿主子插件」**（那会要求父插件 import 子插件代码，违反红线 1 / 4） |

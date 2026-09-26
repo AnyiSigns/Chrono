@@ -21,9 +21,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers({ store: QuestionStore.open(ctx.env), input: link }),
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => link.settle(message),
-    onDrain: () => link.failAll(),
-    onClose: () => link.failAll(),
+    portLinks: [link],
     eventIdPrefix: 'question-evt',
   })
 }

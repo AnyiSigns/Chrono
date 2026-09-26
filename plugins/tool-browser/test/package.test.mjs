@@ -82,7 +82,6 @@ test('execute 源码齐全', () => {
     'execute/types.ts',
     'execute/config.ts',
     'execute/state-dir.ts',
-    'execute/link.ts',
     'execute/lifecycle.ts',
     'execute/creation.ts',
     'execute/net.ts',

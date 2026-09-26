@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { cleanModelTitle, fallbackTitle, normalizeWhitespace, resolveTitle, truncateCodePoints } from '../execute/title.ts'
 import { HARD_MAX_CHARS, loadBaseConfig, resolveConfig } from '../execute/config.ts'
+import { PortLink } from 'plugin-sdk'
 import { BackendError, RemoteModel } from '../execute/port-link.ts'
 
 test('truncateCodePoints：按码点截断，CJK 每字 = 1、不劈代理对', () => {
@@ -54,8 +55,9 @@ test('resolveConfig：args 覆盖可调项，字数上限钳制到 1..10', () =>
 })
 
 test('RemoteModel：单次调用超时作结构化失败（按 timeoutMs 提前收口）', async () => {
-  const neverResolving = { call: () => new Promise(() => {}) }
-  const model = new RemoteModel(neverResolving)
+  // 写帧为空实现：无应答，由 SDK PortLink 的逐次 timeoutMs 提前收口。
+  const link = new PortLink({ write: () => {}, timeoutMs: 30 })
+  const model = new RemoteModel(link)
   const started = Date.now()
   await assert.rejects(
     model.complete({ vendor: 'v', model: 'm' }, [{ role: 'user', content: 'x' }], 8, 30),

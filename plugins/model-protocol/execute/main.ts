@@ -23,9 +23,6 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     ctx.emit({ v: '1', id: `model-evt-${seq}`, kind: 'event', topic, payload })
   }
   const limiter = new RateLimiter(rateLimitFile(ctx.env))
-  const failAll = (): void => {
-    for (const link of links) link.failAll()
-  }
   return createSdkService({
     pluginRoot: packageRootOf(import.meta.url),
     capability: CAPABILITY,
@@ -33,15 +30,8 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers({ secrets, config, limiter, emit }),
     emit: ctx.emit,
     log: LOG,
-    // 两条链共存：SDK 的 settle 对任何 port.result / port.error 都返回 true（即使非本链 id），
-    // 故必须逐一结算、不可短路，否则后一条链的应答会被前一条吞掉而悬挂。
-    intercept: (message) => {
-      let consumed = false
-      for (const link of links) consumed = link.settle(message) || consumed
-      return consumed
-    },
-    onDrain: failAll,
-    onClose: failAll,
+    // 两条链共存：SDK 按各链登记的 id 路由结算，互不吞并；drain / 关闭时一并 failAll。
+    portLinks: links,
   })
 }
 

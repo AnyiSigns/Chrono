@@ -19,14 +19,29 @@
 | -------------- | ----------------------------------------------------------------------------------------- |
 | `wire.ts`      | 帧编解码（4 字节大端长度 + 规范 JSON）、`MAX_FRAME_BYTES`、入站 / 出站 kind 集合          |
 | `canonical.ts` | 规范序列化（键 code-unit 升序、剔除 undefined、-0 归一、最短往返数字）                    |
-| `manifest.ts`  | 读同包 `plugin.json` 派生 manifest                                                        |
+| `manifest.ts`  | 读同包 `plugin.json` 派生 manifest、按能力类取声明方法集                                  |
 | `service.ts`   | `createService` 派发器、`runStdio` 帧循环、`packageRootOf` / `isDirectRun` / `makeLogger` |
-| `port-link.ts` | 反向调用通道 `PortLink`（`port.call` / `port.result` / `port.error`）                     |
+| `port-link.ts` | 反向调用通道 `PortLink`（`port.call` / `port.result` / `port.error`）与 `settlePortLinks`  |
 | `plan.ts`      | 计划值 helper：`externOnly` / `errorValue` / `isErrorValue` / `mergeDirectives`           |
 | `json.ts`      | `Json` / `Rec` / `isRecord` / `asString`                                                  |
 | `env.ts`       | 调用帧 `env` 解析与 `nowOf`（固定时钟）                                                   |
-| `types.ts`     | `CallEnv` / `Handler` / `HandlerResult` / `PortCaller`、`ServiceError` / `BadArgsError`   |
+| `types.ts`     | `CallEnv` / `CallContext` / `Handler` / `HandlerResult` / `PortCaller`、错误类            |
 | `driver.ts`    | 测试驱动 `startService` + `request` + port bridge                                         |
+
+## 派发能力
+
+- **调用身份**：处理器第三参数 `CallContext` 带 `{ callId, port, method, env }`；`callId` 回带进反向调用的
+  `call_id` 字段，宿主据此把反向调用归属到正确回合（并发在途不串台）。只关心 `args` / `env` 的处理器可忽略它。
+- **反向调用**：`PortLink.call(port, method, args, { callId?, timeoutMs? })`——`callId` 回带发起帧，
+  `timeoutMs` 覆盖单次等待上限。`settle` 只结算本链登记过的 id，多链共存互不吞并；
+  `createService` 的 `portLinks` 自动结算应答并在 `drain` / 关闭时 `failAll`，插件不必自写 `intercept`。
+- **并发方法**：`plugin.json.concurrent_methods`（或 `createService.concurrentMethods`）声明的方法，
+  其 `call` 脱出串行链、彼此可并发；`drain` 会等脱链调用落地后再回 `bye`。
+- **多能力类**：门禁按帧内 `port` 逐能力类取 `plugin.json.methods` 声明的方法集，多能力类插件无需哨兵键。
+- **drain 收口**：stdio 形态在回 `bye` 后等 `onDrain`（可异步）落地再退出进程；inproc / worker 不退出进程，
+  由宿主的执行体 teardown 负责。
+- **坏帧处理**：`runStdio` 的 `onMalformedFrame` 缺省 `ignore`（记日志后继续，同块内剩余帧照常解）；
+  选 `exit` 则协议损坏即退非 0（fail-closed）。
 
 ## 插件侧约定
 

@@ -8,9 +8,17 @@
 import { McpConnection } from './mcp-client.ts'
 import type { McpTool } from './mcp-client.ts'
 import { canonicalString, isRecord } from './plan.ts'
-import { authRefOf } from './secrets-link.ts'
-import type { SecretResult } from './secrets-link.ts'
 import type { Json, Rec } from './types.ts'
+
+/** `secrets.resolve` 的返回：成功给明文，失败给结构化码（作数据，不抛错、不断通道）。 */
+export type SecretResult = { ok: true; value: string } | { ok: false; code: string; message: string }
+
+/** 把 env 值里的 auth_ref 形态解析出来；非引用返回 null。 */
+export function authRefOf(value: Json): Rec | null {
+  if (!isRecord(value)) return null
+  const ref = value['auth_ref']
+  return isRecord(ref) ? ref : null
+}
 
 /** 连续失败到该次数仍无法连接 → 隔离该服务器条目。 */
 export const DEFAULT_MAX_FAILURES = 3

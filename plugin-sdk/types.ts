@@ -15,6 +15,21 @@ export interface CallEnv {
   emitter: string | null
 }
 
+/**
+ * 一次调用的身份上下文：发起 `call` 帧的 id、逻辑端口与方法，外加调用帧 `env`。
+ * 处理器据 `callId` 让反向调用回带发起帧，宿主据此把反向调用归属到正确回合（并发在途不串台）。
+ */
+export interface CallContext {
+  /** 发起 `call` 帧 id（宿主填）；回带进反向 `port.call` 的 `call_id` 字段。 */
+  callId: string
+  /** 本次调用的逻辑端口（能力类名）。 */
+  port: string
+  /** 本次调用的方法名。 */
+  method: string
+  /** 与处理器第二个参数同值的调用帧 `env`。 */
+  env: CallEnv
+}
+
 /** 服务主动上行的事件（宿主只透传，不落账、不推进）。 */
 export interface ServiceEvent {
   topic: string
@@ -27,8 +42,15 @@ export interface HandlerResult {
   events: ServiceEvent[]
 }
 
-/** 一个方法：args 与 env 进、结果出；失败抛 `BadArgsError` 或 `ServiceError` 子类。 */
-export type Handler = (args: Json, env: CallEnv) => HandlerResult | Promise<HandlerResult>
+/**
+ * 一个方法：args、env 与调用身份上下文进、结果出；失败抛 `BadArgsError` 或 `ServiceError` 子类。
+ * 第三个参数是后加的，只关心 `args` / `env` 的处理器可忽略它（旧签名仍兼容）。
+ */
+export type Handler = (
+  args: Json,
+  env: CallEnv,
+  call: CallContext,
+) => HandlerResult | Promise<HandlerResult>
 
 /** 反向调用结果：成功带值，失败带稳定码（作数据，不抛）。 */
 export type PortOutcome = { ok: true; value: Json } | { ok: false; code: string; message: string }

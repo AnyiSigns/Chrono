@@ -28,16 +28,13 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers,
     emit: ctx.emit,
     log: LOG,
-    intercept: (message) => {
-      if (message['kind'] === 'reload') {
-        try {
-          policy = loadPolicy()
-          LOG('reload policy reloaded')
-        } catch (err) {
-          LOG(`reload policy failed, keeping current: ${(err as Error).message}`)
-        }
+    onReload: () => {
+      try {
+        policy = loadPolicy()
+        LOG('reload policy reloaded')
+      } catch (err) {
+        LOG(`reload policy failed, keeping current: ${(err as Error).message}`)
       }
-      return false
     },
   })
 }
@@ -45,6 +42,6 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
 export const createService = build
 
 if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
+  runStdio(build, { log: LOG, onMalformedFrame: 'exit' })
   LOG(`service started (pid ${process.pid}); tokenizer=${tokenizerVersion()} from ${nativeLoadedFrom() ?? '?'}`)
 }

@@ -5,7 +5,6 @@ import assert from 'node:assert/strict'
 import { invoke } from '../execute/invoke.ts'
 import { SessionManager } from '../execute/sessions.ts'
 import { BrowserUnsupportedError } from '../execute/engine/types.ts'
-import { ToolError } from '../execute/types.ts'
 import { makeFakeEngine, makeFakeLink } from './fake-engine.mjs'
 
 const CONFIG = {
@@ -125,9 +124,7 @@ test('net_denied：本插件声明级钳制越档即拒（all 需求下 severe /
 test('net_denied 透传：反向调用 sandbox 返回的错误原样回', async () => {
   const { ctx } = makeCtx()
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
-  ctx.link.call = async () => {
-    throw new ToolError('net_denied', 'denied by sandbox')
-  }
+  ctx.link.call = async () => ({ ok: false, code: 'net_denied', message: 'denied by sandbox' })
   const after = await invoke(bag({ action: 'navigate', session, url: 'https://x.test' }), ctx, env(1))
   assert.equal(after.error.code, 'net_denied')
   assert.equal(after.error.message, 'denied by sandbox')
@@ -179,17 +176,17 @@ test('navigate 危险 / 非 http(s) URL → navigate_failed（不做 host 过滤
 })
 
 test('资产面失败码归一：asset_too_large → binary_unsupported，未知码 → tool_failed，已知码透传', async () => {
-  const tooLarge = makeCtx({ link: { assetError: new ToolError('asset_too_large', 'over limit') } })
+  const tooLarge = makeCtx({ link: { assetError: { code: 'asset_too_large', message: 'over limit' } } })
   const tooLargeSession = (await invoke(bag({ action: 'open' }), tooLarge.ctx, env())).result.session
   const tooLargeShot = await invoke(bag({ action: 'screenshot', session: tooLargeSession }), tooLarge.ctx, env(1))
   assert.equal(tooLargeShot.error.code, 'binary_unsupported')
 
-  const weird = makeCtx({ link: { assetError: new ToolError('asset_missing', 'no such asset') } })
+  const weird = makeCtx({ link: { assetError: { code: 'asset_missing', message: 'no such asset' } } })
   const weirdSession = (await invoke(bag({ action: 'open' }), weird.ctx, env())).result.session
   const weirdShot = await invoke(bag({ action: 'screenshot', session: weirdSession }), weird.ctx, env(1))
   assert.equal(weirdShot.error.code, 'tool_failed')
 
-  const timeout = makeCtx({ link: { assetError: new ToolError('tool_timeout', 'slow host') } })
+  const timeout = makeCtx({ link: { assetError: { code: 'tool_timeout', message: 'slow host' } } })
   const timeoutSession = (await invoke(bag({ action: 'open' }), timeout.ctx, env())).result.session
   const timeoutShot = await invoke(bag({ action: 'screenshot', session: timeoutSession }), timeout.ctx, env(1))
   assert.equal(timeoutShot.error.code, 'tool_timeout')
