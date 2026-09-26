@@ -6,7 +6,6 @@ mod defaults;
 mod describe;
 mod diff;
 mod error;
-mod frames;
 mod hash;
 mod invoke;
 #[cfg(test)]
@@ -16,6 +15,6 @@ mod port;
 mod protocol;
 
 fn main() {
-    frames::log(&format!("service started (pid {})", std::process::id()));
+    plugin_sdk::log("tool-fs", &format!("service started (pid {})", std::process::id()));
     protocol::run_loop(std::io::stdin().lock(), std::io::stdout());
 }

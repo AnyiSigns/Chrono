@@ -4,7 +4,7 @@
 // 只依赖 node:net / node:crypto；日志走 stderr。
 
 import { connect } from 'node:net'
-import { createFrameDecoder, encodeFrame } from './frames.js'
+import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
 import { isRecord } from './types.js'
 
 /** 入站面客户端：单连接、自动重连、按 id 配对请求。 */

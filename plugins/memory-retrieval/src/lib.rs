@@ -7,7 +7,6 @@ pub mod config;
 pub mod decay;
 pub mod dedup;
 pub mod error;
-pub mod frames;
 pub mod hash;
 pub mod port;
 pub mod protocol;

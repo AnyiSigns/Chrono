@@ -3,7 +3,6 @@
 // stdin EOF / 管道断开即自退出。服务不读投影、无写通道。
 
 mod exec;
-mod frames;
 mod fsop;
 mod glob;
 mod grant;
@@ -14,6 +13,6 @@ mod tiers;
 mod win32;
 
 fn main() {
-    frames::log(&format!("service started (pid {})", std::process::id()));
+    plugin_sdk::log("sandbox", &format!("service started (pid {})", std::process::id()));
     protocol::run_loop(std::io::stdin().lock(), std::io::stdout());
 }

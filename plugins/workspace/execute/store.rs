@@ -110,7 +110,7 @@ fn append_record(path: Option<&std::path::Path>, run: Option<&str>, body: &Value
                 let _ = file.sync_all();
             }
         }
-        Err(err) => crate::frames::log(&format!("workspace store append failed: {err}")),
+        Err(err) => plugin_sdk::log("workspace", &format!("workspace store append failed: {err}")),
     }
 }
 

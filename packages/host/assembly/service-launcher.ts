@@ -6,7 +6,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
-import { provisionPluginSdk } from './sdk-provision.ts'
+import { provisionPluginSdk, provisionRustPluginSdk } from './sdk-provision.ts'
 import { ServiceLink } from '../service-link.ts'
 import { selectServiceHost } from './service-host.ts'
 import { ensurePluginDataDir } from '../plugin-data.ts'
@@ -102,6 +102,14 @@ export async function prepareService(
     blobsDir: deps.blobsDir,
   })
   if (cwd === null) throw new ServiceStartError('materialize_failed')
+  // Rust SDK 供给：物化树的 `Cargo.toml` 以 `../../plugin-sdk/rust` 依赖 SDK crate，
+  // 须在依赖恢复 / 构建（cargo 解析路径依赖）之前建好两级之上的 `plugin-sdk` 链接。
+  try {
+    provisionRustPluginSdk(cwd, deps.sdkDir)
+  } catch (err) {
+    if (err instanceof ServiceStartError) throw err
+    throw new ServiceStartError('deps_failed')
+  }
   // 大资产直拷先于依赖恢复：构建期输入（如 Rust include_bytes!）须在构建前就位
   if (deps.copyAssets !== undefined) {
     try {

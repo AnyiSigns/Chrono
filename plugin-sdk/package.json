@@ -21,7 +21,8 @@
     "port-link.ts",
     "service.ts",
     "types.ts",
-    "wire.ts"
+    "wire.ts",
+    "rust"
   ],
   "engines": {
     "node": ">=24"

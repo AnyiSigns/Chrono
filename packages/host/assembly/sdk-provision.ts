@@ -2,10 +2,20 @@
 // `plugin-sdk`，使插件服务裸导入 `plugin-sdk` 在任意宿主根下都能解析。
 // 用链接而非复制：SDK 以 TS 源码发布，Node 的类型剥离对 `node_modules` 下的文件不生效；
 // 链接经 realpath 指回框架安装目录（不在 `node_modules` 下），类型剥离与仓库内解析同路。
+// Rust 侧同理：物化树里的 `Cargo.toml` 以相对路径 `../../plugin-sdk/rust` 依赖 SDK crate，
+// 宿主在物化树两级之上建同名 `plugin-sdk` 链接，故该相对路径在任意宿主根下都解析到框架安装。
 // SDK 是插件侧库、不随插件入世、不进世界；宿主只按数据定位它，不 import 它
 // （packages/* 与 SDK 之间没有源码依赖）。
 
-import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,6 +48,39 @@ export function provisionPluginSdk(cwd: string, sdkDir: string = frameworkSdkDir
   removeExisting(target)
   mkdirSync(dirname(target), { recursive: true })
   symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir')
+}
+
+/**
+ * Rust SDK 供给：物化树的 `Cargo.toml` 以相对路径 `../../plugin-sdk/rust` 依赖 SDK crate，
+ * 故在物化目录两级之上建 `plugin-sdk` 链接（任意宿主根下 = `<宿主根>/state/runtime/plugin-sdk`），
+ * 使该相对路径解析到框架安装的 SDK crate。必须早于依赖恢复 / 构建（cargo 解析路径依赖时就要找到它）。
+ * 并发物化时多插件共写同一落点，故已指向框架安装则跳过、建链撞车时再复核一次。
+ */
+export function provisionRustPluginSdk(cwd: string, sdkDir: string = frameworkSdkDir()): void {
+  const source = resolve(sdkDir)
+  if (!existsSync(join(source, 'rust', 'Cargo.toml'))) {
+    throw new Error(`plugin_sdk_rust_missing:${source}`)
+  }
+  const target = resolve(cwd, '..', '..', SDK_PACKAGE_NAME)
+  if (isLinkTo(target, source)) return
+  removeExisting(target)
+  mkdirSync(dirname(target), { recursive: true })
+  try {
+    symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (err) {
+    // 并发下另一物化已建好同一落点：复核后放行，否则原样上抛。
+    if (!isLinkTo(target, source)) throw err
+  }
+}
+
+/** 落点是否已是指向 `source` 的链接（并发供给的幂等判据）。 */
+function isLinkTo(target: string, source: string): boolean {
+  try {
+    if (!lstatSync(target).isSymbolicLink()) return false
+    return realpathSync(target) === realpathSync(source)
+  } catch {
+    return false
+  }
 }
 
 /** 删除已有落点：链接只解链（不跟进目标，避免误删框架安装），普通目录才递归删。 */

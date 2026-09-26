@@ -2,9 +2,9 @@
 // manifest 与 plugin.json 同形；stdout 只发协议帧，日志走 stderr；stdin EOF / 管道断开即自退出。
 // 服务不读投影、无写通道；反向调用 embedding / memory / model 三个 pin。
 
-use memory_retrieval::{frames, protocol};
+use memory_retrieval::protocol;
 
 fn main() {
-    frames::log(&format!("service started (pid {})", std::process::id()));
+    plugin_sdk::log("memory-retrieval", &format!("service started (pid {})", std::process::id()));
     protocol::run_loop(std::io::stdin().lock(), std::io::stdout());
 }

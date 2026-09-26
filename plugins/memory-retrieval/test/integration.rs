@@ -9,7 +9,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
 
-use memory_retrieval::frames::{read_frame, write_frame};
+use plugin_sdk::{read_frame, write_frame};
 
 /// 线协议桥接的假后端数据。
 struct Bridge {

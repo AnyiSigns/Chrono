@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
 
-use evolve_metrics::frames::{read_frame, write_frame};
+use plugin_sdk::{read_frame, write_frame};
 
 struct Service {
     child: Child,

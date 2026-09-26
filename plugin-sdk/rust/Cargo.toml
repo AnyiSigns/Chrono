@@ -3,7 +3,7 @@ name = "plugin-sdk"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "插件服务 SDK（Rust 侧）：服务协议帧编解码与规范序列化"
+description = "插件服务 SDK（Rust 侧）：服务协议壳（帧编解码 / 规范序列化 / 帧循环 / 反向调用通道）"
 
 [lib]
 name = "plugin_sdk"

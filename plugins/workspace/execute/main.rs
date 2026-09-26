@@ -3,7 +3,6 @@
 // stdin EOF / 管道断开即自退出。服务不读投影、无写通道：body 与槽体由调用方随 args 传入。
 
 mod body;
-mod frames;
 mod pick;
 mod platform;
 mod protocol;
@@ -14,6 +13,6 @@ mod store;
 mod win32;
 
 fn main() {
-    frames::log(&format!("service started (pid {})", std::process::id()));
+    plugin_sdk::log("workspace", &format!("service started (pid {})", std::process::id()));
     protocol::run_loop(std::io::stdin().lock(), std::io::stdout());
 }

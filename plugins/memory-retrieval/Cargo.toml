@@ -21,4 +21,5 @@ name = "integration"
 path = "test/integration.rs"
 
 [dependencies]
+plugin-sdk = { path = "../../plugin-sdk/rust" }
 serde_json = "1"

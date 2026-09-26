@@ -3,7 +3,7 @@
 // 帧方向：服务发 `port.call`，宿主按发出者 pins 路由后回 `port.result` / `port.error`（按 id 配对）。
 // 失败作数据（结构化错误），不抛未捕获错误、不断通道；单测用可注入的假端口替换真实通道。
 
-import { writeFrame } from './frames.js'
+import { writeFrame } from 'plugin-sdk'
 
 /** 反向调用等待上限；宿主自身另有调用超时（缺省 30s），此处作通道兜底。 */
 export const PORT_CALL_TIMEOUT_MS = 30000

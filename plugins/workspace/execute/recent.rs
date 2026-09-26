@@ -95,7 +95,7 @@ pub fn record(dir: &Path, path: &str) -> Vec<String> {
     if let Ok(bytes) = serde_json::to_vec_pretty(&json!({ "recent": list })) {
         // 缓存是 ③：写失败不致命，下次重算即可；但仍记日志，不静默吞错。
         if let Err(err) = atomic_replace(&dir.join(RECENT_FILE), &bytes) {
-            crate::frames::log(&format!("recent.json write failed: {err}"));
+            plugin_sdk::log("workspace", &format!("recent.json write failed: {err}"));
         }
     }
     list

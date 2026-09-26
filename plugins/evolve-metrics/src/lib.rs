@@ -6,7 +6,6 @@ pub mod aggregate;
 pub mod bag;
 pub mod error;
 pub mod evidence;
-pub mod frames;
 pub mod hash;
 pub mod plan;
 pub mod port;

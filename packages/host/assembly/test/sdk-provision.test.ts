@@ -2,8 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
-import { frameworkSdkDir, provisionPluginSdk } from '../sdk-provision.ts'
+import { join, resolve } from 'node:path'
+import { frameworkSdkDir, provisionPluginSdk, provisionRustPluginSdk } from '../sdk-provision.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 
 describe('SDK 运行期供给', () => {
@@ -47,5 +47,32 @@ describe('SDK 运行期供给', () => {
     const cwd = join(root, 'pkg')
     mkdirSync(cwd, { recursive: true })
     expect(() => provisionPluginSdk(cwd, join(root, 'missing-sdk'))).toThrow()
+  })
+
+  it('Rust SDK 供给：物化目录两级之上建链，`../../plugin-sdk/rust` 可解析', () => {
+    const cwd = join(root, 'state', 'runtime', 'materialized', 'b'.repeat(64))
+    mkdirSync(cwd, { recursive: true })
+    provisionRustPluginSdk(cwd)
+    const target = resolve(cwd, '..', '..', 'plugin-sdk')
+    expect(lstatSync(target).isSymbolicLink()).toBe(true)
+    expect(realpathSync(target)).toBe(realpathSync(frameworkSdkDir()))
+    // 物化树里的 Cargo.toml 以该相对路径依赖 SDK crate
+    expect(existsSync(join(cwd, '..', '..', 'plugin-sdk', 'rust', 'Cargo.toml'))).toBe(true)
+  })
+
+  it('Rust SDK 供给幂等：重复供给仍指向框架安装', () => {
+    const cwd = join(root, 'state', 'runtime', 'materialized', 'c'.repeat(64))
+    mkdirSync(cwd, { recursive: true })
+    provisionRustPluginSdk(cwd)
+    provisionRustPluginSdk(cwd)
+    const target = resolve(cwd, '..', '..', 'plugin-sdk')
+    expect(lstatSync(target).isSymbolicLink()).toBe(true)
+    expect(realpathSync(target)).toBe(realpathSync(frameworkSdkDir()))
+  })
+
+  it('Rust SDK crate 缺失 → 抛错（调用方按 deps_failed 收口）', () => {
+    const cwd = join(root, 'state', 'runtime', 'materialized', 'd'.repeat(64))
+    mkdirSync(cwd, { recursive: true })
+    expect(() => provisionRustPluginSdk(cwd, join(root, 'missing-sdk'))).toThrow()
   })
 })

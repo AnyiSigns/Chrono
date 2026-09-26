@@ -4,13 +4,12 @@
 // 模型在握手后后台预加载，避免首个调用承担加载延迟。
 
 mod chunk;
-mod frames;
 mod model;
 mod protocol;
 mod tokenizer;
 
 fn main() {
-    frames::log(&format!("service started (pid {})", std::process::id()));
+    plugin_sdk::log("embedding", &format!("service started (pid {})", std::process::id()));
     std::thread::spawn(model::preload);
     protocol::run_loop(std::io::stdin().lock(), std::io::stdout());
 }

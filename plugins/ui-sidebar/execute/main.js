@@ -5,12 +5,15 @@
 // 客户端半边改由插件自交付（`ui-sidebar.client.read` 读包内产物），本服务不再开 HTTP 面。
 
 import { readFileSync } from 'node:fs'
-import { createFrameDecoder, log, writeFrame } from './frames.js'
+import { createFrameDecoder, makeLogger, writeFrame } from 'plugin-sdk'
 import { InboundClient } from './inbound.js'
 import { createHandlers } from './methods.js'
 import { PortLink } from './port-link.js'
 import { inboundSocketPath, rootFromPluginState } from './root.js'
 import { BadArgsError, isRecord } from './types.js'
+
+/** 日志出口：只走 stderr，绝不污染 stdout 的协议帧。 */
+const log = makeLogger('ui-sidebar')
 
 function readPlugin() {
   try {

@@ -21,7 +21,7 @@ import {
   slotOf,
   threadKeyOf,
 } from '../execute/methods.js'
-import { createFrameDecoder, encodeFrame } from '../execute/frames.js'
+import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.js'
 import { BadArgsError } from '../execute/types.js'
 

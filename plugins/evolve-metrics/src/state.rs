@@ -78,7 +78,7 @@ impl FileStateStore {
         };
         // 缓存是 ③：写失败不致命，下次重算即可。临时文件 + rename 防半截 / 并发覆盖。
         if let Err(err) = atomic_replace(&self.file, text.as_bytes()) {
-            crate::frames::log(&format!("baselines.json write failed: {err}"));
+            plugin_sdk::log("evolve-metrics", &format!("baselines.json write failed: {err}"));
         }
     }
 }
