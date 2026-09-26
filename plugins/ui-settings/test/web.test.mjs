@@ -24,6 +24,7 @@ import {
   vendorTemplatesFromResult,
 } from '../execute/web/onboarding.ts'
 import { listText, pluginSubParts, skillTitle, splitList } from '../execute/web/settings-model.ts'
+import { createViewContext } from '../execute/web/view-context.ts'
 import {
   editSlotPayload,
   editTextPatch,
@@ -521,6 +522,29 @@ test('loadTab general：读成功写 config；退避后仍回落 body 归 not_lo
   })
   await loadTab(fallbackCtx, 'general')
   assert.deepEqual(fallbackCtx.state.loadError, { code: 'not_loaded', message: '' })
+})
+
+test('writeConfig：命令回世界写计划（status=done、value=null）算成功，不误报 not_loaded', async () => {
+  const api = {
+    command: async () => ({ ok: true, status: 'done', value: null }),
+    submit: async () => ({ ok: true, status: 'done' }),
+  }
+  const { vc, dispose } = createViewContext(api)
+  try {
+    const body = {
+      version: 1,
+      params: {},
+      permission: 'review',
+      ui: { theme: 'system', style: '', sidebar_width: 260 },
+      providers: {},
+    }
+    const result = await vc.writeConfig(body)
+    assert.equal(result.ok, true)
+    assert.equal(result.refused, false)
+    assert.deepEqual(vc.state.config, body)
+  } finally {
+    dispose()
+  }
 })
 
 test('loadTab skills：失败置页面级 loadError；memory 失败只置降级标记', async () => {

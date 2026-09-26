@@ -154,7 +154,9 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     if (result.ok !== true) {
       return { ok: false, code: typeof result.code === 'string' ? result.code : 'unknown', value: null, refused: false }
     }
-    const refused = result.status === 'refused' || result.value === null
+    // 命令可回「世界写计划」（如 config.write 的阈值镜像），此时 `value` 为 null 属成功；
+    // 只有运行被拒（status=refused）才算未就绪。
+    const refused = result.status === 'refused'
     return { ok: !refused, code: refused ? 'not_loaded' : '', value: result.value, refused }
   }
 
