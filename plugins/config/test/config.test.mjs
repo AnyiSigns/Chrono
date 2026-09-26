@@ -131,6 +131,14 @@ test('config schema 是合法 JSON 且符合白名单子集', () => {
   assertWhitelist(readJson('schema/config.write.args.json'), 'config.write.args')
 })
 
+test('config.write args schema 接受 {patch} 与 {body} 两种写口', () => {
+  const schema = readJson('schema/config.write.args.json')
+  assert.equal(schema.type, 'object')
+  assert.equal(schema.additionalProperties, false)
+  assert.equal(schema.required, undefined)
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['body', 'patch'])
+})
+
 test('config schema 关键字段齐全', () => {
   const schema = readJson('schema/config.json')
   assert.equal(schema.type, 'object')
