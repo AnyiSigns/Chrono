@@ -110,6 +110,8 @@ export interface StartAssemblyOptions {
   depsDir?: string
   /** 源码 CAS 目录；缺省由 root 派生的 `state/blobs`。 */
   blobsDir?: string
+  /** 框架安装里的 SDK 目录（`plugin-sdk/`）；缺省按宿主模块位置解析，测试可注入。 */
+  sdkDir?: string
   /** 物化后的依赖恢复 / 构建；缺省按声明绑定 `restoreDependencies`，测试可注入桩。 */
   restore?: (cwd: string, decl: PluginDecl) => Promise<void>
   /**
@@ -150,6 +152,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   ) => Promise<CallResponse>
   private readonly paths: HostPaths
   private readonly blobsDir: string
+  private readonly sdkDir: string | undefined
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
   private readonly dependents = new Map<string, string[]>()
@@ -175,6 +178,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.startWrapper = options.startWrapper
     this.paths = hostPaths(options.root)
     this.blobsDir = options.blobsDir ?? this.paths.blobsDir
+    this.sdkDir = options.sdkDir
     const depsDir = options.depsDir ?? this.paths.depsDir
     this.restore =
       options.restore ??
@@ -649,6 +653,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       world: this.world,
       materializedDir: this.paths.materializedDir,
       blobsDir: this.blobsDir,
+      sdkDir: this.sdkDir,
       handshakeTimeoutMs: this.handshakeTimeoutMs,
       pluginStateDir: resolve(this.paths.pluginsDir, id),
       pluginDataRoot: this.paths.dataDir,

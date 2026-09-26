@@ -3,7 +3,7 @@
 // → stop。宿主是单写者，任何失败路径都会尝试 stop 释放锁。
 // 用法：node plugins/secrets/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -127,14 +127,8 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', `chrono-secrets-e2e-${stamp}`)
   mkdirSync(join(root, 'state'), { recursive: true })
-  // 服务入口裸 import 'plugin-sdk'：宿主按根目录向上解析 node_modules。
-  // 生产根目录 = 仓库（根 node_modules 有 SDK）；本冒烟用临时根，故在根下提供同一 SDK。
-  mkdirSync(join(root, 'node_modules'), { recursive: true })
-  symlinkSync(
-    join(REPO_ROOT, 'plugin-sdk'),
-    join(root, 'node_modules', 'plugin-sdk'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  )
+  // 服务入口裸 import 'plugin-sdk'：宿主在准备阶段把框架安装的 SDK 链接进物化树，
+  // 故本冒烟无需在临时根下手建 node_modules/plugin-sdk。
   let started = false
   try {
     const packed = boot(root, ['pack', SECRETS_DIR, '--identity', 'secrets'])

@@ -6,6 +6,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
+import { provisionPluginSdk } from './sdk-provision.ts'
 import { ServiceLink } from '../service-link.ts'
 import { selectServiceHost } from './service-host.ts'
 import { ensurePluginDataDir } from '../plugin-data.ts'
@@ -56,6 +57,12 @@ export interface ServiceLauncherDeps {
    * 必须在依赖恢复前：Rust 构建期输入（`include_bytes!`）依赖它已就位；抛错按启动失败传播。
    */
   copyAssets?: (cwd: string) => void
+  /**
+   * 框架安装里的 SDK 目录（`plugin-sdk/`）；缺省按宿主模块位置解析。
+   * 准备阶段把 SDK 链接进物化树的 `node_modules/plugin-sdk`，使插件裸导入 `plugin-sdk`
+   * 在任意宿主根下都可解析（SDK 不随插件入世、不进世界）。
+   */
+  sdkDir?: string
   /** 反向调用（服务 → 宿主）转发；缺省不接线，服务发 `port.call` 得 `not_loaded`。 */
   onPortCall?: (
     port: string,
@@ -81,7 +88,7 @@ export interface PreparedService {
 }
 
 /**
- * 准备阶段：物化 + 大资产直拷 + 依赖恢复 / 构建 + ④ 目录建目录，返回准备产物。
+ * 准备阶段：物化 + 大资产直拷 + 依赖恢复 / 构建 + SDK 供给 + ④ 目录建目录，返回准备产物。
  * 不起服务、不占端口；失败时尚未起服务，按启动失败分类传播（`materialize_failed` / `deps_failed`）。
  * ④ 目录在此阶段建（不占独占资源），独占序可在 drain 旧实例前先完成。
  */
@@ -112,6 +119,14 @@ export async function prepareService(
       if (err instanceof ServiceStartError) throw err
       throw new ServiceStartError('deps_failed')
     }
+  }
+  // SDK 供给：链接进物化树，使裸导入 `plugin-sdk` 在任意宿主根下可解析。
+  // 必须在依赖恢复之后：`npm ci` 会清空物化树的 `node_modules`，先供会被覆盖。
+  try {
+    provisionPluginSdk(cwd, deps.sdkDir)
+  } catch (err) {
+    if (err instanceof ServiceStartError) throw err
+    throw new ServiceStartError('deps_failed')
   }
   // ④ 目录：声明 `durable` 才建；未声明者不建目录（不给隐式持久层）。
   if (decl.state === 'durable' && deps.pluginDataRoot !== undefined) {

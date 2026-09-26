@@ -5,9 +5,11 @@
 
 - **定位**：插件侧库，与 `toolchain/` 同级的第一方非载体包。**零内核零宿主依赖**：
   自带规范序列化实现，不 import `packages/*`；`packages/*` 也不 import 本包。
-- **依赖方向**：插件经裸导入 `plugin-sdk` 使用；仓库根 `package.json` 以
-  `"plugin-sdk": "file:./plugin-sdk"` 声明，`npm install` 在根 `node_modules/` 建链接。
-  插件与宿主在仓库根下运行时据此解析；SDK 不进入世界、不随插件打包。
+- **依赖方向**：插件经裸导入 `plugin-sdk` 使用。宿主在**准备阶段**把框架安装的顶层
+  `plugin-sdk/` 链接进每个物化树的 `node_modules/plugin-sdk`，故插件服务在**任意宿主根**下都能解析它；
+  仓库内开发时根 `node_modules/plugin-sdk` 由根 `package.json` 的 `"plugin-sdk": "file:./plugin-sdk"` 提供。
+  用链接而非复制：SDK 以 TS 源码发布，Node 的类型剥离对 `node_modules` 下的文件不生效，
+  链接经 realpath 指回框架安装目录（不在 `node_modules` 下）。SDK 不进入世界、不随插件打包。
 - **三形态**：同一服务实例在 `stdio` 下由 `runStdio` 起帧循环；`inproc` / `worker` 下入口
   导出 `createService({ emit, env })` 供宿主直调。三种形态共用同一派发器，结果与事件一致。
 

@@ -39,6 +39,27 @@ export const FIXTURE_SERVICE_MAIN = readFileSync(
 )
 
 /**
+ * SDK 版 toy 服务源文本：裸导入 `plugin-sdk`，三形态共用（stdio 起帧循环；
+ * inproc / worker 导出 `createService` 供宿主直调）。用于验证宿主在任意根下供给 SDK。
+ */
+export const FIXTURE_SDK_MAIN = `import { createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+const LOG = makeLogger('toy-sdk')
+function build(ctx) {
+  return createSdkService({
+    pluginRoot: packageRootOf(import.meta.url),
+    capability: 'toy.sdk',
+    handlers: {
+      echo: async (args) => ({ value: { echo: args }, events: [] }),
+    },
+    emit: ctx.emit,
+    log: LOG,
+  })
+}
+export const createService = build
+if (isDirectRun(import.meta.url)) runStdio(build, { log: LOG })
+`
+
+/**
  * 反向调用夹具服务：配了 `reversePort` 时先发 `port.call` 到目标，再把
  * `{env, forwarded, argsEnv}` 回给宿主；否则回 `{env, args, pid}`。用于验证
  * 反向转发 / 端口审计 / 方法级超时；帧编解码与宿主同形。

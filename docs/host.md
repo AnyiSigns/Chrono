@@ -227,6 +227,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 身份的 `schema`（`Identity.schema`）= `plugin.json.schema` 指向的包内文件——它是该身份的**自述 / 数据契约**（描述本身份声明的数据形态；数据、非特权，`kernel.md` §四 / §十一），入世解析成 def 哈希写进 `Identity.schema`。宿主对 `plugin.json` 形状的元校验是**宿主侧另一份 schema**，不占此字段。**`schema` 可省略 / 空串**（无世界数据的 UI 插件可零 schema，直接省略字段，不得以 `null` 占位）：省略时宿主机械 `put` 一份最小默认 def `{"type":"object"}` 并以其哈希作 `Identity.schema`（内核要求身份必有 schema），不解释业务；声明了非空路径但包内文件缺失才拒 `missing_schema`。`Identity.schema` 在身份诞生（`add_identity` / `fork`）时固定；换代（`add_gen`）不带 schema——**要改数据契约须 `fork` 新身份**（内核无 set_schema op）。
 - 工作副本落 `state/runtime/`（③ 可重算），**永不进世界**；复用前校验宿主标记，标记缺失 / 不符即整目录重物化；服务写进物化目录的文件不是源码树的一部分、不保证跨代保留（**不得当持久层**——要持久层请声明 `state: "durable"` 并写 `state/data/<id>/`，见「插件持久数据」）。依赖安装 / 构建 / 起服务全归插件的 `decl.build` / `decl.start`，宿主**不认识语言、不执行 npm、不做编译**。
 - **起服务**：宿主 spawn `decl.start` 并接管其 **stdin/stdout**（服务协议走 stdio，见 `docs/protocol.md` §一 / §二）；服务日志走 stderr，stdout 只许协议帧。
+- **SDK 供给**：插件运行期可裸导入 `plugin-sdk`（服务协议壳，零内核零宿主依赖，见 `plugin-sdk/README.md`）。宿主在**准备阶段**于物化树内建 `node_modules/plugin-sdk` 链接，指向框架安装的顶层 `plugin-sdk`——故插件服务在**任意宿主根**下都能解析它。用**链接而非复制**：SDK 以 TS 源码发布，Node 的类型剥离对 `node_modules` 下的文件不生效，链接经 realpath 指回框架安装目录（不在 `node_modules` 下）。宿主只按数据定位、**不 import** SDK；SDK 不随插件入世、不进世界、不进 `pins` / 路由 / 装配。
 
 **写入落点（取代"唯一写口"这个全局概念）**
 
