@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync, cpSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, cpSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -117,7 +117,9 @@ function startService({ pluginState, extraEnv = {} }) {
 // ── 握手 / 控制 ────────────────────────────────────────────────────────────
 
 test('缺 methods 声明回落处理器表（无 TDZ）', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'kilo', 'secrets-nomethods-'))
+  // 临时包落在包根（非 test/ 下）：裸 import 'plugin-sdk' 沿父目录解析到仓库根 node_modules，
+  // 且不被 node --test 的 `test/**` 发现规则当作测试文件执行。
+  const dir = mkdtempSync(join(PKG_ROOT, '.tmp-nomethods-'))
   cpSync(join(PKG_ROOT, 'execute'), join(dir, 'execute'), { recursive: true })
   writeFileSync(
     join(dir, 'plugin.json'),
@@ -155,28 +157,35 @@ test('缺 methods 声明回落处理器表（无 TDZ）', async () => {
   child.once('exit', (code) => {
     for (const handler of pending) handler({ kind: 'exit', code })
   })
-  const manifestReply = reply('drv-1')
-  child.stdin.write(encodeFrame({ v: '1', id: 'drv-1', kind: 'hello', impl: 'secrets', gen: 'g' }))
-  const manifest = await manifestReply
-  assert.equal(manifest.kind, 'manifest')
-  assert.equal(manifest.identity, 'secrets')
-  // 缺声明时回落 HANDLERS 键：resolve 仍被识别（不是 unknown_method）
-  const resolveReply = reply('drv-2')
-  child.stdin.write(
-    encodeFrame({
-      v: '1',
-      id: 'drv-2',
-      kind: 'call',
-      port: 'secrets',
-      method: 'resolve',
-      args: { auth_ref: {} },
-      env: { run: null, thread: null, now: 0 },
-    }),
-  )
-  const resolved = await resolveReply
-  assert.equal(resolved.kind, 'error')
-  assert.equal(resolved.code, 'bad_auth_ref')
-  child.stdin.end()
+  try {
+    const manifestReply = reply('drv-1')
+    child.stdin.write(encodeFrame({ v: '1', id: 'drv-1', kind: 'hello', impl: 'secrets', gen: 'g' }))
+    const manifest = await manifestReply
+    assert.equal(manifest.kind, 'manifest')
+    assert.equal(manifest.identity, 'secrets')
+    // 缺声明时回落 HANDLERS 键：resolve 仍被识别（不是 unknown_method）
+    const resolveReply = reply('drv-2')
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'drv-2',
+        kind: 'call',
+        port: 'secrets',
+        method: 'resolve',
+        args: { auth_ref: {} },
+        env: { run: null, thread: null, now: 0 },
+      }),
+    )
+    const resolved = await resolveReply
+    assert.equal(resolved.kind, 'error')
+    assert.equal(resolved.code, 'bad_auth_ref')
+  } finally {
+    child.stdin.end()
+    if (child.exitCode === null) {
+      await new Promise((resolveExit) => child.once('exit', resolveExit))
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('hello 回 manifest，声明与 plugin.json 一致', async () => {

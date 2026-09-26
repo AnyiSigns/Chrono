@@ -9,7 +9,7 @@
 ## 一、共同基础
 
 - **传输**：**服务协议 = stdio**（宿主 spawn 服务时的 stdin/stdout 管道；协议帧走 stdout、**日志走 stderr**，LSP / MCP 同款约定）；**入站协议 = 本地 socket**（POSIX unix domain socket；Windows named pipe）。两者都**不开 TCP**；入站 socket 以 fs 权限即鉴权（服务协议由宿主 1:1 拉起，无需鉴权）。
-- **帧**：4 字节大端长度 + UTF-8 JSON（按内核口径的规范序列化）。
+- **帧**：4 字节大端长度 + UTF-8 JSON（按内核口径的规范序列化）。插件服务侧由顶层独立包 `plugin-sdk` 提供同一实现：自带规范序列化，与宿主 `wire.ts` 逐字节一致（一致性测试钉死）。
 - **信封**：`{ v, id, kind, ... }`；`v` = 协议版本，`kind` = 消息种类。
 - 请求 / 响应按 `id` 配对；服务可主动发 `event`（无对应请求）。
 - 版本不匹配 → `protocol_mismatch`。
@@ -17,6 +17,7 @@
 ## 二、服务协议（宿主 ↔ 插件服务）
 
 本协议跑在**服务进程的 stdin/stdout**上（宿主 `start` 时接管）：宿主 → 服务写 **stdin**，服务 → 宿主写 **stdout**；**日志一律走 stderr**（stdout 只许协议帧）。
+插件侧的服务协议壳（帧编解码 / 帧循环 / manifest 派生 / 调用派发 / 反向调用通道）由顶层独立包 `plugin-sdk` 提供：`stdio` 下 SDK 起帧循环，`inproc` / `worker` 下 SDK 暴露同一派发器供宿主直调；三形态共用同一派发逻辑。
 
 ### 2.1 握手
 

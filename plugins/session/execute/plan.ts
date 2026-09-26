@@ -1,24 +1,11 @@
-// 共享纯函数：会话记录的形状归一、时间格式化与摘要。服务不读投影、不构造世界写计划。
+// 会话领域纯函数：时间格式化、摘要、消息体与事件构造。通用 JSON 判定与 env 时钟由 SDK 提供。
+// 服务不读投影、不构造世界写计划。
 
-import type { CallEnv, Json } from './types.ts'
-
-export type Rec = { [key: string]: Json }
-
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-export function asString(value: Json | undefined): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null
-}
+import { asString, isRecord } from 'plugin-sdk'
+import type { CallEnv, Json, Rec } from 'plugin-sdk'
 
 export function asArray(value: Json | undefined): Json[] | null {
   return Array.isArray(value) ? value : null
-}
-
-/** 帧 env 的固定时钟；env 缺失（不该发生）时回落 0，绝不自取时钟。 */
-export function nowOf(env: CallEnv): number {
-  return typeof env.now === 'number' && Number.isFinite(env.now) ? env.now : 0
 }
 
 /** 宿主时钟（毫秒）→ ISO 8601 字符串；纯格式化，不取当前时间。 */

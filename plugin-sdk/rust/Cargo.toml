@@ -1,0 +1,13 @@
+[package]
+name = "plugin-sdk"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "插件服务 SDK（Rust 侧）：服务协议帧编解码与规范序列化"
+
+[lib]
+name = "plugin_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"

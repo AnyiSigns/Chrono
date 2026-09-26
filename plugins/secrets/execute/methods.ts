@@ -1,9 +1,10 @@
 // 能力类 `secrets` 的两个方法：resolve（解析成明文）与 list（只回 {name, has}）。
 // 服务不读投影、不自取时钟（env.now 无关）；明文只在返回值里，绝不进日志 / stderr / 缓存。
 
+import { isRecord } from 'plugin-sdk'
 import { readLocalSecrets } from './secrets-file.ts'
 import { SecretError } from './types.ts'
-import type { Handler, Json, Rec } from './types.ts'
+import type { Handler, Json, Rec } from 'plugin-sdk'
 
 /** 密钥名长度上限（与宿主本地存储面同口径）。 */
 export const MAX_SECRET_NAME_LENGTH = 256
@@ -20,10 +21,6 @@ export interface SecretsDeps {
   file: string | null
   /** 进程环境（`env` kind 的取值面）。 */
   env: Record<string, string | undefined>
-}
-
-function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 校验 auth_ref 形态；合法则返回 `{kind, name}`，否则抛 bad_auth_ref。 */
@@ -75,10 +72,10 @@ function listSecrets(deps: SecretsDeps): Json {
     .map((name) => ({ name, has: true }))
 }
 
-/** 构造方法表（依赖注入：文件路径 + 进程环境由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：文件路径 + 进程环境由入口提供，便于测试与确定性）。 */
 export function createHandlers(deps: SecretsDeps): Record<string, Handler> {
   return {
-    resolve: (args) => resolveSecret(args, deps),
-    list: () => listSecrets(deps),
+    resolve: (args) => ({ value: resolveSecret(args, deps), events: [] }),
+    list: () => ({ value: listSecrets(deps), events: [] }),
   }
 }

@@ -36,7 +36,8 @@ test('plugin.json 12 字段齐全且形态合法', () => {
   assert.equal(decl.protocol, '1')
   assert.equal(typeof decl.restart, 'object')
   assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.health.probe, 'secrets.list')
+  assert.equal(decl.health.interval_ms, 10000)
+  assert.equal(decl.health.timeout_ms, 2000)
   assert.equal(decl.state, 'recomputable')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
@@ -53,10 +54,11 @@ test('schema/secrets.json 是合法 JSON 且声明 kind 词表', () => {
   assert.deepEqual(schema.properties.list_entry.required, ['name', 'has'])
 })
 
-test('execute/ 源码文件齐全', () => {
-  for (const rel of ['execute/main.ts', 'execute/methods.ts', 'execute/secrets-file.ts', 'execute/frames.ts', 'execute/types.ts']) {
+test('execute/ 源码文件齐全（帧编解码 / 帧循环走 plugin-sdk）', () => {
+  for (const rel of ['execute/main.ts', 'execute/methods.ts', 'execute/secrets-file.ts', 'execute/types.ts']) {
     assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
   }
+  assert.equal(existsSync(join(PKG_ROOT, 'execute/frames.ts')), false, '本地 frames.ts 应已删除')
 })
 
 test('package.json 零依赖且带测试脚本', () => {

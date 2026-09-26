@@ -1,12 +1,12 @@
-// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：本插件 `pins` 含 `input`，
-// 故可按逻辑端口调 `input.clear` 清本线程输入槽（槽清理由 input 服务承担，单 owner）。
-// 帧方向：服务发 `port.call`，宿主按发出者 pins 路由后回 `port.result` / `port.error`（按 id 配对）。
+// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：服务发 `port.call`，
+// 宿主按发出者 `pins` 路由后回 `port.result` / `port.error`（按 id 配对）。
 // 失败作数据（结构化错误），不抛未捕获错误、不断通道。
 
-import { writeFrame } from './frames.ts'
-import type { Json, PortCaller, PortOutcome, Rec } from './types.ts'
+import { writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'
+import type { Json, Rec } from './json.ts'
+import type { PortCaller, PortOutcome } from './types.ts'
 
-/** 反向调用等待上限（通道兜底）：清槽是本地写，给足余量即可。 */
+/** 反向调用等待上限（通道兜底）。 */
 export const PORT_CALL_TIMEOUT_MS = 30000
 
 interface PendingCall {
@@ -14,20 +14,32 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>
 }
 
+export interface PortLinkOptions {
+  /** 发帧出口；缺省写 stdout（stdio 形态）。 */
+  write?: (message: Json) => void
+  /** 等待上限；缺省 `PORT_CALL_TIMEOUT_MS`。 */
+  timeoutMs?: number
+  /** 帧 id 前缀；缺省 `port`。 */
+  idPrefix?: string
+}
+
+/** 反向调用通道：`call` 发 `port.call`，`settle` 结算宿主回帧。 */
 export class PortLink implements PortCaller {
   private readonly pending = new Map<string, PendingCall>()
   private seq = 0
   private readonly write: (message: Json) => void
   private readonly timeoutMs: number
+  private readonly idPrefix: string
 
-  constructor(write: (message: Json) => void = writeFrame, timeoutMs: number = PORT_CALL_TIMEOUT_MS) {
-    this.write = write
-    this.timeoutMs = timeoutMs
+  constructor(options: PortLinkOptions = {}) {
+    this.write = options.write ?? writeFrame
+    this.timeoutMs = options.timeoutMs ?? PORT_CALL_TIMEOUT_MS
+    this.idPrefix = options.idPrefix ?? 'port'
   }
 
   call(port: string, method: string, args: Rec): Promise<PortOutcome> {
     this.seq += 1
-    const id = `session-${this.seq}`
+    const id = `${this.idPrefix}-${this.seq}`
     return new Promise<PortOutcome>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
@@ -36,7 +48,7 @@ export class PortLink implements PortCaller {
       timer.unref?.()
       this.pending.set(id, { resolve, timer })
       try {
-        this.write({ v: '1', id, kind: 'port.call', port, method, args })
+        this.write({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args })
       } catch (err) {
         clearTimeout(timer)
         this.pending.delete(id)
@@ -67,6 +79,7 @@ export class PortLink implements PortCaller {
     return true
   }
 
+  /** 断连 / drain 时结算全部在途：失败作数据，不悬挂。 */
   failAll(code = 'transport_failed'): void {
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer)

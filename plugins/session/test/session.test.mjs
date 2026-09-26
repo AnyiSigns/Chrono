@@ -152,6 +152,21 @@ function conversationById(read, id) {
   return (read.conversations ?? []).find((item) => item.id === id) ?? null
 }
 
+// refs 是消息 id → body 的映射；服务帧按规范序列化（键升序），故不能依赖键的插入序，
+// 按 prev 链还原逻辑顺序。
+function orderedBodies(refs) {
+  const bodies = Object.values(refs)
+  const byId = new Map(bodies.map((body) => [body.id, body]))
+  const head = bodies.find((body) => !body.prev || !byId.has(body.prev.def))
+  const out = []
+  let current = head
+  while (current) {
+    out.push(current)
+    current = bodies.find((body) => body.prev && body.prev.def === current.id)
+  }
+  return out
+}
+
 function commitEnv(run) {
   return { run, thread: 't1', now: 1_700_000_000_000 }
 }
@@ -229,10 +244,8 @@ test('commit writes own store: read round-trips chain and returns no world plan'
     assert.equal(read.current, 'c1')
     assert.equal(conversationById(read, 'c1').count, 2)
     const chain = read.refs
-    const ids = Object.keys(chain)
-    assert.equal(ids.length, 2)
-    const user = chain[ids[0]]
-    const assistant = chain[ids[1]]
+    assert.equal(Object.keys(chain).length, 2)
+    const [user, assistant] = orderedBodies(chain)
     assert.equal(user.role, 'user')
     assert.equal(user.content, 'hi')
     assert.equal(assistant.role, 'assistant')
@@ -303,7 +316,7 @@ test('commit failure path: user message + separate system message', async () => 
     assert.equal(value.ok, false)
     assert.equal(value.error, 'model failed')
     const read = await drv.call('read', { conversation: 'c1' })
-    const bodies = Object.values(read.refs)
+    const bodies = orderedBodies(read.refs)
     assert.equal(bodies[0].role, 'user')
     assert.equal(bodies[1].role, 'system')
     assert.equal(bodies[1].content, 'model failed')
@@ -336,7 +349,7 @@ test('commit append: only appends assistant, head follows current chain head', a
     }, commitEnv('run-2'))
     assert.equal(value.count, 3)
     const read = await drv.call('read', { conversation: 'c1' })
-    const bodies = Object.values(read.refs)
+    const bodies = orderedBodies(read.refs)
     assert.deepEqual(bodies.map((b) => b.role), ['user', 'assistant', 'assistant'])
     assert.equal(bodies[2].content, 'approved done')
     assert.deepEqual(bodies[2].prev, { def: bodies[1].id })
@@ -518,7 +531,7 @@ test('branch copies the window up to the target message into a new conversation'
       assistant: { content: 'd' },
     }, commitEnv('run-2'))
     const read = await drv.call('read', { conversation: 'c1' })
-    const ids = Object.keys(read.refs)
+    const ids = orderedBodies(read.refs).map((body) => body.id)
     assert.equal(ids.length, 4)
     const value = await drv.call('branch', {
       thread_id: 't1',
@@ -626,7 +639,7 @@ test('3/4 split: deleting CHRONO_PLUGIN_STATE still replays from the durable sto
     await second.hello()
     const read = await second.call('read', { conversation: 'c1' })
     assert.equal(conversationById(read, 'c1').count, 2)
-    assert.equal(Object.values(read.refs)[0].content, 'persisted')
+    assert.equal(orderedBodies(read.refs)[0].content, 'persisted')
   } finally {
     second.close()
     await second.exit
