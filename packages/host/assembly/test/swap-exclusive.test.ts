@@ -136,7 +136,7 @@ describe('换代换人序（独占资源声明）', () => {
       { exclusive: ['port'] },
       { exclusive: ['port'] },
     )
-    let oldPid = -1
+    let oldPid: number | undefined = -1
     let oldAliveAtPrepare: boolean | null = null
     const restore = async (cwd: string): Promise<void> => {
       if (cwd.endsWith(v2)) oldAliveAtPrepare = isPidAlive(oldPid)
@@ -163,7 +163,7 @@ describe('换代换人序（独占资源声明）', () => {
   it('缺省（无独占声明）→ 保持先起新后 drain：新世代构建时旧进程仍在跑', async () => {
     const identity = 'toy-overlap'
     const { world, head, v1, v2 } = seedTwoGens(identity, {}, {})
-    let oldPid = -1
+    let oldPid: number | undefined = -1
     let oldAliveAtBuild: boolean | null = null
     const restore = async (cwd: string): Promise<void> => {
       if (cwd.endsWith(v2)) oldAliveAtBuild = isPidAlive(oldPid)

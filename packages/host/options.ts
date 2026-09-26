@@ -2,6 +2,8 @@
 // 口径：显式（`--call-timeout-ms` / `--start-wrapper` / `--watch`）> 环境（`CHRONO_*`）> 常量 / 无。
 // 纯函数：host 入口与 boot start 共用同一份，避免两处解析漂移；非法值 fail-closed。
 
+import type { Json } from '../kernel/index.ts'
+import { PROTOTYPE_KEYS } from './common/json.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/run-loop.ts'
 import { MAX_CALL_TIMEOUT_MS } from './service-link.ts'
 
@@ -115,4 +117,65 @@ export function resolveCompactStrict(explicit?: boolean, env?: string): boolean 
   if (WATCH_TRUE.has(value)) return true
   if (WATCH_FALSE.has(value)) return false
   throw new Error(`bad_compact_strict: ${env}`)
+}
+
+/** 框架运营配置文件：仓库根 `chrono.config.json`。 */
+export const CONFIG_FILE = 'chrono.config.json'
+/** 受保护 pin 名单在该文件里的键。 */
+export const PROTECTED_PINS_KEY = 'protected_pins'
+/** 受保护 pin 名单的环境覆盖（逗号分隔）。 */
+export const PROTECTED_PINS_ENV = 'CHRONO_PROTECTED_PINS'
+
+/** 受保护 pin 名单解析结果：`declared=false` = 文件 / 键缺失（空集 + 运维日志）。 */
+export type ProtectedPinsResolution =
+  | { ok: true; identities: string[]; declared: boolean }
+  | { ok: false; reason: 'bad_protected_pins' }
+
+/** 逗号分隔名单：任一项为空串 / 原型键 → 非法；整体空串由调用方视为未设置。 */
+function parseProtectedPinList(raw: string): string[] | null {
+  const items = raw.split(',').map((item) => item.trim())
+  if (items.some((item) => item.length === 0 || PROTOTYPE_KEYS.has(item))) return null
+  return items
+}
+
+/** 文件里的名单：必须是字符串数组、无空串项 / 原型键项；否则非法。 */
+function parseProtectedPinValue(value: Json): string[] | null {
+  if (!Array.isArray(value)) return null
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string' || item.length === 0 || PROTOTYPE_KEYS.has(item)) return null
+    out.push(item)
+  }
+  return out
+}
+
+/**
+ * 解析受保护 pin 名单，优先级 **显式 > 环境 `CHRONO_PROTECTED_PINS` > 文件 `protected_pins`**。
+ * 空串（显式 / 环境）视为未设置；文件缺失 / 键缺失 → 空集且 `declared:false`（fail-open，配兜底测试）；
+ * 形态非法（非字符串数组 / 原型键 / 空串项）→ `{ok:false}`，由调用方 fail-closed 拒 `bad_protected_pins`。
+ */
+export function resolveProtectedPins(
+  explicit?: string,
+  env?: string,
+  fileValue?: Json,
+): ProtectedPinsResolution {
+  const explicitValue = explicit !== undefined && explicit.length > 0 ? explicit : undefined
+  if (explicitValue !== undefined) {
+    const parsed = parseProtectedPinList(explicitValue)
+    return parsed === null
+      ? { ok: false, reason: 'bad_protected_pins' }
+      : { ok: true, identities: parsed, declared: true }
+  }
+  const envValue = env !== undefined && env.length > 0 ? env : undefined
+  if (envValue !== undefined) {
+    const parsed = parseProtectedPinList(envValue)
+    return parsed === null
+      ? { ok: false, reason: 'bad_protected_pins' }
+      : { ok: true, identities: parsed, declared: true }
+  }
+  if (fileValue === undefined) return { ok: true, identities: [], declared: false }
+  const parsed = parseProtectedPinValue(fileValue)
+  return parsed === null
+    ? { ok: false, reason: 'bad_protected_pins' }
+    : { ok: true, identities: parsed, declared: true }
 }

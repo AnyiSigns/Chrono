@@ -32,6 +32,38 @@ function assembleRun(defs: World['defs'], gens: Gen[], from: number, to: number)
 }
 
 /**
+ * 世代重建后的机械重映射（就地改 `ids`）：按身份下标映射重写 `gen.base` / `gen.graft.gen`，
+ * 按 payload 映射重写 `identity.active`。压扁与回收共用同一份实现。
+ * @param ids 待重写的身份表
+ * @param indexMaps 身份 → 旧世代下标 → 新下标
+ * @param payloadRemaps 身份 → 旧 payload → 新 payload；缺省 = 不改 active（回收不改 payload）
+ */
+export function remapGens(
+  ids: World['ids'],
+  indexMaps: Map<string, Map<number, number>>,
+  payloadRemaps?: Map<string, Map<Hash, Hash>>,
+): void {
+  for (const id of Object.keys(ids)) {
+    const indexMap = indexMaps.get(id)
+    const payloadRemap = payloadRemaps?.get(id)
+    const identity = ids[id]
+    for (const gen of identity.gens) {
+      if (gen.base !== undefined) {
+        const mapped = indexMap?.get(gen.base)
+        if (mapped !== undefined) gen.base = mapped
+      }
+      if (gen.graft !== undefined) {
+        const mapped = indexMaps.get(gen.graft.from)?.get(gen.graft.gen)
+        if (mapped !== undefined) gen.graft = { from: gen.graft.from, gen: mapped }
+      }
+    }
+    if (identity.active !== null && payloadRemap?.has(identity.active)) {
+      identity.active = payloadRemap.get(identity.active) as Hash
+    }
+  }
+}
+
+/**
  * 压扁所有身份里的线性补丁链：链折叠为单个整份世代（payload = H({body: 组装结果})，def 写入新 defs）。
  * `minChain` = 触发折叠的最短链长（含整份起点，默认 2：一个整份 + 至少一条补丁）。
  * base 与 graft 的下标随新世代表重映射；active 指向被折叠世代时改指折叠后的整份世代。
@@ -131,24 +163,7 @@ export function flattenPatches(world: World, minChain = 2): FlattenResult {
     payloadRemaps.set(id, payloadRemap)
   }
 
-  for (const id of Object.keys(ids)) {
-    const indexMap = indexMaps.get(id)
-    const payloadRemap = payloadRemaps.get(id)
-    const identity = ids[id]
-    for (const gen of identity.gens) {
-      if (gen.base !== undefined) {
-        const mapped = indexMap?.get(gen.base)
-        if (mapped !== undefined) gen.base = mapped
-      }
-      if (gen.graft !== undefined) {
-        const mapped = indexMaps.get(gen.graft.from)?.get(gen.graft.gen)
-        if (mapped !== undefined) gen.graft = { from: gen.graft.from, gen: mapped }
-      }
-    }
-    if (identity.active !== null && payloadRemap?.has(identity.active)) {
-      identity.active = payloadRemap.get(identity.active) as Hash
-    }
-  }
+  remapGens(ids, indexMaps, payloadRemaps)
 
   return { world: { defs, ids }, flattened }
 }

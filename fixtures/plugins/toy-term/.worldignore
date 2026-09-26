@@ -1,0 +1,4 @@
+# 糖化源与测试不入世：入世的是编译产物 terms/（定义本体）。
+# 「term 产物可入世」与「编译必须确定性」绑定（docs/plugins.md §三 红线 5）。
+terms.src/
+test/

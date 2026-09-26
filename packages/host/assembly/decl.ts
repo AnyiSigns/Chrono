@@ -3,7 +3,11 @@
 
 import { H } from '../../kernel/index.ts'
 import { getBlob, isBlobPointer } from '../blobs.ts'
+import { FRAMEWORK_COMMAND_NAME_SET } from '../common/framework-commands.ts'
+import { PROTOTYPE_KEYS, isRecord, isStringArray, isStringMap } from '../common/json.ts'
+import { isSafeRelativePath } from '../common/paths-safe.ts'
 import { replaceTermRefs } from './term-refs.ts'
+import type { ServiceTransport } from '../service-link.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
 export interface PluginCommand {
@@ -42,12 +46,17 @@ export interface PluginDecl {
   pins: Record<string, string>
   start: string
   /**
+   * 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。由 `plugin.json.transport` 声明；
+   * `inproc` / `worker` 下 `start` 是**同语言入口模块路径**（相对物化目录），不是 shell 命令。
+   */
+  transport: ServiceTransport
+  /**
    * 显式构建声明（宿主只执行、不解释语言）；`null` = 字段缺失（回落宿主旧探测）。
    * 空数组是合法声明：显式表示「无需构建」，不回落探测。
    */
   build: PluginBuildStep[] | null
   /**
-   * 独占资源声明：元素为资源类名（认 `port` 与 `data`）。非空 = 本插件的服务实例独占该资源、
+   * 独占资源声明：元素为资源类名（开放命名，如 `port` / `data`）。非空 = 本插件的服务实例独占该资源、
    * 新旧实例不能并存（如固定端口、单写句柄的持久存储），宿主换代时先 drain 旧服务再起新服务；
    * 空 = 无独占资源。描述的是「占用事实」，不指定宿主调度机制。
    */
@@ -78,56 +87,40 @@ export interface DeclRead {
 
 export type ParseDeclResult = { ok: true; decl: PluginDecl } | { ok: false; reasons: string[] }
 
-function isRecord(v: Json | undefined): v is { [k: string]: Json } {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function isStringArray(v: Json | undefined): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
-
-function isStringMap(v: Json | undefined): v is Record<string, string> {
-  if (!isRecord(v)) return false
-  return Object.values(v).every((x) => typeof x === 'string')
-}
+type ParseCommandsResult = { ok: true; commands: PluginCommand[] } | { ok: false; reason: string }
 
 /**
- * 宿主 / CLI 命令名是保留字（`host.md` §五 命令）：插件命令不得占用。
- * 与 `packages/boot/main.ts` 的 `RESERVED` 保持同口径（离线命令与 CLI 自有命令一并保留）。
+ * 解析命令声明：保留命令名给专用拒绝码 `reserved_command_name`（作者能看出是撞了保留字，
+ * 不再混进 `bad_plugin_decl`）；其余形态问题仍归 `bad_plugin_decl`。
+ * 保留名清单由 `common/framework-commands.ts` 单点定义，与 CLI 派发同源。
  */
-const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
-  'start',
-  'stop',
-  'run',
-  'status',
-  'seed',
-  'pack',
-  'verify',
-  'replay',
-  'compact',
-  'audit',
-  'assets',
-  'blobs',
-  'materialized',
-])
-
-function parseCommands(v: Json | undefined): PluginCommand[] | null {
-  if (!Array.isArray(v)) return null
+function parseCommands(v: Json | undefined): ParseCommandsResult {
+  if (!Array.isArray(v)) return { ok: false, reason: 'bad_plugin_decl' }
   const out: PluginCommand[] = []
   for (const item of v) {
-    if (!isRecord(item)) return null
+    if (!isRecord(item)) return { ok: false, reason: 'bad_plugin_decl' }
     const { name, entry, argsSchema, readonly } = item
-    if (typeof name !== 'string' || name.length === 0) return null
-    if (RESERVED_COMMAND_NAMES.has(name)) return null
-    if (typeof entry !== 'string' || entry.length === 0) return null
-    if (argsSchema !== undefined && typeof argsSchema !== 'string') return null
+    if (typeof name !== 'string' || name.length === 0) {
+      return { ok: false, reason: 'bad_plugin_decl' }
+    }
+    if (FRAMEWORK_COMMAND_NAME_SET.has(name)) {
+      return { ok: false, reason: 'reserved_command_name' }
+    }
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return { ok: false, reason: 'bad_plugin_decl' }
+    }
+    if (argsSchema !== undefined && typeof argsSchema !== 'string') {
+      return { ok: false, reason: 'bad_plugin_decl' }
+    }
     // 缺省 false；显式给出必须是布尔（非布尔入世拒，不静默转换）
-    if (readonly !== undefined && typeof readonly !== 'boolean') return null
+    if (readonly !== undefined && typeof readonly !== 'boolean') {
+      return { ok: false, reason: 'bad_plugin_decl' }
+    }
     const command: PluginCommand = { name, entry, readonly: readonly ?? false }
     if (argsSchema !== undefined) command.argsSchema = argsSchema
     out.push(command)
   }
-  return out
+  return { ok: true, commands: out }
 }
 
 /** 成员种类：驱动数据热生效 / 代码起新服务，只认这三种。 */
@@ -174,30 +167,62 @@ function parseBuild(v: Json | undefined): PluginBuildStep[] | null | undefined {
   return out
 }
 
-/**
- * 独占资源类名白名单：认 `port`（绑定固定端口 / 地址的服务）与 `data`（新旧实例不能并存打开
- * 同一份持久存储）。未列入的资源类宿主无法判定换人序是否安全，故显式拒绝（fail-closed），
- * 不静默当无声明处理。
- */
-const EXCLUSIVE_RESOURCE_KINDS: ReadonlySet<string> = new Set(['port', 'data'])
-
-/**
+/** 资源类名形态上限：非空、限长、非 JS 原型键（作对象键会命中原型成员）。 */
+const EXCLUSIVE_RESOURCE_NAME_MAX = 64 /**
  * 解析 `exclusive` 声明：缺失 → `undefined`（无独占资源）；畸形 → `null`（入世拒）。
- * 每项是一个资源类名，只查形态与白名单，不查该资源是否真的被占用（语义不在本层）。
+ * 资源类名开放（`gpu` / `lock` / `singleton` 等皆可）：宿主对 `exclusive` 只做「非空即走独占换人序」，
+ * 不需要理解资源类语义，故只校验形态（非空、限长、非原型键），不查该资源是否真的被占用。
+ * 唯一的语义交叉校验在 `parsePluginDecl`：`data` 类要求 `state === 'durable'`。
  */
 function parseExclusive(v: Json | undefined): string[] | null | undefined {
   if (v === undefined) return undefined
   if (!Array.isArray(v)) return null
   const out: string[] = []
   for (const item of v) {
-    if (typeof item !== 'string' || !EXCLUSIVE_RESOURCE_KINDS.has(item)) return null
+    if (
+      typeof item !== 'string' ||
+      item.length === 0 ||
+      item.length > EXCLUSIVE_RESOURCE_NAME_MAX ||
+      PROTOTYPE_KEYS.has(item)
+    ) {
+      return null
+    }
     out.push(item)
   }
   return out
 }
 
+/** 同语言（TS/JS）入口模块扩展名：`inproc` / `worker` 只接受这类入口。 */
+const SAME_LANGUAGE_ENTRY = /\.(mjs|cjs|js|mts|cts|ts|jsx|tsx)$/i
+
 /**
- * 宿主侧 `plugin.json` 元 schema：14 个字段一个不少、类型正确、枚举合法
+ * 同语言入口模块路径：非空、无空白、安全的包内相对路径、以 TS/JS 扩展名结尾。
+ * `inproc` / `worker` 把入口载入宿主同进程 / worker，异语言代码无法这样加载，故 fail-closed。
+ */
+function isSameLanguageEntry(start: string): boolean {
+  const entry = start.trim()
+  if (entry.length === 0) return false
+  if (/\s/.test(entry)) return false
+  if (!isSafeRelativePath(entry)) return false
+  return SAME_LANGUAGE_ENTRY.test(entry)
+}
+
+/**
+ * 解析 `transport`：缺失 → `undefined`（由调用方回落 `stdio`，存量行为不变）；畸形 → `null`（入世拒）。
+ * `inproc` / `worker` 之间**无缺省**，插件须显式声明其一，且 `start` 必须是同语言入口模块路径。
+ */
+function parseTransport(
+  value: Json | undefined,
+  start: string,
+): ServiceTransport | null | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'stdio' && value !== 'inproc' && value !== 'worker') return null
+  if (value === 'stdio') return value
+  return isSameLanguageEntry(start) ? value : null
+}
+
+/**
+ * 宿主侧 `plugin.json` 元 schema：15 个字段一个不少、类型正确、枚举合法
  * （`state` 两档：`recomputable` / `durable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
  * `build` 可省略（回落宿主旧探测），显式声明则逐令牌过 shell 安全白名单。
@@ -205,10 +230,16 @@ function parseExclusive(v: Json | undefined): string[] | null | undefined {
  */
 export function parsePluginDecl(value: Json): ParseDeclResult {
   if (!isRecord(value)) return { ok: false, reasons: ['bad_plugin_decl'] }
-  const commands = parseCommands(value['commands'])
+  const commandsResult = parseCommands(value['commands'])
+  if (!commandsResult.ok) return { ok: false, reasons: [commandsResult.reason] }
+  const commands = commandsResult.commands
   const members = parseMembers(value['members'])
   const build = parseBuild(value['build'])
   const exclusive = parseExclusive(value['exclusive'])
+  const transport = parseTransport(
+    value['transport'],
+    typeof value['start'] === 'string' ? value['start'] : '',
+  )
   // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
   const rawSchema = value['schema']
   const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
@@ -228,9 +259,9 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     isRecord(value['health']) &&
     stateOk &&
     members !== null &&
-    commands !== null &&
     build !== null &&
-    exclusive !== null
+    exclusive !== null &&
+    transport !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
   // 交叉校验（按声明判，不看运行期目录是否已建）：声明独占 `data` 却非 `durable` 是自相矛盾——
   // 没有持久目录却声明独占持久存储，宿主无法给出对应的换人序语义。
@@ -246,6 +277,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       methods: value['methods'] as Record<string, string[]>,
       pins: value['pins'] as Record<string, string>,
       start: value['start'] as string,
+      transport: transport ?? 'stdio',
       build: build ?? null,
       exclusive: exclusive ?? [],
       protocol: value['protocol'] as string,
@@ -253,7 +285,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       health: value['health'] as Json,
       state: value['state'] as string,
       members: members as PluginMember[],
-      commands: commands as PluginCommand[],
+      commands,
     },
   }
 }
@@ -482,8 +514,22 @@ export function listCommands(world: World, blobsDir?: string): CommandDecl[] {
 
 /** 按命令名解析到入口 def；重名取身份 id 字典序最小者。 */
 export function resolveCommand(world: World, name: string, blobsDir?: string): CommandDecl | null {
-  for (const cmd of listCommands(world, blobsDir)) {
-    if (cmd.name === name) return cmd
-  }
-  return null
+  return buildCommandIndex(world, blobsDir).byName.get(name) ?? null
+}
+
+/** 命令索引：命令列表 + `名字 → 命令` 映射，供宿主按链头缓存、避免每次线性全扫。 */
+export interface CommandIndex {
+  commands: CommandDecl[]
+  byName: Map<string, CommandDecl>
+}
+
+/**
+ * 建命令索引：一次解析全部命令，名字映射按首次出现（身份 id 升序）先到先得，
+ * 与 `resolveCommand` 的「重名取字典序最小者」同口径。
+ */
+export function buildCommandIndex(world: World, blobsDir?: string): CommandIndex {
+  const commands = listCommands(world, blobsDir)
+  const byName = new Map<string, CommandDecl>()
+  for (const command of commands) if (!byName.has(command.name)) byName.set(command.name, command)
+  return { commands, byName }
 }

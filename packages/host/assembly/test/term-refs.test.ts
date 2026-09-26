@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from '../term-refs.ts'
+import { collectRefs, replaceTermRefs, termTopoOrder } from '../term-refs.ts'
+import { normalizeRefPath } from '../../common/paths-safe.ts'
 import { listCommands } from '../index.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'

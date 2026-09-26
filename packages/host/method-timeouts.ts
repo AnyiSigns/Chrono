@@ -3,6 +3,7 @@
 // 声明非法只记 invalid（由宿主落运维日志）、按无覆盖处理，不阻断其余身份 / 方法。
 
 import type { Def, Json, World } from '../kernel/index.ts'
+import { PROTOTYPE_KEYS, isRecord } from './common/json.ts'
 import { MAX_CALL_TIMEOUT_MS } from './service-link.ts'
 
 /**
@@ -20,13 +21,6 @@ export interface MethodTimeoutRead {
   invalid: { identity: string; reason: string }[]
 }
 
-/** JS 原型键：作为声明键出现即拒（否则赋值 / 读取会命中原型成员）。 */
-const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
-
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /** 解析一个身份的 `method_timeouts` 声明；非法条目只记 invalid，不影响同身份其它条目。 */
 function parseMethodTimeouts(
   identity: string,
@@ -39,7 +33,7 @@ function parseMethodTimeouts(
   }
   const entries: MethodTimeoutEntry[] = []
   for (const [key, value] of Object.entries(raw)) {
-    if (key.length === 0 || UNSAFE_KEYS.has(key)) {
+    if (key.length === 0 || PROTOTYPE_KEYS.has(key)) {
       invalid.push({ identity, reason: 'bad_timeout_key' })
       continue
     }

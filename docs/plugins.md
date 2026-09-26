@@ -18,7 +18,7 @@
     每份运行数据**单 owner** 写，别人经能力调用问它，不借世界当共享内存。
 - 成员三种，**同路无特例**：**执行件**（自带服务进程）/ **term**（判定数据）/ **声明**（`plugin.json` + `schema`）。
 - **npm 只是投递信封**：世界才是真源——插件入世（`put` / `batch`）后源码进 ① 才生效；包内第三方依赖（`node_modules`）是宿主侧 ③（可重算）。
-- 插件包放在哪（仓库 `plugins/<name>/` 或 `node_modules/`）**只是位置、不是分类**；宿主按 `state/plugins.json` 的 `[{name, path?}]` 解析（有 `path` 走路径、无 `path` 走 Node 解析）。
+- 插件包放在哪（仓库 `plugins/<name>/` 或 `node_modules/`）**只是位置、不是分类**；宿主默认扫 `plugins/*/plugin.json` **目录发现**，`state/plugins.json` 只作可选覆盖（`[{name, path?, exclude?}]`：有 `path` 走路径、无 `path` 走 Node 解析、`exclude` 移除同名目录）。
 - 「agent engine」不是某个插件，而是**宿主 + 全部插件 + 世界**的组合；**没有特权插件**。
 
 ## 二、长什么样
@@ -26,7 +26,7 @@
 ```
 <plugin-package>/                 # 一个 npm 包（仓库 plugins/<name>/ 或 node_modules/<pkg>，同形）
 ├── package.json     npm 信封：name / version / 依赖 / scripts（宿主不解释，入 ① 作源码）
-├── plugin.json      插件契约：14 字段（`schema` / `build` / `exclusive` 可省略；宿主解释、入世进 ①；与信封无关）
+├── plugin.json      插件契约：15 字段（`schema` / `build` / `exclusive` / `transport` 可省略；宿主解释、入世进 ①；与信封无关）
 ├── README.md        自述（人读）
 ├── .worldignore     入世排除表（可选；宿主读，自身不入 ①）
 ├── test/            测试文件（**不入 ①**）
@@ -46,7 +46,7 @@
 - **`.worldignore`（可选）**：包内文本文件，每行一个相对路径（**按路径段前缀匹配**，故 `test/` 不误伤 `test.js`；`#` 注释、空行忽略），命中即不入 ①；不能命中契约必需文件（`plugin.json` / `package.json` / 锁 / `README.md` / `schema` / `commands` / `members` 路径本身），否则整批拒绝 `bad_worldignore`（畸形 `.worldignore`，如含 `..` 段 / 读取失败，同样拒绝）。插件用它排除构建产物 / 测试 / 语言运行时缓存（`dist/`、`.venv/`、`__pycache__/` 等）——宿主不认识语言，故不内置这些名字。
 - **整服务 Rust 插件的 `src/`**：整服务 Rust 插件把 `src/`（或 `execute/`）登记为 `execute` 成员（如 `{kind:'execute', path:'src/'}`）——机制合法且换代识别需要；包内只放源码 + `Cargo.toml`，构建在 `plugin.json.build` 里显式声明（如 `[{cmd:'cargo', args:['build','--release']}]`），`target/` 等编译产物走 `.worldignore` 排除、并按声明经 ③ 依赖缓存物化。
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
-- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。**注意（口径修正）**：宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`example` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
+- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。**注意（口径修正）**：宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`templates/plugin/` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
 - **term 内 callee 引用必须无环**：`terms/` 里的 `$ref` 在入世时解析成 def 哈希；成环 → **整包入世被拒**（`term_cycle`），其他包照常。term 调用图本就是 defs DAG 的子图（`kernel.md` §十三），环 = 写错。
 - **term 读世界只经 `ctx` 投影**（形状见 `host.md` §五 投影）：内核 `["g", path]` 是**静态字面路径**，故按**身份字面 id** 取（`ctx.ids.<id>.active` / `.body`）；哈希键（`defs.<hash>`）不可达——宿主不把 `defs` 表给 term。
 - 插件包**不得依赖 `kernel` 或其他插件包**；插件间依赖只走 `pins`（npm 依赖只管自带库，见 §三）。
@@ -64,12 +64,13 @@
 | `implements` | 提供的能力类（能力类名） |
 | `methods` | 能力类 → 方法名 |
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
-| `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`） |
+| `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`）。`transport` 为 `inproc` / `worker` 时，`start` 是**同语言入口模块路径**（相对物化目录，如 `execute/main.mjs`），不是 shell 命令 |
+| `transport` | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。**可省略**（缺省 = `stdio`，存量行为不变）。`stdio` 下宿主 spawn 子进程并接管其 stdin/stdout；`inproc` 下宿主把 `start` 指向的同语言入口**动态载入宿主进程同一线程**直调；`worker` 下宿主用 `worker_threads` 载入该入口（独立堆、结构化克隆通信）——三者都**不开端口**，`inproc` / `worker` 也**不走 stdio**。`inproc` / `worker` 之间**无缺省**，须显式声明其一，且只对同语言（TS/JS）入口成立：`start` 含空白 / 逃逸路径 / 非 JS 扩展名即入世拒 `bad_plugin_decl`。**代价**：`inproc` 与宿主同线程，插件崩溃会**带走宿主**（`worker` 有独立堆，崩溃只收该分支），故 `inproc` 默认不推荐。同进程插件一律载入宿主进程（或其起的 worker），**不存在「插件宿主子插件」**（那会要求父插件 import 子插件代码，违反红线 1 / 4） |
 | `build` | **构建声明**（宿主只执行、不解释语言，与 `start` 同性质）：`[{ cmd, args }]`，每步一条命令；物化后、`start` 前按序执行。**可省略**：字段缺失 = 回落宿主存量探测（`package.json` 依赖 / 锁 → npm、`Cargo.toml` → `cargo build --release`），供尚未迁移的插件兼容；**声明了（含空数组）就只跑声明的**——空数组 = 显式「无需构建」。`cmd` 与每个 `args` 令牌必须过 shell 安全白名单（`[A-Za-z0-9_./:@,+-]`）：命令经 `shell:true` 解析，令牌含空白 / 引号 / shell 元字符即入世拒 `bad_plugin_decl`。环境变量（`npm_config_cache` / `CARGO_TARGET_DIR` 等）由宿主注入，不写进声明；产物落点分共享型与随世代型两种合法形态（见 §三 红线 5） |
 | `exclusive` | **独占资源声明**（描述占用事实，不指定宿主调度机制）：`["<资源类>"]`，认 `port`（绑定固定端口 / 地址的服务）与 `data`（新旧实例不能并存打开同一份持久存储；须同时声明 `state: "durable"`，否则入世拒 `bad_plugin_decl`）。**可省略**（缺省 = 无独占资源）。非空 = 本插件的服务实例**独占该资源、新旧实例不能并存**；宿主据此在**代码换代**时改为「先准备 → drain 旧服务 → 再起新服务 → 切端点」（接受该身份短暂空窗），缺省则保持零空窗的「先起新 → 切端点 → drain 旧」。**声明 `durable` 不自动等于独占**：是否并存取决于引擎——支持多进程并发的（如 SQLite 的 WAL + 文件锁）**不**声明 `data`、走零空窗缺省序；独占单写句柄的才声明。判据是引擎事实，不是"有没有持久数据"。**以新世代声明为准**（声明描述新实例的占用事实）。元素非字符串 / 空串 / 未知资源类即入世拒 `bad_plugin_decl`（宿主无法判定未知资源类的换人序是否安全，故 fail-closed）。与 `build` 同性质：插件声明事实，宿主决定调度——以后换调度策略不必改插件（见 `host.md` §五 装配） |
 | `protocol` | 服务协议版本 |
 | `restart` | 重启策略：`policy` = `on-exit`（缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；`backoff` = `none` / `fixed` / `exponential`（缺省 `exponential`）、`backoff_ms` / `backoff_max_ms` 退避参数；`max` 重启上限；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；`drain_ms` 排空期限。v1 默认 `backoff=exponential`、`backoff_ms=500`、`backoff_max_ms=30000`、`max=5`、`window_ms=60000`、`drain_ms=5000` |
-| `health` | 健康判据：`interval_ms` / `timeout_ms` 由宿主消费（v1 默认 10000 / 2000）；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3）；`probe` = 服务侧自述的探针名（**宿主不消费**，服务可自解析） |
+| `health` | 健康判据：`interval_ms` / `timeout_ms`（v1 默认 10000 / 2000）、`failure_threshold`（连续失败阈值，缺省 3、下限 1）、`grace_period_ms`（启动宽限期，缺省 `max(interval_ms, 30000)`，显式 `0` = 关闭）均由宿主消费；宿主健康判定走**协议级 `probe` / `pong`**（`docs/protocol.md` §2.3），不存在服务自述的探针名 |
 | `state` | 状态档：`recomputable`（③ 可重算，缺省——缓存 / 索引 / 水位落 `state/plugins/<id>/`，可随时删）或 `durable`（④ 不可重算——运行数据落 `state/data/<id>/`，跨代存活、进备份、只按身份消失回收）。声明 `durable` 才获得持久数据目录（环境变量 `CHRONO_PLUGIN_DATA` 注入）；**引擎与格式归插件**（SQLite / 追加日志 / 裸文件 / 嵌入式 KV 皆可），宿主不读不校验不迁移。口径见 `host.md` §五「插件持久数据」 |
 | `members` | 成员清单，每项带 `kind`（`execute` / `term` / `schema`）——「数据热生效 vs 代码起新服务」由此驱动，不按目录名 |
 | `commands` | 命令声明：`{ name, entry, argsSchema, readonly? }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下。`readonly` 可选布尔（缺省 `false`；显式非布尔入世拒）：`true` = **只读命令（纯查询）**，宿主不广播 run 生命周期事件、不落审计、不推进链头——只有确认命令不写链、不产 write / plan 时才标（产出即 `refused`、reason `readonly_violation`） |
@@ -93,8 +94,10 @@
 - **schema 顶层「宿主消费键」**（宿主机械读、不认识业务；其余键归插件自用）：
   `periodic: [{ command | method, every_ms, reads? }]`（定时触发，`host.md` §五 定时触发）；
   `method_timeouts: {"<能力类>.<方法>": ms}`（方法级调用超时覆盖，`host.md` §五 效果）；
+  `audit_tier: {"<能力类>": { max_records, max_bytes }}`（审计保留分档：声明端口走自己的预算，超框架上限截到上限，未声明走 default 档）；
+  `audit_redact: {"<能力类>.<方法>": [键...]}`（审计脱敏白名单：命中方法只落白名单键 + 派生 `has`，精确键优先、其次裸方法名）；
   `assets_manifest: [{ path, sha256, size }]`（投递目录大资产直拷，`host.md` §五 宿主扩展面）。
-  三键声明非法均只记运维日志、不阻断装载。
+  声明非法均按未声明处理、不阻断装载。
 
 ## 三、做法红线
 
@@ -108,7 +111,8 @@
    - **共享型产物**（Rust 二进制、原生扩展 `*.node` 等）：落宿主侧 ③ 共享缓存（如 `state/deps/cargo-target/`），多世代复用；服务按声明路径去找（缓存目录由宿主经环境变量注入，不写进声明）。
    - **随世代产物**（前端 bundle 等）：落**物化目录内**（如 `dist/` / `execute/web/dist/`），因为要被 `import.meta.url` 相对定位；不跨世代共享，每世代各一份，随该世代目录一起回收。
    `node_modules` 等依赖目录由宿主按通用排除处理（宿主侧 ③、不入世）；构建产物则必须由插件 `.worldignore` 显式排除——宿主不认识语言，故不内置 `dist/` 等名字。产物若随源码入世，字节差异会污染内容哈希并触发无意义的连续换代。
-6. **物理端点不进世界**：服务端点 = 子进程 **stdio**（宿主接管）、入站面用 socket；只住宿主侧 ③。
+   **例外：term 编译产物是定义本体，必须入世。** 工具链把糖化源 `terms.src/` 编译出的 `terms/*.json` 是**判定定义本身**，不是可重算副产物，故**不得**进 `.worldignore`；被排除的是糖化源 `terms.src/` 与构建脚本。这条「term 产物可入世」与「编译必须确定性」**绑定**（`term-toolchain.md` §六.3：同源两次编译逐字节一致）：产物虽属定义本体，若同源重编译字节漂移，每次构建仍会触发无意义换代乃至换代死循环——正是上面「产物必须排除」要防的病。故两条规则必须一起满足：产物入世的前提是编译确定性。
+6. **物理端点不进世界**：服务端点按 `transport` 三形态（`stdio` = 子进程、`inproc` = 宿主同线程、`worker` = 宿主起的 worker；均由宿主接管；`inproc` / `worker` 无独立物理端点）、入站面用 socket；只住宿主侧 ③。
 7. **状态按声明分档，运行数据自持久化**：③ 可重算（缺省）落 `CHRONO_PLUGIN_STATE`；④ 不可重算须显式声明 `state: "durable"`，运行数据落 `CHRONO_PLUGIN_DATA`（宿主划地盘、保证跨代存活与备份归属，**引擎 / schema / 迁移 / 事务 / 并发全归插件**）。**未声明 `durable` 不得把物化目录当持久层**（物化目录是 ③、跨代不保留）。跨代不能并存开同一份存储的引擎另声明 `exclusive: ["data"]`。**不得为持久化而借道世界**：运行记录写世界是红线 2 的违反。密钥走世界数据 `auth_ref = {kind:'local'|'env', name}`（只存引用不存本体，见 `host.md` §五 其它），不进 `plugin.json` 明文、不进世界 body、不进持久存储明文。
 8. **执行件不承担校验**：校验是 term / schema，宿主机械检查。
 9. **命令是具名入口**：宿主按声明路由走一次 run，不得拿命令当写链旁路；命令名不得占用宿主保留字。
@@ -153,7 +157,9 @@
 
 - **形态 = 服务，不是库**：插件之间不 import（红线 1 / 4），故存储只能经能力调用（`eff` → 宿主路由 → stdio 帧）。这决定定位：**粗粒度数据操作**的默认家。逐 token 写、向量全扫这类热路径留在 owner 进程内部，不跨进程往返（理由与审计分档同源，见 `host.md` §五 效果）。
 - **按引擎分身份，不合成一个**：关系 / 查询型与文件 / 文档型各自独立身份、独立换代、独立 `pins`——需要原生构建的引擎不拖累只要文件读写的场景。
-- **命名空间按 `emitter` 分**：存储服务按调用帧 `env.emitter`（宿主填，见 `host.md` §五 效果）为每个 owner 身份分库，**不接受调用方自报的 namespace 参数**（可伪造）。一个 owner 一份库：坏一份不连坐，身份从 `world.ids` 消失时可整份清理。
+- **命名空间按 `emitter` 分**：存储服务按调用帧 `env.emitter`（宿主填，见 `host.md` §五 效果）为每个 owner 身份分库，**不接受调用方自报的 namespace 参数**（可伪造）。一个 owner 一份库：坏一份不连坐。
+- **必须提供"丢弃某命名空间"方法**：owner 退役时宿主只删得到 owner 自己的 ④ 目录，删不到存储服务库里属于它的那份。清理责任在被委托方，须在 `README.md` 写明——不提供即静默漏数据。
+- **谁该用它**：低频、不在意延迟的 owner（待办 / 界面配置 / 清单类）。**热路径自写**——每回合多写的 owner（会话 / 消息 / 输入槽）付不起每次读写一趟 `eff` 往返加一条审计。判据是调用频次与延迟敏感度，不是"是不是数据"。
 - **自身声明 `state: "durable"`**，并按引擎事实决定是否 `exclusive: ["data"]`。
 - **大字节不走它**：二进制走 `host.asset.put` / `host.asset.get`（内容寻址落 `state/assets/`，上限 8 MiB，见 `host.md` §五 资产），不塞进存储服务的 JSON 帧。
 - **pin 它即受保护**：owner 把持久化委托给存储服务后，该 `pins` 进受保护身份表——入世（`seed` / `pack` / `validate_package`）删掉它即整批拒 `protected_pin_removed`，因为那等于让写入静默失效。**覆盖范围与其它受保护身份同**：裸运行期顶层 `add_gen` 不经入世门禁，故这条守卫不覆盖它（`host.md` §五 宿主扩展面）。
@@ -170,10 +176,10 @@
 
 - 一个 npm 包：`package.json`（npm 信封）+ `plugin.json`（机器契约）、`README.md`（人读自述）、
   `execute/`（执行件）、`terms/`（判定数据）、`schema/`（声明 schema）、`.worldignore`（可选：入世排除表）。
-- `plugin.json` 的 14 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
-  `exclusive` / `protocol` / `restart` / `health` / `state` / `members` / `commands`。
+- `plugin.json` 的 15 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
+  `exclusive` / `transport` / `protocol` / `restart` / `health` / `state` / `members` / `commands`。
   **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；`build` 可省略（回落宿主存量探测）；
-  `exclusive` 可省略（无独占资源，走零空窗换代）。其余 11 个字段一个不少。
+  `exclusive` 可省略（无独占资源，走零空窗换代）；`transport` 可省略（缺省 `stdio`）。其余 11 个字段一个不少。
 - **有运行数据的插件另交两样**：`state: "durable"` 声明，以及 `README.md` 里写清存储引擎、目录布局与迁移策略（人读自述义务，见红线 10）。
 
 **行为**（§三 十条红线）

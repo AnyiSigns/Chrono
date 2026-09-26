@@ -3,9 +3,9 @@
 // 方言口径见 `docs/plugins.md` §二，落点见 `docs/plans/host-plan.md` A13。
 
 import { deepEq, t } from '../../kernel/index.ts'
-import type { Json } from '../../kernel/index.ts'
-
-type Rec = { [k: string]: Json }
+import type { Json, World } from '../../kernel/index.ts'
+import { isRecord } from '../common/json.ts'
+import type { CommandDecl } from './decl.ts'
 
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const KEYWORDS = new Set([
@@ -25,10 +25,6 @@ const KEYWORDS = new Set([
 ])
 /** 注记键：合法但不参与校验。 */
 const ANNOTATIONS = new Set(['title', 'description', 'default', 'examples'])
-
-function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isNonNegativeInteger(value: Json | undefined): boolean {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
@@ -193,4 +189,21 @@ export function validateArgs(schema: Json, args: Json): boolean {
     }
   }
   return true
+}
+
+/**
+ * 命令 `args` 的机械校验（无 socket 版）：命令入口 / 入站转发 / 周期触发共用同一口径。
+ * 运行期 `add_gen` 产出的 `argsSchema` 未必过入世门禁，故这里补一次方言元校验（fail-closed）。
+ * 缺省 `argsSchema` = 不设门；schema def 缺失或方言非法 → `bad_args_schema`。
+ */
+export function commandArgsIssue(
+  world: World,
+  command: CommandDecl,
+  args: Json,
+): 'ok' | 'bad_args_schema' | 'bad_args' {
+  if (command.argsSchema === null) return 'ok'
+  const schemaDef = world.defs[command.argsSchema]
+  const dialect = schemaDef === undefined ? null : validateArgsSchema(schemaDef.body)
+  if (schemaDef === undefined || dialect === null || !dialect.ok) return 'bad_args_schema'
+  return validateArgs(schemaDef.body, args) ? 'ok' : 'bad_args'
 }

@@ -1,13 +1,13 @@
-// 日志与世界：空世界常量、链位置、锚点、重放与段校验。
+// 日志与世界：两个身份（位置哈希 / 内容摘要）、空世界常量、链位置、锚点、重放与段校验。
 // 逐 op 的机械语义在 journal.apply.ts（允许的点分段拆分），本文件转口其公共件。
 
 import { KernelError } from './types.ts'
-import type { Def, Entry, Head, Hash, Identity, World } from './types.ts'
-import { cloneDefs } from './defs.ts'
+import type { Def, Entry, Hash, Head, Identity, Json, World } from './types.ts'
+import { cloneDefs, defsKeys } from './defs.ts'
+import { H } from './hash.ts'
 import { applyEntry } from './journal.apply.ts'
-import { entryHash, worldRev } from './journal.id.ts'
 
-export { applyEntry, entryHash, worldRev }
+export { applyEntry }
 
 // 冻结（含内层 map）：兑现"空世界字面量只读"——误用未克隆的 EMPTY_WORLD 就地写入会当场抛
 export const EMPTY_WORLD: World = Object.freeze({
@@ -30,6 +30,53 @@ export function cloneWorld(w: World): World {
     ids[key] = { ...identity, gens: [...identity.gens] }
   }
   return { defs: cloneDefs(w.defs), ids }
+}
+
+/**
+ * 单条 entry 的位置哈希：只吃 `argsHash` 等定长字段，不读 `args`（O(1)）。
+ * @param e 待哈希 entry——其 `argsHash` 必须已定（commit 回填后，或已落盘 entry）
+ * @returns 64-hex 链位置；与 `pos([e])` 同值
+ */
+export function entryHash(e: Entry): Hash {
+  // ref 可为 undefined：canonicalJson 统一剔除 undefined 键，Json 类型未表达这一口径
+  return H({
+    at: e.at,
+    seq: e.seq,
+    prev: e.prev,
+    op: e.op,
+    argsHash: e.argsHash,
+    by: e.by,
+    ref: e.ref,
+  } as unknown as Json)
+}
+
+/**
+ * 内容身份：`H({ keys, ids 摘要 })`。keys = defs 键 code-unit 升序；
+ * ids 摘要只吃 `schema` / `active` / gen 内容哈希，**不吃 `born` / `adopted` 履历**。
+ * 按需算（快照 / 跨世界比较），不挂在每条写入上。
+ * @param world 任意世界（只读）
+ * @returns 64-hex 内容身份；同内容同 active 而履历不同的世界必得同值
+ */
+export function worldRev(world: World): Hash {
+  const keys = defsKeys(world.defs).slice().sort()
+  const digest: Record<string, Json> = {}
+  for (const key of Object.keys(world.ids)) {
+    const identity = world.ids[key]
+    digest[key] = {
+      id: identity.id,
+      schema: identity.schema,
+      active: identity.active,
+      gens: identity.gens.map((g) => ({
+        seq: g.seq,
+        payload: g.payload,
+        pins: g.pins,
+        sig: g.sig,
+        ...(g.graft ? { graft: g.graft } : {}),
+        ...(g.base !== undefined ? { base: g.base } : {}),
+      })),
+    }
+  }
+  return H({ keys, ids: digest })
 }
 
 /**

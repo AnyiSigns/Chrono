@@ -2,6 +2,7 @@ import { describe, expect, it, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { ServiceLink } from '../service-link.ts'
+import { createStdioChannel } from '../assembly/service-host.ts'
 import { cleanupTempRoot, createTempRoot } from './test-helpers.ts'
 import { FIXTURE_ALPHA, writeTempPackage } from './test-helpers-ext.ts'
 
@@ -42,7 +43,10 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
 
   it('握手成功：manifest 与 fixture 声明一致', async () => {
     const child = spawnFixture(FIXTURE_ALPHA)
-    const link = new ServiceLink(child, { impl: 'toy-alpha', gen: 'g'.repeat(64) })
+    const link = new ServiceLink(createStdioChannel(child), {
+      impl: 'toy-alpha',
+      gen: 'g'.repeat(64),
+    })
     const manifest = await link.handshake(2000)
     expect(manifest.v).toBe('1')
     expect(manifest.identity).toBe('toy-alpha')
@@ -54,7 +58,10 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
 
   it('probe → pong ok，drain → bye', async () => {
     const child = spawnFixture(FIXTURE_ALPHA)
-    const link = new ServiceLink(child, { impl: 'toy-alpha', gen: 'g'.repeat(64) })
+    const link = new ServiceLink(createStdioChannel(child), {
+      impl: 'toy-alpha',
+      gen: 'g'.repeat(64),
+    })
     await link.handshake(2000)
     const ok = await link.probe(1000)
     expect(ok).toBe(true)
@@ -71,7 +78,10 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
       serviceConfig: { callMode: 'silent' },
     })
     const child = spawnFixture(pkgRoot)
-    const link = new ServiceLink(child, { impl: 'toy-slow', gen: 'g'.repeat(64) })
+    const link = new ServiceLink(createStdioChannel(child), {
+      impl: 'toy-slow',
+      gen: 'g'.repeat(64),
+    })
     await link.handshake(2000)
     const controller = new AbortController()
     const pending = link.call('toy.slow', 'echo', null, 60_000, controller.signal)
@@ -91,7 +101,10 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
       serviceConfig: { callMode: 'silent' },
     })
     const child = spawnFixture(pkgRoot)
-    const link = new ServiceLink(child, { impl: 'toy-slow', gen: 'g'.repeat(64) })
+    const link = new ServiceLink(createStdioChannel(child), {
+      impl: 'toy-slow',
+      gen: 'g'.repeat(64),
+    })
     await link.handshake(2000)
     expect(link.hasInflightCall()).toBe(false)
     const controller = new AbortController()
@@ -104,7 +117,10 @@ describe('服务协议 ServiceLink（直连 fixture 服务）', () => {
 
   it('link.close() 即 stdin EOF：服务自退出（断连自退出义务）', async () => {
     const child = spawnFixture(FIXTURE_ALPHA)
-    const link = new ServiceLink(child, { impl: 'toy-alpha', gen: 'g'.repeat(64) })
+    const link = new ServiceLink(createStdioChannel(child), {
+      impl: 'toy-alpha',
+      gen: 'g'.repeat(64),
+    })
     await link.handshake(2000)
     const exited = new Promise<number | null>((resolve) =>
       child.once('exit', (code) => resolve(code)),

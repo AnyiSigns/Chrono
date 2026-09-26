@@ -319,7 +319,12 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-probe',
       start: 'node execute/main.js',
       implements: ['toy.probe'],
-      health: { probe: 'toy.probe.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
       restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { probeFailTotal: 2 },
     })
@@ -357,7 +362,12 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-endpoint',
       start: 'node execute/main.js',
       implements: ['toy.endpoint'],
-      health: { probe: 'toy.endpoint.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
       // fixed 退避 400ms：退出到重挂之间有确定的可观测窗口
       restart: {
         policy: 'on-exit',
@@ -398,7 +408,12 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-silentprobe',
       start: 'node execute/main.js',
       implements: ['toy.silentprobe'],
-      health: { probe: 'toy.silentprobe.echo', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
       restart: { policy: 'on-exit', backoff: 'none', max: 1, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { probeMode: 'silent' },
     })
@@ -544,7 +559,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-event',
       start: 'node execute/main.js',
       implements: ['toy.event'],
-      health: { probe: 'toy.event.echo', interval_ms: 100, timeout_ms: 200, grace_period_ms: 0 },
+      health: { interval_ms: 100, timeout_ms: 200, grace_period_ms: 0 },
       serviceConfig: { eventTopic: 'ping', eventPayload: { n: 1 }, eventOnProbe: true },
     })
     const events: Array<{ impl: string; topic: string; payload: Json }> = []
@@ -651,32 +666,6 @@ describe('装配运行时 startAssembly', () => {
     expect(records.some((r) => r.kind === 'service' && r.event === 'restart_exhausted')).toBe(false)
     expect(handle.loaded()).toEqual([])
     expect(handle.endpoints.list()).toHaveLength(0)
-  }, 15000)
-
-  it('health.probe 填任意字符串（含空串）不影响装载与健康判定（判定走协议级 probe/pong）', async () => {
-    const hpRoot = writeTempPackage(root, {
-      identity: 'toy-healthprobe',
-      start: 'node execute/main.js',
-      implements: ['toy.healthprobe'],
-      health: { probe: '', interval_ms: 100, timeout_ms: 100, failure_threshold: 1, grace_period_ms: 0 },
-      restart: { policy: 'on-exit', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
-      serviceConfig: { probeFailTotal: 1 },
-    })
-    const { handle } = await startWorld([{ name: 'toy-healthprobe', path: hpRoot }])
-    await waitFor(
-      () =>
-        records.some(
-          (r) =>
-            r.kind === 'service' &&
-            r.event === 'exit' &&
-            r.impl === 'toy-healthprobe' &&
-            r.reason === 'health_timeout',
-        ),
-      '空 probe 字段下健康判定仍触发（协议级 ok:false → health_timeout）',
-      8000,
-    )
-    await waitForQuiescence(() => records, 'toy-healthprobe 重启后恢复健康')
-    expect(handle.loaded().map((x) => x.id)).toContain('toy-healthprobe')
   }, 15000)
 
   it('stop() 按启动序逆序 drain：顺序证据（两静默服务各记 drain_timeout，记录序 = 启动序逆序）', async () => {
@@ -917,7 +906,7 @@ describe('装配运行时 startAssembly', () => {
       { name: 'toy-poldef', path: defRoot },
       { name: 'toy-polbogus', path: bogusRoot },
     ])
-    const rowOf = (id: string): { pid: number } | null =>
+    const rowOf = (id: string): { pid?: number } | null =>
       handle.endpoints.get(id, world.ids[id].active as Hash, id.replace('toy-', 'toy.'), 'echo')
     const firstRowPids = new Map(
       ['toy-poldef', 'toy-polbogus'].map((id) => {
@@ -1235,7 +1224,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.health.two'],
       health: {
-        probe: 'toy.health.two.echo',
         interval_ms: 100,
         timeout_ms: 100,
         failure_threshold: 3,
@@ -1249,7 +1237,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.health.three'],
       health: {
-        probe: 'toy.health.three.echo',
         interval_ms: 100,
         timeout_ms: 100,
         failure_threshold: 3,
@@ -1307,7 +1294,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.grace.hold'],
       health: {
-        probe: 'toy.grace.hold.echo',
         interval_ms: 50,
         timeout_ms: 100,
         failure_threshold: 1,
@@ -1321,7 +1307,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.grace.kill'],
       health: {
-        probe: 'toy.grace.kill.echo',
         interval_ms: 50,
         timeout_ms: 100,
         failure_threshold: 1,
@@ -1362,7 +1347,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.probereset'],
       health: {
-        probe: 'toy.probereset.echo',
         interval_ms: 50,
         timeout_ms: 200,
         failure_threshold: 3,
@@ -1384,13 +1368,14 @@ describe('装配运行时 startAssembly', () => {
     handles.push(handle)
     // 等 9 次探针（3 个完整循环）：若成功不复位，第 4 次探针即累计到阈值 3 被杀
     await waitFor(
-      () =>
-        events.filter((e) => e.impl === 'toy-probereset' && e.topic === 'probe').length >= 9,
+      () => events.filter((e) => e.impl === 'toy-probereset' && e.topic === 'probe').length >= 9,
       '完成 3 个探针循环',
       8000,
     )
     expect(
-      records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-probereset'),
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-probereset',
+      ),
     ).toBe(false)
     expect(handle.loaded().some((x) => x.id === 'toy-probereset')).toBe(true)
   }, 15000)
@@ -1401,7 +1386,6 @@ describe('装配运行时 startAssembly', () => {
       start: 'node execute/main.js',
       implements: ['toy.attemptsreset'],
       health: {
-        probe: 'toy.attemptsreset.echo',
         interval_ms: 50,
         timeout_ms: 200,
         failure_threshold: 3,
@@ -1423,9 +1407,7 @@ describe('装配运行时 startAssembly', () => {
     expect(
       records.some(
         (r) =>
-          r.kind === 'service' &&
-          r.event === 'restart_exhausted' &&
-          r.impl === 'toy-attemptsreset',
+          r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-attemptsreset',
       ),
     ).toBe(false)
     await waitFor(
@@ -1506,7 +1488,7 @@ describe('装配运行时 startAssembly', () => {
     const v1 = world.ids[identity].active as Hash
     const v2 = world.ids[identity].gens[0].payload
 
-    let oldPid = -1
+    let oldPid: number | undefined = -1
     let oldAliveAtPrepare: boolean | null = null
     const restore = async (cwd: string): Promise<void> => {
       if (cwd.endsWith(v2)) oldAliveAtPrepare = isPidAlive(oldPid)

@@ -9,11 +9,15 @@ import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
 import type { AuditQuery, AuditReport } from './audit.ts'
 import { parseAuditFilter } from './audit.ts'
+import { decodeBase64Strict, isSha256Hex } from './common/cas.ts'
+import { asRecord } from './common/json.ts'
 import type { EndpointCallResult } from './endpoint-table.ts'
 import type { HostCapabilityCall } from './effect/index.ts'
 import type { Hash, Json, World } from '../kernel/index.ts'
 
 export interface HostCapabilityDeps {
+  /** 仓库根：`validate_package` 的受保护 pin 名单从它的 `chrono.config.json` 读。 */
+  root: string
   assetsDir: string
   /** 源码 CAS 目录：`source.read` 解析 pointer blob 时经它读字节。 */
   blobsDir: string
@@ -37,10 +41,6 @@ export interface HostCapabilityDeps {
   ) => { ok: true; run: string } | { ok: false; code: 'too_many_runs' }
   /** 停机中：不再受理新 run。 */
   isStopping: () => boolean
-}
-
-function asRecord(value: Json | undefined): { [k: string]: Json } | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null
 }
 
 function bad(code: string, message: string): EndpointCallResult {
@@ -99,9 +99,9 @@ function blobPutCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
   const bytes = record === null ? undefined : record['bytes']
   if (typeof bytes !== 'string') return bad('bad_blob', 'blob.put expects { bytes(base64) }')
-  const decoded = Buffer.from(bytes, 'base64')
   // 只收规范 base64（往返一致才认），与 asset.put 同口径
-  if (decoded.toString('base64') !== bytes) return bad('bad_blob', 'non-canonical base64')
+  const decoded = decodeBase64Strict(bytes)
+  if (decoded === null) return bad('bad_blob', 'non-canonical base64')
   if (decoded.length > MAX_BLOB_BYTES) return bad('blob_too_large', 'blob exceeds limit')
   const result = putBlob(deps.blobsDir, decoded)
   if (!result.ok) return bad(result.code, 'blob put rejected')
@@ -155,8 +155,6 @@ const DEF_READ_MAX_BYTES = 4 * 1024 * 1024
 /** 越权门禁的闭包缓存条目上限（按「身份 + 投影 body 哈希」缓存，body 不可变 ⇒ 命中可复用）。 */
 const DEF_SCOPE_CACHE_MAX = 64
 
-const HASH_PATTERN = /^[0-9a-f]{64}$/
-
 /**
  * `def.read { identity, hashes }`：按哈希只读解析 def body——投影只回引用，消费方按需取 body。
  * 只读、有界（单次哈希数 / 返回字节数）、越权 fail-closed：只放行从该身份投影 body 可达的 def；
@@ -197,7 +195,7 @@ function defReadCall(
   let bytes = 0
   let truncated = false
   for (const raw of hashes) {
-    if (typeof raw !== 'string' || !HASH_PATTERN.test(raw)) {
+    if (!isSha256Hex(raw)) {
       return bad('bad_directive', 'def.read expects 64-hex hashes')
     }
     if (Object.hasOwn(defs, raw)) continue
@@ -235,7 +233,10 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
   if (read === null) return bad('not_found', identity)
   const entry = resolveTreeEntry(world, read.tree, path)
   if (entry === null || entry.mode !== 'file') return bad('not_found', path)
-  const bytes = blobBytes(world.defs[entry.hash] as { body?: Json; enc?: Json } | undefined, deps.blobsDir)
+  const bytes = blobBytes(
+    world.defs[entry.hash] as { body?: Json; enc?: Json } | undefined,
+    deps.blobsDir,
+  )
   if (bytes === null) return bad('not_found', path)
   return { ok: true, value: { path, content: bytes.content, size: bytes.size } }
 }
@@ -244,7 +245,13 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
 function validatePackageCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
   const files = record === null ? undefined : record['files']
-  const outcome = validatePackage(deps.world(), deps.runtimeDir, files ?? null, deps.blobsDir)
+  const outcome = validatePackage(
+    deps.world(),
+    deps.runtimeDir,
+    files ?? null,
+    deps.blobsDir,
+    deps.root,
+  )
   if (!outcome.accepted) return bad('bad_directive', outcome.message)
   return { ok: true, value: outcome.report as unknown as Json }
 }

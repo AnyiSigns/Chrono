@@ -76,8 +76,10 @@
 - **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now, emitter}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`，`emitter` = 发起该反向调用的服务身份）。
   发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如 `#29` 把密钥下传 `#25` `exec`）：宿主原样透传给目标、
   **端口审计里对值脱敏**（`{redacted:true, keys:[…]}`，见 `host.md` §五「反向调用 `env` 值脱敏」）。
-- 解析不到 → `port.error{code:'unresolved_cap'}`；目标未就绪 → `not_loaded`；目标返回 `error` 时原样回
+- 解析不到 → `port.error{error:'unresolved_cap'}`；目标未就绪 → `not_loaded`；目标返回 `error` 时原样回
   `port.error`（**失败作数据**，调用方可据此分支 / 降级，不炸本轮）。
+- **错误码字段口径**：入站 `error` 帧（§三）与服务 → 宿主 `error` 帧（§2.2）一律用 `code`；
+  反向 `port.error` 属服务协议族（按 `ok` 判别），错误码字段名为 `error`——两族命名暂未统一，切换另立。
 - **审计分流（写死）**：世界里的 `eff` 记 `EffectAudit` 并入链；**反向调用只记宿主侧端口审计，不入世界、不参与重放**
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。

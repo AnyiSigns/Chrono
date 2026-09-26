@@ -107,7 +107,7 @@ describe('validate_package dry-run 不写 CAS', () => {
         start: '',
         protocol: '1',
         restart: { policy: 'never' },
-        health: { probe: '' },
+        health: {},
         state: 'recomputable',
         members: [],
         commands: [],

@@ -42,12 +42,17 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     await cleanupTempRoot(root)
   })
 
-  function seedSecrets(callValue: Json | undefined, callMode?: string): void {
+  function seedSecrets(callValue: Json | undefined, callMode?: string, redact = true): void {
     const impl = writeTempPackage(root, {
       identity: 'secrets-impl',
       implements: ['secrets'],
       methods: { secrets: ['resolve'] },
       start: 'node execute/main.js',
+      // 声明式脱敏：宿主按被调身份 schema 的 audit_redact 白名单脱敏（无 port 特判）
+      schema: {
+        type: 'object',
+        ...(redact ? { audit_redact: { 'secrets.resolve': ['name', 'kind'] } } : {}),
+      },
       serviceConfig:
         callMode === undefined ? { callValue } : { callMode, callErrorCode: 'secret_missing' },
     })
@@ -111,5 +116,22 @@ describe('H7 效果审计脱敏（secrets.resolve）', () => {
     const body = secretsAuditBody()
     expect(body.result).toEqual({ name: 'API_KEY', kind: 'local', has: false })
     expect(body.outcome).toBe('error')
+  })
+
+  it('未声明 audit_redact 的方法审计落完整结果（声明化后不再有 port 特判）', async () => {
+    seedSecrets({ token: SECRET }, undefined, false)
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const result = await client.command('toy-caller.resolve')
+      expect(result.status).toBe('done')
+    } finally {
+      client.close()
+    }
+    const body = secretsAuditBody()
+    // 未声明 → 落完整 EffResult（{ok,value}），声明化后不再有 port 特判
+    expect(body.result).toEqual({ ok: true, value: { token: SECRET } })
+    expect(body.outcome).toBe('ok')
   })
 })

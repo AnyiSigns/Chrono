@@ -13,14 +13,15 @@ const RUNTIME_FILES = [
   'types.ts',
   'value.ts',
   'hash.ts',
-  'hash.utf8.ts',
   'defs.ts',
   'journal.ts',
-  'journal.id.ts',
   'journal.apply.ts',
   'commit.ts',
-  'commit.form.ts',
   'machine.ts',
+  'machine.eval.ts',
+  'patch.ts',
+  'rebase.ts',
+  'recycle.ts',
   'run.ts',
 ]
 function runtimeSources(): [string, string][] {

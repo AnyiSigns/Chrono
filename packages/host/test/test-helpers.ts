@@ -56,7 +56,7 @@ export function createToyPlugin(root: string): string {
           window_ms: 60000,
           drain_ms: 5000,
         },
-        health: { probe: 'toy.echo.echo', interval_ms: 10000, timeout_ms: 2000 },
+        health: { interval_ms: 10000, timeout_ms: 2000 },
         state: 'recomputable',
         members: [
           { kind: 'term', path: 'terms/' },

@@ -1,4 +1,4 @@
-// 编排：一次输入 → 一条输出。整次调用原子——cloneWorld 恰一次，refused / waiting /
+// 编排：一次输入 → 一条输出。整次调用原子——非 idle 路径 cloneWorld 恰一次，refused / waiting /
 // idle 一律交回 input.world / input.head（克隆体只服务 done 路径）；错误收口（catch 转
 // refused）只做这一次、只在最外层。
 
@@ -16,17 +16,25 @@ import type {
   Json,
   KernelInput,
   KernelOutput,
+  Path,
   World,
 } from './types.ts'
 
 type EvalDirective = Extract<Directive, { kind: 'eval' }>
+
+/** 失败节点定位（可选）：由机器在失败路径回溯得出，随拒绝观测透出 run 出口。 */
+interface FailureLoc {
+  at?: Path
+  def?: Hash
+  callAt?: Path
+}
 
 /** run 的观测出口：write 观测的 pos 由 run 传入，观测函数自己不读状态。 */
 type ObsOutcome =
   | { kind: 'write'; o: CommitOutcome; pos: Hash | null }
   | { kind: 'eval'; r: EvalResult }
   | { kind: 'extern' }
-  | { kind: 'refused'; reasons: string[] }
+  | { kind: 'refused'; reasons: string[]; at?: Path; def?: Hash; callAt?: Path }
 
 /** 一次调用的可变状态：head 推进、gas 跨 directive 共享、观测累积。 */
 interface RunState {
@@ -71,14 +79,14 @@ function usageOf(st: RunState): { gas: number; depth: number } {
   return { gas: st.input.limits.gas - st.gasLeft, depth: st.peakDepth }
 }
 
-/** run 级拒绝：世界/head 回到入口，观测保留并在末尾补拒因——拒因经 observations 承载。 */
-function refuse(st: RunState, reasons: string[]): KernelOutput {
+/** run 级拒绝：世界/head 回到入口，观测保留并在末尾补拒因——拒因与失败节点经 observations 承载。 */
+function refuse(st: RunState, reasons: string[], loc?: FailureLoc): KernelOutput {
   return {
     world: st.input.world,
     journal: [],
     head: st.input.head,
     pending: null,
-    observations: [...st.obs, observationsOf(null, { kind: 'refused', reasons }) as Json],
+    observations: [...st.obs, observationsOf(null, { kind: 'refused', reasons, ...loc }) as Json],
     status: 'refused',
     usage: usageOf(st),
   }
@@ -117,14 +125,14 @@ function handleEval(st: RunState, i: number, d: EvalDirective): KernelOutput | n
       usage: usageOf(st),
     }
   }
-  if (!r.ok) return refuse(st, [r.error])
+  if (!r.ok) return refuse(st, [r.error], { at: r.at, def: r.def, callAt: r.callAt })
   const view = observationsOf(d, { kind: 'eval', r })
   if (view !== null) st.obs.push(view)
   return null
 }
 
 function isBodyTerm(body: Json): boolean {
-  return Array.isArray(body) && typeof body[0] === 'string' && TERM_TAGS.includes(body[0])
+  return Array.isArray(body) && typeof body[0] === 'string' && TERM_TAGS.has(body[0])
 }
 
 /**
@@ -151,14 +159,28 @@ export function observationsOf(d: Directive | null, outcome: ObsOutcome): Json |
         entry: d && d.kind === 'eval' ? d.entry : null,
         ok: r.ok,
       }
-      if (r.ok) view.value = r.value
-      else view.error = r.error
+      if (r.ok) {
+        view.value = r.value
+      } else {
+        view.error = r.error
+        if (r.at !== undefined) view.at = r.at
+        if (r.def !== undefined) view.def = r.def
+        if (r.callAt !== undefined) view.callAt = r.callAt
+      }
       return view as unknown as Json
     }
     case 'extern':
       return { kind: 'extern', payload: d && d.kind === 'extern' ? d.payload : null }
-    case 'refused':
-      return { kind: 'refused', reasons: outcome.reasons }
+    case 'refused': {
+      const view: { [k: string]: Json | undefined } = {
+        kind: 'refused',
+        reasons: outcome.reasons,
+      }
+      if (outcome.at !== undefined) view.at = outcome.at
+      if (outcome.def !== undefined) view.def = outcome.def
+      if (outcome.callAt !== undefined) view.callAt = outcome.callAt
+      return view as unknown as Json
+    }
   }
 }
 
@@ -171,15 +193,6 @@ export function observationsOf(d: Directive | null, outcome: ObsOutcome): Json |
  *   directives、同一 now 回灌 results 后重调（续跑契约）
  */
 export function run(input: KernelInput): KernelOutput {
-  const st: RunState = {
-    input,
-    world: cloneWorld(input.world), // 整体成本 = 一次复制 + 每条 entry O(1)
-    head: input.head,
-    journal: [],
-    obs: [],
-    gasLeft: input.limits.gas,
-    peakDepth: 0,
-  }
   if (input.directives.length === 0) {
     return {
       world: input.world,
@@ -190,6 +203,15 @@ export function run(input: KernelInput): KernelOutput {
       status: 'idle',
       usage: { gas: 0, depth: 0 },
     }
+  }
+  const st: RunState = {
+    input,
+    world: cloneWorld(input.world), // 整体成本 = 一次复制 + 每条 entry O(1)；idle 路径不付
+    head: input.head,
+    journal: [],
+    obs: [],
+    gasLeft: input.limits.gas,
+    peakDepth: 0,
   }
   try {
     for (let i = 0; i < input.directives.length; i++) {

@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LAZY_DEFS } from '../../kernel/index.ts'
 import type { Def, Hash } from '../../kernel/index.ts'
+import { jsonByteLength } from '../common/json.ts'
 
 /** 单 store 的 LRU def 上限（缺省）：约几千份 body，远低于整世界规模。 */
 export const DEFAULT_DEF_CACHE = 4096
@@ -34,26 +35,11 @@ export interface DefStoreOptions {
   shard: number
   /** def 键清单（内容哈希，落盘时的全集）。 */
   hashes: Hash[]
-  /** LRU def 上限；缺省 `DEFAULT_DEF_CACHE`。 */
-  cacheLimit?: number
-  /** LRU 字节上限（按 `JSON.stringify(body).length` 近似）；缺省 `DEFAULT_DEF_CACHE_BYTES`。 */
-  cacheBytesLimit?: number
 }
 
 /** def 体量近似：body 的 JSON 字符数（够用且无额外依赖）；序列化异常按 0 计。 */
 function defBytes(def: Def): number {
-  try {
-    return JSON.stringify(def.body).length
-  } catch {
-    return 0
-  }
-}
-
-/** 整片 def 的近似字节和：入 LRU 前的分片字节预检用。 */
-function shardBytes(loaded: Map<Hash, Def>): number {
-  let total = 0
-  for (const def of loaded.values()) total += defBytes(def)
-  return total
+  return jsonByteLength(def.body)
 }
 
 /**
@@ -77,8 +63,8 @@ export class DefStore {
     this.shard = options.shard
     this.order = [...options.hashes]
     this.manifest = new Set(this.order)
-    this.cacheLimit = options.cacheLimit ?? DEFAULT_DEF_CACHE
-    this.cacheBytesLimit = options.cacheBytesLimit ?? DEFAULT_DEF_CACHE_BYTES
+    this.cacheLimit = DEFAULT_DEF_CACHE
+    this.cacheBytesLimit = DEFAULT_DEF_CACHE_BYTES
   }
 
   /** 键是否在清单内（零 IO）。 */
@@ -96,7 +82,7 @@ export class DefStore {
     const cached = this.cache.get(hash)
     if (cached !== undefined) {
       this.stats.hits += 1
-      this.touch(hash, cached.def)
+      this.touch(hash, cached.def, cached.bytes)
       return cached.def
     }
     if (!this.manifest.has(hash)) return undefined
@@ -104,23 +90,20 @@ export class DefStore {
     const loaded = this.loadShard(hash.slice(0, this.shard))
     const def = loaded.get(hash)
     if (def === undefined) return undefined
-    // 分片已整片解析：整片入 LRU（请求项最后 touch，避免被同片项挤掉）。
+    // 分片已整片解析：先算一次各 def 体量，整片入 LRU（请求项最后 touch，避免被同片项挤掉）。
     // 分片字节超预算时只缓存请求项——整片入会一次挤掉大量条目且随即被淘汰，徒增抖动。
-    if (shardBytes(loaded) <= this.cacheBytesLimit) {
-      for (const [key, value] of loaded) this.touch(key, value)
+    const sizes = new Map<Hash, number>()
+    let total = 0
+    for (const [key, value] of loaded) {
+      const size = defBytes(value)
+      sizes.set(key, size)
+      total += size
     }
-    this.touch(hash, def)
+    if (total <= this.cacheBytesLimit) {
+      for (const [key, value] of loaded) this.touch(key, value, sizes.get(key))
+    }
+    this.touch(hash, def, sizes.get(hash))
     return def
-  }
-
-  /** 批量取：逐键走 `get`（同分片只读一次）。 */
-  getMany(hashes: Hash[]): Map<Hash, Def> {
-    const out = new Map<Hash, Def>()
-    for (const hash of hashes) {
-      const def = this.get(hash)
-      if (def !== undefined) out.set(hash, def)
-    }
-    return out
   }
 
   /** 已缓存 def 数（诊断 / 测试）。 */
@@ -133,17 +116,20 @@ export class DefStore {
     return this.cacheBytes
   }
 
-  /** LRU 登记：条数与字节任一超限即淘汰最旧；单 def 超字节上限则不缓存（防一个大 body 撑爆）。 */
-  private touch(hash: Hash, def: Def): void {
+  /**
+   * LRU 登记：条数与字节任一超限即淘汰最旧；单 def 超字节上限则不缓存（防一个大 body 撑爆）。
+   * `bytes` 已由调用方算好时直接复用，避免命中路径每次访问都重新序列化 body。
+   */
+  private touch(hash: Hash, def: Def, bytes?: number): void {
     const existing = this.cache.get(hash)
     if (existing !== undefined) {
       this.cache.delete(hash)
       this.cacheBytes -= existing.bytes
     }
-    const bytes = defBytes(def)
-    if (bytes > this.cacheBytesLimit) return
-    this.cache.set(hash, { def, bytes })
-    this.cacheBytes += bytes
+    const size = bytes ?? defBytes(def)
+    if (size > this.cacheBytesLimit) return
+    this.cache.set(hash, { def, bytes: size })
+    this.cacheBytes += size
     while (this.cache.size > this.cacheLimit || this.cacheBytes > this.cacheBytesLimit) {
       const oldest = this.cache.keys().next().value
       if (oldest === undefined) break

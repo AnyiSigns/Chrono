@@ -1,8 +1,8 @@
 // 基础世界分片 + 按需加载验收：
 // - v2 写读往返：索引小文件 + 分片，世界摘要与 def 逐一致；
 // - 惰性：读索引 / 列键 / 算摘要不读分片（DefStore.stats.loads === 0），取 body 才按需读；
-// - LRU：命中不重复读盘，超限淘汰最旧；
-// - 旧 v1 单文件照读（fail-open）；
+// - LRU：命中不重复读盘；
+// - 未变分片复用：同一份 def 键集再写不重读 body；
 // - 缺分片 fail-open（视作缺 def，不炸），分片目录整体缺失 → 视作无基础世界。
 
 import { describe, expect, it, afterEach } from 'vitest'
@@ -11,7 +11,6 @@ import { dirname, join } from 'node:path'
 import { H, canonicalJson, cloneWorld, worldRev } from '../../../kernel/index.ts'
 import type { Def, Hash, Json, World } from '../../../kernel/index.ts'
 import { DefStore, createLazyDefs, readBase, writeBase } from '../index.ts'
-import { loadAnchor } from '../index.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 
 /** 造一个只有 defs、无身份的世界；每个 body 的键 = H({body})。 */
@@ -124,26 +123,6 @@ describe('基础世界分片（v2）', () => {
     expect(readBase(baseFile)).toBeNull()
   })
 
-  it('旧 v1 单文件照读：body 内联、无 store，摘要一致', () => {
-    const { baseFile } = newRoot()
-    const world = worldWithDefs([{ a: 1 }, { b: 2 }])
-    const legacy = {
-      v: 1,
-      snapshot: SNAPSHOT,
-      worldRev: worldRev(world),
-      snapshotRev: worldRev(world),
-      world,
-    }
-    writeFileSync(baseFile, JSON.stringify(legacy))
-    const base = readBase(baseFile)
-    expect(base).not.toBeNull()
-    expect(base!.v).toBe(1)
-    expect(base!.store).toBeUndefined()
-    expect(worldRev(base!.world)).toBe(worldRev(world))
-    const key = Object.keys(world.defs)[0] as Hash
-    expect(base!.world.defs[key]).toEqual(world.defs[key])
-  })
-
   it('E1：readBase 不 eager 自校；verify() 惰性算摘要、幂等且零分片读', () => {
     const { baseFile } = newRoot()
     const world = worldWithDefs([{ a: 1 }, { b: 2 }])
@@ -166,27 +145,38 @@ describe('基础世界分片（v2）', () => {
     expect(good.store!.stats.loads).toBe(0)
   })
 
-  it('E4：读到 v1 base 时以同一 snapshot/world/worldRev 迁移为 v2，head/worldRev 不变', () => {
-    const { root, baseFile } = newRoot()
+  it('E4：未变分片复用：def 键集不变而身份变化时，新代目录分片字节与旧一致', () => {
+    const { baseFile } = newRoot()
     const world = worldWithDefs([{ a: 1 }, { b: 2 }])
-    const rev = worldRev(world)
     const snapshot = { seq: 5, hash: 'c'.repeat(64) }
-    writeFileSync(
-      baseFile,
-      JSON.stringify({ v: 1, snapshot, worldRev: rev, snapshotRev: rev, world }),
+    writeBase(baseFile, { snapshot, world })
+    const first = indexOf(baseFile)
+    const shardBytes = first.defs.map((key) =>
+      readFileSync(join(dirname(baseFile), first.defsDir, `${key.slice(0, 2)}.jsonl`), 'utf8'),
     )
-    const journal = join(root, 'state', 'world', 'journal.jsonl')
-    const anchor = loadAnchor(journal, baseFile, undefined, { migrateLegacy: true })
-    expect(anchor.baseSeq).toBe(5)
-    expect(anchor.head).toEqual(snapshot)
-    expect(worldRev(anchor.world)).toBe(rev)
-
-    const migrated = JSON.parse(readFileSync(baseFile, 'utf8')) as Record<string, unknown>
-    expect(migrated['v']).toBe(2)
-    expect(migrated['world']).toBeUndefined()
-    expect(migrated['worldRev']).toBe(rev)
-    expect(migrated['snapshotRev']).toBe(rev)
-    expect(migrated['defs']).toHaveLength(2)
+    // 同一 def 键集、加上一个身份：worldRev 变、代目录换，但分片按前缀复用旧文件
+    const withIdentity: World = {
+      defs: world.defs,
+      ids: {
+        x: {
+          id: 'x',
+          schema: first.defs[0] as Hash,
+          gens: [],
+          active: null,
+          born: { at: 1, by: 'test' },
+        },
+      },
+    }
+    writeBase(baseFile, { snapshot: { seq: 6, hash: 'd'.repeat(64) }, world: withIdentity })
+    const second = indexOf(baseFile)
+    expect(second.defsDir).not.toBe(first.defsDir)
+    for (const [i, key] of second.defs.entries()) {
+      expect(
+        readFileSync(join(dirname(baseFile), second.defsDir, `${key.slice(0, 2)}.jsonl`), 'utf8'),
+      ).toBe(shardBytes[i])
+    }
+    const reloaded = readBase(baseFile)!
+    expect(worldRev(reloaded.world)).toBe(worldRev(withIdentity))
   })
 })
 
@@ -196,7 +186,7 @@ describe('DefStore LRU', () => {
     for (const root of roots.splice(0)) await cleanupTempRoot(root)
   })
 
-  it('分片读一次后命中缓存；超限淘汰最旧，再取触发重读', () => {
+  it('分片读一次后命中缓存：重复取同键不再读盘', () => {
     const root = createTempRoot()
     roots.push(root)
     const dir = join(root, 'defs')
@@ -208,74 +198,21 @@ describe('DefStore LRU', () => {
         canonicalJson({ h: key, d: { body: { key } } }) + '\n',
       )
     }
-    const store = new DefStore({ dir, shard: 2, hashes: keys, cacheLimit: 2 })
+    const store = new DefStore({ dir, shard: 2, hashes: keys })
     expect(store.has(keys[0])).toBe(true)
     expect(store.stats.loads).toBe(0)
 
     store.get(keys[0])
     store.get(keys[1])
     expect(store.cached()).toBe(2)
+    expect(store.cachedBytes()).toBeGreaterThan(0)
     expect(store.stats.loads).toBe(2)
 
-    store.get(keys[2]) // 淘汰最旧 keys[0]
-    expect(store.cached()).toBe(2)
-    expect(store.stats.loads).toBe(3)
-
     const hitsBefore = store.stats.hits
-    store.get(keys[2]) // 命中
-    expect(store.stats.hits).toBe(hitsBefore + 1)
-    expect(store.stats.loads).toBe(3)
-
-    store.get(keys[0]) // 已淘汰：重读
-    expect(store.stats.loads).toBe(4)
-  })
-
-  it('getMany 同分片只读一次', () => {
-    const root = createTempRoot()
-    roots.push(root)
-    const dir = join(root, 'defs')
-    mkdirSync(dir, { recursive: true })
-    const same = ['aa' + '1'.repeat(62), 'aa' + '2'.repeat(62)] as Hash[]
-    writeFileSync(
-      join(dir, 'aa.jsonl'),
-      same.map((h, i) => canonicalJson({ h, d: { body: { i } } })).join('\n') + '\n',
-    )
-    const store = new DefStore({ dir, shard: 2, hashes: same, cacheLimit: 8 })
-    const many = store.getMany(same)
-    expect(many.size).toBe(2)
-    expect(store.stats.loads).toBe(1)
-  })
-
-  it('字节预算：超限淘汰最旧；单 def 超上限不缓存（大 def 不撑爆）', () => {
-    const root = createTempRoot()
-    roots.push(root)
-    const dir = join(root, 'defs')
-    mkdirSync(dir, { recursive: true })
-    const keys = ['aa', 'bb'].map((prefix) => (prefix + '0'.repeat(62)) as Hash)
-    for (const key of keys) {
-      writeFileSync(
-        join(dir, `${key.slice(0, 2)}.jsonl`),
-        canonicalJson({ h: key, d: { body: { key } } }) + '\n',
-      )
-    }
-    // 每 body ≈ 74B；字节上限 100 → 两条装不下，取第二条即淘汰第一条
-    const store = new DefStore({ dir, shard: 2, hashes: keys, cacheLimit: 100, cacheBytesLimit: 100 })
-    store.get(keys[0])
-    expect(store.cached()).toBe(1)
-    store.get(keys[1])
-    expect(store.cached()).toBe(1)
-    expect(store.cachedBytes()).toBeLessThanOrEqual(100)
-    expect(store.get(keys[0])).toEqual({ body: { key: keys[0] } }) // 已淘汰：重读
-
-    // 单 def 超字节上限：能取到但不入缓存
-    const huge = ('cc' + '0'.repeat(62)) as Hash
-    writeFileSync(
-      join(dir, 'cc.jsonl'),
-      canonicalJson({ h: huge, d: { body: { text: 'x'.repeat(500) } } }) + '\n',
-    )
-    const big = new DefStore({ dir, shard: 2, hashes: [huge], cacheLimit: 100, cacheBytesLimit: 100 })
-    expect(big.get(huge)).toEqual({ body: { text: 'x'.repeat(500) } })
-    expect(big.cached()).toBe(0)
+    store.get(keys[0]) // 命中
+    store.get(keys[1]) // 命中
+    expect(store.stats.hits).toBe(hitsBefore + 2)
+    expect(store.stats.loads).toBe(2)
   })
 })
 

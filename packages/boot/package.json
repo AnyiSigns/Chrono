@@ -8,9 +8,12 @@
     "package.json",
     "README.md",
     "main.ts",
+    "commands.ts",
     "tsconfig.json"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",

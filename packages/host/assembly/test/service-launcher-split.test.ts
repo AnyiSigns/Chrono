@@ -20,7 +20,7 @@ vi.mock('../materialize.ts', async (importOriginal) => {
 
 import { launchService, prepareService, spawnService } from '../service-launcher.ts'
 import type { PreparedService, ServiceLauncherDeps } from '../service-launcher.ts'
-import { classifyStartFailure, stopChild, waitForExit } from '../supervision.ts'
+import { classifyStartFailure, teardownService, waitForServiceExit } from '../supervision.ts'
 import type { ServiceRuntime, StartFailure } from '../supervision.ts'
 import { readPluginDecl } from '../decl.ts'
 import type { PluginDecl } from '../decl.ts'
@@ -81,8 +81,8 @@ describe('起服务阶段拆分', () => {
   }
 
   async function stopService(service: ServiceRuntime): Promise<void> {
-    stopChild(service.proc, service.link)
-    await waitForExit(service.proc, 2000)
+    teardownService(service)
+    await waitForServiceExit(service, 2000)
   }
 
   it('一次性入口 launchService：准备 + spawn 只物化一次', async () => {
@@ -114,7 +114,9 @@ describe('起服务阶段拆分', () => {
   it('准备阶段失败分类：物化失败 → materialize_failed', async () => {
     const { world, decl } = seedOne('toy-split')
     const missing = '0'.repeat(64) as Hash
-    expect(await classifyRejection(prepareService(deps(world), 'toy-split', missing, decl))).toEqual({
+    expect(
+      await classifyRejection(prepareService(deps(world), 'toy-split', missing, decl)),
+    ).toEqual({
       event: 'service',
       reason: 'materialize_failed',
     })
@@ -125,7 +127,9 @@ describe('起服务阶段拆分', () => {
     const restore = async (): Promise<void> => {
       throw new Error('build exploded')
     }
-    expect(await classifyRejection(prepareService(deps(world, { restore }), 'toy-split', gen, decl))).toEqual({
+    expect(
+      await classifyRejection(prepareService(deps(world, { restore }), 'toy-split', gen, decl)),
+    ).toEqual({
       event: 'service',
       reason: 'deps_failed',
     })
@@ -136,12 +140,12 @@ describe('起服务阶段拆分', () => {
     const copyAssets = (): void => {
       throw new Error('copy exploded')
     }
-    expect(await classifyRejection(prepareService(deps(world, { copyAssets }), 'toy-split', gen, decl))).toEqual(
-      {
-        event: 'service',
-        reason: 'deps_failed',
-      },
-    )
+    expect(
+      await classifyRejection(prepareService(deps(world, { copyAssets }), 'toy-split', gen, decl)),
+    ).toEqual({
+      event: 'service',
+      reason: 'deps_failed',
+    })
   })
 
   it('spawn 阶段失败分类：进程先死 → service 失败（closed / exited，准备成功也拦得住）', async () => {

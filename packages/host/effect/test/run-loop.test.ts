@@ -49,8 +49,7 @@ function fakeRouter(
 describe('通用 run loop runRound', () => {
   it('空 directives → idle，不产审计', async () => {
     const outcome = await runRound({
-      world: emptyWorld(),
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } }),
       directives: [],
       caps: {},
       limits: LIMITS,
@@ -66,8 +65,7 @@ describe('通用 run loop runRound', () => {
     const world = emptyWorld()
     const head: Head = { ...EMPTY_HEAD }
     const outcome = await runRound({
-      world,
-      head,
+      writer: new WorldWriter({ world, head }),
       directives: [
         {
           kind: 'write',
@@ -138,8 +136,7 @@ describe('通用 run loop runRound', () => {
     const head: Head = { ...EMPTY_HEAD }
     const audits: AuditDraft[] = []
     const outcome = await runRound({
-      world,
-      head,
+      writer: new WorldWriter({ world, head }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -164,8 +161,7 @@ describe('通用 run loop runRound', () => {
     }
     const audits: AuditDraft[] = []
     const outcome = await runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -206,8 +202,7 @@ describe('通用 run loop runRound', () => {
     const audits: AuditDraft[] = []
     const calls: Json[] = []
     const outcome = await runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -234,8 +229,7 @@ describe('通用 run loop runRound', () => {
     }
     const audits: AuditDraft[] = []
     const outcome = await runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -262,8 +256,7 @@ describe('通用 run loop runRound', () => {
   it('audit:false（只读）：内核产出的业务写不上账、不推进 head（journal 仍上浮）', async () => {
     const rounds: Entry[][] = []
     const outcome = await runRound({
-      world: emptyWorld(),
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } }),
       directives: [
         {
           kind: 'write',
@@ -321,8 +314,7 @@ describe('通用 run loop runRound', () => {
       }),
     }
     const pending = runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -374,8 +366,7 @@ describe('通用 run loop runRound', () => {
       }),
     }
     const pending = runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -407,8 +398,7 @@ describe('通用 run loop runRound', () => {
     }
     const audits: AuditDraft[] = []
     const outcome = await runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy-owner'],
       caps: {},
@@ -424,23 +414,7 @@ describe('通用 run loop runRound', () => {
     expect(audits).toEqual([])
   })
 
-  it('writer 与 world/head 同时给出 → 立即抛错（不静默取一）', async () => {
-    const writer = new WorldWriter({ world: emptyWorld(), head: { ...EMPTY_HEAD } })
-    await expect(
-      runRound({
-        writer,
-        world: emptyWorld(),
-        head: { ...EMPTY_HEAD },
-        directives: [],
-        caps: {},
-        limits: LIMITS,
-        initiator: 'client',
-        now: NOW,
-      }),
-    ).rejects.toThrow('not both')
-  })
-
-  it('writer 与 world+head 都缺 → 立即抛错（fail-closed）', async () => {
+  it('缺 writer → 立即抛错（fail-closed，不静默新建写者）', async () => {
     await expect(
       runRound({
         directives: [],
@@ -449,7 +423,7 @@ describe('通用 run loop runRound', () => {
         initiator: 'client',
         now: NOW,
       }),
-    ).rejects.toThrow('provide either writer')
+    ).rejects.toThrow('provide writer')
   })
 
   it('效果路由用本 run 锚定世界：writer 快照已前进也不改路由世界', async () => {
@@ -495,8 +469,7 @@ describe('通用 run loop runRound', () => {
     }
     const audits: AuditDraft[] = []
     const outcome = await runRound({
-      world,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: [undefined],
       caps: {},
@@ -661,8 +634,7 @@ describe('通用 run loop runRound', () => {
       resolutionWorld: () => live,
     }
     const outcome = await runRound({
-      world: anchored,
-      head: { ...EMPTY_HEAD },
+      writer: new WorldWriter({ world: anchored, head: { ...EMPTY_HEAD } }),
       directives: [evalDirective(termHash)],
       owners: ['toy'],
       caps: {},

@@ -36,7 +36,6 @@
     "drain_ms": 5000
   },
   "health": {
-    "probe": "tools.list",
     "interval_ms": 10000,
     "timeout_ms": 2000
   },

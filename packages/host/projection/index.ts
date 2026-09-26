@@ -6,11 +6,10 @@
 // 深层 def body 由消费方经只读解析能力（宿主 `host.def.read`）按需取回。
 
 import { assembleBody, readPatchOps, worldRev } from '../../kernel/index.ts'
-import { latestDataGen, readPluginDecl } from '../assembly/decl.ts'
+import { latestDataGen, readPluginDecl } from '../assembly/index.ts'
+import { isSha256Hex } from '../common/cas.ts'
+import { PROTOTYPE_KEYS, isRecord } from '../common/json.ts'
 import type { Gen, Hash, Head, Json, World } from '../../kernel/index.ts'
-
-/** def 键的形状：64 位小写十六进制；不符（业务数据恰好带 `def` 字段）不当作引用标记。 */
-const HASH_PATTERN = /^[0-9a-f]{64}$/
 
 /** 引用标记：`{"def": "<64hex>"}`——body 里指向另一 def 的显式标记。 */
 function markerHash(value: Json): Hash | null {
@@ -18,7 +17,7 @@ function markerHash(value: Json): Hash | null {
   const keys = Object.keys(value)
   if (keys.length !== 1 || keys[0] !== 'def') return null
   const hash = (value as { def?: Json }).def
-  return typeof hash === 'string' && HASH_PATTERN.test(hash) ? hash : null
+  return isSha256Hex(hash) ? hash : null
 }
 
 /** 收集一段 JSON 里直接出现的标记哈希（不进入标记内部，标记本身只承载哈希）。 */
@@ -82,6 +81,26 @@ export function reachableDefHashes(world: World, body: Json, cap = DEFAULT_REF_C
 export const DEFAULT_REF_CAP = 1000
 
 /**
+ * 沿投影字面路径取值：路径不合 / 越界 / 原型键 → `null`（宿主只机械取用，不解释业务）。
+ * 供周期 bag 注入与 eval `inject` 共用同一口径。
+ */
+export function readProjectionPath(projection: Json, path: Json[]): Json {
+  let current: Json = projection
+  for (const segment of path) {
+    if (typeof segment === 'string') {
+      if (PROTOTYPE_KEYS.has(segment)) return null
+      if (!isRecord(current)) return null
+      current = current[segment] ?? null
+    } else if (typeof segment === 'number' && Array.isArray(current)) {
+      current = current[segment] ?? null
+    } else {
+      return null
+    }
+  }
+  return current
+}
+
+/**
  * 组装某身份某世代的 body：整份世代取 payload def body；补丁世代取 base 世代组装结果再按序应用补丁。
  * base 恒指向更早世代（`base < seq`），无环；任一环缺失（base 越界 / def 缺失 / 补丁体非法）回 null
  * （fail-closed，不抛）。结果按下标记忆，避免链式回溯重复组装。
@@ -138,8 +157,6 @@ export function assembleIdentityBody(world: World, identityId: string): Json | n
 }
 
 export interface ProjectionOptions {
-  /** 覆盖 `DEFAULT_REF_CAP`（测试用）。 */
-  refCap?: number
   /** 源码 CAS 目录：解析身份声明（pointer blob）取 `pins` 时经它读文本。 */
   blobsDir?: string
 }
@@ -155,11 +172,11 @@ export interface ProjectionOptions {
  * 只读是宿主纪律：不写链、不推进 head、不参与哈希。
  * @param world 基础世界（v1 = 宿主当前世界）
  * @param head 该世界的链头（投影反映构造时点的世界）
- * @param options 引用集合硬上限覆盖（缺省 `DEFAULT_REF_CAP`）
+ * @param options 源码 CAS 目录（解析声明 `pins` 用）
  * @returns 交给 term 的 JSON 视图
  */
 export function projectBaseOnly(world: World, head: Head, options?: ProjectionOptions): Json {
-  const cap = options?.refCap ?? DEFAULT_REF_CAP
+  const cap = DEFAULT_REF_CAP
   const ids: { [id: string]: Json } = {}
   for (const id of Object.keys(world.ids)) {
     const identity = world.ids[id]
@@ -168,7 +185,8 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
     // body = 最近数据世代的组装结果；无数据世代回落 active（代码 / commit def body）。
     // data_gen = 组装来源世代（写方据此把下一世代写成补丁世代：base = data_gen.seq）。
     const body = assembleIdentityBody(world, id)
-    const dataGenView: Json | null = dataGen !== null && body !== null ? { seq: dataGen.seq, payload: dataGen.payload } : null
+    const dataGenView: Json | null =
+      dataGen !== null && body !== null ? { seq: dataGen.seq, payload: dataGen.payload } : null
     // pins = 当前代码世代声明里的表（逻辑端点名 → 被依赖身份名字面值）；无代码世代 → null
     const decl = readPluginDecl(world, id, options?.blobsDir)
     ids[id] = {

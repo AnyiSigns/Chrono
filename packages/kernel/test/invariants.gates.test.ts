@@ -18,28 +18,21 @@ vi.mock('../value.ts', async (importOriginal) => {
     const fixed = ['at', 'seq', 'prev', 'op', 'argsHash', 'by', 'ref']
     return keys.length > 0 && keys.every((k) => fixed.includes(k)) && keys.includes('argsHash')
   }
+  // 内容身份吃 `{ keys, ids }`；按此形状计 worldRev 调用（不改载荷账）
+  const revArg = (v: unknown): boolean => {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+    const keys = Object.keys(v as Record<string, unknown>)
+    return keys.length === 2 && keys.includes('keys') && keys.includes('ids')
+  }
   return {
     ...o,
     canonicalJson: (v: unknown): string => {
-      if (!positionMap(v)) stubs.canon += 1
+      if (positionMap(v)) stubs.entryHash += 1
+      else {
+        if (revArg(v)) stubs.worldRev += 1
+        stubs.canon += 1
+      }
       return inner(v)
-    },
-  }
-})
-
-vi.mock('../journal.id.ts', async (importOriginal) => {
-  const o = (await importOriginal()) as Record<string, unknown>
-  const pos = o.entryHash as (e: unknown) => string
-  const rev = o.worldRev as (w: unknown) => string
-  return {
-    ...o,
-    entryHash: (e: unknown): string => {
-      stubs.entryHash += 1
-      return pos(e)
-    },
-    worldRev: (w: unknown): string => {
-      stubs.worldRev += 1
-      return rev(w)
     },
   }
 })
@@ -47,16 +40,29 @@ vi.mock('../journal.id.ts', async (importOriginal) => {
 import {
   EMPTY_WORLD,
   H,
+  KernelError,
   cloneWorld,
   commit,
   entryHash,
   eval as evaluate,
+  replay,
   run,
   validate,
   verify,
   worldRev,
 } from '../index.ts'
-import type { Def, Entry, Hash, Json, KernelInput, Op, World, WriteRequest } from '../index.ts'
+import type {
+  Def,
+  Directive,
+  Entry,
+  Gen,
+  Hash,
+  Json,
+  KernelInput,
+  Op,
+  World,
+  WriteRequest,
+} from '../index.ts'
 
 type Head = Parameters<typeof commit>[0]
 type TermT = Parameters<typeof evaluate>[0]
@@ -123,8 +129,8 @@ const SRC_DIR = decodeURIComponent(
   (import.meta as unknown as { url: string }).url.replace(/^file:\/\/\//, ''),
 ).replace(/\/test\/[^/]*$/, '/')
 const RUNTIME_FILES =
-  'index.ts types.ts value.ts hash.ts hash.utf8.ts defs.ts patch.ts rebase.ts journal.ts journal.id.ts ' +
-  'journal.apply.ts commit.ts commit.form.ts machine.ts recycle.ts run.ts'
+  'index.ts types.ts value.ts hash.ts defs.ts patch.ts rebase.ts journal.ts journal.apply.ts ' +
+  'commit.ts machine.ts machine.eval.ts recycle.ts run.ts'
 function runtimeSources(): [string, string][] {
   return (readdirSync(SRC_DIR) as string[])
     .filter(
@@ -453,11 +459,7 @@ describe('终止性：固定种子随机 term 全部三态返回', () => {
       case 'g':
         return ['g', pick([[], ['a'], ['a', 1], [0], ['nope'], 'bad'], rnd) as Json] as TermT
       case 'get':
-        return [
-          'get',
-          sub(),
-          pick([[], ['a'], ['a', 0], ['nope'], 'bad'], rnd) as Json,
-        ] as TermT
+        return ['get', sub(), pick([[], ['a'], ['a', 0], ['nope'], 'bad'], rnd) as Json] as TermT
       case 'getOr':
         return [
           'getOr',
@@ -483,12 +485,7 @@ describe('终止性：固定种子随机 term 全部三态返回', () => {
       case 'call':
         return ['call', sub(), pick([[sub()], [sub(), sub()], J('not-list')], rnd)] as TermT
       case 'arith':
-        return [
-          'arith',
-          pick(['add', 'sub', 'mul', 'div', 'zz'], rnd),
-          sub(),
-          sub(),
-        ] as TermT
+        return ['arith', pick(['add', 'sub', 'mul', 'div', 'zz'], rnd), sub(), sub()] as TermT
       case 'list':
         return ['list', pick([[sub()], [sub(), sub()], J('not-list')], rnd)] as TermT
       case 'obj':
@@ -548,5 +545,170 @@ describe('无审核词表静态扫描：内核运行时文件零审核概念', (
     for (const [f, src] of files) if (AUDIT_RE.test(src)) offenders.push(f)
     expect(offenders).toEqual([])
     expect(files.length).toBe(RUNTIME_FILES.split(' ').length)
+  })
+})
+
+describe('深度护栏：递归 JSON 遍历超限一律收成 depth（无 RangeError 穿出）', () => {
+  function nestJson(levels: number, leaf: Json): Json {
+    let v = leaf
+    for (let i = 0; i < levels; i++) v = [v]
+    return v
+  }
+  const DEEP = nestJson(100_000, 0)
+  const reasonsOf = (o: { observations: Json[] }): string[] | undefined =>
+    (o.observations[o.observations.length - 1] as { reasons?: string[] }).reasons
+
+  it('put：写请求 args 深嵌套 → refused depth', () => {
+    const r = req('deep-put', 'put', dRec(DEEP), null)
+    const o = run(input({ directives: [{ kind: 'write', request: r } as Directive] }))
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['depth']])
+  })
+
+  it('batch：子操作 args 深嵌套（段 1 substitute）→ refused depth', () => {
+    const ops = J({ ops: [sub('put', dRec(DEEP))] })
+    const r = req('deep-batch', 'batch', ops, null)
+    const o = run(input({ directives: [{ kind: 'write', request: r } as Directive] }))
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['depth']])
+  })
+
+  it('replay：深嵌套 args 的 entry → KernelError depth（非 RangeError）', () => {
+    const e: Entry = {
+      seq: 0,
+      prev: null,
+      op: 'put',
+      args: dRec(DEEP),
+      argsHash: 'x',
+      by: 't',
+      at: NOW,
+    }
+    let caught: unknown
+    try {
+      replay([e])
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(KernelError)
+    expect((caught as KernelError).code).toBe('depth')
+  })
+
+  it('verify：深嵌套 args 的 entry → 返回码 depth（verify 自身不抛）', () => {
+    const e: Entry = {
+      seq: 0,
+      prev: null,
+      op: 'put',
+      args: dRec(DEEP),
+      argsHash: 'x',
+      by: 't',
+      at: NOW,
+    }
+    expect(verify([e], { world: cloneWorld(EMPTY_WORLD), head: emptyHead() })).toEqual({
+      ok: false,
+      error: 'depth',
+    })
+  })
+})
+
+describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且保留原因链', () => {
+  const S = H({ body: 'schema' })
+  const SIG = H({ body: 'sig' })
+  const PAY = H({ body: 'payload' })
+  const WRITE0 = 'f'.repeat(64)
+
+  /** 身份 x 的 gen0 payload=PAY，但 defs 里 PAY 的值为 undefined：读 body 时抛 TypeError。 */
+  function brokenWorld(): World {
+    const gen0: Gen = {
+      seq: 0,
+      payload: S,
+      pins: {},
+      sig: S,
+      adopted: { at: 1, by: 't', write: WRITE0 },
+    }
+    return {
+      defs: { [S]: { body: {} }, [SIG]: { body: {} }, [PAY]: undefined as unknown as Def },
+      ids: { x: { id: 'x', schema: S, gens: [gen0], active: S, born: { at: 1, by: 't' } } },
+    }
+  }
+
+  it('段 2 中途抛非 KernelError：已应用子操作回滚，世界逐字节不变，cause 保留', () => {
+    const world = brokenWorld()
+    const head: Head = { seq: 0, hash: WRITE0 }
+    const before = snap(world)
+    const ops = J({
+      ops: [
+        sub('put', dRec('rolled')),
+        sub('add_gen', J({ id: 'x', payload: PAY, pins: {}, sig: SIG, base: 0 })),
+      ],
+    })
+    let caught: unknown
+    try {
+      commit(head, world, req('atomic-internal', 'batch', ops, head.hash), NOW)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(KernelError)
+    expect((caught as KernelError).code).toBe('internal')
+    expect((caught as KernelError).cause).toBeInstanceOf(TypeError)
+    expect(snap(world)).toBe(before)
+    expect(world.defs[H({ body: 'rolled' })]).toBeUndefined()
+  })
+
+  it('单 op 应用期 KernelError：世界逐字节不变', () => {
+    const { world, head } = seeded()
+    const before = snap(world)
+    expect(() =>
+      commit(head, world, req('bad-snap', 'snapshot', J({ world_rev: GHOST }), head.hash), NOW),
+    ).toThrowError('world_rev_mismatch')
+    expect(() =>
+      commit(
+        head,
+        world,
+        req(
+          'bad-base',
+          'add_gen',
+          J({ id: 'x', payload: PAY, pins: {}, sig: SIG, base: 9 }),
+          head.hash,
+        ),
+        NOW,
+      ),
+    ).toThrowError('missing_parent')
+    expect(snap(world)).toBe(before)
+  })
+})
+
+describe('now 有限数门禁：非有限数在改世界之前拒绝', () => {
+  const reasonsOf = (o: { observations: Json[] }): string[] | undefined =>
+    (o.observations[o.observations.length - 1] as { reasons?: string[] }).reasons
+
+  it('validate / commit：NaN / ±Infinity → bad_form，世界逐字节不变', () => {
+    const { world, head } = seeded()
+    const before = [snap(world), snap(head)]
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const r = req('now-bad', 'put', dRec('x'), head.hash)
+      expect(validate(head, world, r, bad)).toMatchObject({ ok: false, reasons: ['bad_form'] })
+      const o = commit(head, world, r, bad)
+      expect([o.verdict.ok, o.verdict.reasons, o.entry, o.hash]).toEqual([
+        false,
+        ['bad_form'],
+        null,
+        null,
+      ])
+      expect([snap(world), snap(head)]).toEqual(before)
+    }
+  })
+
+  it('run：now 非有限数 → refused bad_form，input 世界未动', () => {
+    const { world, head } = seeded()
+    const inp = input({
+      world,
+      head,
+      now: Number.NaN,
+      directives: [
+        { kind: 'write', request: req('now-bad-run', 'put', dRec('y'), head.hash) } as Directive,
+      ],
+    })
+    const before = snap(inp.world)
+    const o = run(inp)
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['bad_form']])
+    expect(snap(inp.world)).toBe(before)
   })
 })

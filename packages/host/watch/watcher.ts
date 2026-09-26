@@ -23,8 +23,6 @@ export interface WatchTarget {
 
 export interface SourceWatcherOptions {
   root: string
-  /** 静默窗口（毫秒）；缺省 `DEFAULT_WATCH_DEBOUNCE_MS`。 */
-  debounceMs?: number
   /**
    * 一次合并后的重建请求；同目标串行、不重入。`changedPath` 为触发事件的文件名
    * （无法定位时为空串，仅作日志展示）。
@@ -61,7 +59,6 @@ export function resolveWatchTargets(root: string): WatchTarget[] {
 
 /** 起 watcher：每个投递目标一个 recursive 句柄 + 一个静默窗口；返回的 stop 等待在途重建收敛。 */
 export function startSourceWatcher(options: SourceWatcherOptions): SourceWatcherHandle {
-  const debounceMs = options.debounceMs ?? DEFAULT_WATCH_DEBOUNCE_MS
   const targets = resolveWatchTargets(options.root)
   const watchers: FSWatcher[] = []
   const debouncers: Debouncer[] = []
@@ -71,7 +68,7 @@ export function startSourceWatcher(options: SourceWatcherOptions): SourceWatcher
   for (const target of targets) {
     let lastPath = ''
     let chain: Promise<void> = Promise.resolve()
-    const debouncer = new Debouncer(debounceMs, () => {
+    const debouncer = new Debouncer(DEFAULT_WATCH_DEBOUNCE_MS, () => {
       if (stopped) return
       const changed = lastPath
       chain = chain

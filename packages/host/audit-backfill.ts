@@ -8,11 +8,11 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Entry, Hash, Json, World } from '../kernel/index.ts'
-import { AUDIT_MAX_BYTES, AUDIT_MAX_RECORDS } from './audit.ts'
+import { AUDIT_MAX_BYTES, AUDIT_MAX_RECORDS, EFFECT_AUDIT_KIND } from './audit.ts'
 import type { AuditDraft } from './audit.ts'
 import { AuditStore } from './audit-store.ts'
-import { EFFECT_AUDIT_KIND } from './effect/execute.ts'
-import { writeFileAtomic } from './ledger/atomic.ts'
+import { writeFileAtomic } from './common/fs-atomic.ts'
+import { isRecord, jsonByteLength } from './common/json.ts'
 import type { HostPaths } from './paths.ts'
 
 /** 回填标记：`backfilled` 为真即不再扫；`throughEntrySeq` = 本次回填覆盖到的最大 entry seq。 */
@@ -21,30 +21,11 @@ export interface AuditBackfillMeta {
   throughEntrySeq: number
 }
 
-export interface AuditBackfillOptions {
-  /** 覆盖保留窗口条数（缺省 `AUDIT_MAX_RECORDS`）。 */
-  maxRecords?: number
-  /** 覆盖保留窗口近似字节（缺省 `AUDIT_MAX_BYTES`）。 */
-  maxBytes?: number
-}
-
 export interface AuditBackfillReport {
   /** 本次实际追加的条数（已回填过则为 0）。 */
   backfilled: number
   /** 扫描覆盖到的最大 entry seq（无 entry 为 -1）。 */
   throughEntrySeq: number
-}
-
-function isRecord(value: unknown): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function bodyBytes(body: Json): number {
-  try {
-    return JSON.stringify(body).length
-  } catch {
-    return 0
-  }
 }
 
 /** 读回填标记；缺文件 / 形态坏 / 未标记一律视为未回填（fail-open，不砖化）。 */
@@ -107,16 +88,14 @@ function collectCandidates(world: World, entries: readonly Entry[]): Candidate[]
 }
 
 /** 从新到旧取窗口内候选（条数 / 字节任一超限即停），返回时间正序的待追加草稿。 */
-function selectWithinWindow(candidates: Candidate[], options: AuditBackfillOptions): AuditDraft[] {
-  const maxRecords = options.maxRecords ?? AUDIT_MAX_RECORDS
-  const maxBytes = options.maxBytes ?? AUDIT_MAX_BYTES
+function selectWithinWindow(candidates: Candidate[]): AuditDraft[] {
   const selected: Candidate[] = []
   let bytes = 0
   for (let i = candidates.length - 1; i >= 0; i--) {
     const candidate = candidates[i]
-    if (selected.length >= maxRecords) break
-    const size = bodyBytes(candidate.body)
-    if (selected.length > 0 && bytes + size > maxBytes) break
+    if (selected.length >= AUDIT_MAX_RECORDS) break
+    const size = jsonByteLength(candidate.body)
+    if (selected.length > 0 && bytes + size > AUDIT_MAX_BYTES) break
     selected.push(candidate)
     bytes += size
   }
@@ -140,13 +119,12 @@ export function backfillAuditStore(
   world: World,
   entries: readonly Entry[],
   store: AuditStore,
-  options: AuditBackfillOptions = {},
 ): AuditBackfillReport {
   if (readAuditBackfillMeta(paths.auditMetaFile) !== null) {
     return { backfilled: 0, throughEntrySeq: -1 }
   }
   const throughEntrySeq = entries.length > 0 ? entries[entries.length - 1].seq : -1
-  const drafts = selectWithinWindow(collectCandidates(world, entries), options)
+  const drafts = selectWithinWindow(collectCandidates(world, entries))
   for (const draft of drafts) store.append(draft)
   writeAuditBackfillMeta(paths.auditMetaFile, { backfilled: true, throughEntrySeq })
   return { backfilled: drafts.length, throughEntrySeq }

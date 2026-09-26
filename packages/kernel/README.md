@@ -6,12 +6,12 @@
 
 做四件事：
 
-| 机制     | 一句话                                                                |
-| -------- | --------------------------------------------------------------------- |
-| 值层     | JSON 值 + 类型格 + 规范序列化 + 内容哈希——可比较、可锚定              |
+| 机制     | 一句话                                                                 |
+| -------- | ---------------------------------------------------------------------- |
+| 值层     | JSON 值 + 类型格 + 规范序列化 + 内容哈希——可比较、可锚定               |
 | 归约机   | 14 原语的项求值 + gas / depth 预算——世界内容（含一切判定标准）可被执行 |
-| 日志     | append-only 哈希链 + 可参数化重放——可归因、可退回任意版本             |
-| 唯一写口 | 机械校验 + 恰好单次应用——非法内容进不来，谱系与依附不变量守得住       |
+| 日志     | append-only 哈希链 + 可参数化重放——可归因、可退回任意版本              |
+| 唯一写口 | 机械校验 + 恰好单次应用——非法内容进不来，谱系与依附不变量守得住        |
 
 明确不做：装载代码、IO、持久化、调度、审核（该不该采纳）、效果执行、多世界合并、任何"删除"。
 内核认识的概念只有四个词：**身份 · 世代 · 依附 · 判决**。判决 = 机械合法性（`ok` / `reasons`），不是正当性——后者永远在上层。
@@ -45,31 +45,31 @@ KernelOutput { world, journal, head, pending, observations, status, usage }
 
 ## 文件与依赖
 
-| 文件               | 职责（导出口径见 `index.ts`，加导出 = 改设计）                                                   |
-| ------------------ | ------------------------------------------------------------------------------------------------ |
-| `types.ts`         | 全部共用类型 + `KernelError`（错误只携带 code，边界处收口为 refused）                            |
-| `value.ts`         | 类型格 `t` / `canonicalJson` / `deepEq`                                                          |
-| `hash.ts`          | FIPS 180-4 sha256（增量压缩）+ `H()`                                                             |
-| `hash.utf8.ts`     | UTF-8 编码（孤立代理即拒），`H` 的流式入口                                                       |
-| `journal.id.ts`    | 两个身份：`entryHash`（O(1)）与 `worldRev`（按需）                                               |
-| `journal.apply.ts` | `applyEntry` 逐 op 语义 + `batch` 两段式（预哈希趟 → 应用趟，失败逆序回滚）                      |
-| `journal.ts`       | `EMPTY_WORLD` / `EMPTY_HEAD` / `cloneWorld` / `pos` / `anchorAfter` / `replay` / `verify` + 转口 |
-| `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                  |
-| `commit.form.ts`   | `validate` 的形态检查（op 形状表）                                                               |
-| `commit.ts`        | `validate` / `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                               |
-| `machine.ts`       | `eval`（导出名）：14 原语分派 + `walk` / `evalCall`；`cmp` 全序 / `pred` 谓词 / `get`·`getOr` 投影 / `arith`·`list`·`obj` 构造 |
-| `run.ts`           | 编排：`run` / `observationsOf`；唯一调用 `commit` 之处，错误只在此收口                           |
-| `index.ts`         | 只 re-export、无逻辑；公共面的全部形状                                                           |
+| 文件               | 职责（导出口径见 `index.ts`，加导出 = 改设计）                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`         | 全部共用类型 + `KernelError`（错误只携带 code，边界处收口为 refused）                                                                                |
+| `value.ts`         | 类型格 `t` / `canonicalJson` / `deepEq`                                                                                                              |
+| `hash.ts`          | FIPS 180-4 sha256（增量压缩）+ `H()` + UTF-8 编码（孤立代理即拒）                                                                                    |
+| `journal.ts`       | 两个身份：`entryHash`（O(1)）与 `worldRev`（按需）；`EMPTY_WORLD` / `EMPTY_HEAD` / `cloneWorld` / `pos` / `anchorAfter` / `replay` / `verify` + 转口 |
+| `journal.apply.ts` | `applyEntry` 逐 op 语义 + `batch` 两段式（预哈希趟 → 应用趟，失败逆序回滚）                                                                          |
+| `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                                                                      |
+| `rebase.ts`        | `flattenPatches` 压扁线性补丁链；`remapGens` 世代重建后的 base / graft / active 重映射（回收共用）                                                   |
+| `commit.ts`        | `validate`（含 op 形状表）/ `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                                                                    |
+| `machine.eval.ts`  | 14 原语求值 + `Map` 分派表 + `walk` / `evalCall`；`cmp` 全序 / `pred` 谓词 / `get`·`getOr` 投影 / `arith`·`list`·`obj` 构造                          |
+| `machine.ts`       | 归约机类型（`Term` / `Env` / `EvalResult` / `TERM_TAGS`）与转口；逐原语实现见 `machine.eval.ts`                                                      |
+| `run.ts`           | 编排：`run` / `observationsOf`；唯一调用 `commit` 之处，错误只在此收口                                                                               |
+| `index.ts`         | 只 re-export、无逻辑；公共面的全部形状                                                                                                               |
 
 依赖是单向：
 
 ```
 value ← types
-hash ← types, value, hash.utf8
-journal.id ← types, hash ·  journal.apply ← types, hash, journal.id
-journal ← types, journal.apply, journal.id
-commit.form ← types ·  commit ← types, hash, journal
-machine ← types, value, hash        （与 journal / commit 之间无任何边）
+hash ← types, value
+journal.apply ← types, hash, journal      （applyEntry 用两个身份）
+journal ← types, hash, defs, journal.apply（两个身份 + 世界常量 / 重放 / 校验，转口 applyEntry）
+commit ← types, value, journal
+machine.eval ← types, value, hash         （逐原语求值 / 分派表 / cmp）
+machine ← types, machine.eval             （类型与转口；与 journal / commit 之间无任何边）
 run ← 全部
 ```
 

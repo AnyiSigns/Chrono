@@ -35,11 +35,11 @@ import {
   classifyStartFailure,
   parseHealth,
   parseRestart,
-  stopChild,
-  terminateChild,
-  waitForExit,
+  teardownService,
+  terminateService,
+  waitForServiceExit,
 } from './supervision.ts'
-import { isSafeIdentityName } from './identity-name.ts'
+import { isSafeIdentityName } from '../common/paths-safe.ts'
 import { swapService } from './swap.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { SwapHost } from './swap.ts'
@@ -257,6 +257,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.record('dep', event.kind, { impl: event.id })
     }
     this.buildDependencyMaps()
+    // 启动序先落定：start 中途抛出时 `stop` 仍能按它逆序收口已 spawn 的服务，不留孤儿。
+    this.order = [...this.plan.order]
     // 按依赖层起：同层无依赖边可并发（带上限），层间顺序保证被依赖者先起。
     // 某身份失败时其反向可达的依赖者（必在更晚的层）会在本层结束前被标隔离，
     // 故后续层的 dep 判定仍读到一致的装载状态，不出现半更新。
@@ -264,7 +266,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     for (const layer of layers) {
       await runWithConcurrency(layer, this.startConcurrency, (id) => this.startIdentity(id))
     }
-    this.order = [...this.plan.order]
   }
 
   loaded(): LoadedIdentity[] {
@@ -299,19 +300,19 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.clearRestart(service)
     service.draining = true
     if (service.handledExit) {
-      // 退出已受理：仍等它真正落定再继续，避免停机返回时残留未回收进程
-      await waitForExit(service.proc, EXIT_WAIT_MS)
+      // 退出已受理：仍等它真正落定再继续，避免停机返回时残留未回收执行体
+      await waitForServiceExit(service, EXIT_WAIT_MS)
       return
     }
     service.handledExit = true
     try {
       await service.link.drain(service.restart.drainMs, service.restart.drainMs + 1_000)
-      stopChild(service.proc, service.link)
+      teardownService(service)
     } catch {
-      stopChild(service.proc, service.link)
+      teardownService(service)
       this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'drain_timeout' })
     }
-    await waitForExit(service.proc, EXIT_WAIT_MS)
+    await waitForServiceExit(service, EXIT_WAIT_MS)
   }
 
   private record(kind: LifecycleKind, event: string, fields: LifecycleFields = {}): void {
@@ -402,8 +403,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       // 启动窗口内该身份可能已被别的坏分支隔离（在途 launch）：不得复活
       if (this.stopping || this.isolated.has(id)) {
         if (!this.stopping) this.record('dep', 'stale', { impl: id })
-        stopChild(service.proc, service.link)
-        await waitForExit(service.proc, EXIT_WAIT_MS)
+        teardownService(service)
+        await waitForServiceExit(service, EXIT_WAIT_MS)
         return
       }
       this.services.set(id, service)
@@ -454,9 +455,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         service.draining = true
         if (!service.handledExit) {
           service.handledExit = true
-          stopChild(service.proc, service.link)
+          teardownService(service)
           this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'isolated' })
-          exits.push(waitForExit(service.proc, EXIT_WAIT_MS))
+          exits.push(waitForServiceExit(service, EXIT_WAIT_MS))
         }
       }
       this.endpoints.removeIdentity(id)
@@ -600,8 +601,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
     this.endpoints.removeGeneration(service.id, service.gen)
     this.record('service', 'exit', { impl: service.id, gen: service.gen, reason: drainReason })
-    stopChild(service.proc, service.link)
-    await waitForExit(service.proc, EXIT_WAIT_MS)
+    teardownService(service)
+    await waitForServiceExit(service, EXIT_WAIT_MS)
   }
 
   /** 新世代无执行件：旧服务按换代路径退场，身份保留为数据身份。 */
@@ -737,7 +738,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
           gen: service.gen,
           cap,
           method,
-          transport: 'stdio',
+          transport: service.transport,
           pid: service.pid,
           link: service.link,
         })
@@ -803,19 +804,19 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     // 宿主卡顿导致的超时不据此杀服务：延迟高于探针超时说明是宿主自身被拖住，不是服务哑了。
     if (hostLagging(service.health.timeoutMs)) return
     service.pendingExitReason = 'health_timeout'
-    terminateChild(service.proc)
-    await waitForExit(service.proc, EXIT_WAIT_MS)
+    terminateService(service)
+    await waitForServiceExit(service, EXIT_WAIT_MS)
     this.handleProcessExit(service, 'health_timeout')
   }
 
   private handleChannelClosed(service: ServiceRuntime, reason: string): void {
     if (service.handledExit || this.stopping || service.draining) return
-    // 通道断多半是进程已在退出：先让退出事件带真实 code 收尾；到期还没退再强杀（服务已哑但未死）
+    // 通道断多半是执行体已在退出：先让退出事件带真实 code 收尾；到期还没退再强杀（服务已哑但未死）
     if (service.channelCloseTimer === null) {
       service.channelCloseTimer = setTimeout(() => {
         service.channelCloseTimer = null
-        if (service.proc.exitCode === null && service.proc.signalCode === null) {
-          terminateChild(service.proc)
+        if (!service.lifecycle.exited) {
+          terminateService(service)
         }
         this.handleProcessExit(service, reason)
       }, 200)
@@ -883,13 +884,13 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       const next = await this.launch(service.id, service.gen, service.decl)
       // 重启窗口内该身份可能已被隔离 / 换代：不得复活
       if (this.stopping || this.isolated.has(service.id)) {
-        stopChild(next.proc, next.link)
-        await waitForExit(next.proc, EXIT_WAIT_MS)
+        teardownService(next)
+        await waitForServiceExit(next, EXIT_WAIT_MS)
         return
       }
       if (this.assemblyGenOf(service.id)?.payload !== service.gen) {
-        stopChild(next.proc, next.link)
-        await waitForExit(next.proc, EXIT_WAIT_MS)
+        teardownService(next)
+        await waitForServiceExit(next, EXIT_WAIT_MS)
         return
       }
       next.attempts = service.attempts
@@ -938,6 +939,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 /** 起装配运行时：按装配计划逐身份物化 / 起服务 / 握手；坏分支隔离，其余照常。 */
 export async function startAssembly(options: StartAssemblyOptions): Promise<AssemblyRuntimeHandle> {
   const runtime = new AssemblyRuntime(options)
-  await runtime.start()
+  try {
+    await runtime.start()
+  } catch (err) {
+    // start 中途抛出时已 spawn 的服务必须收口：runtime 尚未交调用方，stop 是唯一停它们的地方。
+    try {
+      await runtime.stop()
+    } catch {
+      // 清理尽力而为，不遮蔽原始错误
+    }
+    throw err
+  }
   return runtime
 }

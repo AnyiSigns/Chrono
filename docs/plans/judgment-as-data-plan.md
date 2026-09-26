@@ -27,7 +27,9 @@
 
 ---
 
-## 二、步骤 0：判定核补全（内核）
+## 二、步骤 0：判定核补全（内核）（已完成）
+
+> 状态：已完成——判定核按方案甲落地（`pred` 产 `Bool`），`get`/`getOr` 值投影、`arith`/`list`/`obj` 均已在位，内核原语共 14。
 
 ### 0.1 裁决桥的方案
 
@@ -56,7 +58,9 @@
 
 ---
 
-## 三、步骤 1：糖化 JSON 规范 + 编译器核心
+## 三、步骤 1：糖化 JSON 规范 + 编译器核心（已完成）
+
+> 状态：已完成——`toolchain/spec.md` + `lower.ts`（含 `let` 写期宏、内联 step/ref、确定性）。
 
 新建顶层包 `toolchain/`（**非 `packages/`**——`packages/` 是运行时载体实现；自带 `package.json` / `tsconfig.json` / `test/`）。编译器主入口**零内核依赖**（`docs/term-toolchain.md` §七/§八）。
 
@@ -76,7 +80,9 @@
 
 ---
 
-## 四、步骤 2：TS builder（作者体验层）
+## 四、步骤 2：TS builder（作者体验层）（已完成）
+
+> 状态：已完成——`toolchain/builder.ts` 的 `t.*` 类型化构造器与组合子。
 
 `toolchain/builder.ts`：类型化 API，产糖化 JSON 或直接产 AST。
 
@@ -90,7 +96,9 @@
 
 ---
 
-## 五、步骤 3：静态校验器
+## 五、步骤 3：静态校验器（已完成）
+
+> 状态：已完成——`toolchain/validate.ts`（形态 / 引用 / 无环 / `eff` 声明）。跨身份方法名属被调身份声明，工具链单包不校验，由宿主入世补上（`docs/term-toolchain.md` §六.1）。
 
 `toolchain/validate.ts`，编译期 fail-closed（`docs/term-toolchain.md` §六.1）：
 
@@ -107,7 +115,9 @@
 
 ---
 
-## 六、步骤 4：源映射 + 测试器（内核依赖拆到独立入口）
+## 六、步骤 4：源映射 + 测试器（内核依赖拆到独立入口）（已完成）
+
+> 状态：已完成——`toolchain/sourcemap.ts` + `toolchain/testkit.ts`（独立入口，可依赖内核；不入插件包）。
 
 1. `toolchain/sourcemap.ts`：AST 节点 → 源位置；运行期错误码（`bad_term` / `bad_var` / `missing_path` / `bad_fun` / `missing_ref` / `gas` / `depth` / `eff_error`）回落源行。**零内核依赖**；源映射是作者侧派生物，**不入 ①**。
 2. `toolchain/testkit/`（**独立入口，可依赖内核**）：给定 `ctx` / `args` / `effects` 回灌表，调用内核 `evaluate` 求值，断言结果与错误码（与内核共用同一实现）。**由外部工具调用，不放进插件包**——插件只交 fixture，内核依赖因此不进入插件（`docs/term-toolchain.md` §七）。

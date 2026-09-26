@@ -3,6 +3,7 @@
 // 可经宿主 options 注入 sink 覆盖；它只作运维取证，不被业务消费。
 
 import type { Json } from '../kernel/index.ts'
+import { isRecord } from './common/json.ts'
 
 /** 一条反向调用端口审计记录：`args` 已脱敏，其余字段是机械路由信息。 */
 export interface PortAuditRecord {
@@ -25,10 +26,6 @@ export interface PortAuditSink {
 
 /** 缺省环形缓冲容量：端口审计只作运维取证、不参与业务，故有界。 */
 export const PORT_AUDIT_CAPACITY = 256
-
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 /**
  * 脱敏 args 顶层 `env` 字段的值：替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性）；

@@ -7,7 +7,7 @@
   "start": "node execute/main.js",
   "protocol": "1",
   "restart": { "policy": "on-exit", "backoff": "exponential", "max": 5, "window_ms": 60000, "drain_ms": 5000 },
-  "health": { "probe": "example.echo.echo", "interval_ms": 10000, "timeout_ms": 2000 },
+  "health": { "interval_ms": 10000, "timeout_ms": 2000 },
   "state": "recomputable",
   "members": [
     { "kind": "execute", "path": "execute/" },

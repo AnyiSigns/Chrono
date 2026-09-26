@@ -2,6 +2,7 @@
 // 键不含调用方：`impl+gen+cap+method`，由 assembly 写、effect 读。
 
 import type { CallEnv } from './wire.ts'
+import type { ServiceTransport } from './service-link.ts'
 import type { Hash, Json } from '../kernel/index.ts'
 
 /** 一次能力调用的应答：有响应（成功值或错误）即数据，形态由 link 实现保证。 */
@@ -9,7 +10,7 @@ export type EndpointCallResult =
   { ok: true; value: Json } | { ok: false; code: string; message: string }
 
 /**
- * 端点调用通道：服务（stdio）与宿主保留能力类（host）同形，`run-loop` 只依赖这个接口。
+ * 端点调用通道：服务（stdio / inproc / worker）与宿主保留能力类（host）同形，`run-loop` 只依赖这个接口。
  * `ServiceLink` 天然满足它（同签名 / 同应答形态）。
  */
 export interface EndpointLink {
@@ -23,14 +24,18 @@ export interface EndpointLink {
   ): Promise<EndpointCallResult>
 }
 
+/** 端点形态：服务三种形态 + 宿主保留能力类（无进程）。 */
+export type EndpointTransport = ServiceTransport | 'host'
+
 export interface EndpointRow {
   impl: string
   gen: Hash
   cap: string
   method: string
-  /** `stdio` = 子进程服务；`host` = 宿主保留能力类（无进程）。 */
-  transport: 'stdio' | 'host'
-  pid: number
+  /** `stdio` / `inproc` / `worker` = 服务三种形态；`host` = 宿主保留能力类（无进程）。 */
+  transport: EndpointTransport
+  /** 物理进程 pid；`inproc` / `worker` / `host` 无独立进程，为 `undefined`。 */
+  pid?: number
   link: EndpointLink
 }
 

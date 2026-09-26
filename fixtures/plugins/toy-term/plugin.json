@@ -1,0 +1,14 @@
+{
+  "identity": "toy-term",
+  "implements": [],
+  "methods": {},
+  "pins": {},
+  "start": "",
+  "build": [{ "cmd": "node", "args": ["../../../toolchain/build.ts", "."] }],
+  "protocol": "1",
+  "restart": { "policy": "never" },
+  "health": {},
+  "state": "recomputable",
+  "members": [{ "kind": "term", "path": "terms/" }],
+  "commands": [{ "name": "toy-term.best", "entry": "terms/best.json" }]
+}

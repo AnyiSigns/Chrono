@@ -1,5 +1,5 @@
 // 原子落盘：temp → fsync 文件 → rename →（尽力）fsync 目录。
-// journal / 基础世界 / 资产三处共用同一份持久化语义，避免各自漂移。
+// journal / 基础世界 / 资产 / 审计侧存等多处共用同一份持久化语义，避免各自漂移。
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -40,13 +40,29 @@ export function writeFileStaged(file: string, data: string | Uint8Array, mode?: 
   const temp = `${file}.tmp-${randomUUID()}`
   const fd = openSync(temp, 'w', mode ?? 0o666)
   try {
-    if (typeof data === 'string') writeSync(fd, data)
-    else writeSync(fd, data)
+    writeAllSync(fd, data)
     fsyncSync(fd)
   } finally {
     closeSync(fd)
   }
   renameSync(temp, file)
+}
+
+/**
+ * 写满整段：`writeSync` 可能短写（返回写入字节数小于请求），静默接受会丢尾部字节。
+ * 逐段续写直到写完；零进展（返回 <= 0）即抛，不无限循环。
+ */
+export function writeAllSync(fd: number, data: string | Uint8Array): void {
+  const buffer =
+    typeof data === 'string'
+      ? Buffer.from(data, 'utf8')
+      : Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  let offset = 0
+  while (offset < buffer.length) {
+    const written = writeSync(fd, buffer, offset, buffer.length - offset)
+    if (written <= 0) throw new Error('short_write')
+    offset += written
+  }
 }
 
 /** 目录 fsync：Windows 不支持目录句柄 fsync，失败即忽略（尽力而为）。 */

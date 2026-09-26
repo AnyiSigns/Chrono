@@ -289,7 +289,7 @@ describe('H14 宿主保留能力类 host', () => {
           start: '',
           protocol: '1',
           restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
-          health: { probe: '', interval_ms: 0, timeout_ms: 0 },
+          health: { interval_ms: 0, timeout_ms: 0 },
           state: 'recomputable',
           members: [],
           commands: [],

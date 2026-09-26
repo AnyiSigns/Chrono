@@ -16,7 +16,7 @@ export interface ClientOptions {
 }
 
 /** 宿主出站 kind 白名单（运行期兜底）：未知 kind 视为协议漂移，显式收口而非静默超时。 */
-const KNOWN_OUTBOUND_KINDS: ReadonlySet<string> = new Set([
+export const KNOWN_OUTBOUND_KINDS: ReadonlySet<string> = new Set([
   'event',
   'accepted',
   'error',

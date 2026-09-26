@@ -8,12 +8,14 @@
 // 回收失败 fail-open：退回未回收世界照常写盘，不阻断压缩。
 
 import { randomUUID } from 'node:crypto'
-import { commit, recycleWorld, worldRev } from '../kernel/index.ts'
+import { recycleWorld, worldRev } from '../kernel/index.ts'
 import type { Entry, Hash, Head, Json, RecycleStats, World } from '../kernel/index.ts'
 import { archiveColdSegment, writeBase, writeJournalAtomic } from './ledger/index.ts'
-import { latestDataGen } from './assembly/decl.ts'
+import { commitToWorld } from './world-commit.ts'
+import { isRecord } from './common/json.ts'
+import { latestDataGen } from './assembly/index.ts'
 import { reachableDefHashes } from './projection/index.ts'
-import { EFFECT_AUDIT_KIND } from './effect/execute.ts'
+import { EFFECT_AUDIT_KIND } from './audit.ts'
 import type { HostPaths } from './paths.ts'
 
 /** 启动自动压缩阈值（尾段 entry 数）：达到即追加快照并归档前缀。 */
@@ -100,10 +102,6 @@ function recycleOrKeep(
   }
 }
 
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /** 审计 def 判别：body 带保留判别键 `kind:'effect_audit'`。 */
 function isAuditDef(body: Json | undefined): boolean {
   return isRecord(body) && body['kind'] === EFFECT_AUDIT_KIND
@@ -147,24 +145,28 @@ export function compactWorld(
   retention?: CompactRetention,
 ): CompactResult {
   const snapshotRev = worldRev(world)
-  const request = {
-    id: `snapshot-${randomUUID()}`,
-    op: 'snapshot' as const,
-    target: { expect_pos: head.hash },
-    args: { world_rev: snapshotRev },
-    by: 'host',
+  const committed = commitToWorld(
+    { kind: 'lock', world, head },
+    {
+      id: `snapshot-${randomUUID()}`,
+      op: 'snapshot',
+      args: { world_rev: snapshotRev },
+      by: 'host',
+    },
+    now,
+    (entry) => {
+      // 先归档前缀、再重写 journal：任何一步崩掉都不丢 entry（冷段已落盘）
+      archiveColdSegment(paths.coldDir, prefix)
+      writeJournalAtomic(paths.journalFile, [entry])
+    },
+  )
+  if (committed.kind !== 'committed') {
+    const reason = committed.kind === 'refused' ? committed.reasons.join(',') : 'noop'
+    throw new Error(`compact_failed: ${reason}`)
   }
-  const outcome = commit(head, world, request, now)
-  if (!outcome.verdict.ok || outcome.entry === null || outcome.hash === null) {
-    throw new Error(`compact_failed: ${outcome.verdict.reasons.join(',')}`)
-  }
-  const snapshotEntry = outcome.entry
-  const snapshot = { seq: snapshotEntry.seq, hash: outcome.hash as Hash }
+  const snapshot = { seq: committed.entry.seq, hash: committed.hash }
   const recycled = recycleOrKeep(world, retention)
   const pruned = stripAuditDefs(recycled.world)
-  // 先归档前缀、再重写 journal：任何一步崩掉都不丢 entry（冷段已落盘）
-  archiveColdSegment(paths.coldDir, prefix)
-  writeJournalAtomic(paths.journalFile, [snapshotEntry])
   writeBase(paths.baseFile, { snapshot, snapshotRev, world: pruned })
   return { snapshot, moved: prefix.length, recycled: recycled.stats, world: pruned }
 }

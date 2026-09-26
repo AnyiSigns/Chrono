@@ -185,4 +185,10 @@ describe('键序无关性与 deepEq', () => {
       expect(typeof deepEq(a, b)).toBe('boolean')
     }
   })
+
+  it('深度超限返回 false 而非抛错（注释口径成立）', () => {
+    const deep = nest(200, 1)
+    expect(() => deepEq(deep, deep)).not.toThrow()
+    expect(deepEq(deep, deep)).toBe(false)
+  })
 })

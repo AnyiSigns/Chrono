@@ -27,7 +27,7 @@
 
 1. `packages/{kernel,host,boot,client}` 任何包**不得依赖**本包（运行时不得依赖工具链）。
 2. 插件**仅不入世的构建 / 开发脚本**可 import 本包的编译器（`.worldignore` 排除该脚本）；插件运行期（`execute/` / `src/` / `terms/` / `schema/` / `plugin.json`）与入世内容**不得** import。
-3. 本包**至多依赖内核**（仅测试器入口，尚未建），不进运行路径。
+3. 本包**至多依赖内核**（仅测试器入口 `testkit.ts`），不进运行路径。
 
 **编译器零内核依赖**是第 2 条成立的前提：插件 devDependency 拉本包时不传递内核。
 
@@ -108,7 +108,7 @@ t.fold(t.ctx(['xs']), t.lit(0), t.if(t.pred('gt', t.arg(1), t.arg(0)), t.arg(1),
 ## 程序与测试入口
 
 - `Program`：`{ terms: Record<路径, 糖化>, implements?: string[], pins?: Record<能力类, 身份>, methods?: Record<能力类, string[]> }`。
-  `eff.port` 必须在 `implements`、`pins` 键或 `methods` 键里，`method` 必须在 `methods[port]` 里，否则校验器报 `undeclared_port` / `undeclared_method`（只声明 `methods` 即可，无需重复填 `implements`）。
+  `eff.port` 必须在 `implements`、`pins` 键或 `methods` 键里，否则报 `undeclared_port`。`method` 校验分两侧：自调用（`port ∈ implements`，或仅声明了 `methods` 的能力类）必须落在 `methods[port]`，否则报 `undeclared_method`；跨身份（`port` 只在 `pins` 里）方法名属被调身份声明，工具链单包看不到、**不校验**（宿主入世期按被调方声明补上，见 `docs/term-toolchain.md` §六.1）。只声明 `methods` 即可，无需重复填 `implements`。
 - `runTerm(program, termPath, fixtures)`：**默认先静态校验**，不过回 `{ ok:false, error:'invalid', issues }`（issues 带源指针）；通过则求值，返回 `{ ok:true, value } | { ok:false, error, at?, def?, callAt? }`。`fixtures = { ctx?, args?, effects?, trace? }`。
 - `trace: true` 时结果附 `trace: Array<{port, method, args}>`（按发射顺序），可断言「某效果恰好/未发射」。
 - `runTermUnchecked(...)`：显式跳过校验，直接求值。

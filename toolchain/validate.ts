@@ -198,16 +198,20 @@ export function validateProgram(p: Program): { ok: boolean; issues: Issue[] } {
         if (typeof port === 'string' && !ports.has(port)) {
           issues.push({ path: `${at}/port`, message: `undeclared_port: ${port}` })
         }
-        const declared = typeof port === 'string' ? p.methods?.[port] : undefined
-        if (typeof port === 'string' && p.methods !== undefined && declared === undefined) {
-          // 契约：eff.port 必须在 methods 里有条目（哪怕空数组）；否则方法名无从校验
-          issues.push({ path: `${at}/port`, message: `undeclared_method: ${port}` })
-        } else if (
-          declared !== undefined &&
-          typeof node.method === 'string' &&
-          !declared.includes(node.method)
-        ) {
-          issues.push({ path: `${at}/method`, message: `undeclared_method: ${port}.${node.method}` })
+        // 方法名只在自调用（port ∈ implements，或仅声明了 methods 的能力类）可校验；
+        // 跨身份（port 只在 pins 里）的方法名住在被调身份声明里，工具链只有单包源、看不到被调声明，
+        // 故放弃校验（宿主入世按被调身份声明判，两侧口径刻意不同，见 docs/term-toolchain.md §六.1）。
+        const selfDeclared =
+          typeof port === 'string' &&
+          ((p.implements ?? []).includes(port) || Object.hasOwn(p.methods ?? {}, port))
+        if (selfDeclared) {
+          const declared = p.methods?.[port]
+          if (declared === undefined) {
+            // 契约：自调用 port 必须在 methods 里有条目（哪怕空数组）；否则方法名无从校验
+            issues.push({ path: `${at}/port`, message: `undeclared_method: ${port}` })
+          } else if (typeof node.method === 'string' && !declared.includes(node.method)) {
+            issues.push({ path: `${at}/method`, message: `undeclared_method: ${port}.${node.method}` })
+          }
         }
       }
     })

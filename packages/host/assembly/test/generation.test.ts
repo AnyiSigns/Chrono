@@ -111,7 +111,7 @@ describe('classifyGenerationChange（A6 换代判据）', () => {
         start: 'node execute/main.js',
         members: BOTH_MEMBERS,
         terms: { 'a.json': '["c",1]' },
-        health: { probe: 'changed', interval_ms: 1234, timeout_ms: 99 },
+        health: { interval_ms: 1234, timeout_ms: 99 },
       },
     ])
     expect(classifyGenerationChange(v1.world, v1.gen, v2.world, v2.gen, blobsDir())).toBe('data')

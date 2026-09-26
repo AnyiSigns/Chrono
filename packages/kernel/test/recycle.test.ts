@@ -320,3 +320,33 @@ describe('recycleWorld：淘汰世代引用拒绝（fail-closed）', () => {
     ).toBe('<no-throw>')
   })
 })
+
+describe('recycleWorld：genWindow<=0 仍做引用闭包回填', () => {
+  it('genWindow:0 + keepGens 指向补丁世代 → base 世代保留、组装不悬挂', () => {
+    const S = h('s')
+    const F = h('f')
+    const P = h('p')
+    const A = h('a')
+    const X = h('9')
+    const w = world([S, F, P, A, X], {
+      x: {
+        id: 'x',
+        schema: S,
+        gens: [gen(F, S, { seq: 0 }), { ...gen(P, S), base: 0, seq: 1 }, gen(A, S, { seq: 2 })],
+        active: A,
+        born: { at: 1, by: 'test' },
+      },
+    })
+    bodyOf(w, P, { ops: [{ op: 'replace', path: ['n'], value: 2 }] })
+    const { world: out } = recycleWorld(w, {
+      genWindow: 0,
+      keepGens: [{ id: 'x', seq: 1 }],
+      dropRoots: [X],
+    })
+    expect(out.ids.x.gens.map((g) => g.payload)).toEqual([F, P, A])
+    expect(out.ids.x.gens[1].base).toBe(0)
+    expect(out.defs[F]).toBeDefined()
+    expect(out.defs[P]).toBeDefined()
+    expect(out.defs[X]).toBeUndefined()
+  })
+})

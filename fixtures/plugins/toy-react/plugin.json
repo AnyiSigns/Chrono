@@ -19,7 +19,6 @@
     "drain_ms": 500
   },
   "health": {
-    "probe": "toy.react.ping",
     "interval_ms": 10000,
     "timeout_ms": 1000
   },

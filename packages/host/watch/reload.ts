@@ -4,14 +4,14 @@
 // 换代走正常 `add_gen`，产生真 journal entry，可回滚可审计，不引入开发态与生产态的分叉。
 
 import { randomUUID } from 'node:crypto'
-import { cloneWorld, commit } from '../../kernel/index.ts'
 import { appendJournal } from '../ledger/index.ts'
 import { putBlob } from '../blobs.ts'
 import { planIngest } from '../assembly/ingest.ts'
 import type { PluginEntry } from '../assembly/ingest.ts'
 import type { HostPaths } from '../paths.ts'
 import type { WorldWriter } from '../writer.ts'
-import type { Hash, Head, World, WriteRequest } from '../../kernel/index.ts'
+import { commitToWorld } from '../world-commit.ts'
+import type { Hash, Head, World } from '../../kernel/index.ts'
 
 export type ReloadOutcome =
   | { status: 'unchanged'; identity: string }
@@ -26,11 +26,6 @@ export interface ReloadDeps {
   now: () => number
   /** 链头推进后的装配跟随；宿主注入 `applyWorldSerial`，保证换代跟随串行且单调。 */
   applyWorld: (world: World, head: Head) => Promise<void>
-  /**
-   * 落账（`appendJournal`）失败的收口：宿主注入致命标记（fail-stop）；
-   * 缺省不标记，只把失败当普通拒绝返回。
-   */
-  onPersistFailure?: (err: unknown) => void
 }
 
 /** 落账段内的定论：与外部 `ReloadOutcome` 分离，携带提交产物供段外交装配跟随。 */
@@ -72,40 +67,32 @@ export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promis
       const plan = planned.plan
       if (plan.unchanged) return { kind: 'unchanged', identity: plan.identity }
 
-      const request: WriteRequest = {
-        id: `watch-${randomUUID()}`,
-        op: 'batch',
-        target: { expect_pos: state.head.hash },
-        args: { ops: plan.ops },
-        by: 'watcher',
+      const committed = commitToWorld(
+        { kind: 'writer', world: state.world, head: state.head },
+        {
+          id: `watch-${randomUUID()}`,
+          op: 'batch',
+          args: { ops: plan.ops },
+          by: 'watcher',
+        },
+        deps.now(),
+        (entry) => appendJournal(deps.paths.journalFile, [entry]),
+      )
+      if (committed.kind === 'refused') {
+        return { kind: 'failed', identity: plan.identity, reasons: committed.reasons }
       }
-      // `commit` 的契约是就地演化传入的世界；但装配运行时持有同一份引用做「换代前后」比对，
-      // 就地改会让它把新旧视作同一对象而看不见换代。故先克隆独占副本再提交（与内核 `run` 同规）。
-      const nextWorld = cloneWorld(state.world)
-      const committed = commit(state.head, nextWorld, request, deps.now())
-      if (!committed.verdict.ok) {
-        return { kind: 'failed', identity: plan.identity, reasons: committed.verdict.reasons }
-      }
-      if (committed.entry === null) {
+      if (committed.kind === 'unchanged') {
         // 幂等命中（内容其实未变）：世界未动
         return { kind: 'unchanged', identity: plan.identity }
       }
-      try {
-        appendJournal(deps.paths.journalFile, [committed.entry])
-      } catch (err) {
-        // 落账失败是 fail-stop：内存世界尚未推进（下一行才改 state.world），但账本已不可写，
-        // 交宿主标记致命并停机，避免后续提交继续以内存为准造成分叉。
-        deps.onPersistFailure?.(err)
-        throw err
-      }
-      state.world = nextWorld
-      state.head = { seq: committed.entry.seq, hash: committed.hash as Hash }
+      state.world = committed.world
+      state.head = committed.head
       return {
         kind: 'committed',
         identity: plan.identity,
         gen: plan.commitHash,
-        world: nextWorld,
-        head: state.head,
+        world: committed.world,
+        head: committed.head,
       }
     } catch (err) {
       return {

@@ -4,8 +4,15 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { ServiceChannelError, SERVICE_PROTOCOL_VERSION } from '../service-link.ts'
-import type { ServiceLink, ServiceManifest } from '../service-link.ts'
+import type {
+  ServiceChannel,
+  ServiceLink,
+  ServiceManifest,
+  ServiceTransport,
+} from '../service-link.ts'
+import { asRecord } from '../common/json.ts'
 import type { PluginDecl } from './decl.ts'
+import type { ServiceLifecycle } from './service-host.ts'
 import type { Hash, Json } from '../../kernel/index.ts'
 
 /** terminate 后等待进程真正退出的有界窗口：结算 / 继续前先等它落定，避免遗留孤儿进程。 */
@@ -35,9 +42,14 @@ export interface ServiceRuntime {
   id: string
   gen: Hash
   decl: PluginDecl
-  proc: ChildProcess
+  transport: ServiceTransport
+  /** 仅 stdio 有：被 spawn 的子进程；inproc / worker 无独立进程。 */
+  proc?: ChildProcess
+  channel: ServiceChannel
+  lifecycle: ServiceLifecycle
   link: ServiceLink
-  pid: number
+  /** 物理进程 pid；inproc / worker 为 `undefined`。 */
+  pid?: number
   startedAt: number
   attempts: number
   /** 连续探针失败计数：成功即清零；达到 `health.failureThreshold` 才走退出重启。 */
@@ -99,10 +111,6 @@ export function classifyStartFailure(err: unknown): StartFailure {
   if (err instanceof ServiceStartError) return { event: 'service', reason: err.reason }
   if (err instanceof ServiceChannelError) return { event: 'service', reason: err.code }
   return { event: 'service', reason: 'unknown' }
-}
-
-function asRecord(value: Json | undefined): { [k: string]: Json } | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null
 }
 
 function numberField(record: { [k: string]: Json } | null, key: string, fallback: number): number {
@@ -205,7 +213,18 @@ export function waitForExit(child: ChildProcess, timeoutMs: number): Promise<voi
   })
 }
 
-export function stopChild(child: ChildProcess, link: ServiceLink): void {
-  link.close()
-  terminateChild(child)
+/** 关通道并终止执行体（stdio 杀进程树；inproc / worker 关模型自身执行体）。 */
+export function teardownService(service: ServiceRuntime): void {
+  service.link.close()
+  service.lifecycle.terminate()
+}
+
+/** 只终止执行体、不关通道（健康超时等路径用）。 */
+export function terminateService(service: ServiceRuntime): void {
+  service.lifecycle.terminate()
+}
+
+/** 等执行体真正退出（有界）；已退出立即返回。 */
+export function waitForServiceExit(service: ServiceRuntime, timeoutMs: number): Promise<void> {
+  return service.lifecycle.waitForExit(timeoutMs)
 }

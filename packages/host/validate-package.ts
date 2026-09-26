@@ -5,6 +5,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { planPack } from './assembly/index.ts'
+import { decodeBase64Strict } from './common/cas.ts'
+import { isSafePackageFilePath } from './common/paths-safe.ts'
 import type { Json, World } from '../kernel/index.ts'
 
 export interface ValidateError {
@@ -23,31 +25,6 @@ export interface ValidatePackageReport {
 export type ValidatePackageOutcome =
   { accepted: true; report: ValidatePackageReport } | { accepted: false; message: string }
 
-const SAFE_SEGMENT = /^[^/\\<>:"|?*\u0000-\u001f]+$/
-/** Windows 保留设备名（大小写不敏感）：作为文件名会在物化时命中设备，故入世前拒。 */
-const WINDOWS_RESERVED = new Set([
-  'con',
-  'prn',
-  'aux',
-  'nul',
-  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
-  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
-])
-
-/** 包内相对路径必须是安全单段拼接：禁绝对 / 反斜杠 / 盘符 / `..` / 空段 / Windows 非法名。 */
-function isSafeRelPath(path: string): boolean {
-  if (path.length === 0 || path.length > 4096) return false
-  if (path.startsWith('/') || path.startsWith('\\')) return false
-  if (path.includes('\\') || path.includes('\u0000')) return false
-  if (/^[A-Za-z]:/.test(path)) return false
-  return path.split('/').every((segment) => {
-    if (segment.length === 0 || segment === '.' || segment === '..') return false
-    if (!SAFE_SEGMENT.test(segment)) return false
-    if (segment.endsWith('.') || segment.endsWith(' ')) return false
-    return !WINDOWS_RESERVED.has(segment.toLowerCase())
-  })
-}
-
 /** 候选文件值：文本字符串，或 `{ text }` / `{ base64 }` 显式形态（base64 只收规范编码）。 */
 function decodeFile(value: Json): Buffer | null {
   if (typeof value === 'string') return Buffer.from(value, 'utf8')
@@ -57,11 +34,7 @@ function decodeFile(value: Json): Buffer | null {
   // 两形态同时出现是歧义输入：拒，不猜优先级
   if (hasText && hasBase64) return null
   if (hasText) return Buffer.from(value['text'] as string, 'utf8')
-  if (hasBase64) {
-    const base64 = value['base64'] as string
-    const decoded = Buffer.from(base64, 'base64')
-    return decoded.toString('base64') === base64 ? decoded : null
-  }
+  if (hasBase64) return decodeBase64Strict(value['base64'] as string)
   return null
 }
 
@@ -79,19 +52,21 @@ function errorOf(reason: string): ValidateError {
  * 对一份候选包源码树跑入世机械校验，返回错误列表与规范化树哈希；不写世界。
  * `files` 形状非法（非对象 / 路径逃逸 / 值形态不符）→ `accepted:false`（调用方按 `bad_directive` 收口）。
  * `blobsDir` 仅供读取旧世代的 pointer 声明；候选包字节一律不落 CAS（dry-run）。
+ * `configRoot` 是仓库根：受保护 pin 名单从它的 `chrono.config.json` 读（候选目录不是仓库根）。
  */
 export function validatePackage(
   world: World,
   runtimeDir: string,
   files: Json,
   blobsDir?: string,
+  configRoot?: string,
 ): ValidatePackageOutcome {
   if (typeof files !== 'object' || files === null || Array.isArray(files)) {
     return { accepted: false, message: 'validate_package expects { files }' }
   }
   const entries: Array<[string, Buffer]> = []
   for (const [path, value] of Object.entries(files)) {
-    if (!isSafeRelPath(path)) return { accepted: false, message: `unsafe path: ${path}` }
+    if (!isSafePackageFilePath(path)) return { accepted: false, message: `unsafe path: ${path}` }
     const bytes = decodeFile(value)
     if (bytes === null) return { accepted: false, message: `bad file: ${path}` }
     entries.push([path, bytes])
@@ -105,7 +80,7 @@ export function validatePackage(
       mkdirSync(dirname(abs), { recursive: true })
       writeFileSync(abs, bytes)
     }
-    const plan = planPack(world, dir, undefined, blobsDir)
+    const plan = planPack(world, dir, undefined, blobsDir, configRoot)
     if (!plan.ok) {
       return {
         accepted: true,

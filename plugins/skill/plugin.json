@@ -18,7 +18,6 @@
     "drain_ms": 5000
   },
   "health": {
-    "probe": "skill.read",
     "interval_ms": 10000,
     "timeout_ms": 2000
   },

@@ -4,9 +4,11 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { runSeed, runVerify, runReplay, startHost } from '../../host/index.ts'
+import { FRAMEWORK_COMMAND_NAMES } from '../../host/common/framework-commands.ts'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../host/test/test-helpers.ts'
 import { killProcessTree } from '../../host/test/test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
+import { handlers, helpText } from '../commands.ts'
 
 const BOOT_MAIN = fileURLToPath(new URL('../main.ts', import.meta.url))
 
@@ -296,5 +298,18 @@ describe('CLI 薄壳 boot', () => {
     expect(bad.code).toBe(1)
     expect(bad.stderr).toContain('bad_start_wrapper')
     expect(bad.stdout).toBe('')
+  })
+})
+
+describe('保留命令名单点化（§6.4）', () => {
+  it('CLI 派发表键 == FRAMEWORK_COMMAND_NAMES（新增命令漏加规范清单即红）', () => {
+    expect(Object.keys(handlers).sort()).toEqual([...FRAMEWORK_COMMAND_NAMES].sort())
+  })
+
+  it('helpText() 覆盖全部保留命令名', () => {
+    const text = helpText()
+    for (const name of FRAMEWORK_COMMAND_NAMES) {
+      expect(text, `帮助文本缺 ${name}`).toContain(name)
+    }
   })
 })

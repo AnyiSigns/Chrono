@@ -84,20 +84,7 @@ function identityOf(id: string, active: Hash, schema = 's'.repeat(64)): World['i
 }
 
 describe('A10 轮间驱动 runSubmission', () => {
-  it('writer 与 world/head 同时给出或都缺 → 抛错（不静默取一）', async () => {
-    const writer = new WorldWriter({ world: EMPTY_WORLD, head: { seq: -1, hash: null } })
-    await expect(
-      runSubmission({
-        writer,
-        world: EMPTY_WORLD,
-        head: { seq: -1, hash: null },
-        directives: [],
-        caps: {},
-        limits: LIMITS,
-        initiator: 'tester',
-        now: () => 1,
-      }),
-    ).rejects.toThrow('not both')
+  it('缺 writer → 抛错（fail-closed，不静默新建写者）', async () => {
     await expect(
       runSubmission({
         directives: [],
@@ -106,13 +93,12 @@ describe('A10 轮间驱动 runSubmission', () => {
         initiator: 'tester',
         now: () => 1,
       }),
-    ).rejects.toThrow('provide either writer')
+    ).rejects.toThrow('provide writer')
   })
 
   it('空 directives → idle', async () => {
     const outcome = await runSubmission({
-      world: EMPTY_WORLD,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world: EMPTY_WORLD, head: { seq: -1, hash: null } }),
       directives: [],
       caps: {},
       limits: LIMITS,
@@ -128,8 +114,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const rounds: Entry[][] = []
     let tick = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         evalD(pure),
         writeD('put', { body: { a: 1 } }),
@@ -171,8 +156,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const journal: Entry[] = []
     let tick = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -212,8 +196,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const audits: AuditDraft[] = []
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(term)],
       caps: {},
       limits: LIMITS,
@@ -238,8 +221,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const world = worldOf({ [pure]: put({ body: ['c', 1] }) })
     let tick = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         evalD(pure),
         { kind: 'extern', payload: { x: 1 } },
@@ -292,8 +274,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     world.defs[planner] = put({ body: ['c', plan] })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -339,8 +320,7 @@ describe('A10 轮间驱动 runSubmission', () => {
       const world = worldOf({ [planner]: put({ body: ['c', bad] }) })
       const journal: Entry[] = []
       const outcome = await runSubmission({
-        world,
-        head: { seq: -1, hash: null },
+        writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
         directives: [evalD(planner)],
         caps: {},
         limits: LIMITS,
@@ -359,8 +339,10 @@ describe('A10 轮间驱动 runSubmission', () => {
     const data: Json = { $directives: 'x' }
     const planner = defHash(put({ body: ['c', data] }))
     const outcome = await runSubmission({
-      world: worldOf({ [planner]: put({ body: ['c', data] }) }),
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({
+        world: worldOf({ [planner]: put({ body: ['c', data] }) }),
+        head: { seq: -1, hash: null },
+      }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -385,8 +367,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const journal: Entry[] = []
     let tick = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(midPlanner)],
       caps: {},
       limits: LIMITS,
@@ -412,8 +393,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     // 服务把「再次 eval 该入口」当计划返回：每轮 1 条 eff → 无界递归
     const plan: Json = { $directives: [{ kind: 'eval', entry: term, ctx: null }] }
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(term)],
       caps: {},
       limits: LIMITS,
@@ -449,8 +429,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(plannerA), evalD(plannerB)],
       caps: {},
       limits: LIMITS,
@@ -474,8 +453,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     })
     const emitters: string[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -523,8 +501,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     world.defs[planner] = put({ body: ['c', plan] })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -556,8 +533,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const audits: AuditDraft[] = []
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(term)],
       caps: {},
       limits: LIMITS,
@@ -585,8 +561,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const world = worldOf({ [planner]: put({ body: ['c', plan] }) })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -620,8 +595,7 @@ describe('A10 轮间驱动 runSubmission', () => {
       const world = worldOf({ [planner]: put({ body: ['c', plan] }) })
       const journal: Entry[] = []
       const outcome = await runSubmission({
-        world,
-        head: { seq: -1, hash: null },
+        writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
         directives: [evalD(planner)],
         caps: {},
         limits: LIMITS,
@@ -643,8 +617,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     const world = worldOf({ [termHash]: put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }) })
     const audits: AuditDraft[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(termHash)],
       caps: {},
       limits: LIMITS,
@@ -683,8 +656,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     // 基线快照：业务写就地改世界，对比重放须从快照起（defs 不可变，浅拷即可）
     const base: World = { defs: { ...world.defs }, ids: { ...world.ids } }
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -716,8 +688,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const head: Head = { seq: 4, hash: 'f'.repeat(64) }
     const calls: Array<{ world: World; head: Head }> = []
     const outcome = await runSubmission({
-      world,
-      head,
+      writer: new WorldWriter({ world, head }),
       directives: [{ kind: 'eval', entry: reader, args: null }],
       caps: {},
       limits: LIMITS,
@@ -739,8 +710,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const { reader, world } = readerWorld()
     await expect(
       runSubmission({
-        world,
-        head: { seq: -1, hash: null },
+        writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
         directives: [{ kind: 'eval', entry: reader, args: null }],
         caps: {},
         limits: LIMITS,
@@ -754,8 +724,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const { reader, world } = readerWorld()
     await expect(
       runSubmission({
-        world,
-        head: { seq: -1, hash: null },
+        writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
         directives: [{ kind: 'eval', entry: reader, args: null }],
         caps: {},
         limits: LIMITS,
@@ -771,8 +740,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     let calls = 0
     // 显式 null + 读 world_rev 的 term：若实现错把 null 当缺省填投影，此处会 done 而非 refused
     const withNull = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: revReader, args: null, ctx: null }],
       caps: {},
       limits: LIMITS,
@@ -790,8 +758,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     })
 
     const withValue = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: reader, args: null, ctx: { marker: 'mine' } }],
       caps: {},
       limits: LIMITS,
@@ -811,8 +778,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const { reader, world } = readerWorld()
     const calls: Array<{ world: World; head: Head }> = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         { kind: 'eval', entry: reader, args: null },
         { kind: 'eval', entry: reader, args: null },
@@ -845,8 +811,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
 
   it('纯 write 提交不构造 ctx', async () => {
     const outcome = await runSubmission({
-      world: EMPTY_WORLD,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world: EMPTY_WORLD, head: { seq: -1, hash: null } }),
       directives: [writeD('put', { body: { only: 'write' } })],
       caps: {},
       limits: LIMITS,
@@ -871,8 +836,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const audits: AuditDraft[] = []
     let calls = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: main, args: null }],
       caps: {},
       limits: LIMITS,
@@ -910,8 +874,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
 
     let calls = 0
     const filled = await runSubmission({
-      world: planWorld,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world: planWorld, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: plannerKey, args: null }],
       caps: {},
       limits: LIMITS,
@@ -932,8 +895,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
 
     // 显式 null：错误实现若填投影会 done，正确实现 refused
     const passthrough = await runSubmission({
-      world: planWorld,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world: planWorld, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: plannerNullKey, args: null }],
       caps: {},
       limits: LIMITS,
@@ -957,8 +919,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const reader = defHash(put({ body: ['v', 0] }))
     const world = worldOf({ [reader]: put({ body: ['v', 0] }) })
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         {
           kind: 'eval',
@@ -986,8 +947,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     const reader = defHash(put({ body: ['v', 0] }))
     const world = worldOf({ [reader]: put({ body: ['v', 0] }) })
     const badArgs = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [{ kind: 'eval', entry: reader, args: null, inject: { ids: ['ids'] } }],
       caps: {},
       limits: LIMITS,
@@ -1022,8 +982,7 @@ describe('A14 eval ctx 注入（三路同规）', () => {
     })
     const calls: Array<{ world: World; head: Head }> = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1063,8 +1022,7 @@ describe('H18 plan eval 按命令名解析', () => {
       [planner]: put({ body: ['c', plan] }),
     })
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1089,8 +1047,7 @@ describe('H18 plan eval 按命令名解析', () => {
     })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1115,8 +1072,7 @@ describe('H18 plan eval 按命令名解析', () => {
       const world = worldOf({ [planner]: put({ body: ['c', bad] }) })
       const journal: Entry[] = []
       const outcome = await runSubmission({
-        world,
-        head: { seq: -1, hash: null },
+        writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
         directives: [evalD(planner)],
         caps: {},
         limits: LIMITS,
@@ -1139,8 +1095,10 @@ describe('H18 plan eval 按命令名解析', () => {
     const planner = defHash(put({ body: ['c', plan] }))
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world: worldOf({ [planner]: put({ body: ['c', plan] }) }),
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({
+        world: worldOf({ [planner]: put({ body: ['c', plan] }) }),
+        head: { seq: -1, hash: null },
+      }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1167,8 +1125,7 @@ describe('H18 plan eval 按命令名解析', () => {
     })
     const emitters: string[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1204,8 +1161,7 @@ describe('H18 plan eval 按命令名解析', () => {
     const world = worldOf({ [innerTerm]: put({ body: ['c', inner] }) })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: (parsed as { ok: true; directives: Directive[] }).directives,
       caps: {},
       limits: LIMITS,
@@ -1224,8 +1180,7 @@ describe('只读提交 runSubmission（readonly）', () => {
   it('write directive → refused readonly_violation，不落账、不推进 head', async () => {
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world: EMPTY_WORLD,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world: EMPTY_WORLD, head: { seq: -1, hash: null } }),
       directives: [writeD('put', { body: { a: 1 } })],
       caps: {},
       limits: LIMITS,
@@ -1251,8 +1206,7 @@ describe('只读提交 runSubmission（readonly）', () => {
     const world = worldOf({ [planner]: put({ body: ['c', plan] }) })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1275,8 +1229,7 @@ describe('只读提交 runSubmission（readonly）', () => {
     const world = worldOf({ [pure]: put({ body: ['c', 1] }) })
     let advanced = 0
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(pure)],
       caps: {},
       limits: LIMITS,
@@ -1303,8 +1256,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     world.ids['dep'] = identityOf('dep', active)
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {} })],
       caps: {},
       limits: LIMITS,
@@ -1326,8 +1278,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     world.ids['dep'] = identityOf('dep', active)
     // 显式给 payload（≠ 基准 active）：若被覆盖成 active 会成功；正确实现透传 → 内核判 stale_active
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {}, expect_active: payload }),
       ],
@@ -1352,8 +1303,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     })
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         writeD('batch', {
           ops: [
@@ -1448,8 +1398,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     world.ids['dep'] = identityOf('dep', active)
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [evalD(planner)],
       caps: {},
       limits: LIMITS,
@@ -1521,8 +1470,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     world.ids['dep'] = identityOf('dep', active)
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         writeD('batch', {
           ops: [
@@ -1578,8 +1526,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     }
     const journal: Entry[] = []
     const outcome = await runSubmission({
-      world,
-      head: { seq: -1, hash: null },
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
         writeD('batch', {
           ops: [

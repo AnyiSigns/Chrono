@@ -7,6 +7,7 @@
 // 非法补丁 fail-closed：未知 op / 空路径 / 穿过标量的路径 / append 目标非列表非字符串，
 // 一律抛 KernelError('bad_patch')，不静默吞掉。
 
+import { isRecord, walkJson } from './value.ts'
 import { KernelError } from './types.ts'
 import type { Json } from './types.ts'
 
@@ -21,10 +22,6 @@ export interface PatchOp {
 }
 
 const PATCH_OPS = Object.freeze(['append', 'replace', 'delete'] as const)
-
-function isRecord(v: Json | undefined): v is { [k: string]: Json } {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 function isPathSegment(v: Json): v is string | number {
   return typeof v === 'string' || (typeof v === 'number' && Number.isInteger(v))
@@ -51,10 +48,18 @@ export function readPatchOps(body: Json): PatchOp[] | null {
 
 /** JSON 兼容深拷贝：标量原样、容器递归复制（补丁 value 不得与链共享引用）。 */
 function deepCopy(value: Json | undefined): Json {
-  if (Array.isArray(value)) return value.map((item) => deepCopy(item))
+  return walkJson(value, copyNode, 0)
+}
+
+function copyNode(
+  value: Json | undefined,
+  _depth: number,
+  next: (child: Json | undefined) => Json,
+): Json {
+  if (Array.isArray(value)) return value.map(next)
   if (value !== null && typeof value === 'object') {
     const out: { [k: string]: Json } = {}
-    for (const key of Object.keys(value)) out[key] = deepCopy(value[key])
+    for (const key of Object.keys(value)) out[key] = next((value as { [k: string]: Json })[key])
     return out
   }
   return value === undefined ? null : value
@@ -158,7 +163,8 @@ function applyOne(doc: Json, patch: PatchOp): void {
   }
   const last = patch.path[patch.path.length - 1]
   if (isRecord(node) && typeof last === 'string') delete node[last]
-  else if (Array.isArray(node) && typeof last === 'number' && last >= 0 && last < node.length) node.splice(last, 1)
+  else if (Array.isArray(node) && typeof last === 'number' && last >= 0 && last < node.length)
+    node.splice(last, 1)
 }
 
 /**

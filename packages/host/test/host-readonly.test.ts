@@ -55,6 +55,9 @@ describe('只读命令', () => {
     const pkg = writeTempPackage(root, {
       identity: 'toy-ro',
       start: '',
+      // 自调用端口须在 implements / methods 里声明（入世期机械校验）；
+      // 无执行件 → 运行期照旧拿不到端点，用于验只读命令的失败路径。
+      implements: ['toy.missing'],
       members: [{ kind: 'term', path: 'terms/' }],
       terms: {
         'read.json': JSON.stringify(EFF_TERM),

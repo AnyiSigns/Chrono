@@ -9,6 +9,7 @@ import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { hostPaths, socketPath } from '../paths.ts'
 import { createFrameDecoder, encodeFrame } from '../wire.ts'
+import { isRecord } from '../common/json.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 import { waitFor, waitForLifecycle, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -61,10 +62,6 @@ function rawCollect(
       reject(err)
     })
   })
-}
-
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 describe('H10 宿主 run 生命周期事件', () => {

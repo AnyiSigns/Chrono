@@ -21,6 +21,17 @@ export const FIXTURE_PYTHON = fileURLToPath(
   new URL('../../../fixtures/plugins/toy-python', import.meta.url),
 )
 
+/** 三形态共用入口的 toy 插件包（stdio / inproc / worker 同一份派发逻辑）。 */
+export const FIXTURE_CHANNEL = fileURLToPath(
+  new URL('../../../fixtures/plugins/toy-channel', import.meta.url),
+)
+
+/** 三形态共用 toy 服务源文本：临时包按 transport 复用同一份实现，避免多份实现漂移。 */
+export const FIXTURE_CHANNEL_MAIN = readFileSync(
+  fileURLToPath(new URL('../../../fixtures/plugins/toy-channel/execute/main.mjs', import.meta.url)),
+  'utf8',
+)
+
 /** 服务脚本源文本：临时服务包复用 fixture 同一份 main.js，避免两份实现漂移。 */
 export const FIXTURE_SERVICE_MAIN = readFileSync(
   fileURLToPath(new URL('../../../fixtures/plugins/toy-alpha/execute/main.js', import.meta.url)),
@@ -113,6 +124,8 @@ export interface PackageSpec {
   methods?: Record<string, string[]>
   pins?: Record<string, string>
   start?: string
+  /** 服务传输形态声明；省略则不写 `transport` 字段（回落 `stdio`）。 */
+  transport?: string
   /** 显式构建声明；省略则不写 `build` 字段（回落宿主旧探测）。 */
   build?: Array<{ cmd: string; args: string[] }>
   /** 独占资源声明；省略则不写 `exclusive` 字段（无独占资源）。 */
@@ -134,11 +147,23 @@ export interface PackageSpec {
 }
 
 /**
- * 在临时 root 下写一个完整插件包（契约 14 字段：`build` / `exclusive` 缺省省略、其余齐全；CommonJS 信封）。
+ * 在临时 root 下写一个完整插件包（契约字段：`build` / `exclusive` / `transport` 缺省省略、其余齐全；CommonJS 信封）。
  * 返回包根绝对路径；同名身份重复调用会覆盖已有文件（换代测试用）。
  */
 export function writeTempPackage(root: string, spec: PackageSpec): string {
   const pkgRoot = join(root, 'pkgs', spec.dir ?? spec.identity)
+  writePackageAt(pkgRoot, spec)
+  return pkgRoot
+}
+
+/** 在 `root/plugins/<name>` 写一个插件包（目录发现用；与 `writeTempPackage` 同内容）。 */
+export function writeDiscoveredPackage(root: string, spec: PackageSpec): string {
+  const pkgRoot = join(root, 'plugins', spec.dir ?? spec.identity)
+  writePackageAt(pkgRoot, spec)
+  return pkgRoot
+}
+
+function writePackageAt(pkgRoot: string, spec: PackageSpec): void {
   const methods =
     spec.methods ?? Object.fromEntries(spec.implements?.map((cap) => [cap, ['echo']]) ?? [])
   const start = spec.start ?? ''
@@ -149,6 +174,7 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
     methods,
     pins: spec.pins ?? {},
     start,
+    ...(spec.transport === undefined ? {} : { transport: spec.transport }),
     ...(spec.build === undefined ? {} : { build: spec.build }),
     ...(spec.exclusive === undefined ? {} : { exclusive: spec.exclusive }),
     protocol: spec.protocol ?? '1',
@@ -160,7 +186,6 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
       drain_ms: 500,
     },
     health: spec.health ?? {
-      probe: `${spec.identity}.echo`,
       interval_ms: 10000,
       timeout_ms: 1000,
     },
@@ -209,7 +234,11 @@ export function writeTempPackage(root: string, spec: PackageSpec): string {
       writeFile(join(pkgRoot, rel), content)
     }
   }
-  return pkgRoot
+}
+
+/** 写仓库根 `chrono.config.json`：受保护 pin 名单由入世从 root 读取。 */
+export function writeChronoConfig(root: string, protectedPins: string[]): void {
+  writeJson(root, 'chrono.config.json', { protected_pins: protectedPins })
 }
 
 function writeJson(pkgRoot: string, rel: string, value: unknown): void {
@@ -349,9 +378,9 @@ export async function waitForQuiescence(
   throw new Error(`waitForQuiescence 超时（事件流未静默）: ${label}`)
 }
 
-/** 进程存活检测：kill(pid, 0) 探针；EPERM 视为存活。 */
-export function isPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
+/** 进程存活检测：kill(pid, 0) 探针；EPERM 视为存活。`pid` 缺省（inproc / worker 端点）视为不存活。 */
+export function isPidAlive(pid: number | undefined): boolean {
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
@@ -366,9 +395,9 @@ export function isPidAlive(pid: number): boolean {
  * 容忍「目标已死」：实现侧通道断开后的清理常与调用方抢同一棵树，
  * taskkill 对消失的目标会以 128 退出并打 ERROR —— 意图（树消失）已达成，不判失败。
  */
-export function killProcessTree(pid: number): Promise<void> {
+export function killProcessTree(pid: number | undefined): Promise<void> {
   return new Promise((resolve) => {
-    if (!isPidAlive(pid)) {
+    if (pid === undefined || !isPidAlive(pid)) {
       resolve()
       return
     }

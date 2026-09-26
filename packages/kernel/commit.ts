@@ -1,10 +1,9 @@
 // 唯一写口：机械校验（validate）→ 构造（entryOf）→ 应用
 // （applyEntry 恰一次）→ 回填 argsHash（全库唯一回填点）。判决 = ok/reasons，只管合法性。
-// 形态检查拆分在 commit.form.ts（预算护栏）。
 
 import { applyEntry, entryHash } from './journal.ts'
-import { hasForm } from './commit.form.ts'
 import { defHas } from './defs.ts'
+import { isHash, isRecord } from './value.ts'
 import type {
   CommitOutcome,
   CommitResult,
@@ -18,6 +17,115 @@ import type {
 } from './types.ts'
 
 type Rec = { [k: string]: Json }
+
+const VALID_OPS: readonly string[] = Object.freeze(
+  'put add_identity add_gen set_active retire fork graft batch note snapshot'.split(' '),
+)
+
+function isNonemptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0
+}
+
+function isGenIndex(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0
+}
+
+function isPinSet(v: unknown): v is Record<string, string> {
+  if (!isRecord(v)) return false
+  for (const item of Object.values(v)) if (!isHash(item)) return false
+  return true
+}
+
+function isGraftRef(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  const g = v
+  return isNonemptyString(g['from']) && isGenIndex(g['gen']) && Object.keys(g).length === 2
+}
+
+interface ArgShape {
+  r: Rec
+  keys: string[]
+  exact: (reqd: string[], opt: string[]) => boolean
+}
+
+const GEN_KEYS = ['id', 'payload', 'pins', 'sig']
+
+const genBaseOk = (c: ArgShape): boolean =>
+  isNonemptyString(c.r['id']) &&
+  isHash(c.r['payload']) &&
+  isPinSet(c.r['pins']) &&
+  isHash(c.r['sig'])
+
+const FORM_CHECKS: { [op: string]: (c: ArgShape) => boolean } = {
+  put: (c) =>
+    c.exact(['body'], ['pins', 'sig']) &&
+    (!('pins' in c.r) || isPinSet(c.r['pins'])) &&
+    (!('sig' in c.r) || isHash(c.r['sig'])),
+  note: () => true, // 任意 JSON 对象 = 留痕载荷（§11.2 形状表）：hasForm 前置已保证 args 是非 null、非数组对象
+  snapshot: (c) => c.exact(['world_rev'], []) && isHash(c.r['world_rev']),
+  add_identity: (c) =>
+    c.exact(['id', 'schema'], ['parent']) &&
+    isNonemptyString(c.r['id']) &&
+    isHash(c.r['schema']) &&
+    (!('parent' in c.r) || isNonemptyString(c.r['parent'])),
+  fork: (c) =>
+    c.exact(['id', 'schema', 'parent'], []) &&
+    isNonemptyString(c.r['id']) &&
+    isHash(c.r['schema']) &&
+    isNonemptyString(c.r['parent']),
+  set_active: (c) =>
+    c.exact(['id', 'active'], []) &&
+    isNonemptyString(c.r['id']) &&
+    (isHash(c.r['active']) || c.r['active'] === null),
+  retire: (c) => c.exact(['id'], []) && isNonemptyString(c.r['id']),
+  add_gen: (c) => {
+    if ('seq' in c.r) return false // seq 由内核分配，携带即 bad_form
+    return (
+      c.exact(GEN_KEYS, ['graft', 'expect_active', 'base']) &&
+      genBaseOk(c) &&
+      (!('graft' in c.r) || isGraftRef(c.r['graft'])) &&
+      (!('base' in c.r) || isGenIndex(c.r['base'])) &&
+      (!('expect_active' in c.r) || isHash(c.r['expect_active']) || c.r['expect_active'] === null)
+    )
+  },
+  graft: (c) =>
+    !('seq' in c.r) &&
+    c.exact([...GEN_KEYS, 'from', 'gen'], []) &&
+    genBaseOk(c) &&
+    isNonemptyString(c.r['from']) &&
+    isGenIndex(c.r['gen']),
+  batch: (c) => {
+    if (!c.exact(['ops'], []) || !Array.isArray(c.r['ops'])) return false
+    for (const item of c.r['ops'] as Json[]) {
+      if (!isRecord(item)) return false
+      const sub = item
+      const subKeys = Object.keys(sub)
+      if (subKeys.length !== 2) return false
+      if (!subKeys.every((k) => k === 'op' || k === 'args')) return false
+      if (!(typeof sub['op'] === 'string' && VALID_OPS.includes(sub['op']))) return false
+    }
+    return true
+  },
+}
+
+/**
+ * 形态检查：op ∈ Op；expect_pos = 64-hex 或 null；args 符合该 op 形状（形状表）；
+ * 传入 `now` 时还要求其为有限数（非有限数会让 `entryHash` 在改世界之后才抛）。
+ */
+export function hasForm(req: WriteRequest, now?: number): boolean {
+  if (now !== undefined && !Number.isFinite(now)) return false
+  if (!isNonemptyString(req.by) || !isNonemptyString(req.id)) return false
+  if (!VALID_OPS.includes(req.op)) return false
+  if (!isHash(req.target.expect_pos) && req.target.expect_pos !== null) return false
+  if (req.ref !== undefined && !isHash(req.ref)) return false
+  const a = req.args
+  if (!isRecord(a)) return false
+  const r = a
+  const keys = Object.keys(r)
+  const exact = (reqd: string[], opt: string[]): boolean =>
+    keys.every((k) => reqd.includes(k) || opt.includes(k)) && reqd.every((k) => keys.includes(k))
+  return (FORM_CHECKS[req.op] ?? (() => false))({ r, keys, exact })
+}
 
 /** 引用检查：内核认识的字段里的每个 Hash 必须已在 defs（body 内部的引用归上层）。 */
 function checkRefs(world: World, req: WriteRequest): string | null {
@@ -80,11 +188,12 @@ function verdictOf(ok: boolean, code: string | null, head: Head): CommitResult {
  * @param head 当前链头（位置门禁对照 expect_pos）
  * @param world 当前世界（引用与不变量门禁均为只读检查）
  * @param req 写请求
+ * @param now 时间戳；传入时形态门禁校验其为有限数（缺省不校验，供只查请求形态的调用方）
  * @returns 通过：reasons 空；失败：reasons 为单元素错误码（bad_form / missing_ref /
  *   pos_conflict / id_taken / missing_parent）
  */
-export function validate(head: Head, world: World, req: WriteRequest): CommitResult {
-  if (!hasForm(req)) return verdictOf(false, 'bad_form', head)
+export function validate(head: Head, world: World, req: WriteRequest, now?: number): CommitResult {
+  if (!hasForm(req, now)) return verdictOf(false, 'bad_form', head)
   const refErr = checkRefs(world, req)
   if (refErr) return verdictOf(false, refErr, head)
   if (req.target.expect_pos !== head.hash) return verdictOf(false, 'pos_conflict', head)
@@ -122,7 +231,7 @@ export function entryOf(head: Head, req: WriteRequest, now: number): Entry {
  *   错误一律在 run 的最外层 catch 收敛为 refused；batch 段 2 子操作失败不外抛，转 ok:false 判决
  */
 export function commit(head: Head, world: World, req: WriteRequest, now: number): CommitOutcome {
-  const v = validate(head, world, req)
+  const v = validate(head, world, req, now)
   if (!v.ok) return { verdict: v, entry: null, hash: null }
   const e = entryOf(head, req, now)
   const r = applyEntry(world, e)

@@ -39,6 +39,7 @@ function worldOf(): World {
 
 function capability(world: World) {
   return createHostCapability({
+    root: 'root',
     assetsDir: 'assets',
     blobsDir: 'blobs',
     runtimeDir: 'runtime',
@@ -66,7 +67,13 @@ function patchWorldOf(): World {
         id: 'sess',
         schema: 's'.repeat(64),
         gens: [
-          { seq: 0, payload: BASE, pins: {}, sig: BASE, adopted: { at: 1, by: 'seed', write: 'w-0' } },
+          {
+            seq: 0,
+            payload: BASE,
+            pins: {},
+            sig: BASE,
+            adopted: { at: 1, by: 'seed', write: 'w-0' },
+          },
           {
             seq: 1,
             payload: PATCH,
@@ -120,9 +127,7 @@ describe('host.def.read 只读解析', () => {
   })
 
   it('哈希数超上限 → def_read_too_many（有界）', async () => {
-    const hashes = Array.from({ length: 257 }, (_, i) =>
-      i.toString(16).padStart(64, '0'),
-    ) as Hash[]
+    const hashes = Array.from({ length: 257 }, (_, i) => i.toString(16).padStart(64, '0')) as Hash[]
     const result = await read(worldOf(), { identity: 'sess', hashes })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.code).toBe('def_read_too_many')

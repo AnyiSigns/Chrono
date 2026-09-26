@@ -5,15 +5,12 @@
 import {
   closeSync,
   existsSync,
-  fstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
-  readSync,
   truncateSync,
-  writeSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
@@ -27,8 +24,9 @@ import {
   worldRev,
 } from '../../kernel/index.ts'
 import type { Entry, Hash, Head, Json, World } from '../../kernel/index.ts'
-import { writeFileAtomic } from './atomic.ts'
-import { LEGACY_BASE_VERSION, readBase, writeBase } from './base.ts'
+import { fsyncDir, writeAllSync, writeFileAtomic } from '../common/fs-atomic.ts'
+import { endsWithNewline, readJsonlFile } from '../common/jsonl.ts'
+import { readBase } from './base.ts'
 
 export interface Anchor {
   world: World
@@ -89,33 +87,8 @@ export function readJournal(file: string): Entry[] {
  * 带换行的行解析失败仍是真损坏（含末行），中间行同理，一律抛。用于启动 / append 路径。
  */
 export function readJournalTolerant(file: string): JournalRead {
-  if (!existsSync(file)) return { entries: [], truncated: false, validBytes: 0 }
-  const bytes = readFileSync(file)
-  const entries: Entry[] = []
-  let validBytes = 0
-  let start = 0
-  while (start < bytes.length) {
-    const newline = bytes.indexOf(0x0a, start)
-    const lineEnd = newline === -1 ? bytes.length : newline + 1
-    if (newline === -1) {
-      // 末段无换行：空段视为正常收尾；非空且解析失败即撕裂尾
-      if (start < bytes.length) {
-        const line = bytes.subarray(start, bytes.length).toString('utf8')
-        try {
-          entries.push(JSON.parse(line) as Entry)
-          validBytes = bytes.length
-        } catch {
-          return { entries, truncated: true, validBytes }
-        }
-      }
-      break
-    }
-    const line = bytes.subarray(start, newline).toString('utf8')
-    if (line.length > 0) entries.push(JSON.parse(line) as Entry)
-    validBytes = lineEnd
-    start = lineEnd
-  }
-  return { entries, truncated: false, validBytes }
+  const read = readJsonlFile(file, { parse: (line) => JSON.parse(line) as Entry, strict: true })
+  return { entries: read.items, truncated: read.truncated, validBytes: read.validBytes }
 }
 
 /**
@@ -132,43 +105,27 @@ export function repairJournalTail(file: string): JournalRead {
  * 追加 entries 并 fsync；空数组不产生任何落盘。
  * 追加前校验文件以 `\n` 结尾（非空时）：否则上一条是撕裂尾，直接追加会把新 entry 粘在残行上
  * 而被后续容错读当末行丢弃、终致 journal 永久损坏。调用方须先 `repairJournalTail` 截断。
+ * 首次创建文件时另 fsync 父目录：文件数据已 fsync，但目录项尚未持久化，掉电会丢整个文件。
  */
 export function appendJournal(file: string, entries: Entry[]): void {
   if (entries.length === 0) return
   mkdirSync(dirname(file), { recursive: true })
   assertJournalAppendable(file)
   const payload = entries.map((e) => canonicalJson(e as unknown as Json)).join('\n') + '\n'
+  const created = !existsSync(file)
   const fd = openSync(file, 'a')
   try {
-    writeSync(fd, payload)
+    writeAllSync(fd, payload)
     fsyncSync(fd)
   } finally {
     closeSync(fd)
   }
+  if (created) fsyncDir(dirname(file))
 }
 
 /** 追加前守卫：非空文件末字节必须是换行，否则抛 `journal_torn_tail`（fail-closed，不粘行）。 */
 function assertJournalAppendable(file: string): void {
-  let fd: number | undefined
-  try {
-    fd = openSync(file, 'r')
-    const size = fstatSync(fd).size
-    if (size === 0) return
-    const tail = Buffer.alloc(1)
-    readSync(fd, tail, 0, 1, size - 1)
-    if (tail[0] !== 0x0a) throw new Error('journal_torn_tail')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw err
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd)
-      } catch {
-        // 已关闭
-      }
-    }
-  }
+  if (!endsWithNewline(file)) throw new Error('journal_torn_tail')
 }
 
 /** 段落的规范序列化（每行一条 entry）。 */
@@ -238,31 +195,12 @@ function dedupeBySeq(entries: Entry[]): Entry[] {
  * @param file journal 文件
  * @param baseFile 基础世界文件；缺省 = 不启用基础世界（测试 / 纯日志场景）
  * @param coldDir 冷段目录；缺省 = journal 同级的 `cold/`
- * @param options `migrateLegacy` = 读到 v1 单文件 base 时以同一 snapshot/world/worldRev 落 v2
- *   （不新增 entry、不改链头）；仅在可写上下文（启动 / 离线持锁）置真。
  */
-export function loadAnchor(
-  file: string,
-  baseFile?: string,
-  coldDir?: string,
-  options?: { migrateLegacy?: boolean },
-): Anchor {
+export function loadAnchor(file: string, baseFile?: string, coldDir?: string): Anchor {
   const cold = coldDir ?? join(dirname(file), 'cold')
   const base = baseFile === undefined ? null : readBase(baseFile)
   // 接驳校验：读 base 不 eager 自校，首次需要摘要处（此处）按需 verify，不符即 bad_base（fail-closed）
   if (base !== null) base.verify()
-  if (base !== null && base.v === LEGACY_BASE_VERSION && options?.migrateLegacy === true) {
-    // 读时迁移：同 snapshot / world / worldRev 落 v2（不新增 entry、不改链头）；迁移失败不阻断载入
-    try {
-      writeBase(baseFile as string, {
-        snapshot: base.snapshot,
-        world: base.world,
-        ...(base.snapshotRev !== undefined ? { snapshotRev: base.snapshotRev } : {}),
-      })
-    } catch {
-      // 迁移是缓存形态优化：失败仍以 v1 内联世界照常载入，下次再试
-    }
-  }
   const tail = readJournalTolerant(file)
   if (base !== null && alignedWithBase(tail.entries, base.snapshot)) {
     // 有界化回收后基础世界是全量世界的子世界（worldRev 与快照记录的 snapshotRev 不同）：

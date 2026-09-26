@@ -21,11 +21,6 @@ function handleOf(defs: Record<Hash, Def>): LazyDefsHandle | undefined {
   return (defs as unknown as Record<symbol, LazyDefsHandle | undefined>)[LAZY_DEFS]
 }
 
-/** 是否惰性 defs 表。 */
-export function isLazyDefs(defs: Record<Hash, Def>): boolean {
-  return handleOf(defs) !== undefined
-}
-
 /** 复制 defs 表：惰性表走其廉价克隆，普通表浅拷贝（保持既有「复制可写层」语义）。 */
 export function cloneDefs(defs: Record<Hash, Def>): Record<Hash, Def> {
   const handle = handleOf(defs)

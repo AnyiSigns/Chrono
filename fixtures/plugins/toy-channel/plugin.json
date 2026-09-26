@@ -1,0 +1,24 @@
+{
+  "identity": "toy-channel",
+  "schema": "schema/plugin.schema.json",
+  "implements": ["toy.channel"],
+  "methods": { "toy.channel": ["echo"] },
+  "pins": {},
+  "start": "node execute/main.mjs",
+  "transport": "stdio",
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "none",
+    "max": 3,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 1000
+  },
+  "state": "recomputable",
+  "members": [{ "kind": "execute", "path": "execute/" }],
+  "commands": []
+}

@@ -9,9 +9,9 @@ import type { CallEnv } from '../wire.ts'
 import { buildAudit, callEffect } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
 import type { AuditDraft } from '../audit.ts'
+import { resolveAuditRedact } from '../audit-redact.ts'
 import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
-import { WorldWriter } from '../writer.ts'
-import type { WorldState } from '../writer.ts'
+import type { WorldState, WorldWriter } from '../writer.ts'
 import { assertNotFatal, markFatal } from './fatal.ts'
 import type { RoundRouter } from './route.ts'
 import type {
@@ -36,10 +36,7 @@ export type RoundMaterialize = (
   | { ok: false; reason: string }
 
 export interface RoundInput {
-  /** 起始世界 / 链头：与 `writer` 二者其一（都缺或同时给出 → 抛错）。 */
-  world?: World
-  head?: Head
-  /** 落账互斥段：内核 run 与审计提交都在它内部执行；与 `world` + `head` 二者其一。 */
+  /** 落账互斥段：内核 run 与审计提交都在它内部执行。 */
   writer?: WorldWriter
   /** 已物化 directives（与 `materialize` 二选一，且不可都缺）。 */
   directives?: Directive[]
@@ -91,24 +88,15 @@ export interface RoundOutcome {
 const MAX_SUSPENSIONS = 100_000
 
 /**
- * 落账段来源：`writer`（多 run 并发时宿主传入）或 `world` + `head` 二者其一。
- * 同时给出或都缺都是接线缺陷：立即抛错，不静默取一（否则并发下可能悄悄用了错误的世界视图）。
+ * 落账段来源：`writer`（多 run 并发时宿主传入，也是唯一来源）。
+ * 缺省是接线缺陷：立即抛错，不静默新建写者——否则同一链头会出现两个互不串行的写者，
+ * `expect_pos` 单链头 CAS 不再成立。
  */
-export function resolveWriter(input: {
-  world?: World
-  head?: Head
-  writer?: WorldWriter
-}): WorldWriter {
-  if (input.writer !== undefined) {
-    if (input.world !== undefined || input.head !== undefined) {
-      throw new Error('provide either writer or world+head, not both')
-    }
-    return input.writer
+export function resolveWriter(input: { writer?: WorldWriter }): WorldWriter {
+  if (input.writer === undefined) {
+    throw new Error('provide writer')
   }
-  if (input.world === undefined || input.head === undefined) {
-    throw new Error('provide either writer or both world and head')
-  }
-  return new WorldWriter({ world: input.world, head: input.head })
+  return input.writer
 }
 
 /**
@@ -140,6 +128,13 @@ function locateDirective(
   return null
 }
 
+/** 端点调用器 + 最近一次调用路由到的目标身份声明式脱敏白名单（避免二次路由）。 */
+interface EffectCaller {
+  call: EndpointCaller
+  /** 最近一次 `call` 路由到的目标身份的 `schema.audit_redact` 白名单；无声明为 `undefined`。 */
+  redactKeys: () => readonly string[] | undefined
+}
+
 /** 按 A1 把 pending eff 解析到端点并调用；解析失败 / 传输失败都是数据（EffResult）。 */
 function makeCaller(
   input: RoundInput,
@@ -147,7 +142,7 @@ function makeCaller(
   index: number,
   directives: Directive[],
   owners: ReadonlyArray<string | undefined> | undefined,
-): EndpointCaller | undefined {
+): EffectCaller | undefined {
   if (input.router === undefined || owners === undefined) return undefined
   if (index < 0) return undefined
   const directive = directives[index]
@@ -165,12 +160,15 @@ function makeCaller(
     now: input.now,
     emitter,
   }
-  return async (eff: EffRequest): Promise<EffResult> => {
+  // 最近一次调用解析到的目标身份声明式脱敏白名单：调用后读取，避免为审计二次路由。
+  let redactKeys: readonly string[] | undefined
+  const call: EndpointCaller = async (eff: EffRequest): Promise<EffResult> => {
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
-    // 等待上限按**目标身份**的 schema 方法级声明覆盖；无声明回落到进程级 / 常量。
-    // 解析世界与路由同代：路由注入 liveWorld 时按活世界解析，超时声明也取同一 getter 的结果。
+    // 等待上限与脱敏白名单都按**目标身份**的 schema 声明取；无声明回落进程级 / 常量 / 完整结果。
+    // 解析世界与路由同代：路由注入 liveWorld 时按活世界解析，声明也取同一 getter 的结果。
     const resolutionWorld = router.resolutionWorld?.(world) ?? world
+    redactKeys = resolveAuditRedact(resolutionWorld, routed.row.impl, eff.port, eff.method)
     const timeoutMs =
       resolveMethodTimeoutMs(resolutionWorld, routed.row.impl, eff.port, eff.method) ??
       baseTimeoutMs
@@ -193,6 +191,7 @@ function makeCaller(
       return { ok: false, error: 'transport_failed' }
     }
   }
+  return { call, redactKeys: () => redactKeys }
 }
 
 /** 把每条 write directive 的 `expect_pos` 机械锚到当前链头：并发提交下轮首头会前进。 */
@@ -336,7 +335,7 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       resolvedOwners(),
     )
     // 服务调用在互斥段之外：多个 run 的效果等待可并发
-    const { result, cancelled } = await callEffect(eff, caller, input.signal)
+    const { result, cancelled } = await callEffect(eff, caller?.call, input.signal)
     if (input.audit === false) {
       // 只读：效果照常回灌，但不落审计；取消语义保持（aborted 时按 cancelled 收口）
       results[eff.id] = result
@@ -358,6 +357,7 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       },
       result,
       cancelled,
+      caller?.redactKeys(),
     )
     if (input.onAudit !== undefined) persist(() => input.onAudit?.(draft))
     results[eff.id] = result

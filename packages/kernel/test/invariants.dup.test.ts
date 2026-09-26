@@ -20,20 +20,9 @@ vi.mock('../value.ts', async (importOriginal) => {
   return {
     ...o,
     canonicalJson: (v: unknown): string => {
-      if (!positionMap(v)) stubs.canon += 1
+      if (positionMap(v)) stubs.entryHash += 1
+      else stubs.canon += 1
       return inner(v)
-    },
-  }
-})
-
-vi.mock('../journal.id.ts', async (importOriginal) => {
-  const o = (await importOriginal()) as Record<string, unknown>
-  const hash = o.entryHash as (e: unknown) => string
-  return {
-    ...o,
-    entryHash: (e: unknown): string => {
-      stubs.entryHash += 1
-      return hash(e)
     },
   }
 })

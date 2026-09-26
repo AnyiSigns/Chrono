@@ -1,11 +1,12 @@
 // 机械语义层（世界的逐 op apply 语义）：applyEntry 与 batch 两段式。
-// 点分段拆分（预算护栏）：两个身份在 journal.id.ts，世界常量与重放/校验在 journal.ts。
+// 世界常量、两个身份与重放/校验在 journal.ts。
 // 别名契约：只改调用方独占的世界副本，**绝不改传入的 Entry**。
 
 import { defHas } from './defs.ts'
 import { H } from './hash.ts'
-import { entryHash, worldRev } from './journal.id.ts'
+import { entryHash, worldRev } from './journal.ts'
 import { readPatchOps } from './patch.ts'
+import { walkJson } from './value.ts'
 import { KernelError } from './types.ts'
 import type { Def, Entry, Gen, Hash, Identity, Json, Op, World } from './types.ts'
 
@@ -257,22 +258,30 @@ function applyBatch(
     try {
       r = applyOp(w, child, adoptedBy ?? outerPos, undo)
     } catch (err) {
-      if (err instanceof KernelError) {
-        rollback(w, undo, mark)
-        return { ok: false, error: err.code }
-      }
-      throw err
+      rollback(w, undo, mark) // 任何异常都先回滚：整批原子性不依赖异常类型
+      if (err instanceof KernelError) return { ok: false, error: err.code }
+      throw wrapInternal(err) // 非四态异常包成 KernelError，保留原因链
     }
     if (!r.ok) {
       rollback(w, undo, mark)
       return { ok: false, error: r.error }
     }
-    if (r.argsHash !== hashes[k]) throw new Error('batch two-phase divergence') // 护栏
+    if (r.argsHash !== hashes[k]) {
+      rollback(w, undo, mark)
+      throw new KernelError('internal') // 两段式分歧：内部不变量被破，回滚后上抛
+    }
     allNoop = allNoop && r.isNoop
     written.push(...r.written)
     acc.push(opsList[k].op === 'put' ? r.argsHash : null)
   }
   return ok(w, allNoop, argsHash, written)
+}
+
+/** 把非四态异常包成 `KernelError('internal')`，原因链挂到 `cause`。 */
+function wrapInternal(err: unknown): KernelError {
+  const wrapped = new KernelError('internal')
+  wrapped.cause = err
+  return wrapped
 }
 
 function readOps(args: Json): BatchOp[] {
@@ -307,24 +316,30 @@ function hashOnly(op: Op, args: Json): Hash {
  * 用转义包裹 `{'$lit': v}` 落盘：`v` 按数据原样保留、其中的 `$n` 不再当占位符。
  */
 export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
-  if (Array.isArray(v)) return v.map((x) => substitute(x, acc, k))
-  if (v === null || typeof v !== 'object') return v
-  const record = v as { [key: string]: Json }
-  const keys = Object.keys(record)
-  if (keys.length === 1 && keys[0] === '$n') {
-    const j = record['$n']
-    if (typeof j !== 'number' || !Number.isInteger(j) || j < 0 || j >= k || acc[j] === null) {
-      throw new KernelError('bad_selfref')
-    }
-    return acc[j] as Hash
-  }
-  if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
-  const out: { [key: string]: Json } = {}
-  for (const key of keys) {
-    const sv = substitute(record[key], acc, k)
-    if (sv !== undefined) out[key] = sv
-  }
-  return out
+  return walkJson(
+    v,
+    (value, _depth, next) => {
+      if (Array.isArray(value)) return value.map(next)
+      if (value === null || typeof value !== 'object') return value as Json
+      const record = value as { [key: string]: Json }
+      const keys = Object.keys(record)
+      if (keys.length === 1 && keys[0] === '$n') {
+        const j = record['$n']
+        if (typeof j !== 'number' || !Number.isInteger(j) || j < 0 || j >= k || acc[j] === null) {
+          throw new KernelError('bad_selfref')
+        }
+        return acc[j] as Hash
+      }
+      if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
+      const out: { [key: string]: Json } = {}
+      for (const key of keys) {
+        const sv = next(record[key])
+        if (sv !== undefined) out[key] = sv
+      }
+      return out
+    },
+    0,
+  )
 }
 
 /**
@@ -332,17 +347,20 @@ export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
  * 只继续还原嵌套的 `$lit`（若要落数据 `{'$lit':…}` 本身，须再包一层）。
  */
 function literal(v: Json): Json {
-  if (Array.isArray(v)) return v.map((x) => literal(x))
-  if (v === null || typeof v !== 'object') return v
-  const record = v as { [key: string]: Json }
+  return walkJson(v, literalNode, 0)
+}
+
+function literalNode(
+  value: Json | undefined,
+  _depth: number,
+  next: (child: Json | undefined) => Json,
+): Json {
+  if (Array.isArray(value)) return value.map(next)
+  if (value === null || typeof value !== 'object') return value as Json
+  const record = value as { [key: string]: Json }
   const keys = Object.keys(record)
   if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
   const out: { [key: string]: Json } = {}
-  for (const key of keys) out[key] = literal(record[key])
+  for (const key of keys) out[key] = next(record[key])
   return out
-}
-
-/** 把任意数据包成转义形态（写方用：数据里带 `{'$n':k}` 字面量时避免被内核当占位符替换）。 */
-export function asLiteral(v: Json): Json {
-  return { $lit: v }
 }

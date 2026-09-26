@@ -2,10 +2,11 @@
 // 内存缓冲 + 有界延迟批量追加：同一文件保持单个 append 句柄，按批写入、按批 fsync。
 // 逐行原子追加；不进世界、不进链、不参与重放。
 
-import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { canonicalJson } from '../kernel/index.ts'
 import type { Json } from '../kernel/index.ts'
+import { writeAllSync } from './common/fs-atomic.ts'
 
 /** 运维日志事件的两级命名：`kind` 封闭、`event` 每 kind 有规范表（见 `docs/host.md` §五 其它）。 */
 export type LifecycleKind = 'host' | 'dep' | 'handshake' | 'service'
@@ -87,7 +88,7 @@ function flushSink(sink: LifecycleSink, forceFsync = false): void {
   sink.lines.length = 0
   sink.bytes = 0
   const fd = openSink(sink)
-  writeSync(fd, payload)
+  writeAllSync(fd, payload)
   if (forceFsync || fsyncOnFlush) fsyncSync(fd)
 }
 

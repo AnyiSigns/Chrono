@@ -1,0 +1,3 @@
+{
+  "protected_pins": ["sandbox", "guard", "secrets", "approval", "storage-sql", "storage-kv"]
+}

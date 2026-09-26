@@ -9,7 +9,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { writeFileAtomic } from './ledger/atomic.ts'
+import { casFilePath, decodeBase64Strict, isSha256Hex } from './common/cas.ts'
+import { writeFileAtomic } from './common/fs-atomic.ts'
+import { gcDirs } from './common/gc-dirs.ts'
+import { isRecord } from './common/json.ts'
 import type { Json, World } from '../kernel/index.ts'
 
 /** 资产引用判别键：宿主机械识别（GC / 校验）只看这个 `kind`。 */
@@ -37,22 +40,15 @@ export interface AssetGcReport {
   kept: number
 }
 
-const SHA256_HEX = /^[0-9a-f]{64}$/
-
 /**
  * mime 旁挂文件后缀：字节本体按内容寻址，mime 是调用方声明、不参与寻址，
  * 故与字节文件同名旁挂（`<sha256>.mime`）；GC / 列举只认 64-hex 名字，旁挂不混入资产清单。
  */
 const MIME_SUFFIX = '.mime'
 
-function isRecord(value: Json): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /** 资产文件名：sha256 十六进制；非 64 hex 一律拒绝（防路径穿越）。 */
 export function assetFile(dir: string, sha256: string): string | null {
-  if (!SHA256_HEX.test(sha256)) return null
-  return resolve(dir, sha256)
+  return casFilePath(dir, sha256)
 }
 
 function assetMimeFile(dir: string, sha256: string): string {
@@ -73,14 +69,9 @@ function readAssetMime(dir: string, sha256: string): string {
 export function putAsset(dir: string, mime: unknown, bytes: unknown): AssetPutResult {
   if (typeof mime !== 'string' || mime.length === 0) return { ok: false, code: 'bad_asset' }
   if (typeof bytes !== 'string' || bytes.length === 0) return { ok: false, code: 'bad_asset' }
-  let decoded: Buffer
-  try {
-    decoded = Buffer.from(bytes, 'base64')
-  } catch {
-    return { ok: false, code: 'bad_asset' }
-  }
   // 只收规范 base64（防 URL-safe / 脏字符被静默吞掉）：往返一致才认
-  if (decoded.toString('base64') !== bytes) return { ok: false, code: 'bad_asset' }
+  const decoded = decodeBase64Strict(bytes)
+  if (decoded === null) return { ok: false, code: 'bad_asset' }
   if (decoded.length > MAX_ASSET_BYTES) return { ok: false, code: 'asset_too_large' }
   const sha256 = createHash('sha256').update(decoded).digest('hex')
   const file = assetFile(dir, sha256)
@@ -136,27 +127,27 @@ export function collectAssetRefs(world: World): Set<string> {
  */
 export function gcAssets(dir: string, keep: ReadonlySet<string>): AssetGcReport {
   if (!existsSync(dir)) return { removed: [], kept: 0 }
-  const removed: string[] = []
-  let kept = 0
+  cleanOrphanMimes(dir)
+  const report = gcDirs(dir, {
+    select: (name) => isSha256Hex(name),
+    keep: (name) => keep.has(name),
+    remove: (name) => {
+      rmSync(resolve(dir, name), { force: true })
+      rmSync(assetMimeFile(dir, name), { force: true })
+    },
+  })
+  return { removed: report.removed, kept: report.kept }
+}
+
+/** 孤儿旁挂（字节本体已不在）：一并清掉，不留悬空元数据。 */
+function cleanOrphanMimes(dir: string): void {
   for (const name of readdirSync(dir)) {
-    if (name.endsWith(MIME_SUFFIX)) {
-      // 孤儿旁挂（字节本体已不在）：一并清掉，不留悬空元数据
-      const base = name.slice(0, -MIME_SUFFIX.length)
-      if (SHA256_HEX.test(base) && !existsSync(resolve(dir, base))) {
-        rmSync(resolve(dir, name), { force: true })
-      }
-      continue
+    if (!name.endsWith(MIME_SUFFIX)) continue
+    const base = name.slice(0, -MIME_SUFFIX.length)
+    if (isSha256Hex(base) && !existsSync(resolve(dir, base))) {
+      rmSync(resolve(dir, name), { force: true })
     }
-    if (!SHA256_HEX.test(name)) continue
-    if (keep.has(name)) {
-      kept += 1
-      continue
-    }
-    rmSync(resolve(dir, name), { force: true })
-    rmSync(assetMimeFile(dir, name), { force: true })
-    removed.push(name)
   }
-  return { removed: removed.sort(), kept }
 }
 
 /** 资产区现状（离线 GC 报告 / 诊断用）：只列 64-hex 文件。 */
@@ -164,7 +155,7 @@ export function listAssets(dir: string): { sha256: string; size: number }[] {
   if (!existsSync(dir)) return []
   const out: { sha256: string; size: number }[] = []
   for (const name of readdirSync(dir)) {
-    if (!SHA256_HEX.test(name)) continue
+    if (!isSha256Hex(name)) continue
     out.push({ sha256: name, size: statSync(resolve(dir, name)).size })
   }
   return out.sort((a, b) => (a.sha256 < b.sha256 ? -1 : 1))

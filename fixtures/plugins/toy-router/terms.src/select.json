@@ -1,0 +1,608 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "pred",
+    "op": "ne",
+    "a": {
+      "k": "get",
+      "of": {
+        "k": "fold",
+        "coll": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "candidates"
+          ]
+        },
+        "init": {
+          "k": "obj",
+          "fields": {
+            "chosen": {
+              "k": "lit",
+              "v": null
+            },
+            "aliases": {
+              "k": "getOr",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "aliases"
+              ],
+              "fallback": {
+                "k": "lit",
+                "v": []
+              }
+            },
+            "primary": {
+              "k": "getOr",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "primary"
+              ],
+              "fallback": {
+                "k": "lit",
+                "v": ""
+              }
+            }
+          }
+        },
+        "step": {
+          "k": "if",
+          "cond": {
+            "k": "pred",
+            "op": "ne",
+            "a": {
+              "k": "get",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "chosen"
+              ]
+            },
+            "b": {
+              "k": "lit",
+              "v": null
+            }
+          },
+          "then": {
+            "k": "arg",
+            "i": 0
+          },
+          "else": {
+            "k": "if",
+            "cond": {
+              "k": "call",
+              "ref": {
+                "k": "get",
+                "of": {
+                  "k": "fold",
+                  "coll": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "init": {
+                    "k": "obj",
+                    "fields": {
+                      "needle": {
+                        "k": "arg",
+                        "i": 1
+                      },
+                      "found": {
+                        "k": "lit",
+                        "v": false
+                      }
+                    }
+                  },
+                  "step": {
+                    "k": "if",
+                    "cond": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "found"
+                      ]
+                    },
+                    "then": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "else": {
+                      "k": "if",
+                      "cond": {
+                        "k": "pred",
+                        "op": "eq",
+                        "a": {
+                          "k": "arg",
+                          "i": 1
+                        },
+                        "b": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "needle"
+                          ]
+                        }
+                      },
+                      "then": {
+                        "k": "obj",
+                        "fields": {
+                          "needle": {
+                            "k": "get",
+                            "of": {
+                              "k": "arg",
+                              "i": 0
+                            },
+                            "path": [
+                              "needle"
+                            ]
+                          },
+                          "found": {
+                            "k": "lit",
+                            "v": true
+                          }
+                        }
+                      },
+                      "else": {
+                        "k": "arg",
+                        "i": 0
+                      }
+                    }
+                  }
+                },
+                "path": [
+                  "found"
+                ]
+              },
+              "args": [
+                {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "aliases"
+                  ]
+                },
+                {
+                  "k": "arg",
+                  "i": 1
+                }
+              ]
+            },
+            "then": {
+              "k": "obj",
+              "fields": {
+                "chosen": {
+                  "k": "arg",
+                  "i": 1
+                },
+                "aliases": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "aliases"
+                  ]
+                },
+                "primary": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "primary"
+                  ]
+                }
+              }
+            },
+            "else": {
+              "k": "arg",
+              "i": 0
+            }
+          }
+        }
+      },
+      "path": [
+        "chosen"
+      ]
+    },
+    "b": {
+      "k": "lit",
+      "v": null
+    }
+  },
+  "then": {
+    "k": "get",
+    "of": {
+      "k": "fold",
+      "coll": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "candidates"
+        ]
+      },
+      "init": {
+        "k": "obj",
+        "fields": {
+          "chosen": {
+            "k": "lit",
+            "v": null
+          },
+          "aliases": {
+            "k": "getOr",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "aliases"
+            ],
+            "fallback": {
+              "k": "lit",
+              "v": []
+            }
+          },
+          "primary": {
+            "k": "getOr",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "primary"
+            ],
+            "fallback": {
+              "k": "lit",
+              "v": ""
+            }
+          }
+        }
+      },
+      "step": {
+        "k": "if",
+        "cond": {
+          "k": "pred",
+          "op": "ne",
+          "a": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "chosen"
+            ]
+          },
+          "b": {
+            "k": "lit",
+            "v": null
+          }
+        },
+        "then": {
+          "k": "arg",
+          "i": 0
+        },
+        "else": {
+          "k": "if",
+          "cond": {
+            "k": "call",
+            "ref": {
+              "k": "get",
+              "of": {
+                "k": "fold",
+                "coll": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "init": {
+                  "k": "obj",
+                  "fields": {
+                    "needle": {
+                      "k": "arg",
+                      "i": 1
+                    },
+                    "found": {
+                      "k": "lit",
+                      "v": false
+                    }
+                  }
+                },
+                "step": {
+                  "k": "if",
+                  "cond": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "found"
+                    ]
+                  },
+                  "then": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "else": {
+                    "k": "if",
+                    "cond": {
+                      "k": "pred",
+                      "op": "eq",
+                      "a": {
+                        "k": "arg",
+                        "i": 1
+                      },
+                      "b": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "needle"
+                        ]
+                      }
+                    },
+                    "then": {
+                      "k": "obj",
+                      "fields": {
+                        "needle": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "needle"
+                          ]
+                        },
+                        "found": {
+                          "k": "lit",
+                          "v": true
+                        }
+                      }
+                    },
+                    "else": {
+                      "k": "arg",
+                      "i": 0
+                    }
+                  }
+                }
+              },
+              "path": [
+                "found"
+              ]
+            },
+            "args": [
+              {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "aliases"
+                ]
+              },
+              {
+                "k": "arg",
+                "i": 1
+              }
+            ]
+          },
+          "then": {
+            "k": "obj",
+            "fields": {
+              "chosen": {
+                "k": "arg",
+                "i": 1
+              },
+              "aliases": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "aliases"
+                ]
+              },
+              "primary": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "primary"
+                ]
+              }
+            }
+          },
+          "else": {
+            "k": "arg",
+            "i": 0
+          }
+        }
+      }
+    },
+    "path": [
+      "chosen"
+    ]
+  },
+  "else": {
+    "k": "if",
+    "cond": {
+      "k": "call",
+      "ref": {
+        "k": "get",
+        "of": {
+          "k": "fold",
+          "coll": {
+            "k": "arg",
+            "i": 0
+          },
+          "init": {
+            "k": "obj",
+            "fields": {
+              "needle": {
+                "k": "arg",
+                "i": 1
+              },
+              "found": {
+                "k": "lit",
+                "v": false
+              }
+            }
+          },
+          "step": {
+            "k": "if",
+            "cond": {
+              "k": "get",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "found"
+              ]
+            },
+            "then": {
+              "k": "arg",
+              "i": 0
+            },
+            "else": {
+              "k": "if",
+              "cond": {
+                "k": "pred",
+                "op": "eq",
+                "a": {
+                  "k": "arg",
+                  "i": 1
+                },
+                "b": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "needle"
+                  ]
+                }
+              },
+              "then": {
+                "k": "obj",
+                "fields": {
+                  "needle": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "needle"
+                    ]
+                  },
+                  "found": {
+                    "k": "lit",
+                    "v": true
+                  }
+                }
+              },
+              "else": {
+                "k": "arg",
+                "i": 0
+              }
+            }
+          }
+        },
+        "path": [
+          "found"
+        ]
+      },
+      "args": [
+        {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "candidates"
+          ]
+        },
+        {
+          "k": "getOr",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "primary"
+          ],
+          "fallback": {
+            "k": "lit",
+            "v": ""
+          }
+        }
+      ]
+    },
+    "then": {
+      "k": "getOr",
+      "of": {
+        "k": "arg",
+        "i": 0
+      },
+      "path": [
+        "primary"
+      ],
+      "fallback": {
+        "k": "lit",
+        "v": ""
+      }
+    },
+    "else": {
+      "k": "obj",
+      "fields": {
+        "ok": {
+          "k": "lit",
+          "v": false
+        },
+        "error": {
+          "k": "obj",
+          "fields": {
+            "code": {
+              "k": "lit",
+              "v": "no_candidate"
+            }
+          }
+        }
+      }
+    }
+  }
+}

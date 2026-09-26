@@ -11,7 +11,7 @@ function emptyWorld(): World {
   return { defs: {}, ids: {} }
 }
 
-function asRecord(value: Json): Record<string, Json> {
+function asObject(value: Json): Record<string, Json> {
   return value as Record<string, Json>
 }
 
@@ -96,7 +96,7 @@ describe('入世守卫：声明路径逃逸包根 → bad_plugin_decl', () => {
 
     for (const testCase of cases) {
       const decl = JSON.parse(readFileSync(pluginFile, 'utf8')) as Json
-      testCase.patch(asRecord(decl))
+      testCase.patch(asObject(decl))
       writeFileSync(pluginFile, JSON.stringify(decl, null, 2))
       const planned = planIngest(emptyWorld(), root, { name: 'toy-path', path: pkgRoot })
       expect(planned.ok, testCase.label).toBe(false)
@@ -105,7 +105,7 @@ describe('入世守卫：声明路径逃逸包根 → bad_plugin_decl', () => {
 
     // runSeed 面同样整包拒、不写 batch
     const decl = JSON.parse(readFileSync(pluginFile, 'utf8')) as Json
-    asRecord(decl).schema = '../outside.json'
+    asObject(decl).schema = '../outside.json'
     writeFileSync(pluginFile, JSON.stringify(decl, null, 2))
     const report = runSeed(root, [{ name: 'toy-path', path: pkgRoot }])
     expect(report.items[0].status).toBe('failed')

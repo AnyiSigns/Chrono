@@ -2,10 +2,11 @@
 // 宿主不认识目录内容，只保证位置：声明 `durable` 时在准备阶段建目录、注入 `CHRONO_PLUGIN_DATA`，
 // 启动时删目录名不在当前世界身份集中的顶层项。与 ③ 分开：④ 进备份、跨代存活，不参与世代窗口回收。
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { lstatSync, mkdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { World } from '../kernel/index.ts'
-import { isSafeIdentityName } from './assembly/identity-name.ts'
+import { gcDirs } from './common/gc-dirs.ts'
+import { isSafeIdentityName } from './common/paths-safe.ts'
 
 /** 身份名不安全（路径穿越 / 非法目录名）：拒绝解析持久目录，fail-closed。 */
 export class PluginDataError extends Error {
@@ -42,19 +43,14 @@ export interface PluginDataGcReport {
  * 用 `Object.hasOwn` 判身份存在（`__proto__` 等原型键不是真身份）；符号链接只删链接、不跟进去。
  */
 export function gcPluginData(dataRoot: string, world: World): PluginDataGcReport {
-  if (!existsSync(dataRoot)) return { removed: [], failed: [] }
-  const removed: string[] = []
-  const failed: { name: string; reason: string }[] = []
-  for (const name of readdirSync(dataRoot)) {
-    if (Object.hasOwn(world.ids, name)) continue
-    const target = resolve(dataRoot, name)
-    try {
+  const report = gcDirs(dataRoot, {
+    keep: (name) => Object.hasOwn(world.ids, name),
+    remove: (name) => {
+      const target = resolve(dataRoot, name)
       const link = lstatSync(target).isSymbolicLink()
       rmSync(target, link ? { force: true } : { recursive: true, force: true })
-      removed.push(name)
-    } catch (err) {
-      failed.push({ name, reason: err instanceof Error ? err.message : String(err) })
-    }
-  }
-  return { removed: removed.sort(), failed }
+    },
+    onRemoveError: 'collect',
+  })
+  return { removed: report.removed, failed: report.failed }
 }

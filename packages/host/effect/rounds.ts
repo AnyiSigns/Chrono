@@ -7,6 +7,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { HOST_CAPABILITY } from '../host-methods.ts'
+import { isRecord } from '../common/json.ts'
+import { OP_NAMES } from '../common/op-names.ts'
+import { readProjectionPath } from '../projection/index.ts'
 import { resolveWriter, runRound } from './run-loop.ts'
 import { assertNotFatal } from './fatal.ts'
 import type { AuditDraft } from '../audit.ts'
@@ -41,19 +44,6 @@ export type DirectiveDraft =
 /** 投影 provider：按该轮轮首的 world / head 构造；effect 不 import projection，由宿主注入。 */
 export type CtxProvider = (world: World, head: Head) => Json
 
-const OPS: ReadonlySet<string> = new Set([
-  'put',
-  'add_identity',
-  'add_gen',
-  'set_active',
-  'retire',
-  'fork',
-  'graft',
-  'batch',
-  'note',
-  'snapshot',
-])
-
 /** 携带来源标记的 directive：plan 产出的写由宿主重填 id / by（发起者），入站提交的保留作者给的幂等键。
  *  owner = A1 发出者（宿主构造 directive 时已知：命令入口属主，plan 条目继承产出者属主）。
  *  baseline = 产出该计划条目的 eval 所在轮所见世界（`add_gen.expect_active` 基准）；入站直提无此字段。 */
@@ -65,10 +55,7 @@ interface StagedDirective {
 }
 
 export interface SubmissionInput {
-  /** 起始世界 / 链头：与 `writer` 二者其一（都缺或同时给出 → 抛错）。 */
-  world?: World
-  head?: Head
-  /** 落账互斥段：所有内核提交与审计落账都经它串行；与 `world` + `head` 二者其一。 */
+  /** 落账互斥段：所有内核提交与审计落账都经它串行。 */
   writer?: WorldWriter
   directives: DirectiveDraft[]
   caps: Record<string, boolean>
@@ -122,10 +109,6 @@ export interface SubmissionOutcome {
   observations: Json[]
 }
 
-function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /** 分相：连续 eval / extern 并一轮；每条 write 单独一轮；extern 随邻并保序。 */
 function splitPhases(staged: StagedDirective[]): StagedDirective[][] {
   const groups: StagedDirective[][] = []
@@ -154,7 +137,10 @@ function parseInject(raw: Json | undefined): Record<string, Json[]> | null {
     const path = raw[key]
     if (!Array.isArray(path)) return null
     for (const segment of path) {
-      if (typeof segment !== 'string' && !(typeof segment === 'number' && Number.isInteger(segment))) {
+      if (
+        typeof segment !== 'string' &&
+        !(typeof segment === 'number' && Number.isInteger(segment))
+      ) {
         return null
       }
     }
@@ -199,7 +185,7 @@ function materializePlanItem(
       return { ok: true, directive: { kind: 'extern', payload: raw['payload'] ?? null } }
     case 'write': {
       const request = raw['request']
-      if (!isRecord(request) || typeof request['op'] !== 'string' || !OPS.has(request['op'])) {
+      if (!isRecord(request) || typeof request['op'] !== 'string' || !OP_NAMES.has(request['op'])) {
         return { ok: false, reason: 'bad_directive' }
       }
       const directive: DirectiveDraft = {
@@ -470,26 +456,6 @@ function recordEntryActive(
   if (op === 'retire' || op === 'add_identity' || op === 'fork') ownActive.set(id, null)
 }
 
-/** JS 原型键：注入路径段出现即拒（否则读到的是函数 / 原型，不是数据）。 */
-const UNSAFE_INJECT_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
-
-/** 沿投影片段路径取值；路径不合 / 越界 / 原型键 → null（宿主只机械取用，不解释业务）。 */
-function readProjectionPath(projection: Json, path: Json[]): Json {
-  let current: Json = projection
-  for (const segment of path) {
-    if (typeof segment === 'string') {
-      if (UNSAFE_INJECT_KEYS.has(segment)) return null
-      if (!isRecord(current)) return null
-      current = current[segment] ?? null
-    } else if (typeof segment === 'number' && Array.isArray(current)) {
-      current = current[segment] ?? null
-    } else {
-      return null
-    }
-  }
-  return current
-}
-
 /** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐；eval 的 ctx 缺省填该轮投影（构造一次、该轮共享）。 */
 function prepareGroup(
   group: StagedDirective[],
@@ -565,7 +531,7 @@ function prepareGroup(
     if (
       !isRecord(source as unknown as Json) ||
       typeof source.op !== 'string' ||
-      !OPS.has(source.op)
+      !OP_NAMES.has(source.op)
     ) {
       return { ok: false, reason: 'bad_directive' }
     }

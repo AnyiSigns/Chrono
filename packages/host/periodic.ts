@@ -3,6 +3,7 @@
 // 机械注入）由宿主注入的 `onFire` 完成——宿主不认识业务，只按声明周期触发。
 
 import type { Json, World } from '../kernel/index.ts'
+import { PROTOTYPE_KEYS, isRecord } from './common/json.ts'
 
 /** 周期方法所需的一段投影：`key` 是 bag 里的键，`path` 是投影内的字面路径。 */
 export interface PeriodicRead {
@@ -32,13 +33,6 @@ interface Scheduled {
   timer: NodeJS.Timeout
 }
 
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** JS 原型键：bag 键 / 投影路径段出现即拒（否则赋值改原型、读取拿到函数）。 */
-const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype'])
-
 /** 解析一条 `periodic` 声明；不合法返回原因字符串。 */
 function parseEntry(identity: string, raw: Json): PeriodicEntry | string {
   if (!isRecord(raw)) return 'not_object'
@@ -56,8 +50,8 @@ function parseEntry(identity: string, raw: Json): PeriodicEntry | string {
   if (rawReads !== undefined) {
     if (!isRecord(rawReads)) return 'bad_reads'
     for (const [key, path] of Object.entries(rawReads)) {
-      if (UNSAFE_KEYS.has(key) || !Array.isArray(path)) return 'bad_reads'
-      if (path.some((segment) => typeof segment === 'string' && UNSAFE_KEYS.has(segment))) {
+      if (PROTOTYPE_KEYS.has(key) || !Array.isArray(path)) return 'bad_reads'
+      if (path.some((segment) => typeof segment === 'string' && PROTOTYPE_KEYS.has(segment))) {
         return 'bad_reads'
       }
       reads.push({ key, path })

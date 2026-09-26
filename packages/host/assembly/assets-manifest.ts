@@ -5,6 +5,9 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isSha256Hex } from '../common/cas.ts'
+import { isRecord } from '../common/json.ts'
+import { isSafeRelativePath } from '../common/paths-safe.ts'
 import { ServiceStartError } from './supervision.ts'
 import type { Json, World } from '../../kernel/index.ts'
 
@@ -16,22 +19,6 @@ export interface AssetManifestEntry {
 
 export type AssetsManifestRead =
   { ok: true; entries: AssetManifestEntry[] } | { ok: false; reason: string }
-
-const SHA256_PATTERN = /^[0-9a-f]{64}$/
-
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** 包内相对路径必须是安全单段路径：禁 `..` 段、绝对路径、盘符与反斜杠（防逃逸物化目录）。 */
-function isSafeRelativePath(path: string): boolean {
-  if (path.length === 0) return false
-  if (path.startsWith('/') || path.startsWith('\\')) return false
-  if (path.includes('\\')) return false
-  if (/^[A-Za-z]:/.test(path)) return false
-  const segments = path.split('/').filter((segment) => segment.length > 0 && segment !== '.')
-  return segments.length > 0 && !segments.some((segment) => segment === '..')
-}
 
 /**
  * 读身份的 `schema` def 顶层 `assets_manifest`（无声明 → 空表）。
@@ -54,7 +41,7 @@ export function readAssetsManifest(world: World, identityId: string): AssetsMani
     if (typeof path !== 'string' || !isSafeRelativePath(path)) {
       return { ok: false, reason: 'assets_manifest_invalid' }
     }
-    if (typeof sha256 !== 'string' || !SHA256_PATTERN.test(sha256)) {
+    if (!isSha256Hex(sha256)) {
       return { ok: false, reason: 'assets_manifest_invalid' }
     }
     if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) {

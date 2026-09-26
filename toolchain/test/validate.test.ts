@@ -50,6 +50,24 @@ describe('静态校验器', () => {
     expect(issuesOf(program)).toContain('undeclared_method: judge.bad')
   })
 
+  it('跨身份（port 只在 pins 里）不校验方法名：工具链单包看不到被调声明', () => {
+    const program = {
+      terms: { 'terms/e.json': t.eff('secrets', 'list', t.lit(null)) },
+      implements: ['ui-settings'],
+      methods: { 'ui-settings': ['view'] },
+      pins: { secrets: 'secrets' },
+    }
+    expect(validateProgram(program as unknown as Program).ok).toBe(true)
+  })
+
+  it('仅声明 methods 的能力类仍按自调用校验方法名', () => {
+    const program = {
+      terms: { 'terms/e.json': t.eff('local', 'ghost', t.lit(null)) },
+      methods: { local: ['ok'] },
+    }
+    expect(issuesOf(program)).toContain('undeclared_method: local.ghost')
+  })
+
   it('形态不合（未绑定 bind）被拦', () => {
     expect(issuesOf({ terms: { 'terms/b.json': t.bind('nope') } })).toContain('bad_sugar')
   })

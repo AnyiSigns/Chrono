@@ -1,18 +1,10 @@
-// 内容哈希（地基）：FIPS 180-4 sha256 + H()；utf8 拆分在 hash.utf8.ts。
+// 内容哈希（地基）：FIPS 180-4 sha256 + H() + UTF-8 编码（孤立代理即拒）。
 // H 走增量压缩：canonical 字符流按 code unit 喂入，凑满 512 位块就地压缩，
 // 不物化整条字节数组。零第三方 import。
 
 import { canonicalJson } from './value.ts'
-import { forEachByte } from './hash.utf8.ts'
+import { KernelError } from './types.ts'
 import type { Hash, Json } from './types.ts'
-
-/**
- * 字符串按 UTF-8 编码为字节序列（点分段在 hash.utf8.ts，此处转口以直接测孤立代理边界）。
- * @param s 待编码字符串
- * @returns UTF-8 字节
- * @throws KernelError('lone_surrogate') 未配对的代理码元
- */
-export { utf8 } from './hash.utf8.ts'
 
 /** 初始哈希值：前 8 个素数平方根小数部分的前 32 位。冻结只读；newState 取切片。 */
 const IV = Object.freeze([
@@ -145,4 +137,42 @@ function toHex(bytes: Uint8Array): string {
   let out = ''
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0')
   return out
+}
+
+/**
+ * 把字符串按 UTF-8 编码为字节序列（保留为独立导出以直接测孤立代理边界）。
+ * @param s 待编码字符串
+ * @returns UTF-8 字节
+ * @throws KernelError('lone_surrogate') 未配对的代理码元
+ */
+export function utf8(s: string): Uint8Array {
+  const bytes: number[] = []
+  forEachByte(s, (byte) => bytes.push(byte))
+  return new Uint8Array(bytes)
+}
+
+/** 逐 code unit 增量产出 UTF-8 字节（H 的流式入口就喂它，不物化整条字节数组）。 */
+function forEachByte(s: string, put: (byte: number) => void): void {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x80) put(c)
+    else if (c < 0x800) {
+      put(0xc0 | (c >> 6))
+      put(0x80 | (c & 0x3f))
+    } else if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new KernelError('lone_surrogate')
+      const cp = 0x10000 + (((c - 0xd800) << 10) | (next - 0xdc00))
+      i += 1
+      put(0xf0 | (cp >> 18))
+      put(0x80 | ((cp >> 12) & 0x3f))
+      put(0x80 | ((cp >> 6) & 0x3f))
+      put(0x80 | (cp & 0x3f))
+    } else if (c >= 0xdc00 && c <= 0xdfff) throw new KernelError('lone_surrogate')
+    else {
+      put(0xe0 | (c >> 12))
+      put(0x80 | ((c >> 6) & 0x3f))
+      put(0x80 | (c & 0x3f))
+    }
+  }
 }

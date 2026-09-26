@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { executeEffect } from '../execute.ts'
-import type { AuditMeta } from '../execute.ts'
-import type { EffRequest, Json } from '../../../kernel/index.ts'
+import { buildAudit, callEffect } from '../execute.ts'
+import type { AuditMeta, EndpointCaller } from '../execute.ts'
+import type { AuditDraft } from '../../audit.ts'
+import type { EffRequest, EffResult, Json } from '../../../kernel/index.ts'
 
 const NOW = 1000
 
@@ -13,12 +14,23 @@ function mkEff(port = 'toy.echo', method = 'echo'): EffRequest {
   return { id: 'eff'.repeat(16), port, method, args: null, caps: {} }
 }
 
-/** 审计正文：`executeEffect` 产出的草稿 body（不进世界，由侧存追加）。 */
+/** 测试用便捷组合：与生产 run loop 同路，分开调 `callEffect` + `buildAudit`。 */
+async function executeEffect(
+  eff: EffRequest,
+  auditMeta: AuditMeta,
+  call?: EndpointCaller,
+  signal?: AbortSignal,
+): Promise<{ result: EffResult; audit: AuditDraft }> {
+  const { result, cancelled } = await callEffect(eff, call, signal)
+  return { result, audit: buildAudit(eff, auditMeta, result, cancelled) }
+}
+
+/** 审计正文：草稿 body（不进世界，由侧存追加）。 */
 function bodyOf(outcome: { audit: { body: Json } }): { [k: string]: Json } {
   return outcome.audit.body as { [k: string]: Json }
 }
 
-describe('效果执行 executeEffect（审计草稿）', () => {
+describe('效果执行（审计草稿）', () => {
   it('无端点调用器 → result.ok=false error=not_loaded，仍产审计草稿', async () => {
     const outcome = await executeEffect(mkEff(), meta())
     expect(outcome.result.ok).toBe(false)
@@ -105,11 +117,10 @@ describe('效果执行 executeEffect（审计草稿）', () => {
 
   it('host 批量结果超限 → 审计只留截断标记，调用方仍拿完整值', async () => {
     const big = 'x'.repeat(70 * 1024)
-    const outcome = await executeEffect(
-      mkEff('host', 'asset.get'),
-      meta(),
-      async () => ({ ok: true, value: { bytes: big } }),
-    )
+    const outcome = await executeEffect(mkEff('host', 'asset.get'), meta(), async () => ({
+      ok: true,
+      value: { bytes: big },
+    }))
     expect(outcome.result).toEqual({ ok: true, value: { bytes: big } })
     expect(bodyOf(outcome)['result']).toEqual({ truncated: true, size: expect.any(Number) })
   })

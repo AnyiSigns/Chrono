@@ -5,14 +5,17 @@ import { loadAnchor } from '../../ledger/index.ts'
 import { hostPaths } from '../../paths.ts'
 import { validatePackage } from '../../validate-package.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
-import { writeTempPackage } from '../../test/test-helpers-ext.ts'
+import { writeChronoConfig, writeTempPackage } from '../../test/test-helpers-ext.ts'
 import type { Hash, World } from '../../../kernel/index.ts'
+
+const PROTECTED = ['sandbox', 'guard', 'secrets', 'approval', 'storage-sql', 'storage-kv']
 
 describe('入世守卫：受保护 pins 不可删', () => {
   let root: string
 
   beforeEach(() => {
     root = createTempRoot()
+    writeChronoConfig(root, PROTECTED)
   })
 
   afterEach(() => cleanupTempRoot(root))
@@ -97,7 +100,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
       start: '',
       protocol: '1',
       restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
-      health: { probe: '', interval_ms: 0, timeout_ms: 0 },
+      health: { interval_ms: 0, timeout_ms: 0 },
       state: 'recomputable',
       members: [],
       commands: [],
@@ -113,6 +116,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
       hostPaths(root).runtimeDir,
       files({}),
       hostPaths(root).blobsDir,
+      root,
     )
     expect(removed.accepted).toBe(true)
     if (removed.accepted) {
@@ -125,6 +129,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
       hostPaths(root).runtimeDir,
       files({ storage: 'storage-sql' }),
       hostPaths(root).blobsDir,
+      root,
     )
     expect(kept.accepted).toBe(true)
     if (kept.accepted) expect(kept.report.ok).toBe(true)

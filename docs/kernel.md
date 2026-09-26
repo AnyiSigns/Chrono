@@ -144,7 +144,7 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 | `base_only` | 直接取宿主存的基础世界 | 即空段调用 `verify([], anchorAfter(基础,快照), {worldRev})`——唯一能校基础的入口 | ❌ 只读投影 |
 
 相关导出面（`journal.ts`）：`EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter`。
-定义表访问抽象（`defs.ts`）：`LAZY_DEFS`、`LazyDefsHandle`、`isLazyDefs`、`cloneDefs`、`defHas`、`defsKeys`——内核只经它们读 / 判存在 / 列键 / 克隆 defs 表，普通 map 与惰性代理行为一致；`cloneWorld` 与 `flattenPatches` 的复制都走 `cloneDefs`，不展开 body。
+定义表访问抽象（`defs.ts`）：`LAZY_DEFS`、`LazyDefsHandle`、`cloneDefs`、`defHas`、`defsKeys`——内核只经它们读 / 判存在 / 列键 / 克隆 defs 表，普通 map 与惰性代理行为一致；`cloneWorld` 与 `flattenPatches` 的复制都走 `cloneDefs`，不展开 body。
 
 成对使用是硬规则。`replay` 只重建、不校验链——它内部不查 `seq`/`prev` 衔接，只查 `applyEntry` 成功与 `argsHash` 一致。于是 `replay(尾段, 错的基础)` 不报错：尾段一条本该撞 `id_taken` 而被拒的记录，接在缺前缀基础上却成功，于是算出链上从未被授权的世界。防"接错位"的责任全在 `verify`。`base_only` 的禁则是结构性的：写要 `expect_pos`，而 `pos` 是链头哈希，基础里没有——它只能当只读投影，正当用途恰好是"上下文 = 对日志的投影"这一闭环。
 
@@ -337,7 +337,7 @@ Arith ["arith", op, T, T]          List  ["list", [T...]]        Obj  ["obj", {k
 |---|---|
 | value | `TYPE_ORDER`、`t`、`canonicalJson`、`deepEq` |
 | hash | `utf8`、`sha256`、`H` |
-| defs | `LAZY_DEFS`、`LazyDefsHandle`、`isLazyDefs`、`cloneDefs`、`defHas`、`defsKeys` |
+| defs | `LAZY_DEFS`、`LazyDefsHandle`、`cloneDefs`、`defHas`、`defsKeys` |
 | patch | `PatchOp`、`PatchPath`、`assembleBody`、`readPatchOps` |
 | rebase | `flattenPatches`、`FlattenResult` |
 | recycle | `recycleWorld`、`RecycleSpec`、`RecycleStats`、`RecycleResult` |

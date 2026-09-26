@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { blobPointerOf, blobSha256 } from '../blobs.ts'
+import { pathSegments } from '../common/paths-safe.ts'
 import type { Json } from '../../kernel/index.ts'
 
 /** 通用排除：依赖（宿主侧 ③）与版本库元数据——宿主只内置这两个名字。 */
@@ -43,13 +44,6 @@ interface TreeEntry {
   name: string
   mode: 'file' | 'dir'
   hash: string
-}
-
-/** 把相对路径拆成路径段；空段与 `.` 丢弃，`..` 视为非法（返回 null）。 */
-export function pathSegments(relPath: string): string[] | null {
-  const segments = relPath.split('/').filter((segment) => segment.length > 0 && segment !== '.')
-  if (segments.some((segment) => segment === '..')) return null
-  return segments
 }
 
 /** 解析 `.worldignore` 文本：`#` 注释 / 空行忽略，其余每行一个相对路径。 */

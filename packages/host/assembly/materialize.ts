@@ -13,7 +13,6 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -23,6 +22,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { blobFile, isBlobPointer } from '../blobs.ts'
+import { gcDirs } from '../common/gc-dirs.ts'
 import { assemblyGen, isCodeGen } from './decl.ts'
 import { MATERIALIZE_MARKER } from './source.ts'
 import type { BlobPointer } from '../blobs.ts'
@@ -231,33 +231,26 @@ export function gcMaterialized(
   keepGenerations = MATERIALIZED_KEEP_GENERATIONS,
 ): MaterializedGcReport {
   const keep = materializedKeepSet(world, keepGenerations)
-  if (!existsSync(materializedDir)) return { scanned: 0, removed: [], kept: 0, failed: [] }
-  const removed: string[] = []
-  const failed: { name: string; reason: string }[] = []
-  let scanned = 0
-  let kept = 0
-  for (const name of readdirSync(materializedDir)) {
-    const target = blobFile(materializedDir, name)
-    if (target === null) continue
-    // 只认真实目录：staging 目录名带后缀、非目录项一律跳过，避免误删意外内容
-    let isDirectory = false
-    try {
-      isDirectory = lstatSync(target).isDirectory()
-    } catch {
-      continue
-    }
-    if (!isDirectory) continue
-    scanned += 1
-    if (keep.has(name)) {
-      kept += 1
-      continue
-    }
-    try {
-      rmSync(target, { recursive: true, force: true })
-      removed.push(name)
-    } catch (err) {
-      failed.push({ name, reason: err instanceof Error ? err.message : String(err) })
-    }
+  const report = gcDirs(materializedDir, {
+    select: (name) => isMaterializedDir(materializedDir, name),
+    keep: (name) => keep.has(name),
+    remove: (name) => rmSync(join(materializedDir, name), { recursive: true, force: true }),
+  })
+  return {
+    scanned: report.scanned,
+    removed: report.removed,
+    kept: report.kept,
+    failed: report.failed,
   }
-  return { scanned, removed: removed.sort(), kept, failed }
+}
+
+/** 只认真实目录：staging 目录名带后缀、非目录项一律跳过，避免误删意外内容。 */
+function isMaterializedDir(dir: string, name: string): boolean {
+  const target = blobFile(dir, name)
+  if (target === null) return false
+  try {
+    return lstatSync(target).isDirectory()
+  } catch {
+    return false
+  }
 }

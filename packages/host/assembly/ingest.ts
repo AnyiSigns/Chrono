@@ -7,45 +7,126 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
+import { appendLifecycle } from '../lifecycle.ts'
 import { hostPaths } from '../paths.ts'
-import { isSafeIdentityName } from './identity-name.ts'
+import { readProtectedPins } from '../protected-pins.ts'
+import { isRecord } from '../common/json.ts'
+import { MinHeap } from '../common/min-heap.ts'
+import {
+  isSafeIdentityName,
+  isSafeRelativePath,
+  normalizeRefPath,
+  pathSegments,
+} from '../common/paths-safe.ts'
 import { validateArgsSchema } from './args-schema.ts'
 import {
   DEFAULT_SCHEMA_BODY,
   isCodeGen,
   latestCodeGen,
   parsePluginDecl,
+  readPluginDecl,
   readPluginDeclOfGen,
   termDefOf,
 } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
-import { isIgnored, packSourceDir, pathSegments, readWorldignore } from './source.ts'
+import { validateEffDecls } from './eff-decls.ts'
+import type { EffDeclContext } from './eff-decls.ts'
+import { isIgnored, packSourceDir, readWorldignore } from './source.ts'
 import type { PackedBlob } from './source.ts'
-import { collectRefs, normalizeRefPath, replaceTermRefs, termTopoOrder } from './term-refs.ts'
+import { collectRefs, replaceTermRefs, termTopoOrder } from './term-refs.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
 
-/** `state/plugins.json` 的一项：有 path 按路径解析，无 path 走 Node 解析。 */
+/**
+ * 插件投递项：有 path 按路径解析，无 path 走 Node 解析（`node_modules`）。
+ * `exclude` 为真时从并集里移除同名项（目录发现的显式排除）。
+ */
 export interface PluginEntry {
   name: string
   path?: string
+  exclude?: boolean
 }
 
-/** 读 `state/plugins.json`；缺文件即空清单；形态非法抛 `bad_plugins_manifest`。 */
-export function readPluginManifest(root: string): PluginEntry[] {
+/** 读 `state/plugins.json` 清单本身；缺文件即空；形态非法抛 `bad_plugins_manifest`。 */
+function readManifestFile(root: string): PluginEntry[] {
   const file = hostPaths(root).pluginsFile
   if (!existsSync(file)) return []
   const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
   if (!Array.isArray(parsed)) throw new Error('bad_plugins_manifest')
   return parsed.map((item) => {
-    if (typeof item !== 'object' || item === null) throw new Error('bad_plugins_manifest')
-    const record = item as { name?: unknown; path?: unknown }
+    if (!isRecord(item)) throw new Error('bad_plugins_manifest')
+    const record = item as { name?: unknown; path?: unknown; exclude?: unknown }
     if (typeof record.name !== 'string' || record.name.length === 0) {
       throw new Error('bad_plugins_manifest')
     }
-    return record.path === undefined
-      ? { name: record.name }
-      : { name: record.name, path: String(record.path) }
+    const entry: PluginEntry = { name: record.name }
+    if (record.path !== undefined) entry.path = String(record.path)
+    if (record.exclude !== undefined) {
+      if (typeof record.exclude !== 'boolean') throw new Error('bad_plugins_manifest')
+      entry.exclude = record.exclude
+    }
+    return entry
   })
+}
+
+/** 已记过「发现跳过」运维日志的 `root\0目录`：同一目录只记一次，避免逐次解析重记。 */
+const discoveryLogged = new Set<string>()
+
+function logDiscoverySkip(root: string, dir: string, reason: string): void {
+  const key = `${resolve(root)}\u0000${dir}`
+  if (discoveryLogged.has(key)) return
+  discoveryLogged.add(key)
+  appendLifecycle(hostPaths(root).lifecycleFile, {
+    at: Date.now(),
+    kind: 'host',
+    event: 'plugin_discovery_skipped',
+    reason: `${dir}:${reason}`,
+  })
+}
+
+/**
+ * 目录发现：扫 `plugins` 下各子目录的 `plugin.json` 得到投递项（path = `plugins/<目录名>`）。
+ * 目录名不安全 → 跳过并记运维日志；`plugin.json` 读不出 / 解析失败 → 跳过并记日志，不 fail-stop
+ * （一个坏目录不得挡住整个启动）。不含 `plugin.json` 的目录不是插件，静默跳过。
+ */
+function discoverPluginEntries(root: string): PluginEntry[] {
+  const dir = join(root, 'plugins')
+  if (!existsSync(dir)) return []
+  const out: PluginEntry[] = []
+  for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue
+    const name = dirent.name
+    if (!isSafeIdentityName(name)) {
+      logDiscoverySkip(root, name, 'unsafe_name')
+      continue
+    }
+    const pkgRoot = join(dir, name)
+    if (!existsSync(join(pkgRoot, 'plugin.json'))) continue
+    if (readJsonFile(join(pkgRoot, 'plugin.json')) === undefined) {
+      logDiscoverySkip(root, name, 'unreadable_plugin_json')
+      continue
+    }
+    out.push({ name, path: `plugins/${name}` })
+  }
+  out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  return out
+}
+
+/**
+ * 读有效插件清单：目录发现 ∪ 清单，同名以清单项优先（清单可覆盖路径），排除项从并集移除。
+ * 清单不存在 / 为空 → 纯目录发现；真实身份仍取包内 `plugin.json.identity`，清单 `name` 只是解析标签。
+ */
+export function readPluginManifest(root: string): PluginEntry[] {
+  const manifest = readManifestFile(root)
+  const byName = new Map<string, PluginEntry>()
+  for (const entry of discoverPluginEntries(root)) byName.set(entry.name, entry)
+  for (const entry of manifest) {
+    if (entry.exclude === true) continue
+    byName.set(entry.name, entry)
+  }
+  for (const entry of manifest) {
+    if (entry.exclude === true) byName.delete(entry.name)
+  }
+  return [...byName.values()]
 }
 
 export interface IngestPlan {
@@ -73,31 +154,18 @@ const LOCK_FILES = [
 ]
 
 /**
- * 受保护身份（保护名单住宿主侧、不进世界，故连代码换代也改不动）：新世代删除对它们的 `pins` 引用即整批拒。
- * 理由：可见性过滤是黑名单，攻击面在依赖关系——agent 可写一个不 pin `sandbox` 的 `tool-fs` 让强制失效；
- * 委托持久化同理，删掉对存储服务的 `pins` 会让写入静默失效。这是纯机械的「旧世代有、新世代没了」比对，宿主不认识业务。
- * 覆盖范围与既有受保护身份同：只覆盖入世（`seed` / `pack` / `validate_package`），裸运行期顶层 `add_gen` 不经入世门禁。
- */
-const PROTECTED_PIN_IDENTITIES: ReadonlySet<string> = new Set([
-  'sandbox',
-  'guard',
-  'secrets',
-  'approval',
-  'storage-sql',
-  'storage-kv',
-])
-
-/**
  * 跨代比对 `pins`：最近代码世代引用了某受保护身份、新声明不再引用 → 删了保护边。
  * 按被依赖身份名比对（`decl.pins` 的值即身份名），不涉及解析后的哈希。
  * 不依赖 `active`：retired 身份重入世同样按最近代码世代比对，否则「退役→重入世」可绕过保护。
  * 身份不存在 / 无代码世代 → 无从比对，放行；有代码世代但声明读不出 → fail-closed 拒。
+ * 受保护名单来自运营配置（`chrono.config.json` 的 `protected_pins`），不在源码里写死身份名。
  */
 function removedProtectedPin(
   world: World,
   identity: string,
   decl: PluginDecl,
   blobsDir: string | undefined,
+  protectedPins: ReadonlySet<string>,
 ): boolean {
   const record = Object.hasOwn(world.ids, identity) ? world.ids[identity] : undefined
   if (record === undefined) return false
@@ -113,7 +181,7 @@ function removedProtectedPin(
   if (previous === null) return true
   const nextPins = new Set(Object.values(decl.pins))
   for (const depId of Object.values(previous.decl.pins)) {
-    if (PROTECTED_PIN_IDENTITIES.has(depId) && !nextPins.has(depId)) return true
+    if (protectedPins.has(depId) && !nextPins.has(depId)) return true
   }
   return false
 }
@@ -158,8 +226,8 @@ function readJsonFile(abs: string): Json | undefined {
 
 function readPackageVersion(pkgRoot: string): string {
   const pkg = readJsonFile(join(pkgRoot, 'package.json'))
-  if (typeof pkg === 'object' && pkg !== null && !Array.isArray(pkg)) {
-    const version = (pkg as { [k: string]: Json })['version']
+  if (isRecord(pkg)) {
+    const version = pkg['version']
     if (typeof version === 'string') return version
   }
   return ''
@@ -174,16 +242,6 @@ function collectJsonFiles(absDir: string, rel: string, out: string[]): void {
   }
 }
 
-/** 声明中的包内路径必须是安全相对路径：禁 `..` 段、绝对路径、盘符与反斜杠。 */
-function isSafePackagePath(path: string): boolean {
-  if (path.length === 0) return false
-  if (path.startsWith('/') || path.startsWith('\\')) return false
-  if (path.includes('\\')) return false
-  if (/^[A-Za-z]:/.test(path)) return false
-  const segments = path.split('/').filter((segment) => segment.length > 0 && segment !== '.')
-  return segments.length > 0 && !segments.some((segment) => segment === '..')
-}
-
 /** 找第一个逃逸包根的声明路径（schema / 命令入口 / 参数 schema / members）；无则 null。 */
 function unsafeDeclaredPath(decl: PluginDecl): string | null {
   const candidates: string[] = decl.schema === null ? [] : [decl.schema]
@@ -192,7 +250,7 @@ function unsafeDeclaredPath(decl: PluginDecl): string | null {
     if (command.argsSchema !== undefined) candidates.push(command.argsSchema)
   }
   for (const member of decl.members) candidates.push(member.path)
-  return candidates.find((candidate) => !isSafePackagePath(candidate)) ?? null
+  return candidates.find((candidate) => !isSafeRelativePath(candidate)) ?? null
 }
 
 /** 契约层引用的包内文件：命中 `.worldignore` 即整批拒绝。 */
@@ -222,12 +280,15 @@ function ignoredRequiredPath(
 /**
  * 包内 term 入世：先按 `$ref` 图拓扑序（callee 先），逐个替换占位符成 callee def 哈希。
  * 引用包外 / 不存在的成员 → `bad_term_ref`；成环 → `term_cycle`；两者都整包拒。
+ * 同时校验每个 term 的 `eff` 声明（`undeclared_port` / `undeclared_method`），口径见 `eff-decls.ts`。
  */
 function planTerms(
   pkgRoot: string,
   decl: PluginDecl,
   commitHash: Hash,
   ops: Json[],
+  world: World,
+  blobsDir: string | undefined,
 ): { ok: true } | { ok: false; reasons: string[] } {
   const paths = new Set<string>()
   const collected: string[] = []
@@ -245,6 +306,23 @@ function planTerms(
     const ast = readJsonFile(join(pkgRoot, path))
     if (ast === undefined) return { ok: false, reasons: [`missing_entry:${path}`] }
     asts.set(path, ast)
+  }
+
+  const effCtx: EffDeclContext = {
+    implements: new Set(decl.implements),
+    pins: new Set(Object.keys(decl.pins)),
+    methods: decl.methods,
+    calleeMethodsOf: (port) => {
+      const depId = decl.pins[port]
+      // 保留能力类 `host` 不在世界里，按「看不到被调声明」跳过方法名校验。
+      if (depId === undefined || depId === HOST_CAPABILITY) return null
+      const read = readPluginDecl(world, depId, blobsDir)
+      return read === null ? null : read.decl.methods
+    },
+  }
+  for (const path of all) {
+    const issues = validateEffDecls(asts.get(path) as Json, effCtx)
+    if (issues.length > 0) return { ok: false, reasons: issues }
   }
 
   const refs = new Map<string, string[]>()
@@ -305,6 +383,7 @@ function planIngestAtRoot(
   pkgRoot: string,
   identityOverride: string | undefined,
   blobsDir: string | undefined,
+  protectedPins: ReadonlySet<string>,
 ): IngestResult {
   const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
   if (rawDecl === undefined) return { ok: false, reasons: ['missing_plugin_json'] }
@@ -318,7 +397,7 @@ function planIngestAtRoot(
   if (!isSafeIdentityName(identity)) return { ok: false, reasons: ['bad_plugin_decl'] }
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
 
-  if (removedProtectedPin(world, identity, decl, blobsDir)) {
+  if (removedProtectedPin(world, identity, decl, blobsDir, protectedPins)) {
     return { ok: false, reasons: ['protected_pin_removed'] }
   }
 
@@ -360,7 +439,7 @@ function planIngestAtRoot(
   const schemaIndex = ops.length
   ops.push({ op: 'put', args: { body: schemaJson } })
 
-  const terms = planTerms(pkgRoot, decl, commitHash, ops)
+  const terms = planTerms(pkgRoot, decl, commitHash, ops, world, blobsDir)
   if (!terms.ok) return { ok: false, reasons: terms.reasons }
 
   for (const command of decl.commands) {
@@ -423,9 +502,11 @@ export function resolveEntryRoot(root: string, entry: PluginEntry): string | nul
  */
 export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
   try {
+    const pins = readProtectedPins(root)
+    if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
     const pkgRoot = resolvePackageRoot(entry, root)
     if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
-    return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir)
+    return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir, pins.identities)
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
   }
@@ -464,18 +545,36 @@ export function orderEntriesForSeed(root: string, entries: PluginEntry[]): Plugi
     const entryName = entries[node.index].name
     if (!indexByName.has(entryName)) indexByName.set(entryName, node.index)
   }
-  const ready = (node: SeedNode, done: Set<number>): boolean =>
-    node.deps.every((dep) => {
+  // 入度 = 清单内、非自身的不同依赖数；dependents 记录谁依赖我，供完成时递减。
+  const remaining = new Map<number, number>()
+  const dependents = new Map<number, Set<number>>()
+  for (const node of nodes) {
+    const targets = new Set<number>()
+    for (const dep of node.deps) {
       const target = indexByName.get(dep)
-      return target === undefined || target === node.index || done.has(target)
-    })
+      if (target === undefined || target === node.index) continue
+      targets.add(target)
+    }
+    remaining.set(node.index, targets.size)
+    for (const target of targets) {
+      const list = dependents.get(target)
+      if (list === undefined) dependents.set(target, new Set([node.index]))
+      else list.add(node.index)
+    }
+  }
+  // 就绪前沿按下标取最小：与「每轮线性找最小 ready 下标」等价，但整体 O(n log n)。
+  const ready = new MinHeap<number>((a, b) => a - b)
+  for (const node of nodes) if (remaining.get(node.index) === 0) ready.push(node.index)
   const order: PluginEntry[] = []
   const done = new Set<number>()
-  while (order.length < entries.length) {
-    const node = nodes.find((candidate) => !done.has(candidate.index) && ready(candidate, done))
-    if (node === undefined) break // 剩余项成环：原序附加
-    done.add(node.index)
-    order.push(entries[node.index])
+  for (let index = ready.pop(); index !== undefined; index = ready.pop()) {
+    done.add(index)
+    order.push(entries[index])
+    for (const dependent of dependents.get(index) ?? []) {
+      const left = (remaining.get(dependent) as number) - 1
+      remaining.set(dependent, left)
+      if (left === 0) ready.push(dependent)
+    }
   }
   for (const node of nodes) if (!done.has(node.index)) order.push(entries[node.index])
   return order
@@ -486,12 +585,15 @@ export function orderEntriesForSeed(root: string, entries: PluginEntry[]): Plugi
  * （`packSourceDir` + `.worldignore` + 通用排除），故同一目录同一身份产出同一 tree / commit 哈希。
  * `identity` 缺省取 `plugin.json.identity`；显式给出时作为世界身份与 `commit.meta.name`。
  * `blobsDir` 供读取旧世代的 pointer 声明（受保护引脚比对）；调用方按自己的根目录给出。
+ * `configRoot` 给定时从该根的 `chrono.config.json` 读受保护 pin 名单（`validate_package` 的候选目录
+ * 不是仓库根，故不能从 `dir` 读）；缺省不设保护（空集）。
  */
 export function planPack(
   world: World,
   dir: string,
   identity?: string,
   blobsDir?: string,
+  configRoot?: string,
 ): IngestResult {
   try {
     const pkgRoot = resolve(dir)
@@ -499,7 +601,13 @@ export function planPack(
     if (!existsSync(join(pkgRoot, 'plugin.json'))) {
       return { ok: false, reasons: ['missing_plugin_json'] }
     }
-    return planIngestAtRoot(world, pkgRoot, identity, blobsDir)
+    let protectedPins: ReadonlySet<string> = new Set()
+    if (configRoot !== undefined) {
+      const pins = readProtectedPins(configRoot)
+      if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
+      protectedPins = pins.identities
+    }
+    return planIngestAtRoot(world, pkgRoot, identity, blobsDir, protectedPins)
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
   }
@@ -520,8 +628,8 @@ export function resolvePluginSourceRoot(root: string, identity: string): string 
     const pkgRoot = resolvePackageRoot(entry, root)
     if (pkgRoot === null) continue
     const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
-    if (typeof rawDecl !== 'object' || rawDecl === null || Array.isArray(rawDecl)) continue
-    if ((rawDecl as { [k: string]: Json })['identity'] === identity) return pkgRoot
+    if (!isRecord(rawDecl)) continue
+    if (rawDecl['identity'] === identity) return pkgRoot
   }
   return null
 }

@@ -255,8 +255,13 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     expect(readJournal(journalFile()).length).toBe(before)
   })
 
-  it('A1 失败码落审计：依赖不声明能力类 → not_loaded；依赖退役 → stale', async () => {
-    const noncap = writeTempPackage(root, { identity: 'toy-noncap', start: '' })
+  it('A1 失败码落审计：依赖声明能力类但无服务 → not_loaded；依赖退役 → stale', async () => {
+    // 依赖声明能力类（入世期校验通过），但无执行件 / 无服务 → 运行期 not_loaded。
+    const noncap = writeTempPackage(root, {
+      identity: 'toy-noncap',
+      start: '',
+      implements: ['toy.alpha'],
+    })
     runSeed(root, [
       { name: 'toy-noncap', path: noncap },
       { name: 'toy-caller', path: writeCaller({ 'toy.alpha': 'toy-noncap' }) },

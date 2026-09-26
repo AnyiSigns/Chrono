@@ -5,6 +5,7 @@ export { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
 export type { AssemblyPlan, DependencyEdge, IsolatedIdentity, IsolatedReason } from './closure.ts'
 export {
   assemblyGen,
+  buildCommandIndex,
   DEFAULT_SCHEMA_BODY,
   isCodeGen,
   latestCodeGen,
@@ -21,6 +22,7 @@ export {
 } from './decl.ts'
 export type {
   CommandDecl,
+  CommandIndex,
   DeclRead,
   ParseDeclResult,
   PluginBuildStep,
@@ -31,7 +33,7 @@ export type {
 } from './decl.ts'
 export { classifyGenerationChange } from './generation.ts'
 export type { GenerationChange } from './generation.ts'
-export { validateArgs, validateArgsSchema } from './args-schema.ts'
+export { commandArgsIssue, validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
 export {
   orderEntriesForSeed,
@@ -42,6 +44,8 @@ export {
   resolvePluginSourceRoot,
 } from './ingest.ts'
 export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
+export { validateEffDecls, walkEffs } from './eff-decls.ts'
+export type { EffDeclContext } from './eff-decls.ts'
 export { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
 export type { AssetManifestEntry, AssetsManifestRead } from './assets-manifest.ts'
 export {

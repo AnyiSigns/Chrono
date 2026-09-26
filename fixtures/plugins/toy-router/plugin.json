@@ -1,0 +1,23 @@
+{
+  "identity": "toy-router",
+  "implements": ["router"],
+  "methods": { "router": ["select"] },
+  "pins": {},
+  "start": "node execute/main.js",
+  "build": [{ "cmd": "node", "args": ["../../../toolchain/build.ts", "."] }],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "none",
+    "max": 3,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": { "interval_ms": 10000, "timeout_ms": 1000 },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" }
+  ],
+  "commands": [{ "name": "toy-router.select", "entry": "terms/select.json" }]
+}

@@ -6,15 +6,14 @@
 // 旧读取器要求 `body` 为字符串，遇对象体安全失败而非把哈希串当内容写出。
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { writeFileAtomic } from './ledger/atomic.ts'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { casFilePath, isSha256Hex } from './common/cas.ts'
+import { writeFileAtomic } from './common/fs-atomic.ts'
+import { gcDirs } from './common/gc-dirs.ts'
 import type { Json, World } from '../kernel/index.ts'
 
 /** pointer def 判别键：读取侧据此把对象体 blob 认作内容引用，而非文件内容。 */
 export const BLOB_POINTER_KIND = 'blob'
-
-const SHA256_HEX = /^[0-9a-f]{64}$/
 
 /** 源码 blob 的指针形态（`put` 的 def body）。 */
 export interface BlobPointer {
@@ -27,8 +26,7 @@ export interface BlobPointer {
 export type BlobPutResult = { ok: true; pointer: BlobPointer } | { ok: false; code: 'bad_blob' }
 
 export type BlobReadResult =
-  | { ok: true; bytes: Buffer }
-  | { ok: false; code: 'bad_blob' | 'blob_missing' }
+  { ok: true; bytes: Buffer } | { ok: false; code: 'bad_blob' | 'blob_missing' }
 
 export interface BlobGcReport {
   /** 扫描到的 64-hex 文件数。 */
@@ -48,8 +46,7 @@ export function blobSha256(bytes: Uint8Array): string {
 
 /** CAS 文件路径：sha256 十六进制；非 64 hex 一律拒绝（防路径穿越）。 */
 export function blobFile(dir: string, sha256: string): string | null {
-  if (!SHA256_HEX.test(sha256)) return null
-  return resolve(dir, sha256)
+  return casFilePath(dir, sha256)
 }
 
 /** 构造 pointer def body：字节摘要 + 长度，键即 `H({ body: pointer })`。 */
@@ -66,8 +63,7 @@ export function isBlobPointer(value: Json | undefined): value is BlobPointer {
   const record = value as { [k: string]: Json }
   return (
     record['kind'] === BLOB_POINTER_KIND &&
-    typeof record['sha256'] === 'string' &&
-    SHA256_HEX.test(record['sha256']) &&
+    isSha256Hex(record['sha256']) &&
     typeof record['size'] === 'number' &&
     Number.isInteger(record['size']) &&
     record['size'] >= 0
@@ -145,24 +141,18 @@ export function collectBlobRefs(world: World): Set<string> {
  * 只动 64-hex 命名的文件（临时文件 / 非源码字节不碰）；删不掉不致命，记入 `failed`。
  */
 export function gcBlobs(dir: string, keep: ReadonlySet<string>): BlobGcReport {
-  if (!existsSync(dir)) return { scanned: 0, removed: [], kept: 0, failed: [] }
-  const removed: string[] = []
-  const failed: { sha256: string; reason: string }[] = []
-  let scanned = 0
-  let kept = 0
-  for (const name of readdirSync(dir)) {
-    if (!SHA256_HEX.test(name)) continue
-    scanned += 1
-    if (keep.has(name)) {
-      kept += 1
-      continue
-    }
-    try {
-      rmSync(resolve(dir, name), { force: true })
-      removed.push(name)
-    } catch (err) {
-      failed.push({ sha256: name, reason: err instanceof Error ? err.message : String(err) })
-    }
+  const report = gcDirs(dir, {
+    select: (name) => isSha256Hex(name),
+    keep: (name) => keep.has(name),
+    remove: (name) => {
+      const target = casFilePath(dir, name)
+      if (target !== null) rmSync(target, { force: true })
+    },
+  })
+  return {
+    scanned: report.scanned,
+    removed: report.removed,
+    kept: report.kept,
+    failed: report.failed.map((item) => ({ sha256: item.name, reason: item.reason })),
   }
-  return { scanned, removed: removed.sort(), kept, failed }
 }

@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { statSync, truncateSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { commit, worldRev } from '../kernel/index.ts'
+import { worldRev } from '../kernel/index.ts'
 import {
   gcMaterialized,
   latestDataGen,
@@ -32,11 +32,13 @@ import type { BlobGcReport } from './blobs.ts'
 import { collectAssetRefs, gcAssets } from './assets.ts'
 import type { AssetGcReport } from './assets.ts'
 import { DEFAULT_FLATTEN_CHAIN, DEFAULT_GEN_RETENTION, compactWorld } from './compact.ts'
+import { commitToWorld } from './world-commit.ts'
 import { AuditStore } from './audit-store.ts'
+import { resolveAuditTier } from './audit-tiers.ts'
 import { backfillAuditStore, readAuditBackfillMeta } from './audit-backfill.ts'
 import { hostPaths } from './paths.ts'
 import type { HostPaths } from './paths.ts'
-import type { Hash, Head, RecycleStats, WriteRequest } from '../kernel/index.ts'
+import type { Hash, Head, RecycleStats } from '../kernel/index.ts'
 
 /** 与 assembly 同源，保留本模块导出面（`readPluginManifest` 属插件清单读面）。 */
 export { readPluginManifest }
@@ -81,9 +83,7 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   if (!lock.ok) throw new Error('writer_busy')
   try {
     const entries = orderEntriesForSeed(root, explicit ?? readPluginManifest(root))
-    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir, {
-      migrateLegacy: true,
-    })
+    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     repairTruncatedJournal(paths, anchor)
     const items: SeedItem[] = []
     for (const entry of entries) {
@@ -97,26 +97,28 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
         items.push({ name: entry.name, status: 'unchanged', identity: plan.identity, reasons: [] })
         continue
       }
-      const request: WriteRequest = {
-        id: `seed-${randomUUID()}`,
-        op: 'batch',
-        target: { expect_pos: anchor.head.hash },
-        args: { ops: plan.ops },
-        by: 'seed',
-      }
       // 字节先于链落 CAS：commit 拒绝时至多留孤儿字节（离线 GC 清理），世界分文未动
       for (const blob of plan.blobs) putBlob(paths.blobsDir, blob.bytes)
-      const outcome = commit(anchor.head, anchor.world, request, Date.now())
-      if (!outcome.verdict.ok) {
-        items.push({ name: entry.name, status: 'failed', reasons: outcome.verdict.reasons })
+      const committed = commitToWorld(
+        { kind: 'lock', world: anchor.world, head: anchor.head },
+        {
+          id: `seed-${randomUUID()}`,
+          op: 'batch',
+          args: { ops: plan.ops },
+          by: 'seed',
+        },
+        Date.now(),
+        (entry) => appendJournal(paths.journalFile, [entry]),
+      )
+      if (committed.kind === 'refused') {
+        items.push({ name: entry.name, status: 'failed', reasons: committed.reasons })
         continue
       }
-      if (outcome.entry !== null) {
-        appendJournal(paths.journalFile, [outcome.entry])
+      if (committed.kind === 'committed') {
         anchor = {
           ...anchor,
-          head: { seq: outcome.entry.seq, hash: outcome.hash as Hash },
-          entries: [...anchor.entries, outcome.entry],
+          head: committed.head,
+          entries: [...anchor.entries, committed.entry],
         }
       }
       items.push({ name: entry.name, status: 'seeded', identity: plan.identity, reasons: [] })
@@ -147,11 +149,9 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
   const lock = acquireLock(paths.lockFile, Date.now())
   if (!lock.ok) throw new Error('writer_busy')
   try {
-    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir, {
-      migrateLegacy: true,
-    })
+    let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     repairTruncatedJournal(paths, anchor)
-    const planned = planPack(anchor.world, resolve(root, dir), identity, paths.blobsDir)
+    const planned = planPack(anchor.world, resolve(root, dir), identity, paths.blobsDir, root)
     if (!planned.ok) {
       return {
         ok: false,
@@ -173,31 +173,33 @@ export function runPack(root: string, dir: string, identity?: string): PackRepor
         head: anchor.head,
       }
     }
-    const request: WriteRequest = {
-      id: `pack-${randomUUID()}`,
-      op: 'batch',
-      target: { expect_pos: anchor.head.hash },
-      args: { ops: plan.ops },
-      by: 'pack',
-    }
     // 字节先于链落 CAS：commit 拒绝时至多留孤儿字节（离线 GC 清理），世界分文未动
     for (const blob of plan.blobs) putBlob(paths.blobsDir, blob.bytes)
-    const outcome = commit(anchor.head, anchor.world, request, Date.now())
-    if (!outcome.verdict.ok) {
+    const committed = commitToWorld(
+      { kind: 'lock', world: anchor.world, head: anchor.head },
+      {
+        id: `pack-${randomUUID()}`,
+        op: 'batch',
+        args: { ops: plan.ops },
+        by: 'pack',
+      },
+      Date.now(),
+      (entry) => appendJournal(paths.journalFile, [entry]),
+    )
+    if (committed.kind === 'refused') {
       return {
         ok: false,
         identity: plan.identity,
         status: 'failed',
-        reasons: outcome.verdict.reasons,
+        reasons: committed.reasons,
         head: anchor.head,
       }
     }
-    if (outcome.entry !== null) {
-      appendJournal(paths.journalFile, [outcome.entry])
+    if (committed.kind === 'committed') {
       anchor = {
         ...anchor,
-        head: { seq: outcome.entry.seq, hash: outcome.hash as Hash },
-        entries: [...anchor.entries, outcome.entry],
+        head: committed.head,
+        entries: [...anchor.entries, committed.entry],
       }
     }
     return {
@@ -362,7 +364,11 @@ export function runCompact(root: string, options: CompactOptions = {}): CompactR
     // D2 历史审计一次性回填（与宿主首启同路，持锁时执行）：旁路失败不阻断压缩；已回填则跳过
     if (readAuditBackfillMeta(paths.auditMetaFile) === null) {
       try {
-        backfillAuditStore(paths, world, entries, AuditStore.open(paths.auditFile))
+        const store = AuditStore.open(paths.auditFile, {
+          tierBudgetOf: (port) =>
+            typeof port === 'string' ? resolveAuditTier(world, port) : undefined,
+        })
+        backfillAuditStore(paths, world, entries, store)
       } catch {
         // 回填失败只损失历史审计可见性，下次压缩 / 启动再试
       }

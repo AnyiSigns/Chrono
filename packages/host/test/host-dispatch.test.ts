@@ -10,6 +10,7 @@ import type { HostHandle } from '../host.ts'
 import { hostPaths, socketPath } from '../paths.ts'
 import { readJournal } from '../ledger/index.ts'
 import { createFrameDecoder, encodeFrame } from '../wire.ts'
+import { isRecord } from '../common/json.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 import type { Json } from '../../kernel/index.ts'
 
@@ -49,10 +50,6 @@ function rawCollect(
       reject(err)
     })
   })
-}
-
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 describe('入站派发收口', () => {

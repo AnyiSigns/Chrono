@@ -2,7 +2,7 @@
 // 只读世界：不执行效果、不写链；端点表键不含调用方（impl+gen+cap+method）。
 // `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
 
-import { assemblyGen, readPluginDecl } from '../assembly/decl.ts'
+import { assemblyGen, buildOwnerIndex, readPluginDecl } from '../assembly/index.ts'
 import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
 import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
@@ -74,45 +74,31 @@ function hostRow(emitter: string, method: string, host: HostCapabilityCall): End
 }
 
 /**
- * 构造 A1 路由器。ownerIndex 按 `world.ids` 对象缓存（审计落账只改 defs、共享 ids，
- * 故同代身份的索引跨审计命中）；依赖"已声明能力类"按 (impl, gen) 缓存解析结果——
- * gen 是内容哈希，声明不可变，命中即可复用；解析仍每调用机械对照世界。
+ * 构造 A1 路由器。ownerIndex 按 `world.ids` 对象缓存（同代世界共享 ids，重建是 O(#身份×世代)）；
+ * 依赖"已声明能力类"按身份缓存**最近一次解析的世代**——gen 是内容哈希、声明不可变，命中即可复用；
+ * 只保留每个身份的最近世代，避免键含世代哈希的 Map 只增（世代换代即替换）。
  */
 export function createRoundRouter(options: RouterOptions): RoundRouter {
   const ownerIndexes = new WeakMap<World['ids'], Map<Hash, string>>()
-  // 已声明能力类按 (id, gen) 缓存（gen 内容哈希 ⇒ 声明不可变）；声明读不出（null）不缓存，下次可重试。
-  const implementsCache = new Map<string, Set<string>>()
+  // 每个身份只留最近解析的 (gen → caps)：声明不可变，命中可复用；换代替换，不随历史世代累积。
+  const implementsCache = new Map<string, { gen: Hash; caps: Set<string> }>()
 
-  const ownerIndexOf = (ids: World['ids']): Map<Hash, string> => {
-    const cached = ownerIndexes.get(ids)
+  const ownerIndexOf = (world: World): Map<Hash, string> => {
+    const cached = ownerIndexes.get(world.ids)
     if (cached !== undefined) return cached
-    const index = new Map<Hash, string>()
-    const keys = Object.keys(ids).sort()
-    for (const id of keys) {
-      const identity = ids[id]
-      if (identity.active === null) continue
-      for (const gen of identity.gens) {
-        if (gen.payload === identity.active && !index.has(gen.payload)) index.set(gen.payload, id)
-      }
-    }
-    for (const id of keys) {
-      for (const gen of ids[id].gens) {
-        if (!index.has(gen.payload)) index.set(gen.payload, id)
-      }
-    }
-    ownerIndexes.set(ids, index)
+    const index = buildOwnerIndex(world)
+    ownerIndexes.set(world.ids, index)
     return index
   }
 
   const implementsOf = (world: World, id: string, gen: Hash): Set<string> | null => {
-    const key = `${id}\u0000${gen}`
-    const cached = implementsCache.get(key)
-    if (cached !== undefined) return cached
+    const cached = implementsCache.get(id)
+    if (cached !== undefined && cached.gen === gen) return cached.caps
     const decl = readPluginDecl(world, id, options.blobsDir)?.decl ?? null
     // 声明读不出（def / blob 暂缺）：不缓存 null，下一次解析可重试；补齐后同键重算成功
     if (decl === null) return null
     const caps = new Set(decl.implements)
-    implementsCache.set(key, caps)
+    implementsCache.set(id, { gen, caps })
     return caps
   }
 
@@ -146,7 +132,7 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
         return { ok: true, row: hostRow(emitterId, method, options.host) }
       }
       if (resolutionWorld.defs[pinned] === undefined) return { ok: false, error: 'stale' }
-      const owner = ownerIndexOf(resolutionWorld.ids).get(pinned)
+      const owner = ownerIndexOf(resolutionWorld).get(pinned)
       if (owner === undefined) return { ok: false, error: 'stale' }
       const ownerGen = assemblyGen(resolutionWorld, owner)
       if (ownerGen === null) return { ok: false, error: 'stale' }

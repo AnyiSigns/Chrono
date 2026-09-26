@@ -1,10 +1,10 @@
-# example（形状模板插件）
+# plugin（形状模板插件）
 
 > **定位（2026-09-20 修订）**：本目录只是**目录形状 / `plugin.json` 12 字段模板**，用于对照 `docs/plugins.md` §二，**不是**真实能力插件，也**不是参考实现**。
 > **参考实现**是 `fixtures/plugins/toy-alpha`（含完整 stdio 帧协议服务、断连自退出、`.worldignore`、测试与合格 README；另有 `toy-beta` / `toy-python`）——写执行件、协议义务、`.worldignore`、README 自述时以它为准。
 
 ```
-plugins/example/
+templates/plugin/
 ├── package.json     npm 信封（宿主不解释）
 ├── plugin.json     插件契约（12 字段；宿主解释）
 ├── README.md       本文件（人读自述）

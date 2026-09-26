@@ -380,3 +380,63 @@ describe('观测形状 = observationsOf 公共面对拍（eval / bad_term / refu
     )
   })
 })
+
+describe('失败节点定位在 run 出口透出（at / def / callAt）', () => {
+  it('eval 求值失败：拒绝观测带 at；成功路径不带这三键（逐字节对拍）', () => {
+    const body = J(['cmp', ['g', ['nope']], ['c', 1]])
+    const s = seedDef(body)
+    const o = run(input({ world: s.world, head: s.head, directives: [evalDir(s.key)] }))
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['missing_path']])
+    expect(lastObs(o)).toEqual({
+      kind: 'refused',
+      reasons: ['missing_path'],
+      at: [1],
+    })
+    expect(Object.keys(lastObs(o) as object).sort()).toEqual(['at', 'kind', 'reasons'])
+  })
+
+  it('被调 term 内失败：带 def（被调哈希）与 callAt（调用点路径）', () => {
+    const inner = J(['v', 5])
+    const outer = J(['cmp', ['call', ['c', dKey(inner)], [['c', 1]]], ['c', 0]])
+    const s = seedDefs([inner, outer])
+    const o = run(input({ world: s.world, head: s.head, directives: [evalDir(s.keys[1])] }))
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['bad_var']])
+    expect(lastObs(o)).toMatchObject({
+      kind: 'refused',
+      reasons: ['bad_var'],
+      def: s.keys[0],
+      callAt: [1],
+    })
+  })
+
+  it('成功路径观测与改前逐字节一致：eval 观测无 at / def / callAt', () => {
+    const s = seedDef(['v', 0])
+    const d = evalDir(s.key, 'ok')
+    const o = run(input({ world: s.world, head: s.head, directives: [d] }))
+    expect(o.status).toBe('done')
+    const obs = lastObs(o) as { [k: string]: Json }
+    expect(Object.keys(obs).sort()).toEqual(['entry', 'kind', 'ok', 'value'])
+    expect(obs).toEqual({ kind: 'eval', entry: s.key, ok: true, value: 'ok' })
+  })
+
+  it('observationsOf 的 eval 分支：失败结果写出 at / def / callAt，成功结果不写', () => {
+    const entry = 'ab'.repeat(32)
+    const d = evalDir(entry)
+    const def = 'cd'.repeat(32)
+    const failed = observationsOf(d, {
+      kind: 'eval',
+      r: { ok: false, error: 'bad_var', at: [2, 0], def, callAt: [1] },
+    } as never)
+    expect(failed).toEqual({
+      kind: 'eval',
+      entry,
+      ok: false,
+      error: 'bad_var',
+      at: [2, 0],
+      def,
+      callAt: [1],
+    })
+    const ok = observationsOf(d, { kind: 'eval', r: { ok: true, value: 7 } } as never)
+    expect(Object.keys(ok as object).sort()).toEqual(['entry', 'kind', 'ok', 'value'])
+  })
+})

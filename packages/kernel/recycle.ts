@@ -7,7 +7,9 @@
 // 空操作：不触发任何裁剪时返回入参世界（genWindow<=0 且无 dropRoots 即空操作）。
 // 回收失败不阻断执行：调用方以 try/catch 兜底，fail-open。
 
-import { flattenPatches } from './rebase.ts'
+import { cloneDefs } from './defs.ts'
+import { flattenPatches, remapGens } from './rebase.ts'
+import { isHash, isRecord, walkJson } from './value.ts'
 import type { Def, Gen, Hash, Json, World } from './types.ts'
 
 /** 世界回收规格：世代窗口 + 可达根集合。 */
@@ -37,33 +39,36 @@ export interface RecycleResult {
   stats: RecycleStats
 }
 
-const HASH_PATTERN = /^[0-9a-f]{64}$/
-
 /** `{"def":hash}` 形态的引用标记：body 里以此指向其它 def，是可达闭包的边。 */
-function markerHash(value: Json): Hash | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+function markerHash(value: Json | undefined): Hash | null {
+  if (!isRecord(value)) return null
   const keys = Object.keys(value)
   if (keys.length !== 1 || keys[0] !== 'def') return null
-  const hash = (value as { def?: Json }).def
-  return typeof hash === 'string' && HASH_PATTERN.test(hash) ? hash : null
+  const hash = value['def']
+  return isHash(hash) ? hash : null
 }
 
-/** 递归收集 JSON 值里所有引用标记（哈希）。 */
+/** 递归收集 JSON 值里所有引用标记（哈希）；命中标记即不再下探。 */
 function collectMarkers(value: Json, out: Hash[]): void {
-  const hash = markerHash(value)
-  if (hash !== null) {
-    out.push(hash)
-    return
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectMarkers(item, out)
-    return
-  }
-  if (typeof value === 'object' && value !== null) {
-    for (const key of Object.keys(value)) {
-      collectMarkers((value as { [k: string]: Json })[key], out)
-    }
-  }
+  walkJson(
+    value,
+    (node, _depth, next) => {
+      const hash = markerHash(node)
+      if (hash !== null) {
+        out.push(hash)
+        return node as Json
+      }
+      if (Array.isArray(node)) {
+        for (const item of node) next(item)
+        return node
+      }
+      if (typeof node === 'object' && node !== null) {
+        for (const key of Object.keys(node)) next((node as { [k: string]: Json })[key])
+      }
+      return node as Json
+    },
+    0,
+  )
 }
 
 /** 单个 def 的出边：`sig` + `pins` 值 + body 内的引用标记。 */
@@ -151,6 +156,7 @@ function addIndex(
  * 计算每身份的保留世代：窗口 + active + 调用方显式保留集 + pins 固定点 + graft 来源 + 补丁 base。
  * `keepGens` 是调用方的机械保留集（如投影数据世代），内核只做并集、不解释其含义；
  * 并入发生在固定点回填之前，故其 pins / graft / base 依赖同样被拉入。
+ * 固定点用工作表推进：新增项才入表，每代只处理一次（不每轮全量重扫）。
  */
 function retainedGens(
   world: World,
@@ -170,29 +176,28 @@ function retainedGens(
     keep.set(id, set)
   }
   for (const item of keepGens) addIndex(world, keep, item.id, item.seq)
-  if (genWindow <= 0) return keep
   const owners = payloadOwners(world)
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const id of Object.keys(world.ids)) {
-      const gens = world.ids[id].gens
-      for (const index of [...(keep.get(id) as Set<number>)]) {
-        const gen = gens[index]
-        if (gen === undefined) continue
-        for (const pin of Object.values(gen.pins)) {
-          for (const owner of owners.get(pin) ?? []) {
-            if (addIndex(world, keep, owner.id, owner.index)) changed = true
-          }
-        }
-        if (gen.graft !== undefined && addIndex(world, keep, gen.graft.from, gen.graft.gen)) {
-          changed = true
-        }
-        // 补丁世代的 base 世代必须一并保留，否则组装悬挂（base 是 seq，随重建重映射）
-        if (gen.base !== undefined && addIndex(world, keep, id, gen.base)) {
-          changed = true
+  const work: { id: string; index: number }[] = []
+  for (const id of Object.keys(world.ids)) {
+    for (const index of keep.get(id) as Set<number>) work.push({ id, index })
+  }
+  while (work.length > 0) {
+    const item = work.pop() as { id: string; index: number }
+    const gen = world.ids[item.id]?.gens[item.index]
+    if (gen === undefined) continue
+    for (const pin of Object.values(gen.pins)) {
+      for (const owner of owners.get(pin) ?? []) {
+        if (addIndex(world, keep, owner.id, owner.index)) {
+          work.push({ id: owner.id, index: owner.index })
         }
       }
+    }
+    if (gen.graft !== undefined && addIndex(world, keep, gen.graft.from, gen.graft.gen)) {
+      work.push({ id: gen.graft.from, index: gen.graft.gen })
+    }
+    // 补丁世代的 base 世代必须一并保留，否则组装悬挂（base 是 seq，随重建重映射）
+    if (gen.base !== undefined && addIndex(world, keep, item.id, gen.base)) {
+      work.push({ id: item.id, index: gen.base })
     }
   }
   return keep
@@ -224,30 +229,6 @@ function rebuildIds(world: World, keep: Map<string, Set<number>>): RebuiltIds {
   return { ids, dropped, oldToNew }
 }
 
-/** graft 来源世代下标随世代重建重映射。 */
-function remapGrafts(ids: World['ids'], oldToNew: Map<string, Map<number, number>>): void {
-  for (const id of Object.keys(ids)) {
-    for (const gen of ids[id].gens) {
-      if (gen.graft === undefined) continue
-      const mapped = oldToNew.get(gen.graft.from)?.get(gen.graft.gen)
-      if (mapped !== undefined && mapped !== gen.graft.gen) {
-        gen.graft = { from: gen.graft.from, gen: mapped }
-      }
-    }
-  }
-}
-
-/** 补丁世代的 base 随世代重建重映射：base 世代必被 retainedGens 保留，映射必存在。 */
-function remapBases(ids: World['ids'], oldToNew: Map<string, Map<number, number>>): void {
-  for (const id of Object.keys(ids)) {
-    for (const gen of ids[id].gens) {
-      if (gen.base === undefined) continue
-      const mapped = oldToNew.get(id)?.get(gen.base)
-      if (mapped !== undefined) gen.base = mapped
-    }
-  }
-}
-
 /** 计算待回收的 def：保留闭包外、且符合当前口径的 def。 */
 function removedDefs(world: World, retained: World, spec: RecycleSpec): Set<Hash> {
   const keepRoots = spec.keepRoots ?? []
@@ -268,10 +249,11 @@ function removedDefs(world: World, retained: World, spec: RecycleSpec): Set<Hash
   return removed
 }
 
+/** 保留闭包外的 def 从表里移除：克隆可写层（惰性表保持惰性），再按键移除。 */
 function pruneDefs(world: World, removed: ReadonlySet<Hash>): World['defs'] {
   if (removed.size === 0) return world.defs
-  const defs: World['defs'] = {}
-  for (const key of Object.keys(world.defs)) if (!removed.has(key)) defs[key] = world.defs[key]
+  const defs = cloneDefs(world.defs)
+  for (const hash of removed) Reflect.deleteProperty(defs, hash)
   return defs
 }
 
@@ -289,8 +271,7 @@ export function recycleWorld(world: World, spec: RecycleSpec): RecycleResult {
       : { world, flattened: 0 }
   const keep = retainedGens(source.world, spec.genWindow, spec.keepGens ?? [])
   const rebuilt = rebuildIds(source.world, keep)
-  remapGrafts(rebuilt.ids, rebuilt.oldToNew)
-  remapBases(rebuilt.ids, rebuilt.oldToNew)
+  remapGens(rebuilt.ids, rebuilt.oldToNew)
   const retained: World = { defs: source.world.defs, ids: rebuilt.ids }
   const removed = removedDefs(source.world, retained, spec)
   if (removed.size === 0 && rebuilt.dropped === 0 && source.flattened === 0) {

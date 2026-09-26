@@ -218,7 +218,7 @@ function worldWithDecl(pins: { [name: string]: string }): World {
     start: '',
     protocol: '1',
     restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
-    health: { probe: '', interval_ms: 0, timeout_ms: 0 },
+    health: { interval_ms: 0, timeout_ms: 0 },
     state: 'recomputable',
     members: [],
     commands: [],
@@ -431,12 +431,13 @@ describe('投影引用集合 refs（只回引用、不回 body）', () => {
     expect(view.ids['sess'].refs).toEqual([])
   })
 
-  it('refCap 是硬上限：直接标记超出即截断（防异常数据撑爆投影）', () => {
-    const world = worldWithDataBody(
-      { a: { def: msg1 }, b: { def: msg2 }, c: { def: msg3 } },
-      { [msg1]: { body: {} }, [msg2]: { body: {} }, [msg3]: { body: {} } },
-    )
-    const view = projectBaseOnly(world, EMPTY_HEAD, { refCap: 2 }) as unknown as Projection
-    expect(view.ids['sess'].refs).toHaveLength(2)
+  it('引用集合有硬上限：直接标记超出即截断（防异常数据撑爆投影）', () => {
+    const body: { [k: string]: Json } = {}
+    for (let i = 0; i < 1001; i++) {
+      body[`m${i}`] = { def: i.toString(16).padStart(64, '0') }
+    }
+    const world = worldWithDataBody(body, {})
+    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
+    expect(view.ids['sess'].refs).toHaveLength(1000)
   })
 })

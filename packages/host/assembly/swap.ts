@@ -2,10 +2,10 @@
 // 缺省（无独占资源声明）：先起新服务 → 端点切新 → drain 旧服务；新旧短暂并存、零空窗，是多数插件的最优序。
 // 声明独占资源（如固定端口）：新实例无法与旧实例并存，必须先把旧服务 drain 退场再起新服务；
 // 代价是该身份在旧进程退出到新进程握手完成之间不可用（短暂空窗），用可用性换资源正确性。
-// 独占序把不占资源的准备阶段（物化 / 构建）提前到 drain 之前：空窗只剩 spawn + 握手，不再是整块启动。
+// 独占序把不占资源的准备阶段（物化 / 构建）提前到 drain 之前：空窗只剩起服务 + 握手，不再是整块启动。
 // 插件只声明「我独占某类资源」这一事实，换人序由宿主据此决定，故以后换调度策略不必改插件。
 
-import { stopChild, waitForExit } from './supervision.ts'
+import { teardownService, waitForServiceExit } from './supervision.ts'
 import type { ServiceRuntime } from './supervision.ts'
 import type { PreparedService } from './service-launcher.ts'
 import type { PluginDecl } from './decl.ts'
@@ -21,9 +21,9 @@ export interface SwapHost {
   /** 从服务表移除（仅当当前实例匹配，避免误删更新的实例）。 */
   removeService: (id: string, service: ServiceRuntime) => void
   launch: (id: string, gen: Hash, decl: PluginDecl) => Promise<ServiceRuntime>
-  /** 准备阶段（物化 + 资产直拷 + 依赖恢复 / 构建）：不 spawn、不占独占资源，可先于 drain 调用。 */
+  /** 准备阶段（物化 + 资产直拷 + 依赖恢复 / 构建）：不起服务、不占独占资源，可先于 drain 调用。 */
   prepare: (id: string, gen: Hash, decl: PluginDecl) => Promise<PreparedService>
-  /** spawn 阶段：在准备产物上起进程并握手；旧实例须已退场，否则独占资源冲突。 */
+  /** 起服务阶段：在准备产物上起服务并握手；旧实例须已退场，否则独占资源冲突。 */
   launchPrepared: (
     id: string,
     gen: Hash,
@@ -89,14 +89,14 @@ async function swapOverlap(
     return
   }
   if (host.isStopping() || host.isIsolated(id)) {
-    stopChild(next.proc, next.link)
-    await waitForExit(next.proc, 2_000)
+    teardownService(next)
+    await waitForServiceExit(next, 2_000)
     return
   }
   if (host.serviceOf(id) !== oldService) {
     // 防御：旧服务已被别的路径替换；新服务不得顶掉更新的实例
-    stopChild(next.proc, next.link)
-    await waitForExit(next.proc, 2_000)
+    teardownService(next)
+    await waitForServiceExit(next, 2_000)
     return
   }
   oldService.draining = true // 先停健康探针与退出重启
@@ -106,11 +106,11 @@ async function swapOverlap(
 
 /**
  * 独占序（声明独占资源）：准备阶段不占独占资源，先在旧实例仍服务时完成（物化 + 构建），
- * 再把旧服务 drain 退场（drain → 摘该世代端点 → 记 `service.exit` → 停进程），最后才 spawn 新服务。
+ * 再把旧服务 drain 退场（drain → 摘该世代端点 → 记 `service.exit` → 停进程），最后才起新服务。
  * 该身份在旧进程退出到新进程握手完成之间无端点（调用得 `not_loaded`），是声明独占的必然代价；
- * 准备提前后，这段空窗只剩 spawn + 握手，构建耗时不再计入停机时间。
+ * 准备提前后，这段空窗只剩起服务 + 握手，构建耗时不再计入停机时间。
  * 准备阶段失败时旧实例尚未退场：走与重叠序相同的 fail-safe（记运维日志 + 端点换新世代键，旧进程继续服务）。
- * 旧服务已 drain、spawn 阶段仍起不来时**不复活旧进程**（那会让运行服务停在旧代码世代，违反「不拿更旧世代顶上」）：
+ * 旧服务已 drain、起服务阶段仍起不来时**不复活旧进程**（那会让运行服务停在旧代码世代，违反「不拿更旧世代顶上」）：
  * 该身份转入「无服务但保留世代」，按 `restart` 策略重试新世代，重试超限才隔离分支。
  */
 async function swapExclusive(
@@ -148,14 +148,14 @@ async function swapExclusive(
     return
   }
   if (host.isStopping() || host.isIsolated(id)) {
-    stopChild(next.proc, next.link)
-    await waitForExit(next.proc, 2_000)
+    teardownService(next)
+    await waitForServiceExit(next, 2_000)
     return
   }
   if (host.serviceOf(id) !== undefined) {
     // 防御：等待期间该身份已被别的路径装上服务；新服务不得顶掉更新的实例
-    stopChild(next.proc, next.link)
-    await waitForExit(next.proc, 2_000)
+    teardownService(next)
+    await waitForServiceExit(next, 2_000)
     return
   }
   host.adoptService(next)

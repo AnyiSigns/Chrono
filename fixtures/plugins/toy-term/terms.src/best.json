@@ -1,0 +1,25 @@
+{
+  "k": "get",
+  "of": {
+    "k": "fold",
+    "coll": { "k": "ctx", "path": ["cands"] },
+    "init": { "k": "lit", "v": null },
+    "step": {
+      "k": "if",
+      "cond": { "k": "pred", "op": "eq", "a": { "k": "arg", "i": 0 }, "b": { "k": "lit", "v": null } },
+      "then": { "k": "arg", "i": 1 },
+      "else": {
+        "k": "if",
+        "cond": {
+          "k": "pred",
+          "op": "gt",
+          "a": { "k": "get", "of": { "k": "arg", "i": 1 }, "path": ["score"] },
+          "b": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["score"] }
+        },
+        "then": { "k": "arg", "i": 1 },
+        "else": { "k": "arg", "i": 0 }
+      }
+    }
+  },
+  "path": ["id"]
+}

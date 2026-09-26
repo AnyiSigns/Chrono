@@ -2,14 +2,8 @@
 // 只认「单一保留键 + 字符串」的形状；替换成 callee def 哈希，不解释 Call 语义、不推断依赖。
 
 import type { Hash, Json } from '../../kernel/index.ts'
-
-/** 规范化 `$ref` 相对路径；空路径或含 `..` 段返回 null。 */
-export function normalizeRefPath(ref: string): string | null {
-  const segments = ref.split('/').filter((segment) => segment.length > 0 && segment !== '.')
-  if (segments.length === 0) return null
-  if (segments.some((segment) => segment === '..')) return null
-  return segments.join('/')
-}
+import { MinHeap } from '../common/min-heap.ts'
+import { normalizeRefPath } from '../common/paths-safe.ts'
 
 /** 深度遍历，收集所有 `$ref` 占位符的目标路径（原样，未规范化）。 */
 export function collectRefs(value: Json, out: string[]): void {
@@ -83,19 +77,16 @@ export function termTopoOrder(
       else list.add(path)
     }
   }
-  const ready = paths.filter((path) => remaining.get(path) === 0).sort()
+  // 就绪前沿按路径字典序取最小：与「排序数组 + 有序插入」等价，但 push / pop 均摊 O(log n)。
+  const ready = new MinHeap<string>((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  for (const path of paths) if (remaining.get(path) === 0) ready.push(path)
   const order: string[] = []
-  while (ready.length > 0) {
-    const current = ready.shift() as string
+  for (let current = ready.pop(); current !== undefined; current = ready.pop()) {
     order.push(current)
     for (const caller of callers.get(current) ?? []) {
       const left = (remaining.get(caller) as number) - 1
       remaining.set(caller, left)
-      if (left === 0) {
-        const index = ready.findIndex((path) => path > caller)
-        if (index < 0) ready.push(caller)
-        else ready.splice(index, 0, caller)
-      }
+      if (left === 0) ready.push(caller)
     }
   }
   return order.length === paths.length ? order : null

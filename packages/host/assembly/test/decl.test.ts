@@ -13,7 +13,7 @@ function baseDecl(overrides: Record<string, Json> = {}): Json {
     start: '',
     protocol: '1',
     restart: { policy: 'on-exit' },
-    health: { probe: 'p' },
+    health: {},
     state: 'recomputable',
     members: [{ kind: 'term', path: 'terms/' }],
     commands: [{ name: 'toy.hello', entry: 'terms/hello.json' }],
@@ -141,13 +141,24 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     if (result.ok) expect(result.decl.exclusive).toEqual([])
   })
 
-  it('exclusive 非数组 / 项非字符串 / 空串 / 未知资源类 → ok:false', () => {
+  it('exclusive 资源类名开放：任意非空字符串通过（含 gpu / lock）', () => {
+    const gpu = parsePluginDecl(baseDecl({ exclusive: ['gpu'] }))
+    expect(gpu.ok).toBe(true)
+    if (gpu.ok) expect(gpu.decl.exclusive).toEqual(['gpu'])
+    const mixed = parsePluginDecl(baseDecl({ exclusive: ['port', 'gpu'] }))
+    expect(mixed.ok).toBe(true)
+    if (mixed.ok) expect(mixed.decl.exclusive).toEqual(['port', 'gpu'])
+    expect(parsePluginDecl(baseDecl({ exclusive: ['lock', 'singleton'] })).ok).toBe(true)
+  })
+
+  it('exclusive 非数组 / 项非字符串 / 空串 / 原型键 / 超长 → ok:false', () => {
     expect(parsePluginDecl(baseDecl({ exclusive: 'port' })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ exclusive: null })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ exclusive: [1] })).ok).toBe(false)
     expect(parsePluginDecl(baseDecl({ exclusive: [''] })).ok).toBe(false)
-    expect(parsePluginDecl(baseDecl({ exclusive: ['gpu'] })).ok).toBe(false)
-    expect(parsePluginDecl(baseDecl({ exclusive: ['port', 'gpu'] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: ['__proto__'] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: ['constructor'] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ exclusive: ['x'.repeat(65)] })).ok).toBe(false)
   })
 
   it('state 两档：recomputable / durable 通过，其余拒', () => {
@@ -173,10 +184,27 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ exclusive: ['data'] })).ok).toBe(false)
   })
 
-  it("exclusive 含 data 与未知资源类 → ok:false（未知类仍 fail-closed）", () => {
+  it('exclusive 含 data 与其它资源类 + durable → ok:true（data 交叉校验只认 data 项）', () => {
+    const result = parsePluginDecl(baseDecl({ exclusive: ['data', 'gpu'], state: 'durable' }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.exclusive).toEqual(['data', 'gpu'])
+  })
+
+  it('保留命令名（commands / unseeded / help）→ reserved_command_name', () => {
+    for (const name of ['commands', 'unseeded', 'help']) {
+      const result = parsePluginDecl(baseDecl({ commands: [{ name, entry: 'terms/hello.json' }] }))
+      expect(result.ok, `命令名 ${name} 应被拒`).toBe(false)
+      if (!result.ok) expect(result.reasons).toEqual(['reserved_command_name'])
+    }
+  })
+
+  it('非保留命令名仍通过；空命令名仍归 bad_plugin_decl', () => {
     expect(
-      parsePluginDecl(baseDecl({ exclusive: ['data', 'gpu'], state: 'durable' })).ok,
-    ).toBe(false)
+      parsePluginDecl(baseDecl({ commands: [{ name: 'toy.ok', entry: 'terms/hello.json' }] })).ok,
+    ).toBe(true)
+    const empty = parsePluginDecl(baseDecl({ commands: [{ name: '', entry: 'terms/hello.json' }] }))
+    expect(empty.ok).toBe(false)
+    if (!empty.ok) expect(empty.reasons).toEqual(['bad_plugin_decl'])
   })
 
   it('member kind 非法（如 binary）→ ok:false', () => {
@@ -244,5 +272,51 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(null as unknown as Json).ok).toBe(false)
     expect(parsePluginDecl('string' as unknown as Json).ok).toBe(false)
     expect(parsePluginDecl([] as unknown as Json).ok).toBe(false)
+  })
+})
+
+describe('parsePluginDecl transport 声明', () => {
+  it('省略 → 回落 stdio（存量行为不变）', () => {
+    const result = parsePluginDecl(baseDecl({ start: 'node execute/main.js' }))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.decl.transport).toBe('stdio')
+  })
+
+  it('显式 stdio / inproc / worker：同语言入口通过', () => {
+    for (const transport of ['stdio', 'inproc', 'worker']) {
+      const start = transport === 'stdio' ? 'node execute/main.js' : 'execute/main.js'
+      const result = parsePluginDecl(baseDecl({ start, transport }))
+      expect(result.ok, `transport=${transport} 应通过`).toBe(true)
+      if (result.ok) expect(result.decl.transport).toBe(transport)
+    }
+  })
+
+  it('inproc / worker 声明非 JS 入口 → ok:false（异语言无法载入同进程 / worker）', () => {
+    for (const transport of ['inproc', 'worker']) {
+      for (const start of ['python execute/main.py', 'execute/main.py', 'cargo run', '']) {
+        expect(
+          parsePluginDecl(baseDecl({ start, transport })).ok,
+          `transport=${transport} start=${JSON.stringify(start)} 应被拒`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it('inproc / worker 声明逃逸路径 / 含空白入口 → ok:false', () => {
+    for (const transport of ['inproc', 'worker']) {
+      for (const start of ['../escape.mjs', '/abs/main.mjs', 'execute/my main.mjs']) {
+        expect(
+          parsePluginDecl(baseDecl({ start, transport })).ok,
+          `transport=${transport} start=${JSON.stringify(start)} 应被拒`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it('未知 transport 值 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ start: 'execute/main.mjs', transport: 'thread' })).ok).toBe(
+      false,
+    )
+    expect(parsePluginDecl(baseDecl({ start: 'execute/main.mjs', transport: 1 })).ok).toBe(false)
   })
 })

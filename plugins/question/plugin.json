@@ -20,7 +20,6 @@
     "drain_ms": 5000
   },
   "health": {
-    "probe": "question.describe",
     "interval_ms": 10000,
     "timeout_ms": 2000
   },

@@ -6,12 +6,13 @@ import {
   listCommands,
   resolveCommand,
   termDefOf,
+  planIngest,
 } from '../index.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
 import { hostPaths } from '../../paths.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
-import { writeTempPackage } from '../../test/test-helpers-ext.ts'
+import { writeChronoConfig, writeTempPackage } from '../../test/test-helpers-ext.ts'
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 
@@ -27,7 +28,7 @@ describe('装配 assembly', () => {
         start: '',
         protocol: '1',
         restart: { policy: 'on-exit' },
-        health: { probe: 'p' },
+        health: {},
         state: 'recomputable',
         members: [{ kind: 'term', path: 'terms/' }],
         commands: [{ name: 'toy.hello', entry: 'terms/hello.json' }],
@@ -235,6 +236,46 @@ describe('装配 assembly', () => {
         }
       })
     }
+  })
+
+  describe('seed 级：受保护 pins（运营配置）', () => {
+    it('受保护身份被删 pin → 拒 protected_pin_removed；未受保护身份被删 → 放行', async () => {
+      const root = createTempRoot()
+      try {
+        writeChronoConfig(root, ['sandbox'])
+        const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
+        const otherRoot = writeTempPackage(root, { identity: 'other-dep' })
+        const guardedRoot = writeTempPackage(root, {
+          identity: 'tool-guarded',
+          pins: { sandbox: 'sandbox' },
+        })
+        const freeRoot = writeTempPackage(root, {
+          identity: 'tool-free',
+          pins: { other: 'other-dep' },
+        })
+        const report = runSeed(root, [
+          { name: 'sandbox', path: sandboxRoot },
+          { name: 'other-dep', path: otherRoot },
+          { name: 'tool-guarded', path: guardedRoot },
+          { name: 'tool-free', path: freeRoot },
+        ])
+        expect(report.ok).toBe(true)
+        const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+
+        // 受保护：删掉 sandbox 引用 → 拒
+        writeTempPackage(root, { identity: 'tool-guarded', pins: {} })
+        const guarded = planIngest(world, root, { name: 'tool-guarded', path: guardedRoot })
+        expect(guarded.ok).toBe(false)
+        if (!guarded.ok) expect(guarded.reasons).toEqual(['protected_pin_removed'])
+
+        // 未受保护：删掉对同一身份的别名 pin → 放行
+        writeTempPackage(root, { identity: 'tool-free', pins: {} })
+        const free = planIngest(world, root, { name: 'tool-free', path: freeRoot })
+        expect(free.ok).toBe(true)
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
   })
 
   describe('seed 级：命令入口路径规范化', () => {

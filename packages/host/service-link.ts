@@ -1,15 +1,34 @@
-// 服务协议宿主侧：服务 = 宿主 spawn 的子进程，协议帧走其 stdin/stdout（日志走 stderr）。
-// 本文件只做帧编解码、请求 / 响应按 id 配对与上行 event 转交；
-// 形态校验、健康判定、重启与隔离在 assembly 运行时。
+// 服务协议宿主侧：服务经 ServiceChannel 收发协议帧（stdio / inproc / worker 三种形态同协议）。
+// 本文件只做请求 / 响应按 id 配对与上行 event 转交；通道实现（帧编解码 / 直调 / worker 消息）
+// 在 assembly/service-host.ts，形态校验、健康判定、重启与隔离在 assembly 运行时。
 
 import { randomUUID } from 'node:crypto'
-import type { ChildProcess } from 'node:child_process'
-import { createFrameDecoder, encodeFrame } from './wire.ts'
 import type { CallEnv } from './wire.ts'
+import { isRecord, isStringArray } from './common/json.ts'
 import type { Json } from '../kernel/index.ts'
 
 /** 服务协议版本；与 `plugin.json.protocol` 同源口径，与入站协议版本独立。 */
 export const SERVICE_PROTOCOL_VERSION = '1'
+
+/** 服务传输形态：由 `plugin.json.transport` 声明；未声明 = `stdio`。 */
+export type ServiceTransport = 'stdio' | 'inproc' | 'worker'
+
+/**
+ * 一条服务通道：只负责把 Json 协议帧送达对端 / 从对端接收，不解释协议语义。
+ * stdio 形态编解码 4 字节长度前缀帧；inproc / worker 直传对象（结构化克隆）。
+ */
+export interface ServiceChannel {
+  /** 发一帧；通道已关闭时抛错（调用方按「没执行」收口）。 */
+  write(frame: Json): void
+  /** 注册消息回调（单消费者：ServiceLink）。 */
+  onMessage(cb: (message: Json) => void): void
+  /** 注册对端关闭 / 帧损坏回调（宿主主动 `close()` 不触发）。 */
+  onClose(cb: (reason: string) => void): void
+  /** 主动关闭通道（stdio 关 stdin 触发服务自退出；inproc / worker 关闭其执行体）。 */
+  close(): void
+  /** 物理进程 pid；inproc / worker 无独立进程，为 `undefined`。 */
+  readonly pid?: number
+}
 
 /**
  * 单次调用等待上限的硬上限（毫秒）：`setTimeout` 超过 2^31-1 会溢出成立即触发（1ms），
@@ -68,14 +87,6 @@ export interface ServiceLinkOptions {
   onClosed?: (reason: string) => void
 }
 
-function isRecord(value: Json | undefined): value is { [k: string]: Json } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isStringArray(value: Json | undefined): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
-
 function isStringArrayMap(value: Json | undefined): value is Record<string, string[]> {
   if (!isRecord(value)) return false
   return Object.values(value).every(isStringArray)
@@ -100,12 +111,11 @@ function parseManifest(value: Json): ServiceManifest | null {
   }
 }
 
-/** 一条服务连接：宿主 → 服务写 stdin，服务 → 宿主读 stdout。 */
+/** 一条服务连接：宿主经 `ServiceChannel` 收发帧，本类只做协议配对。 */
 export class ServiceLink {
   readonly impl: string
   readonly gen: string
-  private readonly child: ChildProcess
-  private readonly decoder = createFrameDecoder()
+  private readonly channel: ServiceChannel
   private readonly pending = new Map<string, Pending>()
   private readonly onEvent?: (topic: string, payload: Json) => void
   private readonly onPortCall?: (
@@ -125,19 +135,15 @@ export class ServiceLink {
   private inflightCalls = 0
   private closed = false
 
-  constructor(child: ChildProcess, options: ServiceLinkOptions) {
-    this.child = child
+  constructor(channel: ServiceChannel, options: ServiceLinkOptions) {
+    this.channel = channel
     this.impl = options.impl
     this.gen = options.gen
     this.onEvent = options.onEvent
     this.onPortCall = options.onPortCall
     this.onClosed = options.onClosed
-    child.stdout?.on('data', (chunk: Buffer) => this.onData(chunk))
-    child.stdout?.on('error', () => this.markClosed('channel_error'))
-    child.stdout?.on('end', () => this.markClosed('channel_closed'))
-    child.stdin?.on('error', () => {
-      // 写失败由 request 的写回调归类；此处防止未处理的 stream error 打崩宿主
-    })
+    channel.onMessage((message) => this.onMessage(message))
+    channel.onClose((reason) => this.markClosed(reason))
   }
 
   /** 发 hello 收 manifest；manifest 形态不合抛 `bad_manifest`。 */
@@ -226,17 +232,13 @@ export class ServiceLink {
     }
   }
 
-  /** 宿主主动关闭通道（end stdin，触发服务「断连自退出」义务）。 */
+  /** 宿主主动关闭通道（stdio end stdin，触发服务「断连自退出」义务；inproc / worker 关执行体）。 */
   close(): void {
     if (!this.closed) {
       this.closed = true
       this.failPending()
     }
-    try {
-      this.child.stdin?.end()
-    } catch {
-      // 通道可能已断；关闭是幂等的
-    }
+    this.channel.close()
   }
 
   private request(
@@ -247,8 +249,7 @@ export class ServiceLink {
     signal?: AbortSignal,
     env?: CallEnv,
   ): Promise<Json> {
-    const stdin = this.child.stdin
-    if (this.closed || stdin === null || stdin === undefined || stdin.destroyed) {
+    if (this.closed) {
       return Promise.reject(new ServiceChannelError('closed'))
     }
     const id = randomUUID()
@@ -289,29 +290,14 @@ export class ServiceLink {
       this.pending.set(id, { expect, resolve, reject, cleanup })
       // 按帧 id 登记反向回带 env：登记先于写帧，服务在同一 chunk 内先发 port.call 也能命中
       if (env !== undefined) this.inflightEnvs.set(id, env)
-      stdin.write(
-        encodeFrame({ v: SERVICE_PROTOCOL_VERSION, id, kind, ...fields } as Json),
-        (err) => {
-          if (err) {
-            this.pending.delete(id)
-            cleanup()
-            reject(new ServiceChannelError('closed'))
-          }
-        },
-      )
+      try {
+        this.channel.write({ v: SERVICE_PROTOCOL_VERSION, id, kind, ...fields } as Json)
+      } catch {
+        this.pending.delete(id)
+        cleanup()
+        reject(new ServiceChannelError('closed'))
+      }
     })
-  }
-
-  private onData(chunk: Buffer): void {
-    if (this.closed) return
-    let messages: Json[]
-    try {
-      messages = this.decoder.push(chunk)
-    } catch {
-      this.markClosed('protocol_error')
-      return
-    }
-    for (const message of messages) this.onMessage(message)
   }
 
   private onMessage(message: Json): void {
@@ -387,11 +373,12 @@ export class ServiceLink {
   }
 
   private writePortResponse(id: string, response: CallResponse): void {
-    const stdin = this.child.stdin
-    if (this.closed || stdin === null || stdin === undefined || stdin.destroyed) return
+    if (this.closed) return
     const frame: { [k: string]: Json } = response.ok
       ? { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.result', ok: true, value: response.value }
       : {
+          // 反向 PortLink 属服务协议族（按 `ok` 判别），错误码字段沿用 `error`；
+          // 入站与服务正向错误帧一律用 `code`。
           v: SERVICE_PROTOCOL_VERSION,
           id,
           kind: 'port.error',
@@ -399,7 +386,11 @@ export class ServiceLink {
           error: response.code,
           message: response.message,
         }
-    stdin.write(encodeFrame(frame as Json))
+    try {
+      this.channel.write(frame as Json)
+    } catch {
+      // 通道已断：晚到的反向应答无处可回，忽略
+    }
   }
 
   private markClosed(reason: string): void {
