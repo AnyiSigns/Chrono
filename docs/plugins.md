@@ -2,7 +2,6 @@
 
 > 口径来源：`docs/kernel.md`（内核设计）+ `docs/host.md`（载体设计）。
 > 本文只规定**插件长什么样、怎么写、怎么接**；**不规定有哪些插件**。
-> 旧版「插件清单与分离规则」已作废（旧装配层口径），可从 git 历史取回。
 
 ---
 
@@ -46,7 +45,7 @@
 - **`.worldignore`（可选）**：包内文本文件，每行一个相对路径（**按路径段前缀匹配**，故 `test/` 不误伤 `test.js`；`#` 注释、空行忽略），命中即不入 ①；不能命中契约必需文件（`plugin.json` / `package.json` / 锁 / `README.md` / `schema` / `commands` / `members` 路径本身），否则整批拒绝 `bad_worldignore`（畸形 `.worldignore`，如含 `..` 段 / 读取失败，同样拒绝）。插件用它排除构建产物 / 测试 / 语言运行时缓存（`dist/`、`.venv/`、`__pycache__/` 等）——宿主不认识语言，故不内置这些名字。
 - **整服务 Rust 插件的 `src/`**：整服务 Rust 插件把 `src/`（或 `execute/`）登记为 `execute` 成员（如 `{kind:'execute', path:'src/'}`）——机制合法且换代识别需要；包内只放源码 + `Cargo.toml`，构建在 `plugin.json.build` 里显式声明（如 `[{cmd:'cargo', args:['build','--release']}]`），`target/` 等编译产物走 `.worldignore` 排除、并按声明经 ③ 依赖缓存物化。
 - **包内路径约束**：`schema` / `commands[].entry` / `commands[].argsSchema` / `members[].path` 必须是安全的**包内相对路径**（禁 `..` 段、绝对路径、盘符、反斜杠），否则入世拒 `bad_plugin_decl`。
-- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。**注意（口径修正）**：宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`templates/plugin/` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
+- **测试不入 ①、也不依赖 ①**：`npm test`（或等价命令）在包目录（`plugins/<name>/` 或 `node_modules/`）里跑，不读世界副本；世界只保留**运行时所需**（契约文件 + `execute/` / `terms/` / `schema/`）。宿主打包只自动排除 `node_modules` / `.git`——**`test/` 不在自动排除之列**，插件须在 `.worldignore` 里显式声明 `test/`（`templates/plugin/` / `toy-*` 夹具同此），否则测试文件会随源码树入世。
 - **term 内 callee 引用必须无环**：`terms/` 里的 `$ref` 在入世时解析成 def 哈希；成环 → **整包入世被拒**（`term_cycle`），其他包照常。term 调用图本就是 defs DAG 的子图（`kernel.md` §十三），环 = 写错。
 - **term 读世界只经 `ctx` 投影**（形状见 `host.md` §五 投影）：内核 `["g", path]` 是**静态字面路径**，故按**身份字面 id** 取（`ctx.ids.<id>.active` / `.body`）；哈希键（`defs.<hash>`）不可达——宿主不把 `defs` 表给 term。
 - 插件包**不得依赖 `kernel` 或其他插件包**；插件间依赖只走 `pins`（npm 依赖只管自带库，见 §三）。
@@ -54,7 +53,7 @@
 - **计划值口径**：服务**没有任何写通道**——运行时写计划只能由「拿到了 `ctx` 的服务」构造，作为顶层 `eval` 的值经 term 交回宿主，再由宿主按 directive 落账（`host.md` §五 落账）；服务不写链、不落账。
 - **服务不读投影（通则）**：有 `execute` 的插件，其 `+`（投影读）一律由**调用方的入口 term 读 `ctx` 后随 `args` / `bag` 传入**（服务只收 bag、回结果 / 计划）；服务不读投影、不按名调命令。命令入口 term 可读投影。
 - **保留身份 `host`**：`pins` 的值可写 `host`，入世解析到**宿主自身保留能力类**（见 `host.md` §五 路由 / 宿主扩展面）；不要求世界里有该身份。**限制**：host pin 仅在入世（`seed` / `pack` 的 `batch`）成立，裸运行期顶层 `add_gen` / `put` / `graft` 不接受（提前 `bad_directive`）；host 能力是 **v1 受信面、无方法级鉴权**。身份名不得为 `host`（会被遮蔽）。
-- 密钥不进世界：世界数据里的引用形状为 `auth_ref = {kind:'local'|'env', name}`（`#2` / `#24` 冻结）；原则（只存引用不存本体；`plugin.json` 的 ④ 状态档仍后置）见 `host.md` §五 其它。
+- 密钥不进世界：世界数据里的引用形状为 `auth_ref = {kind:'local'|'env', name}`（形状冻结）；原则（只存引用不存本体）见 `host.md` §五 其它。
 
 `plugin.json` 字段（冻结）：
 
@@ -67,8 +66,8 @@
 | `concurrent_methods` | **可省略**：声明为并发安全的方法名数组（SDK 消费）。这些方法的 `call` 脱出服务串行链、彼此可并发；缺省 = 全部串行。只对「纯查询、无插件内可变状态、不发世界写计划」的方法声明，误声明会破坏有先后依赖的状态 |
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`）。`transport` 为 `inproc` / `worker` 时，`start` 是**同语言入口模块路径**（相对物化目录，如 `execute/main.mjs`），不是 shell 命令 |
-| `transport` | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。**可省略**（缺省 = `stdio`，存量行为不变）。`stdio` 下宿主 spawn 子进程并接管其 stdin/stdout；`inproc` 下宿主把 `start` 指向的同语言入口**动态载入宿主进程同一线程**直调；`worker` 下宿主用 `worker_threads` 载入该入口（独立堆、结构化克隆通信）——三者都**不开端口**，`inproc` / `worker` 也**不走 stdio**。`inproc` / `worker` 之间**无缺省**，须显式声明其一，且只对同语言（TS/JS）入口成立：`start` 含空白 / 逃逸路径 / 非 JS 扩展名即入世拒 `bad_plugin_decl`。**代价**：`inproc` 与宿主同线程，插件崩溃会**带走宿主**（`worker` 有独立堆，崩溃只收该分支），故 `inproc` 默认不推荐。同进程插件一律载入宿主进程（或其起的 worker），**不存在「插件宿主子插件」**（那会要求父插件 import 子插件代码，违反红线 1 / 4） |
-| `build` | **构建声明**（宿主只执行、不解释语言，与 `start` 同性质）：`[{ cmd, args }]`，每步一条命令；物化后、`start` 前按序执行。**可省略**：字段缺失 = 回落宿主存量探测（`package.json` 依赖 / 锁 → npm、`Cargo.toml` → `cargo build --release`），供尚未迁移的插件兼容；**声明了（含空数组）就只跑声明的**——空数组 = 显式「无需构建」。`cmd` 与每个 `args` 令牌必须过 shell 安全白名单（`[A-Za-z0-9_./:@,+-]`）：命令经 `shell:true` 解析，令牌含空白 / 引号 / shell 元字符即入世拒 `bad_plugin_decl`。环境变量（`npm_config_cache` / `CARGO_TARGET_DIR` 等）由宿主注入，不写进声明；产物落点分共享型与随世代型两种合法形态（见 §三 红线 5） |
+| `transport` | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。**可省略**（缺省 = `stdio`）。`stdio` 下宿主 spawn 子进程并接管其 stdin/stdout；`inproc` 下宿主把 `start` 指向的同语言入口**动态载入宿主进程同一线程**直调；`worker` 下宿主用 `worker_threads` 载入该入口（独立堆、结构化克隆通信）——三者都**不开端口**，`inproc` / `worker` 也**不走 stdio**。`inproc` / `worker` 之间**无缺省**，须显式声明其一，且只对同语言（TS/JS）入口成立：`start` 含空白 / 逃逸路径 / 非 JS 扩展名即入世拒 `bad_plugin_decl`。**代价**：`inproc` 与宿主同线程，插件崩溃会**带走宿主**（`worker` 有独立堆，崩溃只收该分支），故 `inproc` 默认不推荐。同进程插件一律载入宿主进程（或其起的 worker），**不存在「插件宿主子插件」**（那会要求父插件 import 子插件代码，违反红线 1 / 4） |
+| `build` | **构建声明**（宿主只执行、不解释语言，与 `start` 同性质）：`[{ cmd, args }]`，每步一条命令；物化后、`start` 前按序执行。**可省略**：字段缺失 = 回落宿主探测（`package.json` 依赖 / 锁 → npm、`Cargo.toml` → `cargo build --release`）；**声明了（含空数组）就只跑声明的**——空数组 = 显式「无需构建」。`cmd` 与每个 `args` 令牌必须过 shell 安全白名单（`[A-Za-z0-9_./:@,+-]`）：命令经 `shell:true` 解析，令牌含空白 / 引号 / shell 元字符即入世拒 `bad_plugin_decl`。环境变量（`npm_config_cache` / `CARGO_TARGET_DIR` 等）由宿主注入，不写进声明；产物落点分共享型与随世代型两种合法形态（见 §三 红线 5） |
 | `exclusive` | **独占资源声明**（描述占用事实，不指定宿主调度机制）：`["<资源类>"]`，认 `port`（绑定固定端口 / 地址的服务）与 `data`（新旧实例不能并存打开同一份持久存储；须同时声明 `state: "durable"`，否则入世拒 `bad_plugin_decl`）。**可省略**（缺省 = 无独占资源）。非空 = 本插件的服务实例**独占该资源、新旧实例不能并存**；宿主据此在**代码换代**时改为「先准备 → drain 旧服务 → 再起新服务 → 切端点」（接受该身份短暂空窗），缺省则保持零空窗的「先起新 → 切端点 → drain 旧」。**声明 `durable` 不自动等于独占**：是否并存取决于引擎——支持多进程并发的（如 SQLite 的 WAL + 文件锁）**不**声明 `data`、走零空窗缺省序；独占单写句柄的才声明。判据是引擎事实，不是"有没有持久数据"。**以新世代声明为准**（声明描述新实例的占用事实）。元素非字符串 / 空串 / 未知资源类即入世拒 `bad_plugin_decl`（宿主无法判定未知资源类的换人序是否安全，故 fail-closed）。与 `build` 同性质：插件声明事实，宿主决定调度——以后换调度策略不必改插件（见 `host.md` §五 装配） |
 | `protocol` | 服务协议版本 |
 | `restart` | 重启策略：`policy` = `on-exit`（缺省 / 未知按此）/ `never`（不重启，退出即隔离该分支）；`backoff` = `none` / `fixed` / `exponential`（缺省 `exponential`）、`backoff_ms` / `backoff_max_ms` 退避参数；`max` 重启上限；**稳定 `window_ms`**：本次运行 ≥ `window_ms` 才复位重启计数，否则算 flapping；`drain_ms` 排空期限。v1 默认 `backoff=exponential`、`backoff_ms=500`、`backoff_max_ms=30000`、`max=5`、`window_ms=60000`、`drain_ms=5000` |
@@ -109,7 +108,7 @@
 2. **只提交定义内容与效果请求**：进世界的写计划只许载**定义与判定**数据（`put` / `batch` 载荷）+ `EffRequest`；另有 `event` 通知（宿主只透传，不落账、不推进），**不得**用它写链或索取其他插件的端点。**运行记录不构造写计划**——它写自有持久存储（红线 7），把它塞进 `put` / `add_gen` 是设计错误而非风格问题（理由见 `host.md` §五「入世判定」）。
 3. **不与其他插件直连**：效果一律经宿主（保 `EffectAudit`）。
 4. **依赖只走 `pins`，可跨插件相互依赖（但闭包必须无环）**：A 的 `pins` 写 B 的身份（名 → 身份名，入世时解析成哈希，绑定的是**身份**不是版本）；A 的代码 / term 只写**能力类名 + 方法名**，宿主按 `pins` 路由。**不 import、不共享进程内对象、不直连**；`pins` 只记**身份级**（跨身份）依赖。term 内对同包 callee 的引用是**本身份内**的函数值：源里写占位符、入世替换成 def 哈希，不入 `pins`。漏写身份级 `pins` 会静默失效。**自能力路由不是 `pins` 项**：有 `execute` 的插件把入口 term 的 `eff` 路由进**自己的服务**（能力类 = 自身 `implements` 声明）**无需写自引用 pin**，它不构成身份级依赖、不进装配闭包、不参与受保护 `pins` 校验（见 `host.md` §五 路由）。
-5. **自带启动命令 / 自带构建声明 / 实现语言自由**：宿主只跑 `plugin.json.start` 与 `plugin.json.build`，不认识语言；插件可用任意语言（默认 TS；非默认语言由插件自述（`README.md`）声明）。包内只放**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；构建由 `build` 显式声明（可省略回落存量探测），宿主在**物化目录内**按序执行（`host.md` §五 宿主扩展面）。构建产物按**能否跨世代共享**分两种合法形态，二者都必须由 `.worldignore` 排除、不得入世：
+5. **自带启动命令 / 自带构建声明 / 实现语言自由**：宿主只跑 `plugin.json.start` 与 `plugin.json.build`，不认识语言；插件可用任意语言（默认 TS；非默认语言由插件自述（`README.md`）声明）。包内只放**源码 + 依赖清单**（`package.json` / `Cargo.toml`）；构建由 `build` 显式声明（可省略，缺省回落探测），宿主在**物化目录内**按序执行（`host.md` §五 宿主扩展面）。构建产物按**能否跨世代共享**分两种合法形态，二者都必须由 `.worldignore` 排除、不得入世：
    - **共享型产物**（Rust 二进制、原生扩展 `*.node` 等）：落宿主侧 ③ 共享缓存（如 `state/deps/cargo-target/`），多世代复用；服务按声明路径去找（缓存目录由宿主经环境变量注入，不写进声明）。
    - **随世代产物**（前端 bundle 等）：落**物化目录内**（如 `dist/` / `execute/web/dist/`），因为要被 `import.meta.url` 相对定位；不跨世代共享，每世代各一份，随该世代目录一起回收。
    `node_modules` 等依赖目录由宿主按通用排除处理（宿主侧 ③、不入世）；构建产物则必须由插件 `.worldignore` 显式排除——宿主不认识语言，故不内置 `dist/` 等名字。产物若随源码入世，字节差异会污染内容哈希并触发无意义的连续换代。
@@ -143,7 +142,6 @@
 | 代码（`exclusive` 声明独占资源） | 先准备 → drain 旧服务 → 再起新服务 → 端点切换（该身份短暂空窗） | 换 |
 
 - **换代不动持久数据**：`state/data/<id>/` 按身份而非世代命名，代码换代、回滚 `set_active` 都不碰它——回滚插件版本不回滚用户数据。数据迁移（新世代要改自己的表结构）归插件在启动时自做，宿主不代劳。
-
 - 一次 run **锚定世代**，换代只在 **run 边界**生效。
 - **不做**原地热补丁（破坏"旧世代源码还在、回滚 = 一个记账动作"，`kernel.md` §八）。
 - **依赖联动（跟随 active，不锁版本）**：`pin` 绑定被依赖**身份**；B 换代 → 宿主把 A 的解析目标
@@ -180,7 +178,7 @@
   `execute/`（执行件）、`terms/`（判定数据）、`schema/`（声明 schema）、`.worldignore`（可选：入世排除表）。
 - `plugin.json` 的 15 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
   `exclusive` / `transport` / `protocol` / `restart` / `health` / `state` / `members` / `commands`。
-  **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；`build` 可省略（回落宿主存量探测）；
+  **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；`build` 可省略（回落宿主探测）；
   `exclusive` 可省略（无独占资源，走零空窗换代）；`transport` 可省略（缺省 `stdio`）。其余 11 个字段一个不少。
 - **有运行数据的插件另交两样**：`state: "durable"` 声明，以及 `README.md` 里写清存储引擎、目录布局与迁移策略（人读自述义务，见红线 10）。
 

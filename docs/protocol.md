@@ -75,17 +75,17 @@
 - **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins` 解析
   （与 §2.2 的 host→service `call` 同一路由口径，见 `host.md` §五「路由」）。
 - **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now, emitter}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`，`emitter` = 发起该反向调用的服务身份）。
-  发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如 `#29` 把密钥下传 `#25` `exec`）：宿主原样透传给目标、
+  发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如把密钥经 `env` 下传给需要它的服务）：宿主原样透传给目标、
   **端口审计里对值脱敏**（`{redacted:true, keys:[…]}`，见 `host.md` §五「反向调用 `env` 值脱敏」）。
 - 解析不到 → `port.error{error:'unresolved_cap'}`；目标未就绪 → `not_loaded`；目标返回 `error` 时原样回
   `port.error`（**失败作数据**，调用方可据此分支 / 降级，不炸本轮）。
 - **错误码字段口径**：入站 `error` 帧（§三）与服务 → 宿主 `error` 帧（§2.2）一律用 `code`；
-  反向 `port.error` 属服务协议族（按 `ok` 判别），错误码字段名为 `error`——两族命名暂未统一，切换另立。
+  反向 `port.error` 属服务协议族（按 `ok` 判别），错误码字段名为 `error`；§2.2 的正向 `error` 帧该字段名为 `code`。
 - **审计分流（写死）**：世界里的 `eff` 记 `EffectAudit` 并入链；**反向调用只记宿主侧端口审计，不入世界、不参与重放**
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。#27 的 `subagent.resume` / `subagent.terminate`、#42 的 `read` / `validate` / `list`（经 `identities`）、#28/#30/#31 的二进制字节、#43/#44 的审计读面走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在 #42 等上层，宿主不强制）。
+- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -144,7 +144,7 @@
   `put.bytes` 是**规范 base64**（往返一致才收），宿主解码后算 sha256 落盘（同字节幂等）；原始字节上限 8 MiB
   （base64 ≈10.67 MiB < 16 MiB 帧上限），更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；
   超限 → `asset_too_large`；`get` 字节缺失 → `asset_missing`。回收走离线 `boot assets gc`（见 `host.md` §五 资产）。
-- `secrets.put` / `secrets.delete` 是**密钥本地存储面**（见 `host.md` §五 宿主扩展面）：宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**。`name` 非空、≤256、不得为 `__proto__`/`constructor`/`prototype`；`value` ≤64 KiB；空 / 含 NUL / 越界 → `bad_directive`。`put` 的 `value` 只进本地文件；本地文件损坏时 put/delete **fail-closed**（不静默覆写丢密钥）。`list` 不是入站动词（由 `#24 secrets.list` 经 eff 回 `{name,has}`）。
+- `secrets.put` / `secrets.delete` 是**密钥本地存储面**（见 `host.md` §五 宿主扩展面）：宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**。`name` 非空、≤256、不得为 `__proto__`/`constructor`/`prototype`；`value` ≤64 KiB；空 / 含 NUL / 越界 → `bad_directive`。`put` 的 `value` 只进本地文件；本地文件损坏时 put/delete **fail-closed**（不静默覆写丢密钥）。`list` 不是入站动词（由密钥插件以 `secrets.list` 经 `eff` 回 `{name,has}`）。
 - **效果审计脱敏**（非入站动词）：宿主写 `EffectAudit` 时，对 `port=secrets` + `method=resolve` 把 `result` 替换为 `{name,kind,has}`（见 `host.md` §五 宿主扩展面）。
 - `audit` 是**只读审计面**：按 `run`（回合）/ `emitter`（发出者身份）/ `outcome` 过滤 `EffectAudit`，
   机械 AND、**seq 降序取最新 `limit` 条**（缺省 100、上限 1000）；`records` 形状
@@ -196,8 +196,8 @@
 | `bad_term_ref` | 入世时 `$ref` 指向包内不存在的成员 | `host.md` §五 源码 |
 | `identity_mismatch` | `pack --identity` 与包内 `plugin.json.identity` 不一致 | `host.md` §五 入世路径 |
 | `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval` / 存储类身份）的引用（入世整批拒） | `host.md` §五 源码 |
-| `hidden_identity` | #42 `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/README.md` |
-| `validate_required` | #42 / #45 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/README.md` |
+| `hidden_identity` | `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/README.md` |
+| `validate_required` | `plugin-admin` 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/README.md` |
 | `restart_exhausted` | 崩溃重启超过 `restart` 上限 | `host.md` §五 装配 |
 | `bad_start_wrapper` | 启动包装器非法值（空 / 含 NUL / 换行） | `host.md` §五 服务启动包装器 |
 | `bad_call_timeout` | 调用超时选项非法值 | `host.md` §五 效果 |
