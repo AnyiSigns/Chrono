@@ -100,6 +100,18 @@ export function trackRunStarted(
   }
 }
 
+/**
+ * 流式增量（`model.delta` / `tool.start`）认领：把该线程标记为「生成中」。
+ * 审批 / 提问的续跑在 `ui-approval.decide` / `question.answer` 顶层 run 内跑，
+ * 不产本插件认识的 `chat.send` run.started；没有这条，输入卡在续跑期间不显示进行态。
+ * 已追踪同一 run 时原引用返回（避免每帧 publish）。
+ */
+export function trackActivity(state: RunState, run: unknown, threadKey: string): RunState {
+  if (typeof run !== 'string' || run.length === 0) return state
+  if (state.runs[threadKey] === run) return state
+  return { ...state, runs: { ...state.runs, [threadKey]: run } }
+}
+
 export interface FinishedFold {
   state: RunState
   kind: 'write' | 'turn' | 'other'

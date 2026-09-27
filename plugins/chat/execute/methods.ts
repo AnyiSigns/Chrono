@@ -30,6 +30,31 @@ export interface ChatDeps {
   port: PortCaller
   wiring: Wiring
   host?: PortCaller
+  /** 回合开始事件出口（`chat.turn.started`）；单测缺省不发。 */
+  emit?: (topic: string, payload: Json) => void
+}
+
+/**
+ * 回合开始事件主题：对话回合是**嵌套 eval**（续跑在 `ui-approval.decide` / `question.answer`
+ * 顶层 run 内跑）时没有独立宿主 run 生命周期，客户端拿不到「回合已开始」，只能等首个
+ * `model.delta`——输入卡 / 工作态在首 token 前空窗。本服务在派发解释前自报一次。
+ * 载荷：`{run, thread, conversation, source}`；`run` = 顶层 run id（与宿主 `run.finished` 配对、可取消）。
+ */
+export const TURN_STARTED_TOPIC = 'chat.turn.started'
+
+function emitTurnStarted(
+  deps: ChatDeps,
+  env: CallEnv,
+  thread: string,
+  conversationId: string | null,
+  source: 'send' | 'resume',
+): void {
+  deps.emit?.(TURN_STARTED_TOPIC, {
+    run: env.run,
+    thread,
+    conversation: conversationId,
+    source,
+  })
 }
 
 /** 投影里 refs 会被本服务消费的身份（其余身份只读 body，无需解析引用）。 */
@@ -270,6 +295,7 @@ async function send(
     sessionBody,
   })
   if (newConversation !== null) bag['new_conversation'] = newConversation
+  emitTurnStarted(deps, env, turn.thread, turn.conversationId, 'send')
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) return interpreted.failure
 
@@ -333,6 +359,7 @@ async function resume(
   if (payload !== null) resumeBag['payload'] = payload
   bag['resume'] = resumeBag
 
+  emitTurnStarted(deps, env, thread, conversationId, 'resume')
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) return interpreted.failure
   const merged = mergeDirectives([interpreted.value])

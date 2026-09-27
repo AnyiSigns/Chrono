@@ -64,7 +64,8 @@
 - `read({conversation?})` → 会话切片 `{version,current,conversations,head,refs,data_gen:null,pending_turns}`：
   `refs` = 本会话消息 `id → body`（服务自建，非世界投影闭包）；`head` = 链头消息 id；`data_gen` 恒 `null`（无世界数据世代）。
 - `history({conversation?,before?,limit?})` → `{conversation,messages,next_before:null,body,refs}`；
-  `messages` 为**新 → 旧**窗口（`before` 命中的那条不含）。
+  `messages` 为**新 → 旧**窗口（`before` 命中的那条不含）。`conversation` 缺省取 `current`；
+  无 `current`（或 `current` 指向软删会话）时回 `null` 与空窗口（**不回落列表首条**），显式 id 仍原样取用。
 
 ### `commit`
 

@@ -21,14 +21,16 @@ export function currentConversationId(history: any): string | null {
   return body !== null && typeof body.current === 'string' ? body.current : null
 }
 
-/** 按 id 取会话；未指定时回落 current，再回落首条。 */
+/**
+ * 按 id 取会话；未指定时回落 `current`。**不再回落列表首条**：
+ * 无当前会话（current 缺失 / 已删）时回 null，让视图走空态，而不是把首条（可能已删）会话当当前渲染。
+ */
 export function pickConversation(history: any, id: unknown): any {
   const list = conversationList(history)
   const target = typeof id === 'string' && id.length > 0 ? id : currentConversationId(history)
   return (
     list.find((item) => item.id === target) ??
     list.find((item) => item.id === currentConversationId(history)) ??
-    list[0] ??
     null
   )
 }
@@ -70,14 +72,18 @@ export function loadConversation(history: any, id: unknown): { conversation: any
 }
 
 /**
- * 事件线程过滤（写死）：只处理属于当前视图线程的事件。
- * 无 `active_thread` 时视图线程视为主线程——接受 `null` 与 `_main`。
+ * 事件线程过滤：只处理属于当前视图线程的事件。
+ * - 无 `active_thread` 时视图线程视为主线程——接受 `null` 与 `_main`；
+ * - 视图为主会话（`isMainView`）时额外接受 `_main`：审批 / 提问的**续跑**在
+ *   `ui-approval.decide` / `question.answer` 顶层 run 内跑，事件不带会话 id（thread=`_main`），
+ *   而视图线程是会话 id；不认这一档，续跑的流式增量与终局都会被丢弃（像后台跑完一次性抛出）。
  */
-export function matchesThread(payloadThread: unknown, viewThread: unknown): boolean {
+export function matchesThread(payloadThread: unknown, viewThread: unknown, isMainView = false): boolean {
   const view = typeof viewThread === 'string' && viewThread.length > 0 ? viewThread : null
   const payload = typeof payloadThread === 'string' && payloadThread.length > 0 ? payloadThread : null
   if (view === null) return payload === null || payload === '_main'
-  return payload === view
+  if (payload === view) return true
+  return isMainView && payload === '_main'
 }
 
 /**
@@ -104,16 +110,6 @@ export function finishesCurrentStream(stream: any, run: unknown): boolean {
 /** 周期 run 不是对话回合：其 `run.finished` 不处理。 */
 export function isPeriodicRun(origin: unknown): boolean {
   return origin === 'periodic'
-}
-
-/** 对话回合命令：只有这些命令产生真正的流式对话回合，管理命令 / 槽写 run 不建流。 */
-const CHAT_TURN_COMMANDS = ['chat.send', 'chat.resume']
-
-/** 该 run 是否为对话回合：按宿主 run 生命周期载荷里的命令名判定。 */
-export function isChatTurnRun(payload: unknown): boolean {
-  if (!isRec(payload)) return false
-  const name = payload.name
-  return typeof name === 'string' && CHAT_TURN_COMMANDS.includes(name)
 }
 
 /** 子代理头文字：有父会话时 `{agent} · 由 {parent} 触发`，否则只给 agent 名。 */

@@ -22,7 +22,13 @@ const PORT_CALL_TIMEOUT_MS = 600000
 
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({ write: ctx.emit, idPrefix: 'chat', timeoutMs: PORT_CALL_TIMEOUT_MS })
-  const handlers = createHandlers({ port: link, host: link, wiring: loadWiring() })
+  // 回合开始事件出口（`chat.turn.started`）：续跑是嵌套 eval，无宿主 run 生命周期，须由本服务自报。
+  let seq = 0
+  const emit = (topic: string, payload: unknown): void => {
+    seq += 1
+    ctx.emit({ v: '1', id: `chat-evt-${seq}`, kind: 'event', topic, payload })
+  }
+  const handlers = createHandlers({ port: link, host: link, wiring: loadWiring(), emit })
   const sdkHandlers: Record<string, Handler> = {}
   for (const [method, handler] of Object.entries(handlers)) {
     sdkHandlers[method] = async (args, env) => ({ value: await handler(args, env), events: [] })

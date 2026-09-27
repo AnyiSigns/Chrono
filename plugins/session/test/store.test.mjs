@@ -94,3 +94,28 @@ test('torn trailing line is skipped (fail-open)', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('selection: no current (or current soft-deleted) resolves to empty, not the first conversation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const env = envFor(root)
+    const store = SessionStore.open(env)
+    store.upsertConversation('r1', { id: 'c1', title: 'a' })
+    store.appendMessage('r1', 'c1', { id: 'm1', role: 'user', content: 'hi', prev: null, at: 'now' })
+    store.upsertConversation('r1', { id: 'c2', title: 'b' })
+    // No current: history(null) must not fall back to the first conversation.
+    assert.equal(store.history(null, null, null).conversation, null)
+    assert.deepEqual(store.history(null, null, null).messages, [])
+    assert.equal(store.slice(null).head, null)
+    // Explicit id still resolves (even a soft-deleted one).
+    assert.equal(store.history('c1', null, null).conversation, 'c1')
+    // current pointing at a soft-deleted conversation resolves to empty.
+    store.setCurrent('r1', 'c1')
+    store.softDelete('r1', 'c1', '2026-01-01')
+    assert.equal(store.history(null, null, null).conversation, null)
+    assert.equal(store.slice(null).head, null)
+    assert.equal(store.history('c1', null, null).conversation, 'c1')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -26,6 +26,12 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 | `chat.history` | 反向调用 `session.history({conversation,before,limit})`，返回服务读自有存储还原的窗口（`messages` 新→旧 + `body` + `refs`）；**不读投影 `refs`、不逐跳 hydrator 还原**。**不触发下游写、不写链**——声明为**只读命令**（`readonly: true`），宿主不广播其 `run.started` / `run.finished`、不落审计、不推进链头。 |
 | `chat.resume`（args `{cursor, thread, payload?, ids?}`） | 跨 run 续跑：装配与 send 相同的 interpret bag（`input` / `session` 同样问 owner），另加 `bag.resume={cursor,thread,payload}` 交 loop-policy 恢复执行，合并计划返回。**`ids` = 调用方随 plan eval 传入的投影切片**（内核 term 不能同时传 args 与投影）。 |
 
+- **上行事件 `chat.turn.started`**：`send` / `resume` 在派发 `loop-policy.interpret` **前**自报一次，
+  载荷 `{run, thread, conversation, source}`——`run` = 顶层 run id（与宿主 `run.finished` 配对、可取消），
+  `source ∈ send/resume`。用途：续跑是嵌在 `ui-approval.decide` / `question.answer` 顶层 run 内的 eval，
+  没有独立宿主 run 生命周期；客户端据此在首个 `model.delta` 前建在途回合 / 显示生成态。
+  收口仍以宿主 `run.finished`（同 run id）为准，不另发结束事件。空槽 / 未配置模型等提前返回的路径不发。
+
 管道（`chat.send` 的 `chat.message` 分支）：
 
 ```

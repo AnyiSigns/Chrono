@@ -29,7 +29,6 @@ import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
   hasUserMessage,
-  isChatTurnRun,
   isPeriodicRun,
   matchesThread,
   messageId,
@@ -1604,6 +1603,9 @@ function App({
     flushDeltas()
     const st = stateRef.current
     const payload = record.payload !== null && typeof record.payload === 'object' ? record.payload : {}
+    // 当前视图是否主会话：主会话视图下 `_main`（审批 / 提问续跑不带会话 id）也归本视图。
+    const isMainView = store.getSnapshot().kind === 'main'
+    const match = (thread: unknown): boolean => matchesThread(thread, st.viewThread, isMainView)
     if (record.topic === 'shell.state') {
       const wasConnected = st.connected
       st.connected = payload.connected === true
@@ -1623,33 +1625,34 @@ function App({
       return
     }
     if (record.topic === 'model.delta') {
-      if (matchesThread(payload.thread, st.viewThread)) {
+      if (match(payload.thread)) {
         pendingDeltas.current.push(payload)
         scheduleFlush()
       }
       return
     }
     if (record.topic === 'tool.start') {
-      if (matchesThread(payload.thread, st.viewThread)) {
+      if (match(payload.thread)) {
         store.commit(applyToolStart(store.getSnapshot(), payload), { type: 'lifecycle' })
       }
       return
     }
     if (record.topic === 'tool.delta') {
-      if (matchesThread(payload.thread, st.viewThread)) {
+      if (match(payload.thread)) {
         store.commit(applyToolDelta(store.getSnapshot(), payload), { type: 'lifecycle' })
       }
       return
     }
     if (record.topic === 'tool.end') {
-      if (matchesThread(payload.thread, st.viewThread)) {
+      if (match(payload.thread)) {
         store.commit(applyToolEnd(store.getSnapshot(), payload), { type: 'lifecycle' })
       }
       return
     }
-    if (record.topic === 'run.started') {
-      if (!isChatTurnRun(payload)) return
-      if (matchesThread(payload.thread, st.viewThread)) {
+    // 回合开始由 chat 服务自报（`chat.turn.started`）：续跑是嵌套 eval，没有宿主 run 生命周期，
+    // 只看 `run.started.name` 会漏掉续跑、工作态在首个 delta 前空窗。
+    if (record.topic === 'chat.turn.started') {
+      if (match(payload.thread)) {
         store.commit(applyRunStarted(store.getSnapshot(), payload), { type: 'lifecycle' })
         void apiRef.current.loadPendingUser()
       }
@@ -1657,7 +1660,7 @@ function App({
     }
     if (record.topic === 'run.finished') {
       if (isPeriodicRun(payload.origin)) return
-      if (!matchesThread(payload.thread, st.viewThread)) return
+      if (!match(payload.thread)) return
       const folded = foldRunFinished(store.getSnapshot(), payload)
       if (folded.action === 'ignore') return
       if (folded.action === 'cancel') {
@@ -1669,20 +1672,20 @@ function App({
       return
     }
     if (record.topic === 'group.message') {
-      if (!matchesThread(dataChangeTarget(payload), st.viewThread)) return
+      if (!match(dataChangeTarget(payload))) return
       const id = typeof payload.id === 'string' ? payload.id : typeof payload.message === 'string' ? payload.message : ''
       if (id.length > 0) st.group.unreadIds.add(id)
       void apiRef.current.loadHistory(st.viewThread, { resetView: false })
       return
     }
     if (record.topic === 'workflow.step') {
-      if (!matchesThread(dataChangeTarget(payload), st.viewThread)) return
+      if (!match(dataChangeTarget(payload))) return
       st.workflowStep = payload
       rerender()
       return
     }
     if (record.topic === 'thread.updated' || record.topic === 'thread.opened' || record.topic === 'thread.closed') {
-      if (!matchesThread(dataChangeTarget(payload), st.viewThread)) return
+      if (!match(dataChangeTarget(payload))) return
       void apiRef.current.loadHistory(st.viewThread, { resetView: false })
     }
   }

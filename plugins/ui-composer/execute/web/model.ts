@@ -92,9 +92,21 @@ export function threadKeyOf(activeThread: unknown): string {
   return typeof activeThread === 'string' && activeThread.length > 0 ? activeThread : MAIN_THREAD
 }
 
-/** 事件线程与当前视图线程是否同一线程（缺省一律归 `_main`）。 */
+/**
+ * 事件线程与当前视图线程是否同一线程（缺省一律归 `_main`）。
+ * `_main` 是**未带会话 id 的主线程回合**（审批 / 提问续跑在 `approval.decide` /
+ * `question.answer` 顶层 run 内跑，事件不带会话 id）；它归当前活动线程，故视为同一线程。
+ */
 export function matchesThread(payloadThread: unknown, activeThread: unknown): boolean {
-  return threadKeyOf(payloadThread) === threadKeyOf(activeThread)
+  const active = threadKeyOf(activeThread)
+  const payload = threadKeyOf(payloadThread)
+  if (payload === active) return true
+  return payload === MAIN_THREAD && active !== MAIN_THREAD
+}
+
+/** 周期维护 run（`origin = 'periodic'`）：不构成回合信号。 */
+export function isPeriodicRun(origin: unknown): boolean {
+  return origin === 'periodic'
 }
 
 /** run 级事件的线程键。 */

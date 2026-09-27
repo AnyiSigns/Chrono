@@ -64,10 +64,16 @@ test('active_thread 单桥：仅 current 变（或未选定）时重置', () => 
     knownCurrent: 'c3',
     reset: true,
   })
-  // current 缺失 → 不动
+  // current 缺失（删到无当前会话）→ 清空 active_thread 回空态（reset 仅在确有值可清时为真）
   assert.deepEqual(resolveActiveThread({ current: null, knownCurrent: 'c1', activeThread: 'c2' }), {
-    activeThread: 'c2',
-    knownCurrent: 'c1',
+    activeThread: null,
+    knownCurrent: null,
+    reset: true,
+  })
+  // current / active 均缺失 → 无值可清，不写
+  assert.deepEqual(resolveActiveThread({ current: null, knownCurrent: null, activeThread: null }), {
+    activeThread: null,
+    knownCurrent: null,
     reset: false,
   })
   // 非法输入 → 全 null

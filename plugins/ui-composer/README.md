@@ -59,6 +59,13 @@
   收到该线程**本回合 run**（按 run id 关联）的 `run.finished` 后自动取队首写槽并续发
   （与当前查看线程无关）；宿主的其它 run（如 `origin:'periodic'` 的维护类 run）不构成回合信号。
   计数随 `active_thread` 切换，刷新即丢；每条可移除。
+- **续跑进行态**：审批 / 提问的续跑在 `ui-approval.decide` / `question.answer` 顶层 run 内跑，
+  不产本插件认识的 `chat.send` `run.started`；输入卡按 chat 服务自报的 `chat.turn.started`
+  直接认领该线程生成态（`run-model.ts#trackActivity`），缺该事件时以首个 `model.delta` /
+  `tool.start` 兜底；`run.finished` 收回——续跑期间输入卡即显示进行态且可终止。
+- **`_main` 归当前活动线程**：续跑事件不带会话 id（thread=`_main`），而 `active_thread` 是会话 id。
+  `model.ts#matchesThread` 把 `_main` 视为当前活动线程，事件键（`eventKeyOf`）一并归到会话 id，
+  使 run 追踪 / 忙态 / 用量与 `active_thread` 同键。
 - **上下文用量行**：数据源为宿主事件 `context.assembled`（按线程过滤取当前线程最近一次）。
   形如 `上下文 42k / 128k`（`tabular-nums`）；<75% 次级字、≥75% warning 前景字、
   ≥100% danger 前景字 + 「上下文已满」。该行常驻渲染：无事件时隐形占位（`visibility:hidden`，

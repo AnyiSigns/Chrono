@@ -27,8 +27,10 @@ import {
   enqueue,
   enqueueFront,
   isCodeGenFallbackBody,
+  isPeriodicRun,
   isRecord,
   LOADING_NOTE_MS,
+  MAIN_THREAD,
   matchesThread,
   mergeConfig,
   normalizePermission,
@@ -52,6 +54,7 @@ import {
   isExpecting,
   isThreadBusy,
   releaseWrite,
+  trackActivity,
   trackRunFinished,
   trackRunStarted,
 } from './run-model.ts'
@@ -749,6 +752,15 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
 
   // ---- 事件（壳事件总线；按线程过滤） ----
 
+  /**
+   * 事件线程键：`_main`（未带会话 id 的主线程回合）归当前活动线程，
+   * 使 run 追踪 / 忙态 / 用量以会话 id 为键，与 `active_thread` 一致。
+   */
+  function eventKeyOf(payload: unknown): string {
+    const key = runKeyOf(payload)
+    return key === MAIN_THREAD && state.activeThread !== null ? threadKeyOf(state.activeThread) : key
+  }
+
   function onRecord(record: { topic: string; payload: unknown }): void {
     const payload = isRecord(record.payload) ? record.payload : {}
     // 壳连接态：断连 / 重连经 `shell.state` 广播；恢复后若配置读取曾失败则自动重拉。
@@ -762,7 +774,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       return
     }
     if (record.topic === 'run.started') {
-      const key = runKeyOf(payload)
+      // 周期维护 run（thread=null）虽经 `eventKeyOf` 归到活动线程，也不得认领本回合。
+      if (isPeriodicRun(payload.origin)) return
+      const key = eventKeyOf(payload)
       const tracked = trackRunStarted(tracking, runIdOf(payload), key)
       tracking = tracked.state
       if (tracked.turnStarted) {
@@ -771,8 +785,30 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       }
       return
     }
+    if (record.topic === 'chat.turn.started') {
+      // 对话回合由 chat 服务自报开始：续跑是嵌套 eval，宿主 `run.started` 的名字是审批 / 提问命令。
+      // 直接认领该线程生成态，工作态不必等首个流式增量。
+      if (!matchesThread(payload.thread, state.activeThread)) return
+      const next = trackActivity(tracking, runIdOf(payload), eventKeyOf(payload))
+      if (next !== tracking) {
+        tracking = next
+        publish()
+      }
+      return
+    }
+    if (record.topic === 'model.delta' || record.topic === 'tool.start') {
+      // 续跑缺 `chat.turn.started` 时以首个流式增量兜底认领该线程生成态。
+      if (isPeriodicRun(payload.origin)) return
+      if (!matchesThread(payload.thread, state.activeThread)) return
+      const next = trackActivity(tracking, runIdOf(payload), eventKeyOf(payload))
+      if (next !== tracking) {
+        tracking = next
+        publish()
+      }
+      return
+    }
     if (record.topic === 'run.finished') {
-      const key = runKeyOf(payload)
+      const key = eventKeyOf(payload)
       const tracked = trackRunFinished(tracking, runIdOf(payload), key)
       tracking = tracked.state
       // 槽写 run 落账：此刻才触发 `chat.send`（此时它才读得到新槽）。
@@ -792,7 +828,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     }
     if (record.topic === 'context.assembled') {
       if (!matchesThread(payload.thread, state.activeThread)) return
-      state.usage = { ...state.usage, [runKeyOf(payload)]: payload }
+      state.usage = { ...state.usage, [eventKeyOf(payload)]: payload }
       publish()
     }
   }

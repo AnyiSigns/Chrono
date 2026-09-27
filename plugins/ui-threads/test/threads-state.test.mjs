@@ -1,6 +1,7 @@
-// `threads.state` 服务装配测试（node --test）：
-// 父会话闭包（线程树排序 / 隔离）、标签文案来源（缺省标题 → 兜底文案）、状态角标字段、待办标签；
-// 外加协议级驱动：hello → manifest、ping、threads.state、未知能力类、probe、drain → bye、EOF 自退出。
+﻿// `threads.state` 服务装配测试（node --test）：
+// 父会话闭包（线程树排序 / 隔离）、标签文案来源（缺省标题 → 兜底文案）、状态角标字段、待办视图；
+// 外加协议级驱动：hello → manifest、ping、threads.state（反向调用 session.read / todo.invoke）、
+// 未知能力类、probe、drain → bye、EOF 自退出。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -40,8 +41,15 @@ function conversation(id, extra = {}) {
   }
 }
 
-function sessionIds(conversations, current) {
-  return { session: { body: { version: 1, current, conversations } } }
+/** owner `session.read` 的切片形状（`threads.state` 的入参）。 */
+function sessionSlice(conversations, current) {
+  return { version: 1, current, conversations }
+}
+
+/** owner `todo.read` 的清单结果形状。 */
+function todoResult(items) {
+  const done = items.filter((item) => item.status === 'completed').length
+  return { items, total: items.length, done }
 }
 
 /** 一棵线程树：main c1 → sub c2 → sub c3；另一棵 main c4 → sub c5。 */
@@ -57,24 +65,24 @@ function twoTrees() {
 
 test('父会话闭包：current 决定根，标签 = 根 + parent 闭包（树序）', () => {
   const tree = twoTrees()
-  const atRoot = assembleThreadsState(sessionIds(tree, 'c1'))
+  const atRoot = assembleThreadsState(sessionSlice(tree, 'c1'))
   assert.equal(atRoot.ok, true)
   assert.equal(atRoot.current, 'c1')
   assert.equal(atRoot.root, 'c1')
   assert.deepEqual(atRoot.tags.map((tag) => tag.thread), ['c1', 'c2', 'c3'])
 
   // current 落在子线程：根仍是其 main 祖先，闭包不变
-  const atChild = assembleThreadsState(sessionIds(tree, 'c2'))
+  const atChild = assembleThreadsState(sessionSlice(tree, 'c2'))
   assert.equal(atChild.root, 'c1')
   assert.deepEqual(atChild.tags.map((tag) => tag.thread), ['c1', 'c2', 'c3'])
 
   // 切到另一棵父会话：换一组标签，不混入第一棵
-  const atOther = assembleThreadsState(sessionIds(tree, 'c4'))
+  const atOther = assembleThreadsState(sessionSlice(tree, 'c4'))
   assert.equal(atOther.root, 'c4')
   assert.deepEqual(atOther.tags.map((tag) => tag.thread), ['c4', 'c5'])
 
   // current 缺失：回落第一条 main
-  const noCurrent = assembleThreadsState(sessionIds(tree, null))
+  const noCurrent = assembleThreadsState(sessionSlice(tree, null))
   assert.equal(noCurrent.root, 'c1')
 })
 
@@ -84,7 +92,7 @@ test('软删会话不进顶栏，也不参与根解析', () => {
     conversation('c2', { kind: 'subagent', parent: { def: 'c1' }, deleted_at: '2026-01-01' }),
   ]
   assert.deepEqual(activeConversations(tree).map((item) => item.id), ['c1'])
-  const value = assembleThreadsState(sessionIds(tree, 'c1'))
+  const value = assembleThreadsState(sessionSlice(tree, 'c1'))
   assert.deepEqual(value.tags.map((tag) => tag.thread), ['c1'])
 })
 
@@ -95,7 +103,7 @@ test('标签文案来源：缺省标题 → default_title，子代理 / 群聊 /
     conversation('c3', { kind: 'group', parent: { def: 'c1' }, title: '新对话' }),
     conversation('c4', { kind: 'workflow', parent: { def: 'c1' }, title: '流水线' }),
   ]
-  const value = assembleThreadsState(sessionIds(tree, 'c1'))
+  const value = assembleThreadsState(sessionSlice(tree, 'c1'))
   const byId = new Map(value.tags.map((tag) => [tag.thread, tag]))
   assert.equal(byId.get('c1').default_title, true)
   assert.equal(byId.get('c2').default_title, false)
@@ -118,42 +126,43 @@ test('状态角标：同源 status / pending；waiting / blocked 无角标', () 
   assert.equal(badgeOf(conversation('x', { status: 'running', pending: { approval: 0, question: 1 } })), 'pending')
 
   const value = assembleThreadsState(
-    sessionIds([conversation('c1', { status: 'running', pending: { approval: 1, question: 0 } })], 'c1'),
+    sessionSlice([conversation('c1', { status: 'running', pending: { approval: 1, question: 0 } })], 'c1'),
   )
   assert.equal(value.tags[0].badge, 'pending')
   assert.deepEqual(value.tags[0].pending, { approval: 1, question: 0 })
   assert.equal(value.tags[0].status, 'running')
 })
 
-test('待办标签位：#47 投影有未完成项才出，全完成 / 清空即消失', () => {
-  const ids = sessionIds([conversation('c1', { title: '主会话' })], 'c1')
-  ids.todo = {
-    body: { conversations: { c1: { items: { tail: { def: 'h3' }, count: 3 } } } },
-    refs: {
-      h3: { id: 't3', text: '第三步', status: 'pending', prev: { def: 'h2' } },
-      h2: { id: 't2', text: '第二步', status: 'in_progress', prev: { def: 'h1' } },
-      h1: { id: 't1', text: '第一步', status: 'completed', prev: null },
-    },
-  }
-  const value = assembleThreadsState(ids)
+test('待办视图：owner 清单有未完成项才出，全完成 / 清空即消失', () => {
+  const session = sessionSlice([conversation('c1', { title: '主会话' })], 'c1')
+  const todo = todoResult([
+    { id: 't1', text: '第一步', status: 'completed' },
+    { id: 't2', text: '第二步', status: 'in_progress' },
+    { id: 't3', text: '第三步', status: 'pending' },
+  ])
+  const value = assembleThreadsState(session, todo)
   assert.equal(value.todo.conversation, 'c1')
   assert.equal(value.todo.total, 3)
   assert.equal(value.todo.done, 1)
   assert.equal(value.todo.pending, 2)
   assert.deepEqual(value.todo.items.map((item) => item.text), ['第一步', '第二步', '第三步'])
-  assert.equal(Object.hasOwn(value.todo.items[0], 'prev'), false, '清单条目不暴露链式 prev')
+  assert.equal(Object.hasOwn(value.todo.items[0], 'prev'), false, '清单条目不暴露内部字段')
 
   // 全部 completed → 标签消失
-  ids.todo.refs.h3.status = 'completed'
-  ids.todo.refs.h2.status = 'completed'
-  assert.equal(assembleThreadsState(ids).todo, null)
+  const allDone = todoResult([
+    { id: 't1', text: '第一步', status: 'completed' },
+    { id: 't2', text: '第二步', status: 'completed' },
+    { id: 't3', text: '第三步', status: 'completed' },
+  ])
+  assert.equal(assembleThreadsState(session, allDone).todo, null)
 
-  // 清空（tail null）→ 标签消失
-  ids.todo.body.conversations.c1.items = { tail: null, count: 0 }
-  assert.equal(assembleThreadsState(ids).todo, null)
+  // 清空（items 空）→ 标签消失
+  assert.equal(assembleThreadsState(session, todoResult([])).todo, null)
+  // 取不到 owner 清单（null）→ 标签消失
+  assert.equal(assembleThreadsState(session, null).todo, null)
 })
 
-test('无会话投影 / 非对象入参：不崩、回空标签', () => {
+test('无会话 / 非对象入参：不崩、回空标签', () => {
   const empty = assembleThreadsState({})
   assert.equal(empty.ok, true)
   assert.equal(empty.current, null)
@@ -181,7 +190,7 @@ test('线程树纯函数：orderSubtree / resolveRootMainId / dataChangeTarget',
 test('store 作用域：卸载 / 重挂保留标签 / 未读 / 当前线程', () => {
   // register 作用域只建一次 store，组件卸载 / 重挂都复用该实例。
   const store = createThreadsStore(initialView(FALLBACK_MESSAGES))
-  const loaded = applyLoaded(store.getSnapshot(), assembleThreadsState(sessionIds(twoTrees(), 'c1')))
+  const loaded = applyLoaded(store.getSnapshot(), assembleThreadsState(sessionSlice(twoTrees(), 'c1')))
   store.commit(loaded.view)
   store.commit(applyUnreadBump(store.getSnapshot(), 'c2'))
   const before = store.getSnapshot()
@@ -231,9 +240,15 @@ test('状态标题文本：各态取不同文案，loading 追加「仍在读取
   assert.equal(threadsStatusText(failed, 'failed', false), messageText(FALLBACK_MESSAGES, 'boom'))
 })
 
-test('协议级：hello → manifest，ping，threads.state，未知能力类，probe，drain → bye', async () => {
+test('协议级：hello → manifest，ping，threads.state（反向调用 owner），未知能力类，probe，drain → bye', async () => {
   const { env, cleanup } = tempRoot()
-  const service = startService(env)
+  const service = startService(env, {
+    portResponder: (port, method) => {
+      if (port === 'session' && method === 'read') return { ok: true, value: sessionSlice(twoTrees(), 'c1') }
+      if (port === 'todo' && method === 'invoke') return { ok: true, value: { ok: true, result: todoResult([]) } }
+      return { ok: false, code: 'not_loaded', message: '' }
+    },
+  })
   try {
     const manifest = await service.hello()
     assert.equal(manifest.identity, 'ui-threads')
@@ -251,8 +266,9 @@ test('协议级：hello → manifest，ping，threads.state，未知能力类，
     const absolute = await service.callRaw('client.read', { path: '/etc/passwd' })
     assert.equal(absolute.kind, 'error')
 
-    const value = await service.call('threads.state', sessionIds(twoTrees(), 'c1'))
+    const value = await service.call('threads.state', null)
     assert.equal(value.ok, true)
+    assert.equal(value.current, 'c1')
     assert.deepEqual(value.tags.map((tag) => tag.thread), ['c1', 'c2', 'c3'])
 
     const unknown = await service.callPort('nope', 'threads.state', {})

@@ -54,7 +54,12 @@ export function tempRoot() {
   }
 }
 
-export function startService(env) {
+/**
+ * `options.portResponder(port, method, args)` 应答服务的反向调用（`port.call` 帧），
+ * 返回 `{ok:true, value}` 或 `{ok:false, code, message}`；缺省一律回 `{ok:false, code:'not_loaded'}`。
+ */
+export function startService(env, options = {}) {
+  const portResponder = typeof options.portResponder === 'function' ? options.portResponder : () => ({ ok: false, code: 'not_loaded', message: '' })
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] })
   const decoder = createDecoder()
   const pending = new Map()
@@ -65,6 +70,14 @@ export function startService(env) {
     for (const message of decoder.push(chunk)) {
       if (message.kind === 'event') {
         events.push(message)
+        continue
+      }
+      if (message.kind === 'port.call') {
+        const outcome = portResponder(message.port, message.method, message.args) ?? { ok: false, code: 'not_loaded', message: '' }
+        const frame = outcome.ok
+          ? { v: '1', id: message.id, kind: 'port.result', value: outcome.value ?? null }
+          : { v: '1', id: message.id, kind: 'port.error', error: outcome.code ?? 'port_failed', message: outcome.message ?? '' }
+        child.stdin.write(encodeFrame(frame))
         continue
       }
       const handler = pending.get(message.id)

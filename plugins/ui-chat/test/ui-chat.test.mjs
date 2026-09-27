@@ -21,7 +21,6 @@ import {
   dataChangeTarget,
   finishesCurrentStream,
   hasUserMessage,
-  isChatTurnRun,
   isPeriodicRun,
   loadConversation,
   matchesThread,
@@ -458,6 +457,10 @@ test('事件按 thread 过滤（写死）', () => {
   assert.equal(matchesThread('_main', null), true)
   assert.equal(matchesThread('t1', null), false)
   assert.equal(matchesThread(undefined, 't1'), false)
+  // 主会话视图额外接受 `_main`（审批 / 提问续跑不带会话 id）；子会话视图不认。
+  assert.equal(matchesThread('_main', 'c1', true), true)
+  assert.equal(matchesThread('_main', 'c1', false), false)
+  assert.equal(matchesThread('c2', 'c1', true), false)
 })
 
 test('数据变更类事件优先 payload.conversation，缺失才回落 payload.thread', () => {
@@ -490,19 +493,6 @@ test('periodic run.finished 不处理：仅 origin=periodic 命中', () => {
   assert.equal(isPeriodicRun('forward'), false)
   assert.equal(isPeriodicRun('detached'), false)
   assert.equal(isPeriodicRun(undefined), false)
-})
-
-test('只有对话回合命令建流：chat.send / chat.resume 建，管理命令 / 槽写 / 周期不建', () => {
-  assert.equal(isChatTurnRun({ name: 'chat.send' }), true)
-  assert.equal(isChatTurnRun({ name: 'chat.resume' }), true)
-  assert.equal(isChatTurnRun({ name: 'workspace.pick' }), false)
-  assert.equal(isChatTurnRun({ name: 'workspace.add' }), false)
-  assert.equal(isChatTurnRun({ name: 'session.new' }), false)
-  assert.equal(isChatTurnRun({ origin: 'submit' }), false)
-  assert.equal(isChatTurnRun({ origin: 'periodic' }), false)
-  assert.equal(isChatTurnRun({ origin: 'detached' }), false)
-  assert.equal(isChatTurnRun(null), false)
-  assert.equal(isChatTurnRun(undefined), false)
 })
 
 // ---- 群聊 ----

@@ -117,13 +117,18 @@ export function register(ctx: SlotContext): void {
 - 浏览器经壳 `ctx.events.onAny` 订阅宿主事件（`impl` / `topic` 不改名），不再有本插件端口 SSE。
 - 浏览器按 **`payload.thread === 当前视图线程`** 过滤（写死，`history-model.ts#matchesThread`）：
   - 有 `active_thread` 时严格相等；
-  - 无 `active_thread` 时视图线程视为主线程，接受 `null` 与 `_main`。
-- 处理的事件：`model.delta`、`tool.start/delta/end`、`run.started/run.finished`、
+  - 无 `active_thread` 时视图线程视为主线程，接受 `null` 与 `_main`；
+  - 当前视图为主会话时额外接受 `_main`：审批 / 提问的**续跑**在 `ui-approval.decide` /
+    `question.answer` 顶层 run 内跑，事件不带会话 id（thread=`_main`）；不认这一档续跑的
+    流式增量与终局会被丢，表现为「后台跑完一次性抛出」。
+- 处理的事件：`chat.turn.started`、`model.delta`、`tool.start/delta/end`、`run.finished`、
   `group.message`、`workflow.step`、`thread.*`、`shell.state`（连接态与重连重同步）。
-- **run 生命周期按 run id 关联**：只有对话回合命令（`name ∈ chat.send/chat.resume`）的
-  `run.started` 建流——管理命令 / 槽写 run 不建流（`origin` 的 `command` 同时覆盖对话回合与
-  管理命令，须看 `name`）；`run.finished` 按 run id 关联在途回合收束（无关终局忽略、不重拉），
-  周期 run 不处理。
+- **回合开始 = `chat.turn.started`（chat 服务自报）**：对话回合若非顶层（续跑嵌在
+  `ui-approval.decide` / `question.answer` 的 run 内）就没有宿主 run 生命周期，只看
+  `run.started.name` 会漏掉续跑、工作态在首个增量前空窗；由 chat 服务在派发解释前自报，
+  `run` = 顶层 run id（与宿主 `run.finished` 配对、可取消）。管理命令 / 槽写 run 不建流。
+- **收束按 run id 关联**：`run.finished` 的在途 run id 与在途回合一致才收束（无关终局忽略、
+  不重拉），周期 run 不处理。
 - `thread.*` / `group.message` 触发的是一次静默快照（quiet reload，保留消息、只出顶部细呼吸条）。
 
 ## 长列表窗口化

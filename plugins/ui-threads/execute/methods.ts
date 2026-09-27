@@ -1,12 +1,11 @@
 // 能力类 `ui-threads` 的方法表：`ping` 健康占位 + `threads.state` 标签数据装配 + `client.read` 客户端半边交付。
-// 服务不读投影、无写通道：`threads.state` 只从入口 term 随 args 传入的 `ctx.ids` 切片里取数。
-// `client.read` 是只读命令：按包内相对 `.js` 路径回字节，做路径穿越防护。
+// `threads.state` 经反向调用问 owner：`session.read` 取会话切片、`todo.invoke(todo.read)` 取待办清单
+// （session / todo 运行记录已出世界，故服务不读世界投影）。`client.read` 按包内相对 `.js` 路径回字节。
 
 import { readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import type { PortCaller } from 'plugin-sdk'
-import { createRefHydrator, hydrateIds } from './refs.ts'
-import type { DefReader } from './refs.ts'
+import { resolveRootMainId } from './web/threads-model.ts'
 import { assembleThreadsState } from './threads-state.ts'
 import { isRecord } from './types.ts'
 import type { Handler, Json } from './types.ts'
@@ -15,8 +14,8 @@ export interface HandlerDeps {
   identity: string
   /** 浏览器客户端半边资产根目录（`execute/web/`）；`client.read` 只在此目录内解析。 */
   webRoot: string
-  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
-  host?: PortCaller
+  /** 反向调用通道（`session.read` / `todo.invoke`，按 pins 路由）；单测注入假端口。 */
+  port: PortCaller
 }
 
 export interface ClientFile {
@@ -55,22 +54,37 @@ export function readClientFile(webRoot: string, path: unknown): ClientFile | nul
   }
 }
 
-/** 构造方法表；main.ts 校验 `port` / `method` 后取用。 */
+/** 运行记录 owner 身份：会话切片 `session.read`、待办清单 `todo.invoke`（均已出世界）。 */
+const SESSION_PORT = 'session'
+const SESSION_READ = 'read'
+const TODO_PORT = 'todo'
+const TODO_INVOKE = 'invoke'
+
+/** 取 owner `session.read` 切片；取不到回空切片（顶栏显示无会话，不崩）。 */
+async function readSession(port: PortCaller): Promise<Json> {
+  const outcome = await port.call(SESSION_PORT, SESSION_READ, {})
+  return outcome.ok && isRecord(outcome.value) ? outcome.value : {}
+}
+
+/** 取 owner 待办清单（`todo.read`，按根会话 id）；无根 / 取不到回 null。 */
+async function readTodo(port: PortCaller, rootId: string | null): Promise<Json> {
+  if (rootId === null) return null
+  const outcome = await port.call(TODO_PORT, TODO_INVOKE, { tool: 'todo.read', session_id: rootId })
+  if (!outcome.ok || !isRecord(outcome.value) || outcome.value['ok'] !== true) return null
+  return isRecord(outcome.value['result']) ? (outcome.value['result'] as Json) : null
+}
+
+/** 构造方法表；main.ts 注入反向调用通道，单测可注入假端口。 */
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
-  const read: DefReader = async (identity, hashes) => {
-    if (deps.host === undefined) return null
-    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
-    if (!outcome.ok) return null
-    return isRecord(outcome.value) ? outcome.value : null
-  }
-  const hydrator = createRefHydrator(read)
   return {
     ping: (): { value: Json; events: [] } => ({ value: { pong: true, identity: deps.identity }, events: [] }),
 
-    /** 入口 term 传 `ctx.ids`，服务按需解析待办引用后装配线程标签 + 待办标签（父会话隔离）。 */
-    'threads.state': async (args): Promise<{ value: Json; events: [] }> => {
-      const ids = await hydrateIds(args, ['todo'], hydrator)
-      return { value: assembleThreadsState(ids), events: [] }
+    /** 问 owner 取会话切片 + 待办清单，装配线程标签 + 待办视图（父会话隔离）。 */
+    'threads.state': async (): Promise<{ value: Json; events: [] }> => {
+      const session = await readSession(deps.port)
+      const root = resolveRootMainId(session['conversations'], session['current'])
+      const todo = await readTodo(deps.port, root)
+      return { value: assembleThreadsState(session, todo), events: [] }
     },
 
     /** 壳经 `<id>.client.read` 取客户端半边字节：`{path}` → `{path,text}`；非法路径 fail-closed。 */

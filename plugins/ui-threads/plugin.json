@@ -5,7 +5,8 @@
     "ui-threads": ["ping", "threads.state", "client.read"]
   },
   "pins": {
-    "host": "host"
+    "session": "session",
+    "todo": "todo"
   },
   "start": "node execute/main.ts",
   "build": [

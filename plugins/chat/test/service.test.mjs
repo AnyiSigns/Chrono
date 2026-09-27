@@ -149,6 +149,9 @@ test('send: non-first message skips the title segment', async () => {
     const result = await drv.call('send', idsFixture())
     assert.equal(drv.portCalls.some((frame) => frame.port === 'session-title'), false)
     assert.deepEqual(directivesOf(result.value), INTERPRET_PLAN.$directives)
+    // 回合开始自报：客户端据此在首个 delta 前建在途回合（续跑嵌套 eval 无宿主 run 生命周期）。
+    const turn = drv.events.find((frame) => frame.topic === 'chat.turn.started')
+    assert.deepEqual(turn?.payload, { run: 'run-1', thread: 't1', conversation: 'c-1', source: 'send' })
   } finally {
     drv.close()
   }
@@ -279,6 +282,8 @@ test('resume: assembles bag from owner services + passes bag.resume', async () =
     assert.equal(bag.input.content, '帮我写一个快速排序')
     assert.equal(bag.session.head, 'h3')
     assert.deepEqual(directivesOf(result.value), INTERPRET_PLAN.$directives)
+    const turn = drv.events.find((frame) => frame.topic === 'chat.turn.started')
+    assert.deepEqual(turn?.payload, { run: 'run-1', thread: 't1', conversation: 'c-1', source: 'resume' })
   } finally {
     drv.close()
   }

@@ -43,6 +43,11 @@ function isRecord(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** 软删会话：`deleted_at` 非 null。 */
+function isDeleted(entry: Rec): boolean {
+  return entry['deleted_at'] !== null && entry['deleted_at'] !== undefined
+}
+
 /** 追加一条 JSON 记录并 fsync；目录缺失时静默（纯内存降级，仅测试无 ④ 注入时发生）。 */
 function appendRecord(path: string | null, record: Rec): void {
   if (path === null) return
@@ -307,6 +312,11 @@ export class SessionStore {
     }
   }
 
+  /**
+   * 选会话：显式 id 命中即取（含软删，供显式历史 / 校验）；否则取 `current`（仅未软删）。
+   * 无 `current` / `current` 指向已删 → null（回空态），**不再回落列表首条**——否则「删到无当前
+   * 会话」会把首条（甚至已删）会话当成当前渲染。
+   */
   private pick(convId: string | null): Rec | null {
     const list = this.conversations
     if (convId !== null) {
@@ -315,9 +325,9 @@ export class SessionStore {
     }
     if (this.current !== null) {
       const found = list.find((item) => item['id'] === this.current)
-      if (found !== undefined) return this.entryWithHead(found)
+      if (found !== undefined && !isDeleted(found)) return this.entryWithHead(found)
     }
-    return list.length > 0 ? this.entryWithHead(list[0]) : null
+    return null
   }
 }
 

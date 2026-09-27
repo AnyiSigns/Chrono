@@ -12,6 +12,7 @@ import {
   expectTurn,
   isExpecting,
   isThreadBusy,
+  trackActivity,
   trackRunFinished,
   trackRunStarted,
 } from '../execute/web/run-model.ts'
@@ -83,6 +84,22 @@ test('expecting 被 clearExpecting 收回后，迟到的 run.started 不认领',
   let state = expectTurn(createRunState(), 'a')
   state = clearExpecting(state, 'a')
   assert.equal(trackRunStarted(state, 't1', 'a').turnStarted, false)
+})
+
+test('流式增量认领：续跑（无本插件 run.started）首个 model.delta / tool.start 即置忙，run.finished 收回', () => {
+  let state = createRunState()
+  assert.equal(isThreadBusy(state, 'a'), false)
+  const claimed = trackActivity(state, 'r-resume', 'a')
+  assert.notEqual(claimed, state, '变更应换引用')
+  state = claimed
+  assert.equal(state.runs.a, 'r-resume')
+  assert.equal(isThreadBusy(state, 'a'), true)
+  // 同 run 重复增量不换引用（避免每帧 publish）
+  assert.equal(trackActivity(state, 'r-resume', 'a'), state)
+  // 缺 run id 不认领
+  assert.equal(trackActivity(state, null, 'a'), state)
+  // run.finished 收回
+  assert.equal(isThreadBusy(trackRunFinished(state, 'r-resume', 'a').state, 'a'), false)
 })
 
 test('结束记录有界：大量无关 run 不无限增长，最新一条可认领', () => {

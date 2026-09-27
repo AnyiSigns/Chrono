@@ -8,7 +8,7 @@
 
 - 能力类：`ui-threads`（`ping` 健康占位 + `threads.state` 标签装配 + `client.read` 客户端半边交付；
   UI 插件统一 `ui-<身份名>`、互不 pin）。
-- `pins`：无（不发 `eff`）；只读命令按名经宿主路由调用，切换只走壳的 `api.uiState`。
+- `pins`：`session` → `session`、`todo` → `todo`（`threads.state` 反向调用 owner），切换只走壳的 `api.uiState`。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`，宿主提供最小默认 def）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行时零 npm 依赖；构建用 `esbuild`（devDependency）。
@@ -17,13 +17,13 @@
 
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
-| `threads.state` | `eff ui-threads threads.state ["g",["ids"]]` | 入口 term 只传投影切片 `ctx.ids`；服务从传入投影取 `session` 线程字段（`kind` / `parent` / 标题 / `status` / `pending`）与 `todo` 待办清单，返回标签数据 |
+| `threads.state` | `eff ui-threads threads.state ["v",0]` | 服务反向调用 `session.read` 取会话切片、`todo.invoke(todo.read)` 取当前父会话待办清单，装配标签数据（`kind` / `parent` / 标题 / `status` / `pending` + 待办） |
 | `ui-threads.client.read` | `eff ui-threads client.read ["g",["path"]]` | 只读：按包内相对 `.js` 路径回 `{path,text}`（壳取客户端半边字节用）；路径穿越防护 fail-closed |
 
-- **投影读在入口 term，服务不读投影**：`threads.state` 的入口 term 读 `ctx.ids` 随 eff args 传入，
-  服务只做装配（内核 term 语言无对象构造 / 无算术，装配下沉到服务）。
-- 本插件**无 pins**，`eff` 经宿主的**自能力路由**解析到本插件自己的端点行（能力类 = 自身 `implements`），
-  不构成跨身份依赖。
+- **运行记录问 owner**：`session`（会话 / 消息链）与 `todo`（待办清单）已出世界，住各自 ④ 存储；
+  `threads.state` 不读世界投影，改为反向调用 owner（与 `chat.history` 同口径）。
+- `pins`：`session` → `session`、`todo` → `todo`；`threads.state` 的 `eff` 经宿主的**自能力路由**解析到
+  本插件自己的端点行（能力类 = 自身 `implements`），反向调用按 pins 路由到对应 owner。
 
 ## 客户端半边（自产自交付）
 
@@ -70,8 +70,9 @@ contract = '2'；register(ctx) 把顶栏组件注册进 topbar slot；不再导�
 ## 切换与未读
 
 - 点击标签 → `api.uiState.set('active_thread', threadId)`；`ui-chat` 订阅该键并按 `kind` 重拉对应线程。
-- **`current` ↔ `active_thread` 单桥**：侧栏 `session.select` 落账后 `session` 发 `thread.updated`（含 `current` 变），
-  本插件据此重算 `threads.state`，并**仅当 `current` 变了**（或尚未选定）才把 `active_thread` 重置到它。
+- **`current` ↔ `active_thread` 单桥**：侧栏 `session.select` / 删除会话落账后 `session` 发 `thread.updated`（含 `current` 变），
+  本插件据此重算 `threads.state`，并**仅当 `current` 变了**（或尚未选定）才把 `active_thread` 重置到它；
+  `current` 变 null（删到无当前会话）时一并清空 `active_thread`，视图回空态而非滞留已删会话。
 - **未读角标 = 内存计数**（视图态不落世界）：`group.message` 到达且线程 ≠ `active_thread` 时 +1；
   切入该线程即清零；**刷新即丢**（登记限制，与消息流内未读锚点分工不同）。
 

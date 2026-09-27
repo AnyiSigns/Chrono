@@ -97,7 +97,8 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
     }
     const applied = applyLoaded(store.getSnapshot(), result.value)
     store.commit(applied.view)
-    if (applied.reset && applied.view.activeThread !== null) {
+    // `reset` 时写回 active_thread（含 null：删到无当前会话要清空，回空态而非滞留已删会话）。
+    if (applied.reset) {
       ctx.uiState.set('active_thread', applied.view.activeThread)
     }
   }, [ctx, store])

@@ -24,6 +24,7 @@ import {
   identityActive,
   identityBody,
   isCodeGenFallbackBody,
+  isPeriodicRun,
   matchesThread,
   mergeConfig,
   messageRowLabel,
@@ -108,8 +109,14 @@ test('线程键与事件过滤：缺省一律归 _main', () => {
   assert.equal(matchesThread('t2', 't1'), false)
   assert.equal(matchesThread(null, null), true)
   assert.equal(matchesThread('_main', null), true)
-  assert.equal(matchesThread(null, 't1'), false)
-  assert.equal(matchesThread(undefined, 't1'), false)
+  // `_main` / 缺省（未带会话 id 的主线程回合，如审批 / 提问续跑）归当前活动线程。
+  assert.equal(matchesThread(null, 't1'), true)
+  assert.equal(matchesThread(undefined, 't1'), true)
+  assert.equal(matchesThread('_main', 'c1'), true)
+  assert.equal(matchesThread('c1', '_main'), false)
+  assert.equal(matchesThread('c2', 'c1'), false)
+  assert.equal(isPeriodicRun('periodic'), true)
+  assert.equal(isPeriodicRun('command'), false)
   assert.equal(runKeyOf({ thread: 't1' }), 't1')
   assert.equal(runKeyOf({}), '_main')
   assert.equal(runIdOf({ run: 'r1' }), 'r1')

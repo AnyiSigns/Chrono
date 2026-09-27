@@ -58,7 +58,8 @@ test('readClientFile：正常读回 {path,text}，穿越 / 越界 / 缺失拒绝
 test('client.read 方法：{path} → {path,text}；非法路径抛错（fail-closed）', () => {
   const webRoot = tempWeb()
   try {
-    const handlers = createHandlers({ identity: 'ui-threads', webRoot })
+    const port = { call: async () => ({ ok: false, code: 'not_used', message: '' }) }
+    const handlers = createHandlers({ identity: 'ui-threads', webRoot, port })
     const value = handlers['client.read']({ path: 'dist/entry.js' }, ENV).value
     assert.equal(value.path, 'dist/entry.js')
     assert.equal(value.text, 'export const built = true\n')
