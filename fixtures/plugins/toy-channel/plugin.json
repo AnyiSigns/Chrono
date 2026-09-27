@@ -5,6 +5,7 @@
   "methods": { "toy.channel": ["echo"] },
   "pins": {},
   "start": "node execute/main.mjs",
+  "build": [],
   "transport": "stdio",
   "protocol": "1",
   "restart": {

@@ -11,6 +11,7 @@ function baseDecl(overrides: Record<string, Json> = {}): Json {
     methods: { 'toy.echo': ['echo'] },
     pins: {},
     start: '',
+    build: [],
     protocol: '1',
     restart: { policy: 'on-exit' },
     health: {},
@@ -22,7 +23,7 @@ function baseDecl(overrides: Record<string, Json> = {}): Json {
 }
 
 describe('parsePluginDecl 元 schema 严格性', () => {
-  it('合法 decl（build 省略）且 state=recomputable、member kind 合法 → ok:true', () => {
+  it('合法 decl 且 state=recomputable、member kind 合法 → ok:true', () => {
     const result = parsePluginDecl(baseDecl())
     expect(result.ok).toBe(true)
     if (result.ok) {
@@ -62,10 +63,12 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ schema: {} })).ok).toBe(false)
   })
 
-  it('build 省略 → ok:true 且 build 为 null（回落旧探测）', () => {
-    const result = parsePluginDecl(baseDecl())
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.decl.build).toBeNull()
+  it('build 省略 → ok:false（build 是必需声明，宿主不再回落探测）', () => {
+    const omitted = baseDecl()
+    delete (omitted as Record<string, Json>)['build']
+    const result = parsePluginDecl(omitted)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reasons).toEqual(['bad_plugin_decl'])
   })
 
   it('build 合法 → ok:true 且解析出步骤', () => {

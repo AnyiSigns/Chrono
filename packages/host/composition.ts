@@ -34,6 +34,17 @@ import { worldRev } from '../kernel/index.ts'
 import type { Hash, Json, World } from '../kernel/index.ts'
 import type { HostOptions } from './host.ts'
 
+/**
+ * 该运维事件应记住的跟随失败世代（无则 null）：唯一消费者是 watcher（`host-reload` 据集合把
+ * 「旧版本继续服务」讲清）。watcher 关闭时无人消费，记了只会随进程无界增长，故不记。
+ */
+export function followFailureGen(record: LifecycleRecord, watchEnabled: boolean): string | null {
+  if (!watchEnabled || record.gen === undefined) return null
+  if (record.kind === 'service' && record.event === 'start_failed') return record.gen
+  if (record.kind === 'handshake' && record.event === 'failed') return record.gen
+  return null
+}
+
 /** 组合根接线的运行态句柄：停机 / 事件广播 / 端口审计只读快照。 */
 export interface ComposedHost {
   socket: string
@@ -51,6 +62,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
   const address = socketPath(root)
   const startedAt = Date.now()
   const registry = new RunRegistry(startedAt)
+  const watchEnabled = options.watch === true
   const followFailedGens = new Set<string>()
   let stopping = false
   let runtime: AssemblyRuntimeHandle | undefined
@@ -60,8 +72,12 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
   let server: InboundServerHandle | undefined
   let stopImpl: (() => Promise<void>) | undefined
   let bootstrappedRef: BootstrappedHost | undefined
-  let shutdownPending = false
   let stopPromise: Promise<void> | undefined
+  // 装配接线（wire）落定信号：停机若落在「监听已开、装配未完成」的窗口，等它落定再收口 runtime。
+  let bootstrapDoneResolve: (() => void) | undefined
+  const bootstrapDone = new Promise<void>((resolve) => {
+    bootstrapDoneResolve = resolve
+  })
   // 入站监听先于装配：服务连上后可能在装配完成前发起反向调用，这里挂起等待路由就绪。
   let routerReadyResolve: (() => void) | undefined
   const routerReady = new Promise<void>((resolve) => {
@@ -80,9 +96,8 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
   /** 运维日志唯一落点；顺带记住跟随失败的世代，供 watcher 观测（只读派生，不额外写盘）。 */
   const recordLifecycle = (record: LifecycleRecord): void => {
     safeAppendLifecycle(record)
-    if (record.gen === undefined) return
-    if (record.kind === 'service' && record.event === 'start_failed') followFailedGens.add(record.gen)
-    if (record.kind === 'handshake' && record.event === 'failed') followFailedGens.add(record.gen)
+    const failedGen = followFailureGen(record, watchEnabled)
+    if (failedGen !== null) followFailedGens.add(failedGen)
   }
 
   /** 停机幂等：并发 / 重复调用共享同一个 promise。 */
@@ -109,6 +124,9 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       await registry.settle()
       server?.destroyClients()
       await server?.close()
+      // 停机请求可能落在「监听已开、装配未完成」的窗口：此刻 runtime 尚未赋值，若就此收口会在
+      // 装配随后起出的服务无人停的情况下释放锁（孤儿进程）。等装配落定，再收口它起出的 runtime。
+      if (bootstrappedRef === undefined) await bootstrapDone
       try {
         if (runtime !== undefined) await runtime.stop()
       } catch {
@@ -116,7 +134,6 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       }
       server?.unlinkSocket()
       if (bootstrappedRef !== undefined) await bootstrappedRef.shutdown()
-      else shutdownPending = true
     })()
     return stopPromise
   }
@@ -379,7 +396,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       reportMethodTimeouts(writer.snapshot().world)
 
       // 源码 watcher：默认关；只监听、不落账——变动经宿主落账互斥段提交，再交装配跟随。
-      if (options.watch === true) {
+      if (watchEnabled) {
         const watchReload = createWatchReload({
           root,
           paths,
@@ -433,16 +450,23 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
     }
   }
 
-  const bootstrapped = await bootstrapHost({
-    root,
-    paths,
-    startedAt,
-    compactTailEntries: options.compactTailEntries,
-    safeAppendLifecycle,
-    wire: buildWired,
-  })
+  let bootstrapped: BootstrappedHost
+  try {
+    bootstrapped = await bootstrapHost({
+      root,
+      paths,
+      startedAt,
+      compactTailEntries: options.compactTailEntries,
+      safeAppendLifecycle,
+      wire: buildWired,
+    })
+  } catch (err) {
+    // 装配失败也要放行等 bootstrapDone 的停机续行；锁已由 bootstrap 自身 catch 释放。
+    bootstrapDoneResolve?.()
+    throw err
+  }
   bootstrappedRef = bootstrapped
-  if (shutdownPending) await bootstrapped.shutdown()
+  bootstrapDoneResolve?.()
 
   return {
     socket: address,

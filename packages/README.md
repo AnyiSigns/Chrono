@@ -23,13 +23,56 @@ boot ──→ client ──→ kernel
   └────→ host ────→ kernel
 ```
 
-- `host` 只通过 `host/index.ts` 对外；`host` 内部 `assembly` **只读世界**——不 import `effect` / `ledger` 的写口
-  （「不认识插件种类」是 import 图上的事实，不是形容词）。
+- `host` 只通过 `host/index.ts` 对外；`host` 内部 `assembly` **只读世界**——不 import `effect` / `ledger`
+  （「不认识插件种类」是 import 图上的事实，不是形容词：`assembly` 触达的宿主顶层模块只有 `blobs` /
+  `endpoint-table` / `host-methods` / `lifecycle` / `paths` / `plugin-data` / `protected-pins` /
+  `service-link` / `wire`，无一条路径通向两个写口）。判定类常量（如调用超时缺省值与硬上限）住
+  `host/common/`，不住被判定方，否则配置层会反向依赖运行层而让这条断言失效。
 - `boot` 对内核只有类型引用；`client` 运行时另用内核的 `canonicalJson` 做规范序列化（两侧帧格式独立实现）。
 - `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins`（见
   [`docs/plugins.md`](../docs/plugins.md)）。
 - 加插件**不改** `packages/` 任何文件：插件包住 `plugins/<name>/` 或 `node_modules/`，由 `state/plugins.json` 列出。
 - `toolchain/` 是作者侧**构建期**工具：`packages/` 任何包**不得依赖**它；插件仅不入世的构建 / 开发脚本可 import 其编译器；它至多依赖内核（仅测试器入口），不进运行路径。
+
+## 冻结（2026-09-27 生效）
+
+`packages/` 四包已冻结。冻结后只允许两类改动：
+
+1. **算法与细节优化**：同行为前提下的性能、可读性、内部结构调整。
+2. **明确缺陷修复**：有复现、有根因、判定为 `packages/` 侧缺陷的修复。
+
+其它一切需求由改插件满足。冻结的目的是让插件层可整体替换——换 agent、全部插件换掉、加入新形态插件——而
+`packages/` 不动。故本目录必须保持轻量且薄：它机械执行 `docs/` 定义的契约，不认识任何具体插件，不承载业务语义。
+
+**`host/index.ts` 是宿主的唯一公开面**：加导出 = 改规格，属冻结范围内的规格变更，需与解冻同等对待。
+
+### 冻结后仍需解冻的清单
+
+以下词表是硬封闭的，加成员必须改 `packages/`。不做可扩展注册表（与轻量目标冲突），改为登记在案：扩其中任一项
+即为**协议演进**，需一次有记录的解冻，不算违反冻结。
+
+| 词表 | 位置 |
+| --- | --- |
+| `host.*` 方法集 | `host/host-methods.ts`；路由闸 `host/effect/route.ts`；派发 `host/host-capability.ts` |
+| 服务传输形态 | `host/assembly/decl.ts`（声明校验）、`host/assembly/service-host.ts`（选择）、`host/service-link.ts`、`host/endpoint-table.ts` |
+| 入站动词 | `host/wire.ts`、`host/inbound/dispatch.ts`、客户端镜像 `client/index.ts` |
+| 服务协议帧 | `host/service-link.ts` |
+| `plugin.json` 各枚举 | `host/assembly/decl.ts`（`members.kind` / `transport` / `state`）、`host/assembly/supervision.ts`（`restart` / `backoff`） |
+| `argsSchema` 方言 | `host/assembly/args-schema.ts` |
+| schema 宿主消费键 | `host/periodic.ts`、`method-timeouts.ts`、`audit-tiers.ts`、`audit-redact.ts`、`assembly/assets-manifest.ts` |
+| 结构化 op / directive / term 原语 | `kernel/types.ts`、`kernel/machine.ts`；宿主侧镜像 `host/common/op-names.ts`、`host/assembly/eff-decls.ts` |
+| `set_active` / `retire` / `fork` 的 `expect_*` 门禁 | 尚不存在（`kernel/journal.apply.ts` 只有 `add_gen` / `graft` 经 `expect_active` 把关）——补它属协议演进 |
+
+term 原语表有防漂移双保险：宿主 `walkEffs` 以内核 `TERM_TAGS` 为权威，遇内核列了而本表无分支的头即拒整包
+`bad_term:<head>`，另有遍历 `TERM_TAGS` 的覆盖测试。故加原语而漏改宿主不会静默放行，会当场失败。
+
+### 已知不由 packages 承担的责任
+
+- **回合不跨重启续跑**：宿主不持久化 run 游标、不自动重发效果。重启后由插件自行判断未完成的回合并重发。
+  `host.thread.resume` 是调用方驱动的**新**分离 run，不是内核 `waiting` 态的续跑。
+- **插件独立性无宿主侧强制**：「插件不得互相 import、不得 import 宿主」目前靠约定与各插件自带的
+  `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `pins`、
+  运行期路由只认 `pins` 与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
 
 ## 一次调用的数据流
 

@@ -21,7 +21,5 @@ export const FRAMEWORK_COMMAND_NAMES = [
   'help',
 ] as const
 
-export type FrameworkCommandName = (typeof FRAMEWORK_COMMAND_NAMES)[number]
-
 /** 保留名集合：入世与 CLI 判定的共同形态。 */
 export const FRAMEWORK_COMMAND_NAME_SET: ReadonlySet<string> = new Set(FRAMEWORK_COMMAND_NAMES)

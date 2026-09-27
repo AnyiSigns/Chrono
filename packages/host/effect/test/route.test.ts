@@ -16,6 +16,7 @@ const DECL: Json = {
   methods: { 'toy.echo': ['echo'] },
   pins: {},
   start: 'node execute/main.js',
+  build: [],
   protocol: '1',
   restart: { policy: 'on-exit' },
   health: { interval_ms: 0 },

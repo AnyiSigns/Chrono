@@ -403,6 +403,54 @@ describe('装配运行时 startAssembly', () => {
     expect(handle.loaded().map((x) => x.id)).toContain('toy-endpoint')
   }, 15000)
 
+  it('进程退出后的重启退避窗口内：loaded 报 service:false（不把已死进程当在跑服务）', async () => {
+    const backoffRoot = writeTempPackage(root, {
+      identity: 'toy-backoff',
+      start: 'node execute/main.js',
+      implements: ['toy.backoff'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      // fixed 退避 2000ms：退出到重启之间有足够宽的可观测窗口
+      restart: {
+        policy: 'on-exit',
+        backoff: 'fixed',
+        backoff_ms: 2000,
+        max: 3,
+        window_ms: 60000,
+        drain_ms: 200,
+      },
+      serviceConfig: { probeFailTotal: 1 },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-backoff', path: backoffRoot }])
+    const gen = world.ids['toy-backoff'].active as Hash
+    const firstPid = handle.endpoints.get('toy-backoff', gen, 'toy.backoff', 'echo')!.pid
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: true })
+
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-backoff'),
+      'toy-backoff 健康超时退出',
+      8000,
+    )
+    // 进程已死、端点已摘：退避窗口内 loaded 必须报 service:false，而非仍在跑
+    expect(isPidAlive(firstPid)).toBe(false)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: false })
+
+    await waitFor(
+      () => {
+        const row = handle.endpoints.get('toy-backoff', gen, 'toy.backoff', 'echo')
+        return row !== null && row.pid !== firstPid
+      },
+      '退避后重启端点重挂',
+      8000,
+    )
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: true })
+  }, 15000)
+
   it('探针无 pong（超时）→ 按退出处理；超限 → service.restart_exhausted 并隔离', async () => {
     const silentRoot = writeTempPackage(root, {
       identity: 'toy-silentprobe',

@@ -1,5 +1,5 @@
 // 运维日志：宿主生命周期事件的唯一落点。
-// 内存缓冲 + 有界延迟批量追加：同一文件保持单个 append 句柄，按批写入、按批 fsync。
+// 内存缓冲 + 有界延迟批量追加：同一文件保持单个 append 句柄，按批写入；落稳（fsync）只在停机 / 致命路径。
 // 逐行原子追加；不进世界、不进链、不参与重放。
 
 import { closeSync, fsyncSync, mkdirSync, openSync } from 'node:fs'
@@ -46,16 +46,7 @@ interface LifecycleSink {
 }
 
 const sinks = new Map<string, LifecycleSink>()
-let fsyncOnFlush = false
 let exitHooked = false
-
-/**
- * 每批 flush 后是否 fsync：缺省关，依赖 OS 页缓存（进程崩溃不丢已 flush 数据）；
- * 仅在需要抗掉电 / 掉 OS 时打开。停机 / 致命路径始终强制 fsync，与开关无关。
- */
-export function setLifecycleFsync(enabled: boolean): void {
-  fsyncOnFlush = enabled
-}
 
 function sinkFor(file: string): LifecycleSink {
   const key = resolve(file)
@@ -89,7 +80,7 @@ function flushSink(sink: LifecycleSink, forceFsync = false): void {
   sink.bytes = 0
   const fd = openSink(sink)
   writeAllSync(fd, payload)
-  if (forceFsync || fsyncOnFlush) fsyncSync(fd)
+  if (forceFsync) fsyncSync(fd)
 }
 
 function closeSink(sink: LifecycleSink): void {

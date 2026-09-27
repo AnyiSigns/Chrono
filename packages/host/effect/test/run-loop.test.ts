@@ -388,6 +388,51 @@ describe('通用 run loop runRound', () => {
     expect(body.outcome).toBe('cancelled')
   })
 
+  it('传输失败保留通道错误码：timeout / protocol_error 在审计里可辨，outcome 仍 transport_failed', async () => {
+    const termHash = 'ab'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
+      ids: {},
+    }
+    for (const code of ['timeout', 'protocol_error'] as const) {
+      const audits: AuditDraft[] = []
+      const router: RoundRouter = {
+        resolve: () => ({
+          ok: true,
+          row: {
+            impl: 'toy',
+            gen: 'g'.repeat(64),
+            cap: 'toy.echo',
+            method: 'echo',
+            transport: 'stdio',
+            pid: 1,
+            link: { call: () => Promise.reject(new ServiceChannelError(code)) },
+          } as unknown as EndpointRow,
+        }),
+      }
+      const outcome = await runRound({
+        writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+        directives: [evalDirective(termHash)],
+        owners: ['toy-owner'],
+        caps: {},
+        limits: LIMITS,
+        initiator: 'client',
+        now: NOW,
+        router,
+        onAudit: (draft) => audits.push(draft),
+      })
+      expect(outcome.status).toBe('refused')
+      expect(outcome.observations[outcome.observations.length - 1]).toMatchObject({
+        kind: 'refused',
+        reasons: ['eff_error'],
+      })
+      expect(audits).toHaveLength(1)
+      const body = audits[0].body as unknown as { result: EffResult; outcome: string }
+      expect(body.result).toEqual({ ok: false, error: code })
+      expect(body.outcome).toBe('transport_failed')
+    }
+  })
+
   it('取消（挂起前已 abort）：不跑内核、不落审计', async () => {
     const controller = new AbortController()
     controller.abort()

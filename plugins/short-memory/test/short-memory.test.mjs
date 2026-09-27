@@ -31,7 +31,7 @@ test('plugin.json 字段齐全且形态合法（durable + 独占 data）', () =>
   const decl = readJson('plugin.json')
   assert.deepEqual(
     Object.keys(decl).sort(),
-    ['commands', 'exclusive', 'health', 'identity', 'implements', 'members', 'methods', 'pins', 'protocol', 'restart', 'schema', 'start', 'state'].sort(),
+    ['build', 'commands', 'exclusive', 'health', 'identity', 'implements', 'members', 'methods', 'pins', 'protocol', 'restart', 'schema', 'start', 'state'].sort(),
   )
   assert.equal(decl.identity, 'short-memory')
   assert.deepEqual(decl.implements, ['short-memory'])

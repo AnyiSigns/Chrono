@@ -16,6 +16,7 @@ const DECL_FIELDS = [
   'methods',
   'pins',
   'start',
+  'build',
   'protocol',
   'restart',
   'health',
@@ -24,7 +25,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 12 字段齐全且形态合法', () => {
+test('plugin.json 13 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tool-http')

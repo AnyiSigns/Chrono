@@ -53,9 +53,10 @@ describe('插件 ④ 目录', () => {
     expect(dir).toBe(join(root, 'state', 'data', 'known'))
     expect(existsSync(dir)).toBe(true)
     for (const bad of ['../evil', 'a/b', 'a\\b', '', 'CON', '__proto__', 'host', 'a.']) {
-      expect(() => ensurePluginDataDir(dataRoot, bad), `身份名 ${JSON.stringify(bad)} 应被拒`).toThrow(
-        PluginDataError,
-      )
+      expect(
+        () => ensurePluginDataDir(dataRoot, bad),
+        `身份名 ${JSON.stringify(bad)} 应被拒`,
+      ).toThrow(PluginDataError)
     }
   })
 

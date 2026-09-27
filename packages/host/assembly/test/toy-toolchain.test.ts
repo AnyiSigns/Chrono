@@ -4,11 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { eval as evaluate } from '../../../kernel/index.ts'
 import type { Env, Term } from '../../../kernel/machine.ts'
-import {
-  parsePluginDecl,
-  resolveCommand,
-  readPluginDecl,
-} from '../index.ts'
+import { parsePluginDecl, resolveCommand, readPluginDecl } from '../index.ts'
 import { runSeed } from '../../offline.ts'
 import { validatePackage } from '../../validate-package.ts'
 import { loadAnchor } from '../../ledger/index.ts'
@@ -61,10 +57,14 @@ describe('toy 通路：糖化源 → 构建产物 → 入世 → eval', () => {
   it('plugin.json.build 声明工具链编译步，产物 terms/ 在入世树内、terms.src/ 被排除', async () => {
     const root = createTempRoot()
     try {
-      const decl = parsePluginDecl(JSON.parse(readFileSync(join(TERM_FIXTURE, 'plugin.json'), 'utf8')) as Json)
+      const decl = parsePluginDecl(
+        JSON.parse(readFileSync(join(TERM_FIXTURE, 'plugin.json'), 'utf8')) as Json,
+      )
       expect(decl.ok).toBe(true)
       if (decl.ok) {
-        expect(decl.decl.build).toEqual([{ cmd: 'node', args: ['../../../toolchain/build.ts', '.'] }])
+        expect(decl.decl.build).toEqual([
+          { cmd: 'node', args: ['../../../toolchain/build.ts', '.'] },
+        ])
       }
 
       const report = runSeed(root, [{ name: 'toy-term', path: TERM_FIXTURE }])

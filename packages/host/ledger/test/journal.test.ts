@@ -30,7 +30,7 @@ type Op =
   | 'snapshot'
 
 function mkEntry(seq: number, prev: string | null, op: Op, args: Json) {
-  return { seq, prev, op, args, argsHash: 'h'.repeat(64), by: 'u', at: 1000 + seq }
+  return { seq, prev, op, args, argsHash: 'a'.repeat(64), by: 'u', at: 1000 + seq }
 }
 
 describe('账本 journal', () => {
@@ -133,6 +133,24 @@ describe('账本 journal', () => {
     appendFileSync(file, '{"seq":2,"prev":')
     const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
     expect(() => appendJournal(file, [e2])).toThrow('journal_torn_tail')
+  })
+
+  it('结构坏 entry（形态不符）即拒：语法合法但字段缺失不得静默进重放', () => {
+    appendJournal(file, [mkEntry(0, null, 'put', { body: { v: 1 } })])
+    // 语法合法、缺 prev / argsHash：形态校验必须拒
+    appendFileSync(
+      file,
+      JSON.stringify({ seq: 1, op: 'put', args: { body: { v: 2 } }, by: 'u', at: 1 }) + '\n',
+    )
+    expect(() => readJournal(file)).toThrow('bad_journal')
+    expect(() => readJournalTolerant(file)).toThrow('bad_journal')
+    expect(() => loadAnchor(file)).toThrow('bad_journal')
+  })
+
+  it('链后缀不得当完整链：首条 seq ≠ 0 时 loadAnchor 回落读抛 bad_journal', () => {
+    // 直接写从 seq 5 起的尾段（模拟冷段缺失后的残链）：prev null 但 seq 不从 0 起
+    appendJournal(file, [mkEntry(5, null, 'put', { body: { v: 1 } })])
+    expect(() => loadAnchor(file)).toThrow('bad_journal')
   })
 
   it('中间行损坏仍抛：不得静默读半条', () => {

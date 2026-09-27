@@ -4,7 +4,7 @@
 // `env` 是共享可变对象（gas / depth / n 靠同一实例累加，evalCall 禁止展开复制）。
 
 import { H } from './hash.ts'
-import { TYPE_ORDER, isHash, isRecord, t } from './value.ts'
+import { MAX_JSON_DEPTH, TYPE_ORDER, isHash, isRecord, t } from './value.ts'
 import { KernelError } from './types.ts'
 import type { Env, EvalResult, Term, TermTag } from './machine.ts'
 import type { EffRequest, Hash, Json, Path } from './types.ts'
@@ -64,14 +64,20 @@ function atPath(at: AtNode | null): Path {
 }
 
 /**
- * 全序比较：跨型按 TYPE_ORDER 下标；同型逐结构。值域内（有限数由 t() 保证）永不抛错，
- * 非有限 number 在进入前由 t() 报 'nonfinite'。
+ * 全序比较：跨型按 TYPE_ORDER 下标；同型逐结构。与 canonicalJson / walkJson / deepEq 共用
+ * `MAX_JSON_DEPTH` 深度护栏——表达式的 ctx / args 由宿主提供、不经 H()，故嵌套不受内容哈希钳制。
  * @param a 左值——必须是 Json 域内值（不做隐式转换，true 与 1 不属同型可比对）
  * @param b 右值
  * @returns -1 | 0 | 1
  * @throws KernelError('nonfinite') 任一侧是非有限数
+ * @throws KernelError('depth') 嵌套超过 `MAX_JSON_DEPTH`
  */
 export function cmp(a: Json, b: Json): number {
+  return cmpAt(a, b, 0)
+}
+
+function cmpAt(a: Json, b: Json, depth: number): number {
+  if (depth > MAX_JSON_DEPTH) throw new KernelError('depth')
   const ta = t(a)
   const tb = t(b)
   if (ta !== tb) return TYPE_ORDER.indexOf(ta) < TYPE_ORDER.indexOf(tb) ? -1 : 1
@@ -95,7 +101,7 @@ export function cmp(a: Json, b: Json): number {
       const lb = b as Json[]
       const shared = Math.min(la.length, lb.length)
       for (let i = 0; i < shared; i++) {
-        const c = cmp(la[i], lb[i])
+        const c = cmpAt(la[i], lb[i], depth + 1)
         if (c !== 0) return c
       }
       return la.length < lb.length ? -1 : la.length > lb.length ? 1 : 0
@@ -120,7 +126,7 @@ export function cmp(a: Json, b: Json): number {
           if (onlyA === undefined || key < onlyA) onlyA = key
           continue
         }
-        const c = cmp(left, right)
+        const c = cmpAt(left, right, depth + 1)
         if (c !== 0 && (valueKey === undefined || key < valueKey)) {
           valueKey = key
           valueCmp = c

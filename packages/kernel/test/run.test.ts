@@ -72,6 +72,13 @@ const reasonsOf = (o: { observations: Json[] }): string[] | undefined =>
   (lastObs(o) as { reasons?: string[] }).reasons
 const effId = (i: number, n: number): Hash => H({ run: RUN, i, n } as unknown as Json)
 
+/** 逐层包数组：造宿主可注入、不经 H() 钳制的深值。 */
+function nest(levels: number, leaf: Json): Json {
+  let v = leaf
+  for (let i = 0; i < levels; i++) v = [v]
+  return v
+}
+
 describe('四态各一例（含空 directives → idle）', () => {
   it('idle：world/head === input（引用级）、journal/pending/observations 全空、usage 全 0', () => {
     const s = seedDef('base')
@@ -438,5 +445,24 @@ describe('失败节点定位在 run 出口透出（at / def / callAt）', () => 
     })
     const ok = observationsOf(d, { kind: 'eval', r: { ok: true, value: 7 } } as never)
     expect(Object.keys(ok as object).sort()).toEqual(['entry', 'kind', 'ok', 'value'])
+  })
+})
+
+describe('值深度护栏：eval 的 ctx / args 由宿主注入、不经 H() 钳制', () => {
+  it('深值经实参进 cmp → refused depth，不逃逸为 RangeError', () => {
+    const s = seedDef(J(['cmp', ['v', 0], ['v', 0]]))
+    const deep = nest(20_000, 1) // 远超 MAX_JSON_DEPTH：无护栏时 cmp 逐结构下探会冲垮调用栈
+    const inp = input({
+      world: s.world,
+      head: s.head,
+      directives: [evalDir(s.key, deep)],
+    })
+    let o: ReturnType<typeof run> | undefined
+    expect(() => {
+      o = run(inp)
+    }).not.toThrow()
+    expect(o?.status).toBe('refused')
+    expect(reasonsOf(o as ReturnType<typeof run>)).toEqual(['depth'])
+    expect(o?.world).toBe(inp.world)
   })
 })

@@ -9,6 +9,7 @@
     "embedding": "embedding"
   },
   "start": "node execute/main.ts",
+  "build": [],
   "exclusive": ["data"],
   "protocol": "1",
   "restart": {

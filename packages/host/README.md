@@ -56,7 +56,7 @@ startHost
   ④ 开入站 socket，写类提交（submit / 命令）FIFO 串行；status 等只读即时应答
   ⑤ 每轮 done 落账（业务 journal）→ A6 换代跟随 → 下一轮
 stop
-  等在途提交 → 断开客户端 → 反拓扑序逐个 drain 服务 → fsync → 释放锁 → 退出（不写链、不改 active）
+  等在途提交 → 断开客户端 → 启动序逆序摘除服务并**并发** drain（各服务独立有界等待）→ fsync → 释放锁 → 退出（不写链、不改 active）
 ```
 
 - 一拍效果：`run` 挂起 → A1 路由 → 服务 `call` → `EffectAudit` **先落** → `results` 回灌 → 同 `run_id` / `now` / `directives` 续跑；
@@ -64,17 +64,19 @@ stop
 - 换代跟随：宿主自身 `active` 换代才动作——数据热生效（`reload` / `ack`，进程不动）、代码起新服务 + 旧服务 `drain`；
   依赖换代只由路由重解析，依赖 `retire` / `set_active(null)` 则运行期 fail-closed 隔离（`dep.retired`）。
 - `run` 内 `set_active` 只在下一轮 / 下一 run 生效；`refused` / `waiting` 的 `pos` 一律作废。
+- 停机服务摘除按启动序**逆序**同步完成（从服务表移除、清计时器），但各服务的 `drain` / 终止**并发等待**——单个卡住的服务不拖垮整体停机。**后果**：drain 期间被依赖者可能先退场，依赖者在途调用可得 `not_loaded`；这是**正常停机行为，不是故障**。
 
 ## 运维日志
 
 宿主独有取证：`state/lifecycle.log`（JSONL，逐行原子追加，内存缓冲 + 有界延迟批量落盘），**不进世界、不进链、不参与重放**。
 
-| `kind`      | `event`                                       | 触发                      |
-| ----------- | --------------------------------------------- | ------------------------- |
-| `host`      | `start` / `stop` / `start_failed`             | 宿主自起停 / 启动选项非法 |
-| `dep`       | `cycle` / `stale` / `drift` / `retired`       | 装配解析 / 依赖退役       |
-| `handshake` | `failed` / `extra_dropped`                    | 握手校验                  |
-| `service`   | `start_failed` / `exit` / `restart_exhausted` | 起服务 / 进程             |
+| `kind`      | `event`                                                                                                                                                                          | 触发                                                                                                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `host`      | `start` / `stop` / `start_failed`                                                                                                                                                | 宿主自起停 / 启动选项非法                                                                                                  |
+| `host`      | `watch_*` / `gc_failed` / `plugin_discovery_skipped` / `journal_tail_repaired` / `listen_error` / `persist_fatal_stop` / `run_failed` / `follow_failed` / `protected_pins_unset` | watcher / 启动 GC 失败 / 目录发现跳过 / journal 尾修复 / 监听错误 / 落账致命停机 / run 异常 / 跟随失败 / 受保护 pin 未配置 |
+| `dep`       | `cycle` / `stale` / `drift` / `retired` / `periodic_invalid` / `method_timeout_invalid` / `assets_manifest_invalid`                                                              | 装配解析 / 依赖退役 / 周期、方法级超时与资产清单声明非法                                                                   |
+| `handshake` | `failed` / `extra_dropped`                                                                                                                                                       | 握手校验                                                                                                                   |
+| `service`   | `start_failed` / `exit` / `restart_exhausted`                                                                                                                                    | 起服务 / 进程                                                                                                              |
 
 ## 落盘布局
 

@@ -2,7 +2,7 @@
 
 export { buildAudit, callEffect } from './execute.ts'
 export type { AuditMeta, EffectCall, EndpointCaller } from './execute.ts'
-export { activeGenOf, createRoundRouter } from './route.ts'
+export { createRoundRouter } from './route.ts'
 export type {
   HostCapabilityCall,
   RouteError,
@@ -10,7 +10,8 @@ export type {
   RoundRouter,
   RouterOptions,
 } from './route.ts'
-export { DEFAULT_CALL_TIMEOUT_MS, runRound } from './run-loop.ts'
+export { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
+export { runRound } from './run-loop.ts'
 export type { RoundInput, RoundMaterialize, RoundOutcome } from './run-loop.ts'
 export { assertNotFatal, fatalError, PersistFatalError } from './fatal.ts'
 export {

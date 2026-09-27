@@ -23,8 +23,8 @@ node packages/boot/main.ts <命令> [--root <路径>] [参数]
 
 | 分类   | 命令                                                     | 说明                                                                                                                                     |
 | ------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| 宿主   | `start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]` | 起宿主（世界单写者，后台进程），就绪后打印 `{ok, root, pid, call_timeout_ms, start_wrapper}`                                               |
-| 客户端 | `stop`                                                   | 令宿主按反拓扑序 drain 后停机                                                                                                            |
+| 宿主   | `start [--call-timeout-ms <ms>] [--start-wrapper <cmd>]` | 起宿主（世界单写者，后台进程），就绪后打印 `{ok, root, pid, call_timeout_ms, start_wrapper}`                                             |
+| 客户端 | `stop`                                                   | 令宿主按启动序逆序摘除服务并并发 drain 后停机                                                                                            |
 | 客户端 | `status`                                                 | 链头与已装载身份清单                                                                                                                     |
 | 客户端 | `run <directives-json\|@文件>`                           | 提交 directives 跑一轮，打印 `{run, status, observations}`                                                                               |
 | 客户端 | `commands`                                               | 列出插件声明的命令                                                                                                                       |
@@ -33,15 +33,19 @@ node packages/boot/main.ts <命令> [--root <路径>] [参数]
 | 离线   | `seed [包路径...]`                                       | 入世；缺省读 `state/plugins.json`（批量）                                                                                                |
 | 离线   | `pack <目录> --identity <id>`                            | 入世单个插件目录（手动 / 程序化；与 `seed` 共用打包规则；`--identity` 必须与包内 `plugin.json.identity` 一致，否则 `identity_mismatch`） |
 | 离线   | `verify`                                                 | 全量校验 journal                                                                                                                         |
+| 离线   | `unseeded`                                               | 列出 `state/plugins.json` 里尚未入世的身份（不持锁，只读）                                                                               |
 | 离线   | `replay`                                                 | 全量重放并给出内容摘要                                                                                                                   |
 | 离线   | `compact`                                                | 压缩：追加快照 + 冷段归档 + 写基础世界                                                                                                   |
 | 离线   | `assets gc`                                              | 回收资产区里世界无引用的字节                                                                                                             |
+| 离线   | `blobs gc`                                               | 回收源码 CAS 里世界无引用的字节                                                                                                          |
+| 离线   | `materialized gc`                                        | 回收物化区里已无世代引用的目录                                                                                                           |
 | —      | `help`（或缺省）                                         | 打印说明                                                                                                                                 |
 
 - `run` 的 `directives` 是内核形态的数组，例：
   `run '[{"kind":"write","request":{"id":"w1","op":"put","target":{"expect_pos":null},"args":{"body":["c",1]},"by":"cli"}}]'`。
-- 宿主保留字（插件命令不得占用，入世即拒）：`start` / `stop` / `run` / `status` / `seed` / `pack` / `verify` / `replay` / `compact`；
-  `commands` / `audit` / `help` 是 CLI 自己的命令，不转发给宿主。
+- 宿主保留字（插件命令不得占用，入世即拒）：`start` / `stop` / `run` / `status` / `seed` / `pack` / `verify` /
+  `replay` / `unseeded` / `compact` / `commands` / `audit` / `assets` / `blobs` / `materialized` / `help`
+  （与宿主侧同一份清单，见 `docs/host.md` §五 宿主扩展面）。其中 `commands` / `audit` 连宿主取数，`help` 只在 CLI 侧打印。
 - 参数含 `@` 前缀时从文件读 JSON（相对当前工作目录）。
 - 输出：结果 JSON 走 stdout；错误消息走 stderr，退出码 1。
 - **退出码**：用法错误与异常 → 1；`seed` / `pack` 有任一条目 `failed`（报告 `ok:false`）→ 也**非 0**（结构化报告照常走 stdout）。

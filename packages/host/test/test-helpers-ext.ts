@@ -147,7 +147,7 @@ export interface PackageSpec {
   start?: string
   /** 服务传输形态声明；省略则不写 `transport` 字段（回落 `stdio`）。 */
   transport?: string
-  /** 显式构建声明；省略则不写 `build` 字段（回落宿主旧探测）。 */
+  /** 显式构建声明；省略则写空数组（`build` 是必需字段，空数组 = 无需构建）。 */
   build?: Array<{ cmd: string; args: string[] }>
   /** 独占资源声明；省略则不写 `exclusive` 字段（无独占资源）。 */
   exclusive?: string[]
@@ -168,7 +168,7 @@ export interface PackageSpec {
 }
 
 /**
- * 在临时 root 下写一个完整插件包（契约字段：`build` / `exclusive` / `transport` 缺省省略、其余齐全；CommonJS 信封）。
+ * 在临时 root 下写一个完整插件包（契约字段：`build` 缺省写空数组、`exclusive` / `transport` 缺省省略、其余齐全；CommonJS 信封）。
  * 返回包根绝对路径；同名身份重复调用会覆盖已有文件（换代测试用）。
  */
 export function writeTempPackage(root: string, spec: PackageSpec): string {
@@ -196,7 +196,7 @@ function writePackageAt(pkgRoot: string, spec: PackageSpec): void {
     pins: spec.pins ?? {},
     start,
     ...(spec.transport === undefined ? {} : { transport: spec.transport }),
-    ...(spec.build === undefined ? {} : { build: spec.build }),
+    build: spec.build ?? [],
     ...(spec.exclusive === undefined ? {} : { exclusive: spec.exclusive }),
     protocol: spec.protocol ?? '1',
     restart: spec.restart ?? {

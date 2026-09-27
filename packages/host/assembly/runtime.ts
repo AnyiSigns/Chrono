@@ -722,7 +722,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private assetsCopyOf(id: string): ((cwd: string) => void) | undefined {
     const manifest = readAssetsManifest(this.world, id)
     if (!manifest.ok) {
-      this.record('dep', 'periodic_invalid', { impl: id, reason: manifest.reason })
+      this.record('dep', 'assets_manifest_invalid', { impl: id, reason: manifest.reason })
       return undefined
     }
     if (manifest.entries.length === 0) return undefined
@@ -845,6 +845,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       gen: service.gen,
       reason: service.pendingExitReason ?? reason,
     })
+    // 进程已死：从服务表摘除，令 `loaded` 在重启退避窗口内据实报 `service:false`。
+    // 服务表只含在跑服务；重试成功由 `attemptRestart` 重新登记，无需在此保留死实例。
+    if (this.services.get(service.id) === service) this.services.delete(service.id)
     // 已被换代取代（自身 active 不再是本 gen）→ 不重启旧世代（A6：绝不回落）
     if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
     // 声明 never：不重启，退出即隔离该分支（退出监听无法 await，隔离内部的退出回收自成一体）

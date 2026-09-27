@@ -216,6 +216,7 @@ function worldWithDecl(pins: { [name: string]: string }): World {
     methods: { 'toy.decl': ['echo'] },
     pins,
     start: '',
+    build: [],
     protocol: '1',
     restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
     health: { interval_ms: 0, timeout_ms: 0 },

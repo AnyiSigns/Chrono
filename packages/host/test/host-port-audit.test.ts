@@ -185,7 +185,9 @@ describe('H19 反向调用端口审计（env 值脱敏）', () => {
     try {
       const result = await client.command('toy-caller.run')
       expect(result.status).toBe('done')
-      const value = (result.observations[0] as { value: Json }).value as { forwarded: { args: Json } }
+      const value = (result.observations[0] as { value: Json }).value as {
+        forwarded: { args: Json }
+      }
       expect(value.forwarded.args).toEqual({ env: { secret: SECRET, apiKey: 'zzz' }, n: 7 })
       expect(handle.portAuditRecords().length).toBe(1)
     } finally {

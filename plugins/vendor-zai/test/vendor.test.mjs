@@ -10,7 +10,7 @@ const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
 const DECL_FIELDS = [
-  'identity', 'schema', 'implements', 'methods', 'pins', 'start',
+  'identity', 'schema', 'implements', 'methods', 'pins', 'start', 'build',
   'protocol', 'restart', 'health', 'state', 'members', 'commands',
 ]
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
@@ -100,7 +100,7 @@ const EXPECTED = {
 const SCHEMA_TOP_KEYS = ['name', 'sdk', 'default_base_url', 'default_auth_ref_name', 'default_reasoning', 'quirks']
 const QUIRKS_KEYS = ['impl', 'protocol', 'sdk_package', 'auth_style', 'auth_header', 'system_role', 'reasoning_field', 'reasoning_map', 'reasoning_response_field', 'max_tokens_field', 'models_path', 'stream_usage', 'extra_headers', 'note']
 
-test('plugin.json 12 字段齐全且形态合法', () => {
+test('plugin.json 13 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, EXPECTED.identity)

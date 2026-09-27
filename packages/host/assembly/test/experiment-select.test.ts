@@ -18,7 +18,9 @@ import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import { writeTempPackage } from '../../test/test-helpers-ext.ts'
 import type { Gen, Json, World } from '../../../kernel/index.ts'
 
-const TOY_ROUTER = fileURLToPath(new URL('../../../../fixtures/plugins/toy-router', import.meta.url))
+const TOY_ROUTER = fileURLToPath(
+  new URL('../../../../fixtures/plugins/toy-router', import.meta.url),
+)
 
 const SELECT_INPUT: Json = { candidates: ['a', 'b'], aliases: ['b'], primary: 'a' }
 
@@ -72,9 +74,9 @@ describe('实验：router.select 判定进 term（toy-router）', () => {
       expect(
         evalSelect(world, blobsDir, { candidates: ['a', 'b'], aliases: [], primary: 'a' }),
       ).toEqual({ ok: true, value: 'a' })
-      expect(
-        evalSelect(world, blobsDir, { candidates: ['a'], aliases: [], primary: 'z' }),
-      ).toEqual({ ok: true, value: { ok: false, error: { code: 'no_candidate' } } })
+      expect(evalSelect(world, blobsDir, { candidates: ['a'], aliases: [], primary: 'z' })).toEqual(
+        { ok: true, value: { ok: false, error: { code: 'no_candidate' } } },
+      )
     } finally {
       await cleanupTempRoot(root)
     }

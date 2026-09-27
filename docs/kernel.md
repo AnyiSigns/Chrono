@@ -36,7 +36,7 @@ run(input: KernelInput) → KernelOutput
 ```
 value   ← types
 hash    ← types, value
-journal ← types, hash            （world 的 apply/链/校验 + batch 的 substitute/argsHashOf）
+journal ← types, hash            （world 的 apply/链/校验 + batch 的 substitute/hashOnly）
 commit  ← types, hash, journal   （不依赖 machine）
 machine ← types, value, hash    （不依赖 journal / commit）
 run     ← 以上全部               （唯一调用 commit 的地方）
@@ -239,7 +239,7 @@ KernelOutput = { world, journal, head, pending, observations, status, usage }
 
 三条设计语义：**整次调用原子**（拒绝/等待/空闲返回的是输入世界、日志为空，克隆体只服务于 done）；**等待从不返回部分世界**（不捕获续体，结果由输入回灌，从入口重跑，走到同一 `eff` 取 `results[id]`）；**推荐一条 write 一个调用**（要原子写多份用一条 `batch`，这是 batch 的主要用途）。
 
-**run 级并发**：多个 run 可同时活动——并发**只在 run 之间**，每个 run 内部仍是单 pending（eval 内不并行）。并发机制在**宿主侧**（提交队列 + 乐观校验，见 `host.md` §五 写者），内核 `run` 语义不变：仍是纯函数、单 pending、`expect_pos` 单链头 CAS。宿主把各 run 的 `commit` 进单一提交队列串行落账，冲突（base `worldRev` 不符）时按续跑纪律重提交（同 `run_id`/`now`、`results` 只增不改，重试占新 `seq`、入账可辨）。仲裁序 = journal `seq`（链序），**无需在 `Entry`/`Op` 加新字段**。并发 run 都写**同一条单链**，与 §十四边界 5「单链 CAS、不做多链合并」一致。
+**run 级并发**：多个 run 可同时活动——并发**只在 run 之间**，每个 run 内部仍是单 pending（eval 内不并行）。并发机制在**宿主侧**（提交队列 + 串行落账，见 `host.md` §五 写者），内核 `run` 语义不变：仍是纯函数、单 pending、`expect_pos` 单链头 CAS。宿主把各 run 的 `commit` 进单一提交队列串行落账，并在**落账互斥段内**把每条 write 的 `expect_pos` **机械重锚**到当时链头——即「在新链头上重放同一条 directive」，故 `pos_conflict` 结构上不产生；这里**没有**「检测 base 冲突再自动重提交」这条路径，串行落账靠互斥段保证，不靠乐观重试。分工写明：**宿主只机械重锚 `expect_pos`**（保单链 CAS 与串行落账），**写者自己用 `expect_*` 门禁守语义前提**。当前只有 `add_gen` / `graft`（沿同一 `applyAddGen` 路径）认 `expect_active`——宿主只为 `add_gen` 自动注入，`graft` 仅在写者显式携带时生效；`set_active` / `retire` / `fork` **无**此类门禁。故对这三个 op 的**陈旧判定防御目前不可用**，不被串行落账覆盖，本条不假装它已解决。仲裁序 = journal `seq`（链序），**无需在 `Entry`/`Op` 加新字段**（`expect_active` 是 op 的 `args` 字段，非链格式字段）。并发 run 都写**同一条单链**，与 §十四边界 5「单链 CAS、不做多链合并」一致。
 
 效果身份 `eff_id = H({run, i, n})`：`i` 是 directive 序号，`n` 是该次求值内效果序号——序号要带，否则一次调用内多次求值碰撞。不捕获续体的代价：单 pending 是严格求值下界（同时挂起多个语义上不可能）；一个 directive 内 k 个效果 ⇒ 总成本 O(k²)（每次续跑重放前缀），由 `limits.gas` 封顶不会失控但按期付。纪律：效果放叶子、长循环拆多 directive（`i` 不同 ⇒ 各自前缀更短）。门外逃生舱（宿主侧，不破不捕获续体）：真正贵的是重复触碰真实端口而非重放纯计算，效果身份确定 ⇒ 宿主可按 `(port, method, canonicalJson(args))` 缓存幂等端口结果，把外效应摊平到 O(k)；但宿主不能"从第 k 个效果续跑内核"——那需捕获续体。
 
@@ -261,7 +261,7 @@ Eff   ["eff", port, method, args]  Call  ["call", fTerm, [T...]]
 Arith ["arith", op, T, T]          List  ["list", [T...]]        Obj  ["obj", {k: T...}]
 ```
 
-`pred`（op ∈ lt/le/gt/ge/eq/ne）复用 `cmp` 全序，是 `if` 唯一可计算出来的布尔来源；`get` 对任意值沿静态 path 投影，与 `g` 对称（`g` 的根是 `ctx`，`get` 的根是任意值）；`getOr` 同 `get` 但缺失路径时惰性取默认项，使外部数据里的**可选字段**可在 term 内安全读取。`arith`（op ∈ add/sub/mul）只接受有限数、结果非有限报 `bad_arith`；`list`/`obj` 逐个求值构造新列表/新对象（`obj` 键按 code-unit 升序，与 `canonicalJson`/`cmp` 同序）。**不加 `div`**：除零与非终止小数语义复杂、收益低。这些全是**加法式扩展**（原语只增不改语义）：不改身份、终止性与链格式，老日志不含新原语仍可重放；新原语在旧实现上报 `bad_term` 而非算错。
+`pred`（op ∈ lt/le/gt/ge/eq/ne）复用 `cmp` 全序，是 `if` 唯一可计算出来的布尔来源；`get` 对任意值沿静态 path 投影，与 `g` 对称（`g` 的根是 `ctx`，`get` 的根是任意值）；`getOr` 同 `get` 但缺失路径时惰性取默认项，使外部数据里的**可选字段**可在 term 内安全读取。`arith`（op ∈ add/sub/mul）只接受有限数、结果非有限报 `bad_arith`；`cmp` 与规范序列化 `canonicalJson` 共用同一嵌套深度护栏，超限报 `depth`（拒绝执行，不逸出为宿主语言栈溢出）；`list`/`obj` 逐个求值构造新列表/新对象（`obj` 键按 code-unit 升序，与 `canonicalJson`/`cmp` 同序）。**不加 `div`**：除零与非终止小数语义复杂、收益低。这些全是**加法式扩展**（原语只增不改语义）：不改身份、终止性与链格式，老日志不含新原语仍可重放；新原语在旧实现上报 `bad_term` 而非算错。
 
 term 的边界：可推导纯数值、可组装结果对象；但**重计算与效果仍归执行件**——判定管选择、编排与轻量组装，数值聚合之外的重活不进 term。
 

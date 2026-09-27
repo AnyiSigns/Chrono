@@ -37,7 +37,10 @@ export function createWatchReload(deps: WatchReloadDeps): WatchReload {
    */
   const followFailureLine = (identity: string): string => {
     const running =
-      deps.getRuntime()?.loaded().some((entry) => entry.id === identity && entry.service) ?? false
+      deps
+        .getRuntime()
+        ?.loaded()
+        .some((entry) => entry.id === identity && entry.service) ?? false
     return running
       ? `watcher: ${identity} 新世代构建 / 启动失败，旧版本继续服务`
       : `watcher: ${identity} 新世代启动失败，当前无可用服务（按 restart 策略重试）`

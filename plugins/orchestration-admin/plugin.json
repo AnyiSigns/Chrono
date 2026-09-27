@@ -8,6 +8,7 @@
   },
   "pins": {},
   "start": "node execute/main.ts",
+  "build": [],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

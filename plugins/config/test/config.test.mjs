@@ -19,6 +19,7 @@ const DECL_FIELDS = [
   'methods',
   'pins',
   'start',
+  'build',
   'protocol',
   'restart',
   'health',

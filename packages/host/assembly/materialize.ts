@@ -180,7 +180,7 @@ function setReadOnly(file: string): void {
 export const MATERIALIZED_KEEP_GENERATIONS = 5
 
 export interface MaterializedGcReport {
-  /** 扫描到的 64-hex 目录数。 */
+  /** 扫描到的可回收项数（64-hex 世代目录 + staging 残留）。 */
   scanned: number
   /** 被删的世代目录名（排序）。 */
   removed: string[]
@@ -222,8 +222,13 @@ export function materializedKeepSet(
 }
 
 /**
- * 回收物化目录（③ 可重算）：只删 64-hex 命名的目录，跳过 staging（`.tmp-` 后缀）与意外内容；
- * 符号链接不跟进。删不掉只记 `failed`（Windows 只读硬链接目录可能需先解属性），不阻断调用方。
+ * 回收物化目录（③ 可重算）：删 64-hex 命名的世代目录与 staging 残留（`.tmp-` 中间态），
+ * 跳过意外内容与非目录项；符号链接不跟进。删不掉只记 `failed`
+ * （Windows 只读硬链接目录可能需先解属性），不阻断调用方。
+ *
+ * staging 目录只在物化硬崩时残留（正常路径 catch 内即清）；回收安全性依据：GC 的调用方都**持有世界锁**
+ * （bootstrap 抢锁后、装配前；离线 `runMaterializedGc` 同规），存活宿主必持锁、并发的第二个宿主在抢锁处
+ * 即 `writer_busy`，故 GC 时刻结构上不存在属于活进程的在途物化。
  */
 export function gcMaterialized(
   materializedDir: string,
@@ -232,7 +237,8 @@ export function gcMaterialized(
 ): MaterializedGcReport {
   const keep = materializedKeepSet(world, keepGenerations)
   const report = gcDirs(materializedDir, {
-    select: (name) => isMaterializedDir(materializedDir, name),
+    select: (name) =>
+      isMaterializedDir(materializedDir, name) || isStagingDir(materializedDir, name),
     keep: (name) => keep.has(name),
     remove: (name) => rmSync(join(materializedDir, name), { recursive: true, force: true }),
   })
@@ -244,10 +250,24 @@ export function gcMaterialized(
   }
 }
 
-/** 只认真实目录：staging 目录名带后缀、非目录项一律跳过，避免误删意外内容。 */
+/** staging 目录名：`<commit 64-hex>.tmp-<pid>-<uuid>`；即 `materializeCommit` 的中间态命名。 */
+const STAGING_DIR_PATTERN =
+  /^[0-9a-f]{64}\.tmp-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** 只认真实目录：64-hex 名非目录项一律跳过，避免误删意外内容。 */
 function isMaterializedDir(dir: string, name: string): boolean {
   const target = blobFile(dir, name)
   if (target === null) return false
+  return isDirectory(target)
+}
+
+/** staging 残留：只认 `materializeCommit` 命名形态的真实目录，恰好像 staging 的文件 / 意外目录不碰。 */
+function isStagingDir(dir: string, name: string): boolean {
+  if (!STAGING_DIR_PATTERN.test(name)) return false
+  return isDirectory(join(dir, name))
+}
+
+function isDirectory(target: string): boolean {
   try {
     return lstatSync(target).isDirectory()
   } catch {

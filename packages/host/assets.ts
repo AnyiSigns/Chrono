@@ -7,7 +7,7 @@
 // - 备份口径：备份世界 ≠ 备份字节，须连同 `state/assets/` 一起备份。
 
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { casFilePath, decodeBase64Strict, isSha256Hex } from './common/cas.ts'
 import { writeFileAtomic } from './common/fs-atomic.ts'
@@ -148,15 +148,4 @@ function cleanOrphanMimes(dir: string): void {
       rmSync(resolve(dir, name), { force: true })
     }
   }
-}
-
-/** 资产区现状（离线 GC 报告 / 诊断用）：只列 64-hex 文件。 */
-export function listAssets(dir: string): { sha256: string; size: number }[] {
-  if (!existsSync(dir)) return []
-  const out: { sha256: string; size: number }[] = []
-  for (const name of readdirSync(dir)) {
-    if (!isSha256Hex(name)) continue
-    out.push({ sha256: name, size: statSync(resolve(dir, name)).size })
-  }
-  return out.sort((a, b) => (a.sha256 < b.sha256 ? -1 : 1))
 }

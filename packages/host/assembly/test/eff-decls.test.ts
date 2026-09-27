@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import { planPack, validateEffDecls, walkEffs } from '../index.ts'
+import type { EffDeclContext } from '../index.ts'
 import { validatePackage } from '../../validate-package.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
 import { hostPaths } from '../../paths.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import { writeTempPackage } from '../../test/test-helpers-ext.ts'
+import { TERM_TAGS } from '../../../kernel/index.ts'
 import type { Json, World } from '../../../kernel/index.ts'
 
 function emptyWorld(): World {
@@ -25,7 +27,13 @@ describe('入世期 eff 声明校验', () => {
       const ast = [
         'if',
         ['pred', 'eq', ['c', ['eff', 'nope', 'm', ['c', null]]], ['c', null]],
-        ['list', [['eff', 'p', 'a', ['c', null]], ['c', 1]]],
+        [
+          'list',
+          [
+            ['eff', 'p', 'a', ['c', null]],
+            ['c', 1],
+          ],
+        ],
         [
           'obj',
           {
@@ -45,6 +53,62 @@ describe('入世期 eff 声明校验', () => {
       ] as unknown as Json
       expect(collectPorts(ast)).toEqual(['p.c'])
     })
+
+    it('c / g / v 的载荷即便形如 eff 头也不下钻（字面量数据）', () => {
+      const shaped = ['eff', 'nope', 'm', ['c', null]]
+      expect(collectPorts(['c', shaped] as unknown as Json)).toEqual([])
+      expect(collectPorts(['g', shaped] as unknown as Json)).toEqual([])
+      expect(collectPorts(['v', shaped] as unknown as Json)).toEqual([])
+    })
+  })
+
+  describe('walkEffs：与内核 TERM_TAGS 对表、未覆盖头 fail-closed', () => {
+    const eff = ['eff', 'p', 'a', ['c', null]] as unknown as Json
+    const emptyCtx: EffDeclContext = {
+      implements: new Set<string>(),
+      pins: new Set<string>(),
+      methods: {},
+      calleeMethodsOf: () => null,
+    }
+
+    it('内核 TERM_TAGS 的每个头都被 walkEffs 覆盖（新增原语未同步即失败）', () => {
+      for (const tag of TERM_TAGS) {
+        const handled = walkEffs([tag] as unknown as Json, () => {})
+        expect(handled, tag).toEqual([])
+      }
+    })
+
+    it('term 承载原语的 term 位置内嵌的 eff 均被找到', () => {
+      const cases: Array<[string, Json]> = [
+        ['get', ['get', eff, []]],
+        ['getOr', ['getOr', ['c', null], [], eff]],
+        ['cmp', ['cmp', eff, ['c', null]]],
+        ['pred', ['pred', 'eq', eff, ['c', null]]],
+        ['arith', ['arith', 'add', eff, ['c', null]]],
+        ['if', ['if', ['c', true], eff, ['c', null]]],
+        ['fold', ['fold', eff, ['c', null], ['c', null]]],
+        ['call', ['call', ['c', '0'.repeat(64)], [eff]]],
+        ['list', ['list', [eff]]],
+        ['obj', ['obj', { k: eff }]],
+        ['eff', eff],
+      ] as unknown as Array<[string, Json]>
+      for (const [tag, ast] of cases) {
+        expect(collectPorts(ast), tag).toEqual(['p.a'])
+      }
+    })
+
+    it('内核新增原语而本表未覆盖 → walkEffs 记录、validateEffDecls 整包拒 bad_term', () => {
+      // 模拟内核向 TERM_TAGS 增一个原语、宿主 walkEffs 未同步：默认分支绝不静默跳过。
+      const drift = TERM_TAGS as unknown as Set<string>
+      drift.add('futurePrim')
+      try {
+        const ast = ['futurePrim', eff] as unknown as Json
+        expect(walkEffs(ast, () => {})).toEqual(['futurePrim'])
+        expect(validateEffDecls(ast, emptyCtx)).toEqual(['bad_term:futurePrim'])
+      } finally {
+        drift.delete('futurePrim')
+      }
+    })
   })
 
   describe('validateEffDecls：自调用与跨身份口径分开', () => {
@@ -52,8 +116,7 @@ describe('入世期 eff 声明校验', () => {
       implements: new Set(['self']),
       pins: new Set(['remote']),
       methods: { self: ['ok'] },
-      calleeMethodsOf: (port: string) =>
-        port === 'remote' ? { remote: ['r'] } : null,
+      calleeMethodsOf: (port: string) => (port === 'remote' ? { remote: ['r'] } : null),
     }
 
     it('自调用 method 不在 methods[port] → undeclared_method', () => {
@@ -83,6 +146,33 @@ describe('入世期 eff 声明校验', () => {
       expect(
         validateEffDecls(['eff', 'remote', 'anything', ['c', null]] as unknown as Json, ctx),
       ).toEqual([])
+    })
+  })
+
+  describe('seed 级：未覆盖头 fail-closed', () => {
+    it('内核新增原语而本表未覆盖 → 整包拒 bad_term，世界未写入', async () => {
+      const root = createTempRoot()
+      // 模拟内核向 TERM_TAGS 增一个原语、宿主 walkEffs 未同步；入世门禁须整包拒而非放行。
+      const drift = TERM_TAGS as unknown as Set<string>
+      drift.add('futurePrim')
+      try {
+        const pkg = writeTempPackage(root, {
+          identity: 'toy-future-head',
+          implements: [],
+          methods: {},
+          terms: {
+            'x.json': JSON.stringify(['futurePrim', ['eff', 'nope', 'm', ['c', null]]]),
+          },
+        })
+        const report = runSeed(root, [{ name: 'toy-future-head', path: pkg }])
+        expect(report.ok).toBe(false)
+        expect(report.items[0].reasons).toContain('bad_term:futurePrim')
+        const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+        expect(Object.hasOwn(world.ids, 'toy-future-head')).toBe(false)
+      } finally {
+        drift.delete('futurePrim')
+        await cleanupTempRoot(root)
+      }
     })
   })
 
@@ -252,6 +342,7 @@ describe('入世期 eff 声明校验', () => {
               methods: { 'toy.validate': ['ok'] },
               pins: {},
               start: '',
+              build: [],
               protocol: '1',
               restart: {},
               health: {},

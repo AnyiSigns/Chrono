@@ -84,4 +84,24 @@ describe('物化回收的宿主接线', () => {
     expect(existsSync(join(paths.materializedDir, orphan))).toBe(false)
     expect(existsSync(join(paths.materializedDir, active))).toBe(true)
   })
+
+  it('宿主启动时回收物化 staging 残留：硬崩遗留目录被删、保留集目录保留', async () => {
+    const { world, active } = seedDataOnly()
+    const paths = hostPaths(root)
+    expect(
+      materializeCommit(world, active, paths.materializedDir, { blobsDir: paths.blobsDir }),
+    ).not.toBeNull()
+    const staleStaging = join(
+      paths.materializedDir,
+      `${active}.tmp-999-12345678-1234-1234-1234-123456789abc`,
+    )
+    mkdirSync(staleStaging, { recursive: true })
+    writeFileSync(join(staleStaging, 'partial.js'), 'partial')
+
+    const handle = await startHost({ root })
+    handles.push(handle)
+
+    expect(existsSync(staleStaging)).toBe(false)
+    expect(existsSync(join(paths.materializedDir, active))).toBe(true)
+  })
 })

@@ -31,7 +31,9 @@ export interface DispatchDeps {
   handlers: InboundHandlers
 }
 
-export function createDispatch(deps: DispatchDeps): (socket: Socket, message: InboundMessage) => void {
+export function createDispatch(
+  deps: DispatchDeps,
+): (socket: Socket, message: InboundMessage) => void {
   const { send } = deps
 
   const error = (socket: Socket, id: string, code: string, message: string): void => {
@@ -43,11 +45,7 @@ export function createDispatch(deps: DispatchDeps): (socket: Socket, message: In
     socket: Socket,
     id: string,
     accepted: boolean,
-    run: (
-      runId: string,
-      thread: string | null,
-      signal: AbortSignal,
-    ) => Promise<void>,
+    run: (runId: string, thread: string | null, signal: AbortSignal) => Promise<void>,
     message: InboundMessage,
   ): void => {
     const runId = randomUUID()
@@ -99,8 +97,7 @@ export function createDispatch(deps: DispatchDeps): (socket: Socket, message: In
           socket,
           message.id,
           false,
-          (runId, thread, signal) =>
-            deps.handlers.command(socket, message, runId, thread, signal),
+          (runId, thread, signal) => deps.handlers.command(socket, message, runId, thread, signal),
           message,
         )
         return
@@ -111,8 +108,7 @@ export function createDispatch(deps: DispatchDeps): (socket: Socket, message: In
           socket,
           message.id,
           false,
-          (runId, thread, signal) =>
-            deps.handlers.forward(socket, message, runId, thread, signal),
+          (runId, thread, signal) => deps.handlers.forward(socket, message, runId, thread, signal),
           message,
         )
         return
@@ -202,15 +198,22 @@ export function createDispatch(deps: DispatchDeps): (socket: Socket, message: In
       }
       case 'commands': {
         const snapshot = deps.getSnapshot()
-        const commands = deps.commandIndexFor(snapshot.world, snapshot.head).commands.map(
-          (command) => ({ identity: command.identity, name: command.name, entry: command.entry }),
-        )
+        const commands = deps
+          .commandIndexFor(snapshot.world, snapshot.head)
+          .commands.map((command) => ({
+            identity: command.identity,
+            name: command.name,
+            entry: command.entry,
+          }))
         send(socket, { v: PROTOCOL_VERSION, id: message.id, kind: 'list', commands })
         return
       }
       case 'status': {
         const runtime = deps.getRuntime()
-        const loaded = runtime === undefined ? [] : runtime.loaded().map((entry) => ({ id: entry.id, gen: entry.gen }))
+        const loaded =
+          runtime === undefined
+            ? []
+            : runtime.loaded().map((entry) => ({ id: entry.id, gen: entry.gen }))
         const current = deps.getSnapshot()
         send(socket, {
           v: PROTOCOL_VERSION,

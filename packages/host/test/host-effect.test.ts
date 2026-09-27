@@ -141,7 +141,11 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     expect(write.op).toBe('put')
     expect(write.ref).toBeUndefined()
     const auditBody = lastAuditBody()
-    expect(auditBody['request']).toMatchObject({ port: 'toy.alpha', method: 'echo', args: { n: 1 } })
+    expect(auditBody['request']).toMatchObject({
+      port: 'toy.alpha',
+      method: 'echo',
+      args: { n: 1 },
+    })
     expect(auditBody['result']).toMatchObject({
       ok: true,
       value: { impl: 'toy-alpha', port: 'toy.alpha', method: 'echo' },
@@ -400,9 +404,10 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     } finally {
       client.close()
     }
-    // 无业务写（审计只进侧存）
+    // 无业务写（审计只进侧存）；静默超时保留具体传输原因（timeout），不再塌成笼统 transport_failed
     expect(readJournal(journalFile()).length).toBe(before)
-    expect(lastAuditBody()['result']).toEqual({ ok: false, error: 'transport_failed' })
+    expect(lastAuditBody()['result']).toEqual({ ok: false, error: 'timeout' })
+    expect(lastAuditBody()['outcome']).toBe('transport_failed')
   }, 30000)
 
   it('并发提交串行化：两条写同链、无 pos_conflict', async () => {

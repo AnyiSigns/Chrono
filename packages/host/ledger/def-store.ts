@@ -1,14 +1,16 @@
 // 基础世界 def 分片存储 + 按需加载。
 // 分片按 def 键（内容哈希）前 N 位十六进制字符命名：`<prefix>.jsonl`，每行一条 `{h,d}`。
-// `DefStore` 只按需读分片，LRU 缓存已读 def；缺分片 / 坏行 fail-open（视作缺 def，不炸）。
+// `DefStore` 只按需读分片，LRU 缓存已读 def；**缺分片**视作缺 def（fail-open），
+// 行不可解析或 body 复算哈希与键不符按**损坏**处理（抛 `bad_base`，不得静默当缺 def）。
+// 内容自校按需：分片整片入缓存时未校条目标记待校，首次取用才复算 `H(d) === h`。
 // `createLazyDefs` 把 store 包成与普通 defs 表同形的对象：内核照常按下标读 / 写 / 列键，
 // 但 `Object.keys`、判存在、克隆都不读 body——只有真正取 def 才触发一次分片读。
 // 写入走内存覆盖层（副本独立），底层分片保持只读。
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { LAZY_DEFS } from '../../kernel/index.ts'
-import type { Def, Hash } from '../../kernel/index.ts'
+import { H, LAZY_DEFS } from '../../kernel/index.ts'
+import type { Def, Hash, Json } from '../../kernel/index.ts'
 import { jsonByteLength } from '../common/json.ts'
 
 /** 单 store 的 LRU def 上限（缺省）：约几千份 body，远低于整世界规模。 */
@@ -44,14 +46,15 @@ function defBytes(def: Def): number {
 
 /**
  * 分片 def 存储：清单在内存（判存在 / 列键零 IO），body 按分片惰性读入 LRU。
- * 读侧 fail-open：分片缺失或行损坏只当该 def 不存在，不抛。
+ * 读侧：**缺分片** fail-open（视作缺 def）；行损坏 / body 哈希不符 fail-closed（抛 `bad_base`）。
+ * body 哈希按需自校：整片入缓存的条目先标记待校，首次取用才复算，避免热路径重复哈希。
  */
 export class DefStore {
   private readonly dir: string
   private readonly shard: number
   private readonly manifest: Set<Hash>
   private readonly order: Hash[]
-  private readonly cache = new Map<Hash, { def: Def; bytes: number }>()
+  private readonly cache = new Map<Hash, { def: Def; bytes: number; verified: boolean }>()
   private readonly seenShards = new Set<string>()
   private readonly cacheLimit: number
   private readonly cacheBytesLimit: number
@@ -77,19 +80,31 @@ export class DefStore {
     return this.order
   }
 
-  /** 按哈希取 def：缓存优先，未命中读其分片；缺分片 / 坏行 → undefined（fail-open）。 */
+  /** 按哈希取 def：缓存优先，未命中读其分片；缺分片 → undefined（fail-open），body 哈希不符 → 抛 `bad_base`。 */
   get(hash: Hash): Def | undefined {
     const cached = this.cache.get(hash)
     if (cached !== undefined) {
       this.stats.hits += 1
+      if (!cached.verified) {
+        this.assertBody(hash, cached.def)
+        cached.verified = true
+      }
       this.touch(hash, cached.def, cached.bytes)
       return cached.def
     }
     if (!this.manifest.has(hash)) return undefined
     this.stats.misses += 1
-    const loaded = this.loadShard(hash.slice(0, this.shard))
+    const prefix = hash.slice(0, this.shard)
+    const loaded = this.loadShard(prefix)
     const def = loaded.get(hash)
-    if (def === undefined) return undefined
+    if (def === undefined) {
+      // 分片文件存在却缺该键（截断 / 缺行）＝清单与分片不一致，按损坏拒；
+      // 整片文件缺失才是文档化的「缺 def」fail-open（清单与分片同时丢，回落全链可重建）
+      if (existsSync(join(this.dir, `${prefix}.jsonl`))) throw new Error('bad_base')
+      return undefined
+    }
+    // verify-on-demand：只校被取用的 def；整片入缓存的其余条目留待各自首次取用时再校。
+    this.assertBody(hash, def)
     // 分片已整片解析：先算一次各 def 体量，整片入 LRU（请求项最后 touch，避免被同片项挤掉）。
     // 分片字节超预算时只缓存请求项——整片入会一次挤掉大量条目且随即被淘汰，徒增抖动。
     const sizes = new Map<Hash, number>()
@@ -100,10 +115,15 @@ export class DefStore {
       total += size
     }
     if (total <= this.cacheBytesLimit) {
-      for (const [key, value] of loaded) this.touch(key, value, sizes.get(key))
+      for (const [key, value] of loaded) this.touch(key, value, sizes.get(key), key === hash)
     }
-    this.touch(hash, def, sizes.get(hash))
+    this.touch(hash, def, sizes.get(hash), true)
     return def
+  }
+
+  /** 内容寻址自校：body 复算哈希须等于其键，否则抛 `bad_base`（损坏不得当缺 def 静默吞掉）。 */
+  private assertBody(hash: Hash, def: Def): void {
+    if (H(def as unknown as Json) !== hash) throw new Error('bad_base')
   }
 
   /** 已缓存 def 数（诊断 / 测试）。 */
@@ -119,8 +139,9 @@ export class DefStore {
   /**
    * LRU 登记：条数与字节任一超限即淘汰最旧；单 def 超字节上限则不缓存（防一个大 body 撑爆）。
    * `bytes` 已由调用方算好时直接复用，避免命中路径每次访问都重新序列化 body。
+   * `verified` = body 是否已通过内容哈希自校；整片入缓存的条目为 false，首次取用再校。
    */
-  private touch(hash: Hash, def: Def, bytes?: number): void {
+  private touch(hash: Hash, def: Def, bytes?: number, verified = true): void {
     const existing = this.cache.get(hash)
     if (existing !== undefined) {
       this.cache.delete(hash)
@@ -128,7 +149,7 @@ export class DefStore {
     }
     const size = bytes ?? defBytes(def)
     if (size > this.cacheBytesLimit) return
-    this.cache.set(hash, { def, bytes: size })
+    this.cache.set(hash, { def, bytes: size, verified })
     this.cacheBytes += size
     while (this.cache.size > this.cacheLimit || this.cacheBytes > this.cacheBytesLimit) {
       const oldest = this.cache.keys().next().value
@@ -156,14 +177,14 @@ export class DefStore {
     }
     for (const line of text.split('\n')) {
       if (line.length === 0) continue
+      let record: { h?: unknown; d?: unknown }
       try {
-        const record = JSON.parse(line) as { h?: unknown; d?: unknown }
-        if (typeof record.h === 'string' && record.d !== undefined) {
-          out.set(record.h, record.d as unknown as Def)
-        }
+        record = JSON.parse(line) as { h?: unknown; d?: unknown }
       } catch {
-        // fail-open：坏行跳过，不炸整个分片
+        throw new Error('bad_base')
       }
+      if (typeof record.h !== 'string' || record.d === undefined) throw new Error('bad_base')
+      out.set(record.h, record.d as unknown as Def)
     }
     return out
   }

@@ -538,7 +538,9 @@ describe('H16 调用帧 env 注入', () => {
       pins: { 'toy.origin': 'toy-origin' },
       start: '',
       members: [{ kind: 'term', path: 'terms/' }],
-      terms: { 'hold.json': JSON.stringify(['eff', 'toy.origin', 'hold', ['c', { delay_ms: 250 }]]) },
+      terms: {
+        'hold.json': JSON.stringify(['eff', 'toy.origin', 'hold', ['c', { delay_ms: 250 }]]),
+      },
       commands: [{ name: 'toy-client.hold', entry: 'terms/hold.json' }],
     })
     expect(
@@ -555,8 +557,12 @@ describe('H16 调用帧 env 注入', () => {
       const entry = await entryOf(conn, 'toy-client.hold')
       // 两条并发：A 先到（服务在 250ms 延迟中），B 后到并排在 A 之后。A 的反向调用必须拿 A 的 env。
       const [a] = await Promise.all([
-        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], { thread: 'thr-a' }),
-        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], { thread: 'thr-b' }),
+        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], {
+          thread: 'thr-a',
+        }),
+        conn.submit([{ kind: 'eval', entry, args: null } as unknown as Directive], {
+          thread: 'thr-b',
+        }),
       ])
       expect(a.status).toBe('done')
       const value = (a.observations[0] as { value: Json }).value as {
@@ -649,10 +655,7 @@ describe('H16 调用帧 env 注入', () => {
   })
 
   it('反向 port.call 目标回 error → port.error 透传目标错误码', async () => {
-    seedReverse(
-      { reversePort: 'toy.target', reverseMethod: 'echo' },
-      { errorCode: 'boom' },
-    )
+    seedReverse({ reversePort: 'toy.target', reverseMethod: 'echo' }, { errorCode: 'boom' })
     const handle = await startHost({ root })
     handles.push(handle)
     const conn = await connect({ root, timeoutMs: 3000 })

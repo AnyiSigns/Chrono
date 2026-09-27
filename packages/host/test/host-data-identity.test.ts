@@ -16,7 +16,12 @@ import { getBlob, isBlobPointer, putBlob } from '../blobs.ts'
 import { projectBaseOnly } from '../projection/index.ts'
 import { H, worldRev } from '../../kernel/index.ts'
 import type { Directive, Entry, Hash, Json, Op, World } from '../../kernel/index.ts'
-import { createTempRoot, cleanupTempRoot, createToyPlugin, readAuditRecords } from './test-helpers.ts'
+import {
+  createTempRoot,
+  cleanupTempRoot,
+  createToyPlugin,
+  readAuditRecords,
+} from './test-helpers.ts'
 import {
   FIXTURE_ALPHA,
   isPidAlive,

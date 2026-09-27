@@ -3,7 +3,8 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
-import { connect, bufferedResultCount, ClientError } from '../index.ts'
+import { connect, ClientError } from '../index.ts'
+import type { Client } from '../index.ts'
 import { encodeFrame } from '../frame.ts'
 import { resolveRoot, socketPath } from '../socket.ts'
 import { createTempRoot, cleanupTempRoot } from '../../host/test/test-helpers.ts'
@@ -22,6 +23,11 @@ function requestId(chunk: Buffer): string {
   const length = chunk.readUInt32BE(0)
   const body = JSON.parse(chunk.subarray(4, 4 + length).toString('utf8')) as { id: string }
   return body.id
+}
+
+/** 缓冲条数探针：直读连接私有缓冲表（公开面不暴露该状态，测试经此观察缓冲语义）。 */
+function bufferedResultCount(client: Client): number {
+  return (client as unknown as { bufferedResults: Map<string, unknown> }).bufferedResults.size
 }
 
 describe('客户端早到结果缓冲', () => {

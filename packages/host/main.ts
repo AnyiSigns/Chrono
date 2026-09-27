@@ -36,15 +36,27 @@ try {
     `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'} watch=${watch ? 'on' : 'off'}\n`,
   )
   const shutdown = (): void => {
-    void handle.stop().then(() => {
-      try {
-        // 信号路径兜底：stop 已排空，这里再落稳一次，确保退出前无未写批
-        flushLifecycleSync()
-      } catch {
-        // 退出兜底尽力而为
-      }
-      process.exit(0)
-    })
+    void handle
+      .stop()
+      .then(() => {
+        try {
+          // 信号路径兜底：stop 已排空，这里再落稳一次，确保退出前无未写批
+          flushLifecycleSync()
+        } catch {
+          // 退出兜底尽力而为
+        }
+        process.exit(0)
+      })
+      .catch((err: unknown) => {
+        // 停机失败（如释放锁抛错）不落成未处理拒绝：先落稳日志与失败原因，再按非零码退出，避免进程挂起
+        try {
+          flushLifecycleSync()
+        } catch {
+          // 退出兜底尽力而为
+        }
+        process.stderr.write(`stop_failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      })
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)

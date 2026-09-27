@@ -8,6 +8,7 @@ import { ServiceChannelError } from '../service-link.ts'
 import type { CallEnv } from '../wire.ts'
 import { buildAudit, callEffect } from './execute.ts'
 import type { EndpointCaller } from './execute.ts'
+import { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
 import type { AuditDraft } from '../audit.ts'
 import { resolveAuditRedact } from '../audit-redact.ts'
 import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
@@ -24,9 +25,6 @@ import type {
   Json,
   World,
 } from '../../kernel/index.ts'
-
-/** 效果调用缺省超时；`plugin.json` 无此字段，宿主常量（调用未完成 → 传输层失败）。 */
-export const DEFAULT_CALL_TIMEOUT_MS = 30_000
 
 /** 轮内物化结果：在落账段内用该段世界解析 pins / 构造 ctx / 解析命令。 */
 export type RoundMaterialize = (
@@ -184,9 +182,10 @@ function makeCaller(
       if (response.ok) return { ok: true, value: response.value }
       return { ok: true, value: { error: response.code, message: response.message } }
     } catch (err) {
-      // 取消（不再等待）与传输失败分列：前者 outcome 记 cancelled，后者 transport_failed
-      if (err instanceof ServiceChannelError && err.code === 'cancelled') {
-        return { ok: false, error: 'cancelled' }
+      // 传输失败保留通道错误码（timeout / closed / protocol_error / cancelled）：内核只据 `ok` 归 eff_error，
+      // 审计 outcome 仍由 `ok:false` 机械归 transport_failed；正文据 `error` 值可辨具体传输失败。
+      if (err instanceof ServiceChannelError) {
+        return { ok: false, error: err.code }
       }
       return { ok: false, error: 'transport_failed' }
     }

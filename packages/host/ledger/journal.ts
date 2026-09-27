@@ -24,8 +24,11 @@ import {
   worldRev,
 } from '../../kernel/index.ts'
 import type { Entry, Hash, Head, Json, World } from '../../kernel/index.ts'
+import { isSha256Hex } from '../common/cas.ts'
 import { fsyncDir, writeAllSync, writeFileAtomic } from '../common/fs-atomic.ts'
+import { isRecord } from '../common/json.ts'
 import { endsWithNewline, readJsonlFile } from '../common/jsonl.ts'
+import { OP_NAMES } from '../common/op-names.ts'
 import { readBase } from './base.ts'
 
 export interface Anchor {
@@ -67,8 +70,34 @@ export interface JournalRead {
 }
 
 /**
+ * entry 形态校验：结构不符即拒。解析与校验共用同一处，防「语法对、结构错」的条目静默进重放。
+ */
+function isEntry(value: unknown): value is Entry {
+  if (!isRecord(value)) return false
+  const e = value as Record<string, unknown>
+  return (
+    isSeq(e['seq']) &&
+    (e['prev'] === null || isSha256Hex(e['prev'])) &&
+    typeof e['op'] === 'string' &&
+    OP_NAMES.has(e['op']) &&
+    e['args'] !== undefined &&
+    isSha256Hex(e['argsHash']) &&
+    typeof e['by'] === 'string' &&
+    (e['ref'] === undefined || isSha256Hex(e['ref'])) &&
+    typeof e['at'] === 'number'
+  )
+}
+
+/** 解析一行 entry 并做形态校验；结构不符抛 `bad_journal`（不得静默进重放）。 */
+function parseEntry(line: string): Entry {
+  const value = JSON.parse(line) as unknown
+  if (!isEntry(value)) throw new Error('bad_journal')
+  return value
+}
+
+/**
  * 严格读：每行一条 entry 的规范 JSON；缺文件视为空账。
- * 任何非空行解析失败（含末行）都抛——用于 verify / replay / 冷段，完整性判定不得静默丢条目。
+ * 任何非空行解析失败或结构不符（含末行）都抛——用于 verify / replay / 冷段，完整性判定不得静默丢条目。
  */
 export function readJournal(file: string): Entry[] {
   if (!existsSync(file)) return []
@@ -76,7 +105,7 @@ export function readJournal(file: string): Entry[] {
   const entries: Entry[] = []
   for (const line of text.split('\n')) {
     if (line.length === 0) continue
-    entries.push(JSON.parse(line) as Entry)
+    entries.push(parseEntry(line))
   }
   return entries
 }
@@ -87,7 +116,7 @@ export function readJournal(file: string): Entry[] {
  * 带换行的行解析失败仍是真损坏（含末行），中间行同理，一律抛。用于启动 / append 路径。
  */
 export function readJournalTolerant(file: string): JournalRead {
-  const read = readJsonlFile(file, { parse: (line) => JSON.parse(line) as Entry, strict: true })
+  const read = readJsonlFile(file, { parse: parseEntry, strict: true })
   return { entries: read.items, truncated: read.truncated, validBytes: read.validBytes }
 }
 
@@ -151,8 +180,8 @@ export function archiveColdSegment(coldDir: string, entries: Entry[]): string | 
   return `seg-${first}-${last}.jsonl`
 }
 
-function isSeq(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 0
+function isSeq(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 /** 读全部冷段（按首 seq 升序拼接）；跨段按 seq 去重，容忍崩溃窗口产生的重叠。 */
@@ -188,9 +217,25 @@ function dedupeBySeq(entries: Entry[]): Entry[] {
 }
 
 /**
+ * 链位置校验：从起点 `(seq0, prev0)` 起 seq 严格 +1、prev 逐条衔接；不查 apply / argsHash。
+ * `replay` 只重建、不校验衔接（kernel.md §六），故取用前由此挡住「链后缀被当作完整链重放」。
+ */
+function assertChain(entries: Entry[], seq0: number, prev0: Hash | null): void {
+  let seq = seq0
+  let prev = prev0
+  for (const entry of entries) {
+    if (entry.seq !== seq || entry.prev !== prev) throw new Error('bad_journal')
+    prev = entryHash(entry)
+    seq += 1
+  }
+}
+
+/**
  * 取用世界（G6）：base 与 journal 尾段对齐时只读「快照起的尾段」并接在基础世界上重放；
  * base 缺失 / 与尾段不对齐（崩溃窗口）时回落**全链**（冷段 + 尾段，按 seq 去重）从空世界重放——
  * 基础世界文件是派生缓存，丢了不丢数据。base 形态损坏（`readBase` 抛 `bad_base`）仍 fail-closed。
+ * entry 形态不符抛 `bad_journal`；接驳 / 回落两路都校验链位置（seq 严格 +1、prev 衔接），
+ * 全链回落还要求从 seq 0 / prev null 起——`replay` 不查衔接，链后缀不得被当作完整链重放。
  * 尾文件按容错读：撕裂尾被排除并回报在 `journalTruncated` / `journalValidBytes`，交持锁写方截断。
  * @param file journal 文件
  * @param baseFile 基础世界文件；缺省 = 不启用基础世界（测试 / 纯日志场景）
@@ -207,6 +252,11 @@ export function loadAnchor(file: string, baseFile?: string, coldDir?: string): A
     // 快照 entry 的 world_rev 自校对不上回收世界，故跳过快照 entry、直接以基础世界为起点重放尾段。
     // 快照 entry 仍在 journal 里，full verify（冷段 + 尾段从空世界重放）照常校验其 world_rev。
     const pruned = base.snapshotRev !== undefined && base.snapshotRev !== base.worldRev
+    // 快照 entry 由 alignedWithBase 锚定到 base；其后的尾段须逐条衔接（replay 不查衔接）
+    if (tail.entries.length > 0) {
+      const first = tail.entries[0]
+      assertChain(tail.entries.slice(1), first.seq + 1, entryHash(first))
+    }
     const world = replay(pruned ? tail.entries.slice(1) : tail.entries, base.world)
     const head =
       tail.entries.length > 0
@@ -223,6 +273,8 @@ export function loadAnchor(file: string, baseFile?: string, coldDir?: string): A
     }
   }
   const entries = dedupeBySeq([...readColdEntries(cold), ...tail.entries])
+  // 回落全链从空世界重放：必须从 seq 0 / prev null 起严格衔接，链后缀不得当完整链
+  assertChain(entries, 0, null)
   return {
     world: replay(entries, EMPTY_WORLD),
     head: headOf(entries),

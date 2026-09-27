@@ -9,6 +9,7 @@
     "host": "host"
   },
   "start": "node execute/main.ts",
+  "build": [],
   "exclusive": ["port"],
   "protocol": "1",
   "restart": {

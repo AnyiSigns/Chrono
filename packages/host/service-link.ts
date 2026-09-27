@@ -4,6 +4,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { CallEnv } from './wire.ts'
+import { MAX_CALL_TIMEOUT_MS } from './common/call-timeout.ts'
 import { isRecord, isStringArray } from './common/json.ts'
 import type { Json } from '../kernel/index.ts'
 
@@ -29,12 +30,6 @@ export interface ServiceChannel {
   /** 物理进程 pid；inproc / worker 无独立进程，为 `undefined`。 */
   readonly pid?: number
 }
-
-/**
- * 单次调用等待上限的硬上限（毫秒）：`setTimeout` 超过 2^31-1 会溢出成立即触发（1ms），
- * 故任何超时声明 / 选项都必须 ≤ 此值；超限按非法处理，不落到计时器。
- */
-export const MAX_CALL_TIMEOUT_MS = 2 ** 31 - 1
 
 export interface ServiceManifest {
   v: string

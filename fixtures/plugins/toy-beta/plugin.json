@@ -5,6 +5,7 @@
   "methods": { "toy.beta": ["echo"] },
   "pins": { "toy.alpha": "toy-alpha" },
   "start": "node execute/main.js",
+  "build": [],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

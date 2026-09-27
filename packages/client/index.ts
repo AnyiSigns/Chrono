@@ -296,11 +296,6 @@ class HostClient implements Client {
     this.socket.destroy()
   }
 
-  /** 测试用：当前暂存的早到结果条数。 */
-  bufferedResultCount(): number {
-    return this.bufferedResults.size
-  }
-
   private awaitRun(
     run: string,
   ): Promise<Extract<OutboundMessage, { kind: 'result'; run: string }>> {
@@ -461,9 +456,4 @@ export function connect(options: ClientOptions = {}): Promise<Client> {
       reject(err)
     })
   })
-}
-
-/** 测试用：查询连接内部暂存的早到结果条数。 */
-export function bufferedResultCount(client: Client): number {
-  return client instanceof HostClient ? client.bufferedResultCount() : 0
 }

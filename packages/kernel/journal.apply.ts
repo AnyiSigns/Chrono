@@ -211,7 +211,7 @@ function batchDigest(
   const acc0: (Hash | null)[] = []
   for (let k = 0; k < opsList.length; k++) {
     const a2 = substitute(opsList[k].args, acc0, k)
-    const h = argsHashOf(opsList[k].op, a2)
+    const h = hashOnly(opsList[k].op, a2)
     hashes.push(h)
     pairs.push([opsList[k].op, h])
     acc0.push(opsList[k].op === 'put' ? h : null)
@@ -291,10 +291,6 @@ function readOps(args: Json): BatchOp[] {
 }
 
 /** argsHash 的按 op 口径：put / 其余 → H(args)；batch → 子对聚合（递归段 1）。 */
-export function argsHashOf(op: Op, args: Json): Hash {
-  return op === 'batch' ? hashOnly('batch', args) : H(args)
-}
-
 function hashOnly(op: Op, args: Json): Hash {
   if (op !== 'batch') return H(args)
   const opsList = readOps(args)

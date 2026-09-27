@@ -51,10 +51,10 @@ export interface PluginDecl {
    */
   transport: ServiceTransport
   /**
-   * 显式构建声明（宿主只执行、不解释语言）；`null` = 字段缺失（回落宿主旧探测）。
-   * 空数组是合法声明：显式表示「无需构建」，不回落探测。
+   * 显式构建声明（宿主只执行、不解释语言）；**字段必需**——缺失即入世拒 `bad_plugin_decl`。
+   * 空数组是合法声明：显式表示「无需构建」。
    */
-  build: PluginBuildStep[] | null
+  build: PluginBuildStep[]
   /**
    * 独占资源声明：元素为资源类名（开放命名，如 `port` / `data`）。非空 = 本插件的服务实例独占该资源、
    * 新旧实例不能并存（如固定端口、单写句柄的持久存储），宿主换代时先 drain 旧服务再起新服务；
@@ -148,11 +148,11 @@ function parseMembers(v: Json | undefined): PluginMember[] | null {
 const SAFE_BUILD_TOKEN = /^[A-Za-z0-9_./:@,+-]+$/
 
 /**
- * 解析 `build` 声明：缺失 → `undefined`（回落旧探测）；畸形 → `null`（入世拒）。
+ * 解析 `build` 声明：字段必需，缺失 → `null`（入世拒 `bad_plugin_decl`）；畸形 → `null`。
  * 每步形如 `{cmd, args}`，`cmd` 非空、`args` 为令牌白名单内的字符串数组。
  */
-function parseBuild(v: Json | undefined): PluginBuildStep[] | null | undefined {
-  if (v === undefined) return undefined
+function parseBuild(v: Json | undefined): PluginBuildStep[] | null {
+  if (v === undefined) return null
   if (!Array.isArray(v)) return null
   const out: PluginBuildStep[] = []
   for (const item of v) {
@@ -225,7 +225,7 @@ function parseTransport(
  * 宿主侧 `plugin.json` 元 schema：15 个字段一个不少、类型正确、枚举合法
  * （`state` 两档：`recomputable` / `durable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
- * `build` 可省略（回落宿主旧探测），显式声明则逐令牌过 shell 安全白名单。
+ * `build` 是必需字段（宿主不解释语言，声明是唯一构建来源），逐令牌过 shell 安全白名单。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
 export function parsePluginDecl(value: Json): ParseDeclResult {
@@ -278,7 +278,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       pins: value['pins'] as Record<string, string>,
       start: value['start'] as string,
       transport: transport ?? 'stdio',
-      build: build ?? null,
+      build: build as PluginBuildStep[],
       exclusive: exclusive ?? [],
       protocol: value['protocol'] as string,
       restart: value['restart'] as Json,

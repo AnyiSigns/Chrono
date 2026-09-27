@@ -4,7 +4,7 @@
 
 import type { Def, Json, World } from '../kernel/index.ts'
 import { PROTOTYPE_KEYS, isRecord } from './common/json.ts'
-import { MAX_CALL_TIMEOUT_MS } from './service-link.ts'
+import { MAX_CALL_TIMEOUT_MS } from './common/call-timeout.ts'
 
 /**
  * 一条方法级超时声明：`key` 是声明的原始键——`<能力类>.<方法>` 或裸方法名。

@@ -252,8 +252,9 @@ function linkOrCopy(src: string, dest: string): void {
 
 /**
  * 落 def 分片代目录：`<baseDir>/defs/<rev 前 16 位>/<prefix>.jsonl`。
- * 键集与上一份 base 相同的前缀直接复用其分片文件（不读 body）；其余前缀按需读 body 重写，
- * 取不到 body 的键（分片缺失等）不写、也不进索引清单，清单与分片保持一致。
+ * 键集与上一份 base 相同的前缀直接复用其分片文件（不读 body）；其余前缀按需读 body 重写。
+ * 取不到 body 的键（分片缺失 / 损坏）即抛 `bad_base`——清单由世界现列，缺 body 说明世界与分片不一致，
+ * 静默丢掉会让截断后的世界貌似自洽（内容寻址完整性洞）。
  * 先写 staging 目录再整目录 rename（半写安全），崩溃只可能留下无人引用的 staging 目录。
  * @returns 代目录名、实际落盘的键清单与内容摘要
  */
@@ -275,7 +276,12 @@ function writeDefShards(
       toLink.push([src, prefix])
       continue
     }
-    const kept = hashes.filter((hash) => world.defs[hash] !== undefined)
+    const kept: Hash[] = []
+    for (const hash of hashes) {
+      // 取 body 会顺带触发内容哈希自校（损坏即抛）；undefined 说明分片缺失，同样不得静默缩世界
+      if (world.defs[hash] === undefined) throw new Error('bad_base')
+      kept.push(hash)
+    }
     if (kept.length > 0) toWrite.push([prefix, kept])
     written.push(...kept)
   }

@@ -10,12 +10,7 @@ import { runSeed } from '../offline.ts'
 import { loadAnchor } from '../ledger/index.ts'
 import { hostPaths } from '../paths.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
-import {
-  isPidAlive,
-  killProcessTree,
-  waitFor,
-  writeTempPackage,
-} from './test-helpers-ext.ts'
+import { isPidAlive, killProcessTree, waitFor, writeTempPackage } from './test-helpers-ext.ts'
 
 /**
  * 探针服务：启动即把自己的 pid 写进物化目录，随后按服务协议应答握手 / 探针 / drain，
@@ -128,7 +123,11 @@ describe('启动失败收口', () => {
         },
         // 运维日志在 toy-b 的失败事件处抛出：令 start() 中途抛出，而 toy-a 已 spawn
         log: (record) => {
-          if (record.kind === 'service' && record.event === 'start_failed' && record.impl === 'toy-b') {
+          if (
+            record.kind === 'service' &&
+            record.event === 'start_failed' &&
+            record.impl === 'toy-b'
+          ) {
             throw new Error('injected log failure')
           }
         },

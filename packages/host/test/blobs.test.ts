@@ -105,6 +105,7 @@ describe('validate_package dry-run 不写 CAS', () => {
         methods: {},
         pins: {},
         start: '',
+        build: [],
         protocol: '1',
         restart: { policy: 'never' },
         health: {},

@@ -6,7 +6,7 @@ import {
   resolveStartWrapper,
   resolveWatch,
 } from '../options.ts'
-import { DEFAULT_CALL_TIMEOUT_MS } from '../effect/run-loop.ts'
+import { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
 
 describe('入口参数解析（boot / host 共用）', () => {
   it('摘出 --root / --call-timeout-ms，其余按序进 rest', () => {
@@ -133,7 +133,8 @@ describe('严格回收开关解析（显式 > env > 关）', () => {
 
   it('env 真值打开 / 假值关', () => {
     for (const on of ['1', 'true', 'On']) expect(resolveCompactStrict(undefined, on)).toBe(true)
-    for (const off of ['0', 'false', 'off']) expect(resolveCompactStrict(undefined, off)).toBe(false)
+    for (const off of ['0', 'false', 'off'])
+      expect(resolveCompactStrict(undefined, off)).toBe(false)
   })
 
   it('无法识别的 env 值 fail-closed', () => {

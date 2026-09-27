@@ -230,7 +230,8 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
       method: 'echo',
       args: { n: 1 },
     })
-    expect(auditBody.result).toEqual({ ok: false, error: 'transport_failed' })
+    // 静默超时保留具体传输原因（timeout），outcome 仍机械归 transport_failed
+    expect(auditBody.result).toEqual({ ok: false, error: 'timeout' })
     expect(headMirror).toEqual(headOf(entries))
     expect(verifyFull(entries).ok).toBe(true)
   })

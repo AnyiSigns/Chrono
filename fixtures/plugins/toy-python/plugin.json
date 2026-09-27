@@ -5,6 +5,7 @@
   "methods": { "toy.python": ["echo"] },
   "pins": {},
   "start": "py execute/main.py",
+  "build": [],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",

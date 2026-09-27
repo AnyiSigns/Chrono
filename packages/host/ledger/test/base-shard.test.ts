@@ -123,6 +123,59 @@ describe('基础世界分片（v2）', () => {
     expect(readBase(baseFile)).toBeNull()
   })
 
+  it('坏 def body 取用即检：哈希与键不符抛 bad_base，不静默当缺 def 服务', () => {
+    const { baseFile } = newRoot()
+    const world = worldWithDefs([{ a: 1 }, { b: 2 }])
+    writeBase(baseFile, { snapshot: SNAPSHOT, world })
+    const index = indexOf(baseFile)
+    const key = index.defs[0] as Hash
+    const shardFile = join(dirname(baseFile), index.defsDir, `${key.slice(0, 2)}.jsonl`)
+    // 篡改目标行 body、保留原 h：body 不再复现键（内容寻址完整性被破）
+    const lines = readFileSync(shardFile, 'utf8').split('\n')
+    const at = lines.findIndex(
+      (line) => line.length > 0 && (JSON.parse(line) as { h: string }).h === key,
+    )
+    expect(at).toBeGreaterThanOrEqual(0)
+    lines[at] = canonicalJson({ h: key, d: { body: { corrupt: true } } })
+    writeFileSync(shardFile, lines.join('\n'))
+
+    const base = readBase(baseFile)!
+    expect(worldRev(base.world)).toBe(worldRev(world)) // 摘要只吃键，仍自校通过
+    expect(() => base.world.defs[key]).toThrow('bad_base') // 取 body 即检出不服务
+  })
+
+  it('缺分片时 writeBase 不静默缩世界：抛 bad_base 而非丢键', () => {
+    const { baseFile } = newRoot()
+    const world = worldWithDefs([{ a: 1 }, { b: 2 }, { c: 3 }])
+    writeBase(baseFile, { snapshot: SNAPSHOT, world })
+    const index = indexOf(baseFile)
+    const key = index.defs[0] as Hash
+    rmSync(join(dirname(baseFile), index.defsDir, `${key.slice(0, 2)}.jsonl`))
+    // 以缺分片的 base 读回世界再写回：manifest 仍含该键，缺 body 必须抛出，不得缩清单
+    const base = readBase(baseFile)!
+    expect(() =>
+      writeBase(baseFile, { snapshot: { seq: 8, hash: 'd'.repeat(64) }, world: base.world }),
+    ).toThrow('bad_base')
+  })
+
+  it('分片存在但缺清单键（截断 / 缺行）：按损坏拒，不 fail-open 当缺 def', () => {
+    const { baseFile } = newRoot()
+    const world = worldWithDefs([{ a: 1 }, { b: 2 }])
+    writeBase(baseFile, { snapshot: SNAPSHOT, world })
+    const index = indexOf(baseFile)
+    const key = index.defs[0] as Hash
+    const shardFile = join(dirname(baseFile), index.defsDir, `${key.slice(0, 2)}.jsonl`)
+    // 只删目标行、保留分片文件：模拟分片被截断掉整行
+    const rest = readFileSync(shardFile, 'utf8')
+      .split('\n')
+      .filter((line) => !(line.length > 0 && (JSON.parse(line) as { h: string }).h === key))
+    writeFileSync(shardFile, rest.join('\n'))
+
+    const base = readBase(baseFile)!
+    expect(base.store!.has(key)).toBe(true) // 清单仍列出
+    expect(() => base.world.defs[key]).toThrow('bad_base') // 分片在却缺键即损坏
+  })
+
   it('E1：readBase 不 eager 自校；verify() 惰性算摘要、幂等且零分片读', () => {
     const { baseFile } = newRoot()
     const world = worldWithDefs([{ a: 1 }, { b: 2 }])
@@ -191,11 +244,22 @@ describe('DefStore LRU', () => {
     roots.push(root)
     const dir = join(root, 'defs')
     mkdirSync(dir, { recursive: true })
-    const keys = ['aa', 'bb', 'cc'].map((prefix) => (prefix + '0'.repeat(62)) as Hash)
-    for (const key of keys) {
+    // 真内容寻址：键 = H(def)、分片行 {h,d} 自洽；取前缀互异的三份 def，各落一个分片
+    const keys: Hash[] = []
+    const defs: Def[] = []
+    const prefixes = new Set<string>()
+    for (let i = 0; keys.length < 3; i++) {
+      const def: Def = { body: { i } }
+      const key = H(def as unknown as Json)
+      if (prefixes.has(key.slice(0, 2))) continue
+      prefixes.add(key.slice(0, 2))
+      defs.push(def)
+      keys.push(key)
+    }
+    for (let i = 0; i < keys.length; i++) {
       writeFileSync(
-        join(dir, `${key.slice(0, 2)}.jsonl`),
-        canonicalJson({ h: key, d: { body: { key } } }) + '\n',
+        join(dir, `${keys[i].slice(0, 2)}.jsonl`),
+        canonicalJson({ h: keys[i], d: defs[i] as unknown as Json }) + '\n',
       )
     }
     const store = new DefStore({ dir, shard: 2, hashes: keys })

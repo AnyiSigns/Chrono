@@ -9,7 +9,6 @@ import {
   collectAssetRefs,
   gcAssets,
   getAsset,
-  listAssets,
   putAsset,
 } from '../assets.ts'
 import type { World } from '../../kernel/index.ts'
@@ -41,7 +40,6 @@ describe('G4 资产面 assets', () => {
     // 同字节再入：幂等同引用，不产生第二份
     const second = putAsset(dir, 'text/plain', bytes.toString('base64'))
     expect(second).toEqual(first)
-    expect(listAssets(dir)).toEqual([{ sha256: first.ref.sha256, size: bytes.length }])
   })
 
   it('getAsset：往返一致；缺失 asset_missing；非 64hex bad_asset（防路径穿越）', () => {

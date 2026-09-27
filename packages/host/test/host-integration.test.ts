@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer, connect as netConnect } from 'node:net'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
@@ -13,7 +13,10 @@ import {
   FIXTURE_ALPHA,
   FIXTURE_BETA,
   FIXTURE_SERVICE_MAIN,
+  isPidAlive,
+  killProcessTree,
   readLifecycle,
+  waitFor,
   waitForLifecycle,
   writeTempPackage,
 } from './test-helpers-ext.ts'
@@ -55,6 +58,19 @@ describe('宿主集成（入站面）', () => {
       socket.once('connect', () => resolve(socket))
       socket.once('error', reject)
     })
+  }
+
+  /** 有界重试连接：listen 先于装配，socket 未就绪时连接会失败。 */
+  async function connectWhenListening(address: string, timeoutMs = 8000): Promise<Socket> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        return await rawConnect(address)
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+    }
+    throw new Error('入站 socket 未就绪')
   }
 
   /** 从裸 socket 读够 count 条协议帧（入站面响应与客户端解码器同构）。 */
@@ -310,6 +326,44 @@ describe('宿主集成（入站面）', () => {
       }
     })
   })
+
+  it('装配完成前收到 stop：慢构建窗口内停机，无残留服务进程、锁释放', async () => {
+    const pidFile = join(root, 'svc.pid')
+    const pkgRoot = writeTempPackage(root, {
+      identity: 'toy-slowstop',
+      start: 'node execute/main.js',
+      implements: ['toy.slowstop'],
+      // 显式构建声明：装配在该步阻塞约 3s，令「listen 已开、装配未完成」的窗口可被稳定命中
+      build: [{ cmd: 'node', args: ['build.js'] }],
+      files: {
+        'build.js': 'setTimeout(function () {}, 3000)\n',
+        'execute/main.js': `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))\n${FIXTURE_SERVICE_MAIN}`,
+      },
+    })
+    const report = runSeed(root, [{ name: 'toy-slowstop', path: pkgRoot }])
+    expect(report.ok).toBe(true)
+
+    let pid: number | null = null
+    const started = startHost({ root })
+    try {
+      // listen 先于装配：socket 就绪时装配仍卡在慢构建；连接后立即发 stop，命中该窗口
+      const socket = await connectWhenListening(socketPath(root))
+      socket.write(encodeFrame({ v: '1', id: 'stop-window', kind: 'stop' }))
+      // 不在此销毁：stop 受理后由停机序列销毁该客户端，留待 flush 保证帧送达
+
+      const handle = await started
+      handles.push(handle)
+      await handle.stop()
+
+      expect(existsSync(hostPaths(root).lockFile)).toBe(false)
+      // 装配在 stop 之后仍继续并 spawn 出服务；停机序列必须把它一并收口，不留孤儿进程
+      await waitFor(() => existsSync(pidFile), '装配继续后服务 spawn 并写下 pid', 8000)
+      pid = Number.parseInt(readFileSync(pidFile, 'utf8'), 10)
+      await waitFor(() => !isPidAlive(pid as number), '停机后服务进程退出，无孤儿', 5000)
+    } finally {
+      if (pid !== null && isPidAlive(pid)) await killProcessTree(pid)
+    }
+  }, 20000)
 
   // POSIX 下 startHost 会先 unlink 陈旧 socket 文件再 listen，占用文件会被清掉而 listen 成功；
   // Windows named pipe 无 unlink 语义，占用同名管道即稳定触发 EADDRINUSE。

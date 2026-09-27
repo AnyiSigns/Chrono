@@ -26,6 +26,7 @@ describe('装配 assembly', () => {
         methods: { 'toy.echo': ['echo'] },
         pins: {},
         start: '',
+        build: [],
         protocol: '1',
         restart: { policy: 'on-exit' },
         health: {},

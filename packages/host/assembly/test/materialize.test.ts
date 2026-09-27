@@ -46,6 +46,7 @@ function seedInlineJournal(root: string): Hash {
     methods: {},
     pins: {},
     start: '',
+    build: [],
     protocol: '1',
     restart: {},
     health: {},

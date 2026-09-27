@@ -21,6 +21,9 @@ function writeJson(dir: string, name: string, value: unknown): void {
   writeFileSync(join(dir, name), JSON.stringify(value, null, 2))
 }
 
+const NPM_CI = { cmd: 'npm', args: ['ci', '--no-audit', '--no-fund'] }
+const CARGO_RELEASE = { cmd: 'cargo', args: ['build', '--release'] }
+
 describe('依赖恢复 planDependencyRestore', () => {
   let cwd: string
 
@@ -30,95 +33,33 @@ describe('依赖恢复 planDependencyRestore', () => {
 
   afterEach(() => cleanupTempRoot(cwd))
 
-  it('无任何清单 → []（toy 包不触发恢复）', () => {
-    expect(planDependencyRestore(cwd)).toEqual([])
+  it('build: [] → []（显式无需构建）', () => {
+    expect(planDependencyRestore(cwd, [])).toEqual([])
   })
 
-  it('package.json 无依赖且无锁文件 → []', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', version: '0.0.0', private: true })
-    expect(planDependencyRestore(cwd)).toEqual([])
+  it('声明的步骤原样产出，且不共享声明引用', () => {
+    const build = [NPM_CI, CARGO_RELEASE]
+    const steps = planDependencyRestore(cwd, build)
+    expect(steps).toEqual(build)
+    expect(steps).not.toBe(build)
+    expect(steps[0]).not.toBe(build[0])
   })
 
-  it('package.json 有 dependencies → npm install（无锁文件）', () => {
+  it('宿主不探测语言痕迹：有依赖声明 / 锁文件 / Cargo.toml，声明为空仍一步不跑', () => {
     writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
-    expect(planDependencyRestore(cwd)).toEqual([
-      { cmd: 'npm', args: ['install', '--no-audit', '--no-fund'] },
-    ])
-  })
-
-  it('仅锁文件（无 package.json 依赖）→ npm ci', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', version: '0.0.0' })
     writeFileSync(join(cwd, 'package-lock.json'), '{}')
-    expect(planDependencyRestore(cwd)).toEqual([
-      { cmd: 'npm', args: ['ci', '--no-audit', '--no-fund'] },
-    ])
-  })
-
-  it('有依赖 + npm 锁文件 → npm ci', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', devDependencies: { vitest: '^2.0.0' } })
-    writeFileSync(join(cwd, 'npm-shrinkwrap.json'), '{}')
-    expect(planDependencyRestore(cwd)).toEqual([
-      { cmd: 'npm', args: ['ci', '--no-audit', '--no-fund'] },
-    ])
-  })
-
-  it('非 npm 锁文件（yarn / pnpm / bun）→ 回落 npm install', () => {
-    for (const lock of ['yarn.lock', 'pnpm-lock.yaml', 'bun.lock']) {
-      writeJson(cwd, 'package.json', { name: 'toy', devDependencies: { vitest: '^2.0.0' } })
-      writeFileSync(join(cwd, lock), '')
-      expect(planDependencyRestore(cwd)).toEqual([
-        { cmd: 'npm', args: ['install', '--no-audit', '--no-fund'] },
-      ])
-    }
-  })
-
-  it('Cargo.toml → cargo build --release（旧探测回落）', () => {
-    writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "toy"\n')
-    expect(planDependencyRestore(cwd)).toEqual([{ cmd: 'cargo', args: ['build', '--release'] }])
-  })
-
-  it('binding.gyp 不再触发任何步骤（死探测已删）', () => {
-    writeFileSync(join(cwd, 'binding.gyp'), '{}')
-    expect(planDependencyRestore(cwd)).toEqual([])
-  })
-
-  it('显式 build 声明 → 只跑声明的步骤，忽略旧探测', () => {
-    writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "toy"\n')
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
-    const build = [{ cmd: 'cargo', args: ['build', '--release', '--features', 'x'] }]
-    expect(planDependencyRestore(cwd, build)).toEqual(build)
-  })
-
-  it('显式 build: [] → 一步不跑（显式无需构建，不回落探测）', () => {
     writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "toy"\n')
     expect(planDependencyRestore(cwd, [])).toEqual([])
   })
 
-  it('有恢复标记 → 显式 build 也被跳过（本目录已恢复）', () => {
-    writeFileSync(join(cwd, '.chrono-deps-ok'), '')
-    expect(planDependencyRestore(cwd, [{ cmd: 'cargo', args: ['build'] }])).toEqual([])
-  })
-
-  it('顺序 Node → Rust（旧探测）', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
-    writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "toy"\n')
-    expect(planDependencyRestore(cwd).map((step) => step.cmd)).toEqual(['npm', 'cargo'])
-    expect(planDependencyRestore(cwd)[1].args).toEqual(['build', '--release'])
-  })
-
-  it('有 node_modules 但无恢复标记 → 仍产 Node 步（半恢复要重跑）', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
+  it('有 node_modules 但无恢复标记 → 仍按声明产出（半恢复要重跑）', () => {
     mkdirSync(join(cwd, 'node_modules'), { recursive: true })
-    expect(planDependencyRestore(cwd)).toEqual([
-      { cmd: 'npm', args: ['install', '--no-audit', '--no-fund'] },
-    ])
+    expect(planDependencyRestore(cwd, [NPM_CI])).toEqual([NPM_CI])
   })
 
-  it('有恢复完成标记 → []（跳过全部步骤）', () => {
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
-    mkdirSync(join(cwd, 'node_modules'), { recursive: true })
+  it('有恢复标记 → 声明的步骤也跳过（本目录已恢复）', () => {
     writeFileSync(join(cwd, '.chrono-deps-ok'), '')
-    expect(planDependencyRestore(cwd)).toEqual([])
+    expect(planDependencyRestore(cwd, [CARGO_RELEASE])).toEqual([])
   })
 })
 
@@ -136,15 +77,18 @@ describe('依赖恢复 restoreDependencies', () => {
 
   afterEach(() => cleanupTempRoot(root))
 
-  it('按步执行并注入缓存环境（npm / cargo）', async () => {
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
-    writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "toy"\n')
+  it('按声明执行并注入缓存环境（npm / cargo）', async () => {
     const calls: Array<{ cmd: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string }> = []
-    await restoreDependencies(cwd, depsDir, undefined, async (cmd, args, env, runCwd) => {
-      calls.push({ cmd, args, env, cwd: runCwd })
-    })
+    await restoreDependencies(
+      cwd,
+      depsDir,
+      [NPM_CI, CARGO_RELEASE],
+      async (cmd, args, env, runCwd) => {
+        calls.push({ cmd, args, env, cwd: runCwd })
+      },
+    )
     expect(calls.map((call) => call.cmd)).toEqual(['npm', 'cargo'])
-    expect(calls[0].args).toEqual(['install', '--no-audit', '--no-fund'])
+    expect(calls[0].args).toEqual(['ci', '--no-audit', '--no-fund'])
     expect(calls[0].cwd).toBe(cwd)
     expect(calls[0].env['npm_config_cache']).toBe(join(depsDir, 'npm'))
     expect(calls[0].env['npm_config_allow_remote']).toBe('all')
@@ -155,17 +99,16 @@ describe('依赖恢复 restoreDependencies', () => {
 
   it('无步骤时不调用 run，也不写标记', async () => {
     let called = false
-    await restoreDependencies(cwd, depsDir, undefined, async () => {
+    await restoreDependencies(cwd, depsDir, [], async () => {
       called = true
     })
     expect(called).toBe(false)
     expect(existsSync(join(cwd, '.chrono-deps-ok'))).toBe(false)
   })
 
-  it('显式 build 声明按步执行（不再看清单文件）', async () => {
+  it('声明的步骤按序执行（不再看清单文件）', async () => {
     const calls: Array<{ cmd: string; args: string[]; env: NodeJS.ProcessEnv }> = []
-    const build = [{ cmd: 'cargo', args: ['build', '--release'] }]
-    await restoreDependencies(cwd, depsDir, build, async (cmd, args, env) => {
+    await restoreDependencies(cwd, depsDir, [CARGO_RELEASE], async (cmd, args, env) => {
       calls.push({ cmd, args, env })
     })
     expect(calls.map((call) => call.cmd)).toEqual(['cargo'])
@@ -184,13 +127,7 @@ describe('依赖恢复 restoreDependencies', () => {
     process.env['WRAP_LOG'] = log
     const wrapper = `"${process.execPath}" "${script}"`
     try {
-      await restoreDependencies(
-        cwd,
-        depsDir,
-        [{ cmd: 'cargo', args: ['build', '--release'] }],
-        undefined,
-        wrapper,
-      )
+      await restoreDependencies(cwd, depsDir, [CARGO_RELEASE], undefined, wrapper)
     } finally {
       delete process.env['WRAP_LOG']
     }
@@ -198,9 +135,8 @@ describe('依赖恢复 restoreDependencies', () => {
   })
 
   it('某步失败 → 抛 ServiceStartError(deps_failed) 且不写标记（下次重试）', async () => {
-    writeJson(cwd, 'package.json', { name: 'toy', dependencies: { left: '^1.0.0' } })
     await expect(
-      restoreDependencies(cwd, depsDir, undefined, async () => {
+      restoreDependencies(cwd, depsDir, [NPM_CI], async () => {
         throw new Error('npm exploded')
       }),
     ).rejects.toMatchObject({ name: 'ServiceStartError', reason: 'deps_failed' })

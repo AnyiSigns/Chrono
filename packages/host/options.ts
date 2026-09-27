@@ -3,9 +3,8 @@
 // 纯函数：host 入口与 boot start 共用同一份，避免两处解析漂移；非法值 fail-closed。
 
 import type { Json } from '../kernel/index.ts'
+import { DEFAULT_CALL_TIMEOUT_MS, MAX_CALL_TIMEOUT_MS } from './common/call-timeout.ts'
 import { PROTOTYPE_KEYS } from './common/json.ts'
-import { DEFAULT_CALL_TIMEOUT_MS } from './effect/run-loop.ts'
-import { MAX_CALL_TIMEOUT_MS } from './service-link.ts'
 
 /** 入口 flag 语法（boot CLI 与宿主入口共用同一份解析，避免语义漂移）。 */
 export interface EntryOptions {

@@ -98,12 +98,7 @@ describe('14 原语各一正一反', () => {
     expect(err(ev(asTerm(['pred', 'lt', constNode(1)]), envOf()))).toBe('bad_term')
   })
   it('pred → if：比较结果驱动分支（判定核的桥）', () => {
-    const t = asTerm([
-      'if',
-      ['pred', 'lt', ['v', 0], ['v', 1]],
-      constNode('yes'),
-      constNode('no'),
-    ])
+    const t = asTerm(['if', ['pred', 'lt', ['v', 0], ['v', 1]], constNode('yes'), constNode('no')])
     expect(okv(ev(t, envOf({ args: [1, 2] as unknown as Json[] })))).toBe('yes')
     expect(okv(ev(t, envOf({ args: [2, 1] as unknown as Json[] })))).toBe('no')
   })
@@ -155,7 +150,11 @@ describe('14 原语各一正一反', () => {
     expect(err(ev(asTerm(['arith', 'div', constNode(1), constNode(2)]), envOf()))).toBe('bad_term')
   })
   it('list：逐项构造 / 非数组 bad_term', () => {
-    expect(okv(ev(asTerm(['list', [constNode(1), ['v', 0]]]), envOf({ args: [2] as unknown as Json[] })))).toEqual([1, 2])
+    expect(
+      okv(
+        ev(asTerm(['list', [constNode(1), ['v', 0]]]), envOf({ args: [2] as unknown as Json[] })),
+      ),
+    ).toEqual([1, 2])
     expect(err(ev(asTerm(['list', constNode(1)]), envOf()))).toBe('bad_term')
   })
   it('obj：逐字段构造（键升序）/ 非记录 bad_term', () => {
@@ -166,12 +165,7 @@ describe('14 原语各一正一反', () => {
     expect(err(ev(asTerm(['obj', constNode(1)]), envOf()))).toBe('bad_term')
   })
   it('arith 结果入 cmp 全序：可直接比较', () => {
-    const t = asTerm([
-      'pred',
-      'lt',
-      ['arith', 'add', constNode(1), constNode(2)],
-      constNode(4),
-    ])
+    const t = asTerm(['pred', 'lt', ['arith', 'add', constNode(1), constNode(2)], constNode(4)])
     expect(okv(ev(t, envOf()))).toBe(true)
   })
 })

@@ -6,7 +6,7 @@ import { assemblyGen, buildOwnerIndex, readPluginDecl } from '../assembly/index.
 import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
 import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
-import type { Gen, Hash, Identity, Json, World } from '../../kernel/index.ts'
+import type { Hash, Json, World } from '../../kernel/index.ts'
 
 /** 路由失败码：与 protocol §四 同名（作为 `EffResult.error` 落审计，内核归 `eff_error`）。 */
 export type RouteError = 'unresolved_cap' | 'not_loaded' | 'stale'
@@ -49,12 +49,6 @@ export interface RouterOptions {
    * 消除「锚定世界 active 世代 vs 端点表已换代」的偏斜；缺省仍用锚定世界（判定/路由/提交同世界）。
    */
   liveWorld?: () => World
-}
-
-/** 身份当前 active 世代；无身份 / retired / 世代缺失返回 null。 */
-export function activeGenOf(identity: Identity | undefined): Gen | null {
-  if (identity === undefined || identity.active === null) return null
-  return identity.gens.find((gen) => gen.payload === identity.active) ?? null
 }
 
 /** 宿主保留端点行：无进程（pid 0），调用经注入的派发器；`gen` 也是保留字面量。 */

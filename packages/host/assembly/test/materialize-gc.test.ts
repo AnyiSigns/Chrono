@@ -76,23 +76,25 @@ describe('物化回收（materialized gc）', () => {
     expect(existsSync(join(matDir, gens[3]))).toBe(true)
   })
 
-  it('只删 64-hex 目录：staging 目录、非目录项与意外内容不碰', () => {
+  it('回收 64-hex 孤儿目录与 staging 残留：非目录项与意外内容不碰', () => {
     seedVersion('toy-mat-gc-v1', '1')
     const current = world()
     const gen = current.ids['toy-mat-gc'].active as Hash
     const matDir = materializeAll([gen])
 
-    const staging = join(matDir, `${gen}.tmp-123-456`)
+    // 硬崩遗留的 staging 目录：命名同 materializeCommit 中间态
+    const stagingName = `${gen}.tmp-123-12345678-1234-1234-1234-123456789abc`
+    const staging = join(matDir, stagingName)
     mkdirSync(staging, { recursive: true })
     mkdirSync(join(matDir, 'notes'), { recursive: true })
     const strayFile = join(matDir, 'f'.repeat(64))
     writeFileSync(strayFile, 'stray file')
 
     const report = gcMaterialized(matDir, current, 0)
-    expect(report.scanned).toBe(1)
+    expect(report.scanned).toBe(2)
     expect(report.kept).toBe(1)
-    expect(report.removed).toEqual([])
-    expect(existsSync(staging)).toBe(true)
+    expect(report.removed).toEqual([stagingName])
+    expect(existsSync(staging)).toBe(false)
     expect(existsSync(join(matDir, 'notes'))).toBe(true)
     expect(existsSync(strayFile)).toBe(true)
     expect(existsSync(join(matDir, gen))).toBe(true)

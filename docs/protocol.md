@@ -45,7 +45,7 @@
 
 - **`env`（宿主填写，机械）**：`{ run, thread, now, emitter }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟、**发出者身份**。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。`emitter` 由宿主解析填写、调用方无从伪造，是被调服务按 owner 分命名空间的**唯一合法依据**（存储类服务据此分库）；宿主保留身份的调用记 `host`。**不得**改用调用方自报的 namespace 参数。
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
-  只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值）→ 内核 `eff_error` → 该轮 `refused`（`transport_failed`）。
+  只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值，`error` 记具体通道错误码，见 `host.md` §五 效果）→ 内核 `eff_error` → 该轮 `refused`（审计 `outcome` 仍 `transport_failed`）。
 - 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `boot start --call-timeout-ms` 可配；**被调方可按插件 `schema.method_timeouts` 按方法覆盖**，见 `host.md` §五 效果）。
 
 ### 2.3 控制
@@ -85,7 +85,7 @@
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
+- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -128,7 +128,7 @@
 发起者 → 宿主   secrets.put { v, id, name, value }           → secrets.ok { id, name }  # 直写本地密钥文件（不进世界）
 发起者 → 宿主   secrets.delete { v, id, name }               → secrets.ok { id, name }
 发起者 → 宿主   status   { v, id }                           → state { id, world_head, world_rev, loaded: [...] }
-发起者 → 宿主   stop     { v, id }                           → accepted { id }   # 令宿主按反拓扑序 drain 后停机
+发起者 → 宿主   stop     { v, id }                           → accepted { id }   # 令宿主按启动序逆序摘除服务并并发 drain 后停机
 宿主 → 发起者   event    { v, impl, topic, payload }         # 插件 event 透传 + 宿主 run 生命周期 / 身份世代事件，广播给已连接客户端
 ```
 
@@ -145,7 +145,7 @@
   （base64 ≈10.67 MiB < 16 MiB 帧上限），更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；
   超限 → `asset_too_large`；`get` 字节缺失 → `asset_missing`。回收走离线 `boot assets gc`（见 `host.md` §五 资产）。
 - `secrets.put` / `secrets.delete` 是**密钥本地存储面**（见 `host.md` §五 宿主扩展面）：宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**。`name` 非空、≤256、不得为 `__proto__`/`constructor`/`prototype`；`value` ≤64 KiB；空 / 含 NUL / 越界 → `bad_directive`。`put` 的 `value` 只进本地文件；本地文件损坏时 put/delete **fail-closed**（不静默覆写丢密钥）。`list` 不是入站动词（由密钥插件以 `secrets.list` 经 `eff` 回 `{name,has}`）。
-- **效果审计脱敏**（非入站动词）：宿主写 `EffectAudit` 时，对 `port=secrets` + `method=resolve` 把 `result` 替换为 `{name,kind,has}`（见 `host.md` §五 宿主扩展面）。
+- **效果审计脱敏**（非入站动词）：宿主写 `EffectAudit` 时按**被调身份 `schema.audit_redact` 声明**（`{"<能力类>.<方法>": [键...]}`，精确键优先、其次裸方法名）把命中方法的 `result` 收成白名单键 + 派生 `has`；未声明落完整结果（见 `host.md` §五 宿主扩展面）。
 - `audit` 是**只读审计面**：按 `run`（回合）/ `emitter`（发出者身份）/ `outcome` 过滤 `EffectAudit`，
   机械 AND、**seq 降序取最新 `limit` 条**（缺省 100、上限 1000）；`records` 形状
   `{seq, at, by, body}`，`body = {kind:'effect_audit', request, result, port, method, outcome, run, emitter}`。
@@ -189,7 +189,7 @@
 | `bad_args` | 命令 `args` 不符合 `argsSchema` | `host.md` §五 命令 |
 | `bad_args_schema` | `argsSchema` 含白名单外关键词 / 形态非法（入世整包拒） | `plugins.md` §二 方言 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |
-| `transport_failed` | 服务管道 / 帧 / 进程死亡（传输级） | §2.2 |
+| `transport_failed` | 效果未执行（传输级）的审计 `outcome`；具体通道错误码（`timeout` / `closed` / `protocol_error` / `bad_manifest` / `cancelled`）另存 `EffResult.error`（§2.2） | §2.2 |
 | `unresolved_pin` | 被依赖身份不存在 / 未激活（入世、或运行期结构 op / `batch` 子操作的 pins 解析） | `host.md` §五 源码 / 落账 |
 | `bad_worldignore` | `.worldignore` 命中了契约必需文件 | `host.md` §五 源码 |
 | `term_cycle` | 入世时同包 term `$ref` 成环（该包整批拒） | `host.md` §五 源码 |
@@ -202,7 +202,8 @@
 | `bad_start_wrapper` | 启动包装器非法值（空 / 含 NUL / 换行） | `host.md` §五 服务启动包装器 |
 | `bad_call_timeout` | 调用超时选项非法值 | `host.md` §五 效果 |
 | `picker_unavailable` | 无图形会话，原生目录选择器不可用 | `plugins/workspace/README.md` |
-| `not_found` | `host.source.read` 路径不存在 / 指向目录 | `host.md` §五 宿主扩展面 |
+| `not_found` | `host.source.read` 路径不存在 / 指向目录；`host.def.read` 身份不存在或 body 组装失败 | `host.md` §五 宿主扩展面 |
+| `def_read_too_many` | `host.def.read` 单次哈希数超过 256 | `host.md` §五 宿主扩展面 |
 | `net_denied` | `sandbox` 网络档位拒绝（`caps.net` 越档） | `plugins/sandbox/README.md` |
 | `internal` | 宿主内部错误 | — |
 

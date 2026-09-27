@@ -4,7 +4,15 @@
 
 import { describe, expect, it } from 'vitest'
 import type { Entry, Hash, Head, Json, Op, World } from '../index.ts'
-import { EMPTY_HEAD, EMPTY_WORLD, H, applyEntry, cloneWorld, entryHash, worldRev } from '../index.ts'
+import {
+  EMPTY_HEAD,
+  EMPTY_WORLD,
+  H,
+  applyEntry,
+  cloneWorld,
+  entryHash,
+  worldRev,
+} from '../index.ts'
 
 type Outcome = ReturnType<typeof applyEntry>
 type OkOutcome = Extract<Outcome, { ok: true }>

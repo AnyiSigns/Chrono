@@ -263,7 +263,7 @@ describe('assets_manifest 接入宿主启动', () => {
       join(root, 'state', 'lifecycle.log'),
       (entry) =>
         entry.kind === 'dep' &&
-        entry.event === 'periodic_invalid' &&
+        entry.event === 'assets_manifest_invalid' &&
         entry.reason === 'assets_manifest_invalid',
       'assets_manifest_invalid log',
     )

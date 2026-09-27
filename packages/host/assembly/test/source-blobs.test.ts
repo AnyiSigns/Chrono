@@ -47,7 +47,9 @@ describe('packSourceDir 产 pointer def', () => {
     // a.txt / b.txt 同内容 → 同一 pointer def 出现两次（内核按 def 键去重）
     expect(pointers).toHaveLength(3)
     expect(pointers.every((pointer) => pointer.kind === 'blob')).toBe(true)
-    const samePointer = pointers.find((pointer) => pointer.sha256 === blobSha256(Buffer.from('same')))
+    const samePointer = pointers.find(
+      (pointer) => pointer.sha256 === blobSha256(Buffer.from('same')),
+    )
     expect(samePointer).toBeDefined()
     expect(samePointer!.size).toBe(4)
     const binPointer = pointers.find((pointer) => pointer.sha256 === blobSha256(binary))
@@ -60,9 +62,9 @@ describe('packSourceDir 产 pointer def', () => {
     expect(packed.blobs.map((blob) => blob.sha256).sort()).toEqual(
       [blobSha256(Buffer.from('same')), blobSha256(binary)].sort(),
     )
-    expect(packed.blobs.find((blob) => blob.sha256 === blobSha256(binary))!.bytes.equals(binary)).toBe(
-      true,
-    )
+    expect(
+      packed.blobs.find((blob) => blob.sha256 === blobSha256(binary))!.bytes.equals(binary),
+    ).toBe(true)
   })
 
   it('同内容文件解析到同一 blob def 键（tree 结构共享）', () => {

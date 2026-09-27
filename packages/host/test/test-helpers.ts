@@ -48,6 +48,7 @@ export function createToyPlugin(root: string): string {
         methods: { 'toy.echo': ['echo'] },
         pins: {},
         start: '',
+        build: [],
         protocol: '1',
         restart: {
           policy: 'on-exit',
