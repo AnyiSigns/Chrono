@@ -32,13 +32,16 @@
       z-index: var(--z-topbar);
       flex: none;
     }
-    /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条 */
-    #slot-main { flex: 1 1 auto; min-height: var(--main-min-h); overflow: hidden; }
+    /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条。
+       flex-basis 必须是 0 而非 auto：auto 时 main 的尺寸随消息内容增长，会把 dock / composer
+       往下挤（dock 被压扁、输入框被顶出视口）。0 基 + 自持滚动让 main 恒占「剩余空间」。 */
+    #slot-main { flex: 1 1 0; min-height: var(--main-min-h); overflow: hidden; }
+    /* dock 不随消息流伸缩：main 的内容高度会撑大其 flex-basis，若 dock 可收缩（flex-shrink>0）
+       就会被压扁到输入框下沿；停靠带必须恒取自身内容高度（上限 --dock-max-h 内自滚）。 */
     #slot-dock {
       position: relative;
       z-index: var(--z-dock);
-      flex: 0 3 auto;
-      min-height: 0;
+      flex: none;
       max-height: var(--dock-max-h);
       overflow: auto;
     }
