@@ -65,12 +65,14 @@ Chrono 的**审批停靠带**：`dock` 槽子应用，展示待审批队列（�
 - **层级 / 质感**：停靠带用 `--z-dock`、薄玻璃（全局唯一例外，`--c-glass` + `backdrop-filter`，
   不支持时降级实色）；出入 200ms，最大高 40vh、超出内滚；无待审批项时不占高度、不渲染。
 - **堆叠卡片**：`execute/web/styles.ts` 由组件注入 `<style>`（只引壳 token、零硬编码色值）；
-  队列渲染为卡片堆叠——非首卡 `margin-top` 负偏移、`nth-child` 递减 z-index 让前卡压在深卡之上，
-  按 `kind` 左侧色条（tool_call 警示 / plugin_write 危险 / orchestration_change 信息）。
+  多条时默认 iOS 式堆叠——前卡完整可操作，至多两张后卡只露顶部一条（逐级收窄、变暗、退后），
+  滚轮在堆叠上循环切换前卡（按条目 `id` 跟踪，裁决 / 刷新后同卡保持在前）；点窥视区或头部
+  切换钮展开为平铺列表（gap 分隔），再点收起为堆叠。按 `kind` 左侧色条（tool_call 警示 /
+  plugin_write 危险 / orchestration_change 信息）。
 - **位置**：`.approval-root` 与 `.composer-root` 同盒（`max-width: --msg-max-w` 居中 + 两侧 `space-16`），
   故停靠带恒在对话输入框正上方、左右边缘对齐；`dock` 槽本就位于 main 与 composer 之间。
-- **键盘可达 / aria**：`role="region"` + `aria-label`；展开按钮 `aria-expanded` / `aria-label`；
-  危险动作补 `aria-label`；`aria-live="assertive"` 播报待审批计数。
+- **键盘可达 / aria**：`role="region"` + `aria-label`；条目展开钮与堆叠 / 平铺切换钮均带
+  `aria-expanded` / `aria-label`；危险动作补 `aria-label`；`aria-live="assertive"` 播报待审批计数。
 
 ## 运行
 

@@ -1,8 +1,9 @@
 // `ui-approval` 客户端半边：注册进壳 `dock` 槽的 React 组件（契约 v2）。
 // 业务状态住 React-free store（`store.ts`）；组件只渲染 store 快照 + 纯模型视图。
-// 停靠带：0 高度起步，有待审批项才渲染；多条按队列 + 计数 + 整批裁决；键盘可达 + aria。
+// 停靠带：0 高度起步，有待审批项才渲染；多条默认 iOS 式堆叠（前卡完整 + 至多两张后卡露顶），
+// 滚轮循环切换前卡（按 item.id 跟踪），点窥视区或头部切换钮展开为平铺列表；键盘可达 + aria。
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 import {
   approvalStatus,
@@ -134,6 +135,11 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
 
   const pending = snapshot.items.filter(isPending)
   const count = pending.length
+  const [fanned, setFanned] = useState(false)
+  const [frontId, setFrontId] = useState<string | null>(null)
+  const found = pending.findIndex((item) => item.id === frontId)
+  const frontIndex = found >= 0 ? found : 0
+  const stacked = !fanned && count > 1
   const status = approvalStatus({
     loading: snapshot.loading,
     error: snapshot.error,
@@ -141,6 +147,45 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
     itemCount: count,
   })
   const [slow, setSlow] = useState(false)
+
+  // 队列不足两张时无叠可展：回到堆叠默认、前卡回落队首。
+  useEffect(() => {
+    if (count < 2) {
+      setFanned(false)
+      setFrontId(null)
+    }
+  }, [count])
+
+  // 滚轮循环切换前卡：React 的 onWheel 是 passive、无法 preventDefault，
+  // 故挂原生非 passive 监听；48px 累积阈值 = 一卡，180ms 闲置清零（触控板一次手势只进一卡）。
+  const deckRef = useRef<HTMLDivElement | null>(null)
+  const wheelRef = useRef<{ count: number; frontIndex: number; ids: string[] }>({ count: 0, frontIndex: 0, ids: [] })
+  wheelRef.current = { count, frontIndex, ids: pending.map((item) => item.id) }
+  useEffect(() => {
+    const el = deckRef.current
+    if (!stacked || el === null) return undefined
+    let acc = 0
+    let idle: ReturnType<typeof setTimeout> | null = null
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      acc += event.deltaY
+      if (idle !== null) clearTimeout(idle)
+      idle = setTimeout(() => {
+        acc = 0
+      }, 180)
+      if (Math.abs(acc) < 48) return
+      const dir = acc > 0 ? 1 : -1
+      acc = 0
+      const { count: n, frontIndex: i, ids } = wheelRef.current
+      if (n < 2) return
+      setFrontId(ids[(i + dir + n) % n])
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (idle !== null) clearTimeout(idle)
+    }
+  }, [stacked])
 
   useEffect(() => {
     if (count === 0) {
@@ -213,6 +258,19 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
               {waitText}
             </span>
             <span className="approval-head-spacer" />
+            {count > 1 && (
+              <button
+                type="button"
+                className="approval-fan"
+                data-open={fanned ? 'true' : 'false'}
+                aria-expanded={fanned ? 'true' : 'false'}
+                aria-label={fanned ? t('approval_collapse_all') : t('approval_expand_all', { count })}
+                title={fanned ? t('approval_collapse_all') : t('approval_expand_all', { count })}
+                onClick={() => setFanned(!fanned)}
+              >
+                <Icon name="chevron-down" size={14} />
+              </button>
+            )}
             <HeadButton kind={CONFIRM_DENY_ALL} count={count} tone="danger" store={store} snapshot={snapshot} t={t} />
             <HeadButton kind={CONFIRM_APPROVE_ALL} count={count} tone="accent" store={store} snapshot={snapshot} t={t} />
           </div>
@@ -237,13 +295,29 @@ function Dock({ ctx, store }: { ctx: SlotContext; store: ApprovalStore }) {
             />
           </div>
         )}
-        {count > 0 && (
-          <div className="approval-list">
-            {pending.map((item) => (
-              <Item key={item.id} item={item} store={store} snapshot={snapshot} t={t} />
-            ))}
-          </div>
-        )}
+        {count > 0 &&
+          (stacked ? (
+            <div className="approval-deck" ref={deckRef}>
+              <div
+                className="approval-peeks"
+                data-depths={Math.min(2, count - 1)}
+                aria-hidden="true"
+                onClick={() => setFanned(true)}
+              >
+                {count > 2 && (
+                  <Peek key={pending[(frontIndex + 2) % count].id} item={pending[(frontIndex + 2) % count]} depth={2} snapshot={snapshot} t={t} />
+                )}
+                <Peek key={pending[(frontIndex + 1) % count].id} item={pending[(frontIndex + 1) % count]} depth={1} snapshot={snapshot} t={t} />
+              </div>
+              <Item key={pending[frontIndex].id} item={pending[frontIndex]} store={store} snapshot={snapshot} t={t} />
+            </div>
+          ) : (
+            <div className="approval-list">
+              {pending.map((item) => (
+                <Item key={item.id} item={item} store={store} snapshot={snapshot} t={t} />
+              ))}
+            </div>
+          ))}
       </div>
       <div className="approval-sr" aria-live="assertive" aria-atomic="true">
         {live}
@@ -336,6 +410,19 @@ function Item(props: { item: Rec; store: ApprovalStore; snapshot: ApprovalSnapsh
           <TextButton label={t('approval_retry')} disabled={busy} onClick={() => store.submitItem(item, error.action)} />
         </div>
       )}
+    </div>
+  )
+}
+
+// 窥视卡：堆叠态下后卡只露顶部一条（逐级收窄 + 变暗 + 退后），装饰性（aria-hidden），
+// 点击/滚轮交互由容器承载；key = item.id，轮换时重挂以播滑入动效。
+function Peek(props: { item: Rec; depth: number; snapshot: ApprovalSnapshot; t: T }) {
+  const { item, depth, snapshot, t } = props
+  const presentation = itemPresentation(item, snapshot.refs, t)
+  return (
+    <div className="approval-peek" data-depth={depth} data-kind={presentation.view.kind} data-tone={itemTone(item)}>
+      <span className="approval-item-tool">{presentation.lead}</span>
+      <span className="approval-item-summary">{presentation.summary}</span>
     </div>
   )
 }

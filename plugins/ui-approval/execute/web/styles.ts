@@ -3,8 +3,11 @@
 // Layout intent (kept out of the CSS template so no Chinese leaks into web source):
 // - .approval-root mirrors .composer-root (max-width: --msg-max-w, centered, space-16 sides)
 //   so the dock sits directly above the input card with matching left/right edges.
-// - The queue is a deck: items are cards with a small negative top margin; the front card
-//   keeps the highest z-index (nth-child) so deeper cards tuck under it like a stack.
+// - Stacked deck (default for 2+ items): the front card is full size; up to two cards behind
+//   peek out above it, each narrower and dimmer by depth (iOS notification-stack look).
+//   The peeks container reserves only the visible band height; peek bodies spill onto the
+//   front card and are covered by its opaque surface + higher z-index.
+// - Fan-out (toggle in the head or tap the peeks) renders the flat list with plain gaps.
 // - Glass is the one global exception (--c-glass + backdrop blur), with a solid fallback.
 
 export const STYLE_TEXT = `
@@ -50,6 +53,24 @@ export const STYLE_TEXT = `
 }
 .approval-head-wait[data-warn="true"] { color: var(--c-warning); }
 .approval-head-spacer { flex: 1; }
+.approval-fan {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-text-3);
+  cursor: pointer;
+  transition: background-color var(--motion-fast), color var(--motion-fast);
+}
+.approval-fan:hover { background: var(--c-selection); color: var(--c-text); }
+.approval-fan:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+.approval-fan svg { transition: transform var(--motion-fast); }
+.approval-fan[data-open="true"] svg { transform: rotate(180deg); }
 .approval-btn {
   display: inline-flex;
   align-items: center;
@@ -115,7 +136,41 @@ export const STYLE_TEXT = `
   .approval-loading { background: var(--c-surface); }
 }
 .approval-loading-note { color: var(--c-text-3); }
-.approval-list { display: flex; flex-direction: column; }
+.approval-list { display: flex; flex-direction: column; gap: var(--space-8); }
+.approval-deck { position: relative; }
+.approval-deck > .approval-item { z-index: 5; }
+.approval-peeks { position: relative; cursor: pointer; user-select: none; }
+.approval-peeks[data-depths="1"] { height: 14px; }
+.approval-peeks[data-depths="2"] { height: 26px; }
+.approval-peek {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 26px;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-lg);
+  background: var(--c-surface);
+  box-shadow: var(--shadow-soft);
+  font-size: var(--font-size-xs);
+  line-height: var(--leading-code);
+  animation: approval-peek-in var(--motion-base);
+  transition: top var(--motion-fast), opacity var(--motion-fast);
+}
+@keyframes approval-peek-in {
+  from { transform: translateY(6px); }
+  to { transform: none; }
+}
+.approval-peek[data-depth="1"] { top: 12px; left: 8px; right: 8px; z-index: 2; opacity: .85; }
+.approval-peek[data-depth="2"] { top: 0; left: 16px; right: 16px; z-index: 1; opacity: .6; }
+.approval-peeks[data-depths="1"] .approval-peek[data-depth="1"] { top: 0; }
+.approval-peeks[data-depths="2"]:hover .approval-peek[data-depth="1"] { top: 13px; }
+.approval-peeks:hover .approval-peek[data-depth="1"] { opacity: 1; }
+.approval-peeks:hover .approval-peek[data-depth="2"] { opacity: .75; }
 .approval-item {
   position: relative;
   z-index: 1;
@@ -126,10 +181,6 @@ export const STYLE_TEXT = `
   animation: approval-item-in var(--motion-base);
   transition: box-shadow var(--motion-fast), transform var(--motion-fast), border-color var(--motion-fast);
 }
-.approval-item + .approval-item { margin-top: calc(-1 * var(--space-4)); }
-.approval-item:nth-child(1) { z-index: 5; }
-.approval-item:nth-child(2) { z-index: 4; }
-.approval-item:nth-child(3) { z-index: 3; }
 .approval-item:hover,
 .approval-item:focus-within {
   z-index: 6;
@@ -138,7 +189,8 @@ export const STYLE_TEXT = `
   box-shadow: var(--shadow-pop);
 }
 .approval-item[data-tone="expired"] { opacity: .62; }
-.approval-item::before {
+.approval-item::before,
+.approval-peek::before {
   content: "";
   position: absolute;
   left: 0;
@@ -148,12 +200,15 @@ export const STYLE_TEXT = `
   border-radius: var(--radius-lg) 0 0 var(--radius-lg);
   background: var(--c-warning);
 }
-.approval-item[data-kind="plugin_write"]::before { background: var(--c-danger); }
-.approval-item[data-kind="orchestration_change"]::before { background: var(--c-info); }
-.approval-item[data-tone="expired"]::before { background: var(--c-text-3); }
+.approval-item[data-kind="plugin_write"]::before,
+.approval-peek[data-kind="plugin_write"]::before { background: var(--c-danger); }
+.approval-item[data-kind="orchestration_change"]::before,
+.approval-peek[data-kind="orchestration_change"]::before { background: var(--c-info); }
+.approval-item[data-tone="expired"]::before,
+.approval-peek[data-tone="expired"]::before { background: var(--c-text-3); }
 @keyframes approval-item-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 .approval-item-main {
   display: flex;
@@ -242,7 +297,7 @@ export const STYLE_TEXT = `
   border: 0;
 }
 @media (prefers-reduced-motion: reduce) {
-  .approval-dock, .approval-item { animation: none; }
+  .approval-dock, .approval-item, .approval-peek { animation: none; }
   .approval-breathe-ring { animation: none; opacity: .4; }
 }
 `

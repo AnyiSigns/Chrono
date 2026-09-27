@@ -52,6 +52,8 @@ export const UI_TEXT: Record<string, string> = {
   approval_graph_diff: '图 diff',
   approval_expand: '展开',
   approval_collapse: '收起',
+  approval_expand_all: '展开全部 {count} 项',
+  approval_collapse_all: '收起为堆叠',
   approval_empty: '暂无待审批项',
   approval_queue_full: '审批队列已满。先处理现有条目。',
   approval_dependency_missing: '依赖未就绪',
