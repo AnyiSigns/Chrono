@@ -376,6 +376,71 @@ test('内建机械兜底：bag 未带 guard_rules 与带默认 body 判定一致
   }
 })
 
+// ── 命令前缀白名单 ──────────────────────────────────────────────────────────
+
+test('allow_patterns：命中前缀直落 allow（放行工作区外等升级），未命中照常升级', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const rules = clone(DEFAULT_RULES)
+    rules.allow_patterns = [{ port: 'tool-shell', tool: 'shell', prefix: ['npm', 'test'], verdict: 'allow' }]
+    const hit = await drv.judge(
+      bag([{ port: 'tool-shell', tool: 'shell', args: { input: 'npm test --watch', path: OUTSIDE } }], {
+        guard_rules: rules,
+      }),
+    )
+    assert.equal(hit.value.decisions[0].verdict, 'allow')
+    assert.equal(hit.value.decisions[0].reason, 'allowlisted')
+    assert.equal(hit.value.decisions[0].rule, 'npm test')
+
+    const miss = await drv.judge(
+      bag([{ port: 'tool-shell', tool: 'shell', args: { input: 'npm run build', path: OUTSIDE } }], {
+        guard_rules: rules,
+      }),
+    )
+    assert.equal(miss.value.decisions[0].verdict, 'escalate')
+    assert.equal(miss.value.decisions[0].reason, 'outside_workspace')
+  } finally {
+    drv.close()
+  }
+})
+
+test('allow_patterns：危险模式优先，危险命令不被白名单放行', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const rules = clone(DEFAULT_RULES)
+    rules.allow_patterns = [{ port: 'tool-shell', tool: 'shell', prefix: ['rm'], verdict: 'allow' }]
+    const result = await drv.judge(
+      bag([{ port: 'tool-shell', tool: 'shell', args: { input: 'rm -rf /' } }], { guard_rules: rules }),
+    )
+    assert.equal(result.value.decisions[0].verdict, 'escalate')
+    assert.equal(result.value.decisions[0].reason, 'dangerous_pattern')
+  } finally {
+    drv.close()
+  }
+})
+
+test('allow_patterns：前缀大小写不敏感，port / tool 不符不生效', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const rules = clone(DEFAULT_RULES)
+    rules.allow_patterns = [{ port: 'tool-shell', tool: 'shell', prefix: ['NPM', 'TEST'], verdict: 'allow' }]
+    const ci = await drv.judge(
+      bag([{ port: 'tool-shell', tool: 'shell', args: { input: 'npm test', path: OUTSIDE } }], { guard_rules: rules }),
+    )
+    assert.equal(ci.value.decisions[0].verdict, 'allow')
+
+    const otherTool = await drv.judge(
+      bag([{ port: 'tool-shell', tool: 'exec', args: { input: 'npm test', path: OUTSIDE } }], { guard_rules: rules }),
+    )
+    assert.equal(otherTool.value.decisions[0].verdict, 'escalate')
+  } finally {
+    drv.close()
+  }
+})
+
 // ── 结构化错误 ──────────────────────────────────────────────────────────────
 
 test('bag 非对象 / calls 非数组 → bad_args，不崩进程', async () => {

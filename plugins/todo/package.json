@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "按会话键控的待办清单：todo.write 整表替换产写计划、todo.read 读调用方传入的投影数据",
+  "description": "按会话键控的待办清单：todo.write 整表替换 / todo.update 按 id 增量，即时落 owner 委托存储；todo.read 从自有存储读",
   "files": [
     "plugin.json",
     "package.json",
@@ -14,6 +14,6 @@
   ],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --test test/todo.test.mjs test/todo-read.test.mjs"
+    "test": "node --test test/todo.test.mjs test/todo-read.test.mjs test/todo-update.test.mjs"
   }
 }

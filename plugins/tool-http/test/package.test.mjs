@@ -9,6 +9,9 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
+import { declaredCaps, NET_WEBFETCH } from '../execute/caps.ts'
+import { HOST_METHOD_TIMEOUT_MS, MAX_EXEC_BUDGET_MS, REVERSE_TIMEOUT_MARGIN_MS } from '../execute/reverse.ts'
+
 const DECL_FIELDS = [
   'identity',
   'schema',
@@ -59,19 +62,27 @@ test('schema/tool-http.json 声明两工具形状与免费源默认清单', () =
   assert.equal(defaults.version, 1)
   assert.equal(defaults.top_n, 10)
   assert.equal(defaults.rrf_k, 60)
-  assert.equal(defaults.obey_robots, true)
+  assert.equal(defaults.obey_robots, false)
   assert.equal(typeof defaults.user_agent, 'string')
   const names = defaults.sources.map((source) => source.name)
-  assert.deepEqual(names, [
-    'DuckDuckGo HTML',
-    'DuckDuckGo Lite',
-    'Bing',
-    'Mojeek',
-    'SearXNG',
-    'Wikipedia API',
-  ])
-  const searxng = defaults.sources.find((source) => source.id === 'searxng')
-  assert.ok(Array.isArray(searxng.instances) && searxng.instances.length >= 2)
+  assert.deepEqual(names, ['Bing RSS', 'Mojeek'])
+  for (const dead of ['duckduckgo-html', 'duckduckgo-lite', 'searxng', 'wikipedia', 'marginalia']) {
+    assert.equal(
+      defaults.sources.some((source) => source.id === dead),
+      false,
+      `${dead} 已不可用，不应留在内建清单`,
+    )
+  }
+})
+
+test('调用等待嵌套：调用方反向等待 > 宿主方法级超时 > 反向等待 > 执行', () => {
+  const schema = readJson('schema/tool-http.json')
+  const methodTimeout = schema.method_timeouts['tool-http.invoke']
+  assert.equal(methodTimeout, HOST_METHOD_TIMEOUT_MS)
+  // tools 服务按工具声明 caps.timeout_ms + 10s 推反向等待（plugins/tools/execute/dispatch.ts:398）。
+  assert.ok(declaredCaps(NET_WEBFETCH).timeout_ms + 10_000 > methodTimeout, '调用方等待须大于宿主方法级超时')
+  // 插件内约束：host > reverse > exec。
+  assert.ok(MAX_EXEC_BUDGET_MS + REVERSE_TIMEOUT_MARGIN_MS < methodTimeout, '反向等待须小于宿主方法级超时')
 })
 
 test('execute/ 源码齐全', () => {
@@ -81,10 +92,13 @@ test('execute/ 源码齐全', () => {
     'execute/describe.ts',
     'execute/websearch.ts',
     'execute/webfetch.ts',
+    'execute/webresearch.ts',
+    'execute/content.ts',
     'execute/config.ts',
     'execute/caps.ts',
     'execute/context.ts',
     'execute/fetcher.ts',
+    'execute/fetcher-cli.mjs',
     'execute/net.ts',
     'execute/sources.ts',
     'execute/robots.ts',

@@ -4,9 +4,10 @@ agent 向用户提问并等待作答：工具 `question` 把问题队列项写**
 **本回合正常结束**（不阻塞、不用 `eff` 等待），用户作答后续跑，把答案回灌为本次工具调用的结果。
 队列与 resume 游标是**运行记录**，**不进世界**——不产 `write` directive、不占 `seq`、不改 `worldRev`。
 
-- 能力类：`question`（`describe` / `invoke` / `list` / `sweep`）。
+- 能力类：`question`（`describe` / `invoke` / `list` / `state` / `sweep`）。
 - `pins`：`{"input":"input"}`——作答槽属 `input` 服务，服务经**反向调用** `input.read` 取槽、`input.clear` 清槽。
-- 命令：`question.answer`（入口 `terms/question.answer.json`，`["eff","question","invoke",["c",null]]`——不再传投影切片）。
+- 命令：`question.answer`（入口 `terms/question.answer.json`，`["eff","question","invoke",["c",null]]`——不再传投影切片）；
+  `question.state`（只读，`["eff","question","state",["c",null]]`——只回 `{id, answered, answers, expired}`，供重拉后对账，不含 `questions` / `resume`）。
 - 事件：入队时上行 `question.pending`（载荷带 `run` / `thread` / 队列项 id），供通知面消费。
 - 状态档：`durable`（④ 不可重算）；`exclusive: ["data"]`（单写句柄）。启动：`node execute/main.ts`。
 - 运行时零 npm 依赖；服务不读投影、无写链通道、不取时间 / 随机（`at` / `now` 由 bag / env 传入），同输入同输出。
@@ -15,6 +16,8 @@ agent 向用户提问并等待作答：工具 `question` 把问题队列项写**
 
 - ④ `CHRONO_PLUGIN_DATA/question.jsonl`：单文件追加日志，每条逻辑写一次 append + fsync（换行收尾）；
   启动重放即得全量队列。记录 `{t:'turn'|'write', run, ...}`：`write.ops` 为 `item`（upsert）/`count`（累计入队数）。
+  记录数超阈值（缺省 4096）时启动重放后压紧一次：折成 live 快照（当前 item + count + 仍 open 的回合标记），
+  原子临时文件 + rename；数据不变、日志不单调膨胀。
 - ③ `CHRONO_PLUGIN_STATE/index.json`：派生物（记录水位 / 计数 / 项数），删掉可由 ④ 重放重建，**不承载真源**。
 - 回合标记 `{t:'turn', run, state:'open'|'closed'}`：存在 `open` 且无 `closed` 即中断残留，`pendingTurns()` 可辨识。
 - **为何自写而非委托 `storage-*`**：作答续跑要求入队当场落账游标、作答当场读回并改写，自写零协议往返、零审计。
@@ -63,6 +66,11 @@ term 语言只有八个原语，无法把「槽 id / answers」与「队列 item
 `describe.render.detail.kind = "question"`；`invoke` 结果随附交互卡描述符
 `{form:"card", label:"question", summary, tone:"plain", detail:{kind:"question", interactive:true, id, questions, expired, answers}}`，
 `id` 供 ui-chat 提交 `question.answer` 定位 item，`expired` / `answers` 随消息 part 快照进 session，使 ui-chat 能提交 / 折叠 / 呈现 expired。
+
+part 快照只代表**入队那一刻**（`answers:null` / `expired:false`）。作答后卡片应收为**只读**并展示用户回答；
+sweep 过期后也应收为只读。故 UI 在重拉历史（`chat.history`）后按卡片 `detail.id` 批量调 `question.state` 对账，
+以服务端队列为准覆盖 `answers`（含空数组的「全部忽略」）/ `answered` / `expired`；对账失败（question 未就绪）时
+回落 part 快照，不阻断历史渲染。
 
 ## 运行
 

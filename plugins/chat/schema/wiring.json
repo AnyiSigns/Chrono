@@ -21,7 +21,8 @@
   "on_budget": "fail",
   "stream": { "topic": "model.delta" },
   "method_timeouts": {
-    "chat.send": 600000,
-    "chat.resume": 600000
+    "chat.send": 6300000,
+    "chat.resume": 6300000,
+    "chat.cancel": 600000
   }
 }

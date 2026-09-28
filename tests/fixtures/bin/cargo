@@ -1,0 +1,5 @@
+#!/bin/sh
+# 端到端测试夹具：cargo 空操作替身（非 Windows）。
+# 原生构建由夹具预置的产物满足，e2e 不触发真实编译。
+echo "[chrono-e2e] cargo stub: skip cargo $*" 1>&2
+exit 0

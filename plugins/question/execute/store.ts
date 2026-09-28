@@ -11,12 +11,16 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Rec = { [key: string]: Json }
+
+/** 追加日志超过该记录数时，在启动重放后压紧一次（防止长期运行单调膨胀）。 */
+export const DEFAULT_COMPACT_THRESHOLD = 4096
 
 function isRecord(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -70,12 +74,14 @@ export class QuestionStore {
     this.dataFile = dataFile
     this.stateFile = stateFile
     if (dataFile !== null) {
-      for (const record of replay(dataFile)) this.apply(record)
+      const replayed = replay(dataFile)
+      this.records = replayed.length
+      for (const record of replayed) this.apply(record)
     }
     this.writeDerived()
   }
 
-  static open(env: NodeJS.ProcessEnv = process.env): QuestionStore {
+  static open(env: NodeJS.ProcessEnv = process.env, options: { compactThreshold?: number } = {}): QuestionStore {
     const dataDir = env['CHRONO_PLUGIN_DATA']
     const stateDir = env['CHRONO_PLUGIN_STATE']
     let dataFile: string | null = null
@@ -88,7 +94,36 @@ export class QuestionStore {
       mkdirSync(stateDir, { recursive: true })
       stateFile = join(stateDir, 'index.json')
     }
-    return new QuestionStore(dataFile, stateFile)
+    const store = new QuestionStore(dataFile, stateFile)
+    store.compact(options.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD)
+    return store
+  }
+
+  /**
+   * 启动重放后压紧日志：把「被覆盖的 item / 已闭合回合标记」折成一份 live 快照（原子临时文件 + rename）。
+   * 只保留当前 live item（按到达序）+ count + 仍 open 的回合标记；失败不致命，原日志照常可用。
+   */
+  private compact(threshold: number): void {
+    if (this.dataFile === null || threshold <= 0 || this.records < threshold) return
+    const ops: Json[] = []
+    for (const id of this.order) {
+      const item = this.items.get(id)
+      if (item !== undefined) ops.push({ op: 'item', item })
+    }
+    ops.push({ op: 'count', value: this.total })
+    const lines = [JSON.stringify({ t: 'write', run: null, ops })]
+    for (const [run, state] of this.turns) {
+      if (state === 'open') lines.push(JSON.stringify({ t: 'turn', run, state: 'open' }))
+    }
+    const tmp = `${this.dataFile}.compact`
+    try {
+      writeFileSync(tmp, `${lines.join('\n')}\n`, 'utf8')
+      renameSync(tmp, this.dataFile)
+      this.records = lines.length
+      this.writeDerived()
+    } catch {
+      // 压缩失败不致命：保留原日志。
+    }
   }
 
   private writeDerived(): void {

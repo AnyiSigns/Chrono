@@ -102,6 +102,15 @@ function renderAssistant(message: Rec, parts: Json[], toolPartByCall: Map<string
     const callId = str(call['id'])
     if (callId === null) continue
     const tool = str(call['name']) ?? ''
+    // 同一 call 可能在多段续跑 / 重建里重复出现（如 question 挂起步 + 作答步）：
+    // 复用首个 part（保留其位置与更具体的 render），只补缺省字段，避免历史里出现重复工具卡。
+    const existing = toolPartByCall.get(callId)
+    if (existing !== undefined) {
+      if (existing['args'] === null || existing['args'] === undefined) existing['args'] = call['arguments'] ?? null
+      if (existing['render'] === null || existing['render'] === undefined) existing['render'] = renders.get(tool) ?? null
+      if (str(existing['tool']) === null) existing['tool'] = tool
+      continue
+    }
     const part: Rec = {
       type: 'tool',
       call_id: callId,

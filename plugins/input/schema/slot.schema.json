@@ -10,6 +10,11 @@
       "description": "键 = thread_id（缺省 `_main`）；值 = 槽 body（下方 `slot` 给出的平铺形态；白名单子集无 oneOf / $ref 且 additionalProperties 只能布尔，故只作声明，实际形态校验归写入端）。",
       "additionalProperties": true
     },
+    "slot_refs": {
+      "type": "object",
+      "description": "键 = thread_id；值 = 该槽写入时的 run id（`slot_ref`），供回合开始时按槽幂等开合（同一槽不开第二个回合）。无该线程键回 null；服务读回时附带，非槽 body 自身的字段。",
+      "additionalProperties": true
+    },
     "slot": {
       "title": "槽 body（slots 的值，单值平铺）",
       "description": "slots 每个值的平铺形态声明；`kind` 判别联合，其余字段按 kind 取用。该键只描述 slots 的值形状，不是 body 自身的字段。",

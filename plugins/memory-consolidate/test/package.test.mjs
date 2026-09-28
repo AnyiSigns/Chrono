@@ -62,7 +62,7 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('schema：策略参数 + periodic 两拍（owner 数据由服务自读，无投影 reads）', () => {
+test('schema：策略参数 + periodic 两拍（只注入派发策略，owner 数据仍由服务自读）', () => {
   const schema = readJson('schema/memory-maintenance.json')
   assert.equal(schema.type, 'object')
   const params = schema.params
@@ -78,9 +78,22 @@ test('schema：策略参数 + periodic 两拍（owner 数据由服务自读，�
   for (const entry of schema.periodic) {
     assert.equal(typeof entry.every_ms, 'number')
     assert.ok(entry.every_ms > 0)
-    assert.equal(entry.reads, undefined, 'owner 数据由服务自读，不应再有投影 reads')
+    // reads 只注入周期派发策略（数据世代 body），不注入 owner 数据。
+    assert.equal(typeof entry.reads, 'object')
+    assert.ok(Object.keys(entry.reads).length > 0)
+    for (const path of Object.values(entry.reads)) {
+      assert.ok(Array.isArray(path))
+      assert.deepEqual(path.slice(0, 3), ['ids', 'memory-consolidate', 'body'])
+    }
   }
-  assert.equal(schema.method_timeouts['memory-maintenance.consolidate'], 120000)
+  assert.deepEqual(Object.keys(schema.periodic[0].reads), ['summarize'])
+  assert.deepEqual(Object.keys(schema.periodic[1].reads).sort(), [
+    'candidate_threshold',
+    'l1_ttl_ms',
+    'l2_capacity',
+    'l3_capacity',
+  ])
+  assert.equal(schema.method_timeouts['memory-maintenance.consolidate'], 4800000)
 })
 
 test('无 terms/ 目录且无命令面', () => {

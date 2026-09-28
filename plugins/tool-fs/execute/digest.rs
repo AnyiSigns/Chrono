@@ -1,5 +1,10 @@
-// SHA-256（纯 Rust，无外部依赖）：与 `sandbox.fsop` 的 `expected_hash` 口径一致（小写十六进制）。
-// 自实现以免引入编译期加密依赖；用标准测试向量覆盖。
+// 工具结果摘要（digest）：随成功结果自带，供上下文老化直接渲染，无需装配器认识工具语义。
+// 只放确定、有界的展示字段（路径 / 行窗 / 内容哈希 / 规模 / 模式与命中数）；不含时间、不含正文全文。
+// 自实现 SHA-256 以免引入编译期加密依赖，口径为小写十六进制。
+
+use serde_json::{json, Value};
+
+// ── SHA-256（纯 Rust，无外部依赖） ──────────────────────────────────────────
 
 const INITIAL: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -17,7 +22,7 @@ const ROUND: [u32; 64] = [
 ];
 
 /// 计算 SHA-256 摘要。
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut state = INITIAL;
     let mut padded = Vec::with_capacity(bytes.len() + 72);
     padded.extend_from_slice(bytes);
@@ -89,7 +94,7 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
-/// SHA-256 的小写十六进制表示（fsop `expected_hash` 口径）。
+/// SHA-256 的小写十六进制表示。
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for byte in sha256(bytes) {
@@ -98,12 +103,51 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// 与上下文老化一致的字节规模文本：`<1024B` 原样；否则 KB（≥100 取整，其余一位小数）。
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        return format!("{bytes}B");
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb >= 100.0 {
+        format!("{}KB", kb.round() as i64)
+    } else {
+        let rounded = (kb * 10.0).round() / 10.0;
+        format!("{rounded}KB")
+    }
+}
+
+/// read 摘要：路径、行窗（`1-240`）、返回窗口内容的 sha256、规模摘要。
+pub fn read_digest(
+    path: &str,
+    start_line: u64,
+    end_line: Option<u64>,
+    lines_returned: u64,
+    text: &str,
+) -> Value {
+    let lines = match end_line {
+        Some(end) => format!("{start_line}-{end}"),
+        None => format!("{start_line}"),
+    };
+    json!({
+        "path": path,
+        "lines": lines,
+        "sha": sha256_hex(text.as_bytes()),
+        "summary": format!("{lines_returned} 行 / {}", format_bytes(text.len())),
+    })
+}
+
+/// glob / grep 摘要：模式、命中数、涉及文件数（glob 下同 paths 数）。
+pub fn search_digest(pattern: &str, hits: usize, files: usize) -> Value {
+    json!({ "pattern": pattern, "hits": hits, "files": files })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn known_vectors() {
+    fn sha256_known_vectors() {
         assert_eq!(
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -115,9 +159,32 @@ mod tests {
     }
 
     #[test]
-    fn long_input_padding() {
-        let data = vec![b'a'; 1000];
-        assert_eq!(sha256_hex(&data).len(), 64);
-        assert_ne!(sha256(&data), sha256(&data[..999]));
+    fn read_digest_shape() {
+        let digest = read_digest("src/a.ts", 1, Some(240), 240, "hello");
+        assert_eq!(digest["path"], "src/a.ts");
+        assert_eq!(digest["lines"], "1-240");
+        assert_eq!(digest["sha"], "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(digest["summary"], "240 行 / 5B");
+    }
+
+    #[test]
+    fn read_digest_empty_window_keeps_start_only() {
+        let digest = read_digest("a.txt", 5, None, 0, "");
+        assert_eq!(digest["lines"], "5");
+        assert_eq!(digest["summary"], "0 行 / 0B");
+    }
+
+    #[test]
+    fn format_bytes_matches_aging_scale() {
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(1023), "1023B");
+        assert_eq!(format_bytes(8397), "8.2KB");
+        assert_eq!(format_bytes(1024 * 100), "100KB");
+    }
+
+    #[test]
+    fn search_digest_shape() {
+        let digest = search_digest("fn", 37, 12);
+        assert_eq!(digest, json!({ "pattern": "fn", "hits": 37, "files": 12 }));
     }
 }

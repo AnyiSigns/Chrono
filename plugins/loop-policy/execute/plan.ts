@@ -257,9 +257,14 @@ export function externDirective(payload: Json): Json {
   return { kind: 'extern', payload }
 }
 
-/** 一条 eval 计划条目（H18：宿主按命令名解析入口）。 */
-export function evalDirective(command: string, args: Json): Json {
-  return { kind: 'eval', command, args }
+/**
+ * 一条 eval 计划条目（H18：宿主按命令名解析入口）。
+ * `inject` 声明宿主执行期把投影片段按路径并入 args（键 → 投影路径），续跑 eval 据此拿投影而无需自带整份。
+ */
+export function evalDirective(command: string, args: Json, inject?: Rec): Json {
+  const directive: Rec = { kind: 'eval', command, args }
+  if (inject !== undefined) directive['inject'] = inject
+  return directive
 }
 
 /** 值里是否带计划通道包装 `$directives`。 */

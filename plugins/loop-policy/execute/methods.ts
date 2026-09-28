@@ -3,15 +3,18 @@
 // 服务不读投影、不写链、不自取时钟（now 取 env）；同输入同输出（LLM 项除外，eff_log 回灌配对下等价）。
 
 import { interpretGraph } from './interpreter.ts'
+import { clearCancel, requestCancel } from './cancel.ts'
 import { evolutionBody, expandAdoption, expandRejection, ledgerEntries, scanProposals } from './proposals.ts'
 import { H } from './hash.ts'
 import { asString, baseSeqOf, isRecord, isoAt, nowOf, planOf, RoundPatches } from './plan.ts'
 import { PINS } from './plugin.ts'
 import { createRefHydrator } from './refs.ts'
 import type { DefReader, RefHydrator } from './refs.ts'
-import { resolveModel } from './seed.ts'
+import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
+import { SEGMENT_ENDED } from './lifecycle.ts'
+import { attributionOf, resolveModel, retriableOf } from './seed.ts'
+import { accumulateDirectives, accumulatedDirectives, clearTrace, traceFor } from './segment-trace.ts'
 import { buildTraceTail } from './tail.ts'
-import { TraceRecorder } from './trace.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, PortCaller, Rec } from './types.ts'
 
@@ -122,45 +125,101 @@ async function interpret(
   const at = isoAt(nowOf(env, bag))
   const resume = parseResume(bag)
   const events: HandlerResult['events'] = []
+  const turnId = asString(bag['turn_id'])
+  let ended: string | null = null
 
-  if (resume !== null && isRecord(resume['cursor']) && resume['cursor']['kind'] === 'orchestration_change') {
-    return { value: orchestrationResume(bag, pins, resume, env, at), events }
-  }
+  try {
+    if (resume !== null && isRecord(resume['cursor']) && resume['cursor']['kind'] === 'orchestration_change') {
+      return { value: orchestrationResume(bag, pins, resume, env, at), events }
+    }
 
-  const trace = new TraceRecorder()
-  const result = await interpretGraph({ bag, env, model, pins, port: deps.port, trace, resume })
-  events.push(...result.events)
-  const graphHash = H(model.graph)
-  const round = newRound(bag)
-  buildTraceTail(bag, trace, result.directives, env, graphHash, at, round)
-  let proposalDirectives: Json[] = []
-  if (result.pending === null) {
-    const scan = await scanProposals({
-      bag,
-      env,
-      model,
-      pins,
-      port: deps.port,
-      run: env.run,
-      workspaceId: asString(bag['workspace_id']),
-      at,
-      round,
-    })
-    proposalDirectives = scan.directives
-    events.push(...scan.events)
+    // 段间 trace 累积：同一回合的多次 interpret 共用一个记录器，settle 时一次写（每回合一个 evolution 世代）。
+    const trace = traceFor(turnId)
+    const result = await interpretGraph({ bag, env, model, pins, port: deps.port, trace, resume })
+    ended = result.ended
+    events.push(...result.events)
+    const graphHash = H(model.graph)
+    const round = newRound(bag)
+    const stepping = result.ended === SEGMENT_ENDED
+    if (stepping) {
+      // 段终态：不落 trace / 不改 evolution，只登记本段计划供 settle 出摘要。
+      accumulateDirectives(turnId, result.directives)
+    } else {
+      buildTraceTail(bag, trace, accumulatedDirectives(turnId, result.directives), env, graphHash, at, round)
+      if (result.pending === null) {
+        const scan = await scanProposals({
+          bag,
+          env,
+          model,
+          pins,
+          port: deps.port,
+          run: env.run,
+          workspaceId: asString(bag['workspace_id']),
+          at,
+          round,
+        })
+        events.push(...scan.events)
+        for (const directive of scan.directives) {
+          result.directives.push(directive)
+        }
+      }
+    }
+    // 同回合的 trace / verdicts 合并为一个 evolution 世代；影子指标等其它写仍在各自批次。
+    const all: Json[] = [...result.directives, ...round.finalize()]
+    const summary: Rec = {
+      ...result.summary,
+      // 段终态摘要不占用 `interpret` 这一终态摘要标识：同 run 后续段的终态摘要才是回执用的那条。
+      kind: stepping ? SEGMENT_ENDED : 'interpret',
+      fell_back: resolved.fellBack,
+      graph: graphHash,
+      ended: result.ended,
+      // 解释器生命周期（封闭枚举）与图内进度（数据）：换图不改枚举，UI 按 contract_id 映射当前动作。
+      lifecycle: result.lifecycle,
+      progress: result.progress,
+      refused_at: trace.refusedAt,
+      branch_not_taken: trace.branchNotTaken,
+      instances: trace.steps.map((step) => [step['node_index'], step['chosen_instance']]),
+    }
+    // 契约版本事实留痕：未标注（缺失）时为 null，消费方据此区分「未标注」与「已标注且兼容」。
+    summary['contract_version'] = asString(bag['contract_version'])
+    // 转换点 C：回合终态由属主 CAS 落定；`awaiting` / `stepping` 是段终态，不收口。
+    if (turnId !== null) {
+      summary['turn_id'] = turnId
+      if (result.pending === null && !stepping) {
+        const refusedCode = trace.refusedAt !== null ? asString(trace.refusedAt['code']) : null
+        const fallbackAttr = refusedCode !== null ? attributionOf(model, refusedCode) : null
+        const outcome = result.ended === 'refused'
+          ? (result.refusedOutcome ?? refusedOutcome(
+              refusedCode ?? 'downstream_refusal',
+              null,
+              refusedCode !== null && retriableOf(model, refusedCode),
+              fallbackAttr,
+            ))
+          : result.ended === 'cancelled'
+            ? cancelledOutcome()
+            : committedOutcome(result.stopReason)
+        const settled = await deps.port.call('session', 'turn_settle', { turn_id: turnId, outcome })
+        summary['outcome'] = outcome
+        summary['settled'] = settled.ok && isRecord(settled.value) && settled.value['ok'] === true
+      }
+    }
+    return { value: planOf(all, summary), events }
+  } finally {
+    // 段终态（stepping）：保留取消标志与 trace 累积，让下一段入口仍能看见取消、settle 时一次写出。
+    if (ended !== SEGMENT_ENDED) {
+      clearTrace(turnId)
+      clearCancel(turnId)
+    }
   }
-  // 同回合的 trace / verdicts 合并为一个 evolution 世代；影子指标等其它写仍在各自批次。
-  const all: Json[] = [...result.directives, ...proposalDirectives, ...round.finalize()]
-  const summary: Rec = {
-    ...result.summary,
-    fell_back: resolved.fellBack,
-    graph: graphHash,
-    ended: result.ended,
-    refused_at: trace.refusedAt,
-    branch_not_taken: trace.branchNotTaken,
-    instances: trace.steps.map((step) => [step['node_index'], step['chosen_instance']]),
-  }
-  return { value: planOf(all, summary), events }
+}
+
+/** `cancel(turn_id)`：置内存标志，运行中的 interpret 在派发边界查、命中即停；幂等。 */
+function cancel(args: Json): HandlerResult {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  if (turnId === null) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  requestCancel(turnId)
+  return { value: { ok: true, turn_id: turnId, cancelled: true }, events: [] }
 }
 
 /** 构造方法表（依赖注入：反向调用通道由 main 提供）。 */
@@ -175,5 +234,6 @@ export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
   return {
     interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
       interpret(args, env, deps, hydrator),
+    cancel: (args: Json): Promise<HandlerResult> => Promise.resolve(cancel(args)),
   }
 }

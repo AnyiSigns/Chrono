@@ -1,23 +1,45 @@
 // 种子判定 / pre / post / 结构检查的单元测试（纯函数，不起服务）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { checkToolCalls, evalPost, evalPre, evalWhen, todoIncomplete, wroteFiles } from '../execute/rules.ts'
+import { checkToolCalls, evalPost, evalPre, evalWhen, knownWhen, todoIncomplete, unknownWhenExpr, wroteFiles } from '../execute/rules.ts'
 
 function ctx(outputs, state = {}) {
   return { nodeIndex: 0, outputs: new Map(Object.entries(outputs).map(([k, v]) => [Number(k), v])), inputs: new Map(), shared: {}, thresholds: {}, effLog: [], state }
 }
 
+/** 已判定据的布尔值；未知判据回结构化拒绝。 */
+function when(expr, c, source) {
+  return evalWhen(expr, c, source)
+}
+
 test('when：nonempty / empty / verdict_is / eq / not', () => {
   const c = ctx({ 1: { tool_calls: [{ name: 'edit' }], message: { role: 'assistant' } }, 2: { verdict: 'allow' }, 3: { decision: 'approved' } })
-  assert.equal(evalWhen('nonempty(tool_calls)', c, 1), true)
-  assert.equal(evalWhen('empty(message)', c, 1), false)
-  assert.equal(evalWhen('empty(tool_calls)', c, 1), false)
-  assert.equal(evalWhen('verdict_is(allow)', c, 2), true)
-  assert.equal(evalWhen('verdict_is(deny)', c, 2), false)
-  assert.equal(evalWhen('verdict_is(approved)', c, 3), true)
-  assert.equal(evalWhen('eq(verdict:allow)', c, 2), true)
-  assert.equal(evalWhen('not verdict_is(deny)', c, 2), true)
-  assert.equal(evalWhen('', c, 1), true, '缺省无条件')
+  assert.deepEqual(when('nonempty(tool_calls)', c, 1), { ok: true, value: true })
+  assert.deepEqual(when('empty(message)', c, 1), { ok: true, value: false })
+  assert.deepEqual(when('empty(tool_calls)', c, 1), { ok: true, value: false })
+  assert.deepEqual(when('verdict_is(allow)', c, 2), { ok: true, value: true })
+  assert.deepEqual(when('verdict_is(deny)', c, 2), { ok: true, value: false })
+  assert.deepEqual(when('verdict_is(approved)', c, 3), { ok: true, value: true })
+  assert.deepEqual(when('eq(verdict:allow)', c, 2), { ok: true, value: true })
+  assert.deepEqual(when('not verdict_is(deny)', c, 2), { ok: true, value: true })
+  assert.deepEqual(when('', c, 1), { ok: true, value: true }, '缺省无条件')
+})
+
+test('when：未知判据 fail-closed（含 not 取反不得变 fail-open）', () => {
+  const c = ctx({ 1: { verdict: 'allow' } })
+  const unknown = when('mystery(x)', c, 1)
+  assert.equal(unknown.ok, false)
+  assert.equal(unknown.code, 'when_unsat')
+  assert.equal(unknown.value, false)
+  const negated = when('not mystery(x)', c, 1)
+  assert.equal(negated.ok, false, 'not 未知判据必须传播拒绝，不得取反成 true')
+  assert.equal(negated.value, false)
+  assert.equal(knownWhen('mystery(x)'), false)
+  assert.equal(knownWhen('not mystery(x)'), false)
+  assert.equal(knownWhen('verdict_is(allow)'), true)
+  assert.equal(knownWhen(''), true)
+  assert.equal(unknownWhenExpr(['verdict_is(allow)', 'nope(x)', '']), 'nope(x)')
+  assert.equal(unknownWhenExpr(['verdict_is(allow)', '']), null)
 })
 
 test('when：wrote_files 按写类工具成功项判定', () => {

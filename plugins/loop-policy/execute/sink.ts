@@ -36,8 +36,8 @@ export async function runSink(
     return
   }
   const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, sink)
-  // 拒绝短路不丢弃本回合已产出的内容：把最后一步的助手消息一并交 commit，正文/推理/工具卡照常落盘，
-  // 只额外补 `error` 码；否则流式时看得到、重载后整回合「记录全没」。
+  // 拒绝短路不丢弃本回合已产出的内容：把最后一步的助手消息一并交收口步（step.result），正文/推理/工具卡照常落盘，
+  // 拒绝码则进结局（由 `turn.settle` 落定）；否则流式时看得到、重载后整回合「记录全没」。
   let sinkInputs: Rec
   if (refusal !== null) {
     sinkInputs = { refusal }
@@ -59,6 +59,12 @@ export async function runSink(
     const artifact = normalizeRefusalInput(refusal, model)
     sinkInputs = { ...sinkInputs, refusal: artifact }
     if (trace.refusedAt === null) trace.refuse(sink, rs.iter, artifact['code'] as string, artifact['attributable_to'] as string)
+  }
+  // 两条拒绝通道形状一致：无论拒绝是运行期短路传入还是边送（approval denied 等），
+  // 都把本回合最后一步助手消息一并交收口步，助手正文 / 推理 / 工具卡不因拒绝而丢。
+  if (sinkInputs['refusal'] !== undefined && sinkInputs['refusal'] !== null && sinkInputs['message'] === undefined) {
+    const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
+    if (lastMessage !== null) sinkInputs['message'] = lastMessage
   }
   const chosen = selectInstance(model, contract, scopeCtx)
   if (chosen === null) {
@@ -95,8 +101,8 @@ export async function runSink(
 
 /**
  * 显式挂起收口：回合级等人（approval.wait 返回 `pending`）不以静默 sink 收口，而是单独收集本轮已发生的事实。
- * 收口前先把用户消息（随 commitBag 的 `bag.input`）、助手消息与已执行工具结果（随 `rs.extraMessages` 的展示
- * parts）落账——它们已经发生，存续不该取决于后续是否获批；收口带挂起原因与 resume 游标，供跨宿主重启续跑。
+ * 收口前把助手承接帧（正文 / 推理 / 工具卡，审批未决则结果与状态留空）作为 step.result 落步记录——它已经发生，
+ * 存续不该取决于后续是否获批；回合头（用户消息）已由 `session.turn_open` 落账，收口只带挂起原因与 resume 游标。
  * 不走 `runSink` 的入边收集：`pending` 在种子里没有出边，且静默收口会让「等人」与「跑完了」不可区分。
  */
 export async function runSuspend(
@@ -120,7 +126,7 @@ export async function runSuspend(
     trace.refuse(sink, rs.iter, 'input_insufficient', 'graph')
     return
   }
-  // 已发生的助手消息作为终止消息交 commit：正文 / 推理 / 工具卡（审批未决，结果与状态留空）随 parts 落盘。
+  // 已发生的助手消息作为终止消息交收口步：正文 / 推理 / 工具卡（审批未决，结果与状态留空）随 parts 落盘。
   const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
   const sinkInputs: Rec = { pending: { reason: pending['kind'] ?? 'pending', cursor: pending['cursor'] ?? null } }
   if (lastMessage !== null) sinkInputs['message'] = lastMessage

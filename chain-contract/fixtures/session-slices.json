@@ -1,0 +1,48 @@
+{
+  "session": {
+    "version": 1,
+    "current": "c-1759000000000-0",
+    "conversations": [
+      {
+        "id": "c-1759000000000-0",
+        "workspace_id": "w-1",
+        "kind": "main",
+        "title": "空指针排查",
+        "count": 4,
+        "head": { "def": "m-4" }
+      }
+    ]
+  },
+  "slice": {
+    "version": 1,
+    "current": "c-1759000000000-0",
+    "conversations": [
+      {
+        "id": "c-1759000000000-0",
+        "workspace_id": "w-1",
+        "kind": "main",
+        "title": "空指针排查",
+        "count": 4,
+        "head": { "def": "m-4" }
+      }
+    ],
+    "head": "m-4",
+    "refs": {
+      "m-1": { "id": "m-1", "role": "user", "content": "看看 foo.ts 第 42 行", "at": "2026-09-28T00:00:00.000Z", "prev": null },
+      "m-2": {
+        "id": "m-2",
+        "role": "assistant",
+        "content": "",
+        "parts": [
+          { "type": "reasoning", "provider": "anthropic", "model": "claude-sonnet-4-6", "form": "blocks", "payload": "先读文件", "signature": "sig-1" },
+          { "type": "tool", "tool": "fs.read", "args": { "path": "foo.ts" }, "status": "ok" }
+        ],
+        "at": "2026-09-28T00:00:01.000Z",
+        "prev": { "def": "m-1" }
+      },
+      "m-3": { "id": "m-3", "role": "user", "content": "继续", "at": "2026-09-28T00:00:02.000Z", "prev": { "def": "m-2" } },
+      "m-4": { "id": "m-4", "role": "assistant", "content": "第 42 行确实少了判空", "at": "2026-09-28T00:00:03.000Z", "prev": { "def": "m-3" } }
+    },
+    "data_gen": null
+  }
+}

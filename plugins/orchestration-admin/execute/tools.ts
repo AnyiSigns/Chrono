@@ -14,9 +14,9 @@ const READONLY_CAPS: Rec = {
   procs_max: 1,
 }
 
-const GRAPH_BAG: Rec = { type: 'object', description: '当前编排图数据。' }
-const EVOLUTION_BAG: Rec = { type: 'object', description: '变更台账（可选）。' }
-const PINS_BAG: Rec = { type: 'object', description: '依赖关系表（名 → 被依赖的插件名）。' }
+const GRAPH_BAG: Rec = { type: 'object' }
+const EVOLUTION_BAG: Rec = { type: 'object' }
+const PINS_BAG: Rec = { type: 'object' }
 
 /** 四个工具的自述（name / 四要素 / argsSchema / caps / idempotent / render）。 */
 export const TOOLS: Json[] = [
@@ -24,14 +24,11 @@ export const TOOLS: Json[] = [
     name: 'orchestration.list',
     intent: '列出当前生效编排图的概览、契约清单与阈值。',
     when_to_use: '需要总览当前编排有哪些节点、契约与阈值时。',
-    param_semantics: {
-      graph: '当前编排图数据。',
-      evolution: '变更台账（可选，用于关联证据摘要）。',
-      pins: '依赖关系表。',
-    },
+    param_semantics: {},
     boundaries: '只读概览，不含全文；看全文用 orchestration.read，校验用 orchestration.validate。',
     description: '列出当前编排图的概览、契约清单与阈值。',
     argsSchema: { type: 'object', properties: { graph: GRAPH_BAG, evolution: EVOLUTION_BAG, pins: PINS_BAG }, additionalProperties: true },
+    hidden_params: ['graph', 'evolution', 'pins'],
     caps: READONLY_CAPS,
     idempotent: true,
     render: { form: 'card', label: 'orchestration', summary: 'list', tone: 'solid', detail: { kind: 'list' } },
@@ -43,7 +40,6 @@ export const TOOLS: Json[] = [
     param_semantics: {
       kind: '要读的类型：contract / scope / graph / thresholds / evidence。',
       target: '目标 id；kind=graph 时忽略。',
-      graph: '当前编排图数据。',
     },
     boundaries: '只读单条目，不列目录；校验用 orchestration.validate，改图用 orchestration.propose。',
     description: '按类型与 id 读取编排某一部分的全文。',
@@ -51,13 +47,14 @@ export const TOOLS: Json[] = [
       type: 'object',
       properties: {
         kind: { enum: ['contract', 'scope', 'graph', 'thresholds', 'evidence'] },
-        target: { type: 'string', description: '条目 id。' },
+        target: { type: 'string' },
         graph: GRAPH_BAG,
         evolution: EVOLUTION_BAG,
       },
       required: ['kind', 'target'],
       additionalProperties: true,
     },
+    hidden_params: ['graph', 'evolution'],
     caps: READONLY_CAPS,
     idempotent: true,
     render: { form: 'card', label: 'orchestration', summary: 'read  {target}', tone: 'solid', detail: { kind: 'json' } },
@@ -66,27 +63,23 @@ export const TOOLS: Json[] = [
     name: 'orchestration.validate',
     intent: '预校验一份候选编排图，返回错误列表与校验结果。',
     when_to_use: '准备提交编排变更之前，先校验候选图是否合法。',
-    param_semantics: {
-      graph: '待校验的候选编排图。',
-      active_graph: '当前生效图，用于对比。',
-      pins: '依赖关系表。',
-      runs_since_fork: '距上次分叉的回合数。',
-    },
+    param_semantics: {},
     boundaries: '只是预检，不代表已生效；不改动编排。',
     description: '校验候选编排图，返回 {ok, errors, result_hash}。',
     argsSchema: {
       type: 'object',
       properties: {
         graph: GRAPH_BAG,
-        active_graph: { type: 'object', description: '当前生效图。' },
+        active_graph: { type: 'object' },
         pins: PINS_BAG,
         runs_since_fork: { type: 'integer', minimum: 0 },
       },
       additionalProperties: true,
     },
+    hidden_params: ['graph', 'active_graph', 'pins', 'runs_since_fork'],
     caps: READONLY_CAPS,
     idempotent: true,
-    render: { form: 'card', label: 'orchestration', summary: 'validate  {target}', tone: 'solid', detail: { kind: 'json' } },
+    render: { form: 'card', label: 'orchestration', summary: 'validate', tone: 'solid', detail: { kind: 'json' } },
   },
   {
     name: 'orchestration.propose',
@@ -97,7 +90,6 @@ export const TOOLS: Json[] = [
       evidence_ids: '支撑依据 id 列表，必填非空。',
       graph: '候选编排图。',
       writes: '随附的附加改动（可为空）。',
-      target: '变更目标；缺省取当前生效图。',
       by: '提案来源：evolve-loop（缺省）/ user。',
       validate_hash: '上次 orchestration.validate 的结果哈希，必填。',
     },
@@ -112,11 +104,12 @@ export const TOOLS: Json[] = [
         writes: { type: 'array', items: { type: 'object' } },
         target: { type: 'object' },
         by: { enum: ['evolve-loop', 'user'] },
-        validate_hash: { type: 'string', description: '上次 orchestration.validate 的结果哈希。' },
+        validate_hash: { type: 'string' },
       },
       required: ['class', 'evidence_ids', 'graph'],
       additionalProperties: true,
     },
+    hidden_params: ['graph', 'target'],
     caps: READONLY_CAPS,
     idempotent: false,
     render: { form: 'card', label: 'orchestration', summary: 'propose  {target}', tone: 'solid', detail: { kind: 'diff' } },

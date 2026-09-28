@@ -7,6 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "test": "node tools/test-all.mjs",
     "build:vendor": "node tools/build-vendor.mjs",
     "build:ui": "node tools/build-ui.mjs",
     "typecheck:ui": "node tools/typecheck-ui.mjs"

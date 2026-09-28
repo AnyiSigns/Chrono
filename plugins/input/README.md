@@ -11,7 +11,8 @@
 ## 存储引擎与落点
 
 - ④ `CHRONO_PLUGIN_DATA/slots.jsonl`：单文件追加日志，每条记录一次 append + fsync；启动重放即得全量槽位。
-  记录 `{t:'slot', run, thread, slot}`：同线程后写覆盖前值；**同值不重写**（幂等短路）。
+  记录 `{t:'slot', run, thread, slot}`：同线程后写覆盖前值；**同值不重写**（幂等短路）。记录的 `run`
+  在读口回带为 `slot_ref`（槽写入时的 run id）。
 - ③ `CHRONO_PLUGIN_STATE/index.json`：派生物（记录水位 / 线程数），删掉可由 ④ 重放重建。
 
 ## 逐字段判定（定义 / 判定 vs 运行记录）
@@ -30,7 +31,8 @@ body 形状 `{ slots: { "<thread_id>": <槽 body> } }`：
 
 ## 方法 / 命令
 
-- `read({thread?})` → `{slots:{…}}`；给 `thread` 时另附 `{thread, slot}`。
+- `read({thread?})` → `{slots:{…}, slot_refs:{…}}`；给 `thread` 时另附 `{thread, slot, slot_ref}`。
+  `slot_refs[thread]` / `slot_ref` = 该槽写入时的 run id，回合开始时作幂等键（同一槽不开第二个回合）。
 - `write({thread?, slot})` → 覆盖本线程槽，回 `{ok:true, thread}`；`slot` 必填。
 - `clear({thread?, thread_id?})` → 本线程槽置 `{kind:'idle'}`，其余线程键不动。
 - 线程键缺省取帧 `env.thread`，再缺省 `_main`。

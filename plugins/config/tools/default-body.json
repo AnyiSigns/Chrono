@@ -1,7 +1,7 @@
 {
   "version": 1,
   "params": {},
-  "permission": "review",
+  "permission": "severe",
   "ui": {
     "theme": "system",
     "style": "",

@@ -25,12 +25,13 @@ test('plugin.json：identity / implements / methods / pins / start / members / c
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'loop-policy')
   assert.deepEqual(plugin.implements, ['loop-policy'])
-  assert.deepEqual(plugin.methods['loop-policy'], ['interpret'])
+  assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel'])
   assert.deepEqual(plugin.pins, {
     session: 'session',
     model: 'model-protocol',
     context: 'context-window',
     retrieval: 'memory-retrieval',
+    compress: 'compress',
     guard: 'guard',
     approval: 'approval',
     tools: 'tools',
@@ -59,7 +60,7 @@ test('schema/graph.json：六类条目形状 + method_timeouts(H17)', () => {
   assert.ok(schema.properties.contract_entry)
   assert.ok(schema.properties.scope_entry)
   assert.ok(schema.properties.graph_entry)
-  assert.equal(schema.method_timeouts['loop-policy.interpret'], 600000)
+  assert.equal(schema.method_timeouts['loop-policy.interpret'], 6000000)
 })
 
 test('package.json：type=module 且 test = node --test', () => {

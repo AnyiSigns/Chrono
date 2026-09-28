@@ -16,6 +16,7 @@ const TOOL_ICONS: { [key: string]: string } = {
   glob: 'folder',
   grep: 'search',
   edit: 'pencil-line',
+  stat: 'info',
   write: 'upload',
   shell: 'monitor',
   exec: 'monitor',
@@ -48,17 +49,73 @@ function fieldText(source: any, path: string): string {
 }
 
 /**
- * `summary` 模板文法（冻结）：裸 `{field}` = args 字段；`{result.field}` = 结果字段。
+ * `summary` 模板文法：裸 `{field}` = args 字段；`{result.field}` = 结果字段；
+ * `{? ... }` = 可选段（段内任一字段解析为空则整段不输出，避免缺省参数留下悬空分隔符）。
  * 缺失字段渲染为空串；过长由调用方截断（不换行溢出）。
  */
 export function renderSummary(template: unknown, args: any, result: any): string {
   if (typeof template !== 'string' || template.length === 0) return ''
-  return template
-    .replace(/\{([a-zA-Z0-9_.]+)\}/g, (_, expr: string) => {
-      if (expr.startsWith('result.')) return fieldText(result, expr.slice('result.'.length))
-      return fieldText(args, expr)
-    })
-    .trim()
+  return expandTemplate(template, args, result).text.trim()
+}
+
+const SUMMARY_FIELD = /^[a-zA-Z0-9_.]+$/
+
+/** 展开模板；返回文本与「是否含解析为空的字段」标记（供外层可选段判定）。 */
+function expandTemplate(
+  template: string,
+  args: any,
+  result: any,
+): { text: string; missing: boolean } {
+  let text = ''
+  let missing = false
+  let index = 0
+  while (index < template.length) {
+    const char = template[index]
+    if (char === '{' && template[index + 1] === '?') {
+      const close = matchGroup(template, index)
+      if (close === -1) {
+        text += char
+        index += 1
+        continue
+      }
+      const inner = expandTemplate(template.slice(index + 2, close), args, result)
+      if (!inner.missing) text += inner.text
+      index = close + 1
+      continue
+    }
+    if (char === '{') {
+      const close = template.indexOf('}', index)
+      const expr = close === -1 ? '' : template.slice(index + 1, close)
+      if (close !== -1 && SUMMARY_FIELD.test(expr)) {
+        const value = expr.startsWith('result.')
+          ? fieldText(result, expr.slice('result.'.length))
+          : fieldText(args, expr)
+        if (value.length === 0) missing = true
+        text += value
+        index = close + 1
+        continue
+      }
+      text += char
+      index += 1
+      continue
+    }
+    text += char
+    index += 1
+  }
+  return { text, missing }
+}
+
+/** 找 `{?` 的配对 `}`：按花括号深度配对，段内可含 `{field}`。 */
+function matchGroup(template: string, start: number): number {
+  let depth = 1
+  for (let index = start + 2; index < template.length; index += 1) {
+    if (template[index] === '{') depth += 1
+    else if (template[index] === '}') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
 }
 
 /** 摘要过长截断（不换行溢出）。 */

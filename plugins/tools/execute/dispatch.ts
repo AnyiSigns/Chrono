@@ -126,9 +126,9 @@ function toEntry(call: Json, index: number, directory: Directory, workspaceRoot:
   return { index, callId, tool, args, entry, preError: null }
 }
 
-/** 逐 call args 校验（同一方言）；失败回可读原因。 */
+/** 逐 call args 校验（同一方言）；失败回可读原因。用完整 schema（含调用方注入参数）。 */
 function validateCallArgs(entry: ToolEntry, args: Rec): string | null {
-  const result = validateArgs(entry.decl['argsSchema'], args)
+  const result = validateArgs(entry.decl['validateSchema'] ?? entry.decl['argsSchema'], args)
   return result.ok ? null : result.message
 }
 
@@ -339,7 +339,7 @@ async function executeCall(
     args: entry.args,
   })
 
-  const loader = (): Promise<Outcome> => callProvider(tool, entry.args, bag, deps)
+  const loader = (): Promise<Outcome> => callProvider(tool, entry.args, bag, deps, env, entry.callId)
   const outcome =
     cacheEnabled && idempotent
       ? ((await deps.cache.run(cacheKey, loader)) as unknown as Outcome)
@@ -355,7 +355,14 @@ interface Outcome {
   error?: Rec
 }
 
-async function callProvider(tool: ToolEntry, args: Rec, bag: Rec, deps: DispatchDeps): Promise<Outcome> {
+async function callProvider(
+  tool: ToolEntry,
+  args: Rec,
+  bag: Rec,
+  deps: DispatchDeps,
+  env: CallEnv,
+  callId: string,
+): Promise<Outcome> {
   if (tool.kind === 'binding' && (tool.method === null || tool.method.length === 0)) {
     return { ok: true, result: projectionRead(tool, bag) }
   }
@@ -368,13 +375,32 @@ async function callProvider(tool: ToolEntry, args: Rec, bag: Rec, deps: Dispatch
     })
     return outcomeOf(call, 'binding')
   }
-  const call = await deps.link.call(tool.provider, 'invoke', {
-    ...passthrough,
-    tool: tool.name,
-    args,
-    caps: tool.decl['caps'] ?? null,
-  })
+  // 调用身份随 bag 下传：提供者可据此在调用中途发 `tool.delta`（模型可见的 call_id + run / thread）。
+  const timeoutMs = providerInvokeTimeout(tool)
+  const call = await deps.link.call(
+    tool.provider,
+    'invoke',
+    {
+      ...passthrough,
+      run: env.run,
+      thread: env.thread,
+      call_id: callId,
+      tool: tool.name,
+      args,
+      caps: tool.decl['caps'] ?? null,
+    },
+    timeoutMs === undefined ? {} : { timeoutMs },
+  )
   return outcomeOf(call, 'invoke')
+}
+
+/** 提供者调用等待上限：按工具声明 caps.timeout_ms 抬高（长命令须活过工具自己的执行预算），缺省用通道兜底。 */
+function providerInvokeTimeout(tool: ToolEntry): number | undefined {
+  const caps = tool.decl['caps']
+  if (!isRecord(caps)) return undefined
+  const declared = caps['timeout_ms']
+  if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) return undefined
+  return declared + 10_000
 }
 
 /** 投影读：数据由调用方入口 term 读出后放 bag.projection_reads（键 = 绑定 read 或工具名）。 */

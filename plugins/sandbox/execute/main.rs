@@ -2,12 +2,25 @@
 // manifest 与 plugin.json 同形（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影、无写通道。
 
+mod casefold;
+mod casefold_table;
 mod exec;
 mod fsop;
 mod glob;
 mod grant;
 mod hash;
+#[cfg(target_os = "linux")]
+mod cgroup;
+#[cfg(target_os = "linux")]
+mod landlock;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+mod namespaces;
 mod protocol;
+#[cfg(target_os = "linux")]
+mod seccomp;
+mod session;
 mod tiers;
 #[cfg(windows)]
 mod win32;

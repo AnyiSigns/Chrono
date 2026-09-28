@@ -5,6 +5,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { describeTools, DEFAULT_CAPS, LANGUAGES } from '../execute/describe.ts'
 
+const PROFILE = {
+  command: { cmd: 'pwsh', argsPrefix: ['-NoProfile', '-Command'] },
+  session: { cmd: 'pwsh', argsPrefix: ['-NoProfile', '-NoLogo', '-NoExit', '-Command', '-'] },
+  sessionSyntax: 'powershell',
+  python: 'python',
+  label: 'pwsh',
+  syntax: 'PowerShell',
+}
+
 const ALLOWED_SCHEMA_KEYS = new Set([
   'type',
   'properties',
@@ -26,7 +35,7 @@ const ALLOWED_SCHEMA_KEYS = new Set([
 ])
 
 function shell() {
-  const tools = describeTools().tools
+  const tools = describeTools(PROFILE).tools
   assert.equal(tools.length, 1)
   return tools[0]
 }
@@ -46,7 +55,7 @@ function checkSchemaKeys(schema, path = 'argsSchema') {
 }
 
 test('describe 只回单工具 shell', () => {
-  assert.deepEqual(describeTools().tools.map((tool) => tool.name), ['shell'])
+  assert.deepEqual(describeTools(PROFILE).tools.map((tool) => tool.name), ['shell'])
 })
 
 test('四要素必填非空且 param_semantics 覆盖必填参数', () => {
@@ -62,16 +71,30 @@ test('四要素必填非空且 param_semantics 覆盖必填参数', () => {
   }
 })
 
-test('argsSchema：mode enum / input / language 白名单 / 必填 input / 闭集', () => {
+test('argsSchema：action / mode / language / input / 闭集', () => {
   const schema = shell().argsSchema
   assert.equal(schema.type, 'object')
-  assert.deepEqual(schema.required, ['input'])
+  assert.deepEqual(schema.required, [])
   assert.equal(schema.additionalProperties, false)
+  assert.deepEqual(schema.properties.action.enum, ['run', 'output', 'kill', 'reset'])
   assert.deepEqual(schema.properties.mode.enum, ['command', 'code'])
   assert.equal(schema.properties.input.type, 'string')
   assert.equal(schema.properties.input.minLength, 1)
   assert.deepEqual(schema.properties.language.enum, ['javascript', 'python', 'shell'])
   checkSchemaKeys(schema)
+})
+
+test('argsSchema：description / workdir / timeout_ms / background / fresh / task_id 等可选参数', () => {
+  const props = shell().argsSchema.properties
+  assert.equal(props.description.type, 'string')
+  assert.equal(props.workdir.type, 'string')
+  assert.equal(props.timeout_ms.type, 'integer')
+  assert.equal(props.timeout_ms.minimum, 1)
+  assert.equal(props.background.type, 'boolean')
+  assert.equal(props.fresh.type, 'boolean')
+  assert.equal(props.task_id.type, 'string')
+  assert.equal(props.cursor.minimum, 0)
+  assert.equal(props.wait_ms.minimum, 0)
 })
 
 test('caps 对象形含 fs.read；net 为字符串枚举、与 sandbox 形状一致', () => {
@@ -95,13 +118,25 @@ test('idempotent:false、modes 与 languages 白名单', () => {
   assert.deepEqual(tool.languages, LANGUAGES)
 })
 
-test('render 描述符 = 默认收缩卡片 + terminal 展开 + 非 live', () => {
+test('render 描述符 = 默认收缩卡片 + terminal 展开 + 摘要取 description + live', () => {
   assert.deepEqual(shell().render, {
     form: 'card',
     label: 'shell',
-    summary: '{input}',
+    summary: '{description}',
     tone: 'plain',
     detail: { kind: 'terminal' },
-    live: false,
+    live: true,
   })
+})
+
+test('description 文本按注入的平台 shell 口径生成', () => {
+  const posix = describeTools({
+    command: { cmd: 'bash', argsPrefix: ['-c'] },
+    python: 'python3',
+    label: 'bash',
+    syntax: 'POSIX shell',
+  }).tools[0]
+  assert.match(posix.description, /POSIX shell/)
+  assert.match(posix.description, /bash/)
+  assert.doesNotMatch(posix.description, /PowerShell/)
 })

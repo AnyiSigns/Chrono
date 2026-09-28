@@ -2,11 +2,22 @@
 // 以及消息体 / 附件 / parts 的宽松解析。规范消息的组装在 `candidates.ts` 完成。
 
 import { asAssetRef, isRecord } from './text.ts'
-import type { AssetRef, CanonicalPart, Role } from './types.ts'
+import type { AssetRef, CanonicalPart, Json, Role } from './types.ts'
+
+/** 历史展示 part `{type:'tool'}` 携带的调用与结果（跨回合回灌用）。 */
+export interface ParsedToolCall {
+  callId: string
+  tool: string
+  args: Json
+  result: Json | null
+  /** `ok` / `error` / `null`（挂起未决）。 */
+  status: string | null
+}
 
 export interface ParsedParts {
   parts: CanonicalPart[]
   hasToolCall: boolean
+  toolParts: ParsedToolCall[]
 }
 
 function textPart(text: string): CanonicalPart {
@@ -17,11 +28,12 @@ function assetPart(kind: 'image' | 'audio' | 'file', asset: AssetRef, name: stri
   return { type: kind, asset, name }
 }
 
-/** 宽松解析 parts：文本 / 资产 / 工具 part（工具 part 原样 JSON 化透传，方言化归上层）。 */
+/** 宽松解析 parts：文本 / 资产 / 工具 part；工具 part 另作结构化调用（跨回合回灌），推理块跨回合丢弃。 */
 export function parseRawParts(value: unknown): ParsedParts {
-  if (typeof value === 'string') return { parts: [textPart(value)], hasToolCall: false }
-  if (!Array.isArray(value)) return { parts: [], hasToolCall: false }
+  if (typeof value === 'string') return { parts: [textPart(value)], hasToolCall: false, toolParts: [] }
+  if (!Array.isArray(value)) return { parts: [], hasToolCall: false, toolParts: [] }
   const parts: CanonicalPart[] = []
+  const toolParts: ParsedToolCall[] = []
   let hasToolCall = false
   for (const item of value) {
     if (typeof item === 'string') {
@@ -43,13 +55,28 @@ export function parseRawParts(value: unknown): ParsedParts {
       }
       continue
     }
-    // 展示专用 part（工具卡 / 推理块）：只给 UI 渲染，不进模型上下文；
-    // 工具调用与结果对模型的可见性由 `extra_messages` 回灌（tool_calls / tool_call_id）保证。
-    if (type === 'tool' || type === 'reasoning') continue
+    // 展示用工具卡（commit-parts 落盘）：提升为可回灌的调用 + 结果，跨回合不再消失。
+    if (type === 'tool') {
+      const callId = typeof item['call_id'] === 'string' ? (item['call_id'] as string) : null
+      if (callId === null) continue
+      const tool = typeof item['tool'] === 'string' ? (item['tool'] as string) : ''
+      const status = typeof item['status'] === 'string' ? (item['status'] as string) : null
+      toolParts.push({
+        callId,
+        tool,
+        args: (item['args'] ?? null) as Json,
+        result: (item['result'] ?? null) as Json,
+        status,
+      })
+      hasToolCall = true
+      continue
+    }
+    // 推理块：跨回合默认丢弃（只留结论），不注入模型上下文。
+    if (type === 'reasoning') continue
     if (type === 'tool_call' || type === 'tool_use') hasToolCall = true
     parts.push(textPart(JSON.stringify(item)))
   }
-  return { parts, hasToolCall }
+  return { parts, hasToolCall, toolParts }
 }
 
 /** 解析附件：可解析 `text` 内联；二进制只留资产引用。 */
@@ -80,7 +107,11 @@ export function messageParts(body: Record<string, unknown>): ParsedParts {
   if (parts.length === 0 && typeof body['content'] === 'string' && (body['content'] as string).length > 0) {
     parts.push(textPart(body['content'] as string))
   }
-  return { parts: parts.concat(parseAttachments(body['attachments'])), hasToolCall: parsed.hasToolCall }
+  return {
+    parts: parts.concat(parseAttachments(body['attachments'])),
+    hasToolCall: parsed.hasToolCall,
+    toolParts: parsed.toolParts,
+  }
 }
 
 export function normalizeRole(value: unknown): Role {

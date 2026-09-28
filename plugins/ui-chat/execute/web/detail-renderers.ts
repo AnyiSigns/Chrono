@@ -139,6 +139,8 @@ export function parsePatch(patch: unknown, context = 3): { rows: any[]; truncate
   const rows: any[] = []
   let oldLine = 0
   let newLine = 0
+  // 只把首个 `@@` 之前的 `---` / `+++` 当文件头；hunk 内以 `--` / `++` 开头的内容行照常作删除 / 新增。
+  let header = true
   for (const line of splitLines(patch)) {
     if (line.startsWith('@@')) {
       const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
@@ -147,9 +149,10 @@ export function parsePatch(patch: unknown, context = 3): { rows: any[]; truncate
         newLine = Number(match[2])
       }
       rows.push({ type: 'hunk', text: line })
+      header = false
       continue
     }
-    if (line.startsWith('---') || line.startsWith('+++')) continue
+    if (header && (line.startsWith('---') || line.startsWith('+++'))) continue
     if (line.startsWith('+')) {
       rows.push({ type: 'add', newLine, text: line.slice(1), prefix: '+ ' })
       newLine += 1
@@ -172,13 +175,17 @@ export function parsePatch(patch: unknown, context = 3): { rows: any[]; truncate
 function normalizeMatches(value: unknown): any[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => {
-    if (typeof item === 'string') return { path: '', line: 0, text: item }
-    if (!isRec(item)) return { path: '', line: 0, text: String(item) }
+    if (typeof item === 'string') return { path: '', line: 0, text: item, count: 0, before: [], after: [] }
+    if (!isRec(item)) return { path: '', line: 0, text: String(item), count: 0, before: [], after: [] }
     const line = item.line ?? item.lineno ?? item.line_number ?? 0
     return {
       path: typeof item.path === 'string' ? item.path : typeof item.file === 'string' ? item.file : '',
       line: typeof line === 'number' ? line : 0,
       text: typeof item.text === 'string' ? item.text : typeof item.match === 'string' ? item.match : typeof item.snippet === 'string' ? item.snippet : '',
+      // files_only：每文件命中总数；上下文：before / after 行数组（仅增字段，不改 matches 形状）。
+      count: typeof item.count === 'number' ? item.count : 0,
+      before: Array.isArray(item.before) ? item.before.map(String) : [],
+      after: Array.isArray(item.after) ? item.after.map(String) : [],
     }
   })
 }
@@ -236,17 +243,28 @@ function normalizeAnswers(value: unknown): any[] {
   return []
 }
 
-function answerTextOf(answer: any): string {
-  if (!isRec(answer)) return ''
+/** 单条作答的文本片段：选中项在前、自定义输入在后。 */
+function answerPieces(answer: any): string[] {
+  if (!isRec(answer)) return []
   const pieces: string[] = Array.isArray(answer.selected) ? answer.selected.map(String) : []
   if (typeof answer.custom === 'string' && answer.custom.length > 0) pieces.push(answer.custom)
-  return pieces.join(UI_TEXT.chat_answer_sep)
+  return pieces
+}
+
+function answerTextOf(answer: any): string {
+  return answerPieces(answer).join(UI_TEXT.chat_answer_sep)
+}
+
+/** 取某问题的已答片段列表（选中 + 自定义）；供卡片逐项渲染标签，避免再按分隔符切分。 */
+export function questionAnswerList(answers: unknown, questionId: string): string[] {
+  const list = normalizeAnswers(answers)
+  const found = list.find((answer) => answer.questionId === questionId)
+  return found === undefined ? [] : answerPieces(found)
 }
 
 /** 取某问题的已答文本（选中 + 自定义，顿号分隔）；兼容原始 `question_id` 与本地 `questionId` 形态。 */
 export function questionAnswerText(answers: unknown, questionId: string): string {
-  const list = normalizeAnswers(answers)
-  return answerTextOf(list.find((answer) => answer.questionId === questionId))
+  return questionAnswerList(answers, questionId).join(UI_TEXT.chat_answer_sep)
 }
 
 function questionViewModel(detail: any): any {
@@ -263,7 +281,6 @@ function questionViewModel(detail: any): any {
     expired,
     answered: answers.length > 0 || detail.answered === true,
     itemId: typeof itemId === 'string' ? itemId : null,
-    thread: typeof detail.thread === 'string' ? detail.thread : null,
     questions,
     answers,
   }
@@ -300,8 +317,14 @@ export function detailViewModel(detail: unknown): any {
       const rows = Array.isArray(detail.rows) ? detail.rows.map((row: any) => (Array.isArray(row) ? row.map(cellText) : [])) : []
       return { kind: 'table', columns, rows }
     }
-    case 'json':
-      return { kind: 'json', text: safeStringify(detail.value ?? detail.json ?? detail) }
+    case 'json': {
+      const value = Object.hasOwn(detail, 'value')
+        ? detail.value
+        : Object.hasOwn(detail, 'json')
+          ? detail.json
+          : withoutKind(detail)
+      return { kind: 'json', text: safeStringify(value) }
+    }
     case 'file':
       return {
         kind: 'file',
@@ -339,4 +362,13 @@ function cellText(cell: any): string {
   if (typeof cell === 'string') return cell
   if (typeof cell === 'number' || typeof cell === 'boolean') return String(cell)
   return safeStringify(cell)
+}
+
+/** 去掉描述符自身的 `kind`，避免 json 渲染器把渲染器标记当数据展示。 */
+function withoutKind(source: { [key: string]: any }): { [key: string]: any } {
+  const out: { [key: string]: any } = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (key !== 'kind') out[key] = value
+  }
+  return out
 }

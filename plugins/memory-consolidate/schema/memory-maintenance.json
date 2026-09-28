@@ -1,6 +1,6 @@
 {
   "title": "memory-consolidate（记忆维护 · 全层）",
-  "description": "身份自述 / 数据契约：能力类 memory-maintenance 的五个方法（consolidate / sweep / candidates / view / edit）的 bag 与结果形状，以及本插件自用的策略参数。L1/L2（short-memory）与 L3（memory-store）都是运行记录、已出世界：本服务经反向调用读写 owner 服务，不读投影、不产世界写计划。会话 → 工作区归属经反向调用 session.read。sweep 水位住宿主侧 ③（可重算）。时间由调用帧 env 传入（不自取时钟），同输入同输出。",
+  "description": "身份自述 / 数据契约：能力类 memory-maintenance 的五个方法（consolidate / sweep / candidates / view / edit）的 bag 与结果形状，以及本插件自用的策略参数。L1/L2（short-memory）与 L3（memory-store）都是运行记录、已出世界：本服务经反向调用读写 owner 服务，不读投影、不产世界写计划。会话 → 工作区归属经反向调用 session.read。周期条目的派发策略（consolidate 的 summarize、sweep 的阈值覆盖）住数据世代 body，由宿主按 periodic.reads 机械注入 args；owner 数据仍由服务自读。sweep 水位住宿主侧 ③（可重算）。时间由调用帧 env 传入（不自取时钟），同输入同输出。",
   "type": "object",
   "additionalProperties": true,
   "params": {
@@ -140,11 +140,26 @@
     }
   },
   "periodic": [
-    { "method": "consolidate", "every_ms": 3600000 },
-    { "method": "sweep", "every_ms": 1800000 }
+    {
+      "method": "consolidate",
+      "every_ms": 3600000,
+      "reads": {
+        "summarize": ["ids", "memory-consolidate", "body", "consolidate", "summarize"]
+      }
+    },
+    {
+      "method": "sweep",
+      "every_ms": 1800000,
+      "reads": {
+        "l1_ttl_ms": ["ids", "memory-consolidate", "body", "sweep", "l1_ttl_ms"],
+        "l2_capacity": ["ids", "memory-consolidate", "body", "sweep", "l2_capacity"],
+        "l3_capacity": ["ids", "memory-consolidate", "body", "sweep", "l3_capacity"],
+        "candidate_threshold": ["ids", "memory-consolidate", "body", "sweep", "candidate_threshold"]
+      }
+    }
   ],
   "method_timeouts": {
-    "memory-maintenance.consolidate": 120000,
-    "memory-maintenance.sweep": 120000
+    "memory-maintenance.consolidate": 4800000,
+    "memory-maintenance.sweep": 900000
   }
 }

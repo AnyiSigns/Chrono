@@ -20,6 +20,7 @@ const METHOD_NAMES = [
   'deleteConversation',
   'restoreConversation',
   'branchConversation',
+  'listTurns',
   'listWorkspaces',
   'pickWorkspace',
   'addWorkspace',
@@ -34,6 +35,7 @@ const COMMAND_NAMES = [
   'session.delete',
   'session.restore',
   'session.branch',
+  'session.turns',
   'workspace.list',
   'workspace.pick',
   'workspace.add',
@@ -95,9 +97,11 @@ test('members = execute + term；命令入口 term 全部存在且形状为 eff 
     assert.ok(METHOD_NAMES.includes(term[2]), `${command.entry} 方法名 ${term[2]} 应在声明内`)
   }
   const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  assert.equal(readonly['session.turns'], true, 'session.turns 只读')
   assert.equal(readonly['workspace.list'], true, 'workspace.list 只读')
   assert.equal(readonly['ui-sidebar.client.read'], true, 'client.read 只读')
-  for (const name of COMMAND_NAMES.filter((name) => name !== 'workspace.list' && name !== 'ui-sidebar.client.read')) {
+  const READONLY = new Set(['session.turns', 'workspace.list', 'ui-sidebar.client.read'])
+  for (const name of COMMAND_NAMES.filter((name) => !READONLY.has(name))) {
     assert.equal(readonly[name], undefined, `${name} 非只读`)
   }
 })
@@ -107,6 +111,7 @@ test('入口 term 投影读 / 命令 args 口径', () => {
   assert.deepEqual(readJson('terms/session.select.json'), ['eff', 'ui-sidebar', 'selectConversation', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/session.branch.json'), ['eff', 'ui-sidebar', 'branchConversation', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/workspace.list.json'), ['eff', 'ui-sidebar', 'listWorkspaces', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/session.turns.json'), ['eff', 'ui-sidebar', 'listTurns', ['v', 0]])
   assert.deepEqual(readJson('terms/workspace.add.json'), ['eff', 'ui-sidebar', 'addWorkspace', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/workspace.pick.json'), ['eff', 'ui-sidebar', 'pickWorkspace', ['c', null]])
   assert.deepEqual(readJson('terms/workspace.reveal.json'), ['eff', 'ui-sidebar', 'revealWorkspace', ['v', 0]])

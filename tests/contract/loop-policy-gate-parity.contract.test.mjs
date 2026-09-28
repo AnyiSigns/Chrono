@@ -1,11 +1,12 @@
-// 与 #45 orchestration-admin 本地复刻机械闸的对拍：规则清单 / 错误码 / 结果哈希逐项一致。
-// 权威 = 本插件写期机械闸；#45 的 validate 只是预检。两处实现若漂移，本测试即失败。
+// 接缝契约：loop-policy 的写期机械闸与 orchestration-admin 的 validate 预检逐项对拍。
+// 权威 = loop-policy 写期机械闸；orchestration-admin 的 validate 只是预检。两处实现若漂移，本测试即失败。
+// 该断言同时引用两个插件，属跨插件测试，故住根 tests/contract/。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateGraphData } from '../execute/gate.ts'
-import { seedModel } from '../execute/seed.ts'
-import { H } from '../execute/hash.ts'
-import { validateBag } from '../../orchestration-admin/execute/gate.ts'
+import { validateGraphData } from '../../plugins/loop-policy/execute/gate.ts'
+import { seedModel } from '../../plugins/loop-policy/execute/seed.ts'
+import { H } from '../../plugins/loop-policy/execute/hash.ts'
+import { validateBag } from '../../plugins/orchestration-admin/execute/gate.ts'
 
 const PINS = {
   session: 'session',

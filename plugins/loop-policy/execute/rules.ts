@@ -145,43 +145,90 @@ function stateFlag(ctx: RuleCtx, key: string): boolean {
   return ctx.state[key] === true
 }
 
-/** `when` 求值（缺省空串 = 无条件）。 */
-export function evalWhen(expr: string, ctx: RuleCtx, sourceNode: number): boolean {
-  const text = expr.trim()
+/** `when` 表达式声明的判据名。 */
+const KNOWN_WHEN_RULES = new Set([
+  'nonempty',
+  'empty',
+  'eq',
+  'verdict_is',
+  'wrote_files',
+  'todo_incomplete',
+  'question_pending',
+  'dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete',
+])
+
+/** `when` 表达式是否只用到已知判据（空串 = 无条件；`not` 前缀剥除后判定）。 */
+export function knownWhen(expr: string): boolean {
+  let text = expr.trim()
   if (text.length === 0) return true
-  if (text.startsWith('not ')) return !evalWhen(text.slice(4), ctx, sourceNode)
+  if (text.startsWith('not ')) text = text.slice(4).trim()
+  return KNOWN_WHEN_RULES.has(parseRule(text).name)
+}
+
+/** 一组 `when` 表达式里首个未知判据（无则 null），用于入口 fail-closed 校验。 */
+export function unknownWhenExpr(expressions: readonly (string | undefined)[]): string | null {
+  for (const expr of expressions) {
+    if (expr === undefined) continue
+    if (!knownWhen(expr)) return expr
+  }
+  return null
+}
+
+/** `when` 求值结果：`ok:false` 是结构化拒绝（未知 / 畸形判据），不是「条件不成立」。 */
+export interface WhenResult {
+  ok: boolean
+  value: boolean
+  code?: string
+  reason?: string
+}
+
+/** 未知 / 畸形 `when` 判据的统一拒绝码。 */
+const WHEN_UNSAT = 'when_unsat'
+
+/**
+ * `when` 求值（缺省空串 = 无条件）。未知判据 fail-closed：回 `ok:false` 的结构化拒绝，
+ * 不再静默返回 false；`not` 前缀传播内层失败（未知判据取反不得变成 fail-open）。
+ */
+export function evalWhen(expr: string, ctx: RuleCtx, sourceNode: number): WhenResult {
+  const text = expr.trim()
+  if (text.length === 0) return { ok: true, value: true }
+  if (text.startsWith('not ')) {
+    const inner = evalWhen(text.slice(4), ctx, sourceNode)
+    if (!inner.ok) return inner
+    return { ok: true, value: !inner.value }
+  }
   const { name, args } = parseRule(text)
   switch (name) {
     case 'nonempty':
-      return nonempty(outputField(ctx, sourceNode, args))
+      return { ok: true, value: nonempty(outputField(ctx, sourceNode, args)) }
     case 'empty':
-      return !nonempty(outputField(ctx, sourceNode, args))
+      return { ok: true, value: !nonempty(outputField(ctx, sourceNode, args)) }
     case 'eq': {
       const colon = args.indexOf(':')
-      if (colon < 0) return false
+      if (colon < 0) return { ok: false, value: false, code: WHEN_UNSAT, reason: `bad_args:${name}` }
       const field = args.slice(0, colon).trim()
       const expected = args.slice(colon + 1).trim()
       const value = outputField(ctx, sourceNode, field)
-      return String(value ?? '') === expected
+      return { ok: true, value: String(value ?? '') === expected }
     }
     case 'verdict_is':
-      return verdictValue(ctx, sourceNode) === args
+      return { ok: true, value: verdictValue(ctx, sourceNode) === args }
     case 'wrote_files': {
       const results = outputField(ctx, sourceNode, args.length > 0 ? args : 'results')
       const calls = Array.isArray(ctx.state['last_calls']) ? (ctx.state['last_calls'] as Rec[]) : []
-      return wroteFiles(results, calls, ctx.state['tools'])
+      return { ok: true, value: wroteFiles(results, calls, ctx.state['tools']) }
     }
     case 'todo_incomplete':
-      return stateFlag(ctx, 'todo_incomplete')
+      return { ok: true, value: stateFlag(ctx, 'todo_incomplete') }
     case 'question_pending':
-      return stateFlag(ctx, 'question_pending')
+      return { ok: true, value: stateFlag(ctx, 'question_pending') }
     case 'dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete': {
       const dispatched = stateFlag(ctx, 'dispatched_tools')
       const question = stateFlag(ctx, 'question_pending')
-      return (dispatched && !question) || stateFlag(ctx, 'verify_failed') || stateFlag(ctx, 'todo_incomplete')
+      return { ok: true, value: (dispatched && !question) || stateFlag(ctx, 'verify_failed') || stateFlag(ctx, 'todo_incomplete') }
     }
     default:
-      return false
+      return { ok: false, value: false, code: WHEN_UNSAT, reason: `unknown_when:${name}` }
   }
 }
 

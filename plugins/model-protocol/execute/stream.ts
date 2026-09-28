@@ -8,6 +8,8 @@ import type { Json, Rec } from 'plugin-sdk'
 export interface Shard {
   text?: string
   reasoning?: string
+  /** 厂商中立推理块（含签名 / 加密）：只随最终值回带，不上行事件。 */
+  reasoning_block?: Rec
   tool_call?: { index: number; id?: string; name?: string; arguments_delta?: string }
   usage?: Rec
   stop_reason?: string
@@ -39,6 +41,7 @@ function parseArguments(raw: string): Json {
 export class StreamAccumulator {
   private readonly textParts: string[] = []
   private readonly reasoningParts: string[] = []
+  private readonly reasoningBlocks: Rec[] = []
   private readonly tools = new Map<number, ToolCallState>()
   private usage: Rec | null = null
   private stopReason: string | null = null
@@ -53,6 +56,10 @@ export class StreamAccumulator {
     if (typeof shard.reasoning === 'string' && shard.reasoning.length > 0) {
       this.reasoningParts.push(shard.reasoning)
       fragment['reasoning'] = shard.reasoning
+    }
+    if (shard.reasoning_block !== undefined) {
+      this.reasoningBlocks.push(shard.reasoning_block)
+      fragment['reasoning_block'] = shard.reasoning_block
     }
     if (shard.tool_call !== undefined) {
       const call = this.mergeToolCall(shard.tool_call)
@@ -86,6 +93,11 @@ export class StreamAccumulator {
 
   get reasoning(): string {
     return this.reasoningParts.join('')
+  }
+
+  /** 适配器在终止分片里给出的中立推理块（按出现序）。 */
+  get reasoningBlocksValue(): Rec[] {
+    return this.reasoningBlocks
   }
 
   get usageValue(): Rec | null {

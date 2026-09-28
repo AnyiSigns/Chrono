@@ -91,6 +91,57 @@ export function parseBing(html: string): RawResult[] {
   return results
 }
 
+/** 去 CDATA 包裹（RSS 文本可能用 CDATA）。 */
+function stripCdata(text: string): string {
+  return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+}
+
+/** 取某标签内的文本（含 CDATA / 实体归一）。 */
+function tagText(block: string, tag: string): string {
+  const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(block)
+  return match === null ? '' : stripTags(stripCdata(match[1] ?? ''))
+}
+
+/** 通用 RSS 2.0：`<item>` 的 title / link / description。 */
+export function parseRss(xml: string): RawResult[] {
+  const results: RawResult[] = []
+  for (const match of xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)) {
+    const block = match[1] ?? ''
+    const url = tagText(block, 'link')
+    if (url.length === 0) continue
+    results.push({ title: tagText(block, 'title') || url, url, snippet: tagText(block, 'description') })
+  }
+  return results
+}
+
+/** Bing RSS：RSS 2.0（`format=rss`），比抓 HTML 结果页稳定。 */
+export function parseBingRss(xml: string): RawResult[] {
+  return parseRss(xml)
+}
+
+/** Marginalia：`{results:[{url,title,description}]}`（公开 key，独立索引）。 */
+export function parseMarginalia(body: string): RawResult[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  if (!isRec(parsed) || !Array.isArray(parsed['results'])) return []
+  const results: RawResult[] = []
+  for (const item of parsed['results']) {
+    if (!isRec(item)) continue
+    const url = item['url']
+    if (typeof url !== 'string' || url.length === 0) continue
+    results.push({
+      title: typeof item['title'] === 'string' ? stripTags(item['title']) : url,
+      url,
+      snippet: typeof item['description'] === 'string' ? stripTags(item['description']) : '',
+    })
+  }
+  return results
+}
+
 /** Mojeek：ob 标题 + s 摘要。 */
 export function parseMojeek(html: string): RawResult[] {
   return pairWithSnippets(
@@ -178,6 +229,12 @@ export function parseSource(source: SourceConfig, body: string): RawResult[] {
       return parseDdgLite(body)
     case 'bing':
       return parseBing(body)
+    case 'bing-rss':
+      return parseBingRss(body)
+    case 'rss':
+      return parseRss(body)
+    case 'marginalia':
+      return parseMarginalia(body)
     case 'mojeek':
       return parseMojeek(body)
     case 'searxng':

@@ -1,0 +1,6 @@
+{
+  "title": "contract_version（契约主版本标记）",
+  "description": "bag 携带的主版本标记。形态 <major>.<minor>；消费方只要求主版本一致，小版本前向兼容。未知主版本必须显式拒绝并给可读结局（contract_version_mismatch），不得逐键回落。",
+  "type": "string",
+  "pattern": "^[0-9]+(\\.[0-9]+)?$"
+}

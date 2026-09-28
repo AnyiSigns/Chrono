@@ -17,8 +17,12 @@ import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk
 
 const CAPABILITY = 'chat'
 const LOG = makeLogger('chat')
-/** 反向调用等待上限：须 ≥ `loop-policy.interpret` 的声明超时（包住多次模型调用）。 */
-const PORT_CALL_TIMEOUT_MS = 600000
+/**
+ * 反向调用等待上限。须严格大于 `loop-policy.interpret` 的声明超时（6000000），
+ * 使慢内层先以自身错误收口；同时严格小于本服务 `chat.send` 的安全网（6300000），
+ * 否则外层先被掐断、内层还没机会自收口。
+ */
+const PORT_CALL_TIMEOUT_MS = 6150000
 
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({ write: ctx.emit, idPrefix: 'chat', timeoutMs: PORT_CALL_TIMEOUT_MS })

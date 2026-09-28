@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { websearch } from '../execute/websearch.ts'
-import { execFail, execOk, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
+import { argValue, execFail, execOk, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
 
 const SOURCES = [
   { id: 'a', name: 'Alpha', kind: 'html', parse: 'ddg-html', enabled: true, endpoint: 'https://a.test/search', query_param: 'q', timeout_ms: 1000 },
@@ -92,6 +92,16 @@ test('websearch 的执行 caps.net 声明为 limited', async () => {
   assert.equal(execCalls[0].caps.fs.read, 'none')
 })
 
+test('fetcher_env 随 exec bag 下传（隔离执行 env_clear 后注入）', async () => {
+  const env = { NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:7897' }
+  const { backend, execCalls } = makeBackend(htmlRoutes())
+  await websearch({ query: 'chrono' }, makeCtx(config({ fetcher_env: env }), backend))
+  assert.deepEqual(execCalls[0].env, env)
+  const second = makeBackend(htmlRoutes())
+  await websearch({ query: 'chrono' }, makeCtx(config(), second.backend))
+  assert.equal(second.execCalls[0].env, undefined, '未配置时不注入 env')
+})
+
 test('obey_robots 开启时被禁路径记入 sources_failed', async () => {
   const router = prefixRouter([
     ['https://a.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /search' }))],
@@ -138,6 +148,38 @@ test('畸形 endpoint 只记该源失败，不拖垮整次检索', async () => {
   assert.equal(result.result.sources_failed[0].code, 'fetch_failed')
 })
 
+test('源声明的 headers / extra_query 透传：公开 key 与固定参数', async () => {
+  const source = {
+    id: 'm',
+    name: 'Marginalia',
+    kind: 'marginalia',
+    parse: 'marginalia',
+    enabled: true,
+    endpoint: 'https://api2.marginalia-search.com/search',
+    query_param: 'query',
+    headers: { 'API-Key': 'public' },
+    extra_query: { count: '5' },
+    timeout_ms: 8000,
+  }
+  const router = prefixRouter([
+    [
+      'https://api2.marginalia-search.com/search',
+      execOk(fetcherStdout({ contentType: 'application/json', body: '{"results":[{"title":"M","url":"https://m.test/a","description":"d"}]}' })),
+    ],
+  ])
+  const { backend, execCalls } = makeBackend(router)
+  const result = await websearch(
+    { query: 'chrono' },
+    makeCtx(testConfig({ sources: [source], obey_robots: false }), backend),
+  )
+  assert.equal(result.ok, true)
+  assert.equal(result.result.results[0].url, 'https://m.test/a')
+  const url = argValue(execCalls[0], '--url')
+  assert.ok(url.includes('query=chrono'), `缺 query 参数：${url}`)
+  assert.ok(url.includes('count=5'), `缺 extra_query：${url}`)
+  assert.ok(execCalls[0].args.includes('API-Key: public'), 'API-Key 头未透传')
+})
+
 test('全部源 endpoint 畸形 → all_sources_failed（不冒泡异常）', async () => {
   const { backend } = makeBackend(() => undefined)
   const result = await websearch(
@@ -147,4 +189,43 @@ test('全部源 endpoint 畸形 → all_sources_failed（不冒泡异常）', as
   assert.equal(result.ok, false)
   assert.equal(result.error.code, 'all_sources_failed')
   assert.equal(result.error.sources_failed.length, 1)
+})
+
+test('SearXNG 多实例并发尝试：单实例慢不再串行叠加', async () => {
+  const source = {
+    id: 'sx',
+    name: 'SX',
+    kind: 'searxng',
+    parse: 'searxng',
+    enabled: true,
+    endpoint: null,
+    instances: ['https://s1.test', 'https://s2.test', 'https://s3.test', 'https://s4.test', 'https://s5.test'],
+    query_param: 'q',
+    timeout_ms: 50,
+  }
+  let inFlight = 0
+  let maxInFlight = 0
+  const backend = {
+    async exec() {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      inFlight -= 1
+      return execFail('fetch_failed', 'down')
+    },
+    async assetPut() {
+      return execFail('unused', '')
+    },
+  }
+  const started = Date.now()
+  const result = await websearch(
+    { query: 'chrono' },
+    makeCtx(testConfig({ sources: [source], obey_robots: false }), backend),
+  )
+  const elapsed = Date.now() - started
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'all_sources_failed')
+  assert.equal(result.error.sources_failed[0].source, 'SX')
+  assert.ok(maxInFlight >= 2, `多实例应并发，实测最大并发 ${maxInFlight}`)
+  assert.ok(elapsed < 5 * source.timeout_ms, `并发总耗时应远小于串行 N×timeout，实测 ${elapsed}ms`)
 })

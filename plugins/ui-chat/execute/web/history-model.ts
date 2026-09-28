@@ -21,6 +21,12 @@ export function currentConversationId(history: any): string | null {
   return body !== null && typeof body.current === 'string' ? body.current : null
 }
 
+/** 回合记录（持久回合状态 + 结局）：`chat.history` 返回的当前会话回合视图数组。 */
+export function conversationTurns(history: any): any[] {
+  if (!isRec(history) || !Array.isArray(history.turns)) return []
+  return history.turns.filter((turn: unknown) => isRec(turn))
+}
+
 /**
  * 按 id 取会话；未指定时回落 `current`。**不再回落列表首条**：
  * 无当前会话（current 缺失 / 已删）时回 null，让视图走空态，而不是把首条（可能已删）会话当当前渲染。

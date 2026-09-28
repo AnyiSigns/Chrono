@@ -93,7 +93,7 @@ function main() {
     const configRead = boot(root, ['config.read'])
     const readBody = configRead.observations[0].value.body
     assert.equal(readBody.version, 1)
-    assert.equal(readBody.permission, 'review')
+    assert.equal(readBody.permission, 'severe')
     assert.equal(readBody.ui.theme, 'system')
     assert.deepEqual(readBody.providers, {})
     console.log('config.read: ok（owner 合并世界基线）')

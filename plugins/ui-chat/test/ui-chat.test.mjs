@@ -33,6 +33,7 @@ import {
 import { assetSource, messageViewItems, partViewModel, pendingUserDef, safeStringify } from '../execute/web/render-parts.ts'
 import { degradeText, renderSummary, toolCardViewModel, truncateSummary } from '../execute/web/tool-card.ts'
 import { computeDiff, detailViewModel, parsePatch, questionAnswerText, splitLines } from '../execute/web/detail-renderers.ts'
+import { applyQuestionStates, collectQuestionItemIds } from '../execute/web/question-state.ts'
 import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
 import { groupViewModel } from '../execute/web/group.ts'
 import { statusIcon, statusText, workflowViewModel } from '../execute/web/workflow.ts'
@@ -294,6 +295,16 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
   assert.equal(toolCardViewModel({ render: { form: 'weird' } }).form, 'degraded')
   assert.equal(renderSummary('{a}.{b}', { a: 1, b: 2 }, null), '1.2')
   assert.equal(renderSummary('{missing}', {}, null), '')
+  // 可选段 {? ... }：段内字段全非空才输出，缺省参数不留下悬空分隔符。
+  const editTemplate = '{path}{?  +{result.added} -{result.removed}}'
+  assert.equal(renderSummary(editTemplate, { path: 'a.ts' }, { added: 3, removed: 0 }), 'a.ts  +3 -0')
+  assert.equal(renderSummary(editTemplate, { path: 'a.ts' }, null), 'a.ts')
+  // added 有值、removed 缺失：整段不输出（0 是有效值，空串才算缺失）。
+  assert.equal(renderSummary(editTemplate, { path: 'a.ts' }, { added: 3 }), 'a.ts')
+  const readTemplate = '{path}{?  · offset {offset}}{?  · limit {limit}}'
+  assert.equal(renderSummary(readTemplate, { path: 'a.ts' }, null), 'a.ts')
+  assert.equal(renderSummary(readTemplate, { path: 'a.ts', offset: 2, limit: 50 }, null), 'a.ts  · offset 2  · limit 50')
+  assert.equal(renderSummary(readTemplate, { path: 'a.ts', limit: 50 }, null), 'a.ts  · limit 50')
   assert.equal(truncateSummary('abcdef', 4), 'abc…')
   assert.equal(degradeText({ result: { a: 1 } }), safeStringify({ a: 1 }))
 })
@@ -315,19 +326,38 @@ test('detail.kind：text / code / diff / matches / paths / list / table / json /
   assert.ok(patch.rows.some((row) => row.type === 'add' && row.text === 'new' && row.prefix === '+ '))
   assert.ok(patch.rows.some((row) => row.type === 'del' && row.text === 'old' && row.prefix === '- '))
 
+  // 文件头只在首个 @@ 之前跳过；hunk 内以 `--` 开头的内容行照常作删除行（不被误吞）。
+  const headed = parsePatch('--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n+new')
+  assert.equal(headed.rows.filter((row) => row.type === 'hunk').length, 1)
+  assert.equal(headed.rows.some((row) => row.text === 'a/f.txt'), false)
+  const dashed = parsePatch('@@ -1,1 +1,1 @@\n---keep\n+new')
+  assert.ok(dashed.rows.some((row) => row.type === 'del' && row.text === '--keep'))
+
   const collapsed = computeDiff(Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n'), Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n'))
   assert.ok(collapsed.rows.some((row) => row.type === 'hunk'))
   assert.ok(collapsed.rows.some((row) => row.type === 'hunk' && row.text === '… 折叠 14 行 …'))
   assert.deepEqual(splitLines('a\nb'), ['a', 'b'])
 
   const matches = detailViewModel({ kind: 'matches', matches: [{ path: 'a.ts', line: 3, text: 'x' }] })
-  assert.deepEqual(matches.items[0], { path: 'a.ts', line: 3, text: 'x' })
+  assert.deepEqual(matches.items[0], { path: 'a.ts', line: 3, text: 'x', count: 0, before: [], after: [] })
+  // files_only 的 count 与 before/after 上下文原样带出，供展开体展示。
+  const filesOnly = detailViewModel({
+    kind: 'matches',
+    matches: [{ path: 'a.ts', line: 1, text: 'fn', count: 7, before: ['pre'], after: ['post'] }],
+  })
+  assert.equal(filesOnly.items[0].count, 7)
+  assert.deepEqual(filesOnly.items[0].before, ['pre'])
+  assert.deepEqual(filesOnly.items[0].after, ['post'])
   assert.deepEqual(detailViewModel({ kind: 'paths', paths: ['a', 'b'] }).items, ['a', 'b'])
   assert.deepEqual(detailViewModel({ kind: 'list', items: [1, 2] }).items, [1, 2])
   const table = detailViewModel({ kind: 'table', columns: ['a', 'b'], rows: [[1, 'x']] })
   assert.deepEqual(table.columns, ['a', 'b'])
   assert.deepEqual(table.rows, [['1', 'x']])
   assert.match(detailViewModel({ kind: 'json', value: { a: 1 } }).text, /"a": 1/)
+  // 无 value/json 时直接序列化结果本体，但不把描述符 own 的 kind 当数据展示。
+  const plainJson = detailViewModel({ kind: 'json', exists: true, size: 3 }).text
+  assert.match(plainJson, /"exists": true/)
+  assert.doesNotMatch(plainJson, /"kind"/)
   assert.equal(detailViewModel({ kind: 'file', name: 'f', source: { kind: 'asset', sha256: 'c'.repeat(64) } }).name, 'f')
   assert.equal(detailViewModel({ kind: 'image', source: { kind: 'asset', sha256: 'd'.repeat(64) } }).kind, 'image')
   const terminal = detailViewModel({ kind: 'terminal', stdout: 'out', stderr: 'err', exit_code: 2 })
@@ -358,6 +388,10 @@ test('detail.kind:question：单选 / 多选 / 自定义 / 已答 / expired', ()
   assert.equal(answered.answered, true)
   assert.equal(answered.answers[0].selected[0], 'A')
 
+  // 「全部忽略」：空 answers 也算已答（answered 标记），卡片收为已答只读。
+  const ignoredAll = detailViewModel({ kind: 'question', answered: true, answers: [], questions: [] })
+  assert.equal(ignoredAll.answered, true)
+
   const expired = detailViewModel({ kind: 'question', status: 'expired', questions: [] })
   assert.equal(expired.expired, true)
 
@@ -378,6 +412,37 @@ test('detail.kind:question：单选 / 多选 / 自定义 / 已答 / expired', ()
   assert.equal(questionAnswerText([{ questionId: 'q1', selected: ['A'], custom: null }], 'q1'), 'A')
   assert.equal(questionAnswerText([{ question_id: 'q1', selected: ['A'], custom: 'x' }], 'q1'), 'A、x')
   assert.equal(questionAnswerText([], 'q1'), '')
+})
+
+test('question-state：收集 question 卡 id 并按服务端状态覆盖（已答 / 过期 ⇒ 只读）', () => {
+  const view = {
+    messages: [
+      { hash: 'm1', def: { id: 'm1', role: 'assistant', parts: [{ type: 'tool', call_id: 'c1', render: { detail: { kind: 'question', id: 'q-1', questions: [{ id: 'q1' }], answers: null, interactive: true } } }] } },
+      { hash: 'm2', def: { id: 'm2', role: 'assistant', parts: [{ type: 'tool', call_id: 'c2', render: { detail: { kind: 'question', id: 'q-2', questions: [{ id: 'q2' }], answers: null, interactive: true } } }] } },
+      { hash: 'm3', def: { id: 'm3', role: 'assistant', parts: [{ type: 'text', text: 'x' }] } },
+    ],
+  }
+  assert.deepEqual(collectQuestionItemIds(view.messages), ['q-1', 'q-2'])
+  assert.deepEqual(collectQuestionItemIds([]), [])
+
+  const patched = applyQuestionStates(view, {
+    'q-1': { id: 'q-1', answered: true, answers: [{ question_id: 'q1', selected: ['A'] }], expired: false },
+    'q-2': { id: 'q-2', answered: false, answers: null, expired: true },
+  })
+  const d1 = patched.messages[0].def.parts[0].render.detail
+  assert.equal(d1.answered, true)
+  assert.equal(d1.answers[0].selected[0], 'A')
+  assert.equal(d1.interactive, false, '已答收为只读')
+  const d2 = patched.messages[1].def.parts[0].render.detail
+  assert.equal(d2.expired, true)
+  assert.equal(d2.interactive, true, '过期保持 interactive，由 expired 分支出警告 + 禁用控件')
+  // 非 question 消息与未命中项保持原引用。
+  assert.equal(patched.messages[2], view.messages[2])
+  assert.equal(applyQuestionStates(view, {}), view, '无状态覆盖时原引用返回')
+  // 未命中的卡不动。
+  const partial = applyQuestionStates(view, { 'q-1': { id: 'q-1', answered: true, answers: [], expired: false } })
+  assert.equal(partial.messages[1], view.messages[1])
+  assert.equal(partial.messages[0].def.parts[0].render.detail.answered, true)
 })
 
 // ---- usage ----

@@ -1,12 +1,12 @@
 // 能力类 `todo` 的两个方法：`describe`（工具自述）+ `invoke`（按工具名派发）。
 // 清单本体已出世界：写即时落委托存储（storage-kv，按 env.emitter 分命名空间），读从自有存储取；
-// 不再产世界写计划、不再从 bag 收投影切片。会话 id 仍由调用方经 bag / args 给出（模型看不到）。
+// 不产世界写计划、不读投影。会话 id 由调用方经 bag / args 给出（模型看不到）。
 
 import { BadArgsError } from 'plugin-sdk'
 import { resolveLimits } from './config.ts'
-import { asString, isRecord } from './plan.ts'
+import { asArray, asString, isRecord } from './plan.ts'
 import type { TodoStore } from './store.ts'
-import { normalizeItems, summarize } from './todo.ts'
+import { applyOps, defaultAtOf, nextSeqFor, normalizeItems, summarize } from './todo.ts'
 import { describeValue } from './tools.ts'
 import { ToolError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, Rec } from 'plugin-sdk'
@@ -45,7 +45,13 @@ function sessionIdOf(toolArgs: Rec, bag: Rec): string | null {
   return null
 }
 
-/** `todo.describe`：回 `todo.write` / `todo.read` 两工具 + 四要素 + render 描述符。 */
+function requireSession(toolArgs: Rec, bag: Rec): string {
+  const conversationId = sessionIdOf(toolArgs, bag)
+  if (conversationId === null) throw new BadArgsError('conversation id not provided by caller')
+  return conversationId
+}
+
+/** `todo.describe`：回三工具 + 四要素 + render 描述符。 */
 function describeTool(_args: Rec, _env: CallEnv): Json {
   return describeValue()
 }
@@ -53,36 +59,53 @@ function describeTool(_args: Rec, _env: CallEnv): Json {
 /** `todo.write`：整表替换本会话清单，即时写委托存储（边跑边追加）。 */
 async function writeTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps): Promise<Json> {
   const args: Rec = { ...toolArgs }
-  if (typeof args['at'] !== 'string' || args['at'].length === 0) {
-    const bagAt = bag['at']
-    if (typeof bagAt === 'string' && bagAt.length > 0) args['at'] = bagAt
-  }
-  const conversationId = sessionIdOf(toolArgs, bag)
-  if (conversationId === null) {
-    throw new BadArgsError('conversation id not provided by caller')
-  }
-  const { items, summary } = normalizeItems(args, conversationId, resolveLimits())
-  await deps.store.write(env.run, conversationId, asString(args['at']), items)
-  return { ok: true, conversation_id: conversationId, ...summary }
+  const at = defaultAtOf(args, bag)
+  if (at !== null) args['at'] = at
+  const conversationId = requireSession(toolArgs, bag)
+  const limits = resolveLimits()
+  const current = await deps.store.load(conversationId)
+  const { items, summary, nextSeq } = normalizeItems(args, limits, nextSeqFor(current.items, current.seq))
+  await deps.store.save(conversationId, { run: env.run, at, seq: nextSeq, items })
+  return { ok: true, conversation_id: conversationId, total: summary.total, done: summary.done }
+}
+
+/** `todo.update`：按 id 增量增 / 改 / 删 / 移动本会话条目。 */
+async function updateTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps): Promise<Json> {
+  const ops = asArray(toolArgs['ops'])
+  if (ops === null || ops.length === 0) throw new BadArgsError('ops must be a non-empty array')
+  const conversationId = requireSession(toolArgs, bag)
+  const limits = resolveLimits()
+  const defaultAt = defaultAtOf(toolArgs, bag)
+  const current = await deps.store.load(conversationId)
+  const { items, changed, summary, nextSeq } = applyOps(current.items, ops, limits, nextSeqFor(current.items, current.seq), defaultAt)
+  await deps.store.save(conversationId, { run: env.run, at: defaultAt, seq: nextSeq, items })
+  return { ok: true, conversation_id: conversationId, total: summary.total, done: summary.done, changed }
 }
 
 /** `todo.read`：从自有存储取本会话清单（服务不读投影）。 */
 async function readTool(toolArgs: Rec, bag: Rec, _env: CallEnv, deps: TodoDeps): Promise<Json> {
-  const conversationId = sessionIdOf(toolArgs, bag)
-  if (conversationId === null) {
-    throw new BadArgsError('conversation id not provided by caller')
-  }
-  const items = await deps.store.read(conversationId)
-  return summarize(items)
+  const conversationId = requireSession(toolArgs, bag)
+  const current = await deps.store.load(conversationId)
+  return summarize(current.items)
 }
 
-/** `todo.invoke`：按工具名派发；业务失败作 `{ok:false,error}` 值（不炸本轮）。 */
+/**
+ * `todo.invoke`：按工具名派发（`todo` 依 `args.action`；旧名 `todo.write` / `todo.update` / `todo.read`
+ * 保留给内部调用方，目录里只广告合并后的 `todo`）；业务失败作 `{ok:false,error}` 值（不炸本轮）。
+ */
 async function invokeTool(args: Rec, env: CallEnv, deps: TodoDeps): Promise<Json> {
   const tool = requireString(args, 'tool')
   const toolArgs = isRecord(args['args']) ? (args['args'] as Rec) : {}
   try {
     let value: Json
-    if (tool === 'todo.write') value = await writeTool(toolArgs, args, env, deps)
+    if (tool === 'todo') {
+      const action = toolArgs['action']
+      if (action === 'replace') value = await writeTool(toolArgs, args, env, deps)
+      else if (action === 'update') value = await updateTool(toolArgs, args, env, deps)
+      else if (action === 'read') value = await readTool(toolArgs, args, env, deps)
+      else throw new BadArgsError('action must be one of replace / update / read')
+    } else if (tool === 'todo.write') value = await writeTool(toolArgs, args, env, deps)
+    else if (tool === 'todo.update') value = await updateTool(toolArgs, args, env, deps)
     else if (tool === 'todo.read') value = await readTool(toolArgs, args, env, deps)
     else throw new ToolError('unknown_tool', tool)
     return { ok: true, result: value }

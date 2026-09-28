@@ -1,0 +1,146 @@
+[
+  {
+    "label": "committed",
+    "outcome": { "kind": "committed", "code": null, "attributableTo": null, "retryable": false, "cause": null }
+  },
+  {
+    "label": "committed-budget-stop",
+    "outcome": { "kind": "committed", "code": null, "attributableTo": null, "retryable": false, "cause": null, "stop_reason": "budget" }
+  },
+  {
+    "label": "refused-model-not-configured",
+    "outcome": { "kind": "refused", "code": "model_not_configured", "attributableTo": "owner", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-workspace-missing",
+    "outcome": { "kind": "refused", "code": "workspace_missing", "attributableTo": "owner", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-empty-slot",
+    "outcome": { "kind": "refused", "code": "empty_slot", "attributableTo": "owner", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-no-plan",
+    "outcome": { "kind": "refused", "code": "no_plan", "attributableTo": "graph", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-owner-unavailable",
+    "outcome": { "kind": "refused", "code": "owner_unavailable", "attributableTo": "owner", "retryable": true, "cause": null }
+  },
+  {
+    "label": "refused-turn-busy",
+    "outcome": { "kind": "refused", "code": "turn_busy", "attributableTo": "owner", "retryable": true, "cause": null }
+  },
+  {
+    "label": "refused-loop-unavailable",
+    "outcome": {
+      "kind": "refused",
+      "code": "loop_unavailable",
+      "attributableTo": "transport",
+      "retryable": true,
+      "cause": { "from": "loop-policy.interpret", "code": "transport_failed", "message": "service link unavailable" }
+    }
+  },
+  {
+    "label": "refused-model",
+    "outcome": {
+      "kind": "refused",
+      "code": "downstream_refusal",
+      "attributableTo": "model",
+      "retryable": true,
+      "cause": { "from": "model-protocol.chat", "code": "model_timeout", "message": "idle timeout" }
+    }
+  },
+  {
+    "label": "refused-tool",
+    "outcome": {
+      "kind": "refused",
+      "code": "downstream_refusal",
+      "attributableTo": "tool",
+      "retryable": false,
+      "cause": { "from": "tool-fs", "code": "not_found", "message": "foo.ts: no such file" }
+    }
+  },
+  {
+    "label": "refused-guard",
+    "outcome": {
+      "kind": "refused",
+      "code": "downstream_refusal",
+      "attributableTo": "guard",
+      "retryable": false,
+      "cause": { "from": "guard.judge", "code": "denied", "message": "denied by guard" }
+    }
+  },
+  {
+    "label": "refused-approval",
+    "outcome": {
+      "kind": "refused",
+      "code": "downstream_refusal",
+      "attributableTo": "approval",
+      "retryable": false,
+      "cause": { "from": "approval.enqueue", "code": "denied", "message": "denied by user" }
+    }
+  },
+  {
+    "label": "refused-graph",
+    "outcome": {
+      "kind": "refused",
+      "code": "capability_mismatch",
+      "attributableTo": "graph",
+      "retryable": false,
+      "cause": { "from": "loop-policy.interpret", "code": "scope_mismatch", "message": "no instance" }
+    }
+  },
+  {
+    "label": "refused-budget",
+    "outcome": { "kind": "refused", "code": "budget_exceeded", "attributableTo": "budget", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-budget-impossible",
+    "outcome": { "kind": "refused", "code": "budget_impossible", "attributableTo": "budget", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-too-many-rounds",
+    "outcome": { "kind": "refused", "code": "too_many_rounds", "attributableTo": "budget", "retryable": false, "cause": null }
+  },
+  {
+    "label": "refused-transport",
+    "outcome": {
+      "kind": "refused",
+      "code": "transport_failed",
+      "attributableTo": "transport",
+      "retryable": true,
+      "cause": { "from": "host.service-link", "code": "transport_failed", "message": "frame bus closed" }
+    }
+  },
+  {
+    "label": "refused-contract-version",
+    "outcome": {
+      "kind": "refused",
+      "code": "contract_version_mismatch",
+      "attributableTo": "owner",
+      "retryable": false,
+      "cause": null,
+      "message": "unsupported contract_version: 2.0"
+    }
+  },
+  {
+    "label": "refused-invalid-contract",
+    "outcome": {
+      "kind": "refused",
+      "code": "invalid_contract",
+      "attributableTo": "owner",
+      "retryable": false,
+      "cause": null,
+      "message": "bag.resume must be object"
+    }
+  },
+  {
+    "label": "cancelled",
+    "outcome": { "kind": "cancelled", "code": "cancelled", "attributableTo": "owner", "retryable": false, "cause": null }
+  },
+  {
+    "label": "interrupted",
+    "outcome": { "kind": "interrupted", "code": "interrupted", "attributableTo": "owner", "retryable": true, "cause": null }
+  }
+]

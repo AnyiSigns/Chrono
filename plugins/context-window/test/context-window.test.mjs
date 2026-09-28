@@ -110,7 +110,51 @@ test('build 成功：messages / params / manifest，事件载荷带帧 env 的 r
   }
 })
 
-test('前缀缓存排序：prompt → tools → L2 → L1 → 技能 → 召回 → 历史 → 风格 → input', async () => {
+test('环境节：给出工作目录时注入稳定系统消息（工作目录 / 平台 / 命令解释器），紧跟系统提示', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(baseBag({ system_prompt: 'SYS', workspace_root: 'C:\\ws\\p' }))
+    const texts = textMessages(value)
+    const sysIndex = texts.indexOf('SYS')
+    assert.ok(sysIndex >= 0, '系统提示应在消息里')
+    const env = texts[sysIndex + 1]
+    assert.ok(env.includes('C:\\ws\\p'), '环境节应含工作目录')
+    assert.ok(env.includes('PowerShell'), '环境节应说明命令解释器为 PowerShell')
+    assert.ok(env.includes('操作系统'), '环境节应含操作系统')
+    assert.equal(value.manifest.sources.prompt.count, 2, '系统提示 + 环境节')
+  } finally {
+    drv.close()
+  }
+})
+
+test('环境节：无工作目录时不注入（不虚报根）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(baseBag({ system_prompt: 'SYS' }))
+    assert.equal(value.manifest.sources.prompt.count, 1)
+  } finally {
+    drv.close()
+  }
+})
+
+test('环境节文案不含内部标识符（不污染模型推理）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(baseBag({ system_prompt: 'SYS', workspace_root: 'C:\\ws\\p' }))
+    const env = textMessages(value).find((text) => text.includes('C:\\ws\\p'))
+    assert.ok(env !== undefined)
+    for (const token of ['fsop', 'caps', 'guard', 'sandbox', 'port.call', 'tool-fs', 'context-window']) {
+      assert.ok(!env.includes(token), `环境节不应含 ${token}`)
+    }
+  } finally {
+    drv.close()
+  }
+})
+
+test('前缀缓存排序：prompt → tools → L2 → 历史 → L1 → 技能 → 召回 → 风格 → input', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -132,14 +176,14 @@ test('前缀缓存排序：prompt → tools → L2 → L1 → 技能 → 召回 
     )
     const texts = textMessages(value)
     assert.equal(texts[0], 'P')
-    assert.equal(texts[1], '{"name":"t1","description":"d","schema":{"type":"object"}}')
+    assert.equal(texts[1], '{"description":"d","name":"t1","schema":{"type":"object"}}')
     assert.deepEqual(texts.slice(2), [
       '[工作区记忆]\nL2T',
+      'HIST',
       '[上一会话摘要]\nPL1T',
       '[本会话摘要]\nL1T',
       '[技能 s1]\nSK',
       'REC',
-      'HIST',
       'STY',
       'IN',
     ])
@@ -194,7 +238,7 @@ test('跨来源去重：召回与历史内容一致 → 丢召回副本', async 
   }
 })
 
-test('冲突消解：同 subject 多版本取 at 最新', async () => {
+test('记忆条目无 subject 契约：未知字段被忽略，不触发冲突裁剪', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -209,9 +253,9 @@ test('冲突消解：同 subject 多版本取 at 最新', async () => {
       }),
     )
     const texts = textMessages(value)
+    assert.ok(texts.includes('[工作区记忆]\nold'))
     assert.ok(texts.includes('[本会话摘要]\nnew'))
-    assert.ok(!texts.includes('[工作区记忆]\nold'))
-    assert.ok(value.manifest.trimmed.some((entry) => entry.reason === 'conflict'))
+    assert.ok(!value.manifest.trimmed.some((entry) => entry.reason === 'conflict'))
   } finally {
     drv.close()
   }
@@ -219,7 +263,7 @@ test('冲突消解：同 subject 多版本取 at 最新', async () => {
 
 // ── 预算 / 配额 ────────────────────────────────────────────────────────────
 
-test('budget_impossible：P0 + P1 超预算（结构化错误值，非崩溃）', async () => {
+test('budget_impossible：P0（系统提示）单独超窗 → 结构化错误值并指名元素', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -666,6 +710,41 @@ test('thread_kind=subagent：去上一会话 L1，加父摘要 / 任务提示词
     assert.ok(texts.includes('[父会话摘要]\nparent'))
     assert.ok(texts.includes('task'))
     assert.ok(texts.some((text) => text.includes('[收件箱 instruction')))
+  } finally {
+    drv.close()
+  }
+})
+
+test('thread_kind=subagent：父检查点优先，上下文 = 任务 + 父检查点且不组装父消息历史', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(
+      baseBag({
+        thread_kind: 'subagent',
+        input: 'IN',
+        system_prompt: 'P',
+        session: chainOf([{ id: 'h1', role: 'user', content: 'PARENT-HISTORY' }]),
+        task_prompt: 'DELEGATED-TASK',
+        parent_checkpoint: {
+          type: 'checkpoint',
+          turn_id: 'p1',
+          seq: 4,
+          summary: { goal: '父目标', findings: [{ claim: '父发现' }], files: [{ path: 'a.ts' }] },
+          covered_upto: 4,
+        },
+      }),
+    )
+    assert.equal(value.manifest.sources.history.count, 0, 'subagent 不组装父消息历史')
+    const texts = textMessages(value)
+    assert.ok(!texts.includes('PARENT-HISTORY'), '父消息历史不得进入上下文')
+    assert.ok(texts.includes('DELEGATED-TASK'), '任务应注入')
+    assert.ok(
+      texts.some(
+        (text) => text.includes('[父检查点]') && text.includes('父目标') && text.includes('父发现') && text.includes('a.ts'),
+      ),
+      `父检查点应渲染进上下文: ${JSON.stringify(texts)}`,
+    )
   } finally {
     drv.close()
   }

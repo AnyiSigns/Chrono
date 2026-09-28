@@ -65,6 +65,34 @@ test('httpStream：调用方从不迭代 → 未消费兜底 TTL 到点销毁上
   }
 })
 
+test('httpStream：持续吐增量不受空闲超时限制（判死按推进，不按总时长）', async () => {
+  const server = await startHttpServer((req, res) => {
+    sseHead(res)
+    let sent = 0
+    // 每 20ms 一个事件、共 8 个：总时长 160ms 远超 120ms 的空闲阈值，但每次间隔都短于阈值。
+    const timer = setInterval(() => {
+      sent += 1
+      sseEvent(res, { t: sent })
+      if (sent >= 8) {
+        clearInterval(timer)
+        res.end()
+      }
+    }, 20)
+    res.on('close', () => clearInterval(timer))
+  })
+  try {
+    const stream = await httpStream({ method: 'GET', url: server.url, headers: {}, timeout_ms: 120, now: 0 })
+    let chunks = 0
+    for await (const chunk of stream.chunks) {
+      assert.equal(typeof chunk, 'string')
+      chunks += 1
+    }
+    assert.equal(chunks, 8, '仍在推进的流不得被空闲超时掐断')
+  } finally {
+    await server.close()
+  }
+})
+
 test('httpStream：消费方提前 break → 上游响应被销毁（socket 释放）', async () => {
   let closed = false
   const server = await startHttpServer((req, res) => {

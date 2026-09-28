@@ -1,6 +1,6 @@
 // `tool-http` 宿主装配 E2E（黑盒，离线）：
 // pack sandbox 替身 + tool-http → seed → start → 轮询 loaded → 直连服务 stdio（把 port.call
-// 桥接到注入的假后端）→ describe / websearch / webfetch / net_denied → stop → verify + replay
+// 桥接到注入的假后端）→ describe / websearch / websearch(read>0) / webfetch / net_denied → stop → verify + replay
 // → 离线读投影确认 pins。
 //
 // 说明：真实 sandbox 是 Rust 实现、首跑需 cargo 编译且可能触网，故这里用 tools/fixtures/sandbox
@@ -190,7 +190,7 @@ async function directChecks() {
 
     const described = await client.request('call', { port: 'tool-http', method: 'describe', args: {} })
     assert.deepEqual(described.value.tools.map((tool) => tool.name), ['websearch', 'webfetch'])
-    console.log('describe：两工具四要素齐备')
+    console.log('describe：二工具四要素齐备')
 
     const search = await client.request('call', {
       port: 'tool-http',
@@ -213,6 +213,28 @@ async function directChecks() {
     assert.deepEqual(search.value.result.sources_used, ['S'])
     assert.equal(search.value.result.results[0].url, 'https://one.test/page')
     console.log('websearch：经反向调用合并结果')
+
+    const research = await client.request('call', {
+      port: 'tool-http',
+      method: 'invoke',
+      args: {
+        tool: 'websearch',
+        args: { query: 'chrono', read: 1 },
+        config: {
+          obey_robots: false,
+          sources: [
+            { id: 's', name: 'S', kind: 'html', parse: 'ddg-html', endpoint: 'https://s.test/search', query_param: 'q', timeout_ms: 1000 },
+          ],
+        },
+        tier: 'auto',
+        workspace_root: 'C:/ws',
+        caps: { fs: { read: 'none', write: 'none' }, net: 'all' },
+      },
+    })
+    assert.equal(research.value.ok, true)
+    assert.equal(research.value.result.results[0].read, true)
+    assert.ok(research.value.result.results[0].content.length > 0)
+    console.log('websearch(read=1)：检索并抽取首条正文')
 
     const binary = await client.request('call', {
       port: 'tool-http',
@@ -287,7 +309,7 @@ async function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     assert.deepEqual(projection.ids['tool-http'].pins, { sandbox: 'sandbox', host: 'host' })
     assert.deepEqual(projection.ids.sandbox.pins, {})
     console.log('离线投影：tool-http.pins = { sandbox, host }')

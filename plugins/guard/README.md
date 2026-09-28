@@ -52,7 +52,7 @@
 | `forbidden_call` | `(port, tool)` 在明确禁止清单内。 |
 | `bad_call` | call 形态非法（非对象 / `port` 或 `tool` 缺失）。 |
 
-判定优先级（先命中先定）：`deny`（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP → 危险模式 → 工作区外 → net 越档 → `allow`。
+判定优先级（先命中先定）：`deny`（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP → 危险模式 → **命令前缀白名单** → 工作区外 → net 越档 → `allow`。
 
 ## 默认启发式与档位
 
@@ -66,6 +66,8 @@
   （`net` 段可关 / 改裁决）。批准后由编排层签发一次性 `caps.grant`（`op:"exec"` + `net`）放行本次；
   真正的强制面在 sandbox / 工具自身。`auto` 档 net=all 本就不越档。
 - **结构写高危**：`(plugin-admin, plugin.write)` 与 `(orchestration-admin, orchestration.propose)` → `escalate`。
+- **命令前缀白名单**（`allow_patterns`）：`{port, tool, prefix:[…], verdict}`；对命令串（`args.input` / `args.command`）做保守分词（识别引号、不解析 `&&` / `|` / `;`）后逐词前缀匹配（大小写不敏感）。
+  命中即直落 `allow`（reason `allowlisted`，rule = 前缀串），用于免审批放行安全命令；**危险模式先于它判定**，故危险命令不会被白名单放行。缺省空表。
 - **档位开关**（`guard_rules.tiers`）：`auto` 档直落（结构写 / 危险模式 / 工作区外 / net 越档不弹卡），
   但 **MCP 在 `auto` 档也 `escalate`**；`severe` / `review` / `deny` 升级全开。
   缺省 / 未知档位按 fail-closed（升级全开）。

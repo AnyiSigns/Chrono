@@ -43,13 +43,24 @@ test('九个 action 的分派与结果形状', async () => {
   const session = opened.result.session
 
   const navigate = await invoke(bag({ action: 'navigate', session, url: 'https://example.com' }), ctx, env())
-  assert.deepEqual(navigate.result, { status: 200, url: 'https://example.com', title: 'title:https://example.com' })
-  assert.deepEqual((await invoke(bag({ action: 'click', session, selector: '#a' }), ctx, env())).result, { ok: true })
-  assert.deepEqual((await invoke(bag({ action: 'type', session, selector: 'input', text: 'hi', submit: true }), ctx, env())).result, { ok: true })
-  assert.deepEqual((await invoke(bag({ action: 'press', session, key: 'Enter' }), ctx, env())).result, { ok: true })
-  assert.deepEqual((await invoke(bag({ action: 'wait_for', session, selector: '#a' }), ctx, env())).result, { ok: true })
-  assert.deepEqual((await invoke(bag({ action: 'extract', session }), ctx, env())).result, { text: 'hello body' })
-  assert.deepEqual((await invoke(bag({ action: 'extract', session, selector: '#a', attr: 'href' }), ctx, env())).result, { value: '/a' })
+  assert.deepEqual(navigate.result, {
+    status: 200,
+    url: 'https://example.com',
+    title: 'title:https://example.com',
+    digest: { action: 'navigate', url: 'https://example.com', status: 200 },
+  })
+  assert.deepEqual((await invoke(bag({ action: 'click', session, selector: '#a' }), ctx, env())).result, { ok: true, digest: { action: 'click' } })
+  assert.deepEqual((await invoke(bag({ action: 'type', session, selector: 'input', text: 'hi', submit: true }), ctx, env())).result, { ok: true, digest: { action: 'type' } })
+  assert.deepEqual((await invoke(bag({ action: 'press', session, key: 'Enter' }), ctx, env())).result, { ok: true, digest: { action: 'press' } })
+  assert.deepEqual((await invoke(bag({ action: 'wait_for', session, selector: '#a' }), ctx, env())).result, { ok: true, digest: { action: 'wait_for' } })
+  assert.deepEqual((await invoke(bag({ action: 'extract', session }), ctx, env())).result, {
+    text: 'hello body',
+    digest: { action: 'extract', bytes: Buffer.byteLength('hello body', 'utf8') },
+  })
+  assert.deepEqual((await invoke(bag({ action: 'extract', session, selector: '#a', attr: 'href' }), ctx, env())).result, {
+    value: '/a',
+    digest: { action: 'extract', bytes: Buffer.byteLength('/a', 'utf8') },
+  })
 
   const shot = await invoke(bag({ action: 'screenshot', session }), ctx, env())
   assert.equal(shot.ok, true)
@@ -59,7 +70,34 @@ test('九个 action 的分派与结果形状', async () => {
   assert.ok(shot.result.asset.size > 0)
   assert.ok(link.calls.some((call) => call.port === 'host' && call.method === 'asset.put'))
 
-  assert.deepEqual((await invoke(bag({ action: 'close', session }), ctx, env())).result, { closed: true })
+  assert.deepEqual((await invoke(bag({ action: 'close', session }), ctx, env())).result, {
+    closed: true,
+    digest: { action: 'close', closed: true },
+  })
+})
+
+test('每个 action 的成功结果自带 digest，形状是消费方可直接取用的普通对象', async () => {
+  const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
+  const { ctx } = makeCtx()
+  const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
+  const cases = [
+    { args: { action: 'open' }, action: 'open' },
+    { args: { action: 'navigate', session, url: 'https://example.com' }, action: 'navigate' },
+    { args: { action: 'click', session, selector: '#a' }, action: 'click' },
+    { args: { action: 'type', session, selector: 'input', text: 'hi' }, action: 'type' },
+    { args: { action: 'press', session, key: 'Enter' }, action: 'press' },
+    { args: { action: 'wait_for', session, selector: '#a' }, action: 'wait_for' },
+    { args: { action: 'extract', session }, action: 'extract' },
+    { args: { action: 'screenshot', session }, action: 'screenshot' },
+    { args: { action: 'close', session }, action: 'close' },
+  ]
+  for (const { args, action } of cases) {
+    const result = await invoke(bag(args), ctx, env())
+    assert.equal(result.ok, true, action)
+    const digest = result.result.digest
+    assert.ok(isPlainObject(digest), `${action} digest 必须是普通对象`)
+    assert.equal(digest.action, action)
+  }
 })
 
 test('会话内状态保持：open→navigate→click→extract 用同一引擎实例', async () => {

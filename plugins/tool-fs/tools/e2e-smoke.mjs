@@ -210,7 +210,7 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
     assert.equal(describe.kind, 'result', JSON.stringify(describe))
     assert.deepEqual(
       describe.value.tools.map((tool) => tool.name),
-      ['read', 'edit', 'glob', 'grep'],
+      ['read', 'edit', 'glob', 'grep', 'stat'],
     )
 
     const base = {
@@ -264,7 +264,7 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
     assert.equal(denied.value.ok, false, JSON.stringify(denied.value))
     assert.equal(denied.value.error.code, 'fs_denied')
 
-    console.log('直连协议：describe 四工具 + read/edit/new/glob/grep + 区外 severe fs_denied')
+    console.log('直连协议：describe 五工具 + read/edit/new/glob/grep/stat + 区外 severe fs_denied')
   } finally {
     toolfs.stdin.end()
     sandbox.stdin.end()

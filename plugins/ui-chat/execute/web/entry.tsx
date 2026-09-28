@@ -15,7 +15,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { ReactNode } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
 
 import { STYLE_TEXT } from './styles.ts'
@@ -42,18 +42,23 @@ import {
   applyToolDelta,
   applyToolEnd,
   applyToolStart,
+  applyTurnPending,
+  applyTurnSettled,
   clearPendingUser,
   createThreadStore,
   dropInFlight,
   emptyView,
   foldRunFinished,
   isStreaming,
+  outcomeBlocks,
+  outcomeDisplayCode,
   reconcilePendingUser,
   setPendingUser,
 } from './thread-store.ts'
 import { messageViewItems, pendingUserDef, safeStringify } from './render-parts.ts'
 import { toolCardViewModel } from './tool-card.ts'
-import { detailViewModel, questionAnswerText } from './detail-renderers.ts'
+import { detailViewModel, questionAnswerList } from './detail-renderers.ts'
+import { applyQuestionStates, collectQuestionItemIds } from './question-state.ts'
 import { buildDateSeparators } from './date-sep.ts'
 import { usageText } from './usage.ts'
 import { COPY_HOLD_MS } from './copy.ts'
@@ -489,13 +494,26 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
 
   if (answered) {
     return (
-      <div className="chat-question">
-        {questions.map((question: any) => (
-          <div key={question.id}>
-            <div className="chat-question-q">{question.header || question.question}</div>
-            <div className="chat-muted">{questionAnswerText(answers, question.id)}</div>
-          </div>
-        ))}
+      <div className="chat-question" data-answered="true">
+        {questions.map((question: any) => {
+          const pieces = questionAnswerList(answers, question.id)
+          return (
+            <div key={question.id} className="chat-question-answer">
+              <div className="chat-question-q">{question.header || question.question}</div>
+              {pieces.length > 0 ? (
+                <div className="chat-question-answer-list">
+                  {pieces.map((piece: string, index: number) => (
+                    <span key={index} className="chat-question-chip">
+                      {piece}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="chat-question-skip">{lookupMessage(env.table, 'chat_ignored').body}</span>
+              )}
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -507,15 +525,22 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
         {questions.map((question: any) => (
           <div key={question.id} className="chat-question-group">
             {question.header.length > 0 ? <div className="chat-question-q">{question.header}</div> : null}
-            <div>{question.question}</div>
-            {question.options.map((option: any) => (
-              <div key={option.label} className="chat-question-opt" aria-disabled="true">
-                <span>{option.label}</span>
-                {option.description.length > 0 ? (
-                  <span className="chat-question-opt-desc">{option.description}</span>
-                ) : null}
+            {question.question.length > 0 ? <div className="chat-question-text">{question.question}</div> : null}
+            {question.options.length > 0 ? (
+              <div className="chat-question-opts">
+                {question.options.map((option: any) => (
+                  <div key={option.label} className="chat-question-opt" data-readonly="true">
+                    <span className="chat-question-mark" data-shape={question.multiple ? 'box' : 'dot'} aria-hidden="true" />
+                    <span className="chat-question-opt-body">
+                      <span className="chat-question-opt-label">{option.label}</span>
+                      {option.description.length > 0 ? (
+                        <span className="chat-question-opt-desc">{option.description}</span>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
           </div>
         ))}
       </div>
@@ -526,23 +551,39 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
   if (total === 0) return <div className="chat-question" data-readonly="true" />
   const current = questions[Math.min(step, total - 1)]
   const isLast = step >= total - 1
+  const currentSelection = selections[current.id] ?? []
+  const customEnabled = current.custom !== false
+  const currentCustom = customs[current.id] ?? ''
+  const customChecked = currentCustom.trim().length > 0
 
-  const toggle = (question: any, label: string) => {
+  const toggle = (label: string) => {
     if (vm.expired) return
-    setSelections((currentSelections) => {
-      const next: { [id: string]: string[] } = {}
-      for (const key of Object.keys(currentSelections)) next[key] = [...currentSelections[key]]
-      const set = new Set(next[question.id] ?? [])
-      if (question.multiple) {
+    setError(null)
+    setSelections((previous) => {
+      const next: { [id: string]: string[] } = { ...previous, [current.id]: [...(previous[current.id] ?? [])] }
+      const set = new Set(next[current.id])
+      if (current.multiple) {
         if (set.has(label)) set.delete(label)
         else set.add(label)
       } else {
         set.clear()
         set.add(label)
       }
-      next[question.id] = [...set]
+      next[current.id] = [...set]
       return next
     })
+    // 单选：选项与自定义互斥，选选项即清掉本题自定义输入。
+    if (!current.multiple) setCustoms((previous) => ({ ...previous, [current.id]: '' }))
+  }
+
+  const changeCustom = (value: string) => {
+    if (vm.expired) return
+    setError(null)
+    setCustoms((previous) => ({ ...previous, [current.id]: value }))
+    // 单选：自定义有内容即视为选中它，清掉本题选项。
+    if (!current.multiple && value.trim().length > 0) {
+      setSelections((previous) => ({ ...previous, [current.id]: [] }))
+    }
   }
 
   const goTo = (next: number) => {
@@ -592,11 +633,16 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     setError(lookupMessage(env.table, result.code ?? 'unknown').body)
   }
 
+  const advance = () => {
+    if (isLast) void submit()
+    else goTo(step + 1)
+  }
+
   /** 忽略本题：清掉本题作答后推进；末题则直接提交其余作答。 */
   const ignoreCurrent = () => {
     if (vm.expired || submittingRef.current) return
-    setSelections((currentSelections) => ({ ...currentSelections, [current.id]: [] }))
-    setCustoms((currentCustoms) => ({ ...currentCustoms, [current.id]: '' }))
+    setSelections((previous) => ({ ...previous, [current.id]: [] }))
+    setCustoms((previous) => ({ ...previous, [current.id]: '' }))
     if (!isLast) {
       goTo(step + 1)
       return
@@ -605,93 +651,167 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
     void submit(current.id, true)
   }
 
+  /** 多行输入随内容长高（先归零再按 scrollHeight 撑开）。 */
+  const autoGrow = (element: HTMLTextAreaElement) => {
+    element.style.height = 'auto'
+    element.style.height = `${element.scrollHeight}px`
+  }
+
+  /** 数字键 1–9 速选当前题选项，Enter 推进 / 提交；焦点在文本框时交还原生行为。 */
+  const onCardKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (vm.expired) return
+    const target = event.target as HTMLElement
+    const tag = target.tagName
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return
+    if (/^[1-9]$/.test(event.key)) {
+      const option = current.options[Number(event.key) - 1]
+      if (option !== undefined) {
+        event.preventDefault()
+        toggle(option.label)
+      }
+      return
+    }
+    // 焦点在选项按钮上时 Enter 归按钮（触发选择），不在此重复推进。
+    if (event.key === 'Enter' && tag !== 'BUTTON') {
+      event.preventDefault()
+      advance()
+    }
+  }
+
   return (
-    <div className="chat-question" data-expired={String(vm.expired)}>
+    <div className="chat-question" data-expired={String(vm.expired)} onKeyDown={onCardKeyDown}>
       {vm.expired ? (
         <div className="chat-warning-inline">
           <Icon name="alert-triangle" size={16} />
           <span>{lookupMessage(env.table, 'chat_expired').body}</span>
         </div>
       ) : null}
-      <div className="chat-question-nav">
-        <span className="chat-question-progress">
-          {formatText('chat_question_progress', { index: step + 1, total })}
+      <div className="chat-question-head">
+        <span className="chat-question-icon" aria-hidden="true">
+          <Icon name="info" size={16} />
         </span>
-        <div className="chat-question-nav-btns">
-          <button
-            type="button"
-            className="chat-question-nav-btn"
-            disabled={vm.expired || step <= 0}
-            aria-label={lookupMessage(env.table, 'chat_prev_question').body}
-            onClick={() => goTo(step - 1)}
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            className="chat-question-nav-btn"
-            disabled={vm.expired || isLast}
-            aria-label={lookupMessage(env.table, 'chat_next_question').body}
-            onClick={() => goTo(step + 1)}
-          >
-            ›
-          </button>
-        </div>
+        <span className="chat-question-heading">{current.header || current.question}</span>
+        <span className="chat-question-badge">
+          {lookupMessage(env.table, current.multiple ? 'chat_question_multiple' : 'chat_question_single').body}
+        </span>
       </div>
+      {current.header.length > 0 && current.question.length > 0 ? (
+        <div className="chat-question-text">{current.question}</div>
+      ) : null}
+      {total > 1 ? (
+        <div className="chat-question-nav">
+          <span className="chat-question-progress">
+            <span className="chat-question-dots" aria-hidden="true">
+              {questions.map((question: any, index: number) => (
+                <span
+                  key={question.id}
+                  className="chat-question-dot"
+                  data-state={index === step ? 'current' : index < step ? 'done' : 'todo'}
+                />
+              ))}
+            </span>
+            {formatText('chat_question_progress', { index: step + 1, total })}
+          </span>
+          <div className="chat-question-nav-btns">
+            <button
+              type="button"
+              className="chat-question-nav-btn"
+              disabled={vm.expired || step <= 0}
+              aria-label={lookupMessage(env.table, 'chat_prev_question').body}
+              onClick={() => goTo(step - 1)}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              className="chat-question-nav-btn"
+              disabled={vm.expired || isLast}
+              aria-label={lookupMessage(env.table, 'chat_next_question').body}
+              onClick={() => goTo(step + 1)}
+            >
+              ›
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div
         className="chat-question-group"
         role={current.multiple ? 'group' : 'radiogroup'}
         aria-label={current.header || current.question}
       >
-        {current.header.length > 0 ? <div className="chat-question-q">{current.header}</div> : null}
-        <div>{current.question}</div>
-        {current.options.map((option: any) => {
-          const checked = (selections[current.id] ?? []).includes(option.label)
-          return (
-            <div
-              key={option.label}
-              className="chat-question-opt"
-              role={current.multiple ? 'checkbox' : 'radio'}
-              tabIndex={vm.expired ? -1 : 0}
-              aria-checked={checked}
-              aria-disabled={vm.expired}
-              onClick={() => toggle(current, option.label)}
-              onKeyDown={(event) => {
-                if (event.key === ' ' || event.key === 'Spacebar') {
-                  event.preventDefault()
-                  toggle(current, option.label)
-                } else if (event.key === 'Enter') {
-                  event.preventDefault()
-                  if (isLast) void submit()
-                  else goTo(step + 1)
-                }
-              }}
+        {current.options.length > 0 ? (
+          <div className="chat-question-opts">
+            {current.options.map((option: any, index: number) => {
+              const checked = currentSelection.includes(option.label)
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  className="chat-question-opt"
+                  role={current.multiple ? 'checkbox' : 'radio'}
+                  aria-checked={checked}
+                  aria-disabled={vm.expired}
+                  disabled={vm.expired}
+                  onClick={() => toggle(option.label)}
+                >
+                  <span
+                    className="chat-question-mark"
+                    data-shape={current.multiple ? 'box' : 'dot'}
+                    data-checked={String(checked)}
+                    aria-hidden="true"
+                  >
+                    {checked ? <Icon name="check" size={12} /> : null}
+                  </span>
+                  <span className="chat-question-opt-body">
+                    <span className="chat-question-opt-label">{option.label}</span>
+                    {option.description.length > 0 ? (
+                      <span className="chat-question-opt-desc">{option.description}</span>
+                    ) : null}
+                  </span>
+                  {index < 9 ? (
+                    <span className="chat-question-key" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+        {customEnabled ? (
+          <label className="chat-question-custom" data-active={String(customChecked)}>
+            <span
+              className="chat-question-mark"
+              data-shape={current.multiple ? 'box' : 'dot'}
+              data-checked={String(customChecked)}
+              aria-hidden="true"
             >
-              <span>{option.label}</span>
-              {option.description.length > 0 ? (
-                <span className="chat-question-opt-desc">{option.description}</span>
-              ) : null}
-            </div>
-          )
-        })}
-        <input
-          className="chat-question-input"
-          type="text"
-          placeholder={lookupMessage(env.table, 'chat_custom_input').body}
-          aria-label={`${lookupMessage(env.table, 'chat_custom_answer').body}：${current.header || current.question}`}
-          disabled={vm.expired}
-          value={customs[current.id] ?? ''}
-          onChange={(event) =>
-            setCustoms((currentCustoms) => ({ ...currentCustoms, [current.id]: event.target.value }))
-          }
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              if (isLast) void submit()
-              else goTo(step + 1)
-            }
-          }}
-        />
+              {customChecked ? <Icon name="check" size={12} /> : null}
+            </span>
+            <span className="chat-question-opt-body">
+              <span className="chat-question-opt-label">{lookupMessage(env.table, 'chat_other').body}</span>
+              <textarea
+                key={current.id}
+                className="chat-question-input"
+                rows={1}
+                placeholder={lookupMessage(env.table, 'chat_other_input').body}
+                aria-label={`${lookupMessage(env.table, 'chat_other').body}：${current.header || current.question}`}
+                disabled={vm.expired}
+                value={currentCustom}
+                onChange={(event) => {
+                  changeCustom(event.target.value)
+                  autoGrow(event.target)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    advance()
+                  }
+                }}
+              />
+            </span>
+          </label>
+        ) : null}
       </div>
       <div className="chat-question-actions">
         <button
@@ -702,11 +822,12 @@ function QuestionCard({ vm }: { vm: any }): ReactNode {
         >
           {lookupMessage(env.table, 'chat_ignore').body}
         </button>
+        <span className="chat-question-spacer" />
         <button
           type="button"
           className="chat-btn chat-btn-accent"
           disabled={vm.expired || submitting}
-          onClick={() => (isLast ? void submit() : goTo(step + 1))}
+          onClick={advance}
         >
           {submitting
             ? lookupMessage(env.table, 'chat_submitting').body
@@ -733,9 +854,22 @@ function DetailView({ detail }: { detail: any }): ReactNode {
       return (
         <div className="chat-matches">
           {vm.items.map((item: any, index: number) => (
-            <div key={index}>
-              <span className="chat-matches-line">{`${item.path}:${item.line}  `}</span>
-              <span>{item.text}</span>
+            <div key={index} className="chat-match">
+              <div className="chat-match-head">
+                <span className="chat-matches-line">{`${item.path}:${item.line}`}</span>
+                {item.count > 1 ? <span className="chat-match-count">{`×${item.count}`}</span> : null}
+              </div>
+              {item.before.map((line: string, lineIndex: number) => (
+                <div key={`before-${lineIndex}`} className="chat-match-context">
+                  {line}
+                </div>
+              ))}
+              <div className="chat-match-hit">{item.text}</div>
+              {item.after.map((line: string, lineIndex: number) => (
+                <div key={`after-${lineIndex}`} className="chat-match-context">
+                  {line}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -852,8 +986,8 @@ function ToolStatus({ state }: { state: string | null }): ReactNode {
 
 /**
  * 工具卡：`line` 一行不可展开；`card` 折叠头 + 展开体。
- * 在途卡（`live` 非空）结果尚未落地：展开体只给流式输出（`render.live`）或调用参数，
- * 不渲染空 detail；定稿卡展开体渲染描述符与结果合并后的 detail。
+ * 收起态 summary 展示调用输入（args）；在途卡结果尚未落地，展开体只给流式输出（`render.live`），
+ * 定稿卡展开体渲染描述符与结果合并后的 detail（工具输出）。
  */
 function ToolCard({
   vm,
@@ -907,9 +1041,7 @@ function ToolCard({
             <div className="chat-terminal">
               <div className="chat-terminal-stdout">{live.chunks}</div>
             </div>
-          ) : streaming ? (
-            <pre className="chat-code-block">{safeStringify(vm.args ?? null)}</pre>
-          ) : vm.detail === null ? null : (
+          ) : streaming || vm.detail === null ? null : (
             <DetailView detail={vm.detail} />
           )}
         </div>
@@ -1034,7 +1166,7 @@ function MessageItem({ entry, announce }: { entry: any; announce: boolean }): Re
   )
 }
 
-/** 在途工具卡：结果尚未落地，展开体只给流式输出或调用参数。 */
+/** 在途工具卡：结果尚未落地，收起态给调用输入，展开体只给流式输出。 */
 function StreamToolCard({ tool }: { tool: any }): ReactNode {
   if (tool === null || tool === undefined) return null
   const vm = toolCardViewModel({
@@ -1100,7 +1232,11 @@ function StreamTurn({ view }: { view: any }): ReactNode {
         }
         return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
       })}
-      {streaming ? (
+      {inFlight.outcome !== null && inFlight.outcome.kind !== 'committed' ? (
+        <TurnOutcomeLine outcome={inFlight.outcome} />
+      ) : inFlight.suspended === true ? (
+        <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_waiting').body}</div>
+      ) : streaming ? (
         <div className="chat-working">
           <span>
             {lookupMessage(env.table, 'chat_working').body}
@@ -1115,6 +1251,31 @@ function StreamTurn({ view }: { view: any }): ReactNode {
       ) : (
         <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_cancelled').body}</div>
       )}
+    </div>
+  )
+}
+
+/** 回合结局块：非 committed 的持久 / 在途结局按种类与码渲染，不落回成功、不静默消失。 */
+function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
+  const { table } = useChatEnv()
+  const code = outcomeDisplayCode(outcome)
+  const entry = lookupMessage(table, code)
+  const detail =
+    typeof outcome.attributableTo === 'string' && outcome.attributableTo.length > 0
+      ? ` ${formatText('chat_outcome_detail', { code, attribution: outcome.attributableTo })}`
+      : ''
+  return (
+    <div className="chat-outcome" data-kind={outcome.kind}>
+      <Icon name={outcome.kind === 'cancelled' ? 'x' : 'alert-circle'} size={16} />
+      <div>
+        <div className="chat-outcome-title">
+          {entry.title || lookupMessage(table, 'chat_error').body}
+        </div>
+        <div>
+          {entry.body}
+          {detail}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1302,6 +1463,17 @@ function isAssistantEntry(entry: any): boolean {
   return role !== 'user' && role !== 'system'
 }
 
+/**
+ * 该历史条目是否为「当前在途回合」的助手消息：是则不渲染。
+ * 在途块是该回合的实时权威呈现，历史里同回合的助手消息（承接帧先落盘所致）只是它的旧快照；
+ * 两者同屏会重复呈现工具卡（观感像同一批工具被再次调用），定稿收口后在途块消失、历史消息即唯一。
+ * 消息 id 形状 `msg-<conv>-<turnId>-assistant`（见 session store）。
+ */
+function isInFlightTurnEntry(entry: any, turnId: string | null): boolean {
+  if (turnId === null || !isAssistantEntry(entry)) return false
+  return messageId(entry).endsWith(`-${turnId}-assistant`)
+}
+
 function contentKey(view: any, hasPendingUser: boolean): string {
   const inFlight = view.inFlight
   const textLength = inFlight !== null ? inFlight.text.length : -1
@@ -1463,6 +1635,26 @@ function App({
     // 首屏 / 重拉后补渲染在途用户消息：run 暂停在审批 / 提问时槽仍留 `chat.message`、
     // 而权威历史尚未提交该消息，只在 run.started 拉会漏——重载后整条用户消息就「记录全没」。
     void loadPendingUser()
+    // question 卡以服务端队列为准对账：已答 / 过期 ⇒ 只读并回填用户回答（part 快照只代表入队那一刻）。
+    void reconcileQuestions(st.viewThread)
+  }
+
+  /** 重拉历史后按 `question.state` 对账 question 卡；失败（question 未就绪）静默回落快照，不阻断渲染。 */
+  async function reconcileQuestions(thread: any): Promise<void> {
+    if (collectQuestionItemIds(store.getSnapshot().messages).length === 0) return
+    const result = (await ctx.command('question.state', null, { thread })) as any
+    if (disposedRef.current || stateRef.current.viewThread !== thread) return
+    const items = result !== null && result.ok === true && Array.isArray(result.value?.items) ? result.value.items : null
+    if (items === null) return
+    const byId: any = {}
+    for (const item of items) {
+      if (item !== null && typeof item === 'object' && typeof item.id === 'string') byId[item.id] = item
+    }
+    const patched = applyQuestionStates(store.getSnapshot(), byId)
+    if (patched !== store.getSnapshot()) {
+      store.commit(patched, { type: 'lifecycle' })
+      rerender()
+    }
   }
 
   async function submitQuestion(vm: any, answers: any[]): Promise<{ ok: boolean; code?: string }> {
@@ -1658,17 +1850,39 @@ function App({
       }
       return
     }
+    if (record.topic === 'chat.turn.pending') {
+      // 回合挂起（等审批 / 等作答）：保留在途块并显示等待态，不当作定稿清空。
+      if (match(payload.thread)) {
+        store.commit(applyTurnPending(store.getSnapshot(), payload), { type: 'lifecycle' })
+      }
+      return
+    }
+    if (record.topic === 'chat.turn.settled') {
+      // 回合终态：挂起期间到达的终局（尤其取消）也在此收口，并重拉权威历史。
+      if (match(payload.thread)) {
+        store.commit(applyTurnSettled(store.getSnapshot(), payload), { type: 'lifecycle' })
+        void apiRef.current.loadHistory(st.viewThread, { resetView: false })
+      }
+      return
+    }
     if (record.topic === 'run.finished') {
       if (isPeriodicRun(payload.origin)) return
       if (!match(payload.thread)) return
       const folded = foldRunFinished(store.getSnapshot(), payload)
       if (folded.action === 'ignore') return
-      if (folded.action === 'cancel') {
-        store.commit(clearPendingUser(folded.view), { type: 'lifecycle' })
+      if (folded.action === 'suspend') {
+        // 挂起段的宿主 run 结束但回合未完：保留在途块，等续跑 / 终局事件。
+        store.commit(folded.view, { type: 'lifecycle' })
         return
       }
-      store.commit(folded.view, { type: 'lifecycle' })
-      void apiRef.current.loadHistory(st.viewThread, { resetView: false, announceFinal: true })
+      // cancel：显式清乐观用户气泡；refused / interrupt / violation 同样落账，
+      // 失败不得静默当成功——持久回合结局块在重拉后呈现。
+      const next = folded.action === 'cancel' ? clearPendingUser(folded.view) : folded.view
+      store.commit(next, { type: 'lifecycle' })
+      void apiRef.current.loadHistory(st.viewThread, {
+        resetView: false,
+        announceFinal: folded.action === 'finalize',
+      })
       return
     }
     if (record.topic === 'group.message') {
@@ -1882,6 +2096,8 @@ function App({
     }
     const slice = view.messages.slice(st.window.start, st.window.end)
     const lastEntry = view.messages.length > 0 ? view.messages[view.messages.length - 1] : null
+    const inFlightTurnId =
+      view.inFlight !== null && typeof view.inFlight.turnId === 'string' ? view.inFlight.turnId : null
     for (const item of buildDateSeparators(slice, new Date())) {
       if (item.type === 'date') {
         nodes.push(
@@ -1891,6 +2107,8 @@ function App({
         )
         continue
       }
+      // 在途回合的助手消息由 StreamTurn 呈现；历史里同回合的旧快照不重复渲染。
+      if (isInFlightTurnEntry(item.entry, inFlightTurnId)) continue
       const announce = st.finalizeAnnounce && item.entry === lastEntry && isAssistantEntry(item.entry)
       const entryId = messageId(item.entry)
       nodes.push(
@@ -1911,6 +2129,18 @@ function App({
       nodes.push(
         <MessageBoundary key="stream" resetKey={`stream:${view.revision}`} fallback={<RenderFallback />}>
           <StreamTurn view={view} />
+        </MessageBoundary>,
+      )
+    }
+    // 持久回合结局块：已收口且非 committed 的回合按结局渲染（失败 / 取消 / 中断不消失）。
+    for (const block of outcomeBlocks(view)) {
+      nodes.push(
+        <MessageBoundary
+          key={`outcome-${block.turnId ?? 'unknown'}`}
+          resetKey={`outcome:${view.revision}`}
+          fallback={<RenderFallback />}
+        >
+          <TurnOutcomeLine outcome={block.outcome} />
         </MessageBoundary>,
       )
     }

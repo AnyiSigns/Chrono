@@ -176,16 +176,32 @@ test('会话行为：open → navigate → click → extract → screenshot → 
     assert.equal(session, 'test-run~1')
 
     const navigated = await drv.call('invoke', bag({ action: 'navigate', session, url: 'https://example.com' }))
-    assert.deepEqual(navigated.value.result, { status: 200, url: 'https://example.com', title: 'title:https://example.com' })
-    assert.deepEqual((await drv.call('invoke', bag({ action: 'click', session, selector: '#a' }))).value.result, { ok: true })
-    assert.deepEqual((await drv.call('invoke', bag({ action: 'extract', session }))).value.result, { text: 'hello body' })
+    assert.deepEqual(navigated.value.result, {
+      status: 200,
+      url: 'https://example.com',
+      title: 'title:https://example.com',
+      digest: { action: 'navigate', url: 'https://example.com', status: 200 },
+    })
+    assert.deepEqual((await drv.call('invoke', bag({ action: 'click', session, selector: '#a' }))).value.result, {
+      ok: true,
+      digest: { action: 'click' },
+    })
+    assert.deepEqual((await drv.call('invoke', bag({ action: 'extract', session }))).value.result, {
+      text: 'hello body',
+      digest: { action: 'extract', bytes: Buffer.byteLength('hello body', 'utf8') },
+    })
 
     const shot = await drv.call('invoke', bag({ action: 'screenshot', session }))
     assert.equal(shot.value.result.asset.kind, 'asset')
     assert.match(shot.value.result.asset.sha256, /^[0-9a-f]{64}$/)
+    assert.equal(shot.value.result.digest.action, 'screenshot')
+    assert.equal(shot.value.result.digest.bytes, shot.value.result.asset.size)
     assert.ok(drv.portCalls.some((call) => call.port === 'host' && call.method === 'asset.put'))
 
-    assert.deepEqual((await drv.call('invoke', bag({ action: 'close', session }))).value.result, { closed: true })
+    assert.deepEqual((await drv.call('invoke', bag({ action: 'close', session }))).value.result, {
+      closed: true,
+      digest: { action: 'close', closed: true },
+    })
     const after = await drv.call('invoke', bag({ action: 'navigate', session, url: 'https://x.test' }))
     assert.equal(after.value.error.code, 'session_not_found')
   } finally {

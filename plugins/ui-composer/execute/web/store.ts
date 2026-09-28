@@ -44,6 +44,8 @@ import {
   threadKeyOf,
 } from './model.ts'
 import type { ConfigStatus } from './model.ts'
+import { receiptView } from './outcome.ts'
+import type { ReceiptView } from './outcome.ts'
 import {
   armWrite,
   beginWrite,
@@ -114,6 +116,8 @@ export interface ComposerSnapshot {
   permission: string
   sending: boolean
   error: string | null
+  /** 回合业务结局 / 回合前拒绝的渲染视图（失败不掩盖）；`null` = 无可呈现内容。 */
+  outcome: ReceiptView | null
   running: boolean
   busy: boolean
   canSend: boolean
@@ -165,9 +169,10 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     connected: ctx.events?.connected?.() === true,
     model: null as string | null,
     reasoning: hiddenReasoning(),
-    permission: 'review',
+    permission: 'severe',
     sending: false,
     error: null as string | null,
+    outcome: null as ReceiptView | null,
   }
 
   let tracking: RunState = createRunState()
@@ -180,6 +185,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   let reasoningSeq = 0
   const writeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const expectTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** 最近一次发送的原文 / 附件：回合前拒绝（槽仍保留）时原样放回输入卡供重试。 */
+  const sentStash = new Map<string, { text: string; chips: Chip[] }>()
   const listeners = new Set<(snapshot: ComposerSnapshot) => void>()
 
   function buildSnapshot(): ComposerSnapshot {
@@ -207,6 +214,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       permission: state.permission,
       sending: state.sending,
       error: state.error,
+      outcome: state.outcome,
       running: typeof tracking.runs[threadKey] === 'string',
       busy: isThreadBusy(tracking, threadKey),
       canSend:
@@ -479,7 +487,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     state.config = read.body
     state.model = read.body === null ? null : currentModelOf(read.body)
     state.permission =
-      read.body === null ? 'review' : normalizePermission(isRecord(read.body) ? read.body.permission : null)
+      read.body === null ? 'severe' : normalizePermission(isRecord(read.body) ? read.body.permission : null)
     publish()
     await ensureReasoning()
   }
@@ -570,6 +578,17 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     }
   }
 
+  /** 回合前拒绝：槽仍保留，把原文 / 附件放回输入卡（用户已输入新内容时不覆盖）。 */
+  function restoreSentInput(threadKey: string): void {
+    const stash = sentStash.get(threadKey)
+    sentStash.delete(threadKey)
+    if (stash === undefined) return
+    if (state.text.length === 0) state.text = stash.text
+    if (state.attachments.length === 0 && stash.chips.length > 0) {
+      state.attachments = [...stash.chips]
+    }
+  }
+
   /** 触发 `chat.send`：不等回合结束（进度由宿主事件驱动）；`transport_failed` 是长回合超时的正常现象。 */
   function dispatchSend(threadKey: string): void {
     tracking = expectTurn(tracking, threadKey)
@@ -589,6 +608,22 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       .triggerSend(threadKey)
       .then((result) => {
         if (disposed) return
+        // 壳对回帧恒包 `{ok:true}`：业务成败藏在 `value` 的结局里，必须读 value 才能不掩盖失败。
+        const view = receiptView(result)
+        if (view.kind === 'failure' || view.kind === 'guidance') {
+          clearExpectTimer(threadKey)
+          tracking = clearExpecting(tracking, threadKey)
+          state.error = null
+          state.outcome = view
+          if (view.kind === 'guidance') restoreSentInput(threadKey)
+          else sentStash.delete(threadKey)
+          publish()
+          return
+        }
+        if (view.kind === 'success') {
+          state.outcome = null
+          sentStash.delete(threadKey)
+        }
         // 成功、以及长回合超时（transport_failed，回合可能已在跑）都保留 expecting，
         // 交给 run.started 认领或超时兜底；只有确定的失败才立即收回并报错。
         if (result.ok || result.code === 'transport_failed') return
@@ -680,6 +715,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     }
     state.sending = true
     state.error = null
+    state.outcome = null
     tracking = beginWrite(tracking, threadKey)
     publish()
     let wrote: SubmitResult | null = null
@@ -701,6 +737,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       return
     }
     clearSentInput(ready, sentText)
+    sentStash.set(threadKey, { text: sentText, chips: ready })
     publish()
     armSend(threadKey, wrote.run)
   }
@@ -726,6 +763,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     publish()
     tracking = beginWrite(tracking, threadKey)
     const slot = queueEntry(result.message).slot
+    state.outcome = null
     let wrote: SubmitResult | null = null
     try {
       wrote = await client.writeSlot(threadKey, slot)
@@ -740,6 +778,10 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       publish()
       return
     }
+    sentStash.set(threadKey, {
+      text: isRecord(slot) && typeof slot.text === 'string' ? slot.text : '',
+      chips: [],
+    })
     armSend(threadKey, wrote.run)
   }
 

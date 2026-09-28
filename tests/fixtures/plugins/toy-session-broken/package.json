@@ -1,0 +1,8 @@
+{
+  "name": "toy-session-broken",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：同身份 session，commit 恒失败（制造收口失败）",
+  "engines": { "node": ">=24" }
+}

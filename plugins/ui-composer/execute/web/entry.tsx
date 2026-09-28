@@ -324,7 +324,7 @@ function ChipView({ chip }: { chip: Chip }): ReactNode {
 // ---- 输入卡 ----
 
 function Composer(): ReactNode {
-  const { store, snapshot: s, t } = useEnv()
+  const { ctx, store, snapshot: s, t } = useEnv()
   const [openDd, setOpenDd] = useState<'model' | 'reasoning' | 'permission' | null>(null)
   const [ddActive, setDdActive] = useState(-1)
   const [pendingOpen, setPendingOpen] = useState(false)
@@ -821,6 +821,31 @@ function Composer(): ReactNode {
 
             {s.error !== null ? (
               <span className="composer-inline-error">{t(s.error)}</span>
+            ) : null}
+
+            {s.outcome !== null && s.outcome.kind !== 'none' && s.outcome.kind !== 'success' ? (
+              <span className="composer-inline-error" data-role="outcome" data-kind={s.outcome.kind}>
+                <span>
+                  {t(s.outcome.displayCode ?? 'unknown')}
+                  {s.outcome.kind === 'failure' && s.outcome.attributableTo !== null
+                    ? ` ${t('composer_outcome_detail', {
+                        code: s.outcome.displayCode ?? '',
+                        attribution: s.outcome.attributableTo,
+                      })}`
+                    : ''}
+                </span>
+                {s.outcome.action === 'settings' ? (
+                  <button
+                    type="button"
+                    className="composer-inline-retry"
+                    onClick={() => {
+                      if (typeof ctx.uiState?.set === 'function') ctx.uiState.set('settings_open', true)
+                    }}
+                  >
+                    {t('composer_open_settings')}
+                  </button>
+                ) : null}
+              </span>
             ) : null}
           </div>
 

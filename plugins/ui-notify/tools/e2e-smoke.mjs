@@ -180,7 +180,7 @@ async function main() {
     const state = boot(root, ['notify.state'])
     const value = state.observations[0].value
     assert.equal(value.version, 1)
-    assert.equal(value.permission, 'review')
+    assert.equal(value.permission, 'severe')
     assert.equal(value.ui.notify.approval_pending, false)
     assert.equal(value.ui.notify.run_finished, true)
     assert.equal(value.ui.notify.orchestration_unhealthy, false)

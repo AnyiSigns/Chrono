@@ -129,14 +129,16 @@ export function pendingOf(conversation: unknown): { approval: number; question: 
 }
 
 /**
- * 状态角标（同源 `thread.updated` 的 `status` / `pending`）：
- * 待审批 / 待作答 > 运行中 > 完成 > 失败；`waiting` / `blocked` 无角标。
+ * 状态角标：待审批 / 待作答 > 运行中 > 完成 > 失败。
+ * 「运行中」来自 session 的回合状态（该会话有仍开着的回合，见 `session.read.open_turns`），
+ * 不读 `conversation.status`：生产从不写 `status:"running"`，那是死分支。
+ * 终态 `done` / `failed` / `terminated` 仍读会话 `status`；`waiting` / `blocked` 无角标。
  */
-export function badgeOf(conversation: unknown): string | null {
+export function badgeOf(conversation: unknown, openTurn = false): string | null {
   const pending = pendingOf(conversation)
   if (pending.approval > 0 || pending.question > 0) return 'pending'
+  if (openTurn === true) return 'running'
   const status = statusOf(conversation)
-  if (status === 'running') return 'running'
   if (status === 'done') return 'done'
   if (status === 'failed' || status === 'terminated') return 'failed'
   return null

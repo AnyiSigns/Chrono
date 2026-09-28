@@ -20,8 +20,9 @@ export function register(ctx: SlotContext): void {
 
 - `ctx` = 壳 api + `pluginId` + `useStore` + `slots`（完整形状见 `types/ui-contract.d.ts`）。
 - `ctx.slots.register(target, Component)`：`target` 为 slot 名或 `{ name, children }`。
-  顶层 slot 为 `sidebar` / `main` / `dock` / `composer` / `topbar` / `overlay`；
+  顶层 slot 为 `sidebar` / `main` / `dock` / `composer` / `topbar` / `underbar` / `overlay`；
   `children` 声明本组件提供的子 slot，组件内用 `ctx.slots.Outlet` 落位。
+  （`underbar` 紧贴 `topbar` 之下、`main` 之上，供顶栏插件挂次级条带；挂载表里的 slot 只决定子应用加载位，注册目标可任选顶层 slot。）
 - 壳对每个注册组件包一层错误边界：组件抛错只坏本 slot，渲染占位卡 + 重试。
 - 壳侧唯一状态集成点是 `ctx.useStore`（`useSyncExternalStore` 绑定）。
   `useStore(store)` 返回快照；`useStore(store, selector)` 返回投影，selector 必须返回稳定引用或原始值。

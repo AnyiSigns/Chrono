@@ -3,6 +3,7 @@
 
 import { NET_WEBSEARCH } from './caps.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
+import { searchDigest } from './digest.ts'
 import { parseSource, parseSearxng } from './sources.ts'
 import { canonicalizeUrl, withQuery } from './url.ts'
 import { fail, isRec, ok } from './types.ts'
@@ -23,10 +24,11 @@ type SourceOutcome =
 
 type TextOutcome = { ok: true; text: string } | { ok: false; code: string; message: string }
 
-function sourceHeaders(config: Config): Record<string, string> {
+function sourceHeaders(config: Config, source: SourceConfig): Record<string, string> {
   return {
     'User-Agent': config.user_agent,
     Accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
+    ...source.headers,
   }
 }
 
@@ -62,7 +64,7 @@ async function fetchSourceText(
   const spec: FetchSpec = {
     url,
     method: 'GET',
-    headers: sourceHeaders(ctx.config),
+    headers: sourceHeaders(ctx.config, source),
     timeoutMs: source.timeout_ms,
     maxSize: ctx.config.output_max,
     maxRedirs: ctx.config.redirect_max,
@@ -86,7 +88,7 @@ async function queryHtml(
   if (source.endpoint === null) {
     return { ok: false, source: source.name, code: 'fetch_failed', message: 'source has no endpoint' }
   }
-  const url = withQuery(source.endpoint, { [source.query_param]: query })
+  const url = withQuery(source.endpoint, { ...source.extra_query, [source.query_param]: query })
   const fetched = await fetchSourceText(url, source, ctx, robotsCache)
   if (!fetched.ok) return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
   return { ok: true, source: source.name, results: parseSource(source, fetched.text).slice(0, limit) }
@@ -101,21 +103,25 @@ async function querySearxng(
 ): Promise<SourceOutcome> {
   let code = 'fetch_failed'
   let message = 'no searxng instance configured'
+  const attempts: string[] = []
   for (const instance of source.instances) {
-    const attempts = [
-      withQuery(instance, { [source.query_param]: query, format: 'json' }),
-      withQuery(instance, { [source.query_param]: query }),
-    ]
-    for (const url of attempts) {
-      const fetched = await fetchSourceText(url, source, ctx, robotsCache)
-      if (!fetched.ok) {
-        code = fetched.code
-        message = fetched.message
-        continue
-      }
-      const results = parseSearxng(fetched.text).slice(0, limit)
-      if (results.length > 0) return { ok: true, source: source.name, results }
+    attempts.push(withQuery(instance, { [source.query_param]: query, format: 'json' }))
+    attempts.push(withQuery(instance, { [source.query_param]: query }))
+  }
+  if (attempts.length === 0) return { ok: false, source: source.name, code, message }
+  // 全部实例 / 格式并发尝试：单实例不可达不再串行叠加（N 实例 × 单源超时会拖垮整次检索）。
+  // 结果按声明顺序取首个非空，保持确定可回放。
+  const fetched = await Promise.all(
+    attempts.map((url) => fetchSourceText(url, source, ctx, robotsCache)),
+  )
+  for (const outcome of fetched) {
+    if (!outcome.ok) {
+      code = outcome.code
+      message = outcome.message
+      continue
     }
+    const results = parseSearxng(outcome.text).slice(0, limit)
+    if (results.length > 0) return { ok: true, source: source.name, results }
   }
   return { ok: false, source: source.name, code, message }
 }
@@ -270,5 +276,6 @@ export async function websearch(args: Json, ctx: ToolContext): Promise<ToolResul
     results: results as unknown as Json,
     sources_used: used as unknown as Json,
     sources_failed: failures as unknown as Json,
+    digest: searchDigest(query, results.length, used),
   })
 }

@@ -14,11 +14,8 @@ const READONLY_CAPS: Rec = {
   procs_max: 1,
 }
 
-const IDENTITY_ARG: Rec = { type: 'string', description: '目标插件名。' }
-const FILES_ARG: Rec = {
-  type: 'object',
-  description: '候选源码树：包内相对路径 → 文本内容。',
-}
+const IDENTITY_ARG: Rec = { type: 'string' }
+const FILES_ARG: Rec = { type: 'object' }
 
 /** 四个工具的自述（name / 四要素 / argsSchema / caps / idempotent / render）。 */
 export const TOOLS: Json[] = [
@@ -46,7 +43,7 @@ export const TOOLS: Json[] = [
     description: '按路径读取某插件的一个源码文件，返回内容与字节数。',
     argsSchema: {
       type: 'object',
-      properties: { identity: IDENTITY_ARG, path: { type: 'string', description: '包内相对路径。' } },
+      properties: { identity: IDENTITY_ARG, path: { type: 'string' } },
       required: ['identity', 'path'],
       additionalProperties: true,
     },

@@ -1,0 +1,8 @@
+{
+  "name": "toy-approval-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：声明 e2e.approve / e2e.pending 命令，转发到 approval 能力",
+  "engines": { "node": ">=24" }
+}

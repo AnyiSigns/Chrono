@@ -2,8 +2,8 @@
 // 临时 root → state/plugins.json 列 question → seed → start → 轮询 loaded → 经宿主跑一次命令 question.answer
 // （无槽，预期结构化 no_slot、不写世界、run 正常 done）→ stop → verify + replay → 离线读投影核对身份与世代。
 //
-// 说明：作答续跑的另一半（eval chat.resume + 记答案 + 清槽）需要 #14 chat / #33 loop-policy 与 #1 input 就位，
-// 不在 W3 装配内；该路径由协议级测试以真实服务调用 + kernel `eval` 求值入口 term 覆盖。
+// 说明：作答续跑的另一半（eval chat.resume + 记答案 + 清槽）需要 chat / loop-policy 与 input 就位，
+// 不在本装配内；该路径由协议级测试以真实服务调用 + kernel `eval` 求值入口 term 覆盖。
 // 用法：node plugins/question/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -84,7 +84,13 @@ async function main() {
     const list = Array.isArray(commands) ? commands : (commands?.commands ?? [])
     const names = list.map((item) => item.name)
     assert.ok(names.includes('question.answer'), `命令清单缺 question.answer：${JSON.stringify(commands)}`)
-    console.log('命令声明：question.answer 在册')
+    assert.ok(names.includes('question.state'), `命令清单缺 question.state：${JSON.stringify(commands)}`)
+    console.log('命令声明：question.answer / question.state 在册')
+
+    // 只读对账命令：空队列也应正常 done（入口 term 解析通过、不写世界、不发 run 生命周期）。
+    const stateRun = boot(root, ['question.state'])
+    assert.equal(stateRun.status, 'done', `question.state 应以 done 收口：${JSON.stringify(stateRun)}`)
+    console.log('命令 run：question.state（只读）→ done')
 
     // 经宿主跑一次命令：无槽 → 结构化 no_slot，不写世界，run 正常 done
     const answered = boot(root, ['question.answer'])
@@ -113,7 +119,7 @@ async function main() {
     console.log('离线投影：身份与世代正确、pins 指向 input')
 
     console.log(`E2E ok（root=${root}）`)
-    console.log('注：作答续跑（chat.resume / 记答案 / 清槽）依赖 #14/#33/#1，见文件头说明。')
+    console.log('注：作答续跑（chat.resume / 记答案 / 清槽）依赖 chat / loop-policy / input，见文件头说明。')
   } finally {
     if (started) {
       try {

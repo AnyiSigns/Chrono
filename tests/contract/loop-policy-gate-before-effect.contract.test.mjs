@@ -1,10 +1,10 @@
-// 门禁前置于效果（写死条）：gate 判 escalate 时，工具的实际效果必须尚未发出——
+// 接缝契约：门禁前置于效果（写死条）——gate 判 escalate 时工具的实际效果必须尚未发出。
 // 同 run 内不得出现 `tools.dispatch` 派发（也就不会产生该调用的 EffectAudit）。
-// 真 guard 判定接入，覆盖「工具声明 net 越当前档 → gate 应 escalate」的端到端链路。
+// 接入 loop-policy 的真实解释器与 guard 的真实判定，属跨插件链路，故住根 tests/contract/。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startService, directivesOf } from './driver.mjs'
-import { judge } from '../../guard/execute/judge.ts'
+import { startService, directivesOf } from '../../plugins/loop-policy/test/driver.mjs'
+import { judge } from '../../plugins/guard/execute/judge.ts'
 
 const TOOLS = [
   {

@@ -24,7 +24,11 @@
 
 两类一视同仁：都进目录、都可派发（绑定项在派发时映射为对目标能力类的反向 `port.call`）。
 
-**已就位的绑定**：`evolve-metrics` → evolve-metrics `record`（`{class:"evolve-metrics", method:"record", caps:{fs:{read:"none",write:"none"},net:"none"}, idempotent:false}`），
+**已就位的绑定**：默认绑定表住 `tools/default-body.json`，提供 `memory.compress` / `memory.put` /
+`memory.read` / `memory.candidates`（分别绑定 `compress` / `memory` / `memory-maintenance` 能力类）
+与 `retrieval.search`（绑定 `retrieval` 能力类，其 pin 指向 `memory-retrieval`）。检索因此成为模型可调
+工具（需要时自行调用），不再作每回合预加载的召回块。
+另有 `evolve-metrics` → evolve-metrics `record`（`{class:"evolve-metrics", method:"record", caps:{fs:{read:"none",write:"none"},net:"none"}, idempotent:false}`），
 `pins` 含 `evolve-metrics`；工具名 `record` 直绑 evolve-metrics 能力类方法，落 `class:'user_request'` 证据、返回 `evidence_id`（orchestration-admin `propose` 引用它）。
 
 ## `list(bag) -> 目录`
@@ -36,7 +40,18 @@
   `caps` 形状非法 → **`bad_tool_decl`**（该项不进目录、不派发），并在 `rejected` 里留诊断。
 - **外部 MCP 工具例外**：四要素由 MCP description 兜底、缺项不拒；`argsSchema` 净化到白名单子集。
 - **工具名全局唯一**：重名后者被拒。
-- 返回 `{tools:[声明], rejected:[{name,code,message}]}`；`description` 缺省由四要素机械拼装。
+- 返回 `{tools:[声明], rejected:[{name,code,message}]}`；`description` 由四要素机械拼装：
+  `description`（提供者直给的短摘要）作首行，其后拼 `使用时机：` / `边界：`；`param_semantics` 是参数文案的
+  **唯一来源**，逐项并入 `argsSchema` 对应属性的 `description`（「怎么用」就地挂参数上，**不在 description 重复**）；
+  提供者的 `argsSchema` 属性不应再自带 `description`——会被覆盖丢弃，属死数据。仅当某键在
+  `argsSchema` 无对应属性时（如纯 `additionalProperties` 的外部工具）才回落到 description 的 `参数：` 行——
+  四要素是模型判断「何时用、怎么用、边界在哪」的关键，不能只留一行简介（否则工具间割裂、模型倾向单用万能工具）。
+  模型可见文案须为任务级自然语言，**不得含插件名 / 能力类名 / 函数名等内部标识符**。
+- **注入参数（`hidden_params`）**：声明里列出的参数（如 `retrieval.search` 的 `workspace` / `recall_budget`、
+  `orchestration.*` 的图与台账 bag）由调用方在派发前填好、模型不该也不能填。list 时把这些属性从**模型可见**
+  `argsSchema` 摘掉（`required` 同摘），并保留完整 schema 到 `validateSchema` 供 `dispatch` 校验，
+  使调用方随 args 注入的值仍被接受。hidden 且非 `required` 的注入参数**不在 `param_semantics` 留词条**
+  （模型不可见、也非契约必需）；若该 hidden 参数在 `required` 中，则**必须保留词条**以通过覆盖校验。
 - 目录由调用方（如 `loop-policy` 的 `context.assemble`）eff 后写进 bag / 上下文，模型才看得到。
 
 ## `dispatch(bag) -> 管道（整批 + 并发）`

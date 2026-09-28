@@ -3,7 +3,7 @@
   "schema": "schema/sandbox.json",
   "implements": ["sandbox"],
   "methods": {
-    "sandbox": ["exec", "fsop", "capabilities"]
+    "sandbox": ["exec", "exec_start", "exec_poll", "exec_kill", "session_close", "fsop", "capabilities"]
   },
   "pins": {},
   "start": "node execute/launch.mjs",

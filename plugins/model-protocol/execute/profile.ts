@@ -6,6 +6,8 @@
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest } from './http.ts'
 import { canonicalEqual, deepClone, externOnly, isRecord } from './plan.ts'
+import { capabilityToJson, resolveReasoningCapability } from './reasoning.ts'
+import type { ReasoningCapability } from './reasoning.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
 import { BadArgsError } from 'plugin-sdk'
@@ -17,7 +19,7 @@ export interface ProfileDeps {
   config: PortCaller
 }
 
-const MANAGED_KEYS = ['context_window', 'max_output', 'reasoning', 'modalities'] as const
+const MANAGED_KEYS = ['context_window', 'max_output', 'reasoning', 'reasoning_capability', 'modalities'] as const
 
 const PROVIDER_ALIASES: Record<string, string> = {
   'google-genai': 'google',
@@ -116,8 +118,19 @@ function effortValues(entry: Rec): string[] | null {
   return null
 }
 
+/** 厂商级推理能力：按厂商模板声明的 impl / protocol / sdk 解析；无法核实即保守默认。 */
+function vendorCapability(vendorBody: Rec | null, vendor: string): ReasoningCapability {
+  const quirks = vendorBody !== null && isRecord(vendorBody['quirks']) ? (vendorBody['quirks'] as Rec) : {}
+  const sdk = vendorBody !== null && typeof vendorBody['sdk'] === 'string' ? (vendorBody['sdk'] as string) : null
+  return resolveReasoningCapability({
+    provider: sdk ?? vendor,
+    impl: typeof quirks['impl'] === 'string' ? (quirks['impl'] as string) : null,
+    protocol: typeof quirks['protocol'] === 'string' ? (quirks['protocol'] as string) : null,
+  })
+}
+
 /** 从 models.dev 模型条目计算 config 身份的元数据字段。 */
-function computeMetadata(entry: Rec, vendorBody: Rec | null): Rec {
+function computeMetadata(entry: Rec, vendorBody: Rec | null, capability: ReasoningCapability): Rec {
   const metadata: Rec = {}
   const limit = isRecord(entry['limit']) ? (entry['limit'] as Rec) : {}
   const contextWindow = typeof limit['context'] === 'number' ? (limit['context'] as number) : null
@@ -143,15 +156,19 @@ function computeMetadata(entry: Rec, vendorBody: Rec | null): Rec {
     if (Array.isArray(modalities['output'])) normalized['output'] = modalities['output']
     if (Object.keys(normalized).length > 0) metadata['modalities'] = normalized
   }
+  // 无推理档位的模型一律按「不回传、不发思考参数」写能力表，避免对不支持推理的模型误发参数。
+  metadata['reasoning_capability'] = capabilityToJson(
+    Array.isArray(metadata['reasoning']) ? capability : resolveReasoningCapability({}),
+  )
   return metadata
 }
 
 /** 按所选 id 计算元数据（只取 source 里存在的模型）。 */
-function computeAll(sourceModels: Rec, ids: string[], vendorBody: Rec | null): Rec {
+function computeAll(sourceModels: Rec, ids: string[], vendorBody: Rec | null, capability: ReasoningCapability): Rec {
   const metadata: Rec = {}
   for (const id of ids) {
     const entry = sourceModels[id]
-    if (isRecord(entry)) metadata[id] = computeMetadata(entry, vendorBody)
+    if (isRecord(entry)) metadata[id] = computeMetadata(entry, vendorBody, capability)
   }
   return metadata
 }
@@ -286,11 +303,12 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
     const source = await fetchSource(sourceUrl(args, policy), policy, deps, env.now)
     const providers = sourceProviders(source)
     if (providers === null) throw new ModelError('profile_bad_source', 'models.dev response has no providers')
-    const providerKey = resolveProviderKey(providers, vendor, findVendorBody(vendorBodies, vendor), providerHints(config, vendor))
+    const vendorBody = findVendorBody(vendorBodies, vendor)
+    const providerKey = resolveProviderKey(providers, vendor, vendorBody, providerHints(config, vendor))
     if (providerKey === null) return errorValue('profile_vendor_unknown', `no models.dev provider for ${vendor}`)
     const provider = providers[providerKey]
     const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}
-    const metadata = computeAll(sourceModels, ids, findVendorBody(vendorBodies, vendor))
+    const metadata = computeAll(sourceModels, ids, vendorBody, vendorCapability(vendorBody, vendor))
     if (config === null) return { ok: true, changed: false, models: metadata, write: false }
     const updated = applyMetadata(config, { vendor, ids }, metadata)
     const changed = !canonicalEqual(updated, config)
@@ -323,7 +341,7 @@ export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<
       if (providerKey === null) continue
       const provider = providers[providerKey]
       const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}
-      const metadata = computeAll(sourceModels, target.ids, body)
+      const metadata = computeAll(sourceModels, target.ids, body, vendorCapability(body, target.vendor))
       summary[target.vendor] = metadata
       updated = applyMetadata(updated, target, metadata)
     }

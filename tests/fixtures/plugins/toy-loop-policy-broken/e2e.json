@@ -1,0 +1,6 @@
+{
+  "errors": {
+    "interpret": { "code": "e2e_loop_down", "message": "e2e: loop-policy interpret unreachable" }
+  },
+  "values": {}
+}

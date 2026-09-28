@@ -25,10 +25,10 @@ export const STYLE_TEXT = `
 .threads-unread { min-width: 16px; height: 16px; padding: 0 var(--space-4); border-radius: var(--radius-sm);
   background: var(--c-selection); color: var(--c-text-2); font-size: var(--font-size-xs);
   line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
-.threads-todo { margin-top: var(--space-8); border: 1px solid var(--c-border);
-  border-radius: var(--radius-md); background: var(--c-bg); }
+.threads-todo { display: block; }
+.threads-under { background: var(--c-bg); border-bottom: 1px solid var(--c-border); }
 .threads-todo-head { display: flex; align-items: center; gap: var(--space-8); width: 100%;
-  min-height: 32px; padding: var(--space-4) var(--space-12); background: none; border: none;
+  min-height: 32px; padding: var(--space-4) var(--space-16); background: none; border: none;
   color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); text-align: left;
   cursor: pointer; border-radius: inherit; }
 .threads-todo-head:hover { background: color-mix(in srgb, var(--c-text) 4%, transparent); }
@@ -42,7 +42,7 @@ export const STYLE_TEXT = `
 .threads-todo[data-open="true"] .threads-todo-body { grid-template-rows: 1fr; }
 .threads-todo-clip { overflow: hidden; min-height: 0; }
 .threads-todo-list { display: flex; flex-direction: column; gap: var(--space-4);
-  padding: 0 var(--space-12) var(--space-8); opacity: 0; transition: opacity var(--motion-slow); }
+  padding: 0 var(--space-16) var(--space-8); opacity: 0; transition: opacity var(--motion-slow); }
 .threads-todo[data-open="true"] .threads-todo-list { opacity: 1; }
 .threads-todo-item { display: flex; align-items: center; gap: var(--space-8); min-height: 28px;
   font-size: var(--font-size-sm); color: var(--c-text); }
@@ -54,6 +54,9 @@ export const STYLE_TEXT = `
 .threads-todo-check[data-status="in_progress"]::after { content: ''; width: 6px; height: 6px;
   border-radius: var(--radius-sm); background: var(--c-accent); }
 .threads-todo-item[data-status="completed"] .threads-todo-text { color: var(--c-text-3);
+  text-decoration: line-through; }
+.threads-todo-check[data-status="cancelled"] { opacity: 0.4; }
+.threads-todo-item[data-status="cancelled"] .threads-todo-text { color: var(--c-text-3);
   text-decoration: line-through; }
 .threads-todo-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .threads-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

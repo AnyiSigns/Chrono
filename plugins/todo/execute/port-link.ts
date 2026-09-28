@@ -9,10 +9,7 @@ import type { Json, PortCaller, Rec } from 'plugin-sdk'
 /** 委托存储的键值后端抽象：生产环境是反向调用 `storage-kv.*`，单测注入假后端。 */
 export interface StorageBackend {
   get(key: string): Promise<Json | null>
-  put(key: string, value: Json): Promise<void>
   batch(ops: Array<{ op: 'put' | 'del'; key: string; value?: Json }>): Promise<void>
-  list(prefix: string): Promise<Array<{ key: string; value: Json }>>
-  dropNamespace(): Promise<void>
 }
 
 /** `storage-kv` 的反向调用后端：按发出者命名空间读写本 owner 数据。 */
@@ -35,27 +32,7 @@ export class RemoteStorage implements StorageBackend {
     return value['value'] ?? null
   }
 
-  async put(key: string, value: Json): Promise<void> {
-    await this.invoke('put', { key, value })
-  }
-
   async batch(ops: Array<{ op: 'put' | 'del'; key: string; value?: Json }>): Promise<void> {
     await this.invoke('batch', { ops })
-  }
-
-  async list(prefix: string): Promise<Array<{ key: string; value: Json }>> {
-    const value = await this.invoke('list', { prefix })
-    if (!isRecord(value) || !Array.isArray(value['entries'])) return []
-    const out: Array<{ key: string; value: Json }> = []
-    for (const item of value['entries'] as Json[]) {
-      if (isRecord(item) && typeof item['key'] === 'string') {
-        out.push({ key: item['key'] as string, value: (item['value'] ?? null) as Json })
-      }
-    }
-    return out
-  }
-
-  async dropNamespace(): Promise<void> {
-    await this.invoke('dropNamespace', {})
   }
 }

@@ -3,7 +3,7 @@
 唯一的模型 IO 服务：多 SDK / 三协议 HTTP + SSE（混合实现）+ 调用韧性（重试 / 退避 / 限流 / 流断重连）
 + 模型发现（discover）+ 档案同步（profile / sync）+ 厂商模板枚举（vendors）。
 
-- 能力类：`model`；方法：`chat` / `complete` / `vendors` / `discover` / `profile` / `sync`。
+- 能力类：`model`；方法：`chat` / `complete` / `abort` / `vendors` / `discover` / `profile` / `sync`。
 - `pins`：`{"secrets":"secrets"}`（唯一依赖；经反向帧 `port.call` 调 `secrets.resolve` 取密钥）。
 - 命令面：无（`commands: []`）；宿主按 `schema` 顶层 `periodic` 直调方法 `sync`。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
@@ -44,6 +44,14 @@
 同 `chat` 的连接 / 密钥 / 韧性路径，但**非流式**、**不发 `model.delta`**，返回 `{ok, text, usage}`。
 供旁路小补全（如会话标题生成）使用。
 
+### `abort(args)`
+
+`{turn_id}` → 销毁该回合在途 HTTP 请求，返回 `{ok, aborted, turn_id}`。这是取消链路里唯一能真正中止
+长推理调用的一层：`chat` / `complete` 收到 `bag.turn_id` 时把请求登记进在途表，`abort` 按 `turn_id`
+精确销毁本次请求（不触碰共享适配器或进程级资源），失败归 `model_aborted`（不可重试）。
+缺 `turn_id` 或该回合无在途请求 = 幂等 no-op（`aborted:false`），不是错误。请求在成功 / 失败 / 超时 /
+中止四条完成路径上都会摘除登记，映射不泄漏。
+
 ### `discover(args)`
 
 `{url, auth_ref?}` → `GET {base_url}{models_path}`（缺省 `/models`）+ 鉴权 → 规范化模型 id 列表
@@ -78,7 +86,7 @@
 | 限流 | 429 尊重 `Retry-After` + 每 provider 令牌桶；状态落插件 ③ 目录，目录缺失时安全降级为进程内存 |
 | 流断重连 | SSE 断开或未收到终止事件 → 整请求重试；重试前先上行 `{reset:true}`，消费方据此丢弃已累积分片 |
 | 超时 | 单次请求超时归 `model_timeout`；方法级等待上限由宿主按 `schema.method_timeouts` 覆盖 |
-| 取消 | 协议无 cancel 帧——宿主摘除等待、不杀服务（**无显式取消通道**，见「已知限制」） |
+| 取消 | `abort(turn_id)` 销毁该回合在途请求（`model_aborted`，不可重试）；`impl=sdk` 路径由 SDK 内部持有连接，暂不支持（见「已知限制」） |
 
 调用方可在 `bag.resilience` 覆盖本次调用的韧性参数（`max_retries` / `backoff_ms` / `backoff_max_ms` /
 `jitter` / `request_timeout_ms` / `token_bucket`）。
@@ -87,7 +95,7 @@
 
 `model_auth_failed`(401/403) / `model_rate_limited`(429) / `model_bad_request`(400) /
 `model_server_error`(5xx) / `model_timeout` / `model_stream_broken` / `model_network_error` /
-`model_unsupported`（如 `impl=sdk` 包缺失）。失败值形状 `{ok:false, error:{code, message}}`。
+`model_unsupported`（如 `impl=sdk` 包缺失）/ `model_aborted`（本回合被 `abort` 中止）。失败值形状 `{ok:false, error:{code, message}}`。
 
 ## SDK 依赖
 
@@ -103,13 +111,14 @@
 
 - `periodic`：`[{method:"sync", every_ms, reads:{config:["ids","config","body"], "vendor-*":["ids","vendor-*","body"]}}]`
   ——宿主机械取投影片段放进 bag，服务不读投影。
-- `method_timeouts`：`{"model.chat": <大上限>, "model.complete": <大上限>}`（流式调用避免被缺省超时截断）。
+- `method_timeouts`：`{"model.chat": <大上限>, "model.complete": <大上限>, "model.abort": 30000}`（流式调用避免被缺省超时截断）。
 
 其余键（`resilience` / 各方法 request·result 形状 / `delta_event`）归本插件自用，宿主不解释。
 
 ## 已知限制
 
-- **无显式取消通道**：服务协议没有 cancel 帧；宿主取消时只摘除等待、不杀服务，故在途模型调用不会被服务侧中止。
+- **`abort` 只覆盖三协议 HTTP 路径**：`impl=sdk`（`@google/genai`）的连接由 SDK 内部持有，`abort` 无法销毁，
+  该路径的取消退化为不中止请求（回合仍会以 `cancelled` 收口，只是长推理不会被提前掐断）。
 - **流断重试是整请求重试**（v1）：不按 index resume；重试前上行 `{reset:true}`，消费方需据此丢弃已累积文本。
 - **`impl=sdk` 仅 `@google/genai`**：新增 SDK 厂商 = 本插件换代。
 - **`profile` / `sync` 共享 body 并发为 last-write-wins**（写罕见、单写者，属已知接受口径）。

@@ -2,7 +2,7 @@
 // 隔离执行按 caps.net 四档钳制，越档回 net_denied——本层原样透传，不改写。
 
 import { execBudgetMs, execCaps } from './caps.ts'
-import { buildFetcherCommand, parseFetcherStdout } from './fetcher.ts'
+import { buildFetcherCommand, parseFetcherStdout, resolveFetcherCommand } from './fetcher.ts'
 import { REVERSE_TIMEOUT_MARGIN_MS } from './reverse.ts'
 import { robotsAllows } from './robots.ts'
 import { isRec } from './types.ts'
@@ -38,8 +38,11 @@ function stringOf(value: Json | undefined): string {
  * `budgetMs` 由调用方按 `execBudgetMs` 算出并同时用于反向等待，保证二者同源。
  */
 export function makeExecBag(ctx: ToolContext, spec: FetchSpec, net: string, budgetMs: number): Rec {
-  const { cmd, args } = buildFetcherCommand(ctx.config.fetcher_cmd, spec)
+  const resolved = resolveFetcherCommand(ctx.config.fetcher_cmd)
+  const { cmd, args } = buildFetcherCommand(resolved.cmd, spec, resolved.prefix)
   const bag: Rec = { cmd, args, caps: execCaps(ctx.caps, net, ctx.config.output_max, budgetMs) }
+  const env = ctx.config.fetcher_env ?? {}
+  if (Object.keys(env).length > 0) bag['env'] = env
   if (ctx.tier !== undefined) bag['tier'] = ctx.tier
   if (ctx.workspaceRoot !== undefined) bag['workspace_root'] = ctx.workspaceRoot
   if (ctx.sandboxTiers !== undefined) bag['sandbox_tiers'] = ctx.sandboxTiers

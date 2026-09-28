@@ -1,6 +1,9 @@
-// 会话项状态角标状态机（纯函数，可单测）：把宿主 / 会话事件归约成每线程角标态。
+// 会话项状态角标状态机（纯函数，可单测）：把会话回合 / 裁决事件归约成每线程角标态。
 // 角标优先级：待审批（闸门）> 运行中 > 失败 > 未读（计数）；不常驻红点——
-// 失败 / 待审批随状态变化消失，运行中随 `run.finished` 消失，未读随选中该会话清空。
+// 失败 / 待审批随状态变化消失，运行中随 `chat.turn.settled` 消失，未读随选中该会话清空。
+// 「运行中」以会话回合状态为准：实时由 `chat.turn.started` / `chat.turn.settled` 归约，
+// 首屏由会话持久回合状态（`session.read.open_turns`）补种；不读宿主
+// `run.started` / `run.finished`（机械信号），也不读生产从不写的 `status:"running"`。
 
 export interface BadgeState {
   running: Record<string, string | null>
@@ -48,6 +51,24 @@ export function threadOf(payload: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/** 回合事件的会话键：优先 `conversation`（续跑时 `thread` 可能是 `_main`），回落 `thread`。 */
+export function turnConversationOf(payload: unknown): string | null {
+  if (payload === null || typeof payload !== 'object') return null
+  const record = payload as { conversation?: unknown; thread?: unknown }
+  const value = record.conversation ?? record.thread
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function isRecord(value: unknown): value is { [key: string]: any } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 结局是否失败（`committed` / `cancelled` 之外都算失败，用于失败角标）。 */
+function isFailureOutcome(outcome: unknown): boolean {
+  if (!isRecord(outcome) || typeof outcome.kind !== 'string') return false
+  return outcome.kind !== 'committed' && outcome.kind !== 'cancelled'
+}
+
 function copy(state: BadgeState): BadgeState {
   return {
     running: { ...state.running },
@@ -74,26 +95,31 @@ export function applyEvent(state: BadgeState, impl: unknown, topic: unknown, pay
   const next = copy(state)
   const record: { [key: string]: any } = payload !== null && typeof payload === 'object' ? (payload as { [key: string]: any }) : {}
   switch (topic) {
-    case 'run.started': {
+    // 回合开始 / 收口是业务回合状态（chat 广播），据此驱动运行中与失败角标；
+    // 宿主 `run.started` / `run.finished` 只作机械信号，不再参与归约。
+    case 'chat.turn.started': {
+      const conversation = turnConversationOf(record) ?? thread
       const run = typeof record.run === 'string' && record.run.length > 0 ? record.run : null
-      next.running[thread] = run
-      if (run !== null) next.runs[run] = thread
-      delete next.failed[thread]
+      next.running[conversation] = run
+      if (run !== null) next.runs[run] = conversation
+      delete next.failed[conversation]
       return next
     }
-    case 'run.finished': {
-      const run = typeof record.run === 'string' && record.run.length > 0 ? record.run : null
+    case 'chat.turn.settled': {
+      const conversation = turnConversationOf(record) ?? thread
       let changed = false
-      if ((run === null || next.running[thread] === run) && Object.prototype.hasOwnProperty.call(next.running, thread)) {
-        delete next.running[thread]
+      if (Object.prototype.hasOwnProperty.call(next.running, conversation)) {
+        delete next.running[conversation]
         changed = true
       }
-      if (run !== null && next.runs[run] === thread) {
-        delete next.runs[run]
-        changed = true
+      for (const [run, owner] of Object.entries(next.runs)) {
+        if (owner === conversation) {
+          delete next.runs[run]
+          changed = true
+        }
       }
-      if (record.status === 'failed' && next.failed[thread] !== true) {
-        next.failed[thread] = true
+      if (isFailureOutcome(record.outcome) && next.failed[conversation] !== true) {
+        next.failed[conversation] = true
         changed = true
       }
       return changed ? next : state
@@ -162,6 +188,12 @@ export function applyEvent(state: BadgeState, impl: unknown, topic: unknown, pay
           changed = true
         }
       }
+      for (const [run, owner] of Object.entries(next.runs)) {
+        if (owner === thread) {
+          delete next.runs[run]
+          changed = true
+        }
+      }
       return changed ? next : state
     }
     default:
@@ -220,10 +252,30 @@ export function clearUnread(state: BadgeState, conversationId: string): BadgeSta
 }
 
 /**
+ * 用会话的持久回合状态（`session.read.open_turns` 摘要）补首屏运行角标：
+ * 重载后、下一个 `chat.turn.started` 到达前，也能显示哪些会话有仍开着的回合
+ * （含非当前会话）。只补缺、不覆盖：已由事件给出的运行记录（带 run id）优先，
+ * 清除仍走 `chat.turn.settled`；摘要只带 `{turn_id,conv}`，故补种的运行记录 run 为 null。
+ */
+export function seedOpenTurns(state: BadgeState, openTurns: unknown): BadgeState {
+  if (!Array.isArray(openTurns)) return state
+  let next: BadgeState | null = null
+  for (const raw of openTurns) {
+    if (!isRecord(raw)) continue
+    const conversation = raw.conv
+    if (typeof conversation !== 'string' || conversation.length === 0) continue
+    if (Object.prototype.hasOwnProperty.call((next ?? state).running, conversation)) continue
+    if (next === null) next = copy(state)
+    next.running[conversation] = null
+  }
+  return next ?? state
+}
+
+/**
  * 用 `chat.history` 会话列表补种角标（首屏无事件时的初值）：
- * `status:"failed"` → 失败；`pending.approval` → 待审批；`inbox.count - last_seen` → 未读；
- * `status:"running"` → 运行中（run id 未知，终止按钮待 `run.started` 补齐）。
- * 已由事件给出的字段优先，不被历史覆盖。
+ * `status:"failed"` → 失败；`pending.approval` → 待审批；`inbox.count - last_seen` → 未读。
+ * 运行中不在此补种——它来自会话回合状态（`chat.turn.started`），而 `conversation.status`
+ * 生产从不写 `"running"`。已由事件给出的字段优先，不被历史覆盖。
  * `locallyRead` 为本地已读会话集合：其历史未读不再补种（服务端 `last_seen` 未及时更新时不复活角标）。
  */
 export function seedFromHistory(
@@ -236,9 +288,6 @@ export function seedFromHistory(
     const id = conversation.id
     if (typeof id !== 'string' || id.length === 0) continue
     if (conversation.status === 'failed') next.failed[id] = true
-    if (conversation.status === 'running' && !Object.prototype.hasOwnProperty.call(next.running, id)) {
-      next.running[id] = null
-    }
     const approval = approvalCount(conversation.pending)
     if (approval !== null && approval > 0 && next.pending[id] === undefined) next.pending[id] = approval
     if (conversation.inbox !== null && conversation.inbox !== undefined) {

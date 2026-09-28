@@ -16,8 +16,17 @@ import {
 } from './plan.ts'
 import { BadArgsError, asString, isRecord, nowOf } from 'plugin-sdk'
 import type { CallEnv, Handler, HandlerResult, Json, PortCaller } from 'plugin-sdk'
+import { refused, validateOutcome, validateStepRecord } from './contract/index.ts'
+import type { TurnOutcome } from './contract/index.ts'
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'terminated'])
+
+/** 记不下来就停：步记录 / 回合头写不进时的 fail-closed 结局。 */
+function ownerUnavailable(message: string): TurnOutcome {
+  return refused({ code: 'owner_unavailable', attributableTo: 'owner', retryable: true, message })
+}
+
+const STEP_APPEND_TYPES = new Set(['step.intent', 'step.result', 'checkpoint'])
 
 /** 服务依赖：反向调用通道（清输入槽）+ 会话存储。 */
 export interface SessionDeps {
@@ -80,14 +89,16 @@ function newConversationEntry(
   title: string,
   at: string,
   kind: string,
+  parent: Rec | null = null,
+  agent: Rec | null = null,
 ): Rec {
   return {
     id,
     workspace_id: workspaceId,
     title,
     kind,
-    parent: null,
-    agent: null,
+    parent,
+    agent,
     participants: [],
     workflow: null,
     inbox: { tail: null, count: 0, last_seen: 0 },
@@ -541,7 +552,7 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
       participants: asArray(args['participants']) ?? [],
       workflow: isRecord(args['workflow']) ? args['workflow'] : null,
       inbox: { tail: null, count: 0, last_seen: 0 },
-      status: asString(args['status']) ?? 'running',
+      status: asString(args['status']) ?? 'waiting',
       last_activity: null,
       pending: isRecord(args['pending']) ? args['pending'] : { approval: 0, question: 0 },
       created: at,
@@ -614,16 +625,204 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
   return { value: { ok: true, to, seq, status, kind }, events }
 }
 
+// ── 回合事件日志：turn_open / step_append / turn_settle ─────────────────────
+
+/**
+ * 回合开始留痕：调模型之前写，携带用户消息与槽引用。三种结果：
+ * `created` 新开（清槽）；`already_open` 同一 `turn_id` / `slot_ref` 已有回合（`state` 分在途与已收口，
+ * 已收口带出结局），调用方不得再执行、不得清槽；`turn_busy` 本会话已有另一个开态回合，槽必须保留。
+ * 建会话随之前移：`new_conversation` 与回合头同一次 append 落盘，无「回合已开始但会话不存在」的中间态。
+ * 写不进则回合不开始：不落内存、不清槽，回 `owner_unavailable` 供重试。
+ */
+async function turnOpen(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  const slotRef = asString(args['slot_ref'])
+  const userMessage = isRecord(args['user_message']) ? (args['user_message'] as Rec) : null
+  if (turnId === null || slotRef === null || userMessage === null) {
+    return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  }
+  const at = isoAt(nowOf(env))
+  const store = deps.store
+  const spec = isRecord(args['new_conversation']) ? (args['new_conversation'] as Rec) : null
+  const conversationId = (spec !== null ? asString(spec['id']) : null) ?? store.currentId()
+  if (conversationId === null) return { value: { ok: false, reason: 'no_conversation' }, events: [] }
+
+  let createdConversation: Rec | null = null
+  // 严格按 id 判存在：`conversation()` 在显式 id 未命中时会回落到 `current`，
+  // 会把「子代理旁路会话尚不存在」误判成已存在（当前仍是主会话）。
+  const conversationExists = (store.body()['conversations'] as Json[]).some(
+    (item) => isRecord(item) && item['id'] === conversationId,
+  )
+  if (!conversationExists) {
+    if (spec === null) return { value: { ok: false, reason: 'no_conversation' }, events: [] }
+    createdConversation = newConversationEntry(
+      conversationId,
+      asString(spec['workspace_id']),
+      asString(spec['title']) ?? DEFAULT_TITLE,
+      at,
+      asString(spec['kind']) ?? 'main',
+      isRecord(spec['parent']) ? (spec['parent'] as Rec) : null,
+      isRecord(spec['agent']) ? (spec['agent'] as Rec) : null,
+    )
+  }
+
+  const record: Rec = {
+    type: 'turn.open',
+    turn_id: turnId,
+    conv: conversationId,
+    user_message: userMessage,
+    slot_ref: slotRef,
+    at,
+  }
+  // 线程口径与子代理任务随回合头持久化：续跑据此恢复隔离上下文（子代理拿任务 + 父检查点，不继承父历史）。
+  const threadKind = asString(args['thread_kind'])
+  if (threadKind !== null) record['thread_kind'] = threadKind
+  const taskPrompt = asString(args['task_prompt'])
+  if (taskPrompt !== null) record['task_prompt'] = taskPrompt
+  if (isRecord(args['parent_checkpoint']) || typeof args['parent_checkpoint'] === 'string') {
+    record['parent_checkpoint'] = args['parent_checkpoint'] as Json
+  }
+  if (Array.isArray(args['parent_summaries'])) record['parent_summaries'] = args['parent_summaries'] as Json
+  if (createdConversation !== null) record['new_conversation'] = createdConversation
+  const checked = validateStepRecord(record)
+  if (!checked.ok) {
+    return { value: { ok: false, reason: 'invalid_contract', outcome: checked.outcome }, events: [] }
+  }
+
+  const opened = await store.openTurn(record)
+  if (opened.status === 'failed') {
+    return {
+      value: { ok: false, reason: 'owner_unavailable', outcome: ownerUnavailable('turn log append failed') },
+      events: [],
+    }
+  }
+  const events = []
+  if (opened.status === 'created' && createdConversation !== null) {
+    const kind = asString(createdConversation['kind']) ?? 'main'
+    events.push({ topic: 'thread.opened', payload: { ...conversationEvent(env, conversationId), kind } })
+    events.push({
+      topic: 'thread.updated',
+      payload: {
+        ...conversationEvent(env, conversationId),
+        // 子代理旁路会话不抢占 current，故不声称 current 变更。
+        changed: kind === 'subagent' ? ['head', 'count'] : ['current', 'head', 'count'],
+      },
+    })
+  }
+  const threadId = asString(args['thread_id']) ?? asString(env.thread)
+  if (opened.status === 'created' && threadId !== null) await clearSlot(deps, threadId)
+  const value: Rec = {
+    ok: opened.status !== 'turn_busy',
+    status: opened.status,
+    created: opened.status === 'created',
+    turn_id: opened.turn_id,
+    conversation: opened.conv ?? conversationId,
+  }
+  if (opened.status === 'already_open') {
+    value['state'] = opened.state
+    if (opened.outcome !== null) value['outcome'] = opened.outcome
+  }
+  if (opened.status === 'turn_busy') {
+    value['reason'] = 'turn_busy'
+    value['busy_turn_id'] = opened.busy_turn_id
+  }
+  return { value, events }
+}
+
+/**
+ * 追加一条步记录（intent / result / checkpoint），按 `(turn_id, type, seq)` 去重。
+ * 先写意图再执行：追加失败不落内存、不视为已执行，并以 `refused{owner_unavailable}` 收口停止。
+ */
+async function stepAppend(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  void env
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const type = asString(args['type'])
+  if (type === null || !STEP_APPEND_TYPES.has(type)) {
+    return { value: { ok: false, reason: 'bad_record_type' }, events: [] }
+  }
+  const record: Rec = { ...args }
+  const checked = validateStepRecord(record)
+  if (!checked.ok) {
+    return { value: { ok: false, reason: 'invalid_contract', outcome: checked.outcome }, events: [] }
+  }
+  const turnId = asString(args['turn_id'])
+  const status = await deps.store.appendStep(record)
+  if (status === 'failed') {
+    const outcome = ownerUnavailable('turn step append failed')
+    if (turnId !== null) await deps.store.settle(turnId, outcome as unknown as Rec)
+    return { value: { ok: false, reason: 'owner_unavailable', outcome }, events: [] }
+  }
+  if (status === 'not_found') return { value: { ok: false, reason: 'unknown_turn' }, events: [] }
+  if (status === 'not_open') return { value: { ok: false, reason: 'not_open' }, events: [] }
+  return {
+    value: { ok: true, turn_id: turnId, seq: args['seq'] ?? null, deduped: status === 'exists' },
+    events: [],
+  }
+}
+
+/**
+ * 回合收口：CAS 保护，只有开态 / interrupted 能被落定；终态被拒并记迟到日志。
+ * `awaiting` 是段终态不是回合终态，`validateOutcome` 只认四种终态，天然拒绝。
+ */
+async function turnSettle(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  void env
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  if (turnId === null) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const checked = validateOutcome(args['outcome'])
+  if (!checked.ok) {
+    return { value: { ok: false, reason: 'invalid_contract', outcome: checked.outcome }, events: [] }
+  }
+  const outcome = checked.value
+  const result = await deps.store.settle(turnId, outcome as unknown as Rec)
+  if (result.status === 'unknown') return { value: { ok: false, reason: 'unknown_turn' }, events: [] }
+  if (result.status === 'late') {
+    return {
+      value: { ok: false, reason: 'already_settled', rejected: true, persisted: result.persisted, outcome },
+      events: [],
+    }
+  }
+  return { value: { ok: true, turn_id: turnId, outcome, persisted: result.persisted }, events: [] }
+}
+
+/**
+ * 记录取消意图：被取消的回合先落意图，重启收口据此判 `cancelled` 而非仅仅 `interrupted`。
+ * 只记意图、不落终态——终态仍由 `turn_settle` 的 CAS 落定；已收口回合回其结局（no-op）。
+ */
+async function turnCancel(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  void env
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  if (turnId === null) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const result = await deps.store.cancelTurn(turnId)
+  if (result.status === 'unknown') return { value: { ok: false, reason: 'unknown_turn' }, events: [] }
+  if (result.status === 'failed') return { value: { ok: false, reason: 'owner_unavailable' }, events: [] }
+  const value: Rec = {
+    ok: true,
+    turn_id: turnId,
+    state: result.status === 'settled' ? 'settled' : 'open',
+    conversation: result.conv,
+  }
+  if (result.outcome !== null) value['outcome'] = result.outcome
+  return { value, events: [] }
+}
+
 // ── read / history（服务读自有存储） ────────────────────────────────────────
 
 function read(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
   void env
-  const convId = isRecord(args) ? asString(args['conversation']) : null
   const store = deps.store
+  const record = isRecord(args) ? args : {}
+  const turnId = asString(record['turn_id'])
+  const turn = turnId === null ? null : store.turn(turnId)
+  // 显式会话优先；否则按 `turn_id` 定位该回合所属会话（续跑子代理旁路线程时 `current` 仍是主会话）。
+  const convId = asString(record['conversation']) ?? (turn !== null ? asString(turn['conv']) : null)
   return {
     value: {
       ...store.slice(convId),
       pending_turns: store.pendingTurns(),
+      open_turns: store.openTurnSummaries(),
     },
     events: [],
   }
@@ -655,6 +854,10 @@ export function createHandlers(deps: SessionDeps): Record<string, Handler> {
     restore: (args, env) => restore(requireArgs(args), env, deps),
     branch: (args, env) => branch(requireArgs(args), env, deps),
     deliver: (args, env) => deliver(requireArgs(args), env, deps),
+    turn_open: (args, env) => turnOpen(args, env, deps),
+    step_append: (args, env) => stepAppend(args, env, deps),
+    turn_settle: (args, env) => turnSettle(args, env, deps),
+    turn_cancel: (args, env) => turnCancel(args, env, deps),
     read: (args, env) => read(args, env, deps),
     history: (args, env) => history(args, env, deps),
   }

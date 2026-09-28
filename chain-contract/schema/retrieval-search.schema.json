@@ -1,0 +1,57 @@
+{
+  "title": "retrieval.search bag（TS 发、Rust 收）",
+  "description": "loop-policy 的 recall 节点经反向调用发给 memory-retrieval 的 bag。权威键名取自消费方 memory-retrieval 的既有契约（schema/retrieval.json 与 src/bag.rs / src/config.rs）：工作区是 workspace，预算是 recall_budget。生产方 dispatch.ts 已按权威键名发出 workspace 与 recall_budget（源值取内部键 workspace_id / budget），两侧逐键对齐；此前的 workspace_id / budget 错位已修，见 chain-contract/README.md。服务不读投影、不取时间：全部数据由调用方随 bag 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "description": "契约主版本标记；消费方遇未知主版本显式拒绝。"
+    },
+    "query": {
+      "type": "string",
+      "description": "当前轮查询文本；recall 节点路径以顶层 query 传入（生产方当前由 bag.task 取）。"
+    },
+    "goal": {
+      "type": "string",
+      "description": "本会话 L1 goal / 摘要，拼进查询；也接受 bag.l1.goal。"
+    },
+    "l1": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "L1 记忆切片；goal_of 回落读 l1.goal。"
+    },
+    "workspace": {
+      "type": "string",
+      "description": "权威工作区键：当前工作区 id，工作区范围过滤据此判定。"
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "召回策略配置（top_k / recall_budget / min_score / decay_lambda / workspace_scope / tags / source / mmr_lambda / rerank / multi_query / model / dim）。"
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "retrieval 配置的别名。"
+    },
+    "recall_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "权威预算键：召回预算（由 loop-policy 按 thresholds 写入）；优先于 retrieval.recall_budget。"
+    },
+    "dedup_set": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "在上下文条目的 dedup_key 列表（与上下文调配器同口径）。"
+    },
+    "now": {
+      "description": "宿主固定时钟（epoch 毫秒或 ISO 8601 字符串）；缺省回落调用帧 env.now。服务不取时间。"
+    },
+    "model_config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "多查询 / 语义重排时 model.chat 的连接实例；缺失时模型项降级为关闭。"
+    }
+  }
+}

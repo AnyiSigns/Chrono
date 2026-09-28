@@ -89,7 +89,7 @@ test('invoke：缺会话 id / items 非数组 / 未知工具 → 结构化拒', 
   }
 })
 
-test('write：超限 / 坏状态 → 结构化业务拒（too_many_items / text_too_long / bad_status）', async () => {
+test('write：超限 / 坏状态 / id 重复 → 结构化业务拒（too_many_items / text_too_long / bad_status / bad_args）', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -113,6 +113,12 @@ test('write：超限 / 坏状态 → 结构化业务拒（too_many_items / text_
       args: { conversation_id: 'c1', items: [{ text: 'a', status: 'done' }] },
     })
     assert.equal(badStatus.error.code, 'bad_status')
+
+    const dupId = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: { conversation_id: 'c1', items: [{ id: 't0', text: 'a' }, { id: 't0', text: 'b' }] },
+    })
+    assert.equal(dupId.error.code, 'bad_args')
   } finally {
     drv.close()
   }

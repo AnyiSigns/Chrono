@@ -42,7 +42,7 @@ test('hello 回 manifest（与 plugin.json 一致）；控制帧与 EOF 自退�
     const manifest = await driver.hello()
     assert.equal(manifest.identity, 'model-protocol')
     assert.deepEqual(manifest.implements, ['model'])
-    assert.deepEqual(manifest.methods.model, ['chat', 'complete', 'vendors', 'discover', 'profile', 'sync'])
+    assert.deepEqual(manifest.methods.model, ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
     assert.equal((await driver.request('probe', {}, 'pong')).ok, true)

@@ -1,20 +1,9 @@
 {
   "title": "tool-fs（文件工具）",
-  "description": "身份自述 / 数据契约：描述 tool-fs 能力类两方法 describe / invoke 的入参与结果形状，以及工具开关、大小与行窗口缺省、二进制策略、默认忽略表兜底。忽略表正式住本身份数据世代 body（由调用方随 bag.ignore 传入）；schema 出生即冻结，只作身份契约与缺省说明。本插件服务不读投影、不直接触盘：tier / workspace_root / caps / grant / ignore 全由调用方随 bag 传入，触盘经反向调用 sandbox.fsop。",
+  "description": "身份自述 / 数据契约：描述 tool-fs 能力类两方法 describe / invoke 的入参与结果形状，以及大小与行窗口缺省、二进制策略、默认忽略表兜底。忽略表正式住本身份数据世代 body（由调用方随 bag.ignore 传入）；schema 出生即冻结，只作身份契约与缺省说明。本插件服务不读投影、不直接触盘：tier / workspace_root / caps / grant / ignore 全由调用方随 bag 传入，触盘经反向调用 sandbox.fsop。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
-    "tools_enabled": {
-      "type": "object",
-      "description": "工具开关：关掉的工具不进 describe 清单、invoke 一律 unknown_tool。",
-      "additionalProperties": false,
-      "properties": {
-        "read": { "type": "boolean" },
-        "edit": { "type": "boolean" },
-        "glob": { "type": "boolean" },
-        "grep": { "type": "boolean" }
-      }
-    },
     "defaults": {
       "type": "object",
       "description": "大小与行窗口缺省；未随 args 给出时由本插件补入转发给 sandbox.fsop。",
@@ -22,7 +11,7 @@
       "properties": {
         "read_limit": { "type": "integer", "minimum": 1, "default": 2000 },
         "list_limit": { "type": "integer", "minimum": 1, "default": 200 },
-        "grep_limit": { "type": "integer", "minimum": 1, "default": 100 },
+        "grep_limit": { "type": "integer", "minimum": 1, "default": 200 },
         "output_max": { "type": "integer", "minimum": 1, "default": 1048576 },
         "timeout_ms": { "type": "integer", "minimum": 0, "default": 30000 },
         "mem_mb": { "type": "integer", "minimum": 0, "default": 1024 },
@@ -31,7 +20,7 @@
     },
     "default_ignore": {
       "type": "array",
-      "description": "默认忽略表兜底：bag.ignore / args.ignore 都缺省时用于 glob / grep；正式忽略表住身份数据世代 body。",
+      "description": "默认忽略表兜底：bag.ignore / args.ignore 都缺省时用于 glob / grep。条目按「文件名 / 整路径 / 任一路径段」匹配，命中目录即整棵剪枝；显式空数组表示不忽略。正式忽略表住身份数据世代 body。",
       "default": [".git", "node_modules", "target", "__pycache__", ".venv"],
       "items": { "type": "string" }
     },
@@ -60,10 +49,10 @@
       "required": ["tool", "args"],
       "additionalProperties": true,
       "properties": {
-        "tool": { "enum": ["read", "edit", "glob", "grep"] },
+        "tool": { "enum": ["read", "edit", "glob", "grep", "stat"] },
         "args": { "type": "object" },
         "workspace_root": { "type": ["string", "null"] },
-        "tier": { "enum": ["auto", "severe", "review", "deny", "null"] },
+        "tier": { "type": ["string", "null"], "enum": ["auto", "severe", "review", "deny", null] },
         "caps": { "type": "object" },
         "grant": { "type": "object" },
         "ignore": { "type": "array", "items": { "type": "string" } }
@@ -86,13 +75,16 @@
               "enum": [
                 "bad_path",
                 "fs_denied",
+                "permission_denied",
                 "workspace_missing",
                 "path_not_found",
                 "not_a_directory",
+                "not_a_file",
                 "edit_conflict",
                 "too_large",
                 "binary_unsupported",
-                "output_truncated",
+                "io_error",
+                "sandbox_setup_failed",
                 "tool_failed",
                 "tool_timeout",
                 "unknown_tool",

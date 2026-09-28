@@ -1,0 +1,123 @@
+{
+  "context.assemble": {
+    "input": {
+      "config": { "vendor": "anthropic", "model": "claude-sonnet-4-6", "params": { "max_tokens": 4096 } },
+      "input": { "content": "看看 foo.ts 第 42 行" },
+      "memories": { "l1": { "goal": "排查空指针" } },
+      "session": { "version": 1, "current": "c-1759000000000-0", "conversations": [], "head": null, "refs": {}, "data_gen": null },
+      "thread_kind": "main",
+      "thread": "_main",
+      "workspace_root": "/repo",
+      "tier": "auto",
+      "system_prompt": "你是 Chrono 助手",
+      "extra_messages": [
+        { "role": "assistant", "content": "", "tool_calls": [{ "id": "call-0", "name": "fs.read", "arguments": { "path": "foo.ts" } }] },
+        { "role": "tool", "content": "42: return obj.value" }
+      ]
+    },
+    "output": {
+      "messages": [
+        { "role": "system", "content": "你是 Chrono 助手" },
+        { "role": "user", "content": "看看 foo.ts 第 42 行" }
+      ],
+      "usage": { "estimate_tokens": 512 }
+    }
+  },
+  "model.chat": {
+    "input": {
+      "config": { "vendor": "anthropic", "model": "claude-sonnet-4-6", "params": { "max_tokens": 4096 } },
+      "messages": [
+        { "role": "system", "content": "你是 Chrono 助手" },
+        { "role": "user", "content": "看看 foo.ts 第 42 行" }
+      ],
+      "tools": [
+        { "name": "fs.read", "description": "读文件", "argsSchema": { "type": "object", "properties": { "path": { "type": "string" } } } }
+      ]
+    },
+    "output": {
+      "text": "",
+      "reasoning": "先读文件",
+      "tool_calls": [{ "call_id": "call-0", "tool": "fs.read", "args": { "path": "foo.ts" } }],
+      "usage": { "prompt_tokens": 1200, "completion_tokens": 80, "cached_tokens": 1024 },
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning": "先读文件",
+        "usage": { "prompt_tokens": 1200, "completion_tokens": 80, "cached_tokens": 1024 },
+        "tool_calls": [{ "id": "call-0", "name": "fs.read", "arguments": { "path": "foo.ts" } }]
+      }
+    }
+  },
+  "tool.gate": {
+    "input": {
+      "calls": [{ "port": "tool-fs", "tool": "fs.read", "args": { "path": "foo.ts" }, "net": "none" }],
+      "tier": "auto",
+      "tier_net": "all",
+      "workspace_root": "/repo",
+      "guard_rules": { "rules": [] }
+    },
+    "output": {
+      "decisions": [{ "port": "tool-fs", "tool": "fs.read", "verdict": "allow" }],
+      "summary": { "allow": 1, "escalate": 0, "deny": 0 },
+      "verdict": "allow"
+    }
+  },
+  "tool.dispatch": {
+    "input": {
+      "tools_bindings": { "tools": ["fs.read"] },
+      "workspace_root": "/repo",
+      "tier": "auto",
+      "calls": [{ "call_id": "call-0", "tool": "fs.read", "args": { "path": "foo.ts" }, "port": "tool-fs" }]
+    },
+    "output": {
+      "results": [
+        {
+          "call_id": "call-0",
+          "tool": "fs.read",
+          "ok": true,
+          "result": { "path": "foo.ts", "lines": "1-240", "sha": "a1b2", "content": "42: return obj.value" },
+          "$directives": []
+        }
+      ]
+    }
+  },
+  "turn.commit": {
+    "input": {
+      "session": { "version": 1, "current": "c-1759000000000-0", "conversations": [], "head": null, "refs": {}, "data_gen": null },
+      "slots": { "_main": { "kind": "chat.message" } },
+      "thread_id": "_main",
+      "slot": { "kind": "chat.message", "text": "看看 foo.ts 第 42 行" },
+      "user": { "content": "看看 foo.ts 第 42 行" },
+      "assistant": { "content": "第 42 行确实少了判空", "meta": { "usage": { "prompt_tokens": 1200, "completion_tokens": 80 } } },
+      "conversation": "c-1759000000000-0"
+    },
+    "output": { "ok": true, "reply": "第 42 行确实少了判空", "conversation": "c-1759000000000-0", "count": 2 }
+  },
+  "recall": {
+    "input": {
+      "workspace": "w-1",
+      "recall_budget": 8,
+      "query": "看看 foo.ts 第 42 行"
+    },
+    "output": {
+      "ok": true,
+      "kind": "search",
+      "status": "ready",
+      "query": "看看 foo.ts 第 42 行",
+      "recall": [
+        {
+          "entry_hash": "e-1",
+          "entry_id": "mem-1",
+          "chunk_index": 0,
+          "score": 0.82,
+          "score_raw": 0.82,
+          "text": "foo.ts 第 42 行历史修复记录",
+          "meta": { "workspace": "w-1", "source": "session" }
+        }
+      ],
+      "count": 1,
+      "budget": 8,
+      "stats": { "missing": 0, "scope": 0, "tags": 0, "source": 0, "threshold": 0, "dedup": 0 }
+    }
+  }
+}

@@ -24,16 +24,24 @@ function threadOf(args: Rec | null, env: CallEnv): string {
   return fromArgs ?? asString(env.thread) ?? MAIN_THREAD
 }
 
-/** `read`：回整份槽体 `{slots:{…}}`（可选 thread 仅用于附带该线程当前槽）。 */
+/** `read`：回整份槽体 `{slots:{…}, slot_refs:{…}}`（给 thread 时另附该线程当前槽与 `slot_ref`）。 */
 function read(args: Json, env: CallEnv, deps: InputDeps): { value: Json; events: [] } {
   const body = deps.store.body()
   const record = isRecord(args) ? args : null
   const thread = record !== null ? asString(record['thread']) : null
   if (thread !== null) {
-    return { value: { ...body, thread, slot: deps.store.get(thread) }, events: [] }
+    return {
+      value: {
+        ...body,
+        thread,
+        slot: deps.store.get(thread),
+        slot_ref: deps.store.slotRef(thread),
+      },
+      events: [],
+    }
   }
   void env
-  return { value: body, events: [] }
+  return { value: { ...body, slot_refs: deps.store.slotRefs() }, events: [] }
 }
 
 /** `write`：覆盖本线程槽（args.slot 必填；形状校验归写入端）。 */

@@ -1,0 +1,6 @@
+{
+  "errors": {
+    "turn_settle": { "code": "e2e_settle_down", "message": "e2e: session turn_settle unreachable" }
+  },
+  "values": {}
+}

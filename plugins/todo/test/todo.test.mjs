@@ -47,13 +47,13 @@ test('stdin EOF 即自退出（断连不占端点）', async () => {
 
 // ── describe ───────────────────────────────────────────────────────────────
 
-test('describe：两工具 + 四要素 + argsSchema + caps（无 fs / 无 net）+ render', async () => {
+test('describe：单一 todo 工具（action 分派）+ 四要素 + argsSchema + caps（无 fs / 无 net）+ render', async () => {
   const drv = startService()
   try {
     await drv.hello()
     const value = await drv.call('describe', {})
     const tools = value.tools
-    assert.deepEqual(tools.map((tool) => tool.name), ['todo.write', 'todo.read'])
+    assert.deepEqual(tools.map((tool) => tool.name), ['todo'])
     for (const tool of tools) {
       for (const field of ['intent', 'when_to_use', 'boundaries', 'description']) {
         assert.ok(
@@ -73,22 +73,60 @@ test('describe：两工具 + 四要素 + argsSchema + caps（无 fs / 无 net）
       assert.equal(tool.render.form, 'card')
       assert.equal(tool.render.label, 'todo')
       assert.equal(tool.render.summary, '{done}/{total} 已完成')
-      assert.equal(tool.render.tone, 'plain')
       assert.deepEqual(tool.render.detail, { kind: 'list', fields: ['text', 'status'] })
     }
-    const write = tools.find((tool) => tool.name === 'todo.write')
-    const read = tools.find((tool) => tool.name === 'todo.read')
-    assert.equal(write.idempotent, false)
-    assert.equal(read.idempotent, true)
-    assert.equal(read.binding, undefined)
+    const todo = tools[0]
+    assert.equal(todo.render.tone, 'plain')
+    assert.equal(todo.idempotent, false)
+    assert.equal(todo.binding, undefined)
+    assert.deepEqual(todo.argsSchema.properties.action.enum, ['replace', 'update', 'read'])
+    assert.deepEqual(todo.argsSchema.required, ['action'])
+    // 死接口已移除；状态枚举单一来源（含 cancelled）。
+    assert.equal('body' in todo.argsSchema.properties, false)
+    assert.deepEqual(todo.argsSchema.properties.items.items.properties.status.enum, [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ])
+    assert.equal('priority' in todo.argsSchema.properties.items.items.properties, false)
+    assert.equal('activeForm' in todo.argsSchema.properties.items.items.properties, true)
+  } finally {
+    drv.close()
+  }
+})
+
+test('invoke：合并工具 todo 按 action 派发 replace / update / read；非法 action 回 bad_args', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const replace = await drv.call('invoke', {
+      tool: 'todo',
+      args: { action: 'replace', items: [{ text: 'a' }] },
+      session_id: 'c1',
+    })
+    assert.equal(replace.ok, true, JSON.stringify(replace))
+    assert.equal(replace.result.total, 1)
+    const update = await drv.call('invoke', {
+      tool: 'todo',
+      args: { action: 'update', ops: [{ op: 'add', text: 'b' }] },
+      session_id: 'c1',
+    })
+    assert.equal(update.ok, true, JSON.stringify(update))
+    assert.equal(update.result.changed.length, 1)
+    const read = await drv.call('invoke', { tool: 'todo', args: { action: 'read' }, session_id: 'c1' })
+    assert.equal(read.ok, true)
+    assert.equal(read.result.total, 2)
+    const bad = await drv.call('invoke', { tool: 'todo', args: { action: 'nope' }, session_id: 'c1' })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'bad_args')
   } finally {
     drv.close()
   }
 })
 
 // ── 写读往返 + 世界不再新增世代 ─────────────────────────────────────────────
-
-test('write/read 往返：整表替换、条目形状、done 计数；不产世界写计划', async () => {
+test('write/read 往返：整表替换、稳定 id、条目形状、done 计数；不产世界写计划', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -97,7 +135,7 @@ test('write/read 往返：整表替换、条目形状、done 计数；不产世�
       args: {
         conversation_id: 'c1',
         at: AT,
-        items: [{ text: '写文档' }, { text: '跑测试', status: 'in_progress', priority: 1 }],
+        items: [{ text: '写文档' }, { text: '跑测试', status: 'in_progress', activeForm: '正在跑测试' }],
       },
     })
     assert.equal(written.ok, true, JSON.stringify(written))
@@ -105,14 +143,26 @@ test('write/read 往返：整表替换、条目形状、done 计数；不产世�
     assert.equal(written.result.total, 2)
     assert.equal(written.result.done, 0)
     assert.equal(written.result.conversation_id, 'c1')
-    assert.deepEqual(written.result.items.map((item) => item.id), ['c1-0', 'c1-1'])
+    assert.equal('items' in written.result, false, 'write 不回传全表')
 
     const read = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
     assert.equal(read.ok, true)
     assertNoDirectives(read.result)
+    assert.deepEqual(read.result.items.map((item) => item.id), ['t0', 't1'])
     assert.deepEqual(read.result.items.map((item) => item.text), ['写文档', '跑测试'])
+    assert.equal(read.result.items[1].activeForm, '正在跑测试')
     assert.equal(read.result.total, 2)
     assert.equal('prev' in read.result.items[0], false)
+
+    // 带上读回的 id 整表重写：身份保持（含重排）。
+    const rewritten = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: { conversation_id: 'c1', items: [read.result.items[1], { ...read.result.items[0], status: 'completed' }] },
+    })
+    assert.equal(rewritten.ok, true)
+    const after = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
+    assert.deepEqual(after.result.items.map((item) => item.id), ['t1', 't0'])
+    assert.equal(after.result.items[1].status, 'completed')
   } finally {
     drv.close()
   }
@@ -155,13 +205,46 @@ test('空数组 = 清空本会话；其它会话键互不影响', async () => {
   }
 })
 
-// ── 边跑边追加 ─────────────────────────────────────────────────────────────
-
-test('边跑边追加：写后立即可读；同回合重复写幂等', async () => {
+test('write：多个 in_progress → multiple_in_progress；cancelled 合法但不计完成', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const args = { conversation_id: 'c1', at: AT, items: [{ text: 'a' }, { text: 'b', status: 'completed' }] }
+    const bad = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: {
+        conversation_id: 'c1',
+        items: [{ text: 'a', status: 'in_progress' }, { text: 'b', status: 'in_progress' }],
+      },
+    })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'multiple_in_progress')
+
+    const ok = await drv.call('invoke', {
+      tool: 'todo.write',
+      args: {
+        conversation_id: 'c1',
+        items: [
+          { text: 'a', status: 'completed' },
+          { text: 'b', status: 'cancelled' },
+          { text: 'c', status: 'in_progress' },
+        ],
+      },
+    })
+    assert.equal(ok.ok, true)
+    assert.equal(ok.result.total, 3)
+    assert.equal(ok.result.done, 1)
+  } finally {
+    drv.close()
+  }
+})
+
+// ── 边跑边追加 ─────────────────────────────────────────────────────────────
+
+test('边跑边追加：写后立即可读；同回合重复写同值幂等', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const args = { conversation_id: 'c1', at: AT, items: [{ id: 't0', text: 'a' }, { id: 't1', text: 'b', status: 'completed' }] }
     await drv.call('invoke', { tool: 'todo.write', args })
     const midTurn = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
     assert.equal(midTurn.result.total, 2)
@@ -237,7 +320,7 @@ test('未知能力 / 方法 / 非对象 args → 协议级结构化错误，不�
     )
     assert.equal(badArgs.code, 'bad_args')
     const ok = await drv.call('describe', {})
-    assert.equal(ok.tools.length, 2)
+    assert.equal(ok.tools.length, 1)
   } finally {
     drv.close()
   }

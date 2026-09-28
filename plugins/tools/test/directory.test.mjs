@@ -97,6 +97,107 @@ test('list：description 缺省由四要素拼装', async () => {
   })
 })
 
+test('list：description 拼入使用时机 / 边界；param_semantics 并入 argsSchema 不重复', async () => {
+  await withService(BASE_PROVIDERS, async (service) => {
+    const response = await service.call('list', {})
+    const tool = response.value.tools.find((item) => item.name === 'read')
+    assert.ok(tool.description.startsWith('读文本文件'), tool.description)
+    assert.ok(tool.description.includes('使用时机：需要查看文件内容时。'), tool.description)
+    assert.ok(tool.description.includes('边界：只读单文件；找文件用 glob。'), tool.description)
+    assert.ok(!tool.description.includes('参数：'), `参数说明应内联进 argsSchema，不在 description 重复：${tool.description}`)
+    assert.equal(tool.argsSchema.properties.path.description, '文件路径。')
+  })
+})
+
+test('list：param_semantics 无对应属性时回落 description 的 参数：行（信息不丢）', async () => {
+  const providers = {
+    'tool-fs': {
+      describe: () => ({
+        tools: [
+          toolDecl({
+            name: 'loose',
+            param_semantics: { known: '有属性。', extra: '无属性。' },
+            argsSchema: { type: 'object', properties: { known: { type: 'string' } }, additionalProperties: true },
+          }),
+        ],
+      }),
+    },
+  }
+  await withService(providers, async (service) => {
+    const response = await service.call('list', {})
+    const tool = response.value.tools.find((item) => item.name === 'loose')
+    assert.ok(!tool.description.includes('known:'), `已内联的参数不应回落：${tool.description}`)
+    assert.ok(tool.description.includes('参数：extra: 无属性。'), tool.description)
+    assert.equal(tool.argsSchema.properties.known.description, '有属性。')
+  })
+})
+
+test('list：hidden_params 从模型可见 argsSchema 摘掉（required 同摘），validateSchema 保留注入参数', async () => {
+  const providers = {
+    'tool-fs': {
+      describe: () => ({
+        tools: [
+          toolDecl({
+            name: 'probe',
+            param_semantics: { path: '文件路径。', workspace: '工作区 id（调用方注入，模型不填）。' },
+            hidden_params: ['workspace'],
+            argsSchema: {
+              type: 'object',
+              required: ['path', 'workspace'],
+              properties: { path: { type: 'string' }, workspace: { type: 'string' } },
+              additionalProperties: false,
+            },
+          }),
+        ],
+      }),
+    },
+  }
+  await withService(providers, async (service) => {
+    const response = await service.call('list', {})
+    const tool = response.value.tools.find((item) => item.name === 'probe')
+    assert.deepEqual(Object.keys(tool.argsSchema.properties), ['path'])
+    assert.deepEqual(tool.argsSchema.required, ['path'])
+    assert.equal(tool.argsSchema.properties.workspace, undefined)
+    assert.ok(tool.validateSchema.properties.workspace, '校验 schema 须保留注入参数')
+    assert.ok(!tool.description.includes('workspace'), `注入参数不进描述：${tool.description}`)
+  })
+})
+
+test('dispatch：模型可见 schema 摘掉的注入参数仍可随 args 注入、不被拒', async () => {
+  const providers = {
+    'tool-fs': {
+      describe: () => ({
+        tools: [
+          toolDecl({
+            name: 'probe',
+            param_semantics: { path: '文件路径。', workspace: '工作区 id（调用方注入，模型不填）。' },
+            hidden_params: ['workspace'],
+            argsSchema: {
+              type: 'object',
+              required: ['path', 'workspace'],
+              properties: { path: { type: 'string' }, workspace: { type: 'string' } },
+              additionalProperties: false,
+            },
+          }),
+        ],
+      }),
+      invoke: (bag) => ({ ok: true, result: { echoed: bag['args'] ?? null } }),
+    },
+  }
+  await withService(providers, async (service) => {
+    const listed = await service.call('list', {})
+    const directory = { tools: listed.value.tools, rejected: [] }
+    const result = await service.call('dispatch', {
+      directory,
+      verdicts: 'allow',
+      workspace_root: 'C:\\ws',
+      calls: [{ call_id: 'c1', tool: 'probe', args: { path: 'a.txt', workspace: 'w1' } }],
+    })
+    assert.equal(result.value.results[0].ok, true, JSON.stringify(result.value.results[0]))
+    assert.deepEqual(result.value.results[0].result.echoed, { path: 'a.txt', workspace: 'w1' })
+  })
+})
+
 test('四要素缺一即 bad_tool_decl（不进目录、rejected 留诊断）', async () => {
   const providers = {
     'tool-fs': {

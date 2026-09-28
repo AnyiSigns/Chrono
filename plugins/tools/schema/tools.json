@@ -24,7 +24,7 @@
       "additionalProperties": true,
       "description": "list 入参（bag）：tools_bindings 与 mcp_tools 由调用方入口 term 读出后传入。",
       "properties": {
-        "tools_bindings": { "type": "object", "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?}。" },
+        "tools_bindings": { "type": "object", "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?, hidden_params?}。hidden_params 列的参数由调用方注入、模型不该填，list 时从模型可见 argsSchema 摘掉（仍在 validateSchema 里校验）。" },
         "mcp_tools": { "type": "array", "description": "外部 MCP 工具清单（#37 投影 ids.mcp.body.tools，工具名已命名空间化 mcp.<server>.<tool>）。" }
       }
     },
@@ -74,6 +74,6 @@
     }
   },
   "method_timeouts": {
-    "tools.dispatch": 600000
+    "tools.dispatch": 1800000
   }
 }

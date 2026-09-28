@@ -66,7 +66,7 @@ function startService() {
   return { child, request }
 }
 
-test('describe 值：两工具四要素齐备、caps 含 fs.read、idempotent 与 render 正确', () => {
+test('describe 值：二工具四要素齐备、caps 含 fs.read、idempotent 与 render 正确', () => {
   const { tools } = describeTools()
   assert.deepEqual(tools.map((tool) => tool.name), ['websearch', 'webfetch'])
   for (const tool of tools) {
@@ -90,7 +90,11 @@ test('describe 值：两工具四要素齐备、caps 含 fs.read、idempotent �
   assert.deepEqual(websearch.argsSchema.properties.sources.items, { type: 'string' })
   assert.deepEqual(websearch.render.detail, { kind: 'list', fields: ['title', 'url', 'snippet', 'source'] })
   assert.equal(websearch.render.summary, '{query}')
-  assert.equal(websearch.caps.net, 'limited')
+  // 合并 webresearch 后：websearch 声明 read / max_chars，net 升到 all（read>0 可抓任意页面）。
+  // 单一文案源：顶层参数文案只在 param_semantics，argsSchema 只留结构关键词。
+  assert.deepEqual(websearch.argsSchema.properties.read, { type: 'integer', minimum: 0, maximum: 5 })
+  assert.equal(websearch.argsSchema.properties.max_chars.minimum, 200)
+  assert.equal(websearch.caps.net, 'all')
   const webfetch = tools[1]
   assert.deepEqual(webfetch.argsSchema.required, ['url'])
   assert.deepEqual(webfetch.render.detail, { kind: 'code', lang: 'markdown' })

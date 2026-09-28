@@ -66,6 +66,8 @@ interface FormattedMessage {
   content: Json
   tool_call_id?: string
   tool_calls?: Json
+  /** 厂商中立推理块：原样上提，由协议层按方言编形（不在此改写 / 截断）。 */
+  reasoning?: Json
 }
 
 function textOnly(parts: CanonicalPart[]): boolean {
@@ -187,6 +189,10 @@ export function formatMessages(
     // assistant 的工具调用：中性形状原样上提，由协议层（model-protocol）按方言编成厂商字段。
     if (message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
       formattedMessage.tool_calls = message.toolCalls
+    }
+    // assistant 的推理块：厂商中立形态原样上提，由协议层按方言编形。
+    if (message.role === 'assistant' && message.reasoning !== null && message.reasoning !== undefined) {
+      formattedMessage.reasoning = message.reasoning as unknown as Json
     }
     formatted.push(formattedMessage as unknown as Json)
   }

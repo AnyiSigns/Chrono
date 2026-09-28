@@ -12,6 +12,8 @@ import {
   applyToolDelta,
   applyToolEnd,
   applyToolStart,
+  applyTurnPending,
+  applyTurnSettled,
   clearPendingUser,
   createThreadStore,
   dropInFlight,
@@ -19,7 +21,11 @@ import {
   FINISHED_MEMORY,
   foldRunFinished,
   isStreaming,
+  normalizeOutcome,
+  outcomeBlocks,
+  outcomeDisplayCode,
   reconcilePendingUser,
+  resolveDisplayOutcome,
   setPendingUser,
 } from '../execute/web/thread-store.ts'
 
@@ -65,7 +71,8 @@ test('快照收口定稿：finalizing 的在途回合被快照原地替换（定
   let view = applyDelta(emptyView(), { run: 'r1', text: '流式中' })
   // 流式中快照：保留在途
   assert.notEqual(applySnapshot(view, historyFixture(), 'c1').inFlight, null)
-  // 定稿中快照：收口
+  // 业务结局 committed → 定稿中；快照落地后收口
+  view = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'committed' } })
   view = foldRunFinished(view, { run: 'r1', status: 'done' }).view
   assert.equal(view.inFlight.finalizing, true)
   const settled = applySnapshot(view, historyFixture(), 'c1')
@@ -73,13 +80,14 @@ test('快照收口定稿：finalizing 的在途回合被快照原地替换（定
   assert.equal(settled.messages.length, 2)
 })
 
-test('生命周期：started → delta 追加 → finished 收束（语义 2）', () => {
+test('生命周期：started → delta 追加 → committed 结局 → finished 收束（语义 2）', () => {
   let view = emptyView()
-  view = applyRunStarted(view, { run: 'r1', thread: 't1' })
+  view = applyRunStarted(view, { run: 'r1', thread: 't1', turn_id: 'turn-1' })
   view = applyDelta(view, { run: 'r1', text: '你' })
   view = applyDelta(view, { run: 'r1', text: '好' })
   assert.equal(view.inFlight.text, '你好')
   assert.equal(isStreaming(view), true)
+  view = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'committed' } })
   const folded = foldRunFinished(view, { run: 'r1', status: 'done' })
   assert.equal(folded.action, 'finalize')
   assert.equal(folded.view.inFlight.finalizing, true)
@@ -117,6 +125,8 @@ test('tool.delta 缺 started 自愈：无在途回合时先建在途回合', () 
 
 test('取消后的在途回合被权威快照清除，不再重复渲染', () => {
   let view = applyDelta(emptyView(), { run: 'r1', text: 'half' })
+  // 取消的业务结局由 `chat.turn.settled` 先行到达；机械 `run.finished{cancelled}` 只作收束。
+  view = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'cancelled' } })
   view = foldRunFinished(view, { run: 'r1', status: 'cancelled' }).view
   assert.equal(view.inFlight.cancelled, true)
   const settled = applySnapshot(view, historyFixture(), 'c1')
@@ -166,6 +176,7 @@ test('finishedRuns 有界：不超过 FINISHED_MEMORY', () => {
 
 test('取消：保留在途并标记 cancelled，不再流式（语义 2）', () => {
   let view = applyDelta(emptyView(), { run: 'r1', text: 'half' })
+  view = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'cancelled' } })
   const folded = foldRunFinished(view, { run: 'r1', status: 'cancelled' })
   assert.equal(folded.action, 'cancel')
   assert.equal(folded.view.inFlight.cancelled, true)
@@ -176,7 +187,92 @@ test('取消：保留在途并标记 cancelled，不再流式（语义 2）', ()
 test('匹配放宽：任一侧缺 run id 视为匹配', () => {
   const view = applyDelta(emptyView(), { text: 'no-run' })
   const folded = foldRunFinished(view, { run: 'r7', status: 'done' })
-  assert.equal(folded.action, 'finalize')
+  // 匹配成立（未匹配会回 ignore）；无业务结局的 `done` 是契约违例，非静默成功。
+  assert.equal(folded.action, 'violation')
+})
+
+// ---- 三通道收束规则（全函数）与 I3 / I19 ----
+
+test('I3：status=done 且无业务结局 = 契约违例，不静默当成功', () => {
+  const display = resolveDisplayOutcome({ status: 'done', reasons: [] }, null)
+  assert.equal(display.kind, 'violation')
+  assert.equal(display.code, 'contract_violation')
+  const folded = foldRunFinished(applyDelta(emptyView(), { run: 'r1', text: 'x' }), {
+    run: 'r1',
+    status: 'done',
+  })
+  assert.equal(folded.action, 'violation')
+  assert.equal(folded.view.inFlight.violation, true)
+  assert.equal(isStreaming(folded.view), false)
+})
+
+test('收束规则：机械 refused / cancelled 且无业务结局 → 合成 refused{transport}', () => {
+  const refused = resolveDisplayOutcome({ status: 'refused', reasons: ['eff_error'] }, null)
+  assert.equal(refused.kind, 'refused')
+  assert.equal(refused.attributableTo, 'transport')
+  assert.equal(refused.code, 'eff_error')
+  assert.equal(refused.retryable, true)
+  // reasons 缺省 / 无字符串时回落固定码。
+  const cancelled = resolveDisplayOutcome({ status: 'cancelled', reasons: [] }, null)
+  assert.equal(cancelled.kind, 'refused')
+  assert.equal(cancelled.code, 'transport_refused')
+  // 无业务结局的机械取消不得当成成功的 committed。
+  const folded = foldRunFinished(applyDelta(emptyView(), { run: 'r1', text: 'half' }), {
+    run: 'r1',
+    status: 'cancelled',
+  })
+  assert.equal(folded.action, 'refused')
+  assert.equal(folded.view.inFlight.finalizing, true)
+})
+
+test('收束规则：有业务结局时一律以业务结局为准（即便 status=done）', () => {
+  const business = normalizeOutcome({ kind: 'refused', code: 'model_unreachable', attributableTo: 'model' })
+  const display = resolveDisplayOutcome({ status: 'done' }, business)
+  assert.equal(display.kind, 'refused')
+  assert.equal(display.attributableTo, 'model')
+  assert.equal(display.code, 'model_unreachable')
+})
+
+test('I19：逐类注入业务结局，在途渲染分支正确（refused 呈现失败，不落回成功）', () => {
+  const cases = [
+    { kind: 'committed', action: 'finalize' },
+    { kind: 'refused', action: 'refused' },
+    { kind: 'cancelled', action: 'cancel' },
+    { kind: 'interrupted', action: 'interrupt' },
+  ]
+  for (const injected of cases) {
+    let view = applyRunStarted(emptyView(), { run: 'r1', thread: 'c1', turn_id: 'turn-1' })
+    view = applyTurnSettled(view, {
+      turn_id: 'turn-1',
+      outcome: { kind: injected.kind, code: injected.kind, attributableTo: 'owner' },
+    })
+    const folded = foldRunFinished(view, { run: 'r1', status: 'done' })
+    assert.equal(folded.action, injected.action, `kind=${injected.kind}`)
+    if (injected.kind !== 'committed') {
+      assert.notEqual(folded.view.inFlight.outcome, null)
+      assert.equal(folded.view.inFlight.outcome.kind, injected.kind)
+      assert.notEqual(outcomeDisplayCode(folded.view.inFlight.outcome), 'unknown')
+    }
+  }
+})
+
+test('持久回合结局块：settled 且非 committed 才渲染；在途同 turn 跳过', () => {
+  const base = {
+    ...emptyView('t1'),
+    turns: [
+      { turn_id: 't1', conv: 'c1', state: 'open', outcome: null },
+      { turn_id: 't2', conv: 'c1', state: 'settled', outcome: { kind: 'refused', code: 'boom', attributableTo: 'tool' } },
+      { turn_id: 't3', conv: 'c1', state: 'settled', outcome: { kind: 'committed' } },
+    ],
+  }
+  const blocks = outcomeBlocks({ ...base, inFlight: { turnId: 't1' } })
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].turnId, 't2')
+  assert.equal(blocks[0].outcome.code, 'boom')
+  // 在途回合（同 turn_id）已由在途块呈现，持久块跳过，避免重复。
+  assert.equal(outcomeBlocks({ ...base, inFlight: { turnId: 't2' } }).length, 0)
+  // 非终态 / committed 均不出块。
+  assert.equal(outcomeBlocks({ ...base, inFlight: null }).length, 1)
 })
 
 test('工具卡 fold：有序、按 call_id 去重后置末、chunks 追加、end 标记', () => {
@@ -345,6 +441,49 @@ test('乐观用户气泡：卸载 / 重挂后仍在，权威快照含同文消�
   const settled = reconcilePendingUser(applySnapshot(remounted, settledHistory, 'c1'))
   assert.equal(settled.pendingUser, null)
   assert.equal(settled.inFlight.text, '生成中')
+})
+
+test('同 turn_id 续跑复用同一在途块，不新开（避免同批工具卡再次出现）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1', turn_id: 'turn-1' })
+  view = applyDelta(view, { run: 'r1', text: '先读一下' })
+  // 段续跑 / 审批续跑：同一 turn_id、新 run；在途块复用，已有内容不丢、run 换代。
+  view = applyRunStarted(view, { run: 'r2', thread: 't1', turn_id: 'turn-1', source: 'resume' })
+  assert.equal(view.inFlight.run, 'r2')
+  assert.equal(view.inFlight.turnId, 'turn-1')
+  assert.equal(view.inFlight.text, '先读一下')
+  // 不同 turn_id：替换为新块。
+  const next = applyRunStarted(view, { run: 'r3', thread: 't1', turn_id: 'turn-2' })
+  assert.equal(next.inFlight.turnId, 'turn-2')
+  assert.equal(next.inFlight.text, '')
+})
+
+test('挂起：chat.turn.pending 标记 suspended，run.finished 不收口（action=suspend）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1', turn_id: 'turn-1' })
+  view = applyDelta(view, { run: 'r1', text: '需要审批' })
+  view = applyTurnPending(view, { run: 'r1', thread: 't1', turn_id: 'turn-1', pending: 'approval' })
+  assert.equal(view.inFlight.suspended, true)
+  assert.equal(isStreaming(view), false)
+  const folded = foldRunFinished(view, { run: 'r1', status: 'done' })
+  assert.equal(folded.action, 'suspend')
+  assert.notEqual(folded.view.inFlight, null)
+  assert.equal(folded.view.inFlight.suspended, true)
+  // 批准续跑：同一 turn_id 的 started 清除挂起，在途块继续。
+  const resumed = applyRunStarted(folded.view, { run: 'r2', thread: 't1', turn_id: 'turn-1', source: 'resume' })
+  assert.equal(resumed.inFlight.suspended, false)
+  assert.equal(resumed.inFlight.text, '需要审批')
+  assert.equal(isStreaming(resumed), true)
+})
+
+test('挂起期间终局：chat.turn.settled 清挂起并进入定稿 / 取消收口', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1', turn_id: 'turn-1' })
+  view = applyTurnPending(view, { turn_id: 'turn-1' })
+  const settled = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'committed' } })
+  assert.equal(settled.inFlight.suspended, false)
+  assert.equal(settled.inFlight.finalizing, true)
+  // 取消：标 cancelled，快照清除。
+  const cancelled = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'cancelled' } })
+  assert.equal(cancelled.inFlight.cancelled, true)
+  assert.equal(applySnapshot(cancelled, historyFixture(), 'c1').inFlight, null)
 })
 
 test('乐观用户气泡：取消 / 线程切换走显式清除', () => {

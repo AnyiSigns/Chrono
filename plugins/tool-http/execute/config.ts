@@ -18,6 +18,10 @@ export interface SourceConfig {
   query_param: string
   timeout_ms: number
   language: string
+  /** 固定请求头（如 `API-Key`）；与默认抓取头合并，源声明优先。 */
+  headers: Record<string, string>
+  /** 固定查询参数（如 `format=rss`、`count`）；与 query_param 合并。 */
+  extra_query: Record<string, string>
 }
 
 /** 归一化后的运行配置。 */
@@ -31,6 +35,9 @@ export interface Config {
   redirect_max: number
   block_private_hosts: boolean
   fetcher_cmd: string
+  /** 传给 fetcher 子进程的环境变量（隔离执行 `env_clear` 后注入）。走代理时设
+   *  `NODE_USE_ENV_PROXY=1` 与 `HTTPS_PROXY`/`HTTP_PROXY`（Node 24 的 fetch 默认不认代理）。 */
+  fetcher_env: Record<string, string>
   source_timeout_ms: number
   sources: SourceConfig[]
 }
@@ -44,40 +51,22 @@ export const BUILTIN_DEFAULTS: Rec = {
   top_n: 10,
   output_max: 1048576,
   user_agent: 'chrono-tool-http/1.0',
-  obey_robots: true,
+  obey_robots: false,
   redirect_max: 5,
   block_private_hosts: true,
-  fetcher_cmd: 'fetcher',
+  fetcher_cmd: '',
+  fetcher_env: {},
   source_timeout_ms: DEFAULT_SOURCE_TIMEOUT_MS,
   sources: [
     {
-      id: 'duckduckgo-html',
-      name: 'DuckDuckGo HTML',
-      kind: 'html',
-      parse: 'ddg-html',
-      enabled: true,
-      endpoint: 'https://html.duckduckgo.com/html/',
-      query_param: 'q',
-      timeout_ms: 8000,
-    },
-    {
-      id: 'duckduckgo-lite',
-      name: 'DuckDuckGo Lite',
-      kind: 'html',
-      parse: 'ddg-lite',
-      enabled: true,
-      endpoint: 'https://lite.duckduckgo.com/lite/',
-      query_param: 'q',
-      timeout_ms: 8000,
-    },
-    {
-      id: 'bing',
-      name: 'Bing',
-      kind: 'html',
-      parse: 'bing',
+      id: 'bing-rss',
+      name: 'Bing RSS',
+      kind: 'bing-rss',
+      parse: 'bing-rss',
       enabled: true,
       endpoint: 'https://www.bing.com/search',
       query_param: 'q',
+      extra_query: { format: 'rss' },
       timeout_ms: 8000,
     },
     {
@@ -88,26 +77,6 @@ export const BUILTIN_DEFAULTS: Rec = {
       enabled: true,
       endpoint: 'https://www.mojeek.com/search',
       query_param: 'q',
-      timeout_ms: 8000,
-    },
-    {
-      id: 'searxng',
-      name: 'SearXNG',
-      kind: 'searxng',
-      parse: 'searxng',
-      enabled: true,
-      instances: ['https://searx.be', 'https://searxng.site'],
-      query_param: 'q',
-      timeout_ms: 8000,
-    },
-    {
-      id: 'wikipedia',
-      name: 'Wikipedia API',
-      kind: 'wikipedia',
-      parse: 'wikipedia-json',
-      enabled: true,
-      endpoint: 'https://en.wikipedia.org/w/api.php',
-      language: 'en',
       timeout_ms: 8000,
     },
   ],
@@ -130,6 +99,16 @@ function pickString(raw: Json | undefined, fallback: string): string {
   return typeof raw === 'string' && raw.length > 0 ? raw : fallback
 }
 
+/** 字符串映射：只收值非空的键，保持声明顺序（确定性）。 */
+function stringMap(raw: Json | undefined): Record<string, string> {
+  if (!isRec(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'string' && value.length > 0) out[key] = value
+  }
+  return out
+}
+
 function parseSource(raw: Json, fallbackTimeout: number): SourceConfig | null {
   if (!isRec(raw)) return null
   const id = pickString(raw['id'], '')
@@ -150,6 +129,8 @@ function parseSource(raw: Json, fallbackTimeout: number): SourceConfig | null {
     query_param: pickString(raw['query_param'], 'q'),
     timeout_ms: pickInt(raw['timeout_ms'], fallbackTimeout, 100, 120000),
     language: pickString(raw['language'], 'en'),
+    headers: stringMap(raw['headers']),
+    extra_query: stringMap(raw['extra_query']),
   }
 }
 
@@ -174,10 +155,11 @@ export function normalizeConfig(raw: Rec | null | undefined): Config {
     top_n: pickInt(src['top_n'], 10, 1, 100),
     output_max: pickInt(src['output_max'], 1048576, 1, 64 * 1024 * 1024),
     user_agent: pickString(src['user_agent'], 'chrono-tool-http/1.0'),
-    obey_robots: pickBool(src['obey_robots'], true),
+    obey_robots: pickBool(src['obey_robots'], false),
     redirect_max: pickInt(src['redirect_max'], 5, 0, 20),
     block_private_hosts: pickBool(src['block_private_hosts'], true),
-    fetcher_cmd: pickString(src['fetcher_cmd'], 'fetcher'),
+    fetcher_cmd: pickString(src['fetcher_cmd'], ''),
+    fetcher_env: stringMap(src['fetcher_env']),
     source_timeout_ms: sourceTimeout,
     sources:
       parseSources(src['sources'], sourceTimeout) ??

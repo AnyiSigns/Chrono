@@ -3,6 +3,8 @@
 
 import { resolveDowngrade } from './downgrade.ts'
 import { displayParts } from './commit-parts.ts'
+import { isCancelled } from './cancel.ts'
+import { latestCheckpoint, renderCheckpointText, subagentTaskText, toSubagentResult } from './subagent.ts'
 import {
   contractId,
   effectsMethods,
@@ -13,6 +15,7 @@ import {
 } from './model.ts'
 import { checkToolCalls } from './rules.ts'
 import { asArray, asString, isRecord, putOp } from './plan.ts'
+import { appendStep } from './steplog.ts'
 import type { ChosenInstance } from './scope.ts'
 import type { TraceRecorder } from './trace.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState } from './types.ts'
@@ -76,25 +79,76 @@ function assembleBag(input: NodeDispatchInput): Rec {
     'tier',
     'persona',
     'skills_select',
+    // 子代理隔离：父摘要 / 任务提示词 / 父检查点随装配下传，消费方按线程口径取用。
+    'parent_summaries',
+    'task_prompt',
+    'parent_checkpoint',
   ])
   const system = input.model.prompts['system']
   if (isRecord(system) && typeof system['text'] === 'string') out['system_prompt'] = system['text']
   else if (bag['system_prompt'] !== undefined) out['system_prompt'] = bag['system_prompt']
   if (input.rs.extraMessages.length > 0) out['extra_messages'] = input.rs.extraMessages
+  // 阈值单一真源：解析后的扁平 thresholds map（含 `large_artifact_bytes`）随 context bag 下传，
+  // 消费方据此覆盖自身 policy 默认，避免两处各定义默认值漂移。
+  out['thresholds'] = input.model.thresholds
+  // 最近一次完成的模型调用用量随组装下传，供 context-window 校准 token 估算（缺失即不落键）。
+  const usage = isRecord(input.rs.shared['last_usage']) ? (input.rs.shared['last_usage'] as Rec) : null
+  if (usage !== null) out['usage'] = usage
   return out
 }
 
-/** 模型调用的 bag（agent.step / subagent / evolve.propose 共用）。 */
+/**
+ * 模型调用的连接实例：把上下文组装算出的 `max_output` 对齐进 `config.params.max_tokens`，
+ * 使模型真实输出上限与预算假设一致（否则适配器回落自身默认，预算余量与实际不符）。
+ */
+function modelConfig(input: NodeDispatchInput): Json {
+  const base = input.bag['config']
+  if (!isRecord(base)) return base ?? null
+  const params = isRecord(input.rs.shared['model_params']) ? (input.rs.shared['model_params'] as Rec) : null
+  const maxOutput = params !== null ? params['max_output'] : undefined
+  if (typeof maxOutput !== 'number' || !Number.isFinite(maxOutput)) return base
+  const configParams = isRecord(base['params']) ? (base['params'] as Rec) : {}
+  return { ...base, params: { ...configParams, max_tokens: maxOutput } }
+}
+
+/** 模型调用的 bag（agent.step / evolve.propose 共用）。 */
 function modelBag(input: NodeDispatchInput): Rec {
   const bag = input.bag
   const messages = input.inputs['messages']
   const out: Rec = {
-    config: bag['config'] ?? null,
+    config: modelConfig(input),
     messages: Array.isArray(messages) ? messages : input.rs.messages,
   }
   if (Array.isArray(bag['tools'])) out['tools'] = bag['tools']
   if (bag['resilience'] !== undefined) out['resilience'] = bag['resilience']
   if (bag['tool_choice'] !== undefined) out['tool_choice'] = bag['tool_choice']
+  // 前缀缓存提示由 context.assemble 产出（厂商中立），原样转发给模型适配器；缺失即不落键。
+  const cache = isRecord(input.rs.shared['last_cache']) ? (input.rs.shared['last_cache'] as Rec) : null
+  if (cache !== null) out['cache'] = cache
+  // 回合身份随模型调用下传：model-protocol 据此把在途 HTTP 请求登记进可中止表。
+  if (bag['turn_id'] !== undefined) out['turn_id'] = bag['turn_id']
+  return out
+}
+
+/**
+ * 子代理模型调用 bag：上下文 = 任务 + 父检查点，**不含父消息历史**；
+ * 返回结构化结果而非子代理全程记录（长任务里最便宜的上下文节省）。
+ * 父检查点取自本回合最后一条结构化 `checkpoint` 步记录（同一回合内委派场景）。
+ */
+function subagentBag(input: NodeDispatchInput): Rec {
+  const task = subagentTaskText(input.inputs, input.bag)
+  const checkpoint = latestCheckpoint(input.bag, asString(input.bag['turn_id']))
+  const messages: Json[] = []
+  const system = input.model.prompts['subagent']
+  if (isRecord(system) && typeof system['text'] === 'string') messages.push({ role: 'system', content: system['text'] })
+  if (task !== null) messages.push({ role: 'user', content: task })
+  if (checkpoint !== null && isRecord(checkpoint['summary'])) {
+    const text = renderCheckpointText(checkpoint['summary'] as Rec)
+    if (text.length > 0) messages.push({ role: 'system', content: `[父检查点]\n${text}` })
+  }
+  const out: Rec = { config: modelConfig(input), messages, thread_kind: 'subagent' }
+  if (checkpoint !== null) out['parent_checkpoint'] = checkpoint
+  if (input.bag['turn_id'] !== undefined) out['turn_id'] = input.bag['turn_id']
   return out
 }
 
@@ -169,6 +223,7 @@ function dispatchBag(input: NodeDispatchInput, verdict: Json | null): Rec {
     'workspace_root',
     'tier',
     'grant',
+    'ignore',
     'question',
     'session',
     'session_id',
@@ -220,7 +275,7 @@ function stepOutput(value: Json): Rec {
 }
 
 /** 归一模型 tool_calls → 派发 calls（{call_id, tool, args}）；用于 gate / dispatch。 */
-export function toCalls(value: Json): Rec[] {
+export function toCalls(value: Json, providerOf: (tool: string) => string): Rec[] {
   const checked = checkToolCalls(isRecord(value) ? value['tool_calls'] : undefined)
   return checked.calls.map((call, index) => {
     const id = typeof call['call_id'] === 'string' ? call['call_id'] : `call-${index}`
@@ -230,28 +285,22 @@ export function toCalls(value: Json): Rec[] {
   })
 }
 
-/** 工具 → 提供者能力类（供 guard 判据 (port, tool)）；缺目录信息时回落 `tool`。 */
-let toolProviderLookup: (name: string) => string | null = () => null
-export function setToolProviderLookup(fn: (name: string) => string | null): void {
-  toolProviderLookup = fn
-}
-function providerOf(tool: string): string {
-  return toolProviderLookup(tool) ?? 'tool'
-}
-
-/** 从 `bag.tools`（工具目录）建立工具 → 提供者能力类映射（供 guard 判据 (port, tool)）。 */
-export function configureProviders(bag: Rec): void {
-  const tools = bag['tools']
-  const map = new Map<string, string>()
-  if (Array.isArray(tools)) {
-    for (const item of tools) {
-      if (!isRecord(item)) continue
-      const name = asString(item['name'])
-      const provider = asString(item['provider'])
-      if (name !== null && provider !== null) map.set(name, provider)
+/**
+ * 工具 → 提供者能力类解析器（供 guard 判据 (port, tool)）。
+ * 按当次调用自己的 `bag.tools` 惰性读取，故不持跨调用可变状态：并发 `interpret` 各用各的目录。
+ * 缺目录信息回落 `tool`。
+ */
+export function providerResolver(bag: Rec): (tool: string) => string {
+  return (tool: string): string => {
+    const tools = bag['tools']
+    if (Array.isArray(tools)) {
+      for (const item of tools) {
+        if (!isRecord(item) || item['name'] !== tool) continue
+        return asString(item['provider']) ?? 'tool'
+      }
     }
+    return 'tool'
   }
-  setToolProviderLookup((name) => map.get(name) ?? null)
 }
 
 /**
@@ -262,7 +311,6 @@ export function configureProviders(bag: Rec): void {
 async function ensureToolDirectory(input: NodeDispatchInput): Promise<void> {
   const bag = input.bag
   if ((Array.isArray(bag['tools']) && bag['tools'].length > 0) || isRecord(bag['directory'])) {
-    configureProviders(bag)
     return
   }
   const listBag = pick(bag, ['tools_bindings', 'mcp_tools'])
@@ -273,7 +321,6 @@ async function ensureToolDirectory(input: NodeDispatchInput): Promise<void> {
   bag['tools'] = tools
   bag['directory'] = { tools, rejected }
   input.trace.recordEff(input.iter, 'tools', 'list', listBag, value, outcome.ok ? 'ok' : 'transport_failed')
-  configureProviders(bag)
 }
 
 /** verify 的 dispatch 结果 → `{report:{passed, detail, exit_code}}`（post / trace 的输入面）。 */
@@ -305,44 +352,45 @@ function verifyBag(input: NodeDispatchInput): { bag: Rec; skipped: boolean } {
   return { bag: out, skipped: false }
 }
 
-function commitBag(input: NodeDispatchInput): Rec {
-  const bag = input.bag
-  const session = isRecord(bag['session']) ? (bag['session'] as Rec) : {}
-  const slots = isRecord(bag['slots']) ? (bag['slots'] as Rec) : isRecord(bag['input_body']) ? (bag['input_body'] as Rec) : {}
-  const inputValue = bag['input']
-  const slot = isRecord(inputValue) && typeof inputValue['kind'] === 'string' ? inputValue : { kind: 'chat.message', text: asString(isRecord(inputValue) ? inputValue['content'] : undefined) ?? '' }
-  const userText = asString(isRecord(inputValue) ? inputValue['text'] ?? inputValue['content'] : undefined) ?? ''
-  const message = isRecord(input.inputs['message']) ? (input.inputs['message'] as Rec) : {}
-  const refusal = isRecord(input.inputs['refusal']) ? (input.inputs['refusal'] as Rec) : null
-  const assistant: Rec = { content: typeof message['content'] === 'string' ? message['content'] : '' }
+/** 助手展示记录：正文 + 可选用量 + 展示 parts（推理 / 正文 / 工具卡按到达序）。 */
+export function assistantRecord(rs: RunState, message: Rec, tools: Json[]): Rec {
+  const assistant: Rec = { content: typeof message['content'] === 'string' ? (message['content'] as string) : '' }
   if (isRecord(message['usage'])) assistant['meta'] = { usage: message['usage'] }
-  // 展示 parts：推理 / 正文 / 工具卡按到达序落盘，定稿后 UI 仍能渲染工具卡与推理块。
   // 纯文本回合不写 parts（content 已覆盖），避免历史无谓膨胀。
-  const parts = displayParts(
-    input.rs.extraMessages,
-    message,
-    Array.isArray(bag['tools']) ? (bag['tools'] as Json[]) : [],
-  )
+  const parts = displayParts(rs.extraMessages, message, tools)
   if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
-  const pending = isRecord(input.inputs['pending']) ? (input.inputs['pending'] as Rec) : null
-  const out: Rec = {
-    session,
-    slots,
-    thread_id: input.env.thread ?? '_main',
-    slot,
-    user: { content: userText },
-    assistant,
+  return assistant
+}
+
+/**
+ * 回合收口步：把本轮最终助手消息（含工具卡 / 推理块）作为 step.result 追加进回合日志。
+ * 挂起（inputs.pending）与收口共用同一形状：内容都先落盘，结局由 `turn.settle` 另写。
+ */
+function commitStepRecord(input: NodeDispatchInput): Rec | null {
+  const turnId = asString(input.bag['turn_id'])
+  if (turnId === null) return null
+  const message = isRecord(input.inputs['message']) ? (input.inputs['message'] as Rec) : {}
+  const tools = Array.isArray(input.bag['tools']) ? (input.bag['tools'] as Json[]) : []
+  const record: Rec = {
+    type: 'step.result',
+    turn_id: turnId,
+    seq: input.rs.steps + 1,
+    assistant: assistantRecord(input.rs, message, tools),
+    tool_results: Array.isArray(input.inputs['results']) ? (input.inputs['results'] as Json[]) : [],
   }
-  if (typeof session['current'] === 'string') out['conversation'] = session['current']
-  // 无当前会话的自动建会话规格（由 chat 装配）：随 commit 透传给 session 原子建 main 会话。
-  if (isRecord(bag['new_conversation'])) out['new_conversation'] = bag['new_conversation']
-  // 挂起收口带挂起原因 + resume 游标；续跑收口只追加助手 / 系统消息（用户消息已落账）。
-  if (pending !== null) out['pending'] = pending
-  if (bag['append_commit'] === true) out['append'] = true
-  // 落盘错误码取稳定拒绝码（`pre_unsat` / `capability_mismatch` …），不取内部 reason 明细：
-  // 明细（如 `last_message_role`）只进 trace，UI 按码取人话。
-  if (refusal !== null) out['error'] = asString(refusal['code']) ?? asString(refusal['message']) ?? 'refused'
-  return out
+  if (isRecord(message['usage'])) record['usage'] = message['usage']
+  return record
+}
+
+/** 收口节点：只追加最终内容步记录，不写世界、不定结局（结局由解释器 `turn.settle` 独占）。 */
+async function appendCommitStep(input: NodeDispatchInput): Promise<NodeDispatchResult> {
+  const record = commitStepRecord(input)
+  if (record === null) return { ok: true, value: { appended: false }, outcome: 'ok' }
+  const appended = await appendStep(input.port, record)
+  if (!appended.ok) {
+    return { ok: false, value: { ok: false, error: { code: 'owner_unavailable', message: 'turn step append failed' } }, outcome: 'error', code: 'owner_unavailable' }
+  }
+  return { ok: true, value: { appended: true }, outcome: 'ok' }
 }
 
 /** 派发一个节点；返回归一结果（不抛，失败作数据）。 */
@@ -370,16 +418,28 @@ export async function dispatchNode(input: NodeDispatchInput): Promise<NodeDispat
     return callPort(input, 'tools', 'dispatch', dispatchBag(input, input.inputs['verdict'] ?? null), false)
   }
   if (contractIdValue === 'turn.commit') {
-    return callPort(input, 'session', 'commit', commitBag(input), false)
+    return appendCommitStep(input)
   }
   if (contractIdValue === 'context.assemble') {
     await ensureToolDirectory(input)
     return callPort(input, 'context', 'build', assembleBag(input), false)
   }
   if (contractIdValue === 'recall') {
-    const out = pick(input.bag, ['workspace_id', 'budget'])
+    // 权威键名取自消费方 memory-retrieval：工作区 `workspace`、预算 `recall_budget`（query 两侧一致）。
+    // 源值仍取本插件内部键（`workspace_id` / `budget`），只对齐发出的键名，避免消费方 fail-open 静默回落。
+    const out: Rec = {}
+    const workspace = input.bag['workspace_id'] ?? input.bag['workspace']
+    if (workspace !== undefined && workspace !== null) out['workspace'] = workspace
+    const budget = input.bag['recall_budget'] ?? input.bag['budget']
+    if (budget !== undefined && budget !== null) out['recall_budget'] = budget
     out['query'] = input.bag['task'] ?? null
     return callPort(input, 'retrieval', 'search', out, false)
+  }
+  if (contractIdValue === 'subagent') {
+    // 子代理隔离：用任务 + 父检查点的专用 bag（不读父消息历史），产出归一为结构化结果。
+    const result = await callPort(input, cap, method, subagentBag(input), true)
+    if (!result.ok) return result
+    return { ...result, value: toSubagentResult(result.value) }
   }
   if (cap.length === 0) {
     return { ok: true, value: {}, outcome: 'ok' }
@@ -485,7 +545,8 @@ async function callPort(
   }
   const error = isRecord(value['error']) ? (value['error'] as Rec) : {}
   const code = asString(error['code']) ?? 'downstream_refusal'
-  if (isModel) {
+  // 已取消的回合不降级重试模型：abort 后的失败不该再起一次调用。
+  if (isModel && !isCancelled(asString(input.bag['turn_id']))) {
     const downgraded = await resolveDowngrade(input.port, input.pins, input.model.thresholds, code, cap)
     if (downgraded !== null) {
       const retry = await input.port.call(downgraded.port, method, bag)

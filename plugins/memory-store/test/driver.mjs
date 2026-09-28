@@ -153,8 +153,8 @@ export function startService(options = {}) {
   }
 }
 
-/** 轮询 search 直到索引就绪（或超时）。 */
-export async function waitReady(drv, args, timeoutMs = 5000) {
+/** 轮询 search 直到索引就绪（或超时）。上限取宽裕值：满载机器上原生服务启动会明显变慢。 */
+export async function waitReady(drv, args, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const result = await drv.call('search', args)

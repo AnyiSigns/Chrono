@@ -16,7 +16,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
-use crate::glob::{glob_match, looks_like_regex, regex_search};
+use crate::casefold::casefold;
+use crate::glob::{glob_match, regex_search, regex_unsupported};
 use crate::grant::{self, Grant, GrantStore};
 use crate::hash::sha256_hex;
 use crate::tiers::{self, Effective, FsScope};
@@ -46,6 +47,12 @@ fn path_not_found(message: impl Into<String>) -> FsError {
 fn not_a_directory(message: impl Into<String>) -> FsError {
     FsError::new("not_a_directory", message)
 }
+fn not_a_file(message: impl Into<String>) -> FsError {
+    FsError::new("not_a_file", message)
+}
+fn io_error(message: impl Into<String>) -> FsError {
+    FsError::new("io_error", message)
+}
 fn edit_conflict(message: impl Into<String>) -> FsError {
     FsError::new("edit_conflict", message)
 }
@@ -62,12 +69,12 @@ fn permission_denied(message: impl Into<String>) -> FsError {
     FsError::new("permission_denied", message)
 }
 
-/// io 错误 → 结构化码：权限错误如实归 `permission_denied`，不伪装成 `path_not_found`。
+/// io 错误 → 结构化码：权限 / 不存在如实归类，其余归 `io_error`，不伪装成 `path_not_found`。
 fn map_io_error(err: std::io::Error) -> FsError {
     match err.kind() {
         std::io::ErrorKind::NotFound => path_not_found(err.to_string()),
         std::io::ErrorKind::PermissionDenied => permission_denied(err.to_string()),
-        _ => path_not_found(err.to_string()),
+        _ => io_error(err.to_string()),
     }
 }
 
@@ -308,7 +315,7 @@ fn strip_extended(path: &Path) -> String {
     text
 }
 
-fn norm_key(path: &Path) -> String {
+pub(crate) fn norm_key(path: &Path) -> String {
     let text = strip_extended(path).replace('\\', "/");
     if cfg!(windows) {
         text.to_lowercase()
@@ -318,7 +325,7 @@ fn norm_key(path: &Path) -> String {
 }
 
 /// `target` 是否落在 `root` 内（含自身）；Windows 大小写不敏感、分隔符归一。
-fn is_inside(target: &Path, root: &Path) -> bool {
+pub(crate) fn is_inside(target: &Path, root: &Path) -> bool {
     let target_key = norm_key(target);
     let root_key = norm_key(root);
     if target_key == root_key {
@@ -357,29 +364,53 @@ fn grant_path_allows(grant: &Grant, context: &FsContext, target: &Path) -> bool 
 // ── 文本工具 ───────────────────────────────────────────────────────────────
 
 fn has_nul(bytes: &[u8]) -> bool {
-    bytes.iter().take(8000).any(|byte| *byte == 0)
+    bytes.contains(&0)
 }
 
+/// 行切分：只按 `\n` 切、保留行尾 `\r`（CRLF 文件的 `\r` 属于内容，读窗口据此与文件字节一致）；
+/// 不保留末尾空行（`a\n` 只有一行）。
 fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
     }
-    let mut lines: Vec<String> = text
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
-        .collect();
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
     if lines.last().map(String::is_empty).unwrap_or(false) {
         lines.pop();
     }
     lines
 }
 
+/// 归一为 CRLF：先统一成 LF，再把 `\n` 换成 `\r\n`。
+fn to_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// 行尾口径适配：文件是 CRLF、而 old 用 LF 时按文件风格转换 old/new（反之亦然），
+/// 使「用别处读到的 LF 文本去改 CRLF 文件」可用；混合行尾的文件不做转换。
+fn adapt_line_endings<'a>(
+    text: &str,
+    old: &'a str,
+    new: &'a str,
+) -> (std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>) {
+    use std::borrow::Cow;
+    let file_crlf = text.contains("\r\n") && !text.replace("\r\n", "").contains('\r');
+    if file_crlf && !old.contains('\r') {
+        return (Cow::Owned(to_crlf(old)), Cow::Owned(to_crlf(new)));
+    }
+    if !text.contains('\r') && old.contains('\r') {
+        let to_lf = |value: &str| value.replace("\r\n", "\n");
+        return (Cow::Owned(to_lf(old)), Cow::Owned(to_lf(new)));
+    }
+    (Cow::Borrowed(old), Cow::Borrowed(new))
+}
+
 /// 把字节截到 `max_bytes` 内的最长 UTF-8 前缀（不切断多字节字符）；返回（文本，是否被截断）。
-fn decode_capped(mut bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
+/// 截断后仍非合法 UTF-8（非 NUL 的伪二进制，如 GBK / UTF-16）→ `binary_unsupported`，不再静默 lossy 解码。
+fn decode_utf8_capped(mut bytes: Vec<u8>, max_bytes: usize) -> Result<(String, bool), FsError> {
     if bytes.len() <= max_bytes {
         return match String::from_utf8(bytes) {
-            Ok(text) => (text, false),
-            Err(err) => (String::from_utf8_lossy(&err.into_bytes()).into_owned(), false),
+            Ok(text) => Ok((text, false)),
+            Err(_) => Err(binary_unsupported("file is not valid UTF-8")),
         };
     }
     let mut cut = max_bytes;
@@ -389,8 +420,8 @@ fn decode_capped(mut bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
     }
     bytes.truncate(cut);
     match String::from_utf8(bytes) {
-        Ok(text) => (text, true),
-        Err(err) => (String::from_utf8_lossy(&err.into_bytes()).into_owned(), true),
+        Ok(text) => Ok((text, true)),
+        Err(_) => Err(binary_unsupported("file is not valid UTF-8")),
     }
 }
 
@@ -439,8 +470,18 @@ fn matches_pattern(pattern: &str, relative: &str, name: &str) -> bool {
     }
 }
 
+/// 忽略判定：含 `/` 的条目按相对路径 glob；否则按「文件名 / 整路径 / **任一路径段**」匹配——
+/// 故目录名条目（`.git` / `node_modules` / `target` 等）能命中目录并整棵剪枝，`*.log` 仍按文件段命中。
 fn ignored(patterns: &[String], relative: &str, name: &str) -> bool {
-    patterns.iter().any(|pattern| matches_pattern(pattern, relative, name))
+    patterns.iter().any(|pattern| {
+        if pattern.contains('/') {
+            return glob_match(pattern, relative);
+        }
+        if glob_match(pattern, name) || glob_match(pattern, relative) {
+            return true;
+        }
+        relative.split('/').any(|segment| glob_match(pattern, segment))
+    })
 }
 
 // ── op: stat ───────────────────────────────────────────────────────────────
@@ -479,14 +520,14 @@ fn op_read(
     }
     let meta = fs::metadata(&canon).map_err(map_io_error)?;
     if !meta.is_file() {
-        return Err(not_a_directory("expected a file"));
+        return Err(not_a_file("expected a file"));
     }
     // 读前按上限截断（最多读 output_max + 1 字节）：超限返回截断内容 + truncated（非错）。
     let (raw, _) = read_verified_capped(&canon, context.output_max)?;
     if has_nul(&raw) {
         return Err(binary_unsupported("file contains NUL bytes"));
     }
-    let (text, size_truncated) = decode_capped(raw, context.output_max);
+    let (text, size_truncated) = decode_utf8_capped(raw, context.output_max)?;
     let lines = split_lines(&text);
     let total_lines = lines.len();
     let offset = arg_usize(args, "offset").unwrap_or(0).min(total_lines);
@@ -496,11 +537,31 @@ fn op_read(
         None => total_lines,
     };
     let window = lines[offset..end].join("\n");
+    let lines_returned = end - offset;
+    // 字节被 output_max 截断时，文件其余内容不可再经本工具读到：`has_more` 不成立、不提供续读游标。
+    let has_more = !size_truncated && end < total_lines;
+    let next_offset = if has_more { json!(end) } else { Value::Null };
+    // 行号统一 1 基：空窗口仍给出游标所指行（offset+1），`end_line` 无内容时为 null。
+    let start_line = offset + 1;
+    let end_line = if lines_returned > 0 {
+        json!(end)
+    } else {
+        Value::Null
+    };
     Ok(json!({
         "text": window,
-        // 超上限时只读到截断处，total_lines 为已读部分的计数。
+        // 未截断时为全文行数；被 output_max 截断时仅为已读部分的计数（见 content_truncated）。
         "total_lines": total_lines,
-        // 返回的是文件窗口而非全文（超上限 / 跳过头尾被裁）即标记，非错。
+        // 返回窗口首行 / 末行的 1 基行号；`text` 为原始文本、不带行号前缀。
+        "start_line": start_line,
+        "end_line": end_line,
+        "lines_returned": lines_returned,
+        // 窗口之后是否还有行可续读；续读用 next_offset 作为下一次 offset（0 基）。
+        "has_more": has_more,
+        "next_offset": next_offset,
+        // 内容因 output_max 被按字节截断（末行可能不完整、文件其余不可读）；标记，非错。
+        "content_truncated": size_truncated,
+        // 窗口不是整份文件（跳过头 / 未到尾 / 按字节截断）即标记，非错。保留旧口径。
         "truncated": size_truncated || offset > 0 || end < total_lines,
         "binary": false,
     }))
@@ -528,7 +589,7 @@ fn op_list(
     let limit = arg_usize(args, "limit").unwrap_or(200);
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    walk_files(&base_canon, &mut |file| {
+    walk_files(&base_canon, &base_canon, &ignore, &mut |file| {
         let relative = relative_slash(&base_canon, file);
         let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         if !matches_pattern(&pattern, &relative, &name) || ignored(&ignore, &relative, &name) {
@@ -552,8 +613,9 @@ fn op_list(
     Ok(json!({ "paths": paths, "truncated": truncated }))
 }
 
-/// 递归收集文件（不跟随目录符号链接 / junction，避免环）；确定性由调用方排序保证。
-fn walk_files<F: FnMut(&Path)>(root: &Path, visit: &mut F) {
+/// 递归收集文件（不跟随目录符号链接 / junction，避免环）；命中忽略表的目录整棵剪枝。
+/// `base` 用于计算相对路径（与忽略表比对）；确定性由调用方排序保证。
+fn walk_files<F: FnMut(&Path)>(root: &Path, base: &Path, ignore: &[String], visit: &mut F) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -565,7 +627,12 @@ fn walk_files<F: FnMut(&Path)>(root: &Path, visit: &mut F) {
         };
         let path = entry.path();
         if file_type.is_dir() {
-            walk_files(&path, visit);
+            let relative = relative_slash(base, &path);
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !ignore.is_empty() && ignored(ignore, &relative, &name) {
+                continue;
+            }
+            walk_files(&path, base, ignore, visit);
         } else if file_type.is_file() {
             visit(&path);
         }
@@ -595,15 +662,35 @@ fn op_grep(
     }
     let glob_filter = arg_str(args, "glob").map(str::to_string);
     let ignore = arg_strings(args, "ignore");
-    let limit = arg_usize(args, "limit").unwrap_or(100);
-    // 显式 `regex` 开关优先；否则仅在含正则专属元字符时按正则（`. * ? +` 等常见字面不触发）。
-    let is_regex = args
-        .get("regex")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| looks_like_regex(&pattern));
+    let limit = arg_usize(args, "limit").unwrap_or(200);
+    // 匹配模式：显式 `mode:"literal"|"regex"` 优先；否则 `regex` 布尔开关；两者都缺省按**字面**匹配
+    // （默认不猜正则，避免 `[error]` / `C:\foo` 这类字面量被静默当正则）。正则模式下先校验支持子集：
+    // 不支持即显式 `bad_args`，**绝不**静默退化按字面匹配。
+    let is_regex = match arg_str(args, "mode") {
+        Some("regex") => true,
+        Some("literal") => false,
+        Some(other) => {
+            return Err(bad_args(format!(
+                "unknown grep mode `{other}` (expected literal|regex)"
+            )))
+        }
+        None => args.get("regex").and_then(Value::as_bool).unwrap_or(false),
+    };
+    if is_regex {
+        if let Some(reason) = regex_unsupported(&pattern) {
+            return Err(bad_args(format!(
+                "regex pattern not supported: {reason}; use mode:\"literal\" or simplify the pattern"
+            )));
+        }
+    }
+
+    let ignore_case = arg_bool(args, "ignore_case");
+    let files_only = arg_bool(args, "files_only");
+    let before = arg_usize(args, "before").unwrap_or(0).min(20);
+    let after = arg_usize(args, "after").unwrap_or(0).min(20);
 
     let mut files: Vec<PathBuf> = Vec::new();
-    walk_files(&base_canon, &mut |file| {
+    walk_files(&base_canon, &base_canon, &ignore, &mut |file| {
         let relative = relative_slash(&base_canon, file);
         let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         if let Some(glob_filter) = &glob_filter {
@@ -618,33 +705,65 @@ fn op_grep(
     });
     files.sort();
 
+    let folded_pattern = if ignore_case {
+        casefold(&pattern)
+    } else {
+        pattern.clone()
+    };
     let mut matches = Vec::new();
     let mut used = 0usize;
     let mut truncated = false;
+    let mut skipped_binary = 0usize;
+    let mut skipped_too_large = 0usize;
+    let mut skipped_unreadable = 0usize;
     'outer: for file in &files {
         let Ok(meta) = fs::metadata(file) else {
+            skipped_unreadable += 1;
             continue;
         };
         if meta.len() as usize > context.output_max {
+            skipped_too_large += 1;
             continue;
         }
         let Ok(bytes) = fs::read(file) else {
+            skipped_unreadable += 1;
             continue;
         };
         if has_nul(&bytes) {
+            skipped_binary += 1;
             continue;
         }
         let Ok(text) = String::from_utf8(bytes) else {
+            skipped_binary += 1;
             continue;
         };
         let relative = relative_slash(&base_canon, file);
-        for (index, line) in split_lines(&text).iter().enumerate() {
-            let hit = if is_regex {
+        let lines = split_lines(&text);
+        let mut file_count = 0usize;
+        let mut file_first: Option<(usize, String)> = None;
+        for (index, line) in lines.iter().enumerate() {
+            // ignore_case：模式与命中行同做 Unicode casefold（表驱动，未做 NFC/NFD 规范化）；不改动正则结构校验。
+            let hit = if ignore_case {
+                let hay = casefold(line);
+                if is_regex {
+                    regex_search(&folded_pattern, &hay)
+                } else {
+                    hay.contains(folded_pattern.as_str())
+                }
+            } else if is_regex {
                 regex_search(&pattern, line)
             } else {
-                line.contains(&pattern)
+                line.contains(pattern.as_str())
             };
             if !hit {
+                continue;
+            }
+            file_count += 1;
+            if files_only {
+                // 每文件只保留首个命中（含行号）与命中总数，避免整文件命中刷屏。
+                if file_first.is_none() {
+                    file_first = Some((index + 1, line.chars().take(1000).collect()));
+                }
                 continue;
             }
             if matches.len() >= limit || used >= context.output_max {
@@ -652,15 +771,48 @@ fn op_grep(
                 break 'outer;
             }
             let excerpt: String = line.chars().take(1000).collect();
-            used += excerpt.len() + relative.len();
-            matches.push(json!({
+            let mut entry = json!({
                 "path": relative,
                 "line": index + 1,
                 "text": excerpt,
+            });
+            if before > 0 || after > 0 {
+                let context_line = |line: &String| -> String { line.chars().take(1000).collect() };
+                let start = index.saturating_sub(before);
+                let end = (index + after + 1).min(lines.len());
+                let before_lines: Vec<String> = lines[start..index].iter().map(context_line).collect();
+                let after_lines: Vec<String> = lines[index + 1..end].iter().map(context_line).collect();
+                entry["before"] = json!(before_lines);
+                entry["after"] = json!(after_lines);
+            }
+            used += excerpt.len() + relative.len();
+            matches.push(entry);
+        }
+        if files_only && file_count > 0 {
+            if matches.len() >= limit {
+                truncated = true;
+                break 'outer;
+            }
+            let (line, text) = file_first.unwrap_or((0, String::new()));
+            used += text.len() + relative.len();
+            matches.push(json!({
+                "path": relative,
+                "line": line,
+                "text": text,
+                "count": file_count,
             }));
         }
     }
-    Ok(json!({ "matches": matches, "truncated": truncated }))
+    Ok(json!({
+        "matches": matches,
+        "truncated": truncated,
+        // 未参与匹配的文件计数（不改变 matches 形状）：二进制 / 超 output_max / 不可读。
+        "skipped": {
+            "binary": skipped_binary,
+            "too_large": skipped_too_large,
+            "unreadable": skipped_unreadable,
+        },
+    }))
 }
 
 // ── op: write ──────────────────────────────────────────────────────────────
@@ -685,12 +837,24 @@ fn op_write(
     context.check_write(inside_workspace(context, &canon), &canon, store)?;
     let expected = arg_str(args, "expected_hash");
     let create = arg_bool(args, "create");
+    let exclusive = arg_bool(args, "exclusive");
     let hash = sha256_hex(data.as_bytes());
     // 写互斥：读校验与 rename 同处一个临界区；`exec` 绕过本锁的并发改写由 rename 前复核兜底。
     let _guard = write_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 独占新建：目标已存在即 edit_conflict（`create_new` 语义），使「新建」只发一次 write、可被单 op grant 覆盖。
+    if exclusive {
+        if !create {
+            return Err(path_not_found("file does not exist (create=false)"));
+        }
+        if canon.exists() {
+            return Err(edit_conflict("file already exists"));
+        }
+        atomic_write_new(&canon, data.as_bytes())?;
+        return Ok(json!({ "bytes_written": data.len(), "created": true, "hash": hash }));
+    }
     if exists {
         if !canon.is_file() {
-            return Err(not_a_directory("expected a file"));
+            return Err(not_a_file("expected a file"));
         }
         let mut base: Option<Vec<u8>> = None;
         if let Some(expected) = expected {
@@ -741,7 +905,7 @@ fn op_replace(
         return Err(path_not_found("file does not exist"));
     }
     if !canon.is_file() {
-        return Err(not_a_directory("expected a file"));
+        return Err(not_a_file("expected a file"));
     }
     // 写互斥：读校验 → 替换计算 → rename 同一临界区；`exec` 绕过本锁的并发改写由 rename 前复核兜底。
     let guard = write_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -772,18 +936,44 @@ fn op_replace(
             return Err(edit_conflict("expected_hash mismatch"));
         }
     }
-    let positions: Vec<usize> = text.match_indices(old).map(|(index, _)| index).collect();
+    // 行尾口径：直接匹配优先；不中且文件与 old 行尾风格不一致时，按文件风格转换 old/new 再匹配
+    // （用别处读到的 LF 文本改 CRLF 文件）。混合行尾的文件不做转换。
+    let mut old_used = old.to_string();
+    let mut new_used = new.to_string();
+    let mut positions: Vec<usize> = text.match_indices(old).map(|(index, _)| index).collect();
+    if positions.is_empty() {
+        let (adapted_old, adapted_new) = adapt_line_endings(&text, old, new);
+        if adapted_old.as_ref() != old {
+            let adapted_positions: Vec<usize> =
+                text.match_indices(adapted_old.as_ref()).map(|(index, _)| index).collect();
+            if !adapted_positions.is_empty() {
+                old_used = adapted_old.into_owned();
+                new_used = adapted_new.into_owned();
+                positions = adapted_positions;
+            }
+        }
+    }
     if positions.is_empty() {
         return Err(edit_conflict("old not found"));
     }
     if positions.len() > 1 && !replace_all {
-        return Err(edit_conflict("old is not unique"));
+        // 诊断带上命中行号（最多列 20 处）：模型据此收窄锚点或改用 replace_all，无需再读一遍。
+        let line_number = |position: usize| 1 + text[..position].matches('\n').count();
+        let mut lines: Vec<String> = positions.iter().take(20).map(|p| line_number(*p).to_string()).collect();
+        if positions.len() > lines.len() {
+            lines.push("…".to_string());
+        }
+        return Err(edit_conflict(format!(
+            "old is not unique ({} matches at lines {}); use replace_all or a longer anchor",
+            positions.len(),
+            lines.join(", ")
+        )));
     }
     let count = if replace_all { positions.len() } else { 1 };
     let next = if replace_all {
-        text.replace(old, new)
+        text.replace(old_used.as_str(), new_used.as_str())
     } else {
-        text.replacen(old, new, 1)
+        text.replacen(old_used.as_str(), new_used.as_str(), 1)
     };
     if next.len() > context.output_max {
         return Err(too_large(format!(
@@ -796,12 +986,12 @@ fn op_replace(
     // rename 已完成，patch 合成不再触盘：先放锁，避免大片段 diff 长时间占用写互斥。
     drop(guard);
 
-    let (added_per, removed_per, diff_lines) = line_diff(old, new);
+    let (added_per, removed_per, diff_lines) = line_diff(&old_used, &new_used);
     let mut patch = String::new();
     for position in positions.iter().take(count) {
         let line_number = 1 + text[..*position].matches('\n').count();
-        let old_count = split_lines(old).len().max(1);
-        let new_count = split_lines(new).len();
+        let old_count = split_lines(&old_used).len().max(1);
+        let new_count = split_lines(&new_used).len();
         patch.push_str(&format!(
             "@@ -{line_number},{old_count} +{line_number},{new_count} @@\n"
         ));
@@ -815,6 +1005,8 @@ fn op_replace(
         "replaced": count,
         "added": added_per * count,
         "removed": removed_per * count,
+        // 真实写入字节数：原子重写后的整份文件大小（与 `write` 的 bytes_written 同口径）。
+        "bytes_written": next.len(),
         "patch": patch,
     }))
 }
@@ -828,9 +1020,8 @@ fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// 原子写 + rename 前复核：`base` 非 None 时，rename 前重读目标，与 `base` 不符即 `edit_conflict`。
-/// 进程内 best-effort：`exec` 可跑任意命令绕过 fsop 写锁，本复核是兜底而非 OS 级隔离。
-fn atomic_write_verified(path: &Path, bytes: &[u8], base: Option<&[u8]>) -> Result<(), FsError> {
+/// 在目标同目录写临时文件（sync 落盘），返回临时路径；调用方负责 rename / 清理。
+fn write_temp(path: &Path, bytes: &[u8]) -> Result<PathBuf, FsError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -848,6 +1039,13 @@ fn atomic_write_verified(path: &Path, bytes: &[u8], base: Option<&[u8]>) -> Resu
         file.sync_all()
             .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
     }
+    Ok(temp)
+}
+
+/// 原子写 + rename 前复核：`base` 非 None 时，rename 前重读目标，与 `base` 不符即 `edit_conflict`。
+/// 进程内 best-effort：`exec` 可跑任意命令绕过 fsop 写锁，本复核是兜底而非 OS 级隔离。
+fn atomic_write_verified(path: &Path, bytes: &[u8], base: Option<&[u8]>) -> Result<(), FsError> {
+    let temp = write_temp(path, bytes)?;
     if let Some(base) = base {
         // 区分「读失败」与「内容不符」：外部占用导致读失败是环境问题（sandbox_setup_failed），
         // 只有真正读到且与 base 不符才是 edit_conflict。
@@ -865,6 +1063,19 @@ fn atomic_write_verified(path: &Path, bytes: &[u8], base: Option<&[u8]>) -> Resu
                 ));
             }
         }
+    }
+    fs::rename(&temp, path).map_err(|err| {
+        let _ = fs::remove_file(&temp);
+        FsError::new("sandbox_setup_failed", err.to_string())
+    })
+}
+
+/// 独占新建：rename 前确认目标仍不存在（`create_new` 语义的进程内 best-effort 版）。
+fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
+    let temp = write_temp(path, bytes)?;
+    if path.exists() {
+        let _ = fs::remove_file(&temp);
+        return Err(edit_conflict("file already exists"));
     }
     fs::rename(&temp, path).map_err(|err| {
         let _ = fs::remove_file(&temp);
@@ -1027,6 +1238,54 @@ mod tests {
         let grep = call(&bag(&dir, "grep", ".", "severe", full_caps(), json!({"pattern":"beta"})));
         assert_eq!(grep["result"]["matches"][0]["line"], 2);
         assert_eq!(grep["result"]["matches"][0]["text"], "beta");
+    }
+
+    #[test]
+    fn read_reports_window_metadata() {
+        let dir = TempDir::new("read-window");
+        dir.write("a.txt", "l1\nl2\nl3\n");
+        let window = call(&bag(
+            &dir,
+            "read",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"offset":1,"limit":1}),
+        ));
+        assert_eq!(window["result"]["text"], "l2");
+        assert_eq!(window["result"]["start_line"], 2);
+        assert_eq!(window["result"]["end_line"], 2);
+        assert_eq!(window["result"]["lines_returned"], 1);
+        assert_eq!(window["result"]["has_more"], true);
+        assert_eq!(window["result"]["next_offset"], 2);
+        assert_eq!(window["result"]["content_truncated"], false);
+
+        // 读到尾部：无更多行，next_offset 为 null。
+        let tail = call(&bag(
+            &dir,
+            "read",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"offset":2,"limit":1}),
+        ));
+        assert_eq!(tail["result"]["has_more"], false);
+        assert_eq!(tail["result"]["next_offset"], Value::Null);
+        assert_eq!(tail["result"]["end_line"], 3);
+
+        // 越界 offset 被夹到文件尾：空窗口游标为末尾行之后，end_line 为 null。
+        let empty = call(&bag(
+            &dir,
+            "read",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"offset":9,"limit":1}),
+        ));
+        assert_eq!(empty["result"]["lines_returned"], 0);
+        assert_eq!(empty["result"]["start_line"], 4);
+        assert_eq!(empty["result"]["end_line"], Value::Null);
+        assert_eq!(empty["result"]["has_more"], false);
     }
 
     #[test]
@@ -1370,6 +1629,8 @@ mod tests {
         ));
         assert_eq!(capped["ok"], true, "{capped}");
         assert_eq!(capped["result"]["truncated"], true);
+        assert_eq!(capped["result"]["content_truncated"], true);
+        assert_eq!(capped["result"]["has_more"], false);
         assert_eq!(capped["result"]["text"].as_str().unwrap().len(), 10);
     }
 
@@ -1503,7 +1764,7 @@ mod tests {
             ".",
             "severe",
             full_caps(),
-            json!({"pattern":"^fn .*\\(\\)","glob":"*.rs"}),
+            json!({"pattern":"^fn .*\\(\\)","mode":"regex","glob":"*.rs"}),
         ));
         let matches = result["result"]["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 2);
@@ -1511,6 +1772,138 @@ mod tests {
         assert_eq!(matches[0]["line"], 1);
     }
 
+    #[test]
+    fn grep_regex_unsupported_is_explicit() {
+        let dir = TempDir::new("grep-mode");
+        dir.write("a.txt", "foo bar\nfoo|bar\n");
+        // 缺省按字面：`|` 不再触发正则，命中字面串 "foo|bar" 行。
+        let auto = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"foo|bar"}),
+        ));
+        assert_eq!(auto["ok"], true, "{auto}");
+        assert_eq!(auto["result"]["matches"].as_array().map(Vec::len), Some(1));
+        assert_eq!(auto["result"]["matches"][0]["line"], 2);
+        // 显式 regex：`|` 结构不在支持子集 → bad_args（绝不静默按字面匹配）。
+        let regex = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"foo|bar","mode":"regex"}),
+        ));
+        assert_eq!(regex["code"], "bad_args", "{regex}");
+        // 显式 literal：按字面串命中 "foo|bar" 行。
+        let literal = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"foo|bar","mode":"literal"}),
+        ));
+        assert_eq!(literal["result"]["matches"].as_array().map(Vec::len), Some(1));
+        assert_eq!(literal["result"]["matches"][0]["line"], 2);
+        // 未知 mode → bad_args。
+        let bad = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"foo","mode":"nah"}),
+        ));
+        assert_eq!(bad["code"], "bad_args");
+    }
+
+    #[test]
+    fn grep_files_only_ignore_case_and_context() {
+        let dir = TempDir::new("grep-plus");
+        dir.write("a.txt", "Alpha\nbeta\nGamma\n");
+        dir.write("b.txt", "alpha again\n");
+        // ignore_case + files_only：每文件一条，带 count。
+        let files = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"alpha","ignore_case":true,"files_only":true}),
+        ));
+        let items = files["result"]["matches"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["path"], "a.txt");
+        assert_eq!(items[0]["line"], 1);
+        assert_eq!(items[0]["count"], 1);
+        assert_eq!(items[1]["path"], "b.txt");
+
+        // 上下文行：before / after 各取一行。
+        let ctx = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"beta","before":1,"after":1}),
+        ));
+        let hit = &ctx["result"]["matches"][0];
+        assert_eq!(hit["line"], 2);
+        assert_eq!(hit["before"], json!(["Alpha"]));
+        assert_eq!(hit["after"], json!(["Gamma"]));
+    }
+
+    #[test]
+    fn grep_ignore_case_uses_unicode_casefold() {
+        let dir = TempDir::new("casefold");
+        dir.write("s.txt", "Straße\n");
+        // ß → ss 的变长折叠：STRASSE 命中 Straße。
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"STRASSE","ignore_case":true}),
+        ));
+        let items = result["result"]["matches"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["path"], "s.txt");
+        assert_eq!(items[0]["line"], 1);
+    }
+
+    #[test]
+    fn edit_conflict_reports_match_lines() {
+        let dir = TempDir::new("edit-lines");
+        dir.write("f.txt", "dup\nx\ndup\n");
+        let result = call(&bag(
+            &dir,
+            "replace",
+            "f.txt",
+            "severe",
+            full_caps(),
+            json!({"old":"dup","new":"D"}),
+        ));
+        assert_eq!(result["code"], "edit_conflict");
+        let message = result["message"].as_str().unwrap_or("");
+        assert!(message.contains("2 matches"), "{message}");
+        assert!(message.contains("lines 1, 3"), "{message}");
+    }
+
+    #[test]
+    fn read_invalid_utf8_is_binary_unsupported() {
+        let dir = TempDir::new("non-utf8");
+        // 0xFF 0xFE 无 NUL 字节：非合法 UTF-8 的伪二进制，不得静默 lossy 解码。
+        fs::write(dir.path.join("gbk.dat"), [0xFFu8, 0xFE, 0x41]).unwrap();
+        let result = call(&bag(&dir, "read", "gbk.dat", "severe", full_caps(), json!({})));
+        assert_eq!(result["code"], "binary_unsupported");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn workspace_root_case_insensitive_on_windows() {
         let dir = TempDir::new("case");
@@ -1592,5 +1985,130 @@ mod tests {
         // base 命中则正常替换。
         atomic_write_verified(&target, b"next", Some(b"current")).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "next");
+    }
+
+    #[test]
+    fn ignore_prunes_directories_for_list_and_grep() {
+        let dir = TempDir::new("ignore-dir");
+        dir.write("keep/a.txt", "needle\n");
+        dir.write("node_modules/dep/b.txt", "needle\n");
+        dir.write("target/debug/c.txt", "needle\n");
+        dir.write("nested/.git/config", "needle\n");
+
+        let list = call(&bag(
+            &dir,
+            "list",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"**/*.txt","ignore":["node_modules","target",".git"]}),
+        ));
+        assert_eq!(list["result"]["paths"], json!(["keep/a.txt"]));
+
+        let grep = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"needle","ignore":["node_modules","target",".git"]}),
+        ));
+        let paths: Vec<&str> = grep["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["keep/a.txt"]);
+    }
+
+    #[test]
+    fn read_preserves_crlf_and_replace_adapts_line_endings() {
+        let dir = TempDir::new("crlf");
+        dir.write("win.txt", "alpha\r\nbeta\r\ngamma\r\n");
+        // read 保留原始行尾：窗口文本与文件字节一致。
+        let read = call(&bag(&dir, "read", "win.txt", "severe", full_caps(), json!({"offset":1,"limit":1})));
+        assert_eq!(read["result"]["text"], "beta\r");
+        // 用 LF 形态的 old（如别处读到的文本）替换 CRLF 文件：按文件风格适配后命中。
+        let lf = call(&bag(
+            &dir,
+            "replace",
+            "win.txt",
+            "severe",
+            full_caps(),
+            json!({"old":"beta\ngamma","new":"BETA\nGAMMA"}),
+        ));
+        assert_eq!(lf["ok"], true, "{lf}");
+        assert_eq!(lf["result"]["replaced"], 1);
+        assert_eq!(
+            fs::read_to_string(dir.path.join("win.txt")).unwrap(),
+            "alpha\r\nBETA\r\nGAMMA\r\n"
+        );
+        assert_eq!(lf["result"]["bytes_written"], 20);
+    }
+
+    #[test]
+    fn write_exclusive_rejects_existing_and_creates_fresh() {
+        let dir = TempDir::new("exclusive");
+        let created = call(&bag(
+            &dir,
+            "write",
+            "new.txt",
+            "severe",
+            full_caps(),
+            json!({"data":"hi","create":true,"exclusive":true}),
+        ));
+        assert_eq!(created["result"]["created"], true);
+        assert_eq!(fs::read_to_string(dir.path.join("new.txt")).unwrap(), "hi");
+        // 已存在即 edit_conflict，且不改内容。
+        let conflict = call(&bag(
+            &dir,
+            "write",
+            "new.txt",
+            "severe",
+            full_caps(),
+            json!({"data":"other","create":true,"exclusive":true}),
+        ));
+        assert_eq!(conflict["code"], "edit_conflict");
+        assert_eq!(fs::read_to_string(dir.path.join("new.txt")).unwrap(), "hi");
+    }
+
+    #[test]
+    fn expected_file_but_directory_is_not_a_file() {
+        let dir = TempDir::new("not-a-file");
+        dir.write("sub/inner.txt", "x");
+        let read = call(&bag(&dir, "read", "sub", "severe", full_caps(), json!({})));
+        assert_eq!(read["code"], "not_a_file", "{read}");
+        let replace = call(&bag(
+            &dir,
+            "replace",
+            "sub",
+            "severe",
+            full_caps(),
+            json!({"old":"x","new":"y"}),
+        ));
+        assert_eq!(replace["code"], "not_a_file", "{replace}");
+    }
+
+    #[test]
+    fn grep_reports_skipped_files() {
+        let dir = TempDir::new("grep-skip");
+        dir.write("ok.txt", "hit\n");
+        dir.write("big.txt", "hit\nhit\n");
+        fs::write(dir.path.join("bin.dat"), [0u8, 1, 2]).unwrap();
+        // output_max=4：big.txt 超限、bin.dat 归二进制；ok.txt 正常命中。
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            json!({"fs":{"read":"full","write":"full"},"output_max":4}),
+            json!({"pattern":"hit"}),
+        ));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["result"]["skipped"]["binary"], 1, "{result}");
+        assert_eq!(result["result"]["skipped"]["too_large"], 1, "{result}");
+        assert_eq!(result["result"]["skipped"]["unreadable"], 0, "{result}");
+        assert_eq!(result["result"]["matches"].as_array().map(Vec::len), Some(1), "{result}");
     }
 }

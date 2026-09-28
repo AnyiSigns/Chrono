@@ -32,6 +32,12 @@
       z-index: var(--z-topbar);
       flex: none;
     }
+    /* underbar 紧贴 topbar 之下、main 之上：常显占布局，承载顶栏的次级条带（如待办清单）。 */
+    #slot-underbar {
+      position: relative;
+      z-index: var(--z-topbar);
+      flex: none;
+    }
     /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条。
        flex-basis 必须是 0 而非 auto：auto 时 main 的尺寸随消息内容增长，会把 dock / composer
        往下挤（dock 被压扁、输入框被顶出视口）。0 基 + 自持滚动让 main 恒占「剩余空间」。 */
@@ -49,9 +55,10 @@
     #slot-composer { flex: none; min-height: 0; overflow: visible; }
     #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
     #slot-overlay > * { pointer-events: auto; }
-    /* slot 客户端半边挂载容器：撑满所属 slot；topbar 常显占布局，高度随内容自适应 */
+    /* slot 客户端半边挂载容器：撑满所属 slot；topbar / underbar 常显占布局，高度随内容自适应 */
     .shell-slot-app { height: 100%; min-height: 0; }
     #slot-topbar .shell-slot-app { height: auto; }
+    #slot-underbar .shell-slot-app { height: auto; }
     body.shell-narrow #slot-sidebar { width: var(--sidebar-w-collapsed); }
     /* <1024：消息列与输入框退化为「全宽 − 边距」（响应式断点）；设在 #shell-column 让 main / composer 同时跟随 */
     body.shell-narrow #shell-column { --msg-max-w: 100%; }
@@ -224,6 +231,7 @@
     <aside id="slot-sidebar" data-slot="sidebar" aria-label="侧栏"></aside>
     <div id="shell-column">
       <header id="slot-topbar" data-slot="topbar"></header>
+      <section id="slot-underbar" data-slot="underbar" aria-label="次级栏"></section>
       <main id="slot-main" data-slot="main"></main>
       <section id="slot-dock" data-slot="dock" aria-label="审批停靠带"></section>
       <footer id="slot-composer" data-slot="composer"></footer>

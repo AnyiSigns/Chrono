@@ -108,6 +108,32 @@ test('坏行 / 半写末行跳过（fail-open）', () => {
   }
 })
 
+test('日志压紧：超阈值启动重放后折成 live 快照（记录数下降、数据不变）', () => {
+  const root = tempRoot('compact')
+  try {
+    const first = QuestionStore.open(envFor(root))
+    first.turnOpen('r1')
+    first.appendItem('r1', itemOf({ id: questionId('r1', 0), op_key: 'r1:question:c1' }))
+    first.turnClose('r1')
+    for (let index = 0; index < 5; index += 1) {
+      first.updateItem('r1', {
+        ...itemOf({ id: questionId('r1', 0), op_key: 'r1:question:c1' }),
+        answers: [{ question_id: 'q1', selected: [`a${index}`] }],
+      })
+    }
+    const file = join(root, 'data', 'question.jsonl')
+    const before = readFileSync(file, 'utf8').trim().split('\n').length
+    const second = QuestionStore.open(envFor(root), { compactThreshold: 3 })
+    const after = readFileSync(file, 'utf8').trim().split('\n').length
+    assert.ok(after < before, `压紧后记录数应下降：${before} → ${after}`)
+    assert.equal(second.count(), 1)
+    assert.deepEqual(second.get('q-r1-0').answers, [{ question_id: 'q1', selected: ['a4'] }])
+    assert.deepEqual(second.pendingTurns(), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('存储层不产世界 directive：question 队列无 add_gen', () => {
   const root = tempRoot('noworld')
   try {

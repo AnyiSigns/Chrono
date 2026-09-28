@@ -235,15 +235,40 @@ test('read returns empty slots; write then read round-trips', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    assert.deepEqual(await drv.call('read', {}), { slots: {} })
+    assert.deepEqual(await drv.call('read', {}), { slots: {}, slot_refs: {} })
     const wrote = await drv.call('write', { thread: 't1', slot: { kind: 'chat.message', text: 'hi' } })
     assert.equal(wrote.ok, true)
     const read = await drv.call('read', { thread: 't1' })
     assert.deepEqual(read.slots.t1, { kind: 'chat.message', text: 'hi' })
     assert.deepEqual(read.slot, { kind: 'chat.message', text: 'hi' })
+    assert.equal(read.slot_ref, 'run-1')
   } finally {
     drv.close()
     drv.cleanup()
+  }
+})
+
+test('read exposes slot_refs / slot_ref; slot run id survives restart', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-input-'))
+  const first = startService({ root })
+  try {
+    await first.hello()
+    await first.call('write', { thread: 't1', slot: { kind: 'chat.message', text: 'hi' } }, { run: 'run-7', thread: 't1', now: 1 })
+    await first.call('write', { thread: 't2', slot: { kind: 'chat.message', text: 'yo' } }, { run: 'run-8', thread: 't2', now: 1 })
+    assert.equal((await first.call('read', { thread: 't1' })).slot_ref, 'run-7')
+    assert.deepEqual((await first.call('read', {})).slot_refs, { t1: 'run-7', t2: 'run-8' })
+  } finally {
+    first.close()
+    await first.exit
+  }
+  const second = startService({ root })
+  try {
+    await second.hello()
+    assert.equal((await second.call('read', { thread: 't1' })).slot_ref, 'run-7')
+  } finally {
+    second.close()
+    await second.exit
+    second.cleanup()
   }
 })
 

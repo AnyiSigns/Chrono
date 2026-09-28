@@ -3,7 +3,7 @@
   "schema": "schema/question.json",
   "implements": ["question"],
   "methods": {
-    "question": ["describe", "invoke", "list", "sweep"]
+    "question": ["describe", "invoke", "list", "state", "sweep"]
   },
   "pins": {
     "input": "input"
@@ -36,6 +36,11 @@
       "name": "question.answer",
       "entry": "terms/question.answer.json",
       "argsSchema": "schema/question.answer.args.json"
+    },
+    {
+      "name": "question.state",
+      "entry": "terms/question.state.json",
+      "readonly": true
     }
   ]
 }

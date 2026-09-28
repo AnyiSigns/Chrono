@@ -28,18 +28,14 @@ test('plugin.json 不 pin 密钥面（零配置）', () => {
 
 test('缺省清单零配置可检索（假后端，离线）', async () => {
   const router = prefixRouter([
-    ['https://html.duckduckgo.com/html/', execOk(fetcherStdout({ body: '<a class="result__a" href="https://ddg.test/a">DDG</a><a class="result__snippet">ddg snip</a>' }))],
-    ['https://lite.duckduckgo.com/lite/', execOk(fetcherStdout({ body: '<a class="result-link" href="https://lite.test/a">Lite</a><td class="result-snippet">lite snip</td>' }))],
-    ['https://www.bing.com/search', execOk(fetcherStdout({ body: '<li class="b_algo"><h2><a href="https://bing.test/a">Bing</a></h2><p>bing snip</p></li>' }))],
-    ['https://www.mojeek.com/search', execOk(fetcherStdout({ body: '<a class="ob" href="https://mojeek.test/a">Mojeek</a><p class="s">mojeek snip</p>' }))],
-    ['https://searx.be', execOk(fetcherStdout({ contentType: 'application/json', body: '{"results":[{"title":"SX","url":"https://searx.test/a","content":"sx snip"}]}' }))],
-    ['https://en.wikipedia.org/w/api.php', execOk(fetcherStdout({ contentType: 'application/json', body: '{"query":{"search":[{"title":"Wiki","snippet":"wiki snip"}]}}' }))],
+    ['https://www.bing.com/search', execOk(fetcherStdout({ contentType: 'application/rss+xml', body: '<rss><channel><item><title>Bing</title><link>https://bing.test/a</link><description>bing snip</description></item></channel></rss>' }))],
+    ['https://www.mojeek.com/search', execOk(fetcherStdout({ body: '<a class="ob" href="https://mojeek.test/a">Mojeek</a><p class="s">mojeek snip</p></a>' }))],
   ])
   const { backend } = makeBackend(router)
   const config = mergeConfig({ obey_robots: false })
   const result = await websearch({ query: 'chrono' }, makeCtx(config, backend))
   assert.equal(result.ok, true)
-  assert.equal(result.result.sources_used.length, 6)
+  assert.equal(result.result.sources_used.length, 2)
   assert.deepEqual(result.result.sources_failed, [])
-  assert.ok(result.result.results.length >= 6)
+  assert.ok(result.result.results.length >= 2)
 })

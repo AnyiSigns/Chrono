@@ -45,7 +45,9 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
   默认：`ui-sidebar/sidebar/8791`、`ui-chat/main/8788`、`ui-approval/dock/8789`、
   `ui-composer/composer/8790`、`ui-threads/topbar/8793`、`ui-settings/overlay/8792`。
   子应用端口可 `CHRONO_UI_PORT_<ID>` 覆盖（ID 大写、非字母数字转 `_`）。一插件一 slot；
-  增删插件只改表，不改壳代码。
+  增删插件只改表，不改壳代码。挂载表的 `slot` 只决定子应用加载位；插件注册时可在任意顶层
+  slot 落位（`sidebar` / `main` / `dock` / `composer` / `topbar` / `underbar` / `overlay`）——
+  `underbar` 紧贴 `topbar` 之下、`main` 之上，供顶栏插件挂次级条带（如待办清单）。
 - `state/ui-headless.json` = `[{id, entry}]`；`entry` 为插件包内路径。headless 不进挂载表、
   不给布局位、不占端口；壳经 `host.source.read` 取字节并以同源静态路径服务。默认
   `{id:"ui-notify", entry:"web/entry.js"}`。

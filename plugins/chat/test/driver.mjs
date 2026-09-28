@@ -112,7 +112,7 @@ export function startService(options = {}) {
 
 // ── 假下游服务（bridge 回值） ────────────────────────────────────────────────
 
-/** #33 interpret 返回的写计划（回合尾一次写 + extern 摘要）。 */
+/** #33 interpret 返回的写计划（步记录只走反向调用，计划里是业务写 + 结局摘要 extern）。 */
 export const INTERPRET_PLAN = {
   $directives: [
     {
@@ -121,21 +121,34 @@ export const INTERPRET_PLAN = {
         op: 'batch',
         args: {
           ops: [
-            { op: 'put', args: { body: { id: 'msg-c-1-0', role: 'user' } } },
-            { op: 'add_gen', args: { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+            { op: 'put', args: { body: { id: 'evidence-1', kind: 'trace' } } },
+            { op: 'add_gen', args: { id: 'evolution', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
           ],
         },
       },
     },
-    { kind: 'extern', payload: { ok: true, kind: 'interpret', ended: 'done' } },
+    {
+      kind: 'extern',
+      payload: {
+        ok: true,
+        kind: 'interpret',
+        ended: 'done',
+        turn_id: 't-run-slot-1',
+        outcome: { kind: 'committed', code: null, attributableTo: null, retryable: false, cause: null },
+        settled: true,
+      },
+    },
   ],
 }
 
 /** #49 session-title.generate 的回值：标题值（非写计划）。 */
 export const TITLE_VALUE = { ok: true, title: '快速排序' }
 
-/** 默认输入槽体（owner `input.read` 回值）。 */
-export const DEFAULT_INPUT_BODY = { slots: { t1: { kind: 'chat.message', text: '帮我写一个快速排序' } } }
+/** 默认输入槽体（owner `input.read` 回值）：带槽写入时的 run id 作 `slot_ref`。 */
+export const DEFAULT_INPUT_BODY = {
+  slots: { t1: { kind: 'chat.message', text: '帮我写一个快速排序' } },
+  slot_ref: 'run-slot-1',
+}
 
 /** 默认当前会话待办（owner `todo.invoke` 的 `todo.read` 回值）。 */
 export const DEFAULT_TODO_RESULT = { items: [{ id: 't1', text: '写排序', status: 'pending' }], total: 1, done: 0 }
@@ -191,13 +204,31 @@ export function defaultBridge(overrides = {}, owners = {}) {
     'short-memory.read': () => owners.memory ?? memoryFixture(),
     'todo.invoke': () => ({ ok: true, result: owners.todo ?? DEFAULT_TODO_RESULT }),
     'session.history': () => owners.history ?? historyFixture(),
+    'session.turn_open': (args) => owners.turnOpen ?? {
+      ok: true,
+      turn_id: 't-run-slot-1',
+      conversation: (args?.new_conversation && args.new_conversation.id) || 'c-1',
+      created: Boolean(args?.new_conversation),
+    },
+    'session.turn_settle': () => owners.turnSettle ?? { ok: true, turn_id: 't-run-slot-1', outcome: {}, persisted: true },
+    'session.turn_cancel': (args) => owners.turnCancel ?? {
+      ok: true,
+      turn_id: args?.turn_id ?? 't-run-slot-1',
+      state: 'open',
+      conversation: 'c-1',
+    },
+    'session.step_append': () => ({ ok: true }),
+    'config.read': () => ({ active: null, data_gen: null, pins: {}, refs: {}, body: owners.configValue ?? configFixture() }),
+    'mcp.read': () => owners.mcp ?? mcpFixture(),
+    'workspace.read': () => owners.workspace ?? workspaceFixture(),
+    'skill.read': () => owners.skill ?? skillFixture(),
     'loop-policy.interpret': () => INTERPRET_PLAN,
     'session-title.generate': () => TITLE_VALUE,
     ...overrides,
   }
-  return (port, method) => {
+  return (port, method, args) => {
     const fn = table[`${port}.${method}`]
-    return Promise.resolve(fn === undefined ? { error: 'not_ready', message: 'no fake' } : { value: fn() })
+    return Promise.resolve(fn === undefined ? { error: 'not_ready', message: 'no fake' } : { value: fn(args) })
   }
 }
 

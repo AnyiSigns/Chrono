@@ -34,6 +34,7 @@ export function graphCursor(
   iter: IterState,
   callId: string | null,
   originalInput: Json = null,
+  turnId: string | null = null,
 ): Rec {
   const cursor: Rec = {
     kind,
@@ -54,6 +55,8 @@ export function graphCursor(
     original_input: originalInput,
   }
   if (callId !== null) cursor['call_id'] = callId
+  // 回合身份随游标延续：续跑（新 run）继续同一回合，不重铸。
+  if (turnId !== null) cursor['turn_id'] = turnId
   return cursor
 }
 

@@ -1,0 +1,32 @@
+{
+  "identity": "e2e-approval-admin",
+  "implements": [],
+  "methods": {},
+  "pins": {
+    "approval": "approval"
+  },
+  "start": "",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "term", "path": "terms/" }
+  ],
+  "commands": [
+    { "name": "e2e.approve", "entry": "terms/e2e.approve.json" },
+    { "name": "e2e.pending", "entry": "terms/e2e.pending.json" }
+  ]
+}

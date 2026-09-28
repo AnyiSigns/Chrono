@@ -5,17 +5,26 @@ import assert from 'node:assert/strict'
 import { BUILTIN_DEFAULTS, defaultConfig, mergeConfig, readSchemaDefaults } from '../execute/config.ts'
 import { canonicalizeUrl, isPrivateHost, parseHttpUrl, withQuery } from '../execute/url.ts'
 import { robotsAllows } from '../execute/robots.ts'
-import { buildFetcherCommand, parseFetcherStdout } from '../execute/fetcher.ts'
+import { buildFetcherCommand, parseFetcherStdout, resolveFetcherCommand } from '../execute/fetcher.ts'
 import { htmlToMarkdown, htmlToText, stripTags, unwrapRedirect } from '../execute/html.ts'
-import { parseBing, parseDdgHtml, parseDdgLite, parseMojeek, parseSearxng, parseSource } from '../execute/sources.ts'
+import {
+  parseBing,
+  parseBingRss,
+  parseDdgHtml,
+  parseDdgLite,
+  parseMarginalia,
+  parseMojeek,
+  parseSearxng,
+  parseSource,
+} from '../execute/sources.ts'
 import { fetcherStdout } from './support.mjs'
 
-test('配置：schema defaults 与内建兜底一致，缺省六源', () => {
+test('配置：schema defaults 与内建兜底一致，缺省双源', () => {
   assert.deepEqual(readSchemaDefaults(), BUILTIN_DEFAULTS)
   const config = defaultConfig()
-  assert.equal(config.sources.length, 6)
+  assert.equal(config.sources.length, 2)
   assert.equal(config.top_n, 10)
-  assert.equal(config.obey_robots, true)
+  assert.equal(config.obey_robots, false)
 })
 
 test('配置：数据世代 body 优先，可换源不改代码', () => {
@@ -26,9 +35,19 @@ test('配置：数据世代 body 优先，可换源不改代码', () => {
   assert.equal(config.sources[0].query_param, 'q')
 })
 
-test('配置：空 sources 数组 = 显式无源，不回落内建六源', () => {
+test('配置：空 sources 数组 = 显式无源，不回落内建双源', () => {
   const config = mergeConfig({ sources: [] })
   assert.equal(config.sources.length, 0)
+})
+
+test('配置：fetcher_env 归一为字符串映射（空值丢弃）', () => {
+  const config = mergeConfig({
+    fetcher_env: { NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:7897', empty: '' },
+  })
+  assert.deepEqual(config.fetcher_env, {
+    NODE_USE_ENV_PROXY: '1',
+    HTTPS_PROXY: 'http://127.0.0.1:7897',
+  })
 })
 
 test('URL：只收 http(s)、内网判定、规范化去重', () => {
@@ -104,6 +123,15 @@ test('fetcher：参数映射与输出解析', () => {
   assert.equal(parseFetcherStdout('{"status":200,"body_encoding":"utf8"}\nAAAA'), null)
 })
 
+test('fetcher 命令解析：缺省内置 Node 脚本，非空走外部命令', () => {
+  const bundled = resolveFetcherCommand('')
+  assert.equal(bundled.cmd, process.execPath)
+  assert.equal(bundled.prefix.length, 1)
+  assert.ok(bundled.prefix[0].endsWith('fetcher-cli.mjs'))
+  const external = resolveFetcherCommand('  magic-fetcher  ')
+  assert.deepEqual(external, { cmd: 'magic-fetcher', prefix: [] })
+})
+
 test('HTML：正文提取 + markdown 确定；raw 原样；摘要去标签', () => {
   const html = [
     '<html><head><title>T</title><style>.x{}</style></head><body>',
@@ -152,4 +180,14 @@ test('源解析：各源 HTML / JSON 归一化', () => {
   )
   assert.equal(wikipedia[0].url, 'https://en.wikipedia.org/wiki/A_B')
   assert.equal(wikipedia[0].snippet, 'AB')
+  const rss = parseBingRss(
+    '<rss><channel><item><title>A &amp; B</title><link>https://r.test/1</link>' +
+      '<description><![CDATA[<b>snip</b>]]></description></item></channel></rss>',
+  )
+  assert.equal(rss[0].title, 'A & B')
+  assert.equal(rss[0].url, 'https://r.test/1')
+  assert.equal(rss[0].snippet, 'snip')
+  const marg = parseMarginalia('{"results":[{"title":"M","url":"https://m2.test/","description":"desc"}]}')
+  assert.equal(marg[0].url, 'https://m2.test/')
+  assert.equal(marg[0].snippet, 'desc')
 })

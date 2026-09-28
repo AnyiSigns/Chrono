@@ -1,21 +1,7 @@
-// 流水线第 2 步（去重）与第 6 步（冲突消解）。
-// 去重：规范化后完全一致只留最新一条；跨来源时历史是事实源，丢记忆副本。
-// 冲突消解：同键（记忆 subject / dedup_key）多版本取 at 最新，同 at 取来源可信度高者。
+// 流水线第 2 步（去重）：规范化后完全一致只留最新一条；跨来源时历史是事实源，丢记忆副本。
+// 原子组完整性由配对修复（`pairing.ts`）在装配边界兜底：去重不会为孤儿工具调用留下缺口。
 
 import type { CanonicalMessage, Source } from './types.ts'
-
-const TRUST: Record<Source, number> = {
-  history: 4,
-  tool: 5,
-  l1: 3,
-  l2: 2,
-  recall: 1,
-  prompt: 0,
-  tools: 0,
-  input: 0,
-  skill: 0,
-  style: 0,
-}
 
 export interface DedupResult {
   messages: CanonicalMessage[]
@@ -59,42 +45,4 @@ export function dedupe(messages: CanonicalMessage[]): DedupResult {
 
   const kept = crossSource.filter((_message, index) => keep.has(index))
   return { messages: kept, deduped: messages.length - kept.length }
-}
-
-export interface ConflictResult {
-  messages: CanonicalMessage[]
-  conflicts: { source: string; reason: string }[]
-}
-
-/** 冲突消解：同 conflict_key 多版本取 at 最新；同 at 取可信度高者（历史 > L1 > L2 > L3）。 */
-export function resolveConflicts(messages: CanonicalMessage[]): ConflictResult {
-  const groups = new Map<string, number[]>()
-  messages.forEach((message, index) => {
-    const list = groups.get(message.conflictKey)
-    if (list === undefined) groups.set(message.conflictKey, [index])
-    else list.push(index)
-  })
-
-  const keep = new Set<number>()
-  const dropped: { source: string; reason: string }[] = []
-  for (const indices of groups.values()) {
-    if (indices.length === 1) {
-      keep.add(indices[0] as number)
-      continue
-    }
-    let best = indices[0] as number
-    for (const index of indices) {
-      const candidate = messages[index] as CanonicalMessage
-      const current = messages[best] as CanonicalMessage
-      if (candidate.at > current.at) best = index
-      else if (candidate.at === current.at && TRUST[candidate.source] > TRUST[current.source]) best = index
-    }
-    keep.add(best)
-    for (const index of indices) {
-      if (index === best) continue
-      dropped.push({ source: (messages[index] as CanonicalMessage).source, reason: 'conflict' })
-    }
-  }
-  const kept = messages.filter((_message, index) => keep.has(index))
-  return { messages: kept, conflicts: dropped }
 }

@@ -3,6 +3,7 @@
 // `caps.net` 声明级钳制在本插件内完成，并向 sandbox 咨询强制面可用性（反向 `port.call`）。
 
 import { TOOL_NAME } from './describe.ts'
+import { actionDigest, byteLength } from './digest.ts'
 import { BrowserUnsupportedError } from './engine/types.ts'
 import { assertNetAllowed, sandboxNetEnforcement } from './net.ts'
 import { BadArgsError, ERROR_CODES, ToolError } from './types.ts'
@@ -143,7 +144,7 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
     case 'open': {
       await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId, scope.grant)
       const session = await ctx.sessions.open(env.run, env.now, viewportOf(args))
-      return { session }
+      return { session, digest: actionDigest('open') }
     }
     case 'navigate': {
       const record = await withSession(args, ctx, env, scope, callId)
@@ -151,25 +152,30 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
       if (!/^https?:\/\//i.test(url)) throw new ToolError('navigate_failed', `unsupported url: ${url}`)
       const result = await record.engine.navigate(url, optionalString(args, 'wait_until'))
       ctx.sessions.touch(record.id, env.now)
-      return { status: result.status, url: result.url, title: result.title }
+      return {
+        status: result.status,
+        url: result.url,
+        title: result.title,
+        digest: actionDigest('navigate', { url: result.url, status: result.status }),
+      }
     }
     case 'click': {
       const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.click(requiredString(args, 'selector'))
       ctx.sessions.touch(record.id, env.now)
-      return { ok: true }
+      return { ok: true, digest: actionDigest('click') }
     }
     case 'type': {
       const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.type(requiredString(args, 'selector'), requiredString(args, 'text'), optionalBoolean(args, 'submit'))
       ctx.sessions.touch(record.id, env.now)
-      return { ok: true }
+      return { ok: true, digest: actionDigest('type') }
     }
     case 'press': {
       const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.press(requiredString(args, 'key'))
       ctx.sessions.touch(record.id, env.now)
-      return { ok: true }
+      return { ok: true, digest: actionDigest('press') }
     }
     case 'wait_for': {
       const selector = optionalString(args, 'selector')
@@ -178,26 +184,33 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
       const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.waitFor(selector, ms)
       ctx.sessions.touch(record.id, env.now)
-      return { ok: true }
+      return { ok: true, digest: actionDigest('wait_for') }
     }
     case 'extract': {
       const record = await withSession(args, ctx, env, scope, callId)
       const attr = optionalString(args, 'attr')
       const result = await record.engine.extract(optionalString(args, 'selector'), attr)
       ctx.sessions.touch(record.id, env.now)
-      return attr === undefined ? { text: result.text ?? '' } : { value: result.value ?? '' }
+      if (attr === undefined) {
+        const text = result.text ?? ''
+        return { text, digest: actionDigest('extract', { bytes: byteLength(text) }) }
+      }
+      const value = result.value ?? ''
+      return { value, digest: actionDigest('extract', { bytes: byteLength(value) }) }
     }
     case 'screenshot': {
       const record = await withSession(args, ctx, env, scope, callId)
       const format = optionalString(args, 'format')
       const shot = await record.engine.screenshot(optionalBoolean(args, 'full_page') ?? false, format)
       ctx.sessions.touch(record.id, env.now)
-      return { asset: await putAsset(ctx.link, shot.mime, shot.bytes, callId) }
+      const asset = await putAsset(ctx.link, shot.mime, shot.bytes, callId)
+      const size = isRecord(asset) && typeof asset['size'] === 'number' ? asset['size'] : shot.bytes.length
+      return { asset, digest: actionDigest('screenshot', { bytes: size }) }
     }
     case 'close': {
       const id = requiredString(args, 'session')
       const closed = await ctx.sessions.close(id, env.now)
-      return { closed }
+      return { closed, digest: actionDigest('close', { closed }) }
     }
     default:
       throw new ToolError('bad_args', `unknown action ${action}`)

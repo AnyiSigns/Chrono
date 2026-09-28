@@ -1,0 +1,76 @@
+[
+  {
+    "type": "turn.open",
+    "turn_id": "t-1759000000000",
+    "conv": "c-1759000000000-0",
+    "user_message": {
+      "id": "m-1",
+      "role": "user",
+      "content": "看看 foo.ts 第 42 行，那里的空指针是不是少了判空",
+      "at": "2026-09-28T00:00:00.000Z"
+    },
+    "slot_ref": "run-7",
+    "at": "2026-09-28T00:00:00.000Z"
+  },
+  {
+    "type": "step.intent",
+    "turn_id": "t-1759000000000",
+    "seq": 1,
+    "kind": "tool.dispatch",
+    "tool_calls": [
+      { "id": "call-0", "name": "fs.read", "arguments": { "path": "foo.ts" } }
+    ]
+  },
+  {
+    "type": "step.result",
+    "turn_id": "t-1759000000000",
+    "seq": 1,
+    "assistant": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{ "id": "call-0", "name": "fs.read", "arguments": { "path": "foo.ts" } }]
+    },
+    "tool_results": [
+      { "call_id": "call-0", "tool": "fs.read", "ok": true, "result": { "path": "foo.ts", "lines": "1-240", "sha": "a1b2" } }
+    ],
+    "reasoning": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "form": "blocks",
+      "payload": "先读文件确认第 42 行",
+      "signature": "sig-1",
+      "encrypted": null,
+      "tokens": 64
+    },
+    "usage": { "prompt_tokens": 1200, "completion_tokens": 80, "cached_tokens": 1024 }
+  },
+  {
+    "type": "checkpoint",
+    "turn_id": "t-1759000000000",
+    "seq": 1,
+    "summary": {
+      "goal": "排查 foo.ts 第 42 行的空指针",
+      "constraints": ["不引入新依赖"],
+      "decisions": [{ "what": "先读文件再判断", "why": "需要确认上下文", "at_step": 1 }],
+      "findings": [{ "claim": "第 42 行缺少判空", "evidence": { "handle": "h-foo-42" } }],
+      "files": [{ "path": "foo.ts", "state": "read", "summary": "第 42 行访问可能为空的对象" }],
+      "open_questions": [],
+      "next_steps": ["给出补丁"],
+      "errors_to_avoid": [],
+      "user_preferences": [],
+      "covered_upto": "1"
+    },
+    "covered_upto": "1"
+  },
+  {
+    "type": "turn.settle",
+    "turn_id": "t-1759000000000",
+    "outcome": {
+      "kind": "committed",
+      "code": null,
+      "attributableTo": null,
+      "retryable": false,
+      "cause": null
+    }
+  }
+]

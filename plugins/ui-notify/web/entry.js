@@ -129,6 +129,7 @@ function unhealthySummary(payload) {
  * 载荷未带时为 null（正文据此决定是否加标签，不用原始 thread id）。
  * `always` = 结构 / 失败 / 断线类，不看窗口焦点也通知；
  * `unthrottled` = 结构性事件，不占同屏配额、不走排队（即时），但仍按 5s 窗口对同键合并。
+ * `run.finished` 只对有会话（thread 非空）的 run 分类；后台 run（thread 缺省 null）返回 null。
  */
 export function classify(record) {
   const source = asRecord(record)
@@ -152,6 +153,9 @@ export function classify(record) {
     }
     case 'run.finished': {
       const thread = pickThread(payload, null)
+      // 后台 run（thread 缺省 null：periodic / 命令 run）不属于任何会话，一律不弹系统通知；
+      // 否则用户没在对话、切到别的软件时也会收到「回合失败 / 回合完成」。
+      if (thread === null) return null
       const label = pickLabel(payload, null)
       const summary = firstLine(payload.summary)
       if (payload.status === 'done') {

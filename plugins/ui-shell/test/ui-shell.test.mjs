@@ -962,7 +962,12 @@ test('壳页面细节：toast DOM 序、无死代码、响应式与 ::selection�
   assert.match(html, /::selection/)
   assert.match(html, /scrollbar-width: thin/)
   assert.match(html, /::-webkit-scrollbar-thumb/)
-  assert.match(html, /flex: 0 3 auto/)
+  // main 取剩余空间（0 基 + 自持滚动），dock 恒取内容高度：两者都不得随消息流伸缩。
+  assert.match(html, /#slot-main \{ flex: 1 1 0/)
+  assert.match(html, /#slot-dock \{[\s\S]*?flex: none/)
+  // underbar 紧贴 topbar 之下、main 之上：常显占布局，flex: none。
+  assert.match(html, /id="slot-underbar" data-slot="underbar"/)
+  assert.match(html, /#slot-underbar \{[\s\S]*?flex: none/)
   assert.match(html, /--msg-max-w: 100%/)
   assert.match(html, /#shell-banner-retry[\s\S]*?min-height: 24px/)
 })

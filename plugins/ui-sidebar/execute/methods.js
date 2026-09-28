@@ -166,6 +166,19 @@ export function createHandlers(deps) {
 
     listWorkspaces: (args) => callValue(deps.workspace, 'workspace', 'list', assembleWorkspaceListArgs(args)),
 
+    /**
+     * 只读回合面：向 `session` owner 反向调用 `session.read`，只回跨会话仍开着的回合摘要
+     * （`open_turns`）。侧栏首屏据此补运行角标——重载后、下一个 `chat.turn.*` 事件到达前，
+     * 也能显示哪些会话有开着的回合（含非当前会话）；其余会话切片字段不需要。
+     */
+    listTurns: async () => {
+      const outcome = await deps.session.call('session', 'read', {})
+      if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
+      const value = isRecord(outcome.value) ? outcome.value : {}
+      const open = Array.isArray(value['open_turns']) ? value['open_turns'] : []
+      return externOnly({ open_turns: open })
+    },
+
     pickWorkspace: () => callValue(deps.workspace, 'workspace', 'pick', {}),
 
     addWorkspace: workspaceCommand('add'),

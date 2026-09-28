@@ -5,15 +5,22 @@
 + 回合尾写 trace / 队列项 / 提案扫描 + `agent.step` 失败的降级判定。图 / 策略住本身份的**数据世代 body**；
 六类条目（契约 / Scope / 提示词 / 图 / 阈值 / 拒绝码）；空 body 回落**包内种子图 / 默认阈值**。
 
-- 能力类 / 方法：`loop-policy.interpret`（唯一方法；`schema.method_timeouts` 覆盖整回合等待上限）。
-- `pins`（= **节点类型空间**）：`session` / `model` / `context` / `retrieval` / `guard` / `approval` / `tools` /
-  `router` / `evolve-metrics`。
+- 能力类 / 方法：`loop-policy.interpret`（图执行；一次调用跑**一段 = 一个 iter**，段尾未完即返回自续跑 eval）、
+  `loop-policy.cancel`（置取消标志；同为并发方法，才不会被在途 `interpret` 挡住）。`schema.method_timeouts` 只兜一段，
+  整回合长度由预算阶梯与宿主轮数上限约束。
+- `pins`（= **节点类型空间**）：`session` / `model` / `context` / `retrieval` / `compress` / `guard` / `approval` /
+  `tools` / `router` / `evolve-metrics`。
 - 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行时零 npm 依赖；服务不写链、不读投影、不 import 宿主 / 内核 / client；跨插件只走 `port.call`；`now` 取 `env.now`。
+- **并发**：`interpret` 声明为 `concurrent_methods`（跨会话并发；会话内互斥落在 `session.turn_open` 的 CAS）。
+  派发路径无跨调用可变状态：工具 → 提供者能力类的解析器按当次 `bag.tools` 惰性读取，随调用构造，不复用全局。
+  并发 `interpret` 各用各的目录解析提供者，互不串台。
 
 ## 入口契约（chat 装配 bag）
 
 `interpret(bag)` 的图数据与所有节点 bag 均由调用方（chat 入口 term）读出随 bag 传入；服务不读投影。
+bag 带 `contract_version` 时校验主版本：不匹配立即拒绝并给 `contract_version_mismatch` 结构化结局（不逐键回落）；
+缺失视为未标注版本并兼容接受，事实记进摘要 `contract_version`（未标注为 null）。
 
 ```jsonc
 {
@@ -24,17 +31,20 @@
   "input" / "slots", "config", "tier", "memories", "session", "persona", "skills",
   "workspace_id" / "workspace_root", "todo", "guard_rules", "sandbox_tiers", "tools", …,
   "evolution": { version, trace:{tail,count}, evidence:…, proposals:…, verdicts:… },  // evolution 台账
-  "resume": { "cursor": {…}, "thread": …, "payload": {…} } | null,                    // 跨 run 续跑
+  "resume": { "cursor": {…}, "thread": …, "payload": {…} }        // 裁决 / 作答续跑（带挂起游标）
+          | { "continuation": true, "turn_id": "…" } | null,       // 段续跑（无游标，状态由步记录重建）
   "run": "…", "now": 0
 }
 ```
 
 `interpret` 返回 `{ $directives: [...] }`：按段序合并各节点返回的写计划 + 回合尾 trace 写 + 提案扫描写，
-末尾一条 `extern` 摘要（`{ok, kind:'interpret', iters, steps, fell_back, graph, ended, refused_at, branch_not_taken, instances}`），
-交 chat 入口 term 作为顶层 `$directives` 上提。
+末尾一条 `extern` 摘要（`{ok, kind:'interpret', iters, steps, fell_back, graph, ended, lifecycle, progress, refused_at, branch_not_taken, instances}`），
+交 chat 入口 term 作为顶层 `$directives` 上提。有回合身份时一段只跑一个 iter：段尾回合未完则摘要改标
+`kind:'stepping'`、计划追加 `{kind:'eval', command:'chat.resume', args:{turn_id, thread}, inject:{ids}}`，
+由宿主在同一 run 内续跑；回合已完才收口。
 
 > **与 chat 静态管道等价口径**：等价指**写计划（`write` 子操作序列）+ 反向调用 eff 序列**一致
-> （简单问答 = `context.build → model.chat → session.commit`）；`extern` 观测载荷不逐字节等价
+> （简单问答 = `context.build → model.chat → 回合尾 step.result`；内容步 + 终态 `turn_settle`）；`extern` 观测载荷不逐字节等价
 > （本插件额外附回合尾摘要 extern），chat 静态管道另有的 reply extern 仍在合并结果中。
 
 ## 服务自驱解释器
@@ -51,10 +61,14 @@
    其余 ⇒ `capability_mismatch`（graph）。**可重试码**（`retriable:true`）在 `post_retry_max` 上限内**重跑本节点**，达上限才收口拒绝。
    拒绝一律**短路到 sink**（`trace.refused_at` 可还原：`{node_index, iter, code, attributable_to}`）；拒绝路径把最后一步助手消息
    一并交 sink，本回合已产出的正文 / 推理 / 工具卡照常落盘（只补 `error` 码），不再「记录全没」。
-6. **重入**：回合尾按 `Graph.loop.when` 判定；`question_pending` 优先 ⇒ 本 run 正常结束（不 loop）；
-   派发过工具 / verify 失败 / `todo_incomplete` ⇒ 继续 loop。达 `max_turn_iter` / `max_steps` 仍要派发 ⇒ 落 **`budget`** 码（不静默截断）。
-7. **sink 延后收口**：sink 在每个 iter 内不执行，只在 loop 终止 / 拒绝短路时执行一次 ⇒「回合尾一次写」
-   （消息 + trace + 队列项 + 提案扫描），避免重复提交用户消息 / 清槽。
+6. **重入（跨段）**：段尾按 `Graph.loop.when` 判定；`question_pending` 优先 ⇒ 本段正常收口（不 loop）；
+    派发过工具 / verify 失败 / `todo_incomplete` ⇒ 段尾落一条段标记步记录并返回自续跑 eval，下一段由步记录重建
+    状态（`extra_messages` 由工具步记录重建，段标记步落段序号）。达 `max_turn_iter` / `max_steps` 仍要派发 ⇒
+    用户预算主动停：已完成步骤保留，以 **`committed` + `stop_reason`**（`turn_iter` / `steps`）收口，先于宿主机械轮数上限生效。
+    无回合身份（单测直调）时不分段，保持同步多 iter。
+7. **sink 延后收口**：sink 在每个 iter 内不执行，只在回合终止 / 拒绝短路的那一段执行一次 ⇒「回合尾一次写」
+   （消息 + trace + 队列项 + 提案扫描），避免重复提交用户消息 / 清槽；段终态不写 trace，同回合的 trace 记录器
+   在段间累积、settle 时一次写成（每回合一个 evolution 世代）。
 8. **每步记 `trace.eff_log`**：`{step, iter, port, method, args_hash, result_hash, outcome}`（`outcome ∈ ok/error/transport_failed/cancelled`）；
    随 trace 写入世界（evolve-metrics shadow 配对的数据底座）。
 
@@ -64,7 +78,7 @@
 | --- | --- | --- |
 | `contracts` | 链式 tail；能力边界（inputs / outputs / reads / publishes / pre / post / refuses / effects / cost） | 十一个种子契约 |
 | `nodes` | 链式 tail；Scope 实例（atomic / composite、entry、bindings、autonomy、scope、links） | 十一个种子实例 |
-| `prompts` | 链式 tail / 对象映射；`system`（行为准则 + 产品事实、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词 |
+| `prompts` | 链式 tail / 对象映射；`system`（Markdown：角色 + 沟通 / 执行 / 工具 / 安全四节、安全节最高优先、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词 |
 | `graph` | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from | 种子图 |
 | `thresholds` | 链式 tail / 扁平 map / 条目数组；字段名契约见下 | `DEFAULT_THRESHOLDS` |
 | `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十四码（含 `empty_output`，可重试） |
@@ -122,13 +136,13 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
   `call_id` 必填；`op` 须等于本次 `fsop` op；目标路径须落在 `paths`（**空 = 不适用**）；`fs` 只声明本次 op 维度
   （未声明不放宽、不回落 full）；`net` 为 net 越档批准的范围（none/limited/all，消费一次）；`tier` 须等于当前档；
   `expires` 用帧 `env.now` 判；同 `call_id` 消费一次即拒）。
-  `op` 映射（与 tool-fs 契约对齐）：`read→read` / `glob→list` / `grep→grep` / `edit→replace`（`old` 非空）/ `write`（`old` 空）；
+  `op` 映射（与 tool-fs 契约对齐）：`read→read` / `glob→list` / `grep→grep` / `stat→stat` / `edit→replace`（`old` 非空）/ `write`（`old` 空）；
   net 越档升级（`net_outside_tier`）且无 fs op 映射时补 `op:"exec"`，使 sandbox exec 能消费 net 放宽。
 - **游标契约（本插件自造 opaque 结构，宿主不认识）**：`{kind:'approval'|'question'|'orchestration_change', iter, node_index,
   outputs, inputs, executed, messages, extra_messages, slots, shared, dispatched_tools, question_pending, verify_failed, last_calls, steps, original_input, call_id?}`。
   `original_input` = 本轮 `bag.input`（原始用户消息）：作答 / 裁决时刻的槽已换成 `approval.decide` / `question.answer`，
   恢复时优先用它重建上下文。提问往返的游标在派发后重建（含同批其它工具真实结果）并替换进 question 队列项的 `resume`，
-  恢复时只替换 question 项。
+  恢复时只替换 question 项。**段续跑不走此游标**：只带 `turn_id`，状态由会话步记录重建。
 
 ## 提案扫描与采纳
 
@@ -137,6 +151,20 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 裁决续跑（`cursor.kind:'orchestration_change'`）：`approved` ⇒ 按 `patch.writes[]` 展开
 `add_gen('loop-policy', 图 def)` + 各跨身份 `add_gen` + `accepted` verdict；`denied` ⇒ `rejected` verdict。
 机械闸不过的提案直接落 `rejected` verdict（不入人闸）。`evolve.propose` Scope（LLM）产提案、**不产证据**，触发读**已落账** evolution evidence。
+
+## 取消（协作式）
+
+`cancel(turn_id)` 在进程内按回合置标志（幂等）；运行中的 `interpret` 在三个检查点查标志，命中即停、不派发：
+
+1. **入口**（进入 iter 环之前）：标志已置时立即返回，不派发任何节点；
+2. **每次节点派发前**（`runIter` 内的每个拓扑节点前）：模型调用与工具派发都在此闸后，命中即不开始本节点；
+3. **每个节点派发后**（`dispatchNode` 返回、记录 eff 之后）：模型调用被 `model-protocol.abort` 中止、
+   或派发期间置了标志时，丢弃产出、不短路成拒绝。
+
+取消返回 `ended:'cancelled'`，不经 sink、不写拒绝产物；已完成的步骤内容已在回合日志里。取消的回合由
+`session.turn_settle(cancelled)` 经 CAS 落定——若取消链路已先落定，本段迟到收口被 CAS 拒绝并记 `late_settles`
+（僵尸段不得改写结局）。标志在**回合终态**（done / refused / cancelled / pending）清除；段终态（stepping）保留，
+使落在两段之间的取消能拦住下一段入口。取消不回溯已落账（冻结层既定语义）。
 
 ## 降级判定
 
@@ -153,17 +181,24 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 `unhealthy_refused_streak=3`。
 图 / 演化参数（本插件权威）：`max_turn_iter` / `max_steps` / `gas` / `llm_chain_max` / `max_graph_diff` /
 `min_runs_before_fork` / `max_links` / `graph_growth_quota` / `instance_growth_quota` / `shadow_rounds` /
-`large_artifact_bytes` / `model_alias_pins`。`interpret` 把解析后的**扁平 thresholds map** 随 evolve-metrics bag 下传。
+`large_artifact_bytes` / `model_alias_pins`。`interpret` 把解析后的**扁平 thresholds map** 随 evolve-metrics bag 下传，
+并随 `context.assemble` bag 下传（`bag.thresholds`）：`large_artifact_bytes` 等阈值以本插件为单一真源，
+消费方 context-window 据此覆盖自身 policy 默认。
 
 ## 未决 / 偏离（明写）
 
 - **chat bag / `bag.resume` 接口（已落地）**：`chat.send` / `chat.resume` 的入口 term 经自能力路由 eff `loop-policy.interpret`。
   本插件按 bag 装配契约定义并容错接受：`bag.input`（槽或归一）、`bag.slots`、`bag.refs`/`bag.graph_refs`、
   `bag.resume = {cursor, thread, payload}`（也接受 cursor 直接作 resume、`payload.verdict` 或 `resume.verdict`）。
-- **context-window `extra_messages`（已落地）**：同一 `interpret` 内 iter 间产物经服务内存 `extra_messages` 随
+- **context-window `extra_messages`（已落地）**：回合内已派发产物的进度经 `extra_messages` 随
   `context.assemble` bag 传入，由 context-window 接受该键并追加到 messages 尾部（source=`tool`，排在本轮输入之后）。
+  分段执行后该进度**由本回合步记录重建**（`execute/reconstruct.ts`：每步 `step.intent` 给中性调用、`step.result.tool_results`
+  给结果，`checkpoint({kind:verify|segment})` 给校验报告与段序号），不再依赖服务进程内状态跨段存活。
   工具路径按**规范序列**回灌：先 `assistant` 承接帧（带中性 `tool_calls: [{id,name,arguments}]`），再逐条
   `tool` 结果（带 `tool_call_id` 与调用配对）——否则模型看不到自己的调用，会反复重调同一工具。
+- **用量 / 缓存提示转发（已落地）**：最近一次完成的模型调用用量（本段暂存，跨段由 `step.result` 重建）随
+  `context.assemble` bag 的 `usage` 键下传，激活 context-window 的估算校准；`context.assemble` 回值里的
+  中立 `cache` 提示原样转发进 `model.chat` bag 的 `cache` 键。两者都 absent-safe：来源缺失即不落键。
 - **落盘展示 parts（已落地）**：`turn.commit` 把本轮时间线（承接帧 + 工具结果）折叠成有序展示段
   （`reasoning` / `text` / `tool`，见 `execute/commit-parts.ts`）写进 assistant 消息 `parts`，供 UI 定稿后
   仍能渲染推理块与工具卡（含 render 描述符与结果）。纯展示数据，不进模型上下文：context-window 丢弃
@@ -174,10 +209,27 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 - **拒绝码表 append-only 合流**：解析图数据时保留图上已有码，并补进包内种子新增码（老图无需重 seed 即获新码）。
 - **不变量 4 写期判据**：图数据无工具名，故写期按端口名 + **声明式写档 `caps.fs.write`** 机械近似；更精确的
   `(port, tool)` 判据归运行时（`guard.judge` 逐 call）。composite 子图递归生效。
-- **`join` / `recall` 为词汇占位**：`join` 是纯函数（同键取最新，不发 eff）；`recall` 的 `retrieval.search` bag 形状为
-  初版约定，待 memory-retrieval 接口冻结后对齐。
-- **游标落世界**：跨 run 续跑必须把服务进程内状态序列化进队列项游标（`outputs` / `messages` 等），大回合游标较大；
-  v1 以正确性优先，未做压缩 / 引用化。
+- **子代理隔离（已落地）**：`subagent` 契约派发时不经父消息历史，改用**任务 + 父检查点**的专用 bag
+  （`execute/subagent.ts`）：任务取 `inputs.task` > `bag.task` > `bag.input`；父检查点取本回合最后一条结构化
+  `checkpoint` 步记录（同回合内委派场景）。模型产出归一为**结构化结果**（`goal` / `findings` / `files` /
+  `open_questions` 等，与 `checkpoint.summary` 同形），并被 `toSubagentResult` 落成 `checkpoint` 步记录，
+  父回合只吸收蒸馏结论而非子代理全程记录——长任务里这是最便宜的上下文节省。子代理模型调用随附
+  `thread_kind:'subagent'` 与 `parent_checkpoint`；`context.assemble` 侧对 subagent 线程不组装父消息历史。
+  **边界**：跨线程委派（父检查点在另一会话的回合里）需调用方把 `parent_checkpoint` 随 bag 传入，本插件在
+  同回合内自取。
+- **`join` / `recall` 为词汇占位**：`join` 是纯函数（同键取最新，不发 eff）；`recall` 只作契约 / 实例词汇，**不进默认图**。
+  检索已改为**模型可调工具**（工具绑定归 `tools`），默认路径不自动召回；常驻只留工作区 L2（由 context-window 装配）。
+  `retrieval.search` bag 的权威键名已冻结并双向对齐（`workspace` / `recall_budget` / `query`），见
+  `chain-contract/README.md` 与 `tests/contract/loop-policy-retrieval.seam.contract.test.mjs`。
+- **段边界检查点（本插件触发）**：每段收束、回合未完时读本段 `context.assemble` 清单的 `used / budget`，
+  越阈即经 `port.call compress.summarize`（`algorithmic`、`persist:false`）产出结构化摘要，追加一条
+  `checkpoint` 步记录作为新的历史基础（`facts` 映射成 `findings`，`covered_upto` = 已落步序号）。
+  档位阈值 `checkpoint_soft_ratio=0.7` / `checkpoint_hard_ratio=0.85` / `checkpoint_emergency_ratio=0.95`
+  住本插件阈值（`bag.checkpoint_thresholds` 可按调用覆盖）；75% 提示仍是 context-window 的辅助信号。
+  **压缩失败不阻断回合**：跳过记录、照常续段，段标记与自续跑不受影响。
+- **游标落世界**：挂起 / 续跑（审批 / 提问 / 编排变更）仍把当前 iter 的图位置与调用状态序列化进队列项游标
+  （`node_index` / `outputs` / `messages` 等，opaque，宿主不认识）；这类续跑是段内恢复，必须带图位置。
+  **段续跑不同**：`chat.resume` 只带 `turn_id`，解释器据步记录重建状态，服务不把整回合序列化进计划或游标。
 - **`caps.grant` 的两处 v1 边界（明写）**：① `bag.grant` 是单值，整批升级只绑定首个升级 call（按 call 拆批为后续登记项）；
   ② `edit` 新建（`old` 空）先 `stat`（op=`read`）再 `write`（op=`write`），grant 只绑定 `write`，区外 `stat` 仍可能被档位拒
   （与 `plugins/tool-fs/README.md`「区外新建」已知限制一致）。
@@ -185,7 +237,7 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 ## 运行
 
 ```sh
-npm test                    # 协议级 + 单元测试（node --test，73 例）
+npm test                    # 协议级 + 单元测试（node --test）
 node tools/e2e-smoke.mjs    # 宿主装配 E2E（pack 闭包 → seed → 离线投影 → 直连协议 → verify）
 ```
 

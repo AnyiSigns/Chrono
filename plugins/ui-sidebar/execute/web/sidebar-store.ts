@@ -3,7 +3,7 @@
 // 零 react import（可 grep 断言）；DOM 只出现在浮层测量 / 下载等动作里，不构建视图。
 
 import type { SlotContext } from '@chrono/ui-contract'
-import { applyEvent, clearUnread, createBadgeState, seedFromHistory } from './badges.ts'
+import { applyEvent, clearUnread, createBadgeState, seedFromHistory, seedOpenTurns } from './badges.ts'
 import type { BadgeState } from './badges.ts'
 import { beginConfirm, clearConfirm, CONFIRM_MS, createConfirmState, isConfirming } from './confirm.ts'
 import type { ConfirmState } from './confirm.ts'
@@ -143,6 +143,8 @@ export class SidebarStore {
   /** 读面请求序号：并发 loadAll / loadHistory 时旧回包不覆盖新结果。 */
   private loadSeq = 0
   private historySeq = 0
+  /** 回合读面序号：事件已改写运行角标时，在途的持久回合读回包作废（不把已收口会话读回运行中）。 */
+  private turnsSeq = 0
   /** 会话切换序号：并发 selectSession 时旧回包不抢先改状态。 */
   private selectSeq = 0
 
@@ -311,6 +313,23 @@ export class SidebarStore {
     return true
   }
 
+  /**
+   * 首屏补种运行角标：读会话持久回合状态（`session.turns` → owner `session.read.open_turns`）。
+   * 事件路径负责实时开合；本读覆盖重载后、下一个事件前的首屏，以及非当前会话的运行中。
+   * 只补缺、不覆盖；事件已改写运行角标时（`turnsSeq` 变化）丢弃在途回包。
+   */
+  private async loadTurns(): Promise<boolean> {
+    const seq = (this.turnsSeq += 1)
+    const result = await this.command('session.turns', null)
+    if (seq !== this.turnsSeq) return true
+    if (!result.ok) return false
+    const value = result.value
+    this.update({
+      badges: seedOpenTurns(this.snapshot.badges, isRecord(value) ? value['open_turns'] : null),
+    })
+    return true
+  }
+
   private async loadStoredWidth(): Promise<void> {
     const seq = this.loadSeq
     const result = await this.command('config.read', null)
@@ -329,7 +348,12 @@ export class SidebarStore {
     if (this.disposed) return
     const seq = (this.loadSeq += 1)
     this.update({ loading: true, error: null })
-    const [workspacesOk, historyOk] = await Promise.all([this.loadWorkspaces(), this.loadHistory(), this.loadStoredWidth()])
+    const [workspacesOk, historyOk] = await Promise.all([
+      this.loadWorkspaces(),
+      this.loadHistory(),
+      this.loadStoredWidth(),
+      this.loadTurns(),
+    ])
     if (this.disposed || seq !== this.loadSeq) return
     this.update({ loading: false, error: !workspacesOk || !historyOk ? this.text('sidebar_dependency_missing') : null })
     this.syncActiveWorkspace()
@@ -351,12 +375,20 @@ export class SidebarStore {
       this.update({ connected: payload['connected'] === true })
       return
     }
+    if (
+      record['topic'] === 'chat.turn.started' ||
+      record['topic'] === 'chat.turn.settled' ||
+      record['topic'] === 'thread.closed'
+    ) {
+      // 事件已改写运行角标：在途的持久回合读回包作废，避免把已收口 / 已关闭会话读回运行中。
+      this.turnsSeq += 1
+    }
     const badges = applyEvent(this.snapshot.badges, record['impl'], record['topic'], payload)
     if (
       record['topic'] === 'thread.updated' ||
       record['topic'] === 'thread.opened' ||
       record['topic'] === 'thread.closed' ||
-      record['topic'] === 'run.finished'
+      record['topic'] === 'chat.turn.settled'
     ) {
       this.scheduleReload()
     }

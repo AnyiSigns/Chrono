@@ -50,8 +50,8 @@
             "description": "线程收件箱 {tail:{\"def\":\"<最新 inbox 消息 def>\"}|null, count, last_seen}；deliver 写、assemble 读后推进 last_seen"
           },
           "status": {
-            "enum": ["running", "waiting", "blocked", "done", "failed", "terminated"],
-            "description": "线程处境；缺键 = 未标注"
+            "enum": ["waiting", "done", "failed", "terminated"],
+            "description": "线程处境；缺键 = 未标注。waiting = 建会话与进行中；done / failed / terminated = 终态（deliver 带终态时写，并广播 thread.closed）。"
           },
           "last_activity": {
             "type": "object",
@@ -68,6 +68,54 @@
           "count": { "type": "integer", "description": "消息条数冗余计数（链完整性以 prev 为准）" },
           "created": { "type": "string", "description": "创建时间（ISO 8601，取帧 env.now）" },
           "deleted_at": { "type": "string", "description": "软删时间戳（ISO 8601）；null = 未删（缺键同义）；消息 def 不删不回溯" }
+        }
+      }
+    },
+    "turns": {
+      "type": "array",
+      "description": "回合事件日志投影（本会话）：每条回合的 open / settled 状态、结局与步记录。回合记录按 turn_id 键，续跑复用同一回合；outcome 取契约终态（committed / refused / cancelled / interrupted）。",
+      "items": {
+        "type": "object",
+        "required": ["turn_id", "conv", "state"],
+        "additionalProperties": true,
+        "properties": {
+          "turn_id": { "type": "string", "description": "回合身份；一次用户意图到最终答复，跨 send / N 次 resume 不变" },
+          "conv": { "type": "string", "description": "所属会话 id" },
+          "slot_ref": { "type": "string", "description": "槽写入时的 run id；同一槽不开第二个回合（幂等）" },
+          "at": { "type": "string", "description": "回合开始时间（ISO 8601，取帧 env.now）" },
+          "state": { "enum": ["open", "settled"], "description": "open = 进行中；settled = 已有结局（含启动收口的 interrupted）" },
+          "outcome": { "type": "object", "description": "回合结局（契约 TurnOutcome）；open 时为 null" },
+          "thread_kind": {
+            "type": "string",
+            "description": "线程种类（turn.open 记录，缺键 = main）；subagent 回合据此在续跑时恢复隔离口径"
+          },
+          "task_prompt": {
+            "type": "string",
+            "description": "子代理任务提示词（turn.open 记录）；续跑不丢失任务"
+          },
+          "parent_checkpoint": {
+            "description": "子代理父检查点（结构化 summary 或裸摘要；turn.open 记录）"
+          },
+          "parent_summaries": {
+            "type": "array",
+            "items": { "type": "object" },
+            "description": "子代理父会话摘要回退（turn.open 记录）"
+          },
+          "cancel_requested": { "type": "boolean", "description": "已记录取消意图；重启收口据此判 cancelled 而非 interrupted" },
+          "late_settles": { "type": "array", "items": { "type": "object" }, "description": "被 CAS 拒绝并记档的迟到收口" },
+          "steps": { "type": "array", "items": { "type": "object" }, "description": "步记录（step.intent / step.result / checkpoint），按 seq 去重" }
+        }
+      }
+    },
+    "open_turns": {
+      "type": "array",
+      "description": "跨会话仍开着的回合摘要（供角标读，O(open 回合)）。",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "turn_id": { "type": "string" },
+          "conv": { "type": "string" }
         }
       }
     },
@@ -104,5 +152,15 @@
         }
       }
     }
+  },
+  "method_timeouts": {
+    "session.turn_open": 120000,
+    "session.step_append": 120000,
+    "session.turn_settle": 120000,
+    "session.turn_cancel": 120000,
+    "session.commit": 120000,
+    "session.read": 120000,
+    "session.history": 120000,
+    "session.deliver": 120000
   }
 }

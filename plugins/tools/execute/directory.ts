@@ -185,6 +185,8 @@ function normalizeInvokeTool(raw: Json, provider: string, lenient: boolean): Nor
   const idempotent = typeof raw['idempotent'] === 'boolean' ? (raw['idempotent'] as boolean) : lenient ? false : null
   if (idempotent === null) return { entry: null, message: 'idempotent must be a boolean' }
 
+  const merged = mergeParamSemantics(argsSchema, raw['param_semantics'])
+  const hidden = hiddenParamsOf(raw)
   const render = isRecord(raw['render']) ? (raw['render'] as Rec) : null
   const decl: Rec = {
     ...raw,
@@ -193,11 +195,17 @@ function normalizeInvokeTool(raw: Json, provider: string, lenient: boolean): Nor
     kind: 'invoke',
     method: null,
     read: null,
-    description: descriptionOf(raw),
-    argsSchema: argsSchema as Json,
+    description: descriptionOf(
+      raw,
+      merged.residual.filter(([key]) => !hidden.has(key)),
+    ),
+    // 模型可见 schema 摘掉调用方注入参数；校验仍用完整 schema（validateSchema，仅在确有隐藏项时随声明下发）。
+    argsSchema: hideParams(merged.schema, hidden),
     caps: (capsResult.caps ?? defaultCaps()) as Json,
     idempotent,
   }
+  if (hidden.size > 0) decl['validateSchema'] = merged.schema
+  delete decl['hidden_params']
   if (render === null) delete decl['render']
   return { entry: { name, provider, kind: 'invoke', method: null, read: null, decl }, message: '' }
 }
@@ -238,6 +246,8 @@ function normalizeBinding(name: string, item: Rec, pins: string[]): NormalizeOut
   const read = typeof readRaw === 'string' ? readRaw : null
 
   const render = isRecord(item['render']) ? (item['render'] as Rec) : null
+  const merged = mergeParamSemantics(item['argsSchema'], item['param_semantics'])
+  const hidden = hiddenParamsOf(item)
   const decl: Rec = {
     name,
     provider,
@@ -248,11 +258,16 @@ function normalizeBinding(name: string, item: Rec, pins: string[]): NormalizeOut
     when_to_use: item['when_to_use'] ?? null,
     param_semantics: item['param_semantics'] ?? {},
     boundaries: item['boundaries'] ?? null,
-    description: descriptionOf(item),
-    argsSchema: item['argsSchema'] as Json,
+    description: descriptionOf(
+      item,
+      merged.residual.filter(([key]) => !hidden.has(key)),
+    ),
+    // 模型可见 schema 摘掉调用方注入参数；校验仍用完整 schema（validateSchema，仅在确有隐藏项时随声明下发）。
+    argsSchema: hideParams(merged.schema, hidden),
     caps: (capsResult.caps ?? defaultCaps()) as Json,
     idempotent: item['idempotent'] as boolean,
   }
+  if (hidden.size > 0) decl['validateSchema'] = merged.schema
   if (render !== null) decl['render'] = render
   return { entry: { name, provider, kind: 'binding', method, read, decl }, message: '' }
 }
@@ -282,21 +297,82 @@ function checkParamCoverage(raw: Rec, argsSchema: Json): string | null {
   return null
 }
 
-/** 模型可见文本：提供者可直给；缺省由四要素机械拼装。 */
-function descriptionOf(raw: Rec): string {
-  const given = raw['description']
-  if (typeof given === 'string' && given.trim().length > 0) return given
-  const intent = typeof raw['intent'] === 'string' ? raw['intent'] : ''
-  const when = typeof raw['when_to_use'] === 'string' ? raw['when_to_use'] : ''
-  const semantics = isRecord(raw['param_semantics'])
-    ? Object.entries(raw['param_semantics'] as Rec)
-        .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : canonicalJson(value)}`)
-        .join('; ')
-    : ''
-  const boundaries = typeof raw['boundaries'] === 'string' ? raw['boundaries'] : ''
+/**
+ * 把 `param_semantics` 逐项并入 `argsSchema` 对应属性的 `description`：语义就地挂在参数上，
+ * 与 `description` 里的散文说明去重（同一段文案只出现一次）。`param_semantics` 覆盖同名属性的
+ * `description`，是参数文案的唯一来源，故提供者不应再自带该属性的 `description`（会被覆盖丢弃）。
+ * 返回合并后的 schema 与
+ * **未覆盖键**（`param_semantics` 有、schema 无对应属性——如纯 `additionalProperties` 的外部工具），
+ * 未覆盖键仍回落到 `description` 的 `参数：` 行，信息不丢。
+ */
+function mergeParamSemantics(schema: Json, rawSemantics: Json | undefined): { schema: Json; residual: [string, Json][] } {
+  const entries = isRecord(rawSemantics) ? Object.entries(rawSemantics as Rec) : []
+  if (entries.length === 0) return { schema, residual: [] }
+  if (!isRecord(schema)) return { schema, residual: entries }
+  const properties = isRecord(schema['properties']) ? (schema['properties'] as Rec) : null
+  if (properties === null) return { schema, residual: entries }
+  const merged: Rec = { ...properties }
+  const residual: [string, Json][] = []
+  for (const [key, value] of entries) {
+    const child = properties[key]
+    const text = typeof value === 'string' ? value.trim() : canonicalJson(value)
+    if (isRecord(child) && text.length > 0) {
+      merged[key] = { ...child, description: text }
+      continue
+    }
+    residual.push([key, value])
+  }
+  return { schema: { ...schema, properties: merged }, residual }
+}
+
+/**
+ * 调用方注入参数（`hidden_params`）：这些参数由系统在派发前填好、模型不该也不能填，
+ * 故从**模型可见** `argsSchema` 里摘掉（连 `required` 一并摘），但保留在 `validateSchema` 里供派发校验，
+ * 使其可由调用方随 args 注入而不被拒。文案 / 文档仍住 `param_semantics`。
+ */
+function hiddenParamsOf(raw: Rec): Set<string> {
+  const value = raw['hidden_params']
+  if (!Array.isArray(value)) return new Set()
+  return new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))
+}
+
+/** 摘掉隐藏参数后的模型可见 schema（属性与 `required` 同摘；无隐藏项时原样返回）。 */
+function hideParams(schema: Json, hidden: Set<string>): Json {
+  if (hidden.size === 0 || !isRecord(schema)) return schema
+  const properties = isRecord(schema['properties']) ? (schema['properties'] as Rec) : null
+  if (properties === null) return schema
+  const kept: Rec = {}
+  for (const [key, value] of Object.entries(properties)) if (!hidden.has(key)) kept[key] = value
+  const out: Rec = { ...schema, properties: kept }
+  if (Array.isArray(schema['required'])) {
+    const required = (schema['required'] as Json[]).filter(
+      (key) => typeof key !== 'string' || !hidden.has(key),
+    )
+    if (required.length > 0) out['required'] = required
+    else delete out['required']
+  }
+  return out
+}
+
+/**
+ * 模型可见文本：由四要素机械拼装（短描述 / 使用时机 / 残余参数 / 边界）。
+ * `description` 只作首行摘要（提供者直给），不再短路四要素——`when_to_use` / `boundaries` 是模型判断
+ * 「何时用、边界在哪」的关键，必须进上下文；`param_semantics` 的「怎么用」已并入 `argsSchema`
+ * 各属性的 `description`（见 `mergeParamSemantics`），仅未覆盖键在这里以 `参数：` 回落到正文，避免重复。
+ * 文案须为任务级自然语言，不得含插件名 / 能力类名 / 函数名等内部标识符（见各提供者 schema）。
+ */
+function descriptionOf(raw: Rec, residual: [string, Json][]): string {
+  const given = typeof raw['description'] === 'string' ? raw['description'].trim() : ''
+  const intent = typeof raw['intent'] === 'string' ? raw['intent'].trim() : ''
+  const when = typeof raw['when_to_use'] === 'string' ? raw['when_to_use'].trim() : ''
+  const semantics = residual
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : canonicalJson(value)}`)
+    .join('; ')
+  const boundaries = typeof raw['boundaries'] === 'string' ? raw['boundaries'].trim() : ''
+  const lead = given.length > 0 ? given : intent
   return [
-    intent,
-    when.length > 0 ? `使用时机：${when}` : '',
+    lead,
+    when.length > 0 && when !== lead ? `使用时机：${when}` : '',
     semantics.length > 0 ? `参数：${semantics}` : '',
     boundaries.length > 0 ? `边界：${boundaries}` : '',
   ]

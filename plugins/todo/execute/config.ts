@@ -9,8 +9,8 @@ import type { Json } from 'plugin-sdk'
 export const DEFAULT_MAX_ITEMS = 200
 /** 缺省单条文本长度上限（Unicode 码点）。 */
 export const DEFAULT_MAX_TEXT_LENGTH = 500
-/** 缺省状态枚举。 */
-export const DEFAULT_STATUSES: string[] = ['pending', 'in_progress', 'completed']
+/** 缺省状态枚举（`cancelled` = 放弃，不计入完成、也不算未完成）。 */
+export const DEFAULT_STATUSES: string[] = ['pending', 'in_progress', 'completed', 'cancelled']
 
 export interface TodoLimits {
   maxItems: number

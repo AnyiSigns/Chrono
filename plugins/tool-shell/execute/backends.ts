@@ -29,9 +29,16 @@ export function createLink(write: (message: Json) => void): PortLink {
   return new PortLink({ write, idPrefix: 'tool-shell', timeoutMs: HOST_METHOD_TIMEOUT_MS })
 }
 
-/** 执行后端抽象：生产环境是反向调用 `sandbox.exec`，单测注入假后端。 */
+/** 执行后端抽象：生产环境是反向调用 `sandbox.exec*`，单测注入假后端。 */
 export interface ExecBackend {
-  exec(args: Rec, timeoutMs?: number): Promise<Rec>
+  /** 起一个可轮询的任务（会话命令或一次性进程），回 `{task_id}`。 */
+  start(args: Rec, timeoutMs?: number): Promise<Rec>
+  /** 读任务新输出。 */
+  poll(args: Rec, timeoutMs?: number): Promise<Rec>
+  /** 杀任务。 */
+  kill(args: Rec, timeoutMs?: number): Promise<Rec>
+  /** 关会话。 */
+  sessionClose(args: Rec, timeoutMs?: number): Promise<Rec>
 }
 
 /** 密钥后端抽象：生产环境是反向调用 `secrets.resolve`，单测注入假后端。 */
@@ -39,7 +46,7 @@ export interface SecretsBackend {
   resolve(authRef: Rec): Promise<string>
 }
 
-/** `sandbox.exec` 的反向调用后端：成功回执行结果值，前置失败抛结构化错误。 */
+/** `sandbox.exec*` 的反向调用后端：成功回执行结果值，前置失败抛结构化错误。 */
 export class RemoteExec implements ExecBackend {
   private readonly link: PortLink
 
@@ -47,10 +54,30 @@ export class RemoteExec implements ExecBackend {
     this.link = link
   }
 
-  async exec(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
-    const outcome = await this.link.call('sandbox', 'exec', args, { timeoutMs })
+  exec(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
+    return this.callValue('exec', args, timeoutMs)
+  }
+
+  start(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
+    return this.callValue('exec_start', args, timeoutMs)
+  }
+
+  poll(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
+    return this.callValue('exec_poll', args, timeoutMs)
+  }
+
+  kill(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
+    return this.callValue('exec_kill', args, timeoutMs)
+  }
+
+  sessionClose(args: Rec, timeoutMs: number = DEFAULT_CALL_TIMEOUT_MS): Promise<Rec> {
+    return this.callValue('session_close', args, timeoutMs)
+  }
+
+  private async callValue(method: string, args: Rec, timeoutMs: number): Promise<Rec> {
+    const outcome = await this.link.call('sandbox', method, args, { timeoutMs })
     if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new ToolError('tool_failed', 'sandbox.exec returned a non-object')
+    if (!isRecord(outcome.value)) throw new ToolError('tool_failed', `sandbox.${method} returned a non-object`)
     return outcome.value
   }
 }

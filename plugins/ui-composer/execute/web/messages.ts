@@ -67,6 +67,18 @@ export const UI_TEXT: { [code: string]: string } = {
   composer_trimmed_reason: '原因：{reason}',
   composer_attachment: '附件 {count}',
   composer_more_chip: '+{count}',
+  composer_open_settings: '前往设置',
+  composer_outcome_detail: '（{code} · 归因 {attribution}）',
+  loop_unavailable: '模型服务不可达，回合未能开始。稍后重试。',
+  owner_unavailable: '运行记录服务不可用，回合未能开始。稍后重试。',
+  turn_busy: '本会话已有回合在跑，消息已保留，稍后重试。',
+  no_plan: '编排没有产出可执行的计划。请重试。',
+  contract_violation: '回合结束但没有结局记录（契约违例）。请重试或反馈。',
+  transport_refused: '传输层拒绝了这次回合。稍后重试。',
+  empty_slot: '输入槽为空，回合未能开始。请重新输入。',
+  model_not_configured: '尚未配置模型。前往设置选择厂商与模型。',
+  interrupted: '回合已中断。',
+  cancelled: '回合已取消。',
 }
 
 const LOCALE_KEY = 'locale'

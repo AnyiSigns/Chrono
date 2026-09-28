@@ -8,8 +8,11 @@ import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
 const CAPABILITY = 'loop-policy'
 const LOG = makeLogger('loop-policy')
-/** 反向调用等待上限；宿主另有 `method_timeouts` 覆盖 `interpret`。 */
-const PORT_CALL_TIMEOUT_MS = 600000
+/**
+ * 反向调用等待上限。须严格大于被调用层最长的 `method_timeouts`（`model.chat` 3600000），
+ * 否则本层先超时、内层安全网还没机会自收口；同时严格小于本层 `interpret` 的安全网（6000000）。
+ */
+const PORT_CALL_TIMEOUT_MS = 3900000
 
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({ write: ctx.emit, idPrefix: 'loop-policy', timeoutMs: PORT_CALL_TIMEOUT_MS })

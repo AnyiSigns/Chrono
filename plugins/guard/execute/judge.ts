@@ -3,7 +3,7 @@
 // 只做词法预判；realpath 权威在沙箱，两判不一致时由沙箱 fail-closed 拒绝。
 
 import { FAIL_CLOSED_TIER, parseRules } from './rules.ts'
-import type { DangerPattern, Rules, TierPolicy } from './rules.ts'
+import type { AllowPattern, DangerPattern, Rules, TierPolicy } from './rules.ts'
 import { BadArgsError } from './types.ts'
 import type { Decision, Json, JudgeResult, Rec } from './types.ts'
 
@@ -125,11 +125,65 @@ function serverOf(call: Rec): string | null {
   return null
 }
 
+/** 命令文本：tool-shell 的 `args.input`（兼容 `args.command`）。 */
+function commandOf(call: Rec): string | null {
+  const args = call['args']
+  if (!isRecord(args)) return null
+  for (const key of ['input', 'command']) {
+    const value = args[key]
+    if (typeof value === 'string' && value.length > 0) return value
+  }
+  return null
+}
+
+/**
+ * 保守分词：按空白切分、识别单双引号；**不**解析 shell 运算符（`&&` / `|` / `;`）。
+ * 故前缀白名单只保证「命令以这些词元开头」，链式命令的安全兜底仍是危险模式（危险模式先于白名单判定）。
+ */
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let quote: string | null = null
+  for (const ch of command) {
+    if (quote !== null) {
+      if (ch === quote) quote = null
+      else current += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        tokens.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += ch
+  }
+  if (current.length > 0) tokens.push(current)
+  return tokens
+}
+
+/** 前缀白名单命中：port / tool 相同，且命令词元以 `prefix` 开头（大小写不敏感、逐词匹配）。 */
+function matchesAllowPattern(
+  entry: AllowPattern,
+  port: string,
+  tool: string,
+  tokens: string[],
+): boolean {
+  if (entry.port !== port || entry.tool !== tool) return false
+  if (tokens.length < entry.prefix.length) return false
+  return entry.prefix.every((token, index) => tokens[index].toLowerCase() === token.toLowerCase())
+}
+
 // ── 单 call 判定 ────────────────────────────────────────────────────────────
 
 /**
  * 判定优先级（先命中先定）：deny（形态 / 禁止 / 白名单）→ 结构写 → 外部 MCP →
- * 危险模式 → 工作区外 → net 越档 → allow。各 escalate 类别按当前档的 tier 策略开关；
+ * 危险模式 → 命令前缀白名单 → 工作区外 → net 越档 → allow。各 escalate 类别按当前档的 tier 策略开关；
  * 关（如 auto 档）即直落 allow。
  */
 function judgeCall(
@@ -187,6 +241,17 @@ function judgeCall(
     if (matchPattern(pattern, text)) {
       if (!tier.danger) return { index, port, tool, verdict: 'allow', reason: 'allowed' }
       return { index, port, tool, verdict: pattern.verdict, reason: 'dangerous_pattern', rule: pattern.id }
+    }
+  }
+
+  // 命令前缀白名单：危险模式已先判，故白名单不会放行危险命令。
+  const command = commandOf(call)
+  if (command !== null) {
+    const tokens = tokenizeCommand(command)
+    for (const entry of rules.allow_patterns) {
+      if (matchesAllowPattern(entry, port, tool, tokens)) {
+        return { index, port, tool, verdict: entry.verdict, reason: 'allowlisted', rule: entry.prefix.join(' ') }
+      }
     }
   }
 

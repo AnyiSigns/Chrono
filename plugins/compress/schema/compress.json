@@ -83,7 +83,7 @@
     }
   },
   "method_timeouts": {
-    "compress.summarize": 600000,
-    "compress.compact": 600000
+    "compress.summarize": 3900000,
+    "compress.compact": 3900000
   }
 }

@@ -163,7 +163,7 @@ test('terms：config.read 取世界切片问 owner；config.write 传命令 args
 test('tools/default-body.json 是可落地的默认 body', () => {
   const body = readJson('tools/default-body.json')
   assert.equal(body.version, 1)
-  assert.equal(body.permission, 'review')
+  assert.equal(body.permission, 'severe')
   assert.deepEqual(body.ui, { theme: 'system', style: '', sidebar_width: 260 })
   assert.deepEqual(body.providers, {})
   assert.equal(body.vendor, undefined)

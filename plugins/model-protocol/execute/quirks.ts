@@ -39,6 +39,13 @@ export const PROTOCOL_DEFAULTS: Record<string, Rec> = {
     impl: 'protocol',
     auth_style: 'bearer',
     system_role: 'system',
+    // Responses 的推理档位走 `reasoning: {effort}`；仅当模型有档位时才会传。
+    reasoning_field: 'reasoning',
+    reasoning_map: {
+      low: { effort: 'low' },
+      medium: { effort: 'medium' },
+      high: { effort: 'high' },
+    },
     max_tokens_field: 'max_output_tokens',
     models_path: '/models',
     stream_usage: 'final_chunk',
@@ -48,6 +55,13 @@ export const PROTOCOL_DEFAULTS: Record<string, Rec> = {
     auth_style: 'header',
     auth_header: 'x-api-key',
     system_role: 'system',
+    // 扩展思考走 `thinking: {type:'enabled', budget_tokens}`；档位映射到预算。
+    reasoning_field: 'thinking',
+    reasoning_map: {
+      low: { type: 'enabled', budget_tokens: 1024 },
+      medium: { type: 'enabled', budget_tokens: 4096 },
+      high: { type: 'enabled', budget_tokens: 16384 },
+    },
     max_tokens_field: 'max_tokens',
     models_path: '/models',
     stream_usage: 'separate',

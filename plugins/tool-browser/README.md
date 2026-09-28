@@ -39,6 +39,10 @@
   tone:"plain", detail:{kind:"json"}, live:false}`——`webbrowser` 是单个工具，只能声明一个 `detail.kind`，
   故固定通用 `json`，不按 action 变化。
 
+每个动作的成功结果另带 `digest`（普通对象，供上下文老化直接渲染、不替换原有字段）：始终含 `action`，
+`navigate` 附 `{url, status}`；`screenshot` 附 `bytes`（资产体积）；`extract` 附 `bytes`（内容字节数）；
+`close` 附 `closed`。确定、有界、不含时间与正文全文。
+
 ## 会话
 
 - `open` 起会话并返回会话 id；`close` 显式关；空闲超 TTL 自动回收；服务退出 / 断连 / `SIGTERM` / `SIGINT` 全关

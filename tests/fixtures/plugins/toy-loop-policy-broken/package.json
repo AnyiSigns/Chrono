@@ -1,0 +1,8 @@
+{
+  "name": "toy-loop-policy-broken",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：同身份 loop-policy，interpret 恒失败（制造下游不可达）",
+  "engines": { "node": ">=24" }
+}

@@ -19,6 +19,7 @@ import {
 } from '../execute/assemble.ts'
 import { defHashOf, directivesOf, errorValue, externOnly, isErrorValue, mergeDirectives } from '../execute/plan.ts'
 import { loadWiring, sliceEnabled } from '../execute/wiring.ts'
+import { CONTRACT_VERSION } from '../execute/contract/index.ts'
 import { configFixture, idsFixture, memoryFixture } from './driver.mjs'
 
 test('modelConfigOf：从 #2 config 解析连接实例 + 档案 + 风格来源', () => {
@@ -166,6 +167,54 @@ test('buildInterpretBag：非空缺省 tools 才落键（空数组不落）', ()
   })
   assert.equal(bag.tools.length, 1)
   assert.equal(bag.tools[0].name, 'edit')
+})
+
+test('buildInterpretBag：恒带 contract_version（生成契约常量）', () => {
+  const ids = idsFixture()
+  const bag = buildInterpretBag({
+    ids,
+    wiring: loadWiring(),
+    slot: slotOf(ids, 't1'),
+    conversation: ids.session.body.conversations[0],
+    conversationId: 'c-1',
+    config: modelConfigOf(ids),
+    thread: 't1',
+  })
+  assert.equal(bag.contract_version, CONTRACT_VERSION)
+})
+
+test('buildInterpretBag：subagent 线程携带任务 + 父检查点，thread_kind 取 subagent', () => {
+  const ids = idsFixture()
+  const conversation = {
+    id: 'c-sub',
+    kind: 'subagent',
+    workspace_id: 'w-1',
+    parent: { def: 'c-1' },
+    agent: null,
+    title: '审查 a.ts',
+    count: 0,
+    head: null,
+  }
+  const checkpoint = { goal: '审查 a.ts', findings: [{ claim: 'ok', evidence: { handle: 'h-1' } }] }
+  const bag = buildInterpretBag({
+    ids,
+    wiring: loadWiring(),
+    slot: { kind: 'chat.message', text: '审查 a.ts' },
+    conversation,
+    conversationId: 'c-sub',
+    config: modelConfigOf(ids),
+    thread: 't-sub',
+    threadKind: 'subagent',
+    taskPrompt: '审查 a.ts',
+    parentCheckpoint: checkpoint,
+    parentSummaries: [{ summary: '旧摘要' }],
+  })
+  assert.equal(bag.thread_kind, 'subagent')
+  assert.equal(bag.task_prompt, '审查 a.ts')
+  assert.deepEqual(bag.parent_checkpoint, checkpoint)
+  assert.deepEqual(bag.parent_summaries, [{ summary: '旧摘要' }])
+  assert.equal(bag.session_id, 'c-sub')
+  assert.equal(bag.contract_version, CONTRACT_VERSION)
 })
 
 test('shouldGenerateTitle：仅缺省标题且 count==0', () => {

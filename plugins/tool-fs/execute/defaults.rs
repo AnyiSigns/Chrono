@@ -14,7 +14,7 @@ pub const DEFAULT_READ_LIMIT: u64 = 2000;
 /// `glob` 结果条数缺省。
 pub const DEFAULT_LIST_LIMIT: u64 = 200;
 /// `grep` 命中条数缺省。
-pub const DEFAULT_GREP_LIMIT: u64 = 100;
+pub const DEFAULT_GREP_LIMIT: u64 = 200;
 
 /// 忽略表兜底：与 `schema/tool-fs.json` 的 `default_ignore` 一致。
 pub const DEFAULT_IGNORE: [&str; 5] = [".git", "node_modules", "target", "__pycache__", ".venv"];

@@ -228,7 +228,7 @@ export function mergeConfig(config: unknown, change: unknown): Rec {
 // ── 权限四档 ──────────────────────────────────────────────────────────────
 
 export function normalizePermission(value: unknown): string {
-  return PERMISSIONS.includes(value as string) ? (value as string) : 'review'
+  return PERMISSIONS.includes(value as string) ? (value as string) : 'severe'
 }
 
 export function permissionLabelCode(value: unknown): string {

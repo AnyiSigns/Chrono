@@ -3,10 +3,12 @@
 // 客户端真源：一个线程一份 view，渲染器只读 view，不各自持状态。
 // store 只提供 getSnapshot / subscribe / commit，不 import 任何框架，壳侧可用 uSES 直接绑定。
 //
-// 事件语义（客户端 fold 内强制，共 8 条）：
+// 事件语义（客户端 fold 内强制，共 9 条）：
 // 1. 单连接有序：同一 SSE 连接内事件按到达顺序 fold，不重排。
-// 2. run 生命周期单调：`run.started` 建立 / 替换在途回合；`model.delta` / `tool.*`
+// 2. run 生命周期单调：`run.started` / `chat.turn.started` 建立 / 替换在途回合；`model.delta` / `tool.*`
 //    只作用于 run id 匹配的在途回合；`run.finished` 终结该 run。
+// 2b. 回合挂起（`chat.turn.pending`，等审批 / 等作答）：回合未终结而宿主 run 结束 → 标记 `suspended`，
+//     不收口；同一 `turn_id` 的续跑 `chat.turn.started` 复用原在途块（只换代 run id），不新开、不重放。
 // 3. 迟到帧丢弃：已定稿 run 的后续 delta / tool 帧一律丢弃，防止定稿后冒出幽灵回合。
 // 4. 缺 started 自愈：首个 delta / tool.start 到达即建在途回合，started 丢失不丢流。
 // 5. 无关终局忽略：`run.finished` 无匹配在途回合即判定为无关 run（写 run / 周期 run /
@@ -17,8 +19,17 @@
 // 7. 快照权威：快照替换权威消息段（messages / conversation / refs / kind）；
 //    在途回合只由生命周期事件（定稿 / 取消 / 线程切换 / 重连）清除。
 // 8. 重连：连接 false→true 时由调用方清在途回合并强制快照重同步（断线期间增量不可信）。
+// 9. 结局收束（全函数）：业务结局以 `chat.turn.settled` 为准，`run.finished` 只作机械信号；
+//    `status=done` 且无业务结局是契约违例，显式标记而非静默当成功。
 
-import { conversationList, hasUserMessage, loadConversation, messageText, threadKind } from './history-model.ts'
+import {
+  conversationList,
+  conversationTurns,
+  hasUserMessage,
+  loadConversation,
+  messageText,
+  threadKind,
+} from './history-model.ts'
 
 /** 已定稿 run 的记忆长度（丢弃迟到帧用；有界，防无界增长）。 */
 export const FINISHED_MEMORY = 32
@@ -34,6 +45,13 @@ function runId(payload: any): string | null {
 function threadOf(payload: any): string | null {
   return isRec(payload) && typeof payload.thread === 'string' && payload.thread.length > 0
     ? payload.thread
+    : null
+}
+
+/** 回合身份 `turn_id`：同一用户回合跨 `send` + N 次 `resume` 恒定，用于跨 run 复用同一在途块。 */
+function turnIdOf(payload: any): string | null {
+  return isRec(payload) && typeof payload.turn_id === 'string' && payload.turn_id.length > 0
+    ? payload.turn_id
     : null
 }
 
@@ -53,6 +71,88 @@ function deltaReasoning(payload: any): string {
   return isRec(payload) && typeof payload.reasoning === 'string' ? payload.reasoning : ''
 }
 
+// ---- 结局收束（纯函数） ----
+
+/** 回合终态种类（契约封闭集）。 */
+export type OutcomeKind = 'committed' | 'refused' | 'cancelled' | 'interrupted'
+
+/** 归一后的结局：展示只需 kind / 码 / 归因 / 可重试 / 下游 cause 码 / 消息。 */
+export interface BusinessOutcome {
+  kind: OutcomeKind
+  code: string | null
+  attributableTo: string | null
+  retryable: boolean
+  causeCode: string | null
+  message: string | null
+}
+
+const OUTCOME_KINDS: readonly OutcomeKind[] = ['committed', 'refused', 'cancelled', 'interrupted']
+
+/** 归一一条结局；形态非法回 null。 */
+export function normalizeOutcome(value: any): BusinessOutcome | null {
+  if (!isRec(value)) return null
+  const kind = value.kind
+  if (typeof kind !== 'string' || !OUTCOME_KINDS.includes(kind as OutcomeKind)) return null
+  const cause = isRec(value.cause) ? value.cause : null
+  return {
+    kind: kind as OutcomeKind,
+    code: typeof value.code === 'string' && value.code.length > 0 ? value.code : null,
+    attributableTo:
+      typeof value.attributableTo === 'string' && value.attributableTo.length > 0 ? value.attributableTo : null,
+    retryable: value.retryable === true,
+    causeCode: cause !== null && typeof cause.code === 'string' && cause.code.length > 0 ? cause.code : null,
+    message: typeof value.message === 'string' && value.message.length > 0 ? value.message : null,
+  }
+}
+
+/** 展示码：结局层码优先，其次下游 cause 码，最后 `unknown`。 */
+export function outcomeDisplayCode(outcome: BusinessOutcome | null): string {
+  if (outcome === null) return 'unknown'
+  return outcome.code ?? outcome.causeCode ?? 'unknown'
+}
+
+/** 显示结局：`kind` 增补 `violation`（契约违例），其余与业务结局同形。 */
+export interface DisplayOutcome extends BusinessOutcome {
+  kind: OutcomeKind | 'violation'
+}
+
+function violationOutcome(): DisplayOutcome {
+  return {
+    kind: 'violation',
+    code: 'contract_violation',
+    attributableTo: 'owner',
+    retryable: true,
+    causeCode: null,
+    message: null,
+  }
+}
+
+/**
+ * 三通道收束规则（全函数）：`run.finished` 是机械信号，业务结局是权威。
+ * - 有业务结局：一律用业务结局（含 cancelled / interrupted，保证按结局分支渲染）；
+ * - 无业务结局且 `status=done`：契约违例（I3），不得静默当成功；
+ * - 无业务结局且 `status=refused / cancelled`：合成 `refused{attributableTo:'transport', code:reasons[0]}`；
+ * - 其余状态（含 `idle`）：同样按契约违例 fail-closed。
+ */
+export function resolveDisplayOutcome(payload: any, businessOutcome: BusinessOutcome | null): DisplayOutcome {
+  if (businessOutcome !== null) return businessOutcome
+  const status = isRec(payload) && typeof payload.status === 'string' ? payload.status : ''
+  if (status === 'done') return violationOutcome()
+  if (status === 'refused' || status === 'cancelled') {
+    const reasons = isRec(payload) && Array.isArray(payload.reasons) ? payload.reasons : []
+    const code = reasons.find((item: unknown) => typeof item === 'string' && item.length > 0) ?? 'transport_refused'
+    return {
+      kind: 'refused',
+      code,
+      attributableTo: 'transport',
+      retryable: true,
+      causeCode: null,
+      message: null,
+    }
+  }
+  return violationOutcome()
+}
+
 /** 空视图：线程切换 / 首屏前的占位。 */
 export function emptyView(thread: string | null = null): any {
   return {
@@ -62,6 +162,7 @@ export function emptyView(thread: string | null = null): any {
     refs: {},
     kind: 'main',
     messages: [],
+    turns: [],
     inFlight: null,
     pendingUser: null,
     finishedRuns: [],
@@ -69,11 +170,13 @@ export function emptyView(thread: string | null = null): any {
   }
 }
 
-function newInFlight(run: string | null, thread: string | null): any {
+function newInFlight(run: string | null, thread: string | null, turnId: string | null): any {
   // segments：到达序渲染段（reasoning / text / tool 段），渲染器按序交错展示；
   // text / reasoning / tools 仍冗余保留（供慢流判定与 contentKey），从 segments 同步得出。
+  // turnId / suspended：跨 run（审批 / 提问续跑、段续跑）复用同一在途块；挂起时暂停流式观感。
   return {
     run,
+    turnId,
     thread,
     text: '',
     reasoning: '',
@@ -81,6 +184,9 @@ function newInFlight(run: string | null, thread: string | null): any {
     segments: [],
     finalizing: false,
     cancelled: false,
+    suspended: false,
+    /** 业务结局（`chat.turn.settled` 记录）；机械信号收束时据此分支，不掩盖失败。 */
+    outcome: null,
   }
 }
 
@@ -112,10 +218,10 @@ function ensureInFlight(view: any, run: string | null, payload: any): any {
   if (view.inFlight !== null) {
     if (run === null || view.inFlight.run === run) return view
     if (view.inFlight.run === null) {
-      return { ...view, inFlight: { ...view.inFlight, run } }
+      return { ...view, inFlight: { ...view.inFlight, run, turnId: view.inFlight.turnId ?? turnIdOf(payload) } }
     }
   }
-  return { ...view, inFlight: newInFlight(run, threadOf(payload)) }
+  return { ...view, inFlight: newInFlight(run, threadOf(payload), turnIdOf(payload)) }
 }
 
 /**
@@ -133,6 +239,7 @@ export function applySnapshot(view: any, history: any, conversationId: unknown):
     refs: isRec(history) && isRec(history.refs) ? history.refs : {},
     kind: threadKind(loaded.conversation),
     messages: loaded.messages,
+    turns: conversationTurns(history),
     inFlight:
       view.inFlight !== null && (view.inFlight.finalizing === true || view.inFlight.cancelled === true)
         ? null
@@ -141,14 +248,60 @@ export function applySnapshot(view: any, history: any, conversationId: unknown):
   }
 }
 
-/** `run.started`：建立 / 替换在途回合；已定稿 run 忽略；自愈时缺 run id 则认领不替换。 */
+/**
+ * `chat.turn.started` / `run.started`：建立 / 替换在途回合；已定稿 run 忽略；自愈时缺 run id 则认领不替换。
+ * **同一 `turn_id` 的续跑复用原在途块**并认领新 run（不新开）：否则挂起前已展示的内容与工具卡
+ * 会在恢复时重新出现，观感像同一批工具被再次调用。
+ */
 export function applyRunStarted(view: any, payload: any): any {
   const run = runId(payload)
+  const turnId = turnIdOf(payload)
   if (isFinished(view, run)) return view
+  if (view.inFlight !== null && turnId !== null && view.inFlight.turnId === turnId) {
+    return { ...view, inFlight: { ...view.inFlight, run, suspended: false } }
+  }
   if (view.inFlight !== null && view.inFlight.run === null) {
-    return { ...view, inFlight: { ...view.inFlight, run } }
+    return { ...view, inFlight: { ...view.inFlight, run, turnId: view.inFlight.turnId ?? turnId, suspended: false } }
   }
   return ensureInFlight(view, run, payload)
+}
+
+/**
+ * `chat.turn.pending`：回合挂起（等审批 / 等作答）——回合未终结但宿主 run 会结束。
+ * 标记在途块挂起，使其不被 `run.finished` 当作定稿收口，并让渲染器显示等待态。
+ */
+export function applyTurnPending(view: any, payload: any): any {
+  const inFlight = view.inFlight
+  if (inFlight === null) return view
+  const turnId = turnIdOf(payload)
+  const run = runId(payload)
+  const matched =
+    turnId !== null ? inFlight.turnId === turnId : inFlight.run === null || run === null || inFlight.run === run
+  if (!matched) return view
+  return { ...view, inFlight: { ...inFlight, suspended: true } }
+}
+
+/**
+ * `chat.turn.settled`：回合终态（成功 / 拒绝 / 取消 / 中断）。记录业务结局并据其分支：
+ * `cancelled` 标取消；`committed` / `refused` / `interrupted` 进入定稿（快照落地后由持久回合结局呈现）。
+ */
+export function applyTurnSettled(view: any, payload: any): any {
+  const inFlight = view.inFlight
+  if (inFlight === null) return view
+  const turnId = turnIdOf(payload)
+  if (turnId !== null && inFlight.turnId !== null && inFlight.turnId !== turnId) return view
+  const outcome = normalizeOutcome(isRec(payload) ? payload.outcome : null)
+  const cancelled = outcome !== null && outcome.kind === 'cancelled'
+  return {
+    ...view,
+    inFlight: {
+      ...inFlight,
+      suspended: false,
+      outcome: outcome ?? inFlight.outcome,
+      cancelled: cancelled || inFlight.cancelled === true,
+      finalizing: cancelled ? false : true,
+    },
+  }
 }
 
 /**
@@ -240,9 +393,10 @@ export function applyToolEnd(view: any, payload: any): any {
 }
 
 /**
- * `run.finished` 处置：返回 `{view, action}`。
- * action ∈ 'finalize'（done，等快照原地替换）| 'cancel'（保留在途并标记取消）
- *        | 'ignore'（迟到 / 重复 / 无匹配在途回合的无关终局）。
+ * `run.finished` 处置（机械信号 + 业务结局收束）：返回 `{view, action}`。
+ * action ∈ 'finalize'（committed，等快照原地替换）| 'refused' / 'interrupt'（失败结局）
+ *        | 'violation'（status=done 但无业务结局：契约违例，显式标记）| 'cancel'（取消）
+ *        | 'suspend'（挂起段 run 结束但回合未完）| 'ignore'（迟到 / 重复 / 无匹配在途回合）。
  * 匹配放宽：任一侧 run id 缺失时视为匹配（自愈回合可能没认领到 run id）。
  */
 export function foldRunFinished(view: any, payload: any): { view: any; action: string } {
@@ -253,13 +407,58 @@ export function foldRunFinished(view: any, payload: any): { view: any; action: s
     inFlight !== null && (inFlight.run === null || run === null || inFlight.run === run)
   const marked = rememberFinished(view, run)
   if (!matched) return { view: marked, action: 'ignore' }
-  if (payload.status === 'cancelled') {
+  const business = inFlight.outcome !== null && inFlight.outcome !== undefined ? inFlight.outcome : null
+  // 挂起段（等审批 / 等作答）的宿主 run 结束不代表回合定稿：无业务结局时保留在途块（记入 finishedRuns 丢弃迟到帧），
+  // 由续跑 `chat.turn.started` 复用、终局 `chat.turn.settled` 收口。action='suspend' 供调用方提交视图但不重拉。
+  if (marked.inFlight.suspended === true && business === null) return { view: marked, action: 'suspend' }
+  const display = resolveDisplayOutcome(payload, business)
+  if (display.kind === 'committed') {
     return {
-      view: { ...marked, inFlight: { ...marked.inFlight, cancelled: true, finalizing: false } },
+      view: { ...marked, inFlight: { ...marked.inFlight, suspended: false, finalizing: true } },
+      action: 'finalize',
+    }
+  }
+  if (display.kind === 'cancelled') {
+    return {
+      view: { ...marked, inFlight: { ...marked.inFlight, suspended: false, cancelled: true, finalizing: false } },
       action: 'cancel',
     }
   }
-  return { view: { ...marked, inFlight: { ...marked.inFlight, finalizing: true } }, action: 'finalize' }
+  if (display.kind === 'refused' || display.kind === 'interrupted') {
+    // 失败结局：在途块记下结局并转定稿；快照落地后由持久回合结局块呈现（不落回成功、不静默消失）。
+    return {
+      view: { ...marked, inFlight: { ...marked.inFlight, suspended: false, finalizing: true, outcome: display } },
+      action: display.kind === 'interrupted' ? 'interrupt' : 'refused',
+    }
+  }
+  // 契约违例（status=done 且无业务结局）：无持久回合作依据，保留在途块显式标记，不静默当成功。
+  return {
+    view: { ...marked, inFlight: { ...marked.inFlight, suspended: false, violation: true, outcome: display } },
+    action: 'violation',
+  }
+}
+
+/**
+ * 持久回合结局块：会话记录里已收口且非 `committed` 的回合，供渲染失败 / 取消 / 中断。
+ * 当前在途回合（同 `turn_id`）跳过，避免与在途块重复呈现。
+ */
+export function outcomeBlocks(view: any): Array<{ turnId: string | null; outcome: BusinessOutcome }> {
+  const turns = Array.isArray(view.turns) ? view.turns : []
+  const blocks: Array<{ turnId: string | null; outcome: BusinessOutcome }> = []
+  for (const turn of turns) {
+    if (!isRec(turn) || turn.state !== 'settled') continue
+    const outcome = normalizeOutcome(turn.outcome)
+    if (outcome === null || outcome.kind === 'committed') continue
+    if (
+      view.inFlight !== null &&
+      view.inFlight.turnId !== null &&
+      view.inFlight.turnId === turn.turn_id
+    ) {
+      continue
+    }
+    blocks.push({ turnId: typeof turn.turn_id === 'string' ? turn.turn_id : null, outcome })
+  }
+  return blocks
 }
 
 /** 丢弃在途回合：快照已含定稿消息（传 run）或线程切换 / 重连（不传 run）。 */
@@ -269,9 +468,14 @@ export function dropInFlight(view: any, run: string | null = null): any {
   return { ...view, inFlight: null }
 }
 
-/** 是否正在流式（在途且未取消）。 */
+/**
+ * 是否正在流式（在途、未取消、未挂起、尚无结局）。挂起（等审批 / 等作答）不算流式；
+ * 已记下业务结局（含契约违例）即终态，不再转计时与文本光标——失败 / 取消不得继续伪装在跑。
+ */
 export function isStreaming(view: any): boolean {
-  return view.inFlight !== null && view.inFlight.cancelled !== true
+  const inFlight = view.inFlight
+  if (inFlight === null || inFlight.cancelled === true || inFlight.suspended === true) return false
+  return inFlight.outcome === null || inFlight.outcome === undefined
 }
 
 /**

@@ -108,5 +108,6 @@
   "net": {
     "enabled": true,
     "verdict": "escalate"
-  }
+  },
+  "allow_patterns": []
 }

@@ -184,8 +184,8 @@ test('配置合并：只改点名字段；reasoning:null 清键', () => {
 test('权限四档：归一 / 文案码 / 图标', () => {
   assert.deepEqual(PERMISSIONS, ['auto', 'severe', 'review', 'deny'])
   assert.equal(normalizePermission('deny'), 'deny')
-  assert.equal(normalizePermission('bogus'), 'review')
-  assert.equal(normalizePermission(null), 'review')
+  assert.equal(normalizePermission('bogus'), 'severe')
+  assert.equal(normalizePermission(null), 'severe')
   assert.equal(permissionLabelCode('auto'), 'composer_permission_auto')
   assert.equal(permissionDescCode('severe'), 'composer_permission_severe_desc')
   assert.equal(permissionIcon('review'), 'eye')

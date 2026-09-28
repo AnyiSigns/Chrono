@@ -1,4 +1,6 @@
-// `ui-threads` 客户端半边（slot = topbar）：注册进壳的单一 React 运行时。
+// `ui-threads` 客户端半边（slot = topbar + underbar）：注册进壳的单一 React 运行时。
+// 标签行住 `topbar`；待办清单面板住紧贴其下的 `underbar`（真正的下一条带，不再是顶栏内嵌卡片）。
+// 两个组件共享 register 作用域的同一 store。
 // 契约：`contract = '2'` + `register(ctx)`；业务态住 React-free store（threads-store.ts），
 // 纯视图模型住叶子模块（零 react import）；本文件只做 React 编排与渲染。
 // 标签数据经壳 `ctx.command('threads.state')` 取回；切换只写 `ctx.uiState.active_thread`。
@@ -27,7 +29,7 @@ import {
   threadsStatusText,
   toggleTodo,
 } from './threads-store.ts'
-import type { ThreadTag, ThreadsStore, TodoView } from './threads-store.ts'
+import type { ThreadTag, ThreadsStore } from './threads-store.ts'
 import { STYLE_TEXT } from './styles.ts'
 
 const BADGE_TEXT_KEY: { [tone: string]: string } = {
@@ -60,14 +62,11 @@ function Icon({ icons, name, size = 16, className }: { icons: string; name: stri
   )
 }
 
-/** 顶栏组件：常显标签 / 待办清单渲染 + 事件订阅；标签为原生 button，可 Tab 到达。 */
-function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
+/** 顶栏组件（topbar slot）：常显标签 + 数据订阅与事件编排；标签为原生 button，可 Tab 到达。 */
+function Topbar({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
   const view = ctx.useStore(store)
   const status = threadsStatusOf(view)
-  const todo = view.data !== null ? view.data.todo : null
   const [slow, setSlow] = useState(false)
-  const [peek, setPeek] = useState(false)
-  const todoSigRef = useRef<string | null>(null)
   const reloadTimer = useRef<number | null>(null)
   const disposed = useRef(false)
   const loadSeq = useRef(0)
@@ -121,26 +120,6 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
     return () => window.clearTimeout(timer)
   }, [status])
 
-  // ---- 待办清单出现 / 更新：播放一次「展开→收起」peek，随后回落默认收起态 ----
-  const todoSig =
-    todo === null
-      ? null
-      : `${todo.conversation}|${todo.total}|${todo.done}|${todo.items
-          .map((item) => `${item.status}:${item.text}`)
-          .join('\u0001')}`
-  useEffect(() => {
-    if (todoSig === null) {
-      todoSigRef.current = null
-      setPeek(false)
-      return undefined
-    }
-    if (todoSigRef.current === todoSig) return undefined
-    todoSigRef.current = todoSig
-    setPeek(true)
-    const timer = window.setTimeout(() => setPeek(false), TODO_PEEK_MS)
-    return () => window.clearTimeout(timer)
-  }, [todoSig])
-
   // ---- uiState：`active_thread` 外部写入（侧栏 / 其它 slot） ----
   useEffect(() => {
     store.commit(applyActiveThread(store.getSnapshot(), ctx.uiState.get('active_thread')))
@@ -168,8 +147,12 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
             if (
               record.topic === 'thread.updated' ||
               record.topic === 'thread.opened' ||
-              record.topic === 'thread.closed'
+              record.topic === 'thread.closed' ||
+              record.topic === 'chat.turn.started' ||
+              record.topic === 'chat.turn.pending' ||
+              record.topic === 'chat.turn.settled'
             ) {
+              // 回合状态变化后重算 `threads.state`：运行角标读 session 的 open 回合。
               scheduleReload()
               return
             }
@@ -228,41 +211,6 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
     )
   }
 
-  function renderTodo(todoView: TodoView, open: boolean) {
-    return (
-      <div className="threads-todo" data-open={open ? 'true' : 'false'}>
-        <button
-          type="button"
-          className="threads-todo-head"
-          aria-expanded={open}
-          onClick={() => store.commit(toggleTodo(store.getSnapshot()))}
-        >
-          <Icon icons={ctx.tokens.icons} name="check-check" size={14} className="threads-todo-icon" />
-          <span className="threads-todo-progress">
-            {formatText(view.table, 'threads_todo_progress', { done: todoView.done, total: todoView.total })}
-          </span>
-          <Icon icons={ctx.tokens.icons} name="chevron-down" size={14} className="threads-todo-chevron" />
-        </button>
-        <div className="threads-todo-body">
-          <div className="threads-todo-clip">
-            <div className="threads-todo-list">
-              {todoView.items.map((item) => (
-                <div className="threads-todo-item" data-status={item.status} key={item.id}>
-                  <span className="threads-todo-check" data-status={item.status} aria-hidden="true">
-                    {item.status === 'completed' ? (
-                      <Icon icons={ctx.tokens.icons} name="check" size={10} />
-                    ) : null}
-                  </span>
-                  <span className="threads-todo-text">{item.text}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   function renderTags() {
     // 失败 / 不可达：给可重试的显式错误标签，不再落回「不渲染」。
     if (status === 'offline' || status === 'failed') {
@@ -287,8 +235,6 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
   }
 
   const tagNodes = renderTags()
-  const hasBar = tagNodes !== null || todo !== null
-  const todoOpen = view.todoOpen || peek
   return (
     <div
       className="threads-root"
@@ -297,12 +243,7 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
       tabIndex={0}
     >
       <style>{STYLE_TEXT}</style>
-      {hasBar ? (
-        <div className="threads-panel">
-          {tagNodes !== null ? <div className="threads-tags">{tagNodes}</div> : null}
-          {todo !== null ? renderTodo(todo, todoOpen) : null}
-        </div>
-      ) : null}
+      {tagNodes !== null ? <div className="threads-panel"><div className="threads-tags">{tagNodes}</div></div> : null}
       <div className="threads-sr" aria-live="polite" aria-atomic="true">
         {announcementOf(view)}
       </div>
@@ -310,12 +251,84 @@ function App({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
   )
 }
 
+/** 次级栏组件（underbar slot）：常显待办清单面板，紧贴顶栏之下；无未完成项时整条不渲染。 */
+function Underbar({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
+  const view = ctx.useStore(store)
+  const todo = view.data !== null ? view.data.todo : null
+  const [peek, setPeek] = useState(false)
+  const todoSigRef = useRef<string | null>(null)
+
+  // ---- 待办清单出现 / 更新：播放一次「展开→收起」peek，随后回落默认收起态 ----
+  const todoSig =
+    todo === null
+      ? null
+      : `${todo.conversation}|${todo.total}|${todo.done}|${todo.items
+          .map((item) => `${item.status}:${item.activeForm ?? ''}:${item.text}`)
+          .join('\u0001')}`
+  useEffect(() => {
+    if (todoSig === null) {
+      todoSigRef.current = null
+      setPeek(false)
+      return undefined
+    }
+    if (todoSigRef.current === todoSig) return undefined
+    todoSigRef.current = todoSig
+    setPeek(true)
+    const timer = window.setTimeout(() => setPeek(false), TODO_PEEK_MS)
+    return () => window.clearTimeout(timer)
+  }, [todoSig])
+
+  if (todo === null) return null
+  const open = view.todoOpen || peek
+  return (
+    <div className="threads-root">
+      <style>{STYLE_TEXT}</style>
+      <div className="threads-under">
+        <div className="threads-todo" data-open={open ? 'true' : 'false'}>
+          <button
+            type="button"
+            className="threads-todo-head"
+            aria-expanded={open}
+            onClick={() => store.commit(toggleTodo(store.getSnapshot()))}
+          >
+            <Icon icons={ctx.tokens.icons} name="check-check" size={14} className="threads-todo-icon" />
+            <span className="threads-todo-progress">
+              {formatText(view.table, 'threads_todo_progress', { done: todo.done, total: todo.total })}
+            </span>
+            <Icon icons={ctx.tokens.icons} name="chevron-down" size={14} className="threads-todo-chevron" />
+          </button>
+          <div className="threads-todo-body">
+            <div className="threads-todo-clip">
+              <div className="threads-todo-list">
+                {todo.items.map((item) => (
+                  <div className="threads-todo-item" data-status={item.status} key={item.id}>
+                    <span className="threads-todo-check" data-status={item.status} aria-hidden="true">
+                      {item.status === 'completed' ? (
+                        <Icon icons={ctx.tokens.icons} name="check" size={10} />
+                      ) : null}
+                    </span>
+                    <span className="threads-todo-text">
+                      {item.status === 'in_progress' && item.activeForm !== null ? item.activeForm : item.text}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export const contract = '2'
 
-/** 注册进壳的 `topbar` slot；壳对每个注册组件包错误边界。 */
+/** 注册进壳的 `topbar`（标签）与 `underbar`（待办清单）；壳对每个注册组件包错误边界。 */
 export function register(ctx: SlotContext): void {
-  // store 住 register 作用域：壳错误边界卸载后重挂复用同一实例，标签数据 / 未读 / 连接态不随组件销毁。
+  // store 住 register 作用域：壳错误边界卸载后重挂复用同一实例，标签数据 / 未读 / 连接态不随组件销毁；
+  // 两个 slot 组件共享该实例。
   // 首屏以当前壳连接态起步，避免订阅前已广播的 `shell.state` 缺失导致误判 offline。
   const store = createThreadsStore(setConnected(initialView(FALLBACK_MESSAGES), ctx.events.connected()))
-  ctx.slots.register({ name: 'topbar' }, (props) => <App ctx={props.ctx} store={store} />)
+  ctx.slots.register({ name: 'topbar' }, (props) => <Topbar ctx={props.ctx} store={store} />)
+  ctx.slots.register({ name: 'underbar' }, (props) => <Underbar ctx={props.ctx} store={store} />)
 }

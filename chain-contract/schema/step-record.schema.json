@@ -1,0 +1,140 @@
+{
+  "title": "回合步记录（turn step record）",
+  "description": "session 回合事件日志的追加记录形状，按 type 取五种。回合尾一次写改为边跑边追加：turn.open 在调模型之前写；step.intent 在有副作用的工具派发之前写（先写意图再执行）；step.result 记助手 / 工具结果 / 推理 / 用量；checkpoint 是压缩产物，追加而非改写；turn.settle 只在 open 态经 CAS 生效。步记录按 (turn_id, seq) 去重。",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": true,
+  "oneOf": [
+    { "$ref": "#/definitions/turnOpen" },
+    { "$ref": "#/definitions/stepIntent" },
+    { "$ref": "#/definitions/stepResult" },
+    { "$ref": "#/definitions/checkpoint" },
+    { "$ref": "#/definitions/turnSettle" }
+  ],
+  "definitions": {
+    "turnId": { "type": "string", "description": "回合身份；一次用户意图到最终答复，跨 send / N 次 resume 不变。" },
+    "reasoningBlock": {
+      "type": "object",
+      "required": ["provider", "model", "form", "payload"],
+      "additionalProperties": true,
+      "description": "厂商中立的不透明推理块；编成哪家线格式由 model-protocol 适配器决定。",
+      "properties": {
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "form": { "enum": ["text", "blocks"] },
+        "payload": { "description": "原样推理载荷（文本或块数组）。" },
+        "signature": { "type": ["string", "null"], "description": "不透明签名（Anthropic thinking / Gemini thought signature）。" },
+        "encrypted": { "type": ["string", "null"], "description": "不透明加密载荷（redacted_thinking 等）。" },
+        "tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["kind", "retryable"],
+      "additionalProperties": true,
+      "description": "回合结局；形状以 turn-outcome.schema.json 为准。",
+      "properties": {
+        "kind": { "enum": ["committed", "refused", "cancelled", "interrupted"] },
+        "code": { "type": ["string", "null"] },
+        "attributableTo": { "type": ["string", "null"] },
+        "retryable": { "type": "boolean" },
+        "cause": { "type": ["object", "null"] },
+        "stop_reason": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "turnOpen": {
+      "type": "object",
+      "required": ["type", "turn_id", "conv", "user_message", "slot_ref", "at"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "turn.open" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "conv": { "type": "string", "description": "会话 id；建会话随回合头前移。" },
+        "user_message": { "type": "object", "additionalProperties": true, "description": "本回合用户消息记录。" },
+        "slot_ref": { "type": "string", "description": "槽写入时的 run id；同一槽不会开第二个回合（幂等）。" },
+        "at": { "type": "string", "description": "ISO 8601 时间，取帧 env.now。" }
+      }
+    },
+    "stepIntent": {
+      "type": "object",
+      "required": ["type", "turn_id", "seq", "kind", "tool_calls"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "step.intent" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "seq": { "type": "integer", "minimum": 0, "description": "步序号；步记录按 (turn_id, seq) 去重。" },
+        "kind": { "type": "string", "description": "意图种类（节点 / 契约 id）。" },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "arguments": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "description": "即将派发的工具调用；落盘成功才派发。"
+        }
+      }
+    },
+    "stepResult": {
+      "type": "object",
+      "required": ["type", "turn_id", "seq"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "step.result" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "assistant": { "type": "object", "additionalProperties": true, "description": "助手消息（正文 + parts）。" },
+        "tool_results": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true },
+          "description": "工具结果；无结果者合成 interrupted 占位以保配对。"
+        },
+        "reasoning": { "$ref": "#/definitions/reasoningBlock" },
+        "usage": { "type": "object", "additionalProperties": true, "description": "token 用量（含缓存命中）。" }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": ["type", "turn_id", "seq", "summary", "covered_upto"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "checkpoint" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "结构化检查点：goal / constraints / decisions / findings / files / open_questions / next_steps / errors_to_avoid / user_preferences / covered_upto。",
+          "properties": {
+            "goal": { "type": "string" },
+            "constraints": { "type": "array", "items": { "type": "string" } },
+            "decisions": { "type": "array", "items": { "type": "object" } },
+            "findings": { "type": "array", "items": { "type": "object" } },
+            "files": { "type": "array", "items": { "type": "object" } },
+            "open_questions": { "type": "array", "items": { "type": "string" } },
+            "next_steps": { "type": "array", "items": { "type": "string" } },
+            "errors_to_avoid": { "type": "array", "items": { "type": "object" } },
+            "user_preferences": { "type": "array", "items": { "type": "string" } },
+            "covered_upto": { "type": ["string", "integer"] }
+          }
+        },
+        "covered_upto": { "type": ["string", "integer"], "description": "检查点覆盖到的步序号。" }
+      }
+    },
+    "turnSettle": {
+      "type": "object",
+      "required": ["type", "turn_id", "outcome"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "turn.settle" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "outcome": { "$ref": "#/definitions/outcome" }
+      }
+    }
+  }
+}

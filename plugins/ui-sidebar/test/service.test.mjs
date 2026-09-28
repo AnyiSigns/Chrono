@@ -227,6 +227,26 @@ test('读命令与纯动作：list / pick / reveal 反向调用并外包 extern'
   })
 })
 
+test('listTurns：反向调 session.read，只回跨会话仍开着的回合摘要（open_turns）', async () => {
+  const session = recordingPort({
+    ok: true,
+    value: { version: 1, current: 'c1', conversations: [], open_turns: [{ turn_id: 't1', conv: 'c1' }] },
+  })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+  const value = await handlers.listTurns(null, { run: null, thread: null, now: 0 })
+  assert.deepEqual(session.calls[0], { port: 'session', method: 'read', args: {} })
+  assert.deepEqual(value, {
+    $directives: [{ kind: 'extern', payload: { open_turns: [{ turn_id: 't1', conv: 'c1' }] } }],
+  })
+})
+
+test('listTurns：owner 读失败时回 extern 错误，不回摘要', async () => {
+  const session = recordingPort({ ok: false, code: 'not_loaded', message: 'x' })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+  const value = await handlers.listTurns(null, { run: null, thread: null, now: 0 })
+  assert.equal(value.$directives[0].payload.error.code, 'not_loaded')
+})
+
 test('装配失败 / 反向调用失败：只回 extern 错误，不构造写计划', async () => {
   const failed = recordingPort({ ok: false, code: 'not_loaded', message: 'x' })
   const handlers = createHandlers({ identity: 'ui-sidebar', session: failed, workspace: failed })
@@ -369,6 +389,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
       'deleteConversation',
       'restoreConversation',
       'branchConversation',
+      'listTurns',
       'listWorkspaces',
       'pickWorkspace',
       'addWorkspace',

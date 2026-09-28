@@ -82,6 +82,16 @@ test('run.finished：完成 / 失败 / 模型错误前缀分流', () => {
   assert.equal(classify({ topic: 'run.finished', payload: { status: 'idle' } }), null)
 })
 
+test('run.finished：后台 run（thread 缺省 null）不分类，不弹系统通知', () => {
+  assert.equal(classify({ topic: 'run.finished', payload: { run: 'r1', status: 'failed' } }), null)
+  assert.equal(classify({ topic: 'run.finished', payload: { run: 'r1', thread: null, status: 'refused' } }), null)
+  assert.equal(classify({ topic: 'run.finished', payload: { run: 'r1', thread: null, status: 'done' } }), null)
+  assert.equal(
+    classify({ topic: 'run.finished', payload: { run: 'r1', thread: null, status: 'failed', reasons: ['model_rate_limited'] } }),
+    null,
+  )
+})
+
 test('断线合成事件始终通知', () => {
   const down = classify({ impl: 'shell', topic: 'shell.disconnected', payload: {} })
   assert.equal(down.kind, 'disconnected')
@@ -117,7 +127,7 @@ test('未订阅事件返回 null', () => {
 })
 
 test('双重门控：开关 + 权限 granted 才弹', () => {
-  const descriptor = classify({ topic: 'run.finished', payload: { status: 'refused' } })
+  const descriptor = classify({ topic: 'run.finished', payload: { status: 'refused', thread: 't1' } })
   assert.equal(evaluate(descriptor, { switches: switchesOn, permission: 'granted', focused: true }).show, true)
   assert.equal(evaluate(descriptor, { switches: { ...switchesOn, run_failed: false }, permission: 'granted' }).reason, 'switch_off')
   assert.equal(evaluate(descriptor, { switches: switchesOn, permission: 'default' }).reason, 'permission_default')
@@ -132,7 +142,7 @@ test('only_when_unfocused 仅约束 tool_call 待审批与回合完成', () => {
     evaluate(approval, { switches: { ...switchesOn, only_when_unfocused: false }, permission: 'granted', focused: true }).show,
     true,
   )
-  const done = classify({ topic: 'run.finished', payload: { status: 'done' } })
+  const done = classify({ topic: 'run.finished', payload: { status: 'done', thread: 't1' } })
   assert.equal(evaluate(done, { switches: switchesOn, permission: 'granted', focused: true }).reason, 'focused')
 
   const structural = classify({ topic: 'approval.pending', payload: { kind: 'plugin_write' } })

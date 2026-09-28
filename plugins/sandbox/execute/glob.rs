@@ -97,16 +97,62 @@ fn match_class(pattern: &[char], start: usize, target: char) -> (bool, usize) {
     (false, start + 1)
 }
 
-/// 是否含**正则专属**元字符（否则按字面子串匹配，更快也更直观）。
-/// 收紧口径：`.` / `*` / `?` / `+` 在字面模式里太常见（`a.b` / `file?.txt` / `C++`），
-/// 不再单独触发正则；只有 `(` `[` `{` `|` `^` `$` `\` 才按正则处理（可用显式开关覆盖）。
-pub fn looks_like_regex(pattern: &str) -> bool {
-    pattern
-        .chars()
-        .any(|c| matches!(c, '(' | '[' | '{' | '|' | '^' | '$' | '\\'))
+/// 校验模式是否落在简易正则支持子集内；`Some(reason)` 表示不支持。
+/// 调用方在正则模式下必须先校验：不支持即显式报错，**不得**静默退化按字面匹配。
+/// 支持：字面、`.`、`*`/`+`/`?`（量词须有可量化原子）、`^`（仅开头）/`$`（仅结尾）、`[...]` 类、
+/// 以及把元字符 `.*+?[](){}|\^$` 转义成字面。
+/// 不支持：交替 `|`、分组 `(`/`)`、重复 `{...}`、字符类简写 `\d`/`\w`/`\s` 等未知转义、悬空量词、未闭合 `[`。
+pub fn regex_unsupported(pattern: &str) -> Option<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut index = 0;
+    // 上一个位置是否刚结束一个可被量词作用的原子。
+    let mut prev_atom = false;
+    while index < chars.len() {
+        match chars[index] {
+            '|' => return Some("alternation `|` is not supported".to_string()),
+            '(' | ')' => return Some("grouping `(`/`)` is not supported".to_string()),
+            '{' | '}' => return Some("repetition `{...}` is not supported".to_string()),
+            '\\' => {
+                index += 1;
+                if index >= chars.len() {
+                    return Some("trailing backslash `\\`".to_string());
+                }
+                let escaped = chars[index];
+                if !matches!(
+                    escaped,
+                    '.' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '|' | '\\' | '^' | '$'
+                ) {
+                    return Some(format!(
+                        "escape `\\{escaped}` is not supported (no \\d/\\w/\\s classes)"
+                    ));
+                }
+                prev_atom = true;
+            }
+            '*' | '+' | '?' => {
+                if !prev_atom {
+                    return Some(format!("quantifier `{}` has nothing to repeat", chars[index]));
+                }
+                // 量化后不能紧跟第二个量词。
+                prev_atom = false;
+            }
+            '[' => {
+                let Some((_, next)) = parse_class(&chars, index) else {
+                    return Some("unclosed character class `[`".to_string());
+                };
+                index = next - 1;
+                prev_atom = true;
+            }
+            '^' if index == 0 => prev_atom = false,
+            '$' if index + 1 == chars.len() => prev_atom = false,
+            _ => prev_atom = true,
+        }
+        index += 1;
+    }
+    None
 }
 
 /// 简易正则：字面、`.`、`*`/`+`/`?`、`^`/`$`、`[...]`、`\` 转义；无分组 / 交替。
+/// 仅当 `regex_unsupported` 通过时语义才确定；未校验的非法模式会退化为字面匹配。
 pub fn regex_search(pattern: &str, text: &str) -> bool {
     let tokens = match parse_regex(pattern) {
         Some(tokens) => tokens,
@@ -320,9 +366,26 @@ mod tests {
         assert!(regex_search("colou?r", "colour"));
         assert!(regex_search("[0-9]+", "abc123"));
         assert!(!regex_search("[0-9]+", "abc"));
-        assert!(regex_search(r"\d+", "abc") == false); // \d 不在子集内，按字面 d 匹配
         assert!(regex_search(r"a\.b", "a.b"));
         assert!(!regex_search(r"a\.b", "axb"));
+    }
+
+    #[test]
+    fn regex_unsupported_flags_silent_traps() {
+        // 交替 / 分组 / 重复 / 未知名类转义 / 悬空量词 / 未闭合类：都必须被识别为不支持。
+        assert!(regex_unsupported("foo|bar").is_some());
+        assert!(regex_unsupported("(foo)").is_some());
+        assert!(regex_unsupported("a{2,3}").is_some());
+        assert!(regex_unsupported(r"\d+").is_some());
+        assert!(regex_unsupported("*foo").is_some());
+        assert!(regex_unsupported("[abc").is_some());
+        assert!(regex_unsupported(r"a\").is_some());
+        // 支持子集：字面、`.`、量词、锚点、字符类、转义元字符。
+        assert!(regex_unsupported("^fn .*\\(\\)").is_none());
+        assert!(regex_unsupported("[0-9]+").is_none());
+        assert!(regex_unsupported(r"a\.b").is_none());
+        assert!(regex_unsupported("colou?r").is_none());
+        assert!(regex_unsupported("plain text").is_none());
     }
 
     #[test]

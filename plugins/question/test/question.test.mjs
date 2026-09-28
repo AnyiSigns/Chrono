@@ -125,7 +125,7 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致（dura
     const manifest = await drv.hello()
     assert.equal(manifest.identity, 'question')
     assert.deepEqual(manifest.implements, ['question'])
-    assert.deepEqual(manifest.methods.question, ['describe', 'invoke', 'list', 'sweep'])
+    assert.deepEqual(manifest.methods.question, ['describe', 'invoke', 'list', 'state', 'sweep'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
   } finally {
@@ -141,12 +141,16 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
   assert.deepEqual(plugin.pins, { input: 'input' })
   assert.equal(plugin.state, 'durable')
   assert.deepEqual(plugin.exclusive, ['data'])
-  assert.deepEqual(plugin.methods.question, ['describe', 'invoke', 'list', 'sweep'])
+  assert.deepEqual(plugin.methods.question, ['describe', 'invoke', 'list', 'state', 'sweep'])
   const kinds = plugin.members.map((member) => member.kind).sort()
   assert.deepEqual(kinds, ['execute', 'schema', 'term'])
-  assert.equal(plugin.commands[0].name, 'question.answer')
-  assert.equal(plugin.commands[0].entry, 'terms/question.answer.json')
-  assert.equal(plugin.commands[0].argsSchema, 'schema/question.answer.args.json')
+  assert.equal(plugin.commands.length, 2)
+  const answerCmd = plugin.commands.find((command) => command.name === 'question.answer')
+  assert.equal(answerCmd.entry, 'terms/question.answer.json')
+  assert.equal(answerCmd.argsSchema, 'schema/question.answer.args.json')
+  const stateCmd = plugin.commands.find((command) => command.name === 'question.state')
+  assert.equal(stateCmd.entry, 'terms/question.state.json')
+  assert.equal(stateCmd.readonly, true)
 
   const schema = JSON.parse(readFileSync(join(PKG_ROOT, 'schema', 'question.json'), 'utf8'))
   assert.equal(schema.periodic[0].method, 'sweep')
@@ -159,6 +163,8 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
   // 入口 term：eff 自身 invoke，args = null（槽由服务经 input.read 取，不再传投影）
   const term = JSON.parse(readFileSync(join(PKG_ROOT, 'terms', 'question.answer.json'), 'utf8'))
   assert.deepEqual(term, ['eff', 'question', 'invoke', ['c', null]])
+  const stateTerm = JSON.parse(readFileSync(join(PKG_ROOT, 'terms', 'question.state.json'), 'utf8'))
+  assert.deepEqual(stateTerm, ['eff', 'question', 'state', ['c', null]])
 })
 
 // ── describe ───────────────────────────────────────────────────────────────
@@ -331,6 +337,12 @@ test('invoke(question)：越界 / 缺字段回结构化错误、不产写', asyn
     const noId = await drv.call('invoke', { tool: 'question', args: { questions: [{ question: 'Q?' }] } })
     assert.equal(noId.error.code, 'missing_question_id')
 
+    const dup = await drv.call('invoke', {
+      tool: 'question',
+      args: { questions: [question('q1'), question('q1')] },
+    })
+    assert.equal(dup.error.code, 'duplicate_question_id')
+
     const unknown = await drv.call('invoke', { tool: 'nope', args: {} })
     assert.equal(unknown.ok, false)
     assert.equal(unknown.error.code, 'unknown_tool')
@@ -356,6 +368,36 @@ test('list：读队列，返回 oldest→newest，统计 answered/expired', asyn
     assert.deepEqual(payload.items.map((item) => item.id), ['q-run-1-0', 'q-run-1-1'])
     assert.equal(payload.answered, 0)
     assert.equal(payload.expired, 0)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+// ── state（只读对账） ──────────────────────────────────────────────────────
+
+test('state：只回 {id, answered, answers, expired}，不含 questions / resume', async () => {
+  const drv = startService({ onPortCall: answerPortCall })
+  try {
+    await drv.hello()
+    await drv.call('invoke', {
+      tool: 'question',
+      args: { questions: [question()] },
+      thread: 't1',
+      cursor: { node_index: 4, call_id: 'c1' },
+      run: 'run-1',
+    })
+    const before = externOf(await drv.call('state', {}))
+    assert.equal(before.ok, true)
+    assert.deepEqual(before.items, [{ id: 'q-run-1-0', answered: false, answers: null, expired: false }])
+    assert.equal('questions' in before.items[0], false)
+    assert.equal('resume' in before.items[0], false)
+
+    await drv.call('invoke', null, { run: 'r2', thread: 't1', now: 1_700_000_000_000 })
+    const after = externOf(await drv.call('state', {}))
+    assert.equal(after.items[0].answered, true)
+    assert.deepEqual(after.items[0].answers, [{ question_id: 'q1', selected: ['左'] }])
+    assert.equal(after.items[0].expired, false)
   } finally {
     drv.close()
     drv.cleanup()
@@ -473,6 +515,94 @@ test('answer：无槽 → no_slot；id 找不到 → not_found + 清槽', async 
   } finally {
     drv2.close()
     drv2.cleanup()
+  }
+})
+
+// ── 作答守卫 ───────────────────────────────────────────────────────────────
+
+test('answer：已答 / 过期 / 坏 answers / 无游标 均结构化拒且清槽', async () => {
+  // 已答：第一次作答成功后，同一槽再次作答 → already_answered。
+  const answered = startService({ onPortCall: answerPortCall })
+  try {
+    await answered.hello()
+    await answered.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'cur-1', run: 'run-1' })
+    const first = await answered.call('invoke', null, { run: 'r2', thread: 't1', now: 0 })
+    assert.equal(externOf(first).status, 'answered')
+    const second = await answered.call('invoke', null, { run: 'r3', thread: 't1', now: 0 })
+    assert.equal(externOf(second).error.code, 'already_answered')
+    assert.equal(directivesOf(second).some((item) => item.kind === 'eval'), false)
+  } finally {
+    answered.close()
+    answered.cleanup()
+  }
+
+  // 过期：入队到过去，sweep 标过期后作答 → expired。
+  const expired = startService({ onPortCall: answerPortCall })
+  try {
+    await expired.hello()
+    await expired.call(
+      'invoke',
+      { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'cur-1', run: 'run-1', at: new Date(PAST).toISOString() },
+      { run: 'run-1', thread: 't1', now: PAST },
+    )
+    await expired.call('sweep', {}, { run: null, thread: null, now: PAST + 1_000_000 })
+    const value = await expired.call('invoke', null, { run: 'r2', thread: 't1', now: PAST + 1_000_000 })
+    assert.equal(externOf(value).error.code, 'expired')
+  } finally {
+    expired.close()
+    expired.cleanup()
+  }
+
+  // 坏 answers：question_id 非字符串 → bad_answers。
+  const bad = startService({
+    onPortCall: (message, reply) => {
+      if (message.method === 'read') {
+        reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { slot: { kind: 'question.answer', id: 'q-run-1-0', answers: [{ question_id: 1 }] } } })
+        return
+      }
+      reply({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true } })
+    },
+  })
+  try {
+    await bad.hello()
+    await bad.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'cur-1', run: 'run-1' })
+    const value = await bad.call('invoke', null, { run: 'r2', thread: 't1', now: 0 })
+    assert.equal(externOf(value).error.code, 'bad_answers')
+  } finally {
+    bad.close()
+    bad.cleanup()
+  }
+
+  // 无游标：入队未带 cursor → item.resume=null，作答回 no_resume_cursor（不发 chat.resume）。
+  const noCursor = startService({ onPortCall: answerPortCall })
+  try {
+    await noCursor.hello()
+    await noCursor.call('invoke', { tool: 'question', args: { questions: [question()] }, thread: 't1', run: 'run-1' })
+    const value = await noCursor.call('invoke', null, { run: 'r2', thread: 't1', now: 0 })
+    assert.equal(externOf(value).error.code, 'no_resume_cursor')
+    assert.equal(directivesOf(value).some((item) => item.kind === 'eval'), false)
+  } finally {
+    noCursor.close()
+    noCursor.cleanup()
+  }
+})
+
+test('invoke(question)：expires_at 以 at 为基准（bag.at 与 env.now 不同也一致）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const base = 1_600_000_000_000
+    await drv.call(
+      'invoke',
+      { tool: 'question', args: { questions: [question()] }, thread: 't1', cursor: 'cur-1', run: 'run-1', at: new Date(base).toISOString() },
+      { run: 'run-1', thread: 't1', now: base + 999_999 },
+    )
+    const item = externOf(await drv.call('list', {})).items[0]
+    assert.equal(item.at, new Date(base).toISOString())
+    assert.equal(item.expires_at, new Date(base + 600000).toISOString(), 'expires_at = at + expires_ms')
+  } finally {
+    drv.close()
+    drv.cleanup()
   }
 })
 

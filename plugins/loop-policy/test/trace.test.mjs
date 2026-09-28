@@ -78,9 +78,26 @@ test('无 #43 台账时不产 trace 写', async () => {
 })
 
 test('trace 摘要落成 def：引用为 {def}、可解析、且为不含正文的轻量摘要', async () => {
-  const service = startService()
+  const service = startService({
+    providers: {
+      // 工具结果冒泡一条写计划，使本回合 directives 非空（摘要 def 才登记）。
+      'model.chat': (args) => {
+        const last = args.messages?.[args.messages.length - 1]
+        if (last && last.role === 'tool') return { ok: true, text: 'done', tool_calls: [], usage: {} }
+        return { ok: true, text: '', tool_calls: [{ id: 'c1', name: 'todo', args: {} }], usage: {} }
+      },
+      'guard.judge': () => ({ decisions: [{ index: 0, port: 'todo', tool: 'todo', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
+      'tools.dispatch': (args) => ({
+        results: args.calls.map((call) => ({
+          call_id: call.call_id,
+          ok: true,
+          result: { $directives: [{ kind: 'write', request: { op: 'put', args: { body: { marker: 'nested' } } } }] },
+        })),
+      }),
+    },
+  })
   try {
-    const result = await service.interpret({ evolution: LEDGER })
+    const result = await service.interpret({ turn_id: 't1', evolution: LEDGER })
     const ops = writeOps(result.value)
     const entry = ops.find((op) => op.op === 'put' && op.args.body.kind === 'trace').args.body
     assert.match(entry.directives_summary.def, /^[0-9a-f]{64}$/)

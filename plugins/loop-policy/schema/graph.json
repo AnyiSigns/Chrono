@@ -3,6 +3,20 @@
   "description": "身份自述 / 数据契约：六类条目（contracts / nodes / prompts / graph / thresholds / refusal_codes）的形状。数据住本身份的数据世代 body（不在包树）；空 body 由服务回落包内种子图与默认阈值。graph 是单值不是 tail（历史版本由数据世代承载）。服务不读投影：六类条目由调用方入口 term 读投影后随 bag.graph 传入。",
   "type": "object",
   "additionalProperties": true,
+  "lifecycle": {
+    "title": "解释器生命周期（封闭、与图拓扑无关）",
+    "description": "状态只经声明的转换表变更，非允许转换是结构化失败。图内进度 {iter,node_index,contract_id} 是数据、不是状态；换图不改状态枚举。",
+    "states": ["assembled", "stepping", "suspended", "settling", "settled"],
+    "events": ["step", "segment", "suspend", "settle", "finalize"],
+    "transitions": {
+      "assembled": { "step": "stepping", "settle": "settling" },
+      "stepping": { "segment": "stepping", "suspend": "suspended", "settle": "settling" },
+      "suspended": {},
+      "settling": { "finalize": "settled" },
+      "settled": {}
+    },
+    "terminal": ["settled"]
+  },
   "properties": {
     "contracts": {
       "type": "object",
@@ -155,6 +169,7 @@
     }
   },
   "method_timeouts": {
-    "loop-policy.interpret": 600000
+    "loop-policy.interpret": 6000000,
+    "loop-policy.cancel": 30000
   }
 }

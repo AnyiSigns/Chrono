@@ -4,12 +4,14 @@
 // 非幂等、永不缓存；不读投影、不写世界；世界 / 结果 / args 不取时间随机（重试等待与可选抖动只影响时延）。
 
 import { getAdapter } from './adapters.ts'
-import type { ModelOutput, RequestContext } from './adapters.ts'
+import type { CacheHint, ModelOutput, RequestContext } from './adapters.ts'
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest, httpStream } from './http.ts'
 import { authRefOf, isRecord } from './plan.ts'
 import { normalizeQuirks } from './quirks.ts'
 import type { Quirks } from './quirks.ts'
+import { reasoningBlock, resolveReasoningCapability } from './reasoning.ts'
+import type { ReasoningBlock, ReasoningCapability } from './reasoning.ts'
 import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
 import { createSseParser, StreamAccumulator } from './stream.ts'
@@ -30,14 +32,36 @@ interface ParsedChat {
   messages: Json[]
   params: Rec
   quirks: Quirks
+  capability: ReasoningCapability
+  cache: CacheHint | undefined
   authRef: Rec | null
   tools: Json | undefined
   tool_choice: Json | undefined
   provider: string
   resilience: Json | undefined
+  /** 本次调用所属回合 id（缺省 null）：用于把在途 HTTP 请求登记进可中止表。 */
+  turn_id: string | null
 }
 
-/** 从 bag 解析连接 / 模型 / 消息 / 怪癖；缺必需字段抛 bad_args。 */
+/** 调用方在 config 上显式给出的推理能力表（优先于协议 / 厂商默认）。 */
+function profileCapabilityOf(config: Rec): Json | undefined {
+  return isRecord(config['reasoning_capability']) ? config['reasoning_capability'] : undefined
+}
+
+/** 缓存提示：厂商中立，只保留已知键；空对象视为未给。 */
+function parseCache(value: Json | undefined): CacheHint | undefined {
+  if (!isRecord(value)) return undefined
+  const hint: CacheHint = {}
+  if (Array.isArray(value['breakpoints'])) {
+    hint.breakpoints = (value['breakpoints'] as Json[]).filter((item): item is number => typeof item === 'number' && Number.isInteger(item))
+  }
+  if (value['system'] === true) hint.system = true
+  if (value['tools'] === true) hint.tools = true
+  if (typeof value['key'] === 'string' && value['key'].length > 0) hint.key = value['key'] as string
+  return Object.keys(hint).length === 0 ? undefined : hint
+}
+
+/** 从 bag 解析连接 / 模型 / 消息 / 怪癖 / 能力表 / 缓存提示；缺必需字段抛 bad_args。 */
 export function parseChatBag(bag: Json): ParsedChat {
   if (!isRecord(bag)) throw new BadArgsError('bag must be an object')
   const config = bag['config']
@@ -50,17 +74,26 @@ export function parseChatBag(bag: Json): ParsedChat {
   if (!Array.isArray(messages)) throw new BadArgsError('bag.messages must be an array')
   const protocolOverride = typeof config['protocol'] === 'string' ? (config['protocol'] as string) : null
   const provider = typeof config['vendor'] === 'string' ? (config['vendor'] as string) : model
+  const quirks = normalizeQuirks(config['quirks'], protocolOverride)
   return {
     base_url: baseUrl,
     model,
     messages,
     params: isRecord(config['params']) ? (config['params'] as Rec) : {},
-    quirks: normalizeQuirks(config['quirks'], protocolOverride),
+    quirks,
+    capability: resolveReasoningCapability({
+      provider,
+      impl: quirks.impl,
+      protocol: quirks.protocol,
+      profile: profileCapabilityOf(config),
+    }),
+    cache: parseCache(bag['cache']),
     authRef: authRefOf(config),
     tools: bag['tools'],
     tool_choice: bag['tool_choice'],
     provider,
     resilience: bag['resilience'],
+    turn_id: typeof bag['turn_id'] === 'string' && bag['turn_id'].length > 0 ? (bag['turn_id'] as string) : null,
   }
 }
 
@@ -79,13 +112,16 @@ function requestContext(parsed: ParsedChat, secret: string | null, stream: boole
   return {
     base_url: parsed.base_url,
     model: parsed.model,
+    provider: parsed.provider,
     messages: parsed.messages,
     params: parsed.params,
     quirks: parsed.quirks,
+    capability: parsed.capability,
     secret,
     stream,
     tools: parsed.tools,
     tool_choice: parsed.tool_choice,
+    cache: parsed.cache,
   }
 }
 
@@ -180,6 +216,11 @@ function protocolLabel(parsed: ParsedChat): string {
   return parsed.quirks.impl === 'sdk' ? 'sdk' : parsed.quirks.protocol
 }
 
+/** 取协议适配器；身份（provider / model）随适配器构造，供捕获中立推理块标注来源。 */
+function adapterFor(parsed: ParsedChat): ReturnType<typeof getAdapter> {
+  return getAdapter(parsed.quirks.protocol, parsed.quirks, { provider: parsed.provider, model: parsed.model })
+}
+
 function outputValue(output: ModelOutput, parsed: ParsedChat, includeReasoning: boolean): Rec {
   const value: Rec = {
     ok: true,
@@ -190,8 +231,19 @@ function outputValue(output: ModelOutput, parsed: ParsedChat, includeReasoning: 
     protocol: protocolLabel(parsed),
   }
   if (includeReasoning && output.reasoning !== undefined) value['reasoning'] = output.reasoning
+  if (includeReasoning && output.reasoning_blocks !== undefined && output.reasoning_blocks.length > 0) {
+    value['reasoning_blocks'] = output.reasoning_blocks as unknown as Json
+  }
   if (output.stop_reason !== undefined) value['stop_reason'] = output.stop_reason
   return value
+}
+
+/** 流式最终值的中立推理块：适配器给了就用，没有则由推理文本兜底成一块。 */
+function streamReasoningBlocks(accumulator: StreamAccumulator, ctx: RequestContext): ReasoningBlock[] {
+  const blocks = accumulator.reasoningBlocksValue
+  if (blocks.length > 0) return blocks as unknown as ReasoningBlock[]
+  if (accumulator.reasoning.length === 0) return []
+  return [reasoningBlock(ctx.provider, ctx.model, 'text', accumulator.reasoning)]
 }
 
 /** 一次流式尝试：打开 SSE、逐段解析、经门去重后上行。 */
@@ -201,6 +253,7 @@ async function streamAttempt(
   policy: RetryPolicy,
   gate: DeltaGate,
   now: number,
+  turnId: string | null,
 ): Promise<ModelOutput> {
   gate.beginAttempt()
   const built = adapter.build(ctx)
@@ -211,6 +264,7 @@ async function streamAttempt(
     body: JSON.stringify(built.body),
     timeout_ms: policy.request_timeout_ms,
     now,
+    turn_id: turnId ?? undefined,
   })
   const accumulator = new StreamAccumulator()
   const parser = createSseParser()
@@ -231,6 +285,8 @@ async function streamAttempt(
     usage: accumulator.usageValue,
   }
   if (accumulator.reasoning.length > 0) output.reasoning = accumulator.reasoning
+  const blocks = streamReasoningBlocks(accumulator, ctx)
+  if (blocks.length > 0) output.reasoning_blocks = blocks
   const stop = accumulator.stopReasonValue
   if (stop !== null) output.stop_reason = stop
   return output
@@ -242,6 +298,7 @@ async function fullAttempt(
   ctx: RequestContext,
   policy: RetryPolicy,
   now: number,
+  turnId: string | null,
 ): Promise<ModelOutput> {
   const built = adapter.build(ctx)
   const response = await httpRequest({
@@ -251,6 +308,7 @@ async function fullAttempt(
     body: JSON.stringify(built.body),
     timeout_ms: policy.request_timeout_ms,
     now,
+    turn_id: turnId ?? undefined,
   })
   let json: Json
   try {
@@ -266,9 +324,11 @@ function sdkInput(parsed: ParsedChat, secret: string | null): SdkCallInput {
     sdk_package: parsed.quirks.sdk_package,
     api_key: secret ?? '',
     model: parsed.model,
+    provider: parsed.provider,
     messages: parsed.messages,
     params: parsed.params,
     quirks: parsed.quirks,
+    capability: parsed.capability,
   }
 }
 
@@ -300,7 +360,7 @@ export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Jso
     const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, fragment))
     const output = await withRetry(
       parsed.provider,
-      () => streamAttempt(getAdapter(parsed.quirks.protocol, parsed.quirks), ctx, policy, gate, env.now),
+      () => streamAttempt(adapterFor(parsed), ctx, policy, gate, env.now, parsed.turn_id),
       { policy, limiter: deps.limiter, now: env.now },
     )
     return outputValue(output, parsed, true)
@@ -320,7 +380,7 @@ export async function complete(deps: ChatDeps, bag: Json, env: CallEnv): Promise
     const output =
       parsed.quirks.impl === 'sdk'
         ? await withRetry(parsed.provider, () => googleComplete(sdkInput(parsed, secret)), { policy, limiter: deps.limiter, now: env.now })
-        : await withRetry(parsed.provider, () => fullAttempt(getAdapter(parsed.quirks.protocol, parsed.quirks), requestContext(parsed, secret, false), policy, env.now), { policy, limiter: deps.limiter, now: env.now })
+        : await withRetry(parsed.provider, () => fullAttempt(adapterFor(parsed), requestContext(parsed, secret, false), policy, env.now, parsed.turn_id), { policy, limiter: deps.limiter, now: env.now })
     return { ok: true, text: output.text, usage: output.usage }
   } catch (err) {
     if (err instanceof BadArgsError) throw err

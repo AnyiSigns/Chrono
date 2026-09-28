@@ -5,6 +5,7 @@
 
 import { asString, defHashOf, isRecord, numberField } from './plan.ts'
 import { sliceEnabled } from './wiring.ts'
+import { CONTRACT_VERSION } from './contract/index.ts'
 import type { Wiring } from './wiring.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -63,6 +64,38 @@ export function headHashOf(conversation: Rec | null): string | null {
   if (conversation === null || !isRecord(conversation['head'])) return null
   const hash = (conversation['head'] as Rec)['def']
   return typeof hash === 'string' ? hash : null
+}
+
+/**
+ * 续跑段装配用的「回合前」会话切片：把当前回合已落的消息从链头前移出去，
+ * 使历史窗口回到回合起点；同回合进度改由步记录重建的 `extra_messages` 回灌（与分段前同形）。
+ * 只改会话条目的链头，refs 保留（历史窗口沿 prev 走，不猜链头）；并取出本回合用户消息作输入。
+ */
+export function stripCurrentTurn(
+  session: Rec,
+  conversationId: string | null,
+  turnId: string,
+): { session: Rec; conversation: Rec | null; userMessage: Rec | null } {
+  const refs = isRecord(session['refs']) ? (session['refs'] as Rec) : {}
+  const conversations = Array.isArray(session['conversations']) ? (session['conversations'] as Json[]) : []
+  const conversation = conversationId === null ? null : findConversation(session, conversationId)
+  const prefix = conversationId === null ? null : `msg-${conversationId}-${turnId}-`
+  const userKey = prefix === null ? null : `${prefix}user`
+  const userMessage = userKey !== null && isRecord(refs[userKey]) ? (refs[userKey] as Rec) : null
+  let cursor = headHashOf(conversation)
+  while (cursor !== null && prefix !== null && cursor.startsWith(prefix)) {
+    const prev = isRecord(refs[cursor]) ? refs[cursor]['prev'] : null
+    cursor = defHashOf(prev)
+  }
+  const head = cursor === null ? null : { def: cursor }
+  const updated = conversations.map((item) =>
+    isRecord(item) && item['id'] === conversationId ? { ...item, head } : item,
+  )
+  return {
+    session: { ...session, conversations: updated },
+    conversation: conversation === null ? null : { ...conversation, head },
+    userMessage,
+  }
 }
 
 function limitOf(meta: Rec | null): Rec | null {
@@ -281,24 +314,43 @@ export interface InterpretBagInput {
   thread: string
   /** 会话 body 覆盖（如已并入生成的标题）；缺省取投影 `ids.session.body`。 */
   sessionBody?: Rec
+  /** 线程种类覆盖（续跑时回合记录比投影会话更权威）；缺省取会话 `kind`。 */
+  threadKind?: string
+  /** 子代理任务提示词（仅 `thread_kind === 'subagent'` 落键）。 */
+  taskPrompt?: string | null
+  /** 父检查点（结构化 summary 或裸摘要；仅 subagent 落键）。 */
+  parentCheckpoint?: Json | null
+  /** 父会话摘要回退（仅 subagent 落键）。 */
+  parentSummaries?: Json | null
 }
 
 /**
  * 装配 #33 `interpret` 的 bag（`chat.send` 契约）：一次覆盖全部节点所需切片。
  * 仅当对应身份在投影里才落键；缺省身份由 #33 回落包内种子 / 内建兜底。
+ * bag 恒带 `contract_version`（生成契约常量），供消费方按主版本显式拒绝过期契约。
  */
 export function buildInterpretBag(params: InterpretBagInput): Rec {
   const { ids, wiring, slot, conversation, conversationId, config, thread } = params
   const sessionBody = params.sessionBody ?? bodyOf(ids, 'session') ?? {}
   const sessionEntry = entryOf(ids, 'session')
   const sessionDataGen = sessionEntry !== null && sessionEntry['data_gen'] !== undefined ? sessionEntry['data_gen'] : null
+  const threadKind = params.threadKind ?? (conversation !== null ? asString(conversation['kind']) ?? 'main' : 'main')
   const bag: Rec = {
+    contract_version: CONTRACT_VERSION,
     input: inputOf(slot),
     input_body: bodyOf(ids, 'input') ?? {},
     config,
     thread,
-    thread_kind: conversation !== null ? asString(conversation['kind']) ?? 'main' : 'main',
+    thread_kind: threadKind,
     session: sessionSlice(sessionBody, conversation, refsOf(ids, 'session'), sessionDataGen),
+  }
+  if (threadKind === 'subagent') {
+    const taskPrompt = asString(params.taskPrompt)
+    if (taskPrompt !== null) bag['task_prompt'] = taskPrompt
+    if (params.parentCheckpoint !== undefined && params.parentCheckpoint !== null) {
+      bag['parent_checkpoint'] = params.parentCheckpoint
+    }
+    if (Array.isArray(params.parentSummaries)) bag['parent_summaries'] = params.parentSummaries
   }
   const tier = tierOf(ids)
   if (tier !== null) bag['tier'] = tier
@@ -337,6 +389,9 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
   if (guardRules !== null) bag['guard_rules'] = guardRules
   const sandboxTiers = bodyOf(ids, 'sandbox')
   if (sandboxTiers !== null) bag['sandbox_tiers'] = sandboxTiers
+  // 文件工具的忽略表：身份 body 的 `ignore` 数组（缺省 / 空数组语义由工具侧决定）。
+  const fsBody = bodyOf(ids, 'tool-fs')
+  if (isRecord(fsBody) && Array.isArray(fsBody['ignore'])) bag['ignore'] = fsBody['ignore']
   const toolsBody = bodyOf(ids, 'tools')
   if (toolsBody !== null) bag['tools_bindings'] = toolsBody
   const mcpTools = mcpToolsOf(ids)

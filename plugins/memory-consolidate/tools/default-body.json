@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "consolidate": { "summarize": true },
+  "sweep": {
+    "l1_ttl_ms": 86400000,
+    "l2_capacity": 200,
+    "l3_capacity": 500,
+    "candidate_threshold": 0.2
+  }
+}

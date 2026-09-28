@@ -12,6 +12,7 @@ export type ModelErrorCode =
   | 'model_stream_broken'
   | 'model_network_error'
   | 'model_unsupported'
+  | 'model_aborted'
 
 export interface ModelErrorOptions {
   retryable?: boolean

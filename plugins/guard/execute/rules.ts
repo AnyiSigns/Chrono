@@ -59,6 +59,15 @@ export interface NetRule {
   verdict: Verdict
 }
 
+/** 命令前缀白名单：命中即放行，免审批（危险模式优先于它，危险命令仍拦）。 */
+export interface AllowPattern {
+  port: string
+  tool: string
+  /** 命令词元前缀（大小写不敏感、逐词匹配，从第一个词元开始）。 */
+  prefix: string[]
+  verdict: Verdict
+}
+
 export interface Rules {
   version: number
   tiers: Record<string, TierPolicy>
@@ -68,6 +77,7 @@ export interface Rules {
   structural_writes: StructuralRule[]
   deny: DenyRule
   net: NetRule
+  allow_patterns: AllowPattern[]
 }
 
 /** 未知 / 缺失档位按 fail-closed：升级判定一律开启（不因档位缺失而静默放行）。 */
@@ -177,6 +187,7 @@ export const DEFAULT_RULES: Rules = {
     enabled: true,
     verdict: 'escalate',
   },
+  allow_patterns: [],
 }
 
 function isRecord(value: Json | undefined): value is Rec {
@@ -323,6 +334,24 @@ function parseNet(value: Json | undefined): NetRule {
   }
 }
 
+/** 解析命令前缀白名单：缺省 / 畸形回落内建（空表）。 */
+function parseAllowPatterns(value: Json | undefined): AllowPattern[] {
+  if (value === undefined) return DEFAULT_RULES.allow_patterns
+  if (!Array.isArray(value)) return DEFAULT_RULES.allow_patterns
+  const out: AllowPattern[] = []
+  for (const item of value) {
+    if (!isRecord(item)) continue
+    const port = item['port']
+    const tool = item['tool']
+    const prefix = stringArray(item['prefix'])
+    if (typeof port !== 'string' || port.length === 0) continue
+    if (typeof tool !== 'string' || tool.length === 0) continue
+    if (prefix === null || prefix.length === 0) continue
+    out.push({ port, tool, prefix, verdict: asVerdict(item['verdict'], 'allow') })
+  }
+  return out
+}
+
 /** 解析 bag.guard_rules：非对象（缺省）用内建默认；逐段合并，段缺省回落默认。 */
 export function parseRules(raw: Json | undefined): Rules {
   if (!isRecord(raw)) return DEFAULT_RULES
@@ -335,5 +364,6 @@ export function parseRules(raw: Json | undefined): Rules {
     structural_writes: parseStructural(raw['structural_writes']),
     deny: parseDeny(raw['deny']),
     net: parseNet(raw['net']),
+    allow_patterns: parseAllowPatterns(raw['allow_patterns']),
   }
 }

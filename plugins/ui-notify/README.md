@@ -43,14 +43,17 @@ headless bundle 自初始化时把它**发布到同页全局**，供同页的设
 | `approval.pending`（`kind=tool_call`） | 仅窗口无焦点时通知（前台由审批卡片呈现） |
 | `approval.pending`（`kind=orchestration_change`） | **始终**通知，标题「待审批：编排变更」 |
 | `approval.pending`（`kind=plugin_write`） | **始终**通知，标题「待审批：插件写入」 |
-| `run.finished`（`status=done`） | 仅窗口无焦点时通知，标题「回合完成」 |
-| `run.finished`（`status=refused` / `failed`） | **始终**通知，标题「回合失败」 |
-| `run.finished` 且 `reasons` 含 `model_*` 前缀 / `transport_failed` | **始终**通知，标题「模型错误」 |
+| `run.finished`（`status=done`，有会话） | 仅窗口无焦点时通知，标题「回合完成」 |
+| `run.finished`（`status=refused` / `failed`，有会话） | **始终**通知，标题「回合失败」 |
+| `run.finished` 且 `reasons` 含 `model_*` 前缀 / `transport_failed`（有会话） | **始终**通知，标题「模型错误」 |
 | `shell.disconnected` / `shell.reconnected`（壳合成） | **始终**通知，标题「断线」/「已重连」 |
 | `orchestration.unhealthy` | **始终**通知，标题「编排连续失败」 |
 | `question.pending` | **始终**通知，标题「提问待作答」 |
 
 - `approval.pending` 载荷兼容 `payload.item.{kind,thread}` 与扁平 `payload.{kind,thread}`。
+- **`run.finished` 只对有会话（`thread` 非空）的 run 通知**；后台 run（`thread` 缺省 `null`，如
+  periodic / 命令 run）不属于任何会话，一律不弹系统通知——避免用户没在对话、切到别的软件时
+  也收到「回合失败 / 回合完成」。
 - **模型错误分流依赖 `run.finished` 载荷里的 `reasons`**；当前宿主事件载荷为
   `{ run, thread, status }`，无 `reasons` 时该分支不可达，退化为「回合失败」（已知限制）。
 - `orchestration.unhealthy` 的 `thread` 为 `null`，去重键退化为 `kind`。
@@ -67,7 +70,8 @@ only_when_unfocused
 ```
 
 `only_when_unfocused` 只约束 `tool_call` 待审批与回合完成；结构变更 / 失败 / 断线 /
-编排健康 / 提问类始终通知。配置写入入口是设置页的「通知」分组。
+编排健康 / 提问类始终通知。**后台 run（`thread` 缺省 `null`）的 `run.finished` 不进通知路径**，
+与开关 / 焦点无关。配置写入入口是设置页的「通知」分组。
 
 ## 通知形态
 

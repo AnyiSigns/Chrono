@@ -92,8 +92,12 @@ function enqueue(params: Rec, bag: Rec, env: CallEnv, store: QuestionStore): Han
   }
 
   const session = sessionIdOf(bag)
-  const at = asString(bag['at']) ?? isoAt(nowOf(env))
-  const expiresAt = CONFIG.expiresMs === null ? null : isoAt(nowOf(env) + CONFIG.expiresMs)
+  const frameNow = nowOf(env)
+  const atText = asString(bag['at'])
+  const atMs = atText === null ? frameNow : Date.parse(atText)
+  const at = atText ?? isoAt(frameNow)
+  const baseMs = Number.isFinite(atMs) ? atMs : frameNow
+  const expiresAt = CONFIG.expiresMs === null ? null : isoAt(baseMs + CONFIG.expiresMs)
   const id = questionId(run, store.count())
   const item: Rec = {
     id,
@@ -131,6 +135,24 @@ function answerFailure(code: string, message: string): HandlerResult {
   return { value: externOnly({ ok: false, error: { code, message } }), events: [] }
 }
 
+/**
+ * 作答形态校验：数组；每项对象、`question_id` 非空字符串、`selected` 字符串数组（可缺省）、
+ * `custom` 字符串（可缺省）。空数组合法（用户可「全部忽略」）。
+ */
+function validAnswers(value: Json[]): boolean {
+  for (const item of value) {
+    if (!isRecord(item)) return false
+    if (asString(item['question_id']) === null) return false
+    const selected = item['selected']
+    if (selected !== undefined && selected !== null) {
+      if (!Array.isArray(selected) || selected.some((piece) => typeof piece !== 'string')) return false
+    }
+    const custom = item['custom']
+    if (custom !== undefined && custom !== null && typeof custom !== 'string') return false
+  }
+  return true
+}
+
 async function answerCommand(env: CallEnv, deps: QuestionDeps): Promise<HandlerResult> {
   const thread = asString(env.thread) ?? '_main'
   const read = await deps.input.call('input', 'read', { thread })
@@ -144,10 +166,24 @@ async function answerCommand(env: CallEnv, deps: QuestionDeps): Promise<HandlerR
   if (id === null) return answerFailure('missing_id', 'slot.id required')
   if (answers === null) return answerFailure('missing_answers', 'slot.answers required')
 
-  const item = deps.store.get(id)
-  if (item === null) {
+  /** 收口即清槽：作答槽只消费一次，失败也清，避免残留遮挡后续作答。 */
+  const failAndClear = async (code: string, message: string): Promise<HandlerResult> => {
     await deps.input.call('input', 'clear', { thread_id: thread })
-    return answerFailure('not_found', id)
+    return answerFailure(code, message)
+  }
+
+  const item = deps.store.get(id)
+  if (item === null) return failAndClear('not_found', id)
+  if (!validAnswers(answers)) return failAndClear('bad_answers', 'slot.answers malformed')
+  // 已答 / 过期不再续跑：重放旧槽或双端竞态不得重开同一回合。
+  if (item['answers'] !== null) return failAndClear('already_answered', id)
+  if (item['expired'] === true) return failAndClear('expired', id)
+
+  const resume = isRecord(item['resume']) ? (item['resume'] as Rec) : null
+  const resumeArgs = resume !== null && isRecord(resume['args']) ? (resume['args'] as Rec) : null
+  const cursor = resumeArgs === null ? null : (resumeArgs['cursor'] ?? null)
+  if (resume === null || resumeArgs === null || cursor === null) {
+    return failAndClear('no_resume_cursor', id)
   }
 
   const itemThread = asString(item['thread']) ?? thread
@@ -159,9 +195,6 @@ async function answerCommand(env: CallEnv, deps: QuestionDeps): Promise<HandlerR
   // 作答槽已被消费：清本线程槽（失败不阻断续跑，槽残留由写入端覆盖）。
   await deps.input.call('input', 'clear', { thread_id: thread })
 
-  const resume = isRecord(item['resume']) ? (item['resume'] as Rec) : null
-  const resumeArgs = resume !== null && isRecord(resume['args']) ? (resume['args'] as Rec) : null
-  const cursor = resumeArgs === null ? null : (resumeArgs['cursor'] ?? null)
   const at = asString(item['at'])
   const directives: Json[] = [
     // 续跑不再自带整份投影：`inject` 声明由宿主执行期把投影切片并入 args。
@@ -205,6 +238,23 @@ function list(store: QuestionStore): HandlerResult {
   }
 }
 
+// ── state（只读对账：供 UI 重拉后判定已答 / 过期） ─────────────────────────
+
+/**
+ * 只回判定所需的窄字段：`{id, answered, answers, expired}`；**不含 `questions` / `resume`**（
+ * resume 内是不透明 loop 游标，不得经入站面外泄）。`answered` 与 `answers:null` 双写，
+ * 使「全部忽略」提交的空数组也能被识别为已答。
+ */
+function state(store: QuestionStore): HandlerResult {
+  const items = store.itemsInOrder().map((item) => ({
+    id: item['id'] ?? null,
+    answered: item['answers'] !== null,
+    answers: item['answers'] ?? null,
+    expired: item['expired'] === true,
+  }))
+  return { value: externOnly({ ok: true, version: 1, items }), events: [] }
+}
+
 // ── sweep（宿主周期方法） ───────────────────────────────────────────────────
 
 function isExpired(item: Rec, now: number): boolean {
@@ -236,6 +286,7 @@ export function createHandlers(deps: QuestionDeps): Record<string, Handler> {
     describe: () => describe(),
     invoke: (args, env) => invoke(args, env, deps),
     list: () => list(deps.store),
+    state: () => state(deps.store),
     sweep: (args, env) => {
       void args
       return sweep(env, deps.store)

@@ -5,6 +5,7 @@
   "methods": {
     "tools": ["list", "dispatch"]
   },
+  "concurrent_methods": ["dispatch"],
   "pins": {
     "guard": "guard",
     "tool-fs": "tool-fs",

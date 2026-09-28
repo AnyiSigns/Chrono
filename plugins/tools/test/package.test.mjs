@@ -25,6 +25,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'concurrent_methods',
   'pins',
   'start',
   'build',
@@ -36,13 +37,14 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
+test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tools')
   assert.equal(decl.schema, 'schema/tools.json')
   assert.deepEqual(decl.implements, ['tools'])
   assert.deepEqual(decl.methods, { tools: ['list', 'dispatch'] })
+  assert.deepEqual(decl.concurrent_methods, ['dispatch'])
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

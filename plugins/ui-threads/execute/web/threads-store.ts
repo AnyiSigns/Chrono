@@ -23,6 +23,7 @@ export interface TodoItem {
   id: string
   text: string
   status: string
+  activeForm: string | null
 }
 
 export interface TodoView {
@@ -94,12 +95,13 @@ function normalizeTodo(raw: unknown): TodoView | null {
       if (!isRecord(item)) continue
       const text = typeof item.text === 'string' ? item.text : ''
       const status = typeof item.status === 'string' ? item.status : 'pending'
+      const activeForm = typeof item.activeForm === 'string' && item.activeForm.length > 0 ? item.activeForm : null
       const explicit = typeof item.id === 'string' && item.id.length > 0 ? item.id : null
       // 无 id 的项按内容生成稳定键（跨重排不变）；同内容重复项再以序号消歧，保证唯一。
       let id = explicit ?? `todo:${status}:${text}`
       if (seen.has(id)) id = `${id}#${index}`
       seen.add(id)
-      items.push({ id, text, status })
+      items.push({ id, text, status, activeForm })
     }
   }
   return {

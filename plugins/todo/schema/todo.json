@@ -1,24 +1,24 @@
 {
   "title": "todo（按会话键控的待办清单）",
-  "description": "身份自述 / 数据契约。清单本体是运行记录，已出世界：住 owner 委托存储（storage-kv，按 env.emitter 分命名空间），键 `conv:<会话 id>` = {run, at, items:[{id,text,status,priority?,at?}]}，键 `turn:<回合 id>` = {state,conv}。本 schema 只留服务读的限额与枚举（定义 / 判定数据，住世界；schema 成员变化属数据、可热改）；宿主 v1 不校验身份数据。",
+  "description": "身份自述 / 数据契约。清单本体是运行记录，已出世界：住 owner 委托存储（storage-kv，按 env.emitter 分命名空间），键 `conv:<会话 id>` = {run, at, seq, items:[{id,text,status,activeForm?,at?}]}，键 `turn:<回合 id>` = {state,conv}。本 schema 只留服务读的限额与枚举（定义 / 判定数据，住世界；schema 成员变化属数据、可热改）；describe 的状态枚举与写入门禁同源现读此处，宿主 v1 不校验身份数据。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "max_items": {
       "type": "integer",
       "minimum": 1,
-      "description": "单会话条目条数上限（todo.write 门禁，超出 → too_many_items）。缺省 200。"
+      "description": "单会话条目条数上限（todo.write / todo.update 门禁，超出 → too_many_items）。缺省 200。"
     },
     "max_text_length": {
       "type": "integer",
       "minimum": 1,
-      "description": "单条文本长度上限（按 Unicode 码点计，超出 → text_too_long）。缺省 500。"
+      "description": "单条文本 / activeForm 长度上限（按 Unicode 码点计，超出 → text_too_long）。缺省 500。"
     },
     "statuses": {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "条目状态枚举（todo.write 门禁，越界 → bad_status）。缺省 [\"pending\",\"in_progress\",\"completed\"]。"
+      "description": "条目状态枚举（todo.write / todo.update 门禁，越界 → bad_status；同一清单至多一个 in_progress）。缺省 [\"pending\",\"in_progress\",\"completed\",\"cancelled\"]。"
     }
   }
 }

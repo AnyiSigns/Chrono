@@ -80,6 +80,7 @@ const EXPECTED_TERMS = {
   'chat.send': ['eff', 'chat', 'send', ['g', ['ids']]],
   'chat.history': ['eff', 'chat', 'history', ['v', 0]],
   'chat.resume': ['eff', 'chat', 'resume', ['v', 0]],
+  'chat.cancel': ['eff', 'chat', 'cancel', ['v', 0]],
 }
 
 function bootRaw(root, args) {
@@ -146,7 +147,7 @@ function main() {
   assert.ok(decl !== null, 'chat 声明应可解析')
   assert.equal(decl.decl.identity, 'chat')
   assert.deepEqual(decl.decl.implements, ['chat'])
-  assert.deepEqual(decl.decl.methods.chat, ['send', 'history', 'resume'])
+  assert.deepEqual(decl.decl.methods.chat, ['send', 'history', 'resume', 'cancel'])
   assert.equal(decl.decl.start, 'node execute/main.ts')
   assert.deepEqual(
     decl.decl.members,
@@ -163,7 +164,7 @@ function main() {
   const commands = listCommands(anchor.world, paths.blobsDir).filter((command) => command.identity === 'chat')
   assert.deepEqual(
     commands.map((command) => command.name).sort(),
-    ['chat.history', 'chat.resume', 'chat.send'],
+    ['chat.cancel', 'chat.history', 'chat.resume', 'chat.send'],
   )
   for (const command of commands) {
     assert.equal(typeof command.entry, 'string')
@@ -175,7 +176,7 @@ function main() {
     assert.equal(body[1], 'chat')
     assert.equal(Object.hasOwn(decl.decl.pins, 'chat'), false, 'chat 不应有自引用 pin')
   }
-  console.log('命令：chat.send / chat.history / chat.resume 入口解析 + H21 自能力路由通过')
+  console.log('命令：chat.send / chat.history / chat.resume / chat.cancel 入口解析 + H21 自能力路由通过')
 
   // .worldignore：test/ 与 tools/ 不入世；execute/、terms/、schema/ 在
   assert.equal(resolveTreeEntry(anchor.world, decl.tree, 'test'), null, '.worldignore 应排除 test/')

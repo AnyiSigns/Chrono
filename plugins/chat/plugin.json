@@ -3,9 +3,9 @@
   "schema": "schema/wiring.json",
   "implements": ["chat"],
   "methods": {
-    "chat": ["send", "history", "resume"]
+    "chat": ["send", "history", "resume", "cancel"]
   },
-  "concurrent_methods": ["history"],
+  "concurrent_methods": ["send", "resume", "history", "cancel"],
   "pins": {
     "session": "session",
     "input": "input",
@@ -46,6 +46,7 @@
   "commands": [
     { "name": "chat.send", "entry": "terms/chat.send.json" },
     { "name": "chat.history", "entry": "terms/chat.history.json", "readonly": true },
-    { "name": "chat.resume", "entry": "terms/chat.resume.json" }
+    { "name": "chat.resume", "entry": "terms/chat.resume.json" },
+    { "name": "chat.cancel", "entry": "terms/chat.cancel.json" }
   ]
 }

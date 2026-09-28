@@ -13,17 +13,30 @@
     "style": 0.03
   },
   "prefix": {
-    "stable": ["prompt", "tools"],
-    "order": ["l2", "l1", "skill", "recall", "history", "style"]
+    "stable": ["prompt", "tools", "l2"],
+    "order": ["history", "l1", "skill", "recall", "style"]
   },
   "thresholds": {
     "compress_hint_ratio": 0.75
   },
+  "retention": {
+    "recent_turns": 4,
+    "t2_text_chars": 200,
+    "large_artifact_bytes": 65536,
+    "oversized_user_chars": 8192
+  },
   "messages": {
+    "environment": "当前环境：工作目录 {workspace_root}；操作系统 {platform}；命令解释器为 PowerShell（跨平台同一套语法），命令默认在此工作目录下执行；相对路径均以此工作目录为基准。",
     "compress_hint": "上下文接近预算上限；请先用自然语言总结并压缩较早的上下文，再继续。",
-    "interleave_guidance": "请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。"
+    "interleave_guidance": "请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。",
+    "input_truncated": "…（此处本轮输入因超出上下文预算被截断）…",
+    "error_line": "系统错误：{error}",
+    "error_avoid_header": "应避免的错误"
   },
   "modality_fallback": {
     "text_template": "[{kind} 附件：{name}（{mime}）]"
+  },
+  "method_timeouts": {
+    "context.build": 120000
   }
 }

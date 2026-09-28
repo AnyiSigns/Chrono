@@ -41,9 +41,9 @@ function conversation(id, extra = {}) {
   }
 }
 
-/** owner `session.read` 的切片形状（`threads.state` 的入参）。 */
-function sessionSlice(conversations, current) {
-  return { version: 1, current, conversations }
+/** owner `session.read` 的切片形状（`threads.state` 的入参）；`open_turns` = 跨会话仍开着的回合。 */
+function sessionSlice(conversations, current, openTurns = []) {
+  return { version: 1, current, conversations, open_turns: openTurns }
 }
 
 /** owner `todo.read` 的清单结果形状。 */
@@ -115,22 +115,30 @@ test('标签文案来源：缺省标题 → default_title，子代理 / 群聊 /
   assert.equal(threadLabelKey(byId.get('c4').kind), 'thread_label_workflow')
 })
 
-test('状态角标：同源 status / pending；waiting / blocked 无角标', () => {
-  assert.equal(badgeOf(conversation('x', { status: 'running' })), 'running')
+test('状态角标：运行中读 session 的 open 回合；终态读 status；待审批优先', () => {
+  // 生产从不写 status:"running"：该死分支已移除，裸 status 不再产生运行角标。
+  assert.equal(badgeOf(conversation('x', { status: 'running' })), null)
+  // 会话有仍开着的回合（session.read.open_turns）→ 运行中，可压过终态 status。
+  assert.equal(badgeOf(conversation('x'), true), 'running')
+  assert.equal(badgeOf(conversation('x', { status: 'done' }), true), 'running')
   assert.equal(badgeOf(conversation('x', { status: 'done' })), 'done')
   assert.equal(badgeOf(conversation('x', { status: 'failed' })), 'failed')
   assert.equal(badgeOf(conversation('x', { status: 'terminated' })), 'failed')
   assert.equal(badgeOf(conversation('x', { status: 'waiting' })), null)
   assert.equal(badgeOf(conversation('x', { status: 'blocked' })), null)
-  assert.equal(badgeOf(conversation('x', { status: 'running', pending: { approval: 2, question: 0 } })), 'pending')
-  assert.equal(badgeOf(conversation('x', { status: 'running', pending: { approval: 0, question: 1 } })), 'pending')
+  // 待审批优先于运行中。
+  assert.equal(badgeOf(conversation('x', { pending: { approval: 2, question: 0 } }), true), 'pending')
+  assert.equal(badgeOf(conversation('x', { pending: { approval: 0, question: 1 } }), true), 'pending')
 
+  // 装配：open_turns 决定运行角标。
+  const running = assembleThreadsState(sessionSlice([conversation('c1')], 'c1', [{ turn_id: 't1', conv: 'c1' }]))
+  assert.equal(running.tags[0].badge, 'running')
+  // 待审批仍优先于运行中。
   const value = assembleThreadsState(
-    sessionSlice([conversation('c1', { status: 'running', pending: { approval: 1, question: 0 } })], 'c1'),
+    sessionSlice([conversation('c1', { pending: { approval: 1, question: 0 } })], 'c1', [{ turn_id: 't1', conv: 'c1' }]),
   )
   assert.equal(value.tags[0].badge, 'pending')
   assert.deepEqual(value.tags[0].pending, { approval: 1, question: 0 })
-  assert.equal(value.tags[0].status, 'running')
 })
 
 test('待办视图：owner 清单有未完成项才出，全完成 / 清空即消失', () => {

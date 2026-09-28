@@ -1,7 +1,9 @@
 // fetcher 命令契约：本插件把抓取意图映射为 fetcher 参数，网络出口统一经隔离执行跑它。
 // stdout 首行是元数据 JSON（status / content_type / url / truncated / body_encoding），
 // 其余是 base64 响应体；stderr 是错误文本。响应体 base64 化以便二进制安全穿越协议帧。
+// 缺省用本包内置的 Node fetcher（零运行前置）；配置 `fetcher_cmd` 非空时改用外部命令（沙箱镜像提供）。
 
+import { fileURLToPath } from 'node:url'
 import { isRec } from './types.ts'
 
 export interface FetchSpec {
@@ -13,12 +15,32 @@ export interface FetchSpec {
   maxRedirs: number
 }
 
-/** 构造 fetcher 的命令与参数。 */
+/** 命令与参数前缀：`cmd` + `prefix` 是固定部分，逐次抓取参数追加在后。 */
+export interface FetcherCommand {
+  cmd: string
+  prefix: string[]
+}
+
+/** 本包内置 fetcher 脚本绝对路径（随 `execute/` 入世、物化后可读）。 */
+const BUNDLED_FETCHER_PATH = fileURLToPath(new URL('./fetcher-cli.mjs', import.meta.url))
+
+/**
+ * 解析 fetcher 命令：`fetcher_cmd` 非空 = 外部命令（沙箱镜像提供），原样作 `cmd`；
+ * 空 = 内置 Node fetcher，用当前 Node 可执行文件跑本包脚本。
+ */
+export function resolveFetcherCommand(fetcherCmd: string): FetcherCommand {
+  const external = typeof fetcherCmd === 'string' ? fetcherCmd.trim() : ''
+  if (external.length > 0) return { cmd: external, prefix: [] }
+  return { cmd: process.execPath, prefix: [BUNDLED_FETCHER_PATH] }
+}
+
+/** 构造 fetcher 的命令与参数（`prefix` 为命令自身参数，缺省无）。 */
 export function buildFetcherCommand(
   cmd: string,
   spec: FetchSpec,
+  prefix: string[] = [],
 ): { cmd: string; args: string[] } {
-  const args = ['--url', spec.url, '--method', spec.method]
+  const args = [...prefix, '--url', spec.url, '--method', spec.method]
   for (const [key, value] of Object.entries(spec.headers)) args.push('--header', `${key}: ${value}`)
   args.push('--timeout', String(spec.timeoutMs))
   args.push('--max-size', String(spec.maxSize))

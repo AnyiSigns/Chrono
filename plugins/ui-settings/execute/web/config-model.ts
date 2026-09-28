@@ -50,7 +50,7 @@ export function emptyConfig(): any {
   return {
     version: 1,
     params: {},
-    permission: 'review',
+    permission: 'severe',
     ui: { theme: 'system', style: '', sidebar_width: 260 },
     providers: {},
   }

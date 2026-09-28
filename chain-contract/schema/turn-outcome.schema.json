@@ -1,0 +1,64 @@
+{
+  "title": "回合结局（TurnOutcome）",
+  "description": "回合终态的对外契约。kind 取封闭四值；code 是结局层自己的封闭小集；attributableTo 是封闭归因维度；下游业务码不改名，原样放进 cause.code。run.finished.status 只是宿主机械信号，业务结局经本记录、chat.turn.settled 事件与命令回执三条通道表达。committed 不带 code / attributableTo，预算收口用 stop_reason。",
+  "type": "object",
+  "required": ["kind", "retryable"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "enum": ["committed", "refused", "cancelled", "interrupted"],
+      "description": "回合终态；awaiting 是段终态不是回合终态，不在此枚举。"
+    },
+    "code": {
+      "enum": [
+        "budget_exceeded",
+        "budget_impossible",
+        "cancelled",
+        "capability_mismatch",
+        "contract_version_mismatch",
+        "downstream_refusal",
+        "empty_slot",
+        "interrupted",
+        "invalid_contract",
+        "loop_unavailable",
+        "model_not_configured",
+        "model_timeout",
+        "no_plan",
+        "owner_unavailable",
+        "too_many_rounds",
+        "transport_failed",
+        "turn_busy",
+        "workspace_missing",
+        null
+      ],
+      "description": "结局层封闭码；committed 为 null。既有码逐一沿用，不重命名。"
+    },
+    "attributableTo": {
+      "enum": ["model", "tool", "guard", "approval", "graph", "owner", "transport", "budget", null],
+      "description": "封闭归因维度：结局由谁导致。"
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "是否可在不改动输入的前提下重试。"
+    },
+    "cause": {
+      "type": ["object", "null"],
+      "description": "下游错误的包裹；开放、命名空间化，code 逐字节原样透传。",
+      "required": ["from", "code"],
+      "additionalProperties": true,
+      "properties": {
+        "from": { "type": "string", "description": "来源命名空间，如 tool-fs 或 retrieval.search。" },
+        "code": { "type": "string", "description": "下游原码，原样携带不改名。" },
+        "message": { "type": "string", "description": "下游消息，可选。" }
+      }
+    },
+    "stop_reason": {
+      "type": "string",
+      "description": "预算 / 步数等主动收口原因；仅 committed 使用。"
+    },
+    "message": {
+      "type": "string",
+      "description": "可读兜底文本，未知码时供 UI 渲染。"
+    }
+  }
+}

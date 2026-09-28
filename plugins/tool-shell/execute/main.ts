@@ -14,40 +14,80 @@ import {
 import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 import { createLink, RemoteExec, RemoteSecrets } from './backends.ts'
 import { createHandlers } from './methods.ts'
+import type { ShellProfile } from './describe.ts'
+import type { Rec } from './types.ts'
 
 const CAPABILITY = 'tool-shell'
 const LOG = makeLogger('tool-shell')
 
-/**
- * 解析命令形态的 PowerShell 解释器，按优先级探测：`pwsh`（PowerShell Core，二进制名跨版本恒定，
- * 比 7 新的稳定版同名）→ `pwsh-preview`（预览版）→ `powershell.exe`（仅 Windows，系统自带 5.1）。
- * 探测是存在性冒烟（`exit 0`），不校验版本，故更新版本无需改代码；服务启动时一次性执行，结果注入 invoke。
- */
-function resolveShellCommand(): string {
-  const candidates =
-    process.platform === 'win32'
-      ? ['pwsh', 'pwsh-preview', 'powershell.exe']
-      : ['pwsh', 'pwsh-preview']
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate, ['-NoProfile', '-Command', 'exit 0'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    })
-    if (probe.status === 0) return candidate
+/** 解释器存在性冒烟：跑一条立即退出的命令，只看退出码（不校验版本，更新版本无需改代码）。 */
+function probeCommand(cmd: string, args: string[]): boolean {
+  const probe = spawnSync(cmd, args, { stdio: 'ignore', windowsHide: true })
+  return probe.status === 0
+}
+
+/** python 解释器：unix 优先 `python3`，缺失回落 `python`（Windows 两者同名）。 */
+function resolvePython(): string {
+  return probeCommand('python3', ['-c', 'pass']) ? 'python3' : 'python'
+}
+
+/** Windows：`pwsh`（Core，二进制名跨版本恒定）→ `pwsh-preview` → `powershell.exe`（系统自带 5.1）。 */
+function resolveWindowsProfile(): ShellProfile {
+  const cmd =
+    ['pwsh', 'pwsh-preview', 'powershell.exe'].find((candidate) =>
+      probeCommand(candidate, ['-NoProfile', '-Command', 'exit 0']),
+    ) ?? 'powershell.exe'
+  return {
+    command: {
+      cmd,
+      argsPrefix: ['-NoProfile', '-Command'],
+      // 5.1 缺省按本机 ANSI / OEM 代码页写 stdout（中文会乱码）；开命令前把控制台与管道编码统一到 UTF-8。
+      preamble:
+        'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; $OutputEncoding = [System.Text.Encoding]::UTF8',
+    },
+    session: { cmd, argsPrefix: ['-NoProfile', '-NoLogo', '-NoExit', '-Command', '-'] },
+    sessionSyntax: 'powershell',
+    python: resolvePython(),
+    label: cmd,
+    syntax: 'PowerShell',
   }
-  return candidates[0]
+}
+
+/** unix：`bash` → `sh`；命令按 POSIX shell 语法执行。 */
+function resolvePosixProfile(): ShellProfile {
+  const cmd = ['bash', 'sh'].find((candidate) => probeCommand(candidate, ['-c', 'exit 0'])) ?? 'sh'
+  return {
+    command: { cmd, argsPrefix: ['-c'] },
+    session: { cmd, argsPrefix: ['-s'] },
+    sessionSyntax: 'posix',
+    python: resolvePython(),
+    label: cmd,
+    syntax: 'POSIX shell',
+  }
+}
+
+/** 平台原生 shell 口令：服务启动时一次性探测，结果注入 describe 与 invoke。 */
+function resolveShellProfile(): ShellProfile {
+  return process.platform === 'win32' ? resolveWindowsProfile() : resolvePosixProfile()
 }
 
 /** 构造服务实例：反向调用通道 + 执行 / 密钥后端由本插件提供。 */
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = createLink(ctx.emit)
+  let liveSeq = 0
+  // 调用中途上行 `tool.delta`（前台命令实时输出）；帧 id 与 SDK 的事件序号空间错开，避免撞车。
+  const emitLive = (topic: string, payload: Rec): void => {
+    liveSeq += 1
+    ctx.emit({ v: '1', id: `tool-shell-live-${liveSeq}`, kind: 'event', topic, payload })
+  }
   return createSdkService({
     pluginRoot: packageRootOf(import.meta.url),
     capability: CAPABILITY,
     handlers: createHandlers({
       exec: new RemoteExec(link),
       secrets: new RemoteSecrets(link),
-      shell: resolveShellCommand(),
+      profile: resolveShellProfile(),
+      emit: emitLive,
     }),
     emit: ctx.emit,
     log: LOG,

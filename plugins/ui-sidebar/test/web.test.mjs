@@ -30,6 +30,7 @@ import {
   createBadgeState,
   runningRun,
   seedFromHistory,
+  seedOpenTurns,
   threadOf,
 } from '../execute/web/badges.ts'
 import { beginConfirm, clearConfirm, confirmExpired, CONFIRM_MS, createConfirmState, isConfirming } from '../execute/web/confirm.ts'
@@ -163,33 +164,39 @@ test('消息链还原：沿 prev 从链头逆序收集再反转；断链 / 环�
 
 // ---- 角标状态机 ----
 
-test('运行角标：run.started 记 run、run.finished 清除；失败转失败角标', () => {
+test('运行角标：chat.turn.started 记回合 / run、chat.turn.settled 清除；失败结局转失败角标', () => {
   let state = createBadgeState()
   assert.equal(threadOf({ thread: 'c1' }), 'c1')
   assert.equal(threadOf({ conversation: 'c2' }), 'c2')
   assert.equal(threadOf({}), null)
-  state = applyEvent(state, 'host', 'run.started', { run: 'r1', thread: 'c1' })
+  // 续跑时 thread 可能是 `_main`，按 conversation 归键。
+  state = applyEvent(state, 'chat', 'chat.turn.started', { turn_id: 't1', run: 'r1', thread: '_main', conversation: 'c1' })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'running', run: 'r1' })
   assert.equal(runningRun(state, 'c1'), 'r1')
-  state = applyEvent(state, 'host', 'run.finished', { run: 'r1', thread: 'c1', status: 'done' })
+  state = applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't1', conversation: 'c1', outcome: { kind: 'committed' } })
   assert.equal(badgeFor(state, 'c1'), null)
   assert.equal(runningRun(state, 'c1'), null)
-  state = applyEvent(state, 'host', 'run.finished', { run: 'r2', thread: 'c1', status: 'failed' })
+  // 失败结局（拒绝 / 中断）→ 失败角标。
+  state = applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't2', conversation: 'c1', outcome: { kind: 'refused', code: 'x' } })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'failed' })
+  // 取消不算失败。
+  let cancelled = applyEvent(createBadgeState(), 'chat', 'chat.turn.started', { turn_id: 't3', conversation: 'c2' })
+  cancelled = applyEvent(cancelled, 'chat', 'chat.turn.settled', { turn_id: 't3', conversation: 'c2', outcome: { kind: 'cancelled' } })
+  assert.equal(badgeFor(cancelled, 'c2'), null)
 })
 
 test('角标优先级：待审批 > 运行中 > 失败 > 未读；不常驻红点', () => {
   let state = createBadgeState()
-  state = applyEvent(state, 'host', 'run.started', { run: 'r1', thread: 'c1' })
+  state = applyEvent(state, 'chat', 'chat.turn.started', { turn_id: 't1', run: 'r1', conversation: 'c1' })
   state = applyEvent(state, 'session', 'approval.pending', { thread: 'c1' })
-  state = applyEvent(state, 'host', 'run.finished', { run: 'r1', thread: 'c1', status: 'failed' })
+  state = applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't1', conversation: 'c1', outcome: { kind: 'refused' } })
   state = applyEvent(state, 'session', 'group.message', { thread: 'c1' })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'pending', count: 1 })
   state = applyEvent(state, 'session', 'approval.decided', { thread: 'c1', count: 0 })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'failed' })
-  state = applyEvent(state, 'host', 'run.started', { run: 'r3', thread: 'c1' })
+  state = applyEvent(state, 'chat', 'chat.turn.started', { turn_id: 't2', run: 'r3', conversation: 'c1' })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'running', run: 'r3' })
-  state = applyEvent(state, 'host', 'run.finished', { run: 'r3', thread: 'c1', status: 'done' })
+  state = applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't2', conversation: 'c1', outcome: { kind: 'committed' } })
   assert.deepEqual(badgeFor(state, 'c1'), { kind: 'unread', count: 1 })
   state = clearUnread(state, 'c1')
   assert.equal(badgeFor(state, 'c1'), null)
@@ -210,7 +217,7 @@ test('thread.updated 归一 status / pending / inbox；thread.closed 清空', ()
   assert.equal(badgeFor(state, 'c1'), null)
 })
 
-test('首屏补种：从会话 status / pending / inbox 生成初值，事件态优先', () => {
+test('首屏补种：从会话 status / pending / inbox 生成初值；运行中不补种', () => {
   const conversations = [
     { id: 'c1', status: 'failed', pending: null, inbox: null },
     { id: 'c2', status: 'waiting', pending: { approval: 1 }, inbox: { count: 5, last_seen: 2 } },
@@ -219,10 +226,46 @@ test('首屏补种：从会话 status / pending / inbox 生成初值，事件态
   const seeded = seedFromHistory(createBadgeState(), conversations)
   assert.deepEqual(badgeFor(seeded, 'c1'), { kind: 'failed' })
   assert.deepEqual(badgeFor(seeded, 'c2'), { kind: 'pending', count: 1 })
-  assert.deepEqual(badgeFor(seeded, 'c3'), { kind: 'running', run: null })
-  const withEvent = applyEvent(createBadgeState(), 'host', 'run.started', { run: 'r9', thread: 'c3' })
+  // `status:"running"` 是死字段（生产从不写）：不产生运行角标。
+  assert.equal(badgeFor(seeded, 'c3'), null)
+  // 运行中来自会话回合事件，事件态优先于历史补种。
+  const withEvent = applyEvent(createBadgeState(), 'chat', 'chat.turn.started', { turn_id: 't9', run: 'r9', conversation: 'c3' })
   const merged = seedFromHistory(withEvent, conversations)
   assert.deepEqual(badgeFor(merged, 'c3'), { kind: 'running', run: 'r9' })
+})
+
+test('首屏运行角标：session.open_turns 补种（事件到达前即可显示，含非当前会话）；事件仍清除', () => {
+  // 重载后、下一个 `chat.turn.started` 之前：会话持久回合状态给出运行中。
+  const seeded = seedOpenTurns(createBadgeState(), [
+    { turn_id: 't1', conv: 'c1' },
+    { turn_id: 't2', conv: 'c2' },
+    { conv: '' },
+    null,
+  ])
+  assert.deepEqual(badgeFor(seeded, 'c1'), { kind: 'running', run: null })
+  assert.equal(badgeFor(seeded, 'c2').kind, 'running')
+  assert.equal(badgeFor(seeded, 'c3'), null)
+  // 摘要只带 {turn_id,conv}，无 run：运行中补种后终止按钮无 run 可用。
+  assert.equal(runningRun(seeded, 'c1'), null)
+  // 只补缺：事件带来的运行记录（含 run id）优先，不被摘要覆盖。
+  const withEvent = applyEvent(createBadgeState(), 'chat', 'chat.turn.started', {
+    turn_id: 't1',
+    run: 'r1',
+    conversation: 'c1',
+  })
+  assert.deepEqual(badgeFor(seedOpenTurns(withEvent, [{ turn_id: 't1', conv: 'c1' }]), 'c1'), {
+    kind: 'running',
+    run: 'r1',
+  })
+  // 事件路径仍能清除持久读补出的运行中。
+  const cleared = applyEvent(seeded, 'chat', 'chat.turn.settled', {
+    turn_id: 't1',
+    conversation: 'c1',
+    outcome: { kind: 'committed' },
+  })
+  assert.equal(badgeFor(cleared, 'c1'), null)
+  // 非法摘要原样返回入参引用（调用方据引用相等判变更）。
+  assert.equal(seedOpenTurns(seeded, null), seeded)
 })
 
 test('组聚合角标：取组内最高优先级；未读跨会话求和；空组 / 无角标为 null', () => {
@@ -234,9 +277,9 @@ test('组聚合角标：取组内最高优先级；未读跨会话求和；空�
   state = applyEvent(state, 'session', 'group.message', { thread: 'c2' })
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'unread', count: 3 })
   assert.deepEqual(badgeForGroup(state, ['c1']), { kind: 'unread', count: 2 })
-  state = applyEvent(state, 'host', 'run.finished', { run: 'r0', thread: 'c1', status: 'failed' })
+  state = applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't0', conversation: 'c1', outcome: { kind: 'interrupted' } })
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'failed' })
-  state = applyEvent(state, 'host', 'run.started', { run: 'r1', thread: 'c2' })
+  state = applyEvent(state, 'chat', 'chat.turn.started', { turn_id: 't1', run: 'r1', conversation: 'c2' })
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'running', run: 'r1' })
   state = applyEvent(state, 'session', 'approval.pending', { thread: 'c1' })
   assert.deepEqual(badgeForGroup(state, ['c1', 'c2']), { kind: 'pending', count: 1 })
@@ -256,14 +299,17 @@ test('applyEvent：无实际变更时回传入参引用（供调用方免序列�
   const state = createBadgeState()
   // 未知 topic / 无 thread 原样返回
   assert.equal(applyEvent(state, 'host', 'unknown.topic', { thread: 'c1' }), state)
-  assert.equal(applyEvent(state, 'host', 'run.started', {}), state)
+  assert.equal(applyEvent(state, 'chat', 'chat.turn.started', {}), state)
   // 已清零的 approval.decided 不再产生新引用
   assert.equal(applyEvent(state, 'session', 'approval.decided', { thread: 'c1', count: 0 }), state)
   // 有实际变更时回新引用
   const next = applyEvent(state, 'session', 'group.message', { thread: 'c1' })
   assert.notEqual(next, state)
-  // 重复的 run.finished（无运行记录、非失败）不产生新引用
-  assert.equal(applyEvent(state, 'host', 'run.finished', { run: 'r1', thread: 'c1', status: 'done' }), state)
+  // 重复的终局（无运行记录、非失败结局）不产生新引用
+  assert.equal(
+    applyEvent(state, 'chat', 'chat.turn.settled', { turn_id: 't1', conversation: 'c1', outcome: { kind: 'committed' } }),
+    state,
+  )
 })
 
 test('首屏补种：本地已读会话的历史未读不再复活', () => {

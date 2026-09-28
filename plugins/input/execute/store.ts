@@ -59,6 +59,7 @@ export class InputStore {
   private readonly dataFile: string | null
   private readonly stateFile: string | null
   private slots = new Map<string, Json>()
+  private runs = new Map<string, string | null>()
   private records = 0
 
   private constructor(dataFile: string | null, stateFile: string | null) {
@@ -100,6 +101,9 @@ export class InputStore {
     const thread = record['thread']
     if (typeof thread !== 'string') return
     this.slots.set(thread, (record['slot'] ?? null) as Json)
+    // 槽写入时的 run id 随槽留存：回合开始以其作 `slot_ref` 幂等键（同槽不开第二个回合）。
+    const run = record['run']
+    this.runs.set(thread, typeof run === 'string' ? run : null)
   }
 
   /** 写一个线程键（同值不重写：幂等短路）。 */
@@ -121,5 +125,17 @@ export class InputStore {
     const slots: Rec = {}
     for (const [thread, slot] of this.slots) slots[thread] = slot
     return { slots }
+  }
+
+  /** 某线程槽写入时的 run id（`slot_ref`）；无该线程键回 null。 */
+  slotRef(thread: string): string | null {
+    return this.runs.get(thread) ?? null
+  }
+
+  /** 全部线程的槽引用映射（body 形状之外的读口附加项）。 */
+  slotRefs(): Rec {
+    const out: Rec = {}
+    for (const [thread, run] of this.runs) out[thread] = run
+    return out
   }
 }

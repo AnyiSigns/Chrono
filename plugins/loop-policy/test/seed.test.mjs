@@ -26,6 +26,18 @@ test('种子图七节点、sink = turn.commit', () => {
   assert.equal(SEED_GRAPH.nodes[6], 'turn.commit')
 })
 
+test('默认图不自动召回：recall 只作契约 / 实例词汇，检索是模型可调工具', () => {
+  assert.equal(SEED_GRAPH.nodes.includes('recall'), false, 'recall 不得进默认图')
+  assert.ok(SEED_CONTRACTS.some((c) => c.contract_id === 'recall'), 'recall 契约保留为词汇')
+  assert.ok(SEED_NODES.some((n) => n.contract_id === 'recall' && n.scope.kind === 'global'), 'recall 实例保留')
+})
+
+test('默认阈值声明上下文检查点三档（软 0.7 / 硬 0.85 / 应急 0.95）', () => {
+  assert.equal(DEFAULT_THRESHOLDS['checkpoint_soft_ratio'], 0.7)
+  assert.equal(DEFAULT_THRESHOLDS['checkpoint_hard_ratio'], 0.85)
+  assert.equal(DEFAULT_THRESHOLDS['checkpoint_emergency_ratio'], 0.95)
+})
+
 test('默认阈值覆盖 evolve-metrics 阈值契约字段名', () => {
   for (const name of [
     'failure_cluster_n',
@@ -44,6 +56,25 @@ test('默认阈值覆盖 evolve-metrics 阈值契约字段名', () => {
     'unhealthy_refused_streak',
   ]) {
     assert.equal(typeof DEFAULT_THRESHOLDS[name], 'number', `缺阈值 ${name}`)
+  }
+})
+
+test('默认阈值声明图 / 演化参数（随扁平 map 下传 evolve-metrics）', () => {
+  for (const name of [
+    'max_turn_iter',
+    'max_steps',
+    'gas',
+    'llm_chain_max',
+    'max_graph_diff',
+    'min_runs_before_fork',
+    'max_links',
+    'graph_growth_quota',
+    'instance_growth_quota',
+    'shadow_rounds',
+    'large_artifact_bytes',
+    'model_alias_pins',
+  ]) {
+    assert.equal(typeof DEFAULT_THRESHOLDS[name], 'number', `缺参数 ${name}`)
   }
 })
 

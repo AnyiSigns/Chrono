@@ -60,7 +60,8 @@
 ## 默认 body 预置（可复现）
 
 - `tools/default-body.json`：默认 body（`version: 1`、无 `vendor` / `model`、`params` 保守默认、
-  `permission: "review"`、`ui.theme: "system"`、`ui.style: ""`、`ui.sidebar_width: 260`、`providers: {}`）。
+  `permission: "severe"`（工作区可读可写，结构化工具有效）、`ui.theme: "system"`、`ui.style: ""`、
+  `ui.sidebar_width: 260`、`providers: {}`）。
 - `tools/seed-default-body.mjs`：宿主已 `start` 时，读默认 body 并提交一条数据世代写入（`put` + `add_gen`），
   作为首启基线（`config.read` 合并世界基线 + 自有存储）。可重复执行。
 

@@ -34,7 +34,6 @@ function argsSchema(config: QuestionConfig): Rec {
         type: 'array',
         minItems: 1,
         maxItems: config.maxQuestions,
-        description: '要问用户的问题列表；每项含 id / header / question / options / multiple / custom。',
         items: {
           type: 'object',
           properties: {
@@ -66,7 +65,7 @@ export function describeValue(config: QuestionConfig): Json {
     name: 'question',
     intent: '向用户提出一个或多个问题并等待作答。',
     when_to_use:
-      '需要用户补充信息、在若干方案里做选择、或确认 agent 无法自行决定的事项时。',
+      '需要用户补充信息、在若干方案里做选择、或需要确认你无法自行决定的事项时。',
     param_semantics: {
       questions:
         '问题数组，每项 {id, header, question, options[], multiple, custom}；options 为空即纯开放作答，multiple 允许多选，custom 允许自定义输入。',
@@ -109,11 +108,14 @@ export function normalizeQuestions(value: Json | undefined, config: QuestionConf
     return { ok: false, code: 'too_many_questions', message: `${list.length} > ${config.maxQuestions}` }
   }
   const questions: Rec[] = []
+  const seenIds = new Set<string>()
   for (const raw of list) {
     if (!isRecord(raw)) return { ok: false, code: 'bad_questions', message: 'question must be an object' }
     const id = asString(raw['id'])
     const question = asString(raw['question'])
     if (id === null) return { ok: false, code: 'missing_question_id', message: 'question.id required' }
+    if (seenIds.has(id)) return { ok: false, code: 'duplicate_question_id', message: id }
+    seenIds.add(id)
     if (question === null) {
       return { ok: false, code: 'missing_question_text', message: 'question.question required' }
     }

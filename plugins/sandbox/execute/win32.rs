@@ -29,6 +29,10 @@ pub struct JobHandle {
     handle: HANDLE,
 }
 
+// Job 句柄是进程级内核对象句柄，允许多线程共享（监视线程读 stats、任务注册表持 kill 闭包）。
+unsafe impl Send for JobHandle {}
+unsafe impl Sync for JobHandle {}
+
 /// 运行中 job 的观测值。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct JobStats {

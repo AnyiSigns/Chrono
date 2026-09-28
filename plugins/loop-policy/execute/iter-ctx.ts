@@ -6,8 +6,10 @@ import { directivesOf, isRecord } from './plan.ts'
 import { attributionOf } from './seed.ts'
 import { evalWhen, todoIncomplete, type RuleCtx } from './rules.ts'
 import type { GraphView } from './gate.ts'
+import type { TurnOutcome } from './contract/index.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState, ServiceEvent } from './types.ts'
 import type { TraceRecorder } from './trace.ts'
+import type { Ended, GraphProgress, LifecycleState } from './lifecycle.ts'
 
 export interface InterpretInput {
   bag: Rec
@@ -25,7 +27,16 @@ export interface InterpretResult {
   pending: Rec | null
   summary: Rec
   state: RunState
-  ended: 'done' | 'refused' | 'pending'
+  /** 段 / 回合终态标记：段边界为 `stepping`（计划含续跑 eval，不是回合终态、不收口）。 */
+  ended: Ended
+  /** 解释器生命周期状态（封闭枚举，与图拓扑无关）。 */
+  lifecycle: LifecycleState
+  /** 图内进度（数据，非状态）。 */
+  progress: GraphProgress
+  /** 预算主动收口的 `stop_reason`（命名哪一维预算用尽）；非预算收口为 null。 */
+  stopReason: string | null
+  /** 契约版本拒绝等预先构造的精确结局；为 null 时由收口方按拒绝码派生。 */
+  refusedOutcome: TurnOutcome | null
 }
 
 export interface IterState {
@@ -48,8 +59,6 @@ export function freshState(): RunState {
     lastCalls: [],
   }
 }
-
-export { configureProviders } from './dispatch.ts'
 
 export function externPayload(value: Json): Rec | null {
   for (const directive of directivesOf(value)) {
@@ -92,7 +101,9 @@ export function edgeTriggered(edge: Rec, ctx: RuleCtx): boolean {
   if (ports === null) return false
   const source = ports.from[0]
   if (!ctx.outputs.has(source)) return false
-  return evalWhen(edgeWhen(edge), ctx, source)
+  const when = evalWhen(edgeWhen(edge), ctx, source)
+  // 未知判据不激活边（fail-closed）；未知判据会在解释器入口被判据校验先行拒绝。
+  return when.ok && when.value
 }
 
 /** 节点激活：入边端口按 binding_mode（all / any）满足。 */

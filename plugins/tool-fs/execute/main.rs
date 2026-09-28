@@ -5,8 +5,8 @@
 mod defaults;
 mod describe;
 mod diff;
+mod digest;
 mod error;
-mod hash;
 mod invoke;
 #[cfg(test)]
 mod invoke_tests;

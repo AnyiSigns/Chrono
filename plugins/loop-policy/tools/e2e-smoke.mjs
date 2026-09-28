@@ -151,8 +151,10 @@ async function directProtocolSmoke(entry) {
         last && last.role === 'tool'
           ? { ok: true, text: 'done', tool_calls: [], usage: {} }
           : { ok: true, text: 'e2e answer', tool_calls: [], usage: {} }
-    } else if (key === 'session.commit') {
-      value = { $directives: [{ kind: 'extern', payload: { ok: true, reply: 'e2e answer' } }] }
+    } else if (key === 'session.step_append') {
+      value = { ok: true, turn_id: message.args.turn_id }
+    } else if (key === 'session.turn_settle') {
+      value = { ok: true, turn_id: message.args.turn_id, outcome: message.args.outcome, persisted: true }
     } else {
       child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'unresolved_cap', message: key }))
       return
@@ -179,14 +181,15 @@ async function directProtocolSmoke(entry) {
     assert.equal(manifest.identity, 'loop-policy')
     assert.deepEqual(manifest.methods['loop-policy'], ['interpret'])
 
-    const result = await call('i1', {})
+    const result = await call('i1', { turn_id: 't1' })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     assert.ok(Array.isArray(result.value.$directives))
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'done')
+    assert.equal(summary.settled, true)
     assert.equal(summary.fell_back, true)
-    assert.deepEqual(seen, ['tools.list', 'context.build', 'model.chat', 'session.commit'])
-    console.log('直连协议：interpret 空 body 回落种子图、tools.list 装配目录 + 无工具路径三步就位')
+    assert.deepEqual(seen, ['tools.list', 'context.build', 'model.chat', 'session.step_append', 'session.turn_settle'])
+    console.log('直连协议：interpret 空 body 回落种子图、tools.list 装配目录 + 无工具路径三步就位 + 步记录收口')
   } finally {
     child.stdin.end()
     await waitExit(child)

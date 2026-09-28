@@ -38,7 +38,27 @@ function createDecoder() {
   }
 }
 
-const OK_EXEC = { exit_code: 0, stdout: '', stderr: '', truncated: false, duration_ms: 1, code: null }
+const DONE_POLL = {
+  output: '',
+  next_cursor: 0,
+  running: false,
+  exit_code: 0,
+  code: null,
+  truncated: false,
+  dropped_bytes: 0,
+  tail: '',
+}
+
+/** 假后端：按 sandbox 方法回形状正确的值；其余端口回密钥明文。 */
+function defaultPort(port, method) {
+  if (port === 'sandbox') {
+    if (method === 'exec_start') return { value: { task_id: 'task-1' } }
+    if (method === 'exec_poll') return { value: DONE_POLL }
+    if (method === 'exec_kill') return { value: { killed: true } }
+    if (method === 'session_close') return { value: { closed: true } }
+  }
+  return { value: 'plain-secret' }
+}
 
 function startService(options = {}) {
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -48,9 +68,7 @@ function startService(options = {}) {
   const events = []
   let stderr = ''
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  const resolvePort =
-    options.resolvePort ??
-    ((port, method) => (method === 'exec' ? { value: OK_EXEC } : { value: 'plain-secret' }))
+  const resolvePort = options.resolvePort ?? defaultPort
 
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
@@ -179,9 +197,9 @@ test('describe 经服务协议回报单工具 shell', async () => {
   }
 })
 
-test('invoke command 经反向 port.call 调 sandbox.exec 并回 terminal 结果', async () => {
+test('invoke command 经反向 port.call 调 sandbox.exec_start（会话形态）并回 terminal 结果', async () => {
   const drv = startService({
-    resolvePort: () => ({ value: { ...OK_EXEC, stdout: 'hi\n' } }),
+    resolvePort: defaultPort,
   })
   try {
     await drv.hello()
@@ -189,20 +207,32 @@ test('invoke command 经反向 port.call 调 sandbox.exec 并回 terminal 结果
     assert.equal(result.kind, 'result')
     assert.equal(result.value.ok, true)
     assert.equal(result.value.result.kind, 'terminal')
-    assert.equal(result.value.result.stdout, 'hi\n')
-    const execCall = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec')
-    assert.ok(execCall !== undefined, '应经反向 port.call 调 sandbox.exec')
-    const expectedShell = process.platform === 'win32' ? ['pwsh', 'powershell.exe'] : ['pwsh']
-    assert.ok(expectedShell.includes(execCall.args.cmd), `shell=${execCall.args.cmd}`)
-    assert.deepEqual(execCall.args.args, ['-NoProfile', '-Command', 'echo hi'])
-    assert.equal(execCall.args.tier, 'severe')
+    const startCall = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec_start')
+    assert.ok(startCall !== undefined, '应经反向 port.call 调 sandbox.exec_start')
+    const isWindows = process.platform === 'win32'
+    const expectedShell = isWindows ? ['pwsh', 'pwsh-preview', 'powershell.exe'] : ['bash', 'sh']
+    assert.equal(startCall.args.session_id, 't1', '命令应走常驻会话（按线程隔离）')
+    assert.equal(startCall.args.command, 'echo hi')
+    assert.ok(expectedShell.includes(startCall.args.session_shell.cmd), `shell=${startCall.args.session_shell.cmd}`)
+    assert.equal(startCall.args.session_shell.syntax, isWindows ? 'powershell' : 'posix')
+    assert.equal(startCall.args.tier, 'severe')
+    assert.ok(
+      drv.portCalls.some((call) => call.port === 'sandbox' && call.method === 'exec_poll'),
+      '应轮询 exec_poll',
+    )
   } finally {
     drv.close()
   }
 })
 
 test('invoke code 经服务协议回 json 结构化结果', async () => {
-  const drv = startService({ resolvePort: () => ({ value: { ...OK_EXEC, stdout: '{"n":2}' } }) })
+  const drv = startService({
+    resolvePort: (port, method) => {
+      if (method === 'exec_start') return { value: { task_id: 'task-1' } }
+      if (method === 'exec_poll') return { value: { ...DONE_POLL, output: '{"n":2}', next_cursor: 7 } }
+      return { value: null }
+    },
+  })
   try {
     await drv.hello()
     const result = await drv.call('invoke', {
@@ -216,12 +246,12 @@ test('invoke code 经服务协议回 json 结构化结果', async () => {
   }
 })
 
-test('invoke 的 auth_ref 经 secrets.resolve；明文只出现在 exec env，不进结果', async () => {
+test('invoke 的 auth_ref 经 secrets.resolve；明文只出现在 exec_start env，不进结果', async () => {
   const secret = 'svc-secret'
   const drv = startService({
     resolvePort: (port, method) => {
       if (port === 'secrets' && method === 'resolve') return { value: secret }
-      return { value: OK_EXEC }
+      return defaultPort(port, method)
     },
   })
   try {
@@ -230,10 +260,10 @@ test('invoke 的 auth_ref 经 secrets.resolve；明文只出现在 exec env，�
     const secretsCall = drv.portCalls.find((call) => call.port === 'secrets')
     assert.ok(secretsCall !== undefined, '应经反向 port.call 调 secrets.resolve')
     assert.deepEqual(secretsCall.args.auth_ref, { kind: 'local', name: 'TOKEN' })
-    const execCall = drv.portCalls.find((call) => call.port === 'sandbox')
-    assert.deepEqual(execCall.args.env, { TOKEN: secret })
+    const startCall = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec_start')
+    assert.deepEqual(startCall.args.env, { TOKEN: secret })
     assert.equal(JSON.stringify(result.value).includes(secret), false, '明文不得进结果')
-    assert.equal(drv.events.length, 0, '本插件不发 event')
+    assert.equal(drv.events.length, 0, '无 call_id 时不发 event')
     assert.equal(drv.stderrText().includes(secret), false, '明文不得进日志')
   } finally {
     drv.close()
@@ -243,7 +273,7 @@ test('invoke 的 auth_ref 经 secrets.resolve；明文只出现在 exec env，�
 test('sandbox 前置失败原码透传', async () => {
   const drv = startService({
     resolvePort: (port, method) =>
-      method === 'exec' ? { error: 'fs_denied', message: 'outside' } : { value: 'x' },
+      method === 'exec_start' ? { error: 'fs_denied', message: 'outside' } : { value: 'x' },
   })
   try {
     await drv.hello()

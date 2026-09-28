@@ -60,6 +60,11 @@ export function register(ctx: SlotContext): void {
 - **定稿替换**：`run.finished`（done）把在途回合标记为定稿中，随后一次快照在同一帧内原地收口；
   `cancelled` 保留已生成部分 + 「已取消」。定稿后的工具卡与推理块来自 assistant 消息的展示
   `parts`（由 `turn.commit` 落盘），故刷新 / 切线程后仍可见。
+- **挂起不收口 + 同回合复用**：`chat.turn.pending`（等审批 / 等作答）标记在途回合挂起——宿主 run 结束
+  也不定稿（`run.finished` → action `suspend`），渲染为「等待审批」而非「正在工作」；`chat.turn.started`
+  带**同一 `turn_id`** 的续跑复用原在途块（只换代 run id），不新开，故恢复时不重放已展示内容与工具卡；
+  `chat.turn.settled` 清挂起并收口（含挂起期间到达的取消）。在途块存在时，历史里**同回合**的助手消息
+  由在途块替代、不重复渲染（其 id 形如 `msg-<conv>-<turnId>-assistant`）。
 - **乐观用户消息**：回合进行中从 `chat.message` 槽读出在途用户消息并即时渲染；权威快照落地
   即收起，避免与历史重复。用户消息不再等到回合结束才可见。
 - **错误边界**：每条消息（含流式回合、群聊气泡）各自包一层渲染异常边界，单条渲染异常降级为
@@ -68,7 +73,8 @@ export function register(ctx: SlotContext): void {
 客户端事件语义（`thread-store.ts` 头部与单测逐条锁住）：
 
 1. 单连接有序：同一 SSE 连接内事件按到达顺序 fold，不重排。
-2. run 生命周期单调：`run.started` 建立 / 替换在途回合；`model.delta` / `tool.*` 只作用于 run 匹配的在途回合。
+2. run 生命周期单调：`run.started` / `chat.turn.started` 建立 / 替换在途回合；`model.delta` / `tool.*` 只作用于 run 匹配的在途回合。
+2b. 回合挂起（`chat.turn.pending`）：回合未终结而宿主 run 结束不收口；同一 `turn_id` 的续跑复用原在途块、不重放。
 3. 迟到帧丢弃：已定稿 run 的后续 delta / tool 帧丢弃，防定稿后冒出幽灵回合。
 4. 缺 started 自愈：首个 delta / tool.start 到达即建在途回合，started 丢失不丢流。
 5. 无关终局忽略：`run.finished` 无匹配在途回合即判为无关 run（写 run / 周期 run），不触发重拉。
@@ -97,7 +103,8 @@ export function register(ctx: SlotContext): void {
 | | `reasoning` | 推理折叠块：默认收起，头部「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown；只作展示，不进模型上下文 |
 | | `image` / `video` / `audio` / `file` | 尺寸上限按全局 UI 设计语言；`loading="lazy"`；音视频不自动播放；点击进 lightbox / 播放器。资产经 `ctx.asset.get` 取字节转 blob URL（可 revoke，替代 data URL）；图片解码前探测自然尺寸并预留精确占位盒，消除懒加载跳动 |
 | 工具卡 | `form:"line"` | 一行（图标 + label + summary），不可展开 |
-| | `form:"card"` | 折叠（图标 + label + summary + 状态角标）→ 展开（detail）；在途卡展开体只给流式输出（`live:true`）或调用参数，定稿卡展开体渲染描述符与结果合并后的 detail |
+| | `form:"card"` | 折叠（图标 + label + summary + 状态角标）→ 展开（detail）。收起态 summary 展示调用输入（args），展开态展示工具输出；在途卡结果未落地，展开体只给流式输出（`live:true`），定稿卡渲染描述符与结果合并后的 detail |
+| | `summary` 模板 | 裸 `{field}` = args 字段；`{result.field}` = 结果字段；`{? ... }` = 可选段（段内任一字段解析为空则整段不输出，避免悬空分隔符） |
 | | `tone` | `ghost` / `plain` / `solid` 质感（line 形态仅 `solid` 留左侧强调条） |
 | | 状态角标 | 运行中呼吸点 / 成功勾 / 失败叹号（`tool.end` 的 `ok` 与定稿 `status` 驱动） |
 | | `live:true` | 收 `tool.start` 开卡、按 `call_id` 追加 `tool.delta`、`tool.end` 收尾，回合末以消息 part 定稿 |
@@ -121,8 +128,9 @@ export function register(ctx: SlotContext): void {
   - 当前视图为主会话时额外接受 `_main`：审批 / 提问的**续跑**在 `ui-approval.decide` /
     `question.answer` 顶层 run 内跑，事件不带会话 id（thread=`_main`）；不认这一档续跑的
     流式增量与终局会被丢，表现为「后台跑完一次性抛出」。
-- 处理的事件：`chat.turn.started`、`model.delta`、`tool.start/delta/end`、`run.finished`、
-  `group.message`、`workflow.step`、`thread.*`、`shell.state`（连接态与重连重同步）。
+- 处理的事件：`chat.turn.started`、`chat.turn.pending`、`chat.turn.settled`、`model.delta`、
+  `tool.start/delta/end`、`run.finished`、`group.message`、`workflow.step`、`thread.*`、
+  `shell.state`（连接态与重连重同步）。
 - **回合开始 = `chat.turn.started`（chat 服务自报）**：对话回合若非顶层（续跑嵌在
   `ui-approval.decide` / `question.answer` 的 run 内）就没有宿主 run 生命周期，只看
   `run.started.name` 会漏掉续跑、工作态在首个增量前空窗；由 chat 服务在派发解释前自报，

@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
-import { H } from '../execute/hash.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
@@ -51,19 +50,24 @@ export function defaultProviders(overrides = {}) {
       const calls = Array.isArray(args.calls) ? args.calls : []
       return { results: calls.map((call, index) => ({ call_id: call.call_id ?? `call-${index}`, ok: true, result: { tool: call.tool } })) }
     },
-    'session.commit': (args) => ({
-      $directives: [
-        {
-          kind: 'write',
-          request: {
-            op: 'batch',
-            args: { ops: [{ op: 'put', args: { body: { id: 'msg-1', role: 'assistant', content: args.assistant?.content ?? '' } } }] },
-          },
-        },
-        { kind: 'extern', payload: { ok: true, reply: args.assistant?.content ?? '', conversation: args.conversation ?? null } },
-      ],
-    }),
+    'session.step_append': () => ({ ok: true, turn_id: 't1', deduped: false }),
+    'session.turn_settle': (args) => ({ ok: true, turn_id: args.turn_id, outcome: args.outcome, persisted: true }),
     'retrieval.search': () => ({ items: [] }),
+    'compress.summarize': (args) => ({
+      ok: true,
+      kind: 'summarize',
+      conversation: args.conversation ?? null,
+      covered_upto: args.covered_upto ?? null,
+      summary: {
+        goal: typeof args.goal === 'string' && args.goal.length > 0 ? args.goal : 'stub summary',
+        decisions: [],
+        facts: ['fact-1'],
+        open_questions: [],
+        files: Array.isArray(args.files) ? args.files : [],
+        next_steps: [],
+      },
+      dedup: 'text',
+    }),
     'router.select': (args) => args.primary,
     'evolve-metrics.shadow': () => ({ status: 'pass', metric_id: 'metric-1' }),
   }
@@ -80,6 +84,8 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
   const stderr = []
   const resolvedProviders = { ...defaultProviders(), ...providers }
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
+  // 回合步记录台账：缺会话 owner 时以驱动代收 step_append，供段续跑重建（模拟 session.read 的 turns[].steps）。
+  const stepStore = new Map()
 
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
@@ -102,6 +108,11 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
   child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
 
   function respond(message) {
+    if (message.port === 'session' && message.method === 'step_append' && message.args && typeof message.args.turn_id === 'string') {
+      const list = stepStore.get(message.args.turn_id) ?? []
+      list.push(message.args)
+      stepStore.set(message.args.turn_id, list)
+    }
     const key = `${message.port}.${message.method}`
     const provider = resolvedProviders[key]
     if (provider === undefined) {
@@ -143,6 +154,35 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
     })
   }
 
+  /** 驱动段：一段一次 interpret；段尾若产续跑 eval，则以段终态重建 bag 续跑，直到回合终态。 */
+  async function interpretTurn(initial, callEnv) {
+    let current = initial
+    const merged = []
+    let last = null
+    for (let guard = 0; guard < 500; guard += 1) {
+      last = await request('call', { port: 'loop-policy', method: 'interpret', args: current, env: callEnv }, ['result', 'error'])
+      if (last.kind !== 'result') return last
+      const dirs = directivesOf(last.value)
+      const cont = dirs.find(
+        (item) => item && item.kind === 'eval' && item.command === 'chat.resume' && item.args && typeof item.args.turn_id === 'string',
+      )
+      if (cont === undefined) break
+      for (const item of dirs) {
+        if (item && item.kind !== 'extern' && item.kind !== 'eval') merged.push(item)
+      }
+      const turnId = cont.args.turn_id
+      current = {
+        ...current,
+        turn_id: typeof current.turn_id === 'string' ? current.turn_id : turnId,
+        resume: { continuation: true, turn_id: turnId },
+        session: { turns: [{ turn_id: turnId, steps: stepStore.get(turnId) ?? [] }] },
+      }
+    }
+    if (merged.length === 0 || last === null || last.kind !== 'result') return last
+    const value = last.value && typeof last.value === 'object' && !Array.isArray(last.value) ? last.value : {}
+    return { ...last, value: { ...value, $directives: [...merged, ...directivesOf(value)] } }
+  }
+
   return {
     child,
     exit,
@@ -152,7 +192,7 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
     request,
     hello: () => request('hello', { impl: 'loop-policy', gen: 'gen-1' }, 'manifest'),
     call: (port, method, args, callEnv = env) => request('call', { port, method, args, env: callEnv }, ['result', 'error']),
-    interpret: (bag, callEnv = env) => request('call', { port: 'loop-policy', method: 'interpret', args: bag, env: callEnv }, ['result', 'error']),
+    interpret: (bag, callEnv = env) => interpretTurn(bag, callEnv),
     close: () => child.stdin.end(),
   }
 }
@@ -187,59 +227,3 @@ export function writeBatches(value) {
   return batches
 }
 
-/** 批内 `$n` 替换（宿主内核 substitute 口径）；越界 / 指向非 put 即抛。 */
-function substitute(value, acc, k) {
-  if (Array.isArray(value)) return value.map((item) => substitute(item, acc, k))
-  if (value === null || typeof value !== 'object') return value
-  const keys = Object.keys(value)
-  if (keys.length === 1 && keys[0] === '$n') {
-    const j = value.$n
-    if (!Number.isInteger(j) || j < 0 || j >= k || acc[j] === null) throw new Error(`bad_selfref ${j} at ${k}`)
-    return acc[j]
-  }
-  const out = {}
-  for (const key of keys) out[key] = substitute(value[key], acc, k)
-  return out
-}
-
-/** 按内核 argsHash 口径解析一批 ops：`$n` 替换 + 每条 def 键（put 才有产物）。 */
-export function resolveBatch(ops) {
-  const acc = []
-  const out = []
-  for (let k = 0; k < ops.length; k++) {
-    const args = substitute(ops[k].args, acc, k)
-    const hash = H(args)
-    out.push({ op: ops[k].op, args, hash })
-    acc.push(ops[k].op === 'put' ? hash : null)
-  }
-  return out
-}
-
-/** 宿主投影 assembleGenBody 的补丁组装口径（本插件补丁只用 replace）。 */
-export function assemblePatch(baseBody, patches) {
-  const doc = JSON.parse(JSON.stringify(baseBody))
-  for (const patch of patches) {
-    if (patch.op !== 'replace') continue
-    let node = doc
-    for (let i = 0; i < patch.path.length - 1; i++) node = node[patch.path[i]]
-    node[patch.path[patch.path.length - 1]] = JSON.parse(JSON.stringify(patch.value))
-  }
-  return doc
-}
-
-/**
- * 组装一批 write ops 里的 evolution 世代（宿主投影口径）：
- * 整份世代取 payload def body；补丁世代取 baseBody 组装后按序应用补丁。
- * 返回 `{ body, defs, addGen, patchOps }`（无 add_gen 时 body 为 null）。
- */
-export function assembleEvolutionBatch(batch, baseBody) {
-  const resolved = resolveBatch(batch)
-  const defs = {}
-  for (const item of resolved) if (item.op === 'put') defs[item.hash] = item.args.body
-  const addGen = resolved.find((item) => item.op === 'add_gen' && item.args.id === 'evolution') ?? null
-  if (addGen === null) return { body: null, defs, addGen: null, patchOps: null }
-  const defBody = defs[addGen.args.payload]
-  if (addGen.args.base === undefined) return { body: defBody, defs, addGen, patchOps: null }
-  const patchOps = defBody?.ops ?? null
-  return { body: patchOps === null ? null : assemblePatch(baseBody, patchOps), defs, addGen, patchOps }
-}

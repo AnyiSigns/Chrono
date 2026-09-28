@@ -26,16 +26,19 @@
 | L3 条目各字段（owner = `memory-store`） | 运行记录（出世界） | 见 `plugins/memory-store/README.md` |
 | **sweep 水位** | **③ 派生物（落 `CHRONO_PLUGIN_STATE`，不进 ④）** | **可由 ④ 条目 `at` 重算 / 重扫**（判据是「删了能不能重建」）；删掉后从最早重扫，结果收敛 |
 | `params.*`（schema 顶层，阈值 / 容量 / TTL） | **定义 / 判定（留世界，schema）** | 清理判定阈值；回滚应带上 |
-| `periodic.*`（每拍间隔） | **定义 / 判定（留世界，schema）** | 触发调度声明 |
+| `periodic.*`（每拍间隔与 `reads`） | **定义 / 判定（留世界，schema）** | 触发调度声明 |
+| 周期派发策略 body（`tools/default-body.json` → 数据世代） | **定义 / 判定（留世界，数据世代）** | consolidate 的 `summarize` / sweep 的阈值覆盖；周期只按 `periodic.reads` 注入策略，owner 数据仍由服务自读 |
 
-**结论**：本身份无自有运行记录（L1/L2/L3 归 owner 服务）；水位是 ③ 派生物；留在世界的是 schema（策略参数）。
+**结论**：本身份无自有运行记录（L1/L2/L3 归 owner 服务）；水位是 ③ 派生物；留在世界的是 schema（策略参数）与周期派发策略 body。
 
 ## 边界（迁移后）
 
 - **读写一律经 owner 服务**：`consolidate` / `sweep` / `edit` 经 `port.call` 读 `short-memory.read` /
   `memory.list` / `session.read`，算结果后经 `short-memory.apply` / `memory.append` / `memory.delete` /
   `memory.pin` / `memory.edit` 写回；**不产 `$directives`、不直接写链**。
-- **不读投影**：owner 数据由服务自行读取，`schema.periodic` 不再有 `reads`。
+- **不读投影**：服务自身不读投影，owner 数据由服务经反向调用自读。周期条目按 `schema.periodic.reads`
+  由宿主机械注入**数据世代 body 里的派发策略**（consolidate 的 `summarize`、sweep 的阈值覆盖）；
+  策略 body 由 `tools/seed-default-body.mjs` 预置（`start` 对无数据世代的身份自动跑），不注入任何 owner 数据。
 - 不做：调模型（交 `compress`）/ L3 存储实现（交 `memory-store`）/ 向量计算（交 `embedding`）/
   判定「该不该维护」（归 `loop-policy` 准则）。
 - 服务不 import 宿主与内核，运行时零依赖（只用 Node 内置模块）。
@@ -43,7 +46,8 @@
 ## 触发
 
 - `consolidate` / `sweep` 的周期住 `schema/memory-maintenance.json` 顶层 `periodic`（两拍：`consolidate` 1h、`sweep` 30min），
-  由宿主按周期直接调服务方法；数据由服务自读，不再注入投影。
+  由宿主按周期直接调服务方法；owner 数据由服务自读，宿主只按 `periodic.reads` 注入策略 body 片段
+  （`summarize`、阈值覆盖）——缺 body 时各键落 `null`，服务回落 schema 缺省。
 - `candidates` 经记忆工具具名工具 `memory.candidates` 暴露；`view` / `edit` 经 `ui-settings` 记忆 tab 的命令入口 term 装配 args。
 
 ## 五个方法

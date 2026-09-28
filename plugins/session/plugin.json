@@ -13,6 +13,10 @@
       "restore",
       "branch",
       "deliver",
+      "turn_open",
+      "step_append",
+      "turn_settle",
+      "turn_cancel",
       "read",
       "history"
     ]

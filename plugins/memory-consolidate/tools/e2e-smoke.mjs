@@ -7,13 +7,14 @@
 // 与本次「声明与协议就位」验收无关，故跳过；pack / seed 已覆盖插件声明、pins 与 .worldignore 的宿主门禁。
 // 用法：node plugins/memory-consolidate/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
 import { projectBaseOnly } from '../../../packages/host/projection/index.ts'
+import { buildPeriodicBag } from '../../../packages/host/periodic-runner.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -312,6 +313,18 @@ async function main() {
     assert.equal(treePaths.some((item) => item.startsWith('test/')), false, '.worldignore 应排除 test/')
     assert.equal(treePaths.some((item) => item.startsWith('tools/')), false, '.worldignore 应排除 tools/')
     console.log(`.worldignore：源码树 ${treePaths.length} 个文件，test/ 与 tools/ 已排除`)
+
+    // 周期派发链路：真实 buildPeriodicBag + schema.periodic.reads + 数据世代策略 body
+    // → 非空 bag 且 summarize=true（不再恒 false）；无 reads 时回 null（对照）。
+    const schemaBody = JSON.parse(readFileSync(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'schema', 'memory-maintenance.json'), 'utf8'))
+    const policyBody = JSON.parse(readFileSync(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'tools', 'default-body.json'), 'utf8'))
+    const consolidateEntry = schemaBody.periodic.find((entry) => entry.method === 'consolidate')
+    const reads = Object.entries(consolidateEntry.reads).map(([key, path]) => ({ key, path }))
+    assert.equal(buildPeriodicBag({}, []), null, '无 reads 时 buildPeriodicBag 应回 null')
+    const periodicBag = buildPeriodicBag({ ids: { 'memory-consolidate': { body: policyBody } } }, reads)
+    assert.notEqual(periodicBag, null, 'buildPeriodicBag 不应回 null')
+    assert.equal(periodicBag.summarize, true, '周期 bag 应带 summarize=true')
+    console.log('周期 bag：buildPeriodicBag 注入 summarize=true（策略 body → compress.summarize 链路不再死）')
 
     await directProtocolSmoke(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'execute', 'main.ts'))
 

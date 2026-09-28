@@ -3,13 +3,15 @@
   "schema": "schema/graph.json",
   "implements": ["loop-policy"],
   "methods": {
-    "loop-policy": ["interpret"]
+    "loop-policy": ["interpret", "cancel"]
   },
+  "concurrent_methods": ["interpret", "cancel"],
   "pins": {
     "session": "session",
     "model": "model-protocol",
     "context": "context-window",
     "retrieval": "memory-retrieval",
+    "compress": "compress",
     "guard": "guard",
     "approval": "approval",
     "tools": "tools",

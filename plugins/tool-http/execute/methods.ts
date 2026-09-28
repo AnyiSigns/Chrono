@@ -7,6 +7,7 @@ import { mergeConfig } from './config.ts'
 import { describeTools } from './describe.ts'
 import { websearch } from './websearch.ts'
 import { webfetch } from './webfetch.ts'
+import { webresearch } from './webresearch.ts'
 import { fail, isRec } from './types.ts'
 import type { PortLink } from 'plugin-sdk'
 import type { HttpBackend } from './backend.ts'
@@ -27,7 +28,7 @@ export function buildContext(bag: Rec, callId: string | null, backend: HttpBacke
   }
 }
 
-/** invoke 入口：按工具名路由到 websearch / webfetch；异常兜底转结构化错误（不炸本轮）。 */
+/** invoke 入口：按工具名路由；websearch 依 `read>0` 决定是否读正文；异常兜底转结构化错误（不炸本轮）。 */
 export async function invoke(
   args: Json,
   callId: string | null,
@@ -47,8 +48,14 @@ async function dispatch(args: Json, callId: string | null, backend: HttpBackend)
   if (typeof tool !== 'string' || tool.length === 0) return fail('bad_args', 'tool is required')
   const toolArgs = bag['args'] ?? {}
   const ctx = buildContext(bag, callId, backend)
-  if (tool === 'websearch') return websearch(toolArgs, ctx)
+  if (tool === 'websearch') {
+    const read = isRec(toolArgs) ? toolArgs['read'] : undefined
+    if (typeof read === 'number' && read > 0) return webresearch(toolArgs, ctx)
+    return websearch(toolArgs, ctx)
+  }
   if (tool === 'webfetch') return webfetch(toolArgs, ctx)
+  // 旧名保留：内部调用方 / 既有测试仍可直达研究形态（目录里只广告合并后的 websearch）。
+  if (tool === 'webresearch') return webresearch(toolArgs, ctx)
   return fail('unknown_tool', `unknown tool ${tool}`)
 }
 

@@ -3,45 +3,18 @@
 // 响应体 ≤ output_max；文本超限截断并标记 truncated，二进制超限回 too_large。
 
 import { NET_WEBFETCH } from './caps.ts'
+import { decodeText, isTextual, normalizeContentType, renderText } from './content.ts'
+import { byteLength, fetchDigest } from './digest.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
 import { DEFAULT_CALL_TIMEOUT_MS, REVERSE_TIMEOUT_MARGIN_MS } from './reverse.ts'
-import { htmlToMarkdown, htmlToText } from './html.ts'
 import { isPrivateHost, parseHttpUrl } from './url.ts'
 import { fail, isRec, ok } from './types.ts'
 import type { FetchSpec } from './fetcher.ts'
 import type { Json, Rec, ToolResult } from './types.ts'
 import type { ToolContext } from './context.ts'
 
-const HTML_TYPES = new Set(['text/html', 'application/xhtml+xml'])
-
 function resolveFormat(raw: Json | undefined): 'markdown' | 'text' | 'raw' {
   return raw === 'text' || raw === 'raw' ? raw : 'markdown'
-}
-
-function normalizeContentType(raw: string): string {
-  const head = raw.split(';')[0] ?? ''
-  return head.trim().toLowerCase()
-}
-
-function isTextual(contentType: string): boolean {
-  if (HTML_TYPES.has(contentType)) return true
-  if (contentType.startsWith('text/')) return true
-  if (contentType === 'application/json' || contentType.endsWith('+json')) return true
-  if (contentType === 'application/xml' || contentType.endsWith('+xml')) return true
-  return false
-}
-
-function decodeText(bytes: Buffer, rawContentType: string): string {
-  const charset = /charset\s*=\s*"?([^";]+)"?/i.exec(rawContentType)?.[1]?.trim().toLowerCase()
-  if (charset === 'latin1' || charset === 'iso-8859-1' || charset === 'latin-1') {
-    return bytes.toString('latin1')
-  }
-  return bytes.toString('utf8')
-}
-
-function renderText(text: string, contentType: string, format: 'markdown' | 'text' | 'raw'): string {
-  if (format === 'raw' || !HTML_TYPES.has(contentType)) return text
-  return format === 'text' ? htmlToText(text) : htmlToMarkdown(text)
 }
 
 function fetchSpec(url: string, ctx: ToolContext): FetchSpec {
@@ -118,7 +91,10 @@ export async function webfetch(args: Json, ctx: ToolContext): Promise<ToolResult
       return fail('too_large', 'binary body exceeds output_max', { status: outcome.status })
     }
     const stored = await storeBinary(outcome.bytes, contentType, outcome.status, ctx)
-    if (stored.ok) stored.result['url'] = outcome.url
+    if (stored.ok) {
+      stored.result['url'] = outcome.url
+      stored.result['digest'] = fetchDigest(outcome.url, outcome.status, outcome.bytes.length)
+    }
     return stored
   }
   const bytes = oversize ? outcome.bytes.subarray(0, ctx.config.output_max) : outcome.bytes
@@ -129,5 +105,6 @@ export async function webfetch(args: Json, ctx: ToolContext): Promise<ToolResult
     content_type: contentType,
     content,
     truncated: outcome.truncated || oversize,
+    digest: fetchDigest(outcome.url, outcome.status, byteLength(content)),
   })
 }

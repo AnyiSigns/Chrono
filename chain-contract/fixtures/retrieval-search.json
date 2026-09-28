@@ -1,0 +1,47 @@
+{
+  "authoritative": {
+    "contract_version": "1.0",
+    "query": "看看 foo.ts 第 42 行",
+    "goal": "排查 foo.ts 的空指针",
+    "workspace": "w-1",
+    "recall_budget": 8,
+    "retrieval": { "top_k": 8, "workspace_scope": true },
+    "dedup_set": ["看看 foo.ts 第 42 行"],
+    "model_config": { "vendor": "anthropic", "model": "claude-sonnet-4-6" }
+  },
+  "producer_current": {
+    "workspace": "w-1",
+    "recall_budget": 8,
+    "query": "看看 foo.ts 第 42 行"
+  },
+  "producer_drift_historical": {
+    "status": "historical",
+    "note": "历史档：以下键名错位曾存在于修复前的生产方，现已按权威键名对齐，仅作回归追溯。当前生产方形状见 producer_current。",
+    "items": [
+      {
+        "authoritative_key": "workspace",
+        "producer_key_before": "workspace_id",
+        "producer_key_after": "workspace",
+        "producer_location": "plugins/loop-policy/execute/dispatch.ts",
+        "consumer_location": "plugins/memory-retrieval/src/bag.rs",
+        "consequence_before": "工作区过滤静默失效，召回跨工作区"
+      },
+      {
+        "authoritative_key": "recall_budget",
+        "producer_key_before": "budget",
+        "producer_key_after": "recall_budget",
+        "producer_location": "plugins/loop-policy/execute/dispatch.ts",
+        "consumer_location": "plugins/memory-retrieval/src/config.rs",
+        "consequence_before": "预算静默不生效，回落 top_k: 8"
+      },
+      {
+        "authoritative_key": "query",
+        "producer_key_before": "query",
+        "producer_key_after": "query",
+        "producer_location": "plugins/loop-policy/execute/dispatch.ts",
+        "consumer_location": "plugins/memory-retrieval/src/bag.rs",
+        "consequence_before": "一致"
+      }
+    ]
+  }
+}

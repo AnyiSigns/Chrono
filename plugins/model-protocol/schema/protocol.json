@@ -13,6 +13,7 @@
         "messages": { "type": "array", "description": "对话消息 [{role, content, tool_call_id?, tool_calls?}]；system 角色按 quirks.system_role 归一。" },
         "tools": { "type": "array", "description": "可选工具声明：中性声明 {name, description?, argsSchema?}（按协议机械编成 function 工具）；已带非空 type 的协议原生项原样透传。缺 name 的项丢弃。" },
         "tool_choice": { "description": "可选工具选择策略，原样编进请求。" },
+        "cache": { "type": "object", "description": "可选厂商中立缓存提示：{breakpoints?: number[], system?: bool, tools?: bool, key?: string}。断点按映射后消息下标标稳定前缀末尾；适配器决定线编码（Anthropic cache_control / OpenAI prompt_cache_key）。" },
         "resilience": { "type": "object", "description": "可选：本次调用的韧性覆盖（max_retries / backoff_ms / backoff_max_ms / request_timeout_ms / token_bucket）；缺省取本 schema 的 resilience。" }
       }
     },
@@ -23,6 +24,7 @@
         "ok": { "type": "boolean" },
         "text": { "type": "string", "description": "最终文本（累积全部流式分片）。" },
         "reasoning": { "type": "string", "description": "推理文本（reasoning_response_field 命中的字段）；无则缺键。" },
+        "reasoning_blocks": { "type": "array", "description": "厂商中立推理块 [{provider, model, form, payload, signature, encrypted, tokens}]；字段固定，供后续按能力表回传。" },
         "tool_calls": { "type": "array", "description": "工具调用 [{id, name, arguments}]，arguments 为解析后的对象（解析失败时为原字符串）。" },
         "usage": { "type": "object", "description": "归一用量 {prompt_tokens, completion_tokens, total_tokens}；无则 null。" },
         "model": { "type": "string" },
@@ -101,7 +103,7 @@
       "properties": {
         "ok": { "type": "boolean" },
         "changed": { "type": "boolean" },
-        "models": { "type": "object", "description": "计算出的模型元数据（id → {context_window, max_output, reasoning?, modalities?}）。" },
+        "models": { "type": "object", "description": "计算出的模型元数据（id → {context_window, max_output, reasoning?, reasoning_capability, modalities?}）；reasoning_capability 为厂商推理能力表 {retention, requires_replay_in_tool_loop, signature_field, replay_form, invalidated_by, verified}。" },
         "error": { "type": "object", "description": "{code, message}；code ∈ profile_network / profile_bad_source / profile_vendor_unknown。" }
       }
     },
@@ -154,7 +156,8 @@
     }
   ],
   "method_timeouts": {
-    "model.chat": 600000,
-    "model.complete": 120000
+    "model.chat": 3600000,
+    "model.complete": 3600000,
+    "model.abort": 30000
   }
 }

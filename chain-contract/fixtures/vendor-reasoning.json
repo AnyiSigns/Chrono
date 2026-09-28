@@ -1,0 +1,61 @@
+{
+  "anthropic": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "form": "blocks",
+    "payload": [
+      { "type": "thinking", "thinking": "先读文件确认第 42 行" }
+    ],
+    "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds",
+    "encrypted": null,
+    "tokens": 64
+  },
+  "anthropic-redacted": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "form": "blocks",
+    "payload": [{ "type": "redacted_thinking" }],
+    "signature": null,
+    "encrypted": "EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIw",
+    "tokens": 32
+  },
+  "gemini": {
+    "provider": "google",
+    "model": "gemini-3-pro",
+    "form": "blocks",
+    "payload": [
+      { "type": "thought", "text": "先读文件" },
+      { "type": "function_call", "name": "fs.read", "args": { "path": "foo.ts" }, "thoughtSignature": "Cs8BAdHtim9Binit" }
+    ],
+    "signature": "Cs8BAdHtim9Binit",
+    "encrypted": null,
+    "tokens": 48
+  },
+  "deepseek": {
+    "provider": "deepseek",
+    "model": "deepseek-reasoner",
+    "form": "text",
+    "payload": "先读文件确认第 42 行，再给出补丁",
+    "signature": null,
+    "encrypted": null,
+    "tokens": 96
+  },
+  "kimi": {
+    "provider": "moonshot",
+    "model": "kimi-k2.7-code",
+    "form": "text",
+    "payload": "保留思考：需要确认 foo.ts 的上下文",
+    "signature": null,
+    "encrypted": null,
+    "tokens": 72
+  },
+  "openai": {
+    "provider": "openai",
+    "model": "gpt-5.6",
+    "form": "text",
+    "payload": "先读文件",
+    "signature": null,
+    "encrypted": null,
+    "tokens": 40
+  }
+}

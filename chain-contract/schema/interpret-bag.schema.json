@@ -1,0 +1,149 @@
+{
+  "title": "interpret bag（chat -> loop-policy 的横切契约）",
+  "description": "chat.send / chat.resume 装配、loop-policy.interpret 消费的 bag 形状。属性键记录生产方 buildInterpretBag 与 chat 方法实际写出的键（含条件键与 new_conversation / resume），条件键仅在对应身份在投影里时出现。bag 带 contract_version；消费方遇未知主版本立即拒绝并给可读结局，而不是逐键回落。消费方读取但生产方不写出的键（如 pins / task / runs_since_fork）见 chain-contract/README.md 的对拍说明，属待对齐项。",
+  "type": "object",
+  "required": ["input", "input_body", "config", "session", "thread", "thread_kind"],
+  "additionalProperties": true,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "description": "契约主版本标记，形如 <major>.<minor>；主版本不匹配即显式拒绝。"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "本轮用户消息规范化结果 {content, parts?, attachments?}。"
+    },
+    "input_body": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "input 身份投影 body（每线程输入槽）；缺失回落 {}。"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "模型连接实例 {vendor, model, base_url, auth_ref, params, quirks?, protocol?, context_window?, max_output?}。"
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "会话切片：会话 body 字段 + head（当前会话链头哈希）+ refs（全量引用闭包）+ data_gen。"
+    },
+    "thread": {
+      "type": "string",
+      "description": "线程键；缺 env.thread 时回落 _main。"
+    },
+    "thread_kind": {
+      "type": "string",
+      "description": "线程种类；无会话时回落 main。"
+    },
+    "tier": {
+      "type": "string",
+      "description": "当前权限档（config.permission）；缺失即缺键。"
+    },
+    "session_id": {
+      "type": "string",
+      "description": "当前会话 id；无当前会话即缺键。"
+    },
+    "workspace_id": {
+      "type": "string",
+      "description": "当前会话 workspace_id；无即缺键。"
+    },
+    "workspace_root": {
+      "type": "string",
+      "description": "workspace 列表里匹配当前 workspace_id 的 path；无即缺键。"
+    },
+    "memories": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "记忆片段 {l1?, l2?}，按 wiring 开关裁剪；空即缺键。"
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "loop-policy 图数据切片：六类条目 body + refs 闭包。"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "evolution 台账切片（与 evolution 同源，历史键名）。"
+    },
+    "evolution": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "evolution 台账切片：四类链 body + refs 闭包 + data_gen。"
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "审批队列切片 {queue, refs}。"
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "提问队列切片 {body, refs}。"
+    },
+    "todo": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "当前会话待办切片 {items}。"
+    },
+    "guard_rules": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "guard 身份 body（门禁规则）。"
+    },
+    "sandbox_tiers": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "sandbox 身份 body（档位 net 映射等）。"
+    },
+    "tools_bindings": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "tools 身份 body（工具绑定表）。"
+    },
+    "mcp_tools": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "mcp 身份 body.tools 外部工具清单。"
+    },
+    "persona": {
+      "type": "string",
+      "description": "当前会话人格提示词文本；无即缺键。"
+    },
+    "skills": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "技能候选；按 wiring.skill 开关裁剪。"
+    },
+    "style": {
+      "type": "string",
+      "description": "config.ui.style 风格文本；按 wiring.style 开关裁剪。"
+    },
+    "system_prompt": {
+      "type": "string",
+      "description": "wiring 注入的系统提示词；按 wiring.prompt 开关。"
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "wiring 注入的工具 schema 目录；空数组不落键。"
+    },
+    "recall": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "预加载召回块；按 wiring.recall 开关（当前恒为空数组）。"
+    },
+    "new_conversation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "chat.send 装配的自动建会话规格 {id, workspace_id, title?}；随 turn.open / commit 原子建。"
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "chat.resume 追加的续跑依据 {cursor, thread, payload?}。"
+    }
+  }
+}

@@ -275,7 +275,7 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
       portCalls.some((call) => call.port === 'secrets' && call.method === 'resolve'),
       '应经反向 port.call 调 secrets.resolve',
     )
-    const execCall = portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec' && call.args.env)
+    const execCall = portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec_start' && call.args.env)
     assert.equal(execCall.args.env.E2E_TOKEN, E2E_SECRET, '明文应只经 exec env 下传')
 
     // 非零退出：结果仍回带 exit_code（统一经 PowerShell）。

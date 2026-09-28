@@ -1,0 +1,24 @@
+{
+  "name": "chain-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "横切契约源：bag / 步记录 / 结局 / 召回 bag 的语言中立 schema 与 TS 真源，运行子集生成进消费插件",
+  "files": [
+    "package.json",
+    "README.md",
+    "src/",
+    "schema/",
+    "fixtures/",
+    "invariants.ts",
+    "tools/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "generate": "node tools/generate.mjs",
+    "check-drift": "node tools/check-drift.mjs"
+  }
+}

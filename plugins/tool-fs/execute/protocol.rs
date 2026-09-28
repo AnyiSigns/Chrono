@@ -121,9 +121,9 @@ mod tests {
     }
 
     #[test]
-    fn describe_call_returns_four_tools() {
+    fn describe_call_returns_tools() {
         let value = handle_call("describe", &json!({}), &FakeBackend).unwrap();
-        assert_eq!(value["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(value["tools"].as_array().unwrap().len(), 5);
     }
 
     #[test]

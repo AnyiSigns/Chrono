@@ -1,0 +1,67 @@
+{
+  "contract_version": "1.0",
+  "input": {
+    "content": "看看 foo.ts 第 42 行，那里的空指针是不是少了判空",
+    "parts": [{ "type": "text", "text": "看看 foo.ts 第 42 行，那里的空指针是不是少了判空" }]
+  },
+  "input_body": {
+    "slots": {
+      "_main": {
+        "kind": "chat.message",
+        "text": "看看 foo.ts 第 42 行，那里的空指针是不是少了判空",
+        "workspace_id": "w-1",
+        "conversation_id": "c-1759000000000-0",
+        "run": "run-7"
+      }
+    }
+  },
+  "config": {
+    "vendor": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "base_url": "https://api.anthropic.com",
+    "auth_ref": { "kind": "env", "name": "ANTHROPIC_API_KEY" },
+    "params": { "max_tokens": 4096 },
+    "context_window": 200000,
+    "max_output": 8192
+  },
+  "thread": "_main",
+  "thread_kind": "main",
+  "session": {
+    "version": 1,
+    "current": "c-1759000000000-0",
+    "conversations": [
+      {
+        "id": "c-1759000000000-0",
+        "workspace_id": "w-1",
+        "kind": "main",
+        "title": "空指针排查",
+        "count": 0,
+        "head": null
+      }
+    ],
+    "head": null,
+    "refs": {},
+    "data_gen": null
+  },
+  "tier": "auto",
+  "session_id": "c-1759000000000-0",
+  "workspace_id": "w-1",
+  "workspace_root": "/repo",
+  "memories": {
+    "l1": { "goal": "排查 foo.ts 的空指针", "summary": "已定位到第 42 行" },
+    "l2": { "goal": "核心链路重构", "summary": "先落地重构再引实验产物" }
+  },
+  "graph": {
+    "contracts": { "tail": null, "count": 0 },
+    "nodes": { "tail": null, "count": 0 },
+    "prompts": { "tail": null, "count": 0 },
+    "thresholds": { "tail": null, "count": 0 },
+    "refusal_codes": { "tail": null, "count": 0 },
+    "refs": {}
+  },
+  "todo": { "items": [] },
+  "guard_rules": { "rules": [] },
+  "sandbox_tiers": { "tiers": { "auto": { "net": "all" } } },
+  "tools_bindings": { "tools": ["fs.read", "fs.list", "shell"] },
+  "new_conversation": { "id": "c-1759000000000-0", "workspace_id": "w-1" }
+}

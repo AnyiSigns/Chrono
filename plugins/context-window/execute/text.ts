@@ -3,11 +3,36 @@
 // 前缀和用于历史窗口 / atomic 组的区间求和不重复遍历。
 
 import { countTokens } from './native.ts'
-import type { AssetRef, CanonicalPart, Json } from './types.ts'
+import type { AssetRef, CanonicalPart, Json, NeutralReasoning } from './types.ts'
 
 /** 判断普通对象（非数组、非 null）。 */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * 按每模型校正系数缩放估算 token：与 `canonicalize` 同口径（四舍五入、下界 0）。
+ * 老化 / 压缩 / 截断等改写路径重算 token 时须经它，否则真实用量校准在改写后丢失。
+ */
+export function applyScale(tokens: number, scale: number): number {
+  const factor = typeof scale === 'number' && Number.isFinite(scale) && scale > 0 ? scale : 1
+  return Math.max(0, Math.round(tokens * factor))
+}
+
+/**
+ * 稳定 JSON 序列化：对象键按码位升序递归排序，数组保持原序。
+ * 工具 schema / 中性工具调用等随 bag 到达的 JSON 键序不保证一致，稳定键序是前缀缓存的前提。
+ */
+export function stableStringify(value: Json): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`
+  const keys = Object.keys(value).sort()
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, Json>)[key] as Json)}`).join(',')}}`
+}
+
+/** 推理块的计数文本（中立块形状固定：payload 为字符串，原样取用）。 */
+export function reasoningText(reasoning: NeutralReasoning): string {
+  return reasoning.payload
 }
 
 /** 规范化文本：统一换行、压缩连续空白、去首尾空白（dedup_key 的组成部分）。 */
