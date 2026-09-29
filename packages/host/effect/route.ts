@@ -33,7 +33,18 @@ export interface SlotOutcome {
 
 /** 路由钩子：effect 在挂起点用它把 `eff` 解析到端点；实现由宿主按当前端点表构造。 */
 export interface RoundRouter {
-  resolve(world: World, emitterId: string, cap: string, method: string): RouteOutcome
+  /**
+   * 解析一个调用到端点行。`target` 给定时为「按成员定位的 many」：`cap` 是扩展类、`target` 是
+   * 目标提供方身份名，要求「该类在发出者 `needs` 且 `mode:"many"`」且「目标 ∈ 索引(类)」；
+   * 缺省为单值语义（`pins` / `one`-needs / 自能力）。
+   */
+  resolve(
+    world: World,
+    emitterId: string,
+    cap: string,
+    method: string,
+    target?: string,
+  ): RouteOutcome
   /**
    * 按 `many` 声明解析槽：有序成员表（各自端点行或元素错误）。
    * 未声明该 cap / `mode:"one"` / 发出者无装配世代 → null（`one` 走 `resolve` 的 needs 分支）。
@@ -132,14 +143,44 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
   const needsOf = (world: World, id: string, gen: Hash): Record<string, NeedDecl> | null =>
     factsOf(world, id, gen)?.needs ?? null
 
+  /**
+   * 按成员定位的 many：发出者对 `cap` 须声明 `needs` 且 `mode:"many"`，`target` 须是世界能力索引(cap)
+   * 的成员；命中则解析到该成员在 `cap` 上的端点行。任一不满足作数据错误，不抛。
+   */
+  const resolveMember = (
+    resolutionWorld: World,
+    emitterId: string,
+    cap: string,
+    method: string,
+    target: string,
+  ): RouteOutcome => {
+    const gen = assemblyGen(resolutionWorld, emitterId)
+    if (gen === null) return { ok: false, error: 'unresolved_cap' }
+    const need = needsOf(resolutionWorld, emitterId, gen.payload)?.[cap]
+    if (need === undefined || need.mode !== 'many') return { ok: false, error: 'unresolved_cap' }
+    const members = capabilityProviders(resolutionWorld, cap, options.blobsDir)
+    if (!members.includes(target)) return { ok: false, error: 'not_loaded' }
+    if (!Object.hasOwn(resolutionWorld.ids, target)) return { ok: false, error: 'stale' }
+    const memberGen = assemblyGen(resolutionWorld, target)
+    if (memberGen === null) return { ok: false, error: 'stale' }
+    const caps = implementsOf(resolutionWorld, target, memberGen.payload)
+    if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
+    const row = options.endpoints.get(target, memberGen.payload, cap, method)
+    if (row === null) return { ok: false, error: 'not_loaded' }
+    return { ok: true, row }
+  }
+
   return {
     resolutionWorld(anchored) {
       // 活端点表世界优先（提供时）：解析世代与端点表同代，避免换代偏斜
       return options.liveWorld?.() ?? anchored
     },
-    resolve(world, emitterId, cap, method) {
+    resolve(world, emitterId, cap, method, target) {
       // 活端点表世界优先（提供时）：解析世代与端点表同代，避免换代偏斜
       const resolutionWorld = options.liveWorld?.() ?? world
+      // 按成员定位的 many：扩展类在发出者 needs 且 mode:"many"，目标须是世界索引(cap)成员。
+      if (target !== undefined)
+        return resolveMember(resolutionWorld, emitterId, cap, method, target)
       // G7 A1：pins / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
       const gen = assemblyGen(resolutionWorld, emitterId)
       const pinned = gen?.pins[cap]

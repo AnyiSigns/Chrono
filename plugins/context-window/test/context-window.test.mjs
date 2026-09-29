@@ -1,6 +1,6 @@
 // `context-window` 服务协议级测试（node --test）：合成 bag 驱动 `context.build`，收 `context.assembled` 事件。
 // 覆盖：流水线各阶段、预算两路错误、atomic 组、前缀序、三方言、多模态降级、TTL、covered_upto、
-// 75% 只追加一条、交错引导幂等且不含工具标识符、thread_kind 四路、事件载荷、回放纪律、错误不崩。
+// 交错引导幂等且不含工具标识符、thread_kind 四路、事件载荷、回放纪律、错误不崩。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,7 +10,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { baseBag, chainOf, contentOf, FIXED_ENV, PKG_ROOT, startService } from './driver.mjs'
 
-const COMPRESS_HINT = '上下文接近预算上限；请先用自然语言总结并压缩较早的上下文，再继续。'
 const GUIDANCE = '请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。'
 const TOOL_IDENTIFIERS = ['read', 'write', 'grep', 'glob', 'shell', 'fsop', 'exec', 'tool.', 'tool-fs', 'context', 'session', 'sandbox', 'capability', 'port']
 
@@ -664,26 +663,7 @@ test('检查点全局边界 {turn_id, seq}：边界之前的记录被 T3 丢弃�
   }
 })
 
-// ── 75% / 交错引导 ─────────────────────────────────────────────────────────
-
-test('75% 触发：只追加一条压缩提示', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'a '.repeat(80),
-        system_prompt: 'P',
-        config: { model: 'm1', context_window: 100, max_output: 1 },
-      }),
-    )
-    const texts = textMessages(value)
-    assert.equal(texts.filter((text) => text === COMPRESS_HINT).length, 1)
-    assert.equal(texts[texts.length - 1], COMPRESS_HINT)
-  } finally {
-    drv.close()
-  }
-})
+// ── 交错引导 ───────────────────────────────────────────────────────────────
 
 test('交错引导：含工具结果时幂等追加一条，文案不含工具标识符', async () => {
   const drv = startService()

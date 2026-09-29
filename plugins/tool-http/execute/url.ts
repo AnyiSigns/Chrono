@@ -49,11 +49,19 @@ function parseIpv6(raw: string): number[] | null {
       if (group.length === 0) return null
       if (group.includes('.')) {
         if (index !== groups.length - 1) return null
-        const octets = group.split('.').map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN))
-        if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+        const octets = group
+          .split('.')
+          .map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN))
+        if (
+          octets.length !== 4 ||
+          octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+        ) {
           return null
         }
-        result.push(((octets[0] ?? 0) << 8) | (octets[1] ?? 0), ((octets[2] ?? 0) << 8) | (octets[3] ?? 0))
+        result.push(
+          ((octets[0] ?? 0) << 8) | (octets[1] ?? 0),
+          ((octets[2] ?? 0) << 8) | (octets[3] ?? 0),
+        )
       } else {
         if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null
         result.push(parseInt(group, 16))

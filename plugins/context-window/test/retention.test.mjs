@@ -9,6 +9,10 @@ import { ensureNative } from './driver.mjs'
 process.env.CHRONO_PLUGIN_STATE = ''
 ensureNative()
 
+const { setLocalCountProvider } = await import('../execute/tokens.ts')
+const { countText } = await import('./fakes.mjs')
+setLocalCountProvider((text) => countText(text))
+
 const { canonicalize } = await import('../execute/normalize.ts')
 const { applyRetention, tierOf, compressText } = await import('../execute/retention.ts')
 const { dedupe } = await import('../execute/stages.ts')

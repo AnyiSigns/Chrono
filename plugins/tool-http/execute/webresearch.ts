@@ -68,7 +68,9 @@ function searchItems(value: Json): SearchItem[] {
 }
 
 function stringList(value: Json): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 /** 抓取单条结果并抽正文；只读、失败作数据（不抛）。 */
@@ -85,7 +87,13 @@ async function readOne(
   }
   const target = parsed.toString()
   if (ctx.config.obey_robots) {
-    const allowed = await robotsAllowsUrl(ctx, target, ctx.config.source_timeout_ms, NET_WEBFETCH, robotsCache)
+    const allowed = await robotsAllowsUrl(
+      ctx,
+      target,
+      ctx.config.source_timeout_ms,
+      NET_WEBFETCH,
+      robotsCache,
+    )
     if (!allowed) return { ok: false, url: target, code: 'robots_disallowed' }
   }
   const spec: FetchSpec = {
@@ -107,7 +115,13 @@ async function readOne(
   }
   const contentType = normalizeContentType(outcome.contentType)
   if (!isTextual(contentType)) {
-    return { ok: false, url: outcome.url, code: 'binary_unsupported', contentType, status: outcome.status }
+    return {
+      ok: false,
+      url: outcome.url,
+      code: 'binary_unsupported',
+      contentType,
+      status: outcome.status,
+    }
   }
   const text = renderText(decodeText(outcome.bytes, outcome.contentType), contentType, 'markdown')
   const content = text.length > maxChars ? text.slice(0, maxChars) : text
@@ -142,7 +156,9 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
   if (!found.ok) return found
   const items = searchItems(found.result['results'])
   const sourcesUsed = stringList(found.result['sources_used'])
-  const sourcesFailed = Array.isArray(found.result['sources_failed']) ? (found.result['sources_failed'] as Json[]) : []
+  const sourcesFailed = Array.isArray(found.result['sources_failed'])
+    ? (found.result['sources_failed'] as Json[])
+    : []
 
   if (read === 0 || items.length === 0) {
     return ok({
@@ -158,7 +174,9 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
 
   const robotsCache = new Map<string, string | null>()
   const targets = items.slice(0, read)
-  const outcomes = await Promise.all(targets.map((item) => readOne(item, ctx, robotsCache, maxChars)))
+  const outcomes = await Promise.all(
+    targets.map((item) => readOne(item, ctx, robotsCache, maxChars)),
+  )
   const readUsed: string[] = []
   const readFailed: Rec[] = []
   const results = items.map((item, index) => {
@@ -177,7 +195,11 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
       } as unknown as Json
     }
     readFailed.push({ url: outcome.url, code: outcome.code ?? 'fetch_failed' })
-    return { ...item, read: false, error: { code: outcome.code ?? 'fetch_failed' } } as unknown as Json
+    return {
+      ...item,
+      read: false,
+      error: { code: outcome.code ?? 'fetch_failed' },
+    } as unknown as Json
   })
 
   return ok({

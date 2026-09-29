@@ -27,7 +27,9 @@ async function loadExternalEngine(
   try {
     module = (await import(pathToFileURL(modulePath).href)) as { createEngine?: EngineLoader }
   } catch (err) {
-    throw new BrowserUnsupportedError(`cannot load engine module ${modulePath}: ${(err as Error).message}`)
+    throw new BrowserUnsupportedError(
+      `cannot load engine module ${modulePath}: ${(err as Error).message}`,
+    )
   }
   if (typeof module.createEngine !== 'function') {
     throw new BrowserUnsupportedError(`engine module ${modulePath} does not export createEngine`)

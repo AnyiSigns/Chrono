@@ -1,14 +1,17 @@
 // 整批 dispatch：批级解析 workspace_root → guard 兜底（有 verdicts 则跳过）→ 按最严批级判定
-// 并发扇出到提供者（describe/invoke 提供者走 invoke；绑定项走能力类方法或投影读）。
+// 并发扇出到提供者（describe/invoke 提供者经扩展类 `tool-provider` 按成员定位调用；绑定项走能力类方法或投影读）。
 // 本插件只返回 results，不落账、不冒泡 $directives；提供者错误原样透传。
 // 目录经反向 `port.call tool-registry.list` 解析；args 校验经 `port.call tool-schema.validate-args`；
-// 语义门经 `port.call guard.judge`。
+// 语义门经 `port.call guard.judge`；工具提供者经 `tool-provider` 扩展类按成员定位（成员来自世界，不改本模块）。
 
 import { canonicalJson, isRecord } from 'plugin-sdk'
 import type { CallEnv, Json, PortLink, PortOutcome, Rec } from 'plugin-sdk'
 import type { ResultCache } from './cache.ts'
 import { resolveCacheEnabled, resolveConcurrency } from './config.ts'
 import { BadArgsError } from './types.ts'
+
+/** 工具提供方扩展类（拥有方 `slots` 契约）：按目录条目的 `provider` 身份定位成员调用。 */
+const TOOL_PROVIDER = 'tool-provider'
 
 /** 派发上下文键：不进提供者 bag（工具声明 caps 会覆盖调用级 caps）。 */
 const CONTROL_KEYS = new Set([
@@ -542,7 +545,7 @@ async function callProvider(
   // 调用身份随 bag 下传：提供者可据此在调用中途发 `tool.delta`（模型可见的 call_id + run / thread）。
   const timeoutMs = providerInvokeTimeout(tool)
   const call = await deps.link.call(
-    tool.provider,
+    TOOL_PROVIDER,
     'invoke',
     {
       ...passthrough,
@@ -553,7 +556,7 @@ async function callProvider(
       args,
       caps: tool.decl['caps'] ?? null,
     },
-    timeoutMs === undefined ? {} : { timeoutMs },
+    { ...(timeoutMs === undefined ? {} : { timeoutMs }), provider: tool.provider },
   )
   return outcomeOf(call, 'invoke')
 }

@@ -34,7 +34,13 @@ function makeCtx(options = {}) {
 }
 
 const env = (now = 0, run = 'run-1') => ({ run, thread: null, now })
-const bag = (args, extra = {}) => ({ tool: 'webbrowser', args, tier: 'auto', caps: { net: 'all' }, ...extra })
+const bag = (args, extra = {}) => ({
+  tool: 'webbrowser',
+  args,
+  tier: 'auto',
+  caps: { net: 'all' },
+  ...extra,
+})
 
 test('九个 action 的分派与结果形状', async () => {
   const { ctx, link } = makeCtx()
@@ -42,25 +48,51 @@ test('九个 action 的分派与结果形状', async () => {
   assert.equal(opened.ok, true)
   const session = opened.result.session
 
-  const navigate = await invoke(bag({ action: 'navigate', session, url: 'https://example.com' }), ctx, env())
+  const navigate = await invoke(
+    bag({ action: 'navigate', session, url: 'https://example.com' }),
+    ctx,
+    env(),
+  )
   assert.deepEqual(navigate.result, {
     status: 200,
     url: 'https://example.com',
     title: 'title:https://example.com',
     digest: { action: 'navigate', url: 'https://example.com', status: 200 },
   })
-  assert.deepEqual((await invoke(bag({ action: 'click', session, selector: '#a' }), ctx, env())).result, { ok: true, digest: { action: 'click' } })
-  assert.deepEqual((await invoke(bag({ action: 'type', session, selector: 'input', text: 'hi', submit: true }), ctx, env())).result, { ok: true, digest: { action: 'type' } })
-  assert.deepEqual((await invoke(bag({ action: 'press', session, key: 'Enter' }), ctx, env())).result, { ok: true, digest: { action: 'press' } })
-  assert.deepEqual((await invoke(bag({ action: 'wait_for', session, selector: '#a' }), ctx, env())).result, { ok: true, digest: { action: 'wait_for' } })
+  assert.deepEqual(
+    (await invoke(bag({ action: 'click', session, selector: '#a' }), ctx, env())).result,
+    { ok: true, digest: { action: 'click' } },
+  )
+  assert.deepEqual(
+    (
+      await invoke(
+        bag({ action: 'type', session, selector: 'input', text: 'hi', submit: true }),
+        ctx,
+        env(),
+      )
+    ).result,
+    { ok: true, digest: { action: 'type' } },
+  )
+  assert.deepEqual(
+    (await invoke(bag({ action: 'press', session, key: 'Enter' }), ctx, env())).result,
+    { ok: true, digest: { action: 'press' } },
+  )
+  assert.deepEqual(
+    (await invoke(bag({ action: 'wait_for', session, selector: '#a' }), ctx, env())).result,
+    { ok: true, digest: { action: 'wait_for' } },
+  )
   assert.deepEqual((await invoke(bag({ action: 'extract', session }), ctx, env())).result, {
     text: 'hello body',
     digest: { action: 'extract', bytes: Buffer.byteLength('hello body', 'utf8') },
   })
-  assert.deepEqual((await invoke(bag({ action: 'extract', session, selector: '#a', attr: 'href' }), ctx, env())).result, {
-    value: '/a',
-    digest: { action: 'extract', bytes: Buffer.byteLength('/a', 'utf8') },
-  })
+  assert.deepEqual(
+    (await invoke(bag({ action: 'extract', session, selector: '#a', attr: 'href' }), ctx, env()))
+      .result,
+    {
+      value: '/a',
+      digest: { action: 'extract', bytes: Buffer.byteLength('/a', 'utf8') },
+    },
+  )
 
   const shot = await invoke(bag({ action: 'screenshot', session }), ctx, env())
   assert.equal(shot.ok, true)
@@ -77,7 +109,8 @@ test('九个 action 的分派与结果形状', async () => {
 })
 
 test('每个 action 的成功结果自带 digest，形状是消费方可直接取用的普通对象', async () => {
-  const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
+  const isPlainObject = (value) =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
   const { ctx } = makeCtx()
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
   const cases = [
@@ -116,7 +149,11 @@ test('close 后引用回 session_not_found', async () => {
   const { ctx } = makeCtx()
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
   await invoke(bag({ action: 'close', session }), ctx, env(1))
-  const after = await invoke(bag({ action: 'navigate', session, url: 'https://x.test' }), ctx, env(2))
+  const after = await invoke(
+    bag({ action: 'navigate', session, url: 'https://x.test' }),
+    ctx,
+    env(2),
+  )
   assert.equal(after.ok, false)
   assert.equal(after.error.code, 'session_not_found')
 })
@@ -163,7 +200,11 @@ test('net_denied 透传：反向调用 sandbox 返回的错误原样回', async 
   const { ctx } = makeCtx()
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
   ctx.link.call = async () => ({ ok: false, code: 'net_denied', message: 'denied by sandbox' })
-  const after = await invoke(bag({ action: 'navigate', session, url: 'https://x.test' }), ctx, env(1))
+  const after = await invoke(
+    bag({ action: 'navigate', session, url: 'https://x.test' }),
+    ctx,
+    env(1),
+  )
   assert.equal(after.error.code, 'net_denied')
   assert.equal(after.error.message, 'denied by sandbox')
 })
@@ -181,7 +222,11 @@ test('消费 sandbox.capabilities：自述 net 不强制（none）时 fail-close
 test('引擎错误透传：http_status / element_not_found / navigate_failed', async () => {
   const { ctx } = makeCtx({ engine: { status: 404 } })
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
-  const http = await invoke(bag({ action: 'navigate', session, url: 'https://x.test' }), ctx, env(1))
+  const http = await invoke(
+    bag({ action: 'navigate', session, url: 'https://x.test' }),
+    ctx,
+    env(1),
+  )
   assert.equal(http.error.code, 'http_status')
 
   const missing = await invoke(bag({ action: 'click', session, selector: '#missing' }), ctx, env(2))
@@ -189,7 +234,11 @@ test('引擎错误透传：http_status / element_not_found / navigate_failed', a
 
   const broken = makeCtx({ engine: { failNavigate: 'dns' } })
   const brokenSession = (await invoke(bag({ action: 'open' }), broken.ctx, env())).result.session
-  const failed = await invoke(bag({ action: 'navigate', session: brokenSession, url: 'https://x.test' }), broken.ctx, env(1))
+  const failed = await invoke(
+    bag({ action: 'navigate', session: brokenSession, url: 'https://x.test' }),
+    broken.ctx,
+    env(1),
+  )
   assert.equal(failed.error.code, 'navigate_failed')
 })
 
@@ -206,7 +255,12 @@ test('形态非法 → bad_args；未知工具 → unknown_tool', async () => {
 test('navigate 危险 / 非 http(s) URL → navigate_failed（不做 host 过滤，只限协议）', async () => {
   const { ctx } = makeCtx()
   const session = (await invoke(bag({ action: 'open' }), ctx, env())).result.session
-  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'ftp://example.com/x', 'about:blank']) {
+  for (const url of [
+    'file:///etc/passwd',
+    'javascript:alert(1)',
+    'ftp://example.com/x',
+    'about:blank',
+  ]) {
     const result = await invoke(bag({ action: 'navigate', session, url }), ctx, env(1))
     assert.equal(result.ok, false, url)
     assert.equal(result.error.code, 'navigate_failed', url)
@@ -214,18 +268,35 @@ test('navigate 危险 / 非 http(s) URL → navigate_failed（不做 host 过滤
 })
 
 test('资产面失败码归一：asset_too_large → binary_unsupported，未知码 → tool_failed，已知码透传', async () => {
-  const tooLarge = makeCtx({ link: { assetError: { code: 'asset_too_large', message: 'over limit' } } })
-  const tooLargeSession = (await invoke(bag({ action: 'open' }), tooLarge.ctx, env())).result.session
-  const tooLargeShot = await invoke(bag({ action: 'screenshot', session: tooLargeSession }), tooLarge.ctx, env(1))
+  const tooLarge = makeCtx({
+    link: { assetError: { code: 'asset_too_large', message: 'over limit' } },
+  })
+  const tooLargeSession = (await invoke(bag({ action: 'open' }), tooLarge.ctx, env())).result
+    .session
+  const tooLargeShot = await invoke(
+    bag({ action: 'screenshot', session: tooLargeSession }),
+    tooLarge.ctx,
+    env(1),
+  )
   assert.equal(tooLargeShot.error.code, 'binary_unsupported')
 
-  const weird = makeCtx({ link: { assetError: { code: 'asset_missing', message: 'no such asset' } } })
+  const weird = makeCtx({
+    link: { assetError: { code: 'asset_missing', message: 'no such asset' } },
+  })
   const weirdSession = (await invoke(bag({ action: 'open' }), weird.ctx, env())).result.session
-  const weirdShot = await invoke(bag({ action: 'screenshot', session: weirdSession }), weird.ctx, env(1))
+  const weirdShot = await invoke(
+    bag({ action: 'screenshot', session: weirdSession }),
+    weird.ctx,
+    env(1),
+  )
   assert.equal(weirdShot.error.code, 'tool_failed')
 
   const timeout = makeCtx({ link: { assetError: { code: 'tool_timeout', message: 'slow host' } } })
   const timeoutSession = (await invoke(bag({ action: 'open' }), timeout.ctx, env())).result.session
-  const timeoutShot = await invoke(bag({ action: 'screenshot', session: timeoutSession }), timeout.ctx, env(1))
+  const timeoutShot = await invoke(
+    bag({ action: 'screenshot', session: timeoutSession }),
+    timeout.ctx,
+    env(1),
+  )
   assert.equal(timeoutShot.error.code, 'tool_timeout')
 })

@@ -34,11 +34,23 @@
       "required": ["id", "run", "thread", "questions", "answers"],
       "additionalProperties": true,
       "properties": {
-        "id": { "type": "string", "description": "确定性 id q-<run>-<seq>（run + 入队序），非随机" },
-        "op_key": { "type": "string", "description": "幂等键（run + 提问节点），同回合同节点重复入队收敛到同一条" },
+        "id": {
+          "type": "string",
+          "description": "确定性 id q-<run>-<seq>（run + 入队序），非随机"
+        },
+        "op_key": {
+          "type": "string",
+          "description": "幂等键（run + 提问节点），同回合同节点重复入队收敛到同一条"
+        },
         "run": { "type": "string", "description": "入队时的回合 id（来自 bag / env）" },
-        "session": { "type": ["string", "null"], "description": "入队时的当前会话 id（来自 bag；调用方读会话后传入）；取不到为 null" },
-        "thread": { "type": "string", "description": "入队时的线程 id（来自 bag）；pending 事件载荷同带" },
+        "session": {
+          "type": ["string", "null"],
+          "description": "入队时的当前会话 id（来自 bag；调用方读会话后传入）；取不到为 null"
+        },
+        "thread": {
+          "type": "string",
+          "description": "入队时的线程 id（来自 bag）；pending 事件载荷同带"
+        },
         "questions": {
           "type": "array",
           "description": "问题数组：[{id, header, question, options[], multiple, custom}]；options 为空 = 纯开放作答",
@@ -49,10 +61,22 @@
           "description": "作答回填：[{question_id, selected[], custom?}]；未答 null",
           "items": { "type": "object" }
         },
-        "expired": { "type": "boolean", "description": "是否已由 question.sweep 标过期；未过期 false" },
-        "resume": { "type": ["object", "null"], "description": "续跑依据 {command:'chat.resume', args:{cursor, thread}}；cursor = 调用方执行游标（不透明透传），随队列项持久化，跨宿主重启可续跑；无 cursor 时 null" },
-        "at": { "type": "string", "description": "入队时间（ISO 8601，取帧 env.now 或 args.at），不取时间" },
-        "expires_at": { "type": ["string", "null"], "description": "过期时间（ISO 8601，at + expires_ms）；expires_ms 为 null 时恒 null" }
+        "expired": {
+          "type": "boolean",
+          "description": "是否已由 question.sweep 标过期；未过期 false"
+        },
+        "resume": {
+          "type": ["object", "null"],
+          "description": "续跑依据 {command:'chat.resume', args:{cursor, thread}}；cursor = 调用方执行游标（不透明透传），随队列项持久化，跨宿主重启可续跑；无 cursor 时 null"
+        },
+        "at": {
+          "type": "string",
+          "description": "入队时间（ISO 8601，取帧 env.now 或 args.at），不取时间"
+        },
+        "expires_at": {
+          "type": ["string", "null"],
+          "description": "过期时间（ISO 8601，at + expires_ms）；expires_ms 为 null 时恒 null"
+        }
       }
     }
   },

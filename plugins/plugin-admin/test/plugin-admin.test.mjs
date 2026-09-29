@@ -99,8 +99,9 @@ test('hello 回 manifest：只实现 plugin-admin，方法声明与 plugin.json 
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'plugin-admin')
-    assert.deepEqual(manifest.implements, ['plugin-admin'])
+    assert.deepEqual(manifest.implements, ['plugin-admin', 'tool-provider'])
     assert.deepEqual(manifest.methods['plugin-admin'], ['describe', 'invoke'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.methods.plugin, undefined, '管理平面能力类不再住本插件')
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
@@ -292,8 +293,11 @@ test('未知能力 / 方法 → 结构化错误，不崩进程', async () => {
 
 test('plugin.json：needs.plugin=one、pins 空、只实现 plugin-admin', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
-  assert.deepEqual(decl.implements, ['plugin-admin'])
-  assert.deepEqual(decl.methods, { 'plugin-admin': ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['plugin-admin', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    'plugin-admin': ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.pins, {})
   assert.deepEqual(decl.needs, { plugin: { mode: 'one' } })
 })

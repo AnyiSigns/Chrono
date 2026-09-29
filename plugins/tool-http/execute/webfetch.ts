@@ -72,16 +72,32 @@ export async function webfetch(args: Json, ctx: ToolContext): Promise<ToolResult
   }
   const format = resolveFormat(bag['format'])
   if (ctx.config.obey_robots) {
-    const allowed = await robotsAllowsUrl(ctx, url.toString(), ctx.config.source_timeout_ms, NET_WEBFETCH, new Map())
+    const allowed = await robotsAllowsUrl(
+      ctx,
+      url.toString(),
+      ctx.config.source_timeout_ms,
+      NET_WEBFETCH,
+      new Map(),
+    )
     if (!allowed) return fail('robots_disallowed', `robots.txt disallows ${url.toString()}`)
   }
   const outcome = await fetchUrl(ctx, fetchSpec(url.toString(), ctx), NET_WEBFETCH)
   if (!outcome.ok) {
-    return fail(outcome.code, outcome.message, outcome.status === undefined ? {} : { status: outcome.status })
+    return fail(
+      outcome.code,
+      outcome.message,
+      outcome.status === undefined ? {} : { status: outcome.status },
+    )
   }
   // 跟随重定向后的最终落点仍需过 robots：初始 URL 的放行不覆盖最终 URL。
   if (ctx.config.obey_robots && outcome.url !== url.toString()) {
-    const allowed = await robotsAllowsUrl(ctx, outcome.url, ctx.config.source_timeout_ms, NET_WEBFETCH, new Map())
+    const allowed = await robotsAllowsUrl(
+      ctx,
+      outcome.url,
+      ctx.config.source_timeout_ms,
+      NET_WEBFETCH,
+      new Map(),
+    )
     if (!allowed) return fail('robots_disallowed', `robots.txt disallows ${outcome.url}`)
   }
   const contentType = normalizeContentType(outcome.contentType)

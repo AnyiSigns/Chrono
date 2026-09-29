@@ -42,7 +42,11 @@ export async function invoke(
   }
 }
 
-async function dispatch(args: Json, callId: string | null, backend: HttpBackend): Promise<ToolResult> {
+async function dispatch(
+  args: Json,
+  callId: string | null,
+  backend: HttpBackend,
+): Promise<ToolResult> {
   const bag = isRec(args) ? args : {}
   const tool = bag['tool']
   if (typeof tool !== 'string' || tool.length === 0) return fail('bad_args', 'tool is required')

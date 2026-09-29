@@ -13,6 +13,10 @@ import { baseBag, contentOf, startService, ensureNative } from './driver.mjs'
 process.env.CHRONO_PLUGIN_STATE = ''
 ensureNative()
 
+const { setLocalCountProvider } = await import('../execute/tokens.ts')
+const { countText } = await import('./fakes.mjs')
+setLocalCountProvider((text) => countText(text))
+
 const { canonicalize } = await import('../execute/normalize.ts')
 const { dedupe } = await import('../execute/stages.ts')
 const { missingResults, repairPairing } = await import('../execute/pairing.ts')

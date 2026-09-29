@@ -1,9 +1,10 @@
 {
   "identity": "question",
   "schema": "schema/question.json",
-  "implements": ["question"],
+  "implements": ["question", "tool-provider"],
   "methods": {
-    "question": ["describe", "invoke", "list", "state", "sweep"]
+    "question": ["describe", "invoke", "list", "state", "sweep"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {},
   "needs": {

@@ -10,18 +10,10 @@ import { relayFrame, serviceEntry, startBridgedService } from './bridge.mjs'
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const SCHEMA_ROOT = resolve(PKG_ROOT, '..', 'tool-schema')
+const FIXTURE_ROOT = resolve(PKG_ROOT, '..', '..', 'tests', 'fixtures', 'plugins', 'tool-fixture')
 
 const PINS = {
   'tool-schema': 'tool-schema',
-  'tool-fs': 'tool-fs',
-  'tool-shell': 'tool-shell',
-  'tool-http': 'tool-http',
-  'tool-browser': 'tool-browser',
-  mcp: 'mcp',
-  'plugin-admin': 'plugin-admin',
-  'orchestration-admin': 'orchestration-admin',
-  todo: 'todo',
-  question: 'question',
   session: 'session',
   compress: 'compress',
   memory: 'memory-store',
@@ -30,26 +22,54 @@ const PINS = {
   'evolve-metrics': 'evolve-metrics',
 }
 
-function start(providers = {}) {
+/** 扩展类 `tool-provider` 的世界成员（宿主按世界能力索引注入；提供方身份名，码元序）。 */
+const MANY_NEEDS = {
+  'tool-provider': [
+    'mcp',
+    'orchestration-admin',
+    'plugin-admin',
+    'question',
+    'todo',
+    'tool-browser',
+    'tool-fs',
+    'tool-http',
+    'tool-shell',
+  ],
+}
+
+function start(providers = {}, options = {}) {
   const schema = startBridgedService({
     cwd: SCHEMA_ROOT,
     entry: serviceEntry(SCHEMA_ROOT),
     timeoutMs: 15000,
   })
+  const extra = options.services ?? {}
+  const manyNeeds = { ...MANY_NEEDS, ...(options.manyNeeds ?? {}) }
   const registry = startBridgedService({
     cwd: PKG_ROOT,
     entry: ENTRY,
     timeoutMs: 15000,
-    env: { CHRONO_PLUGIN_PINS: JSON.stringify(PINS) },
+    env: {
+      CHRONO_PLUGIN_PINS: JSON.stringify(PINS),
+      CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify(manyNeeds),
+    },
     async onPortCall(message) {
       if (message.port === 'tool-schema') {
         return relayFrame(
           await schema.call('tool-schema', message.method, message.args ?? {}, message.env),
         )
       }
-      const fn = providers[message.port]?.describe
+      // 按成员定位的 many：帧 `provider` = 目标提供方身份名；否则为单值端口。
+      const dest = typeof message.provider === 'string' ? message.provider : message.port
+      const fn = providers[dest]?.describe
       if (typeof fn === 'function') return { ok: true, value: await fn(message.args) }
-      return { ok: false, code: 'unresolved_cap', message: `no provider ${String(message.port)}` }
+      const service = extra[dest]
+      if (service !== undefined) {
+        return relayFrame(
+          await service.call(message.port, message.method, message.args ?? {}, message.env),
+        )
+      }
+      return { ok: false, code: 'unresolved_cap', message: `no provider ${String(dest)}` }
     },
   })
   return {
@@ -58,12 +78,13 @@ function start(providers = {}) {
     close() {
       registry.close()
       schema.close()
+      for (const service of Object.values(extra)) service.close()
     },
   }
 }
 
-async function withService(providers, fn) {
-  const drv = start(providers)
+async function withService(providers, fn, options = {}) {
+  const drv = start(providers, options)
   try {
     await drv.hello('tool-registry')
     return await fn(drv)
@@ -311,4 +332,34 @@ test('坏 args：bag 非对象 → bad_args', async () => {
     assert.equal(bad.kind, 'error')
     assert.equal(bad.code, 'bad_args')
   })
+})
+
+test('零改动：新工具插件（fixture implements tool-provider）随世界成员表自动进目录', async () => {
+  const fixture = startBridgedService({
+    cwd: FIXTURE_ROOT,
+    entry: join(FIXTURE_ROOT, 'execute', 'main.mjs'),
+    timeoutMs: 15000,
+  })
+  try {
+    // 新增提供方 = 世界成员表多一项；tool-registry / list 代码与声明均不改。
+    await withService(
+      BASE_PROVIDERS,
+      async (drv) => {
+        const value = await listValue(drv, {})
+        const names = value.tools.map((tool) => tool.name)
+        assert.ok(names.includes('fixture.echo'), `目录应含 fixture.echo：${JSON.stringify(names)}`)
+        const tool = value.tools.find((item) => item.name === 'fixture.echo')
+        assert.equal(tool.provider, 'tool-fixture')
+        assert.equal(tool.kind, 'invoke')
+      },
+      {
+        services: { 'tool-fixture': fixture },
+        manyNeeds: {
+          'tool-provider': [...MANY_NEEDS['tool-provider'], 'tool-fixture'],
+        },
+      },
+    )
+  } finally {
+    fixture.close()
+  }
 })

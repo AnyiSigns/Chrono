@@ -31,12 +31,27 @@
           "required": ["mode", "input", "language"],
           "additionalProperties": true,
           "properties": {
-            "mode": { "type": "string", "description": "输入形态：command 跑一条命令；code 跑脚本 / 表达式。" },
+            "mode": {
+              "type": "string",
+              "description": "输入形态：command 跑一条命令；code 跑脚本 / 表达式。"
+            },
             "input": { "type": "string", "description": "命令串或代码片段。" },
-            "language": { "type": "string", "description": "mode=code 时的语言（白名单见 languages）。" },
-            "description": { "type": "string", "description": "一句话说明这条命令做什么（供审批与审计展示）。" },
-            "workdir": { "type": "string", "description": "本次命令的工作目录；相对路径以工作目录为基准。" },
-            "timeout_ms": { "type": "integer", "description": "本次执行的超时上限（毫秒）；不得超过声明上限。" }
+            "language": {
+              "type": "string",
+              "description": "mode=code 时的语言（白名单见 languages）。"
+            },
+            "description": {
+              "type": "string",
+              "description": "一句话说明这条命令做什么（供审批与审计展示）。"
+            },
+            "workdir": {
+              "type": "string",
+              "description": "本次命令的工作目录；相对路径以工作目录为基准。"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "description": "本次执行的超时上限（毫秒）；不得超过声明上限。"
+            }
           }
         },
         "boundaries": { "type": "string", "description": "使用边界：不做什么、该换哪个工具。" },

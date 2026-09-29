@@ -1,9 +1,10 @@
 {
   "identity": "orchestration-admin",
   "schema": "schema/orchestration-admin.json",
-  "implements": ["orchestration-admin"],
+  "implements": ["orchestration-admin", "tool-provider"],
   "methods": {
-    "orchestration-admin": ["describe", "invoke"]
+    "orchestration-admin": ["describe", "invoke"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {},
   "needs": {

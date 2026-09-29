@@ -85,7 +85,13 @@ function enqueue(params: Rec, bag: Rec, env: CallEnv, store: QuestionStore): Han
     return {
       value: {
         ok: true,
-        result: { ok: true, status: 'pending', id: existing['id'], count: store.count(), render: renderCard(existing) },
+        result: {
+          ok: true,
+          status: 'pending',
+          id: existing['id'],
+          count: store.count(),
+          render: renderCard(existing),
+        },
       },
       events: [],
     }
@@ -145,7 +151,8 @@ function validAnswers(value: Json[]): boolean {
     if (asString(item['question_id']) === null) return false
     const selected = item['selected']
     if (selected !== undefined && selected !== null) {
-      if (!Array.isArray(selected) || selected.some((piece) => typeof piece !== 'string')) return false
+      if (!Array.isArray(selected) || selected.some((piece) => typeof piece !== 'string'))
+        return false
     }
     const custom = item['custom']
     if (custom !== undefined && custom !== null && typeof custom !== 'string') return false
@@ -202,7 +209,11 @@ async function answerCommand(env: CallEnv, deps: QuestionDeps): Promise<HandlerR
   const render = renderCard(updated)
   const directives: Json[] = [
     // 续跑不再自带整份投影：`inject` 声明由宿主执行期把投影切片并入 args。
-    evalCommandDirective('chat.resume', { cursor, thread: itemThread, payload: { answers, render } }, { ids: ['ids'] }),
+    evalCommandDirective(
+      'chat.resume',
+      { cursor, thread: itemThread, payload: { answers, render } },
+      { ids: ['ids'] },
+    ),
     externDirective({ ok: true, status: 'answered', id, thread: itemThread, at, render }),
   ]
   return { value: { $directives: directives }, events: [] }
@@ -278,7 +289,10 @@ function sweep(env: CallEnv, store: QuestionStore): HandlerResult {
   }
   const run = env.run
   store.turnOpen(run)
-  store.updateItems(run, targets.map((item) => ({ ...item, expired: true })))
+  store.updateItems(
+    run,
+    targets.map((item) => ({ ...item, expired: true })),
+  )
   store.turnClose(run)
   return { value: externOnly({ ok: true, changed: true, expired: targets.length }), events: [] }
 }

@@ -8,7 +8,14 @@ import assert from 'node:assert/strict'
 import { webfetch } from '../execute/webfetch.ts'
 import { websearch } from '../execute/websearch.ts'
 import { webresearch } from '../execute/webresearch.ts'
-import { execOk, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
+import {
+  execOk,
+  fetcherStdout,
+  makeBackend,
+  makeCtx,
+  prefixRouter,
+  testConfig,
+} from './support.mjs'
 
 /** 与消费方 `isRecord` 同口径：非 null、非数组的对象。 */
 function isPlainObject(value) {
@@ -43,7 +50,9 @@ test('webfetch 文本结果带 digest {url,status,bytes}', async () => {
   const router = prefixRouter([
     [
       'https://page.test/',
-      execOk(fetcherStdout({ contentType: 'text/plain', body: 'hello', url: 'https://page.test/' })),
+      execOk(
+        fetcherStdout({ contentType: 'text/plain', body: 'hello', url: 'https://page.test/' }),
+      ),
     ],
   ])
   const { backend } = makeBackend(router)

@@ -46,21 +46,13 @@ test('plugin.json 15 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('needs：tool-registry + tool-schema + guard + 同批工具提供者类（逐个 one）', () => {
+test('needs：tool-registry + tool-schema + guard + tool-provider(many) + 绑定提供者类逐个 one', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.needs, {
     'tool-registry': { mode: 'one' },
     'tool-schema': { mode: 'one' },
     guard: { mode: 'one' },
-    'tool-fs': { mode: 'one' },
-    'tool-shell': { mode: 'one' },
-    'tool-http': { mode: 'one' },
-    'tool-browser': { mode: 'one' },
-    mcp: { mode: 'one' },
-    'plugin-admin': { mode: 'one' },
-    'orchestration-admin': { mode: 'one' },
-    todo: { mode: 'one' },
-    question: { mode: 'one' },
+    'tool-provider': { mode: 'many' },
     session: { mode: 'one' },
     compress: { mode: 'one' },
     memory: { mode: 'one' },

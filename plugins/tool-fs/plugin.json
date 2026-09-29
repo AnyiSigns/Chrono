@@ -1,9 +1,9 @@
 {
   "identity": "tool-fs",
   "schema": "schema/tool-fs.json",
-  "implements": ["tool-fs"],
+  "implements": ["tool-provider"],
   "methods": {
-    "tool-fs": ["describe", "invoke"]
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {
     "host": "host"

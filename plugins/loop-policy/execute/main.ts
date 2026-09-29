@@ -16,10 +16,11 @@ import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 const CAPABILITY = 'loop-policy'
 const LOG = makeLogger('loop-policy')
 /**
- * 反向调用等待上限。须严格大于被调用层最长的 `method_timeouts`（`model.chat` 3600000），
+ * 反向调用等待上限。须严格大于被调用层最长的 `method_timeouts`——段边界检查点经 `compress.summarize`
+ * 走图外语义压缩（`compress.summarize` 3900000，内层再嵌 `semantic.summarize` 3660000 / `model.chat` 3600000），
  * 否则本层先超时、内层安全网还没机会自收口；同时严格小于本层 `interpret` 的安全网（6000000）。
  */
-const PORT_CALL_TIMEOUT_MS = 3900000
+const PORT_CALL_TIMEOUT_MS = 4200000
 
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({

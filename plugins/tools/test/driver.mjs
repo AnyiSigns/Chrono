@@ -26,15 +26,6 @@ export const FACADE_PINS = {
 }
 export const REGISTRY_PINS = {
   'tool-schema': 'tool-schema',
-  'tool-fs': 'tool-fs',
-  'tool-shell': 'tool-shell',
-  'tool-http': 'tool-http',
-  'tool-browser': 'tool-browser',
-  mcp: 'mcp',
-  'plugin-admin': 'plugin-admin',
-  'orchestration-admin': 'orchestration-admin',
-  todo: 'todo',
-  question: 'question',
   session: 'session',
   compress: 'compress',
   memory: 'memory-store',
@@ -46,7 +37,30 @@ export const DISPATCH_PINS = {
   'tool-registry': 'tool-registry',
   'tool-schema': 'tool-schema',
   guard: 'guard',
-  ...Object.fromEntries(Object.entries(REGISTRY_PINS).filter(([port]) => port !== 'tool-schema')),
+  session: 'session',
+  compress: 'compress',
+  memory: 'memory-store',
+  retrieval: 'memory-retrieval',
+  'memory-maintenance': 'memory-consolidate',
+  'evolve-metrics': 'evolve-metrics',
+}
+
+/**
+ * 扩展类 `tool-provider` 的世界成员（宿主按世界能力索引注入；提供方身份名，码元序）。
+ * 加 / 减成员 = 世界变更；`tool-registry` 代码与声明零改动。
+ */
+export const MANY_NEEDS = {
+  'tool-provider': [
+    'mcp',
+    'orchestration-admin',
+    'plugin-admin',
+    'question',
+    'todo',
+    'tool-browser',
+    'tool-fs',
+    'tool-http',
+    'tool-shell',
+  ],
 }
 
 /** 兼容旧引用：门面有效 pins。 */
@@ -55,10 +69,12 @@ export const DEFAULT_PINS = FACADE_PINS
 /**
  * 启动门面与三个下游真实服务并返回请求 / 反向调用接口。`providers` 可后续用 `setProvider` 修改
  * （同一对象引用）；反向调用按「假提供者优先，其次真实下游服务，最后 unresolved_cap」递归路由。
+ * `options.services` 追加真实下游服务（如夹具工具插件）；`options.manyNeeds` 覆盖成员表。
  */
 export function startService(options = {}) {
   const providers = options.providers ?? {}
   const timeoutMs = options.timeoutMs ?? 15000
+  const manyNeeds = { ...MANY_NEEDS, ...(options.manyNeeds ?? {}) }
 
   const schema = startBridgedService({
     cwd: SCHEMA_ROOT,
@@ -69,7 +85,10 @@ export function startService(options = {}) {
     cwd: REGISTRY_ROOT,
     entry: serviceEntry(REGISTRY_ROOT),
     timeoutMs,
-    env: { CHRONO_PLUGIN_PINS: JSON.stringify(REGISTRY_PINS) },
+    env: {
+      CHRONO_PLUGIN_PINS: JSON.stringify(REGISTRY_PINS),
+      CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify(manyNeeds),
+    },
     onPortCall: (message) => route('tool-registry', message),
   })
   const dispatch = startBridgedService({
@@ -91,11 +110,14 @@ export function startService(options = {}) {
     'tool-registry': registry,
     'tool-dispatch': dispatch,
     tools,
+    ...(options.services ?? {}),
   }
 
   /** 递归路由一次反向调用：假提供者优先，其次真实下游服务，未知端口回 unresolved_cap。 */
   async function route(_origin, frame) {
-    const fake = providers[frame.port]?.[frame.method]
+    // 按成员定位的 many：帧 `provider` = 目标提供方身份名；否则为单值端口。
+    const dest = typeof frame.provider === 'string' ? frame.provider : frame.port
+    const fake = providers[dest]?.[frame.method]
     if (typeof fake === 'function') {
       try {
         const value = await fake(frame.args ?? {})
@@ -104,12 +126,12 @@ export function startService(options = {}) {
         return { ok: false, code: 'bridge_failed', message: String(err?.message ?? err) }
       }
     }
-    const downstream = services[frame.port]
+    const downstream = services[dest]
     if (downstream === undefined) {
       return {
         ok: false,
         code: 'unresolved_cap',
-        message: `no provider ${String(frame.port)}.${String(frame.method)}`,
+        message: `no provider ${String(dest)}.${String(frame.method)}`,
       }
     }
     return relayFrame(await downstream.call(frame.port, frame.method, frame.args ?? {}, frame.env))
@@ -142,6 +164,7 @@ export function startService(options = {}) {
       dispatch.close()
       registry.close()
       schema.close()
+      for (const service of Object.values(options.services ?? {})) service.close()
     },
   }
 }

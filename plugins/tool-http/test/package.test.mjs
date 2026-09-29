@@ -10,7 +10,11 @@ const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
 import { declaredCaps, NET_WEBFETCH } from '../execute/caps.ts'
-import { HOST_METHOD_TIMEOUT_MS, MAX_EXEC_BUDGET_MS, REVERSE_TIMEOUT_MARGIN_MS } from '../execute/reverse.ts'
+import {
+  HOST_METHOD_TIMEOUT_MS,
+  MAX_EXEC_BUDGET_MS,
+  REVERSE_TIMEOUT_MARGIN_MS,
+} from '../execute/reverse.ts'
 
 const DECL_FIELDS = [
   'identity',
@@ -34,8 +38,11 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tool-http')
   assert.equal(decl.schema, 'schema/tool-http.json')
-  assert.deepEqual(decl.implements, ['tool-http'])
-  assert.deepEqual(decl.methods, { 'tool-http': ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['tool-http', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    'tool-http': ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
@@ -59,7 +66,11 @@ test('schema/tool-http.json 声明两工具形状与免费源默认清单', () =
   assert.equal(schema.type, 'object')
   assert.deepEqual(schema.properties.websearch_request.required, ['query'])
   assert.deepEqual(schema.properties.webfetch_request.required, ['url'])
-  assert.deepEqual(schema.properties.webfetch_request.properties.format.enum, ['markdown', 'text', 'raw'])
+  assert.deepEqual(schema.properties.webfetch_request.properties.format.enum, [
+    'markdown',
+    'text',
+    'raw',
+  ])
   const defaults = schema.defaults
   assert.equal(defaults.version, 1)
   assert.equal(defaults.top_n, 10)
@@ -82,9 +93,15 @@ test('调用等待嵌套：调用方反向等待 > 宿主方法级超时 > 反�
   const methodTimeout = schema.method_timeouts['tool-http.invoke']
   assert.equal(methodTimeout, HOST_METHOD_TIMEOUT_MS)
   // tools 服务按工具声明 caps.timeout_ms + 10s 推反向等待（plugins/tools/execute/dispatch.ts:398）。
-  assert.ok(declaredCaps(NET_WEBFETCH).timeout_ms + 10_000 > methodTimeout, '调用方等待须大于宿主方法级超时')
+  assert.ok(
+    declaredCaps(NET_WEBFETCH).timeout_ms + 10_000 > methodTimeout,
+    '调用方等待须大于宿主方法级超时',
+  )
   // 插件内约束：host > reverse > exec。
-  assert.ok(MAX_EXEC_BUDGET_MS + REVERSE_TIMEOUT_MARGIN_MS < methodTimeout, '反向等待须小于宿主方法级超时')
+  assert.ok(
+    MAX_EXEC_BUDGET_MS + REVERSE_TIMEOUT_MARGIN_MS < methodTimeout,
+    '反向等待须小于宿主方法级超时',
+  )
 })
 
 test('execute/ 源码齐全', () => {

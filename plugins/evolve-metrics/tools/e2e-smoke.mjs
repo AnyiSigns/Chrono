@@ -1,8 +1,8 @@
 // `evolve-metrics` 宿主装配 E2E（**不真跑 cargo 物化**）：
-// pack evolve-metrics（pins `host`）→ seed → 离线读世界，验证声明（identity / implements / methods /
-// pins.host / start / members）、schema 的 `periodic` 两拍（sweep + aggregate，aggregate.reads 注入
-// trace + thresholds）、`.worldignore` 效果（test/ / target/ / tools/ 不入源码树，src/ / execute/ /
-// schema/ / Cargo.toml / Cargo.lock 入树）。
+// pack evolve-metrics（残留门面，needs 四个提供方）→ seed → 离线读世界，验证声明
+// （identity / implements / methods / needs / pins / start / members）、schema 不再含 `periodic`
+// （周期触发随方法迁入 evolve-evidence / evolve-sweep）、`.worldignore` 效果（test/ / target/ /
+// tools/ 不入源码树，src/ / execute/ / schema/ / Cargo.toml / Cargo.lock 入树）。
 // 说明：本脚本只做离线入世与投影读，**不起宿主**，故不触发 H15 依赖物化（cargo build）。
 // 用法：node plugins/evolve-metrics/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
@@ -13,7 +13,6 @@ import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
-import { HOST_CAPABILITY } from '../../../packages/host/host-methods.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
@@ -35,7 +34,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -94,30 +95,27 @@ function main() {
   assert.deepEqual(decl.implements, ['evolve-metrics'])
   assert.deepEqual(decl.methods['evolve-metrics'], ['aggregate', 'sweep', 'shadow', 'record'])
   assert.equal(decl.start, 'node execute/launch.mjs')
-  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.needs, {
+    'evolve-ledger': { mode: 'one' },
+    'evolve-evidence': { mode: 'one' },
+    'evolve-sweep': { mode: 'one' },
+    'evolve-shadow': { mode: 'one' },
+  })
   assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(
-    decl.members.map((member) => member.path).sort(),
-    ['execute/', 'schema/', 'src/'],
-  )
-  // pins.host 在世界里解析为宿主保留能力类哈希（H14）。
-  assert.equal(gen.pins.host, HOST_CAPABILITY, 'pins.host 未解析到宿主保留能力类')
-  console.log('声明：identity / implements / methods / start / members / pins.host 就位')
+  assert.deepEqual(decl.members.map((member) => member.path).sort(), [
+    'execute/',
+    'schema/',
+    'src/',
+  ])
+  console.log('声明：identity / implements / methods / needs / pins / start / members 就位')
 
-  // schema periodic：两拍 sweep + aggregate；aggregate.reads 注入 trace + thresholds。
+  // schema 不再含 periodic：周期触发随方法迁入 evolve-evidence / evolve-sweep。
   const schema = world.defs[identity.schema].body
-  assert.ok(Array.isArray(schema.periodic), 'schema 缺 periodic 数组')
-  assert.equal(schema.periodic.length, 2)
-  const sweep = schema.periodic.find((entry) => entry.method === 'sweep')
-  const aggregate = schema.periodic.find((entry) => entry.method === 'aggregate')
-  assert.ok(sweep !== undefined && aggregate !== undefined, 'periodic 缺 sweep / aggregate')
-  assert.ok(sweep.every_ms > 0 && aggregate.every_ms > 0)
-  assert.deepEqual(aggregate.reads.trace, ['ids', 'evolution'])
-  assert.deepEqual(aggregate.reads.thresholds, ['ids', 'loop-policy'])
-  assert.ok(sweep.reads.trace !== undefined && sweep.reads.verdicts !== undefined)
+  assert.ok(schema.periodic === undefined, '门面 schema 不应再含 periodic')
   // 数值调参不重定义：schema 里不出现聚类阈值字段。
   assert.ok(!JSON.stringify(schema).includes('failure_cluster_n'), 'schema 不应重定义聚类阈值')
-  console.log('periodic：sweep + aggregate 两拍，reads 注入 trace / thresholds')
+  console.log('schema：无 periodic（随方法迁出），不重定义聚类阈值')
 
   // .worldignore：test/ / target/ / tools/ 不入树；契约必需文件与源码入树。
   const all = [...tree.keys()]
@@ -136,11 +134,8 @@ function main() {
     'src/main.rs',
     'src/lib.rs',
     'src/protocol.rs',
-    'src/aggregate.rs',
-    'src/evidence.rs',
-    'src/shadow.rs',
-    'src/sweep.rs',
-    'src/record.rs',
+    'src/port.rs',
+    'src/error.rs',
   ]) {
     assert.ok(all.includes(required), `源码树缺 ${required}（实有：${all.join(', ')}）`)
   }

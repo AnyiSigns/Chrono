@@ -106,6 +106,8 @@ test('反向调用等待上限落在被调用层与属主层安全网之间', ()
   // loop-policy 的反向调用打到 model.chat，其属主层是 loop-policy.interpret。
   const loopCap = reverseCap('loop-policy/execute/main.ts')
   assert.ok(loopCap > MODEL_TIMEOUTS['model.chat'], 'loop-policy 反向上限必须大于 model.chat')
+  // 段边界检查点经 compress.summarize 走图外语义压缩 ⇒ 反向上限也须大于该层声明超时。
+  assert.ok(loopCap > COMPRESS_TIMEOUTS['compress.summarize'], 'loop-policy 反向上限必须大于 compress.summarize')
   assert.ok(loopCap < LOOP_TIMEOUTS['loop-policy.interpret'], 'loop-policy 反向上限必须小于 loop-policy.interpret')
 
   // chat 的反向调用打到 loop-policy.interpret，其属主层是 chat.send。
@@ -156,7 +158,7 @@ test('安全网值与约定一致（不得缩小）', () => {
   assert.equal(MAINT_TIMEOUTS['memory-maintenance.consolidate'], 4800000)
   assert.equal(MAINT_TIMEOUTS['memory-maintenance.sweep'], 900000)
   assert.equal(reverseCap('chat/execute/main.ts'), 6150000)
-  assert.equal(reverseCap('loop-policy/execute/main.ts'), 3900000)
+  assert.equal(reverseCap('loop-policy/execute/main.ts'), 4200000)
   // 本地 fs / CPU 层（属主在别处声明），只核验已按表声明，不改它。
   assert.equal(CONTEXT_TIMEOUTS['context.build'], 120000)
 })

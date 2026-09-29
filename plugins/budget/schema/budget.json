@@ -1,0 +1,134 @@
+{
+  "title": "budget（预算建模与 token 校准）",
+  "description": "身份自述 / 数据契约：由模型档案与生效 policy 数值算出上下文预算标量与每来源配额上限（窗 − 输出 − 余量），并维护每模型 token 校正系数（真实 prompt_tokens / 估算的指数滑动平均）。系数状态落 CHRONO_PLUGIN_STATE/calibration.json（③ 可重算，可随时删）。确定、同输入同输出、不取时间 / 随机；服务不读投影、无写通道。消息级配额分配（allocate / retention / order / pairing）留消费方 `context-window`。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "budget.model": ["config"],
+    "budget.factor": [],
+    "budget.observe": ["usage"]
+  },
+  "properties": {
+    "model_request": {
+      "type": "object",
+      "description": "model 入参：模型档案 config（可 null）+ 生效 policy 数值（单一真源在消费方）。",
+      "required": ["config", "policy"],
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "type": ["object", "null"],
+          "description": "模型档案：context_window / max_output；缺失回落默认并标 profile_missing。"
+        },
+        "policy": {
+          "type": "object",
+          "description": "生效 policy 数值：margin_ratio / default_context_window / default_max_output / quota 比例。",
+          "additionalProperties": true,
+          "properties": {
+            "margin_ratio": { "type": "number", "minimum": 0 },
+            "default_context_window": { "type": "number", "minimum": 0 },
+            "default_max_output": { "type": "number", "minimum": 0 },
+            "quota": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "l2": { "type": "number", "minimum": 0 },
+                "l1": { "type": "number", "minimum": 0 },
+                "skill": { "type": "number", "minimum": 0 },
+                "recall": { "type": "number", "minimum": 0 },
+                "style": { "type": "number", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "model_result": {
+      "type": "object",
+      "description": "model 结果：预算标量、窗口 / 输出保留 / 余量、来源（profile / default）与每来源配额上限。",
+      "required": ["budget", "context_window", "max_output", "margin", "origin", "flags", "quota"],
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "type": "integer",
+          "description": "总输入预算 = context_window − max_output − margin。"
+        },
+        "context_window": { "type": "number", "description": "生效上下文窗口。" },
+        "max_output": { "type": "number", "description": "生效输出保留（封顶到半个窗口）。" },
+        "margin": { "type": "number", "description": "余量 = floor(window × margin_ratio)。" },
+        "origin": { "enum": ["profile", "default"], "description": "预算来源。" },
+        "flags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "如 profile_missing（档案缺 context_window / max_output）。"
+        },
+        "quota": {
+          "type": "object",
+          "description": "每来源配额上限（token，占预算比例取整；未用额度下滚给历史）。",
+          "required": ["l2", "l1", "skill", "recall", "style"],
+          "additionalProperties": false,
+          "properties": {
+            "l2": { "type": "integer", "minimum": 0 },
+            "l1": { "type": "integer", "minimum": 0 },
+            "skill": { "type": "integer", "minimum": 0 },
+            "recall": { "type": "integer", "minimum": 0 },
+            "style": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "factor_request": {
+      "type": "object",
+      "description": "factor 入参：模型名。",
+      "required": ["model"],
+      "additionalProperties": false,
+      "properties": { "model": { "type": "string", "minLength": 1 } }
+    },
+    "factor_result": {
+      "type": "object",
+      "description": "factor 结果：当前生效的每模型校正系数（无则 1）。",
+      "required": ["factor"],
+      "additionalProperties": false,
+      "properties": { "factor": { "type": "number", "minimum": 0 } }
+    },
+    "observe_request": {
+      "type": "object",
+      "description": "observe 入参：模型名 + 本次装配估算（按旧系数缩放后）+ 真实 usage（可 null）。",
+      "required": ["model", "estimate"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "estimate": { "type": "number", "minimum": 0 },
+        "usage": {
+          "type": ["object", "null"],
+          "description": "模型回包用量（厂商键：prompt_tokens / *_tokens / cached_tokens / cache_read_input_tokens / cache_creation_input_tokens …）。"
+        }
+      }
+    },
+    "observe_result": {
+      "type": "object",
+      "description": "observe 结果：更新后系数 + 本次解析出的用量形状（无 prompt_tokens 则 usage 为 null）。",
+      "required": ["factor", "usage"],
+      "additionalProperties": true,
+      "properties": {
+        "factor": { "type": "number", "minimum": 0 },
+        "usage": { "type": ["object", "null"] }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（缺必填字段 / model 非空串 / estimate 非负数）。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "budget.model": 30000,
+    "budget.factor": 10000,
+    "budget.observe": 30000
+  }
+}

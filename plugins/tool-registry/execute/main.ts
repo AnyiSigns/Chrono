@@ -25,6 +25,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     handlers: createHandlers({
       link,
       pins: ctx.pins === undefined ? [] : Object.keys(ctx.pins),
+      manyProviders: ctx.manyNeeds?.['tool-provider'] ?? [],
     }),
     emit: ctx.emit,
     log: LOG,

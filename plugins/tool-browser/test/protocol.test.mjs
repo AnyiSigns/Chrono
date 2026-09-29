@@ -60,7 +60,12 @@ function startService(envOverrides = {}) {
               id: message.id,
               kind: 'port.result',
               ok: true,
-              value: { platform: 'test', implementations: [], default_impl: 'native', enforcement: { net: 'declaration' } },
+              value: {
+                platform: 'test',
+                implementations: [],
+                default_impl: 'native',
+                enforcement: { net: 'declaration' },
+              },
             }),
           )
         } else if (message.port === 'host' && message.method === 'asset.put') {
@@ -71,12 +76,24 @@ function startService(envOverrides = {}) {
               id: message.id,
               kind: 'port.result',
               ok: true,
-              value: { kind: 'asset', sha256: createHash('sha256').update(bytes).digest('hex'), mime: message.args.mime, size: bytes.length },
+              value: {
+                kind: 'asset',
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+                mime: message.args.mime,
+                size: bytes.length,
+              },
             }),
           )
         } else {
           child.stdin.write(
-            encodeFrame({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'unresolved_cap', message: 'no bridge' }),
+            encodeFrame({
+              v: '1',
+              id: message.id,
+              kind: 'port.error',
+              ok: false,
+              error: 'unresolved_cap',
+              message: 'no bridge',
+            }),
           )
         }
         continue
@@ -124,7 +141,13 @@ function startService(envOverrides = {}) {
   }
 }
 
-const bag = (args, extra = {}) => ({ tool: 'webbrowser', args, tier: 'auto', caps: { net: 'all' }, ...extra })
+const bag = (args, extra = {}) => ({
+  tool: 'webbrowser',
+  args,
+  tier: 'auto',
+  caps: { net: 'all' },
+  ...extra,
+})
 
 test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 自退出', async () => {
   const drv = startService()
@@ -132,8 +155,9 @@ test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'tool-browser')
-    assert.deepEqual(manifest.implements, ['tool-browser'])
+    assert.deepEqual(manifest.implements, ['tool-browser', 'tool-provider'])
     assert.deepEqual(manifest.methods['tool-browser'], ['describe', 'invoke'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
@@ -157,9 +181,17 @@ test('describe 回 webbrowser 契约；未知方法 / 能力类结构化错误',
     assert.equal(tool.caps.fs.read, 'none')
     assert.equal(tool.idempotent, false)
     assert.deepEqual(tool.render.detail, { kind: 'json' })
-    const unknownMethod = await drv.request('call', { port: 'tool-browser', method: 'nope', args: {} }, 'error')
+    const unknownMethod = await drv.request(
+      'call',
+      { port: 'tool-browser', method: 'nope', args: {} },
+      'error',
+    )
     assert.equal(unknownMethod.code, 'unknown_method')
-    const unknownCap = await drv.request('call', { port: 'other', method: 'describe', args: {} }, 'error')
+    const unknownCap = await drv.request(
+      'call',
+      { port: 'other', method: 'describe', args: {} },
+      'error',
+    )
     assert.equal(unknownCap.code, 'unresolved_cap')
   } finally {
     drv.close()
@@ -175,17 +207,23 @@ test('会话行为：open → navigate → click → extract → screenshot → 
     const session = opened.value.result.session
     assert.equal(session, 'test-run~1')
 
-    const navigated = await drv.call('invoke', bag({ action: 'navigate', session, url: 'https://example.com' }))
+    const navigated = await drv.call(
+      'invoke',
+      bag({ action: 'navigate', session, url: 'https://example.com' }),
+    )
     assert.deepEqual(navigated.value.result, {
       status: 200,
       url: 'https://example.com',
       title: 'title:https://example.com',
       digest: { action: 'navigate', url: 'https://example.com', status: 200 },
     })
-    assert.deepEqual((await drv.call('invoke', bag({ action: 'click', session, selector: '#a' }))).value.result, {
-      ok: true,
-      digest: { action: 'click' },
-    })
+    assert.deepEqual(
+      (await drv.call('invoke', bag({ action: 'click', session, selector: '#a' }))).value.result,
+      {
+        ok: true,
+        digest: { action: 'click' },
+      },
+    )
     assert.deepEqual((await drv.call('invoke', bag({ action: 'extract', session }))).value.result, {
       text: 'hello body',
       digest: { action: 'extract', bytes: Buffer.byteLength('hello body', 'utf8') },
@@ -202,7 +240,10 @@ test('会话行为：open → navigate → click → extract → screenshot → 
       closed: true,
       digest: { action: 'close', closed: true },
     })
-    const after = await drv.call('invoke', bag({ action: 'navigate', session, url: 'https://x.test' }))
+    const after = await drv.call(
+      'invoke',
+      bag({ action: 'navigate', session, url: 'https://x.test' }),
+    )
     assert.equal(after.value.error.code, 'session_not_found')
   } finally {
     drv.close()
@@ -214,7 +255,9 @@ test('反向 port.call 回带发起 call 帧 id（call_id）', async () => {
   try {
     await drv.hello()
     const opened = await drv.call('invoke', bag({ action: 'open' }))
-    const capabilities = drv.portCalls.find((call) => call.port === 'sandbox' && call.method === 'capabilities')
+    const capabilities = drv.portCalls.find(
+      (call) => call.port === 'sandbox' && call.method === 'capabilities',
+    )
     assert.ok(capabilities !== undefined, '应经反向 port.call 咨询 sandbox.capabilities')
     assert.equal(capabilities.call_id, opened.id)
 
@@ -258,9 +301,17 @@ test('会话空闲超 TTL 自动回收', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const opened = await drv.call('invoke', bag({ action: 'open' }), { run: 'ttl-run', thread: null, now: 0 })
+    const opened = await drv.call('invoke', bag({ action: 'open' }), {
+      run: 'ttl-run',
+      thread: null,
+      now: 0,
+    })
     const session = opened.value.result.session
-    const after = await drv.call('invoke', bag({ action: 'extract', session }), { run: 'ttl-run', thread: null, now: 999999 })
+    const after = await drv.call('invoke', bag({ action: 'extract', session }), {
+      run: 'ttl-run',
+      thread: null,
+      now: 999999,
+    })
     assert.equal(after.value.error.code, 'session_not_found')
   } finally {
     drv.close()

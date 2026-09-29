@@ -1,669 +1,236 @@
 // 能力类 `memory-maintenance` 的方法表：consolidate / sweep / candidates / view / edit。
-// L1/L2（short-memory）与 L3（memory-store）都是运行记录，已出世界：本服务经反向调用读写 owner 服务，
-// 不再构造世界写计划。去重 / 切块经反向调用 `embedding`；需要摘要时经反向调用 `compress`（persist:false）。
-// sweep 水位住宿主侧 ③（可重算）；服务不自取时钟。
+// 本插件退化为**时序编排门面**：保留原公开方法面与返回形状，按 layer 把算法委派给三个提供方
+// （`l1-maintenance` / `l2-maintenance` / `l3-maintenance`）；自身不直接读写 owner 服务、
+// 不读投影、不产世界写计划、不自取时钟（时间由调用帧 env 传入）。
+// `sweep` 水位住宿主侧 ③（可重算），由本门面读写；是否推进水位取决于三层汇总是否有变更。
 
+import { asString, isRecord, nowOf, errorValue } from 'plugin-sdk'
 import { resolveParams } from './config.ts'
-import type { MaintenanceParams } from './config.ts'
-import {
-  asString,
-  asStringList,
-  errorValue,
-  isRecord,
-  isoAt,
-  nowOf,
-  uniqueStrings,
-} from './plan.ts'
-import {
-  deriveEntryId,
-  parseIso,
-  recordAt,
-  sessionsOf,
-  stringArray,
-  workspacesOf,
-} from './memory.ts'
-import type { LiveEntry } from './memory.ts'
-import { dedupByCosine } from './vectors.ts'
-import { atOrBefore, readWatermark, writeWatermark } from './watermark.ts'
+import { isoAt } from './plan.ts'
+import { readWatermark, writeWatermark } from './watermark.ts'
 import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
-import type {
-  CompressBackend,
-  EmbeddingBackend,
-  MemoryBackend,
-  SessionBackend,
-  ShortMemoryBackend,
-  TokenizerBackend,
-} from './port-link.ts'
+import type { L1Backend, L2Backend, L3Backend } from './port-link.ts'
 
 const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
-const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
 
-/** 后端注入：生产环境是反向调用，单测注入假后端。 */
+/** 后端注入：生产环境反向调用三个提供方，单测注入假后端。 */
 export interface MaintenanceDeps {
-  embedding: EmbeddingBackend
-  tokenizer: TokenizerBackend
-  compress: CompressBackend
-  shortMemory: ShortMemoryBackend
-  memory: MemoryBackend
-  session: SessionBackend
-}
-
-interface Context {
-  args: Rec
-  shortMemory: Rec
-  session: Rec
-  entries: LiveEntry[]
-  pinned: Rec
-  params: MaintenanceParams
-  model: string
-  at: string
-  now: number
+  l1: L1Backend
+  l2: L2Backend
+  l3: L3Backend
 }
 
 function toFailure(err: unknown): { code: string; message: string } {
   if (err instanceof BackendError) return { code: err.code, message: err.message }
-  if (err instanceof BadArgsError) return { code: 'bad_args', message: err.message }
   return {
     code: 'internal',
     message: err instanceof Error ? err.message : 'memory-maintenance failed',
   }
 }
 
-/** 读 L1/L2（short-memory）、L3 存活条目 + pinned（memory-store）、会话归属（session）。 */
-async function loadState(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Context> {
-  const record = isRecord(args) ? args : {}
-  const shortMemory = await deps.shortMemory.read()
-  const session = await deps.session.read()
-  const listed = await deps.memory.list()
-  const rawEntries = Array.isArray(listed['entries']) ? (listed['entries'] as Json[]) : []
-  const entries: LiveEntry[] = []
-  for (const item of rawEntries) {
-    if (!isRecord(item) || typeof item['id'] !== 'string') continue
-    const meta = isRecord(item['meta']) ? (item['meta'] as Rec) : {}
-    entries.push({
-      hash: item['id'] as string,
-      id: item['id'] as string,
-      text: typeof item['text'] === 'string' ? (item['text'] as string) : '',
-      meta,
-      weight: typeof item['weight'] === 'number' ? (item['weight'] as number) : undefined,
-      at: asString(meta['at']) ?? '',
-    })
-  }
-  const pinned = isRecord(listed['pinned']) ? (listed['pinned'] as Rec) : {}
-  const now = nowOf(env, record)
+/** 提供方结构化失败值（`{ok:false,error:{code,message}}`）→ 失败码与描述。 */
+function failureOf(value: Rec): { code: string; message: string } {
+  const error = isRecord(value['error']) ? (value['error'] as Rec) : {}
   return {
-    args: record,
-    shortMemory,
-    session,
-    entries,
-    pinned,
-    params: resolveParams(record),
-    model: asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
-    at: isoAt(now),
-    now,
+    code: typeof error['code'] === 'string' ? (error['code'] as string) : 'internal',
+    message: typeof error['message'] === 'string' ? (error['message'] as string) : '',
   }
 }
 
-/** #11 会话 → 工作区归属（按 conversations[].workspace_id）。 */
-function conversationWorkspaceMap(session: Rec): Map<string, string> {
-  const map = new Map<string, string>()
-  const list = Array.isArray(session['conversations']) ? (session['conversations'] as Json[]) : []
-  for (const item of list) {
-    if (!isRecord(item)) continue
-    const id = asString(item['id'])
-    const workspace = asString(item['workspace_id'])
-    if (id !== null && workspace !== null && !map.has(id)) map.set(id, workspace)
-  }
-  return map
+function arrayOf(value: Json | undefined): Json[] {
+  return Array.isArray(value) ? value : []
 }
 
-function sameStringList(left: Json | undefined, right: Json | undefined): boolean {
-  const a = stringArray(left)
-  const b = stringArray(right)
-  if (a.length !== b.length) return false
-  return a.every((item, index) => item === b[index])
+/** 读 args / env 的公共上下文：now（不自取时钟）与 ISO at。 */
+function contextOf(args: Json, env: CallEnv): { args: Rec; now: number; at: string } {
+  const record = isRecord(args) ? args : {}
+  const now = nowOf(env, record)
+  return { args: record, now, at: isoAt(now) }
 }
 
-/** L2 是否实质变化（不含 `at` 刷新）：goal / 四个列表 / sources 任一不同即变。 */
-function l2Changed(existing: Rec, next: Rec): boolean {
-  const left = isRecord(existing['summary']) ? (existing['summary'] as Rec) : {}
-  const right = isRecord(next['summary']) ? (next['summary'] as Rec) : {}
-  if ((asString(left['goal']) ?? '') !== (asString(right['goal']) ?? '')) return true
-  for (const field of LIST_FIELDS) {
-    if (!sameStringList(left[field], right[field])) return true
-  }
-  return !sameStringList(existing['sources'], next['sources'])
-}
-
-interface L1Record {
-  id: string
-  at: string
-  atMs: number
-  workspace: string
-  summary: Rec
-}
-
-/** 分组 L1：按工作区归属；无归属（会话未映射且无显式 workspace）的会话跳过，不盲合并。 */
-function groupL1(ctx: Context): Map<string, L1Record[]> {
-  const sessions = sessionsOf(ctx.shortMemory)
-  const wsMap = conversationWorkspaceMap(ctx.session)
-  const explicit = asString(ctx.args['workspace'])
-  const groups = new Map<string, L1Record[]>()
-  for (const conversationId of Object.keys(sessions).sort()) {
-    const record = sessions[conversationId]
-    if (!isRecord(record)) continue
-    const workspace = wsMap.get(conversationId) ?? explicit
-    if (workspace === null) continue
-    const at = asString(record['at']) ?? ctx.at
-    const list = groups.get(workspace) ?? []
-    list.push({
-      id: conversationId,
-      at,
-      atMs: parseIso(at) ?? ctx.now,
-      workspace,
-      summary: isRecord(record['summary']) ? (record['summary'] as Rec) : {},
-    })
-    groups.set(workspace, list)
-  }
-  return groups
-}
-
-/** 需要摘要时 eff #19：把合并后的列表交给 compress.summarize（persist:false，只算不写）。 */
-async function summarizeWorkspace(
-  ctx: Context,
-  deps: MaintenanceDeps,
-  workspace: string,
-  l1s: L1Record[],
-  merged: Rec,
-): Promise<{ goal: string; facts: string[] } | { error: { code: string; message: string } }> {
-  try {
-    const payload = await deps.compress.summarize({
-      conversation: l1s[0]?.id ?? '',
-      workspace,
-      mode: 'algorithmic',
-      persist: false,
-      goal: asString(merged['goal']) ?? '',
-      facts: stringArray(merged['facts']),
-      decisions: stringArray(merged['decisions']),
-      open_questions: stringArray(merged['open_questions']),
-      files: stringArray(merged['files']),
-    })
-    const summary = isRecord(payload['summary']) ? (payload['summary'] as Rec) : {}
-    return { goal: asString(summary['goal']) ?? '', facts: stringArray(summary['facts']) }
-  } catch (err) {
-    const failure = toFailure(err)
-    return { error: { code: failure.code, message: failure.message } }
-  }
-}
-
-/** L1 合并进 L2（去重向量由 #20 提供）→ L2 高价值项固化进 L3 → 写 owner 服务。 */
+/** 时序编排：L2 合并（L1→L2）→ L3 固化（L2→L3）；返回原 consolidate 形状。 */
 async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = await loadState(args, env, deps)
-  const summarize = ctx.args['summarize'] === true
-  const groups = groupL1(ctx)
-  if (groups.size === 0) {
-    return { ok: true, kind: 'consolidate', at: ctx.at, no_input: true, merged: [], solidified: [] }
+  const { args: record, now, at } = contextOf(args, env)
+  const params = resolveParams(record)
+  const base: Rec = {
+    ...record,
+    now,
+    dedup_threshold: params.dedupThreshold,
+    embedding_model: asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
   }
 
-  const existingWorkspaces = workspacesOf(ctx.shortMemory)
-  const nextWorkspaces: Rec = { ...existingWorkspaces }
-  const changedWorkspaces: Rec = {}
-  const mergedPayload: Rec[] = []
-  const sourcesByWorkspace = new Map<string, string[]>()
-  const nextSummaries = new Map<string, Rec>()
-
-  for (const workspace of [...groups.keys()].sort()) {
-    const l1s = (groups.get(workspace) ?? []).sort((left, right) =>
-      left.atMs !== right.atMs ? right.atMs - left.atMs : left.id < right.id ? -1 : 1,
-    )
-    const existingL2 = recordAt(existingWorkspaces, workspace)
-    const existingSummary = isRecord(existingL2['summary']) ? (existingL2['summary'] as Rec) : {}
-    const nextSummary: Rec = {}
-    // L2 列表按最旧在前（与 compress 追加写一致）：sweep 超容量时从最旧一端裁。
-    for (const field of LIST_FIELDS) {
-      const items = []
-      for (const l1 of l1s) {
-        for (const text of stringArray(l1.summary[field])) {
-          items.push({ key: `l1:${l1.id}:${field}:${text}`, text, at: l1.at, priority: 1 })
-        }
-      }
-      for (const text of stringArray(existingSummary[field])) {
-        items.push({
-          key: `l2:${workspace}:${field}:${text}`,
-          text,
-          at: asString(existingL2['at']) ?? '',
-          priority: 2,
-        })
-      }
-      const result = await dedupByCosine(
-        items,
-        ctx.params.dedupThreshold,
-        deps.tokenizer,
-        deps.embedding,
-        ctx.model,
-      )
-      nextSummary[field] = result.accepted.map((item) => item.text).reverse()
-    }
-    nextSummary['goal'] = asString(existingSummary['goal']) ?? ''
-    if (summarize) {
-      const summarized = await summarizeWorkspace(ctx, deps, workspace, l1s, nextSummary)
-      if ('error' in summarized) return errorValue(summarized.error.code, summarized.error.message)
-      nextSummary['goal'] = summarized.goal
-      const items = summarized.facts.map((text, index) => ({
-        key: `s:${index}:${text}`,
-        text,
-        at: ctx.at,
-        priority: 1,
-      }))
-      const result = await dedupByCosine(
-        items,
-        ctx.params.dedupThreshold,
-        deps.tokenizer,
-        deps.embedding,
-        ctx.model,
-      )
-      nextSummary['facts'] = result.accepted.map((item) => item.text).reverse()
-    }
-    const existingSources = stringArray(existingL2['sources'])
-    const added = l1s.map((l1) => l1.id).filter((id) => !existingSources.includes(id))
-    const sources = uniqueStrings([...added, ...existingSources])
-    sourcesByWorkspace.set(workspace, sources)
-    nextSummaries.set(workspace, nextSummary)
-    const nextL2: Rec = { ...existingL2, summary: nextSummary, sources, at: ctx.at }
-    if (l2Changed(existingL2, nextL2)) {
-      nextWorkspaces[workspace] = nextL2
-      changedWorkspaces[workspace] = nextL2
-      mergedPayload.push({
-        workspace,
-        facts: stringArray(nextSummary['facts']).length,
-        sources: added,
-      })
-    }
+  const merged = await deps.l2.merge(base)
+  if (merged['ok'] === false) {
+    const failure = failureOf(merged)
+    return errorValue(failure.code, failure.message)
+  }
+  if (merged['no_input'] === true) {
+    return { ok: true, kind: 'consolidate', at, no_input: true, merged: [], solidified: [] }
   }
 
-  const shortChanged = mergedPayload.length > 0
-
-  // L2 高价值项固化进 L3：weight ≥ 阈值（或 high_value 强制）；与现有 L3 / 彼此余弦去重。
-  const weights = isRecord(ctx.args['item_weights']) ? (ctx.args['item_weights'] as Rec) : {}
-  const highValue = asStringList(ctx.args['high_value'], 'high_value')
-  const candidates: Array<{ workspace: string; text: string; weight: number }> = []
-  for (const workspace of [...nextSummaries.keys()].sort()) {
-    const summary = nextSummaries.get(workspace) as Rec
-    const sources = sourcesByWorkspace.get(workspace) ?? []
-    const derived = Math.min(1, sources.length / ctx.params.solidifyFullSources)
-    for (const field of ['facts', 'decisions']) {
-      for (const text of stringArray(summary[field])) {
-        const explicit =
-          typeof weights[text] === 'number' && Number.isFinite(weights[text])
-            ? (weights[text] as number)
-            : null
-        const weight = explicit ?? derived
-        if (weight >= ctx.params.weightThreshold || highValue.includes(text)) {
-          candidates.push({ workspace, text, weight })
-        }
-      }
-    }
+  const solidifyArgs: Rec = {
+    ...base,
+    workspaces: arrayOf(merged['workspaces']),
+    weight_threshold: params.weightThreshold,
+    solidify_full_sources: params.solidifyFullSources,
+  }
+  const solidified = await deps.l3.solidify(solidifyArgs)
+  if (solidified['ok'] === false) {
+    const failure = failureOf(solidified)
+    return errorValue(failure.code, failure.message)
   }
 
-  let toAdd: Array<{ workspace: string; text: string; weight: number }> = []
-  if (candidates.length > 0) {
-    const items = [
-      ...ctx.entries.map((entry) => ({
-        key: `l3:${entry.id}`,
-        text: entry.text,
-        at: entry.at,
-        priority: 0,
-      })),
-      ...candidates.map((candidate) => ({
-        key: `new:${candidate.workspace}:${candidate.text}`,
-        text: candidate.text,
-        at: '',
-        priority: 1,
-      })),
-    ]
-    const result = await dedupByCosine(
-      items,
-      ctx.params.dedupThreshold,
-      deps.tokenizer,
-      deps.embedding,
-      ctx.model,
-    )
-    const accepted = new Set(result.accepted.map((item) => item.key))
-    toAdd = candidates.filter((candidate) =>
-      accepted.has(`new:${candidate.workspace}:${candidate.text}`),
-    )
+  const mergedList = arrayOf(merged['merged'])
+  const solidifiedList = arrayOf(solidified['solidified'])
+  if (mergedList.length === 0 && solidifiedList.length === 0) {
+    return { ok: true, kind: 'consolidate', at, merged: [], solidified: [], no_change: true }
   }
-
-  if (!shortChanged && toAdd.length === 0) {
-    return {
-      ok: true,
-      kind: 'consolidate',
-      at: ctx.at,
-      merged: [],
-      solidified: [],
-      no_change: true,
-    }
-  }
-
-  const entries: Rec[] = []
-  const solidifiedPayload: Rec[] = []
-  for (const candidate of toAdd) {
-    const id = deriveEntryId(candidate.workspace, candidate.text, ctx.at)
-    const sources = sourcesByWorkspace.get(candidate.workspace) ?? []
-    const meta: Rec = {
-      source: 'consolidate',
-      workspace: candidate.workspace,
-      at: ctx.at,
-      tags: [],
-    }
-    if (sources.length > 0) meta['session'] = sources[0]
-    entries.push({ id, text: candidate.text, meta, weight: candidate.weight })
-    solidifiedPayload.push({
-      id,
-      workspace: candidate.workspace,
-      weight: candidate.weight,
-      text: candidate.text,
-    })
-  }
-
-  if (shortChanged) await deps.shortMemory.apply({ set_workspaces: changedWorkspaces })
-  if (entries.length > 0) await deps.memory.append({ entries })
-
   return {
     ok: true,
     kind: 'consolidate',
-    at: ctx.at,
+    at,
     dedup: 'vector',
-    summary_used: summarize,
-    merged: mergedPayload,
-    solidified: solidifiedPayload,
+    summary_used: merged['summary_used'] === true,
+    merged: mergedList,
+    solidified: solidifiedList,
   }
 }
 
-/** 待删 L1（到期 24h）/ L2（超容量）/ L3（低权重、超容量，跳过 pinned）→ 写 owner 服务。 */
+/** 时序编排：L1 清理 → L2 裁剪 → L3 遗忘；水位仅在三层汇总无变更时推进。 */
 async function sweep(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = await loadState(args, env, deps)
-  const explicitCursor = asString(ctx.args['cursor'])
+  const { args: record, now, at } = contextOf(args, env)
+  const params = resolveParams(record)
+  const explicitCursor = asString(record['cursor'])
   const cursor = explicitCursor ?? readWatermark()
+  const base: Rec = { ...record, now }
 
-  const sessions = sessionsOf(ctx.shortMemory)
-  const l1Deleted: string[] = []
-  for (const conversationId of Object.keys(sessions).sort()) {
-    const record = sessions[conversationId]
-    if (!isRecord(record)) continue
-    const expiresAt = parseIso(record['expires_at'])
-    const at = parseIso(record['at'])
-    const deadline = expiresAt ?? (at === null ? null : at + ctx.params.l1TtlMs)
-    if (deadline !== null && deadline <= ctx.now) l1Deleted.push(conversationId)
+  const l1 = await deps.l1.sweep({ ...base, l1_ttl_ms: params.l1TtlMs })
+  if (l1['ok'] === false) {
+    const failure = failureOf(l1)
+    return errorValue(failure.code, failure.message)
+  }
+  const l2 = await deps.l2.trim({ ...base, l2_capacity: params.l2Capacity })
+  if (l2['ok'] === false) {
+    const failure = failureOf(l2)
+    return errorValue(failure.code, failure.message)
+  }
+  const l3 = await deps.l3.forget({
+    ...base,
+    cursor,
+    l3_capacity: params.l3Capacity,
+    candidate_threshold: params.candidateThreshold,
+  })
+  if (l3['ok'] === false) {
+    const failure = failureOf(l3)
+    return errorValue(failure.code, failure.message)
   }
 
-  const workspaces = workspacesOf(ctx.shortMemory)
-  const trimmedWorkspaces: Rec = {}
-  const l2Trimmed: Rec[] = []
-  for (const workspace of Object.keys(workspaces).sort()) {
-    const record = workspaces[workspace]
-    if (!isRecord(record)) continue
-    const summary = isRecord(record['summary']) ? (record['summary'] as Rec) : {}
-    const facts = stringArray(summary['facts'])
-    if (facts.length > ctx.params.l2Capacity) {
-      const keep = facts.slice(facts.length - ctx.params.l2Capacity)
-      l2Trimmed.push({ workspace, removed: facts.length - keep.length })
-      trimmedWorkspaces[workspace] = { ...record, summary: { ...summary, facts: keep } }
-    }
-  }
-  const shortChanged = l1Deleted.length > 0 || l2Trimmed.length > 0
-
-  const l3Deleted: Array<{ id: string; reason: string; weight: number; at: string }> = []
-  const selected = new Set<string>()
-  for (const entry of ctx.entries) {
-    if (ctx.pinned[entry.id] === true) continue
-    if (cursor !== null && entry.at !== '' && atOrBefore(entry.at, cursor)) continue
-    const weight = entry.weight ?? 1
-    if (weight < ctx.params.candidateThreshold) {
-      l3Deleted.push({ id: entry.id, reason: 'low_weight', weight, at: entry.at })
-      selected.add(entry.id)
-    }
-  }
-  const need = ctx.entries.length - l3Deleted.length - ctx.params.l3Capacity
-  if (need > 0) {
-    const rest = ctx.entries
-      .filter((entry) => ctx.pinned[entry.id] !== true && !selected.has(entry.id))
-      .sort((left, right) => {
-        const lw = left.weight ?? 1
-        const rw = right.weight ?? 1
-        if (lw !== rw) return lw - rw
-        if (left.at !== right.at) return left.at < right.at ? -1 : 1
-        return left.id < right.id ? -1 : 1
-      })
-    for (let index = 0; index < need && index < rest.length; index++) {
-      l3Deleted.push({
-        id: rest[index].id,
-        reason: 'over_capacity',
-        weight: rest[index].weight ?? 1,
-        at: rest[index].at,
-      })
-    }
-  }
-  const l3Changed = l3Deleted.length > 0
-
-  if (!shortChanged && !l3Changed) {
-    // 无写计划可落账：此时推进水位安全（没有待落账删除会被跳过）。
+  const l1Deleted = arrayOf(l1['l1_deleted'])
+  const l2Trimmed = arrayOf(l2['l2_trimmed'])
+  const l3Deleted = arrayOf(l3['l3_deleted'])
+  if (l1Deleted.length === 0 && l2Trimmed.length === 0 && l3Deleted.length === 0) {
+    // 无变更：此时没有会被跳过的删除候选，推进水位安全。
     // 调用方显式给 cursor 时不改本地水位，避免污染后续无 cursor 的调用。
-    if (explicitCursor === null) writeWatermark(ctx.at)
+    if (explicitCursor === null) writeWatermark(at)
     return {
       ok: true,
       kind: 'sweep',
-      at: ctx.at,
+      at,
       l1_deleted: [],
       l2_trimmed: [],
       l3_deleted: [],
-      cursor_next: ctx.at,
+      cursor_next: at,
       no_changes: true,
     }
   }
-
-  // 有写：水位不在此处推进——写入失败时同输入重跑必须仍产出同一删除集。
-  if (shortChanged) {
-    const applyArgs: Rec = {}
-    if (l1Deleted.length > 0) applyArgs['del_sessions'] = l1Deleted
-    if (l2Trimmed.length > 0) applyArgs['set_workspaces'] = trimmedWorkspaces
-    await deps.shortMemory.apply(applyArgs)
-  }
-  if (l3Changed) await deps.memory.remove({ ids: l3Deleted.map((item) => item.id), at: ctx.at })
-
   return {
     ok: true,
     kind: 'sweep',
-    at: ctx.at,
+    at,
     l1_deleted: l1Deleted,
     l2_trimmed: l2Trimmed,
-    l3_deleted: l3Deleted.map((item) => ({ id: item.id, reason: item.reason })),
-    cursor_next: ctx.at,
+    l3_deleted: l3Deleted,
+    cursor_next: at,
   }
 }
 
-/** 只读：回「过期 / 低价值」候选列表，不删、不写。 */
+/** 只读：按 layer 扇出候选（L1 过期 / L2 超容量 / L3 低权重），拼成原形状，不删、不写。 */
 async function candidates(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = await loadState(args, env, deps)
-  const out: Rec[] = []
-  const sessions = sessionsOf(ctx.shortMemory)
-  for (const conversationId of Object.keys(sessions).sort()) {
-    const record = sessions[conversationId]
-    if (!isRecord(record)) continue
-    const expiresAt = parseIso(record['expires_at'])
-    const at = parseIso(record['at'])
-    const deadline = expiresAt ?? (at === null ? null : at + ctx.params.l1TtlMs)
-    if (deadline !== null && deadline <= ctx.now) {
-      out.push({
-        layer: 'l1',
-        id: conversationId,
-        at: asString(record['at']),
-        reason: 'l1_expired',
-      })
-    }
-  }
-  const workspaces = workspacesOf(ctx.shortMemory)
-  for (const workspace of Object.keys(workspaces).sort()) {
-    const record = workspaces[workspace]
-    if (!isRecord(record)) continue
-    const summary = isRecord(record['summary']) ? (record['summary'] as Rec) : {}
-    const facts = stringArray(summary['facts'])
-    if (facts.length > ctx.params.l2Capacity) {
-      out.push({
-        layer: 'l2',
-        id: workspace,
-        reason: 'l2_over_capacity',
-        excess: facts.length - ctx.params.l2Capacity,
-        items: facts.slice(0, facts.length - ctx.params.l2Capacity),
-      })
-    }
-  }
-  for (const entry of ctx.entries) {
-    if (ctx.pinned[entry.id] === true) continue
-    const weight = entry.weight ?? 1
-    if (weight < ctx.params.candidateThreshold) {
-      out.push({
-        layer: 'l3',
-        id: entry.id,
-        text: entry.text,
-        at: entry.at,
-        weight,
-        reason: 'low_weight',
-      })
-    }
-  }
-  return { ok: true, kind: 'candidates', at: ctx.at, candidates: out }
-}
+  const { args: record, now, at } = contextOf(args, env)
+  const params = resolveParams(record)
+  const base: Rec = { ...record, now }
 
-/** 只读：回 L1 / L2 / L3 三档（L3 字段与 #21 条目一致 + L1 剩余 TTL）。 */
-async function view(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = await loadState(args, env, deps)
-  const l1: Rec[] = []
-  const sessions = sessionsOf(ctx.shortMemory)
-  for (const conversationId of Object.keys(sessions).sort()) {
-    const record = sessions[conversationId]
-    if (!isRecord(record)) continue
-    const expiresAt = parseIso(record['expires_at'])
-    const at = parseIso(record['at'])
-    const deadline = expiresAt ?? (at === null ? null : at + ctx.params.l1TtlMs)
-    l1.push({
-      id: conversationId,
-      at: asString(record['at']),
-      expires_at: asString(record['expires_at']),
-      ttl_remaining_ms: deadline === null ? null : Math.max(0, deadline - ctx.now),
-      summary: isRecord(record['summary']) ? record['summary'] : {},
-    })
+  const l1 = await deps.l1.candidates({ ...base, l1_ttl_ms: params.l1TtlMs })
+  if (l1['ok'] === false) {
+    const failure = failureOf(l1)
+    return errorValue(failure.code, failure.message)
   }
-  const l2: Rec[] = []
-  const workspaces = workspacesOf(ctx.shortMemory)
-  for (const workspace of Object.keys(workspaces).sort()) {
-    const record = workspaces[workspace]
-    if (!isRecord(record)) continue
-    l2.push({
-      id: workspace,
-      at: asString(record['at']),
-      summary: isRecord(record['summary']) ? record['summary'] : {},
-      sources: stringArray(record['sources']),
-    })
+  const l2 = await deps.l2.trim({ ...base, l2_capacity: params.l2Capacity, dry_run: true })
+  if (l2['ok'] === false) {
+    const failure = failureOf(l2)
+    return errorValue(failure.code, failure.message)
   }
-  const l3 = ctx.entries.map((entry) => ({
-    id: entry.id,
-    text: entry.text,
-    at: entry.at,
-    tags: stringArray(entry.meta['tags']),
-    source: asString(entry.meta['source']),
-    workspace: asString(entry.meta['workspace']),
-    weight: entry.weight ?? null,
-    pinned: ctx.pinned[entry.id] === true,
-  }))
-  return { ok: true, kind: 'view', at: ctx.at, l1, l2, l3 }
-}
-
-function findEntry(entries: LiveEntry[], id: string): LiveEntry | null {
-  return entries.find((entry) => entry.id === id) ?? null
-}
-
-/** L3 编辑：删除 / 置顶 / 文本编辑经反向调用 memory-store 写自有存储。 */
-async function editL3(
-  ctx: Context,
-  action: string,
-  id: string,
-  patch: Rec,
-  deps: MaintenanceDeps,
-): Promise<Json> {
-  const existing = findEntry(ctx.entries, id)
-  if (existing === null) {
-    return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
-  }
-  if (action === 'delete') {
-    await deps.memory.remove({ ids: [id], at: ctx.at })
-    return { ok: true, kind: 'edit', action, layer: 'l3', id, deleted_at: ctx.at }
-  }
-  if (action === 'pin') {
-    const pinned = patch['pinned'] !== false
-    await deps.memory.pin({ id, pinned })
-    return { ok: true, kind: 'edit', action, layer: 'l3', id, pinned }
-  }
-  const text = asString(patch['text'])
-  if (text === null) throw new BadArgsError('patch.text is required for text edit')
-  const result = await deps.memory.edit({
-    id,
-    text,
-    meta: { ...existing.meta, at: ctx.at },
-    weight: existing.weight,
+  const l3 = await deps.l3.forget({
+    ...base,
+    candidate_threshold: params.candidateThreshold,
+    dry_run: true,
   })
-  if (result['ok'] === false)
-    return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
-  return { ok: true, kind: 'edit', action, layer: 'l3', id, text }
+  if (l3['ok'] === false) {
+    const failure = failureOf(l3)
+    return errorValue(failure.code, failure.message)
+  }
+
+  return {
+    ok: true,
+    kind: 'candidates',
+    at,
+    candidates: [
+      ...arrayOf(l1['candidates']),
+      ...arrayOf(l2['candidates']),
+      ...arrayOf(l3['candidates']),
+    ],
+  }
 }
 
-/** L1 / L2 编辑：删除整条；文本编辑合并 summary（置顶对 #3 不适用）。 */
-async function editShort(
-  ctx: Context,
-  action: string,
-  layer: string,
-  id: string,
-  patch: Rec,
-  deps: MaintenanceDeps,
-): Promise<Json> {
-  const isL1 = layer === 'l1'
-  const container = isL1 ? sessionsOf(ctx.shortMemory) : workspacesOf(ctx.shortMemory)
-  const existing = container[id]
-  if (!isRecord(existing)) {
-    return { ok: false, kind: 'edit', layer, id, reason: 'not_found' }
+/** 只读：按 layer 扇出视图（L1 / L2 / L3），拼成原形状。 */
+async function view(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
+  const { args: record, now, at } = contextOf(args, env)
+  const params = resolveParams(record)
+  const base: Rec = { ...record, now }
+
+  const l1 = await deps.l1.view({ ...base, l1_ttl_ms: params.l1TtlMs })
+  if (l1['ok'] === false) {
+    const failure = failureOf(l1)
+    return errorValue(failure.code, failure.message)
   }
-  if (action === 'pin') {
-    return { ok: false, kind: 'edit', layer, id, reason: 'unsupported_layer' }
+  const l2 = await deps.l2.view(base)
+  if (l2['ok'] === false) {
+    const failure = failureOf(l2)
+    return errorValue(failure.code, failure.message)
   }
-  if (action === 'delete') {
-    await deps.shortMemory.apply(isL1 ? { del_sessions: [id] } : { del_workspaces: [id] })
-    return { ok: true, kind: 'edit', action, layer, id, deleted_at: ctx.at }
+  const l3 = await deps.l3.view(base)
+  if (l3['ok'] === false) {
+    const failure = failureOf(l3)
+    return errorValue(failure.code, failure.message)
   }
-  const summary = isRecord(existing['summary']) ? (existing['summary'] as Rec) : {}
-  const incoming = isRecord(patch['summary']) ? (patch['summary'] as Rec) : {}
-  const nextSummary: Rec = { ...summary, ...incoming }
-  const text = asString(patch['text'])
-  if (text !== null) nextSummary['goal'] = text
-  const nextRecord: Rec = { ...existing, summary: nextSummary }
-  await deps.shortMemory.apply(
-    isL1 ? { set_sessions: { [id]: nextRecord } } : { set_workspaces: { [id]: nextRecord } },
-  )
-  return { ok: true, kind: 'edit', action, layer, id }
+  return {
+    ok: true,
+    kind: 'view',
+    at,
+    l1: arrayOf(l1['l1']),
+    l2: arrayOf(l2['l2']),
+    l3: arrayOf(l3['l3']),
+  }
 }
 
-/** UI / agent 的改 / 删 / 置顶：经反向调用读写 owner 服务。 */
+/** 按 layer 路由编辑：L3 → l3 提供方；L1 / L2 → l2 提供方。 */
 async function edit(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
-  const ctx = await loadState(args, env, deps)
-  const slot = isRecord(ctx.args['slot']) ? (ctx.args['slot'] as Rec) : {}
-  const action = asString(ctx.args['action']) ?? asString(slot['action'])
-  const layer = asString(ctx.args['layer']) ?? asString(slot['layer'])
-  const id = asString(ctx.args['id']) ?? asString(slot['id'])
-  const patch = isRecord(ctx.args['patch'])
-    ? (ctx.args['patch'] as Rec)
-    : isRecord(slot['patch'])
-      ? (slot['patch'] as Rec)
-      : {}
+  const { args: record, now } = contextOf(args, env)
+  const slot = isRecord(record['slot']) ? (record['slot'] as Rec) : {}
+  const action = asString(record['action']) ?? asString(slot['action'])
+  const layer = asString(record['layer']) ?? asString(slot['layer'])
+  const id = asString(record['id']) ?? asString(slot['id'])
   if (action === null || layer === null || id === null) {
     throw new BadArgsError('action, layer and id are required')
   }
@@ -673,8 +240,9 @@ async function edit(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Js
   if (layer !== 'l1' && layer !== 'l2' && layer !== 'l3') {
     throw new BadArgsError('layer must be l1 / l2 / l3')
   }
-  if (layer === 'l3') return editL3(ctx, action, id, patch, deps)
-  return editShort(ctx, action, layer, id, patch, deps)
+  const payload: Rec = { ...record, now }
+  if (layer === 'l3') return deps.l3.edit(payload)
+  return deps.l2.edit(payload)
 }
 
 /** 失败作数据：后端不可用 / 内部异常回结构化错误（BadArgsError 继续上抛为 bad_args）。 */
@@ -688,7 +256,7 @@ async function guard(run: () => Promise<Json>): Promise<Json> {
   }
 }
 
-/** 构造方法表（依赖注入：向量化 / 摘要 / owner 服务后端由 main 提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：三个提供方后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: MaintenanceDeps): Record<string, Handler> {
   return {
     consolidate: (args: Json, env: CallEnv): Promise<Json> =>

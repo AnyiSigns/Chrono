@@ -6,7 +6,10 @@
   "properties": {
     "jsonrpc": { "type": "string", "description": "JSON-RPC 版本，通常 \"2.0\"。" },
     "id": { "description": "请求 id（字符串 / 数字 / null）；原样透传，v1 不回带。" },
-    "method": { "type": "string", "description": "MCP 方法名（tools/list、tools/call、ping 等）。" },
+    "method": {
+      "type": "string",
+      "description": "MCP 方法名（tools/list、tools/call、ping 等）。"
+    },
     "params": { "type": "object", "description": "MCP 方法参数。" }
   }
 }

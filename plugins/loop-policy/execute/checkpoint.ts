@@ -1,5 +1,8 @@
-// 段边界检查点：上下文压力越阈时，经 `compress.summarize`（algorithmic、只算不写）产出结构化摘要，
-// 追加一条 `checkpoint` 步记录作为新的历史基础。压缩失败不得让回合失败：跳过记录，回合照常续段。
+// 段边界检查点：上下文压力越阈时，经 `compress.summarize` 产出结构化摘要，追加一条 `checkpoint`
+// 步记录作为新的历史基础。压缩走**图外独立模型调用**——`mode:'semantic'` 经 `semantic` → `model.chat`
+// 用独立连接压（不占用图内回合、不把压缩文本渲染进消息流）；无可用模型连接时回落 `algorithmic`。
+// 喂给压缩器的是**整段会话切片**（往期回合 + 工具结果 + 本回合在途），不只本回合。
+// 压缩失败不得让回合失败：跳过记录，回合照常续段。
 // 结构化字段形状与 context-window 消费侧（views.ts / candidates.ts）一致；`facts` 映射为 `findings`。
 
 import { isRecord, numberField } from './plan.ts'
@@ -95,21 +98,70 @@ function conversationOf(bag: Rec, turnId: string): string {
   return turnId
 }
 
-/** 已发生内容的文本切片（供 algorithmic 派生；工具结果 JSON 不入切片，避免噪声）。 */
-function sessionSlice(bag: Rec, rs: RunState): Rec[] {
-  const out: Rec[] = []
-  const input = bag['input']
-  if (typeof input === 'string' && input.length > 0) out.push({ role: 'user', content: input })
-  else if (isRecord(input)) {
-    const content = typeof input['content'] === 'string' ? input['content'] : ''
-    if (content.length > 0) out.push({ role: 'user', content })
+/** 消息文本：字符串直取；`parts` 形态拼接 text 片。 */
+function contentText(message: Rec): string {
+  const content = message['content']
+  if (typeof content === 'string') return content
+  const parts = message['parts']
+  if (!Array.isArray(parts)) return ''
+  const out: string[] = []
+  for (const part of parts) {
+    if (isRecord(part) && part['type'] === 'text' && typeof part['text'] === 'string') out.push(part['text'] as string)
   }
-  for (const message of [...rs.messages, ...rs.extraMessages]) {
-    if (!isRecord(message) || message['role'] === 'tool') continue
-    const content = typeof message['content'] === 'string' ? message['content'] : ''
-    if (content.length > 0) out.push({ role: 'assistant', content })
+  return out.join('\n')
+}
+
+/** 工具结果项 → 文本（字符串直取；失败取 error；其余稳定 JSON 序列化）。 */
+function resultText(result: Json): string {
+  if (typeof result === 'string') return result
+  if (!isRecord(result)) return ''
+  if (result['ok'] === false && typeof result['error'] === 'string') return result['error']
+  return JSON.stringify(result['result'] ?? result)
+}
+
+/**
+ * 整段会话切片：往期回合（`bag.session.turns`）逐条重建——用户消息 / 助手正文 / **工具结果**全带，
+ * 排除本回合（本回合由在途 `rs.extraMessages` + `bag.input` 承担，避免与步日志重复）。
+ * 供压缩器读全量上下文（不只本回合），这是「喂整段上下文给图外压缩器」的输入。
+ */
+function contextSlice(bag: Rec, rs: RunState, turnId: string): Rec[] {
+  const out: Rec[] = []
+  for (const turn of turnsOf(bag)) {
+    if (typeof turn['turn_id'] === 'string' && turn['turn_id'] === turnId) continue
+    const userMessage = isRecord(turn['user_message']) ? (turn['user_message'] as Rec) : null
+    const userText = userMessage !== null ? contentText(userMessage) : ''
+    if (userText.length > 0) out.push({ role: 'user', content: userText })
+    const steps = Array.isArray(turn['steps']) ? (turn['steps'] as Json[]) : []
+    for (const step of steps) {
+      if (!isRecord(step) || step['type'] !== 'step.result') continue
+      const assistant = isRecord(step['assistant']) ? (step['assistant'] as Rec) : null
+      const assistantText = assistant !== null ? contentText(assistant) : ''
+      if (assistantText.length > 0) out.push({ role: 'assistant', content: assistantText })
+      const results = Array.isArray(step['tool_results']) ? (step['tool_results'] as Json[]) : []
+      for (const result of results) {
+        const text = resultText(result)
+        if (text.length > 0) out.push({ role: 'tool', content: text })
+      }
+    }
+  }
+  const input = bag['input']
+  const inputText = typeof input === 'string' ? input : isRecord(input) ? contentText(input) : ''
+  if (inputText.length > 0) out.push({ role: 'user', content: inputText })
+  for (const message of rs.extraMessages) {
+    if (!isRecord(message)) continue
+    const role = typeof message['role'] === 'string' ? (message['role'] as string) : 'assistant'
+    const text = contentText(message as Rec)
+    if (text.length > 0) out.push({ role, content: text })
   }
   return out
+}
+
+/** 图外压缩用的模型连接：优先显式 `compress_model_config`，否则回落图内 `config`（同连接、独立调用）。 */
+function compressionModelConfig(bag: Rec): Rec | null {
+  const explicit = bag['compress_model_config']
+  if (isRecord(explicit)) return explicit
+  const config = bag['config']
+  return isRecord(config) ? config : null
 }
 
 /** 本回合已触达的文件路径（来自末批工具调用 args.path）。 */
@@ -236,7 +288,8 @@ function extrasOf(summary: Rec | null): Rec {
 }
 
 /**
- * 写一条段边界检查点：调用 `compress.summarize`（algorithmic、只算不写）后追加步记录。
+ * 写一条段边界检查点：调用 `compress.summarize`（有独立模型连接则 `semantic`、否则 `algorithmic`；
+ * 均 `persist:false`）后追加步记录。输入为整段会话切片（含工具结果）。
  * 任一步失败（传输 / 下游错误 / 空摘要 / 追加失败）都只回 `{emitted:false}`，不抛、不阻断回合。
  */
 export async function emitCheckpoint(input: CheckpointInput): Promise<CheckpointResult> {
@@ -245,14 +298,23 @@ export async function emitCheckpoint(input: CheckpointInput): Promise<Checkpoint
   // 全局覆盖边界：本回合 + 当前步号。旧式数字只在本回合内有意义，累积检查点改用全局边界。
   const boundary: Rec = { turn_id: turnId, seq: coveredUpto }
   const prior = priorCheckpoint(bag, turnId, coveredUpto)
+  // 幂等：上一检查点已覆盖到当前位置（本回合且步号不落后）⇒ 无新增内容，不重复压。
+  const priorBoundary = prior !== null && isRecord(prior['covered_upto']) ? (prior['covered_upto'] as Rec) : null
+  if (priorBoundary !== null && priorBoundary['turn_id'] === turnId) {
+    const priorSeq = numberField(priorBoundary['seq'])
+    if (priorSeq !== null && priorSeq >= coveredUpto) return { emitted: false, code: 'already_covered' }
+  }
+  const modelConfig = compressionModelConfig(bag)
   const args: Rec = {
     conversation: conversationOf(bag, turnId),
     goal: goalOf(bag),
     files: touchedFiles(rs),
-    session_slice: sessionSlice(bag, rs),
-    mode: 'algorithmic',
+    session_slice: contextSlice(bag, rs, turnId),
+    mode: modelConfig !== null ? 'semantic' : 'algorithmic',
     persist: false,
   }
+  // semantic 模式所需的模型连接实例（图外独立调用；占位回退算法模式）。
+  if (modelConfig !== null) args['model_config'] = modelConfig
   // 累计：把上一累计检查点作为 prior_summary 先并入，产出 = 上一累计 + 本回合切片。
   if (prior !== null) args['prior_summary'] = toCompressSummary(prior)
   const workspace = bag['workspace_id']

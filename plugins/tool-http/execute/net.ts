@@ -76,7 +76,11 @@ export async function fetchUrl(
   const exitCode = outcome.value['exit_code']
   if (typeof exitCode === 'number' && exitCode !== 0) {
     const stderr = stringOf(outcome.value['stderr']).trim()
-    return { ok: false, code: 'fetch_failed', message: stderr.length > 0 ? stderr : `fetcher exit ${exitCode}` }
+    return {
+      ok: false,
+      code: 'fetch_failed',
+      message: stderr.length > 0 ? stderr : `fetcher exit ${exitCode}`,
+    }
   }
   const parsed = parseFetcherStdout(stringOf(outcome.value['stdout']))
   if (parsed === null) {
@@ -84,7 +88,12 @@ export async function fetchUrl(
   }
   const okStatus = options.okStatus ?? ((status: number) => status < 400)
   if (!okStatus(parsed.status)) {
-    return { ok: false, code: 'http_status', message: `HTTP ${parsed.status}`, status: parsed.status }
+    return {
+      ok: false,
+      code: 'http_status',
+      message: `HTTP ${parsed.status}`,
+      status: parsed.status,
+    }
   }
   const finalUrl = parsed.url.length > 0 ? parsed.url : spec.url
   if (ctx.config.block_private_hosts) {

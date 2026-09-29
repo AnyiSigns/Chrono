@@ -1,0 +1,54 @@
+{
+  "title": "evolve-shadow（影子回放提供方 · 三态）",
+  "description": "身份自述 / 数据契约：描述 evolve-shadow 能力类方法 shadow 的入参与结果形状。本插件纯计算、零 token、不调任何真实端口（host.audit 是保留能力类，非端口）；同输入同输出（不取时间、不用随机）。轨迹窗口 / 内核哈希 / 写计划构造经反向 port.call 委派 evolve-ledger（needs 声明为 one）；历史 EffectAudit 经保留能力类 host.audit 读，保留为补充对照源。产出指标 def 的 put 计划供 loop-policy 写 verdicts.gate.shadow 引用；本插件不写链。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "evolve-shadow.shadow": 120000
+  },
+  "properties": {
+    "shadow_bag": {
+      "type": "object",
+      "description": "shadow 的 bag：候选新图 def + 轨迹窗口 + 可选 expected_effs / contracts / graph 节点派发目标；历史 EffectAudit 经 host.audit 读（补充对照源），亦可由 bag.audit 直接给。",
+      "additionalProperties": true,
+      "properties": {
+        "graph": { "description": "候选新图 def（{def:hash} 或图 body）或节点数组。" },
+        "contracts": {
+          "type": "object",
+          "description": "contract_id → {entry:{cap,method}} 或 {effects:{ports,methods}}，用于推导新图 eff 点。"
+        },
+        "expected_effs": {
+          "type": "array",
+          "description": "显式期望 eff 点 [{port,method,args_hash?}]。"
+        },
+        "trace": {},
+        "trace_entries": { "type": "array" },
+        "eff_log": { "type": "array", "description": "显式本轮 eff_log。" },
+        "audit": {
+          "type": "array",
+          "description": "可选：历史 EffectAudit 记录（省一次 host.audit 反向调用）。"
+        },
+        "audit_filter": { "type": "object", "description": "host.audit 的 filter（如 {run}）。" },
+        "audit_limit": { "type": "integer" },
+        "now": {}
+      }
+    },
+    "shadow_result": {
+      "type": "object",
+      "required": ["status", "metric"],
+      "additionalProperties": true,
+      "properties": {
+        "status": { "enum": ["pass", "fail", "unverified"] },
+        "metric": {
+          "type": "object",
+          "description": "影子回放指标（配对源 = trace.eff_log，host.audit 为补充）。"
+        },
+        "metric_id": {
+          "type": "string",
+          "description": "指标 def 键（内核 H，64hex）；供 verdicts.gate.shadow 引用。"
+        },
+        "$directives": { "type": "array", "description": "put(指标 def) 计划；本插件不写链。" }
+      }
+    }
+  }
+}

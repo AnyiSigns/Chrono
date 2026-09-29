@@ -253,10 +253,13 @@ outputs, inputs, executed, messages, extra_messages, slots, shared, dispatched_t
   `retrieval.search` bag 的权威键名已冻结并双向对齐（`workspace` / `recall_budget` / `query`），见
   `chain-contract/README.md` 与 `tests/contract/loop-policy-retrieval.seam.contract.test.mjs`。
 - **段边界检查点（本插件触发）**：每段收束、回合未完时读本段 `context.assemble` 清单的 `used / budget`，
-  越阈即经 `port.call compress.summarize`（`algorithmic`、`persist:false`）产出结构化摘要，追加一条
-  `checkpoint` 步记录作为新的历史基础（`facts` 映射成 `findings`，`covered_upto` = 已落步序号）。
+  越阈即经 `port.call compress.summarize` 产出结构化摘要，追加一条 `checkpoint` 步记录作为新的历史基础
+  （`facts` 映射成 `findings`，`covered_upto` = 已落步序号）。压缩走**图外独立模型调用**：`bag.config`
+  （或显式 `bag.compress_model_config`）在场时 `mode:'semantic'`——经 `semantic` → `model.chat` 用独立连接
+  压，不占用图内回合、压缩文本不进消息流；无连接时回落 `algorithmic`。喂给压缩器的是**整段会话切片**
+  （往期回合 + 工具结果 + 本回合在途，`persist:false`）。上一检查点已覆盖当前位置则不重复压（`already_covered`）。
   档位阈值 `checkpoint_soft_ratio=0.7` / `checkpoint_hard_ratio=0.85` / `checkpoint_emergency_ratio=0.95`
-  住本插件阈值（`bag.checkpoint_thresholds` 可按调用覆盖）；75% 提示仍是 context-window 的辅助信号。
+  住本插件阈值（`bag.checkpoint_thresholds` 可按调用覆盖）。
   **压缩失败不阻断回合**：跳过记录、照常续段，段标记与自续跑不受影响。
 - **游标落世界**：挂起 / 续跑（审批 / 提问 / 编排变更）仍把当前 iter 的图位置与调用状态序列化进队列项游标
   （`node_index` / `outputs` / `messages` 等，opaque，宿主不认识）；这类续跑是段内恢复，必须带图位置。

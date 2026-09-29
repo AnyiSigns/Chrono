@@ -1,0 +1,105 @@
+{
+  "title": "l2-maintenance（L2 记忆维护）",
+  "description": "身份自述 / 数据契约：L2（short-memory 的工作区摘要）维护的 merge（L1 按工作区分组合并进 L2，向量去重，可选摘要）/ trim（超容量从最旧一端裁剪）/ view（只读一档）/ edit（删除 / 摘要编辑）四方法。L1/L2 是运行记录、已出世界：本服务经反向调用读写 owner 服务，不读投影、不产世界写计划、不自取时钟（时间由调用帧 env 传入，同输入同输出）。会话 → 工作区归属经反向调用 session.read；去重经 embedding.embed；需要摘要时经 compress.summarize（persist:false，只算不写）。",
+  "type": "object",
+  "additionalProperties": true,
+  "params": {
+    "dedup_cosine_threshold": 0.9,
+    "l2_capacity": 200
+  },
+  "properties": {
+    "merge_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "merge 的 bag：owner 数据由服务自行读取，调用方只需给可选策略覆盖。",
+      "properties": {
+        "workspace": {
+          "type": "string",
+          "description": "可选：显式目标工作区（session 无归属时的回落）。"
+        },
+        "summarize": {
+          "type": "boolean",
+          "description": "需要摘要时置 true：eff compress.summarize（persist:false）产合并摘要（失败即明确失败、不半写）。"
+        },
+        "embedding_model": { "type": "string" },
+        "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "now": {}
+      }
+    },
+    "trim_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "trim 的 bag：dry_run=true 时只算不写，回 l2_over_capacity 候选。",
+      "properties": {
+        "l2_capacity": { "type": "integer", "minimum": 1 },
+        "dry_run": { "type": "boolean" },
+        "now": {}
+      }
+    },
+    "view_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "view 的 bag：只读回 L2 一档（id / at / summary / sources）。",
+      "properties": { "now": {} }
+    },
+    "edit_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "edit 的 bag：L1 / L2 的删除 / 摘要编辑经反向调用写 owner 服务（置顶不适用）。",
+      "required": ["action", "layer", "id"],
+      "properties": {
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "enum": ["l1", "l2"] },
+        "id": { "type": "string" },
+        "patch": { "type": "object", "additionalProperties": true },
+        "slot": { "type": "object", "additionalProperties": true },
+        "now": {}
+      }
+    },
+    "merge_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "merge" },
+        "merged": { "type": "array", "items": { "type": "object" } },
+        "workspaces": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "trim_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "trim" },
+        "l2_trimmed": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "view_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "view" },
+        "l2": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "edit_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "edit" },
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "enum": ["l1", "l2"] },
+        "id": { "type": "string" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "l2-maintenance.merge": 4090000,
+    "l2-maintenance.trim": 40000,
+    "l2-maintenance.view": 40000,
+    "l2-maintenance.edit": 40000
+  }
+}

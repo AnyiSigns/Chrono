@@ -150,7 +150,7 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
     const manifest = await tfNext()
     assert.equal(manifest.kind, 'manifest', 'tool-fs hello 应回 manifest')
     assert.equal(manifest.identity, 'tool-fs')
-    assert.deepEqual(manifest.methods['tool-fs'], ['describe', 'invoke'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
 
     sandbox.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'sandbox' }))
     const sandboxManifest = await sbNext()
@@ -163,7 +163,7 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
           v: '1',
           id,
           kind: 'call',
-          port: 'tool-fs',
+          port: 'tool-provider',
           method,
           args,
           env: { run: null, thread: null, now: 0 },

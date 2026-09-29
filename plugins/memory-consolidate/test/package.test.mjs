@@ -47,12 +47,9 @@ test('plugin.json 13 字段齐全且形态合法', () => {
     'memory-maintenance': ['consolidate', 'sweep', 'candidates', 'view', 'edit'],
   })
   assert.deepEqual(decl.needs, {
-    compress: { mode: 'one' },
-    embedding: { mode: 'one' },
-    memory: { mode: 'one' },
-    'short-memory': { mode: 'one' },
-    session: { mode: 'one' },
-    tokenizer: { mode: 'one' },
+    'l1-maintenance': { mode: 'one' },
+    'l2-maintenance': { mode: 'one' },
+    'l3-maintenance': { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
@@ -112,12 +109,10 @@ test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件
     'config.ts',
     'log.ts',
     'main.ts',
-    'memory.ts',
     'methods.ts',
     'plan.ts',
     'port-link.ts',
     'types.ts',
-    'vectors.ts',
     'watermark.ts',
   ]
   assert.deepEqual(files.sort(), expected.sort())

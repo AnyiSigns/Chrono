@@ -35,7 +35,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -83,13 +85,23 @@ async function main() {
     const commands = boot(root, ['commands'])
     const list = Array.isArray(commands) ? commands : (commands?.commands ?? [])
     const names = list.map((item) => item.name)
-    assert.ok(names.includes('question.answer'), `命令清单缺 question.answer：${JSON.stringify(commands)}`)
-    assert.ok(names.includes('question.state'), `命令清单缺 question.state：${JSON.stringify(commands)}`)
+    assert.ok(
+      names.includes('question.answer'),
+      `命令清单缺 question.answer：${JSON.stringify(commands)}`,
+    )
+    assert.ok(
+      names.includes('question.state'),
+      `命令清单缺 question.state：${JSON.stringify(commands)}`,
+    )
     console.log('命令声明：question.answer / question.state 在册')
 
     // 只读对账命令：空队列也应正常 done（入口 term 解析通过、不写世界、不发 run 生命周期）。
     const stateRun = boot(root, ['question.state'])
-    assert.equal(stateRun.status, 'done', `question.state 应以 done 收口：${JSON.stringify(stateRun)}`)
+    assert.equal(
+      stateRun.status,
+      'done',
+      `question.state 应以 done 收口：${JSON.stringify(stateRun)}`,
+    )
     console.log('命令 run：question.state（只读）→ done')
 
     // 经宿主跑一次命令：无槽 → 结构化 no_slot，不写世界，run 正常 done
@@ -119,7 +131,9 @@ async function main() {
     console.log('离线投影：身份与世代正确、pins 指向 input')
 
     console.log(`E2E ok（root=${root}）`)
-    console.log('注：作答续跑（chat.resume / 记答案 / 清槽）依赖 chat / loop-policy / input，见文件头说明。')
+    console.log(
+      '注：作答续跑（chat.resume / 记答案 / 清槽）依赖 chat / loop-policy / input，见文件头说明。',
+    )
   } finally {
     if (started) {
       try {

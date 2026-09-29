@@ -1,23 +1,14 @@
-// 工具目录：`pins` 的工具提供者并集（describe/invoke 提供者各自 describe + 绑定提供者绑定表）
+// 工具目录：扩展类 `tool-provider` 的世界成员表（宿主按世界能力索引注入）逐个反向 `describe`
 // + 外部 MCP 工具（调用方随 bag 传入的投影清单）。做四要素 / argsSchema 白名单 / caps 形状校验
 // 与工具名全局唯一性校验；不合规项不进目录（`bad_tool_decl`），并在 rejected 里留诊断。
 // argsSchema 白名单校验 / 净化与 caps 形状校验经反向 `port.call tool-schema.*`。
+// 加 / 减一个工具提供方 = 世界成员表变化，本模块代码零改动（不枚举提供方）。
 
 import { canonicalJson, isRecord } from 'plugin-sdk'
 import type { Json, PortCaller, Rec } from './types.ts'
 
-/** 无 describe / invoke 的绑定提供者端口（走能力类方法绑定）。 */
-const BINDING_PORTS = new Set([
-  'session',
-  'compress',
-  'memory',
-  'retrieval',
-  'memory-maintenance',
-  'evolve-metrics',
-])
-
-/** 非工具提供者端口（guard 是语义门、host 是保留身份、tool-schema 是校验原语，不参与目录）。 */
-const NON_TOOL_PORTS = new Set(['guard', 'host', 'tool-schema'])
+/** 工具提供方扩展类（拥有方 `slots` 契约）：成员由宿主注入的 `many` 成员表给出。 */
+const TOOL_PROVIDER = 'tool-provider'
 
 /** 四要素键。 */
 const ELEMENTS = ['intent', 'when_to_use', 'boundaries'] as const
@@ -72,6 +63,8 @@ export interface Directory {
 
 export interface BuildInput {
   pins: string[]
+  /** 扩展类 `tool-provider` 的世界成员（提供方身份名，码元序）；每个成员逐个反向 `describe`。 */
+  manyProviders: string[]
   bag: Rec
   link: PortCaller
   schema: SchemaBackend
@@ -82,11 +75,6 @@ export function toolsOf(value: Json): Json[] {
   if (!isRecord(value)) return []
   const tools = value['tools']
   return Array.isArray(tools) ? tools : []
-}
-
-/** describe/invoke 提供者端口 = pins 去掉绑定提供者与非工具提供者。 */
-export function describePorts(pins: string[]): string[] {
-  return pins.filter((port) => !BINDING_PORTS.has(port) && !NON_TOOL_PORTS.has(port))
 }
 
 /** 从 list 的输出（或 bag.directory）重建目录：按名索引，保留 provider / kind / method / read。 */
@@ -130,11 +118,12 @@ export async function listDirectory(input: BuildInput): Promise<Directory> {
 }
 
 /**
- * 构造目录：并发拉全部 describe/invoke 提供者的 `describe`，并入绑定表与外部 MCP 工具，
- * 逐项校验、按工具名去重。提供者 `describe` 不可用（未就绪 / 出错）只跳过该提供者，不阻断目录。
+ * 构造目录：并发拉**扩展类 `tool-provider` 全部世界成员**的 `describe`，并入绑定表与外部 MCP 工具，
+ * 逐项校验、按工具名去重。成员 `describe` 不可用（未就绪 / 出错）只跳过该成员，不阻断目录。
+ * 成员来自调用方注入的世界成员表，故加减提供方不改本模块。
  */
 export async function buildDirectory(input: BuildInput): Promise<Directory> {
-  const { pins, bag, link, schema } = input
+  const { pins, manyProviders, bag, link, schema } = input
   const tools: ToolEntry[] = []
   const rejected: Rejection[] = []
   const seen = new Set<string>()
@@ -153,14 +142,16 @@ export async function buildDirectory(input: BuildInput): Promise<Directory> {
     tools.push(entry)
   }
 
-  const ports = describePorts(pins)
   const described = await Promise.all(
-    ports.map(async (port) => ({ port, value: await link.call(port, 'describe', {}) })),
+    manyProviders.map(async (provider) => ({
+      provider,
+      value: await link.call(TOOL_PROVIDER, 'describe', {}, { provider }),
+    })),
   )
-  for (const { port, value } of described) {
+  for (const { provider, value } of described) {
     if (!value.ok) continue
     for (const raw of toolsOf(value.value)) {
-      const outcome = await normalizeInvokeTool(raw, port, false, schema)
+      const outcome = await normalizeInvokeTool(raw, provider, false, schema)
       if (outcome.entry !== null) push(outcome.entry, null)
       else push(null, { name: nameOf(raw), code: 'bad_tool_decl', message: outcome.message })
     }

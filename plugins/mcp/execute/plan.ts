@@ -41,7 +41,8 @@ export function baseSeqOf(slice: Rec): number | null {
 export function bodyPatches(prev: Rec, next: Rec): Json[] {
   const ops: Json[] = []
   for (const key of Object.keys(next)) {
-    if (!canonicalEqual(prev[key], next[key])) ops.push({ op: 'replace', path: [key], value: next[key] })
+    if (!canonicalEqual(prev[key], next[key]))
+      ops.push({ op: 'replace', path: [key], value: next[key] })
   }
   for (const key of Object.keys(prev)) {
     if (key in next) continue
@@ -54,7 +55,13 @@ export function bodyPatches(prev: Rec, next: Rec): Json[] {
  * 追加数据世代的写子操作：有数据世代（base）且补丁非空 ⇒ put(补丁) + add_gen(base)；
  * 否则整份 put + add_gen。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
  */
-export function pushBodyGen(ops: Json[], id: string, prev: Rec, next: Rec, base: number | null): void {
+export function pushBodyGen(
+  ops: Json[],
+  id: string,
+  prev: Rec,
+  next: Rec,
+  base: number | null,
+): void {
   const index = ops.length
   if (base !== null) {
     const patches = bodyPatches(prev, next)

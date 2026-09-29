@@ -1,0 +1,109 @@
+{
+  "title": "evolve-ledger（台账原语 · 链窗口 / 写计划 / 阈值 / 哈希）",
+  "description": "身份自述 / 数据契约：描述 evolve-ledger 能力类四方法 read-chain / patch-plan / thresholds / hash 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机），无 needs、无 pins、无自有状态。evolve-metrics 门面与其下游提供方（evolve-evidence / evolve-sweep / evolve-shadow）经反向 port.call 消费本插件：链窗口读取、台账写计划构造、阈值解析与确定性哈希全部住此，消费方不本地复刻。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "evolve-ledger.read-chain": 30000,
+    "evolve-ledger.patch-plan": 30000,
+    "evolve-ledger.thresholds": 30000,
+    "evolve-ledger.hash": 30000
+  },
+  "properties": {
+    "read_chain_args": {
+      "type": "object",
+      "description": "read-chain 入参：{bag} 包装或整个 args 视为 bag。",
+      "additionalProperties": true,
+      "properties": {
+        "bag": {
+          "description": "调用方投影片段（trace 窗口 / evolution 投影 / thresholds / refusal_codes 任一形状）。"
+        }
+      }
+    },
+    "read_chain_result": {
+      "type": "object",
+      "required": ["trace", "evidence", "body", "base", "refs", "refusal_codes"],
+      "additionalProperties": true,
+      "properties": {
+        "trace": { "type": "array", "description": "轨迹窗口条目 [{def, body}]，最旧 → 最新。" },
+        "evidence": { "type": "array", "description": "证据窗口条目 [{def, body}]，最旧 → 最新。" },
+        "body": { "description": "当前 evolution body（已剔除 refs / data_gen）；缺失为 null。" },
+        "base": { "description": "数据世代下标 data_gen.seq；缺失为 null（写整份世代）。" },
+        "refs": { "type": "object", "description": "投影引用闭包 {hash: body}。" },
+        "refusal_codes": { "type": "object", "description": "拒绝码 → attributable_to 映射。" }
+      }
+    },
+    "thresholds_args": {
+      "type": "object",
+      "description": "thresholds 入参：{bag} 包装或整个 args 视为 bag。"
+    },
+    "thresholds_result": {
+      "type": "object",
+      "required": ["values"],
+      "additionalProperties": true,
+      "properties": {
+        "values": {
+          "type": "object",
+          "description": "扁平阈值表 {name: number}；链 / 投影 / 数组形状已归一。"
+        }
+      }
+    },
+    "hash_args": {
+      "type": "object",
+      "required": ["values"],
+      "additionalProperties": true,
+      "properties": {
+        "values": { "type": "array", "description": "待哈希值数组。" },
+        "mode": {
+          "enum": ["content", "canonical", "kernel", "fnv"],
+          "description": "content = FNV-1a 64 over canonical；canonical = 规范 JSON 串；kernel = 内核 H（sha256）；fnv = 字面串 FNV。缺省 content。"
+        }
+      }
+    },
+    "hash_result": {
+      "type": "object",
+      "required": ["hashes"],
+      "additionalProperties": true,
+      "properties": {
+        "hashes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "与 values 同序的哈希串。"
+        }
+      }
+    },
+    "patch_plan_args": {
+      "type": "object",
+      "description": "patch-plan 入参：append / replace / puts 三种形态之一。",
+      "additionalProperties": true,
+      "properties": {
+        "gen_id": { "type": "string", "default": "evolution", "description": "add_gen 目标身份。" },
+        "body": { "description": "当前 evolution body；null = 不产写。非 put 形态必填。" },
+        "base": { "description": "数据世代下标；null / 缺省 = 写整份世代。" },
+        "append": {
+          "type": "object",
+          "description": "{section, entries}：向 section 追加条目（自动串 prev、刷新 tail/count）。"
+        },
+        "replace": {
+          "type": "object",
+          "description": "{section: index}：以给定索引整体替换 section（sweep 用）。"
+        },
+        "puts": {
+          "type": "array",
+          "description": "只产 put 批（无 add_gen），供无链写使用。"
+        }
+      }
+    },
+    "patch_plan_result": {
+      "type": "object",
+      "required": ["$directives"],
+      "additionalProperties": true,
+      "properties": {
+        "$directives": {
+          "type": "array",
+          "description": "写计划（batch：put / replace 补丁 + add_gen）；无写 = 空。"
+        }
+      }
+    }
+  }
+}

@@ -21,6 +21,7 @@ import {
 import type { ServiceRuntime } from './supervision.ts'
 import type { ServiceLifecycle } from './service-host.ts'
 import { effectivePins, type PluginDecl } from './decl.ts'
+import { manyNeedsOf } from './capability-index.ts'
 import type { CallResponse, ServiceManifest } from '../service-link.ts'
 import type { CallEnv } from '../wire.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
@@ -69,6 +70,7 @@ export interface ServiceLauncherDeps {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
   onServiceEvent?: (impl: string, topic: string, payload: Json) => void
   onExtraDropped: (impl: string, gen: Hash, caps: string[]) => void
@@ -164,6 +166,8 @@ export async function spawnService(
     startWrapper: deps.startWrapper,
     // 按当刻世界算有效 pins：换代 / 重启都取当前代码世代，数据换代不改 pins。
     pins: effectivePins(deps.world, id, deps.blobsDir) ?? undefined,
+    // 按当刻世界算 `many` 成员表：成员变更 = 世界变更 → 重解析重注入（沿用 identity.changed 热跟随）。
+    manyNeeds: manyNeedsOf(deps.world, id, deps.blobsDir) ?? undefined,
   })
   let service: ServiceRuntime | null = null
   const link = new ServiceLink(channel, {

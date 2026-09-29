@@ -13,8 +13,10 @@ use crate::describe;
 use crate::invoke;
 use crate::port::{FsopBackend, RemoteFsop};
 
-/// 身份名 = 能力类名（类名 = 身份名）。
+/// 身份名 = 扩展类名（工具提供方扩展类 `tool-provider`）。
 pub const IDENTITY: &str = "tool-fs";
+/// 工具提供方扩展类名（拥有方冻结契约，工具提供方均接入）。
+pub const TOOL_PROVIDER: &str = "tool-provider";
 /// 协议版本。
 pub const PROTOCOL: &str = "1";
 /// 状态档：③ 可重算。
@@ -24,7 +26,7 @@ const METHODS: [&str; 2] = ["describe", "invoke"];
 
 static SPEC: ServiceSpec = ServiceSpec {
     identity: IDENTITY,
-    capability: IDENTITY,
+    capability: TOOL_PROVIDER,
     protocol: PROTOCOL,
     state: STATE,
     methods: &METHODS,
@@ -108,8 +110,8 @@ mod tests {
     fn manifest_matches_declaration() {
         let value = manifest();
         assert_eq!(value["identity"], "tool-fs");
-        assert_eq!(value["implements"], json!(["tool-fs"]));
-        assert_eq!(value["methods"]["tool-fs"], json!(["describe", "invoke"]));
+        assert_eq!(value["implements"], json!(["tool-provider"]));
+        assert_eq!(value["methods"]["tool-provider"], json!(["describe", "invoke"]));
         assert_eq!(value["state"], "recomputable");
         assert_eq!(value["protocol"], "1");
     }

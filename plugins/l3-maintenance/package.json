@@ -1,0 +1,21 @@
+{
+  "name": "l3-maintenance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "L3 记忆维护（memory-store）：L2 高价值项固化、低权重 / 超容量遗忘（跳过 pinned）、L3 视图与编辑；方法 solidify / forget / view / edit",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

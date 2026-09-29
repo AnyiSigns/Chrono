@@ -3,12 +3,48 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { websearch } from '../execute/websearch.ts'
-import { argValue, execFail, execOk, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
+import {
+  argValue,
+  execFail,
+  execOk,
+  fetcherStdout,
+  makeBackend,
+  makeCtx,
+  prefixRouter,
+  testConfig,
+} from './support.mjs'
 
 const SOURCES = [
-  { id: 'a', name: 'Alpha', kind: 'html', parse: 'ddg-html', enabled: true, endpoint: 'https://a.test/search', query_param: 'q', timeout_ms: 1000 },
-  { id: 'b', name: 'Bravo', kind: 'html', parse: 'bing', enabled: true, endpoint: 'https://b.test/search', query_param: 'q', timeout_ms: 1000 },
-  { id: 'c', name: 'Charlie', kind: 'html', parse: 'mojeek', enabled: true, endpoint: 'https://c.test/search', query_param: 'q', timeout_ms: 1000 },
+  {
+    id: 'a',
+    name: 'Alpha',
+    kind: 'html',
+    parse: 'ddg-html',
+    enabled: true,
+    endpoint: 'https://a.test/search',
+    query_param: 'q',
+    timeout_ms: 1000,
+  },
+  {
+    id: 'b',
+    name: 'Bravo',
+    kind: 'html',
+    parse: 'bing',
+    enabled: true,
+    endpoint: 'https://b.test/search',
+    query_param: 'q',
+    timeout_ms: 1000,
+  },
+  {
+    id: 'c',
+    name: 'Charlie',
+    kind: 'html',
+    parse: 'mojeek',
+    enabled: true,
+    endpoint: 'https://c.test/search',
+    query_param: 'q',
+    timeout_ms: 1000,
+  },
 ]
 
 const DDG_HTML =
@@ -33,7 +69,10 @@ function htmlRoutes() {
   return prefixRouter([
     ['https://a.test/search', execOk(fetcherStdout({ contentType: 'text/html', body: DDG_HTML }))],
     ['https://b.test/search', execOk(fetcherStdout({ contentType: 'text/html', body: BING_HTML }))],
-    ['https://c.test/search', execOk(fetcherStdout({ contentType: 'text/html', body: MOJEEK_HTML }))],
+    [
+      'https://c.test/search',
+      execOk(fetcherStdout({ contentType: 'text/html', body: MOJEEK_HTML })),
+    ],
   ])
 }
 
@@ -42,10 +81,34 @@ test('多源归一化 + URL 去重 + RRF 排序，且确定可回放', async () 
   const resultA = await websearch({ query: 'chrono', count: 4 }, makeCtx(config(), first.backend))
   assert.equal(resultA.ok, true)
   assert.deepEqual(resultA.result.results, [
-    { title: 'One Title', url: 'https://one.test/page', snippet: 'First snippet', source: 'Alpha', rank: 1 },
-    { title: 'Two Bing', url: 'https://two.test/page', snippet: 'Bing snippet two', source: 'Bravo', rank: 2 },
-    { title: 'Four', url: 'https://four.test/y', snippet: 'Mojeek snippet four', source: 'Charlie', rank: 3 },
-    { title: 'Three', url: 'https://three.test/x', snippet: 'Bing snippet three', source: 'Bravo', rank: 4 },
+    {
+      title: 'One Title',
+      url: 'https://one.test/page',
+      snippet: 'First snippet',
+      source: 'Alpha',
+      rank: 1,
+    },
+    {
+      title: 'Two Bing',
+      url: 'https://two.test/page',
+      snippet: 'Bing snippet two',
+      source: 'Bravo',
+      rank: 2,
+    },
+    {
+      title: 'Four',
+      url: 'https://four.test/y',
+      snippet: 'Mojeek snippet four',
+      source: 'Charlie',
+      rank: 3,
+    },
+    {
+      title: 'Three',
+      url: 'https://three.test/x',
+      snippet: 'Bing snippet three',
+      source: 'Bravo',
+      rank: 4,
+    },
   ])
   assert.deepEqual(resultA.result.sources_used, ['Alpha', 'Bravo', 'Charlie'])
   assert.deepEqual(resultA.result.sources_failed, [])
@@ -65,7 +128,9 @@ test('单源失败不整体失败：可用结果照回并标记失败源', async
   const result = await websearch({ query: 'chrono', count: 5 }, makeCtx(config(), backend))
   assert.equal(result.ok, true)
   assert.deepEqual(result.result.sources_used, ['Alpha', 'Charlie'])
-  assert.deepEqual(result.result.sources_failed, [{ source: 'Bravo', code: 'http_status', message: 'HTTP 503' }])
+  assert.deepEqual(result.result.sources_failed, [
+    { source: 'Bravo', code: 'http_status', message: 'HTTP 503' },
+  ])
   assert.ok(result.result.results.length >= 3)
 })
 
@@ -104,19 +169,37 @@ test('fetcher_env 随 exec bag 下传（隔离执行 env_clear 后注入）', as
 
 test('obey_robots 开启时被禁路径记入 sources_failed', async () => {
   const router = prefixRouter([
-    ['https://a.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /search' }))],
+    [
+      'https://a.test/robots.txt',
+      execOk(
+        fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /search' }),
+      ),
+    ],
     ['https://a.test/search', execOk(fetcherStdout({ body: DDG_HTML }))],
-    ['https://b.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nAllow: /' }))],
+    [
+      'https://b.test/robots.txt',
+      execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nAllow: /' })),
+    ],
     ['https://b.test/search', execOk(fetcherStdout({ body: BING_HTML }))],
-    ['https://c.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nAllow: /' }))],
+    [
+      'https://c.test/robots.txt',
+      execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nAllow: /' })),
+    ],
     ['https://c.test/search', execOk(fetcherStdout({ body: MOJEEK_HTML }))],
   ])
   const { backend } = makeBackend(router)
-  const result = await websearch({ query: 'chrono' }, makeCtx(config({ obey_robots: true }), backend))
+  const result = await websearch(
+    { query: 'chrono' },
+    makeCtx(config({ obey_robots: true }), backend),
+  )
   assert.equal(result.ok, true)
   assert.deepEqual(result.result.sources_used, ['Bravo', 'Charlie'])
   assert.deepEqual(result.result.sources_failed, [
-    { source: 'Alpha', code: 'robots_disallowed', message: 'robots.txt disallows https://a.test/search?q=chrono' },
+    {
+      source: 'Alpha',
+      code: 'robots_disallowed',
+      message: 'robots.txt disallows https://a.test/search?q=chrono',
+    },
   ])
 })
 
@@ -130,12 +213,32 @@ test('query 缺失 / 空白 → bad_args', async () => {
 })
 
 const MIXED_SOURCES = [
-  { id: 'good', name: 'Good', kind: 'html', parse: 'ddg-html', enabled: true, endpoint: 'https://good.test/search', query_param: 'q', timeout_ms: 1000 },
-  { id: 'bad', name: 'Bad', kind: 'html', parse: 'ddg-html', enabled: true, endpoint: 'not a url', query_param: 'q', timeout_ms: 1000 },
+  {
+    id: 'good',
+    name: 'Good',
+    kind: 'html',
+    parse: 'ddg-html',
+    enabled: true,
+    endpoint: 'https://good.test/search',
+    query_param: 'q',
+    timeout_ms: 1000,
+  },
+  {
+    id: 'bad',
+    name: 'Bad',
+    kind: 'html',
+    parse: 'ddg-html',
+    enabled: true,
+    endpoint: 'not a url',
+    query_param: 'q',
+    timeout_ms: 1000,
+  },
 ]
 
 test('畸形 endpoint 只记该源失败，不拖垮整次检索', async () => {
-  const router = prefixRouter([['https://good.test/search', execOk(fetcherStdout({ body: DDG_HTML }))]])
+  const router = prefixRouter([
+    ['https://good.test/search', execOk(fetcherStdout({ body: DDG_HTML }))],
+  ])
   const { backend } = makeBackend(router)
   const result = await websearch(
     { query: 'chrono' },
@@ -164,7 +267,12 @@ test('源声明的 headers / extra_query 透传：公开 key 与固定参数', a
   const router = prefixRouter([
     [
       'https://api2.marginalia-search.com/search',
-      execOk(fetcherStdout({ contentType: 'application/json', body: '{"results":[{"title":"M","url":"https://m.test/a","description":"d"}]}' })),
+      execOk(
+        fetcherStdout({
+          contentType: 'application/json',
+          body: '{"results":[{"title":"M","url":"https://m.test/a","description":"d"}]}',
+        }),
+      ),
     ],
   ])
   const { backend, execCalls } = makeBackend(router)
@@ -199,7 +307,13 @@ test('SearXNG 多实例并发尝试：单实例慢不再串行叠加', async () 
     parse: 'searxng',
     enabled: true,
     endpoint: null,
-    instances: ['https://s1.test', 'https://s2.test', 'https://s3.test', 'https://s4.test', 'https://s5.test'],
+    instances: [
+      'https://s1.test',
+      'https://s2.test',
+      'https://s3.test',
+      'https://s4.test',
+      'https://s5.test',
+    ],
     query_param: 'q',
     timeout_ms: 50,
   }

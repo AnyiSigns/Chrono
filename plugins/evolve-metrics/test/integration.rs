@@ -1,5 +1,5 @@
-// 集成测试：黑盒经服务协议驱动真实二进制（hello / manifest / 四方法），
-// 并直接调用库面断言 shadow 三态与确定性。`cargo test` 一并运行。
+// 集成测试：黑盒经服务协议驱动真实二进制（hello / manifest / 四方法委派），
+// 测试充当最小宿主，应答门面发往提供方的反向调用。`cargo test` 一并运行。
 // 用 `test/`（非 cargo 缺省 `tests/`），由 Cargo.toml 的 `[[test]] path` 显式声明。
 
 use std::io::{BufReader, Write};
@@ -44,16 +44,44 @@ impl Service {
             .expect("service closed unexpectedly")
     }
 
-    fn call(&mut self, id: &str, method: &str, args: Value) -> Value {
+    /// 最小宿主：应答门面发往 `evolve-evidence` / `evolve-sweep` / `evolve-shadow` 的反向调用，
+    /// 直到目标 `id` 的正向应答到达；返回（正向应答, 最后一次反向调用）。
+    fn call(&mut self, id: &str, method: &str, args: Value) -> (Value, Option<Value>) {
         self.send(&json!({
             "v": "1", "id": id, "kind": "call",
             "port": "evolve-metrics", "method": method, "args": args,
             "env": {"run": "r1", "thread": null, "now": 42},
         }));
+        let mut last_reverse = None;
         loop {
             let message = self.recv();
-            if message.get("id").and_then(Value::as_str) == Some(id) {
-                return message;
+            match message.get("kind").and_then(Value::as_str) {
+                Some("port.call") => {
+                    let port = message.get("port").and_then(Value::as_str).unwrap_or("");
+                    let value = match port {
+                        "evolve-evidence" => json!({
+                            "evidence": [], "unhealthy": {"fired": false},
+                            "evidence_id": "ev-x", "$directives": []
+                        }),
+                        "evolve-sweep" => json!({
+                            "swept": 0, "retained": 0, "$directives": []
+                        }),
+                        "evolve-shadow" => json!({
+                            "status": "unverified", "metric": {}, "metric_id": "0",
+                            "$directives": []
+                        }),
+                        other => panic!("unexpected provider port {other}"),
+                    };
+                    last_reverse = Some(message.clone());
+                    self.send(&json!({
+                        "v": "1", "id": message["id"], "kind": "port.result", "value": value
+                    }));
+                }
+                _ => {
+                    if message.get("id").and_then(Value::as_str) == Some(id) {
+                        return (message, last_reverse);
+                    }
+                }
             }
         }
     }
@@ -61,24 +89,13 @@ impl Service {
 
 impl Drop for Service {
     fn drop(&mut self) {
-        // 断开 stdin（EOF）→ 服务自退出，再回收子进程。
         self.stdin.take();
         let _ = self.child.wait();
     }
 }
 
-fn evolution_body() -> Value {
-    json!({
-        "version": 1,
-        "trace": {"tail": null, "count": 0},
-        "evidence": {"tail": null, "count": 0},
-        "proposals": {"tail": null, "count": 0},
-        "verdicts": {"tail": null, "count": 0}
-    })
-}
-
 #[test]
-fn protocol_handshake_and_four_methods() {
+fn protocol_handshake_and_method_delegation() {
     let mut service = Service::spawn();
     service.send(&json!({"v":"1","id":"h","kind":"hello","impl":"evolve-metrics"}));
     let manifest = service.recv();
@@ -89,121 +106,34 @@ fn protocol_handshake_and_four_methods() {
         json!(["aggregate", "sweep", "shadow", "record"])
     );
 
-    // aggregate：空轨迹 → 空集、无写计划。
-    let empty = service.call("a1", "aggregate", json!({}));
-    assert_eq!(empty["kind"], "result", "{empty}");
-    assert!(empty["value"]["evidence"].as_array().unwrap().is_empty());
-    assert!(empty["value"]["$directives"].as_array().unwrap().is_empty());
+    let (aggregated, reverse) = service.call("a1", "aggregate", json!({"thresholds": {}}));
+    assert_eq!(aggregated["kind"], "result", "{aggregated}");
+    assert!(aggregated["value"]["evidence"].as_array().unwrap().is_empty());
+    let reverse = reverse.expect("aggregate 应委派提供方");
+    assert_eq!(reverse["port"], "evolve-evidence");
+    assert_eq!(reverse["method"], "aggregate");
+    // 调用帧 env 经 bag.__env 转交。
+    assert_eq!(reverse["args"]["__env"]["run"], "r1");
 
-    // aggregate：一条 graph 归因拒绝 → 一条 failure_cluster 证据 + 写计划。
-    let bag = json!({
-        "trace_entries": [{"kind":"trace","run":"r1","workspace_id":"w1","outcome":"refused",
-            "refused_at":{"node_index":1,"code":"capability_mismatch","attributable_to":"graph"}}],
-        "thresholds": {"failure_cluster_n": 1},
-        "evolution": evolution_body()
-    });
-    let aggregated = service.call("a2", "aggregate", bag);
-    assert_eq!(aggregated["value"]["evidence"][0]["class"], "failure_cluster");
-    assert!(!aggregated["value"]["$directives"].as_array().unwrap().is_empty());
+    let (swept, reverse) = service.call("s1", "sweep", json!({}));
+    assert_eq!(swept["value"]["swept"], 0);
+    assert_eq!(reverse.unwrap()["port"], "evolve-sweep");
 
-    // record：产 user_request 证据。
-    let recorded = service.call(
+    let (shadowed, reverse) = service.call("sh1", "shadow", json!({"audit": []}));
+    assert_eq!(shadowed["value"]["status"], "unverified");
+    assert_eq!(reverse.unwrap()["port"], "evolve-shadow");
+
+    let (recorded, reverse) = service.call(
         "r1",
         "record",
-        json!({"user_message_def": {"def": "msg"}, "workspace_id": "w1", "evolution": evolution_body()}),
+        json!({"user_message_def": {"def": "msg"}, "workspace_id": "w1"}),
     );
-    assert!(recorded["value"]["evidence_id"].as_str().unwrap().starts_with("ev-"));
-    assert!(!recorded["value"]["$directives"].as_array().unwrap().is_empty());
-
-    // sweep：不动被 verdict 引用的轨迹。
-    let swept = service.call(
-        "s1",
-        "sweep",
-        json!({
-            "trace_entries": [
-                {"kind":"trace","run":"old","workspace_id":"w1","outcome":"done"},
-                {"kind":"trace","run":"new","workspace_id":"w1","outcome":"done"}
-            ],
-            "thresholds": {"trace_retention_rounds": 1},
-            "evolution": evolution_body()
-        }),
-    );
-    assert_eq!(swept["value"]["swept"], 1);
-    assert_eq!(swept["value"]["retained"], 1);
-
-    // shadow：无期望 eff → unverified（fail-closed）。audit 直接给空表，避免反向调用等待。
-    let shadowed = service.call("sh1", "shadow", json!({"audit": []}));
-    assert_eq!(shadowed["value"]["status"], "unverified");
-}
-
-#[test]
-fn shadow_three_states() {
-    use evolve_metrics::shadow::{evaluate, AuditRecord, EffKey, EffRecord};
-    let key = EffKey {
-        port: "model".to_string(),
-        method: "chat".to_string(),
-        args_hash: Some("a1".to_string()),
-    };
-    let ok = EffRecord {
-        port: "model".to_string(),
-        method: "chat".to_string(),
-        args_hash: Some("a1".to_string()),
-        result_hash: Some("r1".to_string()),
-        outcome: "ok".to_string(),
-    };
-    assert_eq!(
-        evaluate(std::slice::from_ref(&key), std::slice::from_ref(&ok), &[]).0,
-        "pass"
-    );
-    let mut other = ok.clone();
-    other.result_hash = Some("r2".to_string());
-    assert_eq!(
-        evaluate(std::slice::from_ref(&key), &[ok.clone(), other], &[]).0,
-        "fail"
-    );
-    assert_eq!(evaluate(std::slice::from_ref(&key), &[], &[]).0, "unverified");
-    // audit 补充：无 eff_log 时按 (port,method) 兜底。
-    let audit = vec![AuditRecord {
-        port: "model".to_string(),
-        method: "chat".to_string(),
-        outcome: "ok".to_string(),
-    }];
-    assert_eq!(
-        evaluate(std::slice::from_ref(&key), &[], &audit).0,
-        "pass"
-    );
-}
-
-#[test]
-fn aggregate_is_deterministic() {
-    use evolve_metrics::aggregate::run as aggregate;
-    use evolve_metrics::port::CapturingEventSink;
-    use evolve_metrics::state::MemoryStateStore;
-    let bag = json!({
-        "trace_entries": [
-            {"kind":"trace","run":"r1","workspace_id":"w1","outcome":"refused",
-             "refused_at":{"node_index":1,"code":"capability_mismatch","attributable_to":"graph"}},
-            {"kind":"trace","run":"r2","workspace_id":"w1","outcome":"refused",
-             "refused_at":{"node_index":1,"code":"capability_mismatch","attributable_to":"graph"}}
-        ],
-        "thresholds": {"failure_cluster_n": 2, "unhealthy_refused_streak": 2},
-        "evolution": evolution_body()
-    });
-    let events_a = CapturingEventSink::new();
-    let events_b = CapturingEventSink::new();
-    let state_a = MemoryStateStore::new();
-    let state_b = MemoryStateStore::new();
-    let first = aggregate(&bag, &json!({"now": 7}), &events_a, &state_a).unwrap();
-    let second = aggregate(&bag, &json!({"now": 7}), &events_b, &state_b).unwrap();
-    assert_eq!(first, second);
-    // 最近连续 refused 达阈 → 发 orchestration.unhealthy。
-    assert_eq!(events_a.events().len(), 1);
-    assert_eq!(events_a.events()[0].0, "orchestration.unhealthy");
+    assert_eq!(reverse.unwrap()["port"], "evolve-evidence");
+    assert!(recorded["value"].get("evidence_id").is_some());
 }
 
 // ── 红线断言（测试不得 import 宿主 / 内核 / client） ──────────────────────────
 
-/// 递归收集目录下全部文件。
 fn collect_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     if !dir.exists() {
@@ -220,7 +150,6 @@ fn collect_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// README 是否含 `#<数字>` 计划编号样式。
 fn has_plan_number(text: &str) -> bool {
     text.as_bytes()
         .windows(2)

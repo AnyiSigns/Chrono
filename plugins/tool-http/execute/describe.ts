@@ -67,7 +67,8 @@ function websearchTool(): Rec {
 function webfetchTool(): Rec {
   return {
     name: 'webfetch',
-    intent: '抓取单个 http(s) URL，HTML 转 markdown 或纯文本（可选保留原始 HTML），二进制存为资产引用。',
+    intent:
+      '抓取单个 http(s) URL，HTML 转 markdown 或纯文本（可选保留原始 HTML），二进制存为资产引用。',
     when_to_use: '已有具体 URL，需要其正文内容时。',
     param_semantics: {
       url: '要抓取的 http(s) URL，必填；内网地址按配置策略拒绝。',

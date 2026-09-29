@@ -124,8 +124,9 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致（dura
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.identity, 'question')
-    assert.deepEqual(manifest.implements, ['question'])
+    assert.deepEqual(manifest.implements, ['question', 'tool-provider'])
     assert.deepEqual(manifest.methods.question, ['describe', 'invoke', 'list', 'state', 'sweep'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
   } finally {
@@ -137,7 +138,7 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致（dura
 test('plugin.json / schema / .worldignore 声明口径', () => {
   const plugin = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.equal(plugin.identity, 'question')
-  assert.deepEqual(plugin.implements, ['question'])
+  assert.deepEqual(plugin.implements, ['question', 'tool-provider'])
   assert.deepEqual(plugin.needs, { input: { mode: 'one' } })
   assert.equal(plugin.state, 'durable')
   assert.deepEqual(plugin.exclusive, ['data'])

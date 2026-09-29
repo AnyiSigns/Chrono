@@ -1,8 +1,8 @@
 {
   "identity": "tool-fs",
-  "implements": ["tool-fs"],
+  "implements": ["tool-provider"],
   "methods": {
-    "tool-fs": ["describe", "invoke"]
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {
     "sandbox": "sandbox",
@@ -25,8 +25,6 @@
     "timeout_ms": 2000
   },
   "state": "recomputable",
-  "members": [
-    { "kind": "execute", "path": "execute/" }
-  ],
+  "members": [{ "kind": "execute", "path": "execute/" }],
   "commands": []
 }

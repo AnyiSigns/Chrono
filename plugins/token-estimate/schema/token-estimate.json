@@ -1,0 +1,62 @@
+{
+  "title": "token-estimate（token 估算：批量计数）",
+  "description": "身份自述 / 数据契约：按 v1 估算器规格把文本批量映射为 token 估算数（确定、同输入同输出、不取时间 / 随机）。计数唯一实现是原生扩展（native/tokenizer，napi `.node`），服务不回落 JS 计数。count 一次收一组文本、回同序计数数组，供上层 `context-window` 每轮装配只发一次批量调用；version 回报估算器规格版本。服务不读投影、无写通道。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "token-estimate.count": ["texts"],
+    "token-estimate.version": []
+  },
+  "properties": {
+    "count_request": {
+      "type": "object",
+      "description": "count 入参：一组待计数文本。",
+      "required": ["texts"],
+      "additionalProperties": false,
+      "properties": {
+        "texts": {
+          "type": "array",
+          "description": "待计数文本数组；可空（回空数组）。",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "count_result": {
+      "type": "object",
+      "description": "count 结果：与 texts 同序同长的 token 估算数数组。",
+      "required": ["counts"],
+      "additionalProperties": false,
+      "properties": {
+        "counts": {
+          "type": "array",
+          "description": "逐条估算 token 数（非负整数）。",
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "version_result": {
+      "type": "object",
+      "description": "version 结果：估算器规格版本（接缝替换真 tokenizer 时变更）。",
+      "required": ["version"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "description": "规格版本（如 v1）。" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "texts 缺失 / 非数组 / 含非字符串项。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "token-estimate.count": 30000,
+    "token-estimate.version": 5000
+  }
+}

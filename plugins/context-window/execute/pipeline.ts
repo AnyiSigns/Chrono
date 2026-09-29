@@ -1,10 +1,10 @@
 // 组装流水线编排（第 0–11 步）：汇集 → 结构化 → 去重 → 配对修复 → 预算 / 配额（含降级阶梯）→
-// 前缀排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单 → 75% 压缩提示 → 交错引导。
+// 前缀排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单 → 交错引导。
 // 全程确定、不取时间（TTL 用 env.now）；每模型 token 校正系数缩放快路径计数。
 
 import { createHash } from 'node:crypto'
-import { allocate, computeBudget, readConfig } from './budget.ts'
-import { correctionFactor, observeUsage, parseUsage } from './calibration.ts'
+import { ServiceError } from 'plugin-sdk'
+import { allocate, readConfig } from './budget.ts'
 import { gatherCandidates } from './candidates.ts'
 import { buildParams, formatMessages } from './format.ts'
 import { canonicalize } from './normalize.ts'
@@ -13,6 +13,9 @@ import { applyRetention } from './retention.ts'
 import { computeSections } from './sections.ts'
 import { dedupe } from './stages.ts'
 import { isRecord, stableStringify } from './text.ts'
+import { beginCountPass, endCountPass, fillCounts } from './tokens.ts'
+import type { BudgetModel } from './budget.ts'
+import type { ContextBackends } from './backends.ts'
 import type {
   AssemblyManifest,
   CacheHint,
@@ -61,7 +64,7 @@ function orderMessages(messages: CanonicalMessage[], policy: Policy): CanonicalM
     .map((entry) => entry.message)
 }
 
-/** 尾部提示语（压缩提示 / 交错引导）：单条 system 消息，单独计入 `hints` 分节。 */
+/** 尾部提示语（交错引导）：单条 system 消息，单独计入 `hints` 分节。 */
 function noteMessage(text: string): CanonicalMessage {
   return canonicalize([
     {
@@ -93,10 +96,22 @@ function uniqueFlags(flags: string[]): string[] {
  * 阈值覆盖：调用方随 `bag.thresholds` 下传时优先（单一真源方向），否则用本包 policy 默认。
  * `positiveOnly` 为真时非正数视为不可用回落默认；否则允许 0（表示关闭该例外）。
  */
-function thresholdOverride(bag: Record<string, unknown>, key: string, fallback: number, positiveOnly: boolean): number {
-  const thresholds = isRecord(bag['thresholds']) ? (bag['thresholds'] as Record<string, unknown>) : null
+function thresholdOverride(
+  bag: Record<string, unknown>,
+  key: string,
+  fallback: number,
+  positiveOnly: boolean,
+): number {
+  const thresholds = isRecord(bag['thresholds'])
+    ? (bag['thresholds'] as Record<string, unknown>)
+    : null
   const value = thresholds === null ? undefined : thresholds[key]
-  if (typeof value === 'number' && Number.isFinite(value) && (positiveOnly ? value > 0 : value >= 0)) return value
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    (positiveOnly ? value > 0 : value >= 0)
+  )
+    return value
   return fallback
 }
 
@@ -107,12 +122,19 @@ function largeArtifactBytes(bag: Record<string, unknown>, policy: Policy): numbe
 
 /** 超大用户粘贴阈值（策略默认 / bag 覆盖；0 = 关闭）。 */
 function oversizedUserChars(bag: Record<string, unknown>, policy: Policy): number {
-  return thresholdOverride(bag, 'oversized_user_chars', policy.retention.oversized_user_chars, false)
+  return thresholdOverride(
+    bag,
+    'oversized_user_chars',
+    policy.retention.oversized_user_chars,
+    false,
+  )
 }
 
 /** 稳定前缀的稳定哈希：仅由系统提示 → 工具 → L2 的静态内容决定，前缀不变则键不变。 */
 function prefixKey(run: CanonicalMessage[]): string {
-  const serialized = stableStringify(run.map((message) => ({ role: message.role, parts: message.parts })) as unknown as Json)
+  const serialized = stableStringify(
+    run.map((message) => ({ role: message.role, parts: message.parts })) as unknown as Json,
+  )
   return `ctx-${createHash('sha256').update(serialized).digest('hex').slice(0, 32)}`
 }
 
@@ -132,7 +154,10 @@ function cacheHintOf(messages: CanonicalMessage[], policy: Policy): CacheHint | 
   if (end === 0) return null
   const run = messages.slice(0, end)
   const hint: CacheHint = { key: prefixKey(run) }
-  if (run.some((message) => message.source === 'prompt') && messages.slice(end).every((message) => message.role !== 'system')) {
+  if (
+    run.some((message) => message.source === 'prompt') &&
+    messages.slice(end).every((message) => message.role !== 'system')
+  ) {
     hint.system = true
   }
   if (run.some((message) => message.source === 'tools')) hint.tools = true
@@ -143,7 +168,10 @@ function cacheHintOf(messages: CanonicalMessage[], policy: Policy): CacheHint | 
   return hint
 }
 
-function recallKept(kept: CanonicalMessage[], recall: { entry: string; score: number }[]): { entry: string; score: number }[] {
+function recallKept(
+  kept: CanonicalMessage[],
+  recall: { entry: string; score: number }[],
+): { entry: string; score: number }[] {
   const count = kept.filter((message) => message.source === 'recall').length
   return recall.slice(0, count)
 }
@@ -185,18 +213,63 @@ function makeManifest(input: ManifestInput): AssemblyManifest {
   }
 }
 
+/** 装配迭代上限：发现 → 补齐通常 1–3 遍；超限视为计数不收敛（异常）。 */
+const MAX_COUNT_PASSES = 6
+
 /**
  * 执行一次组装。`bag` 是调用方入口 term 装配的输入（服务不读投影），`env` 是帧 env。
+ * 跨身份取数（`token-estimate` 批量计数、`budget` 建模 / 系数 / 校准）经反向 `port.call`。
+ * 计数按「发现 → 批量补齐」迭代：同步跑装配收集未命中文本 → 一次批量 count 补齐 → 重跑，
+ * 直到某遍零未命中即为确定结果（同输入同输出）。热路径一轮装配只发一次批量 count。
  */
-export function buildAssembly(
+export async function buildAssembly(
   bag: Record<string, unknown>,
   env: CallEnv,
   policy: Policy,
-): PipelineResult {
+  backends: ContextBackends,
+): Promise<PipelineResult> {
   const config = readConfig(bag)
   const model = typeof config?.['model'] === 'string' ? (config['model'] as string) : 'unknown'
-  const usage = parseUsage(bag['usage'])
-  const factor = correctionFactor(model)
+  const factor = await backends.budget.factor(model)
+  const budgetInfo = await backends.budget.model({
+    config,
+    policy: {
+      margin_ratio: policy.budget.margin_ratio,
+      default_context_window: policy.budget.default_context_window,
+      default_max_output: policy.budget.default_max_output,
+      quota: policy.quota,
+    },
+  })
+  for (let pass = 0; pass < MAX_COUNT_PASSES; pass += 1) {
+    beginCountPass()
+    const result = runPipeline(bag, env, policy, factor, budgetInfo, config, model)
+    const missing = endCountPass()
+    if (missing.length === 0) {
+      const observed = await backends.budget.observe(
+        model,
+        result.manifest.used,
+        bag['usage'] ?? null,
+      )
+      result.manifest.usage =
+        observed.usage === null ? null : { ...observed.usage, correction_factor: factor }
+      return result
+    }
+    const counts = await backends.token.count(missing)
+    fillCounts(missing, counts)
+  }
+  throw new ServiceError('token_estimate_failed', 'token counting did not converge')
+}
+
+/** 同步跑一遍装配：计数全部取自缓存 / 未命中记 0，由 `buildAssembly` 迭代补齐。 */
+function runPipeline(
+  bag: Record<string, unknown>,
+  env: CallEnv,
+  policy: Policy,
+  factor: number,
+  budgetInfo: BudgetModel,
+  config: Record<string, unknown> | null,
+  model: string,
+): PipelineResult {
   const gathered = gatherCandidates(bag, env, policy)
   const canonical = canonicalize(gathered.raws, { scale: factor })
   const deduped = dedupe(canonical)
@@ -213,17 +286,17 @@ export function buildAssembly(
     errorAvoidHeader: policy.messages.error_avoid_header,
   })
   const repaired = repairPairing(retained.messages, factor)
-  const budgetInfo = computeBudget(config, policy)
   const allocation = allocate(repaired, budgetInfo.budget, policy, {
     checkpoint: gathered.checkpoint !== null,
     scale: factor,
+    quota: budgetInfo.quota,
   })
   const retention = retained.counts
   const retentionDegraded = retained.degraded
   const recall = recallKept(allocation.kept, gathered.recallEntries)
   const baseFlags = [...gathered.flags, ...budgetInfo.flags]
-  const manifestUsage: UsageManifest | null =
-    usage === null ? null : { ...usage, correction_factor: factor }
+  // 用量形状由 `buildAssembly` 收敛后经 `budget.observe` 回填（此处占位 null）。
+  const manifestUsage: UsageManifest | null = null
 
   if (allocation.error !== null) {
     const manifest = makeManifest({
@@ -242,7 +315,6 @@ export function buildAssembly(
       flags: [...baseFlags, allocation.error.code],
       usage: manifestUsage,
     })
-    observeUsage(model, allocation.used, usage)
     return {
       value: {
         ok: false,
@@ -276,7 +348,6 @@ export function buildAssembly(
       flags: [...baseFlags, 'pairing_violation'],
       usage: manifestUsage,
     })
-    observeUsage(model, allocation.used, usage)
     return {
       value: {
         ok: false,
@@ -292,10 +363,6 @@ export function buildAssembly(
   }
 
   const notes: CanonicalMessage[] = []
-  // 75% 触发：追加一条压缩提示（只一条）。
-  if (budgetInfo.budget > 0 && allocation.used >= budgetInfo.budget * policy.thresholds.compress_hint_ratio) {
-    notes.push(noteMessage(policy.messages.compress_hint))
-  }
   // 交错引导：本轮含工具结果 ⇒ 尾部追加一条「说意图、禁标识符」system 引导（幂等一条）。
   if (containsToolResult(ordered)) notes.push(noteMessage(policy.messages.interleave_guidance))
 
@@ -321,7 +388,6 @@ export function buildAssembly(
     flags,
     usage: manifestUsage,
   })
-  observeUsage(model, allocation.used, usage)
 
   const value: Json = {
     ok: true,
@@ -330,5 +396,9 @@ export function buildAssembly(
     ...(cacheHint === null ? {} : { cache: cacheHint as unknown as Json }),
     manifest: manifest as unknown as Json,
   }
-  return { value, manifest, events: [{ topic: ASSEMBLED_TOPIC, payload: manifest as unknown as Json }] }
+  return {
+    value,
+    manifest,
+    events: [{ topic: ASSEMBLED_TOPIC, payload: manifest as unknown as Json }],
+  }
 }

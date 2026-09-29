@@ -1,0 +1,114 @@
+{
+  "title": "l3-maintenance（L3 记忆维护）",
+  "description": "身份自述 / 数据契约：L3（memory-store 长期条目）维护的 solidify（L2 高价值项固化进 L3，向量去重）/ forget（低权重 / 超容量遗忘，跳过 pinned；游标增量）/ view（只读一档）/ edit（删除 / 置顶 / 文本编辑）四方法。L3 是运行记录、已出世界：本服务经反向调用读写 owner 服务，不读投影、不产世界写计划、不自取时钟（时间由调用帧 env 传入，同输入同输出）。L2 摘要经反向调用 short-memory.read；去重经 embedding.embed。",
+  "type": "object",
+  "additionalProperties": true,
+  "params": {
+    "l3_capacity": 500,
+    "dedup_cosine_threshold": 0.9,
+    "consolidate_weight_threshold": 0.7,
+    "candidate_weight_threshold": 0.2,
+    "solidify_full_sources": 4
+  },
+  "properties": {
+    "solidify_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "solidify 的 bag：按 workspaces 作用域读 L2 摘要，取高价值项（weight ≥ 阈值或 high_value 强制）固化进 L3。",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "本次合并涉及的工作区（由 L2 合并提供）作用域。"
+        },
+        "high_value": { "type": "array", "items": { "type": "string" } },
+        "item_weights": { "type": "object", "additionalProperties": true },
+        "embedding_model": { "type": "string" },
+        "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "weight_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "solidify_full_sources": { "type": "integer", "minimum": 1 },
+        "now": {}
+      }
+    },
+    "forget_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "forget 的 bag：删低权重 / 超容量 L3（跳过 pinned）；dry_run=true 时只算不写、回 low_weight 候选。",
+      "properties": {
+        "cursor": {
+          "type": "string",
+          "description": "增量游标（ISO at）：只对水位之后的条目判低权重。"
+        },
+        "l3_capacity": { "type": "integer", "minimum": 1 },
+        "candidate_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dry_run": { "type": "boolean" },
+        "now": {}
+      }
+    },
+    "view_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "view 的 bag：只读回 L3 一档（id / text / at / tags / source / workspace / weight / pinned）。",
+      "properties": { "now": {} }
+    },
+    "edit_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "edit 的 bag：L3 删除 / 置顶 / 文本编辑经反向调用写 owner 服务。",
+      "required": ["action", "layer", "id"],
+      "properties": {
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "const": "l3" },
+        "id": { "type": "string" },
+        "patch": { "type": "object", "additionalProperties": true },
+        "slot": { "type": "object", "additionalProperties": true },
+        "now": {}
+      }
+    },
+    "solidify_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "solidify" },
+        "solidified": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "forget_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "forget" },
+        "l3_deleted": { "type": "array", "items": { "type": "object" } },
+        "cursor_next": { "type": "string" }
+      }
+    },
+    "view_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "view" },
+        "l3": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "edit_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "edit" },
+        "action": { "enum": ["delete", "pin", "text"] },
+        "layer": { "const": "l3" },
+        "id": { "type": "string" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "l3-maintenance.solidify": 670000,
+    "l3-maintenance.forget": 620000,
+    "l3-maintenance.view": 40000,
+    "l3-maintenance.edit": 620000
+  }
+}

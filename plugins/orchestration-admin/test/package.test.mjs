@@ -42,8 +42,11 @@ test('plugin.json 字段齐全且形态合法（needs orchestration）', () => {
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'orchestration-admin')
   assert.equal(decl.schema, 'schema/orchestration-admin.json')
-  assert.deepEqual(decl.implements, ['orchestration-admin'])
-  assert.deepEqual(decl.methods, { 'orchestration-admin': ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['orchestration-admin', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    'orchestration-admin': ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.pins, {})
   assert.deepEqual(decl.needs, { orchestration: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')

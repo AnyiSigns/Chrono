@@ -34,7 +34,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -69,14 +71,13 @@ function checkDeclaration() {
   assert.deepEqual(decl.needs, { 'storage-kv': { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.state, 'durable')
-  assert.deepEqual(
-    decl.members.map((member) => member.kind).sort(),
-    ['execute', 'schema'],
-  )
+  assert.deepEqual(decl.members.map((member) => member.kind).sort(), ['execute', 'schema'])
   assert.deepEqual(decl.commands, [])
   const ignore = readFileSync(join(TODO_DIR, '.worldignore'), 'utf8')
   assert.match(ignore, /(^|\n)test\/(\r?\n|$)/, '.worldignore 须声明 test/')
-  console.log('声明：identity / implements / methods / pins / start / members / commands 与 .worldignore 正确')
+  console.log(
+    '声明：identity / implements / methods / pins / start / members / commands 与 .worldignore 正确',
+  )
 }
 
 async function main() {

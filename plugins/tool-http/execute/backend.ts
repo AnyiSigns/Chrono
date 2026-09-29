@@ -21,6 +21,7 @@ export interface HttpBackend {
 export function createReverseBackend(link: PortLink): HttpBackend {
   return {
     exec: (bag, callId, timeoutMs) => link.call('sandbox', 'exec', bag, { callId, timeoutMs }),
-    assetPut: (input, callId, timeoutMs) => link.call('host', 'asset.put', input, { callId, timeoutMs }),
+    assetPut: (input, callId, timeoutMs) =>
+      link.call('host', 'asset.put', input, { callId, timeoutMs }),
   }
 }

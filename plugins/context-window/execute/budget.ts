@@ -1,20 +1,42 @@
-// 流水线第 3 / 4 / 5 步：预算建模、配额分配与预算降级阶梯。
-// 总预算 = context_window - max_output - 余量（policy）；配额按优先级给各类，未用额度下滚给历史。
+// 流水线第 3 / 4 / 5 步：配额分配与预算降级阶梯（预算标量与配额由提供方 `budget` 建模）。
+// 配额按优先级给各类，未用额度下滚给历史。
 // 只有 P0（系统提示 + 工具 schema）本身超窗才硬错误，且指名是哪个元素过大；其余一律降级而非失败。
 
 import { ageMessage } from './aging.ts'
-import { countTokens } from './native.ts'
 import { canonicalize } from './normalize.ts'
+import { lookupCount } from './tokens.ts'
 import { isRecord, applyScale, prefixSums, rangeSum } from './text.ts'
 import type { BudgetOrigin, CanonicalMessage, Policy, Source } from './types.ts'
 
-export interface BudgetInfo {
+/** 每来源配额上限（token，由 `budget.model` 建模给出）。 */
+export interface QuotaCaps {
+  l2: number
+  l1: number
+  skill: number
+  recall: number
+  style: number
+}
+
+/** 预算模型：`budget.model` 的返回形状（消费方本地类型，跨身份不 import）。 */
+export interface BudgetModel {
   budget: number
   context_window: number
   max_output: number
   margin: number
   origin: BudgetOrigin
   flags: string[]
+  quota: QuotaCaps
+}
+
+/** 由预算标量与 policy 比例在本地回落出配额上限（直调 allocate 时的兜底，与 `budget.model` 同口径）。 */
+function quotaCapsFromPolicy(budget: number, policy: Policy): QuotaCaps {
+  return {
+    l2: Math.floor(budget * policy.quota.l2),
+    l1: Math.floor(budget * policy.quota.l1),
+    skill: Math.floor(budget * policy.quota.skill),
+    recall: Math.floor(budget * policy.quota.recall),
+    style: Math.floor(budget * policy.quota.style),
+  }
 }
 
 export interface AllocationError {
@@ -44,32 +66,6 @@ const ALL_SOURCES: Source[] = [
   'style',
   'tool',
 ]
-
-function positiveNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
-}
-
-/** 预算建模：从 `bag.config` 取模型档案，缺档案回落保守默认并标 `profile_missing`。 */
-export function computeBudget(config: Record<string, unknown> | null, policy: Policy): BudgetInfo {
-  const flags: string[] = []
-  const contextWindow = positiveNumber(config?.['context_window'])
-  const maxOutput = positiveNumber(config?.['max_output'])
-  const window = contextWindow ?? policy.budget.default_context_window
-  const output = maxOutput ?? policy.budget.default_max_output
-  if (contextWindow === null || maxOutput === null) flags.push('profile_missing')
-  const margin = Math.floor(window * policy.budget.margin_ratio)
-  // 输出预留不能吃掉整个上下文：部分档案的 `max_output` 接近甚至等于 `context_window`（models.dev 偶有
-  // 此类条目），全额预留会让输入预算变负（界面显示「-13.1k」）。封顶到半个上下文，保证至少一半留给输入。
-  const reserve = Math.min(output, Math.floor(window / 2))
-  return {
-    budget: window - reserve - margin,
-    context_window: window,
-    max_output: reserve,
-    margin,
-    origin: contextWindow === null || maxOutput === null ? 'default' : 'profile',
-    flags,
-  }
-}
 
 function emptySources(): Record<string, { tokens: number; count: number }> {
   const sources: Record<string, { tokens: number; count: number }> = {}
@@ -106,14 +102,17 @@ export function groupHistory(messages: CanonicalMessage[]): Group[] {
     }
     const groupId = message.atomicGroup
     let end = index + 1
-    while (end < messages.length && (messages[end] as CanonicalMessage).atomicGroup === groupId) end += 1
+    while (end < messages.length && (messages[end] as CanonicalMessage).atomicGroup === groupId)
+      end += 1
     groups.push({ messages: messages.slice(index, end), tokens: rangeSum(sums, index, end) })
     index = end
   }
   return groups
 }
 
-function collectSources(kept: CanonicalMessage[]): Record<string, { tokens: number; count: number }> {
+function collectSources(
+  kept: CanonicalMessage[],
+): Record<string, { tokens: number; count: number }> {
   const sources = emptySources()
   for (const message of kept) {
     const bucket = sources[message.source] as { tokens: number; count: number }
@@ -144,7 +143,7 @@ interface CoreResult {
 function allocateCore(
   messages: CanonicalMessage[],
   budget: number,
-  policy: Policy,
+  quota: QuotaCaps,
   trimmed: { source: string; reason: string }[],
   reserve: number,
 ): CoreResult {
@@ -179,12 +178,12 @@ function allocateCore(
     left -= used
   }
 
-  const takeByPriority = (priority: number, quota: number): void => {
-    const cap = Math.min(Math.floor(budget * quota), spendable())
+  const takeByPriority = (priority: number, cap: number): void => {
+    const limit = Math.min(cap, spendable())
     let used = 0
     let stopped = false
     for (const message of byPriority(messages, priority)) {
-      if (stopped || used + message.tokens > cap) {
+      if (stopped || used + message.tokens > limit) {
         trimmed.push({ source: message.source, reason: 'quota' })
         stopped = true
         continue
@@ -195,15 +194,17 @@ function allocateCore(
     left -= used
   }
 
-  takeBySource('l2', Math.floor(budget * policy.quota.l2))
-  takeBySource('l1', Math.floor(budget * policy.quota.l1))
-  takeByPriority(2, policy.quota.skill)
-  takeByPriority(3, policy.quota.recall)
-  takeByPriority(5, policy.quota.style)
+  takeBySource('l2', quota.l2)
+  takeBySource('l1', quota.l1)
+  takeByPriority(2, quota.skill)
+  takeByPriority(3, quota.recall)
+  takeByPriority(5, quota.style)
 
   // 历史：仅 `source==='history'`（P4）新 → 旧按 atomic 组整组进出；额度不够时停止（保新近连续）。
   // 本轮记录（`source:'tool'`）不在此列——它们是 T0，另有配额保留路径，不产生 `drop_old_turns`。
-  const groups = groupHistory(byPriority(messages, 4).filter((message) => message.source === 'history'))
+  const groups = groupHistory(
+    byPriority(messages, 4).filter((message) => message.source === 'history'),
+  )
   let droppedHistory = 0
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index] as Group
@@ -262,9 +263,15 @@ function dropReasoning(messages: CanonicalMessage[]): CanonicalMessage[] {
   return changed ? out : messages
 }
 
-/** 截断本轮输入首尾并插入显式标记；二分确定可容纳的字符预算，确定且必不超限（按校正系数同口径）。 */
+/** 截断候选的字符网格粒度：在 [0, len] 上取固定档位，保证一轮即可批量取齐候选计数。 */
+const TRUNCATE_GRID = 96
+
+/**
+ * 截断本轮输入首尾并插入显式标记。在固定字符网格上取「计数 ≤ 上限」的最大档（网格点计数单调不减，
+ * 一旦越限即可停止）；候选计数经批量 `token-estimate.count` 在本轮取齐，确定且必不超限（按校正系数同口径）。
+ */
 function truncateText(text: string, marker: string, maxTokens: number, scale: number): string {
-  const tokensOf = (value: string): number => applyScale(countTokens(value), scale)
+  const tokensOf = (value: string): number => applyScale(lookupCount(value) ?? 0, scale)
   const markerTokens = tokensOf(marker)
   if (maxTokens <= markerTokens) return marker
   if (tokensOf(text) <= maxTokens) return text
@@ -273,18 +280,13 @@ function truncateText(text: string, marker: string, maxTokens: number, scale: nu
     const tail = Math.floor(keepChars / 2)
     return text.slice(0, head) + marker + (tail > 0 ? text.slice(text.length - tail) : '')
   }
-  let low = 0
-  let high = text.length
   let best = compose(0)
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2)
-    const candidate = compose(mid)
-    if (tokensOf(candidate) <= maxTokens) {
-      best = candidate
-      low = mid + 1
-    } else {
-      high = mid - 1
-    }
+  for (let step = 1; step <= TRUNCATE_GRID; step += 1) {
+    const keepChars = Math.floor((text.length * step) / TRUNCATE_GRID)
+    if (keepChars <= 0) continue
+    const candidate = compose(keepChars)
+    if (tokensOf(candidate) > maxTokens) break
+    best = candidate
   }
   return best
 }
@@ -331,7 +333,10 @@ function truncateInput(
     [
       {
         role: target.role,
-        parts: [{ type: 'text', text: truncateText(targetText, marker, allowance, scale) }, ...preserved],
+        parts: [
+          { type: 'text', text: truncateText(targetText, marker, allowance, scale) },
+          ...preserved,
+        ],
         source: 'input',
         priority: target.priority,
         at: target.at,
@@ -353,6 +358,8 @@ export interface AllocationOptions {
   checkpoint?: boolean
   /** 每模型 token 校正系数：改写 / 截断路径重算 token 时与之同口径。 */
   scale?: number
+  /** 每来源配额上限（由 `budget.model` 给出）；缺省按预算与 policy 比例本地回落。 */
+  quota?: QuotaCaps
 }
 
 /**
@@ -370,6 +377,7 @@ export function allocate(
   const trimmed: { source: string; reason: string }[] = []
   const degraded: string[] = []
   const scale = typeof options.scale === 'number' && options.scale > 0 ? options.scale : 1
+  const quota = options.quota ?? quotaCapsFromPolicy(budget, policy)
   if (budget <= 0) {
     return {
       kept: [],
@@ -423,16 +431,16 @@ export function allocate(
   }
 
   const reserve = messages.some((message) => message.source === 'input')
-    ? countTokens(policy.messages.input_truncated) + 1
+    ? (lookupCount(policy.messages.input_truncated) ?? 0) + 1
     : 0
-  let core = allocateCore(working, budget, policy, trimmed, reserve)
+  let core = allocateCore(working, budget, quota, trimmed, reserve)
   // 只有历史组真的因预算被裁才登记 `drop_old_turns`（本轮 T0 记录不计）。
   if (core.droppedHistory > 0) degraded.push('drop_old_turns')
   if (core.inputOverflow) {
     const remaining = budget - core.usedWithoutInput
     working = truncateInput(working, remaining, policy.messages.input_truncated, trimmed, scale)
     degraded.push('truncate_input')
-    core = allocateCore(working, budget, policy, trimmed, reserve)
+    core = allocateCore(working, budget, quota, trimmed, reserve)
   }
 
   const kept = core.kept

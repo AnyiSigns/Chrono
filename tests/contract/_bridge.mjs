@@ -47,9 +47,14 @@ export function startRealService(options) {
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
 
   function respond(message, response) {
-    const base = { v: SERVICE_PROTOCOL_VERSION, id: typeof message.id === 'string' ? message.id : '' }
+    const base = {
+      v: SERVICE_PROTOCOL_VERSION,
+      id: typeof message.id === 'string' ? message.id : '',
+    }
     if (response !== null && response.ok === true) {
-      child.stdin.write(encodeFrame({ ...base, kind: 'port.result', value: response.value ?? null }))
+      child.stdin.write(
+        encodeFrame({ ...base, kind: 'port.result', value: response.value ?? null }),
+      )
       return
     }
     child.stdin.write(
@@ -71,9 +76,13 @@ export function startRealService(options) {
       }
       if (message.kind === 'port.call') {
         portCalls.push(message)
-        Promise.resolve(options.onPortCall ? options.onPortCall(message) : { ok: true, value: null })
+        Promise.resolve(
+          options.onPortCall ? options.onPortCall(message) : { ok: true, value: null },
+        )
           .then((response) => respond(message, response ?? { ok: true, value: null }))
-          .catch((err) => respond(message, { ok: false, code: 'internal', message: String(err && err.message) }))
+          .catch((err) =>
+            respond(message, { ok: false, code: 'internal', message: String(err && err.message) }),
+          )
         continue
       }
       const handler = typeof message.id === 'string' ? pending.get(message.id) : undefined
@@ -93,12 +102,18 @@ export function startRealService(options) {
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, timeoutMs)
       pending.set(id, (message) => {
         clearTimeout(timer)
         if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`))
+          rejectRequest(
+            new Error(
+              `expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`,
+            ),
+          )
           return
         }
         resolveRequest(message)
@@ -117,7 +132,10 @@ export function startRealService(options) {
     request,
     hello: () => request('hello', { impl: options.name, gen: 'gen-1' }, 'manifest'),
     call: (port, method, args, callEnv) =>
-      request('call', { port, method, args, ...(callEnv === undefined ? {} : { env: callEnv }) }, ['result', 'error']),
+      request('call', { port, method, args, ...(callEnv === undefined ? {} : { env: callEnv }) }, [
+        'result',
+        'error',
+      ]),
     close: () => child.stdin.end(),
   }
 }
@@ -126,17 +144,19 @@ export function startRealService(options) {
 export const FIXED_ENV = { run: 'run-seam', thread: 't1', now: 1_700_000_000_000 }
 
 /**
- * 由路由表构造 `onPortCall`：按 `<port>.<method>` 精确匹配 → 按 `<port>` 匹配 → `fallback`。
+ * 由路由表构造 `onPortCall`：按 `<目标>.<method>` 精确匹配 → 按 `<目标>` 匹配 → `fallback`。
+ * 目标 = 帧 `provider`（按成员定位的 many 目标提供方身份名）优先，否则帧 `port`（单值端口）。
  * 命中函数可回 `{ok,...}` 形态，也可直接回值（自动包成 `{ok:true,value}`）。
  */
 export function makeRouter(routes, fallback) {
   return (message) => {
-    const port = message.port
+    const port = typeof message.provider === 'string' ? message.provider : message.port
     const method = message.method
     const fn = routes[`${port}.${method}`] ?? routes[port] ?? fallback
     if (fn === undefined) return { ok: false, code: 'unresolved_cap', message: `${port}.${method}` }
     return Promise.resolve(fn(message.args ?? {}, message)).then((value) => {
-      if (isRecord(value) && typeof value.ok === 'boolean' && ('value' in value || 'code' in value)) return value
+      if (isRecord(value) && typeof value.ok === 'boolean' && ('value' in value || 'code' in value))
+        return value
       return { ok: true, value: value === undefined ? null : value }
     })
   }
@@ -174,5 +194,6 @@ export async function stopRealService(service, timeoutMs = 3000) {
 
 /** 调真实服务并把回帧转成路由应答。 */
 export function forward(service) {
-  return (args, message) => service.call(message.port, message.method, args, message.env).then(relayFrame)
+  return (args, message) =>
+    service.call(message.port, message.method, args, message.env).then(relayFrame)
 }

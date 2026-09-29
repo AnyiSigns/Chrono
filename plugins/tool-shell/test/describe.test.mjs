@@ -55,7 +55,10 @@ function checkSchemaKeys(schema, path = 'argsSchema') {
 }
 
 test('describe 只回单工具 shell', () => {
-  assert.deepEqual(describeTools(PROFILE).tools.map((tool) => tool.name), ['shell'])
+  assert.deepEqual(
+    describeTools(PROFILE).tools.map((tool) => tool.name),
+    ['shell'],
+  )
 })
 
 test('四要素必填非空且 param_semantics 覆盖必填参数', () => {

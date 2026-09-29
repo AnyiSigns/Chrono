@@ -1,37 +1,26 @@
-// 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，收集 event 帧。
-// 测试前确保原生 tokenizer 已构建（包内 target/release）；服务在无 CHRONO_PLUGIN_STATE 时回落该产物。
+// 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，收集 event 帧，
+// 并自动应答反向调用 `port.call`（模拟宿主侧路由：token-estimate / budget）。
+// 反向调用次数经 `driver.portCalls` 记录，供热路径调用次数断言。
 
-import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
+import { createFakeBudget, defaultPortResponse } from './fakes.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 
-const LIB_NAMES =
-  process.platform === 'win32' ? ['tokenizer.dll'] : ['libtokenizer.so', 'tokenizer.so']
-
-/** 确保包内 `target/release/` 有原生库；缺失则跑一次 `cargo build --release`。 */
-export function ensureNative() {
-  for (const name of LIB_NAMES) {
-    if (existsSync(join(PKG_ROOT, 'target', 'release', name))) return
-  }
-  const result = spawnSync('cargo', ['build', '--release'], { cwd: PKG_ROOT, encoding: 'utf8' })
-  if (result.status !== 0) {
-    throw new Error(`cargo build --release failed: ${result.stderr || result.stdout}`)
-  }
-}
-
 export { encodeFrame, createDecoder }
+
+/** 兼容旧测试的调用点：token 计数已下沉，context-window 不再有原生产物。 */
+export function ensureNative() {}
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
-/** 启动服务并返回请求 / 事件接口。 */
-export function startService() {
-  ensureNative()
+/** 启动服务并返回请求 / 反向调用接口。 */
+export function startService(options = {}) {
   const child = spawn(process.execPath, [ENTRY], {
     cwd: PKG_ROOT,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -40,11 +29,31 @@ export function startService() {
   const decoder = createDecoder()
   const pending = new Map()
   const events = []
+  const portCalls = []
+  const stderr = []
+  const budget = options.budget ?? createFakeBudget()
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
       if (message.kind === 'event') {
         events.push(message)
+        continue
+      }
+      if (message.kind === 'port.call') {
+        portCalls.push(message)
+        const outcome = defaultPortResponse(message.port, message.method, message.args, budget)
+        const frame =
+          outcome === null
+            ? {
+                v: '1',
+                id: message.id,
+                kind: 'port.error',
+                ok: false,
+                error: 'not_ready',
+                message: 'no resolver',
+              }
+            : { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value }
+        child.stdin.write(encodeFrame(frame))
         continue
       }
       const handler = pending.get(message.id)
@@ -54,7 +63,7 @@ export function startService() {
       }
     }
   })
-  child.stderr.on('data', () => {})
+  child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
 
   let seq = 0
   function request(kind, fields, expect) {
@@ -64,7 +73,9 @@ export function startService() {
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, 15000)
       pending.set(id, (message) => {
         clearTimeout(timer)
@@ -81,17 +92,27 @@ export function startService() {
   return {
     child,
     events,
+    portCalls,
+    stderr,
+    budget,
     exit,
     request,
     async hello() {
       return request('hello', { impl: 'context-window', gen: 'gen-1' }, 'manifest')
     },
     async build(bag, env = FIXED_ENV) {
-      const message = await request('call', { port: 'context', method: 'build', args: bag, env }, 'result')
+      const message = await request(
+        'call',
+        { port: 'context', method: 'build', args: bag, env },
+        'result',
+      )
       return message.value
     },
     async buildRaw(bag, env = FIXED_ENV) {
-      return request('call', { port: 'context', method: 'build', args: bag, env }, ['result', 'error'])
+      return request('call', { port: 'context', method: 'build', args: bag, env }, [
+        'result',
+        'error',
+      ])
     },
     close() {
       child.stdin.end()
@@ -125,7 +146,11 @@ function callsOf(message) {
     }
     if (part.type === 'tool_call' || part.type === 'tool_use') {
       const id = part.id ?? part.call_id ?? `call-${calls.length}`
-      calls.push({ id, name: part.name ?? part.tool ?? '', arguments: part.arguments ?? part.args ?? {} })
+      calls.push({
+        id,
+        name: part.name ?? part.tool ?? '',
+        arguments: part.arguments ?? part.args ?? {},
+      })
     }
   }
   for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
@@ -141,7 +166,10 @@ function parsedToolContent(content) {
   if (typeof content !== 'string') return null
   try {
     const parsed = JSON.parse(content)
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.call_id === 'string'
+    return parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof parsed.call_id === 'string'
       ? parsed
       : null
   } catch {
@@ -193,31 +221,70 @@ export function turnsFromMessages(messages) {
         if (callId === null) continue
         if (card.status === null && card.result === null) continue
         const ok = card.status !== 'error'
-        toolResults.push(ok ? { call_id: callId, ok: true, result: card.result ?? null } : { call_id: callId, ok: false, error: card.result ?? null })
+        toolResults.push(
+          ok
+            ? { call_id: callId, ok: true, result: card.result ?? null }
+            : { call_id: callId, ok: false, error: card.result ?? null },
+        )
       }
       if (calls.length > 0) {
-        steps.push({ type: 'step.intent', turn_id: turn.turn_id, seq, kind: 'tool.dispatch', tool_calls: calls })
-        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant, tool_results: toolResults })
+        steps.push({
+          type: 'step.intent',
+          turn_id: turn.turn_id,
+          seq,
+          kind: 'tool.dispatch',
+          tool_calls: calls,
+        })
+        steps.push({
+          type: 'step.result',
+          turn_id: turn.turn_id,
+          seq,
+          assistant,
+          tool_results: toolResults,
+        })
       } else {
-        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant, tool_results: toolResults })
+        steps.push({
+          type: 'step.result',
+          turn_id: turn.turn_id,
+          seq,
+          assistant,
+          tool_results: toolResults,
+        })
       }
     }
     // 独立 tool 消息：按其 call_id 回填到最近的 step.result。
     for (const message of turn.tools) {
       const callId = typeof message.tool_call_id === 'string' ? message.tool_call_id : null
       const parsed = parsedToolContent(message.content)
-      const result = parsed ?? (typeof message.content === 'string' ? { call_id: callId ?? `call-${seq}`, ok: true, result: message.content } : null)
+      const result =
+        parsed ??
+        (typeof message.content === 'string'
+          ? { call_id: callId ?? `call-${seq}`, ok: true, result: message.content }
+          : null)
       if (result === null) continue
       let target = null
       for (const step of steps) if (step.type === 'step.result') target = step
       if (target === null) {
         seq += 1
-        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant: { content: '' }, tool_results: [result] })
+        steps.push({
+          type: 'step.result',
+          turn_id: turn.turn_id,
+          seq,
+          assistant: { content: '' },
+          tool_results: [result],
+        })
       } else {
         target.tool_results.push(result)
       }
     }
-    const out = { turn_id: turn.turn_id, conv: 'c1', at: '2026-01-01T00:00:00.000Z', state: 'settled', outcome: { kind: 'committed', retryable: false }, steps }
+    const out = {
+      turn_id: turn.turn_id,
+      conv: 'c1',
+      at: '2026-01-01T00:00:00.000Z',
+      state: 'settled',
+      outcome: { kind: 'committed', retryable: false },
+      steps,
+    }
     if (turn.user !== null) {
       const user = { content: typeof turn.user.content === 'string' ? turn.user.content : '' }
       if (Array.isArray(turn.user.parts)) user.parts = turn.user.parts

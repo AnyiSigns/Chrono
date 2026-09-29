@@ -15,6 +15,7 @@ const DECL_FIELDS = [
   'implements',
   'methods',
   'pins',
+  'slots',
   'needs',
   'start',
   'build',
@@ -26,7 +27,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
+test('plugin.json 15 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tool-registry')
@@ -34,6 +35,7 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['tool-registry'])
   assert.deepEqual(decl.methods, { 'tool-registry': ['list'] })
   assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.slots, { 'tool-provider': { methods: ['describe', 'invoke'] } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
@@ -44,19 +46,11 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('needs：tool-schema + 拆分前 tools 目录覆盖的 describe / 绑定提供者类（逐个 one）', () => {
+test('needs：tool-provider 为 many 扩展类；tool-schema + 绑定提供者类逐个 one', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.needs, {
+    'tool-provider': { mode: 'many' },
     'tool-schema': { mode: 'one' },
-    'tool-fs': { mode: 'one' },
-    'tool-shell': { mode: 'one' },
-    'tool-http': { mode: 'one' },
-    'tool-browser': { mode: 'one' },
-    mcp: { mode: 'one' },
-    'plugin-admin': { mode: 'one' },
-    'orchestration-admin': { mode: 'one' },
-    todo: { mode: 'one' },
-    question: { mode: 'one' },
     session: { mode: 'one' },
     compress: { mode: 'one' },
     memory: { mode: 'one' },

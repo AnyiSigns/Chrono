@@ -124,7 +124,8 @@ export class SessionManager {
     this.sessions.clear()
     const results = await Promise.allSettled(records.map((record) => record.engine.close()))
     for (const result of results) {
-      if (result.status === 'rejected') log(`close session failed: ${(result.reason as Error).message}`)
+      if (result.status === 'rejected')
+        log(`close session failed: ${(result.reason as Error).message}`)
     }
   }
 
@@ -152,7 +153,9 @@ export class SessionManager {
     for (const record of [...this.sessions.values()]) {
       if (now - record.lastUsedAt > this.idleMs) {
         this.sessions.delete(record.id)
-        void record.engine.close().catch((err: unknown) => log(`reap session failed: ${(err as Error).message}`))
+        void record.engine
+          .close()
+          .catch((err: unknown) => log(`reap session failed: ${(err as Error).message}`))
       }
     }
   }

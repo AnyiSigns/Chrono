@@ -45,7 +45,13 @@ export function testConfig(overrides = {}) {
 }
 
 /** 构造 fetcher stdout：首行元数据 JSON + base64 响应体。 */
-export function fetcherStdout({ status = 200, contentType = 'text/html', url = '', truncated = false, body = '' } = {}) {
+export function fetcherStdout({
+  status = 200,
+  contentType = 'text/html',
+  url = '',
+  truncated = false,
+  body = '',
+} = {}) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8')
   const meta = JSON.stringify({
     status,
@@ -74,7 +80,10 @@ export function execFail(code, message) {
 
 /** fetcher 非零退出。 */
 export function execExit(code, stderr = '') {
-  return { ok: true, value: { exit_code: code, stdout: '', stderr, truncated: false, duration_ms: 1 } }
+  return {
+    ok: true,
+    value: { exit_code: code, stdout: '', stderr, truncated: false, duration_ms: 1 },
+  }
 }
 
 /** 取 exec bag 里某个 flag 的取值。 */

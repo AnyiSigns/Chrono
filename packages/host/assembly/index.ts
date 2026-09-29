@@ -42,6 +42,9 @@ export {
   capabilityOwners,
   capabilityProviders,
   effectiveMethods,
+  implementedCaps,
+  manyNeedsMap,
+  manyNeedsOf,
 } from './capability-index.ts'
 export type { CapabilityIndex } from './capability-index.ts'
 export { classifyGenerationChange } from './generation.ts'

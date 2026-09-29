@@ -143,12 +143,7 @@ function parseSources(raw: Json | undefined, fallbackTimeout: number): SourceCon
 /** 把任意形态的配置对象归一化为可消费的配置；缺项回落内建默认。 */
 export function normalizeConfig(raw: Rec | null | undefined): Config {
   const src = isRec(raw) ? raw : {}
-  const sourceTimeout = pickInt(
-    src['source_timeout_ms'],
-    DEFAULT_SOURCE_TIMEOUT_MS,
-    100,
-    120000,
-  )
+  const sourceTimeout = pickInt(src['source_timeout_ms'], DEFAULT_SOURCE_TIMEOUT_MS, 100, 120000)
   return {
     version: pickInt(src['version'], 1, 1, 1_000_000),
     rrf_k: pickInt(src['rrf_k'], 60, 1, 10000),

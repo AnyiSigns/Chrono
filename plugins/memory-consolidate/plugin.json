@@ -7,12 +7,9 @@
   },
   "pins": {},
   "needs": {
-    "compress": { "mode": "one" },
-    "embedding": { "mode": "one" },
-    "memory": { "mode": "one" },
-    "short-memory": { "mode": "one" },
-    "session": { "mode": "one" },
-    "tokenizer": { "mode": "one" }
+    "l1-maintenance": { "mode": "one" },
+    "l2-maintenance": { "mode": "one" },
+    "l3-maintenance": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

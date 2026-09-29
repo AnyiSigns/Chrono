@@ -1,5 +1,6 @@
-// 段边界检查点：上下文压力越阈时经 compress.summarize 写结构化 checkpoint 步记录；
-// 未越阈不写；压缩失败只跳过记录、不阻断续段（回合仍收口）。
+// 段边界检查点：上下文压力越阈时经 compress.summarize 写结构化 checkpoint 步记录（有模型连接走
+// semantic 图外压缩，否则回落 algorithmic）；喂整段会话切片（含工具结果）；未越阈不写；
+// 压缩失败只跳过记录、不阻断续段（回合仍收口）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService, portError } from './driver.mjs'
@@ -65,9 +66,16 @@ test('越软阈：段边界写结构化检查点（compress 为后端，persist:
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'done', JSON.stringify(summary))
     assert.equal(compressArgs.length, 1, '须在段边界调用一次 compress.summarize')
-    assert.equal(compressArgs[0].mode, 'algorithmic')
+    assert.equal(compressArgs[0].mode, 'algorithmic', '无模型连接时回落 algorithmic')
     assert.equal(compressArgs[0].persist, false, '检查点只算不写')
-    assert.deepEqual(compressArgs[0].session_slice, [{ role: 'user', content: '修复 foo' }])
+    assert.deepEqual(
+      compressArgs[0].session_slice.slice(0, 2),
+      [
+        { role: 'user', content: '修复 foo' },
+        { role: 'tool', content: JSON.stringify({ call_id: 'c1', ok: true, result: { path: 'a.txt' } }) },
+      ],
+      '整段会话切片含本回合工具结果（不只助手正文）',
+    )
 
     const records = checkpointRecords(service)
     assert.equal(records.length, 1, '应写一条结构化检查点')
@@ -79,6 +87,58 @@ test('越软阈：段边界写结构化检查点（compress 为后端，persist:
     assert.equal(record.summary.goal, '修复 foo')
     assert.deepEqual(record.summary.findings, [{ claim: '缺陷在 foo.ts:42' }], 'facts 须映射成 findings')
     assert.deepEqual(record.summary.files, [{ path: 'a.txt' }], '本回合触达文件随检查点落账')
+  } finally {
+    service.close()
+  }
+})
+
+test('图外 semantic 压缩：有 config 时经独立模型连接压缩，整段切片含往期工具结果', async () => {
+  const compressArgs = []
+  const config = { vendor: 'v', model: 'm', params: {} }
+  const service = startService({
+    providers: loopProviders({
+      'compress.summarize': (args) => {
+        compressArgs.push(args)
+        return {
+          ok: true,
+          kind: 'summarize',
+          summary: { goal: 'g', decisions: [], facts: ['f'], open_questions: [], files: args.files, next_steps: [] },
+        }
+      },
+    }),
+  })
+  try {
+    await service.interpret({
+      turn_id: 't1',
+      input: '继续',
+      config,
+      workspace_id: 'w1',
+      session: {
+        turns: [
+          {
+            turn_id: 't0',
+            user_message: { content: '上一问' },
+            steps: [
+              { type: 'step.intent', turn_id: 't0', seq: 1, kind: 'tool.dispatch', tool_calls: [{ id: 'p1', name: 'read', arguments: { path: 'x' } }] },
+              { type: 'step.result', turn_id: 't0', seq: 1, assistant: { content: '上一答' }, tool_results: [{ call_id: 'p1', ok: true, result: 'XCONTENT' }] },
+            ],
+          },
+        ],
+      },
+      tools: [{ name: 'edit', provider: 'tool', caps: { fs: { write: 'workspace' } } }],
+    })
+    assert.equal(compressArgs.length, 1)
+    assert.equal(compressArgs[0].mode, 'semantic', '有模型连接走图外 semantic 压缩')
+    assert.deepEqual(compressArgs[0].model_config, config, '独立模型连接原样透传')
+    assert.deepEqual(
+      compressArgs[0].session_slice.slice(0, 3),
+      [
+        { role: 'user', content: '上一问' },
+        { role: 'assistant', content: '上一答' },
+        { role: 'tool', content: JSON.stringify('XCONTENT') },
+      ],
+      '往期回合连工具结果一并进整段切片',
+    )
   } finally {
     service.close()
   }

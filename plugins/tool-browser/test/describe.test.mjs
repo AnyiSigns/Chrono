@@ -5,7 +5,17 @@ import assert from 'node:assert/strict'
 import { describe, TOOL_NAME } from '../execute/describe.ts'
 
 const ELEMENTS = ['intent', 'when_to_use', 'param_semantics', 'boundaries']
-const ACTIONS = ['open', 'navigate', 'click', 'type', 'press', 'wait_for', 'extract', 'screenshot', 'close']
+const ACTIONS = [
+  'open',
+  'navigate',
+  'click',
+  'type',
+  'press',
+  'wait_for',
+  'extract',
+  'screenshot',
+  'close',
+]
 const ALLOWED_SCHEMA_KEYS = new Set([
   'type',
   'properties',
@@ -43,7 +53,10 @@ test('单工具 webbrowser：四要素齐备且 param_semantics 覆盖必填参�
     assert.ok(present, `缺少 ${element}`)
   }
   for (const key of list[0].argsSchema.required) {
-    assert.ok(Object.prototype.hasOwnProperty.call(list[0].param_semantics, key), `param_semantics 未覆盖 ${key}`)
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(list[0].param_semantics, key),
+      `param_semantics 未覆盖 ${key}`,
+    )
   }
 })
 

@@ -34,7 +34,7 @@ const PERMISSION_ICON: { [key: string]: string } = {
   deny: 'ban',
 }
 
-/** 上下文用量阈值（与组装侧的 75% 压缩提示同阈值）。 */
+/** 上下文用量告警阈值（UI 状态行：≥75% warning）。 */
 export const CONTEXT_WARNING_RATIO = 0.75
 export const CONTEXT_FULL_RATIO = 1
 

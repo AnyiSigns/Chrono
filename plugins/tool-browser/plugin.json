@@ -1,9 +1,10 @@
 {
   "identity": "tool-browser",
   "schema": "schema/tool-browser.json",
-  "implements": ["tool-browser"],
+  "implements": ["tool-browser", "tool-provider"],
   "methods": {
-    "tool-browser": ["describe", "invoke"]
+    "tool-browser": ["describe", "invoke"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {
     "host": "host"

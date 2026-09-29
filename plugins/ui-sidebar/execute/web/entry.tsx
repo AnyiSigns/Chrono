@@ -9,7 +9,7 @@ import { badgeFor, badgeForGroup, badgeTextCode, runningRun } from './badges.ts'
 import type { Badge } from './badges.ts'
 import { groupConversations, isEmptyView, matchTitle, relativeBucket, ungroupedConversations } from './sidebar-model.ts'
 import type { Conversation, ConversationGroup, Workspace } from './sidebar-model.ts'
-import { SIDEBAR_CSS } from './styles.ts'
+import { SIDEBAR_CSS, SIDEBAR_MOTION } from './styles.ts'
 import { SidebarStore } from './sidebar-store.ts'
 import type { MenuItem, SidebarSnapshot } from './sidebar-store.ts'
 import { loadMessages } from './messages.ts'
@@ -590,6 +590,17 @@ function TooltipView({ snap }: { snap: SidebarSnapshot }) {
 function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
   const snap = ctx.useStore(store)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  // 拖拽调宽合帧：pointermove 可达输入频率，逐事件提交会每帧多次写 width（触发布局）。
+  // 只记最新 x，一帧提交一次；松手 / 取消时先冲刷未决帧再收尾。
+  const dragRaf = useRef(0)
+  const dragX = useRef(0)
+
+  useEffect(() => {
+    return () => {
+      if (dragRaf.current !== 0) cancelAnimationFrame(dragRaf.current)
+      dragRaf.current = 0
+    }
+  }, [])
 
   useEffect(() => {
     store.attachRoot(rootRef.current)
@@ -598,27 +609,34 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
 
   // 侧栏宽度归本插件（可拖拽 + 持久化）；壳的 `#slot-sidebar` 按 `--sidebar-w-expanded` 定宽。
   // 把有效宽度同步到槽根，避免插件根（`--sb-width`）与槽宽不一致 → 内容溢出 / 横向滚动 / 裁切。
-  // 卸载 / 宽度变更时还原槽根的原值，宿主宽度变量不在本插件卸载后残留。
+  // 槽根带 `overflow: hidden`：宽度过渡必须与 `.sb-root` 同拍（同一时长 + 缓动），否则一快一慢会露出裁切；
+  // 故把 `SIDEBAR_MOTION` 也写到槽根；拖拽调宽 / 用户偏好减少动效时关掉过渡。
+  // 卸载 / 宽度变更时还原槽根的原值，宿主宽度变量与过渡不在本插件卸载后残留。
   useEffect(() => {
     const host = rootRef.current?.closest('#slot-sidebar') as HTMLElement | null
     if (host === null || host === undefined) return
-    const previous = host.style.getPropertyValue('--sidebar-w-expanded')
+    const prevWidth = host.style.getPropertyValue('--sidebar-w-expanded')
+    const prevTransition = host.style.getPropertyValue('transition')
+    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     host.style.setProperty('--sidebar-w-expanded', `${snap.width}px`)
+    host.style.setProperty('transition', snap.dragging || reduced ? 'none' : `width ${SIDEBAR_MOTION}`)
     return () => {
-      if (previous.length > 0) host.style.setProperty('--sidebar-w-expanded', previous)
+      if (prevWidth.length > 0) host.style.setProperty('--sidebar-w-expanded', prevWidth)
       else host.style.removeProperty('--sidebar-w-expanded')
+      if (prevTransition.length > 0) host.style.setProperty('transition', prevTransition)
+      else host.style.removeProperty('transition')
     }
-  }, [snap.width])
+  }, [snap.width, snap.dragging])
 
   const toggleLabel = snap.collapsed ? store.text('sidebar_expand') : store.text('sidebar_collapse')
 
-  let listBody: ReactNode
-  if (snap.collapsed) {
+  // 两态内容都常驻，切换时按同一时钟交叉淡入淡出（藏起的一层 inert，不抢焦点 / 不接指针）。
+  const railBody: ReactNode = (() => {
     // 窄栏轨道：只渲染一枚文件夹图标，悬浮其上开出全量分组 flyout（仅悬浮触发，点击不切换）；
     // 状态点聚合所有工作区（任一目录缺失 > 全量会话最高优先级角标）。
     // 会话行 / 名称 / 搜索 / 文案类状态不在窄栏渲染；错误态留一枚重试图标。
     if (snap.error !== null) {
-      listBody = (
+      return (
         <div className="sb-rail-static">
           <IconButton
             store={store}
@@ -629,45 +647,47 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
           />
         </div>
       )
-    } else {
-      const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
-      const orphans = ungroupedConversations(snap.workspaces, snap.conversations, snap.query)
-      const badge = badgeForGroup(snap.badges, [
-        ...groups.flatMap((group) => group.sessions.map((session) => session.id)),
-        ...orphans.map((session) => session.id),
-      ])
-      const dotKind = snap.workspaces.some((workspace) => workspace.missing) ? 'missing' : (badge?.kind ?? null)
-      const dotCode = dotKind === null ? null : badgeTextCode(dotKind)
-      const dotLabel =
-        dotKind === null
-          ? ''
-          : dotKind === 'unread'
-            ? store.fmt('sidebar_unread_count', { count: badge?.count ?? 0 })
-            : dotCode === null
-              ? ''
-              : store.text(dotCode)
-      const railLabel = dotLabel.length > 0 ? dotLabel : store.text('sidebar_rail_label')
-      listBody = (
-        <button
-          type="button"
-          className="sb-rail-item"
-          data-open={String(snap.flyoutOpen)}
-          aria-label={railLabel}
-          aria-haspopup="true"
-          aria-expanded={snap.flyoutOpen}
-          onMouseEnter={() => store.openFlyout()}
-          onMouseLeave={() => store.hideFlyout()}
-          onFocus={() => store.focusFlyout()}
-          onBlur={() => store.blurFlyout()}
-          onClick={() => store.focusFlyout()}
-        >
-          <Icon icons={snap.icons} name="folder" />
-          {dotKind !== null && <span className="sb-dot sb-rail-dot" data-kind={dotKind} role="img" aria-label={dotLabel} />}
-        </button>
-      )
     }
-  } else if (snap.error !== null) {
-    listBody = (
+    const groups = groupConversations(snap.workspaces, snap.conversations, snap.query)
+    const orphans = ungroupedConversations(snap.workspaces, snap.conversations, snap.query)
+    const badge = badgeForGroup(snap.badges, [
+      ...groups.flatMap((group) => group.sessions.map((session) => session.id)),
+      ...orphans.map((session) => session.id),
+    ])
+    const dotKind = snap.workspaces.some((workspace) => workspace.missing) ? 'missing' : (badge?.kind ?? null)
+    const dotCode = dotKind === null ? null : badgeTextCode(dotKind)
+    const dotLabel =
+      dotKind === null
+        ? ''
+        : dotKind === 'unread'
+          ? store.fmt('sidebar_unread_count', { count: badge?.count ?? 0 })
+          : dotCode === null
+            ? ''
+            : store.text(dotCode)
+    const railLabel = dotLabel.length > 0 ? dotLabel : store.text('sidebar_rail_label')
+    return (
+      <button
+        type="button"
+        className="sb-rail-item"
+        data-open={String(snap.flyoutOpen)}
+        aria-label={railLabel}
+        aria-haspopup="true"
+        aria-expanded={snap.flyoutOpen}
+        onMouseEnter={() => store.openFlyout()}
+        onMouseLeave={() => store.hideFlyout()}
+        onFocus={() => store.focusFlyout()}
+        onBlur={() => store.blurFlyout()}
+        onClick={() => store.focusFlyout()}
+      >
+        <Icon icons={snap.icons} name="folder" />
+        {dotKind !== null && <span className="sb-dot sb-rail-dot" data-kind={dotKind} role="img" aria-label={dotLabel} />}
+      </button>
+    )
+  })()
+
+  let wideBody: ReactNode
+  if (snap.error !== null) {
+    wideBody = (
       <div className="sb-empty">
         <div className="sb-empty-title">{snap.error}</div>
         <IconButton
@@ -680,12 +700,12 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       </div>
     )
   } else if (snap.loading && snap.workspaces.length === 0 && snap.conversations.length === 0) {
-    listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_loading_more')} />
+    wideBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_loading_more')} />
   } else if (
     isEmptyView(snap.workspaces) &&
     ungroupedConversations(snap.workspaces, snap.conversations, snap.query).length === 0
   ) {
-    listBody = (
+    wideBody = (
       <EmptyView
         store={store}
         icons={snap.icons}
@@ -701,9 +721,9 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       groups.every((group) => group.sessions.length === 0) &&
       orphans.length === 0
     ) {
-      listBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_no_match')} />
+      wideBody = <EmptyView store={store} icons={snap.icons} title={store.text('sidebar_no_match')} />
     } else {
-      listBody = (
+      wideBody = (
         <>
           {groups.map((group) => (
             <GroupView key={group.workspace.id} store={store} snap={snap} group={group} />
@@ -714,58 +734,87 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
     }
   }
 
+  // 宽窄切换按钮：宽面板与窄轨各持一枚（同一元素描述，两处挂载），只靠 inert 控制可交互性。
+  const toggleButton = (
+    <button
+      type="button"
+      className="sb-iconbtn sb-toggle"
+      aria-label={toggleLabel}
+      title={snap.wide ? toggleLabel : store.text('sidebar_expand_unavailable')}
+      disabled={!snap.wide}
+      onClick={() => store.toggleCollapsed()}
+    >
+      <span className="sb-toggle-glyph" key={snap.collapsed ? 'rail' : 'wide'}>
+        <Icon icons={snap.icons} name={snap.collapsed ? 'panel-left' : 'panel-left-close'} label={toggleLabel} />
+      </span>
+    </button>
+  )
+
   return (
     <div
       ref={rootRef}
       className="sb-root"
       data-collapsed={String(snap.collapsed)}
       data-dragging={String(snap.dragging)}
-      style={{ '--sb-width': `${snap.width}px` } as CSSProperties}
+      style={{ '--sb-width': `${snap.width}px`, '--sb-wide': `${snap.storedWidth}px` } as CSSProperties}
     >
       <style>{SIDEBAR_CSS}</style>
-      <div className="sb-head">{store.text('sidebar_product')}</div>
-      <div className="sb-search">
-        <div className="sb-search-row">
-          <Icon icons={snap.icons} name="search" />
-          <input
-            type="search"
-            aria-label={store.text('sidebar_search_placeholder')}
-            placeholder={store.text('sidebar_search_placeholder')}
-            value={snap.query}
-            onChange={(event) => store.setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') store.clearQuery()
-            }}
-          />
-        </div>
-      </div>
-      <button type="button" className="sb-add" disabled={snap.pickerBusy} onClick={() => void store.addWorkspace()}>
-        <Icon icons={snap.icons} name="folder-plus" />
-        <span className="sb-label">
-          {snap.pickerBusy ? store.text('sidebar_waiting_picker') : store.text('sidebar_add_workspace')}
-        </span>
-      </button>
-      <div className="sb-status" hidden={snap.status === null} role="status" aria-live="polite">
-        {snap.status === null ? '' : snap.status}
-      </div>
-      <div className="sb-list">{listBody}</div>
-      <div className="sb-foot">
-        {!snap.collapsed && (
-          <button type="button" className="sb-settings" onClick={() => store.openSettings()}>
-            <Icon icons={snap.icons} name="settings" />
-            <span className="sb-label">{store.text('sidebar_settings')}</span>
+      <div className="sb-track">
+        <div className="sb-layer sb-layer-wide" aria-hidden={snap.collapsed} inert={snap.collapsed}>
+          <div className="sb-head">{store.text('sidebar_product')}</div>
+          <div className="sb-search">
+            <div className="sb-search-row">
+              <Icon icons={snap.icons} name="search" />
+              <input
+                type="search"
+                aria-label={store.text('sidebar_search_placeholder')}
+                placeholder={store.text('sidebar_search_placeholder')}
+                value={snap.query}
+                onChange={(event) => store.setQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') store.clearQuery()
+                }}
+              />
+            </div>
+          </div>
+          <button type="button" className="sb-add" disabled={snap.pickerBusy} onClick={() => void store.addWorkspace()}>
+            <Icon icons={snap.icons} name="folder-plus" />
+            <span className="sb-label">
+              {snap.pickerBusy ? store.text('sidebar_waiting_picker') : store.text('sidebar_add_workspace')}
+            </span>
           </button>
-        )}
-        <button
-          type="button"
-          className="sb-iconbtn sb-toggle"
-          aria-label={toggleLabel}
-          title={snap.wide ? toggleLabel : store.text('sidebar_expand_unavailable')}
-          disabled={!snap.wide}
-          onClick={() => store.toggleCollapsed()}
-        >
-          <Icon icons={snap.icons} name={snap.collapsed ? 'panel-left' : 'panel-left-close'} label={toggleLabel} />
-        </button>
+          <div className="sb-status" hidden={snap.status === null} role="status" aria-live="polite">
+            {snap.status === null ? '' : snap.status}
+          </div>
+          <div className="sb-list">{wideBody}</div>
+          <div className="sb-foot">
+            <button
+              type="button"
+              className="sb-settings"
+              tabIndex={snap.collapsed ? -1 : 0}
+              onClick={() => store.openSettings()}
+            >
+              <Icon icons={snap.icons} name="settings" />
+              <span className="sb-label">{store.text('sidebar_settings')}</span>
+            </button>
+            {toggleButton}
+          </div>
+        </div>
+        <div className="sb-layer sb-layer-rail" aria-hidden={!snap.collapsed} inert={!snap.collapsed}>
+          <div className="sb-rail-head">{store.text('sidebar_product')}</div>
+          <button
+            type="button"
+            className="sb-add sb-add-rail"
+            aria-label={store.text('sidebar_add_workspace')}
+            title={store.text('sidebar_add_workspace')}
+            disabled={snap.pickerBusy}
+            onClick={() => void store.addWorkspace()}
+          >
+            <Icon icons={snap.icons} name="folder-plus" />
+          </button>
+          <div className="sb-list">{railBody}</div>
+          <div className="sb-foot sb-foot-rail">{toggleButton}</div>
+        </div>
       </div>
       {!snap.collapsed && snap.wide && (
         <div
@@ -776,12 +825,33 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
           onPointerDown={(event) => {
             event.preventDefault()
             store.beginResize(event.clientX)
+            dragX.current = event.clientX
             const target = event.currentTarget
             if (typeof target.setPointerCapture === 'function') target.setPointerCapture(event.pointerId)
           }}
-          onPointerMove={(event) => store.dragResize(event.clientX)}
-          onPointerUp={() => store.endResize()}
-          onPointerCancel={() => store.endResize()}
+          onPointerMove={(event) => {
+            dragX.current = event.clientX
+            if (dragRaf.current !== 0) return
+            dragRaf.current = requestAnimationFrame(() => {
+              dragRaf.current = 0
+              store.dragResize(dragX.current)
+            })
+          }}
+          onPointerUp={() => {
+            if (dragRaf.current !== 0) {
+              cancelAnimationFrame(dragRaf.current)
+              dragRaf.current = 0
+              store.dragResize(dragX.current)
+            }
+            store.endResize()
+          }}
+          onPointerCancel={() => {
+            if (dragRaf.current !== 0) {
+              cancelAnimationFrame(dragRaf.current)
+              dragRaf.current = 0
+            }
+            store.endResize()
+          }}
         />
       )}
       <FlyoutView store={store} snap={snap} />

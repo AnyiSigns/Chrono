@@ -83,7 +83,9 @@ export function loadConfig(): BrowserConfig {
   const impl = isRecord(engine) ? text(engine['impl'], DEFAULT_CONFIG.impl) : DEFAULT_CONFIG.impl
   return {
     impl: impl ?? DEFAULT_CONFIG.impl,
-    headless: isRecord(engine) ? bool(engine['headless'], DEFAULT_CONFIG.headless) : DEFAULT_CONFIG.headless,
+    headless: isRecord(engine)
+      ? bool(engine['headless'], DEFAULT_CONFIG.headless)
+      : DEFAULT_CONFIG.headless,
     browserPath: isRecord(engine) ? text(engine['browser_path'], null) : null,
     viewport: parseViewport(schema['viewport']),
     navigationTimeoutMs: isRecord(timeouts)
@@ -96,7 +98,8 @@ export function loadConfig(): BrowserConfig {
       ? positiveInt(timeouts['session_idle_ms'], DEFAULT_CONFIG.sessionIdleMs)
       : DEFAULT_CONFIG.sessionIdleMs,
     screenshotFormat: isRecord(screenshot)
-      ? text(screenshot['format'], DEFAULT_CONFIG.screenshotFormat) ?? DEFAULT_CONFIG.screenshotFormat
+      ? (text(screenshot['format'], DEFAULT_CONFIG.screenshotFormat) ??
+        DEFAULT_CONFIG.screenshotFormat)
       : DEFAULT_CONFIG.screenshotFormat,
     allowDownload: isRecord(download)
       ? bool(download['allow'], DEFAULT_CONFIG.allowDownload)

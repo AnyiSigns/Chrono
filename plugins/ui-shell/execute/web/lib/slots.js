@@ -178,11 +178,27 @@ export function createSlotHost(options) {
    * `useStore(store)` 返回快照；`useStore(store, selector)` 返回投影。
    * selector 必须返回稳定引用或原始值（uSES 要求 getSnapshot 可缓存）。
    */
-  function useStore(store, selector) {
+  function useStore(store, selector, isEqual) {
     const pick = typeof selector === 'function' ? selector : (snapshot) => snapshot
+    const eq = typeof isEqual === 'function' ? isEqual : Object.is
+    // 选择结果缓存：同一快照只跑一次选择器，且当选择结果与上次相等（eq）时沿用旧引用，
+    // 让 uSES 得以跳过重渲染——这是「窄订阅」的前提（快照整体换新、但投影未变时不重渲）。
+    const memo = useRef(null)
+    const getSelection = () => {
+      const snapshot = store.getSnapshot()
+      const prev = memo.current
+      if (prev !== null && prev.snapshot === snapshot) return prev.selected
+      const selected = pick(snapshot)
+      if (prev !== null && eq(prev.selected, selected)) {
+        memo.current = { snapshot, selected: prev.selected }
+        return prev.selected
+      }
+      memo.current = { snapshot, selected }
+      return selected
+    }
     return useSyncExternalStore(
       (notify) => store.subscribe(() => notify()),
-      () => pick(store.getSnapshot()),
+      getSelection,
     )
   }
 

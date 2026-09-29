@@ -12,8 +12,11 @@ const readJson = (rel) => JSON.parse(readText(rel))
 test('plugin.json：身份 / 方法面不变，needs 增 mcp-client、保留 secrets', () => {
   const decl = readJson('plugin.json')
   assert.equal(decl.identity, 'mcp')
-  assert.deepEqual(decl.implements, ['mcp'])
-  assert.deepEqual(decl.methods, { mcp: ['describe', 'invoke', 'discover', 'read', 'write'] })
+  assert.deepEqual(decl.implements, ['mcp', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    mcp: ['describe', 'invoke', 'discover', 'read', 'write'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.pins, {})
   assert.deepEqual(decl.needs, { secrets: { mode: 'one' }, 'mcp-client': { mode: 'one' } })
   assert.equal(decl.state, 'durable')

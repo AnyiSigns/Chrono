@@ -64,7 +64,11 @@ async function writeTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps):
   const conversationId = requireSession(toolArgs, bag)
   const limits = resolveLimits()
   const current = await deps.store.load(conversationId)
-  const { items, summary, nextSeq } = normalizeItems(args, limits, nextSeqFor(current.items, current.seq))
+  const { items, summary, nextSeq } = normalizeItems(
+    args,
+    limits,
+    nextSeqFor(current.items, current.seq),
+  )
   await deps.store.save(conversationId, { run: env.run, at, seq: nextSeq, items })
   return { ok: true, conversation_id: conversationId, total: summary.total, done: summary.done }
 }
@@ -77,9 +81,21 @@ async function updateTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps)
   const limits = resolveLimits()
   const defaultAt = defaultAtOf(toolArgs, bag)
   const current = await deps.store.load(conversationId)
-  const { items, changed, summary, nextSeq } = applyOps(current.items, ops, limits, nextSeqFor(current.items, current.seq), defaultAt)
+  const { items, changed, summary, nextSeq } = applyOps(
+    current.items,
+    ops,
+    limits,
+    nextSeqFor(current.items, current.seq),
+    defaultAt,
+  )
   await deps.store.save(conversationId, { run: env.run, at: defaultAt, seq: nextSeq, items })
-  return { ok: true, conversation_id: conversationId, total: summary.total, done: summary.done, changed }
+  return {
+    ok: true,
+    conversation_id: conversationId,
+    total: summary.total,
+    done: summary.done,
+    changed,
+  }
 }
 
 /** `todo.read`：从自有存储取本会话清单（服务不读投影）。 */

@@ -14,7 +14,11 @@
       "additionalProperties": false,
       "properties": {
         "query": { "type": "string", "description": "检索词。" },
-        "count": { "type": "integer", "minimum": 1, "description": "结果条数上限；缺省取配置 top_n。" },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "结果条数上限；缺省取配置 top_n。"
+        },
         "sources": {
           "type": "array",
           "description": "只查这些源（按源 id 或名字匹配）；缺省查全部启用源。",
@@ -66,7 +70,10 @@
       "additionalProperties": false,
       "properties": {
         "url": { "type": "string", "description": "http(s) URL。" },
-        "format": { "enum": ["markdown", "text", "raw"], "description": "HTML 输出形态；缺省 markdown。" }
+        "format": {
+          "enum": ["markdown", "text", "raw"],
+          "description": "HTML 输出形态；缺省 markdown。"
+        }
       }
     },
     "webfetch_result": {
@@ -100,7 +107,11 @@
       "additionalProperties": false,
       "properties": {
         "query": { "type": "string", "description": "检索词。" },
-        "count": { "type": "integer", "minimum": 1, "description": "候选条数上限；缺省取配置 top_n。" },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "候选条数上限；缺省取配置 top_n。"
+        },
         "sources": {
           "type": "array",
           "description": "只查这些源（按源 id 或名字匹配）；缺省查全部启用源。",

@@ -627,7 +627,9 @@ test('MCP 工具经同一目录派发到 mcp.invoke', async () => {
       directory: directory([mcpTool]),
     })
     assert.equal(response.value.results[0].result.tool, 'mcp.srv.echo')
-    const call = service.portCalls.find((item) => item.port === 'mcp' && item.method === 'invoke')
+    const call = service.portCalls.find(
+      (item) => item.provider === 'mcp' && item.method === 'invoke',
+    )
     assert.equal(call.args.tool, 'mcp.srv.echo')
     assert.equal(call.args.args.text, 'hi')
   })
@@ -733,7 +735,7 @@ test('dispatch 无 directory 时现场拉 describe 构造目录', async () => {
     })
     assert.equal(response.value.results[0].ok, true)
     assert.ok(
-      service.portCalls.some((item) => item.port === 'tool-fs' && item.method === 'describe'),
+      service.portCalls.some((item) => item.provider === 'tool-fs' && item.method === 'describe'),
     )
   })
 })

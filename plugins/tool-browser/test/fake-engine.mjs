@@ -28,7 +28,8 @@ export function makeFakeEngine(options = {}) {
     state,
     async navigate(url, waitUntil) {
       calls.push({ op: 'navigate', url, waitUntil })
-      if (options.failNavigate !== undefined) throw new ToolError('navigate_failed', options.failNavigate)
+      if (options.failNavigate !== undefined)
+        throw new ToolError('navigate_failed', options.failNavigate)
       state.url = url
       state.status = options.status ?? 200
       if (state.status >= 400) throw new ToolError('http_status', `HTTP ${state.status}`)
@@ -103,13 +104,12 @@ export function makeFakeLink(options = {}) {
         if (options.sandboxError !== undefined) return { ok: false, ...options.sandboxError }
         return {
           ok: true,
-          value:
-            options.capabilities ?? {
-              platform: 'test',
-              implementations: [],
-              default_impl: 'native',
-              enforcement: { fsop: 'in_process', exec_fs: 'none', net: 'declaration' },
-            },
+          value: options.capabilities ?? {
+            platform: 'test',
+            implementations: [],
+            default_impl: 'native',
+            enforcement: { fsop: 'in_process', exec_fs: 'none', net: 'declaration' },
+          },
         }
       }
       if (port === 'host' && method === 'asset.put') {

@@ -1,0 +1,21 @@
+{
+  "name": "l2-maintenance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "L2 记忆维护（short-memory 工作区摘要）：L1→L2 分组合并去重、超容量裁剪、L2 视图与编辑；方法 merge / trim / view / edit",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

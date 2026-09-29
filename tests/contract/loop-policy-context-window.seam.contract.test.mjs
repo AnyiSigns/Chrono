@@ -25,6 +25,37 @@ function startContext() {
   const service = startRealService({
     name: 'context-window',
     env: { CHRONO_PLUGIN_STATE: stateDir, CHRONO_PLUGIN_DATA: stateDir },
+    // context-window 现经 needs 反调 token-estimate / budget；本接缝用夹具应答（形状对齐 port-link.ts）。
+    onPortCall: (message) => {
+      if (message.port === 'token-estimate' && message.method === 'count') {
+        const texts = Array.isArray(message.args?.texts) ? message.args.texts : []
+        return { ok: true, value: { counts: texts.map((text) => Math.max(1, Math.ceil(String(text).length / 4))) } }
+      }
+      if (message.port === 'token-estimate' && message.method === 'version') {
+        return { ok: true, value: { version: 'v1' } }
+      }
+      if (message.port === 'budget' && message.method === 'model') {
+        return {
+          ok: true,
+          value: {
+            budget: 128000 - 4096 - 1024,
+            context_window: 128000,
+            max_output: 4096,
+            margin: 1024,
+            origin: 'default',
+            flags: [],
+            quota: { l2: 0, l1: 0, skill: 0, recall: 0, style: 0 },
+          },
+        }
+      }
+      if (message.port === 'budget' && message.method === 'factor') {
+        return { ok: true, value: { factor: 1 } }
+      }
+      if (message.port === 'budget' && message.method === 'observe') {
+        return { ok: true, value: { factor: 1, usage: null } }
+      }
+      return { ok: false, code: 'not_loaded', message: `${message.port}.${message.method}` }
+    },
   })
   return { service, stateDir }
 }

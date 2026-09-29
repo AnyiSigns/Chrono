@@ -6,6 +6,7 @@ import { HOST_CAPABILITY } from './host-methods.ts'
 import { redactPortArgs } from './port-audit.ts'
 import type { PortAuditSink } from './port-audit.ts'
 import { resolveMethodTimeoutMs } from './method-timeouts.ts'
+import { implementedCaps } from './assembly/capability-index.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/index.ts'
 import type { HostCapabilityCall, RoundRouter } from './effect/index.ts'
 import type { InboundHandlers } from './inbound/handlers.ts'
@@ -47,7 +48,25 @@ export interface CapabilityWiring {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
+}
+
+/**
+ * 按成员定位的 many：调用端口是扩展类名（如 `tool-provider`），成员自身能力类（如 `tool-shell`）
+ * 的方法级超时声明要在 `implements` 里逐个找；命中第一个返回（声明序，确定性）。
+ */
+function memberCapTimeoutMs(
+  world: World,
+  target: string,
+  method: string,
+  blobsDir: string,
+): number | undefined {
+  for (const cap of implementedCaps(world, target, blobsDir)) {
+    const timeout = resolveMethodTimeoutMs(world, target, cap, method)
+    if (timeout !== undefined) return timeout
+  }
+  return undefined
 }
 
 export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWiring {
@@ -72,7 +91,8 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
   })
 
   /**
-   * 反向调用：服务发 `port.call` 时按发出者身份 `pins` 路由后转发给目标服务。
+   * 反向调用：服务发 `port.call` 时按发出者身份路由后转发给目标服务。
+   * 帧带 `provider` 时按「按成员定位的 many」解析（目标提供方身份 + 扩展类），否则为单值语义。
    * 目标调用帧同样填 `env`：取发起服务在途正向调用的回合信息（同一 run / thread）；无在途调用时
    * 补宿主固定时钟、run / thread 记 null。返回值一律是数据，不抛错（失败作数据回 `port.error`）。
    */
@@ -82,6 +102,7 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ): Promise<CallResponse> => {
     if (deps.getRouter() === undefined) {
       // 装配尚未完成：监听先于装配，服务可能已连上并发起反向调用，等路由就绪再转发。
@@ -90,7 +111,7 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
     const router = deps.getRouter()
     if (router === undefined) return { ok: false, code: 'not_loaded', message: 'router not ready' }
     const world = deps.liveWorld()
-    const routed = router.resolve(world, impl, port, method)
+    const routed = router.resolve(world, impl, port, method, provider)
     if (!routed.ok) return { ok: false, code: routed.error, message: routed.error }
     // 反向调用帧的 env：run / thread 取发起服务在途正向调用的回合信息（无在途补宿主时钟），
     // emitter = 发起该反向调用的服务身份（与正向调用帧的「发出者身份」口径一致）。
@@ -116,8 +137,12 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
       // 审计落点异常不阻断反向调用（旁路取证，非业务通道）
     }
     // 超时按活世界解析（与路由同代），避免锚定旧世代取到已摘除世代的方法级声明。
+    // 按成员定位的 many：调用端口是扩展类名，若扩展类无方法级声明，回落到成员自身能力类声明。
     const timeoutMs =
       resolveMethodTimeoutMs(world, routed.row.impl, port, method) ??
+      (provider === undefined
+        ? undefined
+        : memberCapTimeoutMs(world, routed.row.impl, method, deps.paths.blobsDir)) ??
       deps.callTimeoutMs ??
       DEFAULT_CALL_TIMEOUT_MS
     try {

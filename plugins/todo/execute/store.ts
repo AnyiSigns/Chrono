@@ -52,7 +52,9 @@ export class TodoStore {
   async save(conversationId: string, record: ConvRecord): Promise<void> {
     const run = record.run
     if (run !== null) {
-      await this.backend.batch([{ op: 'put', key: `${TURN_PREFIX}${run}`, value: { state: 'open', conv: conversationId } }])
+      await this.backend.batch([
+        { op: 'put', key: `${TURN_PREFIX}${run}`, value: { state: 'open', conv: conversationId } },
+      ])
     }
     const data: Record<string, Json> = { run, seq: record.seq, items: record.items }
     if (record.at !== null) data['at'] = record.at
@@ -60,7 +62,11 @@ export class TodoStore {
       { op: 'put', key: `${CONV_PREFIX}${conversationId}`, value: data },
     ]
     if (run !== null) {
-      ops.push({ op: 'put', key: `${TURN_PREFIX}${run}`, value: { state: 'closed', conv: conversationId } })
+      ops.push({
+        op: 'put',
+        key: `${TURN_PREFIX}${run}`,
+        value: { state: 'closed', conv: conversationId },
+      })
     }
     await this.backend.batch(ops)
   }

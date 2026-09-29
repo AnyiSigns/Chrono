@@ -17,8 +17,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   rdquo: '”',
 }
 
-const LINK_RE =
-  /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi
+const LINK_RE = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi
 
 /** 解码命名 / 十进制 / 十六进制实体；未知实体原样保留。 */
 export function decodeEntities(text: string): string {
@@ -39,7 +38,9 @@ export function decodeEntities(text: string): string {
 
 /** 去标签 + 解码 + 折叠空白，适合摘要 / 标题。 */
 export function stripTags(html: string): string {
-  return decodeEntities(html.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim()
+  return decodeEntities(html.replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function firstMatch(html: string, pattern: RegExp): string | null {
@@ -102,11 +103,14 @@ export function unwrapRedirect(href: string): string {
 }
 
 function inline(html: string): string {
-  let text = html.replace(LINK_RE, (_whole, dq: string, sq: string, bare: string, inner: string) => {
-    const href = dq ?? sq ?? bare ?? ''
-    const label = inline(inner).trim()
-    return label.length > 0 ? `[${label}](${href})` : href
-  })
+  let text = html.replace(
+    LINK_RE,
+    (_whole, dq: string, sq: string, bare: string, inner: string) => {
+      const href = dq ?? sq ?? bare ?? ''
+      const label = inline(inner).trim()
+      return label.length > 0 ? `[${label}](${href})` : href
+    },
+  )
   text = text.replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_whole, _tag, inner: string) => {
     const label = inline(inner).trim()
     return label.length > 0 ? `**${label}**` : ''
@@ -143,7 +147,8 @@ export function htmlToMarkdown(html: string): string {
   })
   body = body.replace(
     /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi,
-    (_whole, level: string, inner: string) => `\n\n${'#'.repeat(Number(level))} ${inline(inner).trim()}\n\n`,
+    (_whole, level: string, inner: string) =>
+      `\n\n${'#'.repeat(Number(level))} ${inline(inner).trim()}\n\n`,
   )
   body = body.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_whole, inner: string) => {
     const quoted = inline(inner)

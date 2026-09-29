@@ -77,30 +77,30 @@ websearch(args = { query, count?, sources?, read?, max_chars? })   // read > 0
 成功结果的 `result` 自带 `digest`（普通对象），供上下文老化直接渲染，装配器无需认识本工具语义；
 不替换任何原有字段，与完整结果并存，模型仍可据句柄 / 参数重取。确定、有界、不含时间与正文全文：
 
-| 工具 | digest |
-| --- | --- |
-| `webfetch` | `{ url, status, bytes }`（`bytes` = 返回正文字节数；二进制为资产体积） |
-| `websearch`（`read=0`） | `{ query, hits, sources }` |
-| `websearch`（`read>0`） | `{ query, hits, sources }` |
+| 工具                    | digest                                                                 |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `webfetch`              | `{ url, status, bytes }`（`bytes` = 返回正文字节数；二进制为资产体积） |
+| `websearch`（`read=0`） | `{ query, hits, sources }`                                             |
+| `websearch`（`read>0`） | `{ query, hits, sources }`                                             |
 
 ## 配置
 
 配置是数据：**本身份数据世代 body 优先**（调用方随 invoke bag 的 `config` 传入），
 缺省回落本包 `schema/tool-http.json` 的 `defaults`，再回落内建兜底。热改 = 数据换代，进程不动。
 
-| 键 | 含义 |
-| --- | --- |
-| `sources` | 免费源清单（id / name / kind / parse / enabled / endpoint / instances / query_param / extra_query / headers / timeout_ms / language） |
-| `top_n` | `websearch` 结果条数上限（缺省 10） |
-| `rrf_k` | RRF 融合常数（缺省 60） |
-| `output_max` | 响应体大小上限（缺省 1 MiB） |
-| `user_agent` | 抓取 User-Agent（不伪装） |
-| `obey_robots` | 是否遵循 `robots.txt`（**缺省关**） |
-| `redirect_max` | 重定向上限 |
-| `block_private_hosts` | 是否拒绝内网地址 |
-| `fetcher_cmd` | 外部 fetcher 命令名；缺省空 = 用本包内置 Node fetcher |
-| `fetcher_env` | 传给 fetcher 子进程的环境变量（隔离执行 `env_clear` 后注入）；走代理时设 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY`/`HTTP_PROXY` |
-| `source_timeout_ms` | 单源抓取超时缺省 |
+| 键                    | 含义                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `sources`             | 免费源清单（id / name / kind / parse / enabled / endpoint / instances / query_param / extra_query / headers / timeout_ms / language） |
+| `top_n`               | `websearch` 结果条数上限（缺省 10）                                                                                                   |
+| `rrf_k`               | RRF 融合常数（缺省 60）                                                                                                               |
+| `output_max`          | 响应体大小上限（缺省 1 MiB）                                                                                                          |
+| `user_agent`          | 抓取 User-Agent（不伪装）                                                                                                             |
+| `obey_robots`         | 是否遵循 `robots.txt`（**缺省关**）                                                                                                   |
+| `redirect_max`        | 重定向上限                                                                                                                            |
+| `block_private_hosts` | 是否拒绝内网地址                                                                                                                      |
+| `fetcher_cmd`         | 外部 fetcher 命令名；缺省空 = 用本包内置 Node fetcher                                                                                 |
+| `fetcher_env`         | 传给 fetcher 子进程的环境变量（隔离执行 `env_clear` 后注入）；走代理时设 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY`/`HTTP_PROXY`          |
+| `source_timeout_ms`   | 单源抓取超时缺省                                                                                                                      |
 
 网络出口被 DNS 污染 / IP 封锁时，抓取会连不上（`fetch_failed`）。内置 fetcher 用 Node `fetch`，
 它**默认不读** `HTTPS_PROXY`；经 `fetcher_env` 注入 `NODE_USE_ENV_PROXY=1` + 代理地址后才会走代理
@@ -130,21 +130,21 @@ fetcher --url <url> --method <GET|POST> [--header k:v …] --timeout <ms> --max-
 
 ## 错误码
 
-| 码 | 触发 |
-| --- | --- |
-| `bad_args` | args 形态非法 |
-| `unknown_tool` | `tool` 不是 `websearch` / `webfetch`（`webresearch` 作为旧名仍接受） |
-| `bad_url` | URL 形态非法 / 非 http(s) / 内网地址（按配置）；含重定向后落到内网的最终 URL |
-| `net_denied` | `caps.net` 未授权 / 档位拒绝（隔离执行原样透传） |
-| `fetch_failed` | DNS / 连接 / TLS 失败，或 fetcher 输出不合法；沙箱超限被杀 `oom` / `cpu_exceeded` / `procs_max` / `output_max` 归一到此码 |
-| `sandbox_setup_failed` | 沙箱前置失败（exec 未起）——原样透传 |
-| `http_status` | 4xx / 5xx（附 status） |
-| `too_large` | 二进制响应体超上限或被截断 |
-| `binary_unsupported` | 资产存取不可用 / 失败 |
-| `robots_disallowed` | `robots.txt` 禁止抓取该路径（含重定向后的最终 URL） |
-| `all_sources_failed` | `websearch` 全部选中源失败 |
-| `tool_timeout` | 反向调用 / 宿主调用超时 |
-| `tool_failed` | `invoke` 顶层兜底：未归类异常转结构化错误 |
+| 码                     | 触发                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `bad_args`             | args 形态非法                                                                                                             |
+| `unknown_tool`         | `tool` 不是 `websearch` / `webfetch`（`webresearch` 作为旧名仍接受）                                                      |
+| `bad_url`              | URL 形态非法 / 非 http(s) / 内网地址（按配置）；含重定向后落到内网的最终 URL                                              |
+| `net_denied`           | `caps.net` 未授权 / 档位拒绝（隔离执行原样透传）                                                                          |
+| `fetch_failed`         | DNS / 连接 / TLS 失败，或 fetcher 输出不合法；沙箱超限被杀 `oom` / `cpu_exceeded` / `procs_max` / `output_max` 归一到此码 |
+| `sandbox_setup_failed` | 沙箱前置失败（exec 未起）——原样透传                                                                                       |
+| `http_status`          | 4xx / 5xx（附 status）                                                                                                    |
+| `too_large`            | 二进制响应体超上限或被截断                                                                                                |
+| `binary_unsupported`   | 资产存取不可用 / 失败                                                                                                     |
+| `robots_disallowed`    | `robots.txt` 禁止抓取该路径（含重定向后的最终 URL）                                                                       |
+| `all_sources_failed`   | `websearch` 全部选中源失败                                                                                                |
+| `tool_timeout`         | 反向调用 / 宿主调用超时                                                                                                   |
+| `tool_failed`          | `invoke` 顶层兜底：未归类异常转结构化错误                                                                                 |
 
 ## 边界
 

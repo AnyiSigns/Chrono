@@ -27,7 +27,16 @@ const POSIX = {
   syntax: 'POSIX shell',
 }
 
-const DONE = { output: '', next_cursor: 0, running: false, exit_code: 0, code: null, truncated: false, dropped_bytes: 0, tail: '' }
+const DONE = {
+  output: '',
+  next_cursor: 0,
+  running: false,
+  exit_code: 0,
+  code: null,
+  truncated: false,
+  dropped_bytes: 0,
+  tail: '',
+}
 
 function fakeDeps(options = {}) {
   const startCalls = []
@@ -38,7 +47,8 @@ function fakeDeps(options = {}) {
   const emitted = []
   const deps = {
     profile: options.profile ?? PROFILE,
-    emit: options.noEmit === true ? undefined : (topic, payload) => emitted.push({ topic, payload }),
+    emit:
+      options.noEmit === true ? undefined : (topic, payload) => emitted.push({ topic, payload }),
     exec: {
       async start(args) {
         startCalls.push(args)
@@ -121,25 +131,37 @@ test('平台原生 shell：unix profile 的会话口径 bash -s', async () => {
 
 test('code javascript / python 走一次性进程；code shell 走会话', async () => {
   const js = fakeDeps()
-  await invoke({ tool: 'shell', args: { mode: 'code', language: 'javascript', input: 'console.log(1)' } }, js.deps)
+  await invoke(
+    { tool: 'shell', args: { mode: 'code', language: 'javascript', input: 'console.log(1)' } },
+    js.deps,
+  )
   assert.equal(js.startCalls[0].cmd, 'node')
   assert.deepEqual(js.startCalls[0].args, ['-e', 'console.log(1)'])
   assert.equal(js.startCalls[0].session_id, undefined)
 
   const py = fakeDeps()
-  await invoke({ tool: 'shell', args: { mode: 'code', language: 'python', input: 'print(1)' } }, py.deps)
+  await invoke(
+    { tool: 'shell', args: { mode: 'code', language: 'python', input: 'print(1)' } },
+    py.deps,
+  )
   assert.equal(py.startCalls[0].cmd, 'python')
   assert.deepEqual(py.startCalls[0].args, ['-c', 'print(1)'])
 
   const shell = fakeDeps()
-  await invoke({ tool: 'shell', args: { mode: 'code', language: 'shell', input: 'echo 1' } }, shell.deps)
+  await invoke(
+    { tool: 'shell', args: { mode: 'code', language: 'shell', input: 'echo 1' } },
+    shell.deps,
+  )
   assert.equal(shell.startCalls[0].command, 'echo 1')
   assert.equal(shell.startCalls[0].session_id, 'default')
 })
 
 test('code 模式：stdout 是 JSON 时解析进 result.value', async () => {
   const { deps } = fakeDeps({ pollResult: { ...DONE, output: '{"a":1}\n', next_cursor: 8 } })
-  const result = await invoke({ tool: 'shell', args: { mode: 'code', language: 'javascript', input: 'x' } }, deps)
+  const result = await invoke(
+    { tool: 'shell', args: { mode: 'code', language: 'javascript', input: 'x' } },
+    deps,
+  )
   assert.deepEqual(result.result.value, { a: 1 })
 })
 
@@ -167,7 +189,10 @@ test('前台执行把新输出经 tool.delta 实时下发（带 run / thread / c
     deps,
   )
   assert.deepEqual(emitted, [
-    { topic: 'tool.delta', payload: { call_id: 'call-9', run: 'r1', thread: 't1', delta: 'line\n' } },
+    {
+      topic: 'tool.delta',
+      payload: { call_id: 'call-9', run: 'r1', thread: 't1', delta: 'line\n' },
+    },
   ])
 })
 
@@ -203,11 +228,17 @@ test('workdir 相对路径缺 workspace_root → bad_args，且不执行', async
 
 test('timeout_ms：只收紧不抬高（min 请求与声明上限）', async () => {
   const tight = fakeDeps()
-  await invoke(bag({ caps: { ...DEFAULT_CAPS, timeout_ms: 60000 }, args: { input: 'x', timeout_ms: 10000 } }), tight.deps)
+  await invoke(
+    bag({ caps: { ...DEFAULT_CAPS, timeout_ms: 60000 }, args: { input: 'x', timeout_ms: 10000 } }),
+    tight.deps,
+  )
   assert.equal(tight.startCalls[0].caps.timeout_ms, 10000)
 
   const over = fakeDeps()
-  await invoke(bag({ caps: { ...DEFAULT_CAPS, timeout_ms: 60000 }, args: { input: 'x', timeout_ms: 999999 } }), over.deps)
+  await invoke(
+    bag({ caps: { ...DEFAULT_CAPS, timeout_ms: 60000 }, args: { input: 'x', timeout_ms: 999999 } }),
+    over.deps,
+  )
   assert.equal(over.startCalls[0].caps.timeout_ms, 60000)
 })
 
@@ -229,7 +260,10 @@ test('fresh：先关会话再执行', async () => {
 
 test('background：一次性 exec_start 起任务，立即回任务号；默认不套超时', async () => {
   const { deps, startCalls } = fakeDeps({ startResult: { task_id: 'task-9' } })
-  const result = await invoke(bag({ args: { input: 'npm run dev', background: true, description: 'serve' } }), deps)
+  const result = await invoke(
+    bag({ args: { input: 'npm run dev', background: true, description: 'serve' } }),
+    deps,
+  )
   assert.equal(result.ok, true)
   assert.equal(result.result.background, true)
   assert.equal(result.result.task_id, 'task-9')
@@ -247,9 +281,21 @@ test('background + timeout_ms：按请求收紧', async () => {
 
 test('action=output：轮询任务，回增量输出与状态', async () => {
   const { deps, pollCalls } = fakeDeps({
-    pollResult: { output: 'line\n', next_cursor: 5, running: true, exit_code: null, code: null, truncated: false, dropped_bytes: 0, tail: '' },
+    pollResult: {
+      output: 'line\n',
+      next_cursor: 5,
+      running: true,
+      exit_code: null,
+      code: null,
+      truncated: false,
+      dropped_bytes: 0,
+      tail: '',
+    },
   })
-  const result = await invoke({ tool: 'shell', args: { action: 'output', task_id: 'task-9', cursor: 3, wait_ms: 100 } }, deps)
+  const result = await invoke(
+    { tool: 'shell', args: { action: 'output', task_id: 'task-9', cursor: 3, wait_ms: 100 } },
+    deps,
+  )
   assert.deepEqual(pollCalls, [{ task_id: 'task-9', cursor: 3, wait_ms: 100 }])
   assert.equal(result.result.stdout, 'line\n')
   assert.equal(result.result.next_cursor, 5)
@@ -273,9 +319,18 @@ test('action=reset：关当前会话', async () => {
 
 test('action=output / kill 缺 task_id → bad_args；未知 action → bad_args', async () => {
   const { deps, pollCalls, killCalls } = fakeDeps()
-  assert.equal((await invoke({ tool: 'shell', args: { action: 'output' } }, deps)).error.code, 'bad_args')
-  assert.equal((await invoke({ tool: 'shell', args: { action: 'kill' } }, deps)).error.code, 'bad_args')
-  assert.equal((await invoke({ tool: 'shell', args: { action: 'nope' } }, deps)).error.code, 'bad_args')
+  assert.equal(
+    (await invoke({ tool: 'shell', args: { action: 'output' } }, deps)).error.code,
+    'bad_args',
+  )
+  assert.equal(
+    (await invoke({ tool: 'shell', args: { action: 'kill' } }, deps)).error.code,
+    'bad_args',
+  )
+  assert.equal(
+    (await invoke({ tool: 'shell', args: { action: 'nope' } }, deps)).error.code,
+    'bad_args',
+  )
   assert.equal(pollCalls.length, 0)
   assert.equal(killCalls.length, 0)
 })
@@ -312,7 +367,10 @@ test('输出截断：头部 + 省略标记 + 尾部', async () => {
 test('sandbox 前置失败（port.error）→ 原码透传，无 result', async () => {
   const { deps } = fakeDeps({ startError: new ToolError('fs_denied', 'outside workspace') })
   const result = await invoke(bag(), deps)
-  assert.deepEqual(result, { ok: false, error: { code: 'fs_denied', message: 'outside workspace' } })
+  assert.deepEqual(result, {
+    ok: false,
+    error: { code: 'fs_denied', message: 'outside workspace' },
+  })
 })
 
 test('未给 caps 时 exec_start 用 DEFAULT_CAPS', async () => {
@@ -323,7 +381,10 @@ test('未给 caps 时 exec_start 用 DEFAULT_CAPS', async () => {
 
 test('未知工具 / args 形态非法 / run 缺 input → 结构化错误', async () => {
   const { deps, startCalls } = fakeDeps()
-  assert.equal((await invoke({ tool: 'nope', args: { input: 'x' } }, deps)).error.code, 'unknown_tool')
+  assert.equal(
+    (await invoke({ tool: 'nope', args: { input: 'x' } }, deps)).error.code,
+    'unknown_tool',
+  )
   assert.equal((await invoke({ tool: 'shell', args: null }, deps)).error.code, 'bad_args')
   assert.equal((await invoke({ tool: 'shell', args: {} }, deps)).error.code, 'bad_args')
   assert.equal((await invoke({ tool: 'shell', args: { input: '' } }, deps)).error.code, 'bad_args')
@@ -342,7 +403,9 @@ test('auth_ref → secrets.resolve 被调；明文只出现在 exec_start 的 en
 })
 
 test('auth_ref 解析失败 → 原码透传，且不执行', async () => {
-  const { deps, startCalls } = fakeDeps({ secretError: new ToolError('secret_missing', 'not found') })
+  const { deps, startCalls } = fakeDeps({
+    secretError: new ToolError('secret_missing', 'not found'),
+  })
   const result = await invoke(bag({ auth_ref: { kind: 'local', name: 'TOKEN' } }), deps)
   assert.deepEqual(result, { ok: false, error: { code: 'secret_missing', message: 'not found' } })
   assert.equal(startCalls.length, 0)

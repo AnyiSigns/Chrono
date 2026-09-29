@@ -43,5 +43,9 @@ export function resolveLimits(): TodoLimits {
   } catch {
     // schema 不可读不是致命：用缺省门禁
   }
-  return { maxItems: DEFAULT_MAX_ITEMS, maxTextLength: DEFAULT_MAX_TEXT_LENGTH, statuses: DEFAULT_STATUSES }
+  return {
+    maxItems: DEFAULT_MAX_ITEMS,
+    maxTextLength: DEFAULT_MAX_TEXT_LENGTH,
+    statuses: DEFAULT_STATUSES,
+  }
 }

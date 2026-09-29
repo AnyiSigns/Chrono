@@ -33,8 +33,11 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tool-browser')
   assert.equal(decl.schema, 'schema/tool-browser.json')
-  assert.deepEqual(decl.implements, ['tool-browser'])
-  assert.deepEqual(decl.methods, { 'tool-browser': ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['tool-browser', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    'tool-browser': ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
@@ -69,7 +72,11 @@ test('schema：tier 用 JSON null（nullable 语义，非字符串 "null"）；�
   const tierEnum = schema.properties.invoke_bag.properties.tier.enum
   assert.deepEqual(tierEnum, ['auto', 'severe', 'review', 'deny', null])
   assert.ok(!tierEnum.includes('null'), 'tier 枚举不应含字符串 "null"')
-  assert.equal(schema.properties.invoke_bag.properties.grant, undefined, '浏览器不经 sandbox.exec，不声明 grant')
+  assert.equal(
+    schema.properties.invoke_bag.properties.grant,
+    undefined,
+    '浏览器不经 sandbox.exec，不声明 grant',
+  )
 })
 
 test('schema error.code 闭集与 ERROR_CODES 一致', () => {

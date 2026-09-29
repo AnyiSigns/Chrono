@@ -1,9 +1,10 @@
 {
   "identity": "mcp",
   "schema": "schema/mcp.json",
-  "implements": ["mcp"],
+  "implements": ["mcp", "tool-provider"],
   "methods": {
-    "mcp": ["describe", "invoke", "discover", "read", "write"]
+    "mcp": ["describe", "invoke", "discover", "read", "write"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {},
   "needs": {

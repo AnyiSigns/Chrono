@@ -4,7 +4,9 @@
 
 import { writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'
 import type { Json, Rec } from './json.ts'
-import type { PortCaller, PortOutcome } from './types.ts'
+import type { PortCaller, PortCallOptions, PortOutcome } from './types.ts'
+
+export type { PortCallOptions } from './types.ts'
 
 /** 反向调用等待上限（通道兜底）。 */
 export const PORT_CALL_TIMEOUT_MS = 30000
@@ -23,14 +25,6 @@ export interface PortLinkOptions {
   idPrefix?: string
 }
 
-/** 单次反向调用的覆盖项：回带发起帧 id 与本次等待上限。 */
-export interface PortCallOptions {
-  /** 发起 `call` 帧 id；宿主据此把本次反向调用归属到正确回合（并发在途不串台）。 */
-  callId?: string | null
-  /** 本次等待上限；缺省用通道构造时的 `timeoutMs`。 */
-  timeoutMs?: number
-}
-
 /** 反向调用通道：`call` 发 `port.call`，`settle` 结算宿主回帧。 */
 export class PortLink implements PortCaller {
   private readonly pending = new Map<string, PendingCall>()
@@ -45,7 +39,12 @@ export class PortLink implements PortCaller {
     this.idPrefix = options.idPrefix ?? 'port'
   }
 
-  call(port: string, method: string, args: Rec, options: PortCallOptions = {}): Promise<PortOutcome> {
+  call(
+    port: string,
+    method: string,
+    args: Rec,
+    options: PortCallOptions = {},
+  ): Promise<PortOutcome> {
     this.seq += 1
     const id = `${this.idPrefix}-${this.seq}`
     const timeoutMs = options.timeoutMs ?? this.timeoutMs
@@ -59,6 +58,8 @@ export class PortLink implements PortCaller {
       const frame: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args }
       const callId = options.callId
       if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
+      const provider = options.provider
+      if (typeof provider === 'string' && provider.length > 0) frame['provider'] = provider
       try {
         this.write(frame)
       } catch (err) {

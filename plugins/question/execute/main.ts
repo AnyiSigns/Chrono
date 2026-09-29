@@ -3,7 +3,14 @@
 // 服务不读投影、无写链通道：队列与游标写自有持久存储；
 // 作答槽经反向调用 `input.read` / `input.clear` 读写（槽属 `input` 身份）。
 
-import { PortLink, createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import {
+  PortLink,
+  createService as createSdkService,
+  isDirectRun,
+  makeLogger,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
 import { QuestionStore } from './store.ts'
 import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'

@@ -50,7 +50,9 @@ function bootRaw(root, args) {
 function boot(root, args) {
   const result = bootRaw(root, args)
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`,
+    )
   }
   return result.parsed
 }
@@ -77,7 +79,9 @@ async function waitForLoaded(root, identities) {
     }
     await sleep(2000)
   }
-  throw new Error(`身份未在期限内装载（${identities.join(', ')}；最后错误：${lastError}）\n${lifecycleTail(root)}`)
+  throw new Error(
+    `身份未在期限内装载（${identities.join(', ')}；最后错误：${lastError}）\n${lifecycleTail(root)}`,
+  )
 }
 
 function encodeFrame(message) {
@@ -140,7 +144,12 @@ function startDriver(envOverrides = {}) {
               id: message.id,
               kind: 'port.result',
               ok: true,
-              value: { platform: process.platform, implementations: [], default_impl: 'native', enforcement: { net: 'declaration' } },
+              value: {
+                platform: process.platform,
+                implementations: [],
+                default_impl: 'native',
+                enforcement: { net: 'declaration' },
+              },
             }),
           )
         } else if (message.port === 'host' && message.method === 'asset.put') {
@@ -151,12 +160,24 @@ function startDriver(envOverrides = {}) {
               id: message.id,
               kind: 'port.result',
               ok: true,
-              value: { kind: 'asset', sha256: createHash('sha256').update(bytes).digest('hex'), mime: message.args.mime, size: bytes.length },
+              value: {
+                kind: 'asset',
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+                mime: message.args.mime,
+                size: bytes.length,
+              },
             }),
           )
         } else {
           child.stdin.write(
-            encodeFrame({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'unresolved_cap', message: 'no bridge' }),
+            encodeFrame({
+              v: '1',
+              id: message.id,
+              kind: 'port.error',
+              ok: false,
+              error: 'unresolved_cap',
+              message: 'no bridge',
+            }),
           )
         }
         continue
@@ -191,16 +212,30 @@ function startDriver(envOverrides = {}) {
     })
   }
 
-  const bag = (args, extra = {}) => ({ tool: 'webbrowser', args, tier: 'auto', caps: { net: 'all' }, ...extra })
+  const bag = (args, extra = {}) => ({
+    tool: 'webbrowser',
+    args,
+    tier: 'auto',
+    caps: { net: 'all' },
+    ...extra,
+  })
   const env = (now = 0, run = 'e2e-run') => ({ run, thread: null, now })
 
   return {
     child,
     portCalls,
     hello: () => request('hello', { impl: 'tool-browser', gen: 'e2e' }, 'manifest'),
-    describe: () => request('call', { port: 'tool-browser', method: 'describe', args: {}, env: env() }, ['result', 'error']),
+    describe: () =>
+      request('call', { port: 'tool-browser', method: 'describe', args: {}, env: env() }, [
+        'result',
+        'error',
+      ]),
     invoke: (args, extra = {}, callEnv = env()) =>
-      request('call', { port: 'tool-browser', method: 'invoke', args: bag(args, extra), env: callEnv }, ['result', 'error']),
+      request(
+        'call',
+        { port: 'tool-browser', method: 'invoke', args: bag(args, extra), env: callEnv },
+        ['result', 'error'],
+      ),
     close: () => child.stdin.end(),
   }
 }
@@ -227,22 +262,60 @@ async function sessionSmoke() {
     const session = opened.value.result.session
     assert.equal(session, 'e2e-run~1', '会话 id 应由 run + 序号确定性派生')
 
-    const navigated = await driver.invoke({ action: 'navigate', session, url: 'https://example.com' })
-    assert.deepEqual(navigated.value.result, { status: 200, url: 'https://example.com', title: 'title:https://example.com' })
-    assert.deepEqual((await driver.invoke({ action: 'click', session, selector: '#a' })).value.result, { ok: true })
-    assert.deepEqual((await driver.invoke({ action: 'type', session, selector: 'input', text: 'hi', submit: true })).value.result, { ok: true })
-    assert.deepEqual((await driver.invoke({ action: 'press', session, key: 'Enter' })).value.result, { ok: true })
-    assert.deepEqual((await driver.invoke({ action: 'wait_for', session, ms: 10 })).value.result, { ok: true })
-    assert.deepEqual((await driver.invoke({ action: 'extract', session })).value.result, { text: 'hello body' })
-    assert.deepEqual((await driver.invoke({ action: 'extract', session, selector: '#a', attr: 'href' })).value.result, { value: '/a' })
+    const navigated = await driver.invoke({
+      action: 'navigate',
+      session,
+      url: 'https://example.com',
+    })
+    assert.deepEqual(navigated.value.result, {
+      status: 200,
+      url: 'https://example.com',
+      title: 'title:https://example.com',
+    })
+    assert.deepEqual(
+      (await driver.invoke({ action: 'click', session, selector: '#a' })).value.result,
+      { ok: true },
+    )
+    assert.deepEqual(
+      (
+        await driver.invoke({
+          action: 'type',
+          session,
+          selector: 'input',
+          text: 'hi',
+          submit: true,
+        })
+      ).value.result,
+      { ok: true },
+    )
+    assert.deepEqual(
+      (await driver.invoke({ action: 'press', session, key: 'Enter' })).value.result,
+      { ok: true },
+    )
+    assert.deepEqual((await driver.invoke({ action: 'wait_for', session, ms: 10 })).value.result, {
+      ok: true,
+    })
+    assert.deepEqual((await driver.invoke({ action: 'extract', session })).value.result, {
+      text: 'hello body',
+    })
+    assert.deepEqual(
+      (await driver.invoke({ action: 'extract', session, selector: '#a', attr: 'href' })).value
+        .result,
+      { value: '/a' },
+    )
 
     const shot = await driver.invoke({ action: 'screenshot', session, full_page: true })
     assert.equal(shot.value.result.asset.kind, 'asset')
     assert.equal(shot.value.result.asset.mime, 'image/png')
     assert.match(shot.value.result.asset.sha256, /^[0-9a-f]{64}$/)
-    assert.ok(driver.portCalls.some((call) => call.port === 'host' && call.method === 'asset.put'), '截图应经 host.asset.put')
+    assert.ok(
+      driver.portCalls.some((call) => call.port === 'host' && call.method === 'asset.put'),
+      '截图应经 host.asset.put',
+    )
 
-    assert.deepEqual((await driver.invoke({ action: 'close', session })).value.result, { closed: true })
+    assert.deepEqual((await driver.invoke({ action: 'close', session })).value.result, {
+      closed: true,
+    })
     const afterClose = await driver.invoke({ action: 'navigate', session, url: 'https://x.test' })
     assert.equal(afterClose.value.error.code, 'session_not_found')
 
@@ -253,12 +326,22 @@ async function sessionSmoke() {
     }
 
     // TTL 回收：同一 run 新开会话，下一次调用 now 远超空闲上限
-    const ttlOpened = await driver.invoke({ action: 'open' }, {}, { run: 'ttl-run', thread: null, now: 0 })
+    const ttlOpened = await driver.invoke(
+      { action: 'open' },
+      {},
+      { run: 'ttl-run', thread: null, now: 0 },
+    )
     const ttlSession = ttlOpened.value.result.session
-    const ttlAfter = await driver.invoke({ action: 'extract', session: ttlSession }, {}, { run: 'ttl-run', thread: null, now: 999999 })
+    const ttlAfter = await driver.invoke(
+      { action: 'extract', session: ttlSession },
+      {},
+      { run: 'ttl-run', thread: null, now: 999999 },
+    )
     assert.equal(ttlAfter.value.error.code, 'session_not_found')
 
-    console.log('直连协议：describe 契约 + 九个 action + 会话保持 / close / TTL / net_denied / 截图资产')
+    console.log(
+      '直连协议：describe 契约 + 九个 action + 会话保持 / close / TTL / net_denied / 截图资产',
+    )
   } finally {
     driver.close()
     await waitExit(driver.child)
@@ -338,7 +421,11 @@ async function main() {
     const projection = projectBaseOnly(anchor.world, anchor.head)
     assert.ok(projection.ids.sandbox !== undefined, '投影缺 sandbox 身份')
     assert.ok(projection.ids['tool-browser'] !== undefined, '投影缺 tool-browser 身份')
-    assert.equal(projection.ids['tool-browser'].active === null, false, 'tool-browser 身份应 active')
+    assert.equal(
+      projection.ids['tool-browser'].active === null,
+      false,
+      'tool-browser 身份应 active',
+    )
     console.log('离线投影：sandbox / tool-browser 身份在册')
 
     console.log(`E2E ok（root=${root}）`)

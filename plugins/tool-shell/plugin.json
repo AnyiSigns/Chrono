@@ -1,9 +1,10 @@
 {
   "identity": "tool-shell",
   "schema": "schema/tool-shell.json",
-  "implements": ["tool-shell"],
+  "implements": ["tool-shell", "tool-provider"],
   "methods": {
-    "tool-shell": ["describe", "invoke"]
+    "tool-shell": ["describe", "invoke"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {},
   "needs": {

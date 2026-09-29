@@ -21,7 +21,10 @@ test('read：写后读回条目（老→新），done 计数正确', async () =>
     })
     const result = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
     assert.equal(result.ok, true)
-    assert.deepEqual(result.result.items.map((item) => item.text), ['first', 'second'])
+    assert.deepEqual(
+      result.result.items.map((item) => item.text),
+      ['first', 'second'],
+    )
     assert.equal(result.result.total, 2)
     assert.equal(result.result.done, 1)
     assert.equal('prev' in result.result.items[0], false)
@@ -34,7 +37,10 @@ test('read：未知会话 / 无记录回空清单（不报 missing_todo）', asy
   const drv = startService()
   try {
     await drv.hello()
-    const empty = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'missing' } })
+    const empty = await drv.call('invoke', {
+      tool: 'todo.read',
+      args: { conversation_id: 'missing' },
+    })
     assert.equal(empty.ok, true)
     assert.deepEqual(empty.result.items, [])
     assert.equal(empty.result.total, 0)
@@ -52,13 +58,19 @@ test('read：会话 id 由 bag.session / bag.session_id 解析', async () => {
       args: { conversation_id: 'c1', items: [{ text: 'a' }] },
     })
     const viaSession = await drv.call('invoke', { tool: 'todo.read', args: {}, session_id: 'c1' })
-    assert.deepEqual(viaSession.result.items.map((item) => item.text), ['a'])
+    assert.deepEqual(
+      viaSession.result.items.map((item) => item.text),
+      ['a'],
+    )
     const viaSlice = await drv.call('invoke', {
       tool: 'todo.read',
       args: {},
       session: { body: { current: 'c1' } },
     })
-    assert.deepEqual(viaSlice.result.items.map((item) => item.text), ['a'])
+    assert.deepEqual(
+      viaSlice.result.items.map((item) => item.text),
+      ['a'],
+    )
   } finally {
     drv.close()
   }
@@ -116,7 +128,13 @@ test('write：超限 / 坏状态 / id 重复 → 结构化业务拒（too_many_i
 
     const dupId = await drv.call('invoke', {
       tool: 'todo.write',
-      args: { conversation_id: 'c1', items: [{ id: 't0', text: 'a' }, { id: 't0', text: 'b' }] },
+      args: {
+        conversation_id: 'c1',
+        items: [
+          { id: 't0', text: 'a' },
+          { id: 't0', text: 'b' },
+        ],
+      },
     })
     assert.equal(dupId.error.code, 'bad_args')
   } finally {
@@ -138,10 +156,17 @@ test('服务不读投影：传入的 bag.todo 被忽略，数据只来自自有�
       todo: stale,
     })
     assert.equal(write.ok, true)
-    const read = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c9' }, todo: stale })
+    const read = await drv.call('invoke', {
+      tool: 'todo.read',
+      args: { conversation_id: 'c9' },
+      todo: stale,
+    })
     assert.deepEqual(read.result.items, [])
     const own = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
-    assert.deepEqual(own.result.items.map((item) => item.text), ['fresh'])
+    assert.deepEqual(
+      own.result.items.map((item) => item.text),
+      ['fresh'],
+    )
   } finally {
     drv.close()
   }

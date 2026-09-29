@@ -63,7 +63,10 @@ test('空闲超 TTL 自动回收：会话失效且引擎被关闭', async () => 
   const { sessions, engines } = manager({ idleMs: 1000 })
   const id = await sessions.open('run-1', 0)
   sessions.touch(id, 900)
-  assert.throws(() => sessions.get(id, 1901), (err) => err instanceof ToolError && err.code === 'session_not_found')
+  assert.throws(
+    () => sessions.get(id, 1901),
+    (err) => err instanceof ToolError && err.code === 'session_not_found',
+  )
   assert.equal(sessions.size, 0)
   assert.equal(engines[0].state.closed, true)
 })
@@ -73,8 +76,14 @@ test('close 显式关；再次引用回 session_not_found', async () => {
   const id = await sessions.open('run-1', 0)
   assert.equal(await sessions.close(id, 1), true)
   assert.equal(engines[0].state.closed, true)
-  assert.throws(() => sessions.get(id, 1), (err) => err.code === 'session_not_found')
-  await assert.rejects(() => sessions.close(id, 1), (err) => err.code === 'session_not_found')
+  assert.throws(
+    () => sessions.get(id, 1),
+    (err) => err.code === 'session_not_found',
+  )
+  await assert.rejects(
+    () => sessions.close(id, 1),
+    (err) => err.code === 'session_not_found',
+  )
 })
 
 test('closeAll 关闭全部在册会话', async () => {
@@ -105,7 +114,10 @@ test('closeAll 等在途 open 落地：引擎被关闭，open 被拒（不泄漏
   const opening = sessions.open('run-1', 0)
   const closing = sessions.closeAll()
   release()
-  await assert.rejects(() => opening, (err) => err.code === 'tool_failed')
+  await assert.rejects(
+    () => opening,
+    (err) => err.code === 'tool_failed',
+  )
   await closing
   assert.equal(sessions.size, 0)
   assert.equal(engines.length, 1)
@@ -115,7 +127,10 @@ test('closeAll 等在途 open 落地：引擎被关闭，open 被拒（不泄漏
 test('closeAll 之后 open 立即拒绝，不再造引擎', async () => {
   const { sessions, engines } = manager()
   await sessions.closeAll()
-  await assert.rejects(() => sessions.open('run-1', 0), (err) => err.code === 'tool_failed')
+  await assert.rejects(
+    () => sessions.open('run-1', 0),
+    (err) => err.code === 'tool_failed',
+  )
   assert.equal(engines.length, 0)
 })
 
@@ -125,8 +140,14 @@ test('killAllSync 硬杀兜底：同步 kill 全部会话并清空（exit / 信�
   await sessions.open('run-1', 0)
   sessions.killAllSync()
   assert.equal(sessions.size, 0)
-  assert.ok(engines.every((engine) => engine.state.killed), '每个引擎都应收到同步 kill')
-  assert.ok(engines.every((engine) => !engine.state.closed), '硬杀路径不应走异步 close')
+  assert.ok(
+    engines.every((engine) => engine.state.killed),
+    '每个引擎都应收到同步 kill',
+  )
+  assert.ok(
+    engines.every((engine) => !engine.state.closed),
+    '硬杀路径不应走异步 close',
+  )
 })
 
 test('killAllSync 触达在途建引擎：登记的浏览器子进程被同步 kill，落地引擎不入册且被补杀', async () => {
@@ -150,12 +171,18 @@ test('killAllSync 触达在途建引擎：登记的浏览器子进程被同步 k
   sessions.killAllSync()
   assert.deepEqual(killed, ['child'], '在途浏览器子进程应由 killAllSync 同步 kill')
   release()
-  await assert.rejects(() => opening, (err) => err.code === 'tool_failed')
+  await assert.rejects(
+    () => opening,
+    (err) => err.code === 'tool_failed',
+  )
   assert.equal(sessions.size, 0)
   assert.equal(engine.state.killed, true, '落地引擎应被 abort 分支补杀，不登记进会话表')
 })
 
 test('未知会话 get 回 session_not_found', () => {
   const { sessions } = manager()
-  assert.throws(() => sessions.get('nope', 0), (err) => err.code === 'session_not_found')
+  assert.throws(
+    () => sessions.get('nope', 0),
+    (err) => err.code === 'session_not_found',
+  )
 })

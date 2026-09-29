@@ -18,24 +18,60 @@
 `describe` 一次回报单工具 `shell`（四要素 / `argsSchema` / `caps` / `idempotent` / `modes` / `languages` / `render`）：
 
 ```jsonc
-{ "name": "shell",
+{
+  "name": "shell",
   "intent": "在隔离环境中执行一条命令或一段代码片段。",
   "when_to_use": "需要跑构建 / 测试 / 脚本 / 一次性计算时；命令默认在常驻会话内执行，cd / 环境变量跨调用延续。跑长驻服务用 background:true + action:output。",
-  "param_semantics": { "action": "…", "mode": "…", "input": "…", "language": "…",
-                       "description": "…", "workdir": "…", "timeout_ms": "…",
-                       "background": "…", "fresh": "…", "task_id": "…", "cursor": "…", "wait_ms": "…" },
+  "param_semantics": {
+    "action": "…",
+    "mode": "…",
+    "input": "…",
+    "language": "…",
+    "description": "…",
+    "workdir": "…",
+    "timeout_ms": "…",
+    "background": "…",
+    "fresh": "…",
+    "task_id": "…",
+    "cursor": "…",
+    "wait_ms": "…",
+  },
   "boundaries": "不做结构化文件读写（找文件用 glob、读文件用 read、改文件用 edit）；不做 PTY 全屏交互；不绕过 guard / sandbox。",
-  "argsSchema": { "action?": "run|output|kill|reset", "mode?": "command|code", "input?": "string",
-                  "language?": "javascript|python|shell", "description?": "string", "workdir?": "string",
-                  "timeout_ms?": "integer", "background?": "boolean", "fresh?": "boolean",
-                  "task_id?": "string", "cursor?": "integer", "wait_ms?": "integer" },
-  "caps": { "fs": { "read": "workspace", "write": "workspace" }, "net": "none",
-            "cpu_ms": 60000, "mem_mb": 512, "timeout_ms": 120000, "output_max": 1048576, "procs_max": 32 },
+  "argsSchema": {
+    "action?": "run|output|kill|reset",
+    "mode?": "command|code",
+    "input?": "string",
+    "language?": "javascript|python|shell",
+    "description?": "string",
+    "workdir?": "string",
+    "timeout_ms?": "integer",
+    "background?": "boolean",
+    "fresh?": "boolean",
+    "task_id?": "string",
+    "cursor?": "integer",
+    "wait_ms?": "integer",
+  },
+  "caps": {
+    "fs": { "read": "workspace", "write": "workspace" },
+    "net": "none",
+    "cpu_ms": 60000,
+    "mem_mb": 512,
+    "timeout_ms": 120000,
+    "output_max": 1048576,
+    "procs_max": 32,
+  },
   "idempotent": false,
   "modes": ["command", "code"],
   "languages": ["javascript", "python", "shell"],
-  "render": { "form": "card", "label": "shell", "summary": "{description}", "tone": "plain",
-              "detail": { "kind": "terminal" }, "live": false } }
+  "render": {
+    "form": "card",
+    "label": "shell",
+    "summary": "{description}",
+    "tone": "plain",
+    "detail": { "kind": "terminal" },
+    "live": false,
+  },
+}
 ```
 
 - `argsSchema` 只做形态门禁：`input` 必填、`mode` 取 `command` / `code`、`language` 取白名单；
@@ -55,11 +91,11 @@
 { "ok": false, "error": { "code": "…", "message": "…" }, "result"?: { … } }   // 非零退出 / 资源超限被杀另带 result
 ```
 
-| 输入形态 | 解释器 | `sandbox.exec` |
-| --- | --- | --- |
-| `mode:"command"`（缺省） | 常驻会话内的平台 shell（Windows `-NoExit -Command -`，unix `-s`）；`cd` / env 跨调用延续 | `exec_start`（会话形态）`{session_id, command, session_shell, cwd?, env?, caps, …}` + `exec_poll` 轮询 |
-| `mode:"code"` + `javascript` / `python` | 一次性进程 `node -e` / `python3 -c`（`python` 回落） | `exec_start`（一次性）`{cmd, args, env?, cwd?, caps, …}` + `exec_poll` 轮询 |
-| `mode:"code"` + `shell` | 同 `command`（会话内） | 同 `command` |
+| 输入形态                                | 解释器                                                                                   | `sandbox.exec`                                                                                         |
+| --------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `mode:"command"`（缺省）                | 常驻会话内的平台 shell（Windows `-NoExit -Command -`，unix `-s`）；`cd` / env 跨调用延续 | `exec_start`（会话形态）`{session_id, command, session_shell, cwd?, env?, caps, …}` + `exec_poll` 轮询 |
+| `mode:"code"` + `javascript` / `python` | 一次性进程 `node -e` / `python3 -c`（`python` 回落）                                     | `exec_start`（一次性）`{cmd, args, env?, cwd?, caps, …}` + `exec_poll` 轮询                            |
+| `mode:"code"` + `shell`                 | 同 `command`（会话内）                                                                   | 同 `command`                                                                                           |
 
 - 命令形态统一走**平台原生 shell**：Windows 按 PowerShell、unix 按 POSIX shell；描述文本按当前平台如实生成，不对模型声称跨平台同一语法（避免模型按错误语法猜命令）。`-NoProfile` 保证 Windows 不受用户 profile 影响。解释器在服务启动时一次性探测（存在性，不校验版本）；PowerShell Core 的二进制名跨版本恒为 `pwsh`，故比 7 新的稳定版自动命中，无需改代码。
 - **工作目录**：命令的 cwd 取 `bag.workspace_root`，或模型给出的 `workdir`（相对路径以工作目录为基准词法拼接后经 `sandbox.exec` 的 `cwd` 落地）。是否越出工作区由 sandbox 按当前档强制（区内放行、区外须 `full` 读范围），本插件只做词法拼接、不触盘。

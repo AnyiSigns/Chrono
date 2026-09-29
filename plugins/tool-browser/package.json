@@ -12,7 +12,9 @@
     "execute/",
     "schema/"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "node --test"
   }

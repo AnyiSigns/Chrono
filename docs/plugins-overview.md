@@ -4,37 +4,45 @@
 > 各插件「做什么 / 不做什么」见其自带自述 `README.md`；插件之间不 import、不相识，跨身份依赖只经**能力类**表达。
 > 角色挂在能力类上：**拥有方** `slots`（声明契约）/ **提供方** `implements` / **消费方** `needs`。一个插件跨能力类可同时持有三种角色；同一能力类不得既 `implements` 又 `needs`（拥有方可 `implements` 自产自用、或用 `many` 消费自己的扩展点）；无拥有方时契约回落提供方 `methods`。
 
-共 71 个插件。
+共 80 个插件。
 
 | 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | 依赖 `pins` | state | transport |
 | --- | --- | --- | --- | --- | --- | --- |
 | `agents` | — | — | — | — | recomputable | stdio |
 | `approval` | — | `approval` | — | — | durable | stdio |
+| `budget` | — | `budget` | `token-estimate(one)` | — | recomputable | stdio |
 | `chat` | — | `chat` | `session(one)`、`ref-hydrate(one)`、`input(one)`、`model(one)`、`context(one)`、`session-title(one)`、`loop-policy(one)`、`short-memory(one)`、`todo(one)`、`config(one)`、`mcp(one)`、`workspace(one)`、`skill(one)` | `host` | recomputable | stdio |
 | `compress` | — | `compress` | `summarize(one)`、`semantic(one)`、`dedup(one)`、`short-memory(one)` | — | recomputable | stdio |
 | `config` | — | `config` | — | — | durable | stdio |
-| `context-window` | — | `context` | — | — | recomputable | stdio |
+| `context-window` | — | `context` | `token-estimate(one)`、`budget(one)` | — | recomputable | stdio |
 | `dedup` | — | `dedup` | `embedding(one)` | — | recomputable | stdio |
 | `embedding` | — | `embedding` | `tokenizer(one)` | — | recomputable | stdio |
 | `evolution` | — | — | — | — | recomputable | stdio |
-| `evolve-metrics` | — | `evolve-metrics` | — | `host` | recomputable | stdio |
+| `evolve-evidence` | — | `evolve-evidence` | `evolve-ledger(one)` | — | recomputable | stdio |
+| `evolve-ledger` | — | `evolve-ledger` | — | — | recomputable | stdio |
+| `evolve-metrics` | — | `evolve-metrics` | `evolve-ledger(one)`、`evolve-evidence(one)`、`evolve-sweep(one)`、`evolve-shadow(one)` | — | recomputable | stdio |
+| `evolve-shadow` | — | `evolve-shadow` | `evolve-ledger(one)` | `host` | recomputable | stdio |
+| `evolve-sweep` | — | `evolve-sweep` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `graph-gate` | — | `graph-gate` | — | — | recomputable | stdio |
 | `guard` | — | `guard` | — | — | recomputable | stdio |
 | `input` | — | `input` | — | — | durable | stdio |
+| `l1-maintenance` | — | `l1-maintenance` | `short-memory(one)`、`session(one)` | — | recomputable | stdio |
+| `l2-maintenance` | — | `l2-maintenance` | `short-memory(one)`、`session(one)`、`embedding(one)`、`compress(one)` | — | recomputable | stdio |
+| `l3-maintenance` | — | `l3-maintenance` | `memory(one)`、`short-memory(one)`、`embedding(one)` | — | recomputable | stdio |
 | `loop-policy` | — | `loop-policy` | `session(one)`、`ref-hydrate(one)`、`model(one)`、`context(one)`、`retrieval(one)`、`compress(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |
-| `mcp` | — | `mcp` | `secrets(one)`、`mcp-client(one)` | — | durable | stdio |
+| `mcp` | — | `mcp`、`tool-provider` | `secrets(one)`、`mcp-client(one)` | — | durable | stdio |
 | `mcp-client` | — | `mcp-client` | — | — | recomputable | stdio |
-| `memory-consolidate` | — | `memory-maintenance` | `compress(one)`、`embedding(one)`、`memory(one)`、`short-memory(one)`、`session(one)`、`tokenizer(one)` | — | recomputable | stdio |
+| `memory-consolidate` | — | `memory-maintenance` | `l1-maintenance(one)`、`l2-maintenance(one)`、`l3-maintenance(one)` | — | recomputable | stdio |
 | `memory-retrieval` | — | `retrieval` | `embedding(one)`、`memory(one)`、`query-plan(one)`、`rerank(one)` | — | recomputable | stdio |
 | `memory-store` | — | `memory` | `embedding(one)`、`tokenizer(one)`、`vector-index(one)` | — | durable | stdio |
 | `model-protocol` | — | `model` | `secrets(one)`、`config(one)`、`throttle(one)`、`msg-dialect(one)` | — | recomputable | stdio |
 | `msg-dialect` | — | `msg-dialect` | — | `host` | recomputable | stdio |
 | `orchestration` | — | `orchestration` | `graph-gate(one)` | — | recomputable | stdio |
-| `orchestration-admin` | — | `orchestration-admin` | `orchestration(one)` | — | recomputable | stdio |
+| `orchestration-admin` | — | `orchestration-admin`、`tool-provider` | `orchestration(one)` | — | recomputable | stdio |
 | `plugin` | — | `plugin` | — | `host` | recomputable | stdio |
-| `plugin-admin` | — | `plugin-admin` | `plugin(one)` | — | recomputable | stdio |
+| `plugin-admin` | — | `plugin-admin`、`tool-provider` | `plugin(one)` | — | recomputable | stdio |
 | `query-plan` | — | `query-plan` | `model(one)` | — | recomputable | stdio |
-| `question` | — | `question` | `input(one)` | — | durable | stdio |
+| `question` | — | `question`、`tool-provider` | `input(one)` | — | durable | stdio |
 | `ref-hydrate` | — | `ref-hydrate` | — | `host` | recomputable | stdio |
 | `rerank` | — | `rerank` | `embedding(one)`、`model(one)` | — | recomputable | stdio |
 | `router` | — | `router` | — | — | recomputable | stdio |
@@ -51,15 +59,16 @@
 | `summarize` | — | `summarize` | — | — | recomputable | stdio |
 | `throttle` | — | `throttle` | — | — | recomputable | stdio |
 | `title-format` | — | `title-format` | — | — | recomputable | stdio |
-| `todo` | — | `todo` | `storage-kv(one)` | — | durable | stdio |
+| `todo` | — | `todo`、`tool-provider` | `storage-kv(one)` | — | durable | stdio |
+| `token-estimate` | — | `token-estimate` | — | — | recomputable | stdio |
 | `tokenizer` | — | `tokenizer` | — | — | recomputable | stdio |
-| `tool-browser` | — | `tool-browser` | `sandbox(one)` | `host` | recomputable | stdio |
-| `tool-dispatch` | — | `tool-dispatch` | `tool-registry(one)`、`tool-schema(one)`、`guard(one)`、`tool-fs(one)`、`tool-shell(one)`、`tool-http(one)`、`tool-browser(one)`、`mcp(one)`、`plugin-admin(one)`、`orchestration-admin(one)`、`todo(one)`、`question(one)`、`session(one)`、`compress(one)`、`memory(one)`、`retrieval(one)`、`memory-maintenance(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
-| `tool-fs` | — | `tool-fs` | `sandbox(one)` | `host` | recomputable | stdio |
-| `tool-http` | — | `tool-http` | `sandbox(one)` | `host` | recomputable | stdio |
-| `tool-registry` | — | `tool-registry` | `tool-schema(one)`、`tool-fs(one)`、`tool-shell(one)`、`tool-http(one)`、`tool-browser(one)`、`mcp(one)`、`plugin-admin(one)`、`orchestration-admin(one)`、`todo(one)`、`question(one)`、`session(one)`、`compress(one)`、`memory(one)`、`retrieval(one)`、`memory-maintenance(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
+| `tool-browser` | — | `tool-browser`、`tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
+| `tool-dispatch` | — | `tool-dispatch` | `tool-registry(one)`、`tool-schema(one)`、`guard(one)`、`tool-provider(many)`、`session(one)`、`compress(one)`、`memory(one)`、`retrieval(one)`、`memory-maintenance(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
+| `tool-fs` | — | `tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
+| `tool-http` | — | `tool-http`、`tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
+| `tool-registry` | `tool-provider` | `tool-registry` | `tool-provider(many)`、`tool-schema(one)`、`session(one)`、`compress(one)`、`memory(one)`、`retrieval(one)`、`memory-maintenance(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
 | `tool-schema` | — | `tool-schema` | — | — | recomputable | stdio |
-| `tool-shell` | — | `tool-shell` | `secrets(one)`、`sandbox(one)` | — | recomputable | stdio |
+| `tool-shell` | — | `tool-shell`、`tool-provider` | `secrets(one)`、`sandbox(one)` | — | recomputable | stdio |
 | `tools` | — | `tools` | `tool-registry(one)`、`tool-dispatch(one)` | `host` | recomputable | stdio |
 | `ui-approval` | — | `ui-approval` | `approval(one)`、`input(one)`、`ref-hydrate(one)` | — | recomputable | stdio |
 | `ui-chat` | — | `ui-chat` | — | — | recomputable | stdio |

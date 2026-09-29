@@ -79,8 +79,9 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致', asyn
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.identity, 'orchestration-admin')
-    assert.deepEqual(manifest.implements, ['orchestration-admin'])
+    assert.deepEqual(manifest.implements, ['orchestration-admin', 'tool-provider'])
     assert.deepEqual(manifest.methods['orchestration-admin'], ['describe', 'invoke'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.state, 'recomputable')
   } finally {
     drv.close()

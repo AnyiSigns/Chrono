@@ -42,7 +42,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -81,7 +83,13 @@ function argValue(args, flag) {
 
 function fetcherStdout({ status = 200, contentType = 'text/html', body = '' } = {}) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8')
-  const meta = JSON.stringify({ status, content_type: contentType, url: '', truncated: false, body_encoding: 'base64' })
+  const meta = JSON.stringify({
+    status,
+    content_type: contentType,
+    url: '',
+    truncated: false,
+    body_encoding: 'base64',
+  })
   return `${meta}\n${buffer.toString('base64')}`
 }
 
@@ -104,15 +112,30 @@ function makeBridge() {
         if (typeof url === 'string' && url.includes('bin.test')) {
           return {
             ok: true,
-            value: execValue(fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([0, 1, 2, 3]) })),
+            value: execValue(
+              fetcherStdout({
+                contentType: 'application/octet-stream',
+                body: Buffer.from([0, 1, 2, 3]),
+              }),
+            ),
           }
         }
-        return { ok: true, value: execValue(fetcherStdout({ contentType: 'text/html', body: DDG_HTML })) }
+        return {
+          ok: true,
+          value: execValue(fetcherStdout({ contentType: 'text/html', body: DDG_HTML })),
+        }
       }
       if (message.port === 'host' && message.method === 'asset.put') {
-        return { ok: true, value: { kind: 'asset', sha256: 'cd'.repeat(32), mime: message.args.mime, size: 4 } }
+        return {
+          ok: true,
+          value: { kind: 'asset', sha256: 'cd'.repeat(32), mime: message.args.mime, size: 4 },
+        }
       }
-      return { ok: false, code: 'unresolved_cap', message: `no bridge for ${message.port}.${message.method}` }
+      return {
+        ok: false,
+        code: 'unresolved_cap',
+        message: `no bridge for ${message.port}.${message.method}`,
+      }
     },
   }
 }
@@ -133,11 +156,27 @@ function startClient(bridge) {
           .then((outcome) => {
             const frame = outcome.ok
               ? { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value }
-              : { v: '1', id: message.id, kind: 'port.error', ok: false, error: outcome.code, message: outcome.message }
+              : {
+                  v: '1',
+                  id: message.id,
+                  kind: 'port.error',
+                  ok: false,
+                  error: outcome.code,
+                  message: outcome.message,
+                }
             child.stdin.write(encodeFrame(frame))
           })
           .catch((err) => {
-            child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'bridge_failed', message: err.message }))
+            child.stdin.write(
+              encodeFrame({
+                v: '1',
+                id: message.id,
+                kind: 'port.error',
+                ok: false,
+                error: 'bridge_failed',
+                message: err.message,
+              }),
+            )
           })
         continue
       }
@@ -188,8 +227,15 @@ async function directChecks() {
     assert.equal(manifest.identity, 'tool-http')
     assert.deepEqual(manifest.implements, ['tool-http'])
 
-    const described = await client.request('call', { port: 'tool-http', method: 'describe', args: {} })
-    assert.deepEqual(described.value.tools.map((tool) => tool.name), ['websearch', 'webfetch'])
+    const described = await client.request('call', {
+      port: 'tool-http',
+      method: 'describe',
+      args: {},
+    })
+    assert.deepEqual(
+      described.value.tools.map((tool) => tool.name),
+      ['websearch', 'webfetch'],
+    )
     console.log('describe：二工具四要素齐备')
 
     const search = await client.request('call', {
@@ -201,7 +247,15 @@ async function directChecks() {
         config: {
           obey_robots: false,
           sources: [
-            { id: 's', name: 'S', kind: 'html', parse: 'ddg-html', endpoint: 'https://s.test/search', query_param: 'q', timeout_ms: 1000 },
+            {
+              id: 's',
+              name: 'S',
+              kind: 'html',
+              parse: 'ddg-html',
+              endpoint: 'https://s.test/search',
+              query_param: 'q',
+              timeout_ms: 1000,
+            },
           ],
         },
         tier: 'auto',
@@ -223,7 +277,15 @@ async function directChecks() {
         config: {
           obey_robots: false,
           sources: [
-            { id: 's', name: 'S', kind: 'html', parse: 'ddg-html', endpoint: 'https://s.test/search', query_param: 'q', timeout_ms: 1000 },
+            {
+              id: 's',
+              name: 'S',
+              kind: 'html',
+              parse: 'ddg-html',
+              endpoint: 'https://s.test/search',
+              query_param: 'q',
+              timeout_ms: 1000,
+            },
           ],
         },
         tier: 'auto',
@@ -239,7 +301,12 @@ async function directChecks() {
     const binary = await client.request('call', {
       port: 'tool-http',
       method: 'invoke',
-      args: { tool: 'webfetch', args: { url: 'https://bin.test/f' }, config: { obey_robots: false }, tier: 'auto' },
+      args: {
+        tool: 'webfetch',
+        args: { url: 'https://bin.test/f' },
+        config: { obey_robots: false },
+        tier: 'auto',
+      },
     })
     assert.equal(binary.value.ok, true)
     assert.equal(binary.value.result.asset.kind, 'asset')
@@ -248,13 +315,20 @@ async function directChecks() {
     const denied = await client.request('call', {
       port: 'tool-http',
       method: 'invoke',
-      args: { tool: 'webfetch', args: { url: 'https://denied.test/' }, config: { obey_robots: false }, tier: 'auto' },
+      args: {
+        tool: 'webfetch',
+        args: { url: 'https://denied.test/' },
+        config: { obey_robots: false },
+        tier: 'auto',
+      },
     })
     assert.equal(denied.value.ok, false)
     assert.equal(denied.value.error.code, 'net_denied')
     console.log('net_denied：按档钳制结果透传')
 
-    const execCalls = bridge.calls.filter((call) => call.port === 'sandbox' && call.method === 'exec')
+    const execCalls = bridge.calls.filter(
+      (call) => call.port === 'sandbox' && call.method === 'exec',
+    )
     assert.ok(execCalls.length >= 3)
     assert.ok(execCalls.some((call) => call.args.caps.net === 'limited'))
     assert.ok(execCalls.some((call) => call.args.caps.net === 'all'))

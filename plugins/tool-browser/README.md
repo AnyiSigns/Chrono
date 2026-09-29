@@ -15,17 +15,17 @@
 
 ## `webbrowser`
 
-| `action` | args（要点） | 结果 |
-| --- | --- | --- |
-| `open` | `viewport?` | `{session}` |
-| `navigate` | `session` / `url` / `wait_until?` | `{status, url, title}` |
-| `click` | `session` / `selector` | `{ok}` |
-| `type` | `session` / `selector` / `text` / `submit?` | `{ok}` |
-| `press` | `session` / `key` | `{ok}` |
-| `wait_for` | `session` / `selector?` / `ms?` | `{ok}` |
-| `extract` | `session` / `selector?` / `attr?` | `{text}` / `{value}` |
-| `screenshot` | `session` / `full_page?` / `format?` | `{asset:{kind:'asset',sha256,mime,size}}` |
-| `close` | `session` | `{closed}` |
+| `action`     | args（要点）                                | 结果                                      |
+| ------------ | ------------------------------------------- | ----------------------------------------- |
+| `open`       | `viewport?`                                 | `{session}`                               |
+| `navigate`   | `session` / `url` / `wait_until?`           | `{status, url, title}`                    |
+| `click`      | `session` / `selector`                      | `{ok}`                                    |
+| `type`       | `session` / `selector` / `text` / `submit?` | `{ok}`                                    |
+| `press`      | `session` / `key`                           | `{ok}`                                    |
+| `wait_for`   | `session` / `selector?` / `ms?`             | `{ok}`                                    |
+| `extract`    | `session` / `selector?` / `attr?`           | `{text}` / `{value}`                      |
+| `screenshot` | `session` / `full_page?` / `format?`        | `{asset:{kind:'asset',sha256,mime,size}}` |
+| `close`      | `session`                                   | `{closed}`                                |
 
 - **`idempotent:false`**：有会话 / 有状态，永不缓存、永不 memo（与无状态抓取相对）。
 - `navigate` 仅接受 `http(s)`；`file:` / `javascript:` / `ftp:` 等一律 `navigate_failed`。
@@ -36,7 +36,7 @@
 - `caps` 用对象形并含 `fs.read`：`caps.net = "all"`、`caps.fs = {read:"none", write:"none"}`；
   截图与下载都不落工作区，走资产引用，与 `caps.fs` 无冲突。
 - `render` 为**静态**描述符 `{form:"card", label:"webbrowser", summary:"{action}  {url}",
-  tone:"plain", detail:{kind:"json"}, live:false}`——`webbrowser` 是单个工具，只能声明一个 `detail.kind`，
+tone:"plain", detail:{kind:"json"}, live:false}`——`webbrowser` 是单个工具，只能声明一个 `detail.kind`，
   故固定通用 `json`，不按 action 变化。
 
 每个动作的成功结果另带 `digest`（普通对象，供上下文老化直接渲染、不替换原有字段）：始终含 `action`，
@@ -92,16 +92,16 @@
 
 ## 错误码
 
-| 码 | 触发 |
-| --- | --- |
-| `session_not_found` | 会话 id 未知 / 已回收 / 跨换代失效 |
-| `navigate_failed` / `http_status` | 导航失败 / 4xx-5xx |
-| `element_not_found` | 选择器未命中 / 等待超时 |
-| `net_denied` | `caps.net` 越档 / sandbox 档位拒绝（原样透传） |
-| `browser_unsupported` | 引擎 / 平台不可用 |
-| `binary_unsupported` | 资产体积超限（`host.asset.put` 的 `asset_too_large` 归一到此）/ 分块等后置场景 |
-| `tool_timeout` | 超 sandbox / 宿主调用超时（原样透传）；`wait_for` 的 `ms` 超单动作超时 |
-| `tool_failed` / `unknown_tool` / `bad_args` | 引擎内部失败 / 工具名不符 / args 形态非法 |
+| 码                                          | 触发                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------ |
+| `session_not_found`                         | 会话 id 未知 / 已回收 / 跨换代失效                                             |
+| `navigate_failed` / `http_status`           | 导航失败 / 4xx-5xx                                                             |
+| `element_not_found`                         | 选择器未命中 / 等待超时                                                        |
+| `net_denied`                                | `caps.net` 越档 / sandbox 档位拒绝（原样透传）                                 |
+| `browser_unsupported`                       | 引擎 / 平台不可用                                                              |
+| `binary_unsupported`                        | 资产体积超限（`host.asset.put` 的 `asset_too_large` 归一到此）/ 分块等后置场景 |
+| `tool_timeout`                              | 超 sandbox / 宿主调用超时（原样透传）；`wait_for` 的 `ms` 超单动作超时         |
+| `tool_failed` / `unknown_tool` / `bad_args` | 引擎内部失败 / 工具名不符 / args 形态非法                                      |
 
 > 对外失败码是**闭集**（与 `schema/tool-browser.json` 的 `invoke_result.error.code` 一致）；
 > 资产面等外部码在边界处归一（`asset_too_large` → `binary_unsupported`，其余未知码 → `tool_failed`，已知码原样透传）。

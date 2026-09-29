@@ -81,7 +81,10 @@ export class QuestionStore {
     this.writeDerived()
   }
 
-  static open(env: NodeJS.ProcessEnv = process.env, options: { compactThreshold?: number } = {}): QuestionStore {
+  static open(
+    env: NodeJS.ProcessEnv = process.env,
+    options: { compactThreshold?: number } = {},
+  ): QuestionStore {
     const dataDir = env['CHRONO_PLUGIN_DATA']
     const stateDir = env['CHRONO_PLUGIN_STATE']
     let dataFile: string | null = null

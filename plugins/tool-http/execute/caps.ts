@@ -2,7 +2,12 @@
 // websearch 只打 schema 声明的源清单（limited）；webfetch 可打任意 URL（all）。
 // 执行时间预算与反向等待同源：见 execBudgetMs（保证 host > reverse > exec）。
 
-import { DEFAULT_CALL_TIMEOUT_MS, HOST_METHOD_TIMEOUT_MS, MAX_EXEC_BUDGET_MS, TIMER_MAX_MS } from './reverse.ts'
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  HOST_METHOD_TIMEOUT_MS,
+  MAX_EXEC_BUDGET_MS,
+  TIMER_MAX_MS,
+} from './reverse.ts'
 import { isRec } from './types.ts'
 import type { Rec } from './types.ts'
 
@@ -42,7 +47,9 @@ export function declaredCaps(net: string, outputMax = DEFAULT_OUTPUT_MAX): Rec {
  */
 export function execBudgetMs(declared: Rec | undefined, specTimeoutMs: number): number {
   const capsTimeout =
-    isRec(declared) && typeof declared['timeout_ms'] === 'number' && Number.isFinite(declared['timeout_ms'])
+    isRec(declared) &&
+    typeof declared['timeout_ms'] === 'number' &&
+    Number.isFinite(declared['timeout_ms'])
       ? declared['timeout_ms']
       : DEFAULT_CALL_TIMEOUT_MS
   const budget = Math.max(specTimeoutMs, capsTimeout)

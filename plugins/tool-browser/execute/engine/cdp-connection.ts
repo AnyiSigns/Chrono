@@ -39,7 +39,9 @@ export class CdpConnection {
 
   /** 连接 ws 端点；`open` 前失败或超时 → tool_timeout / browser_unsupported。 */
   static connect(wsUrl: string, timeoutMs: number): Promise<CdpConnection> {
-    const WebSocketCtor = (globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket
+    const WebSocketCtor = (
+      globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike }
+    ).WebSocket
     if (typeof WebSocketCtor !== 'function') {
       throw new ToolError('browser_unsupported', 'global WebSocket is not available')
     }
@@ -120,7 +122,12 @@ export class CdpConnection {
     clearTimeout(entry.timer)
     if (isRecord(message['error'])) {
       const error = message['error'] as Rec
-      entry.reject(new ToolError('tool_failed', typeof error['message'] === 'string' ? error['message'] : 'CDP error'))
+      entry.reject(
+        new ToolError(
+          'tool_failed',
+          typeof error['message'] === 'string' ? error['message'] : 'CDP error',
+        ),
+      )
       return
     }
     entry.resolve((message['result'] ?? null) as Json)

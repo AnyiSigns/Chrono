@@ -1,0 +1,24 @@
+{
+  "name": "evolve-ledger",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "台账原语（Rust）：链窗口读取 / 写入计划构造 / 阈值解析 / 确定性哈希；纯计算、非 LLM、同输入同输出，无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "src/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

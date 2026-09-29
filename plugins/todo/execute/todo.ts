@@ -49,7 +49,10 @@ function readStatus(raw: Rec, where: string, limits: TodoLimits, fallback: strin
   const status = asString(value)
   if (status === null) throw new BadArgsError(`${where}.status must be a string`)
   if (!limits.statuses.includes(status)) {
-    throw new ToolError('bad_status', `${status} not in [${limits.statuses.join(', ')}] (${where}.status)`)
+    throw new ToolError(
+      'bad_status',
+      `${status} not in [${limits.statuses.join(', ')}] (${where}.status)`,
+    )
   }
   return status
 }
@@ -68,7 +71,13 @@ function readActiveForm(raw: Rec, where: string, limits: TodoLimits): string | u
 }
 
 /** 组装对外条目（可选字段仅在存在时写入）。 */
-function buildItem(id: string, text: string, status: string, activeForm: string | undefined, at: string | null): Rec {
+function buildItem(
+  id: string,
+  text: string,
+  status: string,
+  activeForm: string | undefined,
+  at: string | null,
+): Rec {
   const item: Rec = { id, text, status }
   if (activeForm !== undefined) item['activeForm'] = activeForm
   if (at !== null) item['at'] = at
@@ -144,7 +153,10 @@ export function normalizeItems(
     const at = asString(raw['at']) ?? defaultAt
     if (status === 'in_progress') {
       if (focusId !== null) {
-        throw new ToolError('multiple_in_progress', `items 含多个 in_progress（${focusId}, ${id}）；同一清单至多一个`)
+        throw new ToolError(
+          'multiple_in_progress',
+          `items 含多个 in_progress（${focusId}, ${id}）；同一清单至多一个`,
+        )
       }
       focusId = id
     }

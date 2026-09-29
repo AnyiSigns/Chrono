@@ -11,7 +11,13 @@ import { BrowserUnsupportedError, assertWaitWithinTimeout, mimeForFormat } from 
 import { CdpConnection } from './cdp-connection.ts'
 import { ToolError } from '../types.ts'
 import type { CreationHandle } from '../creation.ts'
-import type { BrowserEngine, EngineConfig, ExtractResult, NavigateResult, ScreenshotResult } from './types.ts'
+import type {
+  BrowserEngine,
+  EngineConfig,
+  ExtractResult,
+  NavigateResult,
+  ScreenshotResult,
+} from './types.ts'
 import type { Json, Rec } from '../types.ts'
 
 const CONNECT_TIMEOUT_MS = 15000
@@ -39,7 +45,12 @@ function candidatePaths(): string[] {
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
     ]
   }
-  return ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge']
+  return [
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+  ]
 }
 
 /** 浏览器可执行文件：配置 > 环境变量 > 平台候选路径；都没有即 browser_unsupported。 */
@@ -185,15 +196,25 @@ export class CdpEngine implements BrowserEngine {
   }
 
   private evaluate(expression: string): Promise<Json> {
-    return this.connection.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, this.sessionId).then((result) => {
-      const rec = result as Rec | null
-      if (rec !== null && typeof rec === 'object' && rec['exceptionDetails'] !== undefined) {
-        const details = rec['exceptionDetails'] as Rec
-        throw new ToolError('tool_failed', `page script failed: ${JSON.stringify(details['exception'] ?? details)}`)
-      }
-      const inner = rec !== null && typeof rec === 'object' ? (rec['result'] as Rec | undefined) : undefined
-      return (inner?.['value'] ?? null) as Json
-    })
+    return this.connection
+      .send(
+        'Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true },
+        this.sessionId,
+      )
+      .then((result) => {
+        const rec = result as Rec | null
+        if (rec !== null && typeof rec === 'object' && rec['exceptionDetails'] !== undefined) {
+          const details = rec['exceptionDetails'] as Rec
+          throw new ToolError(
+            'tool_failed',
+            `page script failed: ${JSON.stringify(details['exception'] ?? details)}`,
+          )
+        }
+        const inner =
+          rec !== null && typeof rec === 'object' ? (rec['result'] as Rec | undefined) : undefined
+        return (inner?.['value'] ?? null) as Json
+      })
   }
 
   async navigate(url: string, waitUntil?: string): Promise<NavigateResult> {
@@ -202,7 +223,12 @@ export class CdpEngine implements BrowserEngine {
     loaded.catch(() => undefined)
     let navigation: Json
     try {
-      navigation = await this.connection.send('Page.navigate', { url }, this.sessionId, this.config.navigationTimeoutMs)
+      navigation = await this.connection.send(
+        'Page.navigate',
+        { url },
+        this.sessionId,
+        this.config.navigationTimeoutMs,
+      )
     } catch (err) {
       throw new ToolError('navigate_failed', `navigation failed: ${url}: ${(err as Error).message}`)
     }
@@ -218,7 +244,8 @@ export class CdpEngine implements BrowserEngine {
     )
     const rec = (info ?? {}) as Rec
     const status = typeof rec['status'] === 'number' && rec['status'] > 0 ? rec['status'] : 200
-    if (status >= 400) throw new ToolError('http_status', `navigation returned HTTP ${status}: ${url}`)
+    if (status >= 400)
+      throw new ToolError('http_status', `navigation returned HTTP ${status}: ${url}`)
     return {
       status,
       url: typeof rec['href'] === 'string' ? rec['href'] : url,
@@ -279,8 +306,18 @@ export class CdpEngine implements BrowserEngine {
     const down: Rec = { ...base, type: 'keyDown' }
     if (spec.text !== undefined) down['text'] = spec.text
     const up: Rec = { ...base, type: 'keyUp' }
-    await this.connection.send('Input.dispatchKeyEvent', down, this.sessionId, this.config.actionTimeoutMs)
-    await this.connection.send('Input.dispatchKeyEvent', up, this.sessionId, this.config.actionTimeoutMs)
+    await this.connection.send(
+      'Input.dispatchKeyEvent',
+      down,
+      this.sessionId,
+      this.config.actionTimeoutMs,
+    )
+    await this.connection.send(
+      'Input.dispatchKeyEvent',
+      up,
+      this.sessionId,
+      this.config.actionTimeoutMs,
+    )
   }
 
   async waitFor(selector?: string, ms?: number): Promise<void> {
@@ -306,7 +343,8 @@ export class CdpEngine implements BrowserEngine {
       const value = await this.evaluate(
         `(() => { const el = document.querySelector(${encoded}); return el ? el.getAttribute(${JSON.stringify(attr)}) : null })()`,
       )
-      if (value === null) throw new ToolError('element_not_found', `attribute ${attr} not found on ${target}`)
+      if (value === null)
+        throw new ToolError('element_not_found', `attribute ${attr} not found on ${target}`)
       return { value: String(value) }
     }
     const text = await this.evaluate(
@@ -364,7 +402,10 @@ export class CdpEngine implements BrowserEngine {
 }
 
 /** 探测系统浏览器、spawn、连上 CDP 并开一个页面。 */
-export async function loadCdp(config: EngineConfig, handle: CreationHandle): Promise<BrowserEngine> {
+export async function loadCdp(
+  config: EngineConfig,
+  handle: CreationHandle,
+): Promise<BrowserEngine> {
   const executable = findBrowser(config)
   const { child, wsUrl, profileDir } = await launchBrowser(executable, config, handle)
   let connection: CdpConnection
@@ -380,15 +421,25 @@ export async function loadCdp(config: EngineConfig, handle: CreationHandle): Pro
   try {
     const target = (await connection.send('Target.createTarget', { url: 'about:blank' })) as Rec
     const targetId = target['targetId']
-    if (typeof targetId !== 'string') throw new BrowserUnsupportedError('CDP createTarget returned no targetId')
-    const attached = (await connection.send('Target.attachToTarget', { targetId, flatten: true })) as Rec
+    if (typeof targetId !== 'string')
+      throw new BrowserUnsupportedError('CDP createTarget returned no targetId')
+    const attached = (await connection.send('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    })) as Rec
     const sessionId = attached['sessionId']
-    if (typeof sessionId !== 'string') throw new BrowserUnsupportedError('CDP attachToTarget returned no sessionId')
+    if (typeof sessionId !== 'string')
+      throw new BrowserUnsupportedError('CDP attachToTarget returned no sessionId')
     await connection.send('Page.enable', {}, sessionId)
     await connection.send('Runtime.enable', {}, sessionId)
     await connection.send(
       'Emulation.setDeviceMetricsOverride',
-      { width: config.viewport.width, height: config.viewport.height, deviceScaleFactor: 1, mobile: false },
+      {
+        width: config.viewport.width,
+        height: config.viewport.height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      },
       sessionId,
     )
     return new CdpEngine(child, profileDir, connection, sessionId, config)

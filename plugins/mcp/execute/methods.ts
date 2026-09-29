@@ -58,7 +58,12 @@ async function describe(_args: Json, _env: CallEnv): Promise<HandlerResult> {
  * `discover`：读自有存储的服务器清单 → 连已确认服务器拉工具 → 有变化则写回自有存储。
  * 无变化只回 extern；不产世界写计划、不读投影。
  */
-async function discover(_args: Json, env: CallEnv, deps: McpDeps, callId: string | null): Promise<HandlerResult> {
+async function discover(
+  _args: Json,
+  env: CallEnv,
+  deps: McpDeps,
+  callId: string | null,
+): Promise<HandlerResult> {
   const current = deps.store.read()
   const outcome = await deps.registry.discover(current, callId)
   if (!outcome.changed) {
@@ -69,7 +74,12 @@ async function discover(_args: Json, env: CallEnv, deps: McpDeps, callId: string
 }
 
 /** `invoke(bag)`：bag = `{tool:"mcp.<server>.<tool>", tool_args}` → 路由到对应子进程。 */
-async function invoke(args: Json, _env: CallEnv, deps: McpDeps, callId: string | null): Promise<HandlerResult> {
+async function invoke(
+  args: Json,
+  _env: CallEnv,
+  deps: McpDeps,
+  callId: string | null,
+): Promise<HandlerResult> {
   if (!isRecord(args)) throw new BadArgsError('args must be an object')
   const tool = args['tool']
   if (typeof tool !== 'string' || tool.length === 0) throw new BadArgsError('tool required')
@@ -82,8 +92,10 @@ async function invoke(args: Json, _env: CallEnv, deps: McpDeps, callId: string |
 export function createHandlers(deps: McpDeps): Record<string, Handler> {
   return {
     describe,
-    read: (args: Json, env: CallEnv): Promise<HandlerResult> => Promise.resolve({ value: read(args, env, deps) }),
-    write: (args: Json, env: CallEnv): Promise<HandlerResult> => Promise.resolve({ value: write(args, env, deps) }),
+    read: (args: Json, env: CallEnv): Promise<HandlerResult> =>
+      Promise.resolve({ value: read(args, env, deps) }),
+    write: (args: Json, env: CallEnv): Promise<HandlerResult> =>
+      Promise.resolve({ value: write(args, env, deps) }),
     discover: (args: Json, env: CallEnv, callId: string | null): Promise<HandlerResult> =>
       discover(args, env, deps, callId),
     invoke: (args: Json, env: CallEnv, callId: string | null): Promise<HandlerResult> =>

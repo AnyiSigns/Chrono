@@ -1,222 +1,129 @@
 // 反向调用后端抽象（服务 → 宿主，docs/protocol.md §2.4）：反向调用通道由 SDK 提供
 // （`plugin-sdk` 的 PortLink）；本文件只保留业务后端。
-// 本插件 `needs` 含 `embedding` → embedding（向量化）、`tokenizer` → tokenizer（切块）、`compress` → compress：
-// 去重 / 切块经 `port.call tokenizer.chunk` + `embedding.embed`；需要摘要时经 `port.call compress.summarize`。
+// `memory-consolidate` 退化为时序编排门面：按 layer 反向调用三个提供方
+// （l1-maintenance / l2-maintenance / l3-maintenance），自身不再直接读写 owner 服务。
 // 失败作数据（BackendError），不抛未捕获错误、不断通道；单测用可注入的假后端替换真实通道。
 
-import { isRecord } from './plan.ts'
+import { isRecord } from 'plugin-sdk'
 import { BackendError } from './types.ts'
 import type { PortCaller } from 'plugin-sdk'
-import type { Json, Rec } from './types.ts'
+import type { Rec } from './types.ts'
 
-/** 一个切块（偏移按 Unicode 码点计）。 */
-export interface Chunk {
-  index: number
-  start: number
-  end: number
-  text: string
-}
+/** `l1-maintenance` 各方法的反向调用等待上限（须大于 l1-maintenance 声明）。 */
+export const L1_TIMEOUT_MS = 210000
+/** `l2-maintenance.merge` 的反向调用等待上限（须大于 l2-maintenance 声明）。 */
+export const L2_MERGE_TIMEOUT_MS = 4100000
+/** `l2-maintenance` 其余方法（trim / view / edit）的反向调用等待上限。 */
+export const L2_TIMEOUT_MS = 45000
+/** `l3-maintenance.solidify` 的反向调用等待上限（须大于 l3-maintenance 声明）。 */
+export const L3_SOLIDIFY_TIMEOUT_MS = 680000
+/** `l3-maintenance.forget` 的反向调用等待上限（须大于 l3-maintenance 声明）。 */
+export const L3_FORGET_TIMEOUT_MS = 625000
+/** `l3-maintenance` 其余方法（view / edit）的反向调用等待上限。 */
+export const L3_TIMEOUT_MS = 45000
 
-/** 向量化后端抽象：生产环境是反向调用 `embedding.embed`，单测注入假后端。 */
-export interface EmbeddingBackend {
-  embed(texts: string[], model: string): Promise<number[][]>
-}
-
-/** 切块后端抽象：生产环境是反向调用 `tokenizer.chunk`，单测注入假后端。 */
-export interface TokenizerBackend {
-  chunk(text: string): Promise<Chunk[]>
-}
-
-/** 摘要后端抽象：生产环境是反向调用 `compress.summarize`，单测注入假后端。 */
-export interface CompressBackend {
-  summarize(args: Rec): Promise<Rec>
-}
-
-function parseChunks(value: Json): Chunk[] {
-  if (!Array.isArray(value))
-    throw new BackendError('tokenizer_bad_result', 'tokenizer.chunk returned no chunks')
-  const chunks: Chunk[] = []
-  for (const item of value) {
-    if (!isRecord(item))
-      throw new BackendError('tokenizer_bad_result', 'tokenizer.chunk returned a malformed chunk')
-    const index = typeof item['index'] === 'number' ? item['index'] : chunks.length
-    const start = typeof item['start'] === 'number' ? item['start'] : 0
-    const end = typeof item['end'] === 'number' ? item['end'] : 0
-    const text = typeof item['text'] === 'string' ? (item['text'] as string) : ''
-    chunks.push({ index, start, end, text })
+async function invoke(
+  link: PortCaller,
+  port: string,
+  method: string,
+  args: Rec,
+  timeoutMs: number,
+): Promise<Rec> {
+  const outcome = await link.call(port, method, args, { timeoutMs })
+  if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
+  if (!isRecord(outcome.value)) {
+    throw new BackendError('maintenance_bad_result', `${port}.${method} returned a non-object`)
   }
-  return chunks
+  return outcome.value
 }
 
-/** `tokenizer.chunk` 的反向调用后端。 */
-export class RemoteTokenizer implements TokenizerBackend {
+/** L1 提供方后端抽象：生产环境是反向调用 `l1-maintenance.*`，单测注入假后端。 */
+export interface L1Backend {
+  sweep(args: Rec): Promise<Rec>
+  candidates(args: Rec): Promise<Rec>
+  view(args: Rec): Promise<Rec>
+}
+
+export class RemoteL1 implements L1Backend {
   private readonly link: PortCaller
 
   constructor(link: PortCaller) {
     this.link = link
   }
 
-  async chunk(text: string): Promise<Chunk[]> {
-    const outcome = await this.link.call('tokenizer', 'chunk', { text })
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    return parseChunks(outcome.value)
+  sweep(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l1-maintenance', 'sweep', args, L1_TIMEOUT_MS)
+  }
+
+  candidates(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l1-maintenance', 'candidates', args, L1_TIMEOUT_MS)
+  }
+
+  view(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l1-maintenance', 'view', args, L1_TIMEOUT_MS)
   }
 }
 
-/** `embedding.embed` 的反向调用后端。 */
-export class RemoteEmbedding implements EmbeddingBackend {
-  private readonly link: PortCaller
-
-  constructor(link: PortCaller) {
-    this.link = link
-  }
-
-  async embed(texts: string[], model: string): Promise<number[][]> {
-    const outcome = await this.link.call('embedding', 'embed', { texts, model })
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value) || !Array.isArray(outcome.value['vectors'])) {
-      throw new BackendError('embedding_bad_result', 'embedding.embed returned no vectors')
-    }
-    const vectors: number[][] = []
-    for (const vector of outcome.value['vectors'] as Json[]) {
-      if (!Array.isArray(vector) || vector.some((item) => typeof item !== 'number')) {
-        throw new BackendError(
-          'embedding_bad_result',
-          'embedding.embed returned a malformed vector',
-        )
-      }
-      vectors.push(vector as number[])
-    }
-    if (vectors.length !== texts.length) {
-      throw new BackendError('embedding_bad_result', 'embedding.embed vector count mismatch')
-    }
-    return vectors
-  }
-}
-
-/** 从计划值里取 extern 载荷（`compress.*` 回计划值，摘要住 extern.payload）。 */
-function externPayload(value: Json): Rec {
-  if (isRecord(value) && Array.isArray(value['$directives'])) {
-    for (const directive of value['$directives'] as Json[]) {
-      if (isRecord(directive) && directive['kind'] === 'extern' && isRecord(directive['payload'])) {
-        return directive['payload'] as Rec
-      }
-    }
-  }
-  if (isRecord(value)) return value
-  throw new BackendError('compress_bad_result', 'compress.summarize returned no payload')
-}
-
-/** `compress.summarize` 的反向调用后端：成功回 extern 载荷（含结构化 summary）。 */
-export class RemoteCompress implements CompressBackend {
-  private readonly link: PortCaller
-
-  constructor(link: PortCaller) {
-    this.link = link
-  }
-
-  async summarize(args: Rec): Promise<Rec> {
-    const outcome = await this.link.call('compress', 'summarize', args)
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    return externPayload(outcome.value)
-  }
-}
-
-/** 短期记忆 owner 后端抽象：生产环境是反向调用 `short-memory.read` / `apply`。 */
-export interface ShortMemoryBackend {
-  read(): Promise<Rec>
-  apply(args: Rec): Promise<Rec>
-}
-
-/** `short-memory` 的反向调用后端：读整份 L1 / L2，逐键置 / 删写回。 */
-export class RemoteShortMemory implements ShortMemoryBackend {
-  private readonly link: PortCaller
-
-  constructor(link: PortCaller) {
-    this.link = link
-  }
-
-  async read(): Promise<Rec> {
-    const outcome = await this.link.call('short-memory', 'read', {})
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value))
-      throw new BackendError('short_memory_bad_result', 'short-memory.read returned a non-object')
-    return outcome.value
-  }
-
-  async apply(args: Rec): Promise<Rec> {
-    const outcome = await this.link.call('short-memory', 'apply', args)
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value))
-      throw new BackendError('short_memory_bad_result', 'short-memory.apply returned a non-object')
-    return outcome.value
-  }
-}
-
-/** 长期记忆 owner 后端抽象：生产环境是反向调用 `memory.*`。 */
-export interface MemoryBackend {
-  list(): Promise<Rec>
-  append(args: Rec): Promise<Rec>
-  remove(args: Rec): Promise<Rec>
-  pin(args: Rec): Promise<Rec>
+/** L2 提供方后端抽象：生产环境是反向调用 `l2-maintenance.*`，单测注入假后端。 */
+export interface L2Backend {
+  merge(args: Rec): Promise<Rec>
+  trim(args: Rec): Promise<Rec>
+  view(args: Rec): Promise<Rec>
   edit(args: Rec): Promise<Rec>
 }
 
-/** `memory-store` 的反向调用后端：清单读取与条目写入。 */
-export class RemoteMemory implements MemoryBackend {
+export class RemoteL2 implements L2Backend {
   private readonly link: PortCaller
 
   constructor(link: PortCaller) {
     this.link = link
   }
 
-  private async invoke(method: string, args: Rec): Promise<Rec> {
-    const outcome = await this.link.call('memory', method, args)
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value))
-      throw new BackendError('memory_bad_result', `memory.${method} returned a non-object`)
-    return outcome.value
+  merge(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l2-maintenance', 'merge', args, L2_MERGE_TIMEOUT_MS)
   }
 
-  async list(): Promise<Rec> {
-    return this.invoke('list', {})
+  trim(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l2-maintenance', 'trim', args, L2_TIMEOUT_MS)
   }
 
-  async append(args: Rec): Promise<Rec> {
-    return this.invoke('append', args)
+  view(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l2-maintenance', 'view', args, L2_TIMEOUT_MS)
   }
 
-  async remove(args: Rec): Promise<Rec> {
-    return this.invoke('delete', args)
-  }
-
-  async pin(args: Rec): Promise<Rec> {
-    return this.invoke('pin', args)
-  }
-
-  async edit(args: Rec): Promise<Rec> {
-    return this.invoke('edit', args)
+  edit(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l2-maintenance', 'edit', args, L2_TIMEOUT_MS)
   }
 }
 
-/** 会话 owner 后端抽象：生产环境是反向调用 `session.read`（取会话 → 工作区归属）。 */
-export interface SessionBackend {
-  read(): Promise<Rec>
+/** L3 提供方后端抽象：生产环境是反向调用 `l3-maintenance.*`，单测注入假后端。 */
+export interface L3Backend {
+  solidify(args: Rec): Promise<Rec>
+  forget(args: Rec): Promise<Rec>
+  view(args: Rec): Promise<Rec>
+  edit(args: Rec): Promise<Rec>
 }
 
-/** `session` 的反向调用后端：读会话 body（含 conversations[].workspace_id）。 */
-export class RemoteSession implements SessionBackend {
+export class RemoteL3 implements L3Backend {
   private readonly link: PortCaller
 
   constructor(link: PortCaller) {
     this.link = link
   }
 
-  async read(): Promise<Rec> {
-    const outcome = await this.link.call('session', 'read', {})
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value))
-      throw new BackendError('session_bad_result', 'session.read returned a non-object')
-    return outcome.value
+  solidify(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l3-maintenance', 'solidify', args, L3_SOLIDIFY_TIMEOUT_MS)
+  }
+
+  forget(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l3-maintenance', 'forget', args, L3_FORGET_TIMEOUT_MS)
+  }
+
+  view(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l3-maintenance', 'view', args, L3_TIMEOUT_MS)
+  }
+
+  edit(args: Rec): Promise<Rec> {
+    return invoke(this.link, 'l3-maintenance', 'edit', args, L3_TIMEOUT_MS)
   }
 }

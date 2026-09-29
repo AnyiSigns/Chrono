@@ -77,6 +77,7 @@ export interface ServiceLinkOptions {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
   /** 对端关闭 / 帧损坏时回调一次（宿主主动 close 不触发）。 */
   onClosed?: (reason: string) => void
@@ -118,6 +119,7 @@ export class ServiceLink {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
   private readonly onClosed?: (reason: string) => void
   /**
@@ -352,9 +354,17 @@ export class ServiceLink {
     const callId = message['call_id']
     const env =
       typeof callId === 'string' ? this.inflightEnvs.get(callId) : this.earliestInflightEnv()
+    // 按成员定位的 `many`：帧自带 `provider`（目标提供方身份名）时交宿主按扩展类 + 成员解析。
+    const provider = typeof message['provider'] === 'string' ? message['provider'] : undefined
     let response: CallResponse
     try {
-      response = await this.onPortCall(port, method, (message['args'] ?? null) as Json, env)
+      response = await this.onPortCall(
+        port,
+        method,
+        (message['args'] ?? null) as Json,
+        env,
+        provider,
+      )
     } catch {
       response = { ok: false, code: 'transport_failed', message: 'port.call failed' }
     }

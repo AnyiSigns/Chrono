@@ -31,8 +31,11 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tool-shell')
   assert.equal(decl.schema, 'schema/tool-shell.json')
-  assert.deepEqual(decl.implements, ['tool-shell'])
-  assert.deepEqual(decl.methods, { 'tool-shell': ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['tool-shell', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    'tool-shell': ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.needs, { secrets: { mode: 'one' }, sandbox: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')

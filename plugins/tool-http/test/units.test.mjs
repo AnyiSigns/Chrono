@@ -2,10 +2,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { BUILTIN_DEFAULTS, defaultConfig, mergeConfig, readSchemaDefaults } from '../execute/config.ts'
+import {
+  BUILTIN_DEFAULTS,
+  defaultConfig,
+  mergeConfig,
+  readSchemaDefaults,
+} from '../execute/config.ts'
 import { canonicalizeUrl, isPrivateHost, parseHttpUrl, withQuery } from '../execute/url.ts'
 import { robotsAllows } from '../execute/robots.ts'
-import { buildFetcherCommand, parseFetcherStdout, resolveFetcherCommand } from '../execute/fetcher.ts'
+import {
+  buildFetcherCommand,
+  parseFetcherStdout,
+  resolveFetcherCommand,
+} from '../execute/fetcher.ts'
 import { htmlToMarkdown, htmlToText, stripTags, unwrapRedirect } from '../execute/html.ts'
 import {
   parseBing,
@@ -28,7 +37,10 @@ test('配置：schema defaults 与内建兜底一致，缺省双源', () => {
 })
 
 test('配置：数据世代 body 优先，可换源不改代码', () => {
-  const config = mergeConfig({ top_n: 3, sources: [{ id: 'x', name: 'X', kind: 'html', endpoint: 'https://x.test/s' }] })
+  const config = mergeConfig({
+    top_n: 3,
+    sources: [{ id: 'x', name: 'X', kind: 'html', endpoint: 'https://x.test/s' }],
+  })
   assert.equal(config.top_n, 3)
   assert.equal(config.sources.length, 1)
   assert.equal(config.sources[0].parse, 'html')
@@ -59,7 +71,10 @@ test('URL：只收 http(s)、内网判定、规范化去重', () => {
   assert.equal(isPrivateHost('192.168.1.1'), true)
   assert.equal(isPrivateHost('localhost'), true)
   assert.equal(isPrivateHost('example.com'), false)
-  assert.equal(canonicalizeUrl('HTTPS://Example.TEST:443/a/?b=2&a=1#frag'), 'https://example.test/a?a=1&b=2')
+  assert.equal(
+    canonicalizeUrl('HTTPS://Example.TEST:443/a/?b=2&a=1#frag'),
+    'https://example.test/a?a=1&b=2',
+  )
   assert.equal(withQuery('https://x.test/s', { q: 'a b' }), 'https://x.test/s?q=a+b')
 })
 
@@ -89,7 +104,14 @@ test('内网判定：尾点 / IPv6-mapped / 保留段的绕过形态都被拦', 
 })
 
 test('robots：分组、最长匹配、通配与结尾锚', () => {
-  const text = ['User-agent: *', 'Disallow: /private', 'Allow: /private/open', '', 'User-agent: badbot', 'Disallow: /'].join('\n')
+  const text = [
+    'User-agent: *',
+    'Disallow: /private',
+    'Allow: /private/open',
+    '',
+    'User-agent: badbot',
+    'Disallow: /',
+  ].join('\n')
   assert.equal(robotsAllows(text, 'chrono-tool-http/1.0', '/public'), true)
   assert.equal(robotsAllows(text, 'chrono-tool-http/1.0', '/private/x'), false)
   assert.equal(robotsAllows(text, 'chrono-tool-http/1.0', '/private/open/x'), true)
@@ -115,7 +137,9 @@ test('fetcher：参数映射与输出解析', () => {
   assert.ok(args.includes('--max-size') && args.includes('2048'))
   assert.ok(args.includes('--max-redirs') && args.includes('3'))
   assert.ok(args.includes('--meta'))
-  const parsed = parseFetcherStdout(fetcherStdout({ status: 200, contentType: 'text/plain', body: 'hello' }))
+  const parsed = parseFetcherStdout(
+    fetcherStdout({ status: 200, contentType: 'text/plain', body: 'hello' }),
+  )
   assert.equal(parsed.status, 200)
   assert.equal(parsed.contentType, 'text/plain')
   assert.equal(parsed.bytes.toString('utf8'), 'hello')
@@ -154,7 +178,10 @@ test('HTML：正文提取 + markdown 确定；raw 原样；摘要去标签', () 
   assert.ok(text.includes('World link.'))
   assert.ok(!text.includes('<'))
   assert.equal(stripTags('<b>a</b>&amp;b'), 'a &b')
-  assert.equal(unwrapRedirect('//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.test%2Fa'), 'https://x.test/a')
+  assert.equal(
+    unwrapRedirect('//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.test%2Fa'),
+    'https://x.test/a',
+  )
 })
 
 test('源解析：各源 HTML / JSON 归一化', () => {
@@ -162,20 +189,36 @@ test('源解析：各源 HTML / JSON 归一化', () => {
     '<a class="result__a" href="https://one.test/">One</a><a class="result__snippet">S1</a>' +
       '<a class="result__a" href="https://two.test/">Two</a><a class="result__snippet">S2</a>',
   )
-  assert.deepEqual(ddg.map((item) => item.url), ['https://one.test/', 'https://two.test/'])
+  assert.deepEqual(
+    ddg.map((item) => item.url),
+    ['https://one.test/', 'https://two.test/'],
+  )
   assert.equal(ddg[0].snippet, 'S1')
   const lite = parseDdgLite(
     '<a class="result-link" href="https://lite.test/">L</a><td class="result-snippet">LS</td>',
   )
   assert.equal(lite[0].snippet, 'LS')
-  const bing = parseBing('<li class="b_algo"><h2><a href="https://b.test/">B</a></h2><p>BP</p></li>')
+  const bing = parseBing(
+    '<li class="b_algo"><h2><a href="https://b.test/">B</a></h2><p>BP</p></li>',
+  )
   assert.equal(bing[0].snippet, 'BP')
   const mojeek = parseMojeek('<a class="ob" href="https://m.test/">M</a><p class="s">MS</p>')
   assert.equal(mojeek[0].url, 'https://m.test/')
   const searxng = parseSearxng('{"results":[{"title":"S","url":"https://s.test/","content":"SC"}]}')
   assert.equal(searxng[0].snippet, 'SC')
   const wikipedia = parseSource(
-    { id: 'w', name: 'W', kind: 'wikipedia', parse: 'wikipedia-json', enabled: true, endpoint: null, instances: [], query_param: 'q', timeout_ms: 1000, language: 'en' },
+    {
+      id: 'w',
+      name: 'W',
+      kind: 'wikipedia',
+      parse: 'wikipedia-json',
+      enabled: true,
+      endpoint: null,
+      instances: [],
+      query_param: 'q',
+      timeout_ms: 1000,
+      language: 'en',
+    },
     '{"query":{"search":[{"title":"A B","snippet":"<b>AB</b>"}]}}',
   )
   assert.equal(wikipedia[0].url, 'https://en.wikipedia.org/wiki/A_B')
@@ -187,7 +230,9 @@ test('源解析：各源 HTML / JSON 归一化', () => {
   assert.equal(rss[0].title, 'A & B')
   assert.equal(rss[0].url, 'https://r.test/1')
   assert.equal(rss[0].snippet, 'snip')
-  const marg = parseMarginalia('{"results":[{"title":"M","url":"https://m2.test/","description":"desc"}]}')
+  const marg = parseMarginalia(
+    '{"results":[{"title":"M","url":"https://m2.test/","description":"desc"}]}',
+  )
   assert.equal(marg[0].url, 'https://m2.test/')
   assert.equal(marg[0].snippet, 'desc')
 })

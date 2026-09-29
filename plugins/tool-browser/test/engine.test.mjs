@@ -65,8 +65,18 @@ function fakePlaywrightPage() {
 }
 
 function playwrightEngine(page) {
-  const browser = { async close() {}, async newContext() { throw new Error('unused') } }
-  const context = { async close() {}, async newPage() { throw new Error('unused') } }
+  const browser = {
+    async close() {},
+    async newContext() {
+      throw new Error('unused')
+    },
+  }
+  const context = {
+    async close() {},
+    async newPage() {
+      throw new Error('unused')
+    },
+  }
   return new PlaywrightEngine(browser, context, page, CONFIG)
 }
 

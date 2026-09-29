@@ -5,6 +5,7 @@ import {
   capabilityOwners,
   capabilityProviders,
   effectiveMethods,
+  manyNeedsOf,
   parsePluginDecl,
 } from '../index.ts'
 import type { CapabilityIndex, PluginDecl } from '../index.ts'
@@ -181,6 +182,47 @@ describe('能力索引 capability-index', () => {
       addCodeGen(world, 'mixed', { identity: 'mixed', implements: ['cap'] })
       addDataGen(world, 'mixed')
       expect(capabilityProviders(world, 'cap')).toEqual(['mixed'])
+    })
+  })
+
+  describe('many 成员表 manyNeedsOf', () => {
+    it('逐个 many 需求解析世界提供方（码元序，排除 one / 自身）', () => {
+      const world = emptyWorld()
+      for (const id of ['prov-z', 'prov-a']) {
+        addIdentity(world, id)
+        addCodeGen(world, id, { identity: id, implements: ['capA'] })
+      }
+      addIdentity(world, 'one-prov')
+      addCodeGen(world, 'one-prov', { identity: 'one-prov', implements: ['capB'] })
+      addIdentity(world, 'consumer')
+      addCodeGen(world, 'consumer', {
+        identity: 'consumer',
+        needs: { capA: { mode: 'many' }, capB: { mode: 'one' } },
+      })
+      expect(manyNeedsOf(world, 'consumer')).toEqual({ capA: ['prov-a', 'prov-z'] })
+    })
+
+    it('无 many 需求 → 空表；身份缺失 / 声明读不出 → null', () => {
+      const world = emptyWorld()
+      addIdentity(world, 'consumer')
+      addCodeGen(world, 'consumer', {
+        identity: 'consumer',
+        needs: { capB: { mode: 'one' } },
+      })
+      expect(manyNeedsOf(world, 'consumer')).toEqual({})
+      expect(manyNeedsOf(world, 'missing')).toBeNull()
+    })
+
+    it('退役提供方不入 many 成员表', () => {
+      const world = emptyWorld()
+      addIdentity(world, 'live')
+      addCodeGen(world, 'live', { identity: 'live', implements: ['capA'] })
+      addIdentity(world, 'gone')
+      addCodeGen(world, 'gone', { identity: 'gone', implements: ['capA'] })
+      world.ids['gone'].active = null
+      addIdentity(world, 'consumer')
+      addCodeGen(world, 'consumer', { identity: 'consumer', needs: { capA: { mode: 'many' } } })
+      expect(manyNeedsOf(world, 'consumer')).toEqual({ capA: ['live'] })
     })
   })
 

@@ -97,7 +97,7 @@ export interface RawMessage {
   reasoning?: NeutralReasoning | null
   /** 工具结果消息的老化元数据；同回合结果可据此按预算阶梯老化。 */
   toolResult?: ToolResultMeta | null
-  /** 追加的辅助提示（压缩提示 / 交错引导），单独计入 `hints` 分节。 */
+  /** 追加的辅助提示（交错引导），单独计入 `hints` 分节。 */
   hint?: boolean
   /** 该消息是否为结构化检查点（分层保留把陈旧错误蒸馏进它的 `errors_to_avoid`）。 */
   checkpoint?: boolean
@@ -161,11 +161,6 @@ export interface PrefixPolicy {
   order: Source[]
 }
 
-/** policy 阈值。 */
-export interface ThresholdPolicy {
-  compress_hint_ratio: number
-}
-
 /** policy 分层保留参数。 */
 export interface RetentionPolicy {
   /** T1 近期回合数（N）；距离小于 N 的回合逐字保留，其余按 T2 压缩。 */
@@ -178,11 +173,10 @@ export interface RetentionPolicy {
   oversized_user_chars: number
 }
 
-/** policy 追加文案（环境节 / 压缩提示 / 交错引导语 / 输入截断标记 / 错误分层）。 */
+/** policy 追加文案（环境节 / 交错引导语 / 输入截断标记 / 错误分层）。 */
 export interface MessagePolicy {
   /** 稳定「环境」节模板：占位 `{workspace_root}` / `{platform}`；无工作目录时不注入。 */
   environment: string
-  compress_hint: string
   interleave_guidance: string
   input_truncated: string
   /** T1 系统错误的一行形态（占位 `{error}`）。 */
@@ -202,7 +196,6 @@ export interface Policy {
   budget: BudgetPolicy
   quota: QuotaPolicy
   prefix: PrefixPolicy
-  thresholds: ThresholdPolicy
   retention: RetentionPolicy
   messages: MessagePolicy
   modality_fallback: ModalityPolicy

@@ -4,7 +4,7 @@
 // `world.ids` 对象引用不变，故不能按键控世界的 WeakMap 缓存索引本身；索引每次从
 // `world.ids` + 世代事实缓存重算，O(#身份)，随世界确定性地增减。
 
-import { assemblyGen, readPluginDeclOfGen } from './decl.ts'
+import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import type { PluginDecl, SlotDecl } from './decl.ts'
 import type { Gen, Hash, World } from '../../kernel/index.ts'
@@ -95,6 +95,18 @@ export function capabilityOwners(world: World, cap: string, blobsDir?: string): 
 }
 
 /**
+ * 某身份当前代码世代 `implements` 的能力类（声明序，排除保留能力类 `host`）。
+ * 供宿主在「按成员定位的 many」下，用成员自身能力类解析方法级超时（调用端口是扩展类名）。
+ */
+export function implementedCaps(world: World, identityId: string, blobsDir?: string): string[] {
+  const gen = assemblyGen(world, identityId)
+  if (gen === null) return []
+  const facts = factsOfGen(world, gen, blobsDir)
+  if (facts === null) return []
+  return facts.implements.filter((cap) => cap !== HOST_CAPABILITY)
+}
+
+/**
  * 某能力类的方法契约：第一个拥有方（码元序）`slots[cap].methods`；无拥有方 → `null`。
  * 返回副本，避免调用方改动缓存内的事实。
  */
@@ -106,6 +118,56 @@ export function capabilityContract(world: World, cap: string, blobsDir?: string)
   const facts = factsOfGen(world, gen, blobsDir)
   const contract = facts?.slots[cap]?.methods
   return contract === undefined ? null : [...contract]
+}
+
+/**
+ * 该身份当前代码世代的 `many` 成员表：`needs` 中 `mode:"many"` 的能力类 → 世界能力索引(cap)
+ * 的提供方身份名（码元序，排除退役 / 声明读不出 / `host`）。无代码世代 / 声明不可解析 → `null`。
+ * 单一来源：宿主注入服务工厂上下文的 `manyNeeds`（服务据此按成员反向定位，枢纽不枚举提供方）。
+ */
+export function manyNeedsOf(
+  world: World,
+  identityId: string,
+  blobsDir?: string,
+): Record<string, string[]> | null {
+  const decl = readPluginDecl(world, identityId, blobsDir)
+  if (decl === null) return null
+  return manyNeedsForDecl(decl.decl, identityId, buildCapabilityIndex(world, blobsDir))
+}
+
+function manyNeedsForDecl(
+  decl: PluginDecl,
+  identityId: string,
+  index: CapabilityIndex,
+): Record<string, string[]> {
+  const caps = Object.keys(decl.needs)
+    .filter((cap) => decl.needs[cap].mode === 'many')
+    .sort()
+  const out: Record<string, string[]> = {}
+  for (const cap of caps) {
+    out[cap] = (index.providers.get(cap) ?? []).filter((id) => id !== identityId)
+  }
+  return out
+}
+
+/**
+ * 全世界的 `many` 成员快照：身份 → `manyNeedsOf`（仅含声明了 `many` 需求的身份）。供宿主对比
+ * 世界变迁前后成员集，命中变更的消费方强制重注入（成员变更 = 世界变更 → 重解析重注入）。
+ */
+export function manyNeedsMap(
+  world: World,
+  blobsDir?: string,
+): Map<string, Record<string, string[]>> {
+  const index = buildCapabilityIndex(world, blobsDir)
+  const out = new Map<string, Record<string, string[]>>()
+  for (const id of Object.keys(world.ids).sort()) {
+    const decl = readPluginDecl(world, id, blobsDir)
+    if (decl === null) continue
+    const hasMany = Object.values(decl.decl.needs).some((need) => need.mode === 'many')
+    if (!hasMany) continue
+    out.set(id, manyNeedsForDecl(decl.decl, id, index))
+  }
+  return out
 }
 
 /**

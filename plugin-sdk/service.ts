@@ -29,6 +29,12 @@ export interface ServiceFactoryContext {
    * 由宿主经工厂 ctx 原样传入（SDK 不吞）。
    */
   pins?: Record<string, string>
+  /**
+   * 宿主按世界能力索引注入的 **`many` 成员表**（`cap → [提供方身份名]`，码元序）：该身份
+   * `needs` 中 `mode:"many"` 的能力类 → 其世界提供方。stdio 由宿主经 spawn env
+   * `CHRONO_PLUGIN_MANY_NEEDS` 注入、SDK 从进程 env 解析；inproc / worker 由工厂 ctx 传入。
+   */
+  manyNeeds?: Record<string, string[]>
 }
 
 export interface ServiceConfig {
@@ -115,6 +121,29 @@ export function pinsFromProcess(): Record<string, string> | undefined {
     const value = parsed[key]
     if (typeof value !== 'string') return undefined
     out[key] = value
+  }
+  return out
+}
+
+/**
+ * 从 `process.env.CHRONO_PLUGIN_MANY_NEEDS` 解析宿主注入的 `many` 成员表（stdio 形态）；
+ * 缺失 / 坏 JSON / 形不合一律回落 `undefined`（不抛，服务可回落到本地声明）。
+ */
+export function manyNeedsFromProcess(): Record<string, string[]> | undefined {
+  const raw = process.env['CHRONO_PLUGIN_MANY_NEEDS']
+  if (typeof raw !== 'string') return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(parsed)) return undefined
+  const out: Record<string, string[]> = {}
+  for (const key of Object.keys(parsed)) {
+    const value = parsed[key]
+    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return undefined
+    out[key] = value as string[]
   }
   return out
 }
@@ -341,7 +370,12 @@ export function runStdio(
     }
     writeFrame(message)
   }
-  instance = build({ emit, env: loaderEnvFromProcess(), pins: pinsFromProcess() })
+  instance = build({
+    emit,
+    env: loaderEnvFromProcess(),
+    pins: pinsFromProcess(),
+    manyNeeds: manyNeedsFromProcess(),
+  })
   const decoder = createFrameDecoder()
   process.stdin.on('data', (chunk: Buffer) => {
     // 坏 JSON 帧已被解码器消费，重试可继续解同块内剩余帧；超长帧未被消费，不可重试。

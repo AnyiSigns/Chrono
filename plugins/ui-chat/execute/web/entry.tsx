@@ -305,7 +305,7 @@ function relabelPart(root: HTMLElement | null, table: MessageTable): void {
  * 若合成单个字符串注入，React 每帧会把整条消息的 DOM 拆掉重建——长回答越写越卡（O(n²)）。
  * 缓存更新走 effect，不在渲染期改 ref。`live` = 文本仍在流式在途，尾部走有界渲染。
  */
-function Markdown({
+const Markdown = memo(function Markdown({
   text,
   className,
   live = false,
@@ -350,7 +350,7 @@ function Markdown({
       ) : null}
     </div>
   )
-}
+})
 
 /** base64 字节 + mime → blob URL（对象 URL 由调用方 revoke）。 */
 function blobUrlFromBytes(bytes: Uint8Array, mime: string): string {
@@ -1050,7 +1050,7 @@ function DetailView({ detail }: { detail: any }): ReactNode {
  * 流式中默认展开、收流即收起；用户点击后以点击为准（open 非 null 时不再自动跟随）。
  * 推理只作展示，不进模型上下文（由 context-window 丢弃）。
  */
-function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }): ReactNode {
+const ReasoningBlock = memo(function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }): ReactNode {
   const { table } = useChatEnv()
   const [open, setOpen] = useState<boolean | null>(null)
   if (text.length === 0) return null
@@ -1079,7 +1079,7 @@ function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean 
       ) : null}
     </div>
   )
-}
+})
 
 /** 工具卡状态角标：运行中呼吸点 / 成功勾 / 失败叹号；未知（历史卡无状态）不显示。 */
 function ToolStatus({ state }: { state: string | null }): ReactNode {
@@ -1233,7 +1233,7 @@ function RenderItem({ vm }: { vm: any }): ReactNode {
   return <Markdown text={safeStringify(vm)} />
 }
 
-function MessageItem({ entry, announce }: { entry: any; announce: boolean }): ReactNode {
+const MessageItem = memo(function MessageItem({ entry, announce }: { entry: any; announce: boolean }): ReactNode {
   const env = useChatEnv()
   const def = entry !== null && typeof entry === 'object' ? entry.def : null
   const role = def !== null && typeof def.role === 'string' ? def.role : 'assistant'
@@ -1279,7 +1279,7 @@ function MessageItem({ entry, announce }: { entry: any; announce: boolean }): Re
       <Footnote def={def} showRetry={showRetry} />
     </div>
   )
-}
+})
 
 interface HistoryListProps {
   messages: any[]
@@ -1323,7 +1323,7 @@ const HistoryList = memo(function HistoryList(props: HistoryListProps): ReactNod
 })
 
 /** 在途工具卡：完成（`tool.end`）即用结果本体渲染输出；未完成时只给流式输出。 */
-function StreamToolCard({ tool }: { tool: any }): ReactNode {
+const StreamToolCard = memo(function StreamToolCard({ tool }: { tool: any }): ReactNode {
   if (tool === null || tool === undefined) return null
   const done = tool.done === true
   const ok = tool.ok ?? null
@@ -1340,7 +1340,7 @@ function StreamToolCard({ tool }: { tool: any }): ReactNode {
     status,
   })
   return <ToolCard vm={vm} live={{ chunks: tool.chunks, done, ok }} />
-}
+})
 
 /** 流式回合的秒级计时：active 期间从 0 每秒步进，非 active 归零；计时器随组件卸载清理。 */
 function useElapsedSeconds(active: boolean): number {
@@ -1424,7 +1424,7 @@ function StreamTurn({ view }: { view: any }): ReactNode {
 }
 
 /** 回合结局块：非 committed 的持久 / 在途结局按种类与码渲染，不落回成功、不静默消失。 */
-function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
+const TurnOutcomeLine = memo(function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
   const { table } = useChatEnv()
   const code = outcomeDisplayCode(outcome)
   const entry = lookupMessage(table, code)
@@ -1446,7 +1446,7 @@ function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
       </div>
     </div>
   )
-}
+})
 
 function ErrorBar({ error, onRetry }: { error: any; onRetry: () => void }): ReactNode {
   const env = useChatEnv()
@@ -1686,9 +1686,9 @@ function App({
   })
   const [, setTick] = useState(0)
   const rerender = useCallback(() => setTick((value) => value + 1), [])
-  // 流式增量合帧：同一帧内到达的 model.delta / tool.delta 按到达序合并为一次 store 提交
-  //（一帧最多一次重渲染 —— 否则工具刷屏输出会一包一渲染）。
-  const pendingDeltas = useRef<Array<{ kind: 'delta' | 'tool'; payload: any }>>([])
+  // 流式增量合帧：同一帧内到达的 model.delta / tool.start / tool.delta / tool.end 按到达序合并为一次
+  // store 提交（一帧最多一次重渲染 —— 否则工具刷屏输出会一包一渲染，工具起止各再来一次全树重渲）。
+  const pendingDeltas = useRef<Array<{ kind: 'delta' | 'tool' | 'tool-start' | 'tool-end'; payload: any }>>([])
   const flushScheduled = useRef(false)
   const flushDeltas = useCallback(() => {
     if (pendingDeltas.current.length === 0) return
@@ -1696,7 +1696,10 @@ function App({
     pendingDeltas.current = []
     let next = store.getSnapshot()
     for (const op of queued) {
-      next = op.kind === 'tool' ? applyToolDelta(next, op.payload) : applyDelta(next, op.payload)
+      if (op.kind === 'tool') next = applyToolDelta(next, op.payload)
+      else if (op.kind === 'tool-start') next = applyToolStart(next, op.payload)
+      else if (op.kind === 'tool-end') next = applyToolEnd(next, op.payload)
+      else next = applyDelta(next, op.payload)
     }
     store.commit(next, { type: 'delta' })
   }, [store])
@@ -2131,7 +2134,8 @@ function App({
     }
     if (record.topic === 'tool.start') {
       if (match(payload.thread)) {
-        store.commit(applyToolStart(store.getSnapshot(), payload), { type: 'lifecycle' })
+        pendingDeltas.current.push({ kind: 'tool-start', payload })
+        scheduleFlush()
       }
       return
     }
@@ -2144,7 +2148,8 @@ function App({
     }
     if (record.topic === 'tool.end') {
       if (match(payload.thread)) {
-        store.commit(applyToolEnd(store.getSnapshot(), payload), { type: 'lifecycle' })
+        pendingDeltas.current.push({ kind: 'tool-end', payload })
+        scheduleFlush()
       }
       return
     }

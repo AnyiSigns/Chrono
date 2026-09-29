@@ -17,8 +17,9 @@ test('hello 回 manifest：身份 / 能力类 / 方法与 plugin.json 一致', a
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'todo')
-    assert.deepEqual(manifest.implements, ['todo'])
+    assert.deepEqual(manifest.implements, ['todo', 'tool-provider'])
     assert.deepEqual(manifest.methods.todo, ['describe', 'invoke'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
   } finally {

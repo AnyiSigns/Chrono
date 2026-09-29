@@ -46,8 +46,16 @@ test('缺 tool → bad_args', async () => {
 
 test('websearch：无 read / read=0 只检索；read>0 继续抓正文（旧 webresearch 形态）', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ contentType: 'text/html', body: searchHtml(['https://page1.test/a']) }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article('Body here.') }))],
+    [
+      'https://search.test/s',
+      execOk(
+        fetcherStdout({ contentType: 'text/html', body: searchHtml(['https://page1.test/a']) }),
+      ),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('Body here.') })),
+    ],
   ])
   const { backend } = makeBackend(router)
   const config = { ...testConfig(), sources: [sourceConfig()] }
@@ -56,11 +64,19 @@ test('websearch：无 read / read=0 只检索；read>0 继续抓正文（旧 web
   assert.equal(search.ok, true)
   assert.equal(search.result.results[0].read, undefined)
 
-  const zero = await invoke({ tool: 'websearch', args: { query: 'q', read: 0 }, config }, null, backend)
+  const zero = await invoke(
+    { tool: 'websearch', args: { query: 'q', read: 0 }, config },
+    null,
+    backend,
+  )
   assert.equal(zero.ok, true)
   assert.equal(zero.result.results[0].read, undefined)
 
-  const research = await invoke({ tool: 'websearch', args: { query: 'q', read: 1 }, config }, null, backend)
+  const research = await invoke(
+    { tool: 'websearch', args: { query: 'q', read: 1 }, config },
+    null,
+    backend,
+  )
   assert.equal(research.ok, true)
   assert.equal(research.result.results[0].read, true)
   assert.ok(research.result.results[0].content.includes('Body here.'))
@@ -68,12 +84,24 @@ test('websearch：无 read / read=0 只检索；read>0 继续抓正文（旧 web
 
 test('webresearch 旧名仍直达研究形态', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ contentType: 'text/html', body: searchHtml(['https://page1.test/a']) }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article('Body here.') }))],
+    [
+      'https://search.test/s',
+      execOk(
+        fetcherStdout({ contentType: 'text/html', body: searchHtml(['https://page1.test/a']) }),
+      ),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('Body here.') })),
+    ],
   ])
   const { backend } = makeBackend(router)
   const config = { ...testConfig(), sources: [sourceConfig()] }
-  const result = await invoke({ tool: 'webresearch', args: { query: 'q', read: 1 }, config }, null, backend)
+  const result = await invoke(
+    { tool: 'webresearch', args: { query: 'q', read: 1 }, config },
+    null,
+    backend,
+  )
   assert.equal(result.ok, true)
   assert.equal(result.result.results[0].read, true)
 })

@@ -52,7 +52,9 @@ function bootRaw(root, args) {
 function boot(root, args) {
   const result = bootRaw(root, args)
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`,
+    )
   }
   return result.parsed
 }
@@ -79,7 +81,9 @@ async function waitForLoaded(root, identities) {
     }
     await sleep(2000)
   }
-  throw new Error(`身份未在期限内装载（${identities.join(', ')}；最后错误：${lastError}）\n${lifecycleTail(root)}`)
+  throw new Error(
+    `身份未在期限内装载（${identities.join(', ')}；最后错误：${lastError}）\n${lifecycleTail(root)}`,
+  )
 }
 
 function encodeFrame(message) {
@@ -156,7 +160,8 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
   const secNext = frameReader(secrets)
   const portCalls = []
 
-  const backendOf = (port) => (port === 'sandbox' ? { child: sandbox, next: sbNext } : { child: secrets, next: secNext })
+  const backendOf = (port) =>
+    port === 'sandbox' ? { child: sandbox, next: sbNext } : { child: secrets, next: secNext }
 
   async function bridge(message) {
     portCalls.push(message)
@@ -174,7 +179,15 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     )
     const response = await backend.next()
     if (response.kind === 'result') {
-      toolShell.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: response.value }))
+      toolShell.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: response.value,
+        }),
+      )
     } else {
       toolShell.stdin.write(
         encodeFrame({
@@ -191,7 +204,15 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
 
   async function callTool(id, method, args) {
     toolShell.stdin.write(
-      encodeFrame({ v: '1', id, kind: 'call', port: 'tool-shell', method, args, env: { run: null, thread: null, now: 0 } }),
+      encodeFrame({
+        v: '1',
+        id,
+        kind: 'call',
+        port: 'tool-shell',
+        method,
+        args,
+        env: { run: null, thread: null, now: 0 },
+      }),
     )
     for (;;) {
       const message = await tsNext()
@@ -199,7 +220,8 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
         await bridge(message)
         continue
       }
-      if ((message.kind === 'result' || message.kind === 'error') && message.id === id) return message
+      if ((message.kind === 'result' || message.kind === 'error') && message.id === id)
+        return message
     }
   }
 
@@ -217,7 +239,10 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
 
     const describe = await callTool('d1', 'describe', {})
     assert.equal(describe.kind, 'result', JSON.stringify(describe))
-    assert.deepEqual(describe.value.tools.map((tool) => tool.name), ['shell'])
+    assert.deepEqual(
+      describe.value.tools.map((tool) => tool.name),
+      ['shell'],
+    )
 
     const base = {
       tier: 'severe',
@@ -225,7 +250,11 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
       caps: { fs: { read: 'workspace', write: 'workspace' }, net: 'none' },
     }
 
-    const echo = await callTool('c1', 'invoke', { tool: 'shell', args: { input: 'echo chrono' }, ...base })
+    const echo = await callTool('c1', 'invoke', {
+      tool: 'shell',
+      args: { input: 'echo chrono' },
+      ...base,
+    })
     assert.equal(echo.value.ok, true, JSON.stringify(echo.value))
     assert.equal(echo.value.result.kind, 'terminal')
     assert.equal(echo.value.result.exit_code, 0)
@@ -250,7 +279,11 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
 
     const code = await callTool('c2', 'invoke', {
       tool: 'shell',
-      args: { mode: 'code', language: 'javascript', input: 'console.log(JSON.stringify({ok:true}))' },
+      args: {
+        mode: 'code',
+        language: 'javascript',
+        input: 'console.log(JSON.stringify({ok:true}))',
+      },
       ...base,
     })
     assert.equal(code.value.ok, true, JSON.stringify(code.value))
@@ -275,12 +308,18 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
       portCalls.some((call) => call.port === 'secrets' && call.method === 'resolve'),
       '应经反向 port.call 调 secrets.resolve',
     )
-    const execCall = portCalls.find((call) => call.port === 'sandbox' && call.method === 'exec_start' && call.args.env)
+    const execCall = portCalls.find(
+      (call) => call.port === 'sandbox' && call.method === 'exec_start' && call.args.env,
+    )
     assert.equal(execCall.args.env.E2E_TOKEN, E2E_SECRET, '明文应只经 exec env 下传')
 
     // 非零退出：结果仍回带 exit_code（统一经 PowerShell）。
     const failInput = 'exit 3'
-    const nonzero = await callTool('c3', 'invoke', { tool: 'shell', args: { input: failInput }, ...base })
+    const nonzero = await callTool('c3', 'invoke', {
+      tool: 'shell',
+      args: { input: failInput },
+      ...base,
+    })
     assert.equal(nonzero.value.ok, false, JSON.stringify(nonzero.value))
     assert.equal(nonzero.value.error.code, 'nonzero_exit')
     assert.equal(nonzero.value.result.exit_code, 3)
@@ -306,7 +345,9 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     assert.equal(unsupported.value.error.code, 'code_unsupported_language')
     assert.equal(portCalls.length, before, '白名单外语言不得触发 sandbox 调用')
 
-    console.log('直连协议：describe + command（echo / 管道 / cwd）/ code + 密钥注入 + nonzero_exit + deny 档 fs_denied + 语言白名单')
+    console.log(
+      '直连协议：describe + command（echo / 管道 / cwd）/ code + 密钥注入 + nonzero_exit + deny 档 fs_denied + 语言白名单',
+    )
   } finally {
     toolShell.stdin.end()
     sandbox.stdin.end()
@@ -368,7 +409,10 @@ async function main() {
     console.log('seed 档位映射 body：ok')
 
     // 本地密钥文件：真 secrets 服务经 CHRONO_PLUGIN_STATE 上溯到 <root>/state/secrets.local.json。
-    writeFileSync(join(root, 'state', 'secrets.local.json'), JSON.stringify({ E2E_TOKEN: E2E_SECRET }))
+    writeFileSync(
+      join(root, 'state', 'secrets.local.json'),
+      JSON.stringify({ E2E_TOKEN: E2E_SECRET }),
+    )
 
     await directProtocolSmoke(
       join(TOOL_SHELL_DIR, 'execute', 'main.ts'),

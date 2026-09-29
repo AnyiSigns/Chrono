@@ -64,8 +64,7 @@ export function describeValue(config: QuestionConfig): Json {
   const tool: Rec = {
     name: 'question',
     intent: '向用户提出一个或多个问题并等待作答。',
-    when_to_use:
-      '需要用户补充信息、在若干方案里做选择、或需要确认你无法自行决定的事项时。',
+    when_to_use: '需要用户补充信息、在若干方案里做选择、或需要确认你无法自行决定的事项时。',
     param_semantics: {
       questions:
         '问题数组，每项 {id, header, question, options[], multiple, custom}；options 为空即纯开放作答，multiple 允许多选，custom 允许自定义输入。',
@@ -82,8 +81,7 @@ export function describeValue(config: QuestionConfig): Json {
 
 /** 问题载荷校验结果。 */
 export type NormalizedQuestions =
-  | { ok: true; questions: Rec[] }
-  | { ok: false; code: string; message: string }
+  { ok: true; questions: Rec[] } | { ok: false; code: string; message: string }
 
 function normalizeOption(value: Json): Rec | null {
   if (!isRecord(value)) return null
@@ -99,21 +97,30 @@ function normalizeOption(value: Json): Rec | null {
  * 规范化 / 校验 `questions`：逐项查 id / question / options / multiple / custom，
  * 越界（问题数 / 选项数 / custom 禁用）回结构化错误码，不静默截断。
  */
-export function normalizeQuestions(value: Json | undefined, config: QuestionConfig): NormalizedQuestions {
+export function normalizeQuestions(
+  value: Json | undefined,
+  config: QuestionConfig,
+): NormalizedQuestions {
   const list = asArray(value)
   if (list === null || list.length === 0) {
     return { ok: false, code: 'bad_questions', message: 'questions must be a non-empty array' }
   }
   if (list.length > config.maxQuestions) {
-    return { ok: false, code: 'too_many_questions', message: `${list.length} > ${config.maxQuestions}` }
+    return {
+      ok: false,
+      code: 'too_many_questions',
+      message: `${list.length} > ${config.maxQuestions}`,
+    }
   }
   const questions: Rec[] = []
   const seenIds = new Set<string>()
   for (const raw of list) {
-    if (!isRecord(raw)) return { ok: false, code: 'bad_questions', message: 'question must be an object' }
+    if (!isRecord(raw))
+      return { ok: false, code: 'bad_questions', message: 'question must be an object' }
     const id = asString(raw['id'])
     const question = asString(raw['question'])
-    if (id === null) return { ok: false, code: 'missing_question_id', message: 'question.id required' }
+    if (id === null)
+      return { ok: false, code: 'missing_question_id', message: 'question.id required' }
     if (seenIds.has(id)) return { ok: false, code: 'duplicate_question_id', message: id }
     seenIds.add(id)
     if (question === null) {
@@ -122,7 +129,11 @@ export function normalizeQuestions(value: Json | undefined, config: QuestionConf
     const header = asString(raw['header'])
     const optionsRaw = asArray(raw['options']) ?? []
     if (optionsRaw.length > config.maxOptions) {
-      return { ok: false, code: 'too_many_options', message: `${optionsRaw.length} > ${config.maxOptions}` }
+      return {
+        ok: false,
+        code: 'too_many_options',
+        message: `${optionsRaw.length} > ${config.maxOptions}`,
+      }
     }
     const options: Rec[] = []
     for (const option of optionsRaw) {

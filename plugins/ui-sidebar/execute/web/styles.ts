@@ -1,6 +1,14 @@
 // 侧栏样式（React 层随组件渲染的 `<style>`，不再做 DOM 注入）：只用共享 token
 // （`/assets/tokens.v1.css`），不硬编码色值；类名统一 `sb-` 前缀。
 
+/** 宽窄切换的时长 + 缓动；槽根（`#slot-sidebar`）的 width 过渡必须与 `.sb-root` 同拍，否则一快一慢会露出裁切。
+    `linear()` 是一条弹簧曲线：过冲约 2.6% 后二次收敛（落点最低 ≈50px，窄轨图标 / 状态点仍在安全区），
+    给出手机过渡那种回弹感；时长偏长以留出滑行。 */
+export const SIDEBAR_DURATION_MS = 440
+const SIDEBAR_EASE =
+  'linear(0, 0.2 6%, 0.55 13%, 0.85 21%, 1.01 33%, 1.026 43%, 1.02 52%, 1.005 64%, 0.997 76%, 1)'
+export const SIDEBAR_MOTION = `${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`
+
 export const SIDEBAR_CSS = `
 .sb-root {
   display: flex;
@@ -15,10 +23,31 @@ export const SIDEBAR_CSS = `
   line-height: var(--leading-body);
   position: relative;
   overflow: hidden;
+  --sb-dur: ${SIDEBAR_DURATION_MS}ms;
+  --sb-ease: ${SIDEBAR_EASE};
 }
+/* Collapse = panel width + whole content pan on the same clock: wide pane slides out, rail slides in, nothing reflows
+   (matches the drag feel: pure left/right push). */
 .sb-root[data-dragging="true"] { transition: none; }
-.sb-root:not([data-dragging="true"]) { transition: width var(--motion-base); }
+.sb-root:not([data-dragging="true"]) { transition: width var(--sb-dur) var(--sb-ease); }
 .sb-root[data-collapsed="true"] { --sb-width: 56px; }
+@media (prefers-reduced-motion: reduce) { .sb-root { --sb-dur: 0ms; } }
+
+/* One full-width track: wide pane + rail side by side; collapse shifts it left by one expanded width so the rail lands
+   exactly inside the shrink-to-56px viewport. */
+.sb-track {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  transition: transform var(--sb-dur) var(--sb-ease);
+}
+.sb-root[data-dragging="true"] .sb-track { transition: none; }
+.sb-root[data-collapsed="true"] .sb-track { transform: translateX(calc(-1 * var(--sb-wide, 260px))); }
+
+.sb-layer { flex: none; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.sb-layer-wide { width: var(--sb-wide, 260px); }
+.sb-layer-rail { width: 56px; }
 
 .sb-head {
   padding: var(--space-12) var(--space-12) var(--space-8);
@@ -28,11 +57,14 @@ export const SIDEBAR_CSS = `
   white-space: nowrap;
   overflow: hidden;
 }
-.sb-root[data-collapsed="true"] .sb-head {
+.sb-rail-head {
+  padding: var(--space-12) 0 var(--space-8);
   text-align: center;
   font-size: var(--font-size-lg);
-  padding-left: 0;
-  padding-right: 0;
+  font-weight: var(--weight-strong);
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .sb-search { padding: 0 var(--space-8) var(--space-8); }
@@ -56,7 +88,6 @@ export const SIDEBAR_CSS = `
   color: var(--c-text);
   font-size: var(--font-size-md);
 }
-.sb-root[data-collapsed="true"] .sb-search { display: none; }
 
 .sb-add {
   display: flex;
@@ -72,13 +103,18 @@ export const SIDEBAR_CSS = `
   font-size: var(--font-size-md);
   cursor: pointer;
   text-align: left;
+  transition: background-color var(--motion-fast), color var(--motion-fast);
+}
+.sb-add-rail { justify-content: center; gap: 0; width: 40px; margin: 0 auto var(--space-8); padding: 0; }
+.sb-label {
+  max-width: 9rem;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .sb-add:hover { background: var(--c-selection); color: var(--c-text); }
 .sb-add:disabled { opacity: 0.45; cursor: not-allowed; }
-.sb-root[data-collapsed="true"] .sb-add { justify-content: center; padding: 0; margin: 0 auto var(--space-8); width: 40px; }
-.sb-root[data-collapsed="true"] .sb-add .sb-label { display: none; }
 
-.sb-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: var(--space-8); }
+.sb-list { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: var(--space-8); }
 .sb-empty { padding: var(--space-24) var(--space-12); color: var(--c-text-2); font-size: var(--font-size-sm); text-align: center; }
 .sb-empty-title { color: var(--c-text-2); }
 .sb-empty-hint { margin-top: var(--space-4); color: var(--c-text-3); }
@@ -263,11 +299,14 @@ export const SIDEBAR_CSS = `
   padding: var(--space-8);
   border-top: 1px solid var(--c-border);
 }
+.sb-foot-rail { justify-content: center; padding: var(--space-8) 0; }
 .sb-settings {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  flex: 1;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
   height: 34px;
   padding: 0 var(--space-8);
   border: none;
@@ -276,10 +315,12 @@ export const SIDEBAR_CSS = `
   color: var(--c-text-2);
   font-size: var(--font-size-md);
   cursor: pointer;
+  transition: background-color var(--motion-fast), color var(--motion-fast);
 }
 .sb-settings:hover { background: var(--c-selection); color: var(--c-text); }
-.sb-root[data-collapsed="true"] .sb-foot { justify-content: center; }
 .sb-toggle { width: 34px; height: 34px; }
+.sb-toggle-glyph { display: inline-flex; animation: sb-toggle-in var(--sb-dur) var(--sb-ease) both; }
+@keyframes sb-toggle-in { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }
 
 .sb-resizer {
   position: absolute;

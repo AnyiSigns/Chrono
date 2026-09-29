@@ -41,7 +41,9 @@ function selectSources(config: Config, raw: Json | undefined): SourceConfig[] {
   const enabled = config.sources.filter((source) => source.enabled)
   if (!Array.isArray(raw)) return enabled
   const wanted = new Set(
-    raw.filter((item): item is string => typeof item === 'string').map((item) => item.toLowerCase()),
+    raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.toLowerCase()),
   )
   if (wanted.size === 0) return enabled
   return enabled.filter(
@@ -86,12 +88,22 @@ async function queryHtml(
   robotsCache: Map<string, string | null>,
 ): Promise<SourceOutcome> {
   if (source.endpoint === null) {
-    return { ok: false, source: source.name, code: 'fetch_failed', message: 'source has no endpoint' }
+    return {
+      ok: false,
+      source: source.name,
+      code: 'fetch_failed',
+      message: 'source has no endpoint',
+    }
   }
   const url = withQuery(source.endpoint, { ...source.extra_query, [source.query_param]: query })
   const fetched = await fetchSourceText(url, source, ctx, robotsCache)
-  if (!fetched.ok) return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
-  return { ok: true, source: source.name, results: parseSource(source, fetched.text).slice(0, limit) }
+  if (!fetched.ok)
+    return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
+  return {
+    ok: true,
+    source: source.name,
+    results: parseSource(source, fetched.text).slice(0, limit),
+  }
 }
 
 async function querySearxng(
@@ -134,7 +146,12 @@ async function queryWikipedia(
   robotsCache: Map<string, string | null>,
 ): Promise<SourceOutcome> {
   if (source.endpoint === null) {
-    return { ok: false, source: source.name, code: 'fetch_failed', message: 'source has no endpoint' }
+    return {
+      ok: false,
+      source: source.name,
+      code: 'fetch_failed',
+      message: 'source has no endpoint',
+    }
   }
   const url = withQuery(source.endpoint, {
     action: 'query',
@@ -144,8 +161,13 @@ async function queryWikipedia(
     srlimit: String(limit),
   })
   const fetched = await fetchSourceText(url, source, ctx, robotsCache)
-  if (!fetched.ok) return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
-  return { ok: true, source: source.name, results: parseSource(source, fetched.text).slice(0, limit) }
+  if (!fetched.ok)
+    return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
+  return {
+    ok: true,
+    source: source.name,
+    results: parseSource(source, fetched.text).slice(0, limit),
+  }
 }
 
 function querySource(
@@ -197,7 +219,10 @@ interface MergeEntry {
 }
 
 /** RRF 合并：各源名次倒数融合，按分数降序、URL 升序定序（确定可回放）。 */
-export function mergeResults(lists: SourceList[], rrfK: number): Array<RawResult & { source: string }> {
+export function mergeResults(
+  lists: SourceList[],
+  rrfK: number,
+): Array<RawResult & { source: string }> {
   const entries = new Map<string, MergeEntry>()
   for (const list of lists) {
     list.results.forEach((item, index) => {

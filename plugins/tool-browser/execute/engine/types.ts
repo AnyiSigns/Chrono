@@ -62,7 +62,10 @@ export interface BrowserEngine {
  */
 export function assertWaitWithinTimeout(ms: number | undefined, actionTimeoutMs: number): void {
   if (typeof ms === 'number' && ms > actionTimeoutMs) {
-    throw new ToolError('tool_timeout', `wait_for ${ms}ms exceeds action timeout ${actionTimeoutMs}ms`)
+    throw new ToolError(
+      'tool_timeout',
+      `wait_for ${ms}ms exceeds action timeout ${actionTimeoutMs}ms`,
+    )
   }
 }
 

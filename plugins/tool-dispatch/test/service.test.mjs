@@ -16,15 +16,6 @@ const PINS = {
   'tool-registry': 'tool-registry',
   'tool-schema': 'tool-schema',
   guard: 'guard',
-  'tool-fs': 'tool-fs',
-  'tool-shell': 'tool-shell',
-  'tool-http': 'tool-http',
-  'tool-browser': 'tool-browser',
-  mcp: 'mcp',
-  'plugin-admin': 'plugin-admin',
-  'orchestration-admin': 'orchestration-admin',
-  todo: 'todo',
-  question: 'question',
   session: 'session',
   compress: 'compress',
   memory: 'memory-store',
@@ -65,12 +56,14 @@ function start(providers = {}) {
           return { ok: true, value: { tools: args.tools, rejected: [] } }
         return { ok: false, code: 'unresolved_cap', message: 'no directory' }
       }
-      const fn = providers[message.port]?.[message.method]
+      // 按成员定位的 many：帧 `provider` = 目标提供方身份名；否则为单值端口。
+      const dest = typeof message.provider === 'string' ? message.provider : message.port
+      const fn = providers[dest]?.[message.method]
       if (typeof fn === 'function') return { ok: true, value: await fn(args) }
       return {
         ok: false,
         code: 'unresolved_cap',
-        message: `no provider ${String(message.port)}.${String(message.method)}`,
+        message: `no provider ${String(dest)}.${String(message.method)}`,
       }
     },
   })

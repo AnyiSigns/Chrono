@@ -8,7 +8,7 @@
 
 import { resolve } from 'node:path'
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
-import { effectiveMethods } from './capability-index.ts'
+import { effectiveMethods, manyNeedsMap } from './capability-index.ts'
 import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
@@ -137,6 +137,7 @@ export interface StartAssemblyOptions {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
 }
 
@@ -160,6 +161,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     method: string,
     args: Json,
     env: CallEnv | undefined,
+    provider?: string,
   ) => Promise<CallResponse>
   private readonly paths: HostPaths
   private readonly blobsDir: string
@@ -261,7 +263,21 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       }
     }
     try {
-      for (const id of changed) await this.followGeneration(prev, next, id)
+      // `many` 成员集变更（加减提供方）虽不改消费方代码世代，却要重注入其成员表：
+      // 按世界前后快照 diff 出成员集变化的消费方，强制换代重启（进程不动无法更新服务工厂 ctx）。
+      const prevMany = manyNeedsMap(prev, this.blobsDir)
+      const nextMany = manyNeedsMap(next, this.blobsDir)
+      const manyKey = (map: Map<string, Record<string, string[]>>, id: string): string =>
+        JSON.stringify(map.get(id) ?? null)
+      const reinject = new Set<string>()
+      for (const id of new Set([...prevMany.keys(), ...nextMany.keys()])) {
+        if (this.suspended.has(id)) continue
+        if (next.ids[id]?.active == null) continue
+        if (manyKey(prevMany, id) === manyKey(nextMany, id)) continue
+        reinject.add(id)
+      }
+      const follow = [...new Set([...changed, ...reinject])].sort()
+      for (const id of follow) await this.followGeneration(prev, next, id, reinject.has(id))
       for (const id of retired) await this.retireBranch(id)
     } catch (err) {
       // 跟随未全部成功：世界与索引回到 prev，使「从已应用世界 diff」在下次调用时仍视这些身份为待跟随。
@@ -561,7 +577,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    * 全新身份 → 按装配同路起（依赖未装载则隔离）；新代码世代构建 / 启动失败 → 新世代不激活，
    * 旧服务继续服务（失败只记运维日志）。数据世代只影响投影读侧，不进本路径。
    */
-  private async followGeneration(prev: World, next: World, id: string): Promise<void> {
+  private async followGeneration(
+    prev: World,
+    next: World,
+    id: string,
+    forceRestart = false,
+  ): Promise<void> {
     if (this.stopping) return
     // 已隔离身份：仅当新代码世代不同于隔离世代且重新校验仍有效时复归，否则保持隔离
     if (this.isolated.has(id) && !this.rejoinIsolated(next, id)) return
@@ -607,6 +628,16 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       return
     }
     if (oldService === undefined) {
+      await this.startIdentity(id)
+      this.noteRuntimeStart(id)
+      return
+    }
+    // `many` 成员集变更但代码世代未变：进程不动无法更新服务工厂 ctx，按「先退旧再起新」重注入。
+    // 不走 swapService：同代码世代下「先挂新端点再退旧」会按同一 gen 键误删新端点，故先摘旧再起新。
+    if (forceRestart) {
+      this.swapHost.removeService(id, oldService)
+      await this.stopSuperseded(oldService, 'superseded')
+      if (this.stopping || this.isolated.has(id)) return
       await this.startIdentity(id)
       this.noteRuntimeStart(id)
       return
@@ -746,7 +777,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       onPortCall:
         this.onPortCall === undefined
           ? undefined
-          : (port, method, args, env) => this.onPortCall!(id, port, method, args, env),
+          : (port, method, args, env, provider) =>
+              this.onPortCall!(id, port, method, args, env, provider),
       onServiceEvent: this.onEvent,
       onExtraDropped: (impl, extraGen, caps) =>
         this.record('handshake', 'extra_dropped', { impl, gen: extraGen, caps }),

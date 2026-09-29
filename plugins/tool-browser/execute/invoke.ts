@@ -23,7 +23,8 @@ function isRecord(value: Json | undefined): value is Rec {
 
 function requiredString(args: Rec, key: string): string {
   const value = args[key]
-  if (typeof value !== 'string' || value.length === 0) throw new ToolError('bad_args', `${key} required`)
+  if (typeof value !== 'string' || value.length === 0)
+    throw new ToolError('bad_args', `${key} required`)
   return value
 }
 
@@ -55,7 +56,8 @@ function viewportOf(args: Rec): { width: number; height: number } | undefined {
 
 function errorShape(err: unknown): Rec {
   if (err instanceof ToolError) return { code: err.code, message: err.message }
-  if (err instanceof BrowserUnsupportedError) return { code: 'browser_unsupported', message: err.message }
+  if (err instanceof BrowserUnsupportedError)
+    return { code: 'browser_unsupported', message: err.message }
   if (err instanceof BadArgsError) return { code: 'bad_args', message: err.message }
   return { code: 'tool_failed', message: (err as Error).message ?? 'unknown error' }
 }
@@ -99,7 +101,13 @@ interface CallScope {
 }
 
 /** 取会话（未知 / 过期即 session_not_found），再过 net 钳制。 */
-async function withSession(args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null) {
+async function withSession(
+  args: Rec,
+  ctx: InvokeContext,
+  env: CallEnv,
+  scope: CallScope,
+  callId: string | null,
+) {
   const id = requiredString(args, 'session')
   const record = ctx.sessions.get(id, env.now)
   await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId, scope.grant)
@@ -109,14 +117,23 @@ async function withSession(args: Rec, ctx: InvokeContext, env: CallEnv, scope: C
 /** 资产面失败码归一到 schema 错误闭集：体积超限归 binary_unsupported，其余未知码归 tool_failed。 */
 function assetError(err: unknown): ToolError {
   if (err instanceof ToolError) {
-    if (err.code === 'asset_too_large') return new ToolError('binary_unsupported', `asset put failed: ${err.message}`)
+    if (err.code === 'asset_too_large')
+      return new ToolError('binary_unsupported', `asset put failed: ${err.message}`)
     if ((ERROR_CODES as readonly string[]).includes(err.code)) return err
     return new ToolError('tool_failed', `asset put failed: ${err.code}: ${err.message}`)
   }
-  return new ToolError('tool_failed', `asset put failed: ${(err as Error).message ?? 'unknown error'}`)
+  return new ToolError(
+    'tool_failed',
+    `asset put failed: ${(err as Error).message ?? 'unknown error'}`,
+  )
 }
 
-async function putAsset(link: PortLink, mime: string, bytes: Buffer, callId: string | null): Promise<Json> {
+async function putAsset(
+  link: PortLink,
+  mime: string,
+  bytes: Buffer,
+  callId: string | null,
+): Promise<Json> {
   let value: Json
   try {
     const outcome = await link.call(
@@ -139,7 +156,14 @@ async function putAsset(link: PortLink, mime: string, bytes: Buffer, callId: str
   }
 }
 
-async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env: CallEnv, scope: CallScope, callId: string | null): Promise<Json> {
+async function dispatchAction(
+  action: string,
+  args: Rec,
+  ctx: InvokeContext,
+  env: CallEnv,
+  scope: CallScope,
+  callId: string | null,
+): Promise<Json> {
   switch (action) {
     case 'open': {
       await guardNet(ctx, scope.tier, scope.caps, scope.sandboxTiers, callId, scope.grant)
@@ -149,7 +173,8 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
     case 'navigate': {
       const record = await withSession(args, ctx, env, scope, callId)
       const url = requiredString(args, 'url')
-      if (!/^https?:\/\//i.test(url)) throw new ToolError('navigate_failed', `unsupported url: ${url}`)
+      if (!/^https?:\/\//i.test(url))
+        throw new ToolError('navigate_failed', `unsupported url: ${url}`)
       const result = await record.engine.navigate(url, optionalString(args, 'wait_until'))
       ctx.sessions.touch(record.id, env.now)
       return {
@@ -167,7 +192,11 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
     }
     case 'type': {
       const record = await withSession(args, ctx, env, scope, callId)
-      await record.engine.type(requiredString(args, 'selector'), requiredString(args, 'text'), optionalBoolean(args, 'submit'))
+      await record.engine.type(
+        requiredString(args, 'selector'),
+        requiredString(args, 'text'),
+        optionalBoolean(args, 'submit'),
+      )
       ctx.sessions.touch(record.id, env.now)
       return { ok: true, digest: actionDigest('type') }
     }
@@ -180,7 +209,8 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
     case 'wait_for': {
       const selector = optionalString(args, 'selector')
       const ms = optionalInt(args, 'ms')
-      if (selector === undefined && ms === undefined) throw new ToolError('bad_args', 'wait_for requires selector or ms')
+      if (selector === undefined && ms === undefined)
+        throw new ToolError('bad_args', 'wait_for requires selector or ms')
       const record = await withSession(args, ctx, env, scope, callId)
       await record.engine.waitFor(selector, ms)
       ctx.sessions.touch(record.id, env.now)
@@ -201,10 +231,14 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
     case 'screenshot': {
       const record = await withSession(args, ctx, env, scope, callId)
       const format = optionalString(args, 'format')
-      const shot = await record.engine.screenshot(optionalBoolean(args, 'full_page') ?? false, format)
+      const shot = await record.engine.screenshot(
+        optionalBoolean(args, 'full_page') ?? false,
+        format,
+      )
       ctx.sessions.touch(record.id, env.now)
       const asset = await putAsset(ctx.link, shot.mime, shot.bytes, callId)
-      const size = isRecord(asset) && typeof asset['size'] === 'number' ? asset['size'] : shot.bytes.length
+      const size =
+        isRecord(asset) && typeof asset['size'] === 'number' ? asset['size'] : shot.bytes.length
       return { asset, digest: actionDigest('screenshot', { bytes: size }) }
     }
     case 'close': {
@@ -218,10 +252,16 @@ async function dispatchAction(action: string, args: Rec, ctx: InvokeContext, env
 }
 
 /** invoke 入口：成功 `{ok:true, result}`，失败 `{ok:false, error:{code, message}}`。 */
-export async function invoke(bag: Json, ctx: InvokeContext, env: CallEnv, callId: string | null = null): Promise<Json> {
+export async function invoke(
+  bag: Json,
+  ctx: InvokeContext,
+  env: CallEnv,
+  callId: string | null = null,
+): Promise<Json> {
   try {
     if (!isRecord(bag)) throw new ToolError('bad_args', 'invoke bag must be an object')
-    if (bag['tool'] !== TOOL_NAME) throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
+    if (bag['tool'] !== TOOL_NAME)
+      throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
     const args = bag['args']
     if (!isRecord(args)) throw new ToolError('bad_args', 'invoke args must be an object')
     const action = requiredString(args, 'action')

@@ -242,7 +242,8 @@ function resolveOneNeeds(
 }
 
 /**
- * 校验无自带 `methods` 的 `many` 需求：契约须在世界中可见（拥有方 `slots`）。
+ * 校验无自带 `methods` 的 `many` 需求：契约须可见——世界某拥有方 `slots`，或**本包自身 `slots`**
+ * （拥有方消费自己的扩展点：首入世时该身份尚不在世界，契约住本包声明）。
  * 拥有方可能在本身份之外；seed 排序保证同清单内拥有方先入世，故冷 seed 不误报。
  */
 function missingManyContract(
@@ -253,6 +254,7 @@ function missingManyContract(
   for (const cap of Object.keys(decl.needs)) {
     const need = decl.needs[cap]
     if (need.mode !== 'many' || need.methods !== undefined) continue
+    if (Object.hasOwn(decl.slots, cap)) continue
     if (capabilityContract(world, cap, blobsDir) === null) return true
   }
   return false

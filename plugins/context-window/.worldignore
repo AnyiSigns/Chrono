@@ -1,5 +1,5 @@
 # 入世排除：依赖与构建产物走宿主侧 ③；测试 / 本地工具不入世界。
-# 源码（execute/、native/tokenizer/src、Cargo.toml、Cargo.lock）与 schema 入世。
+# 源码（execute/）与 schema 入世；token 计数与预算建模已下沉为 token-estimate / budget 提供方。
 node_modules/
 target/
 *.node

@@ -54,9 +54,23 @@ function article(text) {
 
 test('webresearch：检索后按名次抽正文，带回出处与读正文成败', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ contentType: 'text/html', body: searchHtml(['https://page1.test/a', 'https://page2.test/b']) }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article('First body content.') }))],
-    ['https://page2.test/b', execOk(fetcherStdout({ contentType: 'application/json', body: '{"k":"second"}' }))],
+    [
+      'https://search.test/s',
+      execOk(
+        fetcherStdout({
+          contentType: 'text/html',
+          body: searchHtml(['https://page1.test/a', 'https://page2.test/b']),
+        }),
+      ),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('First body content.') })),
+    ],
+    [
+      'https://page2.test/b',
+      execOk(fetcherStdout({ contentType: 'application/json', body: '{"k":"second"}' })),
+    ],
   ])
   const { backend } = makeBackend(router)
   const result = await webresearch({ query: 'chrono' }, makeCtx(config(), backend))
@@ -77,9 +91,18 @@ test('webresearch：检索后按名次抽正文，带回出处与读正文成败
 
 test('webresearch：read 限制抓取条数；read=0 只检索不读正文', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a', 'https://page2.test/b']) }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article('one') }))],
-    ['https://page2.test/b', execOk(fetcherStdout({ contentType: 'text/html', body: article('two') }))],
+    [
+      'https://search.test/s',
+      execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a', 'https://page2.test/b']) })),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('one') })),
+    ],
+    [
+      'https://page2.test/b',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('two') })),
+    ],
   ])
   const { backend, execCalls } = makeBackend(router)
   const one = await webresearch({ query: 'q', read: 1 }, makeCtx(config(), backend))
@@ -89,7 +112,8 @@ test('webresearch：read 限制抓取条数；read=0 只检索不读正文', asy
   // 只应抓了 1 个正文页（exec 调用共 2 次：1 次检索 + 1 次正文）。
   assert.equal(execCalls.length, 2)
 
-  backend.exec = async (bag) => router(bag.args[bag.args.indexOf('--url') + 1]) ?? execFail('fetch_failed', 'no route')
+  backend.exec = async (bag) =>
+    router(bag.args[bag.args.indexOf('--url') + 1]) ?? execFail('fetch_failed', 'no route')
   const zero = await webresearch({ query: 'q', read: 0 }, makeCtx(config(), backend))
   assert.deepEqual(zero.result.read_used, [])
   assert.equal(zero.result.results[0].read, undefined)
@@ -98,8 +122,14 @@ test('webresearch：read 限制抓取条数；read=0 只检索不读正文', asy
 test('webresearch：max_chars 截断正文并标记 truncated', async () => {
   const long = 'x'.repeat(500)
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a']) }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article(long) }))],
+    [
+      'https://search.test/s',
+      execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a']) })),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article(long) })),
+    ],
   ])
   const { backend } = makeBackend(router)
   const result = await webresearch({ query: 'q', max_chars: 200 }, makeCtx(config(), backend))
@@ -109,7 +139,10 @@ test('webresearch：max_chars 截断正文并标记 truncated', async () => {
 
 test('webresearch：单页失败只记该条，其余照回', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a', 'https://page2.test/b']) }))],
+    [
+      'https://search.test/s',
+      execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a', 'https://page2.test/b']) })),
+    ],
     ['https://page1.test/a', execFail('net_denied', 'net denied')],
     ['https://page2.test/b', execOk(fetcherStdout({ contentType: 'text/plain', body: 'ok body' }))],
   ])
@@ -119,13 +152,26 @@ test('webresearch：单页失败只记该条，其余照回', async () => {
   assert.equal(result.result.results[0].read, false)
   assert.equal(result.result.results[0].error.code, 'net_denied')
   assert.equal(result.result.results[1].read, true)
-  assert.deepEqual(result.result.read_failed.map((item) => item.code), ['net_denied'])
+  assert.deepEqual(
+    result.result.read_failed.map((item) => item.code),
+    ['net_denied'],
+  )
 })
 
 test('webresearch：内网结果与二进制正文各自结构化失败', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ body: searchHtml(['http://127.0.0.1/secret', 'https://bin.test/f']) }))],
-    ['https://bin.test/f', execOk(fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([0, 1, 2]) }))],
+    [
+      'https://search.test/s',
+      execOk(
+        fetcherStdout({ body: searchHtml(['http://127.0.0.1/secret', 'https://bin.test/f']) }),
+      ),
+    ],
+    [
+      'https://bin.test/f',
+      execOk(
+        fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([0, 1, 2]) }),
+      ),
+    ],
   ])
   const { backend } = makeBackend(router)
   const result = await webresearch({ query: 'q' }, makeCtx(config(), backend))
@@ -135,9 +181,18 @@ test('webresearch：内网结果与二进制正文各自结构化失败', async 
 
 test('webresearch：robots 禁止的正文页记该条失败', async () => {
   const router = prefixRouter([
-    ['https://search.test/s', execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a']) }))],
-    ['https://page1.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /a' }))],
-    ['https://page1.test/a', execOk(fetcherStdout({ contentType: 'text/html', body: article('blocked') }))],
+    [
+      'https://search.test/s',
+      execOk(fetcherStdout({ body: searchHtml(['https://page1.test/a']) })),
+    ],
+    [
+      'https://page1.test/robots.txt',
+      execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /a' })),
+    ],
+    [
+      'https://page1.test/a',
+      execOk(fetcherStdout({ contentType: 'text/html', body: article('blocked') })),
+    ],
   ])
   const { backend } = makeBackend(router)
   const result = await webresearch({ query: 'q' }, makeCtx(config({ obey_robots: true }), backend))

@@ -6,17 +6,12 @@
     "tool-registry": ["list"]
   },
   "pins": {},
+  "slots": {
+    "tool-provider": { "methods": ["describe", "invoke"] }
+  },
   "needs": {
+    "tool-provider": { "mode": "many" },
     "tool-schema": { "mode": "one" },
-    "tool-fs": { "mode": "one" },
-    "tool-shell": { "mode": "one" },
-    "tool-http": { "mode": "one" },
-    "tool-browser": { "mode": "one" },
-    "mcp": { "mode": "one" },
-    "plugin-admin": { "mode": "one" },
-    "orchestration-admin": { "mode": "one" },
-    "todo": { "mode": "one" },
-    "question": { "mode": "one" },
     "session": { "mode": "one" },
     "compress": { "mode": "one" },
     "memory": { "mode": "one" },

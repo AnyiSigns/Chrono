@@ -37,14 +37,16 @@ export async function invoke(bag: Json, deps: InvokeDeps, sessionId = 'default')
 
 async function run(bag: Json, deps: InvokeDeps, sessionId: string): Promise<Json> {
   if (!isRecord(bag)) throw new ToolError('bad_args', 'invoke bag must be an object')
-  if (bag['tool'] !== 'shell') throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
+  if (bag['tool'] !== 'shell')
+    throw new ToolError('unknown_tool', `unknown tool ${String(bag['tool'])}`)
   const args = bag['args']
   if (!isRecord(args)) throw new ToolError('bad_args', 'args must be an object')
   const action = args['action'] ?? 'run'
   if (action === 'output') return invokeOutput(args, deps)
   if (action === 'kill') return invokeKill(args, deps)
   if (action === 'reset') return invokeReset(bag, deps, sessionId)
-  if (action !== 'run') throw new ToolError('bad_args', "action must be 'run' / 'output' / 'kill' / 'reset'")
+  if (action !== 'run')
+    throw new ToolError('bad_args', "action must be 'run' / 'output' / 'kill' / 'reset'")
   return invokeRun(args, bag, deps, sessionId)
 }
 
@@ -75,7 +77,10 @@ async function invokeRun(args: Rec, bag: Rec, deps: InvokeDeps, sessionId: strin
     // 后台任务不套默认超时（否则长驻服务会被默认预算杀掉）；仅模型显式给 timeout_ms 时才限制。
     const caps = { ...effectiveCaps(bag, undefined), timeout_ms: requestedTimeout ?? 0 }
     const env = await buildEnv(bag, deps)
-    const started = await deps.exec.start(buildExecArgs(bag, invocation, env, caps, cwd), DEFAULT_CALL_TIMEOUT_MS)
+    const started = await deps.exec.start(
+      buildExecArgs(bag, invocation, env, caps, cwd),
+      DEFAULT_CALL_TIMEOUT_MS,
+    )
     return {
       ok: true,
       result: {
@@ -100,7 +105,8 @@ async function invokeRun(args: Rec, bag: Rec, deps: InvokeDeps, sessionId: strin
     : buildExecArgs(bag, resolveInvocation(mode, input, language, deps.profile), env, caps, cwd)
   const started = await deps.exec.start(spec, DEFAULT_CALL_TIMEOUT_MS)
   const taskId = typeof started['task_id'] === 'string' ? started['task_id'] : ''
-  if (taskId.length === 0) throw new ToolError('tool_failed', 'sandbox.exec_start returned no task_id')
+  if (taskId.length === 0)
+    throw new ToolError('tool_failed', 'sandbox.exec_start returned no task_id')
   return pumpToResult(taskId, mode, language, bag, deps, input)
 }
 
@@ -200,7 +206,10 @@ async function invokeOutput(args: Rec, deps: InvokeDeps): Promise<Json> {
 async function invokeKill(args: Rec, deps: InvokeDeps): Promise<Json> {
   const taskId = requireString(args['task_id'], 'task_id')
   const killed = await deps.exec.kill({ task_id: taskId }, DEFAULT_CALL_TIMEOUT_MS)
-  return { ok: true, result: { kind: 'terminal', task_id: taskId, killed: killed['killed'] === true } }
+  return {
+    ok: true,
+    result: { kind: 'terminal', task_id: taskId, killed: killed['killed'] === true },
+  }
 }
 
 async function invokeReset(bag: Rec, deps: InvokeDeps, sessionId: string): Promise<Json> {
@@ -378,7 +387,12 @@ function effectiveCaps(bag: Rec, requestedTimeout: number | undefined): Rec {
   return { ...caps, timeout_ms: Math.min(requestedTimeout, limit) }
 }
 
-function executionResult(mode: string, language: string | null, outcome: Rec, command: string): Json {
+function executionResult(
+  mode: string,
+  language: string | null,
+  outcome: Rec,
+  command: string,
+): Json {
   const exitCode = typeof outcome['exit_code'] === 'number' ? outcome['exit_code'] : null
   const stdout = typeof outcome['stdout'] === 'string' ? outcome['stdout'] : ''
   const result: Rec = {
@@ -402,7 +416,11 @@ function executionResult(mode: string, language: string | null, outcome: Rec, co
     return { ok: false, error: { code: killed, message: `exec killed: ${killed}` }, result }
   }
   if (exitCode !== null && exitCode !== 0) {
-    return { ok: false, error: { code: 'nonzero_exit', message: `command exited with code ${exitCode}` }, result }
+    return {
+      ok: false,
+      error: { code: 'nonzero_exit', message: `command exited with code ${exitCode}` },
+      result,
+    }
   }
   return { ok: true, result }
 }

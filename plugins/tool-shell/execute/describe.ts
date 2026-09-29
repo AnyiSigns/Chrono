@@ -52,10 +52,11 @@ function shellTool(profile: ShellProfile): Rec {
     intent: '在隔离环境中执行一条命令或一段代码片段。',
     when_to_use: '需要跑构建 / 测试 / 脚本、做一次性计算，或需要延续 cd / 环境变量、跑长驻服务时。',
     param_semantics: {
-      action: "'run'（缺省）执行命令 / 代码；'output' 读后台任务新输出；'kill' 终止后台任务；'reset' 重开当前会话。",
+      action:
+        "'run'（缺省）执行命令 / 代码；'output' 读后台任务新输出；'kill' 终止后台任务；'reset' 重开当前会话。",
       mode: "'command' 跑一条命令；'code' 跑脚本 / 表达式并按结构化结果回；缺省 'command'。",
       input: `命令串或代码片段（action=run 必填）。command 形态按平台原生 ${profile.syntax} 语法（${profile.label}）解析；相对路径以工作目录为基准。`,
-      language: "mode=code 时的语言，取白名单之一（javascript / python / shell）。",
+      language: 'mode=code 时的语言，取白名单之一（javascript / python / shell）。',
       description: '一句话说明这条命令做什么（供审批与审计展示；run 时务必填写）。',
       workdir: '本次命令的工作目录；相对路径以工作目录为基准，缺省即工作目录本身。',
       timeout_ms: '本次执行的超时上限（毫秒）；不得超过工具声明的上限，超过按声明上限截断。',
@@ -65,7 +66,8 @@ function shellTool(profile: ShellProfile): Rec {
       cursor: 'action=output 时的读取游标（上次结果里的 next_cursor）。',
       wait_ms: 'action=output 时最多等待多久（毫秒）等新输出或任务结束。',
     },
-    boundaries: '文件读写与查找优先用专用工具（找文件 glob、读文件 read、改文件 edit），不要用 shell 绕行。',
+    boundaries:
+      '文件读写与查找优先用专用工具（找文件 glob、读文件 read、改文件 edit），不要用 shell 绕行。',
     description: `执行命令或代码片段，可用用户环境的工具（rg、wsl，自行查看），返回退出码与标准输出。命令默认在常驻会话内按平台原生 ${profile.syntax} 语法（${profile.label}）执行，cd 与环境变量跨调用延续。`,
     argsSchema: {
       type: 'object',

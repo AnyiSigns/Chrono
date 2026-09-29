@@ -1,0 +1,21 @@
+{
+  "name": "budget",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "预算建模与 token 校准提供方：窗 − 输出 − 余量 → 预算标量与配额、每模型系数、EWMA 校准（③ 可重算）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

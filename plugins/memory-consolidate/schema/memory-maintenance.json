@@ -1,6 +1,6 @@
 {
-  "title": "memory-consolidate（记忆维护 · 全层）",
-  "description": "身份自述 / 数据契约：能力类 memory-maintenance 的五个方法（consolidate / sweep / candidates / view / edit）的 bag 与结果形状，以及本插件自用的策略参数。L1/L2（short-memory）与 L3（memory-store）都是运行记录、已出世界：本服务经反向调用读写 owner 服务，不读投影、不产世界写计划。会话 → 工作区归属经反向调用 session.read。周期条目的派发策略（consolidate 的 summarize、sweep 的阈值覆盖）住数据世代 body，由宿主按 periodic.reads 机械注入 args；owner 数据仍由服务自读。sweep 水位住宿主侧 ③（可重算）。时间由调用帧 env 传入（不自取时钟），同输入同输出。",
+  "title": "memory-consolidate（记忆维护 · 全层门面）",
+  "description": "身份自述 / 数据契约：能力类 memory-maintenance 的五个方法（consolidate / sweep / candidates / view / edit）的 bag 与结果形状，以及公开策略参数。本服务是时序编排门面：按 layer 反向调用三个提供方（l1-maintenance / l2-maintenance / l3-maintenance）完成 L1 TTL 清理、L1→L2 合并、L2→L3 固化、L3 遗忘与编辑，自身不直接读写 owner 服务、不读投影、不产世界写计划。周期条目的派发策略（consolidate 的 summarize、sweep 的阈值覆盖）住数据世代 body，由宿主按 periodic.reads 机械注入 args 并透传给对应提供方。sweep 水位住宿主侧 ③（可重算），由本门面读写。时间由调用帧 env 传入（不自取时钟），同输入同输出。",
   "type": "object",
   "additionalProperties": true,
   "params": {
@@ -18,10 +18,24 @@
       "additionalProperties": true,
       "description": "consolidate 的 bag。owner 数据由服务自行读取，调用方只需给可选策略覆盖。",
       "properties": {
-        "workspace": { "type": "string", "description": "可选：显式目标工作区（session 无归属时的回落）。" },
-        "summarize": { "type": "boolean", "description": "需要摘要时置 true：eff compress.summarize（persist:false）产合并摘要（失败即明确失败、不半写）。" },
-        "high_value": { "type": "array", "items": { "type": "string" }, "description": "可选：强制固化的条目文本（绕过权重阈值）。" },
-        "item_weights": { "type": "object", "additionalProperties": true, "description": "可选：条目文本 → 固化权重（0–1）。" },
+        "workspace": {
+          "type": "string",
+          "description": "可选：显式目标工作区（session 无归属时的回落）。"
+        },
+        "summarize": {
+          "type": "boolean",
+          "description": "需要摘要时置 true：eff compress.summarize（persist:false）产合并摘要（失败即明确失败、不半写）。"
+        },
+        "high_value": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "可选：强制固化的条目文本（绕过权重阈值）。"
+        },
+        "item_weights": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "可选：条目文本 → 固化权重（0–1）。"
+        },
         "embedding_model": { "type": "string" },
         "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
         "weight_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -34,7 +48,10 @@
       "additionalProperties": true,
       "description": "sweep 的 bag。cursor = 上次 sweep 水位（args 显式给出时确定性；缺省读宿主 ③ 水位文件）。",
       "properties": {
-        "cursor": { "type": "string", "description": "增量游标（ISO at）：只扫描水位之后新增 / 变更的条目。" },
+        "cursor": {
+          "type": "string",
+          "description": "增量游标（ISO at）：只扫描水位之后新增 / 变更的条目。"
+        },
         "l1_ttl_ms": { "type": "integer", "minimum": 1 },
         "l2_capacity": { "type": "integer", "minimum": 1 },
         "l3_capacity": { "type": "integer", "minimum": 1 },
@@ -68,8 +85,16 @@
         "action": { "enum": ["delete", "pin", "text"] },
         "layer": { "enum": ["l1", "l2", "l3"] },
         "id": { "type": "string" },
-        "patch": { "type": "object", "additionalProperties": true, "description": "pin: {pinned:false} 取消置顶；text: {text} 或 {summary}。" },
-        "slot": { "type": "object", "additionalProperties": true, "description": "可选：槽体（字段同 action / layer / id / patch）。" },
+        "patch": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "pin: {pinned:false} 取消置顶；text: {text} 或 {summary}。"
+        },
+        "slot": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "可选：槽体（字段同 action / layer / id / patch）。"
+        },
         "now": {}
       }
     },

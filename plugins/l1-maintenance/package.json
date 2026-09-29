@@ -1,0 +1,21 @@
+{
+  "name": "l1-maintenance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "L1 记忆维护（short-memory 会话）：TTL 24h 过期清理、过期候选、L1 视图；方法 sweep / candidates / view",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

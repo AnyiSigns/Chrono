@@ -813,7 +813,10 @@ export class SidebarStore {
     if (this.drag === null) return
     const width = widthFromDrag(this.drag.startWidth, clientX - this.drag.startX)
     this.dragWidth = width
+    // 直接写 DOM（不提交快照）：--sb-width 是面板可视宽，--sb-wide 是宽面板内容宽（拖拽时同步，
+    // 使内容随宽度重排，与折叠时的「定宽平移」共用同一变量）。
     this.root?.style.setProperty('--sb-width', `${width}px`)
+    this.root?.style.setProperty('--sb-wide', `${width}px`)
   }
 
   endResize(): void {

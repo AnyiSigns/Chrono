@@ -1,17 +1,8 @@
-// `evolve-metrics`（指标层 · 证据聚合）库面：纯计算模块 + 服务协议模块。
-// 服务不读投影、无写通道、不取时间不用随机：一切输入随 bag / 调用帧 env 传入，
-// 一切写经计划值 `{"$directives":[…]}` 交宿主落账；本插件只产 kind:'evidence' 证据条目，不产提案。
+// `evolve-metrics`（指标层 · 残留门面）库面：保留能力类与方法面，算法委派给四个提供方。
+// 门面不读投影、无写通道、不取时间不用随机：一切输入随 bag / 调用帧 env 传入，
+// 四个方法的实现分别住 `evolve-ledger`（原语）/ `evolve-evidence` / `evolve-sweep` / `evolve-shadow`，
+// 经反向 `port.call` 委派；既有消费方（loop-policy / tools）无需改动。
 
-pub mod aggregate;
-pub mod bag;
 pub mod error;
-pub mod evidence;
-pub mod hash;
-pub mod plan;
 pub mod port;
 pub mod protocol;
-pub mod record;
-pub mod shadow;
-pub mod state;
-pub mod sweep;
-pub mod thresholds;

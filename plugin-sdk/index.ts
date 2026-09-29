@@ -33,6 +33,7 @@ export {
   isDirectRun,
   loaderEnvFromProcess,
   makeLogger,
+  manyNeedsFromProcess,
   packageRootOf,
   pinsFromProcess,
   runStdio,

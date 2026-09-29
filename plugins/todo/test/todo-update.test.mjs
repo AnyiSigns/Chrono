@@ -33,11 +33,20 @@ test('update：add / update / remove / move 顺次作用于同一清单', async 
     assert.equal(result.ok, true, JSON.stringify(result))
     assert.equal(result.result.total, 3)
     assert.equal('items' in result.result, false, 'update 不回传全表')
-    assert.deepEqual(result.result.changed.map((item) => item.id), ['t1', 't3', 't0', 't2'])
+    assert.deepEqual(
+      result.result.changed.map((item) => item.id),
+      ['t1', 't3', 't0', 't2'],
+    )
 
     const read = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
-    assert.deepEqual(read.result.items.map((item) => item.text), ['c', 'b', 'd'])
-    assert.deepEqual(read.result.items.map((item) => item.id), ['t2', 't1', 't3'])
+    assert.deepEqual(
+      read.result.items.map((item) => item.text),
+      ['c', 'b', 'd'],
+    )
+    assert.deepEqual(
+      read.result.items.map((item) => item.id),
+      ['t2', 't1', 't3'],
+    )
     assert.equal(read.result.items[1].status, 'in_progress')
     assert.equal(read.result.items[1].activeForm, '正在做 b')
   } finally {
@@ -79,7 +88,10 @@ test('update：activeForm 传空串清除；status rejected 值 → bad_status',
     await drv.hello()
     await drv.call('invoke', {
       tool: 'todo.write',
-      args: { conversation_id: 'c1', items: [{ text: 'a', status: 'in_progress', activeForm: '正在做' }] },
+      args: {
+        conversation_id: 'c1',
+        items: [{ text: 'a', status: 'in_progress', activeForm: '正在做' }],
+      },
     })
     const cleared = await drv.call('invoke', {
       tool: 'todo.update',
@@ -117,7 +129,10 @@ test('update：id 不存在 / op 非法 / ops 空 / index 非法 → 结构化�
     })
     assert.equal(unknownOp.error.code, 'unknown_op')
 
-    const empty = await drv.call('invoke', { tool: 'todo.update', args: { conversation_id: 'c1', ops: [] } })
+    const empty = await drv.call('invoke', {
+      tool: 'todo.update',
+      args: { conversation_id: 'c1', ops: [] },
+    })
     assert.equal(empty.error.code, 'bad_args')
 
     const badIndex = await drv.call('invoke', {
@@ -126,7 +141,10 @@ test('update：id 不存在 / op 非法 / ops 空 / index 非法 → 结构化�
     })
     assert.equal(badIndex.error.code, 'bad_args')
 
-    const noSession = await drv.call('invoke', { tool: 'todo.update', args: { ops: [{ op: 'add', text: 'z' }] } })
+    const noSession = await drv.call('invoke', {
+      tool: 'todo.update',
+      args: { ops: [{ op: 'add', text: 'z' }] },
+    })
     assert.equal(noSession.error.code, 'bad_args')
   } finally {
     drv.close()
@@ -165,7 +183,10 @@ test('update：稳定 id 不与显式 / 存量 id 冲突', async () => {
     assert.equal(added.ok, true)
     assert.equal(added.result.changed[0].id, 't6')
     const read = await drv.call('invoke', { tool: 'todo.read', args: { conversation_id: 'c1' } })
-    assert.deepEqual(read.result.items.map((item) => item.id), ['t5', 't6'])
+    assert.deepEqual(
+      read.result.items.map((item) => item.id),
+      ['t5', 't6'],
+    )
   } finally {
     drv.close()
   }

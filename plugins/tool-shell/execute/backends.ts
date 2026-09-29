@@ -77,7 +77,8 @@ export class RemoteExec implements ExecBackend {
   private async callValue(method: string, args: Rec, timeoutMs: number): Promise<Rec> {
     const outcome = await this.link.call('sandbox', method, args, { timeoutMs })
     if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new ToolError('tool_failed', `sandbox.${method} returned a non-object`)
+    if (!isRecord(outcome.value))
+      throw new ToolError('tool_failed', `sandbox.${method} returned a non-object`)
     return outcome.value
   }
 }
@@ -91,9 +92,14 @@ export class RemoteSecrets implements SecretsBackend {
   }
 
   async resolve(authRef: Rec): Promise<string> {
-    const outcome = await this.link.call('secrets', 'resolve', { auth_ref: authRef }, {
-      timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
-    })
+    const outcome = await this.link.call(
+      'secrets',
+      'resolve',
+      { auth_ref: authRef },
+      {
+        timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+      },
+    )
     if (!outcome.ok) throw new ToolError(outcome.code, outcome.message)
     if (typeof outcome.value !== 'string' || outcome.value.length === 0) {
       throw new ToolError('secret_missing', 'secrets.resolve returned no value')

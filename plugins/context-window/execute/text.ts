@@ -2,7 +2,7 @@
 // 计数缓存按消息 def 键（历史 = ref 哈希；合成消息 = 原始内容键）缓存，避免每轮全量重算；
 // 前缀和用于历史窗口 / atomic 组的区间求和不重复遍历。
 
-import { countTokens } from './native.ts'
+import { lookupCount } from './tokens.ts'
 import type { AssetRef, CanonicalPart, Json, NeutralReasoning } from './types.ts'
 
 /** 判断普通对象（非数组、非 null）。 */
@@ -108,8 +108,9 @@ const normalizeCache = new Map<string, string>()
 const tokenCache = new Map<string, number>()
 
 /**
- * 计数一个消息的 tokens：文本走原生 tokenizer，资产引用按 1 token/个计。
- * `cacheKey` 必须与计数输入同口径：历史用 def 哈希，合成消息用 `computeTokenKey`；命中缓存直接返回。
+ * 计数一个消息的 tokens：文本计数经 `token-estimate` 的批量结果（本侧文本缓存），资产引用按 1 token/个计。
+ * `cacheKey` 必须与计数输入同口径：历史用 def 哈希，合成消息用 `computeTokenKey`；命中 def 键缓存直接返回。
+ * 文本未命中（尚未批量补齐）时返回 0 且不写缓存——装配迭代会补齐后重跑，届时才落 def 键缓存。
  */
 export function countParts(parts: CanonicalPart[], cacheKey: string): number {
   const cached = tokenCache.get(cacheKey)
@@ -117,7 +118,9 @@ export function countParts(parts: CanonicalPart[], cacheKey: string): number {
     cacheSet(tokenCache, cacheKey, cached)
     return cached
   }
-  const tokens = countTokens(partsText(parts)) + assetPartCount(parts)
+  const counted = lookupCount(partsText(parts))
+  if (counted === null) return 0
+  const tokens = counted + assetPartCount(parts)
   cacheSet(tokenCache, cacheKey, tokens)
   return tokens
 }
@@ -211,7 +214,9 @@ export function renderSummary(summary: unknown): string {
       continue
     }
     if (Array.isArray(value)) {
-      const items = value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+      const items = value.filter(
+        (item): item is string => typeof item === 'string' && item.length > 0,
+      )
       if (items.length > 0) {
         lines.push(`${label}：`)
         for (const item of items) lines.push(`- ${item}`)

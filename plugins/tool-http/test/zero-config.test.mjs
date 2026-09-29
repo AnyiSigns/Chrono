@@ -29,8 +29,23 @@ test('plugin.json 不 pin 密钥面（零配置）', () => {
 
 test('缺省清单零配置可检索（假后端，离线）', async () => {
   const router = prefixRouter([
-    ['https://www.bing.com/search', execOk(fetcherStdout({ contentType: 'application/rss+xml', body: '<rss><channel><item><title>Bing</title><link>https://bing.test/a</link><description>bing snip</description></item></channel></rss>' }))],
-    ['https://www.mojeek.com/search', execOk(fetcherStdout({ body: '<a class="ob" href="https://mojeek.test/a">Mojeek</a><p class="s">mojeek snip</p></a>' }))],
+    [
+      'https://www.bing.com/search',
+      execOk(
+        fetcherStdout({
+          contentType: 'application/rss+xml',
+          body: '<rss><channel><item><title>Bing</title><link>https://bing.test/a</link><description>bing snip</description></item></channel></rss>',
+        }),
+      ),
+    ],
+    [
+      'https://www.mojeek.com/search',
+      execOk(
+        fetcherStdout({
+          body: '<a class="ob" href="https://mojeek.test/a">Mojeek</a><p class="s">mojeek snip</p></a>',
+        }),
+      ),
+    ],
   ])
   const { backend } = makeBackend(router)
   const config = mergeConfig({ obey_robots: false })

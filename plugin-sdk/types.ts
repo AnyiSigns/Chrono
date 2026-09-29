@@ -55,9 +55,23 @@ export type Handler = (
 /** 反向调用结果：成功带值，失败带稳定码（作数据，不抛）。 */
 export type PortOutcome = { ok: true; value: Json } | { ok: false; code: string; message: string }
 
-/** 反向调用通道（服务 → 宿主，按发出者 `pins` 路由）。 */
+/** 单次反向调用的覆盖项：回带发起帧 id、等待上限、按成员定位的 `many` 目标。 */
+export interface PortCallOptions {
+  /** 发起 `call` 帧 id；宿主据此把本次反向调用归属到正确回合（并发在途不串台）。 */
+  callId?: string | null
+  /** 本次等待上限；缺省用通道构造时的 `timeoutMs`。 */
+  timeoutMs?: number
+  /**
+   * 按成员定位的 `many` 目标：反向调用 `port.call` 携带目标提供方身份名（配合扩展类 `port`），
+   * 宿主校验「该类在发出者 `needs` 且 `mode:"many"`」且「目标 ∈ 索引(类)」后按该成员端点调用。
+   * 缺省 = 单值语义（`pins` / `one`-needs / 自能力）。
+   */
+  provider?: string
+}
+
+/** 反向调用通道（服务 → 宿主，按发出者 `pins` / `one`-needs / 成员定位的 `many` 路由）。 */
 export interface PortCaller {
-  call(port: string, method: string, args: Rec): Promise<PortOutcome>
+  call(port: string, method: string, args: Rec, options?: PortCallOptions): Promise<PortOutcome>
 }
 
 /** 领域错误基类：带固定码，派发器映射成协议 error 帧的 `code`。 */

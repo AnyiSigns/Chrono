@@ -1,22 +1,18 @@
-// 缓存提示与 token 校准的专项测试。
+// 缓存提示与 token 校准消费的专项测试。
 // - `context.build` 产出厂商中立的 `cache` 提示：稳定前缀（系统提示 → 工具 → L2）非空时可缓存；
 //   前缀为空（无可缓存内容）时不产出 `cache`；系统角色消息若含前缀外的易变切片则只给 `key`、不标 `system`。
 // - `key` 是静态前缀的稳定哈希：前缀变则键变，仅输入 / L1 变则键不变，连续组装逐字节一致。
-// - 校准消费者：随 `bag.usage` 到达的真实用量进入 calibrator，校正系数在快路径（含改写路径）上生效。
+// - 校准消费者：随 `bag.usage` 到达的真实用量经 `budget.observe` 回填 manifest；系数在快路径（含改写路径）上生效。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { baseBag, chainOf, startService, ensureNative, FIXED_ENV } from './driver.mjs'
+import { baseBag, chainOf, startService, FIXED_ENV } from './driver.mjs'
+import { createFakeBackends, createFakeBudget } from './fakes.mjs'
 
 const { buildAssembly } = await import('../execute/pipeline.ts')
-const { parseUsage, observeUsage, correctionFactor, resetCalibration } = await import('../execute/calibration.ts')
 const { defaultPolicy } = await import('../execute/policy.ts')
 
 process.env.CHRONO_PLUGIN_STATE = ''
-ensureNative()
 
 // ── 缓存提示 ───────────────────────────────────────────────────────────────
 
@@ -89,7 +85,11 @@ test('cache：系统提示变化 → 键变化；连续两次组装 messages 与
   const drv = startService()
   try {
     await drv.hello()
-    const bag = baseBag({ system_prompt: 'P', tools: [{ name: 'a' }], memories: { l2: { summary: 'L2' } } })
+    const bag = baseBag({
+      system_prompt: 'P',
+      tools: [{ name: 'a' }],
+      memories: { l2: { summary: 'L2' } },
+    })
     const first = await drv.build(bag)
     const second = await drv.build(bag)
     assert.equal(JSON.stringify(first.messages), JSON.stringify(second.messages))
@@ -129,85 +129,57 @@ const CAL_BAG = {
   config: { model: 'cal-model', context_window: 100000, max_output: 100 },
 }
 
-test('校准：真实用法更新系数，系数作用于快路径与改写路径', () => {
-  resetCalibration()
+test('校准：真实用法更新系数，系数作用于快路径与改写路径', async () => {
   const policy = defaultPolicy()
-  const raw = buildAssembly(CAL_BAG, { ...FIXED_ENV }, policy)
+  const raw = await buildAssembly(CAL_BAG, { ...FIXED_ENV }, policy, createFakeBackends())
   assert.equal(raw.manifest.usage, null, '无 bag.usage 时不产出用量')
 
-  resetCalibration()
-  assert.equal(correctionFactor('cal-model'), 1)
-  observeUsage('cal-model', 100, null)
-  const factor = observeUsage('cal-model', 100, {
+  const budget = createFakeBudget()
+  assert.equal(budget.factor('cal-model'), 1)
+  budget.observe('cal-model', 100, null)
+  const factor = budget.observe('cal-model', 100, {
     prompt_tokens: 200,
     cached_tokens: 0,
     cache_creation_tokens: 0,
     completion_tokens: 0,
     hit_rate: 0,
     correction_factor: null,
-  })
+  }).factor
   assert.ok(Math.abs(factor - 1.2) < 1e-9, `系数应为 1.2，实得 ${factor}`)
-  assert.equal(correctionFactor('cal-model'), factor)
+  assert.equal(budget.factor('cal-model'), factor)
 
-  const scaled = buildAssembly(
+  const scaled = await buildAssembly(
     { ...CAL_BAG, usage: { prompt_tokens: 1, cached_tokens: 0, completion_tokens: 0 } },
     { ...FIXED_ENV },
     policy,
+    createFakeBackends(budget),
   )
   assert.equal(scaled.manifest.usage.correction_factor, factor, 'manifest 记录的系数即本次装配所用')
   assert.ok(
     scaled.manifest.used > raw.manifest.used,
     `系数应放大快路径计数：raw=${raw.manifest.used} scaled=${scaled.manifest.used}`,
   )
-  resetCalibration()
 })
 
-test('校准：随 bag.usage 的真实用量进入 calibrator（消费者接通）', () => {
+test('校准：随 bag.usage 的真实用量进入 calibrator（消费者接通）', async () => {
   const policy = defaultPolicy()
-  resetCalibration()
-  assert.equal(parseUsage({ prompt_tokens: 123, cached_tokens: 20 }).prompt_tokens, 123)
+  const budget = createFakeBudget()
+  const backends = createFakeBackends(budget)
   const bag = { ...CAL_BAG, usage: { prompt_tokens: 100, cached_tokens: 40, completion_tokens: 5 } }
-  const first = buildAssembly(bag, { ...FIXED_ENV }, policy)
+  const first = await buildAssembly(bag, { ...FIXED_ENV }, policy, backends)
   assert.equal(first.manifest.usage.prompt_tokens, 100)
   assert.equal(first.manifest.usage.cached_tokens, 40)
   assert.equal(first.manifest.usage.hit_rate, 0.4)
-  assert.equal(first.manifest.usage.correction_factor, 1, '首次只有估算、无上次估算可比，系数保持 1')
+  assert.equal(
+    first.manifest.usage.correction_factor,
+    1,
+    '首次只有估算、无上次估算可比，系数保持 1',
+  )
 
   // 第二次带上真实用量：calibrator 已累积上次估算，系数据此更新（EWMA、有界）。
-  const second = buildAssembly(bag, { ...FIXED_ENV }, policy)
+  const second = await buildAssembly(bag, { ...FIXED_ENV }, policy, backends)
   assert.equal(second.manifest.usage.correction_factor, 1, '本次装配用的是更新前的系数')
   const expected = Math.min(2, Math.max(0.5, 0.8 + 0.2 * (100 / first.manifest.used)))
-  const after = correctionFactor('cal-model')
+  const after = budget.factor('cal-model')
   assert.ok(Math.abs(after - expected) < 1e-9, `系数应为 ${expected}，实得 ${after}`)
-  resetCalibration()
-})
-
-test('校准：系数未变不重写状态文件，变化才落盘', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'ctx-cal-'))
-  const file = join(dir, 'calibration.json')
-  const previous = process.env.CHRONO_PLUGIN_STATE
-  try {
-    writeFileSync(file, JSON.stringify({ m: { factor: 1, last_estimate: 100 } }), 'utf8')
-    process.env.CHRONO_PLUGIN_STATE = dir
-    resetCalibration()
-    // 无真实用量 → 系数不变：不得重写状态文件（磁盘 last_estimate 保持 100，内存态另走）。
-    observeUsage('m', 200, null)
-    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { m: { factor: 1, last_estimate: 100 } })
-    // 带真实用量且系数变化 → 落盘（EWMA：1 * (0.8 + 0.2 * 400/200) = 1.2）。
-    observeUsage('m', 300, {
-      prompt_tokens: 400,
-      cached_tokens: 0,
-      cache_creation_tokens: 0,
-      completion_tokens: 0,
-      hit_rate: 0,
-      correction_factor: null,
-    })
-    const saved = JSON.parse(readFileSync(file, 'utf8'))
-    assert.ok(Math.abs(saved.m.factor - 1.2) < 1e-9, `实得 ${saved.m.factor}`)
-    assert.equal(saved.m.last_estimate, 300)
-  } finally {
-    process.env.CHRONO_PLUGIN_STATE = previous
-    resetCalibration()
-    rmSync(dir, { recursive: true, force: true })
-  }
 })

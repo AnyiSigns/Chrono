@@ -7,7 +7,17 @@ import type { Json } from './types.ts'
 /** 单工具名（全局唯一，模型可见）。 */
 export const TOOL_NAME = 'webbrowser'
 
-const ACTIONS = ['open', 'navigate', 'click', 'type', 'press', 'wait_for', 'extract', 'screenshot', 'close']
+const ACTIONS = [
+  'open',
+  'navigate',
+  'click',
+  'type',
+  'press',
+  'wait_for',
+  'extract',
+  'screenshot',
+  'close',
+]
 
 function caps(): Json {
   return {
@@ -65,8 +75,10 @@ function tool(): Json {
     intent: '在一个持久浏览器会话里导航、点击 / 输入 / 按键、等待、抽取文本或截图。',
     when_to_use: '需要执行 JS 渲染、跨多步保持页面状态（登录 / 表单 / 多页跳转）或对页面截图时。',
     param_semantics: {
-      action: '动作分档：open 起会话、navigate 导航、click / type / press / wait_for 交互、extract 抽取、screenshot 截图、close 关会话。',
-      session: '会话 id：open 缺省新开并返回；其余动作引用已存在会话，未知 / 过期回 session_not_found。',
+      action:
+        '动作分档：open 起会话、navigate 导航、click / type / press / wait_for 交互、extract 抽取、screenshot 截图、close 关会话。',
+      session:
+        '会话 id：open 缺省新开并返回；其余动作引用已存在会话，未知 / 过期回 session_not_found。',
       url: 'navigate 的目标地址；仅支持 http / https。',
       selector: 'CSS 选择器；未命中或等待超时回 element_not_found。',
       text: 'type 要写入的文本。',
@@ -80,7 +92,8 @@ function tool(): Json {
       viewport: 'open 的视口覆盖 {width, height}；缺省按默认值。',
     },
     boundaries: '有会话、有状态；无状态抓取用 webfetch。',
-    description: '浏览器自动化：单工具 webbrowser，用 action 分档（会话化导航 / 交互 / 抽取 / 截图）。',
+    description:
+      '浏览器自动化：单工具 webbrowser，用 action 分档（会话化导航 / 交互 / 抽取 / 截图）。',
     argsSchema: argsSchema(),
     caps: caps(),
     idempotent: false,

@@ -6,8 +6,12 @@
     "context": ["build"]
   },
   "pins": {},
+  "needs": {
+    "token-estimate": { "mode": "one" },
+    "budget": { "mode": "one" }
+  },
   "start": "node execute/main.ts",
-  "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
+  "build": [],
   "protocol": "1",
   "restart": {
     "policy": "on-exit",
@@ -25,7 +29,6 @@
   "state": "recomputable",
   "members": [
     { "kind": "execute", "path": "execute/" },
-    { "kind": "execute", "path": "native/" },
     { "kind": "schema", "path": "schema/" }
   ],
   "commands": []

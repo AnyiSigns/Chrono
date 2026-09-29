@@ -1,9 +1,10 @@
 {
   "identity": "plugin-admin",
   "schema": "schema/plugin-admin.json",
-  "implements": ["plugin-admin"],
+  "implements": ["plugin-admin", "tool-provider"],
   "methods": {
-    "plugin-admin": ["describe", "invoke"]
+    "plugin-admin": ["describe", "invoke"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {},
   "needs": {

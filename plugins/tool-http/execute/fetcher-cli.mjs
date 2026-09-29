@@ -56,7 +56,10 @@ function fail(message) {
 
 /** 逐块读体，达到上限即停并标记 truncated（响应流可取消）。 */
 async function readLimited(response, maxSize) {
-  const reader = response.body && typeof response.body.getReader === 'function' ? response.body.getReader() : null
+  const reader =
+    response.body && typeof response.body.getReader === 'function'
+      ? response.body.getReader()
+      : null
   if (reader === null) return { bytes: Buffer.alloc(0), truncated: false }
   const chunks = []
   let total = 0

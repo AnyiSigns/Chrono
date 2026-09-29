@@ -10,7 +10,16 @@ import {
   MAX_EXEC_BUDGET_MS,
   REVERSE_TIMEOUT_MARGIN_MS,
 } from '../execute/reverse.ts'
-import { execFail, execOk, execOkTruncated, fetcherStdout, makeBackend, makeCtx, prefixRouter, testConfig } from './support.mjs'
+import {
+  execFail,
+  execOk,
+  execOkTruncated,
+  fetcherStdout,
+  makeBackend,
+  makeCtx,
+  prefixRouter,
+  testConfig,
+} from './support.mjs'
 
 const ARTICLE =
   '<html><head><title>T</title></head><body><article>' +
@@ -26,7 +35,12 @@ function ctxFor(router, overrides = {}) {
 }
 
 test('text/html → markdown，且同输入同输出', async () => {
-  const router = prefixRouter([['https://page.test/', execOk(fetcherStdout({ contentType: 'text/html; charset=utf-8', body: ARTICLE }))]])
+  const router = prefixRouter([
+    [
+      'https://page.test/',
+      execOk(fetcherStdout({ contentType: 'text/html; charset=utf-8', body: ARTICLE })),
+    ],
+  ])
   const { ctx } = ctxFor(router)
   const first = await webfetch({ url: 'https://page.test/' }, ctx)
   assert.equal(first.ok, true)
@@ -41,7 +55,9 @@ test('text/html → markdown，且同输入同输出', async () => {
 })
 
 test('format=raw 原样返回 HTML；format=text 去标记', async () => {
-  const router = prefixRouter([['https://page.test/', execOk(fetcherStdout({ contentType: 'text/html', body: ARTICLE }))]])
+  const router = prefixRouter([
+    ['https://page.test/', execOk(fetcherStdout({ contentType: 'text/html', body: ARTICLE }))],
+  ])
   const { ctx } = ctxFor(router)
   const raw = await webfetch({ url: 'https://page.test/', format: 'raw' }, ctx)
   assert.equal(raw.result.content, ARTICLE)
@@ -52,7 +68,10 @@ test('format=raw 原样返回 HTML；format=text 去标记', async () => {
 
 test('application/json / text/* 原样返回', async () => {
   const router = prefixRouter([
-    ['https://json.test/', execOk(fetcherStdout({ contentType: 'application/json', body: '{"a":1}' }))],
+    [
+      'https://json.test/',
+      execOk(fetcherStdout({ contentType: 'application/json', body: '{"a":1}' })),
+    ],
     ['https://txt.test/', execOk(fetcherStdout({ contentType: 'text/plain', body: 'plain body' }))],
   ])
   const { ctx } = ctxFor(router)
@@ -63,7 +82,12 @@ test('application/json / text/* 原样返回', async () => {
 })
 
 test('文本超限截断并标记 truncated', async () => {
-  const router = prefixRouter([['https://big.test/', execOk(fetcherStdout({ contentType: 'text/plain', body: 'abcdefghijklmnop' }))]])
+  const router = prefixRouter([
+    [
+      'https://big.test/',
+      execOk(fetcherStdout({ contentType: 'text/plain', body: 'abcdefghijklmnop' })),
+    ],
+  ])
   const { ctx } = ctxFor(router, { output_max: 10 })
   const result = await webfetch({ url: 'https://big.test/' }, ctx)
   assert.equal(result.ok, true)
@@ -73,7 +97,12 @@ test('文本超限截断并标记 truncated', async () => {
 
 test('二进制 → host.asset.put 被调，结果带资产引用', async () => {
   const bytes = Buffer.from([0, 1, 2, 255, 254])
-  const router = prefixRouter([['https://bin.test/', execOk(fetcherStdout({ contentType: 'application/octet-stream', body: bytes }))]])
+  const router = prefixRouter([
+    [
+      'https://bin.test/',
+      execOk(fetcherStdout({ contentType: 'application/octet-stream', body: bytes })),
+    ],
+  ])
   const { ctx, assetCalls } = ctxFor(router)
   const result = await webfetch({ url: 'https://bin.test/' }, ctx)
   assert.equal(result.ok, true)
@@ -86,7 +115,9 @@ test('二进制 → host.asset.put 被调，结果带资产引用', async () => 
 })
 
 test('net_denied 透传，webfetch 声明 caps.net = all', async () => {
-  const { ctx, execCalls } = ctxFor(() => execFail('net_denied', 'declared net all exceeds tier net none'))
+  const { ctx, execCalls } = ctxFor(() =>
+    execFail('net_denied', 'declared net all exceeds tier net none'),
+  )
   const result = await webfetch({ url: 'https://denied.test/' }, ctx)
   assert.equal(result.ok, false)
   assert.equal(result.error.code, 'net_denied')
@@ -94,7 +125,12 @@ test('net_denied 透传，webfetch 声明 caps.net = all', async () => {
 })
 
 test('4xx / 5xx → http_status（附 status）', async () => {
-  const router = prefixRouter([['https://missing.test/', execOk(fetcherStdout({ status: 404, contentType: 'text/html', body: 'nope' }))]])
+  const router = prefixRouter([
+    [
+      'https://missing.test/',
+      execOk(fetcherStdout({ status: 404, contentType: 'text/html', body: 'nope' })),
+    ],
+  ])
   const { ctx } = ctxFor(router)
   const result = await webfetch({ url: 'https://missing.test/' }, ctx)
   assert.equal(result.ok, false)
@@ -104,7 +140,10 @@ test('4xx / 5xx → http_status（附 status）', async () => {
 
 test('obey_robots 开启且被禁 → robots_disallowed', async () => {
   const router = prefixRouter([
-    ['https://page.test/robots.txt', execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /' }))],
+    [
+      'https://page.test/robots.txt',
+      execOk(fetcherStdout({ contentType: 'text/plain', body: 'User-agent: *\nDisallow: /' })),
+    ],
     ['https://page.test/', execOk(fetcherStdout({ body: ARTICLE }))],
   ])
   const { ctx } = ctxFor(router, { obey_robots: true })
@@ -114,7 +153,14 @@ test('obey_robots 开启且被禁 → robots_disallowed', async () => {
 })
 
 test('sandbox 超时码映射为 tool_timeout', async () => {
-  const timeoutValue = { exit_code: null, stdout: '', stderr: '', truncated: false, duration_ms: 10, code: 'timeout' }
+  const timeoutValue = {
+    exit_code: null,
+    stdout: '',
+    stderr: '',
+    truncated: false,
+    duration_ms: 10,
+    code: 'timeout',
+  }
   const { ctx } = ctxFor(() => ({ ok: true, value: timeoutValue }))
   const result = await webfetch({ url: 'https://slow.test/' }, ctx)
   assert.equal(result.ok, false)
@@ -133,10 +179,15 @@ test('bad_url：非 http(s) 与内网地址', async () => {
 
 test('exec 截断（stdout 被隔离执行截断）合并进 truncated：文本标记、二进制 too_large 不存资产', async () => {
   const router = prefixRouter([
-    ['https://big.test/trunc', execOkTruncated(fetcherStdout({ contentType: 'text/plain', body: 'abc' }))],
+    [
+      'https://big.test/trunc',
+      execOkTruncated(fetcherStdout({ contentType: 'text/plain', body: 'abc' })),
+    ],
     [
       'https://bin.test/trunc',
-      execOkTruncated(fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([0, 1, 2]) })),
+      execOkTruncated(
+        fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([0, 1, 2]) }),
+      ),
     ],
   ])
   const { ctx, assetCalls } = ctxFor(router)
@@ -151,7 +202,12 @@ test('exec 截断（stdout 被隔离执行截断）合并进 truncated：文本�
 
 test('重定向后最终 URL 落到内网 → bad_url（不放过 SSRF 绕行）', async () => {
   const router = prefixRouter([
-    ['https://page.test/', execOk(fetcherStdout({ contentType: 'text/html', body: 'x', url: 'http://127.0.0.1/secret' }))],
+    [
+      'https://page.test/',
+      execOk(
+        fetcherStdout({ contentType: 'text/html', body: 'x', url: 'http://127.0.0.1/secret' }),
+      ),
+    ],
   ])
   const { ctx } = ctxFor(router)
   const result = await webfetch({ url: 'https://page.test/' }, ctx)
@@ -167,7 +223,9 @@ test('robots 对重定向后的最终 URL 复查：最终路径被禁 → robots
     ],
     [
       'https://page.test/a',
-      execOk(fetcherStdout({ contentType: 'text/html', body: ARTICLE, url: 'https://page.test/b' })),
+      execOk(
+        fetcherStdout({ contentType: 'text/html', body: ARTICLE, url: 'https://page.test/b' }),
+      ),
     ],
   ])
   const { ctx } = ctxFor(router, { obey_robots: true })
@@ -240,11 +298,16 @@ test('二进制资产存取回带 callId 且反向等待带余量', async () => 
   const seen = []
   const backend = {
     async exec() {
-      return execOk(fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([1, 2, 3]) }))
+      return execOk(
+        fetcherStdout({ contentType: 'application/octet-stream', body: Buffer.from([1, 2, 3]) }),
+      )
     },
     async assetPut(input, callId, timeoutMs) {
       seen.push({ input, callId, timeoutMs })
-      return { ok: true, value: { kind: 'asset', sha256: 'ab'.repeat(32), mime: input.mime, size: 3 } }
+      return {
+        ok: true,
+        value: { kind: 'asset', sha256: 'ab'.repeat(32), mime: input.mime, size: 3 },
+      }
     },
   }
   const ctx = makeCtx(testConfig(), backend, { callId: 'call-11' })

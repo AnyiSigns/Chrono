@@ -3,7 +3,14 @@
 // 清单本体已出世界：写即时落委托存储（storage-kv），读从自有存储取。
 // 反向调用（storage-kv.*）走 `port.call`，应答帧由 SDK 派发器拦截结算（不排队）。
 
-import { PortLink, createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import {
+  PortLink,
+  createService as createSdkService,
+  isDirectRun,
+  makeLogger,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
 import { RemoteStorage } from './port-link.ts'
 import { TodoStore } from './store.ts'

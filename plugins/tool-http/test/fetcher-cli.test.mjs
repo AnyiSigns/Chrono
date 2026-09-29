@@ -16,7 +16,10 @@ function serve(handler) {
     const server = createServer(handler)
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address()
-      resolve({ base: `http://127.0.0.1:${port}`, close: () => new Promise((done) => server.close(done)) })
+      resolve({
+        base: `http://127.0.0.1:${port}`,
+        close: () => new Promise((done) => server.close(done)),
+      })
     })
   })
 }
@@ -30,7 +33,13 @@ function runFetcher(args) {
     child.stdout.on('data', (chunk) => out.push(chunk))
     child.stderr.on('data', (chunk) => err.push(chunk))
     child.on('error', reject)
-    child.on('close', (code) => resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') }))
+    child.on('close', (code) =>
+      resolve({
+        code,
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+      }),
+    )
   })
 }
 
@@ -47,7 +56,19 @@ test('fetcher CLI：200 文本 → 首行元数据 + base64 体', async () => {
     res.end('hello world')
   })
   try {
-    const result = await runFetcher(['--url', `${srv.base}/a`, '--method', 'GET', '--timeout', '3000', '--max-size', '1024', '--max-redirs', '3', '--meta'])
+    const result = await runFetcher([
+      '--url',
+      `${srv.base}/a`,
+      '--method',
+      'GET',
+      '--timeout',
+      '3000',
+      '--max-size',
+      '1024',
+      '--max-redirs',
+      '3',
+      '--meta',
+    ])
     assert.equal(result.code, 0)
     const { meta, body } = parseMeta(result.stdout)
     assert.equal(meta.status, 200)
@@ -66,7 +87,19 @@ test('fetcher CLI：超过 --max-size 截断并标记 truncated', async () => {
     res.end('abcdefghijklmnop')
   })
   try {
-    const result = await runFetcher(['--url', `${srv.base}/big`, '--method', 'GET', '--timeout', '3000', '--max-size', '5', '--max-redirs', '3', '--meta'])
+    const result = await runFetcher([
+      '--url',
+      `${srv.base}/big`,
+      '--method',
+      'GET',
+      '--timeout',
+      '3000',
+      '--max-size',
+      '5',
+      '--max-redirs',
+      '3',
+      '--meta',
+    ])
     assert.equal(result.code, 0)
     const { meta, body } = parseMeta(result.stdout)
     assert.equal(meta.truncated, true)
@@ -87,7 +120,19 @@ test('fetcher CLI：跟随重定向并在元数据回带最终 URL', async () =>
     res.end('landed')
   })
   try {
-    const result = await runFetcher(['--url', `${srv.base}/start`, '--method', 'GET', '--timeout', '3000', '--max-size', '1024', '--max-redirs', '3', '--meta'])
+    const result = await runFetcher([
+      '--url',
+      `${srv.base}/start`,
+      '--method',
+      'GET',
+      '--timeout',
+      '3000',
+      '--max-size',
+      '1024',
+      '--max-redirs',
+      '3',
+      '--meta',
+    ])
     assert.equal(result.code, 0)
     const { meta, body } = parseMeta(result.stdout)
     assert.equal(meta.status, 200)
@@ -99,7 +144,19 @@ test('fetcher CLI：跟随重定向并在元数据回带最终 URL', async () =>
 })
 
 test('fetcher CLI：传输失败 → 非零退出码 + stderr', async () => {
-  const result = await runFetcher(['--url', 'http://127.0.0.1:1/nope', '--method', 'GET', '--timeout', '1500', '--max-size', '64', '--max-redirs', '0', '--meta'])
+  const result = await runFetcher([
+    '--url',
+    'http://127.0.0.1:1/nope',
+    '--method',
+    'GET',
+    '--timeout',
+    '1500',
+    '--max-size',
+    '64',
+    '--max-redirs',
+    '0',
+    '--meta',
+  ])
   assert.notEqual(result.code, 0)
   assert.ok(result.stderr.trim().length > 0)
 })

@@ -109,7 +109,11 @@ export function parseRss(xml: string): RawResult[] {
     const block = match[1] ?? ''
     const url = tagText(block, 'link')
     if (url.length === 0) continue
-    results.push({ title: tagText(block, 'title') || url, url, snippet: tagText(block, 'description') })
+    results.push({
+      title: tagText(block, 'title') || url,
+      url,
+      snippet: tagText(block, 'description'),
+    })
   }
   return results
 }
@@ -144,10 +148,7 @@ export function parseMarginalia(body: string): RawResult[] {
 
 /** Mojeek：ob 标题 + s 摘要。 */
 export function parseMojeek(html: string): RawResult[] {
-  return pairWithSnippets(
-    anchorsByClass(html, 'ob'),
-    textsByClass(html, 'p', 's'),
-  )
+  return pairWithSnippets(anchorsByClass(html, 'ob'), textsByClass(html, 'p', 's'))
 }
 
 function parseSearxngJson(body: string): RawResult[] {

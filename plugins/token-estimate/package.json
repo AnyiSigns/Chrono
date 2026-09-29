@@ -1,0 +1,25 @@
+{
+  "name": "token-estimate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "token 估算提供方：批量 v1 估算器计数（原生 napi 扩展为唯一实现）+ 规格版本自述",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "native/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:rust": "cargo test"
+  }
+}

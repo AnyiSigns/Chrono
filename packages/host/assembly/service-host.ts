@@ -34,6 +34,12 @@ export interface ServiceFactoryContext {
    * inproc / worker 作 loader 参数（worker 经 `workerData` 传）。与 plugin-sdk 侧同形。
    */
   pins?: Record<string, string>
+  /**
+   * 宿主按世界能力索引解析的 **`many` 成员表**（`cap → [提供方身份名]`，码元序）：
+   * 该身份 `needs` 中 `mode:"many"` 的能力类 → 其世界提供方。成员变更 = 世界变更 → 重解析重注入。
+   * stdio 经 spawn env `CHRONO_PLUGIN_MANY_NEEDS` 注入，inproc / worker 作 loader 参数。与 SDK 同形。
+   */
+  manyNeeds?: Record<string, string[]>
 }
 
 /** 同语言入口模块返回的服务实例。 */
@@ -82,6 +88,11 @@ export interface ServiceStartInput {
    * 未定义表示不注入。stdio 走 spawn env `CHRONO_PLUGIN_PINS`，inproc / worker 走工厂 ctx。
    */
   pins?: Record<string, string>
+  /**
+   * 宿主按当刻世界算出的 **`many` 成员表**（`cap → [提供方身份名]`，码元序）；
+   * 未定义表示不注入。stdio 走 spawn env `CHRONO_PLUGIN_MANY_NEEDS`，inproc / worker 走工厂 ctx。
+   */
+  manyNeeds?: Record<string, string[]>
 }
 
 /** 一种服务形态：把声明的服务起成一个通道 + 生命周期。 */
@@ -104,16 +115,18 @@ export function composeStartCommand(start: string, wrapper?: string): string {
   return wrapper === undefined ? start : `${wrapper} ${start}`
 }
 
-/** 把 ③ / ④ 目录与有效 pins 收成注入项（只含已注入项；pins 缺省不注入）。 */
+/** 把 ③ / ④ 目录与有效 pins / many 成员表收成注入项（只含已注入项；缺省不注入）。 */
 function loaderEnv(
   stateDir?: string,
   dataDir?: string,
   pins?: Record<string, string>,
+  manyNeeds?: Record<string, string[]>,
 ): Record<string, string> {
   const env: Record<string, string> = {}
   if (stateDir !== undefined) env['CHRONO_PLUGIN_STATE'] = stateDir
   if (dataDir !== undefined) env['CHRONO_PLUGIN_DATA'] = dataDir
   if (pins !== undefined) env['CHRONO_PLUGIN_PINS'] = JSON.stringify(pins)
+  if (manyNeeds !== undefined) env['CHRONO_PLUGIN_MANY_NEEDS'] = JSON.stringify(manyNeeds)
   return env
 }
 
@@ -223,7 +236,7 @@ const stdioHost: ServiceHost = {
   async start(decl, input) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      ...loaderEnv(input.pluginStateDir, input.dataDir, input.pins),
+      ...loaderEnv(input.pluginStateDir, input.dataDir, input.pins, input.manyNeeds),
     }
     const child = spawn(composeStartCommand(decl.start, input.startWrapper), {
       cwd: input.cwd,
@@ -296,6 +309,7 @@ const inprocHost: ServiceHost = {
         },
         env: loaderEnv(input.pluginStateDir, input.dataDir),
         pins: input.pins,
+        manyNeeds: input.manyNeeds,
       })
     } catch {
       throw new ServiceStartError('service_init_failed')
@@ -413,7 +427,12 @@ const workerHost: ServiceHost = {
   async start(decl, input) {
     const entry = join(input.cwd, decl.start)
     const worker = new Worker(new URL('./worker-bootstrap.mjs', import.meta.url), {
-      workerData: { entry, env: loaderEnv(input.pluginStateDir, input.dataDir), pins: input.pins },
+      workerData: {
+        entry,
+        env: loaderEnv(input.pluginStateDir, input.dataDir),
+        pins: input.pins,
+        manyNeeds: input.manyNeeds,
+      },
     })
     return { channel: createWorkerChannel(worker), lifecycle: createWorkerLifecycle(worker) }
   },

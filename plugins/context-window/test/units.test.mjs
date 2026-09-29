@@ -1,14 +1,15 @@
-// 单元级测试：v1 估算器规格向量（原生实现）、policy 解析、前缀和、规范化键、预算建模。
-// 与 Rust `cargo test` 的规格向量保持一致——两处同口径，锁定「同输入同输出」。
+// 单元级测试：policy 解析、前缀和、规范化键、计数缓存、老化 / 配对 / 预算阶梯。
+// 纯函数直调时经 `setLocalCountProvider` 注入进程内 v1 计数（生产服务走反向批量 count，不设此来源）。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ensureNative } from './driver.mjs'
+import { countText } from './fakes.mjs'
 
 process.env.CHRONO_PLUGIN_STATE = ''
-ensureNative()
 
-const native = await import('../execute/native.ts')
+const { setLocalCountProvider } = await import('../execute/tokens.ts')
+setLocalCountProvider((text) => countText(text))
+
 const { parsePolicy, defaultPolicy, loadPolicy } = await import('../execute/policy.ts')
 const {
   prefixSums,
@@ -23,11 +24,10 @@ const {
   CACHE_MAX_ENTRIES,
 } = await import('../execute/text.ts')
 const { canonicalize } = await import('../execute/normalize.ts')
-const { computeBudget, allocate } = await import('../execute/budget.ts')
+const { allocate } = await import('../execute/budget.ts')
 const { parseRawParts, messageParts } = await import('../execute/history.ts')
 const { projectContext } = await import('../execute/project.ts')
 const { turnMetadata } = await import('../execute/views.ts')
-const { parseUsage, observeUsage, correctionFactor, resetCalibration } = await import('../execute/calibration.ts')
 const { ageResultText, interruptedResult } = await import('../execute/aging.ts')
 const { repairPairing, missingResults } = await import('../execute/pairing.ts')
 
@@ -35,7 +35,15 @@ test('parts 宽松解析：推理块跨回合丢弃；工具卡提升为可回�
   const parsed = parseRawParts([
     { type: 'reasoning', text: '思考' },
     { type: 'text', text: '正文' },
-    { type: 'tool', call_id: 'c1', tool: 'read', args: { path: 'a' }, render: { form: 'line' }, result: { ok: true }, status: 'ok' },
+    {
+      type: 'tool',
+      call_id: 'c1',
+      tool: 'read',
+      args: { path: 'a' },
+      render: { form: 'line' },
+      result: { ok: true },
+      status: 'ok',
+    },
   ])
   assert.deepEqual(parsed.parts, [{ type: 'text', text: '正文' }])
   assert.equal(parsed.hasToolCall, true)
@@ -43,27 +51,12 @@ test('parts 宽松解析：推理块跨回合丢弃；工具卡提升为可回�
     { callId: 'c1', tool: 'read', args: { path: 'a' }, result: { ok: true }, status: 'ok' },
   ])
   // 只剩展示 part 且 content 为空 → 空 parts（不留空消息）
-  assert.deepEqual(messageParts({ content: '', parts: [{ type: 'reasoning', text: 'x' }] }).parts, [])
+  assert.deepEqual(
+    messageParts({ content: '', parts: [{ type: 'reasoning', text: 'x' }] }).parts,
+    [],
+  )
   // content 非空仍回落正文
   assert.deepEqual(messageParts({ content: 'hi' }).parts, [{ type: 'text', text: 'hi' }])
-})
-
-test('估算器规格向量：ASCII / CJK / 混合 / 空串 / 其他文字', () => {
-  assert.equal(native.countTokens(''), 0)
-  assert.equal(native.countTokens('   \n\t'), 0)
-  assert.equal(native.countTokens('hello'), 1)
-  assert.equal(native.countTokens('hello world'), 2)
-  assert.equal(native.countTokens('你好'), 2)
-  assert.equal(native.countTokens('你好，世界'), 5)
-  assert.equal(native.countTokens('Hello世界!'), 4)
-  assert.equal(native.countTokens('foo(bar, baz)'), 4)
-  assert.equal(native.countTokens('Привет'), 2)
-  assert.equal(native.tokenizerVersion(), 'v1')
-})
-
-test('估算器确定性：同输入两次同输出', () => {
-  const sample = 'The quick brown fox 中文测试 12345. '.repeat(50)
-  assert.equal(native.countTokens(sample), native.countTokens(sample))
 })
 
 test('policy：缺键回落默认；非法顶层抛错', () => {
@@ -71,7 +64,6 @@ test('policy：缺键回落默认；非法顶层抛错', () => {
   assert.equal(parsed.version, 2)
   assert.equal(parsed.budget.margin_ratio, 0.1)
   assert.equal(parsed.budget.default_context_window, defaultPolicy().budget.default_context_window)
-  assert.equal(parsed.messages.compress_hint, defaultPolicy().messages.compress_hint)
   assert.throws(() => parsePolicy(null), /must be a JSON object/)
 })
 
@@ -79,7 +71,6 @@ test('policy：随包 policy.json 可加载且前缀边界正确', () => {
   const policy = loadPolicy()
   assert.deepEqual(policy.prefix.stable, ['prompt', 'tools', 'l2'])
   assert.deepEqual(policy.prefix.order, ['history', 'l1', 'skill', 'recall', 'style'])
-  assert.equal(policy.thresholds.compress_hint_ratio, 0.75)
   assert.ok(policy.messages.input_truncated.length > 0)
 })
 
@@ -93,7 +84,10 @@ test('前缀和与区间求和', () => {
 test('规范化键：空白差异等价；角色参与 dedup_key、不参与 content_key', () => {
   assert.equal(normalizeText('  a   b \n c '), 'a b c')
   const parts = [{ type: 'text', text: 'a  b' }]
-  assert.equal(computeDedupKey('user', parts), computeDedupKey('user', [{ type: 'text', text: 'a b' }]))
+  assert.equal(
+    computeDedupKey('user', parts),
+    computeDedupKey('user', [{ type: 'text', text: 'a b' }]),
+  )
   assert.notEqual(computeDedupKey('user', parts), computeDedupKey('system', parts))
   assert.equal(computeContentKey(parts), computeContentKey([{ type: 'text', text: 'a b' }]))
 })
@@ -120,7 +114,10 @@ test('计数缓存键按原始内容：规范化等价不得共用计数缓存',
   assert.notEqual(spaced.cacheKey, single.cacheKey)
   // 资产参与计数键：同文本但资产不同不得共用
   const image = { type: 'image', asset: { sha256: 'a'.repeat(64), mime: 'image/png' }, name: null }
-  assert.notEqual(computeTokenKey([{ type: 'text', text: 'x' }]), computeTokenKey([{ type: 'text', text: 'x' }, image]))
+  assert.notEqual(
+    computeTokenKey([{ type: 'text', text: 'x' }]),
+    computeTokenKey([{ type: 'text', text: 'x' }, image]),
+  )
 })
 
 test('改写 parts 的 tokenKey 与 def 键区隔：同 def 改写后不复用旧计数 / dedup', () => {
@@ -139,26 +136,17 @@ test('改写 parts 的 tokenKey 与 def 键区隔：同 def 改写后不复用�
   ])[0]
   const rewrittenParts = [{ type: 'text', text: 'alice: hi all' }]
   const rewritten = canonicalize([
-    { ...base, role: 'assistant', parts: rewrittenParts, defKey: 'h1', tokenKey: computeTokenKey(rewrittenParts) },
+    {
+      ...base,
+      role: 'assistant',
+      parts: rewrittenParts,
+      defKey: 'h1',
+      tokenKey: computeTokenKey(rewrittenParts),
+    },
   ])[0]
   assert.equal(rewritten.tokens, countParts(rewrittenParts, computeTokenKey(rewrittenParts)))
   assert.notEqual(rewritten.tokens, original.tokens)
   assert.notEqual(rewritten.dedupKey, original.dedupKey)
-})
-
-test('预算建模：缺档案回落默认并标 profile_missing', () => {
-  const policy = defaultPolicy()
-  const missing = computeBudget(null, policy)
-  assert.equal(missing.context_window, policy.budget.default_context_window)
-  assert.equal(missing.max_output, policy.budget.default_max_output)
-  assert.ok(missing.flags.includes('profile_missing'))
-  const explicit = computeBudget({ context_window: 1000, max_output: 100 }, policy)
-  assert.equal(explicit.budget, 1000 - 100 - 50)
-  assert.deepEqual(explicit.flags, [])
-  // max_output ≥ context（models.dev 偶有此类条目）：输出预留封顶到半上下文，输入预算不为负
-  const capped = computeBudget({ context_window: 1000, max_output: 2000 }, policy)
-  assert.equal(capped.max_output, 500)
-  assert.equal(capped.budget, 1000 - 500 - 50)
 })
 
 test('预算分配：budget ≤ 0 走 budget_exceeded 结构化错误（防御性兜底）', () => {
@@ -179,10 +167,22 @@ test('上下文投影：只读步日志；会话级 refs 全量（含别的会�
   const session = {
     head: 'h-other-1',
     refs,
-    turns: [{ turn_id: 't1', conv: 'c1', at: '2026-01-01T00:00:00.000Z', state: 'open', user_message: { content: '本会话' }, steps: [] }],
+    turns: [
+      {
+        turn_id: 't1',
+        conv: 'c1',
+        at: '2026-01-01T00:00:00.000Z',
+        state: 'open',
+        user_message: { content: '本会话' },
+        steps: [],
+      },
+    ],
   }
   const records = projectContext(session, turnMetadata(session)).records
-  assert.deepEqual(records.map((record) => record.parts[0].text), ['本会话'])
+  assert.deepEqual(
+    records.map((record) => record.parts[0].text),
+    ['本会话'],
+  )
 })
 
 test('缓存有界：超过上限按 LRU 淘汰，不单调增长', () => {
@@ -226,7 +226,10 @@ test('老化：同输入同输出；带资源身份 / 规模 / 截断尾部 / �
   assert.ok(String(parsed.handle).startsWith('h-'))
   assert.ok(parsed.tail.length > 0 && parsed.tail.length <= 160)
   // 不同调用的句柄不同
-  assert.notEqual(parsed.handle, JSON.parse(ageResultText('read', args, 'call-2', result, true)).handle)
+  assert.notEqual(
+    parsed.handle,
+    JSON.parse(ageResultText('read', args, 'call-2', result, true)).handle,
+  )
   assert.equal(interruptedResult(), '{"ok":false,"error":"interrupted"}')
 })
 
@@ -247,13 +250,23 @@ test('配对：缺失结果的工具调用合成 interrupted 占位，自检归�
   assert.deepEqual(missingResults(repaired), [])
   const tool = repaired.find((message) => message.role === 'tool')
   assert.equal(tool.toolCallId, 'c1')
-  assert.equal(JSON.stringify(tool.parts), JSON.stringify([{ type: 'text', text: interruptedResult() }]))
+  assert.equal(
+    JSON.stringify(tool.parts),
+    JSON.stringify([{ type: 'text', text: interruptedResult() }]),
+  )
 })
 
 test('预算降级阶梯：老化 → 丢推理 → 截断输入；只有 P0 超窗才硬错', () => {
   const policy = defaultPolicy()
   // P0（系统提示）本身超窗 → budget_impossible 且指名元素
-  const hugePrompt = canonicalize([raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'a '.repeat(100) }] })])
+  const hugePrompt = canonicalize([
+    raw({
+      role: 'system',
+      source: 'prompt',
+      priority: 0,
+      parts: [{ type: 'text', text: 'a '.repeat(100) }],
+    }),
+  ])
   const hard = allocate(hugePrompt, 50, policy)
   assert.equal(hard.error?.code, 'budget_impossible')
   assert.ok(hard.error.message.includes('prompt'))
@@ -266,8 +279,14 @@ test('预算降级阶梯：老化 → 丢推理 → 截断输入；只有 P0 超
       source: 'tool',
       toolCallId: 'c1',
       priority: 4,
-      parts: [{ type: 'text', text: JSON.stringify({ ok: true, result: { content: 'z '.repeat(400) } }) }],
-      toolResult: { tool: 'read', args: { path: 'a' }, verbatim: JSON.stringify({ ok: true, result: { content: 'z '.repeat(400) } }) },
+      parts: [
+        { type: 'text', text: JSON.stringify({ ok: true, result: { content: 'z '.repeat(400) } }) },
+      ],
+      toolResult: {
+        tool: 'read',
+        args: { path: 'a' },
+        verbatim: JSON.stringify({ ok: true, result: { content: 'z '.repeat(400) } }),
+      },
     }),
   ])
   const aged = allocate(withTool, 200, policy)
@@ -287,7 +306,15 @@ test('预算降级阶梯：老化 → 丢推理 → 截断输入；只有 P0 超
       source: 'tool',
       priority: 4,
       parts: [],
-      reasoning: { provider: '', model: 'm', form: 'text', payload: 'r '.repeat(80), signature: '', encrypted: '', tokens: 0 },
+      reasoning: {
+        provider: '',
+        model: 'm',
+        form: 'text',
+        payload: 'r '.repeat(80),
+        signature: '',
+        encrypted: '',
+        tokens: 0,
+      },
     }),
   ])
   const dropped = allocate(withReasoning, 40, policy)
@@ -297,7 +324,13 @@ test('预算降级阶梯：老化 → 丢推理 → 截断输入；只有 P0 超
   // 截断输入：输入超预算但 P0 未超
   const bigInput = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
-    raw({ role: 'user', source: 'input', priority: 0, orderHint: 1, parts: [{ type: 'text', text: 'i '.repeat(400) }] }),
+    raw({
+      role: 'user',
+      source: 'input',
+      priority: 0,
+      orderHint: 1,
+      parts: [{ type: 'text', text: 'i '.repeat(400) }],
+    }),
   ])
   const truncated = allocate(bigInput, 40, policy)
   assert.ok(truncated.degraded.includes('truncate_input'))
@@ -325,13 +358,33 @@ test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢�
       source: 'tool',
       priority: 4,
       parts: [],
-      reasoning: { provider: '', model: 'm', form: 'text', payload: 'r '.repeat(80), signature: '', encrypted: '', tokens: 0 },
+      reasoning: {
+        provider: '',
+        model: 'm',
+        form: 'text',
+        payload: 'r '.repeat(80),
+        signature: '',
+        encrypted: '',
+        tokens: 0,
+      },
     }),
-    raw({ role: 'user', source: 'input', priority: 0, orderHint: 1, parts: [{ type: 'text', text: 'i '.repeat(400) }] }),
+    raw({
+      role: 'user',
+      source: 'input',
+      priority: 0,
+      orderHint: 1,
+      parts: [{ type: 'text', text: 'i '.repeat(400) }],
+    }),
   ])
   const result = allocate(messages, 120, policy)
   assert.equal(result.error, null)
-  const ladder = ['age_tool_results', 'drop_reasoning', 'compress_unavailable', 'drop_old_turns', 'truncate_input']
+  const ladder = [
+    'age_tool_results',
+    'drop_reasoning',
+    'compress_unavailable',
+    'drop_old_turns',
+    'truncate_input',
+  ]
   let cursor = 0
   for (const step of result.degraded) {
     const index = ladder.indexOf(step)
@@ -339,7 +392,10 @@ test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢�
     cursor = index
   }
   for (const expected of ['age_tool_results', 'drop_reasoning', 'truncate_input']) {
-    assert.ok(result.degraded.includes(expected), `缺梯级 ${expected}：${result.degraded.join(' → ')}`)
+    assert.ok(
+      result.degraded.includes(expected),
+      `缺梯级 ${expected}：${result.degraded.join(' → ')}`,
+    )
   }
 })
 
@@ -348,7 +404,12 @@ test('降级阶梯标签：老化压回预算内不登记压缩；配额裁不�
   // 配额（skill）超限被裁、历史仍在预算内 → 只有 quota，不得登记 drop_old_turns。
   const messages = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
-    raw({ role: 'system', source: 'skill', priority: 2, parts: [{ type: 'text', text: 'k '.repeat(500) }] }),
+    raw({
+      role: 'system',
+      source: 'skill',
+      priority: 2,
+      parts: [{ type: 'text', text: 'k '.repeat(500) }],
+    }),
     raw({ role: 'user', source: 'history', priority: 4, parts: [{ type: 'text', text: 'h' }] }),
   ])
   const result = allocate(messages, 100, policy)
@@ -356,22 +417,4 @@ test('降级阶梯标签：老化压回预算内不登记压缩；配额裁不�
   assert.ok(result.trimmed.some((entry) => entry.source === 'skill' && entry.reason === 'quota'))
   assert.equal(result.degraded.includes('drop_old_turns'), false, '配额裁不是历史裁剪')
   assert.ok(result.degraded.includes('compress_unavailable'), '仍超预算才登记压缩梯级')
-})
-
-test('校准：解析缓存命中用量并维护每模型校正系数', () => {
-  resetCalibration()
-  const usage = parseUsage({ prompt_tokens: 100, cached_tokens: 40, completion_tokens: 5 })
-  assert.equal(usage.prompt_tokens, 100)
-  assert.equal(usage.cached_tokens, 40)
-  assert.equal(usage.hit_rate, 0.4)
-  assert.equal(parseUsage({}), null)
-  assert.deepEqual(parseUsage({ input_tokens: 10, cache_read_input_tokens: 5 }), parseUsage({ input_tokens: 10, cache_read_input_tokens: 5 }))
-  assert.equal(parseUsage({ input_tokens: 10, cache_read_input_tokens: 5 }).cached_tokens, 5)
-
-  observeUsage('m', 100, null)
-  const factor = observeUsage('m', 100, { prompt_tokens: 200, cached_tokens: 0, cache_creation_tokens: 0, completion_tokens: 0, hit_rate: 0, correction_factor: null })
-  assert.ok(Math.abs(factor - 1.2) < 1e-9)
-  assert.equal(correctionFactor('m'), factor)
-  resetCalibration()
-  assert.equal(correctionFactor('m'), 1)
 })

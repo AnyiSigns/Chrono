@@ -684,4 +684,46 @@ describe('槽解析 resolveSlot（many）', () => {
     )
     expect(outcome?.members.map((member) => member.provider)).toEqual(['a'])
   })
+
+  it('按成员定位（反向 many）：目标成员命中则解析该成员端点行', () => {
+    const world = manyWorld(['a', 'b'])
+    const endpoints = new EndpointTable()
+    endpoints.add(rowOf('a', assemblyGenOf('a', world), 'toy.echo', 'echo'))
+    endpoints.add(rowOf('b', assemblyGenOf('b', world), 'toy.echo', 'echo'))
+    const router = createRoundRouter({ endpoints })
+    const outcome = router.resolve(world, 'caller', 'toy.echo', 'echo', 'b')
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.row.impl).toBe('b')
+  })
+
+  it('按成员定位：目标非索引成员 → not_loaded', () => {
+    const world = manyWorld(['a'])
+    const endpoints = new EndpointTable()
+    endpoints.add(rowOf('a', assemblyGenOf('a', world), 'toy.echo', 'echo'))
+    const router = createRoundRouter({ endpoints })
+    expect(router.resolve(world, 'caller', 'toy.echo', 'echo', 'ghost')).toEqual({
+      ok: false,
+      error: 'not_loaded',
+    })
+  })
+
+  it('按成员定位：发出者未声明该 many（或 mode:"one"）→ unresolved_cap', () => {
+    const world = manyWorld(['a'], { 'toy.echo': { mode: 'one' } })
+    const endpoints = new EndpointTable()
+    endpoints.add(rowOf('a', assemblyGenOf('a', world), 'toy.echo', 'echo'))
+    const router = createRoundRouter({ endpoints })
+    expect(router.resolve(world, 'caller', 'toy.echo', 'echo', 'a')).toEqual({
+      ok: false,
+      error: 'unresolved_cap',
+    })
+  })
+
+  it('按成员定位：目标缺端点行 → not_loaded', () => {
+    const world = manyWorld(['a'])
+    const router = createRoundRouter({ endpoints: new EndpointTable() })
+    expect(router.resolve(world, 'caller', 'toy.echo', 'echo', 'a')).toEqual({
+      ok: false,
+      error: 'not_loaded',
+    })
+  })
 })

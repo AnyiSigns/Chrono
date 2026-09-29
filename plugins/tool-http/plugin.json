@@ -1,9 +1,10 @@
 {
   "identity": "tool-http",
   "schema": "schema/tool-http.json",
-  "implements": ["tool-http"],
+  "implements": ["tool-http", "tool-provider"],
   "methods": {
-    "tool-http": ["describe", "invoke"]
+    "tool-http": ["describe", "invoke"],
+    "tool-provider": ["describe", "invoke"]
   },
   "pins": {
     "host": "host"

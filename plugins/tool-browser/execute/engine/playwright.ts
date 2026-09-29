@@ -5,7 +5,13 @@
 import { BrowserUnsupportedError, assertWaitWithinTimeout, mimeForFormat } from './types.ts'
 import { ToolError } from '../types.ts'
 import type { CreationHandle } from '../creation.ts'
-import type { BrowserEngine, EngineConfig, ExtractResult, NavigateResult, ScreenshotResult } from './types.ts'
+import type {
+  BrowserEngine,
+  EngineConfig,
+  ExtractResult,
+  NavigateResult,
+  ScreenshotResult,
+} from './types.ts'
 
 interface PwResponse {
   status(): number
@@ -29,7 +35,11 @@ interface PwPage {
   waitForSelector(selector: string, options?: { timeout?: number }): Promise<unknown>
   waitForTimeout(ms: number): Promise<void>
   textContent(selector: string, options?: { timeout?: number }): Promise<string | null>
-  getAttribute(selector: string, name: string, options?: { timeout?: number }): Promise<string | null>
+  getAttribute(
+    selector: string,
+    name: string,
+    options?: { timeout?: number },
+  ): Promise<string | null>
   screenshot(options: { fullPage?: boolean; type?: string }): Promise<Buffer>
   close(): Promise<void>
 }
@@ -40,7 +50,10 @@ interface PwContext {
 }
 
 interface PwBrowser {
-  newContext(options: { viewport: { width: number; height: number }; acceptDownloads?: boolean }): Promise<PwContext>
+  newContext(options: {
+    viewport: { width: number; height: number }
+    acceptDownloads?: boolean
+  }): Promise<PwContext>
   close(): Promise<void>
 }
 
@@ -58,8 +71,12 @@ function isTimeout(err: unknown): boolean {
 
 function mapSelectorError(err: unknown, selector: string): ToolError {
   if (err instanceof ToolError) return err
-  if (isTimeout(err)) return new ToolError('element_not_found', `selector not found in time: ${selector}`)
-  return new ToolError('element_not_found', `selector failed: ${selector}: ${(err as Error).message}`)
+  if (isTimeout(err))
+    return new ToolError('element_not_found', `selector not found in time: ${selector}`)
+  return new ToolError(
+    'element_not_found',
+    `selector failed: ${selector}: ${(err as Error).message}`,
+  )
 }
 
 /** playwright 引擎实例（导出供引擎级单测注入假 page）。 */
@@ -90,7 +107,11 @@ export class PlaywrightEngine implements BrowserEngine {
     if (status >= 400) {
       throw new ToolError('http_status', `navigation returned HTTP ${status}: ${url}`)
     }
-    return { status, url: response === null ? this.page.url() : response.url(), title: await this.page.title() }
+    return {
+      status,
+      url: response === null ? this.page.url() : response.url(),
+      title: await this.page.title(),
+    }
   }
 
   async click(selector: string): Promise<void> {
@@ -104,7 +125,8 @@ export class PlaywrightEngine implements BrowserEngine {
   async type(selector: string, value: string, submit?: boolean): Promise<void> {
     try {
       await this.page.fill(selector, value, { timeout: this.config.actionTimeoutMs })
-      if (submit === true) await this.page.press(selector, 'Enter', { timeout: this.config.actionTimeoutMs })
+      if (submit === true)
+        await this.page.press(selector, 'Enter', { timeout: this.config.actionTimeoutMs })
     } catch (err) {
       throw mapSelectorError(err, selector)
     }
@@ -135,8 +157,11 @@ export class PlaywrightEngine implements BrowserEngine {
     const target = selector ?? 'body'
     try {
       if (typeof attr === 'string' && attr.length > 0) {
-        const value = await this.page.getAttribute(target, attr, { timeout: this.config.actionTimeoutMs })
-        if (value === null) throw new ToolError('element_not_found', `attribute ${attr} not found on ${target}`)
+        const value = await this.page.getAttribute(target, attr, {
+          timeout: this.config.actionTimeoutMs,
+        })
+        if (value === null)
+          throw new ToolError('element_not_found', `attribute ${attr} not found on ${target}`)
         return { value }
       }
       const text = await this.page.textContent(target, { timeout: this.config.actionTimeoutMs })
@@ -178,7 +203,10 @@ export class PlaywrightEngine implements BrowserEngine {
 }
 
 /** 惰性加载 playwright 并开一个页面。 */
-export async function loadPlaywright(config: EngineConfig, handle: CreationHandle): Promise<BrowserEngine> {
+export async function loadPlaywright(
+  config: EngineConfig,
+  handle: CreationHandle,
+): Promise<BrowserEngine> {
   let module: PwModule
   try {
     module = (await import('playwright')) as unknown as PwModule
@@ -192,7 +220,9 @@ export async function loadPlaywright(config: EngineConfig, handle: CreationHandl
       ...(config.browserPath === null ? {} : { executablePath: config.browserPath }),
     })
   } catch (err) {
-    throw new BrowserUnsupportedError(`playwright chromium launch failed: ${(err as Error).message}`)
+    throw new BrowserUnsupportedError(
+      `playwright chromium launch failed: ${(err as Error).message}`,
+    )
   }
   // 浏览器已起：登记同步硬杀句柄；若建引擎途中已被 abort，register 会立即关闭它。
   handle.register({ kill: () => void browser.close().catch(() => undefined) })

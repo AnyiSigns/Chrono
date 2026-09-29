@@ -1,0 +1,81 @@
+{
+  "title": "l1-maintenance（L1 记忆维护）",
+  "description": "身份自述 / 数据契约：L1（short-memory 的会话摘要）维护的 sweep（TTL 24h 过期清理）/ candidates（只读过期候选）/ view（只读一档）三方法。L1 是运行记录、已出世界：本服务经反向调用读 short-memory、写 short-memory，不读投影、不产世界写计划、不自取时钟（时间由调用帧 env 传入，同输入同输出）。会话 → 工作区归属经反向调用 session.read 供入（对齐原维护服务的 owner 读取面）。",
+  "type": "object",
+  "additionalProperties": true,
+  "params": {
+    "l1_ttl_ms": 86400000
+  },
+  "properties": {
+    "sweep_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "sweep 的 bag：删到期 L1 会话（expires_at 优先，否则 at + TTL）。",
+      "properties": {
+        "l1_ttl_ms": { "type": "integer", "minimum": 1 },
+        "now": {}
+      }
+    },
+    "candidates_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "candidates 的 bag：只读回过期 L1 候选，不删、不写。",
+      "properties": {
+        "l1_ttl_ms": { "type": "integer", "minimum": 1 },
+        "now": {}
+      }
+    },
+    "view_bag": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "view 的 bag：只读回 L1 一档，含 at / expires_at / 剩余 TTL / summary。",
+      "properties": {
+        "l1_ttl_ms": { "type": "integer", "minimum": 1 },
+        "now": {}
+      }
+    },
+    "sweep_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "sweep" },
+        "l1_deleted": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "candidates_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "candidates" },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "layer": { "const": "l1" },
+              "id": { "type": "string" },
+              "reason": { "const": "l1_expired" }
+            }
+          }
+        }
+      }
+    },
+    "view_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "kind": { "const": "view" },
+        "l1": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  },
+  "method_timeouts": {
+    "l1-maintenance.sweep": 200000,
+    "l1-maintenance.candidates": 200000,
+    "l1-maintenance.view": 200000
+  }
+}

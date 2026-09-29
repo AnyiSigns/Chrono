@@ -1,7 +1,8 @@
-// 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
-// 并自动应答反向调用 `port.call`（模拟宿主侧路由；可注入 bridge）。
+// 协议级测试驱动（mini-host）：spawn `node execute/main.ts`（memory-consolidate 门面），
+// 并按其 `port.call` 路由：l1/l2/l3-maintenance 转发到各自的 stdio 服务（真实提供方），
+// 其余 owner / 后端调用用内存假件应答。
 // 内置内存假 owner 服务：short-memory（read/apply）、memory-store（list/append/delete/pin/edit）、
-// session（read）；compress.summarize、embedding.embed 与 tokenizer.chunk 走可配置假后端。
+// session（read）；embedding.embed 与 compress.summarize 走可配置假后端。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -11,8 +12,18 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 
-export const DIM = 64
+const PROVIDER_ENTRIES = {
+  'l1-maintenance': resolve(HERE, '..', '..', 'l1-maintenance', 'execute', 'main.ts'),
+  'l2-maintenance': resolve(HERE, '..', '..', 'l2-maintenance', 'execute', 'main.ts'),
+  'l3-maintenance': resolve(HERE, '..', '..', 'l3-maintenance', 'execute', 'main.ts'),
+}
+const PROVIDER_ROOTS = {
+  'l1-maintenance': resolve(HERE, '..', '..', 'l1-maintenance'),
+  'l2-maintenance': resolve(HERE, '..', '..', 'l2-maintenance'),
+  'l3-maintenance': resolve(HERE, '..', '..', 'l3-maintenance'),
+}
 
+export const DIM = 64
 export { encodeFrame, createDecoder }
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: Date.parse('2023-11-14T00:00:00.000Z') }
@@ -183,13 +194,9 @@ export function memoryEntry(entry = {}) {
   }
 }
 
-/** 默认假后端：tokenizer.chunk / embedding.embed / summarize / owner 服务。 */
+/** 默认假后端：embedding.embed / compress.summarize。 */
 export function defaultBridge(options = {}) {
   return (port, method, args) => {
-    if (port === 'tokenizer' && method === 'chunk') {
-      const text = typeof args?.text === 'string' ? args.text : ''
-      return { value: [{ index: 0, start: 0, end: [...text].length, text }] }
-    }
     if (port === 'embedding' && method === 'embed') {
       const texts = Array.isArray(args?.texts) ? args.texts : []
       return {
@@ -208,126 +215,163 @@ export function defaultBridge(options = {}) {
   }
 }
 
-/** 启动服务并返回请求 / 反向调用接口；`bridge(port, method, args)` 应答反向调用。 */
+/** 启动门面服务并返回请求 / 反向调用接口；`bridge(port, method, args)` 应答反向调用。 */
 export function startService(options = {}) {
   const env = { ...process.env }
   if (options.stateDir !== undefined) env.CHRONO_PLUGIN_STATE = options.stateDir
   else delete env.CHRONO_PLUGIN_STATE
-  const child = spawn(process.execPath, [ENTRY], {
-    cwd: PKG_ROOT,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env,
-  })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const frames = []
+  const timeoutMs = options.timeoutMs ?? 15000
   const portCalls = []
-  const stderr = []
   const shortMemory = options.shortMemory ?? createFakeShortMemory(options.memory)
   const memory = options.memoryStore ?? createFakeMemory(options.entries, options.pinned)
   const session = options.session ?? sessionFixture()
   const fallback = defaultBridge(options)
   const bridge =
     options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
+  const providers = new Map()
+  const children = []
 
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      frames.push(message)
-      if (message.kind === 'port.call') {
-        portCalls.push(message)
-        Promise.resolve()
-          .then(() => {
-            if (message.port === 'short-memory') {
-              if (message.method === 'read') return { value: structuredClone(shortMemory.memory) }
-              if (message.method === 'apply')
-                return { value: shortMemory.apply(message.args ?? {}) }
-            }
-            if (message.port === 'memory') {
-              const outcome = memory.call(message.method, message.args ?? {})
-              if (outcome === undefined) return { error: 'unknown_method', message: message.method }
-              return { value: outcome }
-            }
-            if (message.port === 'session' && message.method === 'read') {
-              return { value: structuredClone(session) }
-            }
-            return bridge(message.port, message.method, message.args)
-          })
-          .then((outcome) => {
-            if (!child.stdin.writable) return
-            const frame = outcome.error
-              ? {
-                  v: '1',
-                  id: message.id,
-                  kind: 'port.error',
-                  ok: false,
-                  error: outcome.error,
-                  message: outcome.message ?? outcome.error,
-                }
-              : { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value }
-            child.stdin.write(encodeFrame(frame))
-          })
-          .catch((err) => {
-            if (!child.stdin.writable) return
-            child.stdin.write(
-              encodeFrame({
-                v: '1',
-                id: message.id,
-                kind: 'port.error',
-                ok: false,
-                error: 'bridge_failed',
-                message: err instanceof Error ? err.message : String(err),
-              }),
-            )
-          })
-        continue
-      }
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
-
-  const timeoutMs = options.timeoutMs ?? 15000
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(
-          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
-        )
-      }, timeoutMs)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
+  function makeService(entry, cwd, allowProviders) {
+    const child = spawn(process.execPath, [entry], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env,
     })
+    children.push(child)
+    const decoder = createDecoder()
+    const pending = new Map()
+    const stderr = []
+    let seq = 0
+    const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
+
+    child.stdout.on('data', (chunk) => {
+      for (const message of decoder.push(chunk)) {
+        if (message.kind === 'port.call') {
+          portCalls.push(message)
+          respondToPortCall(child, message, allowProviders)
+          continue
+        }
+        const handler = pending.get(message.id)
+        if (handler !== undefined) {
+          pending.delete(message.id)
+          handler(message)
+        }
+      }
+    })
+    child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
+
+    function request(kind, fields, expect) {
+      seq += 1
+      const id = `${allowProviders ? 'host' : 'owner'}-${seq}`
+      const expected = Array.isArray(expect) ? expect : [expect]
+      return new Promise((resolveRequest, rejectRequest) => {
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          rejectRequest(
+            new Error(
+              `timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`,
+            ),
+          )
+        }, timeoutMs)
+        pending.set(id, (message) => {
+          clearTimeout(timer)
+          if (!expected.includes(message.kind)) {
+            rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
+            return
+          }
+          resolveRequest(message)
+        })
+        child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
+      })
+    }
+
+    return {
+      child,
+      request,
+      call: (port, method, args, callEnv) => {
+        const fields = { port, method, args }
+        if (callEnv !== undefined) fields.env = callEnv
+        return request('call', fields, ['result', 'error'])
+      },
+      close: () => child.stdin.end(),
+      exit,
+      stderr,
+    }
   }
 
+  function providerFor(port) {
+    let provider = providers.get(port)
+    if (provider === undefined) {
+      provider = makeService(PROVIDER_ENTRIES[port], PROVIDER_ROOTS[port], false)
+      providers.set(port, provider)
+    }
+    return provider
+  }
+
+  async function respondToPortCall(child, message, allowProviders) {
+    const port = message.port
+    const method = message.method
+    const args = message.args ?? {}
+    let outcome
+    try {
+      outcome = await resolvePort(port, method, args, allowProviders)
+    } catch (err) {
+      outcome = {
+        error: 'bridge_failed',
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
+    if (!child.stdin.writable) return
+    const frame = outcome.error
+      ? {
+          v: '1',
+          id: message.id,
+          kind: 'port.error',
+          ok: false,
+          error: outcome.error,
+          message: outcome.message ?? outcome.error,
+        }
+      : { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value ?? null }
+    child.stdin.write(encodeFrame(frame))
+  }
+
+  async function resolvePort(port, method, args, allowProviders) {
+    if (allowProviders && Object.hasOwn(PROVIDER_ENTRIES, port)) {
+      const reply = await providerFor(port).call(port, method, args, FIXED_ENV)
+      if (reply.kind === 'result') return { value: reply.value }
+      return { error: reply.code ?? 'provider_error', message: reply.message ?? '' }
+    }
+    if (port === 'short-memory') {
+      if (method === 'read') return { value: structuredClone(shortMemory.memory) }
+      if (method === 'apply') return { value: shortMemory.apply(args) }
+    }
+    if (port === 'memory') {
+      const outcome = memory.call(method, args)
+      if (outcome === undefined) return { error: 'unknown_method', message: method }
+      return { value: outcome }
+    }
+    if (port === 'session' && method === 'read') return { value: structuredClone(session) }
+    return bridge(port, method, args)
+  }
+
+  const facade = makeService(ENTRY, PKG_ROOT, true)
+
   return {
-    child,
-    exit,
-    frames,
+    child: facade.child,
+    exit: facade.exit,
     portCalls,
-    stderr,
-    request,
     shortMemory,
     memory,
-    hello: () => request('hello', { impl: 'memory-consolidate', gen: 'gen-1' }, 'manifest'),
+    request: facade.request,
+    hello: () => facade.request('hello', { impl: 'memory-consolidate', gen: 'gen-1' }, 'manifest'),
     call: (method, args, env = FIXED_ENV) =>
-      request('call', { port: 'memory-maintenance', method, args, env }, ['result', 'error']),
-    close: () => child.stdin.end(),
+      facade.request('call', { port: 'memory-maintenance', method, args, env }, [
+        'result',
+        'error',
+      ]),
+    close: () => {
+      facade.close()
+      for (const provider of providers.values()) provider.close()
+    },
   }
 }
