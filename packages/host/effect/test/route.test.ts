@@ -616,6 +616,22 @@ describe('槽解析 resolveSlot（many）', () => {
     expect(second.ok && second.row.impl).toBe('b')
   })
 
+  it('只声明 needs.many 的消费方：反向 resolve 不可达（unresolved_cap），resolveSlot 才给有序成员表', () => {
+    // 消费方未 implements、无自 pin、无 one 绑定：反向调用只认显式 pins / meta.needs one 绑定 / 自能力，
+    // 看不到 many 槽，故 unresolved_cap；这是「many 不经反向调用」的边界，members 只能从 resolveSlot 取。
+    const world = manyWorld(['a'], { 'toy.echo': { mode: 'many', methods: ['echo'] } })
+    const endpoints = new EndpointTable()
+    endpoints.add(rowOf('a', assemblyGenOf('a', world), 'toy.echo', 'echo'))
+    const router = createRoundRouter({ endpoints })
+    expect(router.resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
+      ok: false,
+      error: 'unresolved_cap',
+    })
+    expect(router.resolveSlot?.(world, 'caller', 'toy.echo', 'echo')?.members).toEqual([
+      { provider: 'a', ok: true, row: expect.objectContaining({ impl: 'a' }) },
+    ])
+  })
+
   it('成员缺端点行 → 该元素 not_loaded，其余成员不受影响', () => {
     const world = manyWorld(['a', 'b'])
     const endpoints = new EndpointTable()

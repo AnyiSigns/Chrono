@@ -58,8 +58,8 @@ boot ──→ client ──→ kernel
 | 入站动词 | `host/wire.ts`、`host/inbound/dispatch.ts`、客户端镜像 `client/index.ts` |
 | 服务协议帧 | `host/service-link.ts` |
 | `plugin.json` 各枚举 | `host/assembly/decl.ts`（`members.kind` / `transport` / `state`）、`host/assembly/supervision.ts`（`restart` / `backoff`） |
-| `plugin.json` 字段 `needs` / `slots` 与 `commit.body.meta.needs` | `host/assembly/decl.ts`、`host/assembly/ingest.ts` |
-| 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out） | `host/effect/route.ts`、`host/effect/run-loop.ts` |
+| `plugin.json` 字段 `needs` / `slots` 与 `commit.body.meta.needs` | `host/assembly/decl.ts`、`host/assembly/ingest.ts`、`host/assembly/runtime.ts`（提供方按拥有方契约注册端点） |
+| 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out / 聚合审计） | `host/effect/route.ts`、`host/effect/run-loop.ts`、`host/effect/execute.ts` |
 | `validate_package` 结果形状 | `host/validate-package.ts` |
 | `argsSchema` 方言 | `host/assembly/args-schema.ts` |
 | schema 宿主消费键 | `host/periodic.ts`、`method-timeouts.ts`、`audit-tiers.ts`、`audit-redact.ts`、`assembly/assets-manifest.ts` |

@@ -775,6 +775,69 @@ describe('通用 run loop 的槽 fan-out', () => {
     expect(body.result).toEqual(elements)
   })
 
+  it('audit:false（只读）：many 槽照常 fan-out 回灌聚合，但不落审计', async () => {
+    const termHash = 'th'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
+      ids: {},
+    }
+    // 两个提供方各自端点：断言只读提交仍逐成员执行（fan-out 确实发生在 2 个提供方上）
+    const calls: string[] = []
+    const router: RoundRouter = {
+      resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+      resolveSlot: () => ({
+        members: [
+          {
+            provider: 'a',
+            ok: true,
+            row: slotRow('a', async () => {
+              calls.push('a')
+              return { ok: true, value: { from: 'a' } }
+            }),
+          },
+          {
+            provider: 'b',
+            ok: true,
+            row: slotRow('b', async () => {
+              calls.push('b')
+              return { ok: true, value: { from: 'b' } }
+            }),
+          },
+        ],
+      }),
+    }
+    const audits: AuditDraft[] = []
+    const outcome = await runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      audit: false,
+      router,
+      onAudit: (draft) => audits.push(draft),
+    })
+    expect(outcome.status).toBe('done')
+    expect(calls).toEqual(['a', 'b'])
+    // 聚合 EffResult 保住每个提供方元素：只读不改 fan-out 语义
+    expect(outcome.observations).toEqual([
+      {
+        kind: 'eval',
+        entry: termHash,
+        ok: true,
+        value: [
+          { provider: 'a', ok: true, value: { from: 'a' } },
+          { provider: 'b', ok: true, value: { from: 'b' } },
+        ],
+      },
+    ])
+    // audit:false 路径不构造审计草稿（onAudit 一次都不调），也不推进 head
+    expect(audits).toEqual([])
+    expect(outcome.head).toEqual(EMPTY_HEAD)
+  })
+
   it('0 命中 → 空元素表；1 命中正常执行', async () => {
     const termHash = 'th'.repeat(32)
     const world: World = {
