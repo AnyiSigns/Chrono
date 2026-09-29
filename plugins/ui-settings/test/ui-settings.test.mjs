@@ -57,6 +57,8 @@ import {
   togglesDisabled,
 } from '../execute/web/notify.ts'
 import {
+  graphEdgeMeta,
+  graphNodeMeta,
   graphView,
   healthView,
   ledgerLists,
@@ -440,12 +442,20 @@ test('台账 tail 倒序 / 摘要 / 图与 Scope 视图', () => {
       { seq: 1, payload: 'g1' },
       { seq: 2, payload: 'g2' },
     ],
-    body: { contract_id: 'c1', nodes: [{ contract_id: 'n1', impl: 'a' }], edges: [{ from: 0, to: 1, when: 'ok' }] },
+    body: {
+      nodes: { tail: { def: 'n1' }, count: 1 },
+      contracts: { tail: null, count: 0 },
+      graph: {
+        nodes: ['c1'],
+        edges: [{ from: [0, 'out'], to: [0, 'in'], when: 'ok' }],
+      },
+    },
+    refs: { n1: { node_id: 'as-1', contract_id: 'c1', impl: 'atomic', prev: null } },
   }
   const view = graphView(graph)
-  assert.equal(view.contractId, 'c1')
-  assert.deepEqual(view.nodes, [{ index: 0, contract_id: 'n1', impl: 'a' }])
-  assert.deepEqual(view.edges, [{ from: 0, to: 1, when: 'ok' }])
+  assert.equal(view.contractId, null, '内联图无 def 哈希')
+  assert.deepEqual(view.nodes, [{ index: 0, contract_id: 'c1', node_id: 'as-1', impl: 'atomic' }])
+  assert.deepEqual(view.edges, [{ from: [0, 'out'], to: [0, 'in'], when: 'ok' }])
   assert.deepEqual(graphView(null).nodes, [])
 
   const agents = {
@@ -480,6 +490,80 @@ test('台账 tail 倒序 / 摘要 / 图与 Scope 视图', () => {
   assert.equal(scopeLabel(null), 'global')
   assert.equal(shortHash('abcdef0123456789'), 'abcdef01')
   assert.equal(shortHash(null), '')
+})
+
+test('graphView：内联图 / `{def}` 图经 refs 解析 / 链式节点 / 畸形空体', () => {
+  // 内联图 + 链式 nodes / contracts（tail 最新，沿 prev 回溯）
+  const inline = graphView({
+    body: {
+      contracts: { tail: { def: 'k2' }, count: 2 },
+      nodes: { tail: { def: 'n2' }, count: 2 },
+      graph: {
+        nodes: ['context.assemble', 'agent.step'],
+        edges: [
+          { from: [0, 'messages'], to: [1, 'messages'] },
+          { from: [1, 'tool_calls'], to: [1, 'calls'], when: 'nonempty(tool_calls)' },
+        ],
+        sink: 1,
+      },
+    },
+    refs: {
+      k1: { contract_id: 'context.assemble', role_tag: 'assemble', prev: null },
+      k2: { contract_id: 'agent.step', role_tag: 'step', prev: { def: 'k1' } },
+      n1: { node_id: 'as-assemble', contract_id: 'context.assemble', impl: 'atomic', prev: null },
+      n2: { node_id: 'as-step', contract_id: 'agent.step', impl: 'composite', prev: { def: 'n1' } },
+    },
+  })
+  assert.equal(inline.contractId, null, '内联图无 def 哈希')
+  assert.deepEqual(inline.nodes, [
+    { index: 0, contract_id: 'context.assemble', node_id: 'as-assemble', impl: 'atomic' },
+    { index: 1, contract_id: 'agent.step', node_id: 'as-step', impl: 'composite' },
+  ])
+  assert.deepEqual(inline.edges, [
+    { from: [0, 'messages'], to: [1, 'messages'], when: '' },
+    { from: [1, 'tool_calls'], to: [1, 'calls'], when: 'nonempty(tool_calls)' },
+  ])
+
+  // `{def}` 图经 refs 解析；contractId = 图 def 哈希
+  const byDef = graphView({
+    body: { nodes: { tail: null, count: 0 }, contracts: { tail: null, count: 0 }, graph: { def: 'g-abc' } },
+    refs: { 'g-abc': { nodes: ['turn.commit'], edges: [], sink: 0 } },
+  })
+  assert.equal(byDef.contractId, 'g-abc')
+  assert.deepEqual(byDef.nodes, [{ index: 0, contract_id: 'turn.commit', node_id: '', impl: '' }])
+  assert.deepEqual(byDef.edges, [])
+
+  // 畸形 / 空体一律回空骨架，不抛
+  for (const bad of [
+    null,
+    {},
+    { body: null },
+    { body: {}, refs: {} },
+    { body: { graph: { nodes: 'no' }, nodes: {} }, refs: {} },
+    { body: { graph: { def: 'missing' }, nodes: { tail: { def: 'x' } } }, refs: {} },
+    { body: { graph: { nodes: ['c1'] }, nodes: 'bogus' }, refs: [] },
+    { body: { graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] }, nodes: [null] }, refs: {} },
+  ]) {
+    const view = graphView(bad)
+    assert.equal(view.contractId, null)
+    assert.ok(Array.isArray(view.nodes))
+    assert.ok(Array.isArray(view.edges))
+  }
+  const malformed = graphView({
+    body: { graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] }, nodes: [null] },
+    refs: {},
+  })
+  assert.deepEqual(malformed.edges, [
+    { from: null, to: [1, 'in'], when: '' },
+    { from: null, to: null, when: '' },
+  ])
+
+  // 展示纯函数
+  assert.equal(graphNodeMeta({ node_id: 'as-1', impl: 'atomic' }), 'as-1 · atomic')
+  assert.equal(graphNodeMeta({ node_id: '', impl: 'atomic' }), 'atomic')
+  assert.equal(graphNodeMeta(null), '')
+  assert.equal(graphEdgeMeta({ from: [0, 'out'], to: [1, 'in'] }), '#0:out -> #1:in')
+  assert.equal(graphEdgeMeta({ from: null, to: null }), '- -> -')
 })
 
 // ---- 服务侧装配 / 桥接 / 判定 ----
@@ -1257,7 +1341,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
     assert.deepEqual(manifest.implements, ['ui-settings'])
-    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'] })
+    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'] })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')
 

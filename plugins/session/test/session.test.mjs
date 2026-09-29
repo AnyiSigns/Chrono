@@ -196,6 +196,7 @@ test('hello returns manifest: durable state and full method list', async () => {
       'restore',
       'branch',
       'deliver',
+      'ack_inbox',
       'turn_open',
       'step_append',
       'turn_settle',
@@ -588,36 +589,118 @@ test('deliver writes inbox + status; terminal status emits thread.closed', async
   }
 })
 
-// -- history -----------------------------------------------------------------
+// -- inbox unread / ack ------------------------------------------------------
 
-test('history reads own store: window newest-first + before / limit', async () => {
+test('inbox unread projection + monotonic ack (append-only, never backwards)', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await seedConversation(drv, 'sub1', { title: 'child' })
+    await drv.call('deliver', { to: 'sub1', kind: 'instruction', body: 'do a', from: 'parent' })
+    await drv.call('deliver', { to: 'sub1', kind: 'instruction', body: 'do b', from: 'parent' })
+
+    const read = await drv.call('read', { conversation: 'sub1' })
+    assert.deepEqual(
+      read.inbox_unread.map((item) => [item.seq, item.kind, item.from, item.body]),
+      [
+        [1, 'instruction', 'parent', 'do a'],
+        [2, 'instruction', 'parent', 'do b'],
+      ],
+    )
+
+    // ack 到 1：只消掉第一条，水位 = 1。
+    const first = await drv.call('ack_inbox', { conversation: 'sub1', seq: 1 })
+    assert.equal(first.ok, true)
+    assert.equal(first.advanced, true)
+    assert.equal(first.last_seen, 1)
+    assert.deepEqual((await drv.call('read', { conversation: 'sub1' })).inbox_unread.map((item) => item.seq), [2])
+
+    // ack 到 2：清空。
+    await drv.call('ack_inbox', { conversation: 'sub1', seq: 2 })
+    assert.deepEqual((await drv.call('read', { conversation: 'sub1' })).inbox_unread, [])
+
+    // 已读 seq 再 ack = no-op；ack 更小的 seq 也不倒退（单调）。
+    const again = await drv.call('ack_inbox', { conversation: 'sub1', seq: 1 })
+    assert.equal(again.advanced, false)
+    assert.equal(again.last_seen, 2)
+    const smaller = await drv.call('ack_inbox', { conversation: 'sub1', seq: 0 })
+    assert.equal(smaller.last_seen, 2)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('inbox ack is append-only and survives restart replay; last_seen never decreases', async () => {
+  const root = tempRoot()
+  const first = startService({ root })
+  try {
+    await first.hello()
+    await seedConversation(first, 'sub1')
+    await first.call('deliver', { to: 'sub1', kind: 'instruction', body: 'x' })
+    await first.call('ack_inbox', { conversation: 'sub1', seq: 1 })
+  } finally {
+    first.close()
+    await first.exit
+  }
+  const second = startService({ root })
+  try {
+    await second.hello()
+    const read = await second.call('read', { conversation: 'sub1' })
+    assert.equal(conversationById(read, 'sub1').inbox.last_seen, 1)
+    assert.deepEqual(read.inbox_unread, [])
+    // 重启后 ack 旧 seq 仍不倒退。
+    const stale = await second.call('ack_inbox', { conversation: 'sub1', seq: 1 })
+    assert.equal(stale.advanced, false)
+    assert.equal(stale.last_seen, 1)
+  } finally {
+    second.close()
+    await second.exit
+    second.cleanup()
+  }
+})
+
+test('ack_inbox on an unknown conversation -> not_found', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.call('ack_inbox', { conversation: 'nope', seq: 1 })
+    assert.equal(value.ok, false)
+    assert.equal(value.reason, 'not_found')
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+// -- history -----------------------------------------------------------------
+test('history reads own store: window newest-first + before / limit by turn', async () => {
   const drv = startService()
   try {
     await drv.hello()
     await seedConversation(drv, 'c1')
-    await drv.call('commit', {
-      thread_id: 't1',
-      slots: { slots: { t1: { kind: 'chat.message', text: 'a' } } },
-      conversation: 'c1',
-      user: { content: 'a' },
-      assistant: { content: 'b' },
-    }, commitEnv('run-1'))
-    await drv.call('commit', {
-      thread_id: 't1',
-      slots: { slots: { t1: { kind: 'chat.message', text: 'c' } } },
-      conversation: 'c1',
-      user: { content: 'c' },
-      assistant: { content: 'd' },
-    }, commitEnv('run-2'))
+    // 展示投影以回合步日志为真源：两个回合各一条助手 step.result。
+    await drv.call('turn_open', { turn_id: 't1', user_message: { content: 'a' }, slot_ref: 'run-1' }, turnEnv('run-1'))
+    await drv.call('step_append', { type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'b' } }, turnEnv('run-1'))
+    await drv.call('turn_settle', { turn_id: 't1', outcome: COMMITTED }, turnEnv('run-1'))
+    await drv.call('turn_open', { turn_id: 't2', user_message: { content: 'c' }, slot_ref: 'run-2' }, turnEnv('run-2'))
+    await drv.call('step_append', { type: 'step.result', turn_id: 't2', seq: 1, assistant: { content: 'd' } }, turnEnv('run-2'))
+    await drv.call('turn_settle', { turn_id: 't2', outcome: COMMITTED }, turnEnv('run-2'))
+
     const full = await drv.call('history', { conversation: 'c1' })
     assert.equal(full.conversation, 'c1')
-    assert.equal(full.messages.length, 4)
+    assert.deepEqual(full.messages.map((e) => e.def.content), ['d', 'c', 'b', 'a'])
     assert.equal(full.messages[0].def.content, 'd')
-    const limited = await drv.call('history', { conversation: 'c1', limit: 2 })
+    // limit 现在是回合数：最近 1 个回合 = t2 的用户 / 助手两条。
+    const limited = await drv.call('history', { conversation: 'c1', limit: 1 })
     assert.deepEqual(limited.messages.map((e) => e.def.content), ['d', 'c'])
+    // before 命中的消息所属回合不含，取更旧回合。
     const before = await drv.call('history', { conversation: 'c1', before: full.messages[1].hash })
     assert.deepEqual(before.messages.map((e) => e.def.content), ['b', 'a'])
     assert.equal(full.next_before, null)
+    // 展示时间线随历史一并给出（含标记位）。
+    assert.ok(Array.isArray(full.display) && full.display.length === 2)
+    assert.deepEqual(full.display[1].items.map((item) => item.kind), ['user', 'text'])
   } finally {
     drv.close()
     drv.cleanup()

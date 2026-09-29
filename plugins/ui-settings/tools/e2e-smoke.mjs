@@ -169,7 +169,7 @@ function assertDeclaration() {
   assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
   assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
   assert.deepEqual(decl.implements, ['ui-settings'])
-  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'])
+  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'])
   assert.deepEqual(decl.pins, {
     model: 'model-protocol',
     secrets: 'secrets',

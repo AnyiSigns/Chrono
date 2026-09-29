@@ -30,10 +30,10 @@ const LIST_KEYS = [
   'user_preferences',
 ] as const
 
-/** 结构化检查点判定：排除段标记 / verify 报告等内部标记。 */
+/** 结构化检查点判定：排除段标记 / verify 报告 / 子代理结果等内部标记。 */
 export function isStructuredCheckpoint(summary: unknown): summary is Rec {
   if (!isRecord(summary)) return false
-  if (summary['kind'] === 'segment' || summary['kind'] === 'verify') return false
+  if (summary['kind'] === 'segment' || summary['kind'] === 'verify' || summary['kind'] === 'subagent') return false
   return STRUCTURED_KEYS.some((key) => summary[key] !== undefined)
 }
 
@@ -143,13 +143,15 @@ function tryJson(text: string | null): Json | null {
 /**
  * 子代理产出归一为结构化结果：优先产出里的 `result` 对象，其次从正文解析 JSON；
  * 解析失败时把正文作 `goal`。返回带上承接帧，`tool_calls` 置空（子代理不直接调工具）。
+ * `kind:'subagent'` 标记使它落账后不被当作会话检查点（不覆盖历史边界），仍随同回合上下文可见。
  */
 export function toSubagentResult(value: Json): Rec {
   const raw = isRecord(value) ? (value as Rec) : {}
   const explicit = isRecord(raw['result']) ? (raw['result'] as Rec) : null
   const text = typeof raw['text'] === 'string' ? (raw['text'] as string) : ''
   const parsed = explicit ?? parseResultJson(text)
-  const result = parsed !== null ? normalizeResult(parsed) : (text.length > 0 ? { goal: text } : {})
+  const normalized = parsed !== null ? normalizeResult(parsed) : (text.length > 0 ? { goal: text } : {})
+  const result: Rec = { ...normalized, kind: 'subagent' }
   const message: Rec = { role: 'assistant', content: renderCheckpointText(result) }
   return { ...raw, message, tool_calls: [], result }
 }

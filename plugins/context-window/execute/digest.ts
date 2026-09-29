@@ -10,6 +10,8 @@ import type { Json } from './types.ts'
 
 /** 资源身份候选键（按序取首个非空字符串）。 */
 const IDENTITY_KEYS = ['path', 'file', 'url', 'uri', 'resource'] as const
+/** 读取窗口键：同一资源的不同分片是不同内容，纳入身份以免被替代去重误塌。 */
+const WINDOW_KEYS = ['offset', 'limit'] as const
 /** shell 命令键。 */
 const COMMAND_KEYS = ['cmd', 'command'] as const
 /** shell 工作目录键。 */
@@ -80,10 +82,28 @@ export function resourceIdentity(tool: string, args: Json): ResourceIdentity | n
   for (const field of IDENTITY_KEYS) {
     const value = args[field]
     if (typeof value === 'string' && value.length > 0) {
-      return { key: `${tool}\u0001${field}\u0001${value}`, fields: { [field]: value } }
+      const window = windowOf(args)
+      // 无窗口时键保持不变（旧身份稳定）；带 offset/limit 的读取是不同分片，另成一键。
+      if (window === null) return { key: `${tool}\u0001${field}\u0001${value}`, fields: { [field]: value } }
+      return {
+        key: `${tool}\u0001${field}\u0001${value}\u0001${window.key}`,
+        fields: { [field]: value, ...window.fields },
+      }
     }
   }
   return null
+}
+
+/** 读取窗口（offset/limit）：缺省返回 null，使无窗口的旧身份键保持稳定。 */
+function windowOf(args: Record<string, unknown>): { key: string; fields: Record<string, string> } | null {
+  const fields: Record<string, string> = {}
+  for (const key of WINDOW_KEYS) {
+    const value = args[key]
+    if (typeof value === 'number' && Number.isFinite(value)) fields[key] = String(value)
+  }
+  const present = WINDOW_KEYS.filter((key) => fields[key] !== undefined)
+  if (present.length === 0) return null
+  return { key: present.map((key) => `${key}=${fields[key]}`).join('\u0001'), fields }
 }
 
 /** 是否变更类结果：写 / 编辑 / 删除等改写资源，替代去重会丢事实，跳过。 */

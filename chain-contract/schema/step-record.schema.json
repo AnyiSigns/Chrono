@@ -13,6 +13,22 @@
   ],
   "definitions": {
     "turnId": { "type": "string", "description": "回合身份；一次用户意图到最终答复，跨 send / N 次 resume 不变。" },
+    "coverageBoundary": {
+      "description": "检查点覆盖边界。字符串 = 历史 message id（旧式）；整数 = 局部于检查点自身回合的步序号（旧式）；{turn_id, seq} = 全局边界（按回合序 + 步号词序）。",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "integer", "minimum": 0 },
+        {
+          "type": "object",
+          "required": ["turn_id", "seq"],
+          "additionalProperties": true,
+          "properties": {
+            "turn_id": { "type": "string" },
+            "seq": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
     "reasoningBlock": {
       "type": "object",
       "required": ["provider", "model", "form", "payload"],
@@ -120,10 +136,10 @@
             "next_steps": { "type": "array", "items": { "type": "string" } },
             "errors_to_avoid": { "type": "array", "items": { "type": "object" } },
             "user_preferences": { "type": "array", "items": { "type": "string" } },
-            "covered_upto": { "type": ["string", "integer"] }
+            "covered_upto": { "$ref": "#/definitions/coverageBoundary" }
           }
         },
-        "covered_upto": { "type": ["string", "integer"], "description": "检查点覆盖到的步序号。" }
+        "covered_upto": { "$ref": "#/definitions/coverageBoundary", "description": "检查点覆盖边界：整数 = 局部步序号（旧式），{turn_id, seq} = 全局边界。" }
       }
     },
     "turnSettle": {

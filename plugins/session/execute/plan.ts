@@ -63,7 +63,7 @@ export function optionalMessageFields(source: Rec | null): Rec {
 }
 
 /**
- * 数据变更类事件基座（`thread.*` / `workflow.step` / `group.message`）：
+ * 数据变更类事件基座（`thread.*` / `group.message`）：
  * `thread` = **目标线程**（不是发起 run 的 thread），`conversation` 保留同值。
  */
 export function conversationEvent(env: CallEnv, conversationId: string | null): Rec {

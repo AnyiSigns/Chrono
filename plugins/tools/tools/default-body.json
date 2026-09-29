@@ -13,8 +13,7 @@
         "facts": "已确认事实列表。",
         "open_questions": "未决问题列表。",
         "files": "涉及的文件列表。",
-        "next_steps": "后续步骤列表。",
-        "covered_upto": "已压缩到的最后一条消息 id。"
+        "next_steps": "后续步骤列表。"
       },
       "boundaries": "只写短期记忆 L1，不改写展示历史；不检索、不固化 L3。",
       "argsSchema": {
@@ -26,8 +25,7 @@
           "facts": { "type": "array", "items": { "type": "string" } },
           "open_questions": { "type": "array", "items": { "type": "string" } },
           "files": { "type": "array", "items": { "type": "string" } },
-          "next_steps": { "type": "array", "items": { "type": "string" } },
-          "covered_upto": { "type": "string" }
+          "next_steps": { "type": "array", "items": { "type": "string" } }
         },
         "additionalProperties": true
       },

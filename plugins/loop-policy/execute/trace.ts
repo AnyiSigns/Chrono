@@ -18,14 +18,42 @@ export class TraceRecorder {
   readonly effLog: Rec[] = []
   readonly linkTaken: Rec[] = []
   branchNotTaken = 0
+  /** 本回合被击败（触发但未选中）的分支明细，确定性记录（声明序）。 */
+  readonly branchesNotTaken: Rec[] = []
   refusedAt: Rec | null = null
   outcome = 'done'
   l1Maxed = false
   private stepSeq = 0
+  /** 分支全域（所有被声明参与执行的边，含 composite 子图边）：用于 `branch_not_taken` 精确计数。 */
+  private readonly branchUniverse = new Set<string>()
+  /** 已消费为输入的分支。 */
+  private readonly branchesTaken = new Set<string>()
 
   nextStep(): number {
     this.stepSeq += 1
     return this.stepSeq
+  }
+
+  /** 登记参与执行的分支键（边键）；跨段 / 子图累积，幂等。 */
+  declareBranches(keys: string[]): void {
+    for (const key of keys) this.branchUniverse.add(key)
+  }
+
+  /** 标记一条边已被消费为输入。 */
+  markBranch(key: string): void {
+    this.branchesTaken.add(key)
+  }
+
+  /** 记一条被击败的分支明细（any 端口未选中的触发边）。 */
+  noteBranchNotTaken(key: string, nodeIndex: number, reason: string): void {
+    this.branchesNotTaken.push({ branch: key, node_index: nodeIndex, reason })
+  }
+
+  /** 精确落定 `branch_not_taken`：未被消费的分支数（与 sink 位置无关）。 */
+  finalizeBranches(): void {
+    let count = 0
+    for (const key of this.branchUniverse) if (!this.branchesTaken.has(key)) count += 1
+    this.branchNotTaken = count
   }
 
   startStep(nodeIndex: number, iter: number, contractId: string, chosenInstance: string, chosenAgent: string | null): Rec {
@@ -70,13 +98,12 @@ export class TraceRecorder {
     step['eff_log'] = list
   }
 
-  refuse(nodeIndex: number, iter: number, code: string, attributableTo: string): void {
-    this.refusedAt = { node_index: nodeIndex, iter, code, attributable_to: attributableTo }
+  refuse(nodeIndex: number, iter: number, code: string, attributableTo: string, parentIndex: number | null = null): void {
+    const entry: Rec = { node_index: nodeIndex, iter, code, attributable_to: attributableTo }
+    // composite 子图内节点与父图节点共用 node_index 空间：带 parent_index 以保持可还原。
+    if (parentIndex !== null) entry['parent_index'] = parentIndex
+    this.refusedAt = entry
     this.outcome = 'refused'
-  }
-
-  notTaken(count: number): void {
-    this.branchNotTaken += Math.max(0, count)
   }
 
   link(from: number, toContract: string, reason: string): void {
@@ -98,6 +125,7 @@ export class TraceRecorder {
       ctx_summary: ctxSummary,
       refused_at: this.refusedAt,
       branch_not_taken: this.branchNotTaken,
+      branches_not_taken: this.branchesNotTaken,
       link_taken: this.linkTaken,
       outcome: this.outcome,
       at,

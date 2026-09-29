@@ -110,7 +110,123 @@ export function chainOf(messages) {
     prev = hash
     head = hash
   }
-  return { head, refs }
+  return { head, refs, turns: turnsFromMessages(messages) }
+}
+
+function callsOf(message) {
+  const calls = []
+  const parts = Array.isArray(message.parts) ? message.parts : []
+  for (const part of parts) {
+    if (part === null || typeof part !== 'object') continue
+    if (part.type === 'tool') {
+      const id = typeof part.call_id === 'string' ? part.call_id : null
+      if (id !== null) calls.push({ id, name: part.tool ?? '', arguments: part.args ?? {} })
+      continue
+    }
+    if (part.type === 'tool_call' || part.type === 'tool_use') {
+      const id = part.id ?? part.call_id ?? `call-${calls.length}`
+      calls.push({ id, name: part.name ?? part.tool ?? '', arguments: part.arguments ?? part.args ?? {} })
+    }
+  }
+  for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+    if (call === null || typeof call !== 'object') continue
+    const id = call.id ?? call.call_id
+    if (typeof id !== 'string') continue
+    calls.push({ id, name: call.name ?? '', arguments: call.arguments ?? call.args ?? {} })
+  }
+  return calls
+}
+
+function parsedToolContent(content) {
+  if (typeof content !== 'string') return null
+  try {
+    const parsed = JSON.parse(content)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.call_id === 'string'
+      ? parsed
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把平铺的展示消息推断成回合步日志（模型形状），供新投影消费：
+ * 每条 user 消息起一个新回合；assistant 的 `parts` 工具卡 / `tool_calls` 落成 step.intent + step.result；
+ * 紧随的 `role:'tool'` 消息按其 call_id 回填结果。
+ */
+export function turnsFromMessages(messages) {
+  const turns = []
+  let current = null
+  const ensureTurn = () => {
+    if (current === null) {
+      current = { turn_id: `t${turns.length + 1}`, user: null, assistant: [], tools: [] }
+      turns.push(current)
+    }
+    return current
+  }
+  for (const message of messages) {
+    if (message === null || typeof message !== 'object') continue
+    if (message.role === 'user') {
+      current = { turn_id: `t${turns.length + 1}`, user: message, assistant: [], tools: [] }
+      turns.push(current)
+      continue
+    }
+    const turn = ensureTurn()
+    if (message.role === 'tool') turn.tools.push(message)
+    else turn.assistant.push(message)
+  }
+
+  return turns.map((turn) => {
+    const steps = []
+    let seq = 0
+    for (const message of turn.assistant) {
+      seq += 1
+      const calls = callsOf(message)
+      const parts = Array.isArray(message.parts) ? message.parts : []
+      const assistant = { content: typeof message.content === 'string' ? message.content : '' }
+      if (typeof message.from === 'string') assistant.from = message.from
+      if (parts.length > 0) assistant.parts = parts
+      const toolResults = []
+      for (const card of parts) {
+        if (card === null || typeof card !== 'object' || card.type !== 'tool') continue
+        const callId = typeof card.call_id === 'string' ? card.call_id : null
+        if (callId === null) continue
+        if (card.status === null && card.result === null) continue
+        const ok = card.status !== 'error'
+        toolResults.push(ok ? { call_id: callId, ok: true, result: card.result ?? null } : { call_id: callId, ok: false, error: card.result ?? null })
+      }
+      if (calls.length > 0) {
+        steps.push({ type: 'step.intent', turn_id: turn.turn_id, seq, kind: 'tool.dispatch', tool_calls: calls })
+        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant, tool_results: toolResults })
+      } else {
+        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant, tool_results: toolResults })
+      }
+    }
+    // 独立 tool 消息：按其 call_id 回填到最近的 step.result。
+    for (const message of turn.tools) {
+      const callId = typeof message.tool_call_id === 'string' ? message.tool_call_id : null
+      const parsed = parsedToolContent(message.content)
+      const result = parsed ?? (typeof message.content === 'string' ? { call_id: callId ?? `call-${seq}`, ok: true, result: message.content } : null)
+      if (result === null) continue
+      let target = null
+      for (const step of steps) if (step.type === 'step.result') target = step
+      if (target === null) {
+        seq += 1
+        steps.push({ type: 'step.result', turn_id: turn.turn_id, seq, assistant: { content: '' }, tool_results: [result] })
+      } else {
+        target.tool_results.push(result)
+      }
+    }
+    const out = { turn_id: turn.turn_id, conv: 'c1', at: '2026-01-01T00:00:00.000Z', state: 'settled', outcome: { kind: 'committed', retryable: false }, steps }
+    if (turn.user !== null) {
+      const user = { content: typeof turn.user.content === 'string' ? turn.user.content : '' }
+      if (Array.isArray(turn.user.parts)) user.parts = turn.user.parts
+      if (Array.isArray(turn.user.attachments)) user.attachments = turn.user.attachments
+      if (typeof turn.user.from === 'string') user.from = turn.user.from
+      out.user_message = user
+    }
+    return out
+  })
 }
 
 /** 基础 bag：默认预算 850（1000 - 100 - 50），支持所有输入模态。 */
@@ -120,7 +236,7 @@ export function baseBag(overrides = {}) {
     system_prompt: 'sys',
     tools: [],
     memories: {},
-    session: { head: null, refs: {} },
+    session: { head: null, refs: {}, turns: [] },
     config: {
       model: 'm1',
       context_window: 1000,

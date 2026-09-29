@@ -133,6 +133,8 @@ interface CoreResult {
   usedWithoutInput: number
   inputTokens: number
   inputOverflow: boolean
+  /** 因预算被整组裁掉的历史消息条数（不含本轮 / 非历史来源）。 */
+  droppedHistory: number
 }
 
 /**
@@ -149,6 +151,13 @@ function allocateCore(
   const keep = new Set<CanonicalMessage>()
   let left = budget
   for (const message of mandatoryOf(messages)) {
+    keep.add(message)
+    left -= message.tokens
+  }
+  // 本轮记录（T0，`source:'tool'`）：优先保留（先于记忆 / 历史配额），不参与历史裁剪。
+  // 超预算时由顶层老化 / 丢推理先行收缩；配对完整性由 atomic 组保证。
+  for (const message of byPriority(messages, 4)) {
+    if (message.source === 'history') continue
     keep.add(message)
     left -= message.tokens
   }
@@ -192,12 +201,17 @@ function allocateCore(
   takeByPriority(3, policy.quota.recall)
   takeByPriority(5, policy.quota.style)
 
-  // 历史（含同回合工具）：新 → 旧，atomic 组整组进 / 整组出；额度不够时停止（保新近连续）。
-  const groups = groupHistory(byPriority(messages, 4))
+  // 历史：仅 `source==='history'`（P4）新 → 旧按 atomic 组整组进出；额度不够时停止（保新近连续）。
+  // 本轮记录（`source:'tool'`）不在此列——它们是 T0，另有配额保留路径，不产生 `drop_old_turns`。
+  const groups = groupHistory(byPriority(messages, 4).filter((message) => message.source === 'history'))
+  let droppedHistory = 0
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index] as Group
     if (group.tokens > spendable()) {
-      for (const message of group.messages) trimmed.push({ source: message.source, reason: 'budget' })
+      for (const message of group.messages) {
+        trimmed.push({ source: message.source, reason: 'budget' })
+        droppedHistory += 1
+      }
       continue
     }
     for (const message of group.messages) keep.add(message)
@@ -217,6 +231,7 @@ function allocateCore(
     usedWithoutInput,
     inputTokens,
     inputOverflow: inputTokens > 0 && inputTokens > left,
+    droppedHistory,
   }
 }
 
@@ -274,6 +289,11 @@ function truncateText(text: string, marker: string, maxTokens: number, scale: nu
   return best
 }
 
+/**
+ * 截断本轮输入：只改写「正文最长」的单条输入消息（首尾保留 + 显式标记），其余输入消息原样保留；
+ * 被截断消息上的非文本 part（附件 / 图片）全部原样保留，不因截断丢失。
+ * 可分配额度 = `remaining - 其它输入消息 token`，保证同批输入互不吞并。
+ */
 function truncateInput(
   messages: CanonicalMessage[],
   remaining: number,
@@ -283,38 +303,49 @@ function truncateInput(
 ): CanonicalMessage[] {
   const inputMessages = messages.filter((message) => message.source === 'input')
   if (inputMessages.length === 0) return messages
-  const text = inputMessages
-    .flatMap((message) => message.parts.filter((part) => part.type === 'text').map((part) => part.text))
-    .join('\n')
-  const template = inputMessages[0] as CanonicalMessage
-  const truncated = canonicalize([
-    {
-      role: 'user',
-      parts: [{ type: 'text', text: truncateText(text, marker, Math.max(1, remaining), scale) }],
-      source: 'input',
-      priority: template.priority,
-      at: template.at,
-      atomic: false,
-      atomicGroup: null,
-      toolCallId: null,
-      from: template.from,
-      orderHint: template.orderHint,
-    },
-  ], { scale })[0] as CanonicalMessage
-  for (const message of inputMessages) trimmed.push({ source: 'input', reason: 'truncated' })
-  const out: CanonicalMessage[] = []
-  let inserted = false
-  for (const message of messages) {
-    if (message.source !== 'input') {
-      out.push(message)
-      continue
+  let target: CanonicalMessage | null = null
+  let targetText = ''
+  let targetLength = -1
+  let targetIndex = -1
+  messages.forEach((message, index) => {
+    if (message.source !== 'input') return
+    const text = message.parts
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n')
+    if (text.length > targetLength) {
+      targetLength = text.length
+      target = message
+      targetText = text
+      targetIndex = index
     }
-    if (!inserted) {
-      out.push(truncated)
-      inserted = true
-    }
-  }
-  return out
+  })
+  if (target === null || targetIndex < 0) return messages
+  let otherTokens = 0
+  for (const message of inputMessages) if (message !== target) otherTokens += message.tokens
+  const preserved = target.parts.filter((part) => part.type !== 'text')
+  // 保留的二进制 part 也各占 1 token 开销，须从可分配额度里扣除，否则截断后仍差一点点放不下。
+  const preservedCost = applyScale(preserved.length, scale)
+  const allowance = Math.max(1, remaining - otherTokens - preservedCost)
+  const truncated = canonicalize(
+    [
+      {
+        role: target.role,
+        parts: [{ type: 'text', text: truncateText(targetText, marker, allowance, scale) }, ...preserved],
+        source: 'input',
+        priority: target.priority,
+        at: target.at,
+        atomic: false,
+        atomicGroup: null,
+        toolCallId: null,
+        from: target.from,
+        orderHint: target.orderHint,
+      },
+    ],
+    { scale },
+  )[0] as CanonicalMessage
+  trimmed.push({ source: 'input', reason: 'truncated' })
+  return messages.map((message, index) => (index === targetIndex ? truncated : message))
 }
 
 export interface AllocationOptions {
@@ -371,12 +402,10 @@ export function allocate(
   }
 
   let working = messages
-  let agedResults = false
   if (sumTokens(working) > budget) {
     const aged = ageToolResults(working, scale)
     if (aged !== working) {
       working = aged
-      agedResults = true
       degraded.push('age_tool_results')
     }
   }
@@ -387,9 +416,9 @@ export function allocate(
       degraded.push('drop_reasoning')
     }
   }
-  // 压缩梯级：预算仍超，或本轮已用机械老化兜底（压缩不可用的回落路径）。
-  // 有检查点 = 压缩产物已消费 → `compress`；否则 `compress_unavailable`——机械老化已顶上，回合不硬死。
-  if (agedResults || sumTokens(working) > budget) {
+  // 压缩梯级：只有机械老化 + 丢推理后仍超预算才登记（已压到预算内 = 压缩未发生）。
+  // 有检查点 = 压缩产物已消费 → `compress`；否则 `compress_unavailable`（压缩不可用，机械老化顶上）。
+  if (sumTokens(working) > budget) {
     degraded.push(options.checkpoint === true ? 'compress' : 'compress_unavailable')
   }
 
@@ -397,7 +426,8 @@ export function allocate(
     ? countTokens(policy.messages.input_truncated) + 1
     : 0
   let core = allocateCore(working, budget, policy, trimmed, reserve)
-  if (trimmed.some((entry) => entry.reason === 'budget')) degraded.push('drop_old_turns')
+  // 只有历史组真的因预算被裁才登记 `drop_old_turns`（本轮 T0 记录不计）。
+  if (core.droppedHistory > 0) degraded.push('drop_old_turns')
   if (core.inputOverflow) {
     const remaining = budget - core.usedWithoutInput
     working = truncateInput(working, remaining, policy.messages.input_truncated, trimmed, scale)

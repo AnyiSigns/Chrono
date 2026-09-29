@@ -53,9 +53,12 @@ function emptyCounts(): Record<RetentionTier, number> {
   return { T0: 0, T1: 0, T2: 0, T3: 0 }
 }
 
-/** 消息的保留等级。非历史来源（本轮输入 / 系统提示 / 记忆 / 同回合 iter 产物）恒为 T0。 */
+/** 消息的保留等级。非历史来源（本轮输入 / 同回合 iter 产物 / 系统提示 / 记忆）恒为 T0。 */
 export function tierOf(message: CanonicalMessage, options: RetentionOptions): RetentionTier {
+  // 非历史先判 T0：同回合记录即使被投影层标了 `covered`（检查点边界落在自身回合内）也不得被 T3 裁掉。
   if (message.source !== 'history') return 'T0'
+  // 投影层已判定被检查点边界覆盖（含边界同回合、独立 tool 结果）→ 直接 T3。
+  if (message.covered === true) return 'T3'
   const turnId = message.turnId ?? null
   if (turnId !== null && options.coveredTurnIds.has(turnId)) return 'T3'
   if (turnId === null) return 'T1'
@@ -162,6 +165,9 @@ function replacementDedupe(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index] as CanonicalMessage
     if (message.role !== 'tool' || message.toolCallId === null) continue
+    // 只优化跨回合历史：本轮 / 同回合工作集（T0，含 extra_messages 的调用内结果）绝不塌缩，
+    // 否则模型在当次推理链里就丢掉刚读到的正文，于是反复重读。
+    if (message.source !== 'history') continue
     const meta = metaOf(message)
     if (meta === null) continue
     const parsed = parseResultContent(meta.verbatim)

@@ -10,6 +10,7 @@
       "profile",
       "discover",
       "health",
+      "graph",
       "scopes",
       "view",
       "search",
@@ -21,6 +22,7 @@
   "concurrent_methods": [
     "vendors",
     "health",
+    "graph",
     "scopes",
     "view",
     "search",

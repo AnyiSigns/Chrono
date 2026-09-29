@@ -25,7 +25,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | `secrets.status` | `eff secrets.list` | 本地密钥引用名状态（只回 `{name,has}`，不回本体） |
 | `settings.identities` | 投影读 `ctx.ids` | 身份名 / 状态 / 世代短哈希（插件页与关于页） |
 | `settings.skills` | `eff skill read`（读 `ctx.ids.skill` 作基线） | 技能清单（技能页）；技能运行记录已出世界，经 owner 服务读回 |
-| `orchestration.graph` | 投影读编排图身份 | 当前 active 图的节点 / 边（只读） |
+| `orchestration.graph` | `eff ui-settings graph`（读 `ctx.ids['loop-policy']`） | eff 服务方法：按需解析投影 refs 后回图切片；浏览器解析 `graph` 单值（内联 / `{def}`）与节点实例（只读） |
 | `orchestration.scopes` | `eff ui-settings scopes`（读 `ctx.ids.agents`） | eff 服务方法：按需解析投影 refs 后回 Scope 名录（只读查询，仍标 `readonly`） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail |
 | `memory.view` | `eff ui-settings view`（无参） | 反向调 `memory-maintenance.view`（L1 / L2 / L3 由维护服务自问 owner） |

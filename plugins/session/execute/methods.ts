@@ -100,7 +100,6 @@ function newConversationEntry(
     parent,
     agent,
     participants: [],
-    workflow: null,
     inbox: { tail: null, count: 0, last_seen: 0 },
     status: 'waiting',
     last_activity: null,
@@ -498,7 +497,6 @@ async function branch(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Handl
     source_message: messageRef,
     agent: source['agent'] ?? null,
     participants: asArray(source['participants']) ?? [],
-    workflow: source['workflow'] ?? null,
     inbox: { tail: null, count: 0, last_seen: 0 },
     status: 'waiting',
     last_activity: null,
@@ -521,11 +519,6 @@ async function branch(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Handl
 }
 
 // ── deliver（跨线程投递） ───────────────────────────────────────────────────
-
-function workflowPosition(workflow: Json | undefined): { node_index: number | null; iter: number | null } {
-  if (!isRecord(workflow)) return { node_index: null, iter: null }
-  return { node_index: numberField(workflow as Rec, 'node_index'), iter: numberField(workflow as Rec, 'iter') }
-}
 
 async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
   const now = nowOf(env)
@@ -550,7 +543,6 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
       parent: isRecord(args['parent']) ? args['parent'] : null,
       agent: isRecord(args['agent']) ? args['agent'] : null,
       participants: asArray(args['participants']) ?? [],
-      workflow: isRecord(args['workflow']) ? args['workflow'] : null,
       inbox: { tail: null, count: 0, last_seen: 0 },
       status: asString(args['status']) ?? 'waiting',
       last_activity: null,
@@ -581,8 +573,6 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
   const pending = isRecord(args['pending'])
     ? args['pending']
     : (isRecord(conversation['pending']) ? conversation['pending'] : { approval: 0, question: 0 })
-  const previousWorkflow = conversation['workflow']
-  const workflow = isRecord(args['workflow']) ? args['workflow'] : previousWorkflow ?? null
   const lastActivity = isRecord(args['last_activity']) ? args['last_activity'] : { at, summary: summaryOf(messageBodyValue) }
   const lastSeenArg = numberField(args, 'last_seen')
   const lastSeen = Math.max(numberField(inbox, 'last_seen') ?? 0, lastSeenArg ?? (numberField(inbox, 'last_seen') ?? 0))
@@ -593,7 +583,6 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
     status,
     last_activity: lastActivity,
     pending,
-    workflow,
   }
   store.upsertConversation(env.run, nextConversation)
 
@@ -605,14 +594,6 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
   const changed = ['inbox']
   if (status !== previousStatus) changed.push('status')
   events.push({ topic: 'thread.updated', payload: { ...conversationEvent(env, to), changed } })
-  const before = workflowPosition(previousWorkflow)
-  const after = workflowPosition(workflow)
-  if (before.node_index !== after.node_index || before.iter !== after.iter) {
-    events.push({
-      topic: 'workflow.step',
-      payload: { ...conversationEvent(env, to), node_index: after.node_index, iter: after.iter },
-    })
-  }
   if (conversationKind === 'group') {
     events.push({
       topic: 'group.message',
@@ -623,6 +604,35 @@ async function deliver(args: Rec, env: CallEnv, deps: SessionDeps): Promise<Hand
     events.push({ topic: 'thread.closed', payload: { ...conversationEvent(env, to), status } })
   }
   return { value: { ok: true, to, seq, status, kind }, events }
+}
+
+// ── inbox ack（跨线程投递已读水位） ──────────────────────────────────────────
+
+/**
+ * 推进收件箱已读水位：`last_seen = max(current, seq)`，只增不减。服务调用路径（args 驱动、不清槽）。
+ * 已读 / 会话未知为幂等 no-op（分别回 `advanced:false` / `not_found`）；追加失败回 `owner_unavailable`
+ * （不落内存、不推进水位，未读保留供下轮重投）。
+ */
+async function ackInbox(args: Rec, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const conversation = asString(args['conversation'])
+  const seq = numberField(args, 'seq')
+  if (conversation === null) throw new BadArgsError('conversation required')
+  if (seq === null) throw new BadArgsError('seq required')
+  const status = await deps.store.ackInbox(env.run, conversation, seq)
+  if (status === 'not_found') {
+    return { value: { ok: false, reason: 'not_found', conversation }, events: [] }
+  }
+  if (status === 'failed') {
+    return { value: { ok: false, reason: 'owner_unavailable', conversation }, events: [] }
+  }
+  const entry = deps.store.conversation(conversation)
+  const inbox = entry !== null && isRecord(entry['inbox']) ? (entry['inbox'] as Rec) : {}
+  const lastSeen = numberField(inbox, 'last_seen') ?? 0
+  const events = status === 'applied'
+    ? [{ topic: 'thread.updated', payload: { ...conversationEvent(env, conversation), changed: ['inbox'] } }]
+    : []
+  return { value: { ok: true, conversation, last_seen: lastSeen, advanced: status === 'applied' }, events }
 }
 
 // ── 回合事件日志：turn_open / step_append / turn_settle ─────────────────────
@@ -854,6 +864,7 @@ export function createHandlers(deps: SessionDeps): Record<string, Handler> {
     restore: (args, env) => restore(requireArgs(args), env, deps),
     branch: (args, env) => branch(requireArgs(args), env, deps),
     deliver: (args, env) => deliver(requireArgs(args), env, deps),
+    ack_inbox: (args, env) => ackInbox(requireArgs(args), env, deps),
     turn_open: (args, env) => turnOpen(args, env, deps),
     step_append: (args, env) => stepAppend(args, env, deps),
     turn_settle: (args, env) => turnSettle(args, env, deps),

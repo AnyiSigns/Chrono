@@ -443,7 +443,6 @@ test('turn log: a subagent turn persists task/checkpoint across replay and keeps
         parent: { def: 'c1' },
         agent: null,
         participants: [],
-        workflow: null,
         inbox: { tail: null, count: 0, last_seen: 0 },
         status: 'waiting',
         last_activity: null,

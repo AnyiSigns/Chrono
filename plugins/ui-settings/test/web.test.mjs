@@ -417,8 +417,11 @@ test('技能行主文本与插件副文本片段（纯模块）', () => {
 })
 
 test('编排图 / Scope / 台账文案组装（纯模块）', () => {
-  const view = graphView({ body: { contract_id: 'c1', nodes: [{ contract_id: 'n1' }], edges: [{ from: 0, to: 1 }] } })
-  assert.equal(graphMeta(view, fakeT), 'settings_orch_contract c1 · settings_orch_nodes 1 · settings_orch_edges 1')
+  const view = graphView({
+    body: { graph: { def: 'abcd' }, nodes: { tail: null, count: 0 } },
+    refs: { abcd: { nodes: ['n1'], edges: [{ from: [0, 'o'], to: [1, 'i'] }] } },
+  })
+  assert.equal(graphMeta(view, fakeT), 'settings_orch_contract abcd · settings_orch_nodes 1 · settings_orch_edges 1')
 
   const scope = { index: 0, id: 'a2', contract_id: 'a2', persona: 'Q', scope: 'global', autonomy: 'high', links: 'l1', success_rate: 0.9 }
   assert.equal(

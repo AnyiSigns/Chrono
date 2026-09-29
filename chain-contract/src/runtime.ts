@@ -450,6 +450,19 @@ function isStepRecordType(value: unknown): value is StepRecordType {
   return typeof value === 'string' && (STEP_RECORD_TYPES as readonly string[]).includes(value)
 }
 
+/**
+ * 覆盖边界：字符串（历史 message id）/ 整数（旧式、局部于检查点自身回合）/
+ * `{turn_id, seq}`（全局边界，按回合序 + 步号词序）。
+ */
+export function isCoverageBoundary(value: unknown): boolean {
+  if (typeof value === 'string') return true
+  if (Number.isInteger(value)) return true
+  if (isRecord(value)) {
+    return typeof value['turn_id'] === 'string' && Number.isInteger(value['seq'])
+  }
+  return false
+}
+
 /** 校验一条回合步记录（`type` 取步记录名）。失败回结构化结局，不抛异常。 */
 export function validateStepRecord(value: unknown): ContractResult<Rec> {
   if (!isRecord(value)) return { ok: false, outcome: invalidContract('step record must be an object') }
@@ -467,9 +480,11 @@ export function validateStepRecord(value: unknown): ContractResult<Rec> {
     return { ok: false, outcome: invalidContract(`${type}.seq must be an integer`) }
   }
   if (type === 'checkpoint') {
-    const covered = value['covered_upto']
-    if (typeof covered !== 'string' && !Number.isInteger(covered)) {
-      return { ok: false, outcome: invalidContract('checkpoint.covered_upto must be a string or integer') }
+    if (!isCoverageBoundary(value['covered_upto'])) {
+      return {
+        ok: false,
+        outcome: invalidContract('checkpoint.covered_upto must be a string, integer, or {turn_id, seq}'),
+      }
     }
   }
   if (type === 'turn.settle') {

@@ -178,7 +178,12 @@ async function interpret(
       progress: result.progress,
       refused_at: trace.refusedAt,
       branch_not_taken: trace.branchNotTaken,
-      instances: trace.steps.map((step) => [step['node_index'], step['chosen_instance']]),
+      // 子图节点与父图共用 node_index 空间：带 parent_index（第三位）以保持可还原；父图节点保持二元组。
+      instances: trace.steps.map((step) =>
+        step['parent_index'] !== undefined
+          ? [step['node_index'], step['chosen_instance'], step['parent_index']]
+          : [step['node_index'], step['chosen_instance']],
+      ),
     }
     // 契约版本事实留痕：未标注（缺失）时为 null，消费方据此区分「未标注」与「已标注且兼容」。
     summary['contract_version'] = asString(bag['contract_version'])

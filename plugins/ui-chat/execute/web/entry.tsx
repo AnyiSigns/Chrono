@@ -64,7 +64,7 @@ import { usageText } from './usage.ts'
 import { COPY_HOLD_MS } from './copy.ts'
 import { createLightboxState } from './lightbox.ts'
 import { groupViewModel } from './group.ts'
-import { statusIcon, workflowViewModel } from './workflow.ts'
+import { progressText, stopReasonText } from './progress.ts'
 import {
   clampWindow,
   dismissNew,
@@ -1212,6 +1212,9 @@ function StreamTurn({ view }: { view: any }): ReactNode {
   if (inFlight === null) return null
   const toolsById = new Map(inFlight.tools.map((tool: any) => [tool.callId, tool]))
   const lastIndex = inFlight.segments.length - 1
+  // 编排进度行 / 预算收口说明：一行紧凑、非侵入；来自回合事件携带的 `progress` / `stop_reason`。
+  const progressLine = progressText(inFlight.progress)
+  const stopNote = stopReasonText(inFlight.stopReason)
   return (
     <div className="chat-msg chat-msg-assistant" aria-busy={inFlight.cancelled === true ? undefined : true}>
       {inFlight.segments.map((segment: any, index: number) => {
@@ -1232,6 +1235,15 @@ function StreamTurn({ view }: { view: any }): ReactNode {
         }
         return <StreamToolCard key={segment.callId} tool={toolsById.get(segment.callId)} />
       })}
+      {stopNote !== null ? (
+        <div className="chat-orchestration" data-tone="stop" role="status">
+          {stopNote}
+        </div>
+      ) : progressLine !== null ? (
+        <div className="chat-orchestration" role="status">
+          {progressLine}
+        </div>
+      ) : null}
       {inFlight.outcome !== null && inFlight.outcome.kind !== 'committed' ? (
         <TurnOutcomeLine outcome={inFlight.outcome} />
       ) : inFlight.suspended === true ? (
@@ -1509,7 +1521,6 @@ function App({
     error: null,
     newMsg: { count: 0 },
     group: { unreadIds: new Set<string>(), anchorEl: null },
-    workflowStep: null,
     connected: false,
     sawDisconnect: false,
     table: FALLBACK_MESSAGES as MessageTable,
@@ -1625,7 +1636,6 @@ function App({
     }
     if (resetView) {
       st.group.unreadIds = new Set()
-      st.workflowStep = null
     }
     // 乐观用户气泡由 store 收口（权威快照已含同文用户消息即清除），不随整屏重置误清。
     st.finalizeAnnounce = options.announceFinal === true
@@ -1697,7 +1707,7 @@ function App({
   async function loadPendingUser(): Promise<void> {
     const thread = stateRef.current.viewThread
     const view = store.getSnapshot()
-    if (view.kind === 'group' || view.kind === 'workflow') return
+    if (view.kind === 'group') return
     const read = (await ctx.command('input.read', thread === null ? null : { thread }, { thread })) as any
     if (disposedRef.current || stateRef.current.viewThread !== thread) return
     const raw = read !== null && read.ok === true ? read.value : null
@@ -1890,12 +1900,6 @@ function App({
       const id = typeof payload.id === 'string' ? payload.id : typeof payload.message === 'string' ? payload.message : ''
       if (id.length > 0) st.group.unreadIds.add(id)
       void apiRef.current.loadHistory(st.viewThread, { resetView: false })
-      return
-    }
-    if (record.topic === 'workflow.step') {
-      if (!match(dataChangeTarget(payload))) return
-      st.workflowStep = payload
-      rerender()
       return
     }
     if (record.topic === 'thread.updated' || record.topic === 'thread.opened' || record.topic === 'thread.closed') {
@@ -2195,46 +2199,6 @@ function App({
     ))
   }
 
-  function renderWorkflow(): ReactNode {
-    const graphRef =
-      view.conversation !== null &&
-      view.conversation.workflow !== undefined &&
-      view.conversation.workflow !== null
-        ? view.conversation.workflow.graph
-        : null
-    const graphDef = graphRef !== null && typeof graphRef.def === 'string' ? view.refs[graphRef.def] : null
-    const vm = workflowViewModel({ conversation: view.conversation, graphDef, step: st.workflowStep })
-    const fillWidth = vm.total > 0 ? `${Math.min(100, Math.round(((vm.index + 1) / vm.total) * 100))}%` : null
-    return (
-      <div className="chat-workflow">
-        <div className="chat-workflow-title">{vm.title}</div>
-        <div className="chat-workflow-meta">{vm.metaText}</div>
-        <div className="chat-workflow-track">
-          <div className="chat-workflow-fill" style={fillWidth !== null ? { width: fillWidth } : undefined} />
-        </div>
-        <details>
-          <summary>{lookupMessage(table, 'chat_node_list').body}</summary>
-          {vm.nodes.map((node: any, index: number) => (
-            <div key={index} className="chat-workflow-node" data-status={node.status}>
-              <Icon name={statusIcon(node.status)} size={16} />
-              <span>{node.label}</span>
-              <span className="chat-workflow-meta">{node.impl}</span>
-              <span>{node.statusText}</span>
-            </div>
-          ))}
-        </details>
-        {vm.rejectCode !== null ? (
-          <div className="chat-error">
-            <div>{lookupMessage(table, vm.rejectCode).body}</div>
-            <button type="button" className="chat-btn" onClick={() => retryTurn()}>
-              {lookupMessage(table, 'chat_retry').body}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
-
   function renderList(): ReactNode {
     const errorBar =
       st.error !== null ? (
@@ -2251,8 +2215,7 @@ function App({
         </div>
       )
     }
-    const body =
-      view.kind === 'group' ? renderGroup() : view.kind === 'workflow' ? renderWorkflow() : renderConversation()
+    const body = view.kind === 'group' ? renderGroup() : renderConversation()
     return errorBar === null ? body : (
       <>
         {errorBar}

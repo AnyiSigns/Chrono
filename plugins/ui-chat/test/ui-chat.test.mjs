@@ -1,6 +1,6 @@
 // `ui-chat` 纯函数视图层 + 服务协议测试（node --test）。
 // 覆盖：markdown / 消毒、parts 分发、工具卡两形态三 tone、detail.kind 全集与未知降级、
-// usage 两路、复制时序、事件线程过滤、群聊 / 步骤卡、窗口化与胶囊状态机、日期分隔、
+// usage 两路、复制时序、事件线程过滤、群聊 / 编排进度、窗口化与胶囊状态机、日期分隔、
 // lightbox 状态机、历史沿 prev 还原、命令不可用路径、client.read 路径穿越防护、
 // 服务握手 / EOF 自退出、入口导出。
 
@@ -36,7 +36,7 @@ import { computeDiff, detailViewModel, parsePatch, questionAnswerText, splitLine
 import { applyQuestionStates, collectQuestionItemIds } from '../execute/web/question-state.ts'
 import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
 import { groupViewModel } from '../execute/web/group.ts'
-import { statusIcon, statusText, workflowViewModel } from '../execute/web/workflow.ts'
+import { progressText, stopReasonText } from '../execute/web/progress.ts'
 import {
   clampWindow,
   createNewMessageState,
@@ -615,27 +615,27 @@ test('群聊视图模型：首字母圆标 / 连续发言人只首条显名 / �
   )
 })
 
-// ---- 工作流 ----
+// ---- 编排进度 ----
 
-test('工作流步骤卡：进度 / 节点列表 / 失败节点拒绝码', () => {
-  const vm = workflowViewModel({
-    conversation: { kind: 'workflow', title: '流程', workflow: { node_index: 1 }, status: 'running' },
-    graphDef: { body: { nodes: [{ name: 'A', impl: 'a' }, { name: 'B', impl: 'b', status: 'failed', reject_code: 'guard_denied' }] } },
-  })
-  assert.equal(vm.title, 'B')
-  assert.equal(vm.index, 1)
-  assert.equal(vm.total, 2)
-  assert.equal(vm.rejectCode, 'guard_denied')
-  assert.equal(vm.failedIndex, 1)
-  assert.equal(statusIcon('failed'), 'x')
-  assert.equal(statusText('running'), '运行中')
-  // 进度 / 状态 / 节点标签由 vm 组装，组件不再就地拼字符串
-  assert.equal(vm.progressText, '第 2 / 2 步')
-  assert.equal(vm.statusText, '运行中')
-  assert.equal(vm.metaText, '第 2 / 2 步 · 运行中')
-  assert.equal(vm.nodes[0].label, '#0 A')
-  assert.equal(vm.nodes[1].label, '#1 B')
-  assert.equal(vm.nodes[1].statusText, '失败')
+test('编排进度：契约 id + 轮次成一行；缺 iter 只给节点名；无效回 null', () => {
+  assert.equal(
+    progressText({ iter: 2, node_index: 1, contract_id: 'tool.dispatch' }),
+    '编排：tool.dispatch · 第 3 轮',
+  )
+  // 缺契约 id：回落节点下标映射的通用节点名（可解析时优先图视图模型，当前图定义不在投影里）。
+  assert.equal(progressText({ iter: 0, node_index: 4, contract_id: null }), '编排：节点 5 · 第 1 轮')
+  // 缺 iter：只给节点名。
+  assert.equal(progressText({ node_index: null, contract_id: 'agent.step' }), '编排：agent.step')
+  // 无可用字段 / 形态非法：不渲染空行。
+  assert.equal(progressText({ iter: 1, node_index: null, contract_id: null }), null)
+  assert.equal(progressText(null), null)
+  assert.equal(progressText('tool.dispatch'), null)
+})
+
+test('预算收口说明：stop_reason 走 message key；缺省回 null', () => {
+  assert.equal(stopReasonText('turn_iter'), '编排提前收口（turn_iter）')
+  assert.equal(stopReasonText(''), null)
+  assert.equal(stopReasonText(null), null)
 })
 
 // ---- 窗口化与胶囊 ----

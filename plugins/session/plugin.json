@@ -13,6 +13,7 @@
       "restore",
       "branch",
       "deliver",
+      "ack_inbox",
       "turn_open",
       "step_append",
       "turn_settle",

@@ -4,7 +4,9 @@
 import { useEffect } from 'react'
 import { DependencyMissing, EmptyState, Icon, TextButton, useVc } from './ui.tsx'
 import {
+  graphEdgeMeta,
   graphMeta,
+  graphNodeMeta,
   graphView,
   HEALTH_UNHEALTHY,
   HEALTH_WARNING,
@@ -84,12 +86,12 @@ function GraphSection() {
         {view.nodes.map((node: any) => (
           <div className="settings-list-item" key={`n${node.index}`}>
             <span className="settings-list-main">{`#${node.index} ${node.contract_id}`}</span>
-            <span className="settings-list-meta">{node.impl}</span>
+            <span className="settings-list-meta">{graphNodeMeta(node)}</span>
           </div>
         ))}
         {view.edges.map((edge: any, index: number) => (
           <div className="settings-list-item" key={`e${index}`}>
-            <span className="settings-list-main">{`${edge.from} -> ${edge.to}`}</span>
+            <span className="settings-list-main">{graphEdgeMeta(edge)}</span>
             <span className="settings-list-meta">{edge.when}</span>
           </div>
         ))}

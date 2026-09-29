@@ -93,7 +93,7 @@ export function matchesThread(payloadThread: unknown, viewThread: unknown, isMai
 }
 
 /**
- * 数据变更类事件（`thread.*` / `group.message` / `workflow.step`）的目标线程：
+ * 数据变更类事件（`thread.*` / `group.message`）的目标线程：
  * 优先 `payload.conversation`（若有，指向目标会话），缺失才回落 `payload.thread`。
  */
 export function dataChangeTarget(payload: unknown): string | null {

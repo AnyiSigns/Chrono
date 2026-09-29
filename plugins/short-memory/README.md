@@ -63,8 +63,9 @@
 
 ## 与压缩 / 维护的协作
 
-- `compress.summarize` / `compact` / `extract` 经 `port.call short-memory.read` 取现状、算合并结果后
-  `port.call short-memory.apply` 写回（读-改-写，绝不盲写整份）。
+- `compress.summarize` 经 `port.call short-memory.read` 取现状、算合并结果后 `port.call short-memory.apply`
+  写回（读-改-写，绝不盲写整份）；L1 的实时写入方是模型工具 `memory.compress`（`persist` 默认 true）。
+  `compress.compact` / `extract` 为保留能力，当前仓库内无调用方（见 `compress/README.md`）。
 - `memory-consolidate.consolidate` / `sweep` / `edit` 同理：读 `read`、按 L1 TTL / L2 容量合并或裁剪后 `apply`。
 
 ## `.worldignore`

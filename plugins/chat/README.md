@@ -36,13 +36,16 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
   载荷 `{turn_id, run, thread, conversation, source}`——`run` = 顶层 run id（与宿主 `run.finished` 配对、可取消），
   `source ∈ send/resume`。用途：续跑是嵌在 `ui-approval.decide` / `question.answer` 顶层 run 内的 eval，
   没有独立宿主 run 生命周期；客户端据此在首个 `model.delta` 前建在途回合 / 显示生成态。
-  空槽 / 未配置模型等回合开始前的拒绝不发。
+  空槽 / 未配置模型等回合开始前的拒绝不发；派发前尚无解释摘要，故不带图内进度。
 - **挂起事件 `chat.turn.pending`**：`loop-policy.interpret` 以 `ended:'pending'`（`approval.wait` 等审批 / 提问）
-  收口时广播，载荷 `{turn_id, run, thread, conversation, pending, source}`（`pending` = 挂起种类，如 `approval`）。
+  收口时广播，载荷 `{turn_id, run, thread, conversation, pending, source}`（`pending` = 挂起种类，如 `approval`）
+  + 摘要里确实存在的 `progress`（图内进度 `{iter, node_index, contract_id}`，UI 据此显示当前编排节点）。
   此时回合**未终结**（工具尚未执行），但宿主 run 会结束、`chat.turn.settled` 不会发。客户端据此保留在途回合并
   显示等待态，而不是把本段当回合定稿、恢复时再拉起一块新的在途回合（否则同一批工具卡会再次出现，观感像重复调用）。
 - **终态事件 `chat.turn.settled`**：回合终态（`committed` / `refused` / `cancelled` / `interrupted`）广播给
-  所有已连客户端，载荷 `{turn_id, thread, conversation, outcome, source}`（`source ∈ send/resume/cancel`）。
+  所有已连客户端，载荷 `{turn_id, thread, conversation, outcome, source}`（`source ∈ send/resume/cancel`）
+  + 摘要里确实存在的 `progress` / `lifecycle`（解释器生命周期）/ `stop_reason`（预算收口原因，仅预算主动停的
+  `committed` 携带）。**只带存在的键、不发明值**：无摘要的收口路径（传输失败 / 取消）不带这三个键。
   命令回执只到发起者（composer），
   而 ui-chat 只听事件、且审批裁决触发的 resume 发起者不是 composer，故终态必须经事件广播。
   `run.finished` 保持纯机械信号，不编码业务结局。
@@ -106,6 +109,19 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
   **跳过父消息历史**（子代理结果另以结构化 `checkpoint` 步记录回写）。
 - 续跑（`chat.resume` 段续跑 / 裁决续跑）由 `turn_id` 经 `session.read` 定位该回合所属会话，
   从回合记录取回任务与父检查点，重启后仍可续同一子代理回合。
+
+### 跨线程收件箱（`inbox_unread` 转发 + ack）
+
+- `session.read` 切片的 `inbox_unread`（本会话未读投递，按 `seq` 升序）随 interpret bag 顶层
+  `inbox_unread` 下传：loop-policy `assembleBag` 透传给 context-window（所有线程口径），
+  `subagentBag` 另行渲染进子代理模型消息（子代理模型调用不经 context-window）。
+- **确认点 = interpret 调用成功返回、且回合未以拒 / 取消收口之后**：只有解释器实际执行（模型确已消费消息）
+  且回合没有失败 / 中止才经 `session.ack_inbox{conversation,seq=max未读}` 推进水位。传输 / 结构化失败
+  （`interpreted.ok === false`）与解释器产出 `refused` / `cancelled` 终态都不 ack，未读保留供重试 / 续跑重投——
+  **失败 / 中止回合不丢消息**；ack 幂等且单调，重复 ack 旧 seq 为 no-op。
+- ack 失败不改变本回合结局、不改会话状态（session 侧只追加、以 `max` 守卫），仅水位未推进 ⇒
+  下轮重投（**retryable-with-audit**，至少一次投递）。
+- 子代理 `send` 指向一条已存在的旁路会话时，另读该会话切片取其未读；新建子代理会话无历史投递。
 
 ## 为什么装配下沉到服务
 

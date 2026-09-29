@@ -129,6 +129,159 @@ test('send: reads owners, then title, then interpret; bag carries owner session/
   assert.equal(await drv.exit, 0)
 })
 
+test('send: forwards unread inbox into the interpret bag and acks the delivered seqs after interpret', async () => {
+  const session = sessionSliceFixture({
+    inbox_unread: [
+      { seq: 1, kind: 'instruction', body: 'a', from: 'sub-1' },
+      { seq: 2, kind: 'report', body: 'b', from: 'sub-2' },
+    ],
+  })
+  const drv = startService({ bridge: defaultBridge({}, { session }) })
+  try {
+    await drv.hello()
+    await drv.call('send', idsFixture())
+    const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
+    assert.deepEqual(bag.inbox_unread.map((item) => item.seq), [1, 2])
+    const ack = callArgs(drv.portCalls, 'session', 'ack_inbox')
+    assert.deepEqual(ack, { conversation: 'c-1', seq: 2 })
+    // ack 在 interpret 之后（模型已消费）。
+    const order = drv.portCalls.map((frame) => `${frame.port}.${frame.method}`)
+    assert.ok(order.indexOf('loop-policy.interpret') < order.indexOf('session.ack_inbox'))
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send: an interpret failure does not ack, so unread is preserved for retry', async () => {
+  const session = sessionSliceFixture({
+    inbox_unread: [{ seq: 1, kind: 'instruction', body: 'a', from: 'sub-1' }],
+  })
+  const drv = startService({
+    bridge: defaultBridge(
+      { 'loop-policy.interpret': () => ({ ok: false, error: { code: 'budget', message: 'gas' } }) },
+      { session },
+    ),
+  })
+  try {
+    await drv.hello()
+    const result = await drv.call('send', idsFixture())
+    assert.equal(externOf(result.value).outcome.kind, 'refused')
+    assert.equal(
+      drv.portCalls.some((frame) => frame.port === 'session' && frame.method === 'ack_inbox'),
+      false,
+      'interpret 失败不得 ack（未读保留供重投）',
+    )
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send: a refused graph outcome does not ack (unread preserved), a committed one does', async () => {
+  const session = sessionSliceFixture({
+    inbox_unread: [{ seq: 1, kind: 'instruction', body: 'a', from: 'sub-1' }],
+  })
+  const refusedPlan = {
+    $directives: [
+      {
+        kind: 'extern',
+        payload: {
+          ok: true,
+          kind: 'interpret',
+          ended: 'refused',
+          turn_id: 't-run-slot-1',
+          outcome: { kind: 'refused', code: 'downstream_refusal', attributableTo: 'graph', retryable: false, cause: null },
+          settled: true,
+        },
+      },
+    ],
+  }
+  const refused = startService({ bridge: defaultBridge({ 'loop-policy.interpret': () => refusedPlan }, { session }) })
+  try {
+    await refused.hello()
+    const result = await refused.call('send', idsFixture())
+    assert.equal(externOf(result.value).outcome.kind, 'refused')
+    assert.equal(
+      refused.portCalls.some((frame) => frame.port === 'session' && frame.method === 'ack_inbox'),
+      false,
+      '拒收口的回合不得 ack（未读保留供重投）',
+    )
+  } finally {
+    refused.close()
+  }
+  assert.equal(await refused.exit, 0)
+
+  const committed = startService({ bridge: defaultBridge({}, { session }) })
+  try {
+    await committed.hello()
+    await committed.call('send', idsFixture())
+    assert.deepEqual(callArgs(committed.portCalls, 'session', 'ack_inbox'), { conversation: 'c-1', seq: 1 })
+  } finally {
+    committed.close()
+  }
+  assert.equal(await committed.exit, 0)
+})
+
+test('send: an existing subagent thread reads its own slice for unread inbox', async () => {
+  const mainConv = { id: 'c-1', title: '主', count: 0, kind: 'main', workspace_id: 'w-1', agent: null, head: null }
+  const subConv = {
+    id: 'c-sub',
+    kind: 'subagent',
+    workspace_id: 'w-1',
+    parent: { def: 'c-1' },
+    agent: null,
+    title: '审查',
+    count: 0,
+    head: null,
+    inbox: { tail: null, count: 1, last_seen: 0 },
+  }
+  const session = sessionSliceFixture({ current: 'c-1', conversations: [mainConv, subConv] })
+  const submit = {
+    kind: 'chat.message',
+    text: '审查 a.ts',
+    workspace_id: 'w-1',
+    thread_kind: 'subagent',
+    task_prompt: '审查 a.ts',
+    conversation_id: 'c-sub',
+  }
+  const base = defaultBridge(
+    {},
+    {
+      session,
+      input: { slots: { t1: submit }, slot_ref: 'run-sub-1' },
+      turnOpen: { ok: true, status: 'created', created: true, turn_id: 't-run-slot-1', conversation: 'c-sub' },
+    },
+  )
+  const drv = startService({
+    bridge: (port, method, args) => {
+      if (port === 'session' && method === 'read' && args?.conversation === 'c-sub') {
+        return Promise.resolve({
+          value: {
+            ...session,
+            current: 'c-1',
+            inbox_unread: [{ seq: 1, kind: 'instruction', body: 'go', from: 'parent' }],
+          },
+        })
+      }
+      return base(port, method, args)
+    },
+  })
+  try {
+    await drv.hello()
+    const result = await drv.call('send', idsFixture({ slot: submit }), { run: 'run-sub-1', thread: 't1', now: 1_700_000_000_000 })
+    assert.equal(result.kind, 'result')
+    const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
+    assert.equal(bag.thread_kind, 'subagent')
+    assert.equal(bag.session_id, 'c-sub')
+    assert.deepEqual(bag.inbox_unread.map((item) => item.seq), [1])
+    assert.deepEqual(callArgs(drv.portCalls, 'session', 'ack_inbox'), { conversation: 'c-sub', seq: 1 })
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
 test('send: definition slices omitted when identity absent from projection', async () => {
   const drv = startService({ bridge: defaultBridge() })
   try {
@@ -157,6 +310,88 @@ test('send: non-first message skips the title segment', async () => {
     // 回合开始自报：客户端据此在首个 delta 前建在途回合（续跑嵌套 eval 无宿主 run 生命周期）。
     const turn = drv.events.find((frame) => frame.topic === 'chat.turn.started')
     assert.deepEqual(turn?.payload, { turn_id: 't-run-slot-1', run: 'run-1', thread: 't1', conversation: 'c-1', source: 'send' })
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send: chat.turn.settled carries graph progress / lifecycle / stop_reason from the interpret summary', async () => {
+  const plan = {
+    $directives: [
+      {
+        kind: 'extern',
+        payload: {
+          ok: true,
+          kind: 'interpret',
+          ended: 'done',
+          turn_id: 't-run-slot-1',
+          outcome: { kind: 'committed', code: null, attributableTo: null, retryable: false, cause: null, stop_reason: 'turn_iter' },
+          lifecycle: 'settled',
+          progress: { iter: 2, node_index: 1, contract_id: 'tool.dispatch' },
+          settled: true,
+        },
+      },
+    ],
+  }
+  const drv = startService({ bridge: defaultBridge({ 'loop-policy.interpret': () => plan }) })
+  try {
+    await drv.hello()
+    await drv.call('send', idsFixture())
+    const settled = drv.events.find((frame) => frame.topic === 'chat.turn.settled')
+    assert.equal(settled?.payload.progress.contract_id, 'tool.dispatch')
+    assert.equal(settled?.payload.progress.iter, 2)
+    assert.equal(settled?.payload.progress.node_index, 1)
+    assert.equal(settled?.payload.lifecycle, 'settled')
+    assert.equal(settled?.payload.stop_reason, 'turn_iter')
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send: chat.turn.pending carries graph progress from the interpret summary', async () => {
+  const plan = {
+    $directives: [
+      {
+        kind: 'extern',
+        payload: {
+          ok: true,
+          kind: 'interpret',
+          ended: 'pending',
+          turn_id: 't-run-slot-1',
+          pending: 'approval',
+          lifecycle: 'suspended',
+          progress: { iter: 3, node_index: 2, contract_id: 'approval.wait' },
+        },
+      },
+    ],
+  }
+  const drv = startService({ bridge: defaultBridge({ 'loop-policy.interpret': () => plan }) })
+  try {
+    await drv.hello()
+    await drv.call('send', idsFixture())
+    const pending = drv.events.find((frame) => frame.topic === 'chat.turn.pending')
+    assert.equal(pending?.payload.pending, 'approval')
+    assert.equal(pending?.payload.progress.contract_id, 'approval.wait')
+    assert.equal(pending?.payload.progress.iter, 3)
+    // 未收口：不发 settled。
+    assert.equal(drv.events.some((frame) => frame.topic === 'chat.turn.settled'), false)
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
+test('send: chat.turn.settled omits progress keys when the summary carries none (no invented values)', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    await drv.call('send', idsFixture())
+    const settled = drv.events.find((frame) => frame.topic === 'chat.turn.settled')
+    assert.equal(Object.hasOwn(settled?.payload ?? {}, 'progress'), false)
+    assert.equal(Object.hasOwn(settled?.payload ?? {}, 'lifecycle'), false)
+    assert.equal(Object.hasOwn(settled?.payload ?? {}, 'stop_reason'), false)
   } finally {
     drv.close()
   }

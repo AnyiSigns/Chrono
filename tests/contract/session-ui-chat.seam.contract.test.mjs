@@ -55,17 +55,24 @@ test('消费向：真实 ui-chat 渲染模型消费真实 session 的展示投�
     // 展示 parts 须含工具卡（loop-policy 的 view.display 形状）。
     assert.ok(parts.some((part) => part.type === 'tool' && part.call_id === 'call-0'), JSON.stringify(parts))
 
-    // 供给方向：真实 session 落盘这些 parts。
-    const committed = await value(session, 'session', 'commit', {
-      slot: { kind: 'chat.message', text: '看看 foo.ts 第 42 行' },
-      user: { content: '看看 foo.ts 第 42 行' },
-      assistant: { content: '', parts },
+    // 供给方向：真实 session 把展示 parts 落进回合步日志（step.result.assistant.parts）。
+    const opened = await value(session, 'session', 'turn_open', {
+      turn_id: 't-seam-8',
+      user_message: { role: 'user', content: '看看 foo.ts 第 42 行' },
+      slot_ref: 'run-seam-8',
+      thread_id: 't1',
       new_conversation: { id: 'c-seam-8', workspace_id: 'w-1', title: 'seam8' },
-      conversation: 'c-seam-8',
     })
-    assert.equal(committed.ok, true, JSON.stringify(committed))
+    assert.equal(opened.status, 'created', JSON.stringify(opened))
+    const appended = await value(session, 'session', 'step_append', {
+      type: 'step.result',
+      turn_id: 't-seam-8',
+      seq: 1,
+      assistant: { content: '', parts },
+    })
+    assert.equal(appended.ok, true, JSON.stringify(appended))
 
-    // 消费方向：ui-chat 的展示还原读真实 session 的 history 投影。
+    // 消费方向：ui-chat 的展示还原读真实 session 的 history 投影（展示投影由回合步日志派生）。
     const history = await value(session, 'session', 'history', { conversation: 'c-seam-8' })
     const messages = restoreMessages(history, history.conversation === 'c-seam-8' ? { head: { def: history.messages[0].hash } } : null)
     const assistant = messages.find((entry) => entry.def?.role === 'assistant')

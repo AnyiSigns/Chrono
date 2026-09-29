@@ -1,7 +1,7 @@
 # ui-chat（全能内容渲染面 · 对话页消息流）
 
 对话页的**全能内容渲染面**：markdown / 流式 / 图像 / 视频 / 音频 / 文件卡 / 工具卡 /
-question 交互卡，以及按线程 `kind` 分派的群聊与工作流步骤卡。本插件是独立包 / 独立进程，
+question 交互卡，以及按线程 `kind` 分派的群聊，并在在途回合给出一行紧凑的编排进度。本插件是独立包 / 独立进程，
 **不再自持端口与 HTTP 面**：浏览器侧客户端半边是一段注册进壳 `main` slot 的模块，
 事件与命令经壳 api（`ctx.events` / `ctx.command` / `ctx.submit`）走宿主。
 
@@ -26,7 +26,7 @@ export function register(ctx: SlotContext): void {
 - 业务状态住 React-free store（`execute/web/thread-store.ts`：`getSnapshot` / `subscribe` /
   `commit`），壳侧经 `ctx.useStore` 以 `useSyncExternalStore` 绑定；组件只渲染，不各自持业务态。
 - 叶子纯模块（markdown / markdown-cache / sanitize / detail-renderers / tool-card /
-  render-parts / history-model / thread-store / group / workflow / windowing / media /
+  render-parts / history-model / thread-store / group / progress / windowing / media /
   date-sep / usage / copy / messages / lightbox）保持零 `react` import，组件吃其产出的
   视图模型，不就地拼字符串。
 - markdown 正文统一经 `Markdown` 组件（`renderMarkdownIncremental` + 白名单消毒 +
@@ -113,7 +113,7 @@ export function register(ctx: SlotContext): void {
 | detail.kind | `text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / `question` | `diff` 新增绿 / 删除红 / 修改黄 + 上下文折叠；`terminal` stdout / stderr 分色 + 退出码；`question` 交互卡（逐题向导） |
 | 线程视图 | `main` / `subagent` | 普通消息流（子代理顶部人格头） |
 | | `group` | 首字母圆标 + 名、连续发言人只首条显名、当前发言者呼吸环、未读锚点 |
-| | `workflow` | 步骤卡：当前步骤 + 第 i/N 步 + 状态三重编码 + 1px 进度条；展开只读节点列表；失败节点拒绝码 + 重试 |
+| 编排进度 | 在途回合 | 由 `chat.turn.pending` / `chat.turn.settled` 携带的 `progress` 驱动：一行紧凑状态「编排：`<contract_id>` · 第 `<iter+1>` 轮」（契约 id 即节点动作标识；`node_index` 仅在可解析时映射成节点名）；带 `stop_reason` 时改为预算收口说明。见 `execute/web/progress.ts` |
 
 `detail.kind:"question"` 的交互卡为**逐题向导**：题目与选项全部由模型给出，系统只额外提供「自定义答案」输入；
 按「第 i / N 个问题」逐题推进，支持上一题 / 下一题、忽略（跳过本题）、末题提交；已答折叠、`expired` 禁用、
@@ -129,7 +129,7 @@ export function register(ctx: SlotContext): void {
     `question.answer` 顶层 run 内跑，事件不带会话 id（thread=`_main`）；不认这一档续跑的
     流式增量与终局会被丢，表现为「后台跑完一次性抛出」。
 - 处理的事件：`chat.turn.started`、`chat.turn.pending`、`chat.turn.settled`、`model.delta`、
-  `tool.start/delta/end`、`run.finished`、`group.message`、`workflow.step`、`thread.*`、
+  `tool.start/delta/end`、`run.finished`、`group.message`、`thread.*`、
   `shell.state`（连接态与重连重同步）。
 - **回合开始 = `chat.turn.started`（chat 服务自报）**：对话回合若非顶层（续跑嵌在
   `ui-approval.decide` / `question.answer` 的 run 内）就没有宿主 run 生命周期，只看

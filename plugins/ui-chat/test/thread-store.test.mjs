@@ -486,6 +486,38 @@ test('挂起期间终局：chat.turn.settled 清挂起并进入定稿 / 取消�
   assert.equal(applySnapshot(cancelled, historyFixture(), 'c1').inFlight, null)
 })
 
+test('编排进度：pending / settled 记下事件携带的 progress；settled 另记 lifecycle / stop_reason', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1', turn_id: 'turn-1' })
+  assert.equal(view.inFlight.progress, null)
+  view = applyTurnPending(view, {
+    turn_id: 'turn-1',
+    pending: 'approval',
+    progress: { iter: 3, node_index: 2, contract_id: 'approval.wait' },
+  })
+  assert.equal(view.inFlight.suspended, true)
+  assert.deepEqual(view.inFlight.progress, { iter: 3, node_index: 2, contract_id: 'approval.wait' })
+  const settled = applyTurnSettled(view, {
+    turn_id: 'turn-1',
+    outcome: { kind: 'committed', stop_reason: 'turn_iter' },
+    progress: { iter: 4, node_index: 3, contract_id: 'tool.dispatch' },
+    lifecycle: 'settled',
+    stop_reason: 'turn_iter',
+  })
+  assert.deepEqual(settled.inFlight.progress, { iter: 4, node_index: 3, contract_id: 'tool.dispatch' })
+  assert.equal(settled.inFlight.lifecycle, 'settled')
+  assert.equal(settled.inFlight.stopReason, 'turn_iter')
+})
+
+test('编排进度：事件不带 progress / stop_reason / lifecycle 时不发明值（保持 null）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1', turn_id: 'turn-1' })
+  view = applyTurnPending(view, { turn_id: 'turn-1', pending: 'approval' })
+  assert.equal(view.inFlight.progress, null)
+  const settled = applyTurnSettled(view, { turn_id: 'turn-1', outcome: { kind: 'committed' } })
+  assert.equal(settled.inFlight.progress, null)
+  assert.equal(settled.inFlight.stopReason, null)
+  assert.equal(settled.inFlight.lifecycle, null)
+})
+
 test('乐观用户气泡：取消 / 线程切换走显式清除', () => {
   let view = applyDelta(emptyView(), { run: 'r1', text: 'half' })
   view = setPendingUser(view, { role: 'user', parts: [] })

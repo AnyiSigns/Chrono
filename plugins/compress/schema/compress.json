@@ -1,6 +1,6 @@
 {
   "title": "compress（压缩引擎：摘要 / 上下文压缩 / 抽取）",
-  "description": "身份自述 / 数据契约：三种压缩方法 summarize / compact / extract 的入参与结果形状，以及本插件自用的参数默认值（mode / 目标长度 / 去重阈值 / 抽取条数 2..3）。75% 触发阈值不住本 schema（触发判定归上下文调配器）；本插件只按调用执行、不判定该不该压。压缩产物（L1/L2）已出世界：本服务经反向调用 short-memory.read / apply 读写 owner 存储，不读投影、不产世界写计划。",
+  "description": "身份自述 / 数据契约：三种压缩方法 summarize / compact / extract 的入参与结果形状，以及本插件自用的参数默认值（mode / 目标长度 / 去重阈值 / 抽取条数 2..3）。75% 触发阈值不住本 schema（触发判定归上下文调配器）；本插件只按调用执行、不判定该不该压。压缩产物（L1/L2）已出世界：本服务经反向调用 short-memory.read / apply 读写 owner 存储，不读投影、不产世界写计划。注：compact / extract 仓内暂无调用方（工具绑定 memory.compress 只接 summarize），有意保留——它们是能力契约的一部分，且 chat 的超时嵌套契约测试以 compress.compact 的 method_timeout 锁死包裹关系。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -26,7 +26,7 @@
       "type": "integer",
       "minimum": 1,
       "default": 3,
-      "description": "extract 抽取条数：接受任意 ≥1 的整数，实际钳制到 2..3（下限不足补到 2，上限超出压回 3）。"
+      "description": "extract 抽取条数（summarize 的 facts 派生同用）：接受任意 ≥1 的整数，实际钳制到 2..3（下限不足补到 2，上限超出压回 3）。"
     },
     "embedding_model": {
       "type": "string",
@@ -53,8 +53,12 @@
       "description": "summarize 入参：会话 id + 结构化摘要字段（agent 工具 args 直带）；短期记忆现状由服务自读 short-memory，会话切片与 model_config 由调用方随 bag 传入。",
       "properties": {
         "conversation": { "type": "string", "description": "会话 id（L1 键）。" },
-        "covered_upto": { "description": "已压缩到的最后一条消息 id（由调用方入口 term 从会话链算出）。" },
-        "session_slice": { "type": "array", "description": "covered_upto 之后的会话切片 [{role, content}]；algorithmic 派生与 semantic prompt 用。" },
+        "prior_summary": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "上一累计检查点摘要（{goal, decisions[], facts[], files[], …}）；累计压缩时先并入，再并入现有 L1 与本次。"
+        },
+        "session_slice": { "type": "array", "description": "本回合已发生内容的会话切片 [{role, content}]；algorithmic 派生与 semantic prompt 用。" },
         "model_config": { "type": "object", "description": "semantic 模式调模型服务的连接实例（原样透传）。" }
       }
     },
@@ -62,13 +66,13 @@
       "type": "object",
       "required": ["conversation", "workspace"],
       "additionalProperties": true,
-      "description": "compact 入参：同 summarize，另需工作区 id（触发 extract 写 L2）。"
+      "description": "compact 入参：同 summarize，另需工作区 id（触发 extract 写 L2）。有意保留（仓内暂无调用方）。"
     },
     "extract_request": {
       "type": "object",
       "required": ["workspace"],
       "additionalProperties": true,
-      "description": "extract 入参：压缩产物（summary 或扁平结构化字段）+ 工作区 id；产出 2–3 条高价值项写 L2。"
+      "description": "extract 入参：压缩产物（summary 或扁平结构化字段）+ 工作区 id；产出 2–3 条高价值项写 L2。有意保留（仓内暂无调用方）。"
     },
     "compress_result": {
       "type": "object",

@@ -26,16 +26,48 @@ function turnSession(conv, turns) {
       }
       prev = aid
     }
+    let steps = turn.steps === undefined ? stepsFromParts(turn) : turn.steps.slice()
+    if (turn.assistant !== undefined && turn.assistant !== '' && !steps.some((step) => step.type === 'step.result' && step.assistant?.content === turn.assistant)) {
+      const maxSeq = steps.reduce((max, step) => (typeof step.seq === 'number' && step.seq > max ? step.seq : max), 0)
+      steps = [...steps, { type: 'step.result', turn_id: turn.turn_id, seq: maxSeq + 1, assistant: { content: turn.assistant }, tool_results: [] }]
+    }
     out.push({
       turn_id: turn.turn_id,
       conv,
       at: turn.at ?? '2026-01-01T00:00:00.000Z',
       state: turn.state ?? 'settled',
       outcome: turn.outcome ?? { kind: 'committed', retryable: false },
-      steps: turn.steps ?? [],
+      user_message: {
+        content: turn.user,
+        ...(turn.parts === undefined ? {} : {}),
+      },
+      steps,
     })
   }
   return { head: prev, refs, turns: out }
+}
+
+/** 无显式 steps 时，按展示 parts 推断步记录（工具卡 → intent + result）。 */
+function stepsFromParts(turn) {
+  const parts = Array.isArray(turn.parts) ? turn.parts : []
+  const toolCards = parts.filter((part) => part !== null && typeof part === 'object' && part.type === 'tool')
+  if (toolCards.length === 0) return []
+  const calls = toolCards.map((card, index) => ({ id: card.call_id ?? `call-${index}`, name: card.tool ?? '', arguments: card.args ?? {} }))
+  const results = []
+  for (const card of toolCards) {
+    const callId = card.call_id
+    if (typeof callId !== 'string') continue
+    if (card.status === null && card.result === null) continue
+    const ok = card.status !== 'error'
+    results.push(ok ? { call_id: callId, ok: true, result: card.result ?? null } : { call_id: callId, ok: false, error: card.result ?? null })
+  }
+  const assistant = { content: turn.assistant ?? '' }
+  const assistantParts = parts.filter((part) => part.type !== 'tool')
+  if (assistantParts.length > 0) assistant.parts = assistantParts
+  return [
+    { type: 'step.intent', turn_id: turn.turn_id, seq: 1, kind: 'tool.dispatch', tool_calls: calls },
+    { type: 'step.result', turn_id: turn.turn_id, seq: 1, assistant, tool_results: results },
+  ]
 }
 
 function checkpointStep(turnId, seq, coveredUpto, summary) {

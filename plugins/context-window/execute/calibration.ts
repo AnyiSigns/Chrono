@@ -10,6 +10,8 @@ import type { UsageManifest } from './types.ts'
 const EWMA_WEIGHT = 0.2
 const FACTOR_MIN = 0.5
 const FACTOR_MAX = 2
+/** 系数变化阈值：小于它视为未变，只在内存累积、不重写状态文件（避免每次装配都落盘同一份）。 */
+const FACTOR_EPSILON = 1e-9
 
 interface ModelCalibration {
   factor: number
@@ -67,8 +69,12 @@ function stateFile(): string | null {
 }
 
 let memory: CalibrationState = {}
+/** 是否已从状态文件装载过：装载一次后以内存态为准，避免跳过写盘时被旧文件覆盖。 */
+let loaded = false
 
 function load(): CalibrationState {
+  if (loaded) return memory
+  loaded = true
   const file = stateFile()
   if (file === null || !existsSync(file)) return memory
   try {
@@ -89,8 +95,8 @@ function load(): CalibrationState {
   }
 }
 
-function save(state: CalibrationState): void {
-  memory = state
+/** 落盘当前状态（③ 可重算）；无状态目录或写盘失败时只保留内存态，不阻断组装。 */
+function persist(state: CalibrationState): void {
   const file = stateFile()
   if (file === null) return
   try {
@@ -120,17 +126,20 @@ function clamp(value: number): number {
 export function observeUsage(model: string, estimate: number, usage: UsageManifest | null): number {
   const state = load()
   const entry = state[model] ?? { factor: 1, last_estimate: 0 }
+  const previous = entry.factor
   let factor = entry.factor
   if (usage !== null && usage.prompt_tokens > 0 && entry.last_estimate > 0) {
     const ratio = usage.prompt_tokens / entry.last_estimate
     factor = clamp(entry.factor * (1 - EWMA_WEIGHT + EWMA_WEIGHT * ratio))
   }
   state[model] = { factor, last_estimate: estimate }
-  save(state)
+  // 系数未变（小于阈值）时不重写状态文件：避免每次装配都落盘同一份；内存态仍推进 last_estimate。
+  if (Math.abs(factor - previous) > FACTOR_EPSILON) persist(state)
   return factor
 }
 
 /** 测试用：清空内存态（落盘态由测试环境无 `CHRONO_PLUGIN_STATE` 规避）。 */
 export function resetCalibration(): void {
   memory = {}
+  loaded = false
 }

@@ -5,9 +5,10 @@ import { dispatchNode } from './dispatch.ts'
 import { directivesOf, isRecord } from './plan.ts'
 import { selectInstance } from './scope.ts'
 import {
-  gatherInputs,
+  consumeBranches,
   normalizeRefusalInput,
   refusalArtifact,
+  resolveInputs,
   ruleCtx,
   type InterpretInput,
   type IterState,
@@ -44,7 +45,9 @@ export async function runSink(
     const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
     if (lastMessage !== null) sinkInputs['message'] = lastMessage
   } else {
-    sinkInputs = gatherInputs(sink, edges, ctx)
+    const resolved = resolveInputs(sink, contract, edges, ctx)
+    consumeBranches(resolved, sink, trace)
+    sinkInputs = resolved.inputs
   }
   if (refusal === null && sinkInputs['refusal'] !== undefined) {
     const artifact = normalizeRefusalInput(sinkInputs['refusal'], model)

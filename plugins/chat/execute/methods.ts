@@ -47,7 +47,8 @@ export const TURN_STARTED_TOPIC = 'chat.turn.started'
 /**
  * 回合结局事件主题：与开始事件对称，向**所有已连客户端**播报实时业务结局。
  * 命令回执只到发起者（ui-composer），而 ui-chat 只听事件，且审批裁决触发的 resume 发起者不是 composer，
- * 故终态回合必须经本事件广播。载荷：`{turn_id, thread, conversation, outcome, source}`。
+ * 故终态回合必须经本事件广播。载荷：`{turn_id, thread, conversation, outcome, source}`
+ * + 摘要里确实存在的 `progress`（图内进度）/ `lifecycle`（解释器生命周期）/ `stop_reason`（预算收口原因）。
  */
 export const TURN_SETTLED_TOPIC = 'chat.turn.settled'
 
@@ -55,7 +56,8 @@ export const TURN_SETTLED_TOPIC = 'chat.turn.settled'
  * 回合挂起事件主题：`approval.wait` 返回 pending 时回合**未终结**（工具尚未执行），
  * 但宿主 run 会结束、`chat.turn.settled` 不会发。本事件把「等审批 / 等作答」的中间态显式广播，
  * 客户端据此保留在途回合并显示等待态，而不是把本段当成回合已定稿、恢复时再拉起一块新的在途回合。
- * 载荷：`{turn_id, run, thread, conversation, pending, source}`（`pending` = 挂起种类，如 `approval`）。
+ * 载荷：`{turn_id, run, thread, conversation, pending, source}`（`pending` = 挂起种类，如 `approval`）
+ * + 摘要里确实存在的 `progress`（图内进度）。
  */
 export const TURN_PENDING_TOPIC = 'chat.turn.pending'
 
@@ -83,14 +85,22 @@ function emitTurnSettled(
   conversationId: string | null,
   outcome: TurnOutcome,
   source: 'send' | 'resume' | 'cancel',
+  extra: Rec | null = null,
 ): void {
-  deps.emit?.(TURN_SETTLED_TOPIC, {
+  const payload: Rec = {
     turn_id: turnId,
     thread,
     conversation: conversationId,
     outcome: outcome as unknown as Json,
     source,
-  })
+  }
+  // 进度 / 生命周期 / 预算收口原因只在摘要确实给出时才带（不臆造值）。
+  if (extra !== null) {
+    for (const key of Object.keys(extra)) {
+      if (extra[key] !== undefined) payload[key] = extra[key]
+    }
+  }
+  deps.emit?.(TURN_SETTLED_TOPIC, payload)
 }
 
 function emitTurnPending(
@@ -101,15 +111,41 @@ function emitTurnPending(
   conversationId: string | null,
   pending: string,
   source: 'send' | 'resume',
+  progress: Json | null = null,
 ): void {
-  deps.emit?.(TURN_PENDING_TOPIC, {
+  const payload: Rec = {
     turn_id: turnId,
     run: env.run,
     thread,
     conversation: conversationId,
     pending,
     source,
-  })
+  }
+  if (progress !== null) payload['progress'] = progress
+  deps.emit?.(TURN_PENDING_TOPIC, payload)
+}
+
+/** 图内进度（只取摘要里确实存在的对象，不臆造）：UI 据此显示当前编排节点。 */
+function summaryProgress(summary: Rec): Rec | null {
+  const progress = summary['progress']
+  return isRecord(progress) ? progress : null
+}
+
+/**
+ * 回合终态事件的附加字段：图内进度 + 解释器生命周期 + 预算收口原因。
+ * 生命周期取摘要 `lifecycle`；收口原因取结局 `stop_reason`（仅预算主动停的 committed 携带）。
+ * 缺失即不落键（「只带存在的键，不发明值」）。
+ */
+function summaryExtras(summary: Rec): Rec {
+  const extra: Rec = {}
+  const progress = summaryProgress(summary)
+  if (progress !== null) extra['progress'] = progress
+  if (typeof summary['lifecycle'] === 'string') extra['lifecycle'] = summary['lifecycle']
+  const outcome = summary['outcome']
+  if (isRecord(outcome) && typeof outcome['stop_reason'] === 'string') {
+    extra['stop_reason'] = outcome['stop_reason']
+  }
+  return extra
 }
 
 /** 投影里 refs 会被本服务消费的身份（其余身份只读 body，无需解析引用）。 */
@@ -181,6 +217,7 @@ const SESSION_READ = 'read'
 const SESSION_TURN_OPEN = 'turn_open'
 const SESSION_TURN_SETTLE = 'turn_settle'
 const SESSION_TURN_CANCEL = 'turn_cancel'
+const SESSION_ACK_INBOX = 'ack_inbox'
 const INPUT_PORT = 'input'
 const INPUT_READ = 'read'
 const SHORT_MEMORY_PORT = 'short-memory'
@@ -449,6 +486,52 @@ function preTurnRefusal(code: string, message: string): Json {
   return externOnly(errorValue(code, message))
 }
 
+/** 会话切片里的未读收件箱（`inbox_unread`）；缺失 / 非数组回空，非对象条目跳过。 */
+function inboxUnreadOf(session: Rec): Rec[] {
+  const list = session['inbox_unread']
+  if (!Array.isArray(list)) return []
+  return list.filter((item): item is Rec => isRecord(item))
+}
+
+/** 未读条目的最大 seq（无有效 seq 回 null）；ack 只推进到这个水位（收件箱未读恒为连续后缀）。 */
+function maxUnreadSeq(items: Rec[]): number | null {
+  let max: number | null = null
+  for (const item of items) {
+    const seq = item['seq']
+    if (typeof seq === 'number' && Number.isFinite(seq) && (max === null || seq > max)) max = seq
+  }
+  return max
+}
+
+/**
+ * 本回合是否以「拒 / 取消」收口（从解释器计划末条 `interpret` 摘要的 outcome 读）。
+ * 这两种终态视为失败 / 中止：未读不 ack，保留供重试 / 续跑重投。
+ */
+function abortedOrRefused(value: Json): boolean {
+  const summary = interpretSummary(value)
+  if (summary === null) return false
+  const outcome = summary['outcome']
+  if (!isRecord(outcome)) return false
+  const kind = asString(outcome['kind'])
+  return kind === 'refused' || kind === 'cancelled'
+}
+
+/**
+ * 收件箱已读确认（append-only）：把本回合注入 bag 的未读水位推进到最大 seq。
+ *
+ * 确认点定在 **interpret 调用成功返回、且回合未以拒 / 取消收口之后**：只有解释器已实际执行
+ * （模型确已消费这些消息）且回合没有失败 / 中止才 ack。传输失败 / 结构化失败（`interpreted.ok === false`）
+ * 以及解释器产出 `refused` / `cancelled` 终态都不 ack，未读保留供重试 / 续跑重投——失败 / 中止回合不丢消息。
+ * 幂等且单调（session 侧以 `max` 守卫，重复 ack 旧 seq 为 no-op）；session ack 失败不改变本回合结局、
+ * 不改会话状态，仅水位未推进 ⇒ 下轮重投（**retryable-with-audit**：至少一次投递）。
+ */
+async function ackInbox(deps: ChatDeps, conversation: string | null, items: Rec[]): Promise<void> {
+  if (conversation === null) return
+  const seq = maxUnreadSeq(items)
+  if (seq === null) return
+  await deps.port.call(SESSION_PORT, SESSION_ACK_INBOX, { conversation, seq })
+}
+
 /**
  * 回合启动：读本线程槽 kind → 空槽 / 非 chat kind 幂等 no-op；
  * 校验必需 owner → `turn_open` 留痕（含建会话）→ 装配 interpret bag 派发 #33，
@@ -485,6 +568,8 @@ async function send(
   // 子代理回合：槽声明 `thread_kind:'subagent'` 时开一条隔离旁路线程——任务 + 父检查点，
   // 不继承父历史；会话 kind = subagent，不抢占 `current`。任务与父检查点随 `turn_open` 持久化。
   const subagent = subagentSpecOf(turn.slot)
+  // 子代理线程不是 `current`：若槽指向一条已存在的旁路会话，另读该会话切片以取它的未读收件箱。
+  let scopedInbox: Rec | null = null
   let newConversation: Rec | null = null
   if (subagent !== null) {
     const slotRec = isRecord(turn.slot) ? turn.slot : {}
@@ -492,6 +577,8 @@ async function send(
     if (existing !== null) {
       turn.conversationId = subagent.conversationId
       turn.conversation = existing
+      const inboxSlice = await deps.port.call(SESSION_PORT, SESSION_READ, { conversation: subagent.conversationId })
+      if (inboxSlice.ok && isRecord(inboxSlice.value)) scopedInbox = inboxSlice.value
     } else {
       const workspaceId = asString(slotRec['workspace_id'])
       if (workspaceId === null || !workspaceKnown(turn.ids, workspaceId)) {
@@ -633,6 +720,8 @@ async function send(
     parentSummaries: subagent?.parentSummaries ?? null,
   })
   bag['turn_id'] = activeTurnId
+  const unread = inboxUnreadOf(scopedInbox ?? sessionBody)
+  if (unread.length > 0) bag['inbox_unread'] = unread as unknown as Json
   emitTurnStarted(deps, env, activeTurnId, turn.thread, conversationId, 'send')
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) {
@@ -640,6 +729,8 @@ async function send(
     await settleTurn(deps, activeTurnId, turn.thread, conversationId, outcome, 'send')
     return refusalReceipt(activeTurnId, turn.thread, conversationId, outcome)
   }
+  // interpret 成功且回合未以拒 / 取消收口 = 模型已消费本轮输入：确认（ack）已注入的未读。
+  if (!abortedOrRefused(interpreted.value)) await ackInbox(deps, conversationId, unread)
 
   const merged = mergeDirectives([interpreted.value])
   const summary = interpretSummary(interpreted.value)
@@ -653,7 +744,7 @@ async function send(
   emitSettledFromSummary(deps, summary, activeTurnId, turn.thread, conversationId, 'send')
   const pendingKind = asString(summary['pending'])
   if (pendingKind !== null) {
-    emitTurnPending(deps, env, activeTurnId, turn.thread, conversationId, pendingKind, 'send')
+    emitTurnPending(deps, env, activeTurnId, turn.thread, conversationId, pendingKind, 'send', summaryProgress(summary))
   }
   return merged
 }
@@ -670,7 +761,7 @@ function emitSettledFromSummary(
   if (summary['settled'] !== true) return
   const outcome = summary['outcome']
   if (!isRecord(outcome)) return
-  emitTurnSettled(deps, turnId, thread, conversationId, outcome as unknown as TurnOutcome, source)
+  emitTurnSettled(deps, turnId, thread, conversationId, outcome as unknown as TurnOutcome, source, summaryExtras(summary))
 }
 
 /** 展示历史：问 `session` 服务取自有存储还原的窗口（不再读投影 refs / 逐跳 hydrator）。 */
@@ -795,6 +886,8 @@ async function resume(
   })
   bag['turn_id'] = turnId
   bag['resume'] = resumeBag
+  const unread = inboxUnreadOf(sessionBody)
+  if (unread.length > 0) bag['inbox_unread'] = unread as unknown as Json
 
   emitTurnStarted(deps, env, turnId, thread, conversationId, 'resume')
   const interpreted = await callInterpret(deps, bag)
@@ -803,6 +896,8 @@ async function resume(
     await settleTurn(deps, turnId, thread, conversationId, outcome, 'resume')
     return refusalReceipt(turnId, thread, conversationId, outcome)
   }
+  // interpret 成功且回合未以拒 / 取消收口 = 模型已消费本轮输入：确认（ack）已注入的未读。
+  if (!abortedOrRefused(interpreted.value)) await ackInbox(deps, conversationId, unread)
   const merged = mergeDirectives([interpreted.value])
   const summary = interpretSummary(interpreted.value)
   if (summary === null) {
@@ -815,7 +910,7 @@ async function resume(
   emitSettledFromSummary(deps, summary, turnId, thread, conversationId, 'resume')
   const pendingKind = asString(summary['pending'])
   if (pendingKind !== null) {
-    emitTurnPending(deps, env, turnId, thread, conversationId, pendingKind, 'resume')
+    emitTurnPending(deps, env, turnId, thread, conversationId, pendingKind, 'resume', summaryProgress(summary))
   }
   return merged
 }

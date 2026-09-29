@@ -134,3 +134,47 @@ test('闭合反例：环 / sink / 未连 required 输入', () => {
   model.graph.edges = [...model.graph.edges, { from: [6, 'plan'], to: [0, 'task'] }]
   assert.ok(checkClosure(buildView(model)).some((e) => e.code === 'cycle'))
 })
+
+test('G7：unconnected_input 只约束 required 输入；optional 未连不报', () => {
+  const base = () => {
+    const model = clone(seedModel())
+    model.contracts.push({
+      contract_id: 'opt.only',
+      role_tag: 'opt',
+      inputs: [
+        { name: 'x', type: 'any', required: false, cardinality: 1, binding_mode: 'all' },
+        { name: 'y', type: 'any', required: false, cardinality: 1, binding_mode: 'all' },
+      ],
+      outputs: [{ name: 'out', type: 'any', cardinality: 1 }],
+      reads: [],
+      publishes: [],
+      pre: 'always',
+      post: 'always',
+      refuses: [],
+      effects: { ports: [], methods: [] },
+      idempotent: true,
+      touches_effects: false,
+      can_delegate: false,
+      cost: {},
+    })
+    model.nodes.push({ node_id: 'opt-node', contract_id: 'opt.only', impl: 'atomic', bindings: {}, autonomy: 'L0', scope: { kind: 'global' } })
+    model.graph = {
+      nodes: ['context.assemble', 'opt.only'],
+      edges: [{ from: [0, 'messages'], to: [1, 'y'] }],
+      entry_supply: [{ type_id: 'task' }],
+      loop: { when: '' },
+      sink: 1,
+    }
+    return model
+  }
+  // optional 的 x 未连：不报 unconnected_input。
+  assert.equal(checkClosure(buildView(base())).some((e) => e.code === 'unconnected_input'), false)
+  // required 的 x 未连：报 unconnected_input（节点仍有 y 入边，不触发 non_entry_isolated）。
+  const req = base()
+  req.contracts = req.contracts.map((c) =>
+    c.contract_id === 'opt.only'
+      ? { ...c, inputs: c.inputs.map((port) => (port.name === 'x' ? { ...port, required: true } : port)) }
+      : c,
+  )
+  assert.ok(checkClosure(buildView(req)).some((e) => e.code === 'unconnected_input'))
+})

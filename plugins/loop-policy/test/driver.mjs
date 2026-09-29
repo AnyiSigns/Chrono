@@ -156,7 +156,8 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
 
   /** 驱动段：一段一次 interpret；段尾若产续跑 eval，则以段终态重建 bag 续跑，直到回合终态。 */
   async function interpretTurn(initial, callEnv) {
-    let current = initial
+    // item 9：生产默认不再下传 `extra_messages`；测试驱动显式 opt-in 以沿用旧的同回合上下文回灌口径。
+    let current = { ...initial, compat_extra_messages: true }
     const merged = []
     let last = null
     for (let guard = 0; guard < 500; guard += 1) {

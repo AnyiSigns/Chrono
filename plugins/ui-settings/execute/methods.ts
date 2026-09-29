@@ -503,6 +503,13 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
       return { ...projection, refs }
     },
 
+    /** 编排图切片：入口 term 传 `ids['loop-policy']`，服务按需解析图 / 链引用后回投影（浏览器解析 `graph` 单值与节点实例）。 */
+    graph: async (args): Promise<Json> => {
+      const projection = isRecord(args) ? args : {}
+      const refs = await hydrator.hydrate('loop-policy', projection['refs'])
+      return { ...projection, refs }
+    },
+
     /**
      * 记忆浏览（只读）：L1 / L2 / L3 由 `memory-maintenance` 自行问 owner 服务，
      * 本服务只反向调 `memory-maintenance.view`；命令结果 = #23 `view` 值（三档）。

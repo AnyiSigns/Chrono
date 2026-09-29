@@ -132,26 +132,104 @@ export function shortHash(hash: any): string {
   return hash.slice(0, 8)
 }
 
-/** 图视图：编排图身份 body 的节点 / 边列表（形状未知时返回空骨架，不崩）。 */
+/** `{"def":hash}` 标记 → 哈希（非空串即认，与 `refEntry` 同口径）；无标记回 null。 */
+function defHash(marker: any): string | null {
+  return isRecord(marker) && typeof marker.def === 'string' && marker.def.length > 0 ? marker.def : null
+}
+
+/**
+ * 条目容器 → 条目数组：已解析数组直接用；链式 `{tail,count}` 经 `refs`（`{hash:body}` 闭包）
+ * 沿 `prev` 从尾回溯（防环、限长）。缺 `refs` / 坏引用即停在已取到的部分。
+ */
+function entryList(container: any, refs: any, limit = LEDGER_LIMIT): any[] {
+  if (Array.isArray(container)) return container.filter(isRecord)
+  if (!isRecord(container) || !isRecord(refs)) return []
+  const entries: any[] = []
+  const visited = new Set<string>()
+  let marker: any = container.tail
+  while (entries.length < limit) {
+    const hash = defHash(marker)
+    if (hash === null || visited.has(hash)) break
+    visited.add(hash)
+    const entry = refs[hash]
+    if (!isRecord(entry)) break
+    entries.push(entry)
+    marker = isRecord(entry.prev) ? entry.prev : null
+  }
+  return entries
+}
+
+/** 图单值：内联 `{nodes:[…]}` 直接用；`{def:hash}` 经 `refs` 解析；不可用回 null（fail-closed）。 */
+function resolveGraph(body: any, refs: any): any {
+  const slot = isRecord(body) ? body.graph : null
+  if (isRecord(slot) && Array.isArray(slot.nodes)) return slot
+  const hash = defHash(slot)
+  if (hash !== null && isRecord(refs) && isRecord(refs[hash])) return refs[hash]
+  return null
+}
+
+/** 边端点 `[node_index, port]`；形态非法回 null。 */
+function edgeEndpoint(value: any): [number, string] | null {
+  if (!Array.isArray(value) || value.length !== 2) return null
+  const [index, port] = value
+  if (!Number.isInteger(index) || typeof port !== 'string') return null
+  return [index, port]
+}
+
+/**
+ * 图视图：`loop-policy` 身份投影的图（`graph` 单值：内联或 `{def}` 经 `refs`）→ 节点 / 边列表。
+ * 节点 = `graph.nodes`（contract_id 生成序），实现信息取自 `body.nodes` 的 Scope 实例（按 contract_id 首个匹配）；
+ * 边 = `graph.edges`（端点 `[node_index, port]`）。任何缺失 / 畸形形状都回空骨架，不抛。
+ */
 export function graphView(projection: any): any {
-  if (!isRecord(projection) || !isRecord(projection.body)) return { contractId: null, nodes: [], edges: [] }
+  const skeleton = { contractId: null, nodes: [], edges: [] }
+  if (!isRecord(projection) || !isRecord(projection.body)) return skeleton
   const body = projection.body
-  const contractId = typeof body.contract_id === 'string' ? body.contract_id : null
-  const nodes = Array.isArray(body.nodes)
-    ? body.nodes.map((node: any, index: number) => ({
-        index,
-        contract_id: isRecord(node) && typeof node.contract_id === 'string' ? node.contract_id : '',
-        impl: isRecord(node) && typeof node.impl === 'string' ? node.impl : '',
-      }))
-    : []
-  const edges = Array.isArray(body.edges)
-    ? body.edges.map((edge: any) => ({
-        from: isRecord(edge) && typeof edge.from === 'number' ? edge.from : null,
-        to: isRecord(edge) && typeof edge.to === 'number' ? edge.to : null,
-        when: isRecord(edge) && typeof edge.when === 'string' ? edge.when : '',
-      }))
-    : []
-  return { contractId, nodes, edges }
+  const refs = isRecord(projection.refs) ? projection.refs : {}
+  const graph = resolveGraph(body, refs)
+  if (graph === null) return skeleton
+  const instances = entryList(body.nodes, refs)
+  const byContract = new Map<string, any>()
+  for (const instance of instances) {
+    const id = typeof instance.contract_id === 'string' ? instance.contract_id : null
+    if (id !== null && !byContract.has(id)) byContract.set(id, instance)
+  }
+  const contractIds = Array.isArray(graph.nodes) ? graph.nodes : []
+  const nodes = contractIds.map((value: any, index: number) => {
+    const contract_id = typeof value === 'string' ? value : ''
+    const instance = byContract.get(contract_id)
+    return {
+      index,
+      contract_id,
+      node_id: isRecord(instance) && typeof instance.node_id === 'string' ? instance.node_id : '',
+      impl: isRecord(instance) && typeof instance.impl === 'string' ? instance.impl : '',
+    }
+  })
+  const rawEdges = Array.isArray(graph.edges) ? graph.edges : []
+  const edges = rawEdges.map((edge: any) => ({
+    from: edgeEndpoint(isRecord(edge) ? edge.from : null),
+    to: edgeEndpoint(isRecord(edge) ? edge.to : null),
+    when: isRecord(edge) && typeof edge.when === 'string' ? edge.when : '',
+  }))
+  return { contractId: defHash(body.graph), nodes, edges }
+}
+
+/** 图节点副行（实例名 · 实现）；缺失片段由 joinMeta 过滤。 */
+export function graphNodeMeta(node: any): string {
+  if (!isRecord(node)) return ''
+  return joinMeta([node.node_id, node.impl])
+}
+
+/** 边端点展示 `#<index>:<port>`；缺失 / 畸形回 `-`。 */
+export function edgeEndpointLabel(endpoint: any): string {
+  if (!Array.isArray(endpoint) || endpoint.length !== 2) return '-'
+  return `#${endpoint[0]}:${endpoint[1]}`
+}
+
+/** 一条边的端点行 `#u:out -> #v:in`。 */
+export function graphEdgeMeta(edge: any): string {
+  if (!isRecord(edge)) return '- -> -'
+  return `${edgeEndpointLabel(edge.from)} -> ${edgeEndpointLabel(edge.to)}`
 }
 
 /** 关联摘要：数组 / 映射 → 人读一行；缺失 → 空串。 */

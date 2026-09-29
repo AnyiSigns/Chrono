@@ -3,7 +3,8 @@
 // 结构化字段形状与 context-window 消费侧（views.ts / candidates.ts）一致；`facts` 映射为 `findings`。
 
 import { isRecord, numberField } from './plan.ts'
-import { appendStep } from './steplog.ts'
+import { appendStep, nextStepSeq } from './steplog.ts'
+import { isStructuredCheckpoint } from './subagent.ts'
 import type { GraphModel, Json, PortCaller, Rec, RunState } from './types.ts'
 
 /** 触发档位：软阈段边界压缩 / 硬阈要求下一调用前已压缩 / 应急（降级阶梯用尽）。 */
@@ -129,8 +130,9 @@ function touchedFiles(rs: RunState): string[] {
  * compress 摘要 → 检查点结构化形状。
  * `decisions` / `findings`（来自 facts）/ `files` 编成对象项（`{what}` / `{claim}` / `{path}`），
  * 与步记录 schema 的 items 形状一致；开放问题与后续步骤为字符串项。
+ * `covered_upto` 为全局边界 `{turn_id, seq}`；`extras` 承接上一累计检查点里 compress 形状不承载的字段。
  */
-function toCheckpointSummary(summary: Rec, coveredUpto: number): Rec {
+function toCheckpointSummary(summary: Rec, boundary: Rec, extras: Rec): Rec {
   const out: Rec = {}
   const goal = typeof summary['goal'] === 'string' ? summary['goal'] : ''
   if (goal.length > 0) out['goal'] = goal
@@ -144,7 +146,92 @@ function toCheckpointSummary(summary: Rec, coveredUpto: number): Rec {
   if (files.length > 0) out['files'] = files.map((path) => ({ path }))
   const nextSteps = stringList(summary['next_steps'])
   if (nextSteps.length > 0) out['next_steps'] = nextSteps
-  out['covered_upto'] = coveredUpto
+  for (const [key, value] of Object.entries(extras)) out[key] = value
+  out['covered_upto'] = boundary
+  return out
+}
+
+/** 检查点项（字符串或 `{what|claim|path|step|text|summary}` 对象）→ 字符串列表。 */
+function itemStrings(value: Json | undefined): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of value) {
+    let text: string | null = null
+    if (typeof item === 'string') text = item
+    else if (isRecord(item)) {
+      for (const key of ['what', 'claim', 'path', 'step', 'text', 'summary']) {
+        const candidate = item[key]
+        if (typeof candidate === 'string' && candidate.length > 0) {
+          text = candidate
+          break
+        }
+      }
+    }
+    if (text === null || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+/** 全部会话回合（`bag.session.turns`）。 */
+function turnsOf(bag: Rec): Rec[] {
+  const session = isRecord(bag['session']) ? (bag['session'] as Rec) : null
+  if (session === null) return []
+  const turns = Array.isArray(session['turns']) ? (session['turns'] as Json[]) : []
+  return turns.filter(isRecord)
+}
+
+/**
+ * 本回合日志里、当前边界之前的最新结构化检查点（累计摘要的来源）。
+ * 词序按（回合序, 步号）：更早的回合整体在前，同回合只取步号更小的检查点。
+ */
+function priorCheckpoint(bag: Rec, turnId: string, boundarySeq: number): Rec | null {
+  const turns = turnsOf(bag)
+  const currentIndex = turns.findIndex((turn) => turn['turn_id'] === turnId)
+  let found: Rec | null = null
+  turns.forEach((turn, index) => {
+    if (currentIndex >= 0 && index > currentIndex) return
+    const steps = Array.isArray(turn['steps']) ? (turn['steps'] as Json[]) : []
+    for (const step of steps) {
+      if (!isRecord(step) || step['type'] !== 'checkpoint') continue
+      if (!isStructuredCheckpoint(step['summary'])) continue
+      if (index === currentIndex) {
+        const seq = numberField(step['seq'])
+        if (seq === null || seq >= boundarySeq) continue
+      }
+      found = step['summary'] as Rec
+    }
+  })
+  return found
+}
+
+/** 检查点结构化摘要 → compress 摘要形状（goal / decisions / facts / files / …）。 */
+function toCompressSummary(summary: Rec): Rec {
+  const out: Rec = {}
+  const goal = typeof summary['goal'] === 'string' ? summary['goal'] : ''
+  if (goal.length > 0) out['goal'] = goal
+  const decisions = itemStrings(summary['decisions'])
+  if (decisions.length > 0) out['decisions'] = decisions
+  const findings = itemStrings(summary['findings'])
+  if (findings.length > 0) out['facts'] = findings
+  const files = itemStrings(summary['files'])
+  if (files.length > 0) out['files'] = files
+  const openQuestions = itemStrings(summary['open_questions'])
+  if (openQuestions.length > 0) out['open_questions'] = openQuestions
+  const nextSteps = itemStrings(summary['next_steps'])
+  if (nextSteps.length > 0) out['next_steps'] = nextSteps
+  return out
+}
+
+/** 上一累计检查点里 compress 形状不承载、需原样承接的字段。 */
+function extrasOf(summary: Rec | null): Rec {
+  const out: Rec = {}
+  if (summary === null) return out
+  for (const key of ['constraints', 'errors_to_avoid', 'user_preferences']) {
+    if (summary[key] !== undefined) out[key] = summary[key] as Json
+  }
   return out
 }
 
@@ -155,15 +242,19 @@ function toCheckpointSummary(summary: Rec, coveredUpto: number): Rec {
 export async function emitCheckpoint(input: CheckpointInput): Promise<CheckpointResult> {
   const { port, bag, rs, turnId } = input
   const coveredUpto = rs.steps
+  // 全局覆盖边界：本回合 + 当前步号。旧式数字只在本回合内有意义，累积检查点改用全局边界。
+  const boundary: Rec = { turn_id: turnId, seq: coveredUpto }
+  const prior = priorCheckpoint(bag, turnId, coveredUpto)
   const args: Rec = {
     conversation: conversationOf(bag, turnId),
-    covered_upto: String(coveredUpto),
     goal: goalOf(bag),
     files: touchedFiles(rs),
     session_slice: sessionSlice(bag, rs),
     mode: 'algorithmic',
     persist: false,
   }
+  // 累计：把上一累计检查点作为 prior_summary 先并入，产出 = 上一累计 + 本回合切片。
+  if (prior !== null) args['prior_summary'] = toCompressSummary(prior)
   const workspace = bag['workspace_id']
   if (typeof workspace === 'string' && workspace.length > 0) args['workspace'] = workspace
 
@@ -181,15 +272,17 @@ export async function emitCheckpoint(input: CheckpointInput): Promise<Checkpoint
   }
   const result = isRecord(value['summary']) ? (value['summary'] as Rec) : null
   if (result === null) return { emitted: false, code: 'compress_empty' }
-  const summary = toCheckpointSummary(result, coveredUpto)
+  const summary = toCheckpointSummary(result, boundary, extrasOf(prior))
   // 无任何结构性内容时不落记录：避免「记为检查点但无内容」使旧回合被静默覆盖。
   if (!Object.keys(summary).some((key) => key !== 'covered_upto')) return { emitted: false, code: 'compress_empty' }
+  // 序号先行占据（单调、唯一），与其它步 / 段标记不撞键，且与 sink 位置无关。
+  const seq = nextStepSeq(rs)
   const appended = await appendStep(port, {
     type: 'checkpoint',
     turn_id: turnId,
-    seq: coveredUpto + 1,
+    seq,
     summary,
-    covered_upto: coveredUpto,
+    covered_upto: boundary,
     // 触发档位（soft / hard / emergency）：观测用，消费侧按 `summary` 读取，忽略本字段。
     rung: input.level,
   })

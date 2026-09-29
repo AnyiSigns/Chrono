@@ -39,7 +39,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
-    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'],
+    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'],
   })
   assert.deepEqual(decl.pins, {
     model: 'model-protocol',
@@ -57,7 +57,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
 
 test('并发方法白名单只含纯只读方法，写计划 / 副作用 / 控制面方法不得入内', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.concurrent_methods, ['vendors', 'health', 'scopes', 'view', 'search', 'client.read'])
+  assert.deepEqual(decl.concurrent_methods, ['vendors', 'health', 'graph', 'scopes', 'view', 'search', 'client.read'])
   for (const name of ['profile', 'discover', 'edit', 'secret', 'ping']) {
     assert.ok(!decl.concurrent_methods.includes(name), `${name} 不得脱链（写计划 / 副作用 / 控制面）`)
   }
@@ -127,7 +127,12 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
   assert.deepEqual(readJson('terms/secrets.status.json'), ['eff', 'secrets', 'list', ['c', null]])
   assert.deepEqual(readJson('terms/settings.identities.json'), ['g', ['ids']])
   assert.deepEqual(readJson('terms/settings.skills.json'), ['eff', 'skill', 'read', ['g', ['ids', 'skill']]])
-  assert.deepEqual(readJson('terms/orchestration.graph.json'), ['g', ['ids', 'loop-policy']])
+  assert.deepEqual(readJson('terms/orchestration.graph.json'), [
+    'eff',
+    'ui-settings',
+    'graph',
+    ['g', ['ids', 'loop-policy']],
+  ])
   assert.deepEqual(readJson('terms/orchestration.scopes.json'), [
     'eff',
     'ui-settings',

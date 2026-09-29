@@ -1,5 +1,6 @@
-// 投影单元测试：`view.display`（UI 完整时间线）与回合日志元数据（`turnMetadata`，供 view.context 分层）。
-// 直接 import execute 源码。
+// 上下文侧元数据单元测试：`turnMetadata`（距离 / 工具调用步号 / 检查点全局边界）、
+// `isCovered` 词序、`isStructuredCheckpoint` / `renderCheckpoint`。展示投影归 session 所有，
+// 其测试在 plugins/session/test/project.test.mjs。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,13 +9,13 @@ import { ensureNative } from './driver.mjs'
 process.env.CHRONO_PLUGIN_STATE = ''
 ensureNative()
 
-const { displayView, turnMetadata, renderCheckpoint, isStructuredCheckpoint } = await import('../execute/views.ts')
+const { turnMetadata, isCovered, renderCheckpoint, isStructuredCheckpoint } = await import('../execute/views.ts')
 
-function session(turns, refs = {}) {
-  return { head: null, refs, turns }
+function session(turns) {
+  return { head: null, refs: {}, turns }
 }
 
-test('turnMetadata：距离、工具调用步号、结构化检查点与覆盖边界', () => {
+test('turnMetadata：距离、工具调用步号、结构化检查点与全局覆盖边界', () => {
   const meta = turnMetadata(
     session([
       { turn_id: 't1', steps: [] },
@@ -22,7 +23,7 @@ test('turnMetadata：距离、工具调用步号、结构化检查点与覆盖�
         turn_id: 't2',
         steps: [
           { type: 'step.intent', turn_id: 't2', seq: 4, kind: 'tool.dispatch', tool_calls: [{ id: 'c1', name: 'read', arguments: { path: 'a' } }] },
-          { type: 'checkpoint', turn_id: 't2', seq: 5, summary: { goal: 'g', covered_upto: 5 }, covered_upto: 5 },
+          { type: 'checkpoint', turn_id: 't2', seq: 5, summary: { goal: 'g' }, covered_upto: { turn_id: 't2', seq: 5 } },
         ],
       },
       {
@@ -37,10 +38,11 @@ test('turnMetadata：距离、工具调用步号、结构化检查点与覆盖�
   assert.equal(meta.callStep.get('c1'), 4)
   assert.equal(meta.checkpoint.turn_id, 't2')
   assert.equal(meta.checkpoint.summary.goal, 'g')
-  assert.deepEqual([...meta.coveredTurnIds].sort(), ['t1', 't2'], '段标记（kind:segment）不是结构化检查点')
+  assert.deepEqual(meta.boundary, { turnId: 't2', turnIndex: 1, seq: 5 })
+  assert.deepEqual([...meta.coveredTurnIds].sort(), ['t1'], '段标记（kind:segment）不是结构化检查点')
 })
 
-test('turnMetadata：同回合在 covered_upto 之后仍有步 → 该回合不被覆盖', () => {
+test('turnMetadata：旧式数字 covered_upto 局部于检查点自身回合', () => {
   const meta = turnMetadata(
     session([
       { turn_id: 't1', steps: [] },
@@ -53,13 +55,29 @@ test('turnMetadata：同回合在 covered_upto 之后仍有步 → 该回合不�
       },
     ]),
   )
+  assert.deepEqual(meta.boundary, { turnId: 't2', turnIndex: 1, seq: 4 })
   assert.deepEqual([...meta.coveredTurnIds], ['t1'])
 })
 
-test('isStructuredCheckpoint / renderCheckpoint：结构化字段渲染成确定文本', () => {
+test('isCovered：边界之前的整回合覆盖，边界回合按步号词序', () => {
+  const meta = turnMetadata(
+    session([
+      { turn_id: 't1', steps: [] },
+      { turn_id: 't2', steps: [{ type: 'checkpoint', turn_id: 't2', seq: 5, summary: { goal: 'g' }, covered_upto: { turn_id: 't2', seq: 5 } }] },
+      { turn_id: 't3', steps: [] },
+    ]),
+  )
+  assert.equal(isCovered(meta, 't1', 99), true)
+  assert.equal(isCovered(meta, 't2', 3), true)
+  assert.equal(isCovered(meta, 't2', 6), false)
+  assert.equal(isCovered(meta, 't3', 0), false)
+})
+
+test('isStructuredCheckpoint / renderCheckpoint：结构化字段渲染成确定文本；子代理结果不算检查点', () => {
   assert.equal(isStructuredCheckpoint({ goal: 'g' }), true)
   assert.equal(isStructuredCheckpoint({ kind: 'segment', iter: 1 }), false)
   assert.equal(isStructuredCheckpoint({ kind: 'verify', text: 't' }), false)
+  assert.equal(isStructuredCheckpoint({ kind: 'subagent', goal: 'g' }), false)
   assert.equal(isStructuredCheckpoint({ note: 'x' }), false)
   const text = renderCheckpoint({
     goal: '目标 A',
@@ -79,49 +97,4 @@ test('isStructuredCheckpoint / renderCheckpoint：结构化字段渲染成确定
   assert.ok(text.includes('src/foo.ts（read · 入口）'))
   assert.ok(text.includes('应避免的错误'))
   assert.ok(text.includes('用户偏好'))
-})
-
-test('view.display：逐回合完整时间线（用户消息 / 推理 / 正文 / 工具卡与结果）', () => {
-  const view = displayView(
-    session(
-      [
-        {
-          turn_id: 't1',
-          at: '2026-01-01T00:00:00.000Z',
-          state: 'settled',
-          outcome: { kind: 'committed', retryable: false },
-          steps: [
-            { type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: '回复' } },
-            {
-              type: 'step.result',
-              turn_id: 't1',
-              seq: 3,
-              assistant: {
-                content: '回复',
-                parts: [
-                  { type: 'reasoning', text: '思考' },
-                  { type: 'text', text: '回复' },
-                  { type: 'tool', call_id: 'c1', tool: 'read', args: { path: 'a' }, result: { text: 'X' }, status: 'ok' },
-                ],
-              },
-            },
-          ],
-        },
-      ],
-      { 'msg-c1-t1-user': { id: 'msg-c1-t1-user', role: 'user', content: '问题' } },
-    ),
-  )
-  assert.equal(view.length, 1)
-  assert.equal(view[0].turn_id, 't1')
-  assert.equal(view[0].state, 'settled')
-  assert.deepEqual(view[0].outcome, { kind: 'committed', retryable: false })
-  assert.deepEqual(
-    view[0].items.map((item) => item.kind),
-    ['user', 'reasoning', 'text', 'tool'],
-  )
-  const tool = view[0].items[3]
-  assert.equal(tool.call_id, 'c1')
-  assert.equal(tool.tool, 'read')
-  assert.deepEqual(tool.result, { text: 'X' })
-  assert.equal(tool.status, 'ok')
 })

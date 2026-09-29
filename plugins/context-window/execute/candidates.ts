@@ -2,13 +2,13 @@
 // 一切输入随 bag 由调用方入口 term 装配传入（服务不读投影）；本轮用户消息 / 系统提示 / 工具 schema /
 // L2 / 上一会话 L1 / 本会话 L1 / 技能 / L3 召回 / 历史 / 风格；线程口径按 bag.thread_kind 调输入。
 //
-// 跨回合作业：历史里的展示工具卡（`type:'tool'`）提升为可回灌的 assistant(tool_calls) + tool(结果摘要)，
-// 结果按机械规则老化并带句柄；同回合 `extra_messages` 的推理块按厂商中立形态回灌。
+// 历史与同回合记录同源于会话回合日志（`session.turns[].steps`），经 `project.ts` 投影成中性模型记录，
+// 不再解析展示 parts / 工具卡 / `refs`。`bag.extra_messages` 不再消费（同回合进度改由步日志派生）。
 
-import { ageResultText, interruptedResult } from './aging.ts'
-import { atomicGroups, messageParts, normalizeRole, planHistory } from './history.ts'
+import { messageParts } from './history.ts'
+import { projectContext } from './project.ts'
 import { computeTokenKey, isRecord, parseAt, parseExpiresAt, renderMemory, stableStringify } from './text.ts'
-import { messageTurnId, renderCheckpoint, turnMetadata, isStructuredCheckpoint, type TurnMetadata } from './views.ts'
+import { isStructuredCheckpoint, renderCheckpoint, turnMetadata, type TurnMetadata } from './views.ts'
 import type { CallEnv, CanonicalPart, Json, MessagePolicy, NeutralReasoning, Policy, RawMessage } from './types.ts'
 
 /** 优先级常量：数值越小越优先、越不可裁。 */
@@ -27,8 +27,6 @@ export interface Gathered {
   raws: RawMessage[]
   flags: string[]
   recallEntries: { entry: string; score: number }[]
-  coveredUpto: string | null
-  l1Valid: boolean
   /** 回合日志元数据（距离 / 步号 / 检查点覆盖）：供分层保留使用。 */
   turns: TurnMetadata
   /** 最新结构化检查点注入的消息（无检查点为 null）。 */
@@ -41,13 +39,6 @@ function textPart(text: string): CanonicalPart {
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
-}
-
-/** 消息 `meta.error`（session 的 commitError 落盘形态）：非空字符串才认。 */
-function metaError(body: Record<string, unknown>): string | null {
-  const meta = isRecord(body['meta']) ? body['meta'] : null
-  const error = meta === null ? undefined : meta['error']
-  return typeof error === 'string' && error.length > 0 ? error : null
 }
 
 /**
@@ -111,6 +102,13 @@ function parentCheckpointRaw(value: unknown, orderHint: number): RawMessage | nu
     from: null,
     orderHint,
   }
+}
+
+/** 收件箱消息体 → 文本：字符串原样，其余稳定 JSON 序列化（同输入同文本）。 */
+function inboxBodyText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value === null || value === undefined) return ''
+  return stableStringify(value as Json)
 }
 
 function inputRaw(parts: CanonicalPart[], priority: number, at: number, orderHint: number, from: string | null = null): RawMessage {
@@ -188,8 +186,6 @@ function sortTools(tools: Json[]): Record<string, unknown>[] {
 export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, policy: Policy): Gathered {
   const raws: RawMessage[] = []
   const flags: string[] = []
-  const history = planHistory(bag)
-  if (!history.l1Valid) flags.push('l1_invalid')
   const session = isRecord(bag['session']) ? bag['session'] : {}
   const turns = turnMetadata(session)
   let checkpoint: RawMessage | null = null
@@ -286,36 +282,33 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     else raws.push(memoryRaw('上一会话摘要', prevL1, 'l1', next()))
   }
 
-  // 本会话 L1（covered_upto 失效 ⇒ 丢弃该 L1，交给下次压缩重建）
+  // 本会话 L1：纯会话摘要层，按 TTL 过滤；覆盖由检查点边界承担，不再要求 message-id 对齐。
   const l1 = isRecord(memories['l1']) ? memories['l1'] : null
-  if (l1 !== null && history.l1Valid) {
+  if (l1 !== null) {
     if (isExpired(l1, env)) flags.push('l1_expired')
     else raws.push(memoryRaw('本会话摘要', l1, 'l1', next()))
   }
 
-  // 结构化检查点：作为历史头部注入。它覆盖的旧回合不再逐条回灌，由本检查点替代；
-  // 记录本身仍留 `view.display` 与 `context.expand`。
-  if (turns.checkpoint !== null) {
-    const text = renderCheckpoint(turns.checkpoint.summary)
-    if (text.trim().length > 0) {
-      checkpoint = {
-        role: 'system',
-        parts: [textPart(`[检查点]\n${text}`)],
-        source: 'l1',
-        priority: PRIORITY.memory,
-        at: 0,
-        atomic: false,
-        atomicGroup: null,
-        toolCallId: null,
-        from: null,
-        orderHint: next(),
-        checkpoint: true,
-      }
-      raws.push(checkpoint)
+  // 本线程未读收件箱（**所有线程口径**）：跨线程投递的未读消息按 seq 序注入。
+  // source=input、优先级同记忆；渲染与 loop-policy 子代理调用同口径。
+  if (Array.isArray(bag['inbox_unread'])) {
+    for (const item of bag['inbox_unread'] as Json[]) {
+      if (!isRecord(item)) continue
+      const kind = asString(item['kind']) ?? 'instruction'
+      const from = asString(item['from']) ?? 'parent'
+      raws.push(
+        inputRaw(
+          [textPart(`[收件箱 ${kind} · 来自 ${from}]\n${inboxBodyText(item['body'])}`)],
+          PRIORITY.memory,
+          parseAt(item['at']),
+          next(),
+          from,
+        ),
+      )
     }
   }
 
-  // 线程：subagent 的父检查点 / 任务提示词 / 未读收件箱。
+  // 线程：subagent 的父检查点 / 任务提示词。
   // 子代理隔离：上下文 = 任务 + 父检查点，不继承父消息历史（历史块按线程口径跳过）。
   if (threadKind === 'subagent') {
     const parentCheckpoint = parentCheckpointRaw(bag['parent_checkpoint'], next())
@@ -334,17 +327,6 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     const taskPrompt = asString(bag['task_prompt'])
     if (taskPrompt !== null) {
       raws.push(inputRaw([textPart(taskPrompt)], PRIORITY.input, 0, next()))
-    }
-    if (Array.isArray(bag['inbox_unread'])) {
-      for (const item of bag['inbox_unread'] as Json[]) {
-        if (!isRecord(item)) continue
-        const kind = asString(item['kind']) ?? 'instruction'
-        const from = asString(item['from']) ?? 'parent'
-        const body = asString(item['body']) ?? ''
-        raws.push(
-          inputRaw([textPart(`[收件箱 ${kind} · 来自 ${from}]\n${body}`)], PRIORITY.memory, parseAt(item['at']), next(), from),
-        )
-      }
     }
   }
 
@@ -441,123 +423,44 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     }
   }
 
-  // 历史（workflow 不组装消息历史；group 用群聊 transcript 替换；subagent 只取任务与父检查点，不继承父历史）
-  let groupOffset = 0
+  // 历史与同回合记录同源：会话回合日志经 `project.ts` 投影成中性模型记录（模型形状，不读展示 parts）。
+  // workflow 不组装消息历史；group 给正文加发言者前缀；subagent 只取任务与父检查点，不继承父历史。
+  // `bag.turn_id` = 本轮回合身份：投影据此跳过本轮用户消息（`input` 权威）、把本轮其余记录标本轮口径。
   if (threadKind !== 'workflow' && threadKind !== 'subagent') {
-    const selected = history.chain.slice(history.coveredIndex + 1)
-    const historyRaws: RawMessage[] = []
-    const historyToolCall: boolean[] = []
-    selected.forEach((entry) => {
-      const parsed = messageParts(entry.body)
-      const role = normalizeRole(entry.body['role'])
-      const turnId = messageTurnId(asString(entry.body['id']) ?? entry.hash, turns)
-      const from =
-        threadKind === 'group' ? asString(entry.body['from']) ?? asString(entry.body['speaker']) : null
-      let parts = parsed.parts
-      // group 改写 parts（加发言者前缀）后内容已不同于 def：计数 / 规范化缓存键须按改写后内容定，
-      // 否则同一 def 在「改写 / 未改写」两形态间串计数与 dedup。
+    const currentTurnId = asString(bag['turn_id'])
+    const projected = projectContext(session, turns, currentTurnId)
+    for (const record of projected.records) {
+      let parts = record.parts
       let tokenKey: string | null = null
-      if (from !== null && parts.length > 0 && parts[0]?.type === 'text') {
-        parts = [{ type: 'text', text: `${from}: ${(parts[0] as { text: string }).text}` }, ...parts.slice(1)]
+      if (threadKind === 'group' && record.from !== null && parts.length > 0 && parts[0]?.type === 'text') {
+        parts = [{ type: 'text', text: `${record.from}: ${(parts[0] as { text: string }).text}` }, ...parts.slice(1)]
         tokenKey = computeTokenKey(parts)
       }
-      const at = parseAt(entry.body['at'])
-      const error = metaError(entry.body)
-      // 展示工具卡提升：assistant 承接帧（调用逐字）+ 各工具结果（机械老化 + 句柄）。
-      if (role === 'assistant' && parsed.toolParts.length > 0) {
-        const toolCalls: Json = parsed.toolParts.map((tool) => ({
-          id: tool.callId,
-          name: tool.tool,
-          arguments: tool.args,
-        }))
-        historyRaws.push({
-          role: 'assistant',
-          parts,
-          source: 'history',
-          priority: PRIORITY.history,
-          at,
-          atomic: true,
-          atomicGroup: null,
-          toolCallId: null,
-          toolCalls,
-          from,
-          orderHint: next(),
-          defKey: entry.hash,
-          turnId,
-          ...(error === null ? {} : { error }),
-          ...(tokenKey === null ? {} : { tokenKey }),
-        })
-        historyToolCall.push(true)
-        for (const tool of parsed.toolParts) {
-          const pending = tool.status === null && tool.result === null
-          if (pending) {
-            historyRaws.push({
-              role: 'tool',
-              parts: [textPart(interruptedResult())],
-              source: 'history',
-              priority: PRIORITY.history,
-              at,
-              atomic: true,
-              atomicGroup: null,
-              toolCallId: tool.callId,
-              from: null,
-              orderHint: next(),
-              defKey: `${entry.hash}\u0001${tool.callId}`,
-              turnId,
-            })
-            historyToolCall.push(false)
-            continue
-          }
-          const ok = tool.status !== 'error'
-          const verbatim = JSON.stringify({ call_id: tool.callId, ok, result: tool.result })
-          historyRaws.push({
-            role: 'tool',
-            parts: [textPart(ageResultText(tool.tool, tool.args, tool.callId, tool.result ?? null, ok))],
-            source: 'history',
-            priority: PRIORITY.history,
-            at,
-            atomic: true,
-            atomicGroup: null,
-            toolCallId: tool.callId,
-            from: null,
-            orderHint: next(),
-            defKey: `${entry.hash}\u0001${tool.callId}`,
-            turnId,
-            toolResult: { tool: tool.tool, args: tool.args, verbatim },
-          })
-          historyToolCall.push(false)
-        }
-        return
-      }
-      historyRaws.push({
-        role,
+      const reasoning = record.reasoning !== null ? neutralReasoning(record.reasoning, model) : null
+      const raw: RawMessage = {
+        role: record.role,
         parts,
-        source: 'history',
-        priority: PRIORITY.history,
-        at,
-        atomic: false,
-        atomicGroup: null,
-        toolCallId: asString(entry.body['tool_call_id']),
-        from,
+        source: record.source,
+        priority: record.priority,
+        at: record.at,
+        atomic: record.group !== null,
+        atomicGroup: record.group,
+        toolCallId: record.toolCallId,
+        from: record.from,
         orderHint: next(),
-        defKey: entry.hash,
-        turnId,
-        ...(error === null ? {} : { error }),
+        turnId: record.turnId,
+        step: record.step,
+        ...(record.toolCalls === null ? {} : { toolCalls: record.toolCalls }),
+        ...(reasoning === null ? {} : { reasoning }),
+        ...(record.toolResult === null ? {} : { toolResult: record.toolResult }),
+        ...(record.error === null ? {} : { error: record.error }),
+        ...(record.checkpoint ? { checkpoint: true } : {}),
+        ...(record.covered ? { covered: true } : {}),
         ...(tokenKey === null ? {} : { tokenKey }),
-      })
-      historyToolCall.push(parsed.hasToolCall)
-    })
-    // 历史 atomic 组：工具调用 + 结果同进同出；与后续 extra_messages 组编号区隔。
-    const historyGroups = atomicGroups(
-      historyRaws.map((raw, index) => ({ parts: raw.parts, role: raw.role, hasToolCall: historyToolCall[index] === true })),
-    )
-    historyRaws.forEach((raw, index) => {
-      raw.atomicGroup = historyGroups[index] ?? null
-      raw.atomic = raw.atomicGroup !== null
-    })
-    raws.push(...historyRaws)
-    // extra_messages 的组号从历史之后接续，避免与历史组相撞。
-    for (const group of historyGroups) if (group !== null && group + 1 > groupOffset) groupOffset = group + 1
+      }
+      raws.push(raw)
+      if (record.checkpoint) checkpoint = raw
+    }
   }
 
   // 风格
@@ -583,77 +486,8 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     })
   }
 
-  // 同回合 iter 间产物（工具结果 / verify 报告 / 提问答案）：随 bag.extra_messages 传入，追加到消息尾部。
-  // source = `tool`（不在前缀序内 ⇒ 排在本轮输入之后）；priority = 历史级（随历史额度可裁，避免 P0 无界）。
-  // assistant(tool_calls) 与它的工具结果编成 atomic 组，同进同出；推理块按中立形态回灌。
-  const extraMessages = bag['extra_messages']
-  if (Array.isArray(extraMessages)) {
-    const extraRaws: RawMessage[] = []
-    const extraToolCall: boolean[] = []
-    const callsById = new Map<string, { tool: string; args: Json }>()
-    for (const item of extraMessages) {
-      if (!isRecord(item)) continue
-      const toolCalls = Array.isArray(item['tool_calls']) ? (item['tool_calls'] as Json) : null
-      if (toolCalls !== null) {
-        for (const call of toolCalls) {
-          if (!isRecord(call)) continue
-          const id = asString(call['id'])
-          if (id === null) continue
-          callsById.set(id, {
-            tool: asString(call['name']) ?? '',
-            args: (call['arguments'] ?? null) as Json,
-          })
-        }
-      }
-    }
-    for (const item of extraMessages) {
-      if (!isRecord(item)) continue
-      const toolCalls = Array.isArray(item['tool_calls']) ? (item['tool_calls'] as Json) : null
-      const parsed = messageParts(item)
-      const reasoning = neutralReasoning(item['reasoning'], model)
-      // 空 content 的 assistant（只带 tool_calls）不能丢：它是工具调用的承接帧
-      if (parsed.parts.length === 0 && (toolCalls === null || toolCalls.length === 0) && reasoning === null) continue
-      const role = normalizeRole(item['role'])
-      const toolCallId = asString(item['tool_call_id'])
-      const error = metaError(item)
-      const raw: RawMessage = {
-        role,
-        parts: parsed.parts,
-        source: 'tool',
-        priority: PRIORITY.history,
-        at: 0,
-        atomic: false,
-        atomicGroup: null,
-        toolCallId,
-        from: null,
-        orderHint: next(),
-        ...(toolCalls === null ? {} : { toolCalls }),
-        ...(reasoning === null ? {} : { reasoning }),
-        ...(error === null ? {} : { error }),
-      }
-      if (role === 'tool' && toolCallId !== null) {
-        const origin = callsById.get(toolCallId)
-        if (origin !== undefined) {
-          raw.toolResult = {
-            tool: origin.tool,
-            args: origin.args,
-            verbatim: parsed.parts.map((part) => (part.type === 'text' ? part.text : '')).join('\n'),
-          }
-        }
-      }
-      extraRaws.push(raw)
-      extraToolCall.push(toolCalls !== null && toolCalls.length > 0)
-    }
-    const extraGroups = atomicGroups(
-      extraRaws.map((raw, index) => ({ parts: raw.parts, role: raw.role, hasToolCall: extraToolCall[index] === true })),
-    )
-    extraRaws.forEach((raw, index) => {
-      const local = extraGroups[index]
-      raw.atomicGroup = local === null ? null : local + groupOffset
-      raw.atomic = raw.atomicGroup !== null
-    })
-    raws.push(...extraRaws)
-  }
+  // 同回合 iter 间产物不再经 `bag.extra_messages` 回灌：改由会话步日志投影（见上）统一派生。
+  // `bag.extra_messages` 仍被接受但忽略（生产者可由 W1 下线）。
 
-  return { raws, flags, recallEntries, coveredUpto: history.coveredUpto, l1Valid: history.l1Valid, turns, checkpoint }
+  return { raws, flags, recallEntries, turns, checkpoint }
 }

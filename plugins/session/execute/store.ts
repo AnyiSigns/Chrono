@@ -24,6 +24,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { STEP_RECORD_TYPES, cancelled, interrupted } from './contract/index.ts'
+import { displayMessagesByTurn, displayTimeline } from './project.ts'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Rec = { [key: string]: Json }
@@ -109,6 +110,22 @@ function isRecord(value: unknown): value is Rec {
 
 function asStr(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function numberField(record: Rec, key: string): number | null {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** 收件箱水位单调：`last_seen` 只增不减（重放旧 `conv` 记录也不倒退）。 */
+function monotonicInbox(next: Rec, prev: Rec): Rec {
+  const prevInbox = isRecord(prev['inbox']) ? prev['inbox'] : null
+  const nextInbox = isRecord(next['inbox']) ? next['inbox'] : null
+  if (prevInbox === null || nextInbox === null) return next
+  const prevSeen = numberField(prevInbox, 'last_seen') ?? 0
+  const nextSeen = numberField(nextInbox, 'last_seen') ?? 0
+  if (nextSeen >= prevSeen) return next
+  return { ...next, inbox: { ...nextInbox, last_seen: prevSeen } }
 }
 
 function isTerminalOutcome(outcome: Rec | null): boolean {
@@ -293,6 +310,19 @@ export class SessionStore {
         if (turn !== undefined) turn.cancel_requested = true
         return
       }
+      case 'inbox.seen': {
+        const conv = record['conv']
+        const lastSeen = record['last_seen']
+        if (typeof conv !== 'string' || typeof lastSeen !== 'number' || !Number.isFinite(lastSeen)) return
+        const index = this.conversations.findIndex((item) => item['id'] === conv)
+        if (index < 0) return
+        const entry = { ...this.conversations[index] }
+        const inbox = isRecord(entry['inbox']) ? { ...(entry['inbox'] as Rec) } : {}
+        inbox['last_seen'] = Math.max(numberField(inbox, 'last_seen') ?? 0, lastSeen)
+        entry['inbox'] = inbox
+        this.conversations[index] = entry
+        return
+      }
       default:
         return
     }
@@ -316,7 +346,7 @@ export class SessionStore {
     if (typeof entry['id'] !== 'string') return
     const id = entry['id']
     const index = this.conversations.findIndex((item) => item['id'] === id)
-    if (index >= 0) this.conversations[index] = entry
+    if (index >= 0) this.conversations[index] = monotonicInbox(entry, this.conversations[index])
     else this.conversations.push(entry)
   }
 
@@ -654,6 +684,30 @@ export class SessionStore {
     return { status: 'recorded', outcome: null, conv: entry.conv }
   }
 
+  /**
+   * 收件箱已读水位单调推进：追加 `inbox.seen` 记录，`last_seen = max(current, seq)`。
+   * `seq <= current` 幂等 no-op（不追加记录）；会话未知回 `not_found`；追加失败回 `failed`（不落内存）。
+   * 只增不减：即使重放乱序 / 旧 `conv` 记录回写，`applyConversation` / `apply` 都以 max 守卫。
+   */
+  async ackInbox(
+    run: string | null,
+    conv: string,
+    seq: number,
+  ): Promise<'applied' | 'unchanged' | 'not_found' | 'failed'> {
+    const index = this.conversations.findIndex((item) => item['id'] === conv)
+    if (index < 0) return 'not_found'
+    const current = numberField(
+      isRecord(this.conversations[index]['inbox']) ? (this.conversations[index]['inbox'] as Rec) : {},
+      'last_seen',
+    ) ?? 0
+    if (seq <= current) return 'unchanged'
+    const record: Rec = { t: 'inbox.seen', run, conv, last_seen: Math.max(current, seq) }
+    const persisted = await this.appendWithRetry(record)
+    if (!persisted) return 'failed'
+    this.apply(record)
+    return 'applied'
+  }
+
   // ── 读口 ────────────────────────────────────────────────────────────────
 
   body(): Rec {
@@ -679,35 +733,68 @@ export class SessionStore {
       head: conversation !== null ? headId(conversation) : null,
       refs,
       turns: conversation !== null ? this.turnsFor(conversation['id'] as string) : [],
+      inbox_unread: conversation !== null ? this.unreadInbox(conversation['id'] as string) : [],
       data_gen: null,
     }
   }
 
-  /** 展示历史：新 → 旧窗口；`before` 命中的那条不含（从它更旧处起）。 */
+  /**
+   * 未读收件箱投影：`${conv}#inbox` 里 `seq > last_seen` 的条目，按 `seq` 升序（确定性）。
+   * 只读：不回写、不推进水位（推进由 `ackInbox` 另行追加记录）。
+   */
+  unreadInbox(convId: string): Rec[] {
+    const conversation = this.conversations.find((item) => item['id'] === convId)
+    if (conversation === undefined) return []
+    const inbox = isRecord(conversation['inbox']) ? (conversation['inbox'] as Rec) : {}
+    const lastSeen = numberField(inbox, 'last_seen') ?? 0
+    const out: Rec[] = []
+    for (const msg of this.messages.get(`${convId}#inbox`) ?? []) {
+      const seq = msg['seq']
+      if (typeof seq !== 'number' || seq <= lastSeen) continue
+      out.push({ seq, from: msg['from'] ?? null, kind: msg['kind'] ?? null, body: msg['body'] ?? null, at: msg['at'] ?? null })
+    }
+    out.sort((left, right) => (left['seq'] as number) - (right['seq'] as number))
+    return out
+  }
+
+  /**
+   * 展示历史：由展示投影（回合日志）重建，按回合窗分页。
+   * `before` 定位既有消息所属回合（该回合不含），`limit` 为回合数；`messages` 新 → 旧。
+   */
   history(convId: string | null, before: string | null, limit: number | null): Rec {
     const conversation = this.pick(convId)
     const refs: Rec = {}
-    const chain: Rec[] = []
-    if (conversation !== null) {
-      const list = this.messages.get(conversation['id'] as string) ?? []
-      for (const msg of list) refs[msg['id'] as string] = msg
-      for (let i = list.length - 1; i >= 0; i--) chain.push({ hash: list[i]['id'] as string, def: list[i] })
+    const conversationId = conversation !== null ? (conversation['id'] as string) : null
+    if (conversationId !== null) {
+      for (const msg of this.messages.get(conversationId) ?? []) refs[msg['id'] as string] = msg
     }
-    let start = 0
+    const turns = conversationId === null ? [] : this.turnsFor(conversationId)
+    const groups = conversationId === null ? [] : displayMessagesByTurn(conversationId, turns)
+    let end = groups.length
     if (before !== null) {
-      const index = chain.findIndex((entry) => entry['hash'] === before || isRecord(entry['def']) && entry['def']['id'] === before)
-      start = index >= 0 ? index + 1 : 0
+      const index = groups.findIndex((group) =>
+        group.messages.some((entry) => entry.hash === before || (isRecord(entry.def) && entry.def['id'] === before)),
+      )
+      if (index >= 0) end = index
     }
-    const window = limit !== null ? chain.slice(start, start + limit) : chain.slice(start)
+    const start = limit !== null ? Math.max(0, end - limit) : 0
+    const selected = groups.slice(start, end)
+    const window: Rec[] = []
+    for (const group of selected) window.push(...group.messages)
+    window.reverse()
+    const oldest = selected.length > 0 && selected[0] !== undefined && selected[0].messages.length > 0
+      ? selected[0].messages[0]?.hash ?? null
+      : null
     return {
-      conversation: conversation !== null ? (conversation['id'] as string) : null,
+      conversation: conversationId,
       before,
       limit,
       messages: window,
-      next_before: null,
-      turns: conversation !== null ? this.turnsFor(conversation['id'] as string) : [],
+      next_before: start > 0 ? oldest : null,
+      turns,
       body: this.body(),
       refs,
+      display: displayTimeline(turns) as unknown as Json,
     }
   }
 
@@ -758,6 +845,7 @@ export class SessionStore {
       outcome: entry.outcome,
       cancel_requested: entry.cancel_requested,
       late_settles: entry.late,
+      user_message: entry.user_message,
       steps: entry.steps,
       ...(entry.thread_kind !== null ? { thread_kind: entry.thread_kind } : {}),
       ...(entry.task_prompt !== null ? { task_prompt: entry.task_prompt } : {}),

@@ -1,5 +1,6 @@
-// 历史候选解析：沿 `prev` 链还原会话消息、定位 covered_upto 边界、标记工具调用 atomic 组；
-// 以及消息体 / 附件 / parts 的宽松解析。规范消息的组装在 `candidates.ts` 完成。
+// 消息体 / 附件 / parts 的宽松解析，以及工具调用 atomic 组标记。
+// 历史候选不再沿 `prev` 链还原（真源是会话回合日志）；本模块只做展示载荷的机械解析（本轮输入 /
+// 用户附件）与规范消息的原子分组。
 
 import { asAssetRef, isRecord } from './text.ts'
 import type { AssetRef, CanonicalPart, Json, Role } from './types.ts'
@@ -146,57 +147,3 @@ export function atomicGroups(
   return groups
 }
 
-export interface HistoryPlan {
-  chain: { hash: string; body: Record<string, unknown> }[]
-  coveredUpto: string | null
-  coveredIndex: number
-  l1Valid: boolean
-}
-
-/** 沿 `prev` 链还原历史（从 head 逆序），并定位 covered_upto 边界。 */
-export function planHistory(bag: Record<string, unknown>): HistoryPlan {
-  const session = isRecord(bag['session']) ? bag['session'] : {}
-  const refsRaw = isRecord(session['refs']) ? session['refs'] : {}
-  const refs = new Map<string, Record<string, unknown>>()
-  for (const [hash, body] of Object.entries(refsRaw)) {
-    if (isRecord(body)) refs.set(hash, body)
-  }
-  const memories = isRecord(bag['memories']) ? bag['memories'] : {}
-  const l1 = isRecord(memories['l1']) ? memories['l1'] : {}
-  const coveredUpto =
-    typeof l1['covered_upto'] === 'string' && (l1['covered_upto'] as string).length > 0
-      ? (l1['covered_upto'] as string)
-      : null
-
-  if (refs.size === 0) {
-    return { chain: [], coveredUpto, coveredIndex: -1, l1Valid: true }
-  }
-
-  // `head` 是当前会话的链头：为空 = 本会话尚无消息（历史为空）；非空但不在 `refs` = 投影不一致。
-  // **绝不**在 refs 里猜链头——`session.refs` 是会话级全量（含其它会话的消息），猜会把别的会话历史当本会话历史。
-  const head = typeof session['head'] === 'string' ? (session['head'] as string) : null
-  if (head === null || !refs.has(head)) {
-    return { chain: [], coveredUpto, coveredIndex: -1, l1Valid: coveredUpto === null }
-  }
-
-  const reversed: { hash: string; body: Record<string, unknown> }[] = []
-  const visited = new Set<string>()
-  let cursor: string | null = head
-  while (cursor !== null && refs.has(cursor) && !visited.has(cursor)) {
-    visited.add(cursor)
-    const body = refs.get(cursor) as Record<string, unknown>
-    reversed.push({ hash: cursor, body })
-    const prev = isRecord(body['prev']) ? body['prev'] : null
-    cursor = prev !== null && typeof prev['def'] === 'string' ? (prev['def'] as string) : null
-  }
-  const chain = reversed.reverse()
-
-  let coveredIndex = -1
-  let l1Valid = true
-  if (coveredUpto !== null) {
-    const found = chain.findIndex((entry) => entry.body['id'] === coveredUpto)
-    if (found >= 0) coveredIndex = found
-    else l1Valid = false
-  }
-  return { chain, coveredUpto, coveredIndex, l1Valid }
-}

@@ -11,6 +11,7 @@ ensureNative()
 
 const { canonicalize } = await import('../execute/normalize.ts')
 const { applyRetention, tierOf, compressText } = await import('../execute/retention.ts')
+const { dedupe } = await import('../execute/stages.ts')
 const { resourceIdentity, isMutableResult, digestOf } = await import('../execute/digest.ts')
 const { allocate } = await import('../execute/budget.ts')
 const { defaultPolicy } = await import('../execute/policy.ts')
@@ -73,6 +74,18 @@ test('等级判定：T0 当前回合 / T1 近期 / T2 陈旧 / T3 检查点覆�
   assert.deepEqual(result.counts, { T0: 2, T1: 3, T2: 1, T3: 1 })
   assert.equal(result.dropped, 1)
   assert.ok(result.degraded.includes('checkpoint_covered_turns'))
+})
+
+test('C6：非历史来源即使 covered=true 也落 T0，不被 T3 覆盖裁剪移除', () => {
+  const options = { ...OPTIONS, coveredTurnIds: new Set(['t-new']) }
+  const messages = canonicalize([
+    raw({ source: 'tool', turnId: 't-new', covered: true, priority: 4, orderHint: 0 }),
+  ])
+  assert.equal(tierOf(messages[0], options), 'T0')
+  const result = applyRetention(messages, options)
+  assert.equal(result.dropped, 0)
+  assert.equal(result.messages.length, 1)
+  assert.deepEqual(result.counts, { T0: 1, T1: 0, T2: 0, T3: 0 })
 })
 
 test('T1：工具结果 → 摘要 + 句柄（提供方 digest 原样带出，缺失按形状回落）', () => {
@@ -160,8 +173,40 @@ test('替代去重：变更类结果不塌缩（改写历史会丢事实）', ()
   assert.equal(result.messages.length, 2)
 })
 
+test('替代去重：只作用于历史，同回合工作集（source=tool）不塌缩', () => {
+  const messages = canonicalize([
+    toolRaw({ turnId: null, callId: 'c1', tool: 'read', args: { path: 'src/a.ts' }, result: { text: 'OLD'.repeat(50), lines_returned: 50 }, orderHint: 0 }),
+    toolRaw({ turnId: null, callId: 'c2', tool: 'read', args: { path: 'src/a.ts' }, result: { text: 'NEW'.repeat(50), lines_returned: 50 }, orderHint: 1 }),
+  ]).map((message) => ({ ...message, source: 'tool' }))
+  const result = applyRetention(messages, OPTIONS)
+  assert.equal(result.replaced, 0)
+  assert.equal(result.messages.length, 2)
+  for (const message of result.messages) {
+    assert.equal(JSON.parse(message.parts[0].text).replaced, undefined)
+  }
+})
+
+test('第 2 步去重：正文一致的工具结果不互相删除（避免配对修复补 interrupted）', () => {
+  const content = JSON.stringify({ call_id: 'c', ok: true, result: { text: 'SAME' } })
+  const messages = canonicalize([
+    raw({ role: 'tool', source: 'tool', toolCallId: 'c1', parts: [{ type: 'text', text: content }], orderHint: 0 }),
+    raw({ role: 'tool', source: 'tool', toolCallId: 'c2', parts: [{ type: 'text', text: content }], orderHint: 1 }),
+  ])
+  const result = dedupe(messages)
+  assert.equal(result.messages.length, 2)
+  assert.equal(result.deduped, 0)
+})
+
 test('资源身份：path / url / cmd+cwd / pattern+base 各自成键；无资源概念返回 null', () => {
   assert.equal(resourceIdentity('read', { path: 'a.ts' }).key, 'read\u0001path\u0001a.ts')
+  assert.equal(
+    resourceIdentity('read', { path: 'a.ts', offset: 240, limit: 240 }).key,
+    'read\u0001path\u0001a.ts\u0001offset=240\u0001limit=240',
+  )
+  assert.notEqual(
+    resourceIdentity('read', { path: 'a.ts', offset: 0 }).key,
+    resourceIdentity('read', { path: 'a.ts', offset: 240 }).key,
+  )
   assert.equal(resourceIdentity('http', { url: 'https://x' }).key, 'http\u0001url\u0001https://x')
   assert.deepEqual(resourceIdentity('shell', { cmd: 'ls', cwd: '/w' }).fields, { cmd: 'ls', cwd: '/w' })
   assert.equal(resourceIdentity('shell', { cmd: 'ls', cwd: '/w' }).key, 'shell\u0001cmd\u0001ls\u0001/w')
@@ -250,10 +295,11 @@ test('校正系数作用于改写路径：老化后 token 按系数缩放（不�
   assert.equal(two.tokens, one.tokens * 2)
 })
 
-test('压缩失败回落：无检查点 → 机械老化 + compress_unavailable，不硬死；有检查点 → compress', () => {
+test('压缩梯级：机械老化已压回预算内不登记；仍超才登记 compress / compress_unavailable', () => {
   const policy = defaultPolicy()
+  // 可收缩：老化后已回到预算内 → 不登记压缩梯级。
   const verbatim = JSON.stringify({ call_id: 'c1', ok: true, result: { text: 'z '.repeat(400) } })
-  const messages = canonicalize([
+  const ageable = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
     raw({
       role: 'tool',
@@ -264,12 +310,22 @@ test('压缩失败回落：无检查点 → 机械老化 + compress_unavailable�
       toolResult: { tool: 'read', args: { path: 'a' }, verbatim },
     }),
   ])
-  const fallback = allocate(messages, 120, policy)
-  assert.equal(fallback.error, null)
-  assert.ok(fallback.degraded.includes('age_tool_results'))
-  assert.ok(fallback.degraded.includes('compress_unavailable'))
+  const aged = allocate(ageable, 120, policy)
+  assert.equal(aged.error, null)
+  assert.ok(aged.degraded.includes('age_tool_results'))
+  assert.equal(aged.degraded.includes('compress_unavailable'), false, '老化已压回预算内 → 压缩未发生')
 
-  const withCheckpoint = allocate(messages, 120, policy, { checkpoint: true })
+  // 不可收缩：大段历史正文既不能老化也不能丢推理 → 仍超预算才登记压缩梯级；历史整组被裁不硬死。
+  const huge = canonicalize([
+    raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
+    raw({ role: 'assistant', source: 'history', priority: 4, parts: [{ type: 'text', text: 'w '.repeat(400) }] }),
+  ])
+  const fallback = allocate(huge, 120, policy)
+  assert.equal(fallback.error, null)
+  assert.ok(fallback.degraded.includes('compress_unavailable'))
+  assert.ok(fallback.degraded.includes('drop_old_turns'), '历史因预算被裁须登记 drop_old_turns')
+
+  const withCheckpoint = allocate(huge, 120, policy, { checkpoint: true })
   assert.equal(withCheckpoint.error, null)
   assert.ok(withCheckpoint.degraded.includes('compress'))
   assert.equal(withCheckpoint.degraded.includes('compress_unavailable'), false)

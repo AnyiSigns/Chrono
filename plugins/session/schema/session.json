@@ -41,13 +41,9 @@
             "items": { "type": "object" },
             "description": "group 圆桌参与者 [{\"def\":\"<#35 instance 哈希>\"}]；缺键 = 空"
           },
-          "workflow": {
-            "type": "object",
-            "description": "workflow 图执行位置 {graph:{\"def\":\"<#33 图哈希>\"}, node_index, iter}；null = 非工作流（缺键同义）"
-          },
           "inbox": {
             "type": "object",
-            "description": "线程收件箱 {tail:{\"def\":\"<最新 inbox 消息 def>\"}|null, count, last_seen}；deliver 写、assemble 读后推进 last_seen"
+            "description": "线程收件箱 {tail:{\"def\":\"<最新 inbox 消息 def>\"}|null, count, last_seen}；deliver 写；ack_inbox 单调推进 last_seen（只增不减）"
           },
           "status": {
             "enum": ["waiting", "done", "failed", "terminated"],
@@ -68,6 +64,22 @@
           "count": { "type": "integer", "description": "消息条数冗余计数（链完整性以 prev 为准）" },
           "created": { "type": "string", "description": "创建时间（ISO 8601，取帧 env.now）" },
           "deleted_at": { "type": "string", "description": "软删时间戳（ISO 8601）；null = 未删（缺键同义）；消息 def 不删不回溯" }
+        }
+      }
+    },
+    "inbox_unread": {
+      "type": "array",
+      "description": "当前会话未读收件箱投影（read 切片）：${conversation}#inbox 里 seq > inbox.last_seen 的条目，按 seq 升序。只读；推进水位由 ack_inbox 另行追加记录。",
+      "items": {
+        "type": "object",
+        "required": ["seq"],
+        "additionalProperties": true,
+        "properties": {
+          "seq": { "type": "integer", "description": "投递序号（1 起、连续）" },
+          "from": { "type": "string", "description": "投递方（缺省 user / parent）" },
+          "kind": { "type": "string", "description": "消息种类（如 instruction / report）" },
+          "body": { "description": "消息体（JSON 任意值，常见为字符串）" },
+          "at": { "type": "string", "description": "投递时间（ISO 8601，取帧 env.now）" }
         }
       }
     },
@@ -161,6 +173,7 @@
     "session.commit": 120000,
     "session.read": 120000,
     "session.history": 120000,
+    "session.ack_inbox": 120000,
     "session.deliver": 120000
   }
 }

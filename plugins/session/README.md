@@ -5,7 +5,7 @@
 调用方（`chat`）经反向调用取用；服务不读投影、无写链通道、不自取时钟（`now` 取帧 `env.now`）。
 
 - 能力类：`session`；方法：`commit` / `new_conversation` / `select` / `rename` / `set_title` / `delete` /
-  `restore` / `branch` / `deliver` / `turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `read` / `history`。
+  `restore` / `branch` / `deliver` / `ack_inbox` / `turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `read` / `history`。
 - 命令：无（命令面由侧栏 / 聊天插件承接）。
 - `pins`：`input` → `input`（`commit` 等消费槽后经反向调用 `input.clear` 清本线程槽）。
 - 状态档：`durable`（④ 不可重算；跨代存活、进备份、只按身份消失回收）；`exclusive: ["data"]`。
@@ -17,16 +17,18 @@
   启动时重放即得全量状态；末行半写撕裂 / 坏行跳过（fail-open）。
 - ③ `CHRONO_PLUGIN_STATE/index.json`：派生物（记录水位 / 会话计数），删掉可由 ④ 重放重建，**不承载真源**。
 - 两类记录共用同一追加机制：
-  - 会话轨（`commit` 用）：`{t:'msg'|'conv'|'current'|'del'|'restore'|'turn'|'cancel', run, ...}`。
+  - 会话轨（`commit` 用）：`{t:'msg'|'conv'|'current'|'del'|'restore'|'turn'|'cancel'|'inbox.seen', run, ...}`。
     - `msg`：`{run, conv, msg}`；消息 `id` 由 run + 角色派生，同 run 同角色重复写幂等。
     - `conv`：`{run, entry}`；按 `id` 新增 / 替换会话条目。
     - `current`：`{run, id}`；`del` / `restore`：软删 / 恢复。
     - `turn`：`{run, conv, state:'open'|'closed'}`；半份提交标记，`read` 的 `pending_turns` 可辨识。
     - `cancel`：`{turn_id}`；取消意图，按回合键标记（重启收口据此判 `cancelled`）。
+    - `inbox.seen`：`{run, conv, last_seen}`；收纳箱已读水位推进时**另追加**的记录（不是回写旧记录），
+      应用时取 `max(原 last_seen, 新 last_seen)`，保证 `last_seen` 单调不减。
   - 回合事件日志（契约形状，`type` 判别）：`turn.open` / `step.intent` / `step.result` / `checkpoint` /
     `turn.settle`，逐字段见 `chain-contract/schema/step-record.schema.json`。追加失败先有限次重试，
     仍失败由调用方 fail-closed。
-- `method_timeouts`：`turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `commit` / `read` / `history` / `deliver`
+- `method_timeouts`：`turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `commit` / `read` / `history` / `deliver` / `ack_inbox`
   均声明 `120000`ms（大 jsonl fsync 需要，避免 30s 缺省造成幽灵提交）。
 
 ## 逐字段判定（定义 / 判定 vs 运行记录）
@@ -47,8 +49,7 @@
 | `conversations[].source_message` | 运行记录 | 分支源消息属运行数据 |
 | `conversations[].agent` | 运行记录（**留世界候选**） | 人格经 bag 取（`persona`），非从世界投影读 |
 | `conversations[].participants` | 运行记录 | 圆桌参与者属运行数据 |
-| `conversations[].workflow` | 运行记录 | 工作流执行位置属运行数据 |
-| `conversations[].inbox` | 运行记录 | 收件箱链头 / 计数属运行数据 |
+| `conversations[].inbox` | 运行记录 | 收件箱链头 / 计数 / 已读水位属运行数据（水位推进只追加 `inbox.seen`） |
 | `conversations[].status` | 运行记录 | 线程处境属运行数据 |
 | `conversations[].last_activity` | 运行记录 | 最近活动属运行数据 |
 | `conversations[].pending` | 运行记录 | 待办计数属运行数据 |
@@ -65,12 +66,13 @@
 
 ## 方法语义
 
-- 写方法（`commit` / `new_conversation` / `select` / `rename` / `set_title` / `delete` / `restore` / `branch` / `deliver`）
+- 写方法（`commit` / `new_conversation` / `select` / `rename` / `set_title` / `delete` / `restore` / `branch` / `deliver` / `ack_inbox`）
   一律**即时写自有存储**（边跑边追加），返回**纯值**（无 `$directives`）；槽驱动方法成功后经反向调用清本线程槽。
-- `read({conversation?, turn_id?})` → 会话切片 `{version,current,conversations,head,refs,turns,open_turns,data_gen:null,pending_turns}`：
+- `read({conversation?, turn_id?})` → 会话切片 `{version,current,conversations,head,refs,turns,inbox_unread,open_turns,data_gen:null,pending_turns}`：
   `refs` = 本会话消息 `id → body`（服务自建，非世界投影闭包）；`head` = 链头消息 id；`data_gen` 恒 `null`（无世界数据世代）；
   `turns` = 本会话回合视图（`turn_id` / `conv` / `slot_ref` / `at` / `state` / `outcome` / `cancel_requested` / `late_settles` / `steps`，
   子代理回合另带 `thread_kind` / `task_prompt` / `parent_checkpoint` / `parent_summaries`）；
+  `inbox_unread` = 当前切片会话的未读收件箱投影 `[{seq,from,kind,body,at}]`（`seq > inbox.last_seen`，按 `seq` 升序；只读）；
   `open_turns` = 跨会话仍开着的回合摘要 `{turn_id,conv}`（O(open 回合)，供角标读）。
   显式 `conversation` 优先；否则给 `turn_id` 时按该回合所属会话返回切片（子代理旁路线程不是 `current`，
   续跑据此定位）；都缺则按 `current`。
@@ -94,7 +96,18 @@
 | `append` | bool，可缺 | 续跑追加：只追加助手 / 系统消息（用户消息已落账） |
 
 返回 `{ok:true, reply, conversation, count}` 或 `{ok:false, error, conversation}`；事件不变
-（`thread.opened` / `thread.updated` / `thread.closed` / `workflow.step` / `group.message`）。
+（`thread.opened` / `thread.updated` / `thread.closed` / `group.message`）。
+
+### `deliver` / `ack_inbox`（跨线程收件箱）
+
+- `deliver({to, kind, body, from?, status?, ...})`：向 `${to}#inbox` 追加一条投递消息（`seq = inbox.count + 1`，
+  连续递增），并更新会话 `inbox.{tail,count}`。**不推进** `last_seen`（未读由读方消费后经 `ack_inbox` 推进）。
+- `ack_inbox({conversation, seq})`：把已读水位推进到 `max(原 last_seen, seq)`，追加一条 `inbox.seen` 记录
+  （**不是回写旧记录**，符合只追加）。返回 `{ok:true, conversation, last_seen, advanced}`：
+  - `advanced:false` = 该 `seq` 已读过（幂等 no-op，不追加记录，水位不倒退）；
+  - 会话未知 → `{ok:false, reason:'not_found'}`；追加失败 → `{ok:false, reason:'owner_unavailable'}`（不落内存、水位不变）。
+  - 水位只增不减：应用层以 `max` 守卫，即便重放乱序 / 旧 `conv` 记录回写也不会倒退。
+  - 成功且确有推进时广播 `thread.updated{changed:['inbox']}`（UI 未读角标据此清除）。
 
 ### 回合事件日志（`turn_open` / `step_append` / `turn_settle`）
 

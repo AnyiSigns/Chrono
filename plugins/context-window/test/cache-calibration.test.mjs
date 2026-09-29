@@ -6,6 +6,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { baseBag, chainOf, startService, ensureNative, FIXED_ENV } from './driver.mjs'
 
 const { buildAssembly } = await import('../execute/pipeline.ts')
@@ -177,4 +180,34 @@ test('校准：随 bag.usage 的真实用量进入 calibrator（消费者接通�
   const after = correctionFactor('cal-model')
   assert.ok(Math.abs(after - expected) < 1e-9, `系数应为 ${expected}，实得 ${after}`)
   resetCalibration()
+})
+
+test('校准：系数未变不重写状态文件，变化才落盘', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ctx-cal-'))
+  const file = join(dir, 'calibration.json')
+  const previous = process.env.CHRONO_PLUGIN_STATE
+  try {
+    writeFileSync(file, JSON.stringify({ m: { factor: 1, last_estimate: 100 } }), 'utf8')
+    process.env.CHRONO_PLUGIN_STATE = dir
+    resetCalibration()
+    // 无真实用量 → 系数不变：不得重写状态文件（磁盘 last_estimate 保持 100，内存态另走）。
+    observeUsage('m', 200, null)
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { m: { factor: 1, last_estimate: 100 } })
+    // 带真实用量且系数变化 → 落盘（EWMA：1 * (0.8 + 0.2 * 400/200) = 1.2）。
+    observeUsage('m', 300, {
+      prompt_tokens: 400,
+      cached_tokens: 0,
+      cache_creation_tokens: 0,
+      completion_tokens: 0,
+      hit_rate: 0,
+      correction_factor: null,
+    })
+    const saved = JSON.parse(readFileSync(file, 'utf8'))
+    assert.ok(Math.abs(saved.m.factor - 1.2) < 1e-9, `实得 ${saved.m.factor}`)
+    assert.equal(saved.m.last_estimate, 300)
+  } finally {
+    process.env.CHRONO_PLUGIN_STATE = previous
+    resetCalibration()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -73,12 +73,67 @@ test('越软阈：段边界写结构化检查点（compress 为后端，persist:
     assert.equal(records.length, 1, '应写一条结构化检查点')
     const record = records[0]
     assert.equal(typeof record.turn_id, 'string')
-    assert.equal(typeof record.covered_upto, 'number')
-    assert.equal(record.covered_upto > 0, true)
+    assert.deepEqual(record.covered_upto, { turn_id: 't1', seq: record.seq - 1 }, '全局边界 {turn_id, seq}')
+    assert.equal(record.covered_upto.seq > 0, true)
     assert.equal(record.rung, 'soft')
     assert.equal(record.summary.goal, '修复 foo')
     assert.deepEqual(record.summary.findings, [{ claim: '缺陷在 foo.ts:42' }], 'facts 须映射成 findings')
     assert.deepEqual(record.summary.files, [{ path: 'a.txt' }], '本回合触达文件随检查点落账')
+  } finally {
+    service.close()
+  }
+})
+
+test('滚动累计：上一结构化检查点作为 prior_summary 先并入，全局边界指向本回合', async () => {
+  const compressArgs = []
+  const prior = {
+    goal: '上一目标',
+    decisions: [{ what: '只读投影' }],
+    findings: [{ claim: '旧缺陷' }],
+    errors_to_avoid: [{ what: '旧错误' }],
+    covered_upto: { turn_id: 't0', seq: 2 },
+  }
+  const service = startService({
+    providers: loopProviders({
+      'compress.summarize': (args) => {
+        compressArgs.push(args)
+        const previous = args.prior_summary ?? {}
+        return {
+          ok: true,
+          kind: 'summarize',
+          summary: {
+            goal: '本轮目标',
+            decisions: [...(previous.decisions ?? []), '本轮决策'],
+            facts: [...(previous.facts ?? []), '本轮事实'],
+            open_questions: [],
+            files: args.files,
+            next_steps: [],
+          },
+        }
+      },
+    }),
+  })
+  try {
+    const result = await service.interpret({
+      turn_id: 't1',
+      input: '继续',
+      workspace_id: 'w1',
+      session: { turns: [{ turn_id: 't0', steps: [{ type: 'checkpoint', turn_id: 't0', seq: 3, summary: prior, covered_upto: { turn_id: 't0', seq: 2 } }] }] },
+      tools: [{ name: 'edit', provider: 'tool', caps: { fs: { write: 'workspace' } } }],
+    })
+    assert.equal(summaryOf(result.value).ended, 'done')
+    assert.equal(compressArgs.length, 1)
+    assert.deepEqual(compressArgs[0].prior_summary, {
+      goal: '上一目标',
+      decisions: ['只读投影'],
+      facts: ['旧缺陷'],
+    }, '上一累计检查点先并入')
+    const record = checkpointRecords(service)[0]
+    assert.equal(record.summary.goal, '本轮目标')
+    assert.deepEqual(record.summary.decisions, [{ what: '只读投影' }, { what: '本轮决策' }], '累计保留上一决策 + 本轮')
+    assert.deepEqual(record.summary.findings, [{ claim: '旧缺陷' }, { claim: '本轮事实' }], '累计保留上一发现 + 本轮')
+    assert.deepEqual(record.summary.errors_to_avoid, [{ what: '旧错误' }], 'compress 形状不承载的字段原样承接')
+    assert.deepEqual(record.covered_upto, { turn_id: 't1', seq: record.seq - 1 }, '全局边界指向本回合')
   } finally {
     service.close()
   }

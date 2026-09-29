@@ -13,6 +13,8 @@ export const DEFAULT_THRESHOLDS: Rec = {
   max_turn_iter: 64,
   max_steps: 512,
   gas: 64,
+  // composite 子图运行期递归展开的深度上限（与 invariants.ts 的折算深度口径一致：>=8 即拒）。
+  max_subgraph_depth: 8,
   llm_chain_max: 2,
   post_retry_max: 2,
   max_graph_diff: 8,
@@ -63,6 +65,11 @@ export const SEED_REFUSAL_CODES: Rec[] = [
   { code: 'link_denied', retriable: false, attributable_to: 'graph' },
   { code: 'needs_approval', retriable: false, attributable_to: 'user' },
   { code: 'denied', retriable: false, attributable_to: 'user' },
+  // composite 子图运行期展开（本插件实现）新增码：递归超深 / 子图预算不足 / sink→父 outputs 映射不唯一。
+  { code: 'max_recur', retriable: false, attributable_to: 'graph' },
+  { code: 'subgraph_incomplete', retriable: false, attributable_to: 'budget' },
+  { code: 'delegate_output_ambiguous', retriable: false, attributable_to: 'graph' },
+  { code: 'subgraph_reject', retriable: false, attributable_to: 'graph' },
 ]
 
 /** 拒绝码 → 归因（全局表查不到时回落 graph）。 */

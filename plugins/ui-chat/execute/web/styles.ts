@@ -199,15 +199,10 @@ export const STYLE_TEXT = `
 .chat-group-name { font-size: var(--font-size-xs); color: var(--c-text-2); }
 .chat-group-bubble { padding: var(--space-8) var(--space-12); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-md); }
 .chat-anchor { padding-top: var(--space-4); border-top: 1px solid var(--c-accent); color: var(--c-accent); font-size: var(--font-size-xs); text-align: center; transition: opacity var(--motion-base); }
-.chat-workflow { display: flex; flex-direction: column; gap: var(--space-8); padding: var(--space-12); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-md); }
-.chat-workflow-title { font-size: var(--font-size-md); font-weight: var(--weight-strong); }
 .chat-workflow-meta { font-size: var(--font-size-xs); color: var(--c-text-2); }
-.chat-workflow-track { height: 1px; background: var(--c-border); }
-.chat-workflow-fill { height: 1px; background: var(--c-accent); }
-.chat-workflow-node { display: flex; align-items: center; gap: var(--space-8); font-size: var(--font-size-sm); }
-.chat-workflow-node[data-status="failed"] { color: var(--c-danger); }
-.chat-workflow-node[data-status="success"] { color: var(--c-success); }
-.chat-workflow-node[data-status="skipped"] { color: var(--c-text-3); }
+/* 编排进度行：一行紧凑状态（图内进度 / 预算收口说明），无动画，避免布局抖动。 */
+.chat-orchestration { display: flex; align-items: center; gap: var(--space-4); font-size: var(--font-size-xs); color: var(--c-text-3); }
+.chat-orchestration[data-tone="stop"] { color: var(--c-warning); }
 .chat-date { margin: var(--space-12) 0; text-align: center; font-size: var(--font-size-xs); color: var(--c-text-3); }
 .chat-lightbox { position: fixed; inset: 0; z-index: var(--z-lightbox); display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--c-text) 28%, transparent); animation: chat-fade var(--motion-base) both; }
 .chat-lightbox-img { max-width: 90vw; max-height: 86vh; box-shadow: var(--shadow-pop); cursor: grab; }

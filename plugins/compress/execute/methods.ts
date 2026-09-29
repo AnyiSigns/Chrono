@@ -3,6 +3,11 @@
 // 本服务经 `port.call short-memory.read` 取现状、算合并结果后 `port.call short-memory.apply` 写回；
 // 读-改-写、绝不盲写整份。semantic 模式经反向调用 model.chat；去重向量经反向调用 embedding.embed。
 // `persist:false` 时只算不写（供 memory-consolidate 纯计算摘要用）。
+//
+// `compact` / `extract` 在仓内暂无调用方（工具绑定 `memory.compress` 只接 `summarize`，段边界检查点
+// 也只经 `compress.summarize`），但**有意保留**：它们是 `compress` 能力契约的一部分，且
+// `chat/test/timeout-nesting.test.mjs` 以 `compress.compact` 的 method_timeout 锁死超时嵌套关系；
+// 移除会破坏该契约测试并改动声明的能力面。若未来确认废弃，应连同契约测试一并处理。
 
 import { dedupNewItems } from './dedup.ts'
 import type { DedupOptions } from './dedup.ts'
@@ -52,6 +57,8 @@ interface Context {
   conversation: string | null
   workspace: string | null
   coveredUpto: string | null
+  /** 上一累计检查点摘要（累计合并时先并入；缺省 null）。 */
+  priorSummary: Summary | null
   mode: 'algorithmic' | 'semantic'
   targetLength: number
   dedupThreshold: number
@@ -104,6 +111,7 @@ function parseContext(args: Json, env: CallEnv, memory: Rec, requirements: Requi
     conversation,
     workspace,
     coveredUpto: asString(args['covered_upto']),
+    priorSummary: isRecord(args['prior_summary']) ? parseSummary(args['prior_summary']) : null,
     mode,
     targetLength: integerField(args['target_length'], 'target_length', DEFAULT_TARGET_LENGTH, 1),
     dedupThreshold: numberField(args['dedup_threshold'], 'dedup_threshold', DEFAULT_DEDUP_THRESHOLD, 0, 1),
@@ -153,7 +161,10 @@ function currentL1Summary(memory: Rec, conversation: string | null, targetLength
   return truncateSummary(parseSummary(recordAt(sessionsOf(memory), conversation)['summary']), targetLength)
 }
 
-/** 写回 L1：合并摘要 + 前进 `covered_upto` + 刷新 `at` / `expires_at`。返回新 L1 记录。 */
+/**
+ * 写回 L1：按「上一累计 → 现有 L1 → 本次」顺序合并摘要 + 前进 `covered_upto` + 刷新 `at` / `expires_at`。
+ * `prior_summary`（累计检查点的来源）最先并入，保证累计检查点保留更早结论。返回新 L1 记录。
+ */
 async function updateL1(
   memory: Rec,
   conversation: string,
@@ -162,8 +173,15 @@ async function updateL1(
   dedup: DedupFn,
 ): Promise<{ record: Rec; summary: Summary; dedup: 'vector' | 'text'; coveredUpto: Json }> {
   const existingL1 = recordAt(sessionsOf(memory), conversation)
-  const existing = truncateSummary(parseSummary(existingL1['summary']), ctx.targetLength)
-  const merged = await mergeSummaryLists(existing, incoming, dedup)
+  let base = truncateSummary(parseSummary(existingL1['summary']), ctx.targetLength)
+  let dedupPath: 'vector' | 'text' = 'text'
+  if (ctx.priorSummary !== null) {
+    const mergedPrior = await mergeSummaryLists(ctx.priorSummary, base, dedup)
+    base = mergedPrior.summary
+    dedupPath = combineDedup(dedupPath, mergedPrior.dedup)
+  }
+  const merged = await mergeSummaryLists(base, incoming, dedup)
+  dedupPath = combineDedup(dedupPath, merged.dedup)
   const coveredUpto = ctx.coveredUpto ?? (existingL1['covered_upto'] ?? null)
   const record: Rec = {
     ...existingL1,
@@ -172,7 +190,7 @@ async function updateL1(
     at: ctx.at,
     expires_at: ctx.expiresAt,
   }
-  return { record, summary: merged.summary, dedup: merged.dedup, coveredUpto }
+  return { record, summary: merged.summary, dedup: dedupPath, coveredUpto }
 }
 
 /** 抽取候选池：压缩产物的 facts / decisions，不足 2 条时由切片按句补足。 */

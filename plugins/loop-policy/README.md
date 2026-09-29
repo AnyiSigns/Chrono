@@ -50,27 +50,46 @@ bag 带 `contract_version` 时校验主版本：不匹配立即拒绝并给 `con
 ## 服务自驱解释器
 
 1. **读图数据**：`resolveModel(bag.graph, refs)`；`graph` 单值缺失 / 空 / 引用未声明契约 ⇒ **回落种子图**（`fell_back:true`）。
-2. **顺序推进**：拓扑序前推；节点 0 = 入口（`entry_supply`）；**推式条件边**——每条边 `when` 在源产出已求值后判定，
-   只沿成立的边激活下游；入边端口按 `binding_mode`（`all` AND 汇聚 / `any` 恰一）激活。
-3. **选实例**：先按 `scope` 过滤候选（`workspace` / `session` 必须 id 匹配；`global` 恒可见），
+2. **顺序推进（拓扑序）**：按 `topoOrder(graph)` 前推，节点身份仍是 `nodes` 数组下标（源必先于目标求值；
+   节点数组未排序的合法 DAG 仍全跑）。节点 0 = 入口（`entry_supply`）；**推式条件边**——每条边 `when` 在源产出已求值后判定，
+   只沿成立的边激活下游。
+   - **入边端口 `binding_mode`**：`any` 端口 ≥1 触发即激活，**按声明序取首个**，其余触发边记 `branch_not_taken`；
+     `all` 端口在 `required:true` 时全部边必须触发，`required!==true` 时允许零触发（输入缺省，条件是这些边的源都已求值——
+     源从未求值即不可达，仍不激活）。
+   - **分支互斥**：同一**输出端口**的出边是一次分支选择，至多一条可触发；>1 触发即编排错误，判 `redundant` 拒绝短路。
+   - `summary.branch_not_taken` 为**精确分支核算**（本回合未被消费的边数，含 composite 子图边），与 sink 位置无关；
+     trace 另带 `branches_not_taken` 明细（被击败边 + 节点 + 原因）。
+3. **运行期轻量闭合（G6）**：进入迭代前跑廉价结构校验（未知契约 + `checkClosure`：边越界 / 环 / sink / required 未连等），
+   非法即结构化拒绝（码取首个 gate 错误码，归因 `graph`），不静默误执行；完整六不变量 + 演化规则仍在 propose / validate 期。
+4. **选实例**：先按 `scope` 过滤候选（`workspace` / `session` 必须 id 匹配；`global` 恒可见），
    再按确定性 tie-break `(隔离升序, 成功率下界降序, cost 升序, node_id 升序)` 取首。
-4. **工具目录（`context.assemble` 前置）**：调用方未预置目录时经 `port.call` `tools.list`（带 `tools_bindings` / `mcp_tools`）
+5. **工具目录（`context.assemble` 前置）**：调用方未预置目录时经 `port.call` `tools.list`（带 `tools_bindings` / `mcp_tools`）
    取目录写进 `bag.tools`（模型上下文可见）与 `bag.directory`（`tool.dispatch` 复用同一目录）；空数组不再被当作「预建空目录」。
-5. **pre → 派发 → post**：`pre` 不过 ⇒ `pre_unsat`（node）短路；`port.call` 传输失败 ⇒ `transport_failed`（node）；
+6. **pre → 派发 → post**：`pre` 不过 ⇒ `pre_unsat`（node）短路；`port.call` 传输失败 ⇒ `transport_failed`（node）；
    节点业务错误 ⇒ 原码或 `downstream_refusal`；`post` 不过 ⇒ 按 reason 取码：模型空产出 ⇒ `empty_output`（node，可重试），
    其余 ⇒ `capability_mismatch`（graph）。**可重试码**（`retriable:true`）在 `post_retry_max` 上限内**重跑本节点**，达上限才收口拒绝。
-   拒绝一律**短路到 sink**（`trace.refused_at` 可还原：`{node_index, iter, code, attributable_to}`）；拒绝路径把最后一步助手消息
-   一并交 sink，本回合已产出的正文 / 推理 / 工具卡照常落盘（只补 `error` 码），不再「记录全没」。
-6. **重入（跨段）**：段尾按 `Graph.loop.when` 判定；`question_pending` 优先 ⇒ 本段正常收口（不 loop）；
-    派发过工具 / verify 失败 / `todo_incomplete` ⇒ 段尾落一条段标记步记录并返回自续跑 eval，下一段由步记录重建
-    状态（`extra_messages` 由工具步记录重建，段标记步落段序号）。达 `max_turn_iter` / `max_steps` 仍要派发 ⇒
-    用户预算主动停：已完成步骤保留，以 **`committed` + `stop_reason`**（`turn_iter` / `steps`）收口，先于宿主机械轮数上限生效。
-    无回合身份（单测直调）时不分段，保持同步多 iter。
-7. **sink 延后收口**：sink 在每个 iter 内不执行，只在回合终止 / 拒绝短路的那一段执行一次 ⇒「回合尾一次写」
+   拒绝一律**短路到 sink**（`trace.refused_at` 可还原：`{node_index, iter, code, attributable_to}`；composite 子图内拒绝另带
+   `parent_index`）；拒绝路径把最后一步助手消息一并交 sink，本回合已产出的正文 / 推理 / 工具卡照常落盘（只补 `error` 码）。
+7. **composite 运行期展开（G2）**：`impl:'composite'` 且带 `subgraph` 的实例不派发能力类，而是把 `subgraph`
+   当独立子图**递归展开**——自己的 `nodes` / `edges` / `entry_supply` / `loop` / `sink`；实例选择沿用父 `scope` / `pins`；
+   子图入口（下标 0）接收 composite 节点的入边输入；子图 sink 产出按声明 `outputs` 映射回该节点（全命中即投影、
+   单输出缺名即整体包裹、多输出歧义 ⇒ `delegate_output_ambiguous`）。子图 `iter.outputs/inputs` 隔离、`rs.steps` 单调共享
+   （`(turn_id,type,seq)` 全局唯一）；子图节点步记录带 `parent_index`（`instances` 三元组、`refused_at.parent_index`），
+   `branch_not_taken` 含子图边。防失控：`max_subgraph_depth`（默认 8）⇒ `max_recur`，`gas` 预算 / `max_steps` ⇒ `subgraph_incomplete`（budget）。
+   **边界（明写）**：子图内模型节点与父图共用 `RunState`（`messages` / `last_calls` / `shared`），不做第二份隔离；
+   仅 `iter.outputs/inputs` 隔离。复杂子图含模型节点时按此口径。
+8. **重入（跨段）**：段尾按 `Graph.loop.when` 判定；`question_pending` 优先 ⇒ 本段正常收口（不 loop）；
+   派发过工具 / verify 失败 / `todo_incomplete` ⇒ 段尾落一条段标记步记录并返回自续跑 eval，下一段由步记录重建
+   状态（`extra_messages` 由工具步记录重建，段标记步落段序号）。达 `max_turn_iter` / `max_steps` 仍要派发 ⇒
+   用户预算主动停：已完成步骤保留，以 **`committed` + `stop_reason`**（`turn_iter` / `steps`）收口，先于宿主机械轮数上限生效。
+   无回合身份（单测直调）时不分段，保持同步多 iter。
+   - **步序号分配**：`nextStepSeq(rs)` 单调占据 `rs.steps`，commit 步 / 段标记 / 检查点均经此分配，
+     `(turn_id,type,seq)` 唯一且与 sink 位置无关（不再用 `rs.steps + 1` 估算）。
+9. **sink 延后收口**：sink 在每个 iter 内不执行，只在回合终止 / 拒绝短路的那一段执行一次 ⇒「回合尾一次写」
    （消息 + trace + 队列项 + 提案扫描），避免重复提交用户消息 / 清槽；段终态不写 trace，同回合的 trace 记录器
    在段间累积、settle 时一次写成（每回合一个 evolution 世代）。
-8. **每步记 `trace.eff_log`**：`{step, iter, port, method, args_hash, result_hash, outcome}`（`outcome ∈ ok/error/transport_failed/cancelled`）；
-   随 trace 写入世界（evolve-metrics shadow 配对的数据底座）。
+10. **每步记 `trace.eff_log`**：`{step, iter, port, method, args_hash, result_hash, outcome}`（`outcome ∈ ok/error/transport_failed/cancelled`）；
+    随 trace 写入世界（evolve-metrics shadow 配对的数据底座）。
 
 ## 六类条目与种子回落
 
@@ -81,7 +100,7 @@ bag 带 `contract_version` 时校验主版本：不匹配立即拒绝并给 `con
 | `prompts` | 链式 tail / 对象映射；`system`（Markdown：角色 + 沟通 / 执行 / 工具 / 安全四节、安全节最高优先、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词 |
 | `graph` | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from | 种子图 |
 | `thresholds` | 链式 tail / 扁平 map / 条目数组；字段名契约见下 | `DEFAULT_THRESHOLDS` |
-| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十四码（含 `empty_output`，可重试） |
+| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十八码（含 `empty_output` 可重试；composite 新增 `max_recur` / `subgraph_incomplete` / `delegate_output_ambiguous` / `subgraph_reject`） |
 
 ## 种子图（七节点 / 十一入边）
 
@@ -123,8 +142,10 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 ## trace / eff_log 与审批 / 提问往返
 
 - 回合尾写：`put(trace 条目) + put(新 evolution body: trace.tail=…, count+1) + add_gen('evolution')`（无 evolution 台账时不产轨迹写）。
-  trace 条目含 `steps[]`（每步 `{node_index, iter, contract_id, chosen_instance, chosen_agent, verdict, refusal, post_failed, verify, usage, eff_log}`）、
-  聚合 `eff_log`、`refused_at`、`branch_not_taken`（未求值 Scope 聚合计数、0 计费）、`link_taken`、`outcome`、`prev`。
+  trace 条目含 `steps[]`（每步 `{node_index, iter, contract_id, chosen_instance, chosen_agent, verdict, refusal, post_failed, verify, usage, eff_log}`，
+  子图步另带 `parent_index`）、
+  聚合 `eff_log`、`refused_at`、`branch_not_taken`（本回合未被消费的边数：精确分支核算、0 计费）、
+  `branches_not_taken`（被击败分支明细）、`link_taken`、`outcome`、`prev`。
 - **审批往返**：`approval.wait` 派发前把游标放进 bag → `approval.enqueue` 产 item（带 `thread` 与
   `resume:{command:'chat.resume', args:{cursor, thread}}`）→ 本 run **正常返回**（`ended:'pending'`）；裁决后经
   `chat.resume`（`bag.resume`）恢复：置 `approval.wait` 产出 `{decision}` 后继续。
@@ -190,12 +211,17 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 - **chat bag / `bag.resume` 接口（已落地）**：`chat.send` / `chat.resume` 的入口 term 经自能力路由 eff `loop-policy.interpret`。
   本插件按 bag 装配契约定义并容错接受：`bag.input`（槽或归一）、`bag.slots`、`bag.refs`/`bag.graph_refs`、
   `bag.resume = {cursor, thread, payload}`（也接受 cursor 直接作 resume、`payload.verdict` 或 `resume.verdict`）。
-- **context-window `extra_messages`（已落地）**：回合内已派发产物的进度经 `extra_messages` 随
-  `context.assemble` bag 传入，由 context-window 接受该键并追加到 messages 尾部（source=`tool`，排在本轮输入之后）。
-  分段执行后该进度**由本回合步记录重建**（`execute/reconstruct.ts`：每步 `step.intent` 给中性调用、`step.result.tool_results`
-  给结果，`checkpoint({kind:verify|segment})` 给校验报告与段序号），不再依赖服务进程内状态跨段存活。
+- **context-window `extra_messages`（item 9，已下线生产下传）**：消费侧已改为从会话步日志
+  （`session.turns[].steps`）投影、**明确忽略本键**（见 context-window `candidates.ts`）。本插件**生产路径默认不再**
+  往 `context.assemble` bag 下传该键；仅当调用方显式 `bag.compat_extra_messages === true`（旧式调用 / 测试兼容）才下传，
+  属惰性兼容键。展示 / 收口路径不读它（直接读 `rs.extraMessages`，见 `commit-parts.ts`），故展示 parts 不受影响。
+  分段执行后进度**由本回合步记录重建**（`execute/reconstruct.ts`：每步 `step.intent` 给中性调用、`step.result.tool_results`
+  给结果，`checkpoint({kind:verify|segment|subagent})` 给校验报告 / 子代理结论 / 段序号），不依赖服务进程内状态跨段存活。
   工具路径按**规范序列**回灌：先 `assistant` 承接帧（带中性 `tool_calls: [{id,name,arguments}]`），再逐条
-  `tool` 结果（带 `tool_call_id` 与调用配对）——否则模型看不到自己的调用，会反复重调同一工具。
+  `tool` 结果（带 `tool_call_id` 与调用配对）。
+- **中立推理持久化（item 8，已落地）**：模型产出里的厂商中立推理块（`reasoning_blocks[0]`，无则推理文本兜底块）随
+  `step.result.reasoning` 落盘（顶层字段，非 `assistant`），使 context-window 跨段 / 跨回合按 `step.result.reasoning`
+  回灌；展示 side 仍取 `assistant.parts` 的 `reasoning`（display 文本），两条通道互不影响。
 - **用量 / 缓存提示转发（已落地）**：最近一次完成的模型调用用量（本段暂存，跨段由 `step.result` 重建）随
   `context.assemble` bag 的 `usage` 键下传，激活 context-window 的估算校准；`context.assemble` 回值里的
   中立 `cache` 提示原样转发进 `model.chat` bag 的 `cache` 键。两者都 absent-safe：来源缺失即不落键。
@@ -215,6 +241,8 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
   `open_questions` 等，与 `checkpoint.summary` 同形），并被 `toSubagentResult` 落成 `checkpoint` 步记录，
   父回合只吸收蒸馏结论而非子代理全程记录——长任务里这是最便宜的上下文节省。子代理模型调用随附
   `thread_kind:'subagent'` 与 `parent_checkpoint`；`context.assemble` 侧对 subagent 线程不组装父消息历史。
+  子代理模型调用另渲染本线程未读收件箱 `bag.inbox_unread`（`[收件箱 kind · 来自 from]\nbody`，按声明序＝
+  `seq` 升序；`assembleBag` 也把该键透传给 context-window，供 main / 其它线程组装口径消费）。
   **边界**：跨线程委派（父检查点在另一会话的回合里）需调用方把 `parent_checkpoint` 随 bag 传入，本插件在
   同回合内自取。
 - **`join` / `recall` 为词汇占位**：`join` 是纯函数（同键取最新，不发 eff）；`recall` 只作契约 / 实例词汇，**不进默认图**。
@@ -230,9 +258,13 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
 - **游标落世界**：挂起 / 续跑（审批 / 提问 / 编排变更）仍把当前 iter 的图位置与调用状态序列化进队列项游标
   （`node_index` / `outputs` / `messages` 等，opaque，宿主不认识）；这类续跑是段内恢复，必须带图位置。
   **段续跑不同**：`chat.resume` 只带 `turn_id`，解释器据步记录重建状态，服务不把整回合序列化进计划或游标。
-- **`caps.grant` 的两处 v1 边界（明写）**：① `bag.grant` 是单值，整批升级只绑定首个升级 call（按 call 拆批为后续登记项）；
-  ② `edit` 新建（`old` 空）先 `stat`（op=`read`）再 `write`（op=`write`），grant 只绑定 `write`，区外 `stat` 仍可能被档位拒
-  （与 `plugins/tool-fs/README.md`「区外新建」已知限制一致）。
+- **`caps.grant` 的维度合并（G8，已落地）**：批准后 grant 绑定**决策序首个可解析的升级 call**
+  （无升级项时回落批内首个 call），但把**整批所有升级裁决**的维度并集并入这一份：`fs`（读写维度并集）、
+  `paths`（声明序去重）、`net`（取最宽范围）、`op`（首个 fs 映射；net 越档且无 fs 映射时补 `exec`）。
+  故「首个升级项不是 net」也不会丢 net 放宽。**v1 边界**：单份 grant 只对绑定的 `call_id` 生效，
+  整批多个 call 各自升级时，其它 call 由 sandbox 侧按同一 grant 判定（跨 call 批量授权的登记项见后续）；
+  `edit` 新建（`old` 空）先 `stat`（op=`read`）再 `write`（op=`write`）时 grant 只绑定 `write`（与
+  `plugins/tool-fs/README.md`「区外新建」已知限制一致）。
 
 ## 运行
 

@@ -3,7 +3,16 @@
 // 不把追加失败当成功、也不继续调模型与工具。
 
 import { isRecord } from './plan.ts'
-import type { PortCaller, Rec } from './types.ts'
+import type { PortCaller, Rec, RunState } from './types.ts'
+
+/**
+ * 回合步序号分配：单调递增并**先行占据**序号，保证同回合内 `(turn_id,type,seq)` 唯一，
+ * 与 sink 位置 / 标记步顺序无关（不再用 `rs.steps + 1` 这种会与后写步撞键的估算）。
+ */
+export function nextStepSeq(rs: RunState): number {
+  rs.steps += 1
+  return rs.steps
+}
 
 export interface AppendStepResult {
   ok: boolean

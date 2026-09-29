@@ -15,7 +15,7 @@ import {
 } from './model.ts'
 import { checkToolCalls } from './rules.ts'
 import { asArray, asString, isRecord, putOp } from './plan.ts'
-import { appendStep } from './steplog.ts'
+import { appendStep, nextStepSeq } from './steplog.ts'
 import type { ChosenInstance } from './scope.ts'
 import type { TraceRecorder } from './trace.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState } from './types.ts'
@@ -75,6 +75,9 @@ function assembleBag(input: NodeDispatchInput): Rec {
     'tools',
     'thread_kind',
     'thread',
+    // 回合身份随组装下传：context-window 据此把本轮用户消息保留为 P0 `input`、本轮其它记录归 `tool`（T0），
+    // 不把本轮 user_message 投影成可裁剪的历史项（见 context-window project.ts::projectContext）。
+    'turn_id',
     'workspace_root',
     'tier',
     'persona',
@@ -83,11 +86,17 @@ function assembleBag(input: NodeDispatchInput): Rec {
     'parent_summaries',
     'task_prompt',
     'parent_checkpoint',
+    // 线程未读收件箱（跨线程投递）：随组装下传给 context-window（所有线程口径均可消费）。
+    'inbox_unread',
   ])
   const system = input.model.prompts['system']
   if (isRecord(system) && typeof system['text'] === 'string') out['system_prompt'] = system['text']
   else if (bag['system_prompt'] !== undefined) out['system_prompt'] = bag['system_prompt']
-  if (input.rs.extraMessages.length > 0) out['extra_messages'] = input.rs.extraMessages
+  // item 9 决策：生产默认**不再**往上下文 bag 下传 `extra_messages`——context-window 已改为从会话步日志
+  // （`session.turns[].steps`）投影并明确忽略本键（见 context-window candidates.ts）。仅当调用方显式
+  // `compat_extra_messages === true`（旧式调用 / 测试兼容）才下传，属惰性兼容键，不影响模型可见性真源。
+  // 展示 / 收口路径不读本键（直接读 `rs.extraMessages`，见 commit-parts.ts），故不受影响。
+  if (bag['compat_extra_messages'] === true && input.rs.extraMessages.length > 0) out['extra_messages'] = input.rs.extraMessages
   // 阈值单一真源：解析后的扁平 thresholds map（含 `large_artifact_bytes`）随 context bag 下传，
   // 消费方据此覆盖自身 policy 默认，避免两处各定义默认值漂移。
   out['thresholds'] = input.model.thresholds
@@ -130,8 +139,31 @@ function modelBag(input: NodeDispatchInput): Rec {
   return out
 }
 
+/** 收件箱消息体 → 文本：字符串原样，其余稳定 JSON 序列化（同输入同文本）。 */
+function inboxBodyText(value: Json | undefined): string {
+  if (typeof value === 'string') return value
+  if (value === undefined) return ''
+  return JSON.stringify(value)
+}
+
 /**
- * 子代理模型调用 bag：上下文 = 任务 + 父检查点，**不含父消息历史**；
+ * 本线程未读收件箱 → 子代理上下文消息（确定性：按 `bag.inbox_unread` 的声明序，调用方已按 seq 升序）。
+ * 渲染与 context-window 同口径：`[收件箱 kind · 来自 from]\nbody`。
+ */
+function inboxMessages(bag: Rec): Json[] {
+  if (!Array.isArray(bag['inbox_unread'])) return []
+  const out: Json[] = []
+  for (const item of bag['inbox_unread'] as Json[]) {
+    if (!isRecord(item)) continue
+    const kind = asString(item['kind']) ?? 'instruction'
+    const from = asString(item['from']) ?? 'parent'
+    out.push({ role: 'user', content: `[收件箱 ${kind} · 来自 ${from}]\n${inboxBodyText(item['body'])}` })
+  }
+  return out
+}
+
+/**
+ * 子代理模型调用 bag：上下文 = 任务 + 父检查点 + 本线程未读收件箱，**不含父消息历史**；
  * 返回结构化结果而非子代理全程记录（长任务里最便宜的上下文节省）。
  * 父检查点取自本回合最后一条结构化 `checkpoint` 步记录（同一回合内委派场景）。
  */
@@ -146,6 +178,7 @@ function subagentBag(input: NodeDispatchInput): Rec {
     const text = renderCheckpointText(checkpoint['summary'] as Rec)
     if (text.length > 0) messages.push({ role: 'system', content: `[父检查点]\n${text}` })
   }
+  for (const message of inboxMessages(input.bag)) messages.push(message)
   const out: Rec = { config: modelConfig(input), messages, thread_kind: 'subagent' }
   if (checkpoint !== null) out['parent_checkpoint'] = checkpoint
   if (input.bag['turn_id'] !== undefined) out['turn_id'] = input.bag['turn_id']
@@ -374,12 +407,24 @@ function commitStepRecord(input: NodeDispatchInput): Rec | null {
   const record: Rec = {
     type: 'step.result',
     turn_id: turnId,
-    seq: input.rs.steps + 1,
+    // 单调分配：与 sink 是否最后无关，也不与后写步 / 标记步撞 `(turn_id,type,seq)`。
+    seq: nextStepSeq(input.rs),
     assistant: assistantRecord(input.rs, message, tools),
     tool_results: Array.isArray(input.inputs['results']) ? (input.inputs['results'] as Json[]) : [],
   }
   if (isRecord(message['usage'])) record['usage'] = message['usage']
+  const reasoning = lastReasoningOf(input.rs)
+  // 厂商中立推理块（非展示 parts）：上下文投影按 `step.result.reasoning` 跨段回灌。
+  if (reasoning !== undefined) record['reasoning'] = reasoning
   return record
+}
+
+/**
+ * 本段最近一次模型调用的**厂商中立推理块**（`reasoning_blocks[0]`）或推理文本兜底块；
+ * 供 step.result 持久化，使 context-window 投影能按 `step.result.reasoning` 跨段回灌。
+ */
+export function lastReasoningOf(rs: RunState): Json | undefined {
+  return rs.shared['last_reasoning']
 }
 
 /** 收口节点：只追加最终内容步记录，不写世界、不定结局（结局由解释器 `turn.settle` 独占）。 */

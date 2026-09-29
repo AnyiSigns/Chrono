@@ -2,6 +2,7 @@
 // 被 interpreter（前推 / 节点派发）与 sink（收口）共用，避免两者互相 import。
 
 import { contractInputs, edgePorts, edgeWhen, type GraphModel } from './model.ts'
+import { edgeKey } from './graph.ts'
 import { directivesOf, isRecord } from './plan.ts'
 import { attributionOf } from './seed.ts'
 import { evalWhen, todoIncomplete, type RuleCtx } from './rules.ts'
@@ -69,11 +70,14 @@ export function externPayload(value: Json): Rec | null {
   return null
 }
 
-function portBindingMode(contract: Rec, inputName: string): string {
+/** 输入端口声明：binding_mode（缺省 all）与 required（缺省 false）。 */
+function portSpec(contract: Rec, inputName: string): { mode: string; required: boolean } {
   for (const port of contractInputs(contract)) {
-    if (port['name'] === inputName && typeof port['binding_mode'] === 'string') return port['binding_mode'] as string
+    if (port['name'] !== inputName) continue
+    const mode = typeof port['binding_mode'] === 'string' ? (port['binding_mode'] as string) : 'all'
+    return { mode, required: port['required'] === true }
   }
-  return 'all'
+  return { mode: 'all', required: false }
 }
 
 export function ruleCtx(rs: RunState, model: GraphModel, bag: Rec, iter: IterState, effLog: Json[], nodeIndex: number): RuleCtx {
@@ -106,51 +110,132 @@ export function edgeTriggered(edge: Rec, ctx: RuleCtx): boolean {
   return when.ok && when.value
 }
 
-/** 节点激活：入边端口按 binding_mode（all / any）满足。 */
-export function isActivated(index: number, contract: Rec, edges: Rec[], ctx: RuleCtx): boolean {
-  if (index === 0) return true
-  const incoming = edges.filter((edge) => {
-    const ports = edgePorts(edge)
-    return ports !== null && ports.to[0] === index
-  })
-  if (incoming.length === 0) return false
-  const byPort = new Map<string, Rec[]>()
-  for (const edge of incoming) {
-    const ports = edgePorts(edge) as { to: [number, string] }
-    const list = byPort.get(ports.to[1]) ?? []
-    list.push(edge)
-    byPort.set(ports.to[1], list)
-  }
-  for (const [name, portEdges] of byPort) {
-    const triggered = portEdges.filter((edge) => edgeTriggered(edge, ctx)).length
-    const mode = portBindingMode(contract, name)
-    if (mode === 'any') {
-      if (triggered === 0) return false
-    } else if (triggered !== portEdges.length) {
-      return false
-    }
-  }
-  return true
+/** 入边端口按 binding_mode（all / any）解析后的结果：是否激活 + 收集到的输入 + 已消费 / 被击败的边。 */
+export interface InputResolution {
+  activated: boolean
+  inputs: Rec
+  /** 被消费（作为输入选中）的边。 */
+  taken: Rec[]
+  /** 触发但未被选中（any 端口败者）的边，确定性记为 branch_not_taken。 */
+  defeated: Rec[]
 }
 
-/** 按入边端口收集节点输入（同端口取首个触发）。 */
-export function gatherInputs(index: number, edges: Rec[], ctx: RuleCtx): Rec {
-  const out: Rec = {}
+/** 边源节点是否已求值（有 outputs）：未求值的源不作「分支已评估但未触发」计。 */
+function sourceEvaluated(edge: Rec, ctx: RuleCtx): boolean {
+  const ports = edgePorts(edge)
+  return ports !== null && ctx.outputs.has(ports.from[0])
+}
+
+/** 取边源输出的指定字段（与旧 gatherInputs 同口径）。 */
+function edgeValue(edge: Rec, ctx: RuleCtx): Json {
+  const ports = edgePorts(edge)
+  if (ports === null) return null
+  const [source, outPort] = ports.from
+  const sourceOutput = ctx.outputs.get(source) ?? {}
+  return sourceOutput[outPort] ?? null
+}
+
+/**
+ * 节点入边解析（确定性）：入边按目标端口分组（声明序），
+ * - `any` 端口：>=1 触发即激活，**按声明序取首个**，其余触发边记 `defeated`；
+ * - `all` 端口：required 时全部边必须触发；optional 时零触发允许（输入缺省），
+ *   但零触发仅在**所有这些边的源都已求值**（分支已判定而未走）时成立——源从未求值即不可达，仍不激活。
+ * 节点 0（入口）恒激活，输入由调用方按需预置（composite 子图入口）。
+ */
+export function resolveInputs(index: number, contract: Rec, edges: Rec[], ctx: RuleCtx): InputResolution {
+  const inputs: Rec = {}
+  const taken: Rec[] = []
+  const defeated: Rec[] = []
+  if (index === 0) return { activated: true, inputs, taken, defeated }
+  const order: string[] = []
+  const byPort = new Map<string, Rec[]>()
   for (const edge of edges) {
     const ports = edgePorts(edge)
     if (ports === null || ports.to[0] !== index) continue
-    if (!edgeTriggered(edge, ctx)) continue
-    const [source, outPort] = ports.from
-    const inPort = ports.to[1]
-    if (out[inPort] !== undefined) continue
-    const sourceOutput = ctx.outputs.get(source) ?? {}
-    out[inPort] = sourceOutput[outPort] ?? null
+    const name = ports.to[1]
+    let list = byPort.get(name)
+    if (list === undefined) {
+      list = []
+      byPort.set(name, list)
+      order.push(name)
+    }
+    list.push(edge)
   }
-  return out
+  if (order.length === 0) return { activated: false, inputs, taken, defeated }
+  let activated = true
+  for (const name of order) {
+    const portEdges = byPort.get(name) as Rec[]
+    const { mode, required } = portSpec(contract, name)
+    const triggered = portEdges.filter((edge) => edgeTriggered(edge, ctx))
+    if (mode === 'any') {
+      if (triggered.length === 0) {
+        activated = false
+        continue
+      }
+      const chosen = triggered[0]
+      inputs[name] = edgeValue(chosen, ctx)
+      taken.push(chosen)
+      for (let i = 1; i < triggered.length; i++) defeated.push(triggered[i])
+      continue
+    }
+    const allEvaluated = portEdges.every((edge) => sourceEvaluated(edge, ctx))
+    const satisfied = required
+      ? triggered.length === portEdges.length
+      : triggered.length === portEdges.length || (allEvaluated && triggered.length === 0)
+    if (!satisfied) {
+      activated = false
+      continue
+    }
+    for (const edge of triggered) {
+      // all 端口同名字段仍单槽：先到先得，后到记 defeated（不静默丢）。
+      if (inputs[name] !== undefined) {
+        defeated.push(edge)
+        continue
+      }
+      inputs[name] = edgeValue(edge, ctx)
+      taken.push(edge)
+    }
+  }
+  return { activated, inputs, taken, defeated }
+}
+
+/**
+ * 源节点输出端口的分支互斥检查：同一输出端口的出边是**一个分支选择**，
+ * 至多一条可触发；>1 触发即判 `redundant`（两「互斥」分支同时走的编排错误）。
+ * 返回被过度触发的端口与其触发边（声明序）；无则 null。
+ */
+export function overTriggeredBranch(nodeIndex: number, edges: Rec[], ctx: RuleCtx): { port: string; edges: Rec[] } | null {
+  const byPort = new Map<string, Rec[]>()
+  for (const edge of edges) {
+    const ports = edgePorts(edge)
+    if (ports === null || ports.from[0] !== nodeIndex) continue
+    const key = ports.from[1]
+    const list = byPort.get(key) ?? []
+    list.push(edge)
+    byPort.set(key, list)
+  }
+  for (const [port, list] of byPort) {
+    if (list.length < 2) continue
+    const triggered = list.filter((edge) => edgeTriggered(edge, ctx))
+    if (triggered.length > 1) return { port, edges: triggered }
+  }
+  return null
 }
 
 export function refusalArtifact(model: GraphModel, code: string, message: string): Rec {
   return { code, message, attributable_to: attributionOf(model, code) }
+}
+
+/** 把解析结果里的已取 / 被击败边登记到 trace（分支审计，确定性；解释器与收口共用）。 */
+export function consumeBranches(resolved: InputResolution, index: number, trace: TraceRecorder): void {
+  for (const edge of resolved.taken) {
+    const key = edgeKey(edge)
+    if (key !== null) trace.markBranch(key)
+  }
+  for (const edge of resolved.defeated) {
+    const key = edgeKey(edge)
+    if (key !== null) trace.noteBranchNotTaken(key, index, 'any_defeated')
+  }
 }
 
 /** 把边触发的拒绝值（gate deny / approval denied）归一成带码的拒绝产物。 */

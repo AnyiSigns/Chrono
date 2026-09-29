@@ -59,6 +59,16 @@ function callIdOf(payload: any): string {
   return isRec(payload) && typeof payload.call_id === 'string' ? payload.call_id : ''
 }
 
+/** 回合事件携带的图内进度 `{iter, node_index, contract_id}`；缺失 / 形态非法回 null。 */
+function progressOf(payload: any): any | null {
+  return isRec(payload) && isRec(payload.progress) ? payload.progress : null
+}
+
+/** 事件里可选的非空字符串字段（缺失 / 空串回 null）。 */
+function stringFieldOf(payload: any, key: string): string | null {
+  return isRec(payload) && typeof payload[key] === 'string' && payload[key].length > 0 ? payload[key] : null
+}
+
 function deltaText(payload: any): string {
   if (!isRec(payload)) return ''
   if (typeof payload.text === 'string') return payload.text
@@ -112,7 +122,7 @@ export function outcomeDisplayCode(outcome: BusinessOutcome | null): string {
 }
 
 /** 显示结局：`kind` 增补 `violation`（契约违例），其余与业务结局同形。 */
-export interface DisplayOutcome extends BusinessOutcome {
+export interface DisplayOutcome extends Omit<BusinessOutcome, 'kind'> {
   kind: OutcomeKind | 'violation'
 }
 
@@ -185,6 +195,12 @@ function newInFlight(run: string | null, thread: string | null, turnId: string |
     finalizing: false,
     cancelled: false,
     suspended: false,
+    /** 图内进度（`chat.turn.pending` / `chat.turn.settled` 携带）；null = 尚无。 */
+    progress: null,
+    /** 预算收口原因（`chat.turn.settled.stop_reason`）；null = 无。 */
+    stopReason: null,
+    /** 解释器生命周期（`chat.turn.settled.lifecycle`）；null = 无。 */
+    lifecycle: null,
     /** 业务结局（`chat.turn.settled` 记录）；机械信号收束时据此分支，不掩盖失败。 */
     outcome: null,
   }
@@ -257,18 +273,22 @@ export function applyRunStarted(view: any, payload: any): any {
   const run = runId(payload)
   const turnId = turnIdOf(payload)
   if (isFinished(view, run)) return view
+  const progress = progressOf(payload)
+  const withProgress = (next: any): any =>
+    progress === null ? next : { ...next, inFlight: { ...next.inFlight, progress } }
   if (view.inFlight !== null && turnId !== null && view.inFlight.turnId === turnId) {
-    return { ...view, inFlight: { ...view.inFlight, run, suspended: false } }
+    return withProgress({ ...view, inFlight: { ...view.inFlight, run, suspended: false } })
   }
   if (view.inFlight !== null && view.inFlight.run === null) {
-    return { ...view, inFlight: { ...view.inFlight, run, turnId: view.inFlight.turnId ?? turnId, suspended: false } }
+    return withProgress({ ...view, inFlight: { ...view.inFlight, run, turnId: view.inFlight.turnId ?? turnId, suspended: false } })
   }
-  return ensureInFlight(view, run, payload)
+  return withProgress(ensureInFlight(view, run, payload))
 }
 
 /**
  * `chat.turn.pending`：回合挂起（等审批 / 等作答）——回合未终结但宿主 run 会结束。
  * 标记在途块挂起，使其不被 `run.finished` 当作定稿收口，并让渲染器显示等待态。
+ * 事件若带图内进度则一并记下，供状态行展示。
  */
 export function applyTurnPending(view: any, payload: any): any {
   const inFlight = view.inFlight
@@ -278,12 +298,17 @@ export function applyTurnPending(view: any, payload: any): any {
   const matched =
     turnId !== null ? inFlight.turnId === turnId : inFlight.run === null || run === null || inFlight.run === run
   if (!matched) return view
-  return { ...view, inFlight: { ...inFlight, suspended: true } }
+  const progress = progressOf(payload)
+  return {
+    ...view,
+    inFlight: { ...inFlight, suspended: true, ...(progress !== null ? { progress } : {}) },
+  }
 }
 
 /**
  * `chat.turn.settled`：回合终态（成功 / 拒绝 / 取消 / 中断）。记录业务结局并据其分支：
  * `cancelled` 标取消；`committed` / `refused` / `interrupted` 进入定稿（快照落地后由持久回合结局呈现）。
+ * 事件里确实存在的图内进度 / 生命周期 / 预算收口原因一并记下（只记存在的键）。
  */
 export function applyTurnSettled(view: any, payload: any): any {
   const inFlight = view.inFlight
@@ -292,6 +317,9 @@ export function applyTurnSettled(view: any, payload: any): any {
   if (turnId !== null && inFlight.turnId !== null && inFlight.turnId !== turnId) return view
   const outcome = normalizeOutcome(isRec(payload) ? payload.outcome : null)
   const cancelled = outcome !== null && outcome.kind === 'cancelled'
+  const progress = progressOf(payload)
+  const stopReason = stringFieldOf(payload, 'stop_reason')
+  const lifecycle = stringFieldOf(payload, 'lifecycle')
   return {
     ...view,
     inFlight: {
@@ -300,6 +328,9 @@ export function applyTurnSettled(view: any, payload: any): any {
       outcome: outcome ?? inFlight.outcome,
       cancelled: cancelled || inFlight.cancelled === true,
       finalizing: cancelled ? false : true,
+      ...(progress !== null ? { progress } : {}),
+      ...(stopReason !== null ? { stopReason } : {}),
+      ...(lifecycle !== null ? { lifecycle } : {}),
     },
   }
 }

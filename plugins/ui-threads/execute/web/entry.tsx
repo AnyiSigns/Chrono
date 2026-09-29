@@ -161,7 +161,6 @@ function Topbar({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {
               scheduleReload()
               return
             }
-            if (record.topic === 'workflow.step') scheduleReload()
           })
         : () => {}
     void load()

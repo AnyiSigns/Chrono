@@ -4,6 +4,10 @@
 `extract`（从压缩产物抽 2–3 条 → L2）。`mode` 可纯算法（确定、零 token）或语义（反向调模型服务）。
 压缩产物（L1 / L2 摘要）是**运行记录**，已**出世界**：住 owner 服务 `short-memory` 的 ④ 自有存储。
 
+> `compact` / `extract` 仓内暂无调用方（工具绑定 `memory.compress` 只接 `summarize`，段边界检查点也只经
+> `compress.summarize`），**有意保留**：它们是 `compress` 能力契约的一部分，且 `chat` 的超时嵌套契约测试以
+> `compress.compact` 的 `method_timeout` 锁死包裹关系；移除会破坏该契约测试并改动声明的能力面。
+
 - 身份：`compress`
 - 能力类 / 方法：`compress` → `summarize` / `compact` / `extract`
 - 命令：无（无入口 term，省略 `terms/`）

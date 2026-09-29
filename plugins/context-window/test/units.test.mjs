@@ -24,8 +24,9 @@ const {
 } = await import('../execute/text.ts')
 const { canonicalize } = await import('../execute/normalize.ts')
 const { computeBudget, allocate } = await import('../execute/budget.ts')
-const { planHistory } = await import('../execute/history.ts')
 const { parseRawParts, messageParts } = await import('../execute/history.ts')
+const { projectContext } = await import('../execute/project.ts')
+const { turnMetadata } = await import('../execute/views.ts')
 const { parseUsage, observeUsage, correctionFactor, resetCalibration } = await import('../execute/calibration.ts')
 const { ageResultText, interruptedResult } = await import('../execute/aging.ts')
 const { repairPairing, missingResults } = await import('../execute/pairing.ts')
@@ -165,24 +166,23 @@ test('预算分配：budget ≤ 0 走 budget_exceeded 结构化错误（防御�
   assert.equal(result.error?.code, 'budget_exceeded')
 })
 
-test('历史还原：head 为空/不在 refs 即空历史，绝不从会话级全量 refs 猜链头（防串会话）', () => {
-  // 会话级 refs 含另一会话的消息链（count 2），但本会话 head = null（尚无消息）
-  const other = { id: 'msg-other-0', role: 'user', content: '别的会话', prev: null }
-  const other2 = { id: 'msg-other-1', role: 'assistant', content: '回答', prev: { def: 'h-other-0' } }
-  const refs = { 'h-other-0': other, 'h-other-1': other2 }
-  const empty = planHistory({ session: { head: null, refs } })
-  assert.deepEqual(empty.chain, [], '本会话无 head → 历史必须为空')
-  const dangling = planHistory({ session: { head: 'h-missing', refs } })
-  assert.deepEqual(dangling.chain, [], 'head 不在 refs → 不猜链头，历史为空')
+test('上下文投影：只读步日志；会话级 refs 全量（含别的会话）不串历史', () => {
+  const refs = {
+    'h-other-0': { id: 'msg-other-0', role: 'user', content: '别的会话' },
+    'h-other-1': { id: 'msg-other-1', role: 'assistant', content: '回答' },
+  }
+  // refs 有内容但 turns 为空 ⇒ 历史为空（不再沿 refs 还原）。
+  const refOnly = { head: 'h-other-1', refs, turns: [] }
+  assert.deepEqual(projectContext(refOnly, turnMetadata(refOnly)).records, [])
 
-  // 本会话有 head：沿 prev 还原，只含本会话链
-  const a = { id: 'msg-cur-0', role: 'user', content: 'A', prev: null }
-  const b = { id: 'msg-cur-1', role: 'assistant', content: 'B', prev: { def: 'h-cur-0' } }
-  const scoped = planHistory({ session: { head: 'h-cur-1', refs: { ...refs, 'h-cur-0': a, 'h-cur-1': b } } })
-  assert.deepEqual(
-    scoped.chain.map((entry) => entry.body.id),
-    ['msg-cur-0', 'msg-cur-1'],
-  )
+  // 只有 turns 被投影（refs 被完全忽略）。
+  const session = {
+    head: 'h-other-1',
+    refs,
+    turns: [{ turn_id: 't1', conv: 'c1', at: '2026-01-01T00:00:00.000Z', state: 'open', user_message: { content: '本会话' }, steps: [] }],
+  }
+  const records = projectContext(session, turnMetadata(session)).records
+  assert.deepEqual(records.map((record) => record.parts[0].text), ['本会话'])
 })
 
 test('缓存有界：超过上限按 LRU 淘汰，不单调增长', () => {
@@ -341,6 +341,21 @@ test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢�
   for (const expected of ['age_tool_results', 'drop_reasoning', 'truncate_input']) {
     assert.ok(result.degraded.includes(expected), `缺梯级 ${expected}：${result.degraded.join(' → ')}`)
   }
+})
+
+test('降级阶梯标签：老化压回预算内不登记压缩；配额裁不算 drop_old_turns', () => {
+  const policy = defaultPolicy()
+  // 配额（skill）超限被裁、历史仍在预算内 → 只有 quota，不得登记 drop_old_turns。
+  const messages = canonicalize([
+    raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
+    raw({ role: 'system', source: 'skill', priority: 2, parts: [{ type: 'text', text: 'k '.repeat(500) }] }),
+    raw({ role: 'user', source: 'history', priority: 4, parts: [{ type: 'text', text: 'h' }] }),
+  ])
+  const result = allocate(messages, 100, policy)
+  assert.equal(result.error, null)
+  assert.ok(result.trimmed.some((entry) => entry.source === 'skill' && entry.reason === 'quota'))
+  assert.equal(result.degraded.includes('drop_old_turns'), false, '配额裁不是历史裁剪')
+  assert.ok(result.degraded.includes('compress_unavailable'), '仍超预算才登记压缩梯级')
 })
 
 test('校准：解析缓存命中用量并维护每模型校正系数', () => {

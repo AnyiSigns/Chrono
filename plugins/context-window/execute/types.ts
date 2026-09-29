@@ -113,6 +113,8 @@ export interface RawMessage {
   step?: number | null
   /** 分层保留等级（由保留阶段赋值；未参与保留的消息缺省 null）。 */
   tier?: RetentionTier | null
+  /** 投影层已判定被检查点边界覆盖（保留阶段据此直接落 T3）。 */
+  covered?: boolean | null
   /**
    * 计数 / 规范化缓存键覆盖：parts 相对 def 内容被改写（如 group 线程给历史加发言者前缀）时，
    * 用改写后 parts 的 `computeTokenKey` 定键，保证键与计数输入同口径，避免与未改写形态串计数。

@@ -166,32 +166,52 @@ function errorSession() {
   return sessionOf(messages, turns)
 }
 
-test('系统错误分层（协议级）：T0 逐字 / T1 一行 / T2 蒸馏进检查点；配对不破', async () => {
+test('检查点 errors_to_avoid 保留；工具错误（ok:false）逐字回灌；配对不破（步日志口径）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session: errorSession() }))
+    const session = {
+      turns: [
+        {
+          turn_id: 'a',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'settled',
+          user_message: { content: 'A-USER' },
+          steps: [
+            { type: 'checkpoint', turn_id: 'a', seq: 5, summary: { goal: '阶段一', errors_to_avoid: [{ what: '旧错误' }] }, covered_upto: { turn_id: 'a', seq: 5 } },
+            { type: 'step.result', turn_id: 'a', seq: 6, assistant: { content: 'A-ASSIST' }, tool_results: [] },
+          ],
+        },
+        {
+          turn_id: 'b',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'B-USER' },
+          steps: [
+            { type: 'step.intent', turn_id: 'b', seq: 1, kind: 'tool.dispatch', tool_calls: [{ id: 'c9', name: 'read', arguments: { path: 'a' } }] },
+            { type: 'step.result', turn_id: 'b', seq: 1, assistant: { content: '' }, tool_results: [{ call_id: 'c9', ok: false, error: 'CERR 首行\nCERR 次行' }] },
+          ],
+        },
+      ],
+    }
+    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session }))
     assert.equal(value.ok, true)
     const texts = value.messages.map(contentOf)
     const joined = texts.join('\n')
 
-    // 被检查点覆盖的 a / b 回合并入检查点，不再逐条回灌。
-    assert.ok(!texts.includes('A-USER') && !texts.includes('B-USER'))
-
-    // T2：原始错误不再出现，蒸馏进检查点 errors_to_avoid。
-    assert.ok(!joined.includes('CERR 次行'), 'T2 原始错误不得逐字回灌')
+    // 被检查点覆盖的 A-USER 不再逐条回灌；检查点原有 errors_to_avoid 保留。
+    assert.ok(!texts.includes('A-USER'))
     const checkpoint = texts.find((text) => text.startsWith('[检查点]'))
     assert.ok(checkpoint, '检查点须注入')
     assert.ok(checkpoint.includes('旧错误'), '检查点原有 errors_to_avoid 保留')
-    assert.ok(checkpoint.includes('CERR 首行'), 'T2 错误须蒸馏进检查点')
 
-    // T1：一行。
-    assert.ok(texts.includes('系统错误：DERR 首行'), `T1 须一行：${joined}`)
-
-    // T0：逐字（模型需要知道失败了）。
-    assert.ok(texts.some((text) => text.includes('GERR 首行') && text.includes('GERR 次行')), 'T0 错误逐字保留')
-
-    assert.ok(value.manifest.degraded.includes('error_to_checkpoint'))
+    // T0 工具错误逐字（模型需要知道失败原因与配对）。
+    const tool = value.messages.find((message) => message.role === 'tool' && message.tool_call_id === 'c9')
+    assert.ok(tool !== undefined, '工具错误记录须回灌')
+    assert.ok(joined.includes('CERR 首行'), '工具错误逐字保留')
+    assert.equal(JSON.parse(contentOf(tool)).ok, false)
 
     // 配对不变量：每个 tool_call 都有配对结果。
     for (let index = 0; index < value.messages.length; index += 1) {

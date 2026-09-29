@@ -330,57 +330,62 @@ test('配额下滚：技能超额被裁，未用额度给历史', async () => {
   }
 })
 
-test('extra_messages：iter 间工具结果追加到消息尾部（排在本轮输入之后，role=tool）', async () => {
+test('同回合步日志：iter 间工具结果从步记录投影（assistant tool_calls + tool 结果配对）', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'IN' },
+          steps: [
+            { type: 'step.intent', turn_id: 't1', seq: 1, kind: 'tool.dispatch', tool_calls: [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }] },
+            { type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: '' }, tool_results: [{ call_id: 'call-1', ok: true, result: 'FILE' }] },
+          ],
+        },
+      ],
+    }
     const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        extra_messages: [
-          { role: 'tool', content: JSON.stringify({ ok: true, result: 'FILE' }) },
-          { role: 'tool', content: 'verify: {"passed":true}' },
-        ],
-        config: { model: 'm1', context_window: 2000, max_output: 100 },
-      }),
+      baseBag({ input: 'IN', system_prompt: 'P', session, config: { model: 'm1', context_window: 2000, max_output: 100 } }),
     )
     assert.equal(value.ok, true)
-    assert.equal(value.manifest.sources.tool.count, 2)
-    const inputIndex = value.messages.findIndex((message) => message.content === 'IN')
-    const toolIndices = value.messages
-      .map((message, index) => ({ message, index }))
-      .filter((entry) => entry.message.role === 'tool')
-      .map((entry) => entry.index)
-    assert.equal(toolIndices.length, 2)
-    assert.ok(toolIndices[0] > inputIndex, '工具结果应排在本轮输入之后')
-    assert.ok(toolIndices[1] < value.messages.length, '工具结果应注入')
+    const assistant = value.messages.find((message) => message.role === 'assistant')
+    const tool = value.messages.find((message) => message.role === 'tool')
+    assert.ok(assistant, 'assistant 承接帧不能丢')
+    assert.deepEqual(assistant.tool_calls, [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }])
+    assert.equal(tool.tool_call_id, 'call-1')
+    assert.equal(JSON.parse(contentOf(tool)).result, 'FILE')
   } finally {
     drv.close()
   }
 })
 
-test('extra_messages：assistant(tool_calls) + tool(tool_call_id) 编进消息（工具回灌闭环）', async () => {
+test('同回合步日志：verify 检查点投影为 system 记录（保留 verify: 报告意图，不产无 id 的 tool 消息）', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        extra_messages: [
-          { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }] },
-          { role: 'tool', tool_call_id: 'call-1', content: '{"ok":true}' },
-        ],
-        config: { model: 'm1', context_window: 2000, max_output: 100, protocol: 'openai-chat' },
-      }),
-    )
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'IN' },
+          steps: [
+            { type: 'checkpoint', turn_id: 't1', seq: 1, summary: { kind: 'verify', text: 'verify: {"passed":true}' }, covered_upto: 1 },
+          ],
+        },
+      ],
+    }
+    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session }))
     assert.equal(value.ok, true)
-    const assistant = value.messages.find((message) => message.role === 'assistant')
-    const tool = value.messages.find((message) => message.role === 'tool')
-    assert.ok(assistant, '空 content 的 assistant 承接帧不能丢')
-    assert.deepEqual(assistant.tool_calls, [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }])
-    assert.equal(tool.tool_call_id, 'call-1')
+    assert.ok(textMessages(value).includes('verify: {"passed":true}'), 'verify 报告应作为 system 记录回灌')
+    assert.equal(value.messages.some((message) => message.role === 'tool'), false, '无调用 id 的 verify 不得是 tool 角色')
   } finally {
     drv.close()
   }
@@ -390,25 +395,40 @@ test('atomic 组不被裁散：工具调用 + 结果同进同出', async () => {
   const drv = startService()
   try {
     await drv.hello()
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'settled',
+          user_message: { content: 'old '.repeat(200) },
+          steps: [{ type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'stale reply' }, tool_results: [] }],
+        },
+        {
+          turn_id: 't2',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'latest' },
+          steps: [
+            { type: 'step.intent', turn_id: 't2', seq: 2, kind: 'tool.dispatch', tool_calls: [{ id: 'call-1', name: 'read', arguments: { path: 'a' } }] },
+            { type: 'step.result', turn_id: 't2', seq: 2, assistant: { content: '' }, tool_results: [{ call_id: 'call-1', ok: true, result: 'tool result' }] },
+          ],
+        },
+      ],
+    }
     const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        session: chainOf([
-          { id: 'm1', role: 'user', content: 'old '.repeat(200) },
-          { id: 'm2', role: 'assistant', parts: [{ type: 'tool_call', name: 'read', args: { path: 'a' } }] },
-          { id: 'm3', role: 'tool', content: 'tool result', tool_call_id: 'call-1' },
-          { id: 'm4', role: 'user', content: 'latest' },
-        ]),
-        config: { model: 'm1', context_window: 100, max_output: 1 },
-      }),
+      baseBag({ input: 'IN', system_prompt: 'P', session, config: { model: 'm1', context_window: 100, max_output: 1 } }),
     )
-    const texts = textMessages(value)
-    const hasToolCall = texts.some((text) => text.includes('"type":"tool_call"'))
-    const hasToolResult = texts.includes('tool result')
-    assert.equal(hasToolCall, hasToolResult)
+    const messages = value.messages
+    const hasToolCall = messages.some((message) =>
+      (Array.isArray(message.tool_calls) ? message.tool_calls : []).some((call) => call.id === 'call-1'),
+    )
+    const tool = messages.find((message) => message.role === 'tool' && message.tool_call_id === 'call-1')
+    assert.equal(hasToolCall, tool !== undefined, '调用与结果必须同进同出')
     assert.equal(hasToolCall, true)
-    assert.ok(!texts.some((text) => text.startsWith('old ')))
+    assert.ok(!textMessages(value).some((text) => text.startsWith('old ')))
     assert.ok(value.manifest.trimmed.some((entry) => entry.source === 'history' && entry.reason === 'budget'))
   } finally {
     drv.close()
@@ -580,7 +600,7 @@ test('TTL：过期 L2 不注入且 flags 记 l2_expired（不复用 l1_expired�
   }
 })
 
-test('covered_upto：边界之前的轮次不进组装', async () => {
+test('L1：不再依赖 message-id 覆盖，covered_upto 仅透传，摘要照常注入', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -592,38 +612,53 @@ test('covered_upto：边界之前的轮次不进组装', async () => {
         session: chainOf([
           { id: 'm1', role: 'user', content: 'one' },
           { id: 'm2', role: 'assistant', content: 'two' },
-          { id: 'm3', role: 'user', content: 'three' },
         ]),
       }),
     )
     const texts = textMessages(value)
-    assert.ok(!texts.includes('one'))
-    assert.deepEqual(texts.filter((text) => ['two', 'three'].includes(text)), ['two', 'three'])
-    assert.equal(value.manifest.sources.history.count, 2)
+    assert.ok(texts.includes('[本会话摘要]\nsum'), 'L1 作为普通会话摘要层注入')
     assert.equal(value.manifest.sources.l1.count, 1)
+    assert.equal(value.manifest.flags.includes('l1_invalid'), false)
+    assert.ok(texts.includes('one') && texts.includes('two'), '历史不再按 L1 covered_upto 裁剪')
   } finally {
     drv.close()
   }
 })
 
-test('covered_upto 失效：丢弃该 L1 + flags l1_invalid，历史全量', async () => {
+test('检查点全局边界 {turn_id, seq}：边界之前的记录被 T3 丢弃，检查点替代', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: { l1: { summary: 'sum', covered_upto: 'missing' } },
-        session: chainOf([
-          { id: 'm1', role: 'user', content: 'one' },
-          { id: 'm2', role: 'assistant', content: 'two' },
-        ]),
-      }),
-    )
-    assert.equal(value.manifest.sources.l1.count, 0)
-    assert.equal(value.manifest.flags.includes('l1_invalid'), true)
-    assert.equal(value.manifest.sources.history.count, 2)
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'settled',
+          user_message: { content: 'one' },
+          steps: [
+            { type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'two' }, tool_results: [] },
+            { type: 'checkpoint', turn_id: 't1', seq: 2, summary: { goal: '阶段一' }, covered_upto: { turn_id: 't1', seq: 2 } },
+          ],
+        },
+        {
+          turn_id: 't2',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'three' },
+          steps: [],
+        },
+      ],
+    }
+    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session }))
+    assert.equal(value.ok, true)
+    const texts = textMessages(value)
+    assert.ok(!texts.includes('one') && !texts.includes('two'), '边界之前的记录被覆盖')
+    assert.ok(texts.includes('three'), '边界之后仍保留')
+    assert.ok(texts.some((text) => text.startsWith('[检查点]')), '检查点注入')
+    assert.ok(value.manifest.retention.T3 >= 2)
   } finally {
     drv.close()
   }
@@ -688,6 +723,31 @@ test('无工具结果时不追加交错引导', async () => {
 })
 
 // ── 线程口径 ───────────────────────────────────────────────────────────────
+
+test('thread_kind=main：未读收件箱按序注入（所有线程口径）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await drv.build(
+      baseBag({
+        thread_kind: 'main',
+        input: 'IN',
+        system_prompt: 'P',
+        inbox_unread: [
+          { seq: 1, kind: 'instruction', body: 'first', from: 'sub-1' },
+          { seq: 2, kind: 'report', body: 'second', from: 'sub-2' },
+        ],
+      }),
+    )
+    const inboxTexts = textMessages(value).filter((text) => text.includes('[收件箱 '))
+    assert.deepEqual(inboxTexts, [
+      '[收件箱 instruction · 来自 sub-1]\nfirst',
+      '[收件箱 report · 来自 sub-2]\nsecond',
+    ])
+  } finally {
+    drv.close()
+  }
+})
 
 test('thread_kind=subagent：去上一会话 L1，加父摘要 / 任务提示词 / 未读收件箱', async () => {
   const drv = startService()

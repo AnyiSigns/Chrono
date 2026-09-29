@@ -53,7 +53,9 @@
   上下文投影只给首尾 + 可还原句柄 + 显式标记（`{aged:true,kind:'user_paste',handle,omitted_chars,head,tail}`）。
   阈值住 `retention.oversized_user_chars`，可被 `bag.thresholds.oversized_user_chars` 覆盖；0 = 关闭。
 - **系统错误分层（`meta.error`）**：T0 逐字（模型需要知道失败了）、T1 一行、T2+ 蒸馏进检查点 `errors_to_avoid`；
-  无检查点时 T2 回落一行。配对不变量不受影响。
+  无检查点时 T2 回落一行。配对不变量不受影响。**口径说明**：上下文投影（步日志）不产 `meta.error`——协议级
+  错误以 `step.result.tool_results` 的 `ok:false` 逐字回灌（本轮 T0 / 历史按工具结果老化）；本节分层保留给
+  自身携带 `meta.error` 的记录（旧式 / 合成），非步日志投影产物。
 - **方言格式化**：`openai-chat` / `openai-responses` / `anthropic-messages`；多模态按模型
   `modalities.input` 编 content parts，不支持该模态时降级为文本引用并标 `modality_dropped`。
 - **token 校准**：真实 `prompt_tokens`（随 `bag.usage` 传入）用于维护每模型校正系数；校正状态落
@@ -94,9 +96,10 @@
 | `memories` | `{ l2?, prev_l1?, l1? }` | 记忆切片；条目 = `{ summary, covered_upto?, expires_at?, at? }` |
 | `skills` | `[{ name?, id?, content? }]` | 技能片段 |
 | `recall` | `[{ entry?, id?, content?, score? }]` | L3 召回（按 `score` 降序截断） |
-| `session` | `{ head?, refs? }` | 历史候选：`refs` = `{ <def 哈希>: <消息体> }`，沿 `prev` 还原链 |
+| `session` | `{ turns?, head?, refs? }` | 历史真源：`turns[].steps`（回合步日志，模型形状）；`refs` / `head` 不再用于还原历史 |
+| `turn_id` | `string` | 本轮回合身份：本轮用户消息不投影（`input` 权威），本轮其余记录标 `source='tool'`（排 input 之后、保留恒 T0）；缺失时不猜测，全部按历史投影 |
 | `style` | `string \| { text? }` | 风格片段 |
-| `extra_messages` | `[{ role?, content?, tool_call_id?, tool_calls?, reasoning? }]` | 同回合 iter 间产物（assistant 承接帧 / 工具结果 / verify 报告 / 提问答案）；追加到消息尾部（source=`tool`，排在本轮输入之后；按历史额度可裁）。`tool_calls` 为中性形状，由协议层编形；`reasoning` 为厂商中立块，原样上提 |
+| `extra_messages` | `[…]` | **已忽略**（同回合进度改由 `session.turns[].steps` 投影派生）；保留键仅为兼容生产者，可下线 |
 | `thresholds` | `{ large_artifact_bytes?: number, oversized_user_chars?: number }` | 可选阈值覆盖（扁平 map，由 loop-policy 随 bag 下传解析后的整份 thresholds）；`large_artifact_bytes` 非正数缺省时用本包 policy 默认，`oversized_user_chars` 允许 0（关闭例外） |
 | `usage` | `{ prompt_tokens?, cached_tokens?, cache_read_input_tokens?, prompt_cache_hit_tokens?, cache_creation_input_tokens?, completion_tokens?, … }` | 上一次模型调用的真实用量；用于校准 token 估算（缺省不校准） |
 | `config` | `{ model?, context_window?, max_output?, sdk?, protocol?, quirks?, modalities? }` | 模型档案与厂商方言 |
@@ -104,13 +107,14 @@
 | `parent_checkpoint` | `checkpoint` 步记录（`{ summary, … }`）或裸 `summary` | subagent：父检查点；仅结构化检查点注入，优先于 `parent_summaries` |
 | `parent_summaries` | `[{ summary, … }]` | subagent：父会话摘要（无 `parent_checkpoint` 时的回落） |
 | `task_prompt` | `string` | subagent：父 agent 任务提示词 |
-| `inbox_unread` | `[{ kind?, body?, from?, at? }]` | subagent：本线程未读消息 |
+| `inbox_unread` | `[{ seq?, kind?, body?, from?, at? }]` | 本线程未读收件箱（**所有线程口径**）：按数组声明序（调用方按 `seq` 升序）逐条注入，`[收件箱 kind · 来自 from]\nbody` |
 | `persona` / `topic` | `string` | group：本轮发言者人格 / 圆桌议题 |
 
 **线程口径**：`main` 全切片；`subagent` 去掉「上一会话 L1」并**不组装父消息历史**，上下文 = 任务
 （`task_prompt`）+ 父检查点（`parent_checkpoint`，无则回落 `parent_summaries`）+ `inbox_unread`；
 `group` 用群聊 transcript（带发言者名）替换历史切片，并加人格与议题；
 `workflow` 不组装消息历史。
+`inbox_unread` 不过滤线程：四个线程口径都按同一形状注入（子代理模型调用绕开本服务时由 loop-policy 自行渲染同形消息）。
 
 `covered_upto` 是组装边界：只注入它**之后**的消息；对不上历史（失效）则丢弃该 L1 并标 `l1_invalid`。
 `expires_at ≤ env.now` 的条目读侧过滤、不注入：**L1 标 `l1_expired`、L2 标 `l2_expired`**（按来源区分，不复用）。

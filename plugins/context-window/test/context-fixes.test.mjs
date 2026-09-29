@@ -51,8 +51,9 @@ test('跨回合连贯：上一回合的工具读以「调用逐字 + 结果老�
   try {
     await drv.hello()
     const session = chainOf([
+      { id: 'm1', role: 'user', content: '看看 foo.ts' },
       {
-        id: 'turn-1',
+        id: 'm2',
         role: 'assistant',
         content: '我来读文件',
         parts: [
@@ -67,6 +68,7 @@ test('跨回合连贯：上一回合的工具读以「调用逐字 + 结果老�
           },
         ],
       },
+      { id: 'm3', role: 'user', content: '当前轮' },
     ])
     const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session }))
     assert.equal(value.ok, true)
@@ -96,11 +98,25 @@ test('配对·中断：assistant(tool_calls) 无结果时合成 interrupted 占�
   const drv = startService()
   try {
     await drv.hello()
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'IN' },
+          steps: [
+            { type: 'step.intent', turn_id: 't1', seq: 1, kind: 'tool.dispatch', tool_calls: [{ id: 'c1', name: 'read', arguments: { path: 'a' } }] },
+          ],
+        },
+      ],
+    }
     const value = await drv.build(
       baseBag({
         input: 'IN',
         system_prompt: 'P',
-        extra_messages: [assistantWithCall('c1', 'read')],
+        session,
         config: { model: 'm1', context_window: 2000, max_output: 100, protocol: 'openai-chat' },
       }),
     )
@@ -118,15 +134,19 @@ test('配对·老化：同回合工具结果超预算先老化，配对不破', 
   const drv = startService()
   try {
     await drv.hello()
-    const verbatim = JSON.stringify({ call_id: 'c1', ok: true, result: { content: 'z '.repeat(600) } })
+    const session = chainOf([
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        parts: [{ type: 'tool', call_id: 'c1', tool: 'read', args: { path: 'a' }, result: { content: 'z '.repeat(600) }, status: 'ok' }],
+      },
+    ])
     const value = await drv.build(
       baseBag({
         input: 'IN',
         system_prompt: 'P',
-        extra_messages: [
-          assistantWithCall('c1', 'read'),
-          { role: 'tool', tool_call_id: 'c1', content: verbatim },
-        ],
+        session,
         config: { model: 'm1', context_window: 300, max_output: 10, protocol: 'openai-chat' },
       }),
     )
@@ -178,6 +198,7 @@ test('附件分层：本轮附件原样，历史附件折叠为「文本描述 +
     const asset = { kind: 'asset', sha256: 'a'.repeat(64), mime: 'image/png', size: 4096 }
     const session = chainOf([
       { id: 'h1', role: 'user', content: '看这张图', attachments: [{ kind: 'image', name: 'pic.png', source: asset }] },
+      { id: 'h2', role: 'user', content: '当前轮' },
     ])
     const value = await drv.build(
       baseBag({
@@ -270,7 +291,7 @@ test('分节 token 明细 + 真实用量解析 + 缓存命中率 + 预算来源'
 
 // ── 同回合推理回灌 ─────────────────────────────────────────────────────────
 
-test('同回合推理回灌：中立块原样携带，payload / signature / encrypted 不改写', async () => {
+test('同回合推理回灌：step.result 的中立块原样携带，payload / signature / encrypted 不改写', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -283,19 +304,37 @@ test('同回合推理回灌：中立块原样携带，payload / signature / encr
       encrypted: 'enc-xyz',
       tokens: 7,
     }
+    const session = {
+      turns: [
+        {
+          turn_id: 't1',
+          conv: 'c1',
+          at: '2026-01-01T00:00:00.000Z',
+          state: 'open',
+          user_message: { content: 'IN' },
+          steps: [
+            {
+              type: 'step.result',
+              turn_id: 't1',
+              seq: 1,
+              assistant: { content: '' },
+              reasoning: block,
+              tool_results: [{ call_id: 'c1', ok: true, result: { content: 'x' } }],
+            },
+          ],
+        },
+      ],
+    }
     const value = await drv.build(
       baseBag({
         input: 'IN',
         system_prompt: 'P',
-        extra_messages: [
-          { role: 'assistant', content: '', tool_calls: [{ id: 'c1', name: 'read', arguments: { path: 'a' } }], reasoning: block },
-          { role: 'tool', tool_call_id: 'c1', content: JSON.stringify({ call_id: 'c1', ok: true, result: { content: 'x' } }) },
-        ],
+        session,
         config: { model: 'm1', context_window: 2000, max_output: 100, protocol: 'openai-chat' },
       }),
     )
     assert.equal(value.ok, true)
-    const assistant = value.messages.find((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    const assistant = value.messages.find((message) => message.role === 'assistant' && message.reasoning !== undefined)
     assert.deepEqual(assistant.reasoning, block, '中立块必须原样携带')
     assert.ok(value.manifest.sections.reasoning > 0, '推理计入 reasoning 分节')
   } finally {

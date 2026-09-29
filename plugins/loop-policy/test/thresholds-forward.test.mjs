@@ -45,3 +45,15 @@ test('未覆盖时默认 large_artifact_bytes 随 context bag 下传（单一真
     service.close()
   }
 })
+
+test('context.assemble bag 携带本轮回合身份 turn_id（上下文投影据此保留本轮输入为 P0）', async () => {
+  const service = startService()
+  try {
+    await service.interpret({ turn_id: 't1' })
+    const args = contextBuildArgs(service)
+    assert.ok(args, 'context.build 应被派发')
+    assert.equal(args.turn_id, 't1')
+  } finally {
+    service.close()
+  }
+})
