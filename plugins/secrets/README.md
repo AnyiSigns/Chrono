@@ -1,11 +1,13 @@
-# secrets（唯一密钥面）
+# secrets（密钥解析面）
 
-密钥的**唯一解析面**：把世界数据里的引用 `auth_ref` 解析成**解析结果**（明文，仅存调用方进程内存），
+密钥的**统一解析面**：把世界数据里的引用 `auth_ref` 解析成**解析结果**（明文，仅存调用方进程内存），
 并回本地存储清单。密钥本体住宿主侧用户本地文件或本服务进程环境，**不进世界、不进审计、不进 config 导出**。
 
 - 能力类：`secrets`；方法：`resolve` / `list`。
 - 命令：无（密钥写入走宿主入站面 `secrets.put` / `secrets.delete`，宿主直写本地文件，不经本服务）。
-- `pins`：无；`+`（投影读）：无（`auth_ref` 由上游入口 term 从世界读出后随 args 传入）。
+- `pins`：无；`needs`：`secrets-local`（`mode:"one"`）——`local` kind 的本地文件读取经反向
+  `port.call secrets-local.read / list` 委派。
+- `+`（投影读）：无（`auth_ref` 由上游入口 term 从世界读出后随 args 传入）。
 - 状态档：`recomputable`（无不可重算状态；服务不缓存、不落盘）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 
@@ -16,7 +18,7 @@
 | 字段 | 类型 / 可空性 | 说明 |
 | --- | --- | --- |
 | `auth_ref` | object，必填 | `{ kind, name }` |
-| `auth_ref.kind` | `"local"` / `"env"`，可缺 | 缺省 `local`：读宿主侧用户本地文件；`env`：读本服务进程环境 |
+| `auth_ref.kind` | `"local"` / `"env"`，可缺 | 缺省 `local`：经 `secrets-local` 读宿主侧用户本地文件；`env`：读本服务进程环境 |
 | `auth_ref.name` | string，必填 | 引用名（如 `DEEPSEEK_API_KEY`）；非空、≤256、不含 NUL、非原型污染保留键 |
 
 - 返回：**解析结果**（明文值，`result.value` 是字符串本身）。明文只进调用方进程内存；
@@ -34,12 +36,12 @@
 - **契约（写死）**：**缺名 = 未读到**——`list` 只列实际读到的名字，不存在的引用名不出现在清单里；
   故 `has:false` **不可达**（保留字段只为形状稳定，调用方不应据此判断存在性）。
 
-## 本地存储路径口径
+## 本地读取口径
 
-宿主起服务时只注入 `CHRONO_PLUGIN_STATE`（= `<root>/state/plugins/<id>`），**不注入 root**。
-本服务由它**上溯两级**得到宿主 state 目录（`<root>/state`），再拼 `secrets.local.json`——
-即宿主单点解析的 `state/secrets.local.json`（形状 `{ "<name>": "<value>" }`）。
-路径归宿主权威，本插件不声明、不创建、不写该文件；未注入该环境变量时 `local` 解析按 `secret_unreadable` 收口。
+`local` kind 的本地文件**路径解析与读取**归 `secrets-local`：它由宿主注入的 `CHRONO_PLUGIN_STATE`
+上溯两级得到宿主 state 目录，拼宿主单点解析的 `state/secrets.local.json`（形状 `{ "<name>": "<value>" }`）。
+路径归宿主权威，本插件不声明、不创建、不写该文件；`secrets-local` 不可达 / 文件不可读时本插件按
+`secret_unreadable` 收口。`env` kind 取本服务进程环境，不经 `secrets-local`。
 
 ## 义务（写死）
 

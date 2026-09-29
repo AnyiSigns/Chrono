@@ -56,7 +56,7 @@ test('hello manifest; reload/probe/drain; EOF exits', async () => {
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'chat')
     assert.deepEqual(manifest.implements, ['chat'])
-    assert.deepEqual(manifest.methods.chat, ['send', 'history', 'resume', 'cancel'])
+    assert.deepEqual(manifest.methods.chat, ['send', 'history', 'resume', 'cancel', 'insert'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
@@ -792,7 +792,8 @@ test('resume: a subagent continuation restores task + parent checkpoint from the
   const drv = startService({ bridge: defaultBridge({}, { session }) })
   try {
     await drv.hello()
-    const result = await drv.call('resume', { turn_id: 't-sub', thread: 't1' })
+    const progress = { iter: 2, node_index: 1, contract_id: 'tool.dispatch' }
+    const result = await drv.call('resume', { turn_id: 't-sub', thread: 't1', progress })
     assert.equal(result.kind, 'result')
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
     assert.equal(bag.thread_kind, 'subagent')
@@ -801,6 +802,10 @@ test('resume: a subagent continuation restores task + parent checkpoint from the
     assert.equal(bag.session_id, 'c-sub')
     assert.equal(bag.resume.continuation, true)
     assert.equal(drv.portCalls.some((frame) => frame.method === 'turn_open'), false, '段续跑不重开回合头')
+    // 段续跑随 args 带来的图内进度随 chat.turn.started 广播：UI 轮次实时前进（不臆造、不回落到 send）。
+    const started = drv.events.find((frame) => frame.topic === 'chat.turn.started')
+    assert.equal(started?.payload.source, 'resume')
+    assert.deepEqual(started?.payload.progress, progress)
   } finally {
     drv.close()
   }

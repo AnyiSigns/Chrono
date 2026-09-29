@@ -3,14 +3,15 @@
   "schema": "schema/wiring.json",
   "implements": ["chat"],
   "methods": {
-    "chat": ["send", "history", "resume", "cancel"]
+    "chat": ["send", "history", "resume", "cancel", "insert"]
   },
-  "concurrent_methods": ["send", "resume", "history", "cancel"],
+  "concurrent_methods": ["send", "resume", "history", "cancel", "insert"],
   "pins": {
     "host": "host"
   },
   "needs": {
     "session": { "mode": "one" },
+    "ref-hydrate": { "mode": "one" },
     "input": { "mode": "one" },
     "model": { "mode": "one" },
     "context": { "mode": "one" },
@@ -49,6 +50,7 @@
     { "name": "chat.send", "entry": "terms/chat.send.json" },
     { "name": "chat.history", "entry": "terms/chat.history.json", "readonly": true },
     { "name": "chat.resume", "entry": "terms/chat.resume.json" },
-    { "name": "chat.cancel", "entry": "terms/chat.cancel.json" }
+    { "name": "chat.cancel", "entry": "terms/chat.cancel.json" },
+    { "name": "chat.insert", "entry": "terms/chat.insert.json" }
   ]
 }

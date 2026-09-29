@@ -33,7 +33,9 @@ function positiveInt(value: Json | undefined, fallback: number): number {
 }
 
 function ratio(value: Json | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : fallback
 }
 
 let cached: MaintenanceParams | null = null
@@ -68,8 +70,20 @@ export function resolveParams(args: Rec): MaintenanceParams {
     l1TtlMs: integerField(args['l1_ttl_ms'], 'l1_ttl_ms', base.l1TtlMs, 1),
     l2Capacity: integerField(args['l2_capacity'], 'l2_capacity', base.l2Capacity, 1),
     l3Capacity: integerField(args['l3_capacity'], 'l3_capacity', base.l3Capacity, 1),
-    dedupThreshold: numberField(args['dedup_threshold'], 'dedup_threshold', base.dedupThreshold, 0, 1),
-    weightThreshold: numberField(args['weight_threshold'], 'weight_threshold', base.weightThreshold, 0, 1),
+    dedupThreshold: numberField(
+      args['dedup_threshold'],
+      'dedup_threshold',
+      base.dedupThreshold,
+      0,
+      1,
+    ),
+    weightThreshold: numberField(
+      args['weight_threshold'],
+      'weight_threshold',
+      base.weightThreshold,
+      0,
+      1,
+    ),
     candidateThreshold: numberField(
       args['candidate_threshold'],
       'candidate_threshold',

@@ -13,11 +13,12 @@
     "schema/",
     "granite-97m/",
     "!granite-97m/model_quint8_avx2.onnx",
-    "!granite-97m/tokenizer.json",
     "Cargo.toml",
     "Cargo.lock"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "cargo test"
   }

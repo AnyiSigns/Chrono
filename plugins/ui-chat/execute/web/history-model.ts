@@ -133,17 +133,22 @@ export function messageId(entry: any): string {
 }
 
 /**
- * 尾部若干条内是否存在同文用户消息（乐观渲染收口判定）。
+ * 尾部若干条内是否存在与乐观用户 def 对应的权威用户消息（乐观渲染收口判定）。
  * 定稿快照里 user 后跟 assistant，故不能只看最后一条；只看尾部避免历史深处同文误判。
+ * 附件数一并比对：纯附件消息正文为空，只比文本会让气泡在提交后收不掉。
  */
-export function hasUserMessage(messages: any[], text: string, depth = 4): boolean {
-  if (!Array.isArray(messages) || text.length === 0) return false
+export function hasPendingUserMessage(messages: any[], def: any, depth = 4): boolean {
+  if (!Array.isArray(messages) || !isRec(def)) return false
+  const text = messageText(def)
+  const attachments = Array.isArray(def.attachments) ? def.attachments.length : 0
+  if (text.length === 0 && attachments === 0) return false
   return messages.slice(-depth).some(
     (entry) =>
       isRec(entry) &&
       isRec(entry.def) &&
       entry.def.role === 'user' &&
-      messageText(entry.def) === text,
+      messageText(entry.def) === text &&
+      (Array.isArray(entry.def.attachments) ? entry.def.attachments.length : 0) === attachments,
   )
 }
 

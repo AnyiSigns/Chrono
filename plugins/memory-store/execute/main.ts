@@ -1,13 +1,20 @@
 // `memory-store` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
 // manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
 // 服务不读投影、无写通道；body + refs 由调用方随 args 传入。
-// 反向调用（embedding.chunk / embedding.embed）走 `port.call`，应答帧立即结算（不排队）。
+// 反向调用（tokenizer.chunk / embedding.embed 与 vector-index.*）走 `port.call`，应答帧立即结算（不排队）。
 
-import { PortLink, createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import {
+  PortLink,
+  createService as createSdkService,
+  isDirectRun,
+  makeLogger,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
 import { MemoryStore } from './persist.ts'
 import { ANCHOR } from './plugin.ts'
-import { RemoteEmbedding } from './port-link.ts'
+import { RemoteEmbedding, RemoteTokenizer, RemoteVectorIndex } from './port-link.ts'
 import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
 const CAPABILITY = 'memory'
@@ -16,7 +23,11 @@ const LOG = makeLogger('memory-store')
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({ write: ctx.emit, idPrefix: 'memory-store' })
   const handlers = createHandlers(
-    { embedding: new RemoteEmbedding(link) },
+    {
+      embedding: new RemoteEmbedding(link),
+      tokenizer: new RemoteTokenizer(link),
+      vectorIndex: new RemoteVectorIndex(link),
+    },
     ANCHOR,
     MemoryStore.open(ANCHOR, ctx.env),
   )

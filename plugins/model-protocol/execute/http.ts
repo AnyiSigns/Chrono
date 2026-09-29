@@ -94,7 +94,8 @@ function defaultClassify(status: number, headers: Rec, _body: string, now: numbe
  */
 function toNetworkError(err: Error): ModelError {
   const code = (err as NodeJS.ErrnoException).code
-  if (code === 'ETIMEDOUT') return new ModelError('model_timeout', err.message, { retryable: false })
+  if (code === 'ETIMEDOUT')
+    return new ModelError('model_timeout', err.message, { retryable: false })
   return new ModelError('model_network_error', err.message, { retryable: true })
 }
 
@@ -150,7 +151,8 @@ function openRequest(
 export function httpRequest(options: HttpOptions): Promise<HttpResult> {
   return new Promise<HttpResult>((resolve, reject) => {
     const classify =
-      options.classify ?? ((status, headers, body) => defaultClassify(status, headers, body, options.now))
+      options.classify ??
+      ((status, headers, body) => defaultClassify(status, headers, body, options.now))
     let settled = false
     let handle: InflightRequest | null = null
     const fail = (err: unknown): void => {
@@ -178,7 +180,11 @@ export function httpRequest(options: HttpOptions): Promise<HttpResult> {
         // 响应体读完前连接关闭（未 complete）即明确失败，避免 body 阶段悬挂。
         res.on('close', () => {
           if (!res.complete) {
-            fail(new ModelError('model_network_error', 'response closed before completion', { retryable: true }))
+            fail(
+              new ModelError('model_network_error', 'response closed before completion', {
+                retryable: true,
+              }),
+            )
           }
         })
         res.on('end', () => {
@@ -199,7 +205,8 @@ export function httpRequest(options: HttpOptions): Promise<HttpResult> {
 export function httpStream(options: HttpOptions): Promise<HttpStream> {
   return new Promise<HttpStream>((resolve, reject) => {
     const classify =
-      options.classify ?? ((status, headers, body) => defaultClassify(status, headers, body, options.now))
+      options.classify ??
+      ((status, headers, body) => defaultClassify(status, headers, body, options.now))
     let settled = false
     let handle: InflightRequest | null = null
     const fail = (err: unknown): void => {
@@ -220,11 +227,17 @@ export function httpStream(options: HttpOptions): Promise<HttpStream> {
         if (status < 200 || status >= 300) {
           const chunks: Buffer[] = []
           res.on('data', (chunk: Buffer) => chunks.push(chunk))
-          res.on('end', () => fail(classify(status, headers, Buffer.concat(chunks).toString('utf8'))))
+          res.on('end', () =>
+            fail(classify(status, headers, Buffer.concat(chunks).toString('utf8'))),
+          )
           res.on('error', fail)
           res.on('close', () => {
             if (!res.complete) {
-              fail(new ModelError('model_network_error', 'response closed before completion', { retryable: true }))
+              fail(
+                new ModelError('model_network_error', 'response closed before completion', {
+                  retryable: true,
+                }),
+              )
             }
           })
           return

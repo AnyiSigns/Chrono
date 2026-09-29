@@ -1,13 +1,13 @@
 {
   "identity": "plugin-admin",
   "schema": "schema/plugin-admin.json",
-  "implements": ["plugin", "plugin-admin"],
+  "implements": ["plugin-admin"],
   "methods": {
-    "plugin": ["list", "read", "validate", "write"],
     "plugin-admin": ["describe", "invoke"]
   },
-  "pins": {
-    "host": "host"
+  "pins": {},
+  "needs": {
+    "plugin": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

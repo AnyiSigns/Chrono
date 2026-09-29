@@ -6,7 +6,14 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { defaultBridge, queryVector, startService, testVector, waitReady } from './driver.mjs'
+import {
+  createFakeVectorIndex,
+  defaultBridge,
+  queryVector,
+  startService,
+  testVector,
+  waitReady,
+} from './driver.mjs'
 
 const AT = new Date(1_700_000_000_000).toISOString()
 
@@ -17,7 +24,16 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'memory-store')
     assert.deepEqual(manifest.implements, ['memory'])
-    assert.deepEqual(manifest.methods.memory, ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'])
+    assert.deepEqual(manifest.methods.memory, [
+      'put',
+      'read',
+      'search',
+      'list',
+      'append',
+      'delete',
+      'pin',
+      'edit',
+    ])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
@@ -55,7 +71,10 @@ test('put/read/list 往返；不产世界写计划', async () => {
 
     const list = await drv.call('list', {})
     assert.equal(list.value.kind, 'list')
-    assert.deepEqual(list.value.entries.map((entry) => entry.text), ['alpha'])
+    assert.deepEqual(
+      list.value.entries.map((entry) => entry.text),
+      ['alpha'],
+    )
     assert.equal(list.value.count, 1)
   } finally {
     drv.close()
@@ -69,11 +88,17 @@ test('世界不再新增世代：服务只回 result / port.call，绝不发 wri
     const put = await drv.call('put', { text: 'alpha' })
     assert.equal(put.value.$directives, undefined)
     assert.equal(
-      drv.frames.some((frame) => ['write', 'put', 'commit', 'batch', 'add_gen'].includes(frame.kind)),
+      drv.frames.some((frame) =>
+        ['write', 'put', 'commit', 'batch', 'add_gen'].includes(frame.kind),
+      ),
       false,
     )
-    assert.ok(drv.portCalls.some((call) => call.port === 'embedding' && call.method === 'chunk'))
+    assert.ok(drv.portCalls.some((call) => call.port === 'tokenizer' && call.method === 'chunk'))
     assert.ok(drv.portCalls.some((call) => call.port === 'embedding' && call.method === 'embed'))
+    assert.ok(drv.portCalls.some((call) => call.port === 'vector-index' && call.method === 'info'))
+    assert.ok(
+      drv.portCalls.some((call) => call.port === 'vector-index' && call.method === 'upsert'),
+    )
   } finally {
     drv.close()
   }
@@ -128,7 +153,10 @@ test('search：暴力余弦确定、最小堆 top-k 部分选择', async () => {
 
     const weighted = queryVector({ alpha: 1, beta: 0.5 })
     const top1 = await drv.call('search', { query_vector: weighted, top_k: 1 })
-    assert.deepEqual(top1.value.hits.map((hit) => hit.entry_hash), [a.value.id])
+    assert.deepEqual(
+      top1.value.hits.map((hit) => hit.entry_hash),
+      [a.value.id],
+    )
     const top2 = await drv.call('search', { query_vector: weighted, top_k: 2 })
     assert.deepEqual(
       top2.value.hits.map((hit) => [hit.entry_hash, hit.score]),
@@ -142,12 +170,12 @@ test('search：暴力余弦确定、最小堆 top-k 部分选择', async () => {
   }
 })
 
-test('③/④ 分界：删掉整个 CHRONO_PLUGIN_STATE 后，仍能从 ④ 重建索引并正常应答', async () => {
+test('③/④ 分界：清空索引（模拟删 ③）后，仍能从 ④ 重建索引并正常应答', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'ms-data-'))
-  const stateDir = mkdtempSync(join(tmpdir(), 'ms-state-'))
+  const vectorIndex = createFakeVectorIndex()
   let idA
   try {
-    const first = startService({ dataDir, stateDir })
+    const first = startService({ dataDir, vectorIndex })
     try {
       await first.hello()
       idA = (await first.call('put', { text: 'alpha' })).value.id
@@ -159,14 +187,17 @@ test('③/④ 分界：删掉整个 CHRONO_PLUGIN_STATE 后，仍能从 ④ 重�
       await first.exit
     }
 
-    // 删除整个 ③ 目录：索引与任何派生物都消失，只留 ④ 条目与 body。
-    rmSync(stateDir, { recursive: true, force: true })
+    // 清空整个索引（模拟删除 ③）：只留 ④ 条目与 body。
+    vectorIndex.clear()
 
-    const second = startService({ dataDir, stateDir })
+    const second = startService({ dataDir, vectorIndex })
     try {
       await second.hello()
       const list = await second.call('list', {})
-      assert.deepEqual(list.value.entries.map((entry) => entry.text), ['beta', 'alpha'])
+      assert.deepEqual(
+        list.value.entries.map((entry) => entry.text),
+        ['beta', 'alpha'],
+      )
       const rebuilt = await waitReady(second, { query_vector: testVector('alpha'), top_k: 2 })
       assert.equal(rebuilt.value.hits[0].entry_hash, idA)
       assert.equal(rebuilt.value.hits[0].score, 1)
@@ -175,7 +206,6 @@ test('③/④ 分界：删掉整个 CHRONO_PLUGIN_STATE 后，仍能从 ④ 重�
     }
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
-    rmSync(stateDir, { recursive: true, force: true })
   }
 })
 
@@ -185,7 +215,12 @@ test('边跑边追加 + 中断残留可辨：append 中途失败留下 open 回�
     const drv = startService({
       dataDir,
       bridge: (port, method, args) => {
-        if (port === 'embedding' && method === 'embed' && Array.isArray(args?.texts) && args.texts.includes('boom')) {
+        if (
+          port === 'embedding' &&
+          method === 'embed' &&
+          Array.isArray(args?.texts) &&
+          args.texts.includes('boom')
+        ) {
           return Promise.resolve({ error: 'embedding_unavailable', message: 'boom' })
         }
         return Promise.resolve(defaultBridge(port, method, args))
@@ -203,7 +238,10 @@ test('边跑边追加 + 中断残留可辨：append 中途失败留下 open 回�
       assert.equal(result.value.error.code, 'embedding_unavailable')
       // 已发生的事实已落盘：good 可读；回合仍 open（中断残留可辨）。
       const list = await drv.call('list', {})
-      assert.deepEqual(list.value.entries.map((entry) => entry.text), ['good'])
+      assert.deepEqual(
+        list.value.entries.map((entry) => entry.text),
+        ['good'],
+      )
       const log = readFileSync(join(dataDir, 'memory.jsonl'), 'utf8')
       assert.ok(log.includes('"state":"open"'), '未闭合回合应留在 ④')
       assert.equal(log.includes('"state":"closed"'), false)
@@ -221,7 +259,11 @@ test('append / delete / pin / edit：写自有存储并可读回', async () => {
     await drv.hello()
     const appended = await drv.call('append', {
       entries: [
-        { id: 'm-1', text: 'one', meta: { source: 'consolidate', workspace: 'w-1', at: AT, tags: [] } },
+        {
+          id: 'm-1',
+          text: 'one',
+          meta: { source: 'consolidate', workspace: 'w-1', at: AT, tags: [] },
+        },
         { id: 'm-2', text: 'two', meta: { source: 'consolidate', at: AT, tags: [] } },
       ],
     })
@@ -230,7 +272,10 @@ test('append / delete / pin / edit：写自有存储并可读回', async () => {
 
     await drv.call('delete', { ids: ['m-1'], at: AT })
     const afterDelete = await drv.call('list', {})
-    assert.deepEqual(afterDelete.value.entries.map((entry) => entry.id), ['m-2'])
+    assert.deepEqual(
+      afterDelete.value.entries.map((entry) => entry.id),
+      ['m-2'],
+    )
     assert.equal((await drv.call('read', { hash: 'm-1' })).value.entry, null)
 
     await drv.call('pin', { id: 'm-2' })

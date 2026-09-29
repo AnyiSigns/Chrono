@@ -772,6 +772,36 @@ async function stepAppend(args: Json, env: CallEnv, deps: SessionDeps): Promise<
 }
 
 /**
+ * 回合运行中插入一条用户消息：仅对 open 回合接受，按 `insert_id` 幂等。
+ * 落 `step.user` 步——同回合投影据此在原位落一条用户消息（既进下一轮模型上下文，又进消息流），
+ * 并广播 `thread.updated` 让 ui-chat 重拉历史。
+ */
+async function turnInsert(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  const insertId = asString(args['insert_id'])
+  const message = isRecord(args['user_message']) ? (args['user_message'] as Rec) : null
+  if (turnId === null || insertId === null || message === null) {
+    return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  }
+  const body: Rec = { ...message }
+  if (body['at'] === undefined) body['at'] = isoAt(nowOf(env))
+  const result = await deps.store.insertUserMessage(turnId, insertId, body)
+  if (result.status === 'failed') return { value: { ok: false, reason: 'owner_unavailable' }, events: [] }
+  if (result.status === 'not_found') return { value: { ok: false, reason: 'unknown_turn' }, events: [] }
+  if (result.status === 'not_open') return { value: { ok: false, reason: 'not_open' }, events: [] }
+  const conv = deps.store.conversationOfTurn(turnId)
+  const events =
+    conv === null
+      ? []
+      : [{ topic: 'thread.updated', payload: { ...conversationEvent(env, conv), changed: ['messages'] } }]
+  return {
+    value: { ok: true, turn_id: turnId, seq: result.seq, deduped: result.status === 'exists' },
+    events,
+  }
+}
+
+/**
  * 回合收口：CAS 保护，只有开态 / interrupted 能被落定；终态被拒并记迟到日志。
  * `awaiting` 是段终态不是回合终态，`validateOutcome` 只认四种终态，天然拒绝。
  */
@@ -866,6 +896,7 @@ export function createHandlers(deps: SessionDeps): Record<string, Handler> {
     deliver: (args, env) => deliver(requireArgs(args), env, deps),
     ack_inbox: (args, env) => ackInbox(requireArgs(args), env, deps),
     turn_open: (args, env) => turnOpen(args, env, deps),
+    turn_insert: (args, env) => turnInsert(args, env, deps),
     step_append: (args, env) => stepAppend(args, env, deps),
     turn_settle: (args, env) => turnSettle(args, env, deps),
     turn_cancel: (args, env) => turnCancel(args, env, deps),

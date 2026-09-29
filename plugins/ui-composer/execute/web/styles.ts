@@ -7,7 +7,10 @@
 // - .composer-input 的 max-height 不复用槽位总高 token：30vh 含工具行 / 附件行，直接复用必溢出。
 // - .composer-root 限宽居中 + 两侧 space-16：与 ui-chat 的 .chat-list（max-width: --msg-max-w，
 //   padding: space-16）同盒，卡片边缘与消息文字边缘对齐；窄屏 --msg-max-w 由壳改为 100% 时一并跟随。
-// - 工具行图标统一 16px（--icon-sm），发送键是唯一 20px 图标 + 圆形实色钮：主操作与其余幽灵按钮分层；
+// - 工具行图标统一 16px（--icon-sm），发送键是唯一 20px 图标 + 圆形水晶钮：主操作与其余幽灵按钮分层；
+//   水晶感 = 半透明底色（--c-send-fill 透出卡面）+ 顶部斜向镜面高光 + 玻璃珠内折射边
+//   （顶部内暗边 gloss-lo + 底部内亮边 gloss-hi）+ 小投影；按下内影加深（凹陷感）。
+//   --c-send-fill 缺失时退回透明底 + 描边（仍可点、不突兀）。
 //   幽灵按钮基色压到 --c-text-2、hover 回 --c-text，避免整行同强度造成的嘈杂感。
 // - 模型 / 推理强度触发器不带前置图标（纯文本 + 折叠箭头），权限触发器保留档位图标。
 // - .composer-context 常驻（无数据 data-empty + visibility:hidden）：用量行出现 / 消失曾推拉输入卡
@@ -200,15 +203,26 @@ export const STYLE_TEXT = `
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 0;
+  border: 1px solid color-mix(in srgb, var(--c-accent-strong) 48%, transparent);
   border-radius: 50%;
-  background: var(--c-accent);
+  background-color: var(--c-send-fill);
+  background-image: linear-gradient(165deg, var(--c-gloss-hi) 0%, transparent 44%);
   color: var(--c-accent-text);
   cursor: pointer;
-  transition: filter var(--motion-fast), opacity var(--motion-fast);
+  box-shadow:
+    inset 0 1px 3px var(--c-gloss-lo),
+    inset 0 -1px 2px var(--c-gloss-hi),
+    0 1px 2px color-mix(in srgb, var(--c-accent-strong) 30%, transparent);
+  transition: filter var(--motion-fast), opacity var(--motion-fast), box-shadow var(--motion-fast);
 }
-.composer-send:hover { filter: brightness(1.06); }
-.composer-send:active { filter: brightness(.94); }
+.composer-send:hover { filter: brightness(1.05) saturate(1.06); }
+.composer-send:active {
+  filter: brightness(.96);
+  box-shadow:
+    inset 0 2px 4px var(--c-gloss-lo),
+    inset 0 -1px 1px var(--c-gloss-hi),
+    0 0 0 transparent;
+}
 .composer-send:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .composer-send:disabled { opacity: .45; cursor: not-allowed; }
 .composer-send-icon {
@@ -243,6 +257,11 @@ export const STYLE_TEXT = `
 .composer-context[data-empty="true"] { visibility: hidden; }
 .composer-context[data-tone="warning"] { color: var(--c-warning); }
 .composer-context[data-tone="danger"] { color: var(--c-danger); }
+.composer-context-text { margin-left: auto; white-space: nowrap; }
+/* left: orchestration progress (muted, never tinted by the context tone); middle: real model usage + token sources. */
+.composer-status-seg { flex: none; color: var(--c-text-3); white-space: nowrap; }
+.composer-status-model { flex: none; color: var(--c-text-2); white-space: nowrap; }
+.composer-status-sources { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-text-3); }
 .composer-pending-wrap {
   position: absolute;
   top: 0;
@@ -334,16 +353,6 @@ export const STYLE_TEXT = `
 }
 .composer-popover-remove:hover { background: var(--c-selection); }
 .composer-popover-remove:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-.composer-tooltip-row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-12);
-  padding: var(--space-4) var(--space-8);
-  color: var(--c-text-2);
-  font-size: var(--font-size-xs);
-  font-variant-numeric: tabular-nums;
-}
-.composer-tooltip-note { padding: var(--space-4) var(--space-8); color: var(--c-text-3); font-size: var(--font-size-xs); }
 @media (prefers-reduced-motion: reduce) {
   .composer-card,
   .composer-card[data-focus="true"],

@@ -44,7 +44,10 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/title.json')
   assert.deepEqual(decl.implements, ['session-title'])
   assert.deepEqual(decl.methods, { 'session-title': ['generate'] })
-  assert.deepEqual(decl.needs, { model: { mode: 'one' } })
+  assert.deepEqual(decl.needs, {
+    model: { mode: 'one' },
+    'title-format': { mode: 'one' },
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
@@ -80,7 +83,6 @@ test('execute/ 源码齐全', () => {
   const files = [
     'execute/main.ts',
     'execute/methods.ts',
-    'execute/title.ts',
     'execute/config.ts',
     'execute/port-link.ts',
     'execute/plan.ts',
@@ -122,7 +124,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

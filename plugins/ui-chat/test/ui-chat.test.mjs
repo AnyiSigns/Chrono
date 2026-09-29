@@ -1,6 +1,6 @@
 // `ui-chat` 纯函数视图层 + 服务协议测试（node --test）。
 // 覆盖：markdown / 消毒、parts 分发、工具卡两形态三 tone、detail.kind 全集与未知降级、
-// usage 两路、复制时序、事件线程过滤、群聊 / 编排进度、窗口化与胶囊状态机、日期分隔、
+// usage 两路、复制时序、事件线程过滤、群聊 / 预算收口、窗口化与胶囊状态机、日期分隔、
 // lightbox 状态机、历史沿 prev 还原、命令不可用路径、client.read 路径穿越防护、
 // 服务握手 / EOF 自退出、入口导出。
 
@@ -12,15 +12,16 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
-import { escapeHtml, injectCursor, renderInline, renderMarkdown } from '../execute/web/markdown.ts'
+import { escapeHtml, renderInline, renderMarkdown, STREAM_FENCE_LINE_CAP } from '../execute/web/markdown.ts'
 import { createMarkdownCache, renderMarkdownIncremental, safeBoundary } from '../execute/web/markdown-cache.ts'
 import { base64ToBytes, fitBox } from '../execute/web/media.ts'
+import { tableToCsv, tableToMarkdown, tableToTsv } from '../execute/web/table-format.ts'
 import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/sanitize.ts'
 import {
   currentConversationId,
   dataChangeTarget,
   finishesCurrentStream,
-  hasUserMessage,
+  hasPendingUserMessage,
   isPeriodicRun,
   loadConversation,
   matchesThread,
@@ -36,7 +37,7 @@ import { computeDiff, detailViewModel, parsePatch, questionAnswerText, splitLine
 import { applyQuestionStates, collectQuestionItemIds } from '../execute/web/question-state.ts'
 import { createLightboxState, MAX_SCALE, MIN_SCALE } from '../execute/web/lightbox.ts'
 import { groupViewModel } from '../execute/web/group.ts'
-import { progressText, stopReasonText } from '../execute/web/progress.ts'
+import { stopReasonText } from '../execute/web/progress.ts'
 import {
   clampWindow,
   createNewMessageState,
@@ -77,7 +78,11 @@ function tempDir(label) {
 test('markdown：块级 / 行内渲染，用户文本一律转义', () => {
   assert.equal(renderMarkdown('# Hi'), '<h1>Hi</h1>')
   assert.equal(renderMarkdown('a\nb'), '<p>a<br>b</p>')
-  assert.equal(renderMarkdown('```\nconst x = 1\n```'), '<pre><code>const x = 1</code></pre>')
+  const fence = renderMarkdown('```\nconst x = 1\n```')
+  assert.match(fence, /^<div class="chat-codeblock" data-lang="">/)
+  assert.match(fence, /<span class="chat-codeblock-actions"><button type="button" class="chat-codeblock-copy" data-copy="idle"><\/button><\/span>/)
+  assert.match(fence, /<pre><code><span class="hljs-keyword">const<\/span> x = <span class="hljs-number">1<\/span><\/code><\/pre><\/div>$/)
+  assert.equal(/data-collapsed/.test(fence), false)
   assert.equal(renderMarkdown('> quote'), '<blockquote><p>quote</p></blockquote>')
   assert.equal(renderMarkdown('- a\n- b'), '<ul><li>a</li><li>b</li></ul>')
   assert.equal(renderMarkdown('1. a'), '<ol><li>a</li></ol>')
@@ -91,6 +96,44 @@ test('markdown：块级 / 行内渲染，用户文本一律转义', () => {
   assert.equal(escapeHtml('<a>&'), '&lt;a&gt;&amp;')
 })
 
+test('markdown 代码块：短块不折叠，长块默认折叠并带头部展开按钮', () => {
+  const short = renderMarkdown('```js\nconst a = 1\n```')
+  assert.equal(/data-collapsed/.test(short), false)
+  assert.equal(/chat-codeblock-toggle/.test(short), false)
+  const body = Array.from({ length: 25 }, (_, i) => `const v${i} = ${i}`).join('\n')
+  const long = renderMarkdown('```js\n' + body + '\n```')
+  assert.match(long, /class="chat-codeblock" data-collapsed="true" data-lang="js"/)
+  assert.match(long, /class="chat-codeblock-toggle" aria-expanded="false"/)
+  // 消毒放行折叠态与按钮的 aria 属性，展开按钮存活。
+  const clean = sanitizeHtml(long)
+  assert.match(clean, /data-collapsed="true"/)
+  assert.match(clean, /aria-expanded="false"/)
+  assert.match(clean, /chat-codeblock-toggle/)
+  assert.match(clean, /class="chat-codeblock-actions"/)
+})
+
+test('markdown 表格：GFM 管道表格渲染，列数按表头归一，消毒放行', () => {
+  const html = renderMarkdown('| a | b |\n| --- | ---: |\n| 1 | 2 |')
+  assert.equal(
+    html,
+    '<div class="chat-tableblock"><div class="chat-table-head"><button type="button" class="chat-table-copy" data-copy="idle"></button><button type="button" class="chat-table-export" aria-expanded="false"></button></div><div class="chat-table-wrap"><table class="chat-table"><thead><tr><th>a</th><th data-align="right">b</th></tr></thead><tbody><tr><td>1</td><td data-align="right">2</td></tr></tbody></table></div><div class="chat-table-menu"><button type="button" class="chat-table-export-csv"></button><button type="button" class="chat-table-export-md"></button></div></div>',
+  )
+  assert.equal(sanitizeHtml(html), html)
+  // 缺列补空、多列丢弃，均按表头列数归一。
+  assert.match(renderMarkdown('| a | b |\n| --- | --- |\n| 1 |'), /<td>1<\/td><td><\/td>/)
+  // 含竖线但分隔行列数不符的普通文本不误判为表格。
+  assert.equal(/chat-table/.test(renderMarkdown('a | b\n---')), false)
+})
+
+test('表格格式化：TSV / CSV 引号转义 / GFM 管道（含 | 转义）', () => {
+  const rows = [['name', 'note'], ['a,b', 'x"y'], ['plain', 'line\nbreak']]
+  assert.equal(tableToTsv(rows), 'name\tnote\na,b\tx"y\nplain\tline\nbreak')
+  assert.equal(tableToCsv(rows), 'name,note\r\n"a,b","x""y"\r\nplain,"line\nbreak"')
+  assert.equal(tableToMarkdown([['a', 'b'], ['1', '2']]), '| a | b |\n| --- | --- |\n| 1 | 2 |')
+  assert.equal(tableToMarkdown([['a|b']]), '| a\\|b |\n| --- |')
+  assert.equal(tableToMarkdown([]), '')
+})
+
 test('markdown 图片：![]() 渲染为安全 img，危险 URL 退化为字面量', () => {
   assert.equal(renderInline('![a](https://e.com/i.png)'), '<img src="https://e.com/i.png" alt="a" loading="lazy">')
   assert.equal(renderInline('![a](javascript:alert(1))'), '![a](javascript:alert(1))')
@@ -98,13 +141,6 @@ test('markdown 图片：![]() 渲染为安全 img，危险 URL 退化为字面�
   // 消毒后 img 存活且无事件属性；危险 src 被剥。
   assert.equal(sanitizeHtml(renderMarkdown('![a](https://e.com/i.png)')), '<p><img src="https://e.com/i.png" alt="a" loading="lazy"></p>')
   assert.equal(/<img/i.test(sanitizeHtml(renderMarkdown('![a](javascript:alert(1))'))), false)
-})
-
-test('流式光标注入：优先落进末块内，空产物给裸光标', () => {
-  assert.equal(injectCursor(''), '<span class="chat-cursor"></span>')
-  assert.equal(injectCursor('<p>hi</p>'), '<p>hi<span class="chat-cursor"></span></p>')
-  assert.equal(injectCursor('<h1>t</h1>'), '<h1>t<span class="chat-cursor"></span></h1>')
-  assert.equal(injectCursor('<ul><li>a</li></ul>'), '<ul><li>a</li></ul><span class="chat-cursor"></span>')
 })
 
 test('消毒：script / 事件属性 / 危险 URL 被清', () => {
@@ -158,6 +194,7 @@ test('markdown 增量缓存：与整段渲染等价，逐字符流式每步一�
     'a\nb\nc',
     'text with `code` and [l](https://e.com)',
     'para\n\n![alt](https://e.com/i.png)\n\nafter',
+    '| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter',
   ]) {
     const step = renderMarkdownIncremental(sample, createMarkdownCache())
     assert.equal(step.html, full(sample), sample)
@@ -179,6 +216,40 @@ test('markdown 增量缓存：与整段渲染等价，逐字符流式每步一�
   const switched = renderMarkdownIncremental('brand new', cache)
   assert.equal(switched.html, full('brand new'))
   assert.equal(switched.cache.prefix, '')
+})
+
+test('markdown 增量缓存：分片返回（prefixHtml 稳定、tailHtml 每帧重算、拼接等于整段）', () => {
+  const full = (text) => sanitizeHtml(renderMarkdown(text))
+  let cache = createMarkdownCache()
+  const first = renderMarkdownIncremental('para one\n\npara two', cache)
+  cache = first.cache
+  assert.equal(first.prefixHtml, full('para one\n\n'))
+  assert.equal(first.tailHtml, full('para two'))
+  assert.equal(first.html, first.prefixHtml + first.tailHtml)
+  // 只推进尾部：前缀片逐字节稳定（渲染器因此不重写前缀节点）
+  const second = renderMarkdownIncremental('para one\n\npara two more', cache)
+  assert.equal(second.prefixHtml, first.prefixHtml)
+  assert.notEqual(second.tailHtml, first.tailHtml)
+  assert.equal(second.html, full('para one\n\npara two more'))
+  // 跨边界：只剩新块进前缀片，尾部片清空
+  const third = renderMarkdownIncremental('para one\n\npara two more\n\npara three\n\n', second.cache)
+  assert.ok(third.prefixHtml.startsWith(second.prefixHtml))
+  assert.equal(third.tailHtml, '')
+  assert.equal(third.html, full('para one\n\npara two more\n\npara three\n\n'))
+})
+
+test('markdown：流式尾部超长围栏跳过 hljs（有界），定稿渲染补齐着色', () => {
+  const body = Array.from({ length: STREAM_FENCE_LINE_CAP + 5 }, (_, i) => `let v${i} = ${i}`).join('\n')
+  const source = `\`\`\`js\n${body}\n`
+  const tailHtml = renderMarkdown(source, { tail: true })
+  assert.equal(tailHtml.includes('hljs-'), false)
+  assert.equal(tailHtml.includes('&lt;'), false)
+  // 短围栏仍高亮
+  const small = renderMarkdown('```js\nlet x = 1\n', { tail: true })
+  assert.equal(small.includes('hljs-'), true)
+  // 非 tail（定稿 / 快照落地）：超长围栏照常高亮
+  const settled = renderMarkdown(`\`\`\`js\n${body}\n\`\`\`\n`)
+  assert.equal(settled.includes('hljs-'), true)
 })
 
 test('媒体辅助：base64 解码与等比装箱', () => {
@@ -314,6 +385,9 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
 test('detail.kind：text / code / diff / matches / paths / list / table / json / file / image / terminal', () => {
   assert.equal(detailViewModel({ kind: 'text', text: 't' }).text, 't')
   assert.equal(detailViewModel({ kind: 'code', text: 'x', language: 'ts' }).language, 'ts')
+  // 正文 / 语言口径不一：webfetch 结果是 content + 描述符用 lang。
+  assert.equal(detailViewModel({ kind: 'code', content: 'body' }).text, 'body')
+  assert.equal(detailViewModel({ kind: 'code', lang: 'markdown' }).language, 'markdown')
   assert.equal(detailViewModel({ kind: 'unknown-kind', a: 1 }).kind, 'text')
 
   const diff = detailViewModel({ kind: 'diff', before: 'a\nb\nc', after: 'a\nB\nc' })
@@ -350,6 +424,18 @@ test('detail.kind：text / code / diff / matches / paths / list / table / json /
   assert.deepEqual(filesOnly.items[0].after, ['post'])
   assert.deepEqual(detailViewModel({ kind: 'paths', paths: ['a', 'b'] }).items, ['a', 'b'])
   assert.deepEqual(detailViewModel({ kind: 'list', items: [1, 2] }).items, [1, 2])
+  // list 数据字段口径不一：websearch=results、plugin.list=list；缺 items 时按已知名回退，否则取首个数组。
+  assert.deepEqual(detailViewModel({ kind: 'list', results: [1, 2] }).items, [1, 2])
+  assert.deepEqual(detailViewModel({ kind: 'list', list: ['a'] }).items, ['a'])
+  assert.deepEqual(detailViewModel({ kind: 'list', scopes: [{ id: 1 }] }).items, [{ id: 1 }])
+  // 有 fields：每条记录按字段拍平成一行文本（websearch 的 title/url/snippet/source）。
+  const searchList = detailViewModel({
+    kind: 'list',
+    fields: ['title', 'url', 'snippet', 'source'],
+    results: [{ title: 'T', url: 'https://a', snippet: 'S', source: 'Wiki' }],
+  })
+  assert.deepEqual(searchList.fields, ['title', 'url', 'snippet', 'source'])
+  assert.deepEqual(searchList.items, ['T · https://a · S · Wiki'])
   const table = detailViewModel({ kind: 'table', columns: ['a', 'b'], rows: [[1, 'x']] })
   assert.deepEqual(table.columns, ['a', 'b'])
   assert.deepEqual(table.rows, [['1', 'x']])
@@ -515,6 +601,44 @@ test('entry.tsx：并发防护 / 合帧 / 上翻闸门 / 无调试码', () => {
   assert.equal(source.includes(';base64,'), false)
 })
 
+test('entry.tsx：流式丝滑三件套（分片注入 / context 值稳定 / 渲染后就地补标签）', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  // 分片注入：前缀片与尾部片各一个节点，绝不把整段拼成单个 __html（否则每帧重建整条消息 DOM）
+  assert.match(source, /className="chat-md-part"/)
+  assert.match(source, /renderMarkdownIncremental\(text, cacheRef\.current as MarkdownCache, live\)/)
+  const htmlProps = source.match(/__html: parts\.(prefixHtml|tailHtml)/g) ?? []
+  assert.equal(htmlProps.length, 2)
+  assert.doesNotMatch(source, /__html: parts\.html/)
+  // 补标签按片跑：两个 effect 分别盯前缀片 / 尾部片
+  assert.match(source, /relabelPart\(prefixRef\.current, env\.table\)/)
+  assert.match(source, /relabelPart\(tailRef\.current, env\.table\)/)
+  // context 值稳定：env 走 useMemo，五个 handler 走 useCallback（否则每帧扇出到全部消息）
+  assert.match(source, /const env: ChatEnv = useMemo\(/)
+  for (const name of ['submitQuestion', 'copyText', 'retryTurn', 'openLightbox', 'openVideo']) {
+    assert.match(source, new RegExp(`const ${name} = useCallback\\(`), name)
+  }
+  // 流式文本段传 live（尾部走有界渲染）
+  assert.match(source, /live=\{streaming && index === lastIndex\}/)
+})
+
+test('styles.ts：滚动锚定关闭 / 消息布局隔离 / 分片段间距保留', () => {
+  const css = readFileSync(join(WEB, 'styles.ts'), 'utf8')
+  assert.match(css, /\.chat-scroll \{[^}]*overflow-anchor: none;/)
+  assert.match(css, /\.chat-msg \{[^}]*contain: layout;/)
+  assert.match(css, /\.chat-md \.chat-md-part:not\(:last-child\) > p:last-child \{ margin-bottom: var\(--space-8\); \}/)
+})
+
+test('entry.tsx：乐观用户气泡由输入槽写入落账触发（不等回合开始）、回合前拒绝即收起', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  // 输入槽写入（`input.write`）run 落账 → 立即拉槽渲染，不依赖回合开始事件
+  assert.match(source, /payload\.name === 'input\.write'/)
+  // `chat.send` 命令 run 落账但从无匹配在途回合（回合前拒绝 / 传输失败）→ 收起乐观气泡
+  assert.match(source, /payload\.name === 'chat\.send'/)
+  // 渲染闸门只看气泡本身：回合开始前也要即时可见
+  assert.match(source, /if \(view\.pendingUser !== null\)/)
+  assert.doesNotMatch(source, /view\.pendingUser !== null && view\.inFlight !== null/)
+})
+
 test('事件按 thread 过滤（写死）', () => {
   assert.equal(matchesThread('t1', 't1'), true)
   assert.equal(matchesThread('t2', 't1'), false)
@@ -615,22 +739,7 @@ test('群聊视图模型：首字母圆标 / 连续发言人只首条显名 / �
   )
 })
 
-// ---- 编排进度 ----
-
-test('编排进度：契约 id + 轮次成一行；缺 iter 只给节点名；无效回 null', () => {
-  assert.equal(
-    progressText({ iter: 2, node_index: 1, contract_id: 'tool.dispatch' }),
-    '编排：tool.dispatch · 第 3 轮',
-  )
-  // 缺契约 id：回落节点下标映射的通用节点名（可解析时优先图视图模型，当前图定义不在投影里）。
-  assert.equal(progressText({ iter: 0, node_index: 4, contract_id: null }), '编排：节点 5 · 第 1 轮')
-  // 缺 iter：只给节点名。
-  assert.equal(progressText({ node_index: null, contract_id: 'agent.step' }), '编排：agent.step')
-  // 无可用字段 / 形态非法：不渲染空行。
-  assert.equal(progressText({ iter: 1, node_index: null, contract_id: null }), null)
-  assert.equal(progressText(null), null)
-  assert.equal(progressText('tool.dispatch'), null)
-})
+// ---- 预算收口 ----
 
 test('预算收口说明：stop_reason 走 message key；缺省回 null', () => {
   assert.equal(stopReasonText('turn_iter'), '编排提前收口（turn_iter）')
@@ -774,11 +883,34 @@ test('乐观收口判定：尾部若干条内同文用户消息', () => {
     { hash: 'e', def: { role: 'user', content: 'again' } },
     { hash: 'f', def: { role: 'assistant', content: 'ok' } },
   ]
-  assert.equal(hasUserMessage(messages, 'again'), true)
-  assert.equal(hasUserMessage(messages, 'hi'), false)
-  assert.equal(hasUserMessage(messages, 'missing'), false)
-  assert.equal(hasUserMessage([], 'x'), false)
-  assert.equal(hasUserMessage(messages, ''), false)
+  const user = (text) => ({ role: 'user', parts: [{ type: 'text', text }] })
+  assert.equal(hasPendingUserMessage(messages, user('again')), true)
+  assert.equal(hasPendingUserMessage(messages, user('hi')), false)
+  assert.equal(hasPendingUserMessage(messages, user('missing')), false)
+  assert.equal(hasPendingUserMessage([], user('x')), false)
+  assert.equal(hasPendingUserMessage(messages, user('')), false)
+})
+
+test('乐观收口判定：同文 + 同附件数才收口（纯附件消息正文为空也要收）', () => {
+  const messages = [
+    { hash: 'a', def: { role: 'user', content: 'hi', attachments: [{ kind: 'file' }] } },
+    { hash: 'b', def: { role: 'assistant', content: 'yo' } },
+  ]
+  const withText = { role: 'user', parts: [{ type: 'text', text: 'hi' }], attachments: [{ kind: 'file' }] }
+  const withoutAttach = { role: 'user', parts: [{ type: 'text', text: 'hi' }] }
+  assert.equal(hasPendingUserMessage(messages, withText), true)
+  assert.equal(hasPendingUserMessage(messages, withoutAttach), false)
+
+  const attachmentOnly = [
+    { hash: 'c', def: { role: 'user', content: '', attachments: [{ kind: 'image' }] } },
+    { hash: 'd', def: { role: 'assistant', content: 'ok' } },
+  ]
+  assert.equal(
+    hasPendingUserMessage(attachmentOnly, { role: 'user', parts: [], attachments: [{ kind: 'image' }] }),
+    true,
+  )
+  // 空 def（无正文无附件）无从比对，不误判为已落定
+  assert.equal(hasPendingUserMessage(attachmentOnly, { role: 'user', parts: [] }), false)
 })
 
 // ---- 命令不可用 ----
@@ -1028,8 +1160,12 @@ test('entry.tsx 导出 contract=2 / register，且不再导出 mount', () => {
   assert.match(source, /export const contract = '2'/)
   assert.match(source, /export function register\(ctx: SlotContext\)/)
   assert.equal(/export (async )?function mount\b/.test(source), false)
-  // 全仓唯一 dangerouslySetInnerHTML 处：Markdown 组件
-  assert.equal((source.match(/dangerouslySetInnerHTML=\{\{/g) ?? []).length, 1)
+  // 全仓唯一 dangerouslySetInnerHTML 处：Markdown 组件（分片注入 = 前缀片 + 尾部片两个节点）
+  assert.equal((source.match(/dangerouslySetInnerHTML=\{\{/g) ?? []).length, 2)
+  const markdownAt = source.indexOf('function Markdown(')
+  assert.ok(markdownAt >= 0)
+  const after = source.slice(markdownAt, source.indexOf('function blobUrlFromBytes'))
+  assert.equal((after.match(/dangerouslySetInnerHTML=\{\{/g) ?? []).length, 2)
 })
 
 test('entry.tsx：线程 store 建在 register 作用域，组件经 props 复用同一实例', () => {

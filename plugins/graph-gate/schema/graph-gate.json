@@ -1,0 +1,170 @@
+{
+  "title": "graph-gate（图机械闸原语）",
+  "description": "身份自述 / 数据契约：图数据随 args 传入的纯机械面。validate 对图数据 bag 跑完整机械闸（闭合 / 类型 / publish 偏序 / 端口 ⊆ pins + 六条图不变量 + 四条演化规则）并回结果哈希；closure 做运行期结构闭合（未知契约 + 闭合检查）并回拓扑视图；select 按 scope 过滤 + 确定性 tie-break 选实例；hash 按内核口径对给定值做内容哈希。服务不读投影、无反向调用、无写通道。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "graph-gate.validate": [],
+    "graph-gate.closure": [],
+    "graph-gate.select": [],
+    "graph-gate.hash": []
+  },
+  "properties": {
+    "validate_request": {
+      "type": "object",
+      "description": "validate 的 args：图数据 bag 与 pins / active 图 / fork 计数。",
+      "required": ["graph"],
+      "additionalProperties": true,
+      "properties": {
+        "graph": {
+          "description": "图数据（六类条目包装 `{contracts,nodes,prompts,graph,thresholds,refusal_codes}`，或含 def 引用的切片）。"
+        },
+        "pins": { "type": "object", "description": "有效 pins（端口 → 提供方）；缺省空。" },
+        "active_graph": {
+          "type": ["object", "null"],
+          "description": "当前 active 图的 def body；缺省 null。"
+        },
+        "runs_since_fork": {
+          "type": ["number", "null"],
+          "description": "距上次 fork 的回合数；缺省 null。"
+        },
+        "refs": {
+          "type": "object",
+          "description": "def 引用闭包（链式条目 / 图 def 解析用）；缺省空。"
+        }
+      }
+    },
+    "validate_result": {
+      "type": "object",
+      "description": "validate 的返回值：机械闸是否通过、错误列表与结果哈希。",
+      "required": ["ok", "errors", "result_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "boolean", "description": "错误列表为空即通过。" },
+        "errors": {
+          "type": "array",
+          "description": "结构化错误列表（闭合 / 类型 / publish / pins / 不变量 / 演化）。",
+          "items": { "$ref": "#/properties/gate_error" }
+        },
+        "result_hash": {
+          "type": "string",
+          "description": "对 `{graph,pins,active_graph,runs_since_fork}` 的内核口径 H（hex sha256）。"
+        }
+      }
+    },
+    "closure_request": {
+      "type": "object",
+      "description": "closure 的 args：图数据 bag。",
+      "required": ["graph"],
+      "additionalProperties": true,
+      "properties": {
+        "graph": { "description": "图数据（六类条目包装或含 def 引用的切片）。" },
+        "refs": { "type": "object", "description": "def 引用闭包；缺省空。" }
+      }
+    },
+    "closure_result": {
+      "type": "object",
+      "description": "closure 的返回值：结构是否闭合、错误列表与拓扑视图。",
+      "required": ["ok", "errors", "view"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "errors": { "type": "array", "items": { "$ref": "#/properties/gate_error" } },
+        "view": {
+          "type": ["object", "null"],
+          "description": "拓扑视图（图可解析时）；graph_missing 时为 null。",
+          "additionalProperties": false,
+          "properties": {
+            "n": { "type": "integer", "description": "节点数。" },
+            "sink": { "type": "integer", "description": "sink 节点下标。" },
+            "order": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "拓扑序（稳定升序）。"
+            }
+          }
+        }
+      }
+    },
+    "select_request": {
+      "type": "object",
+      "description": "select 的 args：图数据、目标契约 id 与隔离上下文。",
+      "required": ["graph", "contract_id"],
+      "additionalProperties": true,
+      "properties": {
+        "graph": { "description": "图数据（六类条目包装或含 def 引用的切片）。" },
+        "contract_id": { "type": "string", "description": "目标契约 id。" },
+        "workspace_id": {
+          "type": ["string", "null"],
+          "description": "工作区 id（workspace 实例过滤）。"
+        },
+        "session_id": {
+          "type": ["string", "null"],
+          "description": "会话 id（session 实例过滤）。"
+        },
+        "refs": { "type": "object", "description": "def 引用闭包；缺省空。" }
+      }
+    },
+    "select_result": {
+      "type": "object",
+      "description": "select 的返回值：命中实例（无候选为 null）或结构化失败。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "instance": {
+          "type": ["object", "null"],
+          "description": "所选实例：`{node, contract, chosen_instance, chosen_agent, candidates}`；无候选为 null。"
+        },
+        "error": {
+          "type": "object",
+          "description": "结构化失败：graph_missing / contract_not_found。",
+          "additionalProperties": true
+        }
+      }
+    },
+    "hash_request": {
+      "type": "object",
+      "description": "hash 的 args：任意待哈希值。",
+      "required": ["value"],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "description": "待哈希的 JSON 值。" }
+      }
+    },
+    "hash_result": {
+      "type": "object",
+      "description": "hash 的返回值。",
+      "required": ["hash"],
+      "additionalProperties": false,
+      "properties": {
+        "hash": { "type": "string", "description": "内核口径 H(value)（hex sha256）。" }
+      }
+    },
+    "gate_error": {
+      "type": "object",
+      "description": "结构化机械闸错误：错误码 / 定位路径 / 说明。",
+      "required": ["code", "path", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "path": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "args 形态非法（非对象 / 缺必填键）。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "graph-gate.validate": 30000,
+    "graph-gate.closure": 30000,
+    "graph-gate.select": 5000,
+    "graph-gate.hash": 5000
+  }
+}

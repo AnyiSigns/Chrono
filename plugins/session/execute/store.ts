@@ -644,6 +644,40 @@ export class SessionStore {
   }
 
   /**
+   * 回合运行中插入一条用户消息（`step.user`）：仅 open 态接受，按 `insert_id` 幂等。
+   * 步号取当前最大步号 + 1（`restoreFromSteps` 据此推进后续 seq，不与模型步撞车）；
+   * 本回合的消息投影据此在原位落一条用户消息——既进下一轮模型上下文，又进消息流。
+   */
+  async insertUserMessage(
+    turnId: string,
+    insertId: string,
+    message: Rec,
+  ): Promise<{ status: 'inserted' | 'exists' | 'not_found' | 'not_open' | 'failed'; seq: number | null }> {
+    const entry = this.turnLog.get(turnId)
+    if (entry === undefined) return { status: 'not_found', seq: null }
+    if (entry.state !== 'open') return { status: 'not_open', seq: null }
+    if (entry.steps.some((step) => step['type'] === 'step.user' && step['insert_id'] === insertId)) {
+      return { status: 'exists', seq: null }
+    }
+    let maxSeq = 0
+    for (const step of entry.steps) {
+      const seq = numberField(step, 'seq')
+      if (seq !== null && seq > maxSeq) maxSeq = seq
+    }
+    const seq = maxSeq + 1
+    const record: Rec = { type: 'step.user', turn_id: turnId, seq, insert_id: insertId, user_message: message }
+    const persisted = await this.appendWithRetry(record)
+    if (!persisted) return { status: 'failed', seq: null }
+    this.apply(record)
+    return { status: 'inserted', seq }
+  }
+
+  /** 回合所属会话 id（无该回合回 null）。 */
+  conversationOfTurn(turnId: string): string | null {
+    return this.turnLog.get(turnId)?.conv ?? null
+  }
+
+  /**
    * CAS 收口：开态 / interrupted 允许落定，终态拒绝并记迟到。同步判定胜者，再尽力追加。
    * 追加失败不回滚内存终态（停止后续调用；重启时按 open 收口为 interrupted）。
    */
@@ -873,6 +907,7 @@ export class SessionStore {
       ...entry,
       head: last !== null ? { def: last['id'] } : null,
       count: list.length,
+      updated_at: last !== null ? (last['at'] ?? null) : null,
     }
   }
 

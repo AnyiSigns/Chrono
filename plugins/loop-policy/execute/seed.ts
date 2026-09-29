@@ -13,7 +13,7 @@ export const DEFAULT_THRESHOLDS: Rec = {
   max_turn_iter: 64,
   max_steps: 512,
   gas: 64,
-  // composite 子图运行期递归展开的深度上限（与 invariants.ts 的折算深度口径一致：>=8 即拒）。
+  // composite 子图运行期递归展开的深度上限（与 `graph-gate` 的折算深度口径一致：>=8 即拒）。
   max_subgraph_depth: 8,
   llm_chain_max: 2,
   post_retry_max: 2,
@@ -55,6 +55,16 @@ export const SEED_REFUSAL_CODES: Rec[] = [
   { code: 'capability_mismatch', retriable: false, attributable_to: 'graph' },
   // 模型偶发空产出（无正文、无工具调用）：非图的能力错配，可重跑本步。
   { code: 'empty_output', retriable: true, attributable_to: 'node' },
+  // 模型侧错误（HTTP 状态 / 传输归类）：归因 model，可重试性按厂商语义。
+  { code: 'model_bad_request', retriable: false, attributable_to: 'model' },
+  { code: 'model_auth_failed', retriable: false, attributable_to: 'model' },
+  { code: 'model_unsupported', retriable: false, attributable_to: 'model' },
+  { code: 'model_timeout', retriable: false, attributable_to: 'model' },
+  { code: 'model_aborted', retriable: false, attributable_to: 'model' },
+  { code: 'model_rate_limited', retriable: true, attributable_to: 'model' },
+  { code: 'model_server_error', retriable: true, attributable_to: 'model' },
+  { code: 'model_network_error', retriable: true, attributable_to: 'model' },
+  { code: 'model_stream_broken', retriable: true, attributable_to: 'model' },
   { code: 'budget', retriable: false, attributable_to: 'budget' },
   { code: 'undeclared_read', retriable: false, attributable_to: 'node' },
   { code: 'downstream_refusal', retriable: false, attributable_to: 'graph' },
@@ -75,7 +85,8 @@ export const SEED_REFUSAL_CODES: Rec[] = [
 /** 拒绝码 → 归因（全局表查不到时回落 graph）。 */
 export function attributionOf(model: GraphModel, code: string): string {
   for (const entry of model.refusalCodes) {
-    if (entry['code'] === code) return typeof entry['attributable_to'] === 'string' ? entry['attributable_to'] : 'graph'
+    if (entry['code'] === code)
+      return typeof entry['attributable_to'] === 'string' ? entry['attributable_to'] : 'graph'
   }
   return 'graph'
 }
@@ -127,7 +138,11 @@ export const SEED_CONTRACTS: Rec[] = [
     pre: 'always',
     post: 'step_post',
     refuses: ['pre_unsat', 'transport_failed'],
-    effects: { ports: ['model'], methods: ['chat'], caps: { fs: { read: 'none', write: 'none' }, net: 'allow' } },
+    effects: {
+      ports: ['model'],
+      methods: ['chat'],
+      caps: { fs: { read: 'none', write: 'none' }, net: 'allow' },
+    },
     idempotent: false,
     touches_effects: true,
     can_delegate: true,
@@ -225,7 +240,11 @@ export const SEED_CONTRACTS: Rec[] = [
     pre: 'always',
     post: 'step_post',
     refuses: ['pre_unsat', 'transport_failed'],
-    effects: { ports: ['model'], methods: ['chat'], caps: { fs: { read: 'none', write: 'none' }, net: 'allow' } },
+    effects: {
+      ports: ['model'],
+      methods: ['chat'],
+      caps: { fs: { read: 'none', write: 'none' }, net: 'allow' },
+    },
     idempotent: false,
     touches_effects: true,
     can_delegate: true,
@@ -241,7 +260,11 @@ export const SEED_CONTRACTS: Rec[] = [
     pre: 'always',
     post: 'always',
     refuses: ['pre_unsat'],
-    effects: { ports: ['model'], methods: ['chat'], caps: { fs: { read: 'none', write: 'none' }, net: 'allow' } },
+    effects: {
+      ports: ['model'],
+      methods: ['chat'],
+      caps: { fs: { read: 'none', write: 'none' }, net: 'allow' },
+    },
     idempotent: false,
     touches_effects: true,
     can_delegate: false,
@@ -288,7 +311,13 @@ export const SEED_CONTRACTS: Rec[] = [
   },
 ]
 
-function node(nodeId: string, contractId: string, entry: Rec | null, scope: Rec, extra: Rec = {}): Rec {
+function node(
+  nodeId: string,
+  contractId: string,
+  entry: Rec | null,
+  scope: Rec,
+  extra: Rec = {},
+): Rec {
   const out: Rec = {
     node_id: nodeId,
     contract_id: contractId,
@@ -314,7 +343,9 @@ export const SEED_NODES: Rec[] = [
   node('as-verify-noop', 'verify', null, GLOBAL),
   node('as-commit', 'turn.commit', { cap: 'session', method: 'step_append' }, GLOBAL),
   node('jn-global', 'join', null, GLOBAL, { bindings: { join: 'same_key_latest' } }),
-  node('sa-global', 'subagent', { cap: 'model', method: 'chat' }, GLOBAL, { bindings: { agent: 'neutral' } }),
+  node('sa-global', 'subagent', { cap: 'model', method: 'chat' }, GLOBAL, {
+    bindings: { agent: 'neutral' },
+  }),
   node('ep-global', 'evolve.propose', { cap: 'model', method: 'chat' }, GLOBAL),
   node('rc-global', 'recall', { cap: 'retrieval', method: 'search' }, GLOBAL),
 ]
@@ -330,7 +361,7 @@ export const SEED_PROMPTS: Rec = {
       '你的具体能力与限制由运行时环境决定：工作目录、平台、命令解释器、可用工具及其说明在环境节中给出。一切以环境节为准；本提示不预设任何具体工具。能力不可用时如实说明，不假装已使用。\n' +
       '\n' +
       '## 沟通\n' +
-      '- 用用户使用的语言回复；术语、专有名词、代码标识原样保留。\n' +
+      '- 首次和用户交流请先查看当前所处环境，用用户使用的语言回复；术语、专有名词、代码标识原样保留。\n' +
       '- 结论先行：先给结果，再按需补充依据。\n' +
       '- 直接具体：一句能说清就不写一段；不复述用户已知的内容，不写开场白与收尾客套。\n' +
       '- 面向用户只陈述意图与结果，用自然语言说明在做什么；不暴露内部能力名称、调用步骤或参数。\n' +
@@ -343,10 +374,10 @@ export const SEED_PROMPTS: Rec = {
       '3. 计划确定后直接执行，不为确认而中断。需要连续多步时逐步推进，让每步结果可见。\n' +
       '4. 只做被要求的事，不擅自扩大范围。发现更严重的问题时指出并交用户决定，不顺手修改。\n' +
       '5. 改动后做最小必要验证，验证通过再收口；无法验证时明确说明哪些未经验证。\n' +
-      '6. 确认目标达成、无遗留问题后结束本轮；只有任务完成或确需用户决定时才收口。\n' +
+      '6. 确认目标达成、无遗留问题后结束本轮（有相关文档可随用户偏好先更新文档）；只有任务完成或确需用户决定时才收口。\n' +
       '\n' +
       '## 工具与工作区\n' +
-      '- 优先用当前提供的工具获取事实与落地操作，而不是凭记忆断言。\n' +
+      '- 优先用当前提供的工具获取事实与落地操作，而不是凭记忆断言、对着用户输出满屏代码/计划/文本。\n' +
       '- 信息获取类操作可并行；有先后依赖或会互相影响的操作按顺序进行。\n' +
       '- 工具报错时先看清错误再决定重试或换法；同类失败连续发生就改变思路，不原样重试。\n' +
       '- 对工作区的改动要落回实际文件，不把「打算怎么做」当作「已经做了」。\n' +
@@ -395,7 +426,10 @@ export const SEED_GRAPH: Rec = {
     { from: [5, 'report'], to: [6, 'report'] },
   ],
   entry_supply: [{ type_id: 'task', role: 'task' }],
-  loop: { when: 'dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete', max_iter: 'max_turn_iter' },
+  loop: {
+    when: 'dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete',
+    max_iter: 'max_turn_iter',
+  },
   sink: 6,
 }
 
@@ -439,7 +473,11 @@ export function resolveModel(raw: Json | undefined, refs: Rec): ResolvedModel {
   const contracts = provided.contracts.length > 0 ? provided.contracts : SEED_CONTRACTS
   const nodes = provided.nodes.length > 0 ? provided.nodes : SEED_NODES
   if (nodes.length === 0) return { model: seedModel(), fellBack: true }
-  const ids = new Set(contracts.map((contract) => contract['contract_id']).filter((id): id is string => typeof id === 'string'))
+  const ids = new Set(
+    contracts
+      .map((contract) => contract['contract_id'])
+      .filter((id): id is string => typeof id === 'string'),
+  )
   const usable = graphNodes(provided.graph).every((id) => ids.has(id))
   if (!usable) return { model: seedModel(), fellBack: true }
   return {

@@ -86,7 +86,11 @@ export function displayParts(timeline: Json[], finalMessage: Rec | null, tools: 
 
   // 终止助手消息也按同一口径渲染：挂起回合的终止消息带 tool_calls（审批未决），
   // 其工具卡须落盘（结果 / 状态留空），否则「已发生的助手消息」在历史里只剩正文。
-  if (finalMessage !== null) renderAssistant(finalMessage, parts, toolPartByCall, renders)
+  // 但挂起收口把 `rs.messages[0]`（同一对象）既交时间线又当 finalMessage：再渲染一遍会重复正文
+  // （工具卡按 call_id 去重，正文不去重 → `[text, tool, text]`）。同一对象即同一帧，跳过。
+  if (finalMessage !== null && !timeline.includes(finalMessage)) {
+    renderAssistant(finalMessage, parts, toolPartByCall, renders)
+  }
   return parts
 }
 

@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、needs 九条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 十条、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,11 +36,24 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；needs 九条（model / secrets / retrieval / memory-maintenance / session / short-memory / input / skill / config）', () => {
+test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；needs 十条（model / secrets / retrieval / memory-maintenance / session / ref-hydrate / short-memory / input / skill / config）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
-    'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'],
+    'ui-settings': [
+      'ping',
+      'vendors',
+      'profile',
+      'discover',
+      'health',
+      'graph',
+      'scopes',
+      'view',
+      'search',
+      'edit',
+      'client.read',
+      'secret',
+    ],
   })
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
@@ -49,6 +62,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
     retrieval: { mode: 'one' },
     'memory-maintenance': { mode: 'one' },
     session: { mode: 'one' },
+    'ref-hydrate': { mode: 'one' },
     'short-memory': { mode: 'one' },
     input: { mode: 'one' },
     skill: { mode: 'one' },
@@ -58,9 +72,20 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
 
 test('并发方法白名单只含纯只读方法，写计划 / 副作用 / 控制面方法不得入内', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.concurrent_methods, ['vendors', 'health', 'graph', 'scopes', 'view', 'search', 'client.read'])
+  assert.deepEqual(decl.concurrent_methods, [
+    'vendors',
+    'health',
+    'graph',
+    'scopes',
+    'view',
+    'search',
+    'client.read',
+  ])
   for (const name of ['profile', 'discover', 'edit', 'secret', 'ping']) {
-    assert.ok(!decl.concurrent_methods.includes(name), `${name} 不得脱链（写计划 / 副作用 / 控制面）`)
+    assert.ok(
+      !decl.concurrent_methods.includes(name),
+      `${name} 不得脱链（写计划 / 副作用 / 控制面）`,
+    )
   }
 })
 
@@ -88,10 +113,16 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'ui-settings.secret',
   ])
   for (const command of decl.commands) {
-    assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
+    assert.equal(
+      Object.hasOwn(command, 'argsSchema'),
+      false,
+      `${command.name} 无参不应声明 argsSchema`,
+    )
     assert.ok(readText(command.entry).length > 0, `${command.entry} 应存在`)
   }
-  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  const readonly = Object.fromEntries(
+    decl.commands.map((command) => [command.name, command.readonly]),
+  )
   for (const name of [
     'model.vendors',
     'secrets.status',
@@ -106,28 +137,38 @@ test('members = execute + term；命令入口 term 全部存在', () => {
   ]) {
     assert.equal(readonly[name], true, `${name} 只读`)
   }
-  for (const name of [
-    'model.discover',
-    'model.profile',
-    'memory.search',
-    'memory.edit',
-  ]) {
+  for (const name of ['model.discover', 'model.profile', 'memory.search', 'memory.edit']) {
     assert.equal(readonly[name], undefined, `${name} 非只读`)
   }
 })
 
 test('入口 term 形状：投影读 / eff 端口与方法', () => {
-  assert.deepEqual(readJson('terms/model.vendors.json'), ['eff', 'ui-settings', 'vendors', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/model.vendors.json'), [
+    'eff',
+    'ui-settings',
+    'vendors',
+    ['g', ['ids']],
+  ])
   assert.deepEqual(readJson('terms/model.discover.json'), [
     'eff',
     'ui-settings',
     'discover',
     ['c', null],
   ])
-  assert.deepEqual(readJson('terms/model.profile.json'), ['eff', 'ui-settings', 'profile', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/model.profile.json'), [
+    'eff',
+    'ui-settings',
+    'profile',
+    ['g', ['ids']],
+  ])
   assert.deepEqual(readJson('terms/secrets.status.json'), ['eff', 'secrets', 'list', ['c', null]])
   assert.deepEqual(readJson('terms/settings.identities.json'), ['g', ['ids']])
-  assert.deepEqual(readJson('terms/settings.skills.json'), ['eff', 'skill', 'read', ['g', ['ids', 'skill']]])
+  assert.deepEqual(readJson('terms/settings.skills.json'), [
+    'eff',
+    'skill',
+    'read',
+    ['g', ['ids', 'skill']],
+  ])
   assert.deepEqual(readJson('terms/orchestration.graph.json'), [
     'eff',
     'ui-settings',
@@ -140,7 +181,12 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
     'scopes',
     ['g', ['ids', 'agents']],
   ])
-  assert.deepEqual(readJson('terms/orchestration.health.json'), ['eff', 'ui-settings', 'health', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/orchestration.health.json'), [
+    'eff',
+    'ui-settings',
+    'health',
+    ['g', ['ids']],
+  ])
   // 记忆三条：view / edit 无参（owner 数据由下游服务自读）；search 传命令 args（查询条件）。
   assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['c', null]])
   assert.deepEqual(readJson('terms/memory.edit.json'), ['eff', 'ui-settings', 'edit', ['c', null]])
@@ -175,7 +221,8 @@ test('插件源码与测试不 import 宿主 / 内核 / 客户端（tools/ 冒�
       const path = join(dir, entry.name)
       // `tools/e2e-smoke.mjs` 是唯一例外：冒烟脚本可 import 宿主内部模块（见 plugins.md §三）。
       if (entry.isDirectory()) {
-        if (entry.name === 'tools' || entry.name === 'node_modules' || entry.name === 'dist') continue
+        if (entry.name === 'tools' || entry.name === 'node_modules' || entry.name === 'dist')
+          continue
         walk(path)
       } else if (entry.isFile() && /\.(mjs|ts|js)$/.test(entry.name)) files.push(path)
     }
@@ -227,7 +274,8 @@ function stripComments(source) {
     }
     if (ch === '/' && next === '*') {
       index += 2
-      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/')) index += 1
+      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/'))
+        index += 1
       index += 2
       continue
     }
@@ -247,7 +295,8 @@ test('web 层代码无散落中文（文案集中在 messages.ts）与硬编码�
         walk(join(dir, entry.name))
         continue
       }
-      if (/\.(ts|tsx)$/.test(entry.name) && entry.name !== 'messages.ts') files.push(join(dir, entry.name))
+      if (/\.(ts|tsx)$/.test(entry.name) && entry.name !== 'messages.ts')
+        files.push(join(dir, entry.name))
     }
   }
   walk(webDir)

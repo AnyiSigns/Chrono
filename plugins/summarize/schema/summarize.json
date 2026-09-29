@@ -1,0 +1,147 @@
+{
+  "title": "summarize（结构化摘要原语）",
+  "description": "身份自述 / 数据契约：结构化摘要（L1 / L2 共用形状 goal / decisions / facts / open_questions / files / next_steps，L2 去 next_steps）与确定性派生原语（纯函数、同输入同输出、不取时间 / 随机）。derive 结构化字段优先、缺失由会话切片按句派生；parse / current 从摘要记录解析（current 另按目标长度截断全字段）；sentences 从切片派生句子；merge 按既有列表 + 去重结果拼接（去重结果由消费方经 dedup 提供方算好后经 outcomes 传入）；to_l1 / to_l2 写出 L1 / L2 形状。本服务无反向调用、不读投影、不写世界。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "summary": {
+      "type": "object",
+      "description": "结构化摘要形状：goal 字符串，其余为字符串数组。",
+      "additionalProperties": true,
+      "properties": {
+        "goal": { "type": "string" },
+        "decisions": { "type": "array", "items": { "type": "string" } },
+        "facts": { "type": "array", "items": { "type": "string" } },
+        "open_questions": { "type": "array", "items": { "type": "string" } },
+        "files": { "type": "array", "items": { "type": "string" } },
+        "next_steps": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "derive_request": {
+      "type": "object",
+      "required": ["args", "target_length", "extract_items"],
+      "additionalProperties": false,
+      "description": "derive 入参：原始摘要 args（goal / 列表字段 / session_slice / summary）、目标长度（码点）与抽取条数。",
+      "properties": {
+        "args": {
+          "type": "object",
+          "description": "原始摘要 args；优先 args.summary（压缩产物），否则由扁平字段 / 切片派生。"
+        },
+        "target_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "目标长度（Unicode 码点）。"
+        },
+        "extract_items": { "type": "integer", "minimum": 1, "description": "facts 派生条数。" }
+      }
+    },
+    "parse_request": {
+      "type": "object",
+      "required": ["record"],
+      "additionalProperties": false,
+      "description": "parse 入参：摘要记录（缺失 / 非字符串项忽略，不截断）。",
+      "properties": {
+        "record": { "type": ["object", "null"], "description": "摘要记录（可为 null）。" }
+      }
+    },
+    "current_request": {
+      "type": "object",
+      "required": ["record", "target_length"],
+      "additionalProperties": false,
+      "description": "current 入参：摘要记录 + 目标长度；解析后统一截断全字段。",
+      "properties": {
+        "record": { "type": ["object", "null"], "description": "摘要记录（可为 null）。" },
+        "target_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "目标长度（Unicode 码点）。"
+        }
+      }
+    },
+    "sentences_request": {
+      "type": "object",
+      "required": ["session_slice", "limit", "target_length"],
+      "additionalProperties": false,
+      "description": "sentences 入参：会话切片 + 条数上限 + 目标长度；逐条 content 按句切分、去重、截断。",
+      "properties": {
+        "session_slice": { "type": "array", "description": "会话切片 [{role, content}]。" },
+        "limit": { "type": "integer", "minimum": 1, "description": "返回句子条数上限。" },
+        "target_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "单句截断长度（Unicode 码点）。"
+        }
+      }
+    },
+    "merge_request": {
+      "type": "object",
+      "required": ["existing", "incoming", "outcomes"],
+      "additionalProperties": false,
+      "description": "merge 入参：既有 / 新摘要 + 逐字段去重结果（消费方经 dedup 提供方算得）。",
+      "properties": {
+        "existing": { "type": "object", "description": "既有摘要。" },
+        "incoming": { "type": "object", "description": "新摘要；goal 非空时优先。" },
+        "outcomes": {
+          "type": "object",
+          "description": "字段名 → {accepted, dedup}；accepted 为去重后接受的新条目，dedup 为本次去重路径。",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "accepted": { "type": "array", "items": { "type": "string" } },
+              "dedup": { "enum": ["vector", "text"] }
+            }
+          }
+        }
+      }
+    },
+    "to_l1_request": {
+      "type": "object",
+      "required": ["summary"],
+      "additionalProperties": false,
+      "description": "to_l1 入参：摘要 → L1 记录（六个字段）。",
+      "properties": { "summary": { "type": "object", "description": "摘要。" } }
+    },
+    "to_l2_request": {
+      "type": "object",
+      "required": ["summary"],
+      "additionalProperties": false,
+      "description": "to_l2 入参：摘要 → L2 记录（无 next_steps）。",
+      "properties": { "summary": { "type": "object", "description": "摘要。" } }
+    },
+    "derive_result": {
+      "type": "object",
+      "description": "derive / parse / current / merge 返回 {summary}（merge 另带 dedup）。",
+      "additionalProperties": true
+    },
+    "record_result": {
+      "type": "object",
+      "description": "to_l1 / to_l2 返回 {record}。",
+      "additionalProperties": true
+    },
+    "sentences_result": {
+      "type": "array",
+      "description": "sentences 返回字符串数组。",
+      "items": { "type": "string" }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（缺必填字段 / target_length 或 extract_items / limit 非正整数）。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "summarize.derive": 5000,
+    "summarize.parse": 5000,
+    "summarize.current": 5000,
+    "summarize.sentences": 5000,
+    "summarize.merge": 5000,
+    "summarize.to_l1": 5000,
+    "summarize.to_l2": 5000
+  }
+}

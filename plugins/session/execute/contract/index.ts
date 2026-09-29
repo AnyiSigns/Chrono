@@ -1,4 +1,4 @@
-// @generated: do not edit by hand. source-sha256=2828f1ea4034d6c4f1cd643fba1bd5dde517ca2b350c45d92248411ef29c76d8.
+// @generated: do not edit by hand. source-sha256=d70bfd5076afe925b295d1f53ddb844c6d0ec90efd39fe12c1873b52501456d1.
 // Regenerate: node chain-contract/tools/generate.mjs
 // 横切契约运行子集：值形状、封闭码集、校验器、结局构造器与 cause 包裹助手。
 // 自包含：不 import 任何模块、不触网、不取时钟，可随插件世代入世，也可在浏览器半边运行。
@@ -397,7 +397,14 @@ export function validateBag(value: unknown, options?: ValidateBagOptions): Contr
 // 回合步记录校验
 // ---------------------------------------------------------------------------
 
-export const STEP_RECORD_TYPES = ['turn.open', 'step.intent', 'step.result', 'checkpoint', 'turn.settle'] as const
+export const STEP_RECORD_TYPES = [
+  'turn.open',
+  'step.intent',
+  'step.result',
+  'step.user',
+  'checkpoint',
+  'turn.settle',
+] as const
 
 type StepRecordType = (typeof STEP_RECORD_TYPES)[number]
 
@@ -433,6 +440,14 @@ const STEP_RECORD_SPECS: Record<StepRecordType, StepRecordSpec> = {
       ['tool_results', 'array'],
       ['reasoning', 'object'],
       ['usage', 'object'],
+    ],
+  },
+  'step.user': {
+    required: ['turn_id', 'seq', 'user_message'],
+    fields: [
+      ['turn_id', 'string'],
+      ['user_message', 'object'],
+      ['insert_id', 'string'],
     ],
   },
   checkpoint: {

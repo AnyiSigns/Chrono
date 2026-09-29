@@ -1,10 +1,12 @@
 // 能力类 `secrets` 的两个方法：resolve（解析成明文）与 list（只回 {name, has}）。
+// `auth_ref` 形态校验与 `env` kind 取值留本插件；`local` kind 的本地文件读取委派 secrets-local。
 // 服务不读投影、不自取时钟（env.now 无关）；明文只在返回值里，绝不进日志 / stderr / 缓存。
 
 import { isRecord } from 'plugin-sdk'
-import { readLocalSecrets } from './secrets-file.ts'
+import { LocalSecretsError } from './port-link.ts'
 import { SecretError } from './types.ts'
-import type { Handler, Json, Rec } from 'plugin-sdk'
+import type { LocalSecretsReader } from './port-link.ts'
+import type { Handler, Json } from 'plugin-sdk'
 
 /** 密钥名长度上限（与宿主本地存储面同口径）。 */
 export const MAX_SECRET_NAME_LENGTH = 256
@@ -17,8 +19,8 @@ const FORBIDDEN_SECRET_NAMES: ReadonlySet<string> = new Set([
 ])
 
 export interface SecretsDeps {
-  /** 本地密钥文件绝对路径；null = 宿主未注入 CHRONO_PLUGIN_STATE，无法解析。 */
-  file: string | null
+  /** 本地密钥读取面（生产环境经反向调用 secrets-local）。 */
+  local: LocalSecretsReader
   /** 进程环境（`env` kind 的取值面）。 */
   env: Record<string, string | undefined>
 }
@@ -42,40 +44,42 @@ function parseAuthRef(args: Json): { kind: 'local' | 'env'; name: string } {
   return { kind, name }
 }
 
-/** 解析一条引用：`local` 读本地文件、`env` 读进程环境；返回明文（仅存调用方内存）。 */
-function resolveSecret(args: Json, deps: SecretsDeps): Json {
+/** 把 secrets-local 的结构化失败映射成密钥域错误：仅缺失原样透传，其余一律不可读。 */
+function toSecretError(err: unknown): SecretError {
+  if (err instanceof LocalSecretsError && err.code === 'secret_missing') {
+    return new SecretError('secret_missing', err.message)
+  }
+  return new SecretError('secret_unreadable', 'local secrets file is not resolvable')
+}
+
+/** 解析一条引用：`local` 委派 secrets-local、`env` 读进程环境；返回明文（仅存调用方内存）。 */
+async function resolveSecret(args: Json, deps: SecretsDeps): Promise<Json> {
   const { kind, name } = parseAuthRef(args)
   if (kind === 'env') {
     const value = deps.env[name]
     if (value === undefined) throw new SecretError('secret_missing', `env secret not found: ${name}`)
     return value
   }
-  if (deps.file === null) {
-    throw new SecretError('secret_unreadable', 'local secrets file is not resolvable')
+  try {
+    return await deps.local.read(name)
+  } catch (err) {
+    throw toSecretError(err)
   }
-  const read = readLocalSecrets(deps.file)
-  if (!read.ok) throw new SecretError('secret_unreadable', 'local secrets file is unreadable')
-  const value = read.secrets[name]
-  if (value === undefined) throw new SecretError('secret_missing', `local secret not found: ${name}`)
-  return value
 }
 
-/** 列出本地文件里的引用名（只回 `{name, has}`，不回值）；名字排序保确定性。 */
-function listSecrets(deps: SecretsDeps): Json {
-  if (deps.file === null) {
-    throw new SecretError('secret_unreadable', 'local secrets file is not resolvable')
+/** 列出本地文件里的引用名（只回 `{name, has}`，不回值）；排序由 secrets-local 保证。 */
+async function listSecrets(deps: SecretsDeps): Promise<Json> {
+  try {
+    return await deps.local.list()
+  } catch (err) {
+    throw toSecretError(err)
   }
-  const read = readLocalSecrets(deps.file)
-  if (!read.ok) throw new SecretError('secret_unreadable', 'local secrets file is unreadable')
-  return Object.keys(read.secrets)
-    .sort()
-    .map((name) => ({ name, has: true }))
 }
 
-/** 构造方法表（依赖注入：文件路径 + 进程环境由入口提供，便于测试与确定性）。 */
+/** 构造方法表（依赖注入：本地读取面 + 进程环境由入口提供，便于测试与确定性）。 */
 export function createHandlers(deps: SecretsDeps): Record<string, Handler> {
   return {
-    resolve: (args) => ({ value: resolveSecret(args, deps), events: [] }),
-    list: () => ({ value: listSecrets(deps), events: [] }),
+    resolve: async (args) => ({ value: await resolveSecret(args, deps), events: [] }),
+    list: async () => ({ value: await listSecrets(deps), events: [] }),
   }
 }

@@ -41,7 +41,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -143,16 +145,24 @@ async function openSession(entry, dataDir, stateDir) {
 
   function bridge(message) {
     portCalls.push(message)
-    if (message.port === 'embedding' && message.method === 'chunk') {
+    if (message.port === 'tokenizer' && message.method === 'chunk') {
       const text = typeof message.args?.text === 'string' ? message.args.text : ''
       const value = [{ index: 0, start: 0, end: [...text].length, text }]
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+      child.stdin.write(
+        encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }),
+      )
       return
     }
     if (message.port === 'embedding' && message.method === 'embed') {
       const texts = Array.isArray(message.args?.texts) ? message.args.texts : []
-      const value = { model: 'granite-97m', dim: DIM, vectors: texts.map((text) => testVector(text)) }
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+      const value = {
+        model: 'granite-97m',
+        dim: DIM,
+        vectors: texts.map((text) => testVector(text)),
+      }
+      child.stdin.write(
+        encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }),
+      )
       return
     }
     child.stdin.write(
@@ -168,14 +178,17 @@ async function openSession(entry, dataDir, stateDir) {
   }
 
   async function call(id, method, args) {
-    child.stdin.write(encodeFrame({ v: '1', id, kind: 'call', port: 'memory', method, args, env: ENV }))
+    child.stdin.write(
+      encodeFrame({ v: '1', id, kind: 'call', port: 'memory', method, args, env: ENV }),
+    )
     for (;;) {
       const message = await next()
       if (message.kind === 'port.call') {
         bridge(message)
         continue
       }
-      if ((message.kind === 'result' || message.kind === 'error') && message.id === id) return message
+      if ((message.kind === 'result' || message.kind === 'error') && message.id === id)
+        return message
     }
   }
 
@@ -198,7 +211,16 @@ async function directProtocolSmoke(entry, dataDir, stateDir) {
   try {
     assert.equal(first.manifest.kind, 'manifest', 'memory-store hello 应回 manifest')
     assert.equal(first.manifest.identity, 'memory-store')
-    assert.deepEqual(first.manifest.methods.memory, ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'])
+    assert.deepEqual(first.manifest.methods.memory, [
+      'put',
+      'read',
+      'search',
+      'list',
+      'append',
+      'delete',
+      'pin',
+      'edit',
+    ])
 
     const put = await first.call('p1', 'put', { text: 'alpha' })
     assert.equal(put.kind, 'result', JSON.stringify(put))
@@ -219,10 +241,17 @@ async function directProtocolSmoke(entry, dataDir, stateDir) {
     assert.equal(search.value.hits[0].score, 1)
 
     const list = await first.call('l1', 'list', {})
-    assert.deepEqual(list.value.entries.map((item) => item.id), [entryId])
+    assert.deepEqual(
+      list.value.entries.map((item) => item.id),
+      [entryId],
+    )
 
-    assert.ok(first.portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'chunk'))
-    assert.ok(first.portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'))
+    assert.ok(
+      first.portCalls.some((frame) => frame.port === 'tokenizer' && frame.method === 'chunk'),
+    )
+    assert.ok(
+      first.portCalls.some((frame) => frame.port === 'embedding' && frame.method === 'embed'),
+    )
     console.log('直连协议：put / read / search / list + 结果值 + 不产世界写计划')
   } finally {
     await first.close()
@@ -234,9 +263,15 @@ async function directProtocolSmoke(entry, dataDir, stateDir) {
     const read = await second.call('r2', 'read', { hashes: [entryId] })
     assert.equal(read.value.entries[0].entry.text, 'alpha', '重启后应能读回条目（④ 持久化）')
 
-    const removed = await second.call('d1', 'delete', { ids: [entryId], at: '2020-01-01T00:00:00.000Z' })
+    const removed = await second.call('d1', 'delete', {
+      ids: [entryId],
+      at: '2020-01-01T00:00:00.000Z',
+    })
     assert.deepEqual(removed.value.deleted, [entryId])
-    const filtered = await second.call('s2', 'search', { query_vector: testVector('alpha'), top_k: 3 })
+    const filtered = await second.call('s2', 'search', {
+      query_vector: testVector('alpha'),
+      top_k: 3,
+    })
     assert.deepEqual(filtered.value.hits, [], '逻辑删除后不再命中')
     console.log('重启读回：④ 追加日志重放；delete 后 search 过滤')
   } finally {
@@ -271,7 +306,11 @@ async function main() {
     for (const [identity] of PLUGIN_DIRS) {
       assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
     }
-    assert.deepEqual(projection.ids['memory-store'].pins, { embedding: 'embedding' }, 'memory-store pins 应解析为 embedding')
+    assert.deepEqual(
+      projection.ids['memory-store'].pins,
+      { embedding: 'embedding' },
+      'memory-store pins 应解析为 embedding',
+    )
     console.log('离线投影：两身份在册，memory-store pins 解析通过')
 
     const sourcePaths = collectSourcePaths(anchor.world, 'memory-store')
@@ -280,8 +319,16 @@ async function main() {
     assert.ok(sourcePaths.includes('README.md'), '源码树应含 README.md')
     assert.ok(sourcePaths.includes('execute'), '源码树应含 execute/')
     assert.ok(sourcePaths.includes('schema'), '源码树应含 schema/')
-    assert.equal(sourcePaths.some((path) => path === 'test' || path.startsWith('test/')), false, '.worldignore 应排除 test/')
-    assert.equal(sourcePaths.some((path) => path === 'tools' || path.startsWith('tools/')), false, '.worldignore 应排除 tools/')
+    assert.equal(
+      sourcePaths.some((path) => path === 'test' || path.startsWith('test/')),
+      false,
+      '.worldignore 应排除 test/',
+    )
+    assert.equal(
+      sourcePaths.some((path) => path === 'tools' || path.startsWith('tools/')),
+      false,
+      '.worldignore 应排除 tools/',
+    )
     console.log(`.worldignore 门禁：test/ 与 tools/ 未入源码树（共 ${sourcePaths.length} 项）`)
 
     await directProtocolSmoke(

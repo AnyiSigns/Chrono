@@ -1,0 +1,21 @@
+{
+  "name": "ref-hydrate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "引用水合原语：沿 {def} 标记逐跳调 host.def.read、有界缓存、fail-closed；被 chat / ui-settings / ui-approval / loop-policy 反向消费",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

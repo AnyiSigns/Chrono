@@ -82,3 +82,36 @@ test('displayTimeline：不读 refs（refs 全量不进入展示投影）', () =
   assert.deepEqual(displayMessagesByTurn('c1', noTurns.turns), [])
   assert.deepEqual(displayTimeline(noTurns.turns), [])
 })
+
+test('step.user：回合运行中插入的用户消息进展示链与时间线（原位、幂等 id）', () => {
+  const withInsert = [
+    {
+      turn_id: 't3',
+      at: '2026-01-03T00:00:00.000Z',
+      state: 'open',
+      outcome: null,
+      user_message: { content: 'U3' },
+      steps: [
+        { type: 'step.result', turn_id: 't3', seq: 3, assistant: { content: 'A3' } },
+        {
+          type: 'step.user',
+          turn_id: 't3',
+          seq: 4,
+          insert_id: 'i1',
+          user_message: { content: 'INSERT', at: '2026-01-03T00:00:01.000Z' },
+        },
+      ],
+    },
+  ]
+  const groups = displayMessagesByTurn('c1', withInsert)
+  assert.deepEqual(groups[0].messages.map((entry) => entry.hash), [
+    'msg-c1-t3-user',
+    'msg-c1-t3-user-i1',
+    'msg-c1-t3-assistant',
+  ])
+  assert.deepEqual(groups[0].messages.map((entry) => entry.def.content), ['U3', 'INSERT', 'A3'])
+  assert.equal(groups[0].messages[1].def.role, 'user')
+  const timeline = displayTimeline(withInsert)
+  assert.deepEqual(timeline[0].items.map((item) => item.kind), ['user', 'user', 'text'])
+  assert.equal(timeline[0].items[1].text, 'INSERT')
+})

@@ -1,0 +1,21 @@
+{
+  "name": "vector-index",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "向量索引原语：③ 二进制索引编解码 / 原子写 / stale GC、L2 归一、点积、最小堆 top-k 与确定性 tie-break；只回逻辑 key。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

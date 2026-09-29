@@ -43,7 +43,10 @@ export function sseHead(res) {
 /** 写 JSON 响应。 */
 export function jsonResponse(res, status, value) {
   const body = JSON.stringify(value)
-  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
+  })
   res.end(body)
 }
 

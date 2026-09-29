@@ -1,0 +1,89 @@
+{
+  "title": "title-format（标题后处理原语）",
+  "description": "身份自述 / 数据契约：标题后处理原语（纯函数、同输入同输出、不取时间 / 随机）。clean 取首个非空行并去引号 / 标点 / 换行后按 Unicode 码点截断；fallback 取首条用户消息去空白后前 max_chars 字；resolve 按模型清理结果 → 首条消息前 N 字 → 调用方缺省标题的兜底顺序回标题值。服务无反向调用、不读投影、不写世界。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "clean_request": {
+      "type": "object",
+      "description": "clean 入参：模型原始输出与字数上限。",
+      "required": ["text", "max_chars"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string", "description": "待清理的模型原始输出。" },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "标题字数上限（Unicode 码点）。"
+        }
+      }
+    },
+    "fallback_request": {
+      "type": "object",
+      "description": "fallback 入参：首条用户消息与字数上限。",
+      "required": ["first_message", "max_chars"],
+      "additionalProperties": false,
+      "properties": {
+        "first_message": {
+          "type": "string",
+          "description": "首条用户消息文本。"
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "标题字数上限（Unicode 码点）。"
+        }
+      }
+    },
+    "resolve_request": {
+      "type": "object",
+      "description": "resolve 入参：模型原始输出（可为 null）、首条用户消息、字数上限与最终兜底标题。",
+      "required": ["model_text", "first_message", "max_chars", "title_default"],
+      "additionalProperties": false,
+      "properties": {
+        "model_text": {
+          "type": ["string", "null"],
+          "description": "模型清理前的原始输出；模型失败 / 超时 / 未配置为 null。"
+        },
+        "first_message": {
+          "type": "string",
+          "description": "首条用户消息文本。"
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "标题字数上限（Unicode 码点）。"
+        },
+        "title_default": {
+          "type": "string",
+          "description": "最终兜底标题（由调用方保证非空）。"
+        }
+      }
+    },
+    "title_result": {
+      "type": "object",
+      "description": "clean / fallback / resolve 的返回值：标题值（Unicode 码点数 ≤ max_chars）。",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "description": "清理 / 兜底得到的标题。" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（缺必填字段 / max_chars 非正整数 / model_text 既非字符串也非 null）。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "title-format.clean": 2000,
+    "title-format.fallback": 2000,
+    "title-format.resolve": 2000
+  }
+}

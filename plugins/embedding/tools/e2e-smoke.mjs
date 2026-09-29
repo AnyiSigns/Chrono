@@ -1,7 +1,8 @@
-// `embedding` 宿主装配 E2E（重点验证大资产直拷 + `include_bytes!` 全链路）：
-// pack embedding → seed → start（宿主物化：assets_manifest 直拷大资产 → `cargo build --release`
-// → 经 execute/launch.mjs 拉起 → 握手）→ 轮询 status 确认 loaded → 校验缓存二进制 / onnxruntime 库 /
-// 物化目录里的大资产 → 协议直连 embed 断言 384 维与 L2 范数 → stop → verify。
+// `embedding` + `tokenizer` 宿主装配 E2E（重点验证大资产直拷 + `include_bytes!` 全链路）：
+// pack / seed 两插件 → start（宿主物化：assets_manifest 直拷大资产 → `cargo build --release`
+// → 经 execute/launch.mjs 拉起 → 握手）→ 轮询 status 确认两者 loaded → 校验缓存二进制 / onnxruntime 库 /
+// 物化目录里的大资产 → 协议直连 tokenizer 断言 encode / chunk → 协议直连 embedding 断言 manifest →
+// stop → verify。embedding.embed 经反向 port.call tokenizer.encode，需宿主路由，故不在直连冒烟里调用。
 // 首次 release 构建需下载 ort/onnxruntime 并编译 98 MB include_bytes!，可能 10–30 分钟；
 // 宿主是 detached 进程，`boot start` 的 10s 就绪等待会先超时，故超时后转轮询（失败路径也 stop）。
 // 用法：node plugins/embedding/tools/e2e-smoke.mjs
@@ -16,7 +17,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const EMBEDDING_DIR = join(REPO_ROOT, 'plugins', 'embedding')
-const BIN_NAME = process.platform === 'win32' ? 'embedding.exe' : 'embedding'
+const TOKENIZER_DIR = join(REPO_ROOT, 'plugins', 'tokenizer')
+const EMBEDDING_BIN = process.platform === 'win32' ? 'embedding.exe' : 'embedding'
+const TOKENIZER_BIN = process.platform === 'win32' ? 'tokenizer.exe' : 'tokenizer'
 const BUILD_DEADLINE_MS = 45 * 60 * 1000
 const FRAME_TIMEOUT_MS = 180 * 1000
 
@@ -44,7 +47,9 @@ function bootRaw(root, args) {
 function boot(root, args) {
   const result = bootRaw(root, args)
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || result.stdout}`,
+    )
   }
   return result.parsed
 }
@@ -72,16 +77,17 @@ async function waitForLoaded(root) {
   while (Date.now() < deadline) {
     const result = bootRaw(root, ['status'])
     if (result.status === 0 && result.parsed && Array.isArray(result.parsed.loaded)) {
-      if (result.parsed.loaded.some((entry) => entry.id === 'embedding')) return result.parsed
+      const ids = result.parsed.loaded.map((entry) => entry.id)
+      if (ids.includes('embedding') && ids.includes('tokenizer')) return result.parsed
     }
     lastError = result.stderr || result.stdout
     const log = lifecycleTail(root)
-    if (/"impl":"embedding"/.test(log) && /"event":"(start_failed|handshake.failed)"/.test(log)) {
-      throw new Error(`embedding 装配失败：\n${log}`)
+    if (/"event":"(start_failed|handshake.failed)"/.test(log)) {
+      throw new Error(`装配失败：\n${log}`)
     }
     await sleep(2000)
   }
-  throw new Error(`embedding 未在期限内装载（最后错误：${lastError}）\n${lifecycleTail(root)}`)
+  throw new Error(`插件未在期限内装载（最后错误：${lastError}）\n${lifecycleTail(root)}`)
 }
 
 function encodeFrame(message) {
@@ -121,7 +127,76 @@ function frameReader(child) {
     })
 }
 
-async function protocolSmoke(binary, pluginStateDir) {
+async function closeChild(child) {
+  child.stdin.end()
+  await new Promise((resolveExit) => {
+    const timer = setTimeout(() => {
+      child.kill()
+      resolveExit()
+    }, 10000)
+    child.once('exit', () => {
+      clearTimeout(timer)
+      resolveExit()
+    })
+  })
+}
+
+/** 直连 tokenizer 二进制：encode / chunk 均不需反向调用，可独立冒烟。 */
+async function tokenizerProtocolSmoke(binary, pluginStateDir) {
+  const child = spawn(binary, [], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    windowsHide: true,
+    env: { ...process.env, CHRONO_PLUGIN_STATE: pluginStateDir },
+  })
+  const nextFrame = frameReader(child)
+  try {
+    child.stdin.write(encodeFrame({ v: '1', id: 'h1', kind: 'hello', impl: 'tokenizer' }))
+    const manifest = await nextFrame()
+    assert.equal(manifest.kind, 'manifest', 'hello 应回 manifest')
+    assert.equal(manifest.identity, 'tokenizer')
+    assert.deepEqual(manifest.methods.tokenizer, ['encode', 'chunk'])
+
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'c1',
+        kind: 'call',
+        port: 'tokenizer',
+        method: 'encode',
+        args: { text: '你好，world' },
+        env: { run: null, thread: null, now: 0 },
+      }),
+    )
+    const encoded = await nextFrame()
+    assert.equal(encoded.kind, 'result', `encode 应回 result：${JSON.stringify(encoded)}`)
+    assert.equal(encoded.value.ids[0], 179934, '缺省应加 CLS')
+    assert.equal(encoded.value.ids.length, encoded.value.mask.length)
+    assert.equal(encoded.value.ids.length, encoded.value.offsets.length)
+    console.log('协议直连 tokenizer.encode：ids / mask / offsets ok')
+
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'c2',
+        kind: 'call',
+        port: 'tokenizer',
+        method: 'chunk',
+        args: { text: '你好，world', window: 512, overlap: 64 },
+        env: { run: null, thread: null, now: 0 },
+      }),
+    )
+    const chunked = await nextFrame()
+    assert.equal(chunked.kind, 'result', `chunk 应回 result：${JSON.stringify(chunked)}`)
+    assert.equal(chunked.value.length, 1)
+    assert.equal(chunked.value[0].start, 0)
+    assert.equal(chunked.value[0].end, 8, 'start / end 应为 Unicode 码点偏移')
+    console.log('协议直连 tokenizer.chunk：码点偏移 ok')
+  } finally {
+    await closeChild(child)
+  }
+}
+
+async function embeddingProtocolSmoke(binary, pluginStateDir) {
   const child = spawn(binary, [], {
     stdio: ['pipe', 'pipe', 'inherit'],
     windowsHide: true,
@@ -133,58 +208,10 @@ async function protocolSmoke(binary, pluginStateDir) {
     const manifest = await nextFrame()
     assert.equal(manifest.kind, 'manifest', 'hello 应回 manifest')
     assert.equal(manifest.identity, 'embedding')
-    assert.deepEqual(manifest.methods.embedding, ['embed', 'chunk'])
-
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: 'c1',
-        kind: 'call',
-        port: 'embedding',
-        method: 'embed',
-        args: { texts: ['Chrono 本地向量化冒烟测试。'], model: 'granite-97m' },
-        env: { run: null, thread: null, now: 0 },
-      }),
-    )
-    const result = await nextFrame()
-    assert.equal(result.kind, 'result', `embed 应回 result：${JSON.stringify(result)}`)
-    assert.equal(result.value.model, 'granite-97m')
-    assert.equal(result.value.dim, 384)
-    const vector = result.value.vectors[0]
-    assert.equal(vector.length, 384, '向量应为 384 维')
-    const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0))
-    assert.ok(Math.abs(norm - 1) < 1e-3, `L2 范数应约为 1（实测 ${norm}）`)
-    console.log(`协议直连 embed：dim=384，L2 范数=${norm.toFixed(6)}`)
-
-    child.stdin.write(
-      encodeFrame({
-        v: '1',
-        id: 'c2',
-        kind: 'call',
-        port: 'embedding',
-        method: 'chunk',
-        args: { text: '你好，world', window: 512, overlap: 64 },
-        env: { run: null, thread: null, now: 0 },
-      }),
-    )
-    const chunked = await nextFrame()
-    assert.equal(chunked.kind, 'result', `chunk 应回 result：${JSON.stringify(chunked)}`)
-    assert.equal(chunked.value.length, 1)
-    assert.equal(chunked.value[0].start, 0)
-    assert.equal(chunked.value[0].end, 8, 'start / end 应为 Unicode 码点偏移')
-    console.log('协议直连 chunk：码点偏移 ok')
+    assert.deepEqual(manifest.methods.embedding, ['embed'])
+    console.log('协议直连 embedding：manifest 仅 embed ok')
   } finally {
-    child.stdin.end()
-    await new Promise((resolveExit) => {
-      const timer = setTimeout(() => {
-        child.kill()
-        resolveExit()
-      }, 10000)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        resolveExit()
-      })
-    })
+    await closeChild(child)
   }
 }
 
@@ -196,11 +223,16 @@ async function main() {
   try {
     const packed = boot(root, ['pack', EMBEDDING_DIR, '--identity', 'embedding'])
     assert.equal(packed.ok, true, 'pack embedding 报告 ok:false')
-    console.log(`pack embedding: ${packed.status}`)
+    const packedTokenizer = boot(root, ['pack', TOKENIZER_DIR, '--identity', 'tokenizer'])
+    assert.equal(packedTokenizer.ok, true, 'pack tokenizer 报告 ok:false')
+    console.log('pack embedding / tokenizer: ok')
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
-      JSON.stringify([{ name: 'embedding', path: EMBEDDING_DIR }]),
+      JSON.stringify([
+        { name: 'embedding', path: EMBEDDING_DIR },
+        { name: 'tokenizer', path: TOKENIZER_DIR },
+      ]),
     )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
@@ -218,9 +250,11 @@ async function main() {
     const status = await waitForLoaded(root)
     console.log(`status：loaded = ${status.loaded.map((entry) => entry.id).join(', ')}`)
 
-    const binPath = join(root, 'state', 'deps', 'cargo-target', 'release', BIN_NAME)
-    assert.ok(existsSync(binPath), `缓存二进制缺失：${binPath}`)
-    console.log(`物化：缓存二进制就位（${binPath}）`)
+    const embeddingBin = join(root, 'state', 'deps', 'cargo-target', 'release', EMBEDDING_BIN)
+    const tokenizerBin = join(root, 'state', 'deps', 'cargo-target', 'release', TOKENIZER_BIN)
+    assert.ok(existsSync(embeddingBin), `缓存二进制缺失：${embeddingBin}`)
+    assert.ok(existsSync(tokenizerBin), `缓存二进制缺失：${tokenizerBin}`)
+    console.log('物化：缓存二进制就位')
 
     const runtimeDir = join(root, 'state', 'runtime')
     const modelCopy = findFile(runtimeDir, (name) => name === 'model_quint8_avx2.onnx')
@@ -232,9 +266,14 @@ async function main() {
     const dylib = findFile(join(root, 'state', 'deps', 'cargo-target', 'release'), (name) =>
       /^onnxruntime.*\.dll$/i.test(name),
     )
-    console.log(dylib === null ? '物化：未发现独立 onnxruntime DLL（可能静态链接）' : `物化：onnxruntime 库就位（${dylib}）`)
+    console.log(
+      dylib === null
+        ? '物化：未发现独立 onnxruntime DLL（可能静态链接）'
+        : `物化：onnxruntime 库就位（${dylib}）`,
+    )
 
-    await protocolSmoke(binPath, join(root, 'state', 'plugins', 'embedding'))
+    await tokenizerProtocolSmoke(tokenizerBin, join(root, 'state', 'plugins', 'tokenizer'))
+    await embeddingProtocolSmoke(embeddingBin, join(root, 'state', 'plugins', 'embedding'))
 
     boot(root, ['stop'])
     started = false

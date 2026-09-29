@@ -7,7 +7,7 @@ import type { CSSProperties, FocusEvent as ReactFocusEvent, MouseEvent as ReactM
 import type { SlotContext } from '@chrono/ui-contract'
 import { badgeFor, badgeForGroup, badgeTextCode, runningRun } from './badges.ts'
 import type { Badge } from './badges.ts'
-import { groupConversations, isEmptyView, matchTitle, ungroupedConversations } from './sidebar-model.ts'
+import { groupConversations, isEmptyView, matchTitle, relativeBucket, ungroupedConversations } from './sidebar-model.ts'
 import type { Conversation, ConversationGroup, Workspace } from './sidebar-model.ts'
 import { SIDEBAR_CSS } from './styles.ts'
 import { SidebarStore } from './sidebar-store.ts'
@@ -127,38 +127,93 @@ function BadgeView({ store, badge }: { store: SidebarStore; badge: Badge }) {
   )
 }
 
-function ConfirmRow(props: {
-  store: SidebarStore
-  question: string
-  primaryLabel: string
-  onPrimary: () => void
-  onCancel: () => void
-}) {
-  const { store, question, primaryLabel, onPrimary, onCancel } = props
+/**
+ * 破坏性动作二次确认弹窗（删除会话 / 终止运行）：居中遮罩 + 主体 + 取消 / 确认。
+ * 由 `snap.confirm.key`（`delete:<会话 id>` / `terminate:<会话 id>`）驱动；Esc 与点遮罩取消。
+ */
+function ConfirmModal({ store, snap }: { store: SidebarStore; snap: SidebarSnapshot }) {
+  const key = snap.confirm.key
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (key === null) return
+    const node = dialogRef.current
+    if (node !== null) node.focus()
+  }, [key])
+  if (key === null) return null
+  const separator = key.indexOf(':')
+  const action = separator > 0 ? key.slice(0, separator) : key
+  const id = separator > 0 ? key.slice(separator + 1) : ''
+  const session = snap.conversations.find((item) => item.id === id) ?? null
+  const isDelete = action === 'delete'
+  const question = isDelete ? store.text('sidebar_confirm_delete') : store.text('sidebar_confirm_terminate')
+  const primaryLabel = isDelete ? store.text('sidebar_delete') : store.text('sidebar_terminate')
+  const runId = session !== null ? runningRun(snap.badges, session.id) : null
+  const confirm = (): void => {
+    if (isDelete) {
+      if (session !== null) void store.doDelete(session)
+      return
+    }
+    if (runId !== null) void store.doTerminate(runId)
+  }
   return (
-    <div className="sb-confirm">
-      <span>{question}</span>
-      <button
-        type="button"
-        data-primary="true"
-        onClick={(event) => {
-          event.stopPropagation()
-          onPrimary()
+    <div className="sb-modal-backdrop" role="presentation" onClick={() => store.cancelConfirm()}>
+      <div
+        ref={dialogRef}
+        className="sb-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            store.cancelConfirm()
+          }
         }}
       >
-        {primaryLabel}
-      </button>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation()
-          onCancel()
-        }}
-      >
-        {store.text('sidebar_cancel')}
-      </button>
+        <div className="sb-modal-title">{question}</div>
+        {session !== null && session.title.length > 0 ? (
+          <div className="sb-modal-subject">{session.title}</div>
+        ) : null}
+        <div className="sb-modal-actions">
+          <button type="button" className="sb-modal-btn" onClick={() => store.cancelConfirm()}>
+            {store.text('sidebar_cancel')}
+          </button>
+          <button
+            type="button"
+            className="sb-modal-btn"
+            data-danger="true"
+            disabled={!isDelete && runId === null}
+            onClick={confirm}
+          >
+            {primaryLabel}
+          </button>
+        </div>
+      </div>
     </div>
   )
+}
+
+/** 会话行的相对时间标签（刚刚 / n 分钟前 / 今天 / 昨天 / n 天前 / 更早）；无时间回 null。 */
+function relativeLabel(store: SidebarStore, updatedAt: number | null): string | null {
+  const bucket = relativeBucket(updatedAt)
+  if (bucket === null) return null
+  switch (bucket.kind) {
+    case 'now':
+      return store.text('sidebar_time_now')
+    case 'minutes':
+      return store.fmt('sidebar_time_minutes', { n: bucket.n })
+    case 'hours':
+      return store.fmt('sidebar_time_hours', { n: bucket.n })
+    case 'today':
+      return store.text('sidebar_time_today')
+    case 'yesterday':
+      return store.text('sidebar_time_yesterday')
+    case 'days':
+      return store.fmt('sidebar_time_days', { n: bucket.n })
+    default:
+      return store.text('sidebar_time_older')
+  }
 }
 
 function RenameInput({ store, session }: { store: SidebarStore; session: Conversation }) {
@@ -207,8 +262,6 @@ function SessionRow({
   const current = store.currentId() === session.id
   const runId = runningRun(snap.badges, session.id)
   const editing = snap.editing === session.id
-  const confirmDelete = store.confirming(`delete:${session.id}`)
-  const confirmTerminate = runId !== null && store.confirming(`terminate:${session.id}`)
   const badge = badgeFor(snap.badges, session.id)
 
   let body: ReactNode
@@ -219,33 +272,15 @@ function SessionRow({
         <div className="sb-session-actions" data-persist="true" />
       </>
     )
-  } else if (confirmDelete) {
-    body = (
-      <ConfirmRow
-        store={store}
-        question={store.text('sidebar_confirm_delete')}
-        primaryLabel={store.text('sidebar_delete')}
-        onPrimary={() => void store.doDelete(session)}
-        onCancel={() => store.cancelConfirm()}
-      />
-    )
-  } else if (confirmTerminate) {
-    body = (
-      <ConfirmRow
-        store={store}
-        question={store.text('sidebar_confirm_terminate')}
-        primaryLabel={store.text('sidebar_terminate')}
-        onPrimary={() => void store.doTerminate(runId as string)}
-        onCancel={() => store.cancelConfirm()}
-      />
-    )
   } else {
+    const time = relativeLabel(store, session.updatedAt)
     body = (
       <>
         <div className="sb-session-title">
           <Title title={session.title} query={snap.query} />
         </div>
         {badge !== null && <BadgeView store={store} badge={badge} />}
+        {time !== null ? <div className="sb-session-time">{time}</div> : null}
         <div className="sb-session-actions" data-persist="false">
           {runId !== null ? (
             <IconButton
@@ -752,6 +787,7 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       <FlyoutView store={store} snap={snap} />
       <MenuView store={store} snap={snap} />
       <TooltipView snap={snap} />
+      <ConfirmModal store={store} snap={snap} />
     </div>
   )
 }

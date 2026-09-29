@@ -9,7 +9,23 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = ['identity', 'schema', 'implements', 'methods', 'concurrent_methods', 'needs', 'pins', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
+const DECL_FIELDS = [
+  'identity',
+  'schema',
+  'implements',
+  'methods',
+  'concurrent_methods',
+  'needs',
+  'pins',
+  'start',
+  'build',
+  'protocol',
+  'restart',
+  'health',
+  'state',
+  'members',
+  'commands',
+]
 
 test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
@@ -17,9 +33,16 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.equal(decl.identity, 'model-protocol')
   assert.equal(decl.schema, 'schema/protocol.json')
   assert.deepEqual(decl.implements, ['model'])
-  assert.deepEqual(decl.methods, { model: ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'] })
+  assert.deepEqual(decl.methods, {
+    model: ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'],
+  })
   assert.deepEqual(decl.concurrent_methods, ['chat', 'complete', 'abort'])
-  assert.deepEqual(decl.needs, { secrets: { mode: 'one' }, config: { mode: 'one' } })
+  assert.deepEqual(decl.needs, {
+    secrets: { mode: 'one' },
+    config: { mode: 'one' },
+    throttle: { mode: 'one' },
+    'msg-dialect': { mode: 'one' },
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
@@ -30,16 +53,19 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('schema 顶层含宿主消费键 periodic / method_timeouts 与自用 resilience', () => {
+test('schema 顶层含宿主消费键 periodic / method_timeouts', () => {
   const schema = readJson('schema/protocol.json')
   assert.equal(schema.type, 'object')
   assert.equal(schema.periodic.length, 1)
   assert.equal(schema.periodic[0].method, 'sync')
   assert.equal(typeof schema.periodic[0].every_ms, 'number')
-  assert.equal(schema.periodic[0].reads, undefined, 'config 已出世界，sync 经 config.read 问 owner，无投影读')
+  assert.equal(
+    schema.periodic[0].reads,
+    undefined,
+    'config 已出世界，sync 经 config.read 问 owner，无投影读',
+  )
   assert.equal(schema.method_timeouts['model.chat'] >= 300000, true)
   assert.equal(schema.method_timeouts['model.complete'] >= 60000, true)
-  assert.equal(typeof schema.resilience.max_retries, 'number')
   assert.equal(typeof schema.properties.chat_request, 'object')
   assert.equal(typeof schema.properties.profile_request, 'object')
   assert.equal(typeof schema.properties.delta_event, 'object')
@@ -51,7 +77,7 @@ test('execute 源码与 test / tools 齐全', () => {
     'execute/methods.ts',
     'execute/chat.ts',
     'execute/adapters.ts',
-    'execute/reasoning.ts',
+    'execute/dialect-link.ts',
     'execute/discover.ts',
     'execute/profile.ts',
     'execute/vendors.ts',
@@ -59,10 +85,8 @@ test('execute 源码与 test / tools 齐全', () => {
     'execute/resilience.ts',
     'execute/http.ts',
     'execute/stream.ts',
-    'execute/quirks.ts',
     'execute/errors.ts',
     'execute/plan.ts',
-    'execute/plugin.ts',
     'tools/e2e-smoke.mjs',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
@@ -75,7 +99,10 @@ test('package.json：@google/genai 钉版本依赖 + 测试脚本；lockfile 存
   const version = pkg.dependencies['@google/genai']
   assert.match(version, /^\d+\.\d+\.\d+$/, 'SDK 依赖必须钉精确版本')
   assert.ok(existsSync(join(PKG_ROOT, 'package-lock.json')), '缺少 package-lock.json')
-  assert.equal(readJson('package-lock.json').packages['node_modules/@google/genai'].version, version)
+  assert.equal(
+    readJson('package-lock.json').packages['node_modules/@google/genai'].version,
+    version,
+  )
 })
 
 test('.worldignore 排除 test/ tools/ node_modules/ target/，不排除契约必需文件', () => {

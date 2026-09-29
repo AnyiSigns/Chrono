@@ -55,6 +55,15 @@ test('长回合分段：同一 run 同一 turn_id 跑完，逐段计时，助手
     assert.ok(started.some((event) => event.payload.source === 'resume'), '存在段续跑段')
     assert.equal(recorder.byTopic('chat.turn.settled').length, 1, '整回合只收口一次')
 
+    // 观测：段续跑的 started 带图内进度，且轮次随段推进而前进（UI 轮次实时更新，不等到回合收口）。
+    const resumed = started.filter((event) => event.payload.source === 'resume')
+    assert.ok(
+      resumed.every((event) => Number.isInteger(event.payload.progress?.iter)),
+      '段续跑段须带 progress.iter',
+    )
+    const iters = resumed.map((event) => event.payload.progress.iter)
+    assert.ok(new Set(iters).size > 1, '轮次随段推进而前进（非收口时一次性跳变）')
+
     // 观测：三段各派发一次工具（逐段推进，而非一个调用跑完）。
     const toolStarts = recorder.events.filter((event) => event.topic === 'tool.start')
     assert.equal(toolStarts.length, 3)

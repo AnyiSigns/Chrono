@@ -1,0 +1,44 @@
+{
+  "title": "query-plan（查询规划 · L3 召回前置）",
+  "description": "身份自述 / 数据契约：能力类 query-plan 的 plan 方法入参与结果形状。查询构造（顶层 query 拼 L1 goal，避免查询漂移）+ 可选多查询扩展（eff model.chat 生成 2–3 个子查询，去重封顶 4，默认关）。模型项失败即降级为单查询（保确定可回放）。服务不读投影、无写通道、不取时间；一切输入随 args 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "plan_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "plan 入参：原始查询、L1 goal、模型连接实例与多查询开关。",
+      "properties": {
+        "query": { "type": "string", "description": "当前轮原始查询文本。" },
+        "goal": {
+          "type": "string",
+          "description": "本会话 L1 的 goal / 摘要，拼进查询（避免查询漂移）。"
+        },
+        "model_config": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "多查询时 eff model.chat 的连接实例（{base_url, auth_ref, model, params}）；缺失时多查询降级为关闭。"
+        },
+        "multi_query": { "type": "boolean", "description": "多查询开关，默认关。" }
+      }
+    },
+    "plan_result": {
+      "type": "object",
+      "required": ["ok", "query", "queries"],
+      "additionalProperties": true,
+      "description": "成功回 {ok:true, query, queries}：query 为构造后的基础查询，queries 为实际查询集（首项恒等于 query；多查询开启时 >1）。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "query": { "type": "string", "description": "构造后的基础查询（query + L1 goal）。" },
+        "queries": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "实际查询集；多查询开启时 >1。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "query-plan.plan": 300000
+  }
+}

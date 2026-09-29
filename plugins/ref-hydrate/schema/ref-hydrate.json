@@ -1,0 +1,73 @@
+{
+  "title": "ref-hydrate（引用水合原语）",
+  "description": "身份自述 / 数据契约：引用水合原语。hydrate 沿一段 JSON 里直接出现的 `{\"def\":hash}` 逐跳反向调宿主只读 `host.def.read`（`pins.host`），取 body 组成 `{hash: body}` 闭包；进程内有界缓存、同输入同输出。闭包不完整（缺失 / 越权 / 传输失败）时 fail-closed 抛 `def_unavailable`（去重且截断的不可用哈希清单），不静默空。已是对象的 refs 原样返回，非数组回落空对象。服务不读投影、不写世界、无 needs。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "hydrate_request": {
+      "type": "object",
+      "description": "hydrate 入参：待水合的引用（哈希列表 / `{def}` 标记 / 已解析对象）、其所属身份与可选上限。",
+      "required": ["identity"],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "string",
+          "description": "refs 所属身份（宿主 `def.read` 据此做越权门禁）。"
+        },
+        "refs": {
+          "description": "待水合引用：哈希列表（逐跳解析）或已解析对象（原样返回）；缺失 / 非数组回落空对象。"
+        },
+        "limits": {
+          "type": "object",
+          "description": "可选上限覆盖；缺省用与拆分前一致的默认（缓存 4096 / 逐跳 10000 / 单批 256 / 不可用 64）。",
+          "additionalProperties": false,
+          "properties": {
+            "max_cache": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "进程内缓存条目上限。"
+            },
+            "max_hops": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "单次水合的逐跳上限（防坏数据成环）。"
+            },
+            "max_read_batch": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "单次解析请求的哈希数上限（超出分批）。"
+            },
+            "max_unavailable": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "不可用哈希清单的硬上限。"
+            }
+          }
+        }
+      }
+    },
+    "hydrate_result": {
+      "type": "object",
+      "description": "hydrate 返回值：`{hash: body}` 闭包（内容寻址，逐跳展开 `{def}` 标记）。",
+      "additionalProperties": true
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "def_unavailable": {
+          "type": "string",
+          "description": "闭包不完整：宿主 `def.read` 对部分哈希回 missing / denied 或传输失败，fail-closed。"
+        },
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（缺 identity / limits 非对象或含非正整数）。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "ref-hydrate.hydrate": 25000
+  }
+}

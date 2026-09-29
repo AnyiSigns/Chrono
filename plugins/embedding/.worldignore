@@ -5,5 +5,4 @@ test/
 
 # 入世排除：大资产与构建期权重输入（宿主按 schema.assets_manifest 从投递包源目录直拷，见 H15a）
 granite-97m/model_quint8_avx2.onnx
-granite-97m/tokenizer.json
 granite-97m/.gitignore

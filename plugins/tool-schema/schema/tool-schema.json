@@ -1,0 +1,97 @@
+{
+  "title": "tool-schema（工具声明 schema 方言原语）",
+  "description": "身份自述 / 数据契约：工具声明用 argsSchema 方言（JSON Schema 白名单子集）与 caps 形状的机械校验原语。normalize-decl 校验（严格）或净化（lenient，供外部 MCP 工具）声明的 argsSchema；validate-args 按同一方言校验模型传入的 args；normalize-caps 归一 caps 对象形并校验 fs / net / 数值上限。服务无反向调用、不读投影、不写世界、不取时间随机，同输入同输出。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "tool-schema.normalize-decl": [],
+    "tool-schema.validate-args": [],
+    "tool-schema.normalize-caps": []
+  },
+  "properties": {
+    "normalize_decl_request": {
+      "type": "object",
+      "description": "normalize-decl 入参：待处理的 argsSchema 与是否宽松（外部 MCP 工具）。",
+      "required": ["schema"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": {
+          "description": "工具声明的 argsSchema；严格形为白名单子集，lenient 形可为第三方 inputSchema。"
+        },
+        "lenient": {
+          "type": "boolean",
+          "description": "true = 剥掉白名单外关键词（不拒）；false / 缺省 = 严格校验，白名单外关键词拒。"
+        }
+      }
+    },
+    "normalize_decl_result": {
+      "type": "object",
+      "description": "normalize-decl 的返回值：{ok, message, schema}。ok 为真时 schema 为可用（净化后 / 原样）schema，否则为 null。",
+      "required": ["ok", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "message": { "type": "string" },
+        "schema": { "description": "ok 为真时的 schema；失败为 null。" }
+      }
+    },
+    "validate_args_request": {
+      "type": "object",
+      "description": "validate-args 入参：方言 schema 与待校验的值。",
+      "required": ["schema", "value"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "description": "白名单子集 argsSchema。" },
+        "value": { "description": "按 schema 校验的值（模型传入的 args）。" }
+      }
+    },
+    "check_result": {
+      "type": "object",
+      "description": "validate-args 的返回值：{ok, message}。",
+      "required": ["ok", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "message": { "type": "string", "description": "失败时的可读原因。" }
+      }
+    },
+    "normalize_caps_request": {
+      "type": "object",
+      "description": "normalize-caps 入参：待归一的 caps 与是否宽松。",
+      "additionalProperties": true,
+      "properties": {
+        "caps": {
+          "description": "caps 对象形（fs.read / fs.write / net / 数值上限）；缺失或畸形按 lenient 拒或回落缺省。"
+        },
+        "lenient": {
+          "type": "boolean",
+          "description": "true = 非对象回落缺省 caps、缺项按 none；false / 缺省 = 逐项校验并拒。"
+        }
+      }
+    },
+    "caps_result": {
+      "type": "object",
+      "description": "normalize-caps 的返回值：{ok, message, caps}。ok 为真时 caps 为归一后的对象，否则为 null。",
+      "required": ["ok", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "message": { "type": "string" },
+        "caps": { "description": "归一后的 caps（ok 为真时）。" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "args 非对象。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "tool-schema.normalize-decl": 2000,
+    "tool-schema.validate-args": 2000,
+    "tool-schema.normalize-caps": 2000
+  }
+}

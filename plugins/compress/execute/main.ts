@@ -1,11 +1,19 @@
 // `compress` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
 // manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
 // 服务不读投影、无写通道；读-改-写所需的世界数据由调用方随 args 传入。
-// 反向调用（model.chat / embedding.embed）走 `port.call`，应答帧立即结算（不排队）。
+// 反向调用（summarize.* / semantic.summarize / dedup.dedup / short-memory.*）走 `port.call`，
+// 应答帧立即结算（不排队）。
 
-import { PortLink, createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import {
+  PortLink,
+  createService as createSdkService,
+  isDirectRun,
+  makeLogger,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
-import { RemoteEmbedding, RemoteModel, RemoteShortMemory } from './port-link.ts'
+import { RemoteDedup, RemoteSemantic, RemoteShortMemory, RemoteSummarize } from './port-link.ts'
 import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
 const CAPABILITY = 'compress'
@@ -14,8 +22,9 @@ const LOG = makeLogger('compress')
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   const link = new PortLink({ write: ctx.emit, idPrefix: 'compress' })
   const handlers = createHandlers({
-    model: new RemoteModel(link),
-    embedding: new RemoteEmbedding(link),
+    summarize: new RemoteSummarize(link),
+    semantic: new RemoteSemantic(link),
+    dedup: new RemoteDedup(link),
     shortMemory: new RemoteShortMemory(link),
   })
   const sdkHandlers: Record<string, Handler> = {}

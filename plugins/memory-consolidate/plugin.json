@@ -11,7 +11,8 @@
     "embedding": { "mode": "one" },
     "memory": { "mode": "one" },
     "short-memory": { "mode": "one" },
-    "session": { "mode": "one" }
+    "session": { "mode": "one" },
+    "tokenizer": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

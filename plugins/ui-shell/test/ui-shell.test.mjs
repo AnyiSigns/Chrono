@@ -888,6 +888,7 @@ const REQUIRED_TOKENS = [
   '--c-text-2', '--c-text-3', '--c-accent', '--c-accent-text',
   '--c-danger', '--c-danger-bg', '--c-warning', '--c-warning-bg',
   '--c-success', '--c-success-bg', '--c-info', '--c-info-bg', '--c-glass',
+  '--c-gloss-hi', '--c-gloss-lo', '--c-send-fill',
   '--font-sans', '--font-mono', '--font-size-xs', '--font-size-sm', '--font-size-md',
   '--font-size-lg', '--font-size-xl', '--leading-body', '--leading-code',
   '--weight-regular', '--weight-strong',

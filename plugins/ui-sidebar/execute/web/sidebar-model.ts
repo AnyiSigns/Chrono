@@ -18,6 +18,8 @@ export interface Conversation {
   inbox: unknown
   kind: string
   head: string | null
+  /** 最近一次消息时间（ISO 串，来自会话投影的 updated_at）；无消息为 null。 */
+  updatedAt: number | null
 }
 
 export interface ConversationGroup {
@@ -33,6 +35,48 @@ export interface MatchResult {
 /** 判定一个值是否为普通对象（非 null、非数组）。 */
 export function isRecord(value: unknown): value is { [key: string]: any } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 把 ISO 串 / 毫秒数归一为 epoch 毫秒；非法回 null。 */
+export function parseTime(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value > 0 ? value : null
+  if (typeof value !== 'string' || value.length === 0) return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+/** 相对时间分桶（视图层据此取文案 code）：刚刚 / 分钟 / 小时 / 今天 / 昨天 / 天 / 更早。 */
+export type RelativeBucket =
+  | { kind: 'now' }
+  | { kind: 'minutes'; n: number }
+  | { kind: 'hours'; n: number }
+  | { kind: 'today' }
+  | { kind: 'yesterday' }
+  | { kind: 'days'; n: number }
+  | { kind: 'older' }
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** 判断某时刻的日历日序（本地时区），用于「今天 / 昨天」分桶。 */
+function dayOrdinal(ms: number): number {
+  const d = new Date(ms)
+  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / DAY_MS)
+}
+
+/** 相对 `now`（毫秒）把时间戳归到分桶；`at` 为 null 回 null。 */
+export function relativeBucket(at: number | null, now: number = Date.now()): RelativeBucket | null {
+  if (at === null) return null
+  const diff = now - at
+  if (diff < 0) return { kind: 'now' }
+  if (diff < 60 * 1000) return { kind: 'now' }
+  if (diff < 60 * 60 * 1000) return { kind: 'minutes', n: Math.floor(diff / (60 * 1000)) }
+  if (diff < 6 * 60 * 60 * 1000) return { kind: 'hours', n: Math.floor(diff / (60 * 60 * 1000)) }
+  const today = dayOrdinal(now)
+  const that = dayOrdinal(at)
+  if (that === today) return { kind: 'today' }
+  if (that === today - 1) return { kind: 'yesterday' }
+  if (diff < 7 * DAY_MS) return { kind: 'days', n: Math.max(1, Math.floor(diff / DAY_MS)) }
+  return { kind: 'older' }
 }
 
 /** 身份视图 → data body；非身份视图（裸 body）原样返回。 */
@@ -106,6 +150,7 @@ export function normalizeConversations(body: unknown): Conversation[] {
       inbox: isRecord(item['inbox']) ? item['inbox'] : null,
       kind: typeof item['kind'] === 'string' ? item['kind'] : 'main',
       head: isRecord(item['head']) && typeof item['head']['def'] === 'string' ? item['head']['def'] : null,
+      updatedAt: parseTime(item['updated_at']),
     })
   }
   return list

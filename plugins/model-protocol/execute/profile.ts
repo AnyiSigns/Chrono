@@ -1,25 +1,31 @@
 // profile / sync：拉 models.dev -> 只取所选模型 -> 经 `config.write` 写 config owner 自有存储。
 // 落盘前把社区布尔 true 展开为该 vendor 的 default_reasoning 数组（无则缺键）；写前去重（无变化不写）。
-// 运行记录已出世界：profile 的 config 随 args 传入（调用方读 owner），sync 由本服务经 `config.read` 问 owner；
+// 推理能力表经反向 `port.call msg-dialect.reasoning-capability` 解析；参数随 args 传入。
 // 服务不读投影、不联网以外的世界。
 
+import { DialectClient } from './dialect-link.ts'
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest } from './http.ts'
 import { canonicalEqual, deepClone, externOnly, isRecord } from './plan.ts'
-import { capabilityToJson, resolveReasoningCapability } from './reasoning.ts'
-import type { ReasoningCapability } from './reasoning.ts'
-import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
+import { fetchPolicy, portThrottle, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
 import { BadArgsError } from 'plugin-sdk'
 import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 import { collectVendorBodies } from './vendors.ts'
 
 export interface ProfileDeps {
-  limiter: RateLimiter
+  throttle: PortCaller
   config: PortCaller
+  dialect: PortCaller
 }
 
-const MANAGED_KEYS = ['context_window', 'max_output', 'reasoning', 'reasoning_capability', 'modalities'] as const
+const MANAGED_KEYS = [
+  'context_window',
+  'max_output',
+  'reasoning',
+  'reasoning_capability',
+  'modalities',
+] as const
 
 const PROVIDER_ALIASES: Record<string, string> = {
   'google-genai': 'google',
@@ -42,7 +48,9 @@ function hostLabel(baseUrl: string | undefined): string | null {
   if (typeof baseUrl !== 'string' || baseUrl.length === 0) return null
   try {
     const host = new URL(baseUrl).hostname.toLowerCase()
-    const label = host.split('.').filter((part) => part.length > 0 && part !== 'api' && part !== 'www')[0]
+    const label = host
+      .split('.')
+      .filter((part) => part.length > 0 && part !== 'api' && part !== 'www')[0]
     return label ?? null
   } catch {
     return null
@@ -84,7 +92,9 @@ function resolveProviderKey(
   if (typeof name === 'string' && name.length > 0) {
     const byName = new Map(
       Object.entries(providers)
-        .filter(([, provider]) => isRecord(provider) && typeof (provider as Rec)['name'] === 'string')
+        .filter(
+          ([, provider]) => isRecord(provider) && typeof (provider as Rec)['name'] === 'string',
+        )
         .map(([key, provider]) => [(provider as Rec)['name'] as string, key]),
     )
     const hit = byName.get(name)
@@ -99,7 +109,8 @@ function findVendorBody(vendorBodies: Rec, vendor: string): Rec | null {
   const stripped = stripVendorPrefix(vendor)
   for (const [identity, body] of Object.entries(vendorBodies)) {
     if (!isRecord(body)) continue
-    if (identity === vendor || identity === `vendor-${stripped}` || body['sdk'] === stripped) return body
+    if (identity === vendor || identity === `vendor-${stripped}` || body['sdk'] === stripped)
+      return body
   }
   return null
 }
@@ -118,11 +129,19 @@ function effortValues(entry: Rec): string[] | null {
   return null
 }
 
-/** 厂商级推理能力：按厂商模板声明的 impl / protocol / sdk 解析；无法核实即保守默认。 */
-function vendorCapability(vendorBody: Rec | null, vendor: string): ReasoningCapability {
-  const quirks = vendorBody !== null && isRecord(vendorBody['quirks']) ? (vendorBody['quirks'] as Rec) : {}
-  const sdk = vendorBody !== null && typeof vendorBody['sdk'] === 'string' ? (vendorBody['sdk'] as string) : null
-  return resolveReasoningCapability({
+/** 厂商级推理能力：按厂商模板声明的 impl / protocol / sdk 经 msg-dialect 解析；无法核实即保守默认。 */
+async function vendorCapability(
+  dialect: DialectClient,
+  vendorBody: Rec | null,
+  vendor: string,
+): Promise<Rec> {
+  const quirks =
+    vendorBody !== null && isRecord(vendorBody['quirks']) ? (vendorBody['quirks'] as Rec) : {}
+  const sdk =
+    vendorBody !== null && typeof vendorBody['sdk'] === 'string'
+      ? (vendorBody['sdk'] as string)
+      : null
+  return dialect.reasoningCapability({
     provider: sdk ?? vendor,
     impl: typeof quirks['impl'] === 'string' ? (quirks['impl'] as string) : null,
     protocol: typeof quirks['protocol'] === 'string' ? (quirks['protocol'] as string) : null,
@@ -130,7 +149,12 @@ function vendorCapability(vendorBody: Rec | null, vendor: string): ReasoningCapa
 }
 
 /** 从 models.dev 模型条目计算 config 身份的元数据字段。 */
-function computeMetadata(entry: Rec, vendorBody: Rec | null, capability: ReasoningCapability): Rec {
+function computeMetadata(
+  entry: Rec,
+  vendorBody: Rec | null,
+  capability: Rec,
+  conservative: Rec,
+): Rec {
   const metadata: Rec = {}
   const limit = isRecord(entry['limit']) ? (entry['limit'] as Rec) : {}
   const contextWindow = typeof limit['context'] === 'number' ? (limit['context'] as number) : null
@@ -139,7 +163,8 @@ function computeMetadata(entry: Rec, vendorBody: Rec | null, capability: Reasoni
     const output = limit['output'] as number
     // 输出上限不能吃掉整个上下文：models.dev 偶有 `output ≥ context` 的条目（如 step-3.7-flash 262144），
     // 而预算建模是 `context - max_output - margin`，全额预留会让输入预算变负。封顶到半个上下文，至少留一半给输入。
-    metadata['max_output'] = contextWindow !== null && output > contextWindow / 2 ? Math.floor(contextWindow / 2) : output
+    metadata['max_output'] =
+      contextWindow !== null && output > contextWindow / 2 ? Math.floor(contextWindow / 2) : output
   }
   const reasoning = entry['reasoning']
   const efforts = effortValues(entry)
@@ -157,24 +182,34 @@ function computeMetadata(entry: Rec, vendorBody: Rec | null, capability: Reasoni
     if (Object.keys(normalized).length > 0) metadata['modalities'] = normalized
   }
   // 无推理档位的模型一律按「不回传、不发思考参数」写能力表，避免对不支持推理的模型误发参数。
-  metadata['reasoning_capability'] = capabilityToJson(
-    Array.isArray(metadata['reasoning']) ? capability : resolveReasoningCapability({}),
-  )
+  metadata['reasoning_capability'] = Array.isArray(metadata['reasoning'])
+    ? capability
+    : conservative
   return metadata
 }
 
 /** 按所选 id 计算元数据（只取 source 里存在的模型）。 */
-function computeAll(sourceModels: Rec, ids: string[], vendorBody: Rec | null, capability: ReasoningCapability): Rec {
+function computeAll(
+  sourceModels: Rec,
+  ids: string[],
+  vendorBody: Rec | null,
+  capability: Rec,
+  conservative: Rec,
+): Rec {
   const metadata: Rec = {}
   for (const id of ids) {
     const entry = sourceModels[id]
-    if (isRecord(entry)) metadata[id] = computeMetadata(entry, vendorBody, capability)
+    if (isRecord(entry)) metadata[id] = computeMetadata(entry, vendorBody, capability, conservative)
   }
   return metadata
 }
 
 function findConfigProviderKey(providers: Rec, vendor: string): string | null {
-  for (const candidate of [vendor, stripVendorPrefix(vendor), `vendor-${stripVendorPrefix(vendor)}`]) {
+  for (const candidate of [
+    vendor,
+    stripVendorPrefix(vendor),
+    `vendor-${stripVendorPrefix(vendor)}`,
+  ]) {
     if (providers[candidate] !== undefined) return candidate
   }
   return null
@@ -247,7 +282,12 @@ const SOURCE_CACHE_MS = 10 * 60 * 1000
 
 let sourceCache: { url: string; at: number; source: Json } | null = null
 
-async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, now: number): Promise<Json> {
+async function fetchSource(
+  url: string,
+  policy: RetryPolicy,
+  deps: ProfileDeps,
+  now: number,
+): Promise<Json> {
   // models.dev 索引数 MB：profile（每次界面装载都可能触发）与 periodic sync 共用进程内短缓存，
   // 避免反复拉整份源；首拉失败不缓存，下次仍重试。
   if (sourceCache !== null && sourceCache.url === url && now - sourceCache.at < SOURCE_CACHE_MS) {
@@ -267,7 +307,7 @@ async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, 
             ? new ModelError('profile_network', `http ${status}`, { retryable: true })
             : new ModelError('profile_bad_source', `http ${status}`),
       }),
-    { policy, limiter: deps.limiter, now },
+    { policy, throttle: portThrottle(deps.throttle), now },
   )
   let source: Json
   try {
@@ -280,11 +320,22 @@ async function fetchSource(url: string, policy: RetryPolicy, deps: ProfileDeps, 
 }
 
 /** 无变化回 extern；有变化经 `config.write` 写 owner 自有存储，再回 extern 摘要。 */
-async function persist(deps: ProfileDeps, changed: boolean, newConfig: Rec | null, metadata: Rec): Promise<Json> {
-  if (!changed || newConfig === null) return externOnly({ ok: true, changed: false, models: metadata })
+async function persist(
+  deps: ProfileDeps,
+  changed: boolean,
+  newConfig: Rec | null,
+  metadata: Rec,
+): Promise<Json> {
+  if (!changed || newConfig === null)
+    return externOnly({ ok: true, changed: false, models: metadata })
   const outcome = await deps.config.call('config', 'write', { body: newConfig })
   if (!outcome.ok) {
-    return externOnly({ ok: false, changed: false, error: { code: outcome.code, message: outcome.message }, models: metadata })
+    return externOnly({
+      ok: false,
+      changed: false,
+      error: { code: outcome.code, message: outcome.message },
+      models: metadata,
+    })
   }
   return externOnly({ ok: true, changed: true, models: metadata })
 }
@@ -294,21 +345,36 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
   if (!isRecord(args)) throw new BadArgsError('args must be an object')
   const vendor = args['vendor']
   if (typeof vendor !== 'string' || vendor.length === 0) throw new BadArgsError('vendor required')
-  const ids = Array.isArray(args['ids']) ? (args['ids'] as Json[]).filter((id): id is string => typeof id === 'string') : null
+  const ids = Array.isArray(args['ids'])
+    ? (args['ids'] as Json[]).filter((id): id is string => typeof id === 'string')
+    : null
   if (ids === null) throw new BadArgsError('ids must be an array')
   const config = pickConfig(args)
   const vendorBodies = collectVendorBodies(args)
-  const policy = resolvePolicy(args['resilience'])
+  const policy = await fetchPolicy(deps.throttle, args['resilience'])
+  const dialect = new DialectClient(deps.dialect)
   try {
     const source = await fetchSource(sourceUrl(args, policy), policy, deps, env.now)
     const providers = sourceProviders(source)
-    if (providers === null) throw new ModelError('profile_bad_source', 'models.dev response has no providers')
+    if (providers === null)
+      throw new ModelError('profile_bad_source', 'models.dev response has no providers')
     const vendorBody = findVendorBody(vendorBodies, vendor)
-    const providerKey = resolveProviderKey(providers, vendor, vendorBody, providerHints(config, vendor))
-    if (providerKey === null) return errorValue('profile_vendor_unknown', `no models.dev provider for ${vendor}`)
+    const providerKey = resolveProviderKey(
+      providers,
+      vendor,
+      vendorBody,
+      providerHints(config, vendor),
+    )
+    if (providerKey === null)
+      return errorValue('profile_vendor_unknown', `no models.dev provider for ${vendor}`)
     const provider = providers[providerKey]
-    const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}
-    const metadata = computeAll(sourceModels, ids, vendorBody, vendorCapability(vendorBody, vendor))
+    const sourceModels =
+      isRecord(provider) && isRecord((provider as Rec)['models'])
+        ? ((provider as Rec)['models'] as Rec)
+        : {}
+    const capability = await vendorCapability(dialect, vendorBody, vendor)
+    const conservative = await dialect.reasoningCapability({})
+    const metadata = computeAll(sourceModels, ids, vendorBody, capability, conservative)
     if (config === null) return { ok: true, changed: false, models: metadata, write: false }
     const updated = applyMetadata(config, { vendor, ids }, metadata)
     const changed = !canonicalEqual(updated, config)
@@ -324,24 +390,37 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
 export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<Json> {
   if (!isRecord(bag)) throw new BadArgsError('bag must be an object')
   const read = await deps.config.call('config', 'read', {})
-  const fromOwner = read.ok && isRecord(read.value) && isRecord(read.value['body']) ? (read.value['body'] as Rec) : null
+  const fromOwner =
+    read.ok && isRecord(read.value) && isRecord(read.value['body'])
+      ? (read.value['body'] as Rec)
+      : null
   const config = fromOwner ?? pickConfig(bag)
   if (config === null) return externOnly({ ok: true, changed: false, models: {} })
   const vendorBodies = collectVendorBodies(bag)
-  const policy = resolvePolicy(bag['resilience'])
+  const policy = await fetchPolicy(deps.throttle, bag['resilience'])
+  const dialect = new DialectClient(deps.dialect)
   try {
     const source = await fetchSource(sourceUrl(bag, policy), policy, deps, env.now)
     const providers = sourceProviders(source)
-    if (providers === null) throw new ModelError('profile_bad_source', 'models.dev response has no providers')
+    if (providers === null)
+      throw new ModelError('profile_bad_source', 'models.dev response has no providers')
+    const conservative = await dialect.reasoningCapability({})
     let updated = deepClone(config)
     const summary: Rec = {}
     for (const target of targetsFromConfig(config)) {
       const body = findVendorBody(vendorBodies, target.vendor)
-      const providerKey = resolveProviderKey(providers, target.vendor, body, { name: target.name, baseUrl: target.baseUrl })
+      const providerKey = resolveProviderKey(providers, target.vendor, body, {
+        name: target.name,
+        baseUrl: target.baseUrl,
+      })
       if (providerKey === null) continue
       const provider = providers[providerKey]
-      const sourceModels = isRecord(provider) && isRecord((provider as Rec)['models']) ? ((provider as Rec)['models'] as Rec) : {}
-      const metadata = computeAll(sourceModels, target.ids, body, vendorCapability(body, target.vendor))
+      const sourceModels =
+        isRecord(provider) && isRecord((provider as Rec)['models'])
+          ? ((provider as Rec)['models'] as Rec)
+          : {}
+      const capability = await vendorCapability(dialect, body, target.vendor)
+      const metadata = computeAll(sourceModels, target.ids, body, capability, conservative)
       summary[target.vendor] = metadata
       updated = applyMetadata(updated, target, metadata)
     }

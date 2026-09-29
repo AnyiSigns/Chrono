@@ -19,8 +19,10 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const MCP_DIR = join(REPO_ROOT, 'plugins', 'mcp')
+const MCP_CLIENT_DIR = join(REPO_ROOT, 'plugins', 'mcp-client')
+const MCP_CLIENT_ENTRY = join(MCP_CLIENT_DIR, 'execute', 'main.ts')
 const SECRETS_DIR = join(REPO_ROOT, 'plugins', 'secrets')
-const FAKE_SERVER = join(MCP_DIR, 'tools', 'fake-mcp-server.mjs')
+const FAKE_SERVER = join(MCP_CLIENT_DIR, 'tools', 'fake-mcp-server.mjs')
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -37,7 +39,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -68,35 +72,119 @@ function createDecoder() {
   }
 }
 
-/** 直连本服务（注入 CHRONO_PLUGIN_DATA）：write 清单 → discover → read，返回结果与事件。 */
+/** spawn 一个 stdio 服务并逐帧回调（驱动 / 桥接共用）。 */
+function makeChild(entry, cwd, env, onFrame) {
+  const child = spawn(process.execPath, [entry], {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
+  const decoder = createDecoder()
+  child.stdout.on('data', (chunk) => {
+    for (const message of decoder.push(chunk)) onFrame(message)
+  })
+  child.stderr.on('data', () => {})
+  return child
+}
+
+/**
+ * 直连本服务（注入 CHRONO_PLUGIN_DATA）：write 清单 → discover → read，返回结果与事件。
+ * 出站连接已归 `mcp-client`：把本服务发出的 `port.call mcp-client.*` 转发给另起的 `mcp-client`
+ * 服务，再把它回的 `result` / `error` 按原 id 转回 `port.result` / `port.error`（迷你宿主桥）。
+ */
 function driveService(dataDir, body) {
   return new Promise((resolveCall, rejectCall) => {
-    const child = spawn(process.execPath, ['execute/main.ts'], {
-      cwd: MCP_DIR,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, CHRONO_PLUGIN_DATA: dataDir },
-    })
-    const decoder = createDecoder()
     const pending = new Map()
     const events = []
+    const forwarded = new Map()
+    let forwardSeq = 0
+    let client = null
+    let mcp = null
     const timer = setTimeout(() => {
-      child.kill()
+      mcp?.kill()
+      client?.kill()
       rejectCall(new Error('mcp 服务调用超时'))
-    }, 15000)
-    child.stdout.on('data', (chunk) => {
-      for (const message of decoder.push(chunk)) {
+    }, 20000)
+
+    const ensureClient = () => {
+      if (client !== null) return client
+      client = makeChild(MCP_CLIENT_ENTRY, MCP_CLIENT_DIR, {}, (message) => {
+        const target = forwarded.get(message.id)
+        if (target === undefined) return
+        forwarded.delete(message.id)
+        if (message.kind === 'result') {
+          mcp.stdin.write(
+            encodeFrame({
+              v: '1',
+              id: target.mcpId,
+              kind: 'port.result',
+              ok: true,
+              value: message.value,
+            }),
+          )
+        } else {
+          mcp.stdin.write(
+            encodeFrame({
+              v: '1',
+              id: target.mcpId,
+              kind: 'port.error',
+              ok: false,
+              error: message.code,
+              message: message.message,
+            }),
+          )
+        }
+      })
+      return client
+    }
+
+    mcp = makeChild(
+      join(MCP_DIR, 'execute', 'main.ts'),
+      MCP_DIR,
+      { CHRONO_PLUGIN_DATA: dataDir },
+      (message) => {
         if (message.kind === 'event') {
           events.push(message)
-          continue
+          return
+        }
+        if (message.kind === 'port.call') {
+          if (message.port === 'mcp-client') {
+            forwardSeq += 1
+            const fwdId = `fwd-${forwardSeq}`
+            forwarded.set(fwdId, { mcpId: message.id })
+            ensureClient().stdin.write(
+              encodeFrame({
+                v: '1',
+                id: fwdId,
+                kind: 'call',
+                port: 'mcp-client',
+                method: message.method,
+                args: message.args,
+              }),
+            )
+          } else {
+            // 本 smoke 的清单无 auth_ref，secrets 反向调用不应出现；兜底回结构化错误避免悬挂。
+            mcp.stdin.write(
+              encodeFrame({
+                v: '1',
+                id: message.id,
+                kind: 'port.error',
+                ok: false,
+                error: 'unresolved_cap',
+                message: `no bridge for ${message.port}`,
+              }),
+            )
+          }
+          return
         }
         const handler = pending.get(message.id)
         if (handler !== undefined) {
           pending.delete(message.id)
           handler(message)
         }
-      }
-    })
-    child.stderr.on('data', () => {})
+      },
+    )
+
     let seq = 0
     function request(kind, fields, expect) {
       seq += 1
@@ -109,19 +197,29 @@ function driveService(dataDir, body) {
           }
           resolveRequest(message)
         })
-        child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
+        mcp.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
       })
     }
     ;(async () => {
       await request('hello', { impl: 'mcp', gen: 'e2e' }, 'manifest')
       const written = await request(
         'call',
-        { port: 'mcp', method: 'write', args: { body }, env: { run: 'e2e-run', thread: null, now: 0 } },
+        {
+          port: 'mcp',
+          method: 'write',
+          args: { body },
+          env: { run: 'e2e-run', thread: null, now: 0 },
+        },
         'result',
       )
       const discovered = await request(
         'call',
-        { port: 'mcp', method: 'discover', args: {}, env: { run: 'e2e-run', thread: null, now: 0 } },
+        {
+          port: 'mcp',
+          method: 'discover',
+          args: {},
+          env: { run: 'e2e-run', thread: null, now: 0 },
+        },
         'result',
       )
       const read = await request(
@@ -130,11 +228,18 @@ function driveService(dataDir, body) {
         'result',
       )
       clearTimeout(timer)
-      child.stdin.end()
-      resolveCall({ written: written.value, discovered: discovered.value, read: read.value, events })
+      mcp.stdin.end()
+      client?.stdin.end()
+      resolveCall({
+        written: written.value,
+        discovered: discovered.value,
+        read: read.value,
+        events,
+      })
     })().catch((err) => {
       clearTimeout(timer)
-      child.kill()
+      mcp.kill()
+      client?.kill()
       rejectCall(err)
     })
   })
@@ -167,8 +272,9 @@ async function main() {
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
-        // pins 解析依赖 secrets active：seed 按清单顺序处理，依赖方在后
+        // pins 解析依赖 secrets / mcp-client active：seed 按清单顺序处理，依赖方在后
         { name: 'secrets', path: SECRETS_DIR },
+        { name: 'mcp-client', path: MCP_CLIENT_DIR },
         { name: 'mcp', path: MCP_DIR },
       ]),
     )
@@ -220,18 +326,24 @@ async function main() {
     assert.equal(discovered.$directives[0].kind, 'extern')
     assert.equal(discovered.$directives[0].payload.changed, true)
     assert.equal(read.servers[0].id, 'fake')
-    assert.deepEqual(
-      read.tools.map((tool) => tool.name).sort(),
-      ['mcp.fake.add', 'mcp.fake.boom', 'mcp.fake.echo'],
-    )
+    assert.deepEqual(read.tools.map((tool) => tool.name).sort(), [
+      'mcp.fake.add',
+      'mcp.fake.boom',
+      'mcp.fake.echo',
+    ])
     const echo = read.tools.find((tool) => tool.name === 'mcp.fake.echo')
     assert.equal(echo.intent, '回显输入文本')
     assert.equal(echo.boundaries, '由外部 MCP 服务器定义')
     assert.equal(echo.render.detail.kind, 'json')
-    assert.ok(events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'discovered'))
+    assert.ok(
+      events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'discovered'),
+    )
     const logFile = join(dataDir, 'mcp.jsonl')
     assert.equal(existsSync(logFile), true, '④ 追加日志应存在')
-    const records = readFileSync(logFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const records = readFileSync(logFile, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
     assert.ok(records.some((record) => record.t === 'body' && record.run === 'e2e-run'))
     console.log('清单出世界：write/discover/read 往返 + ④ 追加日志 ok')
 
@@ -241,14 +353,21 @@ async function main() {
     const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
     const replayed = boot(root, ['replay'])
-    assert.ok(replayed !== null && (replayed.ok === true || replayed.head !== undefined), `replay 失败：${JSON.stringify(replayed)}`)
+    assert.ok(
+      replayed !== null && (replayed.ok === true || replayed.head !== undefined),
+      `replay 失败：${JSON.stringify(replayed)}`,
+    )
     console.log('verify + replay：ok')
 
     // 离线读投影：mcp 身份无运行记录 body（清单已出世界）。
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const projection = projectBaseOnly(anchor.world, anchor.head)
     const body = projection.ids.mcp?.body
-    assert.equal(body === undefined || body === null || body.servers === undefined, true, 'mcp 清单不应进世界')
+    assert.equal(
+      body === undefined || body === null || body.servers === undefined,
+      true,
+      'mcp 清单不应进世界',
+    )
     console.log('离线投影：mcp 清单未进世界 ok')
 
     console.log(`E2E ok（root=${root}）`)

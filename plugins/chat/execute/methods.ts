@@ -18,22 +18,44 @@ import {
   withConversationTitle,
   workspaceKnown,
 } from './assemble.ts'
-import { asString, errorValue, externOnly, isErrorValue, isRecord, mergeDirectives } from './plan.ts'
+import {
+  asString,
+  errorValue,
+  externOnly,
+  isErrorValue,
+  isRecord,
+  mergeDirectives,
+} from './plan.ts'
 import { causeFromError, causeOf, cancelled, refused } from './contract/index.ts'
 import type { TurnOutcome } from './contract/index.ts'
-import { createRefHydrator } from './refs.ts'
-import type { DefReader, RefHydrator } from './refs.ts'
-import { BadArgsError } from './types.ts'
+import { BadArgsError, ServiceError } from './types.ts'
 import type { Wiring } from './wiring.ts'
 import type { CallEnv, Handler, Json, PortCaller, Rec } from './types.ts'
 
-/** 服务依赖：反向调用通道 + 生效接线（单测可注入假端口）；`host` 为只读解析通道（缺省只吃已解析 refs）。 */
+/** 服务依赖：反向调用通道 + 生效接线（单测可注入假端口）。 */
 export interface ChatDeps {
   port: PortCaller
   wiring: Wiring
-  host?: PortCaller
   /** 回合开始事件出口（`chat.turn.started`）；单测缺省不发。 */
   emit?: (topic: string, payload: Json) => void
+}
+
+/** 引用水合端口（`ref-hydrate.hydrate`）：按身份把投影 refs 解析成闭包；任何失败按拆分前语义映射 def_unavailable。 */
+export interface RefHydrator {
+  hydrate(identity: string, refs: Json): Promise<Rec>
+}
+
+/** 构造水合端口：反向调 `ref-hydrate.hydrate`；已是对象 / 非数组短路（不打无谓往返）。 */
+export function makeHydrator(port: PortCaller): RefHydrator {
+  return {
+    hydrate: async (identity, refs) => {
+      if (isRecord(refs)) return refs
+      if (!Array.isArray(refs)) return {}
+      const outcome = await port.call('ref-hydrate', 'hydrate', { identity, refs })
+      if (!outcome.ok) throw new ServiceError('def_unavailable', outcome.message)
+      return isRecord(outcome.value) ? outcome.value : {}
+    },
+  }
 }
 
 /**
@@ -68,14 +90,18 @@ function emitTurnStarted(
   thread: string,
   conversationId: string | null,
   source: 'send' | 'resume',
+  progress: Json | null = null,
 ): void {
-  deps.emit?.(TURN_STARTED_TOPIC, {
+  const payload: Rec = {
     turn_id: turnId,
     run: env.run,
     thread,
     conversation: conversationId,
     source,
-  })
+  }
+  // 段续跑随 args 带来的图内进度：下一段起点即广播，UI 轮次实时更新（不臆造值）。
+  if (progress !== null) payload['progress'] = progress
+  deps.emit?.(TURN_STARTED_TOPIC, payload)
 }
 
 function emitTurnSettled(
@@ -205,7 +231,9 @@ function subagentSpecOf(slot: Json): SubagentSpec | null {
       isRecord(rec['parent_checkpoint']) || typeof rec['parent_checkpoint'] === 'string'
         ? (rec['parent_checkpoint'] as Json)
         : null,
-    parentSummaries: Array.isArray(rec['parent_summaries']) ? (rec['parent_summaries'] as Json[]) : null,
+    parentSummaries: Array.isArray(rec['parent_summaries'])
+      ? (rec['parent_summaries'] as Json[])
+      : null,
     parent: isRecord(rec['parent']) ? (rec['parent'] as Rec) : null,
     agent: isRecord(rec['agent']) ? (rec['agent'] as Rec) : null,
   }
@@ -215,6 +243,7 @@ function subagentSpecOf(slot: Json): SubagentSpec | null {
 const SESSION_PORT = 'session'
 const SESSION_READ = 'read'
 const SESSION_TURN_OPEN = 'turn_open'
+const SESSION_TURN_INSERT = 'turn_insert'
 const SESSION_TURN_SETTLE = 'turn_settle'
 const SESSION_TURN_CANCEL = 'turn_cancel'
 const SESSION_ACK_INBOX = 'ack_inbox'
@@ -258,32 +287,51 @@ async function withOwnerSlices(
   const sessionArgs: Rec = turnId !== null ? { turn_id: turnId } : {}
   const sessionOutcome = await deps.port.call(SESSION_PORT, SESSION_READ, sessionArgs)
   const sessionFailed = !sessionOutcome.ok || isErrorValue(sessionOutcome.value)
-  const session = !sessionFailed && isRecord(sessionOutcome.value)
-    ? sessionOutcome.value
-    : { version: 1, current: null, conversations: [] }
+  const session =
+    !sessionFailed && isRecord(sessionOutcome.value)
+      ? sessionOutcome.value
+      : { version: 1, current: null, conversations: [] }
   const inputOutcome = await deps.port.call(INPUT_PORT, INPUT_READ, { thread })
   const input = inputOutcome.ok && isRecord(inputOutcome.value) ? inputOutcome.value : { slots: {} }
-  base[SESSION_PORT] = { body: session, refs: isRecord(session['refs']) ? session['refs'] : {}, data_gen: null }
+  base[SESSION_PORT] = {
+    body: session,
+    refs: isRecord(session['refs']) ? session['refs'] : {},
+    data_gen: null,
+  }
   base[INPUT_PORT] = { body: input }
 
   const memoryOutcome = await deps.port.call(SHORT_MEMORY_PORT, SHORT_MEMORY_READ, {})
-  const memory = memoryOutcome.ok && isRecord(memoryOutcome.value) ? memoryOutcome.value : { version: 1, sessions: {}, workspaces: {} }
+  const memory =
+    memoryOutcome.ok && isRecord(memoryOutcome.value)
+      ? memoryOutcome.value
+      : { version: 1, sessions: {}, workspaces: {} }
   base[SHORT_MEMORY_PORT] = { body: memory }
 
   const conversationId = asString(session['current'])
   const todoOutcome =
     conversationId === null
       ? null
-      : await deps.port.call(TODO_PORT, TODO_INVOKE, { tool: 'todo.read', session_id: conversationId })
+      : await deps.port.call(TODO_PORT, TODO_INVOKE, {
+          tool: 'todo.read',
+          session_id: conversationId,
+        })
   const todoResult =
-    todoOutcome !== null && todoOutcome.ok && isRecord(todoOutcome.value) && todoOutcome.value['ok'] === true && isRecord(todoOutcome.value['result'])
+    todoOutcome !== null &&
+    todoOutcome.ok &&
+    isRecord(todoOutcome.value) &&
+    todoOutcome.value['ok'] === true &&
+    isRecord(todoOutcome.value['result'])
       ? (todoOutcome.value['result'] as Rec)
       : { items: [] }
   base[TODO_PORT] = { body: todoResult }
 
   // 用户配置 / 界面配置已出世界：问 config owner（世界切片作基线，服务合并自有存储后回整份视图）。
   // 读失败**不回落世界切片**：那是把「config 服务挂了」误报成「没配模型」的根因，据实上报由上层分码。
-  const configOutcome = await deps.port.call(CONFIG_PORT, CONFIG_READ, isRecord(base[CONFIG_PORT]) ? base[CONFIG_PORT] : {})
+  const configOutcome = await deps.port.call(
+    CONFIG_PORT,
+    CONFIG_READ,
+    isRecord(base[CONFIG_PORT]) ? base[CONFIG_PORT] : {},
+  )
   const configFailed = !configOutcome.ok || isErrorValue(configOutcome.value)
   if (!configFailed && isRecord(configOutcome.value)) base[CONFIG_PORT] = configOutcome.value
 
@@ -293,11 +341,13 @@ async function withOwnerSlices(
 
   // 工作区清单已出世界：问 workspace owner（`workspace_root` 由 bag 装配运行时读 owner）。
   const workspaceOutcome = await deps.port.call(WORKSPACE_PORT, WORKSPACE_READ, {})
-  if (workspaceOutcome.ok && isRecord(workspaceOutcome.value)) base[WORKSPACE_PORT] = { body: workspaceOutcome.value }
+  if (workspaceOutcome.ok && isRecord(workspaceOutcome.value))
+    base[WORKSPACE_PORT] = { body: workspaceOutcome.value }
 
   // 技能清单已出世界：问 skill owner。
   const skillOutcome = await deps.port.call(SKILL_PORT, SKILL_READ, {})
-  if (skillOutcome.ok && isRecord(skillOutcome.value)) base[SKILL_PORT] = { body: skillOutcome.value }
+  if (skillOutcome.ok && isRecord(skillOutcome.value))
+    base[SKILL_PORT] = { body: skillOutcome.value }
   return { ids: base, session, sessionFailed, configFailed }
 }
 
@@ -358,7 +408,10 @@ function slotRefOf(ids: Json, thread: string): string | null {
 /** 本回合用户消息记录（交 `turn_open` 与回合头同一次 append 落盘）。 */
 function userMessageOf(slot: Json): Rec {
   const slotRec = isRecord(slot) ? slot : {}
-  const message: Rec = { role: 'user', content: asString(slotRec['text']) ?? asString(slotRec['content']) ?? '' }
+  const message: Rec = {
+    role: 'user',
+    content: asString(slotRec['text']) ?? asString(slotRec['content']) ?? '',
+  }
   if (Array.isArray(slotRec['attachments'])) message['attachments'] = slotRec['attachments']
   if (Array.isArray(slotRec['parts'])) message['parts'] = slotRec['parts']
   return message
@@ -385,9 +438,14 @@ function interpretSummary(value: Json): Rec | null {
 function segmentContinues(value: Json): boolean {
   if (!isRecord(value) || !Array.isArray(value['$directives'])) return false
   for (const directive of value['$directives'] as Json[]) {
-    if (isRecord(directive) && directive['kind'] === 'eval' && directive['command'] === 'chat.resume') {
+    if (
+      isRecord(directive) &&
+      directive['kind'] === 'eval' &&
+      directive['command'] === 'chat.resume'
+    ) {
       const args = isRecord(directive['args']) ? (directive['args'] as Rec) : null
-      if (args !== null && asString(args['turn_id']) !== null && !isRecord(args['cursor'])) return true
+      if (args !== null && asString(args['turn_id']) !== null && !isRecord(args['cursor']))
+        return true
     }
   }
   return false
@@ -396,7 +454,14 @@ function segmentContinues(value: Json): boolean {
 /** 解释器调用结果：成功带计划值，失败带结局码与下游码（下游码只进 `cause`，不改名）。 */
 type InterpretOutcome =
   | { ok: true; value: Json }
-  | { ok: false; attributableTo: 'transport' | 'graph'; code: string; causeCode: string; message: string | null; error: Json | null }
+  | {
+      ok: false
+      attributableTo: 'transport' | 'graph'
+      code: string
+      causeCode: string
+      message: string | null
+      error: Json | null
+    }
 
 /** 调 `loop-policy.interpret`；传输失败与结构化失败都保留下游码供结局 `cause` 透传。 */
 async function callInterpret(deps: ChatDeps, bag: Rec): Promise<InterpretOutcome> {
@@ -430,11 +495,26 @@ async function callInterpret(deps: ChatDeps, bag: Rec): Promise<InterpretOutcome
 /** 传输 / 结构化失败：包成 `refused` 结局，下游码原样进 `cause`。 */
 function interpretRefusal(failure: Extract<InterpretOutcome, { ok: false }>): TurnOutcome {
   const from = `${LOOP_PORT}.${INTERPRET_METHOD}`
-  const cause = failure.error !== null ? causeFromError(from, failure.error) : causeOf(from, failure.causeCode, failure.message ?? undefined)
+  const cause =
+    failure.error !== null
+      ? causeFromError(from, failure.error)
+      : causeOf(from, failure.causeCode, failure.message ?? undefined)
   if (failure.attributableTo === 'transport') {
-    return refused({ code: 'loop_unavailable', attributableTo: 'transport', retryable: true, cause, message: failure.message ?? undefined })
+    return refused({
+      code: 'loop_unavailable',
+      attributableTo: 'transport',
+      retryable: true,
+      cause,
+      message: failure.message ?? undefined,
+    })
   }
-  return refused({ code: 'downstream_refusal', attributableTo: 'graph', retryable: false, cause, message: failure.message ?? undefined })
+  return refused({
+    code: 'downstream_refusal',
+    attributableTo: 'graph',
+    retryable: false,
+    cause,
+    message: failure.message ?? undefined,
+  })
 }
 
 /** 收口：CAS 落定后向全客户端广播结局；落定失败不广播（回合未终态）。 */
@@ -446,14 +526,22 @@ async function settleTurn(
   outcome: TurnOutcome,
   source: 'send' | 'resume',
 ): Promise<boolean> {
-  const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, { turn_id: turnId, outcome })
+  const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, {
+    turn_id: turnId,
+    outcome,
+  })
   const persisted = settled.ok && isRecord(settled.value) && settled.value['ok'] === true
   if (persisted) emitTurnSettled(deps, turnId, thread, conversationId, outcome, source)
   return persisted
 }
 
 /** 回合内失败的即时回执：结局随回执交发起者。 */
-function refusalReceipt(turnId: string, thread: string, conversationId: string | null, outcome: TurnOutcome): Json {
+function refusalReceipt(
+  turnId: string,
+  thread: string,
+  conversationId: string | null,
+  outcome: TurnOutcome,
+): Json {
   return externOnly({
     ok: false,
     outcome: outcome as unknown as Json,
@@ -573,11 +661,16 @@ async function send(
   let newConversation: Rec | null = null
   if (subagent !== null) {
     const slotRec = isRecord(turn.slot) ? turn.slot : {}
-    const existing = subagent.conversationId !== null ? findConversation(turn.sessionBody, subagent.conversationId) : null
+    const existing =
+      subagent.conversationId !== null
+        ? findConversation(turn.sessionBody, subagent.conversationId)
+        : null
     if (existing !== null) {
       turn.conversationId = subagent.conversationId
       turn.conversation = existing
-      const inboxSlice = await deps.port.call(SESSION_PORT, SESSION_READ, { conversation: subagent.conversationId })
+      const inboxSlice = await deps.port.call(SESSION_PORT, SESSION_READ, {
+        conversation: subagent.conversationId,
+      })
       if (inboxSlice.ok && isRecord(inboxSlice.value)) scopedInbox = inboxSlice.value
     } else {
       const workspaceId = asString(slotRec['workspace_id'])
@@ -656,7 +749,10 @@ async function send(
       if (newConversation !== null) newConversation['title'] = title
       else {
         sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
-        await deps.port.call(SESSION_PORT, 'set_title', { conversation: turn.conversationId, title })
+        await deps.port.call(SESSION_PORT, 'set_title', {
+          conversation: turn.conversationId,
+          title,
+        })
       }
     }
   }
@@ -674,29 +770,40 @@ async function send(
   if (newConversation !== null) openArgs['new_conversation'] = newConversation
   if (subagent !== null) {
     if (subagent.taskPrompt !== null) openArgs['task_prompt'] = subagent.taskPrompt
-    if (subagent.parentCheckpoint !== null) openArgs['parent_checkpoint'] = subagent.parentCheckpoint
+    if (subagent.parentCheckpoint !== null)
+      openArgs['parent_checkpoint'] = subagent.parentCheckpoint
     if (subagent.parentSummaries !== null) openArgs['parent_summaries'] = subagent.parentSummaries
   }
   const opened = await deps.port.call(SESSION_PORT, SESSION_TURN_OPEN, openArgs)
   if (!opened.ok) {
-    return refusalReceipt(turnId, thread, turn.conversationId, refused({
-      code: 'owner_unavailable',
-      attributableTo: 'owner',
-      retryable: true,
-      cause: causeOf(`${SESSION_PORT}.${SESSION_TURN_OPEN}`, opened.code, opened.message),
-    }))
+    return refusalReceipt(
+      turnId,
+      thread,
+      turn.conversationId,
+      refused({
+        code: 'owner_unavailable',
+        attributableTo: 'owner',
+        retryable: true,
+        cause: causeOf(`${SESSION_PORT}.${SESSION_TURN_OPEN}`, opened.code, opened.message),
+      }),
+    )
   }
   const openedValue = isRecord(opened.value) ? (opened.value as Rec) : {}
   if (openedValue['ok'] !== true) {
     const reason = asString(openedValue['reason']) ?? 'owner_unavailable'
     // turn_busy 是服务端兜底：槽必须保留（不清），排队的消息不丢。
     const code = reason === 'turn_busy' ? 'turn_busy' : 'owner_unavailable'
-    return refusalReceipt(turnId, thread, turn.conversationId, refused({
-      code,
-      attributableTo: 'owner',
-      retryable: code === 'turn_busy',
-      cause: causeOf(`${SESSION_PORT}.${SESSION_TURN_OPEN}`, reason),
-    }))
+    return refusalReceipt(
+      turnId,
+      thread,
+      turn.conversationId,
+      refused({
+        code,
+        attributableTo: 'owner',
+        retryable: code === 'turn_busy',
+        cause: causeOf(`${SESSION_PORT}.${SESSION_TURN_OPEN}`, reason),
+      }),
+    )
   }
   // 同一槽已有回合：不重跑解释器（否则工具再执行一遍），回执既有回合；槽同样保留。
   if (asString(openedValue['status']) === 'already_open') {
@@ -744,7 +851,16 @@ async function send(
   emitSettledFromSummary(deps, summary, activeTurnId, turn.thread, conversationId, 'send')
   const pendingKind = asString(summary['pending'])
   if (pendingKind !== null) {
-    emitTurnPending(deps, env, activeTurnId, turn.thread, conversationId, pendingKind, 'send', summaryProgress(summary))
+    emitTurnPending(
+      deps,
+      env,
+      activeTurnId,
+      turn.thread,
+      conversationId,
+      pendingKind,
+      'send',
+      summaryProgress(summary),
+    )
   }
   return merged
 }
@@ -761,7 +877,15 @@ function emitSettledFromSummary(
   if (summary['settled'] !== true) return
   const outcome = summary['outcome']
   if (!isRecord(outcome)) return
-  emitTurnSettled(deps, turnId, thread, conversationId, outcome as unknown as TurnOutcome, source, summaryExtras(summary))
+  emitTurnSettled(
+    deps,
+    turnId,
+    thread,
+    conversationId,
+    outcome as unknown as TurnOutcome,
+    source,
+    summaryExtras(summary),
+  )
 }
 
 /** 展示历史：问 `session` 服务取自有存储还原的窗口（不再读投影 refs / 逐跳 hydrator）。 */
@@ -802,8 +926,11 @@ async function resume(
   if (!isRecord(args)) throw new BadArgsError('resume args must be an object')
   const cursor = args['cursor']
   const continuation = !isRecord(cursor)
-  if (continuation && asString(args['turn_id']) === null) throw new BadArgsError('cursor must be an object')
-  const turnId = isRecord(cursor) ? asString(cursor['turn_id']) ?? asString(args['turn_id']) : asString(args['turn_id'])
+  if (continuation && asString(args['turn_id']) === null)
+    throw new BadArgsError('cursor must be an object')
+  const turnId = isRecord(cursor)
+    ? (asString(cursor['turn_id']) ?? asString(args['turn_id']))
+    : asString(args['turn_id'])
   const projected = isRecord(args['ids']) ? await hydrateIds(args['ids'], hydrator) : {}
   const thread = threadKey(asString(args['thread']) ?? env.thread)
   // 续跑按 `turn_id` 取会话切片：子代理旁路线程不是 `current`，须按回合所属会话定位。
@@ -822,9 +949,13 @@ async function resume(
   const subagent = threadKind === SUBAGENT_KIND
   const taskPrompt = turn !== null ? asString(turn['task_prompt']) : null
   const parentCheckpoint =
-    turn !== null && turn['parent_checkpoint'] !== undefined ? (turn['parent_checkpoint'] as Json) : null
+    turn !== null && turn['parent_checkpoint'] !== undefined
+      ? (turn['parent_checkpoint'] as Json)
+      : null
   const parentSummaries =
-    turn !== null && Array.isArray(turn['parent_summaries']) ? (turn['parent_summaries'] as Json[]) : null
+    turn !== null && Array.isArray(turn['parent_summaries'])
+      ? (turn['parent_summaries'] as Json[])
+      : null
   const config = modelConfigOf(ids) ?? {}
   if (owners.sessionFailed) {
     return externOnly(errorValue('owner_unavailable', 'session owner read failed'))
@@ -836,7 +967,13 @@ async function resume(
   if (continuation) {
     const state = turn === null ? null : asString(turn['state'])
     if (state !== null && state !== 'open') {
-      return externOnly({ ok: true, continuation: true, turn_id: turnId, state, outcome: isRecord(turn?.['outcome']) ? turn?.['outcome'] : null })
+      return externOnly({
+        ok: true,
+        continuation: true,
+        turn_id: turnId,
+        state,
+        outcome: isRecord(turn?.['outcome']) ? turn?.['outcome'] : null,
+      })
     }
   }
   if (owners.configFailed || !configUsable(config)) {
@@ -858,7 +995,11 @@ async function resume(
       resumeBag = { continuation: true, turn_id: turnId }
     } else {
       const stripped = stripCurrentTurn(owners.session, conversationId, turnId)
-      ids['session'] = { ...(isRecord(ids['session']) ? (ids['session'] as Rec) : {}), body: stripped.session, refs: stripped.session['refs'] ?? {} }
+      ids['session'] = {
+        ...(isRecord(ids['session']) ? (ids['session'] as Rec) : {}),
+        body: stripped.session,
+        refs: stripped.session['refs'] ?? {},
+      }
       sessionBody = stripped.session
       conversation = stripped.conversation
       conversationId = asString(stripped.conversation?.['id']) ?? conversationId
@@ -889,7 +1030,9 @@ async function resume(
   const unread = inboxUnreadOf(sessionBody)
   if (unread.length > 0) bag['inbox_unread'] = unread as unknown as Json
 
-  emitTurnStarted(deps, env, turnId, thread, conversationId, 'resume')
+  // 段续跑：图内进度随 `chat.resume` args 带来（loop-policy 段尾写入），下一段起点即广播给 UI。
+  const resumeProgress = isRecord(args['progress']) ? (args['progress'] as Json) : null
+  emitTurnStarted(deps, env, turnId, thread, conversationId, 'resume', resumeProgress)
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) {
     const outcome = interpretRefusal(interpreted)
@@ -910,7 +1053,16 @@ async function resume(
   emitSettledFromSummary(deps, summary, turnId, thread, conversationId, 'resume')
   const pendingKind = asString(summary['pending'])
   if (pendingKind !== null) {
-    emitTurnPending(deps, env, turnId, thread, conversationId, pendingKind, 'resume', summaryProgress(summary))
+    emitTurnPending(
+      deps,
+      env,
+      turnId,
+      thread,
+      conversationId,
+      pendingKind,
+      'resume',
+      summaryProgress(summary),
+    )
   }
   return merged
 }
@@ -939,37 +1091,77 @@ async function cancel(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
   }
   const conversationId = asString(value['conversation'])
   if (value['state'] === 'settled') {
-    return externOnly(settledReceipt(turnId, 'already_settled', isRecord(value['outcome']) ? value['outcome'] : null))
+    return externOnly(
+      settledReceipt(
+        turnId,
+        'already_settled',
+        isRecord(value['outcome']) ? value['outcome'] : null,
+      ),
+    )
   }
   // 通知两层持有在途工作的一方：先置标志（停止再派发），再销毁在途 HTTP（停止烧推理窗口与费用）。
   await deps.port.call(LOOP_PORT, CANCEL_METHOD, { turn_id: turnId })
   await deps.port.call(MODEL_PORT, MODEL_ABORT_METHOD, { turn_id: turnId })
   const outcome = cancelled({ message: 'turn cancelled by user' })
-  const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, { turn_id: turnId, outcome })
+  const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, {
+    turn_id: turnId,
+    outcome,
+  })
   if (settled.ok && isRecord(settled.value) && settled.value['ok'] === true) {
     emitTurnSettled(deps, turnId, thread, conversationId, outcome, 'cancel')
-    return externOnly({ ok: true, cancelled: true, turn_id: turnId, thread, conversation: conversationId, outcome })
+    return externOnly({
+      ok: true,
+      cancelled: true,
+      turn_id: turnId,
+      thread,
+      conversation: conversationId,
+      outcome,
+    })
   }
   // CAS 拒绝：真实收口已先落定（迟到取消不改写结局）。
-  const raced = settled.ok && isRecord(settled.value) && isRecord(settled.value['outcome'])
-    ? (settled.value['outcome'] as Json)
-    : null
+  const raced =
+    settled.ok && isRecord(settled.value) && isRecord(settled.value['outcome'])
+      ? (settled.value['outcome'] as Json)
+      : null
   return externOnly(settledReceipt(turnId, 'already_settled', raced))
 }
 
 /** 构造方法表（依赖注入：反向调用通道与接线由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: ChatDeps): Record<string, Handler> {
-  const read: DefReader = async (identity, hashes) => {
-    if (deps.host === undefined) return null
-    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
-    if (!outcome.ok) return null
-    return isRecord(outcome.value) ? outcome.value : null
-  }
-  const hydrator = createRefHydrator(read)
+  const hydrator = makeHydrator(deps.port)
   return {
     send: (args: Json, env: CallEnv): Promise<Json> => send(args, env, deps, hydrator),
     history: (args: Json, env: CallEnv): Promise<Json> => history(args, env, deps),
     resume: (args: Json, env: CallEnv): Promise<Json> => resume(args, env, deps, hydrator),
     cancel: (args: Json, env: CallEnv): Promise<Json> => cancel(args, env, deps),
+    insert: (args: Json, env: CallEnv): Promise<Json> => insert(args, env, deps),
   }
+}
+
+/**
+ * 回合运行中插入一条用户消息：按 `turn_id` 落 `session.turn_insert`（仅 open 回合接受）。
+ * 落盘为主历史用户消息（消息流可见），并由同回合步日志投影进下一轮模型上下文——
+ * 不起新回合，故不触发 `turn_busy`。
+ */
+async function insert(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
+  void env
+  const record = isRecord(args) ? args : {}
+  const turnId = asString(record['turn_id'])
+  const insertId = asString(record['insert_id'])
+  const message = isRecord(record['user_message'])
+    ? record['user_message']
+    : isRecord(record['message'])
+      ? record['message']
+      : null
+  if (turnId === null || insertId === null || message === null) {
+    throw new BadArgsError('turn_id / insert_id / user_message required')
+  }
+  const outcome = await deps.port.call(SESSION_PORT, SESSION_TURN_INSERT, {
+    turn_id: turnId,
+    insert_id: insertId,
+    user_message: message,
+  })
+  if (!outcome.ok) return errorValue('session_unavailable', outcome.message)
+  if (isErrorValue(outcome.value)) return outcome.value
+  return outcome.value
 }

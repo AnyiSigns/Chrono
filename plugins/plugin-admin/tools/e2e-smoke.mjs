@@ -1,6 +1,7 @@
-// `plugin-admin` 宿主装配 E2E（黑盒，经 boot CLI）：
-// 临时 root → state/plugins.json 列 plugin-admin + toy-alpha（只读引用 fixture）→ seed
-// → start → 轮询 loaded（两身份握手）→ stop → verify + replay → 离线读投影核对 pins/世代。
+// 插件管理面 / 工具面宿主装配 E2E（黑盒，经 boot CLI）：
+// 临时 root → state/plugins.json 列 plugin + plugin-admin + toy-alpha（只读引用 fixture）→ seed
+// → start → 轮询 loaded（三身份握手）→ stop → verify + replay → 离线读投影核对 pins/世代。
+// plugin-admin 的 `needs:{"plugin":{"mode":"one"}}` 由 seed 排序保证管理平面先入世。
 //
 // 集成缺口（写明）：宿主只在**真实 call 期间**路由反向调用（port.call），本插件无命令 / 无入口 term，
 // 无法在装配运行中从外部触发一次 call，故本 E2E 不覆盖运行时 port.call 往返——该往返已由协议级测试
@@ -19,6 +20,7 @@ import { hostPaths } from '../../../packages/host/paths.ts'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
+const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'plugin')
 const PLUGIN_ADMIN_DIR = join(REPO_ROOT, 'plugins', 'plugin-admin')
 const TOY_ALPHA_DIR = join(REPO_ROOT, 'fixtures', 'plugins', 'toy-alpha')
 
@@ -37,7 +39,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -60,6 +64,7 @@ async function main() {
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
+        { name: 'plugin', path: PLUGIN_DIR },
         { name: 'plugin-admin', path: PLUGIN_ADMIN_DIR },
         { name: 'toy-alpha', path: TOY_ALPHA_DIR },
       ]),
@@ -74,11 +79,12 @@ async function main() {
     await waitFor(() => {
       const status = boot(root, ['status'])
       return (
+        status.loaded.some((item) => item.id === 'plugin') &&
         status.loaded.some((item) => item.id === 'plugin-admin') &&
         status.loaded.some((item) => item.id === 'toy-alpha')
       )
-    }, 'plugin-admin + toy-alpha loaded')
-    console.log('start + 握手：ok（plugin-admin 与 toy-alpha 均已装载）')
+    }, 'plugin / plugin-admin + toy-alpha loaded')
+    console.log('start + 握手：ok（plugin / plugin-admin / toy-alpha 均已装载）')
 
     const status = boot(root, ['status'])
     const loaded = status.loaded.find((item) => item.id === 'plugin-admin')
@@ -93,16 +99,20 @@ async function main() {
     assert.deepEqual(replayed.head, status.world_head, 'replay 链头与 status 不一致')
     console.log('verify + replay：ok')
 
-    // 离线读投影：身份与 pins（host 保留字面量）
+    // 离线读投影：管理平面 pin host；工具面 needs.plugin 解析为有效引脚 plugin
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const projection = projectBaseOnly(anchor.world, anchor.head)
+    const plane = projection.ids['plugin']
+    assert.ok(plane, '投影缺 plugin')
+    assert.equal(plane.pins.host, 'host', 'plugin pins.host 应为保留字面量 host')
+    assert.ok(plane.gens.length >= 1, 'plugin 应有代码世代')
     const admin = projection.ids['plugin-admin']
     assert.ok(admin, '投影缺 plugin-admin')
-    assert.equal(admin.pins.host, 'host', 'pins.host 应为保留字面量 host')
+    assert.equal(admin.pins.plugin, 'plugin', 'plugin-admin needs.plugin 应解析为提供方身份名')
     assert.ok(admin.gens.length >= 1, 'plugin-admin 应有代码世代')
     assert.ok(projection.ids['toy-alpha'], '投影缺 toy-alpha')
-    console.log('离线投影：pins.host=host、身份与世代正确')
+    console.log('离线投影：plugin.pins.host=host、plugin-admin.pins.plugin=plugin、身份与世代正确')
 
     console.log(`E2E ok（root=${root}）`)
     console.log('注：运行时 port.call 往返未在此覆盖（宿主只在真实 call 期间路由），见文件头说明。')

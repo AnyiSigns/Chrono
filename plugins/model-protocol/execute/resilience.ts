@@ -1,52 +1,10 @@
-// 调用韧性（v1 全做）：瞬时重试、指数退避、429 尊重 Retry-After + 每 provider 令牌桶。
-// 令牌桶状态落 `CHRONO_PLUGIN_STATE` ③ 目录（可重算）；目录缺失 / 不可读写时安全降级为进程内存。
-// 时间一律取调用帧 env.now（不自取时钟）；退避等待用真实定时器，但等待时长不影响世界内容。
+// 瞬时重试循环（消费方）：可重试错误按指数退避；限流 / 冷却 / 退避决策由 `throttle` 提供方出（反向 `port.call`）。
+// 循环本身住本插件（依赖流 reset 回调与逐段重试），本模块只编排「取策略 -> 取令牌 -> 跑 -> 退避重试」。
+// 时间一律取调用帧 env.now（逻辑时钟，不自取时钟）；等待用真实定时器，等待时长不影响世界内容。
 
-import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
-import { basename, dirname, join } from 'node:path'
 import { ModelError } from './errors.ts'
 import { isRecord } from './plan.ts'
-import { schemaConfig } from './plugin.ts'
-import type { Json, Rec } from 'plugin-sdk'
-
-/** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
-const STALE_TEMP_MS = 60 * 60 * 1000
-
-/** 机会式回收：清理同目录中本模块遗留的过期临时文件，避免崩溃残留的 `.tmp` 堆积。 */
-function sweepStaleTemps(dir: string, prefix: string): void {
-  try {
-    const cutoff = Date.now() - STALE_TEMP_MS
-    for (const name of readdirSync(dir)) {
-      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue
-      const full = join(dir, name)
-      try {
-        if (statSync(full).mtimeMs < cutoff) rmSync(full, { force: true })
-      } catch {
-        // 单文件 stat / 删除失败不影响本次写入
-      }
-    }
-  } catch {
-    // 目录不可读：跳过回收
-  }
-}
-
-/** 原子写：先写同目录唯一临时文件再 rename 替换，读方永不看到半截 JSON。 */
-function writeFileAtomic(file: string, data: string): void {
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
-  try {
-    sweepStaleTemps(dirname(file), `${basename(file)}.`)
-    writeFileSync(temporary, data, 'utf8')
-    renameSync(temporary, file)
-  } catch (err) {
-    try {
-      rmSync(temporary, { force: true })
-    } catch {
-      // 临时文件清理失败不掩盖原始错误
-    }
-    throw err
-  }
-}
+import type { Json, PortCaller, Rec } from 'plugin-sdk'
 
 export interface RetryPolicy {
   max_retries: number
@@ -59,145 +17,103 @@ export interface RetryPolicy {
   models_dev_url: string
 }
 
-const FALLBACK_POLICY: RetryPolicy = {
-  max_retries: 2,
-  backoff_ms: 200,
-  backoff_max_ms: 5000,
-  jitter: false,
-  request_timeout_ms: 300000,
-  connect_timeout_ms: 30000,
-  token_bucket: { capacity: 8, refill_per_sec: 1 },
-  models_dev_url: 'https://models.dev/api.json',
+/** 限流 / 退避决策接口：生产实现经反向 `port.call throttle.*`，单测注入假实现。 */
+export interface Throttle {
+  acquire(provider: string, now: number, policy: RetryPolicy): Promise<number>
+  penalize(provider: string, now: number, retryAfterMs: number, policy: RetryPolicy): Promise<void>
+  plan(attempt: number, policy: RetryPolicy, retryAfterMs?: number): Promise<number>
 }
 
 function positiveInt(value: Json | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback
 }
 
 function bool(value: Json | undefined, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
-/** 合并策略：schema 自用键 -> 兜底 -> 调用方覆盖（bag.resilience）。 */
-export function resolvePolicy(override?: Json): RetryPolicy {
-  const base = schemaConfig()
-  const source = isRecord(override) ? { ...base, ...override } : base
-  const bucket = isRecord(source['token_bucket']) ? (source['token_bucket'] as Rec) : {}
+/** 归一提供方回的 RetryPolicy；缺字段回落安全缺省。 */
+function asPolicy(value: Rec): RetryPolicy {
+  const bucket = isRecord(value['token_bucket']) ? (value['token_bucket'] as Rec) : {}
   return {
-    max_retries: positiveInt(source['max_retries'], FALLBACK_POLICY.max_retries),
-    backoff_ms: positiveInt(source['backoff_ms'], FALLBACK_POLICY.backoff_ms),
-    backoff_max_ms: positiveInt(source['backoff_max_ms'], FALLBACK_POLICY.backoff_max_ms),
-    jitter: bool(source['jitter'], FALLBACK_POLICY.jitter),
-    request_timeout_ms: positiveInt(source['request_timeout_ms'], FALLBACK_POLICY.request_timeout_ms),
-    connect_timeout_ms: positiveInt(source['connect_timeout_ms'], FALLBACK_POLICY.connect_timeout_ms),
+    max_retries: positiveInt(value['max_retries'], 2),
+    backoff_ms: positiveInt(value['backoff_ms'], 200),
+    backoff_max_ms: positiveInt(value['backoff_max_ms'], 5000),
+    jitter: bool(value['jitter'], false),
+    request_timeout_ms: positiveInt(value['request_timeout_ms'], 300000),
+    connect_timeout_ms: positiveInt(value['connect_timeout_ms'], 30000),
     token_bucket: {
-      capacity: positiveInt(bucket['capacity'], FALLBACK_POLICY.token_bucket.capacity),
-      refill_per_sec: positiveInt(bucket['refill_per_sec'], FALLBACK_POLICY.token_bucket.refill_per_sec),
+      capacity: positiveInt(bucket['capacity'], 8),
+      refill_per_sec: positiveInt(bucket['refill_per_sec'], 1),
     },
     models_dev_url:
-      typeof source['models_dev_url'] === 'string' && source['models_dev_url'].length > 0
-        ? (source['models_dev_url'] as string)
-        : FALLBACK_POLICY.models_dev_url,
+      typeof value['models_dev_url'] === 'string' && value['models_dev_url'].length > 0
+        ? (value['models_dev_url'] as string)
+        : 'https://models.dev/api.json',
   }
 }
 
-interface BucketState {
-  tokens: number
-  updated_at: number
-  cooldown_until: number
+function throttleFailed(
+  method: string,
+  outcome: { ok: boolean; code?: string; value?: Json },
+): ModelError {
+  return new ModelError(
+    'model_unsupported',
+    `throttle.${method} failed: ${outcome.ok ? 'bad value' : outcome.code}`,
+  )
 }
 
-function defaultBucket(): BucketState {
-  return { tokens: 0, updated_at: 0, cooldown_until: 0 }
+/** 解析本次调用的韧性策略：经反向 `port.call throttle.policy`（含调用方覆盖）。 */
+export async function fetchPolicy(throttle: PortCaller, override?: Json): Promise<RetryPolicy> {
+  const outcome = await throttle.call('throttle', 'policy', { override: override ?? null })
+  if (!outcome.ok || !isRecord(outcome.value)) throw throttleFailed('policy', outcome)
+  return asPolicy(outcome.value)
 }
 
-/**
- * 每 provider 令牌桶：429 后置冷却（尊重 Retry-After），并按速率补充令牌。
- * 状态持久化到插件 ③ 目录；任何读写失败都只影响本次进程（可重算）。
- */
-export class RateLimiter {
-  private readonly file: string | null
-  private readonly state: Map<string, BucketState>
-
-  constructor(file: string | null) {
-    this.file = file
-    this.state = new Map()
-    this.load()
-  }
-
-  /** 取一个令牌；返回需要等待的毫秒数（0 = 可立即调用）。 */
-  acquire(provider: string, now: number, policy: RetryPolicy): number {
-    const bucket = this.refill(provider, now, policy)
-    if (bucket.cooldown_until > now) return bucket.cooldown_until - now
-    if (bucket.tokens < 1) {
-      const missing = 1 - bucket.tokens
-      return Math.ceil(missing / (policy.token_bucket.refill_per_sec / 1000))
-    }
-    bucket.tokens -= 1
-    this.save()
-    return 0
-  }
-
-  /** 429 惩罚：置冷却到 now + retryAfter（缺省一个退避基数）。 */
-  penalize(provider: string, now: number, retryAfterMs: number, policy: RetryPolicy): void {
-    const bucket = this.refill(provider, now, policy)
-    bucket.cooldown_until = now + retryAfterMs
-    bucket.tokens = 0
-    this.save()
-  }
-
-  private refill(provider: string, now: number, policy: RetryPolicy): BucketState {
-    const bucket = this.state.get(provider) ?? defaultBucket()
-    const elapsed = Math.max(0, now - bucket.updated_at)
-    const gained = (elapsed * policy.token_bucket.refill_per_sec) / 1000
-    bucket.tokens = Math.min(policy.token_bucket.capacity, bucket.tokens + gained)
-    bucket.updated_at = now
-    this.state.set(provider, bucket)
-    return bucket
-  }
-
-  private load(): void {
-    if (this.file === null) return
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as Json
-      if (!isRecord(parsed)) return
-      for (const [provider, value] of Object.entries(parsed)) {
-        if (!isRecord(value)) continue
-        this.state.set(provider, {
-          tokens: typeof value['tokens'] === 'number' ? value['tokens'] : 0,
-          updated_at: typeof value['updated_at'] === 'number' ? value['updated_at'] : 0,
-          cooldown_until: typeof value['cooldown_until'] === 'number' ? value['cooldown_until'] : 0,
-        })
+/** 把反向调用链适配成 `Throttle`：acquire / penalize / plan 逐次 `port.call`。 */
+export function portThrottle(caller: PortCaller): Throttle {
+  return {
+    async acquire(provider, now, policy) {
+      const outcome = await caller.call('throttle', 'acquire', {
+        provider,
+        now,
+        policy: policy as unknown as Rec,
+      })
+      if (!outcome.ok || !isRecord(outcome.value) || typeof outcome.value['wait_ms'] !== 'number') {
+        throw throttleFailed('acquire', outcome)
       }
-    } catch {
-      // 状态文件缺失 / 损坏：可重算，忽略并从空表开始。
-    }
-  }
-
-  private save(): void {
-    if (this.file === null) return
-    try {
-      const payload: Rec = {}
-      for (const [provider, value] of this.state) {
-        payload[provider] = { tokens: value.tokens, updated_at: value.updated_at, cooldown_until: value.cooldown_until }
+      return outcome.value['wait_ms'] as number
+    },
+    async penalize(provider, now, retryAfterMs, policy) {
+      const outcome = await caller.call('throttle', 'penalize', {
+        provider,
+        now,
+        retry_after_ms: retryAfterMs,
+        policy: policy as unknown as Rec,
+      })
+      if (!outcome.ok) throw throttleFailed('penalize', outcome)
+    },
+    async plan(attempt, policy, retryAfterMs) {
+      const args: Rec = { attempt, policy: policy as unknown as Rec }
+      if (retryAfterMs !== undefined) args['retry_after_ms'] = retryAfterMs
+      const outcome = await caller.call('throttle', 'plan', args)
+      if (
+        !outcome.ok ||
+        !isRecord(outcome.value) ||
+        typeof outcome.value['delay_ms'] !== 'number'
+      ) {
+        throw throttleFailed('plan', outcome)
       }
-      writeFileAtomic(this.file, JSON.stringify(payload))
-    } catch {
-      // ③ 目录不存在 / 不可写：安全降级为进程内存。
-    }
+      return outcome.value['delay_ms'] as number
+    },
   }
-}
-
-/** 状态文件路径：`CHRONO_PLUGIN_STATE` 存在时用之，否则 null（纯内存）。 */
-export function rateLimitFile(env: Record<string, string | undefined> = process.env): string | null {
-  const dir = env['CHRONO_PLUGIN_STATE']
-  if (typeof dir !== 'string' || dir.length === 0) return null
-  return join(dir, 'rate-limit.json')
 }
 
 export interface RetryDeps {
   policy: RetryPolicy
-  limiter: RateLimiter
+  throttle: Throttle
   now: number
   sleep?: (ms: number) => Promise<void>
 }
@@ -210,14 +126,18 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /** 瞬时重试循环：可重试错误按指数退避（429 额外置冷却）；不可重试立即抛出。 */
-export async function withRetry<T>(provider: string, run: () => Promise<T>, deps: RetryDeps): Promise<T> {
+export async function withRetry<T>(
+  provider: string,
+  run: () => Promise<T>,
+  deps: RetryDeps,
+): Promise<T> {
   const sleep = deps.sleep ?? defaultSleep
   // 逻辑时钟：等待多久就推进多久，使 429 冷却在同一调用内可过期（不自取真实时间）。
   let clock = deps.now
   for (let attempt = 0; ; attempt += 1) {
     // 取令牌：等待被 backoff_max_ms 截断后必须重新判定（否则在 429 冷却 / 缺令牌下照发请求）
     for (;;) {
-      const waitMs = deps.limiter.acquire(provider, clock, deps.policy)
+      const waitMs = await deps.throttle.acquire(provider, clock, deps.policy)
       if (waitMs <= 0) break
       const capped = Math.min(waitMs, deps.policy.backoff_max_ms)
       await sleep(capped)
@@ -226,13 +146,17 @@ export async function withRetry<T>(provider: string, run: () => Promise<T>, deps
     try {
       return await run()
     } catch (err) {
-      if (!(err instanceof ModelError) || !err.retryable || attempt >= deps.policy.max_retries) throw err
+      if (!(err instanceof ModelError) || !err.retryable || attempt >= deps.policy.max_retries)
+        throw err
       if (err.code === 'model_rate_limited') {
-        deps.limiter.penalize(provider, clock, err.retryAfterMs ?? deps.policy.backoff_ms, deps.policy)
+        await deps.throttle.penalize(
+          provider,
+          clock,
+          err.retryAfterMs ?? deps.policy.backoff_ms,
+          deps.policy,
+        )
       }
-      let delay = Math.min(deps.policy.backoff_ms * 2 ** attempt, deps.policy.backoff_max_ms)
-      if (err.retryAfterMs !== undefined) delay = Math.max(delay, err.retryAfterMs)
-      if (deps.policy.jitter) delay = Math.round(delay * (0.5 + Math.random() * 0.5))
+      const delay = await deps.throttle.plan(attempt, deps.policy, err.retryAfterMs)
       await sleep(delay)
       clock += delay
     }

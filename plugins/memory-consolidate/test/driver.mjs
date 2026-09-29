@@ -1,7 +1,7 @@
 // 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
 // 并自动应答反向调用 `port.call`（模拟宿主侧路由；可注入 bridge）。
 // 内置内存假 owner 服务：short-memory（read/apply）、memory-store（list/append/delete/pin/edit）、
-// session（read）；compress.summarize 与 embedding.chunk/embed 走可配置假后端。
+// session（read）；compress.summarize、embedding.embed 与 tokenizer.chunk 走可配置假后端。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -49,13 +49,27 @@ export function shortMemoryFixture() {
     version: 1,
     sessions: {
       'c-1': {
-        summary: { goal: 'G1', decisions: [], facts: ['f1', 'f2'], open_questions: [], files: [], next_steps: [] },
+        summary: {
+          goal: 'G1',
+          decisions: [],
+          facts: ['f1', 'f2'],
+          open_questions: [],
+          files: [],
+          next_steps: [],
+        },
         covered_upto: 'm1',
         at: '2020-01-01T00:00:00.000Z',
         expires_at: '2020-01-02T00:00:00.000Z',
       },
       'c-2': {
-        summary: { goal: 'G2', decisions: [], facts: ['f2', 'f3'], open_questions: [], files: [], next_steps: [] },
+        summary: {
+          goal: 'G2',
+          decisions: [],
+          facts: ['f2', 'f3'],
+          open_questions: [],
+          files: [],
+          next_steps: [],
+        },
         covered_upto: 'm2',
         at: '2020-01-02T00:00:00.000Z',
         expires_at: '2020-01-03T00:00:00.000Z',
@@ -112,7 +126,13 @@ export function createFakeMemory(initialEntries = [], initialPinned = {}) {
     pinned,
     call(method, args) {
       if (method === 'list') {
-        return { ok: true, kind: 'list', entries: structuredClone(entries), count: entries.length, pinned: { ...pinned } }
+        return {
+          ok: true,
+          kind: 'list',
+          entries: structuredClone(entries),
+          count: entries.length,
+          pinned: { ...pinned },
+        }
       }
       if (method === 'append') {
         const added = []
@@ -138,7 +158,8 @@ export function createFakeMemory(initialEntries = [], initialPinned = {}) {
       }
       if (method === 'edit') {
         const entry = entries.find((item) => item.id === args?.id)
-        if (entry === undefined) return { ok: false, kind: 'edit', id: args?.id, reason: 'not_found' }
+        if (entry === undefined)
+          return { ok: false, kind: 'edit', id: args?.id, reason: 'not_found' }
         entry.text = args.text
         return { ok: true, kind: 'edit', id: args.id, text: args.text }
       }
@@ -152,15 +173,20 @@ export function memoryEntry(entry = {}) {
   return {
     id: entry.id ?? 'm-1',
     text: entry.text ?? 'text',
-    meta: { source: 'manual', workspace: 'w-1', at: entry.at ?? '2023-01-01T00:00:00.000Z', tags: entry.tags ?? [] },
+    meta: {
+      source: 'manual',
+      workspace: 'w-1',
+      at: entry.at ?? '2023-01-01T00:00:00.000Z',
+      tags: entry.tags ?? [],
+    },
     weight: entry.weight ?? null,
   }
 }
 
-/** 默认假后端：chunk / embed / summarize / owner 服务。 */
+/** 默认假后端：tokenizer.chunk / embedding.embed / summarize / owner 服务。 */
 export function defaultBridge(options = {}) {
   return (port, method, args) => {
-    if (port === 'embedding' && method === 'chunk') {
+    if (port === 'tokenizer' && method === 'chunk') {
       const text = typeof args?.text === 'string' ? args.text : ''
       return { value: [{ index: 0, start: 0, end: [...text].length, text }] }
     }
@@ -187,7 +213,11 @@ export function startService(options = {}) {
   const env = { ...process.env }
   if (options.stateDir !== undefined) env.CHRONO_PLUGIN_STATE = options.stateDir
   else delete env.CHRONO_PLUGIN_STATE
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const frames = []
@@ -197,7 +227,8 @@ export function startService(options = {}) {
   const memory = options.memoryStore ?? createFakeMemory(options.entries, options.pinned)
   const session = options.session ?? sessionFixture()
   const fallback = defaultBridge(options)
-  const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
+  const bridge =
+    options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
 
   child.stdout.on('data', (chunk) => {
@@ -209,7 +240,8 @@ export function startService(options = {}) {
           .then(() => {
             if (message.port === 'short-memory') {
               if (message.method === 'read') return { value: structuredClone(shortMemory.memory) }
-              if (message.method === 'apply') return { value: shortMemory.apply(message.args ?? {}) }
+              if (message.method === 'apply')
+                return { value: shortMemory.apply(message.args ?? {}) }
             }
             if (message.port === 'memory') {
               const outcome = memory.call(message.method, message.args ?? {})
@@ -268,7 +300,9 @@ export function startService(options = {}) {
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, timeoutMs)
       pending.set(id, (message) => {
         clearTimeout(timer)

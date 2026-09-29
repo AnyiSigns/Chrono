@@ -58,6 +58,8 @@
   自身携带 `meta.error` 的记录（旧式 / 合成），非步日志投影产物。
 - **方言格式化**：`openai-chat` / `openai-responses` / `anthropic-messages`；多模态按模型
   `modalities.input` 编 content parts，不支持该模态时降级为文本引用并标 `modality_dropped`。
+  被支持的二进制附件只产出**资产占位符**（`asset:<sha256>` URL / `{type:'asset',sha256,mime}` 源）——
+  字节由 `model-protocol` 发请求前经 `host.asset.get` 内联（本插件保持纯投影、不触字节）。
 - **token 校准**：真实 `prompt_tokens`（随 `bag.usage` 传入）用于维护每模型校正系数；校正状态落
   `CHRONO_PLUGIN_STATE/calibration.json`（③ 可重算）。快路径计数（含老化 / 压缩 / 截断等改写路径）按系数缩放；
   无 `bag.usage` 时只累积估算、系数保持 1。

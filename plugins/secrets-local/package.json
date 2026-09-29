@@ -1,0 +1,19 @@
+{
+  "name": "secrets-local",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地密钥文件面：解析宿主 state/secrets.local.json 路径并读取引用名与明文值，只读、不落盘、不进世界",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

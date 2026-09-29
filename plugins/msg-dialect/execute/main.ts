@@ -1,0 +1,37 @@
+// `msg-dialect` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
+// manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
+// 唯一反向调用链 host（`host.asset.get` 资产内联取字节）；不读投影、无写通道。
+
+import {
+  PortLink,
+  createService as createSdkService,
+  isDirectRun,
+  makeLogger,
+  packageRootOf,
+  runStdio,
+} from 'plugin-sdk'
+import { createHandlers } from './methods.ts'
+import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
+
+const CAPABILITY = 'msg-dialect'
+const LOG = makeLogger('msg-dialect')
+
+/** 构造服务实例：一条反向调用链（host，资产内联）+ 纯方言编解码方法。 */
+function build(ctx: ServiceFactoryContext): ServiceInstance {
+  const host = new PortLink({ write: ctx.emit, idPrefix: 'md-host' })
+  return createSdkService({
+    pluginRoot: packageRootOf(import.meta.url),
+    capability: CAPABILITY,
+    defaultState: 'recomputable',
+    handlers: createHandlers({ host }),
+    emit: ctx.emit,
+    log: LOG,
+    portLinks: [host],
+  })
+}
+
+export const createService = build
+
+if (isDirectRun(import.meta.url)) {
+  runStdio(build, { log: LOG })
+}

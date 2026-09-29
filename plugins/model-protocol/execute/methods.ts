@@ -1,6 +1,6 @@
 // 能力类 `model` 的方法表：chat / complete / vendors / discover / profile / sync。
 // 只返回值 / 写计划；不落账、不读投影、不自取时钟。密钥经反向调用 secrets.resolve（明文只存本进程内存）。
-// 依赖（反向调用链 / 令牌桶 / 事件出口）由入口按连接构造后注入。
+// 依赖（反向调用链 / 事件出口）由入口按连接构造后注入；请求编形 / 方言 / 限流决策委派给 msg-dialect / throttle。
 
 import { chat, complete } from './chat.ts'
 import { discover } from './discover.ts'
@@ -9,13 +9,13 @@ import { profile, sync } from './profile.ts'
 import { vendors } from './vendors.ts'
 import { isRecord } from './plan.ts'
 import type { Handler, HandlerResult, Json, PortCaller } from 'plugin-sdk'
-import type { RateLimiter } from './resilience.ts'
 
-/** 单条连接的服务依赖：反向调用链（secrets / config）、令牌桶、事件出口。 */
+/** 单条连接的服务依赖：反向调用链（secrets / config / throttle / msg-dialect）、事件出口。 */
 export interface ModelDeps {
   secrets: PortCaller
   config: PortCaller
-  limiter: RateLimiter
+  throttle: PortCaller
+  dialect: PortCaller
   emit: (topic: string, payload: Json) => void
 }
 
@@ -36,24 +36,49 @@ function abort(args: Json): Json {
   return { ok: true, aborted: abortInflight(turnId), turn_id: turnId }
 }
 
-/** 构造方法表（依赖注入：反向调用链与限流器由入口按连接提供）。 */
+/** 构造方法表（依赖注入：反向调用链由入口按连接提供）。 */
 export function createHandlers(deps: ModelDeps): Record<string, Handler> {
-  const chatDeps = { secrets: deps.secrets, limiter: deps.limiter, emit: deps.emit }
+  const chatDeps = {
+    secrets: deps.secrets,
+    throttle: deps.throttle,
+    dialect: deps.dialect,
+    emit: deps.emit,
+  }
   return {
-    chat: async (args: Json, env): Promise<HandlerResult> => ({ value: await chat(chatDeps, args, env), events: [] }),
-    complete: async (args: Json, env): Promise<HandlerResult> => ({ value: await complete(chatDeps, args, env), events: [] }),
-    abort: (args: Json): Promise<HandlerResult> => Promise.resolve({ value: abort(args), events: [] }),
-    vendors: (args: Json): Promise<HandlerResult> => Promise.resolve({ value: vendors(args), events: [] }),
+    chat: async (args: Json, env): Promise<HandlerResult> => ({
+      value: await chat(chatDeps, args, env),
+      events: [],
+    }),
+    complete: async (args: Json, env): Promise<HandlerResult> => ({
+      value: await complete(chatDeps, args, env),
+      events: [],
+    }),
+    abort: (args: Json): Promise<HandlerResult> =>
+      Promise.resolve({ value: abort(args), events: [] }),
+    vendors: (args: Json): Promise<HandlerResult> =>
+      Promise.resolve({ value: vendors(args), events: [] }),
     discover: async (args: Json, env): Promise<HandlerResult> => ({
-      value: await discover(args, env, { secrets: deps.secrets, limiter: deps.limiter }),
+      value: await discover(args, env, {
+        secrets: deps.secrets,
+        throttle: deps.throttle,
+        dialect: deps.dialect,
+      }),
       events: [],
     }),
     profile: async (args: Json, env): Promise<HandlerResult> => ({
-      value: await profile(args, env, { limiter: deps.limiter, config: deps.config }),
+      value: await profile(args, env, {
+        throttle: deps.throttle,
+        config: deps.config,
+        dialect: deps.dialect,
+      }),
       events: [],
     }),
     sync: async (args: Json, env): Promise<HandlerResult> => ({
-      value: await sync(args, env, { limiter: deps.limiter, config: deps.config }),
+      value: await sync(args, env, {
+        throttle: deps.throttle,
+        config: deps.config,
+        dialect: deps.dialect,
+      }),
       events: [],
     }),
   }

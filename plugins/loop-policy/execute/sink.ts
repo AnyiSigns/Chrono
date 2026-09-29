@@ -13,7 +13,7 @@ import {
   type InterpretInput,
   type IterState,
 } from './iter-ctx.ts'
-import type { GraphView } from './gate.ts'
+import type { GraphView } from './view.ts'
 import type { Json, Rec, RunState } from './types.ts'
 
 export async function runSink(
@@ -52,20 +52,30 @@ export async function runSink(
   if (refusal === null && sinkInputs['refusal'] !== undefined) {
     const artifact = normalizeRefusalInput(sinkInputs['refusal'], model)
     sinkInputs = { ...sinkInputs, refusal: artifact }
-    if (trace.refusedAt === null) trace.refuse(sink, rs.iter, artifact['code'] as string, artifact['attributable_to'] as string)
+    if (trace.refusedAt === null)
+      trace.refuse(sink, rs.iter, artifact['code'] as string, artifact['attributable_to'] as string)
   }
   if (refusal === null && Object.keys(sinkInputs).length === 0) {
     trace.refuse(sink, rs.iter, 'input_insufficient', 'graph')
-    sinkInputs['refusal'] = refusalArtifact(model, 'input_insufficient', 'sink has no triggered input')
+    sinkInputs['refusal'] = refusalArtifact(
+      model,
+      'input_insufficient',
+      'sink has no triggered input',
+    )
   }
   if (refusal !== null && (typeof refusal['code'] !== 'string' || refusal['code'] === '')) {
     const artifact = normalizeRefusalInput(refusal, model)
     sinkInputs = { ...sinkInputs, refusal: artifact }
-    if (trace.refusedAt === null) trace.refuse(sink, rs.iter, artifact['code'] as string, artifact['attributable_to'] as string)
+    if (trace.refusedAt === null)
+      trace.refuse(sink, rs.iter, artifact['code'] as string, artifact['attributable_to'] as string)
   }
   // 两条拒绝通道形状一致：无论拒绝是运行期短路传入还是边送（approval denied 等），
   // 都把本回合最后一步助手消息一并交收口步，助手正文 / 推理 / 工具卡不因拒绝而丢。
-  if (sinkInputs['refusal'] !== undefined && sinkInputs['refusal'] !== null && sinkInputs['message'] === undefined) {
+  if (
+    sinkInputs['refusal'] !== undefined &&
+    sinkInputs['refusal'] !== null &&
+    sinkInputs['message'] === undefined
+  ) {
     const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
     if (lastMessage !== null) sinkInputs['message'] = lastMessage
   }
@@ -74,7 +84,13 @@ export async function runSink(
     trace.refuse(sink, rs.iter, 'scope_mismatch', 'graph')
     return
   }
-  const step = trace.startStep(sink, rs.iter, ids[sink], chosen.chosen_instance, chosen.chosen_agent)
+  const step = trace.startStep(
+    sink,
+    rs.iter,
+    ids[sink],
+    chosen.chosen_instance,
+    chosen.chosen_agent,
+  )
   const effBefore = trace.effLog.length
   const result = await dispatchNode({
     nodeIndex: sink,
@@ -98,7 +114,8 @@ export async function runSink(
   } else {
     step['verdict'] = 'fail'
     step['refusal'] = result.code ?? 'downstream_refusal'
-    if (trace.refusedAt === null) trace.refuse(sink, rs.iter, result.code ?? 'downstream_refusal', 'graph')
+    if (trace.refusedAt === null)
+      trace.refuse(sink, rs.iter, result.code ?? 'downstream_refusal', 'graph')
   }
 }
 
@@ -131,14 +148,22 @@ export async function runSuspend(
   }
   // 已发生的助手消息作为终止消息交收口步：正文 / 推理 / 工具卡（审批未决，结果与状态留空）随 parts 落盘。
   const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
-  const sinkInputs: Rec = { pending: { reason: pending['kind'] ?? 'pending', cursor: pending['cursor'] ?? null } }
+  const sinkInputs: Rec = {
+    pending: { reason: pending['kind'] ?? 'pending', cursor: pending['cursor'] ?? null },
+  }
   if (lastMessage !== null) sinkInputs['message'] = lastMessage
   const chosen = selectInstance(model, contract, scopeCtx)
   if (chosen === null) {
     trace.refuse(sink, rs.iter, 'scope_mismatch', 'graph')
     return
   }
-  const step = trace.startStep(sink, rs.iter, ids[sink], chosen.chosen_instance, chosen.chosen_agent)
+  const step = trace.startStep(
+    sink,
+    rs.iter,
+    ids[sink],
+    chosen.chosen_instance,
+    chosen.chosen_agent,
+  )
   const effBefore = trace.effLog.length
   const result = await dispatchNode({
     nodeIndex: sink,
@@ -164,7 +189,8 @@ export async function runSuspend(
   // 收口失败不改写挂起结局：挂起仍成立（游标已随队列项持久化），只记失败形态供取证。
   step['verdict'] = 'fail'
   step['refusal'] = result.code ?? 'downstream_refusal'
-  if (trace.refusedAt === null) trace.refuse(sink, rs.iter, result.code ?? 'downstream_refusal', 'graph')
+  if (trace.refusedAt === null)
+    trace.refuse(sink, rs.iter, result.code ?? 'downstream_refusal', 'graph')
 }
 
 export function summaryOfRun(rs: RunState, pending: Rec | null): Rec {
@@ -173,6 +199,6 @@ export function summaryOfRun(rs: RunState, pending: Rec | null): Rec {
     kind: 'interpret',
     iters: rs.iter,
     steps: rs.steps,
-    pending: pending === null ? null : pending['kind'] ?? 'pending',
+    pending: pending === null ? null : (pending['kind'] ?? 'pending'),
   }
 }

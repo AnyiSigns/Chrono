@@ -1,17 +1,18 @@
-// 外部 MCP 服务器表与出站发现编排：按数据世代 body 清单连已确认服务器、拉 `tools/list`、
-// 产出新 body（服务器配置 + 命名空间化工具清单）。子进程表与易变运行态住内存（③ 可重算）。
+// 外部 MCP 服务器表与出站发现**策略**层：按数据世代 body 清单决定何时连已确认服务器、
+// 何时重拉工具、何时记账与隔离；真正的连接 / 子进程生命周期委派给 `mcp-client` 提供方。
+// 子进程表与易变运行态住内存（③ 可重算）；失败 / 隔离 / 重启策略住本层。
 //
 // 服务无写通道：本模块只算「新 body」与事件，写计划由 methods.ts 组装、宿主落账。
 // 服务不读投影：清单随调用方 bag 传入（宿主 periodic reads 机械注入）。
 // 事件经持久 sink 直接上行（不依附某次调用的返回值），故子进程在两次调用之间退出也能上报。
 
-import { McpConnection } from './mcp-client.ts'
-import type { McpTool } from './mcp-client.ts'
 import { canonicalString, isRecord } from './plan.ts'
+import type { McpClientBackend } from './port-link.ts'
 import type { Json, Rec } from './types.ts'
 
 /** `secrets.resolve` 的返回：成功给明文，失败给结构化码（作数据，不抛错、不断通道）。 */
-export type SecretResult = { ok: true; value: string } | { ok: false; code: string; message: string }
+export type SecretResult =
+  { ok: true; value: string } | { ok: false; code: string; message: string }
 
 /** 把 env 值里的 auth_ref 形态解析出来；非引用返回 null。 */
 export function authRefOf(value: Json): Rec | null {
@@ -25,6 +26,15 @@ export const DEFAULT_MAX_FAILURES = 3
 
 /** 持久事件出口：服务 → 宿主 `event` 帧（宿主只透传，不落账、不推进）。 */
 export type EventSink = (topic: string, payload: Json) => void
+
+/** `mcp-client.list_tools` 回灌的原始工具条目（只取本插件用到的字段）。 */
+interface McpTool {
+  name: string
+  description: string | null
+  inputSchema: Json
+  outputSchema: Json | null
+  annotations: Json | null
+}
 
 interface RestartConfig {
   policy: 'on-exit' | 'never'
@@ -43,7 +53,8 @@ interface Runtime {
   tools: Rec[]
   toolsSignature: string
   lastError: string | null
-  conn: McpConnection | null
+  /** 已解析 env 缓存：连接配置签名变化时置空重解（避免每次调用重复经 secrets.resolve）。 */
+  resolvedEnv: Record<string, string> | null
 }
 
 function stringArray(value: Json | undefined): string[] {
@@ -98,6 +109,17 @@ function detailKind(tool: McpTool): string {
   }
   if (isRecord(tool.outputSchema) && tool.outputSchema['format'] === 'image') return 'image'
   return 'json'
+}
+
+/** 把 `mcp-client` 回的原始条目规范成工具声明可用的形状。 */
+function asMcpTool(value: Rec): McpTool {
+  return {
+    name: typeof value['name'] === 'string' ? value['name'] : '',
+    description: typeof value['description'] === 'string' ? value['description'] : null,
+    inputSchema: value['inputSchema'] ?? { type: 'object' },
+    outputSchema: value['outputSchema'] ?? null,
+    annotations: value['annotations'] ?? null,
+  }
 }
 
 /** 外部 MCP 工具声明：命名空间化 + 四要素兜底 + 中性 render 描述符。 */
@@ -162,62 +184,29 @@ export class McpRegistry {
   private readonly runtimes = new Map<string, Runtime>()
   private readonly log: (line: string) => void
   private readonly sink: EventSink
+  private readonly client: McpClientBackend
   private readonly resolveAuthRef: (authRef: Rec, callId: string | null) => Promise<SecretResult>
-  /** 停机标志：置位后不再建连，且在途建连在 await 点后拒绝。 */
-  private closing = false
-  /** 在途建连 promise（含 buildEnv 的 await 间隙）：`closeAll` 等它们落地再关闭。 */
-  private readonly inflight = new Set<Promise<unknown>>()
 
   constructor(
     log: (line: string) => void,
     sink: EventSink,
+    client: McpClientBackend,
     resolveAuthRef: (authRef: Rec, callId: string | null) => Promise<SecretResult>,
   ) {
     this.log = log
     this.sink = sink
+    this.client = client
     this.resolveAuthRef = resolveAuthRef
   }
 
-  /** 停机：先置 closing 并等在途建连落地，再关闭全部已登记连接（不泄漏子进程）。 */
-  async closeAll(): Promise<void> {
-    this.closing = true
-    // 先关已登记连接（含正在握手的），再等在途建连落地——落地后可能新登记一个连接，
-    // 故再扫一遍才清表，保证「建连途中退出」也不留孤儿。
-    await this.closeRuntimes()
-    await Promise.allSettled([...this.inflight])
-    await this.closeRuntimes()
-    this.runtimes.clear()
-  }
-
   /**
-   * 同步硬杀全部已登记连接（进程 `exit` / 信号兜底）：不等待、直接 `SIGKILL` 子进程。
-   * 在途建连在 `connect()` 里已先置 `runtime.conn` 再 spawn，故此处也能触达刚起的子进程。
-   */
-  killAllSync(): void {
-    this.closing = true
-    for (const runtime of this.runtimes.values()) {
-      const conn = runtime.conn
-      runtime.conn = null
-      conn?.kill()
-    }
-  }
-
-  /** 关闭当前已登记连接并置空 `runtime.conn`；返回结算 promise 集合。 */
-  private closeRuntimes(): Promise<unknown> {
-    const closes: Promise<void>[] = []
-    for (const runtime of this.runtimes.values()) {
-      const conn = runtime.conn
-      runtime.conn = null
-      if (conn !== null) closes.push(conn.close())
-    }
-    return Promise.allSettled(closes)
-  }
-
-  /**
-   * 按清单重新发现：连已确认服务器 → `initialize` → `tools/list`，产出新 body。
+   * 按清单重新发现：连已确认服务器 → `tools/list`，产出新 body。
    * `changed=false`（body 内容无变化）时调用方只回 extern、不产写计划。
    */
-  async discover(bodyInput: Json | undefined, callId: string | null = null): Promise<DiscoverOutcome> {
+  async discover(
+    bodyInput: Json | undefined,
+    callId: string | null = null,
+  ): Promise<DiscoverOutcome> {
     const { record, servers: inputServers } = normalizeBody(bodyInput)
     const seen = new Set<string>()
     const outServers: Json[] = []
@@ -227,7 +216,9 @@ export class McpRegistry {
     for (const entry of inputServers) {
       const id = typeof entry['id'] === 'string' && entry['id'].length > 0 ? entry['id'] : null
       const command =
-        typeof entry['command'] === 'string' && entry['command'].length > 0 ? entry['command'] : null
+        typeof entry['command'] === 'string' && entry['command'].length > 0
+          ? entry['command']
+          : null
       if (id === null || command === null) {
         outServers.push(entry)
         continue
@@ -235,8 +226,7 @@ export class McpRegistry {
       seen.add(id)
       const runtime = this.runtimeFor(entry)
       if (!runtime.confirmed) {
-        runtime.conn?.close()
-        runtime.conn = null
+        await this.client.close(runtime.id, callId)
         runtime.tools = []
         runtime.toolsSignature = ''
       } else if (runtime.isolated) {
@@ -251,7 +241,7 @@ export class McpRegistry {
 
     for (const id of [...this.runtimes.keys()]) {
       if (seen.has(id)) continue
-      this.runtimes.get(id)?.conn?.close()
+      await this.client.close(id, callId)
       this.runtimes.delete(id)
     }
 
@@ -294,112 +284,79 @@ export class McpRegistry {
         `tool ${parsed.tool} is not in the discovered list of ${parsed.server}`,
       )
     }
-    let conn: McpConnection | null = null
+    let config: Rec
     try {
-      conn = await this.ensureConnected(runtime, callId)
-      const result = await conn.callTool(parsed.tool, toolArgs)
-      return { ok: true, result }
+      config = await this.connectionConfig(runtime, callId)
     } catch (err) {
       const reason = errMessage(err)
-      // 仅当失败者仍是当前连接时记账：子进程退出已由 handleExit 计过，避免同一失败双计。
-      if (conn !== null && runtime.conn === conn) {
-        runtime.conn = null
-        runtime.toolsSignature = ''
-        void conn.close()
-        this.recordFailure(runtime, reason)
-      }
+      this.recordConnectFailure(runtime, reason)
       return errorValue('mcp_call_failed', reason)
     }
+    const outcome = await this.client.callTool(
+      { server: runtime.id, ...config, tool: parsed.tool, arguments: toolArgs },
+      callId,
+    )
+    if (outcome.reconnected !== null) this.handleReconnect(runtime, outcome.reconnected)
+    if (outcome.ok) return { ok: true, result: outcome.result }
+    const reason = outcome.message
+    if (!runtime.isolated) {
+      runtime.toolsSignature = ''
+      this.recordFailure(runtime, reason)
+    }
+    return errorValue('mcp_call_failed', reason)
   }
 
   private async refresh(runtime: Runtime, callId: string | null): Promise<void> {
-    let conn: McpConnection | null = null
+    let config: Rec
     try {
-      conn = await this.ensureConnected(runtime, callId)
-      const list = await conn.listTools()
-      // 重拉期间子进程可能已退出：退出回调已改写运行态，此处不再用死连接的数据覆盖。
-      if (runtime.conn !== conn || !conn.alive) return
-      const decls = list.map((tool) => toolDecl(runtime.id, tool))
-      const signature = decls.map((decl) => String(decl['name'])).join('\n')
-      if (signature !== runtime.toolsSignature) {
-        this.emitServer(runtime, 'discovered', { tools: decls.length })
-      }
-      runtime.failures = 0
-      runtime.lastError = null
-      runtime.tools = decls
-      runtime.toolsSignature = signature
-    } catch (err) {
-      const reason = errMessage(err)
-      if (conn !== null && runtime.conn === conn) {
-        runtime.conn = null
-        void conn.close()
-        this.recordConnectFailure(runtime, reason)
-      }
-      // conn === null：ensureConnected 已记账；handleExit 已处理的失败不再重复。
-    }
-  }
-
-  private async ensureConnected(runtime: Runtime, callId: string | null): Promise<McpConnection> {
-    if (runtime.conn !== null && runtime.conn.alive) return runtime.conn
-    runtime.conn?.close()
-    runtime.conn = null
-    // 建连含 `buildEnv` 的 await 间隙（可能经 secrets 反向调用）：先登记在途 promise，
-    // 令 `closeAll` 能等它落地再关闭，避免建连途中退出留下孤儿子进程。
-    const task = this.connect(runtime, callId)
-    this.inflight.add(task)
-    try {
-      return await task
-    } finally {
-      this.inflight.delete(task)
-    }
-  }
-
-  private async connect(runtime: Runtime, callId: string | null): Promise<McpConnection> {
-    if (this.closing) throw new Error('mcp_registry_closing')
-    let env: Record<string, string>
-    try {
-      env = await this.buildEnv(runtime.entry, callId)
+      config = await this.connectionConfig(runtime, callId)
     } catch (err) {
       this.recordConnectFailure(runtime, errMessage(err))
-      throw err
+      return
     }
-    if (this.closing) throw new Error('mcp_registry_closing')
-    let conn!: McpConnection
-    conn = new McpConnection(
-      {
-        id: runtime.id,
-        command: runtime.entry['command'] as string,
-        args: stringArray(runtime.entry['args']),
-        env,
-        cwd: typeof runtime.entry['cwd'] === 'string' ? (runtime.entry['cwd'] as string) : undefined,
-      },
-      {
-        onLog: (line) => this.log(`[server ${runtime.id}] ${line}`),
-        // list_changed 无需标记：下一次 discover 一律重拉，清单真变化时由 body 差异驱动写世代。
-        onDirty: () => undefined,
-        // 回带连接身份：仅当退出者仍是当前连接时才改写运行态（旧连接退出不覆盖新连接）。
-        onExit: (reason) => this.handleExit(runtime, conn, reason),
-      },
-    )
-    runtime.conn = conn
-    try {
-      await conn.connect()
-    } catch (err) {
-      void conn.close()
-      if (runtime.conn === conn) {
-        runtime.conn = null
-        runtime.toolsSignature = ''
-        this.recordConnectFailure(runtime, errMessage(err))
+    const outcome = await this.client.listTools({ server: runtime.id, ...config }, callId)
+    if (outcome.reconnected !== null) this.handleReconnect(runtime, outcome.reconnected)
+    if (!outcome.ok) {
+      if (runtime.isolated) {
+        runtime.tools = []
+        return
       }
-      throw err
+      this.recordConnectFailure(runtime, outcome.message)
+      return
     }
-    return conn
+    if (runtime.isolated) {
+      runtime.tools = []
+      return
+    }
+    const decls = outcome.tools.map((tool) => toolDecl(runtime.id, asMcpTool(tool)))
+    const signature = decls.map((decl) => String(decl['name'])).join('\n')
+    if (signature !== runtime.toolsSignature) {
+      this.emitServer(runtime, 'discovered', { tools: decls.length })
+    }
+    runtime.failures = 0
+    runtime.lastError = null
+    runtime.tools = decls
+    runtime.toolsSignature = signature
   }
 
   /**
-   * 组装子进程 env：字符串值原样，`{auth_ref}` 值经 `secrets.resolve` 解析后注入同名变量。
-   * 解析失败抛错（由调用方计入连接失败），明文只进 spawn env，不进日志 / 世界 / 计划。
+   * 组装连接配置：字符串 env 原样，`{auth_ref}` 值经 `secrets.resolve` 解析后注入同名变量。
+   * 解析结果按连接配置签名缓存；解析失败抛错（由调用方计入连接失败），
+   * 明文只进 spawn env，不进日志 / 世界 / 计划 / 存储。
    */
+  private async connectionConfig(runtime: Runtime, callId: string | null): Promise<Rec> {
+    if (runtime.resolvedEnv === null) {
+      runtime.resolvedEnv = await this.buildEnv(runtime.entry, callId)
+    }
+    const config: Rec = {
+      command: runtime.entry['command'] as string,
+      args: stringArray(runtime.entry['args']),
+      env: runtime.resolvedEnv,
+    }
+    if (typeof runtime.entry['cwd'] === 'string') config['cwd'] = runtime.entry['cwd']
+    return config
+  }
+
   private async buildEnv(entry: Rec, callId: string | null): Promise<Record<string, string>> {
     const raw = isRecord(entry['env']) ? entry['env'] : {}
     const out: Record<string, string> = {}
@@ -420,14 +377,12 @@ export class McpRegistry {
   }
 
   /**
-   * 子进程退出：计一次失败（空闲崩溃也计），按 `restart.policy` / `restart.max` 决定隔离。
-   * 仅当退出者仍是当前连接时改写（旧连接退出不覆盖新连接），避免与在途 invoke / refresh 交错。
+   * 连接提供方回报「本次为重建连接，上一连接意外退出」：按 `restart.policy` / `restart.max`
+   * 记账（空闲崩溃也计），`policy:"never"` 立即隔离。
    */
-  private handleExit(runtime: Runtime, conn: McpConnection, reason: string): void {
-    if (runtime.conn !== conn) return
-    runtime.conn = null
-    runtime.toolsSignature = ''
+  private handleReconnect(runtime: Runtime, reason: string): void {
     const text = `server_exited: ${reason}`
+    runtime.toolsSignature = ''
     if (runtime.restart.policy === 'never') {
       runtime.failures += 1
       runtime.lastError = text
@@ -437,7 +392,8 @@ export class McpRegistry {
       return
     }
     this.recordFailure(runtime, text)
-    if (!runtime.isolated) this.emitServer(runtime, 'exited', { reason, failures: runtime.failures })
+    if (!runtime.isolated)
+      this.emitServer(runtime, 'exited', { reason, failures: runtime.failures })
   }
 
   /** 记一次失败；到达 `restart.max` 即隔离并发事件。 */
@@ -482,20 +438,19 @@ export class McpRegistry {
         tools: [],
         toolsSignature: '',
         lastError: null,
-        conn: null,
+        resolvedEnv: null,
       }
       this.runtimes.set(id, runtime)
       return runtime
     }
     if (runtime.signature !== signature) {
-      // 连接配置变化：重连、复位失败计数，并解除隔离（给修好的配置一次重试机会）
-      runtime.conn?.close()
-      runtime.conn = null
+      // 连接配置变化：复位失败计数、解除隔离（给修好的配置一次重试机会）；env 缓存随之失效。
       runtime.failures = 0
       runtime.lastError = null
       runtime.toolsSignature = ''
       runtime.isolated = false
       runtime.isolation = null
+      runtime.resolvedEnv = null
     }
     runtime.entry = entry
     runtime.signature = signature

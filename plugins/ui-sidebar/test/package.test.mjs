@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、needs 三条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 四条、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值、
 // 叶子纯模块零 react import、构建声明与客户端半边契约。
 import { test } from 'node:test'
@@ -22,10 +22,8 @@ const METHOD_NAMES = [
   'branchConversation',
   'listTurns',
   'listWorkspaces',
-  'pickWorkspace',
   'addWorkspace',
   'removeWorkspace',
-  'revealWorkspace',
 ]
 
 const COMMAND_NAMES = [
@@ -75,7 +73,7 @@ test('构建声明：npm ci + esbuild 打包脚本，令牌过白名单且不含
   assert.match(script, /dist\/entry\.js/, '构建脚本产物应为 dist/entry.js')
 })
 
-test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；needs 三条（session / workspace / input）', () => {
+test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；needs 四条（session / workspace / workspace-picker / input）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-sidebar'])
   assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES })
@@ -83,11 +81,18 @@ test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；n
   assert.deepEqual(decl.needs, {
     session: { mode: 'one' },
     workspace: { mode: 'one' },
+    'workspace-picker': { mode: 'one' },
     input: { mode: 'one' },
   })
 })
 
-test('members = execute + term；命令入口 term 全部存在且形状为 eff 到本插件能力类', () => {
+/** 跨身份入口 term：`workspace.pick` / `workspace.reveal` 直接 eff `workspace-picker`。 */
+const CROSS_IDENTITY_TERMS = {
+  'workspace.pick': { port: 'workspace-picker', methods: ['pick'] },
+  'workspace.reveal': { port: 'workspace-picker', methods: ['reveal'] },
+}
+
+test('members = execute + term；命令入口 term 存在且形状为 eff（自能力路由或 workspace-picker）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
@@ -98,8 +103,14 @@ test('members = execute + term；命令入口 term 全部存在且形状为 eff 
     assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 不声明 argsSchema`)
     const term = readJson(command.entry)
     assert.equal(term[0], 'eff', `${command.entry} 应为 eff`)
-    assert.equal(term[1], 'ui-sidebar', `${command.entry} 应 eff 到本插件能力类（自能力路由）`)
-    assert.ok(METHOD_NAMES.includes(term[2]), `${command.entry} 方法名 ${term[2]} 应在声明内`)
+    const cross = CROSS_IDENTITY_TERMS[command.name]
+    if (cross !== undefined) {
+      assert.equal(term[1], cross.port, `${command.entry} 应 eff ${cross.port}`)
+      assert.ok(cross.methods.includes(term[2]), `${command.entry} 方法名 ${term[2]} 应在 ${cross.port} 声明内`)
+    } else {
+      assert.equal(term[1], 'ui-sidebar', `${command.entry} 应 eff 到本插件能力类（自能力路由）`)
+      assert.ok(METHOD_NAMES.includes(term[2]), `${command.entry} 方法名 ${term[2]} 应在声明内`)
+    }
   }
   const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
   assert.equal(readonly['session.turns'], true, 'session.turns 只读')
@@ -118,8 +129,8 @@ test('入口 term 投影读 / 命令 args 口径', () => {
   assert.deepEqual(readJson('terms/workspace.list.json'), ['eff', 'ui-sidebar', 'listWorkspaces', ['g', ['ids']]])
   assert.deepEqual(readJson('terms/session.turns.json'), ['eff', 'ui-sidebar', 'listTurns', ['v', 0]])
   assert.deepEqual(readJson('terms/workspace.add.json'), ['eff', 'ui-sidebar', 'addWorkspace', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/workspace.pick.json'), ['eff', 'ui-sidebar', 'pickWorkspace', ['c', null]])
-  assert.deepEqual(readJson('terms/workspace.reveal.json'), ['eff', 'ui-sidebar', 'revealWorkspace', ['v', 0]])
+  assert.deepEqual(readJson('terms/workspace.pick.json'), ['eff', 'workspace-picker', 'pick', ['c', null]])
+  assert.deepEqual(readJson('terms/workspace.reveal.json'), ['eff', 'workspace-picker', 'reveal', ['v', 0]])
   assert.deepEqual(readJson('terms/client.read.json'), ['eff', 'ui-sidebar', 'clientRead', ['v', 0]])
 })
 

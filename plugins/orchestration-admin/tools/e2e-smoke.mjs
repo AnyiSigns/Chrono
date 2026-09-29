@@ -1,11 +1,10 @@
 // `orchestration-admin` 宿主装配 E2E（黑盒，经 boot CLI）：
-// 临时 root → state/plugins.json 只列 orchestration-admin（无 pins，可独立）→ seed
-// → start → 轮询 loaded（握手）→ stop → verify + replay → 离线读投影核对身份 / 空 pins / 世代。
-// 另跑一次独立 `pack` 验证单目录入世门禁。
+// 临时 root → 按依赖序 pack graph-gate → orchestration → orchestration-admin → state/plugins.json 列三者 → seed
+// → start → 轮询 loaded（握手）→ stop → verify + replay → 离线读投影核对身份 / pins / 世代。
 //
 // 集成缺口（写明）：宿主只在真实 call 期间路由反向调用，本插件无命令 / 无入口 term，
-// 无法在装配运行中从外部触发一次 call；协议级测试已完整覆盖方法行为。本插件无 pins、不发 eff，
-// 故不依赖 #33 / #44 / #43。
+// 无法在装配运行中从外部触发一次 call；协议级测试已完整覆盖 describe / invoke 派发。
+// needs 解析要求提供方先入世：orchestration-admin 需 orchestration，orchestration 需 graph-gate。
 // 用法：node plugins/orchestration-admin/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -20,7 +19,9 @@ import { hostPaths } from '../../../packages/host/paths.ts'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
-const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'orchestration-admin')
+
+// 依赖序：被依赖者先 pack（needs 解析要求提供方已在世界里）。
+const PLUGIN_ORDER = ['graph-gate', 'orchestration', 'orchestration-admin']
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -37,9 +38,15 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
+}
+
+function pluginDir(identity) {
+  return join(REPO_ROOT, 'plugins', identity)
 }
 
 async function waitFor(predicate, label, timeoutMs = 20000) {
@@ -57,17 +64,19 @@ async function main() {
   mkdirSync(join(root, 'state'), { recursive: true })
   let started = false
   try {
-    // 独立 pack：单目录入世门禁（无 pins，不需其它身份）
-    const packRoot = join(tmpdir(), 'kilo', `chrono-orchestration-admin-pack-${stamp}`)
-    mkdirSync(join(packRoot, 'state'), { recursive: true })
-    const packed = boot(packRoot, ['pack', PLUGIN_DIR, '--identity', 'orchestration-admin'])
-    assert.equal(packed.ok, true, `pack 报告 ok:false：${JSON.stringify(packed)}`)
-    assert.equal(packed.identity, 'orchestration-admin')
-    console.log(`pack: ${packed.identity}=${packed.status}`)
+    // 按依赖序 pack：每步验证单目录入世门禁（needs 目标已在世界里）。
+    for (const identity of PLUGIN_ORDER) {
+      const packed = boot(root, ['pack', pluginDir(identity), '--identity', identity])
+      assert.equal(packed.ok, true, `pack ${identity} 报告 ok:false：${JSON.stringify(packed)}`)
+      assert.equal(packed.identity, identity)
+      console.log(`pack: ${packed.identity}=${packed.status}`)
+    }
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
-      JSON.stringify([{ name: 'orchestration-admin', path: PLUGIN_DIR }]),
+      JSON.stringify(
+        PLUGIN_ORDER.map((identity) => ({ name: identity, path: pluginDir(identity) })),
+      ),
     )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
@@ -95,15 +104,26 @@ async function main() {
     assert.deepEqual(replayed.head, status.world_head, 'replay 链头与 status 不一致')
     console.log('verify + replay：ok')
 
-    // 离线读投影：身份存在、pins 为空、有代码世代
+    // 离线读投影：身份存在、needs 解析成 pins、有代码世代。
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const projection = projectBaseOnly(anchor.world, anchor.head)
     const admin = projection.ids['orchestration-admin']
     assert.ok(admin, '投影缺 orchestration-admin')
-    assert.deepEqual(admin.pins, {}, 'pins 应为空对象')
+    assert.deepEqual(
+      admin.pins,
+      { orchestration: 'orchestration' },
+      'admin pins 应为 needs 解析结果',
+    )
     assert.ok(admin.gens.length >= 1, 'orchestration-admin 应有代码世代')
-    console.log('离线投影：pins={}、身份与世代正确')
+    const plane = projection.ids['orchestration']
+    assert.ok(plane, '投影缺 orchestration')
+    assert.deepEqual(
+      plane.pins,
+      { 'graph-gate': 'graph-gate' },
+      'orchestration pins 应为 needs 解析结果',
+    )
+    console.log('离线投影：身份与 needs 解析正确')
 
     console.log(`E2E ok（root=${root}）`)
   } finally {

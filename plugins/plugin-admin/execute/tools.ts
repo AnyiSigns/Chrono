@@ -29,7 +29,13 @@ export const TOOLS: Json[] = [
     argsSchema: { type: 'object', properties: {}, additionalProperties: true },
     caps: READONLY_CAPS,
     idempotent: true,
-    render: { form: 'card', label: 'plugin', summary: 'list', tone: 'solid', detail: { kind: 'list' } },
+    render: {
+      form: 'card',
+      label: 'plugin',
+      summary: 'list',
+      tone: 'solid',
+      detail: { kind: 'list' },
+    },
   },
   {
     name: 'plugin.read',

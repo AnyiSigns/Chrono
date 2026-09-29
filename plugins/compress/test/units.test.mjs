@@ -1,22 +1,11 @@
-// `compress` 逻辑级测试：直接 import execute 源码（不 spawn 服务），覆盖派生 / 合并 / 去重 / 三方法。
+// `compress` 逻辑级测试：直接 import execute 源码（不 spawn 服务），用假提供方后端注入。
+// 摘要形状 / 派生 / 合并 / 语义 / 去重的真实行为住各提供方插件测试；此处只测消费方编排与端口契约。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cosine, dedupNewItems } from '../execute/dedup.ts'
 import { combineDedup, createHandlers, TTL_MS } from '../execute/methods.ts'
-import { asStringList, normalizeText, uniqueStrings } from '../execute/plan.ts'
-import { semanticSummary } from '../execute/semantic.ts'
-import {
-  deriveSentences,
-  emptySummary,
-  mergeSummaryLists,
-  parseSummary,
-  sentencesOf,
-  summaryFromArgs,
-  summaryFromSource,
-  summaryToL2Json,
-  truncate,
-} from '../execute/summary.ts'
+import { normalizeText, uniqueStrings } from '../execute/plan.ts'
 import { BadArgsError } from '../execute/types.ts'
+import { dedupResponse, summarizeResponse } from './fakes.mjs'
 import { memoryFixture } from './driver.mjs'
 
 /** 内存假 short-memory 后端：read 回整份、apply 逐键置 / 删。 */
@@ -43,85 +32,46 @@ function fakeShortMemory(initial = memoryFixture()) {
   }
 }
 
+/** 假摘要后端：按端口方法转发到 fakes 的确定性实现。 */
+function fakeSummarizeBackend() {
+  return {
+    derive: async (args, targetLength, extractItems) =>
+      summarizeResponse('derive', {
+        args,
+        target_length: targetLength,
+        extract_items: extractItems,
+      }).summary,
+    parse: async (record) => summarizeResponse('parse', { record }).summary,
+    current: async (record, targetLength) =>
+      summarizeResponse('current', { record, target_length: targetLength }).summary,
+    sentences: async (slice, limit, targetLength) =>
+      summarizeResponse('sentences', { session_slice: slice, limit, target_length: targetLength })
+        .sentences,
+    merge: async (existing, incoming, outcomes) =>
+      summarizeResponse('merge', { existing, incoming, outcomes }),
+    toL1: async (summary) => summarizeResponse('to_l1', { summary }).record,
+    toL2: async (summary) => summarizeResponse('to_l2', { summary }).record,
+  }
+}
+
+function fakeSemanticBackend(response) {
+  return { summarize: async () => response }
+}
+
+function fakeDedupBackend() {
+  return { dedup: async (incoming, reference) => dedupResponse({ incoming, reference }) }
+}
+
 const ENV = { run: 'r', thread: 't', now: 1_700_000_000_000 }
 const EXPIRES = new Date(1_700_000_000_000 + TTL_MS).toISOString()
 
-test('normalizeText / uniqueStrings / asStringList', () => {
+function handlersWith(overrides = {}) {
+  return createHandlers({ summarize: fakeSummarizeBackend(), ...overrides })
+}
+
+test('normalizeText / uniqueStrings', () => {
   assert.equal(normalizeText('  a   b \n'), 'a b')
   assert.deepEqual(uniqueStrings([' a ', 'a', 'b', '']), ['a', 'b'])
-  assert.deepEqual(asStringList(['x', 'y'], 'facts'), ['x', 'y'])
-  assert.deepEqual(asStringList(undefined, 'facts'), [])
-  assert.throws(() => asStringList('x', 'facts'), BadArgsError)
-})
-
-test('sentencesOf / deriveSentences 确定派生', () => {
-  assert.deepEqual(sentencesOf('First. Second! Third?'), ['First.', 'Second!', 'Third?'])
-  const slice = [
-    { role: 'user', content: 'Alpha one. Beta two.' },
-    { role: 'assistant', content: 'Gamma three.' },
-  ]
-  assert.deepEqual(deriveSentences(slice, 2, 100), ['Alpha one.', 'Beta two.'])
-  assert.deepEqual(deriveSentences(undefined, 3, 100), [])
-})
-
-test('truncate 按 Unicode 码点截断，不劈代理对', () => {
-  assert.equal(truncate('abc', 5), 'abc')
-  assert.equal(truncate('abcde', 3), 'abc')
-  assert.equal(truncate('a😀b', 2), 'a😀')
-  const astral = '😀😀😀'
-  const cut = truncate(astral, 1)
-  assert.equal(cut, '😀')
-  assert.equal(Array.from(cut).length, 1)
-  assert.notEqual(cut, astral.slice(0, 1))
-  assert.equal(astral.slice(0, 1), '\uD83D')
-})
-
-test('target_length 一致作用于 summary 解析来源', () => {
-  const long = 'x'.repeat(10)
-  const parsed = summaryFromSource({ summary: { goal: long, facts: [long, 'short'] } }, 3, 3)
-  assert.equal(parsed.goal, 'xxx')
-  assert.deepEqual(parsed.facts, ['xxx', 'sho'])
-})
-
-test('summaryFromArgs：结构化字段优先，缺失由切片派生', () => {
-  const summary = summaryFromArgs(
-    {
-      goal: '目标',
-      facts: ['事实一', '事实一'],
-      session_slice: [{ role: 'user', content: 'Derived sentence.' }],
-    },
-    100,
-    3,
-  )
-  assert.equal(summary.goal, '目标')
-  assert.deepEqual(summary.facts, ['事实一'])
-  assert.deepEqual(summary.decisions, [])
-  assert.deepEqual(summary.next_steps, [])
-})
-
-test('summaryFromArgs：无结构化字段时从切片派生 goal 与 facts', () => {
-  const summary = summaryFromArgs({ session_slice: [{ role: 'user', content: 'Hello world.' }] }, 100, 3)
-  assert.equal(summary.goal, 'Hello world.')
-  assert.deepEqual(summary.facts, ['Hello world.'])
-})
-
-test('mergeSummaryLists：去重后追加、goal 新值优先', async () => {
-  const existing = { ...emptySummary(), goal: 'old', facts: ['a', 'b'] }
-  const incoming = { ...emptySummary(), goal: 'new', facts: ['b', 'c'] }
-  const dedup = async (items, reference) => ({
-    accepted: items.filter((item) => !reference.includes(item)),
-    dedup: 'text',
-  })
-  const merged = await mergeSummaryLists(existing, incoming, dedup)
-  assert.equal(merged.summary.goal, 'new')
-  assert.deepEqual(merged.summary.facts, ['a', 'b', 'c'])
-  assert.equal(merged.dedup, 'text')
-
-  const mixed = await mergeSummaryLists(existing, incoming, async (items, reference) => ({
-    accepted: items.filter((item) => !reference.includes(item)),
-    dedup: items.length > 0 && reference.length > 0 ? 'vector' : 'text',
-  }))
-  assert.equal(mixed.dedup, 'vector')
 })
 
 test('combineDedup：任一段向量即报 vector，全文本才报 text', () => {
@@ -131,49 +81,9 @@ test('combineDedup：任一段向量即报 vector，全文本才报 text', () =>
   assert.equal(combineDedup('text', 'text'), 'text')
 })
 
-test('parseSummary / summaryToL2Json：L2 无 next_steps', () => {
-  const parsed = parseSummary({ goal: 'g', facts: ['f'], next_steps: ['n'] })
-  assert.deepEqual(parsed.facts, ['f'])
-  assert.deepEqual(parsed.next_steps, ['n'])
-  const l2 = summaryToL2Json(parsed)
-  assert.equal(l2.next_steps, undefined)
-  assert.deepEqual(l2.facts, ['f'])
-})
-
-test('cosine / dedupNewItems：精确去重与向量去重', async () => {
-  assert.equal(cosine([1, 0], [1, 0]), 1)
-  assert.equal(cosine([1, 0], [0, 1]), 0)
-  const exact = await dedupNewItems(['a', 'a', 'b'], ['a'], { model: 'm', threshold: 0.9 })
-  assert.deepEqual(exact.accepted, ['b'])
-  assert.equal(exact.dedup, 'text')
-
-  const embedding = { embed: async (texts) => texts.map((text) => (text === 'alpha' || text === 'alpha!' ? [1, 0] : [0, 1])) }
-  const vector = await dedupNewItems(['alpha!', 'beta'], ['alpha'], { embedding, model: 'm', threshold: 0.9 })
-  assert.deepEqual(vector.accepted, ['beta'])
-  assert.equal(vector.dedup, 'vector')
-
-  const broken = { embed: async () => { throw new Error('down') } }
-  const fallback = await dedupNewItems(['x'], ['y'], { embedding: broken, model: 'm', threshold: 0.9 })
-  assert.deepEqual(fallback.accepted, ['x'])
-  assert.equal(fallback.dedup, 'text')
-})
-
-test('semanticSummary：模型出 JSON 即用；解析失败 / 缺 config 回结构化错误', async () => {
-  const model = { chat: async () => ({ ok: true, text: '```json\n{"goal":"m","facts":["f1","f2"]}\n```' }) }
-  const ok = await semanticSummary({ model_config: { base_url: 'x' } }, emptySummary(), model)
-  assert.equal(ok.summary.goal, 'm')
-  assert.deepEqual(ok.summary.facts, ['f1', 'f2'])
-
-  const bad = await semanticSummary({ model_config: {} }, emptySummary(), { chat: async () => ({ ok: true, text: 'nope' }) })
-  assert.equal(bad.error.code, 'semantic_parse_failed')
-
-  const missing = await semanticSummary({}, emptySummary(), model)
-  assert.equal(missing.error.code, 'model_config_required')
-})
-
 test('summarize（algorithmic）：写 L1 到 short-memory，保留其他会话 / 工作区', async () => {
   const store = fakeShortMemory()
-  const handlers = createHandlers({ shortMemory: store.backend })
+  const handlers = handlersWith({ shortMemory: store.backend })
   const value = await handlers.summarize(
     { conversation: 'c-1', covered_upto: 'msg-9', goal: 'G', facts: ['f1', 'f2'] },
     ENV,
@@ -191,15 +101,69 @@ test('summarize（algorithmic）：写 L1 到 short-memory，保留其他会话 
 
 test('summarize：缺 conversation → BadArgsError', async () => {
   const store = fakeShortMemory()
-  const handlers = createHandlers({ shortMemory: store.backend })
+  const handlers = handlersWith({ shortMemory: store.backend })
   await assert.rejects(() => handlers.summarize({}, ENV), BadArgsError)
+})
+
+test('summarize：去重经注入的 dedup 后端（向量路径报 vector）', async () => {
+  const store = fakeShortMemory()
+  store.memory.sessions['c-1'] = {
+    summary: {
+      goal: '',
+      decisions: [],
+      facts: ['alpha'],
+      open_questions: [],
+      files: [],
+      next_steps: [],
+    },
+    covered_upto: 'msg-1',
+    at: '2020-01-01T00:00:00.000Z',
+    expires_at: '2020-01-02T00:00:00.000Z',
+  }
+  const dedup = {
+    dedup: async (incoming, reference) => ({
+      accepted: incoming.filter((item) => !reference.includes(item)),
+      dedup: 'vector',
+    }),
+  }
+  const handlers = handlersWith({ shortMemory: store.backend, dedup })
+  const value = await handlers.summarize({ conversation: 'c-1', facts: ['alpha!', 'beta'] }, ENV)
+  assert.equal(value.dedup, 'vector')
+  assert.deepEqual(store.memory.sessions['c-1'].summary.facts, ['alpha', 'alpha!', 'beta'])
+})
+
+test('summarize：dedup 后端缺失 → 回落精确文本（text）', async () => {
+  const store = fakeShortMemory()
+  const handlers = handlersWith({ shortMemory: store.backend })
+  const value = await handlers.summarize({ conversation: 'c-1', facts: ['a', 'a', 'b'] }, ENV)
+  assert.equal(value.dedup, 'text')
+  assert.deepEqual(store.memory.sessions['c-1'].summary.facts, ['a', 'b'])
+})
+
+test('summarize：dedup 后端失败 → 回落精确文本，不炸本轮', async () => {
+  const store = fakeShortMemory()
+  const dedup = {
+    dedup: async () => {
+      throw new Error('down')
+    },
+  }
+  const handlers = handlersWith({ shortMemory: store.backend, dedup })
+  const value = await handlers.summarize({ conversation: 'c-1', facts: ['a', 'b'] }, ENV)
+  assert.equal(value.ok, true)
+  assert.equal(value.dedup, 'text')
 })
 
 test('compact：写 L1 并触发 extract 写 L2（2–3 条）', async () => {
   const store = fakeShortMemory()
-  const handlers = createHandlers({ shortMemory: store.backend })
+  const handlers = handlersWith({ shortMemory: store.backend })
   const value = await handlers.compact(
-    { conversation: 'c-1', workspace: 'w-1', goal: 'G', facts: ['one', 'two', 'three'], decisions: ['decide'] },
+    {
+      conversation: 'c-1',
+      workspace: 'w-1',
+      goal: 'G',
+      facts: ['one', 'two', 'three'],
+      decisions: ['decide'],
+    },
     ENV,
   )
   assert.equal(store.memory.sessions['c-1'].summary.goal, 'G')
@@ -217,49 +181,92 @@ test('extract：2–3 条不重复；全重复回 all_duplicate', async () => {
     sources: [],
     at: '2020-01-01T00:00:00.000Z',
   }
-  const handlers = createHandlers({ shortMemory: store.backend })
-  const value = await handlers.extract({ workspace: 'w-1', summary: { facts: ['dup', 'dup2', 'new1', 'new2', 'new3'] } }, ENV)
+  const handlers = handlersWith({ shortMemory: store.backend })
+  const value = await handlers.extract(
+    { workspace: 'w-1', summary: { facts: ['dup', 'dup2', 'new1', 'new2', 'new3'] } },
+    ENV,
+  )
   assert.deepEqual(value.items, ['new1', 'new2', 'new3'])
 
-  const dupOnly = await handlers.extract({ workspace: 'w-1', summary: { facts: ['dup', 'dup2'] }, session_slice: [] }, ENV)
+  const dupOnly = await handlers.extract(
+    { workspace: 'w-1', summary: { facts: ['dup', 'dup2'] }, session_slice: [] },
+    ENV,
+  )
   assert.equal(dupOnly.reason, 'all_duplicate')
 })
 
 test('extract：候选不足 2 条 → insufficient_content', async () => {
   const store = fakeShortMemory()
-  const handlers = createHandlers({ shortMemory: store.backend })
+  const handlers = handlersWith({ shortMemory: store.backend })
   const value = await handlers.extract({ workspace: 'w-1', summary: { facts: [] } }, ENV)
   assert.equal(value.ok, false)
   assert.equal(value.error.code, 'insufficient_content')
 })
 
-test('semantic 模式：经注入模型后端出摘要；模型失败作数据', async () => {
+test('semantic 模式：经注入语义后端出摘要；模型失败作数据', async () => {
   const store = fakeShortMemory()
-  const model = { chat: async () => ({ ok: true, text: JSON.stringify({ goal: 'M', facts: ['mf1', 'mf2'] }) }) }
-  const handlers = createHandlers({ shortMemory: store.backend, model })
-  const value = await handlers.summarize({ conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } }, ENV)
+  const model = fakeSemanticBackend({ summary: { goal: 'M', facts: ['mf1', 'mf2'] } })
+  const handlers = handlersWith({ shortMemory: store.backend, semantic: model })
+  const value = await handlers.summarize(
+    { conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } },
+    ENV,
+  )
   assert.equal(value.summary.goal, 'M')
 
-  const failing = createHandlers({ shortMemory: fakeShortMemory().backend, model: { chat: async () => { throw new Error('boom') } } })
-  const failed = await failing.summarize({ conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } }, ENV)
+  const failing = handlersWith({
+    shortMemory: fakeShortMemory().backend,
+    semantic: fakeSemanticBackend({ error: { code: 'model_server_error', message: 'boom' } }),
+  })
+  const failed = await failing.summarize(
+    { conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' } },
+    ENV,
+  )
   assert.equal(failed.ok, false)
+  assert.equal(failed.error.code, 'model_server_error')
   assert.equal(failed.$directives, undefined)
+})
+
+test('semantic 模式：未接语义后端 → model_unavailable', async () => {
+  const store = fakeShortMemory()
+  const handlers = handlersWith({ shortMemory: store.backend })
+  const value = await handlers.summarize({ conversation: 'c-1', mode: 'semantic' }, ENV)
+  assert.equal(value.ok, false)
+  assert.equal(value.error.code, 'model_unavailable')
 })
 
 test('target_length 一致作用于 semantic 输出与既有 L1', async () => {
   const store = fakeShortMemory()
   store.memory.sessions['c-1'] = {
-    summary: { goal: '', decisions: [], facts: ['oldfactlong'], open_questions: [], files: [], next_steps: [] },
+    summary: {
+      goal: '',
+      decisions: [],
+      facts: ['oldfactlong'],
+      open_questions: [],
+      files: [],
+      next_steps: [],
+    },
     covered_upto: null,
     at: '2020-01-01T00:00:00.000Z',
     expires_at: '2020-01-02T00:00:00.000Z',
   }
-  const model = { chat: async () => ({ ok: true, text: JSON.stringify({ goal: 'aaaaaa', facts: ['bbbbbb'] }) }) }
-  const handlers = createHandlers({ shortMemory: store.backend, model })
+  const semantic = fakeSemanticBackend({ summary: { goal: 'aaaaaa', facts: ['bbbbbb'] } })
+  const handlers = handlersWith({ shortMemory: store.backend, semantic })
   const value = await handlers.summarize(
     { conversation: 'c-1', mode: 'semantic', model_config: { base_url: 'x' }, target_length: 3 },
     ENV,
   )
   assert.equal(value.summary.goal, 'aaa')
   assert.deepEqual(value.summary.facts, ['old', 'bbb'])
+})
+
+test('persist:false 只算不写', async () => {
+  const store = fakeShortMemory()
+  const handlers = handlersWith({ shortMemory: store.backend })
+  const before = JSON.stringify(store.memory)
+  const value = await handlers.summarize(
+    { conversation: 'c-1', goal: 'G', facts: ['f'], persist: false },
+    ENV,
+  )
+  assert.equal(value.summary.goal, 'G')
+  assert.equal(JSON.stringify(store.memory), before)
 })

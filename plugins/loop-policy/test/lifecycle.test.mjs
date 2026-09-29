@@ -170,6 +170,11 @@ test('段边界：一次 interpret 以 chat.resume 续跑收口为 stepping（�
       directivesOf(result.value).some((item) => item.kind === 'eval' && item.command === 'chat.resume'),
       '段边界必须仍返回 chat.resume 续跑 eval',
     )
+    // 续跑 args 带下一段图内进度：chat 在下一段 `chat.turn.started` 上广播，UI 轮次实时前进。
+    const resume = directivesOf(result.value).find((item) => item.kind === 'eval' && item.command === 'chat.resume')
+    assert.equal(resume.args.turn_id, 't1')
+    assert.equal(typeof resume.args.progress.iter, 'number')
+    assert.equal(resume.args.progress.iter, summary.progress.iter + 1, 'progress.iter 取下一段序号')
   } finally {
     service.close()
   }

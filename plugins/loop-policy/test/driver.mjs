@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
+import { runtimeClosure, validateGraphData } from './fake-graph-gate.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
@@ -49,27 +50,50 @@ export function defaultProviders(overrides = {}) {
       }
     },
     'model.chat': (args) => {
-      const last = Array.isArray(args.messages) && args.messages.length > 0 ? args.messages[args.messages.length - 1] : null
-      if (last && last.role === 'tool') return { ok: true, text: 'done after tools', tool_calls: [], usage: { tokens: 10 } }
+      const last =
+        Array.isArray(args.messages) && args.messages.length > 0
+          ? args.messages[args.messages.length - 1]
+          : null
+      if (last && last.role === 'tool')
+        return { ok: true, text: 'done after tools', tool_calls: [], usage: { tokens: 10 } }
       return { ok: true, text: 'hi there', tool_calls: [], usage: { tokens: 5 } }
     },
     'guard.judge': (args) => {
       const calls = Array.isArray(args.calls) ? args.calls : []
-      const decisions = calls.map((call, index) => ({ index, port: call.port ?? '', tool: call.tool ?? '', verdict: 'allow' }))
+      const decisions = calls.map((call, index) => ({
+        index,
+        port: call.port ?? '',
+        tool: call.tool ?? '',
+        verdict: 'allow',
+      }))
       return { decisions, summary: { allow: decisions.length, escalate: 0, deny: 0 } }
     },
     'approval.enqueue': () => ({
       $directives: [
-        { kind: 'write', request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { id: 'ap-1' } } }] } } },
+        {
+          kind: 'write',
+          request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { id: 'ap-1' } } }] } },
+        },
         { kind: 'extern', payload: { ok: true, id: 'ap-1', count: 1, pending: 1 } },
       ],
     }),
     'tools.dispatch': (args) => {
       const calls = Array.isArray(args.calls) ? args.calls : []
-      return { results: calls.map((call, index) => ({ call_id: call.call_id ?? `call-${index}`, ok: true, result: { tool: call.tool } })) }
+      return {
+        results: calls.map((call, index) => ({
+          call_id: call.call_id ?? `call-${index}`,
+          ok: true,
+          result: { tool: call.tool },
+        })),
+      }
     },
     'session.step_append': () => ({ ok: true, turn_id: 't1', deduped: false }),
-    'session.turn_settle': (args) => ({ ok: true, turn_id: args.turn_id, outcome: args.outcome, persisted: true }),
+    'session.turn_settle': (args) => ({
+      ok: true,
+      turn_id: args.turn_id,
+      outcome: args.outcome,
+      persisted: true,
+    }),
     'retrieval.search': () => ({ items: [] }),
     'compress.summarize': (args) => ({
       ok: true,
@@ -88,6 +112,13 @@ export function defaultProviders(overrides = {}) {
     }),
     'router.select': (args) => args.primary,
     'evolve-metrics.shadow': () => ({ status: 'pass', metric_id: 'metric-1' }),
+    // 机械闸归 graph-gate 提供方：测试以本地假实现应答（与真实契约同形）；真实行为由 graph-gate
+    // 自带测试与根 tests/contract 覆盖，插件间不得直连。
+    'graph-gate.validate': (args) => validateGraphData(args),
+    'graph-gate.closure': (args) => {
+      const result = runtimeClosure(args.graph, args.refs ?? {})
+      return { ok: result.ok, errors: result.errors, view: result.view }
+    },
   }
   return { ...providers, ...overrides }
 }
@@ -130,7 +161,12 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
   child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
 
   function respond(message) {
-    if (message.port === 'session' && message.method === 'step_append' && message.args && typeof message.args.turn_id === 'string') {
+    if (
+      message.port === 'session' &&
+      message.method === 'step_append' &&
+      message.args &&
+      typeof message.args.turn_id === 'string'
+    ) {
       const list = stepStore.get(message.args.turn_id) ?? []
       list.push(message.args)
       stepStore.set(message.args.turn_id, list)
@@ -138,19 +174,39 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     const key = `${message.port}.${message.method}`
     const provider = resolvedProviders[key]
     if (provider === undefined) {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.error', error: 'unresolved_cap', message: key }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.error',
+          error: 'unresolved_cap',
+          message: key,
+        }),
+      )
       return
     }
     Promise.resolve(provider(message.args ?? {}, message))
       .then((value) => {
         if (value && typeof value === 'object' && value.__error) {
-          child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.error', ...value.__error }))
+          child.stdin.write(
+            encodeFrame({ v: '1', id: message.id, kind: 'port.error', ...value.__error }),
+          )
           return
         }
-        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', value: value ?? null }))
+        child.stdin.write(
+          encodeFrame({ v: '1', id: message.id, kind: 'port.result', value: value ?? null }),
+        )
       })
       .catch((err) => {
-        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.error', error: 'internal', message: err.message }))
+        child.stdin.write(
+          encodeFrame({
+            v: '1',
+            id: message.id,
+            kind: 'port.error',
+            error: 'internal',
+            message: err.message,
+          }),
+        )
       })
   }
 
@@ -162,12 +218,18 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, 20000)
       pending.set(id, (message) => {
         clearTimeout(timer)
         if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`))
+          rejectRequest(
+            new Error(
+              `expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`,
+            ),
+          )
           return
         }
         resolveRequest(message)
@@ -183,11 +245,20 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     const merged = []
     let last = null
     for (let guard = 0; guard < 500; guard += 1) {
-      last = await request('call', { port: 'loop-policy', method: 'interpret', args: current, env: callEnv }, ['result', 'error'])
+      last = await request(
+        'call',
+        { port: 'loop-policy', method: 'interpret', args: current, env: callEnv },
+        ['result', 'error'],
+      )
       if (last.kind !== 'result') return last
       const dirs = directivesOf(last.value)
       const cont = dirs.find(
-        (item) => item && item.kind === 'eval' && item.command === 'chat.resume' && item.args && typeof item.args.turn_id === 'string',
+        (item) =>
+          item &&
+          item.kind === 'eval' &&
+          item.command === 'chat.resume' &&
+          item.args &&
+          typeof item.args.turn_id === 'string',
       )
       if (cont === undefined) break
       for (const item of dirs) {
@@ -202,7 +273,8 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
       }
     }
     if (merged.length === 0 || last === null || last.kind !== 'result') return last
-    const value = last.value && typeof last.value === 'object' && !Array.isArray(last.value) ? last.value : {}
+    const value =
+      last.value && typeof last.value === 'object' && !Array.isArray(last.value) ? last.value : {}
     return { ...last, value: { ...value, $directives: [...merged, ...directivesOf(value)] } }
   }
 
@@ -214,7 +286,8 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     stderr,
     request,
     hello: () => request('hello', { impl: 'loop-policy', gen: 'gen-1' }, 'manifest'),
-    call: (port, method, args, callEnv = env) => request('call', { port, method, args, env: callEnv }, ['result', 'error']),
+    call: (port, method, args, callEnv = env) =>
+      request('call', { port, method, args, env: callEnv }, ['result', 'error']),
     interpret: (bag, callEnv = env) => interpretTurn(bag, callEnv),
     close: () => child.stdin.end(),
   }
@@ -243,10 +316,13 @@ export function writeOps(value) {
 export function writeBatches(value) {
   const batches = []
   for (const directive of directivesOf(value)) {
-    if (directive.kind === 'write' && directive.request?.args && Array.isArray(directive.request.args.ops)) {
+    if (
+      directive.kind === 'write' &&
+      directive.request?.args &&
+      Array.isArray(directive.request.args.ops)
+    ) {
       batches.push(directive.request.args.ops)
     }
   }
   return batches
 }
-

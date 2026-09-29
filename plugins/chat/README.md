@@ -26,17 +26,18 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 | --- | --- |
 | `chat.send`（无参） | 服务按 `call` 帧 `env.thread` 取线程键，反向调用 `input.read` 取本线程槽 kind：`chat.message` → 跑管道；空槽 / `idle` / 非 chat kind → 幂等 no-op（`extern{ok:true,noop:true}`，不触发下游 eff）。 |
 | `chat.history` | 反向调用 `session.history({conversation,before,limit})`，返回服务读自有存储还原的窗口（`messages` 新→旧 + `body` + `refs`）；**不读投影 `refs`、不逐跳 hydrator 还原**。**不触发下游写、不写链**——声明为**只读命令**（`readonly: true`），宿主不广播其 `run.started` / `run.finished`、不落审计、不推进链头。 |
-| `chat.resume` | 续同一回合，两种 args：<br>① `{cursor, thread, payload?, ids?}`——裁决 / 作答续跑：装配与 send 相同的 interpret bag，另加 `bag.resume={cursor,thread,payload}` 交 loop-policy 按游标恢复图位置，合并计划返回。<br>② `{turn_id, thread?, ids?}`——**段续跑**（本服务段尾 eval 自续）：无游标，历史窗口移到回合起点、输入取本回合用户消息，`bag.resume={continuation:true,turn_id}`，loop-policy 据会话步记录重建状态。回合已非 open（如取消竞态先落定）则不派发，回执既有状态。<br>**`ids` = 调用方随 plan eval 传入的投影切片**（内核 term 不能同时传 args 与投影）；段续跑由宿主 `inject` 并入。 |
+| `chat.resume` | 续同一回合，两种 args：<br>① `{cursor, thread, payload?, ids?}`——裁决 / 作答续跑：装配与 send 相同的 interpret bag，另加 `bag.resume={cursor,thread,payload}` 交 loop-policy 按游标恢复图位置，合并计划返回。<br>② `{turn_id, thread?, progress?, ids?}`——**段续跑**（本服务段尾 eval 自续）：无游标，历史窗口移到回合起点、输入取本回合用户消息，`bag.resume={continuation:true,turn_id}`，loop-policy 据会话步记录重建状态；`progress` 为上一段段尾的图内进度（含下一段序号），随 `chat.turn.started` 广播。回合已非 open（如取消竞态先落定）则不派发，回执既有状态。<br>**`ids` = 调用方随 plan eval 传入的投影切片**（内核 term 不能同时传 args 与投影）；段续跑由宿主 `inject` 并入。 |
 | `chat.cancel`（args `{turn_id, thread?}`） | 协作式取消：先经 `session.turn_cancel` 落取消意图，再 `loop-policy.cancel`（停止再派发）与 `model-protocol.abort`（销毁在途 HTTP），最后 `session.turn_settle(cancelled)` 经 CAS 落终态并广播 `chat.turn.settled`。已收口回合是 no-op（回 `{cancelled:false, reason:'already_settled', outcome?}`），**不回溯成功回合**；**输入槽保留**供重试。**必须声明为并发方法**，否则会排在在途 `chat.send` 后永远到不了。 |
 
 - **回合身份 `turn_id`**：`send` 由槽写入 run id（`input.slot_ref`）铸 `t-<slot_ref>`，随 bag → 解释器 → 步记录 →
   收口 → 事件全程携带；`resume` 从裁决 / 作答游标或段续跑 args 里续同一 `turn_id`，不重铸、不重开回合头。
   一个 `turn_id` = 一个用户意图 = 一个回合，跨 `send` + N 次 resume（长回合每段一次段续跑，逐段 `chat.turn.started`）。
 - **上行事件 `chat.turn.started`**：`send` / `resume` 在派发 `loop-policy.interpret` **前**自报一次，
-  载荷 `{turn_id, run, thread, conversation, source}`——`run` = 顶层 run id（与宿主 `run.finished` 配对、可取消），
+  载荷 `{turn_id, run, thread, conversation, source}` + 段续跑时随 args 带来的 `progress`（图内进度）——
+  `run` = 顶层 run id（与宿主 `run.finished` 配对、可取消），
   `source ∈ send/resume`。用途：续跑是嵌在 `ui-approval.decide` / `question.answer` 顶层 run 内的 eval，
   没有独立宿主 run 生命周期；客户端据此在首个 `model.delta` 前建在途回合 / 显示生成态。
-  空槽 / 未配置模型等回合开始前的拒绝不发；派发前尚无解释摘要，故不带图内进度。
+  空槽 / 未配置模型等回合开始前的拒绝不发；`send` 派发前尚无解释摘要，故不带图内进度（`resume` 段续跑带上一段段尾进度，UI 轮次据此实时前进）。
 - **挂起事件 `chat.turn.pending`**：`loop-policy.interpret` 以 `ended:'pending'`（`approval.wait` 等审批 / 提问）
   收口时广播，载荷 `{turn_id, run, thread, conversation, pending, source}`（`pending` = 挂起种类，如 `approval`）
   + 摘要里确实存在的 `progress`（图内进度 `{iter, node_index, contract_id}`，UI 据此显示当前编排节点）。

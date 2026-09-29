@@ -24,7 +24,9 @@ function boot(root, args) {
     cwd: REPO_ROOT,
   })
   if (result.status !== 0) {
-    throw new Error(`boot ${args[0]} 失败（exit ${result.status}）：${result.stderr || result.stdout}`)
+    throw new Error(
+      `boot ${args[0]} 失败（exit ${result.status}）：${result.stderr || result.stdout}`,
+    )
   }
   return JSON.parse(result.stdout)
 }
@@ -56,7 +58,9 @@ function main() {
   ]
   const result = boot(root, ['run', JSON.stringify(directive)])
   if (result.status !== 'done') throw new Error(`写入未完成：${JSON.stringify(result)}`)
-  process.stdout.write(`${JSON.stringify({ ok: true, identity: 'tools', status: result.status })}\n`)
+  process.stdout.write(
+    `${JSON.stringify({ ok: true, identity: 'tools', status: result.status })}\n`,
+  )
 }
 
 main()

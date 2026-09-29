@@ -8,9 +8,15 @@ import { dirname, join, resolve } from 'node:path'
 import { startService } from './driver.mjs'
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const REGISTRY_ROOT = resolve(PKG_ROOT, '..', 'tool-registry')
 
 function readJson(rel) {
   return JSON.parse(readFileSync(join(PKG_ROOT, rel), 'utf8'))
+}
+
+/** 目录装配已下沉 `tool-registry`，绑定 class 的 `needs.one` 归属该提供方。 */
+function readRegistryJson(rel) {
+  return JSON.parse(readFileSync(join(REGISTRY_ROOT, rel), 'utf8'))
 }
 
 const EXPECTED = {
@@ -26,13 +32,16 @@ test('tools/default-body.json：记忆工具绑定齐备且形状合规', () => 
   const bindings = body.bindings
   assert.deepEqual(Object.keys(bindings).sort(), Object.keys(EXPECTED).sort())
 
-  const needs = readJson('plugin.json').needs
+  const needs = readRegistryJson('plugin.json').needs
   for (const [name, expected] of Object.entries(EXPECTED)) {
     const item = bindings[name]
     assert.equal(item.class, expected.class, `${name}.class`)
     assert.equal(item.method, expected.method, `${name}.method`)
     assert.equal(item.idempotent, expected.idempotent, `${name}.idempotent`)
-    assert.ok(Object.hasOwn(needs, item.class), `${name}.class ${item.class} 必须是本插件 needs 的能力类`)
+    assert.ok(
+      Object.hasOwn(needs, item.class),
+      `${name}.class ${item.class} 必须是本插件 needs 的能力类`,
+    )
     for (const key of ['intent', 'when_to_use', 'boundaries']) {
       assert.equal(typeof item[key], 'string', `${name}.${key}`)
       assert.ok(item[key].trim().length > 0, `${name}.${key} 非空`)
@@ -44,7 +53,7 @@ test('tools/default-body.json：记忆工具绑定齐备且形状合规', () => 
 
 test('tools/default-body.json：检索绑定就位（class retrieval → needs.retrieval）', () => {
   const body = readJson('tools/default-body.json')
-  const needs = readJson('plugin.json').needs
+  const needs = readRegistryJson('plugin.json').needs
   const item = body.bindings['retrieval.search']
   assert.ok(item, '默认绑定表须含 retrieval.search')
   assert.equal(item.class, 'retrieval')
@@ -75,7 +84,9 @@ test('默认绑定表进目录：list 无拒绝，记忆工具可派发', async 
 
 test('默认绑定表派发：memory.compress 走反向 port.call(compress.summarize)', async () => {
   const body = readJson('tools/default-body.json')
-  const service = startService({ providers: { compress: { summarize: () => ({ ok: true, kind: 'summarize' }) } } })
+  const service = startService({
+    providers: { compress: { summarize: () => ({ ok: true, kind: 'summarize' }) } },
+  })
   try {
     await service.hello()
     const listed = await service.call('list', { tools_bindings: body })
@@ -87,7 +98,9 @@ test('默认绑定表派发：memory.compress 走反向 port.call(compress.summa
     })
     assert.equal(dispatched.kind, 'result', JSON.stringify(dispatched))
     assert.equal(dispatched.value.results[0].ok, true, JSON.stringify(dispatched.value.results[0]))
-    const reverse = service.portCalls.find((frame) => frame.port === 'compress' && frame.method === 'summarize')
+    const reverse = service.portCalls.find(
+      (frame) => frame.port === 'compress' && frame.method === 'summarize',
+    )
     assert.ok(reverse !== undefined, '应发 compress.summarize 反向调用')
     assert.equal(reverse.args.conversation, 'c-1', '调用方注入的 conversation 原样透传')
     assert.equal(reverse.args.goal, 'g')
@@ -99,7 +112,11 @@ test('默认绑定表派发：memory.compress 走反向 port.call(compress.summa
 test('默认绑定表派发：retrieval.search 走反向 port.call(retrieval.search)', async () => {
   const body = readJson('tools/default-body.json')
   const service = startService({
-    providers: { retrieval: { search: (args) => ({ ok: true, kind: 'search', recall: [], query: args.query }) } },
+    providers: {
+      retrieval: {
+        search: (args) => ({ ok: true, kind: 'search', recall: [], query: args.query }),
+      },
+    },
   })
   try {
     await service.hello()
@@ -113,7 +130,9 @@ test('默认绑定表派发：retrieval.search 走反向 port.call(retrieval.sea
     })
     assert.equal(dispatched.kind, 'result', JSON.stringify(dispatched))
     assert.equal(dispatched.value.results[0].ok, true, JSON.stringify(dispatched.value.results[0]))
-    const reverse = service.portCalls.find((frame) => frame.port === 'retrieval' && frame.method === 'search')
+    const reverse = service.portCalls.find(
+      (frame) => frame.port === 'retrieval' && frame.method === 'search',
+    )
     assert.ok(reverse !== undefined, '应发 retrieval.search 反向调用')
     assert.equal(reverse.args.query, 'foo.ts 第 42 行')
     assert.equal(reverse.args.workspace, 'w-1', '调用方注入的 workspace 原样透传')

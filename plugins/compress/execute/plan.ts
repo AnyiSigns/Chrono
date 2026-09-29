@@ -18,18 +18,6 @@ export function normalizeText(value: Json | undefined): string {
   return value.trim().replace(/\s+/g, ' ')
 }
 
-/** 字符串数组：缺省回空数组；含非字符串即拒（结构化 bad_args）。 */
-export function asStringList(value: Json | undefined, field: string): string[] {
-  if (value === undefined || value === null) return []
-  if (!Array.isArray(value)) throw new BadArgsError(`${field} must be an array`)
-  const out: string[] = []
-  for (const item of value) {
-    if (typeof item !== 'string') throw new BadArgsError(`${field} must contain strings`)
-    out.push(item)
-  }
-  return out
-}
-
 /** 规范化 + 去空 + 精确去重（保序）。 */
 export function uniqueStrings(items: string[]): string[] {
   const seen = new Set<string>()

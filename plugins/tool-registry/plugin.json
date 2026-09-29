@@ -1,0 +1,49 @@
+{
+  "identity": "tool-registry",
+  "schema": "schema/tool-registry.json",
+  "implements": ["tool-registry"],
+  "methods": {
+    "tool-registry": ["list"]
+  },
+  "pins": {},
+  "needs": {
+    "tool-schema": { "mode": "one" },
+    "tool-fs": { "mode": "one" },
+    "tool-shell": { "mode": "one" },
+    "tool-http": { "mode": "one" },
+    "tool-browser": { "mode": "one" },
+    "mcp": { "mode": "one" },
+    "plugin-admin": { "mode": "one" },
+    "orchestration-admin": { "mode": "one" },
+    "todo": { "mode": "one" },
+    "question": { "mode": "one" },
+    "session": { "mode": "one" },
+    "compress": { "mode": "one" },
+    "memory": { "mode": "one" },
+    "retrieval": { "mode": "one" },
+    "memory-maintenance": { "mode": "one" },
+    "evolve-metrics": { "mode": "one" }
+  },
+  "start": "node execute/main.ts",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

@@ -4,7 +4,7 @@
 
 import type { Json, Rec } from 'plugin-sdk'
 
-/** 能力声明（与 #25 一致：`{fs:{read,write}, net}` 对象形、含 fs.read；net 为字符串 scope）。 */
+/** 能力声明（`{fs:{read,write}, net}` 对象形、含 fs.read；net 为字符串 scope）。 */
 const READONLY_CAPS: Rec = {
   fs: { read: 'none', write: 'none' },
   net: 'none',
@@ -27,11 +27,21 @@ export const TOOLS: Json[] = [
     param_semantics: {},
     boundaries: '只读概览，不含全文；看全文用 orchestration.read，校验用 orchestration.validate。',
     description: '列出当前编排图的概览、契约清单与阈值。',
-    argsSchema: { type: 'object', properties: { graph: GRAPH_BAG, evolution: EVOLUTION_BAG, pins: PINS_BAG }, additionalProperties: true },
+    argsSchema: {
+      type: 'object',
+      properties: { graph: GRAPH_BAG, evolution: EVOLUTION_BAG, pins: PINS_BAG },
+      additionalProperties: true,
+    },
     hidden_params: ['graph', 'evolution', 'pins'],
     caps: READONLY_CAPS,
     idempotent: true,
-    render: { form: 'card', label: 'orchestration', summary: 'list', tone: 'solid', detail: { kind: 'list' } },
+    render: {
+      form: 'card',
+      label: 'orchestration',
+      summary: 'list',
+      tone: 'solid',
+      detail: { kind: 'list' },
+    },
   },
   {
     name: 'orchestration.read',
@@ -41,7 +51,8 @@ export const TOOLS: Json[] = [
       kind: '要读的类型：contract / scope / graph / thresholds / evidence。',
       target: '目标 id；kind=graph 时忽略。',
     },
-    boundaries: '只读单条目，不列目录；校验用 orchestration.validate，改图用 orchestration.propose。',
+    boundaries:
+      '只读单条目，不列目录；校验用 orchestration.validate，改图用 orchestration.propose。',
     description: '按类型与 id 读取编排某一部分的全文。',
     argsSchema: {
       type: 'object',
@@ -57,7 +68,13 @@ export const TOOLS: Json[] = [
     hidden_params: ['graph', 'evolution'],
     caps: READONLY_CAPS,
     idempotent: true,
-    render: { form: 'card', label: 'orchestration', summary: 'read  {target}', tone: 'solid', detail: { kind: 'json' } },
+    render: {
+      form: 'card',
+      label: 'orchestration',
+      summary: 'read  {target}',
+      tone: 'solid',
+      detail: { kind: 'json' },
+    },
   },
   {
     name: 'orchestration.validate',
@@ -79,7 +96,13 @@ export const TOOLS: Json[] = [
     hidden_params: ['graph', 'active_graph', 'pins', 'runs_since_fork'],
     caps: READONLY_CAPS,
     idempotent: true,
-    render: { form: 'card', label: 'orchestration', summary: 'validate', tone: 'solid', detail: { kind: 'json' } },
+    render: {
+      form: 'card',
+      label: 'orchestration',
+      summary: 'validate',
+      tone: 'solid',
+      detail: { kind: 'json' },
+    },
   },
   {
     name: 'orchestration.propose',
@@ -112,7 +135,13 @@ export const TOOLS: Json[] = [
     hidden_params: ['graph', 'target'],
     caps: READONLY_CAPS,
     idempotent: false,
-    render: { form: 'card', label: 'orchestration', summary: 'propose  {target}', tone: 'solid', detail: { kind: 'diff' } },
+    render: {
+      form: 'card',
+      label: 'orchestration',
+      summary: 'propose  {target}',
+      tone: 'solid',
+      detail: { kind: 'diff' },
+    },
   },
 ]
 

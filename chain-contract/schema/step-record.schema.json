@@ -8,6 +8,7 @@
     { "$ref": "#/definitions/turnOpen" },
     { "$ref": "#/definitions/stepIntent" },
     { "$ref": "#/definitions/stepResult" },
+    { "$ref": "#/definitions/stepUser" },
     { "$ref": "#/definitions/checkpoint" },
     { "$ref": "#/definitions/turnSettle" }
   ],
@@ -112,6 +113,18 @@
         },
         "reasoning": { "$ref": "#/definitions/reasoningBlock" },
         "usage": { "type": "object", "additionalProperties": true, "description": "token 用量（含缓存命中）。" }
+      }
+    },
+    "stepUser": {
+      "type": "object",
+      "required": ["type", "turn_id", "seq", "user_message"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "step.user" },
+        "turn_id": { "$ref": "#/definitions/turnId" },
+        "seq": { "type": "integer", "minimum": 0, "description": "步序号；回合运行中插入的用户消息按同一步号词序落在既有步之间。" },
+        "insert_id": { "type": "string", "description": "插入幂等键（同回合同键不重复落）。" },
+        "user_message": { "type": "object", "additionalProperties": true, "description": "回合运行中插入的用户消息记录（content / attachments / at）。" }
       }
     },
     "checkpoint": {

@@ -105,7 +105,7 @@ function limitOf(meta: Rec | null): Rec | null {
 
 /**
  * 模型连接实例：从 `#2 config` 的当前 vendor / model 解析 provider 与档案，
- * 拼出 `{vendor, model, base_url, auth_ref, params, quirks?, protocol?, context_window?, max_output?}`。
+ * 拼出 `{vendor, model, base_url, auth_ref, params, quirks?, protocol?, context_window?, max_output?, modalities?}`。
  * `#12`（连接）与 `#13`（预算）共用同源 config；缺 vendor / model / provider 回 null。
  */
 export function modelConfigOf(ids: Json): Rec | null {
@@ -142,6 +142,8 @@ export function modelConfigOf(ids: Json): Rec | null {
     (limit !== null ? numberField(limit['output']) : null)
   if (contextWindow !== null) config['context_window'] = contextWindow
   if (maxOutput !== null) config['max_output'] = maxOutput
+  // 多模态能力随档案下传：context-window 据此对不支持的模态降级为文本引用（否则会硬塞非法 part）。
+  if (meta !== null && isRecord(meta['modalities'])) config['modalities'] = meta['modalities']
   return config
 }
 

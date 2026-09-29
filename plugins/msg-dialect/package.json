@@ -1,0 +1,21 @@
+{
+  "name": "msg-dialect",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "消息方言编解码提供方：quirks 归一 / 推理能力表 / 工具编形 / 鉴权 / 请求编形（HTTP + SDK）/ 整包解析 / 资产内联；逐段流式留消费方",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

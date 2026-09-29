@@ -34,8 +34,14 @@ test('modelConfigOf：从 #2 config 解析连接实例 + 档案 + 风格来源',
   assert.deepEqual(config.params, { temperature: 0.3 })
 })
 
-test('modelConfigOf / tierOf：缺 vendor / provider 回 null，tier 取 permission', () => {
-  assert.equal(modelConfigOf(idsFixture({ configBody: { model: 'm' } })), null)
+test('modelConfigOf：档案 modalities 随 config 下传（供上下文按模态降级）', () => {
+  const body = configFixture()
+  body.providers.deepseek.models['deepseek-chat'].modalities = { input: ['text', 'image'] }
+  const config = modelConfigOf(idsFixture({ configBody: body }))
+  assert.deepEqual(config.modalities, { input: ['text', 'image'] })
+})
+
+test('modelConfigOf / tierOf：缺 vendor / provider 回 null，tier 取 permission', () => {  assert.equal(modelConfigOf(idsFixture({ configBody: { model: 'm' } })), null)
   assert.equal(modelConfigOf(idsFixture({ configBody: { vendor: 'nope', model: 'm', providers: {} } })), null)
   assert.equal(tierOf(idsFixture()), 'review')
   assert.equal(tierOf(idsFixture({ omit: ['config'] })), null)

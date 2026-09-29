@@ -1,13 +1,10 @@
-// `compress` 服务协议级测试：spawn `node execute/main.ts`，把反向调用桥接到内存假后端。
+// `compress` 服务协议级测试：spawn `node execute/main.ts`，把反向调用桥接到内存假提供方
+// （summarize / semantic / dedup 经 test/fakes.mjs 仿真；short-memory 由 driver 内建）。
 // 覆盖：握手 / 控制 / EOF 自退出；summarize / compact / extract 写 short-memory（不产世界写计划）；
-// 文本与向量去重；semantic 经 model.chat；persist:false 只算不写；形态非法。
+// 文本与向量去重委派；semantic 经 semantic.summarize；persist:false 只算不写；形态非法。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { memoryFixture, startService } from './driver.mjs'
-
-const OK_EMBED = (texts) => ({
-  value: { model: 'granite-97m', dim: 2, vectors: texts.map((text) => (text === 'alpha' || text === 'alpha!' ? [1, 0] : [0, 1])) },
-})
 
 test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
   const drv = startService()
@@ -47,19 +44,32 @@ test('summarize：写 L1 到 short-memory，保留其他会话 / 工作区；不
     assert.equal(memory.sessions['c-1'].covered_upto, 'msg-9')
     assert.deepEqual(memory.sessions['c-keep'], memoryFixture().sessions['c-keep'])
     assert.deepEqual(memory.workspaces, memoryFixture().workspaces)
-    assert.ok(drv.portCalls.some((call) => call.port === 'embedding' && call.method === 'embed'))
+    assert.ok(drv.portCalls.some((call) => call.port === 'summarize' && call.method === 'derive'))
     assert.ok(drv.portCalls.some((call) => call.port === 'short-memory' && call.method === 'apply'))
   } finally {
     drv.close()
   }
 })
 
-test('summarize 向量去重：近似重复被丢弃', async () => {
-  const drv = startService({ resolvePort: (port, method, args) => (method === 'embed' ? OK_EMBED(args.texts) : { error: 'not_ready', message: 'no' }) })
+test('summarize 向量去重：委派 dedup.dedup，近似重复被丢弃', async () => {
+  const drv = startService({
+    bridge: (port, method) => {
+      if (port === 'dedup' && method === 'dedup')
+        return { value: { accepted: ['beta'], dedup: 'vector' } }
+      return undefined
+    },
+  })
   try {
     await drv.hello()
     drv.shortMemory.memory.sessions['c-1'] = {
-      summary: { goal: '', decisions: [], facts: ['alpha'], open_questions: [], files: [], next_steps: [] },
+      summary: {
+        goal: '',
+        decisions: [],
+        facts: ['alpha'],
+        open_questions: [],
+        files: [],
+        next_steps: [],
+      },
       covered_upto: 'msg-1',
       at: '2020-01-01T00:00:00.000Z',
       expires_at: '2020-01-02T00:00:00.000Z',
@@ -67,6 +77,10 @@ test('summarize 向量去重：近似重复被丢弃', async () => {
     const result = await drv.call('summarize', { conversation: 'c-1', facts: ['alpha!', 'beta'] })
     assert.deepEqual(drv.shortMemory.memory.sessions['c-1'].summary.facts, ['alpha', 'beta'])
     assert.equal(result.value.dedup, 'vector')
+    const dedup = drv.portCalls.find((call) => call.port === 'dedup' && call.method === 'dedup')
+    assert.ok(dedup !== undefined, '应反向调 dedup.dedup')
+    assert.equal(dedup.args.model, 'granite-97m')
+    assert.equal(dedup.args.threshold, 0.9)
   } finally {
     drv.close()
   }
@@ -104,7 +118,10 @@ test('extract：候选全为已有条目 → all_duplicate，不写', async () =
       at: '2020-01-01T00:00:00.000Z',
     }
     const before = JSON.stringify(drv.shortMemory.memory.workspaces['w-1'])
-    const result = await drv.call('extract', { workspace: 'w-1', summary: { facts: ['dup', 'dup2'] } })
+    const result = await drv.call('extract', {
+      workspace: 'w-1',
+      summary: { facts: ['dup', 'dup2'] },
+    })
     assert.equal(result.value.reason, 'all_duplicate')
     assert.equal(JSON.stringify(drv.shortMemory.memory.workspaces['w-1']), before)
   } finally {
@@ -130,22 +147,29 @@ test('persist:false 只算不写（供 memory-consolidate 纯计算摘要）', a
   try {
     await drv.hello()
     const before = JSON.stringify(drv.shortMemory.memory)
-    const result = await drv.call('summarize', { conversation: 'c-1', goal: 'G', facts: ['f'], persist: false })
+    const result = await drv.call('summarize', {
+      conversation: 'c-1',
+      goal: 'G',
+      facts: ['f'],
+      persist: false,
+    })
     assert.equal(result.value.summary.goal, 'G')
     assert.equal(JSON.stringify(drv.shortMemory.memory), before)
-    assert.equal(drv.portCalls.some((call) => call.port === 'short-memory' && call.method === 'apply'), false)
+    assert.equal(
+      drv.portCalls.some((call) => call.port === 'short-memory' && call.method === 'apply'),
+      false,
+    )
   } finally {
     drv.close()
   }
 })
 
-test('semantic：经反向调用 model.chat 出摘要', async () => {
+test('semantic：经反向调用 semantic.summarize 出摘要（带既有 L1）', async () => {
   const drv = startService({
-    bridge: async (port, method) => {
-      if (port === 'model' && method === 'chat') {
-        return { value: { ok: true, text: JSON.stringify({ goal: 'M', facts: ['mf1', 'mf2'] }) } }
-      }
-      return { error: 'not_ready', message: 'no' }
+    bridge: (port, method) => {
+      if (port === 'semantic' && method === 'summarize')
+        return { value: { summary: { goal: 'M', facts: ['mf1', 'mf2'] } } }
+      return undefined
     },
   })
   try {
@@ -153,23 +177,31 @@ test('semantic：经反向调用 model.chat 出摘要', async () => {
     const result = await drv.call('summarize', {
       conversation: 'c-1',
       mode: 'semantic',
-      model_config: { base_url: 'https://example.invalid', model: 'm', quirks: { impl: 'protocol', protocol: 'openai-chat' } },
+      model_config: {
+        base_url: 'https://example.invalid',
+        model: 'm',
+        quirks: { impl: 'protocol', protocol: 'openai-chat' },
+      },
       session_slice: [{ role: 'user', content: 'hi' }],
     })
     assert.equal(result.value.summary.goal, 'M')
-    const chat = drv.portCalls.find((call) => call.port === 'model' && call.method === 'chat')
-    assert.ok(chat !== undefined, '应经反向 port.call 调 model.chat')
-    assert.equal(chat.args.config.base_url, 'https://example.invalid')
+    const call = drv.portCalls.find(
+      (frame) => frame.port === 'semantic' && frame.method === 'summarize',
+    )
+    assert.ok(call !== undefined, '应经反向 port.call 调 semantic.summarize')
+    assert.equal(call.args.args.model_config.base_url, 'https://example.invalid')
+    assert.ok(call.args.existing_l1 !== undefined, '应带既有 L1 摘要记录')
   } finally {
     drv.close()
   }
 })
 
-test('semantic：模型失败作数据（回结构化错误，不写）', async () => {
+test('semantic：语义提供方失败作数据（回结构化错误，不写）', async () => {
   const drv = startService({
-    bridge: async (port, method) => {
-      if (port === 'model' && method === 'chat') return { error: 'model_server_error', message: 'boom' }
-      return { error: 'not_ready', message: 'no' }
+    bridge: (port, method) => {
+      if (port === 'semantic' && method === 'summarize')
+        return { value: { error: { code: 'model_server_error', message: 'boom' } } }
+      return undefined
     },
   })
   try {
@@ -182,7 +214,10 @@ test('semantic：模型失败作数据（回结构化错误，不写）', async 
     assert.equal(result.kind, 'result')
     assert.equal(result.value.ok, false)
     assert.equal(result.value.error.code, 'model_server_error')
-    assert.equal(drv.portCalls.some((call) => call.port === 'short-memory' && call.method === 'apply'), false)
+    assert.equal(
+      drv.portCalls.some((call) => call.port === 'short-memory' && call.method === 'apply'),
+      false,
+    )
   } finally {
     drv.close()
   }
@@ -193,7 +228,10 @@ test('形态非法 → bad_args；未知方法 / 能力类 → 结构化 error',
   try {
     await drv.hello()
     assert.equal((await drv.call('summarize', {})).code, 'bad_args')
-    assert.equal((await drv.call('summarize', { conversation: 'c-1', mode: 'nope' })).code, 'bad_args')
+    assert.equal(
+      (await drv.call('summarize', { conversation: 'c-1', mode: 'nope' })).code,
+      'bad_args',
+    )
     assert.equal(
       (await drv.request('call', { port: 'compress', method: 'nope', args: {} }, 'error')).code,
       'unknown_method',

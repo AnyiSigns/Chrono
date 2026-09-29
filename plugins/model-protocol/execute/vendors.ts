@@ -40,9 +40,13 @@ export function vendors(args: Json): Json {
   for (const [identity, body] of Object.entries(collectVendorBodies(args))) {
     list.push({
       identity,
-      default_base_url: typeof body['default_base_url'] === 'string' ? body['default_base_url'] : null,
-      default_auth_ref_name: typeof body['default_auth_ref_name'] === 'string' ? body['default_auth_ref_name'] : null,
-      default_reasoning: Array.isArray(body['default_reasoning']) ? body['default_reasoning'] : null,
+      default_base_url:
+        typeof body['default_base_url'] === 'string' ? body['default_base_url'] : null,
+      default_auth_ref_name:
+        typeof body['default_auth_ref_name'] === 'string' ? body['default_auth_ref_name'] : null,
+      default_reasoning: Array.isArray(body['default_reasoning'])
+        ? body['default_reasoning']
+        : null,
     })
   }
   list.sort((a, b) => {

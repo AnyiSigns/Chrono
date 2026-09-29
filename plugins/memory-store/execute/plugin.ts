@@ -28,9 +28,14 @@ const SCHEMA = readJson('../schema/memory.json')
 export const ANCHOR: { id: string; dim: number } = (() => {
   const model = SCHEMA['model']
   if (!isRecord(model)) return { ...DEFAULT_MODEL }
-  const id = typeof model['id'] === 'string' && model['id'].length > 0 ? (model['id'] as string) : DEFAULT_MODEL.id
+  const id =
+    typeof model['id'] === 'string' && model['id'].length > 0
+      ? (model['id'] as string)
+      : DEFAULT_MODEL.id
   const dim =
-    typeof model['dim'] === 'number' && Number.isInteger(model['dim']) && (model['dim'] as number) > 0
+    typeof model['dim'] === 'number' &&
+    Number.isInteger(model['dim']) &&
+    (model['dim'] as number) > 0
       ? (model['dim'] as number)
       : DEFAULT_MODEL.dim
   return { id, dim }

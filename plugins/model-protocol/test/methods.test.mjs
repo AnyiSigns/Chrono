@@ -6,7 +6,12 @@ import assert from 'node:assert/strict'
 import { startService } from './driver.mjs'
 import { jsonResponse, startHttpServer } from './fake-http.mjs'
 
-const FAST = { max_retries: 1, backoff_ms: 5, backoff_max_ms: 20, token_bucket: { capacity: 100, refill_per_sec: 1000 } }
+const FAST = {
+  max_retries: 1,
+  backoff_ms: 5,
+  backoff_max_ms: 20,
+  token_bucket: { capacity: 100, refill_per_sec: 1000 },
+}
 
 async function withService(options, run) {
   const driver = startService(options)
@@ -44,7 +49,9 @@ function planBody(value) {
 
 /** 最近一次 `config.write` 反向调用的 body（运行记录已出世界，档案写走 owner 命令）。 */
 function lastConfigWrite(driver) {
-  const call = [...driver.portCalls].reverse().find((item) => item.port === 'config' && item.method === 'write')
+  const call = [...driver.portCalls]
+    .reverse()
+    .find((item) => item.port === 'config' && item.method === 'write')
   return call === undefined ? null : call.args.body
 }
 
@@ -105,10 +112,15 @@ const VENDOR_BODY = {
 // ── discover ───────────────────────────────────────────────────────────────
 
 test('discover：规范化模型 id（去重 / 剥 models/ 前缀 / 排序）并带鉴权头', async () => {
-  const handler = (req, res) => jsonResponse(res, 200, { data: [{ id: 'b' }, { id: 'models/a' }, { id: 'b' }] })
+  const handler = (req, res) =>
+    jsonResponse(res, 200, { data: [{ id: 'b' }, { id: 'models/a' }, { id: 'b' }] })
   await withServer(handler, async (server) => {
     await withService({ secretsResolver: () => ({ value: 'disc-key' }) }, async (driver) => {
-      const result = await driver.call('discover', { url: server.url, auth_ref: { kind: 'env', name: 'K' }, resilience: FAST })
+      const result = await driver.call('discover', {
+        url: server.url,
+        auth_ref: { kind: 'env', name: 'K' },
+        resilience: FAST,
+      })
       assert.deepEqual(result.value, { ok: true, models: ['a', 'b'] })
       assert.equal(server.requests[0].url, '/models')
       assert.equal(server.requests[0].headers.authorization, 'Bearer disc-key')
@@ -117,10 +129,17 @@ test('discover：规范化模型 id（去重 / 剥 models/ 前缀 / 排序）并
 })
 
 test('discover：google 形状（models[].name）也规范化', async () => {
-  const handler = (req, res) => jsonResponse(res, 200, { models: [{ name: 'models/gemini-2.0' }, { name: 'models/gemini-1.5' }] })
+  const handler = (req, res) =>
+    jsonResponse(res, 200, {
+      models: [{ name: 'models/gemini-2.0' }, { name: 'models/gemini-1.5' }],
+    })
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const result = await driver.call('discover', { url: server.url, models_path: '/v1beta/models', resilience: FAST })
+      const result = await driver.call('discover', {
+        url: server.url,
+        models_path: '/v1beta/models',
+        resilience: FAST,
+      })
       assert.deepEqual(result.value.models, ['gemini-1.5', 'gemini-2.0'])
       assert.equal(server.requests[0].url, '/v1beta/models')
     })
@@ -128,17 +147,25 @@ test('discover：google 形状（models[].name）也规范化', async () => {
 })
 
 test('discover 四类结构化错误', async () => {
-  await withService({ secretsResolver: () => ({ error: 'secret_missing', message: 'x' }) }, async (driver) => {
-    const auth = await driver.call('discover', { url: 'http://127.0.0.1:1', auth_ref: { kind: 'local', name: 'M' }, resilience: FAST })
-    assert.equal(auth.value.error.code, 'discover_auth_failed')
-  })
+  await withService(
+    { secretsResolver: () => ({ error: 'secret_missing', message: 'x' }) },
+    async (driver) => {
+      const auth = await driver.call('discover', {
+        url: 'http://127.0.0.1:1',
+        auth_ref: { kind: 'local', name: 'M' },
+        resilience: FAST,
+      })
+      assert.equal(auth.value.error.code, 'discover_auth_failed')
+    },
+  )
   const statuses = [
     [401, 'discover_auth_failed'],
     [404, 'discover_bad_url'],
     [200, 'discover_unsupported'],
   ]
   for (const [status, code] of statuses) {
-    const handler = (req, res) => (status === 200 ? jsonResponse(res, 200, {}) : jsonResponse(res, status, {}))
+    const handler = (req, res) =>
+      status === 200 ? jsonResponse(res, 200, {}) : jsonResponse(res, status, {})
     await withServer(handler, async (server) => {
       await withService({}, async (driver) => {
         const result = await driver.call('discover', { url: server.url, resilience: FAST })
@@ -150,7 +177,10 @@ test('discover 四类结构化错误', async () => {
   const deadUrl = dead.url
   await dead.close()
   await withService({}, async (driver) => {
-    const result = await driver.call('discover', { url: deadUrl, resilience: { ...FAST, max_retries: 0 } })
+    const result = await driver.call('discover', {
+      url: deadUrl,
+      resilience: { ...FAST, max_retries: 0 },
+    })
     assert.equal(result.value.error.code, 'discover_network')
   })
 })
@@ -211,7 +241,11 @@ test('profile：经 config.write 写整份 body（无世界写计划 / 无补丁
       })
       assert.equal(writeDirective(result.value), undefined, '不产世界写计划')
       const body = lastConfigWrite(driver)
-      assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, ['low', 'medium', 'high'])
+      assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, [
+        'low',
+        'medium',
+        'high',
+      ])
     })
   })
 })
@@ -231,7 +265,9 @@ test('profile：写前去重（同 body 再跑只回 extern、不再写）', asy
       const first = await driver.call('profile', args)
       const updated = lastConfigWrite(driver)
       assert.ok(updated !== null)
-      const writesAfterFirst = driver.portCalls.filter((item) => item.port === 'config' && item.method === 'write').length
+      const writesAfterFirst = driver.portCalls.filter(
+        (item) => item.port === 'config' && item.method === 'write',
+      ).length
       const second = await driver.call('profile', { ...args, config: updated })
       assert.equal(writeDirective(second.value), undefined)
       assert.equal(externPayload(second.value).changed, false)
@@ -294,10 +330,21 @@ test('profile：未知厂商 / config 缺省 / 源非 JSON', async () => {
   const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const unknown = await driver.call('profile', { vendor: 'nope', ids: ['x'], source_url: server.url, resilience: FAST })
+      const unknown = await driver.call('profile', {
+        vendor: 'nope',
+        ids: ['x'],
+        source_url: server.url,
+        resilience: FAST,
+      })
       assert.equal(unknown.value.error.code, 'profile_vendor_unknown')
 
-      const noConfig = await driver.call('profile', { vendor: 'deepseek', ids: ['deepseek-chat'], vendors: { 'vendor-deepseek': VENDOR_BODY }, source_url: server.url, resilience: FAST })
+      const noConfig = await driver.call('profile', {
+        vendor: 'deepseek',
+        ids: ['deepseek-chat'],
+        vendors: { 'vendor-deepseek': VENDOR_BODY },
+        source_url: server.url,
+        resilience: FAST,
+      })
       assert.equal(noConfig.value.ok, true)
       assert.equal(noConfig.value.write, false)
       assert.equal(noConfig.value.models['deepseek-chat'].context_window, 64000)
@@ -329,11 +376,20 @@ test('sync：对 config 内全部已选模型批量刷新，无变化不产写�
   const handler = (req, res) => jsonResponse(res, 200, MODELS_DEV)
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const bag = { config: baseConfig(), 'vendor-deepseek': VENDOR_BODY, source_url: server.url, resilience: FAST }
+      const bag = {
+        config: baseConfig(),
+        'vendor-deepseek': VENDOR_BODY,
+        source_url: server.url,
+        resilience: FAST,
+      }
       const first = await driver.call('sync', bag)
       const body = lastConfigWrite(driver)
       assert.ok(body !== null, '应经 config.write 写 owner')
-      assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, ['low', 'medium', 'high'])
+      assert.deepEqual(body.providers.deepseek.models['deepseek-chat'].reasoning, [
+        'low',
+        'medium',
+        'high',
+      ])
       assert.equal(body.providers.deepseek.models['deepseek-r1'].reasoning, undefined)
       const second = await driver.call('sync', { ...bag, config: body })
       assert.equal(writeDirective(second.value), undefined)
@@ -355,13 +411,25 @@ test('vendors：枚举传入模板（数组 / 对象 / 顶层 vendor-* 键），
   await withService({}, async (driver) => {
     const result = await driver.call('vendors', {
       vendors: {
-        'vendor-openai': { sdk: 'openai', default_base_url: 'https://api.openai.com/v1', default_auth_ref_name: 'OPENAI_API_KEY', default_reasoning: ['low', 'high'] },
+        'vendor-openai': {
+          sdk: 'openai',
+          default_base_url: 'https://api.openai.com/v1',
+          default_auth_ref_name: 'OPENAI_API_KEY',
+          default_reasoning: ['low', 'high'],
+        },
         'vendor-deepseek': VENDOR_BODY,
       },
-      'vendor-kimi': { sdk: 'kimi', default_base_url: 'https://api.moonshot.cn/v1', default_auth_ref_name: 'KIMI_API_KEY' },
+      'vendor-kimi': {
+        sdk: 'kimi',
+        default_base_url: 'https://api.moonshot.cn/v1',
+        default_auth_ref_name: 'KIMI_API_KEY',
+      },
     })
     assert.equal(result.value.ok, true)
-    assert.deepEqual(result.value.vendors.map((item) => item.identity), ['vendor-deepseek', 'vendor-kimi', 'vendor-openai'])
+    assert.deepEqual(
+      result.value.vendors.map((item) => item.identity),
+      ['vendor-deepseek', 'vendor-kimi', 'vendor-openai'],
+    )
     const openai = result.value.vendors.find((item) => item.identity === 'vendor-openai')
     assert.deepEqual(openai, {
       identity: 'vendor-openai',
@@ -376,9 +444,16 @@ test('vendors：枚举传入模板（数组 / 对象 / 顶层 vendor-* 键），
 
 test('vendors：数组形态 [{sdk,...}] 自动派生身份', async () => {
   await withService({}, async (driver) => {
-    const result = await driver.call('vendors', { vendors: [{ sdk: 'zai', default_base_url: 'u' }] })
+    const result = await driver.call('vendors', {
+      vendors: [{ sdk: 'zai', default_base_url: 'u' }],
+    })
     assert.deepEqual(result.value.vendors, [
-      { identity: 'vendor-zai', default_base_url: 'u', default_auth_ref_name: null, default_reasoning: null },
+      {
+        identity: 'vendor-zai',
+        default_base_url: 'u',
+        default_auth_ref_name: null,
+        default_reasoning: null,
+      },
     ])
   })
 })

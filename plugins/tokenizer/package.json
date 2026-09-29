@@ -1,0 +1,25 @@
+{
+  "name": "tokenizer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "真实分词与窗口切块（Rust）：tokenizer.json 内嵌二进制，提供 encode（ids/mask/offsets）与 chunk（码点偏移）；无 npm 依赖，编译走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "granite-97m/",
+    "!granite-97m/tokenizer.json",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

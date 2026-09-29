@@ -1,116 +1,54 @@
-// `plugin-admin` 服务协议级测试（node --test）：自实现最小协议驱动，并扮演宿主侧回 `port.call`。
-// 本文件只覆盖插件自身逻辑：方法派发、可见性过滤、validate 凭据缓存、write 的前置拒绝、
-// 工具描述与结构化错误。与真实宿主的接缝（validate_package 的 result_hash、write 计划被内核接受）
-// 属跨层断言，住根 `tests/contract/`，由那里 import 真实的 packages/kernel 与 packages/host。
+// `plugin-admin` 工具面服务协议级测试（node --test）：自实现最小协议驱动，并扮演宿主侧回反向 `port.call`。
+// 覆盖：manifest 声明、describe 工具清单与四要素、invoke 按工具名派发到管理平面 `plugin`、
+// 结构化错误（unknown_tool / bad_args / 管理平面错误透传）与控制帧。validate→write 重逻辑住 `plugin`，
+// 由那里的 `node --test` 覆盖；本文件只验证工具面的薄适配接缝。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { startService as startSdkService } from 'plugin-sdk'
-import { readValidateCache, writeValidateCache } from '../execute/state.ts'
-import { buildPackOps, parseCandidateDecl } from '../execute/pack.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
-const H1 = 'a'.repeat(64)
-const H2 = 'b'.repeat(64)
-/** 假宿主返回的确定性 result_hash：插件只关心它是 64 位十六进制并落 ③ 缓存。 */
-const STUB_RESULT_HASH = 'a'.repeat(64)
+const PLAN_RESULT = { $directives: [{ kind: 'extern', payload: { ok: true } }] }
 
-/** 候选包（扁平 + 一个 execute/ 子目录；pin host 以覆盖保留身份路径）。 */
-function candidate(identity = 'candidate', extra = {}) {
-  return {
-    'plugin.json': JSON.stringify({
-      identity,
-      schema: 'plugin.schema.json',
-      implements: [],
-      methods: {},
-      pins: { host: 'host' },
-      start: '',
-      build: [],
-      protocol: '1',
-      restart: { policy: 'never', backoff: 'none', max: 0, window_ms: 1, drain_ms: 1 },
-      health: { probe: '', interval_ms: 0, timeout_ms: 0 },
-      state: 'recomputable',
-      members: [],
-      commands: [],
-      ...extra,
-    }),
-    'plugin.schema.json': JSON.stringify({ type: 'object' }),
-    'package.json': JSON.stringify({ name: identity, version: '1.2.3' }),
-    'execute/main.js': 'export const x = 1\n',
-  }
-}
-
-/** 默认假宿主：identities / source.read / validate_package / blob.put 的确定性应答。 */
-function stubHostHandler(port, method, args) {
-  if (method === 'identities') {
-    return {
-      value: {
-        list: [
-          { id: 'toy-alpha', active: H1, implements: ['toy.alpha'], commands: [] },
-          { id: 'sandbox', active: H2, implements: ['sandbox'], commands: [] },
-          { id: 'plugin-admin', active: H1, implements: ['plugin', 'plugin-admin'], commands: [] },
-        ],
-      },
-    }
-  }
-  if (method === 'source.read') {
-    return { value: { path: args.path, content: Buffer.from('hi').toString('base64'), size: 2 } }
-  }
-  if (method === 'validate_package') {
-    const files = args.files ?? {}
-    if (files['plugin.json'] === undefined) {
+/** 默认假管理平面：按方法名回确定性值。 */
+function stubPlaneHandler(port, method, args) {
+  if (port !== 'plugin') return { error: 'unresolved_cap', message: port }
+  switch (method) {
+    case 'list':
+      return { value: { list: [{ id: 'toy-alpha' }] } }
+    case 'read':
+      return { value: { path: args.path, content: Buffer.from('hi').toString('base64'), size: 2 } }
+    case 'validate':
       return {
-        value: { ok: false, errors: [{ code: 'missing_plugin_json', path: '', message: 'missing plugin.json' }], result_hash: null },
+        value: {
+          ok: true,
+          errors: [],
+          result_hash: 'a'.repeat(64),
+          candidate_hash: 'b'.repeat(64),
+        },
       }
-    }
-    return { value: { ok: true, errors: [], result_hash: STUB_RESULT_HASH } }
-  }
-  if (method === 'blob.put') {
-    return { value: { kind: 'blob', sha256: '0'.repeat(64), size: 2 } }
-  }
-  return { error: 'not_loaded', message: method }
-}
-
-/** 用插件自身的打包口径算出候选 commit 哈希，作为假宿主 validate_package 的 result_hash。 */
-function commitHashOf(files, needs) {
-  const decl = parseCandidateDecl(files)
-  return buildPackOps(files, decl.identity, decl, needs).commitHash
-}
-
-/**
- * 假宿主工厂：identities 可定制；validate_package 回执的 `result_hash` 按同一 needs 现算，
- * 以模拟宿主「解析结果进 commit 哈希」的口径。
- */
-function stubHostResolving({ needs = {}, identities = [] } = {}) {
-  return (port, method, args) => {
-    if (method === 'identities') return { value: { list: identities } }
-    if (method === 'validate_package') {
-      return {
-        value: { ok: true, errors: [], result_hash: commitHashOf(args.files, needs), needs },
-      }
-    }
-    if (method === 'blob.put') {
-      return { value: { kind: 'blob', sha256: '0'.repeat(64), size: 2 } }
-    }
-    return { error: 'not_loaded', message: method }
+    case 'write':
+      return { value: PLAN_RESULT }
+    default:
+      return { error: 'unknown_method', message: method }
   }
 }
 
 /**
- * 启动服务并扮演宿主侧。`hostHandler(port, method, args)` 返回
- * `{ value }` 或 `{ error: code, message? }`；默认用确定性假宿主。
+ * 启动服务并扮演宿主侧。`planeHandler(port, method, args)` 返回
+ * `{ value }` 或 `{ error: code, message? }`；默认用确定性假管理平面。
  */
 function startService(options = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), 'plugin-admin-state-'))
   const calls = []
-  const handler = options.hostHandler ?? stubHostHandler
+  const handler = options.planeHandler ?? stubPlaneHandler
 
   const drv = startSdkService({
     entry: ENTRY,
@@ -119,7 +57,9 @@ function startService(options = {}) {
     onPortCall: (message) => {
       calls.push({ port: message.port, method: message.method, args: message.args })
       const outcome = handler(message.port, message.method, message.args)
-      if (outcome.error) return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+      if (outcome.error) {
+        return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+      }
       return { ok: true, value: outcome.value }
     },
   })
@@ -151,21 +91,17 @@ function startService(options = {}) {
   }
 }
 
-function cacheFile(stateDir, key) {
-  return join(stateDir, 'validate', `${key}.json`)
-}
-
 // ── 握手 / 控制 / 自退出 ────────────────────────────────────────────────────
 
-test('hello 回 manifest：双能力类与方法声明与 plugin.json 一致', async () => {
+test('hello 回 manifest：只实现 plugin-admin，方法声明与 plugin.json 一致', async () => {
   const drv = startService()
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'plugin-admin')
-    assert.deepEqual(manifest.implements, ['plugin', 'plugin-admin'])
-    assert.deepEqual(manifest.methods.plugin, ['list', 'read', 'validate', 'write'])
+    assert.deepEqual(manifest.implements, ['plugin-admin'])
     assert.deepEqual(manifest.methods['plugin-admin'], ['describe', 'invoke'])
+    assert.equal(manifest.methods.plugin, undefined, '管理平面能力类不再住本插件')
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
   } finally {
@@ -196,278 +132,7 @@ test('stdin EOF 即自退出（断连不占端点）', async () => {
   assert.equal(code, 0)
 })
 
-// ── list ───────────────────────────────────────────────────────────────────
-
-test('list：host.identities 返回后过滤 sandbox 与自身', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.call('plugin', 'list', {})
-    const ids = value.list.map((item) => item.id)
-    assert.deepEqual(ids, ['toy-alpha'])
-    assert.equal(drv.calls[0].method, 'identities')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('可见性黑名单不被世界数据 / bag 改写（只住包内常量）', async () => {
-  const drv = startService({
-    hostHandler: (port, method) => {
-      if (method === 'identities') {
-        return {
-          value: {
-            list: [
-              { id: 'sandbox', active: H1, implements: [], commands: [] },
-              { id: 'plugin-admin', active: H1, implements: [], commands: [] },
-              { id: 'visible-one', active: H1, implements: [], commands: [] },
-            ],
-          },
-        }
-      }
-      return { error: 'not_loaded', message: method }
-    },
-  })
-  try {
-    await drv.hello()
-    const value = await drv.call('plugin', 'list', {
-      visibility: { hidden: [], allow: ['sandbox', 'plugin-admin'] },
-      hidden: [],
-      body: { visibility_blacklist: [] },
-    })
-    assert.deepEqual(value.list.map((item) => item.id), ['visible-one'])
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-
-  // 静态断言：名单只在包内常量文件；schema 与 plugin.json（世界数据面）不含它。
-  const visibility = readFileSync(join(PKG_ROOT, 'execute', 'visibility.ts'), 'utf8')
-  assert.match(visibility, /'sandbox'/)
-  assert.match(visibility, /'plugin-admin'/)
-  const schema = readFileSync(join(PKG_ROOT, 'schema', 'plugin-admin.json'), 'utf8')
-  const plugin = readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8')
-  assert.equal(schema.includes('sandbox'), false)
-  assert.equal(plugin.includes('sandbox'), false)
-})
-
-// ── read ───────────────────────────────────────────────────────────────────
-
-test('read：正常透传 host.source.read', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.call('plugin', 'read', { identity: 'toy-alpha', path: 'plugin.json' })
-    assert.equal(value.path, 'plugin.json')
-    assert.equal(Buffer.from(value.content, 'base64').toString('utf8'), 'hi')
-    assert.equal(drv.calls[0].method, 'source.read')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('read：黑名单身份 → hidden_identity，且不调宿主', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const hidden = await drv.callRaw('plugin', 'read', { identity: 'sandbox', path: 'plugin.json' })
-    assert.equal(hidden.kind, 'error')
-    assert.equal(hidden.code, 'hidden_identity')
-    const self = await drv.callRaw('plugin', 'read', {
-      identity: 'plugin-admin',
-      path: 'execute/main.ts',
-    })
-    assert.equal(self.code, 'hidden_identity')
-    assert.equal(drv.calls.length, 0, '黑名单读不得触达宿主')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('read：宿主错误透传（not_found）', async () => {
-  const drv = startService({
-    hostHandler: (port, method) => {
-      if (method === 'source.read') return { error: 'not_found', message: 'missing' }
-      return { error: 'not_loaded', message: method }
-    },
-  })
-  try {
-    await drv.hello()
-    const missing = await drv.callRaw('plugin', 'read', { identity: 'toy-alpha', path: 'nope' })
-    assert.equal(missing.kind, 'error')
-    assert.equal(missing.code, 'not_found')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-// ── validate（凭据缓存；宿主 result_hash 口径的接缝断言住 tests/contract/） ────
-
-test('validate：宿主 ok 回执透传并写入 ③ 缓存', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const files = candidate('candidate')
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    assert.equal(report.ok, true)
-    assert.deepEqual(report.errors, [])
-    assert.match(report.result_hash, /^[0-9a-f]{64}$/)
-    assert.match(report.candidate_hash, /^[0-9a-f]{64}$/)
-    const cached = JSON.parse(readFileSync(cacheFile(drv.stateDir, report.candidate_hash), 'utf8'))
-    assert.equal(cached.result_hash, report.result_hash)
-    assert.equal(cached.identity, 'candidate')
-    assert.deepEqual(cached.needs, {})
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('validate：errors 路径回 ok:false 且不写缓存', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const files = { 'plugin.schema.json': '{}' }
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    assert.equal(report.ok, false)
-    assert.equal(report.errors[0].code, 'missing_plugin_json')
-    assert.equal(report.result_hash, null)
-    assert.equal(existsSync(cacheFile(drv.stateDir, report.candidate_hash)), false)
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-// ── write：前置拒绝与凭据比对 ────────────────────────────────────────────────
-
-test('write：缺 validate 凭据 → validate_required（且不调宿主 identities）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const rejected = await drv.callRaw('plugin', 'write', {
-      identity: 'candidate',
-      files: candidate('candidate'),
-    })
-    assert.equal(rejected.kind, 'error')
-    assert.equal(rejected.code, 'validate_required')
-    assert.equal(drv.calls.length, 0)
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('write：候选树哈希不符（凭据被篡改）→ validate_required 并清凭据', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const files = candidate('candidate')
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    const file = cacheFile(drv.stateDir, report.candidate_hash)
-    writeFileSync(file, JSON.stringify({ identity: 'candidate', result_hash: '0'.repeat(64), at: 0 }))
-    const rejected = await drv.callRaw('plugin', 'write', { identity: 'candidate', files })
-    assert.equal(rejected.kind, 'error')
-    assert.equal(rejected.code, 'validate_required')
-    assert.throws(() => readFileSync(file, 'utf8'), /ENOENT/)
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('write：带回的 result_hash 与 ③ 凭据不符 → validate_required', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const files = candidate('candidate')
-    await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    const rejected = await drv.callRaw('plugin', 'write', {
-      identity: 'candidate',
-      files,
-      result_hash: 'f'.repeat(64),
-    })
-    assert.equal(rejected.kind, 'error')
-    assert.equal(rejected.code, 'validate_required')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('write：黑名单身份 → hidden_identity，不调宿主', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const rejected = await drv.callRaw('plugin', 'write', {
-      identity: 'sandbox',
-      files: candidate('sandbox'),
-    })
-    assert.equal(rejected.code, 'hidden_identity')
-    assert.equal(drv.calls.length, 0)
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('write：非 host pin 以身份名写入 add_gen.pins（非 active 哈希）', async () => {
-  const files = candidate('candidate', { pins: { host: 'host', model: 'model-protocol' } })
-  const identities = [
-    { id: 'candidate', active: H1, implements: [], commands: [] },
-    { id: 'model-protocol', active: H2, implements: ['model'], commands: [] },
-  ]
-  const drv = startService({ hostHandler: stubHostResolving({ needs: {}, identities }) })
-  try {
-    await drv.hello()
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    assert.equal(report.ok, true)
-    const plan = await drv.call('plugin', 'write', { identity: 'candidate', files })
-    const ops = plan.$directives[0].request.args.ops
-    const addGen = ops[ops.length - 1]
-    assert.equal(addGen.op, 'add_gen')
-    assert.deepEqual(addGen.args.pins, { host: 'host', model: 'model-protocol' })
-    assert.equal(addGen.args.pins.model, 'model-protocol')
-    assert.notEqual(addGen.args.pins.model, H2, 'pin 不得写成 active 哈希')
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-test('write：one need 的解析结果进 meta.needs 与 commit 哈希（与 validate result_hash 一致）', async () => {
-  const files = candidate('candidate', { needs: { model: { mode: 'one' } } })
-  const needs = { model: 'model-protocol' }
-  const identities = [
-    { id: 'candidate', active: H1, implements: [], commands: [] },
-    { id: 'model-protocol', active: H2, implements: ['model'], commands: [] },
-  ]
-  const drv = startService({ hostHandler: stubHostResolving({ needs, identities }) })
-  try {
-    await drv.hello()
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    assert.equal(report.ok, true)
-    assert.equal(report.result_hash, commitHashOf(files, needs))
-    // 凭据须携带宿主解析结果，否则 write 算出的 commit 哈希对不上
-    const cached = JSON.parse(readFileSync(cacheFile(drv.stateDir, report.candidate_hash), 'utf8'))
-    assert.deepEqual(cached.needs, needs)
-
-    const plan = await drv.call('plugin', 'write', { identity: 'candidate', files })
-    assert.equal(plan.$directives[1].payload.commit, report.result_hash)
-    const ops = plan.$directives[0].request.args.ops
-    const commitOp = ops.find((op) => op.op === 'put' && op.args.body && op.args.body.meta)
-    assert.deepEqual(commitOp.args.body.meta, { name: 'candidate', version: '1.2.3', needs })
-  } finally {
-    drv.close()
-    drv.cleanup()
-  }
-})
-
-// ── describe / invoke ──────────────────────────────────────────────────────
+// ── describe ───────────────────────────────────────────────────────────────
 
 test('describe：四工具 + render 描述符 + 描述四要素', async () => {
   const drv = startService()
@@ -494,30 +159,110 @@ test('describe：四工具 + render 描述符 + 描述四要素', async () => {
     }
     assert.equal(tools.find((tool) => tool.name === 'plugin.write').idempotent, false)
     assert.equal(tools.find((tool) => tool.name === 'plugin.write').render.detail.kind, 'diff')
+    assert.equal(drv.calls.length, 0, 'describe 不应触达管理平面')
   } finally {
     drv.close()
     drv.cleanup()
   }
 })
 
-test('invoke：按工具名派发；未知工具回 unknown_tool；黑名单读被拒', async () => {
+// ── invoke：按工具名派发到管理平面 ──────────────────────────────────────────
+
+test('invoke：plugin.list / read / validate / write 各派发到同名管理平面方法', async () => {
   const drv = startService()
   try {
     await drv.hello()
+
     const listed = await drv.call('plugin-admin', 'invoke', { tool: 'plugin.list', args: {} })
     assert.equal(listed.ok, true)
-    assert.deepEqual(listed.result.list.map((item) => item.id), ['toy-alpha'])
+    assert.deepEqual(
+      listed.result.list.map((item) => item.id),
+      ['toy-alpha'],
+    )
 
+    const read = await drv.call('plugin-admin', 'invoke', {
+      tool: 'plugin.read',
+      args: { identity: 'toy-alpha', path: 'plugin.json' },
+    })
+    assert.equal(read.ok, true)
+    assert.equal(Buffer.from(read.result.content, 'base64').toString('utf8'), 'hi')
+
+    const validated = await drv.call('plugin-admin', 'invoke', {
+      tool: 'plugin.validate',
+      args: { identity: 'candidate', files: {} },
+    })
+    assert.equal(validated.ok, true)
+    assert.equal(validated.result.ok, true)
+
+    const written = await drv.call('plugin-admin', 'invoke', {
+      tool: 'plugin.write',
+      args: { identity: 'candidate', files: {} },
+    })
+    assert.equal(written.ok, true)
+    assert.deepEqual(written.result, PLAN_RESULT)
+
+    assert.deepEqual(
+      drv.calls.map((call) => [call.port, call.method]),
+      [
+        ['plugin', 'list'],
+        ['plugin', 'read'],
+        ['plugin', 'validate'],
+        ['plugin', 'write'],
+      ],
+    )
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('invoke：未知工具回 unknown_tool，且不触达管理平面', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
     const unknown = await drv.call('plugin-admin', 'invoke', { tool: 'plugin.nope', args: {} })
     assert.equal(unknown.ok, false)
     assert.equal(unknown.error.code, 'unknown_tool')
+    assert.equal(drv.calls.length, 0)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
 
+test('invoke：管理平面结构化错误原样透传（hidden_identity）', async () => {
+  const drv = startService({
+    planeHandler: (port, method) => {
+      if (method === 'read') return { error: 'hidden_identity', message: 'sandbox' }
+      return stubPlaneHandler(port, method, {})
+    },
+  })
+  try {
+    await drv.hello()
     const hidden = await drv.call('plugin-admin', 'invoke', {
       tool: 'plugin.read',
       args: { identity: 'sandbox', path: 'plugin.json' },
     })
     assert.equal(hidden.ok, false)
     assert.equal(hidden.error.code, 'hidden_identity')
+    assert.equal(hidden.error.message, 'sandbox')
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('invoke：tool 缺失 / 非对象 args → 协议级 bad_args', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const missing = await drv.callRaw('plugin-admin', 'invoke', { args: {} })
+    assert.equal(missing.kind, 'error')
+    assert.equal(missing.code, 'bad_args')
+    const badArgs = await drv.callRaw('plugin-admin', 'invoke', 'not-an-object')
+    assert.equal(badArgs.kind, 'error')
+    assert.equal(badArgs.code, 'bad_args')
+    assert.equal(drv.calls.length, 0)
   } finally {
     drv.close()
     drv.cleanup()
@@ -526,64 +271,29 @@ test('invoke：按工具名派发；未知工具回 unknown_tool；黑名单读�
 
 // ── 结构化错误 ─────────────────────────────────────────────────────────────
 
-test('未知能力 / 方法 / 非对象 args → 结构化错误，不崩进程', async () => {
+test('未知能力 / 方法 → 结构化错误，不崩进程', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const badPort = await drv.callRaw('nope', 'list', {})
+    const badPort = await drv.callRaw('nope', 'describe', {})
     assert.equal(badPort.code, 'unresolved_cap')
-    const badMethod = await drv.callRaw('plugin', 'nope', {})
+    const badMethod = await drv.callRaw('plugin-admin', 'nope', {})
     assert.equal(badMethod.code, 'unknown_method')
-    const badArgs = await drv.callRaw('plugin', 'read', 'not-an-object')
-    assert.equal(badArgs.code, 'bad_args')
     // 进程仍可服务
-    const ok = await drv.call('plugin', 'list', {})
-    assert.equal(ok.list.length, 1)
+    const ok = await drv.call('plugin-admin', 'describe', {})
+    assert.equal(ok.tools.length, 4)
   } finally {
     drv.close()
     drv.cleanup()
   }
 })
 
-// ── ③ 凭据缓存原子写 ────────────────────────────────────────────────────────
+// ── 包声明：工具面只消费 plugin one，自身不 pin host ────────────────────────
 
-test('validate 凭据原子写：不留临时文件，内容可读回', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plugin-admin-state-atomic-'))
-  const previous = process.env.CHRONO_PLUGIN_STATE
-  process.env.CHRONO_PLUGIN_STATE = dir
-  try {
-    const key = 'a'.repeat(64)
-    writeValidateCache(key, { identity: 'candidate', result_hash: 'b'.repeat(64), at: 123, needs: {} })
-    // 临时文件已被 rename 消耗：目录里只剩最终文件
-    assert.deepEqual(readdirSync(join(dir, 'validate')), [`${key}.json`])
-    const entry = readValidateCache(key)
-    assert.equal(entry.identity, 'candidate')
-    assert.equal(entry.result_hash, 'b'.repeat(64))
-    assert.deepEqual(entry.needs, {})
-  } finally {
-    if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
-    else process.env.CHRONO_PLUGIN_STATE = previous
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('readValidateCache：旧凭据缺 needs 字段 → 按空绑定读回（向前兼容）', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plugin-admin-state-old-'))
-  const previous = process.env.CHRONO_PLUGIN_STATE
-  process.env.CHRONO_PLUGIN_STATE = dir
-  try {
-    const key = 'c'.repeat(64)
-    mkdirSync(join(dir, 'validate'), { recursive: true })
-    writeFileSync(
-      join(dir, 'validate', `${key}.json`),
-      JSON.stringify({ identity: 'candidate', result_hash: 'd'.repeat(64), at: 1 }),
-    )
-    const entry = readValidateCache(key)
-    assert.equal(entry.result_hash, 'd'.repeat(64))
-    assert.deepEqual(entry.needs, {})
-  } finally {
-    if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
-    else process.env.CHRONO_PLUGIN_STATE = previous
-    rmSync(dir, { recursive: true, force: true })
-  }
+test('plugin.json：needs.plugin=one、pins 空、只实现 plugin-admin', () => {
+  const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
+  assert.deepEqual(decl.implements, ['plugin-admin'])
+  assert.deepEqual(decl.methods, { 'plugin-admin': ['describe', 'invoke'] })
+  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.needs, { plugin: { mode: 'one' } })
 })

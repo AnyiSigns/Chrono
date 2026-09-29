@@ -74,7 +74,12 @@ export class StreamAccumulator {
     return Object.keys(fragment).length === 0 ? null : fragment
   }
 
-  private mergeToolCall(call: { index: number; id?: string; name?: string; arguments_delta?: string }): Rec {
+  private mergeToolCall(call: {
+    index: number
+    id?: string
+    name?: string
+    arguments_delta?: string
+  }): Rec {
     const existing = this.tools.get(call.index) ?? { id: null, name: null, args: '' }
     if (call.id !== undefined) existing.id = call.id
     if (call.name !== undefined) existing.name = call.name
@@ -111,7 +116,11 @@ export class StreamAccumulator {
   toolCalls(): ToolCallValue[] {
     return [...this.tools.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([, state]) => ({ id: state.id, name: state.name, arguments: parseArguments(state.args) }))
+      .map(([, state]) => ({
+        id: state.id,
+        name: state.name,
+        arguments: parseArguments(state.args),
+      }))
   }
 }
 
@@ -155,4 +164,78 @@ export function stringField(record: Rec, key: string): string | undefined {
 /** 判断一个 JSON 值是否为普通对象。 */
 export function asRecord(value: Json | undefined): Rec | null {
   return isRecord(value) ? value : null
+}
+
+/** 厂商中立推理块形状（字段固定）：流式解码在消费方构造，整包解析由 `msg-dialect` 对称产出。 */
+export interface ReasoningBlock {
+  provider: string
+  model: string
+  form: 'text' | 'blocks'
+  payload: string
+  signature: string
+  encrypted: string
+  tokens: number
+}
+
+/** 构造中立块（消费方流式路径用；形状与 `msg-dialect` 一致）。 */
+export function reasoningBlock(
+  provider: string,
+  model: string,
+  form: 'text' | 'blocks',
+  payload: string,
+  signature = '',
+  encrypted = '',
+  tokens = 0,
+): ReasoningBlock {
+  return { provider, model, form, payload, signature, encrypted, tokens }
+}
+
+function numberField(source: Rec, key: string): number | undefined {
+  const value = source[key]
+  return typeof value === 'number' ? value : undefined
+}
+
+/** 缓存 token 归一（与 `msg-dialect` 同口径）：只落出现过的字段。 */
+function cacheTokens(source: Rec): Rec {
+  const out: Rec = {}
+  const promptDetails = isRecord(source['prompt_tokens_details'])
+    ? (source['prompt_tokens_details'] as Rec)
+    : null
+  const inputDetails = isRecord(source['input_tokens_details'])
+    ? (source['input_tokens_details'] as Rec)
+    : null
+  const cached =
+    numberField(source, 'cached_tokens') ??
+    (promptDetails === null ? undefined : numberField(promptDetails, 'cached_tokens')) ??
+    (inputDetails === null ? undefined : numberField(inputDetails, 'cached_tokens'))
+  if (cached !== undefined) out['cached_tokens'] = cached
+  const hit = numberField(source, 'prompt_cache_hit_tokens')
+  if (hit !== undefined) out['prompt_cache_hit_tokens'] = hit
+  const miss = numberField(source, 'prompt_cache_miss_tokens')
+  if (miss !== undefined) out['prompt_cache_miss_tokens'] = miss
+  const read = numberField(source, 'cache_read_input_tokens')
+  if (read !== undefined) out['cache_read_input_tokens'] = read
+  const creation = numberField(source, 'cache_creation_input_tokens')
+  if (creation !== undefined) out['cache_creation_input_tokens'] = creation
+  const googleCached = numberField(source, 'cachedContentTokenCount')
+  if (googleCached !== undefined) out['cached_content_tokens'] = googleCached
+  return out
+}
+
+/** 归一用量为 `{prompt_tokens, completion_tokens, total_tokens}`（含缓存 token）。 */
+export function normalizeUsage(
+  prompt: Json | undefined,
+  completion: Json | undefined,
+  source?: Rec,
+): Rec | null {
+  if (typeof prompt !== 'number' && typeof completion !== 'number') return null
+  const promptTokens = typeof prompt === 'number' ? prompt : 0
+  const completionTokens = typeof completion === 'number' ? completion : 0
+  const usage: Rec = {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  }
+  if (source !== undefined) Object.assign(usage, cacheTokens(source))
+  return usage
 }

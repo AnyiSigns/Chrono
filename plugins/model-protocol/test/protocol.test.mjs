@@ -6,7 +6,12 @@ import assert from 'node:assert/strict'
 import { chatBag, configFor, startService } from './driver.mjs'
 import { delay, jsonResponse, parseBody, sseEvent, sseHead, startHttpServer } from './fake-http.mjs'
 
-const FAST = { max_retries: 2, backoff_ms: 5, backoff_max_ms: 20, token_bucket: { capacity: 100, refill_per_sec: 1000 } }
+const FAST = {
+  max_retries: 2,
+  backoff_ms: 5,
+  backoff_max_ms: 20,
+  token_bucket: { capacity: 100, refill_per_sec: 1000 },
+}
 
 function deltas(driver, field) {
   return driver.events
@@ -42,7 +47,15 @@ test('hello 回 manifest（与 plugin.json 一致）；控制帧与 EOF 自退�
     const manifest = await driver.hello()
     assert.equal(manifest.identity, 'model-protocol')
     assert.deepEqual(manifest.implements, ['model'])
-    assert.deepEqual(manifest.methods.model, ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'])
+    assert.deepEqual(manifest.methods.model, [
+      'chat',
+      'complete',
+      'abort',
+      'vendors',
+      'discover',
+      'profile',
+      'sync',
+    ])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
     assert.equal((await driver.request('probe', {}, 'pong')).ok, true)
@@ -52,9 +65,18 @@ test('hello 回 manifest（与 plugin.json 一致）；控制帧与 EOF 自退�
 
 test('未知能力类 / 未知方法 / args 非对象 → 结构化 error', async () => {
   await withService({}, async (driver) => {
-    assert.equal((await driver.request('call', { port: 'other', method: 'chat', args: {} }, 'error')).code, 'unresolved_cap')
-    assert.equal((await driver.request('call', { port: 'model', method: 'nope', args: {} }, 'error')).code, 'unknown_method')
-    assert.equal((await driver.request('call', { port: 'model', method: 'chat', args: 'x' }, 'error')).code, 'bad_args')
+    assert.equal(
+      (await driver.request('call', { port: 'other', method: 'chat', args: {} }, 'error')).code,
+      'unresolved_cap',
+    )
+    assert.equal(
+      (await driver.request('call', { port: 'model', method: 'nope', args: {} }, 'error')).code,
+      'unknown_method',
+    )
+    assert.equal(
+      (await driver.request('call', { port: 'model', method: 'chat', args: 'x' }, 'error')).code,
+      'bad_args',
+    )
   })
 })
 
@@ -67,10 +89,25 @@ test('openai-chat：请求编解码（max_tokens / reasoning_field·map / auth /
     sseEvent(res, { choices: [{ delta: { content: 'Hel' } }] })
     sseEvent(res, { choices: [{ delta: { content: 'lo' } }] })
     sseEvent(res, { choices: [{ delta: { reasoning_content: 'think' } }] })
-    sseEvent(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'lookup', arguments: '{"a"' } }] } }] })
-    sseEvent(res, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ':1}' } }] } }] })
+    sseEvent(res, {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, id: 'call_1', function: { name: 'lookup', arguments: '{"a"' } },
+            ],
+          },
+        },
+      ],
+    })
+    sseEvent(res, {
+      choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ':1}' } }] } }],
+    })
     sseEvent(res, { choices: [{ delta: {}, finish_reason: 'tool_calls' }] })
-    sseEvent(res, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 } })
+    sseEvent(res, {
+      choices: [],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    })
     sseEvent(res, '[DONE]')
     res.end()
   }
@@ -85,8 +122,14 @@ test('openai-chat：请求编解码（max_tokens / reasoning_field·map / auth /
       assert.equal(result.value.ok, true)
       assert.equal(result.value.text, 'Hello')
       assert.equal(result.value.reasoning, 'think')
-      assert.deepEqual(result.value.tool_calls, [{ id: 'call_1', name: 'lookup', arguments: { a: 1 } }])
-      assert.deepEqual(result.value.usage, { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 })
+      assert.deepEqual(result.value.tool_calls, [
+        { id: 'call_1', name: 'lookup', arguments: { a: 1 } },
+      ])
+      assert.deepEqual(result.value.usage, {
+        prompt_tokens: 5,
+        completion_tokens: 7,
+        total_tokens: 12,
+      })
       assert.equal(result.value.protocol, 'openai-chat')
 
       const request = server.requests[0]
@@ -104,12 +147,68 @@ test('openai-chat：请求编解码（max_tokens / reasoning_field·map / auth /
 
       assert.equal(deltas(driver, 'text').join(''), 'Hello')
       assert.equal(deltas(driver, 'reasoning').join(''), 'think')
-      const payloads = driver.events.filter((event) => event.topic === 'model.delta').map((event) => event.payload)
+      const payloads = driver.events
+        .filter((event) => event.topic === 'model.delta')
+        .map((event) => event.payload)
       assert.ok(payloads.every((payload) => payload.run === 'run-1' && payload.thread === 't1'))
       assert.equal(JSON.stringify(result.value).includes('sk-secret-xyz'), false, '明文不得进结果')
       assert.equal(JSON.stringify(driver.events).includes('sk-secret-xyz'), false, '明文不得进事件')
-      assert.equal(JSON.stringify(request.body).includes('sk-secret-xyz'), false, '明文不得进请求体')
-      assert.ok(driver.portCalls.some((call) => call.port === 'secrets' && call.method === 'resolve'))
+      assert.equal(
+        JSON.stringify(request.body).includes('sk-secret-xyz'),
+        false,
+        '明文不得进请求体',
+      )
+      assert.ok(
+        driver.portCalls.some((call) => call.port === 'secrets' && call.method === 'resolve'),
+      )
+    })
+  })
+})
+
+test('资产内联：image_url 占位符经 host.asset.get 换成 data URL 后上行', async () => {
+  const sha = 'a'.repeat(64)
+  const handler = (req, res) => {
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { content: 'ok' } }] })
+    sseEvent(res, { choices: [{ delta: {}, finish_reason: 'stop' }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    const secretsResolver = (port, method) => {
+      if (port === 'host' && method === 'asset.get')
+        return { value: { bytes: 'aGVsbG8=', mime: 'image/png', size: 5 } }
+      return { error: 'not_available', message: 'no resolver' }
+    }
+    await withService({ secretsResolver }, async (driver) => {
+      const bag = chatBag(server.url, {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'see' },
+              { type: 'image_url', image_url: { url: `asset:${sha}` } },
+            ],
+          },
+        ],
+        resilience: FAST,
+      })
+      const result = await driver.call('chat', bag)
+      assert.equal(result.kind, 'result')
+      assert.equal(result.value.ok, true)
+
+      const body = parseBody(server.requests[0])
+      const message = body.messages.find((item) => item.role === 'user')
+      assert.deepEqual(message.content[1], {
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,aGVsbG8=' },
+      })
+      assert.equal(JSON.stringify(body).includes(`asset:${sha}`), false, '不得残留占位符')
+      assert.ok(
+        driver.portCalls.some(
+          (call) => call.port === 'msg-dialect' && call.method === 'inline-assets',
+        ),
+      )
     })
   })
 })
@@ -152,7 +251,11 @@ test('openai-chat：中性 tool_calls / tool_call_id 编成厂商形状（工具
       const bag = chatBag(server.url, {
         messages: [
           { role: 'user', content: 'read it' },
-          { role: 'assistant', content: '', tool_calls: [{ id: 'call-9', name: 'read', arguments: { path: 'a' } }] },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{ id: 'call-9', name: 'read', arguments: { path: 'a' } }],
+          },
           { role: 'tool', tool_call_id: 'call-9', content: '{"ok":true}' },
         ],
       })
@@ -178,7 +281,10 @@ test('openai-chat：usage 来源 none → usage 为 null，不发 usage 事件',
   }
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const bag = chatBag(server.url, { config: { quirks: { ...configFor('').quirks, stream_usage: 'none' } }, resilience: FAST })
+      const bag = chatBag(server.url, {
+        config: { quirks: { ...configFor('').quirks, stream_usage: 'none' } },
+        resilience: FAST,
+      })
       const result = await driver.call('chat', bag)
       assert.equal(result.value.usage, null)
       assert.equal(deltas(driver, 'usage').length, 0)
@@ -218,19 +324,40 @@ test('openai-responses：input / max_output_tokens 编解码与类型化事件�
     sseHead(res)
     sseEvent(res, { type: 'response.output_text.delta', delta: 'Hi ' })
     sseEvent(res, { type: 'response.output_text.delta', delta: 'there' })
-    sseEvent(res, { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_r', name: 'search' } })
-    sseEvent(res, { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"q":"x"}' })
-    sseEvent(res, { type: 'response.completed', response: { usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 } } })
+    sseEvent(res, {
+      type: 'response.output_item.added',
+      item: { type: 'function_call', id: 'fc_1', call_id: 'call_r', name: 'search' },
+    })
+    sseEvent(res, {
+      type: 'response.function_call_arguments.delta',
+      item_id: 'fc_1',
+      delta: '{"q":"x"}',
+    })
+    sseEvent(res, {
+      type: 'response.completed',
+      response: { usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 } },
+    })
     res.end()
   }
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const quirks = { ...configFor('').quirks, protocol: 'openai-responses', max_tokens_field: 'max_output_tokens', reasoning_field: null }
+      const quirks = {
+        ...configFor('').quirks,
+        protocol: 'openai-responses',
+        max_tokens_field: 'max_output_tokens',
+        reasoning_field: null,
+      }
       const bag = chatBag(server.url, { config: { quirks }, resilience: FAST })
       const result = await driver.call('chat', bag)
       assert.equal(result.value.text, 'Hi there')
-      assert.deepEqual(result.value.tool_calls, [{ id: 'call_r', name: 'search', arguments: { q: 'x' } }])
-      assert.deepEqual(result.value.usage, { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 })
+      assert.deepEqual(result.value.tool_calls, [
+        { id: 'call_r', name: 'search', arguments: { q: 'x' } },
+      ])
+      assert.deepEqual(result.value.usage, {
+        prompt_tokens: 3,
+        completion_tokens: 4,
+        total_tokens: 7,
+      })
       const body = parseBody(server.requests[0])
       assert.equal(server.requests[0].url, '/responses')
       assert.equal(body.max_output_tokens, 64)
@@ -248,12 +375,32 @@ test('anthropic-messages：system 顶层 / x-api-key + anthropic-version / think
     sseHead(res)
     sseEvent(res, { type: 'message_start', message: { usage: { input_tokens: 2 } } })
     sseEvent(res, { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } })
-    sseEvent(res, { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } })
+    sseEvent(res, {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: 'hmm' },
+    })
     sseEvent(res, { type: 'content_block_start', index: 1, content_block: { type: 'text' } })
-    sseEvent(res, { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Answer' } })
-    sseEvent(res, { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'toolu_1', name: 'calc' } })
-    sseEvent(res, { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"n":2}' } })
-    sseEvent(res, { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 6 } })
+    sseEvent(res, {
+      type: 'content_block_delta',
+      index: 1,
+      delta: { type: 'text_delta', text: 'Answer' },
+    })
+    sseEvent(res, {
+      type: 'content_block_start',
+      index: 2,
+      content_block: { type: 'tool_use', id: 'toolu_1', name: 'calc' },
+    })
+    sseEvent(res, {
+      type: 'content_block_delta',
+      index: 2,
+      delta: { type: 'input_json_delta', partial_json: '{"n":2}' },
+    })
+    sseEvent(res, {
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use' },
+      usage: { output_tokens: 6 },
+    })
     sseEvent(res, { type: 'message_stop' })
     res.end()
   }
@@ -268,12 +415,21 @@ test('anthropic-messages：system 顶层 / x-api-key + anthropic-version / think
         stream_usage: 'separate',
         extra_headers: { 'anthropic-version': '2023-06-01' },
       }
-      const bag = chatBag(server.url, { config: { quirks, auth_ref: { kind: 'env', name: 'A' } }, resilience: FAST })
+      const bag = chatBag(server.url, {
+        config: { quirks, auth_ref: { kind: 'env', name: 'A' } },
+        resilience: FAST,
+      })
       const result = await driver.call('chat', bag)
       assert.equal(result.value.text, 'Answer')
       assert.equal(result.value.reasoning, 'hmm')
-      assert.deepEqual(result.value.tool_calls, [{ id: 'toolu_1', name: 'calc', arguments: { n: 2 } }])
-      assert.deepEqual(result.value.usage, { prompt_tokens: 2, completion_tokens: 6, total_tokens: 8 })
+      assert.deepEqual(result.value.tool_calls, [
+        { id: 'toolu_1', name: 'calc', arguments: { n: 2 } },
+      ])
+      assert.deepEqual(result.value.usage, {
+        prompt_tokens: 2,
+        completion_tokens: 6,
+        total_tokens: 8,
+      })
       assert.equal(result.value.stop_reason, 'tool_use')
 
       const request = server.requests[0]
@@ -301,7 +457,11 @@ test('complete：非流式、不发 model.delta，回 {text, usage}', async () =
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
       const result = await driver.call('complete', chatBag(server.url, { resilience: FAST }))
-      assert.deepEqual(result.value, { ok: true, text: 'done', usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } })
+      assert.deepEqual(result.value, {
+        ok: true,
+        text: 'done',
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      })
       assert.equal(driver.events.length, 0, 'complete 不发事件')
       assert.equal(parseBody(server.requests[0]).stream, false)
     })
@@ -342,7 +502,10 @@ test('429：尊重 Retry-After 后退避重试；耗尽回 model_rate_limited', 
   }
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const result = await driver.call('chat', chatBag(server.url, { resilience: { ...FAST, max_retries: 1 } }))
+      const result = await driver.call(
+        'chat',
+        chatBag(server.url, { resilience: { ...FAST, max_retries: 1 } }),
+      )
       assert.equal(result.value.ok, false)
       assert.equal(result.value.error.code, 'model_rate_limited')
       assert.equal(server.requests.length, 2)
@@ -358,7 +521,10 @@ test('429 正秒数 Retry-After：按该值退避后重试', async () => {
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
       const begin = Date.now()
-      const result = await driver.call('chat', chatBag(server.url, { resilience: { ...FAST, max_retries: 1 } }))
+      const result = await driver.call(
+        'chat',
+        chatBag(server.url, { resilience: { ...FAST, max_retries: 1 } }),
+      )
       assert.equal(result.value.error.code, 'model_rate_limited')
       assert.equal(server.requests.length, 2)
       assert.ok(Date.now() - begin >= 40, '应等待 Retry-After 指定的时长')
@@ -387,10 +553,18 @@ test('流断整请求重试：分片不重不漏', async () => {
       assert.equal(result.value.ok, true)
       assert.equal(result.value.text, 'part1-part2')
       assert.equal(server.requests.length, 2)
-      const payloads = driver.events.filter((event) => event.topic === 'model.delta').map((event) => event.payload)
-      assert.ok(payloads.some((payload) => payload.reset === true), '重试前应上行 reset')
+      const payloads = driver.events
+        .filter((event) => event.topic === 'model.delta')
+        .map((event) => event.payload)
+      assert.ok(
+        payloads.some((payload) => payload.reset === true),
+        '重试前应上行 reset',
+      )
       const lastReset = payloads.map((payload) => payload.reset === true).lastIndexOf(true)
-      const afterReset = payloads.slice(lastReset + 1).map((payload) => payload.text).filter((value) => typeof value === 'string')
+      const afterReset = payloads
+        .slice(lastReset + 1)
+        .map((payload) => payload.text)
+        .filter((value) => typeof value === 'string')
       assert.equal(afterReset.join(''), 'part1-part2', 'reset 后重放的文本不重不漏')
     })
   })
@@ -416,7 +590,13 @@ test('401 → model_auth_failed；网络不可达 → model_network_error；未�
       const auth = await driver.call('chat', chatBag(server.url, { resilience: FAST }))
       assert.equal(auth.value.error.code, 'model_auth_failed')
       assert.equal(server.requests.length, 1, '401 不重试')
-      const unsupported = await driver.call('chat', chatBag(server.url, { config: { quirks: { ...configFor('').quirks, protocol: 'nope' } }, resilience: FAST }))
+      const unsupported = await driver.call(
+        'chat',
+        chatBag(server.url, {
+          config: { quirks: { ...configFor('').quirks, protocol: 'nope' } },
+          resilience: FAST,
+        }),
+      )
       assert.equal(unsupported.value.error.code, 'model_unsupported')
     })
   })
@@ -424,23 +604,38 @@ test('401 → model_auth_failed；网络不可达 → model_network_error；未�
   const deadUrl = dead.url
   await dead.close()
   await withService({}, async (driver) => {
-    const result = await driver.call('chat', chatBag(deadUrl, { resilience: { ...FAST, max_retries: 0 } }))
+    const result = await driver.call(
+      'chat',
+      chatBag(deadUrl, { resilience: { ...FAST, max_retries: 0 } }),
+    )
     assert.equal(result.value.error.code, 'model_network_error')
   })
 })
 
 test('密钥解析失败 → model_auth_failed，且不回明文', async () => {
-  await withService({ secretsResolver: () => ({ error: 'secret_missing', message: 'not found' }) }, async (driver) => {
-    const result = await driver.call('chat', chatBag('http://127.0.0.1:1', { config: { auth_ref: { kind: 'local', name: 'MISSING' } }, resilience: FAST }))
-    assert.equal(result.value.error.code, 'model_auth_failed')
-    assert.equal(JSON.stringify(result.value).includes('sk-secret'), false)
-  })
+  await withService(
+    { secretsResolver: () => ({ error: 'secret_missing', message: 'not found' }) },
+    async (driver) => {
+      const result = await driver.call(
+        'chat',
+        chatBag('http://127.0.0.1:1', {
+          config: { auth_ref: { kind: 'local', name: 'MISSING' } },
+          resilience: FAST,
+        }),
+      )
+      assert.equal(result.value.error.code, 'model_auth_failed')
+      assert.equal(JSON.stringify(result.value).includes('sk-secret'), false)
+    },
+  )
 })
 
 test('bag 缺 config / model → 协议 bad_args', async () => {
   await withService({}, async (driver) => {
     assert.equal((await driver.call('chat', { messages: [] })).code, 'bad_args')
-    assert.equal((await driver.call('chat', { config: { base_url: 'x' }, messages: [] })).code, 'bad_args')
+    assert.equal(
+      (await driver.call('chat', { config: { base_url: 'x' }, messages: [] })).code,
+      'bad_args',
+    )
   })
 })
 
@@ -452,7 +647,9 @@ test('请求超时 → model_timeout（可重试，耗尽后回该码）', async
   }
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
-      const bag = chatBag(server.url, { resilience: { ...FAST, max_retries: 0, request_timeout_ms: 50 } })
+      const bag = chatBag(server.url, {
+        resilience: { ...FAST, max_retries: 0, request_timeout_ms: 50 },
+      })
       const result = await driver.call('complete', bag)
       assert.equal(result.value.error.code, 'model_timeout')
     })

@@ -5,7 +5,7 @@
 import type { SlotContext } from '@chrono/ui-contract'
 import { applyEvent, clearUnread, createBadgeState, seedFromHistory, seedOpenTurns } from './badges.ts'
 import type { BadgeState } from './badges.ts'
-import { beginConfirm, clearConfirm, CONFIRM_MS, createConfirmState, isConfirming } from './confirm.ts'
+import { clearConfirm, createConfirmState } from './confirm.ts'
 import type { ConfirmState } from './confirm.ts'
 import { exportBody, exportFilename, messagesOf } from './export.ts'
 import { formatText, messageText } from './messages.ts'
@@ -130,7 +130,6 @@ export class SidebarStore {
   /** 焦点是否仍在浮窗簇内；键盘用户不因鼠标移出而被收起。 */
   private flyoutFocused = false
   private reloadTimer: ReturnType<typeof setTimeout> | null = null
-  private confirmTimer: ReturnType<typeof setTimeout> | null = null
   private widthTimer: ReturnType<typeof setTimeout> | null = null
   private statusTimer: ReturnType<typeof setTimeout> | null = null
   private closeEvents: (() => void) | null = null
@@ -238,7 +237,6 @@ export class SidebarStore {
       this.tooltipTimer,
       this.flyoutTimer,
       this.reloadTimer,
-      this.confirmTimer,
       this.widthTimer,
       this.statusTimer,
     ]) {
@@ -429,7 +427,7 @@ export class SidebarStore {
   }
 
   confirming(key: string): boolean {
-    return isConfirming(this.snapshot.confirm, key, Date.now())
+    return this.snapshot.confirm.key === key
   }
 
   private applyViewport(): void {
@@ -523,29 +521,16 @@ export class SidebarStore {
   }
 
   requestTerminate(session: Conversation): void {
-    this.update({ confirm: beginConfirm(this.snapshot.confirm, `terminate:${session.id}`, Date.now()) })
-    this.scheduleConfirmRefresh()
+    this.update({ confirm: { key: `terminate:${session.id}`, until: Number.MAX_SAFE_INTEGER } })
   }
 
   confirmDelete(session: Conversation): void {
-    this.update({ confirm: beginConfirm(this.snapshot.confirm, `delete:${session.id}`, Date.now()) })
-    this.scheduleConfirmRefresh()
+    this.update({ confirm: { key: `delete:${session.id}`, until: Number.MAX_SAFE_INTEGER } })
   }
 
   cancelConfirm(): void {
     this.update({ confirm: clearConfirm() })
     this.releaseFlyoutIfIdle()
-  }
-
-  private scheduleConfirmRefresh(): void {
-    if (this.confirmTimer !== null) clearTimeout(this.confirmTimer)
-    this.confirmTimer = setTimeout(() => {
-      this.confirmTimer = null
-      if (this.snapshot.confirm.key !== null) {
-        this.update({ confirm: clearConfirm() })
-        this.releaseFlyoutIfIdle()
-      }
-    }, CONFIRM_MS + 50)
   }
 
   /** 就地编辑 / 确认结束后，指针与焦点均已不在浮窗簇内则收起浮窗（避免保活残留）。 */

@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync, cpSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, cpSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -54,8 +54,58 @@ function writeSecrets(file, value) {
   writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value))
 }
 
+/** 测试用本地文件读取（仿真 secrets-local 的 readLocalSecrets）：缺失 → 空表；损坏 → 不可读。 */
+function readLocalSecretsForTest(file) {
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: true, secrets: {} }
+    return { ok: false }
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { ok: false }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { ok: false }
+  const secrets = {}
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value === 'string') secrets[name] = value
+  }
+  return { ok: true, secrets }
+}
+
+/** 仿真宿主侧路由：把 secrets 的反向 `port.call` 应答为 secrets-local.read / list。 */
+function answerPortCall(message, secretsFile) {
+  const base = { v: '1', id: message.id }
+  if (message.port !== 'secrets-local') {
+    return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
+  }
+  if (message.method !== 'read' && message.method !== 'list') {
+    return { ...base, kind: 'port.error', ok: false, error: 'unknown_method', message: `unknown method ${message.method}` }
+  }
+  const read = readLocalSecretsForTest(secretsFile)
+  if (!read.ok) {
+    return { ...base, kind: 'port.error', ok: false, error: 'secret_unreadable', message: 'local secrets file is unreadable' }
+  }
+  if (message.method === 'list') {
+    const value = Object.keys(read.secrets)
+      .sort()
+      .map((name) => ({ name, has: true }))
+    return { ...base, kind: 'port.result', ok: true, value }
+  }
+  const value = read.secrets[message.args?.name]
+  if (value === undefined) {
+    return { ...base, kind: 'port.error', ok: false, error: 'secret_missing', message: 'local secret not found' }
+  }
+  return { ...base, kind: 'port.result', ok: true, value }
+}
+
 function startService({ pluginState, extraEnv = {} }) {
   const env = { ...process.env, CHRONO_PLUGIN_STATE: pluginState, ...extraEnv }
+  const secretsFile = resolve(pluginState, '..', '..', 'secrets.local.json')
   const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
   const decoder = createDecoder()
   const pending = new Map()
@@ -63,6 +113,10 @@ function startService({ pluginState, extraEnv = {} }) {
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
   child.stdout.on('data', (chunk) => {
     for (const message of decoder.push(chunk)) {
+      if (message.kind === 'port.call') {
+        child.stdin.write(encodeFrame(answerPortCall(message, secretsFile)))
+        continue
+      }
       const handler = pending.get(message.id)
       if (handler !== undefined) {
         pending.delete(message.id)

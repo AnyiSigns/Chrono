@@ -1,0 +1,21 @@
+{
+  "name": "mcp-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "外部 MCP 服务器 stdio 客户端：JSON-RPC 换行分帧 + 握手 + 子进程生命周期（spawn / 重连 / 关闭 / 硬杀兜底）",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

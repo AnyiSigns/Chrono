@@ -1,0 +1,21 @@
+{
+  "name": "semantic",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "语义摘要原语：提示词构建 + 模型输出围栏解析；经反向 model.chat 出同结构摘要记录，失败作数据",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

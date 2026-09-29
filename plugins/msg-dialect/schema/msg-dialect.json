@@ -1,0 +1,121 @@
+{
+  "title": "msg-dialect（消息方言编解码）",
+  "description": "身份自述 / 数据契约：能力类 msg-dialect 的方法（normalize-quirks / reasoning-capability / encode-tools / apply-auth / build / parse-full / inline-assets）。把归一化 messages / system / 档位·map / 工具 / 缓存断点编成请求体（build 回 HTTP 请求或 SDK 参数），把非流式整包回包解析为 text / reasoning（中立块）/ tool_calls / usage / 停止原因（parse-full）。逐段流式 SSE 解析不在此：跨插件 port.call 不能传流式回调，留消费方 model-protocol。唯一反向调用为 host.asset.get（资产内联）。不读投影、不写世界、不自取时钟。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "normalize_quirks_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "quirks": { "type": "object", "description": "厂商 quirks 声明；缺省取协议默认。" },
+        "protocol_override": { "type": ["string", "null"] }
+      }
+    },
+    "reasoning_capability_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "provider": { "type": ["string", "null"] },
+        "protocol": { "type": ["string", "null"] },
+        "impl": { "type": ["string", "null"] },
+        "profile": { "description": "显式能力表（优先）。" }
+      }
+    },
+    "encode_tools_request": {
+      "type": "object",
+      "required": ["tools", "protocol"],
+      "additionalProperties": true,
+      "properties": {
+        "tools": { "description": "工具声明数组；协议原生（带 type）透传，中性声明按协议编形。" },
+        "protocol": { "type": "string" }
+      }
+    },
+    "apply_auth_request": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": true,
+      "properties": {
+        "url": { "type": "string" },
+        "quirks": { "type": "object" },
+        "secret": { "type": ["string", "null"] }
+      }
+    },
+    "build_request": {
+      "type": "object",
+      "required": ["provider", "model", "messages"],
+      "additionalProperties": true,
+      "properties": {
+        "quirks": { "type": "object", "description": "归一后 quirks（经 normalize-quirks）。" },
+        "capability_profile": {},
+        "provider": { "type": "string" },
+        "base_url": { "type": "string" },
+        "model": { "type": "string" },
+        "messages": { "type": "array" },
+        "params": { "type": "object" },
+        "secret": { "type": ["string", "null"] },
+        "stream": { "type": "boolean" },
+        "tools": {},
+        "tool_choice": {},
+        "cache": { "type": "object" }
+      }
+    },
+    "build_result": {
+      "type": "object",
+      "description": "{kind:'http', protocol, url, headers, body} 或 {kind:'sdk', protocol:'sdk', params}。",
+      "additionalProperties": true
+    },
+    "parse_full_request": {
+      "type": "object",
+      "required": ["provider", "model"],
+      "additionalProperties": true,
+      "properties": {
+        "quirks": { "type": "object" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "json": { "description": "厂商整包回包。" }
+      }
+    },
+    "parse_full_result": {
+      "type": "object",
+      "description": "{text, reasoning?, reasoning_blocks?, tool_calls, usage, stop_reason?}。",
+      "additionalProperties": true
+    },
+    "inline_assets_request": {
+      "type": "object",
+      "required": ["messages", "protocol"],
+      "additionalProperties": true,
+      "properties": {
+        "messages": { "type": "array" },
+        "protocol": { "type": "string" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string" },
+        "model_unsupported": { "type": "string", "description": "未知协议。" }
+      }
+    }
+  },
+  "audit_redact": {
+    "msg-dialect.normalize-quirks": [],
+    "msg-dialect.reasoning-capability": [],
+    "msg-dialect.encode-tools": [],
+    "msg-dialect.apply-auth": ["secret"],
+    "msg-dialect.build": ["secret"],
+    "msg-dialect.parse-full": [],
+    "msg-dialect.inline-assets": []
+  },
+  "method_timeouts": {
+    "msg-dialect.normalize-quirks": 5000,
+    "msg-dialect.reasoning-capability": 5000,
+    "msg-dialect.encode-tools": 5000,
+    "msg-dialect.apply-auth": 5000,
+    "msg-dialect.build": 30000,
+    "msg-dialect.parse-full": 30000,
+    "msg-dialect.inline-assets": 30000
+  }
+}

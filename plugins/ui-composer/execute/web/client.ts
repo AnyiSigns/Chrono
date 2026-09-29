@@ -65,6 +65,7 @@ export interface ComposerClient {
   writeConfig(patch: unknown, thread?: string): Promise<SubmitResult>
   writeSlot(threadKey: string, slot: unknown): Promise<SubmitResult>
   triggerSend(threadKey: string): Promise<CommandResult>
+  insertMessage(turnId: string, insertId: string, message: unknown, thread?: string): Promise<CommandResult>
   cancelRun(run: string): Promise<{ ok: boolean; code: string }>
   fetchProfile(): Promise<CommandResult>
 }
@@ -109,6 +110,9 @@ export function createClient(ctx: SlotContext): ComposerClient {
       return asSubmit(await command(built.name, built.args, threadKey))
     },
     triggerSend: (threadKey) => command('chat.send', null, threadKey),
+    /** 回合运行中插入用户消息：`chat.insert` 命令（落主历史 + 下一轮并入，不起新回合）。 */
+    insertMessage: (turnId, insertId, message, thread) =>
+      command('chat.insert', { turn_id: turnId, insert_id: insertId, user_message: message }, thread),
     async cancelRun(run) {
       const result = await ctx.cancel(run)
       if (isRecord(result)) {

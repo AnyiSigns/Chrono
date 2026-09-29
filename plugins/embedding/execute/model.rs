@@ -1,6 +1,7 @@
 // granite-97m 推理引擎：`model_quint8_avx2.onnx` 经 `include_bytes!` 内嵌进二进制
 // （构建期输入由宿主 `assets_manifest` 直拷提供）。ModernBERT + CLS pooling + L2 归一。
 // 确定性：单线程执行（intra / inter threads = 1），同输入同输出。
+// 分词不在此内嵌：经反向 `port.call tokenizer.encode` 取 token ids / mask（`TokenizerPort`）。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -8,15 +9,13 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 
-use crate::tokenizer;
-
 /// 模型 id（与 schema 清单一致；向量随 id / dim 变）。
 pub const MODEL_ID: &str = "granite-97m";
 /// 向量维度。
 pub const DIM: usize = 384;
 /// 单条文本参与推理的最大 token 数（服务侧内存护栏）。
 /// 模型 max_seq 是 32768，但 ModernBERT 的全局注意力按 O(seq²) 分配：32768 token 需 ≈51 GB。
-/// 默认窗口仅 ~512 token，故单次推理截断到本上限；超长文本应由调用方先 `chunk` 再逐块 `embed`。
+/// 默认窗口仅 ~512 token，故单次推理截断到本上限；超长文本应由调用方先 `tokenizer.chunk` 再逐块 `embed`。
 const EMBED_MAX_TOKENS: usize = 2048;
 
 /// granite-97m 权重（≈98 MB，不进世界）。
@@ -30,7 +29,7 @@ pub struct ModelError {
 }
 
 impl ModelError {
-    fn new(code: &str, message: impl Into<String>) -> Self {
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_string(),
             message: message.into(),
@@ -42,7 +41,19 @@ impl ModelError {
     }
 }
 
-/// 推理引擎：tokenizer 共享自 `tokenizer` 模块，ONNX 会话由互斥锁串行化（保确定、防并发争用）。
+/// 分词结果：ids / mask 与文本 token 一一对应（`tokenizer.encode` 的对外形状）。
+#[derive(Clone, Debug)]
+pub struct Encoded {
+    pub ids: Vec<i64>,
+    pub mask: Vec<i64>,
+}
+
+/// 分词端口：生产为反向 `port.call tokenizer.encode`；单测注入本地实现。
+pub trait TokenizerPort: Send + Sync {
+    fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Encoded, ModelError>;
+}
+
+/// 推理引擎：ONNX 会话由互斥锁串行化（保确定、防并发争用）。
 pub struct Engine {
     session: Mutex<Session>,
 }
@@ -60,7 +71,6 @@ pub fn engine() -> Result<&'static Engine, ModelError> {
 
 /// 预加载：在服务握手后后台执行，避免首个 `embed` 调用承担加载延迟。
 pub fn preload() {
-    let _ = tokenizer::shared();
     let _ = engine();
 }
 
@@ -83,31 +93,30 @@ impl Engine {
 
     /// 批量文本 -> 384 维 L2 归一向量（与输入一一对应、顺序保持）。
     /// 逐条推理（不 padding）：结果只取决于文本自身，与批次组成无关 ⇒ 索引可重算一致。
-    pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ModelError> {
+    pub fn embed(
+        &self,
+        texts: &[String],
+        tokenizer: &dyn TokenizerPort,
+    ) -> Result<Vec<Vec<f32>>, ModelError> {
         let mut vectors = Vec::with_capacity(texts.len());
         for text in texts {
-            vectors.push(self.embed_single(text)?);
+            vectors.push(self.embed_single(text, tokenizer)?);
         }
         Ok(vectors)
     }
 
-    fn embed_single(&self, text: &str) -> Result<Vec<f32>, ModelError> {
-        let tokenizer = tokenizer::shared().map_err(ModelError::load)?;
-        let encoding = tokenizer
-            .encode(text, true)
-            .map_err(|err| ModelError::new("tokenize_failed", err.to_string()))?;
-        let sequence = encoding.len().min(EMBED_MAX_TOKENS);
+    fn embed_single(&self, text: &str, tokenizer: &dyn TokenizerPort) -> Result<Vec<f32>, ModelError> {
+        let encoded = tokenizer.encode(text, true)?;
+        let sequence = encoded
+            .ids
+            .len()
+            .min(encoded.mask.len())
+            .min(EMBED_MAX_TOKENS);
         if sequence == 0 {
             return Err(ModelError::new("inference_failed", "empty token sequence"));
         }
-        let ids: Vec<i64> = encoding.get_ids()[..sequence]
-            .iter()
-            .map(|id| *id as i64)
-            .collect();
-        let mask: Vec<i64> = encoding.get_attention_mask()[..sequence]
-            .iter()
-            .map(|m| *m as i64)
-            .collect();
+        let ids: Vec<i64> = encoded.ids[..sequence].to_vec();
+        let mask: Vec<i64> = encoded.mask[..sequence].to_vec();
         let ids_tensor = Tensor::from_array(([1usize, sequence], ids))
             .map_err(|err| ModelError::new("inference_failed", format!("ids tensor: {err}")))?;
         let mask_tensor = Tensor::from_array(([1usize, sequence], mask))
@@ -155,12 +164,59 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[cfg(test)]
+pub use tests::test_tokenizer;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 测试用分词端口：运行时从兄弟 `tokenizer` 插件资产读入真实分词器
+    /// （生产二进制不内嵌 `tokenizer.json`；仅测试期读取）。
+    pub struct TestTokenizer {
+        inner: tokenizers::Tokenizer,
+    }
+
+    impl TestTokenizer {
+        fn load() -> Self {
+            const PATH: &str =
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../tokenizer/granite-97m/tokenizer.json");
+            let bytes = std::fs::read(PATH)
+                .unwrap_or_else(|err| panic!("需要兄弟 tokenizer 插件资产 {PATH}: {err}"));
+            let inner = tokenizers::Tokenizer::from_bytes(bytes)
+                .expect("tokenizer.json 应能解析");
+            Self { inner }
+        }
+    }
+
+    impl TokenizerPort for TestTokenizer {
+        fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Encoded, ModelError> {
+            let encoding = self
+                .inner
+                .encode(text, add_special_tokens)
+                .map_err(|err| ModelError::new("tokenize_failed", err.to_string()))?;
+            Ok(Encoded {
+                ids: encoding.get_ids().iter().map(|id| *id as i64).collect(),
+                mask: encoding
+                    .get_attention_mask()
+                    .iter()
+                    .map(|mask| *mask as i64)
+                    .collect(),
+            })
+        }
+    }
+
+    /// 进程内共享测试分词器：避免每个用例重复解析 25 MB。
+    pub fn test_tokenizer() -> &'static TestTokenizer {
+        static SHARED: OnceLock<TestTokenizer> = OnceLock::new();
+        SHARED.get_or_init(TestTokenizer::load)
+    }
+
     fn embed_one(text: &str) -> Vec<f32> {
         let engine = engine().expect("引擎应能加载");
-        engine.embed(&[text.to_string()]).unwrap().remove(0)
+        engine
+            .embed(&[text.to_string()], test_tokenizer())
+            .unwrap()
+            .remove(0)
     }
 
     fn norm(vector: &[f32]) -> f32 {
@@ -186,7 +242,7 @@ mod tests {
     fn batch_matches_single() {
         let engine = engine().unwrap();
         let texts = vec!["first sentence".to_string(), "第二句话".to_string()];
-        let batch = engine.embed(&texts).unwrap();
+        let batch = engine.embed(&texts, test_tokenizer()).unwrap();
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0], embed_one(&texts[0]));
         assert_eq!(batch[1], embed_one(&texts[1]));
@@ -238,7 +294,7 @@ mod tests {
         );
         assert!(
             related_score > 0.4,
-            "中文相关文本相似度应足够高：{related_score}"
+            "中文文本相似度应足够高：{related_score}"
         );
     }
 }

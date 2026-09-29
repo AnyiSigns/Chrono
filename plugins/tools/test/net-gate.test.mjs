@@ -68,7 +68,15 @@ test('兜底判定带上 net 输入：guard.judge 收到工具声明 net 与档�
   let seen = null
   await withService(
     {
-      guard: { judge: (args) => { seen = args; return { decisions: [{ index: 0, verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } } } },
+      guard: {
+        judge: (args) => {
+          seen = args
+          return {
+            decisions: [{ index: 0, verdict: 'allow' }],
+            summary: { allow: 1, escalate: 0, deny: 0 },
+          }
+        },
+      },
       'tool-http': { invoke: () => ({ ok: true, result: {} }) },
     },
     async (service) => {
@@ -89,7 +97,12 @@ test('兜底判定（真 guard）：severe 下 webfetch（net=all）越档 → n
   await withService(
     {
       guard: { judge: (args) => judge(args) },
-      'tool-http': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+      'tool-http': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
     },
     async (service) => {
       const response = await service.call('dispatch', {
@@ -110,7 +123,12 @@ test('兜底判定 fail-closed：缺 tier → tier_net=none，越档仍升级', 
   await withService(
     {
       guard: { judge: (args) => judge(args) },
-      'tool-http': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+      'tool-http': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
     },
     async (service) => {
       const response = await service.call('dispatch', {
@@ -128,7 +146,12 @@ test('兜底判定：档位数据世代放宽 severe.net=all → 同调用放行
   await withService(
     {
       guard: { judge: (args) => judge(args) },
-      'tool-http': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+      'tool-http': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
     },
     async (service) => {
       const response = await service.call('dispatch', {
@@ -146,7 +169,14 @@ test('兜底判定：档位数据世代放宽 severe.net=all → 同调用放行
 test('消费侧按 gate 裁决字符串理解：escalate / deny 不得静默放行', async () => {
   let invoked = 0
   await withService(
-    { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } },
+    {
+      'tool-fs': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
+    },
     async (service) => {
       const call = (verdicts) =>
         service.call('dispatch', {
@@ -157,7 +187,11 @@ test('消费侧按 gate 裁决字符串理解：escalate / deny 不得静默放�
         })
 
       const escalated = await call('escalate')
-      assert.equal(escalated.value.results[0].error.code, 'needs_approval', 'gate escalate 必须拦在效果之前')
+      assert.equal(
+        escalated.value.results[0].error.code,
+        'needs_approval',
+        'gate escalate 必须拦在效果之前',
+      )
       const denied = await call('deny')
       assert.equal(denied.value.results[0].error.code, 'denied')
       const unknown = await call('bogus')
@@ -175,7 +209,14 @@ test('消费侧按 gate 裁决字符串理解：escalate / deny 不得静默放�
 test('消费侧：畸形 verdicts（非字符串 / 非数组 / 非对象）fail-closed 为 denied', async () => {
   let invoked = 0
   await withService(
-    { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } },
+    {
+      'tool-fs': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
+    },
     async (service) => {
       const response = await service.call('dispatch', {
         calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
@@ -192,7 +233,14 @@ test('消费侧：畸形 verdicts（非字符串 / 非数组 / 非对象）fail-
 test('消费侧：escalate 字符串时零效果（提供者未被触达）', async () => {
   let invoked = 0
   await withService(
-    { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } },
+    {
+      'tool-fs': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
+    },
     async (service) => {
       const response = await service.call('dispatch', {
         calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
@@ -209,7 +257,14 @@ test('消费侧：escalate 字符串时零效果（提供者未被触达）', as
 test('消费侧：结构化 verdicts（数组 / decisions / call_id 映射）语义不变', async () => {
   let invoked = 0
   await withService(
-    { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } },
+    {
+      'tool-fs': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
+    },
     async (service) => {
       const arr = await service.call('dispatch', {
         calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
@@ -235,7 +290,12 @@ test('net=none 的工具不受 net 档影响（兜底判定照常放行）', asy
   await withService(
     {
       guard: { judge: (args) => judge(args) },
-      'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+      'tool-fs': {
+        invoke: () => {
+          invoked += 1
+          return { ok: true, result: {} }
+        },
+      },
     },
     async (service) => {
       const response = await service.call('dispatch', {

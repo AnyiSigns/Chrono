@@ -151,15 +151,6 @@ pub fn validate_add(fs: &dyn Fs, path: &str, workspaces: &[Value]) -> Result<Str
     Ok(canonical_text)
 }
 
-/// 目标工作区路径（reveal 用）：按 id 在清单里线性查找。
-pub fn workspace_path(workspaces: &[Value], id: &str) -> Option<String> {
-    workspaces
-        .iter()
-        .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|item| item.get("path").and_then(Value::as_str))
-        .map(str::to_string)
-}
-
 /// `list`：逐路径 stat，`missing` = 不存在 / 非目录（stat 失败按 missing 收口，不阻塞其它项）。
 pub fn list_value(workspaces: &[Value], fs: &dyn Fs) -> Value {
     let items: Vec<Value> = workspaces
@@ -523,13 +514,6 @@ mod tests {
             validate_add(&fs, "C:\\ghost", &[]).unwrap_err(),
             AddError::PathNotFound
         );
-    }
-
-    #[test]
-    fn workspace_path_resolves_from_list() {
-        let list = vec![json!({ "id": "w1", "path": "C:\\ws" })];
-        assert_eq!(workspace_path(&list, "w1"), Some("C:\\ws".to_string()));
-        assert_eq!(workspace_path(&list, "nope"), None);
     }
 
     #[test]

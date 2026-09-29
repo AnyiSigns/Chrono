@@ -4,6 +4,7 @@
 // 纯字符串进出，可在 node --test 里直接单测。
 
 import { escapeAttr, safeUrl } from './sanitize.ts'
+import { highlightCode } from './highlight.ts'
 
 /** 文本转义（`&` / `<` / `>`）。 */
 export function escapeHtml(text: unknown): string {
@@ -127,31 +128,79 @@ export function renderInline(text: unknown): string {
   return out
 }
 
+/** 超过该行数的围栏代码块默认折叠成可滚代码框，靠头部 `chat-codeblock-toggle` 展开 / 收起。 */
+export const CODE_COLLAPSE_LINES = 20
+
 const HEADING_RE = /^(#{1,6})\s+(.*)$/
 const HR_RE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
 const FENCE_RE = /^\s*```/
+const FENCE_LANG_RE = /^\s*```([^\s]*)/
 const UL_RE = /^\s*[-*+]\s+(.*)$/
 const OL_RE = /^\s*\d+[.)]\s+(.*)$/
+/** GFM 管道表格的分隔行：`|---|:--:|--:|`（每列至少一个 `-`，可带对齐冒号）。 */
+const TABLE_DELIM_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 
-const CURSOR_HTML = '<span class="chat-cursor"></span>'
-const LAST_BLOCK_CLOSE_RE = /<\/(p|h[1-6]|li|blockquote|pre|td|th)>$/
-
-/**
- * 在已渲染 HTML 末尾插入流式光标，优先插进最后一个块级元素内，
- * 使光标紧随末行而不是掉到块下方新起一行。空产物直接返回光标。
- */
-export function injectCursor(html: unknown): string {
-  const source = String(html ?? '')
-  if (source.length === 0) return CURSOR_HTML
-  const match = LAST_BLOCK_CLOSE_RE.exec(source)
-  if (match !== null && match.index !== undefined) {
-    return `${source.slice(0, match.index)}${CURSOR_HTML}${source.slice(match.index)}`
-  }
-  return source + CURSOR_HTML
+/** 把一行表格拆成去空白的单元格（剥掉首尾包裹的 `|`）。 */
+function splitTableRow(line: string): string[] {
+  let text = line.trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|')) text = text.slice(0, -1)
+  return text.split('|').map((cell) => cell.trim())
 }
 
+/** 分隔单元格的对齐标记：`:--` 左、`--:` 右、`:-:` 居中，无冒号返回 null。 */
+function tableAlign(cell: string): string | null {
+  const text = cell.trim()
+  const left = text.startsWith(':')
+  const right = text.endsWith(':')
+  if (left && right) return 'center'
+  if (right) return 'right'
+  if (left) return 'left'
+  return null
+}
+
+/** 当前行 + 下一行构成 GFM 表格：表头含 `|`，下一行是分隔行且列数一致。 */
+function isTableStart(lines: string[], index: number): boolean {
+  const header = lines[index]
+  const delim = lines[index + 1]
+  if (header === undefined || delim === undefined || !header.includes('|')) return false
+  if (!TABLE_DELIM_RE.test(delim)) return false
+  return splitTableRow(header).length === splitTableRow(delim).length
+}
+
+/** 表格渲染：列数按表头归一（多列丢弃、缺列补空），对齐走 `data-align` 由样式着色。
+ *  外壳带右上角悬浮工具条（复制 / 导出菜单），按钮文案由渲染后本地化补齐。 */
+function renderTable(header: string[], aligns: (string | null)[], rows: string[][]): string {
+  const cell = (tag: 'th' | 'td', text: string, align: string | null): string =>
+    `<${tag}${align !== null ? ` data-align="${align}"` : ''}>${renderInline(text)}</${tag}>`
+  const head = header.map((text, i) => cell('th', text, aligns[i] ?? null)).join('')
+  const body = rows
+    .map((row) => `<tr>${header.map((_, i) => cell('td', row[i] ?? '', aligns[i] ?? null)).join('')}</tr>`)
+    .join('')
+  const toolbar =
+    '<div class="chat-table-head">' +
+    '<button type="button" class="chat-table-copy" data-copy="idle"></button>' +
+    '<button type="button" class="chat-table-export" aria-expanded="false"></button>' +
+    '</div>'
+  const menu =
+    `<div class="chat-table-menu">` +
+    `<button type="button" class="chat-table-export-csv"></button>` +
+    `<button type="button" class="chat-table-export-md"></button>` +
+    `</div>`
+  return `<div class="chat-tableblock">${toolbar}<div class="chat-table-wrap"><table class="chat-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${menu}</div>`
+}
+
+/** 块级渲染选项：`tail` = 流式在途的尾部片段（未定稿），走有界路径。 */
+export interface RenderOptions {
+  tail?: boolean
+}
+
+/** 流式尾部超长围栏的行数 / 字节上限：超过则跳过高亮，只做转义。 */
+export const STREAM_FENCE_LINE_CAP = 400
+export const STREAM_FENCE_BYTE_CAP = 32 * 1024
+
 /** 块级渲染：字符串进、HTML 字符串出（未消毒，调用方接 sanitizeHtml）。 */
-export function renderMarkdown(source: unknown): string {
+export function renderMarkdown(source: unknown, options: RenderOptions = {}): string {
   const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n')
   const out: string[] = []
   let i = 0
@@ -162,6 +211,8 @@ export function renderMarkdown(source: unknown): string {
       continue
     }
     if (FENCE_RE.test(line)) {
+      const langMatch = FENCE_LANG_RE.exec(line)
+      const lang = langMatch !== null ? langMatch[1].trim() : ''
       const body: string[] = []
       i += 1
       while (i < lines.length && !FENCE_RE.test(lines[i])) {
@@ -169,7 +220,23 @@ export function renderMarkdown(source: unknown): string {
         i += 1
       }
       if (i < lines.length) i += 1
-      out.push(`<pre><code>${escapeHtml(body.join('\n'))}</code></pre>`)
+      const langLabel = lang.length > 0 ? `<span class="chat-codeblock-lang">${escapeHtml(lang)}</span>` : ''
+      // 长块默认折叠：外壳挂 data-collapsed，头部给展开 / 收起按钮（文案由渲染后本地化补齐）。
+      const long = body.length > CODE_COLLAPSE_LINES
+      const collapsed = long ? ' data-collapsed="true"' : ''
+      const toggle = long
+        ? '<button type="button" class="chat-codeblock-toggle" aria-expanded="false"></button>'
+        : ''
+      // 流式尾部：未完成的长围栏每帧重解析，hljs 分词成本随块长线性增长。超过上限就只转义
+      //（每帧成本有界）；该围栏定稿（进入前缀 / 快照落地）后由非 tail 渲染补齐着色。
+      const bodyText = body.join('\n')
+      const plain =
+        options.tail === true &&
+        (body.length > STREAM_FENCE_LINE_CAP || bodyText.length > STREAM_FENCE_BYTE_CAP)
+      const codeHtml = plain ? escapeHtml(bodyText) : highlightCode(bodyText, lang)
+      out.push(
+        `<div class="chat-codeblock"${collapsed} data-lang="${escapeAttr(lang)}"><div class="chat-codeblock-head">${langLabel}<span class="chat-codeblock-actions">${toggle}<button type="button" class="chat-codeblock-copy" data-copy="idle"></button></span></div><pre><code>${codeHtml}</code></pre></div>`,
+      )
       continue
     }
     const heading = HEADING_RE.exec(line)
@@ -190,7 +257,7 @@ export function renderMarkdown(source: unknown): string {
         body.push(lines[i].replace(/^\s*>\s?/, ''))
         i += 1
       }
-      out.push(`<blockquote>${renderMarkdown(body.join('\n'))}</blockquote>`)
+      out.push(`<blockquote>${renderMarkdown(body.join('\n'), options)}</blockquote>`)
       continue
     }
     if (UL_RE.test(line) || OL_RE.test(line)) {
@@ -204,6 +271,26 @@ export function renderMarkdown(source: unknown): string {
       out.push(`<${ordered ? 'ol' : 'ul'}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`)
       continue
     }
+    if (isTableStart(lines, i)) {
+      const header = splitTableRow(lines[i])
+      const aligns = splitTableRow(lines[i + 1]).map(tableAlign)
+      i += 2
+      const rows: string[][] = []
+      while (
+        i < lines.length &&
+        !/^\s*$/.test(lines[i]) &&
+        lines[i].includes('|') &&
+        !FENCE_RE.test(lines[i]) &&
+        HEADING_RE.exec(lines[i]) === null &&
+        !HR_RE.test(lines[i]) &&
+        !/^\s*>/.test(lines[i])
+      ) {
+        rows.push(splitTableRow(lines[i]))
+        i += 1
+      }
+      out.push(renderTable(header, aligns, rows))
+      continue
+    }
     const paragraph: string[] = []
     while (
       i < lines.length &&
@@ -213,7 +300,8 @@ export function renderMarkdown(source: unknown): string {
       !HR_RE.test(lines[i]) &&
       !/^\s*>/.test(lines[i]) &&
       !UL_RE.test(lines[i]) &&
-      !OL_RE.test(lines[i])
+      !OL_RE.test(lines[i]) &&
+      !isTableStart(lines, i)
     ) {
       paragraph.push(renderInline(lines[i]))
       i += 1

@@ -48,7 +48,12 @@ test('periodic.consolidate：reads 注入 summarize（数据世代策略 → 非
 test('periodic.sweep：reads 注入阈值覆盖（非空 bag）', () => {
   const schema = readJson('schema/memory-maintenance.json')
   const entry = entryOf(schema, 'sweep')
-  assert.deepEqual(Object.keys(entry.reads).sort(), ['candidate_threshold', 'l1_ttl_ms', 'l2_capacity', 'l3_capacity'])
+  assert.deepEqual(Object.keys(entry.reads).sort(), [
+    'candidate_threshold',
+    'l1_ttl_ms',
+    'l2_capacity',
+    'l3_capacity',
+  ])
   const body = readJson('tools/default-body.json')
   const bag = buildBag({ ids: { 'memory-consolidate': { body } } }, entry.reads)
   assert.notEqual(bag, null)
@@ -66,7 +71,8 @@ test('periodic 的 method_timeouts 保持声明（consolidate > compress.summari
   assert.equal(schema.method_timeouts['memory-maintenance.consolidate'], 4800000)
   assert.equal(schema.method_timeouts['memory-maintenance.sweep'], 900000)
   assert.ok(
-    schema.method_timeouts['memory-maintenance.consolidate'] > compress.method_timeouts['compress.summarize'] + storeCeiling,
+    schema.method_timeouts['memory-maintenance.consolidate'] >
+      compress.method_timeouts['compress.summarize'] + storeCeiling,
     'consolidate 必须大于 compress.summarize 与 memory-store 之和',
   )
   assert.ok(
@@ -78,7 +84,10 @@ test('periodic 的 method_timeouts 保持声明（consolidate > compress.summari
 test('周期 bag 直达 compress.summarize：summarize 可被真正触发', async () => {
   const schema = readJson('schema/memory-maintenance.json')
   const body = readJson('tools/default-body.json')
-  const bag = buildBag({ ids: { 'memory-consolidate': { body } } }, entryOf(schema, 'consolidate').reads)
+  const bag = buildBag(
+    { ids: { 'memory-consolidate': { body } } },
+    entryOf(schema, 'consolidate').reads,
+  )
 
   const drv = startService({ memory: shortMemoryFixture() })
   try {
@@ -87,7 +96,9 @@ test('周期 bag 直达 compress.summarize：summarize 可被真正触发', asyn
     assert.equal(result.kind, 'result', JSON.stringify(result))
     assert.equal(result.value.ok, true)
     assert.equal(result.value.summary_used, true)
-    const call = drv.portCalls.find((item) => item.port === 'compress' && item.method === 'summarize')
+    const call = drv.portCalls.find(
+      (item) => item.port === 'compress' && item.method === 'summarize',
+    )
     assert.ok(call !== undefined, 'summarize=true 时应反向调 compress.summarize')
     assert.equal(call.args.persist, false)
     assert.equal(call.args.mode, 'algorithmic')

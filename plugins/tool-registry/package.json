@@ -1,0 +1,21 @@
+{
+  "name": "tool-registry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工具目录装配：describe/invoke 提供者并集 + 能力类绑定表 + 外部 MCP 工具，做四要素 / argsSchema 白名单 / caps 形状校验、工具名去重与模型可见文案拼装",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -106,13 +106,13 @@ export function resumeVerdict(resume: Rec | null): string | null {
 
 /** 恢复提问节点：把答案回灌为 question 工具结果（游标取自派发前，故常需按 last_calls 重建）。 */
 export function patchQuestionAnswer(iter: IterState, nodeIndex: number, callId: string | null, payload: Rec, calls: Rec[]): void {
-  const answers = payload['answers'] ?? null
+  // 结果取整份 payload（`{answers, render?}`）：`render` 随结果进展示段，作答后的 part 仍带题干 / id。
   const output = iter.outputs.get(nodeIndex)
   if (output !== undefined && Array.isArray(output['results'])) {
     output['results'] = (output['results'] as Json[]).map((item) => {
       if (!isRecord(item)) return item
       if (callId !== null && item['call_id'] !== callId) return item
-      return { ...item, ok: true, result: { answers } }
+      return { ...item, ok: true, result: payload }
     })
     iter.executed.add(nodeIndex)
     return
@@ -120,7 +120,7 @@ export function patchQuestionAnswer(iter: IterState, nodeIndex: number, callId: 
   const results = calls.map((call, index) => ({
     call_id: typeof call['call_id'] === 'string' ? call['call_id'] : `call-${index}`,
     ok: true,
-    result: call['tool'] === 'question' ? { answers } : { status: 'resumed' },
+    result: call['tool'] === 'question' ? payload : { status: 'resumed' },
   }))
   iter.outputs.set(nodeIndex, { results })
   iter.executed.add(nodeIndex)

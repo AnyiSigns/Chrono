@@ -9,7 +9,8 @@
   "needs": {
     "embedding": { "mode": "one" },
     "memory": { "mode": "one" },
-    "model": { "mode": "one" }
+    "query-plan": { "mode": "one" },
+    "rerank": { "mode": "one" }
   },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],

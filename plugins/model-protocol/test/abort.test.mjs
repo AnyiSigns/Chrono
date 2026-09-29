@@ -34,8 +34,16 @@ async function withDriver(run) {
 
 test('abort：缺 turn_id / 未知 turn_id 是幂等 no-op', async () => {
   await withDriver(async (driver) => {
-    assert.deepEqual((await driver.call('abort', {})).value, { ok: true, aborted: false, turn_id: null })
-    assert.deepEqual((await driver.call('abort', { turn_id: 'nope' })).value, { ok: true, aborted: false, turn_id: 'nope' })
+    assert.deepEqual((await driver.call('abort', {})).value, {
+      ok: true,
+      aborted: false,
+      turn_id: null,
+    })
+    assert.deepEqual((await driver.call('abort', { turn_id: 'nope' })).value, {
+      ok: true,
+      aborted: false,
+      turn_id: 'nope',
+    })
   })
 })
 
@@ -52,7 +60,10 @@ test('abort：销毁在途流式请求，失败归 model_aborted（不可重试�
   const driver = startService({})
   try {
     await driver.hello()
-    const pending = driver.call('chat', chatBag(server.url, { turn_id: 't-abort', resilience: FAST }))
+    const pending = driver.call(
+      'chat',
+      chatBag(server.url, { turn_id: 't-abort', resilience: FAST }),
+    )
     await waitFor(() => server.requests.length >= 1)
     assert.equal((await driver.call('abort', { turn_id: 't-abort' })).value.aborted, true)
     const result = await pending
@@ -71,12 +82,19 @@ test('abort：销毁在途流式请求，失败归 model_aborted（不可重试�
 
 test('abort：销毁在途非流式请求（complete）', async () => {
   const server = await startHttpServer((req, res) => {
-    setTimeout(() => jsonResponse(res, 200, { choices: [{ message: { role: 'assistant', content: 'late' } }] }), 500)
+    setTimeout(
+      () =>
+        jsonResponse(res, 200, { choices: [{ message: { role: 'assistant', content: 'late' } }] }),
+      500,
+    )
   })
   const driver = startService({})
   try {
     await driver.hello()
-    const pending = driver.call('complete', chatBag(server.url, { turn_id: 't-comp', resilience: FAST }))
+    const pending = driver.call(
+      'complete',
+      chatBag(server.url, { turn_id: 't-comp', resilience: FAST }),
+    )
     await waitFor(() => server.requests.length >= 1)
     assert.equal((await driver.call('abort', { turn_id: 't-comp' })).value.aborted, true)
     const result = await pending
@@ -101,7 +119,10 @@ test('完成路径清理：成功 / HTTP 错误后 abort 都是 no-op', async ()
     const driver = startService({})
     try {
       await driver.hello()
-      const ok = await driver.call('chat', chatBag(server.url, { turn_id: 't-ok', resilience: FAST }))
+      const ok = await driver.call(
+        'chat',
+        chatBag(server.url, { turn_id: 't-ok', resilience: FAST }),
+      )
       assert.equal(ok.value.ok, true)
       assert.equal((await driver.call('abort', { turn_id: 't-ok' })).value.aborted, false)
     } finally {
@@ -111,11 +132,16 @@ test('完成路径清理：成功 / HTTP 错误后 abort 都是 no-op', async ()
     }
   }
   {
-    const server = await startHttpServer((req, res) => jsonResponse(res, 400, { error: { message: 'bad' } }))
+    const server = await startHttpServer((req, res) =>
+      jsonResponse(res, 400, { error: { message: 'bad' } }),
+    )
     const driver = startService({})
     try {
       await driver.hello()
-      const bad = await driver.call('chat', chatBag(server.url, { turn_id: 't-bad', resilience: FAST }))
+      const bad = await driver.call(
+        'chat',
+        chatBag(server.url, { turn_id: 't-bad', resilience: FAST }),
+      )
       assert.equal(bad.value.ok, false)
       assert.equal((await driver.call('abort', { turn_id: 't-bad' })).value.aborted, false)
     } finally {
@@ -136,7 +162,10 @@ test('完成路径清理：socket 空闲超时后 abort 是 no-op', async () => 
     await driver.hello()
     const result = await driver.call(
       'chat',
-      chatBag(server.url, { turn_id: 't-timeout', resilience: { ...FAST, max_retries: 0, request_timeout_ms: 150 } }),
+      chatBag(server.url, {
+        turn_id: 't-timeout',
+        resilience: { ...FAST, max_retries: 0, request_timeout_ms: 150 },
+      }),
     )
     assert.equal(result.value.ok, false)
     assert.equal((await driver.call('abort', { turn_id: 't-timeout' })).value.aborted, false)

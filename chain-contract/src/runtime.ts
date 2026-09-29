@@ -395,7 +395,14 @@ export function validateBag(value: unknown, options?: ValidateBagOptions): Contr
 // 回合步记录校验
 // ---------------------------------------------------------------------------
 
-export const STEP_RECORD_TYPES = ['turn.open', 'step.intent', 'step.result', 'checkpoint', 'turn.settle'] as const
+export const STEP_RECORD_TYPES = [
+  'turn.open',
+  'step.intent',
+  'step.result',
+  'step.user',
+  'checkpoint',
+  'turn.settle',
+] as const
 
 type StepRecordType = (typeof STEP_RECORD_TYPES)[number]
 
@@ -431,6 +438,14 @@ const STEP_RECORD_SPECS: Record<StepRecordType, StepRecordSpec> = {
       ['tool_results', 'array'],
       ['reasoning', 'object'],
       ['usage', 'object'],
+    ],
+  },
+  'step.user': {
+    required: ['turn_id', 'seq', 'user_message'],
+    fields: [
+      ['turn_id', 'string'],
+      ['user_message', 'object'],
+      ['insert_id', 'string'],
     ],
   },
   checkpoint: {

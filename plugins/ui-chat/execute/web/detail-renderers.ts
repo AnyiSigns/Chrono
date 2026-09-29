@@ -197,6 +197,36 @@ function normalizeStrings(value: unknown): string[] {
   )
 }
 
+/** list 的数据数组：各工具口径不一（`results` / `list` / `items` …），按已知名优先，再回退首个数组。 */
+const LIST_ARRAY_KEYS = ['items', 'results', 'list', 'entries', 'rows', 'todos', 'paths', 'matches']
+function listArrayOf(detail: any): any[] {
+  for (const key of LIST_ARRAY_KEYS) {
+    if (Array.isArray(detail[key])) return detail[key]
+  }
+  for (const value of Object.values(detail)) {
+    if (Array.isArray(value)) return value
+  }
+  return []
+}
+
+/** list 视图模型：按 `fields` 把每条记录拍平成一行文本；无字段时原样保留（交 DOM 兜底序列化）。 */
+function listViewModel(detail: any): any {
+  const fields: string[] = Array.isArray(detail.fields) ? detail.fields.map((field: unknown) => String(field)) : []
+  const source = listArrayOf(detail)
+  const items =
+    fields.length > 0
+      ? source.map((item: any) =>
+          isRec(item)
+            ? fields
+                .map((field: string) => cellText(item[field]))
+                .filter((piece: string) => piece.length > 0)
+                .join(' · ')
+            : cellText(item),
+        )
+      : source
+  return { kind: 'list', fields, items }
+}
+
 function normalizeQuestion(question: unknown): any {
   if (!isRec(question)) {
     return { id: '', header: '', question: String(question ?? ''), options: [], multiple: false, custom: true }
@@ -297,8 +327,17 @@ export function detailViewModel(detail: unknown): any {
     case 'code':
       return {
         kind: 'code',
-        text: typeof detail.text === 'string' ? detail.text : typeof detail.code === 'string' ? detail.code : '',
-        language: typeof detail.language === 'string' ? detail.language : '',
+        // 正文口径不一：read 的结果是 `text`，webfetch 是 `content`；描述符也可能用 `code`。
+        text:
+          typeof detail.text === 'string'
+            ? detail.text
+            : typeof detail.content === 'string'
+              ? detail.content
+              : typeof detail.code === 'string'
+                ? detail.code
+                : '',
+        language:
+          typeof detail.language === 'string' ? detail.language : typeof detail.lang === 'string' ? detail.lang : '',
       }
     case 'diff': {
       const parsed = typeof detail.patch === 'string' ? parsePatch(detail.patch) : computeDiff(detail.before ?? '', detail.after ?? '')
@@ -309,7 +348,7 @@ export function detailViewModel(detail: unknown): any {
     case 'paths':
       return { kind: 'paths', items: normalizeStrings(detail.paths ?? detail.items) }
     case 'list':
-      return { kind: 'list', items: Array.isArray(detail.items) ? detail.items : [] }
+      return listViewModel(detail)
     case 'table': {
       const columns = Array.isArray(detail.columns)
         ? detail.columns.map((column: any) => (isRec(column) ? String(column.title ?? column.key ?? '') : String(column)))

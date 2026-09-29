@@ -1,0 +1,109 @@
+{
+  "title": "throttle（限流与退避决策）",
+  "description": "身份自述 / 数据契约：能力类 throttle 的四个方法（policy / acquire / plan / penalize）。policy 合并本 schema 的 resilience 缺省与调用方覆盖；acquire 取每 provider 令牌桶令牌并回需等待毫秒；plan 计算下次指数退避（含 Retry-After 下限与可选抖动）；penalize 置 429 冷却。状态落本插件 ③ 目录（rate-limit.json，可重算），目录缺失 / 不可写时降级进程内存。本服务不自取时间（now 由调用方传逻辑时钟）、不读投影、不写世界、不联网。",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "policy_request": {
+      "type": "object",
+      "description": "可选 override：本次调用的韧性覆盖；缺省取本 schema 的 resilience。",
+      "additionalProperties": true,
+      "properties": {
+        "override": {
+          "type": "object",
+          "description": "{max_retries, backoff_ms, backoff_max_ms, jitter, request_timeout_ms, connect_timeout_ms, token_bucket, models_dev_url} 的覆盖。"
+        }
+      }
+    },
+    "policy_result": {
+      "type": "object",
+      "description": "归一后的 RetryPolicy：{max_retries, backoff_ms, backoff_max_ms, jitter, request_timeout_ms, connect_timeout_ms, token_bucket, models_dev_url}。",
+      "additionalProperties": true
+    },
+    "acquire_request": {
+      "type": "object",
+      "required": ["provider", "now"],
+      "additionalProperties": true,
+      "properties": {
+        "provider": { "type": "string", "description": "限流键（厂商 / 端点名）。" },
+        "now": { "type": "number", "description": "调用方逻辑时钟（毫秒）。" },
+        "policy": { "type": "object", "description": "可选 RetryPolicy；缺省用本 schema 缺省。" }
+      }
+    },
+    "acquire_result": {
+      "type": "object",
+      "required": ["wait_ms"],
+      "additionalProperties": true,
+      "properties": {
+        "wait_ms": { "type": "integer", "description": "0 = 可立即调用，否则需等待毫秒。" }
+      }
+    },
+    "plan_request": {
+      "type": "object",
+      "required": ["attempt"],
+      "additionalProperties": true,
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "第几次重试尝试（从 0 起）。"
+        },
+        "retry_after_ms": {
+          "type": ["number", "null"],
+          "description": "429 的 Retry-After（毫秒），作退避下限。"
+        },
+        "policy": { "type": "object" }
+      }
+    },
+    "plan_result": {
+      "type": "object",
+      "required": ["delay_ms"],
+      "additionalProperties": true,
+      "properties": { "delay_ms": { "type": "integer", "description": "下次退避等待毫秒。" } }
+    },
+    "penalize_request": {
+      "type": "object",
+      "required": ["provider", "now"],
+      "additionalProperties": true,
+      "properties": {
+        "provider": { "type": "string" },
+        "now": { "type": "number" },
+        "retry_after_ms": { "type": "number", "description": "冷却时长毫秒。" },
+        "policy": { "type": "object" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（缺 provider / now / attempt）。"
+        }
+      }
+    }
+  },
+  "resilience": {
+    "max_retries": 2,
+    "backoff_ms": 200,
+    "backoff_max_ms": 5000,
+    "jitter": false,
+    "request_timeout_ms": 300000,
+    "connect_timeout_ms": 30000,
+    "token_bucket": { "capacity": 8, "refill_per_sec": 1 },
+    "models_dev_url": "https://models.dev/api.json"
+  },
+  "audit_redact": {
+    "throttle.policy": [],
+    "throttle.acquire": [],
+    "throttle.plan": [],
+    "throttle.penalize": []
+  },
+  "method_timeouts": {
+    "throttle.policy": 10000,
+    "throttle.acquire": 10000,
+    "throttle.plan": 10000,
+    "throttle.penalize": 10000
+  }
+}

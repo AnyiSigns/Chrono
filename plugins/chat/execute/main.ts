@@ -32,7 +32,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     seq += 1
     ctx.emit({ v: '1', id: `chat-evt-${seq}`, kind: 'event', topic, payload })
   }
-  const handlers = createHandlers({ port: link, host: link, wiring: loadWiring(), emit })
+  const handlers = createHandlers({ port: link, wiring: loadWiring(), emit })
   const sdkHandlers: Record<string, Handler> = {}
   for (const [method, handler] of Object.entries(handlers)) {
     sdkHandlers[method] = async (args, env) => ({ value: await handler(args, env), events: [] })

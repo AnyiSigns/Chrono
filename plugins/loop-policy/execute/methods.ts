@@ -4,26 +4,51 @@
 
 import { interpretGraph } from './interpreter.ts'
 import { clearCancel, requestCancel } from './cancel.ts'
-import { evolutionBody, expandAdoption, expandRejection, ledgerEntries, scanProposals } from './proposals.ts'
+import {
+  evolutionBody,
+  expandAdoption,
+  expandRejection,
+  ledgerEntries,
+  scanProposals,
+} from './proposals.ts'
 import { H } from './hash.ts'
 import { asString, baseSeqOf, isRecord, isoAt, nowOf, planOf, RoundPatches } from './plan.ts'
 import { PINS } from './plugin.ts'
-import { createRefHydrator } from './refs.ts'
-import type { DefReader, RefHydrator } from './refs.ts'
 import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
 import { SEGMENT_ENDED } from './lifecycle.ts'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
-import { accumulateDirectives, accumulatedDirectives, clearTrace, traceFor } from './segment-trace.ts'
+import {
+  accumulateDirectives,
+  accumulatedDirectives,
+  clearTrace,
+  traceFor,
+} from './segment-trace.ts'
 import { buildTraceTail } from './tail.ts'
-import { BadArgsError } from './types.ts'
+import { BadArgsError, ServiceError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, PortCaller, Rec } from './types.ts'
 
 export interface LoopPolicyDeps {
   port: PortCaller
-  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
-  host?: PortCaller
   /** 宿主注入的有效 pins（声明 `pins` ∪ one-needs）；bag 内场景覆盖优先于它。 */
   pins?: Rec
+}
+
+/** 引用水合端口（`ref-hydrate.hydrate`）：按身份把 bag 内 refs 解析成闭包；失败按拆分前语义映射 def_unavailable。 */
+export interface RefHydrator {
+  hydrate(identity: string, refs: Json): Promise<Rec>
+}
+
+/** 构造水合端口：反向调 `ref-hydrate.hydrate`；已是对象 / 非数组短路（不打无谓往返）。 */
+export function makeHydrator(port: PortCaller): RefHydrator {
+  return {
+    hydrate: async (identity, refs) => {
+      if (isRecord(refs)) return refs
+      if (!Array.isArray(refs)) return {}
+      const outcome = await port.call('ref-hydrate', 'hydrate', { identity, refs })
+      if (!outcome.ok) throw new ServiceError('def_unavailable', outcome.message)
+      return isRecord(outcome.value) ? outcome.value : {}
+    },
+  }
 }
 
 /** bag 里承载引用闭包的容器键 → 其 refs 所属身份（用于越权门禁）。 */
@@ -123,7 +148,7 @@ async function interpret(
   const refs = refsOf(bag)
   const resolved = resolveModel(bag['graph'], refs)
   const model = resolved.model
-  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : deps.pins ?? PINS
+  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : (deps.pins ?? PINS)
   const at = isoAt(nowOf(env, bag))
   const resume = parseResume(bag)
   const events: HandlerResult['events'] = []
@@ -131,13 +156,26 @@ async function interpret(
   let ended: string | null = null
 
   try {
-    if (resume !== null && isRecord(resume['cursor']) && resume['cursor']['kind'] === 'orchestration_change') {
+    if (
+      resume !== null &&
+      isRecord(resume['cursor']) &&
+      resume['cursor']['kind'] === 'orchestration_change'
+    ) {
       return { value: orchestrationResume(bag, pins, resume, env, at), events }
     }
 
     // 段间 trace 累积：同一回合的多次 interpret 共用一个记录器，settle 时一次写（每回合一个 evolution 世代）。
     const trace = traceFor(turnId)
-    const result = await interpretGraph({ bag, env, model, pins, port: deps.port, trace, resume })
+    const result = await interpretGraph({
+      bag,
+      env,
+      model,
+      pins,
+      port: deps.port,
+      trace,
+      resume,
+      refs,
+    })
     ended = result.ended
     events.push(...result.events)
     const graphHash = H(model.graph)
@@ -147,7 +185,15 @@ async function interpret(
       // 段终态：不落 trace / 不改 evolution，只登记本段计划供 settle 出摘要。
       accumulateDirectives(turnId, result.directives)
     } else {
-      buildTraceTail(bag, trace, accumulatedDirectives(turnId, result.directives), env, graphHash, at, round)
+      buildTraceTail(
+        bag,
+        trace,
+        accumulatedDirectives(turnId, result.directives),
+        env,
+        graphHash,
+        at,
+        round,
+      )
       if (result.pending === null) {
         const scan = await scanProposals({
           bag,
@@ -195,16 +241,18 @@ async function interpret(
       if (result.pending === null && !stepping) {
         const refusedCode = trace.refusedAt !== null ? asString(trace.refusedAt['code']) : null
         const fallbackAttr = refusedCode !== null ? attributionOf(model, refusedCode) : null
-        const outcome = result.ended === 'refused'
-          ? (result.refusedOutcome ?? refusedOutcome(
-              refusedCode ?? 'downstream_refusal',
-              null,
-              refusedCode !== null && retriableOf(model, refusedCode),
-              fallbackAttr,
-            ))
-          : result.ended === 'cancelled'
-            ? cancelledOutcome()
-            : committedOutcome(result.stopReason)
+        const outcome =
+          result.ended === 'refused'
+            ? (result.refusedOutcome ??
+              refusedOutcome(
+                refusedCode ?? 'downstream_refusal',
+                null,
+                refusedCode !== null && retriableOf(model, refusedCode),
+                fallbackAttr,
+              ))
+            : result.ended === 'cancelled'
+              ? cancelledOutcome()
+              : committedOutcome(result.stopReason)
         const settled = await deps.port.call('session', 'turn_settle', { turn_id: turnId, outcome })
         summary['outcome'] = outcome
         summary['settled'] = settled.ok && isRecord(settled.value) && settled.value['ok'] === true
@@ -231,13 +279,7 @@ function cancel(args: Json): HandlerResult {
 
 /** 构造方法表（依赖注入：反向调用通道由 main 提供）。 */
 export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
-  const read: DefReader = async (identity, hashes) => {
-    if (deps.host === undefined) return null
-    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
-    if (!outcome.ok) return null
-    return isRecord(outcome.value) ? outcome.value : null
-  }
-  const hydrator = createRefHydrator(read)
+  const hydrator = makeHydrator(deps.port)
   return {
     interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
       interpret(args, env, deps, hydrator),

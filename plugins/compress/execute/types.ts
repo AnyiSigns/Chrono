@@ -5,6 +5,22 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 /** 普通对象（非数组、非 null）。 */
 export type Rec = { [key: string]: Json }
 
+/** 结构化摘要形状（与 `summarize` 提供方同口径；跨身份不 import，消费方保留本地类型）。 */
+export interface Summary {
+  goal: string
+  decisions: string[]
+  facts: string[]
+  open_questions: string[]
+  files: string[]
+  next_steps: string[]
+}
+
+/** 某列表字段的去重结果（由 `dedup` 提供方算得）。 */
+export interface DedupOutcome {
+  accepted: string[]
+  dedup: 'vector' | 'text'
+}
+
 /** 调用帧 env（宿主填写，机械）：本回合 id / 发起者 thread / 固定时钟。 */
 export interface CallEnv {
   run: string | null

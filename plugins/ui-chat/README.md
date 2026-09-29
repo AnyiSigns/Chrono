@@ -1,7 +1,8 @@
 # ui-chat（全能内容渲染面 · 对话页消息流）
 
 对话页的**全能内容渲染面**：markdown / 流式 / 图像 / 视频 / 音频 / 文件卡 / 工具卡 /
-question 交互卡，以及按线程 `kind` 分派的群聊，并在在途回合给出一行紧凑的编排进度。本插件是独立包 / 独立进程，
+question 交互卡，以及按线程 `kind` 分派的群聊；常规编排进度行已移到输入卡下方状态行（ui-composer）。
+本插件是独立包 / 独立进程，
 **不再自持端口与 HTTP 面**：浏览器侧客户端半边是一段注册进壳 `main` slot 的模块，
 事件与命令经壳 api（`ctx.events` / `ctx.command` / `ctx.submit`）走宿主。
 
@@ -65,8 +66,10 @@ export function register(ctx: SlotContext): void {
   带**同一 `turn_id`** 的续跑复用原在途块（只换代 run id），不新开，故恢复时不重放已展示内容与工具卡；
   `chat.turn.settled` 清挂起并收口（含挂起期间到达的取消）。在途块存在时，历史里**同回合**的助手消息
   由在途块替代、不重复渲染（其 id 形如 `msg-<conv>-<turnId>-assistant`）。
-- **乐观用户消息**：回合进行中从 `chat.message` 槽读出在途用户消息并即时渲染；权威快照落地
-  即收起，避免与历史重复。用户消息不再等到回合结束才可见。
+- **乐观用户消息**：`input.write` 槽写入的 run 落账即读出 `chat.message` 槽在途用户消息并即时渲染，
+  不等回合开始事件（回合开始前还有 owner 读 / 标题生成等前段，首条消息尤甚；快回合还可能在客户端
+  读到槽前就提交清槽）。权威快照落地即收起；`chat.send` 命令 run 落账但从未开启回合（回合前拒绝 /
+  传输失败）也收起，不把一段从未成为回合的消息留在流尾。用户消息不再等到回合结束才可见。
 - **错误边界**：每条消息（含流式回合、群聊气泡）各自包一层渲染异常边界，单条渲染异常降级为
   行内提示，不冒泡崩掉整棵聊天树。
 
@@ -113,7 +116,10 @@ export function register(ctx: SlotContext): void {
 | detail.kind | `text` / `code` / `diff` / `matches` / `paths` / `list` / `table` / `json` / `file` / `image` / `terminal` / `question` | `diff` 新增绿 / 删除红 / 修改黄 + 上下文折叠；`terminal` stdout / stderr 分色 + 退出码；`question` 交互卡（逐题向导） |
 | 线程视图 | `main` / `subagent` | 普通消息流（子代理顶部人格头） |
 | | `group` | 首字母圆标 + 名、连续发言人只首条显名、当前发言者呼吸环、未读锚点 |
-| 编排进度 | 在途回合 | 由 `chat.turn.pending` / `chat.turn.settled` 携带的 `progress` 驱动：一行紧凑状态「编排：`<contract_id>` · 第 `<iter+1>` 轮」（契约 id 即节点动作标识；`node_index` 仅在可解析时映射成节点名）；带 `stop_reason` 时改为预算收口说明。见 `execute/web/progress.ts` |
+| 预算收口 | 在途回合 | 由 `chat.turn.settled` 携带的 `stop_reason` 驱动：预算主动收口时在消息流尾显示一行收口说明（`data-tone="stop"`）。见 `execute/web/progress.ts` |
+
+常规编排进度行（`编排：<contract_id> · 第 <iter+1> 轮`）已移到输入卡下方状态行，由 ui-composer 渲染
+（`chat.turn.*` / `run.started` 携带的 `progress`）。
 
 `detail.kind:"question"` 的交互卡为**逐题向导**：题目与选项全部由模型给出，系统只额外提供「自定义答案」输入；
 按「第 i / N 个问题」逐题推进，支持上一题 / 下一题、忽略（跳过本题）、末题提交；已答折叠、`expired` 禁用、
@@ -134,7 +140,8 @@ export function register(ctx: SlotContext): void {
 - **回合开始 = `chat.turn.started`（chat 服务自报）**：对话回合若非顶层（续跑嵌在
   `ui-approval.decide` / `question.answer` 的 run 内）就没有宿主 run 生命周期，只看
   `run.started.name` 会漏掉续跑、工作态在首个增量前空窗；由 chat 服务在派发解释前自报，
-  `run` = 顶层 run id（与宿主 `run.finished` 配对、可取消）。管理命令 / 槽写 run 不建流。
+  `run` = 顶层 run id（与宿主 `run.finished` 配对、可取消）。管理命令 / 槽写 run 不建流；
+  槽写 run（`run.finished.name === 'input.write'`）只用来即时拉乐观用户消息。
 - **收束按 run id 关联**：`run.finished` 的在途 run id 与在途回合一致才收束（无关终局忽略、
   不重拉），周期 run 不处理。
 - `thread.*` / `group.message` 触发的是一次静默快照（quiet reload，保留消息、只出顶部细呼吸条）。

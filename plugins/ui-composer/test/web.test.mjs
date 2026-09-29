@@ -29,6 +29,7 @@ import {
   mergeConfig,
   messageRowLabel,
   messageSummary,
+  modelUsageView,
   modelsOf,
   normalizePermission,
   permissionDescCode,
@@ -327,21 +328,72 @@ test('上下文用量：数字格式 / 阈值分档 / 明细', () => {
   assert.equal(usageView({ used: 1 }), null)
   assert.equal(usageView(null), null)
 
-  const rows = sourceRows({ sources: { system: 1000, tools: { tokens: 2500 }, unknown: 5 } })
+  const rows = sourceRows({ sources: { prompt: 1000, tools: { tokens: 2500 }, unknown: 5 } })
   assert.deepEqual(
     rows.map((row) => row.key),
-    ['system', 'tools', 'unknown'],
+    ['prompt', 'tools', 'unknown'],
   )
-  assert.equal(rows[0].code, 'composer_source_system')
+  assert.equal(rows[0].code, 'composer_source_prompt')
   assert.equal(rows[0].text, '1k')
   assert.equal(rows[1].text, '2.5k')
   assert.equal(rows[2].code, null)
+  // 工具定义（tools）与工具结果（tool）合并为一行「工具」：合计 token、保留首个键。
+  const mergedTools = sourceRows({ sources: { tools: { tokens: 2500 }, tool: 5 } })
+  assert.equal(mergedTools.length, 1)
+  assert.equal(mergedTools[0].key, 'tools')
+  assert.equal(mergedTools[0].code, 'composer_source_tools')
+  assert.equal(mergedTools[0].tokens, 2505)
+  assert.equal(mergedTools[0].text, '2.5k')
+  // 分配器全部来源键都应映射到文案码（键集 = context-window 的 ALL_SOURCES）；
+  // tools / tool 同码合并后共 9 行。
+  const allMapped = sourceRows({
+    sources: {
+      prompt: 1,
+      tools: 1,
+      input: 1,
+      l2: 1,
+      l1: 1,
+      skill: 1,
+      recall: 1,
+      history: 1,
+      style: 1,
+      tool: 1,
+    },
+  })
+  assert.equal(allMapped.length, 9)
+  assert.ok(allMapped.every((row) => row.code !== null))
 
   const trimmed = trimmedRows({ trimmed: [{ label: 'x', reason: 'budget' }, { id: 'y' }, 'nope'] })
   assert.deepEqual(trimmed, [
     { label: 'x', reason: 'budget' },
     { label: 'y', reason: '' },
   ])
+})
+
+test('真实模型用量：输入 / 输出 token 与缓存命中率（非装配估算）', () => {
+  const view = modelUsageView({ prompt_tokens: 1200, completion_tokens: 80, cached_tokens: 1024 })
+  assert.equal(view.inputText, '1.2k')
+  assert.equal(view.outputText, '80')
+  assert.equal(view.hitRateText, '85%')
+  // 嵌套形态（`model.delta` / 清单）：优先读内层 `usage`。
+  const nested = modelUsageView({
+    used: 10,
+    budget: 100,
+    usage: { prompt_tokens: 100, completion_tokens: 5, cache_read_input_tokens: 40, hit_rate: 0.4 },
+  })
+  assert.equal(nested.inputText, '100')
+  assert.equal(nested.outputText, '5')
+  assert.equal(nested.hitRateText, '40%')
+  // 各方言缓存键归一。
+  assert.equal(
+    modelUsageView({ input_tokens: 10, output_tokens: 2, prompt_cache_hit_tokens: 5 }).hitRateText,
+    '50%',
+  )
+  // 无缓存字段：不显示命中率（不臆造 0%）。
+  assert.equal(modelUsageView({ prompt_tokens: 100, completion_tokens: 5 }).hitRateText, '')
+  // 非模型用量（无 prompt_tokens，如装配清单本体）→ null，绝不显示估算。
+  assert.equal(modelUsageView({ used: 10, budget: 100, sources: { prompt: 1 } }), null)
+  assert.equal(modelUsageView(null), null)
 })
 
 test('附件分类：格式判定 / 种类 / mime 猜测 / 资产引用归一', () => {
@@ -451,8 +503,10 @@ function fakeComposerCtx() {
   const listeners = new Set()
   const uiValues = new Map()
   const uiSubs = new Map()
+  const calls = []
   return {
     tokens: { messages: '' },
+    calls,
     uiState: {
       get: (key) => uiValues.get(key),
       set: (key, value) => {
@@ -473,7 +527,8 @@ function fakeComposerCtx() {
         return () => listeners.delete(listener)
       },
     },
-    command: async (name) => {
+    command: async (name, args) => {
+      calls.push({ name, args })
       if (name === 'input.read') {
         return { ok: true, value: { active: 'a', body: { version: 1, slots: {} } } }
       }
@@ -483,6 +538,7 @@ function fakeComposerCtx() {
       }
       if (name === 'config.write') return { ok: true, value: { ok: true } }
       if (name === 'chat.send') return { ok: true, value: null }
+      if (name === 'chat.insert') return { ok: true, value: { ok: true } }
       return { ok: false, code: 'unknown', value: null }
     },
     submit: async () => ({ ok: true, run: 'w1' }),
@@ -517,6 +573,78 @@ test('store 作用域：卸载 / 重挂保留草稿与 RunState，init 幂等不
   // 最终卸载：dispose 释放订阅。
   store.dispose()
   assert.equal(ctx.listenerCount(), 0)
+})
+
+test('store：捕获模型真实用量（model.delta.usage / 清单 usage），非装配估算', async () => {
+  const ctx = fakeComposerCtx()
+  const store = createComposerStore(ctx)
+  await store.init()
+  store.setText('hi')
+  await store.send()
+  const thread = ctx.uiState.get('active_thread')
+  ctx.emit({ topic: 'run.finished', payload: { thread, run: 'w1' } })
+  ctx.emit({ topic: 'run.started', payload: { thread, run: 'r1' } })
+  // 流式终段携带真实用量：落该线程的 modelUsage。
+  const usage = { prompt_tokens: 1200, completion_tokens: 80, cached_tokens: 1024 }
+  ctx.emit({ topic: 'model.delta', payload: { thread, run: 'r1', usage } })
+  assert.deepEqual(store.getSnapshot().modelUsage[thread], usage)
+  // 清单里的 usage（context-window 已归一并算命中率）同样回填。
+  const manifestUsage = { prompt_tokens: 100, cached_tokens: 40, hit_rate: 0.4, completion_tokens: 5 }
+  ctx.emit({
+    topic: 'context.assembled',
+    payload: { thread, run: 'r1', used: 10, budget: 100, usage: manifestUsage },
+  })
+  assert.deepEqual(store.getSnapshot().modelUsage[thread], manifestUsage)
+  // 清单无 usage（首轮）：不写 modelUsage，绝不退化为估算。
+  ctx.emit({ topic: 'context.assembled', payload: { thread, run: 'r2', used: 11, budget: 100, usage: null } })
+  assert.deepEqual(store.getSnapshot().modelUsage[thread], manifestUsage)
+  store.dispose()
+})
+
+test('store：回合运行中插入的消息在 chat.turn.settled 续发（续跑无 run.finished）', async () => {
+  const ctx = fakeComposerCtx()
+  const store = createComposerStore(ctx)
+  await store.init()
+  store.setText('第一条')
+  await store.send()
+  const thread = ctx.uiState.get('active_thread')
+  ctx.emit({ topic: 'run.finished', payload: { thread, run: 'w1' } })
+  ctx.emit({ topic: 'run.started', payload: { thread, run: 'r1' } })
+  assert.equal(store.getSnapshot().running, true)
+  // 回合运行中插入第二条：线程忙 → 入待发队列，不抢跑。
+  store.setText('第二条')
+  await store.send()
+  assert.equal(store.getSnapshot().queueCount, 1)
+  assert.equal(store.getSnapshot().running, true)
+  // 续跑是嵌套 eval、无宿主 run.finished：回合定稿只经 chat.turn.settled 广播。
+  ctx.emit({ topic: 'chat.turn.settled', payload: { thread, outcome: { kind: 'committed' } } })
+  // 续跑定稿即续发：待发队列清空、第二条已派发（写槽 → chat.send）。
+  assert.equal(store.getSnapshot().queueCount, 0)
+  store.dispose()
+})
+
+test('store：回合运行中（有 turn_id）发送 → 走 chat.insert 落主历史，不入待发队列', async () => {
+  const ctx = fakeComposerCtx()
+  const store = createComposerStore(ctx)
+  await store.init()
+  store.setText('第一条')
+  await store.send()
+  const thread = ctx.uiState.get('active_thread')
+  ctx.emit({ topic: 'run.finished', payload: { thread, run: 'w1' } })
+  // chat 服务自报回合开始并带 turn_id（此后运行中发送据此定位回合）。
+  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1' } })
+  assert.equal(store.getSnapshot().running, true)
+  store.setText('第二条')
+  await store.send()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  // 不入待发队列；改调 chat.insert（不起新回合，避免被会话 turn_busy 拒）。
+  assert.equal(store.getSnapshot().queueCount, 0)
+  const insert = ctx.calls.find((call) => call.name === 'chat.insert')
+  assert.ok(insert, '应调用 chat.insert')
+  assert.equal(insert.args.turn_id, 't-1')
+  assert.equal(insert.args.user_message.content, '第二条')
+  assert.equal(store.getSnapshot().text, '')
+  store.dispose()
 })
 
 test('entry.tsx：store 建在 register 作用域，组件经 props 复用同一实例', () => {

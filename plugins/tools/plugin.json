@@ -10,22 +10,8 @@
     "host": "host"
   },
   "needs": {
-    "guard": { "mode": "one" },
-    "tool-fs": { "mode": "one" },
-    "tool-shell": { "mode": "one" },
-    "tool-http": { "mode": "one" },
-    "tool-browser": { "mode": "one" },
-    "mcp": { "mode": "one" },
-    "plugin-admin": { "mode": "one" },
-    "orchestration-admin": { "mode": "one" },
-    "evolve-metrics": { "mode": "one" },
-    "todo": { "mode": "one" },
-    "question": { "mode": "one" },
-    "session": { "mode": "one" },
-    "compress": { "mode": "one" },
-    "memory": { "mode": "one" },
-    "retrieval": { "mode": "one" },
-    "memory-maintenance": { "mode": "one" }
+    "tool-registry": { "mode": "one" },
+    "tool-dispatch": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

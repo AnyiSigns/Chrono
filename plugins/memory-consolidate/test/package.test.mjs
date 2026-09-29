@@ -52,6 +52,7 @@ test('plugin.json 13 字段齐全且形态合法', () => {
     memory: { mode: 'one' },
     'short-memory': { mode: 'one' },
     session: { mode: 'one' },
+    tokenizer: { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
@@ -75,7 +76,10 @@ test('schema：策略参数 + periodic 两拍（只注入派发策略，owner �
   assert.equal(typeof params.candidate_weight_threshold, 'number')
 
   assert.ok(Array.isArray(schema.periodic))
-  assert.deepEqual(schema.periodic.map((entry) => entry.method), ['consolidate', 'sweep'])
+  assert.deepEqual(
+    schema.periodic.map((entry) => entry.method),
+    ['consolidate', 'sweep'],
+  )
   for (const entry of schema.periodic) {
     assert.equal(typeof entry.every_ms, 'number')
     assert.ok(entry.every_ms > 0)
@@ -119,7 +123,11 @@ test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件
   assert.deepEqual(files.sort(), expected.sort())
   for (const name of files) {
     const source = readText(join('execute', name))
-    assert.equal(/packages\/(host|kernel|client)/.test(source), false, `${name} 不应 import 宿主 / 内核 / client`)
+    assert.equal(
+      /packages\/(host|kernel|client)/.test(source),
+      false,
+      `${name} 不应 import 宿主 / 内核 / client`,
+    )
     assert.equal(/from ['"]\.\.\/\.\.\//.test(source), false, `${name} 不应引用包外路径`)
   }
 })
@@ -141,7 +149,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

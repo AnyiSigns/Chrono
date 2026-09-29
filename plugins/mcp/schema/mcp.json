@@ -1,6 +1,6 @@
 {
   "title": "mcp（MCP 适配器 · 双向）",
-  "description": "身份自述 / 数据契约：清单（服务器配置 servers + 发现到的外部工具 tools，命名空间化 mcp.<server>.<tool>）是运行记录，已出世界，住本服务自有持久存储（④ CHRONO_PLUGIN_DATA），经 `mcp.read` / `mcp.write` 读写。服务器条目须 confirmed:true 才 spawn；未确认条目只登记不连接。describe 只回本插件自述；宿主按顶层 periodic 直调 mcp.discover 刷新（服务读自有存储，不经投影）。",
+  "description": "身份自述 / 数据契约：清单（服务器配置 servers + 发现到的外部工具 tools，命名空间化 mcp.<server>.<tool>）是运行记录，已出世界，住本服务自有持久存储（④ CHRONO_PLUGIN_DATA），经 `mcp.read` / `mcp.write` 读写。服务器条目须 confirmed:true 才建连（出站连接与子进程由 mcp-client 持有）；未确认条目只登记不连接。describe 只回本插件自述；宿主按顶层 periodic 直调 mcp.discover 刷新（服务读自有存储，不经投影）。",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -11,7 +11,7 @@
     },
     "servers": {
       "type": "array",
-      "description": "外部 MCP 服务器清单（配置）：命令 / 参数 / env / confirmed / trusted / restart。条目须 confirmed:true 才 spawn。易变运行态（connected / failures / tool_count / isolated / isolation / last_error）留服务进程内存，不写回 body。",
+      "description": "外部 MCP 服务器清单（配置）：命令 / 参数 / env / confirmed / trusted / restart。条目须 confirmed:true 才建连（经 mcp-client）。易变运行态（connected / failures / tool_count / isolated / isolation / last_error）留服务进程内存，不写回 body。",
       "items": {
         "type": "object",
         "required": ["id", "command"],
@@ -32,7 +32,7 @@
           },
           "env": {
             "type": "object",
-            "description": "追加环境变量：键 = 子进程环境变量名，值 = 字符串字面量，或 auth_ref 引用 {auth_ref:{kind:'local'|'env', name}}。引用值在 spawn 前经 secrets.resolve 解析后注入同名变量；明文不进世界 / 日志 / 计划。"
+            "description": "追加环境变量：键 = 子进程环境变量名，值 = 字符串字面量，或 auth_ref 引用 {auth_ref:{kind:'local'|'env', name}}。引用值在建连前经 secrets.resolve 解析后随连接配置传 mcp-client，注入同名变量；明文不进世界 / 日志 / 计划 / 存储。"
           },
           "cwd": {
             "type": "string",
@@ -40,7 +40,7 @@
           },
           "confirmed": {
             "type": "boolean",
-            "description": "用户在插件设置面确认；true 才 spawn，未确认条目只登记不连接。"
+            "description": "用户在插件设置面确认；true 才建连，未确认条目只登记不连接。"
           },
           "trusted": {
             "type": "boolean",
@@ -77,8 +77,14 @@
           "tool": { "type": "string", "description": "外部 MCP 工具原名。" },
           "intent": { "type": "string", "description": "行为意图；MCP description 兜底。" },
           "when_to_use": { "type": "string", "description": "使用时机；MCP description 兜底。" },
-          "param_semantics": { "type": "object", "description": "逐参数含义；inputSchema 各参数 description 兜底。" },
-          "boundaries": { "type": "string", "description": "使用边界；缺省「由外部 MCP 服务器定义」。" },
+          "param_semantics": {
+            "type": "object",
+            "description": "逐参数含义；inputSchema 各参数 description 兜底。"
+          },
+          "boundaries": {
+            "type": "string",
+            "description": "使用边界；缺省「由外部 MCP 服务器定义」。"
+          },
           "description": { "type": "string", "description": "模型可见文本。" },
           "argsSchema": { "type": "object", "description": "外部 inputSchema（原样透传）。" },
           "caps": { "type": "object", "description": "能力声明（与工具目录口径一致）。" },

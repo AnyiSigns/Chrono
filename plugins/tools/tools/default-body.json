@@ -32,7 +32,13 @@
       "caps": { "fs": { "read": "none", "write": "none" }, "net": "none" },
       "idempotent": false,
       "hidden_params": ["conversation"],
-      "render": { "form": "card", "label": "memory", "summary": "compress", "tone": "plain", "detail": { "kind": "json" } }
+      "render": {
+        "form": "card",
+        "label": "memory",
+        "summary": "compress",
+        "tone": "plain",
+        "detail": { "kind": "json" }
+      }
     },
     "memory.put": {
       "class": "memory",
@@ -59,7 +65,13 @@
       },
       "caps": { "fs": { "read": "none", "write": "none" }, "net": "none" },
       "idempotent": false,
-      "render": { "form": "card", "label": "memory", "summary": "put  {text}", "tone": "plain", "detail": { "kind": "json" } }
+      "render": {
+        "form": "card",
+        "label": "memory",
+        "summary": "put  {text}",
+        "tone": "plain",
+        "detail": { "kind": "json" }
+      }
     },
     "memory.read": {
       "class": "memory",
@@ -98,7 +110,13 @@
       },
       "caps": { "fs": { "read": "none", "write": "none" }, "net": "none" },
       "idempotent": true,
-      "render": { "form": "card", "label": "memory", "summary": "candidates", "tone": "plain", "detail": { "kind": "json" } }
+      "render": {
+        "form": "card",
+        "label": "memory",
+        "summary": "candidates",
+        "tone": "plain",
+        "detail": { "kind": "json" }
+      }
     },
     "retrieval.search": {
       "class": "retrieval",
@@ -124,7 +142,13 @@
       "caps": { "fs": { "read": "none", "write": "none" }, "net": "none" },
       "idempotent": true,
       "hidden_params": ["workspace", "recall_budget"],
-      "render": { "form": "card", "label": "memory", "summary": "recall  {query}", "tone": "plain", "detail": { "kind": "json" } }
+      "render": {
+        "form": "card",
+        "label": "memory",
+        "summary": "recall  {query}",
+        "tone": "plain",
+        "detail": { "kind": "json" }
+      }
     }
   }
 }

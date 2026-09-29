@@ -7,7 +7,9 @@
   },
   "pins": {},
   "needs": {
-    "embedding": { "mode": "one" }
+    "embedding": { "mode": "one" },
+    "tokenizer": { "mode": "one" },
+    "vector-index": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

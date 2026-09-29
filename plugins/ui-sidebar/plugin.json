@@ -13,10 +13,8 @@
       "branchConversation",
       "listTurns",
       "listWorkspaces",
-      "pickWorkspace",
       "addWorkspace",
-      "removeWorkspace",
-      "revealWorkspace"
+      "removeWorkspace"
     ]
   },
   "pins": {
@@ -25,6 +23,7 @@
   "needs": {
     "session": { "mode": "one" },
     "workspace": { "mode": "one" },
+    "workspace-picker": { "mode": "one" },
     "input": { "mode": "one" }
   },
   "start": "node execute/main.js",

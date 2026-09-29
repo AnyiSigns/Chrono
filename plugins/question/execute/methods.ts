@@ -196,10 +196,14 @@ async function answerCommand(env: CallEnv, deps: QuestionDeps): Promise<HandlerR
   await deps.input.call('input', 'clear', { thread_id: thread })
 
   const at = asString(item['at'])
+  // 作答结果随附交互卡描述符（与入队同一 renderCard 口径，含 `id` / `questions` / `answers`）：
+  // 续跑段的落盘 part 才会保留题干与 `detail.id`——否则只回落目录静态壳（空卡），
+  // UI 既无法按 `id` 调 `question.state` 对账，也认不出已答。
+  const render = renderCard(updated)
   const directives: Json[] = [
     // 续跑不再自带整份投影：`inject` 声明由宿主执行期把投影切片并入 args。
-    evalCommandDirective('chat.resume', { cursor, thread: itemThread, payload: { answers } }, { ids: ['ids'] }),
-    externDirective({ ok: true, status: 'answered', id, thread: itemThread, at }),
+    evalCommandDirective('chat.resume', { cursor, thread: itemThread, payload: { answers, render } }, { ids: ['ids'] }),
+    externDirective({ ok: true, status: 'answered', id, thread: itemThread, at, render }),
   ]
   return { value: { $directives: directives }, events: [] }
 }

@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
+import { defaultPortResponse } from './fakes.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
@@ -20,14 +21,25 @@ export function memoryFixture(overrides = {}) {
     version: 1,
     sessions: {
       'c-keep': {
-        summary: { goal: 'keep', decisions: [], facts: ['kept'], open_questions: [], files: [], next_steps: [] },
+        summary: {
+          goal: 'keep',
+          decisions: [],
+          facts: ['kept'],
+          open_questions: [],
+          files: [],
+          next_steps: [],
+        },
         covered_upto: 'msg-keep',
         at: '2020-01-01T00:00:00.000Z',
         expires_at: '2020-01-02T00:00:00.000Z',
       },
     },
     workspaces: {
-      'w-keep': { summary: { goal: 'wkeep', decisions: [], facts: ['wkept'], open_questions: [], files: [] }, sources: ['c-keep'], at: '2020-01-01T00:00:00.000Z' },
+      'w-keep': {
+        summary: { goal: 'wkeep', decisions: [], facts: ['wkept'], open_questions: [], files: [] },
+        sources: ['c-keep'],
+        at: '2020-01-01T00:00:00.000Z',
+      },
     },
     ...overrides,
   }
@@ -69,8 +81,15 @@ export function startService(options = {}) {
   const portCalls = []
   const stderr = []
   const shortMemory = options.shortMemory ?? createFakeShortMemory(options.memory)
-  const fallback = options.resolvePort ?? (() => ({ error: 'not_ready', message: 'no resolver' }))
-  const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(fallback(port, method, args)))
+  // `bridge` / `resolvePort` 为部分覆盖：回 undefined 即回落默认假提供方（summarize / semantic / dedup）。
+  const custom = options.bridge ?? options.resolvePort
+  const respond = (port, method, args) => {
+    if (typeof custom === 'function') {
+      const outcome = custom(port, method, args)
+      if (outcome !== undefined) return outcome
+    }
+    return defaultPortResponse(port, method, args)
+  }
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
 
   child.stdout.on('data', (chunk) => {
@@ -89,7 +108,7 @@ export function startService(options = {}) {
             if (message.port === 'short-memory' && message.method === 'apply') {
               return { value: shortMemory.apply(message.args ?? {}) }
             }
-            return bridge(message.port, message.method, message.args)
+            return respond(message.port, message.method, message.args)
           })
           .then((outcome) => {
             const frame = outcome.error
@@ -137,7 +156,9 @@ export function startService(options = {}) {
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, timeoutMs)
       pending.set(id, (message) => {
         clearTimeout(timer)

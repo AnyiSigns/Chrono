@@ -66,11 +66,19 @@
 - **`_main` 归当前活动线程**：续跑事件不带会话 id（thread=`_main`），而 `active_thread` 是会话 id。
   `model.ts#matchesThread` 把 `_main` 视为当前活动线程，事件键（`eventKeyOf`）一并归到会话 id，
   使 run 追踪 / 忙态 / 用量与 `active_thread` 同键。
-- **上下文用量行**：数据源为宿主事件 `context.assembled`（按线程过滤取当前线程最近一次）。
-  形如 `上下文 42k / 128k`（`tabular-nums`）；<75% 次级字、≥75% warning 前景字、
-  ≥100% danger 前景字 + 「上下文已满」。该行常驻渲染：无事件时隐形占位（`visibility:hidden`，
-  高度与有数据一致），回合起止切换不再推拉输入卡；回合结束后保留最近一次组装的用量常显，
-  至下次 `context.assembled` 刷新；只读、不做压缩动作。
+- **状态行（上下文用量 + 真实模型用量 + 来源明细 + 轮次）**：常驻输入卡下方一行。数据源为宿主事件
+  `context.assembled`（按线程过滤取当前线程最近一次）与回合事件 `chat.turn.*` / `run.started`
+  携带的图内进度。左侧只报轮次 `第 N 轮`；**真实模型用量**取模型回包（`model.delta.usage` 流式终段，
+  缺失时回退清单 `usage`）归一的「模型输入 / 模型输出 / 缓存命中率」——**只显真实用量、绝不显装配估算**
+  （无 `prompt_tokens` 则不渲染该段）；中间为各来源 token 明细（`prompt` / `tools` / `input` / `l1` / `l2` /
+  `skill` / `recall` / `history` / `style` / `tool`，只列非零项，被裁剪数追加在后；工具定义与工具结果同展为
+  一行「工具」并合计）；右侧为 `上下文 used / budget`（<75% 次级字、≥75% warning、≥100% danger +
+  「上下文已满」）。轮次随分段续跑的 `chat.turn.started` 实时前进（不等到回合收口）。
+  该行常驻渲染：无数据时隐形占位（`visibility:hidden`，高度与有数据一致），回合起止切换不推拉
+  输入卡；回合结束后用量与轮次均保留为「上次状态」常显。仅作展示，不做压缩动作。
+- **状态行跨刷新回填**：`context.assembled` / `chat.turn.*` 均不落账、刷新无重放，故按会话把
+  用量、真实模型用量与编排进度缓存到浏览器 `localStorage`（视图缓存，不入世界、不参与重放），
+  会话切回 / 刷新后即时回填，避免状态行空白。
 - **推理强度**：选项先读用户配置（`providers.<vendor>.models.<model>.reasoning`）；配置缺档位时
   按名调 `model.profile` 拉档案并落配置；档案也缺档位则隐藏按钮；档位值全同时折叠为单开关。
 - **权限档**：四档 `auto` / `severe` / `review` / `deny`，全局写配置 `permission`。

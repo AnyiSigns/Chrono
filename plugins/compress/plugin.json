@@ -7,8 +7,9 @@
   },
   "pins": {},
   "needs": {
-    "model": { "mode": "one" },
-    "embedding": { "mode": "one" },
+    "summarize": { "mode": "one" },
+    "semantic": { "mode": "one" },
+    "dedup": { "mode": "one" },
     "short-memory": { "mode": "one" }
   },
   "start": "node execute/main.ts",

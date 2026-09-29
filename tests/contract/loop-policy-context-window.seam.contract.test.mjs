@@ -98,3 +98,60 @@ test('双向：真实 loop-policy ↔ 真实 context-window（消息数组 + 参
     rmSync(stateDir, { recursive: true, force: true })
   }
 })
+
+test('双向：question 作答后，续跑模型经真实 context-window 须看到答案（生产投影路径）', async () => {
+  const { service: context, stateDir } = startContext()
+  const seen = []
+  const loop = startLoop({
+    providers: {
+      ...defaultProviders({
+        'model.chat': (args) => {
+          seen.push(clone(args))
+          const messages = Array.isArray(args.messages) ? args.messages : []
+          const sawAnswer = JSON.stringify(messages).includes('selected')
+          // 第一次：没有工具结果 → 发 question；之后一旦见到工具结果 → 收口。
+          const hasTool = messages.some((message) => message && message.role === 'tool')
+          if (!hasTool)
+            return {
+              ok: true,
+              text: '先确认一下',
+              tool_calls: [{ id: 'q1', name: 'question', args: { questions: [{ id: 'x', question: '过没过？', options: [{ label: '过' }, { label: '没过' }] }] } }],
+              usage: { total_tokens: 5 },
+            }
+          return { ok: true, text: sawAnswer ? '收到：过' : '仍未收到答案', tool_calls: [], usage: { total_tokens: 7 } }
+        },
+      }),
+      'context.build': (args, message) => forwardValue(context)(args, message),
+      'tools.dispatch': (args) => ({
+        results: args.calls.map((call) =>
+          call.tool === 'question'
+            ? { call_id: call.call_id, ok: true, result: { status: 'pending' } }
+            : { call_id: call.call_id, ok: true, result: {} },
+        ),
+      }),
+    },
+  })
+  try {
+    await context.hello()
+    const first = await loop.interpret({ turn_id: 't1', input: { content: '测一下提问' } })
+    assert.equal(first.kind, 'result', JSON.stringify(first))
+    const cursor = loop.portCalls.find((call) => call.port === 'tools' && call.method === 'dispatch')?.args?.cursor
+    assert.ok(cursor, 'question 派发应带续跑游标')
+    const second = await loop.interpret({
+      turn_id: 't1',
+      input: { content: '测一下提问' },
+      resume: { cursor, thread: 't1', payload: { answers: [{ question_id: 'x', selected: ['过'] }] } },
+    })
+    assert.equal(second.kind, 'result', JSON.stringify(second))
+    const last = seen.at(-1)
+    assert.ok(last, '续跑须再调模型')
+    const toolMessage = (last.messages ?? []).find((message) => message && message.role === 'tool')
+    assert.ok(toolMessage, `续跑模型须看到 question 工具结果：${JSON.stringify(last.messages)}`)
+    assert.ok(String(toolMessage.content).includes('selected'), '工具结果须含用户作答')
+  } finally {
+    loop.close()
+    await loop.exit
+    await stopRealService(context)
+    rmSync(stateDir, { recursive: true, force: true })
+  }
+})

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "L3 召回（Rust）：查询构造 / 多查询 / 向量化 / 索引检索 / 过滤 / 时间衰减 / 去重 / MMR / 预算截断，写入 bag.recall；无 npm 依赖，二进制走宿主依赖缓存",
+  "description": "L3 召回（Rust）：编排查询规划（query-plan）/ 向量化 / 索引检索 / 过滤 / 时间衰减 / 去重 / 候选重排（rerank）/ 预算截断，写入 bag.recall；无 npm 依赖，二进制走宿主依赖缓存",
   "files": [
     "plugin.json",
     "package.json",
@@ -15,7 +15,9 @@
     "Cargo.toml",
     "Cargo.lock"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "cargo test"
   }

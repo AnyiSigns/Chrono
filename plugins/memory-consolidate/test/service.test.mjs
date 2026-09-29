@@ -33,7 +33,13 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'memory-consolidate')
     assert.deepEqual(manifest.implements, ['memory-maintenance'])
-    assert.deepEqual(manifest.methods['memory-maintenance'], ['consolidate', 'sweep', 'candidates', 'view', 'edit'])
+    assert.deepEqual(manifest.methods['memory-maintenance'], [
+      'consolidate',
+      'sweep',
+      'candidates',
+      'view',
+      'edit',
+    ])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
@@ -82,14 +88,20 @@ test('consolidate：同输入同输出（确定性）', async () => {
 })
 
 test('consolidate：需要摘要时 eff compress.summarize（persist:false，summary_used + goal 来自摘要）', async () => {
-  const drv = startService({ vectors: MERGE_VECTORS, memory: shortMemoryFixture(), summary: { goal: 'MERGED', facts: ['sf1'] } })
+  const drv = startService({
+    vectors: MERGE_VECTORS,
+    memory: shortMemoryFixture(),
+    summary: { goal: 'MERGED', facts: ['sf1'] },
+  })
   try {
     await drv.hello()
     const result = await drv.call('consolidate', { summarize: true, weight_threshold: 1 })
     assert.equal(result.value.summary_used, true)
     assert.equal(drv.shortMemory.memory.workspaces['w-1'].summary.goal, 'MERGED')
     assert.deepEqual(drv.shortMemory.memory.workspaces['w-1'].summary.facts, ['sf1'])
-    const call = drv.portCalls.find((item) => item.port === 'compress' && item.method === 'summarize')
+    const call = drv.portCalls.find(
+      (item) => item.port === 'compress' && item.method === 'summarize',
+    )
     assert.ok(call !== undefined)
     assert.equal(call.args.persist, false)
   } finally {
@@ -144,7 +156,10 @@ test('consolidate：空集不产生写、不调后端', async () => {
     const result = await drv.call('consolidate', {})
     assert.equal(result.value.no_input, true)
     assert.equal(result.value.$directives, undefined)
-    assert.equal(drv.portCalls.some((call) => call.port === 'embedding'), false)
+    assert.equal(
+      drv.portCalls.some((call) => call.port === 'embedding'),
+      false,
+    )
   } finally {
     drv.close()
   }
@@ -154,7 +169,10 @@ test('consolidate：L2 高价值项固化进 L3（meta.source=consolidate）', a
   const drv = startService({ vectors: MERGE_VECTORS, memory: shortMemoryFixture() })
   try {
     await drv.hello()
-    const result = await drv.call('consolidate', { item_weights: { f3: 0.9 }, solidify_full_sources: 100 })
+    const result = await drv.call('consolidate', {
+      item_weights: { f3: 0.9 },
+      solidify_full_sources: 100,
+    })
     assert.equal(result.value.solidified.length, 1)
     assert.equal(drv.memory.entries.length, 1)
     const entry = drv.memory.entries[0]
@@ -174,7 +192,10 @@ test('consolidate：与现有 L3 重复的固化候选被跳过', async () => {
   })
   try {
     await drv.hello()
-    const result = await drv.call('consolidate', { item_weights: { f3: 0.9 }, solidify_full_sources: 100 })
+    const result = await drv.call('consolidate', {
+      item_weights: { f3: 0.9 },
+      solidify_full_sources: 100,
+    })
     assert.equal(result.value.solidified.length, 0)
     assert.equal(drv.memory.entries.length, 1)
   } finally {
@@ -195,7 +216,10 @@ test('sweep：L1 到期删除（写 short-memory）', async () => {
 })
 
 test('sweep：空删除集不产生写', async () => {
-  const future = { ...shortMemoryFixture(), sessions: { 'c-9': { summary: { facts: [] }, at: AT, expires_at: '2099-01-01T00:00:00.000Z' } } }
+  const future = {
+    ...shortMemoryFixture(),
+    sessions: { 'c-9': { summary: { facts: [] }, at: AT, expires_at: '2099-01-01T00:00:00.000Z' } },
+  }
   const drv = startService({ memory: future })
   try {
     await drv.hello()
@@ -264,7 +288,10 @@ test('sweep：同输入同删除集（确定性）；重跑幂等', async () => 
 
 test('sweep：无变更时才推进水位（后续调用按水位增量）', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'mc-state-'))
-  const future = { ...shortMemoryFixture(), sessions: { 'c-9': { summary: { facts: [] }, at: AT, expires_at: '2099-01-01T00:00:00.000Z' } } }
+  const future = {
+    ...shortMemoryFixture(),
+    sessions: { 'c-9': { summary: { facts: [] }, at: AT, expires_at: '2099-01-01T00:00:00.000Z' } },
+  }
   try {
     const drv = startService({ stateDir, memory: future })
     try {
@@ -296,7 +323,11 @@ test('sweep：L2 超容量从最旧一端裁', async () => {
     version: 1,
     sessions: {},
     workspaces: {
-      'w-1': { summary: { goal: '', facts: ['a', 'b', 'c'], decisions: [], open_questions: [], files: [] }, sources: [], at: AT },
+      'w-1': {
+        summary: { goal: '', facts: ['a', 'b', 'c'], decisions: [], open_questions: [], files: [] },
+        sources: [],
+        at: AT,
+      },
     },
   }
   const drv = startService({ memory })
@@ -329,7 +360,19 @@ test('candidates：只读回候选、不产写、不删', async () => {
     memory: {
       version: 1,
       sessions: shortMemoryFixture().sessions,
-      workspaces: { 'w-1': { summary: { goal: '', facts: ['a', 'b', 'c'], decisions: [], open_questions: [], files: [] }, sources: [], at: AT } },
+      workspaces: {
+        'w-1': {
+          summary: {
+            goal: '',
+            facts: ['a', 'b', 'c'],
+            decisions: [],
+            open_questions: [],
+            files: [],
+          },
+          sources: [],
+          at: AT,
+        },
+      },
     },
     entries: [memoryEntry({ id: 'm-1', text: 'x', weight: 0.1 })],
   })
@@ -362,10 +405,16 @@ test('view：L1/L2/L3 三档字段齐全（含剩余 TTL 与条目字段）', as
     assert.equal(value.l2.length, 1)
     assert.deepEqual(value.l2[0].sources, ['c-0'])
     assert.equal(value.l3.length, 1)
-    assert.deepEqual(
-      Object.keys(value.l3[0]).sort(),
-      ['at', 'id', 'pinned', 'source', 'tags', 'text', 'weight', 'workspace'],
-    )
+    assert.deepEqual(Object.keys(value.l3[0]).sort(), [
+      'at',
+      'id',
+      'pinned',
+      'source',
+      'tags',
+      'text',
+      'weight',
+      'workspace',
+    ])
     assert.deepEqual(value.l3[0].tags, ['tag-a'])
     assert.equal(value.l3[0].weight, 0.5)
     assert.equal(value.l3[0].pinned, false)
@@ -388,10 +437,20 @@ test('edit：delete / pin / text 三种动作写 owner 服务', async () => {
       const pinned = await drv2.call('edit', { action: 'pin', layer: 'l3', id: 'm-1' })
       assert.equal(pinned.value.pinned, true)
       assert.equal(drv2.memory.pinned['m-1'], true)
-      const unpinned = await drv2.call('edit', { action: 'pin', layer: 'l3', id: 'm-1', patch: { pinned: false } })
+      const unpinned = await drv2.call('edit', {
+        action: 'pin',
+        layer: 'l3',
+        id: 'm-1',
+        patch: { pinned: false },
+      })
       assert.equal(unpinned.value.pinned, false)
       assert.equal(drv2.memory.pinned['m-1'], undefined)
-      const edited = await drv2.call('edit', { action: 'text', layer: 'l3', id: 'm-1', patch: { text: 'new' } })
+      const edited = await drv2.call('edit', {
+        action: 'text',
+        layer: 'l3',
+        id: 'm-1',
+        patch: { text: 'new' },
+      })
       assert.equal(edited.value.ok, true)
       assert.equal(drv2.memory.entries[0].text, 'new')
     } finally {
@@ -427,7 +486,8 @@ test('未知方法 / 能力类 → 结构化 error', async () => {
   try {
     await drv.hello()
     assert.equal(
-      (await drv.request('call', { port: 'memory-maintenance', method: 'nope', args: {} }, 'error')).code,
+      (await drv.request('call', { port: 'memory-maintenance', method: 'nope', args: {} }, 'error'))
+        .code,
       'unknown_method',
     )
     assert.equal(

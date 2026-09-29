@@ -98,11 +98,17 @@ function toolCallsOf(step: Record<string, unknown>): Record<string, unknown>[] {
   return out
 }
 
-/** 工具结果的模型形状回灌文本 `{call_id, ok, result|error}`。 */
+/**
+ * 工具结果的模型形状回灌文本 `{call_id, ok, result|error}`。
+ * 失败若另带 `result`（如 `tool-shell` 非零退出回带的 stdout / exit_code）一并回灌——
+ * 否则模型只见错误码、看不到具体报错。
+ */
 function toolResultContent(result: Record<string, unknown>, callId: string): string {
   const ok = result['ok'] !== false
   if (ok) return JSON.stringify({ call_id: callId, ok: true, result: result['result'] ?? null })
-  return JSON.stringify({ call_id: callId, ok: false, error: result['error'] ?? result['result'] ?? null })
+  const envelope: Record<string, unknown> = { call_id: callId, ok: false, error: result['error'] ?? null }
+  if (Object.hasOwn(result, 'result')) envelope['result'] = result['result']
+  return JSON.stringify(envelope)
 }
 
 function resultCallId(result: Record<string, unknown>, index: number): string {
@@ -141,6 +147,35 @@ export function projectContext(
 
     const covered = (step: number | null): boolean => isCovered(metadata, turnId, step)
     const push = (record: ProjectedRecord): void => {
+      records.push(record)
+    }
+    // 工具结果按 `call_id` 原位覆盖（**仅限本回合**：`call_id` 由模型生成，跨回合可能重名）：
+    // 挂起步先落 pending 结果，作答步再落 answers（同一调用两条 step.result）。若各追加一条 tool 记录，
+    // 同一 `tool_call_id` 会出现两条结果——厂商适配器只认第一条（pending），作答结果被当成孤立消息丢弃，
+    // 模型永远看不到答案（`restoreFromSteps` 有此覆盖，投影侧此前缺失）。
+    const toolRecordAt = new Map<string, number>()
+    // 同一 `call_id` 的结果原位覆盖（保留首次所在的原子组与工具名 / 参数）。
+    const pushTool = (record: ProjectedRecord, callId: string): void => {
+      const existing = toolRecordAt.get(callId)
+      if (existing !== undefined) {
+        const previous = records[existing] as ProjectedRecord
+        const previousResult = isRecord(previous.toolResult) ? previous.toolResult : null
+        const nextResult = isRecord(record.toolResult) ? record.toolResult : null
+        const merged: ProjectedRecord = {
+          ...record,
+          group: record.group ?? previous.group,
+        }
+        if (nextResult !== null && previousResult !== null) {
+          merged.toolResult = {
+            tool: nextResult['tool'] !== '' ? nextResult['tool'] : previousResult['tool'],
+            args: nextResult['tool'] !== '' ? nextResult['args'] : previousResult['args'],
+            verbatim: nextResult['verbatim'],
+          } as ProjectedRecord['toolResult']
+        }
+        records[existing] = merged
+        return
+      }
+      toolRecordAt.set(callId, records.length)
       records.push(record)
     }
 
@@ -217,7 +252,7 @@ export function projectContext(
           const callId = resultCallId(resultItem, index)
           const verbatim = toolResultContent(resultItem, callId)
           const call = calls.find((item) => item['id'] === callId) ?? null
-          push({
+          pushTool({
             role: 'tool',
             parts: [textPart(verbatim)],
             source: origin,
@@ -238,7 +273,7 @@ export function projectContext(
             covered: covered(seq),
             group: batchGroup,
             from: null,
-          })
+          }, callId)
         })
         continue
       }
@@ -271,7 +306,7 @@ export function projectContext(
         toolResultsOf(step).forEach((resultItem, index) => {
           const callId = resultCallId(resultItem, index)
           const verbatim = toolResultContent(resultItem, callId)
-          push({
+          pushTool({
             role: 'tool',
             parts: [textPart(verbatim)],
             source: origin,
@@ -288,8 +323,36 @@ export function projectContext(
             covered: covered(seq),
             group: null,
             from: null,
-          })
+          }, callId)
         })
+        continue
+      }
+
+      if (type === 'step.user') {
+        const message = isRecord(step['user_message']) ? (step['user_message'] as Record<string, unknown>) : null
+        if (message !== null) {
+          const parts = userParts(message)
+          if (parts.length > 0) {
+            push({
+              role: 'user',
+              parts,
+              source: origin,
+              priority: HISTORY_PRIORITY,
+              toolCalls: null,
+              toolCallId: null,
+              toolResult: null,
+              reasoning: null,
+              error: null,
+              checkpoint: false,
+              turnId,
+              step: seq,
+              at,
+              covered: covered(seq),
+              group: null,
+              from: asString(message['from']),
+            })
+          }
+        }
         continue
       }
 

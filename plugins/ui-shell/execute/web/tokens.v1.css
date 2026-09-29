@@ -12,17 +12,35 @@
   --c-text: #1F1E1C;
   --c-text-2: #6E6D69;
   --c-text-3: #9C9B96;
-  --c-accent: #46548C;
-  --c-accent-text: #FFFFFF;
+  --c-accent: #C9B291;
+  --c-accent-text: #2A1F12;
+  --c-accent-strong: #846632;
   --c-danger: #B4342A;
   --c-danger-bg: #F7E9E7;
   --c-warning: #9A6B15;
   --c-warning-bg: #F5EDDC;
   --c-success: #3E7A4E;
   --c-success-bg: #E7F0E9;
-  --c-info: #46548C;
-  --c-info-bg: #E9EBF4;
+  --c-info: #846632;
+  --c-info-bg: #F3EEE3;
+
+  /* §2.1 代码 token 配色（中饱和、高对比，供 highlight.js 的 .hljs-* 着色；
+     色相彼此拉开，明度对标浅底 #FDFDFC 上 ≥4.5:1，避免大面积高亮刺眼） */
+  --c-code-kw: #5E409D;
+  --c-code-str: #347A3F;
+  --c-code-num: #BC5215;
+  --c-code-fn: #205EA6;
+  --c-code-type: #1F7A73;
+  --c-code-attr: #8C6A00;
+  --c-code-var: var(--c-text-2);
+  --c-code-meta: var(--c-text-2);
+  --c-code-tag: #5E409D;
+  --c-code-regexp: #A02F6F;
   --c-glass: rgba(253, 253, 252, .82);
+  /* 水晶主操作钮（发送键）：半透明底色透出卡面 + 顶部镜面高光 + 底部暖暗内影，深浅色分支各异 */
+  --c-send-fill: color-mix(in srgb, var(--c-accent) 62%, transparent);
+  --c-gloss-hi: rgba(255, 255, 255, .62);
+  --c-gloss-lo: rgba(96, 68, 24, .22);
 
   /* §3 字体 */
   --font-sans: -apple-system, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC",
@@ -74,7 +92,7 @@
   /* 悬浮卡（输入卡）：近处接触影 + 一层柔散影，轻量分层逼近真实光照 */
   --shadow-lift: 0 1px 2px rgba(0, 0, 0, .04), 0 3px 10px -4px rgba(0, 0, 0, .06);
   --glass-blur: 12px;
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--c-accent) 8%, transparent);
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--c-accent-strong) 10%, transparent);
 
   /* §7 动效 */
   --motion-fast: 100ms ease-out;
@@ -105,17 +123,31 @@
   --c-text: #E8E6E3;
   --c-text-2: #A3A19B;
   --c-text-3: #6F6D68;
-  --c-accent: #8E9BD4;
-  --c-accent-text: #1A1A24;
+  --c-accent: #CBB496;
+  --c-accent-text: #241A0C;
+  --c-accent-strong: #D4BE9A;
   --c-danger: #E88A80;
   --c-danger-bg: rgba(232, 138, 128, .12);
   --c-warning: #D9AE5B;
   --c-warning-bg: rgba(217, 174, 91, .12);
   --c-success: #7FC795;
   --c-success-bg: rgba(127, 199, 149, .12);
-  --c-info: #8E9BD4;
-  --c-info-bg: rgba(142, 155, 212, .12);
+  --c-info: #D4BE9A;
+  --c-info-bg: rgba(203, 180, 150, .14);
+  --c-code-kw: #8B7EC8;
+  --c-code-str: #8FB05A;
+  --c-code-num: #DA702C;
+  --c-code-fn: #5599D6;
+  --c-code-type: #3AA99F;
+  --c-code-attr: #C99B3F;
+  --c-code-var: var(--c-text-2);
+  --c-code-meta: var(--c-text-2);
+  --c-code-tag: #8B7EC8;
+  --c-code-regexp: #D0699F;
   --c-glass: rgba(30, 29, 27, .84);
+  --c-send-fill: color-mix(in srgb, var(--c-accent) 74%, transparent);
+  --c-gloss-hi: rgba(255, 255, 255, .20);
+  --c-gloss-lo: rgba(0, 0, 0, .40);
   --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, .30), 0 4px 12px -6px rgba(0, 0, 0, .40);
   --shadow-lift: 0 1px 2px rgba(0, 0, 0, .26), 0 3px 10px -4px rgba(0, 0, 0, .30);
@@ -131,17 +163,31 @@
     --c-text: #E8E6E3;
     --c-text-2: #A3A19B;
     --c-text-3: #6F6D68;
-    --c-accent: #8E9BD4;
-    --c-accent-text: #1A1A24;
+    --c-accent: #CBB496;
+    --c-accent-text: #241A0C;
+    --c-accent-strong: #D4BE9A;
     --c-danger: #E88A80;
     --c-danger-bg: rgba(232, 138, 128, .12);
     --c-warning: #D9AE5B;
     --c-warning-bg: rgba(217, 174, 91, .12);
     --c-success: #7FC795;
     --c-success-bg: rgba(127, 199, 149, .12);
-    --c-info: #8E9BD4;
-    --c-info-bg: rgba(142, 155, 212, .12);
+    --c-info: #D4BE9A;
+    --c-info-bg: rgba(203, 180, 150, .14);
+    --c-code-kw: #8B7EC8;
+    --c-code-str: #8FB05A;
+    --c-code-num: #DA702C;
+    --c-code-fn: #5599D6;
+    --c-code-type: #3AA99F;
+    --c-code-attr: #C99B3F;
+    --c-code-var: var(--c-text-2);
+    --c-code-meta: var(--c-text-2);
+    --c-code-tag: #8B7EC8;
+    --c-code-regexp: #D0699F;
     --c-glass: rgba(30, 29, 27, .84);
+    --c-send-fill: color-mix(in srgb, var(--c-accent) 74%, transparent);
+    --c-gloss-hi: rgba(255, 255, 255, .20);
+    --c-gloss-lo: rgba(0, 0, 0, .40);
     --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
     --shadow-lift: 0 1px 2px rgba(0, 0, 0, .26), 0 3px 10px -4px rgba(0, 0, 0, .30);
   }

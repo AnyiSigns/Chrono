@@ -21,7 +21,11 @@ function readDecl() {
     param_semantics: {},
     boundaries: 'b',
     description: 'd',
-    argsSchema: { type: 'object', properties: { path: { type: 'string' } }, additionalProperties: true },
+    argsSchema: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      additionalProperties: true,
+    },
     caps: NO_CAPS,
     idempotent: false,
   }

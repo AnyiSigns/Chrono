@@ -29,11 +29,13 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
   assert.deepEqual(plugin.pins, { host: 'host' })
   assert.deepEqual(plugin.needs, {
     session: { mode: 'one' },
+    'ref-hydrate': { mode: 'one' },
     model: { mode: 'one' },
     context: { mode: 'one' },
     retrieval: { mode: 'one' },
     compress: { mode: 'one' },
     guard: { mode: 'one' },
+    'graph-gate': { mode: 'one' },
     approval: { mode: 'one' },
     tools: { mode: 'one' },
     router: { mode: 'one' },
@@ -75,7 +77,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

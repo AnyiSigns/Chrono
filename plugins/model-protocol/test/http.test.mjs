@@ -81,7 +81,13 @@ test('httpStream：持续吐增量不受空闲超时限制（判死按推进，�
     res.on('close', () => clearInterval(timer))
   })
   try {
-    const stream = await httpStream({ method: 'GET', url: server.url, headers: {}, timeout_ms: 120, now: 0 })
+    const stream = await httpStream({
+      method: 'GET',
+      url: server.url,
+      headers: {},
+      timeout_ms: 120,
+      now: 0,
+    })
     let chunks = 0
     for await (const chunk of stream.chunks) {
       assert.equal(typeof chunk, 'string')
@@ -105,7 +111,13 @@ test('httpStream：消费方提前 break → 上游响应被销毁（socket 释�
     })
   })
   try {
-    const stream = await httpStream({ method: 'GET', url: server.url, headers: {}, timeout_ms: 5000, now: 0 })
+    const stream = await httpStream({
+      method: 'GET',
+      url: server.url,
+      headers: {},
+      timeout_ms: 5000,
+      now: 0,
+    })
     for await (const chunk of stream.chunks) {
       assert.equal(typeof chunk, 'string')
       break

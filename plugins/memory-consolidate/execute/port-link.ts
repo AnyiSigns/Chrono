@@ -1,7 +1,7 @@
 // 反向调用后端抽象（服务 → 宿主，docs/protocol.md §2.4）：反向调用通道由 SDK 提供
 // （`plugin-sdk` 的 PortLink）；本文件只保留业务后端。
-// 本插件 `pins` 含 `embedding` → embedding、`compress` → compress：
-// 去重 / 切块经 `port.call embedding.chunk` + `embedding.embed`；需要摘要时经 `port.call compress.summarize`。
+// 本插件 `needs` 含 `embedding` → embedding（向量化）、`tokenizer` → tokenizer（切块）、`compress` → compress：
+// 去重 / 切块经 `port.call tokenizer.chunk` + `embedding.embed`；需要摘要时经 `port.call compress.summarize`。
 // 失败作数据（BackendError），不抛未捕获错误、不断通道；单测用可注入的假后端替换真实通道。
 
 import { isRecord } from './plan.ts'
@@ -17,10 +17,14 @@ export interface Chunk {
   text: string
 }
 
-/** 向量化后端抽象：生产环境是反向调用 `embedding.chunk` / `embedding.embed`，单测注入假后端。 */
+/** 向量化后端抽象：生产环境是反向调用 `embedding.embed`，单测注入假后端。 */
 export interface EmbeddingBackend {
-  chunk(text: string): Promise<Chunk[]>
   embed(texts: string[], model: string): Promise<number[][]>
+}
+
+/** 切块后端抽象：生产环境是反向调用 `tokenizer.chunk`，单测注入假后端。 */
+export interface TokenizerBackend {
+  chunk(text: string): Promise<Chunk[]>
 }
 
 /** 摘要后端抽象：生产环境是反向调用 `compress.summarize`，单测注入假后端。 */
@@ -29,10 +33,12 @@ export interface CompressBackend {
 }
 
 function parseChunks(value: Json): Chunk[] {
-  if (!Array.isArray(value)) throw new BackendError('embedding_bad_result', 'embedding.chunk returned no chunks')
+  if (!Array.isArray(value))
+    throw new BackendError('tokenizer_bad_result', 'tokenizer.chunk returned no chunks')
   const chunks: Chunk[] = []
   for (const item of value) {
-    if (!isRecord(item)) throw new BackendError('embedding_bad_result', 'embedding.chunk returned a malformed chunk')
+    if (!isRecord(item))
+      throw new BackendError('tokenizer_bad_result', 'tokenizer.chunk returned a malformed chunk')
     const index = typeof item['index'] === 'number' ? item['index'] : chunks.length
     const start = typeof item['start'] === 'number' ? item['start'] : 0
     const end = typeof item['end'] === 'number' ? item['end'] : 0
@@ -42,8 +48,8 @@ function parseChunks(value: Json): Chunk[] {
   return chunks
 }
 
-/** `embedding.chunk` 的反向调用后端。 */
-export class RemoteEmbedding implements EmbeddingBackend {
+/** `tokenizer.chunk` 的反向调用后端。 */
+export class RemoteTokenizer implements TokenizerBackend {
   private readonly link: PortCaller
 
   constructor(link: PortCaller) {
@@ -51,9 +57,18 @@ export class RemoteEmbedding implements EmbeddingBackend {
   }
 
   async chunk(text: string): Promise<Chunk[]> {
-    const outcome = await this.link.call('embedding', 'chunk', { text })
+    const outcome = await this.link.call('tokenizer', 'chunk', { text })
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
     return parseChunks(outcome.value)
+  }
+}
+
+/** `embedding.embed` 的反向调用后端。 */
+export class RemoteEmbedding implements EmbeddingBackend {
+  private readonly link: PortCaller
+
+  constructor(link: PortCaller) {
+    this.link = link
   }
 
   async embed(texts: string[], model: string): Promise<number[][]> {
@@ -65,7 +80,10 @@ export class RemoteEmbedding implements EmbeddingBackend {
     const vectors: number[][] = []
     for (const vector of outcome.value['vectors'] as Json[]) {
       if (!Array.isArray(vector) || vector.some((item) => typeof item !== 'number')) {
-        throw new BackendError('embedding_bad_result', 'embedding.embed returned a malformed vector')
+        throw new BackendError(
+          'embedding_bad_result',
+          'embedding.embed returned a malformed vector',
+        )
       }
       vectors.push(vector as number[])
     }
@@ -121,14 +139,16 @@ export class RemoteShortMemory implements ShortMemoryBackend {
   async read(): Promise<Rec> {
     const outcome = await this.link.call('short-memory', 'read', {})
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new BackendError('short_memory_bad_result', 'short-memory.read returned a non-object')
+    if (!isRecord(outcome.value))
+      throw new BackendError('short_memory_bad_result', 'short-memory.read returned a non-object')
     return outcome.value
   }
 
   async apply(args: Rec): Promise<Rec> {
     const outcome = await this.link.call('short-memory', 'apply', args)
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new BackendError('short_memory_bad_result', 'short-memory.apply returned a non-object')
+    if (!isRecord(outcome.value))
+      throw new BackendError('short_memory_bad_result', 'short-memory.apply returned a non-object')
     return outcome.value
   }
 }
@@ -153,7 +173,8 @@ export class RemoteMemory implements MemoryBackend {
   private async invoke(method: string, args: Rec): Promise<Rec> {
     const outcome = await this.link.call('memory', method, args)
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new BackendError('memory_bad_result', `memory.${method} returned a non-object`)
+    if (!isRecord(outcome.value))
+      throw new BackendError('memory_bad_result', `memory.${method} returned a non-object`)
     return outcome.value
   }
 
@@ -194,7 +215,8 @@ export class RemoteSession implements SessionBackend {
   async read(): Promise<Rec> {
     const outcome = await this.link.call('session', 'read', {})
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) throw new BackendError('session_bad_result', 'session.read returned a non-object')
+    if (!isRecord(outcome.value))
+      throw new BackendError('session_bad_result', 'session.read returned a non-object')
     return outcome.value
   }
 }

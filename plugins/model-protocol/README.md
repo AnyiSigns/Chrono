@@ -1,15 +1,23 @@
 # model-protocol（模型 IO 服务）
 
-唯一的模型 IO 服务：多 SDK / 三协议 HTTP + SSE（混合实现）+ 调用韧性（重试 / 退避 / 限流 / 流断重连）
-+ 模型发现（discover）+ 档案同步（profile / sync）+ 厂商模板枚举（vendors）。
+唯一的模型 IO 服务：HTTP / SSE 传输 + 逐段流式解码 + 调用韧性（重试循环）+ 模型发现（discover）
 
-- 能力类：`model`；方法：`chat` / `complete` / `abort` / `vendors` / `discover` / `profile` / `sync`。
-- `pins`：`{"secrets":"secrets"}`（唯一依赖；经反向帧 `port.call` 调 `secrets.resolve` 取密钥）。
-- 命令面：无（`commands: []`）；宿主按 `schema` 顶层 `periodic` 直调方法 `sync`。
-- 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 状态档：`recomputable`（令牌桶等状态落插件 ③ 目录，可重算）。
-- 服务不读投影、不写世界；世界 / 结果 / args 不取时间随机（重试等待与可选抖动只影响时延）：连接实例与 quirks 由调用方入口 term 装配后随 bag 传入，
+- 档案同步（profile / sync）+ 厂商模板枚举（vendors）。请求编形 / 方言 / 整包解析与限流退避**决策**
+  分别委派给 `msg-dialect` / `throttle` 提供方。
+
+* 能力类：`model`；方法：`chat` / `complete` / `abort` / `vendors` / `discover` / `profile` / `sync`。
+* `pins`：`{}`；`needs`：`secrets` / `config` / `throttle` / `msg-dialect`（皆 `mode:one`）。
+  经反向帧 `port.call` 调 `secrets.resolve` 取密钥、调 `throttle.*` 取限流 / 退避决策、
+  调 `msg-dialect.*` 编请求 / 解析整包 / 内联资产。
+* 命令面：无（`commands: []`）；宿主按 `schema` 顶层 `periodic` 直调方法 `sync`。
+* 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
+* 状态档：`recomputable`（限流状态现落 `throttle` 的 ③ 目录；本插件无本地状态）。
+* 服务不读投影、不写世界；世界 / 结果 / args 不取时间随机（重试等待与可选抖动只影响时延）：连接实例与 quirks 由调用方入口 term 装配后随 bag 传入，
   周期路径的投影片段由宿主按 `schema.periodic.reads` 机械注入 bag。
+
+> 拆分说明：逐段流式 SSE 解析**留本插件**（跨插件 `port.call` 是请求 / 响应，不能传流式回调 / `AsyncIterable`），
+> HTTP / SSE 传输亦然；无流式回调的纯件（请求编形 `build`、整包解析 `parse-full`、工具编形、鉴权、资产内联、
+> quirks / 推理能力表、限流退避状态与决策）分别外置到 `msg-dialect` / `throttle`。
 
 ## 调用路径
 
@@ -20,21 +28,25 @@
 
 1. `auth_ref` 经反向调用 `secrets.resolve` 解析；**明文只存本进程内存，绝不写入 args / 结果 / 日志 / event**。
    解析结果有效期覆盖整次调用（含重试 / 退避 / 流断重连），重试不重新解析。
-2. 按 `quirks.impl` 分派**有界适配器**：
-   - `impl=protocol`：自实现三协议 HTTP + SSE——`openai-chat` / `openai-responses` / `anthropic-messages`；
-   - `impl=sdk`：惰性加载 `sdk_package`（当前仅 `@google/genai`）。
-3. 编请求：`messages` / `temperature` / `max_tokens`（按 `max_tokens_field`）/ `reasoning`
-   （有档位经 `reasoning_map` 编进 `reasoning_field`；无值不传字段，用模型默认）/ `tools`。
-   `messages` 里的工具回灌按协议编形：`assistant` 的中性 `tool_calls: [{id,name,arguments}]` 编成
+2. **资产内联**：把 `messages` 交给反向调用 `msg-dialect.inline-assets`——由该提供方经其
+   `host.asset.get` 取二进制附件字节并按协议替换占位符（失败 / 超限降级文本引用）。
+3. 经反向调用 `msg-dialect.normalize-quirks` 归一本厂商 quirks；按 `quirks.impl` 分派：
+   - `impl=protocol`：`msg-dialect.build` 回 HTTP 请求（url / headers / body），本插件自持
+     `http` / SSE 传输与逐段流式解码（三协议 `openai-chat` / `openai-responses` / `anthropic-messages`）；
+   - `impl=sdk`：`msg-dialect.build` 回 SDK 参数（`{model, contents, config}`，当前仅 `@google/genai`），
+     本插件惰性加载 SDK、发起调用并做流式 / 整包扫描。
+4. 请求编形（`messages` 映射 / `temperature` / `max_tokens` 按 `max_tokens_field` / `reasoning` 档位经
+   `reasoning_map` 编进 `reasoning_field` / `tools` 编形 / system 角色 / 缓存断点 / 鉴权）全部住 `msg-dialect`；
+   工具回灌同样按下述协议口径编形：`assistant` 的中性 `tool_calls: [{id,name,arguments}]` 编成
    openai 的 `{id,type:'function',function:{name,arguments:<json>}}` / anthropic 的 `tool_use` 块；
    `tool` 消息的 `tool_call_id` 在 openai 原样透传、在 anthropic 编成 user 的 `tool_result` 块。
    `tools` 接受**中性声明** `{name, description?, argsSchema?}`，按协议机械编成 function 工具
    （openai-chat / openai-responses 的 `{type:'function', function:{name, description, parameters}}`、
    anthropic-messages 的 `{name, description, input_schema}`）；已带非空 `type` 的协议原生项原样透传，
    缺 `name` 的项丢弃，空列表不写 `tools`。
-4. 流式逐段上行 `event(topic:"model.delta", payload:{run, thread, model, protocol, …分片})`——
+5. 流式逐段上行 `event(topic:"model.delta", payload:{run, thread, model, protocol, …分片})`——
    `run` / `thread` 自协议帧 `env` 读取。分片含 `text` / `reasoning` / `tool_call` / `usage` / `stop_reason` / `done`。
-5. 返回最终值 `{ok, text, reasoning?, tool_calls, usage, model, protocol, stop_reason?}`。
+6. 返回最终值 `{ok, text, reasoning?, tool_calls, usage, model, protocol, stop_reason?}`。
    `usage` 归一为 `{prompt_tokens, completion_tokens, total_tokens}`。
 
 `chat` **非幂等、永不缓存**（`temperature=0` 也不保证逐字节一致）。
@@ -79,17 +91,18 @@
 
 ## 韧性（v1 全做）
 
-| 项 | 口径 |
-| --- | --- |
-| 瞬时重试 | 网络错误 / 5xx / 流断 → 重试上限 `max_retries`；4xx 不重试（429 除外） |
-| 退避 | 指数退避（默认无抖动，保审计可预期）；参数住 `schema/protocol.json` 的 `resilience` |
-| 限流 | 429 尊重 `Retry-After` + 每 provider 令牌桶；状态落插件 ③ 目录，目录缺失时安全降级为进程内存 |
-| 流断重连 | SSE 断开或未收到终止事件 → 整请求重试；重试前先上行 `{reset:true}`，消费方据此丢弃已累积分片 |
-| 超时 | 单次请求超时归 `model_timeout`；方法级等待上限由宿主按 `schema.method_timeouts` 覆盖 |
-| 取消 | `abort(turn_id)` 销毁该回合在途请求（`model_aborted`，不可重试）；`impl=sdk` 路径由 SDK 内部持有连接，暂不支持（见「已知限制」） |
+| 项       | 口径                                                                                                                             |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 瞬时重试 | 网络错误 / 5xx / 流断 → 重试上限 `max_retries`；4xx 不重试（429 除外）                                                           |
+| 退避     | 指数退避（默认无抖动，保审计可预期）；参数住 `throttle` 的 `schema/throttle.json` 的 `resilience`，经 `throttle.plan` 出延迟     |
+| 限流     | 429 尊重 `Retry-After` + 每 provider 令牌桶；状态落 `throttle` 插件 ③ 目录，目录缺失时安全降级为进程内存                         |
+| 流断重连 | SSE 断开或未收到终止事件 → 整请求重试；重试前先上行 `{reset:true}`，消费方据此丢弃已累积分片                                     |
+| 超时     | 单次请求超时归 `model_timeout`；方法级等待上限由宿主按 `schema.method_timeouts` 覆盖                                             |
+| 取消     | `abort(turn_id)` 销毁该回合在途请求（`model_aborted`，不可重试）；`impl=sdk` 路径由 SDK 内部持有连接，暂不支持（见「已知限制」） |
 
 调用方可在 `bag.resilience` 覆盖本次调用的韧性参数（`max_retries` / `backoff_ms` / `backoff_max_ms` /
-`jitter` / `request_timeout_ms` / `token_bucket`）。
+`jitter` / `request_timeout_ms` / `token_bucket`）；覆盖随 `throttle.policy` 合并，重试循环本身留本插件
+（依赖流 reset 回调），只把「状态 + 决策」外置给 `throttle`。
 
 ## 错误码（结构化，作数据回灌调用方）
 
@@ -113,7 +126,8 @@
   ——宿主机械取投影片段放进 bag，服务不读投影。
 - `method_timeouts`：`{"model.chat": <大上限>, "model.complete": <大上限>, "model.abort": 30000}`（流式调用避免被缺省超时截断）。
 
-其余键（`resilience` / 各方法 request·result 形状 / `delta_event`）归本插件自用，宿主不解释。
+其余键（各方法 request·result 形状 / `delta_event`）归本插件自用，宿主不解释。
+限流 / 退避参数已迁 `throttle` 的 `schema`；厂商 quirks / 推理能力表 / 协议编解码已迁 `msg-dialect`。
 
 ## 已知限制
 

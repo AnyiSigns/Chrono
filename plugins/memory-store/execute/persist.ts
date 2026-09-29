@@ -3,7 +3,15 @@
 // 记录：`{t:'entry', run, entry}`（按 id 覆盖，幂等）、`{t:'body', run, body}`、`{t:'turn', run, state}`。
 // 向量索引（③）由本存储的 body / 条目重算，删掉可重建；本文件只存不可重算的条目与 body。
 
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { countOf, isDeleted, linkedEntries, tailHashOf } from './store.ts'
 import type { Json, Rec } from './types.ts'
@@ -18,7 +26,13 @@ function isRecord(value: unknown): value is Rec {
 }
 
 function emptyBody(anchor: { id: string; dim: number }): Rec {
-  return { tail: null, count: 0, deleted: {}, pinned: {}, model: { id: anchor.id, dim: anchor.dim } }
+  return {
+    tail: null,
+    count: 0,
+    deleted: {},
+    pinned: {},
+    model: { id: anchor.id, dim: anchor.dim },
+  }
 }
 
 function appendRecord(path: string | null, record: Rec): void {
@@ -70,7 +84,10 @@ export class MemoryStore {
   }
 
   /** 从 spawn env 打开：④ 路径取 `CHRONO_PLUGIN_DATA`；未注入则纯内存（仅测试）。 */
-  static open(anchor: { id: string; dim: number }, env: NodeJS.ProcessEnv = process.env): MemoryStore {
+  static open(
+    anchor: { id: string; dim: number },
+    env: NodeJS.ProcessEnv = process.env,
+  ): MemoryStore {
     const dataDir = env['CHRONO_PLUGIN_DATA']
     let dataFile: string | null = null
     if (typeof dataDir === 'string' && dataDir.length > 0) {
@@ -84,7 +101,8 @@ export class MemoryStore {
     const type = record['t']
     if (type === 'entry') {
       const entry = record['entry']
-      if (isRecord(entry) && typeof entry['id'] === 'string') this.entries.set(entry['id'] as string, entry)
+      if (isRecord(entry) && typeof entry['id'] === 'string')
+        this.entries.set(entry['id'] as string, entry)
       return
     }
     if (type === 'body') {

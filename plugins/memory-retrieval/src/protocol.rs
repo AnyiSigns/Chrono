@@ -1,6 +1,6 @@
 // `memory-retrieval` 服务进程协议面：方法分派（search）；帧编解码 / 控制帧 / 线程派发 /
 // 反向调用应答结算走 plugin-sdk。stdout 只发协议帧，日志走 stderr；服务不读投影、无写通道：
-// 所需世界数据全由调用方随 bag 传入；反向调用 embedding / memory / model 三个 pin。
+// 所需世界数据全由调用方随 bag 传入；反向调用 embedding / memory / query-plan / rerank 四个 pin。
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -10,7 +10,8 @@ use serde_json::Value;
 use plugin_sdk::{PortLink, ServiceError, ServiceHandler, ServiceSpec, SharedWriter};
 
 use crate::port::{
-    EmbeddingPort, MemoryPort, ModelPort, Ports, RemoteEmbedding, RemoteMemory, RemoteModel,
+    EmbeddingPort, MemoryPort, Ports, QueryPlanPort, RemoteEmbedding, RemoteMemory,
+    RemoteQueryPlan, RemoteRerank, RerankPort,
 };
 use crate::retrieve;
 use crate::state::{FileStateStore, StateStore};
@@ -34,11 +35,12 @@ static SPEC: ServiceSpec = ServiceSpec {
     methods: &METHODS,
 };
 
-/// 服务运行期依赖：三个反向调用面 + ③ 查询向量缓存。
+/// 服务运行期依赖：四个反向调用面 + ③ 查询向量缓存。
 pub struct ServiceCtx {
     pub embedding: Arc<dyn EmbeddingPort>,
     pub memory: Arc<dyn MemoryPort>,
-    pub model: Arc<dyn ModelPort>,
+    pub query_plan: Arc<dyn QueryPlanPort>,
+    pub rerank: Arc<dyn RerankPort>,
     pub state: Arc<dyn StateStore>,
 }
 
@@ -59,7 +61,8 @@ pub fn handle_call(
             let ports = Ports {
                 embedding: ctx.embedding.as_ref(),
                 memory: ctx.memory.as_ref(),
-                model: ctx.model.as_ref(),
+                query_plan: ctx.query_plan.as_ref(),
+                rerank: ctx.rerank.as_ref(),
             };
             retrieve::run(args, env, &ports, ctx.state.as_ref())
         }
@@ -97,7 +100,8 @@ pub fn run_loop<R: Read, W: Write + Send + 'static>(reader: R, writer: W) {
     let ctx = Arc::new(ServiceCtx {
         embedding: Arc::new(RemoteEmbedding::new(Arc::clone(&link))),
         memory: Arc::new(RemoteMemory::new(Arc::clone(&link))),
-        model: Arc::new(RemoteModel::new(Arc::clone(&link))),
+        query_plan: Arc::new(RemoteQueryPlan::new(Arc::clone(&link))),
+        rerank: Arc::new(RemoteRerank::new(Arc::clone(&link))),
         state: Arc::new(FileStateStore::from_env()),
     });
     run_loop_with(reader, shared, link, ctx);
@@ -111,7 +115,7 @@ fn run_loop_with<R: Read>(reader: R, shared: SharedWriter, link: Arc<PortLink>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::{FakeEmbedding, FakeMemory, FakeModel};
+    use crate::port::{FakeEmbedding, FakeMemory, FakeQueryPlan, FakeRerank};
     use crate::state::MemoryStateStore;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -120,7 +124,8 @@ mod tests {
         ServiceCtx {
             embedding: Arc::new(FakeEmbedding::new(4)),
             memory: Arc::new(FakeMemory::new(Vec::new(), BTreeMap::new())),
-            model: Arc::new(FakeModel::new("[]")),
+            query_plan: Arc::new(FakeQueryPlan),
+            rerank: Arc::new(FakeRerank),
             state: Arc::new(MemoryStateStore::new()),
         }
     }

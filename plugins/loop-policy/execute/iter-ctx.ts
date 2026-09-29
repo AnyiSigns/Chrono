@@ -6,7 +6,7 @@ import { edgeKey } from './graph.ts'
 import { directivesOf, isRecord } from './plan.ts'
 import { attributionOf } from './seed.ts'
 import { evalWhen, todoIncomplete, type RuleCtx } from './rules.ts'
-import type { GraphView } from './gate.ts'
+import type { GraphView } from './view.ts'
 import type { TurnOutcome } from './contract/index.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState, ServiceEvent } from './types.ts'
 import type { TraceRecorder } from './trace.ts'
@@ -20,6 +20,8 @@ export interface InterpretInput {
   port: PortCaller
   trace: TraceRecorder
   resume: Rec | null
+  /** 图数据 def 引用闭包（`graph-gate.closure` 读链式条目 / 图 def 用；服务不读投影）。 */
+  refs: Rec
 }
 
 export interface InterpretResult {
@@ -80,7 +82,14 @@ function portSpec(contract: Rec, inputName: string): { mode: string; required: b
   return { mode: 'all', required: false }
 }
 
-export function ruleCtx(rs: RunState, model: GraphModel, bag: Rec, iter: IterState, effLog: Json[], nodeIndex: number): RuleCtx {
+export function ruleCtx(
+  rs: RunState,
+  model: GraphModel,
+  bag: Rec,
+  iter: IterState,
+  effLog: Json[],
+  nodeIndex: number,
+): RuleCtx {
   return {
     nodeIndex,
     outputs: iter.outputs,
@@ -142,7 +151,12 @@ function edgeValue(edge: Rec, ctx: RuleCtx): Json {
  *   但零触发仅在**所有这些边的源都已求值**（分支已判定而未走）时成立——源从未求值即不可达，仍不激活。
  * 节点 0（入口）恒激活，输入由调用方按需预置（composite 子图入口）。
  */
-export function resolveInputs(index: number, contract: Rec, edges: Rec[], ctx: RuleCtx): InputResolution {
+export function resolveInputs(
+  index: number,
+  contract: Rec,
+  edges: Rec[],
+  ctx: RuleCtx,
+): InputResolution {
   const inputs: Rec = {}
   const taken: Rec[] = []
   const defeated: Rec[] = []
@@ -204,7 +218,11 @@ export function resolveInputs(index: number, contract: Rec, edges: Rec[], ctx: R
  * 至多一条可触发；>1 触发即判 `redundant`（两「互斥」分支同时走的编排错误）。
  * 返回被过度触发的端口与其触发边（声明序）；无则 null。
  */
-export function overTriggeredBranch(nodeIndex: number, edges: Rec[], ctx: RuleCtx): { port: string; edges: Rec[] } | null {
+export function overTriggeredBranch(
+  nodeIndex: number,
+  edges: Rec[],
+  ctx: RuleCtx,
+): { port: string; edges: Rec[] } | null {
   const byPort = new Map<string, Rec[]>()
   for (const edge of edges) {
     const ports = edgePorts(edge)
@@ -227,7 +245,11 @@ export function refusalArtifact(model: GraphModel, code: string, message: string
 }
 
 /** 把解析结果里的已取 / 被击败边登记到 trace（分支审计，确定性；解释器与收口共用）。 */
-export function consumeBranches(resolved: InputResolution, index: number, trace: TraceRecorder): void {
+export function consumeBranches(
+  resolved: InputResolution,
+  index: number,
+  trace: TraceRecorder,
+): void {
   for (const edge of resolved.taken) {
     const key = edgeKey(edge)
     if (key !== null) trace.markBranch(key)
@@ -240,11 +262,21 @@ export function consumeBranches(resolved: InputResolution, index: number, trace:
 
 /** 把边触发的拒绝值（gate deny / approval denied）归一成带码的拒绝产物。 */
 export function normalizeRefusalInput(value: Json, model: GraphModel): Rec {
-  if (isRecord(value) && typeof value['code'] === 'string' && value['code'].length > 0) return value as Rec
+  if (isRecord(value) && typeof value['code'] === 'string' && value['code'].length > 0)
+    return value as Rec
   const denied =
     value === 'deny' ||
     value === 'denied' ||
     (isRecord(value) && (value['verdict'] === 'deny' || value['decision'] === 'denied'))
-  if (denied) return { code: 'denied', message: 'denied by guard or user', attributable_to: attributionOf(model, 'denied') }
-  return { code: 'downstream_refusal', message: 'downstream refused', attributable_to: attributionOf(model, 'downstream_refusal') }
+  if (denied)
+    return {
+      code: 'denied',
+      message: 'denied by guard or user',
+      attributable_to: attributionOf(model, 'denied'),
+    }
+  return {
+    code: 'downstream_refusal',
+    message: 'downstream refused',
+    attributable_to: attributionOf(model, 'downstream_refusal'),
+  }
 }

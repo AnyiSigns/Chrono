@@ -1,0 +1,21 @@
+{
+  "name": "title-format",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "标题后处理原语：clean（去引号标点 / 码点截断）/ fallback（首条消息前 N 字）/ resolve（兜底顺序）；纯函数、同输入同输出",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

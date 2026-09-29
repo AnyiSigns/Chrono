@@ -1,8 +1,6 @@
 {
   "identity": "ui-settings",
-  "implements": [
-    "ui-settings"
-  ],
+  "implements": ["ui-settings"],
   "methods": {
     "ui-settings": [
       "ping",
@@ -19,15 +17,7 @@
       "secret"
     ]
   },
-  "concurrent_methods": [
-    "vendors",
-    "health",
-    "graph",
-    "scopes",
-    "view",
-    "search",
-    "client.read"
-  ],
+  "concurrent_methods": ["vendors", "health", "graph", "scopes", "view", "search", "client.read"],
   "pins": {
     "host": "host"
   },
@@ -37,6 +27,7 @@
     "retrieval": { "mode": "one" },
     "memory-maintenance": { "mode": "one" },
     "session": { "mode": "one" },
+    "ref-hydrate": { "mode": "one" },
     "short-memory": { "mode": "one" },
     "input": { "mode": "one" },
     "skill": { "mode": "one" },

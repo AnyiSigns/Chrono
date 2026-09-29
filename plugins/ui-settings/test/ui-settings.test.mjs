@@ -81,10 +81,21 @@ import {
   upsertSkill,
 } from '../execute/web/settings-model.ts'
 import { lookupMessage, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
-import { commitProvider, commitProviderEdit, fetchModels, saveProviderSecret } from '../execute/web/provider-actions.ts'
+import {
+  commitProvider,
+  commitProviderEdit,
+  fetchModels,
+  saveProviderSecret,
+} from '../execute/web/provider-actions.ts'
 import { createViewContext } from '../execute/web/view-context.ts'
 
-import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.ts'
+import {
+  commandFrame,
+  extractValue,
+  interpretResponse,
+  submitFrame,
+  unwrapPlan,
+} from '../execute/bridge.ts'
 import {
   assembleDiscoverArgs,
   assembleEditArgs,
@@ -104,7 +115,6 @@ import {
   resolveThreshold,
 } from '../execute/methods.ts'
 import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
-import { DefUnavailableError } from '../execute/refs.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -143,7 +153,10 @@ test('config 读-改-写：厂商增删改、选择、参数、UI 字段', () =>
   const added = upsertProvider(base, 'deepseek', entry)
   assert.equal(base.providers.deepseek, undefined, '不改入参')
   assert.equal(providerList(added).length, 1)
-  assert.deepEqual(enabledModelIds(added.providers.deepseek), ['deepseek-chat', 'deepseek-reasoner'])
+  assert.deepEqual(enabledModelIds(added.providers.deepseek), [
+    'deepseek-chat',
+    'deepseek-reasoner',
+  ])
 
   // 当前选择由对话输入框写：此处直接构造带 vendor / model 的 config 验证删除清选择
   const selected = { ...added, vendor: 'deepseek', model: 'deepseek-chat' }
@@ -170,7 +183,10 @@ test('写口命令：config / input / skill 各回 owner 命令名与 args（运
   assert.equal(config.name, 'config.write')
   assert.equal(config.args.body.version, emptyConfig().version)
   const slot = slotWriteCommand('t1', { kind: 'model.probe', url: 'u' })
-  assert.deepEqual(slot, { name: 'input.write', args: { thread: 't1', slot: { kind: 'model.probe', url: 'u' } } })
+  assert.deepEqual(slot, {
+    name: 'input.write',
+    args: { thread: 't1', slot: { kind: 'model.probe', url: 'u' } },
+  })
   assert.deepEqual(skillWriteCommand({ version: 1, skills: [] }), {
     name: 'skill.write',
     args: { body: { version: 1, skills: [] } },
@@ -211,16 +227,32 @@ test('配置导入：合法通过，坏 JSON / 缺字段 / 坏枚举被拒', () 
 test('厂商模板抽取与预填（模板只是预填来源）', () => {
   const ids = {
     'vendor-deepseek': {
-      body: { sdk: 'deepseek', default_base_url: 'https://api.deepseek.com/v1', default_auth_ref_name: 'DEEPSEEK_API_KEY', default_reasoning: ['low', 'high'] },
+      body: {
+        sdk: 'deepseek',
+        default_base_url: 'https://api.deepseek.com/v1',
+        default_auth_ref_name: 'DEEPSEEK_API_KEY',
+        default_reasoning: ['low', 'high'],
+      },
     },
     'vendor-custom': { body: { sdk: 'custom' } },
     config: { body: { version: 1 } },
   }
   const templates = vendorTemplates(ids)
-  assert.deepEqual(templates.map((item) => item.identity), ['vendor-custom', 'vendor-deepseek'])
-  assert.equal(templatePrefill(templates, 'vendor-deepseek').base_url, 'https://api.deepseek.com/v1')
+  assert.deepEqual(
+    templates.map((item) => item.identity),
+    ['vendor-custom', 'vendor-deepseek'],
+  )
+  assert.equal(
+    templatePrefill(templates, 'vendor-deepseek').base_url,
+    'https://api.deepseek.com/v1',
+  )
   assert.equal(templatePrefill(templates, 'vendor-deepseek').key, 'deepseek')
-  assert.deepEqual(templatePrefill(templates, 'missing'), { key: '', base_url: '', auth_ref_name: '', sdk: '' })
+  assert.deepEqual(templatePrefill(templates, 'missing'), {
+    key: '',
+    base_url: '',
+    auth_ref_name: '',
+    sdk: '',
+  })
   assert.deepEqual(vendorTemplates(null), [])
 })
 
@@ -230,7 +262,12 @@ test('探测槽 / 模型列表归一 / 发现错误码', () => {
     auth_ref: { kind: 'env', name: 'K' },
     protocol: 'openai-chat',
   })
-  assert.deepEqual(slot, { kind: 'model.probe', url: 'https://api.deepseek.com/v1', auth_ref: { kind: 'env', name: 'K' }, protocol: 'openai-chat' })
+  assert.deepEqual(slot, {
+    kind: 'model.probe',
+    url: 'https://api.deepseek.com/v1',
+    auth_ref: { kind: 'env', name: 'K' },
+    protocol: 'openai-chat',
+  })
   const envSlot = buildProbeSlot({ base_url: 'u', auth_ref: { kind: 'local', name: 'K' } })
   assert.equal(Object.hasOwn(envSlot, 'protocol'), false, '预设厂商不带 protocol')
   const anonSlot = buildProbeSlot({ base_url: 'https://api.kilo.ai/api/gateway' })
@@ -239,7 +276,10 @@ test('探测槽 / 模型列表归一 / 发现错误码', () => {
   assert.deepEqual(discoverModels({ ok: true, models: ['b', 'a', 'a'] }), ['a', 'b'])
   assert.deepEqual(discoverModels({ ok: false, error: { code: 'discover_bad_url' } }), [])
   assert.deepEqual(discoverModels(null), [])
-  assert.equal(discoverErrorCode({ ok: false, error: { code: 'discover_auth_failed' } }), 'discover_auth_failed')
+  assert.equal(
+    discoverErrorCode({ ok: false, error: { code: 'discover_auth_failed' } }),
+    'discover_auth_failed',
+  )
   assert.equal(discoverErrorCode({ ok: false }), 'discover_unsupported')
   assert.equal(discoverErrorCode({ ok: true }), null)
 })
@@ -254,7 +294,10 @@ test('引导表单校验：必填 / URL 形态 / 模型在勾选内', () => {
   assert.equal(validateOnboarding({ ...good, base_url: '' }), 'settings_required')
   assert.equal(validateOnboarding({ ...good, base_url: 'ftp://x' }), 'settings_bad_url')
   assert.equal(validateOnboarding({ ...good, base_url: 'not a url' }), 'settings_bad_url')
-  assert.equal(validateOnboarding({ ...good, auth_ref: { kind: 'env', name: '' } }), 'settings_required')
+  assert.equal(
+    validateOnboarding({ ...good, auth_ref: { kind: 'env', name: '' } }),
+    'settings_required',
+  )
   assert.equal(validateOnboarding({ ...good, auth_ref: null }), null, '匿名（无 auth_ref）放行')
   assert.equal(validateOnboarding({ ...good, models: [] }), 'settings_required')
   assert.deepEqual(CUSTOM_PROTOCOLS, ['openai-chat', 'openai-responses', 'anthropic-messages'])
@@ -288,7 +331,10 @@ test('引导完成：写 config 合并厂商（不写当前选择）', () => {
 // ---- 通知 ----
 
 test('notify.state 解析：config body 形态 / 直接形态 / 权限三态', () => {
-  const fromConfig = parseNotifyState({ ui: { notify: { run_failed: false } }, permission: 'granted' })
+  const fromConfig = parseNotifyState({
+    ui: { notify: { run_failed: false } },
+    permission: 'granted',
+  })
   assert.equal(fromConfig.toggles.run_failed, false)
   assert.equal(fromConfig.permission, 'granted')
   const direct = parseNotifyState({ toggles: { run_finished: false }, permission: 'denied' })
@@ -341,12 +387,23 @@ function evolutionFixture(outcomes) {
   let prev = null
   outcomes.forEach((outcome, index) => {
     const hash = `h${index}`
-    refs[hash] = { kind: 'trace', outcome, prev, refused_at: outcome === 'refused' ? { code: 'guard_denied' } : null }
+    refs[hash] = {
+      kind: 'trace',
+      outcome,
+      prev,
+      refused_at: outcome === 'refused' ? { code: 'guard_denied' } : null,
+    }
     prev = { def: hash }
   })
   const last = outcomes.length > 0 ? { def: `h${outcomes.length - 1}` } : null
   return {
-    body: { version: 1, trace: { tail: last, count: outcomes.length }, evidence: { tail: null, count: 0 }, proposals: { tail: null, count: 0 }, verdicts: { tail: null, count: 0 } },
+    body: {
+      version: 1,
+      trace: { tail: last, count: outcomes.length },
+      evidence: { tail: null, count: 0 },
+      proposals: { tail: null, count: 0 },
+      verdicts: { tail: null, count: 0 },
+    },
     refs,
     active: null,
     gens: [],
@@ -411,29 +468,52 @@ test('台账 tail 倒序 / 摘要 / 图与 Scope 视图', () => {
     },
     refs: {
       v1: { kind: 'verdict', id: 'v1', result: 'rejected', proposal_ids: ['p1'], prev: null },
-      v2: { kind: 'verdict', id: 'v2', result: 'accepted', proposal_ids: ['p2', 'p3'], prev: { def: 'v1' } },
+      v2: {
+        kind: 'verdict',
+        id: 'v2',
+        result: 'accepted',
+        proposal_ids: ['p2', 'p3'],
+        prev: { def: 'v1' },
+      },
     },
   }
   const lists = ledgerLists(evolution)
-  assert.deepEqual(lists.verdicts.map((entry) => entry.id), ['v2', 'v1'])
+  assert.deepEqual(
+    lists.verdicts.map((entry) => entry.id),
+    ['v2', 'v1'],
+  )
   assert.deepEqual(ledgerSummary('verdicts', lists.verdicts[0]), {
     id: 'v2',
     label: 'accepted',
     detail: 'proposal p2, p3',
   })
-  assert.deepEqual(ledgerSummary('proposals', { id: 'p1', class: 'binding', evidence_ids: ['ev-1'] }), {
-    id: 'p1',
-    label: 'binding',
-    detail: 'evidence ev-1',
-  })
-  assert.deepEqual(ledgerSummary('evidence', { id: 'ev-1', class: 'failure_cluster', cluster_key: { code: 'c' }, n: 3, traces: [{ def: 't1' }] }), {
-    id: 'ev-1',
-    label: 'failure_cluster',
-    detail: 'c · n 3 · trace t1',
-  })
+  assert.deepEqual(
+    ledgerSummary('proposals', { id: 'p1', class: 'binding', evidence_ids: ['ev-1'] }),
+    {
+      id: 'p1',
+      label: 'binding',
+      detail: 'evidence ev-1',
+    },
+  )
+  assert.deepEqual(
+    ledgerSummary('evidence', {
+      id: 'ev-1',
+      class: 'failure_cluster',
+      cluster_key: { code: 'c' },
+      n: 3,
+      traces: [{ def: 't1' }],
+    }),
+    {
+      id: 'ev-1',
+      label: 'failure_cluster',
+      detail: 'c · n 3 · trace t1',
+    },
+  )
   assert.deepEqual(walkTail(evolution, 'proposals'), [])
   // 服务侧已走好的台账数组：直接归一，不再走投影 tail
-  assert.deepEqual(ledgerLists({ verdicts: [{ id: 'v' }], proposals: [], evidence: [] }).verdicts, [{ id: 'v' }])
+  assert.deepEqual(ledgerLists({ verdicts: [{ id: 'v' }], proposals: [], evidence: [] }).verdicts, [
+    { id: 'v' },
+  ])
 
   const graph = {
     active: 'g2',
@@ -479,8 +559,26 @@ test('台账 tail 倒序 / 摘要 / 图与 Scope 视图', () => {
     },
   }
   assert.deepEqual(scopeList(agents), [
-    { index: 0, id: 'a2', contract_id: 'a2', persona: 'Q', scope: 'global', autonomy: 'high', links: 'l1', success_rate: 0.9 },
-    { index: 1, id: 'a1', contract_id: 'a1', persona: 'P', scope: 'workspace', autonomy: '', links: '', success_rate: null },
+    {
+      index: 0,
+      id: 'a2',
+      contract_id: 'a2',
+      persona: 'Q',
+      scope: 'global',
+      autonomy: 'high',
+      links: 'l1',
+      success_rate: 0.9,
+    },
+    {
+      index: 1,
+      id: 'a1',
+      contract_id: 'a1',
+      persona: 'P',
+      scope: 'workspace',
+      autonomy: '',
+      links: '',
+      success_rate: null,
+    },
   ])
   assert.deepEqual(scopeList(null), [])
   assert.equal(scopeLabel('global'), 'global')
@@ -526,7 +624,11 @@ test('graphView：内联图 / `{def}` 图经 refs 解析 / 链式节点 / 畸形
 
   // `{def}` 图经 refs 解析；contractId = 图 def 哈希
   const byDef = graphView({
-    body: { nodes: { tail: null, count: 0 }, contracts: { tail: null, count: 0 }, graph: { def: 'g-abc' } },
+    body: {
+      nodes: { tail: null, count: 0 },
+      contracts: { tail: null, count: 0 },
+      graph: { def: 'g-abc' },
+    },
     refs: { 'g-abc': { nodes: ['turn.commit'], edges: [], sink: 0 } },
   })
   assert.equal(byDef.contractId, 'g-abc')
@@ -542,7 +644,13 @@ test('graphView：内联图 / `{def}` 图经 refs 解析 / 链式节点 / 畸形
     { body: { graph: { nodes: 'no' }, nodes: {} }, refs: {} },
     { body: { graph: { def: 'missing' }, nodes: { tail: { def: 'x' } } }, refs: {} },
     { body: { graph: { nodes: ['c1'] }, nodes: 'bogus' }, refs: [] },
-    { body: { graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] }, nodes: [null] }, refs: {} },
+    {
+      body: {
+        graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] },
+        nodes: [null],
+      },
+      refs: {},
+    },
   ]) {
     const view = graphView(bad)
     assert.equal(view.contractId, null)
@@ -550,7 +658,10 @@ test('graphView：内联图 / `{def}` 图经 refs 解析 / 链式节点 / 畸形
     assert.ok(Array.isArray(view.edges))
   }
   const malformed = graphView({
-    body: { graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] }, nodes: [null] },
+    body: {
+      graph: { nodes: ['c1'], edges: [{ from: 'bad', to: [1, 'in'] }, null] },
+      nodes: [null],
+    },
     refs: {},
   })
   assert.deepEqual(malformed.edges, [
@@ -592,14 +703,19 @@ test('服务侧厂商装配：从 ids 的 vendor-* body 收集并桥接 model.ve
   ])
   assert.deepEqual(assembleVendorArgs(ids), { vendors: collectVendorBodies(ids) })
 
-  const model = fakeModel({ ok: true, value: { ok: true, vendors: [{ identity: 'vendor-custom' }] } })
+  const model = fakeModel({
+    ok: true,
+    value: { ok: true, vendors: [{ identity: 'vendor-custom' }] },
+  })
   const handlers = createHandlers({ identity: 'ui-settings', model })
   const value = await handlers.vendors(ids, { run: null, thread: null, now: 0 })
   assert.deepEqual(model.calls, [
     { port: 'model', method: 'vendors', args: { vendors: collectVendorBodies(ids) } },
   ])
   assert.deepEqual(value, {
-    $directives: [{ kind: 'extern', payload: { ok: true, vendors: [{ identity: 'vendor-custom' }] } }],
+    $directives: [
+      { kind: 'extern', payload: { ok: true, vendors: [{ identity: 'vendor-custom' }] } },
+    ],
   })
 
   const failed = fakeModel({ ok: false, code: 'not_loaded', message: 'x' })
@@ -611,7 +727,11 @@ test('服务侧厂商装配：从 ids 的 vendor-* body 收集并桥接 model.ve
 test('服务侧档案装配：从 config 读当前选择与已勾选模型', async () => {
   const ids = {
     config: {
-      body: { version: 1, vendor: 'deepseek', providers: { deepseek: { models: { a: { enabled: true }, b: {} } } } },
+      body: {
+        version: 1,
+        vendor: 'deepseek',
+        providers: { deepseek: { models: { a: { enabled: true }, b: {} } } },
+      },
     },
     'vendor-deepseek': { body: { sdk: 'deepseek' } },
   }
@@ -619,11 +739,18 @@ test('服务侧档案装配：从 config 读当前选择与已勾选模型', asy
   assert.equal(assembled.ok, true)
   assert.equal(assembled.args.vendor, 'deepseek')
   assert.deepEqual(assembled.args.ids, ['a', 'b'])
-  assert.deepEqual(assembled.args.vendors, [{ identity: 'vendor-deepseek', body: { sdk: 'deepseek' } }])
+  assert.deepEqual(assembled.args.vendors, [
+    { identity: 'vendor-deepseek', body: { sdk: 'deepseek' } },
+  ])
   assert.equal(assembleProfileArgs({}).ok, false)
   assert.equal(assembleProfileArgs({ config: { body: { version: 1 } } }).code, 'profile_no_vendor')
 
-  const plan = { $directives: [{ kind: 'write', request: { op: 'batch', args: { ops: [] } } }, { kind: 'extern', payload: { ok: true, changed: true } }] }
+  const plan = {
+    $directives: [
+      { kind: 'write', request: { op: 'batch', args: { ops: [] } } },
+      { kind: 'extern', payload: { ok: true, changed: true } },
+    ],
+  }
   const model = fakeModel({ ok: true, value: plan })
   const handlers = createHandlers({ identity: 'ui-settings', model })
   const value = await handlers.profile(ids, { run: null, thread: null, now: 0 })
@@ -642,9 +769,14 @@ test('服务侧发现装配与清槽：经 input owner 读 model.probe、清 _ma
       t1: { kind: 'chat.message' },
     },
   }
-  assert.deepEqual(assembleDiscoverArgs(inputBody), { url: 'https://x/v1', auth_ref: { kind: 'env', name: 'K' } })
+  assert.deepEqual(assembleDiscoverArgs(inputBody), {
+    url: 'https://x/v1',
+    auth_ref: { kind: 'env', name: 'K' },
+  })
   assert.deepEqual(
-    assembleDiscoverArgs({ slots: { _main: { kind: 'model.probe', url: 'https://api.kilo.ai/api/gateway' } } }),
+    assembleDiscoverArgs({
+      slots: { _main: { kind: 'model.probe', url: 'https://api.kilo.ai/api/gateway' } },
+    }),
     { url: 'https://api.kilo.ai/api/gateway' },
     '匿名 probe（无 auth_ref）照发，不带鉴权',
   )
@@ -659,9 +791,15 @@ test('服务侧发现装配与清槽：经 input owner 读 model.probe、清 _ma
     { port: 'input', method: 'clear', args: { thread_id: '_main' } },
   ])
   assert.deepEqual(model.calls, [
-    { port: 'model', method: 'discover', args: { url: 'https://x/v1', auth_ref: { kind: 'env', name: 'K' } } },
+    {
+      port: 'model',
+      method: 'discover',
+      args: { url: 'https://x/v1', auth_ref: { kind: 'env', name: 'K' } },
+    },
   ])
-  assert.deepEqual(value, { $directives: [{ kind: 'extern', payload: { ok: true, models: ['m1'] } }] })
+  assert.deepEqual(value, {
+    $directives: [{ kind: 'extern', payload: { ok: true, models: ['m1'] } }],
+  })
 
   const missingInput = fakeModel({ ok: true, value: { slots: { _main: { kind: 'idle' } } } })
   const missingHandlers = createHandlers({ identity: 'ui-settings', model, input: missingInput })
@@ -669,7 +807,10 @@ test('服务侧发现装配与清槽：经 input owner 读 model.probe、清 _ma
   assert.equal(missing.$directives.length, 1)
   assert.equal(missing.$directives[0].kind, 'extern')
   assert.equal(missing.$directives[0].payload.error.code, 'model_probe_missing')
-  assert.deepEqual(missingInput.calls.map((call) => call.method), ['read', 'clear'])
+  assert.deepEqual(
+    missingInput.calls.map((call) => call.method),
+    ['read', 'clear'],
+  )
 })
 
 test('服务侧健康判定：计数 / 阈值 / 拒绝码 / 回滚目标 / 缺编排图降级', () => {
@@ -702,7 +843,10 @@ test('服务侧健康判定：计数 / 阈值 / 拒绝码 / 回滚目标 / 缺�
   assert.equal(degraded.rollback, null)
   assert.equal(judgeHealth({}).status, 'ok')
   assert.deepEqual(judgeHealth({}).ledger, { verdicts: [], proposals: [], evidence: [] })
-  assert.deepEqual(resolveThreshold({ body: { thresholds: 4 } }), { value: 4, source: 'loop-policy' })
+  assert.deepEqual(resolveThreshold({ body: { thresholds: 4 } }), {
+    value: 4,
+    source: 'loop-policy',
+  })
   assert.deepEqual(resolveThreshold({}), { value: 3, source: 'default' })
 })
 
@@ -715,14 +859,34 @@ test('服务侧台账：三条 tail 倒序随健康结果返回，采纳与拒�
       trace: { tail: null, count: 0 },
     },
     refs: {
-      v1: { kind: 'verdict', id: 'v1', result: 'rejected', proposal_ids: ['p1'], evidence_ids: ['e1'], prev: null },
-      v2: { kind: 'verdict', id: 'v2', result: 'accepted', proposal_ids: ['p2'], evidence_ids: ['e2'], prev: { def: 'v1' } },
+      v1: {
+        kind: 'verdict',
+        id: 'v1',
+        result: 'rejected',
+        proposal_ids: ['p1'],
+        evidence_ids: ['e1'],
+        prev: null,
+      },
+      v2: {
+        kind: 'verdict',
+        id: 'v2',
+        result: 'accepted',
+        proposal_ids: ['p2'],
+        evidence_ids: ['e2'],
+        prev: { def: 'v1' },
+      },
     },
   }
   const ledger = serviceLedgerLists(evolution)
-  assert.deepEqual(ledger.verdicts.map((entry) => entry.id), ['v2', 'v1'])
+  assert.deepEqual(
+    ledger.verdicts.map((entry) => entry.id),
+    ['v2', 'v1'],
+  )
   const health = judgeHealth({ evolution })
-  assert.deepEqual(health.ledger.verdicts.map((entry) => entry.result), ['accepted', 'rejected'])
+  assert.deepEqual(
+    health.ledger.verdicts.map((entry) => entry.result),
+    ['accepted', 'rejected'],
+  )
 })
 
 // ---- 记忆命令（服务侧装配 / 桥接 / 清槽）----
@@ -732,14 +896,30 @@ function memoryIds() {
     'short-memory': {
       body: {
         version: 1,
-        sessions: { 'c-1': { summary: { goal: '写排序', facts: ['f1'] }, at: '2026-01-01T00:00:00Z', expires_at: null } },
+        sessions: {
+          'c-1': {
+            summary: { goal: '写排序', facts: ['f1'] },
+            at: '2026-01-01T00:00:00Z',
+            expires_at: null,
+          },
+        },
         workspaces: { w1: { summary: { goal: 'g' }, sources: ['c-1'] } },
       },
     },
-    session: { body: { version: 1, current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w1' }] } },
+    session: {
+      body: { version: 1, current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w1' }] },
+    },
     'memory-store': {
       body: { tail: null, count: 1, deleted: {}, pinned: {} },
-      refs: { h1: { id: 'm-1', text: 'alpha', meta: { source: 'manual', workspace: 'w1', tags: ['t'] }, chunks: [], prev: null } },
+      refs: {
+        h1: {
+          id: 'm-1',
+          text: 'alpha',
+          meta: { source: 'manual', workspace: 'w1', tags: ['t'] },
+          chunks: [],
+          prev: null,
+        },
+      },
     },
     input: { body: { slots: { _main: { kind: 'idle' } } } },
   }
@@ -770,7 +950,10 @@ test('记忆读侧跨批修复：search 经 eff 问 session / short-memory owner
     }
   }
   const retrieval = makePort({ ok: true, kind: 'search', recall: [], count: 0 })
-  const shortOwner = makePort({ version: 1, sessions: { 'c-1': { summary: { goal: 'owner-goal' } } } })
+  const shortOwner = makePort({
+    version: 1,
+    sessions: { 'c-1': { summary: { goal: 'owner-goal' } } },
+  })
   const sessionOwner = makePort({ version: 1, current: 'c-1' })
   const searchHandlers = createHandlers({
     identity: 'ui-settings',
@@ -780,8 +963,14 @@ test('记忆读侧跨批修复：search 经 eff 问 session / short-memory owner
     session: sessionOwner,
   })
   await searchHandlers.search({ query: 'q' }, { run: null, thread: null, now: 0 })
-  assert.ok(shortOwner.calls.some((call) => call.method === 'read'), '应问 short-memory owner')
-  assert.ok(sessionOwner.calls.some((call) => call.method === 'read'), '应问 session owner')
+  assert.ok(
+    shortOwner.calls.some((call) => call.method === 'read'),
+    '应问 short-memory owner',
+  )
+  assert.ok(
+    sessionOwner.calls.some((call) => call.method === 'read'),
+    '应问 session owner',
+  )
   const searchCall = retrieval.calls[0]
   assert.equal(searchCall.method, 'search')
   assert.equal(searchCall.args.goal, 'owner-goal', 'goal 从 session / short-memory owner 读')
@@ -793,7 +982,10 @@ test('memory.search 装配：#22 真实 bag（query / goal / workspace / retriev
     session: { body: { version: 1, current: 'c-1', conversations: [] } },
     'short-memory': { body: { version: 1, sessions: { 'c-1': { summary: { goal: '写排序' } } } } },
   }
-  const assembled = assembleSearchBag({ query: 'note', workspace: 'w1', tags: ['t'], limit: 5 }, owners)
+  const assembled = assembleSearchBag(
+    { query: 'note', workspace: 'w1', tags: ['t'], limit: 5 },
+    owners,
+  )
   assert.equal(assembled.ok, true)
   assert.deepEqual(assembled.bag, {
     query: 'note',
@@ -802,7 +994,13 @@ test('memory.search 装配：#22 真实 bag（query / goal / workspace / retriev
     retrieval: { tags: ['t'], top_k: 5 },
   })
   assert.equal(currentSessionGoal(owners), '写排序')
-  assert.equal(currentSessionGoal({ session: { body: { current: 'x' } }, 'short-memory': { body: { sessions: {} } } }), null)
+  assert.equal(
+    currentSessionGoal({
+      session: { body: { current: 'x' } },
+      'short-memory': { body: { sessions: {} } },
+    }),
+    null,
+  )
 
   const missing = assembleSearchBag({ query: '   ' }, {})
   assert.equal(missing.ok, false)
@@ -811,9 +1009,16 @@ test('memory.search 装配：#22 真实 bag（query / goal / workspace / retriev
   const searchValue = { ok: true, kind: 'search', recall: [], count: 0 }
   const retrieval = fakeModel({ ok: true, value: searchValue })
   const handlers = createHandlers({ identity: 'ui-settings', model: retrieval, retrieval })
-  const value = await handlers.search({ query: 'note', workspace: 'w1', tags: ['t'], limit: 5 }, { run: null, thread: null, now: 0 })
+  const value = await handlers.search(
+    { query: 'note', workspace: 'w1', tags: ['t'], limit: 5 },
+    { run: null, thread: null, now: 0 },
+  )
   assert.deepEqual(retrieval.calls, [
-    { port: 'retrieval', method: 'search', args: { query: 'note', workspace: 'w1', retrieval: { tags: ['t'], top_k: 5 } } },
+    {
+      port: 'retrieval',
+      method: 'search',
+      args: { query: 'note', workspace: 'w1', retrieval: { tags: ['t'], top_k: 5 } },
+    },
   ])
   assert.deepEqual(value, { $directives: [{ kind: 'extern', payload: searchValue }] })
 
@@ -824,7 +1029,13 @@ test('memory.search 装配：#22 真实 bag（query / goal / workspace / retriev
 test('memory.edit 槽消费 / action 对齐 / 经 input owner 清槽，结果只出 extern', async () => {
   const inputBody = {
     slots: {
-      _main: { kind: 'memory.edit', action: 'update', layer: 'l3', id: 'm-1', patch: { text: 'beta' } },
+      _main: {
+        kind: 'memory.edit',
+        action: 'update',
+        layer: 'l3',
+        id: 'm-1',
+        patch: { text: 'beta' },
+      },
       t1: { kind: 'chat.message' },
     },
   }
@@ -836,7 +1047,10 @@ test('memory.edit 槽消费 / action 对齐 / 经 input owner 清槽，结果只
   assert.equal(maintenanceAction('pin'), 'pin')
   assert.equal(maintenanceAction('bogus'), null)
   assert.deepEqual(memoryEditKeys(inputBody), ['_main'])
-  assert.deepEqual(memoryEditKeys({ slots: { t1: { kind: 'memory.edit' }, _main: { kind: 'idle' } } }), ['t1'])
+  assert.deepEqual(
+    memoryEditKeys({ slots: { t1: { kind: 'memory.edit' }, _main: { kind: 'idle' } } }),
+    ['t1'],
+  )
   assert.deepEqual(memoryEditKeys({ slots: { _main: { kind: 'idle' } } }), ['_main'])
 
   const assembled = assembleEditArgs(inputBody)
@@ -848,9 +1062,16 @@ test('memory.edit 槽消费 / action 对齐 / 经 input owner 清槽，结果只
   const editValue = { ok: true, kind: 'edit', action: 'text', layer: 'l3', id: 'm-1', text: 'beta' }
   const maintenance = fakeModel({ ok: true, value: editValue })
   const input = fakeModel({ ok: true, value: inputBody })
-  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance, input })
+  const handlers = createHandlers({
+    identity: 'ui-settings',
+    model: maintenance,
+    maintenance,
+    input,
+  })
   const value = await handlers.edit(null, { run: null, thread: null, now: 0 })
-  assert.deepEqual(maintenance.calls, [{ port: 'memory-maintenance', method: 'edit', args: assembled.args }])
+  assert.deepEqual(maintenance.calls, [
+    { port: 'memory-maintenance', method: 'edit', args: assembled.args },
+  ])
   assert.deepEqual(input.calls, [
     { port: 'input', method: 'read', args: {} },
     { port: 'input', method: 'clear', args: { thread_id: '_main' } },
@@ -862,29 +1083,50 @@ test('memory.edit 缺槽 / 端口失败：仍经 owner 清槽并以 extern 收�
   const idleInput = { slots: { _main: { kind: 'idle' } } }
   const maintenance = fakeModel({ ok: true, value: { ok: true, kind: 'edit' } })
   const input = fakeModel({ ok: true, value: idleInput })
-  const handlers = createHandlers({ identity: 'ui-settings', model: maintenance, maintenance, input })
+  const handlers = createHandlers({
+    identity: 'ui-settings',
+    model: maintenance,
+    maintenance,
+    input,
+  })
   const missing = await handlers.edit(null, { run: null, thread: null, now: 0 })
   assert.equal(missing.$directives.length, 1)
   assert.equal(missing.$directives[0].kind, 'extern')
   assert.equal(missing.$directives[0].payload.error.code, 'memory_edit_slot_missing')
   assert.equal(maintenance.calls.length, 0, '缺槽不发反向调用')
-  assert.deepEqual(input.calls.map((call) => call.method), ['read', 'clear'])
+  assert.deepEqual(
+    input.calls.map((call) => call.method),
+    ['read', 'clear'],
+  )
   assert.deepEqual(input.calls[1].args, { thread_id: '_main' })
 
-  const failInputBody = { slots: { _main: { kind: 'memory.edit', action: 'delete', layer: 'l3', id: 'm-1' } } }
+  const failInputBody = {
+    slots: { _main: { kind: 'memory.edit', action: 'delete', layer: 'l3', id: 'm-1' } },
+  }
   const failed = fakeModel({ ok: false, code: 'transport_failed', message: 'x' })
   const failInput = fakeModel({ ok: true, value: failInputBody })
-  const failedHandlers = createHandlers({ identity: 'ui-settings', model: failed, maintenance: failed, input: failInput })
+  const failedHandlers = createHandlers({
+    identity: 'ui-settings',
+    model: failed,
+    maintenance: failed,
+    input: failInput,
+  })
   const value = await failedHandlers.edit(null, { run: null, thread: null, now: 0 })
   assert.equal(value.$directives[0].payload.error.code, 'transport_failed')
-  assert.deepEqual(failInput.calls.map((call) => call.method), ['read', 'clear'])
+  assert.deepEqual(
+    failInput.calls.map((call) => call.method),
+    ['read', 'clear'],
+  )
 })
 
 // ---- 设置页纯函数 ----
 
 test('tab 表与归一', () => {
   assert.equal(TABS.length, 7)
-  assert.deepEqual(TABS.map((tab) => tab.id), ['general', 'model', 'plugins', 'skills', 'memory', 'orchestration', 'about'])
+  assert.deepEqual(
+    TABS.map((tab) => tab.id),
+    ['general', 'model', 'plugins', 'skills', 'memory', 'orchestration', 'about'],
+  )
   assert.equal(normalizeTab('model'), 'model')
   assert.equal(normalizeTab('bogus'), 'general')
 })
@@ -895,7 +1137,10 @@ test('身份只读行 / 插件计数', () => {
     'loop-policy': { active: null, gens: [], pins: { sandbox: 's'.repeat(64) } },
   }
   const rows = identityRows(ids)
-  assert.deepEqual(rows.map((row) => row.id), ['config', 'loop-policy'])
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ['config', 'loop-policy'],
+  )
   assert.equal(rows[0].activeShort.length, 8)
   assert.equal(rows[1].retired, true)
   assert.deepEqual(rows[1].pins, { sandbox: 's'.repeat(64) })
@@ -905,7 +1150,9 @@ test('身份只读行 / 插件计数', () => {
 
 test('技能清单读写', () => {
   assert.deepEqual(skillList(null), [])
-  assert.deepEqual(skillList({ body: { version: 1, skills: [{ id: 'sk-1' }, null] } }), [{ id: 'sk-1' }])
+  assert.deepEqual(skillList({ body: { version: 1, skills: [{ id: 'sk-1' }, null] } }), [
+    { id: 'sk-1' },
+  ])
   const body = { version: 1, skills: [] }
   const added = upsertSkill(body, { id: 'sk-1', name: 'A', enabled: true })
   assert.equal(added.skills.length, 1)
@@ -921,7 +1168,17 @@ test('技能清单读写', () => {
 
 test('技能表单 → 条目（触发字段 / scope）', () => {
   const skill = skillFromForm(
-    { name: 'T', description: 'D', keywords: 'a, b  a', file_globs: '**/*.ts', explicit: '@x', scope_kind: 'workspace', workspace_id: 'w1', body: 'B', enabled: true },
+    {
+      name: 'T',
+      description: 'D',
+      keywords: 'a, b  a',
+      file_globs: '**/*.ts',
+      explicit: '@x',
+      scope_kind: 'workspace',
+      workspace_id: 'w1',
+      body: 'B',
+      enabled: true,
+    },
     'sk-1',
     'now',
   )
@@ -970,7 +1227,13 @@ test('编辑：只改 base_url，密钥 / 模型与档案元数据原样保留',
     models: { a: { enabled: true, context_window: 1000 } },
   }
   const { ctx, writes } = fakeProviderCtx({ version: 1, providers: { deepseek: entry } })
-  const form = { mode: 'edit', editKey: 'deepseek', base_url: 'https://new/v1', busy: false, error: null }
+  const form = {
+    mode: 'edit',
+    editKey: 'deepseek',
+    base_url: 'https://new/v1',
+    busy: false,
+    error: null,
+  }
   assert.equal(await commitProviderEdit(ctx, form, 'deepseek'), true)
   const saved = ctx.state.config.providers.deepseek
   assert.equal(saved.base_url, 'https://new/v1')
@@ -981,7 +1244,10 @@ test('编辑：只改 base_url，密钥 / 模型与档案元数据原样保留',
 })
 
 test('编辑：地址非法即拒，不写 config', async () => {
-  const { ctx, writes } = fakeProviderCtx({ version: 1, providers: { deepseek: { base_url: 'https://old/v1' } } })
+  const { ctx, writes } = fakeProviderCtx({
+    version: 1,
+    providers: { deepseek: { base_url: 'https://old/v1' } },
+  })
   const form = { mode: 'edit', editKey: 'deepseek', base_url: 'ftp://x', busy: false, error: null }
   assert.equal(await commitProviderEdit(ctx, form, 'deepseek'), false)
   assert.equal(writes.length, 0)
@@ -999,10 +1265,15 @@ test('密钥更新：经入站 secrets.put 后刷新状态点，不落 state', a
 test('密钥更新：匿名厂商补上本地 auth_ref 引用，密钥才生效', async () => {
   const { ctx, writes } = fakeProviderCtx({
     version: 1,
-    providers: { kilo: { base_url: 'https://api.kilo.ai/api/gateway', models: { m: { enabled: true } } } },
+    providers: {
+      kilo: { base_url: 'https://api.kilo.ai/api/gateway', models: { m: { enabled: true } } },
+    },
   })
   assert.equal(await saveProviderSecret(ctx, 'CUSTOM_API_KEY', 'sk-x', 'kilo'), true)
-  assert.deepEqual(writes[0].body.providers.kilo.auth_ref, { kind: 'local', name: 'CUSTOM_API_KEY' })
+  assert.deepEqual(writes[0].body.providers.kilo.auth_ref, {
+    kind: 'local',
+    name: 'CUSTOM_API_KEY',
+  })
   assert.equal(ctx.state.savedKey, 'provider:kilo')
 })
 
@@ -1056,7 +1327,10 @@ function fetchForm(overrides = {}) {
 }
 
 test('获取模型：本地取值面先落密钥，再写探测槽并发现（默认全勾选）', async () => {
-  const { ctx, puts, writes, calls } = fakeFetchCtx({ ok: true, value: { ok: true, models: ['m1', 'm2'] } })
+  const { ctx, puts, writes, calls } = fakeFetchCtx({
+    ok: true,
+    value: { ok: true, models: ['m1', 'm2'] },
+  })
   const form = fetchForm()
   await fetchModels(ctx, form)
   assert.deepEqual(puts, [{ path: 'api/secrets/put', body: { name: 'K', value: 'top-secret' } }])
@@ -1107,7 +1381,10 @@ test('config 写：经 config.write 命令写 owner 自有存储（无世界提�
   try {
     const body = emptyConfig()
     assert.equal((await vc.writeConfig(body, 'k')).ok, true)
-    assert.deepEqual(calls.map((call) => call.name), ['config.write'])
+    assert.deepEqual(
+      calls.map((call) => call.name),
+      ['config.write'],
+    )
     assert.equal(calls[0].args.body.version, body.version)
     assert.equal(submitted.length, 0, '不再提交世界写指令')
   } finally {
@@ -1172,18 +1449,29 @@ test('新建厂商：经 config.write 命令写自有存储', async () => {
 // ---- 文案 ----
 
 test('文案表：解析 / 未知码兜底 / 共享表单源优先、本地仅骨架兜底', () => {
-  const table = parseMessages('{"locale":"zh-CN","unknown_command":{"title":"未知命令","body":"没有这个命令"}}')
+  const table = parseMessages(
+    '{"locale":"zh-CN","unknown_command":{"title":"未知命令","body":"没有这个命令"}}',
+  )
   assert.equal(table.unknown_command.body, '没有这个命令')
   assert.equal(parseMessages('not json'), null)
   assert.equal(lookupMessage(table, 'no_such').body.includes('no_such'), true)
   // 共享表（壳的单一文案来源）登记后，界面文案从其取用
-  const shared = parseMessages(readFileSync(join(REPO_ROOT, 'plugins', 'ui-shell', 'execute', 'web', 'messages.v1.json'), 'utf8'))
+  const shared = parseMessages(
+    readFileSync(
+      join(REPO_ROOT, 'plugins', 'ui-shell', 'execute', 'web', 'messages.v1.json'),
+      'utf8',
+    ),
+  )
   assert.ok(shared !== null, '共享文案表应可解析')
   assert.equal(lookupMessage(shared, 'settings_theme_day').body, '日间')
   assert.equal(lookupMessage(shared, 'settings_title').body, '设置')
   // 共享表不可用时回落本地骨架兜底
   assert.equal(lookupMessage(null, 'settings_title').body, UI_TEXT.settings_title)
-  assert.equal(lookupMessage(null, 'settings_orch_scope').body.includes('settings_orch_scope'), true, '非骨架键落 unknown 兜底')
+  assert.equal(
+    lookupMessage(null, 'settings_orch_scope').body.includes('settings_orch_scope'),
+    true,
+    '非骨架键落 unknown 兜底',
+  )
 })
 
 // ---- 入站桥 / client.read ----
@@ -1198,12 +1486,26 @@ test('入站桥帧构造、回包解释与计划解包', () => {
     thread: 't',
   })
   assert.equal(submitFrame('i', []).kind, 'submit')
-  const error = interpretResponse({ ok: true, frame: { kind: 'error', code: 'unknown_command', message: 'x' }, code: '', message: '' })
+  const error = interpretResponse({
+    ok: true,
+    frame: { kind: 'error', code: 'unknown_command', message: 'x' },
+    code: '',
+    message: '',
+  })
   assert.equal(error.ok, false)
   assert.equal(error.code, 'unknown_command')
   const ok = interpretResponse({
     ok: true,
-    frame: { kind: 'result', observations: [{ kind: 'eval', ok: true, value: { $directives: [{ kind: 'extern', payload: { ok: true, changed: true } }] } }] },
+    frame: {
+      kind: 'result',
+      observations: [
+        {
+          kind: 'eval',
+          ok: true,
+          value: { $directives: [{ kind: 'extern', payload: { ok: true, changed: true } }] },
+        },
+      ],
+    },
     code: '',
     message: '',
   })
@@ -1240,7 +1542,10 @@ test('client.read：正常读回包内文件，越界与缺失返回 null', () =
 })
 
 test('client.read 方法：非法 / 缺失路径结构化失败，正常路径读回产物', () => {
-  const handlers = createHandlers({ identity: 'ui-settings', model: fakeModel({ ok: false, code: 'x', message: '' }) })
+  const handlers = createHandlers({
+    identity: 'ui-settings',
+    model: fakeModel({ ok: false, code: 'x', message: '' }),
+  })
   const env = { run: null, thread: null, now: 0 }
   const bad = handlers['client.read']({ path: '../plugin.json' }, env)
   assert.equal(bad.ok, false)
@@ -1336,22 +1641,55 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
   }
 
   try {
-    child.stdin.write(encodeFrame({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-settings', gen: 'g' }))
+    child.stdin.write(
+      encodeFrame({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-settings', gen: 'g' }),
+    )
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
     assert.deepEqual(manifest.implements, ['ui-settings'])
-    assert.deepEqual(manifest.methods, { 'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'] })
+    assert.deepEqual(manifest.methods, {
+      'ui-settings': [
+        'ping',
+        'vendors',
+        'profile',
+        'discover',
+        'health',
+        'graph',
+        'scopes',
+        'view',
+        'search',
+        'edit',
+        'client.read',
+        'secret',
+      ],
+    })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')
 
-    child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-settings', method: 'ping', args: {} }))
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'c1',
+        kind: 'call',
+        port: 'ui-settings',
+        method: 'ping',
+        args: {},
+      }),
+    )
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
     assert.equal(messages.find((message) => message.id === 'c1').value.pong, true)
 
     // client.read 路径穿越：越界路径结构化失败，不崩进程。
     child.stdin.write(
-      encodeFrame({ v: '1', id: 'r1', kind: 'call', port: 'ui-settings', method: 'client.read', args: { path: '../plugin.json' } }),
+      encodeFrame({
+        v: '1',
+        id: 'r1',
+        kind: 'call',
+        port: 'ui-settings',
+        method: 'client.read',
+        args: { path: '../plugin.json' },
+      }),
     )
     await waitFor(() => messages.some((message) => message.id === 'r1'), 'client.read rejection')
     assert.equal(messages.find((message) => message.id === 'r1').value.ok, false)
@@ -1375,7 +1713,9 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const portCall = messages.find((message) => message.kind === 'port.call')
     assert.equal(portCall.port, 'model')
     assert.equal(portCall.method, 'vendors')
-    assert.deepEqual(portCall.args, { vendors: [{ identity: 'vendor-deepseek', body: { sdk: 'deepseek' } }] })
+    assert.deepEqual(portCall.args, {
+      vendors: [{ identity: 'vendor-deepseek', body: { sdk: 'deepseek' } }],
+    })
     child.stdin.write(
       encodeFrame({
         v: '1',
@@ -1387,7 +1727,9 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     )
     await waitFor(() => messages.some((message) => message.id === 'v1'), 'vendors result')
     assert.deepEqual(messages.find((message) => message.id === 'v1').value, {
-      $directives: [{ kind: 'extern', payload: { ok: true, vendors: [{ identity: 'vendor-deepseek' }] } }],
+      $directives: [
+        { kind: 'extern', payload: { ok: true, vendors: [{ identity: 'vendor-deepseek' }] } },
+      ],
     })
 
     // health 直接回结构化判定（无反向调用）。
@@ -1408,12 +1750,22 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     assert.equal(healthValue.threshold_source, 'default')
 
     // 在途调用与 drain 连发：drain 必须等在途调用收口后才发 bye（协议 §2.3）。
-    child.stdin.write(encodeFrame({ v: '1', id: 'c2', kind: 'call', port: 'ui-settings', method: 'ping', args: {} }))
+    child.stdin.write(
+      encodeFrame({
+        v: '1',
+        id: 'c2',
+        kind: 'call',
+        port: 'ui-settings',
+        method: 'ping',
+        args: {},
+      }),
+    )
     child.stdin.write(encodeFrame({ v: '1', id: 'd1', kind: 'drain', deadline_ms: 100 }))
     await waitFor(() => messages.some((message) => message.id === 'd1'), 'bye')
     assert.equal(messages.find((message) => message.id === 'd1').kind, 'bye')
     assert.ok(
-      messages.findIndex((message) => message.id === 'c2') < messages.findIndex((message) => message.id === 'd1'),
+      messages.findIndex((message) => message.id === 'c2') <
+        messages.findIndex((message) => message.id === 'd1'),
       '在途调用结果应先于 bye',
     )
     await new Promise((resolveExit) => child.once('exit', resolveExit))
@@ -1482,47 +1834,133 @@ test('并发方法脱链：只读方法在写类方法在途时仍立即派发�
   // profile 是串行（写类）方法：反向调 model.profile 后停在其应答前，用于制造「在途」。
   const profileArgs = {
     config: {
-      body: { version: 1, vendor: 'deepseek', providers: { deepseek: { models: { m1: { enabled: true } } } } },
+      body: {
+        version: 1,
+        vendor: 'deepseek',
+        providers: { deepseek: { models: { m1: { enabled: true } } } },
+      },
     },
   }
-  const portCalls = (method) => service.messages.filter((message) => message.kind === 'port.call' && message.method === method)
+  const portCalls = (method) =>
+    service.messages.filter((message) => message.kind === 'port.call' && message.method === method)
   // 档案装配现在先问 config owner（config.read）：自动应答，聚焦 profile 串行 / 脱链语义。
   const answeredReads = new Set()
   const autoAnswerReads = () => {
     for (const message of service.messages) {
-      if (message.kind !== 'port.call' || message.method !== 'read' || answeredReads.has(message.id)) continue
+      if (
+        message.kind !== 'port.call' ||
+        message.method !== 'read' ||
+        answeredReads.has(message.id)
+      )
+        continue
       answeredReads.add(message.id)
-      service.send({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { body: profileArgs.config.body } })
+      service.send({
+        v: '1',
+        id: message.id,
+        kind: 'port.result',
+        ok: true,
+        value: { body: profileArgs.config.body },
+      })
     }
   }
   const autoTimer = setInterval(autoAnswerReads, 20)
   try {
     // (a) profile 在途（其 port.call 未应答）时，vendors 脱链立即派发并完成。
-    service.send({ v: '1', id: 'pf1', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
+    service.send({
+      v: '1',
+      id: 'pf1',
+      kind: 'call',
+      port: 'ui-settings',
+      method: 'profile',
+      args: profileArgs,
+    })
     await service.waitFor(() => portCalls('profile').length === 1, 'profile port.call')
-    service.send({ v: '1', id: 'vd1', kind: 'call', port: 'ui-settings', method: 'vendors', args: {} })
-    await service.waitFor(() => portCalls('vendors').length === 1, 'vendors port.call while profile in flight')
-    service.send({ v: '1', id: portCalls('vendors')[0].id, kind: 'port.result', ok: true, value: { ok: true, vendors: [] } })
-    await service.waitFor(() => service.messages.some((message) => message.id === 'vd1'), 'vendors result')
+    service.send({
+      v: '1',
+      id: 'vd1',
+      kind: 'call',
+      port: 'ui-settings',
+      method: 'vendors',
+      args: {},
+    })
+    await service.waitFor(
+      () => portCalls('vendors').length === 1,
+      'vendors port.call while profile in flight',
+    )
+    service.send({
+      v: '1',
+      id: portCalls('vendors')[0].id,
+      kind: 'port.result',
+      ok: true,
+      value: { ok: true, vendors: [] },
+    })
+    await service.waitFor(
+      () => service.messages.some((message) => message.id === 'vd1'),
+      'vendors result',
+    )
     assert.ok(
       !service.messages.some((message) => message.id === 'pf1'),
       'profile 未应答前其结果不得出现：vendors 与 profile 并行而非排队',
     )
-    service.send({ v: '1', id: portCalls('profile')[0].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
-    await service.waitFor(() => service.messages.some((message) => message.id === 'pf1'), 'profile result')
+    service.send({
+      v: '1',
+      id: portCalls('profile')[0].id,
+      kind: 'port.result',
+      ok: true,
+      value: { ok: true, changed: false },
+    })
+    await service.waitFor(
+      () => service.messages.some((message) => message.id === 'pf1'),
+      'profile result',
+    )
 
     // (b) 串行方法：第二个 profile 在第一个收口前不得派发（保持到达序）。
     const settled = portCalls('profile').length
-    service.send({ v: '1', id: 'pf2', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
-    service.send({ v: '1', id: 'pf3', kind: 'call', port: 'ui-settings', method: 'profile', args: profileArgs })
+    service.send({
+      v: '1',
+      id: 'pf2',
+      kind: 'call',
+      port: 'ui-settings',
+      method: 'profile',
+      args: profileArgs,
+    })
+    service.send({
+      v: '1',
+      id: 'pf3',
+      kind: 'call',
+      port: 'ui-settings',
+      method: 'profile',
+      args: profileArgs,
+    })
     await service.waitFor(() => portCalls('profile').length === settled + 1, 'pf2 port.call')
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 200))
     assert.equal(portCalls('profile').length, settled + 1, 'pf3 必须等 pf2 收口后才派发')
-    service.send({ v: '1', id: portCalls('profile')[settled].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
-    await service.waitFor(() => portCalls('profile').length === settled + 2, 'pf3 port.call after pf2 settles')
-    service.send({ v: '1', id: portCalls('profile')[settled + 1].id, kind: 'port.result', ok: true, value: { ok: true, changed: false } })
-    await service.waitFor(() => service.messages.some((message) => message.id === 'pf3'), 'pf3 result')
-    assert.ok(service.messages.some((message) => message.id === 'pf2'), 'pf2 结果已回')
+    service.send({
+      v: '1',
+      id: portCalls('profile')[settled].id,
+      kind: 'port.result',
+      ok: true,
+      value: { ok: true, changed: false },
+    })
+    await service.waitFor(
+      () => portCalls('profile').length === settled + 2,
+      'pf3 port.call after pf2 settles',
+    )
+    service.send({
+      v: '1',
+      id: portCalls('profile')[settled + 1].id,
+      kind: 'port.result',
+      ok: true,
+      value: { ok: true, changed: false },
+    })
+    await service.waitFor(
+      () => service.messages.some((message) => message.id === 'pf3'),
+      'pf3 result',
+    )
+    assert.ok(
+      service.messages.some((message) => message.id === 'pf2'),
+      'pf2 结果已回',
+    )
   } finally {
     clearInterval(autoTimer)
     if (service.child.exitCode === null) service.child.kill()
@@ -1530,29 +1968,53 @@ test('并发方法脱链：只读方法在写类方法在途时仍立即派发�
   }
 })
 
-test('引用不可用：hydrate 抛 def_unavailable；服务帧映射同码', async () => {
+test('引用不可用：水合失败透传 def_unavailable；服务帧映射同码', async () => {
   const hash = 'a'.repeat(64)
-  const failingHost = { call: async () => ({ ok: false, code: 'denied', message: 'denied' }) }
-  const handlers = createHandlers({ identity: 'ui-settings', host: failingHost })
-  await assert.rejects(handlers.scopes({ refs: [hash] }, { run: null, thread: null, now: 0 }), (err) => {
-    assert.ok(err instanceof DefUnavailableError)
-    assert.equal(err.code, 'def_unavailable')
-    return true
-  })
+  const failing = { call: async () => ({ ok: false, code: 'denied', message: 'denied' }) }
+  const handlers = createHandlers({ identity: 'ui-settings', refHydrate: failing })
+  await assert.rejects(
+    handlers.scopes({ refs: [hash] }, { run: null, thread: null, now: 0 }),
+    (err) => {
+      assert.equal(err.code, 'def_unavailable', '水合任何失败都按拆分前语义映射为 def_unavailable')
+      return true
+    },
+  )
 
   const root = tempDir('def-unavailable')
   const service = startService(root)
   try {
     service.send({ v: '1', id: 'h1', kind: 'hello', impl: 'ui-settings', gen: 'g' })
-    await service.waitFor(() => service.messages.some((message) => message.kind === 'manifest'), 'manifest')
-    service.send({ v: '1', id: 'sc1', kind: 'call', port: 'ui-settings', method: 'scopes', args: { refs: [hash] } })
     await service.waitFor(
-      () => service.messages.some((message) => message.kind === 'port.call' && message.method === 'def.read'),
-      'def.read port.call',
+      () => service.messages.some((message) => message.kind === 'manifest'),
+      'manifest',
     )
-    const call = service.messages.find((message) => message.kind === 'port.call' && message.method === 'def.read')
-    service.send({ v: '1', id: call.id, kind: 'port.error', ok: false, error: 'denied', message: 'denied' })
-    await service.waitFor(() => service.messages.some((message) => message.id === 'sc1'), 'scopes response')
+    service.send({
+      v: '1',
+      id: 'sc1',
+      kind: 'call',
+      port: 'ui-settings',
+      method: 'scopes',
+      args: { refs: [hash] },
+    })
+    const isHydrateCall = (message) =>
+      message.kind === 'port.call' && message.port === 'ref-hydrate' && message.method === 'hydrate'
+    await service.waitFor(
+      () => service.messages.some(isHydrateCall),
+      'ref-hydrate.hydrate port.call',
+    )
+    const call = service.messages.find(isHydrateCall)
+    service.send({
+      v: '1',
+      id: call.id,
+      kind: 'port.error',
+      ok: false,
+      error: 'def_unavailable',
+      message: 'def unavailable',
+    })
+    await service.waitFor(
+      () => service.messages.some((message) => message.id === 'sc1'),
+      'scopes response',
+    )
     const response = service.messages.find((message) => message.id === 'sc1')
     assert.equal(response.kind, 'error')
     assert.equal(response.code, 'def_unavailable')
@@ -1577,7 +2039,9 @@ test('服务 EOF 自退出', async () => {
   child.stdin.end()
   const code = await Promise.race([
     exit,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('service did not exit on EOF')), 8000)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('service did not exit on EOF')), 8000),
+    ),
   ])
   assert.equal(typeof code, 'number')
   rmSync(root, { recursive: true, force: true })

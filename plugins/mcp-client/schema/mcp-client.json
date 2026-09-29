@@ -1,0 +1,152 @@
+{
+  "title": "mcp-client（外部 MCP 服务器 stdio 客户端）",
+  "description": "身份自述 / 数据契约：按 args 里的连接配置（server / command / args / env / cwd）管理外部 MCP 服务器子进程，自己实现 MCP stdio 传输（换行分隔的 JSON-RPC 消息、initialize 握手、tools/list、tools/call）。连接按 `server` 键复用、配置变化重连，`close` 显式关闭；传输错误作数据（结构化码）回灌、不抛未捕获错误。失败 / 隔离 / 重启策略归消费方 `mcp`；本服务不读投影、不写世界。env 为已解析的追加环境变量（密钥明文只在 spawn 时进子进程），端口审计按宿主口径脱敏 args 顶层 env 值。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "mcp-client.list_tools": [],
+    "mcp-client.call_tool": [],
+    "mcp-client.close": []
+  },
+  "properties": {
+    "server_config": {
+      "type": "object",
+      "description": "连接配置（list_tools / call_tool 共用）：服务器 id + 可执行 + 参数 + 已解析 env + 工作目录。",
+      "required": ["server", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "server": {
+          "type": "string",
+          "minLength": 1,
+          "description": "本地唯一服务器 id（连接复用键）。"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "可执行文件（MCP stdio 服务器）。"
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "命令行参数；缺省空。"
+        },
+        "env": {
+          "type": "object",
+          "description": "追加环境变量（已由消费方解析 auth_ref）；端口审计脱敏其值。",
+          "additionalProperties": { "type": "string" }
+        },
+        "cwd": { "type": "string", "description": "可选工作目录。" }
+      }
+    },
+    "list_tools_request": {
+      "type": "object",
+      "description": "list_tools 的 args：连接配置；确保连接后拉 tools/list。",
+      "required": ["server", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "server": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "cwd": { "type": "string" }
+      }
+    },
+    "call_tool_request": {
+      "type": "object",
+      "description": "call_tool 的 args：连接配置 + 工具名 + 转发给外部 tools/call 的 arguments。",
+      "required": ["server", "command", "tool"],
+      "additionalProperties": false,
+      "properties": {
+        "server": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "tool": { "type": "string", "minLength": 1, "description": "外部 MCP 工具原名。" },
+        "arguments": { "type": "object", "description": "转发给外部 MCP tools/call 的参数。" }
+      }
+    },
+    "close_request": {
+      "type": "object",
+      "description": "close 的 args：要关闭的 server（缺省关闭全部连接）。",
+      "additionalProperties": false,
+      "properties": {
+        "server": {
+          "type": "string",
+          "minLength": 1,
+          "description": "目标服务器 id；缺省关闭全部。"
+        }
+      }
+    },
+    "list_tools_result": {
+      "type": "object",
+      "description": "list_tools 的返回值：成功带规范化工具条目与上一连接意外退出原因；失败带结构化错误。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "tools": {
+          "type": "array",
+          "description": "规范化后的 MCP 工具条目（name / description / inputSchema / outputSchema / annotations）。",
+          "items": { "type": "object" }
+        },
+        "reconnected": {
+          "type": ["string", "null"],
+          "description": "本次为该 server 重建连接时，上一连接意外退出的原因；首次建连 / 复用为 null。"
+        },
+        "error": { "$ref": "#/properties/client_error" }
+      }
+    },
+    "call_tool_result": {
+      "type": "object",
+      "description": "call_tool 的返回值：成功带 MCP tools/call 原始结果；失败带结构化错误。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "description": "MCP tools/call 结果对象（原样回传，本服务不解释）。" },
+        "reconnected": {
+          "type": ["string", "null"],
+          "description": "同 list_tools：上一连接意外退出原因；首次建连 / 复用为 null。"
+        },
+        "error": { "$ref": "#/properties/client_error" }
+      }
+    },
+    "close_result": {
+      "type": "object",
+      "description": "close 的返回值：{ok:true,closed}——实际关闭的连接数。",
+      "required": ["ok", "closed"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "closed": { "type": "integer", "minimum": 0, "description": "实际关闭的连接数。" }
+      }
+    },
+    "client_error": {
+      "type": "object",
+      "description": "结构化客户端错误（作数据返回，不抛）：{code,message}。",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "bad_config / bad_args / mcp_connect_failed / mcp_list_failed / mcp_call_failed / mcp_client_closing。"
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "协议 error 帧的 code（形态门禁失败，方法不跑）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "args 非对象，或 call_tool 缺 tool。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "mcp-client.list_tools": 40000,
+    "mcp-client.call_tool": 45000,
+    "mcp-client.close": 5000
+  }
+}

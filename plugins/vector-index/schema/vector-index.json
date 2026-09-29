@@ -1,0 +1,173 @@
+{
+  "title": "vector-index（向量索引原语）",
+  "description": "身份自述 / 数据契约：向量索引原语。持有记录 = {key, chunk_index, vector}（逻辑 key + 块号 + 向量），落本身份 ③ CHRONO_PLUGIN_STATE/index.bin（二进制、原子写、stale GC），可重算、删掉可重建。upsert 按 key 覆盖（先删同 key 旧记录再追加，保持插入序）并写入消费方给的版本计数，锚（model/dim）变即重建；remove 删若干 key；search 暴力余弦（L2 归一 ⇒ 点积）最小堆 top-k，同分按 key、chunk_index 升序；info 回当前索引描述（含记录）；clear 清空。只回逻辑 key，不解析条目哈希。服务不读投影、无反向调用、无写通道、不自取时钟。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "vector-index.upsert": [],
+    "vector-index.remove": [],
+    "vector-index.search": [],
+    "vector-index.info": [],
+    "vector-index.clear": []
+  },
+  "properties": {
+    "upsert_request": {
+      "type": "object",
+      "required": ["model", "dim", "count", "records"],
+      "additionalProperties": false,
+      "description": "upsert 入参：索引锚（model / dim）、消费方版本计数与要覆盖的记录。",
+      "properties": {
+        "model": { "type": "string", "minLength": 1, "description": "向量模型 id（索引锚）。" },
+        "dim": { "type": "integer", "minimum": 1, "description": "向量维度（索引锚）。" },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "消费方版本计数（如世界条目计数），只存不解释。"
+        },
+        "records": {
+          "type": "array",
+          "description": "要写入的记录；同 key 旧记录先删再追加（保持插入序），向量在写入时 L2 归一。",
+          "items": {
+            "type": "object",
+            "required": ["key", "chunk_index", "vector"],
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "消费方逻辑键（如条目 id）。"
+              },
+              "chunk_index": { "type": "integer", "minimum": 0 },
+              "vector": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "number" },
+                "description": "长度必须等于 dim 的有限数向量。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "upsert_result": {
+      "type": "object",
+      "required": ["ok", "present", "model", "dim", "count", "size"],
+      "additionalProperties": false,
+      "description": "upsert 结果：写入后的索引描述（size = 记录数）。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "present": { "const": true },
+        "model": { "type": "string" },
+        "dim": { "type": "integer" },
+        "count": { "type": "integer" },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "remove_request": {
+      "type": "object",
+      "required": ["keys"],
+      "additionalProperties": false,
+      "description": "remove 入参：要删除记录的若干逻辑 key。",
+      "properties": {
+        "keys": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "remove_result": {
+      "type": "object",
+      "required": ["ok", "removed", "size"],
+      "additionalProperties": false,
+      "description": "remove 结果：实际删除的记录数与剩余记录数。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "removed": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "search_request": {
+      "type": "object",
+      "required": ["query_vector"],
+      "additionalProperties": false,
+      "description": "search 入参：查询向量与 top-k（缺省 10）。空索引回 hits:[]。",
+      "properties": {
+        "query_vector": { "type": "array", "minItems": 1, "items": { "type": "number" } },
+        "top_k": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "search_result": {
+      "type": "object",
+      "required": ["ok", "hits"],
+      "additionalProperties": false,
+      "description": "search 结果：score 降序、同分按 key / chunk_index 升序的命中（只回逻辑 key）。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "hits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "chunk_index", "score"],
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string" },
+              "chunk_index": { "type": "integer", "minimum": 0 },
+              "score": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "info_result": {
+      "type": "object",
+      "required": ["ok", "present", "records"],
+      "additionalProperties": false,
+      "description": "info 结果：当前索引描述（含全部记录，供消费方做覆盖判据与去重）；空索引 present:false、records:[]。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "present": { "type": "boolean" },
+        "model": { "type": "string" },
+        "dim": { "type": "integer" },
+        "count": { "type": "integer" },
+        "size": { "type": "integer", "minimum": 0 },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "chunk_index", "vector"],
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string" },
+              "chunk_index": { "type": "integer", "minimum": 0 },
+              "vector": { "type": "array", "items": { "type": "number" } }
+            }
+          }
+        }
+      }
+    },
+    "clear_result": {
+      "type": "object",
+      "required": ["ok"],
+      "additionalProperties": false,
+      "description": "clear 结果：索引已清空（③ 文件已删，回到空索引）。",
+      "properties": {
+        "ok": { "type": "boolean" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": {
+          "type": "string",
+          "description": "args 形态非法（非对象 / 缺必填键 / 向量维度不符 / 维度非正）。"
+        }
+      }
+    }
+  },
+  "method_timeouts": {
+    "vector-index.upsert": 60000,
+    "vector-index.remove": 30000,
+    "vector-index.search": 60000,
+    "vector-index.info": 30000,
+    "vector-index.clear": 30000
+  }
+}

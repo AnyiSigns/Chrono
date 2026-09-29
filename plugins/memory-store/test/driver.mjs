@@ -40,14 +40,121 @@ export function queryVector(weights, dim = DIM) {
   return vector
 }
 
-/** 默认假向量化后端：chunk 整段一块，embed 回确定性单位向量。 */
+/** L2 归一（与 vector-index 提供方同口径）。 */
+function normalize(vector) {
+  let sum = 0
+  for (const value of vector) sum += value * value
+  const norm = Math.sqrt(sum)
+  if (norm === 0 || !Number.isFinite(norm)) return vector.map(() => 0)
+  return vector.map((value) => value / norm)
+}
+
+function dot(left, right) {
+  const length = Math.min(left.length, right.length)
+  let sum = 0
+  for (let index = 0; index < length; index++) sum += left[index] * right[index]
+  return sum
+}
+
+/**
+ * 内存假 `vector-index` 服务：实现 upsert / remove / search / info / clear 与确定性 tie-break。
+ * 供 memory-store 协议级测试桥接反向调用；可在会话间共享 / 手动 clear（模拟删除 ③）。
+ */
+export function createFakeVectorIndex() {
+  let data = null
+  return {
+    clear() {
+      data = null
+      return { ok: true }
+    },
+    upsert(input) {
+      if (data === null || data.modelId !== input.model || data.dim !== input.dim) {
+        data = { modelId: input.model, dim: input.dim, count: input.count, records: [] }
+      }
+      const keys = new Set(input.records.map((record) => record.key))
+      if (keys.size > 0) data.records = data.records.filter((record) => !keys.has(record.key))
+      for (const record of input.records) {
+        data.records.push({
+          key: record.key,
+          chunk_index: record.chunk_index,
+          vector: normalize(record.vector),
+        })
+      }
+      data.count = input.count
+      return {
+        ok: true,
+        present: true,
+        model: data.modelId,
+        dim: data.dim,
+        count: data.count,
+        size: data.records.length,
+      }
+    },
+    remove(keys) {
+      if (data === null) return { ok: true, removed: 0, size: 0 }
+      const set = new Set(keys)
+      const before = data.records.length
+      data.records = data.records.filter((record) => !set.has(record.key))
+      return { ok: true, removed: before - data.records.length, size: data.records.length }
+    },
+    search(query, topK) {
+      if (data === null) return { ok: true, hits: [] }
+      const hits = data.records.map((record) => ({
+        key: record.key,
+        chunk_index: record.chunk_index,
+        score: dot(query, record.vector),
+      }))
+      hits.sort(
+        (left, right) =>
+          right.score - left.score ||
+          (left.key < right.key ? -1 : left.key > right.key ? 1 : 0) ||
+          left.chunk_index - right.chunk_index,
+      )
+      return { ok: true, hits: hits.slice(0, topK) }
+    },
+    info() {
+      if (data === null) return { ok: true, present: false, records: [] }
+      return {
+        ok: true,
+        present: true,
+        model: data.modelId,
+        dim: data.dim,
+        count: data.count,
+        size: data.records.length,
+        records: data.records.map((record) => ({
+          key: record.key,
+          chunk_index: record.chunk_index,
+          vector: [...record.vector],
+        })),
+      }
+    },
+  }
+}
+
+/** 把 `vector-index.*` 反向调用派发到内存假服务，回 `{value}` / `{error,message}`。 */
+function vectorIndexOutcome(fake, method, args) {
+  if (method === 'upsert') return { value: fake.upsert(args) }
+  if (method === 'remove') return { value: fake.remove(Array.isArray(args?.keys) ? args.keys : []) }
+  if (method === 'search') {
+    return {
+      value: fake.search(
+        Array.isArray(args?.query_vector) ? args.query_vector : [],
+        args?.top_k ?? 10,
+      ),
+    }
+  }
+  if (method === 'info') return { value: fake.info() }
+  if (method === 'clear') return { value: fake.clear() }
+  return { error: 'unknown_method', message: `fake vector-index has no ${method}` }
+}
+
+/** 默认假后端：tokenizer.chunk 整段一块，embedding.embed 回确定性单位向量。 */
 export function defaultBridge(port, method, args) {
-  if (port !== 'embedding') return { error: 'not_ready', message: 'no resolver' }
-  if (method === 'chunk') {
+  if (port === 'tokenizer' && method === 'chunk') {
     const text = typeof args?.text === 'string' ? args.text : ''
     return { value: [{ index: 0, start: 0, end: [...text].length, text }] }
   }
-  if (method === 'embed') {
+  if (port === 'embedding' && method === 'embed') {
     const texts = Array.isArray(args?.texts) ? args.texts : []
     const model = typeof args?.model === 'string' ? args.model : 'granite-97m'
     return { value: { model, dim: DIM, vectors: texts.map((text) => testVector(text)) } }
@@ -62,13 +169,24 @@ export function startService(options = {}) {
   else delete env.CHRONO_PLUGIN_STATE
   if (options.dataDir !== undefined) env.CHRONO_PLUGIN_DATA = options.dataDir
   else delete env.CHRONO_PLUGIN_DATA
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const frames = []
   const portCalls = []
   const stderr = []
-  const bridge = options.bridge ?? ((port, method, args) => Promise.resolve(defaultBridge(port, method, args)))
+  const vectorIndex = options.vectorIndex ?? createFakeVectorIndex()
+  const customBridge = options.bridge
+  const bridge = (port, method, args) => {
+    if (port === 'vector-index')
+      return Promise.resolve(vectorIndexOutcome(vectorIndex, method, args))
+    if (customBridge !== undefined) return Promise.resolve(customBridge(port, method, args))
+    return Promise.resolve(defaultBridge(port, method, args))
+  }
   const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
 
   child.stdout.on('data', (chunk) => {
@@ -125,7 +243,9 @@ export function startService(options = {}) {
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`))
+        rejectRequest(
+          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
+        )
       }, timeoutMs)
       pending.set(id, (message) => {
         clearTimeout(timer)
@@ -145,6 +265,7 @@ export function startService(options = {}) {
     frames,
     portCalls,
     stderr,
+    vectorIndex,
     request,
     hello: () => request('hello', { impl: 'memory-store', gen: 'gen-1' }, 'manifest'),
     call: (method, args, env = FIXED_ENV) =>

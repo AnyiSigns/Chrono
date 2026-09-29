@@ -83,6 +83,26 @@ export function clearExpecting(state: RunState, threadKey: string): RunState {
   return { ...state, expecting }
 }
 
+/**
+ * 回合定稿（`chat.turn.settled`）无条件清该线程生成态：`runs` / `expecting`。
+ * 续跑是嵌套 eval、无宿主 `run.finished`，靠回合终态事件收口而非 run 生命周期；
+ * `writing` / `pendingWrite` 属槽写（input.write），不在此清。幂等。
+ */
+export function clearTurnRun(state: RunState, threadKey: string): RunState {
+  let next = state
+  if (next.runs[threadKey] !== undefined) {
+    const runs = { ...next.runs }
+    delete runs[threadKey]
+    next = { ...next, runs }
+  }
+  if (next.expecting[threadKey] === true) {
+    const expecting = { ...next.expecting }
+    delete expecting[threadKey]
+    next = { ...next, expecting }
+  }
+  return next
+}
+
 /** `run.started`：仅当本线程在等回合 run 时认领；其余 run 不构成「生成中」。 */
 export function trackRunStarted(
   state: RunState,

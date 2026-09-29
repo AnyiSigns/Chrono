@@ -48,7 +48,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -111,14 +113,25 @@ function shortMemoryFixture() {
     version: 1,
     sessions: {
       'c-1': {
-        summary: { goal: 'G1', decisions: [], facts: ['f1', 'f2'], open_questions: [], files: [], next_steps: [] },
+        summary: {
+          goal: 'G1',
+          decisions: [],
+          facts: ['f1', 'f2'],
+          open_questions: [],
+          files: [],
+          next_steps: [],
+        },
         covered_upto: 'm1',
         at: '2020-01-01T00:00:00.000Z',
         expires_at: '2020-01-02T00:00:00.000Z',
       },
     },
     workspaces: {
-      'w-1': { summary: { goal: 'WG', decisions: [], facts: ['old'], open_questions: [], files: [] }, sources: ['c-0'], at: '2020-01-01T00:00:00.000Z' },
+      'w-1': {
+        summary: { goal: 'WG', decisions: [], facts: ['old'], open_questions: [], files: [] },
+        sources: ['c-0'],
+        at: '2020-01-01T00:00:00.000Z',
+      },
     },
   }
 }
@@ -151,10 +164,16 @@ async function directProtocolSmoke(entry) {
 
   async function bridge(message) {
     portCalls.push(message)
-    if (message.port === 'embedding' && message.method === 'chunk') {
+    if (message.port === 'tokenizer' && message.method === 'chunk') {
       const text = typeof message.args?.text === 'string' ? message.args.text : ''
       child.stdin.write(
-        encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: [{ index: 0, start: 0, end: [...text].length, text }] }),
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: [{ index: 0, start: 0, end: [...text].length, text }],
+        }),
       )
       return
     }
@@ -170,29 +189,75 @@ async function directProtocolSmoke(entry) {
         vector[hash % 8] = 1
         return vector
       })
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { model: 'granite-97m', dim: 8, vectors } }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: { model: 'granite-97m', dim: 8, vectors },
+        }),
+      )
       return
     }
     if (message.port === 'short-memory' && message.method === 'read') {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: state.shortMemory }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: state.shortMemory,
+        }),
+      )
       return
     }
     if (message.port === 'short-memory' && message.method === 'apply') {
       applied.push(message.args)
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, changed: 1 } }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: { ok: true, changed: 1 },
+        }),
+      )
       return
     }
     if (message.port === 'session' && message.method === 'read') {
-      const value = { version: 1, current: 'c-1', conversations: [{ id: 'c-1', workspace_id: 'w-1' }] }
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+      const value = {
+        version: 1,
+        current: 'c-1',
+        conversations: [{ id: 'c-1', workspace_id: 'w-1' }],
+      }
+      child.stdin.write(
+        encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }),
+      )
       return
     }
     if (message.port === 'memory' && message.method === 'list') {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, kind: 'list', entries: [], count: 0, pinned: {} } }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: { ok: true, kind: 'list', entries: [], count: 0, pinned: {} },
+        }),
+      )
       return
     }
     if (message.port === 'memory' && message.method === 'append') {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, kind: 'append', added: [], count: 0 } }))
+      child.stdin.write(
+        encodeFrame({
+          v: '1',
+          id: message.id,
+          kind: 'port.result',
+          ok: true,
+          value: { ok: true, kind: 'append', added: [], count: 0 },
+        }),
+      )
       return
     }
     if (message.port === 'compress' && message.method === 'summarize') {
@@ -202,25 +267,46 @@ async function directProtocolSmoke(entry) {
           id: message.id,
           kind: 'port.result',
           ok: true,
-          value: { $directives: [{ kind: 'extern', payload: { ok: true, kind: 'summarize', summary: { goal: 'MERGED', facts: ['sf1'] } } }] },
+          value: {
+            $directives: [
+              {
+                kind: 'extern',
+                payload: {
+                  ok: true,
+                  kind: 'summarize',
+                  summary: { goal: 'MERGED', facts: ['sf1'] },
+                },
+              },
+            ],
+          },
         }),
       )
       return
     }
     child.stdin.write(
-      encodeFrame({ v: '1', id: message.id, kind: 'port.error', ok: false, error: 'not_ready', message: 'no resolver' }),
+      encodeFrame({
+        v: '1',
+        id: message.id,
+        kind: 'port.error',
+        ok: false,
+        error: 'not_ready',
+        message: 'no resolver',
+      }),
     )
   }
 
   async function call(id, method, args) {
-    child.stdin.write(encodeFrame({ v: '1', id, kind: 'call', port: 'memory-maintenance', method, args, env }))
+    child.stdin.write(
+      encodeFrame({ v: '1', id, kind: 'call', port: 'memory-maintenance', method, args, env }),
+    )
     for (;;) {
       const message = await next()
       if (message.kind === 'port.call') {
         await bridge(message)
         continue
       }
-      if ((message.kind === 'result' || message.kind === 'error') && message.id === id) return message
+      if ((message.kind === 'result' || message.kind === 'error') && message.id === id)
+        return message
     }
   }
 
@@ -229,7 +315,13 @@ async function directProtocolSmoke(entry) {
     const manifest = await next()
     assert.equal(manifest.kind, 'manifest', 'hello 应回 manifest')
     assert.equal(manifest.identity, 'memory-consolidate')
-    assert.deepEqual(manifest.methods['memory-maintenance'], ['consolidate', 'sweep', 'candidates', 'view', 'edit'])
+    assert.deepEqual(manifest.methods['memory-maintenance'], [
+      'consolidate',
+      'sweep',
+      'candidates',
+      'view',
+      'edit',
+    ])
 
     const consolidated = await call('c1', 'consolidate', { weight_threshold: 1 })
     assert.equal(consolidated.kind, 'result', JSON.stringify(consolidated))
@@ -260,7 +352,9 @@ async function directProtocolSmoke(entry) {
     assert.ok(portCalls.some((frame) => frame.port === 'short-memory' && frame.method === 'read'))
     assert.ok(portCalls.some((frame) => frame.port === 'session' && frame.method === 'read'))
     assert.ok(portCalls.some((frame) => frame.port === 'memory' && frame.method === 'list'))
-    console.log('直连协议：consolidate / sweep / candidates / view / edit 读 owner + 写 owner + 结果值')
+    console.log(
+      '直连协议：consolidate / sweep / candidates / view / edit 读 owner + 写 owner + 结果值',
+    )
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -309,24 +403,52 @@ async function main() {
     const treePaths = collectTreePaths(anchor.world, rootTreeHash)
     assert.ok(treePaths.includes('plugin.json'), '源码树应含 plugin.json')
     assert.ok(treePaths.includes('schema/memory-maintenance.json'), '源码树应含 schema')
-    assert.ok(treePaths.some((item) => item.startsWith('execute/')), '源码树应含 execute/')
-    assert.equal(treePaths.some((item) => item.startsWith('test/')), false, '.worldignore 应排除 test/')
-    assert.equal(treePaths.some((item) => item.startsWith('tools/')), false, '.worldignore 应排除 tools/')
+    assert.ok(
+      treePaths.some((item) => item.startsWith('execute/')),
+      '源码树应含 execute/',
+    )
+    assert.equal(
+      treePaths.some((item) => item.startsWith('test/')),
+      false,
+      '.worldignore 应排除 test/',
+    )
+    assert.equal(
+      treePaths.some((item) => item.startsWith('tools/')),
+      false,
+      '.worldignore 应排除 tools/',
+    )
     console.log(`.worldignore：源码树 ${treePaths.length} 个文件，test/ 与 tools/ 已排除`)
 
     // 周期派发链路：真实 buildPeriodicBag + schema.periodic.reads + 数据世代策略 body
     // → 非空 bag 且 summarize=true（不再恒 false）；无 reads 时回 null（对照）。
-    const schemaBody = JSON.parse(readFileSync(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'schema', 'memory-maintenance.json'), 'utf8'))
-    const policyBody = JSON.parse(readFileSync(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'tools', 'default-body.json'), 'utf8'))
+    const schemaBody = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, 'plugins', 'memory-consolidate', 'schema', 'memory-maintenance.json'),
+        'utf8',
+      ),
+    )
+    const policyBody = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, 'plugins', 'memory-consolidate', 'tools', 'default-body.json'),
+        'utf8',
+      ),
+    )
     const consolidateEntry = schemaBody.periodic.find((entry) => entry.method === 'consolidate')
     const reads = Object.entries(consolidateEntry.reads).map(([key, path]) => ({ key, path }))
     assert.equal(buildPeriodicBag({}, []), null, '无 reads 时 buildPeriodicBag 应回 null')
-    const periodicBag = buildPeriodicBag({ ids: { 'memory-consolidate': { body: policyBody } } }, reads)
+    const periodicBag = buildPeriodicBag(
+      { ids: { 'memory-consolidate': { body: policyBody } } },
+      reads,
+    )
     assert.notEqual(periodicBag, null, 'buildPeriodicBag 不应回 null')
     assert.equal(periodicBag.summarize, true, '周期 bag 应带 summarize=true')
-    console.log('周期 bag：buildPeriodicBag 注入 summarize=true（策略 body → compress.summarize 链路不再死）')
+    console.log(
+      '周期 bag：buildPeriodicBag 注入 summarize=true（策略 body → compress.summarize 链路不再死）',
+    )
 
-    await directProtocolSmoke(join(REPO_ROOT, 'plugins', 'memory-consolidate', 'execute', 'main.ts'))
+    await directProtocolSmoke(
+      join(REPO_ROOT, 'plugins', 'memory-consolidate', 'execute', 'main.ts'),
+    )
 
     const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)

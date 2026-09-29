@@ -34,8 +34,9 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['compress'])
   assert.deepEqual(decl.methods, { compress: ['summarize', 'compact', 'extract'] })
   assert.deepEqual(decl.needs, {
-    model: { mode: 'one' },
-    embedding: { mode: 'one' },
+    summarize: { mode: 'one' },
+    semantic: { mode: 'one' },
+    dedup: { mode: 'one' },
     'short-memory': { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
@@ -73,19 +74,19 @@ test('无 terms/ 目录且无命令面', () => {
   assert.deepEqual(readJson('plugin.json').commands, [])
 })
 
-test('execute/ 源码齐全', () => {
+test('execute/ 源码齐全（算法已迁出，只留薄门面）', () => {
   const files = [
     'execute/main.ts',
     'execute/methods.ts',
-    'execute/summary.ts',
-    'execute/semantic.ts',
-    'execute/dedup.ts',
     'execute/port-link.ts',
     'execute/log.ts',
     'execute/plan.ts',
     'execute/types.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
+  for (const moved of ['execute/summary.ts', 'execute/semantic.ts', 'execute/dedup.ts']) {
+    assert.equal(existsSync(join(PKG_ROOT, moved)), false, `${moved} 应已迁入独立提供方`)
+  }
 })
 
 test('package.json 零依赖且 test = node --test', () => {

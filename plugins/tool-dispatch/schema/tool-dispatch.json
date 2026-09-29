@@ -1,0 +1,95 @@
+{
+  "title": "tool-dispatch（工具批派发）",
+  "description": "身份自述 / 数据契约：整批工具派发。dispatch 解析 workspace_root，按 bag.verdicts 或兜底一次 guard.judge 取最严批级，allow 才按有界并发池扇出到提供者（describe/invoke 提供者走 invoke；绑定项走能力类方法或投影读）；只返回 results，不落账、不冒泡 $directives。目录经反向 `port.call tool-registry.list` 解析，args 校验经 `port.call tool-schema.validate-args`。私有参数含并发上限与结果缓存。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "tool-dispatch.dispatch": []
+  },
+  "properties": {
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 4,
+      "description": "整批 dispatch 的进程内并发上限（缺省 4）。超上限的 call 排队不丢弃；单次调用可用 bag.concurrency 覆盖。"
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "结果缓存私有参数：只缓存 idempotent:true 的工具结果（写类 / 模型 chat / 有会话类永不缓存）。",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用进程内结果缓存。"
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 256,
+          "description": "缓存条目上限（LRU 近似，超限淘汰最旧）。"
+        }
+      }
+    },
+    "dispatch_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["calls"],
+      "description": "dispatch 入参（bag）：整批 calls + 调用上下文（workspace_root / tier / caps / grant / verdicts / directory / tools_bindings / mcp_tools）。",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "description": "整批工具调用：每项 {call_id, tool, args}。",
+          "items": {
+            "type": "object",
+            "required": ["call_id", "tool"],
+            "additionalProperties": true,
+            "properties": {
+              "call_id": { "type": "string", "description": "模型侧调用 id（结果按它保序）。" },
+              "tool": { "type": "string", "description": "工具名（全局唯一，见工具目录）。" },
+              "args": {
+                "type": "object",
+                "description": "该工具的参数（按工具 argsSchema 机械校验）。"
+              }
+            }
+          }
+        },
+        "workspace_root": {
+          "type": "string",
+          "description": "执行根（入口 term 解析后传入）；缺失只对相对路径调用拒 workspace_missing。"
+        },
+        "directory": {
+          "type": "object",
+          "description": "调用方已装配好的目录；给出则本地索引复用、不再交目录服务。"
+        },
+        "tier": { "type": "string", "description": "当前权限档，透传给 guard 与提供者。" },
+        "caps": {
+          "type": "object",
+          "description": "调用级 caps 透传；派发时以工具声明的 caps 为准。"
+        },
+        "grant": { "type": "object", "description": "批准后的一次性 caps.grant，本插件只透传。" },
+        "verdicts": { "description": "调用方已按 call 判好的 verdict；给出则跳过 guard 兜底。" }
+      }
+    },
+    "dispatch_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "dispatch 的结果：{results: [{call_id, ok, result|error}]}，按 call_id 保序；不落账、不冒泡 $directives。",
+      "properties": {
+        "results": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "bag / calls 形态非法。" },
+        "unresolved_cap": { "type": "string", "description": "目录服务不可用（fail-closed）。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "tool-dispatch.dispatch": 1790000
+  }
+}

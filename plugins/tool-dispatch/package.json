@@ -1,0 +1,21 @@
+{
+  "name": "tool-dispatch",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工具批派发：批级 workspace / guard 兜底 / 最严批级判定，按有界并发池扇出到提供者（describe/invoke 或能力类绑定），带进程内结果缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

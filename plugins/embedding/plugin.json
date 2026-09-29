@@ -3,9 +3,12 @@
   "schema": "schema/embedding.json",
   "implements": ["embedding"],
   "methods": {
-    "embedding": ["embed", "chunk"]
+    "embedding": ["embed"]
   },
   "pins": {},
+  "needs": {
+    "tokenizer": { "mode": "one" }
+  },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",

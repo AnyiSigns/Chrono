@@ -8,7 +8,8 @@
   "pins": {},
   "needs": {
     "approval": { "mode": "one" },
-    "input": { "mode": "one" }
+    "input": { "mode": "one" },
+    "ref-hydrate": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [
@@ -38,6 +39,10 @@
     { "name": "approval.list", "entry": "terms/approval.list.json", "readonly": true },
     { "name": "approval.decide", "entry": "terms/approval.decide.json" },
     { "name": "approval.decide_all", "entry": "terms/approval.decide_all.json" },
-    { "name": "ui-approval.client.read", "entry": "terms/ui-approval.client.read.json", "readonly": true }
+    {
+      "name": "ui-approval.client.read",
+      "entry": "terms/ui-approval.client.read.json",
+      "readonly": true
+    }
   ]
 }

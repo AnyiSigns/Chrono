@@ -455,12 +455,18 @@ test('answer：反向调 input.read 取槽 → 写回答案 → input.clear → 
     const value = await drv.call('invoke', null, { run: 'r2', thread: 't1', now: 1_700_000_000_000 })
     const directives = directivesOf(value)
     assert.deepEqual(directives.map((item) => item.kind), ['eval', 'extern'])
-    assert.deepEqual(directives[0], {
-      kind: 'eval',
-      command: 'chat.resume',
-      args: { cursor: { node_index: 4, call_id: 'c1' }, thread: 't1', payload: { answers: [{ question_id: 'q1', selected: ['左'] }] } },
-      inject: { ids: ['ids'] },
-    })
+    const evalArgs = directives[0].args
+    assert.equal(directives[0].kind, 'eval')
+    assert.equal(directives[0].command, 'chat.resume')
+    assert.deepEqual(directives[0].inject, { ids: ['ids'] })
+    assert.deepEqual(evalArgs.cursor, { node_index: 4, call_id: 'c1' })
+    assert.equal(evalArgs.thread, 't1')
+    assert.deepEqual(evalArgs.payload.answers, [{ question_id: 'q1', selected: ['左'] }])
+    // 作答结果随附交互卡描述符：续跑段落盘 part 才保留题干与 detail.id（否则空卡 / 无法对账）。
+    assert.equal(evalArgs.payload.render.detail.kind, 'question')
+    assert.equal(evalArgs.payload.render.detail.id, 'q-run-1-0')
+    assert.deepEqual(evalArgs.payload.render.detail.answers, [{ question_id: 'q1', selected: ['左'] }])
+    assert.equal(externOf(value).render.detail.id, 'q-run-1-0')
     assert.equal(externOf(value).status, 'answered')
     assert.equal(externOf(value).id, 'q-run-1-0')
 

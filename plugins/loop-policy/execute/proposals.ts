@@ -1,8 +1,7 @@
-// 提案扫描与采纳（§14）：读 #43 `proposals` 未决项 → 本地机械闸 → `port.call #44 shadow` →
-// `approval.wait` 产 `orchestration_change` 入 #32 → `approved` 按 `patch.writes[]` 展开 `add_gen`/`set_active` 计划；
-// `denied` 落 verdicts。**只消费提案**；用户驱动提案（#45 record → propose）由此进入采纳，不再停在台账。
+// 提案扫描与采纳（§14）：读 `proposals` 未决项 → `port.call graph-gate.validate` 机械闸 → `port.call shadow`（影子回放）→
+// `approval.wait` 产 `orchestration_change` 入审批 → `approved` 按 `patch.writes[]` 展开 `add_gen`/`set_active` 计划；
+// `denied` 落 verdicts。**只消费提案**；用户驱动提案（record → propose）由此进入采纳，不再停在台账。
 
-import { validateGraphData } from './gate.ts'
 import { defHashOf, isRecord } from './plan.ts'
 import type { RoundPatches } from './plan.ts'
 import type { CallEnv, GraphModel, Json, PortCaller, Rec, ServiceEvent } from './types.ts'
@@ -144,10 +143,28 @@ async function gateProposal(input: ProposalScanInput, proposal: Rec): Promise<Ga
     refusal_codes: input.model.refusalCodes,
   }
   const active = input.model.graph
-  const runs = typeof input.bag['runs_since_fork'] === 'number' ? (input.bag['runs_since_fork'] as number) : null
-  const gate = validateGraphData({ graph: wrapper, pins: input.pins, active_graph: active, runs_since_fork: runs, refs })
-  const errors = gate.errors as unknown as Rec[]
-  if (!gate.ok) return { ok: false, errors, shadow: null, shadowDirectives: [] }
+  const runs =
+    typeof input.bag['runs_since_fork'] === 'number'
+      ? (input.bag['runs_since_fork'] as number)
+      : null
+  // 机械闸归 `graph-gate` 提供方：图数据 / pins / active 图 / fork 计数随 args 传入（服务不本地复刻）。
+  const gateOutcome = await input.port.call('graph-gate', 'validate', {
+    graph: wrapper,
+    pins: input.pins,
+    active_graph: active,
+    runs_since_fork: runs,
+    refs,
+  })
+  let errors: Rec[] = []
+  let passed = false
+  if (gateOutcome.ok && isRecord(gateOutcome.value)) {
+    const value = gateOutcome.value
+    passed = value['ok'] === true
+    if (Array.isArray(value['errors'])) errors = (value['errors'] as Json[]).filter(isRecord)
+  } else if (!gateOutcome.ok) {
+    errors = [{ code: 'graph_gate_unavailable', path: 'graph-gate', message: gateOutcome.message }]
+  }
+  if (!passed) return { ok: false, errors, shadow: null, shadowDirectives: [] }
 
   const outcome = await input.port.call('evolve-metrics', 'shadow', {
     graph: wrapper,
@@ -162,13 +179,21 @@ async function gateProposal(input: ProposalScanInput, proposal: Rec): Promise<Ga
     shadow = typeof metricId === 'string' ? { def: metricId } : null
     // #44 `shadow` 的指标 def 键 = H({body:metric_def})；其返回的 put 计划必须落账，影子指标才可解析。
     const returned = outcome.value['$directives']
-    if (Array.isArray(returned)) for (const directive of returned as Json[]) shadowDirectives.push(directive)
+    if (Array.isArray(returned))
+      for (const directive of returned as Json[]) shadowDirectives.push(directive)
   }
   return { ok: true, errors, shadow, shadowDirectives }
 }
 
 /** 构造 verdict 条目；`prev` 由回合累积器串到该槽上一登记条目（或回合初 tail）。 */
-function makeVerdict(proposalIds: string[], evidenceIds: string[], result: string, gate: Rec, at: string, id: string): Rec {
+function makeVerdict(
+  proposalIds: string[],
+  evidenceIds: string[],
+  result: string,
+  gate: Rec,
+  at: string,
+  id: string,
+): Rec {
   return {
     kind: 'verdict',
     id,
@@ -197,7 +222,19 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
     // 影子指标 def 先落账（先于引用它的队列项 / verdict），否则 `gate.shadow={def:metric_id}` 解析不到。
     for (const directive of gated.shadowDirectives) directives.push(directive)
     if (!gated.ok) {
-      const verdict = makeVerdict([id], evidenceIds, 'rejected', { mechanical: 'fail', reason: gated.errors[0]?.['code'] ?? null, shadow: null, human: null }, input.at, `vd-${input.run ?? 'run'}-${id}`)
+      const verdict = makeVerdict(
+        [id],
+        evidenceIds,
+        'rejected',
+        {
+          mechanical: 'fail',
+          reason: gated.errors[0]?.['code'] ?? null,
+          shadow: null,
+          human: null,
+        },
+        input.at,
+        `vd-${input.run ?? 'run'}-${id}`,
+      )
       input.round.stage('evolution', 'verdicts', verdict)
       continue
     }
@@ -219,11 +256,21 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
       if (isRecord(value) && Array.isArray(value['$directives'])) {
         for (const directive of value['$directives'] as Json[]) directives.push(directive)
       }
-      events.push({ topic: 'orchestration.change_pending', payload: { run: input.run, thread: input.env.thread, proposal_id: id } })
+      events.push({
+        topic: 'orchestration.change_pending',
+        payload: { run: input.run, thread: input.env.thread, proposal_id: id },
+      })
       return { directives, pending: { kind: 'orchestration_change', proposal_ids: [id] }, events }
     }
     // enqueue 传输失败：不吞，落拒绝 verdict 以便可审计。
-    const verdict = makeVerdict([id], evidenceIds, 'rejected', { mechanical: 'pass', reason: 'approval_unavailable', shadow: gated.shadow, human: null }, input.at, `vd-${input.run ?? 'run'}-${id}`)
+    const verdict = makeVerdict(
+      [id],
+      evidenceIds,
+      'rejected',
+      { mechanical: 'pass', reason: 'approval_unavailable', shadow: gated.shadow, human: null },
+      input.at,
+      `vd-${input.run ?? 'run'}-${id}`,
+    )
     input.round.stage('evolution', 'verdicts', verdict)
   }
   return { directives, pending: null, events }
@@ -258,7 +305,14 @@ export function expandAdoption(
   }
   const id = typeof proposal['id'] === 'string' ? proposal['id'] : 'pr-?'
   const evidenceIds = stringList(proposal['evidence_ids'])
-  const verdict = makeVerdict([id], evidenceIds, 'accepted', { mechanical: 'pass', reason: null, shadow: null, human: 'approved' }, at, `vd-${run ?? 'run'}-${id}`)
+  const verdict = makeVerdict(
+    [id],
+    evidenceIds,
+    'accepted',
+    { mechanical: 'pass', reason: null, shadow: null, human: 'approved' },
+    at,
+    `vd-${run ?? 'run'}-${id}`,
+  )
   round.stage('evolution', 'verdicts', verdict)
 }
 
@@ -281,6 +335,13 @@ export function expandRejection(
     const proposal = byId.get(id)
     if (proposal !== undefined) evidenceIds.push(...stringList(proposal['evidence_ids']))
   }
-  const verdict = makeVerdict(proposalIds, evidenceIds, 'rejected', { mechanical: 'pass', reason, shadow: null, human: 'denied' }, at, `vd-${run ?? 'run'}-${proposalIds[0] ?? '?'}`)
+  const verdict = makeVerdict(
+    proposalIds,
+    evidenceIds,
+    'rejected',
+    { mechanical: 'pass', reason, shadow: null, human: 'denied' },
+    at,
+    `vd-${run ?? 'run'}-${proposalIds[0] ?? '?'}`,
+  )
   round.stage('evolution', 'verdicts', verdict)
 }

@@ -56,28 +56,13 @@ test('plugin.json 15 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('pins 只保留 host；能力类消费（含 evolve-metrics #44 record 绑定）走 needs.one', () => {
+test('门面 pins 只保留 host；算法消费走 needs.one（tool-registry / tool-dispatch）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
-    guard: { mode: 'one' },
-    'tool-fs': { mode: 'one' },
-    'tool-shell': { mode: 'one' },
-    'tool-http': { mode: 'one' },
-    'tool-browser': { mode: 'one' },
-    mcp: { mode: 'one' },
-    'plugin-admin': { mode: 'one' },
-    'orchestration-admin': { mode: 'one' },
-    'evolve-metrics': { mode: 'one' },
-    todo: { mode: 'one' },
-    question: { mode: 'one' },
-    session: { mode: 'one' },
-    compress: { mode: 'one' },
-    memory: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    'memory-maintenance': { mode: 'one' },
+    'tool-registry': { mode: 'one' },
+    'tool-dispatch': { mode: 'one' },
   })
-  assert.equal(decl.needs['evolve-metrics'].mode, 'one')
 })
 
 test('.worldignore 排除 test/ 与 tools/（契约必需文件不可排除）', () => {
@@ -114,7 +99,11 @@ test('execute/ 不 import 宿主 / 内核 / client，也不 import 其他插件�
           specifier === 'plugin-sdk',
         `${file} 不应 import ${specifier}`,
       )
-      assert.equal(/packages\/(host|kernel|client)/.test(specifier), false, `${file} 不应 import 宿主 / 内核`)
+      assert.equal(
+        /packages\/(host|kernel|client)/.test(specifier),
+        false,
+        `${file} 不应 import 宿主 / 内核`,
+      )
     }
   }
 })
@@ -132,7 +121,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

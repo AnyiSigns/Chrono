@@ -20,7 +20,10 @@ test('writeWatermark：仅当前进，落后游标不覆盖；原子写无临时
     // 回退写被忽略
     writeWatermark('2023-01-01T00:00:00.000Z')
     assert.equal(readWatermark(), '2024-01-01T00:00:00.000Z')
-    assert.equal(JSON.parse(readFileSync(join(dir, FILE_NAME), 'utf8')).cursor, '2024-01-01T00:00:00.000Z')
+    assert.equal(
+      JSON.parse(readFileSync(join(dir, FILE_NAME), 'utf8')).cursor,
+      '2024-01-01T00:00:00.000Z',
+    )
 
     // 前进写落盘
     writeWatermark('2025-01-01T00:00:00.000Z')

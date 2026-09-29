@@ -27,7 +27,14 @@ import { dedupByCosine } from './vectors.ts'
 import { atOrBefore, readWatermark, writeWatermark } from './watermark.ts'
 import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
-import type { CompressBackend, EmbeddingBackend, MemoryBackend, SessionBackend, ShortMemoryBackend } from './port-link.ts'
+import type {
+  CompressBackend,
+  EmbeddingBackend,
+  MemoryBackend,
+  SessionBackend,
+  ShortMemoryBackend,
+  TokenizerBackend,
+} from './port-link.ts'
 
 const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
 const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
@@ -35,6 +42,7 @@ const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
 /** 后端注入：生产环境是反向调用，单测注入假后端。 */
 export interface MaintenanceDeps {
   embedding: EmbeddingBackend
+  tokenizer: TokenizerBackend
   compress: CompressBackend
   shortMemory: ShortMemoryBackend
   memory: MemoryBackend
@@ -56,7 +64,10 @@ interface Context {
 function toFailure(err: unknown): { code: string; message: string } {
   if (err instanceof BackendError) return { code: err.code, message: err.message }
   if (err instanceof BadArgsError) return { code: 'bad_args', message: err.message }
-  return { code: 'internal', message: err instanceof Error ? err.message : 'memory-maintenance failed' }
+  return {
+    code: 'internal',
+    message: err instanceof Error ? err.message : 'memory-maintenance failed',
+  }
 }
 
 /** 读 L1/L2（short-memory）、L3 存活条目 + pinned（memory-store）、会话归属（session）。 */
@@ -225,7 +236,13 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
           priority: 2,
         })
       }
-      const result = await dedupByCosine(items, ctx.params.dedupThreshold, deps.embedding, ctx.model)
+      const result = await dedupByCosine(
+        items,
+        ctx.params.dedupThreshold,
+        deps.tokenizer,
+        deps.embedding,
+        ctx.model,
+      )
       nextSummary[field] = result.accepted.map((item) => item.text).reverse()
     }
     nextSummary['goal'] = asString(existingSummary['goal']) ?? ''
@@ -239,7 +256,13 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
         at: ctx.at,
         priority: 1,
       }))
-      const result = await dedupByCosine(items, ctx.params.dedupThreshold, deps.embedding, ctx.model)
+      const result = await dedupByCosine(
+        items,
+        ctx.params.dedupThreshold,
+        deps.tokenizer,
+        deps.embedding,
+        ctx.model,
+      )
       nextSummary['facts'] = result.accepted.map((item) => item.text).reverse()
     }
     const existingSources = stringArray(existingL2['sources'])
@@ -251,7 +274,11 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
     if (l2Changed(existingL2, nextL2)) {
       nextWorkspaces[workspace] = nextL2
       changedWorkspaces[workspace] = nextL2
-      mergedPayload.push({ workspace, facts: stringArray(nextSummary['facts']).length, sources: added })
+      mergedPayload.push({
+        workspace,
+        facts: stringArray(nextSummary['facts']).length,
+        sources: added,
+      })
     }
   }
 
@@ -267,7 +294,10 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
     const derived = Math.min(1, sources.length / ctx.params.solidifyFullSources)
     for (const field of ['facts', 'decisions']) {
       for (const text of stringArray(summary[field])) {
-        const explicit = typeof weights[text] === 'number' && Number.isFinite(weights[text]) ? (weights[text] as number) : null
+        const explicit =
+          typeof weights[text] === 'number' && Number.isFinite(weights[text])
+            ? (weights[text] as number)
+            : null
         const weight = explicit ?? derived
         if (weight >= ctx.params.weightThreshold || highValue.includes(text)) {
           candidates.push({ workspace, text, weight })
@@ -279,7 +309,12 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
   let toAdd: Array<{ workspace: string; text: string; weight: number }> = []
   if (candidates.length > 0) {
     const items = [
-      ...ctx.entries.map((entry) => ({ key: `l3:${entry.id}`, text: entry.text, at: entry.at, priority: 0 })),
+      ...ctx.entries.map((entry) => ({
+        key: `l3:${entry.id}`,
+        text: entry.text,
+        at: entry.at,
+        priority: 0,
+      })),
       ...candidates.map((candidate) => ({
         key: `new:${candidate.workspace}:${candidate.text}`,
         text: candidate.text,
@@ -287,13 +322,28 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
         priority: 1,
       })),
     ]
-    const result = await dedupByCosine(items, ctx.params.dedupThreshold, deps.embedding, ctx.model)
+    const result = await dedupByCosine(
+      items,
+      ctx.params.dedupThreshold,
+      deps.tokenizer,
+      deps.embedding,
+      ctx.model,
+    )
     const accepted = new Set(result.accepted.map((item) => item.key))
-    toAdd = candidates.filter((candidate) => accepted.has(`new:${candidate.workspace}:${candidate.text}`))
+    toAdd = candidates.filter((candidate) =>
+      accepted.has(`new:${candidate.workspace}:${candidate.text}`),
+    )
   }
 
   if (!shortChanged && toAdd.length === 0) {
-    return { ok: true, kind: 'consolidate', at: ctx.at, merged: [], solidified: [], no_change: true }
+    return {
+      ok: true,
+      kind: 'consolidate',
+      at: ctx.at,
+      merged: [],
+      solidified: [],
+      no_change: true,
+    }
   }
 
   const entries: Rec[] = []
@@ -301,10 +351,20 @@ async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Pro
   for (const candidate of toAdd) {
     const id = deriveEntryId(candidate.workspace, candidate.text, ctx.at)
     const sources = sourcesByWorkspace.get(candidate.workspace) ?? []
-    const meta: Rec = { source: 'consolidate', workspace: candidate.workspace, at: ctx.at, tags: [] }
+    const meta: Rec = {
+      source: 'consolidate',
+      workspace: candidate.workspace,
+      at: ctx.at,
+      tags: [],
+    }
     if (sources.length > 0) meta['session'] = sources[0]
     entries.push({ id, text: candidate.text, meta, weight: candidate.weight })
-    solidifiedPayload.push({ id, workspace: candidate.workspace, weight: candidate.weight, text: candidate.text })
+    solidifiedPayload.push({
+      id,
+      workspace: candidate.workspace,
+      weight: candidate.weight,
+      text: candidate.text,
+    })
   }
 
   if (shortChanged) await deps.shortMemory.apply({ set_workspaces: changedWorkspaces })
@@ -377,7 +437,12 @@ async function sweep(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<J
         return left.id < right.id ? -1 : 1
       })
     for (let index = 0; index < need && index < rest.length; index++) {
-      l3Deleted.push({ id: rest[index].id, reason: 'over_capacity', weight: rest[index].weight ?? 1, at: rest[index].at })
+      l3Deleted.push({
+        id: rest[index].id,
+        reason: 'over_capacity',
+        weight: rest[index].weight ?? 1,
+        at: rest[index].at,
+      })
     }
   }
   const l3Changed = l3Deleted.length > 0
@@ -430,7 +495,12 @@ async function candidates(args: Json, env: CallEnv, deps: MaintenanceDeps): Prom
     const at = parseIso(record['at'])
     const deadline = expiresAt ?? (at === null ? null : at + ctx.params.l1TtlMs)
     if (deadline !== null && deadline <= ctx.now) {
-      out.push({ layer: 'l1', id: conversationId, at: asString(record['at']), reason: 'l1_expired' })
+      out.push({
+        layer: 'l1',
+        id: conversationId,
+        at: asString(record['at']),
+        reason: 'l1_expired',
+      })
     }
   }
   const workspaces = workspacesOf(ctx.shortMemory)
@@ -515,7 +585,13 @@ function findEntry(entries: LiveEntry[], id: string): LiveEntry | null {
 }
 
 /** L3 编辑：删除 / 置顶 / 文本编辑经反向调用 memory-store 写自有存储。 */
-async function editL3(ctx: Context, action: string, id: string, patch: Rec, deps: MaintenanceDeps): Promise<Json> {
+async function editL3(
+  ctx: Context,
+  action: string,
+  id: string,
+  patch: Rec,
+  deps: MaintenanceDeps,
+): Promise<Json> {
   const existing = findEntry(ctx.entries, id)
   if (existing === null) {
     return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
@@ -531,13 +607,26 @@ async function editL3(ctx: Context, action: string, id: string, patch: Rec, deps
   }
   const text = asString(patch['text'])
   if (text === null) throw new BadArgsError('patch.text is required for text edit')
-  const result = await deps.memory.edit({ id, text, meta: { ...existing.meta, at: ctx.at }, weight: existing.weight })
-  if (result['ok'] === false) return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
+  const result = await deps.memory.edit({
+    id,
+    text,
+    meta: { ...existing.meta, at: ctx.at },
+    weight: existing.weight,
+  })
+  if (result['ok'] === false)
+    return { ok: false, kind: 'edit', layer: 'l3', id, reason: 'not_found' }
   return { ok: true, kind: 'edit', action, layer: 'l3', id, text }
 }
 
 /** L1 / L2 编辑：删除整条；文本编辑合并 summary（置顶对 #3 不适用）。 */
-async function editShort(ctx: Context, action: string, layer: string, id: string, patch: Rec, deps: MaintenanceDeps): Promise<Json> {
+async function editShort(
+  ctx: Context,
+  action: string,
+  layer: string,
+  id: string,
+  patch: Rec,
+  deps: MaintenanceDeps,
+): Promise<Json> {
   const isL1 = layer === 'l1'
   const container = isL1 ? sessionsOf(ctx.shortMemory) : workspacesOf(ctx.shortMemory)
   const existing = container[id]
@@ -557,7 +646,9 @@ async function editShort(ctx: Context, action: string, layer: string, id: string
   const text = asString(patch['text'])
   if (text !== null) nextSummary['goal'] = text
   const nextRecord: Rec = { ...existing, summary: nextSummary }
-  await deps.shortMemory.apply(isL1 ? { set_sessions: { [id]: nextRecord } } : { set_workspaces: { [id]: nextRecord } })
+  await deps.shortMemory.apply(
+    isL1 ? { set_sessions: { [id]: nextRecord } } : { set_workspaces: { [id]: nextRecord } },
+  )
   return { ok: true, kind: 'edit', action, layer, id }
 }
 
@@ -568,7 +659,11 @@ async function edit(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Js
   const action = asString(ctx.args['action']) ?? asString(slot['action'])
   const layer = asString(ctx.args['layer']) ?? asString(slot['layer'])
   const id = asString(ctx.args['id']) ?? asString(slot['id'])
-  const patch = isRecord(ctx.args['patch']) ? (ctx.args['patch'] as Rec) : isRecord(slot['patch']) ? (slot['patch'] as Rec) : {}
+  const patch = isRecord(ctx.args['patch'])
+    ? (ctx.args['patch'] as Rec)
+    : isRecord(slot['patch'])
+      ? (slot['patch'] as Rec)
+      : {}
   if (action === null || layer === null || id === null) {
     throw new BadArgsError('action, layer and id are required')
   }
@@ -596,9 +691,11 @@ async function guard(run: () => Promise<Json>): Promise<Json> {
 /** 构造方法表（依赖注入：向量化 / 摘要 / owner 服务后端由 main 提供，便于测试与确定性）。 */
 export function createHandlers(deps: MaintenanceDeps): Record<string, Handler> {
   return {
-    consolidate: (args: Json, env: CallEnv): Promise<Json> => guard(() => consolidate(args, env, deps)),
+    consolidate: (args: Json, env: CallEnv): Promise<Json> =>
+      guard(() => consolidate(args, env, deps)),
     sweep: (args: Json, env: CallEnv): Promise<Json> => guard(() => sweep(args, env, deps)),
-    candidates: (args: Json, env: CallEnv): Promise<Json> => guard(() => candidates(args, env, deps)),
+    candidates: (args: Json, env: CallEnv): Promise<Json> =>
+      guard(() => candidates(args, env, deps)),
     view: (args: Json, env: CallEnv): Promise<Json> => guard(() => view(args, env, deps)),
     edit: (args: Json, env: CallEnv): Promise<Json> => guard(() => edit(args, env, deps)),
   }

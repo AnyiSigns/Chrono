@@ -23,7 +23,11 @@ const BASE_PROVIDERS = {
         toolDecl({
           name: 'todo.read',
           param_semantics: { conversation_id: '会话 id。' },
-          argsSchema: { type: 'object', properties: { conversation_id: { type: 'string' } }, required: ['conversation_id'] },
+          argsSchema: {
+            type: 'object',
+            properties: { conversation_id: { type: 'string' } },
+            required: ['conversation_id'],
+          },
           caps: { fs: { read: 'none', write: 'none' }, net: 'none' },
           idempotent: true,
         }),
@@ -77,9 +81,18 @@ test('list：record 绑定（#44 evolve-metrics）随 pins 就位进入目录', 
     assert.equal(tool.idempotent, false)
     assert.equal(tool.caps.net, 'none')
     assert.equal(tool.caps.fs.read, 'none')
-    assert.deepEqual(Object.keys(tool.argsSchema.properties).sort(), ['user_message_def', 'workspace_id'])
+    assert.deepEqual(Object.keys(tool.argsSchema.properties).sort(), [
+      'user_message_def',
+      'workspace_id',
+    ])
     assert.equal(tool.argsSchema.required, undefined, '注入参数不设 required，模型可空参调用')
-    assert.deepEqual(tool.render, { form: 'card', label: 'record', summary: 'record  {result.evidence_id}', tone: 'plain', detail: { kind: 'json' } })
+    assert.deepEqual(tool.render, {
+      form: 'card',
+      label: 'record',
+      summary: 'record  {result.evidence_id}',
+      tone: 'plain',
+      detail: { kind: 'json' },
+    })
     assert.equal(response.value.rejected.length, 0)
   })
 })
@@ -104,7 +117,10 @@ test('list：description 拼入使用时机 / 边界；param_semantics 并入 ar
     assert.ok(tool.description.startsWith('读文本文件'), tool.description)
     assert.ok(tool.description.includes('使用时机：需要查看文件内容时。'), tool.description)
     assert.ok(tool.description.includes('边界：只读单文件；找文件用 glob。'), tool.description)
-    assert.ok(!tool.description.includes('参数：'), `参数说明应内联进 argsSchema，不在 description 重复：${tool.description}`)
+    assert.ok(
+      !tool.description.includes('参数：'),
+      `参数说明应内联进 argsSchema，不在 description 重复：${tool.description}`,
+    )
     assert.equal(tool.argsSchema.properties.path.description, '文件路径。')
   })
 })
@@ -117,7 +133,11 @@ test('list：param_semantics 无对应属性时回落 description 的 参数：�
           toolDecl({
             name: 'loose',
             param_semantics: { known: '有属性。', extra: '无属性。' },
-            argsSchema: { type: 'object', properties: { known: { type: 'string' } }, additionalProperties: true },
+            argsSchema: {
+              type: 'object',
+              properties: { known: { type: 'string' } },
+              additionalProperties: true,
+            },
           }),
         ],
       }),
@@ -139,7 +159,10 @@ test('list：hidden_params 从模型可见 argsSchema 摘掉（required 同摘�
         tools: [
           toolDecl({
             name: 'probe',
-            param_semantics: { path: '文件路径。', workspace: '工作区 id（调用方注入，模型不填）。' },
+            param_semantics: {
+              path: '文件路径。',
+              workspace: '工作区 id（调用方注入，模型不填）。',
+            },
             hidden_params: ['workspace'],
             argsSchema: {
               type: 'object',
@@ -170,7 +193,10 @@ test('dispatch：模型可见 schema 摘掉的注入参数仍可随 args 注入�
         tools: [
           toolDecl({
             name: 'probe',
-            param_semantics: { path: '文件路径。', workspace: '工作区 id（调用方注入，模型不填）。' },
+            param_semantics: {
+              path: '文件路径。',
+              workspace: '工作区 id（调用方注入，模型不填）。',
+            },
             hidden_params: ['workspace'],
             argsSchema: {
               type: 'object',
@@ -201,7 +227,9 @@ test('dispatch：模型可见 schema 摘掉的注入参数仍可随 args 注入�
 test('四要素缺一即 bad_tool_decl（不进目录、rejected 留诊断）', async () => {
   const providers = {
     'tool-fs': {
-      describe: () => ({ tools: [toolDecl({ boundaries: undefined }), toolDecl({ name: 'glob' })] }),
+      describe: () => ({
+        tools: [toolDecl({ boundaries: undefined }), toolDecl({ name: 'glob' })],
+      }),
     },
   }
   await withService(providers, async (service) => {
@@ -229,7 +257,11 @@ test('argsSchema 白名单外关键词 → bad_tool_decl', async () => {
   const providers = {
     'tool-fs': {
       describe: () => ({
-        tools: [toolDecl({ argsSchema: { type: 'object', properties: { path: { type: 'string', pattern: '^x' } } } })],
+        tools: [
+          toolDecl({
+            argsSchema: { type: 'object', properties: { path: { type: 'string', pattern: '^x' } } },
+          }),
+        ],
       }),
     },
   }
@@ -281,8 +313,13 @@ test('工具名全局唯一：跨来源重名后者被拒', async () => {
 
 test('绑定 class 未 pin → bad_tool_decl', async () => {
   await withService(BASE_PROVIDERS, async (service) => {
-    const response = await service.call('list', { tools_bindings: { ghost: bindingItem({ class: 'ghost' }) } })
-    assert.equal(response.value.tools.some((tool) => tool.name === 'ghost'), false)
+    const response = await service.call('list', {
+      tools_bindings: { ghost: bindingItem({ class: 'ghost' }) },
+    })
+    assert.equal(
+      response.value.tools.some((tool) => tool.name === 'ghost'),
+      false,
+    )
     assert.match(response.value.rejected[0].message, /not pinned/)
   })
 })
@@ -291,7 +328,12 @@ test('绑定 method 缺省 = 投影读（method null）', async () => {
   await withService(BASE_PROVIDERS, async (service) => {
     const response = await service.call('list', {
       tools_bindings: {
-        'subagent.status': bindingItem({ class: 'session', method: null, argsSchema: { type: 'object' }, param_semantics: {} }),
+        'subagent.status': bindingItem({
+          class: 'session',
+          method: null,
+          argsSchema: { type: 'object' },
+          param_semantics: {},
+        }),
       },
     })
     const tool = response.value.tools.find((item) => item.name === 'subagent.status')
@@ -301,11 +343,17 @@ test('绑定 method 缺省 = 投影读（method null）', async () => {
 })
 
 test('describe 提供者不可用只跳过，不阻断目录', async () => {
-  await withService({ 'tool-fs': { describe: () => ({ tools: [toolDecl()] }) } }, async (service) => {
-    const response = await service.call('list', {})
-    assert.deepEqual(response.value.tools.map((tool) => tool.name), ['read'])
-    assert.equal(response.value.rejected.length, 0)
-  })
+  await withService(
+    { 'tool-fs': { describe: () => ({ tools: [toolDecl()] }) } },
+    async (service) => {
+      const response = await service.call('list', {})
+      assert.deepEqual(
+        response.value.tools.map((tool) => tool.name),
+        ['read'],
+      )
+      assert.equal(response.value.rejected.length, 0)
+    },
+  )
 })
 
 test('管理面工具（net:false 旧形）经目录校验通过，render 原样保留', async () => {
@@ -321,9 +369,22 @@ test('管理面工具（net:false 旧形）经目录校验通过，render 原样
       required: ['identity', 'files'],
       additionalProperties: true,
     },
-    caps: { fs: { read: 'none', write: 'none' }, net: false, timeout_ms: 30000, mem_mb: 256, output_max: 2097152, procs_max: 1 },
+    caps: {
+      fs: { read: 'none', write: 'none' },
+      net: false,
+      timeout_ms: 30000,
+      mem_mb: 256,
+      output_max: 2097152,
+      procs_max: 1,
+    },
     idempotent: false,
-    render: { form: 'card', label: 'plugin', summary: 'write  {identity}', tone: 'solid', detail: { kind: 'diff' } },
+    render: {
+      form: 'card',
+      label: 'plugin',
+      summary: 'write  {identity}',
+      tone: 'solid',
+      detail: { kind: 'diff' },
+    },
   })
   const providers = {
     'plugin-admin': { describe: () => ({ tools: [pluginTool] }) },
@@ -335,13 +396,23 @@ test('管理面工具（net:false 旧形）经目录校验通过，render 原样
             param_semantics: { class: '变更类。', evidence_ids: '证据 id。', graph: '候选图。' },
             argsSchema: {
               type: 'object',
-              properties: { class: { enum: ['binding', 'structure'] }, evidence_ids: { type: 'array', items: { type: 'string' } }, graph: { type: 'object' } },
+              properties: {
+                class: { enum: ['binding', 'structure'] },
+                evidence_ids: { type: 'array', items: { type: 'string' } },
+                graph: { type: 'object' },
+              },
               required: ['class', 'evidence_ids', 'graph'],
               additionalProperties: true,
             },
             caps: { fs: { read: 'none', write: 'none' }, net: false },
             idempotent: false,
-            render: { form: 'card', label: 'orchestration', summary: 'propose  {target}', tone: 'solid', detail: { kind: 'diff' } },
+            render: {
+              form: 'card',
+              label: 'orchestration',
+              summary: 'propose  {target}',
+              tone: 'solid',
+              detail: { kind: 'diff' },
+            },
           }),
         ],
       }),
@@ -353,12 +424,20 @@ test('管理面工具（net:false 旧形）经目录校验通过，render 原样
     assert.deepEqual(names, ['orchestration.propose', 'plugin.write'])
     const pluginWrite = response.value.tools.find((tool) => tool.name === 'plugin.write')
     assert.equal(pluginWrite.caps.net, 'none')
-    assert.deepEqual(pluginWrite.render, { form: 'card', label: 'plugin', summary: 'write  {identity}', tone: 'solid', detail: { kind: 'diff' } })
+    assert.deepEqual(pluginWrite.render, {
+      form: 'card',
+      label: 'plugin',
+      summary: 'write  {identity}',
+      tone: 'solid',
+      detail: { kind: 'diff' },
+    })
   })
 })
 
 test('无 render 描述符的工具照常进目录（渲染端降级 markdown）', async () => {
-  const providers = { 'tool-fs': { describe: () => ({ tools: [toolDecl({ name: 'plain', render: undefined })] }) } }
+  const providers = {
+    'tool-fs': { describe: () => ({ tools: [toolDecl({ name: 'plain', render: undefined })] }) },
+  }
   await withService(providers, async (service) => {
     const response = await service.call('list', {})
     const tool = response.value.tools.find((item) => item.name === 'plain')

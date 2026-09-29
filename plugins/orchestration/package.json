@@ -1,0 +1,21 @@
+{
+  "name": "orchestration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "编排平面：列 / 读 / 机械闸 dry-run 校验 / 产提案，提案只写台账、不产证据不产写；机械闸经 graph-gate 消费",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

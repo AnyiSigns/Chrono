@@ -3,7 +3,7 @@
   "schema": "schema/workspace.json",
   "implements": ["workspace"],
   "methods": {
-    "workspace": ["list", "read", "pick", "add", "remove", "reveal"]
+    "workspace": ["list", "read", "add", "remove"]
   },
   "pins": {},
   "start": "node execute/launch.mjs",

@@ -44,8 +44,14 @@ test('plugin.json 字段齐全且形态合法', () => {
   assert.equal(decl.identity, 'memory-store')
   assert.equal(decl.schema, 'schema/memory.json')
   assert.deepEqual(decl.implements, ['memory'])
-  assert.deepEqual(decl.methods, { memory: ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'] })
-  assert.deepEqual(decl.needs, { embedding: { mode: 'one' } })
+  assert.deepEqual(decl.methods, {
+    memory: ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'],
+  })
+  assert.deepEqual(decl.needs, {
+    embedding: { mode: 'one' },
+    tokenizer: { mode: 'one' },
+    'vector-index': { mode: 'one' },
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.deepEqual(decl.exclusive, ['data'])
   assert.equal(decl.protocol, '1')
@@ -84,7 +90,6 @@ test('无 terms/ 目录且无命令面', () => {
 test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件包', () => {
   const files = readdirSync(join(PKG_ROOT, 'execute')).filter((name) => name.endsWith('.ts'))
   const expected = [
-    'heap.ts',
     'log.ts',
     'main.ts',
     'methods.ts',
@@ -94,12 +99,15 @@ test('execute/ 源码齐全且不 import 宿主 / 内核 / client / 其他插件
     'persist.ts',
     'store.ts',
     'types.ts',
-    'vector-index.ts',
   ]
   assert.deepEqual(files.sort(), expected.sort())
   for (const name of files) {
     const source = readText(join('execute', name))
-    assert.equal(/packages\/(host|kernel|client)/.test(source), false, `${name} 不应 import 宿主 / 内核 / client`)
+    assert.equal(
+      /packages\/(host|kernel|client)/.test(source),
+      false,
+      `${name} 不应 import 宿主 / 内核 / client`,
+    )
     assert.equal(/from ['"]\.\.\/\.\.\//.test(source), false, `${name} 不应引用包外路径`)
   }
 })
@@ -121,7 +129,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

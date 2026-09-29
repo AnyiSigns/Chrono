@@ -1,6 +1,6 @@
 // 集成测试：黑盒经服务协议驱动真实二进制（hello / manifest / search），
-// 并用线协议桥接注入 embedding / memory / model 假实现（应答 port.call）。
-// 覆盖：命中集确定、空库、同条目多块不重复、过滤、预算、dedup_set 去重、不产生写。
+// 并用线协议桥接注入 embedding / memory / query-plan / rerank 假实现（应答 port.call）。
+// 覆盖：命中集确定、空库、同条目多块不重复、过滤、预算、dedup_set 去重、多查询、语义重排、不产生写。
 // 用 `test/`（非 cargo 缺省 `tests/`），由 Cargo.toml 的 `[[test]] path` 显式声明。
 
 use std::collections::BTreeMap;
@@ -75,7 +75,7 @@ impl Service {
         }
     }
 
-    /// 应答服务的反向调用：注入假 embedding / memory / model。
+    /// 应答服务的反向调用：注入假 embedding / memory / query-plan / rerank。
     fn answer(&mut self, message: &Value) {
         let port = message.get("port").and_then(Value::as_str).unwrap_or("");
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
@@ -113,7 +113,102 @@ impl Service {
                 }
                 json!({"ok": true, "kind": "read", "entries": entries, "missing": missing})
             }
-            ("model", "chat") => json!({"text": self.bridge.chat_text}),
+            // 假 query-plan：按同口径拼 query + goal；多查询开启且带 model_config 时并入 chat_text 的子查询。
+            ("query-plan", "plan") => {
+                let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+                let goal = args.get("goal").and_then(Value::as_str).unwrap_or("");
+                let combined = if query.is_empty() {
+                    goal.to_string()
+                } else if goal.is_empty() {
+                    query.to_string()
+                } else {
+                    format!("{query}\n{goal}")
+                };
+                let mut queries = vec![json!(combined.clone())];
+                let multi_query = args.get("multi_query").and_then(Value::as_bool).unwrap_or(false);
+                let has_model = args.get("model_config").map(|v| !v.is_null()).unwrap_or(false);
+                if multi_query && has_model {
+                    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&self.bridge.chat_text) {
+                        for item in items {
+                            if let Some(text) = item.as_str() {
+                                if !text.is_empty()
+                                    && !queries.iter().any(|q| q.as_str() == Some(text))
+                                {
+                                    queries.push(json!(text));
+                                }
+                            }
+                            if queries.len() >= 4 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                json!({"ok": true, "query": combined, "queries": queries})
+            }
+            // 假 rerank：按 score 降序、同分 key 升序；rerank 开启且带 model_config 时按 chat_text 的索引重排。
+            ("rerank", "order") => {
+                let mut ordered = args
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                ordered.sort_by(|left, right| {
+                    let left_score = left.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+                    let right_score = right.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+                    right_score
+                        .partial_cmp(&left_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| {
+                            let left_key = left.get("key").and_then(Value::as_str).unwrap_or("");
+                            let right_key = right.get("key").and_then(Value::as_str).unwrap_or("");
+                            left_key.cmp(right_key)
+                        })
+                });
+                let rerank = args.get("rerank").and_then(Value::as_bool).unwrap_or(false);
+                let has_model = args.get("model_config").map(|v| !v.is_null()).unwrap_or(false);
+                if rerank && has_model && ordered.len() > 1 {
+                    let mut indices: Vec<usize> = Vec::new();
+                    let push = |index: usize, out: &mut Vec<usize>| {
+                        if index < ordered.len() && !out.contains(&index) {
+                            out.push(index);
+                        }
+                    };
+                    if let Ok(Value::Array(items)) =
+                        serde_json::from_str::<Value>(&self.bridge.chat_text)
+                    {
+                        for item in items {
+                            if let Some(index) = item.as_u64() {
+                                push(index as usize, &mut indices);
+                            }
+                        }
+                    } else {
+                        for token in self.bridge.chat_text.split(|c: char| !c.is_ascii_digit()) {
+                            if let Ok(index) = token.parse::<usize>() {
+                                push(index, &mut indices);
+                            }
+                        }
+                    }
+                    if !indices.is_empty() {
+                        let mut slots: Vec<Option<Value>> =
+                            ordered.into_iter().map(Some).collect();
+                        let mut out = Vec::new();
+                        for index in indices {
+                            if let Some(item) = slots.get_mut(index).and_then(Option::take) {
+                                out.push(item);
+                            }
+                        }
+                        for item in slots.into_iter().flatten() {
+                            out.push(item);
+                        }
+                        ordered = out;
+                    }
+                }
+                let order: Vec<Value> = ordered
+                    .iter()
+                    .map(|item| item.get("key").cloned().unwrap_or(Value::Null))
+                    .collect();
+                json!({"ok": true, "order": order})
+            }
             _ => json!({"ok": false, "error": {"code": "unexpected_port"}}),
         };
         self.send(&json!({

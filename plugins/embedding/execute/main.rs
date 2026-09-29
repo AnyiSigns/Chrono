@@ -1,12 +1,11 @@
 // `embedding` 服务进程入口（Rust）：服务协议帧循环（docs/protocol.md §二）。
 // manifest 与 plugin.json 同形（服务自述与声明一致）；stdout 只发协议帧，日志走 stderr；
 // stdin EOF / 管道断开即自退出。服务不读投影、无写通道。
-// 模型在握手后后台预加载，避免首个调用承担加载延迟。
+// 模型在握手后后台预加载，避免首个调用承担加载延迟；分词经反向 `port.call tokenizer.encode`。
 
-mod chunk;
 mod model;
+mod port;
 mod protocol;
-mod tokenizer;
 
 fn main() {
     plugin_sdk::log("embedding", &format!("service started (pid {})", std::process::id()));

@@ -1,7 +1,8 @@
-// `search`：检索流水线主体（查询构造 → 多查询 → 向量化 → 索引检索 → 归并回溯 → 过滤 → 时间衰减 →
-// 阈值 → 去重 → MMR（+ 可选语义重排）→ 预算截断），结果写入 bag.recall（返回值）。
+// `search`：检索流水线编排（查询规划 → 向量化 → 索引检索 → 归并回溯 → 过滤 → 时间衰减 →
+// 阈值 → 去重 → 候选重排（MMR + 可选语义重排）→ 预算截断），结果写入 bag.recall（返回值）。
 // 服务不读投影、无写通道、不取时间；一切输入随 bag 传入，跨插件调用只走反向调用。
-// 模型项（多查询 / 语义重排）默认关，失败即降级为关闭（保确定可回放）。
+// 查询构造 / 多查询与候选重排（MMR / 语义）是重逻辑，分别委派 query-plan.plan / rerank.order；
+// 本服务只留编排与查询向量缓存（③）。模型项（多查询 / 语义重排）默认关，失败即降级（保确定可回放）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +16,7 @@ use crate::error::ServiceError;
 use crate::hash;
 use crate::port::Ports;
 use crate::state::StateStore;
-use crate::vector::{self, ChunkHit, EntryScore, MmrItem};
+use crate::vector::{self, ChunkHit, EntryScore};
 
 /// 一条候选条目（已归并到条目级）。
 #[derive(Clone, Debug)]
@@ -37,12 +38,29 @@ pub fn run(
     state: &dyn StateStore,
 ) -> Result<Value, (String, String)> {
     let config = config::from_bag(bag);
-    let query = combine_query(bag);
-    if query.trim().is_empty() {
+    let raw_query = bag::query_of(bag);
+    let goal = bag::goal_of(bag);
+    if raw_query.trim().is_empty() && goal.trim().is_empty() {
         return Ok(empty_result(&config, "", Vec::new()));
     }
 
-    let queries = build_queries(&config, &query, bag, ports);
+    // 查询规划委派 query-plan.plan（查询构造 + 可选多查询）。
+    let plan = ports
+        .query_plan
+        .plan(json!({
+            "query": raw_query,
+            "goal": goal,
+            "model_config": bag::model_config(bag),
+            "multi_query": config.multi_query,
+        }))
+        .map_err(into_error)?;
+    let queries = plan_queries(&plan);
+    let query = plan
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| queries.first().cloned().unwrap_or_default());
+
     let vectors = embed_texts(&queries, &config, ports, state).map_err(into_error)?;
 
     let hits = match search_all(&vectors, &config, ports).map_err(into_error)? {
@@ -65,8 +83,7 @@ pub fn run(
     let candidates = apply_decay(candidates, &config, bag, env);
     let candidates = apply_threshold(candidates, &config, &mut stats);
     let candidates = apply_dedup(candidates, bag, &mut stats);
-    let candidates = order_candidates(candidates, &config, ports);
-    let candidates = apply_rerank(candidates, &config, bag, ports);
+    let candidates = apply_order(candidates, &config, bag, ports);
 
     let limit = config::effective_limit(&config);
     let recall: Vec<Value> = candidates.iter().take(limit).map(candidate_json).collect();
@@ -113,17 +130,18 @@ fn into_error(error: ServiceError) -> (String, String) {
     (error.code, error.message)
 }
 
-/// 查询构造：顶层 query + L1 goal（避免查询漂移）。
-fn combine_query(bag: &Value) -> String {
-    let query = bag::query_of(bag);
-    let goal = bag::goal_of(bag);
-    if query.is_empty() {
-        return goal;
-    }
-    if goal.is_empty() {
-        return query;
-    }
-    format!("{query}\n{goal}")
+/// 从 query-plan.plan 结果取查询集；缺失 / 非数组回空集。
+fn plan_queries(plan: &Value) -> Vec<String> {
+    plan.get("queries")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 空结果：不报错、不产写。
@@ -157,87 +175,6 @@ fn index_building_result(config: &RetrievalConfig, query: &str, queries: Vec<Str
         "budget": config::effective_limit(config),
         "stats": Stats::default().to_json(),
     })
-}
-
-/// 多查询（开关，默认关）：eff model.chat 生成 2–3 个子查询；失败即降级为单查询。
-fn build_queries(
-    config: &RetrievalConfig,
-    query: &str,
-    bag: &Value,
-    ports: &Ports<'_>,
-) -> Vec<String> {
-    let mut queries = vec![query.to_string()];
-    if !config.multi_query {
-        return queries;
-    }
-    let model_config = bag::model_config(bag);
-    if model_config.is_null() {
-        return queries;
-    }
-    let Ok(text) = chat_text(ports, &model_config, &subquery_prompt(query)) else {
-        return queries;
-    };
-    for sub in parse_string_array(&text) {
-        if sub.is_empty() || queries.iter().any(|existing| existing == &sub) {
-            continue;
-        }
-        queries.push(sub);
-        if queries.len() >= 4 {
-            break;
-        }
-    }
-    queries
-}
-
-fn subquery_prompt(query: &str) -> String {
-    format!(
-        "Generate 2 to 3 alternative search queries (synonyms / related phrasing) for the \
-following memory lookup. Reply with a JSON array of strings only.\nQuery: {query}"
-    )
-}
-
-/// 调用 model.chat 取文本回复。
-fn chat_text(
-    ports: &Ports<'_>,
-    model_config: &Value,
-    prompt: &str,
-) -> Result<String, ServiceError> {
-    let args = json!({
-        "config": model_config,
-        "messages": [{ "role": "user", "content": prompt }],
-    });
-    let value = ports.model.chat(args)?;
-    Ok(value
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string())
-}
-
-/// 从模型文本解析字符串数组：先按 JSON 解析，失败按行拆（去项目符号 / 编号）。
-fn parse_string_array(text: &str) -> Vec<String> {
-    if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
-        if let Some(items) = value.as_array() {
-            return items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|item| item.trim().to_string())
-                .filter(|item| !item.is_empty())
-                .collect();
-        }
-    }
-    text.lines()
-        .map(|line| {
-            let trimmed = line.trim().trim_start_matches(['-', '*']);
-            trimmed
-                .trim_start_matches(|c: char| {
-                    c.is_ascii_digit() || c == '.' || c == ')' || c == '、'
-                })
-                .trim()
-                .to_string()
-        })
-        .filter(|line| !line.is_empty())
-        .collect()
 }
 
 /// 向量化（含 ③ 查询向量缓存）：命中即用，未命中批量重算并回写。
@@ -523,43 +460,71 @@ fn apply_dedup(candidates: Vec<Candidate>, bag: &Value, stats: &mut Stats) -> Ve
     out
 }
 
-/// 排序：MMR（多样性）为主；MMR 需要候选向量，向量化失败即降级为分数序。
-fn order_candidates(
+/// 候选重排委派 rerank.order（MMR + 可选语义重排）：传候选（key / score / text）与策略，回 key 顺序。
+/// 重排服务失败即降级为分数序（不报错、不阻塞召回）。
+fn apply_order(
     mut candidates: Vec<Candidate>,
     config: &RetrievalConfig,
+    bag: &Value,
     ports: &Ports<'_>,
 ) -> Vec<Candidate> {
-    if candidates.len() <= 1 || config.mmr_lambda >= 1.0 {
-        sort_by_score(&mut candidates);
+    if candidates.is_empty() {
         return candidates;
     }
-    let texts: Vec<String> = candidates.iter().map(|item| item.text.clone()).collect();
-    let Ok(vectors) = ports.embedding.embed(&texts, &config.model) else {
+    let items: Vec<Value> = candidates
+        .iter()
+        .map(|candidate| {
+            json!({
+                "key": candidate.entry_hash,
+                "score": candidate.score,
+                "text": candidate.text,
+            })
+        })
+        .collect();
+    let args = json!({
+        "items": items,
+        "mmr_lambda": config.mmr_lambda,
+        "rerank": config.rerank,
+        "model": config.model,
+        "model_config": bag::model_config(bag),
+    });
+    let Ok(value) = ports.rerank.order(args) else {
         sort_by_score(&mut candidates);
         return candidates;
     };
-    if vectors.len() != candidates.len() {
+    let order = parse_order(&value);
+    if order.is_empty() {
         sort_by_score(&mut candidates);
         return candidates;
     }
-    let items: Vec<MmrItem> = candidates
-        .iter()
-        .zip(vectors)
-        .map(|(candidate, vector)| MmrItem {
-            key: candidate.entry_hash.clone(),
-            relevance: candidate.score,
-            vector,
+    reorder_by_keys(candidates, &order)
+}
+
+/// 从 rerank.order 结果取 key 顺序；缺失 / 非数组回空集。
+fn parse_order(value: &Value) -> Vec<String> {
+    value
+        .get("order")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
         })
-        .collect();
-    let order = vector::mmr_order(&items, config.mmr_lambda);
+        .unwrap_or_default()
+}
+
+/// 按 key 顺序重排（entry_hash 唯一）；未出现在顺序里的项按原序追加（确定兜底）。
+fn reorder_by_keys(candidates: Vec<Candidate>, order: &[String]) -> Vec<Candidate> {
     let mut positions: BTreeMap<String, usize> = BTreeMap::new();
-    for (index, item) in candidates.iter().enumerate() {
-        positions.insert(item.entry_hash.clone(), index);
+    for (index, candidate) in candidates.iter().enumerate() {
+        positions.insert(candidate.entry_hash.clone(), index);
     }
     let mut slots: Vec<Option<Candidate>> = candidates.into_iter().map(Some).collect();
     let mut out = Vec::new();
     for key in order {
-        if let Some(index) = positions.get(&key).copied() {
+        if let Some(index) = positions.get(key).copied() {
             if let Some(candidate) = slots.get_mut(index).and_then(Option::take) {
                 out.push(candidate);
             }
@@ -581,85 +546,6 @@ fn sort_by_score(candidates: &mut [Candidate]) {
     });
 }
 
-/// 语义重排（开关，默认关）：eff model.chat listwise 重排；失败 / 解析不出即保留原序。
-fn apply_rerank(
-    candidates: Vec<Candidate>,
-    config: &RetrievalConfig,
-    bag: &Value,
-    ports: &Ports<'_>,
-) -> Vec<Candidate> {
-    if !config.rerank || candidates.len() <= 1 {
-        return candidates;
-    }
-    let model_config = bag::model_config(bag);
-    if model_config.is_null() {
-        return candidates;
-    }
-    let Ok(text) = chat_text(ports, &model_config, &rerank_prompt(&candidates)) else {
-        return candidates;
-    };
-    let order = parse_index_order(&text, candidates.len());
-    if order.is_empty() {
-        return candidates;
-    }
-    reorder(candidates, &order)
-}
-
-fn rerank_prompt(candidates: &[Candidate]) -> String {
-    let mut lines = String::from(
-        "Reorder the candidate memories by relevance to the query, most relevant first. \
-Reply with a JSON array of zero-based indices only.\nCandidates:\n",
-    );
-    for (index, candidate) in candidates.iter().enumerate() {
-        let snippet: String = candidate.text.chars().take(160).collect();
-        lines.push_str(&format!("{index}. {snippet}\n"));
-    }
-    lines
-}
-
-/// 解析模型文本里的重排索引：先按 JSON 数组，失败按非数字分隔扫描；越界 / 重复剔除。
-fn parse_index_order(text: &str, count: usize) -> Vec<usize> {
-    let mut out = Vec::new();
-    let push = |index: usize, out: &mut Vec<usize>| {
-        if index < count && !out.contains(&index) {
-            out.push(index);
-        }
-    };
-    if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
-        if let Some(items) = value.as_array() {
-            for item in items {
-                if let Some(index) = item.as_u64() {
-                    push(index as usize, &mut out);
-                }
-            }
-            return out;
-        }
-    }
-    for token in text.split(|c: char| !c.is_ascii_digit()) {
-        if token.is_empty() {
-            continue;
-        }
-        if let Ok(index) = token.parse::<usize>() {
-            push(index, &mut out);
-        }
-    }
-    out
-}
-
-fn reorder(candidates: Vec<Candidate>, order: &[usize]) -> Vec<Candidate> {
-    let mut slots: Vec<Option<Candidate>> = candidates.into_iter().map(Some).collect();
-    let mut out = Vec::new();
-    for &index in order {
-        if let Some(candidate) = slots.get_mut(index).and_then(Option::take) {
-            out.push(candidate);
-        }
-    }
-    for candidate in slots.into_iter().flatten() {
-        out.push(candidate);
-    }
-    out
-}
-
 fn candidate_json(candidate: &Candidate) -> Value {
     let mut object = Map::new();
     object.insert("entry_hash".to_string(), json!(candidate.entry_hash));
@@ -675,7 +561,7 @@ fn candidate_json(candidate: &Candidate) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::{FakeBuildingMemory, FakeEmbedding, FakeMemory, FakeModel};
+    use crate::port::{FakeBuildingMemory, FakeEmbedding, FakeMemory, FakeQueryPlan, FakeRerank};
     use crate::state::MemoryStateStore;
 
     fn entry(id: &str, text: &str, workspace: Option<&str>, source: &str, at: &str) -> Value {
@@ -718,11 +604,13 @@ mod tests {
 
     fn run_with(bag: &Value, memory: &FakeMemory) -> Value {
         let embedding = FakeEmbedding::new(4);
-        let model = FakeModel::new("[]");
+        let query_plan = FakeQueryPlan;
+        let rerank = FakeRerank;
         let ports = Ports {
             embedding: &embedding,
             memory,
-            model: &model,
+            query_plan: &query_plan,
+            rerank: &rerank,
         };
         run(bag, &json!({}), &ports, &MemoryStateStore::new()).unwrap()
     }
@@ -762,11 +650,13 @@ mod tests {
     fn index_building_is_structured_not_silent_empty() {
         let embedding = FakeEmbedding::new(4);
         let memory = FakeBuildingMemory;
-        let model = FakeModel::new("[]");
+        let query_plan = FakeQueryPlan;
+        let rerank = FakeRerank;
         let ports = Ports {
             embedding: &embedding,
             memory: &memory,
-            model: &model,
+            query_plan: &query_plan,
+            rerank: &rerank,
         };
         let bag = json!({"query": "note", "memory": {"body": {"count": 0}, "refs": {}}});
         let value = run(&bag, &json!({}), &ports, &MemoryStateStore::new()).unwrap();
@@ -780,12 +670,14 @@ mod tests {
     fn bag_without_memory_slice_still_queries_owner() {
         // L3 切片不再随 bag 传入：bag 无 memory 键时仍应问 memory-store owner 并召回。
         let embedding = FakeEmbedding::new(4);
-        let model = FakeModel::new("[]");
+        let query_plan = FakeQueryPlan;
+        let rerank = FakeRerank;
         let memory = memory();
         let ports = Ports {
             embedding: &embedding,
             memory: &memory,
-            model: &model,
+            query_plan: &query_plan,
+            rerank: &rerank,
         };
         let value = run(
             &json!({"query": "note", "retrieval": {"mmr_lambda": 1.0, "workspace_scope": false}}),
@@ -889,11 +781,13 @@ mod tests {
     fn query_vector_cache_avoids_recompute() {
         let embedding = FakeEmbedding::new(4);
         let memory = memory();
-        let model = FakeModel::new("[]");
+        let query_plan = FakeQueryPlan;
+        let rerank = FakeRerank;
         let ports = Ports {
             embedding: &embedding,
             memory: &memory,
-            model: &model,
+            query_plan: &query_plan,
+            rerank: &rerank,
         };
         let state = MemoryStateStore::new();
         let bag = json!({"query": "note", "retrieval": {"mmr_lambda": 1.0}});
@@ -904,46 +798,14 @@ mod tests {
     }
 
     #[test]
-    fn multi_query_defaults_off() {
-        let config = RetrievalConfig::default();
-        let embedding = FakeEmbedding::new(4);
-        let memory = memory();
-        let model = FakeModel::new("[\"other\"]");
-        let ports = Ports {
-            embedding: &embedding,
-            memory: &memory,
-            model: &model,
-        };
-        let queries = build_queries(&config, "note", &json!({"model_config": {}}), &ports);
-        assert_eq!(queries, vec!["note"]);
-    }
-
-    #[test]
-    fn multi_query_uses_model_when_enabled() {
-        let config = RetrievalConfig {
-            multi_query: true,
-            ..Default::default()
-        };
-        let embedding = FakeEmbedding::new(4);
-        let memory = memory();
-        let model = FakeModel::new("[\"alpha\", \"beta\"]");
-        let ports = Ports {
-            embedding: &embedding,
-            memory: &memory,
-            model: &model,
-        };
-        let queries = build_queries(&config, "note", &json!({"model_config": {}}), &ports);
-        assert_eq!(queries, vec!["note", "alpha", "beta"]);
-    }
-
-    #[test]
-    fn parse_helpers_are_tolerant() {
-        assert_eq!(parse_string_array("[\"a\", \"b\"]"), vec!["a", "b"]);
-        assert_eq!(
-            parse_string_array("1. alpha\n- beta"),
-            vec!["alpha", "beta"]
-        );
-        assert_eq!(parse_index_order("[2, 0, 5]", 3), vec![2, 0]);
-        assert_eq!(parse_index_order("2, 0, 0", 3), vec![2, 0]);
+    fn query_and_goal_are_combined_via_query_plan() {
+        // 查询构造已委派 query-plan：goal 拼进基础查询与查询集。
+        let bag = json!({
+            "query": "note", "goal": "ship it",
+            "retrieval": {"mmr_lambda": 1.0, "workspace_scope": false}
+        });
+        let value = run_with(&bag, &memory());
+        assert_eq!(value["query"], "note\nship it");
+        assert_eq!(value["queries"], json!(["note\nship it"]));
     }
 }

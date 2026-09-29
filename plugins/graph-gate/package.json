@@ -1,0 +1,21 @@
+{
+  "name": "graph-gate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "图机械闸原语：闭合 / 类型 / publish 偏序 / 端口⊆pins + 六不变量 + 四演化规则校验，运行期结构闭合、实例确定性选择与内核口径哈希。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

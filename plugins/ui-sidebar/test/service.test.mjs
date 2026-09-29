@@ -12,7 +12,6 @@ import { dirname, join, resolve } from 'node:path'
 
 import {
   assembleBranchArgs,
-  assembleRevealArgs,
   assembleSessionArgs,
   assembleWorkspaceListArgs,
   createHandlers,
@@ -23,7 +22,6 @@ import {
 } from '../execute/methods.js'
 import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
 import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.js'
-import { BadArgsError } from '../execute/types.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -116,15 +114,6 @@ test('分支装配：补源链 refs；列表装配：服务读自有存储（无
   assert.deepEqual(assembleWorkspaceListArgs({}), {})
 })
 
-test('reveal 装配：只取 id；缺 id 抛 BadArgsError', () => {
-  assert.deepEqual(assembleRevealArgs({ workspace: 'w1', workspaces: [{ id: 'w1', path: '/a' }] }), {
-    workspace: 'w1',
-  })
-  assert.deepEqual(assembleRevealArgs({ workspace: 'w1' }), { workspace: 'w1' })
-  assert.throws(() => assembleRevealArgs({}), BadArgsError)
-  assert.throws(() => assembleRevealArgs(null), BadArgsError)
-})
-
 // ---- 方法处理器：服务装配 + 反向调用 args ----
 
 test('newConversation：从 input 服务读槽后装配，反向调 session.new_conversation，结果原样上提', async () => {
@@ -210,21 +199,13 @@ test('工作区写类：add / remove 从 input 服务读槽 → 反向调 worksp
   assert.deepEqual(input.calls[3], { port: 'input', method: 'clear', args: { thread_id: '_main' } })
 })
 
-test('读命令与纯动作：list / pick / reveal 反向调用并外包 extern', async () => {
+test('读命令：list 反向调用并外包 extern', async () => {
   const ids = idsFixture()
   const workspace = recordingPort({ ok: true, value: [{ id: 'w1', name: 'A', path: '/a', missing: false }] })
   const handlers = createHandlers({ identity: 'ui-sidebar', session: recordingPort({ ok: true, value: null }), workspace })
   const list = await handlers.listWorkspaces(ids, { run: null, thread: null, now: 0 })
   assert.deepEqual(workspace.calls[0], { port: 'workspace', method: 'list', args: {} })
   assert.deepEqual(list, { $directives: [{ kind: 'extern', payload: [{ id: 'w1', name: 'A', path: '/a', missing: false }] }] })
-  await handlers.pickWorkspace(null, { run: null, thread: null, now: 0 })
-  assert.deepEqual(workspace.calls[1], { port: 'workspace', method: 'pick', args: {} })
-  await handlers.revealWorkspace({ workspace: 'w1', workspaces: [{ id: 'w1', path: '/a' }] }, { run: null, thread: null, now: 0 })
-  assert.deepEqual(workspace.calls[2], {
-    port: 'workspace',
-    method: 'reveal',
-    args: { workspace: 'w1' },
-  })
 })
 
 test('listTurns：反向调 session.read，只回跨会话仍开着的回合摘要（open_turns）', async () => {
@@ -391,10 +372,8 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
       'branchConversation',
       'listTurns',
       'listWorkspaces',
-      'pickWorkspace',
       'addWorkspace',
       'removeWorkspace',
-      'revealWorkspace',
     ])
     assert.equal(manifest.v, '1')
 

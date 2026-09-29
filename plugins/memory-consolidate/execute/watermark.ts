@@ -2,7 +2,15 @@
 // 语义：上次 sweep 的时间（ISO at）；下次只扫描 `at > 水位` 的条目（省本插件扫描，
 // 不省 periodic.reads 的全量注入）。args.cursor 显式给出时优先，保证同输入同删除集。
 
-import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, join } from 'node:path'
 
 const FILE_NAME = 'sweep-watermark.json'

@@ -1,20 +1,19 @@
 // chat / complete：唯一模型调用路径的编排层。
-// 取密钥（反向调 secrets.resolve，明文只存本进程内存）-> 按 impl 分派有界适配器（protocol×3 / sdk）
-// -> 韧性重试 -> 流式逐段发 model.delta（run / thread 自帧 env）-> 返回最终值（含 usage / tool_calls）。
-// 非幂等、永不缓存；不读投影、不写世界；世界 / 结果 / args 不取时间随机（重试等待与可选抖动只影响时延）。
+// 取密钥（反向调 secrets.resolve，明文只存本进程内存）-> 经 msg-dialect 编请求（build）/ 资产内联 ->
+// 韧性重试（throttle 决策）-> 流式逐段发 model.delta（本插件自持 http / SSE 传输与逐段解码）->
+// 返回最终值（含 usage / tool_calls）。非幂等、永不缓存；不读投影、不写世界；不自取时间。
+// 逐段流式解码留本插件：跨插件 port.call 不能传流式回调 / AsyncIterable。
 
-import { getAdapter } from './adapters.ts'
-import type { CacheHint, ModelOutput, RequestContext } from './adapters.ts'
+import { getStreamDecoder } from './adapters.ts'
+import type { ModelOutput } from './adapters.ts'
+import { DialectClient } from './dialect-link.ts'
+import type { DialectQuirks } from './dialect-link.ts'
 import { ModelError, errorValue } from './errors.ts'
 import { httpRequest, httpStream } from './http.ts'
 import { authRefOf, isRecord } from './plan.ts'
-import { normalizeQuirks } from './quirks.ts'
-import type { Quirks } from './quirks.ts'
-import { reasoningBlock, resolveReasoningCapability } from './reasoning.ts'
-import type { ReasoningBlock, ReasoningCapability } from './reasoning.ts'
-import { RateLimiter, resolvePolicy, withRetry } from './resilience.ts'
+import { fetchPolicy, portThrottle, withRetry } from './resilience.ts'
 import type { RetryPolicy } from './resilience.ts'
-import { createSseParser, StreamAccumulator } from './stream.ts'
+import { createSseParser, reasoningBlock, StreamAccumulator } from './stream.ts'
 import { googleChat, googleComplete } from './sdk-google.ts'
 import type { SdkCallInput } from './sdk-google.ts'
 import { BadArgsError } from 'plugin-sdk'
@@ -22,7 +21,8 @@ import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 
 export interface ChatDeps {
   secrets: PortCaller
-  limiter: RateLimiter
+  throttle: PortCaller
+  dialect: PortCaller
   emit: (topic: string, payload: Json) => void
 }
 
@@ -31,9 +31,10 @@ interface ParsedChat {
   model: string
   messages: Json[]
   params: Rec
-  quirks: Quirks
-  capability: ReasoningCapability
-  cache: CacheHint | undefined
+  quirksRaw: Json | undefined
+  protocolOverride: string | null
+  capabilityProfile: Json | undefined
+  cache: Rec | undefined
   authRef: Rec | null
   tools: Json | undefined
   tool_choice: Json | undefined
@@ -49,51 +50,55 @@ function profileCapabilityOf(config: Rec): Json | undefined {
 }
 
 /** 缓存提示：厂商中立，只保留已知键；空对象视为未给。 */
-function parseCache(value: Json | undefined): CacheHint | undefined {
+function parseCache(value: Json | undefined): Rec | undefined {
   if (!isRecord(value)) return undefined
-  const hint: CacheHint = {}
+  const hint: Rec = {}
   if (Array.isArray(value['breakpoints'])) {
-    hint.breakpoints = (value['breakpoints'] as Json[]).filter((item): item is number => typeof item === 'number' && Number.isInteger(item))
+    hint['breakpoints'] = (value['breakpoints'] as Json[]).filter(
+      (item): item is number => typeof item === 'number' && Number.isInteger(item),
+    )
   }
-  if (value['system'] === true) hint.system = true
-  if (value['tools'] === true) hint.tools = true
-  if (typeof value['key'] === 'string' && value['key'].length > 0) hint.key = value['key'] as string
+  if (value['system'] === true) hint['system'] = true
+  if (value['tools'] === true) hint['tools'] = true
+  if (typeof value['key'] === 'string' && value['key'].length > 0)
+    hint['key'] = value['key'] as string
   return Object.keys(hint).length === 0 ? undefined : hint
 }
 
-/** 从 bag 解析连接 / 模型 / 消息 / 怪癖 / 能力表 / 缓存提示；缺必需字段抛 bad_args。 */
+/** 从 bag 解析连接 / 模型 / 消息 / 怪癖原料 / 缓存提示；缺必需字段抛 bad_args。 */
 export function parseChatBag(bag: Json): ParsedChat {
   if (!isRecord(bag)) throw new BadArgsError('bag must be an object')
   const config = bag['config']
   if (!isRecord(config)) throw new BadArgsError('bag.config required')
   const baseUrl = config['base_url']
-  if (typeof baseUrl !== 'string' || baseUrl.length === 0) throw new BadArgsError('config.base_url required')
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0)
+    throw new BadArgsError('config.base_url required')
   const model = config['model']
-  if (typeof model !== 'string' || model.length === 0) throw new BadArgsError('config.model required')
+  if (typeof model !== 'string' || model.length === 0)
+    throw new BadArgsError('config.model required')
   const messages = bag['messages'] ?? config['messages']
   if (!Array.isArray(messages)) throw new BadArgsError('bag.messages must be an array')
-  const protocolOverride = typeof config['protocol'] === 'string' ? (config['protocol'] as string) : null
+  const protocolOverride =
+    typeof config['protocol'] === 'string' ? (config['protocol'] as string) : null
   const provider = typeof config['vendor'] === 'string' ? (config['vendor'] as string) : model
-  const quirks = normalizeQuirks(config['quirks'], protocolOverride)
   return {
     base_url: baseUrl,
     model,
     messages,
     params: isRecord(config['params']) ? (config['params'] as Rec) : {},
-    quirks,
-    capability: resolveReasoningCapability({
-      provider,
-      impl: quirks.impl,
-      protocol: quirks.protocol,
-      profile: profileCapabilityOf(config),
-    }),
+    quirksRaw: config['quirks'],
+    protocolOverride,
+    capabilityProfile: profileCapabilityOf(config),
     cache: parseCache(bag['cache']),
     authRef: authRefOf(config),
     tools: bag['tools'],
     tool_choice: bag['tool_choice'],
     provider,
     resilience: bag['resilience'],
-    turn_id: typeof bag['turn_id'] === 'string' && bag['turn_id'].length > 0 ? (bag['turn_id'] as string) : null,
+    turn_id:
+      typeof bag['turn_id'] === 'string' && bag['turn_id'].length > 0
+        ? (bag['turn_id'] as string)
+        : null,
   }
 }
 
@@ -101,28 +106,36 @@ export function parseChatBag(bag: Json): ParsedChat {
 async function resolveSecret(parsed: ParsedChat, secrets: PortCaller): Promise<string | null> {
   if (parsed.authRef === null) return null
   const outcome = await secrets.call('secrets', 'resolve', { auth_ref: parsed.authRef })
-  if (!outcome.ok) throw new ModelError('model_auth_failed', `secret resolve failed: ${outcome.code}`)
+  if (!outcome.ok)
+    throw new ModelError('model_auth_failed', `secret resolve failed: ${outcome.code}`)
   if (typeof outcome.value !== 'string' || outcome.value.length === 0) {
     throw new ModelError('model_auth_failed', 'secret resolve returned no value')
   }
   return outcome.value
 }
 
-function requestContext(parsed: ParsedChat, secret: string | null, stream: boolean): RequestContext {
-  return {
+/** 组装 `msg-dialect.build` 入参；空值字段省略以免误编进请求体。 */
+function buildArgs(
+  parsed: ParsedChat,
+  quirks: DialectQuirks,
+  secret: string | null,
+  stream: boolean,
+): Rec {
+  const args: Rec = {
+    quirks,
+    provider: parsed.provider,
     base_url: parsed.base_url,
     model: parsed.model,
-    provider: parsed.provider,
     messages: parsed.messages,
     params: parsed.params,
-    quirks: parsed.quirks,
-    capability: parsed.capability,
     secret,
     stream,
-    tools: parsed.tools,
-    tool_choice: parsed.tool_choice,
-    cache: parsed.cache,
   }
+  if (parsed.capabilityProfile !== undefined) args['capability_profile'] = parsed.capabilityProfile
+  if (parsed.tools !== undefined) args['tools'] = parsed.tools
+  if (parsed.tool_choice !== undefined) args['tool_choice'] = parsed.tool_choice
+  if (parsed.cache !== undefined) args['cache'] = parsed.cache
+  return args
 }
 
 /** 跨重试分片去重：同一前缀只上行一次（流断整请求重试时不重不漏）。 */
@@ -142,7 +155,12 @@ class DeltaGate {
   }
 
   beginAttempt(): void {
-    if (this.emittedText > 0 || this.emittedReasoning > 0 || this.emittedArgs.size > 0 || this.emittedMeta.size > 0) {
+    if (
+      this.emittedText > 0 ||
+      this.emittedReasoning > 0 ||
+      this.emittedArgs.size > 0 ||
+      this.emittedMeta.size > 0
+    ) {
       // 流断整请求重试：先上行 reset 让消费方丢弃已累积分片，再重放新流（不重不漏）。
       this.push({ reset: true })
       this.emittedText = 0
@@ -212,26 +230,30 @@ class DeltaGate {
   }
 }
 
-function protocolLabel(parsed: ParsedChat): string {
-  return parsed.quirks.impl === 'sdk' ? 'sdk' : parsed.quirks.protocol
+function protocolLabel(quirks: DialectQuirks): string {
+  return quirks.impl === 'sdk' ? 'sdk' : quirks.protocol
 }
 
-/** 取协议适配器；身份（provider / model）随适配器构造，供捕获中立推理块标注来源。 */
-function adapterFor(parsed: ParsedChat): ReturnType<typeof getAdapter> {
-  return getAdapter(parsed.quirks.protocol, parsed.quirks, { provider: parsed.provider, model: parsed.model })
-}
-
-function outputValue(output: ModelOutput, parsed: ParsedChat, includeReasoning: boolean): Rec {
+function outputValue(
+  output: ModelOutput,
+  parsed: ParsedChat,
+  protocol: string,
+  includeReasoning: boolean,
+): Rec {
   const value: Rec = {
     ok: true,
     text: output.text,
     tool_calls: output.tool_calls,
     usage: output.usage,
     model: parsed.model,
-    protocol: protocolLabel(parsed),
+    protocol,
   }
   if (includeReasoning && output.reasoning !== undefined) value['reasoning'] = output.reasoning
-  if (includeReasoning && output.reasoning_blocks !== undefined && output.reasoning_blocks.length > 0) {
+  if (
+    includeReasoning &&
+    output.reasoning_blocks !== undefined &&
+    output.reasoning_blocks.length > 0
+  ) {
     value['reasoning_blocks'] = output.reasoning_blocks as unknown as Json
   }
   if (output.stop_reason !== undefined) value['stop_reason'] = output.stop_reason
@@ -239,24 +261,39 @@ function outputValue(output: ModelOutput, parsed: ParsedChat, includeReasoning: 
 }
 
 /** 流式最终值的中立推理块：适配器给了就用，没有则由推理文本兜底成一块。 */
-function streamReasoningBlocks(accumulator: StreamAccumulator, ctx: RequestContext): ReasoningBlock[] {
+function streamReasoningBlocks(
+  accumulator: StreamAccumulator,
+  provider: string,
+  model: string,
+): Json[] {
   const blocks = accumulator.reasoningBlocksValue
-  if (blocks.length > 0) return blocks as unknown as ReasoningBlock[]
+  if (blocks.length > 0) return blocks as unknown as Json[]
   if (accumulator.reasoning.length === 0) return []
-  return [reasoningBlock(ctx.provider, ctx.model, 'text', accumulator.reasoning)]
+  return [reasoningBlock(provider, model, 'text', accumulator.reasoning) as unknown as Json]
 }
 
-/** 一次流式尝试：打开 SSE、逐段解析、经门去重后上行。 */
+/** 一次流式尝试：经 msg-dialect 编请求，打开 SSE、逐段解码、经门去重后上行。 */
 async function streamAttempt(
-  adapter: ReturnType<typeof getAdapter>,
-  ctx: RequestContext,
+  decoder: ReturnType<typeof getStreamDecoder>,
+  parsed: ParsedChat,
+  quirks: DialectQuirks,
+  secret: string | null,
   policy: RetryPolicy,
   gate: DeltaGate,
   now: number,
   turnId: string | null,
+  dialect: DialectClient,
 ): Promise<ModelOutput> {
   gate.beginAttempt()
-  const built = adapter.build(ctx)
+  const built = await dialect.build(buildArgs(parsed, quirks, secret, true))
+  if (
+    built.kind !== 'http' ||
+    built.url === undefined ||
+    built.headers === undefined ||
+    built.body === undefined
+  ) {
+    throw new ModelError('model_unsupported', 'msg-dialect.build did not return an HTTP request')
+  }
   const response = await httpStream({
     method: 'POST',
     url: built.url,
@@ -271,36 +308,50 @@ async function streamAttempt(
   let sawTerminal = false
   for await (const chunk of response.chunks) {
     for (const data of parser.push(chunk)) {
-      const fragments = adapter.handleStreamData(data, accumulator)
+      const fragments = decoder.handleStreamData(data, accumulator)
       for (const fragment of fragments) {
         if (fragment['done'] === true) sawTerminal = true
         gate.accept(fragment)
       }
     }
   }
-  if (!sawTerminal) throw new ModelError('model_stream_broken', 'stream ended without terminal', { retryable: true })
+  if (!sawTerminal)
+    throw new ModelError('model_stream_broken', 'stream ended without terminal', {
+      retryable: true,
+    })
   const output: ModelOutput = {
     text: accumulator.text,
     tool_calls: accumulator.toolCalls() as unknown as Json[],
     usage: accumulator.usageValue,
   }
   if (accumulator.reasoning.length > 0) output.reasoning = accumulator.reasoning
-  const blocks = streamReasoningBlocks(accumulator, ctx)
-  if (blocks.length > 0) output.reasoning_blocks = blocks
+  const blocks = streamReasoningBlocks(accumulator, parsed.provider, parsed.model)
+  if (blocks.length > 0)
+    output.reasoning_blocks = blocks as unknown as ModelOutput['reasoning_blocks']
   const stop = accumulator.stopReasonValue
   if (stop !== null) output.stop_reason = stop
   return output
 }
 
-/** 一次非流式尝试：单次 HTTP，解析完整响应。 */
+/** 一次非流式尝试：经 msg-dialect 编请求 + 单次 HTTP + 整包解析。 */
 async function fullAttempt(
-  adapter: ReturnType<typeof getAdapter>,
-  ctx: RequestContext,
+  parsed: ParsedChat,
+  quirks: DialectQuirks,
+  secret: string | null,
   policy: RetryPolicy,
   now: number,
   turnId: string | null,
+  dialect: DialectClient,
 ): Promise<ModelOutput> {
-  const built = adapter.build(ctx)
+  const built = await dialect.build(buildArgs(parsed, quirks, secret, false))
+  if (
+    built.kind !== 'http' ||
+    built.url === undefined ||
+    built.headers === undefined ||
+    built.body === undefined
+  ) {
+    throw new ModelError('model_unsupported', 'msg-dialect.build did not return an HTTP request')
+  }
   const response = await httpRequest({
     method: 'POST',
     url: built.url,
@@ -316,23 +367,25 @@ async function fullAttempt(
   } catch (err) {
     throw new ModelError('model_unsupported', `invalid response body: ${(err as Error).message}`)
   }
-  return adapter.parseFull(json)
+  return dialect.parseFull({ quirks, provider: parsed.provider, model: parsed.model, json })
 }
 
-function sdkInput(parsed: ParsedChat, secret: string | null): SdkCallInput {
+function sdkInput(
+  parsed: ParsedChat,
+  quirks: DialectQuirks,
+  secret: string | null,
+  sdkParams: Rec,
+): SdkCallInput {
   return {
-    sdk_package: parsed.quirks.sdk_package,
+    sdk_package: quirks.sdk_package,
     api_key: secret ?? '',
-    model: parsed.model,
     provider: parsed.provider,
-    messages: parsed.messages,
-    params: parsed.params,
-    quirks: parsed.quirks,
-    capability: parsed.capability,
+    model: parsed.model,
+    sdk_params: sdkParams,
   }
 }
 
-/** chat：流式（impl=sdk 走 SDK 适配器，impl=protocol 走三协议适配器）。 */
+/** chat：流式（impl=sdk 走 SDK 适配器，impl=protocol 走三协议流式解码）。 */
 export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Json> {
   let parsed: ParsedChat
   try {
@@ -341,29 +394,52 @@ export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Jso
     throw err instanceof BadArgsError ? err : new BadArgsError((err as Error).message)
   }
   try {
+    const dialect = new DialectClient(deps.dialect)
+    const quirks = await dialect.normalizeQuirks(parsed.quirksRaw, parsed.protocolOverride)
     const secret = await resolveSecret(parsed, deps.secrets)
-    const policy = resolvePolicy(parsed.resilience)
-    // impl=sdk 与三协议同规：每次 attempt 新建适配器 / 经同一 DeltaGate 去重（重试先上行 reset）
-    if (parsed.quirks.impl === 'sdk') {
-      const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, fragment))
+    const policy = await fetchPolicy(deps.throttle, parsed.resilience)
+    const throttle = portThrottle(deps.throttle)
+    parsed.messages = await dialect.inlineAssets(parsed.messages, quirks.protocol)
+    // impl=sdk 与三协议同规：每次 attempt 新建解码器 / 经同一 DeltaGate 去重（重试先上行 reset）
+    if (quirks.impl === 'sdk') {
+      const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, quirks, fragment))
       const output = await withRetry(
         parsed.provider,
-        () => {
+        async () => {
           gate.beginAttempt()
-          return googleChat(sdkInput(parsed, secret), (fragment) => gate.accept(fragment))
+          const built = await dialect.build(buildArgs(parsed, quirks, secret, true))
+          if (built.kind !== 'sdk' || built.params === undefined) {
+            throw new ModelError('model_unsupported', 'msg-dialect.build did not return SDK params')
+          }
+          return googleChat(sdkInput(parsed, quirks, secret, built.params), (fragment) =>
+            gate.accept(fragment),
+          )
         },
-        { policy, limiter: deps.limiter, now: env.now },
+        { policy, throttle, now: env.now },
       )
-      return outputValue(output, parsed, true)
+      return outputValue(output, parsed, protocolLabel(quirks), true)
     }
-    const ctx = requestContext(parsed, secret, true)
-    const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, fragment))
+    const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, quirks, fragment))
     const output = await withRetry(
       parsed.provider,
-      () => streamAttempt(adapterFor(parsed), ctx, policy, gate, env.now, parsed.turn_id),
-      { policy, limiter: deps.limiter, now: env.now },
+      () =>
+        streamAttempt(
+          getStreamDecoder(quirks.protocol, quirks.reasoning_response_field, {
+            provider: parsed.provider,
+            model: parsed.model,
+          }),
+          parsed,
+          quirks,
+          secret,
+          policy,
+          gate,
+          env.now,
+          parsed.turn_id,
+          dialect,
+        ),
+      { policy, throttle, now: env.now },
     )
-    return outputValue(output, parsed, true)
+    return outputValue(output, parsed, protocolLabel(quirks), true)
   } catch (err) {
     if (err instanceof BadArgsError) throw err
     if (err instanceof ModelError) return errorValue(err.code, err.message)
@@ -375,12 +451,37 @@ export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Jso
 export async function complete(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Json> {
   const parsed = parseChatBag(bag)
   try {
+    const dialect = new DialectClient(deps.dialect)
+    const quirks = await dialect.normalizeQuirks(parsed.quirksRaw, parsed.protocolOverride)
     const secret = await resolveSecret(parsed, deps.secrets)
-    const policy = resolvePolicy(parsed.resilience)
+    const policy = await fetchPolicy(deps.throttle, parsed.resilience)
+    const throttle = portThrottle(deps.throttle)
+    parsed.messages = await dialect.inlineAssets(parsed.messages, quirks.protocol)
     const output =
-      parsed.quirks.impl === 'sdk'
-        ? await withRetry(parsed.provider, () => googleComplete(sdkInput(parsed, secret)), { policy, limiter: deps.limiter, now: env.now })
-        : await withRetry(parsed.provider, () => fullAttempt(adapterFor(parsed), requestContext(parsed, secret, false), policy, env.now, parsed.turn_id), { policy, limiter: deps.limiter, now: env.now })
+      quirks.impl === 'sdk'
+        ? await withRetry(
+            parsed.provider,
+            async () => {
+              const built = await dialect.build(buildArgs(parsed, quirks, secret, false))
+              if (built.kind !== 'sdk' || built.params === undefined) {
+                throw new ModelError(
+                  'model_unsupported',
+                  'msg-dialect.build did not return SDK params',
+                )
+              }
+              return googleComplete(sdkInput(parsed, quirks, secret, built.params))
+            },
+            { policy, throttle, now: env.now },
+          )
+        : await withRetry(
+            parsed.provider,
+            () => fullAttempt(parsed, quirks, secret, policy, env.now, parsed.turn_id, dialect),
+            {
+              policy,
+              throttle,
+              now: env.now,
+            },
+          )
     return { ok: true, text: output.text, usage: output.usage }
   } catch (err) {
     if (err instanceof BadArgsError) throw err
@@ -389,12 +490,18 @@ export async function complete(deps: ChatDeps, bag: Json, env: CallEnv): Promise
   }
 }
 
-function emitDelta(deps: ChatDeps, parsed: ParsedChat, env: CallEnv, fragment: Rec): void {
+function emitDelta(
+  deps: ChatDeps,
+  parsed: ParsedChat,
+  env: CallEnv,
+  quirks: DialectQuirks,
+  fragment: Rec,
+): void {
   deps.emit('model.delta', {
     run: env.run,
     thread: env.thread,
     model: parsed.model,
-    protocol: protocolLabel(parsed),
+    protocol: protocolLabel(quirks),
     ...fragment,
   })
 }

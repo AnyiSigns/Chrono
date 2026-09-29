@@ -102,20 +102,45 @@ export const SIDEBAR_CSS = `
 .sb-group-actions[data-persist="true"] { opacity: 1; }
 
 .sb-session {
+  position: relative;
   display: flex;
   align-items: center;
+  gap: var(--space-8);
   height: 34px;
   padding-left: 20px;
-  padding-right: var(--space-4);
+  padding-right: var(--space-8);
   border-radius: var(--radius-md);
   color: var(--c-text-2);
   cursor: pointer;
 }
 .sb-session:hover { background: var(--c-selection); }
-.sb-session[data-current="true"] { background: var(--c-selection); color: var(--c-text); }
+.sb-session[data-current="true"] { background: var(--c-selection); color: var(--c-text); font-weight: var(--weight-medium); }
+.sb-session[data-current="true"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 2px 2px 0;
+  background: var(--c-accent-strong);
+}
 .sb-session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-md); }
-.sb-session-actions { display: flex; align-items: center; gap: var(--space-4); opacity: 0; }
+/* timestamp flush right; hover actions overlay absolutely (no layout width) to avoid a gap. */
+.sb-session-time { flex: none; margin-left: auto; color: var(--c-text-3); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sb-session-actions {
+  position: absolute;
+  right: var(--space-4);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding-left: var(--space-8);
+  background: inherit;
+  opacity: 0;
+}
 .sb-session:hover .sb-session-actions, .sb-session:focus-within .sb-session-actions { opacity: 1; }
+.sb-session:hover .sb-session-time, .sb-session:focus-within .sb-session-time { visibility: hidden; }
 .sb-session-rename {
   flex: 1;
   min-width: 0;
@@ -126,9 +151,57 @@ export const SIDEBAR_CSS = `
   font-size: var(--font-size-md);
   padding: 2px var(--space-4);
 }
-.sb-confirm { display: flex; align-items: center; gap: var(--space-8); flex: 1; color: var(--c-danger); font-size: var(--font-size-sm); }
-.sb-confirm button { border: none; background: transparent; color: inherit; cursor: pointer; font-size: var(--font-size-sm); }
-.sb-confirm button[data-primary="true"] { color: var(--c-danger); font-weight: var(--weight-strong); }
+/* destructive-action confirm modal (delete / terminate): centered scrim, replaces inline confirm row. */
+.sb-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--c-text) 30%, transparent);
+  animation: sb-scrim var(--motion-fast) both;
+}
+.sb-modal {
+  width: min(340px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: var(--space-16);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  color: var(--c-text);
+  outline: none;
+  animation: sb-pop var(--motion-fast) both;
+}
+.sb-modal-title { font-size: var(--font-size-md); font-weight: var(--weight-strong); }
+.sb-modal-subject {
+  margin-top: var(--space-4);
+  color: var(--c-text-2);
+  font-size: var(--font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-modal-actions { display: flex; justify-content: flex-end; gap: var(--space-8); margin-top: var(--space-16); }
+.sb-modal-btn {
+  height: 30px;
+  padding: 0 var(--space-12);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+.sb-modal-btn:hover { background: var(--c-selection); }
+.sb-modal-btn[data-danger="true"] { border-color: var(--c-danger); color: var(--c-danger); background: transparent; }
+.sb-modal-btn[data-danger="true"]:hover { background: var(--c-danger-bg); }
+.sb-modal-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sb-modal-btn:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+@keyframes sb-scrim { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sb-pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sb-modal-backdrop, .sb-modal { animation: none; } }
 
 .sb-badge { flex: none; display: inline-flex; align-items: center; gap: var(--space-4); }
 .sb-dot { width: 6px; height: 6px; border-radius: 50%; }

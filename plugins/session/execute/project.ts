@@ -91,6 +91,29 @@ function assistantDef(conv: string, turn: Rec): Rec | null {
   return def
 }
 
+/** 回合运行中插入的用户消息步（`step.user`），按步号升序。 */
+function insertSteps(turn: Rec): Rec[] {
+  return stepsOf(turn)
+    .filter((step) => step['type'] === 'step.user')
+    .sort((a, b) => stepSeq(a) - stepSeq(b))
+}
+
+/** 插入的用户消息 def（id 用插入幂等键去重）。 */
+function insertDef(conv: string, turn: Rec, step: Rec): Rec | null {
+  const message = isRecord(step['user_message']) ? (step['user_message'] as Rec) : null
+  if (message === null) return null
+  const insertId = asString(step['insert_id']) ?? `${stepSeq(step)}`
+  const def: Rec = {
+    id: `msg-${conv}-${turn['turn_id'] as string}-user-${insertId}`,
+    role: 'user',
+    content: asString(message['content']) ?? '',
+    at: (message['at'] ?? turn['at'] ?? null) as Json,
+  }
+  if (Array.isArray(message['parts'])) def['parts'] = message['parts']
+  if (Array.isArray(message['attachments'])) def['attachments'] = message['attachments']
+  return def
+}
+
 /** 展示序消息链（旧 → 新），按回合分组；`prev` 跨回合串成链。 */
 export function displayMessagesByTurn(conv: string, turns: Rec[]): DisplayTurn[] {
   const groups: DisplayTurn[] = []
@@ -106,6 +129,8 @@ export function displayMessagesByTurn(conv: string, turns: Rec[]): DisplayTurn[]
       messages.push({ hash: def['id'] as string, def })
     }
     push(userDef(conv, turn))
+    // 回合运行中插入的用户消息：落在本回合用户消息之后、最终助手之前（展示链可表达的位置）。
+    for (const step of insertSteps(turn)) push(insertDef(conv, turn, step))
     push(assistantDef(conv, turn))
     groups.push({ turnId, messages })
   }
@@ -173,6 +198,12 @@ export function displayTimeline(turns: Rec[]): DisplayTurnTimeline[] {
     const user = isRecord(turn['user_message']) ? turn['user_message'] : null
     const userText = user !== null ? asString(user['content']) : null
     if (userText !== null) items.push({ kind: 'user', text: userText })
+    // 回合运行中插入的用户消息：时间线里作为用户条目按步号落位。
+    for (const step of insertSteps(turn)) {
+      const message = isRecord(step['user_message']) ? (step['user_message'] as Rec) : null
+      const text = message !== null ? asString(message['content']) : null
+      if (text !== null) items.push({ kind: 'user', text })
+    }
 
     // 最终助手展示 parts（reasoning / text / tool 按到达序）。
     let best: Rec | null = null

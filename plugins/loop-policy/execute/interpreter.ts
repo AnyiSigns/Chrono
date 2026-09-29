@@ -2,8 +2,20 @@
 // 推式条件边 + 拒绝短路到 sink + 回合重入（Graph.loop）+ MAX_STEPS/gas 自限 + 审批/提问跨 run 续跑。
 // 游标是服务进程内状态（跨 run 续跑时序列化进队列项游标落世界）。
 
-import { assistantRecord, dispatchNode, lastReasoningOf, netScopeOf, providerResolver, toCalls } from './dispatch.ts'
-import { checkpointLevel, checkpointThresholds, contextPressure, emitCheckpoint } from './checkpoint.ts'
+import {
+  assistantRecord,
+  dispatchNode,
+  lastReasoningOf,
+  netScopeOf,
+  providerResolver,
+  toCalls,
+} from './dispatch.ts'
+import {
+  checkpointLevel,
+  checkpointThresholds,
+  contextPressure,
+  emitCheckpoint,
+} from './checkpoint.ts'
 import { displayParts } from './commit-parts.ts'
 import { isCancelled } from './cancel.ts'
 import { appendStep, nextStepSeq, toolCallsForLog } from './steplog.ts'
@@ -23,10 +35,17 @@ import {
   nodeSubgraph,
   numericThreshold,
 } from './model.ts'
-import { buildView, checkClosure } from './gate.ts'
+import { buildView } from './view.ts'
 import { edgeKey, topoOrder } from './graph.ts'
 import { LifecycleMachine, endedOf, type GraphProgress } from './lifecycle.ts'
-import { asString, directivesOf, evalDirective, isRecord, nestedDirectivesOf, numberField } from './plan.ts'
+import {
+  asString,
+  directivesOf,
+  evalDirective,
+  isRecord,
+  nestedDirectivesOf,
+  numberField,
+} from './plan.ts'
 import { attributionOf, retriableOf } from './seed.ts'
 import { evalPost, evalPre, evalWhen, unknownWhenExpr } from './rules.ts'
 import { selectInstance } from './scope.ts'
@@ -42,13 +61,19 @@ import {
   type InterpretResult,
   type IterState,
 } from './iter-ctx.ts'
-import { graphCursor, patchQuestionAnswer, resumePayload, resumeVerdict, restoreState } from './cursor.ts'
+import {
+  graphCursor,
+  patchQuestionAnswer,
+  resumePayload,
+  resumeVerdict,
+  restoreState,
+} from './cursor.ts'
 import { checkContractVersion } from './contract/index.ts'
 import { restoreFromSteps, turnSteps } from './reconstruct.ts'
 import { runSink, runSuspend, summaryOfRun } from './sink.ts'
 import type { TraceRecorder } from './trace.ts'
 import type { TurnOutcome } from './contract/index.ts'
-import type { CallEnv, Json, Rec, RunState, ServiceEvent } from './types.ts'
+import type { CallEnv, GraphModel, Json, PortCaller, Rec, RunState, ServiceEvent } from './types.ts'
 
 interface IterResult {
   refused: Rec | null
@@ -81,24 +106,36 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   const edges = graphEdges(model.graph)
   const sink = graphSink(model.graph)
   const contracts = contractIndex(model)
-  const scopeCtx = { workspace_id: asString(bag['workspace_id']), session_id: asString(bag['session_id']) }
+  const scopeCtx = {
+    workspace_id: asString(bag['workspace_id']),
+    session_id: asString(bag['session_id']),
+  }
   const maxTurnIter = numericThreshold(model.thresholds, 'max_turn_iter', 6)
   const maxSteps = numericThreshold(model.thresholds, 'max_steps', 64)
   const turnId = asString(bag['turn_id'])
   const loopWhen = asString(graphLoop(model.graph)['when']) ?? ''
   const directives: Json[] = []
   const events: ServiceEvent[] = []
-  const pendingCursor = input.resume !== null && isRecord(input.resume['cursor']) ? (input.resume['cursor'] as Rec) : null
+  const pendingCursor =
+    input.resume !== null && isRecord(input.resume['cursor'])
+      ? (input.resume['cursor'] as Rec)
+      : null
   const continuation = input.resume !== null && input.resume['continuation'] === true
   // 分支全域登记（含 composite 子图在展开时追加）：供 `branch_not_taken` 精确计数，与 sink 位置无关。
-  trace.declareBranches(edges.map((edge) => edgeKey(edge)).filter((key): key is string => key !== null))
+  trace.declareBranches(
+    edges.map((edge) => edgeKey(edge)).filter((key): key is string => key !== null),
+  )
   // 子图运行期展开的 gas 预算（与步预算 / 深度上限共同防嵌套失控）。
   const gas = { remaining: numericThreshold(model.thresholds, 'gas', 64) }
 
   // 取消检查点（入口）：标志在进入解释前已置时立即停，不派发任何节点（含模型与工具）。
   if (isCancelled(turnId)) {
     const stopped = freshState()
-    const machine = new LifecycleMachine({ iter: stopped.iter, node_index: null, contract_id: null })
+    const machine = new LifecycleMachine({
+      iter: stopped.iter,
+      node_index: null,
+      contract_id: null,
+    })
     machine.send('settle')
     machine.send('finalize')
     trace.finalizeBranches()
@@ -118,13 +155,17 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
 
   let rs: RunState
   let iter: IterState
-  if (pendingCursor !== null && (pendingCursor['kind'] === 'approval' || pendingCursor['kind'] === 'question')) {
+  if (
+    pendingCursor !== null &&
+    (pendingCursor['kind'] === 'approval' || pendingCursor['kind'] === 'question')
+  ) {
     const restored = restoreState(pendingCursor)
     rs = restored.rs
     iter = restored.iter
     // 续跑优先用游标内原始输入：作答 / 裁决那一刻的槽已是 approval.decide / question.answer，
     // 直接用会丢原始用户消息（游标随队列项落世界，opaque，不透明）。
-    if (pendingCursor['original_input'] !== undefined) bag['input'] = pendingCursor['original_input']
+    if (pendingCursor['original_input'] !== undefined)
+      bag['input'] = pendingCursor['original_input']
     const nodeIndex = numberField(pendingCursor['node_index']) ?? 0
     if (pendingCursor['kind'] === 'approval') {
       const verdict = resumeVerdict(input.resume) ?? 'denied'
@@ -138,14 +179,17 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     } else {
       // 作答续跑：答案回灌为该工具调用的结果，本段图内进度不变（派发已发生）——段尾重入，
       // 下一段据步记录重建 extra_messages（含答案与同批其它工具真实结果）后重跑 assemble + step。
+      // 结果取整份 payload（`{answers, render?}`）：`render` 是 question 服务的动态卡描述符，
+      // 随结果进展示段（commit-parts 口径），使作答后的落盘 part 仍带题干与 `detail.id`。
       const payload = resumePayload(input.resume)
-      const answers = payload['answers'] ?? null
       const callId = asString(pendingCursor['call_id'])
       patchQuestionAnswer(iter, nodeIndex, callId, payload, rs.lastCalls)
       rs.dispatchedTools = true
       // 答案以与同步环同形的 assistant(tool_calls) → tool(result) 序列回灌 extra_messages：
       // 无回合身份（同步重入）时本段重跑 assemble 即见答案；有回合身份时改由步记录在重入段重建。
-      appendToolMessages(rs, { results: [{ call_id: callId ?? 'question', ok: true, result: { answers } }] })
+      appendToolMessages(rs, {
+        results: [{ call_id: callId ?? 'question', ok: true, result: payload }],
+      })
       // 作答步序号：取该回合已落步记录（含悬挂派发步与挂起收口步）的最大 seq 之后，
       // 避免与已落盘步同键被去重——游标取于派发前，其 `steps` 不含悬挂步与挂起收口步。
       let maxSeq = rs.steps
@@ -171,7 +215,7 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
           turn_id: turnId,
           seq: rs.steps,
           assistant: { content: '', parts },
-          tool_results: [{ call_id: callId ?? 'question', ok: true, result: { answers } }],
+          tool_results: [{ call_id: callId ?? 'question', ok: true, result: payload }],
         })
       }
     }
@@ -211,7 +255,19 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   const refuseTerminal = async (code: string, message: string): Promise<InterpretResult> => {
     trace.refuse(sink, rs.iter, code, attributionOf(model, code))
     machine.send('settle')
-    await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, refusalArtifact(model, code, message))
+    await runSink(
+      input,
+      view,
+      ids,
+      edges,
+      contracts,
+      sink,
+      scopeCtx,
+      rs,
+      iter,
+      directives,
+      refusalArtifact(model, code, message),
+    )
     machine.send('finalize')
     return finish(endedOf(machine.state, 'refused'))
   }
@@ -241,18 +297,36 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     return refuseTerminal('when_unsat', `unknown predicate: ${unknownWhen}`)
   }
   // 运行期轻量闭合校验（G6）：篡改 / 旧代 `bag.graph` 形状非法时结构化拒绝，不静默误执行。
-  // 完整六不变量 + 演化规则仍在 propose / validate 期执行（`validateGraphData`），此处只做廉价结构检查。
-  const structural = runtimeStructuralError(view)
+  // 完整六不变量 + 演化规则仍在 propose / validate 期由 `graph-gate` 执行，此处只做廉价结构检查。
+  const structural = await closureError(input.port, model, model.graph, input.refs)
   if (structural !== null) {
     return refuseTerminal(structural.code, structural.message)
   }
   const started = machine.send('step', progressOf(rs, trace))
   if (!started.ok) {
-    return refuseTerminal('invalid_contract', `invalid lifecycle transition ${started.failure.from}--${started.failure.event}`)
+    return refuseTerminal(
+      'invalid_contract',
+      `invalid lifecycle transition ${started.failure.from}--${started.failure.event}`,
+    )
   }
 
   for (;;) {
-    const result = await runIter(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, providerOf, gas, 0, null)
+    const result = await runIter(
+      input,
+      view,
+      ids,
+      edges,
+      contracts,
+      sink,
+      scopeCtx,
+      rs,
+      iter,
+      directives,
+      providerOf,
+      gas,
+      0,
+      null,
+    )
     if (result.cancelled === true) {
       // 取消：不再派发新工具 / 模型，也不写拒绝产物；内容已落步记录，终态由调用方经 CAS 落 `cancelled`。
       machine.send('settle')
@@ -262,12 +336,36 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     if (result.pending !== null) {
       // 显式挂起收口：先把本轮已发生的用户 / 助手消息与已执行工具结果落账，再以 `suspended` 收口。
       machine.send('suspend', progressOf(rs, trace))
-      await runSuspend(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, result.pending)
+      await runSuspend(
+        input,
+        view,
+        ids,
+        edges,
+        contracts,
+        sink,
+        scopeCtx,
+        rs,
+        iter,
+        directives,
+        result.pending,
+      )
       return finish(endedOf(machine.state, 'done'), result.pending)
     }
     if (result.refused !== null) {
       machine.send('settle')
-      await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, result.refused)
+      await runSink(
+        input,
+        view,
+        ids,
+        edges,
+        contracts,
+        sink,
+        scopeCtx,
+        rs,
+        iter,
+        directives,
+        result.refused,
+      )
       machine.send('finalize')
       return finish(endedOf(machine.state, 'refused'))
     }
@@ -276,7 +374,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     let shouldLoop = false
     if (!rs.questionPending && loopWhen.length > 0) {
       const when = evalWhen(loopWhen, loopCtx, 0)
-      if (!when.ok) return refuseTerminal(when.code ?? 'when_unsat', when.reason ?? `unknown_when:${loopWhen}`)
+      if (!when.ok)
+        return refuseTerminal(when.code ?? 'when_unsat', when.reason ?? `unknown_when:${loopWhen}`)
       shouldLoop = when.value
     }
     if (!shouldLoop) {
@@ -303,7 +402,9 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     // 段尾：本段已完成、回合未完 ⇒ 在同一 run 里续下一段（宿主按命令名解析入口）。
     // 段标记步记录把「段序号」落进回合作日志，下一段据此重建 iter / steps，预算不在无步记录的循环里失效。
     // 游标只带 `turn_id`；投影切片经 `inject` 由宿主执行期并入，服务不内嵌整份投影。
-    machine.send('segment', progressOf(rs, trace))
+    // 图内进度一并随续跑 args 交给 chat：下一段起点即可广播，UI 轮次实时更新（不等到回合收口）。
+    const segmentProgress = progressOf(rs, trace)
+    machine.send('segment', segmentProgress)
     // 段边界检查点：上下文压力越阈即在下一段模型调用前压缩（compress 为后端，只算不写）。
     // 失败只跳过记录、不阻断续段（拿到结果也照常分段自续跑）。
     const pressure = contextPressure(rs)
@@ -323,7 +424,12 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       summary: { kind: 'segment', iter: rs.iter + 1 },
       covered_upto: markerSeq,
     })
-    directives.push(evalDirective('chat.resume', continuationArgs(bag, turnId), { ids: ['ids'] }))
+    // 下一段序号 = 本段 iter + 1（与下方 checkpoint 步记录一致）：下一段起点即可显示「正在进行的轮次」。
+    directives.push(
+      evalDirective('chat.resume', continuationArgs(bag, turnId, segmentProgress, rs.iter + 1), {
+        ids: ['ids'],
+      }),
+    )
     return finish(endedOf(machine.state, 'done'))
   }
 }
@@ -331,14 +437,24 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
 /** 图内进度：最近一步的节点与契约 id + 当前段序号（数据，供 UI 映射「正在思考 / 正在调工具」）。 */
 function progressOf(rs: RunState, trace: TraceRecorder): GraphProgress {
   const last = trace.steps.length > 0 ? trace.steps[trace.steps.length - 1] : null
-  const nodeIndex = last !== null && typeof last['node_index'] === 'number' ? (last['node_index'] as number) : null
-  const contract = last !== null && typeof last['contract_id'] === 'string' ? (last['contract_id'] as string) : null
+  const nodeIndex =
+    last !== null && typeof last['node_index'] === 'number' ? (last['node_index'] as number) : null
+  const contract =
+    last !== null && typeof last['contract_id'] === 'string'
+      ? (last['contract_id'] as string)
+      : null
   return { iter: rs.iter, node_index: nodeIndex, contract_id: contract }
 }
 
-/** 自续跑 eval 的 args：回合身份 + 线程（投影切片由 `inject` 注入）。 */
-function continuationArgs(bag: Rec, turnId: string): Rec {
-  const args: Rec = { turn_id: turnId }
+/**
+ * 自续跑 eval 的 args：回合身份 + 线程 + 下一段图内进度（投影切片由 `inject` 注入）。
+ * `progress.iter` 取下一段序号：chat 在下一段 `chat.turn.started` 上广播，UI 轮次实时更新。
+ */
+function continuationArgs(bag: Rec, turnId: string, progress: GraphProgress, iter: number): Rec {
+  const args: Rec = {
+    turn_id: turnId,
+    progress: { ...progress, iter } as unknown as Json,
+  }
   const thread = asString(bag['thread'])
   if (thread !== null) args['thread'] = thread
   return args
@@ -349,14 +465,47 @@ interface GasState {
   remaining: number
 }
 
-/** 运行期轻量结构校验（G6）：未知契约 + 闭合检查；返回首个结构化错误，无则 null。 */
-function runtimeStructuralError(view: ReturnType<typeof buildView>): { code: string; message: string } | null {
-  for (const id of graphNodes(view.model.graph)) {
-    if (!view.contracts.has(id)) return { code: 'unknown_contract', message: `contract not declared: ${id}` }
+/** 图数据包装：把解析后的模型拼成机械闸读入口径（六类条目；`graph` 可取子图）。 */
+function graphWrapperOf(model: GraphModel, graph?: Rec): Rec {
+  return {
+    contracts: model.contracts,
+    nodes: model.nodes,
+    prompts: model.prompts,
+    graph: graph ?? model.graph,
+    thresholds: model.thresholds,
+    refusal_codes: model.refusalCodes,
   }
-  const errors = checkClosure(view)
-  if (errors.length === 0) return null
-  return { code: errors[0].code, message: `${errors[0].path}: ${errors[0].message}` }
+}
+
+/**
+ * 运行期轻量结构校验（G6）：委派 `graph-gate.closure` 做未知契约 + 闭合检查。
+ * 完整六不变量 + 演化规则仍在 propose / validate 期执行（`graph-gate.validate`），此处只做廉价结构检查。
+ * 提供方不可用时 fail-closed 拒绝（不静默误执行）。
+ */
+async function closureError(
+  port: PortCaller,
+  model: GraphModel,
+  graph: Rec,
+  refs: Rec,
+): Promise<{ code: string; message: string } | null> {
+  const outcome = await port.call('graph-gate', 'closure', {
+    graph: graphWrapperOf(model, graph),
+    refs,
+  })
+  if (!outcome.ok) {
+    return {
+      code: 'graph_gate_unavailable',
+      message: outcome.message || 'graph-gate.closure transport failed',
+    }
+  }
+  const value = isRecord(outcome.value) ? (outcome.value as Rec) : null
+  const errors = value !== null && Array.isArray(value['errors']) ? (value['errors'] as Json[]) : []
+  const first = errors.find((error): error is Rec => isRecord(error))
+  if (first === undefined) return null
+  return {
+    code: asString(first['code']) ?? 'unknown_contract',
+    message: `${asString(first['path']) ?? ''}: ${asString(first['message']) ?? ''}`,
+  }
 }
 
 /** 跑一次 iter：拓扑序前推（G1），sink 延后到回合收口。 */
@@ -390,7 +539,23 @@ async function runIter(
     if (!resolved.activated) continue
     consumeBranches(resolved, index, trace)
     iter.inputs.set(index, resolved.inputs)
-    const dispatch = await runNode(input, view, ids, edges, contracts, scopeCtx, rs, iter, index, contract, directives, providerOf, gas, depth, parentIndex)
+    const dispatch = await runNode(
+      input,
+      view,
+      ids,
+      edges,
+      contracts,
+      scopeCtx,
+      rs,
+      iter,
+      index,
+      contract,
+      directives,
+      providerOf,
+      gas,
+      depth,
+      parentIndex,
+    )
     if (dispatch.cancelled === true) return { refused: null, pending: null, cancelled: true }
     if (dispatch.refusal !== null) return { refused: dispatch.refusal, pending: null }
     if (dispatch.pending !== null) return { refused: null, pending: dispatch.pending }
@@ -458,17 +623,45 @@ async function runCompositeNode(
   if (subgraph === null) {
     step['verdict'] = 'fail'
     step['refusal'] = 'capability_mismatch'
-    trace.refuse(index, rs.iter, 'capability_mismatch', attributionOf(model, 'capability_mismatch'), parentIndex)
-    return { refusal: refusalArtifact(model, 'capability_mismatch', `composite ${nodeId(chosen.node) ?? ''} without subgraph`), pending: null }
+    trace.refuse(
+      index,
+      rs.iter,
+      'capability_mismatch',
+      attributionOf(model, 'capability_mismatch'),
+      parentIndex,
+    )
+    return {
+      refusal: refusalArtifact(
+        model,
+        'capability_mismatch',
+        `composite ${nodeId(chosen.node) ?? ''} without subgraph`,
+      ),
+      pending: null,
+    }
   }
   const maxDepth = numericThreshold(model.thresholds, 'max_subgraph_depth', 8)
   if (depth >= maxDepth) {
     step['verdict'] = 'fail'
     step['refusal'] = 'max_recur'
     trace.refuse(index, rs.iter, 'max_recur', attributionOf(model, 'max_recur'), parentIndex)
-    return { refusal: refusalArtifact(model, 'max_recur', `subgraph depth ${depth} >= ${maxDepth}`), pending: null }
+    return {
+      refusal: refusalArtifact(model, 'max_recur', `subgraph depth ${depth} >= ${maxDepth}`),
+      pending: null,
+    }
   }
-  const nested = await runSubgraph(input, view, scopeCtx, rs, subgraph, index, depth + 1, iter.inputs.get(index) ?? {}, directives, providerOf, gas)
+  const nested = await runSubgraph(
+    input,
+    view,
+    scopeCtx,
+    rs,
+    subgraph,
+    index,
+    depth + 1,
+    iter.inputs.get(index) ?? {},
+    directives,
+    providerOf,
+    gas,
+  )
   if (nested.cancelled === true) {
     step['verdict'] = 'cancelled'
     return { refusal: null, pending: null, cancelled: true }
@@ -478,20 +671,40 @@ async function runCompositeNode(
     const code = nested.code ?? 'subgraph_reject'
     step['verdict'] = 'fail'
     step['refusal'] = code
-    if (trace.refusedAt === null) trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex)
-    return { refusal: refusalArtifact(model, code, nested.message ?? 'subgraph refused'), pending: null }
+    if (trace.refusedAt === null)
+      trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex)
+    return {
+      refusal: refusalArtifact(model, code, nested.message ?? 'subgraph refused'),
+      pending: null,
+    }
   }
   const mapped = mapCompositeOutput(contract, nested.output)
   if (mapped.ambiguous) {
     step['verdict'] = 'fail'
     step['refusal'] = 'delegate_output_ambiguous'
-    trace.refuse(index, rs.iter, 'delegate_output_ambiguous', attributionOf(model, 'delegate_output_ambiguous'), parentIndex)
-    return { refusal: refusalArtifact(model, 'delegate_output_ambiguous', 'subgraph sink→outputs mapping not unique'), pending: null }
+    trace.refuse(
+      index,
+      rs.iter,
+      'delegate_output_ambiguous',
+      attributionOf(model, 'delegate_output_ambiguous'),
+      parentIndex,
+    )
+    return {
+      refusal: refusalArtifact(
+        model,
+        'delegate_output_ambiguous',
+        'subgraph sink→outputs mapping not unique',
+      ),
+      pending: null,
+    }
   }
   const output = mapped.value
   applySideEffects(contractId(contract) ?? '', output, rs, providerOf)
   iter.outputs.set(index, output)
-  const post = evalPost(contractPost(contract), ruleCtx(rs, model, input.bag, iter, trace.effLog, index))
+  const post = evalPost(
+    contractPost(contract),
+    ruleCtx(rs, model, input.bag, iter, trace.effLog, index),
+  )
   if (!post.ok) {
     const reason = post.reason ?? 'post_failed'
     const code = postRefusalCode(reason)
@@ -500,12 +713,23 @@ async function runCompositeNode(
     trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex)
     return { refusal: refusalArtifact(model, code, reason), pending: null }
   }
-  const over = overTriggeredBranch(index, edges, ruleCtx(rs, model, input.bag, iter, trace.effLog, index))
+  const over = overTriggeredBranch(
+    index,
+    edges,
+    ruleCtx(rs, model, input.bag, iter, trace.effLog, index),
+  )
   if (over !== null) {
     step['verdict'] = 'fail'
     step['refusal'] = 'redundant'
     trace.refuse(index, rs.iter, 'redundant', attributionOf(model, 'redundant'), parentIndex)
-    return { refusal: refusalArtifact(model, 'redundant', `output port ${over.port} took multiple branches`), pending: null }
+    return {
+      refusal: refusalArtifact(
+        model,
+        'redundant',
+        `output port ${over.port} took multiple branches`,
+      ),
+      pending: null,
+    }
   }
   iter.executed.add(index)
   for (const directive of directivesOf(output)) directives.push(directive)
@@ -536,9 +760,12 @@ async function runSubgraph(
   const edges = graphEdges(subgraph)
   const sink = graphSink(subgraph)
   const contracts = view.contracts
-  trace.declareBranches(edges.map((edge) => edgeKey(edge)).filter((key): key is string => key !== null))
-  const structural = runtimeStructuralError(view)
-  if (structural !== null) return { output: null, code: structural.code, message: structural.message, pending: null }
+  trace.declareBranches(
+    edges.map((edge) => edgeKey(edge)).filter((key): key is string => key !== null),
+  )
+  const structural = await closureError(input.port, model, subgraph, input.refs)
+  if (structural !== null)
+    return { output: null, code: structural.code, message: structural.message, pending: null }
   const iter: IterState = { outputs: new Map(), inputs: new Map(), executed: new Set() }
   if (Object.keys(initialInputs).length > 0) iter.inputs.set(0, initialInputs)
   const maxSteps = numericThreshold(model.thresholds, 'max_steps', 512)
@@ -547,24 +774,62 @@ async function runSubgraph(
   const runOne = async (index: number): Promise<SubgraphResult | null> => {
     const contract = contracts.get(ids[index])
     if (contract === undefined) return null
-    if (depth > maxDepth) return { output: null, code: 'max_recur', message: `subgraph depth ${depth} > ${maxDepth}`, pending: null }
+    if (depth > maxDepth)
+      return {
+        output: null,
+        code: 'max_recur',
+        message: `subgraph depth ${depth} > ${maxDepth}`,
+        pending: null,
+      }
     if (gas.remaining <= 0 || rs.steps >= maxSteps) {
-      return { output: null, code: 'subgraph_incomplete', message: 'subgraph budget exhausted', pending: null }
+      return {
+        output: null,
+        code: 'subgraph_incomplete',
+        message: 'subgraph budget exhausted',
+        pending: null,
+      }
     }
     gas.remaining -= 1
-    if (isCancelled(asString(input.bag['turn_id']))) return { output: null, code: null, message: null, pending: null, cancelled: true }
+    if (isCancelled(asString(input.bag['turn_id'])))
+      return { output: null, code: null, message: null, pending: null, cancelled: true }
     const ctx = ruleCtx(rs, model, input.bag, iter, trace.effLog, index)
     const resolved = resolveInputs(index, contract, edges, ctx)
     if (!resolved.activated) return null
     consumeBranches(resolved, index, trace)
     // 子图入口已带 composite 入边输入：与边收集输入合并（预置优先）。
     const preset = iter.inputs.get(index)
-    iter.inputs.set(index, preset !== undefined ? { ...resolved.inputs, ...preset } : resolved.inputs)
-    const dispatched = await runNode(input, parentView, ids, edges, contracts, scopeCtx, rs, iter, index, contract, directives, providerOf, gas, depth, parentIndex)
-    if (dispatched.cancelled === true) return { output: null, code: null, message: null, pending: null, cancelled: true }
-    if (dispatched.pending !== null) return { output: null, code: null, message: null, pending: dispatched.pending }
+    iter.inputs.set(
+      index,
+      preset !== undefined ? { ...resolved.inputs, ...preset } : resolved.inputs,
+    )
+    const dispatched = await runNode(
+      input,
+      parentView,
+      ids,
+      edges,
+      contracts,
+      scopeCtx,
+      rs,
+      iter,
+      index,
+      contract,
+      directives,
+      providerOf,
+      gas,
+      depth,
+      parentIndex,
+    )
+    if (dispatched.cancelled === true)
+      return { output: null, code: null, message: null, pending: null, cancelled: true }
+    if (dispatched.pending !== null)
+      return { output: null, code: null, message: null, pending: dispatched.pending }
     if (dispatched.refusal !== null) {
-      return { output: null, code: dispatched.refusal['code'] as string, message: dispatched.refusal['message'] as string, pending: null }
+      return {
+        output: null,
+        code: dispatched.refusal['code'] as string,
+        message: dispatched.refusal['message'] as string,
+        pending: null,
+      }
     }
     return null
   }
@@ -581,21 +846,57 @@ async function runSubgraph(
     const resolved = resolveInputs(sink, contract, edges, ctx)
     consumeBranches(resolved, sink, trace)
     const preset = iter.inputs.get(sink)
-    iter.inputs.set(sink, preset !== undefined ? { ...resolved.inputs, ...preset } : resolved.inputs)
-    const dispatched = await runNode(input, parentView, ids, edges, contracts, scopeCtx, rs, iter, sink, contract, directives, providerOf, gas, depth, parentIndex)
-    if (dispatched.cancelled === true) return { output: null, code: null, message: null, pending: null, cancelled: true }
-    if (dispatched.pending !== null) return { output: null, code: null, message: null, pending: dispatched.pending }
+    iter.inputs.set(
+      sink,
+      preset !== undefined ? { ...resolved.inputs, ...preset } : resolved.inputs,
+    )
+    const dispatched = await runNode(
+      input,
+      parentView,
+      ids,
+      edges,
+      contracts,
+      scopeCtx,
+      rs,
+      iter,
+      sink,
+      contract,
+      directives,
+      providerOf,
+      gas,
+      depth,
+      parentIndex,
+    )
+    if (dispatched.cancelled === true)
+      return { output: null, code: null, message: null, pending: null, cancelled: true }
+    if (dispatched.pending !== null)
+      return { output: null, code: null, message: null, pending: dispatched.pending }
     if (dispatched.refusal !== null) {
-      return { output: null, code: dispatched.refusal['code'] as string, message: dispatched.refusal['message'] as string, pending: null }
+      return {
+        output: null,
+        code: dispatched.refusal['code'] as string,
+        message: dispatched.refusal['message'] as string,
+        pending: null,
+      }
     }
   }
   const output = iter.outputs.get(sink) ?? null
   if (output === null) {
     const refused = trace.refusedAt
     if (refused !== null && typeof refused['code'] === 'string') {
-      return { output: null, code: refused['code'] as string, message: 'subgraph refused', pending: null }
+      return {
+        output: null,
+        code: refused['code'] as string,
+        message: 'subgraph refused',
+        pending: null,
+      }
     }
-    return { output: null, code: 'input_insufficient', message: 'subgraph sink has no output', pending: null }
+    return {
+      output: null,
+      code: 'input_insufficient',
+      message: 'subgraph sink has no output',
+      pending: null,
+    }
   }
   return { output, code: null, message: null, pending: null }
 }
@@ -623,19 +924,61 @@ async function runNode(
   const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, index)
   const pre = evalPre(contractPre(contract), ctx)
   if (!pre.ok) {
-    trace.refuse(index, rs.iter, pre.code ?? 'pre_unsat', attributionOf(model, pre.code ?? 'pre_unsat'), parentIndex)
-    return { refusal: refusalArtifact(model, pre.code ?? 'pre_unsat', pre.reason ?? 'pre_unsat'), pending: null }
+    trace.refuse(
+      index,
+      rs.iter,
+      pre.code ?? 'pre_unsat',
+      attributionOf(model, pre.code ?? 'pre_unsat'),
+      parentIndex,
+    )
+    return {
+      refusal: refusalArtifact(model, pre.code ?? 'pre_unsat', pre.reason ?? 'pre_unsat'),
+      pending: null,
+    }
   }
   const chosen = selectInstance(model, contract, scopeCtx)
   if (chosen === null) {
-    trace.refuse(index, rs.iter, 'scope_mismatch', attributionOf(model, 'scope_mismatch'), parentIndex)
-    return { refusal: refusalArtifact(model, 'scope_mismatch', `no instance for ${ids[index]}`), pending: null }
+    trace.refuse(
+      index,
+      rs.iter,
+      'scope_mismatch',
+      attributionOf(model, 'scope_mismatch'),
+      parentIndex,
+    )
+    return {
+      refusal: refusalArtifact(model, 'scope_mismatch', `no instance for ${ids[index]}`),
+      pending: null,
+    }
   }
-  const step = trace.startStep(index, rs.iter, ids[index], chosen.chosen_instance, chosen.chosen_agent)
+  const step = trace.startStep(
+    index,
+    rs.iter,
+    ids[index],
+    chosen.chosen_instance,
+    chosen.chosen_agent,
+  )
   if (parentIndex !== null) step['parent_index'] = parentIndex
   // composite 实例（G2）：实现是「运行期递归展开 node.subgraph」，不走 capability 派发。
   if (nodeImpl(chosen.node) === 'composite') {
-    return runCompositeNode(input, view, ids, edges, contracts, scopeCtx, rs, iter, index, contract, chosen, step, directives, providerOf, gas, depth, parentIndex)
+    return runCompositeNode(
+      input,
+      view,
+      ids,
+      edges,
+      contracts,
+      scopeCtx,
+      rs,
+      iter,
+      index,
+      contract,
+      chosen,
+      step,
+      directives,
+      providerOf,
+      gas,
+      depth,
+      parentIndex,
+    )
   }
   // 回合步记录按 `turn_id` 键；无回合身份（如单测直调）时跳过步记录写入。
   const turnId = asString(bag['turn_id'])
@@ -649,7 +992,8 @@ async function runNode(
   }
   if (preContractId === 'tool.dispatch') {
     const questionCall = firstQuestionCall(Array.isArray(rs.lastCalls) ? rs.lastCalls : [])
-    if (questionCall !== null) bag['cursor'] = graphCursor('question', index, rs, iter, questionCall, bag['input'], turnId)
+    if (questionCall !== null)
+      bag['cursor'] = graphCursor('question', index, rs, iter, questionCall, bag['input'], turnId)
   }
 
   // post 不过：可重试码（如模型偶发空产出）重跑本节点，达上限才收口为拒绝；其余立即拒绝。
@@ -672,7 +1016,10 @@ async function runNode(
         step['verdict'] = 'fail'
         step['refusal'] = 'owner_unavailable'
         trace.refuse(index, rs.iter, 'owner_unavailable', 'owner', parentIndex)
-        return { refusal: refusalArtifact(model, 'owner_unavailable', 'turn step append failed'), pending: null }
+        return {
+          refusal: refusalArtifact(model, 'owner_unavailable', 'turn step append failed'),
+          pending: null,
+        }
       }
     }
     const result = await dispatchNode({
@@ -700,8 +1047,17 @@ async function runNode(
     if (result.outcome === 'transport_failed') {
       step['verdict'] = 'fail'
       step['refusal'] = 'transport_failed'
-      trace.refuse(index, rs.iter, 'transport_failed', attributionOf(model, 'transport_failed'), parentIndex)
-      return { refusal: refusalArtifact(model, 'transport_failed', result.code ?? 'transport_failed'), pending: null }
+      trace.refuse(
+        index,
+        rs.iter,
+        'transport_failed',
+        attributionOf(model, 'transport_failed'),
+        parentIndex,
+      )
+      return {
+        refusal: refusalArtifact(model, 'transport_failed', result.code ?? 'transport_failed'),
+        pending: null,
+      }
     }
     if (result.outcome === 'error') {
       const code = result.code ?? 'downstream_refusal'
@@ -715,7 +1071,10 @@ async function runNode(
     applySideEffects(ids[index], output, rs, providerOf)
     // post 的输入面含本 Scope outputs：先落槽再求值，不过则短路（不产产物）。
     iter.outputs.set(index, output)
-    const post = evalPost(contractPost(contract), ruleCtx(rs, model, bag, iter, trace.effLog, index))
+    const post = evalPost(
+      contractPost(contract),
+      ruleCtx(rs, model, bag, iter, trace.effLog, index),
+    )
     if (post.ok) break
     const reason = post.reason ?? 'post_failed'
     const code = postRefusalCode(reason)
@@ -731,7 +1090,14 @@ async function runNode(
     step['verdict'] = 'fail'
     step['refusal'] = 'redundant'
     trace.refuse(index, rs.iter, 'redundant', attributionOf(model, 'redundant'), parentIndex)
-    return { refusal: refusalArtifact(model, 'redundant', `output port ${over.port} took multiple branches`), pending: null }
+    return {
+      refusal: refusalArtifact(
+        model,
+        'redundant',
+        `output port ${over.port} took multiple branches`,
+      ),
+      pending: null,
+    }
   }
   iter.executed.add(index)
   for (const directive of directivesOf(output)) directives.push(directive)
@@ -742,7 +1108,8 @@ async function runNode(
     const extern = externPayload(output)
     if (extern !== null && extern['ok'] === true) {
       // approval.pending 事件只由 #32 approval.enqueue 发（规范载荷），本插件不重复发。
-      const cursor = pendingCursor ?? graphCursor('approval', index, rs, iter, null, bag['input'], turnId)
+      const cursor =
+        pendingCursor ?? graphCursor('approval', index, rs, iter, null, bag['input'], turnId)
       return { refusal: null, pending: { kind: 'approval', cursor } }
     }
   }
@@ -789,7 +1156,10 @@ async function runNode(
     }
     // 带工具调用的助手承接帧先落盘：工具结果未知时工具卡也已在历史里（结果未知 ≠ 没有记录）。
     const message = isRecord(output['message']) ? (output['message'] as Rec) : null
-    const calls = message !== null && Array.isArray(message['tool_calls']) ? (message['tool_calls'] as Json[]) : []
+    const calls =
+      message !== null && Array.isArray(message['tool_calls'])
+        ? (message['tool_calls'] as Json[])
+        : []
     if (turnId !== null && message !== null && calls.length > 0) {
       // 中立推理块不落此中间承接帧：投影侧对该步走「普通 step.result」分支，会与 tool.dispatch 的
       // intent 结果分支重复投影同一份推理；推理持久化只落在 dispatch / deny / 收口步（消费端实际读取处）。
@@ -823,7 +1193,8 @@ async function runNode(
   }
   if (preContractId === 'verify') {
     const report = output['report']
-    if (isRecord(report) && report['skipped'] !== true && report['passed'] === false) rs.verifyFailed = true
+    if (isRecord(report) && report['skipped'] !== true && report['passed'] === false)
+      rs.verifyFailed = true
     if (report !== undefined) {
       const text = `verify: ${JSON.stringify(report)}`
       rs.extraMessages.push({ role: 'tool', content: text })
@@ -856,7 +1227,9 @@ function fsopOpOf(tool: string, args: Rec): { op: string; write: boolean } | nul
   if (tool === 'stat') return { op: 'stat', write: false }
   if (tool === 'edit') {
     const old = args['old']
-    return typeof old === 'string' && old.length > 0 ? { op: 'replace', write: true } : { op: 'write', write: true }
+    return typeof old === 'string' && old.length > 0
+      ? { op: 'replace', write: true }
+      : { op: 'write', write: true }
   }
   const explicit = args['op']
   if (typeof explicit === 'string' && explicit.length > 0) {
@@ -951,7 +1324,8 @@ function approvalGrant(bag: Rec, env: CallEnv, rs: RunState, cursor: Rec): Rec |
 
 function firstQuestionCall(calls: Rec[]): string | null {
   for (const call of calls) {
-    if (call['tool'] === 'question' && typeof call['call_id'] === 'string') return call['call_id'] as string
+    if (call['tool'] === 'question' && typeof call['call_id'] === 'string')
+      return call['call_id'] as string
   }
   return null
 }
@@ -1008,7 +1382,8 @@ function appendToolMessages(rs: RunState, output: Rec): void {
   const results = Array.isArray(output['results']) ? (output['results'] as Json[]) : []
   results.forEach((result, index) => {
     const rec = isRecord(result) ? result : null
-    const fromResult = rec !== null && typeof rec['call_id'] === 'string' ? (rec['call_id'] as string) : null
+    const fromResult =
+      rec !== null && typeof rec['call_id'] === 'string' ? (rec['call_id'] as string) : null
     const fromCall =
       calls[index] !== undefined && typeof calls[index]['call_id'] === 'string'
         ? (calls[index]['call_id'] as string)
@@ -1024,7 +1399,9 @@ function appendToolMessages(rs: RunState, output: Rec): void {
 /** 累积展示记录：正文取最后一条助手消息，parts 由已回灌时间线（含工具结果）折叠而成。 */
 function accumulatedAssistant(rs: RunState, tools: Json[]): Rec {
   const partial = rs.messages.length > 0 && isRecord(rs.messages[0]) ? (rs.messages[0] as Rec) : {}
-  const assistant: Rec = { content: typeof partial['content'] === 'string' ? (partial['content'] as string) : '' }
+  const assistant: Rec = {
+    content: typeof partial['content'] === 'string' ? (partial['content'] as string) : '',
+  }
   const parts = displayParts(rs.extraMessages, null, tools)
   if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
   return assistant
@@ -1041,9 +1418,11 @@ function feedBackDenied(rs: RunState): Rec[] {
     error: { code: 'denied', message: 'tool call denied by guard; choose another approach' },
   }))
   for (const result of results) {
-    rs.extraMessages.push({ role: 'tool', tool_call_id: result.call_id, content: JSON.stringify(result) })
+    rs.extraMessages.push({
+      role: 'tool',
+      tool_call_id: result.call_id,
+      content: JSON.stringify(result),
+    })
   }
   return results
 }
-
-

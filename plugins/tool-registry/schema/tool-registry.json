@@ -1,0 +1,54 @@
+{
+  "title": "tool-registry（工具目录装配）",
+  "description": "身份自述 / 数据契约：工具目录装配原语。list 把 `pins` 的 describe/invoke 提供者各自 `describe` 并集 + 调用方随 bag 传入的能力类绑定表（bag.tools_bindings）+ 外部 MCP 工具清单（bag.mcp_tools）装配为目录，逐项校验四要素 / argsSchema 白名单 / caps 形状，做工具名去重与模型可见文案拼装；调用方已给出 `bag.directory` / `bag.tools` 时直接复用、不再拉 describe。argsSchema / caps 校验经反向 `port.call tool-schema.*`；服务不读投影、无写通道。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "tool-registry.list": []
+  },
+  "properties": {
+    "list_request": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "list 入参（bag）：tools_bindings 与 mcp_tools 由调用方入口 term 读出后传入；已给 directory / tools 时复用。",
+      "properties": {
+        "tools_bindings": {
+          "type": "object",
+          "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?, hidden_params?}。"
+        },
+        "mcp_tools": {
+          "type": "array",
+          "description": "外部 MCP 工具清单（工具名已命名空间化 mcp.<server>.<tool>）。"
+        },
+        "directory": {
+          "type": "object",
+          "description": "调用方已装配好的目录 `{tools, rejected}`；给出则原样复用。"
+        },
+        "tools": {
+          "type": "array",
+          "description": "已装配好的工具声明数组（无 rejected）；给出则复用。"
+        }
+      }
+    },
+    "directory": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "list 的结果：{tools: [工具声明], rejected: [{name, code, message}]}。工具声明含四要素 / description / argsSchema / caps / idempotent / render 与派发所需的 provider / kind。",
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "object" } },
+        "rejected": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "bag 非对象。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "tool-registry.list": 120000
+  }
+}

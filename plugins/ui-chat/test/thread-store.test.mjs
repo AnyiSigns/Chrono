@@ -292,9 +292,70 @@ test('工具卡 fold：有序、按 call_id 去重后置末、chunks 追加、en
   view = applyToolDelta(view, { run: 'r1', call_id: 'a', chunk: 'line2' })
   const toolA = view.inFlight.tools.find((item) => item.callId === 'a')
   assert.equal(toolA.chunks, 'line1\nline2')
-  view = applyToolEnd(view, { run: 'r1', call_id: 'a', ok: true })
+  view = applyToolEnd(view, { run: 'r1', call_id: 'a', ok: true, result: { text: 'body' } })
   assert.equal(view.inFlight.tools.find((item) => item.callId === 'a').done, true)
   assert.equal(view.inFlight.tools.find((item) => item.callId === 'a').ok, true)
+  // 结果本体随 tool.end 落卡：在途卡完成即可渲染输出，不必等定稿快照。
+  assert.deepEqual(view.inFlight.tools.find((item) => item.callId === 'a').result, { text: 'body' })
+  assert.equal(view.inFlight.tools.find((item) => item.callId === 'a').error, null)
+})
+
+test('tool.end 失败带 result / error：两者都落卡（在途卡展示错误、保留输出）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1' })
+  view = applyToolStart(view, { run: 'r1', call_id: 'a', tool: 'shell', args: { input: 'node x.mjs' } })
+  assert.equal(view.inFlight.tools[0].result, null)
+  assert.equal(view.inFlight.tools[0].error, null)
+  view = applyToolEnd(view, {
+    run: 'r1',
+    call_id: 'a',
+    ok: false,
+    result: { exit_code: 1, stdout: 'boom' },
+    error: { code: 'nonzero_exit', message: 'command exited with code 1' },
+  })
+  const tool = view.inFlight.tools[0]
+  assert.equal(tool.done, true)
+  assert.equal(tool.ok, false)
+  assert.deepEqual(tool.result, { exit_code: 1, stdout: 'boom' })
+  assert.deepEqual(tool.error, { code: 'nonzero_exit', message: 'command exited with code 1' })
+})
+
+test('tool.end 采纳结果自带的动态 render（question 题干 / 选项随结果下发）', () => {
+  let view = applyRunStarted(emptyView(), { run: 'r1', thread: 't1' })
+  // tool.start 只带工具目录静态 render（无题干 / 选项）
+  view = applyToolStart(view, {
+    run: 'r1',
+    call_id: 'q1',
+    tool: 'question',
+    render: { form: 'card', label: 'question', summary: '{header}', detail: { kind: 'question' } },
+  })
+  const dynamic = {
+    form: 'card',
+    label: 'question',
+    summary: '工具测试',
+    detail: {
+      kind: 'question',
+      interactive: true,
+      id: 'item-1',
+      questions: [{ id: 'q1', header: '工具测试', question: '你想吃什么？', options: [] }],
+      expired: false,
+      answers: null,
+    },
+  }
+  view = applyToolEnd(view, {
+    run: 'r1',
+    call_id: 'q1',
+    ok: true,
+    result: { ok: true, status: 'pending', id: 'item-1', render: dynamic },
+  })
+  const tool = view.inFlight.tools.find((item) => item.callId === 'q1')
+  assert.deepEqual(tool.render, dynamic, '在途卡应采用结果里的动态 render，与定稿落盘口径一致')
+  // 结果不带动态 render 时保留 tool.start 的原 render。
+  view = applyToolStart(view, { run: 'r1', call_id: 'b', tool: 'read', render: { form: 'line', label: 'read' } })
+  view = applyToolEnd(view, { run: 'r1', call_id: 'b', ok: true, result: { text: 'x' } })
+  assert.deepEqual(view.inFlight.tools.find((item) => item.callId === 'b').render, {
+    form: 'line',
+    label: 'read',
+  })
 })
 
 test('渲染段交错：正文与工具卡按到达序排布（工具不被挤到文末）', () => {

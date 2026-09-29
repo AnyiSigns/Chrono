@@ -198,6 +198,7 @@ test('hello returns manifest: durable state and full method list', async () => {
       'deliver',
       'ack_inbox',
       'turn_open',
+      'turn_insert',
       'step_append',
       'turn_settle',
       'turn_cancel',

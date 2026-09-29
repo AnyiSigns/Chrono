@@ -6,7 +6,12 @@ import assert from 'node:assert/strict'
 import { chatBag, startService } from './driver.mjs'
 import { sseEvent, sseHead, startHttpServer } from './fake-http.mjs'
 
-const FAST = { max_retries: 1, backoff_ms: 5, backoff_max_ms: 20, token_bucket: { capacity: 100, refill_per_sec: 1000 } }
+const FAST = {
+  max_retries: 1,
+  backoff_ms: 5,
+  backoff_max_ms: 20,
+  token_bucket: { capacity: 100, refill_per_sec: 1000 },
+}
 
 test('concurrent_methods=chat：两次 chat 并发在途、互不阻塞', async () => {
   let inFlight = 0

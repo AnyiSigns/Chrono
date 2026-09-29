@@ -2,17 +2,19 @@
 
 **服务自驱的图解释器**：图执行住 `execute/`、`pre` / `post` / `when` 为服务内声明式规则、节点经反向调用
 `port.call` 派发、每步记入回合尾 `trace.eff_log`。回合管道 + 图执行 + 审批 / 提问往返（跨 run 挂起 / 续跑）
-+ 回合尾写 trace / 队列项 / 提案扫描 + `agent.step` 失败的降级判定。图 / 策略住本身份的**数据世代 body**；
-六类条目（契约 / Scope / 提示词 / 图 / 阈值 / 拒绝码）；空 body 回落**包内种子图 / 默认阈值**。
 
-- 能力类 / 方法：`loop-policy.interpret`（图执行；一次调用跑**一段 = 一个 iter**，段尾未完即返回自续跑 eval）、
+- 回合尾写 trace / 队列项 / 提案扫描 + `agent.step` 失败的降级判定。图 / 策略住本身份的**数据世代 body**；
+  六类条目（契约 / Scope / 提示词 / 图 / 阈值 / 拒绝码）；空 body 回落**包内种子图 / 默认阈值**。
+
+* 能力类 / 方法：`loop-policy.interpret`（图执行；一次调用跑**一段 = 一个 iter**，段尾未完即返回自续跑 eval）、
   `loop-policy.cancel`（置取消标志；同为并发方法，才不会被在途 `interpret` 挡住）。`schema.method_timeouts` 只兜一段，
   整回合长度由预算阶梯与宿主轮数上限约束。
-- `pins`（= **节点类型空间**）：`session` / `model` / `context` / `retrieval` / `compress` / `guard` / `approval` /
+* `pins`（= **节点类型空间**）：`session` / `model` / `context` / `retrieval` / `compress` / `guard` / `approval` /
   `tools` / `router` / `evolve-metrics`。
-- 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖；服务不写链、不读投影、不 import 宿主 / 内核 / client；跨插件只走 `port.call`；`now` 取 `env.now`。
-- **并发**：`interpret` 声明为 `concurrent_methods`（跨会话并发；会话内互斥落在 `session.turn_open` 的 CAS）。
+* `needs`（跨身份依赖，一律 `mode:"one"`）：同 `pins` 各能力类 + 图机械闸 `graph-gate`。
+* 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
+* 运行时零 npm 依赖；服务不写链、不读投影、不 import 宿主 / 内核 / client；跨插件只走 `port.call`；`now` 取 `env.now`。
+* **并发**：`interpret` 声明为 `concurrent_methods`（跨会话并发；会话内互斥落在 `session.turn_open` 的 CAS）。
   派发路径无跨调用可变状态：工具 → 提供者能力类的解析器按当次 `bag.tools` 惰性读取，随调用构造，不复用全局。
   并发 `interpret` 各用各的目录解析提供者，互不串台。
 
@@ -40,7 +42,8 @@ bag 带 `contract_version` 时校验主版本：不匹配立即拒绝并给 `con
 `interpret` 返回 `{ $directives: [...] }`：按段序合并各节点返回的写计划 + 回合尾 trace 写 + 提案扫描写，
 末尾一条 `extern` 摘要（`{ok, kind:'interpret', iters, steps, fell_back, graph, ended, lifecycle, progress, refused_at, branch_not_taken, instances}`），
 交 chat 入口 term 作为顶层 `$directives` 上提。有回合身份时一段只跑一个 iter：段尾回合未完则摘要改标
-`kind:'stepping'`、计划追加 `{kind:'eval', command:'chat.resume', args:{turn_id, thread}, inject:{ids}}`，
+`kind:'stepping'`、计划追加 `{kind:'eval', command:'chat.resume', args:{turn_id, thread, progress:{iter,node_index,contract_id}}, inject:{ids}}`
+（`progress.iter` 取**下一段**序号，供 chat 在下一段 `chat.turn.started` 上广播、UI 轮次实时前进），
 由宿主在同一 run 内续跑；回合已完才收口。
 
 > **与 chat 静态管道等价口径**：等价指**写计划（`write` 子操作序列）+ 反向调用 eff 序列**一致
@@ -93,14 +96,14 @@ bag 带 `contract_version` 时校验主版本：不匹配立即拒绝并给 `con
 
 ## 六类条目与种子回落
 
-| 条目 | 形状 | 空 body 回落 |
-| --- | --- | --- |
-| `contracts` | 链式 tail；能力边界（inputs / outputs / reads / publishes / pre / post / refuses / effects / cost） | 十一个种子契约 |
-| `nodes` | 链式 tail；Scope 实例（atomic / composite、entry、bindings、autonomy、scope、links） | 十一个种子实例 |
-| `prompts` | 链式 tail / 对象映射；`system`（Markdown：角色 + 沟通 / 执行 / 工具 / 安全四节、安全节最高优先、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词 |
-| `graph` | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from | 种子图 |
-| `thresholds` | 链式 tail / 扁平 map / 条目数组；字段名契约见下 | `DEFAULT_THRESHOLDS` |
-| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}` | 十八码（含 `empty_output` 可重试；composite 新增 `max_recur` / `subgraph_incomplete` / `delegate_output_ambiguous` / `subgraph_reject`） |
+| 条目            | 形状                                                                                                                                         | 空 body 回落                                                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `contracts`     | 链式 tail；能力边界（inputs / outputs / reads / publishes / pre / post / refuses / effects / cost）                                          | 十一个种子契约                                                                                                                           |
+| `nodes`         | 链式 tail；Scope 实例（atomic / composite、entry、bindings、autonomy、scope、links）                                                         | 十一个种子实例                                                                                                                           |
+| `prompts`       | 链式 tail / 对象映射；`system`（Markdown：角色 + 沟通 / 执行 / 工具 / 安全四节、安全节最高优先、只谈意图、**禁工具标识符**）、`skill_select` | 种子提示词                                                                                                                               |
+| `graph`         | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from                                                             | 种子图                                                                                                                                   |
+| `thresholds`    | 链式 tail / 扁平 map / 条目数组；字段名契约见下                                                                                              | `DEFAULT_THRESHOLDS`                                                                                                                     |
+| `refusal_codes` | 链式 tail（append-only）；`{code, retriable, attributable_to}`                                                                               | 十八码（含 `empty_output` 可重试；composite 新增 `max_recur` / `subgraph_incomplete` / `delegate_output_ambiguous` / `subgraph_reject`） |
 
 ## 种子图（七节点 / 十一入边）
 
@@ -116,28 +119,28 @@ assemble ──messages──▶ step ──tool_calls(非空)──▶ gate ─
   每个契约至少一个 `scope:global` 实例（不变量 6）。
 - `verify` 默认选 `as-verify-noop`（返回 `{skipped:true}`、零成本）；配了 `bindings.command` 的 workspace 实例经 scope 过滤自动选中并真跑命令。
 - 种子判定（服务内置求值器）：`nonempty` / `empty` / `eq` / `verdict_is` / `wrote_files` / `todo_incomplete` / `question_pending`
-  + 重入复合式 `dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete`。
+  - 重入复合式 `dispatched_tools_and_not_question_pending_or_verify_failed_or_todo_incomplete`。
 - 机械 `post` 四处（只做结构检查，输入面 = 本 Scope outputs/inputs/reads + thresholds + 本步 eff_log）：
   `assemble_post`（messages 非空 ∧ 末条 role ∈ user/tool/system ∧ params 为对象）、
   `step_post`（非空 ∧ 正文 / `tool_calls` 至少其一 ∧ `tool_calls` 结构合法；同帧带前言正文与工具调用合法）、
   `dispatch_post`（result 数 = call 数 ∧ 逐项 ok 布尔 ∧ 失败带 error.code）、
   `verify_post`（skipped 或 passed 布尔 + detail）。
 
-## 机械闸（**权威实现**）
+## 图机械闸（消费 `graph-gate` 提供方）
 
-`execute/gate.ts` + `execute/invariants.ts`：闭合（`no_nodes` / `edge_ref` / `cycle` / `sink` / `non_entry_isolated` /
-`no_path_to_sink` / `multiple_sinks` / `unconnected_input`）、类型（`unknown_port` / `type_mismatch`）、
-publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
-六条不变量（`missing_fallback_entry` / `missing_join_contract` / `missing_subagent_contract` / `approval_bypass` /
-`llm_chain_max` / `last_global_instance` / `unknown_contract`）、
-四条演化规则（`fork_only` / `diff_exceeded` / `min_runs_before_fork`）。
-结果哈希口径 `H({graph, pins, active_graph, runs_since_fork})`（键升序、剔 undefined、`-0→0`）。
+机械闸（闭合 / 类型 / publish 偏序 / 端口 ⊆ pins + 六条不变量 + 四条演化规则）由 `graph-gate` 提供方**权威实现**，
+本插件经反向 `port.call` 消费，不本地复刻：
 
-**与 orchestration-admin 对拍（2026-09-21 已完成）**：`test/parity.test.mjs` 对同一 bag 同时跑权威 `validateGraphData` 与 orchestration-admin
-`validateBag`，逐项断言规则 / 错误码 / 结果哈希一致。对拍修正一处口径：不变量 4 的写档 fs 判据改为**声明式**
-（显式声明 `caps.fs.write` 非 `'none'` 才算高危，且在 `effects.ports` 之外也据 `caps.fs.write` 判定，使
-`tool.dispatch`（端口 `tools`、写档）受约束，与 loop-policy 契约一致）。已同步修正 `plugins/orchestration-admin/**`
-并在两处 README 登记。
+- **运行期结构闭合**：`interpret` 入口与每个 composite 子图入口调 `graph-gate.closure`（未知契约 + 闭合检查）；
+  提供方不可用时 fail-closed 拒绝（`graph_gate_unavailable`）。
+- **提案机械闸**：回合尾提案扫描调 `graph-gate.validate`（图数据 / pins / active 图 / fork 计数随 args 传入）。
+- 图数据随 bag 传入（服务不读投影）；结果哈希口径 `H({graph, pins, active_graph, runs_since_fork})`
+  （键升序、剔 undefined、`-0→0`）。
+- 契约声明：`plugin.json.needs.graph-gate`（`mode:"one"`）；实现与对拍用例住 `plugins/graph-gate`。
+- 错误码：`no_nodes` / `edge_ref` / `cycle` / `sink` / `non_entry_isolated` / `no_path_to_sink` / `multiple_sinks` /
+  `unconnected_input` / `unknown_port` / `type_mismatch` / `publish_order` / `port_not_pinned` /
+  `missing_fallback_entry` / `missing_join_contract` / `missing_subagent_contract` / `approval_bypass` /
+  `llm_chain_max` / `last_global_instance` / `unknown_contract` / `fork_only` / `diff_exceeded` / `min_runs_before_fork`。
 
 ## trace / eff_log 与审批 / 提问往返
 
@@ -160,14 +163,14 @@ publish 偏序（`publish_order`）、端口 ⊆ pins（`port_not_pinned`）、
   `op` 映射（与 tool-fs 契约对齐）：`read→read` / `glob→list` / `grep→grep` / `stat→stat` / `edit→replace`（`old` 非空）/ `write`（`old` 空）；
   net 越档升级（`net_outside_tier`）且无 fs op 映射时补 `op:"exec"`，使 sandbox exec 能消费 net 放宽。
 - **游标契约（本插件自造 opaque 结构，宿主不认识）**：`{kind:'approval'|'question'|'orchestration_change', iter, node_index,
-  outputs, inputs, executed, messages, extra_messages, slots, shared, dispatched_tools, question_pending, verify_failed, last_calls, steps, original_input, call_id?}`。
+outputs, inputs, executed, messages, extra_messages, slots, shared, dispatched_tools, question_pending, verify_failed, last_calls, steps, original_input, call_id?}`。
   `original_input` = 本轮 `bag.input`（原始用户消息）：作答 / 裁决时刻的槽已换成 `approval.decide` / `question.answer`，
   恢复时优先用它重建上下文。提问往返的游标在派发后重建（含同批其它工具真实结果）并替换进 question 队列项的 `resume`，
   恢复时只替换 question 项。**段续跑不走此游标**：只带 `turn_id`，状态由会话步记录重建。
 
 ## 提案扫描与采纳
 
-回合尾读 evolution `proposals` 未决项（newest→oldest）→ 本地机械闸 → `port.call evolve-metrics.shadow`（零 token）→
+回合尾读 evolution `proposals` 未决项（newest→oldest）→ `port.call graph-gate.validate`（机械闸）→ `port.call evolve-metrics.shadow`（零 token）→
 `approval.wait` 产 `orchestration_change` 入 approval（item 带游标 + shadow 指标 def + `port:'orchestration-admin'`）→ 本 run 结束。
 裁决续跑（`cursor.kind:'orchestration_change'`）：`approved` ⇒ 按 `patch.writes[]` 展开
 `add_gen('loop-policy', 图 def)` + 各跨身份 `add_gen` + `accepted` verdict；`denied` ⇒ `rejected` verdict。

@@ -49,7 +49,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     input: link,
     config: link,
     secrets: SECRETS,
-    host: link,
+    refHydrate: link,
   })
   const handlers: Record<string, Handler> = {}
   for (const [name, handler] of Object.entries(rawHandlers)) {

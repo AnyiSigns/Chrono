@@ -15,6 +15,7 @@ const DECL_FIELDS = [
   'implements',
   'methods',
   'pins',
+  'needs',
   'start',
   'build',
   'protocol',
@@ -25,7 +26,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
+test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'secrets')
@@ -33,6 +34,7 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['secrets'])
   assert.deepEqual(decl.methods, { secrets: ['resolve', 'list'] })
   assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.needs, { 'secrets-local': { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(typeof decl.restart, 'object')
@@ -56,10 +58,10 @@ test('schema/secrets.json 是合法 JSON 且声明 kind 词表', () => {
 })
 
 test('execute/ 源码文件齐全（帧编解码 / 帧循环走 plugin-sdk）', () => {
-  for (const rel of ['execute/main.ts', 'execute/methods.ts', 'execute/secrets-file.ts', 'execute/types.ts']) {
+  for (const rel of ['execute/main.ts', 'execute/methods.ts', 'execute/port-link.ts', 'execute/types.ts']) {
     assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
   }
-  assert.equal(existsSync(join(PKG_ROOT, 'execute/frames.ts')), false, '本地 frames.ts 应已删除')
+  assert.equal(existsSync(join(PKG_ROOT, 'execute/secrets-file.ts')), false, 'secrets-file.ts 应已迁入 secrets-local')
 })
 
 test('package.json 零依赖且带测试脚本', () => {

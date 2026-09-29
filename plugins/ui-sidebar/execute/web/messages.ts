@@ -61,6 +61,13 @@ export const UI_TEXT: Record<string, string> = {
   sidebar_rail_label: '会话列表',
   sidebar_ungrouped: '未分组',
   sidebar_expand_unavailable: '窗口过窄，无法展开',
+  sidebar_time_now: '刚刚',
+  sidebar_time_minutes: '{n} 分钟前',
+  sidebar_time_hours: '{n} 小时前',
+  sidebar_time_today: '今天',
+  sidebar_time_yesterday: '昨天',
+  sidebar_time_days: '{n} 天前',
+  sidebar_time_older: '更早',
 }
 
 const LOCALE_KEY = 'locale'

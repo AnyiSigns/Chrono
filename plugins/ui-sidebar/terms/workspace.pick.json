@@ -1,1 +1,1 @@
-["eff", "ui-sidebar", "pickWorkspace", ["c", null]]
+["eff", "workspace-picker", "pick", ["c", null]]

@@ -7,7 +7,7 @@
 - 能力类 / 方法：`session-title` → `generate`
 - 命令：无（由调用方回合管道按能力类调 `generate`，不暴露命令面）
 - 成员：`execute`（TS 服务）、`schema`（`title.json`）
-- `pins`：`model` → `model-protocol`（`model.complete` 非流式单次补全）
+- `needs`：`model` → `model-protocol`（`model.complete` 非流式单次补全）、`title-format` → `title-format`（`title-format.resolve` 标题后处理）
 - 状态档：`recomputable`（无本地持久状态；模型调用不重放、不缓存）
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 健康探针自述：`session-title.generate`（宿主健康判定走协议级 `probe` / `pong`，本字段仅服务自述）
@@ -18,9 +18,11 @@
    读出用户配置后装配传入；服务**不读投影**。
 2. 生成：反向调用模型服务的 `model.complete {config, messages, max_tokens}`——**非流式**，不发 `model.delta`，
    避免流式分片被当成助手消息污染消息流。提示词住 `schema/title.json`。
-3. 后处理：取首个非空行，去首尾空白 / 引号 / 换行 / 结尾标点，再按 **Unicode 码点**硬截断到 ≤10 字
-   （CJK 每字 = 1，不劈代理对）。
-4. 兜底（确定性）：模型失败 / 超时 / 返回空 → 取首条用户消息去空白后前 10 字；仍空 → 保留 `title_default`。
+3. 后处理：经反向 `port.call title-format.resolve` 把「模型清理结果 → 首条消息前 N 字 → `title_default`」的
+   清理 / 码点截断 / 兜底顺序**委派给 `title-format` 提供方**（去首尾空白 / 引号 / 换行 / 结尾标点，按
+   **Unicode 码点**硬截断到 ≤ `max_chars`，CJK 每字 = 1、不劈代理对）。
+4. 兜底（确定性）：模型失败 / 超时 / 返回空 → 交 `title-format.resolve` 兜底；后处理提供方不可用时回落
+   调用方 `title_default`——**不报错、不阻塞主回合**。
 5. 返回：`{ok:true, title}`——标题值（非写计划）。标题落盘归调用方 `chat`：它把标题并入传给
    `loop-policy.interpret` 的 session body，由 `session.commit` 在提交消息时一次性写入（**本插件不构造
    `put` / `add_gen`、不写世界本体**）——这样标题与提交同基，不会出现「标题整份写覆盖提交」的竞争。
@@ -29,16 +31,16 @@
 
 ```jsonc
 {
-  "conversation": "c-1",        // 必填：目标会话 id
+  "conversation": "c-1", // 必填：目标会话 id
   "first_message": "帮我写个排序", // 必填：本回合用户消息文本
-  "vendor": "vendor-openai",    // 可选：用户配置的厂商身份名
-  "model": "gpt-4o-mini",       // 可选：用户配置的模型 id（本插件不内置模型名）
+  "vendor": "vendor-openai", // 可选：用户配置的厂商身份名
+  "model": "gpt-4o-mini", // 可选：用户配置的模型 id（本插件不内置模型名）
   "params": { "temperature": 0.3 },
-  "title_default": "新对话",     // 可选：最终兜底标题
-  "prompt": "…",                // 可选：覆盖 schema 提示词
-  "max_chars": 10,              // 可选：覆盖字数上限（钳制 1..10）
-  "max_tokens": 64,             // 可选：覆盖 max_tokens
-  "timeout_ms": 15000           // 可选：覆盖超时
+  "title_default": "新对话", // 可选：最终兜底标题
+  "prompt": "…", // 可选：覆盖 schema 提示词
+  "max_chars": 10, // 可选：覆盖字数上限（钳制 1..10）
+  "max_tokens": 64, // 可选：覆盖 max_tokens
+  "timeout_ms": 15000, // 可选：覆盖超时
 }
 ```
 
@@ -56,6 +58,7 @@
 ## 边界
 
 - 不做：标题显示（归侧栏 / 顶栏）/ 重命名 UI / 模型实现与韧性（归模型服务）/ 判定是否首条（归调用方入口 term）。
+- **不做后处理原语**：去引号标点 / 码点截断 / 兜底顺序归 `title-format` 提供方，本插件只编排（调模型 + 委派后处理）。
 - **不写世界**：标题落盘归调用方 `chat`（并入 session body、随 `session.commit` 落盘）。
 - **不覆盖用户手动标题**：首条判定归调用方入口 term；标题只在该判定成立时生成。
 - 不内置任何模型名；不取时间 / 随机，同输入同输出。

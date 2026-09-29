@@ -13,7 +13,7 @@ export interface CallEnv {
   now: number
 }
 
-export { BadArgsError } from 'plugin-sdk'
+export { BadArgsError, ServiceError } from 'plugin-sdk'
 
 /** 反向调用后端失败：带结构化码，调用方据此兜底或作数据回灌。 */
 export class BackendError extends Error {

@@ -8,8 +8,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { nodeIo } from '../../chain-contract/fixtures/index.ts'
-import { startService as startLoop, defaultProviders, portError } from '../../plugins/loop-policy/test/driver.mjs'
-import { startRealService, stopRealService, makeRouter } from './_bridge.mjs'
+import {
+  startService as startLoop,
+  defaultProviders,
+  portError,
+} from '../../plugins/loop-policy/test/driver.mjs'
+import {
+  startRealService,
+  stopRealService,
+  makeRouter,
+  forward as routeForward,
+} from './_bridge.mjs'
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -18,9 +27,11 @@ function clone(value) {
 /** loop-policy 测试驱动的反向调用应答：真实服务的 `result` 帧取 `value`，`error` 帧转 `portError`。 */
 function forward(service) {
   return (args, message) =>
-    service.call(message.port, message.method, args, message.env).then((frame) =>
-      frame.kind === 'error' ? portError(frame.error, frame.message) : frame.value,
-    )
+    service
+      .call(message.port, message.method, args, message.env)
+      .then((frame) =>
+        frame.kind === 'error' ? portError(frame.error, frame.message) : frame.value,
+      )
 }
 
 const TOOLS = [
@@ -42,17 +53,40 @@ function startGuard() {
   return startRealService({ name: 'guard' })
 }
 
-/** 真实 tools 服务：工具提供者（Rust 构建件）以桩应答，只假最外部工具边界。 */
-function startTools() {
-  return startRealService({
-    name: 'tools',
+/**
+ * 真实工具链：门面 `tools` + 下游 `tool-registry` / `tool-dispatch` / `tool-schema` 均为真实服务，
+ * 逐跳异步桥接反向 `port.call`（模拟宿主按 pins 路由），只假最外部工具提供者（Rust 构建件）。
+ * `providerRoutes` 形如 `{ '<port>.<method>': (args, message) => value | {ok,...} }`。
+ */
+function startToolsChain(providerRoutes = {}) {
+  const schema = startRealService({ name: 'tool-schema' })
+  const registry = startRealService({ name: 'tool-registry' })
+  const dispatch = startRealService({
+    name: 'tool-dispatch',
     onPortCall: makeRouter({
-      'tool-fs.invoke': (args) => ({
-        ok: true,
-        result: { path: args.args?.path ?? null, lines: '1-240', sha: 'a1b2', content: '42: return obj.value' },
-      }),
+      'tool-schema.validate-args': routeForward(schema),
+      'tool-schema.normalize-decl': routeForward(schema),
+      'tool-schema.normalize-caps': routeForward(schema),
+      'tool-registry.list': routeForward(registry),
+      ...providerRoutes,
     }),
   })
+  const tools = startRealService({
+    name: 'tools',
+    onPortCall: makeRouter({
+      'tool-dispatch.dispatch': routeForward(dispatch),
+      'tool-registry.list': routeForward(registry),
+    }),
+  })
+  return {
+    tools,
+    async stop() {
+      await stopRealService(tools)
+      await stopRealService(dispatch)
+      await stopRealService(registry)
+      await stopRealService(schema)
+    },
+  }
 }
 
 /** 模型先调 fs.read，工具结果回灌后收尾。 */
@@ -69,14 +103,29 @@ function modelProviders() {
     'model.chat': (args) => {
       const last = Array.isArray(args.messages) ? args.messages[args.messages.length - 1] : null
       if (last && last.role === 'tool') return { ok: true, text: 'done', tool_calls: [], usage: {} }
-      return { ok: true, text: '', tool_calls: [{ id: 'call-0', name: 'fs.read', args: { path: 'foo.ts' } }], usage: {} }
+      return {
+        ok: true,
+        text: '',
+        tool_calls: [{ id: 'call-0', name: 'fs.read', args: { path: 'foo.ts' } }],
+        usage: {},
+      }
     },
   })
 }
 
 test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）', async () => {
   const guard = startGuard()
-  const tools = startTools()
+  const chain = startToolsChain({
+    'tool-fs.invoke': (args) => ({
+      ok: true,
+      result: {
+        path: args.args?.path ?? null,
+        lines: '1-240',
+        sha: 'a1b2',
+        content: '42: return obj.value',
+      },
+    }),
+  })
   const gateBags = []
   const dispatchBags = []
   const loop = startLoop({
@@ -88,13 +137,13 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
       },
       'tools.dispatch': (args, message) => {
         dispatchBags.push(clone(args))
-        return forward(tools)(args, message)
+        return forward(chain.tools)(args, message)
       },
     },
   })
   try {
     await guard.hello()
-    await tools.hello()
+    await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),
@@ -123,23 +172,20 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
   } finally {
     loop.close()
     await loop.exit
-    await stopRealService(tools)
+    await chain.stop()
     await stopRealService(guard)
   }
 })
 
 test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒绝作工具结果）', async () => {
   const guard = startGuard()
-  // 用一个会触发的哨兵：deny 时真实 tools 服务不应被触达。
+  // 用一个会触发的哨兵：deny 时真实工具链不应被触达。
   let toolsTouched = 0
-  const tools = startRealService({
-    name: 'tools',
-    onPortCall: makeRouter({
-      'tool-fs.invoke': () => {
-        toolsTouched += 1
-        return { ok: true, result: { path: 'foo.ts' } }
-      },
-    }),
+  const chain = startToolsChain({
+    'tool-fs.invoke': () => {
+      toolsTouched += 1
+      return { ok: true, result: { path: 'foo.ts' } }
+    },
   })
   const modelCalls = []
   const loop = startLoop({
@@ -148,16 +194,22 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
       'model.chat': (args) => {
         modelCalls.push(clone(args))
         const last = Array.isArray(args.messages) ? args.messages[args.messages.length - 1] : null
-        if (last && last.role === 'tool') return { ok: true, text: 'picked another way', tool_calls: [], usage: {} }
-        return { ok: true, text: '', tool_calls: [{ id: 'call-0', name: 'fs.read', args: { path: 'foo.ts' } }], usage: {} }
+        if (last && last.role === 'tool')
+          return { ok: true, text: 'picked another way', tool_calls: [], usage: {} }
+        return {
+          ok: true,
+          text: '',
+          tool_calls: [{ id: 'call-0', name: 'fs.read', args: { path: 'foo.ts' } }],
+          usage: {},
+        }
       },
       'guard.judge': forward(guard),
-      'tools.dispatch': forward(tools),
+      'tools.dispatch': forward(chain.tools),
     },
   })
   try {
     await guard.hello()
-    await tools.hello()
+    await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),
@@ -169,7 +221,10 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
 
     // deny 属工具级拒绝：调用不得到达工具提供者（零副作用）。
     assert.equal(toolsTouched, 0, 'deny 后工具提供者不得被触达')
-    assert.equal(loop.portCalls.some((call) => call.port === 'tools' && call.method === 'dispatch'), false)
+    assert.equal(
+      loop.portCalls.some((call) => call.port === 'tools' && call.method === 'dispatch'),
+      false,
+    )
     assert.equal(modelCalls.length, 2, 'deny 后模型应被再次调用（换方案）')
     // 拒绝原因作为 tool 结果回灌给模型。
     const fedBack = modelCalls[1].messages.filter((message) => message.role === 'tool').pop()
@@ -177,12 +232,14 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
     assert.match(String(fedBack.content), /denied/)
 
     // 拒绝作工具结果回灌、回合继续（§十二 定案 3）：不是 refused 收口。
-    const summary = result.value.$directives.find((directive) => directive.kind === 'extern' && directive.payload?.kind === 'interpret')
+    const summary = result.value.$directives.find(
+      (directive) => directive.kind === 'extern' && directive.payload?.kind === 'interpret',
+    )
     assert.equal(summary.payload.ended, 'done')
   } finally {
     loop.close()
     await loop.exit
-    await stopRealService(tools)
+    await chain.stop()
     await stopRealService(guard)
   }
 })
@@ -193,22 +250,19 @@ test('供给向：工具结果里的 $directives 冒泡进回合计划', async (
     kind: 'write',
     request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { note: 'bubbled' } } }] } },
   }
-  const tools = startRealService({
-    name: 'tools',
-    onPortCall: makeRouter({
-      'tool-fs.invoke': () => ({ ok: true, result: { path: 'foo.ts', $directives: [put] } }),
-    }),
+  const chain = startToolsChain({
+    'tool-fs.invoke': () => ({ ok: true, result: { path: 'foo.ts', $directives: [put] } }),
   })
   const loop = startLoop({
     providers: {
       ...modelProviders(),
       'guard.judge': forward(guard),
-      'tools.dispatch': forward(tools),
+      'tools.dispatch': forward(chain.tools),
     },
   })
   try {
     await guard.hello()
-    await tools.hello()
+    await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),
@@ -218,13 +272,18 @@ test('供给向：工具结果里的 $directives 冒泡进回合计划', async (
     })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const bubbled = result.value.$directives.find(
-      (directive) => directive.kind === 'write' && directive.request?.args?.ops?.[0]?.args?.body?.note === 'bubbled',
+      (directive) =>
+        directive.kind === 'write' &&
+        directive.request?.args?.ops?.[0]?.args?.body?.note === 'bubbled',
     )
-    assert.ok(bubbled !== undefined, `工具结果的写计划须冒泡：${JSON.stringify(result.value.$directives)}`)
+    assert.ok(
+      bubbled !== undefined,
+      `工具结果的写计划须冒泡：${JSON.stringify(result.value.$directives)}`,
+    )
   } finally {
     loop.close()
     await loop.exit
-    await stopRealService(tools)
+    await chain.stop()
     await stopRealService(guard)
   }
 })

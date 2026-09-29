@@ -1,21 +1,18 @@
-// 接缝契约：`plugin-admin` 与真实宿主的插件入世接缝。
-// 插件只产写计划；宿主的 `validate_package` 给出 commit 哈希，内核 `commit` 决定计划能否落账。
+// 接缝契约：`plugin`（管理平面）与 `plugin-admin`（工具面）对真实宿主的入世接缝。
+// 管理平面只产写计划；宿主的 `validate_package` 给出 commit 哈希，内核 `commit` 决定计划能否落账。
 // 两侧哈希口径必须逐字节一致，否则 write 恒被 validate_required 拒绝或计划被内核拒。
+// 工具面 `plugin-admin.invoke` 经反向 `port.call plugin.<method>` 委派管理平面，接缝里桥接到真实 `plugin` 服务。
 // 该断言跨插件与冻结层，故住根 tests/contract/，import 真实 packages/host 与 packages/kernel。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
-import { startService as startSdkService } from 'plugin-sdk'
+import { join } from 'node:path'
 import { commit, EMPTY_HEAD, EMPTY_WORLD, H } from '../../packages/kernel/index.ts'
 import { validatePackage } from '../../packages/host/validate-package.ts'
 import { blobPointerOf, blobSha256 } from '../../packages/host/blobs.ts'
+import { startRealService, stopRealService, makeRouter, forward } from './_bridge.mjs'
 
-const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
-const PKG_ROOT = join(ROOT, 'plugins', 'plugin-admin')
-const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 const H1 = 'a'.repeat(64)
 
@@ -133,31 +130,41 @@ function realHostHandler({ identities = [], world = EMPTY_WORLD } = {}) {
   }
 }
 
+/** 把真实宿主处理器包成 `_bridge` 路由应答（`{value}` / `{error}` → `{ok,...}`）。 */
+function hostRoute(options = {}) {
+  const handler = realHostHandler(options)
+  return (message) => {
+    const outcome = handler(message.port, message.method, message.args)
+    if (outcome.error) {
+      return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+    }
+    return { ok: true, value: outcome.value }
+  }
+}
+
+/** 调真实服务并把 `result` / `error` 帧规范成值。 */
+async function callValue(service, port, method, args, env = FIXED_ENV) {
+  const frame = await service.call(port, method, args, env)
+  if (frame.kind === 'error') throw new Error(`${frame.error}: ${frame.message}`)
+  return frame.value
+}
+
+/** 起真实 `plugin`（管理平面）服务，宿主反向调用走真实宿主处理器。 */
 function startService(options = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), 'plugin-admin-contract-state-'))
-  const handler = realHostHandler(options)
-  const drv = startSdkService({
-    entry: ENTRY,
-    cwd: PKG_ROOT,
+  const service = startRealService({
+    name: 'plugin',
     env: { CHRONO_PLUGIN_STATE: stateDir },
-    onPortCall: (message) => {
-      const outcome = handler(message.port, message.method, message.args)
-      if (outcome.error) return { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
-      return { ok: true, value: outcome.value }
-    },
+    onPortCall: hostRoute(options),
   })
   return {
     stateDir,
-    hello: () => drv.hello('plugin-admin'),
-    call: (port, method, args, env = FIXED_ENV) => drv.call(port, method, args, env).then((m) => m.value),
-    callRaw: (port, method, args, env = FIXED_ENV) => drv.call(port, method, args, env),
-    close: () => drv.close(),
-    cleanup() {
-      try {
-        drv.child.kill()
-      } catch {
-        // 已退出
-      }
+    service,
+    hello: () => service.hello(),
+    call: (port, method, args, env = FIXED_ENV) => callValue(service, port, method, args, env),
+    callRaw: (port, method, args, env = FIXED_ENV) => service.call(port, method, args, env),
+    async cleanup() {
+      await stopRealService(service)
       rmSync(stateDir, { recursive: true, force: true })
     },
   }
@@ -208,13 +215,14 @@ test('接缝：真实 validate_package 的 result_hash 与插件 write 计划一
     const outcome = commitBatch(ops)
     assert.equal(outcome.verdict.ok, true, JSON.stringify(outcome.verdict))
   } finally {
-    drv.close()
-    drv.cleanup()
+    await drv.cleanup()
   }
 })
 
 test('接缝：身份已存在 → 无 add_identity，仅 add_gen（真实 validate 通过）', async () => {
-  const drv = startService({ identities: [{ id: 'candidate', active: H1, implements: [], commands: [] }] })
+  const drv = startService({
+    identities: [{ id: 'candidate', active: H1, implements: [], commands: [] }],
+  })
   try {
     await drv.hello()
     const files = candidate('candidate')
@@ -226,8 +234,7 @@ test('接缝：身份已存在 → 无 add_identity，仅 add_gen（真实 valid
     assert.equal(ops[ops.length - 1].op, 'add_gen')
     assert.equal(plan.$directives[1].payload.new_identity, false)
   } finally {
-    drv.close()
-    drv.cleanup()
+    await drv.cleanup()
   }
 })
 
@@ -255,8 +262,7 @@ test('接缝：零 schema 候选（省略 schema 字段）→ 真实 validate �
     const outcome = commitBatch(ops)
     assert.equal(outcome.verdict.ok, true, JSON.stringify(outcome.verdict))
   } finally {
-    drv.close()
-    drv.cleanup()
+    await drv.cleanup()
   }
 })
 
@@ -290,8 +296,7 @@ test('接缝：one need 的提交带 meta.needs，且哈希与真实 validate_pa
     const outcome = commitBatch(ops)
     assert.equal(outcome.verdict.ok, true, JSON.stringify(outcome.verdict))
   } finally {
-    drv.close()
-    drv.cleanup()
+    await drv.cleanup()
   }
 })
 
@@ -307,31 +312,38 @@ test('接缝：errors 路径（缺 plugin.json）真实宿主回 missing_plugin_
     const cacheFile = join(drv.stateDir, 'validate', `${report.candidate_hash}.json`)
     assert.equal(existsSync(cacheFile), false)
   } finally {
-    drv.close()
-    drv.cleanup()
+    await drv.cleanup()
   }
 })
 
 test('接缝：invoke plugin.write 经真实宿主后计划可冒泡', async () => {
-  const drv = startService()
+  const plane = startService()
+  const adminState = mkdtempSync(join(tmpdir(), 'plugin-admin-contract-admin-'))
+  const admin = startRealService({
+    name: 'plugin-admin',
+    env: { CHRONO_PLUGIN_STATE: adminState },
+    onPortCall: makeRouter({ plugin: forward(plane.service) }),
+  })
   try {
-    await drv.hello()
+    await plane.hello()
+    await admin.hello()
     const files = candidate('candidate')
-    await drv.call('plugin', 'validate', { identity: 'candidate', files })
-    const written = await drv.call('plugin-admin', 'invoke', {
+    await plane.call('plugin', 'validate', { identity: 'candidate', files })
+    const written = await callValue(admin, 'plugin-admin', 'invoke', {
       tool: 'plugin.write',
       args: { identity: 'candidate', files },
     })
     assert.equal(written.ok, true, JSON.stringify(written))
     assert.equal(written.result.$directives[0].request.op, 'batch')
-    // 缓存文件确实被 validate 写入（键 = 候选树哈希）。
-    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
+    // 缓存文件确实被 validate 写入（键 = 候选树哈希），且经工具面委派后仍读到同一份凭据。
+    const report = await plane.call('plugin', 'validate', { identity: 'candidate', files })
     const cached = JSON.parse(
-      readFileSync(join(drv.stateDir, 'validate', `${report.candidate_hash}.json`), 'utf8'),
+      readFileSync(join(plane.stateDir, 'validate', `${report.candidate_hash}.json`), 'utf8'),
     )
     assert.equal(cached.result_hash, report.result_hash)
   } finally {
-    drv.close()
-    drv.cleanup()
+    await stopRealService(admin)
+    rmSync(adminState, { recursive: true, force: true })
+    await plane.cleanup()
   }
 })

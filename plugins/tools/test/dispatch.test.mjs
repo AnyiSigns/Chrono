@@ -45,26 +45,46 @@ async function withService(providers, fn) {
 
 const READ = decl('read', {
   param_semantics: { path: '文件路径。' },
-  argsSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },
+  argsSchema: {
+    type: 'object',
+    properties: { path: { type: 'string' } },
+    required: ['path'],
+    additionalProperties: false,
+  },
   caps: FS_CAPS,
   idempotent: true,
 })
 const EDIT = decl('edit', {
   param_semantics: { path: '文件路径。' },
-  argsSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },
+  argsSchema: {
+    type: 'object',
+    properties: { path: { type: 'string' } },
+    required: ['path'],
+    additionalProperties: false,
+  },
   caps: RW_CAPS,
   idempotent: false,
 })
 const GLOB = decl('glob', {
   param_semantics: { pattern: 'glob 模式。' },
-  argsSchema: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'], additionalProperties: false },
+  argsSchema: {
+    type: 'object',
+    properties: { pattern: { type: 'string' } },
+    required: ['pattern'],
+    additionalProperties: false,
+  },
   caps: FS_CAPS,
   idempotent: false,
 })
 const SHELL = decl('shell', {
   provider: 'tool-shell',
   param_semantics: { input: '命令。' },
-  argsSchema: { type: 'object', properties: { input: { type: 'string' } }, required: ['input'], additionalProperties: false },
+  argsSchema: {
+    type: 'object',
+    properties: { input: { type: 'string' } },
+    required: ['input'],
+    additionalProperties: false,
+  },
   caps: RW_CAPS,
   idempotent: false,
 })
@@ -84,7 +104,11 @@ test('allow：整批并发扇出、结果按 call_id 保序、并发 > 1', async
     },
   }
   const tools = [READ]
-  const calls = ['a', 'b', 'c', 'd'].map((id, index) => ({ call_id: `c${index}`, tool: 'read', args: { path: `${id}.ts` } }))
+  const calls = ['a', 'b', 'c', 'd'].map((id, index) => ({
+    call_id: `c${index}`,
+    tool: 'read',
+    args: { path: `${id}.ts` },
+  }))
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
       calls,
@@ -94,7 +118,10 @@ test('allow：整批并发扇出、结果按 call_id 保序、并发 > 1', async
     })
     assert.equal(response.kind, 'result', JSON.stringify(response))
     const results = response.value.results
-    assert.deepEqual(results.map((item) => item.call_id), ['c0', 'c1', 'c2', 'c3'])
+    assert.deepEqual(
+      results.map((item) => item.call_id),
+      ['c0', 'c1', 'c2', 'c3'],
+    )
     assert.ok(results.every((item) => item.ok === true))
     assert.equal(results[2].result.path, 'c.ts')
     assert.ok(state.max >= 2, `并发未生效 max=${state.max}`)
@@ -116,9 +143,18 @@ test('并发上限生效：超上限排队不丢弃', async () => {
       },
     },
   }
-  const calls = Array.from({ length: 6 }, (_, index) => ({ call_id: `c${index}`, tool: 'read', args: { path: `${index}.ts` } }))
+  const calls = Array.from({ length: 6 }, (_, index) => ({
+    call_id: `c${index}`,
+    tool: 'read',
+    args: { path: `${index}.ts` },
+  }))
   await withService(providers, async (service) => {
-    const response = await service.call('dispatch', { calls, directory: directory([READ]), workspace_root: '/ws', concurrency: 2 })
+    const response = await service.call('dispatch', {
+      calls,
+      directory: directory([READ]),
+      workspace_root: '/ws',
+      concurrency: 2,
+    })
     assert.equal(response.value.results.length, 6)
     assert.equal(state.total, 6)
     assert.ok(state.max <= 2, `并发超上限 max=${state.max}`)
@@ -134,7 +170,12 @@ test('绑定项派发为反向 port.call（args 扁平化）', async () => {
     provider: 'retrieval',
     kind: 'binding',
     method: 'search',
-    argsSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: true },
+    argsSchema: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+      additionalProperties: true,
+    },
     caps: NO_CAPS,
     idempotent: true,
   })
@@ -147,7 +188,9 @@ test('绑定项派发为反向 port.call（args 扁平化）', async () => {
     assert.equal(result.ok, true, JSON.stringify(result))
     assert.equal(result.result.kind, 'search')
     assert.equal(result.result.echo, '记忆')
-    const call = service.portCalls.find((item) => item.port === 'retrieval' && item.method === 'search')
+    const call = service.portCalls.find(
+      (item) => item.port === 'retrieval' && item.method === 'search',
+    )
     assert.ok(call, '应发 retrieval.search 反向调用')
     assert.equal(call.args.query, '记忆')
   })
@@ -160,7 +203,11 @@ test('record 绑定派发为反向 port.call（evolve-metrics.record），写类
     'evolve-metrics': {
       record: (args) => {
         invoked += 1
-        return { evidence_id: 'ev-1', workspace_id: args.workspace_id, source: args.user_message_def }
+        return {
+          evidence_id: 'ev-1',
+          workspace_id: args.workspace_id,
+          source: args.user_message_def,
+        }
       },
     },
   }
@@ -180,7 +227,9 @@ test('record 绑定派发为反向 port.call（evolve-metrics.record），写类
     assert.equal(result.result.workspace_id, 'w1')
     assert.equal(result.result.source.def, 'h1')
 
-    const reverse = service.portCalls.find((item) => item.port === 'evolve-metrics' && item.method === 'record')
+    const reverse = service.portCalls.find(
+      (item) => item.port === 'evolve-metrics' && item.method === 'record',
+    )
     assert.ok(reverse, '应发 evolve-metrics.record 反向调用')
     assert.equal(reverse.args.user_message_def.def, 'h1')
     assert.equal(reverse.args.workspace_id, 'w1')
@@ -196,7 +245,12 @@ test('绑定 method 缺省 = 投影读（不调提供者）', async () => {
   let delivered = 0
   const providers = {
     guard: { judge: guardAllow },
-    session: { deliver: () => { delivered += 1; return { ok: true } } },
+    session: {
+      deliver: () => {
+        delivered += 1
+        return { ok: true }
+      },
+    },
   }
   const binding = decl('subagent.status', {
     provider: 'session',
@@ -214,7 +268,10 @@ test('绑定 method 缺省 = 投影读（不调提供者）', async () => {
     })
     assert.equal(response.value.results[0].result.thread, 't-9')
     assert.equal(delivered, 0)
-    assert.equal(service.portCalls.some((item) => item.port === 'session'), false)
+    assert.equal(
+      service.portCalls.some((item) => item.port === 'session'),
+      false,
+    )
   })
 })
 
@@ -222,7 +279,12 @@ test('escalate：只回 needs_approval 标记、不入队、不调提供者', as
   let invoked = 0
   const providers = {
     guard: { judge: guardByTool({ read: 'escalate' }) },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -240,7 +302,12 @@ test('deny：回 denied、零副作用、不调提供者', async () => {
   let invoked = 0
   const providers = {
     guard: { judge: guardByTool({ read: 'deny' }) },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -257,7 +324,12 @@ test('批级取最严：同批 any escalate → 整批 needs_approval（不部�
   let invoked = 0
   const providers = {
     guard: { judge: guardByTool({ edit: 'escalate' }) },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -268,7 +340,10 @@ test('批级取最严：同批 any escalate → 整批 needs_approval（不部�
       directory: directory([READ, EDIT]),
       workspace_root: '/ws',
     })
-    assert.deepEqual(response.value.results.map((item) => item.error.code), ['needs_approval', 'needs_approval'])
+    assert.deepEqual(
+      response.value.results.map((item) => item.error.code),
+      ['needs_approval', 'needs_approval'],
+    )
     assert.equal(invoked, 0)
   })
 })
@@ -297,7 +372,9 @@ test('workspace_missing 只对相对路径拒：绝对路径仍可派发', async
 test('错误原样透传：提供者错误码不改写（含 timeout），port.call 失败同样透传', async () => {
   const providers = {
     guard: { judge: guardAllow },
-    'tool-shell': { invoke: () => ({ ok: false, error: { code: 'timeout', message: 'sandbox timeout' } }) },
+    'tool-shell': {
+      invoke: () => ({ ok: false, error: { code: 'timeout', message: 'sandbox timeout' } }),
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -313,6 +390,48 @@ test('错误原样透传：提供者错误码不改写（含 timeout），port.c
     assert.equal(byId.get('c1').error.message, 'sandbox timeout')
     // read 的 provider 未注入 → port.call 失败 unresolved_cap 原样透传
     assert.equal(byId.get('c2').error.code, 'unresolved_cap')
+  })
+})
+
+test('失败另带 result：错误码照旧、result 一并透传（模型才看得到具体报错）', async () => {
+  const providers = {
+    guard: { judge: guardAllow },
+    'tool-shell': {
+      invoke: () => ({
+        ok: false,
+        error: { code: 'nonzero_exit', message: 'command exited with code 1' },
+        result: { exit_code: 1, stdout: 'boom: 找不到模块', stderr: '' },
+      }),
+    },
+  }
+  await withService(providers, async (service) => {
+    const response = await service.call('dispatch', {
+      calls: [{ call_id: 'c1', tool: 'shell', args: { input: 'node verify.mjs' } }],
+      directory: directory([SHELL]),
+      workspace_root: '/ws',
+    })
+    const result = response.value.results[0]
+    assert.equal(result.ok, false)
+    assert.equal(result.error.code, 'nonzero_exit')
+    assert.equal(result.result.exit_code, 1)
+    assert.equal(result.result.stdout, 'boom: 找不到模块')
+  })
+})
+
+test('失败无 result：不合成空 result（保持 {ok:false, error} 形状）', async () => {
+  const providers = {
+    guard: { judge: guardAllow },
+    'tool-fs': { invoke: () => ({ ok: false, error: { code: 'fs_denied', message: 'denied' } }) },
+  }
+  await withService(providers, async (service) => {
+    const response = await service.call('dispatch', {
+      calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
+      directory: directory([READ]),
+      workspace_root: '/ws',
+    })
+    const result = response.value.results[0]
+    assert.equal(result.ok, false)
+    assert.equal(Object.hasOwn(result, 'result'), false)
   })
 })
 
@@ -349,7 +468,12 @@ test('bag.cache=false 关闭缓存', async () => {
   let invoked = 0
   const providers = {
     guard: { judge: guardAllow },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     await service.call('dispatch', {
@@ -369,8 +493,18 @@ test('bag.verdicts 已给则跳过 guard 兜底、直接消费', async () => {
   let guardCalls = 0
   let invoked = 0
   const providers = {
-    guard: { judge: () => { guardCalls += 1; return guardAllow({ calls: [] }) } },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    guard: {
+      judge: () => {
+        guardCalls += 1
+        return guardAllow({ calls: [] })
+      },
+    },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -389,8 +523,18 @@ test('bag.verdicts 接受字符串数组 / call_id 映射，均跳过 guard', as
   let guardCalls = 0
   let invoked = 0
   const providers = {
-    guard: { judge: () => { guardCalls += 1; return guardAllow({ calls: [] }) } },
-    'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } },
+    guard: {
+      judge: () => {
+        guardCalls += 1
+        return guardAllow({ calls: [] })
+      },
+    },
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
   }
   await withService(providers, async (service) => {
     const denied = await service.call('dispatch', {
@@ -414,7 +558,14 @@ test('bag.verdicts 接受字符串数组 / call_id 映射，均跳过 guard', as
 
 test('bag.verdicts=deny 时零副作用', async () => {
   let invoked = 0
-  const providers = { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } }
+  const providers = {
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
+  }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
       calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
@@ -430,7 +581,12 @@ test('bag.verdicts=deny 时零副作用', async () => {
 test('caps / grant / tier 透传给提供者；caps 以工具声明为准', async () => {
   const providers = {
     guard: { judge: guardAllow },
-    'tool-shell': { invoke: (bag) => ({ ok: true, result: { caps: bag.caps, grant: bag.grant, tier: bag.tier, root: bag.workspace_root } }) },
+    'tool-shell': {
+      invoke: (bag) => ({
+        ok: true,
+        result: { caps: bag.caps, grant: bag.grant, tier: bag.tier, root: bag.workspace_root },
+      }),
+    },
   }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
@@ -457,7 +613,11 @@ test('MCP 工具经同一目录派发到 mcp.invoke', async () => {
   const mcpTool = decl('mcp.srv.echo', {
     provider: 'mcp',
     kind: 'invoke',
-    argsSchema: { type: 'object', properties: { text: { type: 'string' } }, additionalProperties: true },
+    argsSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      additionalProperties: true,
+    },
     caps: NO_CAPS,
     idempotent: false,
   })
@@ -485,7 +645,10 @@ test('unknown_tool / bad_args / bad_tool_decl', async () => {
         { call_id: 'a', tool: 'read', args: {} },
         { call_id: 'd', tool: 'broken', args: {} },
       ],
-      directory: directory([READ], [{ name: 'broken', code: 'bad_tool_decl', message: 'missing boundaries' }]),
+      directory: directory(
+        [READ],
+        [{ name: 'broken', code: 'bad_tool_decl', message: 'missing boundaries' }],
+      ),
       workspace_root: '/ws',
     })
     const byId = new Map(response.value.results.map((item) => [item.call_id, item]))
@@ -495,23 +658,63 @@ test('unknown_tool / bad_args / bad_tool_decl', async () => {
   })
 })
 
-test('派发时发 tool.start / tool.end 事件（带 call_id）', async () => {
+test('派发时发 tool.start / tool.end 事件（带 call_id；end 带结果本体）', async () => {
   const providers = {
     guard: { judge: guardAllow },
-    'tool-fs': { invoke: () => ({ ok: true, result: {} }) },
+    // 结果按工具名区分：end 事件必须带回对应工具的结果本体（不只 read，edit 等同理）。
+    'tool-fs': {
+      invoke: (bag) => ({
+        ok: true,
+        result: bag.tool === 'edit' ? { patch: '@@ -1 +1 @@\n-a\n+b' } : { text: 'file body' },
+      }),
+    },
   }
   await withService(providers, async (service) => {
     await service.call('dispatch', {
-      calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],
-      directory: directory([READ]),
+      calls: [
+        { call_id: 'c1', tool: 'read', args: { path: 'x.ts' } },
+        { call_id: 'c2', tool: 'edit', args: { path: 'x.ts' } },
+      ],
+      directory: directory([READ, EDIT]),
       workspace_root: '/ws',
     })
     const start = service.events.find((event) => event.topic === 'tool.start')
-    const end = service.events.find((event) => event.topic === 'tool.end')
+    const ends = new Map(
+      service.events
+        .filter((event) => event.topic === 'tool.end')
+        .map((event) => [event.payload.call_id, event.payload]),
+    )
     assert.equal(start.payload.call_id, 'c1')
     assert.equal(start.payload.tool, 'read')
-    assert.equal(end.payload.call_id, 'c1')
-    assert.equal(end.payload.ok, true)
+    assert.equal(ends.get('c1').ok, true)
+    assert.equal(ends.get('c1').result.text, 'file body')
+    assert.equal(ends.get('c2').ok, true)
+    assert.equal(ends.get('c2').result.patch, '@@ -1 +1 @@\n-a\n+b')
+  })
+})
+
+test('tool.end 失败也带结果本体（shell 非零退出的 stdout 随事件下发）', async () => {
+  const providers = {
+    guard: { judge: guardAllow },
+    'tool-shell': {
+      invoke: () => ({
+        ok: false,
+        error: { code: 'nonzero_exit', message: 'command exited with code 1' },
+        result: { exit_code: 1, stdout: 'boom', stderr: '' },
+      }),
+    },
+  }
+  await withService(providers, async (service) => {
+    await service.call('dispatch', {
+      calls: [{ call_id: 'c1', tool: 'shell', args: { input: 'node verify.mjs' } }],
+      directory: directory([SHELL]),
+      workspace_root: '/ws',
+    })
+    const end = service.events.find((event) => event.topic === 'tool.end')
+    assert.equal(end.payload.ok, false)
+    assert.equal(end.payload.result.exit_code, 1)
+    assert.equal(end.payload.result.stdout, 'boom')
+    assert.equal(end.payload.error.code, 'nonzero_exit')
   })
 })
 
@@ -529,13 +732,22 @@ test('dispatch 无 directory 时现场拉 describe 构造目录', async () => {
       workspace_root: '/ws',
     })
     assert.equal(response.value.results[0].ok, true)
-    assert.ok(service.portCalls.some((item) => item.port === 'tool-fs' && item.method === 'describe'))
+    assert.ok(
+      service.portCalls.some((item) => item.port === 'tool-fs' && item.method === 'describe'),
+    )
   })
 })
 
 test('guard 不可用 → fail-closed 全拒', async () => {
   let invoked = 0
-  const providers = { 'tool-fs': { invoke: () => { invoked += 1; return { ok: true, result: {} } } } }
+  const providers = {
+    'tool-fs': {
+      invoke: () => {
+        invoked += 1
+        return { ok: true, result: {} }
+      },
+    },
+  }
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
       calls: [{ call_id: 'c1', tool: 'read', args: { path: 'x.ts' } }],

@@ -25,9 +25,8 @@
 import {
   conversationList,
   conversationTurns,
-  hasUserMessage,
+  hasPendingUserMessage,
   loadConversation,
-  messageText,
   threadKind,
 } from './history-model.ts'
 
@@ -115,9 +114,11 @@ export function normalizeOutcome(value: any): BusinessOutcome | null {
   }
 }
 
-/** 展示码：结局层码优先，其次下游 cause 码，最后 `unknown`。 */
+/** 展示码：结局层码优先，其次下游 cause 码，最后 `unknown`。
+ *  结局层通用包装 `downstream_refusal` 不吞掉下游具体码——有 `cause` 就展示 `cause`。 */
 export function outcomeDisplayCode(outcome: BusinessOutcome | null): string {
   if (outcome === null) return 'unknown'
+  if (outcome.code === 'downstream_refusal' && outcome.causeCode !== null) return outcome.causeCode
   return outcome.code ?? outcome.causeCode ?? 'unknown'
 }
 
@@ -387,6 +388,8 @@ export function applyToolStart(view: any, payload: any): any {
     chunks: '',
     done: false,
     ok: null,
+    result: null,
+    error: null,
   })
   const segments = based.inFlight.segments.filter(
     (segment: any) => !(segment.kind === 'tool' && segment.callId === callId),
@@ -409,7 +412,12 @@ export function applyToolDelta(view: any, payload: any): any {
   return { ...based, inFlight: { ...based.inFlight, tools } }
 }
 
-/** `tool.end`：标记工具卡终态（记录 ok 供状态图标；结果本体等定稿快照）。 */
+/**
+ * `tool.end`：标记工具卡终态（ok 供状态图标；结果本体随事件下发，在途卡即时渲染输出）。
+ * 结果可自带动态 render 描述符（如 question 的题干 / 选项 / 答案快照），比目录里的静态 render 具体，
+ * 就地覆盖在途卡 render——与定稿落盘口径一致（见 loop-policy `commit-parts.ts`），否则在途卡按静态
+ * 壳渲染（question 空卡）、刷新读已落盘 part 才有内容。
+ */
 export function applyToolEnd(view: any, payload: any): any {
   const run = runId(payload)
   if (isFinished(view, run)) return view
@@ -417,8 +425,13 @@ export function applyToolEnd(view: any, payload: any): any {
   const callId = callIdOf(payload)
   if (callId.length === 0) return view
   const ok = typeof payload.ok === 'boolean' ? payload.ok : null
+  const result = isRec(payload) ? (payload.result ?? null) : null
+  const error = isRec(payload) ? (payload.error ?? null) : null
+  const dynamicRender = isRec(result) && isRec(result.render) ? result.render : null
   const tools = view.inFlight.tools.map((item: any) =>
-    item.callId === callId ? { ...item, done: true, ok } : item,
+    item.callId === callId
+      ? { ...item, done: true, ok, result, error, ...(dynamicRender !== null ? { render: dynamicRender } : {}) }
+      : item,
   )
   return { ...view, inFlight: { ...view.inFlight, tools } }
 }
@@ -529,7 +542,7 @@ export function clearPendingUser(view: any): any {
  */
 export function reconcilePendingUser(view: any): any {
   if (view.pendingUser === null) return view
-  return hasUserMessage(view.messages, messageText(view.pendingUser)) ? clearPendingUser(view) : view
+  return hasPendingUserMessage(view.messages, view.pendingUser) ? clearPendingUser(view) : view
 }
 
 /** React-free store：getSnapshot / subscribe / commit（commit 带 meta 供渲染器选增量路径）。 */

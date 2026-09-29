@@ -15,8 +15,17 @@
       "additionalProperties": true,
       "description": "结果缓存私有参数：只缓存 idempotent:true 的工具结果（写类 / 模型 chat / 有会话类永不缓存）。",
       "properties": {
-        "enabled": { "type": "boolean", "default": true, "description": "是否启用进程内结果缓存。" },
-        "max_entries": { "type": "integer", "minimum": 1, "default": 256, "description": "缓存条目上限（LRU 近似，超限淘汰最旧）。" }
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用进程内结果缓存。"
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 256,
+          "description": "缓存条目上限（LRU 近似，超限淘汰最旧）。"
+        }
       }
     },
     "list_request": {
@@ -24,8 +33,14 @@
       "additionalProperties": true,
       "description": "list 入参（bag）：tools_bindings 与 mcp_tools 由调用方入口 term 读出后传入。",
       "properties": {
-        "tools_bindings": { "type": "object", "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?, hidden_params?}。hidden_params 列的参数由调用方注入、模型不该填，list 时从模型可见 argsSchema 摘掉（仍在 validateSchema 里校验）。" },
-        "mcp_tools": { "type": "array", "description": "外部 MCP 工具清单（#37 投影 ids.mcp.body.tools，工具名已命名空间化 mcp.<server>.<tool>）。" }
+        "tools_bindings": {
+          "type": "object",
+          "description": "能力类工具绑定表：tool 名 -> {class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?, hidden_params?}。hidden_params 列的参数由调用方注入、模型不该填，list 时从模型可见 argsSchema 摘掉（仍在 validateSchema 里校验）。"
+        },
+        "mcp_tools": {
+          "type": "array",
+          "description": "外部 MCP 工具清单（#37 投影 ids.mcp.body.tools，工具名已命名空间化 mcp.<server>.<tool>）。"
+        }
       }
     },
     "dispatch_request": {
@@ -44,15 +59,30 @@
             "properties": {
               "call_id": { "type": "string", "description": "模型侧调用 id（结果按它保序）。" },
               "tool": { "type": "string", "description": "工具名（全局唯一，见工具目录）。" },
-              "args": { "type": "object", "description": "该工具的参数（按工具 argsSchema 机械校验）。" }
+              "args": {
+                "type": "object",
+                "description": "该工具的参数（按工具 argsSchema 机械校验）。"
+              }
             }
           }
         },
-        "workspace_root": { "type": "string", "description": "执行根（#14 入口 term 解析后经 #33 传入）；缺失只对相对路径调用拒 workspace_missing，绝对路径仍可派发。" },
-        "tier": { "type": "string", "description": "当前权限档（#33 随 dispatch bag 下传），透传给 guard 与提供者。" },
-        "caps": { "type": "object", "description": "调用级 caps 透传；派发时以工具声明的 caps 为准。" },
+        "workspace_root": {
+          "type": "string",
+          "description": "执行根（#14 入口 term 解析后经 #33 传入）；缺失只对相对路径调用拒 workspace_missing，绝对路径仍可派发。"
+        },
+        "tier": {
+          "type": "string",
+          "description": "当前权限档（#33 随 dispatch bag 下传），透传给 guard 与提供者。"
+        },
+        "caps": {
+          "type": "object",
+          "description": "调用级 caps 透传；派发时以工具声明的 caps 为准。"
+        },
         "grant": { "type": "object", "description": "批准后的一次性 caps.grant，本插件只透传。" },
-        "verdicts": { "type": "array", "description": "调用方（#33 tool.gate）已按 call 判好的 verdict；给出则本插件跳过 guard 兜底。" }
+        "verdicts": {
+          "type": "array",
+          "description": "调用方（#33 tool.gate）已按 call 判好的 verdict；给出则本插件跳过 guard 兜底。"
+        }
       }
     },
     "directory": {
@@ -74,6 +104,7 @@
     }
   },
   "method_timeouts": {
+    "tools.list": 130000,
     "tools.dispatch": 1800000
   }
 }

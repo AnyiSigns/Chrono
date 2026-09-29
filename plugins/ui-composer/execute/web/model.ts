@@ -38,13 +38,19 @@ const PERMISSION_ICON: { [key: string]: string } = {
 export const CONTEXT_WARNING_RATIO = 0.75
 export const CONTEXT_FULL_RATIO = 1
 
-/** 来源键 → 文案码（未知键原样显示键名，不猜）。 */
+/** 上下文来源键 → 文案码（键集 = context-window 分配器的 ALL_SOURCES）。
+ *  `tool`（工具结果）与 `tools`（工具定义）共用同一展示码「工具」，由 `sourceRows` 合并合计。 */
 const SOURCE_CODE: { [key: string]: string } = {
-  system: 'composer_source_system',
+  prompt: 'composer_source_prompt',
   tools: 'composer_source_tools',
-  memory: 'composer_source_memory',
+  input: 'composer_source_input',
+  l2: 'composer_source_l2',
+  l1: 'composer_source_l1',
+  skill: 'composer_source_skill',
+  recall: 'composer_source_recall',
   history: 'composer_source_history',
-  skills: 'composer_source_skills',
+  style: 'composer_source_style',
+  tool: 'composer_source_tools',
 }
 
 export function isRecord(value: unknown): value is Rec {
@@ -442,6 +448,62 @@ export function usageView(usage: unknown): UsageView | null {
   }
 }
 
+// ── 真实模型用量（模型回包，非装配估算） ─────────────────────────────────
+
+/** 模型回包用量键（厂商中立 + 各方言）。 */
+const USAGE_PROMPT_KEYS = ['prompt_tokens', 'input_tokens'] as const
+const USAGE_COMPLETION_KEYS = ['completion_tokens', 'output_tokens'] as const
+const USAGE_CACHED_KEYS = [
+  'cached_tokens',
+  'cache_read_input_tokens',
+  'prompt_cache_hit_tokens',
+  'cached_content_tokens',
+] as const
+
+function usageNumber(record: Rec, keys: readonly string[]): number | null {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
+  }
+  return null
+}
+
+/** 真实模型用量视图（状态栏用）：输入 / 输出 token 与缓存命中率。 */
+export interface ModelUsageView {
+  inputText: string
+  outputText: string
+  hitRateText: string
+}
+
+/**
+ * 解析模型回包的真实用量：支持 `model.delta` 的 `usage` 分片（嵌套或裸用量）与
+ * `context.assembled` 清单里的 `usage`（含 context-window 已算好的 `hit_rate`）。
+ * 无 `prompt_tokens` 回 null——绝不把装配估算当模型用量显示。
+ */
+export function modelUsageView(payload: unknown): ModelUsageView | null {
+  if (!isRecord(payload)) return null
+  const usage = isRecord(payload.usage) ? payload.usage : payload
+  const prompt = usageNumber(usage, USAGE_PROMPT_KEYS)
+  if (prompt === null) return null
+  const completion = usageNumber(usage, USAGE_COMPLETION_KEYS) ?? 0
+  let cached = 0
+  let hasCache = false
+  for (const key of USAGE_CACHED_KEYS) {
+    const value = usageNumber(usage, [key])
+    if (value !== null) {
+      cached += value
+      hasCache = true
+    }
+  }
+  const reported = usageNumber(usage, ['hit_rate'])
+  const rate = reported !== null ? reported : hasCache && prompt > 0 ? cached / prompt : null
+  return {
+    inputText: formatCount(prompt),
+    outputText: formatCount(completion),
+    hitRateText: rate === null ? '' : `${Math.round(rate * 100)}%`,
+  }
+}
+
 export interface SourceRow {
   key: string
   code: string | null
@@ -449,12 +511,13 @@ export interface SourceRow {
   text: string
 }
 
-/** 各来源 token 行；未知来源键原样显示键名。 */
+/** 各来源 token 行；未知来源键原样显示键名。同展示码的来源（工具定义 / 工具结果）合并为一行的合计。 */
 export function sourceRows(usage: unknown): SourceRow[] {
   if (!isRecord(usage)) return []
   const sources = usage.sources
   if (!isRecord(sources)) return []
   const rows: SourceRow[] = []
+  const merged = new Map<string, SourceRow>()
   for (const [key, value] of Object.entries(sources)) {
     const tokens =
       typeof value === 'number' && Number.isFinite(value)
@@ -463,7 +526,18 @@ export function sourceRows(usage: unknown): SourceRow[] {
           ? value.tokens
           : null
     if (tokens === null) continue
-    rows.push({ key, code: SOURCE_CODE[key] ?? null, tokens, text: formatCount(tokens) })
+    const code = SOURCE_CODE[key] ?? null
+    // 合并键：同文案码合计（`tools` + `tool` → 「工具」）；未知键各自成行。
+    const groupKey = code ?? `::${key}`
+    const existing = merged.get(groupKey)
+    if (existing !== undefined) {
+      existing.tokens += tokens
+      existing.text = formatCount(existing.tokens)
+      continue
+    }
+    const row: SourceRow = { key, code, tokens, text: formatCount(tokens) }
+    merged.set(groupKey, row)
+    rows.push(row)
   }
   return rows
 }
@@ -483,6 +557,23 @@ export function trimmedRows(usage: unknown): TrimmedRow[] {
         typeof item.label === 'string' ? item.label : typeof item.id === 'string' ? item.id : '',
       reason: typeof item.reason === 'string' ? item.reason : '',
     }))
+}
+
+// ── 状态栏编排进度 / 耗时 ──────────────────────────────────────────────────
+
+/**
+ * 轮次文案：只报 `第 <round> 轮`（不显节点名）；无 `iter` 回 null（状态栏不渲染该段）。
+ * `round = iter + 1`：段续跑随 args 带的 `progress.iter` 为下一段序号，故实时显示「正在进行的轮次」。
+ */
+export function progressLine(
+  progress: unknown,
+  t: (code: string, vars?: Record<string, unknown>) => string,
+): string | null {
+  if (!isRecord(progress)) return null
+  const iter =
+    typeof progress.iter === 'number' && Number.isFinite(progress.iter) ? progress.iter : null
+  if (iter === null) return null
+  return t('composer_orchestration_progress', { round: iter + 1 })
 }
 
 // ── 配置读取状态（区分「空配置」与「读失败」） ────────────────────────────────

@@ -75,7 +75,7 @@ export function parsePreTurnRefusal(value: unknown): PreTurnRefusal | null {
   if (isRecord(value.outcome)) return null
   const error = isRecord(value.error) ? value.error : null
   const code = error !== null ? asString(error.code) : null
-  if (code === null) return null
+  if (code === null || error === null) return null
   return { code, message: asString(error.message) ?? '' }
 }
 
@@ -84,8 +84,10 @@ export function isFailure(outcome: BusinessOutcome): boolean {
   return outcome.kind !== 'committed'
 }
 
-/** 展示码：优先结局层码，其次 `cause` 里的下游码；无码回 `unknown`。 */
+/** 展示码：结局层码优先，其次 `cause` 里的下游码；无码回 `unknown`。
+ *  结局层通用包装 `downstream_refusal` 不吞掉下游具体码——有 `cause` 就展示 `cause`。 */
 export function displayCode(outcome: BusinessOutcome): string {
+  if (outcome.code === 'downstream_refusal' && outcome.causeCode !== null) return outcome.causeCode
   return outcome.code ?? outcome.causeCode ?? 'unknown'
 }
 

@@ -40,19 +40,29 @@ export class GoogleGenAI {
         }
         if (process.env.FAKE_GOOGLE_TOOL_TURN === '1') {
           yield toolTurnParts()
-          yield { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 } }
+          yield {
+            usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+          }
           return
         }
         yield { text: JSON.stringify(params) }
-        yield { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 } }
+        yield {
+          usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+        }
       },
       async generateContent(params) {
         self.lastParams = params
         globalThis.__fakeGoogleLastParams = params
         if (process.env.FAKE_GOOGLE_TOOL_TURN === '1') {
-          return { ...toolTurnParts(), usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }
+          return {
+            ...toolTurnParts(),
+            usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+          }
         }
-        return { text: 'complete', usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }
+        return {
+          text: 'complete',
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }
       },
     }
   }

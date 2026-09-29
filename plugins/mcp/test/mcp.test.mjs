@@ -1,110 +1,128 @@
-﻿// `mcp` 服务协议级测试（node --test）：自实现最小协议驱动 + 最小 MCP 测试服务器。
-// 驱动 spawn `node execute/main.ts`，发 hello → 收 manifest，发 call → 收 result / error，收集 event。
-// 覆盖：握手 / 控制 / 未知方法 / EOF 自退出；清单出世界（read / write 往返、discover 只写自有存储、
-// 不产世界写计划）；confirmed=false 不 spawn；四要素兜底与 render；invoke 路由与结构化错误；
-// 退出重连；list_changed 下一拍重拉；drain 终止子进程；④ 追加日志重放。
+﻿// `mcp` 服务协议级测试（node --test）：spawn `execute/main.ts`，把反向调用（secrets / mcp-client）
+// 桥接到内存假后端。连接与子进程生命周期已归 `mcp-client`，本套只验本插件的清单存储与
+// 失败 / 隔离 / 重启策略：握手 / 控制 / EOF；清单出世界（read / write 往返、discover 写自有存储、
+// 不产世界写计划）；confirmed=false 不连；四要素兜底与 render；invoke 路由与结构化错误；
+// 连接提供方回灌 reconnected → 记账 / 隔离；配置变化复位；④ 追加日志重放。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
+import { startService } from 'plugin-sdk'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const PKG_ROOT = resolve(HERE, '..')
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
-const FAKE = join(PKG_ROOT, 'tools', 'fake-mcp-server.mjs')
-const MARKER_DIR = join(tmpdir(), 'kilo')
+const FIXED_ENV = { run: 'test-run', thread: 't1', now: 0 }
 
-function startService(options = {}) {
-  const env = { ...process.env, ...(options.env ?? {}) }
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const events = []
-  const portCalls = []
-  const secretsResolver =
-    options.secretsResolver ??
-    (() => ({ error: 'secret_missing', message: 'no resolver' }))
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      if (message.kind === 'event') {
-        events.push(message)
-        continue
+const ECHO = {
+  name: 'echo',
+  description: '回显输入文本',
+  inputSchema: {
+    type: 'object',
+    properties: { message: { type: 'string', description: '要回显的文本' } },
+    required: ['message'],
+  },
+}
+const ADD = {
+  name: 'add',
+  description: '两数相加',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      a: { type: 'number', description: '加数 a' },
+      b: { type: 'number', description: '加数 b' },
+    },
+    required: ['a', 'b'],
+  },
+}
+const BOOM = {
+  name: 'boom',
+  description: '总是失败的示例工具',
+  inputSchema: { type: 'object', properties: {} },
+}
+const OK_TOOLS = [ECHO, ADD, BOOM]
+const BARE = {
+  name: 'bare',
+  inputSchema: { type: 'object', properties: { x: { type: 'string' } } },
+}
+const IMAGE_ECHO = {
+  ...ECHO,
+  annotations: { content_type: 'image/png' },
+  outputSchema: { type: 'object', format: 'image' },
+}
+
+/** 假 `mcp-client`：list_tools / call_tool / close 的默认应答（可被单个用例覆盖）。 */
+function defaultClient() {
+  return (method, args) => {
+    if (method === 'list_tools') return { value: { ok: true, tools: OK_TOOLS, reconnected: null } }
+    if (method === 'call_tool') {
+      const tool = args.tool
+      if (tool === 'add') {
+        const sum = Number(args.arguments?.a ?? 0) + Number(args.arguments?.b ?? 0)
+        return {
+          value: {
+            ok: true,
+            result: { content: [{ type: 'text', text: String(sum) }] },
+            reconnected: null,
+          },
+        }
       }
-      if (message.kind === 'port.call') {
-        portCalls.push(message)
-        const outcome = secretsResolver(message.method, message.args)
-        const frame = outcome.error
-          ? {
-              v: '1',
-              id: message.id,
-              kind: 'port.error',
-              ok: false,
-              error: outcome.error,
-              message: outcome.message ?? outcome.error,
-            }
-          : { v: '1', id: message.id, kind: 'port.result', ok: true, value: outcome.value }
-        child.stdin.write(encodeFrame(frame))
-        continue
-      }
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
+      return {
+        value: {
+          ok: true,
+          result: { content: [{ type: 'text', text: JSON.stringify(args.arguments ?? {}) }] },
+          reconnected: null,
+        },
       }
     }
-  })
-  child.stderr.on('data', () => {})
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 8000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
-    })
-  }
-
-  return {
-    child,
-    exit,
-    events,
-    portCalls,
-    request,
-    hello: () => request('hello', { impl: 'mcp', gen: 'gen-1' }, 'manifest'),
-    call: (method, args) =>
-      request(
-        'call',
-        { port: 'mcp', method, args, env: { run: 'test-run', thread: 't1', now: 0 } },
-        ['result', 'error'],
-      ),
-    close: () => child.stdin.end(),
+    if (method === 'close') return { value: { ok: true, closed: 1 } }
+    return { error: 'unknown_method', message: 'no' }
   }
 }
 
-function serverEntry(id, mode, extra = {}, extraArgs = []) {
+/** SDK 驱动适配：能力类固定，反向调用（secrets / mcp-client）桥接同步应答。 */
+function drive({ onClient, secretsResolver, env } = {}) {
+  const client = onClient ?? defaultClient()
+  const secrets = secretsResolver ?? (() => ({ error: 'secret_missing', message: 'no resolver' }))
+  const drv = startService({
+    entry: ENTRY,
+    cwd: PKG_ROOT,
+    env,
+    onPortCall: (message) => {
+      if (message.port === 'secrets') {
+        const outcome = secrets(message.method, message.args)
+        return outcome.error
+          ? { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+          : { ok: true, value: outcome.value }
+      }
+      if (message.port === 'mcp-client') {
+        const outcome = client(message.method, message.args)
+        return outcome.error
+          ? { ok: false, code: outcome.error, message: outcome.message ?? outcome.error }
+          : { ok: true, value: outcome.value }
+      }
+      return { ok: false, code: 'unresolved_cap', message: `no bridge for ${message.port}` }
+    },
+  })
+  return {
+    ...drv,
+    hello: () => drv.hello('mcp'),
+    call: (method, args, callEnv = FIXED_ENV) => drv.call('mcp', method, args, callEnv),
+    clientCalls: (method) =>
+      drv.portCalls.filter(
+        (frame) => frame.port === 'mcp-client' && (method === undefined || frame.method === method),
+      ),
+    secretCalls: () => drv.portCalls.filter((frame) => frame.port === 'secrets'),
+  }
+}
+
+function serverEntry(id, extra = {}) {
   return {
     id,
     command: process.execPath,
-    args: [FAKE, `--mode=${mode}`, ...extraArgs],
+    args: ['--fake'],
     confirmed: true,
     ...extra,
   }
@@ -136,28 +154,20 @@ function externOf(result) {
   return result.value.$directives[0].payload
 }
 
-async function delay(ms) {
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
-}
-
-async function waitFor(predicate, label, timeoutMs = 3000) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    if (predicate()) return
-    if (Date.now() > deadline) throw new Error(`timeout: ${label}`)
-    await delay(30)
-  }
-}
-
-function markerPath(name) {
-  mkdirSync(MARKER_DIR, { recursive: true })
-  return join(MARKER_DIR, `mcp-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`)
+function markerDataDir(name) {
+  const dir = join(
+    tmpdir(),
+    'kilo',
+    `mcp-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  )
+  mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 // ── 握手 / 控制 / 未知方法 ──────────────────────────────────────────────────
 
 test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 自退出', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
@@ -177,19 +187,29 @@ test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 
 
 test('命令声明只读标记：ping / tools_list 只读，tools_call 非只读', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
-  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  const readonly = Object.fromEntries(
+    decl.commands.map((command) => [command.name, command.readonly]),
+  )
   assert.equal(readonly['mcp.in.ping'], true)
   assert.equal(readonly['mcp.in.tools_list'], true)
   assert.equal(readonly['mcp.in.tools_call'], undefined)
 })
 
 test('未知方法 / 未知能力类 → 结构化 error', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
-    const unknownMethod = await drv.request('call', { port: 'mcp', method: 'nope', args: {} }, 'error')
+    const unknownMethod = await drv.request(
+      'call',
+      { port: 'mcp', method: 'nope', args: {} },
+      'error',
+    )
     assert.equal(unknownMethod.code, 'unknown_method')
-    const unknownCap = await drv.request('call', { port: 'other', method: 'describe', args: {} }, 'error')
+    const unknownCap = await drv.request(
+      'call',
+      { port: 'other', method: 'describe', args: {} },
+      'error',
+    )
     assert.equal(unknownCap.code, 'unresolved_cap')
   } finally {
     drv.close()
@@ -197,7 +217,7 @@ test('未知方法 / 未知能力类 → 结构化 error', async () => {
 })
 
 test('describe 只回本插件自述，不回外部工具清单', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     const described = await drv.call('describe', {})
@@ -218,17 +238,16 @@ test('describe 只回本插件自述，不回外部工具清单', async () => {
 // ── read / write：清单出世界的往返 ────────────────────────────────────────
 
 test('read 空存储 → 空清单；write 后 read 往返一致', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     assert.deepEqual(await readBody(drv), { version: 1, servers: [], tools: [] })
-    const entry = serverEntry('srv', 'ok')
+    const entry = serverEntry('srv')
     await seed(drv, [entry])
     const body = await readBody(drv)
     assert.equal(body.version, 1)
     assert.equal(body.servers.length, 1)
     assert.equal(body.servers[0].id, 'srv')
-    // 同内容重复写幂等短路。
     const again = await drv.call('write', { body: bodyOf([entry]) })
     assert.equal(again.value.changed, false)
   } finally {
@@ -237,7 +256,7 @@ test('read 空存储 → 空清单；write 后 read 往返一致', async () => {
 })
 
 test('write 形态非法 → bad_args', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
     const bad = await drv.call('write', { body: { version: 1, servers: [] } })
@@ -248,37 +267,46 @@ test('write 形态非法 → bad_args', async () => {
   }
 })
 
-// ── discover：写自有存储、不产世界写计划 ───────────────────────────────────
+// ── discover：写自有存储、经 mcp-client 委托、不产世界写计划 ────────────────
 
-test('discover 空清单 → 只回 extern，无写计划', async () => {
-  const drv = startService()
+test('discover 空清单 → 只回 extern，无写计划，且不调 mcp-client', async () => {
+  const drv = drive()
   try {
     await drv.hello()
     const result = await drv.call('discover', {})
     const payload = externOf(result)
     assert.equal(payload.changed, false)
     assert.equal(payload.tools, 0)
+    assert.equal(drv.clientCalls().length, 0)
   } finally {
     drv.close()
   }
 })
 
-test('discover 含 confirmed 服务器 → 写自有存储、命名空间化、四要素与 render、无世界写计划', async () => {
-  const drv = startService()
+test('discover 含 confirmed 服务器 → 委派 mcp-client、写自有存储、命名空间化、四要素与 render、无世界写计划', async () => {
+  const drv = drive()
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'ok')])
+    await seed(drv, [serverEntry('srv')])
     const result = await drv.call('discover', {})
     const payload = externOf(result)
     assert.equal(payload.changed, true)
     assert.equal(payload.tools, 3)
 
+    // 委派给 mcp-client：list_tools 收到 server + 已解析 env（无 auth_ref 时为空对象）
+    const listCall = drv.clientCalls('list_tools')[0]
+    assert.equal(listCall.args.server, 'srv')
+    assert.equal(listCall.args.command, process.execPath)
+    assert.deepEqual(listCall.args.args, ['--fake'])
+    assert.deepEqual(listCall.args.env, {})
+
     const body = await readBody(drv)
     assert.equal(body.version, 1)
-    assert.deepEqual(
-      body.tools.map((tool) => tool.name).sort(),
-      ['mcp.srv.add', 'mcp.srv.boom', 'mcp.srv.echo'],
-    )
+    assert.deepEqual(body.tools.map((tool) => tool.name).sort(), [
+      'mcp.srv.add',
+      'mcp.srv.boom',
+      'mcp.srv.echo',
+    ])
     const echo = body.tools.find((tool) => tool.name === 'mcp.srv.echo')
     assert.equal(echo.server, 'srv')
     assert.equal(echo.tool, 'echo')
@@ -297,12 +325,15 @@ test('discover 含 confirmed 服务器 → 写自有存储、命名空间化、�
       detail: { kind: 'json' },
       live: false,
     })
-    // 易变运行态不写回清单：只保留配置（含 confirmed）
     assert.equal(body.servers[0].connected, undefined)
     assert.equal(body.servers[0].tool_count, undefined)
     assert.equal(body.servers[0].failures, undefined)
     assert.equal(body.servers[0].confirmed, true)
-    assert.ok(drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'discovered'))
+    assert.ok(
+      drv.events.some(
+        (event) => event.topic === 'mcp.server' && event.payload.event === 'discovered',
+      ),
+    )
 
     const described = await drv.call('describe', {})
     assert.deepEqual(described.value.tools, [])
@@ -312,13 +343,12 @@ test('discover 含 confirmed 服务器 → 写自有存储、命名空间化、�
 })
 
 test('四要素兜底：MCP 无 description 时用中性文案；inputSchema 参数无描述时用「参数 <名>」', async () => {
-  const drv = startService()
+  const drv = drive({ onClient: () => ({ value: { ok: true, tools: [BARE], reconnected: null } }) })
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'minimal')])
+    await seed(drv, [serverEntry('srv')])
     await drv.call('discover', {})
-    const body = await readBody(drv)
-    const bare = body.tools[0]
+    const bare = (await readBody(drv)).tools[0]
     assert.equal(bare.name, 'mcp.srv.bare')
     assert.equal(bare.intent, '调用外部 MCP 工具 bare')
     assert.equal(bare.when_to_use, '需要外部 MCP 服务器 srv 的 bare 能力时')
@@ -330,29 +360,29 @@ test('四要素兜底：MCP 无 description 时用中性文案；inputSchema 参
 })
 
 test('render detail.kind：image 标注映射为 image', async () => {
-  const drv = startService()
+  const drv = drive({
+    onClient: () => ({ value: { ok: true, tools: [IMAGE_ECHO], reconnected: null } }),
+  })
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'image')])
+    await seed(drv, [serverEntry('srv')])
     await drv.call('discover', {})
-    const body = await readBody(drv)
-    const echo = body.tools.find((tool) => tool.tool === 'echo')
+    const echo = (await readBody(drv)).tools.find((tool) => tool.tool === 'echo')
     assert.equal(echo.render.detail.kind, 'image')
   } finally {
     drv.close()
   }
 })
 
-test('confirmed=false → 不 spawn、条目只登记', async () => {
-  const marker = markerPath('unconfirmed')
-  const drv = startService()
+test('confirmed=false → 不调 mcp-client.list_tools、只登记；invoke 回 unconfirmed', async () => {
+  const drv = drive()
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'ok', { confirmed: false }, [`--marker=${marker}`])])
-    const result = await drv.call('discover', {})
-    const payload = externOf(result)
+    await seed(drv, [serverEntry('srv', { confirmed: false })])
+    const payload = externOf(await drv.call('discover', {}))
     assert.equal(payload.tools, 0)
-    assert.equal(existsSync(marker), false)
+    assert.equal(drv.clientCalls('list_tools').length, 0)
+    assert.ok(drv.clientCalls('close').length >= 1, '应通知 mcp-client 关闭该连接')
     const invoked = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
     assert.equal(invoked.value.error.code, 'mcp_server_unconfirmed')
   } finally {
@@ -361,10 +391,10 @@ test('confirmed=false → 不 spawn、条目只登记', async () => {
 })
 
 test('同一状态重复 discover 不写回（易变运行态不写清单）', async () => {
-  const drv = startService()
+  const drv = drive()
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'ok')])
+    await seed(drv, [serverEntry('srv')])
     assert.equal(externOf(await drv.call('discover', {})).changed, true)
     assert.equal(externOf(await drv.call('discover', {})).changed, false)
   } finally {
@@ -372,9 +402,8 @@ test('同一状态重复 discover 不写回（易变运行态不写清单）', a
   }
 })
 
-test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不进存储', async () => {
-  const envMarker = markerPath('authref-env')
-  const drv = startService({
+test('env.auth_ref 经 secrets.resolve 解析后随 mcp-client 调用下传；明文不进存储；解析结果按配置缓存', async () => {
+  const drv = drive({
     secretsResolver: (method, args) => {
       assert.equal(method, 'resolve')
       assert.deepEqual(args.auth_ref, { kind: 'local', name: 'TOKEN' })
@@ -383,42 +412,38 @@ test('env.auth_ref 经 secrets.resolve 解析后注入子进程 env；明文不�
   })
   try {
     await drv.hello()
-    const entry = serverEntry(
-      'srv',
-      'ok',
-      { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } },
-      [`--env-marker=${envMarker}`],
-    )
-    await seed(drv, [entry])
+    await seed(drv, [
+      serverEntry('srv', { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } }),
+    ])
     const result = await drv.call('discover', {})
     assert.equal(externOf(result).tools, 3)
-    const secretsCall = drv.portCalls.find((call) => call.port === 'secrets' && call.method === 'resolve')
-    assert.ok(secretsCall !== undefined, '应经反向 port.call 调 secrets.resolve')
-    assert.equal(secretsCall.call_id, result.id, '反向帧回带发起 call 帧 id')
+    assert.ok(drv.secretCalls().length === 1, '应经反向 port.call 调 secrets.resolve')
+    const listCall = drv.clientCalls('list_tools')[0]
+    assert.equal(listCall.args.env.ECHO_TOKEN, 'secret-value-123', '已解析明文随连接配置下传')
     const stored = JSON.stringify(await readBody(drv))
     assert.equal(stored.includes('secret-value-123'), false, '明文不得进存储 / 返回值')
-    assert.equal(readFileSync(envMarker, 'utf8'), 'secret-value-123')
+    // 第二次 discover 复用已缓存 env：不再调 secrets.resolve
+    await drv.call('discover', {})
+    assert.equal(drv.secretCalls().length, 1)
   } finally {
     drv.close()
   }
 })
 
-test('env.auth_ref 解析失败 → 计入连接失败，不 spawn', async () => {
-  const drv = startService({
-    secretsResolver: () => ({ error: 'secret_missing', message: 'not found' }),
-  })
+test('env.auth_ref 解析失败 → 计入连接失败，不调 mcp-client', async () => {
+  const drv = drive({ secretsResolver: () => ({ error: 'secret_missing', message: 'not found' }) })
   try {
     await drv.hello()
-    const entry = serverEntry(
-      'srv',
-      'ok',
-      { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } },
-    )
-    await seed(drv, [entry])
+    await seed(drv, [
+      serverEntry('srv', { env: { ECHO_TOKEN: { auth_ref: { kind: 'local', name: 'TOKEN' } } } }),
+    ])
     const payload = externOf(await drv.call('discover', {}))
     assert.equal(payload.tools, 0)
+    assert.equal(drv.clientCalls('list_tools').length, 0)
     assert.ok(
-      drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'connect_failed'),
+      drv.events.some(
+        (event) => event.topic === 'mcp.server' && event.payload.event === 'connect_failed',
+      ),
     )
     const invoked = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
     assert.equal(invoked.value.error.code, 'mcp_tool_unknown')
@@ -429,16 +454,19 @@ test('env.auth_ref 解析失败 → 计入连接失败，不 spawn', async () =>
 
 // ── invoke：路由与结构化错误 ───────────────────────────────────────────────
 
-test('invoke 路由到子进程 tools/call；未知 / 未确认 / 形态非法 → 结构化错误', async () => {
-  const drv = startService()
+test('invoke 委派 mcp-client.call_tool；未知 / 未确认 / 形态非法 → 结构化错误', async () => {
+  const drv = drive()
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'ok')])
+    await seed(drv, [serverEntry('srv')])
     await drv.call('discover', {})
 
     const echo = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: { message: 'hi' } })
     assert.equal(echo.value.ok, true)
     assert.equal(echo.value.result.content[0].text, JSON.stringify({ message: 'hi' }))
+    const callCall = drv.clientCalls('call_tool')[0]
+    assert.equal(callCall.args.tool, 'echo')
+    assert.deepEqual(callCall.args.arguments, { message: 'hi' })
     const add = await drv.call('invoke', { tool: 'mcp.srv.add', tool_args: { a: 2, b: 3 } })
     assert.equal(add.value.result.content[0].text, '5')
 
@@ -453,48 +481,59 @@ test('invoke 路由到子进程 tools/call；未知 / 未确认 / 形态非法 �
     const badArgs = await drv.call('invoke', {})
     assert.equal(badArgs.kind, 'error')
     assert.equal(badArgs.code, 'bad_args')
-
-    await seed(drv, [serverEntry('srv', 'ok', { confirmed: false })])
-    await drv.call('discover', {})
-    const unconfirmed = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: {} })
-    assert.equal(unconfirmed.value.error.code, 'mcp_server_unconfirmed')
   } finally {
     drv.close()
   }
 })
 
-// ── 子进程退出：重连 / 隔离阈值 ────────────────────────────────────────────
+// ── 失败 / 隔离 / 重启策略（消费 mcp-client 回灌） ──────────────────────────
 
-test('子进程退出 → 下一拍 discover 重连重拉', async () => {
-  const drv = startService()
+test('mcp-client 回灌 reconnected → 记一次退出失败并发 exited 事件，随后重拉成功复位', async () => {
+  let calls = 0
+  const drv = drive({
+    onClient: (method) => {
+      if (method === 'list_tools') {
+        calls += 1
+        return {
+          value: { ok: true, tools: OK_TOOLS, reconnected: calls === 1 ? null : 'exit(0)' },
+        }
+      }
+      return { value: { ok: true, closed: 1 } }
+    },
+  })
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'once')])
-    await drv.call('discover', {})
-    assert.equal((await readBody(drv)).tools.length, 3)
-
-    await waitFor(
-      () => drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'exited'),
-      'server exited event',
-    )
-
-    // 重连重拉成功：工具清单不变 → 清单无变化，不写回（changed=false）
+    await seed(drv, [serverEntry('srv')])
+    assert.equal(externOf(await drv.call('discover', {})).changed, true)
+    // 第二拍：连接提供方报上一连接意外退出；工具清单不变 → 不写回，但记 exited 事件
     const payload = externOf(await drv.call('discover', {}))
     assert.equal(payload.tools, 3)
     assert.equal(payload.changed, false)
-
-    const echo = await drv.call('invoke', { tool: 'mcp.srv.echo', tool_args: { message: 'x' } })
-    assert.equal(echo.value.ok, true)
+    assert.ok(
+      drv.events.some((event) => event.topic === 'mcp.server' && event.payload.event === 'exited'),
+    )
   } finally {
     drv.close()
   }
 })
 
 test('连续失败超限 → 隔离该条目（工具摘除、invoke 回结构化错误）', async () => {
-  const drv = startService()
+  const drv = drive({
+    onClient: (method) => {
+      if (method === 'list_tools')
+        return {
+          value: {
+            ok: false,
+            error: { code: 'mcp_connect_failed', message: 'die' },
+            reconnected: null,
+          },
+        }
+      return { value: { ok: true, closed: 1 } }
+    },
+  })
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'die')])
+    await seed(drv, [serverEntry('srv')])
     let last = null
     for (let attempt = 0; attempt < 3; attempt += 1) {
       last = externOf(await drv.call('discover', {}))
@@ -505,46 +544,48 @@ test('连续失败超限 → 隔离该条目（工具摘除、invoke 回结构�
     assert.equal(isolated.value.ok, false)
     assert.equal(isolated.value.error.code, 'mcp_server_isolated')
 
-    // 隔离状态留内存：后续 discover 仍隔离（不再 spawn）
     assert.equal(externOf(await drv.call('discover', {})).isolated, 1)
+    assert.ok(
+      drv.events.some(
+        (event) => event.topic === 'mcp.server' && event.payload.event === 'isolated',
+      ),
+      '应上行 isolated 事件',
+    )
   } finally {
     drv.close()
   }
 })
 
-// ── tools/list_changed：下一拍重拉 ─────────────────────────────────────────
-
-test('tools/list_changed：下一拍 discover 重拉；清单未变则不写回', async () => {
-  const drv = startService()
+test('连接配置变化 → 复位隔离与失败计数（给修好的配置一次重试机会）', async () => {
+  const seen = []
+  const drv = drive({
+    onClient: (method, args) => {
+      if (method === 'list_tools') {
+        seen.push(args.args[0])
+        if (args.args[0] === '--fixed')
+          return { value: { ok: true, tools: OK_TOOLS, reconnected: null } }
+        return {
+          value: {
+            ok: false,
+            error: { code: 'mcp_connect_failed', message: 'die' },
+            reconnected: null,
+          },
+        }
+      }
+      return { value: { ok: true, closed: 1 } }
+    },
+  })
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'dirty_once')])
-    await drv.call('discover', {})
-    assert.equal((await readBody(drv)).tools.length, 3)
+    await seed(drv, [serverEntry('srv', { args: ['--bad'] })])
+    for (let attempt = 0; attempt < 3; attempt += 1) await drv.call('discover', {})
+    assert.equal(externOf(await drv.call('discover', {})).isolated, 1)
 
-    await delay(200)
-    assert.equal(externOf(await drv.call('discover', {})).changed, false)
-  } finally {
-    drv.close()
-  }
-})
-
-test('listchanged：下一次 discover 拉到新工具清单', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    await seed(drv, [serverEntry('srv', 'listchanged')])
-    await drv.call('discover', {})
-    assert.deepEqual(
-      (await readBody(drv)).tools.map((tool) => tool.name),
-      ['mcp.srv.echo'],
-    )
-    await delay(200)
-    await drv.call('discover', {})
-    assert.deepEqual(
-      (await readBody(drv)).tools.map((tool) => tool.name).sort(),
-      ['mcp.srv.echo', 'mcp.srv.extra'],
-    )
+    await seed(drv, [serverEntry('srv', { args: ['--fixed'] })])
+    const payload = externOf(await drv.call('discover', {}))
+    assert.equal(payload.isolated, 0)
+    assert.equal(payload.tools, 3)
+    assert.ok(seen.includes('--fixed'))
   } finally {
     drv.close()
   }
@@ -553,20 +594,20 @@ test('listchanged：下一次 discover 拉到新工具清单', async () => {
 // ── ④ 追加日志重放 ────────────────────────────────────────────────────────
 
 test('④ 追加日志：新进程重放读回上次写入的清单', async () => {
-  const dir = join(tmpdir(), 'kilo', `mcp-store-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-  mkdirSync(dir, { recursive: true })
-  const first = startService({ env: { CHRONO_PLUGIN_DATA: dir } })
+  const dir = markerDataDir('store')
+  const first = drive({ env: { CHRONO_PLUGIN_DATA: dir } })
   try {
     await first.hello()
-    await seed(first, [serverEntry('srv', 'ok')])
+    await seed(first, [serverEntry('srv')])
     await first.call('discover', {})
     assert.equal((await readBody(first)).tools.length, 3)
   } finally {
     first.close()
   }
   await first.exit
+  assert.equal(existsSync(join(dir, 'mcp.jsonl')), true)
 
-  const second = startService({ env: { CHRONO_PLUGIN_DATA: dir } })
+  const second = drive({ env: { CHRONO_PLUGIN_DATA: dir } })
   try {
     await second.hello()
     const body = await readBody(second)
@@ -578,19 +619,13 @@ test('④ 追加日志：新进程重放读回上次写入的清单', async () =
   await second.exit
 })
 
-// ── drain 终止全部子进程 ───────────────────────────────────────────────────
+// ── drain / EOF ────────────────────────────────────────────────────────────
 
-test('drain 终止全部外部子进程', async () => {
-  const marker = markerPath('drain')
-  const drv = startService()
+test('drain 收口 bye 后自退出', async () => {
+  const drv = drive()
   try {
     await drv.hello()
-    await seed(drv, [serverEntry('srv', 'ok', {}, [`--marker=${marker}`])])
-    await drv.call('discover', {})
-    assert.equal(existsSync(marker), true)
-
     assert.equal((await drv.request('drain', { deadline_ms: 1000 }, 'bye')).kind, 'bye')
-    await waitFor(() => !existsSync(marker), 'external child terminated')
   } finally {
     drv.close()
   }

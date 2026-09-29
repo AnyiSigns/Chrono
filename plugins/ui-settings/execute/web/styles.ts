@@ -84,11 +84,11 @@ export const STYLE_TEXT = `
 .settings-theme-cards { display: flex; gap: var(--space-8); }
 .settings-theme-card { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-8); padding: var(--space-12); background: var(--c-surface); border: var(--settings-ring-stroke) solid var(--c-border); border-radius: var(--radius-md); color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); cursor: pointer; transition: border-color var(--motion-fast), background-color var(--motion-fast); }
 .settings-theme-card:hover { background: var(--c-selection); }
-.settings-theme-card[aria-pressed="true"] { border-color: var(--c-accent); color: var(--c-text); }
+.settings-theme-card[aria-pressed="true"] { border-color: var(--c-accent-strong); color: var(--c-text); }
 .settings-theme-card:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .settings-theme-check { position: absolute; }
 .settings-theme-wrap { position: relative; }
-.settings-theme-wrap .settings-theme-check { top: var(--space-4); right: var(--space-4); color: var(--c-accent); }
+.settings-theme-wrap .settings-theme-check { top: var(--space-4); right: var(--space-4); color: var(--c-accent-strong); }
 .settings-dot { width: var(--settings-dot-size); height: var(--settings-dot-size); border-radius: 50%; flex: none; }
 .settings-dot[data-tone="success"] { background: var(--c-success); }
 .settings-dot[data-tone="danger"] { background: var(--c-danger); }
@@ -245,7 +245,7 @@ export const STYLE_TEXT = `
 .settings-memory-edit .settings-input { flex: 1 1 auto; }
 .settings-memory-expired, .settings-memory-expired .settings-list-main, .settings-memory-expired .settings-list-meta { color: var(--c-text-3); }
 .settings-memory-hit { background: var(--c-selection); border-radius: var(--radius-sm); }
-.settings-memory-pinned { color: var(--c-accent); font-size: var(--font-size-xs); }
+.settings-memory-pinned { color: var(--c-accent-strong); font-size: var(--font-size-xs); }
 @keyframes settings-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes settings-rise-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes settings-rise { from { opacity: 0; transform: translate(-50%, calc(-50% + 2px)); } to { opacity: 1; transform: translate(-50%, -50%); } }

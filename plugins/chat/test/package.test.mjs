@@ -51,6 +51,7 @@ test('plugin.json 15 字段齐全且形态合法', () => {
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
     session: { mode: 'one' },
+    'ref-hydrate': { mode: 'one' },
     input: { mode: 'one' },
     model: { mode: 'one' },
     context: { mode: 'one' },
@@ -89,7 +90,9 @@ test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel 且�
       ['chat.cancel', 'terms/chat.cancel.json'],
     ],
   )
-  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  const readonly = Object.fromEntries(
+    decl.commands.map((command) => [command.name, command.readonly]),
+  )
   assert.equal(readonly['chat.history'], true)
   assert.equal(readonly['chat.send'], undefined)
   assert.equal(readonly['chat.resume'], undefined)
@@ -133,7 +136,12 @@ test('入口 term：send 自能力 eff + 投影切片，history 收 args（owner
 
 test('terms/ 只保留四个命令入口，无装配模板残留', () => {
   const names = readdirSync(join(PKG_ROOT, 'terms')).sort()
-  assert.deepEqual(names, ['chat.cancel.json', 'chat.history.json', 'chat.resume.json', 'chat.send.json'])
+  assert.deepEqual(names, [
+    'chat.cancel.json',
+    'chat.history.json',
+    'chat.resume.json',
+    'chat.send.json',
+  ])
 })
 
 test('.worldignore 声明 test/ 与 tools/；package.json 零依赖带测试脚本', () => {
@@ -163,7 +171,11 @@ test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / cl
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {
-      assert.equal(forbidden.test(readFileSync(file, 'utf8')), false, `${file} 出现宿主 / 内核 / client 引用`)
+      assert.equal(
+        forbidden.test(readFileSync(file, 'utf8')),
+        false,
+        `${file} 出现宿主 / 内核 / client 引用`,
+      )
     }
   }
 })

@@ -34,11 +34,13 @@ import {
   currentVendorOf,
   isRecord,
   messageRowLabel,
+  modelUsageView,
   modelsOf,
   PERMISSIONS,
   permissionDescCode,
   permissionIcon,
   permissionLabelCode,
+  progressLine,
   queueEntry,
   sourceRows,
   threadKeyOf,
@@ -49,7 +51,6 @@ import {
 export const contract = '2'
 
 const MAX_CHIPS = 4
-const TOOLTIP_DELAY_MS = 400
 
 interface Env {
   ctx: SlotContext
@@ -330,7 +331,6 @@ function Composer(): ReactNode {
   const [pendingOpen, setPendingOpen] = useState(false)
   const [focus, setFocus] = useState(false)
   const [dragover, setDragover] = useState(false)
-  const [tipVisible, setTipVisible] = useState(false)
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
@@ -342,9 +342,7 @@ function Composer(): ReactNode {
   const reasoningPopoverRef = useRef<HTMLDivElement | null>(null)
   const permissionPopoverRef = useRef<HTMLDivElement | null>(null)
   const pendingPopoverRef = useRef<HTMLDivElement | null>(null)
-  const contextTipRef = useRef<HTMLDivElement | null>(null)
   const composingRef = useRef(false)
-  const tipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 多行自增高：文本变化后重算高度。
   useEffect(() => {
@@ -389,13 +387,6 @@ function Composer(): ReactNode {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [openDd, pendingOpen, closeOverlays])
-
-  useEffect(
-    () => () => {
-      if (tipTimerRef.current !== null) clearTimeout(tipTimerRef.current)
-    },
-    [],
-  )
 
   // ---- 下拉选项与选中值 ----
 
@@ -586,33 +577,31 @@ function Composer(): ReactNode {
     if (count === 0) closeOverlays(true)
   }
 
-  // ---- 上下文用量行 ----
+  // ---- 上下文用量 / 状态行 ----
 
   const usage = s.usage[threadKeyOf(s.activeThread)]
   const view = usageView(usage)
-  const rows = sourceRows(usage)
-  const trimmed = trimmedRows(usage)
-  const tipShown = tipVisible && (rows.length > 0 || trimmed.length > 0)
+  // 真实模型用量（模型回包，非装配估算）：输入 / 输出 token + 缓存命中率。
+  const modelUsage = modelUsageView(s.modelUsage[threadKeyOf(s.activeThread)])
+  const modelUsageText =
+    modelUsage === null
+      ? ''
+      : [
+          t('composer_model_input', { count: modelUsage.inputText }),
+          t('composer_model_output', { count: modelUsage.outputText }),
+          ...(modelUsage.hitRateText.length > 0
+            ? [t('composer_model_cache', { rate: modelUsage.hitRateText })]
+            : []),
+        ].join(' · ')
+  // 状态行左段：编排进度（自消息流移下来）；右侧：非零 token 来源明细 + 总量。
+  const statusLine = progressLine(s.progress, (code, vars) => t(code, vars))
+  const sourcesText = sourceRows(usage)
+    .filter((row) => row.tokens > 0)
+    .map((row) => `${row.code !== null ? t(row.code) : row.key} ${row.text}`)
+    .join(' · ')
+  const trimmedCount = trimmedRows(usage).length
 
   useClampPopover(pendingPopoverRef, pendingOpen, 'below', String(s.queueCount))
-  useClampPopover(contextTipRef, tipShown, 'above', `${rows.length}:${trimmed.length}`)
-
-  function scheduleTip(): void {
-    if (!isRecord(usage)) return
-    if (tipTimerRef.current !== null) clearTimeout(tipTimerRef.current)
-    tipTimerRef.current = setTimeout(() => {
-      tipTimerRef.current = null
-      setTipVisible(true)
-    }, TOOLTIP_DELAY_MS)
-  }
-
-  function hideTip(): void {
-    if (tipTimerRef.current !== null) {
-      clearTimeout(tipTimerRef.current)
-      tipTimerRef.current = null
-    }
-    setTipVisible(false)
-  }
 
   const expanded = s.attachExpanded || s.attachments.length <= MAX_CHIPS
   const visibleChips = expanded ? s.attachments : s.attachments.slice(0, MAX_CHIPS)
@@ -891,63 +880,38 @@ function Composer(): ReactNode {
         </div>
       </div>
 
-      {/* 用量行常驻：无数据时隐形占位（data-empty），占位高度与有数据一致，
-          回合起止切换不再推拉输入卡。 */}
+      {/* 状态行常驻：无数据时隐形占位（data-empty），占位高度与有数据一致，
+          回合起止切换不再推拉输入卡。左侧编排进度 + 真实模型用量 + token 来源明细，右侧上下文总量。 */}
       <div
         className="composer-context"
         data-tone={view !== null ? view.tone : undefined}
-        data-empty={view === null ? 'true' : undefined}
-        tabIndex={view !== null ? 0 : undefined}
+        data-empty={
+          view === null && statusLine === null && sourcesText.length === 0 && modelUsageText.length === 0
+            ? 'true'
+            : undefined
+        }
         aria-live="polite"
         aria-atomic="true"
-        aria-describedby={tipShown ? 'composer-context-tip' : undefined}
-        onMouseEnter={scheduleTip}
-        onMouseLeave={hideTip}
-        onFocus={scheduleTip}
-        onBlur={hideTip}
       >
+        {statusLine !== null ? <span className="composer-status-seg">{statusLine}</span> : null}
+        {modelUsageText.length > 0 ? (
+          <span className="composer-status-model" data-role="model-usage">
+            {modelUsageText}
+          </span>
+        ) : null}
+        {sourcesText.length > 0 ? (
+          <span className="composer-status-sources">
+            {sourcesText}
+            {trimmedCount > 0 ? ` · ${t('composer_trimmed', { count: trimmedCount })}` : ''}
+          </span>
+        ) : null}
         <span className="composer-context-text">
           {view === null
-            ? ' '
+            ? ' '
             : view.full
               ? t('composer_context_full', { used: view.usedText, budget: view.budgetText })
               : t('composer_context', { used: view.usedText, budget: view.budgetText })}
         </span>
-        {tipShown ? (
-          <div
-            ref={contextTipRef}
-            className="composer-popover"
-            data-placement="above"
-            role="tooltip"
-            id="composer-context-tip"
-          >
-            {rows.map((row) => (
-              <div key={row.key} className="composer-tooltip-row">
-                <span>{row.code !== null ? t(row.code) : row.key}</span>
-                <span>{row.text}</span>
-              </div>
-            ))}
-            {trimmed.length > 0 ? (
-              <>
-                <div className="composer-tooltip-note">
-                  {t('composer_trimmed', { count: trimmed.length })}
-                </div>
-                {trimmed.map((item, index) => {
-                  const label = item.label.length > 0 ? item.label : t('composer_trimmed')
-                  const text =
-                    item.reason.length > 0
-                      ? t('composer_trimmed_reason', { reason: item.reason })
-                      : label
-                  return (
-                    <div key={`${label}-${index}`} className="composer-tooltip-note">
-                      {text}
-                    </div>
-                  )
-                })}
-              </>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       <input ref={fileRef} type="file" multiple hidden onChange={onFileChange} />

@@ -52,9 +52,15 @@ export function isoAt(now: number): string {
 }
 
 /** 可选整数字段：缺省回落 fallback；非整数 / 越下界即拒。 */
-export function integerField(value: Json | undefined, field: string, fallback: number, min: number): number {
+export function integerField(
+  value: Json | undefined,
+  field: string,
+  fallback: number,
+  min: number,
+): number {
   if (value === undefined || value === null) return fallback
-  if (typeof value !== 'number' || !Number.isInteger(value)) throw new BadArgsError(`${field} must be an integer`)
+  if (typeof value !== 'number' || !Number.isInteger(value))
+    throw new BadArgsError(`${field} must be an integer`)
   if (value < min) throw new BadArgsError(`${field} must be >= ${min}`)
   return value
 }
@@ -68,7 +74,8 @@ export function numberField(
   max: number,
 ): number {
   if (value === undefined || value === null) return fallback
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new BadArgsError(`${field} must be a number`)
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    throw new BadArgsError(`${field} must be a number`)
   if (value < min || value > max) throw new BadArgsError(`${field} must be within [${min}, ${max}]`)
   return value
 }
@@ -131,7 +138,13 @@ export function bodyPatches(prev: Rec, next: Rec): Json[] {
  * 追加数据世代的写子操作：有数据世代（base）且补丁非空 ⇒ put(补丁) + add_gen(base)；
  * 否则整份 put + add_gen。调用方在调用前取 `ops.length` 作为 put 下标（本函数内部完成 push）。
  */
-export function pushBodyGen(ops: Json[], id: string, prev: Rec, next: Rec, base: number | null): void {
+export function pushBodyGen(
+  ops: Json[],
+  id: string,
+  prev: Rec,
+  next: Rec,
+  base: number | null,
+): void {
   const index = ops.length
   if (base !== null) {
     const patches = bodyPatches(prev, next)

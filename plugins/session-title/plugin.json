@@ -7,7 +7,8 @@
   },
   "pins": {},
   "needs": {
-    "model": { "mode": "one" }
+    "model": { "mode": "one" },
+    "title-format": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

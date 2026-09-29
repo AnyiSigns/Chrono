@@ -1,0 +1,20 @@
+{
+  "name": "workspace-picker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工作区选择器（Rust）：系统原生目录选择器 pick + 文件管理器 reveal + 最近打开（③）；无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "throttle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "限流与退避决策提供方：每 provider 令牌桶 + 429 冷却 + 指数退避 / 抖动 / Retry-After 调度；状态落 ③ 目录可重算",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

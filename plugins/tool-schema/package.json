@@ -1,0 +1,21 @@
+{
+  "name": "tool-schema",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工具声明 argsSchema 方言与 caps 形状原语：白名单校验 / 净化 / args 机械校验 / caps 归一；纯函数、同输入同输出",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

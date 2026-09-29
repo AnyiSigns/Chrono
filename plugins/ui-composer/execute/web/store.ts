@@ -50,6 +50,7 @@ import {
   armWrite,
   beginWrite,
   clearExpecting,
+  clearTurnRun,
   createRunState,
   endWrite,
   expectTurn,
@@ -73,6 +74,53 @@ function errorOf(err: unknown): string {
   if (err instanceof Error && err.message.length > 0) return err.message
   if (typeof err === 'string' && err.length > 0) return err
   return 'unknown'
+}
+
+/**
+ * 状态行（上下文用量 + 编排进度）按会话缓存到浏览器：`context.assembled` / `chat.turn.*`
+ * 不落账，刷新后无重放，缓存使状态栏即时回填而非空白。纯前端视图缓存，不入世界、不参与重放。
+ */
+const STATUS_CACHE_PREFIX = 'chrono.composer.status.'
+
+function readStatusCache(thread: string): {
+  usage: unknown | null
+  progress: unknown | null
+  modelUsage: unknown | null
+} {
+  const empty = { usage: null, progress: null, modelUsage: null }
+  try {
+    const raw = window.localStorage.getItem(STATUS_CACHE_PREFIX + thread)
+    if (raw === null) return empty
+    const parsed = JSON.parse(raw)
+    if (!isRecord(parsed)) return empty
+    return {
+      usage: parsed['usage'] ?? null,
+      progress: parsed['progress'] ?? null,
+      modelUsage: parsed['modelUsage'] ?? null,
+    }
+  } catch {
+    return empty
+  }
+}
+
+function writeStatusCache(
+  thread: string,
+  usage: unknown,
+  progress: unknown,
+  modelUsage: unknown,
+): void {
+  try {
+    window.localStorage.setItem(
+      STATUS_CACHE_PREFIX + thread,
+      JSON.stringify({
+        usage: usage ?? null,
+        progress: progress ?? null,
+        modelUsage: modelUsage ?? null,
+      }),
+    )
+  } catch {
+    // 隐私模式 / 配额满：状态行退化为会话内可见，不算错误。
+  }
 }
 
 export type ChipStatus = 'loading' | 'ready' | 'failed'
@@ -107,6 +155,8 @@ export interface ComposerSnapshot {
   attachExpanded: boolean
   pending: { [threadKey: string]: unknown }
   usage: { [threadKey: string]: unknown }
+  /** 最近一次模型回包的真实用量（`model.delta.usage` / 清单 `usage`），非装配估算。 */
+  modelUsage: { [threadKey: string]: unknown }
   config: unknown
   configStatus: ConfigStatus
   configError: string | null
@@ -123,6 +173,8 @@ export interface ComposerSnapshot {
   canSend: boolean
   queue: unknown[]
   queueCount: number
+  /** 当前回合的图内编排进度（`chat.turn.*` / `run.started` 携带）；null = 无。 */
+  progress: unknown | null
 }
 
 export interface ComposerStore {
@@ -162,6 +214,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     attachExpanded: false,
     pending: {} as { [threadKey: string]: unknown },
     usage: {} as { [threadKey: string]: unknown },
+    modelUsage: {} as { [threadKey: string]: unknown },
     config: null as unknown,
     configLoading: false,
     configError: null as string | null,
@@ -173,6 +226,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     sending: false,
     error: null as string | null,
     outcome: null as ReceiptView | null,
+    progress: null as unknown | null,
   }
 
   let tracking: RunState = createRunState()
@@ -187,6 +241,12 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   const expectTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** 最近一次发送的原文 / 附件：回合前拒绝（槽仍保留）时原样放回输入卡供重试。 */
   const sentStash = new Map<string, { text: string; chips: Chip[] }>()
+  /** 挂起中（等审批 / 等作答）的线程：其宿主 `run.finished` 是**挂起段**的结束、非回合终态，
+   *  不得认领 / 清 runs / 续发——否则 `running` 误落、待发消息被抢发而被会话 `turn_busy` 拒。
+   *  真正收口由 `chat.turn.settled` 触发；`chat.turn.started`（续跑）与 settled 清标记。 */
+  const suspendedThreads = new Set<string>()
+  /** 当前在途回合 id（线程 → `chat.turn.started.turn_id`）：回合运行中插入消息据此定位回合。 */
+  const turnIds = new Map<string, string>()
   const listeners = new Set<(snapshot: ComposerSnapshot) => void>()
 
   function buildSnapshot(): ComposerSnapshot {
@@ -200,6 +260,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       attachExpanded: state.attachExpanded,
       pending: state.pending,
       usage: state.usage,
+      modelUsage: state.modelUsage,
       config: state.config,
       configStatus: configStatusOf({
         loading: state.configLoading,
@@ -222,6 +283,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
         state.attachments.some((chip) => chip.status === 'ready' && chip.source !== null),
       queue: queueOf(state.pending, threadKey),
       queueCount: queueCount(state.pending, threadKey),
+      progress: state.progress,
     }
   }
 
@@ -708,9 +770,26 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       conversationId: creating ? threadKey : null,
     })
     if (isThreadBusy(tracking, threadKey)) {
-      state.pending = enqueue(state.pending, threadKey, { id: nextId(), slot })
+      // 回合运行中插入：不起新回合（`chat.send` 必被会话 `turn_busy` 拒），改落 `chat.insert`——
+      // 主历史用户消息 + 同回合步日志，随下一轮请求并入运行中的回合。
+      const turnId = turnIds.get(threadKey) ?? null
       clearSentInput(ready, sentText)
+      if (turnId === null) {
+        // 尚未拿到本回合身份（run 已起、`chat.turn.started` 未到）：暂存待发，随回合收口再续。
+        state.pending = enqueue(state.pending, threadKey, { id: nextId(), slot })
+        publish()
+        return
+      }
       publish()
+      const message: Record<string, unknown> = { content: sentText }
+      if (ready.length > 0) message['attachments'] = ready.map(toAttachment)
+      void client.insertMessage(turnId, nextId(), message, threadKey).then((result) => {
+        if (disposed) return
+        if (!result.ok) {
+          state.error = result.code.length > 0 ? result.code : 'unknown'
+          publish()
+        }
+      })
       return
     }
     state.sending = true
@@ -803,6 +882,41 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     return key === MAIN_THREAD && state.activeThread !== null ? threadKeyOf(state.activeThread) : key
   }
 
+  /** 回合收口：编排进度保留为「上次状态」（与上下文用量一致，常显不闪）；换会话才重置。 */
+  function clearTurnStatus(): void {
+    if (state.progress === null) return
+    state.progress = null
+  }
+
+  /** 把当前会话的用量 + 真实模型用量 + 编排进度写进浏览器缓存（状态栏刷新后可回填）。 */
+  function cacheStatus(): void {
+    if (state.activeThread === null) return
+    const key = threadKeyOf(state.activeThread)
+    writeStatusCache(
+      state.activeThread,
+      state.usage[key] ?? null,
+      state.progress,
+      state.modelUsage[key] ?? null,
+    )
+  }
+
+  /** 切换 / 恢复到某会话：用其缓存回填用量、真实模型用量与编排进度；无缓存则清空。 */
+  function restoreStatus(): void {
+    if (state.activeThread === null) {
+      clearTurnStatus()
+      return
+    }
+    const cached = readStatusCache(state.activeThread)
+    const key = threadKeyOf(state.activeThread)
+    if (cached.usage !== null) {
+      state.usage = { ...state.usage, [key]: cached.usage }
+    }
+    if (cached.modelUsage !== null) {
+      state.modelUsage = { ...state.modelUsage, [key]: cached.modelUsage }
+    }
+    state.progress = cached.progress
+  }
+
   function onRecord(record: { topic: string; payload: unknown }): void {
     const payload = isRecord(record.payload) ? record.payload : {}
     // 壳连接态：断连 / 重连经 `shell.state` 广播；恢复后若配置读取曾失败则自动重拉。
@@ -823,6 +937,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       tracking = tracked.state
       if (tracked.turnStarted) {
         clearExpectTimer(key)
+        // 图内进度可能挂在宿主 run 事件上（与 chat 侧 `applyRunStarted` 同口径）。
+        if (isRecord(payload.progress)) state.progress = payload.progress
+        cacheStatus()
         if (matchesThread(payload.thread, state.activeThread)) publish()
       }
       return
@@ -831,27 +948,74 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       // 对话回合由 chat 服务自报开始：续跑是嵌套 eval，宿主 `run.started` 的名字是审批 / 提问命令。
       // 直接认领该线程生成态，工作态不必等首个流式增量。
       if (!matchesThread(payload.thread, state.activeThread)) return
-      const next = trackActivity(tracking, runIdOf(payload), eventKeyOf(payload))
-      if (next !== tracking) {
-        tracking = next
-        publish()
+      const key = eventKeyOf(payload)
+      // 续跑开段 = 挂起结束：清挂起标记，重新认领生成态；记下本回合 id 供运行中插入消息定位。
+      suspendedThreads.delete(key)
+      if (typeof payload['turn_id'] === 'string' && payload['turn_id'].length > 0) {
+        turnIds.set(key, payload['turn_id'])
       }
+      const next = trackActivity(tracking, runIdOf(payload), key)
+      if (isRecord(payload.progress)) state.progress = payload.progress
+      cacheStatus()
+      tracking = next
+      publish()
+      return
+    }
+    if (record.topic === 'chat.turn.pending') {
+      // 回合挂起（等审批 / 等作答）：标记该线程挂起，并更新图内进度（若带）。
+      // 挂起段的宿主 `run.finished` 随后到达，须据本标记跳过（见 run.finished），不得当作回合终态。
+      if (!matchesThread(payload.thread, state.activeThread)) return
+      const key = eventKeyOf(payload)
+      suspendedThreads.add(key)
+      if (isRecord(payload.progress)) state.progress = payload.progress
+      cacheStatus()
+      publish()
+      return
+    }
+    if (record.topic === 'chat.turn.settled') {
+      // 回合终态（成功 / 拒绝 / 取消 / 中断）：保留最后一次编排进度（与上下文用量一致常显；换会话才重置）。
+      if (!matchesThread(payload.thread, state.activeThread)) return
+      const key = eventKeyOf(payload)
+      suspendedThreads.delete(key)
+      turnIds.delete(key)
+      if (isRecord(payload.progress)) state.progress = payload.progress
+      cacheStatus()
+      // 续跑是嵌套 eval、无宿主 run.finished：回合定稿由本事件收口（清生成态），
+      // 再续发该线程待发队列——否则回合运行中插入的消息永远卡在待发、不落盘。
+      // 较 run.finished 早到（chat 服务发 settled 在命令 return 前），先清后续不与 run.finished 抢；
+      // 其后到达的 run.finished 因 runs 已清判 kind='other'，无副作用。
+      tracking = clearTurnRun(tracking, key)
+      clearExpectTimer(key)
+      publish()
+      void continueQueue(key)
       return
     }
     if (record.topic === 'model.delta' || record.topic === 'tool.start') {
       // 续跑缺 `chat.turn.started` 时以首个流式增量兜底认领该线程生成态。
       if (isPeriodicRun(payload.origin)) return
       if (!matchesThread(payload.thread, state.activeThread)) return
+      let changed = false
+      // 真实用量随流式终段到达（model-protocol 已归一）；累计为状态栏的模型用量。
+      if (record.topic === 'model.delta' && isRecord(payload.usage)) {
+        state.modelUsage = { ...state.modelUsage, [eventKeyOf(payload)]: payload.usage }
+        cacheStatus()
+        changed = true
+      }
       const next = trackActivity(tracking, runIdOf(payload), eventKeyOf(payload))
       if (next !== tracking) {
         tracking = next
-        publish()
+        changed = true
       }
+      if (changed) publish()
       return
     }
     if (record.topic === 'run.finished') {
       const key = eventKeyOf(payload)
-      const tracked = trackRunFinished(tracking, runIdOf(payload), key)
+      const run = runIdOf(payload)
+      // 挂起段（等审批 / 等作答）的宿主 run 在此结束，但回合**未**终态：不认领、不清 runs、不续发。
+      // 否则 running 误落、待发消息被抢先发出，被会话 `turn_busy` 拒后回不去。真正收口由 chat.turn.settled 触发。
+      if (suspendedThreads.has(key) && run !== null && tracking.runs[key] === run) return
+      const tracked = trackRunFinished(tracking, run, key)
       tracking = tracked.state
       // 槽写 run 落账：此刻才触发 `chat.send`（此时它才读得到新槽）。
       if (tracked.kind === 'write') {
@@ -862,7 +1026,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       // 回合 run 结束：按线程键清空（后台线程也要清），再续发该线程队列。
       if (tracked.kind === 'turn') {
         clearExpectTimer(key)
-        // 上下文用量保留至下次 context.assembled 刷新：回合结束后仍常显，避免 token 行闪烁。
+        // 上下文用量与编排进度保留为「上次状态」：回合结束后仍常显，避免状态栏闪烁。
         if (matchesThread(payload.thread, state.activeThread)) publish()
         void continueQueue(key)
       }
@@ -871,12 +1035,20 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     if (record.topic === 'context.assembled') {
       if (!matchesThread(payload.thread, state.activeThread)) return
       state.usage = { ...state.usage, [eventKeyOf(payload)]: payload }
+      // 清单里的 `usage` 亦为模型真实用量（context-window 归一并算出命中率）；
+      // 流式终段未给用量（如 `stream_usage:'none'`）时以此回填。
+      if (isRecord(payload.usage)) {
+        state.modelUsage = { ...state.modelUsage, [eventKeyOf(payload)]: payload.usage }
+      }
+      cacheStatus()
       publish()
     }
   }
 
   function applyActiveThread(value: unknown): void {
     state.activeThread = typeof value === 'string' && value.length > 0 ? value : null
+    // 状态行的用量 / 编排进度按会话缓存回填（刷新后无事件重放，靠缓存即时可见）。
+    restoreStatus()
     publish()
   }
 
@@ -900,6 +1072,7 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     const initial =
       typeof ctx.uiState?.get === 'function' ? ctx.uiState.get('active_thread') : undefined
     state.activeThread = typeof initial === 'string' && initial.length > 0 ? initial : null
+    restoreStatus()
     const initialWorkspace =
       typeof ctx.uiState?.get === 'function' ? ctx.uiState.get('active_workspace') : undefined
     state.activeWorkspace =

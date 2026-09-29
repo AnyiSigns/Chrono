@@ -136,7 +136,11 @@ export function buildEntry(input: {
     id: input.id,
     text: input.text,
     meta: input.meta,
-    chunks: input.chunks.map((chunk) => ({ index: chunk.index, start: chunk.start, end: chunk.end })),
+    chunks: input.chunks.map((chunk) => ({
+      index: chunk.index,
+      start: chunk.start,
+      end: chunk.end,
+    })),
     prev: input.prev === null ? null : { def: input.prev },
   }
   if (input.weight !== undefined) entry['weight'] = input.weight

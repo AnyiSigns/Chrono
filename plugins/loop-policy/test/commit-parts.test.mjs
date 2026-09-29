@@ -29,3 +29,24 @@ test('displayParts：不同 call_id 各自成段，顺序按首个承接帧', ()
   const parts = displayParts(timeline, null, [])
   assert.deepEqual(parts.map((part) => part.call_id), ['a', 'b'])
 })
+
+test('displayParts：finalMessage 与时间线同帧（同一对象）时不重复渲染正文（挂起收口）', () => {
+  // 挂起收口把 `rs.messages[0]` 既交时间线又当 finalMessage：正文只应出现一次。
+  const assistant = {
+    role: 'assistant',
+    content: '先确认一下',
+    tool_calls: [{ id: 'q1', name: 'question', arguments: {} }],
+  }
+  const timeline = [
+    assistant,
+    { role: 'tool', content: JSON.stringify({ call_id: 'q1', ok: true, result: { status: 'pending' } }) },
+  ]
+  const parts = displayParts(timeline, assistant, [])
+  assert.deepEqual(parts.map((part) => part.type), ['text', 'tool'], '正文只出现一次，工具卡在其后')
+  assert.equal(parts.filter((part) => part.type === 'text').length, 1)
+  assert.equal(parts[0].text, '先确认一下')
+  // 不同对象的最终消息仍按到达序追加（普通定稿路径不受影响）。
+  const withFinal = displayParts(timeline, { role: 'assistant', content: '完成' }, [])
+  assert.deepEqual(withFinal.map((part) => part.type), ['text', 'tool', 'text'])
+  assert.equal(withFinal[withFinal.length - 1].text, '完成')
+})

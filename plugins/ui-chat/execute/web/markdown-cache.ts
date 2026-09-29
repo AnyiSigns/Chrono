@@ -4,6 +4,12 @@
 // 等价性：本仓 markdown 渲染器的所有块级构造（段落 / 列表 / 引用 / 围栏）都在空白行处收束，
 // 故「空白行边界处切分后分别渲染再拼接」与「整段渲染」结果一致；消毒按标签上下文无关，
 // 拼接同理安全。文本收缩 / 换内容（reset、换消息）时前缀不匹配即整体重置。
+// 例外：`live`（流式在途）时尾部超长未完成围栏退化为纯文本（跳过 hljs），见 markdown 的
+// `STREAM_FENCE_LINE_CAP`——定稿后走非 live 渲染，着色补齐。
+//
+// 分片返回：`prefixHtml` 跨帧稳定（只在跨过新边界时增长），`tailHtml` 每帧重算；渲染器把两者
+// 注入两个并列节点，每帧只重写尾部节点，避免整条消息的 DOM 每帧被拆掉重建。
+// `html` = `prefixHtml + tailHtml`，保留整段等价契约（测试与旧调用方仍按 `html` 断言）。
 
 import { renderMarkdown } from './markdown.ts'
 import { sanitizeHtml } from './sanitize.ts'
@@ -13,6 +19,17 @@ export interface MarkdownCache {
   prefix: string
   /** 已完成前缀的消毒后 HTML。 */
   html: string
+}
+
+/** 增量渲染结果：分片 + 拼接全文 + 新缓存。 */
+export interface MarkdownParts {
+  /** 冻结前缀 HTML：跨帧引用稳定（仅在跨过新边界时变）。 */
+  prefixHtml: string
+  /** 尾部未完成块 HTML：每帧重算。 */
+  tailHtml: string
+  /** `prefixHtml + tailHtml`（整段等价契约）。 */
+  html: string
+  cache: MarkdownCache
 }
 
 /** 空缓存。 */
@@ -43,13 +60,15 @@ export function safeBoundary(text: string): number {
 }
 
 /**
- * 增量渲染：返回本帧 HTML 与新缓存（不修改入参）。
+ * 增量渲染：返回分片 HTML 与新缓存（不修改入参）。
  * 前缀失配（换消息 / reset）时整体重置后重新累积。
+ * `live`：文本仍在流式在途（尾部尚未定稿）——尾部渲染走有界路径（超长围栏不高亮）。
  */
 export function renderMarkdownIncremental(
   text: unknown,
   cache: MarkdownCache,
-): { html: string; cache: MarkdownCache } {
+  live = false,
+): MarkdownParts {
   const source = String(text ?? '')
   let base = source.startsWith(cache.prefix) ? cache : createMarkdownCache()
   const boundary = safeBoundary(source)
@@ -58,5 +77,6 @@ export function renderMarkdownIncremental(
     base = { prefix: source.slice(0, boundary), html: base.html + sanitizeHtml(renderMarkdown(delta)) }
   }
   const tail = source.slice(base.prefix.length)
-  return { html: base.html + sanitizeHtml(renderMarkdown(tail)), cache: base }
+  const tailHtml = sanitizeHtml(renderMarkdown(tail, { tail: live }))
+  return { prefixHtml: base.html, tailHtml, html: base.html + tailHtml, cache: base }
 }

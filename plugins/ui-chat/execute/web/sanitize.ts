@@ -7,12 +7,21 @@ export const ALLOWED_TAGS = new Set([
   'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
   'strong', 'em', 'del', 'a', 'img',
+  'table', 'thead', 'tbody', 'tr', 'th', 'td',
+  'div', 'span', 'button',
 ])
 
-/** 放行的属性：`a` 只认 href / target / rel / title，`img` 只认 src / alt / loading / title。 */
+/** 放行的属性：`a` 只认 href / target / rel / title，`img` 只认 src / alt / loading / title；
+ *  `div` / `span` / `button` 只认代码块外壳用到的 class / type / aria-label / data-*。 */
 export const ALLOWED_ATTRS: { [tag: string]: Set<string> } = {
   a: new Set(['href', 'target', 'rel', 'title']),
   img: new Set(['src', 'alt', 'loading', 'title']),
+  table: new Set(['class']),
+  th: new Set(['class', 'data-align']),
+  td: new Set(['class', 'data-align']),
+  div: new Set(['class', 'data-lang', 'data-collapsed']),
+  span: new Set(['class']),
+  button: new Set(['class', 'type', 'aria-label', 'aria-expanded', 'data-copy', 'data-lang']),
   '*': new Set(['title']),
 }
 
@@ -20,7 +29,7 @@ export const ALLOWED_ATTRS: { [tag: string]: Set<string> } = {
 export const DROP_WITH_CONTENT = new Set([
   'script', 'style', 'iframe', 'object', 'embed', 'template',
   'svg', 'math', 'noscript', 'link', 'meta', 'base', 'form',
-  'input', 'textarea', 'select', 'button',
+  'input', 'textarea', 'select',
 ])
 
 const URL_ATTRS = new Set(['href', 'src', 'xlink:href'])

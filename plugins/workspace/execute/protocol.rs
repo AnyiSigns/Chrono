@@ -10,10 +10,6 @@ use serde_json::{json, Value};
 use plugin_sdk::{CallEnv, ServiceError, ServiceHandler, ServiceSpec};
 
 use crate::body::{self, RealFs};
-use crate::pick;
-use crate::platform::{SystemOpener, SystemPicker};
-use crate::recent;
-use crate::reveal;
 use crate::store::Store;
 
 /// 身份名 = 能力类名（类名 = 身份名）。
@@ -23,7 +19,7 @@ pub const PROTOCOL: &str = "1";
 /// 状态档：清单出世界，落 ④ 不可重算。
 pub const STATE: &str = "durable";
 
-const METHODS: [&str; 6] = ["list", "read", "pick", "add", "remove", "reveal"];
+const METHODS: [&str; 4] = ["list", "read", "add", "remove"];
 
 static SPEC: ServiceSpec = ServiceSpec {
     identity: IDENTITY,
@@ -38,22 +34,6 @@ pub fn manifest() -> Value {
     plugin_sdk::manifest(&SPEC)
 }
 
-/// `reveal` 目标路径：只按 `args.workspace` id 在自有存储的清单里解析。
-/// 不接受未校验的 `args.path`——契约只声明 `{workspace}`，路径真源是 owner 清单。
-fn reveal_path(workspaces: &[Value], args: &Value) -> Result<String, (String, String)> {
-    let id = args
-        .get("workspace")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ("bad_args".to_string(), "reveal requires a workspace id".to_string()))?;
-    body::workspace_path(workspaces, id).ok_or_else(|| {
-        (
-            "bad_args".to_string(),
-            "reveal requires a workspace id resolvable in the owner list".to_string(),
-        )
-    })
-}
-
 /// 处理 `call`：方法分派 + 结构化错误码。写类方法即时落自有存储（边跑边追加）。
 pub fn handle_call(
     method: &str,
@@ -61,11 +41,9 @@ pub fn handle_call(
     env: &CallEnv,
     store: &mut Store,
 ) -> Result<Value, (String, String)> {
-    let state = recent::state_dir();
     match method {
         "list" => Ok(body::list_value(&store.workspaces(), &RealFs)),
         "read" => Ok(store.body().clone()),
-        "pick" => pick::pick_value(&SystemPicker, state.as_deref()),
         "add" => {
             let (list, payload) = body::add_value(&RealFs, args, &store.workspaces())?;
             store.write(env.run.as_deref(), json!({ "version": 1, "workspaces": list }));
@@ -75,10 +53,6 @@ pub fn handle_call(
             let (list, payload) = body::remove_value(args, &store.workspaces())?;
             store.write(env.run.as_deref(), json!({ "version": 1, "workspaces": list }));
             Ok(payload)
-        }
-        "reveal" => {
-            let path = reveal_path(&store.workspaces(), args)?;
-            Ok(reveal::reveal_value(&SystemOpener, &path, state.as_deref()))
         }
         other => Err(("unknown_method".to_string(), format!("unknown method {other}"))),
     }
@@ -122,10 +96,7 @@ mod tests {
         let value = manifest();
         assert_eq!(value["identity"], "workspace");
         assert_eq!(value["implements"], json!(["workspace"]));
-        assert_eq!(
-            value["methods"]["workspace"],
-            json!(["list", "read", "pick", "add", "remove", "reveal"])
-        );
+        assert_eq!(value["methods"]["workspace"], json!(["list", "read", "add", "remove"]));
         assert_eq!(value["state"], "durable");
     }
 
@@ -162,28 +133,5 @@ mod tests {
         let value = handle_call("remove", &args, &CallEnv::default(), &mut store).unwrap();
         assert_eq!(value["removed"], true);
         assert!(store.workspaces().is_empty());
-    }
-
-    #[test]
-    fn reveal_without_resolvable_workspace_is_bad_args() {
-        let mut store = memory_store();
-        let err = handle_call("reveal", &json!({"workspace": "w"}), &CallEnv::default(), &mut store)
-            .unwrap_err();
-        assert_eq!(err.0, "bad_args");
-        // 未校验的 args.path 不再被接受。
-        let err = handle_call(
-            "reveal",
-            &json!({"workspace": "w", "path": "C:\\anywhere"}),
-            &CallEnv::default(),
-            &mut store,
-        )
-        .unwrap_err();
-        assert_eq!(err.0, "bad_args");
-    }
-
-    #[test]
-    fn reveal_path_resolves_from_owner_list() {
-        let workspaces = vec![json!({ "id": "w1", "path": "C:\\ws" })];
-        assert_eq!(reveal_path(&workspaces, &json!({ "workspace": "w1" })).unwrap(), "C:\\ws");
     }
 }

@@ -6,10 +6,46 @@
 import { fileURLToPath } from 'node:url'
 import { isSafeClientPath, readClientFile } from './client-read.ts'
 import { externOnly, isRecord } from './plan.ts'
-import { createRefHydrator, hydrateIds } from './refs.ts'
-import type { DefReader } from './refs.ts'
+import { ServiceError } from 'plugin-sdk'
 import type { PortCaller } from 'plugin-sdk'
 import type { Json, Rec } from './types.ts'
+
+/** 引用水合端口（`ref-hydrate.hydrate`）：按身份把投影 refs 解析成闭包；任何失败按拆分前语义映射 def_unavailable。 */
+interface RefHydrator {
+  hydrate(identity: string, refs: Json): Promise<Rec>
+}
+
+/** 构造水合端口：反向调 `ref-hydrate.hydrate`；已是对象 / 非数组短路（不打无谓往返）。 */
+function makeHydrator(port: PortCaller): RefHydrator {
+  return {
+    hydrate: async (identity, refs) => {
+      if (isRecord(refs)) return refs
+      if (!Array.isArray(refs)) return {}
+      const outcome = await port.call('ref-hydrate', 'hydrate', { identity, refs })
+      if (!outcome.ok) throw new ServiceError('def_unavailable', outcome.message)
+      return isRecord(outcome.value) ? outcome.value : {}
+    },
+  }
+}
+
+/**
+ * 把投影切片 `ids` 里指定身份的 refs（哈希列表）解析成闭包；已是对象则原样。
+ * 返回**新对象**，不改入参。
+ */
+async function hydrateIds(
+  ids: Json,
+  identities: readonly string[],
+  hydrator: RefHydrator,
+): Promise<Json> {
+  if (!isRecord(ids)) return ids
+  const out: Rec = { ...ids }
+  for (const identity of identities) {
+    const entry = out[identity]
+    if (!isRecord(entry)) continue
+    out[identity] = { ...entry, refs: await hydrator.hydrate(identity, entry['refs']) }
+  }
+  return out
+}
 
 /** 客户端半边根目录（`execute/web/`；产物落 `execute/web/dist/entry.js`）。 */
 const WEB_DIR = fileURLToPath(new URL('./web/', import.meta.url))
@@ -37,8 +73,8 @@ export interface HandlerDeps {
   maintenance?: PortCaller
   /** 密钥本地存储面；缺省为不可用通道（单测不涉及时不崩）。 */
   secrets?: SecretsChannel
-  /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
-  host?: PortCaller
+  /** 引用水合端口（pins `ref-hydrate`）：按需把投影 refs 解析成闭包；缺省回落 `model`。 */
+  refHydrate?: PortCaller
   /** 会话 owner（pins `session`）：会话链已出世界，`memory.search` 的 goal 从 owner 读。 */
   session?: PortCaller
   /** 短期记忆 owner（pins `short-memory`）：L1 / L2 已出世界，搜索的 goal 经 `eff` 问 owner。 */
@@ -122,14 +158,18 @@ export function configOf(ids: Json): Rec | null {
  * `model.profile` 入参：`{vendor, ids, config, vendors}`。
  * vendor / ids 从 `#2 config` 的当前选择与已勾选模型读出；厂商模板 body 从 `#4–10` 读出。
  */
-export function assembleProfileArgs(ids: Json): { ok: true; args: Rec } | { ok: false; code: string } {
+export function assembleProfileArgs(
+  ids: Json,
+): { ok: true; args: Rec } | { ok: false; code: string } {
   const config = configOf(ids)
   if (config === null) return { ok: false, code: 'profile_no_config' }
   const vendor = config['vendor']
-  if (typeof vendor !== 'string' || vendor.length === 0) return { ok: false, code: 'profile_no_vendor' }
+  if (typeof vendor !== 'string' || vendor.length === 0)
+    return { ok: false, code: 'profile_no_vendor' }
   const providers = isRecord(config['providers']) ? (config['providers'] as Rec) : {}
   const provider = isRecord(providers[vendor]) ? (providers[vendor] as Rec) : null
-  const models = provider !== null && isRecord(provider['models']) ? (provider['models'] as Rec) : {}
+  const models =
+    provider !== null && isRecord(provider['models']) ? (provider['models'] as Rec) : {}
   const selected = Object.keys(models)
   return { ok: true, args: { vendor, ids: selected, config, vendors: collectVendorBodies(ids) } }
 }
@@ -151,7 +191,8 @@ export function assembleDiscoverArgs(inputBody: Json): Rec | null {
   const args: Rec = { url }
   const authRef = probe['auth_ref']
   if (isRecord(authRef)) args['auth_ref'] = authRef
-  if (typeof probe['protocol'] === 'string' && probe['protocol'].length > 0) args['protocol'] = probe['protocol']
+  if (typeof probe['protocol'] === 'string' && probe['protocol'].length > 0)
+    args['protocol'] = probe['protocol']
   return args
 }
 
@@ -171,7 +212,9 @@ export function projectionBody(ids: Json, identity: string): Rec | null {
 export function currentSessionGoal(ids: Json): string | null {
   const session = projectionBody(ids, 'session')
   const current =
-    session !== null && typeof session['current'] === 'string' ? (session['current'] as string) : null
+    session !== null && typeof session['current'] === 'string'
+      ? (session['current'] as string)
+      : null
   if (current === null || current.length === 0) return null
   const shortMemory = projectionBody(ids, 'short-memory')
   if (shortMemory === null || !isRecord(shortMemory['sessions'])) return null
@@ -203,11 +246,15 @@ export function assembleSearchBag(
   if (goal !== null) bag['goal'] = goal
   const retrieval: Rec = {}
   const tags = Array.isArray(record['tags'])
-    ? (record['tags'] as Json[]).filter((tag): tag is string => typeof tag === 'string' && tag.length > 0)
+    ? (record['tags'] as Json[]).filter(
+        (tag): tag is string => typeof tag === 'string' && tag.length > 0,
+      )
     : []
   if (tags.length > 0) retrieval['tags'] = tags
   const limit =
-    typeof record['limit'] === 'number' && Number.isInteger(record['limit']) && (record['limit'] as number) > 0
+    typeof record['limit'] === 'number' &&
+    Number.isInteger(record['limit']) &&
+    (record['limit'] as number) > 0
       ? (record['limit'] as number)
       : null
   if (limit !== null) retrieval['top_k'] = limit
@@ -228,7 +275,8 @@ export function findMemoryEditSlot(inputBody: Json): Rec | null {
 
 /** 待清的 `memory.edit` 线程键：命中的全部键；一个都没命中则回落 `_main`（与清槽口径一致）。 */
 export function memoryEditKeys(inputBody: Json): string[] {
-  const slots = isRecord(inputBody) && isRecord(inputBody['slots']) ? (inputBody['slots'] as Rec) : {}
+  const slots =
+    isRecord(inputBody) && isRecord(inputBody['slots']) ? (inputBody['slots'] as Rec) : {}
   const keys = Object.keys(slots).filter((key) => {
     const value = slots[key]
     return isRecord(value) && value['kind'] === 'memory.edit'
@@ -318,16 +366,24 @@ export function healthStatus(count: number, threshold: number): string {
 }
 
 /** 最近拒绝码分布（按出现次数降序；无 `refused_at.code` 记 `refused`）。 */
-export function refusalCodes(evolution: Json, limit = LEDGER_LIMIT): Rec[] {  const counts = new Map<string, number>()
+export function refusalCodes(evolution: Json, limit = LEDGER_LIMIT): Rec[] {
+  const counts = new Map<string, number>()
   for (const entry of walkTail(evolution, 'trace', limit)) {
     if (entry['outcome'] !== 'refused') continue
     const refusedAt = isRecord(entry['refused_at']) ? (entry['refused_at'] as Rec) : null
-    const code = refusedAt !== null && typeof refusedAt['code'] === 'string' ? (refusedAt['code'] as string) : 'refused'
+    const code =
+      refusedAt !== null && typeof refusedAt['code'] === 'string'
+        ? (refusedAt['code'] as string)
+        : 'refused'
     counts.set(code, (counts.get(code) ?? 0) + 1)
   }
   return [...counts.entries()]
     .map(([code, count]) => ({ code, count }))
-    .sort((left, right) => (right['count'] as number) - (left['count'] as number) || (left['code'] as string < right['code'] as string ? -1 : 1))
+    .sort(
+      (left, right) =>
+        (right['count'] as number) - (left['count'] as number) ||
+        ((((left['code'] as string) < right['code']) as string) ? -1 : 1),
+    )
 }
 
 /**
@@ -342,14 +398,20 @@ export function rollbackTarget(projection: Json): Rec | null {
   if (index <= 0) return null
   const previous = gens[index - 1]
   if (!isRecord(previous) || typeof previous['payload'] !== 'string') return null
-  return { payload: previous['payload'], seq: typeof previous['seq'] === 'number' ? previous['seq'] : index - 1 }
+  return {
+    payload: previous['payload'],
+    seq: typeof previous['seq'] === 'number' ? previous['seq'] : index - 1,
+  }
 }
 
 /**
  * 读 `#33 thresholds` 的连续失败阈值：`loop-policy.body.thresholds` 为整数，或为对象 / 链条目里的
  * `consecutive_refused`。缺失 / 非法回默认（#33 未建时优雅降级）。
  */
-export function resolveThreshold(loopPolicy: Json): { value: number; source: 'loop-policy' | 'default' } {
+export function resolveThreshold(loopPolicy: Json): {
+  value: number
+  source: 'loop-policy' | 'default'
+} {
   const fallback = { value: DEFAULT_REFUSAL_THRESHOLD, source: 'default' as const }
   if (!isRecord(loopPolicy) || !isRecord(loopPolicy['body'])) return fallback
   const thresholds = (loopPolicy['body'] as Rec)['thresholds']
@@ -410,18 +472,19 @@ function failure(code: string, message: string): Rec {
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   const retrieval = deps.retrieval ?? deps.model
   const maintenance = deps.maintenance ?? deps.model
-  const secrets: SecretsChannel =
-    deps.secrets ?? {
-      put: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
-      delete: async () => ({ ok: false, code: 'ui_unreachable', message: 'secrets channel unavailable' }),
-    }
-  const read: DefReader = async (identity, hashes) => {
-    if (deps.host === undefined) return null
-    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
-    if (!outcome.ok) return null
-    return isRecord(outcome.value) ? outcome.value : null
+  const secrets: SecretsChannel = deps.secrets ?? {
+    put: async () => ({
+      ok: false,
+      code: 'ui_unreachable',
+      message: 'secrets channel unavailable',
+    }),
+    delete: async () => ({
+      ok: false,
+      code: 'ui_unreachable',
+      message: 'secrets channel unavailable',
+    }),
   }
-  const hydrator = createRefHydrator(read)
+  const hydrator = makeHydrator(deps.refHydrate ?? deps.model)
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
 
@@ -431,7 +494,8 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
      */
     'client.read': (args): Json => {
       const path = isRecord(args) ? args['path'] : null
-      if (!isSafeClientPath(path)) return failure('client_read_bad_path', 'path must be a package-relative .js path')
+      if (!isSafeClientPath(path))
+        return failure('client_read_bad_path', 'path must be a package-relative .js path')
       const text = readClientFile(WEB_DIR, path)
       if (text === null) return failure('client_read_missing', path)
       return { path, text }
@@ -441,17 +505,22 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
     secret: async (args): Promise<Json> => {
       const record = isRecord(args) ? args : {}
       const name = record['name']
-      if (typeof name !== 'string' || name.length === 0) return failure('secrets_bad_name', 'name required')
+      if (typeof name !== 'string' || name.length === 0)
+        return failure('secrets_bad_name', 'name required')
       const op = record['op']
       if (op === 'put') {
         const value = record['value']
         if (typeof value !== 'string') return failure('secrets_bad_value', 'value required')
         const outcome = await secrets.put(name, value)
-        return outcome.ok ? { ok: true } : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
+        return outcome.ok
+          ? { ok: true }
+          : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
       }
       if (op === 'delete') {
         const outcome = await secrets.delete(name)
-        return outcome.ok ? { ok: true } : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
+        return outcome.ok
+          ? { ok: true }
+          : failure(outcome.code ?? 'secrets_failed', outcome.message ?? '')
       }
       return failure('secrets_bad_op', 'op must be put or delete')
     },

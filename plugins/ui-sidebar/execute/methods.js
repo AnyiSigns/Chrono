@@ -1,7 +1,8 @@
 // 能力类 `ui-sidebar` 的方法表：只做**投影装配 + 反向调用**，不读投影、不落账、不自取时钟。
 // 入口 term 把 `ctx.ids` 投影切片随 args 传入；会话 body 来自投影，**输入槽来自 `input` owner 服务**
-// （槽已出世界，经 `input.read` 反向调用取），工作区 body 来自投影，经宿主反向调用（`port.call`）转给
-// `session` / `workspace`。依赖服务返回结果值（不再产世界写计划）；读命令返回结构化值。
+// （槽已出世界，经 `input.read` 反向调用取），工作区清单经宿主反向调用（`port.call`）转给 `workspace`。
+// `workspace.pick` / `workspace.reveal` 由入口 term 直接 eff `workspace-picker`，不经本服务。
+// 依赖服务返回结果值（不再产世界写计划）；读命令返回结构化值。
 
 import { CLIENT_WEB_DIR, readClientFile } from './client-files.js'
 import { createRefHydrator, hydrateIds } from './refs.js'
@@ -74,14 +75,6 @@ export function assembleBranchArgs(ids, env, input) {
 /** `workspace.list` 装配：服务读自有存储后逐项 stat；本服务不传列表。 */
 export function assembleWorkspaceListArgs() {
   return {}
-}
-
-/** `workspace.reveal` 装配：只取 id（服务按 id 在自有存储的清单里解析 path，不信任裸路径）。 */
-export function assembleRevealArgs(args) {
-  if (!isRecord(args)) throw new BadArgsError('workspace required')
-  const workspace = asString(args['workspace'])
-  if (workspace === null) throw new BadArgsError('workspace required')
-  return { workspace }
 }
 
 /** 反向调用并返回依赖服务的写计划（原样上提给宿主落账）。 */
@@ -179,11 +172,7 @@ export function createHandlers(deps) {
       return externOnly({ open_turns: open })
     },
 
-    pickWorkspace: () => callValue(deps.workspace, 'workspace', 'pick', {}),
-
     addWorkspace: workspaceCommand('add'),
     removeWorkspace: workspaceCommand('remove'),
-
-    revealWorkspace: (args) => callValue(deps.workspace, 'workspace', 'reveal', assembleRevealArgs(args)),
   }
 }

@@ -3,7 +3,7 @@
 // → stop。宿主是单写者，任何失败路径都会尝试 stop 释放锁。
 // 用法：node plugins/secrets/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -13,6 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const SECRETS_DIR = join(REPO_ROOT, 'plugins', 'secrets')
+const SECRETS_LOCAL_DIR = join(REPO_ROOT, 'plugins', 'secrets-local')
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -60,8 +61,58 @@ function createDecoder() {
   }
 }
 
-/** 直连 secrets 服务：hello → call，返回 result / error 帧。 */
+/** 测试用本地文件读取（仿真 secrets-local）：缺失 → 空表；损坏 → 不可读。 */
+function readLocalSecrets(file) {
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: true, secrets: {} }
+    return { ok: false }
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return { ok: false }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { ok: false }
+  const secrets = {}
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value === 'string') secrets[name] = value
+  }
+  return { ok: true, secrets }
+}
+
+/** 仿真宿主侧路由：把 secrets 的反向 `port.call` 应答为 secrets-local.read / list。 */
+function answerPortCall(message, secretsFile) {
+  const base = { v: '1', id: message.id }
+  if (message.port !== 'secrets-local') {
+    return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
+  }
+  const read = readLocalSecrets(secretsFile)
+  if (!read.ok) {
+    return { ...base, kind: 'port.error', ok: false, error: 'secret_unreadable', message: 'unreadable' }
+  }
+  if (message.method === 'list') {
+    const value = Object.keys(read.secrets)
+      .sort()
+      .map((name) => ({ name, has: true }))
+    return { ...base, kind: 'port.result', ok: true, value }
+  }
+  if (message.method === 'read') {
+    const value = read.secrets[message.args?.name]
+    if (value === undefined) {
+      return { ...base, kind: 'port.error', ok: false, error: 'secret_missing', message: 'missing' }
+    }
+    return { ...base, kind: 'port.result', ok: true, value }
+  }
+  return { ...base, kind: 'port.error', ok: false, error: 'unknown_method', message: message.method }
+}
+
+/** 直连 secrets 服务：hello → call，返回 result / error 帧；反向 `port.call` 由本进程桥接。 */
 function callService(pluginState, method, args, extraEnv = {}) {
+  const secretsFile = resolve(pluginState, '..', '..', 'secrets.local.json')
   return new Promise((resolveCall, rejectCall) => {
     const child = spawn(process.execPath, ['execute/main.ts'], {
       cwd: SECRETS_DIR,
@@ -76,6 +127,10 @@ function callService(pluginState, method, args, extraEnv = {}) {
     }, 8000)
     child.stdout.on('data', (chunk) => {
       for (const message of decoder.push(chunk)) {
+        if (message.kind === 'port.call') {
+          child.stdin.write(encodeFrame(answerPortCall(message, secretsFile)))
+          continue
+        }
         const handler = pending.get(message.id)
         if (handler !== undefined) {
           pending.delete(message.id)
@@ -131,13 +186,19 @@ async function main() {
   // 故本冒烟无需在临时根下手建 node_modules/plugin-sdk。
   let started = false
   try {
+    const packedLocal = boot(root, ['pack', SECRETS_LOCAL_DIR, '--identity', 'secrets-local'])
+    assert.equal(packedLocal.ok, true, 'pack secrets-local 报告 ok:false')
     const packed = boot(root, ['pack', SECRETS_DIR, '--identity', 'secrets'])
     assert.equal(packed.ok, true, 'pack secrets 报告 ok:false')
-    console.log(`pack secrets: ${packed.status}`)
+    console.log(`pack secrets-local / secrets: ${packedLocal.status} / ${packed.status}`)
 
+    // 提供方（secrets-local）在前：seed 按清单顺序处理，needs 解析依赖提供方已 active。
     writeFileSync(
       join(root, 'state', 'plugins.json'),
-      JSON.stringify([{ name: 'secrets', path: SECRETS_DIR }]),
+      JSON.stringify([
+        { name: 'secrets-local', path: SECRETS_LOCAL_DIR },
+        { name: 'secrets', path: SECRETS_DIR },
+      ]),
     )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
@@ -146,6 +207,10 @@ async function main() {
     boot(root, ['start'])
     started = true
     const status = boot(root, ['status'])
+    assert.ok(
+      status.loaded.some((item) => item.id === 'secrets-local'),
+      `secrets-local 未装载：${JSON.stringify(status.loaded)}`,
+    )
     assert.ok(
       status.loaded.some((item) => item.id === 'secrets'),
       `secrets 未装载：${JSON.stringify(status.loaded)}`,

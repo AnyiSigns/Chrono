@@ -1,8 +1,8 @@
-// 向量化与按 entry 聚合去重：切块（#20 chunk）→ 批量向量（#20 embed）→ 余弦阈值贪心去重。
+// 向量化与按 entry 聚合去重：切块（tokenizer.chunk）→ 批量向量（embedding.embed）→ 余弦阈值贪心去重。
 // 同输入同输出：条目排序由 (at 降序, 来源优先级升序, key 升序) 完全决定；向量由后端确定返回。
 
 import { BackendError } from './types.ts'
-import type { Chunk, EmbeddingBackend } from './port-link.ts'
+import type { Chunk, EmbeddingBackend, TokenizerBackend } from './port-link.ts'
 
 /** L2 归一；零向量原样返回零向量（不产生 NaN）。 */
 export function normalize(vector: number[]): number[] {
@@ -32,9 +32,9 @@ export function meanNormalized(vectors: number[][]): number[] {
   return normalize(sum.map((value) => value / vectors.length))
 }
 
-/** 切块：空块集补一个整段块（与 #20 契约一致）。 */
-export async function chunkText(text: string, embedding: EmbeddingBackend): Promise<Chunk[]> {
-  const chunks = await embedding.chunk(text)
+/** 切块：空块集补一个整段块（与 tokenizer 契约一致）。 */
+export async function chunkText(text: string, tokenizer: TokenizerBackend): Promise<Chunk[]> {
+  const chunks = await tokenizer.chunk(text)
   if (chunks.length > 0) return chunks
   return [{ index: 0, start: 0, end: [...text].length, text }]
 }
@@ -45,9 +45,10 @@ export interface Vectorized {
   vectors: number[][][]
 }
 
-/** 批量向量化：每个文本先 `chunk` 再 `embed`（一次批量调用），保持确定序。 */
+/** 批量向量化：每个文本先 `tokenizer.chunk` 再 `embedding.embed`（一次批量调用），保持确定序。 */
 export async function vectorizeTexts(
   texts: string[],
+  tokenizer: TokenizerBackend,
   embedding: EmbeddingBackend,
   model: string,
 ): Promise<Vectorized> {
@@ -55,7 +56,7 @@ export async function vectorizeTexts(
   const flat: string[] = []
   const owner: number[] = []
   for (const text of texts) {
-    const textChunks = await chunkText(text, embedding)
+    const textChunks = await chunkText(text, tokenizer)
     chunks.push(textChunks)
     for (const chunk of textChunks) {
       flat.push(chunk.text)
@@ -104,6 +105,7 @@ function compareItems(left: DedupItem, right: DedupItem): number {
 export async function dedupByCosine(
   items: DedupItem[],
   threshold: number,
+  tokenizer: TokenizerBackend,
   embedding: EmbeddingBackend,
   model: string,
 ): Promise<DedupResult> {
@@ -111,6 +113,7 @@ export async function dedupByCosine(
   if (items.length === 0) return { accepted: [], duplicates: [], vectors }
   const vectorized = await vectorizeTexts(
     items.map((item) => item.text),
+    tokenizer,
     embedding,
     model,
   )

@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、needs 两条（approval / input）、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 三条（approval / input / ref-hydrate）、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值、
 // 客户端半边构建声明与类型门禁。
 import { test } from 'node:test'
@@ -55,14 +55,18 @@ test('build 声明：npm ci + node execute/build.mjs，args 不含 =（shell 安
   }
 })
 
-test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；needs = approval / input', () => {
+test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；needs = approval / input / ref-hydrate', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-approval'])
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
   assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.needs, { approval: { mode: 'one' }, input: { mode: 'one' } })
+  assert.deepEqual(decl.needs, {
+    approval: { mode: 'one' },
+    input: { mode: 'one' },
+    'ref-hydrate': { mode: 'one' },
+  })
 })
 
 test('并发安全声明只含纯只读方法：list / client.read；裁决与控制方法留在串行链', () => {
@@ -73,7 +77,10 @@ test('并发安全声明只含纯只读方法：list / client.read；裁决与�
     assert.ok(declared.has(method), `并发声明的方法须已声明：${method}`)
   }
   for (const excluded of ['decide', 'decide_all', 'ping']) {
-    assert.ok(!decl.concurrent_methods.includes(excluded), `${excluded} 发世界写计划 / 属控制面，不得并发`)
+    assert.ok(
+      !decl.concurrent_methods.includes(excluded),
+      `${excluded} 发世界写计划 / 属控制面，不得并发`,
+    )
   }
 })
 
@@ -88,10 +95,16 @@ test('members = execute + term；四条命令入口 term 全部存在且无 args
     ['approval.list', 'approval.decide', 'approval.decide_all', 'ui-approval.client.read'],
   )
   for (const command of decl.commands) {
-    assert.equal(Object.hasOwn(command, 'argsSchema'), false, `${command.name} 无参不应声明 argsSchema`)
+    assert.equal(
+      Object.hasOwn(command, 'argsSchema'),
+      false,
+      `${command.name} 无参不应声明 argsSchema`,
+    )
     assert.ok(readText(command.entry).length > 0, `${command.entry} 应存在`)
   }
-  const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
+  const readonly = Object.fromEntries(
+    decl.commands.map((command) => [command.name, command.readonly]),
+  )
   assert.equal(readonly['approval.list'], true, 'approval.list 只读')
   assert.equal(readonly['approval.decide'], undefined, 'approval.decide 非只读')
   assert.equal(readonly['approval.decide_all'], undefined, 'approval.decide_all 非只读')
@@ -100,8 +113,18 @@ test('members = execute + term；四条命令入口 term 全部存在且无 args
 
 test('入口 term 形状：eff 到自身能力类；client.read 用 Var 0 取命令 args', () => {
   // list 读投影切片（影子指标 body）；decide / decide_all 不再传投影（槽由服务经 input.read 取）。
-  assert.deepEqual(readJson('terms/approval.list.json'), ['eff', 'ui-approval', 'list', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/approval.decide.json'), ['eff', 'ui-approval', 'decide', ['c', null]])
+  assert.deepEqual(readJson('terms/approval.list.json'), [
+    'eff',
+    'ui-approval',
+    'list',
+    ['g', ['ids']],
+  ])
+  assert.deepEqual(readJson('terms/approval.decide.json'), [
+    'eff',
+    'ui-approval',
+    'decide',
+    ['c', null],
+  ])
   assert.deepEqual(readJson('terms/approval.decide_all.json'), [
     'eff',
     'ui-approval',
@@ -152,7 +175,11 @@ test('插件源码与测试不 import 宿主 / 内核 / 客户端（tools/ 冒�
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
       if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) walk(path)
-      else if (entry.isFile() && entry.name !== 'package-lock.json' && /\.(mjs|ts|tsx|js|json)$/.test(entry.name)) {
+      else if (
+        entry.isFile() &&
+        entry.name !== 'package-lock.json' &&
+        /\.(mjs|ts|tsx|js|json)$/.test(entry.name)
+      ) {
         files.push(path)
       }
     }
@@ -204,7 +231,8 @@ function stripComments(source) {
     }
     if (ch === '/' && next === '*') {
       index += 2
-      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/')) index += 1
+      while (index < source.length && !(source[index] === '*' && source[index + 1] === '/'))
+        index += 1
       index += 2
       continue
     }
@@ -243,7 +271,13 @@ test('客户端半边源码为 entry.tsx，旧 entry.js / DOM / 网络层已删'
 test('服务半边 HTTP 面已删（http-server / port / routes / static / inbound-guard）', () => {
   const execDir = join(pkgRoot, 'execute')
   const names = new Set(readdirSync(execDir))
-  for (const retired of ['http-server.ts', 'port.ts', 'routes.ts', 'static.ts', 'inbound-guard.ts']) {
+  for (const retired of [
+    'http-server.ts',
+    'port.ts',
+    'routes.ts',
+    'static.ts',
+    'inbound-guard.ts',
+  ]) {
     assert.ok(!names.has(retired), `HTTP 面文件仍在：${retired}`)
   }
 })
