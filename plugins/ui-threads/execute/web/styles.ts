@@ -68,7 +68,7 @@ export const STYLE_TEXT = `
   animation: threads-breathe 1.6s ease-in-out infinite; }
 @keyframes threads-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
 @media (prefers-reduced-motion: reduce) {
-  .threads-dot[data-tone="running"], .threads-breathe { animation: none; }
-  .threads-todo-body, .threads-todo-list, .threads-todo-chevron { transition: none; }
+  :root:not([data-motion="full"]) .threads-dot[data-tone="running"], :root:not([data-motion="full"]) .threads-breathe { animation: none; }
+  :root:not([data-motion="full"]) .threads-todo-body, :root:not([data-motion="full"]) .threads-todo-list, :root:not([data-motion="full"]) .threads-todo-chevron { transition: none; }
 }
 `

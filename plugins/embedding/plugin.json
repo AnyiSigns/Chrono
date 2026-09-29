@@ -6,8 +6,11 @@
     "embedding": ["embed"]
   },
   "pins": {},
+  "slots": {
+    "embedding-provider": { "methods": ["embed", "describe-models"] }
+  },
   "needs": {
-    "tokenizer": { "mode": "one" }
+    "embedding-provider": { "mode": "many" }
   },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],

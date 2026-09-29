@@ -94,7 +94,7 @@ test('build 成功：messages / params / manifest，事件载荷带帧 env 的 r
     assert.equal(value.params.max_output, 100)
     assert.equal(value.manifest.run, 'run-1')
     assert.equal(value.manifest.thread, 't1')
-    assert.equal(value.manifest.budget, 850)
+    assert.equal(value.manifest.budget, 950)
     assert.ok(value.manifest.used > 0)
     assert.equal(value.manifest.sources.prompt.count, 1)
     const emitted = eventsSince(drv, before)
@@ -276,7 +276,7 @@ test('budget_impossible：P0（系统提示）单独超窗 → 结构化错误�
     )
     assert.equal(value.ok, false)
     assert.equal(value.code, 'budget_impossible')
-    assert.equal(value.budget, 85)
+    assert.equal(value.budget, 95)
     const emitted = eventsSince(drv, before)
     assert.equal(emitted[0].payload.flags.includes('budget_impossible'), true)
     assert.ok(Array.isArray(emitted[0].payload.trimmed))
@@ -285,7 +285,7 @@ test('budget_impossible：P0（系统提示）单独超窗 → 结构化错误�
   }
 })
 
-test('退化预算：max_output ≥ context 时输出预留封顶半上下文（不再出现负预算）', async () => {
+test('动态输出：max_output ≥ context 时输出夹到窗，输入不静态扣输出', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -293,8 +293,9 @@ test('退化预算：max_output ≥ context 时输出预留封顶半上下文（
       baseBag({ config: { model: 'm1', context_window: 100, max_output: 100 } }),
     )
     assert.equal(value.ok, true)
-    assert.equal(value.manifest.budget, 100 - 50 - 5)
-    assert.equal(value.params.max_output, 50)
+    // 输入预算 = 窗 − 余量（100 − 5 = 95）；请求输出 = min(模型 max_output=100, 窗 − 已用输入)。
+    assert.equal(value.manifest.budget, 100 - 5)
+    assert.equal(value.params.max_output, Math.min(100, 100 - value.manifest.used))
   } finally {
     drv.close()
   }

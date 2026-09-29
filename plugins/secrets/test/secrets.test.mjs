@@ -1,45 +1,17 @@
-// `secrets` 服务协议级测试（node --test）：自实现最小协议驱动。
-// 驱动 spawn `node execute/main.ts`（按宿主机制注入 CHRONO_PLUGIN_STATE），
-// 发 hello → 收 manifest，发 call → 收 result / error，覆盖 reload / drain / probe 与 stdin EOF 自退出。
-// 重点：local / env 解析、结构化失败、list 只回 {name,has}、明文不进 stderr。
+// `secrets` 服务协议级测试（node --test）：经 bridge 驱动真实门面进程，
+// 反向 `port.call` 由 driver 按 provider 转给假后端（local / env）。
+// 重点：local / env 经成员后端解析、结构化失败、list 汇总只回 {name,has}、明文不进 stderr、
+// kind 定位（未声明 kind 报 unsupported）、auth_ref 形态校验。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, cpSync, rmSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const PKG_ROOT = resolve(HERE, '..')
-const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
-
-function encodeFrame(message) {
-  const body = Buffer.from(JSON.stringify(message), 'utf8')
-  const frame = Buffer.allocUnsafe(4 + body.length)
-  frame.writeUInt32BE(body.length, 0)
-  body.copy(frame, 4)
-  return frame
-}
-
-function createDecoder() {
-  let buffered = Buffer.alloc(0)
-  return {
-    push(chunk) {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
-      const messages = []
-      while (buffered.length >= 4) {
-        const length = buffered.readUInt32BE(0)
-        if (buffered.length < 4 + length) break
-        const body = buffered.subarray(4, 4 + length).toString('utf8')
-        buffered = buffered.subarray(4 + length)
-        messages.push(JSON.parse(body))
-      }
-      return messages
-    },
-  }
-}
+import { dirname, join } from 'node:path'
+import { encodeFrame } from 'plugin-sdk'
+import { PKG_ROOT, startFacade } from './driver.mjs'
 
 /** 临时宿主根：`<root>/state/plugins/secrets` 已建（模拟宿主注入的 ③ 目录）。 */
 function makeRoot() {
@@ -54,118 +26,40 @@ function writeSecrets(file, value) {
   writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value))
 }
 
-/** 测试用本地文件读取（仿真 secrets-local 的 readLocalSecrets）：缺失 → 空表；损坏 → 不可读。 */
-function readLocalSecretsForTest(file) {
-  let text
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (err) {
-    if (err.code === 'ENOENT') return { ok: true, secrets: {} }
-    return { ok: false }
-  }
-  let parsed
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return { ok: false }
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { ok: false }
-  const secrets = {}
-  for (const [name, value] of Object.entries(parsed)) {
-    if (typeof value === 'string') secrets[name] = value
-  }
-  return { ok: true, secrets }
-}
-
-/** 仿真宿主侧路由：把 secrets 的反向 `port.call` 应答为 secrets-local.read / list。 */
-function answerPortCall(message, secretsFile) {
-  const base = { v: '1', id: message.id }
-  if (message.port !== 'secrets-local') {
-    return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
-  }
-  if (message.method !== 'read' && message.method !== 'list') {
-    return { ...base, kind: 'port.error', ok: false, error: 'unknown_method', message: `unknown method ${message.method}` }
-  }
-  const read = readLocalSecretsForTest(secretsFile)
-  if (!read.ok) {
-    return { ...base, kind: 'port.error', ok: false, error: 'secret_unreadable', message: 'local secrets file is unreadable' }
-  }
-  if (message.method === 'list') {
-    const value = Object.keys(read.secrets)
-      .sort()
-      .map((name) => ({ name, has: true }))
-    return { ...base, kind: 'port.result', ok: true, value }
-  }
-  const value = read.secrets[message.args?.name]
-  if (value === undefined) {
-    return { ...base, kind: 'port.error', ok: false, error: 'secret_missing', message: 'local secret not found' }
-  }
-  return { ...base, kind: 'port.result', ok: true, value }
-}
-
-function startService({ pluginState, extraEnv = {} }) {
-  const env = { ...process.env, CHRONO_PLUGIN_STATE: pluginState, ...extraEnv }
-  const secretsFile = resolve(pluginState, '..', '..', 'secrets.local.json')
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'], env })
-  const decoder = createDecoder()
-  const pending = new Map()
-  let stderr = ''
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
+/** 一个受限的协议驱动：只做 hello + 调用，供「缺声明回落」用例注入无 methods 的临时包。 */
+function startRaw(entry, cwd, extraEnv = {}) {
+  const child = spawn(process.execPath, [entry], {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...extraEnv },
+  })
+  const pending = []
+  let buffered = Buffer.alloc(0)
   child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      if (message.kind === 'port.call') {
-        child.stdin.write(encodeFrame(answerPortCall(message, secretsFile)))
-        continue
-      }
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
+    buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
+    const messages = []
+    while (buffered.length >= 4) {
+      const length = buffered.readUInt32BE(0)
+      if (buffered.length < 4 + length) break
+      const body = buffered.subarray(4, 4 + length).toString('utf8')
+      buffered = buffered.subarray(4 + length)
+      messages.push(JSON.parse(body))
     }
+    for (const message of messages) for (const handler of [...pending]) handler(message)
   })
-  child.stderr.on('data', (chunk) => {
-    stderr += chunk.toString('utf8')
+  child.once('exit', (code) => {
+    for (const handler of pending) handler({ kind: 'exit', code })
   })
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(new Error(`timeout waiting ${expected.join('/')} for ${kind}`))
-      }, 5000)
-      pending.set(id, (message) => {
+  const reply = (id) =>
+    new Promise((resolveReply, rejectReply) => {
+      const timer = setTimeout(() => rejectReply(new Error(`timeout waiting ${id}`)), 5000)
+      pending.push((message) => {
+        if (message.id !== id) return
         clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(new Error(`expected ${expected.join('/')} got ${message.kind}`))
-          return
-        }
-        resolveRequest(message)
+        resolveReply(message)
       })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
     })
-  }
-
-  return {
-    child,
-    exit,
-    stderrText: () => stderr,
-    request,
-    async hello() {
-      return request('hello', { impl: 'secrets', gen: 'gen-1' }, 'manifest')
-    },
-    async call(method, args) {
-      const message = await request('call', { port: 'secrets', method, args, env: { run: null, thread: null, now: 0 } }, ['result', 'error'])
-      return message
-    },
-    close() {
-      child.stdin.end()
-    },
-  }
+  return { child, reply }
 }
 
 // ── 握手 / 控制 ────────────────────────────────────────────────────────────
@@ -187,37 +81,18 @@ test('缺 methods 声明回落处理器表（无 TDZ）', async () => {
     }),
   )
   const { pluginState } = makeRoot()
-  const child = spawn(process.execPath, [join(dir, 'execute', 'main.ts')], {
-    cwd: dir,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CHRONO_PLUGIN_STATE: pluginState },
-  })
-  const decoder = createDecoder()
-  const pending = []
-  const reply = (id) =>
-    new Promise((resolveReply, rejectReply) => {
-      const timer = setTimeout(() => rejectReply(new Error(`timeout waiting ${id}`)), 5000)
-      pending.push((message) => {
-        if (message.id !== id) return
-        clearTimeout(timer)
-        resolveReply(message)
-      })
-    })
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      for (const handler of [...pending]) handler(message)
-    }
-  })
-  child.once('exit', (code) => {
-    for (const handler of pending) handler({ kind: 'exit', code })
+  const { child, reply } = startRaw(join(dir, 'execute', 'main.ts'), dir, {
+    CHRONO_PLUGIN_STATE: pluginState,
   })
   try {
     const manifestReply = reply('drv-1')
-    child.stdin.write(encodeFrame({ v: '1', id: 'drv-1', kind: 'hello', impl: 'secrets', gen: 'g' }))
+    child.stdin.write(
+      encodeFrame({ v: '1', id: 'drv-1', kind: 'hello', impl: 'secrets', gen: 'g' }),
+    )
     const manifest = await manifestReply
     assert.equal(manifest.kind, 'manifest')
     assert.equal(manifest.identity, 'secrets')
-    // 缺声明时回落 HANDLERS 键：resolve 仍被识别（不是 unknown_method）
+    // 缺声明时回落 HANDLERS 键：resolve 仍被识别（不是 unknown_method）+ auth_ref 形态校验
     const resolveReply = reply('drv-2')
     child.stdin.write(
       encodeFrame({
@@ -242,9 +117,9 @@ test('缺 methods 声明回落处理器表（无 TDZ）', async () => {
   }
 })
 
-test('hello 回 manifest，声明与 plugin.json 一致', async () => {
+test('hello 回 manifest，声明与 plugin.json 一致（消费方面零改动）', async () => {
   const { pluginState } = makeRoot()
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile: join(pluginState, '..', '..', 'secrets.local.json') })
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
@@ -260,7 +135,7 @@ test('hello 回 manifest，声明与 plugin.json 一致', async () => {
 
 test('reload → ack / drain → bye / probe → pong', async () => {
   const { pluginState } = makeRoot()
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile: join(pluginState, '..', '..', 'secrets.local.json') })
   try {
     await drv.hello()
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')
@@ -273,7 +148,7 @@ test('reload → ack / drain → bye / probe → pong', async () => {
 
 test('stdin EOF 即自退出（断连不占端点）', async () => {
   const { pluginState } = makeRoot()
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile: join(pluginState, '..', '..', 'secrets.local.json') })
   await drv.hello()
   drv.close()
   assert.equal(await drv.exit, 0)
@@ -281,13 +156,15 @@ test('stdin EOF 即自退出（断连不占端点）', async () => {
 
 // ── resolve ────────────────────────────────────────────────────────────────
 
-test('resolve local：读宿主 state/secrets.local.json 的明文', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+test('resolve local：经 local 后端读宿主 state/secrets.local.json 的明文', async () => {
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { DEEPSEEK_API_KEY: 'sk-local-123' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
-    const message = await drv.call('resolve', { auth_ref: { kind: 'local', name: 'DEEPSEEK_API_KEY' } })
+    const message = await drv.call('resolve', {
+      auth_ref: { kind: 'local', name: 'DEEPSEEK_API_KEY' },
+    })
     assert.equal(message.kind, 'result')
     assert.equal(message.value, 'sk-local-123')
   } finally {
@@ -296,9 +173,9 @@ test('resolve local：读宿主 state/secrets.local.json 的明文', async () =>
 })
 
 test('resolve local：kind 缺省即 local', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { K: 'v' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const message = await drv.call('resolve', { auth_ref: { name: 'K' } })
@@ -309,9 +186,9 @@ test('resolve local：kind 缺省即 local', async () => {
   }
 })
 
-test('resolve env：读本服务进程环境', async () => {
-  const { pluginState } = makeRoot()
-  const drv = startService({ pluginState, extraEnv: { MY_ENV_SECRET: 'env-abc' } })
+test('resolve env：经 env 后端取值', async () => {
+  const { secretsFile } = makeRoot()
+  const drv = startFacade({ secretsFile, env: { MY_ENV_SECRET: 'env-abc' } })
   try {
     await drv.hello()
     const message = await drv.call('resolve', { auth_ref: { kind: 'env', name: 'MY_ENV_SECRET' } })
@@ -323,9 +200,9 @@ test('resolve env：读本服务进程环境', async () => {
 })
 
 test('resolve 缺失：local / env 都回 secret_missing', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { PRESENT: 'x' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const local = await drv.call('resolve', { auth_ref: { kind: 'local', name: 'ABSENT' } })
@@ -340,9 +217,9 @@ test('resolve 缺失：local / env 都回 secret_missing', async () => {
 })
 
 test('resolve unreadable：本地文件 JSON 损坏 → secret_unreadable，不泄漏文件内容', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, '{ not-json-secret-body')
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const message = await drv.call('resolve', { auth_ref: { kind: 'local', name: 'ANY' } })
@@ -355,20 +232,36 @@ test('resolve unreadable：本地文件 JSON 损坏 → secret_unreadable，不�
   }
 })
 
-test('resolve bad_auth_ref：未知 kind / 缺 name / 非对象', async () => {
-  const { pluginState } = makeRoot()
-  const drv = startService({ pluginState })
+test('resolve kind 未声明 → secret_kind_unsupported（kind 词表开放）', async () => {
+  const { secretsFile } = makeRoot()
+  writeSecrets(secretsFile, { K: 'v' })
+  const drv = startFacade({ secretsFile, members: ['secrets-env', 'secrets-local'] })
   try {
     await drv.hello()
-    const badKind = await drv.call('resolve', { auth_ref: { kind: 'vault', name: 'K' } })
-    assert.equal(badKind.kind, 'error')
-    assert.equal(badKind.code, 'bad_auth_ref')
-    const noName = await drv.call('resolve', { auth_ref: { kind: 'local' } })
-    assert.equal(noName.code, 'bad_auth_ref')
-    const notObject = await drv.call('resolve', { auth_ref: 'K' })
-    assert.equal(notObject.code, 'bad_auth_ref')
-    const proto = await drv.call('resolve', { auth_ref: { kind: 'local', name: '__proto__' } })
-    assert.equal(proto.code, 'bad_auth_ref')
+    const message = await drv.call('resolve', { auth_ref: { kind: 'vault', name: 'K' } })
+    assert.equal(message.kind, 'error')
+    assert.equal(message.code, 'secret_kind_unsupported')
+  } finally {
+    drv.close()
+  }
+})
+
+test('resolve bad_auth_ref：kind 空 / 非字符串；缺 name / 非对象 / 原型键', async () => {
+  const { secretsFile } = makeRoot()
+  const drv = startFacade({ secretsFile })
+  try {
+    await drv.hello()
+    for (const auth_ref of [
+      { kind: '', name: 'K' },
+      { kind: 7, name: 'K' },
+      { kind: 'local' },
+      'K',
+      { kind: 'local', name: '__proto__' },
+    ]) {
+      const message = await drv.call('resolve', { auth_ref })
+      assert.equal(message.kind, 'error', JSON.stringify(auth_ref))
+      assert.equal(message.code, 'bad_auth_ref', JSON.stringify(auth_ref))
+    }
   } finally {
     drv.close()
   }
@@ -376,10 +269,10 @@ test('resolve bad_auth_ref：未知 kind / 缺 name / 非对象', async () => {
 
 // ── list ───────────────────────────────────────────────────────────────────
 
-test('list 只回 {name,has}（不回值），名字排序；缺文件回 []', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+test('list 汇总各后端只回 {name,has}（不回值），名字排序；缺文件回 []', async () => {
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { ZED: 'z-value', ALPHA: 'a-value' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const message = await drv.call('list', {})
@@ -388,9 +281,11 @@ test('list 只回 {name,has}（不回值），名字排序；缺文件回 []', a
       { name: 'ALPHA', has: true },
       { name: 'ZED', has: true },
     ])
-    // 契约：缺名 = 未读到；has 恒 true，has:false 不可达
-    assert.equal(message.value.every((entry) => entry.has === true), true)
-    assert.equal(message.value.some((entry) => entry.name === 'MISSING'), false)
+    // 契约：缺名 = 未读到；has 恒 true，has:false 不可达；env 后端不贡献清单项
+    assert.equal(
+      message.value.every((entry) => entry.has === true),
+      true,
+    )
     assert.ok(!JSON.stringify(message).includes('z-value'))
     assert.ok(!JSON.stringify(message).includes('a-value'))
   } finally {
@@ -398,7 +293,7 @@ test('list 只回 {name,has}（不回值），名字排序；缺文件回 []', a
   }
 
   const empty = makeRoot()
-  const drv2 = startService({ pluginState: empty.pluginState })
+  const drv2 = startFacade({ secretsFile: empty.secretsFile })
   try {
     await drv2.hello()
     const message = await drv2.call('list', null)
@@ -410,9 +305,9 @@ test('list 只回 {name,has}（不回值），名字排序；缺文件回 []', a
 })
 
 test('list 遇损坏文件 → secret_unreadable（结构化，不崩）', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, 'oops')
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const message = await drv.call('list', {})
@@ -426,9 +321,9 @@ test('list 遇损坏文件 → secret_unreadable（结构化，不崩）', async
 // ── 义务 / 健壮性 ───────────────────────────────────────────────────────────
 
 test('明文不进 stderr：resolve 成功与失败后 stderr 都不含值', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { TOP_SECRET: 'super-secret-plaintext' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const ok = await drv.call('resolve', { auth_ref: { kind: 'local', name: 'TOP_SECRET' } })
@@ -442,13 +337,13 @@ test('明文不进 stderr：resolve 成功与失败后 stderr 都不含值', asy
 })
 
 test('结构化错误不崩进程：错误后仍可正常服务', async () => {
-  const { pluginState, secretsFile } = makeRoot()
+  const { secretsFile } = makeRoot()
   writeSecrets(secretsFile, { K: 'v' })
-  const drv = startService({ pluginState })
+  const drv = startFacade({ secretsFile })
   try {
     await drv.hello()
     const bad = await drv.call('resolve', { auth_ref: { kind: 'vault', name: 'K' } })
-    assert.equal(bad.code, 'bad_auth_ref')
+    assert.equal(bad.code, 'secret_kind_unsupported')
     const unknown = await drv.call('nope', {})
     assert.equal(unknown.kind, 'error')
     const nonObject = await drv.call('resolve', 'x')

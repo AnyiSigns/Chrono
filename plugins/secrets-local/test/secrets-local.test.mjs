@@ -1,7 +1,7 @@
 // `secrets-local` 服务协议级测试（node --test）：自实现最小协议驱动。
 // 驱动 spawn `node execute/main.ts`（按宿主机制注入 CHRONO_PLUGIN_STATE），
 // 发 hello → 收 manifest，发 call → 收 result / error，覆盖 reload / drain / probe 与 stdin EOF 自退出。
-// 重点：read / list 的路径解析、结构化失败、明文不进 stderr。
+// 重点：secrets-backend 提供方（read / list / kinds）、路径解析、结构化失败、明文不进 stderr。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
+const CAP = 'secrets-backend'
 
 function encodeFrame(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
@@ -116,7 +117,7 @@ function startService({ pluginState, extraEnv = {} }) {
       const message = await request(
         'call',
         {
-          port: 'secrets-local',
+          port: CAP,
           method,
           args,
           env: { run: null, thread: null, now: 0 },
@@ -133,17 +134,17 @@ function startService({ pluginState, extraEnv = {} }) {
 
 // ── 握手 / 控制 ────────────────────────────────────────────────────────────
 
-test('hello 回 manifest，声明与 plugin.json 一致', async () => {
+test('hello 回 manifest，声明与 plugin.json 一致（secrets-backend 提供方）', async () => {
   const { pluginState } = makeRoot()
   const drv = startService({ pluginState })
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.v, '1')
     assert.equal(manifest.identity, 'secrets-local')
-    assert.deepEqual(manifest.implements, ['secrets-local'])
+    assert.deepEqual(manifest.implements, ['secrets-backend'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
-    assert.deepEqual(manifest.methods['secrets-local'], ['read', 'list'])
+    assert.deepEqual(manifest.methods['secrets-backend'], ['read', 'list', 'kinds'])
   } finally {
     drv.close()
   }
@@ -168,6 +169,21 @@ test('stdin EOF 即自退出（断连不占端点）', async () => {
   await drv.hello()
   drv.close()
   assert.equal(await drv.exit, 0)
+})
+
+// ── kinds ──────────────────────────────────────────────────────────────────
+
+test('kinds：自述支持 auth_ref.kind = local', async () => {
+  const { pluginState } = makeRoot()
+  const drv = startService({ pluginState })
+  try {
+    await drv.hello()
+    const message = await drv.call('kinds', {})
+    assert.equal(message.kind, 'result')
+    assert.deepEqual(message.value, ['local'])
+  } finally {
+    drv.close()
+  }
 })
 
 // ── read ───────────────────────────────────────────────────────────────────

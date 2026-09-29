@@ -297,7 +297,7 @@ export const STYLE_TEXT = `
   border: 0;
 }
 @media (prefers-reduced-motion: reduce) {
-  .approval-dock, .approval-item, .approval-peek { animation: none; }
-  .approval-breathe-ring { animation: none; opacity: .4; }
+  :root:not([data-motion="full"]) .approval-dock, :root:not([data-motion="full"]) .approval-item, :root:not([data-motion="full"]) .approval-peek { animation: none; }
+  :root:not([data-motion="full"]) .approval-breathe-ring { animation: none; opacity: .4; }
 }
 `

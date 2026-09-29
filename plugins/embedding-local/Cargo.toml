@@ -1,0 +1,24 @@
+[package]
+name = "embedding-local"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 宿主按 Cargo.toml 恢复依赖：包根必须有 Cargo.toml，产物落共享缓存
+# `<root>/state/deps/cargo-target/release/embedding-local[.exe]`；`execute/launch.mjs` 据此定位二进制。
+# 权重经 `include_bytes!` 内嵌：构建期输入由宿主 `assets_manifest` 直拷提供。
+# 分词由 `tokenizer` 提供方经反向 `port.call tokenizer.encode` 提供，本身份不内嵌分词器。
+[[bin]]
+name = "embedding-local"
+path = "execute/main.rs"
+
+[dependencies]
+plugin-sdk = { path = "../../plugin-sdk/rust" }
+serde_json = "1"
+# ONNX Runtime 绑定：构建期下载并缓存 onnxruntime 动态库，`copy-dylibs` 把它放到产物目录。
+ort = "=2.0.0-rc.13"
+
+[dev-dependencies]
+# 仅测试期使用：从兄弟 `tokenizer` 插件资产读入真实分词器（运行时读文件），
+# 使向量 / 相似度用例走真实分词，而生产二进制不内嵌 `tokenizer.json`。
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }

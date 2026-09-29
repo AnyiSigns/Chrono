@@ -1,0 +1,63 @@
+{
+  "title": "embedding-local（本地向量化提供方）",
+  "description": "身份自述 / 数据契约：提供方 embedding-local 实现扩展类 embedding-provider 的 embed 与 describe-models。embed 入参与结果形状与门面 embedding.embed 一致（vectors 与 texts 一一对应，每维 dim，已 L2 归一）；describe-models 返回本提供方支持的模型清单（供门面按 model 选成员）。模型权重不进世界，宿主物化时按顶层 assets_manifest 从投递包源目录直拷到物化目录（供 include_bytes! 构建期读取）。分词经 `needs.tokenizer` 反向 `port.call tokenizer.encode` 取得 token ids / mask，本身份不内嵌分词器。服务不读投影、无写通道：一切输入随 bag 由调用方入口 term 传入。",
+  "type": "object",
+  "additionalProperties": true,
+  "model": {
+    "id": "granite-97m",
+    "dim": 384,
+    "pooling": "cls",
+    "normalize": true,
+    "max_seq": 32768
+  },
+  "properties": {
+    "embed_request": {
+      "type": "object",
+      "description": "embed 的 bag：texts 为单条或批量文本；model 缺省为清单里的 id。",
+      "required": ["texts"],
+      "additionalProperties": true,
+      "properties": {
+        "texts": { "type": "array", "items": { "type": "string" } },
+        "model": { "type": "string" }
+      }
+    },
+    "embed_result": {
+      "type": "object",
+      "description": "embed 结果：vectors 与 texts 一一对应，每维 dim，已 L2 归一。",
+      "required": ["model", "dim", "vectors"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "dim": { "type": "integer", "minimum": 1 },
+        "vectors": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }
+      }
+    },
+    "describe_models_result": {
+      "type": "object",
+      "description": "describe-models 结果：本提供方支持的模型清单，每项 {model, dim}。",
+      "required": ["models"],
+      "additionalProperties": false,
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["model", "dim"],
+            "additionalProperties": true,
+            "properties": {
+              "model": { "type": "string" },
+              "dim": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "assets_manifest": [
+    {
+      "path": "granite-97m/model_quint8_avx2.onnx",
+      "sha256": "a6022dd8220ea6f6595562a1328ee216f4a94faa55362f2f4747c80f1e78772e",
+      "size": 98247878
+    }
+  ]
+}

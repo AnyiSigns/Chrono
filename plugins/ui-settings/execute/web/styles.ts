@@ -260,8 +260,8 @@ export const STYLE_TEXT = `
   .settings-guide-inner { max-width: none; margin: 0; padding: var(--space-24) var(--space-16) var(--space-32); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .settings-backdrop, .settings-modal, .settings-content-fade, .settings-guide-inner > *, .settings-check-in { animation: none; }
-  .settings-breathe, .settings-breathe-ring { animation: none; opacity: .4; }
+  :root:not([data-motion="full"]) .settings-backdrop, :root:not([data-motion="full"]) .settings-modal, :root:not([data-motion="full"]) .settings-content-fade, :root:not([data-motion="full"]) .settings-guide-inner > *, :root:not([data-motion="full"]) .settings-check-in { animation: none; }
+  :root:not([data-motion="full"]) .settings-breathe, :root:not([data-motion="full"]) .settings-breathe-ring { animation: none; opacity: .4; }
 }
 `
 

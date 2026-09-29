@@ -19,6 +19,31 @@ pub fn shared_writer<W: Write + Send + 'static>(writer: W) -> SharedWriter {
     Arc::new(Mutex::new(Box::new(writer)))
 }
 
+/// 从 `CHRONO_PLUGIN_MANY_NEEDS` 解析宿主注入的 `many` 成员表（stdio 形态）：能力类 → 成员身份名。
+/// 缺失 / 坏 JSON / 形不合回落 `None`（不抛）；键与成员均按码元序（`BTreeMap` / 排序），
+/// 使「无匹配 / 歧义」的选择规则确定性可复现。inproc / worker 形态没有该 env，故仅 stdio 需要。
+pub fn many_needs_from_env() -> Option<std::collections::BTreeMap<String, Vec<String>>> {
+    let raw = std::env::var("CHRONO_PLUGIN_MANY_NEEDS").ok()?;
+    parse_many_needs(&raw)
+}
+
+/// 解析 `many` 成员表 JSON 文本（与 `many_needs_from_env` 同口径，便于确定性单测）。
+fn parse_many_needs(raw: &str) -> Option<std::collections::BTreeMap<String, Vec<String>>> {
+    let parsed: Value = serde_json::from_str(raw).ok()?;
+    let object = parsed.as_object()?;
+    let mut out = std::collections::BTreeMap::new();
+    for (cap, value) in object {
+        let array = value.as_array()?;
+        let mut members = Vec::with_capacity(array.len());
+        for item in array {
+            members.push(item.as_str()?.to_string());
+        }
+        members.sort();
+        out.insert(cap.clone(), members);
+    }
+    Some(out)
+}
+
 /// 结构化服务错误：错误码 + 人读消息；错误码与协议 / 内核词表同源，由插件给出。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceError {
@@ -393,6 +418,19 @@ mod tests {
         assert_eq!(handle_control(&SPEC, &json!({"kind":"hello","id":"h"})).unwrap()["kind"], "manifest");
         assert_eq!(handle_control(&SPEC, &json!({"kind":"probe","id":"p"})).unwrap()["kind"], "pong");
         assert_eq!(handle_control(&SPEC, &json!({"kind":"reload","id":"r"})).unwrap()["kind"], "ack");
+    }
+
+    #[test]
+    fn parse_many_needs_sorts_members_and_rejects_bad_shape() {
+        let parsed = parse_many_needs(r#"{"embedding-provider":["embedding-local","embedding-fixture"]}"#)
+            .expect("valid many needs parses");
+        assert_eq!(
+            parsed.get("embedding-provider"),
+            Some(&vec!["embedding-fixture".to_string(), "embedding-local".to_string()])
+        );
+        assert!(parse_many_needs("not json").is_none());
+        assert!(parse_many_needs(r#"{"cap":[1]}"#).is_none());
+        assert!(parse_many_needs(r#"{"cap":"nope"}"#).is_none());
     }
 
     #[test]

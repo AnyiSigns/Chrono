@@ -298,9 +298,9 @@ export const STYLE_TEXT = `
 @keyframes chat-pill-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @media (prefers-reduced-motion: reduce) {
   /* 呼吸条 / 旋转为位移动效，减少动态时停用；「正在工作」仅色彩与透明度变化，保留以维持可辨识度。 */
-  .chat-breathe, .chat-tool-spin, .chat-group-avatar[data-current="true"], .chat-tool-detail, .chat-reasoning-body, .chat-table-menu, .chat-pill:not([hidden]) { animation: none; }
-  .chat-breathe, .chat-tool-spin, .chat-group-avatar[data-current="true"] { opacity: .4; }
-  .chat-lightbox, .chat-lightbox[data-closing="true"] { animation: none; }
-  .chat-list, .chat-footnote, .chat-tool-chevron, .chat-reasoning-chevron, .chat-anchor { transition: none; }
+  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"], :root:not([data-motion="full"]) .chat-tool-detail, :root:not([data-motion="full"]) .chat-reasoning-body, :root:not([data-motion="full"]) .chat-table-menu, :root:not([data-motion="full"]) .chat-pill:not([hidden]) { animation: none; }
+  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"] { opacity: .4; }
+  :root:not([data-motion="full"]) .chat-lightbox, :root:not([data-motion="full"]) .chat-lightbox[data-closing="true"] { animation: none; }
+  :root:not([data-motion="full"]) .chat-list, :root:not([data-motion="full"]) .chat-footnote, :root:not([data-motion="full"]) .chat-tool-chevron, :root:not([data-motion="full"]) .chat-reasoning-chevron, :root:not([data-motion="full"]) .chat-anchor { transition: none; }
 }
 `

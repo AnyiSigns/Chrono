@@ -194,7 +194,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root:not([data-motion="full"]) {
     --motion-fast: 0ms;
     --motion-base: 0ms;
     --motion-slow: 0ms;

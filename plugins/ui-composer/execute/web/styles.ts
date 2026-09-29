@@ -354,14 +354,14 @@ export const STYLE_TEXT = `
 .composer-popover-remove:hover { background: var(--c-selection); }
 .composer-popover-remove:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
-  .composer-card,
-  .composer-card[data-focus="true"],
-  .composer-chip-breathe,
-  .composer-popover,
-  .composer-send[data-mode="stop"] .composer-send-icon[data-icon="stop"] {
+  :root:not([data-motion="full"]) .composer-card,
+  :root:not([data-motion="full"]) .composer-card[data-focus="true"],
+  :root:not([data-motion="full"]) .composer-chip-breathe,
+  :root:not([data-motion="full"]) .composer-popover,
+  :root:not([data-motion="full"]) .composer-send[data-mode="stop"] .composer-send-icon[data-icon="stop"] {
     animation: none;
   }
-  .composer-chip-breathe { opacity: .4; }
-  .composer-send[data-mode="stop"] .composer-send-icon[data-icon="stop"] { opacity: 1; }
+  :root:not([data-motion="full"]) .composer-chip-breathe { opacity: .4; }
+  :root:not([data-motion="full"]) .composer-send[data-mode="stop"] .composer-send-icon[data-icon="stop"] { opacity: 1; }
 }
 `

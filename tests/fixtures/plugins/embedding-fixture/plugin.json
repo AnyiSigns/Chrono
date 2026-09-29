@@ -1,0 +1,17 @@
+{
+  "identity": "embedding-fixture",
+  "implements": ["embedding-provider"],
+  "methods": {
+    "embedding-provider": ["embed", "describe-models"]
+  },
+  "pins": {},
+  "needs": {},
+  "start": "node execute/main.mjs",
+  "build": [],
+  "protocol": "1",
+  "restart": { "policy": "on-exit", "max": 5, "window_ms": 60000, "drain_ms": 5000 },
+  "health": { "interval_ms": 10000, "timeout_ms": 2000 },
+  "state": "recomputable",
+  "members": [{ "kind": "execute", "path": "execute/" }],
+  "commands": []
+}

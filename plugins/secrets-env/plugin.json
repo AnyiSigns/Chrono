@@ -1,0 +1,31 @@
+{
+  "identity": "secrets-env",
+  "schema": "schema/secrets-env.json",
+  "implements": ["secrets-backend"],
+  "methods": {
+    "secrets-backend": ["read", "list", "kinds"]
+  },
+  "pins": {},
+  "start": "node execute/main.ts",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

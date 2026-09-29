@@ -17,10 +17,10 @@ test('预算建模：缺档案回落默认并标 profile_missing', () => {
   assert.equal(missing.origin, 'default')
   assert.ok(missing.flags.includes('profile_missing'))
   assert.equal(missing.context_window, 8192)
-  assert.equal(missing.budget, 8192 - 1024 - Math.floor(8192 * 0.05))
+  assert.equal(missing.budget, 8192 - Math.floor(8192 * 0.05))
 })
 
-test('预算建模：档案给出窗口 / 输出；输出封顶到半个窗口', () => {
+test('预算建模：档案给出窗口 / 输出；输入预算 = 窗 − 余量（输出不静态预留）', () => {
   const explicit = computeBudget({
     ...DEFAULT_PARAMS,
     config: { context_window: 1000, max_output: 100 },
@@ -30,14 +30,15 @@ test('预算建模：档案给出窗口 / 输出；输出封顶到半个窗口',
   assert.equal(explicit.context_window, 1000)
   assert.equal(explicit.max_output, 100)
   assert.equal(explicit.margin, 50)
-  assert.equal(explicit.budget, 850)
+  assert.equal(explicit.budget, 950)
 
+  // 输出 ≥ 窗：max_output 夹到窗本身；输入预算不受输出影响。
   const capped = computeBudget({
     ...DEFAULT_PARAMS,
     config: { context_window: 1000, max_output: 2000 },
   })
-  assert.equal(capped.max_output, 500)
-  assert.equal(capped.budget, 1000 - 500 - 50)
+  assert.equal(capped.max_output, 1000)
+  assert.equal(capped.budget, 1000 - 50)
 })
 
 test('预算建模：配额按预算比例取整', () => {
@@ -45,8 +46,8 @@ test('预算建模：配额按预算比例取整', () => {
     ...DEFAULT_PARAMS,
     config: { context_window: 1000, max_output: 100 },
   })
-  assert.equal(result.quota.l2, Math.floor(850 * 0.08))
-  assert.equal(result.quota.recall, Math.floor(850 * 0.12))
+  assert.equal(result.quota.l2, Math.floor(950 * 0.08))
+  assert.equal(result.quota.recall, Math.floor(950 * 0.12))
 })
 
 test('参数归一化：缺键回落默认', () => {

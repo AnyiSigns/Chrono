@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "本地向量化（Rust）：granite-97m int8 ONNX 推理 + 真实 tokenizer 窗口切块；无 npm 依赖，权重内嵌二进制，编译走宿主依赖缓存",
+  "description": "向量化门面（Rust）：按注入的 embedding-provider 成员表，经各成员 describe-models 按 model 选提供方，再带 provider 反向调用其 embed；不持有模型",
   "files": [
     "plugin.json",
     "package.json",
@@ -11,8 +11,6 @@
     ".worldignore",
     "execute/",
     "schema/",
-    "granite-97m/",
-    "!granite-97m/model_quint8_avx2.onnx",
     "Cargo.toml",
     "Cargo.lock"
   ],

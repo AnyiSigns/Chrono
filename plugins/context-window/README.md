@@ -37,8 +37,10 @@
   覆盖）时，无论层级都以「摘要 + 句柄」表示而非内联；`manifest.degraded` 记 `age_large_artifacts`。
 - **配对不变量**：每个 `tool_call` 必须有配对结果；无结果（老化裁掉 / 中断）合成
   `{ok:false,error:'interrupted'}` 占位。`extra_messages` 与历史工具调用均为 atomic 组（调用 + 结果同进同出）。
-- **预算** = `context_window - max_output - 余量`（余量比例住 policy），建模由 `budget.model` 提供方算得，
+- **预算** = `context_window - 余量`（余量比例住 policy），建模由 `budget.model` 提供方算得，
   本插件把生效 policy 数值随调用下传（单一真源在本插件）；返回的每来源配额上限供配额分配使用。
+  输出**不静态预留**：请求 `max_output` 在组装后按剩余给 `min(模型 max_output, 窗 − 已用输入)`，
+  输入可尽量用满模型窗（输入越大、输出越小）。
   只有 P0（系统提示 + 工具 schema）本身超窗才 `budget_impossible` 并指名过大元素；`budget ≤ 0` 返回 `budget_exceeded`。
 - **预算来源可见**：`manifest.budget_origin` 为 `profile`（档案给出）或 `default`（档案缺失回落 policy
   默认）；缺失时另标 `profile_missing`，调用方可据此提示补档，不再静默按小窗口裁剪。

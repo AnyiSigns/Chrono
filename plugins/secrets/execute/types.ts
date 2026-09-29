@@ -3,7 +3,12 @@
 import { ServiceError } from 'plugin-sdk'
 
 /** resolve / list 的结构化失败码（与契约口径一致）。 */
-export type SecretErrorCode = 'secret_missing' | 'secret_unreadable' | 'bad_auth_ref'
+export type SecretErrorCode =
+  | 'secret_missing'
+  | 'secret_unreadable'
+  | 'bad_auth_ref'
+  | 'secret_kind_unsupported'
+  | 'secret_kind_ambiguous'
 
 /** 领域错误：带固定码，由 SDK 派发器映射成协议 error 帧。 */
 export class SecretError extends ServiceError {

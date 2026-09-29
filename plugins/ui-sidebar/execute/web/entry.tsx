@@ -617,7 +617,8 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
     if (host === null || host === undefined) return
     const prevWidth = host.style.getPropertyValue('--sidebar-w-expanded')
     const prevTransition = host.style.getPropertyValue('transition')
-    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const forced = document.documentElement.getAttribute('data-motion') === 'full'
+    const reduced = !forced && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     host.style.setProperty('--sidebar-w-expanded', `${snap.width}px`)
     host.style.setProperty('transition', snap.dragging || reduced ? 'none' : `width ${SIDEBAR_MOTION}`)
     return () => {

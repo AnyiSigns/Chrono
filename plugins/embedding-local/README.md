@@ -1,0 +1,102 @@
+# embedding-local（本地向量化提供方）
+
+扩展点 `embedding-provider` 的本地实现：文本 -> granite-97m（int8 ONNX）-> 384 维 L2 归一向量。
+本地推理、**不触网**、无写通道；不读投影，输入全由调用方随 bag 传入。
+分词由 `tokenizer` 提供方经反向 `port.call tokenizer.encode` 提供（本身份不内嵌分词器）。
+
+- 身份：`embedding-local`
+- 能力类 / 方法：`embedding-provider` → `embed` / `describe-models`
+- 命令：无（成员无 `terms/`：无命令即无入口 term，省略该目录）
+- 成员：`execute`（Rust 服务 + `launch.mjs`）、`schema`（`embedding-local.json`）
+- `needs`：`tokenizer`（分词：`tokenizer.encode`，取 token ids / mask）
+- 状态档：`recomputable`（③ 可重算；无本地持久状态）
+- 启动：`node execute/launch.mjs`（宿主 spawn，stdio 协议帧）
+
+本插件不自带对外能力类：它是扩展类 `embedding-provider` 的提供方（`implements`），
+由拥有方 `embedding` 声明契约并选择。新增同类提供方 = 新插件 `implements: ["embedding-provider"]`，
+`embedding` 与消费方代码都不改。
+
+## 方法契约
+
+```jsonc
+// describe-models 出参：本提供方支持的模型清单（门面据此按 model 选成员）
+{ "models": [{ "model": "granite-97m", "dim": 384 }] }
+// embed 入参（单条或批量；model 缺省 granite-97m）
+{ "texts": ["…"], "model": "granite-97m" }
+// embed 出参（vectors 与 texts 一一对应，每维 384，已 L2 归一）
+{ "model": "granite-97m", "dim": 384, "vectors": [[/* 384 float */], …] }
+```
+
+- **批量**：`embed` 接受数组；服务内部**逐条推理**（不做 padding），故结果只取决于文本自身、与批次组成无关。
+- **分词**：经反向 `port.call tokenizer.encode`（`add_special_tokens=true`，加 CLS / EOS）取 token ids / mask；
+  截断到 2048 token 后推理。分词器单一实现在 `tokenizer` 提供方，本服务不持有分词器文件。
+- **确定性**：ONNX Runtime 单线程执行（`intra_threads = 1`、`inter_threads = 1`）；同文本同向量是索引可重算的前提。
+
+## 模型规格（granite-97m）
+
+| 项             | 值                                                        | 来源                                    |
+| -------------- | --------------------------------------------------------- | --------------------------------------- |
+| 架构           | ModernBERT（12 层，hidden 384，vocab 180000）             | `granite-97m/config.json`               |
+| 向量维度       | 384                                                       | `granite-97m/1_Pooling_config.json`     |
+| Pooling        | CLS token（`last_hidden_state[:, 0]`）                    | `1_Pooling_config.json`                 |
+| 归一化         | 是（L2）                                                  | `granite-97m/modules.json`              |
+| max_seq_length | 32768（服务侧单次推理护栏见下）                           | `granite-97m/sentence_bert_config.json` |
+| 权重           | `granite-97m/model_quint8_avx2.onnx`（int8 AVX2，≈98 MB） | 本地                                    |
+| 分词器         | 由 `tokenizer` 提供方内嵌 `granite-97m/tokenizer.json`    | `plugins/tokenizer`                     |
+
+模型清单（`id` / `dim` / `pooling` / `normalize` / `max_seq`）住 `schema/embedding-local.json` 的 `model`。
+向量随 `id` / `dim` 变：索引记录 `{model_id, dim}`，不匹配即整库重建；换模型 = 改清单 + 重编译二进制 + 重建索引。
+
+## 推理与打包
+
+- **推理**：`ort`（ONNX Runtime 绑定，`=2.0.0-rc.13`），默认 features 含 `download-binaries` / `copy-dylibs`：
+  **构建期**从 pyke CDN 下载 onnxruntime 动态库并缓存到 Cargo 缓存，`copy-dylibs` 把它复制到产物目录
+  （`<root>/state/deps/cargo-target/release/`），运行时由同目录的二进制加载。**无运行时下载**。
+- **权重内嵌**：`model_quint8_avx2.onnx` 经 `include_bytes!` 编进二进制（产物 ≈150 MB）。
+  构建期输入由宿主**大资产直拷**提供：`schema/embedding-local.json` 顶层 `assets_manifest` 登记该文件的
+  `{path, sha256, size}`，宿主物化时从**投递包源目录**直拷到物化目录并校验 sha256，失败 `deps_failed`。
+- **物化**：包根 `Cargo.toml`，宿主物化时跑 `cargo build --release`（`CARGO_TARGET_DIR=<root>/state/deps/cargo-target`），
+  `execute/launch.mjs` 据此定位 `embedding-local[.exe]`；找不到回落包内 `target/release/`。
+- **离线限制**：**首次构建需网络**（下载 crates 与 onnxruntime 二进制）；下载缓存与编译产物就位后，
+  后续构建 / 运行离线可复现。`~/.cargo` 缓存丢失即需重新联网。
+- **平台相关**：二进制与 onnxruntime 库均平台相关（本机为 Windows x64），跨平台须重新构建。
+
+## 入世 / 不入世
+
+|                                      | 内容                                                                                                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 入世（世界真源）                     | `plugin.json` / `package.json` / `Cargo.toml` / `Cargo.lock` / `README.md` / `execute/` 源码 / `schema/` / 模型小 config（`granite-97m/*.json`）/ `granite-97m/LICENSE` |
+| 不入世（`.worldignore`，走宿主侧 ③） | `target/`、`tools/`、`test/`、`granite-97m/model_quint8_avx2.onnx`、`granite-97m/.gitignore`                                                                            |
+
+二进制**统一走构建**：随包投递的预编译二进制仅作 `assets_manifest` 的复制源，物化以构建产物为准；二进制与权重都不进世界。
+
+## 模型按需获取（npm 打包现状）
+
+`granite-97m/model_quint8_avx2.onnx`（≈98 MB）是构建期 `include_bytes!` 的输入，不参与运行时读取。仓库内该文件位于 `granite-97m/`；`package.json` 的 `files` 白名单已把它排除，故 npm 安装得到的包不含它（小 config 文件与 `LICENSE` 仍随包）。
+
+宿主物化阶段按 `schema/embedding-local.json` 顶层 `assets_manifest` 登记的 `{path, sha256, size}`，从投递包源目录直拷该文件到物化目录。npm 包不提供该源目录，故 npm 包消费者须包外提供权重（获取渠道 / 完整性 / 缺失行为尚待补齐）。
+
+## 服务协议
+
+`docs/protocol.md` §二：`hello` / `manifest` / `call` / `result` / `error` / `reload` / `drain` / `bye` / `probe` / `pong`。
+stdout 只发协议帧，日志走 stderr；stdin EOF / 管道断开即自退出。`call` 在独立线程执行，控制帧不被长推理阻塞。
+模型在握手后**后台预加载**，首个 `embed` 不承担加载延迟；加载失败返回结构化 `error`（`model_load_failed`），服务不崩。
+分词经反向 `port.call tokenizer.encode`：反向调用帧立即结算，不排队。
+
+## 测试
+
+```bash
+npm test   # 等价 cargo test：向量 / 相似度 / 分词端口 / 协议 / 模型清单
+```
+
+单元测试用 `tokenizers`（dev-dependency）在运行时从兄弟 `tokenizer` 插件的 `granite-97m/tokenizer.json`
+读入真实分词器（生产二进制不内嵌分词器文件），故测试须与 `plugins/tokenizer` 同仓库共存。
+
+## 已知限制
+
+- **单次推理 token 护栏 2048**：模型 max_seq 是 32768，但 ModernBERT 全局注意力按 O(seq²) 分配，
+  32768 token 单次需 ≈51 GB，本机不可行。服务对单条文本截断到 2048 token；超长文本应先 `tokenizer.chunk` 再逐块 `embed`
+  （默认窗口 512）。这是服务侧内存护栏，不改变 `schema` 里模型规格 `max_seq: 32768`。
+- **逐条推理**：为保「结果与批次组成无关」不做 padding 批处理，吞吐低于真批量；正确性优先。
+- **首次构建耗时 / 需联网**：ort 下载与 98 MB `include_bytes!` 使首次 release 构建可能 10–30 分钟。
+- **投递源目录丢失须重投**：③ 可重算性 = 「源目录 + 世界源码」；源目录本身丢失则须重新投递。

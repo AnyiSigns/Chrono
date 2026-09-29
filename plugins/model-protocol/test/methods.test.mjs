@@ -320,8 +320,8 @@ test('profile：自定义厂商按 base_url / 显示名回落到 models.dev prov
       const model = body.providers.custom.models['stepfun/step-3.7-flash:free']
       assert.deepEqual(model.reasoning, ['low', 'medium', 'high'])
       assert.equal(model.context_window, 262144)
-      // output ≥ context 的条目封顶到半个上下文，避免输入预算变负
-      assert.equal(model.max_output, 131072)
+      // output ≥ context 的脏条目夹到窗本身；输入预算不再静态扣输出（请求期按剩余动态给）
+      assert.equal(model.max_output, 262144)
     })
   })
 })

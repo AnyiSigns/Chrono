@@ -1,0 +1,10 @@
+{
+  "name": "embedding-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "扩展点 embedding-provider 的夹具提供方：声明模型 x，供门面选择路由测试",
+  "engines": {
+    "node": ">=24"
+  }
+}

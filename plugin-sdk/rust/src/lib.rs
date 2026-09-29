@@ -8,8 +8,8 @@ mod wire;
 
 pub use port::{PortLink, DEFAULT_CALL_TIMEOUT_MS};
 pub use service::{
-    current_call_id, manifest, run_service, set_current_call_id, shared_writer, CallEnv,
-    CurrentCallIdGuard, ServiceError, ServiceHandler, ServiceSpec, SharedWriter,
+    current_call_id, manifest, many_needs_from_env, run_service, set_current_call_id, shared_writer,
+    CallEnv, CurrentCallIdGuard, ServiceError, ServiceHandler, ServiceSpec, SharedWriter,
 };
 pub use wire::{
     canonical_json, encode_frame, log, read_frame, write_frame, MAX_FRAME_BYTES, MAX_JSON_DEPTH,

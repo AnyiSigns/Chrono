@@ -15,6 +15,7 @@ const DECL_FIELDS = [
   'implements',
   'methods',
   'pins',
+  'slots',
   'needs',
   'start',
   'build',
@@ -26,7 +27,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
+test('plugin.json 15 字段齐全且形态合法（拥有方 slots + many needs）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'secrets')
@@ -34,7 +35,8 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['secrets'])
   assert.deepEqual(decl.methods, { secrets: ['resolve', 'list'] })
   assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.needs, { 'secrets-local': { mode: 'one' } })
+  assert.deepEqual(decl.slots, { 'secrets-backend': { methods: ['read', 'list', 'kinds'] } })
+  assert.deepEqual(decl.needs, { 'secrets-backend': { mode: 'many' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(typeof decl.restart, 'object')
@@ -49,19 +51,31 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('schema/secrets.json 是合法 JSON 且声明 kind 词表', () => {
+test('schema/secrets.json 声明 auth_ref（kind 开放词表）与失败码', () => {
   const schema = readJson('schema/secrets.json')
   assert.equal(schema.type, 'object')
-  assert.deepEqual(schema.properties.auth_ref.properties.kind.enum, ['local', 'env'])
+  assert.equal(schema.properties.auth_ref.properties.kind.type, 'string')
+  assert.equal(schema.properties.auth_ref.properties.kind.enum, undefined)
   assert.deepEqual(schema.properties.auth_ref.required, ['kind', 'name'])
   assert.deepEqual(schema.properties.list_entry.required, ['name', 'has'])
+  assert.ok(schema.properties.errors.properties.secret_kind_unsupported)
+  assert.ok(schema.properties.errors.properties.secret_kind_ambiguous)
 })
 
 test('execute/ 源码文件齐全（帧编解码 / 帧循环走 plugin-sdk）', () => {
-  for (const rel of ['execute/main.ts', 'execute/methods.ts', 'execute/port-link.ts', 'execute/types.ts']) {
+  for (const rel of [
+    'execute/main.ts',
+    'execute/methods.ts',
+    'execute/port-link.ts',
+    'execute/types.ts',
+  ]) {
     assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
   }
-  assert.equal(existsSync(join(PKG_ROOT, 'execute/secrets-file.ts')), false, 'secrets-file.ts 应已迁入 secrets-local')
+  assert.equal(
+    existsSync(join(PKG_ROOT, 'execute/secrets-file.ts')),
+    false,
+    'secrets-file.ts 应已迁入 secrets-local',
+  )
 })
 
 test('package.json 零依赖且带测试脚本', () => {

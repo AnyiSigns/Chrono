@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-motion="full">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -204,7 +204,7 @@
     .shell-slot-failed-title { color: var(--c-text); font-weight: var(--weight-strong); }
 
     @media (prefers-reduced-motion: reduce) {
-      .shell-toast { animation: none; }
+      :root:not([data-motion="full"]) .shell-toast { animation: none; }
     }
   </style>
   <script type="importmap">

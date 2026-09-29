@@ -43,15 +43,15 @@ export function computeBudget(params: BudgetParams): BudgetModel {
   const output = maxOutput ?? params.default_max_output
   if (contextWindow === null || maxOutput === null) flags.push('profile_missing')
   const margin = Math.floor(window * params.margin_ratio)
-  // 输出预留不能吃掉整个上下文：部分档案的 `max_output` 接近甚至等于 `context_window`，
-  // 全额预留会让输入预算变负。封顶到半个上下文，保证至少一半留给输入。
-  const reserve = Math.min(output, Math.floor(window / 2))
-  const budget = window - reserve - margin
+  // 输出不静态预留：输入预算 = 窗 − 余量（余量是整体安全头寸），输出在请求期按剩余动态给
+  // （消费方取 `max_tokens = min(max_output, 窗 − 已用输入)`），这样输入能尽量用满模型窗。
+  // `max_output` 只作请求输出上限的天花板，夹到不超过窗本身。
+  const budget = window - margin
   const cap = (ratio: number): number => Math.floor(budget * ratio)
   return {
     budget,
     context_window: window,
-    max_output: reserve,
+    max_output: Math.min(output, window),
     margin,
     origin: contextWindow === null || maxOutput === null ? 'default' : 'profile',
     flags,

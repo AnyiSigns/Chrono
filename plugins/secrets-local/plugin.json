@@ -1,9 +1,9 @@
 {
   "identity": "secrets-local",
   "schema": "schema/secrets-local.json",
-  "implements": ["secrets-local"],
+  "implements": ["secrets-backend"],
   "methods": {
-    "secrets-local": ["read", "list"]
+    "secrets-backend": ["read", "list", "kinds"]
   },
   "pins": {},
   "start": "node execute/main.ts",

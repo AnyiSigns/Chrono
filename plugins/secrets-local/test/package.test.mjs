@@ -25,13 +25,13 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
+test('plugin.json 13 字段齐全且形态合法（secrets-backend 提供方）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'secrets-local')
   assert.equal(decl.schema, 'schema/secrets-local.json')
-  assert.deepEqual(decl.implements, ['secrets-local'])
-  assert.deepEqual(decl.methods, { 'secrets-local': ['read', 'list'] })
+  assert.deepEqual(decl.implements, ['secrets-backend'])
+  assert.deepEqual(decl.methods, { 'secrets-backend': ['read', 'list', 'kinds'] })
   assert.deepEqual(decl.pins, {})
   assert.equal(decl.needs, undefined)
   assert.equal(decl.start, 'node execute/main.ts')
@@ -48,14 +48,16 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('schema/secrets-local.json 声明 name 入参 / 失败码 / 脱敏 / 超时', () => {
+test('schema/secrets-local.json 声明 name 入参 / kinds / 失败码 / 脱敏 / 超时', () => {
   const schema = readJson('schema/secrets-local.json')
   assert.equal(schema.type, 'object')
   assert.deepEqual(schema.properties.read_request.required, ['name'])
   assert.deepEqual(schema.properties.list_entry.required, ['name', 'has'])
-  assert.ok(schema.audit_redact['secrets-local.read'].includes('name'))
-  assert.ok(schema.method_timeouts['secrets-local.read'] > 0)
-  assert.ok(schema.method_timeouts['secrets-local.list'] > 0)
+  assert.deepEqual(schema.properties.backend_kinds.items, { type: 'string', const: 'local' })
+  assert.ok(schema.audit_redact['secrets-backend.read'].includes('name'))
+  assert.ok(schema.method_timeouts['secrets-backend.read'] > 0)
+  assert.ok(schema.method_timeouts['secrets-backend.list'] > 0)
+  assert.ok(schema.method_timeouts['secrets-backend.kinds'] > 0)
 })
 
 test('execute/ 源码文件齐全（帧编解码 / 帧循环走 plugin-sdk）', () => {

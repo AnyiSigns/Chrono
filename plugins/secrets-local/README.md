@@ -1,13 +1,20 @@
-# secrets-local（本地密钥文件面）
+# secrets-local（本地密钥文件后端）
 
-本地密钥文件的**只读面**：由宿主注入的 state 目录解析 `state/secrets.local.json` 的绝对路径，
-读取引用名与明文值。密钥本体住宿主侧用户本地文件，**不进世界、不进审计、不进 config 导出**。
+本地密钥文件的**只读后端**：`secrets-backend` 扩展类的一个提供方，支持 `auth_ref.kind = local`。
+由宿主注入的 state 目录解析 `state/secrets.local.json` 的绝对路径，读取引用名与明文值。
+密钥本体住宿主侧用户本地文件，**不进世界、不进审计、不进 config 导出**。
 
-- 能力类 / 方法：`secrets-local` → `read` / `list`。
+- 身份 / 能力类：`secrets-local`（身份）→ `secrets-backend`（提供方，`implements`）。
+- 方法：`read` / `list` / `kinds`（`kinds` 自述支持的 `auth_ref.kind`，本后端恒为 `["local"]`）。
 - 命令：无（密钥写入走宿主入站面 `secrets.put` / `secrets.delete`，宿主直写本地文件，不经本服务）。
 - `pins` / `needs`：无；服务只读宿主本地文件，不消费其它能力。
 - 状态档：`recomputable`（无不可重算状态；服务不缓存、不落盘）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
+
+## 扩展点角色
+
+`secrets-backend` 的拥有方是 `secrets`（声明 `slots`）。本插件经 `implements:["secrets-backend"]`
+自注册为一个后端：新增 / 换后端只改世界成员表，`secrets` 与消费方零改动。本插件不感知其它后端。
 
 ## 方法 args 契约
 
@@ -31,6 +38,11 @@
   名字按字典序排序（保确定性）。本地文件缺失 → `[]`；不可读 / 损坏 → `secret_unreadable`。
 - **契约（写死）**：**缺名 = 未读到**——`list` 只列实际读到的名字，不存在的引用名不出现在清单里；
   故 `has:false` **不可达**（保留字段只为形状稳定，调用方不应据此判断存在性）。
+
+### `kinds`
+
+- 无参；返回 `["local"]`（非空字符串数组）：本后端支持的 `auth_ref.kind` 集。
+  `secrets` 按此在成员间定位 kind 的唯一后端。
 
 ## 本地存储路径口径
 

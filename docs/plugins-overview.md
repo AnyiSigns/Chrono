@@ -4,7 +4,7 @@
 > 各插件「做什么 / 不做什么」见其自带自述 `README.md`；插件之间不 import、不相识，跨身份依赖只经**能力类**表达。
 > 角色挂在能力类上：**拥有方** `slots`（声明契约）/ **提供方** `implements` / **消费方** `needs`。一个插件跨能力类可同时持有三种角色；同一能力类不得既 `implements` 又 `needs`（拥有方可 `implements` 自产自用、或用 `many` 消费自己的扩展点）；无拥有方时契约回落提供方 `methods`。
 
-共 80 个插件。
+共 82 个插件。
 
 | 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | 依赖 `pins` | state | transport |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -16,7 +16,8 @@
 | `config` | — | `config` | — | — | durable | stdio |
 | `context-window` | — | `context` | `token-estimate(one)`、`budget(one)` | — | recomputable | stdio |
 | `dedup` | — | `dedup` | `embedding(one)` | — | recomputable | stdio |
-| `embedding` | — | `embedding` | `tokenizer(one)` | — | recomputable | stdio |
+| `embedding` | `embedding-provider` | `embedding` | `embedding-provider(many)` | — | recomputable | stdio |
+| `embedding-local` | — | `embedding-provider` | `tokenizer(one)` | — | recomputable | stdio |
 | `evolution` | — | — | — | — | recomputable | stdio |
 | `evolve-evidence` | — | `evolve-evidence` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `evolve-ledger` | — | `evolve-ledger` | — | — | recomputable | stdio |
@@ -47,8 +48,9 @@
 | `rerank` | — | `rerank` | `embedding(one)`、`model(one)` | — | recomputable | stdio |
 | `router` | — | `router` | — | — | recomputable | stdio |
 | `sandbox` | — | `sandbox` | — | — | recomputable | stdio |
-| `secrets` | — | `secrets` | `secrets-local(one)` | — | recomputable | stdio |
-| `secrets-local` | — | `secrets-local` | — | — | recomputable | stdio |
+| `secrets` | `secrets-backend` | `secrets` | `secrets-backend(many)` | — | recomputable | stdio |
+| `secrets-env` | — | `secrets-backend` | — | — | recomputable | stdio |
+| `secrets-local` | — | `secrets-backend` | — | — | recomputable | stdio |
 | `semantic` | — | `semantic` | `model(one)` | — | recomputable | stdio |
 | `session` | — | `session` | `input(one)` | — | durable | stdio |
 | `session-title` | — | `session-title` | `model(one)`、`title-format(one)` | — | recomputable | stdio |

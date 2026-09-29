@@ -28,8 +28,8 @@ test('model / factor / observe 端到端', async () => {
         quota: { l2: 0.08, l1: 0.08, skill: 0.1, recall: 0.12, style: 0.03 },
       },
     })
-    assert.equal(model.budget, 850)
-    assert.equal(model.quota.l2, Math.floor(850 * 0.08))
+    assert.equal(model.budget, 950)
+    assert.equal(model.quota.l2, Math.floor(950 * 0.08))
 
     const factor1 = await drv.call('factor', { model: 'svc-model' })
     assert.equal(factor1.factor, 1)

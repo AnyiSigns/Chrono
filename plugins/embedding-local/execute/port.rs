@@ -1,4 +1,4 @@
-// 反向调用适配（服务 → 宿主，docs/protocol.md §2.4）：`embedding` 自身不做分词，
+// 反向调用适配（服务 → 宿主，docs/protocol.md §2.4）：`embedding-local` 自身不做分词，
 // 经 `port.call tokenizer.encode` 取 token ids / mask（`needs.tokenizer: one`）。
 // 通道编解码 / 登记结算走 plugin-sdk 的 `PortLink`；本模块只留领域适配。
 // 失败作数据（ModelError），不抛错、不断通道。

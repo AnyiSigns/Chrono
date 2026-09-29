@@ -1,7 +1,9 @@
 # budget（预算建模与 token 校准提供方）
 
 由模型档案与生效 policy 数值算出上下文预算标量与每来源配额上限，并维护每模型 token 校正系数：
-`model`（窗 − 输出 − 余量 → 预算标量与配额）/ `factor`（每模型系数）/ `observe`（以真实 usage 更新 EWMA）。
+`model`（窗 − 余量 → 预算标量与配额）/ `factor`（每模型系数）/ `observe`（以真实 usage 更新 EWMA）。
+输出**不静态预留**：输入预算 = 窗 − 余量（余量是整体安全头寸），请求输出上限由消费方在请求期按剩余给
+（`max_tokens = min(模型 max_output, 窗 − 已用输入)`）——输入越大输出越小，输入可尽量用满模型窗。
 确定、同输入同输出、不取时间 / 随机。被上层 `context-window` 经反向 `port.call` 消费；自身无反向调用、
 不读投影、无写通道。消息级配额分配（`allocate` / retention / order / pairing）留 `context-window`，不跨身份传
 规范消息。
@@ -21,7 +23,7 @@
 
 | 方法      | 入参                       | 返回                          | 行为                                                                                |
 | --------- | -------------------------- | ----------------------------- | ----------------------------------------------------------------------------------- |
-| `model`   | `{config, policy}`         | `{budget, context_window, …}` | 窗 − 输出 − 余量 → 预算标量；按预算比例给每来源配额上限；缺档案标 `profile_missing` |
+| `model`   | `{config, policy}`         | `{budget, context_window, …}` | 窗 − 余量 → 预算标量（输出不静态预留，`max_output` 只作请求天花板）；按预算比例给每来源配额上限；缺档案标 `profile_missing` |
 | `factor`  | `{model}`                  | `{factor}`                    | 当前生效的每模型校正系数（无则 1）                                                  |
 | `observe` | `{model, estimate, usage}` | `{factor, usage}`             | 以真实用量按 EWMA 更新系数；返回更新后系数与该次解析出的用量形状                    |
 

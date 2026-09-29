@@ -64,6 +64,7 @@ boot ──→ client ──→ kernel
 | 运行期 `pins` 投影并入 `one`-needs（投影 `pins` = 声明 `pins` ∪ `meta.needs`） | `host/projection/index.ts`、`docs/host.md` |
 | 服务工厂上下文新增 `pins`（宿主注入有效 pins，声明 `pins` ∪ `one`-needs）+ stdio spawn env `CHRONO_PLUGIN_PINS` | `host/assembly/decl.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`plugin-sdk/service.ts` |
 | 服务工厂上下文新增 `manyNeeds`（宿主注入 `many` 成员表：cap → 身份名，世界索引）+ stdio spawn env `CHRONO_PLUGIN_MANY_NEEDS`；反向 `port.call` 支持「按成员定位的 `many`」（帧带 `provider`，`route.resolve` 校验 `needs.mode=many` 且目标 ∈ 索引） | `host/assembly/capability-index.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`host/effect/route.ts`、`plugin-sdk/service.ts`、`plugin-sdk/port-link.ts` |
+| `plugin-sdk/rust` 新增 `PortLink::call_with_provider`（反向调用帧带 `provider`，按成员定位 `many`）与 `many_needs_from_env`（解析 `CHRONO_PLUGIN_MANY_NEEDS`，键/成员码元序） | `plugin-sdk/rust/src/port.rs`、`plugin-sdk/rust/src/service.rs`、`plugin-sdk/rust/src/lib.rs` |
 | `host.*` 方法集新增休眠 `identities.suspend` / `identities.resume` | `host/host-methods.ts`、`host/host-capability.ts`、`host/capability-wiring.ts`、`host/assembly/runtime.ts` |
 | `audit_tier` 首命中改身份名字典序 | `host/audit-tiers.ts` |
 | `argsSchema` 方言 | `host/assembly/args-schema.ts` |

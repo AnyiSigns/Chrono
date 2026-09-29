@@ -161,10 +161,9 @@ function computeMetadata(
   if (contextWindow !== null) metadata['context_window'] = contextWindow
   if (typeof limit['output'] === 'number') {
     const output = limit['output'] as number
-    // 输出上限不能吃掉整个上下文：models.dev 偶有 `output ≥ context` 的条目（如 step-3.7-flash 262144），
-    // 而预算建模是 `context - max_output - margin`，全额预留会让输入预算变负。封顶到半个上下文，至少留一半给输入。
-    metadata['max_output'] =
-      contextWindow !== null && output > contextWindow / 2 ? Math.floor(contextWindow / 2) : output
+    // `max_output` 只作请求输出上限的天花板，夹到不超过窗本身（models.dev 偶有 `output ≥ context` 的
+    // 脏条目，如 step-3.7-flash 262144）。输入预算不再静态扣输出：输出在请求期按剩余动态给。
+    metadata['max_output'] = contextWindow === null ? output : Math.min(output, contextWindow)
   }
   const reasoning = entry['reasoning']
   const efforts = effortValues(entry)

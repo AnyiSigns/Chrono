@@ -12,8 +12,6 @@ import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
 import type { L1Backend, L2Backend, L3Backend } from './port-link.ts'
 
-const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
-
 /** 后端注入：生产环境反向调用三个提供方，单测注入假后端。 */
 export interface MaintenanceDeps {
   l1: L1Backend
@@ -53,11 +51,11 @@ function contextOf(args: Json, env: CallEnv): { args: Rec; now: number; at: stri
 async function consolidate(args: Json, env: CallEnv, deps: MaintenanceDeps): Promise<Json> {
   const { args: record, now, at } = contextOf(args, env)
   const params = resolveParams(record)
+  // 不注入硬编码默认模型：调用方未指定 embedding_model 时，由下游 / 向量化门面按提供方元数据定缺省。
   const base: Rec = {
     ...record,
     now,
     dedup_threshold: params.dedupThreshold,
-    embedding_model: asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
   }
 
   const merged = await deps.l2.merge(base)

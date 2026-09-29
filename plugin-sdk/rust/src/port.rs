@@ -63,6 +63,29 @@ impl PortLink {
 
     /// 发一条 `port.call` 并等待应答；超时 / 写失败作结构化错误。
     pub fn call(&self, port: &str, method: &str, args: Value) -> Result<Value, ServiceError> {
+        self.call_impl(port, method, args, None)
+    }
+
+    /// 发一条带 `provider` 的 `port.call`（按成员定位的 `many`）：`port` 是扩展类名、`provider`
+    /// 是目标提供方身份名，宿主校验「该类在发出者 `needs` 且 `mode:"many"`」且「目标 ∈ 索引(类)」
+    /// 后按该成员端点调用；其余语义与 `call` 相同。
+    pub fn call_with_provider(
+        &self,
+        port: &str,
+        method: &str,
+        args: Value,
+        provider: &str,
+    ) -> Result<Value, ServiceError> {
+        self.call_impl(port, method, args, Some(provider))
+    }
+
+    fn call_impl(
+        &self,
+        port: &str,
+        method: &str,
+        args: Value,
+        provider: Option<&str>,
+    ) -> Result<Value, ServiceError> {
         let id = format!("{}-{}", self.id_prefix, self.seq.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::channel();
         self.pending().insert(id.clone(), sender);
@@ -73,6 +96,10 @@ impl PortLink {
         // 回带发起本次处理的正向 `call` 帧 id（可选）：宿主按此把反向调用关联到逻辑调用。
         if let Some(call_id) = current_call_id() {
             frame["call_id"] = json!(call_id);
+        }
+        // 按成员定位的 `many`：帧带目标提供方身份名，宿主按扩展类 + 成员解析。
+        if let Some(target) = provider {
+            frame["provider"] = json!(target);
         }
         if let Err(err) = self.write(&frame) {
             self.pending().remove(&id);
@@ -228,9 +255,29 @@ mod tests {
         let (capture, writer) = capture();
         let link = PortLink::with_timeout(writer, "toy", Duration::from_millis(20));
         set_current_call_id(None);
-        let _ = link.call("sandbox", "fsop", json!({"op": "read"}));
+        let _ = link.call("sandbox", "fsop", json!({}));
         let frame = read_written(&capture.0);
         assert!(frame.get("call_id").is_none());
+    }
+
+    #[test]
+    fn call_with_provider_sets_provider_field() {
+        let (capture, writer) = capture();
+        let link = PortLink::with_timeout(writer, "toy", Duration::from_millis(20));
+        // 无宿主应答：超时返回结构化错误，但帧已写出并带 provider。
+        let _ = link.call_with_provider("embedding-provider", "embed", json!({}), "embedding-local");
+        let frame = read_written(&capture.0);
+        assert_eq!(frame["port"], "embedding-provider");
+        assert_eq!(frame["provider"], "embedding-local");
+    }
+
+    #[test]
+    fn plain_call_omits_provider_field() {
+        let (capture, writer) = capture();
+        let link = PortLink::with_timeout(writer, "toy", Duration::from_millis(20));
+        let _ = link.call("sandbox", "fsop", json!({}));
+        let frame = read_written(&capture.0);
+        assert!(frame.get("provider").is_none());
     }
 
     #[test]

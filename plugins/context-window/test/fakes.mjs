@@ -82,13 +82,13 @@ export function computeBudget(args) {
   const output = maxOutput ?? ratioOf(policy.default_max_output, 1024)
   if (contextWindow === null || maxOutput === null) flags.push('profile_missing')
   const margin = Math.floor(window * ratioOf(policy.margin_ratio, 0.05))
-  const reserve = Math.min(output, Math.floor(window / 2))
-  const budget = window - reserve - margin
+  // 与 budget 提供方同口径：输入预算 = 窗 − 余量；max_output 只作请求输出上限天花板（≤ 窗）。
+  const budget = window - margin
   const cap = (ratio) => Math.floor(budget * ratio)
   return {
     budget,
     context_window: window,
-    max_output: reserve,
+    max_output: Math.min(output, window),
     margin,
     origin: contextWindow === null || maxOutput === null ? 'default' : 'profile',
     flags,

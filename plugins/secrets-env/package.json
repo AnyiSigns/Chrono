@@ -1,0 +1,21 @@
+{
+  "name": "secrets-env",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "进程环境密钥后端：secrets-backend 扩展类的提供方，支持 auth_ref.kind = env，读本服务进程环境",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

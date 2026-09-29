@@ -2,11 +2,9 @@
 // （`/assets/tokens.v1.css`），不硬编码色值；类名统一 `sb-` 前缀。
 
 /** 宽窄切换的时长 + 缓动；槽根（`#slot-sidebar`）的 width 过渡必须与 `.sb-root` 同拍，否则一快一慢会露出裁切。
-    `linear()` 是一条弹簧曲线：过冲约 2.6% 后二次收敛（落点最低 ≈50px，窄轨图标 / 状态点仍在安全区），
-    给出手机过渡那种回弹感；时长偏长以留出滑行。 */
-export const SIDEBAR_DURATION_MS = 440
-const SIDEBAR_EASE =
-  'linear(0, 0.2 6%, 0.55 13%, 0.85 21%, 1.01 33%, 1.026 43%, 1.02 52%, 1.005 64%, 0.997 76%, 1)'
+    `cubic-bezier(0.34, 1.1, 0.64, 1)`：偏利落、快起步，末端仅约 0.2% 回弹（几乎无弹跳感）。 */
+export const SIDEBAR_DURATION_MS = 240
+const SIDEBAR_EASE = 'cubic-bezier(0.34, 1.1, 0.64, 1)'
 export const SIDEBAR_MOTION = `${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`
 
 export const SIDEBAR_CSS = `
@@ -31,7 +29,7 @@ export const SIDEBAR_CSS = `
 .sb-root[data-dragging="true"] { transition: none; }
 .sb-root:not([data-dragging="true"]) { transition: width var(--sb-dur) var(--sb-ease); }
 .sb-root[data-collapsed="true"] { --sb-width: 56px; }
-@media (prefers-reduced-motion: reduce) { .sb-root { --sb-dur: 0ms; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion="full"]) .sb-root { --sb-dur: 0ms; } }
 
 /* One full-width track: wide pane + rail side by side; collapse shifts it left by one expanded width so the rail lands
    exactly inside the shrink-to-56px viewport. */
@@ -237,7 +235,7 @@ export const SIDEBAR_CSS = `
 .sb-modal-btn:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 @keyframes sb-scrim { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sb-pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .sb-modal-backdrop, .sb-modal { animation: none; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion="full"]) .sb-modal-backdrop, :root:not([data-motion="full"]) .sb-modal { animation: none; } }
 
 .sb-badge { flex: none; display: inline-flex; align-items: center; gap: var(--space-4); }
 .sb-dot { width: 6px; height: 6px; border-radius: 50%; }
@@ -248,7 +246,7 @@ export const SIDEBAR_CSS = `
 .sb-dot[data-kind="missing"] { background: var(--c-danger); }
 .sb-unread { font-size: var(--font-size-xs); color: var(--c-text-2); font-variant-numeric: tabular-nums; }
 @keyframes sb-breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.6; } }
-@media (prefers-reduced-motion: reduce) { .sb-dot[data-kind="running"] { animation: none; opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion="full"]) .sb-dot[data-kind="running"] { animation: none; opacity: 0.5; } }
 
 /* Collapsed rail: one folder button opens the flyout on hover; the dot aggregates all workspaces. */
 .sb-rail-item {
