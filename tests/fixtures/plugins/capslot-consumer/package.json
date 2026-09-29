@@ -1,0 +1,8 @@
+{
+  "name": "capslot-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：一个消费方，one 槽接单提供方、many 槽接多提供方",
+  "engines": { "node": ">=24" }
+}

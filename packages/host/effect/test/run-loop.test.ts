@@ -6,7 +6,7 @@ import { runRound } from '../run-loop.ts'
 import { resetFatal } from '../fatal.ts'
 import type { AuditDraft } from '../../audit.ts'
 import type { RoundRouter } from '../route.ts'
-import type { EndpointRow } from '../../endpoint-table.ts'
+import type { EndpointCallResult, EndpointRow } from '../../endpoint-table.ts'
 import type { Directive, EffResult, Entry, Hash, Head, Json, World } from '../../../kernel/index.ts'
 
 const EMPTY_HEAD: Head = { seq: -1, hash: null }
@@ -690,5 +690,279 @@ describe('通用 run loop runRound', () => {
     })
     expect(outcome.status).toBe('done')
     expect(timeouts).toEqual([1234])
+  })
+})
+
+describe('通用 run loop 的槽 fan-out', () => {
+  function slotRow(
+    provider: string,
+    call: (args: Json, timeoutMs: number, signal?: AbortSignal) => Promise<EndpointCallResult>,
+  ): EndpointRow {
+    return {
+      impl: provider,
+      gen: 'g'.repeat(64),
+      cap: 'toy.echo',
+      method: 'echo',
+      transport: 'stdio',
+      pid: 1,
+      link: {
+        call: (
+          _port: string,
+          _method: string,
+          args: Json,
+          timeoutMs: number,
+          signal?: AbortSignal,
+        ) => call(args, timeoutMs, signal),
+      },
+    } as unknown as EndpointRow
+  }
+
+  it('有序元素表：失败成员作值、其余照跑，整体 ok:true，审计 outcome=error', async () => {
+    const termHash = 'th'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
+      ids: {},
+    }
+    const calls: string[] = []
+    const router: RoundRouter = {
+      resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+      resolveSlot: () => ({
+        members: [
+          {
+            provider: 'a',
+            ok: true,
+            row: slotRow('a', async () => {
+              calls.push('a')
+              return { ok: true, value: { from: 'a' } }
+            }),
+          },
+          { provider: 'b', ok: false, error: 'not_loaded' },
+          {
+            provider: 'c',
+            ok: true,
+            row: slotRow('c', async () => {
+              calls.push('c')
+              return { ok: true, value: { from: 'c' } }
+            }),
+          },
+        ],
+      }),
+    }
+    const audits: AuditDraft[] = []
+    const outcome = await runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router,
+      onAudit: (draft) => audits.push(draft),
+    })
+    expect(outcome.status).toBe('done')
+    expect(calls).toEqual(['a', 'c'])
+    const elements: Json = [
+      { provider: 'a', ok: true, value: { from: 'a' } },
+      { provider: 'b', ok: false, error: 'not_loaded' },
+      { provider: 'c', ok: true, value: { from: 'c' } },
+    ]
+    expect(outcome.observations).toEqual([
+      { kind: 'eval', entry: termHash, ok: true, value: elements },
+    ])
+    const body = audits[0].body as unknown as { result: Json; outcome: string }
+    expect(body.outcome).toBe('error')
+    expect(body.result).toEqual(elements)
+  })
+
+  it('0 命中 → 空元素表；1 命中正常执行', async () => {
+    const termHash = 'th'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', 1]] } },
+      ids: {},
+    }
+    const zero = await runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router: {
+        resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+        resolveSlot: () => ({ members: [] }),
+      },
+    })
+    expect(zero.status).toBe('done')
+    expect(zero.observations).toEqual([{ kind: 'eval', entry: termHash, ok: true, value: [] }])
+
+    const one = await runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router: {
+        resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+        resolveSlot: () => ({
+          members: [
+            { provider: 'a', ok: true, row: slotRow('a', async () => ({ ok: true, value: 'a' })) },
+          ],
+        }),
+      },
+    })
+    expect(one.observations).toEqual([
+      { kind: 'eval', entry: termHash, ok: true, value: [{ provider: 'a', ok: true, value: 'a' }] },
+    ])
+  })
+
+  it('fan-out 中整体取消 → 外层 cancelled、run status cancelled、审计保留已执行元素', async () => {
+    const controller = new AbortController()
+    const termHash = 'ef'.repeat(32)
+    const world: World = {
+      defs: { [termHash]: { body: ['eff', 'toy.echo', 'echo', ['c', { n: 1 }]] } },
+      ids: {},
+    }
+    // 首个成员在途时取消：用 started 确保 abort 发生在链路调用已发起之后（不靠微任务计数）
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => (started = resolve))
+    const router: RoundRouter = {
+      resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+      resolveSlot: () => ({
+        members: [
+          {
+            provider: 'a',
+            ok: true,
+            row: slotRow(
+              'a',
+              () =>
+                new Promise<EndpointCallResult>((_resolve, reject) => {
+                  controller.signal.addEventListener(
+                    'abort',
+                    () => reject(new ServiceChannelError('cancelled')),
+                    { once: true },
+                  )
+                  started()
+                }),
+            ),
+          },
+          {
+            provider: 'b',
+            ok: true,
+            row: slotRow('b', async () => ({ ok: true, value: 'b' })),
+          },
+        ],
+      }),
+    }
+    const audits: AuditDraft[] = []
+    const pending = runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router,
+      signal: controller.signal,
+      onAudit: (draft) => audits.push(draft),
+    })
+    await startedPromise
+    controller.abort()
+    const outcome = await pending
+    expect(outcome.status).toBe('cancelled')
+    expect(outcome.journal).toEqual([])
+    expect(audits).toHaveLength(1)
+    const body = audits[0].body as unknown as { result: Json; outcome: string }
+    expect(body.outcome).toBe('cancelled')
+    // 已执行元素保留；未执行的 b 省略正文
+    expect(body.result).toEqual([{ provider: 'a', ok: false, error: 'cancelled' }])
+  })
+
+  it('逐元素超时与脱敏按各提供方 schema 声明解析', async () => {
+    const termHash = 'ab'.repeat(32)
+    const schemaA = 'sa'.repeat(32)
+    const schemaB = 'sb'.repeat(32)
+    const active = 'x'.repeat(64)
+    const identity = (id: string, schema: Hash): World['ids'][string] => ({
+      id,
+      schema,
+      gens: [],
+      active,
+      born: { at: 1, by: 'seed' },
+    })
+    const world: World = {
+      defs: {
+        [termHash]: {
+          body: ['eff', 'toy.echo', 'echo', ['c', { n: 1, auth_ref: { token: 't', secret: 's' } }]],
+        },
+        [schemaA]: {
+          body: {
+            type: 'object',
+            method_timeouts: { 'toy.echo.echo': 111 },
+            audit_redact: { 'toy.echo.echo': ['token'] },
+          },
+        },
+        [schemaB]: {
+          body: {
+            type: 'object',
+            method_timeouts: { echo: 222 },
+            audit_redact: { echo: ['secret'] },
+          },
+        },
+      },
+      ids: { a: identity('a', schemaA), b: identity('b', schemaB) },
+    }
+    const timeouts: Array<{ provider: string; timeoutMs: number }> = []
+    const router: RoundRouter = {
+      resolve: () => ({ ok: false, error: 'unresolved_cap' }),
+      resolveSlot: () => ({
+        members: [
+          {
+            provider: 'a',
+            ok: true,
+            row: slotRow('a', async (_args, timeoutMs) => {
+              timeouts.push({ provider: 'a', timeoutMs })
+              return { ok: true, value: { seen: 'a' } }
+            }),
+          },
+          {
+            provider: 'b',
+            ok: true,
+            row: slotRow('b', async (_args, timeoutMs) => {
+              timeouts.push({ provider: 'b', timeoutMs })
+              return { ok: true, value: { seen: 'b' } }
+            }),
+          },
+        ],
+      }),
+    }
+    const audits: AuditDraft[] = []
+    const outcome = await runRound({
+      writer: new WorldWriter({ world, head: { ...EMPTY_HEAD } }),
+      directives: [evalDirective(termHash)],
+      owners: ['toy-owner'],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'client',
+      now: NOW,
+      router,
+      onAudit: (draft) => audits.push(draft),
+    })
+    expect(outcome.status).toBe('done')
+    expect(timeouts).toEqual([
+      { provider: 'a', timeoutMs: 111 },
+      { provider: 'b', timeoutMs: 222 },
+    ])
+    const body = audits[0].body as unknown as { result: Json; outcome: string }
+    expect(body.outcome).toBe('ok')
+    // 逐元素脱敏：value 换成白名单投影 + has（不落 value）
+    expect(body.result).toEqual([
+      { provider: 'a', ok: true, token: 't', has: true },
+      { provider: 'b', ok: true, secret: 's', has: true },
+    ])
   })
 })

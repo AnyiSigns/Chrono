@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { lowerProgram } from './lower.ts'
 import { validateProgram } from './validate.ts'
 import type { Json } from './lower.ts'
+import type { Program } from './validate.ts'
 
 const SRC = 'terms.src'
 const OUT = 'terms'
@@ -37,6 +38,8 @@ export function buildPackage(dir: string): BuildResult {
     implements: plugin['implements'] as string[] | undefined,
     pins: plugin['pins'] as Record<string, string> | undefined,
     methods: plugin['methods'] as Record<string, string[]> | undefined,
+    needs: plugin['needs'] as Program['needs'],
+    slots: plugin['slots'] as Program['slots'],
   })
   if (!verdict.ok) return { ok: false, compiled: [], issues: verdict.issues }
 

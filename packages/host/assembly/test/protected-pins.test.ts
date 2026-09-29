@@ -224,6 +224,63 @@ describe('入世守卫：受保护 pins 不可删', () => {
     expect(planned.ok).toBe(true)
   })
 
+  it('能力类冒充：受保护提供方退役后新身份同名实现，消费方重入世被拒', () => {
+    const sandboxRoot = writeTempPackage(root, {
+      identity: 'sandbox',
+      implements: ['sandbox'],
+      methods: { sandbox: ['run'] },
+    })
+    const consumerRoot = writeTempPackage(root, {
+      identity: 'tool-x',
+      needs: { sandbox: { mode: 'one' } },
+    })
+    const seeded = runSeed(root, [
+      { name: 'sandbox', path: sandboxRoot },
+      { name: 'tool-x', path: consumerRoot },
+    ])
+    expect(seeded.ok).toBe(true)
+    // 冒充者：新身份 implements 同名能力类，且被受保护身份退役后成为唯一候选
+    const impostorRoot = writeTempPackage(root, {
+      identity: 'impostor',
+      implements: ['sandbox'],
+      methods: { sandbox: ['run'] },
+    })
+    expect(runSeed(root, [{ name: 'impostor', path: impostorRoot }]).ok).toBe(true)
+    const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+    world.ids['sandbox'].active = null
+
+    const planned = planIngest(world, root, { name: 'tool-x', path: consumerRoot })
+    expect(planned.ok).toBe(false)
+    if (!planned.ok) expect(planned.reasons).toEqual(['protected_pin_removed'])
+  })
+
+  it('one 绑定保留受保护身份 → 允许换代', () => {
+    const sandboxRoot = writeTempPackage(root, {
+      identity: 'sandbox',
+      implements: ['sandbox'],
+      methods: { sandbox: ['run'] },
+    })
+    const consumerRoot = writeTempPackage(root, {
+      identity: 'tool-x',
+      needs: { sandbox: { mode: 'one' } },
+    })
+    expect(
+      runSeed(root, [
+        { name: 'sandbox', path: sandboxRoot },
+        { name: 'tool-x', path: consumerRoot },
+      ]).ok,
+    ).toBe(true)
+    const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
+    // 改内容但保留 one 绑定（加一个 term 改变源码树）
+    writeTempPackage(root, {
+      identity: 'tool-x',
+      needs: { sandbox: { mode: 'one' } },
+      terms: { 'x.json': JSON.stringify(['c', 'hello']) },
+    })
+    const planned = planIngest(world, root, { name: 'tool-x', path: consumerRoot })
+    expect(planned.ok).toBe(true)
+  })
+
   it('有代码世代但声明读不出 → fail-closed 拒 protected_pin_removed', () => {
     const codePayload: Hash = 'a'.repeat(64)
     const world: World = {

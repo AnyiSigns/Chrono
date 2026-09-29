@@ -17,7 +17,7 @@
 | `spec.md` | 糖化 JSON 规范（`k` 判别位的表达式对象 → 原语 AST 的逐条映射） |
 | `lower.ts` | 降级器：糖化 JSON → 原语 AST（含 `let`/`bind` 写期宏、内联 step/ref 生成 term）；**零内核依赖**，不算内核哈希（callee 引用留 `{ $ref }`，交宿主 A0b 替换） |
 | `builder.ts` | 类型化 builder `t.*`：作者用 TS 构造糖化表达式（IDE / 类型 / 单测） |
-| `validate.ts` | 静态校验器：形态 / 引用存在 / 引用无环 / `eff` 的 port 与 method 声明 / `let` 复制含 `eff` 的绑定；错误带源指针 |
+| `validate.ts` | 静态校验器：形态 / 引用存在 / 引用无环 / `eff` 的 port 与 method 声明（含 `needs` 消费端口）/ `let` 复制含 `eff` 的绑定；错误带源指针 |
 | `sourcemap.ts` | 源映射：把内核错误里的失败节点路径映射回糖化源指针（零内核依赖） |
 | `testkit.ts` | 测试器入口（**可依赖内核**）：编译程序为 defs、驱动效果回灌、调用内核 `evaluate`；`explainError` 定位运行期错误到源 |
 | `build.ts` | 打包接入 CLI：`terms.src/*.json` → 校验 → `terms/*.json` |
@@ -107,8 +107,8 @@ t.fold(t.ctx(['xs']), t.lit(0), t.if(t.pred('gt', t.arg(1), t.arg(0)), t.arg(1),
 
 ## 程序与测试入口
 
-- `Program`：`{ terms: Record<路径, 糖化>, implements?: string[], pins?: Record<能力类, 身份>, methods?: Record<能力类, string[]> }`。
-  `eff.port` 必须在 `implements`、`pins` 键或 `methods` 键里，否则报 `undeclared_port`。`method` 校验分两侧：自调用（`port ∈ implements`，或仅声明了 `methods` 的能力类）必须落在 `methods[port]`，否则报 `undeclared_method`；跨身份（`port` 只在 `pins` 里）方法名属被调身份声明，工具链单包看不到、**不校验**（宿主入世期按被调方声明补上，见 `docs/term-toolchain.md` §六.1）。只声明 `methods` 即可，无需重复填 `implements`。
+- `Program`：`{ terms: Record<路径, 糖化>, implements?: string[], pins?: Record<能力类, 身份>, methods?: Record<能力类, string[]>, needs?: Record<能力类, { mode:'one'|'many', methods?: string[] }>, slots?: Record<能力类, { methods: string[] }> }`。
+  `eff.port` 必须在 `implements`、`pins` 键、`methods` 键或 `needs` 键里，否则报 `undeclared_port`；`slots` 键**不算端口**——拥有方声明契约不代表本插件消费该类，拥有方要消费自己的扩展点须显式 `needs`。`needs` 键与 `implements` / `pins` / `methods` 键冲突时报 `needs_conflict`。`method` 校验：自调用（`port ∈ implements`，或仅声明了 `methods` 的能力类）必须落在 `methods[port]`，否则报 `undeclared_method`；消费（`port ∈ needs`）中 `many` 按本插件 `slots[cap].methods`（无则 `needs[cap].methods`）校验，`one` 仅在声明了 `needs[cap].methods` 时按它校验；契约不可见（住在别的插件的 `slots`）与跨身份（`port` 只在 `pins` 里）的方法名工具链单包看不到、**不校验**（宿主入世期按被依赖方声明补上，见 `docs/term-toolchain.md` §六.1）。只声明 `methods` 即可，无需重复填 `implements`。
 - `runTerm(program, termPath, fixtures)`：**默认先静态校验**，不过回 `{ ok:false, error:'invalid', issues }`（issues 带源指针）；通过则求值，返回 `{ ok:true, value } | { ok:false, error, at?, def?, callAt? }`。`fixtures = { ctx?, args?, effects?, trace? }`。
 - `trace: true` 时结果附 `trace: Array<{port, method, args}>`（按发射顺序），可断言「某效果恰好/未发射」。
 - `runTermUnchecked(...)`：显式跳过校验，直接求值。

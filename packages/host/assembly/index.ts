@@ -11,6 +11,7 @@ export {
   latestCodeGen,
   latestDataGen,
   listCommands,
+  needsBindingsOf,
   parsePluginDecl,
   readPluginDecl,
   readPluginDeclOfGen,
@@ -24,13 +25,24 @@ export type {
   CommandDecl,
   CommandIndex,
   DeclRead,
+  NeedDecl,
+  NeedMode,
   ParseDeclResult,
   PluginBuildStep,
   PluginCommand,
   PluginDecl,
   PluginMember,
+  SlotDecl,
   TreeEntryRef,
 } from './decl.ts'
+export {
+  buildCapabilityIndex,
+  capabilityContract,
+  capabilityOwners,
+  capabilityProviders,
+  effectiveMethods,
+} from './capability-index.ts'
+export type { CapabilityIndex } from './capability-index.ts'
 export { classifyGenerationChange } from './generation.ts'
 export type { GenerationChange } from './generation.ts'
 export { commandArgsIssue, validateArgs, validateArgsSchema } from './args-schema.ts'

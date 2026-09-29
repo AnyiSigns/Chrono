@@ -144,6 +144,10 @@ export interface PackageSpec {
   implements?: string[]
   methods?: Record<string, string[]>
   pins?: Record<string, string>
+  /** 消费方能力引用；省略不写 `needs` 字段（零扰动）。 */
+  needs?: Record<string, { mode: string; methods?: string[] }>
+  /** 拥有方能力契约；省略不写 `slots` 字段（零扰动）。 */
+  slots?: Record<string, { methods: string[] }>
   start?: string
   /** 服务传输形态声明；省略则不写 `transport` 字段（回落 `stdio`）。 */
   transport?: string
@@ -194,6 +198,8 @@ function writePackageAt(pkgRoot: string, spec: PackageSpec): void {
     implements: spec.implements ?? [],
     methods,
     pins: spec.pins ?? {},
+    ...(spec.needs === undefined ? {} : { needs: spec.needs }),
+    ...(spec.slots === undefined ? {} : { slots: spec.slots }),
     start,
     ...(spec.transport === undefined ? {} : { transport: spec.transport }),
     build: spec.build ?? [],

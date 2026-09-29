@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { startService as startSdkService } from 'plugin-sdk'
-import { commit, EMPTY_HEAD, EMPTY_WORLD } from '../../packages/kernel/index.ts'
+import { commit, EMPTY_HEAD, EMPTY_WORLD, H } from '../../packages/kernel/index.ts'
 import { validatePackage } from '../../packages/host/validate-package.ts'
 import { blobPointerOf, blobSha256 } from '../../packages/host/blobs.ts'
 
@@ -43,8 +43,72 @@ function candidate(identity = 'candidate', extra = {}) {
   }
 }
 
+/**
+ * 手搭一个含提供方身份的只读世界（内联文本 blob，无需 CAS）：提供方声明 `implements` 指定能力类，
+ * 供真实 `validate_package` 解析候选的 `one` need。def / identity 形状与内核落账结果同构。
+ */
+function providerWorld(id, capabilities) {
+  const pluginJson = JSON.stringify({
+    identity: id,
+    implements: capabilities,
+    methods: Object.fromEntries(capabilities.map((cap) => [cap, ['call']])),
+    pins: {},
+    start: '',
+    build: [],
+    protocol: '1',
+    restart: { policy: 'never' },
+    health: {},
+    state: 'recomputable',
+    members: [],
+    commands: [],
+  })
+  const pluginDef = { body: pluginJson }
+  const pluginHash = H(pluginDef)
+  const packageDef = { body: JSON.stringify({ name: id, version: '1.0.0' }) }
+  const packageHash = H(packageDef)
+  const treeDef = {
+    body: {
+      entries: [
+        { name: 'package.json', mode: 'file', hash: packageHash },
+        { name: 'plugin.json', mode: 'file', hash: pluginHash },
+      ],
+    },
+  }
+  const treeHash = H(treeDef)
+  const commitDef = { body: { tree: treeHash, meta: { name: id, version: '1.0.0' } } }
+  const commitHash = H(commitDef)
+  const schemaDef = { body: { type: 'object' } }
+  const schemaHash = H(schemaDef)
+  return {
+    defs: {
+      [pluginHash]: pluginDef,
+      [packageHash]: packageDef,
+      [treeHash]: treeDef,
+      [commitHash]: commitDef,
+      [schemaHash]: schemaDef,
+    },
+    ids: {
+      [id]: {
+        id,
+        schema: schemaHash,
+        gens: [
+          {
+            seq: 0,
+            payload: commitHash,
+            pins: {},
+            sig: commitHash,
+            adopted: { at: 0, by: 'test', write: 'test' },
+          },
+        ],
+        active: commitHash,
+        born: { at: 0, by: 'test' },
+      },
+    },
+  }
+}
+
 /** 真实宿主侧处理器：validate_package / blob.put 用冻结层实现，其余用确定性假值。 */
-function realHostHandler({ identities = [] } = {}) {
+function realHostHandler({ identities = [], world = EMPTY_WORLD } = {}) {
   return (port, method, args) => {
     if (method === 'identities') return { value: { list: identities } }
     if (method === 'source.read') {
@@ -53,7 +117,7 @@ function realHostHandler({ identities = [] } = {}) {
     if (method === 'validate_package') {
       const runtime = mkdtempSync(join(tmpdir(), 'plugin-admin-contract-'))
       try {
-        const outcome = validatePackage(EMPTY_WORLD, runtime, args.files)
+        const outcome = validatePackage(world, runtime, args.files)
         return outcome.accepted
           ? { value: outcome.report }
           : { error: 'bad_directive', message: outcome.message }
@@ -187,6 +251,41 @@ test('接缝：零 schema 候选（省略 schema 字段）→ 真实 validate �
     assert.equal(addIdentity.op, 'add_identity')
     const schemaOp = ops[addIdentity.args.schema.$n]
     assert.deepEqual(schemaOp.args.body, { type: 'object' })
+
+    const outcome = commitBatch(ops)
+    assert.equal(outcome.verdict.ok, true, JSON.stringify(outcome.verdict))
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('接缝：one need 的提交带 meta.needs，且哈希与真实 validate_package / planPack 一致', async () => {
+  const world = providerWorld('model-protocol', ['model'])
+  const drv = startService({
+    world,
+    identities: [{ id: 'model-protocol', active: H1, implements: ['model'], commands: [] }],
+  })
+  try {
+    await drv.hello()
+    const files = candidate('candidate', { needs: { model: { mode: 'one' } } })
+    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
+    assert.equal(report.ok, true, JSON.stringify(report.errors))
+    assert.match(report.result_hash, /^[0-9a-f]{64}$/)
+
+    const plan = await drv.call('plugin', 'write', { identity: 'candidate', files })
+    const ops = batchOps(plan)
+    const commitOp = ops.find((op) => op.op === 'put' && op.args.body && op.args.body.meta)
+    assert.deepEqual(commitOp.args.body.meta, {
+      name: 'candidate',
+      version: '1.2.3',
+      needs: { model: 'model-protocol' },
+    })
+    assert.equal(plan.$directives[1].payload.commit, report.result_hash)
+    const cached = JSON.parse(
+      readFileSync(join(drv.stateDir, 'validate', `${report.candidate_hash}.json`), 'utf8'),
+    )
+    assert.deepEqual(cached.needs, { model: 'model-protocol' })
 
     const outcome = commitBatch(ops)
     assert.equal(outcome.verdict.ok, true, JSON.stringify(outcome.verdict))

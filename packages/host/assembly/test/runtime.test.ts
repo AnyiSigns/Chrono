@@ -149,6 +149,29 @@ describe('装配运行时 startAssembly', () => {
     expect(handle.endpoints.list()).toHaveLength(2)
   }, 15000)
 
+  it('提供方缺 methods[cap] 时按世界 slots 契约注册端点', async () => {
+    const ownerRoot = writeTempPackage(root, {
+      identity: 'toy-slot-owner',
+      start: '',
+      slots: { 'toy.slot': { methods: ['echo', 'ping'] } },
+    })
+    const provRoot = writeTempPackage(root, {
+      identity: 'toy-slot-prov',
+      implements: ['toy.slot'],
+      methods: {},
+      start: 'node execute/main.js',
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-slot-owner', path: ownerRoot },
+      { name: 'toy-slot-prov', path: provRoot },
+    ])
+    const provGen = world.ids['toy-slot-prov'].active as Hash
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'echo')).not.toBeNull()
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'ping')).not.toBeNull()
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'ghost')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(2)
+  }, 15000)
+
   it("start:'' 数据身份装载、无服务、无端点行", async () => {
     const dataRoot = writeTempPackage(root, { identity: 'toy-data' })
     const { handle } = await startWorld([

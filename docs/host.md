@@ -169,9 +169,12 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **保留身份 `host`**：`pins` 值为 `host` 的项解析到**宿主自身**保留能力类（见「宿主扩展面」），不要求世界里有该身份、不入装配闭包为普通节点。
 - **自能力路由（无需自 pin）**：`eff` 的目标能力类若**不在发出者 `pins` 里**，但发出者**自身装配世代**的 `implements`
   声明含它，则解析到**发出者自己的端点行**（`impl+gen+cap+method`，`gen` = 自身装配世代）——插件把入口 term 的 `eff`
-  路由进**自己的 `execute` 服务**不必写自引用 pin。**优先级**：显式 `pins[cap]`（含保留值 `host`）优先，自能力仅在无该 pin 时兜底；
+  路由进**自己的 `execute` 服务**不必写自引用 pin。**优先级**：显式 `pins[cap]`（含保留值 `host`）> `commit.body.meta.needs[cap]` > 自能力（自能力仅在无前两者时兜底）；
   自身未声明该能力类 → `unresolved_cap`，声明了但端点行缺失 → `not_loaded`（与普通路径同码）。自能力**不是 `pins` 项、不构成跨身份依赖**：
   不进装配闭包、不是 DAG 边、不参与受保护 `pins` 校验；保留能力类 `host` 不走此路（仍须显式 pin 值 `host`）。
+- **`needs` 分支（能力类消费）**：发出者装配世代声明了 `needs` 的能力类，解析读该世代 `commit.body.meta.needs[cap]`（**身份名**）——`one` 的绑定在入世期写入（详见「装配」），`many` 由独立 `resolveSlot` 在路由期按世界能力索引解析。命中后按「属主 = 该身份名」走与 `pins` 分支相同的端点解析（`assemblyGen(owner)` → `implementsOf` 含 cap → 端点行），故 `one` 正向可用。绑定的提供方退役 / 声明丢 cap / 端点缺席 → `stale` / `not_loaded`（**作数据**，消费方不被隔离）。按名绑定（非哈希）故**不比对 pin 哈希、不触发漂移**。
+- **`many` 槽与 `resolveSlot`**：成员 = 世界能力索引(cap)（提供方身份集，按身份名字典序），消费方自身不在其中。退役（`active === null`）与声明读不出的身份**静默缺席**（不作为成员、也不作元素错误）；**挂起 = 运行期休眠**（世界 `active` 未变）故仍入索引、仍是成员，与退役相对。`one` / `many` 皆**不写 `gen.pins`、不建闭包 / 运行态边**——**世界驱动、无运行期可变注册表**：索引按各 active 身份的 `assemblyGen` 声明确定性重算（贡献变更 = 世界变更 → 重解析），不轮询、不动态注册。
+- **反向调用的 needs 可达面**：`one` 经 needs 分支天然可反向调用（`port` ∈ `pins` ∪ `one`-needs）；`many` **不经反向**（`resolve` 看不到 needs 键 → `unresolved_cap`）。
 - **自能力回路有界**：plan 可逐层递归产 directive，自能力 `eff` 又允许服务回计划再次 `eff` 自己——单次提交的轮数上限
   `MAX_SUBMISSION_ROUNDS`（宿主常量 10000，宿主可按提交收紧）；超限以 `refused` 收口（reason `too_many_rounds`），不挂死宿主。
   单轮内的挂起次数另受 `run-loop` 的 `too_many_suspensions` 约束。
@@ -181,6 +184,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 - 闭包沿 `pins` **只读**遍历（规矩 A）；`pins` 指向**被依赖身份**，闭包落到各身份的**当前代码世代**；
   拓扑序 = 服务启动顺序（被依赖者先起）。
+- **`needs` 不进闭包**：`pins` 是唯一的身份级闭包边；`needs`（`one` / `many`）**不建闭包 / 运行态边**，只由入世期（`one` 绑定写 `commit.body.meta.needs`）与路由期（`many` 按世界索引）解析，故提供方失败 / 退役**不连坐消费方**（显式 `pins` 的依赖方仍按既有闭包连坐）。`one` 绑定只参与入世**次序**（seed 排序：清单内声明该能力类的提供方先入世），不产生边。
 - **按依赖层并发启动**：拓扑序切成依赖层（层号 = 依赖链最长深度），同层无依赖边 → 带上限并发
   （`DEFAULT_START_CONCURRENCY`，防同时跑满 npm / cargo 构建与进程树）；层间保持顺序，被依赖者先起。
   某身份失败时其反向可达的依赖者必在更晚的层、在本层结束前已标隔离，后续层读到的装载状态一致。
@@ -310,6 +314,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   `outcome` 机械导出：`ok`（有响应成功）/ `error`（有响应为错误）/ `transport_failed`（没执行）/
   `cancelled`（被真取消中止）；`run` = 宿主对外回合 id（`accepted{run}`）、`emitter` = 发出者身份。
   审计不由业务写 `ref` 指向（`write` 不落 `ref`），故效果判定 / 落账不依赖「审计先于业务写」。
+- **槽审计（聚合感知）**：一个 `EffRequest` 仍**一条**审计草稿；`many` 的 `result` 落**聚合元素表**（逐元素 `{provider, ok, …}`）。**脱敏逐元素**：每元素按其提供方 `schema.audit_redact` 的 `${cap}.${method}` 键收白名单（与单值口径同先例）。**截断逐元素 + 聚合预算**：单元素正文超 `MAX_AUDIT_RESULT_BYTES` → 该元素只落 `{provider, ok, value:{truncated:true, size}}`；聚合正文仍超全局预算 → 整槽落 `{truncated:true, size}` 并附 `{provider, ok}` 骨架表（防一个超限元素吞掉全槽取证、或 N 个大元素各自合规却共同撑爆侧存）。**结局（`outcome`）**：全元素 `ok` → `ok`；**任一元素失败 → `error`**；取消 → `cancelled`——此 `outcome` 是审计结局，与聚合 `EffResult` 恒 `{ok:true, value:[…]}` **分属两层**（元素失败只体现在元素表与该 `outcome`，不经外层 `ok:false`）。
 - **调用帧 `env` 注入（机械）**：宿主在**每次服务调用**（正向 `call` 与反向 `port.call` 转发）的协议帧上填 `env: { run, thread, now, emitter }`
   ——`run` = 本次回合 id（宿主分配）、`thread` = 发起者提交信封里的可选字段（原样回带、不校验；detached / 周期 run 恒 `null`）、
   `now` = 宿主固定时钟（与 `KernelInput.now` 同源）、`emitter` = **发出者身份**（宿主解析所得，与 `EffectAudit.emitter` 同源）。
@@ -331,6 +336,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **门禁必须前置于效果，不得与效果并发**（写死）：判定为"需升级 / 需审批"的调用，其**实际效果必须尚未发出**。门禁节点先判、判过才派发，是**图数据的段序义务**；同时**工具实现侧不得在门禁未放行前自行触网 / 触盘**——否则会出现"审批项还在队列里，请求已经发出去了"，审批闸门形同虚设（越档调用已经落地，事后裁决无法撤回已发生的外效应）。载体不代为阻断：它只按 `pins` 路由、按声明调用，不认识哪次调用需要审批（那是判定）。取证靠 `EffectAudit`——门禁判 `escalate` 却存在同 `run` 的对应效果审计，即该义务被违反的机械证据。
 - **失败作数据回灌**：endpoint **有响应**（`result` 或 `error`）→ `EffResult{ok:true, value}` 回灌（`error` 时 `value` 是错误描述），
   term 可据此分支（降级链）；只有**没执行**（连接 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值，`error` 记通道错误码 `timeout` / `closed` / `protocol_error` / `bad_manifest` / `cancelled`；非通道异常才归 `transport_failed`）→ 内核 `eff_error` → 该轮 `refused`（审计 `outcome` 仍 `transport_failed`）。
+- **槽（`many`）执行与扇出**：`many` 的 `eff` 由宿主 `resolveSlot` 命中后**串行 fan-out**——成员按提供方身份名字典序逐个调用，逐元素超时按该提供方 `schema.method_timeouts`（缺省回落进程级 / 常量），**无槽级预算**（总延迟 = Σ 各元素超时）。**元素形状** `{provider, ok:true, value}` / `{provider, ok:false, error, message?}`——**判别键 `ok` 恒存在**（错误元素无 `value`，故消费方须**先判 `ok` 再取 `value`**）；`error` 取路由码（`not_loaded` / `stale`）/ 传输码（`ServiceChannelError.code`）/ 服务错误码。聚合为**一个** `EffResult{ok:true, value:[…]}`——**元素失败一律作值**（元素错误），**绝不**用外层 `ok:false`（否则内核 `eff_error` 整轮拒）；**仅整体取消**（abort）时折叠 `{ok:false, error:'cancelled'}`，未跑元素不再有语义。只读提交（`audit:false`）照常 fan-out、不落审计。内核不变：一个 `eff` 仍一个 `EffRequest`（`eff_id` 不变）→ 一个聚合 `EffResult`。
 - **真取消（`cancel{run}`）**：中止在途 / 排队的 run——丢弃尚未执行的部分（含 plan 产出的 directives）、
   尽力停止等待在途服务调用（服务协议无取消消息：宿主摘除等待、晚到响应忽略、不杀服务进程）、
   在途效果审计记 `outcome: 'cancelled'`（result 记 `{ok:false,error:'cancelled'}`），该 run 以 `cancelled` 收口；
@@ -506,7 +512,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 > 以下为宿主动词，不改内核。投影闭包见「投影」；并发见「写者」。
 
-- **受保护 `pins` 不可删（入世校验）**：跨代比对 `pins`（按被依赖身份名，值即 `decl.pins` 的依赖名），若新世代删除了对**受保护身份**的引用则**整批拒** `protected_pin_removed`；受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。**存储类身份进受保护表**：运行记录的 owner 一旦把持久化委托给存储服务，新世代悄悄删掉该 `pins` 等于让数据写入静默失效——与删 `guard` / `approval` 同类攻击面。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：依赖关系是攻击面——新世代可借删 `pins` 让上层强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
+- **受保护 `pins` 不可删（入世校验）**：跨代比对**解析后属主身份集合**——旧侧 = 最近代码世代 `gen.pins` 的值（def 哈希）经属主索引反查的身份 ∪ 旧 `commit.body.meta.needs` 的值（身份名）；新侧 = 新声明的 `decl.pins` 值（已是身份名）∪ 新 `one` 绑定值。任一旧侧受保护身份不出现在新侧则**整批拒** `protected_pin_removed`；旧侧世代 / 声明读不出 → 同样 fail-closed 拒。按**解析后的身份**而非声明值比对，堵「受保护身份退役后另一身份 `implements` 同名能力类即静默改绑」的冒充洞。`many` **不构成**对受保护身份的依赖（0 命中可运行），受保护身份必须由 `pins` 或 `one` 满足。受保护身份表住**宿主侧**（不进世界，故连代码换代也改不动）。**存储类身份进受保护表**：运行记录的 owner 一旦把持久化委托给存储服务，新世代悄悄删掉该 `pins` 等于让数据写入静默失效——与删 `guard` / `approval` 同类攻击面。比对基准 = 该身份的**最近代码世代**声明（**不依赖 `active`**：`set_active(null)` / retired 后重入世也要比对；有代码世代却读不出声明 → fail-closed 拒；身份不存在 / 无任何代码世代 → 放行）。理由：依赖关系是攻击面——新世代可借删 `pins` 让上层强制失效。机械校验（只比较"旧世代有、新世代没了"），宿主不认识业务。**覆盖范围**：`seed` / `pack` 入世与 `validate_package` dry-run 同路；**裸运行期 `add_gen` 不经过入世门禁**（v1 无 op 级鉴权，见 §七 末），这条守卫不覆盖它。
 - **密钥本地存储面**：入站 `secrets.put {name, value}` / `secrets.delete {name}`——宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**；与 `asset.*` 并列。
 - **效果审计脱敏 + 体积截断**：`EffectAudit.result` 按**被调身份 `schema.audit_redact` 声明**（`{"<能力类>.<方法>": [键...]}`；精确 `<port>.<method>` 优先、其次裸 `<method>`，与 `method_timeouts` 同先例）脱敏——命中方法的 result 只落白名单键 + 派生 `has`（不含本体），未声明落完整结果；声明住被调身份自己的 schema，调用方无从伪造（落点 `packages/host/audit-redact.ts`）。对 `host` 批量方法（`asset.get` / `source.read` / `audit`）结果超过 `MAX_AUDIT_RESULT_BYTES`（64 KiB）时只落 `{truncated:true, size}`——否则 8 MiB 资产 / 拷入既往审计记录的 `audit` 会把世界 / journal / 审计侧存撑爆（调用方仍拿完整结果）。**审计记录的 `request.args` 同样限量**：序列化超过 `MAX_AUDIT_ARGS_BYTES`（64 KiB）时只落 `{id, port, method, args:{truncated:true, size}}`（保留定位所需的 `id` / `port` / `method`；调用方仍拿完整 args，只是审计正文留截断标记）。
 - **反向调用 `env` 值脱敏（端口审计）**：反向 `port.call` 转发时，宿主侧端口审计对 args 顶层 `env` 字段的**值**一律替换为 `{redacted:true, keys:[…键名]}`（键名排序、确定性；目标服务照收原值）——密钥经执行请求的 `env` 通道下传时不落宿主侧记录。它与世界审计脱敏（按 `schema.audit_redact` 声明）是**两处独立口径**：端口审计一律脱敏 `env` 值，世界审计按声明逐方法脱敏 `result`。**端口审计与 `EffectAudit` 分流**：不进世界、不写链、不参与重放。**落点**：`packages/host/port-audit.ts`——宿主侧有界内存环形缓冲 `PortAuditRing`（容量常量 `PORT_AUDIT_CAPACITY` = 256，满即覆盖最旧），宿主 options `portAuditSink` 可注入 sink 覆盖（库调用方 / 测试；注入时记录**同时**写入缺省环形缓冲，sink 抛错只隔离该旁路、不阻断转发）；`HostHandle.portAuditRecords()` 暴露该环形缓冲的**只读快照**（时间正序、有界，缺省读取面，无需注入 sink）；记录形状 `PortAuditRecord = { at, from, target, port, method, args, run, thread }`（`from` = 发起服务身份、`target` = 路由解析出的目标身份、`args` 已脱敏）。

@@ -8,6 +8,7 @@
 
 import { resolve } from 'node:path'
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
+import { effectiveMethods } from './capability-index.ts'
 import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
@@ -737,7 +738,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 
   private registerEndpoints(service: ServiceRuntime): void {
     for (const cap of service.decl.implements) {
-      for (const method of service.decl.methods[cap] ?? []) {
+      const methods = effectiveMethods(this.world, service.id, service.decl, cap, this.blobsDir)
+      for (const method of methods) {
         this.endpoints.add({
           impl: service.id,
           gen: service.gen,

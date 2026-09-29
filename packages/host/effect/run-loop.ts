@@ -7,14 +7,14 @@ import { H, run } from '../../kernel/index.ts'
 import { ServiceChannelError } from '../service-link.ts'
 import type { CallEnv } from '../wire.ts'
 import { buildAudit, callEffect } from './execute.ts'
-import type { EndpointCaller } from './execute.ts'
+import type { EndpointCaller, SlotAudit, SlotAuditElement } from './execute.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
 import type { AuditDraft } from '../audit.ts'
 import { resolveAuditRedact } from '../audit-redact.ts'
 import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
 import type { WorldState, WorldWriter } from '../writer.ts'
 import { assertNotFatal, markFatal } from './fatal.ts'
-import type { RoundRouter } from './route.ts'
+import type { RoundRouter, SlotOutcome } from './route.ts'
 import type {
   Directive,
   EffRequest,
@@ -126,11 +126,13 @@ function locateDirective(
   return null
 }
 
-/** 端点调用器 + 最近一次调用路由到的目标身份声明式脱敏白名单（避免二次路由）。 */
+/** 端点调用器 + 最近一次调用的审计数据（单值脱敏白名单 / 槽逐元素表，避免二次路由）。 */
 interface EffectCaller {
   call: EndpointCaller
   /** 最近一次 `call` 路由到的目标身份的 `schema.audit_redact` 白名单；无声明为 `undefined`。 */
   redactKeys: () => readonly string[] | undefined
+  /** 最近一次 `call` 是槽调用时的逐元素审计数据；单值调用为 `undefined`。 */
+  slotAudit: () => SlotAudit | undefined
 }
 
 /** 按 A1 把 pending eff 解析到端点并调用；解析失败 / 传输失败都是数据（EffResult）。 */
@@ -150,6 +152,7 @@ function makeCaller(
   const router = input.router
   const baseTimeoutMs = input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
   const signal = input.signal
+  const aborted = (): boolean => signal?.aborted === true
   // 调用帧 env：本回合 run id / 发起者 thread / 宿主固定时钟（按轮固定，取轮首值）/ 发出者身份。
   // `emitter` 与审计 `emitter` 同源（都是该 directive 的属主），不另算一份。
   const env: CallEnv = {
@@ -160,7 +163,72 @@ function makeCaller(
   }
   // 最近一次调用解析到的目标身份声明式脱敏白名单：调用后读取，避免为审计二次路由。
   let redactKeys: readonly string[] | undefined
+  // 最近一次调用是槽调用时的逐元素审计数据（未执行元素留 null 占位，落审计时省略正文）。
+  let slotAudit: SlotAudit | undefined
+
+  /**
+   * 槽 fan-out：按成员序串行；元素路由失败 / 服务错误一律作**值**（绝不用外层 `ok:false`，
+   * 否则内核 `eff_error` 整轮拒）。仅整体取消返回外层 `ok:false`，剩余成员不再执行。
+   */
+  const callSlot = async (eff: EffRequest, slot: SlotOutcome): Promise<EffResult> => {
+    // 解析世界与路由同代：逐元素超时 / 脱敏都按它取该提供方的 schema 声明。
+    const resolutionWorld = router.resolutionWorld?.(world) ?? world
+    const elements: Json[] = []
+    const audit: SlotAuditElement[] = []
+    let cancelled = false
+    for (const member of slot.members) {
+      if (aborted()) cancelled = true
+      if (cancelled) {
+        audit.push({ provider: member.provider, element: null })
+        continue
+      }
+      if (!member.ok) {
+        const element: Json = { provider: member.provider, ok: false, error: member.error }
+        elements.push(element)
+        audit.push({ provider: member.provider, element })
+        continue
+      }
+      const keys = resolveAuditRedact(resolutionWorld, member.provider, eff.port, eff.method)
+      const timeoutMs =
+        resolveMethodTimeoutMs(resolutionWorld, member.provider, eff.port, eff.method) ??
+        baseTimeoutMs
+      let element: Json
+      try {
+        const response = await member.row.link.call(
+          eff.port,
+          eff.method,
+          eff.args,
+          timeoutMs,
+          signal,
+          env,
+        )
+        element = response.ok
+          ? { provider: member.provider, ok: true, value: response.value }
+          : {
+              provider: member.provider,
+              ok: false,
+              error: response.code,
+              message: response.message,
+            }
+      } catch (err) {
+        element =
+          err instanceof ServiceChannelError
+            ? { provider: member.provider, ok: false, error: err.code }
+            : { provider: member.provider, ok: false, error: 'transport_failed' }
+      }
+      elements.push(element)
+      audit.push({ provider: member.provider, keys, element })
+      if (aborted()) cancelled = true
+    }
+    slotAudit = { elements: audit }
+    if (cancelled) return { ok: false, error: 'cancelled' }
+    return { ok: true, value: elements }
+  }
+
   const call: EndpointCaller = async (eff: EffRequest): Promise<EffResult> => {
+    const slot = router.resolveSlot?.(world, emitter, eff.port, eff.method) ?? null
+    if (slot !== null) return callSlot(eff, slot)
+    slotAudit = undefined
     const routed = router.resolve(world, emitter, eff.port, eff.method)
     if (!routed.ok) return { ok: false, error: routed.error }
     // 等待上限与脱敏白名单都按**目标身份**的 schema 声明取；无声明回落进程级 / 常量 / 完整结果。
@@ -190,7 +258,7 @@ function makeCaller(
       return { ok: false, error: 'transport_failed' }
     }
   }
-  return { call, redactKeys: () => redactKeys }
+  return { call, redactKeys: () => redactKeys, slotAudit: () => slotAudit }
 }
 
 /** 把每条 write directive 的 `expect_pos` 机械锚到当前链头：并发提交下轮首头会前进。 */
@@ -357,6 +425,7 @@ export async function runRound(input: RoundInput): Promise<RoundOutcome> {
       result,
       cancelled,
       caller?.redactKeys(),
+      caller?.slotAudit(),
     )
     if (input.onAudit !== undefined) persist(() => input.onAudit?.(draft))
     results[eff.id] = result

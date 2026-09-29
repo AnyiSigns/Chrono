@@ -25,7 +25,7 @@
 ```
 <plugin-package>/                 # 一个 npm 包（仓库 plugins/<name>/ 或 node_modules/<pkg>，同形）
 ├── package.json     npm 信封：name / version / 依赖 / scripts（宿主不解释，入 ① 作源码）
-├── plugin.json      插件契约：15 字段（`schema` / `exclusive` / `transport` 可省略；宿主解释、入世进 ①；与信封无关）
+├── plugin.json      插件契约：17 字段（`schema` / `exclusive` / `transport` / `needs` / `slots` 可省略；宿主解释、入世进 ①；与信封无关）
 ├── README.md        自述（人读）
 ├── .worldignore     入世排除表（可选；宿主读，自身不入 ①）
 ├── test/            测试文件（**不入 ①**）
@@ -65,6 +65,8 @@
 | `methods` | 能力类 → 方法名 |
 | `concurrent_methods` | **可省略**：声明为并发安全的方法名数组。这些方法的 `call` 脱出服务串行链、彼此可并发；缺省 = 全部串行。**该字段由 SDK 消费、宿主不读也不校验**：宿主侧 `plugin.json` 元校验（`parsePluginDecl`）不含此键，未知键被忽略，故此处拼写错误 / 形态非法**不会在入世被拦**，只会静默退化为「全部串行」。只对「纯查询、无插件内可变状态、不发世界写计划」的方法声明，误声明会破坏有先后依赖的状态 |
 | `pins` | 身份级依赖：名（逻辑端点名）→ **被依赖身份名**；入世时由宿主解析成「被依赖身份 active 世代 payload 哈希」（**身份依赖唯一记录处**，规矩 A）。term 内对同包 callee 的引用**不进此字段**：它在 `terms/` 源里写成占位符，入世时由宿主机械替换成 callee def 哈希，作 body 数据值 |
+| `needs` | **可省略**：消费方引用的能力类，`{ "<能力类>": { "mode": "one" \| "many", "methods"?: string[] } }`。键 = 能力类名 = term 里 `eff` 的 `port` 字面量（**不做别名**）。`one` = 入世解析到**恰好一个**提供方（候选 = 世界能力索引 − 自身 − `host`），绑定写进该装配世代的 `commit.body.meta.needs[<cap>]`（值 = 提供方**身份名**），**不写 `pins`、不产生闭包 / 运行态边**；0 命中拒 `unresolved_need:<cap>`、≥2 拒 `ambiguous_need:<cap>:<候选,码元序>`。`many` = 每次路由按世界能力索引解析成员（提供方身份名字典序；退役 / 声明读不出者静默缺席，挂起仍入索引），0 命中为合法空表。`methods` 是消费方自报的契约方法名：某能力类有拥有方 `slots` 契约时可省，否则 `many` 必填（非空、无重复）。**键不得与 `pins` / `implements` / `methods` 键重叠**（同一能力类不得既提供又消费），保留名 `host` 不可用 |
+| `slots` | **可省略**：拥有方声明的能力类方法契约，`{ "<能力类>": { "methods": string[] } }`（非空、无重复）。**契约单源在拥有方 `slots`**（无拥有方时回落提供方 `methods[<cap>]`）；提供方 `implements` 与消费方 `needs` 都只**引用类名**。同给 `methods[<cap>]` 时须与 `slots[<cap>].methods` 同集合。拥有方也可 `implements` 该类（自产自用）；拥有方 `needs` 自己的扩展点时 `mode` 必须是 `many`（`one` 是单值绑定、与开放扩展点互斥）。**键不得与 `pins` 键重叠**，保留名 `host` 由宿主声明、插件不得占用 |
 | `start` | 启动命令（宿主不认识语言、不做编译）。为空 ≡ 该插件无执行件（**数据身份**，宿主不起服务）；若 `members` 含 `execute` 而成 `start` 为空 → 装载期按坏声明拒（`service.start_failed` reason `missing_start_command`）。`transport` 为 `inproc` / `worker` 时，`start` 是**同语言入口模块路径**（相对物化目录，如 `execute/main.mjs`），不是 shell 命令 |
 | `transport` | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。**可省略**（缺省 = `stdio`）。`stdio` 下宿主 spawn 子进程并接管其 stdin/stdout；`inproc` 下宿主把 `start` 指向的同语言入口**动态载入宿主进程同一线程**直调；`worker` 下宿主用 `worker_threads` 载入该入口（独立堆、结构化克隆通信）——三者都**不开端口**，`inproc` / `worker` 也**不走 stdio**。`inproc` / `worker` 之间**无缺省**，须显式声明其一，且只对同语言（TS/JS）入口成立：`start` 含空白 / 逃逸路径 / 非 JS 扩展名即入世拒 `bad_plugin_decl`。**代价**：`inproc` 与宿主同线程，插件崩溃会**带走宿主**（`worker` 有独立堆，崩溃只收该分支），故 `inproc` 默认不推荐。同进程插件一律载入宿主进程（或其起的 worker），**不存在「插件宿主子插件」**（那会要求父插件 import 子插件代码，违反红线 1 / 4） |
 | `build` | **构建声明**（宿主只执行、不解释语言，与 `start` 同性质）：`[{ cmd, args }]`，每步一条命令；物化后、`start` 前按序执行。**必需字段**：缺失即入世拒 `bad_plugin_decl`——宿主不认识语言，也不再按包内文件（`package.json` / 锁文件 / `Cargo.toml` 等）探测生态，故构建意图必须显式声明；空数组 = 显式「无需构建」。`cmd` 与每个 `args` 令牌必须过 shell 安全白名单（`[A-Za-z0-9_./:@,+-]`）：命令经 `shell:true` 解析，令牌含空白 / 引号 / shell 元字符即入世拒 `bad_plugin_decl`。环境变量（`npm_config_cache` / `CARGO_TARGET_DIR` 等）由宿主注入，不写进声明；产物落点分共享型与随世代型两种合法形态（见 §三 红线 5） |
@@ -149,6 +151,7 @@
   若 B 的新 active 装载失败 → A 被隔离（fail-closed，**绝不回落旧世代**）。
   **B 退役**（`retire` / `set_active(null)`）≠ 换代：A 及其依赖者**运行期隔离**（与装配期坏分支同口径）；只有换代才只重解析不隔离。
   要换到**另一个身份**的实现才改 `pins`（写新 A 世代，显式记账）；**降级链**用多条别名 pin（每个单值、指向另一身份、别名是目标声明的能力类），降级顺序由 term 判定、宿主不自动重试（见 `host.md` §五 路由）。
+- **`one` 需求跟随同规（不同连坐）**：`needs.mode: "one"` 的绑定住该装配世代的 `commit.body.meta.needs`（能力类 → 提供方身份名），**不写 `pins`、不建闭包边**；换提供方 = 绑定变 ⇒ `commitHash` 变 ⇒ 新世代，消费方源码不动、服务不停。提供方自身换代按**身份名**跟随（非哈希，故不触发漂移）；提供方退役 / 装载失败时消费方**不被隔离**——对该能力类的调用得 `stale` / `not_loaded`，作数据（见 `host.md` §五 路由）。
 - **`pins` 闭包必须是 DAG**；成环 = 拓扑序无解，**该分支被隔离**（环成员及其依赖者 `not_loaded`，其余照常起，见 `host.md` §五 装配）。
 
 ## 六、存储能力类（提供，不强制）
@@ -176,10 +179,11 @@
 
 - 一个 npm 包：`package.json`（npm 信封）+ `plugin.json`（机器契约）、`README.md`（人读自述）、
   `execute/`（执行件）、`terms/`（判定数据）、`schema/`（声明 schema）、`.worldignore`（可选：入世排除表）。
-- `plugin.json` 的 15 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `start` / `build` /
+- `plugin.json` 的 17 个字段一个不少：`identity` / `schema` / `implements` / `methods` / `pins` / `needs` / `slots` / `start` / `build` /
   `exclusive` / `transport` / `protocol` / `restart` / `health` / `state` / `members` / `commands`。
   **例外**：无世界数据的 UI 插件可省略 `schema`（零 schema；省略时宿主提供最小默认 def）；
-  `exclusive` 可省略（无独占资源，走零空窗换代）；`transport` 可省略（缺省 `stdio`）。其余 12 个字段一个不少。
+  `exclusive` 可省略（无独占资源，走零空窗换代）；`transport` 可省略（缺省 `stdio`）；
+  `needs` / `slots` 可省略（不声明 = 零扰动：无 `one` 需求则 `commit` 哈希不变）。其余 12 个字段一个不少。
 - **有运行数据的插件另交两样**：`state: "durable"` 声明，以及 `README.md` 里写清存储引擎、目录布局与迁移策略（人读自述义务，见红线 10）。
 
 **行为**（§三 十条红线）

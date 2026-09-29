@@ -6,7 +6,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, wri
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { stateDir } from './config.ts'
-import { isRecord } from 'plugin-sdk'
+import { isRecord, stringMap } from './plan.ts'
 import type { Rec } from 'plugin-sdk'
 
 /** 崩溃残留的临时文件视为过期的阈值：活跃写者的临时文件不会存活这么久。 */
@@ -34,6 +34,8 @@ export interface ValidateCacheEntry {
   identity: string
   result_hash: string
   at: number
+  /** 宿主解析出的 `one` 绑定（cap → 身份名）；无绑定或旧凭据为 `{}`。 */
+  needs: Record<string, string>
 }
 
 function cacheDir(): string {
@@ -82,6 +84,8 @@ export function readValidateCache(key: string): ValidateCacheEntry | null {
       identity: typeof rec['identity'] === 'string' ? rec['identity'] : '',
       result_hash: rec['result_hash'],
       at: typeof rec['at'] === 'number' ? rec['at'] : 0,
+      // 旧凭据没有 needs 字段：按空绑定收，保证历史缓存仍可读
+      needs: stringMap(rec['needs']),
     }
   } catch {
     return null

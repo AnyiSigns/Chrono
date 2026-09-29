@@ -6,6 +6,7 @@ import { getBlob, isBlobPointer } from '../blobs.ts'
 import { FRAMEWORK_COMMAND_NAME_SET } from '../common/framework-commands.ts'
 import { PROTOTYPE_KEYS, isRecord, isStringArray, isStringMap } from '../common/json.ts'
 import { isSafeRelativePath } from '../common/paths-safe.ts'
+import { HOST_CAPABILITY } from '../host-methods.ts'
 import { replaceTermRefs } from './term-refs.ts'
 import type { ServiceTransport } from '../service-link.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
@@ -36,6 +37,21 @@ export interface PluginBuildStep {
  */
 export const DEFAULT_SCHEMA_BODY: Json = { type: 'object' }
 
+/** 消费方引用能力类的方式：`one` 单提供方绑定，`many` 按世界解析成提供方集合。 */
+export type NeedMode = 'one' | 'many'
+
+/** `needs` 的一个条目：消费方对某能力类的引用（`methods` 仅在无拥有方契约时必填）。 */
+export interface NeedDecl {
+  mode: NeedMode
+  /** 契约方法名；缺省表示按拥有方 `slots[cap]` 契约（世界级，decl 层看不到）。 */
+  methods?: string[]
+}
+
+/** `slots` 的一个条目：拥有方对某能力类声明的方法契约。 */
+export interface SlotDecl {
+  methods: string[]
+}
+
 /** `plugin.json` 的解析结果；字段含义见插件规范，宿主只做形态检查。 */
 export interface PluginDecl {
   identity: string
@@ -44,6 +60,10 @@ export interface PluginDecl {
   implements: string[]
   methods: Record<string, string[]>
   pins: Record<string, string>
+  /** 消费方引用的能力类（`cap → 引用方式`）；省略为空表。 */
+  needs: Record<string, NeedDecl>
+  /** 拥有方声明契约的能力类（`cap → 方法契约`）；省略为空表。 */
+  slots: Record<string, SlotDecl>
   start: string
   /**
    * 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。由 `plugin.json.transport` 声明；
@@ -192,6 +212,92 @@ function parseExclusive(v: Json | undefined): string[] | null | undefined {
   return out
 }
 
+/** 非空且无重复的字符串数组（能力类方法契约的形态要求）。 */
+function isNonEmptyUniqueStringArray(value: unknown): value is string[] {
+  return isStringArray(value) && value.length > 0 && new Set(value).size === value.length
+}
+
+/** 两个字符串数组是否同集合（忽略顺序与重复）。 */
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  const set = new Set(a)
+  if (set.size !== new Set(b).size) return false
+  return b.every((item) => set.has(item))
+}
+
+/** 能力类名形态：非空、非原型键、非宿主保留类 `host`。 */
+function isCapabilityKey(key: string): boolean {
+  return key.length > 0 && !PROTOTYPE_KEYS.has(key) && key !== HOST_CAPABILITY
+}
+
+/**
+ * 解析 `needs`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
+ * 只查形状与声明期冲突：`many` 是否真有契约（本包 `methods` 或世界某拥有方 `slots`）在世界层，
+ * decl 看不到他人声明，故该规则由入世期按能力索引判定。
+ * 键冲突口径：`needs` 键不得与 `pins` / `implements` / `methods` 键重叠——自能力路径与槽路径互斥，
+ * 也据此禁「同一能力类既 implements 又 needs」。
+ */
+function parseNeeds(
+  value: Json | undefined,
+  pins: Record<string, string>,
+  implementsCaps: string[],
+  methods: Record<string, string[]>,
+): Record<string, NeedDecl> | null {
+  if (value === undefined) return {}
+  if (!isRecord(value)) return null
+  const implementsSet = new Set(implementsCaps)
+  const out: Record<string, NeedDecl> = {}
+  for (const cap of Object.keys(value)) {
+    if (!isCapabilityKey(cap)) return null
+    if (Object.hasOwn(pins, cap)) return null
+    if (implementsSet.has(cap)) return null
+    if (Object.hasOwn(methods, cap)) return null
+    const entry = value[cap]
+    if (!isRecord(entry)) return null
+    for (const field of Object.keys(entry)) {
+      if (field !== 'mode' && field !== 'methods') return null
+    }
+    const mode = entry['mode']
+    if (mode !== 'one' && mode !== 'many') return null
+    const need: NeedDecl = { mode }
+    const declared = entry['methods']
+    if (declared !== undefined) {
+      if (!isNonEmptyUniqueStringArray(declared)) return null
+      need.methods = declared
+    }
+    out[cap] = need
+  }
+  return out
+}
+
+/**
+ * 解析 `slots`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
+ * `methods` 是拥有方声明的契约全集（非空、无重复）；同给 `methods[cap]` 时须与它同集合。
+ */
+function parseSlots(
+  value: Json | undefined,
+  pins: Record<string, string>,
+  methods: Record<string, string[]>,
+): Record<string, SlotDecl> | null {
+  if (value === undefined) return {}
+  if (!isRecord(value)) return null
+  const out: Record<string, SlotDecl> = {}
+  for (const cap of Object.keys(value)) {
+    if (!isCapabilityKey(cap)) return null
+    if (Object.hasOwn(pins, cap)) return null
+    const entry = value[cap]
+    if (!isRecord(entry)) return null
+    for (const field of Object.keys(entry)) {
+      if (field !== 'methods') return null
+    }
+    const contract = entry['methods']
+    if (!isNonEmptyUniqueStringArray(contract)) return null
+    const declared = methods[cap]
+    if (declared !== undefined && !sameStringSet(declared, contract)) return null
+    out[cap] = { methods: contract }
+  }
+  return out
+}
+
 /** 同语言（TS/JS）入口模块扩展名：`inproc` / `worker` 只接受这类入口。 */
 const SAME_LANGUAGE_ENTRY = /\.(mjs|cjs|js|mts|cts|ts|jsx|tsx)$/i
 
@@ -222,10 +328,11 @@ function parseTransport(
 }
 
 /**
- * 宿主侧 `plugin.json` 元 schema：15 个字段一个不少、类型正确、枚举合法
+ * 宿主侧 `plugin.json` 元 schema：必需字段一个不少、类型正确、枚举合法
  * （`state` 两档：`recomputable` / `durable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
- * `build` 是必需字段（宿主不解释语言，声明是唯一构建来源），逐令牌过 shell 安全白名单。
+ * `build` 是必需字段（宿主不解释语言，声明是唯一构建来源），逐令牌过 shell 安全白名单；
+ * `needs` / `slots` 可选（省略为空表，存量插件零扰动），只查形状与声明期冲突。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
 export function parsePluginDecl(value: Json): ParseDeclResult {
@@ -263,6 +370,19 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     exclusive !== null &&
     transport !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
+  const methods = value['methods'] as Record<string, string[]>
+  const pins = value['pins'] as Record<string, string>
+  const implementsCaps = value['implements'] as string[]
+  const needs = parseNeeds(value['needs'], pins, implementsCaps, methods)
+  const slots = parseSlots(value['slots'], pins, methods)
+  if (needs === null || slots === null) return { ok: false, reasons: ['bad_plugin_decl'] }
+  // 拥有方消费自己的扩展点：`needs` 与自身 `slots` 同键时必须是 `many`（`one` 是单值绑定，
+  // 与「开放扩展点」互斥）；`needs` / `slots` 与 `implements` 的互斥已在各自解析内判定。
+  for (const cap of Object.keys(needs)) {
+    if (Object.hasOwn(slots, cap) && needs[cap].mode !== 'many') {
+      return { ok: false, reasons: ['bad_plugin_decl'] }
+    }
+  }
   // 交叉校验（按声明判，不看运行期目录是否已建）：声明独占 `data` 却非 `durable` 是自相矛盾——
   // 没有持久目录却声明独占持久存储，宿主无法给出对应的换人序语义。
   if ((exclusive ?? []).includes('data') && state !== 'durable') {
@@ -273,9 +393,11 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     decl: {
       identity: value['identity'] as string,
       schema,
-      implements: value['implements'] as string[],
-      methods: value['methods'] as Record<string, string[]>,
-      pins: value['pins'] as Record<string, string>,
+      implements: implementsCaps,
+      methods,
+      pins,
+      needs,
+      slots,
       start: value['start'] as string,
       transport: transport ?? 'stdio',
       build: build as PluginBuildStep[],
@@ -430,6 +552,25 @@ export function readPluginDecl(
   const gen = assemblyGen(world, identityId)
   if (gen === null) return null
   return readPluginDeclOfGen(world, gen, blobsDir)
+}
+
+/**
+ * 读某世代的 `one` 绑定（`commit.body.meta.needs`，cap → 身份名）。
+ * 形态不符（非对象 / 值非字符串）即视为无绑定返回空表；原型键跳过，避免命中继承成员。
+ */
+export function needsBindingsOf(world: World, gen: Gen): Record<string, string> {
+  const body = world.defs[gen.payload]?.body
+  const meta = isRecord(body) ? body['meta'] : undefined
+  const raw = isRecord(meta) ? meta['needs'] : undefined
+  if (!isRecord(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const cap of Object.keys(raw)) {
+    if (PROTOTYPE_KEYS.has(cap)) continue
+    const value = raw[cap]
+    if (typeof value !== 'string') return {}
+    out[cap] = value
+  }
+  return out
 }
 
 /** term def 的规范构造：body = AST、sig = 世代签名；读侧与入世侧共用同一构造。 */

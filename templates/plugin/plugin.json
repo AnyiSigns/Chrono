@@ -4,6 +4,8 @@
   "implements": ["example.echo"],
   "methods": { "example.echo": ["echo"] },
   "pins": {},
+  "needs": {},
+  "slots": {},
   "start": "node execute/main.js",
   "build": [],
   "protocol": "1",

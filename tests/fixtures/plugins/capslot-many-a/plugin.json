@@ -1,0 +1,25 @@
+{
+  "identity": "capslot-many-a",
+  "implements": ["capslot.many"],
+  "methods": { "capslot.many": ["collect"] },
+  "pins": {},
+  "start": "node execute/main.mjs",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "never",
+    "backoff": "none",
+    "max": 0,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 1000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" }
+  ],
+  "commands": []
+}

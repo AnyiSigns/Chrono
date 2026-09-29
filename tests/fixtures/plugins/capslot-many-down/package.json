@@ -1,0 +1,8 @@
+{
+  "name": "capslot-many-down",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：capslot.many 的休眠提供方，服务起不来但身份仍入索引",
+  "engines": { "node": ">=24" }
+}

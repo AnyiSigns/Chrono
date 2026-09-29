@@ -72,7 +72,7 @@
 宿主 → 服务   port.error  { id, ok: false, error }
 ```
 
-- **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins` 解析
+- **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins`（或 `needs.mode:"one"` 的能力类）解析
   （与 §2.2 的 host→service `call` 同一路由口径，见 `host.md` §五「路由」）。
 - **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now, emitter}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`，`emitter` = 发起该反向调用的服务身份）。
   发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如把密钥经 `env` 下传给需要它的服务）：宿主原样透传给目标、
@@ -83,7 +83,7 @@
   反向 `port.error` 属服务协议族（按 `ok` 判别），错误码字段名为 `error`；§2.2 的正向 `error` 帧该字段名为 `code`。
 - **审计分流（写死）**：世界里的 `eff` 记 `EffectAudit` 并入链；**反向调用只记宿主侧端口审计，不入世界、不参与重放**
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
-- **不扩权**：`port` 必须 ∈ 本插件 `pins`；不得索取其他插件的物理端点（§2.5）、不得借它写链。
+- **不扩权**：`port` 必须 ∈ 本插件 `pins` ∪ `one`-needs（`needs.mode:"one"` 的能力类，经 needs 分支解析）；`many` **不经反向调用**（`resolve` 看不到 needs 键 → `unresolved_cap`）；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
 - **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
 

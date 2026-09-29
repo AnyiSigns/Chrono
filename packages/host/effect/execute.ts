@@ -26,6 +26,21 @@ export interface AuditMeta {
   emitter?: string
 }
 
+/**
+ * 槽调用的一个审计元素：`element` 是该成员已执行的结果记录（成功值或错误记录）；
+ * `null` = 未执行（整体取消后剩余成员不再有语义）。`keys` 是该提供方声明的脱敏白名单。
+ */
+export interface SlotAuditElement {
+  provider: string
+  keys?: readonly string[]
+  element: Json | null
+}
+
+/** 槽调用的审计数据：按成员顺序的逐元素表（含未执行者，落审计时省略其正文）。 */
+export interface SlotAudit {
+  elements: SlotAuditElement[]
+}
+
 function deriveOutcome(result: EffResult): AuditOutcome {
   if (result.ok !== true) return 'transport_failed'
   const value = result.value
@@ -93,6 +108,72 @@ function auditRequest(eff: EffRequest): Json {
   return { id: eff.id, port: eff.port, method: eff.method, args: { truncated: true, size } }
 }
 
+/**
+ * 槽的一个已执行元素的审计正文：保留 `{provider, ok}` 骨架，失败补 `error` / `message`；
+ * 声明式脱敏时以白名单投影（取 `args.auth_ref` 引用）替换 `value` 并派生 `has`，否则原样保留元素 `value`。
+ */
+function slotElementAudit(
+  eff: EffRequest,
+  element: Json,
+  keys: readonly string[] | undefined,
+): { [k: string]: Json } {
+  const record = isRecord(element) ? element : {}
+  const ok = record['ok'] === true
+  const provider = record['provider']
+  const out: { [k: string]: Json } = {
+    provider: typeof provider === 'string' ? provider : null,
+    ok,
+  }
+  if (!ok) {
+    const error = record['error']
+    out['error'] = typeof error === 'string' ? error : 'transport_failed'
+    const message = record['message']
+    if (message !== undefined) out['message'] = message
+  }
+  if (keys !== undefined) {
+    const authRef = isRecord(eff.args) ? eff.args['auth_ref'] : undefined
+    for (const key of keys) {
+      out[key] = isRecord(authRef) && typeof authRef[key] === 'string' ? authRef[key] : null
+    }
+    out['has'] = ok
+  } else if (record['value'] !== undefined) {
+    out['value'] = record['value']
+  }
+  return out
+}
+
+/** 单元素超限即只留 `{provider, ok, value:{truncated,size}}`；聚合总量预算仍由调用方兜底。 */
+function truncateSlotElement(entry: { [k: string]: Json }): { [k: string]: Json } {
+  const size = canonicalJson(entry).length
+  if (size <= MAX_AUDIT_RESULT_BYTES) return entry
+  return { provider: entry['provider'], ok: entry['ok'], value: { truncated: true, size } }
+}
+
+/**
+ * 槽审计正文：逐元素脱敏 / 截断（未执行者省略）；聚合总量超预算时整槽落标记 + `{provider, ok}` 骨架表——
+ * 否则一个超限元素会吞掉全槽取证，或 N 个大元素各自合规却撑爆侧存。
+ */
+function auditSlotResult(eff: EffRequest, slotAudit: SlotAudit): Json {
+  const elements: { [k: string]: Json }[] = []
+  for (const element of slotAudit.elements) {
+    if (element.element === null) continue
+    elements.push(truncateSlotElement(slotElementAudit(eff, element.element, element.keys)))
+  }
+  const size = canonicalJson(elements).length
+  if (size <= MAX_AUDIT_RESULT_BYTES) return elements
+  const skeleton = elements.map((entry) => ({ provider: entry['provider'], ok: entry['ok'] }))
+  return { truncated: true, size, elements: skeleton }
+}
+
+/** 槽审计结局：取消优先；任一元素失败 → `error`；否则 `ok`（不依赖 `deriveOutcome` 的数组行为）。 */
+function slotOutcomeOf(slotAudit: SlotAudit, cancelled: boolean): AuditOutcome {
+  if (cancelled) return 'cancelled'
+  for (const element of slotAudit.elements) {
+    if (isRecord(element.element) && element.element['ok'] === false) return 'error'
+  }
+  return 'ok'
+}
+
 /** 效果调用的结果与取消标记：服务调用与审计草稿构造拆开，便于调用方各自放置。 */
 export interface EffectCall {
   result: EffResult
@@ -134,6 +215,7 @@ export async function callEffect(
  * @param result 已取得的调用结果
  * @param cancelled 是否记为取消（outcome = `cancelled`）
  * @param redactKeys 声明式脱敏白名单键（`schema.audit_redact`）；缺省落完整结果
+ * @param slotAudit 槽调用的逐元素审计数据；给定时按聚合口径落正文与结局，`redactKeys` 不参与
  */
 export function buildAudit(
   eff: EffRequest,
@@ -141,15 +223,23 @@ export function buildAudit(
   result: EffResult,
   cancelled: boolean,
   redactKeys?: readonly string[],
+  slotAudit?: SlotAudit,
 ): AuditDraft {
-  const auditOutcome: AuditOutcome = cancelled ? 'cancelled' : deriveOutcome(result)
+  const auditOutcome: AuditOutcome =
+    slotAudit === undefined
+      ? cancelled
+        ? 'cancelled'
+        : deriveOutcome(result)
+      : slotOutcomeOf(slotAudit, cancelled)
+  const auditBody =
+    slotAudit === undefined ? auditResult(eff, result, redactKeys) : auditSlotResult(eff, slotAudit)
   return {
     at: meta.now,
     by: meta.by,
     body: {
       kind: EFFECT_AUDIT_KIND,
       request: auditRequest(eff),
-      result: auditResult(eff, result, redactKeys),
+      result: auditBody,
       port: eff.port,
       method: eff.method,
       outcome: auditOutcome,

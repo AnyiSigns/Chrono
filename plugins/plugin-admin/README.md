@@ -47,7 +47,7 @@ key = H({ "<包内相对路径>": "<解码后字节的规范 base64>", ... })   
 ```text
 put(blob) × n            # 文件，指针形态 {body:{kind:"blob",sha256,size}}（与宿主入世同口径）
 put(tree)                # 自底向上，entries 按名字升序；目录 tree 在子项之后
-put(commit)              # {body:{tree, meta:{name,version}}}
+put(commit)              # {body:{tree, meta:{name,version,needs?}}}；needs 仅在候选声明了 one 绑定时写
 put(schema)              # plugin.json.schema 指向的文件；schema 省略时用宿主同源默认体 {"type":"object"}
 add_identity?            # 身份不存在时才有，schema 用 {"$n":k} 指 put(schema)
 add_gen                 # {id, payload:{"$n":commitIndex}, sig:同, pins}
@@ -56,8 +56,10 @@ add_gen                 # {id, payload:{"$n":commitIndex}, sig:同, pins}
 - 候选 `plugin.json` 的 `schema` **可省略**（零 schema，无世界数据的 UI 插件用）：此时不读 schema 文件，
   机械用与宿主同源的默认体 `{"type":"object"}` 作 `put(schema)`，`result_hash` 仍与宿主 `validate_package` 一致。
 
-- `pins` 由候选 `plugin.json.pins` 解析：`host` 保留字面量，其余解析到被依赖身份的 active 世代哈希
-  （经 `host.identities`；缺失 / 未激活 → `unresolved_pin`）。
+- `pins` 由候选 `plugin.json.pins` 透传：`host` 保留字面量，其余值是**被依赖身份名**（不在此解析成哈希，
+  宿主在落账段按身份名解析）。身份缺失 / 未激活仍早退报 `unresolved_pin`（经 `host.identities`）。
+- `meta.needs`（`one` 绑定，cap → 身份名）取自 `plugin.validate` 的宿主解析结果，经 ③ 凭据带进 commit；
+  与宿主入世同口径，故 `write` 算出的 commit 哈希与 `validate_package` 的 `result_hash` 一致。
 - 批内顺序与宿主入世（`planPack`）逐字同构：blob / tree 先，随后 commit、schema、`add_identity?`、`add_gen`。
   `add_identity` 必须在 `put(schema)` 之后（占位符只能指向更早的 `put`，规矩 A），故「先 `add_identity`」
   是概念次序、不是批内字面次序。

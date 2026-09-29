@@ -1,0 +1,8 @@
+{
+  "name": "capslot-many-b",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：capslot.many 的提供方 B",
+  "engines": { "node": ">=24" }
+}

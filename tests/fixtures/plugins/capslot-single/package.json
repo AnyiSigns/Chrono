@@ -1,0 +1,8 @@
+{
+  "name": "capslot-single",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：capslot.single 的唯一提供方",
+  "engines": { "node": ">=24" }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildAudit, callEffect } from '../execute.ts'
-import type { AuditMeta, EndpointCaller } from '../execute.ts'
+import type { AuditMeta, EndpointCaller, SlotAudit } from '../execute.ts'
 import type { AuditDraft } from '../../audit.ts'
 import type { EffRequest, EffResult, Json } from '../../../kernel/index.ts'
 
@@ -152,5 +152,112 @@ describe('效果执行（审计草稿）', () => {
     }))
     expect(outcome.result).toEqual({ ok: true, value: { text: big } })
     expect(bodyOf(outcome)['result']).toEqual({ truncated: true, size: expect.any(Number) })
+  })
+})
+
+describe('效果执行：槽（many）聚合审计', () => {
+  function slotBody(audit: AuditDraft): { [k: string]: Json } {
+    return audit.body as { [k: string]: Json }
+  }
+
+  function auditOf(
+    eff: EffRequest,
+    slotAudit: SlotAudit,
+    cancelled = false,
+  ): { result: Json; outcome: Json } {
+    const body = slotBody(
+      buildAudit(eff, meta(), { ok: true, value: null }, cancelled, undefined, slotAudit),
+    )
+    return { result: body['result'], outcome: body['outcome'] }
+  }
+
+  it('任一元素失败 → outcome=error，逐元素骨架保留', () => {
+    const { result, outcome } = auditOf(mkEff(), {
+      elements: [
+        { provider: 'a', element: { provider: 'a', ok: true, value: 1 } },
+        { provider: 'b', element: { provider: 'b', ok: false, error: 'not_loaded' } },
+      ],
+    })
+    expect(outcome).toBe('error')
+    expect(result).toEqual([
+      { provider: 'a', ok: true, value: 1 },
+      { provider: 'b', ok: false, error: 'not_loaded' },
+    ])
+  })
+
+  it('全元素 ok → outcome=ok；未执行元素（null）省略正文', () => {
+    const { result, outcome } = auditOf(mkEff(), {
+      elements: [
+        { provider: 'a', element: { provider: 'a', ok: true, value: 'a' } },
+        { provider: 'b', element: null },
+      ],
+    })
+    expect(outcome).toBe('ok')
+    expect(result).toEqual([{ provider: 'a', ok: true, value: 'a' }])
+  })
+
+  it('取消 → outcome=cancelled（已执行元素仍保留）', () => {
+    const { result, outcome } = auditOf(
+      mkEff(),
+      { elements: [{ provider: 'a', element: { provider: 'a', ok: false, error: 'cancelled' } }] },
+      true,
+    )
+    expect(outcome).toBe('cancelled')
+    expect(result).toEqual([{ provider: 'a', ok: false, error: 'cancelled' }])
+  })
+
+  it('逐元素脱敏：按该元素白名单投影 args.auth_ref，替换 value 并派生 has', () => {
+    const eff: EffRequest = {
+      ...mkEff(),
+      args: { auth_ref: { token: 't', other: 'o' } },
+    }
+    const { result } = auditOf(eff, {
+      elements: [
+        { provider: 'a', keys: ['token'], element: { provider: 'a', ok: true, value: { raw: 1 } } },
+        { provider: 'b', element: { provider: 'b', ok: true, value: { raw: 2 } } },
+      ],
+    })
+    expect(result).toEqual([
+      { provider: 'a', ok: true, token: 't', has: true },
+      { provider: 'b', ok: true, value: { raw: 2 } },
+    ])
+  })
+
+  it('单元素超限 → 该元素只留 {provider, ok, value:{truncated,size}}，骨架在', () => {
+    const big = 'x'.repeat(70 * 1024)
+    const { result } = auditOf(mkEff(), {
+      elements: [
+        { provider: 'a', element: { provider: 'a', ok: true, value: { text: big } } },
+        { provider: 'b', element: { provider: 'b', ok: false, error: 'boom' } },
+      ],
+    })
+    expect(result).toEqual([
+      { provider: 'a', ok: true, value: { truncated: true, size: expect.any(Number) } },
+      { provider: 'b', ok: false, error: 'boom' },
+    ])
+  })
+
+  it('N 个大元素各自合规但聚合超预算 → 整槽骨架表 {provider, ok}', () => {
+    const chunk = 'x'.repeat(40 * 1024)
+    const { result } = auditOf(mkEff(), {
+      elements: [
+        { provider: 'a', element: { provider: 'a', ok: true, value: { text: chunk } } },
+        { provider: 'b', element: { provider: 'b', ok: true, value: { text: chunk } } },
+      ],
+    })
+    expect(result).toEqual({
+      truncated: true,
+      size: expect.any(Number),
+      elements: [
+        { provider: 'a', ok: true },
+        { provider: 'b', ok: true },
+      ],
+    })
+  })
+
+  it('无 slotAudit 时保持单值口径（outcome 由 deriveOutcome 机械导出）', () => {
+    const single = buildAudit(mkEff(), meta(), { ok: true, value: { error: 'toy.failed' } }, false)
+    expect(slotBody(single)['outcome']).toBe('error')
+    expect(slotBody(single)['result']).toEqual({ ok: true, value: { error: 'toy.failed' } })
   })
 })

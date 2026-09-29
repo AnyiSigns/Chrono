@@ -19,10 +19,13 @@ import {
   pathSegments,
 } from '../common/paths-safe.ts'
 import { validateArgsSchema } from './args-schema.ts'
+import { buildOwnerIndex } from './closure.ts'
+import { capabilityContract, capabilityProviders, effectiveMethods } from './capability-index.ts'
 import {
   DEFAULT_SCHEMA_BODY,
   isCodeGen,
   latestCodeGen,
+  needsBindingsOf,
   parsePluginDecl,
   readPluginDecl,
   readPluginDeclOfGen,
@@ -139,6 +142,10 @@ export interface IngestPlan {
   unchanged: boolean
   /** 待落 CAS 的源码字节（按 sha256 去重）；调用方在 `commit` 前落盘，dry-run 不落。 */
   blobs: PackedBlob[]
+  /** `one` 绑定（cap → 提供方身份名）；无 `one` 需求为空表。 */
+  needs: Record<string, string>
+  /** 声明的 `pins`（包内名 → 身份名，`host` 透传）；无为空表。 */
+  pins: Record<string, string>
 }
 
 export type IngestResult = { ok: true; plan: IngestPlan } | { ok: false; reasons: string[] }
@@ -154,8 +161,10 @@ const LOCK_FILES = [
 ]
 
 /**
- * 跨代比对 `pins`：最近代码世代引用了某受保护身份、新声明不再引用 → 删了保护边。
- * 按被依赖身份名比对（`decl.pins` 的值即身份名），不涉及解析后的哈希。
+ * 跨代比对「解析后属主身份集合」：最近代码世代引用了某受保护身份、新声明不再引用 → 删了保护边。
+ * 旧侧 = 旧 `gen.pins` 值（def 哈希）经属主索引反查的身份 ∪ 旧 `commit.body.meta.needs` 值（身份名）；
+ * 新侧 = 新 `decl.pins` 值（身份名）∪ 新 `one` 绑定值。
+ * 按解析后的身份而非声明值比对，堵「受保护身份退役后另一身份 implements 同名能力类即静默改绑」的冒充洞。
  * 不依赖 `active`：retired 身份重入世同样按最近代码世代比对，否则「退役→重入世」可绕过保护。
  * 身份不存在 / 无代码世代 → 无从比对，放行；有代码世代但声明读不出 → fail-closed 拒。
  * 受保护名单来自运营配置（`chrono.config.json` 的 `protected_pins`），不在源码里写死身份名。
@@ -164,6 +173,7 @@ function removedProtectedPin(
   world: World,
   identity: string,
   decl: PluginDecl,
+  newNeedsBindings: Readonly<Record<string, string>>,
   blobsDir: string | undefined,
   protectedPins: ReadonlySet<string>,
 ): boolean {
@@ -179,9 +189,63 @@ function removedProtectedPin(
   if (codeGen === null) return false
   const previous = readPluginDeclOfGen(world, codeGen, blobsDir)
   if (previous === null) return true
-  const nextPins = new Set(Object.values(decl.pins))
-  for (const depId of Object.values(previous.decl.pins)) {
-    if (protectedPins.has(depId) && !nextPins.has(depId)) return true
+  const ownerIndex = buildOwnerIndex(world)
+  const oldIdentities = new Set<string>()
+  for (const pinHash of Object.values(codeGen.pins)) {
+    // 保留能力类 `host` 不是世界身份，无从反查
+    if (pinHash === HOST_CAPABILITY) continue
+    const owner = ownerIndex.get(pinHash)
+    if (owner !== undefined) oldIdentities.add(owner)
+  }
+  for (const boundId of Object.values(needsBindingsOf(world, codeGen))) oldIdentities.add(boundId)
+  const nextIdentities = new Set<string>(Object.values(decl.pins))
+  for (const boundId of Object.values(newNeedsBindings)) nextIdentities.add(boundId)
+  for (const depId of oldIdentities) {
+    if (protectedPins.has(depId) && !nextIdentities.has(depId)) return true
+  }
+  return false
+}
+
+/**
+ * 解析 `one` 需求：候选 = 世界能力索引(cap) − 自身 − `host`，要求恰好一个。
+ * 0 命中 → `unresolved_need:<cap>`；多命中 → `ambiguous_need:<cap>:<候选,码元序>`。
+ * 结果只作 `commit.body.meta.needs` 的取值来源，不写 `gen.pins`。
+ */
+function resolveOneNeeds(
+  world: World,
+  identity: string,
+  decl: PluginDecl,
+  blobsDir: string | undefined,
+): { ok: true; bindings: Record<string, string> } | { ok: false; reasons: string[] } {
+  const needs = decl.needs
+  const bindings: Record<string, string> = {}
+  for (const cap of Object.keys(needs).sort()) {
+    if (needs[cap].mode !== 'one') continue
+    const candidates = capabilityProviders(world, cap, blobsDir).filter(
+      (id) => id !== identity && id !== HOST_CAPABILITY,
+    )
+    if (candidates.length === 0) return { ok: false, reasons: [`unresolved_need:${cap}`] }
+    if (candidates.length > 1) {
+      return { ok: false, reasons: [`ambiguous_need:${cap}:${candidates.join(',')}`] }
+    }
+    bindings[cap] = candidates[0]
+  }
+  return { ok: true, bindings }
+}
+
+/**
+ * 校验无自带 `methods` 的 `many` 需求：契约须在世界中可见（拥有方 `slots`）。
+ * 拥有方可能在本身份之外；seed 排序保证同清单内拥有方先入世，故冷 seed 不误报。
+ */
+function missingManyContract(
+  world: World,
+  decl: PluginDecl,
+  blobsDir: string | undefined,
+): boolean {
+  for (const cap of Object.keys(decl.needs)) {
+    const need = decl.needs[cap]
+    if (need.mode !== 'many' || need.methods !== undefined) continue
+    if (capabilityContract(world, cap, blobsDir) === null) return true
   }
   return false
 }
@@ -289,6 +353,7 @@ function planTerms(
   ops: Json[],
   world: World,
   blobsDir: string | undefined,
+  oneBindings: Readonly<Record<string, string>>,
 ): { ok: true } | { ok: false; reasons: string[] } {
   const paths = new Set<string>()
   const collected: string[] = []
@@ -310,14 +375,25 @@ function planTerms(
 
   const effCtx: EffDeclContext = {
     implements: new Set(decl.implements),
-    pins: new Set(Object.keys(decl.pins)),
+    // 槽端口也是合法端口：显式 pins 与 needs 键（含 many）都收
+    pins: new Set([...Object.keys(decl.pins), ...Object.keys(decl.needs)]),
     methods: decl.methods,
     calleeMethodsOf: (port) => {
       const depId = decl.pins[port]
-      // 保留能力类 `host` 不在世界里，按「看不到被调声明」跳过方法名校验。
-      if (depId === undefined || depId === HOST_CAPABILITY) return null
-      const read = readPluginDecl(world, depId, blobsDir)
-      return read === null ? null : read.decl.methods
+      if (depId !== undefined) {
+        // 保留能力类 `host` 不在世界里，按「看不到被调声明」跳过方法名校验。
+        if (depId === HOST_CAPABILITY) return null
+        const read = readPluginDecl(world, depId, blobsDir)
+        return read === null ? null : read.decl.methods
+      }
+      // `one` 端口：对照拥有方契约（若有），否则对照已解析提供方的有效方法集，与 pins 同强度。
+      const provider = oneBindings[port]
+      if (provider === undefined) return null
+      const contract = capabilityContract(world, port, blobsDir)
+      if (contract !== null) return { [port]: contract }
+      const read = readPluginDecl(world, provider, blobsDir)
+      if (read === null) return null
+      return { [port]: effectiveMethods(world, provider, read.decl, port, blobsDir) }
     },
   }
   for (const path of all) {
@@ -356,6 +432,8 @@ function planIdentity(
   world: World,
   identity: string,
   pins: Record<string, Hash>,
+  needs: Record<string, string>,
+  declaredPins: Record<string, string>,
   ops: Json[],
   commitIndex: number,
   schemaIndex: number,
@@ -371,7 +449,17 @@ function planIdentity(
     op: 'add_gen',
     args: { id: identity, payload: { $n: commitIndex }, pins, sig: { $n: commitIndex } },
   })
-  return { identity, ops, isNewIdentity, commitHash, schemaHash, unchanged: false, blobs }
+  return {
+    identity,
+    ops,
+    isNewIdentity,
+    commitHash,
+    schemaHash,
+    unchanged: false,
+    blobs,
+    needs,
+    pins: declaredPins,
+  }
 }
 
 /**
@@ -397,7 +485,15 @@ function planIngestAtRoot(
   if (!isSafeIdentityName(identity)) return { ok: false, reasons: ['bad_plugin_decl'] }
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
 
-  if (removedProtectedPin(world, identity, decl, blobsDir, protectedPins)) {
+  // 先解析 `one` 绑定，受保护比对（新侧需含绑定值）与 commitHash（meta 需含绑定）都用它
+  const resolved = resolveOneNeeds(world, identity, decl, blobsDir)
+  if (!resolved.ok) return { ok: false, reasons: resolved.reasons }
+  const oneBindings = resolved.bindings
+  if (missingManyContract(world, decl, blobsDir)) {
+    return { ok: false, reasons: ['bad_plugin_decl'] }
+  }
+
+  if (removedProtectedPin(world, identity, decl, oneBindings, blobsDir, protectedPins)) {
     return { ok: false, reasons: ['protected_pin_removed'] }
   }
 
@@ -421,7 +517,13 @@ function planIngestAtRoot(
 
   const packed = packSourceDir(pkgRoot, worldignore.patterns)
   const ops: Json[] = [...packed.ops]
-  const meta = { name: identity, version: readPackageVersion(pkgRoot) }
+  // 无 `one` 需求：meta 形状不变、commitHash 零扰动；有则并入绑定，换绑即换 payload
+  const meta = {
+    name: identity,
+    version: readPackageVersion(pkgRoot),
+    ...(Object.keys(oneBindings).length > 0 ? { needs: oneBindings } : {}),
+  }
+  const declaredPins: Record<string, string> = { ...decl.pins }
   const commitHash = H({ body: { tree: packed.rootTreeHash, meta } } as unknown as Json)
   const commitIndex = ops.length
   ops.push({ op: 'put', args: { body: { tree: { $n: packed.rootTreeIndex }, meta } } })
@@ -439,7 +541,7 @@ function planIngestAtRoot(
   const schemaIndex = ops.length
   ops.push({ op: 'put', args: { body: schemaJson } })
 
-  const terms = planTerms(pkgRoot, decl, commitHash, ops, world, blobsDir)
+  const terms = planTerms(pkgRoot, decl, commitHash, ops, world, blobsDir, oneBindings)
   if (!terms.ok) return { ok: false, reasons: terms.reasons }
 
   for (const command of decl.commands) {
@@ -468,6 +570,8 @@ function planIngestAtRoot(
         schemaHash,
         unchanged: true,
         blobs: [],
+        needs: oneBindings,
+        pins: declaredPins,
       },
     }
   }
@@ -477,6 +581,8 @@ function planIngestAtRoot(
       world,
       identity,
       pins,
+      oneBindings,
+      declaredPins,
       ops,
       commitIndex,
       schemaIndex,
@@ -512,27 +618,77 @@ export function planIngest(world: World, root: string, entry: PluginEntry): Inge
   }
 }
 
-/** 名级依赖节点：清单项解析出的身份名与它 pin 的依赖身份名（`host` 保留能力除外）。 */
+/**
+ * 名级依赖节点：清单项解析出的身份名、它 pin 的依赖身份名、能力需求与它 declaration 的能力面
+ * （`implements` 提供方 / `slots` 拥有方），后三者供 `one` / 无契约 `many` 的排序边解析。
+ */
 interface SeedNode {
   index: number
   identity: string
+  /** `pins` 依赖身份名（`host` 保留能力除外）。 */
   deps: string[]
+  /** `one` 需求的能力类名。 */
+  oneNeeds: string[]
+  /** 无自带 `methods` 的 `many` 需求能力类名（契约须可见）。 */
+  manyNeedsNoMethods: string[]
+  /** 本项 `implements` 的能力类名。 */
+  implementsCaps: string[]
+  /** 本项 `slots` 声明契约的能力类名。 */
+  slotCaps: string[]
 }
 
-/** 读一个清单项的身份与依赖名；包 / 声明读不出时身份回落清单项名、依赖为空（不阻塞排序）。 */
+/** 声明读不出时的空节点：身份回落清单项名、无任何依赖（不阻塞排序）。 */
+function emptySeedNode(identity: string, index: number): SeedNode {
+  return {
+    index,
+    identity,
+    deps: [],
+    oneNeeds: [],
+    manyNeedsNoMethods: [],
+    implementsCaps: [],
+    slotCaps: [],
+  }
+}
+
+/** 读一个清单项的身份、pins 依赖与能力声明；包 / 声明读不出时身份回落清单项名、依赖为空。 */
 function readSeedNode(root: string, entry: PluginEntry, index: number): SeedNode {
   const pkgRoot = resolvePackageRoot(entry, root)
   const rawDecl = pkgRoot === null ? undefined : readJsonFile(join(pkgRoot, 'plugin.json'))
-  if (rawDecl === undefined) return { index, identity: entry.name, deps: [] }
+  if (rawDecl === undefined) return emptySeedNode(entry.name, index)
   const parsed = parsePluginDecl(rawDecl)
-  if (!parsed.ok) return { index, identity: entry.name, deps: [] }
-  const deps = Object.values(parsed.decl.pins).filter((dep) => dep !== HOST_CAPABILITY)
-  return { index, identity: parsed.decl.identity, deps }
+  if (!parsed.ok) return emptySeedNode(entry.name, index)
+  const decl = parsed.decl
+  const oneNeeds: string[] = []
+  const manyNeedsNoMethods: string[] = []
+  for (const cap of Object.keys(decl.needs)) {
+    const need = decl.needs[cap]
+    if (need.mode === 'one') oneNeeds.push(cap)
+    else if (need.methods === undefined) manyNeedsNoMethods.push(cap)
+  }
+  return {
+    index,
+    identity: decl.identity,
+    deps: Object.values(decl.pins).filter((dep) => dep !== HOST_CAPABILITY),
+    oneNeeds,
+    manyNeedsNoMethods,
+    implementsCaps: [...decl.implements],
+    slotCaps: Object.keys(decl.slots),
+  }
+}
+
+/** 把能力类映射到清单下标列表（按遍历序，即清单序）。 */
+function appendCapIndex(index: Map<string, number[]>, cap: string, nodeIndex: number): void {
+  const list = index.get(cap)
+  if (list === undefined) index.set(cap, [nodeIndex])
+  else list.push(nodeIndex)
 }
 
 /**
- * 入世排序（名级）：按 `plugin.json.pins` 把清单重排为「被依赖者先入世」，一次收敛。
- * 依赖身份此刻可能尚未入世（pin 解析发生在入世时），故只能按声明里的身份名建图，不查世界；
+ * 入世排序（名级）：按 `plugin.json` 的 `pins` / `one` 需求 / 无自带方法的 `many` 需求，
+ * 把清单重排为「被依赖者先入世」，一次收敛。
+ * 依赖身份此刻可能尚未入世（解析发生在入世时），故只能按声明建图，不查世界：`pins` 按身份名，
+ * `one` 需求按「清单内声明该能力类的提供方」，无方法 `many` 按「清单内声明该能力类契约的拥有方」。
+ * 能力类在清单内命中 0 / 多者不建边，交入世期按 `unresolved_need` / `ambiguous_need` / 契约缺失报出。
  * 图按「身份名 → 清单下标」解析，身份名与清单项名都参与，取先到者。
  * 引脚指向清单外 / 自身者不建边；清单内成环时环成员保持清单原序，由入世期按 `unresolved_pin` fail-closed 报出。
  */
@@ -540,10 +696,14 @@ export function orderEntriesForSeed(root: string, entries: PluginEntry[]): Plugi
   if (entries.length <= 1) return entries
   const nodes = entries.map((entry, index) => readSeedNode(root, entry, index))
   const indexByName = new Map<string, number>()
+  const providersByCap = new Map<string, number[]>()
+  const ownersByCap = new Map<string, number[]>()
   for (const node of nodes) {
     if (!indexByName.has(node.identity)) indexByName.set(node.identity, node.index)
     const entryName = entries[node.index].name
     if (!indexByName.has(entryName)) indexByName.set(entryName, node.index)
+    for (const cap of node.implementsCaps) appendCapIndex(providersByCap, cap, node.index)
+    for (const cap of node.slotCaps) appendCapIndex(ownersByCap, cap, node.index)
   }
   // 入度 = 清单内、非自身的不同依赖数；dependents 记录谁依赖我，供完成时递减。
   const remaining = new Map<number, number>()
@@ -552,8 +712,15 @@ export function orderEntriesForSeed(root: string, entries: PluginEntry[]): Plugi
     const targets = new Set<number>()
     for (const dep of node.deps) {
       const target = indexByName.get(dep)
-      if (target === undefined || target === node.index) continue
-      targets.add(target)
+      if (target !== undefined && target !== node.index) targets.add(target)
+    }
+    for (const cap of node.oneNeeds) {
+      const candidates = (providersByCap.get(cap) ?? []).filter((index) => index !== node.index)
+      if (candidates.length === 1) targets.add(candidates[0])
+    }
+    for (const cap of node.manyNeedsNoMethods) {
+      const candidates = (ownersByCap.get(cap) ?? []).filter((index) => index !== node.index)
+      if (candidates.length === 1) targets.add(candidates[0])
     }
     remaining.set(node.index, targets.size)
     for (const target of targets) {

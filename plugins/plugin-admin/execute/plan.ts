@@ -26,3 +26,16 @@ export function planOf(ops: Json[], payload: Json): Json {
 export function externOnly(payload: Json): Json {
   return { $directives: [externDirective(payload)] }
 }
+
+/**
+ * 提取「字符串 → 字符串」映射：非对象 / 值非字符串的条目一并丢弃，无有效项回空对象。
+ * 用于宿主解析结果（`needs`）与旧凭据的容错读取，避免把形态不符当有效绑定。
+ */
+export function stringMap(value: Json | undefined): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') out[key] = entry
+  }
+  return out
+}

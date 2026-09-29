@@ -1,9 +1,17 @@
 // A1 路由：发出者 pins（名 → 哈希）→ def → 属主身份 → 该身份当前 active 世代 → 端点表。
+// `one` 绑定（`commit.body.meta.needs` 的身份名）走同一条端点解析，只按名不按哈希。
 // 只读世界：不执行效果、不写链；端点表键不含调用方（impl+gen+cap+method）。
 // `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
 
-import { assemblyGen, buildOwnerIndex, readPluginDecl } from '../assembly/index.ts'
+import {
+  assemblyGen,
+  buildOwnerIndex,
+  capabilityProviders,
+  needsBindingsOf,
+  readPluginDecl,
+} from '../assembly/index.ts'
 import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
+import type { NeedDecl } from '../assembly/index.ts'
 import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
@@ -13,9 +21,24 @@ export type RouteError = 'unresolved_cap' | 'not_loaded' | 'stale'
 
 export type RouteOutcome = { ok: true; row: EndpointRow } | { ok: false; error: RouteError }
 
+/** 槽的一个成员：解析到端点行，或该成员自身的元素错误（不整槽失败）。 */
+export type SlotMember =
+  | { provider: string; ok: true; row: EndpointRow }
+  | { provider: string; ok: false; error: RouteError }
+
+/** 槽解析结果：按提供方身份名有序的成员表；0 命中 = 空表（合法）。 */
+export interface SlotOutcome {
+  members: SlotMember[]
+}
+
 /** 路由钩子：effect 在挂起点用它把 `eff` 解析到端点；实现由宿主按当前端点表构造。 */
 export interface RoundRouter {
   resolve(world: World, emitterId: string, cap: string, method: string): RouteOutcome
+  /**
+   * 按 `many` 声明解析槽：有序成员表（各自端点行或元素错误）。
+   * 未声明该 cap / `mode:"one"` / 发出者无装配世代 → null（`one` 走 `resolve` 的 needs 分支）。
+   */
+  resolveSlot?(world: World, emitterId: string, cap: string, method: string): SlotOutcome | null
   /**
    * 路由实际采用的解析世界（可选）：注入 `liveWorld` 时 `resolve` 按活世界解析，
    * 调用方（run loop 的方法级超时解析）须与路由同代，故经此取同一 getter 的结果。
@@ -74,8 +97,11 @@ function hostRow(emitter: string, method: string, host: HostCapabilityCall): End
  */
 export function createRoundRouter(options: RouterOptions): RoundRouter {
   const ownerIndexes = new WeakMap<World['ids'], Map<Hash, string>>()
-  // 每个身份只留最近解析的 (gen → caps)：声明不可变，命中可复用；换代替换，不随历史世代累积。
-  const implementsCache = new Map<string, { gen: Hash; caps: Set<string> }>()
+  // 每个身份只留最近解析的 (gen → {caps, needs})：声明不可变，命中可复用；换代替换，不随历史世代累积。
+  const declFactsCache = new Map<
+    string,
+    { gen: Hash; caps: Set<string>; needs: Record<string, NeedDecl> }
+  >()
 
   const ownerIndexOf = (world: World): Map<Hash, string> => {
     const cached = ownerIndexes.get(world.ids)
@@ -85,16 +111,26 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     return index
   }
 
-  const implementsOf = (world: World, id: string, gen: Hash): Set<string> | null => {
-    const cached = implementsCache.get(id)
-    if (cached !== undefined && cached.gen === gen) return cached.caps
+  const factsOf = (
+    world: World,
+    id: string,
+    gen: Hash,
+  ): { caps: Set<string>; needs: Record<string, NeedDecl> } | null => {
+    const cached = declFactsCache.get(id)
+    if (cached !== undefined && cached.gen === gen) return cached
     const decl = readPluginDecl(world, id, options.blobsDir)?.decl ?? null
     // 声明读不出（def / blob 暂缺）：不缓存 null，下一次解析可重试；补齐后同键重算成功
     if (decl === null) return null
-    const caps = new Set(decl.implements)
-    implementsCache.set(id, { gen, caps })
-    return caps
+    const facts = { gen, caps: new Set(decl.implements), needs: decl.needs }
+    declFactsCache.set(id, facts)
+    return facts
   }
+
+  const implementsOf = (world: World, id: string, gen: Hash): Set<string> | null =>
+    factsOf(world, id, gen)?.caps ?? null
+
+  const needsOf = (world: World, id: string, gen: Hash): Record<string, NeedDecl> | null =>
+    factsOf(world, id, gen)?.needs ?? null
 
   return {
     resolutionWorld(anchored) {
@@ -108,6 +144,19 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       const gen = assemblyGen(resolutionWorld, emitterId)
       const pinned = gen?.pins[cap]
       if (pinned === undefined) {
+        // `one` 绑定（`commit.body.meta.needs` 的身份名）：按绑定身份当前代码世代解析端点，
+        // 优先于自能力路径。按名绑定（非哈希）故不触发 `onDrift`、不比对 pinned 与 active。
+        const bound = gen === null ? undefined : needsBindingsOf(resolutionWorld, gen)[cap]
+        if (typeof bound === 'string') {
+          if (!Object.hasOwn(resolutionWorld.ids, bound)) return { ok: false, error: 'stale' }
+          const ownerGen = assemblyGen(resolutionWorld, bound)
+          if (ownerGen === null) return { ok: false, error: 'stale' }
+          const boundCaps = implementsOf(resolutionWorld, bound, ownerGen.payload)
+          if (boundCaps === null || !boundCaps.has(cap)) return { ok: false, error: 'not_loaded' }
+          const boundRow = options.endpoints.get(bound, ownerGen.payload, cap, method)
+          if (boundRow === null) return { ok: false, error: 'not_loaded' }
+          return { ok: true, row: boundRow }
+        }
         // 自能力路径（无自 pin）：发出者未 pin 该 cap，但自身装配世代声明实现了它 →
         // 解析到发出者自己的端点行。保留能力类 `host` 不参与（须显式 pin 值 host 才认）。
         if (gen === null || cap === HOST_CAPABILITY) return { ok: false, error: 'unresolved_cap' }
@@ -136,6 +185,37 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       if (row === null) return { ok: false, error: 'not_loaded' }
       if (pinned !== ownerGen.payload) options.onDrift?.(emitterId, cap, ownerGen.payload)
       return { ok: true, row }
+    },
+    resolveSlot(world, emitterId, cap, method) {
+      // 活端点表世界优先（提供时）：与 `resolve` 同规，成员按当前世界解析、随世界收缩 / 扩张。
+      const resolutionWorld = options.liveWorld?.() ?? world
+      const gen = assemblyGen(resolutionWorld, emitterId)
+      if (gen === null) return null
+      const needs = needsOf(resolutionWorld, emitterId, gen.payload)
+      const need = needs?.[cap]
+      if (need === undefined || need.mode !== 'many') return null
+      // 成员 = 世界能力索引（码元序、排除退役 / 声明读不出 / host）逐项解析端点行；
+      // 端点行缺失（休眠隔离 / 方法未声明）作该成员的元素错误，不整槽失败；静默缺席者不入表。
+      const members: SlotMember[] = []
+      for (const provider of capabilityProviders(resolutionWorld, cap, options.blobsDir)) {
+        const memberGen = assemblyGen(resolutionWorld, provider)
+        if (memberGen === null) {
+          members.push({ provider, ok: false, error: 'not_loaded' })
+          continue
+        }
+        const caps = implementsOf(resolutionWorld, provider, memberGen.payload)
+        if (caps === null || !caps.has(cap)) {
+          members.push({ provider, ok: false, error: 'not_loaded' })
+          continue
+        }
+        const row = options.endpoints.get(provider, memberGen.payload, cap, method)
+        if (row === null) {
+          members.push({ provider, ok: false, error: 'not_loaded' })
+          continue
+        }
+        members.push({ provider, ok: true, row })
+      }
+      return { members }
     },
   }
 }

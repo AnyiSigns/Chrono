@@ -29,7 +29,7 @@ boot ──→ client ──→ kernel
   `service-link` / `wire`，无一条路径通向两个写口）。判定类常量（如调用超时缺省值与硬上限）住
   `host/common/`，不住被判定方，否则配置层会反向依赖运行层而让这条断言失效。
 - `boot` 对内核只有类型引用；`client` 运行时另用内核的 `canonicalJson` 做规范序列化（两侧帧格式独立实现）。
-- `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins`（见
+- `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins` / `needs`（见
   [`docs/plugins.md`](../docs/plugins.md)）。
 - 加插件**不改** `packages/` 任何文件：插件包住 `plugins/<name>/` 或 `node_modules/`，由 `state/plugins.json` 列出。
 - `toolchain/` 是作者侧**构建期**工具：`packages/` 任何包**不得依赖**它；插件仅不入世的构建 / 开发脚本可 import 其编译器；它至多依赖内核（仅测试器入口），不进运行路径。
@@ -58,6 +58,9 @@ boot ──→ client ──→ kernel
 | 入站动词 | `host/wire.ts`、`host/inbound/dispatch.ts`、客户端镜像 `client/index.ts` |
 | 服务协议帧 | `host/service-link.ts` |
 | `plugin.json` 各枚举 | `host/assembly/decl.ts`（`members.kind` / `transport` / `state`）、`host/assembly/supervision.ts`（`restart` / `backoff`） |
+| `plugin.json` 字段 `needs` / `slots` 与 `commit.body.meta.needs` | `host/assembly/decl.ts`、`host/assembly/ingest.ts` |
+| 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out） | `host/effect/route.ts`、`host/effect/run-loop.ts` |
+| `validate_package` 结果形状 | `host/validate-package.ts` |
 | `argsSchema` 方言 | `host/assembly/args-schema.ts` |
 | schema 宿主消费键 | `host/periodic.ts`、`method-timeouts.ts`、`audit-tiers.ts`、`audit-redact.ts`、`assembly/assets-manifest.ts` |
 | 结构化 op / directive / term 原语 | `kernel/types.ts`、`kernel/machine.ts`；宿主侧镜像 `host/common/op-names.ts`、`host/assembly/eff-decls.ts` |
@@ -71,8 +74,8 @@ term 原语表有防漂移双保险：宿主 `walkEffs` 以内核 `TERM_TAGS` �
 - **回合不跨重启续跑**：宿主不持久化 run 游标、不自动重发效果。重启后由插件自行判断未完成的回合并重发。
   `host.thread.resume` 是调用方驱动的**新**分离 run，不是内核 `waiting` 态的续跑。
 - **插件独立性无宿主侧强制**：「插件不得互相 import、不得 import 宿主」目前靠约定与各插件自带的
-  `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `pins`、
-  运行期路由只认 `pins` 与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
+  `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `pins` ∪ `needs`、
+  运行期路由只认 `pins` / `meta.needs` 与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
 
 ## 一次调用的数据流
 

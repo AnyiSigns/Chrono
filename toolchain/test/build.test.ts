@@ -38,6 +38,46 @@ describe('buildPackage：内联 step 的产物落盘', () => {
     }
   })
 
+  it('透传 needs / slots：needs 键可作端口，slots 键不可', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chrono-toolchain-'))
+    try {
+      mkdirSync(join(dir, 'terms.src'))
+      writeFileSync(
+        join(dir, 'plugin.json'),
+        JSON.stringify({
+          slots: { 'chat-hook': { methods: ['onTurn'] } },
+          needs: { 'session-title': { mode: 'one' } },
+        }),
+      )
+      const usePath = join(dir, 'terms.src', 'use.json')
+      writeFileSync(
+        usePath,
+        JSON.stringify({
+          k: 'eff',
+          port: 'session-title',
+          method: 'generate',
+          args: { k: 'lit', v: null },
+        }),
+      )
+      expect(buildPackage(dir).ok).toBe(true)
+
+      writeFileSync(
+        usePath,
+        JSON.stringify({
+          k: 'eff',
+          port: 'chat-hook',
+          method: 'onTurn',
+          args: { k: 'lit', v: null },
+        }),
+      )
+      const bad = buildPackage(dir)
+      expect(bad.ok).toBe(false)
+      expect(bad.issues.map((i) => i.message)).toContain('undeclared_port: chat-hook')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('校验不过不写产物', () => {
     const dir = mkdtempSync(join(tmpdir(), 'chrono-toolchain-'))
     try {

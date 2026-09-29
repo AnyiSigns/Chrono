@@ -1,7 +1,7 @@
 // 入世期 eff 声明校验：term AST 里的效果头必须落在插件声明的能力面内。
-// 纯机械集合判断，不解释糖化语义、不取值：读 `plugin.json` 的 implements / pins / methods，
+// 纯机械集合判断，不解释糖化语义、不取值：读 `plugin.json` 的 implements / pins / needs / methods，
 // 扫 term 原语结构的 eff 头取 port / method 两个位置。
-// 自调用（port ∈ implements）与跨身份（port ∈ pins）口径不同，见 docs/term-toolchain.md §六.1：
+// 自调用（port ∈ implements）与跨身份（port ∈ pins ∪ needs）口径不同，见 docs/term-toolchain.md §六.1：
 // 自调用方法名属本包声明，入世期机械校验；跨身份方法名属被调身份声明，按世界里的被调声明判，
 // 被调声明读不出（保留能力 `host` / 尚未入世 / 声明不可解析）时跳过，不新增拒绝语义。
 
@@ -12,7 +12,7 @@ import type { Json } from '../../kernel/index.ts'
 /** 校验上下文：本包声明面 + 被调身份声明解析。 */
 export interface EffDeclContext {
   implements: ReadonlySet<string>
-  /** `pins` 的逻辑端点名（port）集合。 */
+  /** 本包声明消费的逻辑端点名（port）集合：显式 `pins` 键 ∪ `needs` 键。 */
   pins: ReadonlySet<string>
   /** 自调用方法表：能力类 → 方法名。 */
   methods: Record<string, string[]>

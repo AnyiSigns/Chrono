@@ -5,12 +5,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { startService as startSdkService } from 'plugin-sdk'
 import { readValidateCache, writeValidateCache } from '../execute/state.ts'
+import { buildPackOps, parseCandidateDecl } from '../execute/pack.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
@@ -75,6 +76,31 @@ function stubHostHandler(port, method, args) {
     return { value: { kind: 'blob', sha256: '0'.repeat(64), size: 2 } }
   }
   return { error: 'not_loaded', message: method }
+}
+
+/** 用插件自身的打包口径算出候选 commit 哈希，作为假宿主 validate_package 的 result_hash。 */
+function commitHashOf(files, needs) {
+  const decl = parseCandidateDecl(files)
+  return buildPackOps(files, decl.identity, decl, needs).commitHash
+}
+
+/**
+ * 假宿主工厂：identities 可定制；validate_package 回执的 `result_hash` 按同一 needs 现算，
+ * 以模拟宿主「解析结果进 commit 哈希」的口径。
+ */
+function stubHostResolving({ needs = {}, identities = [] } = {}) {
+  return (port, method, args) => {
+    if (method === 'identities') return { value: { list: identities } }
+    if (method === 'validate_package') {
+      return {
+        value: { ok: true, errors: [], result_hash: commitHashOf(args.files, needs), needs },
+      }
+    }
+    if (method === 'blob.put') {
+      return { value: { kind: 'blob', sha256: '0'.repeat(64), size: 2 } }
+    }
+    return { error: 'not_loaded', message: method }
+  }
 }
 
 /**
@@ -294,6 +320,7 @@ test('validate：宿主 ok 回执透传并写入 ③ 缓存', async () => {
     const cached = JSON.parse(readFileSync(cacheFile(drv.stateDir, report.candidate_hash), 'utf8'))
     assert.equal(cached.result_hash, report.result_hash)
     assert.equal(cached.identity, 'candidate')
+    assert.deepEqual(cached.needs, {})
   } finally {
     drv.close()
     drv.cleanup()
@@ -388,6 +415,58 @@ test('write：黑名单身份 → hidden_identity，不调宿主', async () => {
   }
 })
 
+test('write：非 host pin 以身份名写入 add_gen.pins（非 active 哈希）', async () => {
+  const files = candidate('candidate', { pins: { host: 'host', model: 'model-protocol' } })
+  const identities = [
+    { id: 'candidate', active: H1, implements: [], commands: [] },
+    { id: 'model-protocol', active: H2, implements: ['model'], commands: [] },
+  ]
+  const drv = startService({ hostHandler: stubHostResolving({ needs: {}, identities }) })
+  try {
+    await drv.hello()
+    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
+    assert.equal(report.ok, true)
+    const plan = await drv.call('plugin', 'write', { identity: 'candidate', files })
+    const ops = plan.$directives[0].request.args.ops
+    const addGen = ops[ops.length - 1]
+    assert.equal(addGen.op, 'add_gen')
+    assert.deepEqual(addGen.args.pins, { host: 'host', model: 'model-protocol' })
+    assert.equal(addGen.args.pins.model, 'model-protocol')
+    assert.notEqual(addGen.args.pins.model, H2, 'pin 不得写成 active 哈希')
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('write：one need 的解析结果进 meta.needs 与 commit 哈希（与 validate result_hash 一致）', async () => {
+  const files = candidate('candidate', { needs: { model: { mode: 'one' } } })
+  const needs = { model: 'model-protocol' }
+  const identities = [
+    { id: 'candidate', active: H1, implements: [], commands: [] },
+    { id: 'model-protocol', active: H2, implements: ['model'], commands: [] },
+  ]
+  const drv = startService({ hostHandler: stubHostResolving({ needs, identities }) })
+  try {
+    await drv.hello()
+    const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
+    assert.equal(report.ok, true)
+    assert.equal(report.result_hash, commitHashOf(files, needs))
+    // 凭据须携带宿主解析结果，否则 write 算出的 commit 哈希对不上
+    const cached = JSON.parse(readFileSync(cacheFile(drv.stateDir, report.candidate_hash), 'utf8'))
+    assert.deepEqual(cached.needs, needs)
+
+    const plan = await drv.call('plugin', 'write', { identity: 'candidate', files })
+    assert.equal(plan.$directives[1].payload.commit, report.result_hash)
+    const ops = plan.$directives[0].request.args.ops
+    const commitOp = ops.find((op) => op.op === 'put' && op.args.body && op.args.body.meta)
+    assert.deepEqual(commitOp.args.body.meta, { name: 'candidate', version: '1.2.3', needs })
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
 // ── describe / invoke ──────────────────────────────────────────────────────
 
 test('describe：四工具 + render 描述符 + 描述四要素', async () => {
@@ -474,12 +553,34 @@ test('validate 凭据原子写：不留临时文件，内容可读回', () => {
   process.env.CHRONO_PLUGIN_STATE = dir
   try {
     const key = 'a'.repeat(64)
-    writeValidateCache(key, { identity: 'candidate', result_hash: 'b'.repeat(64), at: 123 })
+    writeValidateCache(key, { identity: 'candidate', result_hash: 'b'.repeat(64), at: 123, needs: {} })
     // 临时文件已被 rename 消耗：目录里只剩最终文件
     assert.deepEqual(readdirSync(join(dir, 'validate')), [`${key}.json`])
     const entry = readValidateCache(key)
     assert.equal(entry.identity, 'candidate')
     assert.equal(entry.result_hash, 'b'.repeat(64))
+    assert.deepEqual(entry.needs, {})
+  } finally {
+    if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
+    else process.env.CHRONO_PLUGIN_STATE = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readValidateCache：旧凭据缺 needs 字段 → 按空绑定读回（向前兼容）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-admin-state-old-'))
+  const previous = process.env.CHRONO_PLUGIN_STATE
+  process.env.CHRONO_PLUGIN_STATE = dir
+  try {
+    const key = 'c'.repeat(64)
+    mkdirSync(join(dir, 'validate'), { recursive: true })
+    writeFileSync(
+      join(dir, 'validate', `${key}.json`),
+      JSON.stringify({ identity: 'candidate', result_hash: 'd'.repeat(64), at: 1 }),
+    )
+    const entry = readValidateCache(key)
+    assert.equal(entry.result_hash, 'd'.repeat(64))
+    assert.deepEqual(entry.needs, {})
   } finally {
     if (previous === undefined) delete process.env.CHRONO_PLUGIN_STATE
     else process.env.CHRONO_PLUGIN_STATE = previous

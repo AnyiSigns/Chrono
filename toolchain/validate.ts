@@ -10,6 +10,8 @@ export interface Program {
   implements?: string[] // 自身能力类
   pins?: Record<string, string> // 能力类 → 目标身份（引用其他插件）
   methods?: Record<string, string[]> // 能力类 → 方法名
+  needs?: Record<string, { mode: 'one' | 'many'; methods?: string[] }> // 能力类 → 消费声明
+  slots?: Record<string, { methods: string[] }> // 能力类 → 拥有方方法契约
 }
 
 export interface Issue {
@@ -148,11 +150,25 @@ function countBinds(s: unknown, name: string): number {
  */
 export function validateProgram(p: Program): { ok: boolean; issues: Issue[] } {
   const issues: Issue[] = []
+  const needs = p.needs ?? {}
+  const slots = p.slots ?? {}
   const ports = new Set([
     ...(p.implements ?? []),
     ...Object.keys(p.pins ?? {}),
     ...Object.keys(p.methods ?? {}), // 声明了方法的能力类即视为已声明端口，减少 implements/methods 双填摩擦
+    // needs 键即 eff 端口；slots 键不是端口：拥有方声明契约不代表本插件消费该类
+    ...Object.keys(needs),
   ])
+  // 同一能力类不得既 implements / pins / methods 又 needs，提前给出廉价反馈，与宿主声明期口径一致
+  for (const cap of Object.keys(needs)) {
+    if (
+      (p.implements ?? []).includes(cap) ||
+      Object.hasOwn(p.pins ?? {}, cap) ||
+      Object.hasOwn(p.methods ?? {}, cap)
+    ) {
+      issues.push({ path: `plugin.json/needs/${cap}`, message: `needs_conflict: ${cap}` })
+    }
+  }
   // 内联 step / ref 的落点：只为形态检查，产物丢弃
   const discard: LowerCtx = {
     emit(s, env) {
@@ -198,20 +214,41 @@ export function validateProgram(p: Program): { ok: boolean; issues: Issue[] } {
         if (typeof port === 'string' && !ports.has(port)) {
           issues.push({ path: `${at}/port`, message: `undeclared_port: ${port}` })
         }
+        if (typeof port !== 'string') return
+        const need = needs[port]
+        if (need !== undefined) {
+          // 消费型端口的契约源：many 优先拥有方 slots（本插件同时拥有该类时），无拥有方则用消费方自报的
+          // needs.methods；one 的方法名住在被解析到的提供方声明里，工具链单包看不到，故仅在消费方
+          // 自报 needs.methods 时才校验。三者皆无可见契约则跳过（与跨身份放弃同理）。
+          const contract =
+            need.mode === 'many' ? (slots[port]?.methods ?? need.methods) : need.methods
+          if (
+            contract !== undefined &&
+            typeof node.method === 'string' &&
+            !contract.includes(node.method)
+          ) {
+            issues.push({
+              path: `${at}/method`,
+              message: `undeclared_method: ${port}.${node.method}`,
+            })
+          }
+          return
+        }
         // 方法名只在自调用（port ∈ implements，或仅声明了 methods 的能力类）可校验；
         // 跨身份（port 只在 pins 里）的方法名住在被调身份声明里，工具链只有单包源、看不到被调声明，
         // 故放弃校验（宿主入世按被调身份声明判，两侧口径刻意不同，见 docs/term-toolchain.md §六.1）。
         const selfDeclared =
-          typeof port === 'string' &&
-          ((p.implements ?? []).includes(port) || Object.hasOwn(p.methods ?? {}, port))
-        if (selfDeclared) {
-          const declared = p.methods?.[port]
-          if (declared === undefined) {
-            // 契约：自调用 port 必须在 methods 里有条目（哪怕空数组）；否则方法名无从校验
-            issues.push({ path: `${at}/port`, message: `undeclared_method: ${port}` })
-          } else if (typeof node.method === 'string' && !declared.includes(node.method)) {
-            issues.push({ path: `${at}/method`, message: `undeclared_method: ${port}.${node.method}` })
-          }
+          (p.implements ?? []).includes(port) || Object.hasOwn(p.methods ?? {}, port)
+        if (!selfDeclared) return
+        const declared = p.methods?.[port]
+        if (declared === undefined) {
+          // 契约：自调用 port 必须在 methods 里有条目（哪怕空数组）；否则方法名无从校验
+          issues.push({ path: `${at}/port`, message: `undeclared_method: ${port}` })
+        } else if (typeof node.method === 'string' && !declared.includes(node.method)) {
+          issues.push({
+            path: `${at}/method`,
+            message: `undeclared_method: ${port}.${node.method}`,
+          })
         }
       }
     })

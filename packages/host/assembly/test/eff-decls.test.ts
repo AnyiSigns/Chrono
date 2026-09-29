@@ -311,6 +311,111 @@ describe('入世期 eff 声明校验', () => {
     })
   })
 
+  describe('seed 级：one 需求（槽端口）方法名校验', () => {
+    it('提供方声明方法：有效通过，无效整包拒 undeclared_method', async () => {
+      const root = createTempRoot()
+      try {
+        const provider = writeTempPackage(root, {
+          identity: 'provider',
+          implements: ['cap'],
+          methods: { cap: ['ok'] },
+        })
+        const good = writeTempPackage(root, {
+          identity: 'consumer',
+          needs: { cap: { mode: 'one' } },
+          terms: { 'x.json': JSON.stringify(['eff', 'cap', 'ok', ['c', null]]) },
+        })
+        expect(
+          runSeed(root, [
+            { name: 'provider', path: provider },
+            { name: 'consumer', path: good },
+          ]).ok,
+        ).toBe(true)
+
+        const bad = writeTempPackage(root, {
+          identity: 'consumer',
+          needs: { cap: { mode: 'one' } },
+          terms: { 'x.json': JSON.stringify(['eff', 'cap', 'ghost', ['c', null]]) },
+        })
+        const report = runSeed(root, [
+          { name: 'provider', path: provider },
+          { name: 'consumer', path: bad },
+        ])
+        expect(report.ok).toBe(false)
+        expect(report.items[1].reasons).toContain('undeclared_method:cap.ghost')
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+
+    it('无拥有方契约时对照提供方有效方法集（methods 缺省无语义）', async () => {
+      const root = createTempRoot()
+      try {
+        // 提供方 implements 但不声明 methods：无拥有方契约 → 方法集为空，任何调用都判未声明
+        const provider = writeTempPackage(root, {
+          identity: 'provider',
+          implements: ['cap'],
+          methods: {},
+        })
+        const consumer = writeTempPackage(root, {
+          identity: 'consumer',
+          needs: { cap: { mode: 'one' } },
+          terms: { 'x.json': JSON.stringify(['eff', 'cap', 'ok', ['c', null]]) },
+        })
+        const report = runSeed(root, [
+          { name: 'provider', path: provider },
+          { name: 'consumer', path: consumer },
+        ])
+        expect(report.ok).toBe(false)
+        expect(report.items[1].reasons).toContain('undeclared_method:cap.ok')
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+
+    it('有拥有方契约时对照契约：提供方不声明方法也能通过', async () => {
+      const root = createTempRoot()
+      try {
+        const owner = writeTempPackage(root, {
+          identity: 'owner',
+          slots: { cap: { methods: ['ok'] } },
+        })
+        const provider = writeTempPackage(root, {
+          identity: 'provider',
+          implements: ['cap'],
+          methods: {},
+        })
+        const consumer = writeTempPackage(root, {
+          identity: 'consumer',
+          needs: { cap: { mode: 'one' } },
+          terms: { 'x.json': JSON.stringify(['eff', 'cap', 'ok', ['c', null]]) },
+        })
+        const report = runSeed(root, [
+          { name: 'owner', path: owner },
+          { name: 'provider', path: provider },
+          { name: 'consumer', path: consumer },
+        ])
+        expect(report.ok).toBe(true)
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+
+    it('many 端口不在入世做提供方方法校验（由路由期按成员判定）', async () => {
+      const root = createTempRoot()
+      try {
+        const consumer = writeTempPackage(root, {
+          identity: 'consumer',
+          needs: { hook: { mode: 'many', methods: ['onTurn'] } },
+          terms: { 'x.json': JSON.stringify(['eff', 'hook', 'ghost', ['c', null]]) },
+        })
+        expect(runSeed(root, [{ name: 'consumer', path: consumer }]).ok).toBe(true)
+      } finally {
+        await cleanupTempRoot(root)
+      }
+    })
+  })
+
   describe('pack / validate_package 路径同口径', () => {
     it('planPack（pack）对未声明 port 整包拒', () => {
       const root = createTempRoot()

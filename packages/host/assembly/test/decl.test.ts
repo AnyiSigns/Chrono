@@ -323,3 +323,177 @@ describe('parsePluginDecl transport 声明', () => {
     expect(parsePluginDecl(baseDecl({ start: 'execute/main.mjs', transport: 1 })).ok).toBe(false)
   })
 })
+
+describe('parsePluginDecl needs / slots', () => {
+  it('两者省略 → 零扰动：仍需 ok，且 needs / slots 为空表', () => {
+    const result = parsePluginDecl(baseDecl())
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.decl.needs).toEqual({})
+      expect(result.decl.slots).toEqual({})
+    }
+  })
+
+  it('合法 needs（one 无 methods / many 带 methods）解析通过', () => {
+    const one = parsePluginDecl(baseDecl({ needs: { 'toy.title': { mode: 'one' } } }))
+    expect(one.ok).toBe(true)
+    if (one.ok) expect(one.decl.needs).toEqual({ 'toy.title': { mode: 'one' } })
+
+    const many = parsePluginDecl(
+      baseDecl({ needs: { 'toy.hook': { mode: 'many', methods: ['onTurn'] } } }),
+    )
+    expect(many.ok).toBe(true)
+    if (many.ok) {
+      expect(many.decl.needs).toEqual({ 'toy.hook': { mode: 'many', methods: ['onTurn'] } })
+    }
+  })
+
+  it('合法 slots（拥有方声明契约）解析通过', () => {
+    const result = parsePluginDecl(
+      baseDecl({ slots: { 'toy.hook': { methods: ['onTurn', 'onEnd'] } } }),
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.decl.slots).toEqual({ 'toy.hook': { methods: ['onTurn', 'onEnd'] } })
+    }
+  })
+
+  it('needs / slots 非对象（数组 / null / 字符串 / 数字）→ ok:false', () => {
+    for (const bad of [[], null, 'x', 1]) {
+      expect(parsePluginDecl(baseDecl({ needs: bad })).ok, `needs=${JSON.stringify(bad)}`).toBe(
+        false,
+      )
+      expect(parsePluginDecl(baseDecl({ slots: bad })).ok, `slots=${JSON.stringify(bad)}`).toBe(
+        false,
+      )
+    }
+  })
+
+  it('needs / slots 条目非对象 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': 'one' } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': null } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': ['m'] } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': 1 } })).ok).toBe(false)
+  })
+
+  it('needs / slots 条目未知字段 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'one', extra: 1 } } })).ok).toBe(
+      false,
+    )
+    expect(
+      parsePluginDecl(baseDecl({ slots: { 'toy.cap': { methods: ['m'], extra: 1 } } })).ok,
+    ).toBe(false)
+  })
+
+  it('键为空 / 原型键 / 保留名 host → ok:false', () => {
+    for (const cap of ['', '__proto__', 'constructor', 'prototype', 'host']) {
+      expect(
+        parsePluginDecl(baseDecl({ needs: { [cap]: { mode: 'one' } } })).ok,
+        `needs 键 ${cap}`,
+      ).toBe(false)
+      expect(
+        parsePluginDecl(baseDecl({ slots: { [cap]: { methods: ['m'] } } })).ok,
+        `slots 键 ${cap}`,
+      ).toBe(false)
+    }
+  })
+
+  it('needs 键与 pins / implements / methods 键冲突 → ok:false', () => {
+    expect(
+      parsePluginDecl(baseDecl({ pins: { 'toy.x': 'dep' }, needs: { 'toy.x': { mode: 'one' } } }))
+        .ok,
+    ).toBe(false)
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.echo': { mode: 'one' } } })).ok).toBe(false)
+    expect(
+      parsePluginDecl(
+        baseDecl({ methods: { 'toy.extra': ['m'] }, needs: { 'toy.extra': { mode: 'one' } } }),
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('slots 键与 pins 键冲突 → ok:false', () => {
+    expect(
+      parsePluginDecl(
+        baseDecl({ pins: { 'toy.x': 'dep' }, slots: { 'toy.x': { methods: ['m'] } } }),
+      ).ok,
+    ).toBe(false)
+  })
+
+  it('mode 缺省 / 非 one|many → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': {} } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'some' } } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: '' } } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 1 } } })).ok).toBe(false)
+  })
+
+  it('needs.methods 给定时须非空、全字符串、无重复', () => {
+    expect(
+      parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many', methods: [] } } })).ok,
+    ).toBe(false)
+    expect(
+      parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many', methods: ['a', 1] } } })).ok,
+    ).toBe(false)
+    expect(
+      parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many', methods: ['a', 'a'] } } })).ok,
+    ).toBe(false)
+    expect(
+      parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many', methods: ['a', 'b'] } } })).ok,
+    ).toBe(true)
+  })
+
+  it('slots.methods 缺失 / 空 / 全字符串以外 / 重复 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': {} } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': { methods: [] } } })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': { methods: ['a', 1] } } })).ok).toBe(
+      false,
+    )
+    expect(parsePluginDecl(baseDecl({ slots: { 'toy.cap': { methods: ['a', 'a'] } } })).ok).toBe(
+      false,
+    )
+  })
+
+  it('methods[cap] 与 slots[cap].methods 同给：同集合通过，不一致拒', () => {
+    const same = parsePluginDecl(
+      baseDecl({
+        methods: { 'toy.cap': ['a', 'b'] },
+        slots: { 'toy.cap': { methods: ['b', 'a'] } },
+      }),
+    )
+    expect(same.ok).toBe(true)
+
+    const missing = parsePluginDecl(
+      baseDecl({
+        methods: { 'toy.cap': ['a'] },
+        slots: { 'toy.cap': { methods: ['a', 'b'] } },
+      }),
+    )
+    expect(missing.ok).toBe(false)
+  })
+
+  it('拥有方 implements 自身 slots → 允许', () => {
+    const result = parsePluginDecl(
+      baseDecl({ implements: ['toy.cap'], methods: {}, slots: { 'toy.cap': { methods: ['m'] } } }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it('needs 与自身 slots 同键：mode many 通过，mode one 拒', () => {
+    const many = parsePluginDecl(
+      baseDecl({
+        slots: { 'toy.cap': { methods: ['m'] } },
+        needs: { 'toy.cap': { mode: 'many' } },
+      }),
+    )
+    expect(many.ok).toBe(true)
+
+    const one = parsePluginDecl(
+      baseDecl({ slots: { 'toy.cap': { methods: ['m'] } }, needs: { 'toy.cap': { mode: 'one' } } }),
+    )
+    expect(one.ok).toBe(false)
+  })
+
+  it('many 无 methods 且无本包 slots 契约 → decl 层放行（契约可能在他方，入世期判定）', () => {
+    const result = parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many' } } }))
+    expect(result.ok).toBe(true)
+  })
+})

@@ -20,6 +20,10 @@ export interface ValidatePackageReport {
   errors: ValidateError[]
   /** 候选树规范化后的 commit 哈希；`planPack` 未通过（任何原因）时为 null。 */
   result_hash: string | null
+  /** `one` 绑定（cap → 提供方身份名）；`planPack` 未通过时为 null。 */
+  needs: Record<string, string> | null
+  /** 声明的 `pins`（包内名 → 身份名）；`planPack` 未通过时为 null。 */
+  pins: Record<string, string> | null
 }
 
 export type ValidatePackageOutcome =
@@ -88,12 +92,20 @@ export function validatePackage(
           ok: false,
           errors: plan.reasons.map(errorOf),
           result_hash: null,
+          needs: null,
+          pins: null,
         },
       }
     }
     return {
       accepted: true,
-      report: { ok: true, errors: [], result_hash: plan.plan.commitHash },
+      report: {
+        ok: true,
+        errors: [],
+        result_hash: plan.plan.commitHash,
+        needs: plan.plan.needs,
+        pins: plan.plan.pins,
+      },
     }
   } catch (err) {
     return {
@@ -108,6 +120,8 @@ export function validatePackage(
           },
         ],
         result_hash: null,
+        needs: null,
+        pins: null,
       },
     }
   } finally {

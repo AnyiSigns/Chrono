@@ -1,7 +1,8 @@
 // 候选源码树 → 世界写计划的纯构造：blob / tree / commit 三层 def 与宿主入世（planPack）
 // 逐字节同构，write 计划才可能与 validate 的 result_hash 对上。
 // 形状以 kernel §四 为准：blob = `{body}`（非文本加 `enc:'base64'`）；tree = `{body:{entries}}`；
-// commit = `{body:{tree, meta:{name,version}}}`；批内用 `{"$n":k}` 指向更早的 put（规矩 A）。
+// commit = `{body:{tree, meta:{name,version,needs?}}}`；批内用 `{"$n":k}` 指向更早的 put（规矩 A）。
+// `meta.needs` 与宿主入世同口径：只在有 `one` 绑定时写，值 = cap → 提供方身份名。
 // 排除口径与宿主一致：通用排除 node_modules / .git + 候选包内 `.worldignore` 声明项。
 
 import { H } from './hash.ts'
@@ -250,13 +251,21 @@ function packDir(node: DirNode, ops: Json[], blobs: Map<string, Buffer>): DirPac
 /**
  * 构造 put(blob)×n + put(tree) + put(commit) + put(schema) 子操作序列与真实 commit 哈希。
  * `identity` 必须等于候选 `plugin.json.identity`（调用方先校验）。
+ * `needs` 是宿主解析出的 `one` 绑定（cap → 身份名），并入 `meta.needs` 后 commit 哈希才与校验口径一致。
  */
-export function buildPackOps(files: Rec, identity: string, decl: CandidateDecl): PackOps {
+export function buildPackOps(
+  files: Rec,
+  identity: string,
+  decl: CandidateDecl,
+  needs: Record<string, string>,
+): PackOps {
   const root = buildTree(files)
   const ops: Json[] = []
   const blobs = new Map<string, Buffer>()
   const packed = packDir(root, ops, blobs)
   const meta: Rec = { name: identity, version: decl.version }
+  // 只在有绑定时写：无 need 的包 commit 哈希不变
+  if (Object.keys(needs).length > 0) meta['needs'] = needs
   const commitHash = H({ body: { tree: packed.hash, meta } })
   const commitIndex = ops.length
   ops.push({ op: 'put', args: { body: { tree: { $n: packed.index }, meta } } })

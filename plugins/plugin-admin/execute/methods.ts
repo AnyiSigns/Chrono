@@ -6,7 +6,7 @@ import { BadArgsError } from 'plugin-sdk'
 import { resolveLimits } from './config.ts'
 import { parseIdentities } from './host.ts'
 import { candidateKey, buildPackOps, measureFiles, parseCandidateDecl } from './pack.ts'
-import { isRecord, nowOf, planOf } from './plan.ts'
+import { isRecord, nowOf, planOf, stringMap } from './plan.ts'
 import { clearValidateCache, readValidateCache, writeValidateCache } from './state.ts'
 import { describeValue } from './tools.ts'
 import { isHidden } from './visibility.ts'
@@ -69,7 +69,7 @@ async function readTool(host: HostCaller, args: Rec, _env: CallEnv): Promise<Jso
   return result.value
 }
 
-/** `plugin.validate`：转发宿主 dry-run，并把 result_hash 写入 ③（键 = 候选树规范化哈希）。 */
+/** `plugin.validate`：转发宿主 dry-run，并把 result_hash 与解析出的 needs 写入 ③（键 = 候选树规范化哈希）。 */
 async function validateTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Json> {
   const identity = requireString(args, 'identity')
   const files = requireFiles(args)
@@ -81,16 +81,20 @@ async function validateTool(host: HostCaller, args: Rec, env: CallEnv): Promise<
   const ok = report['ok'] === true
   const errors = Array.isArray(report['errors']) ? (report['errors'] as Json[]) : []
   const resultHash = typeof report['result_hash'] === 'string' ? report['result_hash'] : null
+  const needs = stringMap(report['needs'])
   const key = candidateKey(files)
   if (resultHash !== null) {
-    writeValidateCache(key, { identity, result_hash: resultHash, at: nowOf(env) })
+    writeValidateCache(key, { identity, result_hash: resultHash, at: nowOf(env), needs })
   } else {
     clearValidateCache(key)
   }
   return { ok, errors, result_hash: resultHash, candidate_hash: key }
 }
 
-/** 解析候选 plugin.json 的 pins：`host` 保留字面量，其余解析到被依赖身份 active 世代。 */
+/**
+ * 校验候选 `plugin.json` 的 pins：`host` 保留字面量，其余值即被依赖身份名（原样透传，不解析成哈希——
+ * 宿主在落账段按身份名解析）。缺失 / 未激活的身份仍在此早退报 `unresolved_pin`，给作者及时反馈。
+ */
 function resolvePins(
   declared: Record<string, string>,
   identities: IdentityInfo[],
@@ -103,10 +107,10 @@ function resolvePins(
       continue
     }
     const dep = byId.get(depId)
-    if (dep === undefined || typeof dep.active !== 'string') {
+    if (dep === undefined || dep.active === null) {
       throw new ToolError('unresolved_pin', depId)
     }
-    pins[name] = dep.active
+    pins[name] = depId
   }
   return pins
 }
@@ -135,7 +139,7 @@ async function writeTool(host: HostCaller, args: Rec, _env: CallEnv): Promise<Js
   if (decl.identity !== identity) {
     throw new ToolError('identity_mismatch', `${identity} != ${decl.identity}`)
   }
-  const built = buildPackOps(files, decl.identity, decl)
+  const built = buildPackOps(files, decl.identity, decl, cached.needs)
   if (built.commitHash !== cached.result_hash) {
     clearValidateCache(key)
     throw new ToolError('validate_required', 'commit hash mismatch')

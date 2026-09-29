@@ -1,0 +1,8 @@
+{
+  "name": "capslot-many-c",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：capslot.many 后加入的第三个提供方",
+  "engines": { "node": ">=24" }
+}
