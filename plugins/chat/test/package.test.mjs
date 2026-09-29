@@ -29,6 +29,7 @@ const DECL_FIELDS = [
   'methods',
   'concurrent_methods',
   'pins',
+  'needs',
   'start',
   'build',
   'protocol',
@@ -39,7 +40,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
+test('plugin.json 15 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'chat')
@@ -47,20 +48,20 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['chat'])
   assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume', 'cancel'] })
   assert.deepEqual(decl.concurrent_methods, ['send', 'resume', 'history', 'cancel'])
-  assert.deepEqual(decl.pins, {
-    session: 'session',
-    input: 'input',
-    model: 'model-protocol',
-    context: 'context-window',
-    'session-title': 'session-title',
-    'loop-policy': 'loop-policy',
-    'short-memory': 'short-memory',
-    todo: 'todo',
-    config: 'config',
-    mcp: 'mcp',
-    workspace: 'workspace',
-    skill: 'skill',
-    host: 'host',
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, {
+    session: { mode: 'one' },
+    input: { mode: 'one' },
+    model: { mode: 'one' },
+    context: { mode: 'one' },
+    'session-title': { mode: 'one' },
+    'loop-policy': { mode: 'one' },
+    'short-memory': { mode: 'one' },
+    todo: { mode: 'one' },
+    config: { mode: 'one' },
+    mcp: { mode: 'one' },
+    workspace: { mode: 'one' },
+    skill: { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
@@ -72,9 +73,9 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   ])
 })
 
-test('pins 含 loop-policy（#33 替换管道）', () => {
+test('needs 含 loop-policy（#33 替换管道）', () => {
   const decl = readJson('plugin.json')
-  assert.equal(decl.pins['loop-policy'], 'loop-policy')
+  assert.deepEqual(decl.needs['loop-policy'], { mode: 'one' })
 })
 
 test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel 且入口正确', () => {

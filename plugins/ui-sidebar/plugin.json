@@ -20,10 +20,12 @@
     ]
   },
   "pins": {
-    "session": "session",
-    "workspace": "workspace",
-    "input": "input",
     "host": "host"
+  },
+  "needs": {
+    "session": { "mode": "one" },
+    "workspace": { "mode": "one" },
+    "input": { "mode": "one" }
   },
   "start": "node execute/main.js",
   "build": [

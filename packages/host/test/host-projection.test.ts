@@ -11,7 +11,7 @@ import { loadAnchor, readJournal } from '../ledger/index.ts'
 import { worldRev } from '../../kernel/index.ts'
 import type { Directive, Json } from '../../kernel/index.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
-import { FIXTURE_ALPHA, writeTempPackage } from './test-helpers-ext.ts'
+import { FIXTURE_ALPHA, FIXTURE_BETA, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 
 const READ_HEAD: Json = ['g', ['head', 'seq']]
@@ -23,6 +23,8 @@ const READ_MARKER: Json = ['g', ['marker']]
 const READ_GHOST: Json = ['g', ['ids', 'ghost', 'body']]
 const READ_ADOPTED: Json = ['g', ['ids', 'toy-alpha', 'gens', 0, 'adopted']]
 const READ_PINS: Json = ['g', ['ids', 'toy-caller', 'pins']]
+const READ_NEEDER_PINS: Json = ['g', ['ids', 'toy-needer', 'pins']]
+const READ_BOTH_PINS: Json = ['g', ['ids', 'toy-both', 'pins']]
 
 describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
   let root: string
@@ -67,6 +69,8 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
         { name: 'toy-caller.adopted', entry: 'terms/adopted.json' },
         { name: 'toy-caller.probe', entry: 'terms/probe.json' },
         { name: 'toy-caller.plan', entry: 'terms/plan.json' },
+        { name: 'toy-caller.needer-pins', entry: 'terms/needer-pins.json' },
+        { name: 'toy-caller.both-pins', entry: 'terms/both-pins.json' },
       ],
       terms: {
         'head.json': JSON.stringify(READ_HEAD),
@@ -78,6 +82,8 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
         'ghost.json': JSON.stringify(READ_GHOST),
         'adopted.json': JSON.stringify(READ_ADOPTED),
         'pins.json': JSON.stringify(READ_PINS),
+        'needer-pins.json': JSON.stringify(READ_NEEDER_PINS),
+        'both-pins.json': JSON.stringify(READ_BOTH_PINS),
         'probe.json': JSON.stringify(READ_ACTIVE),
         'plan.json': JSON.stringify([
           'c',
@@ -85,9 +91,23 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
         ]),
       },
     })
+    const needer = writeTempPackage(root, {
+      identity: 'toy-needer',
+      start: '',
+      needs: { 'toy.beta': { mode: 'one' } },
+    })
+    const both = writeTempPackage(root, {
+      identity: 'toy-both',
+      start: '',
+      pins: { 'toy.alpha': 'toy-alpha' },
+      needs: { 'toy.beta': { mode: 'one' } },
+    })
     const report = runSeed(root, [
       { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
       { name: 'toy-caller', path: caller },
+      { name: 'toy-needer', path: needer },
+      { name: 'toy-both', path: both },
     ])
     expect(report.ok).toBe(true)
   }
@@ -238,5 +258,29 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
       client.close()
     }
     expect(readJournal(journalFile())).toHaveLength(before)
+  })
+
+  it('投影 pins 并入 one-needs：声明 pins ∪ one 绑定', async () => {
+    seedDefault()
+    await start()
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      // 仅 one 需求（声明 pins 为空）：pins 只含该绑定
+      const needer = await client.command('toy-caller.needer-pins')
+      expect(needer.status).toBe('done')
+      expect((needer.observations[0] as { value: Json }).value).toEqual({
+        'toy.beta': 'toy-beta',
+      })
+
+      // 声明 pins ∪ one 需求：两键并集
+      const both = await client.command('toy-caller.both-pins')
+      expect(both.status).toBe('done')
+      expect((both.observations[0] as { value: Json }).value).toEqual({
+        'toy.alpha': 'toy-alpha',
+        'toy.beta': 'toy-beta',
+      })
+    } finally {
+      client.close()
+    }
   })
 })

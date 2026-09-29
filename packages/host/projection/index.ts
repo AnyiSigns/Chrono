@@ -6,7 +6,7 @@
 // 深层 def body 由消费方经只读解析能力（宿主 `host.def.read`）按需取回。
 
 import { assembleBody, readPatchOps, worldRev } from '../../kernel/index.ts'
-import { latestDataGen, readPluginDecl } from '../assembly/index.ts'
+import { effectivePins, latestDataGen } from '../assembly/index.ts'
 import { isSha256Hex } from '../common/cas.ts'
 import { PROTOTYPE_KEYS, isRecord } from '../common/json.ts'
 import type { Gen, Hash, Head, Json, World } from '../../kernel/index.ts'
@@ -166,8 +166,9 @@ export interface ProjectionOptions {
  * `body` 口径（G7 A1）= **最近数据世代的组装结果**（整份世代取 payload def body；补丁世代取 base 世代组装后按序应用补丁）；
  * 无数据世代则回落 active（代码 / commit）def body；`active` / `gens` 保持链上原义。
  * `data_gen` = 组装来源世代 `{seq, payload}`（无数据世代 / 组装失败为 null）；写方据此把下一世代写成
- * 补丁世代（`add_gen` 携带 `base = data_gen.seq`）。`pins` = 当前代码世代声明里的 `pins` 表（名 → 被依赖身份名，
- * 机械来自声明，供调用方入口 term 判「端口 ⊆ pins」）；无代码世代则 null。
+ * 补丁世代（`add_gen` 携带 `base = data_gen.seq`）。`pins` = 当前代码世代声明的 `pins` 表 ∪ 该世代
+ * `commit.body.meta.needs` 的 `one` 绑定（名 → 被依赖身份名；声明 `pins` 优先，`many` 无单值绑定、不并入），
+ * 机械来自声明与入世解析，供调用方入口 term 判「端口 ⊆ pins」与运行期读自身 `pins` 的插件；无代码世代则 null。
  * `refs` = body 里 `{"def":hash}` 标记直接出现的哈希列表（只回引用、不回 body；全量无截断，`cap` 仅硬上限）。
  * 只读是宿主纪律：不写链、不推进 head、不参与哈希。
  * @param world 基础世界（v1 = 宿主当前世界）
@@ -187,14 +188,15 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
     const body = assembleIdentityBody(world, id)
     const dataGenView: Json | null =
       dataGen !== null && body !== null ? { seq: dataGen.seq, payload: dataGen.payload } : null
-    // pins = 当前代码世代声明里的表（逻辑端点名 → 被依赖身份名字面值）；无代码世代 → null
-    const decl = readPluginDecl(world, id, options?.blobsDir)
+    // pins = 当前代码世代声明的表 ∪ 该世代 `one` 绑定的并集（逻辑端点名 → 被依赖身份名字面值）。
+    // 口径与宿主注入服务工厂上下文的有效 pins 同源（`effectivePins`）；无代码世代 → null。
+    const pins: Json = effectivePins(world, id, options?.blobsDir)
     ids[id] = {
       active,
       gens: identity.gens.map((gen) => ({ seq: gen.seq, payload: gen.payload })),
       body,
       data_gen: dataGenView,
-      pins: decl === null ? null : decl.decl.pins,
+      pins,
       refs: body === null ? [] : collectRefHashes(body, cap),
       next_before: null,
     }

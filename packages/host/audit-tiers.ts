@@ -47,10 +47,11 @@ function tiersOfSchema(schemaDef: Def): Map<string, AuditTierBudget> {
 
 /**
  * 解析某能力类的审计保留预算：扫全部 active 身份的 `schema` 声明，返回首个命中。
+ * 遍历按身份名**字典序**（与 `many` 成员 / fan-out 同序，保证多提供方时首命中确定）；
  * retired（`active=null`）身份跳过；无声明返回 `undefined`（调用方归 default 档）。
  */
 export function resolveAuditTier(world: World, port: string): AuditTierBudget | undefined {
-  for (const identity of Object.keys(world.ids)) {
+  for (const identity of Object.keys(world.ids).sort()) {
     const record = world.ids[identity]
     if (record.active === null) continue
     const schemaDef = world.defs[record.schema]

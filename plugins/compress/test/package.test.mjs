@@ -14,6 +14,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'needs',
   'pins',
   'start',
   'build',
@@ -32,7 +33,11 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/compress.json')
   assert.deepEqual(decl.implements, ['compress'])
   assert.deepEqual(decl.methods, { compress: ['summarize', 'compact', 'extract'] })
-  assert.deepEqual(decl.pins, { model: 'model-protocol', embedding: 'embedding', 'short-memory': 'short-memory' })
+  assert.deepEqual(decl.needs, {
+    model: { mode: 'one' },
+    embedding: { mode: 'one' },
+    'short-memory': { mode: 'one' },
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

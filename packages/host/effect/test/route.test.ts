@@ -467,6 +467,20 @@ describe('A1 路由 createRoundRouter', () => {
       ).toEqual({ ok: false, error: 'stale' })
     })
 
+    it('绑定提供方休眠（世界 active 不变、端点行已摘除）→ not_loaded', () => {
+      // 休眠 = 保留索引的运行期隔离：世界层 active 未变，仅端点行缺席，故按名绑定解析得 not_loaded。
+      const caller = commitWithMeta(CALLER_DECL, { version: 1, needs: { 'toy.echo': 'dep' } })
+      const world = callerWorld(caller.payload, caller.defs)
+      expect(
+        createRoundRouter({ endpoints: new EndpointTable() }).resolve(
+          world,
+          'caller',
+          'toy.echo',
+          'echo',
+        ),
+      ).toEqual({ ok: false, error: 'not_loaded' })
+    })
+
     it('绑定提供方不声明该能力类 → not_loaded', () => {
       const altDecl: Json = { ...(DECL as Record<string, Json>), implements: ['other.cap'] }
       const alt = commitOf(altDecl, 2)

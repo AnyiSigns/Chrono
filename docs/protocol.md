@@ -85,7 +85,7 @@
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins` ∪ `one`-needs（`needs.mode:"one"` 的能力类，经 needs 分支解析）；`many` **不经反向调用**（`resolve` 看不到 needs 键 → `unresolved_cap`）；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
+- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`identities.suspend { id }` / `identities.resume { id }`（运行期休眠 / 恢复：保留索引、停服务摘端点、不连坐依赖者；休眠态不持久）、`source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 

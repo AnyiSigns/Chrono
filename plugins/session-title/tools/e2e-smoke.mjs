@@ -222,7 +222,7 @@ async function main() {
     }
     assert.deepEqual(
       projection.ids['session-title'].pins,
-      { model: 'model-protocol', session: 'session' },
+      { model: 'model-protocol' },
       'session-title pins 应解析为身份名',
     )
     console.log('离线投影：四身份在册，session-title pins 解析通过')

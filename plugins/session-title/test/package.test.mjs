@@ -25,6 +25,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'needs',
   'pins',
   'start',
   'build',
@@ -43,7 +44,7 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/title.json')
   assert.deepEqual(decl.implements, ['session-title'])
   assert.deepEqual(decl.methods, { 'session-title': ['generate'] })
-  assert.deepEqual(decl.pins, { model: 'model-protocol' })
+  assert.deepEqual(decl.needs, { model: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

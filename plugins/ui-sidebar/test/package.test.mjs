@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、pins 两条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 三条、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值、
 // 叶子纯模块零 react import、构建声明与客户端半边契约。
 import { test } from 'node:test'
@@ -47,7 +47,7 @@ const COMMAND_NAMES = [
 test('plugin.json 省略 schema 且其余字段齐全（含 build、无 exclusive）', () => {
   const decl = readJson('plugin.json')
   assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  const expected = ['identity', 'implements', 'methods', 'pins', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
+  const expected = ['identity', 'implements', 'methods', 'pins', 'needs', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
   assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
   assert.equal(Object.hasOwn(decl, 'exclusive'), false, 'HTTP 面作废后不得再声明独占端口')
   assert.equal(decl.identity, 'ui-sidebar')
@@ -75,11 +75,16 @@ test('构建声明：npm ci + esbuild 打包脚本，令牌过白名单且不含
   assert.match(script, /dist\/entry\.js/, '构建脚本产物应为 dist/entry.js')
 })
 
-test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；pins 三条（session / workspace / input）', () => {
+test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；needs 三条（session / workspace / input）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-sidebar'])
   assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES })
-  assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace', input: 'input', host: 'host' })
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, {
+    session: { mode: 'one' },
+    workspace: { mode: 'one' },
+    input: { mode: 'one' },
+  })
 })
 
 test('members = execute + term；命令入口 term 全部存在且形状为 eff 到本插件能力类', () => {

@@ -26,13 +26,13 @@ test('tools/default-body.json：记忆工具绑定齐备且形状合规', () => 
   const bindings = body.bindings
   assert.deepEqual(Object.keys(bindings).sort(), Object.keys(EXPECTED).sort())
 
-  const pins = readJson('plugin.json').pins
+  const needs = readJson('plugin.json').needs
   for (const [name, expected] of Object.entries(EXPECTED)) {
     const item = bindings[name]
     assert.equal(item.class, expected.class, `${name}.class`)
     assert.equal(item.method, expected.method, `${name}.method`)
     assert.equal(item.idempotent, expected.idempotent, `${name}.idempotent`)
-    assert.ok(Object.hasOwn(pins, item.class), `${name}.class ${item.class} 必须是本插件 pin 的逻辑端点`)
+    assert.ok(Object.hasOwn(needs, item.class), `${name}.class ${item.class} 必须是本插件 needs 的能力类`)
     for (const key of ['intent', 'when_to_use', 'boundaries']) {
       assert.equal(typeof item[key], 'string', `${name}.${key}`)
       assert.ok(item[key].trim().length > 0, `${name}.${key} 非空`)
@@ -42,15 +42,15 @@ test('tools/default-body.json：记忆工具绑定齐备且形状合规', () => 
   }
 })
 
-test('tools/default-body.json：检索绑定就位（class retrieval → pin memory-retrieval）', () => {
+test('tools/default-body.json：检索绑定就位（class retrieval → needs.retrieval）', () => {
   const body = readJson('tools/default-body.json')
-  const pins = readJson('plugin.json').pins
+  const needs = readJson('plugin.json').needs
   const item = body.bindings['retrieval.search']
   assert.ok(item, '默认绑定表须含 retrieval.search')
   assert.equal(item.class, 'retrieval')
   assert.equal(item.method, 'search')
   assert.equal(item.idempotent, true)
-  assert.equal(pins[item.class], 'memory-retrieval', 'retrieval 能力类须 pin memory-retrieval')
+  assert.equal(needs['retrieval']?.mode, 'one', 'retrieval 能力类须 needs.one')
 })
 
 test('默认绑定表进目录：list 无拒绝，记忆工具可派发', async () => {

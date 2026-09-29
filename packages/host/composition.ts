@@ -309,6 +309,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
         audits,
         registry,
         getRouter: () => router,
+        getRuntime: () => runtime,
         routerReady,
         liveWorld: follow.liveWorld,
         isStopping: () => stopping,

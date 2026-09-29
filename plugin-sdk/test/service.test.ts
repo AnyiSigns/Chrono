@@ -1,11 +1,11 @@
 // 服务派发器：manifest 派生、能力 / 方法 / args 门禁、错误映射、事件、env 解析与拦截。
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createService } from '../service.ts'
+import { createService, pinsFromProcess } from '../service.ts'
 import { PortLink } from '../port-link.ts'
 import { BadArgsError, ServiceError } from '../types.ts'
 import type { Json, Rec } from '../json.ts'
@@ -271,11 +271,13 @@ describe('服务派发器', () => {
       instance.receive({ v: '1', id: 'c2', kind: 'call', port: 'alpha', method: 'b', args: {} })
       instance.receive({ v: '1', id: 'c3', kind: 'call', port: 'beta', method: 'a', args: {} })
       await new Promise((resolve) => setTimeout(resolve, 10))
-      expect(sent.map((message) => [message['kind'], message['value'] ?? message['code']])).toEqual([
-        ['result', 'b'],
-        ['error', 'unknown_method'],
-        ['error', 'unknown_method'],
-      ])
+      expect(sent.map((message) => [message['kind'], message['value'] ?? message['code']])).toEqual(
+        [
+          ['result', 'b'],
+          ['error', 'unknown_method'],
+          ['error', 'unknown_method'],
+        ],
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -335,5 +337,34 @@ describe('服务派发器', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('有效 pins：stdio spawn env 解析', () => {
+  const KEY = 'CHRONO_PLUGIN_PINS'
+  const saved = process.env[KEY]
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY]
+    else process.env[KEY] = saved
+  })
+
+  it('有效 JSON 映射 → 原样解析', () => {
+    process.env[KEY] = JSON.stringify({ title: 'provider', host: 'host' })
+    expect(pinsFromProcess()).toEqual({ title: 'provider', host: 'host' })
+  })
+
+  it('未注入 → undefined', () => {
+    delete process.env[KEY]
+    expect(pinsFromProcess()).toBeUndefined()
+  })
+
+  it('坏 JSON / 非字符串映射 → undefined，不抛', () => {
+    process.env[KEY] = '{not json'
+    expect(pinsFromProcess()).toBeUndefined()
+    process.env[KEY] = JSON.stringify({ title: 1 })
+    expect(pinsFromProcess()).toBeUndefined()
+    process.env[KEY] = JSON.stringify('nope')
+    expect(pinsFromProcess()).toBeUndefined()
   })
 })

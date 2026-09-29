@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、无 pins、命令入口 term 形状、build 声明、
+// 包形状测试：零 schema、members = execute + term、needs 声明 session / todo、命令入口 term 形状、build 声明、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 
 import { test } from 'node:test'
@@ -19,6 +19,7 @@ test('plugin.json 省略 schema、无 exclusive、其余字段齐全', () => {
     'identity',
     'implements',
     'methods',
+    'needs',
     'pins',
     'start',
     'build',
@@ -36,11 +37,11 @@ test('plugin.json 省略 schema、无 exclusive、其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-threads（ping + threads.state + client.read）；pins = session / todo owner', () => {
+test('能力类为 ui-threads（ping + threads.state + client.read）；needs = session / todo owner', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-threads'])
   assert.deepEqual(decl.methods, { 'ui-threads': ['ping', 'threads.state', 'client.read'] })
-  assert.deepEqual(decl.pins, { session: 'session', todo: 'todo' })
+  assert.deepEqual(decl.needs, { session: { mode: 'one' }, todo: { mode: 'one' } })
 })
 
 test('members = execute + term；命令入口 term 存在且只读、无参声明', () => {

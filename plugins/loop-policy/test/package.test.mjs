@@ -21,23 +21,23 @@ function listFiles(dir) {
   return out
 }
 
-test('plugin.json：identity / implements / methods / pins / start / members / commands', () => {
+test('plugin.json：identity / implements / methods / pins / needs / start / members / commands', () => {
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'loop-policy')
   assert.deepEqual(plugin.implements, ['loop-policy'])
   assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel'])
-  assert.deepEqual(plugin.pins, {
-    session: 'session',
-    model: 'model-protocol',
-    context: 'context-window',
-    retrieval: 'memory-retrieval',
-    compress: 'compress',
-    guard: 'guard',
-    approval: 'approval',
-    tools: 'tools',
-    router: 'router',
-    'evolve-metrics': 'evolve-metrics',
-    host: 'host',
+  assert.deepEqual(plugin.pins, { host: 'host' })
+  assert.deepEqual(plugin.needs, {
+    session: { mode: 'one' },
+    model: { mode: 'one' },
+    context: { mode: 'one' },
+    retrieval: { mode: 'one' },
+    compress: { mode: 'one' },
+    guard: { mode: 'one' },
+    approval: { mode: 'one' },
+    tools: { mode: 'one' },
+    router: { mode: 'one' },
+    'evolve-metrics': { mode: 'one' },
   })
   assert.equal(plugin.start, 'node execute/main.ts')
   assert.equal(plugin.schema, 'schema/graph.json')

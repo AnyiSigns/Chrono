@@ -6,8 +6,10 @@
     "tool-http": ["describe", "invoke"]
   },
   "pins": {
-    "sandbox": "sandbox",
     "host": "host"
+  },
+  "needs": {
+    "sandbox": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

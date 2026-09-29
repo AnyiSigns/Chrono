@@ -4,9 +4,10 @@
   "methods": {
     "ui-threads": ["ping", "threads.state", "client.read"]
   },
-  "pins": {
-    "session": "session",
-    "todo": "todo"
+  "pins": {},
+  "needs": {
+    "session": { "mode": "one" },
+    "todo": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [

@@ -25,6 +25,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'needs',
   'pins',
   'start',
   'build',
@@ -45,12 +46,12 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.methods, {
     'memory-maintenance': ['consolidate', 'sweep', 'candidates', 'view', 'edit'],
   })
-  assert.deepEqual(decl.pins, {
-    compress: 'compress',
-    embedding: 'embedding',
-    memory: 'memory-store',
-    'short-memory': 'short-memory',
-    session: 'session',
+  assert.deepEqual(decl.needs, {
+    compress: { mode: 'one' },
+    embedding: { mode: 'one' },
+    memory: { mode: 'one' },
+    'short-memory': { mode: 'one' },
+    session: { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')

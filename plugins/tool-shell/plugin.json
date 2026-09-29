@@ -5,9 +5,10 @@
   "methods": {
     "tool-shell": ["describe", "invoke"]
   },
-  "pins": {
-    "secrets": "secrets",
-    "sandbox": "sandbox"
+  "pins": {},
+  "needs": {
+    "secrets": { "mode": "one" },
+    "sandbox": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -24,7 +24,7 @@ function makePackage(): string {
     JSON.stringify({
       identity: 'toy',
       implements: ['toy'],
-      methods: { toy: ['echo'] },
+      methods: { toy: ['echo', 'pins'] },
       protocol: '1',
       state: 'recomputable',
     }),
@@ -45,6 +45,7 @@ export function createService(ctx) {
     log: () => {},
     handlers: {
       echo: (args) => ({ value: { echo: args }, events: [] }),
+      pins: () => ({ value: { pins: ctx.pins ?? null }, events: [] }),
     },
   })
 }
@@ -65,7 +66,39 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<voi
 }
 
 describe('三形态接口', () => {
-  it('inproc：宿主 import 入口后经 createService 直调', async () => {
+  it('inproc：宿主 import 入口后经 createService 直调，ctx.pins 原样透传', async () => {
+    const dir = makePackage()
+    try {
+      const module = (await import(pathToFileURL(join(dir, 'execute', 'main.ts')).href)) as {
+        createService: (ctx: {
+          emit: (m: Json) => void
+          env: Record<string, string>
+          pins?: Record<string, string>
+        }) => {
+          receive: (m: Json) => void
+        }
+      }
+      const sent: Rec[] = []
+      const instance = module.createService({
+        emit: (m) => sent.push(m as Rec),
+        env: {},
+        pins: { title: 'provider' },
+      })
+      instance.receive({ id: 'h', kind: 'hello', impl: 'toy', gen: 'g' })
+      await waitFor(() => sent.length > 0, 2000)
+      expect(sent[0]['kind']).toBe('manifest')
+      expect(sent[0]['identity']).toBe('toy')
+
+      instance.receive({ v: '1', id: 'c', kind: 'call', port: 'toy', method: 'pins', args: {} })
+      await waitFor(() => sent.length > 1, 2000)
+      expect(sent[1]['kind']).toBe('result')
+      expect(sent[1]['value']).toEqual({ pins: { title: 'provider' } })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('inproc：未注入 pins 时 ctx.pins 缺席（回落 null，不抛）', async () => {
     const dir = makePackage()
     try {
       const module = (await import(pathToFileURL(join(dir, 'execute', 'main.ts')).href)) as {
@@ -77,17 +110,18 @@ describe('三形态接口', () => {
       const instance = module.createService({ emit: (m) => sent.push(m as Rec), env: {} })
       instance.receive({ id: 'h', kind: 'hello', impl: 'toy', gen: 'g' })
       await waitFor(() => sent.length > 0, 2000)
-      expect(sent[0]['kind']).toBe('manifest')
-      expect(sent[0]['identity']).toBe('toy')
+      instance.receive({ v: '1', id: 'c', kind: 'call', port: 'toy', method: 'pins', args: {} })
+      await waitFor(() => sent.length > 1, 2000)
+      expect(sent[1]['value']).toEqual({ pins: null })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('worker：宿主 worker 引导载入同一入口并回 manifest', async () => {
+  it('worker：宿主 worker 引导载入同一入口并回 manifest，ctx.pins 原样透传', async () => {
     const dir = makePackage()
     const worker = new Worker(WORKER_BOOTSTRAP, {
-      workerData: { entry: join(dir, 'execute', 'main.ts'), env: {} },
+      workerData: { entry: join(dir, 'execute', 'main.ts'), env: {}, pins: { title: 'provider' } },
     })
     try {
       const received: Rec[] = []
@@ -96,6 +130,10 @@ describe('三形态接口', () => {
       await waitFor(() => received.length > 0, 5000)
       expect(received[0]['kind']).toBe('manifest')
       expect(received[0]['identity']).toBe('toy')
+
+      worker.postMessage({ v: '1', id: 'c', kind: 'call', port: 'toy', method: 'pins', args: {} })
+      await waitFor(() => received.length > 1, 5000)
+      expect(received[1]['value']).toEqual({ pins: { title: 'provider' } })
     } finally {
       await worker.terminate()
       rmSync(dir, { recursive: true, force: true })

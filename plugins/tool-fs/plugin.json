@@ -6,8 +6,10 @@
     "tool-fs": ["describe", "invoke"]
   },
   "pins": {
-    "sandbox": "sandbox",
     "host": "host"
+  },
+  "needs": {
+    "sandbox": { "mode": "one" }
   },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],

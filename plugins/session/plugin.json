@@ -22,8 +22,9 @@
       "history"
     ]
   },
-  "pins": {
-    "input": "input"
+  "pins": {},
+  "needs": {
+    "input": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

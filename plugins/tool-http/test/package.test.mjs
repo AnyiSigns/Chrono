@@ -18,6 +18,7 @@ const DECL_FIELDS = [
   'implements',
   'methods',
   'pins',
+  'needs',
   'start',
   'build',
   'protocol',
@@ -35,7 +36,8 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/tool-http.json')
   assert.deepEqual(decl.implements, ['tool-http'])
   assert.deepEqual(decl.methods, { 'tool-http': ['describe', 'invoke'] })
-  assert.deepEqual(decl.pins, { sandbox: 'sandbox', host: 'host' })
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

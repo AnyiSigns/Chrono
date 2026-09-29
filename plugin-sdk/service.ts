@@ -23,6 +23,12 @@ export interface ServiceFactoryContext {
   emit: (message: Json) => void
   /** ③ / ④ 目录（只含已注入项）。 */
   env: Record<string, string>
+  /**
+   * 宿主注入的**有效 pins**（声明 `pins` ∪ 该身份代码世代的 `one`-needs 绑定）；未注入时缺席。
+   * stdio 由宿主经 spawn env `CHRONO_PLUGIN_PINS` 注入、SDK 从进程 env 解析；inproc / worker
+   * 由宿主经工厂 ctx 原样传入（SDK 不吞）。
+   */
+  pins?: Record<string, string>
 }
 
 export interface ServiceConfig {
@@ -88,6 +94,29 @@ export function loaderEnvFromProcess(): Record<string, string> {
     if (typeof value === 'string') env[key] = value
   }
   return env
+}
+
+/**
+ * 从 `process.env.CHRONO_PLUGIN_PINS` 解析宿主注入的有效 pins（stdio 形态）；
+ * 缺失 / 坏 JSON / 非字符串映射一律回落 `undefined`（不抛，服务可回落到本地声明）。
+ */
+export function pinsFromProcess(): Record<string, string> | undefined {
+  const raw = process.env['CHRONO_PLUGIN_PINS']
+  if (typeof raw !== 'string') return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(parsed)) return undefined
+  const out: Record<string, string> = {}
+  for (const key of Object.keys(parsed)) {
+    const value = parsed[key]
+    if (typeof value !== 'string') return undefined
+    out[key] = value
+  }
+  return out
 }
 
 /** 本模块是否被直接运行（stdio 形态）；被 import 时（inproc / worker）为 false。 */
@@ -312,7 +341,7 @@ export function runStdio(
     }
     writeFrame(message)
   }
-  instance = build({ emit, env: loaderEnvFromProcess() })
+  instance = build({ emit, env: loaderEnvFromProcess(), pins: pinsFromProcess() })
   const decoder = createFrameDecoder()
   process.stdin.on('data', (chunk: Buffer) => {
     // 坏 JSON 帧已被解码器消费，重试可继续解同块内剩余帧；超长帧未被消费，不可重试。

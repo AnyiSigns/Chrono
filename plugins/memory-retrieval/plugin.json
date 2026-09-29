@@ -5,10 +5,11 @@
   "methods": {
     "retrieval": ["search"]
   },
-  "pins": {
-    "embedding": "embedding",
-    "memory": "memory-store",
-    "model": "model-protocol"
+  "pins": {},
+  "needs": {
+    "embedding": { "mode": "one" },
+    "memory": { "mode": "one" },
+    "model": { "mode": "one" }
   },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],

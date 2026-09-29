@@ -227,6 +227,103 @@ describe('能力需求 needs：seed 排序', () => {
   })
 })
 
+describe('能力需求 needs：one 选择跳过休眠提供方', () => {
+  function seedProviders(root: string, ids: string[]): void {
+    const entries = ids.map((id) => {
+      const path = writeTempPackage(root, {
+        identity: id,
+        implements: ['title'],
+        methods: { title: ['get'] },
+      })
+      return { name: id, path }
+    })
+    expect(runSeed(root, entries).ok).toBe(true)
+  }
+
+  function consumerAt(root: string): string {
+    return writeTempPackage(root, {
+      identity: 'consumer',
+      needs: { title: { mode: 'one' } },
+    })
+  }
+
+  it('非休眠候选优先：休眠者被跳过，绑到非休眠提供方', () => {
+    const root = createTempRoot()
+    try {
+      seedProviders(root, ['a-prov', 'b-prov'])
+      const consumer = consumerAt(root)
+      const world = loadAnchor(JOURNAL(root)).world
+      const planned = planIngest(
+        world,
+        root,
+        { name: 'consumer', path: consumer },
+        new Set(['a-prov']),
+      )
+      expect(planned.ok).toBe(true)
+      if (planned.ok) expect(planned.plan.needs).toEqual({ title: 'b-prov' })
+    } finally {
+      cleanupTempRoot(root)
+    }
+  })
+
+  it('非休眠为空 → 回落到休眠者绑定（消费方仍入世，调用得 not_loaded）', () => {
+    const root = createTempRoot()
+    try {
+      seedProviders(root, ['only-prov'])
+      const consumer = consumerAt(root)
+      const world = loadAnchor(JOURNAL(root)).world
+      const planned = planIngest(
+        world,
+        root,
+        { name: 'consumer', path: consumer },
+        new Set(['only-prov']),
+      )
+      expect(planned.ok).toBe(true)
+      if (planned.ok) expect(planned.plan.needs).toEqual({ title: 'only-prov' })
+    } finally {
+      cleanupTempRoot(root)
+    }
+  })
+
+  it('过滤后 ≥2（非休眠）→ ambiguous_need，候选不含休眠者', () => {
+    const root = createTempRoot()
+    try {
+      seedProviders(root, ['a-prov', 'b-prov', 'c-prov'])
+      const consumer = consumerAt(root)
+      const world = loadAnchor(JOURNAL(root)).world
+      const planned = planIngest(
+        world,
+        root,
+        { name: 'consumer', path: consumer },
+        new Set(['a-prov']),
+      )
+      expect(planned.ok).toBe(false)
+      if (!planned.ok) expect(planned.reasons).toEqual(['ambiguous_need:title:b-prov,c-prov'])
+    } finally {
+      cleanupTempRoot(root)
+    }
+  })
+
+  it('非休眠为空而休眠 ≥2 → ambiguous_need，候选为休眠者', () => {
+    const root = createTempRoot()
+    try {
+      seedProviders(root, ['a-prov', 'b-prov'])
+      const consumer = consumerAt(root)
+      const world = loadAnchor(JOURNAL(root)).world
+      const planned = planIngest(
+        world,
+        root,
+        { name: 'consumer', path: consumer },
+        new Set(['a-prov', 'b-prov']),
+      )
+      expect(planned.ok).toBe(false)
+      if (!planned.ok) expect(planned.reasons).toEqual(['ambiguous_need:title:a-prov,b-prov'])
+    } finally {
+      cleanupTempRoot(root)
+    }
+  })
+})
+
 describe('validate_package 报告：needs / pins 出口', () => {
   function consumerFiles(needs: Record<string, unknown>): Record<string, string> {
     return {

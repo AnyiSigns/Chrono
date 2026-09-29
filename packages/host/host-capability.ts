@@ -1,5 +1,6 @@
-// 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / identities / source.read /
-// validate_package / thread.terminate / thread.resume。宿主不解释业务，只做机械路由与内容寻址。
+// 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / identities / identities.suspend /
+// identities.resume / source.read / validate_package / thread.terminate / thread.resume。
+// 宿主不解释业务，只做机械路由与内容寻址。
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
 import { latestDataGen, readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
@@ -7,6 +8,7 @@ import { getBlob, isBlobPointer, putBlob } from './blobs.ts'
 import { assembleIdentityBody, reachableDefHashes } from './projection/index.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
+import type { IdentitySuspendResult } from './host-methods.ts'
 import type { AuditQuery, AuditReport } from './audit.ts'
 import { parseAuditFilter } from './audit.ts'
 import { decodeBase64Strict, isSha256Hex } from './common/cas.ts'
@@ -41,6 +43,10 @@ export interface HostCapabilityDeps {
   ) => { ok: true; run: string } | { ok: false; code: 'too_many_runs' }
   /** 停机中：不再受理新 run。 */
   isStopping: () => boolean
+  /** 运行期休眠一个身份；缺省（未接线）按 `not_found`（不猜）。 */
+  suspendIdentity?: (id: string) => Promise<IdentitySuspendResult>
+  /** 运行期恢复一个身份；缺省（未接线）按 `not_found`（不猜）。 */
+  resumeIdentity?: (id: string) => Promise<IdentitySuspendResult>
 }
 
 function bad(code: string, message: string): EndpointCallResult {
@@ -286,6 +292,31 @@ function threadResumeCall(
   return { ok: true, value: { run: started.run } }
 }
 
+/** 读 `id` 参数；非字符串 / 空串按缺失处理（`not_found`）。 */
+function identityArg(args: Json): string | null {
+  const record = asRecord(args)
+  const id = record === null ? undefined : record['id']
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
+
+/** `identities.suspend { id }`：运行期休眠——停服务、摘端点、保留索引；幂等。 */
+async function suspendCall(deps: HostCapabilityDeps, args: Json): Promise<EndpointCallResult> {
+  const id = identityArg(args)
+  if (id === null || deps.suspendIdentity === undefined) return bad('not_found', 'suspend')
+  const result = await deps.suspendIdentity(id)
+  if (!result.ok) return bad(result.code, id)
+  return { ok: true, value: { ok: true } }
+}
+
+/** `identities.resume { id }`：运行期恢复——按当前代码世代重启；幂等。 */
+async function resumeCall(deps: HostCapabilityDeps, args: Json): Promise<EndpointCallResult> {
+  const id = identityArg(args)
+  if (id === null || deps.resumeIdentity === undefined) return bad('not_found', 'resume')
+  const result = await deps.resumeIdentity(id)
+  if (!result.ok) return bad(result.code, id)
+  return { ok: true, value: { ok: true } }
+}
+
 /** 组装宿主保留能力类派发器；方法集由 `HOST_METHODS` 固定，未知方法 fail-closed。 */
 export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCall {
   const defScopeCache = new Map<string, Set<Hash>>()
@@ -303,6 +334,10 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
         return defReadCall(deps, args, defScopeCache)
       case 'identities':
         return identitiesCall(deps)
+      case 'identities.suspend':
+        return suspendCall(deps, args)
+      case 'identities.resume':
+        return resumeCall(deps, args)
       case 'source.read':
         return sourceReadCall(deps, args)
       case 'thread.terminate':

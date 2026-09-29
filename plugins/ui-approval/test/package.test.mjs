@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、pins 一条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 两条（approval / input）、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值、
 // 客户端半边构建声明与类型门禁。
 import { test } from 'node:test'
@@ -20,6 +20,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'methods',
     'concurrent_methods',
     'pins',
+    'needs',
     'start',
     'build',
     'protocol',
@@ -54,13 +55,14 @@ test('build 声明：npm ci + node execute/build.mjs，args 不含 =（shell 安
   }
 })
 
-test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；pins = approval + 宿主解析', () => {
+test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；needs = approval / input', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-approval'])
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
-  assert.deepEqual(decl.pins, { approval: 'approval', input: 'input' })
+  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.needs, { approval: { mode: 'one' }, input: { mode: 'one' } })
 })
 
 test('并发安全声明只含纯只读方法：list / client.read；裁决与控制方法留在串行链', () => {

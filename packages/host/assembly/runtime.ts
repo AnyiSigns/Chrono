@@ -12,6 +12,7 @@ import { effectiveMethods } from './capability-index.ts'
 import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
+import type { IdentitySuspendResult } from '../host-methods.ts'
 import { classifyGenerationChange } from './generation.ts'
 import { launchService, prepareService, spawnService } from './service-launcher.ts'
 import type { PreparedService, ServiceLauncherDeps } from './service-launcher.ts'
@@ -92,6 +93,15 @@ export interface AssemblyRuntimeHandle {
   /** A6 换代跟随：链头推进后交新世界，宿主自身 active 换代 / 依赖退役在此落地。 */
   applyWorld: (world: World) => Promise<void>
   stop: () => Promise<void>
+  /**
+   * 运行期休眠一个身份（保留索引的运行期隔离）：停服务、摘端点，世界 `active` 不变、仍入能力索引。
+   * `not_found` = 身份不存在 / 无代码世代 / 已退役；已休眠再 suspend 幂等。
+   */
+  suspend: (id: string) => Promise<IdentitySuspendResult>
+  /** 运行期恢复一个身份：按其当前代码世代重启；未休眠再 resume 幂等。 */
+  resume: (id: string) => Promise<IdentitySuspendResult>
+  /** 当刻运行期休眠集（只读、内存态、不持久）：入世解析与 `one` 选择按它跳过休眠提供方。 */
+  suspendedIds: () => ReadonlySet<string>
 }
 
 export interface StartAssemblyOptions {
@@ -163,6 +173,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    */
   private readonly isolated = new Map<string, Hash | null>()
   private readonly loadedIds = new Set<string>()
+  /**
+   * 运行期休眠集（内存态、不持久）：休眠 = 保留索引的运行期隔离。
+   * 仍留在 `loadedIds`（`loaded()` 报 `service:false`）、世界 `active` 不变，仅停服务、摘端点。
+   */
+  private readonly suspended = new Set<string>()
   private readonly services = new Map<string, ServiceRuntime>()
   private readonly pendingRestarts = new Set<Promise<void>>()
   /** 换人序所需能力的闭包视图，交 `swap.ts` 用；不暴露运行时私有状态。 */
@@ -239,8 +254,11 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       const beforeCode =
         beforeIdentity === undefined ? null : (assemblyGen(prev, id)?.payload ?? null)
       const afterCode = assemblyGen(next, id)?.payload ?? null
-      // 代码世代变化才跟随；数据世代变化（beforeCode === afterCode）不动作
-      if (beforeCode !== afterCode || beforeActive === null) changed.push(id)
+      // 代码世代变化才跟随；数据世代变化（beforeCode === afterCode）不动作。
+      // 休眠身份跳过换代启动（不因换代 / 重新激活自动恢复），仅显式 `resume` 才重启。
+      if ((beforeCode !== afterCode || beforeActive === null) && !this.suspended.has(id)) {
+        changed.push(id)
+      }
     }
     try {
       for (const id of changed) await this.followGeneration(prev, next, id)
@@ -281,6 +299,71 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       if (gen !== null) out.push({ id, gen: gen.payload, service: this.services.has(id) })
     }
     return out
+  }
+
+  suspendedIds(): ReadonlySet<string> {
+    return this.suspended
+  }
+
+  /** 休眠 / 恢复的公共前置：身份不存在 / 无代码世代 / 已退役 → `not_found`。 */
+  private suspendable(id: string): IdentitySuspendResult {
+    const identity = this.world.ids[id]
+    if (identity === undefined || identity.active === null) return { ok: false, code: 'not_found' }
+    if (this.assemblyGenOf(id) === null) return { ok: false, code: 'not_found' }
+    return { ok: true }
+  }
+
+  /**
+   * 运行期休眠：停目标身份服务、摘目标端点，保留 `loadedIds`（`loaded()` 报 `service:false`）与能力索引。
+   * 不隔离目标、不连坐依赖者（绝不走 isolateBranch / isolateAll / retireBranch）；不换人、不碰数据目录。
+   */
+  async suspend(id: string): Promise<IdentitySuspendResult> {
+    const allowed = this.suspendable(id)
+    if (!allowed.ok) return allowed
+    if (this.suspended.has(id)) return { ok: true }
+    this.suspended.add(id)
+    await this.detachService(id)
+    this.record('dep', 'suspended', { impl: id })
+    return { ok: true }
+  }
+
+  /** 运行期恢复：按身份**当前代码世代**重启（与装配同路），清休眠标记并记 `dep.resumed`。 */
+  async resume(id: string): Promise<IdentitySuspendResult> {
+    const allowed = this.suspendable(id)
+    if (!allowed.ok) return allowed
+    if (!this.suspended.has(id)) return { ok: true }
+    this.suspended.delete(id)
+    this.record('dep', 'resumed', { impl: id })
+    await this.startIdentity(id)
+    this.noteRuntimeStart(id)
+    return { ok: true }
+  }
+
+  /**
+   * 摘除目标身份的在跑服务：停服务、清计时器、摘该身份全部端点、有界等退出。
+   * 只动目标自身，不隔离、不连坐、不移出 `loadedIds`（与 `isolateAll` 的差别仅在此）。
+   */
+  private async detachService(id: string): Promise<void> {
+    // 先摘端点：摘除立即生效，避免排空期间仍有调用落到目标服务
+    this.endpoints.removeIdentity(id)
+    const service = this.services.get(id)
+    if (service !== undefined) {
+      this.services.delete(id)
+      this.clearHealth(service)
+      this.clearRestart(service)
+      service.draining = true
+      if (!service.handledExit) {
+        service.handledExit = true
+        try {
+          await service.link.drain(service.restart.drainMs, service.restart.drainMs + 1_000)
+        } catch {
+          // 排空超时按强杀处理（停机 / 换代同规）
+        }
+        teardownService(service)
+        this.record('service', 'exit', { impl: id, gen: service.gen, reason: 'suspended' })
+        await waitForServiceExit(service, EXIT_WAIT_MS)
+      }
+    }
   }
 
   async stop(): Promise<void> {

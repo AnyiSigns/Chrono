@@ -67,10 +67,6 @@ function latestCodeGen(identity) {
   return [...identity.gens].reverse().find((gen) => gen.payload !== undefined) ?? null
 }
 
-function isHex64(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-}
-
 function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', `chrono-memory-retrieval-e2e-${stamp}`)
@@ -104,10 +100,10 @@ function main() {
   assert.deepEqual(decl.methods.retrieval, ['search'])
   assert.equal(decl.start, 'node execute/launch.mjs')
   assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.pins, {
-    embedding: 'embedding',
-    memory: 'memory-store',
-    model: 'model-protocol',
+  assert.deepEqual(decl.needs, {
+    embedding: { mode: 'one' },
+    memory: { mode: 'one' },
+    model: { mode: 'one' },
   })
   assert.deepEqual(
     decl.members.map((member) => member.path).sort(),
@@ -115,14 +111,16 @@ function main() {
   )
   console.log('声明：identity / implements / methods / start / members 就位')
 
-  // pins 解析：名 → 被依赖身份 active 世代 payload 哈希（不是字面身份名）。
-  for (const [name, dependency] of Object.entries(decl.pins)) {
-    const resolved = gen.pins[name]
-    assert.ok(isHex64(resolved), `pins.${name} 未解析成 64 位 hex：${resolved}`)
-    assert.notEqual(resolved, dependency, `pins.${name} 仍是字面身份名`)
-    assert.equal(resolved, world.ids[dependency].active, `pins.${name} != ${dependency}.active`)
+  // needs 解析：one 绑定住 `commit.body.meta.needs`（名 → 被依赖身份名），不写 gen.pins。
+  assert.deepEqual(world.defs[gen.payload].body.meta.needs, {
+    embedding: 'embedding',
+    memory: 'memory-store',
+    model: 'model-protocol',
+  })
+  for (const name of Object.keys(decl.needs)) {
+    assert.equal(gen.pins[name], undefined, `needs 不应写 gen.pins.${name}`)
   }
-  console.log('pins：embedding / memory / model 解析到被依赖身份 active 世代哈希')
+  console.log('needs：embedding / memory / model 解析到被依赖身份名，且不写 gen.pins')
 
   // .worldignore：test/ / target/ / tools/ 不入树；契约必需文件与源码入树。
   const all = [...tree.keys()]

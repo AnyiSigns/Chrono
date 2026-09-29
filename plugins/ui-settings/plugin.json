@@ -29,16 +29,18 @@
     "client.read"
   ],
   "pins": {
-    "model": "model-protocol",
-    "secrets": "secrets",
-    "retrieval": "memory-retrieval",
-    "memory-maintenance": "memory-consolidate",
-    "session": "session",
-    "short-memory": "short-memory",
-    "input": "input",
-    "skill": "skill",
-    "config": "config",
     "host": "host"
+  },
+  "needs": {
+    "model": { "mode": "one" },
+    "secrets": { "mode": "one" },
+    "retrieval": { "mode": "one" },
+    "memory-maintenance": { "mode": "one" },
+    "session": { "mode": "one" },
+    "short-memory": { "mode": "one" },
+    "input": { "mode": "one" },
+    "skill": { "mode": "one" },
+    "config": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [

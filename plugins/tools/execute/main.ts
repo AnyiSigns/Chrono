@@ -43,6 +43,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
       concurrency: DEFAULT_CONCURRENCY,
       cache: new ResultCache(DEFAULT_CACHE_MAX_ENTRIES, true),
       cacheEnabled: true,
+      pins: ctx.pins === undefined ? undefined : Object.keys(ctx.pins),
     }),
     emit: ctx.emit,
     log: LOG,

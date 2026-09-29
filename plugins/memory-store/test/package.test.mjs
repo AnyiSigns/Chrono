@@ -25,6 +25,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'needs',
   'pins',
   'start',
   'build',
@@ -44,7 +45,7 @@ test('plugin.json 字段齐全且形态合法', () => {
   assert.equal(decl.schema, 'schema/memory.json')
   assert.deepEqual(decl.implements, ['memory'])
   assert.deepEqual(decl.methods, { memory: ['put', 'read', 'search', 'list', 'append', 'delete', 'pin', 'edit'] })
-  assert.deepEqual(decl.pins, { embedding: 'embedding' })
+  assert.deepEqual(decl.needs, { embedding: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.deepEqual(decl.exclusive, ['data'])
   assert.equal(decl.protocol, '1')

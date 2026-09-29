@@ -66,7 +66,7 @@ function checkDeclaration() {
   assert.equal(decl.identity, 'todo')
   assert.deepEqual(decl.implements, ['todo'])
   assert.deepEqual(decl.methods, { todo: ['describe', 'invoke'] })
-  assert.deepEqual(decl.pins, { 'storage-kv': 'storage-kv' })
+  assert.deepEqual(decl.needs, { 'storage-kv': { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.state, 'durable')
   assert.deepEqual(

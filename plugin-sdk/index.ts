@@ -34,6 +34,7 @@ export {
   loaderEnvFromProcess,
   makeLogger,
   packageRootOf,
+  pinsFromProcess,
   runStdio,
 } from './service.ts'
 export type {

@@ -5,7 +5,10 @@
   "methods": {
     "mcp": ["describe", "invoke", "discover", "read", "write"]
   },
-  "pins": { "secrets": "secrets" },
+  "pins": {},
+  "needs": {
+    "secrets": { "mode": "one" }
+  },
   "start": "node execute/main.ts",
   "build": [],
   "exclusive": ["data"],

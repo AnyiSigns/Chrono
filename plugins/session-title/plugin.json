@@ -5,8 +5,9 @@
   "methods": {
     "session-title": ["generate"]
   },
-  "pins": {
-    "model": "model-protocol"
+  "pins": {},
+  "needs": {
+    "model": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

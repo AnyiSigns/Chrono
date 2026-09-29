@@ -7,6 +7,7 @@ export {
   assemblyGen,
   buildCommandIndex,
   DEFAULT_SCHEMA_BODY,
+  effectivePins,
   isCodeGen,
   latestCodeGen,
   latestDataGen,

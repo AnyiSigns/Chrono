@@ -26,7 +26,12 @@ export interface ReloadDeps {
   now: () => number
   /** 链头推进后的装配跟随；宿主注入 `applyWorldSerial`，保证换代跟随串行且单调。 */
   applyWorld: (world: World, head: Head) => Promise<void>
+  /** 当刻运行期休眠集（`one` 选择按它跳过休眠提供方）；缺省空集（无 runtime）。 */
+  suspended?: () => ReadonlySet<string>
 }
+
+/** 无 runtime 时的默认休眠集：空集。 */
+const NO_SUSPENDED: ReadonlySet<string> = new Set()
 
 /** 落账段内的定论：与外部 `ReloadOutcome` 分离，携带提交产物供段外交装配跟随。 */
 type SegmentOutcome =
@@ -50,7 +55,8 @@ export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promis
   // 段外预规划：读源码树是重同步 IO，放段内会长时间占住落账互斥段、拖慢其它提交。
   // 字节也先落 CAS（内容寻址、幂等）；段内世界未变即复用该预规划。
   const preWorld = deps.writer.snapshot().world
-  const preplanned = planIngest(preWorld, deps.root, entry)
+  const suspended = deps.suspended?.() ?? NO_SUSPENDED
+  const preplanned = planIngest(preWorld, deps.root, entry, suspended)
   if (preplanned.ok && !preplanned.plan.unchanged) {
     for (const blob of preplanned.plan.blobs) putBlob(deps.paths.blobsDir, blob.bytes)
   }
@@ -58,7 +64,7 @@ export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promis
     try {
       let planned = preplanned
       if (!preplanned.ok || state.world !== preWorld) {
-        planned = planIngest(state.world, deps.root, entry)
+        planned = planIngest(state.world, deps.root, entry, suspended)
         if (planned.ok && !planned.plan.unchanged) {
           for (const blob of planned.plan.blobs) putBlob(deps.paths.blobsDir, blob.bytes)
         }

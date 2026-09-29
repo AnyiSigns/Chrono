@@ -138,7 +138,7 @@ test('plugin.json / schema / .worldignore 声明口径', () => {
   const plugin = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.equal(plugin.identity, 'question')
   assert.deepEqual(plugin.implements, ['question'])
-  assert.deepEqual(plugin.pins, { input: 'input' })
+  assert.deepEqual(plugin.needs, { input: { mode: 'one' } })
   assert.equal(plugin.state, 'durable')
   assert.deepEqual(plugin.exclusive, ['data'])
   assert.deepEqual(plugin.methods.question, ['describe', 'invoke', 'list', 'state', 'sweep'])

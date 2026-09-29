@@ -9,6 +9,7 @@ import { resolveMethodTimeoutMs } from './method-timeouts.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/index.ts'
 import type { HostCapabilityCall, RoundRouter } from './effect/index.ts'
 import type { InboundHandlers } from './inbound/handlers.ts'
+import type { AssemblyRuntimeHandle } from './assembly/index.ts'
 import type { RunRegistry } from './run-registry.ts'
 import type { AuditQuery } from './audit.ts'
 import type { CallResponse } from './service-link.ts'
@@ -25,6 +26,8 @@ export interface CapabilityWiringDeps {
   registry: RunRegistry
   /** 活路由器 getter：装配完成前为 undefined。 */
   getRouter: () => RoundRouter | undefined
+  /** 装配运行时 getter：装配完成前为 undefined（休眠 / 恢复运行时才需要它）。 */
+  getRuntime: () => AssemblyRuntimeHandle | undefined
   /** 路由就绪信号：监听先于装配，服务可能在装配完成前发起反向调用。 */
   routerReady: Promise<void>
   /** 已应用世界 getter（与端点表同代）：超时解析与路由同世界。 */
@@ -58,6 +61,14 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
     abortRun: (run) => deps.registry.abort(run),
     startDetachedRun: deps.startDetachedRun,
     isStopping: deps.isStopping,
+    suspendIdentity: async (id) => {
+      const runtime = deps.getRuntime()
+      return runtime === undefined ? { ok: false, code: 'not_found' } : runtime.suspend(id)
+    },
+    resumeIdentity: async (id) => {
+      const runtime = deps.getRuntime()
+      return runtime === undefined ? { ok: false, code: 'not_found' } : runtime.resume(id)
+    },
   })
 
   /**

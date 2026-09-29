@@ -5,8 +5,9 @@
   "methods": {
     "question": ["describe", "invoke", "list", "state", "sweep"]
   },
-  "pins": {
-    "input": "input"
+  "pins": {},
+  "needs": {
+    "input": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

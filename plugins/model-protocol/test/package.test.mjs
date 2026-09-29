@@ -9,7 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = ['identity', 'schema', 'implements', 'methods', 'concurrent_methods', 'pins', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
+const DECL_FIELDS = ['identity', 'schema', 'implements', 'methods', 'concurrent_methods', 'needs', 'pins', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
 
 test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
@@ -19,7 +19,7 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.implements, ['model'])
   assert.deepEqual(decl.methods, { model: ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'] })
   assert.deepEqual(decl.concurrent_methods, ['chat', 'complete', 'abort'])
-  assert.deepEqual(decl.pins, { secrets: 'secrets', config: 'config' })
+  assert.deepEqual(decl.needs, { secrets: { mode: 'one' }, config: { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')

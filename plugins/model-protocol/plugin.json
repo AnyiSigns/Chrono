@@ -6,7 +6,13 @@
     "model": ["chat", "complete", "abort", "vendors", "discover", "profile", "sync"]
   },
   "concurrent_methods": ["chat", "complete", "abort"],
-  "pins": { "secrets": "secrets", "config": "config" },
+  "pins": {
+    "host": "host"
+  },
+  "needs": {
+    "secrets": { "mode": "one" },
+    "config": { "mode": "one" }
+  },
   "start": "node execute/main.ts",
   "build": [{ "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] }],
   "protocol": "1",

@@ -5,8 +5,9 @@
   "methods": {
     "memory": ["put", "read", "search", "list", "append", "delete", "pin", "edit"]
   },
-  "pins": {
-    "embedding": "embedding"
+  "pins": {},
+  "needs": {
+    "embedding": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -61,6 +61,10 @@ boot ──→ client ──→ kernel
 | `plugin.json` 字段 `needs` / `slots` 与 `commit.body.meta.needs` | `host/assembly/decl.ts`、`host/assembly/ingest.ts`、`host/assembly/runtime.ts`（提供方按拥有方契约注册端点） |
 | 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out / 聚合审计） | `host/effect/route.ts`、`host/effect/run-loop.ts`、`host/effect/execute.ts` |
 | `validate_package` 结果形状 | `host/validate-package.ts` |
+| 运行期 `pins` 投影并入 `one`-needs（投影 `pins` = 声明 `pins` ∪ `meta.needs`） | `host/projection/index.ts`、`docs/host.md` |
+| 服务工厂上下文新增 `pins`（宿主注入有效 pins，声明 `pins` ∪ `one`-needs）+ stdio spawn env `CHRONO_PLUGIN_PINS` | `host/assembly/decl.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`plugin-sdk/service.ts` |
+| `host.*` 方法集新增休眠 `identities.suspend` / `identities.resume` | `host/host-methods.ts`、`host/host-capability.ts`、`host/capability-wiring.ts`、`host/assembly/runtime.ts` |
+| `audit_tier` 首命中改身份名字典序 | `host/audit-tiers.ts` |
 | `argsSchema` 方言 | `host/assembly/args-schema.ts` |
 | schema 宿主消费键 | `host/periodic.ts`、`method-timeouts.ts`、`audit-tiers.ts`、`audit-redact.ts`、`assembly/assets-manifest.ts` |
 | 结构化 op / directive / term 原语 | `kernel/types.ts`、`kernel/machine.ts`；宿主侧镜像 `host/common/op-names.ts`、`host/assembly/eff-decls.ts` |

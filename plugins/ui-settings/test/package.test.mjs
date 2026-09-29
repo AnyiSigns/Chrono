@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、pins 两条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 九条、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,6 +19,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
     'methods',
     'concurrent_methods',
     'pins',
+    'needs',
     'start',
     'build',
     'protocol',
@@ -35,23 +36,23 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；pins 四条（model / secrets / retrieval / memory-maintenance）', () => {
+test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；needs 九条（model / secrets / retrieval / memory-maintenance / session / short-memory / input / skill / config）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
     'ui-settings': ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'],
   })
-  assert.deepEqual(decl.pins, {
-    model: 'model-protocol',
-    secrets: 'secrets',
-    retrieval: 'memory-retrieval',
-    'memory-maintenance': 'memory-consolidate',
-    session: 'session',
-    'short-memory': 'short-memory',
-    input: 'input',
-    skill: 'skill',
-    config: 'config',
-    host: 'host',
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, {
+    model: { mode: 'one' },
+    secrets: { mode: 'one' },
+    retrieval: { mode: 'one' },
+    'memory-maintenance': { mode: 'one' },
+    session: { mode: 'one' },
+    'short-memory': { mode: 'one' },
+    input: { mode: 'one' },
+    skill: { mode: 'one' },
+    config: { mode: 'one' },
   })
 })
 

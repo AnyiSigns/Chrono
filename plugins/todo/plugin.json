@@ -5,8 +5,9 @@
   "methods": {
     "todo": ["describe", "invoke"]
   },
-  "pins": {
-    "storage-kv": "storage-kv"
+  "pins": {},
+  "needs": {
+    "storage-kv": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

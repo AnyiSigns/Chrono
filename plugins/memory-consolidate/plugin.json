@@ -5,12 +5,13 @@
   "methods": {
     "memory-maintenance": ["consolidate", "sweep", "candidates", "view", "edit"]
   },
-  "pins": {
-    "compress": "compress",
-    "embedding": "embedding",
-    "memory": "memory-store",
-    "short-memory": "short-memory",
-    "session": "session"
+  "pins": {},
+  "needs": {
+    "compress": { "mode": "one" },
+    "embedding": { "mode": "one" },
+    "memory": { "mode": "one" },
+    "short-memory": { "mode": "one" },
+    "session": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -14,6 +14,24 @@ export { encodeFrame, createDecoder }
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
+/**
+ * 宿主注入的**有效 pins**（声明 `pins` ∪ one-needs 绑定）：迁移后 `plugin.json.pins` 只余 `host`，
+ * 驱动按宿主口径经 spawn env `CHRONO_PLUGIN_PINS` 注入；bag 内的场景覆盖（`bag.pins`）仍优先。
+ */
+export const DEFAULT_PINS = {
+  session: 'session',
+  model: 'model-protocol',
+  context: 'context-window',
+  retrieval: 'memory-retrieval',
+  compress: 'compress',
+  guard: 'guard',
+  approval: 'approval',
+  tools: 'tools',
+  router: 'router',
+  'evolve-metrics': 'evolve-metrics',
+  host: 'host',
+}
+
 /** 反向调用失败标记：提供者回 `{__error:{code,message}}` 时宿主回 `port.error`。 */
 export function portError(code, message = '') {
   return { __error: { code, message } }
@@ -75,8 +93,12 @@ export function defaultProviders(overrides = {}) {
 }
 
 /** 启动服务并返回请求接口。 */
-export function startService({ providers = {}, env = FIXED_ENV } = {}) {
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_PINS } = {}) {
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CHRONO_PLUGIN_PINS: JSON.stringify(pins) },
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []

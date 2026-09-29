@@ -22,7 +22,8 @@ test('服务代码不读环境变量', () => {
 
 test('plugin.json 不 pin 密钥面（零配置）', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
-  assert.deepEqual(decl.pins, { sandbox: 'sandbox', host: 'host' })
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
   assert.ok(!JSON.stringify(decl).includes('secrets'))
 })
 

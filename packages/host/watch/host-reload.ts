@@ -63,6 +63,7 @@ export function createWatchReload(deps: WatchReloadDeps): WatchReload {
         writer: deps.writer,
         now: deps.nextNow,
         applyWorld: deps.applyWorld,
+        suspended: () => deps.getRuntime()?.suspendedIds() ?? new Set<string>(),
       },
       target.entry,
     )

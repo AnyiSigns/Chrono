@@ -5,10 +5,11 @@
   "methods": {
     "compress": ["summarize", "compact", "extract"]
   },
-  "pins": {
-    "model": "model-protocol",
-    "embedding": "embedding",
-    "short-memory": "short-memory"
+  "pins": {},
+  "needs": {
+    "model": { "mode": "one" },
+    "embedding": { "mode": "one" },
+    "short-memory": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

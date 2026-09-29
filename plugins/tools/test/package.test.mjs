@@ -27,6 +27,7 @@ const DECL_FIELDS = [
   'methods',
   'concurrent_methods',
   'pins',
+  'needs',
   'start',
   'build',
   'protocol',
@@ -37,7 +38,7 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
+test('plugin.json 15 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tools')
@@ -55,28 +56,28 @@ test('plugin.json 14 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('pins：工具提供者按各自能力类名，含 evolve-metrics（#44 record 绑定）', () => {
+test('pins 只保留 host；能力类消费（含 evolve-metrics #44 record 绑定）走 needs.one', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.pins, {
-    guard: 'guard',
-    'tool-fs': 'tool-fs',
-    'tool-shell': 'tool-shell',
-    'tool-http': 'tool-http',
-    'tool-browser': 'tool-browser',
-    mcp: 'mcp',
-    'plugin-admin': 'plugin-admin',
-    'orchestration-admin': 'orchestration-admin',
-    'evolve-metrics': 'evolve-metrics',
-    todo: 'todo',
-    question: 'question',
-    session: 'session',
-    compress: 'compress',
-    memory: 'memory-store',
-    retrieval: 'memory-retrieval',
-    'memory-maintenance': 'memory-consolidate',
-    host: 'host',
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, {
+    guard: { mode: 'one' },
+    'tool-fs': { mode: 'one' },
+    'tool-shell': { mode: 'one' },
+    'tool-http': { mode: 'one' },
+    'tool-browser': { mode: 'one' },
+    mcp: { mode: 'one' },
+    'plugin-admin': { mode: 'one' },
+    'orchestration-admin': { mode: 'one' },
+    'evolve-metrics': { mode: 'one' },
+    todo: { mode: 'one' },
+    question: { mode: 'one' },
+    session: { mode: 'one' },
+    compress: { mode: 'one' },
+    memory: { mode: 'one' },
+    retrieval: { mode: 'one' },
+    'memory-maintenance': { mode: 'one' },
   })
-  assert.equal(decl.pins['evolve-metrics'], 'evolve-metrics')
+  assert.equal(decl.needs['evolve-metrics'].mode, 'one')
 })
 
 test('.worldignore 排除 test/ 与 tools/（契约必需文件不可排除）', () => {

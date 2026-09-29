@@ -24,6 +24,41 @@ function worldWithTiers(tiers: Json): World {
   }
 }
 
+/**
+ * 两个 active 身份对同一能力类 `cap` 各声明一份 `audit_tier`：`aaa` 预算更大、`bbb` 更小。
+ * `ids` 插入序为 `bbb` → `aaa`（非字典序），用于验证首命中按身份名字典序。
+ */
+function worldWithTwoTiers(): World {
+  const schemaA = 'a'.repeat(64)
+  const schemaB = 'b'.repeat(64)
+  return {
+    defs: {
+      [schemaA]: {
+        body: { type: 'object', audit_tier: { cap: { max_records: 20, max_bytes: 2000 } } },
+      },
+      [schemaB]: {
+        body: { type: 'object', audit_tier: { cap: { max_records: 10, max_bytes: 1000 } } },
+      },
+    },
+    ids: {
+      bbb: {
+        id: 'bbb',
+        schema: schemaB,
+        gens: [],
+        active: 'g'.repeat(64),
+        born: { at: 1, by: 'test' },
+      },
+      aaa: {
+        id: 'aaa',
+        schema: schemaA,
+        gens: [],
+        active: 'g'.repeat(64),
+        born: { at: 1, by: 'test' },
+      },
+    },
+  }
+}
+
 function draftPort(
   port: string,
   run: string,
@@ -95,6 +130,25 @@ describe('声明式审计分档（schema.audit_tier）', () => {
     for (let i = 0; i < 4; i++) index.add(record(draftPort('approval', `a${i}`)))
     expect(index.size()).toBe(2)
     expect(index.records().map((item) => (item.body as { run: string }).run)).toEqual(['a2', 'a3'])
+  })
+
+  it('多身份声明同一能力类：首命中按身份名字典序，与插入序无关', () => {
+    const world = worldWithTwoTiers()
+    // 插入序非字典序：bbb 在前、aaa 在后
+    expect(Object.keys(world.ids)).toEqual(['bbb', 'aaa'])
+    expect(resolveAuditTier(world, 'cap')).toEqual({ maxRecords: 20, maxBytes: 2000 })
+  })
+
+  it('字典序遍历仍跳过 retired 与 schema def 缺失的身份', () => {
+    const world = worldWithTwoTiers()
+    // aaa 退役（active=null）→ 跳过，回落到字典序次者 bbb
+    world.ids['aaa'] = { ...world.ids['aaa'], active: null }
+    expect(resolveAuditTier(world, 'cap')).toEqual({ maxRecords: 10, maxBytes: 1000 })
+    // bbb 的 schema def 缺失 → 跳过，无命中
+    const ghost = worldWithTwoTiers()
+    delete ghost.defs[ghost.ids['bbb'].schema]
+    ghost.ids['aaa'] = { ...ghost.ids['aaa'], active: null }
+    expect(resolveAuditTier(ghost, 'cap')).toBeUndefined()
   })
 
   it('声明值被截到上限后按上限淘汰', () => {

@@ -37,11 +37,40 @@ export function createDecoder() {
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
 /**
+ * 宿主注入的**有效 pins**（声明 `pins` ∪ one-needs 绑定）：迁移后 `plugin.json.pins` 只余 `host`，
+ * 驱动按宿主口径经 spawn env `CHRONO_PLUGIN_PINS` 注入，键沿用迁移前的逻辑端口名、值为提供方身份名。
+ */
+export const DEFAULT_PINS = {
+  guard: 'guard',
+  'tool-fs': 'tool-fs',
+  'tool-shell': 'tool-shell',
+  'tool-http': 'tool-http',
+  'tool-browser': 'tool-browser',
+  mcp: 'mcp',
+  'plugin-admin': 'plugin-admin',
+  'orchestration-admin': 'orchestration-admin',
+  'evolve-metrics': 'evolve-metrics',
+  todo: 'todo',
+  question: 'question',
+  session: 'session',
+  compress: 'compress',
+  memory: 'memory-store',
+  retrieval: 'memory-retrieval',
+  'memory-maintenance': 'memory-consolidate',
+  host: 'host',
+}
+
+/**
  * 启动服务并返回请求 / 反向调用接口。`providers` 可后续用 `setProvider` 修改（同一对象引用）。
  */
 export function startService(options = {}) {
   const providers = options.providers ?? {}
-  const child = spawn(process.execPath, [ENTRY], { cwd: PKG_ROOT, stdio: ['pipe', 'pipe', 'pipe'] })
+  const pins = options.pins ?? DEFAULT_PINS
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd: PKG_ROOT,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CHRONO_PLUGIN_PINS: JSON.stringify(pins) },
+  })
   const decoder = createDecoder()
   const pending = new Map()
   const events = []

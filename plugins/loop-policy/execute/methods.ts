@@ -22,6 +22,8 @@ export interface LoopPolicyDeps {
   port: PortCaller
   /** 宿主只读解析通道（`host.def.read`）；缺省时只接受已解析的 refs 对象（单测便利）。 */
   host?: PortCaller
+  /** 宿主注入的有效 pins（声明 `pins` ∪ one-needs）；bag 内场景覆盖优先于它。 */
+  pins?: Rec
 }
 
 /** bag 里承载引用闭包的容器键 → 其 refs 所属身份（用于越权门禁）。 */
@@ -121,7 +123,7 @@ async function interpret(
   const refs = refsOf(bag)
   const resolved = resolveModel(bag['graph'], refs)
   const model = resolved.model
-  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : PINS
+  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : deps.pins ?? PINS
   const at = isoAt(nowOf(env, bag))
   const resume = parseResume(bag)
   const events: HandlerResult['events'] = []

@@ -206,9 +206,14 @@ function removedProtectedPin(
   return false
 }
 
+/** 无运行期休眠集时的默认值（离线 seed 无 runtime）：空集，保持零扰动。 */
+const NO_SUSPENDED: ReadonlySet<string> = new Set()
+
 /**
  * 解析 `one` 需求：候选 = 世界能力索引(cap) − 自身 − `host`，要求恰好一个。
- * 0 命中 → `unresolved_need:<cap>`；多命中 → `ambiguous_need:<cap>:<候选,码元序>`。
+ * `one` 的**选择跳过休眠提供方**：先取非休眠候选，非休眠为空才回落到休眠者（消费方仍入世成功、
+ * 对该 cap 调用得 `not_loaded`）；「恰好 1」对过滤后的候选集生效——非休眠 ≥2、或非休眠为空而
+ * 休眠候选 ≥2，均 `ambiguous_need`。0 命中 → `unresolved_need:<cap>`。
  * 结果只作 `commit.body.meta.needs` 的取值来源，不写 `gen.pins`。
  */
 function resolveOneNeeds(
@@ -216,6 +221,7 @@ function resolveOneNeeds(
   identity: string,
   decl: PluginDecl,
   blobsDir: string | undefined,
+  suspended: ReadonlySet<string>,
 ): { ok: true; bindings: Record<string, string> } | { ok: false; reasons: string[] } {
   const needs = decl.needs
   const bindings: Record<string, string> = {}
@@ -224,11 +230,13 @@ function resolveOneNeeds(
     const candidates = capabilityProviders(world, cap, blobsDir).filter(
       (id) => id !== identity && id !== HOST_CAPABILITY,
     )
-    if (candidates.length === 0) return { ok: false, reasons: [`unresolved_need:${cap}`] }
-    if (candidates.length > 1) {
-      return { ok: false, reasons: [`ambiguous_need:${cap}:${candidates.join(',')}`] }
+    const live = candidates.filter((id) => !suspended.has(id))
+    const chosen = live.length > 0 ? live : candidates
+    if (chosen.length === 0) return { ok: false, reasons: [`unresolved_need:${cap}`] }
+    if (chosen.length > 1) {
+      return { ok: false, reasons: [`ambiguous_need:${cap}:${chosen.join(',')}`] }
     }
-    bindings[cap] = candidates[0]
+    bindings[cap] = chosen[0]
   }
   return { ok: true, bindings }
 }
@@ -472,6 +480,7 @@ function planIngestAtRoot(
   identityOverride: string | undefined,
   blobsDir: string | undefined,
   protectedPins: ReadonlySet<string>,
+  suspended: ReadonlySet<string>,
 ): IngestResult {
   const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
   if (rawDecl === undefined) return { ok: false, reasons: ['missing_plugin_json'] }
@@ -486,7 +495,7 @@ function planIngestAtRoot(
   if (unsafeDeclaredPath(decl) !== null) return { ok: false, reasons: ['bad_plugin_decl'] }
 
   // 先解析 `one` 绑定，受保护比对（新侧需含绑定值）与 commitHash（meta 需含绑定）都用它
-  const resolved = resolveOneNeeds(world, identity, decl, blobsDir)
+  const resolved = resolveOneNeeds(world, identity, decl, blobsDir, suspended)
   if (!resolved.ok) return { ok: false, reasons: resolved.reasons }
   const oneBindings = resolved.bindings
   if (missingManyContract(world, decl, blobsDir)) {
@@ -605,14 +614,27 @@ export function resolveEntryRoot(root: string, entry: PluginEntry): string | nul
  * 解析一个插件包并构造入世 batch 计划；不改世界、不落账。
  * 读失败（文件在打包中途被删 / 目录消失 / 权限变化）按 `{ok:false,reasons}` 返回，
  * 交调用方走 `failed` 分支，而不是抛错被 watcher 归为自身故障。
+ * `suspended` 是运行期休眠集（按当刻解析 `one` 选择）；离线 seed 无 runtime，缺省空集。
  */
-export function planIngest(world: World, root: string, entry: PluginEntry): IngestResult {
+export function planIngest(
+  world: World,
+  root: string,
+  entry: PluginEntry,
+  suspended: ReadonlySet<string> = NO_SUSPENDED,
+): IngestResult {
   try {
     const pins = readProtectedPins(root)
     if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
     const pkgRoot = resolvePackageRoot(entry, root)
     if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
-    return planIngestAtRoot(world, pkgRoot, undefined, hostPaths(root).blobsDir, pins.identities)
+    return planIngestAtRoot(
+      world,
+      pkgRoot,
+      undefined,
+      hostPaths(root).blobsDir,
+      pins.identities,
+      suspended,
+    )
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
   }
@@ -774,7 +796,7 @@ export function planPack(
       if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
       protectedPins = pins.identities
     }
-    return planIngestAtRoot(world, pkgRoot, identity, blobsDir, protectedPins)
+    return planIngestAtRoot(world, pkgRoot, identity, blobsDir, protectedPins, NO_SUSPENDED)
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
   }
