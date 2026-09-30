@@ -67,19 +67,11 @@ export interface SecretsChannel {
 export interface HandlerDeps {
   identity: string
   model: PortCaller
-  /** 记忆检索端口（pins `retrieval` → memory-retrieval）；缺省回落 `model`（单测便利）。 */
-  retrieval?: PortCaller
-  /** 记忆维护端口（pins `memory-maintenance` → memory-consolidate）；缺省回落 `model`。 */
-  maintenance?: PortCaller
   /** 密钥本地存储面；缺省为不可用通道（单测不涉及时不崩）。 */
   secrets?: SecretsChannel
   /** 引用水合端口（pins `ref-hydrate`）：按需把投影 refs 解析成闭包；缺省回落 `model`。 */
   refHydrate?: PortCaller
-  /** 会话 owner（pins `session`）：会话链已出世界，`memory.search` 的 goal 从 owner 读。 */
-  session?: PortCaller
-  /** 短期记忆 owner（pins `short-memory`）：L1 / L2 已出世界，搜索的 goal 经 `eff` 问 owner。 */
-  shortMemory?: PortCaller
-  /** 输入槽 owner（pins `input`）：槽已出世界，`model.probe` / `memory.edit` 槽经 `eff` 读写。 */
+  /** 输入槽 owner（pins `input`）：槽已出世界，`model.probe` 槽经 `eff` 读写。 */
   input?: PortCaller
   /** 用户配置 owner（pins `config`）：config 运行记录已出世界，模型档案装配经 `eff` 问 owner。 */
   config?: PortCaller
@@ -92,23 +84,6 @@ async function withConfigOwner(deps: HandlerDeps, ids: Json): Promise<Rec> {
   const outcome = await deps.config.call('config', 'read', {})
   if (outcome.ok && isRecord(outcome.value) && isRecord(outcome.value['body'])) {
     base['config'] = { body: outcome.value['body'] }
-  }
-  return base
-}
-
-/**
- * 本会话 L1 goal 的两个 owner：`session`（当前会话）与 `short-memory`（L1 摘要）。
- * 二者已出世界、不住投影，故搜索装配 goal 时经 `eff` 问 owner（取不到回空，不阻塞）。
- */
-async function withGoalOwners(deps: HandlerDeps, ids: Json): Promise<Rec> {
-  const base: Rec = isRecord(ids) ? { ...ids } : {}
-  if (deps.shortMemory !== undefined) {
-    const outcome = await deps.shortMemory.call('short-memory', 'read', {})
-    if (outcome.ok && isRecord(outcome.value)) base['short-memory'] = { body: outcome.value }
-  }
-  if (deps.session !== undefined) {
-    const outcome = await deps.session.call('session', 'read', {})
-    if (outcome.ok && isRecord(outcome.value)) base['session'] = { body: outcome.value }
   }
   return base
 }
@@ -194,115 +169,6 @@ export function assembleDiscoverArgs(inputBody: Json): Rec | null {
   if (typeof probe['protocol'] === 'string' && probe['protocol'].length > 0)
     args['protocol'] = probe['protocol']
   return args
-}
-
-// ── 记忆 tab 的服务侧装配（纯函数，单测直调）──
-// 记忆运行记录（L1 / L2 / L3）已出世界：owner 数据由下游服务自行读取，
-// 本插件只装配「命令 args → #22 / #23 真实 args」与清槽，不再拼投影切片。
-
-/** 投影里某身份的 `body`（无数据 / 代码世代回 null）。 */
-export function projectionBody(ids: Json, identity: string): Rec | null {
-  if (!isRecord(ids)) return null
-  const entry = ids[identity]
-  if (!isRecord(entry) || !isRecord(entry['body'])) return null
-  return entry['body'] as Rec
-}
-
-/** 本会话 L1 goal：`#11 current` → `#3 sessions[current].summary.goal`；缺失回 null。 */
-export function currentSessionGoal(ids: Json): string | null {
-  const session = projectionBody(ids, 'session')
-  const current =
-    session !== null && typeof session['current'] === 'string'
-      ? (session['current'] as string)
-      : null
-  if (current === null || current.length === 0) return null
-  const shortMemory = projectionBody(ids, 'short-memory')
-  if (shortMemory === null || !isRecord(shortMemory['sessions'])) return null
-  const record = (shortMemory['sessions'] as Rec)[current]
-  if (!isRecord(record) || !isRecord(record['summary'])) return null
-  const goal = (record['summary'] as Rec)['goal']
-  return typeof goal === 'string' && goal.length > 0 ? goal : null
-}
-
-/**
- * `memory.search` 入参：#22 `retrieval.search` 真实 bag。
- * `query` 必填；`workspace` / `tags` 走 `retrieval` 段；`limit` → `retrieval.top_k`；
- * `goal` = 本会话 L1 goal（`owners` = session / short-memory owner 切片，由服务读回）。
- * L3 本体由 `memory-retrieval` 自己经 `memory` pin 问 `memory-store`，bag 不再传 memory 切片。
- */
-export function assembleSearchBag(
-  args: Json,
-  owners: Json,
-): { ok: true; bag: Rec } | { ok: false; code: string; message: string } {
-  const record = isRecord(args) ? args : {}
-  const query = typeof record['query'] === 'string' ? (record['query'] as string) : ''
-  if (query.trim().length === 0) {
-    return { ok: false, code: 'memory_query_required', message: 'query is required' }
-  }
-  const bag: Rec = { query }
-  const workspace = typeof record['workspace'] === 'string' ? (record['workspace'] as string) : ''
-  if (workspace.length > 0) bag['workspace'] = workspace
-  const goal = currentSessionGoal(owners)
-  if (goal !== null) bag['goal'] = goal
-  const retrieval: Rec = {}
-  const tags = Array.isArray(record['tags'])
-    ? (record['tags'] as Json[]).filter(
-        (tag): tag is string => typeof tag === 'string' && tag.length > 0,
-      )
-    : []
-  if (tags.length > 0) retrieval['tags'] = tags
-  const limit =
-    typeof record['limit'] === 'number' &&
-    Number.isInteger(record['limit']) &&
-    (record['limit'] as number) > 0
-      ? (record['limit'] as number)
-      : null
-  if (limit !== null) retrieval['top_k'] = limit
-  if (Object.keys(retrieval).length > 0) bag['retrieval'] = retrieval
-  return { ok: true, bag }
-}
-
-/** `memory.edit` 槽：扫 `slots` 找 `kind=memory.edit` 的槽体（多线程键取排序首个）。 */
-export function findMemoryEditSlot(inputBody: Json): Rec | null {
-  if (!isRecord(inputBody) || !isRecord(inputBody['slots'])) return null
-  const slots = inputBody['slots'] as Rec
-  for (const key of Object.keys(slots).sort()) {
-    const value = slots[key]
-    if (isRecord(value) && value['kind'] === 'memory.edit') return value
-  }
-  return null
-}
-
-/** 待清的 `memory.edit` 线程键：命中的全部键；一个都没命中则回落 `_main`（与清槽口径一致）。 */
-export function memoryEditKeys(inputBody: Json): string[] {
-  const slots =
-    isRecord(inputBody) && isRecord(inputBody['slots']) ? (inputBody['slots'] as Rec) : {}
-  const keys = Object.keys(slots).filter((key) => {
-    const value = slots[key]
-    return isRecord(value) && value['kind'] === 'memory.edit'
-  })
-  return keys.length > 0 ? keys : ['_main']
-}
-
-/** 槽 action 对齐 #23：`update` → `text`（#23 只认 `delete` / `pin` / `text`）。 */
-export function maintenanceAction(action: Json): string | null {
-  if (action === 'update') return 'text'
-  if (action === 'delete' || action === 'pin' || action === 'text') return action
-  return null
-}
-
-/**
- * `memory.edit` 入参：`#1` 槽（owner 读回）→ #23 `edit` 真实 args（`slot` 携带 layer / id / patch）。
- * 槽缺失 / action 非法回结构化失败码（调用方仍会清槽，避免残留非法槽）。
- */
-export function assembleEditArgs(
-  inputBody: Json,
-): { ok: true; args: Rec } | { ok: false; code: string } {
-  const slot = findMemoryEditSlot(inputBody)
-  if (slot === null) return { ok: false, code: 'memory_edit_slot_missing' }
-  const action = maintenanceAction(slot['action'])
-  if (action === null) return { ok: false, code: 'memory_edit_bad_action' }
-  return { ok: true, args: { slot, action } }
 }
 
 // ── 编排健康判定（纯函数，单测直调）──
@@ -470,8 +336,6 @@ function failure(code: string, message: string): Rec {
 
 /** 构造方法表；`deps.model` 是反向调用通道（单测注入假端口）。 */
 export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
-  const retrieval = deps.retrieval ?? deps.model
-  const maintenance = deps.maintenance ?? deps.model
   const secrets: SecretsChannel = deps.secrets ?? {
     put: async () => ({
       ok: false,
@@ -577,48 +441,6 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
       const projection = isRecord(args) ? args : {}
       const refs = await hydrator.hydrate('loop-policy', projection['refs'])
       return { ...projection, refs }
-    },
-
-    /**
-     * 记忆浏览（只读）：L1 / L2 / L3 由 `memory-maintenance` 自行问 owner 服务，
-     * 本服务只反向调 `memory-maintenance.view`；命令结果 = #23 `view` 值（三档）。
-     */
-    view: async (): Promise<Json> => {
-      const outcome = await maintenance.call('memory-maintenance', 'view', {})
-      if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
-      return externOnly(outcome.value)
-    },
-
-    /**
-     * 记忆搜索（只读）：命令 args `{query, workspace?, tags?, limit?}`，服务经 `eff` 问
-     * `session` / `short-memory` owner 取本会话 L1 goal，装配 #22 `retrieval.search` 真实 bag，
-     * 反向调 `retrieval.search`；L3 本体由 `memory-retrieval` 自己问 `memory-store`。
-     */
-    search: async (args): Promise<Json> => {
-      const owners = await withGoalOwners(deps, {})
-      const assembled = assembleSearchBag(args, owners)
-      if (!assembled.ok) return externOnly(failure(assembled.code, assembled.message))
-      const outcome = await retrieval.call('retrieval', 'search', assembled.bag)
-      if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
-      return externOnly(outcome.value)
-    },
-
-    /**
-     * 记忆编辑（写类无参）：服务经 `input` owner 读 `memory.edit` 槽，反向调 `memory-maintenance.edit`，
-     * 无论成败都经 owner 清槽，命令结果 = extern #23 结果。槽 action `update` 对齐为 #23 的 `text`。
-     */
-    edit: async (): Promise<Json> => {
-      const inputBody = await readInputBody(deps)
-      const assembled = assembleEditArgs(inputBody)
-      let payload: Json
-      if (!assembled.ok) {
-        payload = failure(assembled.code, assembled.code)
-      } else {
-        const outcome = await maintenance.call('memory-maintenance', 'edit', assembled.args)
-        payload = outcome.ok ? outcome.value : failure(outcome.code, outcome.message)
-      }
-      for (const thread of memoryEditKeys(inputBody)) await clearInputThread(deps, thread)
-      return externOnly(payload)
     },
   }
 }

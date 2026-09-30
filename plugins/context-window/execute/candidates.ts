@@ -1,24 +1,22 @@
-// 流水线第 0 / 0b / 1 步：候选汇集、L1 TTL 过滤、结构化 → 规范消息（RawMessage）。
+// 流水线第 0 / 1 步：候选汇集、结构化 → 规范消息（RawMessage）。
 // 一切输入随 bag 由调用方入口 term 装配传入（服务不读投影）；本轮用户消息 / 系统提示 / 工具 schema /
-// L2 / 上一会话 L1 / 本会话 L1 / 技能 / L3 召回 / 历史 / 风格；线程口径按 bag.thread_kind 调输入。
+// 收件箱 / 技能 / 历史 / 风格；线程口径按 bag.thread_kind 调输入。
 //
 // 历史与同回合记录同源于会话回合日志（`session.turns[].steps`），经 `project.ts` 投影成中性模型记录，
 // 不再解析展示 parts / 工具卡 / `refs`。`bag.extra_messages` 不再消费（同回合进度改由步日志派生）。
 
 import { messageParts } from './history.ts'
 import { projectContext } from './project.ts'
-import { computeTokenKey, isRecord, parseAt, parseExpiresAt, renderMemory, stableStringify } from './text.ts'
-import { isStructuredCheckpoint, renderCheckpoint, turnMetadata, type TurnMetadata } from './views.ts'
-import type { CallEnv, CanonicalPart, Json, MessagePolicy, NeutralReasoning, Policy, RawMessage } from './types.ts'
+import { computeTokenKey, isRecord, parseAt, stableStringify } from './text.ts'
+import { turnMetadata, type TurnMetadata } from './views.ts'
+import type { CanonicalPart, Json, MessagePolicy, NeutralReasoning, Policy, RawMessage } from './types.ts'
 
 /** 优先级常量：数值越小越优先、越不可裁。 */
 export const PRIORITY = {
   prompt: 0,
   tools: 0,
   input: 0,
-  memory: 1,
   skill: 2,
-  recall: 3,
   history: 4,
   style: 5,
 } as const
@@ -26,11 +24,8 @@ export const PRIORITY = {
 export interface Gathered {
   raws: RawMessage[]
   flags: string[]
-  recallEntries: { entry: string; score: number }[]
-  /** 回合日志元数据（距离 / 步号 / 检查点覆盖）：供分层保留使用。 */
+  /** 回合日志元数据（距离 / 步号）：供分层保留使用。 */
   turns: TurnMetadata
-  /** 最新结构化检查点注入的消息（无检查点为 null）。 */
-  checkpoint: RawMessage | null
 }
 
 function textPart(text: string): CanonicalPart {
@@ -50,58 +45,13 @@ function modelToolSchema(tool: Record<string, unknown>): Json {
   return isRecord(raw) ? (raw as Json) : { type: 'object' }
 }
 
-function memoryText(title: string, entry: Record<string, unknown>): string {
-  return renderMemory(title, entry['summary'])
-}
-
-/** 记忆条目是否已过期（`expires_at <= env.now`）。 */
-function isExpired(entry: Record<string, unknown>, env: CallEnv): boolean {
-  const expiresAt = parseExpiresAt(entry['expires_at'])
-  return expiresAt !== null && expiresAt <= env.now
-}
-
-function memoryRaw(
-  title: string,
-  entry: Record<string, unknown>,
-  source: RawMessage['source'],
-  orderHint: number,
-): RawMessage {
-  return {
-    role: 'system',
-    parts: [textPart(memoryText(title, entry))],
-    source,
-    priority: PRIORITY.memory,
-    at: parseAt(entry['at']),
-    atomic: false,
-    atomicGroup: null,
-    toolCallId: null,
-    from: null,
-    orderHint,
-  }
-}
-
-/**
- * 子代理的父检查点消息：接受 `checkpoint` 步记录（`{summary,…}`）或裸 summary，
- * 仅结构化检查点可注入（段标记 / verify 报告等内部标记不算）；无结构化字段返回 null。
- */
-function parentCheckpointRaw(value: unknown, orderHint: number): RawMessage | null {
-  if (!isRecord(value)) return null
-  const summary = isRecord(value['summary']) ? value['summary'] : value
-  if (!isStructuredCheckpoint(summary)) return null
-  const text = renderCheckpoint(summary)
-  if (text.trim().length === 0) return null
-  return {
-    role: 'system',
-    parts: [textPart(`[父检查点]\n${text}`)],
-    source: 'l1',
-    priority: PRIORITY.memory,
-    at: 0,
-    atomic: false,
-    atomicGroup: null,
-    toolCallId: null,
-    from: null,
-    orderHint,
-  }
+/** 父会话摘要消息体 → 文本：字符串原样，其余稳定 JSON 序列化（同输入同文本）。 */
+function parentSummaryText(entry: unknown): string {
+  if (typeof entry === 'string') return entry
+  const summary = isRecord(entry) && entry['summary'] !== undefined ? entry['summary'] : entry
+  if (typeof summary === 'string') return summary
+  if (summary === null || summary === undefined) return ''
+  return stableStringify(summary as Json)
 }
 
 /** 收件箱消息体 → 文本：字符串原样，其余稳定 JSON 序列化（同输入同文本）。 */
@@ -183,14 +133,12 @@ function sortTools(tools: Json[]): Record<string, unknown>[] {
 }
 
 /** 汇集候选并结构化（第 0 / 0b / 1 步）。 */
-export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, policy: Policy): Gathered {
+export function gatherCandidates(bag: Record<string, unknown>, policy: Policy): Gathered {
   const raws: RawMessage[] = []
   const flags: string[] = []
   const session = isRecord(bag['session']) ? bag['session'] : {}
   const turns = turnMetadata(session)
-  let checkpoint: RawMessage | null = null
 
-  const memories = isRecord(bag['memories']) ? bag['memories'] : {}
   const threadKind = asString(bag['thread_kind']) ?? 'main'
   const config = isRecord(bag['config']) ? bag['config'] : {}
   const model = asString(config['model']) ?? 'unknown'
@@ -286,29 +234,8 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     }
   }
 
-  // L2 工作区记忆（过期按来源记 l2_expired，不复用 L1 的 flag）
-  const l2 = isRecord(memories['l2']) ? memories['l2'] : null
-  if (l2 !== null) {
-    if (isExpired(l2, env)) flags.push('l2_expired')
-    else raws.push(memoryRaw('工作区记忆', l2, 'l2', next()))
-  }
-
-  // 上一会话 L1（subagent 去掉）
-  const prevL1 = isRecord(memories['prev_l1']) ? memories['prev_l1'] : null
-  if (prevL1 !== null && threadKind !== 'subagent') {
-    if (isExpired(prevL1, env)) flags.push('l1_expired')
-    else raws.push(memoryRaw('上一会话摘要', prevL1, 'l1', next()))
-  }
-
-  // 本会话 L1：纯会话摘要层，按 TTL 过滤；覆盖由检查点边界承担，不再要求 message-id 对齐。
-  const l1 = isRecord(memories['l1']) ? memories['l1'] : null
-  if (l1 !== null) {
-    if (isExpired(l1, env)) flags.push('l1_expired')
-    else raws.push(memoryRaw('本会话摘要', l1, 'l1', next()))
-  }
-
   // 本线程未读收件箱（**所有线程口径**）：跨线程投递的未读消息按 seq 序注入。
-  // source=input、优先级同记忆；渲染与 loop-policy 子代理调用同口径。
+  // source=input、优先级同技能；渲染与 loop-policy 子代理调用同口径。
   if (Array.isArray(bag['inbox_unread'])) {
     for (const item of bag['inbox_unread'] as Json[]) {
       if (!isRecord(item)) continue
@@ -317,7 +244,7 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
       raws.push(
         inputRaw(
           [textPart(`[收件箱 ${kind} · 来自 ${from}]\n${inboxBodyText(item['body'])}`)],
-          PRIORITY.memory,
+          PRIORITY.skill,
           parseAt(item['at']),
           next(),
           from,
@@ -326,20 +253,25 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     }
   }
 
-  // 线程：subagent 的父检查点 / 任务提示词。
-  // 子代理隔离：上下文 = 任务 + 父检查点，不继承父消息历史（历史块按线程口径跳过）。
+  // 线程：subagent 的父摘要 / 任务提示词。
+  // 子代理隔离：上下文 = 任务 + 父摘要，不继承父消息历史（历史块按线程口径跳过）。
   if (threadKind === 'subagent') {
-    const parentCheckpoint = parentCheckpointRaw(bag['parent_checkpoint'], next())
-    if (parentCheckpoint !== null) {
-      raws.push(parentCheckpoint)
-    } else if (Array.isArray(bag['parent_summaries'])) {
+    if (Array.isArray(bag['parent_summaries'])) {
       for (const entry of bag['parent_summaries'] as Json[]) {
-        const record = isRecord(entry) ? entry : { summary: entry }
-        if (isExpired(record, env)) {
-          flags.push('l1_expired')
-          continue
-        }
-        raws.push(memoryRaw('父会话摘要', record, 'l1', next()))
+        const text = parentSummaryText(entry)
+        if (text.length === 0) continue
+        raws.push({
+          role: 'system',
+          parts: [textPart(`[父会话摘要]\n${text}`)],
+          source: 'prompt',
+          priority: PRIORITY.prompt,
+          at: 0,
+          atomic: false,
+          atomicGroup: null,
+          toolCallId: null,
+          from: null,
+          orderHint: next(),
+        })
       }
     }
     const taskPrompt = asString(bag['task_prompt'])
@@ -393,56 +325,8 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     }
   }
 
-  // L3 召回（按分数降序截断；未给分数的按 0）
-  const recallEntries: { entry: string; score: number }[] = []
-  if (Array.isArray(bag['recall'])) {
-    const scored: { parts: CanonicalPart[]; score: number; entry: string; index: number }[] = []
-    ;(bag['recall'] as Json[]).forEach((item, index) => {
-      if (typeof item === 'string') {
-        scored.push({ parts: [textPart(item)], score: 0, entry: item, index })
-        return
-      }
-      if (!isRecord(item)) return
-      const score = typeof item['score'] === 'number' && Number.isFinite(item['score']) ? item['score'] : 0
-      const entryValue = item['entry']
-      const id =
-        typeof entryValue === 'string'
-          ? entryValue
-          : isRecord(entryValue)
-            ? asString(entryValue['id']) ?? JSON.stringify(entryValue)
-            : asString(item['id']) ?? `recall-${index}`
-      const explicitContent = asString(item['content'])
-      const text =
-        explicitContent ??
-        (typeof entryValue === 'string'
-          ? entryValue
-          : isRecord(entryValue)
-            ? entryValue['summary'] !== undefined
-              ? renderMemory('召回', entryValue['summary'])
-              : JSON.stringify(entryValue)
-            : '')
-      scored.push({ parts: [textPart(text)], score, entry: id, index })
-    })
-    scored.sort((left, right) => right.score - left.score || left.index - right.index)
-    for (const item of scored) {
-      recallEntries.push({ entry: item.entry, score: item.score })
-      raws.push({
-        role: 'system',
-        parts: item.parts,
-        source: 'recall',
-        priority: PRIORITY.recall,
-        at: 0,
-        atomic: false,
-        atomicGroup: null,
-        toolCallId: null,
-        from: null,
-        orderHint: next(),
-      })
-    }
-  }
-
   // 历史与同回合记录同源：会话回合日志经 `project.ts` 投影成中性模型记录（模型形状，不读展示 parts）。
-  // workflow 不组装消息历史；group 给正文加发言者前缀；subagent 只取任务与父检查点，不继承父历史。
+  // workflow 不组装消息历史；group 给正文加发言者前缀；subagent 只取任务与父摘要，不继承父历史。
   // `bag.turn_id` = 本轮回合身份：投影据此跳过本轮用户消息（`input` 权威）、把本轮其余记录标本轮口径。
   if (threadKind !== 'workflow' && threadKind !== 'subagent') {
     const currentTurnId = asString(bag['turn_id'])
@@ -472,12 +356,9 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
         ...(reasoning === null ? {} : { reasoning }),
         ...(record.toolResult === null ? {} : { toolResult: record.toolResult }),
         ...(record.error === null ? {} : { error: record.error }),
-        ...(record.checkpoint ? { checkpoint: true } : {}),
-        ...(record.covered ? { covered: true } : {}),
         ...(tokenKey === null ? {} : { tokenKey }),
       }
       raws.push(raw)
-      if (record.checkpoint) checkpoint = raw
     }
   }
 
@@ -507,5 +388,5 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
   // 同回合 iter 间产物不再经 `bag.extra_messages` 回灌：改由会话步日志投影（见上）统一派生。
   // `bag.extra_messages` 仍被接受但忽略（生产者可由 W1 下线）。
 
-  return { raws, flags, recallEntries, turns, checkpoint }
+  return { raws, flags, turns }
 }

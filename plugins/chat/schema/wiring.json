@@ -1,10 +1,7 @@
 {
   "slices": {
     "prompt": true,
-    "l2": true,
-    "l1": true,
     "skill": true,
-    "recall": false,
     "history": true,
     "style": true
   },

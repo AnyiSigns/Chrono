@@ -10,25 +10,18 @@
       "health",
       "graph",
       "scopes",
-      "view",
-      "search",
-      "edit",
       "client.read",
       "secret"
     ]
   },
-  "concurrent_methods": ["vendors", "health", "graph", "scopes", "view", "search", "client.read"],
+  "concurrent_methods": ["vendors", "health", "graph", "scopes", "client.read"],
   "pins": {
     "host": "host"
   },
   "needs": {
     "model": { "mode": "one" },
     "secrets": { "mode": "one" },
-    "retrieval": { "mode": "one" },
-    "memory-maintenance": { "mode": "one" },
-    "session": { "mode": "one" },
     "ref-hydrate": { "mode": "one" },
-    "short-memory": { "mode": "one" },
     "input": { "mode": "one" },
     "skill": { "mode": "one" },
     "config": { "mode": "one" }
@@ -106,19 +99,6 @@
       "name": "orchestration.health",
       "entry": "terms/orchestration.health.json",
       "readonly": true
-    },
-    {
-      "name": "memory.view",
-      "entry": "terms/memory.view.json",
-      "readonly": true
-    },
-    {
-      "name": "memory.search",
-      "entry": "terms/memory.search.json"
-    },
-    {
-      "name": "memory.edit",
-      "entry": "terms/memory.edit.json"
     },
     {
       "name": "ui-settings.client.read",

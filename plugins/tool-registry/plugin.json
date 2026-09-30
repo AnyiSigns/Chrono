@@ -13,10 +13,6 @@
     "tool-provider": { "mode": "many" },
     "tool-schema": { "mode": "one" },
     "session": { "mode": "one" },
-    "compress": { "mode": "one" },
-    "memory": { "mode": "one" },
-    "retrieval": { "mode": "one" },
-    "memory-maintenance": { "mode": "one" },
     "evolve-metrics": { "mode": "one" }
   },
   "start": "node execute/main.ts",

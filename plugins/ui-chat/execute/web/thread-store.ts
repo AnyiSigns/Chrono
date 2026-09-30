@@ -520,7 +520,8 @@ export function foldRunFinished(view: any, payload: any): { view: any; action: s
 }
 
 /**
- * 持久回合结局块：会话记录里已收口且非 `committed` 的回合，供渲染失败 / 取消 / 中断。
+ * 持久回合结局块：会话记录里已收口且需显式呈现的回合，供渲染失败 / 中断。
+ * `committed` 无块；`cancelled` 是用户主动停止，静默（不按错误展示）。
  * 当前在途回合（同 `turn_id`）跳过，避免与在途块重复呈现。
  */
 export function outcomeBlocks(view: any): Array<{ turnId: string | null; outcome: BusinessOutcome }> {
@@ -529,7 +530,7 @@ export function outcomeBlocks(view: any): Array<{ turnId: string | null; outcome
   for (const turn of turns) {
     if (!isRec(turn) || turn.state !== 'settled') continue
     const outcome = normalizeOutcome(turn.outcome)
-    if (outcome === null || outcome.kind === 'committed') continue
+    if (outcome === null || outcome.kind === 'committed' || outcome.kind === 'cancelled') continue
     if (
       view.inFlight !== null &&
       view.inFlight.turnId !== null &&

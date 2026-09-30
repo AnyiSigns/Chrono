@@ -124,7 +124,7 @@ add_gen(evolution)                  # 只对台账身份 add_gen；跨身份写�
   （与 guard / tools 口径对齐）；图数据里只有端口名与 `caps`，故按 `exec` / `plugin-admin` / `orchestration-admin`
   端口名，外加**声明式写档**（`caps.fs.write` 非 `'none'`）机械判定，并以 `guard → approval` 直边 + 双向可达近似
   「可达路径上存在该段」（composite 同样递归生效）。更精确的 (port, tool) 判据归 loop-policy 运行时。
-- **不变量 6 只查图内出现的契约**：契约池里声明但未实例化的契约（如待插的 `recall`）不要求 global 实例。
+- **不变量 6 只查图内出现的契约**：契约池里声明但未实例化的契约（如待插的 `verify`）不要求 global 实例。
 - **类型兼容为名义判定**：六类条目无独立 `type_id` 表，故只做相等 / 通配（`any` / `*`）判定，不展开 `subtypes`。
 - **diff 上限在 `validate` 强制**：`propose` 的第 4 条额度只判提案条数（diff 由 `validate` 演化规则 2 覆盖）。
 - **`run_proposal_count` 由调用方装配**：本插件不自读台账计数（服务不读投影）。

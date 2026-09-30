@@ -44,10 +44,7 @@ const SOURCE_CODE: { [key: string]: string } = {
   prompt: 'composer_source_prompt',
   tools: 'composer_source_tools',
   input: 'composer_source_input',
-  l2: 'composer_source_l2',
-  l1: 'composer_source_l1',
   skill: 'composer_source_skill',
-  recall: 'composer_source_recall',
   history: 'composer_source_history',
   style: 'composer_source_style',
   tool: 'composer_source_tools',
@@ -348,6 +345,27 @@ export function removeFromQueue(queue: unknown, threadKey: string, id: unknown):
   return next
 }
 
+/**
+ * 标记队内某条为「已记待发」：服务端已受理（会话内存标记，未落盘 / 未渲染），但尚未插入回合。
+ * 条目**保留在可见待发队列**（badge 可见），等轮次边界插入后再由 `dropNoted` 清除。
+ */
+export function markNoted(queue: unknown, threadKey: string, id: unknown): Rec {
+  const next: Rec = { ...(isRecord(queue) ? queue : {}) }
+  next[threadKey] = queueOf(next, threadKey).map((item) =>
+    isRecord(item) && item.id === id ? { ...item, noted: true } : item,
+  )
+  return next
+}
+
+/** 丢弃队内所有已 noted（已由 promote 插入回合）的条目；保留其余插入序。 */
+export function dropNoted(queue: unknown, threadKey: string): Rec {
+  const list = queueOf(queue, threadKey).filter((item) => !(isRecord(item) && item.noted === true))
+  const next: Rec = { ...(isRecord(queue) ? queue : {}) }
+  if (list.length === 0) delete next[threadKey]
+  else next[threadKey] = list
+  return next
+}
+
 export interface MessageSummary {
   text: string
   count: number
@@ -365,14 +383,20 @@ export function messageSummary(slot: unknown, max = 48): MessageSummary {
 export interface QueueEntry {
   id: string
   slot: unknown
+  /** 是否已由服务端记待发（等轮次边界插入）；已 noted 的条目不得重复 note / 当新回合重发。 */
+  noted: boolean
 }
 
-/** 队内条目拆解：`{ id, slot }` 包装取槽体；裸槽（无 `slot` 键）原样当槽体、id 为空。 */
+/** 队内条目拆解：`{ id, slot, noted }` 包装取槽体；裸槽（无 `slot` 键）原样当槽体、id 为空。 */
 export function queueEntry(message: unknown): QueueEntry {
   if (isRecord(message) && Object.prototype.hasOwnProperty.call(message, 'slot')) {
-    return { id: typeof message.id === 'string' ? message.id : '', slot: message.slot }
+    return {
+      id: typeof message.id === 'string' ? message.id : '',
+      slot: message.slot,
+      noted: message.noted === true,
+    }
   }
-  return { id: '', slot: message }
+  return { id: '', slot: message, noted: false }
 }
 
 /** 待发弹层逐行文案：摘要文本 + 附件计数拼装成可显示字符串（组件不再就地拼）。 */

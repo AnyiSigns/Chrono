@@ -1,6 +1,6 @@
 // 数据身份 E2E 冒烟（黑盒，经 boot CLI）：pack → seed → start → 写 config 世界基线（定义缺省）
 // → config.read（owner 合并世界基线 + 自有存储）/ input.read（服务自有存储）读回 → stop。
-// 运行记录已出世界：input / short-memory 的世界缺省写入不再被读；只 config 的判定阈值基线仍进世界。
+// 运行记录已出世界：input 的世界缺省写入不再被读；只 config 的判定阈值基线仍进世界。
 // 宿主是单写者，任何失败路径都会尝试 stop 释放锁。
 // 用法：node plugins/config/tools/e2e-smoke.mjs
 // 临时根目录建在系统临时目录的 kilo/ 下，执行后可留作排查。
@@ -19,7 +19,6 @@ const CONFIG_DIR = join(REPO_ROOT, 'plugins', 'config')
 const PACKAGES = [
   { id: 'input', dir: join(REPO_ROOT, 'plugins', 'input') },
   { id: 'config', dir: CONFIG_DIR },
-  { id: 'short-memory', dir: join(REPO_ROOT, 'plugins', 'short-memory') },
 ]
 
 function boot(root, args) {
@@ -66,7 +65,7 @@ function main() {
     const expectPos = status.world_head.hash
 
     // 只把 config 的缺省 body 写进世界：它承载判定阈值基线（permission / params / version）。
-    // input / short-memory 的运行记录已出世界，不再写世界缺省。
+    // input 的运行记录已出世界，不再写世界缺省。
     const configBody = JSON.parse(readFileSync(join(CONFIG_DIR, 'tools', 'default-body.json'), 'utf8'))
     const directive = [
       {

@@ -49,9 +49,10 @@ test('I19：逐类注入结局，vm 分支正确', () => {
   assert.equal(refused.kind, 'failure')
   assert.equal(refused.attributableTo, 'graph')
 
+  // 用户主动取消：静默（不按失败呈现），不落内联错误。
   const cancelled = receiptView(shellReceipt({ outcome: outcome({ kind: 'cancelled', code: 'cancelled', attributableTo: 'owner' }) }))
-  assert.equal(cancelled.kind, 'failure')
-  assert.equal(cancelled.displayCode, 'cancelled')
+  assert.equal(cancelled.kind, 'success')
+  assert.equal(cancelled.displayCode, null)
 
   const interrupted = receiptView(shellReceipt({ outcome: outcome({ kind: 'interrupted', code: 'interrupted', attributableTo: 'owner', retryable: true }) }))
   assert.equal(interrupted.kind, 'failure')

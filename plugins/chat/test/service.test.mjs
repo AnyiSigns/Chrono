@@ -25,7 +25,6 @@ const BAG_KEYS = [
   'input',
   'config',
   'tier',
-  'memories',
   'session',
   'graph',
   'persona',
@@ -68,7 +67,7 @@ test('hello manifest; reload/probe/drain; EOF exits', async () => {
   assert.equal(await drv.exit, 0)
 })
 
-test('send: reads owners, then title, then interpret; bag carries owner session/input', async () => {
+test('send: reads owners, opens turn, interprets; title runs after turn start', async () => {
   const drv = startService({
     bridge: defaultBridge({}, {
       session: sessionSliceFixture({
@@ -80,22 +79,26 @@ test('send: reads owners, then title, then interpret; bag carries owner session/
     await drv.hello()
     const result = await drv.call('send', idsFixture({ agent: 'agent-a' }))
     assert.equal(result.kind, 'result')
-    assert.deepEqual(
-      drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      [
-        'session.read',
-        'input.read',
-        'short-memory.read',
-        'todo.invoke',
-        'config.read',
-        'mcp.read',
-        'workspace.read',
-        'skill.read',
-        'session-title.generate',
-        'session.set_title',
-        'session.turn_open',
-        'loop-policy.interpret',
-      ],
+    const order = drv.portCalls.map((frame) => `${frame.port}.${frame.method}`)
+    // 回合开始（turn_open → interpret）不再被标题旁路段挡在前面：标题生成挪到 emitTurnStarted 之后异步跑。
+    const iTurnOpen = order.indexOf('session.turn_open')
+    const iInterpret = order.indexOf('loop-policy.interpret')
+    assert.ok(iTurnOpen >= 0 && iInterpret > iTurnOpen, `turn_open before interpret: ${order.join(', ')}`)
+    for (const owner of [
+      'session.read',
+      'input.read',
+      'todo.invoke',
+      'config.read',
+      'mcp.read',
+      'workspace.read',
+      'skill.read',
+    ]) {
+      assert.ok(order.includes(owner), `missing owner read ${owner}: ${order.join(', ')}`)
+    }
+    await waitFor(() => order.includes('session-title.generate') && order.includes('session.set_title'))
+    assert.ok(
+      order.indexOf('session-title.generate') > iTurnOpen,
+      `title generate after turn_open: ${order.join(', ')}`,
     )
 
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
@@ -105,8 +108,9 @@ test('send: reads owners, then title, then interpret; bag carries owner session/
     assert.equal(bag.input_body.slots.t1.kind, 'chat.message')
     assert.equal(bag.session.head, 'h3')
     assert.equal(bag.session.refs.h3.id, 'm3')
-    // generated title merged into the session body handed to interpret
-    assert.equal(bag.session.conversations[0].title, TITLE_VALUE.title)
+    // 标题旁路段现在回合开始后异步跑：interpret bag 携带的 session 仍是生成前的标题，
+    // 生成结果经 `session.set_title` 写回，不再并进本回合 bag。
+    assert.equal(bag.session.conversations[0].title, '新对话')
     // definition slices still come from the projection unchanged
     assert.equal(bag.config.model, 'deepseek-chat')
     assert.equal(bag.tier, 'review')
@@ -484,10 +488,16 @@ test('send: no current conversation + workspace_id -> new_conversation passthrou
     await drv.hello()
     const result = await drv.call('send', idsFixture())
     assert.equal(result.kind, 'result')
-    // 建会话随回合头前移：new_conversation 随 session.turn_open 落盘，不再是 bag / 回合尾提交的副产品。
+    // 建会话随回合头前移：new_conversation 随 session.turn_open 落盘（先用缺省标题），
+    // 首条消息标题在回合开始后异步生成，再经 session.set_title 写回。
     const openArgs = callArgs(drv.portCalls, 'session', 'turn_open')
-    assert.deepEqual(openArgs.new_conversation, { id: 'c-9', workspace_id: 'w-1', title: TITLE_VALUE.title })
+    assert.deepEqual(openArgs.new_conversation, { id: 'c-9', workspace_id: 'w-1' })
     assert.equal(openArgs.slot_ref, 'run-slot-1')
+    await waitFor(() => callArgs(drv.portCalls, 'session', 'set_title') !== undefined)
+    assert.deepEqual(callArgs(drv.portCalls, 'session', 'set_title'), {
+      conversation: 'c-9',
+      title: TITLE_VALUE.title,
+    })
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
     assert.equal(bag.session_id, 'c-9')
     assert.equal(bag.workspace_id, 'w-1')
@@ -930,7 +940,7 @@ test('cancel: open turn records intent, notifies loop/model, settles cancelled, 
     assert.equal(receipt.outcome.kind, 'cancelled')
     assert.deepEqual(
       drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      ['session.turn_cancel', 'loop-policy.cancel', 'model.abort', 'session.turn_settle'],
+      ['session.turn_cancel', 'loop-policy.cancel', 'model.abort', 'session.turn_promote_input', 'session.turn_settle'],
     )
     assert.equal(callArgs(drv.portCalls, 'session', 'turn_settle').outcome.kind, 'cancelled')
     const event = drv.events.find((frame) => frame.topic === 'chat.turn.settled')

@@ -30,7 +30,7 @@
 - **单一实现**：`encode` 与 `chunk` 用同一份分词器（`tokenizer.json`），token 计数与窗口边界一致。
 - **确定性**：同一分词器、同输入同输出；这是上层 `embedding` 与向量索引可重算的前提。
 - **窗口切块**：用真实 token 计数决定边界；超长逐块、不足一块不补、末块必达文本末尾；
-  `start` / `end` 不外泄 token 单位，统一换算为 **Unicode 码点偏移**（与 `memory-store` 条目 `text.slice` 同口径）。
+  `start` / `end` 不外泄 token 单位，统一换算为 **Unicode 码点偏移**。
 
 ## 推理与打包
 

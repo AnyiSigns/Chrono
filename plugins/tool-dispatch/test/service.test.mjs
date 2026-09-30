@@ -17,10 +17,6 @@ const PINS = {
   'tool-schema': 'tool-schema',
   guard: 'guard',
   session: 'session',
-  compress: 'compress',
-  memory: 'memory-store',
-  retrieval: 'memory-retrieval',
-  'memory-maintenance': 'memory-consolidate',
   'evolve-metrics': 'evolve-metrics',
 }
 
@@ -230,20 +226,19 @@ test('bag.directory 已给：本地索引复用，不发 tool-registry 调用（
 test('绑定项派发为反向 port.call（args 扁平化）；method 缺省 = 投影读', async () => {
   const providers = {
     guard: { judge: guardAllow },
-    retrieval: { search: (args) => ({ ok: true, kind: 'search', echo: args.query }) },
-    session: { deliver: () => ({ ok: true }) },
+    'evolve-metrics': { record: (args) => ({ ok: true, kind: 'record', echo: args.query }) },
   }
-  const binding = decl('retrieval', {
-    provider: 'retrieval',
+  const binding = decl('record', {
+    provider: 'evolve-metrics',
     kind: 'binding',
-    method: 'search',
+    method: 'record',
     argsSchema: {
       type: 'object',
       properties: { query: { type: 'string' } },
       required: ['query'],
       additionalProperties: true,
     },
-    idempotent: true,
+    idempotent: false,
   })
   const projection = decl('subagent.status', {
     provider: 'session',
@@ -255,14 +250,14 @@ test('绑定项派发为反向 port.call（args 扁平化）；method 缺省 = �
   await withService(providers, async (drv) => {
     const response = await drv.call('tool-dispatch', 'dispatch', {
       calls: [
-        { call_id: 'c1', tool: 'retrieval', args: { query: '记忆' } },
+        { call_id: 'c1', tool: 'record', args: { query: '备忘' } },
         { call_id: 'c2', tool: 'subagent.status', args: {} },
       ],
       directory: directory([binding, projection]),
       projection_reads: { 'subagent.status': { thread: 't-9', status: 'running' } },
       verdicts: 'allow',
     })
-    assert.equal(response.value.results[0].result.echo, '记忆')
+    assert.equal(response.value.results[0].result.echo, '备忘')
     assert.equal(response.value.results[1].result.thread, 't-9')
     assert.equal(
       drv.portCalls.some((item) => item.port === 'session'),

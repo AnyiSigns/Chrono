@@ -138,7 +138,7 @@ function answerContextBackend(message) {
         margin: 0,
         origin: 'default',
         flags: [],
-        quota: { l2: 0, l1: 0, skill: 0, recall: 0, style: 0 },
+        quota: { skill: 0, style: 0 },
       },
     }
   }
@@ -211,7 +211,6 @@ function callBuild(stateDir) {
         input: 'hello',
         system_prompt: 'You are a helpful agent.',
         tools: [{ name: 't1', schema: { type: 'object' } }],
-        memories: { l2: { summary: 'e2e' } },
         session: { head: null, refs: {} },
         config: { model: 'e2e-model', context_window: 1000, max_output: 100 },
       }

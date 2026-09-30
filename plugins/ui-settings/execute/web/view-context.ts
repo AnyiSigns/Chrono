@@ -1,5 +1,5 @@
 // 视图上下文：把壳 api + 本插件状态 / 动作装配成一个 React-free `vc`。
-// React 组件只读 `vc.state` 并调用 `vc.*`；动作模块（provider-actions / memory-actions / ...）共用同一 vc。
+// React 组件只读 `vc.state` 并调用 `vc.*`；动作模块（provider-actions / ...）共用同一 vc。
 // 原 `entry.js` 的编排（开合 / 订阅 / 渲染调度）整体搬到这里，DOM 构建层改由 React 组件承担。
 
 import {
@@ -16,9 +16,8 @@ import {
 import { applyTemplate, chooseEntry, defaultOnboarding } from './onboarding.ts'
 import { FALLBACK_MESSAGES, formatText, loadMessages, messageText } from './messages.ts'
 import { HEALTH_OK, healthView } from './health.ts'
-import { loadHealth, loadOrchestration, loadTab, loadVendors, loadMemoryView } from './data-load.ts'
+import { loadHealth, loadOrchestration, loadTab, loadVendors } from './data-load.ts'
 import { commitProvider, commitProviderEdit, fetchModels, saveProviderSecret } from './provider-actions.ts'
-import { doMemoryEdit, doMemorySearch } from './memory-actions.ts'
 import { handleNotifyState, loadNotify, requestPermission } from './notify-actions.ts'
 import { currentThemePref, setTheme } from './theme-actions.ts'
 import { connectEvents } from './sse.ts'
@@ -52,22 +51,6 @@ export function initialState(): any {
     skillConfirmDelete: null,
     onboarding: null,
     orch: { graph: null, scopes: null, health: null, degraded: { graph: false, scopes: false, health: false } },
-    memory: {
-      layer: 'l1',
-      workspace: '',
-      view: null,
-      viewDegraded: false,
-      query: '',
-      search: null,
-      searchDegraded: false,
-      searchBusy: false,
-      searchSeq: 0,
-      identitiesStale: false,
-      edit: null,
-      editError: null,
-      confirmDelete: null,
-      busy: false,
-    },
     ledgerOpen: null,
     rollbackConfirm: false,
     rollbackBusy: false,
@@ -347,9 +330,6 @@ export function createViewContext(api: any): { vc: any; dispose: () => void } {
     loadTab: (tab: string) => loadTab(vc, tab),
     loadHealth: () => loadHealth(vc),
     loadVendors: () => loadVendors(vc),
-    loadMemoryView: () => loadMemoryView(vc),
-    doMemorySearch: () => doMemorySearch(vc),
-    doMemoryEdit: (action: string, layer: string, id: string, patch: any) => doMemoryEdit(vc, action, layer, id, patch),
     requestPermission: () => requestPermission(vc),
   })
 

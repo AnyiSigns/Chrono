@@ -14,10 +14,7 @@ const VALID_SOURCES: Source[] = [
   'prompt',
   'tools',
   'input',
-  'l2',
-  'l1',
   'skill',
-  'recall',
   'history',
   'style',
 ]
@@ -27,12 +24,12 @@ export function defaultPolicy(): Policy {
   return {
     version: 1,
     budget: { margin_ratio: 0.05, default_context_window: 8192, default_max_output: 1024 },
-    quota: { l2: 0.08, l1: 0.08, skill: 0.1, recall: 0.12, style: 0.03 },
+    quota: { skill: 0.1, style: 0.03 },
     prefix: {
-      stable: ['prompt', 'tools', 'l2'],
-      order: ['history', 'l1', 'skill', 'recall', 'style'],
+      stable: ['prompt', 'tools'],
+      order: ['history', 'skill', 'style'],
     },
-    retention: { recent_turns: 4, t2_text_chars: 200, large_artifact_bytes: 65536, oversized_user_chars: 8192 },
+    retention: { recent_turns: 4, large_artifact_bytes: 65536, oversized_user_chars: 8192 },
     messages: {
       environment:
         '当前环境：工作目录 {workspace_root}；操作系统 {platform}；命令解释器为 PowerShell（跨平台同一套语法），命令默认在此工作目录下执行；相对路径均以此工作目录为基准。',
@@ -40,7 +37,6 @@ export function defaultPolicy(): Policy {
         '请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。',
       input_truncated: '…（此处本轮输入因超出上下文预算被截断）…',
       error_line: '系统错误：{error}',
-      error_avoid_header: '应避免的错误',
     },
     modality_fallback: { text_template: '[{kind} 附件：{name}（{mime}）]' },
   }
@@ -87,10 +83,7 @@ export function parsePolicy(parsed: unknown): Policy {
       default_max_output: num(budget['default_max_output'], base.budget.default_max_output),
     },
     quota: {
-      l2: num(quota['l2'], base.quota.l2),
-      l1: num(quota['l1'], base.quota.l1),
       skill: num(quota['skill'], base.quota.skill),
-      recall: num(quota['recall'], base.quota.recall),
       style: num(quota['style'], base.quota.style),
     },
     prefix: {
@@ -99,7 +92,6 @@ export function parsePolicy(parsed: unknown): Policy {
     },
     retention: {
       recent_turns: Math.max(1, num(retention['recent_turns'], base.retention.recent_turns)),
-      t2_text_chars: Math.max(1, num(retention['t2_text_chars'], base.retention.t2_text_chars)),
       large_artifact_bytes: Math.max(1, num(retention['large_artifact_bytes'], base.retention.large_artifact_bytes)),
       oversized_user_chars: Math.max(0, num(retention['oversized_user_chars'], base.retention.oversized_user_chars)),
     },
@@ -108,7 +100,6 @@ export function parsePolicy(parsed: unknown): Policy {
       interleave_guidance: str(messages['interleave_guidance'], base.messages.interleave_guidance),
       input_truncated: str(messages['input_truncated'], base.messages.input_truncated),
       error_line: str(messages['error_line'], base.messages.error_line),
-      error_avoid_header: str(messages['error_avoid_header'], base.messages.error_avoid_header),
     },
     modality_fallback: {
       text_template: str(modality['text_template'], base.modality_fallback.text_template),

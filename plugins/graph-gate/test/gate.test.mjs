@@ -16,7 +16,6 @@ const PINS = {
   session: 'session',
   model: 'model-protocol',
   context: 'context-window',
-  retrieval: 'memory-retrieval',
   guard: 'guard',
   approval: 'approval',
   tools: 'tools',

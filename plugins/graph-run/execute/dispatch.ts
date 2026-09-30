@@ -61,17 +61,15 @@ function pick(bag: Rec, keys: string[]): Rec {
   return out
 }
 
-/** 上下文组装的 bag：系统提示词 / 人格 / 技能 / 记忆 / 会话 + 本轮 iter 间产物。 */
+/** 上下文组装的 bag：系统提示词 / 人格 / 技能 / 会话 + 本轮 iter 间产物。 */
 function assembleBag(input: NodeDispatchInput): Rec {
   const bag = input.bag
   const out = pick(bag, [
     'config',
     'input',
-    'memories',
     'session',
     'style',
     'skills',
-    'recall',
     'tools',
     'thread_kind',
     'thread',
@@ -475,17 +473,6 @@ export async function dispatchNode(input: NodeDispatchInput): Promise<NodeDispat
   if (contractIdValue === 'context.assemble') {
     await ensureToolDirectory(input)
     return callPort(input, 'context', 'build', assembleBag(input), false)
-  }
-  if (contractIdValue === 'recall') {
-    // 权威键名取自消费方 memory-retrieval：工作区 `workspace`、预算 `recall_budget`（query 两侧一致）。
-    // 源值仍取本插件内部键（`workspace_id` / `budget`），只对齐发出的键名，避免消费方 fail-open 静默回落。
-    const out: Rec = {}
-    const workspace = input.bag['workspace_id'] ?? input.bag['workspace']
-    if (workspace !== undefined && workspace !== null) out['workspace'] = workspace
-    const budget = input.bag['recall_budget'] ?? input.bag['budget']
-    if (budget !== undefined && budget !== null) out['recall_budget'] = budget
-    out['query'] = input.bag['task'] ?? null
-    return callPort(input, 'retrieval', 'search', out, false)
   }
   if (contractIdValue === 'subagent') {
     // 子代理隔离：用任务 + 父检查点的专用 bag（不读父消息历史），产出归一为结构化结果。

@@ -53,11 +53,6 @@
       "type": "string",
       "description": "workspace 列表里匹配当前 workspace_id 的 path；无即缺键。"
     },
-    "memories": {
-      "type": "object",
-      "additionalProperties": true,
-      "description": "记忆片段 {l1?, l2?}，按 wiring 开关裁剪；空即缺键。"
-    },
     "graph": {
       "type": "object",
       "additionalProperties": true,
@@ -129,11 +124,6 @@
       "type": "array",
       "items": { "type": "object" },
       "description": "wiring 注入的工具 schema 目录；空数组不落键。"
-    },
-    "recall": {
-      "type": "array",
-      "items": { "type": "object" },
-      "description": "预加载召回块；按 wiring.recall 开关（当前恒为空数组）。"
     },
     "new_conversation": {
       "type": "object",

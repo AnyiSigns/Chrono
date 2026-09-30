@@ -39,7 +39,7 @@ const BASE_PROVIDERS = {
 test('list 并集：describe 提供者 + 绑定表 + 外部 MCP 工具', async () => {
   await withService(BASE_PROVIDERS, async (service) => {
     const response = await service.call('list', {
-      tools_bindings: { retrieval: bindingItem() },
+      tools_bindings: { 'session.deliver': bindingItem() },
       mcp_tools: [
         {
           name: 'mcp.srv.echo',
@@ -55,14 +55,14 @@ test('list 并集：describe 提供者 + 绑定表 + 外部 MCP 工具', async (
     })
     assert.equal(response.kind, 'result', JSON.stringify(response))
     const names = response.value.tools.map((tool) => tool.name).sort()
-    assert.deepEqual(names, ['mcp.srv.echo', 'read', 'retrieval', 'todo.read'])
+    assert.deepEqual(names, ['mcp.srv.echo', 'read', 'session.deliver', 'todo.read'])
 
     const byName = new Map(response.value.tools.map((tool) => [tool.name, tool]))
     assert.equal(byName.get('read').provider, 'tool-fs')
     assert.equal(byName.get('read').kind, 'invoke')
-    assert.equal(byName.get('retrieval').provider, 'retrieval')
-    assert.equal(byName.get('retrieval').kind, 'binding')
-    assert.equal(byName.get('retrieval').method, 'search')
+    assert.equal(byName.get('session.deliver').provider, 'session')
+    assert.equal(byName.get('session.deliver').kind, 'binding')
+    assert.equal(byName.get('session.deliver').method, 'deliver')
     assert.equal(byName.get('mcp.srv.echo').provider, 'mcp')
     // caps 归一：布尔 false → "none"
     assert.equal(byName.get('mcp.srv.echo').caps.net, 'none')
@@ -299,12 +299,12 @@ test('caps：net 布尔 true 拒、false 归一 none、非法字符串拒', asyn
 
 test('工具名全局唯一：跨来源重名后者被拒', async () => {
   const providers = {
-    'tool-fs': { describe: () => ({ tools: [toolDecl({ name: 'retrieval' })] }) },
+    'tool-fs': { describe: () => ({ tools: [toolDecl({ name: 'session.deliver' })] }) },
   }
   await withService(providers, async (service) => {
-    const response = await service.call('list', { tools_bindings: { retrieval: bindingItem() } })
+    const response = await service.call('list', { tools_bindings: { 'session.deliver': bindingItem() } })
     const names = response.value.tools.map((tool) => tool.name)
-    assert.deepEqual(names, ['retrieval'])
+    assert.deepEqual(names, ['session.deliver'])
     assert.equal(response.value.tools[0].provider, 'tool-fs')
     assert.equal(response.value.rejected[0].code, 'bad_tool_decl')
     assert.match(response.value.rejected[0].message, /duplicate/)

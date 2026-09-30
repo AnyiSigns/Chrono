@@ -9,7 +9,6 @@ import { GeneralPanel } from './General.tsx'
 import { ModelPanel } from './Model.tsx'
 import { PluginsPanel } from './Plugins.tsx'
 import { SkillsPanel } from './Skills.tsx'
-import { MemoryPanel } from './Memory.tsx'
 import { OrchestrationPanel } from './Orchestration.tsx'
 import { AboutPanel } from './About.tsx'
 import { Onboarding } from './Onboarding.tsx'
@@ -193,9 +192,6 @@ function TabContent() {
       break
     case 'skills':
       panel = <SkillsPanel />
-      break
-    case 'memory':
-      panel = <MemoryPanel />
       break
     case 'orchestration':
       panel = <OrchestrationPanel />

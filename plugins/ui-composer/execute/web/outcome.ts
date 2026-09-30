@@ -79,9 +79,10 @@ export function parsePreTurnRefusal(value: unknown): PreTurnRefusal | null {
   return { code, message: asString(error.message) ?? '' }
 }
 
-/** 是否失败结局（`committed` 之外都是失败）。 */
+/** 是否失败结局（`committed` 之外都是失败，但 **用户主动取消 `cancelled` 不算失败**：静默）。
+ *  取消是预期内的用户动作，不应在输入卡按错误提示。 */
 export function isFailure(outcome: BusinessOutcome): boolean {
-  return outcome.kind !== 'committed'
+  return outcome.kind !== 'committed' && outcome.kind !== 'cancelled'
 }
 
 /** 展示码：结局层码优先，其次 `cause` 里的下游码；无码回 `unknown`。

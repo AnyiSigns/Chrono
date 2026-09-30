@@ -29,6 +29,7 @@ import { FALLBACK_MESSAGES, formatText, loadMessages, lookupMessage } from './me
 import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
+  finalAssistantIds,
   hasPendingUserMessage,
   isInsertUserEntry,
   isPeriodicRun,
@@ -1259,11 +1260,20 @@ function CopyButton({ def }: { def: any }): ReactNode {
   )
 }
 
-function Footnote({ def, showRetry }: { def: any; showRetry: boolean }): ReactNode {
+function Footnote({
+  def,
+  showRetry,
+  showCopy,
+}: {
+  def: any
+  showRetry: boolean
+  showCopy: boolean
+}): ReactNode {
   const env = useChatEnv()
   const usage = usageText(def)
-  // 复制只对「有可复制正文」的助手消息有意义：工具卡 / 空段不挂复制 UI。
-  const copyable = messageText(def).length > 0
+  const role = def !== null && typeof def === 'object' && typeof def.role === 'string' ? def.role : 'assistant'
+  // 用户消息每条都带复制 UI；助手只在回合最终输出（末段）带，且只认正文——纯工具 / 空段不挂。
+  const copyable = showCopy && (role === 'user' || messageText(def).length > 0)
   if (usage === null && !copyable && !showRetry) return null
   return (
     <div className="chat-footnote">
@@ -1291,7 +1301,15 @@ function RenderItem({ vm }: { vm: any }): ReactNode {
   return <Markdown text={safeStringify(vm)} />
 }
 
-const MessageItem = memo(function MessageItem({ entry, announce }: { entry: any; announce: boolean }): ReactNode {
+const MessageItem = memo(function MessageItem({
+  entry,
+  announce,
+  showCopy = false,
+}: {
+  entry: any
+  announce: boolean
+  showCopy?: boolean
+}): ReactNode {
   const env = useChatEnv()
   const def = entry !== null && typeof entry === 'object' ? entry.def : null
   const role = def !== null && typeof def.role === 'string' ? def.role : 'assistant'
@@ -1305,6 +1323,7 @@ const MessageItem = memo(function MessageItem({ entry, announce }: { entry: any;
             item.type === 'text' ? <div key={index}>{item.text}</div> : <RenderItem key={index} vm={item} />,
           )}
         </div>
+        <Footnote def={def} showRetry={false} showCopy />
       </div>
     )
   }
@@ -1333,7 +1352,7 @@ const MessageItem = memo(function MessageItem({ entry, announce }: { entry: any;
           <RenderItem key={index} vm={item} />
         ))}
       </div>
-      <Footnote def={def} showRetry={showRetry} />
+      <Footnote def={def} showRetry={showRetry} showCopy={showCopy} />
     </div>
   )
 })
@@ -1357,6 +1376,8 @@ const HistoryList = memo(function HistoryList(props: HistoryListProps): ReactNod
   const nodes: ReactNode[] = []
   const slice = messages.slice(start, end)
   const lastEntry = messages.length > 0 ? messages[messages.length - 1] : null
+  // 助手复制 UI 只挂每回合最终输出（末段）：整链是旧→新，按 id 分组取每组最后一条。
+  const finalAssistants = finalAssistantIds(messages)
   for (const item of buildDateSeparators(slice, new Date())) {
     if (item.type === 'date') {
       nodes.push(
@@ -1374,7 +1395,7 @@ const HistoryList = memo(function HistoryList(props: HistoryListProps): ReactNod
     const entryId = messageId(item.entry)
     nodes.push(
       <MessageBoundary key={entryId} resetKey={`${entryId}:${revision}`} fallback={<RenderFallback />}>
-        <MessageItem entry={item.entry} announce={announce} />
+        <MessageItem entry={item.entry} announce={announce} showCopy={finalAssistants.has(entryId)} />
       </MessageBoundary>,
     )
   }
@@ -1471,7 +1492,9 @@ function StreamTurn({ view }: { view: any }): ReactNode {
           {stopNote}
         </div>
       ) : null}
-      {inFlight.outcome !== null && inFlight.outcome.kind !== 'committed' ? (
+      {inFlight.outcome !== null &&
+      inFlight.outcome.kind !== 'committed' &&
+      inFlight.outcome.kind !== 'cancelled' ? (
         <TurnOutcomeLine outcome={inFlight.outcome} />
       ) : inFlight.suspended === true ? (
         <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_waiting').body}</div>
@@ -1487,14 +1510,13 @@ function StreamTurn({ view }: { view: any }): ReactNode {
           </span>
           <span className="chat-working-time">{formatElapsed(seconds)}</span>
         </div>
-      ) : inFlight.cancelled === true ? (
-        <div className="chat-workflow-meta">{lookupMessage(env.table, 'chat_cancelled').body}</div>
       ) : null}
     </div>
   )
 }
 
-/** 回合结局块：非 committed 的持久 / 在途结局按种类与码渲染，不落回成功、不静默消失。 */
+/** 回合结局块：非 committed 的持久 / 在途失败结局按种类与码渲染，不落回成功、不静默消失。
+ *  `cancelled` 是用户主动停止，静默（不按错误展示）；`refused` / `interrupted` 仍显式呈现。 */
 const TurnOutcomeLine = memo(function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
   const { table } = useChatEnv()
   const code = outcomeDisplayCode(outcome)
@@ -2265,11 +2287,13 @@ function App({
       }
       const folded = foldRunFinished(store.getSnapshot(), payload)
       if (folded.action === 'ignore') {
-        // `chat.send` 命令 run 落账但从未开启回合（回合前拒绝 / 传输失败）：收起乐观用户气泡，
-        // 免得一条从未成为回合的消息永久挂在消息流尾。
-        if (payload.name === 'chat.send') {
-          store.commit(clearPendingUser(store.getSnapshot()), { type: 'lifecycle' })
-        }
+        // 无论是否匹配在途块，都要落账「该 run 已终局」（`folded.view` 已含 `finishedRuns`）：
+        // 迟到的 `chat.turn.started` / 增量帧据此被 `applyRunStarted` 丢弃，不会误开一块永不收口的
+        // 在途回合（幽灵「正在工作」）。`chat.send` 从未开启回合时顺带收起乐观用户气泡。
+        store.commit(
+          payload.name === 'chat.send' ? clearPendingUser(folded.view) : folded.view,
+          { type: 'lifecycle' },
+        )
         return
       }
       if (folded.action === 'suspend') {
@@ -2571,14 +2595,7 @@ function App({
           </div>
         ) : null}
         {item.isMe ? (
-          <div className="chat-msg chat-msg-user">
-            <div className="chat-bubble-user">
-              {item.items.length === 0 ? item.text : null}
-              {item.items.map((vm: any, index: number) =>
-                vm.type === 'text' ? <div key={index}>{vm.text}</div> : <RenderItem key={index} vm={vm} />,
-              )}
-            </div>
-          </div>
+          <MessageItem entry={{ def: item.def }} announce={false} />
         ) : (
           <div className="chat-group-item">
             <div className="chat-group-avatar" data-current={String(item.current)}>

@@ -66,6 +66,9 @@ export interface ComposerClient {
   writeSlot(threadKey: string, slot: unknown): Promise<SubmitResult>
   triggerSend(threadKey: string): Promise<CommandResult>
   insertMessage(turnId: string, insertId: string, message: unknown, thread?: string): Promise<CommandResult>
+  resumeTurn(turnId: string, thread?: string): Promise<CommandResult>
+  /** 协作式取消回合（`chat.cancel`）：置取消意图 + 中止在途模型 / 解释器，CAS 落 `cancelled`。 */
+  cancelTurn(turnId: string, thread?: string): Promise<CommandResult>
   cancelRun(run: string): Promise<{ ok: boolean; code: string }>
   fetchProfile(): Promise<CommandResult>
 }
@@ -110,9 +113,13 @@ export function createClient(ctx: SlotContext): ComposerClient {
       return asSubmit(await command(built.name, built.args, threadKey))
     },
     triggerSend: (threadKey) => command('chat.send', null, threadKey),
-    /** 回合运行中插入用户消息：`chat.insert` 命令（落主历史 + 下一轮并入，不起新回合）。 */
+    /** 回合运行中插入用户消息：`chat.insert` 命令（记待发；轮次边界挂起后随 `resume` 落盘并入，不起新回合）。 */
     insertMessage: (turnId, insertId, message, thread) =>
       command('chat.insert', { turn_id: turnId, insert_id: insertId, user_message: message }, thread),
+    /** 待发输入门挂起后恢复：`chat.resume{turn_id}`（无游标 = 段续跑；会话侧先提升待发输入再装配）。 */
+    resumeTurn: (turnId, thread) => command('chat.resume', { turn_id: turnId }, thread),
+    /** 协作式取消回合：真正停掉在途模型 / 解释器并收口 `cancelled`（宿主 abort 不杀在途推理）。 */
+    cancelTurn: (turnId, thread) => command('chat.cancel', { turn_id: turnId }, thread),
     async cancelRun(run) {
       const result = await ctx.cancel(run)
       if (isRecord(result)) {

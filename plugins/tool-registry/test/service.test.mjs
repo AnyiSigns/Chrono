@@ -15,10 +15,6 @@ const FIXTURE_ROOT = resolve(PKG_ROOT, '..', '..', 'tests', 'fixtures', 'plugins
 const PINS = {
   'tool-schema': 'tool-schema',
   session: 'session',
-  compress: 'compress',
-  memory: 'memory-store',
-  retrieval: 'memory-retrieval',
-  'memory-maintenance': 'memory-consolidate',
   'evolve-metrics': 'evolve-metrics',
 }
 
@@ -123,12 +119,12 @@ function toolDecl(overrides = {}) {
 
 function bindingItem(overrides = {}) {
   return {
-    class: 'retrieval',
-    method: 'search',
-    intent: '检索长期记忆。',
-    when_to_use: '需要语义召回记忆时。',
-    param_semantics: { query: '检索词。' },
-    boundaries: '只读检索；写入用 memory。',
+    class: 'session',
+    method: 'deliver',
+    intent: '向会话投递一条消息。',
+    when_to_use: '需要投递给定时。',
+    param_semantics: { query: '消息文本。' },
+    boundaries: '只投递；不读、不写。',
     argsSchema: {
       type: 'object',
       properties: { query: { type: 'string', minLength: 1 } },
@@ -173,7 +169,7 @@ test('hello 回 manifest：能力类与 list 声明与 plugin.json 一致', asyn
 test('list 并集：describe 提供者 + 绑定表 + 外部 MCP 工具', async () => {
   await withService(BASE_PROVIDERS, async (drv) => {
     const value = await listValue(drv, {
-      tools_bindings: { retrieval: bindingItem() },
+      tools_bindings: { 'session.deliver': bindingItem() },
       mcp_tools: [
         {
           name: 'mcp.srv.echo',
@@ -188,12 +184,12 @@ test('list 并集：describe 提供者 + 绑定表 + 外部 MCP 工具', async (
       ],
     })
     const names = value.tools.map((tool) => tool.name).sort()
-    assert.deepEqual(names, ['mcp.srv.echo', 'read', 'retrieval', 'todo.read'])
+    assert.deepEqual(names, ['mcp.srv.echo', 'read', 'session.deliver', 'todo.read'])
     const byName = new Map(value.tools.map((tool) => [tool.name, tool]))
     assert.equal(byName.get('read').provider, 'tool-fs')
     assert.equal(byName.get('read').kind, 'invoke')
-    assert.equal(byName.get('retrieval').kind, 'binding')
-    assert.equal(byName.get('retrieval').method, 'search')
+    assert.equal(byName.get('session.deliver').kind, 'binding')
+    assert.equal(byName.get('session.deliver').method, 'deliver')
     assert.equal(byName.get('mcp.srv.echo').provider, 'mcp')
     assert.equal(byName.get('mcp.srv.echo').caps.net, 'none')
   })

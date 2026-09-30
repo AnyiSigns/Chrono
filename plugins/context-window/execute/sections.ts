@@ -8,8 +8,6 @@ function emptySections(): SectionTokens {
     system: 0,
     tools: 0,
     rules: 0,
-    l2: 0,
-    checkpoint: 0,
     history_text: 0,
     tool_calls: 0,
     tool_results: 0,
@@ -21,8 +19,8 @@ function emptySections(): SectionTokens {
 
 /**
  * 计算分节 token。
- * 归类：工具结果（role=tool）→ `tool_results`；技能 / 风格 → `rules`；L1 摘要 → `checkpoint`；
- * 历史 / 召回正文 → `history_text`；提示语（`hint`）→ `hints`；调用与推理单独成节。
+ * 归类：工具结果（role=tool）→ `tool_results`；技能 / 风格 → `rules`；
+ * 历史正文 → `history_text`；提示语（`hint`）→ `hints`；调用与推理单独成节。
  */
 export function computeSections(messages: CanonicalMessage[]): SectionTokens {
   const sections = emptySections()
@@ -44,12 +42,6 @@ export function computeSections(messages: CanonicalMessage[]): SectionTokens {
         break
       case 'tools':
         sections.tools += partsTokens
-        break
-      case 'l2':
-        sections.l2 += partsTokens
-        break
-      case 'l1':
-        sections.checkpoint += partsTokens
         break
       case 'skill':
       case 'style':

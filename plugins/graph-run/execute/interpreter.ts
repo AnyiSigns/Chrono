@@ -10,12 +10,6 @@ import {
   providerResolver,
   toCalls,
 } from './dispatch.ts'
-import {
-  checkpointLevel,
-  checkpointThresholds,
-  contextPressure,
-  emitCheckpoint,
-} from './checkpoint.ts'
 import { commitParts, committedFromSteps, committedPartsOf, displayParts, incrementalParts, mergeParts } from './commit-parts.ts'
 import { isCancelled } from './cancel.ts'
 import { appendStep, nextStepSeq, toolCallsForLog } from './steplog.ts'
@@ -95,6 +89,19 @@ interface TerminalExtra {
 /** 空转 nudge：升级阶梯的第一步——先提示模型换策略，再次命中才收口。 */
 const LOOP_NUDGE =
   '检测到连续无进展（相同调用/结果重复、或短周期来回）。请停止重复同一操作：换用不同策略，或直接给出结论并结束本轮。'
+
+/**
+ * 客户端在本回合轮次边界是否有排队输入：据此挂起，等其由 `resume` 提升为 `step.user` 再恢复。
+ * 读取失败（端口不支持 / 回合未知）一律按无输入处理（fail-open 到原行为，不误挂起）。
+ */
+async function hasPendingInput(input: InterpretInput, turnId: string): Promise<boolean> {
+  try {
+    const res = await input.port.call('session', 'turn_has_pending_input', { turn_id: turnId })
+    return res.ok && isRecord(res.value) && res.value['pending'] === true
+  } catch {
+    return false
+  }
+}
 
 /** 派发失败值里携带的中止碎片（`error.partial`）。 */
 function partialOf(result: { value: Json }): Rec | null {
@@ -474,6 +481,13 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       rs.loopNudge = null
     }
     rs.loopSignatures = window.slice(-LOOP_WINDOW)
+    // 待发输入门：本段结束后若客户端有排队输入，挂起等它落盘再 resume——恢复的那一轮即读到，不晚一轮。
+    // 放在 settle 之前：否则回合会先收口，排队的消息就没机会进本轮上下文。
+    if (turnId !== null && (await hasPendingInput(input, turnId))) {
+      machine.send('suspend', progressOf(rs, trace))
+      await runSuspend(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, { kind: 'input' })
+      return finish(endedOf(machine.state, 'done'), { kind: 'input' })
+    }
     if (!shouldLoop) {
       machine.send('settle')
       await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null)
@@ -501,17 +515,6 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     // 图内进度一并随续跑 args 交给 chat：下一段起点即可广播，UI 轮次实时更新（不等到回合收口）。
     const segmentProgress = progressOf(rs, trace)
     machine.send('segment', segmentProgress)
-    // 段边界检查点：上下文压力越阈即在下一段模型调用前压缩（compress 为后端，只算不写）。
-    // 失败只跳过记录、不阻断续段（拿到结果也照常分段自续跑）。
-    const pressure = contextPressure(rs)
-    if (pressure !== null) {
-      const thresholds = checkpointThresholds(model, bag)
-      const level = checkpointLevel(pressure.ratio, thresholds)
-      if (level !== null) {
-        // 序号分配在 emitCheckpoint 内单调占据，成功时已推进 rs.steps。
-        await emitCheckpoint({ port: input.port, bag, model, rs, turnId, level })
-      }
-    }
     const markerSeq = nextStepSeq(rs)
     await appendStep(input.port, {
       type: 'checkpoint',
@@ -1468,12 +1471,11 @@ function applySideEffects(
     else delete rs.shared['last_reasoning']
     return
   }
-  // 上下文组装算出的模型参数（含预算用的 `max_output`）暂存本段状态，供模型调用对齐真实输出上限。
-  // 组装清单（used / budget）另存一份，供段边界检查点判定上下文压力；缓存提示原样留给模型调用。
+  // 上下文组装算出的模型参数（含预算用的 `max_output`）暂存本段状态，供模型调用对齐真实输出上限；
+  // 缓存提示原样留给模型调用。
   if (contractIdValue === 'context.assemble') {
     const params = isRecord(output['params']) ? (output['params'] as Rec) : null
     if (params !== null) rs.shared['model_params'] = params
-    if (isRecord(output['manifest'])) rs.shared['context_manifest'] = output['manifest']
     if (isRecord(output['cache'])) rs.shared['last_cache'] = output['cache']
   }
 }

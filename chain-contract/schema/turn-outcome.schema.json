@@ -47,7 +47,7 @@
       "required": ["from", "code"],
       "additionalProperties": true,
       "properties": {
-        "from": { "type": "string", "description": "来源命名空间，如 tool-fs 或 retrieval.search。" },
+        "from": { "type": "string", "description": "来源命名空间，如 tool-fs。" },
         "code": { "type": "string", "description": "下游原码，原样携带不改名。" },
         "message": { "type": "string", "description": "下游消息，可选。" }
       }

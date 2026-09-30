@@ -10,10 +10,7 @@ import type { BudgetOrigin, CanonicalMessage, Policy, Source } from './types.ts'
 
 /** 每来源配额上限（token，由 `budget.model` 建模给出）。 */
 export interface QuotaCaps {
-  l2: number
-  l1: number
   skill: number
-  recall: number
   style: number
 }
 
@@ -31,10 +28,7 @@ export interface BudgetModel {
 /** 由预算标量与 policy 比例在本地回落出配额上限（直调 allocate 时的兜底，与 `budget.model` 同口径）。 */
 function quotaCapsFromPolicy(budget: number, policy: Policy): QuotaCaps {
   return {
-    l2: Math.floor(budget * policy.quota.l2),
-    l1: Math.floor(budget * policy.quota.l1),
     skill: Math.floor(budget * policy.quota.skill),
-    recall: Math.floor(budget * policy.quota.recall),
     style: Math.floor(budget * policy.quota.style),
   }
 }
@@ -49,7 +43,7 @@ export interface AllocationResult {
   used: number
   sources: Record<string, { tokens: number; count: number }>
   trimmed: { source: string; reason: string }[]
-  /** 按序应用的降级阶梯（`age_tool_results` / `drop_reasoning` / `compress_unavailable` / `drop_old_turns` / `truncate_input`）。 */
+  /** 按序应用的降级阶梯（`age_tool_results` / `drop_reasoning` / `drop_old_turns` / `truncate_input`）。 */
   degraded: string[]
   error: AllocationError | null
 }
@@ -58,10 +52,7 @@ const ALL_SOURCES: Source[] = [
   'prompt',
   'tools',
   'input',
-  'l2',
-  'l1',
   'skill',
-  'recall',
   'history',
   'style',
   'tool',
@@ -137,8 +128,8 @@ interface CoreResult {
 }
 
 /**
- * 配额分配（阶梯的应用点）：P0 强制保留；记忆按 `quota.l2` / `quota.l1` 截断；
- * 技能 / 召回 / 风格按配额截断；历史（含工具）新 → 旧按 atomic 组整组进出；输入最后放入，放不下即标溢出。
+ * 配额分配（阶梯的应用点）：P0 强制保留；技能 / 风格按配额截断；
+ * 历史（含工具）新 → 旧按 atomic 组整组进出；输入最后放入，放不下即标溢出。
  */
 function allocateCore(
   messages: CanonicalMessage[],
@@ -153,7 +144,7 @@ function allocateCore(
     keep.add(message)
     left -= message.tokens
   }
-  // 本轮记录（T0，`source:'tool'`）：优先保留（先于记忆 / 历史配额），不参与历史裁剪。
+  // 本轮记录（T0，`source:'tool'`）：优先保留（先于技能 / 历史配额），不参与历史裁剪。
   // 超预算时由顶层老化 / 丢推理先行收缩；配对完整性由 atomic 组保证。
   for (const message of byPriority(messages, 4)) {
     if (message.source === 'history') continue
@@ -162,21 +153,6 @@ function allocateCore(
   }
   // 预留本轮输入被截断后的标记位，避免历史吃掉全部额度后输入被整条丢弃。
   const spendable = (): number => Math.max(0, left - reserve)
-
-  const takeBySource = (source: Source, cap: number): void => {
-    const limit = Math.min(cap, spendable())
-    let used = 0
-    for (const message of messages) {
-      if (message.source !== source) continue
-      if (used + message.tokens > limit) {
-        trimmed.push({ source, reason: 'quota' })
-        continue
-      }
-      keep.add(message)
-      used += message.tokens
-    }
-    left -= used
-  }
 
   const takeByPriority = (priority: number, cap: number): void => {
     const limit = Math.min(cap, spendable())
@@ -194,10 +170,7 @@ function allocateCore(
     left -= used
   }
 
-  takeBySource('l2', quota.l2)
-  takeBySource('l1', quota.l1)
   takeByPriority(2, quota.skill)
-  takeByPriority(3, quota.recall)
   takeByPriority(5, quota.style)
 
   // 历史：仅 `source==='history'`（P4）新 → 旧按 atomic 组整组进出；额度不够时停止（保新近连续）。
@@ -354,8 +327,6 @@ function truncateInput(
 }
 
 export interface AllocationOptions {
-  /** 本次装配是否已消费结构化检查点（检查点 = 压缩产物）。 */
-  checkpoint?: boolean
   /** 每模型 token 校正系数：改写 / 截断路径重算 token 时与之同口径。 */
   scale?: number
   /** 每来源配额上限（由 `budget.model` 给出）；缺省按预算与 policy 比例本地回落。 */
@@ -364,9 +335,8 @@ export interface AllocationOptions {
 
 /**
  * 配额分配 + 预算降级阶梯。
- * 阶梯按序：老化工具结果 → 丢推理 → 压缩（已消费检查点则记为 `compress`，否则 `compress_unavailable` 回落机械老化）
- * → 丢检查点之外的老回合（历史裁剪）→ 截断本轮输入。只有系统提示 + 工具 schema 本身超窗才 `budget_impossible`，
- * 并在消息里指名过大元素。
+ * 阶梯按序：老化工具结果 → 丢推理 → 丢老回合（历史裁剪）→ 截断本轮输入。
+ * 只有系统提示 + 工具 schema 本身超窗才 `budget_impossible`，并在消息里指名过大元素。
  */
 export function allocate(
   messages: CanonicalMessage[],
@@ -424,12 +394,6 @@ export function allocate(
       degraded.push('drop_reasoning')
     }
   }
-  // 压缩梯级：只有机械老化 + 丢推理后仍超预算才登记（已压到预算内 = 压缩未发生）。
-  // 有检查点 = 压缩产物已消费 → `compress`；否则 `compress_unavailable`（压缩不可用，机械老化顶上）。
-  if (sumTokens(working) > budget) {
-    degraded.push(options.checkpoint === true ? 'compress' : 'compress_unavailable')
-  }
-
   const reserve = messages.some((message) => message.source === 'input')
     ? (lookupCount(policy.messages.input_truncated) ?? 0) + 1
     : 0

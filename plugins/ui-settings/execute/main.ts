@@ -42,10 +42,6 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
   const rawHandlers = createHandlers({
     identity: CAPABILITY,
     model: link,
-    retrieval: link,
-    maintenance: link,
-    session: link,
-    shortMemory: link,
     input: link,
     config: link,
     secrets: SECRETS,

@@ -31,8 +31,6 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     session: { mode: 'one' },
     model: { mode: 'one' },
     context: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    compress: { mode: 'one' },
     guard: { mode: 'one' },
     'graph-gate': { mode: 'one' },
     approval: { mode: 'one' },
@@ -53,8 +51,8 @@ test('schema：method_timeouts 覆盖 run / cancel 且 run 落在门面与内层
   const schema = read('schema/graph-run.json')
   assert.equal(schema.method_timeouts['graph-run.run'], 4000000)
   assert.equal(schema.method_timeouts['graph-run.cancel'], 30000)
-  // 严格嵌套：门面反向上限 4200000 > run 4000000 > 内层 compress.summarize 3900000。
-  assert.ok(3900000 < schema.method_timeouts['graph-run.run'])
+  // 严格嵌套：门面反向上限 4200000 > run 4000000 > 内层 model.chat 3600000。
+  assert.ok(3600000 < schema.method_timeouts['graph-run.run'])
   assert.ok(schema.method_timeouts['graph-run.run'] < 4200000)
 })
 

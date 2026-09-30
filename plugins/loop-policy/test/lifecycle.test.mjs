@@ -16,17 +16,17 @@ function summaryOf(value) {
   return null
 }
 
-test('段边界回 stepping、回合终态回 settled：seed 图与含 recall 的图共用同一枚举', async () => {
+test('段边界回 stepping、回合终态回 settled：seed 图与换图共用同一枚举', async () => {
   const seed = seedModel()
   const graph = {
     contracts: seed.contracts,
     nodes: seed.nodes,
     prompts: seed.prompts,
     graph: {
-      nodes: ['context.assemble', 'recall', 'turn.commit'],
+      nodes: ['context.assemble', 'join', 'turn.commit'],
       edges: [
-        { from: [0, 'messages'], to: [1, 'task'] },
-        { from: [1, 'recall'], to: [2, 'message'] },
+        { from: [0, 'messages'], to: [1, 'left'] },
+        { from: [1, 'merged'], to: [2, 'message'] },
       ],
       entry_supply: [{ type_id: 'task', role: 'task' }],
       loop: { when: '', max_iter: 'max_turn_iter' },

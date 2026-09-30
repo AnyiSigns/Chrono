@@ -128,6 +128,9 @@ export function trackRunStarted(
  */
 export function trackActivity(state: RunState, run: unknown, threadKey: string): RunState {
   if (typeof run !== 'string' || run.length === 0) return state
+  // 已终局的 run 不得再认领：宿主中止后服务侧 handler 可能补发 `chat.turn.started` / 增量帧，
+  // 若重新点亮生成态，按钮会指向已注销的 run（再点停止即 `unknown_run`）。
+  if (state.finishedRuns[run] === true) return state
   if (state.runs[threadKey] === run) return state
   return { ...state, runs: { ...state.runs, [threadKey]: run } }
 }
@@ -150,7 +153,9 @@ export function trackRunFinished(state: RunState, run: unknown, threadKey: strin
   if (state.runs[threadKey] === run) {
     const runs = { ...state.runs }
     delete runs[threadKey]
-    return { state: { ...state, runs }, kind: 'turn' }
+    // 连同结束记录一起落账：迟到的 `chat.turn.started` / 增量帧（同一 run）据此被 `trackActivity` 丢弃，
+    // 不会把生成态重新点亮。
+    return { state: rememberFinished({ ...state, runs }, run), kind: 'turn' }
   }
   return { state: rememberFinished(state, run), kind: 'other' }
 }

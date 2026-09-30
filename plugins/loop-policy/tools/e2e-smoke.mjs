@@ -1,8 +1,8 @@
 // `loop-policy` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读 + 直连协议）：
 // pack 依赖闭包（全部 needs 提供方及其传递依赖，按拓扑序）→ seed → 离线投影确认身份在册、有效 pins 解析通过
 // → 直连 loop-policy 门面，把 graph-run / turn-ledger / session 反向调用按帧桩应答 → 覆盖 interpret 委派与收口。
-// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / memory-retrieval / evolve-metrics /
-// tool-fs），物化需 cargo build，与本次「声明 / needs / .worldignore 就位」验收无关；pack / seed 已覆盖宿主门禁。
+// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / evolve-metrics / tool-fs），
+// 物化需 cargo build，与本次「声明 / needs / .worldignore 就位」验收无关；pack / seed 已覆盖宿主门禁。
 // 用法：node plugins/loop-policy/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -24,7 +24,6 @@ const PLUGIN_ORDER = [
   'tokenizer',
   'embedding-local',
   'embedding',
-  'dedup',
   'config',
   'msg-dialect',
   'secrets-env',
@@ -32,10 +31,6 @@ const PLUGIN_ORDER = [
   'secrets',
   'throttle',
   'model-protocol',
-  'semantic',
-  'short-memory',
-  'summarize',
-  'compress',
   'token-estimate',
   'budget',
   'context-window',
@@ -47,19 +42,11 @@ const PLUGIN_ORDER = [
   'graph-gate',
   'guard',
   'vector-index',
-  'memory-store',
-  'query-plan',
-  'rerank',
-  'memory-retrieval',
   'router',
   'input',
   'session',
   'mcp-client',
   'mcp',
-  'l1-maintenance',
-  'l2-maintenance',
-  'l3-maintenance',
-  'memory-consolidate',
   'orchestration',
   'orchestration-admin',
   'plugin',
@@ -94,8 +81,6 @@ const EXPECTED_PINS = {
   session: 'session',
   model: 'model-protocol',
   context: 'context-window',
-  retrieval: 'memory-retrieval',
-  compress: 'compress',
   guard: 'guard',
   'graph-gate': 'graph-gate',
   approval: 'approval',

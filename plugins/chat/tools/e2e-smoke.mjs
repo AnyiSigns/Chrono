@@ -3,7 +3,7 @@
 // → seed → 离线读投影确认身份在册、chat 声明 / pins 解析（含 loop-policy）、命令入口解析
 // （chat.send / chat.history / chat.resume）、H21 自能力入口 term、.worldignore 生效
 // → 声明门禁负例（身份不一致）→ verify。
-// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / memory-retrieval /
+// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding /
 // evolve-metrics / tool-fs），物化需 cargo build，与本次「声明 / pins / 命令 / .worldignore 就位」
 // 验收无关；pack / seed 已覆盖宿主门禁。
 // 用法：node plugins/chat/tools/e2e-smoke.mjs
@@ -32,15 +32,10 @@ const PLUGIN_ORDER = [
   'input',
   'approval',
   'embedding',
-  'dedup',
   'msg-dialect',
   'secrets',
   'throttle',
   'model-protocol',
-  'semantic',
-  'short-memory',
-  'summarize',
-  'compress',
   'evolve-ledger',
   'evolve-evidence',
   'evolve-shadow',
@@ -51,16 +46,8 @@ const PLUGIN_ORDER = [
   'ref-hydrate',
   'tokenizer',
   'vector-index',
-  'memory-store',
-  'query-plan',
-  'rerank',
-  'memory-retrieval',
   'router',
   'session',
-  'l1-maintenance',
-  'l2-maintenance',
-  'l3-maintenance',
-  'memory-consolidate',
   'tool-schema',
   'tool-registry',
   'tool-dispatch',
@@ -85,7 +72,6 @@ const EXPECTED_PINS = {
   context: 'context-window',
   'session-title': 'session-title',
   'loop-policy': 'loop-policy',
-  'short-memory': 'short-memory',
   todo: 'todo',
   config: 'config',
   mcp: 'mcp',
@@ -159,7 +145,7 @@ function main() {
     if (target === 'host') continue
     assert.ok(projection.ids[target], `pins 目标缺身份 ${target}`)
   }
-  console.log('离线投影：chat pins 全量（含 loop-policy / 记忆族 / 配置）解析通过')
+  console.log('离线投影：chat pins 全量（含 loop-policy / 配置）解析通过')
 
   // 声明：execute + term + schema；implements / methods / start 就位
   const decl = readPluginDecl(anchor.world, 'chat', paths.blobsDir)

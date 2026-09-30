@@ -294,7 +294,7 @@ fn selects_fixture_provider_by_model_and_routes_embed() {
     assert_eq!(vectors_len(&result), 2);
     // 夹具的确定性向量：首分量 9。
     assert_eq!(result["value"]["vectors"][0][0], 9.0);
-    // 对外形状与拆分前一致（消费方 memory-store 等零改动）：恰好 {model, dim, vectors}。
+    // 对外形状保持稳定：恰好 {model, dim, vectors}。
     let mut keys: Vec<&str> = result["value"]
         .as_object()
         .expect("embed result must be an object")

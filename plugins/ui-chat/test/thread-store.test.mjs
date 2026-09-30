@@ -281,13 +281,15 @@ test('I19：逐类注入业务结局，在途渲染分支正确（refused 呈现
   }
 })
 
-test('持久回合结局块：settled 且非 committed 才渲染；在途同 turn 跳过', () => {
+test('持久回合结局块：settled 且非 committed / cancelled 才渲染；在途同 turn 跳过', () => {
   const base = {
     ...emptyView('t1'),
     turns: [
       { turn_id: 't1', conv: 'c1', state: 'open', outcome: null },
       { turn_id: 't2', conv: 'c1', state: 'settled', outcome: { kind: 'refused', code: 'boom', attributableTo: 'tool' } },
       { turn_id: 't3', conv: 'c1', state: 'settled', outcome: { kind: 'committed' } },
+      // 用户主动停止：静默，不按错误块展示。
+      { turn_id: 't4', conv: 'c1', state: 'settled', outcome: { kind: 'cancelled', code: 'cancelled', attributableTo: 'owner' } },
     ],
   }
   const blocks = outcomeBlocks({ ...base, inFlight: { turnId: 't1' } })
@@ -296,7 +298,7 @@ test('持久回合结局块：settled 且非 committed 才渲染；在途同 tur
   assert.equal(blocks[0].outcome.code, 'boom')
   // 在途回合（同 turn_id）已由在途块呈现，持久块跳过，避免重复。
   assert.equal(outcomeBlocks({ ...base, inFlight: { turnId: 't2' } }).length, 0)
-  // 非终态 / committed 均不出块。
+  // 非终态 / committed / cancelled 均不出块。
   assert.equal(outcomeBlocks({ ...base, inFlight: null }).length, 1)
 })
 

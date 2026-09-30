@@ -26,7 +26,6 @@ const PINS = {
   model: 'model-provider',
   'model-alt': 'alt-provider',
   context: 'context-window',
-  retrieval: 'memory-retrieval',
   guard: 'guard',
   approval: 'approval',
   tools: 'tools',

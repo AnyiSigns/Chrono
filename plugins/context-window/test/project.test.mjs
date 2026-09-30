@@ -1,5 +1,5 @@
 // 上下文投影单元测试：`project.ts` 直接读会话回合步日志（模型形状）→ 中性模型记录。
-// 覆盖：用户 / 派发批次（assistant tool_calls + tool 结果）/ 最终正文 / 检查点边界 / verify / 子代理，
+// 覆盖：用户 / 派发批次（assistant tool_calls + tool 结果）/ 最终正文 / verify / 子代理，
 // 以及「不读 refs 与展示 parts」。
 
 import { test } from 'node:test'
@@ -176,32 +176,7 @@ test('projectContext：跨回合同名 call_id 不互相覆盖（覆盖只在同
   assert.deepEqual(tools.map((record) => JSON.parse(texts(record)[0]).result.text), ['A', 'B'])
 })
 
-test('projectContext：检查点边界 {turn_id, seq} 覆盖其之前的记录，检查点注入一次', () => {
-  const turns = [
-    { turn_id: 't1', at: '2026-01-01T00:00:00.000Z', user_message: { content: 'U1' }, steps: [{ type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'A1' }, tool_results: [] }] },
-    {
-      turn_id: 't2',
-      at: '2026-01-02T00:00:00.000Z',
-      user_message: { content: 'U2' },
-      steps: [
-        { type: 'step.result', turn_id: 't2', seq: 1, assistant: { content: 'A2' }, tool_results: [] },
-        { type: 'checkpoint', turn_id: 't2', seq: 2, summary: { goal: '阶段一', findings: [{ claim: 'F' }] }, covered_upto: { turn_id: 't2', seq: 2 } },
-        { type: 'step.result', turn_id: 't2', seq: 3, assistant: { content: 'A2b' }, tool_results: [] },
-      ],
-    },
-    { turn_id: 't3', at: '2026-01-03T00:00:00.000Z', user_message: { content: 'U3' }, steps: [] },
-  ]
-  const meta = turnMetadata(session(turns))
-  const { records, checkpoint } = projectContext(session(turns), meta)
-  assert.ok(checkpoint !== null && checkpoint.checkpoint === true)
-  const covered = records.filter((record) => record.covered).map((record) => texts(record).join(''))
-  assert.deepEqual(covered, ['U1', 'A1', 'U2', 'A2'], '边界之前的记录打 covered 标记')
-  const kept = records.filter((record) => !record.covered).map((record) => texts(record).join(''))
-  assert.deepEqual(kept, ['[检查点]\n目标：阶段一\n发现：\n- F', 'A2b', 'U3'])
-  assert.equal(records.filter((record) => record.checkpoint).length, 1, '检查点只注入一次')
-})
-
-test('projectContext：verify / 子代理结果作为 system 记录，不产生无 id 的 tool 消息且不算边界', () => {
+test('projectContext：verify / 子代理结果作为 system 记录，不产生无 id 的 tool 消息', () => {
   const turns = [
     {
       turn_id: 't1',
@@ -213,13 +188,11 @@ test('projectContext：verify / 子代理结果作为 system 记录，不产生�
       ],
     },
   ]
-  const { records, checkpoint } = projectContext(session(turns), turnMetadata(session(turns)))
-  assert.equal(checkpoint, null, '子代理结果不构成会话检查点')
+  const { records } = projectContext(session(turns), turnMetadata(session(turns)))
   assert.deepEqual(records.map((record) => record.role), ['user', 'system', 'system'])
   assert.deepEqual(texts(records[1]), ['verify: {"passed":true}'])
   assert.ok(texts(records[2])[0].startsWith('[子代理]'))
   assert.equal(records.every((record) => record.toolCallId === null), true, 'verify / 子代理不得产 tool_call_id')
-  assert.equal(records.every((record) => record.covered === false), true, '无会话边界 → 不覆盖')
 })
 
 test('projectContext：step.user 依步号原位落一条用户记录（进下一轮模型上下文）', () => {

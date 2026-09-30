@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn chinese_similarity_related_beats_unrelated() {
-        let query = embed_one("把文本转换成向量，用于长期记忆的语义检索。");
+        let query = embed_one("把文本转换成向量，用于文本相似度计算。");
         let related = embed_one("本地向量化服务会为文本生成归一化向量，供检索使用。");
         let unrelated = embed_one("今天晚上应该吃什么晚饭比较好呢？");
         let related_score = cosine(&query, &related);

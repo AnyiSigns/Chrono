@@ -24,6 +24,7 @@ import {
   currentModelOf,
   currentReasoningOf,
   dequeue,
+  dropNoted,
   enqueue,
   enqueueFront,
   isCodeGenFallbackBody,
@@ -31,6 +32,7 @@ import {
   isRecord,
   LOADING_NOTE_MS,
   MAIN_THREAD,
+  markNoted,
   matchesThread,
   mergeConfig,
   normalizePermission,
@@ -770,13 +772,15 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       conversationId: creating ? threadKey : null,
     })
     if (isThreadBusy(tracking, threadKey)) {
-      // 回合进行中发送：**只入待发队列**（不起新回合，避开会话 `turn_busy`），此刻不落盘、不渲染进消息流。
-      // 轮次更新（`chat.turn.started`）时才把队首交给服务端落盘（`chat.insert`）——就像回合开头的用户消息
-      // 一样「发送才落盘」。若回合先收口，由 `chat.turn.settled` → `continueQueue` 作为新回合发出，不丢消息。
+      // 回合进行中发送：入待发队列 + **立刻记待发输入**（`chat.insert` → 会话内存标记，不落盘、不渲染）。
+      // 当前轮次结束时图据该标记**挂起**，客户端随即 `chat.resume` → 装配前把它提升为 `step.user`（此刻才落盘进流），
+      // 于是**紧接着的下一轮**模型即读到。若此刻 turn 身份未知，先留队，由 `chat.turn.started` 补记。
       const entry = { id: nextId(), slot }
       state.pending = enqueue(state.pending, threadKey, entry)
       clearSentInput(ready, sentText)
       publish()
+      const turnId = turnIds.get(threadKey) ?? null
+      if (turnId !== null) void flushQueuedInsert(threadKey, turnId, entry)
       return
     }
     state.sending = true
@@ -809,7 +813,17 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   async function stop(): Promise<void> {
-    const run = tracking.runs[threadKeyOf(state.activeThread)]
+    const key = threadKeyOf(state.activeThread)
+    const run = tracking.runs[key]
+    const turnId = turnIds.get(key)
+    // 优先协作式取消（`chat.cancel`）：真正中止在途模型 / 解释器并 CAS 落 `cancelled`。
+    // 宿主 `cancelRun` 只让宿主「不再等待」，不停服务侧推理，回合仍会跑完并落账。
+    if (typeof turnId === 'string' && turnId.length > 0) {
+      const cancelledTurn = await client.cancelTurn(turnId, key)
+      if (disposed) return
+      if (cancelledTurn.ok) return
+      // 已收口 / 未知回合：回退宿主 run 取消（仍可能有本插件认领的在途 run）。
+    }
     if (typeof run !== 'string') return
     const result = await client.cancelRun(run)
     if (disposed) return
@@ -828,9 +842,9 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   }
 
   /**
-   * 把待发队列里的一条交给服务端落盘：`chat.insert` 插入**当前回合**（落主历史 + 同回合步日志，
-   * 随下一轮请求并入），不起新回合。成功即从本地队列移除；失败（回合已收口 / 身份未就绪）保留，
-   * 随 `continueQueue` 作为新回合发，不把消息丢掉。
+   * 把待发队列里的一条交给服务端记待发：`chat.insert` 在**会话内存**标记（不落盘、不渲染），
+   * 条目**保留在可见队列**（标 `noted`），等轮次边界图挂起 → `resume` 提升为 `step.user`（此刻才落盘进流）。
+   * 回执未真记入（回合已收口 / 未知）则保持未 noted，交给 `continueQueue` 作为新回合发，不静默丢。
    */
   async function flushQueuedInsert(
     threadKey: string,
@@ -855,17 +869,25 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       }
       return
     }
-    state.pending = removeFromQueue(state.pending, threadKey, entry.id)
-    publish()
+    if (isRecord(result.value) && result.value['noted'] === true) {
+      // 会话已记待发：标记 noted 并保留在可见队列，等轮次边界插入后清除（badge 不提前消失）。
+      state.pending = markNoted(state.pending, threadKey, entry.id)
+      publish()
+      return
+    }
+    // 未能记入（回合已收口 / 未知）：保持未 noted，按新回合续发，不丢消息。
+    void continueQueue(threadKey)
   }
 
   /**
-   * 回合身份就绪（收到 `chat.turn.started`）后把本线程待发队列逐条交给服务端：
-   * 覆盖「入队时尚无 `turn_id`」的窗口；已在发送时立即落盘的条目已移除，不重复发。
+   * 回合身份就绪 / 新段开始（`chat.turn.started`）时整理本线程待发队列：
+   * - 已 noted 的条目：上一轮 `resume` 已把它提升为 `step.user` 插入回合，此处清除（此刻即「插入」）；
+   * - 其余条目（入队时尚无 `turn_id`）：交给服务端记待发。
    */
   function drainQueueToInsert(threadKey: string): void {
     const turnId = turnIds.get(threadKey)
     if (turnId === undefined) return
+    state.pending = dropNoted(state.pending, threadKey)
     for (const message of queueOf(state.pending, threadKey)) {
       const entry = queueEntry(message)
       const insertId = entry.id.length > 0 ? entry.id : nextId()
@@ -876,6 +898,10 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
   async function continueQueue(threadKey: string): Promise<void> {
     // 同线程已有写 / 回合在途时不抢跑：等其结束的 run.finished 再续。
     if (isThreadBusy(tracking, threadKey)) return
+    if (queueCount(state.pending, threadKey) === 0) return
+    // 已 noted 的条目由 `resume` 插入了刚结束的回合：丢弃，不当作新回合重发；只续发未 noted 的。
+    state.pending = dropNoted(state.pending, threadKey)
+    publish()
     if (queueCount(state.pending, threadKey) === 0) return
     const result = dequeue(state.pending, threadKey)
     if (result.message === null) return
@@ -1013,6 +1039,13 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       if (isRecord(payload.progress)) state.progress = payload.progress
       cacheStatus()
       publish()
+      // 待发输入门：回合为等排队输入而挂起。消息体已在会话待发（未落盘），此处直接恢复；
+      // `chat.resume` 会在装配前把它提升为 `step.user`（那一刻才落盘进流），本轮即被模型读到。
+      if (payload['pending'] === 'input') {
+        const turnId = typeof payload['turn_id'] === 'string' ? payload['turn_id'] : turnIds.get(key) ?? null
+        const thread = typeof payload['thread'] === 'string' ? payload['thread'] : undefined
+        if (turnId !== null) void client.resumeTurn(turnId, thread)
+      }
       return
     }
     if (record.topic === 'chat.turn.settled') {
@@ -1149,6 +1182,18 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     for (const timer of expectTimers.values()) clearTimeout(timer)
     expectTimers.clear()
     clearConfigTimer()
+  }
+
+  // TEMP DEBUG（浏览器自动化验证用，提交前删除）：暴露 store 状态与事件入口。
+  ;(globalThis as unknown as Record<string, unknown>)['__composerDebug'] = {
+    snapshot: () => snapshot,
+    emit: onRecord,
+    state,
+    send,
+    setText: (text: string) => {
+      state.text = typeof text === 'string' ? text : ''
+      publish()
+    },
   }
 
   return {

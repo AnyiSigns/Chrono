@@ -164,12 +164,12 @@ test('并发上限生效：超上限排队不丢弃', async () => {
 test('绑定项派发为反向 port.call（args 扁平化）', async () => {
   const providers = {
     guard: { judge: guardAllow },
-    retrieval: { search: (args) => ({ ok: true, kind: 'search', hits: [], echo: args.query }) },
+    session: { deliver: (args) => ({ ok: true, kind: 'deliver', echo: args.query }) },
   }
-  const binding = decl('retrieval', {
-    provider: 'retrieval',
+  const binding = decl('session.deliver', {
+    provider: 'session',
     kind: 'binding',
-    method: 'search',
+    method: 'deliver',
     argsSchema: {
       type: 'object',
       properties: { query: { type: 'string' } },
@@ -181,18 +181,18 @@ test('绑定项派发为反向 port.call（args 扁平化）', async () => {
   })
   await withService(providers, async (service) => {
     const response = await service.call('dispatch', {
-      calls: [{ call_id: 'c1', tool: 'retrieval', args: { query: '记忆' } }],
+      calls: [{ call_id: 'c1', tool: 'session.deliver', args: { query: '备忘' } }],
       directory: directory([binding]),
     })
     const result = response.value.results[0]
     assert.equal(result.ok, true, JSON.stringify(result))
-    assert.equal(result.result.kind, 'search')
-    assert.equal(result.result.echo, '记忆')
+    assert.equal(result.result.kind, 'deliver')
+    assert.equal(result.result.echo, '备忘')
     const call = service.portCalls.find(
-      (item) => item.port === 'retrieval' && item.method === 'search',
+      (item) => item.port === 'session' && item.method === 'deliver',
     )
-    assert.ok(call, '应发 retrieval.search 反向调用')
-    assert.equal(call.args.query, '记忆')
+    assert.ok(call, '应发 session.deliver 反向调用')
+    assert.equal(call.args.query, '备忘')
   })
 })
 

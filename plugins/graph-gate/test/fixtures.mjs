@@ -88,14 +88,6 @@ const CONTRACTS = [
     touches_effects: true,
   },
   {
-    contract_id: 'recall',
-    inputs: [input('task', 'task')],
-    outputs: [output('recall', 'recall')],
-    publishes: [],
-    effects: { ports: ['retrieval'], methods: ['search'], caps: NO_FS },
-    touches_effects: true,
-  },
-  {
     contract_id: 'turn.commit',
     inputs: [
       input('message', 'message', { binding_mode: 'any' }),
@@ -139,7 +131,6 @@ const NODES = [
     bindings: { agent: 'neutral' },
   }),
   node('ep-global', 'evolve.propose', { cap: 'model', method: 'chat' }, GLOBAL),
-  node('rc-global', 'recall', { cap: 'retrieval', method: 'search' }, GLOBAL),
 ]
 
 const GRAPH = {

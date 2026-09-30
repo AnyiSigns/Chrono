@@ -23,8 +23,5 @@ export const nodeIo = load('node-io.json')
 /** 每类回合结局各一（`{label, outcome}`）。 */
 export const outcomeFixtures = load('outcomes.json') as { label: string; outcome: TurnOutcome }[]
 
-/** retrieval.search 的权威 bag 与生产方当前 bag；已修键名错位留历史档。 */
-export const retrievalSearch = load('retrieval-search.json')
-
 /** 各厂商推理形态的中立块。 */
 export const vendorReasoning = load('vendor-reasoning.json') as Record<string, ReasoningBlock>

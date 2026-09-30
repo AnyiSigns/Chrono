@@ -9,7 +9,6 @@ export const TABS = [
   { id: 'model', icon: 'cpu' },
   { id: 'plugins', icon: 'puzzle' },
   { id: 'skills', icon: 'sparkles' },
-  { id: 'memory', icon: 'brain' },
   { id: 'orchestration', icon: 'git-branch' },
   { id: 'about', icon: 'info' },
 ]

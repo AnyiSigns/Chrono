@@ -42,7 +42,7 @@ function nextLoadToken(ctx: any): () => boolean {
   return () => ctx.loadSeq !== seq
 }
 
-/** 按 tab 加载数据；memory 无外部读取。装载结果逐段校验令牌，过期即丢弃。 */
+/** 按 tab 加载数据。装载结果逐段校验令牌，过期即丢弃。 */
 export async function loadTab(ctx: any, tab: string): Promise<void> {
   const stale = nextLoadToken(ctx)
   ctx.state.loadError = null
@@ -99,12 +99,6 @@ export async function loadTab(ctx: any, tab: string): Promise<void> {
   }
   if (tab === 'orchestration') {
     await withLoading(ctx, () => loadOrchestration(ctx, stale))
-    return
-  }
-  if (tab === 'memory') {
-    await withLoading(ctx, async () => {
-      await loadMemoryView(ctx, stale)
-    })
     return
   }
   ctx.state.loadError = null
@@ -192,14 +186,4 @@ export async function loadOrchestration(ctx: any, stale: () => boolean = () => f
   if (stale()) return
   ctx.state.orch.health = health.ok ? health.value : null
   ctx.state.orch.degraded.health = !health.ok
-}
-
-/** 记忆浏览（只读）：`memory.view` → L1 / L2 / L3；失败只置降级标记，由记忆面板自身渲染降级态。 */
-export async function loadMemoryView(ctx: any, stale: () => boolean = () => false): Promise<boolean> {
-  const result = await ctx.runCommand('memory.view', null)
-  if (stale()) return false
-  const failed = !result.ok || (isRecord(result.value) && result.value.ok === false)
-  ctx.state.memory.view = failed ? null : result.value
-  ctx.state.memory.viewDegraded = failed
-  return !failed
 }

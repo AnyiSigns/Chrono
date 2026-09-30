@@ -64,7 +64,7 @@
 ### 2.4 反向调用（服务 → 宿主）
 
 服务实现一个能力类时，常要调**本插件 `pins` 里的其他身份**（`tool-fs` → `sandbox`、`model-protocol` → `secrets`、
-`memory-consolidate` → `embedding`…）。故服务协议有**第二方向**的调用：插件 → 宿主，宿主按**发出者 `pins`** 路由后
+`context-window` → `budget`…）。故服务协议有**第二方向**的调用：插件 → 宿主，宿主按**发出者 `pins`** 路由后
 转成对目标服务的 `call`（§2.2）。
 
 ```

@@ -1,5 +1,5 @@
 // 能力类 `vector-index` 的方法表：upsert / remove / search / info / clear。
-// 索引本体是 ③ 可重算件：由消费方（memory-store）从其 ④ 条目重算后经 upsert 灌入并落本身份 ③ 目录；
+// 索引本体是 ③ 可重算件：由调用方经 upsert 灌入并落本身份 ③ 目录；
 // 本服务只持有记录（逻辑 key + chunk_index + 向量），不读投影、无反向调用、无写通道，只回逻辑 key。
 // - upsert：按 key 覆盖（先删同 key 旧记录再追加，保持插入序）+ 覆写版本计数；锚（model/dim）变即重建；
 // - remove：删若干 key 的记录；- search：暴力余弦最小堆 top-k；- info：当前索引描述（含记录）；

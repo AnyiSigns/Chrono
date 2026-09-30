@@ -30,7 +30,6 @@
 | `schema/interpret-bag.schema.json` | chat -> loop-policy 的 `interpret` bag 形状 |
 | `schema/step-record.schema.json` | 回合事件日志五种步记录 |
 | `schema/turn-outcome.schema.json` | 回合结局 |
-| `schema/retrieval-search.schema.json` | `retrieval.search` bag（TS 发、Rust 收） |
 | `schema/contract-version.schema.json` | 契约主版本标记 |
 | `fixtures/` | 共享夹具（真实形状），仅测试期 |
 | `invariants.ts` | I5 码透传、I6 bag 单真源断言器，仅测试期 |
@@ -55,21 +54,6 @@
 `schema/interpret-bag.schema.json` 记录生产方 `buildInterpretBag`（`plugins/chat/execute/assemble.ts`）与
 chat 方法实际写出的键。消费方（`plugins/loop-policy/execute/`）读取但生产方不写出的键属契约缺口，
 已登记在测试的 `allowedConsumerOnly`，逐项列出。
-
-### `retrieval.search` bag
-
-权威键名取自消费方 `memory-retrieval` 的既有契约（`src/bag.rs` / `src/config.rs` 与 `schema/retrieval.json`）：
-工作区键是 **`workspace`**，预算键是 **`recall_budget`**。生产方 `plugins/loop-policy/execute/dispatch.ts`
-已按权威键名发出，三键逐键对齐（此前的 `workspace_id` / `budget` 错位已修）：
-
-| 权威键 | 生产方发出的键 | 生产方位置 | 消费方位置 |
-| --- | --- | --- | --- |
-| `workspace` | `workspace` | `plugins/loop-policy/execute/dispatch.ts`（源值取内部键 `workspace_id`） | `plugins/memory-retrieval/src/bag.rs` |
-| `recall_budget` | `recall_budget` | `plugins/loop-policy/execute/dispatch.ts`（源值取内部键 `budget`） | `plugins/memory-retrieval/src/config.rs` |
-| `query` | `query` | `plugins/loop-policy/execute/dispatch.ts` | `plugins/memory-retrieval/src/bag.rs` |
-
-契约以权威键名冻结；跨语言双向断言（TS 发、Rust 收）见
-`tests/contract/loop-policy-retrieval.seam.contract.test.mjs`。本包不改任何一侧的代码。
 
 ## 用法
 

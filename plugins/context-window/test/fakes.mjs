@@ -69,7 +69,7 @@ function ratioOf(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
-const QUOTA_DEFAULTS = { l2: 0.08, l1: 0.08, skill: 0.1, recall: 0.12, style: 0.03 }
+const QUOTA_DEFAULTS = { skill: 0.1, style: 0.03 }
 
 export function computeBudget(args) {
   const config = args?.config ?? null
@@ -93,10 +93,7 @@ export function computeBudget(args) {
     origin: contextWindow === null || maxOutput === null ? 'default' : 'profile',
     flags,
     quota: {
-      l2: cap(ratioOf(quotaPolicy.l2, QUOTA_DEFAULTS.l2)),
-      l1: cap(ratioOf(quotaPolicy.l1, QUOTA_DEFAULTS.l1)),
       skill: cap(ratioOf(quotaPolicy.skill, QUOTA_DEFAULTS.skill)),
-      recall: cap(ratioOf(quotaPolicy.recall, QUOTA_DEFAULTS.recall)),
       style: cap(ratioOf(quotaPolicy.style, QUOTA_DEFAULTS.style)),
     },
   }

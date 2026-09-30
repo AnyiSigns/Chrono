@@ -7,8 +7,8 @@
 
 - 身份：`graph-run`
 - 能力类 / 方法：`graph-run` → `run`（一次调用跑**一段 = 一个 iter**，段尾未完则返回自续跑计划）、`cancel`（置取消标志）
-- `pins`：无（`"pins": {}`）；`needs`（一律 `mode:"one"`）：`session` / `model` / `context` / `retrieval` /
-  `compress` / `guard` / `graph-gate` / `approval` / `tools` / `router`
+- `pins`：无（`"pins": {}`）；`needs`（一律 `mode:"one"`）：`session` / `model` / `context` /
+  `guard` / `graph-gate` / `approval` / `tools` / `router`
 - 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 运行时零 npm 依赖；服务不写链、不读投影；跨插件只走 `port.call`；`now` 取 `env.now`
 

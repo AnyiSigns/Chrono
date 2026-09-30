@@ -1,6 +1,6 @@
 {
   "title": "回合步记录（turn step record）",
-  "description": "session 回合事件日志的追加记录形状，按 type 取五种。回合尾一次写改为边跑边追加：turn.open 在调模型之前写；step.intent 在有副作用的工具派发之前写（先写意图再执行）；step.result 记助手 / 工具结果 / 推理 / 用量；checkpoint 是压缩产物，追加而非改写；turn.settle 只在 open 态经 CAS 生效。步记录按 (turn_id, seq) 去重。",
+  "description": "session 回合事件日志的追加记录形状，按 type 取五种。回合尾一次写改为边跑边追加：turn.open 在调模型之前写；step.intent 在有副作用的工具派发之前写（先写意图再执行）；step.result 记助手 / 工具结果 / 推理 / 用量；checkpoint 是通用步记录（段标记 / 子代理结果 / verify 报告），追加而非改写；turn.settle 只在 open 态经 CAS 生效。步记录按 (turn_id, seq) 去重。",
   "type": "object",
   "required": ["type"],
   "additionalProperties": true,
@@ -138,7 +138,7 @@
         "summary": {
           "type": "object",
           "additionalProperties": true,
-          "description": "结构化检查点：goal / constraints / decisions / findings / files / open_questions / next_steps / errors_to_avoid / user_preferences / covered_upto。",
+          "description": "通用段记录载荷（段标记 / 子代理结果 / verify 报告等）；历史压缩检查点曾用 goal / constraints / decisions / findings / files / open_questions / next_steps / errors_to_avoid / user_preferences / covered_upto。",
           "properties": {
             "goal": { "type": "string" },
             "constraints": { "type": "array", "items": { "type": "string" } },

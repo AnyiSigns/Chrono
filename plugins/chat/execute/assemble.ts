@@ -168,26 +168,6 @@ function skillsOf(ids: Json): Json {
   return skillBody['skills']
 }
 
-/** 记忆片段：本会话 L1 + 工作区 L2（按 slices 开关）。 */
-function memoriesOf(ids: Json, conversation: Rec | null, wiring: Wiring): Rec {
-  const memoryBody = bodyOf(ids, 'short-memory')
-  const out: Rec = {}
-  if (memoryBody === null) return out
-  const conversationId = conversation !== null ? asString(conversation['id']) : null
-  if (sliceEnabled(wiring, 'l1') && conversationId !== null && isRecord(memoryBody['sessions'])) {
-    const entry = (memoryBody['sessions'] as Rec)[conversationId]
-    if (isRecord(entry)) out['l1'] = entry
-  }
-  if (sliceEnabled(wiring, 'l2')) {
-    const workspaceId = conversation !== null ? asString(conversation['workspace_id']) : null
-    if (workspaceId !== null && isRecord(memoryBody['workspaces'])) {
-      const entry = (memoryBody['workspaces'] as Rec)[workspaceId]
-      if (isRecord(entry)) out['l2'] = entry
-    }
-  }
-  return out
-}
-
 /**
  * `#11` 会话切片：body 字段 + 当前会话链头 + 全量 refs（供 #13 沿 prev 还原）
  * + `data_gen`（写方据此把下一世代写成补丁世代；无数据世代为 null）。
@@ -357,8 +337,6 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
   const tier = tierOf(ids)
   if (tier !== null) bag['tier'] = tier
   if (conversationId !== null) bag['session_id'] = conversationId
-  const memories = memoriesOf(ids, conversation, wiring)
-  if (Object.keys(memories).length > 0) bag['memories'] = memories
   const graph = graphSliceOf(ids)
   if (graph !== null) bag['graph'] = graph
   const workspace = workspaceOf(ids, conversation)
@@ -408,7 +386,6 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
   // 缺省工具 schema 只在非空时落键：空数组会被 #27 当作「预建空目录」而屏蔽真实工具目录，
   // #33 会在 context.assemble 处经 `tools.list` 装配目录。
   if (Array.isArray(wiring.tools) && wiring.tools.length > 0) bag['tools'] = wiring.tools
-  if (sliceEnabled(wiring, 'recall')) bag['recall'] = []
   return bag
 }
 

@@ -20,6 +20,7 @@ import { decodeEntities, parseTag, safeUrl, sanitizeHtml } from '../execute/web/
 import {
   currentConversationId,
   dataChangeTarget,
+  finalAssistantIds,
   finishesCurrentStream,
   hasPendingUserMessage,
   isPeriodicRun,
@@ -911,6 +912,31 @@ test('乐观收口判定：同文 + 同附件数才收口（纯附件消息正�
   )
   // 空 def（无正文无附件）无从比对，不误判为已落定
   assert.equal(hasPendingUserMessage(attachmentOnly, { role: 'user', parts: [] }), false)
+})
+
+test('助手复制 UI：只挂每回合最终助手消息（插入 user 切段时取末段；用户消息不在列）', () => {
+  const messages = [
+    { hash: 'u1', def: { id: 'msg-c-t1-user', role: 'user', content: 'q1' } },
+    { hash: 'a1', def: { id: 'msg-c-t1-assistant-1', role: 'assistant', content: '做一半' } },
+    { hash: 'i1', def: { id: 'msg-c-t1-user-i1', role: 'user', content: '插一句' } },
+    { hash: 'a2', def: { id: 'msg-c-t1-assistant-2', role: 'assistant', content: '最终输出' } },
+    { hash: 'u2', def: { id: 'msg-c-t2-user', role: 'user', content: 'q2' } },
+    { hash: 'a3', def: { id: 'msg-c-t2-assistant-1', role: 'assistant', content: '单段输出' } },
+  ]
+  const ids = finalAssistantIds(messages)
+  assert.equal(ids.has('msg-c-t1-assistant-1'), false)
+  assert.equal(ids.has('msg-c-t1-assistant-2'), true)
+  assert.equal(ids.has('msg-c-t2-assistant-1'), true)
+  // 用户消息不进助手复制集合（用户消息由渲染层无条件挂复制 UI）
+  assert.equal(ids.has('msg-c-t1-user'), false)
+  assert.equal(ids.has('msg-c-t1-user-i1'), false)
+  assert.equal(finalAssistantIds([]).size, 0)
+})
+
+test('entry.tsx：用户消息挂复制 UI、助手按回合末段挂', () => {
+  const source = readFileSync(join(WEB, 'entry.tsx'), 'utf8')
+  assert.match(source, /<Footnote def=\{def\} showRetry=\{false\} showCopy \/>/)
+  assert.match(source, /const finalAssistants = finalAssistantIds\(messages\)/)
 })
 
 // ---- 命令不可用 ----

@@ -133,6 +133,28 @@ export function messageId(entry: any): string {
 }
 
 /**
+ * 助手复制 UI 的挂载点：每个回合的**最后一条**助手消息 id（回合结束后助手的最终输出）。
+ * 展示投影里同一回合的助手输出会被 `step.user` 插入切成多段（id 形如
+ * `msg-<conv>-<turnId>-assistant-<段号>`），只有末段带复制 UI；用户消息不在此列
+ * （用户消息每条都带复制 UI）。缺投影后缀的非标准 id 各自独立成组——退化为「都带复制 UI」。
+ */
+export function finalAssistantIds(messages: any[]): Set<string> {
+  const last = new Map<string, string>()
+  if (!Array.isArray(messages)) return new Set()
+  let index = 0
+  for (const entry of messages) {
+    const def = isRec(entry) && isRec(entry.def) ? entry.def : null
+    if (def !== null && def.role === 'assistant') {
+      const id = messageId(entry)
+      const match = /^(.*)-assistant-\d+$/.exec(id)
+      last.set(match !== null ? match[1] : `#${index}`, id)
+    }
+    index += 1
+  }
+  return new Set(last.values())
+}
+
+/**
  * 回合运行中插入的用户消息（id 形如 `msg-<conv>-<turnId>-user-<insert_id>`；回合开头那条是 `-user`）。
  * 在途期间由 `StreamTurn` 按追加序渲染，历史列表跳过以免重复并错位。
  */

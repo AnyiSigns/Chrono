@@ -16,8 +16,8 @@ import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 const CAPABILITY = 'graph-run'
 const LOG = makeLogger('graph-run')
 /**
- * 反向调用等待上限。须严格大于被调用层最长的 `method_timeouts`——段边界检查点经 `compress.summarize`
- * 走图外语义压缩（`compress.summarize` 3900000，内层再嵌 `semantic.summarize` 3660000 / `model.chat` 3600000），
+ * 反向调用等待上限。须严格大于被调用层最长的 `method_timeouts`——模型调用 `model.chat` 3600000
+ * （经 agent.step / subagent / evolve.propose 抵达），否则本层先超时、内层安全网还没机会自收口；
  * 同时严格小于本层宿主侧的 `graph-run.run` 安全网（4000000）。
  */
 const PORT_CALL_TIMEOUT_MS = 3950000

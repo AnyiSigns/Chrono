@@ -34,8 +34,6 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     'ref-hydrate': { mode: 'one' },
     model: { mode: 'one' },
     context: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    compress: { mode: 'one' },
     guard: { mode: 'one' },
     'graph-gate': { mode: 'one' },
     approval: { mode: 'one' },

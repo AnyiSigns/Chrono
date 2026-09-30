@@ -364,6 +364,8 @@ export class SessionStore {
   private turnBySlot = new Map<string, string>()
   private reservedOpens = new Map<string, ReservedOpen>()
   private reservedSeqs = new Set<string>()
+  /** 回合 id → 待发输入（内存，不落盘）：图据此挂起，挂起后提升为 `step.user`。 */
+  private pendingInput = new Map<string, Rec[]>()
   private records = 0
 
   private constructor(
@@ -1150,6 +1152,35 @@ export class SessionStore {
     return maxSeq
   }
 
+  /**
+   * 记一条**待发输入**（回合进行中用户想插入的消息）：只在内存标记，不落步、不渲染、不进上下文。
+   * 作用有二：① 让图在轮次边界据此**挂起**（等这条输入）② 保存消息体，挂起后提升为 `step.user`。
+   * 提升（`promoteInputs`）才落盘——即「消息进入流之后才落盘」。
+   * 返回是否真记入（回合非 open / 未知一律 false）：调用方据此决定前端是否把该条留在可见待发队列。
+   */
+  notePendingInput(turnId: string, insertId: string, message: Rec): boolean {
+    const entry = this.turnEntryOf(turnId)
+    if (entry === undefined || entry.state !== 'open') return false
+    const list = this.pendingInput.get(turnId) ?? []
+    if (!list.some((item) => item['insert_id'] === insertId)) {
+      list.push({ insert_id: insertId, user_message: message })
+      this.pendingInput.set(turnId, list)
+    }
+    return true
+  }
+
+  /** 该回合是否有待发输入（图在轮次边界据此挂起）。 */
+  hasPendingInput(turnId: string): boolean {
+    return (this.pendingInput.get(turnId)?.length ?? 0) > 0
+  }
+
+  /** 取走待发输入（清内存），返回待落盘条目（保持插入序）。 */
+  takePendingInput(turnId: string): Rec[] {
+    const list = this.pendingInput.get(turnId) ?? []
+    this.pendingInput.delete(turnId)
+    return list
+  }
+
   /** 回合所属会话 id（无该回合回 null）。 */
   conversationOfTurn(turnId: string): string | null {
     const entry = this.turnLogById.get(turnId)
@@ -1178,6 +1209,7 @@ export class SessionStore {
     entry.state = 'settled'
     entry.outcome = outcome
     this.openTurns.delete(turnId)
+    this.pendingInput.delete(turnId)
     this.pushEvent(entry.conv, record)
     const persisted = await this.appendConversationWithRetry(entry.conv, record, false)
     if (persisted) this.persistClose(turnId)

@@ -11,7 +11,6 @@ import {
   INTERPRET_BAG_KEYS,
   OUTCOME_CODES,
   OUTCOME_KINDS,
-  RETRIEVAL_SEARCH_KEYS,
   causeFromError,
   causeOf,
   cancelled,
@@ -24,7 +23,6 @@ import {
   validateBag,
   validateOutcome,
   validateReasoningBlock,
-  validateRetrievalSearchBag,
   validateStepRecord,
 } from '../src/runtime.ts'
 
@@ -161,21 +159,6 @@ test('validateStepRecord：五种记录', () => {
   assert.equal(validateStepRecord({ type: 'nope', turn_id: 't' }).ok, false)
   assert.equal(validateStepRecord({ type: 'step.intent', turn_id: 't', seq: 1 }).ok, false)
   assert.equal(validateStepRecord({ type: 'turn.settle', turn_id: 't', outcome: { kind: 'bogus', retryable: false } }).ok, false)
-})
-
-test('retrieval.search bag：权威键与预算约束', () => {
-  const bag = {
-    query: 'q',
-    workspace: 'w-1',
-    recall_budget: 8,
-    dedup_set: ['a'],
-    model_config: {},
-  }
-  assert.equal(validateRetrievalSearchBag(bag).ok, true)
-  assert.equal(validateRetrievalSearchBag({ ...bag, recall_budget: 0 }).ok, false)
-  assert.equal(validateRetrievalSearchBag({ ...bag, workspace: 3 }).ok, false)
-  assert.ok(RETRIEVAL_SEARCH_KEYS.includes('workspace'))
-  assert.ok(!RETRIEVAL_SEARCH_KEYS.includes('workspace_id'))
 })
 
 test('推理块校验', () => {

@@ -127,6 +127,12 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
     env: CallEnv | undefined,
     provider?: string,
   ): Promise<CallResponse> => {
+    // run 已被取消：对该 run 的反向调用一律回 `cancelled`，不再转发。
+    // 服务侧 handler 感知不到取消（`CallEnv` 无 signal，反向调用 signal 恒 undefined），若放行会在
+    // `run.finished` 之后继续写会话 / 补发业务事件（幽灵回合）。只挡「取消过」的 run，不动正常收口。
+    if (typeof env?.run === 'string' && deps.registry.isCancelled(env.run)) {
+      return { ok: false, code: 'cancelled', message: 'run cancelled' }
+    }
     if (deps.getRouter() === undefined) {
       // 装配尚未完成：监听先于装配，服务可能已连上并发起反向调用，等路由就绪再转发。
       await deps.routerReady

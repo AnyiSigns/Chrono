@@ -38,7 +38,7 @@ export interface PipelineResult {
   events: { topic: string; payload: Json }[]
 }
 
-/** 前缀缓存排序：稳定前缀（系统提示 → 工具 → L2）置前，其后历史 → L1 → 技能 → 召回 → 风格，输入最后。 */
+/** 前缀缓存排序：稳定前缀（系统提示 → 工具）置前，其后历史 → 技能 → 风格，输入最后。 */
 function sourceRanks(policy: Policy): Record<string, number> {
   const order: Source[] = [...policy.prefix.stable, ...policy.prefix.order, 'input']
   const ranks: Record<string, number> = {}
@@ -107,7 +107,7 @@ function oversizedUserChars(bag: Record<string, unknown>, policy: Policy): numbe
   )
 }
 
-/** 稳定前缀的稳定哈希：仅由系统提示 → 工具 → L2 的静态内容决定，前缀不变则键不变。 */
+/** 稳定前缀的稳定哈希：仅由系统提示 → 工具的静态内容决定，前缀不变则键不变。 */
 function prefixKey(run: CanonicalMessage[]): string {
   const serialized = stableStringify(
     run.map((message) => ({ role: message.role, parts: message.parts })) as unknown as Json,
@@ -116,7 +116,7 @@ function prefixKey(run: CanonicalMessage[]): string {
 }
 
 /**
- * 厂商中立的缓存提示：标记稳定前缀（系统提示 → 工具 → L2，即 policy.prefix.stable 的连续前导段）的末尾。
+ * 厂商中立的缓存提示：标记稳定前缀（系统提示 → 工具，即 policy.prefix.stable 的连续前导段）的末尾。
  * 前缀为空（无可缓存内容）时返回 null，调用方不产出 `cache`。`system` 仅在全部 system 角色消息都落在
  * 前缀内时置真（否则 system 串会含易变切片，标记反而使缓存失效）；`breakpoints` 只标非 system 的前缀消息下标。
  */
@@ -145,14 +145,6 @@ function cacheHintOf(messages: CanonicalMessage[], policy: Policy): CacheHint | 
   return hint
 }
 
-function recallKept(
-  kept: CanonicalMessage[],
-  recall: { entry: string; score: number }[],
-): { entry: string; score: number }[] {
-  const count = kept.filter((message) => message.source === 'recall').length
-  return recall.slice(0, count)
-}
-
 interface ManifestInput {
   env: CallEnv
   model: string
@@ -165,7 +157,6 @@ interface ManifestInput {
   retention: Record<RetentionTier, number>
   trimmed: AssemblyManifest['trimmed']
   degraded: string[]
-  recall: { entry: string; score: number }[]
   flags: string[]
   usage: UsageManifest | null
 }
@@ -183,7 +174,6 @@ function makeManifest(input: ManifestInput): AssemblyManifest {
     retention: input.retention,
     trimmed: input.trimmed,
     degraded: input.degraded,
-    recall: input.recall,
     flags: uniqueFlags(input.flags),
     budget_origin: input.budgetOrigin,
     usage: input.usage,
@@ -247,30 +237,25 @@ function runPipeline(
   config: Record<string, unknown> | null,
   model: string,
 ): PipelineResult {
-  const gathered = gatherCandidates(bag, env, policy)
+  const gathered = gatherCandidates(bag, policy)
   const canonical = canonicalize(gathered.raws, { scale: factor })
   const deduped = dedupe(canonical)
   const retained = applyRetention(deduped.messages, {
     distances: gathered.turns.distances,
-    coveredTurnIds: gathered.turns.coveredTurnIds,
     callStep: gathered.turns.callStep,
     recentTurns: policy.retention.recent_turns,
-    t2TextChars: policy.retention.t2_text_chars,
     largeArtifactBytes: largeArtifactBytes(bag, policy),
     oversizedUserChars: oversizedUserChars(bag, policy),
     scale: factor,
     errorLine: policy.messages.error_line,
-    errorAvoidHeader: policy.messages.error_avoid_header,
   })
   const repaired = repairPairing(retained.messages, factor)
   const allocation = allocate(repaired, budgetInfo.budget, policy, {
-    checkpoint: gathered.checkpoint !== null,
     scale: factor,
     quota: budgetInfo.quota,
   })
   const retention = retained.counts
   const retentionDegraded = retained.degraded
-  const recall = recallKept(allocation.kept, gathered.recallEntries)
   const baseFlags = [...gathered.flags, ...budgetInfo.flags]
   // 用量形状由 `buildAssembly` 收敛后经 `budget.observe` 回填（此处占位 null）。
   const manifestUsage: UsageManifest | null = null
@@ -288,7 +273,6 @@ function runPipeline(
       retention,
       trimmed: allocation.trimmed,
       degraded: [...retentionDegraded, ...allocation.degraded],
-      recall,
       flags: [...baseFlags, allocation.error.code],
       usage: manifestUsage,
     })
@@ -321,7 +305,6 @@ function runPipeline(
       retention,
       trimmed: allocation.trimmed,
       degraded: [...retentionDegraded, ...allocation.degraded],
-      recall,
       flags: [...baseFlags, 'pairing_violation'],
       usage: manifestUsage,
     })
@@ -359,7 +342,6 @@ function runPipeline(
     retention,
     trimmed: allocation.trimmed,
     degraded: [...retentionDegraded, ...allocation.degraded],
-    recall,
     flags,
     usage: manifestUsage,
   })

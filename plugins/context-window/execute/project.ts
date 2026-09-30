@@ -6,7 +6,7 @@
 //
 // 产物为中性模型记录（尚未赋来源 / 优先级 / 序号），确定性顺序：
 //   每回合：user 消息；每个派发批次：assistant(content, tool_calls) 后跟各 tool(call_id, JSON 结果)；
-//   无调用的 step.result：assistant 正文；结构化检查点：一条 system 检查点；verify：一条 system 记录；
+//   无调用的 step.result：assistant 正文；verify：一条 system 记录；
 //   子代理结果：一条 system 记录（同回合可见，不构成会话边界）。
 // assistant + 其工具结果编成同一 atomic 组（同进同出），供保留 / 预算按组处理。
 //
@@ -18,7 +18,7 @@
 
 import { parseAttachments } from './history.ts'
 import { isRecord, parseAt } from './text.ts'
-import { isCovered, renderCheckpoint, type TurnMetadata } from './views.ts'
+import { renderCheckpoint, type TurnMetadata } from './views.ts'
 import type { CanonicalPart, Json, Role, Source, ToolResultMeta } from './types.ts'
 
 export interface ProjectedRecord {
@@ -31,11 +31,9 @@ export interface ProjectedRecord {
   toolResult: ToolResultMeta | null
   reasoning: Json | null
   error: string | null
-  checkpoint: boolean
   turnId: string | null
   step: number | null
   at: number
-  covered: boolean
   /** atomic 组号（assistant 与其工具结果同组）；非组内为 null。 */
   group: number | null
   /** 群聊发言者（缺省 null）。 */
@@ -44,11 +42,8 @@ export interface ProjectedRecord {
 
 export interface ProjectedContext {
   records: ProjectedRecord[]
-  /** 最新结构化检查点（无则 null）；其 `checkpoint` 记录已在 `records` 内。 */
-  checkpoint: ProjectedRecord | null
 }
 
-const MEMORY_PRIORITY = 1
 const HISTORY_PRIORITY = 4
 
 function textPart(text: string): CanonicalPart {
@@ -122,18 +117,16 @@ function toolResultsOf(step: Record<string, unknown>): Record<string, unknown>[]
 }
 
 /**
- * 把会话回合日志投影为中性模型记录。`metadata` 提供覆盖边界（被覆盖的记录打 `covered` 标记，
- * 由保留阶段按 T3 丢弃，与检查点注入配合）。`currentTurnId` 给定时，跳过该回合用户消息并让其余记录
+ * 把会话回合日志投影为中性模型记录。`currentTurnId` 给定时，跳过该回合用户消息并让其余记录
  * 走本轮口径（`source:'tool'`）；缺省则全部按历史投影（无回合身份可依时不做猜测）。
  */
 export function projectContext(
   session: Record<string, unknown>,
-  metadata: TurnMetadata,
+  _metadata: TurnMetadata,
   currentTurnId: string | null = null,
 ): ProjectedContext {
   const turns = turnsOf(session)
   const records: ProjectedRecord[] = []
-  let checkpointRecord: ProjectedRecord | null = null
   let group = 0
 
   turns.forEach((turn) => {
@@ -145,7 +138,6 @@ export function projectContext(
     // 本轮非用户记录 = tool 来源（落在 input 之后，保留恒 T0）；往期 = history。
     const origin: Source = isCurrent ? 'tool' : 'history'
 
-    const covered = (step: number | null): boolean => isCovered(metadata, turnId, step)
     const push = (record: ProjectedRecord): void => {
       records.push(record)
     }
@@ -193,11 +185,9 @@ export function projectContext(
           toolResult: null,
           reasoning: null,
           error: null,
-          checkpoint: false,
           turnId,
           step: 0,
           at,
-          covered: covered(0),
           group: null,
           from,
         })
@@ -238,11 +228,9 @@ export function projectContext(
             toolResult: null,
             reasoning,
             error: null,
-            checkpoint: false,
             turnId,
             step: seq,
             at,
-            covered: covered(seq),
             group: calls.length > 0 ? batchGroup : null,
             from: asString(assistant?.['from']),
           })
@@ -266,11 +254,9 @@ export function projectContext(
             },
             reasoning: null,
             error: null,
-            checkpoint: false,
             turnId,
             step: seq,
             at,
-            covered: covered(seq),
             group: batchGroup,
             from: null,
           }, callId)
@@ -294,11 +280,9 @@ export function projectContext(
             toolResult: null,
             reasoning,
             error: null,
-            checkpoint: false,
             turnId,
             step: seq,
             at,
-            covered: covered(seq),
             group: null,
             from: asString(assistant?.['from']),
           })
@@ -316,11 +300,9 @@ export function projectContext(
             toolResult: { tool: '', args: null, verbatim },
             reasoning: null,
             error: null,
-            checkpoint: false,
             turnId,
             step: seq,
             at,
-            covered: covered(seq),
             group: null,
             from: null,
           }, callId)
@@ -343,11 +325,9 @@ export function projectContext(
               toolResult: null,
               reasoning: null,
               error: null,
-              checkpoint: false,
               turnId,
               step: seq,
               at,
-              covered: covered(seq),
               group: null,
               from: asString(message['from']),
             })
@@ -364,50 +344,23 @@ export function projectContext(
         if (kind === 'verify') {
           const text = asString(summary['text'])
           if (text !== null) {
-            push(verifyRecord(text, turnId, seq, at, covered(seq), origin))
+            push(verifyRecord(text, turnId, seq, at, origin))
           }
           continue
         }
         if (kind === 'subagent') {
           const text = renderCheckpoint(summary)
           if (text.trim().length > 0) {
-            push(subagentRecord(`[子代理]\n${text}`, turnId, seq, at, covered(seq), origin))
+            push(subagentRecord(`[子代理]\n${text}`, turnId, seq, at, origin))
           }
           continue
         }
-        // 结构化会话检查点：只注入最新一条，作为边界系统消息（本身不被覆盖）。
-        const isLatest =
-          metadata.checkpoint !== null &&
-          metadata.checkpoint.turn_id === turnId &&
-          metadata.checkpoint.seq === seq
-        if (!isLatest) continue
-        const text = renderCheckpoint(summary)
-        if (text.trim().length === 0) continue
-        checkpointRecord = {
-          role: 'system',
-          parts: [textPart(`[检查点]\n${text}`)],
-          source: 'l1',
-          priority: MEMORY_PRIORITY,
-          toolCalls: null,
-          toolCallId: null,
-          toolResult: null,
-          reasoning: null,
-          error: null,
-          checkpoint: true,
-          turnId,
-          step: seq,
-          at,
-          covered: false,
-          group: null,
-          from: null,
-        }
-        push(checkpointRecord)
         continue
       }
     }
   })
 
-  return { records, checkpoint: checkpointRecord }
+  return { records }
 }
 
 /**
@@ -419,7 +372,6 @@ function verifyRecord(
   turnId: string,
   step: number | null,
   at: number,
-  covered: boolean,
   source: Source,
 ): ProjectedRecord {
   return {
@@ -432,11 +384,9 @@ function verifyRecord(
     toolResult: null,
     reasoning: null,
     error: null,
-    checkpoint: false,
     turnId,
     step,
     at,
-    covered,
     group: null,
     from: null,
   }
@@ -447,7 +397,6 @@ function subagentRecord(
   turnId: string,
   step: number | null,
   at: number,
-  covered: boolean,
   source: Source,
 ): ProjectedRecord {
   return {
@@ -460,11 +409,9 @@ function subagentRecord(
     toolResult: null,
     reasoning: null,
     error: null,
-    checkpoint: false,
     turnId,
     step,
     at,
-    covered,
     group: null,
     from: null,
   }

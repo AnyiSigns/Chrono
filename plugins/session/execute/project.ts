@@ -1,12 +1,12 @@
 // 展示投影（纯函数，展示形状）：唯一真源是会话回合日志（`session.turns[].steps`，append-only）。
 //
 // 扁平事件流口径：回合日志按追加序即一条单一直流——`turn.open` 的用户消息、每个 `step.result`
-// 的助手本步增量、`step.user` 的运行中插入、`checkpoint` 标记都是同级事件。
+// 的助手本步增量、`step.user` 的运行中插入、`checkpoint` 步派生的 verify / subagent 标记都是同级事件。
 // 本模块把某回合的步记录摊平成有序 `StreamEvent[]`（`flattenTurnEvents`），展示链与时间线
 // 都是它之上的纯投影：
 //   - 展示链（`displayMessagesByTurn`）：一条事件一条消息，**一个回合的助手输出塌成一条消息**，
 //     只有 `step.user` 运行中插入才把它切断为「插入前 / 插入后」两段；插入的 user 依追加序落位。
-//   - 时间线（`displayTimeline`）：用户 / 推理 / 正文 / 工具卡 / 检查点 / verify 依序落项。
+//   - 时间线（`displayTimeline`）：用户 / 推理 / 正文 / 工具卡 / verify / subagent 依序落项。
 //
 // 助手段口径：同一回合的多个 `step.result`（承接帧、工具派发回填帧、下一个模型调用……）都是
 // **同一条**助手消息的增量——工具卡按 `call_id` 原位覆盖、文本 / 推理按到达序追加，绝不每轮新开一条
@@ -42,9 +42,9 @@ export interface DisplayTurnTimeline {
   items: DisplayTimelineItem[]
 }
 
-/** 扁平事件流的同级事件（展示投影的输入单位）：`user` / `assistant` / `verify` / `checkpoint` / `subagent`。 */
+/** 扁平事件流的同级事件（展示投影的输入单位）：`user` / `assistant` / `verify` / `subagent`。 */
 export interface StreamEvent {
-  kind: 'user' | 'assistant' | 'verify' | 'checkpoint' | 'subagent'
+  kind: 'user' | 'assistant' | 'verify' | 'subagent'
   turn_id: string
   /** 分支 / 多 agent 元数据：本事件的前一事件键（回合内首事件为 null）。 */
   parent: string | null
@@ -53,7 +53,7 @@ export interface StreamEvent {
   def?: Rec
   /** assistant 事件的**本段增量** parts。 */
   parts?: Json[]
-  /** 非消息事件（verify / checkpoint / subagent）的确定文本。 */
+  /** 非消息事件（verify / subagent）的确定文本。 */
   text?: string
 }
 
@@ -145,26 +145,9 @@ function itemText(item: unknown): string | null {
   return null
 }
 
-const STRUCTURED_KEYS = [
-  'goal',
-  'constraints',
-  'decisions',
-  'findings',
-  'files',
-  'open_questions',
-  'next_steps',
-  'errors_to_avoid',
-  'user_preferences',
-] as const
-
-function isStructuredCheckpoint(summary: Rec): boolean {
-  if (summary['kind'] === 'segment' || summary['kind'] === 'verify' || summary['kind'] === 'subagent') return false
-  return STRUCTURED_KEYS.some((key) => summary[key] !== undefined)
-}
-
 /**
  * 把一条 `checkpoint` 步映射为展示事件；`segment` 标记不入展示（纯引擎内部步），
- * 其余结构缺失 / 文本为空同样跳过。返回 null 表示本步不产生展示事件。
+ * 结构缺失 / 文本为空同样跳过。返回 null 表示本步不产生展示事件。
  */
 function checkpointEvent(turnId: string, step: Rec, at: Json): Omit<StreamEvent, 'parent'> | null {
   const summary = isRecord(step['summary']) ? (step['summary'] as Rec) : null
@@ -178,10 +161,6 @@ function checkpointEvent(turnId: string, step: Rec, at: Json): Omit<StreamEvent,
   if (kind === 'subagent') {
     const text = renderSummary(summary)
     return text.length === 0 ? null : { kind: 'subagent', turn_id: turnId, at, text }
-  }
-  if (isStructuredCheckpoint(summary)) {
-    const text = renderSummary(summary)
-    return text.length === 0 ? null : { kind: 'checkpoint', turn_id: turnId, at, text }
   }
   return null
 }
@@ -387,7 +366,7 @@ function pushAssistantItems(items: DisplayTimelineItem[], event: StreamEvent): v
   }
 }
 
-/** 回合展示时间线：用户 / 推理 / 正文 / 工具卡 / 检查点与 verify 标记（依追加序）。 */
+/** 回合展示时间线：用户 / 推理 / 正文 / 工具卡 / verify 与 subagent 标记（依追加序）。 */
 export function displayTimeline(turns: Rec[]): DisplayTurnTimeline[] {
   const out: DisplayTurnTimeline[] = []
   turns.forEach((turn, index) => {
@@ -403,7 +382,7 @@ export function displayTimeline(turns: Rec[]): DisplayTurnTimeline[] {
         pushAssistantItems(items, event)
         continue
       }
-      if (event.kind === 'verify' || event.kind === 'checkpoint' || event.kind === 'subagent') {
+      if (event.kind === 'verify' || event.kind === 'subagent') {
         if (event.text !== undefined) items.push({ kind: event.kind, text: event.text })
       }
     }

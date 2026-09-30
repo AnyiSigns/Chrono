@@ -41,10 +41,9 @@ export async function seedIdentityBody(client, identity, body, options = {}) {
  * loop-policy 预算阈值覆盖 body：内联包内种子图 + 指定阈值（缺省不覆盖）。
  * 图必须可用（节点 ∈ 种子契约 id），故内联 `SEED_GRAPH`；`resolveModel` 会把该阈值合并进默认。
  */
-export function loopPolicyBudgetBody({ maxTurnIter, maxSteps, checkpointSoftRatio } = {}) {
+export function loopPolicyBudgetBody({ maxTurnIter, maxSteps } = {}) {
   const thresholds = {}
   if (typeof maxTurnIter === 'number') thresholds['max_turn_iter'] = maxTurnIter
   if (typeof maxSteps === 'number') thresholds['max_steps'] = maxSteps
-  if (typeof checkpointSoftRatio === 'number') thresholds['checkpoint_soft_ratio'] = checkpointSoftRatio
   return { graph: SEED_GRAPH, thresholds }
 }

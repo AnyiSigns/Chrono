@@ -28,7 +28,7 @@ bag 带 `contract_version` 时门面校验主版本：不匹配立即拒绝并�
              "thresholds": …, "refusal_codes": … },   // 六类条目；链式 tail 经 refs 解析
   "refs": { "<def>": {…} },                          // 投影引用闭包（也接受 bag.graph_refs / bag.graph.refs）
   "pins": { "model": "model-protocol", … },          // 缺省回落宿主注入的 plugin.json 有效 pins
-  "input" / "slots", "config", "tier", "memories", "session", "persona", "skills",
+  "input" / "slots", "config", "tier", "session", "persona", "skills",
   "workspace_id" / "workspace_root", "todo", "guard_rules", "sandbox_tiers", "tools", …,
   "evolution": { version, trace:{tail,count}, evidence:…, proposals:…, verdicts:… },  // evolution 台账
   "resume": { "cursor": {…}, "thread": …, "payload": {…} }        // 裁决 / 作答续跑（带挂起游标）
@@ -46,8 +46,8 @@ bag 带 `contract_version` 时门面校验主版本：不匹配立即拒绝并�
 
 | 条目            | 形状                                                                                                                                         | 空 body 回落                     |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `contracts`     | 链式 tail；能力边界（inputs / outputs / reads / publishes / pre / post / refuses / effects / cost）                                          | 十一个种子契约                   |
-| `nodes`         | 链式 tail；Scope 实例（atomic / composite、entry、bindings、autonomy、scope、links）                                                         | 十一个种子实例                   |
+| `contracts`     | 链式 tail；能力边界（inputs / outputs / reads / publishes / pre / post / refuses / effects / cost）                                          | 十个种子契约                     |
+| `nodes`         | 链式 tail；Scope 实例（atomic / composite、entry、bindings、autonomy、scope、links）                                                         | 十个种子实例                     |
 | `prompts`       | 链式 tail / 对象映射；`system`（角色 + 沟通 / 执行 / 工具 / 安全四节）、`skill_select`                                                       | 种子提示词                       |
 | `graph`         | **单值**（不是 tail）；nodes / edges / entry_supply / loop / sink / derived_from                                                             | 种子图                           |
 | `thresholds`    | 链式 tail / 扁平 map / 条目数组；字段名契约与 evolve-metrics 对齐（见「阈值契约」）                                                          | `DEFAULT_THRESHOLDS`             |
@@ -70,8 +70,7 @@ bag 带 `contract_version` 时门面校验主版本：不匹配立即拒绝并�
 `trace_retention_rounds` / `evidence_retention_rounds` / `unhealthy_refused_streak`。
 图 / 演化参数（本插件权威）：`max_turn_iter` / `max_steps` / `loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min` / `gas` / `llm_chain_max` / `max_graph_diff` /
 `min_runs_before_fork` / `max_links` / `graph_growth_quota` / `instance_growth_quota` / `shadow_rounds` /
-`large_artifact_bytes` / `model_alias_pins`；上下文检查点三档 `checkpoint_soft_ratio` / `checkpoint_hard_ratio` /
-`checkpoint_emergency_ratio`。解析后的扁平 thresholds map 随 `context.assemble` bag 下传（单一真源）。
+`large_artifact_bytes` / `model_alias_pins`。解析后的扁平 thresholds map 随 `context.assemble` bag 下传（单一真源）。
 运行期空转检测（**与 evolve 的 `no_progress_n` 无关**）：`loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min`
 由图执行引擎据「动作 + 观察 + 状态」签名做连续 / 周期 / 低新颖判定；首次命中先注入一次 nudge（前导系统消息），
 再次命中才以 `stop_reason: no_progress` 收口；`loop.allow_tools` 可豁免轮询类工具。

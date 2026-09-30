@@ -285,10 +285,16 @@ test('队内消息摘要：文本裁剪 + 附件计数', () => {
 
 test('队内条目：包装 {id, slot} 取槽体，行文案由纯模块拼装', () => {
   const wrapper = { id: 'c-1', slot: { kind: 'chat.message', text: 'hi', attachments: [{}, {}] } }
-  assert.deepEqual(queueEntry(wrapper), { id: 'c-1', slot: wrapper.slot })
+  assert.deepEqual(queueEntry(wrapper), { id: 'c-1', slot: wrapper.slot, noted: false })
   assert.deepEqual(queueEntry({ kind: 'chat.message', text: 'bare' }), {
     id: '',
     slot: { kind: 'chat.message', text: 'bare' },
+    noted: false,
+  })
+  assert.deepEqual(queueEntry({ id: 'c-9', slot: { text: 'x' }, noted: true }), {
+    id: 'c-9',
+    slot: { text: 'x' },
+    noted: true,
   })
   const t = (code, vars) => `${code}:${vars.count}`
   assert.equal(messageRowLabel(wrapper, t), 'hi · composer_attachment:2')
@@ -345,22 +351,19 @@ test('上下文用量：数字格式 / 阈值分档 / 明细', () => {
   assert.equal(mergedTools[0].tokens, 2505)
   assert.equal(mergedTools[0].text, '2.5k')
   // 分配器全部来源键都应映射到文案码（键集 = context-window 的 ALL_SOURCES）；
-  // tools / tool 同码合并后共 9 行。
+  // tools / tool 同码合并后共 6 行。
   const allMapped = sourceRows({
     sources: {
       prompt: 1,
       tools: 1,
       input: 1,
-      l2: 1,
-      l1: 1,
       skill: 1,
-      recall: 1,
       history: 1,
       style: 1,
       tool: 1,
     },
   })
-  assert.equal(allMapped.length, 9)
+  assert.equal(allMapped.length, 6)
   assert.ok(allMapped.every((row) => row.code !== null))
 
   const trimmed = trimmedRows({ trimmed: [{ label: 'x', reason: 'budget' }, { id: 'y' }, 'nope'] })
@@ -538,7 +541,7 @@ function fakeComposerCtx() {
       }
       if (name === 'config.write') return { ok: true, value: { ok: true } }
       if (name === 'chat.send') return { ok: true, value: null }
-      if (name === 'chat.insert') return { ok: true, value: { ok: true } }
+      if (name === 'chat.insert') return { ok: true, value: { ok: true, noted: true } }
       return { ok: false, code: 'unknown', value: null }
     },
     submit: async () => ({ ok: true, run: 'w1' }),
@@ -623,7 +626,7 @@ test('store：回合运行中插入的消息在 chat.turn.settled 续发（续�
   store.dispose()
 })
 
-test('store：回合运行中发送 → 只入队（不落盘不发送），随下一次轮次更新才插入', async () => {
+test('store：回合运行中发送 → 入队并立刻记待发输入（chat.insert，不落盘不渲染；队列标保留到轮次插入）', async () => {
   const ctx = fakeComposerCtx()
   const store = createComposerStore(ctx)
   await store.init()
@@ -637,22 +640,26 @@ test('store：回合运行中发送 → 只入队（不落盘不发送），随�
   store.setText('第二条')
   await store.send()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  // 忙时只入队：此刻不落盘（既不发 chat.insert，也不渲染进消息流），消息留在待发队列。
-  assert.equal(store.getSnapshot().queueCount, 1)
-  assert.equal(store.getSnapshot().text, '')
-  assert.equal(ctx.calls.some((call) => call.name === 'chat.insert'), false)
-  // 下一次轮次更新（段续跑 chat.turn.started）才把队首交给服务端落盘。
-  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1', source: 'resume' } })
-  await new Promise((resolve) => setTimeout(resolve, 0))
+  // 忙时立刻记待发输入：由服务端在**当前轮次末尾**据此挂起，再经 resume 落盘——不在入队时落盘 / 渲染。
   const insert = ctx.calls.find((call) => call.name === 'chat.insert')
-  assert.ok(insert, '轮次更新时才插入')
+  assert.ok(insert, '忙时发送应立即记待发输入（chat.insert）')
   assert.equal(insert.args.turn_id, 't-1')
   assert.equal(insert.args.user_message.content, '第二条')
+  // 已记待发：条目保留在可见队列（badge 不提前消失），等轮次边界插入后才清。
+  assert.equal(store.getSnapshot().queueCount, 1)
+  assert.equal(store.getSnapshot().text, '')
+  // 待发输入门挂起事件 → 客户端 resume 续跑。
+  ctx.emit({ topic: 'chat.turn.pending', payload: { thread, turn_id: 't-1', run: 'r1', pending: 'input' } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(ctx.calls.some((call) => call.name === 'chat.resume'), '待发输入挂起应触发 chat.resume')
+  // resume 先 promote 再广播下一段 chat.turn.started：此刻消息已插入回合，队列标清空。
+  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r2' } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(store.getSnapshot().queueCount, 0)
   store.dispose()
 })
 
-test('store：入队时尚无 turn_id → 下一轮次（chat.turn.started）随轮插入', async () => {
+test('store：入队时尚无 turn_id → 下一轮次（chat.turn.started）记待发并保留到插入', async () => {
   const ctx = fakeComposerCtx()
   const store = createComposerStore(ctx)
   await store.init()
@@ -668,11 +675,15 @@ test('store：入队时尚无 turn_id → 下一轮次（chat.turn.started）随
   assert.equal(ctx.calls.some((call) => call.name === 'chat.insert'), false)
   ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1' } })
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(store.getSnapshot().queueCount, 0)
   const insert = ctx.calls.find((call) => call.name === 'chat.insert')
-  assert.ok(insert, '身份就绪后应随轮插入')
+  assert.ok(insert, '身份就绪后应随轮记待发')
   assert.equal(insert.args.turn_id, 't-1')
   assert.equal(insert.args.user_message.content, '第二条')
+  // 记待发后仍保留在可见队列，等该段 resume 的下一轮次 chat.turn.started 才清。
+  assert.equal(store.getSnapshot().queueCount, 1)
+  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r2' } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(store.getSnapshot().queueCount, 0)
   store.dispose()
 })
 

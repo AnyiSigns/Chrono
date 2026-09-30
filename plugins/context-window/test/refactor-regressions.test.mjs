@@ -1,10 +1,9 @@
-// 上下文投影重构的回归测试（R1 / R2 / C4 / C5 / C6）。
+// 上下文投影重构的回归测试（R1 / R2 / C4 / C5）。
 // R1：本轮回合用户消息不投影（`bag.input` 权威），本轮其余记录 source='tool'（排 input 之后、保留 T0）；
 //     本轮超大输入走专属截断路径且不重复。
 // R2：携带 toolCalls 的 assistant 帧不去重（否则同批次工调塌缩、结果变孤儿）。
-// C4：只有仍超预算才登记压缩梯级；只有历史组真被裁才登记 drop_old_turns。
+// C4：只有历史组真被裁才登记 drop_old_turns。
 // C5：只截断「正文最长」的单条输入；其余输入与非文本附件原样保留。
-// C6：非历史来源恒 T0，T3 覆盖裁剪不得移除本回合。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -207,35 +206,4 @@ test('C5：只截断正文最长的单条输入；非文本附件与第二条输
   }
 })
 
-// ── C6：同回合 T0 守卫 ──────────────────────────────────────────────────────
 
-test('C6：T3 检查点覆盖裁剪不得移除本回合（非历史恒 T0）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const session = {
-      turns: [
-        turn('t1', 'OLD', [{ type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'A1' }, tool_results: [] }]),
-        turn('t2', 'IN-SESSION', [
-          { type: 'step.intent', turn_id: 't2', seq: 1, kind: 'tool.dispatch', tool_calls: [{ id: 'c1', name: 'read', arguments: { path: 'a' } }] },
-          { type: 'step.result', turn_id: 't2', seq: 1, assistant: { content: 'A2' }, tool_results: [{ call_id: 'c1', ok: true, result: 'FILE' }] },
-          { type: 'checkpoint', turn_id: 't2', seq: 3, summary: { goal: '阶段一' }, covered_upto: { turn_id: 't2', seq: 3 } },
-        ]),
-      ],
-    }
-    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session, turn_id: 't2' }))
-    assert.equal(value.ok, true)
-    const texts = value.messages.map(contentOf)
-    assert.ok(!texts.includes('A1') && !texts.includes('OLD'), '被覆盖的往期回合整条丢弃')
-    assert.ok(texts.includes('A2'), '本回合在覆盖边界内仍须 T0 保留')
-    assert.ok(texts.includes('IN'), '本轮输入保留')
-    assert.equal(texts.includes('IN-SESSION'), false, '本轮用户消息不投影')
-    const tool = value.messages.find((message) => message.role === 'tool' && message.tool_call_id === 'c1')
-    assert.ok(tool !== undefined, '本回合工具结果不得被 T3 裁掉')
-    assert.equal(JSON.parse(contentOf(tool)).result, 'FILE')
-    assert.ok(value.manifest.retention.T3 >= 1)
-    assert.ok(value.manifest.retention.T0 >= 3)
-  } finally {
-    drv.close()
-  }
-})

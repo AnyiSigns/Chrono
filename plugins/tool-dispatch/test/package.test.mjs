@@ -54,10 +54,6 @@ test('needs：tool-registry + tool-schema + guard + tool-provider(many) + 绑定
     guard: { mode: 'one' },
     'tool-provider': { mode: 'many' },
     session: { mode: 'one' },
-    compress: { mode: 'one' },
-    memory: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    'memory-maintenance': { mode: 'one' },
     'evolve-metrics': { mode: 'one' },
   })
 })

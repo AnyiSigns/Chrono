@@ -41,10 +41,15 @@ export function beginRun(
  * 在册 run 表：`inflight` 在途任务 / `runs` 取消控制器 / `detached` 并发计数 / `nextNow` 非回退时钟。
  * 只做登记与时钟，不解释 run 语义；生命周期事件的成对收口见 `beginRun`。
  */
+/** 已取消 run 的记忆上限：只用于挡住「取消后仍补发的反向调用」，留近期即可。 */
+const ABORTED_MEMORY = 256
+
 export class RunRegistry {
   private readonly inflight = new Set<Promise<void>>()
   private readonly runs = new Map<string, AbortController>()
   private readonly detached = new Set<string>()
+  /** 已取消 run 的记忆：注册表摘除后仍可判定「该 run 取消过」，据此挡迟到反向调用。 */
+  private readonly aborted = new Set<string>()
   private lastNow: number
 
   constructor(startedAt: number) {
@@ -71,11 +76,31 @@ export class RunRegistry {
     const controller = this.runs.get(run)
     if (controller === undefined) return false
     controller.abort()
+    this.rememberAborted(run)
     return true
+  }
+
+  /**
+   * run 是否已被取消（含注册表摘除后）。用于挡住「宿主 run 已取消，但服务侧 handler 仍在跑」时
+   * 对同一 run 的反向调用——否则取消后仍会写会话 / 补发业务事件（幽灵回合）。
+   * 注意：只判「取消过」，不判「已正常结束」——正常收口后仍可能有合法旁路段反向调用。
+   */
+  isCancelled(runId: string): boolean {
+    return this.aborted.has(runId)
+  }
+
+  private rememberAborted(runId: string): void {
+    this.aborted.delete(runId)
+    this.aborted.add(runId)
+    if (this.aborted.size > ABORTED_MEMORY) {
+      const oldest = this.aborted.values().next().value
+      if (oldest !== undefined) this.aborted.delete(oldest)
+    }
   }
 
   /** 停机：中止全部在册 run。 */
   abortAll(): void {
+    for (const runId of this.runs.keys()) this.rememberAborted(runId)
     for (const controller of this.runs.values()) controller.abort()
   }
 

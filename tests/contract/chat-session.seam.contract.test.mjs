@@ -191,7 +191,6 @@ test('供给向：真实 chat 消费真实 session 回帧（turn_busy / already_
     'session.turn_open': (args, message) => session.call('session', 'turn_open', args, message.env).then(relayFrame),
     'session.turn_settle': (args, message) => session.call('session', 'turn_settle', args, message.env).then(relayFrame),
     'input.read': () => ({ slots: { t1: slot }, slot_ref: 'run-seam' }),
-    'short-memory.read': () => ({ version: 1, sessions: {}, workspaces: {} }),
     'todo.invoke': () => ({ ok: true, result: { items: [] } }),
     'config.read': () => ({ body: configBody }),
     'mcp.read': () => ({ tools: [] }),

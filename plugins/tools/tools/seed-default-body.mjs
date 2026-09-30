@@ -1,4 +1,4 @@
-// 预置 tools 记忆工具绑定表默认 body（数据世代）：读同目录 default-body.json，经 boot run 提交一条原子 batch。
+// 预置 tools 工具绑定表默认 body（数据世代）：读同目录 default-body.json，经 boot run 提交一条原子 batch。
 // 绑定表住数据世代：加 / 改绑定 = 数据换代热生效（`chat` 读出后随 `bag.tools_bindings` 传入）。
 // 前置：宿主已 start（世界单写者）；本脚本只做确定性构造与提交，可重复执行（同内容命中 put 幂等）。
 // 用法：node plugins/tools/tools/seed-default-body.mjs --root <宿主根目录>

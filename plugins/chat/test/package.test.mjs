@@ -57,7 +57,6 @@ test('plugin.json 15 字段齐全且形态合法', () => {
     context: { mode: 'one' },
     'session-title': { mode: 'one' },
     'loop-policy': { mode: 'one' },
-    'short-memory': { mode: 'one' },
     todo: { mode: 'one' },
     config: { mode: 'one' },
     mcp: { mode: 'one' },
@@ -106,10 +105,7 @@ test('wiring 切片 / title 声明 / 空槽行为（段序归 #33 图数据）',
   assert.equal(Object.hasOwn(wiring, 'pipeline'), false, '静态管道段序应删除')
   assert.deepEqual(wiring.slices, {
     prompt: true,
-    l2: true,
-    l1: true,
     skill: true,
-    recall: false,
     history: true,
     style: true,
   })

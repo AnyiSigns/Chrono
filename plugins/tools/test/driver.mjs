@@ -27,10 +27,6 @@ export const FACADE_PINS = {
 export const REGISTRY_PINS = {
   'tool-schema': 'tool-schema',
   session: 'session',
-  compress: 'compress',
-  memory: 'memory-store',
-  retrieval: 'memory-retrieval',
-  'memory-maintenance': 'memory-consolidate',
   'evolve-metrics': 'evolve-metrics',
 }
 export const DISPATCH_PINS = {
@@ -38,10 +34,6 @@ export const DISPATCH_PINS = {
   'tool-schema': 'tool-schema',
   guard: 'guard',
   session: 'session',
-  compress: 'compress',
-  memory: 'memory-store',
-  retrieval: 'memory-retrieval',
-  'memory-maintenance': 'memory-consolidate',
   'evolve-metrics': 'evolve-metrics',
 }
 
@@ -191,15 +183,15 @@ export function toolDecl(overrides = {}) {
   }
 }
 
-/** 一个合法绑定项。 */
+/** 一个合法绑定项（绑定到存活能力类 `session`）。 */
 export function bindingItem(overrides = {}) {
   return {
-    class: 'retrieval',
-    method: 'search',
-    intent: '检索长期记忆。',
-    when_to_use: '需要语义召回记忆时。',
-    param_semantics: { query: '检索词。' },
-    boundaries: '只读检索；写入用 memory。',
+    class: 'session',
+    method: 'deliver',
+    intent: '向会话投递一条消息。',
+    when_to_use: '需要投递给定时。',
+    param_semantics: { query: '消息文本。' },
+    boundaries: '只投递；不读、不写。',
     argsSchema: {
       type: 'object',
       properties: { query: { type: 'string', minLength: 1 } },

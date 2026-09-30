@@ -1,14 +1,14 @@
 # ui-settings（引导页 + 设置模态）
 
-Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义厂商同一流程）与设置七页
-（通用 / 模型 / 插件 / 技能 / 记忆 / 编排 / 关于）。本插件是 `overlay` 槽子应用，独立包 /
+Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义厂商同一流程）与设置六页
+（通用 / 模型 / 插件 / 技能 / 编排 / 关于）。本插件是 `overlay` 槽子应用，独立包 /
 独立进程，客户端半边为壳的单一 React 运行时下的一个 slot 模块；事件经壳 `api.events` 订阅。
 本插件另持**编排健康判定**（住本插件 execute 服务）与**回滚入口**，判定不住编排图身份内
 （图被改坏时回滚入口不能也在图里）。
 
 - 能力类：`ui-settings`（`ping` 健康占位 + `vendors` / `profile` / `discover` / `health` /
-  `view` / `search` / `edit` 七个装配方法 + `client.read` 客户端半边交付 + `secret` 密钥本地写入代理）。
-- `pins`：`{"model":"model-protocol","secrets":"secrets","retrieval":"memory-retrieval","memory-maintenance":"memory-consolidate","session":"session","short-memory":"short-memory","input":"input","skill":"skill","config":"config"}`。
+  `graph` / `scopes` 装配方法 + `client.read` 客户端半边交付 + `secret` 密钥本地写入代理）。
+- `pins`：`{"model":"model-protocol","secrets":"secrets","ref-hydrate":"ref-hydrate","input":"input","skill":"skill","config":"config"}`。
 - 状态档：`recomputable`（无世界数据，零 schema）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行期零 npm 依赖；客户端半边源码为 `.ts` / `.tsx`，由 `plugin.json.build` 自打包。
@@ -28,17 +28,13 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
 | `orchestration.graph` | `eff ui-settings graph`（读 `ctx.ids['loop-policy']`） | eff 服务方法：按需解析投影 refs 后回图切片；浏览器解析 `graph` 单值（内联 / `{def}`）与节点实例（只读） |
 | `orchestration.scopes` | `eff ui-settings scopes`（读 `ctx.ids.agents`） | eff 服务方法：按需解析投影 refs 后回 Scope 名录（只读查询，仍标 `readonly`） |
 | `orchestration.health` | `eff ui-settings health`（读 `ctx.ids`） | 服务判定连续 `refused` / 阈值 / 拒绝码分布 / 回滚目标 + 进化台账三条 tail |
-| `memory.view` | `eff ui-settings view`（无参） | 反向调 `memory-maintenance.view`（L1 / L2 / L3 由维护服务自问 owner） |
-| `memory.search` | `eff ui-settings search`（args，内含 UI 取回的 `ids`） | 装配检索真实 bag → 反向调 `retrieval.search` |
-| `memory.edit` | `eff ui-settings edit`（无参） | 写类无参：经 `input` owner 读 `memory.edit` 槽 → 反向调 `memory-maintenance.edit`，经 owner 清槽，返回 extern 结果 |
 | `ui-settings.client.read` | `eff ui-settings client.read`（args `{path}`） | 只读交付客户端半边产物字节；参数限包内相对 `.js`，路径穿越防护 |
 | `ui-settings.secret` | `eff ui-settings secret`（args `{op,name,value?}`） | 密钥本地写入代理：经本进程入站连接直发 `secrets.put` / `secrets.delete`，不进世界 / 审计 |
 
-- **投影读在入口 term**；服务不读投影（随 args 传入）。模型与记忆命令的装配、健康判定住服务
+- **投影读在入口 term**；服务不读投影（随 args 传入）。模型命令的装配与健康判定住服务
   （`execute/methods.ts`），经宿主反向调用（`port.call`）调下游端口。
-- **跨批读侧**：`session` / `short-memory` / `input` / `skill` / `config` 的运行记录已出世界，
-  记忆浏览 / 搜索 / 编辑、模型探测槽消费与模型档案装配改经 `eff` 问 owner（`config` 还用于技能写回后刷新）；
-  L3 本体由 `memory-retrieval` 自己经 `memory` pin 问 `memory-store`，本插件不再拼该切片。
+- **跨批读侧**：`input` / `skill` / `config` 的运行记录已出世界，
+  模型探测槽消费与模型档案装配改经 `eff` 问 owner（`config` 还用于技能写回后刷新）。
 - 未就位依赖（如编排图身份）令对应命令按 `missing_path` 收口为 `refused`；页面据此显示
   「依赖未就绪」降级视图，不因缺身份崩溃。
 
@@ -48,7 +44,7 @@ Chrono 的**引导页与设置模态**：首次配置（厂商模板 / 自定义
   判定阈值（`permission` / `params`）由 owner 服务在变化时镜像进世界。
 - **技能写**：经 `skill.write` 命令（`{body}` 整份）写技能 owner 自有持久存储。
 - **输入槽写**：经 `input.write` 命令（`{thread, slot}`）写 input owner 自有持久存储；
-  `model.discover` / `memory.edit` 消费槽后经 `input.clear` 把对应线程键置 idle（不再产世界清槽计划）。
+  `model.discover` 消费槽后经 `input.clear` 把对应线程键置 idle（不再产世界清槽计划）。
 - **密钥**：浏览器半边经 `ui-settings.secret` 命令代理，服务进程经入站 `secrets.put` /
   `secrets.delete` 直写用户本地文件（不进世界、不进导出、不进审计）；世界数据只存引用
   `auth_ref = {kind:'local'|'env', name}`。
@@ -66,7 +62,7 @@ React 只渲染。壳对每个注册组件包一层错误边界。
 - `overlay` 槽为 `fixed inset 0`：面板未打开时不拦截指针事件（本插件样式对
   `[data-slot-app="ui-settings"]` 覆盖 `pointer-events: none`），打开时自持遮罩、居中与焦点陷阱。
 - 叶子纯模型（`config-model` / `onboarding` / `notify` / `health` / `settings-model` /
-  `memory-model` / `messages` / `version`）为 `.ts`，零 react import，原样保留并由 `node --test` 覆盖。
+  `messages` / `version`）为 `.ts`，零 react import，原样保留并由 `node --test` 覆盖。
 - 原 `dom.js` / `ui-parts.js` / `view-*.js` / `provider-form.js` 的 DOM 构建层改由
   `execute/web/components/*.tsx` 的 React 组件承担；样式仍只引壳 token，零硬编码色值。
 - 产物落 `execute/web/dist/entry.js`，被 `.worldignore` 排除；壳经 `ui-settings.client.read`
@@ -76,7 +72,7 @@ React 只渲染。壳对每个注册组件包一层错误边界。
 
 - **进引导 / 开设置**：订阅壳跨 slot 视图状态 `api.uiState`（`boot_mode` 进引导、
   `settings_open` 同步模态开合）；`Esc` 关闭模态并把焦点归还打开按钮。
-- **定高框架 + 统一页头**：设置模态固定宽高，七页同一外框、内容区内部滚动，翻页不跳动；
+- **定高框架 + 统一页头**：设置模态固定宽高，六页同一外框、内容区内部滚动，翻页不跳动；
   每页由统一页头（页标题 + 一行导语）开场，导语文案键为 `settings_desc_<tab>`。
 - **行内开关**：通知项与技能启停用拨杆开关（`role="switch"`），不引原生 checkbox。
 - **引导页**：整页铺满的居中单列向导，入口页为眉标 + 欢迎语 + 一句说明，表单页只留入口名。
@@ -86,7 +82,6 @@ React 只渲染。壳对每个注册组件包一层错误边界。
   有表单时 = 聚焦的表单视图，标题按入口区分（添加厂商 / 添加自定义厂商 / 编辑）；
   厂商模板优先取 `model.vendors`，不可用时回落身份投影。
 - **技能页**：列表 + 新建 / 编辑 / 启停（启停走拨杆开关）。
-- **记忆页**：三档 L1 / L2 / L3（分段控件）+ 工作区筛选；浏览 / 搜索 / 编辑 / 删除 / 置顶。
 - **编排页**：图区显契约哈希与节点 / 边计数；健康区为状态卡（状态点 + 连续失败 / 阈值 / 来源 +
   失败分类 chips）；进化台账逐级下钻；回滚入口带后果提示行。
 - **关于页**：版本 / 宿主地址 / 插件数。

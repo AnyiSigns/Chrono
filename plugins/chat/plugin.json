@@ -17,7 +17,6 @@
     "context": { "mode": "one" },
     "session-title": { "mode": "one" },
     "loop-policy": { "mode": "one" },
-    "short-memory": { "mode": "one" },
     "todo": { "mode": "one" },
     "config": { "mode": "one" },
     "mcp": { "mode": "one" },

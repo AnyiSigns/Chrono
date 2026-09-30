@@ -2,7 +2,7 @@
 // pack 依赖闭包（全部 pins 及其传递依赖，按拓扑序）→ seed → 离线投影确认身份在册（pins 解析通过）
 // → 直连 tools 服务协议（复用 test/driver.mjs 的多跳宿主桥，把反向调用接到三个下游提供方与假提供者）
 // → verify。
-// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / memory-retrieval / tool-fs），
+// 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / tool-fs），
 // 物化需 cargo build，与本次「声明 / pins / .worldignore 就位」验收无关，故跳过；pack / seed 已覆盖宿主门禁。
 // 用法：node plugins/tools/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
@@ -23,16 +23,11 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 // 拓扑序：被依赖者先 pack（pins 解析要求目标身份已在世界里）。
 const PLUGIN_ORDER = [
   'embedding',
-  'dedup',
   'config',
   'msg-dialect',
   'secrets',
   'throttle',
   'model-protocol',
-  'semantic',
-  'short-memory',
-  'summarize',
-  'compress',
   'evolve-ledger',
   'evolve-evidence',
   'evolve-shadow',
@@ -41,16 +36,8 @@ const PLUGIN_ORDER = [
   'guard',
   'tokenizer',
   'vector-index',
-  'memory-store',
   'input',
   'session',
-  'l1-maintenance',
-  'l2-maintenance',
-  'l3-maintenance',
-  'memory-consolidate',
-  'query-plan',
-  'rerank',
-  'memory-retrieval',
   'tool-schema',
   'tool-registry',
   'tool-dispatch',
@@ -95,23 +82,6 @@ const READ_TOOL = {
   caps: { fs: { read: 'workspace', write: 'none' }, net: 'none' },
   idempotent: true,
   render: { form: 'line', label: 'read', summary: '{path}' },
-}
-
-const RETRIEVAL_BINDING = {
-  class: 'retrieval',
-  method: 'search',
-  intent: '语义召回长期记忆。',
-  when_to_use: '需要召回记忆时。',
-  param_semantics: { query: '检索词。' },
-  boundaries: '只读检索。',
-  argsSchema: {
-    type: 'object',
-    properties: { query: { type: 'string' } },
-    required: ['query'],
-    additionalProperties: true,
-  },
-  caps: { fs: { read: 'none', write: 'none' }, net: 'none' },
-  idempotent: true,
 }
 
 const RECORD_BINDING = {
@@ -175,7 +145,6 @@ async function directProtocolSmoke() {
           }
         },
       },
-      retrieval: { search: () => ({ ok: true, kind: 'search', hits: [] }) },
       'evolve-metrics': {
         record: (args) => ({
           evidence_id: 'ev-1',
@@ -192,12 +161,12 @@ async function directProtocolSmoke() {
     assert.deepEqual(manifest.methods.tools, ['list', 'dispatch'])
 
     const listed = await service.call('list', {
-      tools_bindings: { retrieval: RETRIEVAL_BINDING, record: RECORD_BINDING },
+      tools_bindings: { record: RECORD_BINDING },
       mcp_tools: [MCP_TOOL],
     })
     assert.equal(listed.kind, 'result', JSON.stringify(listed))
     const names = listed.value.tools.map((tool) => tool.name).sort()
-    assert.deepEqual(names, ['mcp.demo.echo', 'read', 'record', 'retrieval'])
+    assert.deepEqual(names, ['mcp.demo.echo', 'read', 'record'])
     assert.equal(listed.value.rejected.length, 0)
     const record = listed.value.tools.find((tool) => tool.name === 'record')
     assert.equal(record.provider, 'evolve-metrics')
@@ -270,7 +239,6 @@ async function main() {
   assert.equal(facadePins['tool-dispatch'], 'tool-dispatch')
   const registryPins = projection.ids['tool-registry'].pins
   assert.equal(registryPins['tool-schema'], 'tool-schema')
-  assert.equal(registryPins['memory'], 'memory-store')
   assert.equal(registryPins['evolve-metrics'], 'evolve-metrics')
   const dispatchPins = projection.ids['tool-dispatch'].pins
   assert.equal(dispatchPins['guard'], 'guard')

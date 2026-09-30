@@ -52,10 +52,6 @@ test('needs：tool-provider 为 many 扩展类；tool-schema + 绑定提供者�
     'tool-provider': { mode: 'many' },
     'tool-schema': { mode: 'one' },
     session: { mode: 'one' },
-    compress: { mode: 'one' },
-    memory: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    'memory-maintenance': { mode: 'one' },
     'evolve-metrics': { mode: 'one' },
   })
 })

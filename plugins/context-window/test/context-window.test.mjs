@@ -1,5 +1,5 @@
 // `context-window` 服务协议级测试（node --test）：合成 bag 驱动 `context.build`，收 `context.assembled` 事件。
-// 覆盖：流水线各阶段、预算两路错误、atomic 组、前缀序、三方言、多模态降级、TTL、covered_upto、
+// 覆盖：流水线各阶段、预算两路错误、atomic 组、前缀序、三方言、多模态降级、
 // 不再注入交错引导、thread_kind 四路、事件载荷、回放纪律、错误不崩。
 
 import { test } from 'node:test'
@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { cpSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { baseBag, chainOf, contentOf, FIXED_ENV, PKG_ROOT, startService } from './driver.mjs'
+import { baseBag, chainOf, contentOf, PKG_ROOT, startService } from './driver.mjs'
 
 function eventsSince(drv, before) {
   return drv.events.slice(before)
@@ -150,7 +150,7 @@ test('环境节文案不含内部标识符（不污染模型推理）', async ()
   }
 })
 
-test('前缀缓存排序：prompt → tools → L2 → 历史 → L1 → 技能 → 召回 → 风格 → input', async () => {
+test('前缀缓存排序：prompt → tools → 历史 → 技能 → 风格 → input', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -159,13 +159,7 @@ test('前缀缓存排序：prompt → tools → L2 → 历史 → L1 → 技能 
         input: 'IN',
         system_prompt: 'P',
         tools: [{ name: 't1', description: 'd', schema: { type: 'object' } }],
-        memories: {
-          l2: { summary: 'L2T' },
-          prev_l1: { summary: 'PL1T' },
-          l1: { summary: 'L1T' },
-        },
         skills: [{ name: 's1', content: 'SK' }],
-        recall: [{ entry: 'REC', score: 1 }],
         session: chainOf([{ id: 'h1', role: 'user', content: 'HIST' }]),
         style: 'STY',
       }),
@@ -173,16 +167,7 @@ test('前缀缓存排序：prompt → tools → L2 → 历史 → L1 → 技能 
     const texts = textMessages(value)
     assert.equal(texts[0], 'P')
     assert.equal(texts[1], '{"description":"d","name":"t1","schema":{"type":"object"}}')
-    assert.deepEqual(texts.slice(2), [
-      '[工作区记忆]\nL2T',
-      'HIST',
-      '[上一会话摘要]\nPL1T',
-      '[本会话摘要]\nL1T',
-      '[技能 s1]\nSK',
-      'REC',
-      'STY',
-      'IN',
-    ])
+    assert.deepEqual(texts.slice(2), ['HIST', '[技能 s1]\nSK', 'STY', 'IN'])
   } finally {
     drv.close()
   }
@@ -213,50 +198,6 @@ test('去重：规范化等价（空白差异）只留最新一条', async () =>
   }
 })
 
-test('跨来源去重：召回与历史内容一致 → 丢召回副本', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        recall: [{ entry: 'dup', score: 5 }],
-        session: chainOf([{ id: 'h', role: 'user', content: 'dup' }]),
-      }),
-    )
-    assert.equal(value.manifest.sources.recall.count, 0)
-    assert.equal(value.manifest.deduped, 1)
-    const dups = textMessages(value).filter((text) => text === 'dup')
-    assert.equal(dups.length, 1)
-  } finally {
-    drv.close()
-  }
-})
-
-test('记忆条目无 subject 契约：未知字段被忽略，不触发冲突裁剪', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: {
-          l2: { summary: 'old', subject: 'proj', at: 1000 },
-          l1: { summary: 'new', subject: 'proj', at: 2000 },
-        },
-      }),
-    )
-    const texts = textMessages(value)
-    assert.ok(texts.includes('[工作区记忆]\nold'))
-    assert.ok(texts.includes('[本会话摘要]\nnew'))
-    assert.ok(!value.manifest.trimmed.some((entry) => entry.reason === 'conflict'))
-  } finally {
-    drv.close()
-  }
-})
-
 // ── 预算 / 配额 ────────────────────────────────────────────────────────────
 
 test('budget_impossible：P0（系统提示）单独超窗 → 结构化错误值并指名元素', async () => {
@@ -267,7 +208,6 @@ test('budget_impossible：P0（系统提示）单独超窗 → 结构化错误�
     const value = await drv.build(
       baseBag({
         system_prompt: 'a '.repeat(100),
-        memories: { l1: { summary: 'b '.repeat(50) } },
         config: { model: 'm1', context_window: 100, max_output: 10 },
       }),
     )
@@ -432,31 +372,6 @@ test('atomic 组不被裁散：工具调用 + 结果同进同出', async () => {
   }
 })
 
-test('召回按配额截断并按分数降序', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        recall: [
-          { entry: 'low', score: 1, content: 'l '.repeat(200) },
-          { entry: 'high', score: 9, content: 'h '.repeat(200) },
-          { entry: 'mid', score: 5, content: 'm '.repeat(200) },
-        ],
-        config: { model: 'm1', context_window: 2000, max_output: 100 },
-      }),
-    )
-    assert.equal(value.manifest.sources.recall.count, 1)
-    assert.equal(value.manifest.recall.length, 1)
-    assert.equal(value.manifest.recall[0].entry, 'high')
-    assert.ok(value.manifest.trimmed.some((entry) => entry.source === 'recall' && entry.reason === 'quota'))
-  } finally {
-    drv.close()
-  }
-})
-
 // ── 方言 / 多模态 ──────────────────────────────────────────────────────────
 
 const IMAGE_BAG = {
@@ -546,121 +461,6 @@ test('多模态降级：模型不支持该模态 → 文本引用 + flags modali
   }
 })
 
-// ── TTL / covered_upto ─────────────────────────────────────────────────────
-
-test('TTL：过期 L1 不注入且 flags 记 l1_expired', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: {
-          l2: { summary: 'fresh', at: 1000 },
-          l1: { summary: 'stale', expires_at: FIXED_ENV.now - 1, at: 1 },
-        },
-      }),
-    )
-    const texts = textMessages(value)
-    assert.ok(texts.includes('[工作区记忆]\nfresh'))
-    assert.ok(!texts.some((text) => text.includes('stale')))
-    assert.equal(value.manifest.sources.l1.count, 0)
-    assert.equal(value.manifest.flags.includes('l1_expired'), true)
-  } finally {
-    drv.close()
-  }
-})
-
-test('TTL：过期 L2 不注入且 flags 记 l2_expired（不复用 l1_expired）', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: {
-          l2: { summary: 'stale-ws', expires_at: FIXED_ENV.now - 1, at: 1 },
-          l1: { summary: 'fresh', at: 1 },
-        },
-      }),
-    )
-    const texts = textMessages(value)
-    assert.ok(texts.includes('[本会话摘要]\nfresh'))
-    assert.ok(!texts.some((text) => text.includes('stale-ws')))
-    assert.equal(value.manifest.sources.l2.count, 0)
-    assert.equal(value.manifest.flags.includes('l2_expired'), true)
-    assert.equal(value.manifest.flags.includes('l1_expired'), false)
-  } finally {
-    drv.close()
-  }
-})
-
-test('L1：不再依赖 message-id 覆盖，covered_upto 仅透传，摘要照常注入', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: { l1: { summary: 'sum', covered_upto: 'm1' } },
-        session: chainOf([
-          { id: 'm1', role: 'user', content: 'one' },
-          { id: 'm2', role: 'assistant', content: 'two' },
-        ]),
-      }),
-    )
-    const texts = textMessages(value)
-    assert.ok(texts.includes('[本会话摘要]\nsum'), 'L1 作为普通会话摘要层注入')
-    assert.equal(value.manifest.sources.l1.count, 1)
-    assert.equal(value.manifest.flags.includes('l1_invalid'), false)
-    assert.ok(texts.includes('one') && texts.includes('two'), '历史不再按 L1 covered_upto 裁剪')
-  } finally {
-    drv.close()
-  }
-})
-
-test('检查点全局边界 {turn_id, seq}：边界之前的记录被 T3 丢弃，检查点替代', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const session = {
-      turns: [
-        {
-          turn_id: 't1',
-          conv: 'c1',
-          at: '2026-01-01T00:00:00.000Z',
-          state: 'settled',
-          user_message: { content: 'one' },
-          steps: [
-            { type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: 'two' }, tool_results: [] },
-            { type: 'checkpoint', turn_id: 't1', seq: 2, summary: { goal: '阶段一' }, covered_upto: { turn_id: 't1', seq: 2 } },
-          ],
-        },
-        {
-          turn_id: 't2',
-          conv: 'c1',
-          at: '2026-01-01T00:00:00.000Z',
-          state: 'open',
-          user_message: { content: 'three' },
-          steps: [],
-        },
-      ],
-    }
-    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P', session }))
-    assert.equal(value.ok, true)
-    const texts = textMessages(value)
-    assert.ok(!texts.includes('one') && !texts.includes('two'), '边界之前的记录被覆盖')
-    assert.ok(texts.includes('three'), '边界之后仍保留')
-    assert.ok(texts.some((text) => text.startsWith('[检查点]')), '检查点注入')
-    assert.ok(value.manifest.retention.T3 >= 2)
-  } finally {
-    drv.close()
-  }
-})
-
 // ── 交错引导（已移除）─────────────────────────────────────────────────────
 
 const REMOVED_GUIDANCE = '请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。'
@@ -739,33 +539,7 @@ test('thread_kind=main：未读收件箱按序注入（所有线程口径）', a
   }
 })
 
-test('thread_kind=subagent：去上一会话 L1，加父摘要 / 任务提示词 / 未读收件箱', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        thread_kind: 'subagent',
-        input: 'IN',
-        system_prompt: 'P',
-        memories: { prev_l1: { summary: 'prev' }, l1: { summary: 'cur' } },
-        parent_summaries: [{ summary: 'parent' }],
-        task_prompt: 'task',
-        inbox_unread: [{ kind: 'instruction', body: 'go', from: 'parent' }],
-      }),
-    )
-    const texts = textMessages(value)
-    assert.ok(!texts.some((text) => text.includes('[上一会话摘要]')))
-    assert.ok(texts.includes('[本会话摘要]\ncur'))
-    assert.ok(texts.includes('[父会话摘要]\nparent'))
-    assert.ok(texts.includes('task'))
-    assert.ok(texts.some((text) => text.includes('[收件箱 instruction')))
-  } finally {
-    drv.close()
-  }
-})
-
-test('thread_kind=subagent：父检查点优先，上下文 = 任务 + 父检查点且不组装父消息历史', async () => {
+test('thread_kind=subagent：加父摘要 / 任务提示词 / 未读收件箱，不组装父消息历史', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -775,26 +549,17 @@ test('thread_kind=subagent：父检查点优先，上下文 = 任务 + 父检查
         input: 'IN',
         system_prompt: 'P',
         session: chainOf([{ id: 'h1', role: 'user', content: 'PARENT-HISTORY' }]),
-        task_prompt: 'DELEGATED-TASK',
-        parent_checkpoint: {
-          type: 'checkpoint',
-          turn_id: 'p1',
-          seq: 4,
-          summary: { goal: '父目标', findings: [{ claim: '父发现' }], files: [{ path: 'a.ts' }] },
-          covered_upto: 4,
-        },
+        parent_summaries: [{ summary: 'parent' }],
+        task_prompt: 'task',
+        inbox_unread: [{ kind: 'instruction', body: 'go', from: 'parent' }],
       }),
     )
     assert.equal(value.manifest.sources.history.count, 0, 'subagent 不组装父消息历史')
     const texts = textMessages(value)
     assert.ok(!texts.includes('PARENT-HISTORY'), '父消息历史不得进入上下文')
-    assert.ok(texts.includes('DELEGATED-TASK'), '任务应注入')
-    assert.ok(
-      texts.some(
-        (text) => text.includes('[父检查点]') && text.includes('父目标') && text.includes('父发现') && text.includes('a.ts'),
-      ),
-      `父检查点应渲染进上下文: ${JSON.stringify(texts)}`,
-    )
+    assert.ok(texts.includes('[父会话摘要]\nparent'))
+    assert.ok(texts.includes('task'))
+    assert.ok(texts.some((text) => text.includes('[收件箱 instruction')))
   } finally {
     drv.close()
   }
@@ -876,9 +641,7 @@ test('同 bag 两次调用逐字节一致（回放纪律）', async () => {
       input: 'IN',
       system_prompt: 'P',
       tools: [{ name: 't1', schema: { type: 'object' } }],
-      memories: { l2: { summary: 'l2' }, l1: { summary: 'l1' } },
       skills: [{ name: 's', content: 'sk' }],
-      recall: [{ entry: 'r', score: 1 }],
       session: chainOf([
         { id: 'm1', role: 'user', content: 'one' },
         { id: 'm2', role: 'assistant', content: 'two' },

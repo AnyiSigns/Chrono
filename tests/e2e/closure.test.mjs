@@ -14,12 +14,8 @@ const EXPECTED_WORLD = [
   'approval',
   'budget',
   'chat',
-  'compress',
   'config',
   'context-window',
-  'dedup',
-  'embedding',
-  'embedding-local',
   'evolve-evidence',
   'evolve-ledger',
   'evolve-metrics',
@@ -29,25 +25,17 @@ const EXPECTED_WORLD = [
   'graph-run',
   'guard',
   'input',
-  'l1-maintenance',
-  'l2-maintenance',
-  'l3-maintenance',
   'loop-policy',
   'mcp',
   'mcp-client',
-  'memory-consolidate',
-  'memory-retrieval',
-  'memory-store',
   'model-protocol',
   'msg-dialect',
   'orchestration',
   'orchestration-admin',
   'plugin',
   'plugin-admin',
-  'query-plan',
   'question',
   'ref-hydrate',
-  'rerank',
   'router',
   'sandbox',
   'sandbox-exec',
@@ -56,18 +44,14 @@ const EXPECTED_WORLD = [
   'secrets',
   'secrets-env',
   'secrets-local',
-  'semantic',
   'session',
   'session-title',
-  'short-memory',
   'skill',
   'storage-kv',
-  'summarize',
   'throttle',
   'title-format',
   'todo',
   'token-estimate',
-  'tokenizer',
   'tool-browser',
   'tool-dispatch',
   'tool-fs',
@@ -77,27 +61,20 @@ const EXPECTED_WORLD = [
   'tool-shell',
   'tools',
   'turn-ledger',
-  'vector-index',
   'workspace',
 ]
 
 const EXPECTED_CARGO = [
-  'embedding',
-  'embedding-local',
   'evolve-evidence',
   'evolve-ledger',
   'evolve-metrics',
   'evolve-shadow',
   'evolve-sweep',
-  'memory-retrieval',
-  'query-plan',
-  'rerank',
   'sandbox',
   'sandbox-exec',
   'sandbox-fs',
   'sandbox-policy',
   'token-estimate',
-  'tokenizer',
   'tool-fs',
   'workspace',
 ]
@@ -106,11 +83,11 @@ test('chat 的传递 pin 闭包只含自身（needs 不建闭包边）', () => {
   assert.deepEqual(computeClosure('chat'), EXPECTED_PIN_CLOSURE)
 })
 
-test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 68 个身份', () => {
+test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 51 个身份', () => {
   assert.deepEqual(computeWorldIdentities('chat'), EXPECTED_WORLD)
 })
 
-test('世界内的原生（cargo）构建件 = 18 个', () => {
+test('世界内的原生（cargo）构建件 = 12 个', () => {
   assert.deepEqual(cargoIdentities(EXPECTED_WORLD), EXPECTED_CARGO)
 })
 

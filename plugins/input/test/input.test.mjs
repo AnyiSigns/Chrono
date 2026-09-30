@@ -181,10 +181,9 @@ test('slot schema keeps the kind enum and slot fields', () => {
     'question.answer',
     'workspace.add',
     'workspace.remove',
-    'memory.edit',
     'idle',
   ])
-  for (const field of ['kind', 'text', 'attachments', 'conversation', 'title', 'message', 'id', 'verdict', 'answers', 'action', 'layer', 'patch']) {
+  for (const field of ['kind', 'text', 'attachments', 'conversation', 'title', 'message', 'id', 'verdict', 'answers']) {
     assert.ok(Object.hasOwn(props, field), `missing slot field ${field}`)
   }
 })

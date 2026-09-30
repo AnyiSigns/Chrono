@@ -1,7 +1,7 @@
 // 缓存提示与 token 校准消费的专项测试。
-// - `context.build` 产出厂商中立的 `cache` 提示：稳定前缀（系统提示 → 工具 → L2）非空时可缓存；
+// - `context.build` 产出厂商中立的 `cache` 提示：稳定前缀（系统提示 → 工具）非空时可缓存；
 //   前缀为空（无可缓存内容）时不产出 `cache`；系统角色消息若含前缀外的易变切片则只给 `key`、不标 `system`。
-// - `key` 是静态前缀的稳定哈希：前缀变则键变，仅输入 / L1 变则键不变，连续组装逐字节一致。
+// - `key` 是静态前缀的稳定哈希：前缀变则键变，仅输入 / 技能变则键不变，连续组装逐字节一致。
 // - 校准消费者：随 `bag.usage` 到达的真实用量经 `budget.observe` 回填 manifest；系数在快路径（含改写路径）上生效。
 
 import { test } from 'node:test'
@@ -16,7 +16,7 @@ process.env.CHRONO_PLUGIN_STATE = ''
 
 // ── 缓存提示 ───────────────────────────────────────────────────────────────
 
-test('cache：稳定前缀（系统提示 → 工具 → L2）给出 system / tools / key', async () => {
+test('cache：稳定前缀（系统提示 → 工具）给出 system / tools / key', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -24,7 +24,6 @@ test('cache：稳定前缀（系统提示 → 工具 → L2）给出 system / to
       baseBag({
         system_prompt: 'P',
         tools: [{ name: 't1', schema: { type: 'object' } }],
-        memories: { l2: { summary: 'L2' } },
       }),
     )
     assert.equal(value.ok, true)
@@ -38,7 +37,6 @@ test('cache：稳定前缀（系统提示 → 工具 → L2）给出 system / to
       baseBag({
         system_prompt: 'P',
         tools: [{ name: 't1', schema: { type: 'object' } }],
-        memories: { l2: { summary: 'L2' } },
       }),
     )
     assert.equal(repeat.cache.key, value.cache.key, '同前缀两次组装键一致')
@@ -59,23 +57,23 @@ test('cache：无可缓存前缀（无系统提示 / 工具 / L2）时不产出 
   }
 })
 
-test('cache：前缀外含系统角色易变切片（L1）时不标 system，但 key 仍由静态前缀决定', async () => {
+test('cache：前缀外含系统角色易变切片（技能）时不标 system，但 key 仍由静态前缀决定', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const build = (l1Summary) =>
+    const build = (skillText) =>
       drv.build(
         baseBag({
           system_prompt: 'P',
           tools: [{ name: 't1', schema: { type: 'object' } }],
-          memories: { l1: { summary: l1Summary } },
+          skills: [{ name: 's', content: skillText }],
         }),
       )
-    const first = await build('L1-甲')
-    assert.equal(first.cache.system, undefined, 'system 串含易变 L1，标记会使缓存失效')
+    const first = await build('技能-甲')
+    assert.equal(first.cache.system, undefined, 'system 串含易变技能，标记会使缓存失效')
     assert.equal(first.cache.tools, true)
-    const second = await build('L1-乙')
-    assert.equal(second.cache.key, first.cache.key, '仅前缀外的 L1 变化不应改键')
+    const second = await build('技能-乙')
+    assert.equal(second.cache.key, first.cache.key, '仅前缀外的技能变化不应改键')
   } finally {
     drv.close()
   }
@@ -88,7 +86,6 @@ test('cache：系统提示变化 → 键变化；连续两次组装 messages 与
     const bag = baseBag({
       system_prompt: 'P',
       tools: [{ name: 'a' }],
-      memories: { l2: { summary: 'L2' } },
     })
     const first = await drv.build(bag)
     const second = await drv.build(bag)
@@ -96,7 +93,7 @@ test('cache：系统提示变化 → 键变化；连续两次组装 messages 与
     assert.equal(JSON.stringify(first.cache), JSON.stringify(second.cache))
 
     const changed = await drv.build(
-      baseBag({ system_prompt: 'Q', tools: [{ name: 'a' }], memories: { l2: { summary: 'L2' } } }),
+      baseBag({ system_prompt: 'Q', tools: [{ name: 'a' }] }),
     )
     assert.notEqual(changed.cache.key, first.cache.key, '前缀内容变化应改键')
   } finally {

@@ -2,9 +2,9 @@
 
 向量索引的**纯原语**：③ 二进制索引编解码 / 原子写 / stale GC、L2 归一、点积、最小堆 top-k 部分选择。
 持有记录 `{key, chunk_index, vector}`（逻辑 key + 块号 + 向量），落本身份 ③
-`CHRONO_PLUGIN_STATE/index.bin`，**可重算、删掉可重建**。消费方（`memory-store`）从其 ④ 条目重算后经
-反向 `port.call vector-index.upsert` 灌入；检索经 `vector-index.search` 得逻辑 key。本服务**只回逻辑 key**，
-不解析条目哈希（key → 哈希由消费方完成）。自身无反向调用、无写通道、无投影读取、不自取时钟。
+`CHRONO_PLUGIN_STATE/index.bin`，**可重算、删掉可重建**。本服务是**通用能力**：调用方经反向
+`port.call vector-index.upsert` 灌入条目、经 `vector-index.search` 取回逻辑 key。本服务**只回逻辑 key**，
+不解析条目哈希（key → 哈希由调用方完成）。自身无反向调用、无写通道、无投影读取、不自取时钟。
 
 - 身份：`vector-index`
 - 能力类 / 方法：`vector-index` → `upsert` / `remove` / `search` / `info` / `clear`
@@ -67,7 +67,7 @@
 
 ## 边界
 
-- 不做：条目正文 / 元数据 / 逻辑删除 / 条目 → 哈希映射（归消费方 `memory-store`）；文本切块与向量化（归 `embedding`）。
+- 不做：条目正文 / 元数据 / 逻辑删除 / 条目 → 哈希映射（归调用方）；文本切块与向量化（归 `embedding`）。
 - 不读投影、无写通道、不发 eff；不取时间 / 随机，同输入同输出。
 - 服务不 import 宿主与内核，运行时零依赖；跨身份只走 `port.call`。
 

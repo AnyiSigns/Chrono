@@ -18,9 +18,9 @@ import {
   workspaceOf,
 } from '../execute/assemble.ts'
 import { defHashOf, directivesOf, errorValue, externOnly, isErrorValue, mergeDirectives } from '../execute/plan.ts'
-import { loadWiring, sliceEnabled } from '../execute/wiring.ts'
+import { loadWiring } from '../execute/wiring.ts'
 import { CONTRACT_VERSION } from '../execute/contract/index.ts'
-import { configFixture, idsFixture, memoryFixture } from './driver.mjs'
+import { configFixture, idsFixture } from './driver.mjs'
 
 test('modelConfigOf：从 #2 config 解析连接实例 + 档案 + 风格来源', () => {
   const ids = idsFixture()
@@ -110,7 +110,7 @@ test('defHashOf：裸哈希 / {def} 引用 / 非法', () => {
   assert.equal(defHashOf({ def: 'nope' }), null)
 })
 
-test('buildInterpretBag：全键装配 + 记忆 / 会话 / 图 / 门禁切片', () => {
+test('buildInterpretBag：全键装配 + 会话 / 图 / 门禁切片', () => {
   const ids = idsFixture({ agent: 'agent-a' })
   const wiring = loadWiring()
   const bag = buildInterpretBag({
@@ -126,7 +126,6 @@ test('buildInterpretBag：全键装配 + 记忆 / 会话 / 图 / 门禁切片', 
     'input',
     'config',
     'tier',
-    'memories',
     'session',
     'graph',
     'persona',
@@ -143,8 +142,6 @@ test('buildInterpretBag：全键装配 + 记忆 / 会话 / 图 / 门禁切片', 
   }
   assert.equal(bag.input.content, '帮我写一个快速排序')
   assert.equal(bag.tier, 'review')
-  assert.equal(bag.memories.l1.summary.goal, '写排序')
-  assert.equal(bag.memories.l2.summary.goal, 'w')
   assert.equal(bag.session.head, 'h3')
   assert.equal(bag.persona, '你是代码评审员。')
   assert.equal(bag.workspace_id, 'w-1')
@@ -152,9 +149,7 @@ test('buildInterpretBag：全键装配 + 记忆 / 会话 / 图 / 门禁切片', 
   assert.equal(bag.thread, 't1')
   assert.equal(bag.thread_kind, 'main')
   assert.equal(bag.style, '简洁')
-  assert.equal(bag.tools_bindings.bindings['retrieval.search'].class, 'retrieval')
-  assert.equal(bag.recall, undefined, 'slices.recall=false 不应装配 recall')
-  assert.equal(sliceEnabled(wiring, 'recall'), false)
+  assert.equal(bag.tools_bindings.bindings.record.class, 'evolve-metrics')
   // 缺省空 tools 不落键：否则 #27 会把空数组当「预建空目录」屏蔽真实工具目录。
   assert.equal(Object.hasOwn(bag, 'tools'), false, '空 tools 不应落 bag')
 })
@@ -268,7 +263,6 @@ test('loadWiring：缺省与 schema 值一致（段序归 #33 图数据，本包
   assert.equal(Object.hasOwn(wiring, 'pipeline'), false)
   assert.equal(wiring.on_empty_slot, 'noop')
   assert.equal(wiring.title.title_default, '新对话')
-  assert.deepEqual(memoryFixture().sessions['c-1'].summary.facts, [])
   assert.equal(configFixture().vendor, 'deepseek')
 })
 

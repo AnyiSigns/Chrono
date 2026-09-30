@@ -4,8 +4,8 @@
 **拥有方**（声明契约 `slots`）与**消费方**（`needs` 为 `many`）。它按请求 `model` 从宿主注入的成员表里
 选出一个提供方，带 `provider` 反向调用该成员的 `embed`，并原样返回结果。
 
-对外公开面不变：能力类 / 方法仍为 `embedding` → `embed`；消费方（`memory-store` / `memory-retrieval` /
-`rerank` / `memory-consolidate` / l2·l3-maintenance 等）仍 `needs {embedding: one}`，**零改动**。
+对外公开面不变：能力类 / 方法仍为 `embedding` → `embed`；本插件是**通用能力**：任何需要向量化的身份
+都可 `needs {embedding: one}` 接入，对外形状零改动。
 
 - 身份：`embedding`
 - 能力类 / 方法：`embedding` → `embed`

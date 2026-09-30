@@ -14,7 +14,7 @@ const { countText } = await import('./fakes.mjs')
 setLocalCountProvider((text) => countText(text))
 
 const { canonicalize } = await import('../execute/normalize.ts')
-const { applyRetention, tierOf, compressText } = await import('../execute/retention.ts')
+const { applyRetention, tierOf } = await import('../execute/retention.ts')
 const { dedupe } = await import('../execute/stages.ts')
 const { resourceIdentity, isMutableResult, digestOf } = await import('../execute/digest.ts')
 const { allocate } = await import('../execute/budget.ts')
@@ -56,40 +56,33 @@ const OPTIONS = {
     ['t-mid', 2],
     ['t-stale', 6],
   ]),
-  coveredTurnIds: new Set(['t-covered']),
   callStep: new Map(),
   recentTurns: 3,
-  t2TextChars: 40,
   largeArtifactBytes: 0,
 }
 
-test('等级判定：T0 当前回合 / T1 近期 / T2 陈旧 / T3 检查点覆盖；非历史恒 T0', () => {
+test('等级判定：T0 当前回合 / T1 近期 / T2 陈旧；非历史恒 T0', () => {
   const messages = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0 }),
     raw({ turnId: 't-new', orderHint: 1 }),
     raw({ turnId: 't-recent', orderHint: 2 }),
     raw({ turnId: 't-mid', orderHint: 3 }),
     raw({ turnId: 't-stale', orderHint: 4 }),
-    raw({ turnId: 't-covered', orderHint: 5 }),
-    raw({ turnId: null, orderHint: 6 }),
+    raw({ turnId: null, orderHint: 5 }),
   ])
-  assert.deepEqual(messages.map((message) => tierOf(message, OPTIONS)), ['T0', 'T0', 'T1', 'T1', 'T2', 'T3', 'T1'])
+  assert.deepEqual(messages.map((message) => tierOf(message, OPTIONS)), ['T0', 'T0', 'T1', 'T1', 'T2', 'T1'])
   const result = applyRetention(messages, OPTIONS)
-  assert.deepEqual(result.counts, { T0: 2, T1: 3, T2: 1, T3: 1 })
-  assert.equal(result.dropped, 1)
-  assert.ok(result.degraded.includes('checkpoint_covered_turns'))
+  assert.deepEqual(result.counts, { T0: 2, T1: 3, T2: 1 })
 })
 
-test('C6：非历史来源即使 covered=true 也落 T0，不被 T3 覆盖裁剪移除', () => {
-  const options = { ...OPTIONS, coveredTurnIds: new Set(['t-new']) }
+test('C6：非历史来源恒落 T0，不被距离裁掉', () => {
   const messages = canonicalize([
-    raw({ source: 'tool', turnId: 't-new', covered: true, priority: 4, orderHint: 0 }),
+    raw({ source: 'tool', turnId: 't-new', priority: 4, orderHint: 0 }),
   ])
-  assert.equal(tierOf(messages[0], options), 'T0')
-  const result = applyRetention(messages, options)
-  assert.equal(result.dropped, 0)
+  assert.equal(tierOf(messages[0], OPTIONS), 'T0')
+  const result = applyRetention(messages, OPTIONS)
   assert.equal(result.messages.length, 1)
-  assert.deepEqual(result.counts, { T0: 1, T1: 0, T2: 0, T3: 0 })
+  assert.deepEqual(result.counts, { T0: 1, T1: 0, T2: 0 })
 })
 
 test('T1：工具结果 → 摘要 + 句柄（提供方 digest 原样带出，缺失按形状回落）', () => {
@@ -115,7 +108,7 @@ test('T1：工具结果 → 摘要 + 句柄（提供方 digest 原样带出，�
   assert.ok(typeof aged.tail === 'string' && aged.tail.length <= 160)
 })
 
-test('T2：工具结果只留句柄（结果丢弃、句柄保留），助手正文压缩、推理丢弃', () => {
+test('T2：工具结果只留句柄（结果丢弃、句柄保留）；助手正文原样、推理保留', () => {
   const messages = canonicalize([
     toolRaw({
       turnId: 't-stale',
@@ -141,11 +134,10 @@ test('T2：工具结果只留句柄（结果丢弃、句柄保留），助手正
   assert.equal(dropped.tail, undefined)
   assert.equal(dropped.summary, undefined)
 
+  // T2 助手消息走 T1/T2 附件老化分支（无附件即原样），不再做正文压缩 / 推理丢弃。
   const assistant = result.messages.find((message) => message.role === 'assistant')
-  assert.equal(assistant.parts[0].text, compressText('很长的散文正文\n第二行不该出现', 40))
-  assert.equal(assistant.parts[0].text.includes('\n'), false)
-  assert.equal(assistant.reasoning, null)
-  assert.ok(result.degraded.includes('tier2_compress'))
+  assert.equal(assistant.parts[0].text, '很长的散文正文\n第二行不该出现')
+  assert.equal(assistant.reasoning.payload, '思考')
 })
 
 test('替代去重：同一 (工具, 资源身份) 只留最后一份完整内容，早前塌成「已被第 N 步替代」', () => {
@@ -299,9 +291,9 @@ test('校正系数作用于改写路径：老化后 token 按系数缩放（不�
   assert.equal(two.tokens, one.tokens * 2)
 })
 
-test('压缩梯级：机械老化已压回预算内不登记；仍超才登记 compress / compress_unavailable', () => {
+test('预算梯级：机械老化已压回预算内不硬死；不可收缩的历史整组被裁并登记 drop_old_turns', () => {
   const policy = defaultPolicy()
-  // 可收缩：老化后已回到预算内 → 不登记压缩梯级。
+  // 可收缩：老化后已回到预算内 → 只剩老化梯级。
   const verbatim = JSON.stringify({ call_id: 'c1', ok: true, result: { text: 'z '.repeat(400) } })
   const ageable = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
@@ -317,20 +309,13 @@ test('压缩梯级：机械老化已压回预算内不登记；仍超才登记 c
   const aged = allocate(ageable, 120, policy)
   assert.equal(aged.error, null)
   assert.ok(aged.degraded.includes('age_tool_results'))
-  assert.equal(aged.degraded.includes('compress_unavailable'), false, '老化已压回预算内 → 压缩未发生')
 
-  // 不可收缩：大段历史正文既不能老化也不能丢推理 → 仍超预算才登记压缩梯级；历史整组被裁不硬死。
+  // 不可收缩：大段历史正文既不能老化也不能丢推理 → 历史整组被裁不硬死。
   const huge = canonicalize([
     raw({ role: 'system', source: 'prompt', priority: 0, parts: [{ type: 'text', text: 'P' }] }),
     raw({ role: 'assistant', source: 'history', priority: 4, parts: [{ type: 'text', text: 'w '.repeat(400) }] }),
   ])
   const fallback = allocate(huge, 120, policy)
   assert.equal(fallback.error, null)
-  assert.ok(fallback.degraded.includes('compress_unavailable'))
   assert.ok(fallback.degraded.includes('drop_old_turns'), '历史因预算被裁须登记 drop_old_turns')
-
-  const withCheckpoint = allocate(huge, 120, policy, { checkpoint: true })
-  assert.equal(withCheckpoint.error, null)
-  assert.ok(withCheckpoint.degraded.includes('compress'))
-  assert.equal(withCheckpoint.degraded.includes('compress_unavailable'), false)
 })

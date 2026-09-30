@@ -124,7 +124,7 @@ function SkillForm(props: { form: any }) {
         </select>
       </Field>
       {form.scope_kind === 'workspace' ? (
-        <Field label={vc.text('settings_memory_workspace_label')}>
+        <Field label={vc.text('settings_skills_workspace_id')}>
           <input
             className="settings-input settings-mono"
             type="text"

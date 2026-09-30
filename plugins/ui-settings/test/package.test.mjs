@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、needs 十条、命令入口 term 形状、
+// 包形状测试：零 schema、members = execute + term、needs 六条、命令入口 term 形状、
 // `.worldignore`、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,7 +36,7 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方法；needs 十条（model / secrets / retrieval / memory-maintenance / session / ref-hydrate / short-memory / input / skill / config）', () => {
+test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法；needs 六条（model / secrets / ref-hydrate / input / skill / config）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods, {
@@ -48,9 +48,6 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
       'health',
       'graph',
       'scopes',
-      'view',
-      'search',
-      'edit',
       'client.read',
       'secret',
     ],
@@ -59,11 +56,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康 / 记忆装配方�
   assert.deepEqual(decl.needs, {
     model: { mode: 'one' },
     secrets: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    'memory-maintenance': { mode: 'one' },
-    session: { mode: 'one' },
     'ref-hydrate': { mode: 'one' },
-    'short-memory': { mode: 'one' },
     input: { mode: 'one' },
     skill: { mode: 'one' },
     config: { mode: 'one' },
@@ -77,11 +70,9 @@ test('并发方法白名单只含纯只读方法，写计划 / 副作用 / 控�
     'health',
     'graph',
     'scopes',
-    'view',
-    'search',
     'client.read',
   ])
-  for (const name of ['profile', 'discover', 'edit', 'secret', 'ping']) {
+  for (const name of ['profile', 'discover', 'secret', 'ping']) {
     assert.ok(
       !decl.concurrent_methods.includes(name),
       `${name} 不得脱链（写计划 / 副作用 / 控制面）`,
@@ -106,9 +97,6 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'orchestration.graph',
     'orchestration.scopes',
     'orchestration.health',
-    'memory.view',
-    'memory.search',
-    'memory.edit',
     'ui-settings.client.read',
     'ui-settings.secret',
   ])
@@ -131,13 +119,12 @@ test('members = execute + term；命令入口 term 全部存在', () => {
     'orchestration.graph',
     'orchestration.scopes',
     'orchestration.health',
-    'memory.view',
     'ui-settings.client.read',
     'ui-settings.secret',
   ]) {
     assert.equal(readonly[name], true, `${name} 只读`)
   }
-  for (const name of ['model.discover', 'model.profile', 'memory.search', 'memory.edit']) {
+  for (const name of ['model.discover', 'model.profile']) {
     assert.equal(readonly[name], undefined, `${name} 非只读`)
   }
 })
@@ -187,10 +174,6 @@ test('入口 term 形状：投影读 / eff 端口与方法', () => {
     'health',
     ['g', ['ids']],
   ])
-  // 记忆三条：view / edit 无参（owner 数据由下游服务自读）；search 传命令 args（查询条件）。
-  assert.deepEqual(readJson('terms/memory.view.json'), ['eff', 'ui-settings', 'view', ['c', null]])
-  assert.deepEqual(readJson('terms/memory.edit.json'), ['eff', 'ui-settings', 'edit', ['c', null]])
-  assert.deepEqual(readJson('terms/memory.search.json'), ['eff', 'ui-settings', 'search', ['v', 0]])
 })
 
 test('.worldignore 声明 test/ 与 tools/ 与 execute/web/dist/', () => {

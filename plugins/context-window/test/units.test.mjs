@@ -69,8 +69,8 @@ test('policy：缺键回落默认；非法顶层抛错', () => {
 
 test('policy：随包 policy.json 可加载且前缀边界正确', () => {
   const policy = loadPolicy()
-  assert.deepEqual(policy.prefix.stable, ['prompt', 'tools', 'l2'])
-  assert.deepEqual(policy.prefix.order, ['history', 'l1', 'skill', 'recall', 'style'])
+  assert.deepEqual(policy.prefix.stable, ['prompt', 'tools'])
+  assert.deepEqual(policy.prefix.order, ['history', 'skill', 'style'])
   assert.ok(policy.messages.input_truncated.length > 0)
 })
 
@@ -341,7 +341,7 @@ test('预算降级阶梯：老化 → 丢推理 → 截断输入；只有 P0 超
   assert.ok(truncated.used <= 40)
 })
 
-test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢老回合 → 截断输入', () => {
+test('降级阶梯按序生效：老化 → 丢推理 → 丢老回合 → 截断输入', () => {
   const policy = defaultPolicy()
   const verbatim = JSON.stringify({ ok: true, result: { content: 'z '.repeat(300) } })
   const messages = canonicalize([
@@ -381,7 +381,6 @@ test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢�
   const ladder = [
     'age_tool_results',
     'drop_reasoning',
-    'compress_unavailable',
     'drop_old_turns',
     'truncate_input',
   ]
@@ -399,7 +398,7 @@ test('降级阶梯按序生效：老化 → 丢推理 → 压缩登记 → 丢�
   }
 })
 
-test('降级阶梯标签：老化压回预算内不登记压缩；配额裁不算 drop_old_turns', () => {
+test('降级阶梯标签：配额裁不算 drop_old_turns', () => {
   const policy = defaultPolicy()
   // 配额（skill）超限被裁、历史仍在预算内 → 只有 quota，不得登记 drop_old_turns。
   const messages = canonicalize([
@@ -416,5 +415,4 @@ test('降级阶梯标签：老化压回预算内不登记压缩；配额裁不�
   assert.equal(result.error, null)
   assert.ok(result.trimmed.some((entry) => entry.source === 'skill' && entry.reason === 'quota'))
   assert.equal(result.degraded.includes('drop_old_turns'), false, '配额裁不是历史裁剪')
-  assert.ok(result.degraded.includes('compress_unavailable'), '仍超预算才登记压缩梯级')
 })

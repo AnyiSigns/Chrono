@@ -15,7 +15,6 @@ import {
   slotOf,
   stripCurrentTurn,
   threadKey,
-  withConversationTitle,
   workspaceKnown,
 } from './assemble.ts'
 import {
@@ -239,18 +238,18 @@ function subagentSpecOf(slot: Json): SubagentSpec | null {
   }
 }
 
-/** 运行记录 owner 身份（消息链 / 输入槽 / 短期记忆 / 待办已出世界，改经 `eff` 问 owner）。 */
+/** 运行记录 owner 身份（消息链 / 输入槽 / 待办已出世界，改经 `eff` 问 owner）。 */
 const SESSION_PORT = 'session'
 const SESSION_READ = 'read'
 const SESSION_TURN_OPEN = 'turn_open'
 const SESSION_TURN_INSERT = 'turn_insert'
 const SESSION_TURN_SETTLE = 'turn_settle'
 const SESSION_TURN_CANCEL = 'turn_cancel'
+const SESSION_TURN_NOTE_INPUT = 'turn_note_input'
+const SESSION_TURN_PROMOTE_INPUT = 'turn_promote_input'
 const SESSION_ACK_INBOX = 'ack_inbox'
 const INPUT_PORT = 'input'
 const INPUT_READ = 'read'
-const SHORT_MEMORY_PORT = 'short-memory'
-const SHORT_MEMORY_READ = 'read'
 const TODO_PORT = 'todo'
 const TODO_INVOKE = 'invoke'
 const CONFIG_PORT = 'config'
@@ -272,8 +271,8 @@ interface OwnerSlices {
 }
 
 /**
- * 从 owner 服务取会话切片、输入槽、短期记忆与当前会话待办，覆盖投影里的同名身份条目。
- * 消息链 / 输入槽 / L1-L2 / 待办已出世界（不产 `write` directive），服务读自有持久存储后返回。
+ * 从 owner 服务取会话切片、输入槽与当前会话待办，覆盖投影里的同名身份条目。
+ * 消息链 / 输入槽 / 待办已出世界（不产 `write` directive），服务读自有持久存储后返回。
  * 必需 owner（session / config）读不到即据实上报，不拿空切片继续（否则把「owner 挂了」误报成别的失败）。
  */
 async function withOwnerSlices(
@@ -299,13 +298,6 @@ async function withOwnerSlices(
     data_gen: null,
   }
   base[INPUT_PORT] = { body: input }
-
-  const memoryOutcome = await deps.port.call(SHORT_MEMORY_PORT, SHORT_MEMORY_READ, {})
-  const memory =
-    memoryOutcome.ok && isRecord(memoryOutcome.value)
-      ? memoryOutcome.value
-      : { version: 1, sessions: {}, workspaces: {} }
-  base[SHORT_MEMORY_PORT] = { body: memory }
 
   const conversationId = asString(session['current'])
   const todoOutcome =
@@ -517,6 +509,18 @@ function interpretRefusal(failure: Extract<InterpretOutcome, { ok: false }>): Tu
   })
 }
 
+/**
+ * 段边界提升待发输入（best-effort）：把会话内存里的待发输入落为 `step.user`（追加在本段输出之后），
+ * 使其进入消息流与下一轮模型上下文。失败不阻断续跑 / 收口。
+ */
+async function promoteInputs(deps: ChatDeps, turnId: string): Promise<void> {
+  try {
+    await deps.port.call(SESSION_PORT, SESSION_TURN_PROMOTE_INPUT, { turn_id: turnId })
+  } catch {
+    // 提升失败不阻断续跑 / 收口：待发输入仍在会话内存，下次边界或收口再提升。
+  }
+}
+
 /** 收口：CAS 落定后向全客户端广播结局；落定失败不广播（回合未终态）。 */
 async function settleTurn(
   deps: ChatDeps,
@@ -526,6 +530,8 @@ async function settleTurn(
   outcome: TurnOutcome,
   source: 'send' | 'resume',
 ): Promise<boolean> {
+  // 收口前先提升待发输入：不丢消息、进入流。
+  await promoteInputs(deps, turnId)
   const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, {
     turn_id: turnId,
     outcome,
@@ -618,6 +624,31 @@ async function ackInbox(deps: ChatDeps, conversation: string | null, items: Rec[
   const seq = maxUnreadSeq(items)
   if (seq === null) return
   await deps.port.call(SESSION_PORT, SESSION_ACK_INBOX, { conversation, seq })
+}
+
+/**
+ * 首条消息标题旁路段（回合开始后异步）：调 `session-title.generate` 生成标题，再 `session.set_title` 写回。
+ * 不参与回合结局、不阻塞 interpret；失败 / 取消只保留缺省标题。取 `sessionBody` 交判定，避免读回算错首条。
+ */
+async function generateTitle(
+  deps: ChatDeps,
+  params: {
+    conversationId: string
+    firstMessage: string
+    config: Rec
+    sessionBody: Rec
+    titleDefault: string
+  },
+): Promise<void> {
+  try {
+    const outcome = await deps.port.call(TITLE_PORT, TITLE_METHOD, buildTitleArgs(params))
+    const title =
+      outcome.ok && isRecord(outcome.value) ? asString(outcome.value['title']) : null
+    if (title === null) return
+    await deps.port.call(SESSION_PORT, 'set_title', { conversation: params.conversationId, title })
+  } catch {
+    // 标题旁路段失败 / 取消不影响回合：缺省标题保留
+  }
 }
 
 /**
@@ -725,37 +756,17 @@ async function send(
     newConversation = { id: conversationId, workspace_id: workspaceId }
   }
 
-  // 首条消息标题：算在 turn_open 之前，随 `new_conversation` 交建会话，或写既有会话。
+  // 首条消息标题：**判定**在 turn_open 之前（取决于建会话前的 count / title），**生成**挪到回合开始之后
+  // 异步跑——标题模型调用曾卡在 turn_open 前，害得首轮 `chat.turn.started`（工作态 / 消息流）要等标题返回。
   // 子代理线程不跑标题段（标题取任务提示词，且省一次模型调用）。
-  let sessionBody = turn.sessionBody
+  const sessionBody = turn.sessionBody
   const titleDefault = wiring.title.title_default
-  if (
+  const shouldTitle =
     subagent === null &&
     wiring.title.when === 'first_message' &&
     turn.conversationId !== null &&
     shouldGenerateTitle(turn.conversation, titleDefault)
-  ) {
-    const titleArgs = buildTitleArgs({
-      conversationId: turn.conversationId,
-      firstMessage: firstMessageOf(turn.slot),
-      config: turn.config,
-      sessionBody: turn.sessionBody,
-      titleDefault,
-    })
-    const titleOutcome = await deps.port.call(TITLE_PORT, TITLE_METHOD, titleArgs)
-    const title =
-      titleOutcome.ok && isRecord(titleOutcome.value) ? asString(titleOutcome.value['title']) : null
-    if (title !== null) {
-      if (newConversation !== null) newConversation['title'] = title
-      else {
-        sessionBody = withConversationTitle(sessionBody, turn.conversationId, title)
-        await deps.port.call(SESSION_PORT, 'set_title', {
-          conversation: turn.conversationId,
-          title,
-        })
-      }
-    }
-  }
+  const titleConversationId = turn.conversationId
 
   // 转换点 A：调模型之前写回合头，携带用户消息与槽引用（成功后才清槽）。
   const slotRef = slotRefOf(ids, thread) ?? env.run ?? `t${env.now}`
@@ -776,6 +787,16 @@ async function send(
   }
   const opened = await deps.port.call(SESSION_PORT, SESSION_TURN_OPEN, openArgs)
   if (!opened.ok) {
+    // run 已被取消 / 中止：宿主对已终局 run 的反向调用回 `cancelled`，此处**不得**再走 turn_open，
+    // 否则会在宿主 run 已 `run.finished` 后补发 `chat.turn.started`（幽灵回合），把客户端生成态重新点亮。
+    if (opened.code === 'cancelled') {
+      return refusalReceipt(
+        turnId,
+        thread,
+        turn.conversationId,
+        cancelled({ message: 'turn cancelled before open' }),
+      )
+    }
     return refusalReceipt(
       turnId,
       thread,
@@ -830,6 +851,17 @@ async function send(
   const unread = inboxUnreadOf(scopedInbox ?? sessionBody)
   if (unread.length > 0) bag['inbox_unread'] = unread as unknown as Json
   emitTurnStarted(deps, env, activeTurnId, turn.thread, conversationId, 'send')
+  // 标题旁路段现挂在这里：回合已开始（工作态 / 消息流不再等标题），标题生成与 interpret 并发，
+  // 生成完再 `set_title` 写回。旁路段失败 / 取消只丢标题，不影响回合结局。
+  if (shouldTitle && titleConversationId !== null) {
+    void generateTitle(deps, {
+      conversationId: titleConversationId,
+      firstMessage: firstMessageOf(turn.slot),
+      config: turn.config,
+      sessionBody: turn.sessionBody,
+      titleDefault,
+    })
+  }
   const interpreted = await callInterpret(deps, bag)
   if (!interpreted.ok) {
     const outcome = interpretRefusal(interpreted)
@@ -934,6 +966,8 @@ async function resume(
     : asString(args['turn_id'])
   const projected = isRecord(args['ids']) ? await hydrateIds(args['ids'], hydrator) : {}
   const thread = threadKey(asString(args['thread']) ?? env.thread)
+  // 段边界：先把待发输入落为 `step.user`，再取会话切片装配——本轮请求即读到（不再晚一轮）。
+  if (turnId !== null) await promoteInputs(deps, turnId)
   // 续跑按 `turn_id` 取会话切片：子代理旁路线程不是 `current`，须按回合所属会话定位。
   const owners = await withOwnerSlices(deps, projected, env, thread, turnId)
   const ids = owners.ids
@@ -1103,6 +1137,8 @@ async function cancel(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
   // 通知两层持有在途工作的一方：先置标志（停止再派发），再销毁在途 HTTP（停止烧推理窗口与费用）。
   await deps.port.call(LOOP_PORT, CANCEL_METHOD, { turn_id: turnId })
   await deps.port.call(MODEL_PORT, MODEL_ABORT_METHOD, { turn_id: turnId })
+  // 取消前提升待发输入：取消也留痕（消息不丢、进入流）。
+  await promoteInputs(deps, turnId)
   const outcome = cancelled({ message: 'turn cancelled by user' })
   const settled = await deps.port.call(SESSION_PORT, SESSION_TURN_SETTLE, {
     turn_id: turnId,
@@ -1157,7 +1193,9 @@ async function insert(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
   if (turnId === null || insertId === null || message === null) {
     throw new BadArgsError('turn_id / insert_id / user_message required')
   }
-  const outcome = await deps.port.call(SESSION_PORT, SESSION_TURN_INSERT, {
+  // 只**记待发**（内存），不落步、不渲染：图在轮次边界据此挂起，挂起后 `resume` 提升为 `step.user`
+  // 才落盘进流——即「消息进入流之后才落盘」。
+  const outcome = await deps.port.call(SESSION_PORT, SESSION_TURN_NOTE_INPUT, {
     turn_id: turnId,
     insert_id: insertId,
     user_message: message,

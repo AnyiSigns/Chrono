@@ -44,7 +44,7 @@ function startContext() {
             margin: 1024,
             origin: 'default',
             flags: [],
-            quota: { l2: 0, l1: 0, skill: 0, recall: 0, style: 0 },
+            quota: { skill: 0, style: 0 },
           },
         }
       }

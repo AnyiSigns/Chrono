@@ -13,8 +13,6 @@ const SECTION_KEYS = [
   'system',
   'tools',
   'rules',
-  'l2',
-  'checkpoint',
   'history_text',
   'tool_calls',
   'tool_results',
@@ -235,7 +233,7 @@ test('前缀稳定：同 bag 反复组装逐字节一致；工具按名排序，
   try {
     await drv.hello()
     const build = (tools) =>
-      drv.build(baseBag({ input: 'IN', system_prompt: 'P', tools, memories: { l2: { summary: 'L2' } } }))
+      drv.build(baseBag({ input: 'IN', system_prompt: 'P', tools }))
     const shuffled = [{ name: 'z' }, { name: 'a' }, { name: 'm' }]
     const first = await build(shuffled)
     const second = await build(shuffled)
@@ -248,7 +246,7 @@ test('前缀稳定：同 bag 反复组装逐字节一致；工具按名排序，
       .filter((text) => text.startsWith('{"name"') || /"name":"[zam]"/.test(text))
     const names = toolTexts.map((text) => JSON.parse(text).name)
     assert.deepEqual(names, ['a', 'm', 'z'])
-    // 稳定前缀（prompt → tools → l2）位于输入之前
+    // 稳定前缀（prompt → tools）位于输入之前
     const texts = first.messages.map(contentOf)
     assert.ok(texts.indexOf('P') < texts.indexOf('IN'))
   } finally {
@@ -337,29 +335,6 @@ test('同回合推理回灌：step.result 的中立块原样携带，payload / s
     const assistant = value.messages.find((message) => message.role === 'assistant' && message.reasoning !== undefined)
     assert.deepEqual(assistant.reasoning, block, '中立块必须原样携带')
     assert.ok(value.manifest.sections.reasoning > 0, '推理计入 reasoning 分节')
-  } finally {
-    drv.close()
-  }
-})
-
-// ── L1/L2 配额生效 ─────────────────────────────────────────────────────────
-
-test('L1 配额生效：超配额摘要被裁，会话不因一条大摘要砖掉', async () => {
-  const drv = startService()
-  try {
-    await drv.hello()
-    const value = await drv.build(
-      baseBag({
-        input: 'IN',
-        system_prompt: 'P',
-        memories: { l1: { summary: 's '.repeat(400) } },
-        config: { model: 'm1', context_window: 1000, max_output: 100 },
-      }),
-    )
-    assert.equal(value.ok, true)
-    assert.equal(value.manifest.sources.l1.count, 0)
-    assert.ok(value.manifest.trimmed.some((entry) => entry.source === 'l1' && entry.reason === 'quota'))
-    assert.ok(!value.messages.map(contentOf).some((text) => text.includes('[本会话摘要]')))
   } finally {
     drv.close()
   }

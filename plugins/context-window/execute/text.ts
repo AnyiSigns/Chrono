@@ -1,4 +1,4 @@
-// 文本规范化、记忆渲染、token 计数缓存与前缀和。
+// 文本规范化、token 计数缓存与前缀和。
 // 计数缓存按消息 def 键（历史 = ref 哈希；合成消息 = 原始内容键）缓存，避免每轮全量重算；
 // 前缀和用于历史窗口 / atomic 组的区间求和不重复遍历。
 
@@ -169,16 +169,6 @@ export function parseAt(value: unknown): number {
   return 0
 }
 
-/** 解析 `expires_at`（数字毫秒或 ISO 字符串）；非法返回 null。 */
-export function parseExpiresAt(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value)
-    if (!Number.isNaN(parsed)) return parsed
-  }
-  return null
-}
-
 /** 把资产引用收敛成规范形状。 */
 export function asAssetRef(value: unknown): AssetRef | null {
   if (!isRecord(value)) return null
@@ -190,46 +180,6 @@ export function asAssetRef(value: unknown): AssetRef | null {
   const ref: AssetRef = { sha256, mime }
   if (typeof size === 'number' && Number.isFinite(size)) ref.size = size
   return ref
-}
-
-/** 记忆摘要字段的中文标签（渲染顺序固定）。 */
-const SUMMARY_FIELDS: [string, string][] = [
-  ['goal', '目标'],
-  ['decisions', '决策'],
-  ['facts', '关键事实'],
-  ['open_questions', '未决问题'],
-  ['files', '涉及文件'],
-  ['next_steps', '下一步'],
-]
-
-/** 把结构化摘要渲染成确定文本；字符串原样返回；缺字段跳过。 */
-export function renderSummary(summary: unknown): string {
-  if (typeof summary === 'string') return summary
-  if (!isRecord(summary)) return ''
-  const lines: string[] = []
-  for (const [key, label] of SUMMARY_FIELDS) {
-    const value = summary[key]
-    if (typeof value === 'string' && value.length > 0) {
-      lines.push(`${label}：${value}`)
-      continue
-    }
-    if (Array.isArray(value)) {
-      const items = value.filter(
-        (item): item is string => typeof item === 'string' && item.length > 0,
-      )
-      if (items.length > 0) {
-        lines.push(`${label}：`)
-        for (const item of items) lines.push(`- ${item}`)
-      }
-    }
-  }
-  return lines.join('\n')
-}
-
-/** 渲染记忆切片为一条消息文本。 */
-export function renderMemory(title: string, summary: unknown): string {
-  const body = renderSummary(summary)
-  return body.length > 0 ? `[${title}]\n${body}` : `[${title}]`
 }
 
 /** 填充 `{key}` 占位（policy 文案模板）。 */

@@ -23,9 +23,6 @@ const CHAT_TIMEOUTS = readJson('chat/schema/wiring.json').method_timeouts
 const LOOP_TIMEOUTS = readJson('loop-policy/schema/graph.json').method_timeouts
 const TOOLS_TIMEOUTS = readJson('tools/schema/tools.json').method_timeouts
 const CONTEXT_TIMEOUTS = readJson('context-window/schema/policy.json').method_timeouts
-const COMPRESS_TIMEOUTS = readJson('compress/schema/compress.json').method_timeouts
-const MAINT_TIMEOUTS = readJson('memory-consolidate/schema/memory-maintenance.json').method_timeouts
-const STORE_TIMEOUTS = readJson('memory-store/schema/memory.json').method_timeouts
 const SESSION_TIMEOUTS = readJson('session/schema/session.json').method_timeouts
 
 const MAX_TIMER_MS = 2 ** 31 - 1
@@ -44,9 +41,6 @@ test('method_timeouts 值域：正整数且不超过计时器硬上限', () => {
     ['model-protocol', MODEL_TIMEOUTS],
     ['tools', TOOLS_TIMEOUTS],
     ['context-window', CONTEXT_TIMEOUTS],
-    ['compress', COMPRESS_TIMEOUTS],
-    ['memory-consolidate', MAINT_TIMEOUTS],
-    ['memory-store', STORE_TIMEOUTS],
     ['session', SESSION_TIMEOUTS],
   ]) {
     for (const [key, value] of Object.entries(table)) {
@@ -106,28 +100,12 @@ test('反向调用等待上限落在被调用层与属主层安全网之间', ()
   // loop-policy 的反向调用打到 model.chat，其属主层是 loop-policy.interpret。
   const loopCap = reverseCap('loop-policy/execute/main.ts')
   assert.ok(loopCap > MODEL_TIMEOUTS['model.chat'], 'loop-policy 反向上限必须大于 model.chat')
-  // 段边界检查点经 compress.summarize 走图外语义压缩 ⇒ 反向上限也须大于该层声明超时。
-  assert.ok(loopCap > COMPRESS_TIMEOUTS['compress.summarize'], 'loop-policy 反向上限必须大于 compress.summarize')
   assert.ok(loopCap < LOOP_TIMEOUTS['loop-policy.interpret'], 'loop-policy 反向上限必须小于 loop-policy.interpret')
 
   // chat 的反向调用打到 loop-policy.interpret，其属主层是 chat.send。
   const chatCap = reverseCap('chat/execute/main.ts')
   assert.ok(chatCap > LOOP_TIMEOUTS['loop-policy.interpret'], 'chat 反向上限必须大于 loop-policy.interpret')
   assert.ok(chatCap < CHAT_TIMEOUTS['chat.send'], 'chat 反向上限必须小于 chat.send')
-})
-
-test('记忆维护链的外层大于其内层之和', () => {
-  const summarize = COMPRESS_TIMEOUTS['compress.summarize']
-  const storeCeiling = Math.max(...Object.values(STORE_TIMEOUTS))
-  assert.ok(summarize > MODEL_TIMEOUTS['model.chat'], 'compress.summarize 必须大于 model.chat')
-  assert.ok(
-    MAINT_TIMEOUTS['memory-maintenance.consolidate'] > summarize + storeCeiling,
-    'memory-maintenance.consolidate 必须大于 compress.summarize + memory-store 之和',
-  )
-  assert.ok(
-    MAINT_TIMEOUTS['memory-maintenance.sweep'] > storeCeiling,
-    'memory-maintenance.sweep 必须大于 memory-store',
-  )
 })
 
 test('取消链的外层大于其顺序内层之和', () => {
@@ -153,10 +131,6 @@ test('安全网值与约定一致（不得缩小）', () => {
   assert.equal(MODEL_TIMEOUTS['model.abort'], 30000)
   assert.equal(SESSION_TIMEOUTS['session.turn_cancel'], 120000)
   assert.equal(TOOLS_TIMEOUTS['tools.dispatch'], 1800000)
-  assert.equal(COMPRESS_TIMEOUTS['compress.summarize'], 3900000)
-  assert.equal(COMPRESS_TIMEOUTS['compress.compact'], 3900000)
-  assert.equal(MAINT_TIMEOUTS['memory-maintenance.consolidate'], 4800000)
-  assert.equal(MAINT_TIMEOUTS['memory-maintenance.sweep'], 900000)
   assert.equal(reverseCap('chat/execute/main.ts'), 6150000)
   assert.equal(reverseCap('loop-policy/execute/main.ts'), 4200000)
   // 本地 fs / CPU 层（属主在别处声明），只核验已按表声明，不改它。

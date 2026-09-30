@@ -11,15 +11,11 @@ import {
   assertValidStepRecord,
   diffBagKeys,
 } from '../invariants.ts'
-import {
-  validateReasoningBlock,
-  validateRetrievalSearchBag,
-} from '../src/runtime.ts'
+import { validateReasoningBlock } from '../src/runtime.ts'
 import {
   interpretBag,
   nodeIo,
   outcomeFixtures,
-  retrievalSearch,
   sessionSlices,
   stepRecords,
   vendorReasoning,
@@ -35,7 +31,6 @@ const PRODUCER_KEYS = [
   'session',
   'tier',
   'session_id',
-  'memories',
   'graph',
   'evidence',
   'evolution',
@@ -51,7 +46,6 @@ const PRODUCER_KEYS = [
   'style',
   'system_prompt',
   'tools',
-  'recall',
   'workspace_id',
   'workspace_root',
   'new_conversation',
@@ -73,7 +67,6 @@ const CONSUMER_KEYS = [
   'input',
   'input_body',
   'mcp_tools',
-  'memories',
   'new_conversation',
   'now',
   'persona',
@@ -81,7 +74,6 @@ const CONSUMER_KEYS = [
   'projection_reads',
   'queue',
   'question',
-  'recall',
   'refs',
   'resilience',
   'resume',
@@ -140,7 +132,7 @@ test('夹具：五种步记录均可校验', () => {
 test('夹具：session 切片与节点 IO 形状齐备', () => {
   assert.ok(typeof sessionSlices['session'] === 'object')
   assert.ok(typeof sessionSlices['slice']['head'] === 'string')
-  for (const node of ['context.assemble', 'model.chat', 'tool.gate', 'tool.dispatch', 'turn.commit', 'recall']) {
+  for (const node of ['context.assemble', 'model.chat', 'tool.gate', 'tool.dispatch', 'turn.commit']) {
     assert.ok(nodeIo[node] !== undefined, `missing node ${node}`)
     assert.ok(typeof nodeIo[node]['input'] === 'object')
     assert.ok(typeof nodeIo[node]['output'] === 'object')
@@ -187,26 +179,6 @@ test('I6：未登记的消费方键会失败', () => {
       },
     ),
   )
-})
-
-test('retrieval.search 夹具：权威键可校验，生产方已对齐，键名漂移留历史档', () => {
-  assert.equal(validateRetrievalSearchBag(retrievalSearch['authoritative']).ok, true)
-  assert.equal(retrievalSearch['authoritative']['workspace'], 'w-1')
-  assert.equal(retrievalSearch['authoritative']['recall_budget'], 8)
-  // 生产方当前形状：已按权威键名发出。
-  assert.equal(retrievalSearch['producer_current']['workspace'], 'w-1')
-  assert.equal(retrievalSearch['producer_current']['recall_budget'], 8)
-  assert.equal(retrievalSearch['producer_current']['query'], '看看 foo.ts 第 42 行')
-  assert.equal(Object.hasOwn(retrievalSearch['producer_current'], 'workspace_id'), false)
-  assert.equal(Object.hasOwn(retrievalSearch['producer_current'], 'budget'), false)
-  // 历史档：明确标注 historical，逐项记录修复前后的键名，不得读作当前形状。
-  const drift = retrievalSearch['producer_drift_historical']
-  assert.equal(drift['status'], 'historical')
-  assert.equal(drift['items'].length, 3)
-  for (const item of drift['items']) {
-    assert.equal(item['producer_key_after'], item['authoritative_key'])
-    assert.equal(typeof item['producer_key_before'], 'string')
-  }
 })
 
 test('厂商推理夹具逐块可校验', () => {

@@ -201,7 +201,6 @@ export function defaultBridge(overrides = {}, owners = {}) {
   const table = {
     'session.read': () => owners.session ?? sessionSliceFixture(),
     'input.read': () => owners.input ?? DEFAULT_INPUT_BODY,
-    'short-memory.read': () => owners.memory ?? memoryFixture(),
     'todo.invoke': () => ({ ok: true, result: owners.todo ?? DEFAULT_TODO_RESULT }),
     'session.history': () => owners.history ?? historyFixture(),
     'session.turn_open': (args) => owners.turnOpen ?? {
@@ -261,28 +260,6 @@ export function configFixture(overrides = {}) {
       },
     },
     ...overrides,
-  }
-}
-
-/** 一份最小 short-memory body（本会话 L1 + 工作区 L2）。 */
-export function memoryFixture() {
-  return {
-    version: 1,
-    sessions: {
-      'c-1': {
-        summary: { goal: '写排序', decisions: [], facts: [], open_questions: [], files: [], next_steps: [] },
-        covered_upto: null,
-        at: '2020-01-01T00:00:00.000Z',
-        expires_at: '2999-01-01T00:00:00.000Z',
-      },
-    },
-    workspaces: {
-      'w-1': {
-        summary: { goal: 'w', decisions: [], facts: [], open_questions: [], files: [] },
-        sources: ['c-1'],
-        at: '2020-01-01T00:00:00.000Z',
-      },
-    },
   }
 }
 
@@ -355,7 +332,7 @@ export function toolsFixture() {
   return {
     version: 1,
     bindings: {
-      'retrieval.search': { class: 'retrieval', method: 'search', argsSchema: { type: 'object' }, caps: {}, idempotent: true },
+      record: { class: 'evolve-metrics', method: 'record', argsSchema: { type: 'object' }, caps: {}, idempotent: false },
     },
   }
 }
@@ -436,7 +413,6 @@ export function idsFixture(overrides = {}) {
       },
     },
     config: { body: overrides.configBody ?? configFixture() },
-    'short-memory': { body: overrides.memoryBody ?? memoryFixture() },
     session: {
       body: overrides.sessionBody ?? { version: 1, current: 'c-1', conversations: [conversation] },
       refs: overrides.refs ?? chainRefs(),

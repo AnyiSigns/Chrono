@@ -34,7 +34,6 @@
             "question.answer",
             "workspace.add",
             "workspace.remove",
-            "memory.edit",
             "idle"
           ]
         },
@@ -75,23 +74,13 @@
         },
         "id": {
           "type": "string",
-          "description": "kind=approval.decide：待审批项 id；kind=question.answer：待作答问题队列项 id；kind=memory.edit：目标记忆条目 id"
+          "description": "kind=approval.decide：待审批项 id；kind=question.answer：待作答问题队列项 id"
         },
         "verdict": { "enum": ["accept", "deny"], "description": "kind=approval.decide" },
         "answers": {
           "type": "array",
           "items": { "type": "object" },
           "description": "kind=question.answer；作答内容（按问题顺序的 {question_id, selected[], custom?}）"
-        },
-        "action": {
-          "enum": ["update", "delete", "pin"],
-          "description": "kind=memory.edit"
-        },
-        "layer": { "enum": ["l1", "l2", "l3"], "description": "kind=memory.edit；记忆层级" },
-        "patch": {
-          "type": "object",
-          "additionalProperties": true,
-          "description": "kind=memory.edit；更新内容（action=update 时）"
         }
       }
     }

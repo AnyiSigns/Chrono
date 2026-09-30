@@ -40,15 +40,12 @@ const OPTIONS = {
     ['t-mid', 2],
     ['t-stale', 6],
   ]),
-  coveredTurnIds: new Set(['t-covered']),
   callStep: new Map(),
   recentTurns: 3,
-  t2TextChars: 200,
   largeArtifactBytes: 0,
   oversizedUserChars: 100,
   scale: 1,
   errorLine: '系统错误：{error}',
-  errorAvoidHeader: '应避免的错误',
 }
 
 // ── 超大用户粘贴 ───────────────────────────────────────────────────────────
@@ -112,65 +109,7 @@ test('超大粘贴（协议级）：bag.thresholds 覆盖阈值，本轮超阈�
 
 // ── 系统错误分层 ───────────────────────────────────────────────────────────
 
-function sessionOf(messages, turns) {
-  const refs = {}
-  let prev = null
-  let head = null
-  for (const body of messages) {
-    refs[body.id] = { ...body, prev: prev === null ? null : { def: prev } }
-    prev = body.id
-    head = body.id
-  }
-  return { head, refs, turns }
-}
-
-const C_ERR = 'CERR 首行\nCERR 次行'
-const D_ERR = 'DERR 首行'
-const G_ERR = 'GERR 首行\nGERR 次行'
-
-function errorSession() {
-  const messages = [
-    { id: 'msg-c1-a-user', role: 'user', content: 'A-USER' },
-    { id: 'msg-c1-a-assistant', role: 'assistant', content: 'A-ASSIST' },
-    { id: 'msg-c1-b-user', role: 'user', content: 'B-USER' },
-    { id: 'msg-c1-c-system', role: 'system', content: C_ERR, meta: { error: C_ERR } },
-    { id: 'msg-c1-d-system', role: 'system', content: D_ERR, meta: { error: D_ERR } },
-    { id: 'msg-c1-e-user', role: 'user', content: 'E-USER' },
-    { id: 'msg-c1-e-assistant', role: 'assistant', content: 'E-ASSIST' },
-    {
-      id: 'msg-c1-f-assistant',
-      role: 'assistant',
-      content: '',
-      parts: [{ type: 'tool', call_id: 'c9', tool: 'read', args: { path: 'a' }, result: { content: 'X', lines_returned: 1 }, status: 'ok' }],
-    },
-    { id: 'msg-c1-f-tool', role: 'tool', content: 'X', tool_call_id: 'c9' },
-    { id: 'msg-c1-g-user', role: 'user', content: 'G-USER' },
-    { id: 'msg-c1-g-system', role: 'system', content: G_ERR, meta: { error: G_ERR } },
-  ]
-  const turns = [
-    { turn_id: 'a', steps: [] },
-    { turn_id: 'b', steps: [] },
-    {
-      turn_id: 'c',
-      steps: [
-        {
-          type: 'checkpoint',
-          turn_id: 'c',
-          seq: 5,
-          summary: { goal: '阶段一', errors_to_avoid: [{ what: '旧错误' }] },
-          covered_upto: 1,
-        },
-      ],
-    },
-    { turn_id: 'd', steps: [] },
-    { turn_id: 'e', steps: [] },
-    { turn_id: 'f', steps: [] },
-    { turn_id: 'g', steps: [] },
-  ]
-  return sessionOf(messages, turns)
-}
-
-test('检查点 errors_to_avoid 保留；工具错误（ok:false）逐字回灌；配对不破（步日志口径）', async () => {
+test('工具错误（ok:false）逐字回灌；配对不破（步日志口径）', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -183,7 +122,6 @@ test('检查点 errors_to_avoid 保留；工具错误（ok:false）逐字回灌�
           state: 'settled',
           user_message: { content: 'A-USER' },
           steps: [
-            { type: 'checkpoint', turn_id: 'a', seq: 5, summary: { goal: '阶段一', errors_to_avoid: [{ what: '旧错误' }] }, covered_upto: { turn_id: 'a', seq: 5 } },
             { type: 'step.result', turn_id: 'a', seq: 6, assistant: { content: 'A-ASSIST' }, tool_results: [] },
           ],
         },
@@ -205,11 +143,9 @@ test('检查点 errors_to_avoid 保留；工具错误（ok:false）逐字回灌�
     const texts = value.messages.map(contentOf)
     const joined = texts.join('\n')
 
-    // 被检查点覆盖的 A-USER 不再逐条回灌；检查点原有 errors_to_avoid 保留。
-    assert.ok(!texts.includes('A-USER'))
-    const checkpoint = texts.find((text) => text.startsWith('[检查点]'))
-    assert.ok(checkpoint, '检查点须注入')
-    assert.ok(checkpoint.includes('旧错误'), '检查点原有 errors_to_avoid 保留')
+    // 往期会话记录照常逐条回灌（不再有检查点覆盖）。
+    assert.ok(texts.includes('A-USER'))
+    assert.ok(texts.includes('A-ASSIST'))
 
     // T0 工具错误逐字（模型需要知道失败原因与配对）。
     const tool = value.messages.find((message) => message.role === 'tool' && message.tool_call_id === 'c9')
@@ -232,7 +168,7 @@ test('检查点 errors_to_avoid 保留；工具错误（ok:false）逐字回灌�
   }
 })
 
-test('系统错误分层（单元）：无检查点时 T2 回落一行，T0 逐字', () => {
+test('系统错误分层（单元）：T2 回落一行，T0 逐字', () => {
   const messages = canonicalize([
     raw({ role: 'system', turnId: 't-new', orderHint: 0, parts: [{ type: 'text', text: 'NEW 首\nNEW 次' }], error: 'NEW 首\nNEW 次' }),
     raw({ role: 'system', turnId: 't-stale', orderHint: 1, parts: [{ type: 'text', text: 'OLD 首\nOLD 次' }], error: 'OLD 首\nOLD 次' }),
@@ -240,7 +176,7 @@ test('系统错误分层（单元）：无检查点时 T2 回落一行，T0 逐�
   const result = applyRetention(messages, OPTIONS)
   const texts = result.messages.map((message) => message.parts[0].text)
   assert.ok(texts.includes('NEW 首\nNEW 次'), 'T0 逐字')
-  assert.ok(texts.includes('系统错误：OLD 首'), '无检查点时 T2 回落一行')
+  assert.ok(texts.includes('系统错误：OLD 首'), 'T2 回落一行')
   assert.ok(!texts.some((text) => text.includes('OLD 次')), '一行蒸馏不得含次行')
   assert.ok(result.degraded.includes('error_line'))
 })

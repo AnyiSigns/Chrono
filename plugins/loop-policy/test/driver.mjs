@@ -1,5 +1,5 @@
 // 协议级测试驱动：spawn 真实 `loop-policy` 门面，并把它对 `graph-run` / `turn-ledger` / `graph-gate` 的
-// 反向调用转交给真实服务；对节点能力类（context / model / guard / approval / tools / session / retrieval /
+// 反向调用转交给真实服务；对节点能力类（context / model / guard / approval / tools / session /
 // router / evolve-metrics）由本驱动以假实现应答。跨插件联调只经 spawn 进程 + 帧转发，不 import 兄弟插件源码。
 // `portCalls` / `events` 汇总自各真实服务（门面对 graph-run / turn-ledger 的内部委派不计入端口序，
 // 与拆分前「门面直接派发节点」的观测口径一致）。
@@ -24,8 +24,6 @@ export const DEFAULT_PINS = {
   session: 'session',
   model: 'model-protocol',
   context: 'context-window',
-  retrieval: 'memory-retrieval',
-  compress: 'compress',
   guard: 'guard',
   approval: 'approval',
   tools: 'tools',
@@ -99,22 +97,6 @@ export function defaultProviders(overrides = {}) {
       turn_id: args.turn_id,
       outcome: args.outcome,
       persisted: true,
-    }),
-    'retrieval.search': () => ({ items: [] }),
-    'compress.summarize': (args) => ({
-      ok: true,
-      kind: 'summarize',
-      conversation: args.conversation ?? null,
-      covered_upto: args.covered_upto ?? null,
-      summary: {
-        goal: typeof args.goal === 'string' && args.goal.length > 0 ? args.goal : 'stub summary',
-        decisions: [],
-        facts: ['fact-1'],
-        open_questions: [],
-        files: Array.isArray(args.files) ? args.files : [],
-        next_steps: [],
-      },
-      dedup: 'text',
     }),
     'router.select': (args) => args.primary,
     'evolve-metrics.shadow': () => ({ status: 'pass', metric_id: 'metric-1' }),

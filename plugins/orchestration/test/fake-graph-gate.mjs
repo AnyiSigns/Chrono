@@ -1,5 +1,5 @@
 // orchestration 测试本地假 `graph-gate`：只在测试进程内仿真反向 port.call 应答，不 import 任何
-// 兄弟插件（插件间不得直连，做法参照 compress/test/fakes.mjs）。契约形状与真实提供方一致（同字段 /
+// 兄弟插件（插件间不得直连，做法参照 context-window/test/fakes.mjs）。契约形状与真实提供方一致（同字段 /
 // 同错误码 / 同结果哈希口径），用于支撑本插件「validate 委派 → 消费机械闸结果」的原断言；
 // 真实机械闸行为由 plugins/graph-gate 自带测试与根 tests/contract 覆盖。
 //

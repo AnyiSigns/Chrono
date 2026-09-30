@@ -1,6 +1,6 @@
 // 展示投影单元测试：`session/execute/project.ts` 把回合步日志摊平成单一有序事件流（展示形状）。
 // 覆盖：用户正文与附件、助手**塌成一条**（每回合一个助手段，不每轮分层）、工具结果回填不新建消息、
-// 运行中插入的 user 依追加序切断助手段（插入前 / 插入后两段）、检查点与 verify 标记，以及「不读 refs」。
+// 运行中插入的 user 依追加序切断助手段（插入前 / 插入后两段）、verify 标记，以及「不读 refs」。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -30,7 +30,6 @@ function turns() {
           },
         },
         { type: 'checkpoint', turn_id: 't1', seq: 2, summary: { kind: 'verify', text: 'verify: {"passed":true}' }, covered_upto: 2 },
-        { type: 'checkpoint', turn_id: 't1', seq: 3, summary: { goal: '阶段一' }, covered_upto: 3 },
       ],
     },
     {
@@ -61,10 +60,10 @@ test('displayMessagesByTurn：扁平事件流 → 展示消息链（旧→新，
   assert.deepEqual(flat[3].def.prev, { def: 'msg-c1-t2-user' })
 })
 
-test('displayTimeline：用户 / 推理 / 正文 / 工具卡 / verify / 检查点标记', () => {
+test('displayTimeline：用户 / 推理 / 正文 / 工具卡 / verify 标记', () => {
   const timeline = displayTimeline(turns())
   assert.deepEqual(timeline.map((turn) => turn.turn_id), ['t1', 't2'])
-  assert.deepEqual(timeline[0].items.map((item) => item.kind), ['user', 'reasoning', 'text', 'tool', 'verify', 'checkpoint'])
+  assert.deepEqual(timeline[0].items.map((item) => item.kind), ['user', 'reasoning', 'text', 'tool', 'verify'])
   const tool = timeline[0].items[3]
   assert.equal(tool.call_id, 'c1')
   assert.equal(tool.tool, 'read')
@@ -72,7 +71,6 @@ test('displayTimeline：用户 / 推理 / 正文 / 工具卡 / verify / 检查�
   assert.equal(tool.status, 'ok')
   assert.deepEqual(tool.result, { text: 'X' })
   assert.equal(timeline[0].items[4].text, 'verify: {"passed":true}')
-  assert.ok(String(timeline[0].items[5].text).includes('目标：阶段一'))
   // 无 parts 时回落 content。
   assert.deepEqual(timeline[1].items.map((item) => item.kind), ['user', 'text'])
 })
@@ -204,7 +202,7 @@ test('兼容旧日志：累积前缀 parts 取增量合并，迁移重放不重�
 
 test('flattenTurnEvents：每个同级事件带 turn_id 与 parent（分支 / 多 agent 元数据可表达）', () => {
   const events = flattenTurnEvents('c1', turns()[0])
-  assert.deepEqual(events.map((event) => event.kind), ['user', 'assistant', 'verify', 'checkpoint'])
+  assert.deepEqual(events.map((event) => event.kind), ['user', 'assistant', 'verify'])
   assert.equal(events[0].parent, null)
   assert.equal(events[1].parent, 'msg-c1-t1-user')
   assert.equal(events[2].parent, 'msg-c1-t1-assistant-1')

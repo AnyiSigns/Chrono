@@ -317,7 +317,6 @@ export const INTERPRET_BAG_FIELDS: ReadonlyArray<readonly [string, FieldType]> =
   ['session_id', 'string'],
   ['workspace_id', 'string'],
   ['workspace_root', 'string'],
-  ['memories', 'object'],
   ['graph', 'object'],
   ['evidence', 'object'],
   ['evolution', 'object'],
@@ -334,7 +333,6 @@ export const INTERPRET_BAG_FIELDS: ReadonlyArray<readonly [string, FieldType]> =
   ['style', 'string'],
   ['system_prompt', 'string'],
   ['tools', 'array'],
-  ['recall', 'array'],
   ['new_conversation', 'object'],
   ['resume', 'object'],
   ['contract_version', 'string'],
@@ -505,55 +503,6 @@ export function validateStepRecord(value: unknown): ContractResult<Rec> {
   if (type === 'turn.settle') {
     const outcome = validateOutcome(value['outcome'])
     if (!outcome.ok) return outcome
-  }
-  return { ok: true, value }
-}
-
-// ---------------------------------------------------------------------------
-// retrieval.search bag 校验（TS 发、Rust 收，权威键名见 schema）
-// ---------------------------------------------------------------------------
-
-/** retrieval.search bag 的权威键。 */
-export const RETRIEVAL_SEARCH_KEYS = [
-  'query',
-  'goal',
-  'l1',
-  'workspace',
-  'retrieval',
-  'options',
-  'recall_budget',
-  'dedup_set',
-  'now',
-  'model_config',
-  'contract_version',
-] as const
-
-/**
- * 校验 `retrieval.search` 的 bag。权威工作区键是 `workspace`、预算键是 `recall_budget`；
- * 消费方（Rust）按此读取，生产方必须对齐。失败回结构化结局，不抛异常。
- */
-export function validateRetrievalSearchBag(value: unknown): ContractResult<Rec> {
-  if (!isRecord(value)) return { ok: false, outcome: invalidContract('retrieval.search bag must be an object') }
-  const fields: ReadonlyArray<readonly [string, FieldType]> = [
-    ['query', 'string'],
-    ['goal', 'string'],
-    ['l1', 'object'],
-    ['workspace', 'string'],
-    ['retrieval', 'object'],
-    ['options', 'object'],
-    ['dedup_set', 'array'],
-    ['model_config', 'object'],
-    ['contract_version', 'string'],
-  ]
-  const typed = validateKnownFields(value, fields)
-  if (!typed.ok) return typed
-  const budget = value['recall_budget']
-  if (budget !== undefined && budget !== null && (!Number.isInteger(budget) || (budget as number) < 1)) {
-    return { ok: false, outcome: invalidContract('retrieval.search.recall_budget must be a positive integer') }
-  }
-  if (value['contract_version'] !== undefined && value['contract_version'] !== null) {
-    const version = checkContractVersion(value['contract_version'])
-    if (!version.ok) return version
   }
   return { ok: true, value }
 }

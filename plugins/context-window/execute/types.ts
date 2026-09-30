@@ -16,10 +16,7 @@ export type Source =
   | 'prompt'
   | 'tools'
   | 'input'
-  | 'l2'
-  | 'l1'
   | 'skill'
-  | 'recall'
   | 'history'
   | 'style'
   | 'tool'
@@ -76,10 +73,9 @@ export interface ToolResultMeta {
 
 /**
  * 保留等级（按回合距离，不按消息条数）：
- * `T0` 当前回合逐字；`T1` 近期回合（结果 → 摘要 + 句柄）；`T2` 陈旧回合（结果丢弃、句柄保留，正文压缩）；
- * `T3` 窗口外（由检查点替代，逐条记录不回灌）。
+ * `T0` 当前回合逐字；`T1` 近期回合（结果 → 摘要 + 句柄）；`T2` 陈旧回合（结果丢弃、句柄保留）。
  */
-export type RetentionTier = 'T0' | 'T1' | 'T2' | 'T3'
+export type RetentionTier = 'T0' | 'T1' | 'T2'
 
 /** 结构化候选（汇集阶段产物，尚未计数 / 去重）。 */
 export interface RawMessage {
@@ -99,9 +95,7 @@ export interface RawMessage {
   toolResult?: ToolResultMeta | null
   /** 追加的辅助提示（交错引导），单独计入 `hints` 分节。 */
   hint?: boolean
-  /** 该消息是否为结构化检查点（分层保留把陈旧错误蒸馏进它的 `errors_to_avoid`）。 */
-  checkpoint?: boolean
-  /** 系统错误文本（消息 `meta.error`）：T0 逐字、T1 一行、T2+ 蒸馏进检查点。 */
+  /** 系统错误文本（消息 `meta.error`）：T0 逐字、T1+ 一行。 */
   error?: string | null
   from: string | null
   orderHint: number
@@ -113,8 +107,6 @@ export interface RawMessage {
   step?: number | null
   /** 分层保留等级（由保留阶段赋值；未参与保留的消息缺省 null）。 */
   tier?: RetentionTier | null
-  /** 投影层已判定被检查点边界覆盖（保留阶段据此直接落 T3）。 */
-  covered?: boolean | null
   /**
    * 计数 / 规范化缓存键覆盖：parts 相对 def 内容被改写（如 group 线程给历史加发言者前缀）时，
    * 用改写后 parts 的 `computeTokenKey` 定键，保证键与计数输入同口径，避免与未改写形态串计数。
@@ -132,7 +124,7 @@ export interface CanonicalMessage extends RawMessage {
   dedupKey: string
   /** 计数缓存键：历史 = def 哈希；合成消息 = 原始内容键（见 `computeTokenKey`）。 */
   cacheKey: string
-  /** 仅规范化内容（不含角色）：跨来源去重（记忆 vs 历史丢记忆副本）用。 */
+  /** 仅规范化内容（不含角色）。 */
   contentKey: string
 }
 
@@ -148,10 +140,7 @@ export interface BudgetPolicy {
 
 /** policy 配额段（占预算的比例；未用额度下滚给历史）。 */
 export interface QuotaPolicy {
-  l2: number
-  l1: number
   skill: number
-  recall: number
   style: number
 }
 
@@ -163,10 +152,8 @@ export interface PrefixPolicy {
 
 /** policy 分层保留参数。 */
 export interface RetentionPolicy {
-  /** T1 近期回合数（N）；距离小于 N 的回合逐字保留，其余按 T2 压缩。 */
+  /** T1 近期回合数（N）；距离小于 N 的回合逐字保留，其余按 T2 保留。 */
   recent_turns: number
-  /** T2 助手正文压缩后的最大字符数。 */
-  t2_text_chars: number
   /** 大产物字节阈值：达到即以「摘要 + 句柄」表示而非内联。 */
   large_artifact_bytes: number
   /** 用户消息超大粘贴阈值（码点）：达到即首尾 + 句柄替代，逐层生效；0 = 关闭。 */
@@ -181,8 +168,6 @@ export interface MessagePolicy {
   input_truncated: string
   /** T1 系统错误的一行形态（占位 `{error}`）。 */
   error_line: string
-  /** 蒸馏进检查点的错误列表标题（与 `renderCheckpoint` 的 `errors_to_avoid` 同标题）。 */
-  error_avoid_header: string
 }
 
 /** policy 多模态降级模板：`{kind}` / `{name}` / `{mime}` 占位。 */
@@ -206,8 +191,6 @@ export interface SectionTokens {
   system: number
   tools: number
   rules: number
-  l2: number
-  checkpoint: number
   history_text: number
   tool_calls: number
   tool_results: number
@@ -246,7 +229,6 @@ export interface AssemblyManifest {
   retention: Record<RetentionTier, number>
   trimmed: { source: string; reason: string }[]
   degraded: string[]
-  recall: { entry: string; score: number }[]
   flags: string[]
   budget_origin: BudgetOrigin
   usage: UsageManifest | null

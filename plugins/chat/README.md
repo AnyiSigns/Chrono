@@ -61,7 +61,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 ```
 
 - 段序归 loop-policy 图数据（改图 = 数据换代热生效）；本包不再持静态管道。
-- 服务按 bag 装配契约装配 interpret bag：`input` / `config` / `tier` / `memories` / `session` / `graph` /
+- 服务按 bag 装配契约装配 interpret bag：`input` / `config` / `tier` / `session` / `graph` /
   `persona` / `skills` / `workspace_root` / `evidence` / `todo` / `guard_rules` / `sandbox_tiers` /
   `tools_bindings` / `mcp_tools` 等（缺对应身份即省略，由 loop-policy 回落种子 / 内建兜底）。
   bag 恒带 `contract_version`（取自生成契约副本 `execute/contract/` 的 `CONTRACT_VERSION`），供消费方按主版本显式拒绝过期契约。

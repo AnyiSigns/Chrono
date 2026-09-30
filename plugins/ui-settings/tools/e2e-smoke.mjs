@@ -5,14 +5,14 @@
 // 默认（离线，无需 npm ci / 网络）：
 //   ① 入世树核对（`.worldignore`：契约文件入世，test/ / tools/ / execute/web/dist/ 排除）
 //   ② plugin.json 形态断言（零 schema、无 exclusive、client.read 只读、build = npm ci + node execute/build.mjs）
-//   ③ seed 真实 pins 闭包（记忆族 / 模型协议 / 密钥 / 会话等，pins 在入世批内解析）
+//   ③ seed 真实 pins 闭包（模型协议 / 密钥 / 输入 / 技能 / 配置等，pins 在入世批内解析）
 //   ④ pack（已入世 → unchanged）
 //   ⑤ client.read 路径穿越防护 + 正常读回（直调服务方法，与既有单测同口径）
 //   ⑥ entry.tsx 导出 contract / register、不再导出 mount（esbuild 擦类型后真实 import）
 //   ⑦ verify
 //
 // 可选（需 npm ci / 网络；仅 `CHRONO_E2E_BOOT=1` 时执行）：宿主 `start` 装配段
-//   （seed 记忆族桩 → start → 轮询 loaded → commands 含 ui-settings.client.read →
+//   （seed → start → 轮询 loaded → commands 含 ui-settings.client.read →
 //   client.read 命令真实往返 → stop → verify + replay）。默认跳过，故本脚本可离线跑通。
 //
 // 用法：node plugins/ui-settings/tools/e2e-smoke.mjs
@@ -34,37 +34,20 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const SETTINGS_DIR = join(REPO_ROOT, 'plugins', 'ui-settings')
 const WEB_DIR = join(SETTINGS_DIR, 'execute', 'web')
 
-/** ① needs 段真实闭包（拓扑序）：记忆族 / 模型协议 / 密钥 / 会话等，needs 在 seed 批内解析。 */
+/** ① needs 段真实闭包（拓扑序）：模型协议 / 密钥 / 输入 / 技能 / 配置等，needs 在 seed 批内解析。 */
 const PINS_CLOSURE = [
   'config',
   'input',
-  'session',
-  'short-memory',
-  'l1-maintenance',
-  'embedding',
-  'dedup',
   'msg-dialect',
   'secrets',
   'throttle',
   'model-protocol',
-  'semantic',
-  'summarize',
-  'compress',
-  'l2-maintenance',
-  'tokenizer',
-  'vector-index',
-  'memory-store',
-  'l3-maintenance',
-  'memory-consolidate',
   'ref-hydrate',
-  'query-plan',
-  'rerank',
-  'memory-retrieval',
   'skill',
   'ui-settings',
 ]
 
-/** 可选 start 段的依赖（pins 需先入世）；记忆族用桩避免 Rust 物化。 */
+/** 可选 start 段的依赖（pins 需先入世）。 */
 const BOOT_PACKAGES = [
   'config',
   'input',
@@ -75,12 +58,6 @@ const BOOT_PACKAGES = [
   'vendor-custom',
   'secrets',
   'model-protocol',
-]
-
-/** 记忆族桩：只声明能力、无 start（仅让 `ui-settings` 的 pins 可解析）。 */
-const STUB_PACKAGES = [
-  ['memory-retrieval', ['retrieval'], { retrieval: ['search'] }],
-  ['memory-consolidate', ['memory-maintenance'], { 'memory-maintenance': ['view', 'edit'] }],
 ]
 
 function boot(root, args, env) {
@@ -162,7 +139,6 @@ function assertWorldTree() {
     'execute/web/view-context.ts',
     'terms/client.read.json',
     'terms/model.vendors.json',
-    'terms/memory.view.json',
     'terms/secret.json',
   ]) {
     assert.ok(packedPaths.includes(required), `入世树缺 ${required}`)
@@ -182,16 +158,12 @@ function assertDeclaration() {
   assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
   assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
   assert.deepEqual(decl.implements, ['ui-settings'])
-  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'])
+  assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'client.read', 'secret'])
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
     model: { mode: 'one' },
     secrets: { mode: 'one' },
-    retrieval: { mode: 'one' },
-    'memory-maintenance': { mode: 'one' },
-    session: { mode: 'one' },
     'ref-hydrate': { mode: 'one' },
-    'short-memory': { mode: 'one' },
     input: { mode: 'one' },
     skill: { mode: 'one' },
     config: { mode: 'one' },
@@ -342,20 +314,6 @@ async function assertEntryExports() {
   }
 }
 
-function writeStubPackage(root, identity, implementsList, methods) {
-  const dir = join(root, 'stubs', identity)
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(
-    join(dir, 'plugin.json'),
-    JSON.stringify(
-      { identity, implements: implementsList, methods, pins: {}, start: '', protocol: '1', restart: {}, health: {}, state: 'recomputable', members: [], commands: [] },
-      null,
-      2,
-    ),
-  )
-  return dir
-}
-
 /**
  * 可选宿主装配段（需 npm ci / 网络）：`CHRONO_E2E_BOOT=1` 时执行。
  * 客户端半边自交付后只验证命令面与只读交付，不再有 HTTP / SSE / 端口。
@@ -367,9 +325,6 @@ async function runBootPhase() {
   let started = false
   try {
     const entries = BOOT_PACKAGES.map((name) => ({ name, path: join(REPO_ROOT, 'plugins', name) }))
-    for (const [identity, implementsList, methods] of STUB_PACKAGES) {
-      entries.push({ name: identity, path: writeStubPackage(root, identity, implementsList, methods) })
-    }
     entries.push({ name: 'ui-settings', path: SETTINGS_DIR })
     writeFileSync(join(root, 'state', 'plugins.json'), JSON.stringify(entries, null, 2))
 

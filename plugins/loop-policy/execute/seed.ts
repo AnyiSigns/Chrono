@@ -1,7 +1,6 @@
 // 包内种子图与默认阈值（兜底目标）：graph 为空 / 解析失败时回落此处。
-// 种子契约十一个（含 join / subagent / evolve.propose / recall 词汇与 verify 分档）、七节点、
+// 种子契约十个（含 join / subagent / evolve.propose 词汇与 verify 分档）、七节点、
 // 四个实质 post；加强不落在默认路径上（简单问答仍是 assemble → step → commit 三步、零额外调用）。
-// recall 只作契约 / 实例词汇，**不进默认图**：检索是模型可调工具，默认不自动召回（见 README「召回改工具」）。
 // 数据住数据世代；本文件只是**包内兜底**，不读投影、不 import 宿主。
 
 import { graphNodes, readGraphModel } from './model.ts'
@@ -29,11 +28,6 @@ export const DEFAULT_THRESHOLDS: Rec = {
   shadow_rounds: 8,
   large_artifact_bytes: 65536,
   model_alias_pins: 0,
-  // 上下文检查点触发阈值（loop-policy 权威）：软阈在段边界触发压缩、硬阈要求下一调用前已压缩、
-  // 应急用尽降级阶梯。`bag.checkpoint_thresholds` 可按调用覆盖（见 execute/checkpoint.ts）。
-  checkpoint_soft_ratio: 0.7,
-  checkpoint_hard_ratio: 0.85,
-  checkpoint_emergency_ratio: 0.95,
   // evolve-metrics 阈值契约（本插件不重定义语义，只提供默认值）
   failure_cluster_n: 3,
   post_failure_ratio: 0.5,
@@ -114,7 +108,7 @@ function output(name: string, type: string, opts: Rec = {}): Rec {
 const NO_FS: Rec = { fs: { read: 'none', write: 'none' }, net: 'none' }
 const WS_FS: Rec = { fs: { read: 'workspace', write: 'workspace' }, net: 'none' }
 
-/** 种子契约十一个。 */
+/** 种子契约十个。 */
 export const SEED_CONTRACTS: Rec[] = [
   {
     contract_id: 'context.assemble',
@@ -275,22 +269,6 @@ export const SEED_CONTRACTS: Rec[] = [
     cost: { calls: 1, tokens: 3000 },
   },
   {
-    contract_id: 'recall',
-    role_tag: 'recall',
-    inputs: [input('task', 'task')],
-    outputs: [output('recall', 'recall')],
-    reads: [],
-    publishes: [],
-    pre: 'always',
-    post: 'always',
-    refuses: ['pre_unsat', 'transport_failed'],
-    effects: { ports: ['retrieval'], methods: ['search'], caps: NO_FS },
-    idempotent: true,
-    touches_effects: true,
-    can_delegate: false,
-    cost: { calls: 1 },
-  },
-  {
     contract_id: 'turn.commit',
     role_tag: 'commit',
     inputs: [
@@ -337,7 +315,7 @@ function node(
 
 const GLOBAL: Rec = { kind: 'global' }
 
-/** 种子 Scope 实例（含 join / subagent / evolve.propose / recall 的中性全局实例与 verify 分档）。 */
+/** 种子 Scope 实例（含 join / subagent / evolve.propose 的中性全局实例与 verify 分档）。 */
 export const SEED_NODES: Rec[] = [
   node('as-assemble', 'context.assemble', { cap: 'context', method: 'build' }, GLOBAL),
   node('as-step', 'agent.step', { cap: 'model', method: 'chat' }, GLOBAL),
@@ -351,7 +329,6 @@ export const SEED_NODES: Rec[] = [
     bindings: { agent: 'neutral' },
   }),
   node('ep-global', 'evolve.propose', { cap: 'model', method: 'chat' }, GLOBAL),
-  node('rc-global', 'recall', { cap: 'retrieval', method: 'search' }, GLOBAL),
 ]
 
 /** 图级系统提示词（Markdown：角色 + 沟通 / 执行 / 工具 / 安全四节；安全节最高优先；禁工具标识符、只谈意图）。 */

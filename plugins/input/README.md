@@ -25,7 +25,7 @@ body 形状 `{ slots: { "<thread_id>": <槽 body> } }`：
 | 字段 | 判定 | 理由 |
 | --- | --- | --- |
 | `slots`（整表） | 运行记录（出世界） | 用户意图信箱是回合输入态；回滚不该带；判定（消费槽跑管道）经命令读 owner，不从世界投影读 |
-| `slots[<thread>]`（槽 body，含 `kind` / `text` / `attachments` / `conversation` / `title` / `message` / `id` / `verdict` / `answers` / `action` / `layer` / `patch` 等） | 运行记录 | 槽是待消费的用户意图，消费后即清；无字段属定义 / 判定 |
+| `slots[<thread>]`（槽 body，含 `kind` / `text` / `attachments` / `conversation` / `title` / `message` / `id` / `verdict` / `answers` 等） | 运行记录 | 槽是待消费的用户意图，消费后即清；无字段属定义 / 判定 |
 | `idle`（槽 kind） | 运行记录 | 清槽标记 |
 
 **结论**：输入槽**无留在世界的定义字段**；留在世界的是 `Identity.schema`（`schema/slot.schema.json` 数据契约 def）。

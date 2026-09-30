@@ -1,6 +1,5 @@
-// 上下文侧元数据单元测试：`turnMetadata`（距离 / 工具调用步号 / 检查点全局边界）、
-// `isCovered` 词序、`isStructuredCheckpoint` / `renderCheckpoint`。展示投影归 session 所有，
-// 其测试在 plugins/session/test/project.test.mjs。
+// 上下文侧元数据单元测试：`turnMetadata`（距离 / 工具调用步号）、`renderCheckpoint`。
+// 展示投影归 session 所有，其测试在 plugins/session/test/project.test.mjs。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -9,13 +8,13 @@ import { ensureNative } from './driver.mjs'
 process.env.CHRONO_PLUGIN_STATE = ''
 ensureNative()
 
-const { turnMetadata, isCovered, renderCheckpoint, isStructuredCheckpoint } = await import('../execute/views.ts')
+const { turnMetadata, renderCheckpoint } = await import('../execute/views.ts')
 
 function session(turns) {
   return { head: null, refs: {}, turns }
 }
 
-test('turnMetadata：距离、工具调用步号、结构化检查点与全局覆盖边界', () => {
+test('turnMetadata：距离与工具调用步号', () => {
   const meta = turnMetadata(
     session([
       { turn_id: 't1', steps: [] },
@@ -36,49 +35,9 @@ test('turnMetadata：距离、工具调用步号、结构化检查点与全局�
   assert.equal(meta.distances.get('t1'), 2)
   assert.equal(meta.distances.get('t3'), 0)
   assert.equal(meta.callStep.get('c1'), 4)
-  assert.equal(meta.checkpoint.turn_id, 't2')
-  assert.equal(meta.checkpoint.summary.goal, 'g')
-  assert.deepEqual(meta.boundary, { turnId: 't2', turnIndex: 1, seq: 5 })
-  assert.deepEqual([...meta.coveredTurnIds].sort(), ['t1'], '段标记（kind:segment）不是结构化检查点')
 })
 
-test('turnMetadata：旧式数字 covered_upto 局部于检查点自身回合', () => {
-  const meta = turnMetadata(
-    session([
-      { turn_id: 't1', steps: [] },
-      {
-        turn_id: 't2',
-        steps: [
-          { type: 'checkpoint', turn_id: 't2', seq: 4, summary: { goal: 'g' }, covered_upto: 4 },
-          { type: 'step.result', turn_id: 't2', seq: 9, assistant: { content: 'x' } },
-        ],
-      },
-    ]),
-  )
-  assert.deepEqual(meta.boundary, { turnId: 't2', turnIndex: 1, seq: 4 })
-  assert.deepEqual([...meta.coveredTurnIds], ['t1'])
-})
-
-test('isCovered：边界之前的整回合覆盖，边界回合按步号词序', () => {
-  const meta = turnMetadata(
-    session([
-      { turn_id: 't1', steps: [] },
-      { turn_id: 't2', steps: [{ type: 'checkpoint', turn_id: 't2', seq: 5, summary: { goal: 'g' }, covered_upto: { turn_id: 't2', seq: 5 } }] },
-      { turn_id: 't3', steps: [] },
-    ]),
-  )
-  assert.equal(isCovered(meta, 't1', 99), true)
-  assert.equal(isCovered(meta, 't2', 3), true)
-  assert.equal(isCovered(meta, 't2', 6), false)
-  assert.equal(isCovered(meta, 't3', 0), false)
-})
-
-test('isStructuredCheckpoint / renderCheckpoint：结构化字段渲染成确定文本；子代理结果不算检查点', () => {
-  assert.equal(isStructuredCheckpoint({ goal: 'g' }), true)
-  assert.equal(isStructuredCheckpoint({ kind: 'segment', iter: 1 }), false)
-  assert.equal(isStructuredCheckpoint({ kind: 'verify', text: 't' }), false)
-  assert.equal(isStructuredCheckpoint({ kind: 'subagent', goal: 'g' }), false)
-  assert.equal(isStructuredCheckpoint({ note: 'x' }), false)
+test('renderCheckpoint：结构化字段渲染成确定文本', () => {
   const text = renderCheckpoint({
     goal: '目标 A',
     constraints: ['不写世界'],

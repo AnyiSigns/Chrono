@@ -3,7 +3,6 @@
     "input": {
       "config": { "vendor": "anthropic", "model": "claude-sonnet-4-6", "params": { "max_tokens": 4096 } },
       "input": { "content": "看看 foo.ts 第 42 行" },
-      "memories": { "l1": { "goal": "排查空指针" } },
       "session": { "version": 1, "current": "c-1759000000000-0", "conversations": [], "head": null, "refs": {}, "data_gen": null },
       "thread_kind": "main",
       "thread": "_main",
@@ -92,32 +91,5 @@
       "conversation": "c-1759000000000-0"
     },
     "output": { "ok": true, "reply": "第 42 行确实少了判空", "conversation": "c-1759000000000-0", "count": 2 }
-  },
-  "recall": {
-    "input": {
-      "workspace": "w-1",
-      "recall_budget": 8,
-      "query": "看看 foo.ts 第 42 行"
-    },
-    "output": {
-      "ok": true,
-      "kind": "search",
-      "status": "ready",
-      "query": "看看 foo.ts 第 42 行",
-      "recall": [
-        {
-          "entry_hash": "e-1",
-          "entry_id": "mem-1",
-          "chunk_index": 0,
-          "score": 0.82,
-          "score_raw": 0.82,
-          "text": "foo.ts 第 42 行历史修复记录",
-          "meta": { "workspace": "w-1", "source": "session" }
-        }
-      ],
-      "count": 1,
-      "budget": 8,
-      "stats": { "missing": 0, "scope": 0, "tags": 0, "source": 0, "threshold": 0, "dedup": 0 }
-    }
   }
 }

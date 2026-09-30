@@ -107,7 +107,6 @@ test('消费向：真实 chat 消费真实 loop-policy 的 $directives 与结局
     'session.turn_open': () => ({ ok: true, status: 'created', turn_id: sessionTurnId, conversation: 'c-1' }),
     'session.turn_settle': (args) => ({ ok: true, turn_id: args.turn_id, outcome: args.outcome, persisted: true }),
     'input.read': () => ({ slots: { t1: slot }, slot_ref: 'run-seam' }),
-    'short-memory.read': () => ({ version: 1, sessions: {}, workspaces: {} }),
     'todo.invoke': () => ({ ok: true, result: { items: [] } }),
     'config.read': () => ({ body: configBody }),
     'mcp.read': () => ({ tools: [] }),

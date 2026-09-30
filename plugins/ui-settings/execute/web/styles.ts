@@ -241,14 +241,6 @@ export const STYLE_TEXT = `
 .settings-code-chip-count { color: var(--c-text); font-variant-numeric: tabular-nums; }
 .settings-rollback { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); margin-top: var(--space-12); }
 .settings-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.settings-memory-entry { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; }
-.settings-memory-field { display: flex; align-items: baseline; gap: var(--space-8); font-size: var(--font-size-xs); }
-.settings-memory-field .settings-list-meta { flex: 1 1 auto; }
-.settings-memory-edit { display: flex; align-items: center; gap: var(--space-8); }
-.settings-memory-edit .settings-input { flex: 1 1 auto; }
-.settings-memory-expired, .settings-memory-expired .settings-list-main, .settings-memory-expired .settings-list-meta { color: var(--c-text-3); }
-.settings-memory-hit { background: var(--c-selection); border-radius: var(--radius-sm); }
-.settings-memory-pinned { color: var(--c-accent-strong); font-size: var(--font-size-xs); }
 @keyframes settings-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes settings-rise-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes settings-rise { from { opacity: 0; transform: translate(-50%, calc(-50% + 2px)); } to { opacity: 1; transform: translate(-50%, -50%); } }

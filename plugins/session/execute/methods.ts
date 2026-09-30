@@ -802,6 +802,56 @@ async function turnInsert(args: Json, env: CallEnv, deps: SessionDeps): Promise<
 }
 
 /**
+ * 记一条待发输入（回合进行中用户想插入的消息）：只在会话内存标记，不落步、不渲染。
+ * 图在轮次边界据此挂起；挂起后由 `turn_promote_input` 提升为 `step.user`（那一刻才落盘进流）。
+ * 回执带 `noted`：回合非 open / 未知时未真记入，回 `noted:false`，调用方据此把消息留待续发而非静默丢弃。
+ */
+async function turnNoteInput(args: Json, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  const insertId = asString(args['insert_id'])
+  const message = isRecord(args['user_message']) ? (args['user_message'] as Rec) : null
+  if (turnId === null || insertId === null || message === null) {
+    return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  }
+  const noted = deps.store.notePendingInput(turnId, insertId, message)
+  return { value: { ok: true, turn_id: turnId, noted }, events: [] }
+}
+
+/** 该回合是否有待发输入（图在轮次边界据此挂起）。回合未知 / 无输入都回 false。 */
+async function turnHasPendingInput(args: Json, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  const pending = turnId !== null && deps.store.hasPendingInput(turnId)
+  return { value: { ok: true, turn_id: turnId, pending }, events: [] }
+}
+
+/**
+ * 段边界提升待发输入：把内存里的待发条目按序落为 `step.user`（追加在本段输出之后），
+ * 有提升则广播重拉历史。这条路径即「消息进入流之后才落盘」。
+ */
+async function turnPromoteInput(args: Json, env: CallEnv, deps: SessionDeps): Promise<HandlerResult> {
+  if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const turnId = asString(args['turn_id'])
+  if (turnId === null) return { value: { ok: false, reason: 'bad_args' }, events: [] }
+  const entries = deps.store.takePendingInput(turnId)
+  let promoted = 0
+  for (const entry of entries) {
+    const insertId = asString(entry['insert_id'])
+    const message = isRecord(entry['user_message']) ? (entry['user_message'] as Rec) : null
+    if (insertId === null || message === null) continue
+    const result = await deps.store.insertUserMessage(turnId, insertId, message)
+    if (result.status === 'inserted') promoted += 1
+  }
+  const conv = deps.store.conversationOfTurn(turnId)
+  const events =
+    promoted > 0 && conv !== null
+      ? [{ topic: 'thread.updated', payload: { ...conversationEvent(env, conv), changed: ['messages'] } }]
+      : []
+  return { value: { ok: true, turn_id: turnId, promoted }, events }
+}
+
+/**
  * 回合收口：CAS 保护，只有开态 / interrupted 能被落定；终态被拒并记迟到日志。
  * `awaiting` 是段终态不是回合终态，`validateOutcome` 只认四种终态，天然拒绝。
  */
@@ -914,6 +964,9 @@ export function createHandlers(deps: SessionDeps): Record<string, Handler> {
     ack_inbox: (args, env) => ackInbox(requireArgs(args), env, deps),
     turn_open: (args, env) => turnOpen(args, env, deps),
     turn_insert: (args, env) => turnInsert(args, env, deps),
+    turn_note_input: (args, _env) => turnNoteInput(args, deps),
+    turn_has_pending_input: (args, _env) => turnHasPendingInput(args, deps),
+    turn_promote_input: (args, env) => turnPromoteInput(args, env, deps),
     step_append: (args, env) => stepAppend(args, env, deps),
     turn_settle: (args, env) => turnSettle(args, env, deps),
     turn_cancel: (args, env) => turnCancel(args, env, deps),
