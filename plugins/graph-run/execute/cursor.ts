@@ -51,6 +51,9 @@ export function graphCursor(
     question_pending: rs.questionPending,
     verify_failed: rs.verifyFailed,
     last_calls: rs.lastCalls,
+    loop_signatures: rs.loopSignatures,
+    loop_nudged: rs.loopNudged,
+    loop_nudge: rs.loopNudge,
     steps: rs.steps,
     original_input: originalInput,
   }
@@ -73,6 +76,11 @@ export function restoreState(cursor: Rec): { rs: RunState; iter: IterState } {
   rs.questionPending = cursor['question_pending'] === true
   rs.verifyFailed = cursor['verify_failed'] === true
   rs.lastCalls = Array.isArray(cursor['last_calls']) ? (cursor['last_calls'] as Rec[]) : []
+  rs.loopSignatures = Array.isArray(cursor['loop_signatures'])
+    ? (cursor['loop_signatures'] as Json[]).filter((item): item is string => typeof item === 'string')
+    : []
+  rs.loopNudged = cursor['loop_nudged'] === true
+  rs.loopNudge = typeof cursor['loop_nudge'] === 'string' ? (cursor['loop_nudge'] as string) : null
   const iter: IterState = {
     outputs: deserializeOutputs(cursor['outputs']),
     inputs: deserializeOutputs(cursor['inputs']),

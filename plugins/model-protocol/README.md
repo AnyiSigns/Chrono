@@ -79,6 +79,9 @@
   其余字段与未选模型原样不动。
 - 社区布尔 `reasoning:true` 展开为该厂商模板的 `default_reasoning` 数组（模板未提供则缺键）；
   `reasoning:false` 或缺失则删键。
+- `reasoning_capability` 取所选厂商模板 `quirks.reasoning_replay` 声明（内置在各 `vendor-*` 模板）；
+  未声明（自定义厂商 / 协议端点）按实例 `config.providers.<vendor>.protocol` 回落协议默认，未知协议即保守默认。
+  无推理档位的模型一律写保守档（不回传、不发思考参数）。
 - **写前去重**：与传入的现有 body 逐字段比对，无变化只回 `extern`（不产写计划，避免空推世代）。
 - `profile` 入参 `{vendor, ids, config?, vendors?, source_url?}`；`config` 缺省时只回档案值、不产写计划。
 - `sync` 由宿主周期直调，对 `config` 内已选模型批量刷新；bag 由 `schema.periodic.reads` 注入。
@@ -97,6 +100,9 @@
 | 退避     | 指数退避（默认无抖动，保审计可预期）；参数住 `throttle` 的 `schema/throttle.json` 的 `resilience`，经 `throttle.plan` 出延迟     |
 | 限流     | 429 尊重 `Retry-After` + 每 provider 令牌桶；状态落 `throttle` 插件 ③ 目录，目录缺失时安全降级为进程内存                         |
 | 流断重连 | SSE 断开或未收到终止事件 → 整请求重试；重试前先上行 `{reset:true}`，消费方据此丢弃已累积分片                                     |
+| 推理降级 | 4xx 且错误正文指向推理字段（`reasoning`/`thinking`/`signature`/`encrypted`）→ 两段退让：先去回传；仍拒则整套关闭思考（`retention=none`，不发参数也不回传） |
+| 字段协商 | 4xx 且正文点名 `max_tokens` / `stream_options` / `tool_choice` / `tools` → 去掉 / 降级该字段后重试；正文给不出线索时按固定梯队（`max_tokens` → `stream_options` → `tool_choice` → `tools`）逐档退让，限次（每次调用最多 3 档）。非 `model_bad_request` 不进入协商 |
+| 降级记忆 | 只有**真正跑通**的退让才按 `provider+base_url+model` 记入进程内记忆（会话内后续同类调用不再重复探测，重启 / 换进程重探）；盲试不成功不会永久降级该端点 |
 | 超时     | 单次请求超时归 `model_timeout`；方法级等待上限由宿主按 `schema.method_timeouts` 覆盖                                             |
 | 取消     | `abort(turn_id)` 销毁该回合在途请求（`model_aborted`，不可重试）；`impl=sdk` 路径由 SDK 内部持有连接，暂不支持（见「已知限制」） |
 

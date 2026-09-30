@@ -37,6 +37,8 @@ interface Target {
   ids: string[]
   name?: string
   baseUrl?: string
+  /** 自定义厂商实例协议（config provider 级 `protocol`），供无模板声明的能力回落。 */
+  protocol?: string
 }
 
 function stripVendorPrefix(name: string): string {
@@ -129,23 +131,50 @@ function effortValues(entry: Rec): string[] | null {
   return null
 }
 
-/** 厂商级推理能力：按厂商模板声明的 impl / protocol / sdk 经 msg-dialect 解析；无法核实即保守默认。 */
-async function vendorCapability(
+/**
+ * 推理能力档案：厂商模板 `quirks.reasoning_replay` 声明优先（厂商口径内置在各自模板）；
+ * 未声明（自定义厂商 / 协议端点）走协议默认 + 实例 protocol 回落，未知协议即保守默认。
+ */
+async function templateCapability(
   dialect: DialectClient,
   vendorBody: Rec | null,
   vendor: string,
+  protocolHint: string | null,
 ): Promise<Rec> {
   const quirks =
     vendorBody !== null && isRecord(vendorBody['quirks']) ? (vendorBody['quirks'] as Rec) : {}
+  const declared = isRecord(quirks['reasoning_replay']) ? (quirks['reasoning_replay'] as Rec) : null
+  if (declared !== null) {
+    return dialect.reasoningCapability({
+      profile: {
+        retention: 'turn',
+        requires_replay_in_tool_loop: declared['requires_in_tool_loop'] === true,
+        signature_field:
+          typeof declared['signature_field'] === 'string' ? declared['signature_field'] : null,
+        replay_form: typeof declared['form'] === 'string' ? declared['form'] : null,
+        invalidated_by: ['model_change', 'prefix_change', 'thinking_param_change'],
+        verified: declared['verified'] === true,
+      },
+    })
+  }
   const sdk =
     vendorBody !== null && typeof vendorBody['sdk'] === 'string'
       ? (vendorBody['sdk'] as string)
       : null
+  const templateProtocol =
+    typeof quirks['protocol'] === 'string' ? (quirks['protocol'] as string) : null
   return dialect.reasoningCapability({
     provider: sdk ?? vendor,
     impl: typeof quirks['impl'] === 'string' ? (quirks['impl'] as string) : null,
-    protocol: typeof quirks['protocol'] === 'string' ? (quirks['protocol'] as string) : null,
+    // 实例 protocol 优先（与请求期 `protocolOverride ?? quirks.protocol` 对齐），模板 protocol 仅作缺省。
+    protocol: protocolHint ?? templateProtocol,
   })
+}
+
+/** 厂商模板是否显式声明了思考回传（`quirks.reasoning_replay`）。声明即视为「确有推理能力」的证据。 */
+function declaresReplay(vendorBody: Rec | null): boolean {
+  if (vendorBody === null || !isRecord(vendorBody['quirks'])) return false
+  return isRecord((vendorBody['quirks'] as Rec)['reasoning_replay'])
 }
 
 /** 从 models.dev 模型条目计算 config 身份的元数据字段。 */
@@ -154,6 +183,7 @@ function computeMetadata(
   vendorBody: Rec | null,
   capability: Rec,
   conservative: Rec,
+  declaredReplay: boolean,
 ): Rec {
   const metadata: Rec = {}
   const limit = isRecord(entry['limit']) ? (entry['limit'] as Rec) : {}
@@ -180,10 +210,10 @@ function computeMetadata(
     if (Array.isArray(modalities['output'])) normalized['output'] = modalities['output']
     if (Object.keys(normalized).length > 0) metadata['modalities'] = normalized
   }
-  // 无推理档位的模型一律按「不回传、不发思考参数」写能力表，避免对不支持推理的模型误发参数。
-  metadata['reasoning_capability'] = Array.isArray(metadata['reasoning'])
-    ? capability
-    : conservative
+  // 有推理档位、或厂商显式声明了回传能力 ⇒ 写解析出的能力；否则按「不回传、不发思考参数」的保守档，
+  // 避免对不支持推理的模型误发参数。厂商声明是「确有推理能力」的证据，故不受档位字段缺失拖累。
+  const reasoningCapable = Array.isArray(metadata['reasoning']) || declaredReplay
+  metadata['reasoning_capability'] = reasoningCapable ? capability : conservative
   return metadata
 }
 
@@ -195,10 +225,12 @@ function computeAll(
   capability: Rec,
   conservative: Rec,
 ): Rec {
+  const declaredReplay = declaresReplay(vendorBody)
   const metadata: Rec = {}
   for (const id of ids) {
     const entry = sourceModels[id]
-    if (isRecord(entry)) metadata[id] = computeMetadata(entry, vendorBody, capability, conservative)
+    if (isRecord(entry))
+      metadata[id] = computeMetadata(entry, vendorBody, capability, conservative, declaredReplay)
   }
   return metadata
 }
@@ -248,13 +280,17 @@ function targetsFromConfig(config: Rec): Target[] {
     const target: Target = { vendor, ids: Object.keys(models) }
     if (typeof provider['name'] === 'string') target.name = provider['name'] as string
     if (typeof provider['base_url'] === 'string') target.baseUrl = provider['base_url'] as string
+    if (typeof provider['protocol'] === 'string') target.protocol = provider['protocol'] as string
     targets.push(target)
   }
   return targets
 }
 
-/** 从 config 取某 provider 的显示名 / base_url，供 models.dev provider 回落匹配。 */
-function providerHints(config: Rec | null, vendor: string): { name?: string; baseUrl?: string } {
+/** 从 config 取某 provider 的显示名 / base_url / protocol，供 models.dev 回落匹配与能力回落。 */
+function providerHints(
+  config: Rec | null,
+  vendor: string,
+): { name?: string; baseUrl?: string; protocol?: string } {
   if (config === null) return {}
   const providers = isRecord(config['providers']) ? (config['providers'] as Rec) : null
   if (providers === null) return {}
@@ -262,9 +298,10 @@ function providerHints(config: Rec | null, vendor: string): { name?: string; bas
   if (key === null) return {}
   const provider = providers[key]
   if (!isRecord(provider)) return {}
-  const hints: { name?: string; baseUrl?: string } = {}
+  const hints: { name?: string; baseUrl?: string; protocol?: string } = {}
   if (typeof provider['name'] === 'string') hints.name = provider['name'] as string
   if (typeof provider['base_url'] === 'string') hints.baseUrl = provider['base_url'] as string
+  if (typeof provider['protocol'] === 'string') hints.protocol = provider['protocol'] as string
   return hints
 }
 
@@ -358,12 +395,8 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
     if (providers === null)
       throw new ModelError('profile_bad_source', 'models.dev response has no providers')
     const vendorBody = findVendorBody(vendorBodies, vendor)
-    const providerKey = resolveProviderKey(
-      providers,
-      vendor,
-      vendorBody,
-      providerHints(config, vendor),
-    )
+    const hints = providerHints(config, vendor)
+    const providerKey = resolveProviderKey(providers, vendor, vendorBody, hints)
     if (providerKey === null)
       return errorValue('profile_vendor_unknown', `no models.dev provider for ${vendor}`)
     const provider = providers[providerKey]
@@ -371,7 +404,7 @@ export async function profile(args: Json, env: CallEnv, deps: ProfileDeps): Prom
       isRecord(provider) && isRecord((provider as Rec)['models'])
         ? ((provider as Rec)['models'] as Rec)
         : {}
-    const capability = await vendorCapability(dialect, vendorBody, vendor)
+    const capability = await templateCapability(dialect, vendorBody, vendor, hints.protocol ?? null)
     const conservative = await dialect.reasoningCapability({})
     const metadata = computeAll(sourceModels, ids, vendorBody, capability, conservative)
     if (config === null) return { ok: true, changed: false, models: metadata, write: false }
@@ -418,7 +451,7 @@ export async function sync(bag: Json, env: CallEnv, deps: ProfileDeps): Promise<
         isRecord(provider) && isRecord((provider as Rec)['models'])
           ? ((provider as Rec)['models'] as Rec)
           : {}
-      const capability = await vendorCapability(dialect, body, target.vendor)
+      const capability = await templateCapability(dialect, body, target.vendor, target.protocol ?? null)
       const metadata = computeAll(sourceModels, target.ids, body, capability, conservative)
       summary[target.vendor] = metadata
       updated = applyMetadata(updated, target, metadata)

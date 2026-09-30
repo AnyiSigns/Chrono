@@ -623,7 +623,7 @@ test('store：回合运行中插入的消息在 chat.turn.settled 续发（续�
   store.dispose()
 })
 
-test('store：回合运行中（有 turn_id）发送 → 走 chat.insert 落主历史，不入待发队列', async () => {
+test('store：回合运行中发送 → 只入队（不落盘不发送），随下一次轮次更新才插入', async () => {
   const ctx = fakeComposerCtx()
   const store = createComposerStore(ctx)
   await store.init()
@@ -631,19 +631,48 @@ test('store：回合运行中（有 turn_id）发送 → 走 chat.insert 落主�
   await store.send()
   const thread = ctx.uiState.get('active_thread')
   ctx.emit({ topic: 'run.finished', payload: { thread, run: 'w1' } })
-  // chat 服务自报回合开始并带 turn_id（此后运行中发送据此定位回合）。
+  // chat 服务自报回合开始并带 turn_id。
   ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1' } })
   assert.equal(store.getSnapshot().running, true)
   store.setText('第二条')
   await store.send()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  // 不入待发队列；改调 chat.insert（不起新回合，避免被会话 turn_busy 拒）。
-  assert.equal(store.getSnapshot().queueCount, 0)
+  // 忙时只入队：此刻不落盘（既不发 chat.insert，也不渲染进消息流），消息留在待发队列。
+  assert.equal(store.getSnapshot().queueCount, 1)
+  assert.equal(store.getSnapshot().text, '')
+  assert.equal(ctx.calls.some((call) => call.name === 'chat.insert'), false)
+  // 下一次轮次更新（段续跑 chat.turn.started）才把队首交给服务端落盘。
+  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1', source: 'resume' } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
   const insert = ctx.calls.find((call) => call.name === 'chat.insert')
-  assert.ok(insert, '应调用 chat.insert')
+  assert.ok(insert, '轮次更新时才插入')
   assert.equal(insert.args.turn_id, 't-1')
   assert.equal(insert.args.user_message.content, '第二条')
-  assert.equal(store.getSnapshot().text, '')
+  assert.equal(store.getSnapshot().queueCount, 0)
+  store.dispose()
+})
+
+test('store：入队时尚无 turn_id → 下一轮次（chat.turn.started）随轮插入', async () => {
+  const ctx = fakeComposerCtx()
+  const store = createComposerStore(ctx)
+  await store.init()
+  store.setText('第一条')
+  await store.send()
+  const thread = ctx.uiState.get('active_thread')
+  // 回合在途但 chat.turn.started 尚未到达：此时发送只能入队，等身份就绪再插。
+  ctx.emit({ topic: 'run.started', payload: { thread, run: 'r1' } })
+  store.setText('第二条')
+  await store.send()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(store.getSnapshot().queueCount, 1)
+  assert.equal(ctx.calls.some((call) => call.name === 'chat.insert'), false)
+  ctx.emit({ topic: 'chat.turn.started', payload: { thread, turn_id: 't-1', run: 'r1' } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(store.getSnapshot().queueCount, 0)
+  const insert = ctx.calls.find((call) => call.name === 'chat.insert')
+  assert.ok(insert, '身份就绪后应随轮插入')
+  assert.equal(insert.args.turn_id, 't-1')
+  assert.equal(insert.args.user_message.content, '第二条')
   store.dispose()
 })
 

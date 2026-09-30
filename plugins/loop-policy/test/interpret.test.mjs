@@ -272,21 +272,32 @@ test('落盘展示 parts：推理 / 正文 / 工具卡按到达序写入 commit�
     })
     const finalStep = stepResults(service).at(-1)
     assert.ok(finalStep, '应有最终助手步记录')
-    const parts = finalStep.assistant.parts
-    assert.ok(Array.isArray(parts), '落盘 assistant 应带展示 parts')
+    // 每步只写本步增量；跨步拼接（工具卡按 call_id 原位覆盖）即完整展示序列。
+    const display = []
+    for (const step of stepResults(service)) {
+      for (const part of step.assistant?.parts ?? []) {
+        if (part.type === 'tool') {
+          const index = display.findIndex((item) => item.type === 'tool' && item.call_id === part.call_id)
+          if (index >= 0) display[index] = part
+          else display.push(part)
+        } else {
+          display.push(part)
+        }
+      }
+    }
     assert.deepEqual(
-      parts.map((part) => part.type),
+      display.map((part) => part.type),
       ['reasoning', 'text', 'tool', 'reasoning', 'text'],
     )
-    assert.equal(parts[0].text, '该用 edit 改文件')
-    assert.equal(parts[1].text, '先查一下')
-    assert.equal(parts[2].call_id, 'c1')
-    assert.equal(parts[2].tool, 'edit')
-    assert.equal(parts[2].status, 'ok')
-    assert.deepEqual(parts[2].result, { added: 1, removed: 1, patch: '@@ -1 +1 @@\n-x\n+y' })
-    assert.equal(parts[2].render.detail.kind, 'diff', '工具卡 render 从目录带入')
-    assert.equal(parts[3].text, '想收尾')
-    assert.equal(parts[4].text, '收尾')
+    assert.equal(display[0].text, '该用 edit 改文件')
+    assert.equal(display[1].text, '先查一下')
+    assert.equal(display[2].call_id, 'c1')
+    assert.equal(display[2].tool, 'edit')
+    assert.equal(display[2].status, 'ok')
+    assert.deepEqual(display[2].result, { added: 1, removed: 1, patch: '@@ -1 +1 @@\n-x\n+y' })
+    assert.equal(display[2].render.detail.kind, 'diff', '工具卡 render 从目录带入')
+    assert.equal(display[3].text, '想收尾')
+    assert.equal(display[4].text, '收尾')
   } finally {
     service.close()
   }
@@ -734,9 +745,19 @@ test('展示 parts 剥离计划通道：工具结果取 extern 载荷、不含 $
       turn_id: 't1',
       tools: [{ name: 'todo', provider: 'todo', render: { form: 'card', label: 'todo' } }],
     })
-    const finalStep = stepResults(service).at(-1)
-    assert.ok(finalStep, '应有最终助手步记录')
-    const part = finalStep.assistant.parts.find((item) => item.type === 'tool')
+    const display = []
+    for (const step of stepResults(service)) {
+      for (const part of step.assistant?.parts ?? []) {
+        if (part.type === 'tool') {
+          const index = display.findIndex((item) => item.type === 'tool' && item.call_id === part.call_id)
+          if (index >= 0) display[index] = part
+          else display.push(part)
+        } else {
+          display.push(part)
+        }
+      }
+    }
+    const part = display.find((item) => item.type === 'tool')
     assert.deepEqual(part.result, {
       ok: true,
       total: 1,
@@ -935,10 +956,11 @@ test('max_turn_iter 达上限仍派发 ⇒ committed + stop_reason（不是 refu
     providers: {
       'model.chat': () => {
         step += 1
+        // 每步参数/结果都不同：避免命中空转熔断，确保走预算收口路径。
         return {
           ok: true,
           text: '',
-          tool_calls: [{ id: `c${step}`, name: 'edit', args: { path: 'a.txt' } }],
+          tool_calls: [{ id: `c${step}`, name: 'edit', args: { path: 'a.txt', n: step } }],
           usage: {},
         }
       },
@@ -946,7 +968,7 @@ test('max_turn_iter 达上限仍派发 ⇒ committed + stop_reason（不是 refu
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
-          result: { path: 'a.txt' },
+          result: call.args,
         })),
       }),
     },
@@ -1118,6 +1140,107 @@ test('todo_incomplete 为真 ⇒ 继续 loop', async () => {
     const result = await service.interpret({ todo: { items: [{ id: 't1', status: 'pending' }] } })
     const summary = summaryOf(result.value)
     assert.ok(summary.iters >= 2, `todo 未完成应重入：iters=${summary.iters}`)
+  } finally {
+    service.close()
+  }
+})
+
+test('无进展熔断（升级阶梯）：todo 未完成且连续无派发 ⇒ 第 3 段 nudge、第 4 段收口', async () => {
+  let calls = 0
+  const service = startService({
+    providers: {
+      'model.chat': () => {
+        calls += 1
+        return { ok: true, text: 'working', tool_calls: [], usage: {} }
+      },
+    },
+  })
+  try {
+    const result = await service.interpret({ todo: { items: [{ id: 't1', status: 'pending' }] } })
+    const summary = summaryOf(result.value)
+    // 升级阶梯：第 3 段命中先注入 nudge，第 4 段仍空转才收口；模型共调用 4 次。
+    assert.equal(calls, 4, '第 3 段 nudge、第 4 段收口')
+    assert.equal(summary.iters, 4)
+  } finally {
+    service.close()
+  }
+})
+
+test('升级阶梯：空转 nudge 只随组装下传一次', async () => {
+  let calls = 0
+  const service = startService({
+    providers: {
+      'model.chat': () => {
+        calls += 1
+        return { ok: true, text: 'working', tool_calls: [], usage: {} }
+      },
+    },
+  })
+  try {
+    await service.interpret({ todo: { items: [{ id: 't1', status: 'pending' }] } })
+    const builds = service.portCalls.filter((call) => call.port === 'context' && call.method === 'build')
+    const nudged = builds.filter((call) => typeof call.args?.loop_nudge === 'string')
+    assert.equal(nudged.length, 1, 'nudge 只下传一次（先提示、再收口）')
+    assert.equal(calls, 4)
+  } finally {
+    service.close()
+  }
+})
+
+test('升级阶梯（分段）：nudge 跨段保留、只注入一次，再次命中收口', async () => {
+  let calls = 0
+  const service = startService({
+    providers: {
+      'model.chat': () => {
+        calls += 1
+        return { ok: true, text: 'working', tool_calls: [], usage: {} }
+      },
+    },
+  })
+  try {
+    const result = await service.interpret({
+      turn_id: 't1',
+      todo: { items: [{ id: 't1', status: 'pending' }] },
+    })
+    const summary = summaryOf(result.value)
+    assert.equal(calls, 4, '分段路径同样第 3 段 nudge、第 4 段收口')
+    assert.equal(summary.outcome.stop_reason, 'no_progress')
+    const builds = service.portCalls.filter((call) => call.port === 'context' && call.method === 'build')
+    const nudged = builds.filter((call) => typeof call.args?.loop_nudge === 'string')
+    assert.equal(nudged.length, 1, '分段路径 nudge 也应只注入一次（跨段由段标记保留）')
+  } finally {
+    service.close()
+  }
+})
+
+test('无进展熔断：反复派发同一工具指纹 ⇒ 达阈值收口', async () => {
+  let calls = 0
+  const service = startService({
+    providers: {
+      'model.chat': () => {
+        calls += 1
+        return {
+          ok: true,
+          text: '',
+          tool_calls: [{ id: 'c1', name: 'stat', args: { path: 'a.txt' } }],
+          usage: {},
+        }
+      },
+      'guard.judge': () => ({
+        decisions: [{ index: 0, port: 'tool', tool: 'stat', verdict: 'allow' }],
+        summary: { allow: 1, escalate: 0, deny: 0 },
+      }),
+      'tools.dispatch': (args) => ({
+        results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })),
+      }),
+    },
+  })
+  try {
+    const result = await service.interpret({ tools: [{ name: 'stat', provider: 'tool' }] })
+    const summary = summaryOf(result.value)
+    // 首段派发即进展；之后连续同签名：第 3 段先 nudge，第 4 段仍重复才收口。
+    assert.equal(calls, 4, '第 3 段 nudge、第 4 段收口')
+    assert.equal(summary.iters, 4)
   } finally {
     service.close()
   }

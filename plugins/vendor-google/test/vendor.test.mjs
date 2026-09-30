@@ -98,7 +98,17 @@ const EXPECTED = {
 }
 
 const SCHEMA_TOP_KEYS = ['name', 'sdk', 'default_base_url', 'default_auth_ref_name', 'default_reasoning', 'quirks']
-const QUIRKS_KEYS = ['impl', 'protocol', 'sdk_package', 'auth_style', 'auth_header', 'system_role', 'reasoning_field', 'reasoning_map', 'reasoning_response_field', 'max_tokens_field', 'models_path', 'stream_usage', 'extra_headers', 'note']
+const QUIRKS_KEYS = ['impl', 'protocol', 'sdk_package', 'auth_style', 'auth_header', 'system_role', 'reasoning_field', 'reasoning_map', 'reasoning_replay', 'reasoning_response_field', 'max_tokens_field', 'models_path', 'stream_usage', 'extra_headers', 'note']
+
+test('reasoning_replay 声明与厂商口径一致', () => {
+  const q = readJson('tools/default-body.json').quirks
+  assert.deepEqual(q.reasoning_replay, {
+    form: 'parts',
+    requires_in_tool_loop: true,
+    signature_field: 'thoughtSignature',
+    verified: true,
+  })
+})
 
 test('plugin.json 13 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')

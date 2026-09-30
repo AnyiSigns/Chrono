@@ -1,6 +1,6 @@
 // `context-window` 服务协议级测试（node --test）：合成 bag 驱动 `context.build`，收 `context.assembled` 事件。
 // 覆盖：流水线各阶段、预算两路错误、atomic 组、前缀序、三方言、多模态降级、TTL、covered_upto、
-// 交错引导幂等且不含工具标识符、thread_kind 四路、事件载荷、回放纪律、错误不崩。
+// 不再注入交错引导、thread_kind 四路、事件载荷、回放纪律、错误不崩。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -9,9 +9,6 @@ import { cpSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { baseBag, chainOf, contentOf, FIXED_ENV, PKG_ROOT, startService } from './driver.mjs'
-
-const GUIDANCE = '请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。'
-const TOOL_IDENTIFIERS = ['read', 'write', 'grep', 'glob', 'shell', 'fsop', 'exec', 'tool.', 'tool-fs', 'context', 'session', 'sandbox', 'capability', 'port']
 
 function eventsSince(drv, before) {
   return drv.events.slice(before)
@@ -664,9 +661,11 @@ test('检查点全局边界 {turn_id, seq}：边界之前的记录被 T3 丢弃�
   }
 })
 
-// ── 交错引导 ───────────────────────────────────────────────────────────────
+// ── 交错引导（已移除）─────────────────────────────────────────────────────
 
-test('交错引导：含工具结果时幂等追加一条，文案不含工具标识符', async () => {
+const REMOVED_GUIDANCE = '请用自然语言说明下一步要做什么；不要引用工具标识符，也不要复述参数。'
+
+test('交错引导不再逐条注入：含工具结果时不追加额外提示', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -680,24 +679,34 @@ test('交错引导：含工具结果时幂等追加一条，文案不含工具�
         ]),
       }),
     )
-    const texts = textMessages(value)
-    assert.equal(texts.filter((text) => text === GUIDANCE).length, 1)
-    assert.equal(texts[texts.length - 1], GUIDANCE)
-    const lowered = GUIDANCE.toLowerCase()
-    for (const identifier of TOOL_IDENTIFIERS) {
-      assert.equal(lowered.includes(identifier), false, `引导语含工具标识符：${identifier}`)
-    }
+    // 说意图 / 禁标识符由系统提示词常驻承载；这里只锁死「不再有逐条注入」。
+    assert.equal(textMessages(value).includes(REMOVED_GUIDANCE), false)
   } finally {
     drv.close()
   }
 })
 
-test('无工具结果时不追加交错引导', async () => {
+test('空转 nudge：loop_nudge 作为前导系统消息注入，且不在消息列尾部', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    const value = await drv.build(baseBag({ input: 'IN', system_prompt: 'P' }))
-    assert.ok(!textMessages(value).includes(GUIDANCE))
+    const value = await drv.build(
+      baseBag({
+        input: 'IN',
+        system_prompt: 'P',
+        loop_nudge: '请换策略或收尾',
+        session: chainOf([
+          { id: 'm1', role: 'assistant', parts: [{ type: 'tool_call', name: 'read', args: {} }] },
+          { id: 'm2', role: 'tool', content: 'result', tool_call_id: 'c1' },
+        ]),
+      }),
+    )
+    const texts = textMessages(value)
+    const hits = texts.filter((text) => text.includes('请换策略或收尾'))
+    assert.equal(hits.length, 1, '空转提示应恰好一条')
+    const index = texts.findIndex((text) => text.includes('请换策略或收尾'))
+    assert.ok(index > texts.indexOf('P'), '空转提示应在系统提示之后')
+    assert.notEqual(index, texts.length - 1, '空转提示不应是消息列最后一条')
   } finally {
     drv.close()
   }

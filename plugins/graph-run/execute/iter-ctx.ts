@@ -57,7 +57,11 @@ export function freshState(): RunState {
     dispatchedTools: false,
     questionPending: false,
     verifyFailed: false,
+    loopSignatures: [],
+    loopNudged: false,
+    loopNudge: null,
     lastCalls: [],
+    committedParts: [],
   }
 }
 

@@ -12,6 +12,7 @@
 - 实现：`protocol`，具体协议由 `config` 运行时给（三基础协议任一）。
 - 鉴权：`auth_style` = `bearer`（bearer 自动用 Authorization 头；具体由 config 给）。
 - 推理：无档位（`reasoning_field` 为 null）；协议与怪癖由 `config` 运行时给。
+- 思考回传：**不声明** `reasoning_replay`，走协议默认（`openai-chat` 通用尝试回传）+ `model-protocol` 的自适应降级；精确声明留给各内置厂商模板。
 - 最大输出字段：`max_tokens`。
 - 模板默认值只是预填，用户可改；实际连接值以 `config` 为准。
 - 可空字段以「缺键或 null」表达；形态校验归写入端（宿主不校验身份数据）。

@@ -54,7 +54,7 @@ test('中立推理块：字段固定且满足本地形状校验', () => {
   })
 })
 
-test('推理能力表：厂商覆盖命中；未覆盖厂商取协议默认（保守，不回传）', () => {
+test('推理能力表：档案 > SDK > 协议默认 > 保守；无厂商中心表', () => {
   assert.equal(
     resolveReasoningCapability({ provider: 'anthropic', protocol: 'anthropic-messages' })
       .replay_form,
@@ -81,8 +81,14 @@ test('推理能力表：厂商覆盖命中；未覆盖厂商取协议默认（�
   const response = resolveReasoningCapability({ provider: 'openai', protocol: 'openai-responses' })
   assert.equal(response.replay_form, 'reasoning_item')
   assert.equal(response.signature_field, 'encrypted_content')
-  const conservative = resolveReasoningCapability({ provider: 'zai', protocol: 'openai-chat' })
-  assert.equal(conservative.replay_form, null, '未核实厂商不回传')
+  // openai 不设厂商覆盖：同一厂商随协议分叉（chat 通用尝试回传 / responses 回传加密项）。
+  assert.equal(
+    resolveReasoningCapability({ provider: 'openai', protocol: 'openai-chat' }).replay_form,
+    'reasoning_content',
+  )
+  // 各内置厂商的精确规则改由厂商模板声明后经 profile 注入；无中心厂商表。
+  const generic = resolveReasoningCapability({ provider: 'unlisted-vendor', protocol: 'openai-chat' })
+  assert.equal(generic.replay_form, 'reasoning_content', '通用 OpenAI 兼容尝试回传，由自适应降级兜底')
   const none = resolveReasoningCapability({ provider: 'whatever', protocol: 'unsupported' })
   assert.equal(none.retention, 'none')
   assert.equal(none.replay_form, null)
@@ -109,7 +115,19 @@ test('换模型即丢：跨模型 / 缺签名的捕获推理不可回传', () =>
 })
 
 test('capabilityToJson：字段固定可入档', () => {
-  const json = capabilityToJson(resolveReasoningCapability({ provider: 'deepseek' }))
+  // 厂商精确定义经模板声明走 profile 槽注入（不再有中心厂商表）。
+  const json = capabilityToJson(
+    resolveReasoningCapability({
+      profile: {
+        retention: 'turn',
+        requires_replay_in_tool_loop: true,
+        signature_field: null,
+        replay_form: 'reasoning_content',
+        invalidated_by: ['model_change', 'prefix_change', 'thinking_param_change'],
+        verified: true,
+      },
+    }),
+  )
   assert.equal(json.replay_form, 'reasoning_content')
   assert.equal(json.requires_replay_in_tool_loop, true)
   assert.equal(Array.isArray(json.invalidated_by), true)

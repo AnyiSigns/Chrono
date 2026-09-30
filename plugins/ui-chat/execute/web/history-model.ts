@@ -133,6 +133,17 @@ export function messageId(entry: any): string {
 }
 
 /**
+ * 回合运行中插入的用户消息（id 形如 `msg-<conv>-<turnId>-user-<insert_id>`；回合开头那条是 `-user`）。
+ * 在途期间由 `StreamTurn` 按追加序渲染，历史列表跳过以免重复并错位。
+ */
+export function isInsertUserEntry(entry: any, turnId: string | null): boolean {
+  if (turnId === null) return false
+  const def = isRec(entry) && isRec(entry.def) ? entry.def : null
+  if (def === null || def.role !== 'user') return false
+  return messageId(entry).includes(`-${turnId}-user-`)
+}
+
+/**
  * 尾部若干条内是否存在与乐观用户 def 对应的权威用户消息（乐观渲染收口判定）。
  * 定稿快照里 user 后跟 assistant，故不能只看最后一条；只看尾部避免历史深处同文误判。
  * 附件数一并比对：纯附件消息正文为空，只比文本会让气泡在提交后收不掉。

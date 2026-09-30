@@ -46,8 +46,8 @@ test('plugin.json 15 字段齐全且形态合法', () => {
   assert.equal(decl.identity, 'chat')
   assert.equal(decl.schema, 'schema/wiring.json')
   assert.deepEqual(decl.implements, ['chat'])
-  assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume', 'cancel'] })
-  assert.deepEqual(decl.concurrent_methods, ['send', 'resume', 'history', 'cancel'])
+  assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume', 'cancel', 'insert'] })
+  assert.deepEqual(decl.concurrent_methods, ['send', 'resume', 'history', 'cancel', 'insert'])
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
     session: { mode: 'one' },
@@ -79,7 +79,7 @@ test('needs 含 loop-policy（#33 替换管道）', () => {
   assert.deepEqual(decl.needs['loop-policy'], { mode: 'one' })
 })
 
-test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel 且入口正确', () => {
+test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel / chat.insert 且入口正确', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(
     decl.commands.map((command) => [command.name, command.entry]),
@@ -88,6 +88,7 @@ test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel 且�
       ['chat.history', 'terms/chat.history.json'],
       ['chat.resume', 'terms/chat.resume.json'],
       ['chat.cancel', 'terms/chat.cancel.json'],
+      ['chat.insert', 'terms/chat.insert.json'],
     ],
   )
   const readonly = Object.fromEntries(
@@ -97,6 +98,7 @@ test('commands 声明 chat.send / chat.history / chat.resume / chat.cancel 且�
   assert.equal(readonly['chat.send'], undefined)
   assert.equal(readonly['chat.resume'], undefined)
   assert.equal(readonly['chat.cancel'], undefined)
+  assert.equal(readonly['chat.insert'], undefined)
 })
 
 test('wiring 切片 / title 声明 / 空槽行为（段序归 #33 图数据）', () => {
@@ -134,11 +136,12 @@ test('入口 term：send 自能力 eff + 投影切片，history 收 args（owner
   assert.deepEqual(cancel, ['eff', 'chat', 'cancel', ['v', 0]])
 })
 
-test('terms/ 只保留四个命令入口，无装配模板残留', () => {
+test('terms/ 只保留五个命令入口，无装配模板残留', () => {
   const names = readdirSync(join(PKG_ROOT, 'terms')).sort()
   assert.deepEqual(names, [
     'chat.cancel.json',
     'chat.history.json',
+    'chat.insert.json',
     'chat.resume.json',
     'chat.send.json',
   ])

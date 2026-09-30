@@ -29,6 +29,7 @@
 | reasoning_field | `reasoning_effort` | 2026-09 官方文档确认（支持 none / minimal / low / medium / high / xhigh / max，随模型而异） |
 | max_tokens_field | `max_completion_tokens` | 2026-09 官方文档确认（max_tokens 已废弃） |
 | reasoning_response_field | `reasoning_content` | 未核实（chat completions 不返回原始推理文本；保留规范模板值） |
+| reasoning_replay | 不回传（`form:null`） | chat completions 无推理文本可回传；`openai-responses` 走协议默认回传加密推理项 |
 
 - 官方文档支持的推理档位是模型相关超集；本模板按归一三档 low / medium / high 预填。
 

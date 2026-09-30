@@ -17,7 +17,7 @@
 
 ```
 候选汇集 → L1 TTL 过滤 → 结构化 → 去重 → 配对修复 → 预算建模（budget）+ 批量 token 计数（token-estimate）
-→ 配额分配 → 降级阶梯 → 前缀缓存排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单事件 → 交错引导
+→ 配额分配 → 降级阶梯 → 前缀缓存排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单事件
 ```
 
 - **候选来源**：本轮用户消息 / 系统提示 / 环境节 / 工具 schema / L2 / 上一会话 L1 / 本会话 L1 /
@@ -26,6 +26,9 @@
   操作系统 / 命令解释器），文案住 `policy.messages.environment`（占位 `{workspace_root}` / `{platform}`）。
   无工作目录不注入（不虚报根）；文案不含内部标识符，避免污染模型推理；与系统提示同属稳定前缀（`source='prompt'`，
   计入 `sections.system` 与 `sources.prompt`）。
+- **空转提示（nudge）**：`bag.loop_nudge` 非空时（graph-run 空转检测升级阶梯的第一步），在系统前言区注入
+  **一条** `[系统引导 · 空转提示]` system 消息——刻意**不**放消息列尾部，避免被模型当成「用户最新指令」。
+  仅命中空转的那一段出现一次，下一段即被清除；无则不注入。
 - **去重**：规范化后完全一致只留最新；跨来源时历史是事实源，丢记忆副本（召回 / 摘要副本）。
 - **跨回合工具回灌**：历史消息 `parts` 里的工具卡（`type:'tool'`）提升为 assistant `tool_calls`
   （调用逐字）+ 结果消息；结果按机械规则老化（资源身份 / 规模 / 截断尾部）并带可展开句柄。
@@ -71,7 +74,9 @@
 tool_calls, tool_results, reasoning, input, hints}` 的逐节 token。
 - **组装清单**：每次组装发一条 `context.assembled` 事件（经宿主透传，不落账、不进世界）；
   `run` / `thread` 取自协议帧 `env`。
-- **交错引导**：本轮含工具结果时追加**一条** system 引导语（说意图、禁工具标识符；文案住 policy）。
+- **交错引导（已移除）**：先前在本轮含工具结果时追加**一条**「说意图、禁工具标识符」system 引导语；
+  它与系统提示词常驻规则重复，且作为消息列最新一条易被模型当成用户最新指令（复述成「用户说…」），故不再逐条注入。
+  `policy.messages.interleave_guidance` 字段保留（配置兼容），但流水线不再读出。
 
 ## 返回值
 
@@ -97,6 +102,7 @@ tool_calls, tool_results, reasoning, input, hints}` 的逐节 token。
 | `input`             | `string \| { content?, parts?, attachments?, at? }`                                                                                           | 本轮用户消息；可解析附件 `text` 内联，二进制只留资产引用                                                                                                                      |
 | `system_prompt`     | `string`                                                                                                                                      | 系统提示（稳定前缀）                                                                                                                                                          |
 | `workspace_root`    | `string`                                                                                                                                      | 执行根：非空时注入环境节（工作目录 / 平台 / 命令解释器）；缺失不注入                                                                                                          |
+| `loop_nudge`        | `string`                                                                                                                                      | 空转提示：非空时在系统前言区注入一条系统引导；仅命中空转段出现一次，随后清除                                                                                                    |
 | `tools`             | `[{ name, description?, schema? }]`                                                                                                           | 工具 schema（稳定前缀；每工具一条）                                                                                                                                           |
 | `memories`          | `{ l2?, prev_l1?, l1? }`                                                                                                                      | 记忆切片；条目 = `{ summary, covered_upto?, expires_at?, at? }`                                                                                                               |
 | `skills`            | `[{ name?, id?, content? }]`                                                                                                                  | 技能片段                                                                                                                                                                      |
@@ -146,7 +152,7 @@ token 计数与预算建模已下沉为提供方，本插件只编排与传数�
 ## schema / policy
 
 `schema/policy.json` 是身份的声明文件，也是组装策略数据：预算余量、各类配额、优先级、
-缓存前缀边界、降级阶梯文案（输入截断标记）、环境节模板、交错引导文案、多模态降级模板，
+缓存前缀边界、降级阶梯文案（输入截断标记）、环境节模板、交错引导文案（保留但不再注入）、多模态降级模板，
 以及宿主消费的 `method_timeouts`（`context.build` 覆盖 30s 缺省）。服务**启动时读取**，
 `reload` 帧（数据换代）时重读——热改 = 数据换代 reload，不改代码。
 

@@ -30,6 +30,7 @@ import type { MessageTable } from './messages.ts'
 import {
   dataChangeTarget,
   hasPendingUserMessage,
+  isInsertUserEntry,
   isPeriodicRun,
   matchesThread,
   messageId,
@@ -1261,10 +1262,13 @@ function CopyButton({ def }: { def: any }): ReactNode {
 function Footnote({ def, showRetry }: { def: any; showRetry: boolean }): ReactNode {
   const env = useChatEnv()
   const usage = usageText(def)
+  // 复制只对「有可复制正文」的助手消息有意义：工具卡 / 空段不挂复制 UI。
+  const copyable = messageText(def).length > 0
+  if (usage === null && !copyable && !showRetry) return null
   return (
     <div className="chat-footnote">
       {usage !== null ? <span className="chat-usage">{usage}</span> : null}
-      <CopyButton def={def} />
+      {copyable ? <CopyButton def={def} /> : null}
       {showRetry ? (
         <IconButton
           name="rotate-ccw"
@@ -1301,7 +1305,6 @@ const MessageItem = memo(function MessageItem({ entry, announce }: { entry: any;
             item.type === 'text' ? <div key={index}>{item.text}</div> : <RenderItem key={index} vm={item} />,
           )}
         </div>
-        <Footnote def={def} showRetry={false} />
       </div>
     )
   }
@@ -1365,6 +1368,8 @@ const HistoryList = memo(function HistoryList(props: HistoryListProps): ReactNod
     }
     // 在途回合的助手消息由 StreamTurn 呈现；历史里同回合的旧快照不重复渲染。
     if (isInFlightTurnEntry(item.entry, inFlightTurnId)) continue
+    // 运行中插入的用户消息同样由 StreamTurn 按追加序就地呈现（不在此按消息序提前渲染）。
+    if (isInsertUserEntry(item.entry, inFlightTurnId)) continue
     const announce = finalizeAnnounce && item.entry === lastEntry && isAssistantEntry(item.entry)
     const entryId = messageId(item.entry)
     nodes.push(
@@ -1432,6 +1437,18 @@ function StreamTurn({ view }: { view: any }): ReactNode {
   return (
     <div className="chat-msg chat-msg-assistant" aria-busy={inFlight.cancelled === true ? undefined : true}>
       {inFlight.segments.map((segment: any, index: number) => {
+        // 运行中插入的用户消息：按追加序落在其前后段之间（处理完上段、下一段尚未产出处）。
+        if (segment.kind === 'user') {
+          return (
+            <MessageBoundary
+              key={segment.id ?? `insert-${index}`}
+              resetKey={`insert:${segment.id ?? index}:${view.revision}`}
+              fallback={<RenderFallback />}
+            >
+              <MessageItem entry={{ def: segment.def }} announce={false} />
+            </MessageBoundary>
+          )
+        }
         if (segment.kind === 'reasoning') {
           return (
             <ReasoningBlock key={`reasoning-${index}`} text={segment.text} streaming={streaming && index === lastIndex} />
@@ -1690,11 +1707,11 @@ function isAssistantEntry(entry: any): boolean {
  * 该历史条目是否为「当前在途回合」的助手消息：是则不渲染。
  * 在途块是该回合的实时权威呈现，历史里同回合的助手消息（承接帧先落盘所致）只是它的旧快照；
  * 两者同屏会重复呈现工具卡（观感像同一批工具被再次调用），定稿收口后在途块消失、历史消息即唯一。
- * 消息 id 形状 `msg-<conv>-<turnId>-assistant`（见 session store）。
+ * 消息 id 形状 `msg-<conv>-<turnId>-assistant[-<段号>]`（见 session store / 展示投影）。
  */
 function isInFlightTurnEntry(entry: any, turnId: string | null): boolean {
   if (turnId === null || !isAssistantEntry(entry)) return false
-  return messageId(entry).endsWith(`-${turnId}-assistant`)
+  return messageId(entry).includes(`-${turnId}-assistant`)
 }
 
 function contentKey(view: any, hasPendingUser: boolean): string {

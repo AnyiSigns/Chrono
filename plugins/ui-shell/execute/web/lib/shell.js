@@ -10,7 +10,6 @@ import { deriveBootMode } from './boot-mode.js'
 import { identityBody } from './identity-shape.js'
 import { createSlotHost } from './slots.js'
 
-const CONTRACT_VERSION = '1'
 /** slot 客户端半边契约版本（`register(ctx)` + `ctx.slots`）。 */
 const SLOT_CONTRACT_VERSION = '2'
 /** slot / headless 装载上限：模块抓取从严（连接被挤占时会一直 pending），mount 运行放宽到与宿主调用超时同量级。 */
@@ -518,24 +517,13 @@ async function doMountEntry(entry, silent = false) {
     if (!silent) renderSlotFailure(root, code, entry)
     return code
   }
-  const entryPath = typeof entry.entry === 'string' && entry.entry.length > 0 ? entry.entry : null
   try {
-    if (entryPath !== null) {
-      // slot 客户端半边：壳经 host.source.read 同源服务，模块把组件注册进命名 slot。
-      const module = await importSlotEntry(entry.id)
-      if (module.contract !== SLOT_CONTRACT_VERSION) return fail('ui_version_mismatch')
-      if (typeof module.register !== 'function') return fail('ui_boot_failed')
-      // register 内部按装载代号拒绝陈旧注册；迟到的 store.start 由插件在注册失败时自行 dispose。
-      await withTimeout(Promise.resolve(module.register(slotHost.ctxFor(entry.id, epoch))), MOUNT_RUN_TIMEOUT_MS)
-      return null
-    }
-    // 旧模型：插件自有端口反代 + mount(root, api)。
-    const module = await withTimeout(import(`/p/${entry.id}/entry.js`), MOUNT_IMPORT_TIMEOUT_MS)
-    if (module.contract !== undefined && module.contract !== CONTRACT_VERSION) {
-      return fail('ui_version_mismatch')
-    }
-    if (typeof module.mount !== 'function') return fail('ui_boot_failed')
-    await withTimeout(module.mount(root, { ...api, slot: entry.slot }), MOUNT_RUN_TIMEOUT_MS)
+    // slot 客户端半边：壳经 /assets/ui/<id>.js 同源服务，模块把组件注册进命名 slot。
+    const module = await importSlotEntry(entry.id)
+    if (module.contract !== SLOT_CONTRACT_VERSION) return fail('ui_version_mismatch')
+    if (typeof module.register !== 'function') return fail('ui_boot_failed')
+    // register 内部按装载代号拒绝陈旧注册；迟到的 store.start 由插件在注册失败时自行 dispose。
+    await withTimeout(Promise.resolve(module.register(slotHost.ctxFor(entry.id, epoch))), MOUNT_RUN_TIMEOUT_MS)
     return null
   } catch (err) {
     return fail(isUnreachable(err) ? 'ui_load_failed' : 'ui_boot_failed')

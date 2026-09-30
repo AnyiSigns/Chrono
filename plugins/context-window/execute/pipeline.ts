@@ -1,5 +1,5 @@
 // 组装流水线编排（第 0–11 步）：汇集 → 结构化 → 去重 → 配对修复 → 预算 / 配额（含降级阶梯）→
-// 前缀排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单 → 交错引导。
+// 前缀排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单。
 // 全程确定、不取时间（TTL 用 env.now）；每模型 token 校正系数缩放快路径计数。
 
 import { createHash } from 'node:crypto'
@@ -62,29 +62,6 @@ function orderMessages(messages: CanonicalMessage[], policy: Policy): CanonicalM
       return left.index - right.index
     })
     .map((entry) => entry.message)
-}
-
-/** 尾部提示语（交错引导）：单条 system 消息，单独计入 `hints` 分节。 */
-function noteMessage(text: string): CanonicalMessage {
-  return canonicalize([
-    {
-      role: 'system',
-      parts: [{ type: 'text', text }],
-      source: 'prompt',
-      priority: 0,
-      at: 0,
-      atomic: false,
-      atomicGroup: null,
-      toolCallId: null,
-      from: null,
-      orderHint: 0,
-      hint: true,
-    },
-  ])[0] as CanonicalMessage
-}
-
-function containsToolResult(messages: CanonicalMessage[]): boolean {
-  return messages.some((message) => message.role === 'tool' || message.toolCallId !== null)
 }
 
 /** flags 去重（保持首次出现顺序）。 */
@@ -362,11 +339,9 @@ function runPipeline(
     }
   }
 
-  const notes: CanonicalMessage[] = []
-  // 交错引导：本轮含工具结果 ⇒ 尾部追加一条「说意图、禁标识符」system 引导（幂等一条）。
-  if (containsToolResult(ordered)) notes.push(noteMessage(policy.messages.interleave_guidance))
-
-  const formatted = formatMessages([...ordered, ...notes], config, policy)
+  // 交错引导按条注入已移除：其语义（说意图、禁标识符、逐步推进）已由系统提示词常驻承载，
+  // 逐条注入既冗余，又会成为「用户刚说了…」这类误归属 / 复述的来源。policy 字段保留但不再注入。
+  const formatted = formatMessages(ordered, config, policy)
   const flags = [...baseFlags]
   if (formatted.dropped) flags.push('modality_dropped')
 
@@ -378,7 +353,7 @@ function runPipeline(
     budget: budgetInfo.budget,
     budgetOrigin: budgetInfo.origin,
     used: allocation.used,
-    sections: computeSections([...ordered, ...notes]),
+    sections: computeSections(ordered),
     sources: allocation.sources,
     deduped: deduped.deduped,
     retention,

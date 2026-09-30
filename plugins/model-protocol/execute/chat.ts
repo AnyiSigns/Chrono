@@ -8,7 +8,7 @@ import { getStreamDecoder } from './adapters.ts'
 import type { ModelOutput } from './adapters.ts'
 import { DialectClient } from './dialect-link.ts'
 import type { DialectQuirks } from './dialect-link.ts'
-import { ModelError, errorValue } from './errors.ts'
+import { ModelError, classifyHttpStatus, errorValue, parseRetryAfter } from './errors.ts'
 import { httpRequest, httpStream } from './http.ts'
 import { authRefOf, isRecord } from './plan.ts'
 import { fetchPolicy, portThrottle, withRetry } from './resilience.ts'
@@ -16,6 +16,15 @@ import type { RetryPolicy } from './resilience.ts'
 import { createSseParser, reasoningBlock, StreamAccumulator } from './stream.ts'
 import { googleChat, googleComplete } from './sdk-google.ts'
 import type { SdkCallInput } from './sdk-google.ts'
+import {
+  applyQuirksRepairs,
+  applyRequestRepairs,
+  nextRepairs,
+  rememberRepairs,
+  repairKey,
+  repairsFor,
+} from './quirk-repair.ts'
+import type { RepairKind } from './quirk-repair.ts'
 import { BadArgsError } from 'plugin-sdk'
 import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 
@@ -47,6 +56,97 @@ interface ParsedChat {
 /** 调用方在 config 上显式给出的推理能力表（优先于协议 / 厂商默认）。 */
 function profileCapabilityOf(config: Rec): Json | undefined {
   return isRecord(config['reasoning_capability']) ? config['reasoning_capability'] : undefined
+}
+
+/** 4xx 归类：把响应体片段并入消息，供字段协商判定（截断，避免超长）。 */
+function classifyWithSnippet(status: number, headers: Rec, body: string, now: number): Error {
+  const retryAfterMs = parseRetryAfter(headers as Record<string, string>, now)
+  const base = classifyHttpStatus(status, retryAfterMs) ?? new Error('unexpected status')
+  if (base instanceof ModelError && status >= 400 && status < 500) {
+    const snippet = body.replace(/\s+/g, ' ').trim().slice(0, 300)
+    if (snippet.length > 0) {
+      return new ModelError(base.code, `${base.message}: ${snippet}`, {
+        retryable: base.retryable,
+        retryAfterMs: base.retryAfterMs,
+      })
+    }
+  }
+  return base
+}
+
+/**
+ * 降级档：区分「回传可选」「回传强制」「整套关闭」。
+ * - 强制回传（DeepSeek/Anthropic/Responses 带签名或加密内容）：去掉回传必然再 400，只能整套关闭思考；
+ * - 可选回传（通用 openai-chat/自建端点）：只去掉回传，**保留思考参数与档位**，避免一次 400 把思考能力静默关掉；
+ * - `closeAll`：思考参数本身被拒时整套关闭（retention=none，不发参数也不回传）。
+ */
+async function downgradedProfile(
+  dialect: DialectClient,
+  quirks: DialectQuirks,
+  current: Json | undefined,
+  closeAll = false,
+): Promise<Json | undefined> {
+  const base = isRecord(current)
+    ? (current as Rec)
+    : await dialect.reasoningCapability({ protocol: protocolLabel(quirks), impl: quirks.impl })
+  if (closeAll || base['requires_replay_in_tool_loop'] === true)
+    return await dialect.reasoningCapability({})
+  return { ...base, replay_form: null, signature_field: null }
+}
+
+/** 每次调用最多新增的字段退让次数（点名字段 + 梯队探测合计）。 */
+const MAX_REPAIRS_PER_CALL = 3
+
+/** 依据已应用退让改写推理能力表：先去回传；仍被拒则整套关闭思考。 */
+async function capabilityWithRepairs(
+  dialect: DialectClient,
+  quirks: DialectQuirks,
+  base: Json | undefined,
+  applied: ReadonlySet<RepairKind>,
+): Promise<Json | undefined> {
+  if (applied.has('drop_reasoning_param')) return await downgradedProfile(dialect, quirks, base, true)
+  if (applied.has('drop_reasoning_replay')) return await downgradedProfile(dialect, quirks, base, false)
+  return base
+}
+
+/**
+ * 4xx 字段协商：按已记忆的退让（baseline）+ 本次探测（trial）改写请求重试。
+ * 只有真正跑通的 trial 才写入记忆——盲试不成功不会让该端点被永久降级。
+ * 非 `model_bad_request` / 无档可退 / 超过限次 → 原样抛出，由上层作数据回灌。
+ */
+async function negotiateOutput(
+  key: string,
+  parsed: ParsedChat,
+  quirks: DialectQuirks,
+  attempt: (
+    effective: ParsedChat,
+    effectiveQuirks: DialectQuirks,
+    applied: ReadonlySet<RepairKind>,
+  ) => Promise<ModelOutput>,
+): Promise<ModelOutput> {
+  const baseline = repairsFor(key)
+  const trial = new Set<RepairKind>()
+  for (let probe = 0; ; probe += 1) {
+    const applied = new Set<RepairKind>([...baseline, ...trial])
+    const effective = { ...parsed, ...applyRequestRepairs(parsed, applied) }
+    const effectiveQuirks = applyQuirksRepairs(quirks, applied)
+    try {
+      const output = await attempt(effective, effectiveQuirks, applied)
+      if (trial.size > 0) rememberRepairs(key, [...trial])
+      return output
+    } catch (err) {
+      if (
+        !(err instanceof ModelError) ||
+        err.code !== 'model_bad_request' ||
+        probe >= MAX_REPAIRS_PER_CALL
+      ) {
+        throw err
+      }
+      const next = nextRepairs(err.message, applied)
+      if (next.length === 0) throw err
+      for (const kind of next) trial.add(kind)
+    }
+  }
 }
 
 /** 缓存提示：厂商中立，只保留已知键；空对象视为未给。 */
@@ -283,6 +383,7 @@ async function streamAttempt(
   now: number,
   turnId: string | null,
   dialect: DialectClient,
+  capture?: { partial?: Record<string, Json> },
 ): Promise<ModelOutput> {
   gate.beginAttempt()
   const built = await dialect.build(buildArgs(parsed, quirks, secret, true))
@@ -302,18 +403,31 @@ async function streamAttempt(
     timeout_ms: policy.request_timeout_ms,
     now,
     turn_id: turnId ?? undefined,
+    classify: (status, headers, body) => classifyWithSnippet(status, headers, body, now),
   })
   const accumulator = new StreamAccumulator()
   const parser = createSseParser()
   let sawTerminal = false
-  for await (const chunk of response.chunks) {
-    for (const data of parser.push(chunk)) {
-      const fragments = decoder.handleStreamData(data, accumulator)
-      for (const fragment of fragments) {
-        if (fragment['done'] === true) sawTerminal = true
-        gate.accept(fragment)
+  try {
+    for await (const chunk of response.chunks) {
+      for (const data of parser.push(chunk)) {
+        const fragments = decoder.handleStreamData(data, accumulator)
+        for (const fragment of fragments) {
+          if (fragment['done'] === true) sawTerminal = true
+          gate.accept(fragment)
+        }
       }
     }
+  } catch (err) {
+    // 中止 / 断流：留下已产出的碎片，供上层（取消）落盘，避免刷新后内容丢失。
+    if (capture !== undefined && (accumulator.text.length > 0 || accumulator.reasoning.length > 0)) {
+      capture.partial = {
+        text: accumulator.text,
+        reasoning: accumulator.reasoning,
+        tool_calls: accumulator.toolCalls() as unknown as Json[],
+      }
+    }
+    throw err
   }
   if (!sawTerminal)
     throw new ModelError('model_stream_broken', 'stream ended without terminal', {
@@ -360,6 +474,7 @@ async function fullAttempt(
     timeout_ms: policy.request_timeout_ms,
     now,
     turn_id: turnId ?? undefined,
+    classify: (status, headers, body) => classifyWithSnippet(status, headers, body, now),
   })
   let json: Json
   try {
@@ -393,6 +508,8 @@ export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Jso
   } catch (err) {
     throw err instanceof BadArgsError ? err : new BadArgsError((err as Error).message)
   }
+  // 中止时已产出的助手碎片（正文 / 推理 / 工具调用）：随失败值上行，供取消路径落盘留痕。
+  const capture: { partial?: Record<string, Json> } = {}
   try {
     const dialect = new DialectClient(deps.dialect)
     const quirks = await dialect.normalizeQuirks(parsed.quirksRaw, parsed.protocolOverride)
@@ -420,29 +537,44 @@ export async function chat(deps: ChatDeps, bag: Json, env: CallEnv): Promise<Jso
       return outputValue(output, parsed, protocolLabel(quirks), true)
     }
     const gate = new DeltaGate((fragment) => emitDelta(deps, parsed, env, quirks, fragment))
-    const output = await withRetry(
-      parsed.provider,
-      () =>
-        streamAttempt(
-          getStreamDecoder(quirks.protocol, quirks.reasoning_response_field, {
-            provider: parsed.provider,
-            model: parsed.model,
-          }),
-          parsed,
-          quirks,
-          secret,
-          policy,
-          gate,
-          env.now,
-          parsed.turn_id,
+    const key = repairKey(parsed.provider, parsed.base_url, parsed.model)
+    const output = await negotiateOutput(
+      key,
+      parsed,
+      quirks,
+      async (effective, effectiveQuirks, applied) => {
+        const capabilityProfile = await capabilityWithRepairs(
           dialect,
-        ),
-      { policy, throttle, now: env.now },
+          effectiveQuirks,
+          parsed.capabilityProfile,
+          applied,
+        )
+        return await withRetry(
+          parsed.provider,
+          () =>
+            streamAttempt(
+              getStreamDecoder(effectiveQuirks.protocol, effectiveQuirks.reasoning_response_field, {
+                provider: parsed.provider,
+                model: parsed.model,
+              }),
+              { ...effective, capabilityProfile },
+              effectiveQuirks,
+              secret,
+              policy,
+              gate,
+              env.now,
+              effective.turn_id,
+              dialect,
+              capture,
+            ),
+          { policy, throttle, now: env.now },
+        )
+      },
     )
     return outputValue(output, parsed, protocolLabel(quirks), true)
   } catch (err) {
     if (err instanceof BadArgsError) throw err
-    if (err instanceof ModelError) return errorValue(err.code, err.message)
+    if (err instanceof ModelError) return errorValue(err.code, err.message, capture.partial)
     throw err
   }
 }
@@ -457,6 +589,36 @@ export async function complete(deps: ChatDeps, bag: Json, env: CallEnv): Promise
     const policy = await fetchPolicy(deps.throttle, parsed.resilience)
     const throttle = portThrottle(deps.throttle)
     parsed.messages = await dialect.inlineAssets(parsed.messages, quirks.protocol)
+    const protocolComplete = (): Promise<ModelOutput> => {
+      const key = repairKey(parsed.provider, parsed.base_url, parsed.model)
+      return negotiateOutput(
+        key,
+        parsed,
+        quirks,
+        async (effective, effectiveQuirks, applied) => {
+          const capabilityProfile = await capabilityWithRepairs(
+            dialect,
+            effectiveQuirks,
+            parsed.capabilityProfile,
+            applied,
+          )
+          return await withRetry(
+            parsed.provider,
+            () =>
+              fullAttempt(
+                { ...effective, capabilityProfile },
+                effectiveQuirks,
+                secret,
+                policy,
+                env.now,
+                effective.turn_id,
+                dialect,
+              ),
+            { policy, throttle, now: env.now },
+          )
+        },
+      )
+    }
     const output =
       quirks.impl === 'sdk'
         ? await withRetry(
@@ -473,15 +635,7 @@ export async function complete(deps: ChatDeps, bag: Json, env: CallEnv): Promise
             },
             { policy, throttle, now: env.now },
           )
-        : await withRetry(
-            parsed.provider,
-            () => fullAttempt(parsed, quirks, secret, policy, env.now, parsed.turn_id, dialect),
-            {
-              policy,
-              throttle,
-              now: env.now,
-            },
-          )
+        : await protocolComplete()
     return { ok: true, text: output.text, usage: output.usage }
   } catch (err) {
     if (err instanceof BadArgsError) throw err

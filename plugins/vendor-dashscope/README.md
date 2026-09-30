@@ -29,6 +29,7 @@
 | reasoning_field | `enable_thinking` | 2026-09 官方文档确认（布尔开关，仍可用；官方建议迁移 `reasoning.effort`） |
 | max_tokens_field | `max_tokens` | 2026-09 官方文档确认（compatible-mode） |
 | reasoning_response_field | `reasoning_content` | 2026-09 官方文档确认 |
+| reasoning_replay | `reasoning_content`（非强制） | 带工具的多轮应回传（缺失降质、非硬错）；新模型另有 `preserve_thinking` |
 
 - 官方另有 `thinking_budget` 与 `reasoning.effort`；本模板按规范保留开关式（三档塌缩为同一布尔值）。
 

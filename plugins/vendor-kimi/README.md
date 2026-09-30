@@ -29,6 +29,7 @@
 | reasoning_field | `null` | 保留（k2.6 为 `thinking` 对象开关、k3 为 `reasoning_effort`，无跨模型统一标量；未采用） |
 | max_tokens_field | `max_completion_tokens` | 2026-09 官方文档确认（`max_tokens` 已废弃） |
 | reasoning_response_field | `reasoning_content` | 2026-09 官方文档确认 |
+| reasoning_replay | `reasoning_content` / 工具循环应回传 | 未核实（规则按设计取） |
 
 - `reasoning_field` 保留 null（无统一标量字段）。
 - `max_tokens_field` 由规范模板原值 `max_tokens` 更正为 `max_completion_tokens`。

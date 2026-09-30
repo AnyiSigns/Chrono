@@ -23,11 +23,16 @@ function stepResults(service) {
 }
 
 test('多段回合：预算先于机械轮数上限收口，settle committed + stop_reason，已完成步骤保留', async () => {
+  let step = 0
   const service = startService({
     providers: {
-      'model.chat': () => ({ ok: true, text: '', tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }], usage: {} }),
+      'model.chat': () => {
+        step += 1
+        // 每步参数/结果都不同：避免命中空转熔断，确保走预算收口路径。
+        return { ok: true, text: '', tool_calls: [{ id: `c${step}`, name: 'edit', args: { path: 'a.txt', n: step } }], usage: {} }
+      },
       'guard.judge': () => ({ decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
-      'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
+      'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: call.args })) }),
     },
   })
   try {

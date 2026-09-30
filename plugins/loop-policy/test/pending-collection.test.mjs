@@ -133,7 +133,10 @@ test('跨重启续跑：从持久化游标裁决续跑，只追加助手消息�
     const finalStep = stepResults(second).at(-1)
     assert.ok(finalStep, '续跑收口落盘最终助手步记录')
     assert.equal(finalStep.assistant.content, 'approved done')
-    const toolPart = finalStep.assistant.parts.find((part) => part.type === 'tool')
+    // 增量落盘：工具卡（结果回填）在派发步，不在收口步；跨步拼接取之。
+    const toolPart = stepResults(second)
+      .flatMap((record) => record.assistant?.parts ?? [])
+      .find((part) => part.type === 'tool')
     assert.equal(toolPart.status, 'ok', '已执行工具结果随续跑收口落盘')
     assert.deepEqual(toolPart.result, { path: 'a.txt' })
   } finally {

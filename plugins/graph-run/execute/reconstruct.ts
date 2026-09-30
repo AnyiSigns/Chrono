@@ -3,6 +3,7 @@
 // 服务不 import 宿主与内核，步记录是唯一真源（服务不自己存状态）。
 
 import { asString, isRecord, numberField } from './plan.ts'
+import { mergeParts } from './commit-parts.ts'
 import { freshState, type IterState } from './iter-ctx.ts'
 import type { Json, Rec, RunState } from './types.ts'
 
@@ -42,6 +43,8 @@ function resultCallId(result: Json, index: number): string {
  */
 export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState } {
   const rs = freshState()
+  // dispatchedTools / verifyFailed / questionPending 是「本段」语义：freshState 起 false，仅本段动作置真。
+  // 无进展熔断（interpreter 的 no_progress）依赖此语义，勿在此从历史步恢复。
   const extra: Json[] = []
   let maxSeq = 0
   let dispatchIntents = 0
@@ -57,11 +60,14 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
     if (seq !== null && calls.length > 0) callsBySeq.set(seq, calls.filter(isRecord).map(callOf))
   }
 
-  let priorReasoning = 0
   /** 最近一条带用量的 `step.result`：跨段重建后供下一次上下文组装校准估算。 */
   let lastUsage: Rec | null = null
   /** 已回灌工具结果的 call_id → extra 下标：后续步重复出现同一 call（如 question 作答步）时原位覆盖，不重发承接帧。 */
   const emittedCalls = new Map<string, number>()
+  /** 已落盘展示段的累计基线（工具卡按 call_id 合并）：续段写增量时据此判新 / 变。 */
+  let committed: Json[] = []
+  /** 无结果承接步（工具调用意图）暂存的推理，随其结果的步一并回灌，不因步拆分而丢。 */
+  let pendingReasoning: string[] = []
   for (const item of steps) {
     if (!isRecord(item)) continue
     const type = item['type']
@@ -71,6 +77,13 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
       const iter = summary !== null ? numberField(summary['iter']) : null
       if (summary !== null && summary['kind'] === 'segment' && iter !== null) {
         segmentIter = iter
+        // 空转窗口与 nudge 状态随段标记落账：续段重建后熔断状态不归零（否则每段都从头算）。
+        const signatures = summary['loop_signatures']
+        if (Array.isArray(signatures)) {
+          rs.loopSignatures = signatures.filter((item): item is string => typeof item === 'string')
+        }
+        if (summary['loop_nudged'] === true) rs.loopNudged = true
+        if (typeof summary['loop_nudge'] === 'string') rs.loopNudge = summary['loop_nudge'] as string
         continue
       }
       // 非终态步里的合成工具消息（如 verify 报告）：重建为工具消息回灌下一段。
@@ -86,9 +99,8 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
         ? ((assistant['meta'] as Rec)['usage'] as Rec)
         : null)
     if (usage !== null) lastUsage = usage
-    const results = Array.isArray(item['tool_results']) ? (item['tool_results'] as Json[]) : []
-    if (results.length === 0) continue
     const parts = Array.isArray(assistant['parts']) ? (assistant['parts'] as Json[]) : []
+    committed = mergeParts(committed, parts)
     const reasonings: string[] = []
     const cards: Rec[] = []
     for (const part of parts) {
@@ -99,6 +111,14 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
       }
       if (part['type'] === 'tool') cards.push(part)
     }
+    const results = Array.isArray(item['tool_results']) ? (item['tool_results'] as Json[]) : []
+    if (results.length === 0) {
+      // 工具调用承接步：本步无结果，推理留待随其结果的步一并回灌。
+      pendingReasoning.push(...reasonings)
+      continue
+    }
+    const carried = pendingReasoning.concat(reasonings)
+    pendingReasoning = []
     // 作答步：其 tool_results 的 call_id 全在已回灌集合里（question 挂起步已记 pending），
     // 且没有新的正文 / 推理——原位覆盖结果为 answers，不再多插一个 assistant(tool_calls) 帧，
     // 否则模型看到重复调用 + 无配对结果的 tool_call（严格 provider 会拒）。
@@ -106,7 +126,7 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
     const supersedes = callIds.every((id) => emittedCalls.has(id))
     const assistantContent = assistant['content']
     const hasContent = typeof assistantContent === 'string' && assistantContent.length > 0
-    if (supersedes && !hasContent && reasonings.length === 0) {
+    if (supersedes && !hasContent && carried.length === 0) {
       results.forEach((result, index) => {
         const id = callIds[index]
         const position = emittedCalls.get(id)
@@ -126,10 +146,8 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
       role: 'assistant',
       content: typeof assistant['content'] === 'string' ? (assistant['content'] as string) : '',
     }
-    // 展示段是累积前缀：本迭代推理 = 累积推理段里新增的那部分，避免前序推理重复回灌。
-    const freshReasoning = reasonings.slice(priorReasoning)
-    priorReasoning = reasonings.length
-    if (freshReasoning.length > 0) message['reasoning'] = freshReasoning.join('')
+    // 展示段按步增量为真源：本迭代推理即本步（含承接步携带）的推理，无需再按累积前缀截取。
+    if (carried.length > 0) message['reasoning'] = carried.join('')
     if (calls.length > 0) message['tool_calls'] = calls
     extra.push(message)
     results.forEach((result, index) => {
@@ -141,6 +159,7 @@ export function restoreFromSteps(steps: Json[]): { rs: RunState; iter: IterState
   rs.extraMessages = extra
   rs.steps = maxSeq
   rs.iter = segmentIter ?? dispatchIntents + 1
+  rs.committedParts = committed
   if (lastUsage !== null) rs.shared['last_usage'] = lastUsage
   return { rs, iter: { outputs: new Map(), inputs: new Map(), executed: new Set() } }
 }

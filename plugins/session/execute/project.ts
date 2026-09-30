@@ -1,9 +1,20 @@
-// 展示投影（纯函数，展示形状）：唯一真源是会话回合日志（`session.turns[].steps`）。
-// 逐回合给出展示时间线（用户文本 / 推理 / 正文 / 工具卡与结果 / 检查点与 verify 标记），
-// 以及 UI 消费的展示序消息链（`{hash, def}`，旧 → 新）。只读展示形状：
-//   `turn.open.user_message.content/parts/attachments`、`step.result.assistant.content/parts`、
-//   `step.result.tool_results`（工具卡状态 / 结果）与 `checkpoint.summary`。
-// 不读世界、不取时钟；结果确定。
+// 展示投影（纯函数，展示形状）：唯一真源是会话回合日志（`session.turns[].steps`，append-only）。
+//
+// 扁平事件流口径：回合日志按追加序即一条单一直流——`turn.open` 的用户消息、每个 `step.result`
+// 的助手本步增量、`step.user` 的运行中插入、`checkpoint` 标记都是同级事件。
+// 本模块把某回合的步记录摊平成有序 `StreamEvent[]`（`flattenTurnEvents`），展示链与时间线
+// 都是它之上的纯投影：
+//   - 展示链（`displayMessagesByTurn`）：一条事件一条消息，**一个回合的助手输出塌成一条消息**，
+//     只有 `step.user` 运行中插入才把它切断为「插入前 / 插入后」两段；插入的 user 依追加序落位。
+//   - 时间线（`displayTimeline`）：用户 / 推理 / 正文 / 工具卡 / 检查点 / verify 依序落项。
+//
+// 助手段口径：同一回合的多个 `step.result`（承接帧、工具派发回填帧、下一个模型调用……）都是
+// **同一条**助手消息的增量——工具卡按 `call_id` 原位覆盖、文本 / 推理按到达序追加，绝不每轮新开一条
+// （否则每轮一层、每层一个复制 UI）。`content` 是纯文本步的唯一载体（该步增量全为文本时不落 `parts`），
+// 故合并时按需补成 text part，保证塌成一条后正文不丢。
+//
+// 只读展示形状：`turn.open.user_message.content/parts/attachments`、`step.result.assistant.content/parts`、
+// `step.user.user_message` 与 `checkpoint.summary`。不读世界、不取时钟；结果确定。
 
 import type { Json, Rec } from './store.ts'
 
@@ -29,6 +40,21 @@ export interface DisplayTurnTimeline {
   outcome: Json
   index: number
   items: DisplayTimelineItem[]
+}
+
+/** 扁平事件流的同级事件（展示投影的输入单位）：`user` / `assistant` / `verify` / `checkpoint` / `subagent`。 */
+export interface StreamEvent {
+  kind: 'user' | 'assistant' | 'verify' | 'checkpoint' | 'subagent'
+  turn_id: string
+  /** 分支 / 多 agent 元数据：本事件的前一事件键（回合内首事件为 null）。 */
+  parent: string | null
+  at: Json
+  /** user / assistant 事件对应的展示消息 def。 */
+  def?: Rec
+  /** assistant 事件的**本段增量** parts。 */
+  parts?: Json[]
+  /** 非消息事件（verify / checkpoint / subagent）的确定文本。 */
+  text?: string
 }
 
 function isRecord(value: unknown): value is Rec {
@@ -63,41 +89,6 @@ function userDef(conv: string, turn: Rec): Rec | null {
   return def
 }
 
-/** 回合最终助手 def：取含内容 / parts 的最大步号 `step.result`（累积全量）。 */
-function assistantDef(conv: string, turn: Rec): Rec | null {
-  let best: Rec | null = null
-  let bestSeq = -1
-  for (const step of stepsOf(turn)) {
-    if (step['type'] !== 'step.result') continue
-    const assistant = isRecord(step['assistant']) ? (step['assistant'] as Rec) : null
-    if (assistant === null) continue
-    const seq = stepSeq(step)
-    if (seq >= bestSeq) {
-      bestSeq = seq
-      best = assistant
-    }
-  }
-  if (best === null) return null
-  const content = asString(best['content'])
-  const parts = Array.isArray(best['parts']) ? (best['parts'] as Json[]) : null
-  if (content === null && parts === null) return null
-  const def: Rec = {
-    id: `msg-${conv}-${turn['turn_id'] as string}-assistant`,
-    role: 'assistant',
-    content: content ?? '',
-    at: (turn['at'] ?? null) as Json,
-  }
-  if (parts !== null) def['parts'] = parts
-  return def
-}
-
-/** 回合运行中插入的用户消息步（`step.user`），按步号升序。 */
-function insertSteps(turn: Rec): Rec[] {
-  return stepsOf(turn)
-    .filter((step) => step['type'] === 'step.user')
-    .sort((a, b) => stepSeq(a) - stepSeq(b))
-}
-
 /** 插入的用户消息 def（id 用插入幂等键去重）。 */
 function insertDef(conv: string, turn: Rec, step: Rec): Rec | null {
   const message = isRecord(step['user_message']) ? (step['user_message'] as Rec) : null
@@ -114,27 +105,9 @@ function insertDef(conv: string, turn: Rec, step: Rec): Rec | null {
   return def
 }
 
-/** 展示序消息链（旧 → 新），按回合分组；`prev` 跨回合串成链。 */
-export function displayMessagesByTurn(conv: string, turns: Rec[]): DisplayTurn[] {
-  const groups: DisplayTurn[] = []
-  let prev: string | null = null
-  for (const turn of turns) {
-    const turnId = asString(turn['turn_id'])
-    if (turnId === null) continue
-    const messages: DisplayMessage[] = []
-    const push = (def: Rec | null): void => {
-      if (def === null) return
-      def['prev'] = prev === null ? null : { def: prev }
-      prev = def['id'] as string
-      messages.push({ hash: def['id'] as string, def })
-    }
-    push(userDef(conv, turn))
-    // 回合运行中插入的用户消息：落在本回合用户消息之后、最终助手之前（展示链可表达的位置）。
-    for (const step of insertSteps(turn)) push(insertDef(conv, turn, step))
-    push(assistantDef(conv, turn))
-    groups.push({ turnId, messages })
-  }
-  return groups
+/** 助手展示 parts（reasoning / text / tool 按到达序）。 */
+function assistantParts(assistant: Rec): Json[] {
+  return Array.isArray(assistant['parts']) ? (assistant['parts'] as Json[]) : []
 }
 
 /** 结构化摘要渲染成确定文本（缺字段跳过）。 */
@@ -189,86 +162,251 @@ function isStructuredCheckpoint(summary: Rec): boolean {
   return STRUCTURED_KEYS.some((key) => summary[key] !== undefined)
 }
 
-/** 回合展示时间线：用户文本 / 推理 / 正文 / 工具卡 / 检查点与 verify 标记。 */
+/**
+ * 把一条 `checkpoint` 步映射为展示事件；`segment` 标记不入展示（纯引擎内部步），
+ * 其余结构缺失 / 文本为空同样跳过。返回 null 表示本步不产生展示事件。
+ */
+function checkpointEvent(turnId: string, step: Rec, at: Json): Omit<StreamEvent, 'parent'> | null {
+  const summary = isRecord(step['summary']) ? (step['summary'] as Rec) : null
+  if (summary === null) return null
+  const kind = summary['kind']
+  if (kind === 'segment') return null
+  if (kind === 'verify') {
+    const text = asString(summary['text'])
+    return text === null ? null : { kind: 'verify', turn_id: turnId, at, text }
+  }
+  if (kind === 'subagent') {
+    const text = renderSummary(summary)
+    return text.length === 0 ? null : { kind: 'subagent', turn_id: turnId, at, text }
+  }
+  if (isStructuredCheckpoint(summary)) {
+    const text = renderSummary(summary)
+    return text.length === 0 ? null : { kind: 'checkpoint', turn_id: turnId, at, text }
+  }
+  return null
+}
+
+/**
+ * 单个回合 → 扁平有序事件流（追加序即真源）。
+ *
+ * 助手**塌成一条**（每回合一个助手段），只有 `step.user` 运行中插入才把它切成「插入前 / 插入后」
+ * 两段（插入的 user 必须就地落在其前后助手之间，否则正文会被排到插入消息之后）。对两种落盘口径
+ * 都成立：
+ *   - 新口径：`step.result.assistant.parts` 是**本步增量**。
+ *   - 旧口径：parts 是整回合**累积前缀**（历史日志）。
+ * 做法：维护跨步的「已渲染段」累计 `rendered`，对每步 parts 取「尚未渲染的增量」(`subtract`) 后并入
+ * 当前助手段——工具卡同 `call_id` 原位覆盖（结果回填保留首个 render / 位置），文本 / 推理按到达序追加。
+ * 纯文本步不落 `parts`（增量全为文本）：其正文只住 `content`，故按需补一条 text part，塌成一条后正文不丢。
+ */
+export function flattenTurnEvents(conv: string, turn: Rec): StreamEvent[] {
+  const turnId = asString(turn['turn_id']) ?? ''
+  const turnAt = (turn['at'] ?? null) as Json
+  const out: StreamEvent[] = []
+  // 返回入列后的同一对象：助手段随后原地追加增量（`parts` 原地更新），不可只留入列时的快照。
+  const push = (event: Omit<StreamEvent, 'parent'>): StreamEvent => {
+    const parent = out.length > 0 ? streamKeyOf(out[out.length - 1]) : null
+    const full: StreamEvent = { ...event, parent }
+    out.push(full)
+    return full
+  }
+
+  const user = userDef(conv, turn)
+  if (user !== null) push({ kind: 'user', turn_id: turnId, at: (user['at'] ?? turnAt) as Json, def: user })
+
+  let cur: Rec | null = null
+  let curEvent: StreamEvent | null = null
+  let rendered: Json[] = []
+  let prevContent = ''
+  let segment = 0
+  for (const step of stepsOf(turn)) {
+    const type = step['type']
+    if (type === 'step.result') {
+      const assistant = isRecord(step['assistant']) ? (step['assistant'] as Rec) : null
+      if (assistant === null) continue
+      const content = asString(assistant['content']) ?? ''
+      const parts = assistantParts(assistant)
+      if (parts.length === 0 && content.length === 0) continue
+      // 本步相对「已渲染」的新 parts（新口径即其增量，旧口径自动切掉累积前缀）。
+      const delta = subtractRendered(rendered, parts)
+      rendered = mergeToolParts(rendered, delta)
+      // 本步新正文：新口径即本步正文，旧口径切掉累积前缀（`content` 相同则无新增）。
+      const newContent =
+        content === prevContent ? '' : content.startsWith(prevContent) ? content.slice(prevContent.length) : content
+      prevContent = content
+      if (cur === null || curEvent === null) {
+        segment += 1
+        cur = {
+          id: `msg-${conv}-${turnId}-assistant-${segment}`,
+          role: 'assistant',
+          content: '',
+          at: turnAt,
+        }
+        curEvent = push({ kind: 'assistant', turn_id: turnId, at: turnAt, def: cur, parts: [] })
+      }
+      // 并入本步增量：工具卡同 call_id 原位覆盖，文本 / 推理按到达序追加。
+      let merged = mergeToolParts(curEvent.parts ?? [], delta)
+      // 纯文本步（无 parts）只把正文落在 content：补一条 text part，塌成一条后正文仍可见。
+      if (newContent.length > 0 && !delta.some((part) => isRecord(part) && part['type'] === 'text')) {
+        merged = mergeToolParts(merged, [{ type: 'text', text: newContent }])
+      }
+      curEvent.parts = merged
+      cur['parts'] = merged
+      if (newContent.length > 0) cur['content'] = (asString(cur['content']) ?? '') + newContent
+      continue
+    }
+    if (type === 'step.user') {
+      const def = insertDef(conv, turn, step)
+      if (def !== null) push({ kind: 'user', turn_id: turnId, at: (def['at'] ?? turnAt) as Json, def })
+      // 插入切断助手段：其后助手回复新开一段。`rendered` / `prevContent` 不重置——
+      // 旧口径的 parts / content 是整回合累积前缀，重置会把已渲染内容当增量重复追加。
+      cur = null
+      curEvent = null
+      continue
+    }
+    if (type === 'checkpoint') {
+      const event = checkpointEvent(turnId, step, turnAt)
+      if (event !== null) push(event)
+    }
+  }
+  return out
+}
+
+/** 键序无关的规范化 JSON（跨段重建后键序可能不同）。 */
+function stableKey(value: Json): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableKey(item)).join(',')}]`
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableKey(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/**
+ * 相对已渲染段 `rendered` 取增量：文本 / 推理块按出现次数取值（同文多块不误合并）；
+ * 工具卡按 `call_id` 判，内容变（结果回填）则重写。
+ */
+function subtractRendered(rendered: Json[], full: Json[]): Json[] {
+  const prevTools = new Map<string, Json>()
+  const prevText = new Map<string, number>()
+  for (const part of rendered) {
+    if (isRecord(part) && part['type'] === 'tool') prevTools.set(String(part['call_id'] ?? ''), part)
+    else {
+      const key = stableKey(part)
+      prevText.set(key, (prevText.get(key) ?? 0) + 1)
+    }
+  }
+  const out: Json[] = []
+  const seen = new Map<string, number>()
+  for (const part of full) {
+    if (isRecord(part) && part['type'] === 'tool') {
+      const before = prevTools.get(String(part['call_id'] ?? ''))
+      if (before === undefined || stableKey(before) !== stableKey(part)) out.push(part)
+      continue
+    }
+    const key = stableKey(part)
+    const used = seen.get(key) ?? 0
+    seen.set(key, used + 1)
+    if (used >= (prevText.get(key) ?? 0)) out.push(part)
+  }
+  return out
+}
+
+/** 工具卡按 `call_id` 原位覆盖合并（增量回填），非工具块按到达序追加。 */
+function mergeToolParts(base: Json[], delta: Json[]): Json[] {
+  const merged = [...base]
+  for (const part of delta) {
+    if (isRecord(part) && part['type'] === 'tool') {
+      const index = merged.findIndex(
+        (item) => isRecord(item) && item['type'] === 'tool' && item['call_id'] === part['call_id'],
+      )
+      if (index >= 0) merged[index] = part
+      else merged.push(part)
+      continue
+    }
+    merged.push(part)
+  }
+  return merged
+}
+
+/** 事件键：消息事件取 def.id，非消息事件取 `turn_id:kind:text`（parent 串联用）。 */
+function streamKeyOf(event: StreamEvent): string {
+  const id = event.def?.['id']
+  return typeof id === 'string' ? id : `${event.turn_id}:${event.kind}:${event.text ?? ''}`
+}
+
+/** 展示序消息链（旧 → 新），按回合分组；`prev` 跨回合串成链。 */
+export function displayMessagesByTurn(conv: string, turns: Rec[]): DisplayTurn[] {
+  const groups: DisplayTurn[] = []
+  let prev: string | null = null
+  for (const turn of turns) {
+    const turnId = asString(turn['turn_id'])
+    if (turnId === null) continue
+    const messages: DisplayMessage[] = []
+    for (const event of flattenTurnEvents(conv, turn)) {
+      if (event.kind !== 'user' && event.kind !== 'assistant') continue
+      const def = event.def
+      if (def === undefined) continue
+      def['prev'] = prev === null ? null : { def: prev }
+      prev = def['id'] as string
+      messages.push({ hash: def['id'] as string, def })
+    }
+    groups.push({ turnId, messages })
+  }
+  return groups
+}
+
+/** 助手事件 parts → 时间线条目（reasoning / text / tool 依序）。 */
+function pushAssistantItems(items: DisplayTimelineItem[], event: StreamEvent): void {
+  const parts = event.parts ?? []
+  const content = event.def !== undefined ? asString(event.def['content']) : null
+  if (parts.length === 0 && content !== null) {
+    items.push({ kind: 'text', text: content })
+    return
+  }
+  for (const part of parts) {
+    if (!isRecord(part)) continue
+    const type = part['type']
+    if (type === 'reasoning' && typeof part['text'] === 'string') {
+      items.push({ kind: 'reasoning', text: part['text'] as string })
+      continue
+    }
+    if (type === 'text' && typeof part['text'] === 'string') {
+      items.push({ kind: 'text', text: part['text'] as string })
+      continue
+    }
+    if (type === 'tool') {
+      items.push({
+        kind: 'tool',
+        call_id: (part['call_id'] ?? null) as Json,
+        tool: (part['tool'] ?? '') as Json,
+        args: (part['args'] ?? null) as Json,
+        render: (part['render'] ?? null) as Json,
+        result: (part['result'] ?? null) as Json,
+        status: (part['status'] ?? null) as Json,
+      })
+    }
+  }
+}
+
+/** 回合展示时间线：用户 / 推理 / 正文 / 工具卡 / 检查点与 verify 标记（依追加序）。 */
 export function displayTimeline(turns: Rec[]): DisplayTurnTimeline[] {
   const out: DisplayTurnTimeline[] = []
   turns.forEach((turn, index) => {
     const turnId = asString(turn['turn_id']) ?? ''
     const items: DisplayTimelineItem[] = []
-    const user = isRecord(turn['user_message']) ? turn['user_message'] : null
-    const userText = user !== null ? asString(user['content']) : null
-    if (userText !== null) items.push({ kind: 'user', text: userText })
-    // 回合运行中插入的用户消息：时间线里作为用户条目按步号落位。
-    for (const step of insertSteps(turn)) {
-      const message = isRecord(step['user_message']) ? (step['user_message'] as Rec) : null
-      const text = message !== null ? asString(message['content']) : null
-      if (text !== null) items.push({ kind: 'user', text })
-    }
-
-    // 最终助手展示 parts（reasoning / text / tool 按到达序）。
-    let best: Rec | null = null
-    let bestSeq = -1
-    for (const step of stepsOf(turn)) {
-      if (step['type'] !== 'step.result') continue
-      const assistant = isRecord(step['assistant']) ? (step['assistant'] as Rec) : null
-      if (assistant === null) continue
-      const parts = Array.isArray(assistant['parts']) ? (assistant['parts'] as Json[]) : []
-      const hasContent = typeof assistant['content'] === 'string' && assistant['content'].length > 0
-      if ((parts.length > 0 || hasContent) && stepSeq(step) >= bestSeq) {
-        bestSeq = stepSeq(step)
-        best = assistant
-      }
-    }
-    const parts = best !== null && Array.isArray(best['parts']) ? (best['parts'] as Json[]) : []
-    if (parts.length === 0 && best !== null && typeof best['content'] === 'string' && best['content'].length > 0) {
-      items.push({ kind: 'text', text: best['content'] as string })
-    }
-    for (const part of parts) {
-      if (!isRecord(part)) continue
-      const type = part['type']
-      if (type === 'reasoning' && typeof part['text'] === 'string') {
-        items.push({ kind: 'reasoning', text: part['text'] as string })
+    for (const event of flattenTurnEvents('', turn)) {
+      if (event.kind === 'user') {
+        const text = event.def !== undefined ? asString(event.def['content']) : null
+        if (text !== null) items.push({ kind: 'user', text })
         continue
       }
-      if (type === 'text' && typeof part['text'] === 'string') {
-        items.push({ kind: 'text', text: part['text'] as string })
+      if (event.kind === 'assistant') {
+        pushAssistantItems(items, event)
         continue
       }
-      if (type === 'tool') {
-        items.push({
-          kind: 'tool',
-          call_id: (part['call_id'] ?? null) as Json,
-          tool: (part['tool'] ?? '') as Json,
-          args: (part['args'] ?? null) as Json,
-          render: (part['render'] ?? null) as Json,
-          result: (part['result'] ?? null) as Json,
-          status: (part['status'] ?? null) as Json,
-        })
+      if (event.kind === 'verify' || event.kind === 'checkpoint' || event.kind === 'subagent') {
+        if (event.text !== undefined) items.push({ kind: event.kind, text: event.text })
       }
     }
-
-    // 检查点 / verify / 子代理标记。
-    for (const step of stepsOf(turn)) {
-      if (step['type'] !== 'checkpoint') continue
-      const summary = isRecord(step['summary']) ? step['summary'] : null
-      if (summary === null) continue
-      if (summary['kind'] === 'segment') continue
-      if (summary['kind'] === 'verify') {
-        const text = asString(summary['text'])
-        if (text !== null) items.push({ kind: 'verify', text })
-        continue
-      }
-      if (summary['kind'] === 'subagent') {
-        const text = renderSummary(summary)
-        if (text.length > 0) items.push({ kind: 'subagent', text })
-        continue
-      }
-      if (isStructuredCheckpoint(summary)) {
-        const text = renderSummary(summary)
-        if (text.length > 0) items.push({ kind: 'checkpoint', text })
-      }
-    }
-
     out.push({
       turn_id: turnId,
       at: (turn['at'] ?? null) as Json,

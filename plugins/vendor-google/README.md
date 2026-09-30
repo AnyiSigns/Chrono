@@ -29,6 +29,7 @@
 | reasoning_field | `thinkingConfig.thinkingBudget` | 2026-09 官方文档确认（0 关思考、-1 动态；范围随模型） |
 | max_tokens_field | `maxOutputTokens` | 2026-09 官方文档确认（SDK 结构字段名） |
 | reasoning_response_field | `thought` | 未核实（SDK 以 part 的 `thought` 标记返回思考，非字符串字段；保留规范模板值） |
+| reasoning_replay | `parts` + `thoughtSignature` / 工具循环必须回传 | 2026-09 官方文档确认 |
 
 - Gemini 3 起官方推荐 `thinkingLevel`（minimal / low / medium / high）；`thinkingBudget` 仍被接受，但对 Gemini 3 Pro 可能表现异常。
 

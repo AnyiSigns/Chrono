@@ -256,7 +256,7 @@ export const STYLE_TEXT = `
   transition: opacity var(--motion-base);
 }
 .composer-context[hidden] { display: none; }
-/* 空态仍占位（visibility 保高度，不推拉输入卡），但用透明度淡入淡出，避免统计行整行突然冒出来。 */
+/* Keep height on the empty state (visibility) but fade via opacity, so the stats line never pops in. */
 .composer-context[data-empty="true"] { visibility: hidden; opacity: 0; }
 .composer-context[data-tone="warning"] { color: var(--c-warning); }
 .composer-context[data-tone="danger"] { color: var(--c-danger); }
@@ -356,7 +356,7 @@ export const STYLE_TEXT = `
 }
 .composer-popover-remove:hover { background: var(--c-selection); }
 .composer-popover-remove:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-/* 悬停 / 焦点反馈统一走短过渡：这些控件原本瞬时换色，划过时是「硬切」（其余控件已各自带过渡）。 */
+/* Unified short transition for hover/focus feedback (these controls used to swap color instantly). */
 .composer-option, .composer-popover-remove, .composer-inline-retry, .composer-pending {
   transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
 }

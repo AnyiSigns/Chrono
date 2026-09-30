@@ -22,6 +22,12 @@
       "high": 24576
     },
     "reasoning_response_field": "thought",
+    "reasoning_replay": {
+      "form": "parts",
+      "requires_in_tool_loop": true,
+      "signature_field": "thoughtSignature",
+      "verified": true
+    },
     "max_tokens_field": "maxOutputTokens",
     "models_path": "/models",
     "stream_usage": "final_chunk",

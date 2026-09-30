@@ -2,7 +2,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classifyHttpStatus, parseRetryAfter } from '../execute/errors.ts'
+import { classifyHttpStatus, errorValue, parseRetryAfter } from '../execute/errors.ts'
 
 test('parseRetryAfter：秒数形式', () => {
   assert.equal(parseRetryAfter({ 'retry-after': '2' }, 123), 2000)
@@ -25,4 +25,15 @@ test('classifyHttpStatus：401 不重试；429 可重试并带 retryAfterMs', ()
   const limited = classifyHttpStatus(429, 1500)
   assert.equal(limited.retryable, true)
   assert.equal(limited.retryAfterMs, 1500)
+})
+
+test('errorValue：无 partial 保持原形状；有 partial 时挂在 error.partial（供取消落盘）', () => {
+  assert.deepEqual(errorValue('model_aborted', 'request aborted'), {
+    ok: false,
+    error: { code: 'model_aborted', message: 'request aborted' },
+  })
+  const withPartial = errorValue('model_aborted', 'request aborted', { text: '半句', reasoning: '想' })
+  assert.equal(withPartial.ok, false)
+  assert.equal(withPartial.error.code, 'model_aborted')
+  assert.deepEqual(withPartial.error.partial, { text: '半句', reasoning: '想' })
 })

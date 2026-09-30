@@ -36,7 +36,10 @@
 5. **composite 子图运行期展开**：自己的 `nodes` / `edges` / `entry_supply` / `loop` / `sink`；防失控：`max_subgraph_depth` / `gas` / `max_steps`。
 6. **sink 延后收口**：sink 只在回合终止 / 拒绝短路的那一段执行一次（「回合尾一次写」）。
 7. **跨段重入**：段尾按 `Graph.loop.when` 判定；有回合身份时自续跑 `chat.resume`（状态由步记录重建）。
-8. **取消（协作式）**：命中标志即停、不派发、不写拒绝产物；终态由属主 CAS 落定。
+8. **空转检测（升级阶梯）**：段尾对「动作 + 观察（工具结果）+ 状态增量」签名做连续重复 / 短周期交替 / 低新颖判定；
+   首次命中注入一次 nudge（`bag.loop_nudge`，前导系统消息）提示换策略，再次命中才 `stopTerminal('no_progress')`。
+   阈值 `loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min`；`loop.allow_tools` 声明的轮询类工具豁免。
+9. **取消（协作式）**：命中标志即停、不派发、不写拒绝产物；终态由属主 CAS 落定。
 
 ## 边界
 

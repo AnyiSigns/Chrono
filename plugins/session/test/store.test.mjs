@@ -471,6 +471,58 @@ test('turn log: a subagent turn persists task/checkpoint across replay and keeps
   }
 })
 
+// -- flat event stream (single source) ---------------------------------------
+
+test('扁平事件流：eventsFor 按追加序；turns[].steps 为其按 turn_id 的派生视图', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const store = SessionStore.open(envFor(root))
+    store.upsertConversation(null, { id: 'c1' })
+    await store.openTurn(turnOpenRecord('t1', 'run-1'))
+    await store.appendStep({ type: 'step.intent', turn_id: 't1', seq: 0, kind: 'model.step', tool_calls: [] })
+    await store.appendStep({ type: 'step.result', turn_id: 't1', seq: 0, assistant: { content: 'ok' } })
+    await store.appendStep({ type: 'step.user', turn_id: 't1', seq: 1, insert_id: 'i1', user_message: { content: 'more' } })
+    await store.settle('t1', COMMITTED)
+
+    // 单一扁平事件流：回合头 / 步 / 收口同级，按 append 序；跨重放稳定。
+    const events = store.eventsFor('c1')
+    assert.deepEqual(events.map((record) => record.type), ['turn.open', 'step.intent', 'step.result', 'step.user', 'turn.settle'])
+    // turns[].steps 是派生视图：只取非终态步记录，保持 append 序。
+    assert.deepEqual(store.turn('t1').steps.map((record) => record.type), ['step.intent', 'step.result', 'step.user'])
+
+    const reopened = SessionStore.open(envFor(root))
+    assert.deepEqual(reopened.eventsFor('c1').map((record) => record.type), ['turn.open', 'step.intent', 'step.result', 'step.user', 'turn.settle'])
+    assert.deepEqual(reopened.turn('t1').steps.map((record) => record.type), ['step.intent', 'step.result', 'step.user'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('插入：insertUserMessage 只按真发送落盘，追加在本段输出之后且按 insert_id 幂等', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const store = SessionStore.open(envFor(root))
+    store.upsertConversation(null, { id: 'c1' })
+    await store.openTurn(turnOpenRecord('t1', 'run-1'))
+    await store.appendStep({ type: 'step.result', turn_id: 't1', seq: 1, assistant: { content: '本段输出' } })
+
+    const inserted = await store.insertUserMessage('t1', 'i1', { content: '插一句' })
+    assert.equal(inserted.status, 'inserted')
+    const users = store.turn('t1').steps.filter((step) => step.type === 'step.user')
+    assert.equal(users.length, 1)
+    assert.equal(users[0].insert_id, 'i1')
+    assert.ok(users[0].seq > 1)
+    // 幂等：同 insert_id 再插不重复。
+    assert.equal((await store.insertUserMessage('t1', 'i1', { content: '插一句' })).status, 'exists')
+
+    // 重放后仍在（append-only 单一真源）。
+    const reopened = SessionStore.open(envFor(root))
+    assert.equal(reopened.turn('t1').steps.filter((step) => step.type === 'step.user').length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // -- partition: small index + per-conversation log ---------------------------
 
 test('partition: startup replays only the index; a conversation log loads on first access', () => {

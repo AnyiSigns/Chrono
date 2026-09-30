@@ -67,6 +67,31 @@ test('快照：替换权威段且不动在途回合（语义 7）', () => {
   assert.equal(dropInFlight(after, 'r1').inFlight, null)
 })
 
+test('快照：在途回合的运行中插入按追加序并入在途段（不落到历史顶部）', () => {
+  const turnId = 'turn-1'
+  const history = {
+    body: { current: 'c1', conversations: [{ id: 'c1', kind: 'main' }] },
+    refs: {},
+    // 新 → 旧：插入（step.user）、助手、回合开头用户
+    messages: [
+      { hash: `msg-c1-${turnId}-user-i1`, def: { id: `msg-c1-${turnId}-user-i1`, role: 'user', content: '插一句' } },
+      { hash: `msg-c1-${turnId}-assistant-1`, def: { id: `msg-c1-${turnId}-assistant-1`, role: 'assistant', content: '在做' } },
+      { hash: `msg-c1-${turnId}-user`, def: { id: `msg-c1-${turnId}-user`, role: 'user', content: '开始' } },
+    ],
+  }
+  let view = emptyView()
+  view = applyRunStarted(view, { run: 'r1', thread: 'c1', turn_id: turnId })
+  view = applyDelta(view, { run: 'r1', text: '在做' })
+  view = applySnapshot(view, history, 'c1')
+  // 插入段排在已有助手段之后（追加序），回合开头那条不并入。
+  assert.deepEqual(view.inFlight.segments.map((segment) => segment.kind), ['text', 'user'])
+  assert.equal(view.inFlight.segments[1].id, `msg-c1-${turnId}-user-i1`)
+  assert.equal(view.inFlight.segments[1].def.content, '插一句')
+  // 幂等：重复快照不重复并入。
+  const again = applySnapshot(view, history, 'c1')
+  assert.equal(again.inFlight.segments.filter((segment) => segment.kind === 'user').length, 1)
+})
+
 test('快照收口定稿：finalizing 的在途回合被快照原地替换（定稿替换）', () => {
   let view = applyDelta(emptyView(), { run: 'r1', text: '流式中' })
   // 流式中快照：保留在途

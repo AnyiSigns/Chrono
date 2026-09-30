@@ -13,8 +13,10 @@
 ## 方法
 
 - `normalize-quirks({quirks?, protocol_override?})` → `{quirks}`：协议默认 + 厂商覆盖归一。
-- `reasoning-capability({provider?, protocol?, impl?, profile?})` → `{capability}`：显式档案 >
-  厂商覆盖 > SDK 默认 > 协议默认 > 保守默认。
+- `reasoning-capability({provider?, protocol?, impl?, profile?})` → `{capability}`：**显式档案**（各厂商模板
+  `quirks.reasoning_replay` 声明经 profile 注入）> SDK 默认 > 协议默认 > 保守默认；**不维护厂商中心表**。
+  内置厂商的精确规则住各自 `vendor-*` 模板；协议实现只机械解释声明。`openai-chat` 缺省即通用
+  「尝试按 `reasoning_content` 回传」，被上游拒绝时由 `model-protocol` 自适应降级剔除。
 - `encode-tools({tools, protocol})` → `{tools}`：中性声明按协议编成 function 工具；原生项透传。
 - `apply-auth({url, quirks, secret})` → `{url, headers}`：按 `auth_style` 生成鉴权。
 - `build({quirks, provider, base_url?, model, messages, params?, secret?, stream?, tools?, tool_choice?, cache?, capability_profile?})`

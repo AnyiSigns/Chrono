@@ -47,7 +47,7 @@ export interface ConversationEntry extends Rec {
   count: number
 }
 
-/** 回合事件日志的一条回合：开态 / 终态、步记录、被 CAS 拒绝的迟到收口、取消意图。 */
+/** 回合元数据（由扁平事件流维护）；步记录不进这里，`turns[].steps` 由事件流按 `turn_id` 派生。 */
 export interface TurnEntry {
   turn_id: string
   conv: string
@@ -56,7 +56,6 @@ export interface TurnEntry {
   at: string
   state: 'open' | 'settled'
   outcome: Rec | null
-  steps: Rec[]
   stepKeys: Set<string>
   late: Rec[]
   /** 取消意图已落盘：重启时仍开着的回合据此收口为 cancelled，而不是仅仅 interrupted。 */
@@ -112,6 +111,9 @@ export const APPEND_RETRY_DELAYS_MS = [0, 200, 800, 2000]
 
 /** 现有终态种类：只有这三种一旦落定就不再被覆盖（`interrupted` 允许迟到真实收口覆盖）。 */
 const TERMINAL_OUTCOME_KINDS = new Set(['committed', 'refused', 'cancelled'])
+
+/** 非终态步记录类型（`turns[].steps` 派生自扁平事件流时只取这些）。 */
+const NON_TERMINAL_STEP_TYPES = new Set(['step.intent', 'step.result', 'step.user', 'checkpoint'])
 
 /** 索引文件名（会话轨：清单 / 当前选择 / 软删 / 收件箱水位 / 开着的回合摘要）。 */
 const INDEX_FILE = 'index.jsonl'
@@ -322,27 +324,6 @@ function writeFileAtomicSync(path: string, content: string): void {
   }
 }
 
-/** 回合条目 → 可持久化快照形状（`Set` 拆成数组）。 */
-function serializeTurn(entry: TurnEntry): Rec {
-  return {
-    turn_id: entry.turn_id,
-    conv: entry.conv,
-    slot_ref: entry.slot_ref,
-    user_message: entry.user_message,
-    at: entry.at,
-    state: entry.state,
-    outcome: entry.outcome,
-    steps: entry.steps as unknown as Json,
-    step_keys: [...entry.stepKeys] as unknown as Json,
-    late: entry.late as unknown as Json,
-    cancel_requested: entry.cancel_requested,
-    thread_kind: entry.thread_kind,
-    task_prompt: entry.task_prompt,
-    parent_checkpoint: entry.parent_checkpoint,
-    parent_summaries: entry.parent_summaries,
-  }
-}
-
 /**
  * 会话存储。写口只有本身份：每个变更方法一次追加（边跑边追加），不攒到回合收口。
  * 读口从内存态返回；会话轨（索引）启动即重放，会话日志按需惰性加载；③ 只是派生物（水位）。
@@ -372,6 +353,11 @@ export class SessionStore {
   private turnConv = new Map<string, string>()
   /** 已加载会话的回合条目（按发生序）。 */
   private turnLogByConv = new Map<string, TurnEntry[]>()
+  /**
+   * 每会话的**单一扁平事件流**（append 序）：`turn.open` / `step.*` / `checkpoint` / `turn.settle` /
+   * `cancel` 同级追加。`turns[].steps` 与上下文 / 展示投影都按它派生，不再各自维护一份表示。
+   */
+  private eventsByConv = new Map<string, Rec[]>()
   /** 回合 id → 条目（只含已加载会话），供按 id 取用。 */
   private turnLogById = new Map<string, TurnEntry>()
   private openTurns = new Set<string>()
@@ -538,7 +524,10 @@ export class SessionStore {
         const turnId = asStr(record['turn_id'])
         if (turnId === null) return
         const turn = this.turnLogById.get(turnId)
-        if (turn !== undefined) turn.cancel_requested = true
+        if (turn !== undefined) {
+          turn.cancel_requested = true
+          this.pushEvent(turn.conv, record)
+        }
         return
       }
       case 'inbox.seen': {
@@ -584,7 +573,7 @@ export class SessionStore {
     this.messages.set(conv, list)
   }
 
-  /** 快照记录：装配结果整体替换被覆盖前缀（消息 + 回合条目含步记录）。 */
+  /** 快照记录：装配结果整体替换被覆盖前缀（消息 + 单一扁平事件流）。 */
   private applySnapshot(record: Rec): void {
     const conv = asStr(record['conv'])
     if (conv === null) return
@@ -599,12 +588,19 @@ export class SessionStore {
         for (const msg of list) if (isRecord(msg)) this.applyMessage(key, msg)
       }
     }
+    const events = record['events']
+    if (Array.isArray(events)) {
+      for (const raw of events) if (isRecord(raw)) this.apply(raw)
+      return
+    }
+    // 兼容旧快照（v1）：回合条目内嵌步记录，摊平进事件流。
     const turns = record['turns']
     if (Array.isArray(turns)) {
       for (const raw of turns) if (isRecord(raw)) this.applySnapshotTurn(raw)
     }
   }
 
+  /** 旧快照（v1）的单回合：把内嵌步记录摊平进事件流，再按事件流派生步视图。 */
   private applySnapshotTurn(raw: Rec): void {
     const turnId = asStr(raw['turn_id'])
     const conv = asStr(raw['conv'])
@@ -613,9 +609,8 @@ export class SessionStore {
     const stepKeys = Array.isArray(raw['step_keys'])
       ? raw['step_keys'].filter((value): value is string => typeof value === 'string')
       : []
-    const steps = Array.isArray(raw['steps']) ? (raw['steps'] as Json[]).filter(isRecord) : []
     const late = Array.isArray(raw['late']) ? (raw['late'] as Json[]).filter(isRecord) : []
-    const entry: TurnEntry = {
+    this.installTurn({
       turn_id: turnId,
       conv,
       slot_ref: asStr(raw['slot_ref']) ?? '',
@@ -623,7 +618,6 @@ export class SessionStore {
       at: asStr(raw['at']) ?? '',
       state: raw['state'] === 'settled' ? 'settled' : 'open',
       outcome: isRecord(raw['outcome']) ? (raw['outcome'] as Rec) : null,
-      steps,
       stepKeys: new Set(stepKeys),
       late,
       cancel_requested: raw['cancel_requested'] === true,
@@ -634,8 +628,18 @@ export class SessionStore {
           ? (raw['parent_checkpoint'] as Json)
           : null,
       parent_summaries: Array.isArray(raw['parent_summaries']) ? (raw['parent_summaries'] as Json) : null,
-    }
-    this.installTurn(entry)
+    })
+    const steps = Array.isArray(raw['steps']) ? (raw['steps'] as Json[]).filter(isRecord) : []
+    for (const step of steps) this.applySnapshotStep(conv, step)
+  }
+
+  /**
+   * 旧快照（v1）的一条步记录：直接进事件流；步视图由 `stepsOf` 派生，无需再单独维护每回合 `steps`。
+   */
+  private applySnapshotStep(conv: string, step: Rec): void {
+    const type = step['type']
+    if (typeof type !== 'string' || !NON_TERMINAL_STEP_TYPES.has(type)) return
+    this.pushEvent(conv, step)
   }
 
   /** 回合日志记录分发（契约 `type` 判别）。 */
@@ -695,7 +699,6 @@ export class SessionStore {
       at,
       state: 'open',
       outcome: null,
-      steps: [],
       stepKeys: new Set(),
       late: [],
       cancel_requested: false,
@@ -706,6 +709,7 @@ export class SessionStore {
         : null,
       parent_summaries: Array.isArray(record['parent_summaries']) ? (record['parent_summaries'] as Json) : null,
     })
+    this.pushEvent(conv, record)
     this.appendTurnMessage(conv, 'user', turnId, userMessage, at)
   }
 
@@ -720,7 +724,7 @@ export class SessionStore {
       entry.stepKeys.add(key.local)
       this.reservedSeqs.delete(key.reserved)
     }
-    entry.steps.push(record)
+    this.pushEvent(entry.conv, record)
     if (record['type'] === 'step.result' && isRecord(record['assistant'])) {
       const assistant = record['assistant']
       this.appendTurnMessage(entry.conv, 'assistant', turnId, assistant, asStr(assistant['at']) ?? entry.at)
@@ -735,6 +739,7 @@ export class SessionStore {
     if (entry === undefined) return
     const outcome = isRecord(record['outcome']) ? record['outcome'] : null
     if (outcome === null) return
+    this.pushEvent(entry.conv, record)
     if (entry.state === 'settled' && isTerminalOutcome(entry.outcome)) {
       entry.late.push(outcome)
       return
@@ -742,6 +747,28 @@ export class SessionStore {
     entry.state = 'settled'
     entry.outcome = outcome
     this.openTurns.delete(turnId)
+  }
+
+  /** 追加一条事件到会话的单一扁平事件流（append 序）；`turns[].steps` 由此按 `turn_id` 派生。 */
+  private pushEvent(conv: string, record: Rec): void {
+    const list = this.eventsByConv.get(conv) ?? []
+    list.push(record)
+    this.eventsByConv.set(conv, list)
+  }
+
+  /** 某会话的单一扁平事件流（append 序）；未加载会话按需惰性加载。 */
+  eventsFor(convId: string): Rec[] {
+    const base = baseConversationId(convId)
+    this.ensureLoaded(base)
+    return this.eventsByConv.get(base) ?? []
+  }
+
+  /** 回合的步记录视图：从扁平事件流按 `turn_id` 过滤非终态步，保持 append 序。 */
+  private stepsOf(entry: TurnEntry): Rec[] {
+    const events = this.eventsByConv.get(entry.conv) ?? []
+    return events.filter(
+      (record) => record['turn_id'] === entry.turn_id && NON_TERMINAL_STEP_TYPES.has(record['type'] as string),
+    )
   }
 
   /** 会话消息 id → 下标索引（按需建）；重放去重与回合消息 upsert 都据它 O(1)。 */
@@ -858,15 +885,15 @@ export class SessionStore {
     this.compact(base)
   }
 
-  /** 装配一条会话快照：消息（本会话 + 收件箱）与回合条目（含步记录 / 取消意图 / 迟到收口）。 */
+  /** 装配一条会话快照：消息（本会话 + 收件箱）与单一扁平事件流（重放即还原回合与步视图）。 */
   private buildSnapshot(base: string): Rec {
     const groups: Rec[] = []
     for (const key of [base, `${base}${INBOX_SUFFIX}`]) {
       const list = this.messages.get(key)
       if (list !== undefined) groups.push({ conv: key, messages: list as unknown as Json })
     }
-    const turns = (this.turnLogByConv.get(base) ?? []).map((entry) => serializeTurn(entry))
-    return { t: 'snapshot', v: 1, conv: base, messages: groups as unknown as Json, turns: turns as unknown as Json }
+    const events = this.eventsByConv.get(base) ?? []
+    return { t: 'snapshot', v: 2, conv: base, messages: groups as unknown as Json, events: events as unknown as Json }
   }
 
   /** 写快照替换该会话日志（单写者，原子整份重写）。 */
@@ -1090,9 +1117,9 @@ export class SessionStore {
   }
 
   /**
-   * 回合运行中插入一条用户消息（`step.user`）：仅 open 态接受，按 `insert_id` 幂等。
-   * 步号取当前最大步号 + 1（`restoreFromSteps` 据此推进后续 seq，不与模型步撞车）；
-   * 本回合的消息投影据此在原位落一条用户消息——既进下一轮模型上下文，又进消息流。
+   * 追加一条运行中插入的用户消息（`step.user`）：仅 open 态接受，按 `insert_id` 幂等。
+   * 消费方在**真正发送**（把队列里的消息交给回合）时才调用——不在入队时落盘。
+   * 步号取当前最大步号 + 1；追加序即在本段已落输出之后，既进下一轮模型上下文，又进消息流。
    */
   async insertUserMessage(
     turnId: string,
@@ -1102,19 +1129,25 @@ export class SessionStore {
     const entry = this.turnEntryOf(turnId)
     if (entry === undefined) return { status: 'not_found', seq: null }
     if (entry.state !== 'open') return { status: 'not_open', seq: null }
-    if (entry.steps.some((step) => step['type'] === 'step.user' && step['insert_id'] === insertId)) {
+    const steps = this.stepsOf(entry)
+    if (steps.some((step) => step['type'] === 'step.user' && step['insert_id'] === insertId)) {
       return { status: 'exists', seq: null }
     }
-    let maxSeq = 0
-    for (const step of entry.steps) {
-      const seq = numberField(step, 'seq')
-      if (seq !== null && seq > maxSeq) maxSeq = seq
-    }
-    const seq = maxSeq + 1
+    const seq = this.maxStepSeq(steps) + 1
     const record: Rec = { type: 'step.user', turn_id: turnId, seq, insert_id: insertId, user_message: message }
     const persisted = await this.appendConversationWithRetry(entry.conv, record)
     if (!persisted) return { status: 'failed', seq: null }
     return { status: 'inserted', seq }
+  }
+
+  /** 当前最大步号（无步回 0）。 */
+  private maxStepSeq(steps: Rec[]): number {
+    let maxSeq = 0
+    for (const step of steps) {
+      const seq = numberField(step, 'seq')
+      if (seq !== null && seq > maxSeq) maxSeq = seq
+    }
+    return maxSeq
   }
 
   /** 回合所属会话 id（无该回合回 null）。 */
@@ -1135,14 +1168,17 @@ export class SessionStore {
     const entry = this.turnEntryOf(turnId)
     if (entry === undefined) return { status: 'unknown', persisted: false }
     const record: Rec = { type: 'turn.settle', turn_id: turnId, outcome }
+    // 终态就地改内存（跳过 apply，避免二次应用误记迟到），事件流同步补一条，保持单一真源完整。
     if (entry.state === 'settled' && isTerminalOutcome(entry.outcome)) {
       entry.late.push(outcome)
+      this.pushEvent(entry.conv, record)
       const persisted = await this.appendConversationWithRetry(entry.conv, record, false)
       return { status: 'late', persisted }
     }
     entry.state = 'settled'
     entry.outcome = outcome
     this.openTurns.delete(turnId)
+    this.pushEvent(entry.conv, record)
     const persisted = await this.appendConversationWithRetry(entry.conv, record, false)
     if (persisted) this.persistClose(turnId)
     return { status: 'settled', persisted }
@@ -1269,12 +1305,15 @@ export class SessionStore {
     const oldest = selected.length > 0 && selected[0] !== undefined && selected[0].messages.length > 0
       ? selected[0].messages[0]?.hash ?? null
       : null
-    // refs 默认只随窗口走（与 messages 同窗）；导出面取全量沿 `prev` 还原整条链。
-    const walk = new Set(window.map((entry) => entry.hash))
+    // refs 默认只随窗口走（与 messages 同窗）；导出面取全量。refs 由展示投影的 def 构成——
+    // 展示链已按事件流扁平化，id 与 def 一一对应，沿 `prev` 可还原整条链。
     const refs: Rec = {}
-    for (const msg of conversationId === null ? [] : this.messages.get(conversationId) ?? []) {
-      const id = msg['id']
-      if (typeof id === 'string' && (full || walk.has(id))) refs[id] = msg
+    if (full) {
+      for (const group of groups) {
+        for (const entry of group.messages) refs[entry.hash] = entry.def
+      }
+    } else {
+      for (const entry of window) refs[entry['hash'] as string] = entry['def'] as Rec
     }
     const selectedIds = new Set(selected.map((group) => group.turnId))
     const windowTurns = full
@@ -1353,7 +1392,7 @@ export class SessionStore {
     }
     if (includeSteps) {
       view['slot_ref'] = entry.slot_ref
-      view['steps'] = entry.steps
+      view['steps'] = this.stepsOf(entry)
     }
     return view
   }

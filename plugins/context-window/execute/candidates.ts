@@ -245,6 +245,24 @@ export function gatherCandidates(bag: Record<string, unknown>, env: CallEnv, pol
     })
   }
 
+  // 空转 nudge（graph-run 空转检测升级阶梯的第一步）：**前导**系统消息，明确标为系统引导，
+  // 不放在消息列尾部（尾插的 system 会被当成用户最新指令）。仅命中空转的那一段出现，随后清除。
+  const loopNudge = asString(bag['loop_nudge'])
+  if (loopNudge !== null) {
+    raws.push({
+      role: 'system',
+      parts: [textPart(`[系统引导 · 空转提示]\n${loopNudge}`)],
+      source: 'prompt',
+      priority: PRIORITY.prompt,
+      at: 0,
+      atomic: false,
+      atomicGroup: null,
+      toolCallId: null,
+      from: null,
+      orderHint: next(),
+    })
+  }
+
   // 工具 schema（按名排序 + 稳定 JSON 键序 = 稳定前缀）
   if (Array.isArray(bag['tools'])) {
     for (const tool of sortTools(bag['tools'] as Json[])) {

@@ -29,6 +29,7 @@
 | reasoning_field | `reasoning_effort` | 2026-09 官方文档确认（`thinking` 是对象 `{ type: enabled | disabled }`，非布尔；标量档位为 `reasoning_effort`，GLM-5.3 仅 low / high / max） |
 | max_tokens_field | `max_tokens` | 2026-09 官方文档确认 |
 | reasoning_response_field | `reasoning_content` | 2026-09 官方文档确认 |
+| reasoning_replay | `reasoning_content`（非强制） | 交错思考口径；标准端点默认 `clear_thinking:true` 剥离历史思考，回传被忽略亦安全 |
 
 - 采用 `reasoning_effort` 是对规范模板原值（`reasoning_field` = `thinking`、布尔映射）的更正：`thinking` 为对象，标量模型无法表达。
 

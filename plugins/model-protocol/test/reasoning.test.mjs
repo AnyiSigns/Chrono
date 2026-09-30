@@ -302,6 +302,187 @@ test('deepseek：换模型后 reasoning_content 被丢弃', async () => {
   })
 })
 
+// ── 自适应降级：推理回传被 4xx 拒绝 → 本次去掉重试一次并记忆 ──────────────────
+
+const REPLAY_MESSAGES = [
+  { role: 'user', content: '查一下' },
+  {
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id: 'c1', name: 'lookup', arguments: { q: 'x' } }],
+    reasoning: {
+      provider: 'gateway-x',
+      model: 'reason-x',
+      form: 'text',
+      payload: 'think',
+      signature: '',
+      encrypted: '',
+      tokens: 0,
+    },
+  },
+  { role: 'tool', tool_call_id: 'c1', content: '{"ok":true}' },
+]
+
+function replayBag(serverUrl) {
+  return chatBag(serverUrl, {
+    config: {
+      vendor: 'gateway-x',
+      model: 'reason-x',
+      params: { max_tokens: 64 },
+      quirks: quirksFor('openai-chat'),
+    },
+    messages: REPLAY_MESSAGES,
+    resilience: FAST,
+  })
+}
+
+test('自适应降级：4xx 指向推理字段 → 去掉回传重试一次并按 provider+model 记忆', async () => {
+  let hits = 0
+  const handler = (req, res) => {
+    hits += 1
+    if (hits === 1) {
+      jsonResponse(res, 400, { error: { message: 'reasoning_content is not supported' } })
+      return
+    }
+    openAiOk(res)
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const first = await driver.call('chat', replayBag(server.url))
+      assert.equal(first.value.ok, true)
+      assert.equal(server.requests.length, 2, '首轮：带声明被 400 → 去回传重试一次')
+      const firstAssistant = parseBody(server.requests[0]).messages.find(
+        (message) => message.role === 'assistant',
+      )
+      const retryAssistant = parseBody(server.requests[1]).messages.find(
+        (message) => message.role === 'assistant',
+      )
+      assert.equal(firstAssistant.reasoning_content, 'think')
+      assert.equal(retryAssistant.reasoning_content, undefined)
+      // 记忆：同 provider+model 后续直接不带回传，只发一次、不再探测。
+      const before = server.requests.length
+      const second = await driver.call('chat', replayBag(server.url))
+      assert.equal(second.value.ok, true)
+      assert.equal(server.requests.length, before + 1)
+      const secondAssistant = parseBody(server.requests[before]).messages.find(
+        (message) => message.role === 'assistant',
+      )
+      assert.equal(secondAssistant.reasoning_content, undefined)
+    })
+  })
+})
+
+test('自适应降级：正文含 reason 字段但非推理拒绝 → 不误判推理、不关思考（仅字段梯队退让）', async () => {
+  const handler = (req, res) => {
+    jsonResponse(res, 400, { error: { reason: 'unrelated failure' } })
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('chat', replayBag(server.url))
+      assert.equal(result.value.ok, false)
+      assert.equal(result.value.error.code, 'model_bad_request')
+      // 裸 `reason` 不是推理拒绝：所有探测请求仍保留 reasoning_content 回传（不关思考）。
+      for (const record of server.requests) {
+        const assistant = (parseBody(record).messages ?? []).find(
+          (message) => message.role === 'assistant',
+        )
+        assert.equal(assistant.reasoning_content, 'think', '不得误判为推理拒绝而去回传')
+      }
+    })
+  })
+})
+
+function effortBag(serverUrl) {
+  return chatBag(serverUrl, {
+    config: {
+      vendor: 'gateway-sig',
+      model: 'sig-reason',
+      params: { max_tokens: 64, reasoning: 'low' },
+      quirks: quirksFor('openai-chat', {
+        reasoning_field: 'reasoning_effort',
+        reasoning_map: { low: 'low', medium: 'medium', high: 'high' },
+      }),
+    },
+    messages: [
+      { role: 'user', content: '查一下' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', name: 'lookup', arguments: { q: 'x' } }],
+        reasoning: {
+          provider: 'gateway-sig',
+          model: 'sig-reason',
+          form: 'text',
+          payload: 'think',
+          signature: 'sig',
+          encrypted: '',
+          tokens: 0,
+        },
+      },
+      { role: 'tool', tool_call_id: 'c1', content: '{"ok":true}' },
+    ],
+    resilience: FAST,
+  })
+}
+
+test('自适应降级：signature 类 4xx 触发；可选回传只去回传、保留思考参数', async () => {
+  let hits = 0
+  const handler = (req, res) => {
+    hits += 1
+    if (hits === 1) {
+      jsonResponse(res, 400, { error: { message: "invalid 'signature' in thinking block" } })
+      return
+    }
+    openAiOk(res)
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('chat', effortBag(server.url))
+      assert.equal(result.value.ok, true)
+      assert.equal(server.requests.length, 2, 'signature 被拒 → 去回传重试一次')
+      const first = parseBody(server.requests[0])
+      const retry = parseBody(server.requests[1])
+      assert.equal(
+        first.messages.find((message) => message.role === 'assistant').reasoning_content,
+        'think',
+      )
+      assert.equal(
+        retry.messages.find((message) => message.role === 'assistant').reasoning_content,
+        undefined,
+      )
+      // 可选回传的降级只去回传：思考参数仍在（未把整套推理静默关掉）。
+      assert.equal(first.reasoning_effort, 'low')
+      assert.equal(retry.reasoning_effort, 'low')
+    })
+  })
+})
+
+test('自适应降级：complete 路径同样降级并记忆', async () => {
+  let hits = 0
+  const handler = (req, res) => {
+    hits += 1
+    if (hits === 1) {
+      jsonResponse(res, 400, { error: { message: 'reasoning_content is not supported' } })
+      return
+    }
+    jsonResponse(res, 200, {
+      choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    })
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('complete', replayBag(server.url))
+      assert.equal(result.value.ok, true)
+      assert.equal(server.requests.length, 2)
+      const retryAssistant = parseBody(server.requests[1]).messages.find(
+        (message) => message.role === 'assistant',
+      )
+      assert.equal(retryAssistant.reasoning_content, undefined)
+    })
+  })
+})
+
 // ── OpenAI Responses：推理项往返 ────────────────────────────────────────────
 
 test('openai-responses：捕获的加密推理按推理项回传进 input', async () => {
@@ -488,7 +669,22 @@ test('profile：把推理能力表写进所选模型元数据', async () => {
       const result = await driver.call('profile', {
         vendor: 'vendor-deepseek',
         ids: ['deepseek-reasoner'],
-        vendors: { 'vendor-deepseek': { sdk: 'deepseek', default_reasoning: ['low', 'high'] } },
+        vendors: {
+          'vendor-deepseek': {
+            sdk: 'deepseek',
+            default_reasoning: ['low', 'high'],
+            quirks: {
+              impl: 'protocol',
+              protocol: 'openai-chat',
+              reasoning_replay: {
+                form: 'reasoning_content',
+                requires_in_tool_loop: true,
+                signature_field: null,
+                verified: true,
+              },
+            },
+          },
+        },
         source_url: server.url,
         resilience: FAST,
       })
@@ -496,6 +692,86 @@ test('profile：把推理能力表写进所选模型元数据', async () => {
       const model = result.value.models['deepseek-reasoner']
       assert.equal(model.reasoning_capability.replay_form, 'reasoning_content')
       assert.equal(model.reasoning_capability.requires_replay_in_tool_loop, true)
+    })
+  })
+})
+
+test('profile：自定义厂商无声明时按实例协议取能力（无中心厂商表）', async () => {
+  const source = {
+    anthropic: {
+      models: {
+        'claude-x': {
+          limit: { context: 200000 },
+          reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+        },
+      },
+    },
+  }
+  const handler = (req, res) => jsonResponse(res, 200, source)
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('profile', {
+        vendor: 'custom',
+        ids: ['claude-x'],
+        config: {
+          providers: {
+            custom: {
+              name: 'My Anthropic',
+              protocol: 'anthropic-messages',
+              base_url: 'https://api.anthropic.com',
+              models: { 'claude-x': {} },
+            },
+          },
+        },
+        vendors: { 'vendor-custom': { sdk: 'custom' } },
+        source_url: server.url,
+        resilience: FAST,
+      })
+      // 带 config 时 profile 走写计划：extern 载荷才是结果。
+      const payload = result.value.$directives.find((item) => item.kind === 'extern').payload
+      assert.equal(payload.ok, true)
+      assert.equal(
+        payload.models['claude-x'].reasoning_capability.replay_form,
+        'thinking_block',
+      )
+    })
+  })
+})
+
+test('profile：厂商声明 reasoning_replay 时，模型无推理档位也写该能力', async () => {
+  const source = {
+    deepseek: { models: { 'deepseek-reasoner': { limit: { context: 64000 } } } },
+  }
+  const handler = (req, res) => jsonResponse(res, 200, source)
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('profile', {
+        vendor: 'vendor-deepseek',
+        ids: ['deepseek-reasoner'],
+        vendors: {
+          'vendor-deepseek': {
+            sdk: 'deepseek',
+            quirks: {
+              impl: 'protocol',
+              protocol: 'openai-chat',
+              reasoning_replay: {
+                form: 'reasoning_content',
+                requires_in_tool_loop: true,
+                signature_field: null,
+                verified: true,
+              },
+            },
+          },
+        },
+        source_url: server.url,
+        resilience: FAST,
+      })
+      assert.equal(result.value.ok, true)
+      assert.equal(
+        result.value.models['deepseek-reasoner'].reasoning_capability.replay_form,
+        'reasoning_content',
+        '厂商声明即确有能力，不受档位字段缺失拖累',
+      )
     })
   })
 })

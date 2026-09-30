@@ -29,6 +29,7 @@
 | reasoning_field | `reasoning_effort` | 2026-09 官方文档确认（none / low / high / max，默认 high；medium、xhigh 兼容映射为 high） |
 | max_tokens_field | `max_tokens` | 2026-09 官方文档确认（上限 384K） |
 | reasoning_response_field | `reasoning_content` | 2026-09 官方文档确认 |
+| reasoning_replay | `reasoning_content` / 工具循环必须回传 | 2026-09 Thinking Mode 文档确认；旧 `deepseek-reasoner` 可能不接受输入回传，由自适应降级兜底 |
 
 - 官方另有 `thinking` 对象开关（`{ type: enabled | disabled }`）；标量档位走 `reasoning_effort`，本模板采用后者。
 - 采用 `reasoning_effort` 是对规范模板原值（`reasoning_field` 为 null、无档位）的更正。

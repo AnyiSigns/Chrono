@@ -242,13 +242,53 @@ function ensureInFlight(view: any, run: string | null, payload: any): any {
 }
 
 /**
+ * 在途回合的运行中插入用户消息（`step.user`）：id 形状 `msg-<conv>-<turnId>-user-<insert_id>`，
+ * 区别于回合开头那条 `msg-<conv>-<turnId>-user`。按追加序取，供在途流按同序并入渲染。
+ */
+export function insertedUserEntries(messages: any[], turnId: string | null): any[] {
+  if (turnId === null || !Array.isArray(messages)) return []
+  const suffix = `-${turnId}-user-`
+  return messages.filter(
+    (entry: any) =>
+      isRec(entry) &&
+      isRec(entry.def) &&
+      entry.def.role === 'user' &&
+      typeof entry.def.id === 'string' &&
+      entry.def.id.includes(suffix),
+  )
+}
+
+/**
  * 快照：替换权威消息段。在途回合处理：
- * - 流式中（未定稿）→ 保留（增量仍在途）；
+ * - 流式中（未定稿）→ 保留（增量仍在途），并把新到的事件流用户插入段按追加序并入在途段——
+ *   使插入气泡与其前后的助手 / 工具段同序渲染（落在「被追加时」的位置，而不是消息流顶部）；
  * - 定稿中（finalizing，run 已终局等权威消息）或已取消（cancelled）→ 原地替换为 null（快照即权威）。
  * 定稿替换因此不依赖任何外挂参数：定稿失败后下一次成功快照也会收口。
  */
 export function applySnapshot(view: any, history: any, conversationId: unknown): any {
   const loaded = loadConversation(history, conversationId)
+  const dropped =
+    view.inFlight !== null && (view.inFlight.finalizing === true || view.inFlight.cancelled === true)
+  let inFlight = dropped ? null : view.inFlight
+  if (inFlight !== null) {
+    const present = new Set(
+      (inFlight.segments ?? [])
+        .filter((segment: any) => segment.kind === 'user')
+        .map((segment: any) => segment.id),
+    )
+    const additions = insertedUserEntries(loaded.messages, inFlight.turnId).filter(
+      (entry: any) => !present.has(entry.def.id),
+    )
+    if (additions.length > 0) {
+      inFlight = {
+        ...inFlight,
+        segments: [
+          ...(inFlight.segments ?? []),
+          ...additions.map((entry: any) => ({ kind: 'user', id: entry.def.id, def: entry.def })),
+        ],
+      }
+    }
+  }
   return {
     ...view,
     conversation: loaded.conversation,
@@ -257,10 +297,7 @@ export function applySnapshot(view: any, history: any, conversationId: unknown):
     kind: threadKind(loaded.conversation),
     messages: loaded.messages,
     turns: conversationTurns(history),
-    inFlight:
-      view.inFlight !== null && (view.inFlight.finalizing === true || view.inFlight.cancelled === true)
-        ? null
-        : view.inFlight,
+    inFlight,
     revision: view.revision + 1,
   }
 }

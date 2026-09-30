@@ -1,11 +1,11 @@
-// 展示投影单元测试：`session/execute/project.ts` 直接读回合步日志（展示形状）→ 展示消息链 / 时间线。
-// 覆盖：用户正文与附件、助手展示 parts（reasoning / text / 工具卡）、检查点与 verify 标记，
-// 以及「不读 refs」。
+// 展示投影单元测试：`session/execute/project.ts` 把回合步日志摊平成单一有序事件流（展示形状）。
+// 覆盖：用户正文与附件、助手**塌成一条**（每回合一个助手段，不每轮分层）、工具结果回填不新建消息、
+// 运行中插入的 user 依追加序切断助手段（插入前 / 插入后两段）、检查点与 verify 标记，以及「不读 refs」。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { displayMessagesByTurn, displayTimeline } = await import('../execute/project.ts')
+const { displayMessagesByTurn, displayTimeline, flattenTurnEvents } = await import('../execute/project.ts')
 
 function turns() {
   return [
@@ -44,15 +44,15 @@ function turns() {
   ]
 }
 
-test('displayMessagesByTurn：回合日志 → 展示消息链（旧→新，prev 串联，id 稳定）', () => {
+test('displayMessagesByTurn：扁平事件流 → 展示消息链（旧→新，prev 串联，id 稳定）', () => {
   const groups = displayMessagesByTurn('c1', turns())
   assert.deepEqual(groups.map((group) => group.turnId), ['t1', 't2'])
   const flat = groups.flatMap((group) => group.messages)
   assert.deepEqual(flat.map((entry) => entry.hash), [
     'msg-c1-t1-user',
-    'msg-c1-t1-assistant',
+    'msg-c1-t1-assistant-1',
     'msg-c1-t2-user',
-    'msg-c1-t2-assistant',
+    'msg-c1-t2-assistant-1',
   ])
   assert.deepEqual(flat.map((entry) => entry.def.content), ['U1', '正文', 'U2', 'A2'])
   assert.equal(flat[0].def.attachments[0].name, 'a.txt')
@@ -83,7 +83,68 @@ test('displayTimeline：不读 refs（refs 全量不进入展示投影）', () =
   assert.deepEqual(displayTimeline(noTurns.turns), [])
 })
 
-test('step.user：回合运行中插入的用户消息进展示链与时间线（原位、幂等 id）', () => {
+test('助手塌成一条：多次 step.result（内容不同 / 含新块）合并进同一条消息', () => {
+  const turn = {
+    turn_id: 't',
+    at: '2026-01-03T00:00:00.000Z',
+    state: 'open',
+    outcome: null,
+    user_message: { content: 'U' },
+    steps: [
+      { type: 'step.result', turn_id: 't', seq: 1, assistant: { content: 'A1', parts: [{ type: 'text', text: 'A1' }, { type: 'tool', call_id: 'c1', tool: 'read' }] } },
+      // 本步增量只含新正文块（不重复前段 parts）。
+      { type: 'step.result', turn_id: 't', seq: 3, assistant: { content: 'A2', parts: [{ type: 'text', text: 'A2' }] } },
+    ],
+  }
+  const messages = displayMessagesByTurn('c', [turn])[0].messages
+  assert.deepEqual(messages.map((entry) => entry.hash), ['msg-c-t-user', 'msg-c-t-assistant-1'])
+  assert.deepEqual(messages.map((entry) => entry.def.content), ['U', 'A1A2'])
+  assert.deepEqual(messages[1].def.parts, [
+    { type: 'text', text: 'A1' },
+    { type: 'tool', call_id: 'c1', tool: 'read' },
+    { type: 'text', text: 'A2' },
+  ])
+})
+
+test('助手纯文本步：增量全为文本（不落 parts）时补 text part，塌成一条后正文不丢', () => {
+  const turn = {
+    turn_id: 't',
+    at: '2026-01-03T00:00:00.000Z',
+    state: 'open',
+    outcome: null,
+    user_message: { content: 'U' },
+    steps: [
+      { type: 'step.result', turn_id: 't', seq: 1, assistant: { content: '', parts: [{ type: 'tool', call_id: 'c1', tool: 'read', status: 'ok' }] } },
+      { type: 'step.result', turn_id: 't', seq: 2, assistant: { content: 'A2' } },
+    ],
+  }
+  const messages = displayMessagesByTurn('c', [turn])[0].messages
+  assert.deepEqual(messages.map((entry) => entry.hash), ['msg-c-t-user', 'msg-c-t-assistant-1'])
+  assert.equal(messages[1].def.content, 'A2')
+  assert.deepEqual(messages[1].def.parts, [
+    { type: 'tool', call_id: 'c1', tool: 'read', status: 'ok' },
+    { type: 'text', text: 'A2' },
+  ])
+})
+
+test('助手工具回填：同段 step.result 不新建消息，结果合入本段工具卡', () => {
+  const turn = {
+    turn_id: 't',
+    at: '2026-01-03T00:00:00.000Z',
+    state: 'open',
+    outcome: null,
+    user_message: { content: 'U' },
+    steps: [
+      { type: 'step.result', turn_id: 't', seq: 1, assistant: { content: '', parts: [{ type: 'tool', call_id: 'c1', tool: 'read' }] } },
+      { type: 'step.result', turn_id: 't', seq: 2, assistant: { content: '', parts: [{ type: 'tool', call_id: 'c1', tool: 'read', status: 'ok', result: { text: 'X' } }] } },
+    ],
+  }
+  const messages = displayMessagesByTurn('c', [turn])[0].messages
+  assert.deepEqual(messages.map((entry) => entry.hash), ['msg-c-t-user', 'msg-c-t-assistant-1'])
+  assert.equal(messages[1].def.parts[0].status, 'ok')
+})
+
+test('step.user：运行中插入的 user 落在其前后助手段之间（回复出现在插入之后）', () => {
   const withInsert = [
     {
       turn_id: 't3',
@@ -100,18 +161,52 @@ test('step.user：回合运行中插入的用户消息进展示链与时间线�
           insert_id: 'i1',
           user_message: { content: 'INSERT', at: '2026-01-03T00:00:01.000Z' },
         },
+        { type: 'step.result', turn_id: 't3', seq: 5, assistant: { content: 'REPLY' } },
       ],
     },
   ]
   const groups = displayMessagesByTurn('c1', withInsert)
   assert.deepEqual(groups[0].messages.map((entry) => entry.hash), [
     'msg-c1-t3-user',
+    'msg-c1-t3-assistant-1',
     'msg-c1-t3-user-i1',
-    'msg-c1-t3-assistant',
+    'msg-c1-t3-assistant-2',
   ])
-  assert.deepEqual(groups[0].messages.map((entry) => entry.def.content), ['U3', 'INSERT', 'A3'])
-  assert.equal(groups[0].messages[1].def.role, 'user')
+  assert.deepEqual(groups[0].messages.map((entry) => entry.def.content), ['U3', 'A3', 'INSERT', 'REPLY'])
+  assert.equal(groups[0].messages[2].def.role, 'user')
   const timeline = displayTimeline(withInsert)
-  assert.deepEqual(timeline[0].items.map((item) => item.kind), ['user', 'user', 'text'])
-  assert.equal(timeline[0].items[1].text, 'INSERT')
+  assert.deepEqual(timeline[0].items.map((item) => item.kind), ['user', 'text', 'user', 'text'])
+  assert.deepEqual(timeline[0].items.map((item) => item.text), ['U3', 'A3', 'INSERT', 'REPLY'])
+})
+
+test('兼容旧日志：累积前缀 parts 取增量合并，迁移重放不重复', () => {
+  const turn = {
+    turn_id: 't',
+    at: '2026-01-03T00:00:00.000Z',
+    state: 'open',
+    outcome: null,
+    user_message: { content: 'U' },
+    steps: [
+      { type: 'step.result', turn_id: 't', seq: 1, assistant: { content: 'A1', parts: [{ type: 'text', text: 'A1' }, { type: 'tool', call_id: 'c1', tool: 'read' }] } },
+      { type: 'step.result', turn_id: 't', seq: 2, assistant: { content: 'A1', parts: [{ type: 'text', text: 'A1' }, { type: 'tool', call_id: 'c1', tool: 'read', status: 'ok', result: { text: 'X' } }] } },
+      { type: 'step.result', turn_id: 't', seq: 3, assistant: { content: 'A2', parts: [{ type: 'text', text: 'A1' }, { type: 'tool', call_id: 'c1', tool: 'read', status: 'ok', result: { text: 'X' } }, { type: 'text', text: 'A2' }] } },
+    ],
+  }
+  const messages = displayMessagesByTurn('c', [turn])[0].messages
+  assert.deepEqual(messages.map((entry) => entry.hash), ['msg-c-t-user', 'msg-c-t-assistant-1'])
+  assert.deepEqual(messages.map((entry) => entry.def.content), ['U', 'A1A2'])
+  assert.deepEqual(messages[1].def.parts, [
+    { type: 'text', text: 'A1' },
+    { type: 'tool', call_id: 'c1', tool: 'read', status: 'ok', result: { text: 'X' } },
+    { type: 'text', text: 'A2' },
+  ])
+})
+
+test('flattenTurnEvents：每个同级事件带 turn_id 与 parent（分支 / 多 agent 元数据可表达）', () => {
+  const events = flattenTurnEvents('c1', turns()[0])
+  assert.deepEqual(events.map((event) => event.kind), ['user', 'assistant', 'verify', 'checkpoint'])
+  assert.equal(events[0].parent, null)
+  assert.equal(events[1].parent, 'msg-c1-t1-user')
+  assert.equal(events[2].parent, 'msg-c1-t1-assistant-1')
+  assert.ok(events.every((event) => event.turn_id === 't1'))
 })

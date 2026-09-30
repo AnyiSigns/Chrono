@@ -12,6 +12,10 @@ export const DEFAULT_THRESHOLDS: Rec = {
   // 图与演化（loop-policy 权威）
   max_turn_iter: 64,
   max_steps: 512,
+  // 运行期无进展空转检测（与 evolve 的 no_progress_n 无关）：签名=动作+观察+状态。
+  loop_repeat_n: 3,
+  loop_novelty_window: 8,
+  loop_novelty_min: 2,
   gas: 64,
   // composite 子图运行期递归展开的深度上限（与 `graph-gate` 的折算深度口径一致：>=8 即拒）。
   max_subgraph_depth: 8,

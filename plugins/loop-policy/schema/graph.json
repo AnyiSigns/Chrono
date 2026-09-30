@@ -139,7 +139,7 @@
         "nodes": { "type": "array", "items": { "type": "string" }, "description": "contract_id 生成序，下标 = node_index。" },
         "edges": { "type": "array", "items": { "type": "object" }, "description": "推式条件边 {from:[u,out], to:[v,in], when?}。" },
         "entry_supply": { "type": "array", "items": { "type": "object" } },
-        "loop": { "type": "object", "description": "{when, max_iter}。" },
+        "loop": { "type": "object", "description": "{when, max_iter, allow_tools?}；allow_tools = 豁免空转检测的轮询类工具名。" },
         "sink": { "type": "integer" },
         "derived_from": { "type": "string", "description": "旧图 def 哈希（fork-only）。" }
       }

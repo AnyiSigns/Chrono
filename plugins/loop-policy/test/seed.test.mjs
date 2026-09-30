@@ -63,6 +63,9 @@ test('默认阈值声明图 / 演化参数（随扁平 map 下传 evolve-metrics
   for (const name of [
     'max_turn_iter',
     'max_steps',
+    'loop_repeat_n',
+    'loop_novelty_window',
+    'loop_novelty_min',
     'gas',
     'llm_chain_max',
     'max_graph_diff',

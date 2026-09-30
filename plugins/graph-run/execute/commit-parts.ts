@@ -5,7 +5,7 @@
 // 工具调用与结果对模型的可见性由 `extra_messages` 回灌（message.tool_calls / tool_call_id）保证。
 
 import { escapeRefs, stripPlans } from './plan.ts'
-import type { Json, Rec } from './types.ts'
+import type { Json, Rec, RunState } from './types.ts'
 
 function isRec(value: unknown): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -127,4 +127,85 @@ function renderAssistant(message: Rec, parts: Json[], toolPartByCall: Map<string
     parts.push(part)
     toolPartByCall.set(callId, part)
   }
+}
+
+/** 本回合已落盘的展示段（跨段重建后由 `committedFromSteps` 重导）；后续 step.result 只写其增量。 */
+export function committedPartsOf(rs: RunState): Json[] {
+  return Array.isArray(rs.committedParts) ? rs.committedParts : []
+}
+
+/** 从回合步日志（`step.result`）重导已落盘展示段累计：续跑 / 游标恢复后写增量的比较基线。 */
+export function committedFromSteps(steps: Json[]): Json[] {
+  let committed: Json[] = []
+  for (const item of steps) {
+    if (!isRec(item) || item['type'] !== 'step.result') continue
+    const assistant = isRec(item['assistant']) ? (item['assistant'] as Rec) : null
+    if (assistant === null) continue
+    const parts = Array.isArray(assistant['parts']) ? (assistant['parts'] as Json[]) : []
+    committed = mergeParts(committed, parts)
+  }
+  return committed
+}
+
+/** 键序无关的规范化 JSON：对象键排序后序列化，供展示段结构比较（跨段重建后键序可能不同）。 */
+function stableStringify(value: Json): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`
+  if (isRec(value)) {
+    const keys = Object.keys(value).sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/**
+ * 展示段增量：相对 `prev`（已落盘）只取新块与内容有变的工具卡。
+ * 文本 / 推理块按出现次数取值（同为同文的多块也不误合并）；工具卡按 `call_id` 判，内容变则重写（结果回填）。
+ */
+export function incrementalParts(prev: Json[], full: Json[]): Json[] {
+  const prevTools = new Map<string, Json>()
+  const prevText = new Map<string, number>()
+  for (const part of prev) {
+    if (isRec(part) && part['type'] === 'tool') prevTools.set(String(part['call_id'] ?? ''), part)
+    else {
+      const signature = stableStringify(part)
+      prevText.set(signature, (prevText.get(signature) ?? 0) + 1)
+    }
+  }
+  const out: Json[] = []
+  const seenText = new Map<string, number>()
+  for (const part of full) {
+    if (isRec(part) && part['type'] === 'tool') {
+      const before = prevTools.get(String(part['call_id'] ?? ''))
+      if (before === undefined || stableStringify(before) !== stableStringify(part)) out.push(part)
+      continue
+    }
+    const signature = stableStringify(part)
+    const used = seenText.get(signature) ?? 0
+    seenText.set(signature, used + 1)
+    if (used >= (prevText.get(signature) ?? 0)) out.push(part)
+  }
+  return out
+}
+
+/**
+ * 合并展示段（工具卡按 `call_id` 原位覆盖，文本 / 推理按追加）：供「显式工具卡步」（question 作答）
+ * 把结果并入已落盘段，使后续 `incrementalParts` 的比较基线包含该结果、不重复回写。
+ */
+export function mergeParts(base: Json[], delta: Json[]): Json[] {
+  const merged = [...base]
+  for (const part of delta) {
+    if (isRec(part) && part['type'] === 'tool') {
+      const index = merged.findIndex((item) => isRec(item) && item['type'] === 'tool' && item['call_id'] === part['call_id'])
+      if (index >= 0) merged[index] = part
+      else merged.push(part)
+      continue
+    }
+    merged.push(part)
+  }
+  return merged
+}
+
+/** 记下本次写入的展示段基线（累计段）。 */
+export function commitParts(rs: RunState, full: Json[]): void {
+  rs.committedParts = full
 }

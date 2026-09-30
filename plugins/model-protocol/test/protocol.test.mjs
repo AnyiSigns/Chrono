@@ -570,13 +570,119 @@ test('流断整请求重试：分片不重不漏', async () => {
   })
 })
 
-test('4xx 不重试：400 一次即回 model_bad_request', async () => {
+test('4xx 字段协商：错误点名 max_tokens → 去掉后重试成功，并按端点记忆', async () => {
+  const handler = (req, res, record) => {
+    const body = parseBody(record)
+    if (body !== null && body.max_tokens !== undefined) {
+      jsonResponse(res, 400, { error: { message: 'max_tokens is too large', param: 'max_tokens' } })
+      return
+    }
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { content: 'ok' } }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const first = await driver.call('chat', chatBag(server.url, { resilience: FAST }))
+      assert.equal(first.value.ok, true)
+      assert.equal(first.value.text, 'ok')
+      assert.equal(server.requests.length, 2, '点名 max_tokens：去掉后重试一次')
+      assert.equal(parseBody(server.requests[1]).max_tokens, undefined)
+
+      const second = await driver.call('chat', chatBag(server.url, { resilience: FAST }))
+      assert.equal(second.value.ok, true)
+      assert.equal(server.requests.length, 3, '记忆生效：第二次首请求即不带 max_tokens')
+      assert.equal(parseBody(server.requests[2]).max_tokens, undefined)
+    })
+  })
+})
+
+test('4xx 字段协商：错误点名 stream_options → 关掉用量合并后重试成功', async () => {
+  const handler = (req, res, record) => {
+    const body = parseBody(record)
+    if (body !== null && body.stream_options !== undefined) {
+      jsonResponse(res, 400, { error: 'unsupported parameter: stream_options' })
+      return
+    }
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { content: 'ok' } }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const result = await driver.call('chat', chatBag(server.url, { resilience: FAST }))
+      assert.equal(result.value.ok, true)
+      assert.equal(server.requests.length, 2)
+      assert.equal(parseBody(server.requests[0]).stream_options !== undefined, true)
+      assert.equal(parseBody(server.requests[1]).stream_options, undefined)
+    })
+  })
+})
+
+test('4xx 字段协商：推理回传被拒 → 去掉 reasoning_content 回传后重试成功', async () => {
+  const handler = (req, res, record) => {
+    const body = parseBody(record)
+    const hasReplay = (body?.messages ?? []).some((message) => message.reasoning_content !== undefined)
+    if (hasReplay) {
+      jsonResponse(res, 400, {
+        error: { message: 'reasoning_content is not allowed', param: 'reasoning_content' },
+      })
+      return
+    }
+    sseHead(res)
+    sseEvent(res, { choices: [{ delta: { content: 'ok' } }] })
+    sseEvent(res, '[DONE]')
+    res.end()
+  }
+  await withServer(handler, async (server) => {
+    await withService({}, async (driver) => {
+      const bag = chatBag(server.url, {
+        messages: [
+          { role: 'user', content: 'hi' },
+          {
+            role: 'assistant',
+            content: 'yo',
+            reasoning_blocks: [
+              {
+                provider: '',
+                model: 'test-model',
+                form: 'text',
+                payload: 'think',
+                signature: '',
+                encrypted: '',
+                tokens: 0,
+              },
+            ],
+          },
+          { role: 'user', content: 'go' },
+        ],
+        resilience: FAST,
+      })
+      const result = await driver.call('chat', bag)
+      assert.equal(result.value.ok, true)
+      assert.equal(server.requests.length, 2)
+      const first = (parseBody(server.requests[0]).messages ?? []).some(
+        (message) => message.reasoning_content !== undefined,
+      )
+      assert.equal(first, true, '首请求带 reasoning_content 回传')
+      const retry = (parseBody(server.requests[1]).messages ?? []).some(
+        (message) => message.reasoning_content !== undefined,
+      )
+      assert.equal(retry, false, '重试不再回传')
+    })
+  })
+})
+
+test('4xx 无字段线索：谈判梯队限次后仍回 model_bad_request（不无限重试）', async () => {
   const handler = (req, res) => jsonResponse(res, 400, { error: 'bad' })
   await withServer(handler, async (server) => {
     await withService({}, async (driver) => {
       const result = await driver.call('chat', chatBag(server.url, { resilience: FAST }))
       assert.equal(result.value.error.code, 'model_bad_request')
-      assert.equal(server.requests.length, 1)
+      // 无字段线索时按梯队探测：首请求 + 最多 3 次退让；每次仍 400，最终原样回灌。
+      assert.equal(server.requests.length, 4)
     })
   })
 })

@@ -86,6 +86,9 @@
         "reasoning_response_field": {
           "description": "响应 / 流里推理文本字段名；缺键或 null = 无。"
         },
+        "reasoning_replay": {
+          "description": "思考回传声明（厂商口径）：{ form: reasoning_content | thinking_block | parts | reasoning_item | null, requires_in_tool_loop: bool, signature_field: string | null, verified: bool }；profile 据此生成模型能力档案。缺键 = 不声明，自定义厂商走协议通用 + 自适应降级。"
+        },
         "max_tokens_field": {
           "type": "string",
           "description": "协议枚举 max_tokens / max_completion_tokens / max_output_tokens；impl=sdk 时允许 SDK 结构字段名（如 maxOutputTokens），由适配器解释。"

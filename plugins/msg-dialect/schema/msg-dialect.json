@@ -16,7 +16,7 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "provider": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"], "description": "保留字段，当前不参与解析；厂商规则经 profile 注入。" },
         "protocol": { "type": ["string", "null"] },
         "impl": { "type": ["string", "null"] },
         "profile": { "description": "显式能力表（优先）。" }

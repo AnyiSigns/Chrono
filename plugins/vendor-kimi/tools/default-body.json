@@ -13,6 +13,12 @@
     "reasoning_field": null,
     "reasoning_map": {},
     "reasoning_response_field": "reasoning_content",
+    "reasoning_replay": {
+      "form": "reasoning_content",
+      "requires_in_tool_loop": true,
+      "signature_field": null,
+      "verified": false
+    },
     "max_tokens_field": "max_completion_tokens",
     "models_path": "/models",
     "stream_usage": "final_chunk",

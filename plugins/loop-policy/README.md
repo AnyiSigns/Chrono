@@ -68,10 +68,13 @@ bag 带 `contract_version` 时门面校验主版本：不匹配立即拒绝并�
 `failure_cluster_n` / `post_failure_ratio` / `post_failure_min` / `cost_anomaly_multiple` / `drift_margin` /
 `drift_min_samples` / `fold_k` / `no_progress_n` / `verify_failure_n` / `verify_cluster_ratio` / `min_workspaces` /
 `trace_retention_rounds` / `evidence_retention_rounds` / `unhealthy_refused_streak`。
-图 / 演化参数（本插件权威）：`max_turn_iter` / `max_steps` / `gas` / `llm_chain_max` / `max_graph_diff` /
+图 / 演化参数（本插件权威）：`max_turn_iter` / `max_steps` / `loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min` / `gas` / `llm_chain_max` / `max_graph_diff` /
 `min_runs_before_fork` / `max_links` / `graph_growth_quota` / `instance_growth_quota` / `shadow_rounds` /
 `large_artifact_bytes` / `model_alias_pins`；上下文检查点三档 `checkpoint_soft_ratio` / `checkpoint_hard_ratio` /
 `checkpoint_emergency_ratio`。解析后的扁平 thresholds map 随 `context.assemble` bag 下传（单一真源）。
+运行期空转检测（**与 evolve 的 `no_progress_n` 无关**）：`loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min`
+由图执行引擎据「动作 + 观察 + 状态」签名做连续 / 周期 / 低新颖判定；首次命中先注入一次 nudge（前导系统消息），
+再次命中才以 `stop_reason: no_progress` 收口；`loop.allow_tools` 可豁免轮询类工具。
 
 ## 跨段续跑与取消
 

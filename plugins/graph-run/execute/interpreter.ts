@@ -16,7 +16,7 @@ import {
   contextPressure,
   emitCheckpoint,
 } from './checkpoint.ts'
-import { displayParts } from './commit-parts.ts'
+import { commitParts, committedFromSteps, committedPartsOf, displayParts, incrementalParts, mergeParts } from './commit-parts.ts'
 import { isCancelled } from './cancel.ts'
 import { appendStep, nextStepSeq, toolCallsForLog } from './steplog.ts'
 import {
@@ -40,6 +40,7 @@ import {
 import { buildView } from './view.ts'
 import { edgeKey, topoOrder } from './graph.ts'
 import { LifecycleMachine, endedOf, type GraphProgress } from './lifecycle.ts'
+import { detectStall, segmentSignature } from './loop-guard.ts'
 import {
   asString,
   directivesOf,
@@ -91,6 +92,48 @@ interface TerminalExtra {
   stopReason?: string | null
 }
 
+/** 空转 nudge：升级阶梯的第一步——先提示模型换策略，再次命中才收口。 */
+const LOOP_NUDGE =
+  '检测到连续无进展（相同调用/结果重复、或短周期来回）。请停止重复同一操作：换用不同策略，或直接给出结论并结束本轮。'
+
+/** 派发失败值里携带的中止碎片（`error.partial`）。 */
+function partialOf(result: { value: Json }): Rec | null {
+  const value = result.value
+  if (!isRecord(value) || !isRecord(value['error'])) return null
+  const partial = value['error']['partial']
+  return isRecord(partial) ? partial : null
+}
+
+/**
+ * 取消 / 中止时把模型已产出的碎片（正文 / 推理）落一条 `step.result`：刷新 / 重放后仍在，
+ * 不因未走完收口节点而丢失。best-effort：写不进不影响取消收口。
+ */
+async function persistPartialStep(
+  input: InterpretInput,
+  bag: Rec,
+  rs: RunState,
+  partial: Rec,
+): Promise<void> {
+  const turnId = asString(bag['turn_id'])
+  if (turnId === null) return
+  const text = asString(partial['text']) ?? ''
+  const reasoning = asString(partial['reasoning']) ?? ''
+  if (text.length === 0 && reasoning.length === 0) return
+  const parts: Json[] = []
+  if (reasoning.length > 0) parts.push({ type: 'reasoning', text: reasoning })
+  if (text.length > 0) parts.push({ type: 'text', text })
+  const record: Rec = {
+    type: 'step.result',
+    turn_id: turnId,
+    seq: nextStepSeq(rs),
+    assistant: { content: text, parts },
+  }
+  await appendStep(input.port, record)
+}
+
+/** 签名窗口上限：repeat/cycle/low_novelty 所需的最大回看段数。 */
+const LOOP_WINDOW = 16
+
 /**
  * 解释一次图执行。
  * 有 `turn_id` 时**一段 = 一个 iter**：段尾若回合未完，返回计划含 `{kind:'eval', command:'chat.resume', args:{turn_id}}`，
@@ -110,6 +153,16 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   }
   const maxTurnIter = numericThreshold(model.thresholds, 'max_turn_iter', 6)
   const maxSteps = numericThreshold(model.thresholds, 'max_steps', 64)
+  const loopRepeatN = numericThreshold(model.thresholds, 'loop_repeat_n', 3)
+  const loopNoveltyWindow = numericThreshold(model.thresholds, 'loop_novelty_window', 8)
+  const loopNoveltyMin = numericThreshold(model.thresholds, 'loop_novelty_min', 2)
+  // per-tool 白名单：轮询类工具（参数/结果随外部状态变化）豁免空转判定；图可经 loop.allow_tools 声明。
+  const loopAllow = new Set(
+    (Array.isArray(graphLoop(model.graph)['allow_tools'])
+      ? (graphLoop(model.graph)['allow_tools'] as Json[])
+      : []
+    ).filter((item): item is string => typeof item === 'string'),
+  )
   const turnId = asString(bag['turn_id'])
   const loopWhen = asString(graphLoop(model.graph)['when']) ?? ''
   const directives: Json[] = []
@@ -160,6 +213,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     const restored = restoreState(pendingCursor)
     rs = restored.rs
     iter = restored.iter
+    // 展示段基线是不进游标的派生物：恢复后从步日志重导，续写增量才不重复回灌已落盘的段。
+    rs.committedParts = committedFromSteps(turnSteps(bag, turnId))
     // 续跑优先用游标内原始输入：作答 / 裁决那一刻的槽已是 approval.decide / question.answer，
     // 直接用会丢原始用户消息（游标随队列项落世界，opaque，不透明）。
     if (pendingCursor['original_input'] !== undefined)
@@ -208,6 +263,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
           result: null,
           status: 'ok',
         }))
+        // 显式工具卡步：并入已落盘基线，后续增量比较据它判「无新内容」，不重复回写。
+        commitParts(rs, mergeParts(committedPartsOf(rs), parts))
         await appendStep(input.port, {
           type: 'step.result',
           turn_id: turnId,
@@ -297,6 +354,7 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   }
 
   for (;;) {
+    const extraStart = rs.extraMessages.length
     const result = await runIter(
       input,
       view,
@@ -313,6 +371,8 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       0,
       null,
     )
+    // nudge 已在本次 runIter 的组装消费（一次性），此处清掉，避免下一段重复注入。
+    rs.loopNudge = null
     if (result.cancelled === true) {
       // 取消：不再派发新工具 / 模型，也不写拒绝产物；内容已落步记录，终态由调用方经 CAS 落 `cancelled`。
       machine.send('settle')
@@ -364,6 +424,56 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
         return refuseTerminal(when.code ?? 'when_unsat', when.reason ?? `unknown_when:${loopWhen}`)
       shouldLoop = when.value
     }
+    // 无进展空转检测（确定性）：签名 = 动作 + 观察（工具结果）+ 状态增量。升级阶梯：首次命中先注入
+    // nudge 提示换策略，再次命中才收口——既不「报告写完又被反复拉起」，也不因一次误判直接终止。
+    const segmentResults = rs.extraMessages
+      .slice(extraStart)
+      .filter((message): message is Rec => isRecord(message) && message['role'] === 'tool')
+      .map((message) => {
+        const content = message['content']
+        if (typeof content !== 'string') return null
+        try {
+          return JSON.parse(content) as Json
+        } catch {
+          return content as Json
+        }
+      })
+      .filter((value): value is Json => value !== null)
+    const todo = bag['todo']
+    const todoDone =
+      isRecord(todo) && Array.isArray(todo['items'])
+        ? (todo['items'] as Json[]).filter(
+            (item) => isRecord(item) && item['status'] === 'completed',
+          ).length
+        : 0
+    const allowHit = rs.lastCalls.some((call) => loopAllow.has(asString(call['tool'])))
+    const window = allowHit
+      ? rs.loopSignatures
+      : [
+          ...rs.loopSignatures,
+          segmentSignature({
+            calls: Array.isArray(rs.lastCalls) ? rs.lastCalls : [],
+            results: segmentResults,
+            state: { todo_done: todoDone, verify_failed: rs.verifyFailed },
+          }),
+        ]
+    const verdict = allowHit
+      ? null
+      : detectStall(window, loopRepeatN, loopNoveltyWindow, loopNoveltyMin)
+    if (shouldLoop && verdict !== null) {
+      if (!rs.loopNudged) {
+        // 第一步：注入 nudge，给模型一次换策略的机会（多数空转在此解开）。
+        rs.loopNudged = true
+        rs.loopNudge = `${LOOP_NUDGE}（${verdict.kind}: ${verdict.detail}）`
+      } else {
+        // 第二步：nudge 后仍空转 ⇒ 主动收口（保留已完成内容，非失败），与预算收口同形。
+        return stopTerminal('no_progress')
+      }
+    } else if (verdict === null && !allowHit) {
+      rs.loopNudged = false
+      rs.loopNudge = null
+    }
+    rs.loopSignatures = window.slice(-LOOP_WINDOW)
     if (!shouldLoop) {
       machine.send('settle')
       await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null)
@@ -407,7 +517,13 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       type: 'checkpoint',
       turn_id: turnId,
       seq: markerSeq,
-      summary: { kind: 'segment', iter: rs.iter + 1 },
+      summary: {
+        kind: 'segment',
+        iter: rs.iter + 1,
+        loop_signatures: rs.loopSignatures,
+        loop_nudged: rs.loopNudged,
+        loop_nudge: rs.loopNudge,
+      },
       covered_upto: markerSeq,
     })
     // 下一段序号 = 本段 iter + 1（与下方 checkpoint 步记录一致）：下一段起点即可显示「正在进行的轮次」。
@@ -1027,6 +1143,9 @@ async function runNode(
     // 取消检查点（派发后）：模型调用被 abort，或派发期间置了标志 ⇒ 不再处理产出、不短路成拒绝。
     if (isCancelled(asString(bag['turn_id']))) {
       step['verdict'] = 'cancelled'
+      // 中止前已产出的推理 / 正文先落盘，避免刷新后丢失这次段产出。
+      const partial = partialOf(result)
+      if (partial !== null) await persistPartialStep(input, bag, rs, partial)
       return { refusal: null, pending: null, cancelled: true }
     }
 
@@ -1382,13 +1501,15 @@ function appendToolMessages(rs: RunState, output: Rec): void {
   })
 }
 
-/** 累积展示记录：正文取最后一条助手消息，parts 由已回灌时间线（含工具结果）折叠而成。 */
+/** 累积展示记录：正文取最后一条助手消息，parts 由已回灌时间线（含工具结果）折叠成本步增量。 */
 function accumulatedAssistant(rs: RunState, tools: Json[]): Rec {
   const partial = rs.messages.length > 0 && isRecord(rs.messages[0]) ? (rs.messages[0] as Rec) : {}
   const assistant: Rec = {
     content: typeof partial['content'] === 'string' ? (partial['content'] as string) : '',
   }
-  const parts = displayParts(rs.extraMessages, null, tools)
+  const full = displayParts(rs.extraMessages, null, tools)
+  const parts = incrementalParts(committedPartsOf(rs), full)
+  commitParts(rs, full)
   if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
   return assistant
 }

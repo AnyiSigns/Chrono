@@ -410,8 +410,11 @@ test('8：模型带 reasoning_blocks ⇒ step.result 持久化厂商中立 reaso
     const withResults = records.find((record) => record.type === 'step.result' && Array.isArray(record.tool_results) && record.tool_results.length > 0)
     assert.ok(withResults, '工具派发步应落盘')
     assert.deepEqual(withResults.reasoning, block, '中立推理块须随 step.result 持久化')
-    // 展示侧仍取 display reasoning（parts 不变）。
-    const display = withResults.assistant.parts.find((part) => part.type === 'reasoning')
+    // 展示侧仍取 display reasoning：增量落盘下推理段可能在其前的承接步里，跨步拼接取之。
+    const display = records
+      .filter((record) => record.type === 'step.result')
+      .flatMap((record) => record.assistant?.parts ?? [])
+      .find((part) => part.type === 'reasoning')
     assert.equal(display.text, 'display-1')
   } finally {
     service.close()

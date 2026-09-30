@@ -62,5 +62,16 @@ export interface RunState {
   dispatchedTools: boolean
   questionPending: boolean
   verifyFailed: boolean
+  /** 近段签名窗口（末尾最新）：无进展空转检测（动作 + 观察 + 状态）。跨段经段标记 / 游标重建。 */
+  loopSignatures: string[]
+  /** 本轮空转是否已注入过 nudge（升级阶梯：先提示、再收口）。 */
+  loopNudged: boolean
+  /** 待注入下一次组装的 nudge 文本（一次性）；无则 null。 */
+  loopNudge: string | null
   lastCalls: Rec[]
+  /**
+   * 本回合已落盘的展示段累计基线（工具卡按 `call_id` 合并）：步 `assistant.parts` 只写其增量。
+   * 不进游标（派生物，续跑时由 `committedFromSteps` 从步日志重导），避免游标背展示数据。
+   */
+  committedParts: Json[]
 }

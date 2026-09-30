@@ -56,10 +56,10 @@ const OPENAI_CHAT: ReasoningCapability = {
   retention: 'turn',
   requires_replay_in_tool_loop: false,
   signature_field: null,
-  replay_form: null,
+  replay_form: 'reasoning_content',
   invalidated_by: [...INVALIDATED_BY_DEFAULT],
   verified: false,
-  note: '推理文本按厂商字段可观测；回传规则不可核实，故不回传',
+  note: 'OpenAI 兼容通用：尝试按 reasoning_content 回传思考；不支持者由自适应降级剔除',
 }
 
 const OPENAI_RESPONSES: ReasoningCapability = {
@@ -92,43 +92,14 @@ const GOOGLE_SDK: ReasoningCapability = {
   note: 'thought signature 随当前步首个 functionCall part 回传',
 }
 
-const DEEPSEEK: ReasoningCapability = {
-  retention: 'turn',
-  requires_replay_in_tool_loop: true,
-  signature_field: null,
-  replay_form: 'reasoning_content',
-  invalidated_by: [...INVALIDATED_BY_DEFAULT],
-  verified: true,
-  note: '思考模式带 tools 时 reasoning_content 必须回传',
-}
-
-const KIMI: ReasoningCapability = {
-  retention: 'turn',
-  requires_replay_in_tool_loop: true,
-  signature_field: null,
-  replay_form: 'reasoning_content',
-  invalidated_by: [...INVALIDATED_BY_DEFAULT],
-  verified: false,
-  note: '保留思考经 reasoning_content 回传；厂商模板未声明回传字段，规则按设计取，未经本仓核实',
-}
-
 const PROTOCOL_CAPABILITY: Record<string, ReasoningCapability> = {
   'openai-chat': OPENAI_CHAT,
   'openai-responses': OPENAI_RESPONSES,
   'anthropic-messages': ANTHROPIC_MESSAGES,
 }
 
-const PROVIDER_CAPABILITY: Record<string, ReasoningCapability> = {
-  deepseek: DEEPSEEK,
-  anthropic: ANTHROPIC_MESSAGES,
-  google: GOOGLE_SDK,
-  'google-genai': GOOGLE_SDK,
-  kimi: KIMI,
-  moonshot: KIMI,
-}
-
 export interface CapabilityInput {
-  /** config.vendor（或模型名）；用于厂商覆盖。 */
+  /** config.vendor / 模型名；**保留字段，当前不参与解析**（厂商规则改由模板 `reasoning_replay` 经 `profile` 注入）。 */
   provider?: string | null
   protocol?: string | null
   impl?: string | null
@@ -173,20 +144,9 @@ function fromProfile(value: Rec): ReasoningCapability {
   }
 }
 
-function providerKey(provider: string | null | undefined): string | null {
-  if (typeof provider !== 'string' || provider.length === 0) return null
-  const stripped = provider.replace(/^vendor-/, '')
-  return stripped.length === 0 ? null : stripped.toLowerCase()
-}
-
-/** 解析本次调用适用的推理能力表：显式档案 > 厂商覆盖 > SDK 默认 > 协议默认 > 保守默认。 */
+/** 解析本次调用适用的推理能力表：显式档案（厂商模板声明 / 档案） > SDK 默认 > 协议默认 > 保守默认。 */
 export function resolveReasoningCapability(input: CapabilityInput): ReasoningCapability {
   if (isCapability(input.profile)) return fromProfile(input.profile as Rec)
-  const key = providerKey(input.provider)
-  if (key !== null) {
-    const override = PROVIDER_CAPABILITY[key]
-    if (override !== undefined) return override
-  }
   if (input.impl === 'sdk') return GOOGLE_SDK
   const protocol = typeof input.protocol === 'string' ? input.protocol : ''
   const byProtocol = PROTOCOL_CAPABILITY[protocol]

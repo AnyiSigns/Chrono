@@ -34,9 +34,14 @@ export class ModelError extends Error {
   }
 }
 
-/** 失败值形状：调用方据 `error.code` 分支（失败作数据，不炸本轮）。 */
-export function errorValue(code: string, message: string): Json {
-  return { ok: false, error: { code, message } }
+/**
+ * 失败值形状：调用方据 `error.code` 分支（失败作数据，不炸本轮）。
+ * `partial` 携带中止（如用户取消）时已产出的助手碎片（正文 / 推理 / 工具调用），供上层落盘留痕。
+ */
+export function errorValue(code: string, message: string, partial?: Record<string, Json>): Json {
+  const error: Record<string, Json> = { code, message }
+  if (partial !== undefined) error['partial'] = partial
+  return { ok: false, error }
 }
 
 /**

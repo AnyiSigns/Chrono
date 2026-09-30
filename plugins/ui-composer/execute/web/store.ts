@@ -770,26 +770,13 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       conversationId: creating ? threadKey : null,
     })
     if (isThreadBusy(tracking, threadKey)) {
-      // 回合运行中插入：不起新回合（`chat.send` 必被会话 `turn_busy` 拒），改落 `chat.insert`——
-      // 主历史用户消息 + 同回合步日志，随下一轮请求并入运行中的回合。
-      const turnId = turnIds.get(threadKey) ?? null
+      // 回合进行中发送：**只入待发队列**（不起新回合，避开会话 `turn_busy`），此刻不落盘、不渲染进消息流。
+      // 轮次更新（`chat.turn.started`）时才把队首交给服务端落盘（`chat.insert`）——就像回合开头的用户消息
+      // 一样「发送才落盘」。若回合先收口，由 `chat.turn.settled` → `continueQueue` 作为新回合发出，不丢消息。
+      const entry = { id: nextId(), slot }
+      state.pending = enqueue(state.pending, threadKey, entry)
       clearSentInput(ready, sentText)
-      if (turnId === null) {
-        // 尚未拿到本回合身份（run 已起、`chat.turn.started` 未到）：暂存待发，随回合收口再续。
-        state.pending = enqueue(state.pending, threadKey, { id: nextId(), slot })
-        publish()
-        return
-      }
       publish()
-      const message: Record<string, unknown> = { content: sentText }
-      if (ready.length > 0) message['attachments'] = ready.map(toAttachment)
-      void client.insertMessage(turnId, nextId(), message, threadKey).then((result) => {
-        if (disposed) return
-        if (!result.ok) {
-          state.error = result.code.length > 0 ? result.code : 'unknown'
-          publish()
-        }
-      })
       return
     }
     state.sending = true
@@ -829,6 +816,60 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     if (!result.ok) {
       state.error = result.code.length > 0 ? result.code : 'unknown'
       publish()
+    }
+  }
+
+  /** 队内槽体 → 插入用的用户消息体（content + attachments），与 chat 的 userMessageOf 同形。 */
+  function slotToUserMessage(slot: unknown): Record<string, unknown> {
+    const rec = isRecord(slot) ? slot : {}
+    const message: Record<string, unknown> = { content: typeof rec['text'] === 'string' ? rec['text'] : '' }
+    if (Array.isArray(rec['attachments'])) message['attachments'] = rec['attachments']
+    return message
+  }
+
+  /**
+   * 把待发队列里的一条交给服务端落盘：`chat.insert` 插入**当前回合**（落主历史 + 同回合步日志，
+   * 随下一轮请求并入），不起新回合。成功即从本地队列移除；失败（回合已收口 / 身份未就绪）保留，
+   * 随 `continueQueue` 作为新回合发，不把消息丢掉。
+   */
+  async function flushQueuedInsert(
+    threadKey: string,
+    turnId: string,
+    entry: { id: string; slot: unknown },
+  ): Promise<void> {
+    let result: CommandResult
+    try {
+      result = await client.insertMessage(turnId, entry.id, slotToUserMessage(entry.slot), threadKey)
+    } catch (err) {
+      if (disposed) return
+      state.error = errorOf(err)
+      publish()
+      return
+    }
+    if (disposed) return
+    if (!result.ok) {
+      // 回合已收口 / 回合未知：条目留在队列，由 `continueQueue` 作为新回合发；不误报错误。
+      if (result.code !== 'not_open' && result.code !== 'unknown_turn' && result.code !== 'bad_directive') {
+        state.error = result.code.length > 0 ? result.code : 'unknown'
+        publish()
+      }
+      return
+    }
+    state.pending = removeFromQueue(state.pending, threadKey, entry.id)
+    publish()
+  }
+
+  /**
+   * 回合身份就绪（收到 `chat.turn.started`）后把本线程待发队列逐条交给服务端：
+   * 覆盖「入队时尚无 `turn_id`」的窗口；已在发送时立即落盘的条目已移除，不重复发。
+   */
+  function drainQueueToInsert(threadKey: string): void {
+    const turnId = turnIds.get(threadKey)
+    if (turnId === undefined) return
+    for (const message of queueOf(state.pending, threadKey)) {
+      const entry = queueEntry(message)
+      const insertId = entry.id.length > 0 ? entry.id : nextId()
+      void flushQueuedInsert(threadKey, turnId, { id: insertId, slot: entry.slot })
     }
   }
 
@@ -954,6 +995,8 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
       if (typeof payload['turn_id'] === 'string' && payload['turn_id'].length > 0) {
         turnIds.set(key, payload['turn_id'])
       }
+      // 轮次更新：把本线程待发队列里的消息随本轮取出发出、插入当前回合。
+      drainQueueToInsert(key)
       const next = trackActivity(tracking, runIdOf(payload), key)
       if (isRecord(payload.progress)) state.progress = payload.progress
       cacheStatus()

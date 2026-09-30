@@ -20,8 +20,10 @@ GET  /assets/icons.v2.svg     线性图标 sprite（Lucide 子集，唯一来源
 GET  /assets/messages.v1.json 错误码 → 人话文案表（唯一来源）
 GET  /favicon.svg             站点图标（字母 C 字标）
 GET  /assets/lib/<name>.js    壳页面共享前端库（ui-state / toast / theme / boot-mode / shell）
+GET  /assets/vendor/<name>.js 壳 vendor 运行时（react / react-dom / use-sync-external-store 单产物）
+GET  /assets/ui/<id>.js       slot 客户端半边（经 <id>.client.read 取字节、同源服务）
 GET  /assets/headless/<id>.js headless 入口（经 host.source.read 取字节、同源服务，不占 slot）
-GET  /p/<id>/*                挂载表内 id → 反代子应用端口；表外 id（如 mcp）→ 宿主 forward 帧
+GET  /p/<id>/*                表外身份（如 mcp）→ 宿主 forward 帧按名路由
 GET  /events                  SSE：宿主事件原样重播 + 壳状态 + 壳合成断连 / 重连事件
 POST /api/theme               写 config.ui.theme（经 config.write 命令；落 config 用 day/night/system 词表）
 POST /api/submit              转入站 submit（body 含 directive(s) + thread）
@@ -44,10 +46,10 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 
 ## 挂载表与 headless 清单
 
-- `state/ui-mounts.json` = `[{id, path, slot, port}]`；启动无表 / 坏表则写默认值。
-  默认：`ui-sidebar/sidebar/8791`、`ui-chat/main/8788`、`ui-approval/dock/8789`、
-  `ui-composer/composer/8790`、`ui-threads/topbar/8793`、`ui-settings/overlay/8792`。
-  子应用端口可 `CHRONO_UI_PORT_<ID>` 覆盖（ID 大写、非字母数字转 `_`）。一插件一 slot；
+- `state/ui-mounts.json` = `[{id, slot, entry}]`；启动无表 / 坏表则写默认值。
+  默认六项均为 `entry: "dist/entry.js"`：`ui-sidebar/sidebar`、`ui-chat/main`、
+  `ui-approval/dock`、`ui-composer/composer`、`ui-threads/topbar`、`ui-settings/overlay`。
+  客户端半边由插件经 `<id>.client.read` 自交付，壳不持每插件端口；一插件一 slot；
   增删插件只改表，不改壳代码。挂载表的 `slot` 只决定子应用加载位；插件注册时可在任意顶层
   slot 落位（`sidebar` / `main` / `dock` / `composer` / `topbar` / `underbar` / `overlay`）——
   `underbar` 紧贴 `topbar` 之下、`main` 之上，供顶栏插件挂次级条带（如待办清单）。
@@ -61,15 +63,26 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 
 ## 子应用契约
 
-`GET /entry.js` 导出 `mount(root, api) -> {unmount()}`；可选导出 `contract`（字符串，
-与壳契约版本 `"1"` 不符即 `ui_version_mismatch`）。
+客户端半边是挂载表 `entry` 指向的包内模块，导出 `contract` 与 `register`：
+
+```ts
+export const contract = '2'
+export function register(ctx): void
+```
+
+`register` 内用 `ctx.slots.register({ name, children }, Component)` 把组件注册进命名 slot；
+`ctx` = 壳 api + `pluginId` + `useStore`（`useSyncExternalStore` 绑定）+ `slots`。契约版本不符即
+`ui_version_mismatch`；客户端半边不再导出 `mount`。完整形状见 `types/ui-contract.d.ts`，
+设计口径见 `docs/ui-client-half.md`。
 
 ```text
-api = {
+ctx = {
   tokens: { css, icons, messages },   // 三个唯一来源路径
   theme:  { get(), set(pref), subscribe(cb) },   // pref ∈ light / dark / system
   navigate(path),
-  slot,                                // 本子应用所在 slot 名
+  pluginId,                            // 本插件身份
+  useStore(store, selector?),          // useSyncExternalStore 绑定
+  slots: { register(target, Component), Outlet },
   submit(directive | directives, opts) // 转入站 submit
   command(name, args, opts)            // 按名调命令
   cancel(run)                          // 真取消指定 run

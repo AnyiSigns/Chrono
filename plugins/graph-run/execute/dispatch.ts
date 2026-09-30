@@ -2,7 +2,7 @@
 // 节点实现不在本插件（节点是各插件的 eff）；本文件只做 bag 装配、结果归一、模型失败时的降级判定。
 
 import { resolveDowngrade } from './downgrade.ts'
-import { displayParts } from './commit-parts.ts'
+import { commitParts, committedPartsOf, displayParts, incrementalParts } from './commit-parts.ts'
 import { isCancelled } from './cancel.ts'
 import { latestCheckpoint, renderCheckpointText, subagentTaskText, toSubagentResult } from './subagent.ts'
 import {
@@ -100,6 +100,10 @@ function assembleBag(input: NodeDispatchInput): Rec {
   // 阈值单一真源：解析后的扁平 thresholds map（含 `large_artifact_bytes`）随 context bag 下传，
   // 消费方据此覆盖自身 policy 默认，避免两处各定义默认值漂移。
   out['thresholds'] = input.model.thresholds
+  // 空转 nudge（一次性）：随组装下传，context-window 作为**前导**系统消息注入（不像尾插那样被当成用户最新指令）。
+  if (typeof input.rs.loopNudge === 'string' && input.rs.loopNudge.length > 0) {
+    out['loop_nudge'] = input.rs.loopNudge
+  }
   // 最近一次完成的模型调用用量随组装下传，供 context-window 校准 token 估算（缺失即不落键）。
   const usage = isRecord(input.rs.shared['last_usage']) ? (input.rs.shared['last_usage'] as Rec) : null
   if (usage !== null) out['usage'] = usage
@@ -385,12 +389,15 @@ function verifyBag(input: NodeDispatchInput): { bag: Rec; skipped: boolean } {
   return { bag: out, skipped: false }
 }
 
-/** 助手展示记录：正文 + 可选用量 + 展示 parts（推理 / 正文 / 工具卡按到达序）。 */
+/** 助手展示记录：正文 + 可选用量 + 本步增量展示 parts（推理 / 正文 / 工具卡）。 */
 export function assistantRecord(rs: RunState, message: Rec, tools: Json[]): Rec {
   const assistant: Rec = { content: typeof message['content'] === 'string' ? (message['content'] as string) : '' }
   if (isRecord(message['usage'])) assistant['meta'] = { usage: message['usage'] }
+  // 展示段按**本步增量**落盘：只写新块与内容有变的工具卡，不存整回合累积前缀。
+  const full = displayParts(rs.extraMessages, message, tools)
+  const parts = incrementalParts(committedPartsOf(rs), full)
+  commitParts(rs, full)
   // 纯文本回合不写 parts（content 已覆盖），避免历史无谓膨胀。
-  const parts = displayParts(rs.extraMessages, message, tools)
   if (parts.some((part) => isRecord(part) && part['type'] !== 'text')) assistant['parts'] = parts
   return assistant
 }
