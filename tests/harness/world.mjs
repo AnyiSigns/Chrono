@@ -8,12 +8,32 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { connect } from '../../packages/client/index.ts'
 import { runBoot, seed, start, status } from './boot.mjs'
-import { PLUGINS_DIR, REPO_ROOT, cargoIdentities, computeClosure, sourceDirFor, toyFor } from './closure.mjs'
+import {
+  NATIVE_CARGO_IDENTITIES,
+  PLUGINS_DIR,
+  REPO_ROOT,
+  cargoIdentities,
+  computeWorldIdentities,
+  sourceDirFor,
+  toyFor,
+} from './closure.mjs'
 
 const FIXTURE_BIN = join(REPO_ROOT, 'tests', 'fixtures', 'bin')
 const NPM_CACHE_SRC = join(REPO_ROOT, 'state', 'deps', 'npm')
 const TOKENIZER_NAME = process.platform === 'win32' ? 'tokenizer.dll' : 'libtokenizer.so'
-const TOKENIZER_SRC = join(REPO_ROOT, 'plugins', 'context-window', 'target', 'release', TOKENIZER_NAME)
+
+/**
+ * 原生 tokenizer 产物来源。计数的唯一实现在提供方 `token-estimate`（原生扩展）；
+ * 候选按「插件包内 target/release → 宿主 ③ 共享缓存」顺序取第一个存在者。
+ */
+const TOKENIZER_SOURCES = [
+  join(REPO_ROOT, 'plugins', 'token-estimate', 'target', 'release', TOKENIZER_NAME),
+  join(REPO_ROOT, 'state', 'deps', 'cargo-target', 'release', TOKENIZER_NAME),
+]
+
+function tokenizerSource() {
+  return TOKENIZER_SOURCES.find((candidate) => existsSync(candidate)) ?? TOKENIZER_SOURCES[0]
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -53,9 +73,12 @@ function killTree(pid) {
  * 宿主未就绪 / 原生 tokenizer 缺失时抛错（由调用方转成 skip 或失败），不静默假启动。
  */
 export async function bootWorld(options = {}) {
-  const closure = options.closure ?? computeClosure('chat')
+  // 默认世界 = chat 的 pin 闭包 ∪ 其 needs 目标提供方（传递）。显式 `closure`（如能力槽夹具世界）按原样用。
+  const closure = options.closure ?? computeWorldIdentities('chat')
   const cargo = cargoIdentities(closure)
-  const unreplaceable = cargo.filter((id) => id !== 'context-window' && toyFor(id) === null)
+  const unreplaceable = cargo.filter(
+    (id) => !NATIVE_CARGO_IDENTITIES.has(id) && toyFor(id) === null,
+  )
   if (unreplaceable.length > 0) {
     throw new Error(`e2e 缺少同名 toy 替身：${unreplaceable.join(', ')}`)
   }
@@ -77,11 +100,13 @@ export async function bootWorld(options = {}) {
   if (existsSync(NPM_CACHE_SRC)) {
     cpSync(NPM_CACHE_SRC, join(root, 'state', 'deps', 'npm'), { recursive: true })
   }
-  // 原生 tokenizer：预置到宿主依赖缓存，使物化后的 context-window 能加载（构建步骤由 PATH 上的空操作 cargo 跳过）。
-  if (existsSync(TOKENIZER_SRC)) {
+  // 原生 tokenizer：预置到宿主依赖缓存，使物化后的 token-estimate（计数提供方）能加载
+  // （构建步骤由 PATH 上的空操作 cargo 跳过）。
+  const tokenizerSrc = tokenizerSource()
+  if (existsSync(tokenizerSrc)) {
     const destDir = join(root, 'state', 'deps', 'cargo-target', 'release')
     mkdirSync(destDir, { recursive: true })
-    cpSync(TOKENIZER_SRC, join(destDir, TOKENIZER_NAME))
+    cpSync(tokenizerSrc, join(destDir, TOKENIZER_NAME))
     state.nativeTokenizerAvailable = true
   }
 
@@ -101,8 +126,9 @@ export async function bootWorld(options = {}) {
       throw new Error(`seed 失败：${seeded.stderr || seeded.stdout || `exit ${seeded.status}`}`)
     }
     if (!state.nativeTokenizerAvailable) {
-      // 早退：context-window 是 chat 的 pin，加载不了则整条链路隔离；由调用方 skip 并给出明确原因。
-      throw new NativeTokenizerMissing(TOKENIZER_SRC)
+      // 早退：token-estimate 是 chat 链路 needs 的计数提供方，原生扩展缺失则计数不可用；
+      // 由调用方 skip 并给出明确原因。
+      throw new NativeTokenizerMissing(tokenizerSrc)
     }
 
     const started = start(root, { env })

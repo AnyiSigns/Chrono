@@ -123,12 +123,12 @@ function SettingsShell() {
     <>
       <div className="settings-backdrop" onClick={() => vc.closeOverlay()} />
       <div className="settings-modal" role="dialog" aria-modal="true" aria-label={vc.text('settings_title')}>
+        <IconButton className="settings-close" name="x" label={vc.text('settings_close')} onClick={() => vc.closeOverlay()} />
         <div className="settings-nav">
           <div className="settings-nav-head">
             <span className="settings-nav-title">{vc.text('settings_title')}</span>
-            <IconButton name="x" label={vc.text('settings_close')} onClick={() => vc.closeOverlay()} />
           </div>
-          <div role="tablist" onKeyDown={onTabKeyDown}>
+          <div className="settings-tablist" role="tablist" onKeyDown={onTabKeyDown}>
             {TABS.map((tab) => (
               <button
                 type="button"

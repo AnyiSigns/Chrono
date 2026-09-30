@@ -1,0 +1,10 @@
+{
+  "name": "toy-rerank",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试用同名 toy：替代 Rust 构建的 rerank",
+  "engines": {
+    "node": ">=24"
+  }
+}

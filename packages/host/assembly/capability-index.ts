@@ -103,7 +103,7 @@ export function implementedCaps(world: World, identityId: string, blobsDir?: str
   if (gen === null) return []
   const facts = factsOfGen(world, gen, blobsDir)
   if (facts === null) return []
-  return facts.implements.filter((cap) => cap !== HOST_CAPABILITY)
+  return [...facts.implements].filter((cap) => cap !== HOST_CAPABILITY)
 }
 
 /**

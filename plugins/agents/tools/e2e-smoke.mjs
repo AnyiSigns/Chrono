@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { H } from '../../../packages/kernel/index.ts'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
-import { projectBaseOnly } from '../../../packages/host/projection/index.ts'
+import { projectBaseOnly, reachableDefHashes } from '../../../packages/host/projection/index.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -274,7 +274,8 @@ function main() {
     assert.equal(replayed.worldRev.length, 64)
     console.log(`replay: ok (worldRev=${replayed.worldRev.slice(0, 12)}…)`)
 
-    // 停机后离线读投影：链头 tail 指向最新条目、refs 闭包含全链（跨批续链的关键断言）。
+    // 停机后离线读投影：链头 tail 指向最新条目（直接标记 refs = 排序去重数组、不做传递闭包），
+    // 跨批续链的深层 def 沿标记逐跳经 reachableDefHashes 取回世界内可达集合。
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     const projection = projectBaseOnly(anchor.world, anchor.head)
@@ -282,20 +283,24 @@ function main() {
     const evolutionBodyRead = projection.ids.evolution.body
     assert.equal(evolutionBodyRead.trace.count, 2)
     assert.equal(evolutionBodyRead.trace.tail.def, H({ body: trace2 }))
-    assert.ok(projection.ids.evolution.refs[trace1Hash], 'evolution refs 缺 trace 1')
-    assert.ok(projection.ids.evolution.refs[trace2Hash], 'evolution refs 缺 trace 2')
+    assert.deepEqual(projection.ids.evolution.refs, [trace2Hash])
+    const evolutionReachable = reachableDefHashes(anchor.world, evolutionBodyRead)
+    assert.ok(evolutionReachable.has(trace1Hash), 'evolution 闭包缺 trace 1')
+    assert.ok(evolutionReachable.has(trace2Hash), 'evolution 闭包缺 trace 2')
 
     const agentsBodyRead = projection.ids.agents.body
     assert.equal(agentsBodyRead.instances.count, 2)
     assert.equal(agentsBodyRead.instances.tail.def, H({ body: instance2 }))
-    assert.ok(projection.ids.agents.refs[instance1Hash], 'agents refs 缺 instance 1')
-    assert.ok(projection.ids.agents.refs[instance2Hash], 'agents refs 缺 instance 2')
-    assert.ok(projection.ids.agents.refs[promptHash], 'agents refs 缺提示词 def')
+    assert.deepEqual(projection.ids.agents.refs, [instance2Hash])
+    const agentsReachable = reachableDefHashes(anchor.world, agentsBodyRead)
+    assert.ok(agentsReachable.has(instance1Hash), 'agents 闭包缺 instance 1')
+    assert.ok(agentsReachable.has(instance2Hash), 'agents 闭包缺 instance 2')
+    assert.ok(agentsReachable.has(promptHash), 'agents 闭包缺提示词 def')
 
     const skillBodyRead = projection.ids.skill.body
     assert.equal(skillBodyRead.skills.length, 1)
     assert.equal(skillBodyRead.skills[0].triggers.explicit[0], '@测试')
-    console.log('projection: ok（tail 指向 + refs 闭包含全链）')
+    console.log('projection: ok（tail 指向 + 直接 refs + 闭包可达全链）')
 
     console.log(`E2E ok（root=${root}）`)
   } finally {

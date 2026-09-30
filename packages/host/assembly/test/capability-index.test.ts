@@ -5,6 +5,7 @@ import {
   capabilityOwners,
   capabilityProviders,
   effectiveMethods,
+  implementedCaps,
   manyNeedsOf,
   parsePluginDecl,
 } from '../index.ts'
@@ -182,6 +183,24 @@ describe('能力索引 capability-index', () => {
       addCodeGen(world, 'mixed', { identity: 'mixed', implements: ['cap'] })
       addDataGen(world, 'mixed')
       expect(capabilityProviders(world, 'cap')).toEqual(['mixed'])
+    })
+  })
+
+  describe('成员自身能力类 implementedCaps', () => {
+    it('按声明序返回，排除保留能力类 host', () => {
+      const world = emptyWorld()
+      addIdentity(world, 'prov')
+      addCodeGen(world, 'prov', { identity: 'prov', implements: ['host', 'capA', 'capB'] })
+      // 回归：fact.implements 是 Set，曾误用 Array#filter 导致 many 反向调用崩错
+      expect(implementedCaps(world, 'prov')).toEqual(['capA', 'capB'])
+    })
+
+    it('身份缺失 / 声明读不出 → 空表', () => {
+      const world = emptyWorld()
+      expect(implementedCaps(world, 'ghost')).toEqual([])
+      addIdentity(world, 'data-only')
+      addDataGen(world, 'data-only')
+      expect(implementedCaps(world, 'data-only')).toEqual([])
     })
   })
 

@@ -30,27 +30,25 @@ export function GeneralPanel() {
           {THEME_CARDS.map((card) => {
             const selected = current === card.id
             return (
-              <div className="settings-theme-wrap" key={card.id}>
-                <button
-                  type="button"
-                  className="settings-theme-card"
-                  aria-pressed={selected ? 'true' : 'false'}
-                  onClick={async () => {
-                    try {
-                      const result = await vc.setTheme(card.id)
-                      vc.state.error = result.ok ? null : { code: result.code, message: '' }
-                    } catch {
-                      vc.state.error = { code: 'ui_unreachable', message: '' }
-                    } finally {
-                      vc.render()
-                    }
-                  }}
-                >
-                  <Icon name={card.icon} size={20} />
-                  <span>{vc.text(`settings_theme_${card.id}`)}</span>
-                </button>
-                {selected ? <Icon name="check" size={16} className="settings-theme-check" /> : null}
-              </div>
+              <button
+                type="button"
+                className="settings-theme-card"
+                key={card.id}
+                aria-pressed={selected ? 'true' : 'false'}
+                onClick={async () => {
+                  try {
+                    const result = await vc.setTheme(card.id)
+                    vc.state.error = result.ok ? null : { code: result.code, message: '' }
+                  } catch {
+                    vc.state.error = { code: 'ui_unreachable', message: '' }
+                  } finally {
+                    vc.render()
+                  }
+                }}
+              >
+                <Icon name={card.icon} size={20} />
+                <span>{vc.text(`settings_theme_${card.id}`)}</span>
+              </button>
             )
           })}
         </div>

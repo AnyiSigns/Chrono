@@ -1,64 +1,120 @@
-// 真 pin 闭包基线：从 `chat` 沿 `plugins/*/plugin.json` 的 `pins` 走完，钉住世界装配所需身份集与其中的原生构建件。
-// 不采信任何文档给出的规模估计；此处断言的是**实际算出的**闭包。数量变化意味着装配面变化，需在此显式更新。
+// 真 pin 闭包基线：从 `chat` 沿 `plugins/*/plugin.json` 的 `pins` 走完——`pins` 是 DAG 闭包边，
+// `needs` 不建闭包边。boot 世界另需闭包内身份的 needs 目标提供方在场，故世界身份集 = pin 闭包 ∪ needs 目标。
+// 不采信任何文档给出的规模估计；此处断言的是**实际算出的**集合。数量变化意味着装配面变化，需在此显式更新。
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeClosure, cargoIdentities } from '../harness/index.mjs'
+import { NATIVE_CARGO_IDENTITIES, cargoIdentities, computeClosure, computeWorldIdentities, toyFor } from '../harness/index.mjs'
 
-const EXPECTED_CLOSURE = [
+// chat 的 `pins` 现只含保留身份 `host`（host 不计），故 pin 闭包只有自身。
+const EXPECTED_PIN_CLOSURE = ['chat']
+
+// 世界身份集 = pin 闭包 ∪ 传递 needs 目标提供方（`many` 取全部提供方）。
+const EXPECTED_WORLD = [
   'approval',
+  'budget',
   'chat',
   'compress',
   'config',
   'context-window',
+  'dedup',
   'embedding',
+  'embedding-local',
+  'evolve-evidence',
+  'evolve-ledger',
   'evolve-metrics',
+  'evolve-shadow',
+  'evolve-sweep',
+  'graph-gate',
   'graph-run',
   'guard',
   'input',
+  'l1-maintenance',
+  'l2-maintenance',
+  'l3-maintenance',
   'loop-policy',
   'mcp',
+  'mcp-client',
   'memory-consolidate',
   'memory-retrieval',
   'memory-store',
   'model-protocol',
+  'msg-dialect',
+  'orchestration',
   'orchestration-admin',
+  'plugin',
   'plugin-admin',
+  'query-plan',
   'question',
+  'ref-hydrate',
+  'rerank',
   'router',
   'sandbox',
+  'sandbox-exec',
+  'sandbox-fs',
+  'sandbox-policy',
   'secrets',
+  'secrets-env',
+  'secrets-local',
+  'semantic',
   'session',
   'session-title',
   'short-memory',
   'skill',
   'storage-kv',
+  'summarize',
+  'throttle',
+  'title-format',
   'todo',
+  'token-estimate',
+  'tokenizer',
   'tool-browser',
+  'tool-dispatch',
   'tool-fs',
   'tool-http',
+  'tool-registry',
+  'tool-schema',
   'tool-shell',
   'tools',
   'turn-ledger',
+  'vector-index',
   'workspace',
 ]
 
 const EXPECTED_CARGO = [
-  'context-window',
   'embedding',
+  'embedding-local',
+  'evolve-evidence',
+  'evolve-ledger',
   'evolve-metrics',
+  'evolve-shadow',
+  'evolve-sweep',
   'memory-retrieval',
+  'query-plan',
+  'rerank',
   'sandbox',
+  'sandbox-exec',
+  'sandbox-fs',
+  'sandbox-policy',
+  'token-estimate',
+  'tokenizer',
   'tool-fs',
   'workspace',
 ]
 
-test('chat 的传递 pin 闭包 = 35 个身份', () => {
-  const closure = computeClosure('chat')
-  assert.deepEqual(closure, EXPECTED_CLOSURE)
+test('chat 的传递 pin 闭包只含自身（needs 不建闭包边）', () => {
+  assert.deepEqual(computeClosure('chat'), EXPECTED_PIN_CLOSURE)
 })
 
-test('闭包内的原生（cargo）构建件 = 7 个', () => {
-  const cargo = cargoIdentities(computeClosure('chat'))
-  assert.deepEqual(cargo, EXPECTED_CARGO)
+test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 68 个身份', () => {
+  assert.deepEqual(computeWorldIdentities('chat'), EXPECTED_WORLD)
+})
+
+test('世界内的原生（cargo）构建件 = 18 个', () => {
+  assert.deepEqual(cargoIdentities(EXPECTED_WORLD), EXPECTED_CARGO)
+})
+
+test('世界内除原生承载身份外，每个 cargo 身份都有同身份 toy 替身', () => {
+  const missing = EXPECTED_CARGO.filter((id) => !NATIVE_CARGO_IDENTITIES.has(id) && toyFor(id) === null)
+  assert.deepEqual(missing, [])
 })

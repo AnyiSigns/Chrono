@@ -35,11 +35,11 @@ export function Icon(props: { name: string; size?: number; label?: string; class
 }
 
 /** 图标按钮：命中区 ≥24×24，必须带 aria-label。 */
-export function IconButton(props: { name: string; label: string; onClick?: () => void; disabled?: boolean }) {
+export function IconButton(props: { name: string; label: string; onClick?: () => void; disabled?: boolean; className?: string }) {
   return (
     <button
       type="button"
-      className="settings-iconbtn"
+      className={props.className ? `settings-iconbtn ${props.className}` : 'settings-iconbtn'}
       aria-label={props.label}
       title={props.label}
       disabled={props.disabled}

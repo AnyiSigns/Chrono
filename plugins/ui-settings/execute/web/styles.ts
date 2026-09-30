@@ -1,6 +1,6 @@
 // 本插件的组件样式：只引用壳提供的 token（`/assets/tokens.v1.css`），零硬编码色值；
 // 需要半透明处用 `color-mix(... var(--c-*) ...)` 由 token 派生，不写死 rgba / hex。
-// 共享 token 未覆盖的组件规格（控件高 / 列表上限 / 呼吸时长 / 遮罩比 / 描边 / 语义点）以
+// 共享 token 未覆盖的组件规格（控件高 / 列表上限 / 呼吸时长 / 遮罩比 / 描边 / 语义点 / 导航标签圆角与行高 / 主题卡宽上限 / 模态圆角）以
 // `.settings-root` 上的局部自定义属性收口，作**组件规格**登记，便于日后上收为全局 token。
 // 引导页（`.settings-guide`）另登记自己的一档规格：更高的控件、更大的标题字阶、中性焦点环——
 // 引导页只用黑 / 白 / 灰（不引 accent），居中单列，靠字阶、留白与发丝线立层级。
@@ -24,21 +24,27 @@ export const STYLE_TEXT = `
   --settings-overlay-mix: 28%;
   --settings-ring-stroke: 1.5px;
   --settings-dot-size: 6px;
+  --settings-tab-radius: 12px;
+  --settings-tab-h: 38px;
+  --settings-modal-radius: 16px;
   --settings-focus-ring: 0 0 0 3px color-mix(in srgb, var(--c-text) 9%, transparent);
   position: fixed; inset: 0; z-index: var(--z-modal);
   pointer-events: auto;
 }
 .settings-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--c-text) var(--settings-overlay-mix), transparent); animation: settings-fade var(--motion-base) both; }
-.settings-modal { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: var(--settings-w); height: var(--settings-h); max-height: 720px; display: flex; background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-md); box-shadow: var(--shadow-pop); overflow: hidden; animation: settings-rise var(--motion-base) both; }
+.settings-modal { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: var(--settings-w); height: var(--settings-h); max-height: 660px; display: flex; background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--settings-modal-radius); box-shadow: var(--shadow-pop); overflow: hidden; animation: settings-rise var(--motion-base) both; }
+.settings-close { position: absolute; right: var(--space-12); top: var(--space-12); z-index: 2; }
 .settings-nav { flex: none; width: var(--settings-nav-w); min-height: 0; position: sticky; top: 0; padding: var(--space-12) var(--space-8); display: flex; flex-direction: column; gap: var(--space-4); background: var(--c-surface); overflow-y: auto; }
-.settings-nav-head { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-8) var(--space-8); }
+.settings-nav-head { display: flex; align-items: center; padding: 0 var(--space-8) var(--space-8); }
 .settings-nav-title { font-size: var(--font-size-md); font-weight: var(--weight-strong); }
-.settings-tab { display: flex; align-items: center; gap: var(--space-8); height: var(--list-item-h); padding: 0 var(--space-8); background: none; border: none; border-radius: var(--radius-md); color: var(--c-text-2); font: inherit; font-size: var(--font-size-md); text-align: left; cursor: pointer; transition: background-color var(--motion-fast), color var(--motion-fast); }
+.settings-tablist { display: flex; flex-direction: column; gap: var(--space-4); }
+.settings-tab { display: flex; align-items: center; gap: var(--space-8); width: 100%; height: var(--settings-tab-h); padding: 0 var(--space-12); background: none; border: none; border-radius: var(--settings-tab-radius); color: var(--c-text-2); font: inherit; font-size: var(--font-size-md); text-align: left; cursor: pointer; transition: background-color var(--motion-fast), color var(--motion-fast); }
 .settings-tab:hover { background: var(--c-selection); color: var(--c-text); }
 .settings-tab[aria-selected="true"] { background: var(--c-selection); color: var(--c-text); font-weight: var(--weight-strong); }
 .settings-tab:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .settings-tab-dot { width: var(--settings-dot-size); height: var(--settings-dot-size); border-radius: 50%; background: var(--c-warning); margin-left: auto; }
-.settings-content { flex: 1 1 auto; overflow: auto; padding: var(--space-16) var(--space-24) var(--space-24); }
+.settings-content { flex: 1 1 auto; overflow: auto; padding: var(--space-16) var(--space-24) var(--space-24); scrollbar-width: none; }
+.settings-content::-webkit-scrollbar { width: 0; height: 0; }
 .settings-content-fade { animation: settings-tab-fade var(--motion-base) both; }
 .settings-panel-head { margin-bottom: var(--space-24); }
 .settings-panel-title { color: var(--c-text); font-size: var(--font-size-lg); font-weight: var(--weight-strong); }
@@ -82,13 +88,10 @@ export const STYLE_TEXT = `
 .settings-iconbtn:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .settings-iconbtn:disabled { opacity: .45; cursor: not-allowed; }
 .settings-theme-cards { display: flex; gap: var(--space-8); }
-.settings-theme-card { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-8); padding: var(--space-12); background: var(--c-surface); border: var(--settings-ring-stroke) solid var(--c-border); border-radius: var(--radius-md); color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); cursor: pointer; transition: border-color var(--motion-fast), background-color var(--motion-fast); }
-.settings-theme-card:hover { background: var(--c-selection); }
-.settings-theme-card[aria-pressed="true"] { border-color: var(--c-accent-strong); color: var(--c-text); }
+.settings-theme-card { flex: 1 1 0; max-width: var(--settings-theme-card-max-w); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-8); min-height: 84px; padding: var(--space-16); background: var(--c-surface); border: var(--settings-ring-stroke) solid var(--c-border); border-radius: var(--radius-lg); color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); cursor: pointer; transition: border-color var(--motion-fast), background-color var(--motion-fast), color var(--motion-fast); }
+.settings-theme-card:hover { background: color-mix(in srgb, var(--c-text) 4%, var(--c-surface)); border-color: color-mix(in srgb, var(--c-text) 10%, var(--c-border)); color: var(--c-text); }
+.settings-theme-card[aria-pressed="true"] { background: color-mix(in srgb, var(--c-text) 6%, var(--c-surface)); border-color: color-mix(in srgb, var(--c-text) 16%, var(--c-border)); color: var(--c-text); }
 .settings-theme-card:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-.settings-theme-check { position: absolute; }
-.settings-theme-wrap { position: relative; }
-.settings-theme-wrap .settings-theme-check { top: var(--space-4); right: var(--space-4); color: var(--c-accent-strong); }
 .settings-dot { width: var(--settings-dot-size); height: var(--settings-dot-size); border-radius: 50%; flex: none; }
 .settings-dot[data-tone="success"] { background: var(--c-success); }
 .settings-dot[data-tone="danger"] { background: var(--c-danger); }

@@ -73,8 +73,8 @@
   --msg-gap: 16px;
   --msg-max-w: 780px;
   --bubble-max-w: 72%;
-  --settings-w: clamp(640px, 65vw, 1120px);
-  --settings-h: 86vh;
+  --settings-w: clamp(600px, 58vw, 1000px);
+  --settings-h: 80vh;
   --settings-nav-w: 160px;
   --dock-max-h: 40vh;
   --composer-max-h: 30vh;

@@ -97,9 +97,13 @@ export function createRecorder(client) {
       const result = await client.command('chat.send', null, { thread })
       return { result, slot }
     },
-    /** 权威会话历史（session owner 自存储经 chat.history 只读命令读出）。 */
+    /**
+     * 权威会话历史（session owner 自存储经 chat.history 只读命令读出）。
+     * 默认 `full: true`（引擎切片）：`turns[].steps` 是端到端断言（意图 / 结果 / 检查点步）的依据，
+     * 展示窗口默认不背步记录。只要消息窗口的用例可传 `{ full: false }`。
+     */
     async history(conversation, options = {}) {
-      const args = { conversation }
+      const args = { conversation, full: options.full !== false }
       if (options.before !== undefined) args.before = options.before
       if (options.limit !== undefined) args.limit = options.limit
       return lastEvalValue(await client.command('chat.history', args))
