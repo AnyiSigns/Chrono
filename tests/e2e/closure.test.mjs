@@ -13,6 +13,7 @@ const EXPECTED_CLOSURE = [
   'context-window',
   'embedding',
   'evolve-metrics',
+  'graph-run',
   'guard',
   'input',
   'loop-policy',
@@ -38,6 +39,7 @@ const EXPECTED_CLOSURE = [
   'tool-http',
   'tool-shell',
   'tools',
+  'turn-ledger',
   'workspace',
 ]
 
@@ -51,7 +53,7 @@ const EXPECTED_CARGO = [
   'workspace',
 ]
 
-test('chat 的传递 pin 闭包 = 33 个身份', () => {
+test('chat 的传递 pin 闭包 = 35 个身份', () => {
   const closure = computeClosure('chat')
   assert.deepEqual(closure, EXPECTED_CLOSURE)
 })

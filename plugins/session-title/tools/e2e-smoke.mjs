@@ -1,8 +1,8 @@
 // `session-title` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读）：
-// pack 依赖链（secrets → model-protocol → session → session-title）→ seed
-// → 离线读投影确认四身份在册（pins 解析通过）→ 声明门禁负例 → 直连服务协议，把反向调用桥接到内存假后端
-// → 覆盖 generate 的正常生成、写计划原样上提与非流式。
-// 说明：**不执行 `boot start`**——本次验收只到「声明与协议就位」；pack / seed 已覆盖插件声明、pins 与 .worldignore 的宿主门禁。
+// pack 依赖闭包（secrets / config / msg-dialect / throttle / model-protocol / title-format / input / session /
+// session-title）→ seed → 离线读投影确认身份在册（有效 pins 解析通过）→ 声明门禁负例
+// → 直连服务协议，把反向调用桥接到内存假后端 → 覆盖 generate 的正常生成、标题值经 title-format 清理与非流式。
+// 说明：**不执行 `boot start`**——本次验收只到「声明与协议就位」；pack / seed 已覆盖插件声明、needs 与 .worldignore 的宿主门禁。
 // 用法：node plugins/session-title/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -19,7 +19,12 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIRS = [
   ['secrets', join(REPO_ROOT, 'plugins', 'secrets')],
+  ['config', join(REPO_ROOT, 'plugins', 'config')],
+  ['msg-dialect', join(REPO_ROOT, 'plugins', 'msg-dialect')],
+  ['throttle', join(REPO_ROOT, 'plugins', 'throttle')],
   ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
+  ['title-format', join(REPO_ROOT, 'plugins', 'title-format')],
+  ['input', join(REPO_ROOT, 'plugins', 'input')],
   ['session', join(REPO_ROOT, 'plugins', 'session')],
   ['session-title', join(REPO_ROOT, 'plugins', 'session-title')],
 ]
@@ -98,13 +103,10 @@ function waitExit(child) {
   })
 }
 
-function directivesOf(value) {
-  return Array.isArray(value?.$directives) ? value.$directives : []
-}
-
 /**
  * 直连 session-title 服务 stdio，把 `port.call` 桥接到内存假后端：
- * `model.complete` 回确定性标题；`session.set_title` 回写计划。
+ * `model.complete` 回确定性模型文本；`title-format.resolve` 回清理后的标题。
+ * 本插件只产标题值，不写世界、不产 `$directives`（会话落盘由调用方 chat 经 session.commit 一次完成）。
  */
 async function directProtocolSmoke(entry) {
   const child = spawn(process.execPath, [entry], {
@@ -115,23 +117,6 @@ async function directProtocolSmoke(entry) {
   const portCalls = []
   const events = []
   const env = { run: 'e2e', thread: null, now: 1_700_000_000_000 }
-  const plan = {
-    $directives: [
-      {
-        kind: 'write',
-        request: {
-          op: 'batch',
-          args: {
-            ops: [
-              { op: 'put', args: { body: { current: 'c-1', conversations: [{ id: 'c-1', title: '快速排序算法' }] } } },
-              { op: 'add_gen', args: { id: 'session', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
-            ],
-          },
-        },
-      },
-      { kind: 'extern', payload: { ok: true, conversation: 'c-1', title: '快速排序算法' } },
-    ],
-  }
 
   function bridge(message) {
     portCalls.push(message)
@@ -139,8 +124,8 @@ async function directProtocolSmoke(entry) {
       child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, text: '"快速排序算法。"' } }))
       return
     }
-    if (message.port === 'session' && message.method === 'set_title') {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: plan }))
+    if (message.port === 'title-format' && message.method === 'resolve') {
+      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, title: '快速排序算法' } }))
       return
     }
     child.stdin.write(
@@ -179,14 +164,18 @@ async function directProtocolSmoke(entry) {
       params: { temperature: 0.3 },
     })
     assert.equal(result.kind, 'result', JSON.stringify(result))
-    assert.deepEqual(directivesOf(result.value), plan.$directives, 'generate 应原样上提会话写计划')
+    assert.equal(result.value.$directives, undefined, '不再产世界写计划')
+    assert.equal(result.value.ok, true)
+    assert.equal(result.value.title, '快速排序算法')
     const model = portCalls.find((frame) => frame.port === 'model')
     assert.equal(model.method, 'complete', '应走非流式 complete')
-    const setTitle = portCalls.find((frame) => frame.port === 'session' && frame.method === 'set_title')
-    assert.equal(setTitle.args.title, '快速排序算法', '引号与结尾标点应被清理')
+    assert.ok(
+      portCalls.some((frame) => frame.port === 'title-format' && frame.method === 'resolve'),
+      '标题后处理应委派 title-format.resolve',
+    )
     assert.equal(events.length, 0, '非流式：不发 model.delta 事件')
 
-    console.log('直连协议：generate 正常生成 + 写计划原样上提 + 非流式')
+    console.log('直连协议：generate 正常生成 + 标题值经 title-format 清理 + 非流式')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -211,21 +200,21 @@ async function main() {
 
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')
-    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部四身份')
+    assert.equal(seeded.items.length, PLUGIN_DIRS.length, 'seed 应覆盖全部闭包身份')
     console.log(`seed: ${seeded.items.map((item) => `${item.name}=${item.status}`).join(' ')}`)
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     for (const [identity] of PLUGIN_DIRS) {
       assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
     }
     assert.deepEqual(
       projection.ids['session-title'].pins,
-      { model: 'model-protocol' },
+      { model: 'model-protocol', 'title-format': 'title-format' },
       'session-title pins 应解析为身份名',
     )
-    console.log('离线投影：四身份在册，session-title pins 解析通过')
+    console.log('离线投影：闭包身份在册，session-title 有效 pins 解析通过')
 
     const gate = bootRaw(root, ['pack', join(REPO_ROOT, 'plugins', 'session-title'), '--identity', 'wrong-identity'])
     assert.notEqual(gate.status, 0, '身份不一致应被声明门禁拒绝')

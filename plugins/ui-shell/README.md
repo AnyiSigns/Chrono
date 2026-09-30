@@ -35,6 +35,9 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 `/p/<id>/<cmd>` 表外路径映射为命令名：路径段以 `.` 连接并保证带 `<id>.` 前缀
 （`/p/mcp/discover` → `mcp.discover`，`/p/mcp/tools/list` → `mcp.tools.list`）。
 
+`/api/command` 成功响应只回 `{ok, kind, status, value}`：`value` 即从宿主帧观测里提取的命令结果值，
+浏览器一律读 `value`（不再随附原始 `observations`，避免同一对象图被序列化两遍）。`/api/submit` 保持原样，只回受理回帧。
+
 壳自有的页面 / 静态 / 模块响应一律 `cache-control: no-store`：降级内容（如空 sprite）若被
 浏览器启发式缓存，`<use href="/assets/icons.v2.svg#…">` 会长期解析不到目标而静默留白。
 降级不阻塞功能，但会落一行 `asset fallback: <name>` 日志（`serveAsset`）。

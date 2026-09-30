@@ -920,11 +920,12 @@ test('tokens.v1.css：§2–§8 全部 token + z 栈，且无组件样式', () =
 
 const REQUIRED_ICONS = [
   'arrow-up', 'square', 'plus', 'pencil', 'settings', 'copy', 'rotate-ccw',
-  'panel-left', 'panel-left-close', 'arrow-down', 'cpu', 'gauge', 'zap', 'shield-alert',
+  'arrow-down', 'cpu', 'gauge', 'zap', 'shield-alert',
   'eye', 'ban', 'check', 'x', 'check-check', 'alert-triangle', 'alert-circle',
   'pencil-line', 'chevron-down', 'list', 'puzzle', 'sparkles', 'brain', 'info', 'sun',
   'moon', 'monitor', 'download', 'upload', 'paperclip', 'folder', 'folder-plus',
   'folder-open', 'chevron-right', 'more-horizontal', 'search', 'trash-2', 'git-branch', 'undo-2',
+  'chat-plus', 'panel-collapse', 'panel-expand', 'think-wave', 'think-wave-live',
 ]
 
 test('icons.v2.svg：登记子集齐全、24×24、stroke 1.5、无 emoji', () => {
@@ -963,9 +964,11 @@ test('壳页面细节：toast DOM 序、无死代码、响应式与 ::selection�
   assert.match(html, /::selection/)
   assert.match(html, /scrollbar-width: thin/)
   assert.match(html, /::-webkit-scrollbar-thumb/)
-  // main 取剩余空间（0 基 + 自持滚动），dock 恒取内容高度：两者都不得随消息流伸缩。
+  // main 取剩余空间（0 基 + 自持滚动）；dock 绝对定位浮在输入框之上，不再占布局顶动 composer。
   assert.match(html, /#slot-main \{ flex: 1 1 0/)
-  assert.match(html, /#slot-dock \{[\s\S]*?flex: none/)
+  assert.match(html, /#slot-dock \{[\s\S]*?position: absolute/)
+  assert.match(html, /#slot-dock \{[\s\S]*?bottom: 100%/)
+  assert.match(html, /#shell-bottom \{[\s\S]*?position: relative/)
   // underbar 紧贴 topbar 之下、main 之上：常显占布局，flex: none。
   assert.match(html, /id="slot-underbar" data-slot="underbar"/)
   assert.match(html, /#slot-underbar \{[\s\S]*?flex: none/)
@@ -1195,6 +1198,38 @@ test('/api/theme：走 config.write 命令用 day/night 词表，回包 / 运行
     ])
     assert.equal(JSON.stringify(commands).includes('add_gen'), false)
     assert.equal(JSON.stringify(commands).includes('$directives'), false)
+  } finally {
+    await server.close()
+  }
+})
+
+test('/api/command：成功回包只带 value，不再双发 observations', async () => {
+  const port = await freePort()
+  const server = await startUiServer(
+    fakeServerDeps({
+      bridge: {
+        async command() {
+          return {
+            ok: true,
+            frame: {
+              kind: 'result',
+              status: 'done',
+              observations: [{ kind: 'eval', ok: true, value: { body: { current: 'c1' } } }],
+            },
+            code: '',
+            message: '',
+          }
+        },
+      },
+    }),
+    port,
+  )
+  try {
+    const { status, payload } = await postJsonTo(port, '/api/command', { name: 'session.list' })
+    assert.equal(status, 200)
+    assert.equal(payload.ok, true)
+    assert.deepEqual(payload.value, { body: { current: 'c1' } })
+    assert.equal(Object.hasOwn(payload, 'observations'), false)
   } finally {
     await server.close()
   }

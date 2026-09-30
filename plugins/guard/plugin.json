@@ -3,7 +3,10 @@
   "schema": "schema/guard.json",
   "implements": ["guard"],
   "methods": {
-    "guard": ["judge"]
+    "guard": ["judge", "facts", "collect"]
+  },
+  "judgments": {
+    "guard": { "judge": "terms/guard.json" }
   },
   "pins": {},
   "start": "node execute/main.ts",
@@ -25,6 +28,7 @@
   "state": "recomputable",
   "members": [
     { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
     { "kind": "schema", "path": "schema/" }
   ],
   "commands": []

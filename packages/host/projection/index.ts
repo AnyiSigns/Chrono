@@ -159,6 +159,11 @@ export function assembleIdentityBody(world: World, identityId: string): Json | n
 export interface ProjectionOptions {
   /** 源码 CAS 目录：解析身份声明（pointer blob）取 `pins` 时经它读文本。 */
   blobsDir?: string
+  /**
+   * 调用方已算好的 `world_rev`：同世界同算法必同值。缺省才在内部现算——
+   * `worldRev` 是 O(#defs) 全量摘要，宿主已按链头缓存时不必重复付。
+   */
+  worldRev?: Hash
 }
 
 /**
@@ -203,7 +208,7 @@ export function projectBaseOnly(world: World, head: Head, options?: ProjectionOp
   }
   return {
     head: { seq: head.seq, hash: head.hash },
-    world_rev: worldRev(world),
+    world_rev: options?.worldRev ?? worldRev(world),
     ids,
   }
 }

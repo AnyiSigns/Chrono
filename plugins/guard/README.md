@@ -1,13 +1,34 @@
 # guard（工具调用语义门）
 
-工具调用语义门：**纯函数**逐 call 出 `allow` / `escalate` / `deny`。
+工具调用语义门：逐 call 出 `allow` / `escalate` / `deny`。
 `escalate` = 工作区外 / 危险操作，需要弹卡；`deny` = 未声明能力 / 明确禁止的调用。
 本插件只判、不执行、不等待：fs 范围强制与 realpath 权威在沙箱；审批 UI 与等待在编排 / 审批面。
 
-- 能力类：`guard`；方法：`judge`。
-- 命令：无。`pins`：无。`+`（投影读）：无——`tier` / `workspace_root` / `guard_rules` 由调用方入口 term 读出后随 bag 传入。
-- 状态档：`recomputable`（无状态；`judge` 不发起 eff、不等待、不取时间、不用随机，同输入同输出）。
-- 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
+- 身份：`guard`
+- 能力类 / 方法：`guard` → `judge`（判定）、`facts` / `collect`（服务侧取数与列表材料化）
+- 判定：`plugin.json.judgments` 声明 `guard.judge = terms/guard.json`——优先级裁决住 term，
+  由宿主路由命中时**就地求值**；服务不实现 `judge`。
+- `pins`：无（judge 只 `eff` 自己的取数方法，是自能力路由，不构成身份级依赖）
+- 状态档：`recomputable`（无状态；同输入同输出，可回放）
+- 进程：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）——
+  服务只提供取数 / 材料化，不起判定。
+
+## 判定作为数据
+
+`judge` 判定不是服务代码，而是世界里的 term def：
+
+- 改判定 = 写一条数据世代（`put` + `add_gen`）→ 热生效、进程不动、可回滚、可审计。
+- 判定 term 先 `eff guard.facts`（把 bag 原样传入）取数，再据事实做**优先级裁决**并汇总 `summary`；
+  逐 call 的裁决结果经 `guard.collect` 把 term 攒出的 cons 链材料化为数组。
+- 源在 `terms.src/`（糖化 JSON），产物 `terms/` 随包入世；源与构建脚本由 `.worldignore` 排除。
+
+## 分工
+
+| 侧 | 职责 |
+| --- | --- |
+| term（`terms/`） | 优先级裁决：deny 形态 / 禁止 / 白名单 → 结构写 → 外部 MCP → 危险模式 → 命令前缀白名单 → 工作区外 → net 越档 → allow；各 escalate 类别按当前档 tier 策略开关 |
+| 服务 `guard.facts({bag})` | 取数：词法路径归一 / `isInside`、`haystack`、`tokenizeCommand`、deny / allow / structural / danger 模式命中、`serverOf`、net scope 归一，以及档位策略值；返回逐 call 事实对象（不含裁决） |
+| 服务 `guard.collect({list})` | 把 term 逐 call 攒出的 `{head, tail}` / `null` cons 链材料化为有序数组（term 表达不了的列表构造） |
 
 ## `judge(bag)` 入参
 
@@ -20,9 +41,10 @@
 }
 ```
 
-- `calls` 缺省 = 空数组；非数组 → 结构化 `bad_args`。
+- `calls` 缺省 = 空数组；非数组 → `bad_args`。
 - 路径取自 `call.path`（顶层）与 `call.args.path` / `call.args.paths`（键名由规则声明）。
 - 外部 MCP 服务器名取自 `call.server` 或 `call.args.server`。
+- 档位 net 范围由调用方算好随 `bag.tier_net` 传入；缺失按 `none` fail-closed（不静默放行越档）。
 
 ## `judge` 返回形状
 
@@ -90,16 +112,20 @@ node plugins/guard/tools/seed-default-body.mjs --root <宿主根目录>
 
 - 不做 fs 范围强制 / realpath 权威判定（归沙箱）；两判不一致时沙箱 fail-closed 拒绝。
 - 不做审批 UI、不等待审批、不执行 `deny`；`escalate` 后的入队 / 裁决 / 续跑归编排与审批面。
-- 服务不 import 宿主与内核，运行时零依赖（只用 Node 内置模块）。
+- 服务不 import 宿主与内核，运行时零依赖（只用 Node 内置模块）；term 服务侧 / 入世内容都不 import 工具链。
 
 ## 运行
 
 ```sh
-npm test                                  # 协议级测试（node --test）
+npm test                                  # 包形状 + 服务协议测试（node --test）
+node ../../toolchain/build.ts .           # 由糖化源 terms.src/ 重编译产物 terms/
 node tools/e2e-smoke.mjs                  # 数据世代 E2E（pack → seed → start → seed body → stop → verify/replay → 离线投影）
 ```
 
+> 编译是作者侧步骤：`terms.src/` 被 `.worldignore` 排除、不入世，产物 `terms/` 随包入世。
+> 故 `plugin.json.build` 为空——服务插件运行期不跑编译（物化树内无糖化源，编译无从进行）。
+
 ## `.worldignore`
 
-声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` /
-`schema/` / `execute/`）随源码入世。
+声明 `test/` / `tools/` / `terms.src/` 不入世界；`plugin.json` / `package.json` / `README.md` /
+`schema/` / `terms/` / `execute/` 随源码入世。

@@ -59,6 +59,7 @@ boot ──→ client ──→ kernel
 | 服务协议帧 | `host/service-link.ts` |
 | `plugin.json` 各枚举 | `host/assembly/decl.ts`（`members.kind` / `transport` / `state`）、`host/assembly/supervision.ts`（`restart` / `backoff`） |
 | `plugin.json` 字段 `needs` / `slots` 与 `commit.body.meta.needs` | `host/assembly/decl.ts`、`host/assembly/ingest.ts`、`host/assembly/runtime.ts`（提供方按拥有方契约注册端点） |
+| `plugin.json` 字段 `judgments`（由 term 承载的能力方法，宿主命中就地求值、不 spawn 服务）+ 端点形态 `transport='term'` | `host/assembly/decl.ts`、`host/assembly/ingest.ts`、`host/assembly/runtime.ts`（判定方法不登记服务端点）、`host/assembly/supervision.ts`（握手覆盖豁免）、`host/endpoint-table.ts`、`host/effect/route.ts`、`host/effect/judgment.ts`、`host/composition.ts` |
 | 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out / 聚合审计） | `host/effect/route.ts`、`host/effect/run-loop.ts`、`host/effect/execute.ts` |
 | `validate_package` 结果形状 | `host/validate-package.ts` |
 | 运行期 `pins` 投影并入 `one`-needs（投影 `pins` = 声明 `pins` ∪ `meta.needs`） | `host/projection/index.ts`、`docs/host.md` |

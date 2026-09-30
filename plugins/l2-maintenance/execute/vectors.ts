@@ -43,12 +43,13 @@ function compareItems(left: DedupItem, right: DedupItem): number {
 /**
  * 余弦阈值贪心去重：按确定序处理，条目若与任一已接受条目余弦 ≥ 阈值即判重（记 `duplicate_of`）。
  * 每条文本一次 `embedding.embed`（不切块）；空集不调用后端（空集不产生写的前提）。
+ * `model` 缺省（null / undefined）时不带 `model`，交由向量化门面按提供方元数据选默认。
  */
 export async function dedupByCosine(
   items: DedupItem[],
   threshold: number,
   embedding: EmbeddingBackend,
-  model: string,
+  model?: string | null,
 ): Promise<DedupResult> {
   if (items.length === 0) return { accepted: [], duplicates: [] }
   const raw = await embedding.embed(

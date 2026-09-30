@@ -35,7 +35,9 @@ function boot(root, args) {
     }
   }
   if (result.status !== 0) {
-    throw new Error(`boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`)
+    throw new Error(
+      `boot ${args.join(' ')} 失败（exit ${result.status}）：${result.stderr || stdout}`,
+    )
   }
   return parsed
 }
@@ -71,7 +73,7 @@ async function main() {
 
     boot(root, ['start'])
     started = true
-    console.log('start + 握手：ok')
+    console.log('start（无执行件，数据身份）：ok')
 
     const seededBody = runSeed(root)
     assert.equal(seededBody.ok, true, 'seed 脚本报告 ok:false')

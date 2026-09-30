@@ -1,5 +1,6 @@
 // 侧栏业务状态（React-free store）：唯一真源，`{getSnapshot, subscribe, commit}` 供壳 `ctx.useStore` 绑定。
-// 组件只渲染快照、只调本 store 的动作；读面 = 入站命令 `chat.history`，写与命令一律经壳 api。
+// 组件只渲染快照、只调本 store 的动作；清单读面 = 入站命令 `session.list`（导出才拉 `chat.history` 全量），
+// 写与命令一律经壳 api。
 // 零 react import（可 grep 断言）；DOM 只出现在浮层测量 / 下载等动作里，不构建视图。
 
 import type { SlotContext } from '@chrono/ui-contract'
@@ -121,6 +122,8 @@ export class SidebarStore {
   private readonly listeners = new Set<(snapshot: SidebarSnapshot) => void>()
   private snapshot: SidebarSnapshot
   private root: HTMLElement | null = null
+  /** 宿主的侧栏槽根（`#slot-sidebar`）：槽宽变量住这里，拖拽时需同步写入以实时重排页面。 */
+  private host: HTMLElement | null = null
   private drag: { startX: number; startWidth: number } | null = null
   private dragWidth = 0
   private tooltipTimer: ReturnType<typeof setTimeout> | null = null
@@ -146,6 +149,8 @@ export class SidebarStore {
   private turnsSeq = 0
   /** 会话切换序号：并发 selectSession 时旧回包不抢先改状态。 */
   private selectSeq = 0
+  /** 刚选中的会话 id：`session.select` 自身回弹的 `thread.updated` 据此短路，不再二次拉清单。 */
+  private selectRefresh: string | null = null
 
   constructor(ctx: SlotContext, messages: MessageTable) {
     this.ctx = ctx
@@ -209,6 +214,8 @@ export class SidebarStore {
 
   attachRoot(element: HTMLElement | null): void {
     this.root = element
+    this.host =
+      element === null ? null : (element.closest('#slot-sidebar') as HTMLElement | null)
   }
 
   /** 启动（可重复：错误边界卸载后重挂会再次调用，`dispose` 不是终态）。 */
@@ -297,11 +304,12 @@ export class SidebarStore {
 
   private async loadHistory(): Promise<boolean> {
     const seq = (this.historySeq += 1)
-    const result = await this.command('chat.history', {})
+    // 清单面足够渲染侧栏：`{version, current, conversations, open_turns}`，不拖整条会话。
+    const result = await this.command('session.list', null)
     if (seq !== this.historySeq) return true
     if (!result.ok) return false
     const history = result.value
-    const conversations = normalizeConversations(isRecord(history) ? history['body'] : null)
+    const conversations = normalizeConversations(history)
     this.update({
       history,
       conversations,
@@ -312,7 +320,7 @@ export class SidebarStore {
   }
 
   /**
-   * 首屏补种运行角标：读会话持久回合状态（`session.turns` → owner `session.read.open_turns`）。
+   * 首屏补种运行角标：读会话持久回合状态（`session.turns` → owner `session.list.open_turns`）。
    * 事件路径负责实时开合；本读覆盖重载后、下一个事件前的首屏，以及非当前会话的运行中。
    * 只补缺、不覆盖；事件已改写运行角标时（`turnsSeq` 变化）丢弃在途回包。
    */
@@ -382,12 +390,15 @@ export class SidebarStore {
       this.turnsSeq += 1
     }
     const badges = applyEvent(this.snapshot.badges, record['impl'], record['topic'], payload)
-    if (
-      record['topic'] === 'thread.updated' ||
-      record['topic'] === 'thread.opened' ||
-      record['topic'] === 'thread.closed' ||
-      record['topic'] === 'chat.turn.settled'
-    ) {
+    const topic = record['topic']
+    if (topic === 'thread.updated' || topic === 'thread.opened' || topic === 'thread.closed') {
+      // `session.select` 自身回弹的 `thread.updated`：selectSession 已直读一次清单，短路这一条，避免二次拉取。
+      if (this.selectRefresh !== null && payload['conversation'] === this.selectRefresh) {
+        this.selectRefresh = null
+      } else {
+        this.scheduleReload()
+      }
+    } else if (topic === 'chat.turn.settled') {
       this.scheduleReload()
     }
     // `applyEvent` 无实际变更时回传入参引用，据此判变更（不再整体 JSON 序列化）。
@@ -398,8 +409,7 @@ export class SidebarStore {
 
   currentId(): string | null {
     const history = this.snapshot.history
-    const body = isRecord(history) && isRecord(history['body']) ? history['body'] : null
-    return body !== null && typeof body['current'] === 'string' ? body['current'] : null
+    return isRecord(history) && typeof history['current'] === 'string' ? history['current'] : null
   }
 
   /**
@@ -479,6 +489,8 @@ export class SidebarStore {
    */
   async selectSession(id: string, keepFlyout = false): Promise<void> {
     const seq = (this.selectSeq += 1)
+    // 本次 select 自身会回弹一条 `thread.updated`；本 store 已直读一次清单，故把该回弹短路。
+    this.selectRefresh = id
     this.locallyRead.add(id)
     this.update({ confirm: clearConfirm(), badges: clearUnread(this.snapshot.badges, id) })
     if (!keepFlyout) this.closeFlyout()
@@ -486,6 +498,7 @@ export class SidebarStore {
     if (this.disposed || seq !== this.selectSeq) return
     // 写未落账（身份未就绪 / 被拒）时不再发切换命令，避免切到旧槽或空槽。
     if (!isWriteAccepted(wrote)) {
+      if (this.selectRefresh === id) this.selectRefresh = null
       this.setStatus(this.text('sidebar_dependency_missing'))
       return
     }
@@ -617,9 +630,13 @@ export class SidebarStore {
   }
 
   async exportSession(session: Conversation, format: string): Promise<void> {
-    const history = this.snapshot.history
-    if (history === null) return
-    const messages = messagesOf(history, session.id)
+    // 导出要整条会话的 `refs`（沿 head 的 prev 全链），故显式拉全量，不复用清单读面。
+    const result = await this.command('chat.history', { conversation: session.id, full: true })
+    if (!result.ok) {
+      this.ctx.toast({ tone: 'danger', text: this.text('sidebar_export_failed') })
+      return
+    }
+    const messages = messagesOf(result.value, session.id)
     const body = exportBody(format, session, messages)
     const filename = exportFilename(session, format === 'json' ? 'json' : 'md')
     try {
@@ -817,6 +834,10 @@ export class SidebarStore {
     // 使内容随宽度重排，与折叠时的「定宽平移」共用同一变量）。
     this.root?.style.setProperty('--sb-width', `${width}px`)
     this.root?.style.setProperty('--sb-wide', `${width}px`)
+    // 槽宽（`--sidebar-w-expanded`）必须逐帧同步：只写插件根时，内容增长会被固定槽宽 + overflow:hidden
+    // 裁掉，主区要等松手（endResize 提交快照）才重排，拖拽因此「没有实时宽窄」。
+    // 拖拽期过渡已在 entry 侧按 dragging 置 none，故这里是瞬时生效、不产生拖尾。
+    this.host?.style.setProperty('--sidebar-w-expanded', `${width}px`)
   }
 
   endResize(): void {

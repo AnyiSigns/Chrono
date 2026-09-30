@@ -6,6 +6,7 @@ import { canonicalJson } from '../../kernel/index.ts'
 import type { EffRequest, EffResult, Json } from '../../kernel/index.ts'
 import { EFFECT_AUDIT_KIND } from '../audit.ts'
 import type { AuditDraft, AuditOutcome } from '../audit.ts'
+import { shapeAuditArgs } from '../audit-redact.ts'
 import { isRecord } from '../common/json.ts'
 
 /**
@@ -83,9 +84,8 @@ function redactAuditResult(
 export const MAX_AUDIT_RESULT_BYTES = 64 * 1024
 
 /**
- * 审计请求参数序列化上限：`args` 超过只落 `{truncated:true,size}`，保留 `id`/`port`/`method`。
- * 大参数（源码 / 字节 / 审计记录）原样入账会把侧存撑爆；调用方仍拿完整 args，
- * 只是审计正文留截断标记。
+ * 审计请求形状摘要的序列化上限：形状（顶层键 + 各值体量 + 白名单字段）超过它即退化为单条截断标记。
+ * `args` 正文不再内嵌，正常远低于上限；此上限只防键数异常多时形状本身撑爆侧存。
  */
 export const MAX_AUDIT_ARGS_BYTES = 64 * 1024
 
@@ -101,11 +101,18 @@ function auditResult(
   return { truncated: true, size }
 }
 
-/** 审计请求口径：`args` 超限即截断为标记，保留定位所需的 id / port / method。 */
-function auditRequest(eff: EffRequest): Json {
-  const size = canonicalJson(eff.args).length
-  if (size <= MAX_AUDIT_ARGS_BYTES) return eff as unknown as Json
-  return { id: eff.id, port: eff.port, method: eff.method, args: { truncated: true, size } }
+/**
+ * 审计请求口径：不再内嵌 `args` 正文（大参数内嵌会把侧存撑爆），只落形状摘要 + 关键标识
+ * （`id`/`port`/`method`/`caps`；`run`/`emitter`/`outcome` 已在正文顶层）+ 白名单放行字段。
+ * 形状摘要仍超上限（键数异常多）时按既有口径退化为 `{truncated:true,size}`；调用方仍拿完整 args。
+ */
+function auditRequest(eff: EffRequest, redactKeys: readonly string[] | undefined): Json {
+  const shape = shapeAuditArgs(eff.args, redactKeys)
+  const args =
+    canonicalJson(shape).length <= MAX_AUDIT_ARGS_BYTES
+      ? shape
+      : { truncated: true, size: canonicalJson(eff.args).length }
+  return { id: eff.id, port: eff.port, method: eff.method, caps: eff.caps, args }
 }
 
 /**
@@ -233,12 +240,15 @@ export function buildAudit(
       : slotOutcomeOf(slotAudit, cancelled)
   const auditBody =
     slotAudit === undefined ? auditResult(eff, result, redactKeys) : auditSlotResult(eff, slotAudit)
+  // 请求形状的白名单字段：单值调用取方法级声明；槽调用取各元素提供方声明的并集。
+  const requestKeys =
+    redactKeys ?? slotAudit?.elements.flatMap((element) => element.keys ?? [])
   return {
     at: meta.now,
     by: meta.by,
     body: {
       kind: EFFECT_AUDIT_KIND,
-      request: auditRequest(eff),
+      request: auditRequest(eff, requestKeys),
       result: auditBody,
       port: eff.port,
       method: eff.method,

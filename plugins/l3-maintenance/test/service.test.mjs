@@ -186,6 +186,34 @@ test('solidify：高价值项固化进 L3（meta.source=consolidate），写 mem
   }
 })
 
+test('solidify：向量模型随调用方传入；缺省不带 model，交由 embedding 门面按提供方元数据解析', async () => {
+  const embeddingCalls = (drv) =>
+    drv.portCalls.filter((call) => call.port === 'embedding' && call.method === 'embed')
+  const args = { workspaces: ['w-1'], item_weights: { f3: 0.9 }, solidify_full_sources: 100 }
+
+  const omitted = drive({ vectors: VECTORS })
+  try {
+    await omitted.hello()
+    await omitted.call('solidify', args)
+    const calls = embeddingCalls(omitted)
+    assert.ok(calls.length > 0)
+    assert.equal(Object.hasOwn(calls[0].args ?? {}, 'model'), false)
+  } finally {
+    omitted.close()
+  }
+
+  const explicit = drive({ vectors: VECTORS })
+  try {
+    await explicit.hello()
+    await explicit.call('solidify', { ...args, embedding_model: 'custom-model' })
+    const calls = embeddingCalls(explicit)
+    assert.ok(calls.length > 0)
+    assert.equal(calls[0].args.model, 'custom-model')
+  } finally {
+    explicit.close()
+  }
+})
+
 test('solidify：与现有 L3 重复的候选被跳过', async () => {
   const drv = drive({
     vectors: VECTORS,

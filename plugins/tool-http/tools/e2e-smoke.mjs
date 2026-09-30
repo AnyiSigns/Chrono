@@ -225,7 +225,7 @@ async function directChecks() {
     const manifest = await client.request('hello', { impl: 'tool-http', gen: 'e2e' })
     assert.equal(manifest.kind, 'manifest')
     assert.equal(manifest.identity, 'tool-http')
-    assert.deepEqual(manifest.implements, ['tool-http'])
+    assert.deepEqual(manifest.implements, ['tool-http', 'tool-provider'])
 
     const described = await client.request('call', {
       port: 'tool-http',

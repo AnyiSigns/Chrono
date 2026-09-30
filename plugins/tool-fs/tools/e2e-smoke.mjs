@@ -130,8 +130,11 @@ function waitExit(child) {
   })
 }
 
-/** 直连 tool-fs 服务 stdio，把其 `port.call` 转发给真实 sandbox 服务（另起 stdio 子进程）。 */
-async function directProtocolSmoke(toolfsBin, sandboxBin) {
+/**
+ * 直连 tool-fs 服务 stdio，把其 `sandbox.fsop` 转发给真实 `sandbox-fs` 二进制
+ * （sandbox 已拆为门面 + sandbox-exec / sandbox-fs；tool-fs 只走 fsop，门面委派由 sandbox-split 契约测试覆盖）。
+ */
+async function directProtocolSmoke(toolfsBin, sandboxFsBin) {
   const stamp = `${process.pid}-${Date.now()}`
   const workspace = join(tmpdir(), 'kilo', `chrono-tool-fs-ws-${stamp}`)
   const outside = join(tmpdir(), 'kilo', `chrono-tool-fs-out-${stamp}`)
@@ -142,7 +145,7 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
   writeFileSync(join(outside, 'secret.txt'), 'top secret\n')
 
   const toolfs = spawn(toolfsBin, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
-  const sandbox = spawn(sandboxBin, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
+  const sandbox = spawn(sandboxFsBin, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
   const tfNext = frameReader(toolfs)
   const sbNext = frameReader(sandbox)
   try {
@@ -152,9 +155,9 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
     assert.equal(manifest.identity, 'tool-fs')
     assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
 
-    sandbox.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'sandbox' }))
+    sandbox.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'sandbox-fs' }))
     const sandboxManifest = await sbNext()
-    assert.equal(sandboxManifest.kind, 'manifest', 'sandbox hello 应回 manifest')
+    assert.equal(sandboxManifest.kind, 'manifest', 'sandbox-fs hello 应回 manifest')
 
     // 反向调用桥：tool-fs 发 port.call → 转发给 sandbox 的 call → 把应答回成 port.result / port.error。
     const callTool = async (id, method, args) => {
@@ -177,7 +180,8 @@ async function directProtocolSmoke(toolfsBin, sandboxBin) {
               v: '1',
               id: message.id,
               kind: 'call',
-              port: message.port,
+              // sandbox-fs 只认自家能力名；门面把 `sandbox` 端口委派到它，这里等价改写。
+              port: 'sandbox-fs',
               method: message.method,
               args: message.args,
               env: { run: null, thread: null, now: 0 },
@@ -278,15 +282,22 @@ async function main() {
   mkdirSync(join(root, 'state'), { recursive: true })
   let started = false
   try {
+    for (const identity of ['sandbox-policy', 'sandbox-exec', 'sandbox-fs']) {
+      const packed = boot(root, ['pack', join(REPO_ROOT, 'plugins', identity), '--identity', identity])
+      assert.equal(packed.ok, true, `pack ${identity} 报告 ok:false`)
+    }
     const packedSandbox = boot(root, ['pack', SANDBOX_DIR, '--identity', 'sandbox'])
     assert.equal(packedSandbox.ok, true, 'pack sandbox 报告 ok:false')
     const packedToolfs = boot(root, ['pack', TOOLFS_DIR, '--identity', 'tool-fs'])
     assert.equal(packedToolfs.ok, true, 'pack tool-fs 报告 ok:false')
-    console.log(`pack：sandbox=${packedSandbox.status} tool-fs=${packedToolfs.status}`)
+    console.log(`pack：sandbox 族=${packedSandbox.status} tool-fs=${packedToolfs.status}`)
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
+        { name: 'sandbox-policy', path: join(REPO_ROOT, 'plugins', 'sandbox-policy') },
+        { name: 'sandbox-exec', path: join(REPO_ROOT, 'plugins', 'sandbox-exec') },
+        { name: 'sandbox-fs', path: join(REPO_ROOT, 'plugins', 'sandbox-fs') },
         { name: 'sandbox', path: SANDBOX_DIR },
         { name: 'tool-fs', path: TOOLFS_DIR },
       ]),
@@ -308,10 +319,12 @@ async function main() {
     console.log(`status：loaded = ${status.loaded.map((entry) => entry.id).join(', ')}`)
 
     const sandboxBin = join(root, 'state', 'deps', 'cargo-target', 'release', `sandbox${EXE}`)
+    const sandboxFsBin = join(root, 'state', 'deps', 'cargo-target', 'release', `sandbox-fs${EXE}`)
     const toolfsBin = join(root, 'state', 'deps', 'cargo-target', 'release', `tool-fs${EXE}`)
     assert.ok(existsSync(sandboxBin), `sandbox 缓存二进制缺失：${sandboxBin}`)
+    assert.ok(existsSync(sandboxFsBin), `sandbox-fs 缓存二进制缺失：${sandboxFsBin}`)
     assert.ok(existsSync(toolfsBin), `tool-fs 缓存二进制缺失：${toolfsBin}`)
-    console.log(`物化：sandbox / tool-fs 二进制就位`)
+    console.log(`物化：sandbox / sandbox-fs / tool-fs 二进制就位`)
 
     const seededBody = spawnSync(process.execPath, [SANDBOX_SEED, '--root', root], {
       encoding: 'utf8',
@@ -322,7 +335,7 @@ async function main() {
     }
     console.log('seed 档位映射 body：ok')
 
-    await directProtocolSmoke(toolfsBin, sandboxBin)
+    await directProtocolSmoke(toolfsBin, sandboxFsBin)
 
     const afterSeed = boot(root, ['status'])
     assert.ok(

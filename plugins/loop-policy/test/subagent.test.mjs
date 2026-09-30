@@ -3,7 +3,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService } from './driver.mjs'
 import { seedModel } from '../execute/seed.ts'
-import { isStructuredCheckpoint, latestCheckpoint, toSubagentResult } from '../execute/subagent.ts'
 
 function subagentGraph() {
   const seed = seedModel()
@@ -45,34 +44,6 @@ function stepRecords(service) {
     .filter((call) => call.port === 'session' && call.method === 'step_append')
     .map((call) => call.args)
 }
-
-test('子代理结构化结果不是会话检查点：kind=subagent 排除，不覆盖历史边界', () => {
-  // `kind:'subagent'` / `kind:'verify'` / `kind:'segment'` 都不是结构化会话检查点。
-  assert.equal(isStructuredCheckpoint({ kind: 'subagent', goal: 'g', findings: [{ claim: 'c' }] }), false)
-  assert.equal(isStructuredCheckpoint({ kind: 'verify', text: 'v' }), false)
-  assert.equal(isStructuredCheckpoint({ kind: 'segment', iter: 1 }), false)
-  assert.equal(isStructuredCheckpoint({ goal: 'g' }), true)
-
-  // toSubagentResult 给结果打上 kind=subagent（落账后可被排除）。
-  const result = toSubagentResult({ result: { goal: 'SUB', findings: [{ claim: 'F' }] } })
-  assert.equal(result.result.kind, 'subagent')
-
-  // 最新会话检查点跳过子代理结果，取真正的结构化检查点。
-  const bag = {
-    session: {
-      turns: [
-        {
-          turn_id: 't0',
-          steps: [
-            { type: 'checkpoint', turn_id: 't0', seq: 1, summary: { kind: 'subagent', goal: '子代理结果' }, covered_upto: 1 },
-            { type: 'checkpoint', turn_id: 't0', seq: 2, summary: { goal: '真检查点' }, covered_upto: 2 },
-          ],
-        },
-      ],
-    },
-  }
-  assert.deepEqual(latestCheckpoint(bag, 't0').summary, { goal: '真检查点' })
-})
 
 test('子代理模型调用包含未读收件箱（确定性顺序，与任务 / 父检查点并列）', async () => {
   const modelCalls = []

@@ -1,0 +1,23 @@
+{
+  "name": "sandbox-exec",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "沙箱执行体生命周期（Rust）：一次性 exec + 可轮询任务 + 常驻会话与四档 fs/net 强制；无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

@@ -144,7 +144,7 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     expect(auditBody['request']).toMatchObject({
       port: 'toy.alpha',
       method: 'echo',
-      args: { n: 1 },
+      args: { n: { truncated: true, size: expect.any(Number) } },
     })
     expect(auditBody['result']).toMatchObject({
       ok: true,

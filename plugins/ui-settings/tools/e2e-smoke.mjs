@@ -34,20 +34,33 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const SETTINGS_DIR = join(REPO_ROOT, 'plugins', 'ui-settings')
 const WEB_DIR = join(SETTINGS_DIR, 'execute', 'web')
 
-/** ① pins 段真实闭包（拓扑序）：记忆族 / 模型协议 / 密钥 / 会话等，pins 在 seed 批内解析。 */
+/** ① needs 段真实闭包（拓扑序）：记忆族 / 模型协议 / 密钥 / 会话等，needs 在 seed 批内解析。 */
 const PINS_CLOSURE = [
-  'secrets',
   'config',
-  'embedding',
-  'short-memory',
-  'model-protocol',
-  'compress',
-  'memory-store',
   'input',
   'session',
+  'short-memory',
+  'l1-maintenance',
+  'embedding',
+  'dedup',
+  'msg-dialect',
+  'secrets',
+  'throttle',
+  'model-protocol',
+  'semantic',
+  'summarize',
+  'compress',
+  'l2-maintenance',
+  'tokenizer',
+  'vector-index',
+  'memory-store',
+  'l3-maintenance',
+  'memory-consolidate',
+  'ref-hydrate',
+  'query-plan',
+  'rerank',
   'memory-retrieval',
   'skill',
-  'memory-consolidate',
   'ui-settings',
 ]
 
@@ -170,17 +183,18 @@ function assertDeclaration() {
   assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
   assert.deepEqual(decl.implements, ['ui-settings'])
   assert.deepEqual(decl.methods['ui-settings'], ['ping', 'vendors', 'profile', 'discover', 'health', 'graph', 'scopes', 'view', 'search', 'edit', 'client.read', 'secret'])
-  assert.deepEqual(decl.pins, {
-    model: 'model-protocol',
-    secrets: 'secrets',
-    retrieval: 'memory-retrieval',
-    'memory-maintenance': 'memory-consolidate',
-    session: 'session',
-    'short-memory': 'short-memory',
-    input: 'input',
-    skill: 'skill',
-    config: 'config',
-    host: 'host',
+  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.deepEqual(decl.needs, {
+    model: { mode: 'one' },
+    secrets: { mode: 'one' },
+    retrieval: { mode: 'one' },
+    'memory-maintenance': { mode: 'one' },
+    session: { mode: 'one' },
+    'ref-hydrate': { mode: 'one' },
+    'short-memory': { mode: 'one' },
+    input: { mode: 'one' },
+    skill: { mode: 'one' },
+    config: { mode: 'one' },
   })
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },

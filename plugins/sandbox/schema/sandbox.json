@@ -4,9 +4,9 @@
   "type": "object",
   "additionalProperties": true,
   "method_timeouts": {
-    "sandbox.exec": 130000,
+    "sandbox.exec": 140000,
     "sandbox.exec_poll": 130000,
-    "sandbox.fsop": 60000
+    "sandbox.fsop": 70000
   },
   "properties": {
     "caps": {

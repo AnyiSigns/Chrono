@@ -115,6 +115,48 @@ function createDecoder() {
   }
 }
 
+/** 仿真宿主侧路由：应答 context-window 对 `token-estimate.*` / `budget.*` 的反向调用。 */
+function answerContextBackend(message) {
+  const base = { v: '1', id: message.id }
+  if (message.port === 'token-estimate' && message.method === 'version') {
+    return { ...base, kind: 'port.result', ok: true, value: { version: 'e2e-tokenizer' } }
+  }
+  if (message.port === 'token-estimate' && message.method === 'count') {
+    const texts = Array.isArray(message.args?.texts) ? message.args.texts : []
+    const counts = texts.map((text) => (typeof text === 'string' ? [...text].length : 0))
+    return { ...base, kind: 'port.result', ok: true, value: { counts } }
+  }
+  if (message.port === 'budget' && message.method === 'model') {
+    return {
+      ...base,
+      kind: 'port.result',
+      ok: true,
+      value: {
+        budget: 800,
+        context_window: 1000,
+        max_output: 100,
+        margin: 0,
+        origin: 'default',
+        flags: [],
+        quota: { l2: 0, l1: 0, skill: 0, recall: 0, style: 0 },
+      },
+    }
+  }
+  if (message.port === 'budget' && message.method === 'factor') {
+    return { ...base, kind: 'port.result', ok: true, value: { factor: 1 } }
+  }
+  if (message.port === 'budget' && message.method === 'observe') {
+    return { ...base, kind: 'port.result', ok: true, value: { factor: 1, usage: null } }
+  }
+  return {
+    ...base,
+    kind: 'port.error',
+    ok: false,
+    error: 'not_ready',
+    message: `no ${message.port}.${message.method}`,
+  }
+}
+
 /** 协议直连服务：hello → context.build，收 event 帧，返回 value 与事件。 */
 function callBuild(stateDir) {
   return new Promise((resolveCall, rejectCall) => {
@@ -134,6 +176,10 @@ function callBuild(stateDir) {
       for (const message of decoder.push(chunk)) {
         if (message.kind === 'event') {
           events.push(message)
+          continue
+        }
+        if (message.kind === 'port.call') {
+          child.stdin.write(encodeFrame(answerContextBackend(message)))
           continue
         }
         const handler = pending.get(message.id)
@@ -191,13 +237,21 @@ async function main() {
   mkdirSync(join(root, 'state'), { recursive: true })
   let started = false
   try {
+    const packedTokenEstimate = boot(root, ['pack', join(REPO_ROOT, 'plugins', 'token-estimate'), '--identity', 'token-estimate'])
+    assert.equal(packedTokenEstimate.ok, true, 'pack token-estimate 报告 ok:false')
+    const packedBudget = boot(root, ['pack', join(REPO_ROOT, 'plugins', 'budget'), '--identity', 'budget'])
+    assert.equal(packedBudget.ok, true, 'pack budget 报告 ok:false')
     const packed = boot(root, ['pack', PKG_DIR, '--identity', 'context-window'])
     assert.equal(packed.ok, true, 'pack context-window 报告 ok:false')
     console.log(`pack context-window: ${packed.status}`)
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
-      JSON.stringify([{ name: 'context-window', path: PKG_DIR }]),
+      JSON.stringify([
+        { name: 'token-estimate', path: join(REPO_ROOT, 'plugins', 'token-estimate') },
+        { name: 'budget', path: join(REPO_ROOT, 'plugins', 'budget') },
+        { name: 'context-window', path: PKG_DIR },
+      ]),
     )
     const seeded = boot(root, ['seed'])
     assert.equal(seeded.ok, true, 'seed 报告 ok:false')

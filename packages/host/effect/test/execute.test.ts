@@ -125,7 +125,7 @@ describe('效果执行（审计草稿）', () => {
     expect(bodyOf(outcome)['result']).toEqual({ truncated: true, size: expect.any(Number) })
   })
 
-  it('审计请求 args 超限 → 截断为标记，保留 id/port/method，调用方 args 不变', async () => {
+  it('审计请求 args 不再内嵌正文：只落形状摘要，调用方 args 不变', async () => {
     const big = { text: 'x'.repeat(70 * 1024) }
     const eff: EffRequest = { ...mkEff('toy.echo', 'echo'), args: big }
     const outcome = await executeEffect(eff, meta())
@@ -134,14 +134,47 @@ describe('效果执行（审计草稿）', () => {
       id: eff.id,
       port: 'toy.echo',
       method: 'echo',
-      args: { truncated: true, size: expect.any(Number) },
+      caps: {},
+      args: { text: { truncated: true, size: expect.any(Number) } },
     })
   })
 
-  it('审计请求 args 未超限 → 原样保留（含 caps）', async () => {
-    const eff: EffRequest = { ...mkEff('toy.echo', 'echo'), args: { small: true } }
+  it('审计请求 args 形状摘要：顶层键 + 各值体量，不落值（含 caps）', async () => {
+    const eff: EffRequest = { ...mkEff('toy.echo', 'echo'), args: { small: true, name: 'abc' } }
     const outcome = await executeEffect(eff, meta())
-    expect(bodyOf(outcome)['request']).toEqual(eff)
+    expect(bodyOf(outcome)['request']).toEqual({
+      id: eff.id,
+      port: 'toy.echo',
+      method: 'echo',
+      caps: {},
+      args: {
+        name: { truncated: true, size: expect.any(Number) },
+        small: { truncated: true, size: expect.any(Number) },
+      },
+    })
+  })
+
+  it('审计请求保留 auth_ref 键表与白名单放行字段（引用本体，不是密钥）', () => {
+    const eff: EffRequest = {
+      ...mkEff('toy.echo', 'echo'),
+      args: { auth_ref: { kind: 'env', name: 'K' }, payload: { n: 1 } },
+    }
+    const audit = buildAudit(eff, meta(), { ok: true, value: 1 }, false, ['name'])
+    const request = (audit.body as { [k: string]: Json })['request'] as { [k: string]: Json }
+    expect(request['args']).toEqual({
+      auth_ref: { keys: ['kind', 'name'], name: 'K' },
+      payload: { truncated: true, size: expect.any(Number) },
+    })
+  })
+
+  it('大 args（世界投影量级）→ 审计请求显著小于原始 args', async () => {
+    const projection = {
+      conversations: Array.from({ length: 200 }, (_, i) => ({ id: `c${i}`, refs: { m: 'x'.repeat(200) } })),
+    }
+    const eff: EffRequest = { ...mkEff('session', 'select'), args: { conversation: projection, context: projection } }
+    const outcome = await executeEffect(eff, meta())
+    expect(JSON.stringify(eff.args).length).toBeGreaterThan(50 * 1024)
+    expect(JSON.stringify(bodyOf(outcome)['request']).length).toBeLessThan(1024)
   })
 
   it('任意端口的大结果都截断（审计正文有界，防侧存撑爆）', async () => {

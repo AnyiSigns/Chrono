@@ -28,6 +28,8 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
   assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel'])
   assert.deepEqual(plugin.pins, { host: 'host' })
   assert.deepEqual(plugin.needs, {
+    'graph-run': { mode: 'one' },
+    'turn-ledger': { mode: 'one' },
     session: { mode: 'one' },
     'ref-hydrate': { mode: 'one' },
     model: { mode: 'one' },

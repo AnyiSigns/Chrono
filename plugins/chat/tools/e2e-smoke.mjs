@@ -22,46 +22,64 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 
-// 拓扑序：被依赖者先 pack（pins 解析要求目标身份已在世界里）。chat 的 pins 闭包含 #33 loop-policy，
-// 故按 loop-policy 的 pins 闭包一并 pack，最后补 session-title 与 chat。
+// 拓扑序：被依赖者先 pack（pins 解析要求目标身份已在世界里）。chat 的 needs 闭包含 loop-policy
+// 及其全部传递依赖，按解析序展开。
 const PLUGIN_ORDER = [
-  'secrets',
   'config',
-  'sandbox',
-  'embedding',
-  'storage-kv',
+  'token-estimate',
+  'budget',
   'context-window',
-  'guard',
-  'router',
-  'orchestration-admin',
-  'evolve-metrics',
-  'plugin-admin',
-  'short-memory',
   'input',
-  'model-protocol',
-  'tool-fs',
-  'tool-shell',
-  'tool-http',
-  'tool-browser',
-  'memory-store',
-  'todo',
-  'question',
   'approval',
-  'workspace',
-  'skill',
-  'session',
-  'session-title',
+  'embedding',
+  'dedup',
+  'msg-dialect',
+  'secrets',
+  'throttle',
+  'model-protocol',
+  'semantic',
+  'short-memory',
+  'summarize',
   'compress',
+  'evolve-ledger',
+  'evolve-evidence',
+  'evolve-shadow',
+  'evolve-sweep',
+  'evolve-metrics',
+  'graph-gate',
+  'guard',
+  'ref-hydrate',
+  'tokenizer',
+  'vector-index',
+  'memory-store',
+  'query-plan',
+  'rerank',
   'memory-retrieval',
+  'router',
+  'session',
+  'l1-maintenance',
+  'l2-maintenance',
+  'l3-maintenance',
   'memory-consolidate',
-  'mcp',
+  'tool-schema',
+  'tool-registry',
+  'tool-dispatch',
   'tools',
   'loop-policy',
+  'mcp-client',
+  'mcp',
+  'title-format',
+  'session-title',
+  'skill',
+  'storage-kv',
+  'todo',
+  'workspace',
   'chat',
 ]
 
 const EXPECTED_PINS = {
   session: 'session',
+  'ref-hydrate': 'ref-hydrate',
   input: 'input',
   model: 'model-protocol',
   context: 'context-window',
@@ -81,6 +99,7 @@ const EXPECTED_TERMS = {
   'chat.history': ['eff', 'chat', 'history', ['v', 0]],
   'chat.resume': ['eff', 'chat', 'resume', ['v', 0]],
   'chat.cancel': ['eff', 'chat', 'cancel', ['v', 0]],
+  'chat.insert': ['eff', 'chat', 'insert', ['v', 0]],
 }
 
 function bootRaw(root, args) {
@@ -147,7 +166,7 @@ function main() {
   assert.ok(decl !== null, 'chat 声明应可解析')
   assert.equal(decl.decl.identity, 'chat')
   assert.deepEqual(decl.decl.implements, ['chat'])
-  assert.deepEqual(decl.decl.methods.chat, ['send', 'history', 'resume', 'cancel'])
+  assert.deepEqual(decl.decl.methods.chat, ['send', 'history', 'resume', 'cancel', 'insert'])
   assert.equal(decl.decl.start, 'node execute/main.ts')
   assert.deepEqual(
     decl.decl.members,
@@ -164,7 +183,7 @@ function main() {
   const commands = listCommands(anchor.world, paths.blobsDir).filter((command) => command.identity === 'chat')
   assert.deepEqual(
     commands.map((command) => command.name).sort(),
-    ['chat.cancel', 'chat.history', 'chat.resume', 'chat.send'],
+    ['chat.cancel', 'chat.history', 'chat.insert', 'chat.resume', 'chat.send'],
   )
   for (const command of commands) {
     assert.equal(typeof command.entry, 'string')

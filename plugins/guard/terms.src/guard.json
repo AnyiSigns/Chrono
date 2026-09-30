@@ -1,0 +1,20 @@
+{
+  "k": "call",
+  "ref": "terms/run.json",
+  "args": [
+    {
+      "k": "eff",
+      "port": "guard",
+      "method": "facts",
+      "args": {
+        "k": "obj",
+        "fields": {
+          "bag": {
+            "k": "arg",
+            "i": 0
+          }
+        }
+      }
+    }
+  ]
+}

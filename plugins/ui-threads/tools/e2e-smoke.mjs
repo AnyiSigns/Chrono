@@ -4,11 +4,12 @@
 // 客户端半边改由插件自交付（只读命令 client.read），不再有子应用 HTTP 端口。
 // 失败路径同样 stop；用法：node plugins/ui-threads/tools/e2e-smoke.mjs
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
+import { packSourceDir, readWorldignore } from '../../../packages/host/assembly/source.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
@@ -17,6 +18,7 @@ const THREADS_DIR = join(REPO_ROOT, 'plugins', 'ui-threads')
 const SESSION_DIR = join(REPO_ROOT, 'plugins', 'session')
 const TODO_DIR = join(REPO_ROOT, 'plugins', 'todo')
 const INPUT_DIR = join(REPO_ROOT, 'plugins', 'input')
+const STORAGE_KV_DIR = join(REPO_ROOT, 'plugins', 'storage-kv')
 
 function boot(root, args, env) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -48,76 +50,58 @@ async function waitFor(predicate, label, timeoutMs = 20000) {
   }
 }
 
-/** 从 journal 收集所有 def body（顶层 put 与 batch 子操作的 put）。 */
-function journalBodies(journalPath) {
-  let text = ''
-  try {
-    text = readFileSync(journalPath, 'utf8')
-  } catch {
-    return []
-  }
-  const bodies = []
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue
-    let entry
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (entry.op === 'put' && entry.args !== null && typeof entry.args === 'object') {
-      bodies.push(entry.args.body)
-    }
-    if (entry.op === 'batch' && entry.args !== null && typeof entry.args === 'object' && Array.isArray(entry.args.ops)) {
-      for (const op of entry.args.ops) {
-        if (op.op === 'put' && op.args !== null && typeof op.args === 'object') bodies.push(op.args.body)
+/** 从打包子操作里收集树内文件路径（目录 put 的 entries；文件条目 hash 是真实哈希）。 */
+function collectPackedPaths(ops, rootIndex) {
+  const paths = []
+  const walk = (index, prefix) => {
+    const body = ops[index]?.args?.body
+    const entries = body?.entries
+    if (!Array.isArray(entries)) return
+    for (const entry of entries) {
+      const name = entry?.name
+      if (typeof name !== 'string') continue
+      const path = prefix.length === 0 ? name : `${prefix}/${name}`
+      if (entry.mode === 'dir' && entry.hash !== null && typeof entry.hash === 'object' && Number.isInteger(entry.hash.$n)) {
+        walk(entry.hash.$n, path)
+      } else if (entry.mode === 'file') {
+        paths.push(path)
       }
     }
   }
-  return bodies
+  walk(rootIndex, '')
+  return paths
 }
 
-/** 核验 `.worldignore`：入世源码树的根 tree 不含 `test/` / `tools/` / `dist`，含 `execute/` / `terms/`。 */
-function assertWorldignoreExcludes(journalPath) {
-  const rootTrees = journalBodies(journalPath).filter(
-    (body) =>
-      body !== null &&
-      typeof body === 'object' &&
-      Array.isArray(body.entries) &&
-      body.entries.some((entry) => entry.name === 'plugin.json'),
-  )
-  assert.ok(rootTrees.length > 0, '入世源码树里找不到根 tree（plugin.json）')
-  for (const tree of rootTrees) {
-    const names = tree.entries.map((entry) => entry.name)
-    assert.equal(names.includes('test'), false, `根 tree 不应含 test/：${names.join(',')}`)
-    assert.equal(names.includes('tools'), false, `根 tree 不应含 tools/：${names.join(',')}`)
-    assert.ok(names.includes('execute'), '根 tree 应含 execute/')
-    assert.ok(names.includes('terms'), '根 tree 应含 terms/')
-  }
-  return rootTrees[0].entries.length
+/** 离线核验 `.worldignore`：入世源码树不含 test/ / tools/ / dist，含 execute/ / terms/。 */
+function packedPaths(dir) {
+  const worldignore = readWorldignore(dir)
+  assert.equal(worldignore.ok, true, '.worldignore 解析失败')
+  const source = packSourceDir(dir, worldignore.patterns)
+  return collectPackedPaths(source.ops, source.rootTreeIndex)
 }
 
 async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', `chrono-ui-threads-e2e-${stamp}`)
-  const packRoot = join(tmpdir(), 'kilo', `chrono-ui-threads-pack-${stamp}`)
   mkdirSync(join(root, 'state'), { recursive: true })
-  mkdirSync(join(packRoot, 'state'), { recursive: true })
   let started = false
   try {
-    // 入世冒烟：单目录 pack + `.worldignore` 核验
-    const packed = boot(packRoot, ['pack', THREADS_DIR, '--identity', 'ui-threads'])
-    assert.equal(packed.ok, true, `pack 报告 ok:false：${JSON.stringify(packed)}`)
-    const entries = assertWorldignoreExcludes(join(packRoot, 'state', 'world', 'journal.jsonl'))
-    console.log(`pack: status=${packed.status} commit=${packed.commitHash}；.worldignore 生效（根 tree ${entries} 项，无 test/ 与 tools/）`)
+    // 入世冒烟：离线打包 + `.worldignore` 核验（无需起宿主，避免 needs 对提供方的入世门禁）。
+    const paths = packedPaths(THREADS_DIR)
+    assert.ok(!paths.some((entry) => entry.startsWith('test/')), `入世树含 test/：${paths.join(', ')}`)
+    assert.ok(!paths.some((entry) => entry.startsWith('tools/')), `入世树含 tools/：${paths.join(', ')}`)
+    assert.ok(paths.some((entry) => entry.startsWith('execute/')), '入世树缺 execute/')
+    assert.ok(paths.some((entry) => entry.startsWith('terms/')), '入世树缺 terms/')
+    console.log(`pack：.worldignore 生效（${paths.length} 项，无 test/ 与 tools/）`)
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
-        { name: 'ui-threads', path: THREADS_DIR },
-        { name: 'session', path: SESSION_DIR },
-        { name: 'todo', path: TODO_DIR },
         { name: 'input', path: INPUT_DIR },
+        { name: 'session', path: SESSION_DIR },
+        { name: 'storage-kv', path: STORAGE_KV_DIR },
+        { name: 'todo', path: TODO_DIR },
+        { name: 'ui-threads', path: THREADS_DIR },
       ]),
     )
     const seeded = boot(root, ['seed'])
@@ -161,12 +145,7 @@ async function main() {
         console.error(`stop 失败：${err.message}`)
       }
     }
-    rmSync(packRoot, { recursive: true, force: true })
-    try {
-      rmSync(root, { recursive: true, force: true })
-    } catch (err) {
-      console.error(`清理临时 root 失败（不影响结果）：${err.message}`)
-    }
+    rmSync(root, { recursive: true, force: true })
   }
 }
 

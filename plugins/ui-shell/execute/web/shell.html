@@ -39,15 +39,18 @@
       flex: none;
     }
     /* main 槽不滚：消息区滚动由 ui-chat 的 .chat-scroll 自持，双滚动容器会出幽灵滚动条。
-       flex-basis 必须是 0 而非 auto：auto 时 main 的尺寸随消息内容增长，会把 dock / composer
+       flex-basis 必须是 0 而非 auto：auto 时 main 的尺寸随消息内容增长，会把底部停靠区
        往下挤（dock 被压扁、输入框被顶出视口）。0 基 + 自持滚动让 main 恒占「剩余空间」。 */
     #slot-main { flex: 1 1 0; min-height: var(--main-min-h); overflow: hidden; }
-    /* dock 不随消息流伸缩：main 的内容高度会撑大其 flex-basis，若 dock 可收缩（flex-shrink>0）
-       就会被压扁到输入框下沿；停靠带必须恒取自身内容高度（上限 --dock-max-h 内自滚）。 */
+    /* 底部停靠区：dock 绝对定位于输入框之上（bottom: 100%），出现 / 消失不占布局——
+       审批卡浮在消息流上方，输入框全程不被顶动（dock 占位会把 composer 顶上去又落回来）。 */
+    #shell-bottom { position: relative; flex: none; min-height: 0; }
     #slot-dock {
-      position: relative;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 100%;
       z-index: var(--z-dock);
-      flex: none;
       max-height: var(--dock-max-h);
       overflow: auto;
     }
@@ -233,8 +236,10 @@
       <header id="slot-topbar" data-slot="topbar"></header>
       <section id="slot-underbar" data-slot="underbar" aria-label="次级栏"></section>
       <main id="slot-main" data-slot="main"></main>
-      <section id="slot-dock" data-slot="dock" aria-label="审批停靠带"></section>
-      <footer id="slot-composer" data-slot="composer"></footer>
+      <div id="shell-bottom">
+        <section id="slot-dock" data-slot="dock" aria-label="审批停靠带"></section>
+        <footer id="slot-composer" data-slot="composer"></footer>
+      </div>
     </div>
   </div>
   <div id="slot-overlay" data-slot="overlay"></div>

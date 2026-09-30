@@ -2,7 +2,7 @@
 // 角标优先级：待审批（闸门）> 运行中 > 失败 > 未读（计数）；不常驻红点——
 // 失败 / 待审批随状态变化消失，运行中随 `chat.turn.settled` 消失，未读随选中该会话清空。
 // 「运行中」以会话回合状态为准：实时由 `chat.turn.started` / `chat.turn.settled` 归约，
-// 首屏由会话持久回合状态（`session.read.open_turns`）补种；不读宿主
+// 首屏由会话持久回合状态（`session.list.open_turns`）补种；不读宿主
 // `run.started` / `run.finished`（机械信号），也不读生产从不写的 `status:"running"`。
 
 export interface BadgeState {
@@ -252,7 +252,7 @@ export function clearUnread(state: BadgeState, conversationId: string): BadgeSta
 }
 
 /**
- * 用会话的持久回合状态（`session.read.open_turns` 摘要）补首屏运行角标：
+ * 用会话的持久回合状态（`session.list.open_turns` 摘要）补首屏运行角标：
  * 重载后、下一个 `chat.turn.started` 到达前，也能显示哪些会话有仍开着的回合
  * （含非当前会话）。只补缺、不覆盖：已由事件给出的运行记录（带 run id）优先，
  * 清除仍走 `chat.turn.settled`；摘要只带 `{turn_id,conv}`，故补种的运行记录 run 为 null。
@@ -272,7 +272,7 @@ export function seedOpenTurns(state: BadgeState, openTurns: unknown): BadgeState
 }
 
 /**
- * 用 `chat.history` 会话列表补种角标（首屏无事件时的初值）：
+ * 用 `session.list` 会话列表补种角标（首屏无事件时的初值）：
  * `status:"failed"` → 失败；`pending.approval` → 待审批；`inbox.count - last_seen` → 未读。
  * 运行中不在此补种——它来自会话回合状态（`chat.turn.started`），而 `conversation.status`
  * 生产从不写 `"running"`。已由事件给出的字段优先，不被历史覆盖。

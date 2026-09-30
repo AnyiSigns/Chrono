@@ -1,0 +1,44 @@
+{
+  "identity": "graph-run",
+  "schema": "schema/graph-run.json",
+  "implements": ["graph-run"],
+  "methods": {
+    "graph-run": ["run", "cancel"]
+  },
+  "concurrent_methods": ["run", "cancel"],
+  "pins": {},
+  "needs": {
+    "session": { "mode": "one" },
+    "model": { "mode": "one" },
+    "context": { "mode": "one" },
+    "retrieval": { "mode": "one" },
+    "compress": { "mode": "one" },
+    "guard": { "mode": "one" },
+    "graph-gate": { "mode": "one" },
+    "approval": { "mode": "one" },
+    "tools": { "mode": "one" },
+    "router": { "mode": "one" }
+  },
+  "start": "node execute/main.ts",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

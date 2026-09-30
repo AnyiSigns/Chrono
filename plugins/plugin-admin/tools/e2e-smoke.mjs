@@ -102,7 +102,7 @@ async function main() {
     // 离线读投影：管理平面 pin host；工具面 needs.plugin 解析为有效引脚 plugin
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const plane = projection.ids['plugin']
     assert.ok(plane, '投影缺 plugin')
     assert.equal(plane.pins.host, 'host', 'plugin pins.host 应为保留字面量 host')

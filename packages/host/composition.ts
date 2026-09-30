@@ -5,6 +5,7 @@ import { hostPaths, socketPath } from './paths.ts'
 import { bootstrapHost } from './bootstrap.ts'
 import type { BootstrappedHost, WiredHost, WorldReady } from './bootstrap.ts'
 import { RunRegistry } from './run-registry.ts'
+import { DEFAULT_LIMITS } from './run-registry.ts'
 import type { BroadcastFn } from './run-registry.ts'
 import { createFollow } from './follow.ts'
 import { createInboundServer } from './inbound/server.ts'
@@ -16,7 +17,12 @@ import { createPeriodicRunner } from './periodic-runner.ts'
 import { createWatchReload } from './watch/host-reload.ts'
 import { buildCommandIndex, startAssembly } from './assembly/index.ts'
 import type { AssemblyRuntimeHandle, CommandIndex } from './assembly/index.ts'
-import { createRoundRouter, fatalError } from './effect/index.ts'
+import {
+  createRoundRouter,
+  createJudgmentRunner,
+  createJudgmentInvoke,
+  fatalError,
+} from './effect/index.ts'
 import type { RoundRouter } from './effect/index.ts'
 import { PeriodicScheduler } from './periodic.ts'
 import { readMethodTimeouts } from './method-timeouts.ts'
@@ -185,16 +191,6 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
   /** 世界就绪后由组合根接线：监听 → 起装配 → 建 router / periodic / watcher。 */
   const buildWired = async (ready: WorldReady): Promise<WiredHost> => {
     const { writer, audits, world, head, setAuditTierWorld } = ready
-    let ctxCache: { head: Hash | null; seq: number; view: Json } | undefined
-    const cachedProjection = (target: World, targetHead: typeof head): Json => {
-      if (ctxCache !== undefined && ctxCache.head === targetHead.hash) return ctxCache.view
-      const view = projectBaseOnly(target, targetHead, { blobsDir: paths.blobsDir })
-      // 单条缓存只被「不更旧」的链头覆盖：并发的陈旧 head 调用不得挤掉更新的缓存
-      if (ctxCache === undefined || targetHead.seq >= ctxCache.seq) {
-        ctxCache = { head: targetHead.hash, seq: targetHead.seq, view }
-      }
-      return view
-    }
     // `world_rev` 是全量摘要（O(#defs)）：按链头缓存，避免每次 `status` 轮询都阻塞事件循环重算。
     let revCache: { head: Hash | null; rev: Hash } | undefined
     const cachedWorldRev = (target: World, targetHead: typeof head): Hash => {
@@ -202,6 +198,20 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       const rev = worldRev(target)
       revCache = { head: targetHead.hash, rev }
       return rev
+    }
+    let ctxCache: { head: Hash | null; seq: number; view: Json } | undefined
+    const cachedProjection = (target: World, targetHead: typeof head): Json => {
+      if (ctxCache !== undefined && ctxCache.head === targetHead.hash) return ctxCache.view
+      const view = projectBaseOnly(target, targetHead, {
+        blobsDir: paths.blobsDir,
+        // 投影内的 `world_rev` 由已缓存的链头摘要供给，不再在投影里重算。
+        worldRev: cachedWorldRev(target, targetHead),
+      })
+      // 单条缓存只被「不更旧」的链头覆盖：并发的陈旧 head 调用不得挤掉更新的缓存
+      if (ctxCache === undefined || targetHead.seq >= ctxCache.seq) {
+        ctxCache = { head: targetHead.hash, seq: targetHead.seq, view }
+      }
+      return view
     }
     // 命令索引按链头缓存：同头多路解析复用一次 `buildCommandIndex`（含名字映射）。
     let commandCache: { head: Hash | null; index: CommandIndex } | undefined
@@ -357,11 +367,20 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       // 锚定旧世代会在并发换代后解析到已被摘除的世代键（假 not_loaded）；liveWorld 与端点表同代。
       // 漂移证据按 (发出者, pin 名) 只留最近依赖世代，避免键含世代哈希的 Set 只增。
       const driftLogged = new Map<string, string>()
+      // 判定内效果（取数 / 调服务方法）的执行：与路由同代解析，嵌套判定按调用链限深，审计旁路落账。
+      const judgmentInvoke = createJudgmentInvoke({
+        getRouter: () => router,
+        blobsDir: paths.blobsDir,
+        now: () => registry.nextNow(),
+        onAudit: (draft) => audits.append(draft),
+        callTimeoutMs: options.callTimeoutMs,
+      })
       router = createRoundRouter({
         endpoints: runtime.endpoints,
         blobsDir: paths.blobsDir,
         liveWorld: follow.liveWorld,
         host: wiring.capability,
+        judgment: createJudgmentRunner(DEFAULT_LIMITS, { invoke: judgmentInvoke }),
         onDrift: (impl, cap, gen) => {
           const key = `${impl}\u0000${cap}`
           if (driftLogged.get(key) === gen) return
@@ -458,6 +477,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       paths,
       startedAt,
       compactTailEntries: options.compactTailEntries,
+      compactJournalBytes: options.compactJournalBytes,
       safeAppendLifecycle,
       wire: buildWired,
     })

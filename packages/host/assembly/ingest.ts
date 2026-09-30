@@ -368,8 +368,14 @@ function planTerms(
   const paths = new Set<string>()
   const collected: string[] = []
   collectJsonFiles(join(pkgRoot, 'terms'), 'terms', collected)
+  // 判定入口也是 term：与命令入口同路纳入候选，缺失 / 坏引用同样整包拒。
+  const judgmentEntries = Object.values(decl.judgments).flatMap((bound) => Object.values(bound))
   // 统一规范化（`./`、重复 `/` 等），否则引用侧规范化后会对不上索引
-  for (const raw of [...collected, ...decl.commands.map((command) => command.entry)]) {
+  for (const raw of [
+    ...collected,
+    ...decl.commands.map((command) => command.entry),
+    ...judgmentEntries,
+  ]) {
     const normalized = normalizeRefPath(raw)
     if (normalized === null) return { ok: false, reasons: [`missing_entry:${raw}`] }
     paths.add(normalized)

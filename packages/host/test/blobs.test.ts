@@ -2,7 +2,7 @@
 // 以及 `validate_package` dry-run 不落 CAS 的边界。
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   BLOB_POINTER_KIND,
@@ -71,6 +71,19 @@ describe('blobs CAS 存储层', () => {
     if (!put.ok) return
     writeFileSync(join(blobsDir(), put.pointer.sha256), Buffer.from('abc'))
     expect(getBlob(blobsDir(), put.pointer)).toEqual({ ok: false, code: 'bad_blob' })
+  })
+
+  it('缓存命中：同 sha256 二次读取不再触盘（命中已校验字节，CAS 不可变）', () => {
+    const bytes = Buffer.from('cache hit bytes')
+    const put = putBlob(blobsDir(), bytes)
+    expect(put.ok).toBe(true)
+    if (!put.ok) return
+    const first = getBlob(blobsDir(), put.pointer)
+    expect(first.ok).toBe(true)
+    rmSync(join(blobsDir(), put.pointer.sha256), { force: true })
+    const second = getBlob(blobsDir(), put.pointer)
+    expect(second.ok).toBe(true)
+    if (second.ok) expect(second.bytes.equals(bytes)).toBe(true)
   })
 
   it('blobFile / isBlobPointer 拒绝非 64-hex 与畸形形态（防路径穿越 / 误判）', () => {

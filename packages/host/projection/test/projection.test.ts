@@ -244,6 +244,16 @@ describe('A14 base_only 投影', () => {
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
     expect(view.ids['sess'].pins).toBeNull()
   })
+
+  it('world_rev 可由调用方传入：与现算同值（省去内部重算）', () => {
+    const world = injectedWorld()
+    const head: Head = { seq: 3, hash: 'f'.repeat(64) }
+    const rev = worldRev(world)
+    const passed = projectBaseOnly(world, head, { worldRev: rev }) as unknown as Projection
+    const computed = projectBaseOnly(world, head) as unknown as Projection
+    expect(passed.world_rev).toBe(rev)
+    expect(passed.world_rev).toBe(computed.world_rev)
+  })
 })
 
 /**

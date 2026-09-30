@@ -10,8 +10,10 @@ export const STYLE_TEXT = `
 .chat-status[hidden] { display: none; }
 .chat-status .chat-breathe { width: 100%; height: 2px; }
 /* 关掉浏览器滚动锚定：贴底靠每帧写 scrollTop（pinToBottom）实现，若锚定也改写滚动位，
-   两者互抢会出现细微抖动（流式时最明显）。 */
-.chat-scroll { flex: 1 1 auto; overflow: auto; overflow-anchor: none; }
+   两者互抢会出现细微抖动（流式时最明显）。
+   scrollbar-gutter: stable 常驻滚动条槽：否则滚动条在内容跨过一屏时出现 / 消失，
+   消息列被挤窄 10px → 文字整段重排，是「流式到某一刻画面突然抖一下」的常见来源。 */
+.chat-scroll { flex: 1 1 auto; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable; }
 .chat-list { box-sizing: border-box; min-height: 100%; max-width: var(--msg-max-w); margin: 0 auto; padding: var(--space-16); display: flex; flex-direction: column; gap: var(--msg-gap); transition: opacity var(--motion-base); }
 /* contain: layout：每条消息的布局自成一块——流式消息每帧长高不牵动同窗其它消息的布局。
    不用 content-visibility / contain: paint：前者与窗口化滚动高度估算打架，后者会裁掉表格导出菜单。 */
@@ -131,8 +133,16 @@ export const STYLE_TEXT = `
 .chat-video-play:hover { background: var(--c-selection); }
 .chat-video-play:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .chat-media-audio { width: 100%; max-width: 480px; height: 40px; }
-.chat-file { display: flex; align-items: center; gap: var(--space-8); height: 34px; max-width: 320px; padding: 0 var(--space-8); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-md); font-size: var(--font-size-sm); }
-.chat-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 附件卡片：默认锚点蓝字 + 无悬停态太「裸」，这里补足文字色 / 悬停 / 焦点与图标层级。
+   min-height 而非固定高：带大小或换行时不被截断。 */
+.chat-file { display: inline-flex; align-items: center; gap: var(--space-8); min-height: 32px; max-width: 320px; padding: var(--space-4) var(--space-8); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-md); color: var(--c-text); font-size: var(--font-size-sm); text-decoration: none; }
+a.chat-file:hover { background: var(--c-selection); border-color: var(--c-text-3); }
+.chat-file:focus-visible { outline: 2px solid var(--c-accent-strong); outline-offset: 2px; }
+.chat-file-icon { flex: none; color: var(--c-text-3); }
+.chat-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-file-meta { flex: none; color: var(--c-text-3); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; }
+.chat-file-action { flex: none; margin-left: var(--space-4); color: var(--c-text-3); }
+a.chat-file:hover .chat-file-icon, a.chat-file:hover .chat-file-action { color: var(--c-text); }
 .chat-placeholder { display: flex; align-items: center; gap: var(--space-8); max-width: 320px; padding: var(--space-8) var(--space-12); background: var(--c-bg); border-radius: var(--radius-md); color: var(--c-text-2); font-size: var(--font-size-sm); }
 .chat-tool { font-size: var(--font-size-sm); }
 .chat-tool-card { border-radius: var(--radius-md); }
@@ -153,16 +163,24 @@ export const STYLE_TEXT = `
 .chat-tool-spin { width: 8px; height: 8px; border-radius: 50%; background: var(--c-accent); animation: chat-breathe 1.2s ease-in-out infinite; }
 .chat-tool-chevron { flex: none; color: var(--c-text-3); transition: transform var(--motion-fast); }
 .chat-tool[data-open="true"] .chat-tool-chevron { transform: rotate(90deg); }
-.chat-tool-detail { padding: var(--space-8); border-top: 1px solid var(--c-border); animation: chat-pop-in var(--motion-base) both; }
+.chat-tool-detail { padding: var(--space-8); border-top: 1px solid var(--c-border); }
+/* 展开区高度过渡：收起不瞬时卸载高度（流式收尾 / 定稿收口时视图瞬跳的主因）。
+   grid 0fr→1fr 可对 auto 高度做过渡；内层 overflow:hidden + min-height:0 才真正收到 0。
+   内容仅在首次展开后常驻（见 entry.tsx 的 everOpen），历史里从未展开的卡片不额外渲染。 */
+.chat-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--motion-base); }
+.chat-collapse[data-open="true"] { grid-template-rows: 1fr; }
+.chat-collapse-inner { min-height: 0; overflow: hidden; }
 .chat-reasoning { border-radius: var(--radius-md); }
 .chat-reasoning-head { display: flex; align-items: center; gap: var(--space-8); width: 100%; min-height: 24px; padding: var(--space-4) var(--space-8); background: none; border: none; color: var(--c-text-3); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer; border-radius: inherit; }
 .chat-reasoning-head:hover { background: color-mix(in srgb, var(--c-text) 4%, transparent); }
 .chat-reasoning-head:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .chat-reasoning-icon { flex: none; }
-.chat-reasoning-label { flex: 1 1 auto; }
+.chat-reasoning-title { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: var(--space-4); }
+.chat-reasoning-label { flex: none; color: var(--c-text-2); }
+.chat-reasoning-summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .chat-reasoning-chevron { flex: none; transition: transform var(--motion-fast); }
 .chat-reasoning[data-open="true"] .chat-reasoning-chevron { transform: rotate(90deg); }
-.chat-reasoning-body { margin-top: var(--space-4); padding: var(--space-8) var(--space-12); background: color-mix(in srgb, var(--c-text) 2%, transparent); border-radius: var(--radius-md); color: var(--c-text-2); font-size: var(--font-size-sm); font-style: italic; animation: chat-pop-in var(--motion-base) both; }
+.chat-reasoning-body { margin-top: var(--space-4); padding: var(--space-8) var(--space-12); background: color-mix(in srgb, var(--c-text) 2%, transparent); border-radius: var(--radius-md); color: var(--c-text-2); font-size: var(--font-size-sm); font-style: italic; }
 .chat-reasoning-body .chat-md { font-size: var(--font-size-sm); color: var(--c-text-2); }
 .chat-code-block { margin: 0; padding: var(--space-8) var(--space-12); background: var(--c-bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: var(--leading-code); overflow-x: auto; white-space: pre; }
 .chat-diff { padding: var(--space-4) 0; background: var(--c-bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: var(--leading-code); overflow-x: auto; }
@@ -292,15 +310,22 @@ export const STYLE_TEXT = `
 @keyframes chat-dot { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 @keyframes chat-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes chat-fade-out { from { opacity: 1; } to { opacity: 0; } }
-/* 展开区 / 浮层入场：轻微上移 + 淡入（含工具卡展开体、思考块、表格导出菜单）。 */
+/* 浮层入场：轻微上移 + 淡入（表格导出菜单等瞬时浮层；展开区改用 .chat-collapse 高度过渡）。 */
 @keyframes chat-pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 /* 「回到底部」浮起钮：保留 translateX(-50%) 水平居中，仅叠加上浮淡入。 */
 @keyframes chat-pill-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* 悬停 / 焦点反馈统一走短过渡：下列控件原本都是瞬时换色，鼠标划过是「硬切」。
+   只过渡颜色类属性（不牵动布局、可合成）；减少动效时 --motion-fast 归零即自动关闭。 */
+.chat-btn, .chat-codeblock-copy, .chat-codeblock-toggle, .chat-file, .chat-iconbtn, .chat-question-nav-btn,
+.chat-reasoning-head, .chat-table-copy, .chat-table-export, .chat-table-menu button, .chat-tool-head,
+.chat-video-play {
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
 @media (prefers-reduced-motion: reduce) {
   /* 呼吸条 / 旋转为位移动效，减少动态时停用；「正在工作」仅色彩与透明度变化，保留以维持可辨识度。 */
-  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"], :root:not([data-motion="full"]) .chat-tool-detail, :root:not([data-motion="full"]) .chat-reasoning-body, :root:not([data-motion="full"]) .chat-table-menu, :root:not([data-motion="full"]) .chat-pill:not([hidden]) { animation: none; }
+  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"], :root:not([data-motion="full"]) .chat-table-menu, :root:not([data-motion="full"]) .chat-pill:not([hidden]) { animation: none; }
   :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"] { opacity: .4; }
   :root:not([data-motion="full"]) .chat-lightbox, :root:not([data-motion="full"]) .chat-lightbox[data-closing="true"] { animation: none; }
-  :root:not([data-motion="full"]) .chat-list, :root:not([data-motion="full"]) .chat-footnote, :root:not([data-motion="full"]) .chat-tool-chevron, :root:not([data-motion="full"]) .chat-reasoning-chevron, :root:not([data-motion="full"]) .chat-anchor { transition: none; }
+  :root:not([data-motion="full"]) .chat-list, :root:not([data-motion="full"]) .chat-footnote, :root:not([data-motion="full"]) .chat-tool-chevron, :root:not([data-motion="full"]) .chat-reasoning-chevron, :root:not([data-motion="full"]) .chat-anchor, :root:not([data-motion="full"]) .chat-collapse { transition: none; }
 }
 `

@@ -176,6 +176,39 @@ describe('H6 定时触发', () => {
     }
   })
 
+  it('方法条目：term 承载（judgments）经路由就地求值并落账其计划值', async () => {
+    const pkg = writeTempPackage(root, {
+      identity: 'toy-periodic-judge',
+      implements: ['toy.periodic-term'],
+      methods: { 'toy.periodic-term': ['tick'] },
+      judgments: { 'toy.periodic-term': { tick: 'terms/tick.json' } },
+      terms: { 'tick.json': JSON.stringify(TICK_TERM) },
+      members: [{ kind: 'term', path: 'terms/' }],
+      schema: { type: 'object', periodic: [{ method: 'tick', every_ms: 60 }] },
+    })
+    expect(runSeed(root, [{ name: 'toy-periodic-judge', path: pkg }]).ok).toBe(true)
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    const events: EventMessage[] = []
+    client.onEvent((event) => events.push(event))
+    try {
+      await waitFor(
+        () =>
+          events.some(
+            (event) =>
+              event.impl === 'host' &&
+              event.topic === 'run.finished' &&
+              (event.payload as { thread?: string | null }).thread === null &&
+              (event.payload as { status?: string }).status === 'done',
+          ),
+        'periodic judgment run.finished(done)',
+      )
+    } finally {
+      client.close()
+    }
+  })
+
   it('非法周期声明：只记运维日志 dep.periodic_invalid，不阻断宿主启动', async () => {
     const pkg = writeTempPackage(root, {
       identity: 'toy-periodic-bad',

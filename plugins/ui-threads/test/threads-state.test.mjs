@@ -1,6 +1,6 @@
 ﻿// `threads.state` 服务装配测试（node --test）：
 // 父会话闭包（线程树排序 / 隔离）、标签文案来源（缺省标题 → 兜底文案）、状态角标字段、待办视图；
-// 外加协议级驱动：hello → manifest、ping、threads.state（反向调用 session.read / todo.invoke）、
+// 外加协议级驱动：hello → manifest、ping、threads.state（反向调用 session.list / todo.invoke）、
 // 未知能力类、probe、drain → bye、EOF 自退出。
 
 import { test } from 'node:test'
@@ -41,7 +41,7 @@ function conversation(id, extra = {}) {
   }
 }
 
-/** owner `session.read` 的切片形状（`threads.state` 的入参）；`open_turns` = 跨会话仍开着的回合。 */
+/** owner `session.list` 的清单形状（`threads.state` 的入参）；`open_turns` = 跨会话仍开着的回合。 */
 function sessionSlice(conversations, current, openTurns = []) {
   return { version: 1, current, conversations, open_turns: openTurns }
 }
@@ -118,7 +118,7 @@ test('标签文案来源：缺省标题 → default_title，子代理 / 群聊 /
 test('状态角标：运行中读 session 的 open 回合；终态读 status；待审批优先', () => {
   // 生产从不写 status:"running"：该死分支已移除，裸 status 不再产生运行角标。
   assert.equal(badgeOf(conversation('x', { status: 'running' })), null)
-  // 会话有仍开着的回合（session.read.open_turns）→ 运行中，可压过终态 status。
+  // 会话有仍开着的回合（session.list.open_turns）→ 运行中，可压过终态 status。
   assert.equal(badgeOf(conversation('x'), true), 'running')
   assert.equal(badgeOf(conversation('x', { status: 'done' }), true), 'running')
   assert.equal(badgeOf(conversation('x', { status: 'done' })), 'done')
@@ -252,7 +252,7 @@ test('协议级：hello → manifest，ping，threads.state（反向调用 owner
   const { env, cleanup } = tempRoot()
   const service = startService(env, {
     portResponder: (port, method) => {
-      if (port === 'session' && method === 'read') return { ok: true, value: sessionSlice(twoTrees(), 'c1') }
+      if (port === 'session' && method === 'list') return { ok: true, value: sessionSlice(twoTrees(), 'c1') }
       if (port === 'todo' && method === 'invoke') return { ok: true, value: { ok: true, result: todoResult([]) } }
       return { ok: false, code: 'not_loaded', message: '' }
     },

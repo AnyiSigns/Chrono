@@ -26,6 +26,8 @@ L3（`memory-store` 长期条目）维护执行件：**L2 高价值项固化** +
 - **确定性**：去重排序由 `(at 降序, 来源优先级, key 升序)` 完全决定；空集 / 空删除集**不产生写**。
 - **参数**：`l3_capacity`（500）、`dedup_threshold`（0.9）、`weight_threshold`（0.7）、
   `candidate_threshold`（0.2）、`solidify_full_sources`（4）；覆盖值形态非法回 `bad_args`。
+- **向量模型**：`embedding_model` 可选；缺省时不向 `embedding.embed` 带 `model`，由向量化门面按提供方
+  `describe-models` 元数据选默认（本插件不硬编码模型名）。
 
 ## 运行
 

@@ -14,6 +14,7 @@ import { AuditStore } from './audit-store.ts'
 import { resolveAuditTier } from './audit-tiers.ts'
 import { backfillAuditStore, readAuditBackfillMeta } from './audit-backfill.ts'
 import {
+  DEFAULT_COMPACT_JOURNAL_BYTES,
   DEFAULT_COMPACT_TAIL_ENTRIES,
   DEFAULT_FLATTEN_CHAIN,
   DEFAULT_GEN_RETENTION,
@@ -48,8 +49,10 @@ export interface BootstrapOptions {
   root: string
   paths: HostPaths
   startedAt: number
-  /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`。 */
+  /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`。设 0 关闭条数触发。 */
   compactTailEntries?: number
+  /** G6 启动压缩阈值（尾段 journal 字节）；缺省 `DEFAULT_COMPACT_JOURNAL_BYTES`。设 0 关闭字节触发。 */
+  compactJournalBytes?: number
   /** 运维日志安全写入：日志是旁路，写失败不得中断启动 / 停机。 */
   safeAppendLifecycle: (record: LifecycleRecord) => void
   /** 世界就绪后由组合根接线（监听入站面 → 起装配 → 建 router / periodic / watcher）。 */
@@ -151,12 +154,18 @@ export async function bootstrapHost(options: BootstrapOptions): Promise<Bootstra
         // 回填失败只损失历史审计可见性，不影响世界 / 链 / 启动
       }
     }
-    // G6 启动压缩：尾段达到阈值即追加快照 entry + 归档前缀 + 写基础世界（世界不变，链头推进到快照）。
+    // G6 启动压缩：尾段条目数或字节数任一达到阈值即追加快照 entry + 归档前缀 + 写基础世界
+    // （世界不变，链头推进到快照）。两个阈值各自设 0 即关闭该触发，都关则从不自动压缩。
     // 归档前缀只取**当前 journal**（未归档部分）：回落全链时 `anchor.entries` 可能是全链，不能整段再归档。
     const compactTailEntries = options.compactTailEntries ?? DEFAULT_COMPACT_TAIL_ENTRIES
+    const compactJournalBytes = options.compactJournalBytes ?? DEFAULT_COMPACT_JOURNAL_BYTES
+    // 字节取载锚那次容错读的有效前缀长度（`anchor.journalValidBytes` = 当前 journal 文件大小），
+    // 与条数判定同源，无需二次读文件。
+    const byEntries = compactTailEntries > 0 && anchor.entries.length >= compactTailEntries
+    const byBytes = compactJournalBytes > 0 && anchor.journalValidBytes >= compactJournalBytes
     let initialWorld: World = anchor.world
     let initialHead: Head = anchor.head
-    if (compactTailEntries > 0 && anchor.entries.length >= compactTailEntries) {
+    if (byEntries || byBytes) {
       // 有界化回收需要**全量世界**的 world_rev（快照 entry 自校 + full verify 用），
       // 故基础世界已被回收（子世界）时从冷段 + 尾段全链重放一次；未回收时直接用载入世界。
       const baseWorld = anchor.pruned

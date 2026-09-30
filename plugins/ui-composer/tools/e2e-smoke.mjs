@@ -143,7 +143,7 @@ async function main() {
     const commands = boot(root, ['commands'])
     const clientRead = commands.find((command) => command.name === 'ui-composer.client.read')
     assert.ok(clientRead !== undefined, `缺 ui-composer.client.read 命令：${JSON.stringify(commands)}`)
-    assert.equal(clientRead.readonly, true)
+    assert.equal(clientRead.entry, 'terms/client.read.json')
     const decl = JSON.parse(readFileSync(join(COMPOSER_DIR, 'plugin.json'), 'utf8'))
     assert.deepEqual(decl.pins, {})
     assert.deepEqual(decl.commands, [

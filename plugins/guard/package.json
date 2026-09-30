@@ -10,6 +10,8 @@
     "README.md",
     ".worldignore",
     "execute/",
+    "terms/",
+    "terms.src/",
     "schema/"
   ],
   "engines": { "node": ">=24" },

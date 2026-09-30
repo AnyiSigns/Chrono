@@ -209,7 +209,6 @@ async function handleCommand(
     ok: true,
     kind: (frame['kind'] ?? null) as Json,
     status: (frame['status'] ?? null) as Json,
-    observations: (frame['observations'] ?? null) as Json,
     value: extractValue(result.frame),
   })
 }

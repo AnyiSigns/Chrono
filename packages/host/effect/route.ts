@@ -9,9 +9,11 @@ import {
   capabilityProviders,
   needsBindingsOf,
   readPluginDecl,
+  resolveJudgmentHash,
 } from '../assembly/index.ts'
 import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
-import type { NeedDecl } from '../assembly/index.ts'
+import type { DeclRead, NeedDecl } from '../assembly/index.ts'
+import type { JudgmentCall } from './judgment.ts'
 import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
@@ -79,6 +81,11 @@ export interface RouterOptions {
   /** 宿主保留能力类派发器；缺省时 `host` 路由 → `not_loaded`（未接线，不猜）。 */
   host?: HostCapabilityCall
   /**
+   * 判定求值器：命中提供方 `judgments` 的能力方法由它就地求值（无服务）。
+   * 缺省时命中判定 → `not_loaded`（未接线，不猜）。
+   */
+  judgment?: JudgmentCall
+  /**
    * 活端点表世界 getter：提供时按它解析（而非传入的锚定世界），使解析世界与活端点表同代，
    * 消除「锚定世界 active 世代 vs 端点表已换代」的偏斜；缺省仍用锚定世界（判定/路由/提交同世界）。
    */
@@ -108,10 +115,15 @@ function hostRow(emitter: string, method: string, host: HostCapabilityCall): End
  */
 export function createRoundRouter(options: RouterOptions): RoundRouter {
   const ownerIndexes = new WeakMap<World['ids'], Map<Hash, string>>()
-  // 每个身份只留最近解析的 (gen → {caps, needs})：声明不可变，命中可复用；换代替换，不随历史世代累积。
+  // 每个身份只留最近解析的 (gen → {caps, needs, judgments})：声明不可变，命中可复用；换代替换，不随历史世代累积。
   const declFactsCache = new Map<
     string,
-    { gen: Hash; caps: Set<string>; needs: Record<string, NeedDecl> }
+    {
+      gen: Hash
+      caps: Set<string>
+      needs: Record<string, NeedDecl>
+      judgments: Record<string, Record<string, Hash>>
+    }
   >()
 
   const ownerIndexOf = (world: World): Map<Hash, string> => {
@@ -126,15 +138,100 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     world: World,
     id: string,
     gen: Hash,
-  ): { caps: Set<string>; needs: Record<string, NeedDecl> } | null => {
+  ): {
+    caps: Set<string>
+    needs: Record<string, NeedDecl>
+    judgments: Record<string, Record<string, Hash>>
+  } | null => {
     const cached = declFactsCache.get(id)
     if (cached !== undefined && cached.gen === gen) return cached
-    const decl = readPluginDecl(world, id, options.blobsDir)?.decl ?? null
+    const read = readPluginDecl(world, id, options.blobsDir)
     // 声明读不出（def / blob 暂缺）：不缓存 null，下一次解析可重试；补齐后同键重算成功
-    if (decl === null) return null
-    const facts = { gen, caps: new Set(decl.implements), needs: decl.needs }
+    if (read === null) return null
+    const facts = {
+      gen,
+      caps: new Set(read.decl.implements),
+      needs: read.decl.needs,
+      judgments: resolveJudgments(world, read),
+    }
     declFactsCache.set(id, facts)
     return facts
+  }
+
+  /**
+   * 解析声明里的 `judgments`：`cap → method → 入口 term def 哈希`（`$ref` 已替换）。
+   * 路径解析不到（缺文件 / 坏引用）即从表中省略——该方法的判定不可用，路由回落端点行（无则 `not_loaded`）。
+   */
+  const resolveJudgments = (world: World, read: DeclRead): Record<string, Record<string, Hash>> => {
+    const out: Record<string, Record<string, Hash>> = {}
+    for (const cap of Object.keys(read.decl.judgments)) {
+      const bound = read.decl.judgments[cap]
+      const resolved: Record<string, Hash> = {}
+      for (const method of Object.keys(bound)) {
+        const hash = resolveJudgmentHash(
+          world,
+          read.tree,
+          bound[method],
+          read.gen.sig,
+          options.blobsDir,
+        )
+        if (hash !== null) resolved[method] = hash
+      }
+      if (Object.keys(resolved).length > 0) out[cap] = resolved
+    }
+    return out
+  }
+
+  /** 该身份/世代在能力类 `cap` 上的方法 `method` 的判定入口哈希；无判定返回 null。 */
+  const judgmentEntryOf = (
+    world: World,
+    id: string,
+    gen: Hash,
+    cap: string,
+    method: string,
+  ): Hash | null => factsOf(world, id, gen)?.judgments[cap]?.[method] ?? null
+
+  /** 判定端点行：无进程（pid 未设），调用经注入的判定求值器；缺省时 → `not_loaded`。 */
+  const judgeRow = (
+    world: World,
+    owner: string,
+    gen: Hash,
+    cap: string,
+    method: string,
+    entry: Hash,
+  ): EndpointRow => ({
+    impl: owner,
+    gen,
+    cap,
+    method,
+    transport: 'term',
+    link: {
+      call: (_port, called, args, timeoutMs, signal): Promise<EndpointCallResult> => {
+        const run = options.judgment
+        if (run === undefined) {
+          return Promise.resolve({ ok: false, code: 'not_loaded', message: 'judgment not wired' })
+        }
+        return run(world, { owner, gen, cap, method: called, entry }, args, timeoutMs, signal)
+      },
+    },
+  })
+
+  /**
+   * 解析能力类 `cap` 的方法 `method` 到端点行：判定优先（`judgments`），否则查端点表。
+   * 判定命中不 spawn 服务、随世界换代热生效；两者皆无 → `not_loaded`。
+   */
+  const rowFor = (
+    world: World,
+    owner: string,
+    gen: Hash,
+    cap: string,
+    method: string,
+  ): RouteOutcome => {
+    const entry = judgmentEntryOf(world, owner, gen, cap, method)
+    if (entry !== null) return { ok: true, row: judgeRow(world, owner, gen, cap, method, entry) }
+    const row = options.endpoints.get(owner, gen, cap, method)
+    if (row === null) return { ok: false, error: 'not_loaded' }
+    return { ok: true, row }
   }
 
   const implementsOf = (world: World, id: string, gen: Hash): Set<string> | null =>
@@ -165,9 +262,7 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     if (memberGen === null) return { ok: false, error: 'stale' }
     const caps = implementsOf(resolutionWorld, target, memberGen.payload)
     if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
-    const row = options.endpoints.get(target, memberGen.payload, cap, method)
-    if (row === null) return { ok: false, error: 'not_loaded' }
-    return { ok: true, row }
+    return rowFor(resolutionWorld, target, memberGen.payload, cap, method)
   }
 
   return {
@@ -194,18 +289,14 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
           if (ownerGen === null) return { ok: false, error: 'stale' }
           const boundCaps = implementsOf(resolutionWorld, bound, ownerGen.payload)
           if (boundCaps === null || !boundCaps.has(cap)) return { ok: false, error: 'not_loaded' }
-          const boundRow = options.endpoints.get(bound, ownerGen.payload, cap, method)
-          if (boundRow === null) return { ok: false, error: 'not_loaded' }
-          return { ok: true, row: boundRow }
+          return rowFor(resolutionWorld, bound, ownerGen.payload, cap, method)
         }
         // 自能力路径（无自 pin）：发出者未 pin 该 cap，但自身装配世代声明实现了它 →
         // 解析到发出者自己的端点行。保留能力类 `host` 不参与（须显式 pin 值 host 才认）。
         if (gen === null || cap === HOST_CAPABILITY) return { ok: false, error: 'unresolved_cap' }
         const own = implementsOf(resolutionWorld, emitterId, gen.payload)
         if (own === null || !own.has(cap)) return { ok: false, error: 'unresolved_cap' }
-        const ownRow = options.endpoints.get(emitterId, gen.payload, cap, method)
-        if (ownRow === null) return { ok: false, error: 'not_loaded' }
-        return { ok: true, row: ownRow }
+        return rowFor(resolutionWorld, emitterId, gen.payload, cap, method)
       }
       // 保留能力类 `host`：只认 cap = host 且方法在保留集内，不查世界 / 端点表
       if (pinned === HOST_CAPABILITY) {
@@ -222,10 +313,10 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       if (ownerGen === null) return { ok: false, error: 'stale' }
       const caps = implementsOf(resolutionWorld, owner, ownerGen.payload)
       if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
-      const row = options.endpoints.get(owner, ownerGen.payload, cap, method)
-      if (row === null) return { ok: false, error: 'not_loaded' }
+      const routed = rowFor(resolutionWorld, owner, ownerGen.payload, cap, method)
+      if (!routed.ok) return routed
       if (pinned !== ownerGen.payload) options.onDrift?.(emitterId, cap, ownerGen.payload)
-      return { ok: true, row }
+      return routed
     },
     resolveSlot(world, emitterId, cap, method) {
       // 活端点表世界优先（提供时）：与 `resolve` 同规，成员按当前世界解析、随世界收缩 / 扩张。
@@ -249,12 +340,12 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
           members.push({ provider, ok: false, error: 'not_loaded' })
           continue
         }
-        const row = options.endpoints.get(provider, memberGen.payload, cap, method)
-        if (row === null) {
-          members.push({ provider, ok: false, error: 'not_loaded' })
+        const memberRow = rowFor(resolutionWorld, provider, memberGen.payload, cap, method)
+        if (!memberRow.ok) {
+          members.push({ provider, ok: false, error: memberRow.error })
           continue
         }
-        members.push({ provider, ok: true, row })
+        members.push({ provider, ok: true, row: memberRow.row })
       }
       return { members }
     },

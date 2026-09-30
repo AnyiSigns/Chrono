@@ -3,10 +3,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { APPEND_RETRY_DELAYS_MS, SessionStore } from '../execute/store.ts'
+import { APPEND_RETRY_DELAYS_MS, SessionStore, isSafeConversationId } from '../execute/store.ts'
 import { createHandlers } from '../execute/methods.ts'
 
 function envFor(root) {
@@ -163,7 +163,7 @@ test('torn trailing line is skipped (fail-open)', () => {
     store.upsertConversation('r1', { id: 'c1' })
     store.appendMessage('r1', 'c1', { id: 'm1', role: 'user', content: 'x', prev: null, at: 'now' })
     // Append a torn line (no trailing newline) to simulate an interrupted write.
-    writeFileSync(join(root, 'data', 'session.jsonl'), '{"t":"msg","conv":"c1","msg":{"id":"m2"', { flag: 'a' })
+    writeFileSync(join(root, 'data', 'conversations', 'c1', 'log.jsonl'), '{"t":"msg","conv":"c1","msg":{"id":"m2"', { flag: 'a' })
     const reopened = SessionStore.open(env)
     assert.equal(reopened.messagesOf('c1').length, 1)
   } finally {
@@ -320,7 +320,7 @@ test('turn log: persistent records are append-only and validate against the step
     await store.appendStep({ type: 'checkpoint', turn_id: 't1', seq: 1, summary: { goal: 'g' }, covered_upto: 0 })
     await store.settle('t1', COMMITTED)
 
-    const lines = readFileSync(join(root, 'data', 'session.jsonl'), 'utf8').split('\n').filter((line) => line.length > 0)
+    const lines = readFileSync(join(root, 'data', 'conversations', 'c1', 'log.jsonl'), 'utf8').split('\n').filter((line) => line.length > 0)
     const records = lines.map((line) => JSON.parse(line))
     const stepRecords = records.filter((record) => typeof record.type === 'string')
     assert.equal(stepRecords.length, 5)
@@ -470,3 +470,193 @@ test('turn log: a subagent turn persists task/checkpoint across replay and keeps
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// -- partition: small index + per-conversation log ---------------------------
+
+test('partition: startup replays only the index; a conversation log loads on first access', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const env = envFor(root)
+    const store = SessionStore.open(env)
+    store.upsertConversation('r1', { id: 'c1' })
+    store.upsertConversation('r1', { id: 'c2' })
+    store.appendMessage('r1', 'c1', { id: 'm1', role: 'user', content: 'a', prev: null, at: 'now' })
+    store.appendMessage('r1', 'c2', { id: 'm2', role: 'user', content: 'b', prev: null, at: 'now' })
+    assert.ok(existsSync(join(root, 'data', 'index.jsonl')))
+    assert.ok(existsSync(join(root, 'data', 'conversations', 'c1', 'log.jsonl')))
+    assert.ok(existsSync(join(root, 'data', 'conversations', 'c2', 'log.jsonl')))
+
+    const reopened = SessionStore.open(env)
+    // 启动只重放索引：没有会话日志被读进内存，清单结构（id / title / 最近已知 head / count）已可从索引回答。
+    assert.deepEqual(reopened.loadedConversationIds(), [])
+    assert.deepEqual(
+      reopened.body().conversations.map((item) => item.id).sort(),
+      ['c1', 'c2'],
+    )
+    assert.deepEqual(reopened.loadedConversationIds(), [])
+    // 首次访问某会话才读它的日志，且只读它一个；读后才据消息列表现算 head / count。
+    assert.equal(reopened.messagesOf('c1').length, 1)
+    assert.deepEqual(reopened.loadedConversationIds(), ['c1'])
+    assert.deepEqual(reopened.messagesOf('c1'), [{ id: 'm1', role: 'user', content: 'a', prev: null, at: 'now' }])
+    const loaded = reopened.body().conversations.find((item) => item.id === 'c1')
+    assert.equal(loaded.count, 1)
+    assert.equal(loaded.head.def, 'm1')
+    assert.equal(reopened.loadedConversationIds().includes('c2'), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// -- per-conversation compaction: snapshot + tail ≡ full replay --------------
+
+async function exerciseConversation(store) {
+  store.upsertConversation('r0', {
+    id: 'c1',
+    workspace_id: 'w1',
+    title: 't',
+    kind: 'main',
+    inbox: { tail: null, count: 0, last_seen: 0 },
+  })
+  store.setCurrent('r0', 'c1')
+  store.appendMessage('r0', 'c1', { id: 'm1', role: 'user', content: 'a', prev: null, at: AT })
+  store.turnOpen('r0', 'c1')
+  store.appendMessage('r0', 'c1', { id: 'm2', role: 'assistant', content: 'b', prev: { def: 'm1' }, at: AT })
+  store.turnClose('r0')
+  await store.openTurn(turnOpenRecord('t1', 'run-1'))
+  await store.appendStep({ type: 'step.intent', turn_id: 't1', seq: 0, kind: 'model.step', tool_calls: [] })
+  await store.appendStep({
+    type: 'step.result',
+    turn_id: 't1',
+    seq: 0,
+    assistant: { content: 'yo', parts: [{ type: 'tool', call_id: 'x' }] },
+  })
+  await store.appendStep({ type: 'step.user', turn_id: 't1', seq: 1, insert_id: 'i1', user_message: { content: 'more' } })
+  await store.appendStep({ type: 'checkpoint', turn_id: 't1', seq: 2, summary: { goal: 'g' }, covered_upto: 0 })
+  await store.settle('t1', COMMITTED)
+  await store.openTurn(turnOpenRecord('t2', 'run-2'))
+  await store.cancelTurn('t2')
+  await store.settle('t2', CANCELLED)
+  await store.settle('t2', COMMITTED)
+  store.appendMessage('r0', 'c1#inbox', { id: 'inbox-c1-1', from: 'u', kind: 'k', body: 'x', seq: 1, at: AT, prev: null })
+  await store.ackInbox('r0', 'c1', 1)
+  // 尾段继续追加，压实后形成「快照 + 尾段」。
+  for (let i = 0; i < 8; i += 1) {
+    store.appendMessage('r0', 'c1', { id: `extra-${i}`, role: 'user', content: `e${i}`, prev: null, at: AT })
+  }
+}
+
+function dumpConversationState(store) {
+  return {
+    current: store.currentId(),
+    body: store.body(),
+    pending: store.pendingTurns(),
+    open: store.openTurnSummaries(),
+    messages: store.messagesOf('c1'),
+    inbox: store.unreadInbox('c1'),
+    slice: store.slice('c1'),
+    history: store.history('c1', null, null),
+    historyFull: store.history('c1', null, null, true),
+    turnsFor: store.turnsFor('c1'),
+    t1: store.turn('t1'),
+    t2: store.turn('t2'),
+  }
+}
+
+test('compaction: "snapshot + tail" replays deep-equal to a full replay', async () => {
+  const rootSlow = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  const rootFast = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const slow = SessionStore.open(envFor(rootSlow))
+    await exerciseConversation(slow)
+    const fast = SessionStore.open(envFor(rootFast), { compactRecords: 4 })
+    await exerciseConversation(fast)
+
+    // 快压实目录确实落了快照（否则等价性无意义）。
+    const fastLines = readFileSync(join(rootFast, 'data', 'conversations', 'c1', 'log.jsonl'), 'utf8')
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line))
+    assert.ok(fastLines.some((record) => record.t === 'snapshot'), 'compaction wrote a snapshot record')
+    assert.ok(fastLines.length < 20, 'compaction bounded the conversation log')
+
+    const slowReplay = SessionStore.open(envFor(rootSlow))
+    const fastReplay = SessionStore.open(envFor(rootFast))
+    assert.deepEqual(dumpConversationState(fastReplay), dumpConversationState(slowReplay))
+  } finally {
+    rmSync(rootSlow, { recursive: true, force: true })
+    rmSync(rootFast, { recursive: true, force: true })
+  }
+})
+
+// -- idempotent, non-destructive migration -----------------------------------
+
+test('migration: legacy session.jsonl → index + per-conversation logs, kept and idempotent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const dataDir = join(root, 'data')
+    const env = envFor(root)
+    mkdirSync(dataDir, { recursive: true })
+    const legacy = [
+      { t: 'conv', run: 'r0', entry: { id: 'c1', workspace_id: 'w1', title: 't' } },
+      { t: 'current', run: 'r0', id: 'c1' },
+      { t: 'msg', run: 'r0', conv: 'c1', msg: { id: 'm1', role: 'user', content: 'a', prev: null, at: AT } },
+      { t: 'msg', run: 'r0', conv: 'c1', msg: { id: 'm2', role: 'assistant', content: 'b', prev: { def: 'm1' }, at: AT } },
+      // 旧文件里仍开着的回合：迁移即启动收口为 interrupted。
+      { type: 'turn.open', turn_id: 't1', conv: 'c1', user_message: { content: 'hi' }, slot_ref: 'run-1', at: AT },
+      { type: 'step.intent', turn_id: 't1', seq: 0, kind: 'model.step', tool_calls: [] },
+    ]
+    const legacyPath = join(dataDir, 'session.jsonl')
+    const legacyBytes = `${legacy.map((record) => JSON.stringify(record)).join('\n')}\n`
+    writeFileSync(legacyPath, legacyBytes, 'utf8')
+
+    const first = SessionStore.open(env)
+    assert.equal(first.currentId(), 'c1')
+    assert.equal(first.messagesOf('c1').length, 3)
+    assert.equal(first.turn('t1').state, 'settled')
+    assert.equal(first.turn('t1').outcome.kind, 'interrupted')
+    assert.ok(existsSync(join(dataDir, 'index.jsonl')))
+    assert.ok(existsSync(join(dataDir, 'conversations', 'c1', 'log.jsonl')))
+    assert.ok(existsSync(join(dataDir, 'migrated')))
+    // 旧文件保留不删、字节不变。
+    assert.equal(readFileSync(legacyPath, 'utf8'), legacyBytes)
+
+    const indexBytes = readFileSync(join(dataDir, 'index.jsonl'), 'utf8')
+    const logBytes = readFileSync(join(dataDir, 'conversations', 'c1', 'log.jsonl'), 'utf8')
+    // 二次启动：迁移完成标记在，重做是 no-op（新布局字节不变）。
+    const second = SessionStore.open(env)
+    assert.equal(second.messagesOf('c1').length, 3)
+    assert.equal(second.turn('t1').outcome.kind, 'interrupted')
+    assert.equal(readFileSync(join(dataDir, 'index.jsonl'), 'utf8'), indexBytes)
+    assert.equal(readFileSync(join(dataDir, 'conversations', 'c1', 'log.jsonl'), 'utf8'), logBytes)
+    assert.equal(readFileSync(legacyPath, 'utf8'), legacyBytes)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// -- conversation id safety --------------------------------------------------
+
+test('safe conversation ids: reject traversal / illegal / reserved / prototype keys', () => {
+  const bad = [
+    '.', '..', '', 'a/b', 'a\\b', 'C:', 'c:x', 'a<b', 'a>b', 'a"b', 'a|b', 'a?b', 'a*b',
+    'con', 'CON', 'nul', 'com1', 'lpt9', 'a.', 'a ', '__proto__', 'constructor', 'prototype',
+    'a\u0000b', '\u0001', 'a\u007fb',
+  ]
+  for (const id of bad) assert.equal(isSafeConversationId(id), false, `expected unsafe: ${JSON.stringify(id)}`)
+  for (const id of ['c1', 'c-1700000000000-0', 'sub1', 'c1#inbox', 'a.b', '中文', '_x']) {
+    assert.equal(isSafeConversationId(id), true, `expected safe: ${id}`)
+  }
+  // 写路径 fail-closed：不安全 id 直接抛，绝不路径穿越。
+  const root = mkdtempSync(join(tmpdir(), 'chrono-store-'))
+  try {
+    const store = SessionStore.open(envFor(root))
+    assert.throws(
+      () => store.appendMessage('r1', '../evil', { id: 'm', role: 'user', content: 'x', prev: null, at: 'now' }),
+      /unsafe_conversation_id/,
+    )
+    assert.equal(existsSync(join(root, 'evil')), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+

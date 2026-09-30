@@ -1,0 +1,19 @@
+{
+  "name": "graph-run",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "图执行引擎：运行期结构闭合 + 拓扑前推 + 节点派发（pre → port.call → post）+ 拒绝短路 + 跨段重入 + 取消。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

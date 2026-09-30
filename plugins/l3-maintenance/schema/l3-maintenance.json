@@ -23,7 +23,10 @@
         },
         "high_value": { "type": "array", "items": { "type": "string" } },
         "item_weights": { "type": "object", "additionalProperties": true },
-        "embedding_model": { "type": "string" },
+        "embedding_model": {
+          "type": "string",
+          "description": "可选：去重向量模型。缺省时不带 model，由 embedding 门面按提供方 describe-models 元数据选默认。"
+        },
         "dedup_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
         "weight_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
         "solidify_full_sources": { "type": "integer", "minimum": 1 },

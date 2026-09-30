@@ -25,6 +25,8 @@ L2（`short-memory` 的工作区摘要）维护执行件：**L1→L2 分组合�
 - **确定性**：去重排序由 `(at 降序, 来源优先级, key 升序)` 完全决定；空集 / 空变更集**不产生写**。
 - **失败不半写**：`compress` / `embedding` 不可用时回结构化错误（先读后算、确认成功才写）。
 - **参数**：`dedup_threshold`（缺省 0.9）、`l2_capacity`（缺省 200）；形态非法回 `bad_args`。
+- **向量模型**：`embedding_model` 可选；缺省时不向 `embedding.embed` 带 `model`，由向量化门面按提供方
+  `describe-models` 元数据选默认（本插件不硬编码模型名）。
 
 ## 运行
 

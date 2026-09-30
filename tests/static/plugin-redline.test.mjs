@@ -16,14 +16,8 @@ const PLUGINS_DIR = join(ROOT, 'plugins')
 // 排除目录：依赖与构建产物不属于插件源码；`dist` 是随世代产物（execute/web/dist 等）。
 const EXCLUDED_DIRS = new Set(['node_modules', 'target', 'dist'])
 
-// 例外一（按路径模式，见 isExempt）：各插件自带的独立发布自检脚本 `tools/e2e-smoke.mjs`，
+// 例外（按路径模式，见 isExempt）：各插件自带的独立发布自检脚本 `tools/e2e-smoke.mjs`，
 // 宿主不装载、不在运行期路径，仅做声明校验。
-// 例外二（逐文件登记）：既存跨插件引用，正确落点是根 `tests/contract/`（跨插件测试），
-// 相关插件不在本次改动范围内，故登记待迁，不静默跳过。
-const ALLOWED_FILES = new Set([
-  'plugins/tools/test/net-gate.test.mjs',
-])
-
 const JS_EXT = /\.(mjs|cjs|js|ts|tsx|mts|cts)$/
 const RUST_EXT = /\.(rs|toml)$/
 const JS_IMPORT_RES = [
@@ -50,7 +44,6 @@ function toRepoPath(abs) {
 }
 
 function isExempt(repoPath) {
-  if (ALLOWED_FILES.has(repoPath)) return true
   return /\/tools\/e2e-smoke\.mjs$/.test(repoPath)
 }
 

@@ -10,7 +10,8 @@
 
 ## 存储引擎与落点
 
-- ④ `CHRONO_PLUGIN_DATA/slots.jsonl`：单文件追加日志，每条记录一次 append + fsync；启动重放即得全量槽位。
+- ④ `CHRONO_PLUGIN_DATA/slots.jsonl`：单文件追加日志，每条记录一次 `open` + 整段写入（不再二次开文件）；
+  fsync 按累计字节批量做；启动重放即得全量槽位（末行半写撕裂截到有效前缀，fail-open）。
   记录 `{t:'slot', run, thread, slot}`：同线程后写覆盖前值；**同值不重写**（幂等短路）。记录的 `run`
   在读口回带为 `slot_ref`（槽写入时的 run id）。
 - ③ `CHRONO_PLUGIN_STATE/index.json`：派生物（记录水位 / 线程数），删掉可由 ④ 重放重建。

@@ -1,0 +1,1 @@
+["obj",{"decisions":["get",["v",0],["decisions"]],"summary":["fold",["get",["v",0],["decisions"]],["obj",{"allow":["c",0],"escalate":["c",0],"deny":["c",0]}],["c",{"$ref":"terms/summary.step.json"}]]}]

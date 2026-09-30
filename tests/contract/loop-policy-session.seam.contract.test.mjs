@@ -10,8 +10,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { stepRecords } from '../../chain-contract/fixtures/index.ts'
-import { restoreFromSteps } from '../../plugins/loop-policy/execute/reconstruct.ts'
-import { displayParts } from '../../plugins/loop-policy/execute/commit-parts.ts'
+import { restoreFromSteps } from '../../plugins/graph-run/execute/reconstruct.ts'
+import { displayParts } from '../../plugins/graph-run/execute/commit-parts.ts'
 import { startService as startLoop, defaultProviders } from '../../plugins/loop-policy/test/driver.mjs'
 import { startRealService, makeRouter, FIXED_ENV } from './_bridge.mjs'
 

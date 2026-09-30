@@ -27,6 +27,10 @@ function readDecl(dir) {
     const mode = entry !== null && typeof entry === 'object' ? entry.mode : undefined
     return `${cap}(${typeof mode === 'string' ? mode : 'one'})`
   })
+  const members = Array.isArray(raw.members) ? raw.members : []
+  const hasService = members.some(
+    (member) => member !== null && typeof member === 'object' && member.kind === 'execute',
+  )
   return {
     name: typeof raw.identity === 'string' ? raw.identity : dir,
     slots: keys(raw.slots),
@@ -34,7 +38,8 @@ function readDecl(dir) {
     needs,
     pins: keys(raw.pins),
     state: typeof raw.state === 'string' ? raw.state : 'recomputable',
-    transport: typeof raw.transport === 'string' ? raw.transport : 'stdio',
+    // 无执行件的身份不起服务（数据身份），传输形态不适用
+    transport: !hasService ? DASH : typeof raw.transport === 'string' ? raw.transport : 'stdio',
   }
 }
 

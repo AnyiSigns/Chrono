@@ -6,7 +6,7 @@
   /* §2 颜色（浅色默认） */
   --c-bg: #FAFAF9;
   --c-surface: #FDFDFC;
-  --c-sidebar: #F5F5F3;
+  --c-sidebar: #F7F7F5;
   --c-selection: #ECECEA;
   --c-border: #E3E2DF;
   --c-text: #1F1E1C;
@@ -71,7 +71,7 @@
   --sidebar-w-max: 420px;
   --list-item-h: 34px;
   --msg-gap: 16px;
-  --msg-max-w: 820px;
+  --msg-max-w: 780px;
   --bubble-max-w: 72%;
   --settings-w: clamp(640px, 65vw, 1120px);
   --settings-h: 86vh;
@@ -117,7 +117,7 @@
   /* §2 颜色（深色） */
   --c-bg: #171615;
   --c-surface: #1E1D1B;
-  --c-sidebar: #141312;
+  --c-sidebar: #161514;
   --c-selection: #2A2927;
   --c-border: rgba(255, 255, 255, .10);
   --c-text: #E8E6E3;
@@ -157,7 +157,7 @@
   :root:not([data-theme="light"]) {
     --c-bg: #171615;
     --c-surface: #1E1D1B;
-    --c-sidebar: #141312;
+    --c-sidebar: #161514;
     --c-selection: #2A2927;
     --c-border: rgba(255, 255, 255, .10);
     --c-text: #E8E6E3;

@@ -5,7 +5,7 @@
 export const STYLE_TEXT = `
 .threads-root { display: flex; flex-direction: column; }
 .threads-root:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
-.threads-panel { padding: var(--space-16); background: var(--c-surface);
+.threads-panel { padding: 20px var(--space-16); background: var(--c-surface);
   border-bottom: 1px solid var(--c-border); }
 .threads-tags { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
 .threads-tag { position: relative; display: inline-flex; align-items: center; gap: var(--space-4);

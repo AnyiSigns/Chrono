@@ -22,26 +22,35 @@ const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 
 // 拓扑序：被依赖者先 pack（pins 解析要求目标身份已在世界里）。
 const PLUGIN_ORDER = [
-  'secrets',
-  'sandbox',
   'embedding',
+  'dedup',
+  'config',
+  'msg-dialect',
+  'secrets',
+  'throttle',
   'model-protocol',
-  'session',
-  'guard',
-  'orchestration-admin',
-  'todo',
-  'question',
-  'memory-store',
+  'semantic',
+  'short-memory',
+  'summarize',
   'compress',
-  'memory-retrieval',
-  'memory-consolidate',
-  'tool-fs',
-  'tool-shell',
-  'tool-http',
-  'tool-browser',
-  'mcp',
-  'plugin-admin',
+  'evolve-ledger',
+  'evolve-evidence',
+  'evolve-shadow',
+  'evolve-sweep',
   'evolve-metrics',
+  'guard',
+  'tokenizer',
+  'vector-index',
+  'memory-store',
+  'input',
+  'session',
+  'l1-maintenance',
+  'l2-maintenance',
+  'l3-maintenance',
+  'memory-consolidate',
+  'query-plan',
+  'rerank',
+  'memory-retrieval',
   'tool-schema',
   'tool-registry',
   'tool-dispatch',
@@ -251,7 +260,7 @@ async function main() {
 
   const paths = hostPaths(root)
   const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-  const projection = projectBaseOnly(anchor.world, anchor.head)
+  const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
   for (const identity of PLUGIN_ORDER) {
     assert.ok(projection.ids[identity] !== undefined, `投影缺身份 ${identity}`)
   }
@@ -260,7 +269,7 @@ async function main() {
   assert.equal(facadePins['tool-registry'], 'tool-registry')
   assert.equal(facadePins['tool-dispatch'], 'tool-dispatch')
   const registryPins = projection.ids['tool-registry'].pins
-  assert.equal(registryPins['tool-fs'], 'tool-fs')
+  assert.equal(registryPins['tool-schema'], 'tool-schema')
   assert.equal(registryPins['memory'], 'memory-store')
   assert.equal(registryPins['evolve-metrics'], 'evolve-metrics')
   const dispatchPins = projection.ids['tool-dispatch'].pins

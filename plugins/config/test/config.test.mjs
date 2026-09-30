@@ -1,7 +1,7 @@
 // config 包形状 / 内容测试 + 服务级读写往返（零依赖，node --test）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -287,6 +287,44 @@ test('④ 追加日志：新进程重放读回上次写入', async () => {
     const view = await second.read({ body: WORLD, active: null })
     assert.equal(view.value.body.vendor, 'deepseek')
     assert.equal(view.value.body.ui.theme, 'night')
+  } finally {
+    second.close()
+  }
+  await second.exit
+})
+
+test('旧 config.jsonl 一次性迁移到原子快照（幂等）', async () => {
+  const dir = join(tmpdir(), 'kilo', `config-migrate-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  mkdirSync(dir, { recursive: true })
+  const legacy = `${[
+    JSON.stringify({ t: 'body', run: 'r1', body: { version: 1, ui: { theme: 'day' } } }),
+    JSON.stringify({ t: 'body', run: 'r2', body: { version: 1, vendor: 'legacy', ui: { theme: 'night' } } }),
+  ].join('\n')}\n`
+  writeFileSync(join(dir, 'config.jsonl'), legacy, 'utf8')
+
+  const first = startService({ CHRONO_PLUGIN_DATA: dir })
+  try {
+    await first.hello()
+    const view = await first.read({ body: WORLD, active: null })
+    assert.equal(view.value.body.vendor, 'legacy')
+    assert.equal(view.value.body.ui.theme, 'night')
+    assert.equal(existsSync(join(dir, 'config.json')), true, '迁移后应落新格式快照')
+  } finally {
+    first.close()
+  }
+  await first.exit
+
+  // 幂等：新文件已存在即不再读旧文件（即便旧文件被改写）。
+  writeFileSync(
+    join(dir, 'config.jsonl'),
+    `${JSON.stringify({ t: 'body', run: 'r3', body: { version: 1, vendor: 'stale' } })}\n`,
+    'utf8',
+  )
+  const second = startService({ CHRONO_PLUGIN_DATA: dir })
+  try {
+    await second.hello()
+    const view = await second.read({ body: WORLD, active: null })
+    assert.equal(view.value.body.vendor, 'legacy')
   } finally {
     second.close()
   }

@@ -1,0 +1,137 @@
+{
+  "title": "sandbox-exec（执行体生命周期）",
+  "description": "身份自述 / 数据契约：一次性 exec + 可轮询后台任务 exec_start/exec_poll/exec_kill + 常驻会话 session_close 的入参与结果形状。档位判定由 sandbox-policy 注入（bag.resolved）。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "sandbox-exec.exec": 130000,
+    "sandbox-exec.exec_poll": 130000
+  },
+  "audit_redact": {
+    "sandbox-exec.exec": [],
+    "sandbox-exec.exec_start": [],
+    "sandbox-exec.exec_poll": [],
+    "sandbox-exec.exec_kill": [],
+    "sandbox-exec.session_close": [],
+    "sandbox-exec.capabilities": []
+  },
+  "properties": {
+    "exec_request": {
+      "type": "object",
+      "description": "exec 的 bag：cmd + args + env；cwd 缺省 = bag.workspace_root，给出时须落在工作区内（区外须当前档 fs 读范围为 full）。",
+      "required": ["cmd"],
+      "additionalProperties": true,
+      "properties": {
+        "cmd": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object" },
+        "cwd": { "type": "string" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "workspace_root": { "type": "string" },
+        "sandbox_tiers": { "type": "object" },
+        "resolved": { "type": "object" }
+      }
+    },
+    "exec_result": {
+      "type": "object",
+      "description": "exec 结果；code 仅在超时 / 超限被杀时出现。truncated 时文本为「头 … 省略标记 … 尾」，omitted_bytes 为丢弃字节数。",
+      "required": ["exit_code", "stdout", "stderr", "truncated", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "truncated": { "type": "boolean" },
+        "omitted_bytes": { "type": "integer", "minimum": 0 },
+        "combined": { "type": "array", "items": { "type": "object" } },
+        "combined_truncated": { "type": "boolean" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "code": { "enum": ["timeout", "oom", "cpu_exceeded", "procs_max", "null"] }
+      }
+    },
+    "session_request": {
+      "type": "object",
+      "description": "会话命令的 bag：session_id + command；首次创建会话时另带 session_shell {cmd, args, syntax}。",
+      "required": ["session_id", "command"],
+      "additionalProperties": true,
+      "properties": {
+        "session_id": { "type": "string" },
+        "command": { "type": "string" },
+        "session_shell": {
+          "type": "object",
+          "required": ["cmd", "args"],
+          "properties": {
+            "cmd": { "type": "string" },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "syntax": { "enum": ["powershell", "posix"] }
+          }
+        },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "workspace_root": { "type": "string" },
+        "sandbox_tiers": { "type": "object" },
+        "resolved": { "type": "object" }
+      }
+    },
+    "exec_start_result": {
+      "type": "object",
+      "description": "exec_start 结果：任务号，供 exec_poll / exec_kill 使用。",
+      "required": ["task_id"],
+      "additionalProperties": false,
+      "properties": { "task_id": { "type": "string" } }
+    },
+    "exec_poll_request": {
+      "type": "object",
+      "description": "exec_poll：自 cursor（字节偏移）起取新输出；wait_ms>0 时最多等这么久等新数据或结束。",
+      "required": ["task_id"],
+      "additionalProperties": true,
+      "properties": {
+        "task_id": { "type": "string" },
+        "cursor": { "type": "integer", "minimum": 0 },
+        "wait_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "exec_poll_result": {
+      "type": "object",
+      "description": "exec_poll 结果：新输出文本 + 新游标 + 运行态 / 退出码 / 截断计数。",
+      "required": ["output", "next_cursor", "running"],
+      "additionalProperties": true,
+      "properties": {
+        "output": { "type": "string" },
+        "next_cursor": { "type": "integer", "minimum": 0 },
+        "running": { "type": "boolean" },
+        "exit_code": { "type": ["integer", "null"] },
+        "code": { "type": ["string", "null"] },
+        "truncated": { "type": "boolean" },
+        "dropped_bytes": { "type": "integer", "minimum": 0 },
+        "tail": { "type": "string" }
+      }
+    },
+    "exec_kill_request": {
+      "type": "object",
+      "description": "exec_kill：杀任务（一次性进程杀整树；会话命令杀会话）。",
+      "required": ["task_id"],
+      "additionalProperties": true,
+      "properties": { "task_id": { "type": "string" } }
+    },
+    "session_close_request": {
+      "type": "object",
+      "description": "session_close：关闭并回收一个会话。",
+      "required": ["session_id"],
+      "additionalProperties": true,
+      "properties": { "session_id": { "type": "string" } }
+    },
+    "capabilities_result": {
+      "type": "object",
+      "description": "本插件的自述片段（平台 / 实现 / Linux 隔离层）；text 由 sandbox-fs 提供，完整结果由 sandbox 门面合并。",
+      "required": ["platform", "implementations", "default_impl", "enforcement"],
+      "additionalProperties": true,
+      "properties": {
+        "platform": { "type": "string" },
+        "implementations": { "type": "array", "items": { "type": "object" } },
+        "default_impl": { "type": "string" },
+        "enforcement": { "type": "object" },
+        "linux": { "type": ["object", "null"] }
+      }
+    }
+  }
+}

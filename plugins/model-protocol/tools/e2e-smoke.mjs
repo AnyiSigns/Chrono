@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
-import { startService as startSdkService } from 'plugin-sdk'
+import { startService as startDriver } from '../test/driver.mjs'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
 import { projectBaseOnly } from '../../../packages/host/projection/index.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
@@ -42,18 +42,21 @@ function boot(root, args) {
   return parsed
 }
 
-/** 直连本服务：hello → call，收集 event，并自动应答反向 port.call（模拟宿主侧路由）。 */
+/** 直连本服务（复用协议级驱动）：真实 spawn `throttle` / `msg-dialect` 提供方应答反向调用；
+ *  secrets / config 经本进程假解析。收集 event 与反向调用帧。 */
 async function callMethod(method, args) {
-  const drv = startSdkService({
-    entry: join(MODEL_DIR, 'execute', 'main.ts'),
-    cwd: MODEL_DIR,
-    env: { CHRONO_PLUGIN_STATE: '' },
+  const drv = startDriver({
     timeoutMs: 15000,
-    onPortCall: () => ({ ok: true, value: SECRET_VALUE }),
+    secretsResolver: (port, callMethodName) => {
+      if (port === 'secrets' && callMethodName === 'resolve') return { value: SECRET_VALUE }
+      if (port === 'config' && callMethodName === 'write') return { value: { ok: true, changed: true } }
+      if (port === 'config' && callMethodName === 'read') return { value: {} }
+      return { error: 'not_available', message: `no ${port}.${callMethodName} in e2e` }
+    },
   })
   try {
     await drv.hello('model-protocol')
-    const result = await drv.call('model', method, args, { run: 'e2e-run', thread: null, now: 0 })
+    const result = await drv.call(method, args)
     return { value: result.value, events: drv.events, portCalls: drv.portCalls }
   } finally {
     drv.close()
@@ -168,6 +171,8 @@ async function main() {
       JSON.stringify([
         { name: 'secrets', path: SECRETS_DIR },
         { name: 'config', path: CONFIG_DIR },
+        { name: 'throttle', path: join(REPO_ROOT, 'plugins', 'throttle') },
+        { name: 'msg-dialect', path: join(REPO_ROOT, 'plugins', 'msg-dialect') },
         { name: 'model-protocol', path: MODEL_DIR },
       ]),
     )
@@ -209,16 +214,33 @@ async function main() {
       source_url: `${modelServer.url}/api.json`,
     })
     const directives = profile.value.$directives
-    assert.equal(directives.length, 2, 'profile 应回 batch + extern')
-    assert.equal(directives[0].kind, 'write')
-    assert.equal(directives[0].request.op, 'batch')
-    const ops = directives[0].request.args.ops
-    assert.equal(ops[0].op, 'put')
-    assert.equal(ops[1].args.id, 'config')
-    console.log('profile 写计划：ok')
+    assert.equal(directives.length, 1, 'profile 应只回 extern 摘要（写经 config.write 委派 owner）')
+    assert.equal(directives[0].kind, 'extern')
+    assert.equal(directives[0].payload.ok, true)
+    assert.equal(directives[0].payload.changed, true)
+    const configWrite = profile.portCalls.find(
+      (frame) => frame.port === 'config' && frame.method === 'write',
+    )
+    assert.ok(configWrite, 'profile 应经 config.write 写入 owner 自有存储')
+    console.log('profile 写计划：ok（extern 摘要 + config.write 委派）')
 
+    // owner 侧的写入由驱动桩收下；把其 body 合成一个 batch 计划落进宿主世界，验证投影管道。
+    const synthetic = [
+      {
+        kind: 'write',
+        request: {
+          op: 'batch',
+          args: {
+            ops: [
+              { op: 'put', args: { body: configWrite.args.body } },
+              { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+            ],
+          },
+        },
+      },
+    ]
     const before = boot(root, ['status'])
-    const landed = boot(root, ['run', JSON.stringify(directives)])
+    const landed = boot(root, ['run', JSON.stringify(synthetic)])
     assert.equal(landed.status, 'done', `计划落账未完成：${JSON.stringify(landed)}`)
     const after = boot(root, ['status'])
     assert.notDeepEqual(after.world_head, before.world_head, '落账后链头应推进')
@@ -235,7 +257,7 @@ async function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const model = projection.ids.config.body.providers.openai.models['gpt-test']
     assert.equal(model.context_window, 128000)
     assert.equal(model.max_output, 16384)

@@ -90,9 +90,10 @@ export class RemoteShortMemory implements ShortMemoryBackend {
   }
 }
 
-/** 向量化后端抽象：生产环境是反向调用 `embedding.embed`，单测注入假后端。 */
+/** 向量化后端抽象：生产环境是反向调用 `embedding.embed`，单测注入假后端。
+ * `model` 缺省（null / undefined）时不带 `model`，交由向量化门面按提供方 `describe-models` 元数据选默认。 */
 export interface EmbeddingBackend {
-  embed(texts: string[], model: string): Promise<number[][]>
+  embed(texts: string[], model?: string | null): Promise<number[][]>
 }
 
 /** `embedding.embed` 的反向调用后端。 */
@@ -103,11 +104,13 @@ export class RemoteEmbedding implements EmbeddingBackend {
     this.link = link
   }
 
-  async embed(texts: string[], model: string): Promise<number[][]> {
+  async embed(texts: string[], model?: string | null): Promise<number[][]> {
+    const args: Rec = { texts }
+    if (typeof model === 'string') args['model'] = model
     const outcome = await this.link.call(
       'embedding',
       'embed',
-      { texts, model },
+      args,
       { timeoutMs: EMBEDDING_TIMEOUT_MS },
     )
     if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)

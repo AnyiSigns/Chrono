@@ -3,9 +3,22 @@
   "schema": "schema/sandbox.json",
   "implements": ["sandbox"],
   "methods": {
-    "sandbox": ["exec", "exec_start", "exec_poll", "exec_kill", "session_close", "fsop", "capabilities"]
+    "sandbox": [
+      "exec",
+      "exec_start",
+      "exec_poll",
+      "exec_kill",
+      "session_close",
+      "fsop",
+      "capabilities"
+    ]
   },
   "pins": {},
+  "needs": {
+    "sandbox-policy": { "mode": "one" },
+    "sandbox-exec": { "mode": "one" },
+    "sandbox-fs": { "mode": "one" }
+  },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",

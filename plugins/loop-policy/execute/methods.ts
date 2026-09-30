@@ -1,31 +1,21 @@
-// 能力类 `loop-policy` 的唯一方法 `interpret`：入口 #14 入口 term eff 本方法（bag 装配归 #14）。
-// 服务自驱：读图数据 → 解释器顺序推进 → 回合尾写 trace / 队列项 / 提案扫描 → 返回计划交 #14 合并上提。
-// 服务不读投影、不写链、不自取时钟（now 取 env）；同输入同输出（LLM 项除外，eff_log 回灌配对下等价）。
+// 能力类 `loop-policy` 的两个方法：`interpret`（入口 #14 eff 本方法，门面装配 bag 并编排）与
+// `cancel`（转发取消意图给 graph-run）。图执行的重量级逻辑归 `graph-run`，回合尾 trace / 提案账本归
+// `turn-ledger`；本插件保留原身份与公开方法名（消费方零改动），退化为薄门面：
+// 水合引用闭包 → 契约版本边界 → （裁决续跑 | 图执行）→ 回合尾账本 → 会话收口。
 
-import { interpretGraph } from './interpreter.ts'
-import { clearCancel, requestCancel } from './cancel.ts'
-import {
-  evolutionBody,
-  expandAdoption,
-  expandRejection,
-  ledgerEntries,
-  scanProposals,
-} from './proposals.ts'
 import { H } from './hash.ts'
-import { asString, baseSeqOf, isRecord, isoAt, nowOf, planOf, RoundPatches } from './plan.ts'
+import { asString, isRecord, isoAt, nowOf, planOf } from './plan.ts'
+import { graphSink } from './model.ts'
 import { PINS } from './plugin.ts'
-import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
-import { SEGMENT_ENDED } from './lifecycle.ts'
+import { checkContractVersion } from './contract/index.ts'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
-import {
-  accumulateDirectives,
-  accumulatedDirectives,
-  clearTrace,
-  traceFor,
-} from './segment-trace.ts'
-import { buildTraceTail } from './tail.ts'
+import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
+import { accumulateDirectives, accumulatedDirectives, clearTrace } from './segment-trace.ts'
 import { BadArgsError, ServiceError } from './types.ts'
 import type { CallEnv, Handler, HandlerResult, Json, PortCaller, Rec } from './types.ts'
+
+/** 段 / 回合终态标记：段边界为 `stepping`（计划含续跑 eval，不是回合终态、不收口）。 */
+const SEGMENT_ENDED = 'stepping'
 
 export interface LoopPolicyDeps {
   port: PortCaller
@@ -100,43 +90,92 @@ function parseResume(bag: Rec): Rec | null {
   return resume
 }
 
-function resumeVerdict(resume: Rec): string | null {
-  const payload = isRecord(resume['payload']) ? (resume['payload'] as Rec) : resume
-  return asString(payload['verdict']) ?? asString(payload['decision'])
-}
-
-/** 回合累积器：evolution 回合初 body + 最近数据世代下标。 */
-function newRound(bag: Rec): RoundPatches {
-  return new RoundPatches(
-    new Map([['evolution', { body: evolutionBody(bag), base: baseSeqOf(bag['evolution']) }]]),
-  )
-}
-
-/** `orchestration_change` 裁决续跑：approved ⇒ 按 patch.writes[] 登记采纳；denied ⇒ 登记拒绝 verdict。 */
-function orchestrationResume(bag: Rec, pins: Rec, resume: Rec, env: CallEnv, at: string): Json {
-  const cursor = isRecord(resume['cursor']) ? (resume['cursor'] as Rec) : {}
-  const proposalIds = Array.isArray(cursor['proposal_ids'])
-    ? (cursor['proposal_ids'] as Json[]).filter((id): id is string => typeof id === 'string')
-    : []
-  const proposals = ledgerEntries(bag, 'proposals')
-  const verdict = resumeVerdict(resume)
-  const round = newRound(bag)
-  if (verdict === 'approved' || verdict === 'accept') {
-    for (const id of proposalIds) {
-      const proposal = proposals.find((item) => item['id'] === id)
-      if (proposal !== undefined) expandAdoption(bag, proposal, pins, at, env.run, round)
-    }
-    return planOf(round.finalize(), { ok: true, kind: 'adopt', proposal_ids: proposalIds })
+/** 契约版本边界：主版本不匹配 ⇒ 立即拒绝（不派发执行、不写 trace、不扫描），给契约结构化结局。 */
+async function contractVersionRefusal(
+  bag: Rec,
+  model: ReturnType<typeof resolveModel>['model'],
+  fellBack: boolean,
+  graphHash: string,
+  turnId: string | null,
+  outcome: Json,
+  deps: LoopPolicyDeps,
+): Promise<Json> {
+  const summary: Rec = {
+    ok: false,
+    kind: 'interpret',
+    iters: 1,
+    steps: 0,
+    pending: null,
+    fell_back: fellBack,
+    graph: graphHash,
+    ended: 'refused',
+    lifecycle: 'settled',
+    progress: { iter: 1, node_index: null, contract_id: null },
+    refused_at: {
+      node_index: graphSink(model.graph),
+      iter: 1,
+      code: 'contract_version_mismatch',
+      attributable_to: 'owner',
+    },
+    branch_not_taken: 0,
+    instances: [],
+    contract_version: asString(bag['contract_version']),
   }
-  expandRejection(bag, proposalIds, at, env.run, 'human_denied', round)
-  return planOf(round.finalize(), {
-    ok: true,
-    kind: 'reject',
-    proposal_ids: proposalIds,
-  })
+  if (turnId !== null) {
+    summary['turn_id'] = turnId
+    const settled = await deps.port.call('session', 'turn_settle', { turn_id: turnId, outcome })
+    summary['outcome'] = outcome
+    summary['settled'] = settled.ok && isRecord(settled.value) && settled.value['ok'] === true
+  }
+  return planOf([], summary)
 }
 
-/** `interpret(bag)`：一次回合的图执行 + 回合尾写。 */
+/** `orchestration_change` 裁决续跑：委派 `turn-ledger.decide`（采纳写回 loop-policy body / 拒绝 verdict）。 */
+async function orchestrationResume(
+  bag: Rec,
+  pins: Rec,
+  resume: Rec,
+  at: string,
+  deps: LoopPolicyDeps,
+): Promise<Json> {
+  const outcome = await deps.port.call('turn-ledger', 'decide', { bag, pins, resume, at })
+  if (!outcome.ok) throw new ServiceError('ledger_unavailable', outcome.message)
+  const value = isRecord(outcome.value) ? (outcome.value as Rec) : {}
+  const batch = Array.isArray(value['batch']) ? (value['batch'] as Json[]) : []
+  const summary = isRecord(value['summary'])
+    ? (value['summary'] as Json)
+    : { ok: true, kind: 'reject', proposal_ids: [] }
+  return planOf(batch, summary)
+}
+
+interface GraphRunValue {
+  directives: Json[]
+  pending: Rec | null
+  summary: Rec
+  ended: string
+  lifecycle: string
+  progress: Json
+  stopReason: string | null
+  trace: Rec
+}
+
+/** 归一 graph-run.run 的回值（形态非法按内部错误，不静默误执行）。 */
+function graphRunValueOf(value: Json): GraphRunValue {
+  const raw = isRecord(value) ? value : null
+  if (raw === null) throw new ServiceError('graph_run_bad_result', 'graph-run.run returned non-object')
+  return {
+    directives: Array.isArray(raw['directives']) ? (raw['directives'] as Json[]) : [],
+    pending: isRecord(raw['pending']) ? (raw['pending'] as Rec) : null,
+    summary: isRecord(raw['summary']) ? (raw['summary'] as Rec) : {},
+    ended: asString(raw['ended']) ?? 'done',
+    lifecycle: asString(raw['lifecycle']) ?? 'settled',
+    progress: raw['progress'] ?? null,
+    stopReason: asString(raw['stop_reason']),
+    trace: isRecord(raw['trace']) ? (raw['trace'] as Rec) : {},
+  }
+}
+
+/** `interpret(bag)`：门面编排一段回合的图执行 + 回合尾账本 + 会话收口。 */
 async function interpret(
   args: Json,
   env: CallEnv,
@@ -151,69 +190,72 @@ async function interpret(
   const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : (deps.pins ?? PINS)
   const at = isoAt(nowOf(env, bag))
   const resume = parseResume(bag)
-  const events: HandlerResult['events'] = []
   const turnId = asString(bag['turn_id'])
+  const graphHash = H(model.graph)
   let ended: string | null = null
 
   try {
+    // 契约边界：bag 带 `contract_version` 时主版本必须一致，未知主版本立即拒绝并给结构化结局；
+    // 缺失视为未标注版本（兼容接受），是否记录由 `summary.contract_version` 决定。
+    if (bag['contract_version'] !== undefined && bag['contract_version'] !== null) {
+      const version = checkContractVersion(bag['contract_version'])
+      if (!version.ok) {
+        ended = 'refused'
+        return {
+          value: await contractVersionRefusal(
+            bag,
+            model,
+            resolved.fellBack,
+            graphHash,
+            turnId,
+            version.outcome as unknown as Json,
+            deps,
+          ),
+          events: [],
+        }
+      }
+    }
+
     if (
       resume !== null &&
       isRecord(resume['cursor']) &&
       resume['cursor']['kind'] === 'orchestration_change'
     ) {
-      return { value: orchestrationResume(bag, pins, resume, env, at), events }
+      return { value: await orchestrationResume(bag, pins, resume, at, deps), events: [] }
     }
 
-    // 段间 trace 累积：同一回合的多次 interpret 共用一个记录器，settle 时一次写（每回合一个 evolution 世代）。
-    const trace = traceFor(turnId)
-    const result = await interpretGraph({
-      bag,
-      env,
-      model,
-      pins,
-      port: deps.port,
-      trace,
-      resume,
-      refs,
-    })
+    // 执行一段：图执行引擎归 graph-run（模型解析归本门面，随 args 传入）。
+    const ran = await deps.port.call('graph-run', 'run', { bag, model, pins, resume, refs })
+    if (!ran.ok) throw new ServiceError('graph_run_unavailable', ran.message)
+    const result = graphRunValueOf(ran.value)
     ended = result.ended
-    events.push(...result.events)
-    const graphHash = H(model.graph)
-    const round = newRound(bag)
-    const stepping = result.ended === SEGMENT_ENDED
+    const stepping = ended === SEGMENT_ENDED
+    const trace = result.trace
+
+    const all: Json[] = [...result.directives]
     if (stepping) {
-      // 段终态：不落 trace / 不改 evolution，只登记本段计划供 settle 出摘要。
+      // 段终态：不落 trace 账本，只登记本段计划供 settle 出摘要。
       accumulateDirectives(turnId, result.directives)
     } else {
-      buildTraceTail(
+      const ledger = await deps.port.call('turn-ledger', 'settle', {
         bag,
+        model,
+        pins,
         trace,
-        accumulatedDirectives(turnId, result.directives),
-        env,
-        graphHash,
+        directives: accumulatedDirectives(turnId, result.directives),
+        graph_hash: graphHash,
+        scan: result.pending === null,
         at,
-        round,
-      )
-      if (result.pending === null) {
-        const scan = await scanProposals({
-          bag,
-          env,
-          model,
-          pins,
-          port: deps.port,
-          run: env.run,
-          workspaceId: asString(bag['workspace_id']),
-          at,
-          round,
-        })
-        events.push(...scan.events)
-        for (const directive of scan.directives) {
-          result.directives.push(directive)
-        }
-      }
+      })
+      if (!ledger.ok) throw new ServiceError('ledger_unavailable', ledger.message)
+      const ledgerValue = isRecord(ledger.value) ? (ledger.value as Rec) : {}
+      const extra = Array.isArray(ledgerValue['extra']) ? (ledgerValue['extra'] as Json[]) : []
+      const batch = Array.isArray(ledgerValue['batch']) ? (ledgerValue['batch'] as Json[]) : []
+      all.push(...extra, ...batch)
     }
-    // 同回合的 trace / verdicts 合并为一个 evolution 世代；影子指标等其它写仍在各自批次。
-    const all: Json[] = [...result.directives, ...round.finalize()]
+
+    const steps = Array.isArray(trace['steps']) ? (trace['steps'] as Json[]) : []
+    const refusedAt = isRecord(trace['refused_at']) ? (trace['refused_at'] as Rec) : null
     const summary: Rec = {
       ...result.summary,
       // 段终态摘要不占用 `interpret` 这一终态摘要标识：同 run 后续段的终态摘要才是回执用的那条。
@@ -224,13 +266,13 @@ async function interpret(
       // 解释器生命周期（封闭枚举）与图内进度（数据）：换图不改枚举，UI 按 contract_id 映射当前动作。
       lifecycle: result.lifecycle,
       progress: result.progress,
-      refused_at: trace.refusedAt,
-      branch_not_taken: trace.branchNotTaken,
+      refused_at: refusedAt,
+      branch_not_taken: typeof trace['branch_not_taken'] === 'number' ? trace['branch_not_taken'] : 0,
       // 子图节点与父图共用 node_index 空间：带 parent_index（第三位）以保持可还原；父图节点保持二元组。
-      instances: trace.steps.map((step) =>
-        step['parent_index'] !== undefined
+      instances: steps.map((step) =>
+        isRecord(step) && step['parent_index'] !== undefined
           ? [step['node_index'], step['chosen_instance'], step['parent_index']]
-          : [step['node_index'], step['chosen_instance']],
+          : [isRecord(step) ? step['node_index'] : null, isRecord(step) ? step['chosen_instance'] : null],
       ),
     }
     // 契约版本事实留痕：未标注（缺失）时为 null，消费方据此区分「未标注」与「已标注且兼容」。
@@ -239,17 +281,16 @@ async function interpret(
     if (turnId !== null) {
       summary['turn_id'] = turnId
       if (result.pending === null && !stepping) {
-        const refusedCode = trace.refusedAt !== null ? asString(trace.refusedAt['code']) : null
+        const refusedCode = refusedAt !== null ? asString(refusedAt['code']) : null
         const fallbackAttr = refusedCode !== null ? attributionOf(model, refusedCode) : null
         const outcome =
           result.ended === 'refused'
-            ? (result.refusedOutcome ??
-              refusedOutcome(
+            ? refusedOutcome(
                 refusedCode ?? 'downstream_refusal',
                 null,
                 refusedCode !== null && retriableOf(model, refusedCode),
                 fallbackAttr,
-              ))
+              )
             : result.ended === 'cancelled'
               ? cancelledOutcome()
               : committedOutcome(result.stopReason)
@@ -258,23 +299,28 @@ async function interpret(
         summary['settled'] = settled.ok && isRecord(settled.value) && settled.value['ok'] === true
       }
     }
-    return { value: planOf(all, summary), events }
+    return { value: planOf(all, summary), events: [] }
   } finally {
-    // 段终态（stepping）：保留取消标志与 trace 累积，让下一段入口仍能看见取消、settle 时一次写出。
-    if (ended !== SEGMENT_ENDED) {
-      clearTrace(turnId)
-      clearCancel(turnId)
-    }
+    // 段终态（stepping）：保留计划累积，让 settle 时一次出摘要；graph-run 侧同样保留 trace / 取消标志。
+    if (ended !== SEGMENT_ENDED) clearTrace(turnId)
   }
 }
 
-/** `cancel(turn_id)`：置内存标志，运行中的 interpret 在派发边界查、命中即停；幂等。 */
-function cancel(args: Json): HandlerResult {
+/** `cancel(turn_id)`：转发取消意图给 graph-run（运行中的 run 在派发边界查、命中即停）；幂等。 */
+async function cancel(args: Json, deps: LoopPolicyDeps): Promise<HandlerResult> {
   if (!isRecord(args)) return { value: { ok: false, reason: 'bad_args' }, events: [] }
   const turnId = asString(args['turn_id'])
   if (turnId === null) return { value: { ok: false, reason: 'bad_args' }, events: [] }
-  requestCancel(turnId)
-  return { value: { ok: true, turn_id: turnId, cancelled: true }, events: [] }
+  const forwarded = await deps.port.call('graph-run', 'cancel', { turn_id: turnId })
+  return {
+    value: {
+      ok: true,
+      turn_id: turnId,
+      cancelled: true,
+      forwarded: forwarded.ok && isRecord(forwarded.value) && forwarded.value['cancelled'] === true,
+    },
+    events: [],
+  }
 }
 
 /** 构造方法表（依赖注入：反向调用通道由 main 提供）。 */
@@ -283,6 +329,6 @@ export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
   return {
     interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
       interpret(args, env, deps, hydrator),
-    cancel: (args: Json): Promise<HandlerResult> => Promise.resolve(cancel(args)),
+    cancel: (args: Json): Promise<HandlerResult> => cancel(args, deps),
   }
 }

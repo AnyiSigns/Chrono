@@ -5,8 +5,11 @@
   "methods": {
     "router": ["select"]
   },
+  "judgments": {
+    "router": { "select": "terms/select.json" }
+  },
   "pins": {},
-  "start": "node execute/main.ts",
+  "start": "",
   "build": [],
   "protocol": "1",
   "restart": {
@@ -24,7 +27,7 @@
   },
   "state": "recomputable",
   "members": [
-    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" },
     { "kind": "schema", "path": "schema/" }
   ],
   "commands": []

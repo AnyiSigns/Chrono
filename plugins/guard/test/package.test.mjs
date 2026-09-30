@@ -14,6 +14,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'judgments',
   'pins',
   'start',
   'build',
@@ -25,13 +26,14 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
+test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'guard')
   assert.equal(decl.schema, 'schema/guard.json')
   assert.deepEqual(decl.implements, ['guard'])
-  assert.deepEqual(decl.methods, { guard: ['judge'] })
+  assert.deepEqual(decl.methods, { guard: ['judge', 'facts', 'collect'] })
+  assert.deepEqual(decl.judgments, { guard: { judge: 'terms/guard.json' } })
   assert.deepEqual(decl.pins, {})
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
@@ -40,9 +42,21 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.equal(decl.state, 'recomputable')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
+    { kind: 'term', path: 'terms/' },
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
+  assert.deepEqual(decl.build, [])
+})
+
+test('judge 判定住 term：产物为原语 AST，糖化源同包且不入世', () => {
+  const entry = readJson('plugin.json').judgments.guard.judge
+  assert.equal(entry, 'terms/guard.json')
+  assert.ok(existsSync(join(PKG_ROOT, entry)), `缺少判定产物 ${entry}`)
+  const ast = readJson(entry)
+  assert.ok(Array.isArray(ast), '判定产物不是原语 AST')
+  assert.equal(ast[0], 'call')
+  assert.ok(existsSync(join(PKG_ROOT, 'terms.src/guard.json')), '缺少糖化源 terms.src/guard.json')
 })
 
 test('schema/guard.json 是合法 JSON 且声明 judge 形状', () => {
@@ -65,17 +79,18 @@ test('tools/default-body.json 是结构化规则（四段齐全）', () => {
   assert.equal(body.deny.allowed_ports, null)
 })
 
-test('execute/ 源码与 tools/ 脚本齐全', () => {
+test('execute/ 取数侧源码与 tools/ 脚本齐全，且无 judge 运行时实现', () => {
   const files = [
     'execute/main.ts',
     'execute/methods.ts',
-    'execute/judge.ts',
+    'execute/facts.ts',
     'execute/rules.ts',
     'execute/types.ts',
     'tools/seed-default-body.mjs',
     'tools/e2e-smoke.mjs',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
+  assert.equal(existsSync(join(PKG_ROOT, 'execute', 'judge.ts')), false, 'judge 不应再住服务')
 })
 
 test('package.json 零依赖且带测试脚本', () => {
@@ -86,13 +101,17 @@ test('package.json 零依赖且带测试脚本', () => {
   assert.equal(pkg.scripts.test, 'node --test')
 })
 
-test('.worldignore 声明 test/ 与 tools/', () => {
+test('.worldignore 声明 test/ 与 tools/ 与糖化源，不排除契约必需文件', () => {
   const lines = readText('.worldignore')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'))
   assert.ok(lines.includes('test/'))
   assert.ok(lines.includes('tools/'))
+  assert.ok(lines.includes('terms.src/'))
+  for (const forbidden of ['plugin.json', 'package.json', 'README.md', 'schema/', 'terms/']) {
+    assert.equal(lines.includes(forbidden), false, `不得排除契约必需文件 ${forbidden}`)
+  }
 })
 
 test('README 存在且不含计划编号 / 计划文档引用', () => {

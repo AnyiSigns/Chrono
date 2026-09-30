@@ -1,0 +1,171 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "pred",
+    "op": "eq",
+    "a": {
+      "k": "get",
+      "of": {
+        "k": "arg",
+        "i": 1
+      },
+      "path": [
+        "verdict"
+      ]
+    },
+    "b": {
+      "k": "lit",
+      "v": "allow"
+    }
+  },
+  "then": {
+    "k": "obj",
+    "fields": {
+      "allow": {
+        "k": "arith",
+        "op": "add",
+        "a": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "allow"
+          ]
+        },
+        "b": {
+          "k": "lit",
+          "v": 1
+        }
+      },
+      "escalate": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "escalate"
+        ]
+      },
+      "deny": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "deny"
+        ]
+      }
+    }
+  },
+  "else": {
+    "k": "if",
+    "cond": {
+      "k": "pred",
+      "op": "eq",
+      "a": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 1
+        },
+        "path": [
+          "verdict"
+        ]
+      },
+      "b": {
+        "k": "lit",
+        "v": "escalate"
+      }
+    },
+    "then": {
+      "k": "obj",
+      "fields": {
+        "allow": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "allow"
+          ]
+        },
+        "escalate": {
+          "k": "arith",
+          "op": "add",
+          "a": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "escalate"
+            ]
+          },
+          "b": {
+            "k": "lit",
+            "v": 1
+          }
+        },
+        "deny": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "deny"
+          ]
+        }
+      }
+    },
+    "else": {
+      "k": "obj",
+      "fields": {
+        "allow": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "allow"
+          ]
+        },
+        "escalate": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "escalate"
+          ]
+        },
+        "deny": {
+          "k": "arith",
+          "op": "add",
+          "a": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "deny"
+            ]
+          },
+          "b": {
+            "k": "lit",
+            "v": 1
+          }
+        }
+      }
+    }
+  }
+}

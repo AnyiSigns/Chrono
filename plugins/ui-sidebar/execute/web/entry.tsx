@@ -83,7 +83,8 @@ function IconButton(props: {
       type="button"
       className="sb-iconbtn"
       aria-label={label}
-      title={label}
+      // 有自绘 tooltip（tipLabel）时不再挂原生 title：否则浏览器原生提示与 `sb-tooltip` 同时弹出，悬停出现两个浮层。
+      title={tipLabel !== undefined ? undefined : label}
       disabled={disabled}
       data-danger={danger === true ? 'true' : undefined}
       onClick={onClick}
@@ -391,7 +392,8 @@ function GroupView(props: {
           <IconButton
             store={store}
             icons={snap.icons}
-            name="pencil"
+            name="chat-plus"
+            size={20}
             label={store.text('sidebar_new_conversation')}
             tipLabel={store.text('sidebar_new_conversation')}
             disabled={workspace.missing}
@@ -746,7 +748,7 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
       onClick={() => store.toggleCollapsed()}
     >
       <span className="sb-toggle-glyph" key={snap.collapsed ? 'rail' : 'wide'}>
-        <Icon icons={snap.icons} name={snap.collapsed ? 'panel-left' : 'panel-left-close'} label={toggleLabel} />
+        <Icon icons={snap.icons} name={snap.collapsed ? 'panel-expand' : 'panel-collapse'} size={18} label={toggleLabel} />
       </span>
     </button>
   )

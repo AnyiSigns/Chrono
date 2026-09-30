@@ -876,8 +876,25 @@ function history(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
     limit: typeof record['limit'] === 'number' && Number.isInteger(record['limit']) && record['limit'] > 0
       ? (record['limit'] as number)
       : null,
+    full: record['full'] === true,
   }
-  return { value: deps.store.history(query.conversation, query.before, query.limit), events: [] }
+  return {
+    value: deps.store.history(query.conversation, query.before, query.limit, query.full),
+    events: [],
+  }
+}
+
+/**
+ * 清单面（轻）：会话 body + 跨会话仍开着的回合摘要，不背消息 / 回合切片。
+ * 供角标 / 顶栏 / 侧栏列表取数；引擎切片仍走 `read`。
+ */
+function list(args: Rec, env: CallEnv, deps: SessionDeps): HandlerResult {
+  void args
+  void env
+  return {
+    value: { ...deps.store.body(), open_turns: deps.store.openTurnSummaries() },
+    events: [],
+  }
 }
 
 // ── 方法表 ─────────────────────────────────────────────────────────────────
@@ -901,6 +918,7 @@ export function createHandlers(deps: SessionDeps): Record<string, Handler> {
     turn_settle: (args, env) => turnSettle(args, env, deps),
     turn_cancel: (args, env) => turnCancel(args, env, deps),
     read: (args, env) => read(args, env, deps),
+    list: (args, env) => list(args, env, deps),
     history: (args, env) => history(args, env, deps),
   }
 }

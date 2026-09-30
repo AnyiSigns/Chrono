@@ -1,0 +1,1 @@
+["if",["pred","ne",["getOr",["v",0],["error"],["c",null]],["c",null]],["obj",{"error":["get",["v",0],["error"]],"message":["getOr",["v",0],["message"],["c",""]]}],["call",["c",{"$ref":"terms/finish.json"}],[["eff","guard","collect",["obj",{"list":["fold",["get",["v",0],["calls"]],["c",null],["c",{"$ref":"terms/judge.step.json"}]]}]]]]]

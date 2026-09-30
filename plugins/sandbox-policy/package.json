@@ -1,0 +1,23 @@
+{
+  "name": "sandbox-policy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "沙箱档位与授权判定（Rust）：四档 fs/net 映射解析与一次性 grant 校验消费；无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "title": "graph-run（图执行引擎）",
+  "description": "身份自述 / 数据契约：图执行引擎——运行期结构闭合（委派 graph-gate.closure）+ 拓扑前推 + 节点派发（pre → port.call → post）+ 拒绝短路到 sink + 跨段重入与取消。图数据、解析后的模型、pins / refs / 续跑依据随 args 传入（服务不读投影）；反向调用节点能力类走 port.call；回合尾 trace / 提案账本归 turn-ledger。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "graph-run.run": [],
+    "graph-run.cancel": []
+  },
+  "properties": {
+    "run_request": {
+      "type": "object",
+      "description": "run 的 args：bag + 解析后的模型 + pins / refs / 续跑依据。",
+      "required": ["bag", "model"],
+      "additionalProperties": true,
+      "properties": {
+        "bag": { "type": "object", "description": "调用方装配的 bag（已水合引用闭包）。" },
+        "model": {
+          "type": "object",
+          "description": "解析后的图模型 `{contracts,nodes,prompts,graph,thresholds,refusalCodes}`。"
+        },
+        "pins": { "type": "object", "description": "有效 pins（端口 → 提供方）；缺省回落宿主注入。" },
+        "refs": { "type": "object", "description": "图数据 def 引用闭包（closure 读链式条目 / 图 def 用）。" },
+        "resume": {
+          "type": ["object", "null"],
+          "description": "续跑依据 `{cursor, thread, payload}` / `{continuation, turn_id}` / null。"
+        }
+      }
+    },
+    "run_result": {
+      "type": "object",
+      "description": "run 的返回值：执行计划、终态、摘要与 trace 事实（供 turn-ledger 组装回合尾账本）。",
+      "required": ["directives", "summary", "ended", "lifecycle", "progress", "trace"],
+      "additionalProperties": true,
+      "properties": {
+        "directives": { "type": "array", "items": { "type": "object" } },
+        "events": { "type": "array", "items": { "type": "object" } },
+        "pending": { "type": ["object", "null"] },
+        "summary": { "type": "object" },
+        "ended": { "enum": ["done", "refused", "pending", "cancelled", "stepping"] },
+        "lifecycle": { "type": "string" },
+        "progress": { "type": "object" },
+        "stop_reason": { "type": ["string", "null"] },
+        "trace": {
+          "type": "object",
+          "description": "trace 纯数据事实：steps / eff_log / 分支 / 拒绝 / 链接 / 结局。"
+        }
+      }
+    },
+    "cancel_request": {
+      "type": "object",
+      "description": "cancel 的 args：回合身份。",
+      "required": ["turn_id"],
+      "additionalProperties": true,
+      "properties": {
+        "turn_id": { "type": "string" }
+      }
+    },
+    "cancel_result": {
+      "type": "object",
+      "description": "cancel 的返回值。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "turn_id": { "type": "string" },
+        "cancelled": { "type": "boolean" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "description": "结构化失败码（协议 error 帧的 code）。",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "args 形态非法（非对象 / 缺必填键）。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "graph-run.run": 4000000,
+    "graph-run.cancel": 30000
+  }
+}

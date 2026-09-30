@@ -40,7 +40,7 @@ export function register(ctx: SlotContext): void {
 
 1. 浏览器经壳 `ctx.command('chat.history', {conversation?}, {thread})` 调用宿主命令面；
 2. `chat.history` 反向调用 `session.history`，由 `session` 服务读**自有持久存储**返回
-   `{messages, body, refs}`（`messages` 为新 → 旧窗口）；
+   `{messages, body, refs, turns}`（`messages` 为新 → 旧窗口；`refs` / `turns` 随窗口收敛，`turns` 不带步记录）；
 3. 浏览器用 `messages` 反转成展示序（`execute/web/history-model.ts`；旧 `refs` 路径保留为兼容回落）；
 4. `chat.history` 命令不可用时 → 行内错误占位（`unknown_command` 人话），不崩。
 

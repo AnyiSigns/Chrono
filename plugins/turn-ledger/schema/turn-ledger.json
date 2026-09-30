@@ -1,0 +1,76 @@
+{
+  "title": "turn-ledger（回合台账 / 提案）",
+  "description": "身份自述 / 数据契约：回合尾台账——trace 条目组装（摘要落 def、条目只存 def 引用）+ 提案扫描（机械闸 graph-gate.validate → 影子回放 evolve-metrics.shadow → 人闸 approval.enqueue）+ 采纳 / 拒绝 verdict。图数据与解析后的模型随 args 传入（服务不读投影）。红线：trace 与 verdict 同世代、proposal 单世代原子性、采纳写回 loop-policy body。",
+  "type": "object",
+  "additionalProperties": true,
+  "audit_redact": {
+    "turn-ledger.settle": [],
+    "turn-ledger.decide": []
+  },
+  "properties": {
+    "settle_request": {
+      "type": "object",
+      "description": "settle 的 args：bag + 解析后的模型 + trace 事实 + 本轮计划 + 是否扫描提案。",
+      "required": ["bag", "model", "trace"],
+      "additionalProperties": true,
+      "properties": {
+        "bag": { "type": "object", "description": "调用方装配的 bag（含 evolution 台账与 refs 闭包）。" },
+        "model": { "type": "object", "description": "解析后的图模型（读 thresholds / refusalCodes / graph）。" },
+        "pins": { "type": "object", "description": "有效 pins；缺省回落宿主注入。" },
+        "trace": {
+          "type": "object",
+          "description": "graph-run 回传的 trace 事实 `{steps,eff_log,refused_at,branch_not_taken,branches_not_taken,link_taken,outcome}`。"
+        },
+        "directives": { "type": "array", "items": { "type": "object" }, "description": "本轮计划（trace 摘要输入）。" },
+        "graph_hash": { "type": ["string", "null"], "description": "本轮图哈希。" },
+        "scan": { "type": "boolean", "description": "是否扫描未决提案（回合挂起 / 段终态时为 false）。" },
+        "at": { "type": "string", "description": "天钟 ISO 字符串；缺省由 env.now 派生。" }
+      }
+    },
+    "settle_result": {
+      "type": "object",
+      "description": "settle 的返回值：单世代 batch 计划 + 直传计划（影子 def / 审批）+ 挂起。",
+      "required": ["extra", "batch"],
+      "additionalProperties": true,
+      "properties": {
+        "extra": { "type": "array", "items": { "type": "object" }, "description": "影子回放 def / 审批入队等直传计划。" },
+        "batch": { "type": "array", "items": { "type": "object" }, "description": "trace + verdict 的单世代原子写计划。" },
+        "pending": { "type": ["object", "null"] },
+        "events": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "decide_request": {
+      "type": "object",
+      "description": "decide 的 args：编排变更裁决续跑。",
+      "required": ["bag", "resume"],
+      "additionalProperties": true,
+      "properties": {
+        "bag": { "type": "object" },
+        "pins": { "type": "object" },
+        "resume": { "type": "object", "description": "续跑依据（含 cursor.proposal_ids 与 verdict / decision）。" },
+        "at": { "type": "string" }
+      }
+    },
+    "decide_result": {
+      "type": "object",
+      "description": "decide 的返回值：采纳 / 拒绝的单世代 batch 计划与摘要。",
+      "required": ["batch", "summary"],
+      "additionalProperties": true,
+      "properties": {
+        "batch": { "type": "array", "items": { "type": "object" } },
+        "summary": { "type": "object" }
+      }
+    },
+    "errors": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bad_args": { "type": "string", "description": "args 形态非法（非对象 / 缺必填键）。" }
+      }
+    }
+  },
+  "method_timeouts": {
+    "turn-ledger.settle": 600000,
+    "turn-ledger.decide": 600000
+  }
+}

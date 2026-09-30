@@ -17,8 +17,8 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const APPROVAL_DIR = join(REPO_ROOT, 'plugins', 'ui-approval')
 
-/** 依赖先于本插件的 seed 顺序（pins 需在入世时解析到已存在的身份）。 */
-const PACKAGES = ['approval', 'input', 'ui-approval']
+/** 依赖先于本插件的 seed 顺序（needs 需在入世时解析到已存在的身份）。 */
+const PACKAGES = ['approval', 'input', 'ref-hydrate', 'ui-approval']
 
 function boot(root, args, env) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -140,11 +140,16 @@ async function main() {
 
     // 5) pins 声明与解析（seed 成功即解析成立；此处核对声明）
     const decl = JSON.parse(readFileSync(join(APPROVAL_DIR, 'plugin.json'), 'utf8'))
-    assert.deepEqual(decl.pins, { approval: 'approval', input: 'input' })
+    assert.deepEqual(decl.pins, {})
+    assert.deepEqual(decl.needs, {
+      approval: { mode: 'one' },
+      input: { mode: 'one' },
+      'ref-hydrate': { mode: 'one' },
+    })
     assert.equal(Object.hasOwn(decl, 'schema'), false, '零 schema：省略字段')
     assert.equal(Object.hasOwn(decl, 'exclusive'), false, '不再独占端口')
     assert.deepEqual(decl.implements, ['ui-approval'])
-    console.log('pins / schema / exclusive：ok（pins={approval,input}，零 schema，无独占端口）')
+    console.log('needs / schema / exclusive：ok（needs={approval,input,ref-hydrate}，零 schema，无独占端口）')
 
     // 6) `approval.list` 命令真实往返：入口 term → 服务 → 反向调 #32 list。
     const listValue = extractValue(boot(root, ['approval.list']))

@@ -1,8 +1,8 @@
 // `loop-policy` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读 + 直连协议）：
-// pack 依赖闭包（全部 pins 及其传递依赖，按拓扑序）→ seed → 离线投影确认身份在册、pins 解析通过
-// → 直连 loop-policy 服务，把反向调用桥接到内存假节点提供者 → 覆盖 interpret（无工具路径 / 有工具路径）。
+// pack 依赖闭包（全部 needs 提供方及其传递依赖，按拓扑序）→ seed → 离线投影确认身份在册、有效 pins 解析通过
+// → 直连 loop-policy 门面，把 graph-run / turn-ledger / session 反向调用按帧桩应答 → 覆盖 interpret 委派与收口。
 // 说明：**不执行 `boot start`**——闭包里含 Rust 服务（sandbox / embedding / memory-retrieval / evolve-metrics /
-// tool-fs），物化需 cargo build，与本次「声明 / pins / .worldignore 就位」验收无关；pack / seed 已覆盖宿主门禁。
+// tool-fs），物化需 cargo build，与本次「声明 / needs / .worldignore 就位」验收无关；pack / seed 已覆盖宿主门禁。
 // 用法：node plugins/loop-policy/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -18,41 +18,86 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 
-// 拓扑序：被依赖者先 pack（pins 解析要求目标身份已在世界里）。含 loop-policy 全部 pins 的传递闭包。
+// 拓扑序：被依赖者先 pack。含 loop-policy `needs` 的传递闭包（每个 `one` 需求恰好一个提供方）。
 const PLUGIN_ORDER = [
-  'secrets',
-  'sandbox',
-  'embedding',
-  'model-protocol',
-  'session',
-  'context-window',
-  'guard',
   'approval',
-  'router',
-  'orchestration-admin',
-  'todo',
-  'question',
-  'memory-store',
+  'tokenizer',
+  'embedding-local',
+  'embedding',
+  'dedup',
+  'config',
+  'msg-dialect',
+  'secrets-env',
+  'secrets-local',
+  'secrets',
+  'throttle',
+  'model-protocol',
+  'semantic',
+  'short-memory',
+  'summarize',
   'compress',
-  'memory-retrieval',
-  'memory-consolidate',
-  'tool-fs',
-  'tool-shell',
-  'tool-http',
-  'tool-browser',
-  'mcp',
-  'plugin-admin',
+  'token-estimate',
+  'budget',
+  'context-window',
+  'evolve-ledger',
+  'evolve-evidence',
+  'evolve-shadow',
+  'evolve-sweep',
   'evolve-metrics',
+  'graph-gate',
+  'guard',
+  'vector-index',
+  'memory-store',
+  'query-plan',
+  'rerank',
+  'memory-retrieval',
+  'router',
+  'input',
+  'session',
+  'mcp-client',
+  'mcp',
+  'l1-maintenance',
+  'l2-maintenance',
+  'l3-maintenance',
+  'memory-consolidate',
+  'orchestration',
+  'orchestration-admin',
+  'plugin',
+  'plugin-admin',
+  'question',
+  'storage-kv',
+  'todo',
+  'sandbox-policy',
+  'sandbox-exec',
+  'sandbox-fs',
+  'sandbox',
+  'tool-browser',
+  'tool-fs',
+  'tool-http',
+  'tool-schema',
+  'tool-shell',
+  'tool-registry',
+  'tool-dispatch',
   'tools',
+  'graph-run',
+  'ref-hydrate',
+  'turn-ledger',
   'loop-policy',
 ]
 
+// 有效 pins = 声明的 `pins`（host）∪ 全部 `one` needs 绑定（名 → 提供方身份名）。
 const EXPECTED_PINS = {
+  host: 'host',
+  'graph-run': 'graph-run',
+  'turn-ledger': 'turn-ledger',
+  'ref-hydrate': 'ref-hydrate',
   session: 'session',
   model: 'model-protocol',
   context: 'context-window',
   retrieval: 'memory-retrieval',
+  compress: 'compress',
   guard: 'guard',
+  'graph-gate': 'graph-gate',
   approval: 'approval',
   tools: 'tools',
   router: 'router',
@@ -137,22 +182,27 @@ async function directProtocolSmoke(entry) {
   const env = { run: 'e2e', thread: null, now: 1_700_000_000_000 }
   const seen = []
 
+  // 门面已薄化：编排重力在 graph-run（图执行）与 turn-ledger（回合并账）；两者作为外部提供方按帧桩应答，
+  // 只验证 loop-policy 的委派顺序、结局归一与会话收口。
   async function bridge(message) {
-    seen.push(`${message.port}.${message.method}`)
     const key = `${message.port}.${message.method}`
+    seen.push(key)
     let value
-    if (key === 'tools.list') {
-      value = { tools: [], rejected: [] }
-    } else if (key === 'context.build') {
-      value = { messages: [{ role: 'user', content: 'e2e' }], params: { model: 'stub' }, manifest: {} }
-    } else if (key === 'model.chat') {
-      const last = Array.isArray(message.args.messages) ? message.args.messages[message.args.messages.length - 1] : null
-      value =
-        last && last.role === 'tool'
-          ? { ok: true, text: 'done', tool_calls: [], usage: {} }
-          : { ok: true, text: 'e2e answer', tool_calls: [], usage: {} }
-    } else if (key === 'session.step_append') {
-      value = { ok: true, turn_id: message.args.turn_id }
+    if (key === 'graph-run.run') {
+      value = {
+        directives: [],
+        pending: null,
+        summary: { ok: true, kind: 'interpret', iters: 1, steps: 0, branch_not_taken: 0, instances: [] },
+        ended: 'done',
+        lifecycle: 'settled',
+        progress: { iter: 1, node_index: null, contract_id: null },
+        stop_reason: null,
+        trace: { steps: [], branch_not_taken: 0, refused_at: null },
+      }
+    } else if (key === 'turn-ledger.settle') {
+      value = { extra: [], batch: [] }
+    } else if (key === 'ref-hydrate.hydrate') {
+      value = {}
     } else if (key === 'session.turn_settle') {
       value = { ok: true, turn_id: message.args.turn_id, outcome: message.args.outcome, persisted: true }
     } else {
@@ -179,7 +229,7 @@ async function directProtocolSmoke(entry) {
     const manifest = await next()
     assert.equal(manifest.kind, 'manifest')
     assert.equal(manifest.identity, 'loop-policy')
-    assert.deepEqual(manifest.methods['loop-policy'], ['interpret'])
+    assert.deepEqual(manifest.methods['loop-policy'], ['interpret', 'cancel'])
 
     const result = await call('i1', { turn_id: 't1' })
     assert.equal(result.kind, 'result', JSON.stringify(result))
@@ -188,8 +238,8 @@ async function directProtocolSmoke(entry) {
     assert.equal(summary.ended, 'done')
     assert.equal(summary.settled, true)
     assert.equal(summary.fell_back, true)
-    assert.deepEqual(seen, ['tools.list', 'context.build', 'model.chat', 'session.step_append', 'session.turn_settle'])
-    console.log('直连协议：interpret 空 body 回落种子图、tools.list 装配目录 + 无工具路径三步就位 + 步记录收口')
+    assert.deepEqual(seen, ['graph-run.run', 'turn-ledger.settle', 'session.turn_settle'])
+    console.log('直连协议：interpret 委派 graph-run.run → turn-ledger.settle → session.turn_settle，结局归一为 done')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -219,13 +269,16 @@ function main() {
 
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const loopPolicy = projection.ids['loop-policy']
     assert.ok(loopPolicy, '投影缺 loop-policy')
-    assert.deepEqual(loopPolicy.pins, EXPECTED_PINS, 'loop-policy pins 应解析为节点类型空间')
+    assert.deepEqual(loopPolicy.pins, EXPECTED_PINS, 'loop-policy 有效 pins 应解析为提供方身份名')
     assert.ok(loopPolicy.gens.length >= 1, 'loop-policy 应有代码世代')
-    for (const target of Object.values(EXPECTED_PINS)) assert.ok(projection.ids[target], `pins 目标缺身份 ${target}`)
-    console.log('离线投影：pins 九项解析通过、身份与世代正确')
+    for (const target of Object.values(EXPECTED_PINS)) {
+      if (target === 'host') continue
+      assert.ok(projection.ids[target], `pins 目标缺身份 ${target}`)
+    }
+    console.log(`离线投影：有效 pins ${Object.keys(EXPECTED_PINS).length} 项解析通过、身份与世代正确`)
 
     directProtocolSmoke(join(REPO_ROOT, 'plugins', 'loop-policy', 'execute', 'main.ts'))
       .then(() => {

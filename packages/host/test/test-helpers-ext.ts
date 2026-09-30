@@ -143,6 +143,8 @@ export interface PackageSpec {
   dir?: string
   implements?: string[]
   methods?: Record<string, string[]>
+  /** 由 term 承载的方法：`cap → method → 包内 term 路径`；省略不写 `judgments` 字段。 */
+  judgments?: Record<string, Record<string, string>>
   pins?: Record<string, string>
   /** 消费方能力引用；省略不写 `needs` 字段（零扰动）。 */
   needs?: Record<string, { mode: string; methods?: string[] }>
@@ -200,6 +202,7 @@ function writePackageAt(pkgRoot: string, spec: PackageSpec): void {
     pins: spec.pins ?? {},
     ...(spec.needs === undefined ? {} : { needs: spec.needs }),
     ...(spec.slots === undefined ? {} : { slots: spec.slots }),
+    ...(spec.judgments === undefined ? {} : { judgments: spec.judgments }),
     start,
     ...(spec.transport === undefined ? {} : { transport: spec.transport }),
     build: spec.build ?? [],

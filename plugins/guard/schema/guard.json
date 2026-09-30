@@ -1,6 +1,6 @@
 {
   "title": "guard（工具调用语义门）",
-  "description": "身份自述 / 数据契约：描述 guard.judge 的入参（bag）与逐 call 判定形状。judge 是纯函数——同输入同输出，不发起 eff、不等待、不取时间、不用随机。危险启发式规则 / 工作区外判据不住本 schema（schema 出生即冻结），住本身份数据世代 body（bag.guard_rules）。",
+  "description": "身份自述 / 数据契约：描述 guard.judge 的入参（bag）与逐 call 判定形状。judge 由 term 承载（plugin.json.judgments）：term 先 eff 自己的 guard.facts 取数，再据事实裁决；同输入同输出、不取时间 / 不用随机。取数侧（guard.facts）负责词法路径归一 / 危险与白名单模式命中 / net 范围归一；列表材料化（guard.collect）把 term 攒出的 cons 链还原为数组。危险启发式规则 / 工作区外判据不住本 schema（schema 出生即冻结），住本身份数据世代 body（bag.guard_rules）。",
   "type": "object",
   "additionalProperties": true,
   "properties": {

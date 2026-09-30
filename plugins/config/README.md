@@ -51,9 +51,11 @@
 
 ## 存储引擎与落点（自写）
 
-- ④ 落点：`CHRONO_PLUGIN_DATA/config.jsonl`，单文件追加日志（每条一次 append + fsync，换行收尾）。
-  记录 `{t:'body', run, body}`；启动重放取最后一条 body，末行半写撕裂 / 坏行跳过（fail-open）。
-- **边跑边追加**：`config.write` 即时写一条记录；同内容重复写幂等短路；每条记录盖回合 id（`run`）。
+- ④ 落点：`CHRONO_PLUGIN_DATA/config.json`，整份 body 的原子快照（temp → fsync → rename 整份重写；
+  半写由原子替换保证）。启动读该文件即得配置；单例配置不写追加日志。
+- **同内容幂等短路**：`config.write` 内容未变不落盘；内容变即整份重写快照。
+- **旧文件迁移**：首次启动若只有旧 `config.jsonl`，取其最后一条 `{t:'body'}` 记录作初值并以新格式落盘
+  （幂等；旧文件保留不删）。
 - **存量不搬**：存储从空开始；读时把世界遗留 body 作基线合并（存量可读），但不写回世界。
 - **清理责任**：自写存储；owner 退役时宿主按身份回收删除 `state/data/config/`，无需额外清理方法。
 

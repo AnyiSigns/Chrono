@@ -9,8 +9,10 @@ export interface HostOptions {
   root: string
   /** 效果调用超时；缺省走 `DEFAULT_CALL_TIMEOUT_MS`（测试可注入更短值）。 */
   callTimeoutMs?: number
-  /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`（测试可注入小值）。 */
+  /** G6 启动压缩阈值（尾段 entry 数）；缺省 `DEFAULT_COMPACT_TAIL_ENTRIES`（测试可注入小值，0 关闭）。 */
   compactTailEntries?: number
+  /** G6 启动压缩阈值（尾段 journal 字节）；缺省 `DEFAULT_COMPACT_JOURNAL_BYTES`（测试可注入小值，0 关闭）。 */
+  compactJournalBytes?: number
   /** 服务启动包装器（宿主侧最小沙箱形态）：只前置到 spawn 命令行；缺省无（零行为变化）。 */
   startWrapper?: string
   /** 端口审计落点（反向 `port.call`）：缺省写宿主侧有界内存环形缓冲。 */

@@ -1,5 +1,5 @@
 // 侧栏纯数据模型：工作区 / 会话归一、按工作区分组、标题本地过滤、消息链还原。
-// 无 DOM、无 IO，全部可脱离浏览器单测。会话读面 = `chat.history` 返回的会话 body。
+// 无 DOM、无 IO，全部可脱离浏览器单测。会话清单读面 = `session.list`；导出再拉 `chat.history` 全量。
 
 export interface Workspace {
   id: string

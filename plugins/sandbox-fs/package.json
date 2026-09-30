@@ -1,0 +1,23 @@
+{
+  "name": "sandbox-fs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "沙箱文件系统操作（Rust）：结构化 fsop 六 op 与范围强制；无 npm 依赖，二进制走宿主依赖缓存",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cargo test"
+  }
+}

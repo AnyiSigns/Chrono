@@ -247,21 +247,24 @@ export const STYLE_TEXT = `
   z-index: calc(var(--z-popover) + 2);
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  justify-content: space-between;
+  gap: var(--space-8);
   padding: var(--space-4) var(--space-4) 0;
-  color: var(--c-text-3);
+  color: var(--c-text-2);
   font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
+  transition: opacity var(--motion-base);
 }
 .composer-context[hidden] { display: none; }
-.composer-context[data-empty="true"] { visibility: hidden; }
+/* 空态仍占位（visibility 保高度，不推拉输入卡），但用透明度淡入淡出，避免统计行整行突然冒出来。 */
+.composer-context[data-empty="true"] { visibility: hidden; opacity: 0; }
 .composer-context[data-tone="warning"] { color: var(--c-warning); }
 .composer-context[data-tone="danger"] { color: var(--c-danger); }
-.composer-context-text { margin-left: auto; white-space: nowrap; }
+.composer-context-text { white-space: nowrap; }
 /* left: orchestration progress (muted, never tinted by the context tone); middle: real model usage + token sources. */
-.composer-status-seg { flex: none; color: var(--c-text-3); white-space: nowrap; }
+.composer-status-seg { flex: none; color: var(--c-text-2); white-space: nowrap; }
 .composer-status-model { flex: none; color: var(--c-text-2); white-space: nowrap; }
-.composer-status-sources { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-text-3); }
+.composer-status-sources { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-text-2); }
 .composer-pending-wrap {
   position: absolute;
   top: 0;
@@ -353,6 +356,10 @@ export const STYLE_TEXT = `
 }
 .composer-popover-remove:hover { background: var(--c-selection); }
 .composer-popover-remove:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+/* 悬停 / 焦点反馈统一走短过渡：这些控件原本瞬时换色，划过时是「硬切」（其余控件已各自带过渡）。 */
+.composer-option, .composer-popover-remove, .composer-inline-retry, .composer-pending {
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion="full"]) .composer-card,
   :root:not([data-motion="full"]) .composer-card[data-focus="true"],

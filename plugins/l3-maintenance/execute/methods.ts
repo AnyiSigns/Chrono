@@ -13,8 +13,6 @@ import { BadArgsError, BackendError } from './types.ts'
 import type { CallEnv, Handler, Json, Rec } from './types.ts'
 import type { EmbeddingBackend, MemoryBackend, ShortMemoryBackend } from './port-link.ts'
 
-const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
-
 /** 后端注入：生产环境是反向调用，单测注入假后端。 */
 export interface L3Deps {
   memory: MemoryBackend
@@ -58,7 +56,7 @@ async function solidify(args: Json, env: CallEnv, deps: L3Deps): Promise<Json> {
   const now = nowOf(env, record)
   const at = isoAt(now)
   const params = resolveParams(record)
-  const model = asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL
+  const model = asString(record['embedding_model'])
   const shortMemory = await deps.shortMemory.read()
   const listed = await deps.memory.list()
   const entries = parseEntries(listed)

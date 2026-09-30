@@ -1,6 +1,6 @@
 // 能力类 `ui-threads` 的方法表：`ping` 健康占位 + `threads.state` 标签数据装配 + `client.read` 客户端半边交付。
-// `threads.state` 经反向调用问 owner：`session.read` 取会话切片、`todo.invoke(todo.read)` 取待办清单
-// （session / todo 运行记录已出世界，故服务不读世界投影）。`client.read` 按包内相对 `.js` 路径回字节。
+// `threads.state` 经反向调用问 owner：`session.list` 取会话清单（body + open_turns）、`todo.invoke(todo.read)`
+// 取待办清单（session / todo 运行记录已出世界，故服务不读世界投影）。`client.read` 按包内相对 `.js` 路径回字节。
 
 import { readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
@@ -14,7 +14,7 @@ export interface HandlerDeps {
   identity: string
   /** 浏览器客户端半边资产根目录（`execute/web/`）；`client.read` 只在此目录内解析。 */
   webRoot: string
-  /** 反向调用通道（`session.read` / `todo.invoke`，按 pins 路由）；单测注入假端口。 */
+  /** 反向调用通道（`session.list` / `todo.invoke`，按 pins 路由）；单测注入假端口。 */
   port: PortCaller
 }
 
@@ -54,15 +54,15 @@ export function readClientFile(webRoot: string, path: unknown): ClientFile | nul
   }
 }
 
-/** 运行记录 owner 身份：会话切片 `session.read`、待办清单 `todo.invoke`（均已出世界）。 */
+/** 运行记录 owner 身份：会话清单 `session.list`、待办清单 `todo.invoke`（均已出世界）。 */
 const SESSION_PORT = 'session'
-const SESSION_READ = 'read'
+const SESSION_LIST = 'list'
 const TODO_PORT = 'todo'
 const TODO_INVOKE = 'invoke'
 
-/** 取 owner `session.read` 切片；取不到回空切片（顶栏显示无会话，不崩）。 */
+/** 取 owner `session.list` 清单（body + open_turns）；取不到回空清单（顶栏显示无会话，不崩）。 */
 async function readSession(port: PortCaller): Promise<Json> {
-  const outcome = await port.call(SESSION_PORT, SESSION_READ, {})
+  const outcome = await port.call(SESSION_PORT, SESSION_LIST, {})
   return outcome.ok && isRecord(outcome.value) ? outcome.value : {}
 }
 

@@ -17,7 +17,6 @@ import type {
   ShortMemoryBackend,
 } from './port-link.ts'
 
-const DEFAULT_EMBEDDING_MODEL = 'granite-97m'
 const LIST_FIELDS = ['facts', 'decisions', 'open_questions', 'files']
 
 /** 后端注入：生产环境是反向调用，单测注入假后端。 */
@@ -33,7 +32,7 @@ interface Context {
   shortMemory: Rec
   at: string
   now: number
-  model: string
+  model: string | null
   dedupThreshold: number
 }
 
@@ -60,7 +59,7 @@ async function loadState(args: Json, env: CallEnv, deps: L2Deps): Promise<Contex
     shortMemory,
     at: isoAt(now),
     now,
-    model: asString(record['embedding_model']) ?? DEFAULT_EMBEDDING_MODEL,
+    model: asString(record['embedding_model']),
     dedupThreshold: params.dedupThreshold,
   }
 }

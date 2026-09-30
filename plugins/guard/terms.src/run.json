@@ -1,0 +1,88 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "pred",
+    "op": "ne",
+    "a": {
+      "k": "getOr",
+      "of": {
+        "k": "arg",
+        "i": 0
+      },
+      "path": [
+        "error"
+      ],
+      "fallback": {
+        "k": "lit",
+        "v": null
+      }
+    },
+    "b": {
+      "k": "lit",
+      "v": null
+    }
+  },
+  "then": {
+    "k": "obj",
+    "fields": {
+      "error": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "error"
+        ]
+      },
+      "message": {
+        "k": "getOr",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "message"
+        ],
+        "fallback": {
+          "k": "lit",
+          "v": ""
+        }
+      }
+    }
+  },
+  "else": {
+    "k": "call",
+    "ref": "terms/finish.json",
+    "args": [
+      {
+        "k": "eff",
+        "port": "guard",
+        "method": "collect",
+        "args": {
+          "k": "obj",
+          "fields": {
+            "list": {
+              "k": "fold",
+              "coll": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "calls"
+                ]
+              },
+              "init": {
+                "k": "lit",
+                "v": null
+              },
+              "step": "terms/judge.step.json"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

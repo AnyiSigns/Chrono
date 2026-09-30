@@ -4,11 +4,11 @@
 > 各插件「做什么 / 不做什么」见其自带自述 `README.md`；插件之间不 import、不相识，跨身份依赖只经**能力类**表达。
 > 角色挂在能力类上：**拥有方** `slots`（声明契约）/ **提供方** `implements` / **消费方** `needs`。一个插件跨能力类可同时持有三种角色；同一能力类不得既 `implements` 又 `needs`（拥有方可 `implements` 自产自用、或用 `many` 消费自己的扩展点）；无拥有方时契约回落提供方 `methods`。
 
-共 82 个插件。
+共 87 个插件。
 
 | 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | 依赖 `pins` | state | transport |
 | --- | --- | --- | --- | --- | --- | --- |
-| `agents` | — | — | — | — | recomputable | stdio |
+| `agents` | — | — | — | — | recomputable | — |
 | `approval` | — | `approval` | — | — | durable | stdio |
 | `budget` | — | `budget` | `token-estimate(one)` | — | recomputable | stdio |
 | `chat` | — | `chat` | `session(one)`、`ref-hydrate(one)`、`input(one)`、`model(one)`、`context(one)`、`session-title(one)`、`loop-policy(one)`、`short-memory(one)`、`todo(one)`、`config(one)`、`mcp(one)`、`workspace(one)`、`skill(one)` | `host` | recomputable | stdio |
@@ -18,19 +18,20 @@
 | `dedup` | — | `dedup` | `embedding(one)` | — | recomputable | stdio |
 | `embedding` | `embedding-provider` | `embedding` | `embedding-provider(many)` | — | recomputable | stdio |
 | `embedding-local` | — | `embedding-provider` | `tokenizer(one)` | — | recomputable | stdio |
-| `evolution` | — | — | — | — | recomputable | stdio |
+| `evolution` | — | — | — | — | recomputable | — |
 | `evolve-evidence` | — | `evolve-evidence` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `evolve-ledger` | — | `evolve-ledger` | — | — | recomputable | stdio |
 | `evolve-metrics` | — | `evolve-metrics` | `evolve-ledger(one)`、`evolve-evidence(one)`、`evolve-sweep(one)`、`evolve-shadow(one)` | — | recomputable | stdio |
 | `evolve-shadow` | — | `evolve-shadow` | `evolve-ledger(one)` | `host` | recomputable | stdio |
 | `evolve-sweep` | — | `evolve-sweep` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `graph-gate` | — | `graph-gate` | — | — | recomputable | stdio |
+| `graph-run` | — | `graph-run` | `session(one)`、`model(one)`、`context(one)`、`retrieval(one)`、`compress(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)` | — | recomputable | stdio |
 | `guard` | — | `guard` | — | — | recomputable | stdio |
 | `input` | — | `input` | — | — | durable | stdio |
 | `l1-maintenance` | — | `l1-maintenance` | `short-memory(one)`、`session(one)` | — | recomputable | stdio |
 | `l2-maintenance` | — | `l2-maintenance` | `short-memory(one)`、`session(one)`、`embedding(one)`、`compress(one)` | — | recomputable | stdio |
 | `l3-maintenance` | — | `l3-maintenance` | `memory(one)`、`short-memory(one)`、`embedding(one)` | — | recomputable | stdio |
-| `loop-policy` | — | `loop-policy` | `session(one)`、`ref-hydrate(one)`、`model(one)`、`context(one)`、`retrieval(one)`、`compress(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |
+| `loop-policy` | — | `loop-policy` | `graph-run(one)`、`turn-ledger(one)`、`ref-hydrate(one)`、`session(one)`、`model(one)`、`context(one)`、`retrieval(one)`、`compress(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |
 | `mcp` | — | `mcp`、`tool-provider` | `secrets(one)`、`mcp-client(one)` | — | durable | stdio |
 | `mcp-client` | — | `mcp-client` | — | — | recomputable | stdio |
 | `memory-consolidate` | — | `memory-maintenance` | `l1-maintenance(one)`、`l2-maintenance(one)`、`l3-maintenance(one)` | — | recomputable | stdio |
@@ -46,8 +47,11 @@
 | `question` | — | `question`、`tool-provider` | `input(one)` | — | durable | stdio |
 | `ref-hydrate` | — | `ref-hydrate` | — | `host` | recomputable | stdio |
 | `rerank` | — | `rerank` | `embedding(one)`、`model(one)` | — | recomputable | stdio |
-| `router` | — | `router` | — | — | recomputable | stdio |
-| `sandbox` | — | `sandbox` | — | — | recomputable | stdio |
+| `router` | — | `router` | — | — | recomputable | — |
+| `sandbox` | — | `sandbox` | `sandbox-policy(one)`、`sandbox-exec(one)`、`sandbox-fs(one)` | — | recomputable | stdio |
+| `sandbox-exec` | — | `sandbox-exec` | `sandbox-policy(one)` | — | recomputable | stdio |
+| `sandbox-fs` | — | `sandbox-fs` | `sandbox-policy(one)` | — | recomputable | stdio |
+| `sandbox-policy` | — | `sandbox-policy` | — | — | recomputable | stdio |
 | `secrets` | `secrets-backend` | `secrets` | `secrets-backend(many)` | — | recomputable | stdio |
 | `secrets-env` | — | `secrets-backend` | — | — | recomputable | stdio |
 | `secrets-local` | — | `secrets-backend` | — | — | recomputable | stdio |
@@ -72,21 +76,22 @@
 | `tool-schema` | — | `tool-schema` | — | — | recomputable | stdio |
 | `tool-shell` | — | `tool-shell`、`tool-provider` | `secrets(one)`、`sandbox(one)` | — | recomputable | stdio |
 | `tools` | — | `tools` | `tool-registry(one)`、`tool-dispatch(one)` | `host` | recomputable | stdio |
+| `turn-ledger` | — | `turn-ledger` | `graph-gate(one)`、`evolve-metrics(one)`、`approval(one)` | — | recomputable | stdio |
 | `ui-approval` | — | `ui-approval` | `approval(one)`、`input(one)`、`ref-hydrate(one)` | — | recomputable | stdio |
 | `ui-chat` | — | `ui-chat` | — | — | recomputable | stdio |
 | `ui-composer` | — | `ui-composer` | — | — | recomputable | stdio |
-| `ui-notify` | — | `ui-notify` | — | — | recomputable | stdio |
+| `ui-notify` | — | `ui-notify` | — | — | recomputable | — |
 | `ui-settings` | — | `ui-settings` | `model(one)`、`secrets(one)`、`retrieval(one)`、`memory-maintenance(one)`、`session(one)`、`ref-hydrate(one)`、`short-memory(one)`、`input(one)`、`skill(one)`、`config(one)` | `host` | recomputable | stdio |
 | `ui-shell` | — | `ui-shell` | — | `host` | recomputable | stdio |
 | `ui-sidebar` | — | `ui-sidebar` | `session(one)`、`workspace(one)`、`workspace-picker(one)`、`input(one)` | `host` | recomputable | stdio |
 | `ui-threads` | — | `ui-threads` | `session(one)`、`todo(one)` | — | recomputable | stdio |
 | `vector-index` | — | `vector-index` | — | — | recomputable | stdio |
-| `vendor-custom` | — | — | — | — | recomputable | stdio |
-| `vendor-dashscope` | — | — | — | — | recomputable | stdio |
-| `vendor-deepseek` | — | — | — | — | recomputable | stdio |
-| `vendor-google` | — | — | — | — | recomputable | stdio |
-| `vendor-kimi` | — | — | — | — | recomputable | stdio |
-| `vendor-openai` | — | — | — | — | recomputable | stdio |
-| `vendor-zai` | — | — | — | — | recomputable | stdio |
+| `vendor-custom` | — | — | — | — | recomputable | — |
+| `vendor-dashscope` | — | — | — | — | recomputable | — |
+| `vendor-deepseek` | — | — | — | — | recomputable | — |
+| `vendor-google` | — | — | — | — | recomputable | — |
+| `vendor-kimi` | — | — | — | — | recomputable | — |
+| `vendor-openai` | — | — | — | — | recomputable | — |
+| `vendor-zai` | — | — | — | — | recomputable | — |
 | `workspace` | — | `workspace` | — | — | durable | stdio |
 | `workspace-picker` | — | `workspace-picker` | — | — | recomputable | stdio |

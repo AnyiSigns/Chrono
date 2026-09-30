@@ -1,0 +1,19 @@
+{
+  "k": "obj",
+  "fields": {
+    "head": {
+      "k": "call",
+      "ref": "terms/decide.json",
+      "args": [
+        {
+          "k": "arg",
+          "i": 1
+        }
+      ]
+    },
+    "tail": {
+      "k": "arg",
+      "i": 0
+    }
+  }
+}

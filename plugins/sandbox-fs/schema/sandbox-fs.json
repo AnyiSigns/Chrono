@@ -1,0 +1,64 @@
+{
+  "title": "sandbox-fs（文件系统操作）",
+  "description": "身份自述 / 数据契约：fsop 六 op（stat / read / list / grep / write / replace）的入参与结果形状。范围判定由 sandbox-policy 注入（bag.resolved），强制点在本插件。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "sandbox-fs.fsop": 60000
+  },
+  "audit_redact": {
+    "sandbox-fs.fsop": []
+  },
+  "properties": {
+    "fsop_request": {
+      "type": "object",
+      "description": "fsop 的 bag：op + path + args（逐 op 参数）；caps / tier / workspace_root / sandbox_tiers / grant / resolved。",
+      "required": ["op", "path"],
+      "additionalProperties": true,
+      "properties": {
+        "op": { "enum": ["stat", "read", "list", "grep", "write", "replace"] },
+        "path": { "type": "string" },
+        "args": { "type": "object" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "workspace_root": { "type": "string" },
+        "sandbox_tiers": { "type": "object" },
+        "resolved": { "type": "object" }
+      }
+    },
+    "fsop_result": {
+      "type": "object",
+      "description": "fsop 结果：成功 {ok:true, op, result}，失败 {ok:false, code, message}。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "op": { "type": "string" },
+        "result": { "type": "object" },
+        "code": {
+          "enum": [
+            "bad_path",
+            "bad_args",
+            "path_not_found",
+            "not_a_directory",
+            "not_a_file",
+            "edit_conflict",
+            "too_large",
+            "binary_unsupported",
+            "fs_denied",
+            "io_error",
+            "sandbox_setup_failed"
+          ]
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "capabilities_result": {
+      "type": "object",
+      "description": "本插件的自述片段（文本匹配口径）；完整 capabilities 由 sandbox 门面合并。",
+      "additionalProperties": true,
+      "properties": {
+        "text": { "type": "object" }
+      }
+    }
+  }
+}

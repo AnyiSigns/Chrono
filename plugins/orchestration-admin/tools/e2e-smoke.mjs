@@ -107,7 +107,7 @@ async function main() {
     // 离线读投影：身份存在、needs 解析成 pins、有代码世代。
     const paths = hostPaths(root)
     const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
-    const projection = projectBaseOnly(anchor.world, anchor.head)
+    const projection = projectBaseOnly(anchor.world, anchor.head, { blobsDir: paths.blobsDir })
     const admin = projection.ids['orchestration-admin']
     assert.ok(admin, '投影缺 orchestration-admin')
     assert.deepEqual(

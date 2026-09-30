@@ -1,0 +1,67 @@
+{
+  "title": "sandbox-policy（档位与授权判定）",
+  "description": "身份自述 / 数据契约：resolve 解析四档 fs/net 映射与 caps 钳制并给出实际放行范围；consume 校验并消费一次性 grant。四档映射表不住本 schema，住调用方随 bag 传入的 sandbox_tiers 数据世代 body。",
+  "type": "object",
+  "additionalProperties": true,
+  "method_timeouts": {
+    "sandbox-policy.resolve": 5000,
+    "sandbox-policy.consume": 5000
+  },
+  "audit_redact": {
+    "sandbox-policy.resolve": [],
+    "sandbox-policy.consume": ["grant"]
+  },
+  "properties": {
+    "resolve_request": {
+      "type": "object",
+      "description": "解析请求：tier + caps +（可选）sandbox_tiers；缺省档 fail-closed 全拒。",
+      "additionalProperties": true,
+      "properties": {
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "caps": { "type": "object" },
+        "sandbox_tiers": { "type": "object" }
+      }
+    },
+    "resolve_result": {
+      "type": "object",
+      "description": "判定结果：effective fs 范围 + caps 资源上限 + net 是否越档；deny_tier 表示 deny 档全拒。",
+      "required": ["deny_tier", "net_within_tier", "fs_read", "fs_write"],
+      "additionalProperties": true,
+      "properties": {
+        "tier": { "type": ["string", "null"] },
+        "deny_tier": { "type": "boolean" },
+        "impl": { "type": "string" },
+        "docker_image": { "type": "string" },
+        "policy_net": { "enum": ["none", "limited", "all"] },
+        "net_within_tier": { "type": "boolean" },
+        "fs_read": { "enum": ["none", "workspace", "full"] },
+        "fs_write": { "enum": ["none", "workspace", "full"] },
+        "caps": { "type": "object" }
+      }
+    },
+    "consume_request": {
+      "type": "object",
+      "description": "一次性 grant 消费：绑定 call_id，校验档位 / 过期后消费一次。",
+      "required": ["grant"],
+      "additionalProperties": true,
+      "properties": {
+        "grant": { "type": "object" },
+        "tier": { "enum": ["auto", "severe", "review", "deny"] },
+        "now": { "type": "number" }
+      }
+    },
+    "consume_result": {
+      "type": "object",
+      "description": "消费结果：ok 为真时给出放宽后的显式范围（未声明维度为 null）。",
+      "required": ["ok"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "code": { "type": "string" },
+        "fs_read": { "type": ["string", "null"] },
+        "fs_write": { "type": ["string", "null"] },
+        "net": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

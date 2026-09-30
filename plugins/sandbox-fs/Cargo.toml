@@ -1,0 +1,15 @@
+[package]
+name = "sandbox-fs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 宿主按 Cargo.toml 恢复依赖：包根必须有 Cargo.toml，产物落共享缓存
+# `<root>/state/deps/cargo-target/release/sandbox-fs[.exe]`；`execute/launch.mjs` 据此定位二进制。
+[[bin]]
+name = "sandbox-fs"
+path = "execute/main.rs"
+
+[dependencies]
+plugin-sdk = { path = "../../plugin-sdk/rust" }
+serde_json = "1"

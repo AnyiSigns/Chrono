@@ -1,0 +1,46 @@
+{
+  "k": "obj",
+  "fields": {
+    "decisions": {
+      "k": "get",
+      "of": {
+        "k": "arg",
+        "i": 0
+      },
+      "path": [
+        "decisions"
+      ]
+    },
+    "summary": {
+      "k": "fold",
+      "coll": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "decisions"
+        ]
+      },
+      "init": {
+        "k": "obj",
+        "fields": {
+          "allow": {
+            "k": "lit",
+            "v": 0
+          },
+          "escalate": {
+            "k": "lit",
+            "v": 0
+          },
+          "deny": {
+            "k": "lit",
+            "v": 0
+          }
+        }
+      },
+      "step": "terms/summary.step.json"
+    }
+  }
+}

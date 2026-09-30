@@ -84,11 +84,33 @@ function readLocalSecrets(file) {
   return { ok: true, secrets }
 }
 
-/** 仿真宿主侧路由：把 secrets 的反向 `port.call` 应答为 secrets-local.read / list。 */
+/** 仿真 secrets-env 后端取值（门面不读 env 值；由本进程按名应答）。 */
+const ENV_VALUES = { E2E_ENV_KEY: 'sk-e2e-env' }
+
+/** 仿真宿主侧路由：把 secrets 的反向 `port.call secrets-backend.*` 应答为内置后端
+ *  secrets-local / secrets-env 的 kinds / read / list（门面按 `kinds` 定位 kind 的后端）。 */
 function answerPortCall(message, secretsFile) {
   const base = { v: '1', id: message.id }
-  if (message.port !== 'secrets-local') {
+  if (message.port !== 'secrets-backend') {
     return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
+  }
+  if (message.provider === 'secrets-env') {
+    if (message.method === 'kinds') return { ...base, kind: 'port.result', ok: true, value: ['env'] }
+    if (message.method === 'list') return { ...base, kind: 'port.result', ok: true, value: [] }
+    if (message.method === 'read') {
+      const value = ENV_VALUES[message.args?.name]
+      if (value === undefined) {
+        return { ...base, kind: 'port.error', ok: false, error: 'secret_missing', message: 'missing' }
+      }
+      return { ...base, kind: 'port.result', ok: true, value }
+    }
+    return { ...base, kind: 'port.error', ok: false, error: 'unknown_method', message: message.method }
+  }
+  if (message.provider !== 'secrets-local') {
+    return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
+  }
+  if (message.method === 'kinds') {
+    return { ...base, kind: 'port.result', ok: true, value: ['local'] }
   }
   const read = readLocalSecrets(secretsFile)
   if (!read.ok) {
@@ -117,7 +139,12 @@ function callService(pluginState, method, args, extraEnv = {}) {
     const child = spawn(process.execPath, ['execute/main.ts'], {
       cwd: SECRETS_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, CHRONO_PLUGIN_STATE: pluginState, ...extraEnv },
+      env: {
+        ...process.env,
+        CHRONO_PLUGIN_STATE: pluginState,
+        CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify({ 'secrets-backend': ['secrets-env', 'secrets-local'] }),
+        ...extraEnv,
+      },
     })
     const decoder = createDecoder()
     const pending = new Map()

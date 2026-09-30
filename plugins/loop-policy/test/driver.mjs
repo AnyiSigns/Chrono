@@ -1,23 +1,24 @@
-// 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧；
-// 作为宿主侧应答反向调用 `port.call`——用假实现注入全部节点提供者（context / model / guard / approval /
-// tools / session / retrieval / router / evolve-metrics）。
-import { spawn } from 'node:child_process'
+// 协议级测试驱动：spawn 真实 `loop-policy` 门面，并把它对 `graph-run` / `turn-ledger` / `graph-gate` 的
+// 反向调用转交给真实服务；对节点能力类（context / model / guard / approval / tools / session / retrieval /
+// router / evolve-metrics）由本驱动以假实现应答。跨插件联调只经 spawn 进程 + 帧转发，不 import 兄弟插件源码。
+// `portCalls` / `events` 汇总自各真实服务（门面对 graph-run / turn-ledger 的内部委派不计入端口序，
+// 与拆分前「门面直接派发节点」的观测口径一致）。
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { encodeFrame, createFrameDecoder as createDecoder } from 'plugin-sdk'
-import { runtimeClosure, validateGraphData } from './fake-graph-gate.mjs'
+import { createFrameDecoder as createDecoder, encodeFrame } from 'plugin-sdk'
+import { startBridgedService, relayFrame } from './bridge.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PKG_ROOT = resolve(HERE, '..')
-const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
+const PLUGINS_ROOT = resolve(HERE, '..', '..')
 
 export { encodeFrame, createDecoder }
 
 export const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
 /**
- * 宿主注入的**有效 pins**（声明 `pins` ∪ one-needs 绑定）：迁移后 `plugin.json.pins` 只余 `host`，
- * 驱动按宿主口径经 spawn env `CHRONO_PLUGIN_PINS` 注入；bag 内的场景覆盖（`bag.pins`）仍优先。
+ * 宿主注入的**有效 pins**（声明 `pins` ∪ one-needs 绑定）：门面按宿主口径经 spawn env
+ * `CHRONO_PLUGIN_PINS` 注入；bag 内的场景覆盖（`bag.pins`）仍优先。
  */
 export const DEFAULT_PINS = {
   session: 'session',
@@ -30,6 +31,10 @@ export const DEFAULT_PINS = {
   tools: 'tools',
   router: 'router',
   'evolve-metrics': 'evolve-metrics',
+  'graph-gate': 'graph-gate',
+  'graph-run': 'graph-run',
+  'turn-ledger': 'turn-ledger',
+  'ref-hydrate': 'ref-hydrate',
   host: 'host',
 }
 
@@ -41,6 +46,7 @@ export function portError(code, message = '') {
 /** 默认节点提供者：全部返回可用的确定性值（可被单测覆盖）。 */
 export function defaultProviders(overrides = {}) {
   const providers = {
+    'ref-hydrate.hydrate': (args) => (Array.isArray(args.refs) ? {} : (args.refs ?? {})),
     'context.build': (args) => {
       const extra = Array.isArray(args.extra_messages) ? args.extra_messages : []
       return {
@@ -112,55 +118,23 @@ export function defaultProviders(overrides = {}) {
     }),
     'router.select': (args) => args.primary,
     'evolve-metrics.shadow': () => ({ status: 'pass', metric_id: 'metric-1' }),
-    // 机械闸归 graph-gate 提供方：测试以本地假实现应答（与真实契约同形）；真实行为由 graph-gate
-    // 自带测试与根 tests/contract 覆盖，插件间不得直连。
-    'graph-gate.validate': (args) => validateGraphData(args),
-    'graph-gate.closure': (args) => {
-      const result = runtimeClosure(args.graph, args.refs ?? {})
-      return { ok: result.ok, errors: result.errors, view: result.view }
-    },
   }
   return { ...providers, ...overrides }
 }
 
-/** 启动服务并返回请求接口。 */
+/**
+ * 启动完整门面链（loop-policy + graph-run + turn-ledger + graph-gate）并返回请求接口。
+ * `providers` 覆盖节点能力类应答；`pins` 注入各服务的有效 pins；`env` 为帧 env。
+ */
 export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_PINS } = {}) {
-  const child = spawn(process.execPath, [ENTRY], {
-    cwd: PKG_ROOT,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CHRONO_PLUGIN_PINS: JSON.stringify(pins) },
-  })
-  const decoder = createDecoder()
-  const pending = new Map()
-  const events = []
-  const portCalls = []
-  const stderr = []
   const resolvedProviders = { ...defaultProviders(), ...providers }
-  const exit = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)))
-  // 回合步记录台账：缺会话 owner 时以驱动代收 step_append，供段续跑重建（模拟 session.read 的 turns[].steps）。
   const stepStore = new Map()
+  const portCalls = []
+  // 帧 env 传递：生产宿主按「在途调用」把 env 回带进反向调用帧；测试桥在此模拟同一语义，
+  // 使 graph-run 内的 `env.now` 等于门面本次 interpret 调用的 env.now。
+  let activeEnv = env
 
-  child.stdout.on('data', (chunk) => {
-    for (const message of decoder.push(chunk)) {
-      if (message.kind === 'event') {
-        events.push(message)
-        continue
-      }
-      if (message.kind === 'port.call') {
-        portCalls.push(message)
-        respond(message)
-        continue
-      }
-      const handler = pending.get(message.id)
-      if (handler !== undefined) {
-        pending.delete(message.id)
-        handler(message)
-      }
-    }
-  })
-  child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')))
-
-  function respond(message) {
+  function recordStep(message) {
     if (
       message.port === 'session' &&
       message.method === 'step_append' &&
@@ -171,81 +145,91 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
       list.push(message.args)
       stepStore.set(message.args.turn_id, list)
     }
+  }
+
+  /** 假节点提供者应答（也记录回合步记录）。 */
+  function answerProvider(message) {
+    recordStep(message)
     const key = `${message.port}.${message.method}`
     const provider = resolvedProviders[key]
     if (provider === undefined) {
-      child.stdin.write(
-        encodeFrame({
-          v: '1',
-          id: message.id,
-          kind: 'port.error',
-          error: 'unresolved_cap',
-          message: key,
-        }),
-      )
-      return
+      return { ok: false, code: 'unresolved_cap', message: key }
     }
-    Promise.resolve(provider(message.args ?? {}, message))
-      .then((value) => {
-        if (value && typeof value === 'object' && value.__error) {
-          child.stdin.write(
-            encodeFrame({ v: '1', id: message.id, kind: 'port.error', ...value.__error }),
-          )
-          return
-        }
-        child.stdin.write(
-          encodeFrame({ v: '1', id: message.id, kind: 'port.result', value: value ?? null }),
-        )
-      })
-      .catch((err) => {
-        child.stdin.write(
-          encodeFrame({
-            v: '1',
-            id: message.id,
-            kind: 'port.error',
-            error: 'internal',
-            message: err.message,
-          }),
-        )
-      })
-  }
-
-  let seq = 0
-  function request(kind, fields, expect) {
-    seq += 1
-    const id = `drv-${seq}`
-    const expected = Array.isArray(expect) ? expect : [expect]
-    return new Promise((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        rejectRequest(
-          new Error(`timeout waiting ${expected.join('/')} for ${kind}; stderr=${stderr.join('')}`),
-        )
-      }, 20000)
-      pending.set(id, (message) => {
-        clearTimeout(timer)
-        if (!expected.includes(message.kind)) {
-          rejectRequest(
-            new Error(
-              `expected ${expected.join('/')} got ${message.kind}: ${JSON.stringify(message)}`,
-            ),
-          )
-          return
-        }
-        resolveRequest(message)
-      })
-      child.stdin.write(encodeFrame({ v: '1', id, kind, ...fields }))
+    return Promise.resolve(provider(message.args ?? {}, message)).then((value) => {
+      if (value && typeof value === 'object' && value.__error) return { ok: false, ...value.__error }
+      return { ok: true, value: value ?? null }
     })
   }
 
-  /** 驱动段：一段一次 interpret；段尾若产续跑 eval，则以段终态重建 bag 续跑，直到回合终态。 */
+  const spawnEnv = { ...process.env, CHRONO_PLUGIN_PINS: JSON.stringify(pins) }
+
+  const graphGate = startBridgedService({
+    cwd: join(PLUGINS_ROOT, 'graph-gate'),
+    entry: join(PLUGINS_ROOT, 'graph-gate', 'execute', 'main.ts'),
+    env: spawnEnv,
+    timeoutMs: 20000,
+    onPortCall: (message) => {
+      portCalls.push(message)
+      return { ok: true, value: null }
+    },
+  })
+
+  const forwardGraphGate = (message) =>
+    graphGate.call(message.port, message.method, message.args, message.env).then(relayFrame)
+
+  const turnLedger = startBridgedService({
+    cwd: join(PLUGINS_ROOT, 'turn-ledger'),
+    entry: join(PLUGINS_ROOT, 'turn-ledger', 'execute', 'main.ts'),
+    env: spawnEnv,
+    timeoutMs: 20000,
+    onPortCall: (message) => {
+      portCalls.push(message)
+      return message.port === 'graph-gate' ? forwardGraphGate(message) : answerProvider(message)
+    },
+  })
+
+  const graphRun = startBridgedService({
+    cwd: join(PLUGINS_ROOT, 'graph-run'),
+    entry: join(PLUGINS_ROOT, 'graph-run', 'execute', 'main.ts'),
+    env: spawnEnv,
+    timeoutMs: 20000,
+    onPortCall: (message) => {
+      portCalls.push(message)
+      return message.port === 'graph-gate' ? forwardGraphGate(message) : answerProvider(message)
+    },
+  })
+
+  const loop = startBridgedService({
+    cwd: PKG_ROOT,
+    entry: join(PKG_ROOT, 'execute', 'main.ts'),
+    env,
+    timeoutMs: 20000,
+    onPortCall: (message) => {
+      // 门面对 graph-run / turn-ledger 的内部委派不计入端口序（观测口径与拆分前一致）。
+      if (message.port !== 'graph-run' && message.port !== 'turn-ledger') portCalls.push(message)
+      if (message.port === 'graph-run')
+        return graphRun
+          .call(message.port, message.method, message.args, message.env ?? activeEnv)
+          .then(relayFrame)
+      if (message.port === 'turn-ledger')
+        return turnLedger
+          .call(message.port, message.method, message.args, message.env ?? activeEnv)
+          .then(relayFrame)
+      if (message.port === 'graph-gate') return forwardGraphGate(message)
+      return answerProvider(message)
+    },
+  })
+
+  const services = [loop, graphRun, turnLedger, graphGate]
+
   async function interpretTurn(initial, callEnv) {
     // item 9：生产默认不再下传 `extra_messages`；测试驱动显式 opt-in 以沿用旧的同回合上下文回灌口径。
+    activeEnv = callEnv ?? env
     let current = { ...initial, compat_extra_messages: true }
     const merged = []
     let last = null
     for (let guard = 0; guard < 500; guard += 1) {
-      last = await request(
+      last = await loop.request(
         'call',
         { port: 'loop-policy', method: 'interpret', args: current, env: callEnv },
         ['result', 'error'],
@@ -279,17 +263,27 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
   }
 
   return {
-    child,
-    exit,
-    events,
     portCalls,
-    stderr,
-    request,
-    hello: () => request('hello', { impl: 'loop-policy', gen: 'gen-1' }, 'manifest'),
-    call: (port, method, args, callEnv = env) =>
-      request('call', { port, method, args, env: callEnv }, ['result', 'error']),
+    get events() {
+      return [...loop.events, ...graphRun.events, ...turnLedger.events, ...graphGate.events]
+    },
+    get stderr() {
+      return [...loop.stderr, ...graphRun.stderr, ...turnLedger.stderr, ...graphGate.stderr]
+    },
+    get child() {
+      return loop.child
+    },
+    request: (kind, fields, expect) => loop.request(kind, fields, expect),
+    hello: () => loop.hello('loop-policy', 'gen-1'),
+    call: (port, method, args, callEnv = env) => {
+      activeEnv = callEnv
+      return loop.request('call', { port, method, args, env: callEnv }, ['result', 'error'])
+    },
     interpret: (bag, callEnv = env) => interpretTurn(bag, callEnv),
-    close: () => child.stdin.end(),
+    close: () => {
+      for (const service of services) service.close()
+    },
+    exit: Promise.all(services.map((service) => service.exit)).then(() => 0),
   }
 }
 

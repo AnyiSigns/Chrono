@@ -12,6 +12,7 @@
       "restoreConversation",
       "branchConversation",
       "listTurns",
+      "listConversations",
       "listWorkspaces",
       "addWorkspace",
       "removeWorkspace"
@@ -58,6 +59,7 @@
     { "name": "session.restore", "entry": "terms/session.restore.json" },
     { "name": "session.branch", "entry": "terms/session.branch.json" },
     { "name": "session.turns", "entry": "terms/session.turns.json", "readonly": true },
+    { "name": "session.list", "entry": "terms/session.list.json", "readonly": true },
     { "name": "workspace.list", "entry": "terms/workspace.list.json", "readonly": true },
     { "name": "workspace.pick", "entry": "terms/workspace.pick.json" },
     { "name": "workspace.add", "entry": "terms/workspace.add.json" },

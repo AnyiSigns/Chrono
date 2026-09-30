@@ -74,7 +74,11 @@ export function manifestCovers(decl: PluginDecl, manifest: ServiceManifest): boo
   if (!decl.implements.every((cap) => manifest.implements.includes(cap))) return false
   for (const [cap, methods] of Object.entries(decl.methods)) {
     const provided = manifest.methods[cap] ?? []
-    if (!methods.every((method) => provided.includes(method))) return false
+    const judgments = decl.judgments?.[cap] ?? {}
+    // 判定承载的方法由宿主就地求值，不要求服务实现；其余方法须服务覆盖。
+    if (!methods.every((method) => Object.hasOwn(judgments, method) || provided.includes(method))) {
+      return false
+    }
   }
   return true
 }

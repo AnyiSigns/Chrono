@@ -266,6 +266,9 @@ function closeTableMenus(root: ParentNode, except: Element | null = null): void 
  */
 function relabelPart(root: HTMLElement | null, table: MessageTable): void {
   if (root === null) return
+  // 所有待补 label 的节点都在代码块 / 表格块内。流式每帧只有尾部片变化，
+  // 纯文本片先做一次命中判断即可跳过下面 6 趟 querySelectorAll（避免每帧无谓的 DOM 扫描）。
+  if (root.querySelector('.chat-codeblock, .chat-tableblock') === null) return
   const label = lookupMessage(table, 'chat_copy').body
   for (const btn of root.querySelectorAll<HTMLButtonElement>('.chat-codeblock-copy')) {
     if (btn.getAttribute('aria-label') === null) {
@@ -526,13 +529,29 @@ function MediaAudio({ source }: { source: any }): ReactNode {
   return <audio className="chat-media-audio" src={url} controls preload="none" onError={() => setFailed(true)} />
 }
 
+/** 字节数 → 人类可读（大于等于 10 时取整，否则 1 位小数；非法 / 非正返回空串）。 */
+function formatBytes(size: unknown): string {
+  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = size
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(unit === 0 || value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
 function FileCard({ name, source }: { name: string; source: any }): ReactNode {
   const [nonce, setNonce] = useState(0)
   const url = useAssetUrl(source, nonce)
+  const sizeText = formatBytes(source !== null && source !== undefined ? source.size : null)
   const inner = (
     <>
-      <Icon name="paperclip" size={16} />
+      <Icon name="paperclip" size={16} className="chat-file-icon" />
       <span className="chat-file-name">{name}</span>
+      {sizeText.length > 0 ? <span className="chat-file-meta">{sizeText}</span> : null}
+      {url !== null ? <Icon name="download" size={14} className="chat-file-action" /> : null}
     </>
   )
   if (url === null) {
@@ -1046,15 +1065,34 @@ function DetailView({ detail }: { detail: any }): ReactNode {
 }
 
 /**
- * 推理折叠块：头部给「推理」标签（流式中带呼吸点），展开为内嵌灰底 markdown。
- * 流式中默认展开、收流即收起；用户点击后以点击为准（open 非 null 时不再自动跟随）。
+ * 折叠态摘要：取首个非空行，剥掉常见 markdown 前缀 / 强调符后压平空白，作单行预览。
+ * 仅用于展示，不参与任何语义。
+ */
+function reasoningSummary(text: string): string {
+  for (const raw of text.split('\n')) {
+    const line = raw
+      .replace(/^[#>*\-\s]+/, '')
+      .replace(/\*\*|__/g, '')
+      .trim()
+    if (line.length > 0) return line
+  }
+  return ''
+}
+
+/**
+ * 推理折叠块：头部给「推理」标签（流式中带呼吸点），收起态附首行摘要，展开为内嵌灰底 markdown。
+ * 流式中默认展开、收流即收起（走 `.chat-collapse` 高度过渡，不是瞬时卸载）；用户点击后以点击为准。
  * 推理只作展示，不进模型上下文（由 context-window 丢弃）。
  */
 const ReasoningBlock = memo(function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }): ReactNode {
   const { table } = useChatEnv()
   const [open, setOpen] = useState<boolean | null>(null)
-  if (text.length === 0) return null
   const expanded = open !== null ? open : streaming
+  // 展开体一旦打开即常驻（收起只收缩高度、不卸载），否则流式收尾的自动收起会瞬间塌陷。
+  const [everOpen, setEverOpen] = useState(expanded)
+  if (expanded && !everOpen) setEverOpen(true)
+  if (text.length === 0) return null
+  const summary = expanded ? '' : reasoningSummary(text)
   return (
     <div className="chat-reasoning" data-open={String(expanded)}>
       <button
@@ -1063,8 +1101,13 @@ const ReasoningBlock = memo(function ReasoningBlock({ text, streaming }: { text:
         aria-expanded={expanded}
         onClick={() => setOpen(!expanded)}
       >
-        <Icon name="brain" size={14} className="chat-reasoning-icon" />
-        <span className="chat-reasoning-label">{lookupMessage(table, 'chat_reasoning').body}</span>
+        <Icon name={streaming ? 'think-wave-live' : 'think-wave'} size={14} className="chat-reasoning-icon" />
+        <span className="chat-reasoning-title">
+          <span className="chat-reasoning-label">{lookupMessage(table, 'chat_reasoning').body}</span>
+          {summary.length > 0 ? (
+            <span className="chat-reasoning-summary"> · {summary}</span>
+          ) : null}
+        </span>
         {streaming ? (
           <span className="chat-tool-status" data-state="running">
             <span className="chat-tool-spin" />
@@ -1072,11 +1115,15 @@ const ReasoningBlock = memo(function ReasoningBlock({ text, streaming }: { text:
         ) : null}
         <Icon name="chevron-right" size={16} className="chat-reasoning-chevron" />
       </button>
-      {expanded ? (
-        <div className="chat-reasoning-body">
-          <Markdown text={text} live={streaming} />
+      <div className="chat-collapse" data-open={String(expanded)}>
+        <div className="chat-collapse-inner">
+          {everOpen ? (
+            <div className="chat-reasoning-body">
+              <Markdown text={text} live={streaming} />
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
     </div>
   )
 })
@@ -1111,8 +1158,14 @@ function ToolCard({
   live?: { chunks: string; done: boolean; ok: boolean | null } | null
 }): ReactNode {
   const [open, setOpen] = useState<boolean | null>(null)
-  if (vm.form === 'degraded') return <Markdown text={vm.text} />
   const streaming = live !== null && live !== undefined
+  const liveBody = streaming && vm.live === true && live.chunks.length > 0
+  // 有流式输出的在途卡默认展开（跑完即收）；其余默认折叠（open 未被交互时为 null）。
+  const expanded = open !== null ? open : liveBody && live.done !== true
+  // 展开体一旦打开即常驻（收起只收缩高度、不卸载），否则跑完自动收起会瞬间塌陷。
+  const [everOpen, setEverOpen] = useState(expanded)
+  if (expanded && !everOpen) setEverOpen(true)
+  if (vm.form === 'degraded') return <Markdown text={vm.text} />
   const state = streaming
     ? live.done !== true
       ? 'running'
@@ -1132,9 +1185,6 @@ function ToolCard({
       </div>
     )
   }
-  const liveBody = streaming && vm.live === true && live.chunks.length > 0
-  // 有流式输出的在途卡默认展开（跑完即收）；其余默认折叠（open 未被交互时为 null）。
-  const expanded = open !== null ? open : liveBody && live.done !== true
   return (
     <div className={`chat-tool chat-tool-card chat-tool-${vm.tone}`} data-open={String(expanded)}>
       <button
@@ -1149,17 +1199,21 @@ function ToolCard({
         <ToolStatus state={state} />
         <Icon name="chevron-right" size={16} className="chat-tool-chevron" />
       </button>
-      {expanded ? (
-        <div className="chat-tool-detail">
-          {liveBody ? (
-            <div className="chat-terminal">
-              <div className="chat-terminal-stdout">{live.chunks}</div>
+      <div className="chat-collapse" data-open={String(expanded)}>
+        <div className="chat-collapse-inner">
+          {everOpen ? (
+            <div className="chat-tool-detail">
+              {liveBody ? (
+                <div className="chat-terminal">
+                  <div className="chat-terminal-stdout">{live.chunks}</div>
+                </div>
+              ) : vm.detail !== null ? (
+                <DetailView detail={vm.detail} />
+              ) : null}
             </div>
-          ) : vm.detail !== null ? (
-            <DetailView detail={vm.detail} />
           ) : null}
         </div>
-      ) : null}
+      </div>
     </div>
   )
 }
@@ -1683,6 +1737,7 @@ function App({
     table: FALLBACK_MESSAGES as MessageTable,
     lightbox: null,
     listOpacity: 1,
+    recentLoad: null,
   })
   const [, setTick] = useState(0)
   const rerender = useCallback(() => setTick((value) => value + 1), [])
@@ -1772,8 +1827,12 @@ function App({
     }
     const args: any =
       typeof conversationId === 'string' && conversationId.length > 0 ? { conversation: conversationId } : {}
+    // 记下这次读取的目标线程：切换回弹的 `thread.updated`（仅 current 变更）据此去重，不再重复拉取。
+    st.recentLoad = { thread: typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : st.viewThread, seq }
     const result = (await ctx.command('chat.history', args, { thread: st.viewThread })) as any
     if (loadingTimer !== null) clearTimeout(loadingTimer)
+    // 本次仍是最新一次读取才撤去去重标记；否则标记归更近一次请求所有。
+    if (seq === requestSeq.current) st.recentLoad = null
     if (disposedRef.current || seq !== requestSeq.current) return
     st.loading = false
     st.reloading = false
@@ -2219,7 +2278,19 @@ function App({
       return
     }
     if (record.topic === 'thread.updated' || record.topic === 'thread.opened' || record.topic === 'thread.closed') {
-      if (!match(dataChangeTarget(payload))) return
+      const target = dataChangeTarget(payload)
+      if (!match(target)) return
+      // 切线程回弹：`active_thread` 切换刚发起、同目标的读取仍在途，且事件只是 current 变更时不再重复拉取；
+      // 内容类变更（head / count / last_activity）不在此列，照常重拉，更新不丢。
+      const changed = Array.isArray(payload.changed) ? payload.changed : []
+      if (
+        changed.includes('current') &&
+        st.recentLoad !== null &&
+        st.recentLoad.seq === requestSeq.current &&
+        st.recentLoad.thread === target
+      ) {
+        return
+      }
       void apiRef.current.loadHistory(st.viewThread, { resetView: false })
     }
   }

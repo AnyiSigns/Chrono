@@ -14,6 +14,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'e2e-run', thread: 't1', now: 1_700_000_000_000 }
+const COMMITTED = { kind: 'committed', code: null, attributableTo: null, retryable: false, cause: null }
 
 function encodeFrame(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8')
@@ -110,15 +111,22 @@ async function main() {
       workspace_id: 'w1',
     })
     assert.equal(created.ok, true)
-    const committed = await drv.call('commit', {
-      thread_id: 't1',
-      slots: { slots: { t1: { kind: 'chat.message', text: 'hello' } } },
-      conversation: 'c1',
-      user: { content: 'hello' },
+    const opened = await drv.call('turn_open', {
+      turn_id: 't1',
+      user_message: { content: 'hello' },
+      slot_ref: 'run-1',
+    })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    const stepped = await drv.call('step_append', {
+      type: 'step.result',
+      turn_id: 't1',
+      seq: 1,
       assistant: { content: 'world' },
     })
-    assert.equal(committed.ok, true)
-    assert.equal('$directives' in committed, false, 'runtime records must not produce world plans')
+    assert.equal(stepped.ok, true, JSON.stringify(stepped))
+    const settled = await drv.call('turn_settle', { turn_id: 't1', outcome: COMMITTED })
+    assert.equal(settled.ok, true, JSON.stringify(settled))
+    assert.equal('$directives' in settled, false, 'runtime records must not produce world plans')
     const read = await drv.call('read', { conversation: 'c1' })
     const conversation = read.conversations.find((item) => item.id === 'c1')
     assert.equal(conversation.count, 2)
@@ -132,7 +140,7 @@ async function main() {
     const history = await drv.call('history', { conversation: 'c1' })
     assert.deepEqual(history.messages.map((entry) => entry.def.role), ['assistant', 'user'])
     assert.ok(drv.portCalls.some((frame) => frame.port === 'input' && frame.method === 'clear'))
-    console.log('durable round-trip: commit -> read -> history ok; input.clear called; no world plan')
+    console.log('durable round-trip: turn_open -> step_append -> turn_settle -> read -> history ok; input.clear called; no world plan')
     console.log(`E2E ok (root=${root})`)
   } finally {
     drv.close()

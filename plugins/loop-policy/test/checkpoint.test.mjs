@@ -4,7 +4,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService, portError } from './driver.mjs'
-import { checkpointLevel, checkpointThresholds, contextPressure } from '../execute/checkpoint.ts'
 
 function summaryOf(value) {
   for (const directive of value?.$directives ?? []) {
@@ -229,24 +228,6 @@ test('压缩失败：只跳过检查点记录，不阻断续段，回合仍收�
   } finally {
     service.close()
   }
-})
-
-test('档位判定：软 / 硬 / 应急三档，bag.checkpoint_thresholds 可覆盖', () => {
-  const model = { thresholds: { checkpoint_soft_ratio: 0.7, checkpoint_hard_ratio: 0.85, checkpoint_emergency_ratio: 0.95 } }
-  const thresholds = checkpointThresholds(model, {})
-  assert.equal(checkpointLevel(0.69, thresholds), null)
-  assert.equal(checkpointLevel(0.7, thresholds), 'soft')
-  assert.equal(checkpointLevel(0.85, thresholds), 'hard')
-  assert.equal(checkpointLevel(0.95, thresholds), 'emergency')
-  const override = checkpointThresholds(model, { checkpoint_thresholds: { soft: 0.5 } })
-  assert.equal(override.soft, 0.5)
-  assert.equal(override.hard, 0.85)
-})
-
-test('压力：缺清单 / 预算非正不触发', () => {
-  assert.equal(contextPressure({ shared: {} }), null)
-  assert.equal(contextPressure({ shared: { context_manifest: { used: 5, budget: 0 } } }), null)
-  assert.equal(contextPressure({ shared: { context_manifest: { used: 5, budget: 10 } } }).ratio, 0.5)
 })
 
 test('未越软阈：不调用 compress，不写检查点', async () => {

@@ -19,8 +19,22 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 
-/** pins 拓扑序：被依赖者先入世（memory-store 依赖 embedding；model-protocol 依赖 secrets / config）。 */
-const PACK_ORDER = ['embedding', 'secrets', 'config', 'memory-store', 'model-protocol', 'memory-retrieval']
+/** pins 拓扑序：被依赖者先入世（memory-store 依赖 embedding / tokenizer / vector-index；
+ *  model-protocol 依赖 secrets / config / throttle / msg-dialect；retrieval 依赖 query-plan / rerank）。 */
+const PACK_ORDER = [
+  'embedding',
+  'tokenizer',
+  'vector-index',
+  'memory-store',
+  'config',
+  'msg-dialect',
+  'secrets',
+  'throttle',
+  'model-protocol',
+  'query-plan',
+  'rerank',
+  'memory-retrieval',
+]
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -103,7 +117,8 @@ function main() {
   assert.deepEqual(decl.needs, {
     embedding: { mode: 'one' },
     memory: { mode: 'one' },
-    model: { mode: 'one' },
+    'query-plan': { mode: 'one' },
+    rerank: { mode: 'one' },
   })
   assert.deepEqual(
     decl.members.map((member) => member.path).sort(),
@@ -115,12 +130,13 @@ function main() {
   assert.deepEqual(world.defs[gen.payload].body.meta.needs, {
     embedding: 'embedding',
     memory: 'memory-store',
-    model: 'model-protocol',
+    'query-plan': 'query-plan',
+    rerank: 'rerank',
   })
   for (const name of Object.keys(decl.needs)) {
     assert.equal(gen.pins[name], undefined, `needs 不应写 gen.pins.${name}`)
   }
-  console.log('needs：embedding / memory / model 解析到被依赖身份名，且不写 gen.pins')
+  console.log('needs：embedding / memory / query-plan / rerank 解析到被依赖身份名，且不写 gen.pins')
 
   // .worldignore：test/ / target/ / tools/ 不入树；契约必需文件与源码入树。
   const all = [...tree.keys()]

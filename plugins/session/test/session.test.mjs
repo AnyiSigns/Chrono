@@ -203,6 +203,7 @@ test('hello returns manifest: durable state and full method list', async () => {
       'turn_settle',
       'turn_cancel',
       'read',
+      'list',
       'history',
     ])
   } finally {
@@ -699,9 +700,15 @@ test('history reads own store: window newest-first + before / limit by turn', as
     const before = await drv.call('history', { conversation: 'c1', before: full.messages[1].hash })
     assert.deepEqual(before.messages.map((e) => e.def.content), ['b', 'a'])
     assert.equal(full.next_before, null)
-    // 展示时间线随历史一并给出（含标记位）。
-    assert.ok(Array.isArray(full.display) && full.display.length === 2)
-    assert.deepEqual(full.display[1].items.map((item) => item.kind), ['user', 'text'])
+    // 展示面不再背展示时间线（无消费者），步记录也不在默认返值里。
+    assert.equal(Object.hasOwn(full, 'display'), false)
+    assert.equal(Object.hasOwn(full.turns[0], 'steps'), false)
+    // refs 随窗口收敛：limit 1 只带本窗口消息。
+    assert.deepEqual(Object.keys(limited.refs).sort(), limited.messages.map((e) => e.hash).sort())
+    // 导出面显式全量：refs 收全量、turns 带步记录。
+    const exported = await drv.call('history', { conversation: 'c1', full: true })
+    assert.equal(Object.keys(exported.refs).length, 4)
+    assert.ok(Array.isArray(exported.turns[0].steps))
   } finally {
     drv.close()
     drv.cleanup()
@@ -1103,7 +1110,7 @@ test('startup settle: an open turn restarts as interrupted{retryable:true}, and 
   }
 })
 
-test('read / history expose turn state and step records; open_turns lists in-flight turns', async () => {
+test('read exposes full turn slice with steps; history omits steps; open_turns lists in-flight turns', async () => {
   const drv = startService()
   try {
     await drv.hello()
@@ -1111,14 +1118,25 @@ test('read / history expose turn state and step records; open_turns lists in-fli
     await drv.call('turn_open', { turn_id: 't1', user_message: { content: 'x' }, slot_ref: 'run-1' }, turnEnv('run-1'))
     await drv.call('step_append', { type: 'step.intent', turn_id: 't1', seq: 0, kind: 'model.step', tool_calls: [] }, turnEnv('run-1'))
     await drv.call('step_append', { type: 'step.result', turn_id: 't1', seq: 0, assistant: { content: 'ok' } }, turnEnv('run-1'))
+    // 引擎切片（read）保持全量：含步记录与 slot_ref。
     const read = await drv.call('read', { conversation: 'c1' })
     assert.equal(read.turns[0].turn_id, 't1')
     assert.equal(read.turns[0].state, 'open')
     assert.equal(read.turns[0].steps.length, 2)
+    assert.equal(read.turns[0].slot_ref, 'run-1')
     assert.deepEqual(read.open_turns, [{ turn_id: 't1', conv: 'c1' }])
+    // 清单面（list）不背切片：只有 body 与开着的回合摘要。
+    const list = await drv.call('list', {})
+    assert.equal(list.current, 'c1')
+    assert.deepEqual(list.open_turns, [{ turn_id: 't1', conv: 'c1' }])
+    assert.equal(Object.hasOwn(list, 'turns'), false)
+    assert.equal(Object.hasOwn(list, 'refs'), false)
+    // 展示面（history）默认不带步记录；full 才带。
     const history = await drv.call('history', { conversation: 'c1' })
     assert.equal(history.turns[0].turn_id, 't1')
-    assert.equal(history.turns[0].steps.length, 2)
+    assert.equal(Object.hasOwn(history.turns[0], 'steps'), false)
+    const full = await drv.call('history', { conversation: 'c1', full: true })
+    assert.equal(full.turns[0].steps.length, 2)
   } finally {
     drv.close()
     drv.cleanup()

@@ -82,14 +82,54 @@ export function putBlob(dir: string, bytes: Uint8Array): BlobPutResult {
   return { ok: true, pointer: blobPointerOf(sha256, buffer.length) }
 }
 
+/**
+ * `getBlob` 有界字节缓存：CAS 内容寻址且只增，进程存活期内同 sha256 字节稳定
+ * （离线 GC 仅在持锁时进行），故命中即视为已校验，省掉重复 `readFileSync` + 整份 `sha256`。
+ * LRU 按字节淘汰最旧；超上限的单份字节不入缓存。
+ */
+const BLOB_CACHE_MAX_BYTES = 4 * 1024 * 1024
+const blobCache = new Map<string, Buffer>()
+let blobCacheBytes = 0
+
+/** 命中缓存：移到队尾（最近使用）；尺寸不符防御性视为未命中。 */
+function takeCachedBlob(pointer: BlobPointer): Buffer | undefined {
+  const cached = blobCache.get(pointer.sha256)
+  if (cached === undefined || cached.length !== pointer.size) return undefined
+  blobCache.delete(pointer.sha256)
+  blobCache.set(pointer.sha256, cached)
+  return cached
+}
+
+/** 记入缓存并按字节上限淘汰最旧。 */
+function rememberBlob(pointer: BlobPointer, bytes: Buffer): void {
+  if (bytes.length > BLOB_CACHE_MAX_BYTES) return
+  const existing = blobCache.get(pointer.sha256)
+  if (existing !== undefined) {
+    blobCache.delete(pointer.sha256)
+    blobCacheBytes -= existing.length
+  }
+  blobCache.set(pointer.sha256, bytes)
+  blobCacheBytes += bytes.length
+  while (blobCacheBytes > BLOB_CACHE_MAX_BYTES) {
+    const oldest = blobCache.keys().next().value
+    if (oldest === undefined) break
+    const evicted = blobCache.get(oldest)
+    if (evicted !== undefined) blobCacheBytes -= evicted.length
+    blobCache.delete(oldest)
+  }
+}
+
 /** 取字节：按 pointer 读回并校验长度与摘要；缺失 → `blob_missing`，损坏 → `bad_blob`。 */
 export function getBlob(dir: string, pointer: BlobPointer): BlobReadResult {
+  const cached = takeCachedBlob(pointer)
+  if (cached !== undefined) return { ok: true, bytes: cached }
   const file = blobFile(dir, pointer.sha256)
   if (file === null) return { ok: false, code: 'bad_blob' }
   if (!existsSync(file)) return { ok: false, code: 'blob_missing' }
   const bytes = readFileSync(file)
   if (bytes.length !== pointer.size) return { ok: false, code: 'bad_blob' }
   if (blobSha256(bytes) !== pointer.sha256) return { ok: false, code: 'bad_blob' }
+  rememberBlob(pointer, bytes)
   return { ok: true, bytes }
 }
 

@@ -172,7 +172,7 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(auditBody.request).toMatchObject({
       port: 'toy.python',
       method: 'echo',
-      args: { n: 1 },
+      args: { n: { truncated: true, size: expect.any(Number) } },
     })
     expect(auditBody.result).toEqual({
       ok: true,
@@ -228,7 +228,7 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     expect(auditBody.request).toMatchObject({
       port: 'toy.python',
       method: 'echo',
-      args: { n: 1 },
+      args: { n: { truncated: true, size: expect.any(Number) } },
     })
     // 静默超时保留具体传输原因（timeout），outcome 仍机械归 transport_failed
     expect(auditBody.result).toEqual({ ok: false, error: 'timeout' })

@@ -1,8 +1,9 @@
-// 周期条目的 run 构造：命令条目按声明入口 term 起 run；方法条目直接调该服务方法，
-// 其返回的计划值（`$directives`）由宿主按该身份落账。宿主不认识业务，只按声明机械触发。
+// 周期条目的 run 构造：命令条目按声明入口 term 起 run；方法条目经路由解析该能力方法的端点行
+// （服务端点或判定 term 端点），其返回的计划值（`$directives`）由宿主按该身份落账。
+// 宿主不认识业务，只按声明机械触发。
 
 import { randomUUID } from 'node:crypto'
-import { assemblyGen, commandArgsIssue, readPluginDecl } from './assembly/index.ts'
+import { commandArgsIssue, readPluginDecl } from './assembly/index.ts'
 import { HOST_CAPABILITY } from './host-methods.ts'
 import { resolveMethodTimeoutMs } from './method-timeouts.ts'
 import { readProjectionPath } from './projection/index.ts'
@@ -92,10 +93,12 @@ export function createPeriodicRunner(deps: PeriodicRunnerDeps): PeriodicRunner {
       directives = [{ kind: 'eval', entry: command.entry, args: bag }]
     } else if (entry.method !== undefined) {
       const cap = capOfMethod(declRead.decl, entry.method)
-      const gen = assemblyGen(world, entry.identity)
-      if (cap === null || gen === null) return { status: 'refused', reasons: [] }
-      const row = runtime.endpoints.get(entry.identity, gen.payload, cap, entry.method)
-      if (row === null) return { status: 'refused', reasons: [] }
+      if (cap === null) return { status: 'refused', reasons: [] }
+      // 经路由解析端点行：发出者 = 自身身份、无 pin，走自能力路径；服务端点与判定 term 端点
+      // （就地求值、不 spawn 服务）同一条解析，与方法调用路径同源。
+      const routed = deps.getRouter()?.resolve(world, entry.identity, cap, entry.method)
+      if (routed === undefined || !routed.ok) return { status: 'refused', reasons: [] }
+      const row = routed.row
       const called = await row.link.call(
         cap,
         entry.method,

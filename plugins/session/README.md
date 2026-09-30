@@ -5,7 +5,7 @@
 调用方（`chat`）经反向调用取用；服务不读投影、无写链通道、不自取时钟（`now` 取帧 `env.now`）。
 
 - 能力类：`session`；方法：`commit` / `new_conversation` / `select` / `rename` / `set_title` / `delete` /
-  `restore` / `branch` / `deliver` / `ack_inbox` / `turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `read` / `history`。
+  `restore` / `branch` / `deliver` / `ack_inbox` / `turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `read` / `list` / `history`。
 - 命令：无（命令面由侧栏 / 聊天插件承接）。
 - `pins`：`input` → `input`（`commit` 等消费槽后经反向调用 `input.clear` 清本线程槽）。
 - 状态档：`durable`（④ 不可重算；跨代存活、进备份、只按身份消失回收）；`exclusive: ["data"]`。
@@ -13,23 +13,42 @@
 
 ## 存储引擎与落点
 
-- ④ `CHRONO_PLUGIN_DATA/session.jsonl`：单文件追加日志，每条记录一次 append + fsync（换行收尾）。
-  启动时重放即得全量状态；末行半写撕裂 / 坏行跳过（fail-open）。
+- ④ `CHRONO_PLUGIN_DATA`：小索引 + 每会话一份日志，按**读的粒度**分区。
+  - `index.jsonl`：会话轨（`{t:'conv'|'current'|'del'|'restore'|'turn'|'inbox.seen', run, ...}`）与
+    跨会话开着的回合摘要 / 回合路由（`{t:'open_turn', turn_id, conv}` / `{t:'close_turn', turn_id}`）。
+    启动**只重放索引**即得全量会话清单与 `open_turns`，不读任何会话日志。
+  - `conversations/<convId>/log.jsonl`：该会话的消息（`msg`，含其 `<convId>#inbox` 条目）与回合事件
+    日志（契约 `type` 判别）。**按会话惰性加载**：首次访问某会话才读它的日志，`turnsFor` 只与本会话相关。
+  - 每会话日志超阈值（条数 / 字节）时写一条**快照记录**替代被覆盖的前缀；快照保留读契约所需的装配
+    （消息列表 + 回合条目含步记录 / 取消意图 / 迟到收口），`history` / `read` / 上下文回灌所见不变
+    （「快照 + 尾段」与全量重放深等）。缺失 / 损坏快照 fail-open 退回读原始前缀。
+  - 旧单文件 `session.jsonl` 由**幂等迁移**转换：启动时若新布局缺失（无完成标记）而旧文件在，重放旧文件
+    写出 `index.jsonl` + `conversations/*` + 完成标记 `migrated`；旧文件**保留不删**、仅不再被读；重跑为 no-op，
+    失败不破坏旧文件（下次启动重试）。
+- 会话 id 用作目录名：按安全单段名校验（拒绝路径分隔符、盘符 / Windows 非法字符、控制字符、结尾点 / 空格、
+  保留设备名与 JS 原型键），写路径 fail-closed，绝不路径穿越。
+- 每条记录一次 `open` + 整段写入（换行收尾）；fsync 按累计字节批量做，只在回合收口 / 关键轨记录
+  （会话轨、回合头、步意图、回合收口）同步落盘。末行半写撕裂截到有效前缀，坏行跳过（fail-open）。
 - ③ `CHRONO_PLUGIN_STATE/index.json`：派生物（记录水位 / 会话计数），删掉可由 ④ 重放重建，**不承载真源**。
-- 两类记录共用同一追加机制：
-  - 会话轨（`commit` 用）：`{t:'msg'|'conv'|'current'|'del'|'restore'|'turn'|'cancel'|'inbox.seen', run, ...}`。
-    - `msg`：`{run, conv, msg}`；消息 `id` 由 run + 角色派生，同 run 同角色重复写幂等。
-    - `conv`：`{run, entry}`；按 `id` 新增 / 替换会话条目。
+- 记录形状：
+  - 会话轨（索引）：`{t:'conv'|'current'|'del'|'restore'|'turn'|'inbox.seen', run, ...}`。
+    - `conv`：`{run, entry}`；按 `id` 新增 / 替换会话条目；写入时补派生的 `head` / `count`，
+      未加载会话的清单据此直接回答。
     - `current`：`{run, id}`；`del` / `restore`：软删 / 恢复。
     - `turn`：`{run, conv, state:'open'|'closed'}`；半份提交标记，`read` 的 `pending_turns` 可辨识。
-    - `cancel`：`{turn_id}`；取消意图，按回合键标记（重启收口据此判 `cancelled`）。
     - `inbox.seen`：`{run, conv, last_seen}`；收纳箱已读水位推进时**另追加**的记录（不是回写旧记录），
       应用时取 `max(原 last_seen, 新 last_seen)`，保证 `last_seen` 单调不减。
-  - 回合事件日志（契约形状，`type` 判别）：`turn.open` / `step.intent` / `step.result` / `checkpoint` /
-    `turn.settle`，逐字段见 `chain-contract/schema/step-record.schema.json`。追加失败先有限次重试，
-    仍失败由调用方 fail-closed。
+    - `open_turn` / `close_turn`：跨会话仍开着的回合摘要 / 回合 → 会话路由，供 `list` / `read` 的
+      `open_turns` 与按 `turn_id` 定位会话的续跑路径（启动即可回答，且引导启动收口）。
+  - 会话日志（`conversations/<convId>/log.jsonl`）：
+    - `msg`：`{run, conv, msg}`；消息 `id` 由 run + 角色派生，同 run 同角色重复写幂等。
+    - `cancel`：`{conv, turn_id}`；取消意图，按回合键标记（重启收口据此判 `cancelled`）。
+    - 回合事件日志（契约形状，`type` 判别）：`turn.open` / `step.intent` / `step.result` / `step.user` /
+      `checkpoint` / `turn.settle`，逐字段见 `chain-contract/schema/step-record.schema.json`。追加失败先有限次重试，
+      仍失败由调用方 fail-closed。
+    - `snapshot`：装配快照（消息 + 回合条目），压实后替代被覆盖前缀。
 - `method_timeouts`：`turn_open` / `step_append` / `turn_settle` / `turn_cancel` / `commit` / `read` / `history` / `deliver` / `ack_inbox`
-  均声明 `120000`ms（大 jsonl fsync 需要，避免 30s 缺省造成幽灵提交）。
+  均声明 `120000`ms（关键轨记录同步落盘 / 会话日志追加与小索引写需要，避免 30s 缺省造成幽灵提交）。
 
 ## 逐字段判定（定义 / 判定 vs 运行记录）
 
@@ -69,6 +88,7 @@
 - 写方法（`commit` / `new_conversation` / `select` / `rename` / `set_title` / `delete` / `restore` / `branch` / `deliver` / `ack_inbox`）
   一律**即时写自有存储**（边跑边追加），返回**纯值**（无 `$directives`）；槽驱动方法成功后经反向调用清本线程槽。
 - `read({conversation?, turn_id?})` → 会话切片 `{version,current,conversations,head,refs,turns,inbox_unread,open_turns,data_gen:null,pending_turns}`：
+  **引擎侧全切片读**（不随展示面收窄）：引擎把它喂给上下文回灌，`turns[].steps` 是上下文投影的唯一真源。
   `refs` = 本会话消息 `id → body`（服务自建，非世界投影闭包）；`head` = 链头消息 id；`data_gen` 恒 `null`（无世界数据世代）；
   `turns` = 本会话回合视图（`turn_id` / `conv` / `slot_ref` / `at` / `state` / `outcome` / `cancel_requested` / `late_settles` / `steps`，
   子代理回合另带 `thread_kind` / `task_prompt` / `parent_checkpoint` / `parent_summaries`）；
@@ -76,9 +96,14 @@
   `open_turns` = 跨会话仍开着的回合摘要 `{turn_id,conv}`（O(open 回合)，供角标读）。
   显式 `conversation` 优先；否则给 `turn_id` 时按该回合所属会话返回切片（子代理旁路线程不是 `current`，
   续跑据此定位）；都缺则按 `current`。
-- `history({conversation?,before?,limit?})` → `{conversation,messages,next_before:null,turns,body,refs}`；
-  `messages` 为**新 → 旧**窗口（`before` 命中的那条不含）。`conversation` 缺省取 `current`；
-  无 `current`（或 `current` 指向软删会话）时回 `null` 与空窗口（**不回落列表首条**），显式 id 仍原样取用。
+- `list({})` → **清单面**（轻）`{version,current,conversations,open_turns}`：只回会话 body 与跨会话开着的回合摘要，
+  不背消息 / 回合切片。供角标 / 顶栏 / 侧栏清单取数，避免为取列表拖回整条会话。
+- `history({conversation?,before?,limit?,full?})` → `{conversation,before,limit,messages,next_before,turns,body,refs}`；
+  `messages` 为**新 → 旧**窗口（`before` 命中的那条不含，`limit` 为回合数）。展示面只回窗口内的数据：
+  `refs` 与 `turns` 随窗口收敛，`turns` **不带步记录**（步记录由 `read` 全量给，或 `full:true` 时带出）；
+  `full:true` 为导出面显式全量（`refs` 收全量、`turns` 带步记录），不再有 `display` 时间线字段。
+  `conversation` 缺省取 `current`；无 `current`（或 `current` 指向软删会话）时回 `null` 与空窗口
+  （**不回落列表首条**），显式 id 仍原样取用。
 
 ### `commit`
 

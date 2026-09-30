@@ -24,8 +24,11 @@ export interface EndpointLink {
   ): Promise<EndpointCallResult>
 }
 
-/** 端点形态：服务三种形态 + 宿主保留能力类（无进程）。 */
-export type EndpointTransport = ServiceTransport | 'host'
+/**
+ * 端点形态：服务三种形态 + 宿主保留能力类（无进程） + 判定（term 承载，无进程）。
+ * `term` 行由路由在命中 `judgments` 时就地合成，不在端点表登记（无服务、无世代进程）。
+ */
+export type EndpointTransport = ServiceTransport | 'host' | 'term'
 
 export interface EndpointRow {
   impl: string

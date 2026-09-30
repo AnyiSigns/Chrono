@@ -10,8 +10,10 @@
     "host": "host"
   },
   "needs": {
-    "session": { "mode": "one" },
+    "graph-run": { "mode": "one" },
+    "turn-ledger": { "mode": "one" },
     "ref-hydrate": { "mode": "one" },
+    "session": { "mode": "one" },
     "model": { "mode": "one" },
     "context": { "mode": "one" },
     "retrieval": { "mode": "one" },

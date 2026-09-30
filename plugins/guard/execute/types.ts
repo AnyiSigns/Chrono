@@ -8,27 +8,6 @@ export type Rec = { [key: string]: Json }
 /** 三值判定。 */
 export type Verdict = 'allow' | 'escalate' | 'deny'
 
-/** 逐 call 判定：理由码取自固定词表，机械可测。 */
-export interface Decision {
-  index: number
-  port: string
-  tool: string
-  verdict: Verdict
-  reason: string
-  rule?: string
-}
-
-export interface JudgeSummary {
-  allow: number
-  escalate: number
-  deny: number
-}
-
-export interface JudgeResult {
-  decisions: Decision[]
-  summary: JudgeSummary
-}
-
 export { BadArgsError } from 'plugin-sdk'
 
 /** 一个方法：args 进、值出。 */

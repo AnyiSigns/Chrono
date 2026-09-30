@@ -17,11 +17,11 @@
 
 | 命令 | 入口 term | 语义 |
 | --- | --- | --- |
-| `threads.state` | `eff ui-threads threads.state ["v",0]` | 服务反向调用 `session.read` 取会话切片、`todo.invoke(todo.read)` 取当前父会话待办清单，装配标签数据（`kind` / `parent` / 标题 / `status` / `pending` + 待办） |
+| `threads.state` | `eff ui-threads threads.state ["v",0]` | 服务反向调用 `session.list` 取会话清单（body + `open_turns`）、`todo.invoke(todo.read)` 取当前父会话待办清单，装配标签数据（`kind` / `parent` / 标题 / `status` / `pending` + 待办） |
 | `ui-threads.client.read` | `eff ui-threads client.read ["g",["path"]]` | 只读：按包内相对 `.js` 路径回 `{path,text}`（壳取客户端半边字节用）；路径穿越防护 fail-closed |
 
 - **运行记录问 owner**：`session`（会话 / 消息链）与 `todo`（待办清单）已出世界，住各自 ④ 存储；
-  `threads.state` 不读世界投影，改为反向调用 owner（与 `chat.history` 同口径）。
+  `threads.state` 不读世界投影，改为反向调用 owner，且只走清单读面（`session.list`），不拖 `session.read` 全切片。
 - `pins`：`session` → `session`、`todo` → `todo`；`threads.state` 的 `eff` 经宿主的**自能力路由**解析到
   本插件自己的端点行（能力类 = 自身 `implements`），反向调用按 pins 路由到对应 owner。
 
@@ -60,7 +60,7 @@ contract = '2'；register(ctx) 把标签行注册进 topbar slot、待办面板�
   清单出现 / 更新时播放一次「展开→收起」提示动画（`TODO_PEEK_MS`，展开停留后回落默认收起态），
   展开 / 收起用 grid 行 `0fr ↔ 1fr` + 内容淡入淡出过渡；`prefers-reduced-motion` 下取消过渡。
 - **状态角标**：待审批（`pending.approval` / `pending.question` > 0）、运行中、完成、失败。
-  待审批 / 终态同源 `session` 的会话字段；**运行中读 session 的回合状态**（`session.read.open_turns`
+  待审批 / 终态同源 `session` 的会话字段；**运行中读 session 的回合状态**（`session.list.open_turns`
   含该会话即有仍开着的回合），不读 `status:"running"`（生产从不写），**也不另订宿主 `run.*`**。
 
 ## 位置与显隐

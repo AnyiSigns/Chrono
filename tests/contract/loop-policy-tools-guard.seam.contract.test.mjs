@@ -1,8 +1,8 @@
 // 接缝契约 6：loop-policy ↔ tools/guard。
 // 共享真源：chain-contract/fixtures/node-io.json 的 `tool.gate.input` / `tool.dispatch.input` 形状。
-// 消费方向：真实 guard 服务与真实 tools 服务分别消费 loop-policy 装配的 gateBag / dispatchBag。
+// 消费方向：真实 guard 判定（judgment term + 真服务取数）与真实 tools 服务分别消费 loop-policy 装配的 gateBag / dispatchBag。
 // 供给方向：真实 loop-policy 解释器消费裁决与工具结果（含 `$directives` 冒泡、deny 回灌）。
-// 至少一侧为真实服务：消费方向两侧都是真实服务（guard / tools 经 plugin-sdk 协议起进程）；
+// 至少一侧为真实服务：消费方向两侧都真实（guard 判定经宿主路由 + 真服务取数；tools 经 plugin-sdk 协议起进程）；
 // 工具提供者（tool-fs / sandbox）为 Rust 构建件，此处按外部边界桩（fixtures 形状）应答，属文档化的对端替身。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,6 +19,7 @@ import {
   makeRouter,
   forward as routeForward,
 } from './_bridge.mjs'
+import { startGuardJudgment } from './_guard.mjs'
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -30,7 +31,7 @@ function forward(service) {
     service
       .call(message.port, message.method, args, message.env)
       .then((frame) =>
-        frame.kind === 'error' ? portError(frame.error, frame.message) : frame.value,
+        frame.kind === 'error' ? portError(frame.code, frame.message) : frame.value,
       )
 }
 
@@ -48,9 +49,12 @@ const TOOLS = [
   },
 ]
 
-/** 真实 guard 服务：无反向依赖。 */
-function startGuard() {
-  return startRealService({ name: 'guard' })
+/** 真 guard 判定（judgment term + 真服务取数）转成驱动的应答形态。 */
+function guardJudge(guard) {
+  return async (args) => {
+    const result = await guard.judge(args)
+    return result.ok ? result.value : portError(result.code, result.message)
+  }
 }
 
 /**
@@ -113,8 +117,8 @@ function modelProviders() {
   })
 }
 
-test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）', async () => {
-  const guard = startGuard()
+test('消费向：真实 guard 判定消费 gateBag（与夹具逐键一致）', async () => {
+  const guard = await startGuardJudgment()
   const chain = startToolsChain({
     'tool-fs.invoke': (args) => ({
       ok: true,
@@ -131,9 +135,9 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
   const loop = startLoop({
     providers: {
       ...modelProviders(),
-      'guard.judge': (args, message) => {
+      'guard.judge': (args) => {
         gateBags.push(clone(args))
-        return forward(guard)(args, message)
+        return guardJudge(guard)(args)
       },
       'tools.dispatch': (args, message) => {
         dispatchBags.push(clone(args))
@@ -142,7 +146,6 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
     },
   })
   try {
-    await guard.hello()
     await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
@@ -153,7 +156,7 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
     })
     assert.equal(result.kind, 'result', JSON.stringify(result))
 
-    // 真实 guard 服务消费的 gateBag 与共享夹具逐键一致（单一夹具源）。
+    // 真判定消费的 gateBag 与共享夹具逐键一致（单一夹具源）。
     assert.equal(gateBags.length, 1)
     assert.deepEqual(gateBags[0], nodeIo['tool.gate'].input)
 
@@ -173,12 +176,12 @@ test('消费向：真实 guard 服务消费 gateBag（与夹具逐键一致）',
     loop.close()
     await loop.exit
     await chain.stop()
-    await stopRealService(guard)
+    await guard.dispose()
   }
 })
 
 test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒绝作工具结果）', async () => {
-  const guard = startGuard()
+  const guard = await startGuardJudgment()
   // 用一个会触发的哨兵：deny 时真实工具链不应被触达。
   let toolsTouched = 0
   const chain = startToolsChain({
@@ -203,12 +206,11 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
           usage: {},
         }
       },
-      'guard.judge': forward(guard),
+      'guard.judge': guardJudge(guard),
       'tools.dispatch': forward(chain.tools),
     },
   })
   try {
-    await guard.hello()
     await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
@@ -240,12 +242,12 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
     loop.close()
     await loop.exit
     await chain.stop()
-    await stopRealService(guard)
+    await guard.dispose()
   }
 })
 
 test('供给向：工具结果里的 $directives 冒泡进回合计划', async () => {
-  const guard = startGuard()
+  const guard = await startGuardJudgment()
   const put = {
     kind: 'write',
     request: { op: 'batch', args: { ops: [{ op: 'put', args: { body: { note: 'bubbled' } } }] } },
@@ -256,12 +258,11 @@ test('供给向：工具结果里的 $directives 冒泡进回合计划', async (
   const loop = startLoop({
     providers: {
       ...modelProviders(),
-      'guard.judge': forward(guard),
+      'guard.judge': guardJudge(guard),
       'tools.dispatch': forward(chain.tools),
     },
   })
   try {
-    await guard.hello()
     await chain.tools.hello()
     const result = await loop.interpret({
       tier: 'auto',
@@ -284,6 +285,6 @@ test('供给向：工具结果里的 $directives 冒泡进回合计划', async (
     loop.close()
     await loop.exit
     await chain.stop()
-    await stopRealService(guard)
+    await guard.dispose()
   }
 })

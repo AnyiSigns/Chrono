@@ -1,6 +1,6 @@
 {
   "title": "session（会话运行记录：服务自有存储契约）",
-  "description": "会话运行记录（消息链 + 会话元数据）住服务自有持久存储（④ CHRONO_PLUGIN_DATA/session.jsonl），不进世界、不产数据世代；本 schema 是身份自述 / 数据契约，描述服务读回的切片形状。消息以消息 id 串成 prev 链，head 指向链头消息 id；refs 由服务自建（消息 id → body）。可空字段用 null（或直接缺键）表达；宿主 v1 不校验身份数据。",
+  "description": "会话运行记录（消息链 + 会话元数据）住服务自有持久存储（④ CHRONO_PLUGIN_DATA：会话轨索引 index.jsonl + 每会话日志 conversations/<convId>/log.jsonl；按会话惰性加载、每会话独立压实），不进世界、不产数据世代；本 schema 是身份自述 / 数据契约，描述服务读回的切片形状。消息以消息 id 串成 prev 链，head 指向链头消息 id；refs 由服务自建（消息 id → body）。可空字段用 null（或直接缺键）表达；宿主 v1 不校验身份数据。",
   "type": "object",
   "required": ["version", "conversations"],
   "additionalProperties": true,

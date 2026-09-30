@@ -1,5 +1,5 @@
 // `threads.state` 的服务侧装配（纯函数）：入参 = owner 服务读回的数据
-// （`session.read` 的会话切片 + `todo.invoke(todo.read)` 的清单结果）。
+// （`session.list` 的会话清单 + `todo.invoke(todo.read)` 的清单结果）。
 // session / todo 已出世界（住各自 ④ 存储），故服务不读世界投影、不再走 `ctx.ids`。
 // 线程树排序 / 父会话隔离 / 角标映射住 `web/threads-model.ts`（服务与浏览器共用同一份纯逻辑）。
 
@@ -47,7 +47,7 @@ function tagOf(conversation: Rec, openTurn: boolean): ThreadTag {
   }
 }
 
-/** 有仍开着回合的会话 id 集合（`session.read.open_turns` 摘要，跨会话）。 */
+/** 有仍开着回合的会话 id 集合（`session.list.open_turns` 摘要，跨会话）。 */
 function openTurnConversations(session: Json): Set<string> {
   const open: Set<string> = new Set()
   if (!isRecord(session) || !Array.isArray(session['open_turns'])) return open
@@ -95,7 +95,7 @@ function todoViewOf(todo: Json, rootId: string | null): TodoView | null {
 
 /**
  * 顶栏标签数据：`{ok, current, root, tags, todo}`。
- * - `session` = owner `session.read` 的切片（`{version,current,conversations,open_turns,...}`）；
+ * - `session` = owner `session.list` 的清单（`{version,current,conversations,open_turns}`）；
  *   会话有仍开着的回合（`open_turns` 含该会话）时其角标为运行中，不读 `conversation.status`；
  * - `todo` = owner `todo.read` 的清单结果（`{items,...}`），缺省 / 取不到传 null；
  * - `current` = session `current`（`current` ↔ `active_thread` 单桥用）；

@@ -1,10 +1,11 @@
 // 接缝契约：门禁前置于效果（写死条）——gate 判 escalate 时工具的实际效果必须尚未发出。
 // 同 run 内不得出现 `tools.dispatch` 派发（也就不会产生该调用的 EffectAudit）。
-// 接入 loop-policy 的真实解释器与 guard 的真实判定，属跨插件链路，故住根 tests/contract/。
+// 接入 loop-policy 的真实解释器与 guard 的真实判定（判定住 term，经宿主路由 + 真服务取数），
+// 属跨插件链路，故住根 tests/contract/。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startService, directivesOf } from '../../plugins/loop-policy/test/driver.mjs'
-import { judge } from '../../plugins/guard/execute/judge.ts'
+import { startService, directivesOf, portError } from '../../plugins/loop-policy/test/driver.mjs'
+import { startGuardJudgment } from './_guard.mjs'
 
 const TOOLS = [
   {
@@ -19,6 +20,14 @@ const TOOLS = [
     idempotent: true,
   },
 ]
+
+/** 真 guard 判定提供者：把端点调用结果转成驱动的应答形态。 */
+function guardProvider(guard) {
+  return async (args) => {
+    const result = await guard.judge(args)
+    return result.ok ? result.value : portError(result.code, result.message)
+  }
+}
 
 function summaryOf(value) {
   for (const directive of directivesOf(value)) {
@@ -50,7 +59,8 @@ function modelProviders(guardProvider, dispatchProbe) {
 
 test('gate escalate（severe 下 webfetch net=all 越档）⇒ 审批入队、同 run 不派发工具', async () => {
   const probe = { count: 0 }
-  const service = startService({ providers: modelProviders((args) => judge(args), probe) })
+  const guard = await startGuardJudgment()
+  const service = startService({ providers: modelProviders(guardProvider(guard), probe) })
   try {
     const result = await service.interpret({
       tier: 'severe',
@@ -68,12 +78,14 @@ test('gate escalate（severe 下 webfetch net=all 越档）⇒ 审批入队、�
     assert.equal(summary.pending, 'approval')
   } finally {
     service.close()
+    await guard.dispose()
   }
 })
 
 test('gate allow（auto 档 net=all）⇒ 正常派发（正控）', async () => {
   const probe = { count: 0 }
-  const service = startService({ providers: modelProviders((args) => judge(args), probe) })
+  const guard = await startGuardJudgment()
+  const service = startService({ providers: modelProviders(guardProvider(guard), probe) })
   try {
     await service.interpret({ tier: 'auto' })
     const seq = portSequence(service)
@@ -82,12 +94,17 @@ test('gate allow（auto 档 net=all）⇒ 正常派发（正控）', async () =>
     assert.equal(probe.count, 1)
   } finally {
     service.close()
+    await guard.dispose()
   }
 })
 
 test('gate escalate 判定的输入面：guard.judge 收到工具声明 net 与档位 net 范围', async () => {
   let seen = null
-  const providers = modelProviders((args) => { seen = args; return judge(args) }, undefined)
+  const guard = await startGuardJudgment()
+  const providers = modelProviders(async (args) => {
+    seen = args
+    return guardProvider(guard)(args)
+  }, undefined)
   const service = startService({ providers })
   try {
     await service.interpret({ tier: 'severe', sandbox_tiers: { tiers: { severe: { net: 'limited' } } } })
@@ -95,12 +112,14 @@ test('gate escalate 判定的输入面：guard.judge 收到工具声明 net 与�
     assert.equal(seen.tier_net, 'limited')
   } finally {
     service.close()
+    await guard.dispose()
   }
 })
 
 test('审批批准续跑：同调用带一次性 grant 后派发（放行面未被误伤）', async () => {
   const probe = { count: 0 }
-  const providers = modelProviders((args) => judge(args), probe)
+  const guard = await startGuardJudgment()
+  const providers = modelProviders(guardProvider(guard), probe)
   const first = startService({ providers })
   let cursor
   try {
@@ -126,5 +145,6 @@ test('审批批准续跑：同调用带一次性 grant 后派发（放行面未�
     assert.equal(dispatchCall.args.grant?.net, 'all', '批准签发一次性 net 放宽')
   } finally {
     second.close()
+    await guard.dispose()
   }
 })

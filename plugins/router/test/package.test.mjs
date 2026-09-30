@@ -1,4 +1,6 @@
 // `router` 包形状 / 内容测试（零依赖，node --test）。
+// `router.select` 判定已进 term（`plugin.json.judgments`），本包无执行件；
+// 判定语义测试住宿主侧（`packages/host`），本包只测包形状与产物。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
@@ -14,6 +16,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
+  'judgments',
   'pins',
   'start',
   'build',
@@ -25,22 +28,44 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
+test('plugin.json 14 字段齐全且形态合法', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'router')
   assert.equal(decl.schema, 'schema/router.json')
   assert.deepEqual(decl.implements, ['router'])
   assert.deepEqual(decl.methods, { router: ['select'] })
+  assert.deepEqual(decl.judgments, { router: { select: 'terms/select.json' } })
   assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, 'node execute/main.ts')
+  assert.equal(decl.start, '')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
   assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
+    { kind: 'term', path: 'terms/' },
     { kind: 'schema', path: 'schema/' },
   ])
   assert.deepEqual(decl.commands, [])
+  assert.deepEqual(decl.build, [])
+})
+
+test('select 判定住 term：产物为原语 AST，糖化源同包且不入世', () => {
+  const entry = readJson('plugin.json').judgments.router.select
+  assert.equal(entry, 'terms/select.json')
+  assert.ok(existsSync(join(PKG_ROOT, entry)), `缺少判定产物 ${entry}`)
+  const ast = readJson(entry)
+  assert.ok(Array.isArray(ast), '判定产物不是原语 AST')
+  assert.equal(ast[0], 'if')
+  assert.ok(existsSync(join(PKG_ROOT, 'terms.src/select.json')), '缺少糖化源 terms.src/select.json')
+})
+
+test('无执行件：无 execute/ 目录、start 为空、members 无 execute', () => {
+  assert.equal(existsSync(join(PKG_ROOT, 'execute')), false, '不应有 execute/')
+  const decl = readJson('plugin.json')
+  assert.equal(decl.start, '')
+  assert.equal(
+    decl.members.some((member) => member.kind === 'execute'),
+    false,
+  )
 })
 
 test('schema/router.json 冻结形状 {primary, aliases} 且声明默认值', () => {
@@ -51,23 +76,6 @@ test('schema/router.json 冻结形状 {primary, aliases} 且声明默认值', ()
   assert.equal(schema.properties.primary.default, 'model')
   assert.equal(schema.properties.aliases.type, 'array')
   assert.deepEqual(schema.properties.aliases.default, [])
-  assert.equal(schema.properties.select_request, undefined)
-  assert.equal(schema.properties.select_result, undefined)
-})
-
-test('无 terms/ 目录且无命令面', () => {
-  assert.equal(existsSync(join(PKG_ROOT, 'terms')), false, '不应有 terms/')
-  assert.deepEqual(readJson('plugin.json').commands, [])
-})
-
-test('execute/ 源码齐全', () => {
-  const files = [
-    'execute/main.ts',
-    'execute/methods.ts',
-    'execute/select.ts',
-    'execute/plugin.ts',
-  ]
-  for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
 })
 
 test('package.json 零依赖且 test = node --test', () => {
@@ -78,14 +86,15 @@ test('package.json 零依赖且 test = node --test', () => {
   assert.equal(pkg.scripts.test, 'node --test')
 })
 
-test('.worldignore 声明 test/ 与 tools/，不排除契约必需文件', () => {
+test('.worldignore 声明 test/ / tools/ / terms.src/，不排除契约必需文件', () => {
   const lines = readText('.worldignore')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'))
   assert.ok(lines.includes('test/'))
   assert.ok(lines.includes('tools/'))
-  for (const forbidden of ['plugin.json', 'package.json', 'README.md', 'schema/', 'execute/']) {
+  assert.ok(lines.includes('terms.src/'))
+  for (const forbidden of ['plugin.json', 'package.json', 'README.md', 'schema/', 'terms/']) {
     assert.equal(lines.includes(forbidden), false, `不得排除契约必需文件 ${forbidden}`)
   }
 })

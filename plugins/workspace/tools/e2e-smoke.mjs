@@ -191,7 +191,7 @@ async function main() {
     const hello = await service.request({ kind: 'hello', impl: 'workspace' })
     assert.equal(hello.kind, 'manifest')
     assert.equal(hello.identity, 'workspace')
-    assert.deepEqual(hello.methods.workspace, ['list', 'read', 'pick', 'add', 'remove', 'reveal'])
+    assert.deepEqual(hello.methods.workspace, ['list', 'read', 'add', 'remove'])
     assert.equal(hello.state, 'durable')
 
     const readReply = await service.request({
@@ -254,7 +254,7 @@ async function main() {
     const verified = boot(root, ['verify'])
     assert.equal(verified.ok, true, `verify 失败：${JSON.stringify(verified)}`)
     const replayed = boot(root, ['replay'])
-    assert.equal(replayed.ok, true, `replay 失败：${JSON.stringify(replayed)}`)
+    assert.equal(typeof replayed.head?.seq, 'number', `replay 失败：${JSON.stringify(replayed)}`)
     console.log('verify + replay：ok')
 
     console.log(`E2E ok（root=${root}）`)

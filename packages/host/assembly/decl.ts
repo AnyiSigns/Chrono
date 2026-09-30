@@ -52,6 +52,13 @@ export interface SlotDecl {
   methods: string[]
 }
 
+/**
+ * `judgments` 的一个条目：`cap → method → 包内 term 路径`。
+ * 该能力方法由 term 承载——宿主路由命中时**就地求值**该 term（不 spawn 服务），
+ * 令判定成为可热改 / 可回滚 / 可审计的数据（`docs/host.md` 路由）。
+ */
+export type JudgmentDecl = Record<string, Record<string, string>>
+
 /** `plugin.json` 的解析结果；字段含义见插件规范，宿主只做形态检查。 */
 export interface PluginDecl {
   identity: string
@@ -64,6 +71,8 @@ export interface PluginDecl {
   needs: Record<string, NeedDecl>
   /** 拥有方声明契约的能力类（`cap → 方法契约`）；省略为空表。 */
   slots: Record<string, SlotDecl>
+  /** 由 term 承载的能力方法（`cap → method → 包内 term 路径`）；省略为空表。 */
+  judgments: JudgmentDecl
   start: string
   /**
    * 服务传输形态：`stdio`（缺省）/ `inproc` / `worker`。由 `plugin.json.transport` 声明；
@@ -298,6 +307,44 @@ function parseSlots(
   return out
 }
 
+/**
+ * 解析 `judgments`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
+ * 每条 = `cap → method → 包内 term 路径`：`cap` 须 ∈ `implements`、`method` 须在该能力类的
+ * 有效方法契约内（`methods[cap]`，缺省回落本包 `slots[cap].methods`），路径须是 `terms/`
+ * 下的安全相对 JSON 路径（`terms/` 成员在入世时已解析成 def）。
+ */
+function parseJudgments(
+  value: Json | undefined,
+  implementsCaps: string[],
+  methods: Record<string, string[]>,
+  slots: Record<string, SlotDecl>,
+): JudgmentDecl | null {
+  if (value === undefined) return {}
+  if (!isRecord(value)) return null
+  const implementsSet = new Set(implementsCaps)
+  const out: JudgmentDecl = {}
+  for (const cap of Object.keys(value)) {
+    if (!isCapabilityKey(cap) || !implementsSet.has(cap)) return null
+    const contract = methods[cap] ?? slots[cap]?.methods
+    if (contract === undefined) return null
+    const entry = value[cap]
+    if (!isRecord(entry)) return null
+    const methodSet = new Set(contract)
+    const bound: Record<string, string> = {}
+    for (const method of Object.keys(entry)) {
+      if (!methodSet.has(method)) return null
+      const path = entry[method]
+      if (typeof path !== 'string' || path.length === 0) return null
+      if (!path.startsWith('terms/') || !path.endsWith('.json')) return null
+      if (!isSafeRelativePath(path)) return null
+      bound[method] = path
+    }
+    if (Object.keys(bound).length === 0) return null
+    out[cap] = bound
+  }
+  return out
+}
+
 /** 同语言（TS/JS）入口模块扩展名：`inproc` / `worker` 只接受这类入口。 */
 const SAME_LANGUAGE_ENTRY = /\.(mjs|cjs|js|mts|cts|ts|jsx|tsx)$/i
 
@@ -376,6 +423,8 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
   const needs = parseNeeds(value['needs'], pins, implementsCaps, methods)
   const slots = parseSlots(value['slots'], pins, methods)
   if (needs === null || slots === null) return { ok: false, reasons: ['bad_plugin_decl'] }
+  const judgments = parseJudgments(value['judgments'], implementsCaps, methods, slots)
+  if (judgments === null) return { ok: false, reasons: ['bad_plugin_decl'] }
   // 拥有方消费自己的扩展点：`needs` 与自身 `slots` 同键时必须是 `many`（`one` 是单值绑定，
   // 与「开放扩展点」互斥）；`needs` / `slots` 与 `implements` 的互斥已在各自解析内判定。
   for (const cap of Object.keys(needs)) {
@@ -398,6 +447,7 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
       pins,
       needs,
       slots,
+      judgments,
       start: value['start'] as string,
       transport: transport ?? 'stdio',
       build: build as PluginBuildStep[],
@@ -475,7 +525,12 @@ export function resolveTreeBlob(
   return body
 }
 
-/** 读指定世代的 `plugin.json`；缺任一步返回 null（供换代比对按旧世代读声明）。 */
+/**
+ * 读指定世代的 `plugin.json`；缺任一步返回 null（供换代比对按旧世代读声明）。
+ * 不按世代记忆结果：声明读的成败取决于当前 `world.defs` 是否含 tree / entry / pointer def，
+ * 而该「缺失」是可补齐的（同世界补齐 def 后重试须成功）——缓存正 / 负结果都会让补齐后的
+ * 同世界重试失真。字节级去重由 `getBlob` 的内容寻址缓存承担（键 sha256、只在 def 在位时命中）。
+ */
 export function readPluginDeclOfGen(world: World, gen: Gen, blobsDir?: string): DeclRead | null {
   const commit = world.defs[gen.payload]
   const tree = (commit?.body as { tree?: Json } | undefined)?.tree
@@ -644,6 +699,20 @@ function resolveTermHash(
     return hash
   }
   return resolve(relPath)
+}
+
+/**
+ * 解析 `judgments` 一条 term 路径的实际 def 哈希（`$ref` 递归替换、`sig` = 世代签名）。
+ * 与命令入口同路；缺失 / 坏引用 / 成环返回 null（入世侧已把关）。
+ */
+export function resolveJudgmentHash(
+  world: World,
+  tree: Hash,
+  relPath: string,
+  sig: Hash,
+  blobsDir?: string,
+): Hash | null {
+  return resolveTermHash(world, tree, relPath, sig, blobsDir)
 }
 
 /** 列出世界里所有身份的具名命令；无法解析声明的身份跳过。 */

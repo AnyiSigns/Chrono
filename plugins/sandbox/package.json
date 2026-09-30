@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "隔离执行（Rust）：一次性 exec + 结构化文件操作 fsop + 四档 fs/net 强制；无 npm 依赖，二进制走宿主依赖缓存",
+  "description": "隔离执行门面（Rust）：保留 exec / fsop / capabilities 等公开方法，委派 sandbox-policy / sandbox-exec / sandbox-fs 三个提供方；无 npm 依赖，二进制走宿主依赖缓存",
   "files": [
     "plugin.json",
     "package.json",
@@ -14,7 +14,9 @@
     "Cargo.toml",
     "Cargo.lock"
   ],
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "cargo test"
   }

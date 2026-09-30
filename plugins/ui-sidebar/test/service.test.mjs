@@ -15,8 +15,6 @@ import {
   assembleSessionArgs,
   assembleWorkspaceListArgs,
   createHandlers,
-  identityBody,
-  identityRefs,
   slotOf,
   threadKeyOf,
 } from '../execute/methods.js'
@@ -71,12 +69,8 @@ function idsFixture() {
 
 // ---- 装配纯函数 ----
 
-test('投影取用：identityBody / identityRefs / slotOf / threadKeyOf', () => {
+test('槽取用：slotOf / threadKeyOf', () => {
   const ids = idsFixture()
-  assert.deepEqual(identityBody(ids, 'workspace'), ids.workspace.body)
-  assert.deepEqual(identityRefs(ids, 'session'), ids.session.refs)
-  assert.deepEqual(identityRefs(ids, 'missing'), {})
-  assert.equal(identityBody(ids, 'missing'), null)
   assert.deepEqual(slotOf(ids.input.body, '_main'), { kind: 'session.new', workspace_id: 'w1' })
   assert.equal(slotOf({}, '_main'), null)
   assert.equal(threadKeyOf({ thread: 't1' }), 't1')
@@ -84,32 +78,34 @@ test('投影取用：identityBody / identityRefs / slotOf / threadKeyOf', () => 
   assert.equal(threadKeyOf(null), '_main')
 })
 
-test('会话装配：{session, slots, thread_id, slot}；缺身份即失败码', () => {
+test('会话装配：{slots, thread_id, slot}；缺输入槽即失败码', () => {
   const ids = idsFixture()
   const input = { body: ids.input.body, slot: ids.input.body.slots._main }
-  const assembled = assembleSessionArgs(ids, { thread: null }, input)
+  const assembled = assembleSessionArgs({ thread: null }, input)
   assert.equal(assembled.ok, true)
   assert.deepEqual(assembled.args, {
-    session: ids.session.body,
     slots: ids.input.body,
     thread_id: '_main',
     slot: ids.input.body.slots._main,
   })
-  const threaded = assembleSessionArgs(ids, { thread: 't1' }, {
+  const threaded = assembleSessionArgs({ thread: 't1' }, {
     body: ids.input.body,
     slot: ids.input.body.slots.t1,
   })
   assert.equal(threaded.args.thread_id, 't1')
   assert.deepEqual(threaded.args.slot, { kind: 'session.select', conversation: 'c1' })
-  assert.equal(assembleSessionArgs({}, { thread: null }, input).code, 'session_missing')
-  assert.equal(assembleSessionArgs({ session: { body: {} } }, { thread: null }, null).code, 'input_missing')
+  assert.equal(assembleSessionArgs({ thread: null }, null).code, 'input_missing')
 })
 
-test('分支装配：补源链 refs；列表装配：服务读自有存储（无参）', () => {
+test('分支装配：与会话同参（不再补源链 refs）；列表装配：服务读自有存储（无参）', () => {
   const ids = idsFixture()
   const input = { body: ids.input.body, slot: ids.input.body.slots._main }
-  const branch = assembleBranchArgs(ids, { thread: null }, input)
-  assert.deepEqual(branch.args.refs, ids.session.refs)
+  const branch = assembleBranchArgs({ thread: null }, input)
+  assert.deepEqual(branch.args, {
+    slots: ids.input.body,
+    thread_id: '_main',
+    slot: ids.input.body.slots._main,
+  })
   assert.deepEqual(assembleWorkspaceListArgs(ids), {})
   assert.deepEqual(assembleWorkspaceListArgs({}), {})
 })
@@ -130,7 +126,6 @@ test('newConversation：从 input 服务读槽后装配，反向调 session.new_
       port: 'session',
       method: 'new_conversation',
       args: {
-        session: ids.session.body,
         slots: ids.input.body,
         thread_id: '_main',
         slot: ids.input.body.slots._main,
@@ -160,14 +155,18 @@ test('select / rename / delete / restore：各自反向调同名 session 方法'
   }
 })
 
-test('branch：反向调 session.branch 且携带 refs', async () => {
+test('branch：反向调 session.branch，args 不含投影 / refs', async () => {
   const ids = idsFixture()
   const session = recordingPort({ ok: true, value: sessionPlan({ ok: true, conversation: 'c9' }) })
   const input = recordingPort({ ok: true, value: ids.input.body })
   const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }), input })
   await handlers.branchConversation(ids, { run: null, thread: null, now: 0 })
   assert.equal(session.calls[0].method, 'branch')
-  assert.deepEqual(session.calls[0].args.refs, ids.session.refs)
+  assert.deepEqual(session.calls[0].args, {
+    slots: ids.input.body,
+    thread_id: '_main',
+    slot: ids.input.body.slots._main,
+  })
 })
 
 test('per-thread 槽键控：env.thread 决定 thread_id 与所读槽键（缺省 _main）', async () => {
@@ -208,14 +207,23 @@ test('读命令：list 反向调用并外包 extern', async () => {
   assert.deepEqual(list, { $directives: [{ kind: 'extern', payload: [{ id: 'w1', name: 'A', path: '/a', missing: false }] }] })
 })
 
-test('listTurns：反向调 session.read，只回跨会话仍开着的回合摘要（open_turns）', async () => {
+test('listConversations：反向调 session.list，原样回清单（body + open_turns）', async () => {
+  const value = { version: 1, current: 'c1', conversations: [{ id: 'c1', count: 0 }], open_turns: [] }
+  const session = recordingPort({ ok: true, value })
+  const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
+  const result = await handlers.listConversations(null, { run: null, thread: null, now: 0 })
+  assert.deepEqual(session.calls[0], { port: 'session', method: 'list', args: {} })
+  assert.deepEqual(result, { $directives: [{ kind: 'extern', payload: value }] })
+})
+
+test('listTurns：反向调 session.list，只回跨会话仍开着的回合摘要（open_turns）', async () => {
   const session = recordingPort({
     ok: true,
     value: { version: 1, current: 'c1', conversations: [], open_turns: [{ turn_id: 't1', conv: 'c1' }] },
   })
   const handlers = createHandlers({ identity: 'ui-sidebar', session, workspace: recordingPort({ ok: true, value: null }) })
   const value = await handlers.listTurns(null, { run: null, thread: null, now: 0 })
-  assert.deepEqual(session.calls[0], { port: 'session', method: 'read', args: {} })
+  assert.deepEqual(session.calls[0], { port: 'session', method: 'list', args: {} })
   assert.deepEqual(value, {
     $directives: [{ kind: 'extern', payload: { open_turns: [{ turn_id: 't1', conv: 'c1' }] } }],
   })
@@ -233,7 +241,7 @@ test('装配失败 / 反向调用失败：只回 extern 错误，不构造写计
   const handlers = createHandlers({ identity: 'ui-sidebar', session: failed, workspace: failed })
   const missing = await handlers.newConversation({}, { run: null, thread: null, now: 0 })
   assert.equal(failed.calls.length, 0, '装配失败不应发反向调用')
-  assert.equal(missing.$directives[0].payload.error.code, 'session_missing')
+  assert.equal(missing.$directives[0].payload.error.code, 'input_missing')
 
   const ids = idsFixture()
   const input = recordingPort({ ok: true, value: ids.input.body })
@@ -371,6 +379,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
       'restoreConversation',
       'branchConversation',
       'listTurns',
+      'listConversations',
       'listWorkspaces',
       'addWorkspace',
       'removeWorkspace',

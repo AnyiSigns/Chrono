@@ -2,7 +2,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startService, writeOps } from './driver.mjs'
-import { RoundPatches } from '../execute/plan.ts'
 import { H } from '../execute/hash.ts'
 
 const LEDGER = {
@@ -116,18 +115,6 @@ test('trace 摘要落成 def：引用为 {def}、可解析、且为不含正文�
   } finally {
     service.close()
   }
-})
-
-test('RoundPatches.stageDef：返回哈希 == H({body})，finalize 含该 def 的 put', () => {
-  const round = new RoundPatches(new Map([['evolution', { body: LEDGER, base: 0 }]]))
-  const body = { workspace_id: 'w1', thread: null, input: 'hi', session: null }
-  const hash = round.stageDef(body)
-  assert.equal(hash, H({ body }))
-  const ops = writeOps({ $directives: round.finalize() })
-  assert.ok(
-    ops.some((op) => op.op === 'put' && op.args.body.workspace_id === 'w1'),
-    '摘要 def 应落账',
-  )
 })
 
 test('补丁世代：evolution 只替换 trace 槽，组装结果 == 整份写入结果', async () => {

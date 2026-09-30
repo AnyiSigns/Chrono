@@ -1,11 +1,10 @@
-// 能力类 `ui-sidebar` 的方法表：只做**投影装配 + 反向调用**，不读投影、不落账、不自取时钟。
-// 入口 term 把 `ctx.ids` 投影切片随 args 传入；会话 body 来自投影，**输入槽来自 `input` owner 服务**
-// （槽已出世界，经 `input.read` 反向调用取），工作区清单经宿主反向调用（`port.call`）转给 `workspace`。
+// 能力类 `ui-sidebar` 的方法表：只做**反向调用编排**，不读投影、不落账、不自取时钟。
+// 会话 / 工作区写命令经 `input` owner 服务反向调用 `input.read` 取本线程槽（槽已出世界），
+// 再经宿主反向调用（`port.call`）转给 `session` / `workspace`；不再预取世界投影。
 // `workspace.pick` / `workspace.reveal` 由入口 term 直接 eff `workspace-picker`，不经本服务。
 // 依赖服务返回结果值（不再产世界写计划）；读命令返回结构化值。
 
 import { CLIENT_WEB_DIR, readClientFile } from './client-files.js'
-import { createRefHydrator, hydrateIds } from './refs.js'
 import { BadArgsError, asString, isRecord } from './types.js'
 import { externOnly, failure } from './plan.js'
 
@@ -15,22 +14,6 @@ export const MAIN_THREAD = '_main'
 /** 线程键：调用帧 `env.thread` 非空字符串，否则 `_main`。 */
 export function threadKeyOf(env) {
   return asString(env === null || env === undefined ? undefined : env.thread) ?? MAIN_THREAD
-}
-
-/** 投影里某身份的 body；缺失 / 非对象返回 null。 */
-export function identityBody(ids, id) {
-  if (!isRecord(ids)) return null
-  const entry = ids[id]
-  if (!isRecord(entry)) return null
-  return isRecord(entry['body']) ? entry['body'] : null
-}
-
-/** 投影里某身份的 refs；缺失返回空对象。 */
-export function identityRefs(ids, id) {
-  if (!isRecord(ids)) return {}
-  const entry = ids[id]
-  if (!isRecord(entry)) return {}
-  return isRecord(entry['refs']) ? entry['refs'] : {}
 }
 
 /** 输入 body 里本线程的槽体；缺失返回 null。 */
@@ -50,26 +33,19 @@ export async function readInput(deps, threadId) {
 }
 
 /**
- * 会话类命令（new / select / rename / delete / restore）的公共装配：
- * `{session, slots, thread_id, slot}`——会话服务据此判槽 kind、切 current、清本线程槽。
- * `session` 来自投影切片，`slots` / `slot` 来自 `input` owner 服务（输入槽已出世界）。
+ * 会话类命令（new / select / rename / delete / restore / branch）的公共装配：
+ * `{slots, thread_id, slot}`——会话服务据此判槽 kind、切 current、清本线程槽。
+ * `slots` / `slot` 来自 `input` owner 服务（输入槽已出世界），不再预取世界投影。
  */
-export function assembleSessionArgs(ids, env, input) {
-  const session = identityBody(ids, 'session')
-  if (session === null) return { ok: false, code: 'session_missing' }
+export function assembleSessionArgs(env, input) {
   if (input === null || input.body === null) return { ok: false, code: 'input_missing' }
   const threadId = threadKeyOf(env)
-  return {
-    ok: true,
-    args: { session: { ...session }, slots: input.body, thread_id: threadId, slot: input.slot },
-  }
+  return { ok: true, args: { slots: input.body, thread_id: threadId, slot: input.slot } }
 }
 
-/** 分支装配：在会话类公共装配上补源链 `refs`（`session.branch` 需要沿 prev 还原链）。 */
-export function assembleBranchArgs(ids, env, input) {
-  const base = assembleSessionArgs(ids, env, input)
-  if (!base.ok) return base
-  return { ok: true, args: { ...base.args, refs: identityRefs(ids, 'session') } }
+/** 分支装配：与其它会话命令同参（源链由 `session.branch` 从 `store.messagesOf` 还原）。 */
+export function assembleBranchArgs(env, input) {
+  return assembleSessionArgs(env, input)
 }
 
 /** `workspace.list` 装配：服务读自有存储后逐项 stat；本服务不传列表。 */
@@ -98,18 +74,10 @@ function assemblyFailure(result) {
 
 /** 构造方法表；`deps.session` / `deps.workspace` 是反向调用通道（单测注入假端口）。 */
 export function createHandlers(deps) {
-  const read = async (identity, hashes) => {
-    if (deps.host === undefined) return null
-    const outcome = await deps.host.call('host', 'def.read', { identity, hashes })
-    if (!outcome.ok) return null
-    return isRecord(outcome.value) ? outcome.value : null
-  }
-  const hydrator = createRefHydrator(read)
-
   /** 会话类命令：从 `input` owner 读本线程槽后装配，再反向调 `session` 对应方法。 */
-  const sessionCommand = (method, assemble) => async (args, env) => {
+  const sessionCommand = (method, assemble) => async (_args, env) => {
     const input = await readInput(deps, threadKeyOf(env))
-    const assembled = assemble(args, env, input)
+    const assembled = assemble(env, input)
     if (!assembled.ok) return assemblyFailure(assembled)
     return callPlan(deps.session, 'session', method, assembled.args)
   }
@@ -148,24 +116,23 @@ export function createHandlers(deps) {
     renameConversation: sessionCommand('rename', assembleSessionArgs),
     deleteConversation: sessionCommand('delete', assembleSessionArgs),
     restoreConversation: sessionCommand('restore', assembleSessionArgs),
-    /** 分支：源链引用按需解析（投影只回引用）后装配。 */
-    branchConversation: async (args, env) => {
-      const ids = await hydrateIds(args, ['session'], hydrator)
-      const input = await readInput(deps, threadKeyOf(env))
-      const assembled = assembleBranchArgs(ids, env, input)
-      if (!assembled.ok) return assemblyFailure(assembled)
-      return callPlan(deps.session, 'session', 'branch', assembled.args)
-    },
+    branchConversation: sessionCommand('branch', assembleBranchArgs),
 
     listWorkspaces: (args) => callValue(deps.workspace, 'workspace', 'list', assembleWorkspaceListArgs(args)),
 
     /**
-     * 只读回合面：向 `session` owner 反向调用 `session.read`，只回跨会话仍开着的回合摘要
+     * 清单面：向 `session` owner 反向调用 `session.list`，回会话 body + 开着的回合摘要。
+     * 侧栏列表 / 顶栏线程标签据此取数，不再拖 `session.read` 的全切片（消息 / 回合 / refs）。
+     */
+    listConversations: () => callValue(deps.session, 'session', 'list', {}),
+
+    /**
+     * 只读回合面：向 `session` owner 反向调用 `session.list`，只回跨会话仍开着的回合摘要
      * （`open_turns`）。侧栏首屏据此补运行角标——重载后、下一个 `chat.turn.*` 事件到达前，
-     * 也能显示哪些会话有开着的回合（含非当前会话）；其余会话切片字段不需要。
+     * 也能显示哪些会话有开着的回合（含非当前会话）；其余清单字段不需要。
      */
     listTurns: async () => {
-      const outcome = await deps.session.call('session', 'read', {})
+      const outcome = await deps.session.call('session', 'list', {})
       if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
       const value = isRecord(outcome.value) ? outcome.value : {}
       const open = Array.isArray(value['open_turns']) ? value['open_turns'] : []

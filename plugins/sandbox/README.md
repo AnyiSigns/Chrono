@@ -1,14 +1,20 @@
-# sandbox（隔离执行）
+# sandbox（隔离执行门面）
 
-隔离执行服务（**Rust**）：一次性 `exec` + 可轮询后台任务 `exec_start` / `exec_poll` / `exec_kill` + 持久会话 `session_close` + 结构化文件操作 `fsop` + 四档 fs/net 强制 + 一次性 `caps.grant` 消费。
+隔离执行能力的**受保护身份**与**公开门面**（**Rust**）：保留原公开方法名，把算法委派给三个提供方插件
+（`sandbox-policy` 档位 / 授权判定、`sandbox-exec` 执行体生命周期、`sandbox-fs` 文件系统操作）——
+一次性 `exec` + 可轮询后台任务 `exec_start` / `exec_poll` / `exec_kill` + 持久会话 `session_close` +
+结构化文件操作 `fsop` + 四档 fs/net 强制 + 一次性 `caps.grant` 消费。
 本插件**只强制、永不发升级**：越界一律结构化拒绝（`fs_denied` / `net_denied`），升级判定归 `guard`、审批往返归编排面。
+消费方**零改动**：仍只经 `sandbox` 能力类调用，门面每方法至多一跳（`exec` / `exec_start` / `fsop` 先向
+`sandbox-policy` 解析判定并随 bag 的 `resolved` 字段下传，再转发执行方）。
 
 - 能力类：`sandbox`；方法：`exec` / `exec_start` / `exec_poll` / `exec_kill` / `session_close` / `fsop` / `capabilities`（`capabilities` 避与协议握手 `probe` 撞名）。
 - 命令：无。`pins`：无（服务不读投影，所需世界数据随 bag 传入）。
+- `needs`：`sandbox-policy` / `sandbox-exec` / `sandbox-fs`（各 `{"mode":"one"}`）。
 - 启动：`node execute/launch.mjs`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 状态档：`recomputable`。
-- 实现语言：Rust（源码 + `Cargo.toml` 入世，`target/` 与二进制走宿主侧依赖缓存）。
-- 方法级超时：schema 顶层 `method_timeouts` 声明 `sandbox.exec` 130000 / `sandbox.exec_poll` 130000 / `sandbox.fsop` 60000——宿主按声明覆盖 30s 缺省等待上限，长命令与大批量 fsop 不被截断（130000 高于调用方反向等待上界，避免正向超时先于反向等待击穿）。
+- 实现语言：Rust（门面：帧循环 + 反向调用；算法在三个提供方；`target/` 与二进制走宿主侧依赖缓存）。
+- 方法级超时：schema 顶层 `method_timeouts` 声明 `sandbox.exec` 140000 / `sandbox.exec_poll` 130000 / `sandbox.fsop` 70000——宿主按声明覆盖 30s 缺省等待上限，长命令与大批量 fsop 不被截断；门面在 `sandbox.exec` / `sandbox.fsop` 上先向 `sandbox-policy` 解析（≤5000）再转发执行方（≤130000 / ≤60000），故门面上界严格大于两跳之和；门面反向等待上限抬到 140000，保证不先于提供方超时。
 
 ## 方法契约
 
@@ -60,7 +66,7 @@
 | `write` | `data` / `create?` / `exclusive?` / `expected_hash?` | `{ bytes_written, created, hash }` |
 | `replace` | `old` / `new` / `replace_all?` / `expected_hash?` | `{ replaced, added, removed, bytes_written, patch }` |
 
-- 强制点在**本插件**：`canonicalize`（解析符号链接 / junction / reparse point、归一 `\\?\` 前缀）后与 `workspace_root` 前缀比对（Windows 大小写不敏感），取「声明 `caps.fs.*` ∩ 当前档」后执行。
+- 强制点在 `sandbox-fs`：`canonicalize`（解析符号链接 / junction / reparse point、归一 `\\?\` 前缀）后与 `workspace_root` 前缀比对（Windows 大小写不敏感），取「声明 `caps.fs.*` ∩ 当前档」后执行。
 - `replace` 在**一次调用内**完成 read→比对→写（临时文件 + rename），`old` 未命中 / 非唯一 / `expected_hash` 不符 → `edit_conflict`；**非唯一时 `message` 附带命中总数与行号（最多 20 处），模型据此收窄锚点或改用 `replace_all`，无需再读一遍**。行尾自适应：文件为 CRLF 而 `old` 用 LF（或反之）时按文件风格转换后再匹配 / 替换，混合行尾不改写；`bytes_written` 回传原子重写后的整份文件字节数。
 - `write` 的 `exclusive:true`：目标已存在即 `edit_conflict`（`create_new` 语义，写锁内检查 + rename 前复核），供新建只发一次 `write`。
 - `grep` 支持字面与简易正则（`.` `*` `+` `?` `^` `$` `[...]` `\` 转义，无分组 / 交替）；**`args.mode`（`literal` / `regex`）缺省 literal**，`args.regex:true` 亦可显式开启；**正则模式下不支持的结构（交替 `|`、分组 `()`、重复 `{...}`、`\d`/`\w`/`\s` 类简写、悬空量词、未闭合 `[`）一律回 `bad_args`，不静默退化为字面匹配**。
@@ -111,22 +117,28 @@ health 探针名声明为 `sandbox.capabilities`（宿主健康判定实际走�
   - **已知限制**：`RLIMIT_NPROC` 是**每真实用户**的全系统计数，root 下易被既有进程占满，故仅一次性进程在无 cgroup 时兜底；`workspace` 档下工作区外写入一律 `EACCES`（含 `/tmp` 临时文件；`/dev/null` 例外）；user namespace 只映射 `0 → 0`，工作区文件若属其他 uid 会不可读写；会话不含命名空间隔离。
   - **未实现（如实缺席于 `capabilities.features`）**：pid namespace。
   - **syscall 绑定手写**（`execute/linux.rs` / `landlock.rs` / `cgroup.rs` / `seccomp.rs` / `namespaces.rs` 的 `extern "C"`，不引 libc）：保持零第三方运行时依赖、离线可构建。
-  - **验证**：仅在本机 WSL Ubuntu（内核 6.18，landlock ABI 7、cgroup v2 可写、seccomp 过滤可用、user / mount / net namespace 可用）跑 `cargo test`，**非裸机**；`bash plugins/sandbox/tools/wsl-test.sh test`。
+  - **验证**：仅在本机 WSL Ubuntu（内核 6.18，landlock ABI 7、cgroup v2 可写、seccomp 过滤可用、user / mount / net namespace 可用）跑 `cargo test`，**非裸机**；`bash plugins/sandbox-exec/tools/wsl-test.sh test`。
 - **mac 原生**：未实现，`exec` 诚实返回 `sandbox_unsupported`。`fsop` 为进程内校验，跨平台可用。
 - **docker 后端**：检测 `docker version`（3s 上限）；不可用 → `capabilities` 报 unavailable、`impl=docker` 时 `sandbox_unsupported`。容器调用代码（`--network` / `--read-only` / `--user` / bind mount / `--memory` / `--pids-limit`；`args.env` 以 `-e <键>` 转发、值不进 argv）已实现，但**本仓库开发机无 docker，未在本机验证**；`limited` 网络白名单未实现，一律回落 `--network none`。
-- **grant 防伪造**：本插件只做机械校验（绑定 / 一次性 / 档位 / 过期）；v1 的 bag 与模型 args 未做 provenance 隔离，伪造 grant 的防线依赖上层（tools / tool-fs 的可信字段边界 + 审批闸）。
+- **grant 防伪造**：授权面（`sandbox-policy`）只做机械校验（绑定 / 一次性 / 档位 / 过期）；v1 的 bag 与模型 args 未做 provenance 隔离，伪造 grant 的防线依赖上层（tools / tool-fs 的可信字段边界 + 审批闸）。
 - **计时口径**：`duration_ms` 用系统单调时钟（`Instant`）。exec 本身是效果、结果进审计，单调计时是运行态观测、不落世界、不影响可回放。
 - **grant 消费记录**驻进程内存：服务重启后不保留（grant 短时、绑定单次调用，跨重启重放不构成常设权限）。
 
 ## 运行
 
 ```sh
-npm test                                  # Windows：cargo test（协议 / fsop 六 op / exec / 任务 / 会话 / 四档 / grant / 档位数据驱动）
-bash plugins/sandbox/tools/wsl-test.sh test   # Linux：在 WSL 里隔离拷贝 + cargo test（linux 原生 exec）
-node tools/e2e-smoke.mjs                  # 宿主装配 E2E（pack → seed → start → 物化编译 → loaded → stop → verify/replay）
-node tools/seed-default-body.mjs --root <宿主根目录>   # 预置档位映射数据世代（宿主已 start）
-python tools/gen-casefold.py              # 刷新 execute/casefold_table.rs（Unicode casefold 表，生成物入世）
+npm test                                  # 门面：cargo test（协议 / manifest 形状）
+# 提供方各自：cd plugins/sandbox-policy; cargo test / cd plugins/sandbox-exec; cargo test / cd plugins/sandbox-fs; cargo test
+# Linux 原生 exec：bash plugins/sandbox-exec/tools/wsl-test.sh test   # 在 WSL 里隔离拷贝 + cargo test
+# 档位判定：cd plugins/sandbox-policy; cargo test（四档 / caps 钳制 / grant 一次性）
+# 文本 casefold 表刷新：python plugins/sandbox-fs/tools/gen-casefold.py
 ```
+
+## 委派关系
+
+- 判定：`sandbox-policy.resolve`（纯档位 / caps 判定）与 `sandbox-policy.consume`（一次性 grant 消费）。
+- 执行：`sandbox-exec`（进程 / 会话）+ `sandbox-fs`（fsop），均 `needs:{"sandbox-policy":one}`。
+- 门面：`sandbox` 保留公开方法名，逐方法委派；`fsop` / `exec` / `exec_start` 先解析判定再转发。
 
 ## `.worldignore`
 

@@ -21,6 +21,8 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIRS = [
   ['embedding', join(REPO_ROOT, 'plugins', 'embedding')],
+  ['tokenizer', join(REPO_ROOT, 'plugins', 'tokenizer')],
+  ['vector-index', join(REPO_ROOT, 'plugins', 'vector-index')],
   ['memory-store', join(REPO_ROOT, 'plugins', 'memory-store')],
 ]
 const DIM = 384
@@ -142,6 +144,8 @@ async function openSession(entry, dataDir, stateDir) {
   })
   const next = frameReader(child)
   const portCalls = []
+  // 内存假 `vector-index`：rebuild 用 clear + upsert 全量灌入，put/append 走 upsert 增量追加。
+  const vectorIndex = { model: 'granite-97m', dim: DIM, count: 0, records: [] }
 
   function bridge(message) {
     portCalls.push(message)
@@ -164,6 +168,49 @@ async function openSession(entry, dataDir, stateDir) {
         encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }),
       )
       return
+    }
+    if (message.port === 'vector-index') {
+      const args = message.args ?? {}
+      if (message.method === 'info') {
+        const value = {
+          present: true,
+          model: vectorIndex.model,
+          dim: vectorIndex.dim,
+          count: vectorIndex.count,
+          records: vectorIndex.records,
+        }
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+        return
+      }
+      if (message.method === 'clear') {
+        vectorIndex.records = []
+        vectorIndex.count = 0
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: {} }))
+        return
+      }
+      if (message.method === 'upsert') {
+        if (typeof args.model === 'string') vectorIndex.model = args.model
+        if (typeof args.dim === 'number') vectorIndex.dim = args.dim
+        if (Array.isArray(args.records)) vectorIndex.records.push(...args.records)
+        if (typeof args.count === 'number') vectorIndex.count = args.count
+        const value = { model: vectorIndex.model, dim: vectorIndex.dim, count: vectorIndex.count }
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value }))
+        return
+      }
+      if (message.method === 'remove') {
+        const keys = Array.isArray(args.keys) ? args.keys : []
+        vectorIndex.records = vectorIndex.records.filter((record) => !keys.includes(record.key))
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: {} }))
+        return
+      }
+      if (message.method === 'search') {
+        const topK = typeof args.top_k === 'number' ? args.top_k : vectorIndex.records.length
+        const hits = vectorIndex.records
+          .slice(0, topK)
+          .map((record) => ({ key: record.key, chunk_index: record.chunk_index, score: 1 }))
+        child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { hits } }))
+        return
+      }
     }
     child.stdin.write(
       encodeFrame({
@@ -308,10 +355,10 @@ async function main() {
     }
     assert.deepEqual(
       projection.ids['memory-store'].pins,
-      { embedding: 'embedding' },
-      'memory-store pins 应解析为 embedding',
+      { embedding: 'embedding', tokenizer: 'tokenizer', 'vector-index': 'vector-index' },
+      'memory-store pins 应解析为 embedding / tokenizer / vector-index',
     )
-    console.log('离线投影：两身份在册，memory-store pins 解析通过')
+    console.log('离线投影：身份在册，memory-store pins 解析通过')
 
     const sourcePaths = collectSourcePaths(anchor.world, 'memory-store')
     assert.ok(sourcePaths.includes('plugin.json'), '源码树应含 plugin.json')

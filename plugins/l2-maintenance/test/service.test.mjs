@@ -180,6 +180,33 @@ test('merge：L1 合并进 L2、sources 最新在前、向量去重；写 owner 
   }
 })
 
+test('merge：向量模型随调用方传入；缺省不带 model，交由 embedding 门面按提供方元数据解析', async () => {
+  const embeddingCalls = (drv) =>
+    drv.portCalls.filter((call) => call.port === 'embedding' && call.method === 'embed')
+
+  const omitted = drive({ vectors: MERGE_VECTORS })
+  try {
+    await omitted.hello()
+    await omitted.call('merge', {})
+    const calls = embeddingCalls(omitted)
+    assert.ok(calls.length > 0)
+    assert.equal(Object.hasOwn(calls[0].args ?? {}, 'model'), false)
+  } finally {
+    omitted.close()
+  }
+
+  const explicit = drive({ vectors: MERGE_VECTORS })
+  try {
+    await explicit.hello()
+    await explicit.call('merge', { embedding_model: 'custom-model' })
+    const calls = embeddingCalls(explicit)
+    assert.ok(calls.length > 0)
+    assert.equal(calls[0].args.model, 'custom-model')
+  } finally {
+    explicit.close()
+  }
+})
+
 test('merge：空会话集 no_input，不调后端、不写', async () => {
   const drv = drive({ memory: { version: 1, sessions: {}, workspaces: {} } })
   try {

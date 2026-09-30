@@ -66,8 +66,11 @@ function treeHas(world, identityId, name) {
 function checkDeclaration() {
   const decl = JSON.parse(readFileSync(join(TODO_DIR, 'plugin.json'), 'utf8'))
   assert.equal(decl.identity, 'todo')
-  assert.deepEqual(decl.implements, ['todo'])
-  assert.deepEqual(decl.methods, { todo: ['describe', 'invoke'] })
+  assert.deepEqual(decl.implements, ['todo', 'tool-provider'])
+  assert.deepEqual(decl.methods, {
+    todo: ['describe', 'invoke'],
+    'tool-provider': ['describe', 'invoke'],
+  })
   assert.deepEqual(decl.needs, { 'storage-kv': { mode: 'one' } })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.state, 'durable')

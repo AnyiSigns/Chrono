@@ -12,12 +12,21 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { loadAnchor } from '../../../packages/host/ledger/index.ts'
+import { getBlob, isBlobPointer } from '../../../packages/host/blobs.ts'
 import { hostPaths } from '../../../packages/host/paths.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'evolve-metrics')
+// 拓扑序：被依赖者先 pack（evolve-evidence / sweep / shadow 都需 evolve-ledger 先入世）。
+const PLUGIN_ORDER = [
+  'evolve-ledger',
+  'evolve-evidence',
+  'evolve-shadow',
+  'evolve-sweep',
+  'evolve-metrics',
+]
 
 function boot(root, args) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -52,10 +61,13 @@ function collectTreePaths(world, treeHash, prefix = '', out = new Map()) {
   return out
 }
 
-function readBlob(world, hash) {
-  const body = world.defs[hash]?.body
-  assert.equal(typeof body, 'string', `blob ${hash} 不是文本`)
-  return body
+/** 读源码文件文本：链上 pointer def → CAS 字节（源码已外迁 `state/blobs/`）。 */
+function readBlob(world, hash, blobsDir) {
+  const pointer = world.defs[hash]?.body
+  assert.ok(isBlobPointer(pointer), `blob ${hash} 不是 pointer def`)
+  const result = getBlob(blobsDir, pointer)
+  assert.equal(result.ok, true, `blob ${hash} 读取失败`)
+  return result.bytes.toString('utf8')
 }
 
 function latestCodeGen(identity) {
@@ -68,13 +80,18 @@ function main() {
   const root = join(tmpdir(), 'kilo', `chrono-evolve-metrics-e2e-${stamp}`)
   mkdirSync(join(root, 'state'), { recursive: true })
 
-  const packed = boot(root, ['pack', PLUGIN_DIR, '--identity', 'evolve-metrics'])
-  assert.equal(packed.ok, true, 'pack evolve-metrics 报告 ok:false')
-  console.log(`pack evolve-metrics: ${packed.status}`)
+  for (const identity of PLUGIN_ORDER) {
+    const dir = join(REPO_ROOT, 'plugins', identity)
+    const packed = boot(root, ['pack', dir, '--identity', identity])
+    assert.equal(packed.ok, true, `pack ${identity} 报告 ok:false`)
+    console.log(`pack ${identity}: ${packed.status}`)
+  }
 
   writeFileSync(
     join(root, 'state', 'plugins.json'),
-    JSON.stringify([{ name: 'evolve-metrics', path: PLUGIN_DIR }]),
+    JSON.stringify(
+      PLUGIN_ORDER.map((identity) => ({ name: identity, path: join(REPO_ROOT, 'plugins', identity) })),
+    ),
   )
   const seeded = boot(root, ['seed'])
   assert.equal(seeded.ok, true, 'seed 报告 ok:false')
@@ -90,7 +107,7 @@ function main() {
   const gen = latestCodeGen(identity)
   assert.ok(gen !== null, 'evolve-metrics 无可解析代码世代')
   const tree = collectTreePaths(world, world.defs[gen.payload].body.tree)
-  const decl = JSON.parse(readBlob(world, tree.get('plugin.json')))
+  const decl = JSON.parse(readBlob(world, tree.get('plugin.json'), paths.blobsDir))
   assert.equal(decl.identity, 'evolve-metrics')
   assert.deepEqual(decl.implements, ['evolve-metrics'])
   assert.deepEqual(decl.methods['evolve-metrics'], ['aggregate', 'sweep', 'shadow', 'record'])

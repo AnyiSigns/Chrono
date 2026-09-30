@@ -1,0 +1,1 @@
+["if",["get",["v",0],["found"]],["v",0],["if",["pred","eq",["v",1],["get",["v",0],["needle"]]],["obj",{"needle":["get",["v",0],["needle"]],"found":["c",true]}],["v",0]]]

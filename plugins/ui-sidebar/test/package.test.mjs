@@ -21,6 +21,7 @@ const METHOD_NAMES = [
   'restoreConversation',
   'branchConversation',
   'listTurns',
+  'listConversations',
   'listWorkspaces',
   'addWorkspace',
   'removeWorkspace',
@@ -34,6 +35,7 @@ const COMMAND_NAMES = [
   'session.restore',
   'session.branch',
   'session.turns',
+  'session.list',
   'workspace.list',
   'workspace.pick',
   'workspace.add',
@@ -114,21 +116,27 @@ test('members = execute + term；命令入口 term 存在且形状为 eff（自�
   }
   const readonly = Object.fromEntries(decl.commands.map((command) => [command.name, command.readonly]))
   assert.equal(readonly['session.turns'], true, 'session.turns 只读')
+  assert.equal(readonly['session.list'], true, 'session.list 只读')
   assert.equal(readonly['workspace.list'], true, 'workspace.list 只读')
   assert.equal(readonly['ui-sidebar.client.read'], true, 'client.read 只读')
-  const READONLY = new Set(['session.turns', 'workspace.list', 'ui-sidebar.client.read'])
+  const READONLY = new Set(['session.turns', 'session.list', 'workspace.list', 'ui-sidebar.client.read'])
   for (const name of COMMAND_NAMES.filter((name) => !READONLY.has(name))) {
     assert.equal(readonly[name], undefined, `${name} 非只读`)
   }
 })
 
-test('入口 term 投影读 / 命令 args 口径', () => {
-  assert.deepEqual(readJson('terms/session.new.json'), ['eff', 'ui-sidebar', 'newConversation', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/session.select.json'), ['eff', 'ui-sidebar', 'selectConversation', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/session.branch.json'), ['eff', 'ui-sidebar', 'branchConversation', ['g', ['ids']]])
-  assert.deepEqual(readJson('terms/workspace.list.json'), ['eff', 'ui-sidebar', 'listWorkspaces', ['g', ['ids']]])
+test('入口 term 不再预取投影 / 命令 args 口径', () => {
+  assert.deepEqual(readJson('terms/session.new.json'), ['eff', 'ui-sidebar', 'newConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/session.select.json'), ['eff', 'ui-sidebar', 'selectConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/session.rename.json'), ['eff', 'ui-sidebar', 'renameConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/session.delete.json'), ['eff', 'ui-sidebar', 'deleteConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/session.restore.json'), ['eff', 'ui-sidebar', 'restoreConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/session.branch.json'), ['eff', 'ui-sidebar', 'branchConversation', ['v', 0]])
+  assert.deepEqual(readJson('terms/workspace.list.json'), ['eff', 'ui-sidebar', 'listWorkspaces', ['v', 0]])
   assert.deepEqual(readJson('terms/session.turns.json'), ['eff', 'ui-sidebar', 'listTurns', ['v', 0]])
-  assert.deepEqual(readJson('terms/workspace.add.json'), ['eff', 'ui-sidebar', 'addWorkspace', ['g', ['ids']]])
+  assert.deepEqual(readJson('terms/session.list.json'), ['eff', 'ui-sidebar', 'listConversations', ['v', 0]])
+  assert.deepEqual(readJson('terms/workspace.add.json'), ['eff', 'ui-sidebar', 'addWorkspace', ['v', 0]])
+  assert.deepEqual(readJson('terms/workspace.remove.json'), ['eff', 'ui-sidebar', 'removeWorkspace', ['v', 0]])
   assert.deepEqual(readJson('terms/workspace.pick.json'), ['eff', 'workspace-picker', 'pick', ['c', null]])
   assert.deepEqual(readJson('terms/workspace.reveal.json'), ['eff', 'workspace-picker', 'reveal', ['v', 0]])
   assert.deepEqual(readJson('terms/client.read.json'), ['eff', 'ui-sidebar', 'clientRead', ['v', 0]])

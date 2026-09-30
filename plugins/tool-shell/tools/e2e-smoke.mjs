@@ -137,10 +137,43 @@ function waitExit(child) {
 }
 
 /**
- * 直连 tool-shell 服务 stdio，把它的 `port.call` 桥接到真实 sandbox 二进制与真实 secrets 服务：
- * `sandbox.exec` → sandbox 的 call 帧；`secrets.resolve` → secrets 的 call 帧；应答回 port.result / port.error。
+ * 直连 tool-shell 服务 stdio，把它对 `sandbox` 端口的 `port.call` 桥接到真实 `sandbox-exec`
+ * 二进制（sandbox 已拆为门面 + sandbox-exec / sandbox-fs；tool-shell 只用 exec 族方法，
+ * 门面委派由 sandbox-split 契约测试覆盖），`secrets.resolve` 桥接到真实 secrets 服务；
+ * 应答回 port.result / port.error。
  */
-async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) {
+/** 仿真 secrets-local 后端：应答 secrets 门面对 `secrets-backend` 的 kinds / read / list 反调。 */
+function answerSecretsBackend(message, secretsStateDir) {
+  const base = { v: '1', id: message.id }
+  if (message.port !== 'secrets-backend' || message.provider !== 'secrets-local') {
+    return { ...base, kind: 'port.error', ok: false, error: 'unresolved_cap', message: `no route for ${message.port}` }
+  }
+  if (message.method === 'kinds') return { ...base, kind: 'port.result', ok: true, value: ['local'] }
+  const file = resolve(secretsStateDir, '..', '..', 'secrets.local.json')
+  let secrets = {}
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) secrets = parsed
+  } catch {
+    secrets = {}
+  }
+  if (message.method === 'list') {
+    const value = Object.keys(secrets)
+      .sort()
+      .map((name) => ({ name, has: true }))
+    return { ...base, kind: 'port.result', ok: true, value }
+  }
+  if (message.method === 'read') {
+    const value = secrets[message.args?.name]
+    if (typeof value !== 'string') {
+      return { ...base, kind: 'port.error', ok: false, error: 'secret_missing', message: 'missing' }
+    }
+    return { ...base, kind: 'port.result', ok: true, value }
+  }
+  return { ...base, kind: 'port.error', ok: false, error: 'unknown_method', message: message.method }
+}
+
+async function directProtocolSmoke(toolShellEntry, sandboxExecBin, secretsStateDir) {
   const workspace = join(tmpdir(), 'kilo', `chrono-tool-shell-ws-${process.pid}-${Date.now()}`)
   mkdirSync(workspace, { recursive: true })
   writeFileSync(join(workspace, 'a.txt'), 'alpha\n')
@@ -149,11 +182,15 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     cwd: TOOL_SHELL_DIR,
     stdio: ['pipe', 'pipe', 'inherit'],
   })
-  const sandbox = spawn(sandboxBin, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
+  const sandbox = spawn(sandboxExecBin, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
   const secrets = spawn(process.execPath, ['execute/main.ts'], {
     cwd: SECRETS_DIR,
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, CHRONO_PLUGIN_STATE: secretsStateDir },
+    env: {
+      ...process.env,
+      CHRONO_PLUGIN_STATE: secretsStateDir,
+      CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify({ 'secrets-backend': ['secrets-local'] }),
+    },
   })
   const tsNext = frameReader(toolShell)
   const sbNext = frameReader(sandbox)
@@ -171,13 +208,18 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
         v: '1',
         id: message.id,
         kind: 'call',
-        port: message.port,
+        // sandbox-exec 只认自家能力名；门面把 `sandbox` 端口委派到它，这里等价改写。
+        port: message.port === 'sandbox' ? 'sandbox-exec' : message.port,
         method: message.method,
         args: message.args,
         env: { run: null, thread: null, now: 0 },
       }),
     )
-    const response = await backend.next()
+    let response = await backend.next()
+    while (response.kind === 'port.call') {
+      backend.child.stdin.write(encodeFrame(answerSecretsBackend(response, secretsStateDir)))
+      response = await backend.next()
+    }
     if (response.kind === 'result') {
       toolShell.stdin.write(
         encodeFrame({
@@ -232,8 +274,8 @@ async function directProtocolSmoke(toolShellEntry, sandboxBin, secretsStateDir) 
     assert.equal(manifest.identity, 'tool-shell')
     assert.deepEqual(manifest.methods['tool-shell'], ['describe', 'invoke'])
 
-    sandbox.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'sandbox' }))
-    assert.equal((await sbNext()).kind, 'manifest', 'sandbox hello 应回 manifest')
+    sandbox.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'sandbox-exec' }))
+    assert.equal((await sbNext()).kind, 'manifest', 'sandbox-exec hello 应回 manifest')
     secrets.stdin.write(encodeFrame({ v: '1', id: 'h', kind: 'hello', impl: 'secrets' }))
     assert.equal((await secNext()).kind, 'manifest', 'secrets hello 应回 manifest')
 
@@ -363,20 +405,28 @@ async function main() {
   let started = false
   try {
     for (const [dir, identity] of [
-      [SECRETS_DIR, 'secrets'],
+      [join(REPO_ROOT, 'plugins', 'sandbox-policy'), 'sandbox-policy'],
+      [join(REPO_ROOT, 'plugins', 'sandbox-exec'), 'sandbox-exec'],
+      [join(REPO_ROOT, 'plugins', 'sandbox-fs'), 'sandbox-fs'],
       [SANDBOX_DIR, 'sandbox'],
+      [join(REPO_ROOT, 'plugins', 'secrets-local'), 'secrets-local'],
+      [SECRETS_DIR, 'secrets'],
       [TOOL_SHELL_DIR, 'tool-shell'],
     ]) {
       const packed = boot(root, ['pack', dir, '--identity', identity])
       assert.equal(packed.ok, true, `pack ${identity} 报告 ok:false`)
     }
-    console.log('pack：secrets / sandbox / tool-shell ok')
+    console.log('pack：sandbox 族 / secrets 族 / tool-shell ok')
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
-        { name: 'secrets', path: SECRETS_DIR },
+        { name: 'sandbox-policy', path: join(REPO_ROOT, 'plugins', 'sandbox-policy') },
+        { name: 'sandbox-exec', path: join(REPO_ROOT, 'plugins', 'sandbox-exec') },
+        { name: 'sandbox-fs', path: join(REPO_ROOT, 'plugins', 'sandbox-fs') },
         { name: 'sandbox', path: SANDBOX_DIR },
+        { name: 'secrets-local', path: join(REPO_ROOT, 'plugins', 'secrets-local') },
+        { name: 'secrets', path: SECRETS_DIR },
         { name: 'tool-shell', path: TOOL_SHELL_DIR },
       ]),
     )
@@ -398,6 +448,8 @@ async function main() {
 
     const sandboxBin = join(root, 'state', 'deps', 'cargo-target', 'release', `sandbox${EXE}`)
     assert.ok(existsSync(sandboxBin), `sandbox 缓存二进制缺失：${sandboxBin}`)
+    const sandboxExecBin = join(root, 'state', 'deps', 'cargo-target', 'release', `sandbox-exec${EXE}`)
+    assert.ok(existsSync(sandboxExecBin), `sandbox-exec 缓存二进制缺失：${sandboxExecBin}`)
 
     const seededBody = spawnSync(process.execPath, [SANDBOX_SEED, '--root', root], {
       encoding: 'utf8',
@@ -416,7 +468,7 @@ async function main() {
 
     await directProtocolSmoke(
       join(TOOL_SHELL_DIR, 'execute', 'main.ts'),
-      sandboxBin,
+      sandboxExecBin,
       join(root, 'state', 'plugins', 'secrets'),
     )
 

@@ -176,6 +176,45 @@ describe('G6 启动重放（基础世界 + 尾段 + 冷段）', () => {
     expect(tail.head.seq).toBe(4)
   })
 
+  it('宿主启动按 journal 字节触发压缩：条数未达阈值也落 base + 冷段', async () => {
+    writeEntries(3)
+    const journalBytes = readFileSync(journalFile()).length
+    expect(journalBytes).toBeGreaterThan(100)
+    const handle = await startHost({
+      root,
+      compactTailEntries: 1000, // 条数触发关闭，只留字节触发
+      compactJournalBytes: 100,
+    })
+    handles.push(handle)
+    expect(existsSync(baseFile())).toBe(true)
+    expect(readColdEntries(coldDir())).toHaveLength(3)
+    expect(readJournal(journalFile())).toHaveLength(1) // 尾段 = [snapshot]
+    await handle.stop()
+    expect(verifyFull(readAllEntries(journalFile(), coldDir())).ok).toBe(true)
+  })
+
+  it('compactJournalBytes: 0 关闭字节触发：条数未达则不压缩', async () => {
+    writeEntries(3)
+    const handle = await startHost({
+      root,
+      compactTailEntries: 1000,
+      compactJournalBytes: 0,
+    })
+    handles.push(handle)
+    expect(existsSync(baseFile())).toBe(false)
+    await handle.stop()
+    expect(existsSync(baseFile())).toBe(false)
+  })
+
+  it('条数与字节阈值皆 0：从不自动压缩', async () => {
+    writeEntries(3)
+    const handle = await startHost({ root, compactTailEntries: 0, compactJournalBytes: 0 })
+    handles.push(handle)
+    expect(existsSync(baseFile())).toBe(false)
+    await handle.stop()
+    expect(existsSync(baseFile())).toBe(false)
+  })
+
   it('compact 幂等：连续两次压缩不产生重叠冷段，全链校验仍过', () => {
     writeEntries(5)
     runCompact(root)

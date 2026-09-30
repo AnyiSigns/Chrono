@@ -1,0 +1,1181 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "get",
+    "of": {
+      "k": "arg",
+      "i": 0
+    },
+    "path": [
+      "invalid"
+    ]
+  },
+  "then": {
+    "k": "obj",
+    "fields": {
+      "index": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "index"
+        ]
+      },
+      "port": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "port"
+        ]
+      },
+      "tool": {
+        "k": "get",
+        "of": {
+          "k": "arg",
+          "i": 0
+        },
+        "path": [
+          "tool"
+        ]
+      },
+      "verdict": {
+        "k": "lit",
+        "v": "deny"
+      },
+      "reason": {
+        "k": "lit",
+        "v": "bad_call"
+      }
+    }
+  },
+  "else": {
+    "k": "if",
+    "cond": {
+      "k": "get",
+      "of": {
+        "k": "arg",
+        "i": 0
+      },
+      "path": [
+        "forbidden"
+      ]
+    },
+    "then": {
+      "k": "obj",
+      "fields": {
+        "index": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "index"
+          ]
+        },
+        "port": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "port"
+          ]
+        },
+        "tool": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "tool"
+          ]
+        },
+        "verdict": {
+          "k": "lit",
+          "v": "deny"
+        },
+        "reason": {
+          "k": "lit",
+          "v": "forbidden_call"
+        }
+      }
+    },
+    "else": {
+      "k": "if",
+      "cond": {
+        "k": "if",
+        "cond": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "portAllowed"
+          ]
+        },
+        "then": {
+          "k": "lit",
+          "v": false
+        },
+        "else": {
+          "k": "lit",
+          "v": true
+        }
+      },
+      "then": {
+        "k": "obj",
+        "fields": {
+          "index": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "index"
+            ]
+          },
+          "port": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "port"
+            ]
+          },
+          "tool": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "tool"
+            ]
+          },
+          "verdict": {
+            "k": "lit",
+            "v": "deny"
+          },
+          "reason": {
+            "k": "lit",
+            "v": "undeclared_capability"
+          }
+        }
+      },
+      "else": {
+        "k": "if",
+        "cond": {
+          "k": "get",
+          "of": {
+            "k": "arg",
+            "i": 0
+          },
+          "path": [
+            "structural",
+            "matched"
+          ]
+        },
+        "then": {
+          "k": "if",
+          "cond": {
+            "k": "if",
+            "cond": {
+              "k": "get",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "policy",
+                "structural"
+              ]
+            },
+            "then": {
+              "k": "lit",
+              "v": false
+            },
+            "else": {
+              "k": "lit",
+              "v": true
+            }
+          },
+          "then": {
+            "k": "obj",
+            "fields": {
+              "index": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "index"
+                ]
+              },
+              "port": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "port"
+                ]
+              },
+              "tool": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "tool"
+                ]
+              },
+              "verdict": {
+                "k": "lit",
+                "v": "allow"
+              },
+              "reason": {
+                "k": "lit",
+                "v": "allowed"
+              }
+            }
+          },
+          "else": {
+            "k": "obj",
+            "fields": {
+              "index": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "index"
+                ]
+              },
+              "port": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "port"
+                ]
+              },
+              "tool": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "tool"
+                ]
+              },
+              "verdict": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "structural",
+                  "verdict"
+                ]
+              },
+              "reason": {
+                "k": "lit",
+                "v": "structural_write"
+              },
+              "rule": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "structural",
+                  "rule"
+                ]
+              }
+            }
+          }
+        },
+        "else": {
+          "k": "if",
+          "cond": {
+            "k": "get",
+            "of": {
+              "k": "arg",
+              "i": 0
+            },
+            "path": [
+              "mcp",
+              "isMcp"
+            ]
+          },
+          "then": {
+            "k": "if",
+            "cond": {
+              "k": "if",
+              "cond": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "mcp",
+                  "trusted"
+                ]
+              },
+              "then": {
+                "k": "lit",
+                "v": true
+              },
+              "else": {
+                "k": "pred",
+                "op": "eq",
+                "a": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "mcpDefault"
+                  ]
+                },
+                "b": {
+                  "k": "lit",
+                  "v": "allow"
+                }
+              }
+            },
+            "then": {
+              "k": "obj",
+              "fields": {
+                "index": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "index"
+                  ]
+                },
+                "port": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "port"
+                  ]
+                },
+                "tool": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "tool"
+                  ]
+                },
+                "verdict": {
+                  "k": "lit",
+                  "v": "allow"
+                },
+                "reason": {
+                  "k": "lit",
+                  "v": "allowed"
+                }
+              }
+            },
+            "else": {
+              "k": "if",
+              "cond": {
+                "k": "pred",
+                "op": "eq",
+                "a": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "mcpDefault"
+                  ]
+                },
+                "b": {
+                  "k": "lit",
+                  "v": "deny"
+                }
+              },
+              "then": {
+                "k": "obj",
+                "fields": {
+                  "index": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "index"
+                    ]
+                  },
+                  "port": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "port"
+                    ]
+                  },
+                  "tool": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "tool"
+                    ]
+                  },
+                  "verdict": {
+                    "k": "lit",
+                    "v": "deny"
+                  },
+                  "reason": {
+                    "k": "lit",
+                    "v": "mcp_untrusted"
+                  },
+                  "rule": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "mcp",
+                      "rule"
+                    ]
+                  }
+                }
+              },
+              "else": {
+                "k": "if",
+                "cond": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "policy",
+                    "mcp"
+                  ]
+                },
+                "then": {
+                  "k": "obj",
+                  "fields": {
+                    "index": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "index"
+                      ]
+                    },
+                    "port": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "port"
+                      ]
+                    },
+                    "tool": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "tool"
+                      ]
+                    },
+                    "verdict": {
+                      "k": "lit",
+                      "v": "escalate"
+                    },
+                    "reason": {
+                      "k": "lit",
+                      "v": "mcp_untrusted"
+                    },
+                    "rule": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "mcp",
+                        "rule"
+                      ]
+                    }
+                  }
+                },
+                "else": {
+                  "k": "obj",
+                  "fields": {
+                    "index": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "index"
+                      ]
+                    },
+                    "port": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "port"
+                      ]
+                    },
+                    "tool": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "tool"
+                      ]
+                    },
+                    "verdict": {
+                      "k": "lit",
+                      "v": "allow"
+                    },
+                    "reason": {
+                      "k": "lit",
+                      "v": "allowed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "k": "if",
+            "cond": {
+              "k": "get",
+              "of": {
+                "k": "arg",
+                "i": 0
+              },
+              "path": [
+                "danger",
+                "matched"
+              ]
+            },
+            "then": {
+              "k": "if",
+              "cond": {
+                "k": "if",
+                "cond": {
+                  "k": "get",
+                  "of": {
+                    "k": "arg",
+                    "i": 0
+                  },
+                  "path": [
+                    "policy",
+                    "danger"
+                  ]
+                },
+                "then": {
+                  "k": "lit",
+                  "v": false
+                },
+                "else": {
+                  "k": "lit",
+                  "v": true
+                }
+              },
+              "then": {
+                "k": "obj",
+                "fields": {
+                  "index": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "index"
+                    ]
+                  },
+                  "port": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "port"
+                    ]
+                  },
+                  "tool": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "tool"
+                    ]
+                  },
+                  "verdict": {
+                    "k": "lit",
+                    "v": "allow"
+                  },
+                  "reason": {
+                    "k": "lit",
+                    "v": "allowed"
+                  }
+                }
+              },
+              "else": {
+                "k": "obj",
+                "fields": {
+                  "index": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "index"
+                    ]
+                  },
+                  "port": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "port"
+                    ]
+                  },
+                  "tool": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "tool"
+                    ]
+                  },
+                  "verdict": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "danger",
+                      "verdict"
+                    ]
+                  },
+                  "reason": {
+                    "k": "lit",
+                    "v": "dangerous_pattern"
+                  },
+                  "rule": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "danger",
+                      "rule"
+                    ]
+                  }
+                }
+              }
+            },
+            "else": {
+              "k": "if",
+              "cond": {
+                "k": "get",
+                "of": {
+                  "k": "arg",
+                  "i": 0
+                },
+                "path": [
+                  "allow",
+                  "matched"
+                ]
+              },
+              "then": {
+                "k": "obj",
+                "fields": {
+                  "index": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "index"
+                    ]
+                  },
+                  "port": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "port"
+                    ]
+                  },
+                  "tool": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "tool"
+                    ]
+                  },
+                  "verdict": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "allow",
+                      "verdict"
+                    ]
+                  },
+                  "reason": {
+                    "k": "lit",
+                    "v": "allowlisted"
+                  },
+                  "rule": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "allow",
+                      "rule"
+                    ]
+                  }
+                }
+              },
+              "else": {
+                "k": "if",
+                "cond": {
+                  "k": "if",
+                  "cond": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "outside",
+                      "matched"
+                    ]
+                  },
+                  "then": {
+                    "k": "get",
+                    "of": {
+                      "k": "arg",
+                      "i": 0
+                    },
+                    "path": [
+                      "policy",
+                      "outside"
+                    ]
+                  },
+                  "else": {
+                    "k": "lit",
+                    "v": false
+                  }
+                },
+                "then": {
+                  "k": "if",
+                  "cond": {
+                    "k": "pred",
+                    "op": "eq",
+                    "a": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "outside",
+                        "verdict"
+                      ]
+                    },
+                    "b": {
+                      "k": "lit",
+                      "v": "allow"
+                    }
+                  },
+                  "then": {
+                    "k": "obj",
+                    "fields": {
+                      "index": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "index"
+                        ]
+                      },
+                      "port": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "port"
+                        ]
+                      },
+                      "tool": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "tool"
+                        ]
+                      },
+                      "verdict": {
+                        "k": "lit",
+                        "v": "allow"
+                      },
+                      "reason": {
+                        "k": "lit",
+                        "v": "allowed"
+                      }
+                    }
+                  },
+                  "else": {
+                    "k": "obj",
+                    "fields": {
+                      "index": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "index"
+                        ]
+                      },
+                      "port": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "port"
+                        ]
+                      },
+                      "tool": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "tool"
+                        ]
+                      },
+                      "verdict": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "outside",
+                          "verdict"
+                        ]
+                      },
+                      "reason": {
+                        "k": "lit",
+                        "v": "outside_workspace"
+                      },
+                      "rule": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "outside",
+                          "rule"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "else": {
+                  "k": "if",
+                  "cond": {
+                    "k": "if",
+                    "cond": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "net",
+                        "matched"
+                      ]
+                    },
+                    "then": {
+                      "k": "get",
+                      "of": {
+                        "k": "arg",
+                        "i": 0
+                      },
+                      "path": [
+                        "policy",
+                        "net"
+                      ]
+                    },
+                    "else": {
+                      "k": "lit",
+                      "v": false
+                    }
+                  },
+                  "then": {
+                    "k": "if",
+                    "cond": {
+                      "k": "pred",
+                      "op": "eq",
+                      "a": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "net",
+                          "verdict"
+                        ]
+                      },
+                      "b": {
+                        "k": "lit",
+                        "v": "allow"
+                      }
+                    },
+                    "then": {
+                      "k": "obj",
+                      "fields": {
+                        "index": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "index"
+                          ]
+                        },
+                        "port": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "port"
+                          ]
+                        },
+                        "tool": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "tool"
+                          ]
+                        },
+                        "verdict": {
+                          "k": "lit",
+                          "v": "allow"
+                        },
+                        "reason": {
+                          "k": "lit",
+                          "v": "allowed"
+                        }
+                      }
+                    },
+                    "else": {
+                      "k": "obj",
+                      "fields": {
+                        "index": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "index"
+                          ]
+                        },
+                        "port": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "port"
+                          ]
+                        },
+                        "tool": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "tool"
+                          ]
+                        },
+                        "verdict": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "net",
+                            "verdict"
+                          ]
+                        },
+                        "reason": {
+                          "k": "lit",
+                          "v": "net_outside_tier"
+                        },
+                        "rule": {
+                          "k": "get",
+                          "of": {
+                            "k": "arg",
+                            "i": 0
+                          },
+                          "path": [
+                            "net",
+                            "rule"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "else": {
+                    "k": "obj",
+                    "fields": {
+                      "index": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "index"
+                        ]
+                      },
+                      "port": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "port"
+                        ]
+                      },
+                      "tool": {
+                        "k": "get",
+                        "of": {
+                          "k": "arg",
+                          "i": 0
+                        },
+                        "path": [
+                          "tool"
+                        ]
+                      },
+                      "verdict": {
+                        "k": "lit",
+                        "v": "allow"
+                      },
+                      "reason": {
+                        "k": "lit",
+                        "v": "allowed"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

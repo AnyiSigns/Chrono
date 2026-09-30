@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "唯一的编排插件：服务自驱图解释器（推式条件边 + 回合重入 + 审批/提问往返 + 回合尾 trace/提案扫描 + 降级判定）。",
+  "description": "唯一的策略门面：水合引用闭包 → 契约版本边界 → 编排 graph-run（图执行）与 turn-ledger（回合台账 / 提案）→ 会话收口；保留公开方法面，消费方零改动。",
   "files": [
     "plugin.json",
     "package.json",

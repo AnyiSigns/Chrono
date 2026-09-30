@@ -329,7 +329,21 @@ export const SIDEBAR_CSS = `
   cursor: col-resize;
 }
 .sb-resizer[hidden] { display: none; }
-.sb-resizer:hover { background: var(--c-text-3); }
+/* Hit area stays 4px, but the visible indicator collapses to 1px: fully transparent by default
+   (no longer a full-height grey bar), shown as a faint line only on hover / drag. */
+.sb-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+  transition: background-color var(--motion-fast);
+}
+.sb-resizer:hover::after { background: color-mix(in srgb, var(--c-text) 18%, transparent); }
+/* Active state while dragging: width already tracks the pointer, so use a muted accent instead of a solid bar. */
+.sb-root[data-dragging="true"] .sb-resizer::after { background: var(--c-accent-strong); }
 
 .sb-flyout {
   position: fixed;
@@ -404,4 +418,11 @@ export const SIDEBAR_CSS = `
   font-size: var(--font-size-xs);
 }
 .sb-status[hidden] { display: none; }
+
+/* Unify hover / focus feedback on a short transition: these used to switch instantly, which felt harsh.
+   Only color / opacity (no layout); with reduced motion --motion-fast is zero so it turns off. */
+.sb-group-head, .sb-session, .sb-iconbtn, .sb-rail-item, .sb-modal-btn, .sb-menu button {
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+.sb-group-actions, .sb-session-actions { transition: opacity var(--motion-fast); }
 `

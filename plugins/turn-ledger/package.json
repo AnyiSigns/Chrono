@@ -1,0 +1,19 @@
+{
+  "name": "turn-ledger",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "回合台账 / 提案：trace 条目组装 + 提案机械闸与影子回放扫描 + 采纳 / 拒绝 verdict，单世代原子写出。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

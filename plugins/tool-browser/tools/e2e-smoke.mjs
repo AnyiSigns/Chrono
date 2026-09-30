@@ -268,13 +268,14 @@ async function sessionSmoke() {
       url: 'https://example.com',
     })
     assert.deepEqual(navigated.value.result, {
+      digest: { action: 'navigate', status: 200, url: 'https://example.com' },
       status: 200,
       url: 'https://example.com',
       title: 'title:https://example.com',
     })
     assert.deepEqual(
       (await driver.invoke({ action: 'click', session, selector: '#a' })).value.result,
-      { ok: true },
+      { ok: true, digest: { action: 'click' } },
     )
     assert.deepEqual(
       (
@@ -286,22 +287,24 @@ async function sessionSmoke() {
           submit: true,
         })
       ).value.result,
-      { ok: true },
+      { ok: true, digest: { action: 'type' } },
     )
     assert.deepEqual(
       (await driver.invoke({ action: 'press', session, key: 'Enter' })).value.result,
-      { ok: true },
+      { ok: true, digest: { action: 'press' } },
     )
     assert.deepEqual((await driver.invoke({ action: 'wait_for', session, ms: 10 })).value.result, {
       ok: true,
+      digest: { action: 'wait_for' },
     })
     assert.deepEqual((await driver.invoke({ action: 'extract', session })).value.result, {
       text: 'hello body',
+      digest: { action: 'extract', bytes: 10 },
     })
     assert.deepEqual(
       (await driver.invoke({ action: 'extract', session, selector: '#a', attr: 'href' })).value
         .result,
-      { value: '/a' },
+      { value: '/a', digest: { action: 'extract', bytes: 2 } },
     )
 
     const shot = await driver.invoke({ action: 'screenshot', session, full_page: true })
@@ -315,6 +318,7 @@ async function sessionSmoke() {
 
     assert.deepEqual((await driver.invoke({ action: 'close', session })).value.result, {
       closed: true,
+      digest: { action: 'close', closed: true },
     })
     const afterClose = await driver.invoke({ action: 'navigate', session, url: 'https://x.test' })
     assert.equal(afterClose.value.error.code, 'session_not_found')
@@ -369,15 +373,22 @@ async function main() {
   mkdirSync(join(root, 'state'), { recursive: true })
   let started = false
   try {
+    for (const identity of ['sandbox-policy', 'sandbox-exec', 'sandbox-fs']) {
+      const packed = boot(root, ['pack', join(REPO_ROOT, 'plugins', identity), '--identity', identity])
+      assert.equal(packed.ok, true, `pack ${identity} 报告 ok:false`)
+    }
     const packedSandbox = boot(root, ['pack', SANDBOX_DIR, '--identity', 'sandbox'])
     assert.equal(packedSandbox.ok, true, 'pack sandbox 报告 ok:false')
     const packedBrowser = boot(root, ['pack', TOOLBROWSER_DIR, '--identity', 'tool-browser'])
     assert.equal(packedBrowser.ok, true, 'pack tool-browser 报告 ok:false')
-    console.log(`pack：sandbox=${packedSandbox.status} tool-browser=${packedBrowser.status}`)
+    console.log(`pack：sandbox 族=${packedSandbox.status} tool-browser=${packedBrowser.status}`)
 
     writeFileSync(
       join(root, 'state', 'plugins.json'),
       JSON.stringify([
+        { name: 'sandbox-policy', path: join(REPO_ROOT, 'plugins', 'sandbox-policy') },
+        { name: 'sandbox-exec', path: join(REPO_ROOT, 'plugins', 'sandbox-exec') },
+        { name: 'sandbox-fs', path: join(REPO_ROOT, 'plugins', 'sandbox-fs') },
         { name: 'sandbox', path: SANDBOX_DIR },
         { name: 'tool-browser', path: TOOLBROWSER_DIR },
       ]),

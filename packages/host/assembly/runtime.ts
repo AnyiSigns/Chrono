@@ -854,7 +854,10 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private registerEndpoints(service: ServiceRuntime): void {
     for (const cap of service.decl.implements) {
       const methods = effectiveMethods(this.world, service.id, service.decl, cap, this.blobsDir)
+      const judgments = service.decl.judgments?.[cap] ?? {}
       for (const method of methods) {
+        // 判定承载的方法由宿主就地求值，不登记服务端点（判定优先且不 spawn 服务）。
+        if (Object.hasOwn(judgments, method)) continue
         this.endpoints.add({
           impl: service.id,
           gen: service.gen,

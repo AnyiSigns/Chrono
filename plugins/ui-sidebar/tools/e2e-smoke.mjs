@@ -15,8 +15,8 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const SIDEBAR_DIR = join(REPO_ROOT, 'plugins', 'ui-sidebar')
 
-/** 依赖先于本插件的 seed 顺序（pins 需在入世时解析到已存在的身份）。 */
-const PACKAGES = ['input', 'session', 'workspace', 'ui-sidebar']
+/** 依赖先于本插件的 seed 顺序（needs 需在入世时解析到已存在的身份）。 */
+const PACKAGES = ['input', 'session', 'workspace', 'workspace-picker', 'ui-sidebar']
 
 function boot(root, args, env) {
   const result = spawnSync(process.execPath, [BOOT_MAIN, ...args, '--root', root], {
@@ -100,7 +100,13 @@ function main() {
     assert.equal(decl.start, 'node execute/main.js')
     assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
     assert.deepEqual(decl.implements, ['ui-sidebar'])
-    assert.deepEqual(decl.pins, { session: 'session', workspace: 'workspace' })
+    assert.deepEqual(decl.pins, { host: 'host' })
+    assert.deepEqual(decl.needs, {
+      session: { mode: 'one' },
+      workspace: { mode: 'one' },
+      'workspace-picker': { mode: 'one' },
+      input: { mode: 'one' },
+    })
     assert.deepEqual(decl.members, [
       { kind: 'execute', path: 'execute/' },
       { kind: 'term', path: 'terms/' },
@@ -112,6 +118,8 @@ function main() {
       'session.delete',
       'session.restore',
       'session.branch',
+      'session.turns',
+      'session.list',
       'workspace.list',
       'workspace.pick',
       'workspace.add',
@@ -124,9 +132,13 @@ function main() {
     for (const command of decl.commands) {
       const term = JSON.parse(readFileSync(join(SIDEBAR_DIR, command.entry), 'utf8'))
       assert.equal(term[0], 'eff')
-      assert.equal(term[1], 'ui-sidebar')
+      // H21 自能力路由：多数命令回本能力类；workspace.pick / reveal 下沉到 workspace-picker 提供方。
+      const owner = command.name === 'workspace.pick' || command.name === 'workspace.reveal'
+        ? 'workspace-picker'
+        : 'ui-sidebar'
+      assert.equal(term[1], owner, `${command.name} 入口能力类应为 ${owner}`)
     }
-    console.log(`声明 / 命令：ok（12 条命令入口 term 齐全；pins=session+workspace）`)
+    console.log(`声明 / 命令：ok（13 条命令入口 term 齐全；pins=host，needs=session+workspace+workspace-picker+input）`)
 
     // 3) 批量 seed：依赖先入世，ui-sidebar 的 pins 才能在入世时解析（同一原子批内解析）。
     writeFileSync(

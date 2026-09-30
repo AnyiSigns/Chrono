@@ -895,6 +895,7 @@ async function history(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> 
     conversation: asString(record['conversation']),
     before: asString(record['before']),
     limit: typeof record['limit'] === 'number' ? record['limit'] : null,
+    full: record['full'] === true,
   })
   if (!outcome.ok) return errorValue('session_unavailable', outcome.message)
   if (isErrorValue(outcome.value)) return outcome.value
