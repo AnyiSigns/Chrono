@@ -5,6 +5,8 @@
 // 运行相（实际 reload / swap / 隔离）在 runtime.ts。
 
 import { readPluginDeclOfGen, resolveTreeEntry } from './decl.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import type { PluginMember } from './decl.ts'
 import type { Gen, Hash, World } from '../../kernel/index.ts'
 
@@ -54,9 +56,10 @@ export function classifyGenerationChange(
   next: World,
   newGen: Gen,
   blobsDir?: string,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
 ): GenerationChange {
-  const oldRead = readPluginDeclOfGen(prev, oldGen, blobsDir)
-  const newRead = readPluginDeclOfGen(next, newGen, blobsDir)
+  const oldRead = readPluginDeclOfGen(prev, oldGen, blobsDir, ecosystem)
+  const newRead = readPluginDeclOfGen(next, newGen, blobsDir, ecosystem)
   if (oldRead === null || newRead === null) return 'code'
   const before = memberRefs(prev, oldRead.tree, oldRead.decl.members)
   const after = memberRefs(next, newRead.tree, newRead.decl.members)

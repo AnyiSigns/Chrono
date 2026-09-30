@@ -5,6 +5,14 @@
 
 import type { Json } from '../kernel/index.ts'
 import { isRecord, jsonByteLength } from './common/json.ts'
+import {
+  AUDIT_DEFAULT_LIMIT,
+  AUDIT_DEFAULT_TIER,
+  AUDIT_MAX_BYTES,
+  AUDIT_MAX_LIMIT,
+  AUDIT_MAX_RECORDS,
+  AUDIT_TIER_DEFAULT,
+} from './options.ts'
 
 /**
  * 审计结局（随审计正文落侧存；审计视图 / 监控按此过滤）：
@@ -54,29 +62,23 @@ export interface AuditQuery {
   query(filter: AuditFilter): AuditReport
 }
 
-export const AUDIT_DEFAULT_LIMIT = 100
-export const AUDIT_MAX_LIMIT = 1000
-
-/** 单档保留窗口缺省（条数）：不分档 / 显式覆盖时使用。 */
-export const AUDIT_MAX_RECORDS = 10_000
-/** 单档保留窗口缺省（近似字节，按 body 的 JSON 长度计）：与条数上限任一超出即淘汰。 */
-export const AUDIT_MAX_BYTES = 8 * 1024 * 1024
-
-/** 声明式分档的单档框架上限：插件自报超上限即截到上限，防绕过审计保留纪律。 */
-export const AUDIT_TIER_MAX_RECORDS = 10_000
-export const AUDIT_TIER_MAX_BYTES = 8 * 1024 * 1024
-
 /** 一档的保留预算（条数 / 字节）；档内最旧先走。 */
 export interface AuditTierBudget {
   maxRecords: number
   maxBytes: number
 }
 
-/** 未声明 `audit_tier` 的端口归 default 档。 */
-export const AUDIT_TIER_DEFAULT = 'default'
-
-/** 缺省档预算：未声明端口走它。 */
-export const AUDIT_DEFAULT_TIER: AuditTierBudget = { maxRecords: 1000, maxBytes: 512 * 1024 }
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export {
+  AUDIT_DEFAULT_LIMIT,
+  AUDIT_DEFAULT_TIER,
+  AUDIT_MAX_BYTES,
+  AUDIT_MAX_LIMIT,
+  AUDIT_MAX_RECORDS,
+  AUDIT_TIER_DEFAULT,
+  AUDIT_TIER_MAX_BYTES,
+  AUDIT_TIER_MAX_RECORDS,
+} from './options.ts'
 
 export interface AuditIndexOptions {
   /** 不分档时的单档全局窗口（测试 / 兼容）；给定时不分档。 */

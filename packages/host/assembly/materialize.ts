@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { blobFile, isBlobPointer } from '../blobs.ts'
 import { gcDirs } from '../common/gc-dirs.ts'
+import { MATERIALIZED_KEEP_GENERATIONS } from '../options.ts'
 import { assemblyGen, isCodeGen } from './decl.ts'
 import { MATERIALIZE_MARKER } from './source.ts'
 import type { BlobPointer } from '../blobs.ts'
@@ -173,11 +174,8 @@ function setReadOnly(file: string): void {
   }
 }
 
-/**
- * active 之外额外保留的前代码世代数。前 N 代只是缓存命中优化，**不是回滚前提**：
- * 被回收的世代仍可由「① 的指针 def + CAS 字节」重建，故回收绝不改变回滚承诺。
- */
-export const MATERIALIZED_KEEP_GENERATIONS = 5
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export { MATERIALIZED_KEEP_GENERATIONS } from '../options.ts'
 
 export interface MaterializedGcReport {
   /** 扫描到的可回收项数（64-hex 世代目录 + staging 残留）。 */

@@ -11,11 +11,14 @@ import {
   readPluginDecl,
   resolveJudgmentHash,
 } from '../assembly/index.ts'
+import { DEFAULT_ECOSYSTEM } from '../assembly/ecosystem.ts'
+import type { EcosystemProfile } from '../assembly/ecosystem.ts'
 import { HOST_CAPABILITY, HOST_METHODS } from '../host-methods.ts'
 import type { DeclRead, NeedDecl } from '../assembly/index.ts'
 import type { JudgmentCall } from './judgment.ts'
 import type { EndpointCallResult, EndpointRow } from '../endpoint-table.ts'
 import type { EndpointTable } from '../endpoint-table.ts'
+import type { CallEnv } from '../wire.ts'
 import type { Hash, Json, World } from '../../kernel/index.ts'
 
 /** 路由失败码：与 protocol §四 同名（作为 `EffResult.error` 落审计，内核归 `eff_error`）。 */
@@ -61,7 +64,7 @@ export interface RoundRouter {
 }
 
 /**
- * 宿主保留能力类调用器：方法级派发，`emitter` 是发出者身份（thread.resume 的 initiator 用它）。
+ * 宿主保留能力类调用器：方法级派发，`emitter` 是发出者身份（run.spawn 的 initiator 用它）。
  * 返回一律是数据（成功值或错误码），不抛错。
  */
 export type HostCapabilityCall = (
@@ -76,6 +79,8 @@ export interface RouterOptions {
   endpoints: EndpointTable
   /** 源码 CAS 目录：解析身份声明（pointer blob）时经它读文本。 */
   blobsDir?: string
+  /** 生态 profile：声明解析（同语言入口扩展名等）随它；缺省内建默认（零行为变化）。 */
+  ecosystem?: EcosystemProfile
   /** pin 哈希与依赖当前 active 不一致：漂移证据（每次解析都可能触发，去重归调用方），不阻塞调用。 */
   onDrift?: (emitter: string, cap: string, gen: Hash) => void
   /** 宿主保留能力类派发器；缺省时 `host` 路由 → `not_loaded`（未接线，不猜）。 */
@@ -90,6 +95,11 @@ export interface RouterOptions {
    * 消除「锚定世界 active 世代 vs 端点表已换代」的偏斜；缺省仍用锚定世界（判定/路由/提交同世界）。
    */
   liveWorld?: () => World
+  /**
+   * 运行期休眠身份集 getter：休眠 = 运行期隔离（世界 `active` 未变、服务停、端点摘除）。
+   * 判定不住端点表，故须显式按它摘除休眠身份的判定路由——否则休眠身份的判定方法仍可路由。
+   */
+  suspended?: () => ReadonlySet<string>
 }
 
 /** 宿主保留端点行：无进程（pid 0），调用经注入的派发器；`gen` 也是保留字面量。 */
@@ -114,6 +124,8 @@ function hostRow(emitter: string, method: string, host: HostCapabilityCall): End
  * 只保留每个身份的最近世代，避免键含世代哈希的 Map 只增（世代换代即替换）。
  */
 export function createRoundRouter(options: RouterOptions): RoundRouter {
+  // 声明解析口径随构造期注入的生态 profile；缺省即内建默认（零行为变化）。
+  const ecosystem = options.ecosystem ?? DEFAULT_ECOSYSTEM
   const ownerIndexes = new WeakMap<World['ids'], Map<Hash, string>>()
   // 每个身份只留最近解析的 (gen → {caps, needs, judgments})：声明不可变，命中可复用；换代替换，不随历史世代累积。
   const declFactsCache = new Map<
@@ -145,7 +157,7 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
   } | null => {
     const cached = declFactsCache.get(id)
     if (cached !== undefined && cached.gen === gen) return cached
-    const read = readPluginDecl(world, id, options.blobsDir)
+    const read = readPluginDecl(world, id, options.blobsDir, ecosystem)
     // 声明读不出（def / blob 暂缺）：不缓存 null，下一次解析可重试；补齐后同键重算成功
     if (read === null) return null
     const facts = {
@@ -206,12 +218,13 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     method,
     transport: 'term',
     link: {
-      call: (_port, called, args, timeoutMs, signal): Promise<EndpointCallResult> => {
+      call: (_port, called, args, timeoutMs, signal, env): Promise<EndpointCallResult> => {
         const run = options.judgment
         if (run === undefined) {
           return Promise.resolve({ ok: false, code: 'not_loaded', message: 'judgment not wired' })
         }
-        return run(world, { owner, gen, cap, method: called, entry }, args, timeoutMs, signal)
+        // 外层调用帧原样透传：判定内效果的 run/thread/now 取外层帧，emitter 在落帧时改写为判定属主。
+        return run(world, { owner, gen, cap, method: called, entry }, args, timeoutMs, signal, env)
       },
     },
   })
@@ -227,6 +240,9 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     cap: string,
     method: string,
   ): RouteOutcome => {
+    // 休眠身份整体不可路由（服务端点已被摘除；判定不住端点表，须在此一并摘除）——
+    // 与休眠服务的收口一致：`not_loaded` 数据错误，不抛、不连坐调用方。
+    if (options.suspended?.().has(owner) === true) return { ok: false, error: 'not_loaded' }
     const entry = judgmentEntryOf(world, owner, gen, cap, method)
     if (entry !== null) return { ok: true, row: judgeRow(world, owner, gen, cap, method, entry) }
     const row = options.endpoints.get(owner, gen, cap, method)
@@ -255,7 +271,7 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
     if (gen === null) return { ok: false, error: 'unresolved_cap' }
     const need = needsOf(resolutionWorld, emitterId, gen.payload)?.[cap]
     if (need === undefined || need.mode !== 'many') return { ok: false, error: 'unresolved_cap' }
-    const members = capabilityProviders(resolutionWorld, cap, options.blobsDir)
+    const members = capabilityProviders(resolutionWorld, cap, options.blobsDir, ecosystem)
     if (!members.includes(target)) return { ok: false, error: 'not_loaded' }
     if (!Object.hasOwn(resolutionWorld.ids, target)) return { ok: false, error: 'stale' }
     const memberGen = assemblyGen(resolutionWorld, target)
@@ -329,7 +345,12 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       // 成员 = 世界能力索引（码元序、排除退役 / 声明读不出 / host）逐项解析端点行；
       // 端点行缺失（休眠隔离 / 方法未声明）作该成员的元素错误，不整槽失败；静默缺席者不入表。
       const members: SlotMember[] = []
-      for (const provider of capabilityProviders(resolutionWorld, cap, options.blobsDir)) {
+      for (const provider of capabilityProviders(
+        resolutionWorld,
+        cap,
+        options.blobsDir,
+        ecosystem,
+      )) {
         const memberGen = assemblyGen(resolutionWorld, provider)
         if (memberGen === null) {
           members.push({ provider, ok: false, error: 'not_loaded' })

@@ -17,6 +17,7 @@ import { createPeriodicRunner } from './periodic-runner.ts'
 import { createWatchReload } from './watch/host-reload.ts'
 import { buildCommandIndex, startAssembly } from './assembly/index.ts'
 import type { AssemblyRuntimeHandle, CommandIndex } from './assembly/index.ts'
+import { readEcosystem } from './assembly/ecosystem.ts'
 import {
   createRoundRouter,
   createJudgmentRunner,
@@ -64,6 +65,13 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
   // 包装器防御：库调用方可能绕过入口解析，非法值同样 fail-closed（不静默降级为无包装器）
   if (options.startWrapper !== undefined) resolveStartWrapper(options.startWrapper)
   const root = options.root
+  // 生态 profile 只在启动时解析一次：文件缺失 / 键缺失即内建默认（零行为变化），
+  // 形态非法则与入世侧同口径 fail-closed 拒启动；此后经参数注入装配，不在各处重复读取。
+  const ecosystem = (() => {
+    const read = readEcosystem(root)
+    if (!read.ok) throw new Error(read.reason)
+    return read.profile
+  })()
   const paths = hostPaths(root)
   const address = socketPath(root)
   const startedAt = Date.now()
@@ -293,6 +301,10 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
           // 运行期监听错误：按停机序列收口，不崩宿主
           void stopImpl?.()
         },
+        onInvalidFrame: (reason) => {
+          // 无法配对的入站畸形帧：只记运维事件（连接由 server 断掉），不影响其它客户端
+          safeAppendLifecycle({ at: Date.now(), kind: 'host', event: 'invalid_frame', reason })
+        },
       })
       server = localServer
 
@@ -327,6 +339,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
         callTimeoutMs: options.callTimeoutMs,
         portAudit,
         nextNow: () => registry.nextNow(),
+        ecosystem,
       })
 
       dispatchRef = createDispatch({
@@ -362,6 +375,7 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
         startWrapper: options.startWrapper,
         depsDir: paths.depsDir,
         blobsDir: paths.blobsDir,
+        ecosystem,
       })
       // 路由解析按「已应用世界」而非 run 锚定世界：端点表由 runtime.applyWorld 按该世界换代换键，
       // 锚定旧世代会在并发换代后解析到已被摘除的世代键（假 not_loaded）；liveWorld 与端点表同代。
@@ -378,7 +392,10 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       router = createRoundRouter({
         endpoints: runtime.endpoints,
         blobsDir: paths.blobsDir,
+        ecosystem,
         liveWorld: follow.liveWorld,
+        // 休眠 = 运行期隔离：判定不住端点表，须按运行态休眠集一并摘除其判定路由。
+        suspended: () => runtime?.suspendedIds() ?? new Set<string>(),
         host: wiring.capability,
         judgment: createJudgmentRunner(DEFAULT_LIMITS, { invoke: judgmentInvoke }),
         onDrift: (impl, cap, gen) => {

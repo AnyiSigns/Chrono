@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     await handler({ root, args, options })
     return
   }
-  await dispatchPluginCommand(root, command, args)
+  await dispatchPluginCommand(root, command, args, options)
 }
 
 try {

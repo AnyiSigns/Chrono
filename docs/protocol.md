@@ -12,6 +12,7 @@
 - **帧**：4 字节大端长度 + UTF-8 JSON（按内核口径的规范序列化）。插件服务侧由顶层独立包 `plugin-sdk` 提供同一实现：自带规范序列化，与宿主 `wire.ts` 逐字节一致（一致性测试钉死）。
 - **信封**：`{ v, id, kind, ... }`；`v` = 协议版本，`kind` = 消息种类。
 - 请求 / 响应按 `id` 配对；服务可主动发 `event`（无对应请求）。
+- **入站畸形帧**（入站面）：可配对（`id` 为字符串）但 `v` / `kind` 缺或类型错 → 回 `error{code:'bad_directive', message:'malformed frame'}`，不静默丢弃；协议上**无法配对**（不可解码 / 无 `id`）→ 断开该连接并记宿主 `host.invalid_frame` 运维事件，不影响其它客户端。
 - 版本不匹配 → `protocol_mismatch`。
 
 ## 二、服务协议（宿主 ↔ 插件服务）
@@ -85,7 +86,12 @@
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
 - **不扩权**：`port` 必须 ∈ 本插件 `pins` ∪ `one`-needs（`needs.mode:"one"` 的能力类，经 needs 分支解析）；`many` 默认不经反向调用，但帧带 `provider`（成员身份）且该类在本插件 `needs` 且 `mode:"many"`、目标 ∈ 世界索引(cap) 时可按成员定位调用（否则 `unresolved_cap`）；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
-- **保留能力类 `host`**：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）；方法 `thread.resume` / `thread.terminate`（run 生命周期）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、`identities {}`（只读身份清单面）、`identities.suspend { id }` / `identities.resume { id }`（运行期休眠 / 恢复：保留索引、停服务摘端点、不连坐依赖者；休眠态不持久）、`source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、`validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
+- **保留能力类 `host`**（方法集恰 12 项；另有 `thread.resume` / `thread.terminate` 两个弃用别名，见下）：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）。方法：
+  `run.spawn` / `run.cancel`（run 生命周期；旧名 `thread.resume` / `thread.terminate` 作为弃用别名并发保留一个协议版本，命中即记宿主 `method_deprecated` 运维日志）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、
+  `identities {}`（只读身份清单面）、`identities.suspend { id }` / `identities.resume { id }`（运行期隔离：停服务摘端点、**判定承载方法一并不可路由**、保留索引、不连坐依赖者；休眠态不持久，已是坏分支隔离态报 `isolated`）、
+  `source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、
+  `validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`blob.put { bytes(base64) }`（源码字节落 CAS，回 pointer def body；规范 base64、原始字节上限 8 MiB）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。
+  上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -100,6 +106,7 @@
 - `event` **不是第三条改世界的路**：不得用于写链、不得替代 `write`、不得索取其他插件的端点。
 - 宿主把服务上行 `event` 原样转成入站协议的 `event`（`impl` = 上报服务的身份，作命名空间），
   广播给已连接客户端（见 §三）。
+- **握手前自发帧**：服务可在 `hello` 前自发帧（如 `inproc` 工厂同步 `emit`）。宿主通道层在消息回调就绪前**有界缓冲**、就绪后按原序投递（超 `MAX_PENDING_FRAMES` 按协议损坏收口，不无界缓冲）；该窗口极窄，覆盖启动期事件不静默丢失。
 
 ### 2.6 服务协议禁止
 
@@ -139,6 +146,7 @@
   已落账内容**不回溯**。`cancel` 只影响一个 run、宿主继续运行；与保留字 `stop`（停宿主）无关。
   **命令 run 与 `submit` run 同规登记**，同样可被 `cancel{run}` 与停机 abort 覆盖（命令 `result` 不带 `run`）。
 - 未知 / 已结束的 run → `error{code:'unknown_run'}`（fail-closed，不静默吞掉）。
+- **受理后错误收口时序**：`submit` / `command` / `forward` 先回 `accepted{id, run}`；随后若起 run 阶段失败，宿主按**原请求 `id`** 回 `error` 帧（该 run 以真实错误码收口，不再推 `result`）。客户端据此把该 `error` 归位到对应 run、立即以真实错误码收口——一次 run 等的是**独立的运行等待预算**（client 库 `runTimeoutMs`，缺省回落单帧请求超时），不按单次 `call` 口径判，故多轮 / 慢 run 不被误判 `timeout`（client API 见 `packages/client/README.md`）。
 - `asset.put` / `asset.get` 是**资产面**：字节按内容寻址住宿主侧 `state/assets/<sha256>`（④ 不可重算），
   **不进世界、不写链、不推进**；世界只存引用 `{kind:'asset', sha256, mime, size}`（内联在引用方数据里）。
   `put.bytes` 是**规范 base64**（往返一致才收），宿主解码后算 sha256 落盘（同字节幂等）；原始字节上限 8 MiB
@@ -185,9 +193,14 @@
 | `bad_asset` | 资产 base64 / mime / sha256 形态非法 | §三 |
 | `asset_too_large` | 资产原始字节超过 8 MiB 上限 | §三 |
 | `asset_missing` | 资产字节不在宿主资产区（可能已回收） | §三 |
-| `too_many_runs` | detached run（`host.thread.resume`）超过宿主并发上限 | `host.md` §五 宿主扩展面 |
+| `bad_blob` | `blob.put` base64 非规范 / pointer 形态非法；载体读源码指针校验失败同码 | `host.md` §五 宿主扩展面 |
+| `blob_too_large` | `blob.put` 原始字节超过 8 MiB 上限 | `host.md` §五 宿主扩展面 |
+| `blob_missing` | 源码指针指向的 CAS 字节缺失（与 `asset_missing` 同口径的已知限制） | `host.md` §五 宿主扩展面 |
+| `too_many_runs` | detached run（`host.run.spawn`）超过宿主并发上限 | `host.md` §五 宿主扩展面 |
 | `bad_args` | 命令 `args` 不符合 `argsSchema` | `host.md` §五 命令 |
 | `bad_args_schema` | `argsSchema` 含白名单外关键词 / 形态非法（入世整包拒） | `plugins.md` §二 方言 |
+| `bad_plugin_decl` | `plugin.json` 形态 / 枚举 / 包内路径 / `implements`（含重复）等非法（入世整包拒；亦作起服务失败 reason） | `plugins.md` §二 |
+| `reserved_command_name` | 插件命令占用框架保留命令名（入世整包拒） | `plugins.md` §二 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |
 | `transport_failed` | 效果未执行（传输级）的审计 `outcome`；具体通道错误码（`timeout` / `closed` / `protocol_error` / `bad_manifest` / `cancelled`）另存 `EffResult.error`（§2.2） | §2.2 |
 | `unresolved_pin` | 被依赖身份不存在 / 未激活（入世、或运行期结构 op / `batch` 子操作的 pins 解析） | `host.md` §五 源码 / 落账 |
@@ -201,6 +214,8 @@
 | `restart_exhausted` | 崩溃重启超过 `restart` 上限 | `host.md` §五 装配 |
 | `bad_start_wrapper` | 启动包装器非法值（空 / 含 NUL / 换行） | `host.md` §五 服务启动包装器 |
 | `bad_call_timeout` | 调用超时选项非法值 | `host.md` §五 效果 |
+| `bad_watch` | watcher 开关环境值非法（`CHRONO_WATCH`） | `host.md` §五 宿主入口选项 |
+| `unknown_entry_arg` | 宿主入口未知位置参数 / 未知 flag | `host.md` §五 宿主入口选项 |
 | `picker_unavailable` | 无图形会话，原生目录选择器不可用 | `plugins/workspace/README.md` |
 | `not_found` | `host.source.read` 路径不存在 / 指向目录；`host.def.read` 身份不存在或 body 组装失败 | `host.md` §五 宿主扩展面 |
 | `def_read_too_many` | `host.def.read` 单次哈希数超过 256 | `host.md` §五 宿主扩展面 |

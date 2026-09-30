@@ -3,14 +3,16 @@
 // 只打公共面 ../index.ts。
 
 import { describe, expect, it } from 'vitest'
-import type { Entry, Hash, Head, Json, Op, World } from '../index.ts'
+import type { Def, Entry, Gen, Hash, Head, Json, Op, World } from '../index.ts'
 import {
   EMPTY_HEAD,
   EMPTY_WORLD,
   H,
+  LAZY_DEFS,
   applyEntry,
   assembleBody,
   cloneWorld,
+  defHas,
   entryHash,
   flattenPatches,
   readPatchOps,
@@ -140,6 +142,33 @@ describe('assembleBody：append / replace / delete', () => {
   })
 })
 
+/** 最小惰性 defs 桩：判存在 / 列键只读清单，取 body 走 store（缺体回落 undefined）。 */
+function lazyDefs(manifest: Set<Hash>, store: Map<Hash, Def>): Record<Hash, Def> {
+  const handle = {
+    has: (hash: Hash): boolean => manifest.has(hash),
+    hashes: (): Hash[] => [...manifest],
+    clone: (): Record<Hash, Def> => lazyDefs(manifest, store),
+  }
+  return new Proxy({} as Record<string, unknown>, {
+    get(target, key) {
+      if (key === LAZY_DEFS) return handle
+      if (typeof key !== 'string') return Reflect.get(target, key)
+      return store.get(key)
+    },
+    has(target, key) {
+      return typeof key === 'string' ? manifest.has(key) : Reflect.has(target, key)
+    },
+    ownKeys: () => [...manifest],
+    getOwnPropertyDescriptor(target, key) {
+      if (typeof key === 'string' && manifest.has(key)) {
+        return { enumerable: true, configurable: true, get: () => store.get(key), set: () => true }
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    set: () => true,
+  }) as unknown as Record<Hash, Def>
+}
+
 /** 建身份 + 整份世代，返回 payload 键。 */
 function seedFullGen(h: Harness, id: string, body: Json): Hash {
   const schema = h.push('put', { body: { s: 1 } }).argsHash
@@ -204,6 +233,59 @@ describe('补丁世代：add_gen base', () => {
     // 失败未落地世代，世界分文不动
     expect(h.w.ids['u1'].gens).toHaveLength(1)
     expect(JSON.stringify(h.w)).toBe(before)
+  })
+
+  it('惰性 defs：清单命中而分片缺体 → missing_ref，绝不读 body 抛 TypeError', () => {
+    const schemaDef: Def = { body: { s: 1 } }
+    const sigDef: Def = { body: { sig: 1 } }
+    const schemaKey = H(schemaDef as unknown as Json)
+    const sigKey = H(sigDef as unknown as Json)
+    const ghostPayload = H({ body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } })
+    const store = new Map<Hash, Def>([
+      [schemaKey, schemaDef],
+      [sigKey, sigDef],
+    ])
+    const manifest = new Set<Hash>([schemaKey, sigKey, ghostPayload])
+    const gen0: Gen = {
+      seq: 0,
+      payload: schemaKey,
+      pins: {},
+      sig: sigKey,
+      adopted: { at: 1, by: 'u', write: 'w'.repeat(64) },
+    }
+    const w: World = {
+      defs: lazyDefs(manifest, store),
+      ids: {
+        u1: {
+          id: 'u1',
+          schema: schemaKey,
+          gens: [gen0],
+          active: schemaKey,
+          born: { at: 1, by: 'u' },
+        },
+      },
+    }
+    expect(defHas(w.defs, ghostPayload)).toBe(true) // 清单说存在
+    expect(w.defs[ghostPayload]).toBeUndefined() // 分片缺体：实际取用为 undefined
+    const e = mkEntry(1, null, 'add_gen', {
+      id: 'u1',
+      payload: ghostPayload,
+      pins: {},
+      sig: sigKey,
+      base: 0,
+    })
+    const codeOf = (): string => {
+      try {
+        applyEntry(w, e)
+        return '<no-throw>'
+      } catch (err) {
+        return typeof (err as { code?: unknown }).code === 'string'
+          ? (err as { code: string }).code
+          : '<non-kernel>'
+      }
+    }
+    expect(codeOf()).toBe('missing_ref') // fail-closed：同 evalCall 的 missing_ref 口径
+    expect(w.ids['u1'].gens).toHaveLength(1) // 失败不落地世代
   })
 
   it('补丁世代可重放：replay 逐字段一致，verify 通过', () => {

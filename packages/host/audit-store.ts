@@ -29,7 +29,7 @@ export interface AuditStoreOptions {
 
 interface TolerantRead {
   records: AuditRecord[]
-  /** 末行无换行且解析失败（撕裂尾）：调用方应截到 `validBytes`。 */
+  /** 末段无尾换行（撕裂尾）：调用方应截到 `validBytes`。 */
   truncated: boolean
   /** 有效前缀字节长度（含末条完整行的换行）。 */
   validBytes: number
@@ -52,7 +52,7 @@ function asAuditRecord(value: unknown): AuditRecord | null {
 
 /**
  * 容错读：逐行解析；带换行的坏行跳过（fail-open，旁路不砖化），
- * 末行无换行且解析失败视为撕裂尾丢弃并回报有效前缀字节数。
+ * 末段无尾换行即撕裂尾，丢弃并回报有效前缀字节数。
  */
 function readTolerant(file: string): TolerantRead {
   const read = readJsonlFile(file, {

@@ -85,13 +85,27 @@ export function helpText(): string {
   ].join('\n')
 }
 
-async function withClient<T>(root: string, fn: (client: Client) => Promise<T>): Promise<T> {
-  const client = await connect({ root })
+async function withClient<T>(
+  root: string,
+  fn: (client: Client) => Promise<T>,
+  runTimeoutMs?: number,
+): Promise<T> {
+  const client = await connect({ root, ...(runTimeoutMs === undefined ? {} : { runTimeoutMs }) })
   try {
     return await fn(client)
   } finally {
     client.close()
   }
+}
+
+/**
+ * run/等待超时：与宿主可配 `call-timeout` 同口径（CLI > `CHRONO_CALL_TIMEOUT_MS` > 30s 常量）。
+ * 取舍：boot 连的是可能在别处启动的宿主，读不到其进程级生效值，故按本进程同一优先级解析并透传；
+ * 若宿主曾以 `boot start --call-timeout-ms` 显式覆盖、本次又未同步该 flag / env，等待仍按本进程解析。
+ * 只给会起 run 的命令（`run` / 插件命令）用；普通请求等待口径不变。
+ */
+function resolveRunTimeoutMs(options: EntryOptions): number {
+  return resolveCallTimeoutMs(options.callTimeout, process.env['CHRONO_CALL_TIMEOUT_MS'])
 }
 
 /** 本次子进程是否已退出 / 起进程失败；在 spawn 后立即挂监听，避免漏掉瞬时退出。 */
@@ -233,12 +247,16 @@ export const handlers: Record<string, CommandHandler> = {
       print(await client.audit(filter === null ? undefined : (filter as unknown as AuditFilter))),
     )
   },
-  run: async ({ root, args }) => {
-    await withClient(root, async (client) => {
-      const directives = parseJsonArg(args[0])
-      if (!Array.isArray(directives)) throw new Error('run expects a directives array')
-      print(await client.submit(directives as Directive[]))
-    })
+  run: async ({ root, args, options }) => {
+    await withClient(
+      root,
+      async (client) => {
+        const directives = parseJsonArg(args[0])
+        if (!Array.isArray(directives)) throw new Error('run expects a directives array')
+        print(await client.submit(directives as Directive[]))
+      },
+      resolveRunTimeoutMs(options),
+    )
   },
   seed: ({ root, args }) => {
     const report = runSeed(root, seedEntries(args))
@@ -252,7 +270,9 @@ export const handlers: Record<string, CommandHandler> = {
     if (!report.ok) process.exitCode = 1
   },
   verify: ({ root }) => {
-    print(runVerify(root))
+    const report = runVerify(root)
+    print(report)
+    if (!report.ok) process.exitCode = 1
   },
   unseeded: ({ root }) => {
     print(unseededIdentities(root))
@@ -289,8 +309,11 @@ export async function dispatchPluginCommand(
   root: string,
   command: string,
   args: string[],
+  options: EntryOptions,
 ): Promise<void> {
-  await withClient(root, async (client) =>
-    print(await client.command(command, parseJsonArg(args[0]))),
+  await withClient(
+    root,
+    async (client) => print(await client.command(command, parseJsonArg(args[0]))),
+    resolveRunTimeoutMs(options),
   )
 }

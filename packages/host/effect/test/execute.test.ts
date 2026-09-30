@@ -169,9 +169,15 @@ describe('效果执行（审计草稿）', () => {
 
   it('大 args（世界投影量级）→ 审计请求显著小于原始 args', async () => {
     const projection = {
-      conversations: Array.from({ length: 200 }, (_, i) => ({ id: `c${i}`, refs: { m: 'x'.repeat(200) } })),
+      records: Array.from({ length: 200 }, (_, i) => ({
+        id: `r${i}`,
+        refs: { m: 'x'.repeat(200) },
+      })),
     }
-    const eff: EffRequest = { ...mkEff('session', 'select'), args: { conversation: projection, context: projection } }
+    const eff: EffRequest = {
+      ...mkEff('toy.store', 'read'),
+      args: { payload: projection, context: projection },
+    }
     const outcome = await executeEffect(eff, meta())
     expect(JSON.stringify(eff.args).length).toBeGreaterThan(50 * 1024)
     expect(JSON.stringify(bodyOf(outcome)['request']).length).toBeLessThan(1024)

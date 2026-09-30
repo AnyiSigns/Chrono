@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { runSeed, runVerify, runReplay, startHost } from '../../host/index.ts'
@@ -82,6 +82,33 @@ describe('CLI 薄壳 boot', () => {
     const report = runVerify(root)
     expect(report.ok).toBe(true)
     expect(report.head!.seq).toBeGreaterThanOrEqual(0)
+  })
+
+  it('verify：ok:true → CLI 退出码 0', async () => {
+    runSeed(root)
+    const result = await runBoot(['verify', '--root', root])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as { ok: boolean }
+    expect(report.ok).toBe(true)
+  })
+
+  it('verify：ok:false → CLI 退出码非 0，报告照常打印（与 seed / pack 同规）', async () => {
+    runSeed(root)
+    // 篡改一条 entry 的 argsHash：结构仍可读，但全量校验必判 args_hash_mismatch。
+    const journal = join(root, 'state', 'world', 'journal.jsonl')
+    const lines = readFileSync(journal, 'utf8')
+      .split('\n')
+      .filter((line) => line.length > 0)
+    const first = JSON.parse(lines[0]!) as { argsHash: string }
+    first.argsHash = '0'.repeat(64)
+    lines[0] = JSON.stringify(first)
+    writeFileSync(journal, `${lines.join('\n')}\n`)
+
+    const result = await runBoot(['verify', '--root', root])
+    expect(result.code).toBe(1)
+    const report = JSON.parse(result.stdout) as { ok: boolean; error?: string }
+    expect(report.ok).toBe(false)
+    expect(typeof report.error).toBe('string')
   })
 
   it('replay 重建世界，worldRev 非空', () => {
@@ -256,6 +283,20 @@ describe('CLI 薄壳 boot', () => {
     const report = JSON.parse(result.stdout) as { ok: boolean; items: { status: string }[] }
     expect(report.ok).toBe(false)
     expect(report.items[0]!.status).toBe('failed')
+  })
+
+  it('pack：未知 flag → 退出码 1、报 unknown_flag', async () => {
+    const result = await runBoot([
+      'pack',
+      join(root, 'pkg', 'toy'),
+      '--identity',
+      'toy',
+      '--nope',
+      '--root',
+      root,
+    ])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('unknown_flag')
   })
 
   it('pack：缺目录 / 缺 --identity → 退出码 1', async () => {

@@ -327,6 +327,17 @@ function evalFold(node: Json[], env: Env, at: AtNode | null): Json {
 
 function evalEff(node: Json[], env: Env, at: AtNode | null): Json {
   if (node.length !== 4) throw new KernelError('bad_term')
+  const port = node[1]
+  const method = node[2]
+  // 形态校验先于实参求值与 n 自增：port/method 不合规即拒绝，不产生任何侧效应
+  if (
+    typeof port !== 'string' ||
+    port.length === 0 ||
+    typeof method !== 'string' ||
+    method.length === 0
+  ) {
+    throw new KernelError('bad_term')
+  }
   const argValue = evalNode(node[3], env, atChild(at, 3))
   const id = H({ run: env.run, i: env.i, n: env.n }) // 只带 n 会碰撞，必须带 directive 序号 i
   env.n += 1
@@ -334,8 +345,8 @@ function evalEff(node: Json[], env: Env, at: AtNode | null): Json {
   if (r === undefined) {
     throw new Suspend({
       id,
-      port: node[1] as string,
-      method: node[2] as string,
+      port,
+      method,
       args: argValue,
       caps: env.caps,
     })

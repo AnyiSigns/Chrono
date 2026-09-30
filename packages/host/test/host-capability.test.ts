@@ -1,5 +1,6 @@
 // H14 宿主保留能力类 host：audit / asset.put / asset.get / source.read /
-// thread.terminate / thread.resume 经 eff 路由到宿主自身，结果作数据回灌。
+// run.cancel / run.spawn（含弃用别名 thread.terminate / thread.resume）经 eff 路由到宿主自身，
+// 结果作数据回灌。
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
@@ -10,8 +11,10 @@ import { runSeed } from '../offline.ts'
 import { readJournal, loadAnchor } from '../ledger/index.ts'
 import { resolveTreeEntry } from '../assembly/index.ts'
 import { isBlobPointer } from '../blobs.ts'
+import { hostPaths } from '../paths.ts'
+import { flushLifecycle } from '../lifecycle.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
-import { FIXTURE_ALPHA, waitFor, writeTempPackage } from './test-helpers-ext.ts'
+import { FIXTURE_ALPHA, readLifecycle, waitFor, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { EventMessage } from '../../client/index.ts'
 import type { Json } from '../../kernel/index.ts'
@@ -26,6 +29,8 @@ const SOURCE_READ_TERM: Json = ['eff', 'host', 'source.read', ['v', 0]]
 const VALIDATE_TERM: Json = ['eff', 'host', 'validate_package', ['v', 0]]
 const TERMINATE_TERM: Json = ['eff', 'host', 'thread.terminate', ['v', 0]]
 const RESUME_TERM: Json = ['eff', 'host', 'thread.resume', ['v', 0]]
+const CANCEL_TERM: Json = ['eff', 'host', 'run.cancel', ['v', 0]]
+const SPAWN_TERM: Json = ['eff', 'host', 'run.spawn', ['v', 0]]
 const WRITE_TERM: Json = [
   'c',
   { $directives: [{ kind: 'write', request: { op: 'put', args: { body: { resumed: true } } } }] },
@@ -75,6 +80,8 @@ describe('H14 宿主保留能力类 host', () => {
         'validate.json': JSON.stringify(VALIDATE_TERM),
         'terminate.json': JSON.stringify(TERMINATE_TERM),
         'resume.json': JSON.stringify(RESUME_TERM),
+        'cancel.json': JSON.stringify(CANCEL_TERM),
+        'spawn.json': JSON.stringify(SPAWN_TERM),
         'write.json': JSON.stringify(WRITE_TERM),
       },
       commands: [
@@ -88,6 +95,8 @@ describe('H14 宿主保留能力类 host', () => {
         { name: 'toy-host.validate', entry: 'terms/validate.json' },
         { name: 'toy-host.terminate', entry: 'terms/terminate.json' },
         { name: 'toy-host.resume', entry: 'terms/resume.json' },
+        { name: 'toy-host.cancel', entry: 'terms/cancel.json' },
+        { name: 'toy-host.spawn', entry: 'terms/spawn.json' },
         { name: 'toy-host.write', entry: 'terms/write.json' },
       ],
     })
@@ -324,7 +333,7 @@ describe('H14 宿主保留能力类 host', () => {
     }
   })
 
-  it('thread.terminate：未知 run → unknown_run', async () => {
+  it('thread.terminate：未知 run → unknown_run，并旁路记弃用日志', async () => {
     seedHost()
     const handle = await startHost({ root })
     handles.push(handle)
@@ -334,6 +343,40 @@ describe('H14 宿主保留能力类 host', () => {
         error: string
       }
       expect(value.error).toBe('unknown_run')
+      flushLifecycle(hostPaths(root).lifecycleFile)
+      expect(readLifecycle(hostPaths(root).lifecycleFile)).toContainEqual(
+        expect.objectContaining({ kind: 'host', event: 'method_deprecated' }),
+      )
+    } finally {
+      client.close()
+    }
+  })
+
+  it('run.cancel / run.spawn：中性名与旧别名同路（未知 run 回 unknown_run；spawn 起 detached run）', async () => {
+    seedHost()
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const client = await connect({ root, timeoutMs: 3000 })
+    try {
+      const cancelled = valueOf(await client.command('toy-host.cancel', { run: 'not-a-run' })) as {
+        error: string
+      }
+      expect(cancelled.error).toBe('unknown_run')
+
+      const commands = await client.commands()
+      const entry = commands.find((command) => command.name === 'toy-host.write')?.entry
+      expect(entry).toBeDefined()
+      const before = readJournal(journalFile()).length
+      const spawned = valueOf(
+        await client.command('toy-host.spawn', { entry: entry as string, args: null }),
+      ) as { run: string }
+      expect(typeof spawned.run).toBe('string')
+      await waitFor(() => readJournal(journalFile()).length > before, 'spawned run write')
+      // 中性名不记弃用日志（别名命中才记）
+      const deprecated = readLifecycle(hostPaths(root).lifecycleFile).filter(
+        (record) => record.event === 'method_deprecated',
+      )
+      expect(deprecated).toEqual([])
     } finally {
       client.close()
     }

@@ -13,6 +13,8 @@ import {
   entryHash,
   worldRev,
 } from '../index.ts'
+import { substitute } from '../journal.apply.ts'
+import { MAX_JSON_DEPTH } from '../value.ts'
 
 type Outcome = ReturnType<typeof applyEntry>
 type OkOutcome = Extract<Outcome, { ok: true }>
@@ -305,6 +307,57 @@ describe('batch：原子性、$n、两段式', () => {
     )
     expect(r.written.length).toBe(2)
     expect(h.w.defs[r.written[1]]).toEqual({ body: { literal: { $n: 0 }, ref: r.written[0] } })
+  })
+
+  it('$lit 深嵌套链：深度沿链累加，超上限 → code=depth，绝不 RangeError', () => {
+    let deep: Json = 0
+    for (let i = 0; i < 10_000; i++) deep = { $lit: deep }
+    let caught: unknown
+    try {
+      substitute(deep, [], 0)
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: unknown })?.code).toBe('depth')
+  })
+
+  it('$lit 链深度 == MAX_JSON_DEPTH 通过、超 1 即 depth', () => {
+    const wrap = (levels: number): Json => {
+      let v: Json = 7
+      for (let i = 0; i < levels; i++) v = { $lit: v }
+      return v
+    }
+    expect(substitute(wrap(MAX_JSON_DEPTH), [], 0)).toBe(7)
+    let caught: unknown
+    try {
+      substitute(wrap(MAX_JSON_DEPTH + 1), [], 0)
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: unknown })?.code).toBe('depth')
+  })
+
+  it('$lit 嵌套 $lit：逐层剥开，内层 $n 作数据、外层占位符照常替换', () => {
+    const h = harness()
+    const r = asOk(
+      h.apply('batch', {
+        ops: [
+          { op: 'put', args: { body: { i: 1 } } },
+          {
+            op: 'put',
+            args: { body: { nested: { $lit: { $lit: { $n: 0 } } }, ref: { $n: 0 } } },
+          },
+        ],
+      }).r,
+    )
+    expect(h.w.defs[r.written[1]]).toEqual({ body: { nested: { $n: 0 }, ref: r.written[0] } })
+  })
+
+  it('$lit 在数组内 / 值为标量或 null：逐元素还原，标量与 null 原样', () => {
+    expect(substitute({ a: [{ $lit: { $n: 0 } }] }, [], 0)).toEqual({ a: [{ $n: 0 }] })
+    expect(substitute({ $lit: 5 }, [], 0)).toBe(5)
+    expect(substitute({ $lit: null }, [], 0)).toBe(null)
+    expect(substitute({ $lit: undefined }, [], 0)).toBeUndefined()
   })
 
   it('子操作全是已存在 put → 整批 isNoop；argsHash = 子对聚合', () => {

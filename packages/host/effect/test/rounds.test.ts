@@ -466,6 +466,35 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect(emitters).toEqual(['ownerA'])
   })
 
+  it('plan 条目属主按产出者位置继承：同 entry 多产出者不归首个', async () => {
+    // mid 的判定产 `step` 计划；step 的判定发 eff。两条 mid 指令共享同一 entry、属主不同——
+    // 按 entry 反查会把第二条 plan 的产出也归给首个 mid 产出者，导致 step 全部按首属主路由。
+    const step = defHash(put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }))
+    const stepPlan: Json = { $directives: [{ kind: 'eval', entry: step, ctx: null }] }
+    const mid = defHash(put({ body: ['c', stepPlan] }))
+    const world = worldOf({
+      [step]: put({ body: ['eff', 'toy.echo', 'echo', ['c', 1]] }),
+      [mid]: put({ body: ['c', stepPlan] }),
+    })
+    const emitters: string[] = []
+    const outcome = await runSubmission({
+      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
+      directives: [
+        { kind: 'eval', entry: mid, args: null, ctx: null },
+        { kind: 'eval', entry: mid, args: { tag: 'B' }, ctx: null },
+      ],
+      caps: {},
+      limits: LIMITS,
+      initiator: 'tester',
+      now: () => 1,
+      router: fakeRouter(undefined, (emitter) => emitters.push(emitter)),
+      initialOwnerOf: (directive) =>
+        directive.kind === 'eval' && directive.args !== null ? 'ownerB' : 'ownerA',
+    })
+    expect(outcome.status).toBe('done')
+    expect(emitters).toEqual(['ownerA', 'ownerB'])
+  })
+
   it('batch 子操作的 pins 同样解析（递归）', async () => {
     const active: Hash = 'a'.repeat(64)
     const world = worldOf({ [active]: put({ body: { commit: true } }) })
@@ -926,20 +955,20 @@ describe('A14 eval ctx 注入（三路同规）', () => {
           entry: reader,
           args: { cursor: 'c-1' },
           ctx: null,
-          inject: { ids: ['ids'], session: ['ids', 'sess', 'body'] },
+          inject: { ids: ['ids'], view: ['ids', 'node', 'body'] },
         },
       ],
       caps: {},
       limits: LIMITS,
       initiator: 'tester',
       now: () => 1,
-      ctxFor: () => ({ ids: { sess: { body: { current: 'c-1' } } } }),
+      ctxFor: () => ({ ids: { node: { body: { current: 'c-1' } } } }),
     })
     expect(outcome.status).toBe('done')
     expect((outcome.observations[0] as { value: Json }).value).toEqual({
       cursor: 'c-1',
-      ids: { sess: { body: { current: 'c-1' } } },
-      session: { current: 'c-1' },
+      ids: { node: { body: { current: 'c-1' } } },
+      view: { current: 'c-1' },
     })
   })
 

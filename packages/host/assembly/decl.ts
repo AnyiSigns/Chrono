@@ -7,6 +7,8 @@ import { FRAMEWORK_COMMAND_NAME_SET } from '../common/framework-commands.ts'
 import { PROTOTYPE_KEYS, isRecord, isStringArray, isStringMap } from '../common/json.ts'
 import { isSafeRelativePath } from '../common/paths-safe.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import { replaceTermRefs } from './term-refs.ts'
 import type { ServiceTransport } from '../service-link.ts'
 import type { Gen, Hash, Json, World } from '../../kernel/index.ts'
@@ -239,6 +241,22 @@ function isCapabilityKey(key: string): boolean {
 }
 
 /**
+ * 解析 `implements`：字符串数组，逐项须为合法能力类名（非空、非原型键、非保留类 `host`）且不得重复。
+ * 非法 / 重复 → `null`（入世拒 `bad_plugin_decl`）：否则会静默退化成「声明实现但零端点」，
+ * 或随原型键命中原型成员。与 `needs` / `slots` / `judgments` 的能力类名口径一致。
+ */
+function parseImplements(value: Json | undefined): string[] | null {
+  if (!isStringArray(value)) return null
+  const seen = new Set<string>()
+  for (const cap of value) {
+    if (!isCapabilityKey(cap)) return null
+    if (seen.has(cap)) return null
+    seen.add(cap)
+  }
+  return value
+}
+
+/**
  * 解析 `needs`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
  * 只查形状与声明期冲突：`many` 是否真有契约（本包 `methods` 或世界某拥有方 `slots`）在世界层，
  * decl 看不到他人声明，故该规则由入世期按能力索引判定。
@@ -345,19 +363,18 @@ function parseJudgments(
   return out
 }
 
-/** 同语言（TS/JS）入口模块扩展名：`inproc` / `worker` 只接受这类入口。 */
-const SAME_LANGUAGE_ENTRY = /\.(mjs|cjs|js|mts|cts|ts|jsx|tsx)$/i
-
 /**
- * 同语言入口模块路径：非空、无空白、安全的包内相对路径、以 TS/JS 扩展名结尾。
- * `inproc` / `worker` 把入口载入宿主同进程 / worker，异语言代码无法这样加载，故 fail-closed。
+ * 同语言入口模块路径：非空、无任何空白（含首尾）、安全的包内相对路径、以生态 profile 声明的
+ * 同语言扩展名结尾。`inproc` / `worker` 把入口载入宿主同进程 / worker，异语言代码无法这样加载，
+ * 故 fail-closed。与消费侧同口径：`service-host.ts` 直接用 `join(cwd, decl.start)` 原串解析，
+ * 故校验**不得 trim**——首尾空白一经规范化放行，运行期仍用原串加载会得 `import_failed`，须在门禁当场拒。
  */
-function isSameLanguageEntry(start: string): boolean {
-  const entry = start.trim()
-  if (entry.length === 0) return false
-  if (/\s/.test(entry)) return false
-  if (!isSafeRelativePath(entry)) return false
-  return SAME_LANGUAGE_ENTRY.test(entry)
+function isSameLanguageEntry(start: string, ecosystem: EcosystemProfile): boolean {
+  if (start.length === 0) return false
+  if (/\s/.test(start)) return false
+  if (!isSafeRelativePath(start)) return false
+  const pattern = new RegExp(`\\.(${ecosystem.entryExtensions.join('|')})$`, 'i')
+  return pattern.test(start)
 }
 
 /**
@@ -367,32 +384,40 @@ function isSameLanguageEntry(start: string): boolean {
 function parseTransport(
   value: Json | undefined,
   start: string,
+  ecosystem: EcosystemProfile,
 ): ServiceTransport | null | undefined {
   if (value === undefined) return undefined
   if (value !== 'stdio' && value !== 'inproc' && value !== 'worker') return null
   if (value === 'stdio') return value
-  return isSameLanguageEntry(start) ? value : null
+  return isSameLanguageEntry(start, ecosystem) ? value : null
 }
 
 /**
  * 宿主侧 `plugin.json` 元 schema：必需字段一个不少、类型正确、枚举合法
  * （`state` 两档：`recomputable` / `durable`，成员 `kind` 只认 `execute` / `term` / `schema`）；
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
+ * `implements` 逐项须为合法能力类名（非空、非原型键、非保留类 `host`）且无重复；
  * `build` 是必需字段（宿主不解释语言，声明是唯一构建来源），逐令牌过 shell 安全白名单；
  * `needs` / `slots` 可选（省略为空表，存量插件零扰动），只查形状与声明期冲突。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
-export function parsePluginDecl(value: Json): ParseDeclResult {
+export function parsePluginDecl(
+  value: Json,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
+): ParseDeclResult {
   if (!isRecord(value)) return { ok: false, reasons: ['bad_plugin_decl'] }
   const commandsResult = parseCommands(value['commands'])
   if (!commandsResult.ok) return { ok: false, reasons: [commandsResult.reason] }
   const commands = commandsResult.commands
   const members = parseMembers(value['members'])
+  const implementsCaps = parseImplements(value['implements'])
+  if (implementsCaps === null) return { ok: false, reasons: ['bad_plugin_decl'] }
   const build = parseBuild(value['build'])
   const exclusive = parseExclusive(value['exclusive'])
   const transport = parseTransport(
     value['transport'],
     typeof value['start'] === 'string' ? value['start'] : '',
+    ecosystem,
   )
   // `schema` 可省略或空串（零 schema 合法）；显式非字符串（含 null）仍拒——「直接省略」是唯一写法。
   const rawSchema = value['schema']
@@ -403,7 +428,6 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
     typeof value['identity'] === 'string' &&
     value['identity'].length > 0 &&
     (rawSchema === undefined || typeof rawSchema === 'string') &&
-    isStringArray(value['implements']) &&
     isRecord(value['methods']) &&
     Object.values(value['methods']).every(isStringArray) &&
     isStringMap(value['pins']) &&
@@ -419,7 +443,6 @@ export function parsePluginDecl(value: Json): ParseDeclResult {
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
   const methods = value['methods'] as Record<string, string[]>
   const pins = value['pins'] as Record<string, string>
-  const implementsCaps = value['implements'] as string[]
   const needs = parseNeeds(value['needs'], pins, implementsCaps, methods)
   const slots = parseSlots(value['slots'], pins, methods)
   if (needs === null || slots === null) return { ok: false, reasons: ['bad_plugin_decl'] }
@@ -530,8 +553,14 @@ export function resolveTreeBlob(
  * 不按世代记忆结果：声明读的成败取决于当前 `world.defs` 是否含 tree / entry / pointer def，
  * 而该「缺失」是可补齐的（同世界补齐 def 后重试须成功）——缓存正 / 负结果都会让补齐后的
  * 同世界重试失真。字节级去重由 `getBlob` 的内容寻址缓存承担（键 sha256、只在 def 在位时命中）。
+ * `ecosystem` 与入世解析同源（同语言入口扩展名）；缺省内建默认，零行为变化。
  */
-export function readPluginDeclOfGen(world: World, gen: Gen, blobsDir?: string): DeclRead | null {
+export function readPluginDeclOfGen(
+  world: World,
+  gen: Gen,
+  blobsDir?: string,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
+): DeclRead | null {
   const commit = world.defs[gen.payload]
   const tree = (commit?.body as { tree?: Json } | undefined)?.tree
   if (typeof tree !== 'string') return null
@@ -543,7 +572,7 @@ export function readPluginDeclOfGen(world: World, gen: Gen, blobsDir?: string): 
   } catch {
     return null
   }
-  const result = parsePluginDecl(parsed)
+  const result = parsePluginDecl(parsed, ecosystem)
   return result.ok ? { decl: result.decl, gen, tree } : null
 }
 
@@ -596,17 +625,19 @@ export function assemblyGen(world: World, identityId: string): Gen | null {
 /**
  * 读身份装配世代的 `plugin.json`（G7 A1）：数据世代不参与声明解析；
  * 无代码世代 / 装配世代的 `plugin.json` 不可解析 → null（fail-closed，不回落更旧世代）。
+ * `ecosystem` 与入世解析同源；缺省内建默认，零行为变化。
  */
 export function readPluginDecl(
   world: World,
   identityId: string,
   blobsDir?: string,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
 ): DeclRead | null {
   const identity = world.ids[identityId]
   if (!identity || identity.active === null) return null
   const gen = assemblyGen(world, identityId)
   if (gen === null) return null
-  return readPluginDeclOfGen(world, gen, blobsDir)
+  return readPluginDeclOfGen(world, gen, blobsDir, ecosystem)
 }
 
 /**

@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ServiceStartError } from './supervision.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import type { PluginBuildStep } from './decl.ts'
 
 /** 一步依赖恢复：要执行的命令与参数；直接来自 `plugin.json.build` 声明。 */
@@ -60,15 +62,16 @@ export async function restoreDependencies(
   build: readonly PluginBuildStep[],
   run?: DependencyRunner,
   wrapper?: string,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
 ): Promise<void> {
   const steps = planDependencyRestore(cwd, build)
   if (steps.length === 0) return
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    npm_config_cache: join(depsDir, 'npm'),
+    [ecosystem.npmCacheEnvVar]: join(depsDir, ecosystem.npmCacheDirName),
     // npm 12 默认 allow-remote=none，会让含依赖插件的 npm ci 拒绝拉取远端包而 deps_failed
-    npm_config_allow_remote: 'all',
-    CARGO_TARGET_DIR: join(depsDir, 'cargo-target'),
+    [ecosystem.npmAllowRemoteEnvVar]: ecosystem.npmAllowRemoteValue,
+    [ecosystem.cargoTargetEnvVar]: join(depsDir, ecosystem.cargoTargetDirName),
   }
   const execute =
     run ?? ((cmd, args, stepEnv, stepCwd) => runCommand(cmd, args, stepEnv, stepCwd, wrapper))

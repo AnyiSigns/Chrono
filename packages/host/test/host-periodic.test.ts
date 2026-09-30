@@ -8,6 +8,7 @@ import { startHost } from '../host.ts'
 import type { HostHandle } from '../host.ts'
 import { runSeed } from '../offline.ts'
 import { PeriodicScheduler, readPeriodicEntries } from '../periodic.ts'
+import { MAX_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
 import { waitFor, waitForLifecycle, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
@@ -64,18 +65,28 @@ describe('H6 定时触发', () => {
         { command: 'p.tick', method: 'sync', every_ms: 1 },
         { command: 'p.tick', every_ms: 0 },
         { method: 'sync', every_ms: 1, reads: { ['__proto__']: ['ids', 'p'] } },
+        { method: 'sync', every_ms: MAX_CALL_TIMEOUT_MS },
+        { method: 'sync', every_ms: MAX_CALL_TIMEOUT_MS + 1 },
       ],
     })
     const { entries, invalid } = readPeriodicEntries(world)
-    expect(entries).toHaveLength(2)
+    expect(entries).toHaveLength(3)
     expect(entries[0]).toMatchObject({ identity: 'p', command: 'p.tick', everyMs: 100 })
     expect(entries[0].reads).toEqual([{ key: 'config', path: ['ids', 'config', 'body'] }])
     expect(entries[1]).toMatchObject({ identity: 'p', method: 'sync', everyMs: 200 })
+    // 等于 MAX_CALL_TIMEOUT_MS 合法（setInterval 不溢出）
+    expect(entries[2]).toMatchObject({
+      identity: 'p',
+      method: 'sync',
+      everyMs: MAX_CALL_TIMEOUT_MS,
+    })
     expect(invalid.map((item) => item.reason)).toEqual([
       'bad_every_ms',
       'bad_target',
       'bad_every_ms',
       'bad_reads',
+      // 超上限按既有 bad_every_ms 口径拒绝，不进入调度
+      'bad_every_ms',
     ])
   })
 

@@ -3,6 +3,7 @@
 import { startHost } from './host.ts'
 import { appendLifecycle, flushLifecycleSync } from './lifecycle.ts'
 import {
+  assertNoEntryRest,
   parseEntryArgv,
   resolveCallTimeoutMs,
   resolveStartWrapper,
@@ -13,27 +14,36 @@ import { hostPaths, resolveRoot } from './paths.ts'
 try {
   const parsed = parseEntryArgv(process.argv.slice(2))
   const root = resolveRoot(parsed.root)
-  const callTimeoutMs = resolveCallTimeoutMs(
-    parsed.callTimeout,
-    process.env['CHRONO_CALL_TIMEOUT_MS'],
-  )
-  let startWrapper: string | undefined
-  try {
-    startWrapper = resolveStartWrapper(parsed.startWrapper, process.env['CHRONO_START_WRAPPER'])
-  } catch (err) {
-    // 包装器非法：fail-closed 拒启动，并留一条运维日志（不进世界、不进链）
-    appendLifecycle(hostPaths(root).lifecycleFile, {
-      at: Date.now(),
-      kind: 'host',
-      event: 'start_failed',
-      reason: 'bad_start_wrapper',
-    })
-    throw err
-  }
-  const watch = resolveWatch(parsed.watch, process.env['CHRONO_WATCH'])
-  const handle = await startHost({ root, callTimeoutMs, startWrapper, watch })
+  // 所有启动选项（未知位置参数 / 超时 / 包装器 / watcher）按同一口径收口：非法即 fail-closed 拒启动，
+  // 并记一条 host.start_failed 运维日志（不进世界、不进链），reason 取错误的规范前缀。
+  const options = ((): {
+    callTimeoutMs: number
+    startWrapper: string | undefined
+    watch: boolean
+  } => {
+    try {
+      assertNoEntryRest(parsed.rest)
+      return {
+        callTimeoutMs: resolveCallTimeoutMs(
+          parsed.callTimeout,
+          process.env['CHRONO_CALL_TIMEOUT_MS'],
+        ),
+        startWrapper: resolveStartWrapper(parsed.startWrapper, process.env['CHRONO_START_WRAPPER']),
+        watch: resolveWatch(parsed.watch, process.env['CHRONO_WATCH']),
+      }
+    } catch (err) {
+      appendLifecycle(hostPaths(root).lifecycleFile, {
+        at: Date.now(),
+        kind: 'host',
+        event: 'start_failed',
+        reason: err instanceof Error ? err.message.split(':', 1)[0] : 'bad_option',
+      })
+      throw err
+    }
+  })()
+  const handle = await startHost({ root, ...options })
   process.stdout.write(
-    `host listening ${handle.socket} call_timeout_ms=${callTimeoutMs} start_wrapper=${startWrapper ?? 'none'} watch=${watch ? 'on' : 'off'}\n`,
+    `host listening ${handle.socket} call_timeout_ms=${options.callTimeoutMs} start_wrapper=${options.startWrapper ?? 'none'} watch=${options.watch ? 'on' : 'off'}\n`,
   )
   const shutdown = (): void => {
     void handle

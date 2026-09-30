@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assertNoEntryRest,
   parseEntryArgv,
   resolveCallTimeoutMs,
   resolveCompactStrict,
@@ -46,6 +47,47 @@ describe('入口参数解析（boot / host 共用）', () => {
       rest: ['start'],
     })
     expect(parseEntryArgv(['start'])).toEqual({ rest: ['start'] })
+  })
+
+  it('支持 --flag=value 形态（三种已知 flag，含带空格的包装器值）', () => {
+    expect(
+      parseEntryArgv([
+        'start',
+        '--root=R',
+        '--call-timeout-ms=5',
+        '--start-wrapper=cmd --profile p',
+      ]),
+    ).toEqual({
+      root: 'R',
+      callTimeout: '5',
+      startWrapper: 'cmd --profile p',
+      rest: ['start'],
+    })
+    // `=` 形态空值仍是 present + 空串（交给 resolver fail-closed）
+    expect(parseEntryArgv(['--call-timeout-ms='])).toEqual({ callTimeout: '', rest: [] })
+    expect(parseEntryArgv(['--start-wrapper='])).toEqual({ startWrapper: '', rest: [] })
+  })
+
+  it('= 形态的值可显式以 -- 开头；空格形态仍不吞下一枚 flag', () => {
+    expect(parseEntryArgv(['--start-wrapper=--sandbox --profile p'])).toEqual({
+      startWrapper: '--sandbox --profile p',
+      rest: [],
+    })
+    // 空格形态：值以 -- 开头视为缺值（不吞 --foo），wrapper 记空串交给 resolver fail-closed
+    expect(parseEntryArgv(['--start-wrapper', '--foo'])).toEqual({
+      startWrapper: '',
+      rest: ['--foo'],
+    })
+  })
+
+  it('未知 flag 原样进 rest（交调用方处置，不静默吞）', () => {
+    expect(parseEntryArgv(['start', '--bogus', 'x'])).toEqual({ rest: ['start', '--bogus', 'x'] })
+    expect(parseEntryArgv(['--bogus=1'])).toEqual({ rest: ['--bogus=1'] })
+  })
+
+  it('assertNoEntryRest：宿主入口不接受位置参数 / 未知 flag', () => {
+    expect(() => assertNoEntryRest([])).not.toThrow()
+    expect(() => assertNoEntryRest(['--bogus'])).toThrow('unknown_entry_arg')
   })
 })
 

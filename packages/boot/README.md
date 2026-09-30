@@ -13,7 +13,8 @@
 node packages/boot/main.ts <命令> [--root <路径>] [参数]
 ```
 
-`--root` 给宿主根目录（缺省 `CHRONO_ROOT`，再缺省当前工作目录）；`--root` 可出现在任意位置。
+`--root` 给宿主根目录（缺省 `CHRONO_ROOT`，再缺省当前工作目录）；`--root` 可出现在任意位置。已知 flag 均支持
+`--flag=value` 形态（首个 `=` 切分；`=` 形态下值可含 `--` 开头的字符，不被当下一枚 flag）。
 `start` 另收 `--call-timeout-ms <ms>`：效果调用超时（优先级 **CLI > `CHRONO_CALL_TIMEOUT_MS` > 30s 常量**），
 生效值随 `{ok, root, pid, call_timeout_ms}` 一并打印；非法值退出码 1（`bad_call_timeout`）。
 `start` 还收 `--start-wrapper <cmd>`：把插件 `start` 包住的包装器命令（宿主侧最小沙箱形态，
@@ -48,7 +49,7 @@ node packages/boot/main.ts <命令> [--root <路径>] [参数]
   （与宿主侧同一份清单，见 `docs/host.md` §五 宿主扩展面）。其中 `commands` / `audit` 连宿主取数，`help` 只在 CLI 侧打印。
 - 参数含 `@` 前缀时从文件读 JSON（相对当前工作目录）。
 - 输出：结果 JSON 走 stdout；错误消息走 stderr，退出码 1。
-- **退出码**：用法错误与异常 → 1；`seed` / `pack` 有任一条目 `failed`（报告 `ok:false`）→ 也**非 0**（结构化报告照常走 stdout）。
+- **退出码**：用法错误与异常 → 1；`seed` / `pack` 有任一条目 `failed`、或 `verify` 报告 `ok:false` → 也**非 0**（结构化报告照常走 stdout）。
 
 ## 边界
 

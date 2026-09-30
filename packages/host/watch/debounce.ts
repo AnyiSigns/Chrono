@@ -1,8 +1,8 @@
 // 源码 watcher 的静默窗口：编辑器保存常产生多次事件、写临时文件再 rename，
 // 窗口内的事件合并为一次重建（尾沿触发：窗口内再有事件则顺延），避免同一保存重建多次。
 
-/** 缺省静默窗口（毫秒）：足够覆盖编辑器多事件与原子替换，又不至于让改动反馈明显延迟。 */
-export const DEFAULT_WATCH_DEBOUNCE_MS = 300
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export { DEFAULT_WATCH_DEBOUNCE_MS } from '../options.ts'
 
 /** 静默窗口定时器；`schedule` 重置窗口，`dispose` 取消未触发的一次。 */
 export class Debouncer {

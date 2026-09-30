@@ -28,12 +28,18 @@ const client = await connect({ root, timeoutMs: 30_000 })
 | `client.audit(filter?)`                           | 只读审计面：按 `run` / `emitter` / `outcome` 查询（seq 降序，缺省 100 条）       |
 | `client.putAsset(mime, bytes)`                    | 资产入库：字节直写宿主资产区（不进世界），返回 `{kind:'asset',sha256,mime,size}` |
 | `client.getAsset(sha256)`                         | 取资产字节；字节缺失 → `asset_missing`                                           |
-| `client.status()`                                 | `{world_head, loaded}` 非阻塞快照（可能瞬态）                                    |
+| `client.putSecret(name, value)`                   | 直写宿主本地密钥文件（不进世界、不进审计）                                       |
+| `client.deleteSecret(name)`                       | 删除本地密钥条目；不存在也回 `secrets.ok`（幂等）                                |
+| `client.status()`                                 | `{world_head, world_rev, loaded}` 非阻塞快照（可能瞬态）                         |
 | `client.stop()`                                   | 令宿主停机并关闭连接                                                             |
 | `client.onEvent(handler)`                         | 订阅宿主广播的服务 `event`（`impl` 命名空间；无 ack、可丢）                      |
 | `client.close()`                                  | 断开连接                                                                         |
 
 - `opts.caps` / `opts.limits` 由发起者给，宿主**透传不扩权**；`now` 由宿主固定，不由客户端给。
+- `connect` 的 `runTimeoutMs` 是**一次 run**（`submit` / `command` / `forward`）的整体等待上限，与普通请求
+  超时分开；缺省回落 `timeoutMs`，`boot` 按宿主 `call-timeout` 口径透传（run 可跨多轮、多次服务调用，
+  用单次调用口径判它会误判 `timeout`）。
+- `putAsset` 在入口按 `MAX_ASSET_BYTES`（8 MiB）前置校验，超限抛 `asset_too_large`，不发超限帧。
 - `opts.onAccepted(run)`：受理即回调，给 UI 留取消 / 展示用的 run 句柄；被取消的 run 以
   `status: 'cancelled'` 收口（与宿主 `stop` 停机是两回事）。
 - `ClientError` 携带协议错误码（`writer_busy` / `unknown_command` / `bad_args` / `unknown_run` / `timeout` / `internal` / …），
@@ -43,8 +49,9 @@ const client = await connect({ root, timeoutMs: 30_000 })
 ## 协议形状
 
 消息枚举在 `protocol.ts`（`v = '1'`）；`submit` / `cancel` / `command` / `forward` / `commands` / `audit` /
-`asset.put` / `asset.get` / `status` / `stop` 与 `accepted` / `result` / `list` / `audits` /
-`asset.ref` / `asset.bytes` / `state` / `error` 的完整定义见 [`docs/protocol.md`](../../docs/protocol.md) §三。
+`asset.put` / `asset.get` / `secrets.put` / `secrets.delete` / `status` / `stop` 与 `accepted` / `result` /
+`list` / `audits` / `asset.ref` / `asset.bytes` / `secrets.ok` / `state` / `error` 的完整定义见
+[`docs/protocol.md`](../../docs/protocol.md) §三。
 `run` 结果按 run id 配对；`event` 广播给所有已连接客户端，不落账、不推进。
 
 ## 边界
@@ -60,7 +67,11 @@ cd packages/client
 npm ci
 npm run typecheck
 npm run format:check
-npm test             # test/client.test.ts、test/frame.test.ts、test/oversize.test.ts
+npm test             # test/client.test.ts、test/frame.test.ts、test/oversize.test.ts、test/secrets.test.ts、
+                     # test/asset-limit.test.ts、test/run-timeout.test.ts 等
 ```
 
 用法示例见 `test/client.test.ts`（起一个宿主后 `submit` / `command` / `status` / `stop`）。
+
+client / host 两侧的入站线常量（命名管道前缀与根摘要长度、`PROTOCOL_VERSION`、`MAX_FRAME_BYTES`）各自实现、
+不跨包共享，由仓库级门禁 `tests/static/host-client-wire-parity.test.mjs` 钉死。

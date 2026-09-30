@@ -129,7 +129,7 @@ const SRC_DIR = decodeURIComponent(
   (import.meta as unknown as { url: string }).url.replace(/^file:\/\/\//, ''),
 ).replace(/\/test\/[^/]*$/, '/')
 const RUNTIME_FILES =
-  'index.ts types.ts value.ts hash.ts defs.ts patch.ts rebase.ts journal.ts journal.apply.ts ' +
+  'index.ts types.ts value.ts hash.ts defs.ts identity.ts patch.ts rebase.ts journal.ts journal.apply.ts ' +
   'commit.ts machine.ts machine.eval.ts recycle.ts run.ts'
 function runtimeSources(): [string, string][] {
   return (readdirSync(SRC_DIR) as string[])
@@ -571,6 +571,15 @@ describe('深度护栏：递归 JSON 遍历超限一律收成 depth（无 RangeE
     expect([o.status, reasonsOf(o)]).toEqual(['refused', ['depth']])
   })
 
+  it('batch：$lit 深嵌套链（substitute 沿 $lit 累加深度）→ refused depth', () => {
+    let deep: Json = 0
+    for (let i = 0; i < 10_000; i++) deep = { $lit: deep }
+    const ops = J({ ops: [sub('put', dRec({ deep }))] })
+    const r = req('deep-lit-batch', 'batch', ops, null)
+    const o = run(input({ directives: [{ kind: 'write', request: r } as Directive] }))
+    expect([o.status, reasonsOf(o)]).toEqual(['refused', ['depth']])
+  })
+
   it('replay：深嵌套 args 的 entry → KernelError depth（非 RangeError）', () => {
     const e: Entry = {
       seq: 0,
@@ -614,7 +623,7 @@ describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且
   const PAY = H({ body: 'payload' })
   const WRITE0 = 'f'.repeat(64)
 
-  /** 身份 x 的 gen0 payload=PAY，但 defs 里 PAY 的值为 undefined：读 body 时抛 TypeError。 */
+  /** 身份 x 的 gen0 payload=PAY；PAY 的 getter 抛 TypeError：段 2 读该 def 时冒非 KernelError。 */
   function brokenWorld(): World {
     const gen0: Gen = {
       seq: 0,
@@ -623,8 +632,17 @@ describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且
       sig: S,
       adopted: { at: 1, by: 't', write: WRITE0 },
     }
+    const defs: Record<Hash, Def> = { [S]: { body: {} }, [SIG]: { body: {} } }
+    // 非枚举：快照（JSON.stringify）不触碰坏项；但 Object.hasOwn 为真、取用时抛 TypeError
+    Object.defineProperty(defs, PAY, {
+      enumerable: false,
+      configurable: true,
+      get() {
+        throw new TypeError('broken def store')
+      },
+    })
     return {
-      defs: { [S]: { body: {} }, [SIG]: { body: {} }, [PAY]: undefined as unknown as Def },
+      defs,
       ids: { x: { id: 'x', schema: S, gens: [gen0], active: S, born: { at: 1, by: 't' } } },
     }
   }

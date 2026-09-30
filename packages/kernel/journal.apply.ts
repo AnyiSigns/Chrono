@@ -4,7 +4,7 @@
 
 import { defHas } from './defs.ts'
 import { H } from './hash.ts'
-import { entryHash, worldRev } from './journal.ts'
+import { entryHash, worldRev } from './identity.ts'
 import { readPatchOps } from './patch.ts'
 import { walkJson } from './value.ts'
 import { KernelError } from './types.ts'
@@ -176,7 +176,10 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
     if (!Number.isInteger(s.base) || s.base < 0 || s.base >= identity.gens.length) {
       throw new KernelError('missing_parent')
     }
-    if (readPatchOps(w.defs[s.payload].body) === null) throw new KernelError('bad_patch')
+    // defHas 只查清单（惰性表不读 body）；取用 body 前再验分片确有该 def，缺失 fail-closed
+    const payloadDef = w.defs[s.payload]
+    if (payloadDef === undefined) throw new KernelError('missing_ref')
+    if (readPatchOps(payloadDef.body) === null) throw new KernelError('bad_patch')
     base = s.base
   }
   let graft: Gen['graft'] | undefined
@@ -308,8 +311,9 @@ function hashOnly(op: Op, args: Json): Hash {
  * batch 占位符替换：`{'$n': k}` 只能指向**本批内更早**且有产物（put）的子操作；
  * 返回**新对象**，不回写入参——日志里存的永远是替换前的 args。
  *
- * 数据里若要出现 `{'$n':k}` 字面量（工具结果 / 术语 AST / 模型入参等任意 JSON 都可能有），
- * 用转义包裹 `{'$lit': v}` 落盘：`v` 按数据原样保留、其中的 `$n` 不再当占位符。
+ * 数据里若要出现 `{'$n':k}` 字面量（任意 JSON 数据都可能有），
+ * 用转义包裹 `{'$lit': v}` 落盘：其中的 `$n` 不再当占位符，嵌套的 `$lit` 继续逐层还原。
+ * `$lit` 的值 `v` 是包裹节点的子节点，故 `v` 从下一层深度续起、整条 `$lit` 链累加同一深度。
  */
 export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
   return walkJson(
@@ -326,7 +330,7 @@ export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
         }
         return acc[j] as Hash
       }
-      if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
+      if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'], _depth + 1)
       const out: { [key: string]: Json } = {}
       for (const key of keys) {
         const sv = next(record[key])
@@ -341,21 +345,23 @@ export function substitute(v: Json, acc: (Hash | null)[], k: number): Json {
 /**
  * 转义包裹 `{'$lit': v}` 的还原：`v` 是**数据**，其中的 `$n` 不再当占位符；
  * 只继续还原嵌套的 `$lit`（若要落数据 `{'$lit':…}` 本身，须再包一层）。
+ * @param v 待还原的转义值
+ * @param depth 包裹节点自身的深度；`v` 是其子节点，从 `depth` 交给 `walkJson` 继续累加
  */
-function literal(v: Json): Json {
-  return walkJson(v, literalNode, 0)
+function literal(v: Json, depth: number): Json {
+  return walkJson(v, literalNode, depth)
 }
 
 function literalNode(
   value: Json | undefined,
-  _depth: number,
+  depth: number,
   next: (child: Json | undefined) => Json,
 ): Json {
   if (Array.isArray(value)) return value.map(next)
   if (value === null || typeof value !== 'object') return value as Json
   const record = value as { [key: string]: Json }
   const keys = Object.keys(record)
-  if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'])
+  if (keys.length === 1 && keys[0] === '$lit') return literal(record['$lit'], depth + 1)
   const out: { [key: string]: Json } = {}
   for (const key of keys) out[key] = next(record[key])
   return out

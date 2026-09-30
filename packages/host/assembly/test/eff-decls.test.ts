@@ -147,6 +147,23 @@ describe('入世期 eff 声明校验', () => {
         validateEffDecls(['eff', 'remote', 'anything', ['c', null]] as unknown as Json, ctx),
       ).toEqual([])
     })
+
+    it('同键既 implements 又 pins：按 pins（被调声明）判，与运行期路由同口径', () => {
+      const ctx: EffDeclContext = {
+        implements: new Set(['dual']),
+        pins: new Set(['dual']),
+        methods: { dual: ['selfOnly'] },
+        calleeMethodsOf: (port) => (port === 'dual' ? { dual: ['remoteOnly'] } : null),
+      }
+      // 被调声明的方法放行（旧实现按自身 methods 会把合法调用拒掉）
+      expect(
+        validateEffDecls(['eff', 'dual', 'remoteOnly', ['c', null]] as unknown as Json, ctx),
+      ).toEqual([])
+      // 自身方法不在被调声明 → 拒（旧实现会放行到运行期）
+      expect(
+        validateEffDecls(['eff', 'dual', 'selfOnly', ['c', null]] as unknown as Json, ctx),
+      ).toEqual(['undeclared_method:dual.selfOnly'])
+    })
   })
 
   describe('seed 级：未覆盖头 fail-closed', () => {
@@ -307,6 +324,46 @@ describe('入世期 eff 声明校验', () => {
         expect(runSeed(root, [{ name: 'toy-hostcall', path: pkg }]).ok).toBe(true)
       } finally {
         await cleanupTempRoot(root)
+      }
+    })
+
+    it('同键既 implements 又 pins：门禁按被依赖者方法判（与路由同口径）', async () => {
+      const goodRoot = createTempRoot()
+      const badRoot = createTempRoot()
+      try {
+        const provider = (root: string) =>
+          writeTempPackage(root, {
+            identity: 'dual-provider',
+            implements: ['dual.cap'],
+            methods: { 'dual.cap': ['remoteOnly'] },
+          })
+        const caller = (root: string, method: string) =>
+          writeTempPackage(root, {
+            identity: 'dual-caller',
+            implements: ['dual.cap'],
+            methods: { 'dual.cap': ['selfOnly'] },
+            pins: { 'dual.cap': 'dual-provider' },
+            terms: { 'x.json': JSON.stringify(['eff', 'dual.cap', method, ['c', null]]) },
+          })
+
+        // 调被依赖者声明的方法：放行（旧实现按自身 methods 会拒）
+        expect(
+          runSeed(goodRoot, [
+            { name: 'dual-provider', path: provider(goodRoot) },
+            { name: 'dual-caller', path: caller(goodRoot, 'remoteOnly') },
+          ]).ok,
+        ).toBe(true)
+
+        // 调自身方法（不在被依赖者声明）：整包拒（旧实现会放行到运行期）
+        const report = runSeed(badRoot, [
+          { name: 'dual-provider', path: provider(badRoot) },
+          { name: 'dual-caller', path: caller(badRoot, 'selfOnly') },
+        ])
+        expect(report.ok).toBe(false)
+        expect(report.items[1].reasons).toContain('undeclared_method:dual.cap.selfOnly')
+      } finally {
+        await cleanupTempRoot(goodRoot)
+        await cleanupTempRoot(badRoot)
       }
     })
   })

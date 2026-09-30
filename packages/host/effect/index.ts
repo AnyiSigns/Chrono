@@ -19,7 +19,12 @@ export type {
   SlotOutcome,
 } from './route.ts'
 export { createJudgmentRunner, MAX_JUDGMENT_EFFECTS } from './judgment.ts'
-export type { JudgmentCall, JudgmentDeps, JudgmentTarget } from './judgment.ts'
+export type {
+  JudgmentCall,
+  JudgmentDeps,
+  JudgmentRunnerOptions,
+  JudgmentTarget,
+} from './judgment.ts'
 export { createJudgmentInvoke, MAX_JUDGMENT_DEPTH } from './judgment-invoke.ts'
 export type { JudgmentInvokeOptions } from './judgment-invoke.ts'
 export { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'

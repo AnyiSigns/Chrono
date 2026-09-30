@@ -5,14 +5,21 @@ import { randomUUID } from 'node:crypto'
 import { connect as netConnect } from 'node:net'
 import type { Socket } from 'node:net'
 import { createFrameDecoder, encodeFrame } from './frame.ts'
-import { PROTOCOL_VERSION } from './protocol.ts'
+import { MAX_ASSET_BYTES, PROTOCOL_VERSION } from './protocol.ts'
 import type { Limits, OutboundMessage } from './protocol.ts'
 import { resolveRoot, socketPath } from './socket.ts'
 import type { Directive, Json } from '../kernel/index.ts'
 
 export interface ClientOptions {
   root?: string
+  /** 普通请求（连接 / 单帧应答）等待上限；缺省 30s。 */
   timeoutMs?: number
+  /**
+   * 一次 run（`submit` / `command` / `forward`）的整体等待上限；与普通请求超时分开——
+   * run 可跨多轮、多次服务调用，用单次调用口径判它会误判 `timeout`。缺省回落 `timeoutMs`
+   * （保持既有调用方行为）；boot 按宿主 `call-timeout` 口径透传（见 `boot/commands.ts`）。
+   */
+  runTimeoutMs?: number
 }
 
 /** 宿主出站 kind 白名单（运行期兜底）：未知 kind 视为协议漂移，显式收口而非静默超时。 */
@@ -123,6 +130,10 @@ export interface Client {
   putAsset(mime: string, bytes: Uint8Array): Promise<AssetRef>
   /** G4 取资产字节；字节缺失 → `asset_missing`。 */
   getAsset(sha256: string): Promise<AssetBytes>
+  /** 密钥本地存储面：直写宿主本地密钥文件（不进世界、不进审计）；失败以协议错误码收口。 */
+  putSecret(name: string, value: string): Promise<void>
+  /** 删除宿主本地密钥文件中的条目；不存在也回 `secrets.ok`（幂等）。 */
+  deleteSecret(name: string): Promise<void>
   status(): Promise<StatusResult>
   stop(): Promise<void>
   onEvent(handler: (event: EventMessage) => void): void
@@ -147,15 +158,21 @@ const MAX_BUFFERED_RESULTS = 1024
 class HostClient implements Client {
   private readonly socket: Socket
   private readonly timeoutMs: number
+  private readonly runTimeoutMs: number
   private readonly decoder = createFrameDecoder()
   private readonly idWaiters = new Map<string, Waiter>()
   private readonly runWaiters = new Map<string, Waiter>()
+  /** submit 的请求 id → `accepted{run}` 的 run id：受理后到达的 `error{id}` 据此归位到该 run。 */
+  private readonly submitRuns = new Map<string, string>()
+  /** 先于等待者到达的 run 错误：与早到结果同规暂存，供 `awaitRun` 立即以真实错误码收口。 */
+  private readonly pendingRunErrors = new Map<string, ClientError>()
   private readonly bufferedResults = new Map<string, OutboundMessage>()
   private readonly eventHandlers: ((event: EventMessage) => void)[] = []
 
-  constructor(socket: Socket, timeoutMs: number) {
+  constructor(socket: Socket, timeoutMs: number, runTimeoutMs: number) {
     this.socket = socket
     this.timeoutMs = timeoutMs
+    this.runTimeoutMs = runTimeoutMs
     socket.on('data', (chunk: Buffer) => this.onData(chunk))
     socket.on('close', () => this.failAll())
     socket.on('error', () => this.failAll())
@@ -176,9 +193,14 @@ class HostClient implements Client {
     this.write(message as unknown as Json)
     return accepted.then(async (acc) => {
       if (acc.run === undefined) throw new ClientError('internal', 'accepted without run')
-      options.onAccepted?.(acc.run)
-      const result = await this.awaitRun(acc.run)
-      return { run: acc.run, status: result.status, observations: result.observations }
+      try {
+        options.onAccepted?.(acc.run)
+        const result = await this.awaitRun(acc.run)
+        return { run: acc.run, status: result.status, observations: result.observations }
+      } finally {
+        // run 已收口（成功 / 错误 / 超时 / 回调抛错）：清理 id → run 关联，防长驻连接无界增长
+        this.submitRuns.delete(id)
+      }
     })
   }
 
@@ -195,7 +217,11 @@ class HostClient implements Client {
     options: SubmitOptions = {},
   ): Promise<CommandResult> {
     const id = randomUUID()
-    const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(id)
+    // 命令走一次 run（可多轮），等待按 run 口径而非单帧请求口径
+    const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(
+      id,
+      this.runTimeoutMs,
+    )
     const message: { [k: string]: Json } = { v: PROTOCOL_VERSION, id, kind: 'command', name, args }
     if (options.caps !== undefined) message['caps'] = options.caps
     if (options.limits !== undefined) message['limits'] = options.limits as unknown as Json
@@ -212,7 +238,11 @@ class HostClient implements Client {
     options: SubmitOptions = {},
   ): Promise<CommandResult> {
     const id = randomUUID()
-    const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(id)
+    // 转发同样走一次 run（可多轮），等待按 run 口径
+    const pending = this.once<Extract<OutboundMessage, { kind: 'result'; id: string }>>(
+      id,
+      this.runTimeoutMs,
+    )
     const message: { [k: string]: Json } = {
       v: PROTOCOL_VERSION,
       id,
@@ -246,6 +276,9 @@ class HostClient implements Client {
   }
 
   async putAsset(mime: string, bytes: Uint8Array): Promise<AssetRef> {
+    // 契约上限在入口前置（见 docs/protocol.md 资产面）：超 8 MiB 宿主必回 `asset_too_large`；
+    // 若照发帧，8–12 MiB 与 >≈12 MiB（base64 撑爆 16 MiB 帧上限）会退化成两种收口，故在此统一。
+    if (bytes.length > MAX_ASSET_BYTES) throw new ClientError('asset_too_large')
     const id = randomUUID()
     const pending = this.once<Extract<OutboundMessage, { kind: 'asset.ref' }>>(id)
     this.write({
@@ -269,6 +302,20 @@ class HostClient implements Client {
       size: message.size,
       bytes: Buffer.from(message.bytes, 'base64'),
     }
+  }
+
+  async putSecret(name: string, value: string): Promise<void> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'secrets.ok' }>>(id)
+    this.write({ v: PROTOCOL_VERSION, id, kind: 'secrets.put', name, value })
+    await pending
+  }
+
+  async deleteSecret(name: string): Promise<void> {
+    const id = randomUUID()
+    const pending = this.once<Extract<OutboundMessage, { kind: 'secrets.ok' }>>(id)
+    this.write({ v: PROTOCOL_VERSION, id, kind: 'secrets.delete', name })
+    await pending
   }
 
   async status(): Promise<StatusResult> {
@@ -304,16 +351,30 @@ class HostClient implements Client {
       this.bufferedResults.delete(run)
       return Promise.resolve(buffered as Extract<OutboundMessage, { kind: 'result'; run: string }>)
     }
-    // 连接已断（含同批未知 kind 触发 failAll 后）时，等 30s 超时没有意义：立即以 connection_closed 收口。
+    // accepted 后到达的 error{id} 已按 run 归位并暂存：立即以真实错误码收口，不落成 timeout。
+    const pendingError = this.pendingRunErrors.get(run)
+    if (pendingError !== undefined) {
+      this.pendingRunErrors.delete(run)
+      return Promise.reject(pendingError)
+    }
+    // 连接已断（含同批未知 kind 触发 failAll 后）时，等运行超时没有意义：立即以 connection_closed 收口。
     if (this.socket.destroyed) return Promise.reject(new ClientError('connection_closed'))
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.runWaiters.delete(run)
         reject(new ClientError('timeout'))
-      }, this.timeoutMs)
+      }, this.runTimeoutMs)
       this.runWaiters.set(run, (message) => {
         clearTimeout(timer)
-        if (message === null || message.kind !== 'result' || !('run' in message)) {
+        if (message === null) {
+          reject(new ClientError('connection_closed'))
+          return
+        }
+        if (message.kind === 'error') {
+          reject(new ClientError(message.code, message.message))
+          return
+        }
+        if (message.kind !== 'result' || !('run' in message)) {
           reject(new ClientError('connection_closed'))
           return
         }
@@ -322,14 +383,17 @@ class HostClient implements Client {
     })
   }
 
-  private once<T extends OutboundMessage>(id: string): Promise<T> {
+  private once<T extends OutboundMessage>(
+    id: string,
+    timeoutMs: number = this.timeoutMs,
+  ): Promise<T> {
     // 连接已断时不再注册等待器：否则等满超时才失败，且期间该 id 永远不会到达。
     if (this.socket.destroyed) return Promise.reject(new ClientError('connection_closed'))
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.idWaiters.delete(id)
         reject(new ClientError('timeout'))
-      }, this.timeoutMs)
+      }, timeoutMs)
       this.idWaiters.set(id, (message) => {
         clearTimeout(timer)
         if (message === null) {
@@ -410,6 +474,26 @@ class HostClient implements Client {
       this.socket.destroy()
       return
     }
+    // 受理先记 id → run 关联：此后到达的 error{id}（如 startRun 兜底回的真实错误码）
+    // 才能归位到该 run，而不是因 accepted 已消费 id 等待器被静默丢弃、最终误判 timeout。
+    if (message.kind === 'accepted' && 'run' in message && typeof message.run === 'string') {
+      this.submitRuns.set(message.id, message.run)
+    }
+    if (message.kind === 'error') {
+      const run = this.submitRuns.get(message.id)
+      if (run !== undefined) {
+        this.submitRuns.delete(message.id)
+        const waiter = this.runWaiters.get(run)
+        if (waiter !== undefined) {
+          this.runWaiters.delete(run)
+          waiter(message)
+        } else {
+          // 等待者尚未注册（accepted 与 error 同批到达）：与早到结果同规暂存
+          this.pendingRunErrors.set(run, new ClientError(message.code, message.message))
+        }
+        return
+      }
+    }
     if ('id' in message) {
       const waiter = this.idWaiters.get(message.id)
       if (waiter !== undefined) {
@@ -430,6 +514,8 @@ class HostClient implements Client {
     for (const waiter of this.runWaiters.values()) waiter(null)
     this.runWaiters.clear()
     this.bufferedResults.clear()
+    this.pendingRunErrors.clear()
+    this.submitRuns.clear()
   }
 }
 
@@ -438,9 +524,11 @@ export function connect(options: ClientOptions = {}): Promise<Client> {
   const root = resolveRoot(options.root)
   const address = socketPath(root)
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  // run 等待缺省回落请求超时：未显式区分时行为与既有调用方一致
+  const runTimeoutMs = options.runTimeoutMs ?? timeoutMs
   return new Promise((resolve, reject) => {
     const socket = netConnect(address)
-    const client = new HostClient(socket, timeoutMs)
+    const client = new HostClient(socket, timeoutMs, runTimeoutMs)
     // 建连超时：对端接受但不完成连接时不得永久挂起；连上后解除空闲超时
     socket.setTimeout(timeoutMs, () => {
       client.close()

@@ -34,15 +34,23 @@ run(input: KernelInput) → KernelOutput
 依赖图就是一条 DAG，不许含糊：
 
 ```
-value   ← types
-hash    ← types, value
-journal ← types, hash            （world 的 apply/链/校验 + batch 的 substitute/hashOnly）
-commit  ← types, hash, journal   （不依赖 machine）
-machine ← types, value, hash    （不依赖 journal / commit）
-run     ← 以上全部               （唯一调用 commit 的地方）
-index   ← run 与公共面            （只 re-export）
+value         ← types
+hash          ← types, value
+defs          ← types
+identity      ← types, defs, hash                            （entryHash / worldRev 两个身份哈希）
+patch         ← types, value
+journal.apply ← types, defs, hash, identity, patch, value    （逐 op 语义 + batch 的 substitute/hashOnly）
+journal       ← types, defs, identity, journal.apply         （世界常量 / 链 / 重放 / 校验 + 转口）
+rebase        ← types, defs, hash, patch
+recycle       ← types, defs, rebase, value
+commit        ← types, defs, value, journal                  （不依赖 machine）
+machine.eval  ← types, hash, value                           （14 原语求值 + 分派表）
+machine       ← types, machine.eval                          （类型与转口；不依赖 journal / commit）
+run           ← types, commit, journal, machine              （唯一调用 commit 的地方）
+index         ← run 与公共面                                  （只 re-export）
 ```
 
+`identity.ts` 是承载两个身份哈希的叶子模块：`journal.ts` 转口并 re-export，`journal.apply.ts` 直接取用。
 `machine.ts` 与 `journal.ts`/`commit.ts` 之间没有任何边——求值不认识写入，写入不认识求值，两边都只认识值模型。多宿主不是一个世界被多个宿主共享：每个宿主各一个内核实例、各一条链、零共享状态。
 
 ## 三、四条机制
@@ -81,7 +89,7 @@ Head     = { seq, hash: Hash|null }     // EMPTY_HEAD = { seq: -1, hash: null }
 Anchor   = { world, head }               // 校验起点；与 KernelInput.head 同形
 ```
 
-关键口径：Def 的键覆盖 `body + pins + sig`（不只是 body），否则改 pin/sig 不动 `worldRev`。`pins` 是**名 → 哈希**的映射（`Record<string, Hash>`），名不透明——内核不解释 pin 名，只要求它存在、是个 Hash 值。`Identity` **没有分类字段、没有标签位**——想区分"插件/判据/数据"就写一份声明它自己的 `schema`，那是数据不是特权。`seq` 由内核分配（gens.length），写请求无从提交；`adopted.write` 指向完成采纳的那条 entry 的位置。
+关键口径：Def 的键覆盖 `body + pins + sig`（不只是 body），否则改 pin/sig 不动 `worldRev`。`pins` 是**名 → 哈希**的映射（`Record<string, Hash>`），名不透明——内核不解释 pin 名，只要求它存在、是个 Hash 值。`Identity` **没有分类字段、没有标签位**——想区分"插件/判据/数据"就写一份声明它自己的 `schema`，那是数据不是特权。`seq` 由内核分配（gens.length），写请求无从提交；`adopted.write` 指向完成采纳的那条 entry 的位置。惰性 defs 表按**清单**判存在（`defHas` 不读 body）；需要读 body 的路径（如补丁世代读取 payload def 的补丁体）若清单有而取值无（分片缺失），按 `missing_ref` **fail-closed**，不当缺 def 静默吞掉。
 
 两份身份必须分开：
 
@@ -90,7 +98,7 @@ Anchor   = { world, head }               // 校验起点；与 KernelInput.head 
 | 位置 `pos` | 链头哈希 = `entryHash(末条)` | O(1) | 乐观并发（`expect_pos`）、链完整性 |
 | 内容 `worldRev` | `H({ defs 键集, ids 摘要 })` | O(def 数) | 快照锚点、跨世界比较、数据 pin —— **按需算，不挂每条 entry** |
 
-内容摘要吃定义表的**键**而不吃序列化 body：键本身就是 `H(Def)`，键集等价于内容集，代价从"序列化整个世界"降到"排序键"。摘要**不吃履历**（`born`/`adopted`）：否则同内容、同 `active` 而采纳历史不同的两世界摘要不同，pin 它们的内容会无端漂移。`ids` 摘要只取 `{id, schema, active, gens:[{seq,payload,pins,sig,graft?}]}`。两者都不做可达闭包——闭包要求认识 body 里的引用标记 = 认识语义。
+内容摘要吃定义表的**键**而不吃序列化 body：键本身就是 `H(Def)`，键集等价于内容集，代价从"序列化整个世界"降到"排序键"。摘要**不吃履历**（`born`/`adopted`）：否则同内容、同 `active` 而采纳历史不同的两世界摘要不同，pin 它们的内容会无端漂移。`ids` 摘要只取 `{id, schema, active, gens:[{seq,payload,pins,sig,graft?,base?}]}`。两者都不做可达闭包——闭包要求认识 body 里的引用标记 = 认识语义。
 
 ## 五、日志即真源
 
@@ -109,7 +117,7 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 
 回滚是一条追加（`set_active` 指回旧世代），不是删节点。**删除在内核里根本不存在**——所以回滚可逆、可重放、可对照。`retire` 与 `set_active(null)` 世界效果相同却是两条不同 entry：历史绝不折叠；幂等（`dup`）只属于"同内容重复 `put`"这一种情形。
 
-`add_gen` **入世即激活**：新世代写入 `gens` 的同时 `Identity.active` 指向其 `payload`（同时激活）；`set_active` 用于把 `active` 指向任意旧世代（回滚）或置 `null`（下线）——`retire` 与置 `null` 效果相同，但仍是两条不同 entry。
+`add_gen` **入世即激活**：新世代写入 `gens` 的同时 `Identity.active` 指向其 `payload`（同时激活）；`set_active` 用于把 `active` 指向任意旧世代（回滚）或置 `null`（下线）——`retire` 与置 `null` 效果相同，但仍是两条不同 entry。`add_gen` **不接受 `graft` 字段**——携带即 `bad_form`；`graft` 只由独立的 `graft` op 设置（它额外携带 `from` / `gen` 指定被嫁接身份与世代，写入 `Gen.graft`）。
 
 链是 Merkle 的：`entryHash` 只吃 `argsHash` 不吃 `args`。各 op 的 `argsHash` 口径：
 
@@ -119,9 +127,9 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 | `batch` | `H({ ops: [[op_i, h_i]…] })`，子哈希聚合，O(子操作数) |
 | 其它 | `H(args)`，一次规范化（`note` 可带留痕载荷，是唯一可能带大 args 的非 batch op） |
 
-于是链头推进、位置、锚点、期望值比较全部 O(1) 不碰载荷字节；一份 args 只规范化一次。`entryHash = H({ at, seq, prev, op, argsHash, by, ref })`——`at`/`by`/`ref` 都进链哈希，所以改时间戳、提交者或审计指针也会被链校验发现；这也是续跑必须传同一 `now` 的原因。防篡改因此更强：重放时把重算的 `argsHash` 与 entry 里存着的值比对，"改了 args 没改 argsHash" 也会被抓出（`args_hash_mismatch`）。
+于是链头推进、位置、锚点、期望值比较全部 O(1) 不碰载荷字节；一份 args 只规范化一次。`entryHash = H({ at, seq, prev, op, argsHash, by, ref })`——`at`/`by`/`ref` 都进链哈希，所以改时间戳、提交者或引用指针也会被链校验发现；这也是续跑必须传同一 `now` 的原因。防篡改因此更强：重放时把重算的 `argsHash` 与 entry 里存着的值比对，"改了 args 没改 argsHash" 也会被抓出（`args_hash_mismatch`）。
 
-`batch` 是唯一的两段式。原因是一条先后依赖：批内 `add_gen` 的 `adopted.write` 语义是"完成采纳的那条 entry 的位置"，批内只可能是外层 batch entry；而外层 `entryHash` 依赖外层 `argsHash`，后者依赖全部子哈希——单趟式无解。段一不碰世界，只做占位符替换、子操作预哈希、聚合与外层定位；段二才逐子应用，失败逆序 `undo` 回滚、世界逐字节不动。占位符 `{"$n": k}` 只能指向**本批内更早的 `put`**（只有它有产物 = def 键）；日志永远存**替换前**的 args，重放必然算出同一个 `argsHash` 与同一个外层位置。顺带收益：哈希性失败在世界分文未动之前就定论。落地的 `dup` 短路也长在段一上：全 `put` 幂等批预哈希后即可定论，跳过段 2。
+`batch` 是唯一的两段式。原因是一条先后依赖：批内 `add_gen` 的 `adopted.write` 语义是"完成采纳的那条 entry 的位置"，批内只可能是外层 batch entry；而外层 `entryHash` 依赖外层 `argsHash`，后者依赖全部子哈希——单趟式无解。段一不碰世界，只做占位符替换、子操作预哈希、聚合与外层定位；段二才逐子应用，失败逆序 `undo` 回滚、世界逐字节不动。占位符 `{"$n": k}` 只能指向**本批内更早的 `put`**（只有它有产物 = def 键）；日志永远存**替换前**的 args，重放必然算出同一个 `argsHash` 与同一个外层位置。顺带收益：哈希性失败在世界分文未动之前就定论。落地的 `dup` 短路也长在段一上：全 `put` 幂等批预哈希后即可定论，跳过段 2。占位符替换与 `$lit` 转义还原沿**同一深度护栏**逐层累加（`$lit` 的值是包裹节点的子节点），超 `MAX_JSON_DEPTH` 报 `depth` 拒绝，不逸出为宿主语言 `RangeError`。
 
 补丁世代（`add_gen` 携带可选 `base`）用「base + 补丁」表达一整份 body。补丁 def 的 body 形如 `{ops:[{op,path,value}…]}`，`op ∈ append|replace|delete`，`path` 是 `(str|int)[]`：`append` 列表追加 / 字符串拼接（路径不存在按值建列表）；`replace` 路径整体替换（中间容器不存在按下一段类型新建）；`delete` 删除路径（缺失即幂等成功）。组装 `assembleBody(base, ops)` 是纯函数：不改 base / 补丁，产物不共享补丁 value 引用。`base` = 同身份内基础世代的 `seq`（严格小于本世代），必须已存在且其 payload def 是合法补丁体，否则 `missing_parent` / `bad_patch`（fail-closed，世界分文不动）。`active` 对补丁世代同义：仍指向 `payload`（补丁 def 键），故 `set_active` 回滚语义不变。组装结果由**取用侧**（宿主投影）按世代链回溯算出，内核不组装、不解释 body 语义；读侧契约不变（投影仍回 `body`，另回 `data_gen` = 组装来源世代，供写方把下一世代写成补丁）。
 
@@ -143,7 +151,7 @@ put | add_identity | add_gen | set_active | retire | fork | graft | batch | note
 | `partial` | `replay(尾段, 快照世界)` | **必须三步**：① 校基础 ② 校接驳 ③ 才 replay | ✅ |
 | `base_only` | 直接取宿主存的基础世界 | 即空段调用 `verify([], anchorAfter(基础,快照), {worldRev})`——唯一能校基础的入口 | ❌ 只读投影 |
 
-相关导出面（`journal.ts`）：`EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter`。
+相关导出面（`journal.ts`）：`EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter`。两个身份哈希 `entryHash` / `worldRev` 由叶子模块 `identity.ts` 承载，`journal.ts` 转口并 re-export，`journal.apply.ts` 直接从 `identity.ts` 取用。
 定义表访问抽象（`defs.ts`）：`LAZY_DEFS`、`LazyDefsHandle`、`cloneDefs`、`defHas`、`defsKeys`——内核只经它们读 / 判存在 / 列键 / 克隆 defs 表，普通 map 与惰性代理行为一致；`cloneWorld` 与 `flattenPatches` 的复制都走 `cloneDefs`，不展开 body。
 
 成对使用是硬规则。`replay` 只重建、不校验链——它内部不查 `seq`/`prev` 衔接，只查 `applyEntry` 成功与 `argsHash` 一致。于是 `replay(尾段, 错的基础)` 不报错：尾段一条本该撞 `id_taken` 而被拒的记录，接在缺前缀基础上却成功，于是算出链上从未被授权的世界。防"接错位"的责任全在 `verify`。`base_only` 的禁则是结构性的：写要 `expect_pos`，而 `pos` 是链头哈希，基础里没有——它只能当只读投影，正当用途恰好是"上下文 = 对日志的投影"这一闭环。
@@ -261,7 +269,7 @@ Eff   ["eff", port, method, args]  Call  ["call", fTerm, [T...]]
 Arith ["arith", op, T, T]          List  ["list", [T...]]        Obj  ["obj", {k: T...}]
 ```
 
-`pred`（op ∈ lt/le/gt/ge/eq/ne）复用 `cmp` 全序，是 `if` 唯一可计算出来的布尔来源；`get` 对任意值沿静态 path 投影，与 `g` 对称（`g` 的根是 `ctx`，`get` 的根是任意值）；`getOr` 同 `get` 但缺失路径时惰性取默认项，使外部数据里的**可选字段**可在 term 内安全读取。`arith`（op ∈ add/sub/mul）只接受有限数、结果非有限报 `bad_arith`；`cmp` 与规范序列化 `canonicalJson` 共用同一嵌套深度护栏，超限报 `depth`（拒绝执行，不逸出为宿主语言栈溢出）；`list`/`obj` 逐个求值构造新列表/新对象（`obj` 键按 code-unit 升序，与 `canonicalJson`/`cmp` 同序）。**不加 `div`**：除零与非终止小数语义复杂、收益低。这些全是**加法式扩展**（原语只增不改语义）：不改身份、终止性与链格式，老日志不含新原语仍可重放；新原语在旧实现上报 `bad_term` 而非算错。
+`pred`（op ∈ lt/le/gt/ge/eq/ne）复用 `cmp` 全序，是 `if` 唯一可计算出来的布尔来源；`get` 对任意值沿静态 path 投影，与 `g` 对称（`g` 的根是 `ctx`，`get` 的根是任意值）；`getOr` 同 `get` 但缺失路径时惰性取默认项，使外部数据里的**可选字段**可在 term 内安全读取。`arith`（op ∈ add/sub/mul）只接受有限数、结果非有限报 `bad_arith`；`cmp` 与规范序列化 `canonicalJson` 共用同一嵌套深度护栏，超限报 `depth`（拒绝执行，不逸出为宿主语言栈溢出）；`list`/`obj` 逐个求值构造新列表/新对象（`obj` 键按 code-unit 升序，与 `canonicalJson`/`cmp` 同序）；`eff` 的 `port` / `method` 须为**非空字符串**，否则 `bad_term`（形态校验先于实参求值与效果序号自增，不合规不产生任何侧效应）。**不加 `div`**：除零与非终止小数语义复杂、收益低。这些全是**加法式扩展**（原语只增不改语义）：不改身份、终止性与链格式，老日志不含新原语仍可重放；新原语在旧实现上报 `bad_term` 而非算错。
 
 term 的边界：可推导纯数值、可组装结果对象；但**重计算与效果仍归执行件**——判定管选择、编排与轻量组装，数值聚合之外的重活不进 term。
 
@@ -271,7 +279,7 @@ term 的边界：可推导纯数值、可组装结果对象；但**重计算与�
 
 输入边界写死不扩：世界是一份完整输入，内核不认识文件/数据库/网络；时钟与随机来自输入（`now` → `Entry.at`），内核不取；能力表来自输入且**恒等于输入**（`EffRequest.caps` 恒等于 `KernelInput.caps`），内核不扩权不改权；效果只被请求从不被执行；单链 CAS，`expect_pos` 只有一个链头，多世界合并不在射程——答案是"再开一段账"而非"加 merge"，因为合并语义要求认识冲突 = 认识语义。
 
-**内核给一致性不给正确性。** 身份/来源：`id` 永不复用、`by` 进链、`ref` 可指向审计记录，但 `by`/`id` 的真实性内核不验（`by` 当不透明字符串，`id` 是标签不是认证）——归上层审核/宿主认证。内容合法性：`commit` 机械校验覆盖形态/引用/位置/不变量，但"改得对不对"内核不管。效果执行：`EffRequest`/`EffResult` 都是可审计数据纸，但结果内容可信度内核不校验，端口返回什么照单回灌——这是全系统最大信任面，落在宿主显式契约上：**宿主必须为每个 `EffRequest→EffResult` 留存配对审计记录并 `put` 成 def、经 `request.ref` 指向它**；否则"世界可追溯"只对写成立、对效果不成立。
+**内核给一致性不给正确性。** 身份/来源：`id` 永不复用、`by` 进链、`ref` 进链哈希但内核不解释其内容（该字段保留给未来的世界内引用语义），但 `by`/`id` 的真实性内核不验（`by` 当不透明字符串，`id` 是标签不是认证）——归上层审核/宿主认证。内容合法性：`commit` 机械校验覆盖形态/引用/位置/不变量，但"改得对不对"内核不管。效果执行：`EffRequest`/`EffResult` 都是可审计数据纸，但结果内容可信度内核不校验，端口返回什么照单回灌——这是全系统最大信任面，落在宿主显式契约上：**宿主必须为每个 `EffRequest→EffResult` 留存配对审计记录**，审计住宿主**旁路侧存**（不进世界、不落链、不参与重放），`write` **不落 `ref`**；否则"世界可追溯"只对写成立、对效果不成立。
 
 宿主契约几条破了内核就白干：
 
@@ -335,14 +343,14 @@ term 的边界：可推导纯数值、可组装结果对象；但**重计算与�
 
 | 模块 | 导出 |
 |---|---|
-| value | `TYPE_ORDER`、`t`、`canonicalJson`、`deepEq` |
+| value | `TYPE_ORDER`、`TypeName`、`t`、`canonicalJson`、`deepEq` |
 | hash | `utf8`、`sha256`、`H` |
 | defs | `LAZY_DEFS`、`LazyDefsHandle`、`cloneDefs`、`defHas`、`defsKeys` |
 | patch | `PatchOp`、`PatchPath`、`assembleBody`、`readPatchOps` |
-| rebase | `flattenPatches`、`FlattenResult` |
+| rebase | `flattenPatches`、`FlattenResult`、`remapGens` |
 | recycle | `recycleWorld`、`RecycleSpec`、`RecycleStats`、`RecycleResult` |
 | journal | `EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`applyEntry`、`replay`、`verify`、`entryHash`、`anchorAfter` |
 | commit | `commit`、`validate`、`entryOf`、`stale` |
-| machine | `eval`、`cmp` |
+| machine | `eval`、`cmp`、`TERM_TAGS`（term 原语定义在 `machine.eval.ts`，经 `machine.ts` 转口） |
 | run | `run`、`observationsOf` |
-| types | 全部类型（`Json`/`Hash`/`Path`/`Def`/`Gen`/`Identity`/`World`/`Head`/`Anchor`/`Op`/`Entry`/`WriteRequest`/`EffRequest`/`EffResult`/`Directive`/`KernelInput`/`KernelOutput`/`CommitResult`/`CommitOutcome`） |
+| types | 全部类型 + `KernelError`（`Json`/`Hash`/`Path`/`Def`/`Gen`/`Identity`/`World`/`Head`/`Anchor`/`Op`/`Entry`/`WriteRequest`/`EffRequest`/`EffResult`/`Directive`/`KernelInput`/`KernelOutput`/`CommitResult`/`CommitOutcome`） |

@@ -79,7 +79,7 @@ export async function reloadPlugin(deps: ReloadDeps, entry: PluginEntry): Promis
           id: `watch-${randomUUID()}`,
           op: 'batch',
           args: { ops: plan.ops },
-          by: 'watcher',
+          by: 'host',
         },
         deps.now(),
         (entry) => appendJournal(deps.paths.journalFile, [entry]),

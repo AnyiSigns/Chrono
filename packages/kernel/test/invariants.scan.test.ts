@@ -14,6 +14,7 @@ const RUNTIME_FILES = [
   'value.ts',
   'hash.ts',
   'defs.ts',
+  'identity.ts',
   'journal.ts',
   'journal.apply.ts',
   'commit.ts',
@@ -61,5 +62,33 @@ describe('运行时零 IO：非 test 源码扫描（node:fs 豁免见文件头�
     for (const f of RUNTIME_FILES) {
       expect(readFileSync(SRC_DIR + f, 'utf8').length).toBeGreaterThan(0)
     }
+  })
+  it('运行时模块值依赖无环（单向 DAG）：identity 为叶，日志层不互引', () => {
+    const sources = runtimeSources()
+    const names = new Set(sources.map(([f]) => f))
+    // 只看值依赖（import / export 重导出）；`import type` 编译期擦除，不构成运行期环
+    const VALUE_EDGE =
+      /(?:^|\n)\s*(?:import|export)\s+(?!type\b)[^'"]*?\bfrom\s+['"]\.\/([^'"]+)['"]/g
+    const graph = new Map<string, string[]>()
+    for (const [f, src] of sources) {
+      const deps: string[] = []
+      for (const m of src.matchAll(VALUE_EDGE)) {
+        if (names.has(m[1])) deps.push(m[1])
+      }
+      graph.set(f, deps)
+    }
+    const state = new Map<string, number>() // 0 未见 / 1 在栈 / 2 已完成
+    const visit = (f: string): void => {
+      const s = state.get(f) ?? 0
+      if (s === 2) return
+      if (s === 1) throw new Error('依赖环经过 ' + f)
+      state.set(f, 1)
+      for (const dep of graph.get(f) ?? []) visit(dep)
+      state.set(f, 2)
+    }
+    expect(() => {
+      for (const f of names) visit(f)
+    }).not.toThrow()
+    expect(graph.get('identity.ts')).toEqual(expect.not.arrayContaining(['journal.ts']))
   })
 })

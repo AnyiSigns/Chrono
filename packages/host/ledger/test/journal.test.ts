@@ -12,6 +12,8 @@ import {
 } from '../index.ts'
 import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { H, entryHash } from '../../../kernel/index.ts'
+import type { Entry } from '../../../kernel/index.ts'
 import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../test/test-helpers.ts'
 
 const EMPTY_HEAD = { seq: -1, hash: null as string | null }
@@ -125,6 +127,33 @@ describe('账本 journal', () => {
     const entries = readJournal(file)
     expect(entries).toHaveLength(3)
     expect(headOf(entries).seq).toBe(3)
+  })
+
+  it('末段完整但缺尾换行：repairJournalTail 截断，appendJournal 成功且链完整', () => {
+    const a0 = { text: 'x' } as unknown as Json
+    const a1 = { text: 'y' } as unknown as Json
+    const e0: Entry = { seq: 0, prev: null, op: 'note', args: a0, argsHash: H(a0), by: 'u', at: 1 }
+    const e1: Entry = {
+      seq: 1,
+      prev: entryHash(e0),
+      op: 'note',
+      args: a1,
+      argsHash: H(a1),
+      by: 'u',
+      at: 2,
+    }
+    appendJournal(file, [e0])
+    const validBytes = statSync(file).size
+    // 模拟第二条内容已写入但尾换行未持久化：末段是完整 JSON、无换行
+    appendFileSync(file, JSON.stringify(e1))
+    const repaired = repairJournalTail(file)
+    expect(repaired.entries).toHaveLength(1)
+    expect(repaired.truncated).toBe(true)
+    expect(statSync(file).size).toBe(validBytes)
+    // 追加不粘行：不再抛 journal_torn_tail
+    appendJournal(file, [e1])
+    // 链完整性校验通过：seq 连续、prev 衔接、argsHash 与实算一致
+    expect(verifyFull(readJournal(file)).ok).toBe(true)
   })
 
   it('appendJournal 守卫：文件以半截行结尾（未换行）时拒追加，不粘行', () => {

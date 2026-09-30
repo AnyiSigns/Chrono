@@ -63,7 +63,7 @@ export function headOf(entries: Entry[]): Head {
 /** 容错读结果：有效前缀 + 是否截断 + 截断处字节偏移。 */
 export interface JournalRead {
   entries: Entry[]
-  /** 末行撕裂（无换行的半截 JSON）被丢弃：持锁写方须先截断到 `validBytes` 再 append。 */
+  /** 末段无尾换行的撕裂尾被丢弃：持锁写方须先截断到 `validBytes` 再 append。 */
   truncated: boolean
   /** 有效前缀的字节长度（含末条完整行的换行）；无截断时等于文件大小。 */
   validBytes: number
@@ -111,8 +111,8 @@ export function readJournal(file: string): Entry[] {
 }
 
 /**
- * 容错读：追加是「整段一次写」，崩溃只可能留下**最后一条**非空行的半截（无换行结尾）。
- * 末段无换行且解析失败视为撕裂尾丢弃，并报告有效前缀字节数供写方截断；
+ * 容错读：追加是「整段一次写」，一条 entry 及其尾换行同次落盘，故末段无尾换行即撕裂尾，
+ * 丢弃并报告有效前缀字节数供写方截断（不论该段能否解析）；
  * 带换行的行解析失败仍是真损坏（含末行），中间行同理，一律抛。用于启动 / append 路径。
  */
 export function readJournalTolerant(file: string): JournalRead {

@@ -77,7 +77,7 @@ export function reachableDefHashes(world: World, body: Json, cap = DEFAULT_REF_C
   return reachable
 }
 
-/** 单个身份直接引用集合的硬上限（防异常数据撑爆投影；正常会话远低于此）。 */
+/** 单个身份直接引用集合的硬上限（防异常数据撑爆投影；正常用量远低于此）。 */
 export const DEFAULT_REF_CAP = 1000
 
 /**

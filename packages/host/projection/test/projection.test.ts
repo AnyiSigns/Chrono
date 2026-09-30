@@ -242,7 +242,7 @@ describe('A14 base_only 投影', () => {
   it('无代码世代：pins 为 null（不并入 one 绑定）', () => {
     const world = worldWithDataBody({ version: 1 }, {})
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].pins).toBeNull()
+    expect(view.ids['node'].pins).toBeNull()
   })
 
   it('world_rev 可由调用方传入：与现算同值（省去内部重算）', () => {
@@ -320,8 +320,8 @@ function worldWithDataBody(body: Json, defs: World['defs']): World {
   return {
     defs: { ...defs, [payload]: { body } },
     ids: {
-      sess: {
-        id: 'sess',
+      node: {
+        id: 'node',
         schema: SCHEMA,
         gens: [
           {
@@ -355,8 +355,8 @@ describe('补丁世代组装：投影 body = base 世代 + 补丁链', () => {
     return {
       defs,
       ids: {
-        sess: {
-          id: 'sess',
+        node: {
+          id: 'node',
           schema: SCHEMA,
           gens: gens as unknown as World['ids'][string]['gens'],
           active,
@@ -380,9 +380,9 @@ describe('补丁世代组装：投影 body = base 世代 + 补丁链', () => {
       p2,
     )
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].body).toEqual({ n: 2, list: ['x'] })
-    expect(view.ids['sess'].data_gen).toEqual({ seq: 2, payload: p2 })
-    expect(view.ids['sess'].active).toBe(p2)
+    expect(view.ids['node'].body).toEqual({ n: 2, list: ['x'] })
+    expect(view.ids['node'].data_gen).toEqual({ seq: 2, payload: p2 })
+    expect(view.ids['node'].active).toBe(p2)
   })
 
   it('混用整份 + 补丁：整份世代重置基准，后续补丁基于它', () => {
@@ -401,8 +401,8 @@ describe('补丁世代组装：投影 body = base 世代 + 补丁链', () => {
       p2,
     )
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].body).toEqual({ m: 10 })
-    expect(view.ids['sess'].data_gen).toEqual({ seq: 3, payload: p2 })
+    expect(view.ids['node'].body).toEqual({ m: 10 })
+    expect(view.ids['node'].data_gen).toEqual({ seq: 3, payload: p2 })
   })
 
   it('悬挂 base（越界 / base def 缺失）：body=null、data_gen=null（fail-closed）', () => {
@@ -417,8 +417,8 @@ describe('补丁世代组装：投影 body = base 世代 + 补丁链', () => {
       p1,
     )
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].body).toBeNull()
-    expect(view.ids['sess'].data_gen).toBeNull()
+    expect(view.ids['node'].body).toBeNull()
+    expect(view.ids['node'].data_gen).toBeNull()
   })
 })
 
@@ -429,19 +429,19 @@ describe('投影引用集合 refs（只回引用、不回 body）', () => {
 
   it('只收 body 里直接出现的 {"def":hash} 标记（排序去重），值不含 body', () => {
     const world = worldWithDataBody(
-      { conversations: [{ head: { def: msg1 }, older: { def: msg2 } }], again: { def: msg1 } },
+      { records: [{ head: { def: msg1 }, older: { def: msg2 } }], again: { def: msg1 } },
       {
-        [msg1]: { body: { role: 'assistant', prev: { def: msg3 } } },
-        [msg2]: { body: { role: 'user', prev: null } },
-        [msg3]: { body: { role: 'user', prev: null } },
+        [msg1]: { body: { kind: 'b', prev: { def: msg3 } } },
+        [msg2]: { body: { kind: 'a', prev: null } },
+        [msg3]: { body: { kind: 'a', prev: null } },
       },
     )
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    const refs = view.ids['sess'].refs
+    const refs = view.ids['node'].refs
     expect(refs).toEqual([msg1, msg2])
     // 深层引用（msg3 在 msg1 体内）不在 refs 里：由消费方按需解析
     expect(refs).not.toContain(msg3)
-    expect(view.ids['sess'].next_before).toBeNull()
+    expect(view.ids['node'].next_before).toBeNull()
   })
 
   it('reachableDefHashes：沿标记传递到世界内可达 def 的键集合（供越权门禁）', () => {
@@ -474,21 +474,21 @@ describe('投影引用集合 refs（只回引用、不回 body）', () => {
     const missing: Hash = '9'.repeat(64)
     const world = worldWithDataBody({ head: { def: missing } }, {})
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].refs).toEqual([missing])
+    expect(view.ids['node'].refs).toEqual([missing])
     expect([...reachableDefHashes(world, { head: { def: missing } })]).toEqual([])
-    expect(view.ids['sess'].next_before).toBeNull()
+    expect(view.ids['node'].next_before).toBeNull()
   })
 
   it('无标记 / body 为 null → refs 为空数组', () => {
     const world = worldWithDataBody({ version: 1 }, {})
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].refs).toEqual([])
+    expect(view.ids['node'].refs).toEqual([])
   })
 
   it('形如 {def:"not-a-hash"} 不是 64hex → 不当引用标记', () => {
     const world = worldWithDataBody({ head: { def: 'not-a-hash' } }, {})
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].refs).toEqual([])
+    expect(view.ids['node'].refs).toEqual([])
   })
 
   it('引用集合有硬上限：直接标记超出即截断（防异常数据撑爆投影）', () => {
@@ -498,6 +498,6 @@ describe('投影引用集合 refs（只回引用、不回 body）', () => {
     }
     const world = worldWithDataBody(body, {})
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['sess'].refs).toHaveLength(1000)
+    expect(view.ids['node'].refs).toHaveLength(1000)
   })
 })

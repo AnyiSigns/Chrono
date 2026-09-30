@@ -7,10 +7,11 @@ import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import { blobPointerOf, blobSha256 } from '../blobs.ts'
 import { pathSegments } from '../common/paths-safe.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
 import type { Json } from '../../kernel/index.ts'
 
-/** 通用排除：依赖（宿主侧 ③）与版本库元数据——宿主只内置这两个名字。 */
-export const SOURCE_EXCLUDED_NAMES: ReadonlySet<string> = new Set(['node_modules', '.git'])
+/** 通用排除默认：依赖（宿主侧 ③）与版本库元数据——默认 profile 只内置这两个名字。 */
+export const SOURCE_EXCLUDED_NAMES: ReadonlySet<string> = DEFAULT_ECOSYSTEM.sourceExcludedNames
 
 /** 入世排除表文件名；自身永不进源码树。 */
 export const WORLDIGNORE_FILE = '.worldignore'
@@ -95,11 +96,15 @@ function readFileStable(abs: string): Buffer {
 }
 
 /** 打包一个目录：返回批内 put 子操作（文件在前、目录在后）与根 tree 的真实哈希。 */
-export function packSourceDir(absDir: string, patterns: string[][] = []): PackedSource {
+export function packSourceDir(
+  absDir: string,
+  patterns: string[][] = [],
+  excludedNames: ReadonlySet<string> = SOURCE_EXCLUDED_NAMES,
+): PackedSource {
   const ops: Json[] = []
   // 同内容去重：同一份字节在包内出现多次只回传一次，落 CAS 幂等且不重复搬运
   const blobs = new Map<string, Buffer>()
-  const root = packDir(absDir, ops, [], patterns, blobs)
+  const root = packDir(absDir, ops, [], patterns, blobs, excludedNames)
   return {
     ops,
     rootTreeIndex: root.index,
@@ -115,12 +120,13 @@ function packDir(
   rel: string[],
   patterns: string[][],
   blobs: Map<string, Buffer>,
+  excludedNames: ReadonlySet<string>,
 ): DirResult {
   const entries: TreeEntry[] = []
   const placeholderEntries: Json[] = []
   let fileCount = 0
   const dirents = readdirSync(dir, { withFileTypes: true })
-    .filter((e) => !SOURCE_EXCLUDED_NAMES.has(e.name))
+    .filter((e) => !excludedNames.has(e.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const dirent of dirents) {
     if (dirent.name === WORLDIGNORE_FILE || dirent.name === MATERIALIZE_MARKER) continue
@@ -128,7 +134,7 @@ function packDir(
     if (isIgnored(relPath, patterns)) continue
     const abs = join(dir, dirent.name)
     if (dirent.isDirectory()) {
-      const child = packDir(abs, ops, relPath, patterns, blobs)
+      const child = packDir(abs, ops, relPath, patterns, blobs, excludedNames)
       entries.push({ name: dirent.name, mode: 'dir', hash: child.hash })
       placeholderEntries.push({ name: dirent.name, mode: 'dir', hash: { $n: child.index } })
       fileCount += child.fileCount

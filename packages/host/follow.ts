@@ -96,11 +96,25 @@ export function createFollow(deps: FollowDeps): FollowHandle {
         return
       }
       // 成功后才推进：appliedSeq / appliedWorld / 广播 三者一致前进
+      const prevWorld = appliedWorld
       appliedSeq = advancedHead.seq
-      // 世代已跟随：逐身份广播变化，供缓存型读侧按 code / data 语义失效重取。
-      broadcastIdentityChanges(appliedWorld, advancedWorld)
       appliedWorld = advancedWorld
-      deps.onApplied(advancedWorld)
+      // 尾段副作用（逐身份广播 / 审计分档世界切换 / 周期对齐 / 方法超时重报）失败不得 reject：
+      // 该 promise 的调用方（run / 周期 / watcher）会把 rejection 当 run 失败并升级致命停机，
+      // 而这只是通知 / 派生状态的可观测性问题。世界已应用，故基准照常前进，失败只记运维日志，
+      // 由下一次跟随收敛（与 applyWorld 失败窗口同口径）。
+      try {
+        // 世代已跟随：逐身份广播变化，供缓存型读侧按 code / data 语义失效重取。
+        broadcastIdentityChanges(prevWorld, advancedWorld)
+        deps.onApplied(advancedWorld)
+      } catch (err) {
+        deps.safeAppendLifecycle({
+          at: Date.now(),
+          kind: 'host',
+          event: 'follow_failed',
+          reason: err instanceof Error ? err.message : String(err),
+        })
+      }
     })
     runtimeChain = next.then(
       () => undefined,

@@ -2,11 +2,13 @@
 // 背景：审计迁旁路侧存后，compact 机械摘除世界里的审计 def；升级前写入的审计 def 从未进侧存，
 // `host.audit` 读不到。首启（或离线 compact）一次性扫描 base world defs 与冷段 / 尾段 entry 的
 // `put` args，按 entry seq 升序重建记录追加进侧存，写 `state/audit/meta.json` 标记。
-// 幂等：标记存在即跳过；回填受保留窗口约束（从新到旧取），超出部分不回填。
-// 审计是旁路：不进世界、不进链、不参与重放。
+// 幂等：标记存在即跳过；标记与追加非原子，故追加前按 (at, by, body) 多重集扣除侧存已有记录——
+// 崩溃窗口（已追加部分记录、meta 未写）重跑不产生重复，也不丢未写入的尾部。
+// 回填受保留窗口约束（从新到旧取），超出部分不回填。审计是旁路：不进世界、不进链、不参与重放。
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { canonicalJson } from '../kernel/index.ts'
 import type { Entry, Hash, Json, World } from '../kernel/index.ts'
 import { AUDIT_MAX_BYTES, AUDIT_MAX_RECORDS, EFFECT_AUDIT_KIND } from './audit.ts'
 import type { AuditDraft } from './audit.ts'
@@ -87,6 +89,11 @@ function collectCandidates(world: World, entries: readonly Entry[]): Candidate[]
   return candidates
 }
 
+/** 回填去重键：`(at, by, body)` 规范序列化；与侧存记录的同一键等值即视为已追加（多重集计数）。 */
+function draftKey(value: { at: number; by: string; body: Json }): string {
+  return canonicalJson({ at: value.at, by: value.by, body: value.body })
+}
+
 /** 从新到旧取窗口内候选（条数 / 字节任一超限即停），返回时间正序的待追加草稿。 */
 function selectWithinWindow(candidates: Candidate[]): AuditDraft[] {
   const selected: Candidate[] = []
@@ -125,7 +132,24 @@ export function backfillAuditStore(
   }
   const throughEntrySeq = entries.length > 0 ? entries[entries.length - 1].seq : -1
   const drafts = selectWithinWindow(collectCandidates(world, entries))
-  for (const draft of drafts) store.append(draft)
+  // 按多重集扣除侧存已有记录：窗口裁剪从新到旧，重跑选出的仍是同一窗口，故已追加部分必被命中，
+  // 崩溃窗口（追加中途、meta 未写）重跑只补尾部，既不重复也不丢失。
+  const present = new Map<string, number>()
+  for (const record of store.records()) {
+    const key = draftKey(record)
+    present.set(key, (present.get(key) ?? 0) + 1)
+  }
+  let backfilled = 0
+  for (const draft of drafts) {
+    const key = draftKey(draft)
+    const remaining = present.get(key) ?? 0
+    if (remaining > 0) {
+      present.set(key, remaining - 1)
+      continue
+    }
+    store.append(draft)
+    backfilled += 1
+  }
   writeAuditBackfillMeta(paths.auditMetaFile, { backfilled: true, throughEntrySeq })
-  return { backfilled: drafts.length, throughEntrySeq }
+  return { backfilled, throughEntrySeq }
 }

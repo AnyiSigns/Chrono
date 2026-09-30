@@ -2,7 +2,14 @@
 // 档位随世界声明变，每次插入现查；未声明端口走 default 档。
 
 import { describe, expect, it } from 'vitest'
-import { AUDIT_TIER_MAX_BYTES, AUDIT_TIER_MAX_RECORDS, AuditIndex } from '../audit.ts'
+import {
+  AUDIT_DEFAULT_TIER,
+  AUDIT_MAX_BYTES,
+  AUDIT_MAX_RECORDS,
+  AUDIT_TIER_MAX_BYTES,
+  AUDIT_TIER_MAX_RECORDS,
+  AuditIndex,
+} from '../audit.ts'
 import { resolveAuditTier } from '../audit-tiers.ts'
 import type { Json, World } from '../../kernel/index.ts'
 
@@ -160,6 +167,28 @@ describe('声明式审计分档（schema.audit_tier）', () => {
     expect(index.size()).toBe(AUDIT_TIER_MAX_RECORDS)
     const runs = index.records().map((item) => (item.body as { run: string }).run)
     expect(runs[0]).toBe('g1')
+  })
+})
+
+describe('审计保留窗口口径：全局单档 ≠ 分档 default 档', () => {
+  it('单档全局窗口 = AUDIT_MAX_*（10000 / 8 MiB）', () => {
+    expect(AUDIT_MAX_RECORDS).toBe(10_000)
+    expect(AUDIT_MAX_BYTES).toBe(8 * 1024 * 1024)
+    expect(new AuditIndex({}).budgetTotals()).toEqual({
+      maxRecords: AUDIT_MAX_RECORDS,
+      maxBytes: AUDIT_MAX_BYTES,
+    })
+  })
+
+  it('分档生效：未声明端口落到 default 档 = AUDIT_DEFAULT_TIER（1000 / 512 KiB）', () => {
+    expect(AUDIT_DEFAULT_TIER).toEqual({ maxRecords: 1000, maxBytes: 512 * 1024 })
+    expect(new AuditIndex({ tierBudgetOf: () => undefined }).budgetTotals()).toEqual(
+      AUDIT_DEFAULT_TIER,
+    )
+    const index = new AuditIndex({ tierBudgetOf: () => undefined })
+    for (let i = 0; i < 1_005; i++) index.add(record(draftPort('approval', `a${i}`)))
+    expect(index.size()).toBe(AUDIT_DEFAULT_TIER.maxRecords)
+    expect((index.records()[0].body as { run: string }).run).toBe('a5')
   })
 })
 

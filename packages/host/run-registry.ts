@@ -2,16 +2,12 @@
 // `run.started` / `run.finished` 成对收口（`finished` 幂等、恰好一次；异常路径也以 refused 收口）。
 
 import type { Json } from '../kernel/index.ts'
-import type { Limits } from './wire.ts'
+
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export { DEFAULT_LIMITS, MAX_DETACHED_RUNS } from './options.ts'
 
 /** 入站面广播回调：宿主自身事件与插件事件同路，`impl = "host"` 表宿主事件。 */
 export type BroadcastFn = (impl: string, topic: string, payload: Json) => void
-
-/** 发起者未给 limits 时的宿主默认预算。 */
-export const DEFAULT_LIMITS: Limits = { gas: 1_000_000, depth: 64 }
-
-/** detached run 并发上限：无调用方等待，超限即拒，防单个插件无限起后台 run 拖垮宿主。 */
-export const MAX_DETACHED_RUNS = 32
 
 export interface RunLifecycle {
   /** 广播 `run.started`；由调用方在起 run 前调用一次。 */

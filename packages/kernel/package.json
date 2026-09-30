@@ -11,6 +11,7 @@
     "commit.ts",
     "defs.ts",
     "hash.ts",
+    "identity.ts",
     "index.ts",
     "journal.apply.ts",
     "journal.ts",

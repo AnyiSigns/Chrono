@@ -14,17 +14,32 @@ const GEN = 'a'.repeat(64) as Hash
 const EXCLUSIVE = { identity: 'toy', exclusive: ['port'] } as unknown as PluginDecl
 const OVERLAP = { identity: 'toy', exclusive: [] } as unknown as PluginDecl
 
-function fakeService(): ServiceRuntime {
-  return { id: 'toy', gen: GEN, draining: false } as unknown as ServiceRuntime
+function fakeService(decl?: PluginDecl): ServiceRuntime {
+  return {
+    id: 'toy',
+    gen: GEN,
+    draining: false,
+    decl,
+    link: { close: () => {} },
+    lifecycle: { terminate: () => {}, waitForExit: () => Promise.resolve() },
+  } as unknown as ServiceRuntime
+}
+
+interface RekeyCall {
+  gen: Hash
+  decl: PluginDecl
+  endpointDecl: PluginDecl | undefined
 }
 
 interface Harness {
   host: SwapHost
   calls: string[]
+  rekeyCalls: RekeyCall[]
 }
 
 function harness(oldService: ServiceRuntime, overrides: Partial<SwapHost> = {}): Harness {
   const calls: string[] = []
+  const rekeyCalls: RekeyCall[] = []
   const nextService = fakeService()
   const prepared: PreparedService = { cwd: 'C:/materialized/toy' }
   // 服务表用可变游标模拟：removeService 后 serviceOf 应为空，adoptService 后指向新实例
@@ -32,6 +47,7 @@ function harness(oldService: ServiceRuntime, overrides: Partial<SwapHost> = {}):
   const base: SwapHost = {
     isStopping: () => false,
     isIsolated: () => false,
+    isSuspended: () => false,
     serviceOf: () => current,
     adoptService: () => {
       calls.push('adopt')
@@ -53,8 +69,9 @@ function harness(oldService: ServiceRuntime, overrides: Partial<SwapHost> = {}):
       calls.push('launchPrepared')
       return nextService
     },
-    rekeyEndpoints: () => {
+    rekeyEndpoints: (_service, gen, decl, endpointDecl) => {
       calls.push('rekey')
+      rekeyCalls.push({ gen, decl, endpointDecl })
     },
     clearRestart: () => {
       calls.push('clearRestart')
@@ -69,7 +86,7 @@ function harness(oldService: ServiceRuntime, overrides: Partial<SwapHost> = {}):
       calls.push('scheduleRetry')
     },
   }
-  return { host: { ...base, ...overrides }, calls }
+  return { host: { ...base, ...overrides }, calls, rekeyCalls }
 }
 
 describe('换人序编排', () => {
@@ -124,6 +141,47 @@ describe('换人序编排', () => {
       'recordStartFailure',
       'scheduleRetry',
     ])
+  })
+
+  it('重叠序起服务失败：端点按旧服务声明重挂（不拿新声明的方法集）', async () => {
+    const oldDecl = {
+      identity: 'toy',
+      exclusive: [],
+      methods: { toy: ['echo'] },
+    } as unknown as PluginDecl
+    const oldService = fakeService(oldDecl)
+    const { host, calls, rekeyCalls } = harness(oldService, {
+      launch: async () => {
+        calls.push('launch')
+        throw new Error('handshake exploded')
+      },
+    })
+    await swapService(host, 'toy', oldService, GEN, OVERLAP)
+    expect(calls).toEqual(['clearRestart', 'launch', 'recordStartFailure', 'rekey'])
+    expect(rekeyCalls[0].decl).toBe(OVERLAP)
+    expect(rekeyCalls[0].endpointDecl).toBe(oldDecl)
+  })
+
+  it('独占序准备失败：端点按旧服务声明重挂（不拿新声明的方法集）', async () => {
+    const oldDecl = { identity: 'toy', exclusive: ['port'] } as unknown as PluginDecl
+    const oldService = fakeService(oldDecl)
+    const { host, calls, rekeyCalls } = harness(oldService, {
+      prepare: async () => {
+        calls.push('prepare')
+        throw new Error('build exploded')
+      },
+    })
+    await swapService(host, 'toy', oldService, GEN, EXCLUSIVE)
+    expect(calls).toEqual(['clearRestart', 'prepare', 'recordStartFailure', 'rekey'])
+    expect(rekeyCalls[0].decl).toBe(EXCLUSIVE)
+    expect(rekeyCalls[0].endpointDecl).toBe(oldDecl)
+  })
+
+  it('已休眠身份不接管：起服务成功后不得 adopt / 重挂端点', async () => {
+    const oldService = fakeService()
+    const { host, calls } = harness(oldService, { isSuspended: () => true })
+    await swapService(host, 'toy', oldService, GEN, OVERLAP)
+    expect(calls).toEqual(['clearRestart', 'launch'])
   })
 
   it('替换防御：准备前旧服务已被替换 → 不做任何动作', async () => {

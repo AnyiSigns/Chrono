@@ -1,13 +1,16 @@
 // 宿主保留能力类 `host` 的方法实现：audit / asset.put / asset.get / identities / identities.suspend /
-// identities.resume / source.read / validate_package / thread.terminate / thread.resume。
+// identities.resume / source.read / validate_package / run.cancel / run.spawn。
 // 宿主不解释业务，只做机械路由与内容寻址。
 // 依赖以回调注入（世界快照 / 审计索引 / run 表），故本模块不直接持有宿主进程状态。
 
 import { latestDataGen, readPluginDecl, resolveTreeEntry } from './assembly/index.ts'
+import { DEFAULT_ECOSYSTEM } from './assembly/ecosystem.ts'
+import type { EcosystemProfile } from './assembly/ecosystem.ts'
 import { getBlob, isBlobPointer, putBlob } from './blobs.ts'
 import { assembleIdentityBody, reachableDefHashes } from './projection/index.ts'
 import { getAsset, putAsset } from './assets.ts'
 import { validatePackage } from './validate-package.ts'
+import { HOST_METHOD_DEPRECATED_ALIASES } from './host-methods.ts'
 import type { IdentitySuspendResult } from './host-methods.ts'
 import type { AuditQuery, AuditReport } from './audit.ts'
 import { parseAuditFilter } from './audit.ts'
@@ -23,6 +26,8 @@ export interface HostCapabilityDeps {
   assetsDir: string
   /** 源码 CAS 目录：`source.read` 解析 pointer blob 时经它读字节。 */
   blobsDir: string
+  /** 生态 profile：`identities` / `source.read` 的声明解析（同语言入口扩展名等）随它；缺省内建默认。 */
+  ecosystem?: EcosystemProfile
   /** 宿主运行态目录（③）：`validate_package` 的候选文件临时落点，用后即删。 */
   runtimeDir: string
   /** 只读审计查询面（侧存索引：启动时由侧存重建、运行期增量补齐）。 */
@@ -34,6 +39,7 @@ export interface HostCapabilityDeps {
   /**
    * 启动一次 detached run（无 socket、结果不回流）：返回新 run id；
    * 并发超宿主上限 → `too_many_runs`（不起新 run）。`thread` 仅随事件原样回带。
+   *（`run.spawn` 及弃用别名 `thread.resume` 共用。）
    */
   startDetachedRun: (
     emitter: string,
@@ -47,6 +53,8 @@ export interface HostCapabilityDeps {
   suspendIdentity?: (id: string) => Promise<IdentitySuspendResult>
   /** 运行期恢复一个身份；缺省（未接线）按 `not_found`（不猜）。 */
   resumeIdentity?: (id: string) => Promise<IdentitySuspendResult>
+  /** 命中弃用别名时的旁路通知（method → 中性名）；缺省即静默，不影响派发。 */
+  onDeprecatedMethod?: (method: string, replacement: string) => void
 }
 
 function bad(code: string, message: string): EndpointCallResult {
@@ -137,11 +145,11 @@ function blobBytes(
  * `identities {}`：只读身份清单面——宿主从世界 + 各身份**当前代码世代声明**机械读出
  * `id` / `active` / `implements` / `commands`（命令只出名字）；不解释业务，不含 `pins` 明细。
  */
-function identitiesCall(deps: HostCapabilityDeps): EndpointCallResult {
+function identitiesCall(deps: HostCapabilityDeps, ecosystem: EcosystemProfile): EndpointCallResult {
   const world = deps.world()
   const list: Json[] = []
   for (const id of Object.keys(world.ids).sort()) {
-    const read = readPluginDecl(world, id, deps.blobsDir)
+    const read = readPluginDecl(world, id, deps.blobsDir, ecosystem)
     list.push({
       id,
       active: world.ids[id].active,
@@ -227,7 +235,11 @@ function defReadCall(
 }
 
 /** `source.read { identity, path }`：按路径读某身份源码 blob（只读；目录 / 缺失 → `not_found`）。 */
-function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
+function sourceReadCall(
+  deps: HostCapabilityDeps,
+  args: Json,
+  ecosystem: EcosystemProfile,
+): EndpointCallResult {
   const record = asRecord(args)
   const identity = record === null ? undefined : record['identity']
   const path = record === null ? undefined : record['path']
@@ -235,7 +247,7 @@ function sourceReadCall(deps: HostCapabilityDeps, args: Json): EndpointCallResul
     return bad('not_found', 'source.read expects { identity, path }')
   }
   const world = deps.world()
-  const read = readPluginDecl(world, identity, deps.blobsDir)
+  const read = readPluginDecl(world, identity, deps.blobsDir, ecosystem)
   if (read === null) return bad('not_found', identity)
   const entry = resolveTreeEntry(world, read.tree, path)
   if (entry === null || entry.mode !== 'file') return bad('not_found', path)
@@ -262,28 +274,27 @@ function validatePackageCall(deps: HostCapabilityDeps, args: Json): EndpointCall
   return { ok: true, value: outcome.report as unknown as Json }
 }
 
-/** `thread.terminate { run }`：等价 `cancel{run}`；未知 / 已结束 → `unknown_run`。 */
-function threadTerminateCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
+/** `run.cancel { run }`：等价 `cancel{run}`；未知 / 已结束 → `unknown_run`。（旧名 `thread.terminate` 共用。） */
+function cancelRunCall(deps: HostCapabilityDeps, args: Json): EndpointCallResult {
   const record = asRecord(args)
   const run = record === null ? undefined : record['run']
   if (typeof run !== 'string' || run.length === 0) {
-    return bad('unknown_run', 'thread.terminate expects run')
+    return bad('unknown_run', 'run.cancel expects run')
   }
   if (!deps.abortRun(run)) return bad('unknown_run', run)
   return { ok: true, value: { ok: true } }
 }
 
-/** `thread.resume { entry, args?, thread? }`：启动 detached run，立即回新 run id；游标语义归调用方。 */
-function threadResumeCall(
-  deps: HostCapabilityDeps,
-  emitter: string,
-  args: Json,
-): EndpointCallResult {
+/**
+ * `run.spawn { entry, args?, thread? }`：启动 detached run，立即回新 run id；游标语义归调用方。
+ *（旧名 `thread.resume` 共用。）
+ */
+function spawnRunCall(deps: HostCapabilityDeps, emitter: string, args: Json): EndpointCallResult {
   if (deps.isStopping()) return bad('internal', 'stopping')
   const record = asRecord(args)
   const entry = record === null ? undefined : record['entry']
   if (typeof entry !== 'string' || entry.length === 0) {
-    return bad('bad_directive', 'thread.resume expects entry')
+    return bad('bad_directive', 'run.spawn expects entry')
   }
   // thread 缺省 null：仅随 detached run 生命周期事件原样回带，宿主不解释
   const thread = record !== null && typeof record['thread'] === 'string' ? record['thread'] : null
@@ -319,8 +330,13 @@ async function resumeCall(deps: HostCapabilityDeps, args: Json): Promise<Endpoin
 
 /** 组装宿主保留能力类派发器；方法集由 `HOST_METHODS` 固定，未知方法 fail-closed。 */
 export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCall {
+  // 声明解析口径随构造期注入的生态 profile；缺省即内建默认（零行为变化）。
+  const ecosystem = deps.ecosystem ?? DEFAULT_ECOSYSTEM
   const defScopeCache = new Map<string, Set<Hash>>()
   return async (method, emitter, args) => {
+    // 弃用别名与新名同路派发；命中别名只旁路记一条弃用日志，不影响返回值
+    const replacement = HOST_METHOD_DEPRECATED_ALIASES.get(method)
+    if (replacement !== undefined) deps.onDeprecatedMethod?.(method, replacement)
     switch (method) {
       case 'audit':
         return auditCall(deps, args)
@@ -333,17 +349,19 @@ export function createHostCapability(deps: HostCapabilityDeps): HostCapabilityCa
       case 'def.read':
         return defReadCall(deps, args, defScopeCache)
       case 'identities':
-        return identitiesCall(deps)
+        return identitiesCall(deps, ecosystem)
       case 'identities.suspend':
         return suspendCall(deps, args)
       case 'identities.resume':
         return resumeCall(deps, args)
       case 'source.read':
-        return sourceReadCall(deps, args)
+        return sourceReadCall(deps, args, ecosystem)
+      case 'run.cancel':
       case 'thread.terminate':
-        return threadTerminateCall(deps, args)
+        return cancelRunCall(deps, args)
+      case 'run.spawn':
       case 'thread.resume':
-        return threadResumeCall(deps, emitter, args)
+        return spawnRunCall(deps, emitter, args)
       case 'validate_package':
         return validatePackageCall(deps, args)
       default:

@@ -9,6 +9,7 @@ import type { ChildProcess } from 'node:child_process'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { detachedProcessGroup } from '../common/platform/index.ts'
 import { createFrameDecoder, encodeFrame } from '../wire.ts'
 import type { ServiceChannel, ServiceTransport } from '../service-link.ts'
 import { isRecord } from '../common/json.ts'
@@ -18,6 +19,53 @@ import type { Json } from '../../kernel/index.ts'
 
 /** 同语言入口模块导出的服务工厂名：宿主直调口，插件侧（含 SDK）以同名导出。 */
 export const SERVICE_FACTORY_EXPORT = 'createService'
+
+/**
+ * 消息回调注册前允许缓冲的入站帧上限：服务可在 `hello` 前自发帧，宿主在回调就绪前先有界
+ * 缓冲、就绪后按原序 flush，避免启动期事件静默丢失；超限按协议损坏收口，不无界缓冲。
+ * 该窗口极窄（stdio 回调先于 I/O 送达，主要命中 inproc 工厂同步 `emit`）。
+ */
+export const MAX_PENDING_FRAMES = 64
+
+/**
+ * 写端在途帧上限：stdio 队列以 `stdin.write` 的 `drain` 为背压信号、此上限兜底防无界；
+ * worker 的 `postMessage` 无原生背压，按「自上次收到服务帧以来投出的帧数」计在途，超限 fail-closed。
+ * 保持正常路径行为与帧序不变。
+ */
+export const MAX_OUTBOUND_FRAMES = 256
+
+/**
+ * 入站有界缓冲：消息回调注册前收到的帧先入队，注册时按原序 flush；超上限触发 `onOverflow`
+ * 收口（既有通道错误码路径）。覆盖「服务在 `hello` 前自发帧」的窄窗口。
+ */
+function createInboundGate(
+  limit: number,
+  onOverflow: () => void,
+): { deliver: (message: Json) => void; bind: (cb: (message: Json) => void) => void } {
+  let cb: ((message: Json) => void) | null = null
+  let buffered: Json[] | null = []
+  return {
+    deliver(message) {
+      if (buffered === null) {
+        cb?.(message)
+        return
+      }
+      if (buffered.length >= limit) {
+        buffered = null
+        onOverflow()
+        return
+      }
+      buffered.push(message)
+    },
+    bind(next) {
+      cb = next
+      if (buffered === null) return
+      const pending = buffered
+      buffered = null
+      for (const message of pending) next(message)
+    },
+  }
+}
 
 /**
  * 同语言入口模块的工厂上下文。③ / ④ 目录对 inproc / worker 是 loader 参数（worker 经
@@ -150,13 +198,46 @@ function resolveServiceFactory(module: Record<string, unknown>): ServiceFactory 
 /** stdio 通道：宿主 → 服务写 stdin，服务 → 宿主读 stdout；帧编解码在本层。 */
 export function createStdioChannel(child: ChildProcess): ServiceChannel {
   const decoder = createFrameDecoder()
-  let messageCb: ((message: Json) => void) | null = null
   let closeCb: ((reason: string) => void) | null = null
   let closed = false
+  let closeReason: string | null = null
+  // 写端串行队列：`stdin.write` 返回 false 即停写、等 `drain` 再续，避免 Writable 缓冲无界增长；
+  // 队列本身也受 `MAX_OUTBOUND_FRAMES` 兜底，超限 fail-closed。
+  const outbound: Uint8Array[] = []
+  let blocked = false
   const notifyClose = (reason: string): void => {
     if (closed) return
     closed = true
+    closeReason = reason
+    outbound.length = 0
     closeCb?.(reason)
+  }
+  const gate = createInboundGate(MAX_PENDING_FRAMES, () => notifyClose('protocol_error'))
+  const onDrain = (): void => {
+    if (!blocked) return
+    blocked = false
+    pump()
+  }
+  function pump(): void {
+    if (blocked || closed) return
+    while (outbound.length > 0 && !blocked && !closed) {
+      const stdin = child.stdin
+      const frame = outbound.shift() as Uint8Array
+      // 无 stdin（异常 spawn）：与既有行为一致地丢弃，不误判为背压
+      if (stdin === null || stdin === undefined) continue
+      let ok: boolean
+      try {
+        ok = stdin.write(frame)
+      } catch {
+        notifyClose('channel_error')
+        return
+      }
+      if (!ok) {
+        // 停写到 `drain`：串行化保证帧序不乱，且不给 Writable 追加缓冲
+        blocked = true
+        stdin.once('drain', onDrain)
+      }
+    }
   }
   child.stdout?.on('data', (chunk: Buffer) => {
     if (closed) return
@@ -167,7 +248,7 @@ export function createStdioChannel(child: ChildProcess): ServiceChannel {
       notifyClose('protocol_error')
       return
     }
-    for (const message of messages) messageCb?.(message)
+    for (const message of messages) gate.deliver(message)
   })
   child.stdout?.on('error', () => notifyClose('channel_error'))
   child.stdout?.on('end', () => notifyClose('channel_closed'))
@@ -178,17 +259,26 @@ export function createStdioChannel(child: ChildProcess): ServiceChannel {
     },
     write(frame: Json): void {
       if (closed) throw new Error('channel_closed')
-      child.stdin?.write(encodeFrame(frame))
+      if (outbound.length >= MAX_OUTBOUND_FRAMES) {
+        notifyClose('backpressure_limit')
+        throw new Error('channel_closed')
+      }
+      outbound.push(encodeFrame(frame))
+      pump()
     },
     onMessage(cb) {
-      messageCb = cb
+      gate.bind(cb)
     },
     onClose(cb) {
       closeCb = cb
+      // 回调注册前已收口（如启动期缓冲超限）：补投一次，收口不因注册晚而丢
+      if (closeReason !== null) cb(closeReason)
     },
     close(): void {
       if (closed) return
       closed = true
+      outbound.length = 0
+      if (blocked) child.stdin?.off('drain', onDrain)
       try {
         child.stdin?.end()
       } catch {
@@ -243,7 +333,7 @@ const stdioHost: ServiceHost = {
       shell: true,
       windowsHide: true,
       // POSIX 下建独立进程组，便于连同 shell 包装一起杀整树
-      detached: process.platform !== 'win32',
+      detached: detachedProcessGroup(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     })
@@ -272,8 +362,17 @@ const inprocHost: ServiceHost = {
     const factory = resolveServiceFactory(module)
     if (factory === null) throw new ServiceStartError('bad_service_entry')
     let instance: ServiceInstance | null = null
-    let messageCb: ((message: Json) => void) | null = null
+    let closeCb: ((reason: string) => void) | null = null
+    let closeReason: string | null = null
     let closed = false
+    const notifyClose = (reason: string): void => {
+      if (closed) return
+      closed = true
+      closeReason = reason
+      closeCb?.(reason)
+    }
+    // 工厂 `emit` 是同步投递、消息回调却由 ServiceLink 稍后注册：握手前自发帧在此有界缓冲、按序 flush。
+    const gate = createInboundGate(MAX_PENDING_FRAMES, () => notifyClose('protocol_error'))
     const channel: ServiceChannel = {
       write(frame: Json): void {
         if (closed) throw new Error('channel_closed')
@@ -283,10 +382,12 @@ const inprocHost: ServiceHost = {
         })
       },
       onMessage(cb) {
-        messageCb = cb
+        gate.bind(cb)
       },
-      onClose() {
+      onClose(cb) {
         // in-proc 无独立退出事件：同线程服务崩溃即宿主崩溃（已知代价，见 docs/plugins.md）
+        closeCb = cb
+        if (closeReason !== null) cb(closeReason)
       },
       close(): void {
         if (closed) return
@@ -304,7 +405,7 @@ const inprocHost: ServiceHost = {
           if (closed) return
           const copy = structuredClone(message)
           queueMicrotask(() => {
-            if (!closed) messageCb?.(copy)
+            if (!closed) gate.deliver(copy)
           })
         },
         env: loaderEnv(input.pluginStateDir, input.dataDir),
@@ -339,17 +440,24 @@ const inprocHost: ServiceHost = {
 // worker：worker_threads 独立堆 + 结构化克隆消息
 // ---------------------------------------------------------------------------
 
-function createWorkerChannel(worker: Worker): ServiceChannel {
-  let messageCb: ((message: Json) => void) | null = null
+/** worker 通道：宿主 → 服务 `postMessage`（无原生背压，按在途帧上限收口），服务 → 宿主读 `message`。 */
+export function createWorkerChannel(worker: Worker): ServiceChannel {
   let closeCb: ((reason: string) => void) | null = null
   let closed = false
+  let closeReason: string | null = null
+  // `postMessage` 无原生背压：按「自上次收到服务帧以来投出的帧数」计在途。服务消息循环在消费
+  // 就会回帧（响应 / 事件）从而重置；沉默累积到上限即判其卡死，fail-closed，不无界增长。
+  let inflight = 0
   const notifyClose = (reason: string): void => {
     if (closed) return
     closed = true
+    closeReason = reason
     closeCb?.(reason)
   }
+  const gate = createInboundGate(MAX_PENDING_FRAMES, () => notifyClose('protocol_error'))
   worker.on('message', (message) => {
-    if (!closed) messageCb?.(message as Json)
+    inflight = 0
+    if (!closed) gate.deliver(message as Json)
   })
   worker.on('error', () => notifyClose('worker_error'))
   worker.on('exit', (code) => notifyClose(code === 0 ? 'worker_exit' : `exit:${code}`))
@@ -359,13 +467,19 @@ function createWorkerChannel(worker: Worker): ServiceChannel {
     },
     write(frame: Json): void {
       if (closed) throw new Error('channel_closed')
+      if (inflight >= MAX_OUTBOUND_FRAMES) {
+        notifyClose('backpressure_limit')
+        throw new Error('channel_closed')
+      }
+      inflight += 1
       worker.postMessage(frame)
     },
     onMessage(cb) {
-      messageCb = cb
+      gate.bind(cb)
     },
     onClose(cb) {
       closeCb = cb
+      if (closeReason !== null) cb(closeReason)
     },
     close(): void {
       if (closed) return

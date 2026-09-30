@@ -38,6 +38,29 @@ describe('common/jsonl', () => {
     expect(read.validBytes).toBe(2)
   })
 
+  it('末段是完整 JSON 但缺尾换行：按撕裂尾丢弃，有效前缀不含该段', () => {
+    writeFileSync(file(), '{"a":1}')
+    // strict 只作用于带换行的坏行，不影响末段撕裂判定：两路同判
+    expect(readJsonlFile(file(), { parse: JSON.parse, strict: true })).toEqual({
+      items: [],
+      truncated: true,
+      validBytes: 0,
+    })
+    expect(readJsonlFile(file(), { parse: JSON.parse, strict: false })).toEqual({
+      items: [],
+      truncated: true,
+      validBytes: 0,
+    })
+  })
+
+  it('前有完整行、末段完整 JSON 缺尾换行：末段丢弃，有效前缀止于前一行', () => {
+    writeFileSync(file(), '1\n{"a":1}')
+    const read = readJsonlFile(file(), { parse: JSON.parse, strict: true })
+    expect(read.items).toEqual([1])
+    expect(read.truncated).toBe(true)
+    expect(read.validBytes).toBe(2)
+  })
+
   it('带换行的坏行：strict 上抛，非 strict 跳过', () => {
     writeFileSync(file(), '1\nbad\n2\n')
     expect(() => readJsonlFile(file(), { parse: JSON.parse, strict: true })).toThrow()

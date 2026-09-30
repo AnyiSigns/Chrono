@@ -21,9 +21,9 @@
 ## 核心模型
 
 - **世界 `World`** = `defs`（内容寻址的 def 表，键 = `H(Def)`）+ `ids`（身份表，`gens` 世代链只增不减，`active` 指向当前世代）。
-- **日志 `Entry[]`**：每条 entry 带 `seq` / `prev` / `op` / `args` / `argsHash` / `by` / `ref` / `at`，`entryHash` 逐条接链，篡改任何字段都会在校验时暴露。
-- **写请求 `WriteRequest`**：`expect_pos` 乐观并发（一个赢，输家 `pos_conflict` 后重组请求再提，这是正常路径）。十种 op：`put` / `add_identity` / `add_gen` / `set_active` / `retire` / `fork` / `graft` / `batch` / `note` / `snapshot`。
-- **两个身份**：位置 `pos`（链头哈希，O(1)，用于并发与链完整性）与内容 `worldRev`（快照锚点与跨世界比较，按需算）。批内原子写入 `batch` 支持自引用占位符 `{"$n": k}`，引用**本批更早**的 `put` 产物。
+- **日志 `Entry[]`**：每条 entry 带 `seq` / `prev` / `op` / `args` / `argsHash` / `by` / `ref` / `at`，`entryHash` 逐条接链，篡改任何字段都会在校验时暴露。`ref` 是可选的世界内 def 指针，内核不解释；效果审计**不住 def**，走宿主旁路侧存，故业务 entry 不携带 `ref`。
+- **写请求 `WriteRequest`**：`expect_pos` 是位置门禁（对链头 CAS）；宿主串行落账时**机械重锚**到当时链头，故 `pos_conflict` 结构上不产生，不存在「检测冲突再自动重提」的路径。十种 op：`put` / `add_identity` / `add_gen` / `set_active` / `retire` / `fork` / `graft` / `batch` / `note` / `snapshot`。
+- **两个身份**：位置 `pos`（链头哈希，O(1)，用于并发与链完整性）与内容 `worldRev`（快照锚点与跨世界比较，按需算）；两者的实现是独立叶子模块 `identity.ts`。批内原子写入 `batch` 支持自引用占位符 `{"$n": k}`，引用**本批更早**的 `put` 产物；要落 `{"$n": k}` 字面量本身须用 `{"$lit": v}` 转义（`$lit` 内的 `$n` 不再当占位符），其还原沿包裹链累加同一 `MAX_JSON_DEPTH` 深度护栏。`graft` 是独立 op——`add_gen` 的形态不接 `graft`（也不接 `from` / `gen`），二者共用同一应用路径。
 - **回滚 = 追加**：`set_active` 指回旧世代，历史不折叠；幂等命中（同内容 `put` / 全幂等 `batch`）不产生 entry。
 
 ## 数据流：一次 `run` 输入 → 一条输出
@@ -41,37 +41,63 @@ KernelOutput { world, journal, head, pending, observations, status, usage }
   - `waiting`：eval 求值未命中 `results`——输出**回到入口**的世界与链头，交出 `pending`；宿主执行效果、把结果写进 `results` 后，以**同一 `run_id`、同一份完整 `directives`、同一 `now`** 重调（续跑契约）。
   - `refused`：机械校验失败或求值错误——整次调用作废（世界未动是字面事实），拒因在 `observations` 末尾 `{kind:'refused', reasons}`。
 - 效果纪律：效果放叶子、长循环拆多个 directive；`waiting` 从不返回部分世界，宿主也不得凭 `waiting` / `refused` 的观测推进 checkpoint。
-- 信任边界：内核给一致性、不给正确性——`by` 是不透明标签、`results` 由宿主照单回灌，效果侧审计记录由宿主留存并用 `ref` 指向。
+- 信任边界：内核给一致性、不给正确性——`by` 是不透明标签、`results` 由宿主照单回灌，效果侧审计由宿主留存于**旁路侧存**（不进世界、业务 write 不落 `ref`）。
 
 ## 文件与依赖
 
-| 文件               | 职责（导出口径见 `index.ts`，加导出 = 改设计）                                                                                                       |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`         | 全部共用类型 + `KernelError`（错误只携带 code，边界处收口为 refused）                                                                                |
-| `value.ts`         | 类型格 `t` / `canonicalJson` / `deepEq`                                                                                                              |
-| `hash.ts`          | FIPS 180-4 sha256（增量压缩）+ `H()` + UTF-8 编码（孤立代理即拒）                                                                                    |
-| `journal.ts`       | 两个身份：`entryHash`（O(1)）与 `worldRev`（按需）；`EMPTY_WORLD` / `EMPTY_HEAD` / `cloneWorld` / `pos` / `anchorAfter` / `replay` / `verify` + 转口 |
-| `journal.apply.ts` | `applyEntry` 逐 op 语义 + `batch` 两段式（预哈希趟 → 应用趟，失败逆序回滚）                                                                          |
-| `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                                                                      |
-| `rebase.ts`        | `flattenPatches` 压扁线性补丁链；`remapGens` 世代重建后的 base / graft / active 重映射（回收共用）                                                   |
-| `commit.ts`        | `validate`（含 op 形状表）/ `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                                                                    |
-| `machine.eval.ts`  | 14 原语求值 + `Map` 分派表 + `walk` / `evalCall`；`cmp` 全序 / `pred` 谓词 / `get`·`getOr` 投影 / `arith`·`list`·`obj` 构造                          |
-| `machine.ts`       | 归约机类型（`Term` / `Env` / `EvalResult` / `TERM_TAGS`）与转口；逐原语实现见 `machine.eval.ts`                                                      |
-| `run.ts`           | 编排：`run` / `observationsOf`；唯一调用 `commit` 之处，错误只在此收口                                                                               |
-| `index.ts`         | 只 re-export、无逻辑；公共面的全部形状                                                                                                               |
+| 文件               | 职责（导出口径见 `index.ts`，加导出 = 改设计）                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`         | 全部共用类型 + `KernelError`（错误只携带 code，边界处收口为 refused）                                                                                         |
+| `value.ts`         | 类型格 `t` / `canonicalJson` / `deepEq`                                                                                                                       |
+| `hash.ts`          | FIPS 180-4 sha256（增量压缩）+ `H()` + UTF-8 编码（孤立代理即拒）                                                                                             |
+| `defs.ts`          | def 表访问三件事（`defHas` / `defsKeys` / `cloneDefs`）；经全局符号 `LAZY_DEFS` 识别宿主惰性分片代理并廉价克隆（不读 body）                                   |
+| `patch.ts`         | 补丁世代：`readPatchOps` 读取补丁 def、`assembleBody` 按序应用补丁                                                                                            |
+| `identity.ts`      | 两个身份哈希（独立叶子，不依赖 journal 层）：`entryHash`（O(1)）与 `worldRev`（按需，摘要不吃履历）                                                           |
+| `journal.ts`       | 空世界常量 / 链位置 / 锚点 / 重放 / 段校验；**转口** `applyEntry` 与两个身份（身份实现在 `identity.ts`）                                                      |
+| `journal.apply.ts` | `applyEntry` 逐 op 语义 + `batch` 两段式（预哈希趟 → 应用趟，失败逆序回滚）+ `$n` / `$lit` 替换（只造新对象，不改入参）                                       |
+| `recycle.ts`       | `recycleWorld`：compact 写 base 时的可达性回收 + 世代保留窗口（纯函数，不改链）                                                                               |
+| `rebase.ts`        | `flattenPatches` 压扁线性补丁链；`remapGens` 世代重建后的 base / graft / active 重映射（回收共用）                                                            |
+| `commit.ts`        | `validate`（含 op 形状表）/ `entryOf` / `commit`（唯一写口）/ `stale`（依附判定）                                                                             |
+| `machine.eval.ts`  | 14 原语求值 + `Map` 分派表 + `walk` / `evalCall`；`cmp` 全序 / `pred` 谓词 / `get`·`getOr` 投影 / `arith`·`list`·`obj` 构造；`eff` 形态先于求值与序号自增校验 |
+| `machine.ts`       | 归约机**类型**（`Term` / `Env` / `EvalResult`）；`TERM_TAGS` / `eval` / `cmp` 经 `machine.eval.ts` 转口，本文件不定义原语                                     |
+| `run.ts`           | 编排：`run` / `observationsOf`；唯一调用 `commit` 之处，错误只在此收口                                                                                        |
+| `index.ts`         | 只 re-export、无逻辑；公共面的全部形状                                                                                                                        |
 
-依赖是单向：
+依赖是单向（`←` 左为被依赖方）：
 
 ```
 value ← types
 hash ← types, value
-journal.apply ← types, hash, journal      （applyEntry 用两个身份）
-journal ← types, hash, defs, journal.apply（两个身份 + 世界常量 / 重放 / 校验，转口 applyEntry）
-commit ← types, value, journal
-machine.eval ← types, value, hash         （逐原语求值 / 分派表 / cmp）
-machine ← types, machine.eval             （类型与转口；与 journal / commit 之间无任何边）
-run ← 全部
+defs ← types
+patch ← types, value
+identity ← types, defs, hash          （entryHash / worldRev：不依赖 journal 层）
+journal.apply ← types, defs, hash, identity, patch, value
+journal ← types, defs, journal.apply, identity   （转口 applyEntry 与两个身份）
+rebase ← types, defs, hash, patch
+recycle ← types, defs, rebase, value
+commit ← types, defs, value, journal
+machine.eval ← types, hash, value     （逐原语求值 / 分派表 / cmp）
+machine ← types, machine.eval         （类型定义 + 转口 TERM_TAGS / eval / cmp；与 journal / commit 无任何边）
+run ← commit, journal, machine, types
 ```
+
+## 公共导出面
+
+`index.ts` 只 re-export，公共面即下表（评审只从公共面导入，加导出 = 改规格）：
+
+| 模块    | 导出                                                                                                                       |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| types   | 全部共用类型 + `KernelError`                                                                                               |
+| value   | `TYPE_ORDER`、`TypeName`、`t`、`canonicalJson`、`deepEq`                                                                   |
+| hash    | `utf8`、`sha256`、`H`                                                                                                      |
+| defs    | `LAZY_DEFS`、`LazyDefsHandle`、`cloneDefs`、`defHas`、`defsKeys`                                                           |
+| patch   | `PatchOp`、`PatchPath`、`assembleBody`、`readPatchOps`                                                                     |
+| journal | `EMPTY_WORLD`、`EMPTY_HEAD`、`cloneWorld`、`pos`、`worldRev`、`entryHash`、`applyEntry`、`replay`、`verify`、`anchorAfter` |
+| rebase  | `flattenPatches`、`remapGens`、`FlattenResult`                                                                             |
+| recycle | `recycleWorld`、`RecycleSpec`、`RecycleStats`、`RecycleResult`                                                             |
+| commit  | `commit`、`validate`、`entryOf`、`stale`                                                                                   |
+| machine | `eval`、`cmp`、`TERM_TAGS`                                                                                                 |
+| run     | `run`、`observationsOf`                                                                                                    |
 
 ## 长链与归档
 

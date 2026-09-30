@@ -21,8 +21,8 @@ export interface AuditMeta {
   by: string
   /** 该轮固定时间戳（审计记录的 `at`）。 */
   now: number
-  /** 本 run 的 run id（`accepted{run}` 同值）；不传记 null。 */
-  run?: string
+  /** 本 run 的 run id（`accepted{run}` 同值）；不传或显式 null 都记为 null。 */
+  run?: string | null
   /** 发出者身份（A1 路由基准）；不传记 null。 */
   emitter?: string
 }
@@ -76,8 +76,8 @@ function redactAuditResult(
 /**
  * 审计结果序列化上限：超过只落 `{truncated:true,size}`。
  * 任意端口的返回值都可能极大——`host.asset.get`（8 MiB ≈ 10.7 MiB base64）、`host.audit`
- * （拷入既往审计记录、超线性增长）、以及 `ui-approval.decide` / `chat.resume` 这类把整段
- * 续跑游标放进计划值的命令。原样入账会把侧存 / 审计索引撑爆，并在写入时同步序列化多兆字节
+ * （拷入既往审计记录、超线性增长），以及把整段续跑游标放进计划值的命令。
+ * 原样入账会把侧存 / 审计索引撑爆，并在写入时同步序列化多兆字节
  * 而卡住宿主事件循环（进而触发全服务健康超时误杀）。
  * 调用方仍拿到完整结果，只是审计正文留截断标记。
  */
@@ -241,8 +241,7 @@ export function buildAudit(
   const auditBody =
     slotAudit === undefined ? auditResult(eff, result, redactKeys) : auditSlotResult(eff, slotAudit)
   // 请求形状的白名单字段：单值调用取方法级声明；槽调用取各元素提供方声明的并集。
-  const requestKeys =
-    redactKeys ?? slotAudit?.elements.flatMap((element) => element.keys ?? [])
+  const requestKeys = redactKeys ?? slotAudit?.elements.flatMap((element) => element.keys ?? [])
   return {
     at: meta.now,
     by: meta.by,

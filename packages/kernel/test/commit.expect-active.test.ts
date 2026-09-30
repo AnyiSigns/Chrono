@@ -1,4 +1,4 @@
-// add_gen 可选前置 expect_active 的验收：只打公共面 ./index.ts。
+// add_gen / graft 可选前置 expect_active 的验收：只打公共面 ./index.ts。
 // 契约：未提供该键 = 不检查；显式 null 与身份 active=null（新生 / 退役）相等；
 // 不匹配抛 stale_active（单 op 直达 / batch 子 op 整批回滚）。
 import { describe, expect, it } from 'vitest'
@@ -51,6 +51,14 @@ function codeOf(fn: () => unknown): string {
 
 const genArgs = (payload: Hash, extra: Record<string, Json> = {}, sig: Hash = SIG_KEY): Json =>
   asJson({ id: 'x', payload, pins: {}, sig, ...extra })
+
+const graftArgs = (
+  payload: Hash,
+  extra: Record<string, Json> = {},
+  from = 'x',
+  gen = 0,
+  sig: Hash = SIG_KEY,
+): Json => asJson({ id: 'x', payload, pins: {}, sig, from, gen, ...extra })
 
 /** 世界：4 条 def（经 put 入链，重放自足）+ 身份 x（无世代）；journal 收集已入链 entry。 */
 function emptyIdentity(): { world: World; head: Head; journal: Entry[] } {
@@ -107,6 +115,85 @@ describe('add_gen expect_active：形态', () => {
         ).reasons,
       ).toEqual(['bad_form'])
     }
+  })
+})
+
+describe('graft expect_active：形态与生效', () => {
+  it('合法值（64-hex / null）过形态；非法值 → bad_form', () => {
+    const { world, head } = activeIdentity()
+    expect(
+      validate(
+        head,
+        world,
+        opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { expect_active: PAYLOAD_KEY }), head.hash),
+      ),
+    ).toMatchObject({ ok: true })
+    expect(
+      validate(
+        head,
+        world,
+        opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { expect_active: null }), head.hash),
+      ),
+    ).toMatchObject({ ok: true })
+    for (const bad of ['zz', 123, true, asJson({})]) {
+      expect(
+        validate(
+          head,
+          world,
+          opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { expect_active: bad }), head.hash),
+        ).reasons,
+      ).toEqual(['bad_form'])
+    }
+  })
+
+  it('匹配当前 active → 生效，世代落 graft 且身份激活', () => {
+    const { world, head } = activeIdentity()
+    const out = commit(
+      head,
+      world,
+      opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { expect_active: PAYLOAD_KEY }), head.hash),
+      NOW,
+    )
+    expect(out.verdict.ok).toBe(true)
+    expect(world.ids['x'].gens[1].graft).toEqual({ from: 'x', gen: 0 })
+    expect(world.ids['x'].active).toBe(NEXT_PAYLOAD_KEY)
+  })
+
+  it('不匹配 → stale_active，世界分文未动', () => {
+    const { world, head } = activeIdentity()
+    const before = JSON.stringify(world)
+    expect(
+      codeOf(() =>
+        commit(
+          head,
+          world,
+          opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { expect_active: SIG_KEY }), head.hash),
+          NOW,
+        ),
+      ),
+    ).toBe('stale_active')
+    expect(JSON.stringify(world)).toBe(before)
+  })
+
+  it('未提供该键 → 行为与现状一致（不检查 active）', () => {
+    const { world, head } = activeIdentity()
+    const out = commit(head, world, opReq('graft', graftArgs(NEXT_PAYLOAD_KEY), head.hash), NOW)
+    expect(out.verdict.ok).toBe(true)
+    expect(world.ids['x'].active).toBe(NEXT_PAYLOAD_KEY)
+  })
+
+  it('from/gen 必需、seq 禁带（保持原口径）', () => {
+    const { world, head } = activeIdentity()
+    const base = graftArgs(NEXT_PAYLOAD_KEY, { expect_active: PAYLOAD_KEY }) as Record<string, Json>
+    const noGen: Record<string, Json> = { ...base }
+    delete noGen['gen']
+    expect(validate(head, world, opReq('graft', asJson(noGen), head.hash)).reasons).toEqual([
+      'bad_form',
+    ])
+    expect(
+      validate(head, world, opReq('graft', graftArgs(NEXT_PAYLOAD_KEY, { seq: 1 }), head.hash))
+        .reasons,
+    ).toEqual(['bad_form'])
   })
 })
 

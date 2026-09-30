@@ -16,6 +16,9 @@
 
 各包自带 `node_modules` 与锁文件，**仓库无根 workspace**；进入包目录各自 `npm ci`。
 
+各包公共面单点在各自 `index.ts`：内核 `kernel/index.ts` 只 re-export（含 term 原语名单 `TERM_TAGS`、两个身份
+`entryHash` / `worldRev` 等）；宿主 `host/index.ts` 是唯一公开面。评审只从公共面导入，**加导出 = 改规格**。
+
 ## 依赖方向（写死）
 
 ```
@@ -31,6 +34,9 @@ boot ──→ client ──→ kernel
 - `boot` 对内核只有类型引用；`client` 运行时另用内核的 `canonicalJson` 做规范序列化（两侧帧格式独立实现）。
 - `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins` / `needs`（见
   [`docs/plugins.md`](../docs/plugins.md)）。
+- 红线由仓库级静态门禁 `tests/static/plugin-redline.test.mjs` 钉死：插件**运行期源码**（`execute/` / `src/`
+  / `terms/` / `test/`）不得 import `packages/*`、不得跨插件直连；仅 `plugins/<插件>/tools/**` 的 dev /
+  构建脚本（被各插件 `.worldignore` 排除、宿主不物化不装载）可 import 宿主内部面。
 - 加插件**不改** `packages/` 任何文件：插件包住 `plugins/<name>/` 或 `node_modules/`，由 `state/plugins.json` 列出。
 - `toolchain/` 是作者侧**构建期**工具：`packages/` 任何包**不得依赖**它；插件仅不入世的构建 / 开发脚本可 import 其编译器；它至多依赖内核（仅测试器入口），不进运行路径。
 
@@ -53,7 +59,7 @@ boot ──→ client ──→ kernel
 
 | 词表 | 位置 |
 | --- | --- |
-| `host.*` 方法集 | `host/host-methods.ts`；路由闸 `host/effect/route.ts`；派发 `host/host-capability.ts` |
+| `host.*` 方法集（宿主保留方法，含 `run.spawn` / `run.cancel` 与一个协议版本的弃用别名 `thread.resume` / `thread.terminate`） | `host/host-methods.ts`；路由闸 `host/effect/route.ts`；派发 `host/host-capability.ts`；别名弃用日志 `host/capability-wiring.ts` |
 | 服务传输形态 | `host/assembly/decl.ts`（声明校验）、`host/assembly/service-host.ts`（选择）、`host/service-link.ts`、`host/endpoint-table.ts` |
 | 入站动词 | `host/wire.ts`、`host/inbound/dispatch.ts`、客户端镜像 `client/index.ts` |
 | 服务协议帧 | `host/service-link.ts` |
@@ -70,16 +76,21 @@ boot ──→ client ──→ kernel
 | `audit_tier` 首命中改身份名字典序 | `host/audit-tiers.ts` |
 | `argsSchema` 方言 | `host/assembly/args-schema.ts` |
 | schema 宿主消费键 | `host/periodic.ts`、`method-timeouts.ts`、`audit-tiers.ts`、`audit-redact.ts`、`assembly/assets-manifest.ts` |
-| 结构化 op / directive / term 原语 | `kernel/types.ts`、`kernel/machine.ts`；宿主侧镜像 `host/common/op-names.ts`、`host/assembly/eff-decls.ts` |
+| 结构化 op / directive / term 原语 | `kernel/types.ts`（`Op` / `Directive` 等）、`kernel/machine.eval.ts`（term 原语 `TERM_TAGS` 与求值，经 `machine.ts` 转口）；宿主侧镜像 `host/common/op-names.ts`、`host/assembly/eff-decls.ts` |
 | `set_active` / `retire` / `fork` 的 `expect_*` 门禁 | 尚不存在（`kernel/journal.apply.ts` 只有 `add_gen` / `graft` 经 `expect_active` 把关）——补它属协议演进 |
 
 term 原语表有防漂移双保险：宿主 `walkEffs` 以内核 `TERM_TAGS` 为权威，遇内核列了而本表无分支的头即拒整包
 `bad_term:<head>`，另有遍历 `TERM_TAGS` 的覆盖测试。故加原语而漏改宿主不会静默放行，会当场失败。
 
+结构 op 名单三份真源——`kernel/types.ts` 的 `Op`、`kernel/commit.ts` 的 `VALID_OPS`、`host/common/op-names.ts`
+的宿主镜像 `OP_NAMES`——由仓库级门禁 `tests/static/op-name-parity.test.mjs` 逐字对表（含顺序）；client / host
+两侧各自实现、不跨包共享的入站线常量（命名管道前缀与根摘要长度、`PROTOCOL_VERSION`、`MAX_FRAME_BYTES`）由
+`tests/static/host-client-wire-parity.test.mjs` 钉死。
+
 ### 已知不由 packages 承担的责任
 
 - **回合不跨重启续跑**：宿主不持久化 run 游标、不自动重发效果。重启后由插件自行判断未完成的回合并重发。
-  `host.thread.resume` 是调用方驱动的**新**分离 run，不是内核 `waiting` 态的续跑。
+  `host.run.spawn` 是调用方驱动的**新**分离 run，不是内核 `waiting` 态的续跑。
 - **插件独立性无宿主侧强制**：「插件不得互相 import、不得 import 宿主」目前靠约定与各插件自带的
   `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `pins` ∪ `needs`、
   运行期路由只认 `pins` / `meta.needs` 与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
@@ -106,7 +117,7 @@ CLI / UI / 测试 / 以客户端身份连入的插件
 
 ```
 Chrono/
-├── docs/             设计文档（kernel.md 唯一权威）+ plans/（计划，不参与设计口径）
+├── docs/             设计文档（`kernel.md` 唯一权威）
 ├── packages/         本目录：kernel / client / boot / host
 ├── plugins/          插件包源码位置（一个插件 = 一个 npm 包；位置非分类）
 ├── toolchain/        第一方作者工具（构建期，非运行时；运行时不得依赖）
@@ -136,13 +147,12 @@ node packages/boot/main.ts stop                              # 反拓扑序 drai
 
 ## 文档地图
 
-| 文档                                      | 内容                                                |
-| ----------------------------------------- | --------------------------------------------------- |
-| [`docs/kernel.md`](../docs/kernel.md)     | 内核设计（唯一权威）：世界 / 日志 / 写口 / 归约机   |
-| [`docs/host.md`](../docs/host.md)         | 载体设计：宿主四个包、边界、硬口径                  |
-| [`docs/plugins.md`](../docs/plugins.md)   | 插件规范：`plugin.json`、红线、生命周期、换代       |
-| [`docs/protocol.md`](../docs/protocol.md) | 服务协议（宿主 ↔ 插件）与入站协议（发起者 ↔ 宿主）  |
-| [`docs/coding.md`](../docs/coding.md)     | 通用编码规范（命名 / 格式 / 结构 / 评审）           |
-| `docs/plans/`                             | 实施计划（不含设计口径；`host-plan.md` 是载体计划） |
+| 文档                                      | 内容                                               |
+| ----------------------------------------- | -------------------------------------------------- |
+| [`docs/kernel.md`](../docs/kernel.md)     | 内核设计（唯一权威）：世界 / 日志 / 写口 / 归约机  |
+| [`docs/host.md`](../docs/host.md)         | 载体设计：宿主四个包、边界、硬口径                 |
+| [`docs/plugins.md`](../docs/plugins.md)   | 插件规范：`plugin.json`、红线、生命周期、换代      |
+| [`docs/protocol.md`](../docs/protocol.md) | 服务协议（宿主 ↔ 插件）与入站协议（发起者 ↔ 宿主） |
+| [`docs/coding.md`](../docs/coding.md)     | 通用编码规范（命名 / 格式 / 结构 / 评审）          |
 
 `docs/chrono-*` 是另一族（独立实验设计），与本实现不接、不参与载体口径。

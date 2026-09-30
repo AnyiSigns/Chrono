@@ -3,10 +3,13 @@
 
 import { createHostCapability } from './host-capability.ts'
 import { HOST_CAPABILITY } from './host-methods.ts'
+import { appendLifecycle } from './lifecycle.ts'
 import { redactPortArgs } from './port-audit.ts'
 import type { PortAuditSink } from './port-audit.ts'
 import { resolveMethodTimeoutMs } from './method-timeouts.ts'
 import { implementedCaps } from './assembly/capability-index.ts'
+import { DEFAULT_ECOSYSTEM } from './assembly/ecosystem.ts'
+import type { EcosystemProfile } from './assembly/ecosystem.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from './effect/index.ts'
 import type { HostCapabilityCall, RoundRouter } from './effect/index.ts'
 import type { InboundHandlers } from './inbound/handlers.ts'
@@ -38,6 +41,8 @@ export interface CapabilityWiringDeps {
   callTimeoutMs?: number
   portAudit: PortAuditSink
   nextNow: () => number
+  /** 生态 profile：宿主声明解析（`identities` / `source.read` / 成员能力类）随它；缺省内建默认。 */
+  ecosystem?: EcosystemProfile
 }
 
 export interface CapabilityWiring {
@@ -61,8 +66,9 @@ function memberCapTimeoutMs(
   target: string,
   method: string,
   blobsDir: string,
+  ecosystem: EcosystemProfile,
 ): number | undefined {
-  for (const cap of implementedCaps(world, target, blobsDir)) {
+  for (const cap of implementedCaps(world, target, blobsDir, ecosystem)) {
     const timeout = resolveMethodTimeoutMs(world, target, cap, method)
     if (timeout !== undefined) return timeout
   }
@@ -70,10 +76,13 @@ function memberCapTimeoutMs(
 }
 
 export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWiring {
+  // 声明解析口径随构造期注入的生态 profile；缺省即内建默认（零行为变化）。
+  const ecosystem = deps.ecosystem ?? DEFAULT_ECOSYSTEM
   const capability = createHostCapability({
     root: deps.root,
     assetsDir: deps.paths.assetsDir,
     blobsDir: deps.paths.blobsDir,
+    ecosystem,
     runtimeDir: deps.paths.runtimeDir,
     audits: deps.audits,
     world: () => deps.writer.snapshot().world,
@@ -87,6 +96,20 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
     resumeIdentity: async (id) => {
       const runtime = deps.getRuntime()
       return runtime === undefined ? { ok: false, code: 'not_found' } : runtime.resume(id)
+    },
+    // 弃用别名旁路记运维日志：一个协议版本的兼容窗口内可见；写失败不影响派发
+    onDeprecatedMethod: (method, replacement) => {
+      try {
+        appendLifecycle(deps.paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'host',
+          event: 'method_deprecated',
+          cap: HOST_CAPABILITY,
+          reason: `${method} → ${replacement}`,
+        })
+      } catch {
+        // 日志写不进去只损失可观测性，不影响主流程
+      }
     },
   })
 
@@ -142,7 +165,7 @@ export function createCapabilityWiring(deps: CapabilityWiringDeps): CapabilityWi
       resolveMethodTimeoutMs(world, routed.row.impl, port, method) ??
       (provider === undefined
         ? undefined
-        : memberCapTimeoutMs(world, routed.row.impl, method, deps.paths.blobsDir)) ??
+        : memberCapTimeoutMs(world, routed.row.impl, method, deps.paths.blobsDir, ecosystem)) ??
       deps.callTimeoutMs ??
       DEFAULT_CALL_TIMEOUT_MS
     try {

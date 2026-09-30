@@ -79,7 +79,8 @@ export function createPeriodicRunner(deps: PeriodicRunnerDeps): PeriodicRunner {
     if (runtime === undefined) return { status: 'refused', reasons: [] }
     const snapshot = writer.snapshot()
     const world = snapshot.world
-    const declRead = readPluginDecl(world, entry.identity, deps.paths.blobsDir)
+    // 声明解析与装配同源：用 runtime 解析一次的生态 profile（同语言入口扩展名），未配置即内建默认
+    const declRead = readPluginDecl(world, entry.identity, deps.paths.blobsDir, runtime.ecosystem)
     if (declRead === null) return { status: 'refused', reasons: [] }
     const bag = buildPeriodicBag(deps.cachedProjection(world, snapshot.head), entry.reads)
     let directives: DirectiveDraft[]

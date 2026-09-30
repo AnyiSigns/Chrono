@@ -7,7 +7,7 @@ import { startAssembly } from '../runtime.ts'
 import type { AssemblyRuntimeHandle, StartAssemblyOptions } from '../runtime.ts'
 import { runSeed } from '../../offline.ts'
 import { loadAnchor } from '../../ledger/index.ts'
-import { commit, cloneWorld } from '../../../kernel/index.ts'
+import { H, commit, cloneWorld } from '../../../kernel/index.ts'
 import type { Gen, Hash, Head, Json, World } from '../../../kernel/index.ts'
 import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
 import {
@@ -23,6 +23,8 @@ type LifeRecord = {
   impl?: string
   gen?: string
   reason?: string
+  cap?: string
+  caps?: string[]
 }
 
 const BOTH_MEMBERS = [
@@ -453,6 +455,31 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
     expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
   }, 15000)
 
+  it('失败换代：端点方法集按旧声明重挂（不拿新声明的方法集）', async () => {
+    const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
+      serviceConfig: { manifest: { identity: 'toy-gen-wrong' } },
+      methods: { 'toy.gen': ['echo', 'extra'] },
+    })
+    const handle = await startWorld(world)
+    const oldPid = handle.endpoints.get('toy-gen', okGen, 'toy.gen', 'echo')!.pid
+
+    await handle.applyWorld(step(world, head, 'set_active', { id: 'toy-gen', active: brokenGen }))
+
+    // 跑的是旧进程：端点方法集须等于旧声明（仅 echo），不得挂上旧进程并不实现的 extra
+    const methods = handle.endpoints
+      .list()
+      .filter((row) => row.impl === 'toy-gen')
+      .map((row) => row.method)
+      .sort()
+    expect(methods).toEqual(['echo'])
+    expect(handle.endpoints.get('toy-gen', brokenGen, 'toy.gen', 'extra')).toBeNull()
+    const row = handle.endpoints.get('toy-gen', brokenGen, 'toy.gen', 'echo')
+    expect(row).not.toBeNull()
+    expect(row!.pid).toBe(oldPid)
+    expect(isPidAlive(oldPid)).toBe(true)
+    expect((await row!.link.call('toy.gen', 'echo', {}, 2000)).ok).toBe(true)
+  }, 15000)
+
   it('新 active 构建失败（deps_failed）：新世代不激活，旧服务继续服务', async () => {
     const { world, head, okGen, brokenGen } = seedSwapFailureFixture({
       build: [{ cmd: 'node', args: ['execute/build-fail.js'] }],
@@ -479,5 +506,78 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
     expect(row!.pid).toBe(oldPid)
     expect(handle.loaded()).toContainEqual({ id: 'toy-gen', gen: brokenGen, service: true })
     expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
+  }, 15000)
+
+  it('纯数据身份（无代码世代）的世代变化不触发跟随 / 隔离', async () => {
+    const dataWorld = (note: string): World => {
+      const schema = H({ schema: 'data-only' })
+      const payload = H({ body: { note } })
+      const gen: Gen = {
+        seq: 0,
+        payload,
+        pins: {},
+        sig: payload,
+        adopted: { at: 0, by: '', write: payload },
+      }
+      return {
+        defs: {
+          [schema]: { body: { schema: 'data-only' } },
+          [payload]: { body: { note }, sig: payload },
+        },
+        ids: {
+          'data-only': {
+            id: 'data-only',
+            schema,
+            gens: [gen],
+            active: payload,
+            born: { at: 0, by: '' },
+          },
+        },
+      }
+    }
+    const handle = await startWorld({ defs: {}, ids: {} })
+    expect(handle.loaded()).toEqual([])
+
+    await handle.applyWorld(dataWorld('one'))
+    await handle.applyWorld(dataWorld('two'))
+
+    // 数据世代无 tree（非代码世代）：不得判 stale / 隔离
+    expect(records.some((r) => r.kind === 'dep' && r.event === 'stale')).toBe(false)
+    expect(handle.loaded()).toEqual([])
+  }, 15000)
+
+  it('同一能力类两拥有方 → 记 capability_owner_conflict，重复 applyWorld 不重记', async () => {
+    const spec = {
+      start: '',
+      members: [{ kind: 'term', path: 'terms/' }],
+      slots: { cap: { methods: ['m'] } },
+    }
+    const ownerA = writeTempPackage(root, {
+      identity: 'owner-a',
+      ...spec,
+      terms: { 'x.json': JSON.stringify(['c', 1]) },
+    })
+    const ownerB = writeTempPackage(root, {
+      identity: 'owner-b',
+      ...spec,
+      terms: { 'x.json': JSON.stringify(['c', 2]) },
+    })
+    expect(
+      runSeed(root, [
+        { name: 'owner-a', path: ownerA },
+        { name: 'owner-b', path: ownerB },
+      ]).ok,
+    ).toBe(true)
+    const anchor = loadAnchor(journalFile(root))
+    const handle = await startWorld(anchor.world)
+
+    const conflicts = (): LifeRecord[] =>
+      records.filter((r) => r.kind === 'host' && r.event === 'capability_owner_conflict')
+    expect(conflicts()).toHaveLength(1)
+    expect(conflicts()[0]).toMatchObject({ cap: 'cap', caps: ['owner-a', 'owner-b'] })
+
+    // 同世界重复 applyWorld：冲突键去重，不重记
+    await handle.applyWorld(anchor.world)
+    expect(conflicts()).toHaveLength(1)
   }, 15000)
 })

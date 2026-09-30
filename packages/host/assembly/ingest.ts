@@ -32,6 +32,8 @@ import {
   termDefOf,
 } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
+import { DEFAULT_ECOSYSTEM, readEcosystem } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import { validateEffDecls } from './eff-decls.ts'
 import type { EffDeclContext } from './eff-decls.ts'
 import { isIgnored, packSourceDir, readWorldignore } from './source.ts'
@@ -49,11 +51,21 @@ export interface PluginEntry {
   exclude?: boolean
 }
 
-/** 读 `state/plugins.json` 清单本身；缺文件即空；形态非法抛 `bad_plugins_manifest`。 */
+/**
+ * 读 `state/plugins.json` 清单本身；缺文件即空。
+ * JSON 解析失败与形状非法统一抛 `bad_plugins_manifest`（错误码可预期：不泄漏 `SyntaxError`），
+ * `path` / `exclude` 做类型校验、不静默 `String()` 强转。`runSeed`（直接抛出）与 watcher
+ * （捕获后按无目标处理）都经此函数，校验口径同源。
+ */
 function readManifestFile(root: string): PluginEntry[] {
   const file = hostPaths(root).pluginsFile
   if (!existsSync(file)) return []
-  const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
+  } catch {
+    throw new Error('bad_plugins_manifest')
+  }
   if (!Array.isArray(parsed)) throw new Error('bad_plugins_manifest')
   return parsed.map((item) => {
     if (!isRecord(item)) throw new Error('bad_plugins_manifest')
@@ -62,7 +74,10 @@ function readManifestFile(root: string): PluginEntry[] {
       throw new Error('bad_plugins_manifest')
     }
     const entry: PluginEntry = { name: record.name }
-    if (record.path !== undefined) entry.path = String(record.path)
+    if (record.path !== undefined) {
+      if (typeof record.path !== 'string') throw new Error('bad_plugins_manifest')
+      entry.path = record.path
+    }
     if (record.exclude !== undefined) {
       if (typeof record.exclude !== 'boolean') throw new Error('bad_plugins_manifest')
       entry.exclude = record.exclude
@@ -149,16 +164,6 @@ export interface IngestPlan {
 }
 
 export type IngestResult = { ok: true; plan: IngestPlan } | { ok: false; reasons: string[] }
-
-/** 锁文件属契约必需文件：存在即不可被 `.worldignore` 排除（npm 信封 + 常见生态锁名）。 */
-const LOCK_FILES = [
-  'package-lock.json',
-  'npm-shrinkwrap.json',
-  'yarn.lock',
-  'pnpm-lock.yaml',
-  'bun.lock',
-  'bun.lockb',
-]
 
 /**
  * 跨代比对「解析后属主身份集合」：最近代码世代引用了某受保护身份、新声明不再引用 → 删了保护边。
@@ -327,15 +332,16 @@ function unsafeDeclaredPath(decl: PluginDecl): string | null {
   return candidates.find((candidate) => !isSafeRelativePath(candidate)) ?? null
 }
 
-/** 契约层引用的包内文件：命中 `.worldignore` 即整批拒绝。 */
+/** 契约层引用的包内文件：命中 `.worldignore` 即整批拒绝。锁文件属契约必需（npm 信封 + 常见生态锁名）。 */
 function ignoredRequiredPath(
   pkgRoot: string,
   decl: PluginDecl,
   patterns: string[][],
+  lockFiles: readonly string[],
 ): string | null {
   const candidates = new Set<string>(['plugin.json', 'package.json', 'README.md'])
   if (decl.schema !== null) candidates.add(decl.schema)
-  for (const lock of LOCK_FILES) {
+  for (const lock of lockFiles) {
     if (existsSync(join(pkgRoot, lock))) candidates.add(lock)
   }
   for (const command of decl.commands) {
@@ -489,10 +495,11 @@ function planIngestAtRoot(
   blobsDir: string | undefined,
   protectedPins: ReadonlySet<string>,
   suspended: ReadonlySet<string>,
+  ecosystem: EcosystemProfile,
 ): IngestResult {
   const rawDecl = readJsonFile(join(pkgRoot, 'plugin.json'))
   if (rawDecl === undefined) return { ok: false, reasons: ['missing_plugin_json'] }
-  const parsed = parsePluginDecl(rawDecl)
+  const parsed = parsePluginDecl(rawDecl, ecosystem)
   if (!parsed.ok) return parsed
   const decl = parsed.decl
   if (identityOverride !== undefined && identityOverride !== decl.identity) {
@@ -516,7 +523,7 @@ function planIngestAtRoot(
 
   const worldignore = readWorldignore(pkgRoot)
   if (!worldignore.ok) return { ok: false, reasons: ['bad_worldignore'] }
-  if (ignoredRequiredPath(pkgRoot, decl, worldignore.patterns) !== null) {
+  if (ignoredRequiredPath(pkgRoot, decl, worldignore.patterns, ecosystem.lockFiles) !== null) {
     return { ok: false, reasons: ['bad_worldignore'] }
   }
 
@@ -532,7 +539,7 @@ function planIngestAtRoot(
     pins[name] = dep.active
   }
 
-  const packed = packSourceDir(pkgRoot, worldignore.patterns)
+  const packed = packSourceDir(pkgRoot, worldignore.patterns, ecosystem.sourceExcludedNames)
   const ops: Json[] = [...packed.ops]
   // 无 `one` 需求：meta 形状不变、commitHash 零扰动；有则并入绑定，换绑即换 payload
   const meta = {
@@ -633,6 +640,8 @@ export function planIngest(
   try {
     const pins = readProtectedPins(root)
     if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
+    const ecosystem = readEcosystem(root)
+    if (!ecosystem.ok) return { ok: false, reasons: [ecosystem.reason] }
     const pkgRoot = resolvePackageRoot(entry, root)
     if (pkgRoot === null) return { ok: false, reasons: ['package_not_found'] }
     return planIngestAtRoot(
@@ -642,6 +651,7 @@ export function planIngest(
       hostPaths(root).blobsDir,
       pins.identities,
       suspended,
+      ecosystem.profile,
     )
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
@@ -799,12 +809,24 @@ export function planPack(
       return { ok: false, reasons: ['missing_plugin_json'] }
     }
     let protectedPins: ReadonlySet<string> = new Set()
+    let ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM
     if (configRoot !== undefined) {
       const pins = readProtectedPins(configRoot)
       if (pins.reason !== undefined) return { ok: false, reasons: [pins.reason] }
       protectedPins = pins.identities
+      const read = readEcosystem(configRoot)
+      if (!read.ok) return { ok: false, reasons: [read.reason] }
+      ecosystem = read.profile
     }
-    return planIngestAtRoot(world, pkgRoot, identity, blobsDir, protectedPins, NO_SUSPENDED)
+    return planIngestAtRoot(
+      world,
+      pkgRoot,
+      identity,
+      blobsDir,
+      protectedPins,
+      NO_SUSPENDED,
+      ecosystem,
+    )
   } catch {
     return { ok: false, reasons: ['source_read_failed'] }
   }

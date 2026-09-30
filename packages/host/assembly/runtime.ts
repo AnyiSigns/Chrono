@@ -8,8 +8,8 @@
 
 import { resolve } from 'node:path'
 import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
-import { effectiveMethods, manyNeedsMap } from './capability-index.ts'
-import { assemblyGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
+import { capabilityOwnerConflicts, effectiveMethods, manyNeedsMap } from './capability-index.ts'
+import { assemblyGen, isCodeGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import type { IdentitySuspendResult } from '../host-methods.ts'
@@ -22,6 +22,8 @@ import {
   runWithConcurrency,
 } from './start-layers.ts'
 import { restoreDependencies } from './deps.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
 import { resolvePluginSourceRoot } from './ingest.ts'
 import { EndpointTable } from '../endpoint-table.ts'
@@ -90,6 +92,8 @@ export interface AssemblyRuntimeHandle {
   loaded: () => LoadedIdentity[]
   endpoints: EndpointTable
   order: string[]
+  /** 本次装配解析一次的生态 profile（声明解析 / 依赖恢复 / SDK 布局同源）；只读视图。 */
+  readonly ecosystem: EcosystemProfile
   /** A6 换代跟随：链头推进后交新世界，宿主自身 active 换代 / 依赖退役在此落地。 */
   applyWorld: (world: World) => Promise<void>
   stop: () => Promise<void>
@@ -123,6 +127,11 @@ export interface StartAssemblyOptions {
   blobsDir?: string
   /** 框架安装里的 SDK 目录（`plugin-sdk/`）；缺省按宿主模块位置解析，测试可注入。 */
   sdkDir?: string
+  /**
+   * 生态 profile（锁文件 / 排除名 / npm-cargo env / SDK 布局 / 入口扩展名）；缺省内建默认。
+   * 由组合根在启动时解析一次后注入，装配侧不再各处 `readEcosystem`。
+   */
+  ecosystem?: EcosystemProfile
   /** 物化后的依赖恢复 / 构建；缺省按声明绑定 `restoreDependencies`，测试可注入桩。 */
   restore?: (cwd: string, decl: PluginDecl) => Promise<void>
   /**
@@ -166,9 +175,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly paths: HostPaths
   private readonly blobsDir: string
   private readonly sdkDir: string | undefined
+  readonly ecosystem: EcosystemProfile
   private readonly plan: AssemblyPlan
   private readonly depsOf = new Map<string, string[]>()
   private readonly dependents = new Map<string, string[]>()
+  /** 已记运维事件的拥有方冲突键（cap+owners+contracts）：同世界重复 applyWorld 不重记。 */
+  private ownerConflictKeys = new Set<string>()
   /**
    * 已隔离身份 → 隔离时所处的代码世代 payload。值为该身份在新代码世代到来时复归的判据：
    * 新代码世代不同才可能复归（同代码世代 / 数据世代变化不复归），并需重新校验仍有效。
@@ -182,6 +194,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly suspended = new Set<string>()
   private readonly services = new Map<string, ServiceRuntime>()
   private readonly pendingRestarts = new Set<Promise<void>>()
+  /** 在途启动任务：`stop()` 须等它们落定，避免停机返回后仍有启动中的服务挂上端点。 */
+  private readonly pendingStarts = new Set<Promise<void>>()
   /** 换人序所需能力的闭包视图，交 `swap.ts` 用；不暴露运行时私有状态。 */
   private readonly swapHost: SwapHost
   private stopping = false
@@ -197,10 +211,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.paths = hostPaths(options.root)
     this.blobsDir = options.blobsDir ?? this.paths.blobsDir
     this.sdkDir = options.sdkDir
+    this.ecosystem = options.ecosystem ?? DEFAULT_ECOSYSTEM
     const depsDir = options.depsDir ?? this.paths.depsDir
     this.restore =
       options.restore ??
-      ((cwd, decl) => restoreDependencies(cwd, depsDir, decl.build, undefined, this.startWrapper))
+      ((cwd, decl) =>
+        restoreDependencies(cwd, depsDir, decl.build, undefined, this.startWrapper, this.ecosystem))
     this.sourceRoot =
       options.sourceRoot ?? ((identity) => resolvePluginSourceRoot(this.paths.root, identity))
     this.onPortCall = options.onPortCall
@@ -210,6 +226,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       isStopping: () => this.stopping,
       isIsolated: (id) => this.isolated.has(id),
       serviceOf: (id) => this.services.get(id),
+      isSuspended: (id) => this.suspended.has(id),
       adoptService: (service) => {
         this.services.set(service.id, service)
         this.registerEndpoints(service)
@@ -221,7 +238,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       launch: (id, gen, decl) => this.launch(id, gen, decl),
       prepare: (id, gen, decl) => this.prepare(id, gen, decl),
       launchPrepared: (id, gen, decl, prepared) => this.launchPrepared(id, gen, decl, prepared),
-      rekeyEndpoints: (service, gen, decl) => this.rekeyEndpoints(service, gen, decl),
+      rekeyEndpoints: (service, gen, decl, endpointDecl) =>
+        this.rekeyEndpoints(service, gen, decl, endpointDecl),
       clearRestart: (service) => this.clearRestart(service),
       recordStartFailure: (id, gen, err) => this.recordStartFailure(id, gen, err),
       stopSuperseded: (service, reason) => this.stopSuperseded(service, reason),
@@ -253,20 +271,21 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         if (beforeActive !== null) retired.push(id)
         continue
       }
-      const beforeCode =
-        beforeIdentity === undefined ? null : (assemblyGen(prev, id)?.payload ?? null)
-      const afterCode = assemblyGen(next, id)?.payload ?? null
+      const beforeCode = beforeIdentity === undefined ? null : this.codeGenPayloadOf(prev, id)
+      const afterCode = this.codeGenPayloadOf(next, id)
       // 代码世代变化才跟随；数据世代变化（beforeCode === afterCode）不动作。
+      // 纯数据身份（无代码世代）`assemblyGen` 会回落到数据世代——这里只认真正的代码世代，
+      // 否则数据世代内容变化会被误判为代码换代并隔离（数据变化不动服务）。
       // 休眠身份跳过换代启动（不因换代 / 重新激活自动恢复），仅显式 `resume` 才重启。
-      if ((beforeCode !== afterCode || beforeActive === null) && !this.suspended.has(id)) {
+      if (beforeCode !== afterCode && !this.suspended.has(id)) {
         changed.push(id)
       }
     }
     try {
       // `many` 成员集变更（加减提供方）虽不改消费方代码世代，却要重注入其成员表：
       // 按世界前后快照 diff 出成员集变化的消费方，强制换代重启（进程不动无法更新服务工厂 ctx）。
-      const prevMany = manyNeedsMap(prev, this.blobsDir)
-      const nextMany = manyNeedsMap(next, this.blobsDir)
+      const prevMany = manyNeedsMap(prev, this.blobsDir, this.ecosystem)
+      const nextMany = manyNeedsMap(next, this.blobsDir, this.ecosystem)
       const manyKey = (map: Map<string, Record<string, string[]>>, id: string): string =>
         JSON.stringify(map.get(id) ?? null)
       const reinject = new Set<string>()
@@ -277,6 +296,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
         reinject.add(id)
       }
       const follow = [...new Set([...changed, ...reinject])].sort()
+      this.recordCapabilityOwnerConflicts(next)
       for (const id of follow) await this.followGeneration(prev, next, id, reinject.has(id))
       for (const id of retired) await this.retireBranch(id)
     } catch (err) {
@@ -296,6 +316,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.record('dep', event.kind, { impl: event.id })
     }
     this.buildDependencyMaps()
+    this.recordCapabilityOwnerConflicts(this.world)
     // 启动序先落定：start 中途抛出时 `stop` 仍能按它逆序收口已 spawn 的服务，不留孤儿。
     this.order = [...this.plan.order]
     // 按依赖层起：同层无依赖边可并发（带上限），层间顺序保证被依赖者先起。
@@ -303,7 +324,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     // 故后续层的 dep 判定仍读到一致的装载状态，不出现半更新。
     const layers = computeStartLayers(this.plan.order, this.depsOf)
     for (const layer of layers) {
-      await runWithConcurrency(layer, this.startConcurrency, (id) => this.startIdentity(id))
+      await runWithConcurrency(layer, this.startConcurrency, (id) => this.trackStart(id))
     }
   }
 
@@ -321,11 +342,15 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     return this.suspended
   }
 
-  /** 休眠 / 恢复的公共前置：身份不存在 / 无代码世代 / 已退役 → `not_found`。 */
+  /**
+   * 休眠 / 恢复的公共前置：身份不存在 / 无代码世代 / 已退役 → `not_found`；
+   * 坏分支隔离态 → `isolated`（不属休眠面：隔离只由新代码世代的复归判定解除，显式 resume 不得绕过）。
+   */
   private suspendable(id: string): IdentitySuspendResult {
     const identity = this.world.ids[id]
     if (identity === undefined || identity.active === null) return { ok: false, code: 'not_found' }
     if (this.assemblyGenOf(id) === null) return { ok: false, code: 'not_found' }
+    if (this.isolated.has(id)) return { ok: false, code: 'isolated' }
     return { ok: true }
   }
 
@@ -343,14 +368,18 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     return { ok: true }
   }
 
-  /** 运行期恢复：按身份**当前代码世代**重启（与装配同路），清休眠标记并记 `dep.resumed`。 */
+  /**
+   * 运行期恢复：按身份**当前代码世代**重启（与装配同路），清休眠标记并记 `dep.resumed`。
+   * 起服务失败会把该身份转入隔离（坏分支），据实报 `isolated`，不与「未休眠」的幂等成功混淆。
+   */
   async resume(id: string): Promise<IdentitySuspendResult> {
     const allowed = this.suspendable(id)
     if (!allowed.ok) return allowed
     if (!this.suspended.has(id)) return { ok: true }
     this.suspended.delete(id)
     this.record('dep', 'resumed', { impl: id })
-    await this.startIdentity(id)
+    await this.trackStart(id)
+    if (this.isolated.has(id)) return { ok: false, code: 'isolated' }
     this.noteRuntimeStart(id)
     return { ok: true }
   }
@@ -389,6 +418,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     // 状态变更（从 services 摘除、清计时器）在各 stopService 的同步段按停机序依次完成，随后才并发等待。
     const teardown = [...this.order].reverse().map((id) => this.stopService(id))
     await Promise.allSettled(teardown)
+    // 等在途启动落地（其内部会看到 stopping 并停掉刚起的服务，且 entry 守卫挡住新启动），再清表：
+    // 否则 stop 返回后仍可能有启动中的服务挂上端点 / 进程。
+    await Promise.allSettled([...this.pendingStarts])
     // 等在途重启落地（其内部会看到 stopping 并停掉刚起的服务），再清表
     await Promise.allSettled([...this.pendingRestarts])
     this.endpoints.clear()
@@ -423,9 +455,40 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.log({ at: Date.now(), kind, event, ...fields })
   }
 
+  /**
+   * 记同一能力类多拥有方契约冲突：`capabilityContract` 取码元序首个拥有方，世界增删拥有方
+   * 会静默改绑消费方所用的契约。这里按「cap + 拥有方 + 契约」去重记运维事件，使冲突可见；
+   * 同世界重复调用不重记（applyWorld 幂等）。
+   */
+  private recordCapabilityOwnerConflicts(world: World): void {
+    const seen = new Set<string>()
+    for (const conflict of capabilityOwnerConflicts(world, this.blobsDir, this.ecosystem)) {
+      const key = `${conflict.cap}\u0000${conflict.owners.join(',')}\u0000${conflict.contracts
+        .map((contract) => contract.join('|'))
+        .join(';')}`
+      seen.add(key)
+      if (this.ownerConflictKeys.has(key)) continue
+      this.record('host', 'capability_owner_conflict', {
+        cap: conflict.cap,
+        caps: conflict.owners,
+        reason: conflict.diverges ? 'contract_mismatch' : 'multiple_owners',
+      })
+    }
+    this.ownerConflictKeys = seen
+  }
+
   /** 装配取用世代（G7 A1）：最近代码世代；无代码世代回落 active；retired → null。 */
   private assemblyGenOf(id: string): Gen | null {
     return assemblyGen(this.world, id)
+  }
+
+  /**
+   * 世界里的**代码**世代 payload：`assemblyGen` 回落到数据世代（纯数据身份 / 合成世界）时为 null。
+   * `applyWorld` 用它判「代码换代」，令数据世代变化不被误判为代码换代。
+   */
+  private codeGenPayloadOf(world: World, id: string): Hash | null {
+    const gen = assemblyGen(world, id)
+    return gen !== null && isCodeGen(world, gen) ? gen.payload : null
   }
 
   /** 依赖图（谁 pins 谁）按当前世界重算：换代会改 pins，退役隔离靠它取反向可达。 */
@@ -471,7 +534,18 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     return reached
   }
 
+  /** 追踪一次启动任务：`stop()` 据此等在途启动落定，保证停机返回后无残留启动 / 端点。 */
+  private trackStart(id: string): Promise<void> {
+    const task: Promise<void> = this.startIdentity(id).finally(() => {
+      this.pendingStarts.delete(task)
+    })
+    this.pendingStarts.add(task)
+    return task
+  }
+
   private async startIdentity(id: string): Promise<void> {
+    // 停机 / 已休眠（含启动窗口内被 suspend）：不得起服务。启动成功后的后置守卫同口径。
+    if (this.stopping || this.suspended.has(id)) return
     if (this.isolated.has(id)) return
     const deps = this.depsOf.get(id) ?? []
     if (deps.some((dep) => !this.loadedIds.has(dep))) {
@@ -479,7 +553,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
       return
     }
-    const read = readPluginDecl(this.world, id, this.blobsDir)
+    const read = readPluginDecl(this.world, id, this.blobsDir, this.ecosystem)
     if (read === null) {
       this.record('service', 'start_failed', { impl: id, reason: 'bad_plugin_decl' })
       this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
@@ -504,9 +578,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
     try {
       const service = await this.launch(id, gen.payload, read.decl)
-      // 启动窗口内该身份可能已被别的坏分支隔离（在途 launch）：不得复活
-      if (this.stopping || this.isolated.has(id)) {
-        if (!this.stopping) this.record('dep', 'stale', { impl: id })
+      // 启动窗口内该身份可能已被别的坏分支隔离 / 被运营休眠（在途 launch）：不得复活
+      if (this.stopping || this.isolated.has(id) || this.suspended.has(id)) {
+        if (this.isolated.has(id)) this.record('dep', 'stale', { impl: id })
         teardownService(service)
         await waitForServiceExit(service, EXIT_WAIT_MS)
         return
@@ -566,6 +640,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       }
       this.endpoints.removeIdentity(id)
       this.loadedIds.delete(id)
+      // 隔离态优先于休眠态：休眠标记一并清掉，避免「已隔离却仍报休眠」（会卡住复归判定）。
+      this.suspended.delete(id)
       this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
     }
     await Promise.allSettled(exits)
@@ -583,13 +659,15 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     id: string,
     forceRestart = false,
   ): Promise<void> {
-    if (this.stopping) return
+    if (this.stopping || this.suspended.has(id)) return
     // 已隔离身份：仅当新代码世代不同于隔离世代且重新校验仍有效时复归，否则保持隔离
     if (this.isolated.has(id) && !this.rejoinIsolated(next, id)) return
     const identity = next.ids[id]
     const newCodeGen = assemblyGen(next, id)
     const newDecl =
-      newCodeGen === null ? null : readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
+      newCodeGen === null
+        ? null
+        : readPluginDeclOfGen(next, newCodeGen, this.blobsDir, this.ecosystem)
     const payloadDef = newCodeGen === null ? undefined : next.defs[newCodeGen.payload]
     if (
       identity === undefined ||
@@ -605,7 +683,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     const oldCodeGen = assemblyGen(prev, id)
     if (oldCodeGen === null) {
       // 全新身份（或从 active=null 重新激活）：与装配同路起服务
-      await this.startIdentity(id)
+      await this.trackStart(id)
       this.noteRuntimeStart(id)
       return
     }
@@ -628,7 +706,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       return
     }
     if (oldService === undefined) {
-      await this.startIdentity(id)
+      await this.trackStart(id)
       this.noteRuntimeStart(id)
       return
     }
@@ -637,12 +715,21 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (forceRestart) {
       this.swapHost.removeService(id, oldService)
       await this.stopSuperseded(oldService, 'superseded')
-      if (this.stopping || this.isolated.has(id)) return
-      await this.startIdentity(id)
+      if (this.stopping || this.isolated.has(id) || this.suspended.has(id)) return
+      await this.trackStart(id)
       this.noteRuntimeStart(id)
       return
     }
-    if (classifyGenerationChange(prev, oldCodeGen, next, newCodeGen, this.blobsDir) === 'data') {
+    if (
+      classifyGenerationChange(
+        prev,
+        oldCodeGen,
+        next,
+        newCodeGen,
+        this.blobsDir,
+        this.ecosystem,
+      ) === 'data'
+    ) {
       const reloaded = await this.tryReload(oldService, newCodeGen.payload)
       if (this.stopping || this.isolated.has(id)) return
       if (reloaded) {
@@ -665,7 +752,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (newCodeGen === null) return false
     if (this.isolated.get(id) === newCodeGen.payload) return false
     const identity = next.ids[id]
-    const newDecl = readPluginDeclOfGen(next, newCodeGen, this.blobsDir)
+    const newDecl = readPluginDeclOfGen(next, newCodeGen, this.blobsDir, this.ecosystem)
     const payloadDef = next.defs[newCodeGen.payload]
     if (
       identity === undefined ||
@@ -693,17 +780,27 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     }
   }
 
-  /** 端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。 */
-  private rekeyEndpoints(service: ServiceRuntime, gen: Hash, decl: PluginDecl): void {
-    // 纵深防御：停机 / 已隔离后不得重挂端点（调用方已守卫，此处再挡一层）
-    if (this.stopping || this.isolated.has(service.id)) return
+  /**
+   * 端点重挂：进程不动，端点行从旧 gen 键换到新 gen 键（同 link / pid）。
+   * `decl` 描述新世代，决定载体后续重启与 `loaded` 报告；`endpointDecl` 描述**在跑进程**的声明，
+   * 决定端点方法集——换代失败降级时二者不同（跑的是旧代码、世代键却是新世代），
+   * 端点须按旧声明重挂，否则会挂上旧进程并不实现的方法。
+   */
+  private rekeyEndpoints(
+    service: ServiceRuntime,
+    gen: Hash,
+    decl: PluginDecl,
+    endpointDecl: PluginDecl = decl,
+  ): void {
+    // 纵深防御：停机 / 已隔离 / 已休眠后不得重挂端点（调用方已守卫，此处再挡一层）
+    if (this.stopping || this.isolated.has(service.id) || this.suspended.has(service.id)) return
     this.endpoints.removeGeneration(service.id, service.gen)
     this.clearHealth(service)
     service.gen = gen
     service.decl = decl
     service.restart = parseRestart(decl.restart)
     service.health = parseHealth(decl.health)
-    this.registerEndpoints(service)
+    this.registerEndpoints(service, endpointDecl)
     this.startHealth(service)
   }
 
@@ -769,6 +866,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       materializedDir: this.paths.materializedDir,
       blobsDir: this.blobsDir,
       sdkDir: this.sdkDir,
+      ecosystem: this.ecosystem,
       handshakeTimeoutMs: this.handshakeTimeoutMs,
       pluginStateDir: resolve(this.paths.pluginsDir, id),
       pluginDataRoot: this.paths.dataDir,
@@ -851,10 +949,17 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     return (cwd) => copyAssetsManifest(manifest.entries, sourceDir, cwd)
   }
 
-  private registerEndpoints(service: ServiceRuntime): void {
-    for (const cap of service.decl.implements) {
-      const methods = effectiveMethods(this.world, service.id, service.decl, cap, this.blobsDir)
-      const judgments = service.decl.judgments?.[cap] ?? {}
+  private registerEndpoints(service: ServiceRuntime, decl: PluginDecl = service.decl): void {
+    for (const cap of decl.implements) {
+      const methods = effectiveMethods(
+        this.world,
+        service.id,
+        decl,
+        cap,
+        this.blobsDir,
+        this.ecosystem,
+      )
+      const judgments = decl.judgments?.[cap] ?? {}
       for (const method of methods) {
         // 判定承载的方法由宿主就地求值，不登记服务端点（判定优先且不 spawn 服务）。
         if (Object.hasOwn(judgments, method)) continue
@@ -958,6 +1063,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       service.channelCloseTimer = null
     }
     if (this.stopping || service.draining || this.isolated.has(service.id)) return
+    // 已休眠身份的服务退出：既不重启也不隔离（休眠态优先；退避窗口内 suspend 不得被重启复活）
+    if (this.suspended.has(service.id)) return
     // 进程已死：该 gen 的端点不可用，先摘除；重启成功后重挂
     this.endpoints.removeGeneration(service.id, service.gen)
     this.record('service', 'exit', {
@@ -985,8 +1092,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
    * 不复位 window——relaunch 失败重试同样计数，避免「每次失败都清零、永不超限」。
    */
   private countRestartAttempt(service: ServiceRuntime): void {
-    // 隔离 / 已被换代取代后不得再排程（防御：当前调用点均已先判，且中途无 await）
-    if (this.stopping || this.isolated.has(service.id)) return
+    // 隔离 / 休眠 / 已被换代取代后不得再排程（防御：当前调用点均已先判，且中途无 await）
+    if (this.stopping || this.isolated.has(service.id) || this.suspended.has(service.id)) return
     if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
     service.attempts += 1
     if (service.attempts > service.restart.max) {
@@ -1005,13 +1112,17 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   }
 
   private async attemptRestart(service: ServiceRuntime): Promise<void> {
-    // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer；换代取代同理不重启
-    if (this.stopping || this.isolated.has(service.id)) return
+    // 防御：隔离时 isolateBranch 已 clearRestart 清掉未触发的 timer；换代取代同理不重启。
+    // 休眠立即生效：退避窗口内 suspend 后此排程即便仍挂起也不得复活进程。
+    if (this.stopping || this.isolated.has(service.id) || this.suspended.has(service.id)) return
     if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
+    // 该身份的活服务已被别的路径换掉（如休眠后 resume 已重起）：旧载体的排程不得再起第二个实例
+    const current = this.services.get(service.id)
+    if (current !== undefined && current !== service) return
     try {
       const next = await this.launch(service.id, service.gen, service.decl)
-      // 重启窗口内该身份可能已被隔离 / 换代：不得复活
-      if (this.stopping || this.isolated.has(service.id)) {
+      // 重启窗口内该身份可能已被隔离 / 休眠 / 换代：不得复活
+      if (this.stopping || this.isolated.has(service.id) || this.suspended.has(service.id)) {
         teardownService(next)
         await waitForServiceExit(next, EXIT_WAIT_MS)
         return
@@ -1027,8 +1138,8 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.registerEndpoints(next)
       this.startHealth(next)
     } catch (err) {
-      // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 / 换代 → 不再记失败、不再排程
-      if (this.isolated.has(service.id)) return
+      // 承重守卫：等待 launch 期间该身份可能已被别的坏分支隔离 / 休眠 / 换代 → 不再记失败、不再排程
+      if (this.isolated.has(service.id) || this.suspended.has(service.id)) return
       if (this.assemblyGenOf(service.id)?.payload !== service.gen) return
       const failure = classifyStartFailure(err)
       if (failure.event === 'handshake') {

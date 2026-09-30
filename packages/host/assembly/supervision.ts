@@ -1,8 +1,19 @@
 // 服务进程监督工具：重启 / 健康策略解析、退避与复位计时、进程树终止、起服务错误分类。
 // 装配运行时的编排（计划、启动、握手、隔离、停机）在 runtime.ts。
 
-import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { killProcessTree } from '../common/platform/index.ts'
+import {
+  DEFAULT_HEALTH_FAILURE_THRESHOLD,
+  DEFAULT_HEALTH_GRACE_MS,
+  DEFAULT_HEALTH_INTERVAL_MS,
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  DEFAULT_RESTART_BACKOFF_MAX_MS,
+  DEFAULT_RESTART_BACKOFF_MS,
+  DEFAULT_RESTART_DRAIN_MS,
+  DEFAULT_RESTART_MAX,
+  DEFAULT_RESTART_WINDOW_MS,
+} from '../options.ts'
 import { ServiceChannelError, SERVICE_PROTOCOL_VERSION } from '../service-link.ts'
 import type {
   ServiceChannel,
@@ -133,22 +144,29 @@ export function parseRestart(value: Json): RestartPolicy {
       backoff === 'none' || backoff === 'fixed' || backoff === 'exponential'
         ? backoff
         : 'exponential',
-    baseMs: numberField(record, 'backoff_ms', 500),
-    maxMs: numberField(record, 'backoff_max_ms', 30_000),
-    max: Math.floor(numberField(record, 'max', 5)),
-    windowMs: numberField(record, 'window_ms', 60_000),
-    drainMs: numberField(record, 'drain_ms', 5_000),
+    baseMs: numberField(record, 'backoff_ms', DEFAULT_RESTART_BACKOFF_MS),
+    maxMs: numberField(record, 'backoff_max_ms', DEFAULT_RESTART_BACKOFF_MAX_MS),
+    max: Math.floor(numberField(record, 'max', DEFAULT_RESTART_MAX)),
+    windowMs: numberField(record, 'window_ms', DEFAULT_RESTART_WINDOW_MS),
+    drainMs: numberField(record, 'drain_ms', DEFAULT_RESTART_DRAIN_MS),
   }
 }
 
 export function parseHealth(value: Json): HealthPolicy {
   const record = asRecord(value)
-  const intervalMs = numberField(record, 'interval_ms', 10_000)
-  const timeoutMs = numberField(record, 'timeout_ms', 2_000)
-  // 连续失败阈值：缺失回落 3，下限 1（旧声明只给 interval_ms / timeout_ms，自动得阈值 3）
-  const failureThreshold = Math.max(1, Math.floor(numberField(record, 'failure_threshold', 3)))
-  // 启动宽限期：缺失回落 max(intervalMs, 30s)，覆盖启动风暴；显式给 0 则关闭宽限
-  const gracePeriodMs = numberField(record, 'grace_period_ms', Math.max(intervalMs, 30_000))
+  const intervalMs = numberField(record, 'interval_ms', DEFAULT_HEALTH_INTERVAL_MS)
+  const timeoutMs = numberField(record, 'timeout_ms', DEFAULT_HEALTH_TIMEOUT_MS)
+  // 连续失败阈值：缺失回落默认阈值，下限 1（旧声明只给 interval_ms / timeout_ms，自动得默认阈值）
+  const failureThreshold = Math.max(
+    1,
+    Math.floor(numberField(record, 'failure_threshold', DEFAULT_HEALTH_FAILURE_THRESHOLD)),
+  )
+  // 启动宽限期：缺失回落 max(intervalMs, 默认宽限)，覆盖启动风暴；显式给 0 则关闭宽限
+  const gracePeriodMs = numberField(
+    record,
+    'grace_period_ms',
+    Math.max(intervalMs, DEFAULT_HEALTH_GRACE_MS),
+  )
   return { intervalMs, timeoutMs, failureThreshold, gracePeriodMs }
 }
 
@@ -164,41 +182,8 @@ export function exitReason(code: number | null, signal: NodeJS.Signals | null): 
   return 'exit:unknown'
 }
 
-/**
- * 杀服务进程树：宿主以 shell 起服务，`child.kill()` 只杀 shell 包装进程，
- * 会遗留真正的服务进程。Windows 用 `taskkill /T /F`，POSIX 用进程组（spawn 时 detached）。
- * 不让 `child.kill()` 与 `taskkill` 抢跑——抢跑会缩短 taskkill 枚举子树的窗口。
- *
- * 已知限制（Windows）：`taskkill` 是异步的，极窄窗口内 shell 已 fork 但尚未被枚举到的
- * 孙进程可能漏网；漏网进程由「stdin EOF 自退出」义务兜底（宿主关闭通道即 EOF）。
- */
-export function terminateChild(child: ChildProcess): void {
-  const pid = child.pid
-  if (pid === undefined) return
-  if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      }).unref()
-      return
-    } catch {
-      // taskkill 不可用时退回直接 kill
-    }
-  } else {
-    try {
-      process.kill(-pid, 'SIGKILL')
-      return
-    } catch {
-      // 进程组不可用时退回直接 kill
-    }
-  }
-  try {
-    child.kill()
-  } catch {
-    // 进程可能已退出
-  }
-}
+/** 杀服务进程树：形态分支在平台适配层（Windows taskkill / POSIX 进程组）。 */
+export { killProcessTree as terminateChild }
 
 /** 等子进程真正退出（有界）；已退出立即返回。 */
 export function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {

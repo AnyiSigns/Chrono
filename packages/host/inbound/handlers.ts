@@ -1,5 +1,5 @@
 // 入站 run 驱动：submit / command / forward 三路统一走 `runDirectiveSet`（解析命令 → 校验 args →
-// 跑 run → 回 result），并承载宿主通用原语 `thread.resume` 起的 detached run。
+// 跑 run → 回 result），并承载宿主通用原语 `run.spawn` 起的 detached run。
 // 宿主不认识命令语义，只按声明解析、机械校验、按 run 生命周期成对收口。
 
 import { randomUUID } from 'node:crypto'
@@ -7,6 +7,7 @@ import type { Socket } from 'node:net'
 import { commandArgsIssue } from '../assembly/index.ts'
 import type { CommandDecl, CommandIndex } from '../assembly/index.ts'
 import { refusedReasons, runSubmission } from '../effect/index.ts'
+import { resolveCaps, resolveLimits } from './validate.ts'
 import type {
   CtxProvider,
   DirectiveDraft,
@@ -68,7 +69,7 @@ export interface InboundHandlers {
     thread: string | null,
     signal: AbortSignal,
   ) => Promise<void>
-  /** `thread.resume`：起一次 detached run（无 socket、结果不回流、事件照广播）。 */
+  /** `run.spawn`：起一次 detached run（无 socket、结果不回流、事件照广播）。 */
   startDetachedRun: (
     emitter: string,
     entry: Hash,
@@ -180,6 +181,31 @@ export function createInboundHandlers(deps: RunDriverDeps): InboundHandlers {
     return false
   }
 
+  /**
+   * 三路共用的 caps / limits 形状收口：缺省回落默认，形状非法即回 `bad_directive` 并拒该 run。
+   * 返回 null 表示已回错（调用方直接 return，不进 `runDirectiveSet`）。
+   */
+  const resolveRunCapsLimits = (
+    socket: Socket,
+    id: string,
+    caps: unknown,
+    limits: unknown,
+  ): { caps: Record<string, boolean>; limits: Limits } | null => {
+    const resolvedCaps = resolveCaps(caps)
+    const resolvedLimits = resolveLimits(limits)
+    if (resolvedCaps === null || resolvedLimits === null) {
+      deps.send(socket, {
+        v: PROTOCOL_VERSION,
+        id,
+        kind: 'error',
+        code: 'bad_directive',
+        message: 'caps / limits malformed',
+      })
+      return null
+    }
+    return { caps: resolvedCaps, limits: resolvedLimits }
+  }
+
   const submit: InboundHandlers['submit'] = async (
     socket,
     message,
@@ -194,14 +220,16 @@ export function createInboundHandlers(deps: RunDriverDeps): InboundHandlers {
     for (const command of deps.commandIndexFor(snapshot.world, snapshot.head).commands) {
       if (!entryOwners.has(command.entry)) entryOwners.set(command.entry, command.identity)
     }
+    const scope = resolveRunCapsLimits(socket, message.id, message.caps, message.limits)
+    if (scope === null) return
     await runDirectiveSet({
       origin: 'submit',
       runId,
       thread,
       signal,
       directives,
-      caps: message.caps ?? {},
-      limits: message.limits ?? DEFAULT_LIMITS,
+      caps: scope.caps,
+      limits: scope.limits,
       readonly: false,
       initialOwnerOf: (directive) =>
         directive.kind === 'eval' && 'entry' in directive
@@ -243,6 +271,8 @@ export function createInboundHandlers(deps: RunDriverDeps): InboundHandlers {
     }
     const args = message.args ?? null
     if (!checkCommandArgs(socket, message.id, resolved, args, snapshot.world)) return
+    const scope = resolveRunCapsLimits(socket, message.id, message.caps, message.limits)
+    if (scope === null) return
     // 只读命令：不广播 run 生命周期事件（读不得成为回合信号），也不落审计 / 账本。
     await runDirectiveSet({
       origin: 'command',
@@ -250,8 +280,8 @@ export function createInboundHandlers(deps: RunDriverDeps): InboundHandlers {
       thread,
       signal,
       directives: [{ kind: 'eval', entry: resolved.entry, args }],
-      caps: message.caps ?? {},
-      limits: message.limits ?? DEFAULT_LIMITS,
+      caps: scope.caps,
+      limits: scope.limits,
       readonly: resolved.readonly === true,
       name: message.name,
       initialOwnerOf: (directive) => (directive.kind === 'eval' ? resolved.identity : undefined),
@@ -300,14 +330,16 @@ export function createInboundHandlers(deps: RunDriverDeps): InboundHandlers {
     }
     const args = message.args ?? null
     if (!checkCommandArgs(socket, message.id, resolved, args, snapshot.world)) return
+    const scope = resolveRunCapsLimits(socket, message.id, message.caps, message.limits)
+    if (scope === null) return
     await runDirectiveSet({
       origin: 'forward',
       runId,
       thread,
       signal,
       directives: [{ kind: 'eval', entry: resolved.entry, args }],
-      caps: message.caps ?? {},
-      limits: message.limits ?? DEFAULT_LIMITS,
+      caps: scope.caps,
+      limits: scope.limits,
       readonly: resolved.readonly === true,
       name: message.command,
       initialOwnerOf: () => resolved.identity,

@@ -12,6 +12,7 @@ import { readJournal } from '../ledger/index.ts'
 import { createFrameDecoder, encodeFrame } from '../wire.ts'
 import { isRecord } from '../common/json.ts'
 import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+import { readLifecycle } from './test-helpers-ext.ts'
 import type { Json } from '../../kernel/index.ts'
 
 /** 把多条帧拼成一次写入（保证服务端同一 chunk 内按序派发），收集回帧直到 predicate 为真（或超时）。 */
@@ -83,6 +84,37 @@ describe('入站派发收口', () => {
     expect(error).toBeDefined()
     expect(error).toMatchObject({ id: 'x1', code: 'bad_directive' })
     expect(String((error as { message?: Json }).message)).toContain('bogus')
+  })
+
+  it('缺 / 错型 v 与 kind 的可读帧 → error{bad_directive}（带 id），不静默', async () => {
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const cases: Array<{ message: Json; id: string }> = [
+      { message: { id: 'mv', kind: 'status' }, id: 'mv' },
+      { message: { v: '1', id: 'mk' }, id: 'mk' },
+      { message: { v: '1', id: 'mt', kind: 5 }, id: 'mt' },
+    ]
+    for (const item of cases) {
+      const frames = await rawCollect(
+        root,
+        [item.message],
+        (all) => all.some((frame) => isRecord(frame) && frame['kind'] === 'error'),
+        2000,
+      )
+      const error = frames.find((frame) => isRecord(frame) && frame['kind'] === 'error')
+      expect(error).toMatchObject({ id: item.id, code: 'bad_directive' })
+    }
+  })
+
+  it('无 id 的畸形帧 → 断连 + 记 host.invalid_frame（无回帧、调用方不悬挂）', async () => {
+    const handle = await startHost({ root })
+    handles.push(handle)
+    const frames = await rawCollect(root, [{ v: '1', kind: 'status' }], () => false, 2000)
+    expect(frames.some((frame) => isRecord(frame) && frame['kind'] === 'error')).toBe(false)
+    const entries = readLifecycle(hostPaths(root).lifecycleFile)
+    expect(entries).toContainEqual(
+      expect.objectContaining({ kind: 'host', event: 'invalid_frame' }),
+    )
   })
 
   it('stop 受理后同一批的 submit 不被受理（setImmediate 窗口不误起 run）', async () => {

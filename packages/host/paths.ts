@@ -1,8 +1,8 @@
 // 宿主侧落盘布局：state/ 永不进世界，全部路径在此单点解析。
 // 根目录由启动参数或环境给出，缺省当前工作目录。
 
-import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
+import { socketAddress } from './common/platform/index.ts'
 
 export interface HostPaths {
   root: string
@@ -79,9 +79,5 @@ export function hostPaths(root: string): HostPaths {
  * 管道名由根路径摘要派生，避免同机多仓库撞名。
  */
 export function socketPath(root: string): string {
-  if (process.platform === 'win32') {
-    const digest = createHash('sha256').update(root).digest('hex').slice(0, 16)
-    return `\\\\.\\pipe\\chrono-host-${digest}`
-  }
-  return resolve(root, 'state', 'sock', 'host.sock')
+  return socketAddress(root)
 }

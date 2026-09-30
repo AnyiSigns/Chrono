@@ -267,6 +267,33 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     expect([out.verdict.ok, out.entry, out.hash, snap(world)]).toEqual([false, null, null, before])
     expect(counters.applyEntry).toBe(0)
   })
+
+  it('add_gen args 带 graft → bad_form（graft 只由独立 graft op 设置）', () => {
+    const { world, head } = seeded()
+    const bad = opReq(
+      'add_gen',
+      asJson({
+        id: 'x',
+        payload: PAYLOAD_KEY,
+        pins: {},
+        sig: SIG_KEY,
+        graft: { from: 'x', gen: 0 },
+      }),
+      head.hash,
+    )
+    expect(validate(head, world, bad).reasons).toEqual(['bad_form'])
+    const before = snap(world)
+    win()
+    const out = commit(head, world, bad, NOW)
+    expect([out.verdict.ok, out.entry, out.hash, snap(world), world.ids['x'].gens.length]).toEqual([
+      false,
+      null,
+      null,
+      before,
+      1,
+    ])
+    expect(counters.applyEntry).toBe(0)
+  })
 })
 
 describe('幂等、batch 应用趟、审计 op', () => {

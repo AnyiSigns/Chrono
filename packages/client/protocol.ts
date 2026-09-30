@@ -4,6 +4,12 @@ import type { Json } from '../kernel/index.ts'
 
 export const PROTOCOL_VERSION = '1'
 
+/**
+ * 单资产原始字节上限：与宿主 `host/assets.ts` 的 `MAX_ASSET_BYTES` 同口径
+ * （契约见 `docs/protocol.md` 资产面；两侧边界独立、不跨包共享），供 `putAsset` 入口前置收口。
+ */
+export const MAX_ASSET_BYTES = 8 * 1024 * 1024
+
 export interface Limits {
   gas: number
   depth: number

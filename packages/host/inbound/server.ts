@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
+import { isWindows } from '../common/platform/index.ts'
 import { PROTOCOL_VERSION, createFrameDecoder, encodeFrame } from '../wire.ts'
 import type { InboundMessage, OutboundMessage } from '../wire.ts'
 import { readMessage } from './validate.ts'
@@ -20,6 +21,8 @@ export interface InboundServerDeps {
   getDispatch: () => DispatchFn
   /** 运行期 accept 级错误：记录 + 按停机序列收口，不崩宿主。 */
   onRuntimeError: (err: Error) => void
+  /** 无法按协议配对的入站畸形帧（缺 / 错型 id、不可解码）：记录宿主运维事件。 */
+  onInvalidFrame: (reason: string) => void
 }
 
 export interface InboundServerHandle {
@@ -69,15 +72,32 @@ export function createInboundServer(deps: InboundServerDeps): InboundServerHandl
       try {
         frames = decoder.push(chunk)
       } catch {
-        // 畸形帧：断掉该客户端，写者进程不因入站损坏退出
+        // 不可解码的帧（坏 JSON / 超长前缀）：记运维事件后断掉该客户端，写者进程不因此退出
+        deps.onInvalidFrame('undecodable frame')
         socket.destroy()
         return
       }
       for (const raw of frames) {
-        const message = readMessage(raw)
-        if (message === null) continue
+        const read = readMessage(raw)
+        if (!read.ok) {
+          if (read.id !== null) {
+            // 可配对（id 为字符串）但 v / kind 缺或类型错：回错帧，不静默丢弃
+            send(socket, {
+              v: PROTOCOL_VERSION,
+              id: read.id,
+              kind: 'error',
+              code: 'bad_directive',
+              message: 'malformed frame',
+            })
+            continue
+          }
+          // 协议上无法配对：记录宿主运维事件并断连，避免调用方悬挂等待
+          deps.onInvalidFrame('malformed frame without id')
+          socket.destroy()
+          return
+        }
         try {
-          deps.getDispatch()(socket, message)
+          deps.getDispatch()(socket, read.message)
         } catch {
           socket.destroy()
           return
@@ -90,7 +110,7 @@ export function createInboundServer(deps: InboundServerDeps): InboundServerHandl
 
   const listenFn = (): Promise<void> => {
     mkdirSync(deps.sockDir, { recursive: true })
-    if (process.platform !== 'win32' && existsSync(deps.address)) {
+    if (!isWindows() && existsSync(deps.address)) {
       try {
         unlinkSync(deps.address)
       } catch {
@@ -118,7 +138,7 @@ export function createInboundServer(deps: InboundServerDeps): InboundServerHandl
       for (const client of clients) client.destroy()
     },
     unlinkSocket: () => {
-      if (process.platform === 'win32') return
+      if (isWindows()) return
       try {
         unlinkSync(deps.address)
       } catch {

@@ -11,6 +11,7 @@ import { resolveMethodTimeoutMs } from '../method-timeouts.ts'
 import { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
 import { buildAudit } from './execute.ts'
 import type { AuditDraft } from '../audit.ts'
+import type { CallEnv } from '../wire.ts'
 import type { RoundRouter } from './route.ts'
 import type { EffRequest, EffResult, World } from '../../kernel/index.ts'
 
@@ -35,14 +36,20 @@ export interface JudgmentInvokeOptions {
  */
 export function createJudgmentInvoke(
   options: JudgmentInvokeOptions,
-): (world: World, emitter: string, eff: EffRequest, signal?: AbortSignal) => Promise<EffResult> {
+): (
+  world: World,
+  emitter: string,
+  eff: EffRequest,
+  signal?: AbortSignal,
+  env?: CallEnv,
+) => Promise<EffResult> {
   const depth = new AsyncLocalStorage<number>()
-  return (world, emitter, eff, signal) => {
+  return (world, emitter, eff, signal, env) => {
     const current = depth.getStore() ?? 0
     if (current >= MAX_JUDGMENT_DEPTH) {
       return Promise.resolve({ ok: false, error: 'recursion_limited' })
     }
-    return depth.run(current + 1, () => invokeOnce(options, world, emitter, eff, signal))
+    return depth.run(current + 1, () => invokeOnce(options, world, emitter, eff, signal, env))
   }
 }
 
@@ -52,6 +59,7 @@ async function invokeOnce(
   emitter: string,
   eff: EffRequest,
   signal: AbortSignal | undefined,
+  env: CallEnv | undefined,
 ): Promise<EffResult> {
   const router = options.getRouter()
   if (router === undefined) return { ok: false, error: 'not_loaded' }
@@ -63,9 +71,19 @@ async function invokeOnce(
     resolveMethodTimeoutMs(resolutionWorld, row.impl, eff.port, eff.method) ??
     options.callTimeoutMs ??
     DEFAULT_CALL_TIMEOUT_MS
+  // 落帧 `env`：外层调用帧的 `run`/`thread`/`now` 原样回带，`emitter` 覆写为判定属主
+  // （判定内效果的发出者身份恒是判定属主，不是外层调用方）；无外层 `env` 时不硬造，保持不填帧。
+  const frameEnv: CallEnv | undefined = env === undefined ? undefined : { ...env, emitter }
   let result: EffResult
   try {
-    const response = await row.link.call(eff.port, eff.method, eff.args, timeoutMs, signal)
+    const response = await row.link.call(
+      eff.port,
+      eff.method,
+      eff.args,
+      timeoutMs,
+      signal,
+      frameEnv,
+    )
     result = response.ok
       ? { ok: true, value: response.value }
       : { ok: true, value: { error: response.code, message: response.message } }
@@ -79,9 +97,12 @@ async function invokeOnce(
     options.onAudit(
       buildAudit(
         eff,
-        { by: emitter, now: options.now(), emitter },
+        // 时间戳与帧同源（`env.now`）：同一次调用不得出现两个不一致的时钟来源；`run` 同外层 run。
+        { by: emitter, now: env?.now ?? options.now(), emitter, run: env?.run ?? null },
         result,
-        signal?.aborted === true && !result.ok,
+        // 取消口径与 run-loop 的 `callEffect`（execute.ts）对齐：仅「已中止且结果就是 cancelled 通道错误」
+        // 才记取消；超时 / 其它通道错误即便外层已中止也不误记为取消。
+        signal?.aborted === true && result.ok === false && result.error === 'cancelled',
         resolveAuditRedact(resolutionWorld, row.impl, eff.port, eff.method),
       ),
     )

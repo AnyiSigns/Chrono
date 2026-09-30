@@ -77,10 +77,16 @@ markdown / 消毒、detail 渲染、工具卡视图模型、parts 视图模型�
 
 ## 服务半边清理
 
-客户端半边改由插件自交付后，插件的 HTTP 面作废，删除：
+各 UI 插件客户端半边改由插件自交付后，**其自身**的原 HTTP 面作废，按插件逐一删除：
 `execute/http-server.*`、`execute/port.*`、`execute/routes.*`、`execute/static.*`、`execute/inbound-guard.*`；
-`plugin.json` 去掉 `"exclusive": ["port"]`。保留 `main` / `inbound` / `bridge` / `frames` / `root` /
+对应 `plugin.json` 去掉 `"exclusive": ["port"]`。保留 `main` / `inbound` / `bridge` / `frames` / `root` /
 `types` / `methods` / `plan` / `port-link` 与 `terms/`、`schema/`。
+
+**例外：`ui-shell` 不在此列。** 它是浏览器半边唯一的 HTTP 入口，保留 `execute/http-server.*`、
+`execute/routes.*`、`execute/inbound-guard.*`，并**继续绑定端口**（`DEFAULT_UI_PORT = 8787`，`CHRONO_UI_PORT`
+覆盖）：故其 `plugin.json` 的 `"exclusive": ["port"]` 一并保留，不得删除。只有不再绑定端口的 UI 插件
+（子应用）才删除该声明。子应用客户端半边按契约 `'2'` 导出 `contract = '2'` 与 `register(ctx)`，
+把 App 注册进壳的命名 slot。
 
 ## 类型门禁
 
@@ -113,6 +119,6 @@ markdown / 消毒、detail 渲染、工具卡视图模型、parts 视图模型�
 ## 测试口径
 
 - 纯模块单测**原样保留**（含 store fold），导入路径随扩展名改 `.ts`。
-- 删除断言已删除实现（路由 / 端口 / 静态白名单 / http-server / inbound-guard）的测试与步骤。
+- 删除断言已删除实现（路由 / 端口 / 静态白名单 / http-server / inbound-guard）的测试与步骤；`ui-shell` 保留的实现及其测试不删。
 - 新增：`<id>.client.read` 的路径穿越防护与正常读回；`entry.tsx` 导出 `contract` 与 `register`。
 - 客户端半边不再导出 `mount`。

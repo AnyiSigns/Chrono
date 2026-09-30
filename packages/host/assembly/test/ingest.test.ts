@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   parsePluginDecl,
   readPluginDecl,
+  readPluginManifest,
   resolveTreeBlob,
   listCommands,
   resolveCommand,
@@ -308,6 +311,61 @@ describe('装配 assembly', () => {
       } finally {
         await cleanupTempRoot(root)
       }
+    })
+  })
+
+  describe('state/plugins.json 清单读面', () => {
+    function writeManifest(root: string, body: string): void {
+      writeFileSync(join(root, 'state', 'plugins.json'), body)
+    }
+
+    it('缺文件 → 空表', () => {
+      const root = createTempRoot()
+      expect(readPluginManifest(root)).toEqual([])
+    })
+
+    it('合法清单 → 逐项解析（path 为字符串原样保留）', () => {
+      const root = createTempRoot()
+      writeManifest(
+        root,
+        JSON.stringify([
+          { name: 'toy', path: 'pkgs/toy' },
+          { name: 'excluded', exclude: true },
+        ]),
+      )
+      const entries = readPluginManifest(root)
+      expect(entries).toContainEqual({ name: 'toy', path: 'pkgs/toy' })
+      expect(entries.some((entry) => entry.name === 'excluded')).toBe(false)
+    })
+
+    it('非法 JSON → 抛 bad_plugins_manifest（不泄漏 SyntaxError）', () => {
+      const root = createTempRoot()
+      writeManifest(root, '{ not json')
+      expect(() => readPluginManifest(root)).toThrow('bad_plugins_manifest')
+    })
+
+    it('形状非法：顶层非数组 / 项非对象 / 缺 name / path 非字符串 / exclude 非布尔 → 抛 bad_plugins_manifest', () => {
+      const cases = [
+        '{}',
+        '[1]',
+        '[{}]',
+        '[{"name":""}]',
+        '[{"name":"toy","path":123}]',
+        '[{"name":"toy","exclude":"yes"}]',
+      ]
+      for (const body of cases) {
+        const root = createTempRoot()
+        writeManifest(root, body)
+        expect(() => readPluginManifest(root), `body=${body} 应被拒`).toThrow(
+          'bad_plugins_manifest',
+        )
+      }
+    })
+
+    it('runSeed 与 watcher 同口径：坏清单同样归 bad_plugins_manifest（非 SyntaxError）', () => {
+      const root = createTempRoot()
+      writeManifest(root, '{ not json')
+      expect(() => runSeed(root)).toThrow('bad_plugins_manifest')
     })
   })
 })

@@ -10,7 +10,11 @@ import {
   parsePluginDecl,
 } from '../index.ts'
 import type { CapabilityIndex, PluginDecl } from '../index.ts'
-import { GEN_FACTS_CACHE_MAX, capabilityFactsCacheSize } from '../capability-index.ts'
+import {
+  GEN_FACTS_CACHE_MAX,
+  capabilityFactsCacheSize,
+  capabilityOwnerConflicts,
+} from '../capability-index.ts'
 import { H } from '../../../kernel/index.ts'
 import type { Def, Gen, Hash, Identity, Json, World } from '../../../kernel/index.ts'
 
@@ -161,9 +165,9 @@ describe('能力索引 capability-index', () => {
     it('保留能力类 host 不入索引', () => {
       const world = emptyWorld()
       addIdentity(world, 'hostlike')
+      // 声明层已拒 implements 含 host；原始世代（绕过解析）同样不得产生索引项
       addCodeGen(world, 'hostlike', { identity: 'hostlike', implements: ['host'] })
       expect(capabilityProviders(world, 'host')).toEqual([])
-      // 提供方声明了 host 外的能力类时照常入索引
       expect(capabilityProviders(world, 'missing')).toEqual([])
     })
 
@@ -187,10 +191,10 @@ describe('能力索引 capability-index', () => {
   })
 
   describe('成员自身能力类 implementedCaps', () => {
-    it('按声明序返回，排除保留能力类 host', () => {
+    it('按声明序返回（保留类 host 已在声明层拒，不入 implements）', () => {
       const world = emptyWorld()
       addIdentity(world, 'prov')
-      addCodeGen(world, 'prov', { identity: 'prov', implements: ['host', 'capA', 'capB'] })
+      addCodeGen(world, 'prov', { identity: 'prov', implements: ['capA', 'capB'] })
       // 回归：fact.implements 是 Set，曾误用 Array#filter 导致 many 反向调用崩错
       expect(implementedCaps(world, 'prov')).toEqual(['capA', 'capB'])
     })
@@ -266,6 +270,43 @@ describe('能力索引 capability-index', () => {
       const first = capabilityContract(world, 'cap') as string[]
       first.push('injected')
       expect(capabilityContract(world, 'cap')).toEqual(['m'])
+    })
+  })
+
+  describe('多拥有方契约冲突 capabilityOwnerConflicts', () => {
+    it('两拥有方同一能力类 → 记为冲突，含拥有方与各自契约', () => {
+      const world = emptyWorld()
+      addIdentity(world, 'b-owner')
+      addCodeGen(world, 'b-owner', { identity: 'b-owner', slots: { cap: { methods: ['m2'] } } })
+      addIdentity(world, 'a-owner')
+      addCodeGen(world, 'a-owner', { identity: 'a-owner', slots: { cap: { methods: ['m1'] } } })
+      const conflicts = capabilityOwnerConflicts(world)
+      expect(conflicts).toHaveLength(1)
+      expect(conflicts[0].cap).toBe('cap')
+      expect(conflicts[0].owners).toEqual(['a-owner', 'b-owner'])
+      expect(conflicts[0].contracts).toEqual([['m1'], ['m2']])
+      expect(conflicts[0].diverges).toBe(true)
+      // 既有口径仍取码元序首个（冲突不改变解析结果，只使其可见）
+      expect(capabilityContract(world, 'cap')).toEqual(['m1'])
+    })
+
+    it('契约一致的多拥有方同样记为冲突但 diverges=false', () => {
+      const world = emptyWorld()
+      for (const id of ['a-owner', 'b-owner']) {
+        addIdentity(world, id)
+        addCodeGen(world, id, { identity: id, slots: { cap: { methods: ['m'] } } })
+      }
+      const conflicts = capabilityOwnerConflicts(world)
+      expect(conflicts).toHaveLength(1)
+      expect(conflicts[0].diverges).toBe(false)
+    })
+
+    it('单拥有方 / 无拥有方 → 无冲突', () => {
+      const world = emptyWorld()
+      addIdentity(world, 'solo')
+      addCodeGen(world, 'solo', { identity: 'solo', slots: { cap: { methods: ['m'] } } })
+      expect(capabilityOwnerConflicts(world)).toEqual([])
+      expect(capabilityOwnerConflicts(emptyWorld())).toEqual([])
     })
   })
 

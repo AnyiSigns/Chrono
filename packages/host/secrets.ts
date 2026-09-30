@@ -5,16 +5,14 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { writeFileAtomic } from './common/fs-atomic.ts'
 import { PROTOTYPE_KEYS, isRecord } from './common/json.ts'
+import { MAX_SECRET_NAME_LENGTH, MAX_SECRET_VALUE_BYTES } from './options.ts'
 import type { Json } from '../kernel/index.ts'
 
 /** 本地密钥文件的内容形态：名 → 值（值一律字符串）。 */
 export type SecretsFile = { [name: string]: string }
 
-/** 密钥名长度上限。 */
-export const MAX_SECRET_NAME_LENGTH = 256
-
-/** 单个密钥值字节上限（64 KiB）：防无界文件。 */
-export const MAX_SECRET_VALUE_BYTES = 64 * 1024
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export { MAX_SECRET_NAME_LENGTH, MAX_SECRET_VALUE_BYTES } from './options.ts'
 
 /** 密钥文件落盘权限：仅所有者可读写。 */
 const SECRETS_FILE_MODE = 0o600

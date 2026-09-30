@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { H } from '../../kernel/index.ts'
 import type { Entry, Hash, Json, World } from '../../kernel/index.ts'
 import { AuditIndex } from '../audit.ts'
-import type { AuditFilter, AuditRecord, AuditTierBudget } from '../audit.ts'
+import type { AuditDraft, AuditFilter, AuditRecord, AuditTierBudget } from '../audit.ts'
 import { AuditStore } from '../audit-store.ts'
 import { backfillAuditStore, readAuditBackfillMeta } from '../audit-backfill.ts'
 import { hostPaths } from '../paths.ts'
@@ -141,6 +141,25 @@ describe('AuditStore 旁路侧存', () => {
     expect(lines()).toBe(2)
   })
 
+  it('半写安全：末段完整但缺尾换行按撕裂尾截断，追加不粘行、不静默丢后续记录', () => {
+    const store = AuditStore.open(file)
+    store.append(draft('r0'))
+    // 模拟第二条内容已写入但尾换行未持久化：末段是完整 JSON、无换行
+    appendFileSync(
+      file,
+      JSON.stringify({ seq: 1, at: 1000, by: 'host', body: { kind: 'effect_audit', run: 'r1' } }),
+    )
+    const reopened = AuditStore.open(file)
+    // 未终结段被截掉，只剩完整行
+    expect(reopened.records().map((r) => (r.body as { run: string }).run)).toEqual(['r0'])
+    expect(readFileSync(file, 'utf8').endsWith('\n')).toBe(true)
+    // 追加不粘行：新记录独立成行，重载可读，且未把后续记录一并吞掉
+    expect(reopened.append(draft('r2')).seq).toBe(1)
+    expect(lines()).toBe(2)
+    const reloaded = AuditStore.open(file)
+    expect(reloaded.records().map((r) => (r.body as { run: string }).run)).toEqual(['r0', 'r2'])
+  })
+
   it('带换行的坏行跳过（fail-open），不影响后续记录', () => {
     const store = AuditStore.open(file)
     store.append(draft('a'))
@@ -244,6 +263,46 @@ describe('历史审计一次性回填', () => {
     expect(backfillAuditStore(paths, world, [entry], store).backfilled).toBe(0)
     expect(store.records()).toHaveLength(1)
     expect(AuditStore.open(paths.auditFile).size()).toBe(1)
+  })
+
+  it('崩溃窗口（追加中途、meta 未写）重跑不重复：去重后只补尾部', () => {
+    const paths = hostPaths(root)
+    const defs: Record<Hash, { body: Json }> = {}
+    const entries: Entry[] = []
+    for (let i = 0; i < 3; i++) {
+      const a = auditDef(`r-${i}`)
+      defs[a.key] = a.def
+      entries.push(putEntry(i, 1000 + i, 'host', a.def))
+    }
+    const world: World = { defs, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    // 模拟崩溃：第一次只成功追加 1 条即抛错（此时 meta 尚未写）
+    let appended = 0
+    const flaky = {
+      records: () => store.records(),
+      append: (draft: AuditDraft) => {
+        if (appended >= 1) throw new Error('crash')
+        appended += 1
+        return store.append(draft)
+      },
+    } as unknown as AuditStore
+    expect(() => backfillAuditStore(paths, world, entries, flaky)).toThrow('crash')
+    expect(readAuditBackfillMeta(paths.auditMetaFile)).toBeNull()
+    expect(store.records()).toHaveLength(1)
+    // 重跑：识别已追加的 1 条，只补剩余 2 条，不产生重复
+    const report = backfillAuditStore(paths, world, entries, store)
+    expect(report.backfilled).toBe(2)
+    expect(store.records().map((r) => (r.body as { run: string }).run)).toEqual([
+      'r-0',
+      'r-1',
+      'r-2',
+    ])
+    // 落盘无重复：重载后仍是三条
+    expect(
+      AuditStore.open(paths.auditFile)
+        .records()
+        .map((r) => (r.body as { run: string }).run),
+    ).toEqual(['r-0', 'r-1', 'r-2'])
   })
 
   it('仅存于 base world 的审计 def（无对应 entry）也回填', () => {

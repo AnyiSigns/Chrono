@@ -18,6 +18,9 @@ import {
   writeSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
+import { isProcessAlive } from '../common/platform/index.ts'
+
+export { isProcessAlive }
 
 export interface LockInfo {
   pid: number
@@ -60,17 +63,6 @@ export function readLockRaw(file: string): { exists: boolean; info: LockInfo | n
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false, info: null }
     // 半写 / 损坏的锁文件等同于无有效持有者，交由 acquire 清理
     return { exists: true, info: null }
-  }
-}
-
-/** 进程存活：`kill(pid, 0)` 探针；EPERM 表示存在但无权限，视为存活。 */
-export function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 

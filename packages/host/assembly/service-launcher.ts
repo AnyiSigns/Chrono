@@ -7,6 +7,8 @@
 import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
 import { provisionPluginSdk, provisionRustPluginSdk } from './sdk-provision.ts'
+import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
+import type { EcosystemProfile } from './ecosystem.ts'
 import { ServiceLink } from '../service-link.ts'
 import { selectServiceHost } from './service-host.ts'
 import { ensurePluginDataDir } from '../plugin-data.ts'
@@ -64,6 +66,11 @@ export interface ServiceLauncherDeps {
    * 在任意宿主根下都可解析（SDK 不随插件入世、不进世界）。
    */
   sdkDir?: string
+  /**
+   * 生态 profile：SDK 包 / 依赖目录 / Rust crate 目录布局由它决定；缺省内建默认。
+   * 由组合根在启动时解析一次注入，起服务编排不再各处 `readEcosystem`。
+   */
+  ecosystem?: EcosystemProfile
   /** 反向调用（服务 → 宿主）转发；缺省不接线，服务发 `port.call` 得 `not_loaded`。 */
   onPortCall?: (
     port: string,
@@ -100,6 +107,7 @@ export async function prepareService(
   gen: Hash,
   decl: PluginDecl,
 ): Promise<PreparedService> {
+  const ecosystem = deps.ecosystem ?? DEFAULT_ECOSYSTEM
   const cwd = materializeCommit(deps.world, gen, deps.materializedDir, {
     blobsDir: deps.blobsDir,
   })
@@ -107,7 +115,7 @@ export async function prepareService(
   // Rust SDK 供给：物化树的 `Cargo.toml` 以 `../../plugin-sdk/rust` 依赖 SDK crate，
   // 须在依赖恢复 / 构建（cargo 解析路径依赖）之前建好两级之上的 `plugin-sdk` 链接。
   try {
-    provisionRustPluginSdk(cwd, deps.sdkDir)
+    provisionRustPluginSdk(cwd, deps.sdkDir, ecosystem)
   } catch (err) {
     if (err instanceof ServiceStartError) throw err
     throw new ServiceStartError('deps_failed')
@@ -133,7 +141,7 @@ export async function prepareService(
   // SDK 供给：链接进物化树，使裸导入 `plugin-sdk` 在任意宿主根下可解析。
   // 必须在依赖恢复之后：`npm ci` 会清空物化树的 `node_modules`，先供会被覆盖。
   try {
-    provisionPluginSdk(cwd, deps.sdkDir)
+    provisionPluginSdk(cwd, deps.sdkDir, ecosystem)
   } catch (err) {
     if (err instanceof ServiceStartError) throw err
     throw new ServiceStartError('deps_failed')

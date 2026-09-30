@@ -307,12 +307,31 @@ describe('parsePluginDecl transport 声明', () => {
 
   it('inproc / worker 声明逃逸路径 / 含空白入口 → ok:false', () => {
     for (const transport of ['inproc', 'worker']) {
-      for (const start of ['../escape.mjs', '/abs/main.mjs', 'execute/my main.mjs']) {
+      for (const start of [
+        '../escape.mjs',
+        '/abs/main.mjs',
+        'execute/my main.mjs',
+        ' execute/main.mjs',
+        'execute/main.mjs ',
+        '\texecute/main.mjs',
+        'execute/main.mjs\n',
+      ]) {
         expect(
           parsePluginDecl(baseDecl({ start, transport })).ok,
           `transport=${transport} start=${JSON.stringify(start)} 应被拒`,
         ).toBe(false)
       }
+    }
+  })
+
+  it('inproc / worker 首尾空白与消费侧同口径：校验不 trim，运行期原串不会 import_failed', () => {
+    // 消费侧 service-host.ts 用 `join(cwd, decl.start)` 原串解析；带空白入口不得通过声明门禁
+    for (const transport of ['inproc', 'worker']) {
+      const padded = parsePluginDecl(baseDecl({ start: ' execute/main.mjs ', transport }))
+      expect(padded.ok).toBe(false)
+      const trimmed = parsePluginDecl(baseDecl({ start: 'execute/main.mjs', transport }))
+      expect(trimmed.ok).toBe(true)
+      if (trimmed.ok) expect(trimmed.decl.start).toBe('execute/main.mjs')
     }
   })
 
@@ -495,5 +514,31 @@ describe('parsePluginDecl needs / slots', () => {
   it('many 无 methods 且无本包 slots 契约 → decl 层放行（契约可能在他方，入世期判定）', () => {
     const result = parsePluginDecl(baseDecl({ needs: { 'toy.cap': { mode: 'many' } } }))
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('parsePluginDecl implements 校验', () => {
+  it('合法能力类名（含空数组）→ 原样解析', () => {
+    const multi = parsePluginDecl(baseDecl({ implements: ['toy.a', 'toy.b'] }))
+    expect(multi.ok).toBe(true)
+    if (multi.ok) expect(multi.decl.implements).toEqual(['toy.a', 'toy.b'])
+
+    const empty = parsePluginDecl(baseDecl({ implements: [] }))
+    expect(empty.ok).toBe(true)
+    if (empty.ok) expect(empty.decl.implements).toEqual([])
+  })
+
+  it('保留类 host / 空串 / 原型键 → ok:false（不得静默退化为零端点）', () => {
+    for (const cap of ['host', '', '__proto__', 'constructor', 'prototype']) {
+      const result = parsePluginDecl(baseDecl({ implements: [cap] }))
+      expect(result.ok, `implements=${JSON.stringify(cap)} 应被拒`).toBe(false)
+      if (!result.ok) expect(result.reasons).toEqual(['bad_plugin_decl'])
+    }
+  })
+
+  it('重复项 / 非字符串项 / 非数组 → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ implements: ['toy.a', 'toy.a'] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ implements: ['toy.a', 1] })).ok).toBe(false)
+    expect(parsePluginDecl(baseDecl({ implements: 'toy.a' })).ok).toBe(false)
   })
 })

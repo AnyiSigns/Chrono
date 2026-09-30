@@ -4,6 +4,7 @@
 
 import type { Json, World } from '../kernel/index.ts'
 import { PROTOTYPE_KEYS, isRecord } from './common/json.ts'
+import { MAX_CALL_TIMEOUT_MS } from './common/call-timeout.ts'
 
 /** 周期方法所需的一段投影：`key` 是 bag 里的键，`path` 是投影内的字面路径。 */
 export interface PeriodicRead {
@@ -42,7 +43,13 @@ function parseEntry(identity: string, raw: Json): PeriodicEntry | string {
   const hasMethod = typeof method === 'string' && method.length > 0
   if (hasCommand === hasMethod) return 'bad_target'
   const everyMs = raw['every_ms']
-  if (typeof everyMs !== 'number' || !Number.isInteger(everyMs) || everyMs <= 0) {
+  // 上界同 `MAX_CALL_TIMEOUT_MS`：`setInterval` 超过 2^31-1 会溢出成立即触发（1ms）→ 周期风暴。
+  if (
+    typeof everyMs !== 'number' ||
+    !Number.isInteger(everyMs) ||
+    everyMs <= 0 ||
+    everyMs > MAX_CALL_TIMEOUT_MS
+  ) {
     return 'bad_every_ms'
   }
   const reads: PeriodicRead[] = []

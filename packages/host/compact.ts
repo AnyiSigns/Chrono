@@ -18,22 +18,13 @@ import { reachableDefHashes } from './projection/index.ts'
 import { EFFECT_AUDIT_KIND } from './audit.ts'
 import type { HostPaths } from './paths.ts'
 
-/** 启动自动压缩阈值（尾段 entry 数）：达到即追加快照并归档前缀。 */
-export const DEFAULT_COMPACT_TAIL_ENTRIES = 512
-
-/**
- * 启动自动压缩阈值（尾段 journal 字节）：与条数阈值同为自动压缩触发，取先到者。
- * 只按条数会漏「少而大」的链——实测 337 条 / ~2.49 MB 时 512 条永不达到，base 从不落盘，
- * 每次启动从空世界全量重放（实测全量重放 1084 ms）。2 MiB 确保该量级启动后必落一次 base，
- * 启动重放退到「base + 尾段」。
- */
-export const DEFAULT_COMPACT_JOURNAL_BYTES = 2 * 1024 * 1024
-
-/** 有界化缺省世代窗口：每身份保留最近 N 代（含 active）+ 被 pin / graft 引用的世代。 */
-export const DEFAULT_GEN_RETENTION = 64
-
-/** 缺省补丁链压扁阈值：线性补丁链长达到此值即在 compact 时折叠成整份世代。 */
-export const DEFAULT_FLATTEN_CHAIN = 32
+// 策略默认值的单一来源在 `options.ts`；此处转出以保持既有引用面。
+export {
+  DEFAULT_COMPACT_JOURNAL_BYTES,
+  DEFAULT_COMPACT_TAIL_ENTRIES,
+  DEFAULT_FLATTEN_CHAIN,
+  DEFAULT_GEN_RETENTION,
+} from './options.ts'
 
 /** compact 时的有界化策略；缺省（未传）不按世代窗口回收，但仍摘除审计 def。 */
 export interface CompactRetention {

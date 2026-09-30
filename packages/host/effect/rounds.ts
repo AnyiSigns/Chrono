@@ -241,12 +241,12 @@ export function refusedReasons(observations: Json[]): string[] {
 }
 
 /**
- * plan 通道：只认顶层 eval 观测（entry ∈ 本轮已解析 eval 集合）value 里的保留包装。
- * 多个 eval 各自产计划时按观测序拼接；其余 value 一律当普通数据。
- * plan 条目的发出者继承产出它的那条 eval 的属主。
+ * plan 通道：只认顶层 eval 观测 value 里的保留包装。多个 eval 各自产计划时按观测序拼接；
+ * 其余 value 一律当普通数据。plan 条目的发出者继承**产出它的那条 eval 的属主**。
  *
- * 匹配基准是**已解析的 eval 入口**（`prepareGroup` 产出的 directive）：命令形式的 eval 入口在
- * 该阶段才由命令声明解析出来，若仍按原始 staged 草稿的 `entry` 匹配，命令形式 eval 产出的计划会被丢弃。
+ * 匹配按**位置**而非按 entry 反查：`directives` 是本轮 `prepareGroup` 已解析的指令（命令形式 eval
+ * 的入口已按命令声明解析出来），与内核观测一一按序对应；按 entry 反查会在「多身份共享同代 commit /
+ * 同 entry」时把后一条的产出误归给首个同 entry 产出者。位置对齐对命令形式同样成立，不丢计划。
  */
 function pickPlan(
   observations: Json[],
@@ -254,23 +254,25 @@ function pickPlan(
   owners: Array<string | undefined>,
   baseline: World,
 ): { ok: true; directives: StagedDirective[] } | { ok: false; reason: string } {
-  const evals: Array<{ entry: Hash; owner: string | undefined }> = []
+  const evalOwners: Array<string | undefined> = []
   directives.forEach((directive, index) => {
-    if (directive.kind === 'eval') evals.push({ entry: directive.entry, owner: owners[index] })
+    if (directive.kind === 'eval') evalOwners.push(owners[index])
   })
   const out: StagedDirective[] = []
+  // 一条 eval directive 至多一条观测（done 轮内全部完成），观测按 directive 序产出；故按序取产出者即可。
+  let evalIndex = 0
   for (const observation of observations) {
-    if (!isRecord(observation)) continue
-    if (observation['kind'] !== 'eval' || observation['ok'] !== true) continue
-    if (typeof observation['entry'] !== 'string') continue
-    const producer = evals.find((item) => item.entry === observation['entry'])
-    if (producer === undefined) continue
+    if (!isRecord(observation) || observation['kind'] !== 'eval') continue
+    if (evalIndex >= evalOwners.length) break
+    const owner = evalOwners[evalIndex]
+    evalIndex += 1
+    if (observation['ok'] !== true) continue
     const value = observation['value']
     if (!isRecord(value) || !Array.isArray(value['$directives'])) continue
     for (const raw of value['$directives']) {
       const item = materializePlanItem(raw)
       if (!item.ok) return item
-      out.push({ directive: item.directive, fromPlan: true, owner: producer.owner, baseline })
+      out.push({ directive: item.directive, fromPlan: true, owner, baseline })
     }
   }
   return { ok: true, directives: out }

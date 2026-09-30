@@ -122,6 +122,20 @@ describe('14 原语各一正一反', () => {
     const r = susp(ev(asTerm(['eff', 'fs', 'read', constNode(3)]), p))
     expect(r.id).toBe(id)
   })
+  it('eff：port/method 非字符串或空 → bad_term，且先于实参求值与 n 自增（无侧效应）', () => {
+    const malformed: unknown[] = [
+      ['eff', 123, 'read', constNode(1)],
+      ['eff', 'fs', null, constNode(1)],
+      ['eff', true, 'read', constNode(1)],
+      ['eff', '', 'read', constNode(1)],
+      ['eff', 'fs', '', constNode(1)],
+    ]
+    for (const term of malformed) {
+      const e = envOf()
+      expect(err(ev(asTerm(term), e))).toBe('bad_term')
+      expect(e.n).toBe(0) // 形态校验在实参求值与 env.n 递增之前
+    }
+  })
   it('call：以 def hash 调用 / 实参表非数组 bad_term', () => {
     const { env, h } = defOf(asTerm(['v', 0]) as unknown as Json)
     expect(okv(ev(asTerm(['call', constNode(h), [constNode(42)]]), env))).toBe(42)

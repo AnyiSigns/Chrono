@@ -15,6 +15,8 @@ import type { Hash } from '../../kernel/index.ts'
 export interface SwapHost {
   isStopping: () => boolean
   isIsolated: (id: string) => boolean
+  /** 运行期休眠态：换人序期间若目标被休眠，则不得接管 / 重挂端点。 */
+  isSuspended: (id: string) => boolean
   serviceOf: (id: string) => ServiceRuntime | undefined
   /** 登记新服务：写入服务表、挂端点、起健康探针。 */
   adoptService: (service: ServiceRuntime) => void
@@ -30,8 +32,16 @@ export interface SwapHost {
     decl: PluginDecl,
     prepared: PreparedService,
   ) => Promise<ServiceRuntime>
-  /** 端点重挂到新世代键（进程不动）。 */
-  rekeyEndpoints: (service: ServiceRuntime, gen: Hash, decl: PluginDecl) => void
+  /**
+   * 端点重挂到新世代键（进程不动）。`endpointDecl` = 在跑进程的声明，端点方法集据它算；
+   * 换代失败降级时传旧服务声明（跑的是旧代码），缺省等于 `decl`（进程已随新世代）。
+   */
+  rekeyEndpoints: (
+    service: ServiceRuntime,
+    gen: Hash,
+    decl: PluginDecl,
+    endpointDecl?: PluginDecl,
+  ) => void
   /** 阻断某服务的重启排程（换代期间旧世代不得借崩溃重启复活）。 */
   clearRestart: (service: ServiceRuntime) => void
   /** 记起服务 / 握手失败，不决定是否隔离。 */
@@ -83,12 +93,13 @@ async function swapOverlap(
     // 新世代不激活：构建 / 启动失败只记运维日志，旧进程继续服务（端点行换到新世代键，
     // 路由仍命中旧进程），依赖者不受影响；待旧进程退出时按新世代重试，成功即真正激活。
     host.recordStartFailure(id, newGen, err)
-    // 停机 / 已隔离：不得再把端点换到新世代键（会复活已下线身份的端点）
-    if (host.isStopping() || host.isIsolated(id)) return
-    host.rekeyEndpoints(oldService, newGen, newDecl)
+    // 停机 / 已隔离 / 已休眠：不得再把端点换到新世代键（会复活已下线身份的端点）
+    if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) return
+    // 跑的是旧进程：端点方法集按旧声明算（载体仍指向新世代，供旧进程退出后按新世代重试）
+    host.rekeyEndpoints(oldService, newGen, newDecl, oldService.decl)
     return
   }
-  if (host.isStopping() || host.isIsolated(id)) {
+  if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) {
     teardownService(next)
     await waitForServiceExit(next, 2_000)
     return
@@ -128,17 +139,18 @@ async function swapExclusive(
   } catch (err) {
     // 旧实例仍在服务：不激活新世代，端点行换到新世代键（路由仍命中旧进程），失败只记运维日志
     host.recordStartFailure(id, newGen, err)
-    // 停机 / 已隔离：不得再把端点换到新世代键（会复活已下线身份的端点）
-    if (host.isStopping() || host.isIsolated(id)) return
-    host.rekeyEndpoints(oldService, newGen, newDecl)
+    // 停机 / 已隔离 / 已休眠：不得再把端点换到新世代键（会复活已下线身份的端点）
+    if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) return
+    // 跑的是旧进程：端点方法集按旧声明算（载体仍指向新世代，供旧进程退出后按新世代重试）
+    host.rekeyEndpoints(oldService, newGen, newDecl, oldService.decl)
     return
   }
   // 准备阶段耗时可能很长，期间状态可能变：drain 之前重做替换防御
   if (host.serviceOf(id) !== oldService) return
-  if (host.isStopping() || host.isIsolated(id)) return
+  if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) return
   host.removeService(id, oldService)
   await host.stopSuperseded(oldService, 'superseded')
-  if (host.isStopping() || host.isIsolated(id)) return
+  if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) return
   let next: ServiceRuntime
   try {
     next = await host.launchPrepared(id, newGen, newDecl, prepared)
@@ -147,7 +159,7 @@ async function swapExclusive(
     host.scheduleGenerationRetry(oldService, newGen, newDecl)
     return
   }
-  if (host.isStopping() || host.isIsolated(id)) {
+  if (host.isStopping() || host.isIsolated(id) || host.isSuspended(id)) {
     teardownService(next)
     await waitForServiceExit(next, 2_000)
     return
