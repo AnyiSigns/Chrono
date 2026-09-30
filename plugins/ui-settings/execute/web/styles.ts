@@ -1,6 +1,6 @@
 // 本插件的组件样式：只引用壳提供的 token（`/assets/tokens.v1.css`），零硬编码色值；
 // 需要半透明处用 `color-mix(... var(--c-*) ...)` 由 token 派生，不写死 rgba / hex。
-// 共享 token 未覆盖的组件规格（控件高 / 列表上限 / 呼吸时长 / 遮罩比 / 描边 / 语义点 / 导航标签圆角与行高 / 主题卡宽上限 / 模态圆角）以
+// 共享 token 未覆盖的组件规格（控件高 / 列表上限 / 呼吸时长 / 遮罩比 / 描边 / 语义点 / 导航标签圆角与行高 / 模态圆角）以
 // `.settings-root` 上的局部自定义属性收口，作**组件规格**登记，便于日后上收为全局 token。
 // 引导页（`.settings-guide`）另登记自己的一档规格：更高的控件、更大的标题字阶、中性焦点环——
 // 引导页只用黑 / 白 / 灰（不引 accent），居中单列，靠字阶、留白与发丝线立层级。
@@ -88,7 +88,7 @@ export const STYLE_TEXT = `
 .settings-iconbtn:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
 .settings-iconbtn:disabled { opacity: .45; cursor: not-allowed; }
 .settings-theme-cards { display: flex; gap: var(--space-8); }
-.settings-theme-card { flex: 1 1 0; max-width: var(--settings-theme-card-max-w); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-8); min-height: 84px; padding: var(--space-16); background: var(--c-surface); border: var(--settings-ring-stroke) solid var(--c-border); border-radius: var(--radius-lg); color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); cursor: pointer; transition: border-color var(--motion-fast), background-color var(--motion-fast), color var(--motion-fast); }
+.settings-theme-card { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-8); min-height: 84px; padding: var(--space-16); background: var(--c-surface); border: var(--settings-ring-stroke) solid var(--c-border); border-radius: var(--radius-lg); color: var(--c-text-2); font: inherit; font-size: var(--font-size-xs); cursor: pointer; transition: border-color var(--motion-fast), background-color var(--motion-fast), color var(--motion-fast); }
 .settings-theme-card:hover { background: color-mix(in srgb, var(--c-text) 4%, var(--c-surface)); border-color: color-mix(in srgb, var(--c-text) 10%, var(--c-border)); color: var(--c-text); }
 .settings-theme-card[aria-pressed="true"] { background: color-mix(in srgb, var(--c-text) 6%, var(--c-surface)); border-color: color-mix(in srgb, var(--c-text) 16%, var(--c-border)); color: var(--c-text); }
 .settings-theme-card:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
