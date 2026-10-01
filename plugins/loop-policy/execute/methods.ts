@@ -6,6 +6,16 @@
 import { H } from './hash.ts'
 import { asString, isRecord, isoAt, nowOf, planOf } from './plan.ts'
 import { graphSink } from './model.ts'
+import {
+  evalPostRule,
+  evalPreRule,
+  evalWhenRule,
+  hasPostRule,
+  hasPreRule,
+  hasWhenRule,
+  ruleCtxFromWire,
+} from './loop-rule.ts'
+import { afterStep, beforeSettle } from './turn-hook.ts'
 import { PINS } from './plugin.ts'
 import { checkContractVersion } from './contract/index.ts'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
@@ -323,12 +333,64 @@ async function cancel(args: Json, deps: LoopPolicyDeps): Promise<HandlerResult> 
   }
 }
 
+/** `loop-rule` 名发现：`probe` 只回是否认领，不解释上下文。 */
+function ruleNameProbe(args: Json, has: (name: string) => boolean): Rec {
+  const input = isRecord(args) ? args : {}
+  const name = asString(input['name']) ?? ''
+  return { known: has(name) }
+}
+
+/** `loop-rule.when`：按名求值；未认领回 `{known:false}`，认领但畸形回 `{known:true, ok:false}`。 */
+function whenRule(args: Json): Json {
+  const input = isRecord(args) ? args : {}
+  const name = asString(input['name']) ?? ''
+  if (input['probe'] === true) return ruleNameProbe(input, hasWhenRule)
+  if (!hasWhenRule(name)) return { known: false }
+  const result = evalWhenRule(
+    name,
+    asString(input['args']) ?? '',
+    ruleCtxFromWire(input['ctx']),
+    typeof input['source_node'] === 'number' ? input['source_node'] : 0,
+  )
+  return { known: true, ok: result.ok, value: result.value, reason: result.reason ?? null }
+}
+
+/** `loop-rule.pre`：按名求值；未认领回 `{known:false}`。 */
+function preRule(args: Json): Json {
+  const input = isRecord(args) ? args : {}
+  const name = asString(input['name']) ?? ''
+  if (input['probe'] === true) return ruleNameProbe(input, hasPreRule)
+  if (!hasPreRule(name)) return { known: false }
+  const result = evalPreRule(name, ruleCtxFromWire(input['ctx']))
+  return { known: true, ok: result.ok, reason: result.reason ?? null }
+}
+
+/** `loop-rule.post`：按名求值；未认领回 `{known:false}`。 */
+function postRule(args: Json): Json {
+  const input = isRecord(args) ? args : {}
+  const name = asString(input['name']) ?? ''
+  if (input['probe'] === true) return ruleNameProbe(input, hasPostRule)
+  if (!hasPostRule(name)) return { known: false }
+  const result = evalPostRule(name, ruleCtxFromWire(input['ctx']))
+  return { known: true, ok: result.ok, reason: result.reason ?? null }
+}
+
 /** 构造方法表（依赖注入：反向调用通道由 main 提供）。 */
 export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
   const hydrator = makeHydrator(deps.port)
+  const fixed = (value: Json): HandlerResult => ({ value, events: [] })
   return {
     interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
       interpret(args, env, deps, hydrator),
     cancel: (args: Json): Promise<HandlerResult> => cancel(args, deps),
+    when: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(whenRule(args))),
+    pre: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(preRule(args))),
+    post: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(postRule(args))),
+    // 固定点钩子：before-assemble / after-settle 默认无增量；after-step 给空转文案；before-settle 探排队输入。
+    'before-assemble': (): Promise<HandlerResult> => Promise.resolve(fixed({ delta: {} })),
+    'after-step': (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(afterStep(args))),
+    'before-settle': (args: Json): Promise<HandlerResult> =>
+      beforeSettle(args, { port: deps.port }).then(fixed),
+    'after-settle': (): Promise<HandlerResult> => Promise.resolve(fixed({ delta: {} })),
   }
 }

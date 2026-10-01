@@ -1,57 +1,13 @@
-// 种子判定 / pre / post / 结构检查的单元测试（纯函数，不起服务）。
+// 解释器侧保留的结构辅助单测：规则表达式解析、待办状态与 tool_calls 结构检查。
+// 判据求值本身已归拥有方 loop-policy（经 `loop-rule` 能力按名求值），此处不再枚举判据名。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { checkToolCalls, evalPost, evalPre, evalWhen, knownWhen, todoIncomplete, unknownWhenExpr, wroteFiles } from '../execute/rules.ts'
+import { checkToolCalls, parseRule, todoIncomplete } from '../execute/rules.ts'
 
-function ctx(outputs, state = {}) {
-  return { nodeIndex: 0, outputs: new Map(Object.entries(outputs).map(([k, v]) => [Number(k), v])), inputs: new Map(), shared: {}, thresholds: {}, effLog: [], state }
-}
-
-/** 已判定据的布尔值；未知判据回结构化拒绝。 */
-function when(expr, c, source) {
-  return evalWhen(expr, c, source)
-}
-
-test('when：nonempty / empty / verdict_is / eq / not', () => {
-  const c = ctx({ 1: { tool_calls: [{ name: 'edit' }], message: { role: 'assistant' } }, 2: { verdict: 'allow' }, 3: { decision: 'approved' } })
-  assert.deepEqual(when('nonempty(tool_calls)', c, 1), { ok: true, value: true })
-  assert.deepEqual(when('empty(message)', c, 1), { ok: true, value: false })
-  assert.deepEqual(when('empty(tool_calls)', c, 1), { ok: true, value: false })
-  assert.deepEqual(when('verdict_is(allow)', c, 2), { ok: true, value: true })
-  assert.deepEqual(when('verdict_is(deny)', c, 2), { ok: true, value: false })
-  assert.deepEqual(when('verdict_is(approved)', c, 3), { ok: true, value: true })
-  assert.deepEqual(when('eq(verdict:allow)', c, 2), { ok: true, value: true })
-  assert.deepEqual(when('not verdict_is(deny)', c, 2), { ok: true, value: true })
-  assert.deepEqual(when('', c, 1), { ok: true, value: true }, '缺省无条件')
-})
-
-test('when：未知判据 fail-closed（含 not 取反不得变 fail-open）', () => {
-  const c = ctx({ 1: { verdict: 'allow' } })
-  const unknown = when('mystery(x)', c, 1)
-  assert.equal(unknown.ok, false)
-  assert.equal(unknown.code, 'when_unsat')
-  assert.equal(unknown.value, false)
-  const negated = when('not mystery(x)', c, 1)
-  assert.equal(negated.ok, false, 'not 未知判据必须传播拒绝，不得取反成 true')
-  assert.equal(negated.value, false)
-  assert.equal(knownWhen('mystery(x)'), false)
-  assert.equal(knownWhen('not mystery(x)'), false)
-  assert.equal(knownWhen('verdict_is(allow)'), true)
-  assert.equal(knownWhen(''), true)
-  assert.equal(unknownWhenExpr(['verdict_is(allow)', 'nope(x)', '']), 'nope(x)')
-  assert.equal(unknownWhenExpr(['verdict_is(allow)', '']), null)
-})
-
-test('when：wrote_files 按写类工具成功项判定', () => {
-  const tools = [
-    { name: 'edit', caps: { fs: { write: 'workspace' } } },
-    { name: 'read', caps: { fs: { write: 'none' } } },
-  ]
-  const calls = [{ call_id: 'c1', tool: 'edit' }, { call_id: 'c2', tool: 'read' }]
-  const results = [{ call_id: 'c1', ok: true, result: { path: 'a' } }, { call_id: 'c2', ok: true, result: {} }]
-  assert.equal(wroteFiles(results, calls, tools), true)
-  assert.equal(wroteFiles([{ call_id: 'c2', ok: true, result: {} }], calls, tools), false)
-  assert.equal(wroteFiles([{ call_id: 'c1', ok: false, error: { code: 'x' } }], calls, tools), false)
+test('parseRule：name 与 name(args) 两种形状', () => {
+  assert.deepEqual(parseRule('nonempty(tool_calls)'), { name: 'nonempty', args: 'tool_calls' })
+  assert.deepEqual(parseRule('always'), { name: 'always', args: '' })
+  assert.deepEqual(parseRule('eq(verdict:allow)'), { name: 'eq', args: 'verdict:allow' })
 })
 
 test('todo_incomplete：pending / in_progress 为真', () => {
@@ -59,33 +15,7 @@ test('todo_incomplete：pending / in_progress 为真', () => {
   assert.equal(todoIncomplete({ items: [{ status: 'done' }] }), false)
   assert.equal(todoIncomplete([{ status: 'in_progress' }]), true)
   assert.equal(todoIncomplete(undefined), false)
-})
-
-test('step_post：非空 ∧（正文 / tool_calls 至少其一）∧ tool_calls 结构合法', () => {
-  const ok = { ok: true, text: 'hi', tool_calls: [] }
-  assert.deepEqual(evalPost('step_post', ctx({ 0: ok })), { ok: true })
-  assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [] } })).reason, 'empty_output')
-  // 同帧带前言正文与工具调用合法（assistant content + tool_calls 是常见模型行为）
-  assert.deepEqual(evalPost('step_post', ctx({ 0: { ok: true, text: 'x', tool_calls: [{ name: 'a' }] } })), { ok: true })
-  assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: '', args: {} }] } })).reason, 'malformed_tool_call')
-  assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: 'a', args: 'nope' }] } })).reason, 'malformed_tool_call')
-  assert.equal(evalPost('step_post', ctx({ 0: { ok: true, text: '', tool_calls: [{ id: 'c', name: 'a', args: {} }, { id: 'c', name: 'b', args: {} }] } })).reason, 'malformed_tool_call')
-})
-
-test('assemble_post / dispatch_post / verify_post 结构检查', () => {
-  assert.deepEqual(evalPost('assemble_post', ctx({ 0: { messages: [{ role: 'user' }], params: { model: 'm' } } })), { ok: true })
-  assert.equal(evalPost('assemble_post', ctx({ 0: { messages: [], params: {} } })).reason, 'empty_messages')
-  const dispatchCtx = ctx({ 0: { results: [{ call_id: 'c', ok: false, error: { code: 'x' } }] } })
-  dispatchCtx.inputs.set(0, { calls: [{ call_id: 'c' }] })
-  assert.deepEqual(evalPost('dispatch_post', dispatchCtx), { ok: true })
-  assert.equal(evalPost('verify_post', ctx({ 0: { report: { skipped: true } } })).ok, true)
-  assert.equal(evalPost('verify_post', ctx({ 0: { report: { passed: false } } })).reason, 'no_detail')
-  assert.equal(evalPost('verify_post', ctx({ 0: {} })).reason, 'no_report')
-})
-
-test('pre：未知规则 fail-closed', () => {
-  assert.equal(evalPre('always', ctx({})).ok, true)
-  assert.equal(evalPre('nope', ctx({})).code, 'pre_unsat')
+  assert.equal(todoIncomplete({ conversations: { c1: { items: [{ status: 'pending' }] } } }), true)
 })
 
 test('checkToolCalls：接受模型原始形状与归一形状', () => {
@@ -94,4 +24,7 @@ test('checkToolCalls：接受模型原始形状与归一形状', () => {
   assert.deepEqual(raw.calls[0].args, { path: 'a' })
   const normalized = checkToolCalls([{ call_id: 'c1', tool: 'edit', args: { path: 'a' } }])
   assert.equal(normalized.ok, true)
+  assert.equal(checkToolCalls([{ id: 'c', name: '', args: {} }]).ok, false)
+  assert.equal(checkToolCalls([{ id: 'c', name: 'a', args: 'nope' }]).ok, false)
+  assert.equal(checkToolCalls([{ id: 'c', name: 'a', args: {} }, { id: 'c', name: 'b', args: {} }]).ok, false)
 })

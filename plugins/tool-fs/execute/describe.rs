@@ -30,21 +30,35 @@ fn caps(read: &str, write: &str) -> Value {
 fn read_tool() -> Value {
     json!({
         "name": "read",
-        "intent": "读取一个文本文件的内容，可按行窗口取片段。",
-        "when_to_use": "需要查看文件内容、为精确替换确认上下文，或定位某段代码时。",
+        "intent": "读取文本文件内容，可按行窗口取片段，或批量读取目录下匹配的多个文件。",
+        "when_to_use": "需要查看文件内容、快速预览开头，或为精确替换确认上下文时；跨多个同类文件（如某目录下所有配置）批量查看时。",
         "param_semantics": {
-            "path": "文件路径：相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）。",
-            "offset": "起始行号（0 基）；缺省 0。续读时用上一次结果的 next_offset。",
-            "limit": "读取的最大行数；缺省 2000，超出即按窗口截断。"
+            "path": "文件路径（单文件），或批量模式下的目录基准：相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）。",
+            "pattern": "批量模式开关：给出即把 path 视为目录，读取匹配该 glob 的文件（如 *.py、**/*.ts；支持 {a,b} 分组）。",
+            "offset": "起始行号（0 基）；缺省 0。续读时用上一次结果的 next_offset。批量下对每个文件生效。",
+            "start_line": "起始行号（1 基、含）；给出时覆盖 offset。与 end_line 组成闭区间。批量下对每个文件生效。",
+            "end_line": "结束行号（1 基、含）；给出时改由行范围决定窗口。须 >= start_line。批量下对每个文件生效。",
+            "limit": "读取的最大行数；缺省 2000，超出即按窗口截断。批量下对每个文件生效。",
+            "preview": "只看文件开头一小段（缺省 50 行），用于快速预览。",
+            "format": "读取编码：utf8（缺省，按文本）；base64 或 hex 按原始字节读出并编码，二进制文件也可读（仅单文件，行窗与预览不适用）。",
+            "max_files": "批量模式最多读取的文件数；缺省 20，超出即截断并给 warning。",
+            "ignore": "批量模式下跳过的名字或路径；缺省用内置忽略规则。"
         },
-        "boundaries": "只读单个文本文件；要续读时按返回的 next_offset 继续取；二进制回 binary_unsupported；找文件用 glob、找内容用 grep、改文件用 edit。",
-        "description": "读文本文件（支持行窗口）；返回 {text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, truncated}。",
+        "boundaries": "只读文件：单文件可分页续读或按起止行取范围，批量按目录与文件模式汇总多个文件；二进制文件默认不返回（批量下跳过并计入 warning），也可按编码读取原始字节；找文件用 glob、找内容用 grep、改文件用 edit。",
+        "description": "读取文件内容，可预览、按行窗口或行范围续读，用编码读取二进制，或批量读取目录下多个文件。",
         "argsSchema": {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "minLength": 1 },
+                "pattern": { "type": "string", "minLength": 1 },
                 "offset": { "type": "integer", "minimum": 0 },
-                "limit": { "type": "integer", "minimum": 1 }
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 },
+                "limit": { "type": "integer", "minimum": 1 },
+                "preview": { "type": "boolean" },
+                "format": { "type": "string", "enum": ["utf8", "base64", "hex"] },
+                "max_files": { "type": "integer", "minimum": 1 },
+                "ignore": { "type": "array", "items": { "type": "string" } }
             },
             "required": ["path"],
             "additionalProperties": false
@@ -54,7 +68,7 @@ fn read_tool() -> Value {
         "render": {
             "form": "card",
             "label": "read",
-            "summary": "{path}{?  · offset {offset}}{?  · limit {limit}}",
+            "summary": "{path}{?  · {pattern}}{?  · offset {offset}}{?  · limit {limit}}",
             "tone": "ghost",
             "detail": { "kind": "code" }
         }
@@ -72,8 +86,8 @@ fn edit_tool() -> Value {
             "new": "替换后的新文；新建分支下为新文件的初始内容。",
             "replace_all": "是否替换全部命中；缺省 false（old 非唯一即 edit_conflict）。"
         },
-        "boundaries": "只改一个文本文件，不做正则替换、不整目录改；old 未命中或非唯一回 edit_conflict，二进制回 binary_unsupported。新建时若文件已存在则回 edit_conflict，不会覆盖。",
-        "description": "精确替换或新建文本文件；返回 {replaced, bytes_written, added, removed, patch}（新建含 created）。",
+        "boundaries": "只改一个文本文件，不做正则替换、不整目录改；替换目标必须唯一命中；新建时不会覆盖已存在文件；二进制文件不接受。",
+        "description": "精确替换或新建文本文件。",
         "argsSchema": {
             "type": "object",
             "properties": {
@@ -100,22 +114,30 @@ fn edit_tool() -> Value {
 fn glob_tool() -> Value {
     json!({
         "name": "glob",
-        "intent": "按文件名模式在工作区内（或指定基准目录）查找文件。",
-        "when_to_use": "知道文件名 / 后缀但不知道具体位置，需要先列出候选文件时。",
+        "intent": "按文件名模式查找文件。",
+        "when_to_use": "知道文件名 / 后缀但不知道具体位置，需要先列出候选文件；或想查看某目录下有哪些文件与子目录、确认目录层级时。",
         "param_semantics": {
-            "pattern": "文件名 glob 模式，如 **/*.rs；不跨目录用 *，跨目录用 **。",
-            "path": "搜索基准目录；缺省工作区根目录，相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）。",
-            "ignore": "忽略模式表；缺省用内置忽略规则。",
-            "limit": "返回条数上限；缺省 200，超限标记 truncated。"
+            "pattern": "文件名匹配模式，如 **/*.rs；不跨目录用 *，跨目录用 **；可用大括号分组，如 *.{rs,toml}。",
+            "path": "从哪个目录开始找；缺省工作区根目录，也可用绝对路径（可能先要你确认）。",
+            "depth": "最大深度：只看相对起始目录不超过几层的项；1 表示只看直接子项。",
+            "min_depth": "最小深度：只看相对起始目录至少几层的项，与 depth 组成区间。",
+            "tree": "是否以目录层级形式展示结果。",
+            "ignore": "搜索时跳过的名字或路径；缺省用内置忽略规则。",
+            "exclude": "额外排除的名字或路径模式（如 .next、__pycache__）；叠加在 ignore 之上，命中目录整棵剪枝。",
+            "limit": "最多返回多少条；超出的不返回。"
         },
-        "boundaries": "只按文件名找文件、返回相对路径；不读内容（找内容用 grep），不改文件。",
-        "description": "按 glob 模式列文件；返回 {paths, truncated}。",
+        "boundaries": "只按文件名查找、只读；不读内容（找内容用 grep），不改文件。",
+        "description": "按文件名模式列出文件，可选择目录层级视图，或额外排除指定名字 / 路径。",
         "argsSchema": {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "minLength": 1 },
                 "path": { "type": "string" },
+                "depth": { "type": "integer", "minimum": 1 },
+                "min_depth": { "type": "integer", "minimum": 1 },
+                "tree": { "type": "boolean" },
                 "ignore": { "type": "array", "items": { "type": "string" } },
+                "exclude": { "type": "array", "items": { "type": "string" } },
                 "limit": { "type": "integer", "minimum": 1 }
             },
             "required": ["pattern"],
@@ -128,7 +150,7 @@ fn glob_tool() -> Value {
             "label": "glob",
             "summary": "{pattern}{?  · in {path}}{?  · limit {limit}}",
             "tone": "ghost",
-            "detail": { "kind": "paths" }
+            "detail": { "kind": "tree" }
         }
     })
 }
@@ -136,27 +158,29 @@ fn glob_tool() -> Value {
 fn grep_tool() -> Value {
     json!({
         "name": "grep",
-        "intent": "在文件内容里按普通文本或正则表达式查找命中行。",
+        "intent": "在文件内容里查找命中行。",
         "when_to_use": "知道一段文本 / 符号名，需要定位它出现在哪些文件与行时。",
         "param_semantics": {
-            "pattern": "要查找的文本；缺省按普通文本匹配，需要正则表达式时用 mode 指定。",
-            "mode": "匹配模式：literal 按普通文本、regex 按正则表达式；缺省 literal。",
-            "ignore_case": "是否忽略大小写（对带变音符号的字符不做规范化，组合形与分解形不互相匹配）；缺省 false。",
-            "files_only": "只回报命中文件：每文件一条（首个命中的行号/文本 + count 命中数）；缺省 false。",
-            "before": "每条命中附带的前置上下文行数（0–20）；缺省 0，仅回报文件时忽略。",
-            "after": "每条命中附带的后置上下文行数（0–20）；缺省 0，仅回报文件时忽略。",
-            "glob": "只在这些文件名模式下搜索，如 *.rs。",
-            "path": "搜索基准目录；缺省工作区根目录，相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）。",
-            "ignore": "忽略模式表；缺省用内置忽略规则。",
-            "limit": "命中条数上限（files_only 下为文件数上限）；缺省 200，超限标记 truncated。"
+            "pattern": "要查找的文本；默认按普通文本匹配。",
+            "mode": "按普通文本还是正则表达式匹配；缺省时含明显正则写法的模式按正则处理。",
+            "ignore_case": "是否忽略大小写。",
+            "files_only": "是否只回报命中的文件、不逐行列出行。",
+            "all": "附加模式数组：命中行须同时满足 pattern 与每个附加模式（AND）。",
+            "any": "附加模式数组：命中行满足 pattern 或其中任一即可（OR）；与 all 叠加时先 OR 后 AND。",
+            "stats": "只回审计聚合（命中文件数 / 命中总数），不逐条回行、不受 limit 截断。",
+            "binary": "是否把二进制文件纳入搜索：按原始字节 / Latin-1 解释（ASCII 模式安全），命中条目带 binary 标记；缺省仍跳过二进制。",
+            "before": "命中行前附带几行上下文。",
+            "after": "命中行后附带几行上下文。",
+            "glob": "只在匹配这些文件名模式的文件里搜索，如 *.rs；可用大括号分组，如 *.{py,yml}。",
+            "path": "从哪个目录开始搜；缺省工作区根目录，也可用绝对路径（可能先要你确认）。",
+            "ignore": "搜索时跳过的名字或路径；缺省用内置忽略规则。",
+            "limit": "最多回报多少条命中。"
         },
         "boundaries": concat!(
-            "只读搜索、返回命中行 {path, line, text}（可选 before/after 上下文；files_only 时每文件一条并带 count）；",
-            "不做替换（改文件用 edit），不按文件名找文件用 glob。",
-            "选择正则模式时，本工具的正则不支持交替 | / 分组 () / 重复 {…} / \\d 等类简写，命中这些结构会报参数错误，",
-            "改用普通文本模式或简化模式即可。"
+            "只读搜索，回报命中的文件与行，可附带上下文；",
+            "不做替换（改文件用 edit），不按文件名找文件用 glob。"
         ),
-        "description": "按模式搜内容（literal / regex，可选忽略大小写/仅文件/上下文）；返回 {matches, truncated, skipped}。",
+        "description": "在文件内容里搜索命中行，可忽略大小写、只回报文件或附带上下文。",
         "argsSchema": {
             "type": "object",
             "properties": {
@@ -164,6 +188,10 @@ fn grep_tool() -> Value {
                 "mode": { "type": "string", "enum": ["literal", "regex"] },
                 "ignore_case": { "type": "boolean" },
                 "files_only": { "type": "boolean" },
+                "all": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                "any": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                "stats": { "type": "boolean" },
+                "binary": { "type": "boolean" },
                 "before": { "type": "integer", "minimum": 0, "maximum": 20 },
                 "after": { "type": "integer", "minimum": 0, "maximum": 20 },
                 "glob": { "type": "string" },
@@ -189,17 +217,37 @@ fn grep_tool() -> Value {
 fn stat_tool() -> Value {
     json!({
         "name": "stat",
-        "intent": "查询单个路径的存在性、类型、大小与修改时间（只读）。",
-        "when_to_use": "需要判断文件 / 目录是否存在、是否目录、大小，或比较修改时间新旧（如找最近改动）时。",
+        "intent": "查询路径的存在性、类型、大小与修改时间（只读）；支持单路径、批量路径与目录子树聚合。",
+        "when_to_use": "需要判断文件 / 目录是否存在、是否目录、大小，或比较修改时间新旧（如找最近改动）时；批量元信息审计（如某目录下所有源文件的大小与时间），或目录子树总大小与最老 / 最新时间时。",
         "param_semantics": {
-            "path": "文件 / 目录路径：相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）。"
+            "path": "文件 / 目录路径（单个），或批量模式下的目录基准：相对路径以工作区根目录为基准，也可用绝对路径（可能先要你确认）；路径里含 glob 元字符（如 src/**/*.py）时自动按批量处理。",
+            "pattern": "批量模式开关：给出即把 path 视为目录，查询匹配该 glob 的路径（如 *.py、**/*.ts；支持 {a,b} 分组）。",
+            "recursive": "目录且为 true 时，额外回整棵子树的聚合（文件 / 目录数、总大小、最老与最新 mtime）。",
+            "max_files": "批量模式最多查询的路径数；缺省 200，超出即截断并给 warning。",
+            "ignore": "批量模式下跳过的名字或路径；缺省用内置忽略规则。",
+            "sort_by": "批量结果的排序键：name（字典序）/ mtime / size；缺省 name。",
+            "order": "排序方向：asc / desc；缺省 mtime、size 为 desc，name 为 asc。",
+            "min_size": "批量过滤：仅保留大小不小于该字节数的项。",
+            "max_size": "批量过滤：仅保留大小不大于该字节数的项。",
+            "min_mtime": "批量过滤：仅保留修改时间不早于该毫秒时间戳的项。",
+            "max_mtime": "批量过滤：仅保留修改时间不晚于该毫秒时间戳的项。"
         },
-        "boundaries": "只读单个路径的元信息；不读内容（用 read）、不列目录（用 glob）、不改文件。mtime 取自文件系统。",
-        "description": "查询路径元信息；返回 {exists, is_dir, size, mtime}。",
+        "boundaries": "只查元信息，不读内容（用 read）、不改文件；批量按目录与文件模式查询，或对目录做子树聚合；列文件名仍以 glob 为主。",
+        "description": "查询单路径或批量路径的存在性、类型、大小与修改时间，目录可做子树聚合。",
         "argsSchema": {
             "type": "object",
             "properties": {
-                "path": { "type": "string", "minLength": 1 }
+                "path": { "type": "string", "minLength": 1 },
+                "pattern": { "type": "string", "minLength": 1 },
+                "recursive": { "type": "boolean" },
+                "max_files": { "type": "integer", "minimum": 1 },
+                "ignore": { "type": "array", "items": { "type": "string" } },
+                "sort_by": { "type": "string", "enum": ["name", "mtime", "size"] },
+                "order": { "type": "string", "enum": ["asc", "desc"] },
+                "min_size": { "type": "integer", "minimum": 0 },
+                "max_size": { "type": "integer", "minimum": 0 },
+                "min_mtime": { "type": "integer", "minimum": 0 },
+                "max_mtime": { "type": "integer", "minimum": 0 }
             },
             "required": ["path"],
             "additionalProperties": false
@@ -285,7 +333,7 @@ mod tests {
         assert_eq!(by_name["read"]["render"]["form"], "card");
         assert_eq!(
             by_name["read"]["render"]["summary"],
-            "{path}{?  · offset {offset}}{?  · limit {limit}}"
+            "{path}{?  · {pattern}}{?  · offset {offset}}{?  · limit {limit}}"
         );
         assert_eq!(by_name["read"]["render"]["tone"], "ghost");
         assert_eq!(
@@ -309,7 +357,7 @@ mod tests {
         );
         assert_eq!(
             by_name["glob"]["render"]["detail"],
-            json!({ "kind": "paths" })
+            json!({ "kind": "tree" })
         );
         assert_eq!(by_name["grep"]["render"]["tone"], "ghost");
         assert_eq!(

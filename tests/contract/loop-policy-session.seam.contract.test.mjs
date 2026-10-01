@@ -54,7 +54,7 @@ function forwardValue(session) {
 /** 模型先调 webfetch，工具结果回灌后收尾。 */
 function modelProviders() {
   return defaultProviders({
-    'tools.list': () => ({ tools: TOOLS, rejected: [] }),
+    'tool-registry.list': () => ({ tools: TOOLS, rejected: [] }),
     'model.chat': (args) => {
       const last = Array.isArray(args.messages) ? args.messages[args.messages.length - 1] : null
       if (last && last.role === 'tool') return { ok: true, text: 'done', tool_calls: [], usage: {} }
@@ -65,7 +65,7 @@ function modelProviders() {
         usage: {},
       }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { fetched: true } })),
     }),
   })

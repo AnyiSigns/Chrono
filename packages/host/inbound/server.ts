@@ -56,7 +56,16 @@ export function createInboundServer(deps: InboundServerDeps): InboundServerHandl
   const clients = new Set<Socket>()
 
   const send = (socket: Socket, message: OutboundMessage): void => {
-    socket.write(encodeFrame(message as unknown as Json))
+    let frame: Uint8Array
+    try {
+      frame = encodeFrame(message as unknown as Json)
+    } catch {
+      // 出站帧超上限：不写出对端必然拒收的脏帧；按不可解码帧同样收口（记运维事件 + 断该客户端）
+      deps.onInvalidFrame('outbound frame exceeds limit')
+      socket.destroy()
+      return
+    }
+    socket.write(frame)
   }
   const broadcast: BroadcastFn = (impl, topic, payload) => {
     for (const client of clients) {

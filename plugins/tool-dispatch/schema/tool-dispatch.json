@@ -1,6 +1,6 @@
 {
   "title": "tool-dispatch（工具批派发）",
-  "description": "身份自述 / 数据契约：整批工具派发。dispatch 解析 workspace_root，按 bag.verdicts 或兜底一次 guard.judge 取最严批级，allow 才按有界并发池扇出到提供者（describe/invoke 提供者走 invoke；绑定项走能力类方法或投影读）；只返回 results，不落账、不冒泡 $directives。目录经反向 `port.call tool-registry.list` 解析，args 校验经 `port.call tool-schema.validate-args`。私有参数含并发上限与结果缓存。",
+  "description": "身份自述 / 数据契约：整批工具派发。dispatch 解析 workspace_root，按 bag.verdicts 或兜底一次 guard.judge 取最严批级，allow 才按有界并发池扇出到提供者（describe/invoke 提供者走 invoke；绑定项走能力类方法或投影读）；只返回 results，不落账、不冒泡 $directives。目录经反向 `port.call tool-registry.list` 解析，args 校验经 `port.call tool-registry.validate-args`。私有参数含并发上限与结果缓存。",
   "type": "object",
   "additionalProperties": true,
   "audit_redact": {

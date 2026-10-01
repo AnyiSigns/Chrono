@@ -46,7 +46,6 @@ test('plugin.json 13 字段齐全且形态合法', () => {
   assert.deepEqual(decl.methods, { 'session-title': ['generate'] })
   assert.deepEqual(decl.needs, {
     model: { mode: 'one' },
-    'title-format': { mode: 'one' },
   })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
@@ -86,6 +85,7 @@ test('execute/ 源码齐全', () => {
     'execute/config.ts',
     'execute/port-link.ts',
     'execute/plan.ts',
+    'execute/title.ts',
   ]
   for (const rel of files) assert.ok(existsSync(join(PKG_ROOT, rel)), `缺少 ${rel}`)
 })

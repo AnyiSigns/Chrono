@@ -1,7 +1,6 @@
 // `session-title` 服务协议级测试：spawn `node execute/main.ts`，把反向调用桥接到内存假后端。
-// 覆盖：握手 / 控制 / EOF 自退出；正常生成经 `model.complete` + `title-format.resolve`（委派后处理）；
-// 模型的空 / 错误 / 未配置路径只改 `model_text` 入参；后处理提供方不可用回落缺省标题；
-// args 缺字段结构化拒；回标题值且不写世界（无 session 反向调用）；非流式（不发 model.delta）。
+// 覆盖：握手 / 控制 / EOF 自退出；正常生成经 `model.complete` + 本地标题后处理；
+// 模型的空 / 错误 / 未配置路径；args 缺字段结构化拒；回标题值且不写世界（无 session 反向调用）；非流式（不发 model.delta）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
@@ -46,24 +45,15 @@ function drive({ bridge } = {}) {
     hello: () => drv.hello('session-title'),
     call: (method, args, env = FIXED_ENV) => drv.call('session-title', method, args, env),
     modelCalls: () => drv.portCalls.filter((frame) => frame.port === 'model'),
-    formatCalls: () => drv.portCalls.filter((frame) => frame.port === 'title-format'),
   }
 }
 
 const OK = (text) => ({ value: { ok: true, text } })
 
-/** 默认 bridge：model.complete 回给定文本；title-format.resolve 回给定标题（可注入失败）。 */
-function bridge({
-  modelText = '"快速排序算法。"',
-  formatTitle = '快速排序算法',
-  formatError,
-} = {}) {
+/** 默认 bridge：model.complete 回给定文本；标题后处理住本插件、无第二个反向调用。 */
+function bridge({ modelText = '"快速排序算法。"' } = {}) {
   return (port, method) => {
     if (port === 'model' && method === 'complete') return OK(modelText)
-    if (port === 'title-format' && method === 'resolve') {
-      if (formatError !== undefined) return { error: formatError, message: 'format boom' }
-      return { value: { title: formatTitle } }
-    }
     return { error: 'not_ready', message: 'no' }
   }
 }
@@ -96,7 +86,7 @@ test('hello 回 manifest；reload/probe/drain；EOF 自退出', async () => {
   assert.equal(await drv.exit, 0)
 })
 
-test('正常生成：非流式调 model.complete，后处理委派 title-format.resolve，回标题值', async () => {
+test('正常生成：非流式调 model.complete，本地清理模型输出，回标题值', async () => {
   const drv = drive({ bridge: bridge() })
   try {
     await drv.hello()
@@ -112,36 +102,26 @@ test('正常生成：非流式调 model.complete，后处理委派 title-format.
     assert.equal(model.args.messages[0].role, 'system')
     assert.equal(model.args.messages[1].content, '帮我写一个快速排序')
     assert.equal(drv.events.length, 0)
-    // 后处理委派：原始模型文本与首条消息 / 字数上限 / 缺省标题原样传入提供方
-    const format = drv.formatCalls()[0]
-    assert.equal(format.method, 'resolve')
-    assert.deepEqual(format.args, {
-      model_text: '"快速排序算法。"',
-      first_message: '帮我写一个快速排序',
-      max_chars: 10,
-      title_default: '新对话',
-    })
+    assert.equal(drv.portCalls.length, 1, '除模型外无其它反向调用')
     assertNoSessionCall(drv)
   } finally {
     drv.close()
   }
 })
 
-test('后处理委派：args.max_chars 覆盖后按次透传给 title-format.resolve', async () => {
+test('后处理本地化：args.max_chars 覆盖后按次截断', async () => {
   const drv = drive({ bridge: bridge() })
   try {
     await drv.hello()
-    await drv.call('generate', generateArgs({ max_chars: 3 }))
-    assert.equal(drv.formatCalls()[0].args.max_chars, 3)
+    const result = await drv.call('generate', generateArgs({ max_chars: 3 }))
+    assert.equal(result.value.title, '快速排')
   } finally {
     drv.close()
   }
 })
 
-test('模型返回空白 → 原始文本原样委派 title-format.resolve（由提供方兜底）', async () => {
-  const drv = drive({
-    bridge: bridge({ modelText: '   ', formatTitle: '帮我写一个快速排序算' }),
-  })
+test('模型返回空白 → 回落首条用户消息前 N 字', async () => {
+  const drv = drive({ bridge: bridge({ modelText: '   ' }) })
   try {
     await drv.hello()
     const result = await drv.call(
@@ -150,20 +130,16 @@ test('模型返回空白 → 原始文本原样委派 title-format.resolve（由
     )
     assert.equal(result.kind, 'result')
     assert.equal(result.value.title, '帮我写一个快速排序算')
-    assert.equal(drv.formatCalls()[0].args.model_text, '   ')
-    assert.equal(drv.formatCalls()[0].args.first_message, '  帮我写一个快速排序算法  ')
   } finally {
     drv.close()
   }
 })
 
-test('模型错误（port.error）→ model_text=null 委派，且不抛', async () => {
+test('模型错误（port.error）→ 回落首条消息，且不抛', async () => {
   const drv = drive({
     bridge: (port, method) => {
       if (port === 'model' && method === 'complete')
         return { error: 'model_server_error', message: 'boom' }
-      if (port === 'title-format' && method === 'resolve')
-        return { value: { title: '写一个快速排序算法' } }
       return { error: 'not_ready', message: 'no' }
     },
   })
@@ -172,16 +148,13 @@ test('模型错误（port.error）→ model_text=null 委派，且不抛', async
     const result = await drv.call('generate', generateArgs({ first_message: '写一个快速排序算法' }))
     assert.equal(result.kind, 'result')
     assert.equal(result.value.title, '写一个快速排序算法')
-    assert.equal(drv.formatCalls()[0].args.model_text, null)
   } finally {
     drv.close()
   }
 })
 
-test('模型空且首条消息全空白 → title_default 原样传给 title-format.resolve', async () => {
-  const drv = drive({
-    bridge: bridge({ modelText: '', formatTitle: '我的标题' }),
-  })
+test('模型空且首条消息全空白 → 保留缺省标题', async () => {
+  const drv = drive({ bridge: bridge({ modelText: '' }) })
   try {
     await drv.hello()
     const result = await drv.call(
@@ -189,27 +162,13 @@ test('模型空且首条消息全空白 → title_default 原样传给 title-for
       generateArgs({ first_message: '   ', title_default: '我的标题' }),
     )
     assert.equal(result.value.title, '我的标题')
-    assert.equal(drv.formatCalls()[0].args.title_default, '我的标题')
   } finally {
     drv.close()
   }
 })
 
-test('后处理提供方不可用 → 回落缺省标题、不报错、不阻塞', async () => {
-  const drv = drive({ bridge: bridge({ formatError: 'transport_failed' }) })
-  try {
-    await drv.hello()
-    const result = await drv.call('generate', generateArgs({ title_default: '我的标题' }))
-    assert.equal(result.kind, 'result')
-    assert.equal(result.value.ok, true)
-    assert.equal(result.value.title, '我的标题')
-  } finally {
-    drv.close()
-  }
-})
-
-test('未配置模型（无 vendor/model/params）→ 不发模型调用，model_text=null 委派', async () => {
-  const drv = drive({ bridge: bridge({ formatTitle: '写一个快速排序算法' }) })
+test('未配置模型（无 vendor/model/params）→ 不发模型调用，走首条消息兜底', async () => {
+  const drv = drive({ bridge: bridge() })
   try {
     await drv.hello()
     const result = await drv.call('generate', {
@@ -218,7 +177,6 @@ test('未配置模型（无 vendor/model/params）→ 不发模型调用，model
     })
     assert.equal(result.kind, 'result')
     assert.equal(drv.modelCalls().length, 0)
-    assert.equal(drv.formatCalls()[0].args.model_text, null)
     assert.equal(result.value.title, '写一个快速排序算法')
   } finally {
     drv.close()

@@ -11,6 +11,12 @@ pub const DEFAULT_MEM_MB: u64 = 1024;
 pub const DEFAULT_PROCS_MAX: u64 = 1;
 /// `read` 行窗口缺省（行数）。
 pub const DEFAULT_READ_LIMIT: u64 = 2000;
+/// `read` 预览模式缺省行数（`preview:true` 且未给 `limit` 时）。
+pub const DEFAULT_PREVIEW_LIMIT: u64 = 50;
+/// `read` 批量模式（给出 `pattern`）缺省最多读取的文件数。
+pub const DEFAULT_READ_FILES_MAX: u64 = 20;
+/// `stat` 批量模式（给出 `pattern` 或 `path` 内联 glob）缺省最多查询的路径数。
+pub const DEFAULT_STAT_FILES_MAX: u64 = 200;
 /// `glob` 结果条数缺省。
 pub const DEFAULT_LIST_LIMIT: u64 = 200;
 /// `grep` 命中条数缺省。
@@ -31,6 +37,9 @@ mod tests {
         let schema: Value = serde_json::from_str(&text).unwrap();
         let defaults = &schema["properties"]["defaults"]["properties"];
         assert_eq!(defaults["read_limit"]["default"], DEFAULT_READ_LIMIT);
+        assert_eq!(defaults["preview_limit"]["default"], DEFAULT_PREVIEW_LIMIT);
+        assert_eq!(defaults["read_files_max"]["default"], DEFAULT_READ_FILES_MAX);
+        assert_eq!(defaults["stat_files_max"]["default"], DEFAULT_STAT_FILES_MAX);
         assert_eq!(defaults["list_limit"]["default"], DEFAULT_LIST_LIMIT);
         assert_eq!(defaults["grep_limit"]["default"], DEFAULT_GREP_LIMIT);
         assert_eq!(defaults["output_max"]["default"], DEFAULT_OUTPUT_MAX);

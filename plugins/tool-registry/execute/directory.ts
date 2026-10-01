@@ -1,7 +1,7 @@
 // 工具目录：扩展类 `tool-provider` 的世界成员表（宿主按世界能力索引注入）逐个反向 `describe`
 // + 外部 MCP 工具（调用方随 bag 传入的投影清单）。做四要素 / argsSchema 白名单 / caps 形状校验
 // 与工具名全局唯一性校验；不合规项不进目录（`bad_tool_decl`），并在 rejected 里留诊断。
-// argsSchema 白名单校验 / 净化与 caps 形状校验经反向 `port.call tool-schema.*`。
+// argsSchema 白名单校验 / 净化与 caps 形状校验由同包 `schema-validate.ts` 纯函数提供。
 // 加 / 减一个工具提供方 = 世界成员表变化，本模块代码零改动（不枚举提供方）。
 
 import { canonicalJson, isRecord } from 'plugin-sdk'
@@ -13,10 +13,10 @@ const TOOL_PROVIDER = 'tool-provider'
 /** 四要素键。 */
 const ELEMENTS = ['intent', 'when_to_use', 'boundaries'] as const
 
-/** 缺省 caps：不触盘、不触网（tool-schema 归一失败时的兜底，与 `tool-schema.normalize-caps` 缺省同形）。 */
+/** 缺省 caps：不触盘、不触网（归一失败时的兜底，与 `normalizeCaps` 缺省同形）。 */
 const DEFAULT_CAPS: Rec = { fs: { read: 'none', write: 'none' }, net: 'unset' }
 
-/** argsSchema 白名单 / caps 校验后端（生产环境经反向 `port.call tool-schema.*`）。 */
+/** argsSchema 白名单 / caps 校验后端（生产环境实现住同包 `methods.ts` 的 `LOCAL_SCHEMA`）。 */
 export interface SchemaBackend {
   /** 严格：白名单校验；宽松：剥白名单外关键词。回可用 schema 或失败原因。 */
   normalizeDecl(schema: Json | undefined, lenient: boolean): Promise<DeclOutcome>

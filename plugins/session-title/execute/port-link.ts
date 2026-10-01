@@ -2,11 +2,8 @@
 // 单测注入假后端。失败作数据（BackendError），不抛未捕获错误、不断通道。
 // 单次调用超时交给 SDK `PortLink.call` 的 `timeoutMs` 覆盖：超时作结构化失败，在途帧的迟到应答被忽略。
 
-import { asString, isRecord } from 'plugin-sdk'
+import { isRecord } from 'plugin-sdk'
 import type { Json, PortCaller, Rec } from 'plugin-sdk'
-
-/** 标题后处理反向调用的等待上限；须严格小于本服务 `method_timeouts` 的 `session-title.generate`。 */
-export const TITLE_FORMAT_TIMEOUT_MS = 5000
 
 /** 反向调用后端失败：带结构化码，调用方据此兜底或作数据回灌。 */
 export class BackendError extends Error {
@@ -58,51 +55,5 @@ export class RemoteModel implements ModelBackend {
       throw new BackendError(modelErrorCode(outcome.value), 'model.complete reported failure')
     }
     return outcome.value
-  }
-}
-
-/** 标题后处理后端抽象：生产环境是反向调用 `title-format.resolve`，单测注入假后端。 */
-export interface TitleFormatBackend {
-  resolve(
-    modelText: string | null,
-    firstMessage: string,
-    maxChars: number,
-    titleDefault: string,
-  ): Promise<string>
-}
-
-/** `title-format.resolve` 的反向调用后端：成功回标题值，失败抛结构化 BackendError。 */
-export class RemoteTitleFormat implements TitleFormatBackend {
-  private readonly link: PortCaller
-
-  constructor(link: PortCaller) {
-    this.link = link
-  }
-
-  async resolve(
-    modelText: string | null,
-    firstMessage: string,
-    maxChars: number,
-    titleDefault: string,
-  ): Promise<string> {
-    const outcome = await this.link.call(
-      'title-format',
-      'resolve',
-      {
-        model_text: modelText,
-        first_message: firstMessage,
-        max_chars: maxChars,
-        title_default: titleDefault,
-      },
-      { timeoutMs: TITLE_FORMAT_TIMEOUT_MS },
-    )
-    if (!outcome.ok) throw new BackendError(outcome.code, outcome.message)
-    if (!isRecord(outcome.value)) {
-      throw new BackendError('title_format_failed', 'title-format.resolve returned a non-object')
-    }
-    const title = asString(outcome.value['title'])
-    if (title === null)
-      throw new BackendError('title_format_failed', 'title-format.resolve returned no title')
-    return title
   }
 }

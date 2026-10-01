@@ -1,22 +1,17 @@
 // HTTP 路由判定（纯函数，便于单测）：浏览器唯一主端口上的全部入口。
 // `/p/<id>/*` 判定写死：id 在挂载表内 → 反代到子应用端口；表外（如 mcp）→ forward 帧发宿主。
 
+import { assetOf, ASSET_NAMES } from './assets.ts'
 import { findMount } from './mounts.ts'
 import type { MountEntry } from './mounts.ts'
 import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
-export const ASSET_NAMES = [
-  'tokens.v1.css',
-  'icons.v2.svg',
-  'messages.v1.json',
-  'favicon.svg',
-] as const
-export type AssetName = (typeof ASSET_NAMES)[number]
+export { ASSET_NAMES }
 
 export type Route =
   | { kind: 'shell-page' }
-  | { kind: 'asset'; name: AssetName }
+  | { kind: 'asset'; name: string }
   | { kind: 'lib'; name: string }
   | { kind: 'vendor'; name: string }
   | { kind: 'ui'; id: string }
@@ -40,12 +35,9 @@ function decodeSegment(segment: string): string | null {
   }
 }
 
+/** 静态资源路由只认资源总表里登记的资源名；新增资源不改本文件。 */
 function assetRoute(name: string): Route | null {
-  if (name === 'favicon.svg') return { kind: 'asset', name: 'favicon.svg' }
-  if (name === 'tokens.v1.css') return { kind: 'asset', name: 'tokens.v1.css' }
-  if (name === 'icons.v2.svg') return { kind: 'asset', name: 'icons.v2.svg' }
-  if (name === 'messages.v1.json') return { kind: 'asset', name: 'messages.v1.json' }
-  return null
+  return assetOf(name) === null ? null : { kind: 'asset', name }
 }
 
 /** 判定一条请求的路由；未知路径 → not-found。 */

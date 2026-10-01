@@ -19,6 +19,9 @@ import { InboundClient } from './inbound.ts'
 import { log } from './log.ts'
 import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts } from './mounts.ts'
 import type { HeadlessEntry } from './mounts.ts'
+import { orderNav, recordsOf } from './nav.ts'
+import type { NavRecord } from './nav.ts'
+import { ensureSlots } from './slots.ts'
 import { inboundSocketPath, rootFromPluginState } from './root.ts'
 import { SHELL_IMPL, shellStateRecord, SseHub } from './sse.ts'
 import { normalizeThemePref, themePrefOfConfig } from './theme.ts'
@@ -31,6 +34,7 @@ const root = rootFromPluginState(process.env, process.cwd())
 const stateDir = `${root}/state`
 const { mounts } = ensureMounts(stateDir)
 const { headless } = ensureHeadless(stateDir)
+const { slots } = ensureSlots(stateDir)
 
 /** 解析壳自身端口（`CHRONO_UI_PORT`）；非法 / 缺省返回 null（回落 `DEFAULT_UI_PORT`）。 */
 function parseShellPort(value: string | undefined): number | null {
@@ -248,6 +252,33 @@ async function uiSource(id: string): Promise<string | null> {
   return text
 }
 
+/**
+ * 汇集 `ui-nav` 各提供方的中立记录：经宿主身份清单发现实现者，按身份名码元序逐一反向调
+ * `ui-nav.list`（按成员定位的 many）。零提供方 / 调用失败 / 形状非法一律按缺席处理，回空表。
+ */
+async function collectNav(): Promise<{ records: NavRecord[] }> {
+  const listed = await host.call('host', 'identities', {})
+  if (!listed.ok || !isRecord(listed.value)) return { records: [] }
+  const list = listed.value['list']
+  if (!Array.isArray(list)) return { records: [] }
+  const providers: string[] = []
+  for (const item of list) {
+    if (!isRecord(item)) continue
+    const id = item['id']
+    const implemented = item['implements']
+    if (typeof id !== 'string' || !Array.isArray(implemented)) continue
+    if (implemented.includes('ui-nav')) providers.push(id)
+  }
+  providers.sort()
+  const groups: { provider: string; records: ReturnType<typeof recordsOf> }[] = []
+  for (const provider of providers) {
+    const outcome = await host.call('ui-nav', 'list', {}, { provider })
+    if (!outcome.ok) continue
+    groups.push({ provider, records: recordsOf(outcome.value) })
+  }
+  return { records: orderNav(groups) }
+}
+
 function applyThemePref(pref: string): void {
   themePref = normalizeThemePref(pref)
   sse.broadcast(shellStateRecord(connected, themePref))
@@ -275,6 +306,7 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     capability: CAPABILITY,
     handlers: {
       ping: () => ({ value: { pong: true, identity: CAPABILITY }, events: [] }),
+      nav: async () => ({ value: await collectNav(), events: [] }),
     },
     emit: ctx.emit,
     log,
@@ -299,6 +331,7 @@ startUiServer(
   {
     mounts,
     headless,
+    slots,
     bridge,
     sse,
     state: shellState,

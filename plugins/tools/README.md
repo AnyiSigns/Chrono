@@ -1,54 +1,37 @@
-# tools（工具门面）
+# tools（工具绑定表数据身份）
 
-工具能力的**薄门面**：保留原 `tools` 契约与公开方法 `list` / `dispatch`，把算法委派给下层提供方——
-目录装配归 `tool-registry`，整批派发归 `tool-dispatch`，schema / caps 校验归 `tool-schema`。
-既有消费方（`loop-policy` 的 `tool.*` 图数据端口）**零改动**。
+工具绑定表的**存储本体**：只存数据、不判定、不起进程。
+`bindings` 是 `工具名 -> 绑定声明`（目标能力类 / 方法 / argsSchema / caps / 四要素文案）的映射，
+由调用方入口 term 读出后随 `bag.tools_bindings` 传给目录装配方。
 
-- 身份 / 能力类：`tools`，`methods: {tools:["list","dispatch"]}`；无命令。
-- `pins`：只保留保留身份 `host`（`"pins": {"host": "host"}`）。
-- `needs`：`tool-registry`（`one`）与 `tool-dispatch`（`one`）——门面只持有这两个直接提供方，
-  工具提供者类与 `guard` 等由下游各自 `needs` 引用（各插件自述为准）。
-- 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 运行时零 npm 依赖。
+本包是**数据身份**：只有 `schema`，无服务进程、无 pins、无命令、无 eff。
+工具目录装配归 `tool-registry`，整批派发归 `tool-dispatch`。
 
-## 方法（门面语义）
+## 身份与数据
 
-`list(bag)` 与 `dispatch(bag)` 的数据形状与拆分前**逐字段一致**；门面不做任何本地算法，只把 `bag`
-原样反向委派：
+- 身份：`tools`
+- body：`{ version, bindings }`，两者必填；`bindings` 空对象 = 无绑定。
+- 绑定声明形状：`{class, method?, argsSchema, intent, when_to_use, param_semantics, boundaries, caps, idempotent, render?, read?, hidden_params?}`。
+- 形态校验归写入端（宿主 v1 不校验身份数据）。
 
-| 方法       | 委派目标                 | 结果形状                                         |
-| ---------- | ------------------------ | ------------------------------------------------ |
-| `list`     | `tool-registry.list`     | `{tools:[声明], rejected:[{name,code,message}]}` |
-| `dispatch` | `tool-dispatch.dispatch` | `{results:[{call_id, ok, result                  | error}]}`（保序） |
+## 提供哪些命令
 
-- 门面对 `bag` 形态只做透传；下游失败按其**原错误码**透传（如 `bad_args` / `unresolved_cap`）。
-- `dispatch` 声明 `concurrent_methods`：两次派发在途互不阻塞（下游 `tool-dispatch.dispatch` 同声明）。
+无命令。数据由写入方的计划落账，读取方按字面身份名读投影（`ids.tools.body`）。
 
-## 下游链
+## 怎么起
 
-```
-tool-schema → tool-registry / tool-dispatch → tools → loop-policy
-```
+无服务：`start` 为空，宿主不起进程。入世后投影即可读。
 
-- `tool-schema`：argsSchema 白名单校验 / 净化与 caps 形状（纯函数）。
-- `tool-registry`：工具目录装配（describe 并集 + 绑定表 + 外部 MCP 工具；四要素 / 去重 / 文案 / 注入参数）。
-- `tool-dispatch`：批级 guard 兜底 / 最严批级 / 有界并发池 / 结果缓存 / 事件与提供者扇出。
+## 状态档
 
-各提供方的入参、错误码与私有参数见其自身自述与 `schema/`。
+`state: "recomputable"`（③ 可重算）。
 
-## 服务纪律
+## 默认 body 预置（可复现）
 
-服务不读投影（目录 / 执行根由调用方随 bag 传入）、不取时间 / 随机、同输入同输出；
-不落账、无写通道；跨插件只走反向帧 `port.call`。
-
-## 运行
-
-```sh
-npm test                                  # 协议级 + 逻辑级测试（node --test）
-node tools/e2e-smoke.mjs                  # 宿主装配 E2E（pack/seed → 投影 → 直连协议冒烟 → verify）
-```
+- `tools/default-body.json`：空绑定表 `{ "version": 1, "bindings": {} }`。
+- 写入脚本见 `tools/seed-default-body.mjs`（需宿主在线；同内容命中 put 幂等）。
 
 ## `.worldignore`
 
-声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` / `schema/` /
-`execute/`）随源码入世。
+声明 `test/` 与 `tools/` 不入世界；其余（`plugin.json` / `package.json` / `README.md` /
+`schema/`）随源码入世。

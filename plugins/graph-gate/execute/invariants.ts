@@ -25,8 +25,12 @@ import { edgeKey, reachableSet, reaches, topoOrder, type Topology } from './grap
 import { buildView, gateError, type GateError, type GraphView } from './gate.ts'
 import type { Rec } from './types.ts'
 
-/** 高危端口（写期只能按端口粒度机械近似；实际判据 = (port, 工具名)，更精确判据归运行时）。 */
-const HIGH_RISK_PORTS = new Set(['exec', 'plugin-admin', 'orchestration-admin'])
+/** 契约元数据：本契约包含的高危端口（写期按端口粒度机械近似；实际判据 = (port, 工具名)，更精确判据归运行时）。 */
+function declaredRiskPorts(contract: Rec): Set<string> {
+  const value = contract['risk_ports']
+  if (!Array.isArray(value)) return new Set()
+  return new Set(value.filter((item): item is string => typeof item === 'string'))
+}
 
 function instanceContracts(view: GraphView, contractIdValue: string): Rec[] {
   return view.model.nodes.filter((node) => nodeContractId(node) === contractIdValue)
@@ -43,8 +47,9 @@ function riskPorts(view: GraphView, contractIdValue: string, depth: number): str
   const out: string[] = []
   const contract = view.contracts.get(contractIdValue)
   if (contract !== undefined) {
+    const risk = declaredRiskPorts(contract)
     for (const port of effectsPorts(contract)) {
-      if (HIGH_RISK_PORTS.has(port)) out.push(port)
+      if (risk.has(port)) out.push(port)
       else if (port === 'fs' && fsWrites(contract)) out.push(port)
     }
     if (fsWrites(contract)) out.push('fs')
@@ -63,18 +68,12 @@ function riskPorts(view: GraphView, contractIdValue: string, depth: number): str
 
 function isGuard(view: GraphView, contractIdValue: string): boolean {
   const contract = view.contracts.get(contractIdValue)
-  return (
-    (contract !== undefined && effectsPorts(contract).includes('guard')) ||
-    contractIdValue === 'tool.gate'
-  )
+  return contract !== undefined && effectsPorts(contract).includes('guard')
 }
 
 function isApproval(view: GraphView, contractIdValue: string): boolean {
   const contract = view.contracts.get(contractIdValue)
-  return (
-    (contract !== undefined && effectsPorts(contract).includes('approval')) ||
-    contractIdValue === 'approval.wait'
-  )
+  return contract !== undefined && effectsPorts(contract).includes('approval')
 }
 
 /** 不变量 1：池中始终保留一个只依赖 entry_supply 的 touches_effects:false 契约。 */

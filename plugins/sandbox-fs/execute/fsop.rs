@@ -17,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::{json, Value};
 
 use crate::casefold::casefold;
-use crate::glob::{glob_match, regex_search, regex_unsupported};
+use crate::glob::{glob_match, literal_empty_hint, regex_intent, regex_search, regex_unsupported};
 use crate::grant::{self, Grant, GrantStore};
 use crate::hash::sha256_hex;
 use crate::tiers::{self, Effective, FsScope};
@@ -170,7 +170,7 @@ fn run_op(bag: &Value, now: f64, store: &mut GrantStore) -> Result<(&'static str
     let args = bag.get("args").cloned().unwrap_or(Value::Null);
     let context = build_context(bag, now, &op)?;
     match op.as_str() {
-        "stat" => Ok(("stat", op_stat(&context, path, store)?)),
+        "stat" => Ok(("stat", op_stat(&context, path, &args, store)?)),
         "read" => Ok(("read", op_read(&context, path, &args, store)?)),
         "list" => Ok(("list", op_list(&context, path, &args, store)?)),
         "grep" => Ok(("grep", op_grep(&context, path, &args, store)?)),
@@ -393,6 +393,76 @@ fn has_nul(bytes: &[u8]) -> bool {
     bytes.contains(&0)
 }
 
+/// 二进制判定：含 NUL 或非合法 UTF-8（伪二进制）。
+fn is_binary_bytes(bytes: &[u8]) -> bool {
+    has_nul(bytes) || std::str::from_utf8(bytes).is_err()
+}
+
+/// 原始字节按 Latin-1 映射为字符串（逐字节 → U+0000..U+00FF，保序、无损）。
+/// 用于二进制文件的行切分与 ASCII 模式匹配（非 UTF-8 字节按 Latin-1 解释）。
+fn latin1_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| *byte as char).collect()
+}
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// 标准 base64 编码（带 `=` 填充，无换行）。
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let grouped = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_ALPHABET[((grouped >> 18) & 0x3f) as usize] as char);
+        out.push(BASE64_ALPHABET[((grouped >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(BASE64_ALPHABET[((grouped >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(BASE64_ALPHABET[(grouped & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// 小写十六进制编码。
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// 读原始字节并编码（`base64` / `hex`）：按 `output_max` 截断（读上限 + 1 字节判截断），
+/// 不要求 UTF-8，故二进制文件也可读。返回编码文本 + 原始字节数 + 截断标记。
+fn read_encoded(path: &Path, encoding: &str, max_bytes: usize) -> Result<Value, FsError> {
+    let (mut raw, capped) = read_verified_capped(path, max_bytes)?;
+    if raw.len() > max_bytes {
+        raw.truncate(max_bytes);
+    }
+    let binary = is_binary_bytes(&raw);
+    let text = match encoding {
+        "base64" => base64_encode(&raw),
+        "hex" => hex_encode(&raw),
+        _ => return Err(bad_args(format!("unknown encoding `{encoding}`"))),
+    };
+    Ok(json!({
+        "text": text,
+        "encoding": encoding,
+        "binary": binary,
+        "bytes": raw.len(),
+        "content_truncated": capped,
+        "truncated": capped,
+    }))
+}
+
 /// 行切分：只按 `\n` 切、保留行尾 `\r`（CRLF 文件的 `\r` 属于内容，读窗口据此与文件字节一致）；
 /// 不保留末尾空行（`a\n` 只有一行）。
 fn split_lines(text: &str) -> Vec<String> {
@@ -451,15 +521,27 @@ fn decode_utf8_capped(mut bytes: Vec<u8>, max_bytes: usize) -> Result<(String, b
     }
 }
 
-fn mtime_ms(meta: &fs::Metadata) -> Value {
-    match meta
-        .modified()
+fn mtime_ms_value(meta: &fs::Metadata) -> Option<u64> {
+    meta.modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-    {
-        Some(duration) => json!(duration.as_millis() as u64),
+        .map(|duration| duration.as_millis() as u64)
+}
+
+fn mtime_ms(meta: &fs::Metadata) -> Value {
+    match mtime_ms_value(meta) {
+        Some(ms) => json!(ms),
         None => Value::Null,
     }
+}
+
+/// 创建时间（ms）；文件系统不支持时回 null（不冒充 mtime）。
+fn ctime_ms(meta: &fs::Metadata) -> Value {
+    meta.created()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| json!(duration.as_millis() as u64))
+        .unwrap_or(Value::Null)
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -512,7 +594,12 @@ fn ignored(patterns: &[String], relative: &str, name: &str) -> bool {
 
 // ── op: stat ───────────────────────────────────────────────────────────────
 
-fn op_stat(context: &FsContext, path: Option<&str>, store: &mut GrantStore) -> Result<Value, FsError> {
+fn op_stat(
+    context: &FsContext,
+    path: Option<&str>,
+    args: &Value,
+    store: &mut GrantStore,
+) -> Result<Value, FsError> {
     let path = path.ok_or_else(|| bad_args("path required"))?;
     let target = resolve_path_arg(path, context.workspace_root.as_deref())?;
     let (canon, exists) = canonical_or_parent(&target)?;
@@ -521,15 +608,78 @@ fn op_stat(context: &FsContext, path: Option<&str>, store: &mut GrantStore) -> R
         return Ok(json!({ "exists": false, "is_dir": false, "size": 0, "mtime": Value::Null }));
     }
     let meta = fs::metadata(&canon).map_err(map_io_error)?;
-    Ok(json!({
+    let mut result = json!({
         "exists": true,
         "is_dir": meta.is_dir(),
         "size": meta.len(),
         "mtime": mtime_ms(&meta),
-    }))
+        "ctime": ctime_ms(&meta),
+        // 只读位（跨平台口径：Windows 为只读属性、Unix 为无 owner 写位）；不做完整权限审计。
+        "readonly": meta.permissions().readonly(),
+    });
+    // `recursive:true` + 目录：额外回整棵子树的聚合元信息（总大小 / 最老最新 mtime）。
+    // 遍历同 `walk_files`：不跟随目录符号链接、按文件名排序（确定性），不改动单路径字段。
+    if meta.is_dir() && arg_bool(args, "recursive") {
+        result["aggregate"] = stat_aggregate(&canon);
+    }
+    Ok(result)
+}
+
+/// 目录子树聚合：文件数 / 子目录数 / 总字节数 / 最老与最新 mtime（ms）。不跟随目录符号链接避免环。
+fn stat_aggregate(root: &Path) -> Value {
+    fn walk(
+        dir: &Path,
+        files: &mut u64,
+        dirs: &mut u64,
+        total: &mut u64,
+        newest: &mut Option<u64>,
+        oldest: &mut Option<u64>,
+    ) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut items: Vec<_> = entries.flatten().collect();
+        items.sort_by_key(|entry| entry.file_name());
+        for entry in items {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                *dirs += 1;
+                walk(&path, files, dirs, total, newest, oldest);
+            } else if file_type.is_file() {
+                *files += 1;
+                if let Ok(meta) = fs::metadata(&path) {
+                    *total += meta.len();
+                    if let Some(ms) = mtime_ms_value(&meta) {
+                        if newest.map(|value| ms > value).unwrap_or(true) {
+                            *newest = Some(ms);
+                        }
+                        if oldest.map(|value| ms < value).unwrap_or(true) {
+                            *oldest = Some(ms);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (mut files, mut dirs, mut total) = (0u64, 0u64, 0u64);
+    let (mut newest, mut oldest) = (None, None);
+    walk(root, &mut files, &mut dirs, &mut total, &mut newest, &mut oldest);
+    json!({
+        "files": files,
+        "dirs": dirs,
+        "total_size": total,
+        "newest_mtime": newest.map(|ms| json!(ms)).unwrap_or(Value::Null),
+        "oldest_mtime": oldest.map(|ms| json!(ms)).unwrap_or(Value::Null),
+    })
 }
 
 // ── op: read ───────────────────────────────────────────────────────────────
+
+/// 预览模式缺省行数（`preview:true` 且未给 `limit` 时）。
+const PREVIEW_LINES: usize = 50;
 
 fn op_read(
     context: &FsContext,
@@ -548,6 +698,18 @@ fn op_read(
     if !meta.is_file() {
         return Err(not_a_file("expected a file"));
     }
+    // `encoding:"base64"|"hex"`：按原始字节读并编码（二进制也可读）；缺省 utf8 保持原有文本口径。
+    match arg_str(args, "encoding") {
+        Some("utf8") | None => {}
+        Some(value @ ("base64" | "hex")) => {
+            return read_encoded(&canon, value, context.output_max);
+        }
+        Some(other) => {
+            return Err(bad_args(format!(
+                "unknown encoding `{other}` (expected utf8|base64|hex)"
+            )))
+        }
+    }
     // 读前按上限截断（最多读 output_max + 1 字节）：超限返回截断内容 + truncated（非错）。
     let (raw, _) = read_verified_capped(&canon, context.output_max)?;
     if has_nul(&raw) {
@@ -557,7 +719,9 @@ fn op_read(
     let lines = split_lines(&text);
     let total_lines = lines.len();
     let offset = arg_usize(args, "offset").unwrap_or(0).min(total_lines);
-    let limit = arg_usize(args, "limit");
+    // 预览模式：只看开头若干行（缺省 50）；显式 limit 仍优先。
+    let preview = arg_bool(args, "preview");
+    let limit = arg_usize(args, "limit").or(if preview { Some(PREVIEW_LINES) } else { None });
     let end = match limit {
         Some(limit) => offset.saturating_add(limit).min(total_lines),
         None => total_lines,
@@ -590,6 +754,8 @@ fn op_read(
         // 窗口不是整份文件（跳过头 / 未到尾 / 按字节截断）即标记，非错。保留旧口径。
         "truncated": size_truncated || offset > 0 || end < total_lines,
         "binary": false,
+        // 生效的预览模式回显（便于区分「只读开头」与整份窗口）。
+        "preview": preview,
     }))
 }
 
@@ -613,16 +779,38 @@ fn op_list(
     let pattern = arg_str(args, "pattern").unwrap_or("*").to_string();
     let ignore = arg_strings(args, "ignore");
     let limit = arg_usize(args, "limit").unwrap_or(200);
+    // `tree:true` 输出层级视图；`depth` 为相对 base 的最大路径段数（1 = 仅直接子项）。
+    let tree = arg_bool(args, "tree");
+    let depth = arg_usize(args, "depth");
+    // `min_depth`：只看相对 base 至少 N 段（与 `depth` 组成区间，缺省 1）。
+    let min_depth = arg_usize(args, "min_depth");
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    walk_files(&base_canon, &base_canon, &ignore, &mut |file| {
-        let relative = relative_slash(&base_canon, file);
-        let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        if !matches_pattern(&pattern, &relative, &name) || ignored(&ignore, &relative, &name) {
-            return;
-        }
-        files.push((relative, file.to_path_buf()));
-    });
+    walk_files(
+        &base_canon,
+        &base_canon,
+        &ignore,
+        &mut |file| {
+            let relative = relative_slash(&base_canon, file);
+            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !matches_pattern(&pattern, &relative, &name) || ignored(&ignore, &relative, &name) {
+                return;
+            }
+            let segments = relative.split('/').count();
+            if let Some(depth) = depth {
+                if segments > depth {
+                    return;
+                }
+            }
+            if let Some(min_depth) = min_depth {
+                if segments < min_depth {
+                    return;
+                }
+            }
+            files.push((relative, file.to_path_buf()));
+        },
+        &mut |_| {},
+    );
     files.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut paths = Vec::new();
@@ -634,14 +822,93 @@ fn op_list(
             break;
         }
         used += relative.len();
-        paths.push(Value::String(relative.clone()));
+        paths.push(relative.clone());
     }
-    Ok(json!({ "paths": paths, "truncated": truncated }))
+    // 因 limit / output_max 未返回的条数（不含被 pattern / ignore / depth 滤掉的，那些本就不入选）。
+    let skipped_count = files.len() - paths.len();
+    // 截断时在结果主体给出可读警告：明确「这不是全量清单」，避免只看到 truncated 布尔而误当全量。
+    let warning = if truncated {
+        Some(format!(
+            "results truncated: showing {} of {} matched paths ({} not returned); raise `limit` or narrow `pattern` / `depth`",
+            paths.len(),
+            files.len(),
+            skipped_count
+        ))
+    } else {
+        None
+    };
+    if tree {
+        return Ok(json!({
+            "tree": render_tree(&paths),
+            "truncated": truncated,
+            "skipped_count": skipped_count,
+            "warning": warning,
+        }));
+    }
+    Ok(json!({
+        "paths": paths,
+        "truncated": truncated,
+        "skipped_count": skipped_count,
+        "warning": warning,
+    }))
+}
+
+/// 把扁平相对路径渲染为层级树：目录在前、文件在后，同级按字典序；过滤后为空的目录剪掉。
+/// 每个节点 `{name, path, type:"dir"|"file"}`，目录另有 `children`。`path` 为相对 base 的斜杠路径。
+fn render_tree(paths: &[String]) -> Vec<Value> {
+    #[derive(Default)]
+    struct Node {
+        dirs: std::collections::BTreeMap<String, Node>,
+        files: Vec<String>,
+    }
+    fn render(node: &Node, prefix: &str, out: &mut Vec<Value>) {
+        let join = |name: &str| -> String {
+            if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            }
+        };
+        for (name, child) in &node.dirs {
+            let path = join(name);
+            let mut children = Vec::new();
+            render(child, &path, &mut children);
+            if children.is_empty() {
+                continue;
+            }
+            out.push(json!({ "name": name, "path": path, "type": "dir", "children": children }));
+        }
+        for name in &node.files {
+            out.push(json!({ "name": name, "path": join(name), "type": "file" }));
+        }
+    }
+
+    let mut root = Node::default();
+    for relative in paths {
+        let segments: Vec<&str> = relative.split('/').collect();
+        let mut node = &mut root;
+        for segment in &segments[..segments.len() - 1] {
+            node = node.dirs.entry((*segment).to_string()).or_default();
+        }
+        if let Some(name) = segments.last() {
+            node.files.push((*name).to_string());
+        }
+    }
+    let mut out = Vec::new();
+    render(&root, "", &mut out);
+    out
 }
 
 /// 递归收集文件（不跟随目录符号链接 / junction，避免环）；命中忽略表的目录整棵剪枝。
 /// `base` 用于计算相对路径（与忽略表比对）；确定性由调用方排序保证。
-fn walk_files<F: FnMut(&Path)>(root: &Path, base: &Path, ignore: &[String], visit: &mut F) {
+/// 被剪掉的目录经 `pruned` 回调上报（相对 `base`，遍历序确定），供结果回显「跳过了哪些目录」。
+fn walk_files<F: FnMut(&Path), G: FnMut(&str)>(
+    root: &Path,
+    base: &Path,
+    ignore: &[String],
+    visit: &mut F,
+    pruned: &mut G,
+) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -656,9 +923,10 @@ fn walk_files<F: FnMut(&Path)>(root: &Path, base: &Path, ignore: &[String], visi
             let relative = relative_slash(base, &path);
             let name = entry.file_name().to_string_lossy().to_string();
             if !ignore.is_empty() && ignored(ignore, &relative, &name) {
+                pruned(&relative);
                 continue;
             }
-            walk_files(&path, base, ignore, visit);
+            walk_files(&path, base, ignore, visit, pruned);
         } else if file_type.is_file() {
             visit(&path);
         }
@@ -692,7 +960,14 @@ fn op_grep(
     // 匹配模式：显式 `mode:"literal"|"regex"` 优先；否则 `regex` 布尔开关；两者都缺省按**字面**匹配
     // （默认不猜正则，避免 `[error]` / `C:\foo` 这类字面量被静默当正则）。正则模式下先校验支持子集：
     // 不支持即显式 `bad_args`，**绝不**静默退化按字面匹配。
-    let is_regex = match arg_str(args, "mode") {
+    let mode_arg = arg_str(args, "mode");
+    // 是否显式声明匹配方式：显式声明（含 `regex` 开关）时不自动改写，尊重调用方。
+    let mode_declared = mode_arg.is_some()
+        || args
+            .get("regex")
+            .map(|value| !value.is_null())
+            .unwrap_or(false);
+    let mut is_regex = match mode_arg {
         Some("regex") => true,
         Some("literal") => false,
         Some(other) => {
@@ -702,39 +977,85 @@ fn op_grep(
         }
         None => args.get("regex").and_then(Value::as_bool).unwrap_or(false),
     };
+    // `all`：附加模式数组，命中行须**同时**满足 `pattern` 与 `all` 中每个模式（AND）。
+    // OR 已由正则交替 `|` 承担，故这里只补 AND；模式数组与 `pattern` 同语义、同 mode。
+    let all_patterns = arg_strings(args, "all");
+    // `any`：附加模式数组，命中行**满足其中任一**即可（OR），与主模式一起构成 OR 集合；
+    // `any` 为空时 OR 集合仅主模式，行为不变。`all` 仍是 AND。
+    let any_patterns = arg_strings(args, "any");
+    let mut or_patterns: Vec<String> = Vec::with_capacity(any_patterns.len() + 1);
+    or_patterns.push(pattern.clone());
+    or_patterns.extend(any_patterns.iter().cloned());
+    // 缺省（未显式声明）且模式含强正则信号（`|` / 类简写 / `{n}` 等）时按正则处理，
+    // 避免 `TODO|FIXME` 这类模式静默按字面空返；信号模式若语法不合法则回落字面（并给 hint）。
+    let regex_signal = or_patterns.iter().any(|value| regex_intent(value));
+    if !mode_declared
+        && !is_regex
+        && regex_signal
+        && or_patterns.iter().all(|value| regex_unsupported(value).is_none())
+    {
+        is_regex = true;
+    }
     if is_regex {
-        if let Some(reason) = regex_unsupported(&pattern) {
-            return Err(bad_args(format!(
-                "regex pattern not supported: {reason}; use mode:\"literal\" or simplify the pattern"
-            )));
+        for candidate in or_patterns.iter().chain(all_patterns.iter()) {
+            if let Some(reason) = regex_unsupported(candidate) {
+                return Err(bad_args(format!("invalid regex: {reason}")));
+            }
         }
     }
 
     let ignore_case = arg_bool(args, "ignore_case");
     let files_only = arg_bool(args, "files_only");
+    // `stats`：只回审计聚合（命中文件数 / 命中总数），不逐条回行、不受 `limit` 截断。
+    let stats = arg_bool(args, "stats");
+    // `binary`：为 true 时把二进制文件按 Latin-1 解码后纳入搜索（而非跳过）；命中条目带 `binary:true`。
+    let include_binary = arg_bool(args, "binary");
     let before = arg_usize(args, "before").unwrap_or(0).min(20);
     let after = arg_usize(args, "after").unwrap_or(0).min(20);
 
     let mut files: Vec<PathBuf> = Vec::new();
-    walk_files(&base_canon, &base_canon, &ignore, &mut |file| {
-        let relative = relative_slash(&base_canon, file);
-        let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        if let Some(glob_filter) = &glob_filter {
-            if !matches_pattern(glob_filter, &relative, &name) {
+    let mut ignored_paths: Vec<String> = Vec::new();
+    walk_files(
+        &base_canon,
+        &base_canon,
+        &ignore,
+        &mut |file| {
+            let relative = relative_slash(&base_canon, file);
+            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if let Some(glob_filter) = &glob_filter {
+                if !matches_pattern(glob_filter, &relative, &name) {
+                    return;
+                }
+            }
+            if ignored(&ignore, &relative, &name) {
                 return;
             }
-        }
-        if ignored(&ignore, &relative, &name) {
-            return;
-        }
-        files.push(file.to_path_buf());
-    });
+            files.push(file.to_path_buf());
+        },
+        &mut |relative| ignored_paths.push(relative.to_string()),
+    );
     files.sort();
+    // 忽略表整棵剪掉的目录（相对 base，遍历序确定）；封顶 100 条并标记。
+    let ignored_paths_truncated = ignored_paths.len() > 100;
+    ignored_paths.truncate(100);
 
-    let folded_pattern = if ignore_case {
-        casefold(&pattern)
+    let folded_or: Vec<String> = if ignore_case {
+        or_patterns.iter().map(|value| casefold(value)).collect()
     } else {
-        pattern.clone()
+        or_patterns.clone()
+    };
+    let folded_all: Vec<String> = if ignore_case {
+        all_patterns.iter().map(|value| casefold(value)).collect()
+    } else {
+        all_patterns.clone()
+    };
+    // 命中判定：主模式与 `all` 中每个模式都命中才算命中（AND）；`hay` / 模式已按 ignore_case 归一。
+    let pattern_hit = |candidate: &str, hay: &str| -> bool {
+        if is_regex {
+            regex_search(candidate, hay)
+        } else {
+            hay.contains(candidate)
+        }
     };
     let mut matches = Vec::new();
     let mut used = 0usize;
@@ -742,6 +1063,8 @@ fn op_grep(
     let mut skipped_binary = 0usize;
     let mut skipped_too_large = 0usize;
     let mut skipped_unreadable = 0usize;
+    let mut files_with_matches = 0usize;
+    let mut total_matches = 0usize;
     'outer: for file in &files {
         let Ok(meta) = fs::metadata(file) else {
             skipped_unreadable += 1;
@@ -755,13 +1078,16 @@ fn op_grep(
             skipped_unreadable += 1;
             continue;
         };
-        if has_nul(&bytes) {
-            skipped_binary += 1;
-            continue;
-        }
-        let Ok(text) = String::from_utf8(bytes) else {
-            skipped_binary += 1;
-            continue;
+        let is_binary = is_binary_bytes(&bytes);
+        let text = if is_binary {
+            if !include_binary {
+                skipped_binary += 1;
+                continue;
+            }
+            // 二进制纳搜：按 Latin-1 逐字节映射（ASCII 模式安全；非 UTF-8 字节按 Latin-1 解释）。
+            latin1_string(&bytes)
+        } else {
+            String::from_utf8(bytes).expect("validated utf-8")
         };
         let relative = relative_slash(&base_canon, file);
         let lines = split_lines(&text);
@@ -769,22 +1095,23 @@ fn op_grep(
         let mut file_first: Option<(usize, String)> = None;
         for (index, line) in lines.iter().enumerate() {
             // ignore_case：模式与命中行同做 Unicode casefold（表驱动，未做 NFC/NFD 规范化）；不改动正则结构校验。
-            let hit = if ignore_case {
-                let hay = casefold(line);
-                if is_regex {
-                    regex_search(&folded_pattern, &hay)
-                } else {
-                    hay.contains(folded_pattern.as_str())
-                }
-            } else if is_regex {
-                regex_search(&pattern, line)
+            let folded: String;
+            let hay: &str = if ignore_case {
+                folded = casefold(line);
+                &folded
             } else {
-                line.contains(pattern.as_str())
+                line.as_str()
             };
+            let hit = folded_or.iter().any(|candidate| pattern_hit(candidate, hay))
+                && folded_all.iter().all(|candidate| pattern_hit(candidate, hay));
             if !hit {
                 continue;
             }
             file_count += 1;
+            // `stats`：只计数，不落条目、不受 `limit` 截断。
+            if stats {
+                continue;
+            }
             if files_only {
                 // 每文件只保留首个命中（含行号）与命中总数，避免整文件命中刷屏。
                 if file_first.is_none() {
@@ -802,6 +1129,10 @@ fn op_grep(
                 "line": index + 1,
                 "text": excerpt,
             });
+            // 仅在二进制命中上标记，文本命中形状不变。
+            if is_binary {
+                entry["binary"] = json!(true);
+            }
             if before > 0 || after > 0 {
                 let context_line = |line: &String| -> String { line.chars().take(1000).collect() };
                 let start = index.saturating_sub(before);
@@ -814,6 +1145,13 @@ fn op_grep(
             used += excerpt.len() + relative.len();
             matches.push(entry);
         }
+        if file_count > 0 {
+            files_with_matches += 1;
+            total_matches += file_count;
+        }
+        if stats {
+            continue;
+        }
         if files_only && file_count > 0 {
             if matches.len() >= limit {
                 truncated = true;
@@ -821,24 +1159,86 @@ fn op_grep(
             }
             let (line, text) = file_first.unwrap_or((0, String::new()));
             used += text.len() + relative.len();
-            matches.push(json!({
+            let mut entry = json!({
                 "path": relative,
                 "line": line,
                 "text": text,
                 "count": file_count,
-            }));
+            });
+            if is_binary {
+                entry["binary"] = json!(true);
+            }
+            matches.push(entry);
         }
     }
-    Ok(json!({
+    let mode_label = if is_regex { "regex" } else { "literal" };
+    // 空结果的诊断优先级：先看 glob 是否把候选滤空（最易被误判为「模式没命中」），再看字面模式是否像正则。
+    let hint = if !(matches.is_empty() && total_matches == 0) {
+        None
+    } else if glob_filter.is_some() && files.is_empty() {
+        Some(
+            "glob matched no files; check the `glob` filter (brace groups like *.{py,yml} are supported)."
+                .to_string(),
+        )
+    } else if !is_regex {
+        literal_empty_hint(&pattern)
+    } else {
+        None
+    };
+    // 完整性警告：结果可能不完整时在主体明确说明（截断 / 二进制 / 超限 / 不可读被跳过），
+    // 避免调用方把局部结果当全量、漏掉敏感信息。
+    let mut caveats: Vec<String> = Vec::new();
+    if truncated {
+        caveats.push("results truncated; raise `limit` or narrow the search".to_string());
+    }
+    if skipped_binary > 0 {
+        caveats.push(format!("{skipped_binary} binary file(s) skipped (contents not searched)"));
+    }
+    if skipped_too_large > 0 {
+        caveats.push(format!("{skipped_too_large} file(s) over output_max skipped"));
+    }
+    if skipped_unreadable > 0 {
+        caveats.push(format!("{skipped_unreadable} unreadable file(s) skipped"));
+    }
+    let warning = if caveats.is_empty() {
+        None
+    } else {
+        Some(caveats.join("; "))
+    };
+    let mut result = json!({
         "matches": matches,
         "truncated": truncated,
+        // 审计统计：参与匹配的候选文件数（已过 glob / ignore 过滤），与 skipped 一起核对扫描完整性。
+        "files_scanned": files.len(),
         // 未参与匹配的文件计数（不改变 matches 形状）：二进制 / 超 output_max / 不可读。
         "skipped": {
             "binary": skipped_binary,
             "too_large": skipped_too_large,
             "unreadable": skipped_unreadable,
         },
-    }))
+        // 生效参数回显：空结果时据此判断「是路径 / glob / ignore 滤没了，还是模式没命中」。
+        "mode": mode_label,
+        // 是否把二进制文件纳入搜索（命中条目另带 `binary:true`）。
+        "binary": include_binary,
+        "base": base_canon.to_string_lossy().replace('\\', "/"),
+        "glob": glob_filter,
+        "ignore": ignore,
+        // 忽略表实际整棵剪掉的目录（相对 base，遍历序）；让「跳过了哪些」可见。
+        "ignored_paths": ignored_paths,
+        "ignored_paths_truncated": ignored_paths_truncated,
+        // 仅当「缺省字面 + 空结果 + 模式像正则」时给出，纯文本空结果不打扰。
+        "hint": hint,
+        // 结果可能不完整时的主体警告（截断 / 跳过二进制等）；完整时为 null。
+        "warning": warning,
+    });
+    // `stats:true`：只回聚合计数（不逐条回行）；`matches` 为空数组，另有 `stats` 对象。
+    if stats {
+        result["stats"] = json!({
+            "files_with_matches": files_with_matches,
+            "total_matches": total_matches,
+        });
+    }
+    Ok(result)
 }
 
 // ── op: write ──────────────────────────────────────────────────────────────
@@ -1799,10 +2199,10 @@ mod tests {
     }
 
     #[test]
-    fn grep_regex_unsupported_is_explicit() {
+    fn grep_regex_alternation_supported_and_syntax_errors_explicit() {
         let dir = TempDir::new("grep-mode");
         dir.write("a.txt", "foo bar\nfoo|bar\n");
-        // 缺省按字面：`|` 不再触发正则，命中字面串 "foo|bar" 行。
+        // 缺省：含 `|` 的强正则信号 → 自动按正则 → 两行都命中（`foo` / `foo|bar`）。
         let auto = call(&bag(
             &dir,
             "grep",
@@ -1812,9 +2212,9 @@ mod tests {
             json!({"pattern":"foo|bar"}),
         ));
         assert_eq!(auto["ok"], true, "{auto}");
-        assert_eq!(auto["result"]["matches"].as_array().map(Vec::len), Some(1));
-        assert_eq!(auto["result"]["matches"][0]["line"], 2);
-        // 显式 regex：`|` 结构不在支持子集 → bad_args（绝不静默按字面匹配）。
+        assert_eq!(auto["result"]["mode"], "regex", "{auto}");
+        assert_eq!(auto["result"]["matches"].as_array().map(Vec::len), Some(2), "{auto}");
+        // 显式 regex：交替现已支持 → 两行都命中（`foo` / `foo|bar`）。
         let regex = call(&bag(
             &dir,
             "grep",
@@ -1823,7 +2223,18 @@ mod tests {
             full_caps(),
             json!({"pattern":"foo|bar","mode":"regex"}),
         ));
-        assert_eq!(regex["code"], "bad_args", "{regex}");
+        assert_eq!(regex["ok"], true, "{regex}");
+        assert_eq!(regex["result"]["matches"].as_array().map(Vec::len), Some(2), "{regex}");
+        // 真语法错误（未闭合分组）才 bad_args。
+        let bad_regex = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"(foo","mode":"regex"}),
+        ));
+        assert_eq!(bad_regex["code"], "bad_args", "{bad_regex}");
         // 显式 literal：按字面串命中 "foo|bar" 行。
         let literal = call(&bag(
             &dir,
@@ -1845,6 +2256,85 @@ mod tests {
             json!({"pattern":"foo","mode":"nah"}),
         ));
         assert_eq!(bad["code"], "bad_args");
+    }
+
+    #[test]
+    fn grep_empty_literal_regex_like_reports_hint_and_echo() {
+        let dir = TempDir::new("grep-hint");
+        dir.write("a.rs", "fn main() {}\n");
+        // 缺省含 `|` → 自动走正则（不再静默字面），无命中也不给 hint（并非字面搜索）。
+        let auto = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "TODO|FIXME", "glob": "*.rs", "ignore": ["node_modules"]}),
+        ));
+        assert_eq!(auto["result"]["mode"], "regex", "{auto}");
+        assert_eq!(auto["result"]["hint"], Value::Null, "{auto}");
+        assert_eq!(auto["result"]["glob"], "*.rs");
+        assert_eq!(auto["result"]["ignore"], json!(["node_modules"]));
+        // 显式 literal：字面搜索空返 → hint 提示可改 mode:"regex"。
+        let literal = call(
+            &bag(&dir, "grep", ".", "severe", full_caps(), json!({
+                "pattern": "TODO|FIXME", "mode": "literal", "glob": "*.rs"
+            })),
+        );
+        assert_eq!(literal["result"]["mode"], "literal", "{literal}");
+        assert!(
+            literal["result"]["hint"].as_str().unwrap_or("").contains("mode"),
+            "literal hint should suggest regex mode: {literal}"
+        );
+        // 纯文本空结果不给 hint。
+        let plain = call(
+            &bag(&dir, "grep", ".", "severe", full_caps(), json!({"pattern": "nonexistent"})),
+        );
+        assert_eq!(plain["result"]["hint"], Value::Null, "{plain}");
+        // 命中时也不给 hint。
+        let hit = call(
+            &bag(&dir, "grep", ".", "severe", full_caps(), json!({"pattern": "fn main"})),
+        );
+        assert_eq!(hit["result"]["hint"], Value::Null, "{hit}");
+    }
+
+    #[test]
+    fn grep_brace_glob_and_no_match_hint() {
+        let dir = TempDir::new("grep-brace");
+        dir.write("a.py", "key = 1\n");
+        dir.write("b.yml", "key: 2\n");
+        dir.write("c.rs", "key = 3\n");
+        // `{py,yml}` 大括号分组：只搜这两类，rs 不参与；files_scanned 回显候选数。
+        let grouped = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "key", "glob": "*.{py,yml}"}),
+        ));
+        assert_eq!(grouped["result"]["files_scanned"], 2, "{grouped}");
+        let paths: Vec<String> = grouped["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["path"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(paths, vec!["a.py".to_string(), "b.yml".to_string()]);
+        // glob 一个都匹配不到：显式提示，避免被误当成「模式没命中」。
+        let empty = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "key", "glob": "*.{txt,md}"}),
+        ));
+        assert_eq!(empty["result"]["files_scanned"], 0, "{empty}");
+        assert!(
+            empty["result"]["hint"].as_str().unwrap_or("").contains("glob"),
+            "glob no-match should hint: {empty}"
+        );
     }
 
     #[test]
@@ -2046,6 +2536,15 @@ mod tests {
             .map(|item| item["path"].as_str().unwrap())
             .collect();
         assert_eq!(paths, vec!["keep/a.txt"]);
+        // 被忽略整棵剪掉的目录可见，供调用方确认搜索范围。
+        let ignored: Vec<&str> = grep["result"]["ignored_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap())
+            .collect();
+        assert!(ignored.contains(&"node_modules"), "{grep}");
+        assert!(ignored.contains(&"target"), "{grep}");
     }
 
     #[test]
@@ -2135,6 +2634,317 @@ mod tests {
         assert_eq!(result["result"]["skipped"]["binary"], 1, "{result}");
         assert_eq!(result["result"]["skipped"]["too_large"], 1, "{result}");
         assert_eq!(result["result"]["skipped"]["unreadable"], 0, "{result}");
+        // 跳过项在主体有可读警告，避免把部分结果当全量而漏报。
+        let warning = result["result"]["warning"].as_str().unwrap_or("");
+        assert!(warning.contains("binary"), "skipped binary should warn: {result}");
+        assert!(warning.contains("output_max"), "too_large should warn: {result}");
         assert_eq!(result["result"]["matches"].as_array().map(Vec::len), Some(1), "{result}");
+    }
+
+    #[test]
+    fn grep_truncated_reports_warning() {
+        let dir = TempDir::new("grep-trunc");
+        dir.write("a.txt", "hit\nhit\nhit\n");
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern":"hit","limit":1}),
+        ));
+        assert_eq!(result["result"]["truncated"], true, "{result}");
+        assert!(
+            result["result"]["warning"].as_str().unwrap_or("").contains("truncated"),
+            "truncated grep should warn: {result}"
+        );
+    }
+
+    #[test]
+    fn list_depth_tree_and_skipped_count() {
+        let dir = TempDir::new("list-tree");
+        dir.write("root.rs", "x");
+        dir.write("src/a.rs", "x");
+        dir.write("src/deep/b.rs", "x");
+        // depth=1：只保留相对 base 的 1 段路径（直接子文件）。
+        let shallow = call(&bag(
+            &dir,
+            "list",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "**/*.rs", "depth": 1}),
+        ));
+        assert_eq!(shallow["result"]["paths"], json!(["root.rs"]), "{shallow}");
+        // tree=true：层级视图，目录在前、文件在后。
+        let tree = call(&bag(
+            &dir,
+            "list",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "**/*.rs", "tree": true}),
+        ));
+        assert!(tree["result"].get("paths").is_none(), "{tree}");
+        let nodes = tree["result"]["tree"].as_array().unwrap();
+        assert_eq!(nodes[0]["name"], "src");
+        assert_eq!(nodes[0]["type"], "dir");
+        assert_eq!(nodes[0]["children"][0]["name"], "deep");
+        assert_eq!(nodes[0]["children"][0]["type"], "dir");
+        assert_eq!(nodes[0]["children"][0]["children"][0]["name"], "b.rs");
+        assert_eq!(nodes[0]["children"][1]["name"], "a.rs");
+        assert_eq!(nodes[1]["name"], "root.rs");
+        assert_eq!(nodes[1]["type"], "file");
+        // limit 截断时回 skipped_count（漏了多少条）。
+        let capped = call(&bag(
+            &dir,
+            "list",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "**/*.rs", "limit": 1}),
+        ));
+        assert_eq!(capped["result"]["truncated"], true, "{capped}");
+        assert_eq!(capped["result"]["skipped_count"], 2, "{capped}");
+        assert!(
+            capped["result"]["warning"].as_str().unwrap_or("").contains("truncated"),
+            "truncated list should warn: {capped}"
+        );
+    }
+
+    #[test]
+    fn read_preview_defaults_to_50_lines() {
+        let dir = TempDir::new("read-preview");
+        let content: String = (1..=120).map(|index| format!("line{index}\n")).collect();
+        dir.write("f.txt", &content);
+        // 预览缺省 50 行，可续读。
+        let preview = call(&bag(
+            &dir,
+            "read",
+            "f.txt",
+            "severe",
+            full_caps(),
+            json!({"preview": true}),
+        ));
+        assert_eq!(preview["ok"], true, "{preview}");
+        assert_eq!(preview["result"]["preview"], true);
+        assert_eq!(preview["result"]["total_lines"], 120);
+        assert_eq!(preview["result"]["lines_returned"], 50);
+        assert_eq!(preview["result"]["has_more"], true);
+        assert_eq!(preview["result"]["next_offset"], 50);
+        // 显式 limit 覆盖预览缺省。
+        let capped = call(&bag(
+            &dir,
+            "read",
+            "f.txt",
+            "severe",
+            full_caps(),
+            json!({"preview": true, "limit": 5}),
+        ));
+        assert_eq!(capped["result"]["lines_returned"], 5);
+        assert_eq!(capped["result"]["next_offset"], 5);
+        // 非预览：缺省整份（sandbox 层 limit 缺省为全文）。
+        let full = call(&bag(&dir, "read", "f.txt", "severe", full_caps(), json!({})));
+        assert_eq!(full["result"]["preview"], false);
+        assert_eq!(full["result"]["lines_returned"], 120);
+    }
+
+    #[test]
+    fn stat_recursive_aggregates_subtree() {
+        let dir = TempDir::new("stat-agg");
+        dir.write("a.txt", "abc");
+        dir.write("sub/b.txt", "de");
+        let recursive = call(&bag(
+            &dir,
+            "stat",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"recursive": true}),
+        ));
+        assert_eq!(recursive["ok"], true, "{recursive}");
+        let aggregate = &recursive["result"]["aggregate"];
+        assert_eq!(aggregate["files"], 2, "{recursive}");
+        assert_eq!(aggregate["dirs"], 1, "{recursive}");
+        assert_eq!(aggregate["total_size"], 5, "{recursive}");
+        assert!(aggregate["newest_mtime"].is_u64(), "{recursive}");
+        assert!(aggregate["oldest_mtime"].is_u64(), "{recursive}");
+        // 非递归：不动单路径结果形状，也不回 aggregate。
+        let plain = call(&bag(&dir, "stat", ".", "severe", full_caps(), json!({})));
+        assert_eq!(plain["result"]["is_dir"], true);
+        assert!(plain["result"].get("aggregate").is_none(), "{plain}");
+    }
+
+    #[test]
+    fn grep_all_requires_every_pattern_on_same_line() {
+        let dir = TempDir::new("grep-all");
+        dir.write("a.txt", "alpha beta\nbeta only\nalpha only\n");
+        // `pattern` + `all` 为 AND：只有同时含 alpha 与 beta 的行命中。
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "alpha", "all": ["beta"]}),
+        ));
+        let items = result["result"]["matches"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{result}");
+        assert_eq!(items[0]["line"], 1, "{result}");
+    }
+
+    #[test]
+    fn grep_any_matches_either_pattern() {
+        let dir = TempDir::new("grep-any");
+        dir.write("a.txt", "alpha\nbeta\ngamma\n");
+        // `pattern` 与 `any` 构成 OR：alpha 或 beta 的行都命中。
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "alpha", "any": ["beta"]}),
+        ));
+        let lines: Vec<u64> = result["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["line"].as_u64().unwrap())
+            .collect();
+        assert_eq!(lines, vec![1, 2], "{result}");
+    }
+
+    #[test]
+    fn list_min_depth_filters_shallow_files() {
+        let dir = TempDir::new("min-depth");
+        dir.write("root.rs", "x");
+        dir.write("src/a.rs", "x");
+        dir.write("src/deep/b.rs", "x");
+        let deep = call(&bag(
+            &dir,
+            "list",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "**/*.rs", "min_depth": 2}),
+        ));
+        assert_eq!(
+            deep["result"]["paths"],
+            json!(["src/a.rs", "src/deep/b.rs"]),
+            "{deep}"
+        );
+    }
+
+    #[test]
+    fn stat_reports_ctime_and_readonly() {
+        let dir = TempDir::new("stat-meta");
+        dir.write("a.txt", "x");
+        let result = call(&bag(&dir, "stat", "a.txt", "severe", full_caps(), json!({})));
+        assert_eq!(result["result"]["readonly"], false, "{result}");
+        // ctime 可能为 null（文件系统不支持），字段须存在。
+        assert!(result["result"].get("ctime").is_some(), "{result}");
+    }
+
+    #[test]
+    fn read_encoding_base64_and_hex() {
+        let dir = TempDir::new("read-enc");
+        fs::write(dir.path.join("bin.dat"), [0u8, 1, 2, 0xff, 0x41]).unwrap();
+        let base64 = call(&bag(
+            &dir,
+            "read",
+            "bin.dat",
+            "severe",
+            full_caps(),
+            json!({"encoding": "base64"}),
+        ));
+        assert_eq!(base64["ok"], true, "{base64}");
+        assert_eq!(base64["result"]["text"], "AAEC/0E=", "{base64}");
+        assert_eq!(base64["result"]["binary"], true, "{base64}");
+        assert_eq!(base64["result"]["bytes"], 5, "{base64}");
+        let hex = call(&bag(
+            &dir,
+            "read",
+            "bin.dat",
+            "severe",
+            full_caps(),
+            json!({"encoding": "hex"}),
+        ));
+        assert_eq!(hex["result"]["text"], "000102ff41", "{hex}");
+        // 文本文件按编码读：binary=false。
+        dir.write("a.txt", "hi");
+        let text_b64 = call(&bag(
+            &dir,
+            "read",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"encoding": "base64"}),
+        ));
+        assert_eq!(text_b64["result"]["binary"], false, "{text_b64}");
+        assert_eq!(text_b64["result"]["text"], "aGk=", "{text_b64}");
+        // 未知编码 → bad_args。
+        let bad = call(&bag(
+            &dir,
+            "read",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"encoding": "rot13"}),
+        ));
+        assert_eq!(bad["code"], "bad_args", "{bad}");
+    }
+
+    #[test]
+    fn grep_binary_searches_raw_bytes_when_enabled() {
+        let dir = TempDir::new("grep-bin");
+        fs::write(dir.path.join("bin.dat"), [0u8, b's', b'e', b'c', b'r', b'e', b't', 0u8]).unwrap();
+        // 默认：二进制被跳过，命中为空且计入 skipped.binary。
+        let skipped = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "secret"}),
+        ));
+        assert_eq!(skipped["result"]["matches"], json!([]), "{skipped}");
+        assert_eq!(skipped["result"]["skipped"]["binary"], 1, "{skipped}");
+        // binary=true：按 Latin-1 搜到，条目带 binary:true。
+        let found = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "secret", "binary": true}),
+        ));
+        let items = found["result"]["matches"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{found}");
+        assert_eq!(items[0]["binary"], true, "{found}");
+        assert_eq!(found["result"]["skipped"]["binary"], 0, "{found}");
+        assert_eq!(found["result"]["binary"], true, "{found}");
+    }
+
+    #[test]
+    fn grep_stats_reports_aggregate_counts() {
+        let dir = TempDir::new("grep-stats");
+        dir.write("a.txt", "hit\nhit\n");
+        dir.write("b.txt", "hit\n");
+        let result = call(&bag(
+            &dir,
+            "grep",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"pattern": "hit", "stats": true}),
+        ));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["result"]["matches"], json!([]), "{result}");
+        assert_eq!(result["result"]["stats"]["files_with_matches"], 2, "{result}");
+        assert_eq!(result["result"]["stats"]["total_matches"], 3, "{result}");
+        // 非 stats：不注入 stats 字段。
+        let plain = call(&bag(&dir, "grep", ".", "severe", full_caps(), json!({"pattern": "hit"})));
+        assert!(plain["result"].get("stats").is_none(), "{plain}");
     }
 }

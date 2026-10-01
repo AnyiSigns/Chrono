@@ -67,6 +67,21 @@ export function normalizeKind(value: Json | undefined): string | null {
   return kind !== null && KINDS.has(kind) ? kind : null
 }
 
+/**
+ * enqueue 的 kind 判据：显式 `kind` 优先；否则按 (port, 工具名) 归一——编排提案 → `orchestration_change`，
+ * 插件写 → `plugin_write`，其余 `tool_call`。port 与工具名都缺失时回 null（调用方按 bad_args 拒）。
+ */
+export function normalizeEnqueueKind(args: Rec): string | null {
+  const explicit = normalizeKind(args['kind'])
+  if (explicit !== null) return explicit
+  const tool = asString(args['tool'])
+  const port = asString(args['port'])
+  if (tool === null && port === null) return null
+  if (tool === 'orchestration.propose' || port === 'orchestration-admin') return 'orchestration_change'
+  if (tool === 'plugin.write' || port === 'plugin-admin') return 'plugin_write'
+  return 'tool_call'
+}
+
 /** 实际提供者能力类名：显式 port 优先，否则按 kind 取默认。 */
 export function resolvePort(kind: string, port: Json | undefined): string {
   const explicit = asString(port)

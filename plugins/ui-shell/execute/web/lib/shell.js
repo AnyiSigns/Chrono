@@ -24,7 +24,16 @@ const BOOT_RETRY_DELAY_MS = 800
 const BOOTSTRAP =
   typeof window.__CHRONO_SHELL__ === 'object' && window.__CHRONO_SHELL__ !== null
     ? window.__CHRONO_SHELL__
-    : { mounts: [], headless: [], theme: 'system' }
+    : { mounts: [], headless: [], slots: [], assets: {}, theme: 'system' }
+
+/** 静态资源 URL：服务端按内容升版注入 `?v=`；缺省回退到未升版的固定路径。 */
+const ASSET_URLS =
+  typeof BOOTSTRAP.assets === 'object' && BOOTSTRAP.assets !== null ? BOOTSTRAP.assets : {}
+function assetUrl(name, fallback) {
+  const url = ASSET_URLS[name]
+  return typeof url === 'string' && url.length > 0 ? url : fallback
+}
+const MESSAGES_URL = assetUrl('messages.v1.json', '/assets/messages.v1.json')
 
 /** 文案表读取失败时的内置最小表（错误码原样显示，不阻塞）。 */
 const FALLBACK_MESSAGES = {
@@ -50,7 +59,7 @@ function msg(code) {
 
 async function loadMessages() {
   try {
-    const response = await fetch('/assets/messages.v1.json')
+    const response = await fetch(MESSAGES_URL)
     if (!response.ok) return
     const parsed = await response.json()
     if (parsed !== null && typeof parsed === 'object') {
@@ -119,9 +128,9 @@ async function postJson(path, body) {
 
 const api = {
   tokens: {
-    css: '/assets/tokens.v1.css',
-    icons: '/assets/icons.v2.svg',
-    messages: '/assets/messages.v1.json',
+    css: assetUrl('tokens.v1.css', '/assets/tokens.v1.css'),
+    icons: assetUrl('icons.v2.svg', '/assets/icons.v2.svg'),
+    messages: MESSAGES_URL,
   },
   theme: {
     get: () => themePref,
@@ -174,6 +183,75 @@ const api = {
   },
   uiState,
 }
+
+// ---- 顶层槽数据化与页面宿主 ----
+
+// 数据声明的顶层槽落到哪个容器：页面自带的 7 个顶层槽已存在则跳过，新增槽按 `mount` 落位。
+const MOUNT_PARENT = {
+  root: () => document.getElementById('shell-root'),
+  column: () => document.getElementById('shell-column'),
+  stage: () => document.getElementById('shell-column'),
+  bottom: () => document.getElementById('shell-bottom'),
+  body: () => document.body,
+}
+
+/** 按数据渲染缺失的顶层槽容器；已存在的槽（页面自带）不重建，只在数据缺省时保持原样。 */
+function renderSlots(specs) {
+  if (!Array.isArray(specs)) return
+  for (const spec of specs) {
+    if (spec === null || typeof spec !== 'object') continue
+    const name = spec.name
+    if (typeof name !== 'string' || name.length === 0) continue
+    if (document.querySelector(`[data-slot="${name}"]`) !== null) continue
+    const parent = (MOUNT_PARENT[spec.mount] ?? MOUNT_PARENT.column)()
+    if (parent === null) continue
+    const isPage = spec.kind === 'page'
+    const el = document.createElement(isPage ? 'section' : 'div')
+    el.id = `slot-${name}`
+    el.dataset.slot = name
+    el.className = isPage ? 'shell-slot-page' : 'shell-slot-chrome'
+    if (isPage) el.hidden = true
+    if (spec.mount === 'stage') {
+      const bottom = document.getElementById('shell-bottom')
+      if (bottom === null) parent.appendChild(el)
+      else parent.insertBefore(el, bottom)
+    } else {
+      parent.appendChild(el)
+    }
+  }
+}
+
+// 页面宿主：`page` 槽一次只显一个已挂载页面；导航改 URL（`/page/<id>`）即切换，ui-chat 不受影响。
+let activePageId = null
+
+function applyPageVisibility() {
+  const host = document.querySelector('[data-slot="page"]')
+  if (host === null) return
+  host.hidden = activePageId === null
+  document.body.classList.toggle('shell-page-active', activePageId !== null)
+  for (const app of host.querySelectorAll('.shell-slot-app')) app.hidden = app.dataset.slotApp !== activePageId
+}
+
+function pageIdFromPath(path) {
+  if (typeof path !== 'string' || path === '' || path === '/') return null
+  const match = path.match(/^\/page\/([^/?#]+)/)
+  if (match === null) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+}
+
+function setActivePage(id) {
+  activePageId = typeof id === 'string' && id.length > 0 ? id : null
+  applyPageVisibility()
+}
+
+window.addEventListener('shell:navigate', (event) => {
+  setActivePage(pageIdFromPath(event && event.detail ? event.detail.path : null))
+})
+window.addEventListener('popstate', () => setActivePage(pageIdFromPath(window.location.pathname)))
 
 // slot 宿主：插件客户端半边经 register(ctx) 注册组件；壳只提供 outlet 与 error boundary。
 // `mountEpoch` 记每个 entry 的当前装载代号：超时重挂会换新代号，迟到的 register 据此被丢弃。
@@ -650,6 +728,13 @@ window.addEventListener('resize', updateNarrow)
 
 async function boot() {
   await loadMessages()
+  renderSlots(BOOTSTRAP.slots)
+  const pageHost = document.querySelector('[data-slot="page"]')
+  if (pageHost !== null) {
+    // 页面客户端半边是延迟装载的：挂上后按当前活动页重算显隐。
+    new MutationObserver(applyPageVisibility).observe(pageHost, { childList: true })
+  }
+  setActivePage(pageIdFromPath(window.location.pathname))
   connectEvents()
   await waitForSlotsReady()
   await mountHeadless()

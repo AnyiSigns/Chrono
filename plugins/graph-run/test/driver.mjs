@@ -16,8 +16,8 @@ export function defaultProviders(overrides = {}) {
     'graph-gate.validate': () => ({ ok: true, errors: [], result_hash: 'a'.repeat(64) }),
     'model.chat': () => ({ ok: true, text: 'hi', tool_calls: [], usage: { tokens: 1 } }),
     'session.step_append': () => ({ ok: true, turn_id: 't1', deduped: false }),
-    'tools.list': () => ({ tools: [], rejected: [] }),
-    'tools.dispatch': (args) => ({
+    'tool-registry.list': () => ({ tools: [], rejected: [] }),
+    'tool-dispatch.dispatch': (args) => ({
       results: (args.calls ?? []).map((call) => ({ call_id: call.call_id, ok: true, result: {} })),
     }),
     'guard.judge': (args) => ({
@@ -31,8 +31,36 @@ export function defaultProviders(overrides = {}) {
     }),
     'evolve-metrics.shadow': () => ({ status: 'pass', metric_id: 'metric-1' }),
     'router.select': (args) => args.primary,
+    // 判据能力类 `loop-rule` 的桩：本插件单测只用到缺省 `always`；名未认领即 fail-closed。
+    'loop-rule.when': (args) => ({ known: args.name === 'always', ok: true, value: true }),
+    'loop-rule.pre': (args) => ({ known: args.name === 'always', ok: true }),
+    'loop-rule.post': (args) => ({ known: args.name === 'always', ok: true }),
+    // 回合固定点钩子桩：默认无中立增量（无需挂起 / 注入）。
+    'turn-hook.before-assemble': () => ({ delta: {} }),
+    'turn-hook.after-step': () => ({ delta: {} }),
+    'turn-hook.before-settle': () => ({ delta: {} }),
+    'turn-hook.after-settle': () => ({ delta: {} }),
     ...overrides,
   }
+}
+
+/** `many` 成员表：单测默认注入判据 / 钩子桩成员，场景 env 可覆盖或追加。 */
+const BASE_MANY_NEEDS = {
+  'loop-rule': ['loop-rule-stub'],
+  'turn-hook': ['turn-hook-stub'],
+}
+
+function withManyNeeds(env) {
+  const raw = env['CHRONO_PLUGIN_MANY_NEEDS']
+  let parsed = {}
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      parsed = {}
+    }
+  }
+  return { ...env, CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify({ ...BASE_MANY_NEEDS, ...parsed }) }
 }
 
 /** 启动 graph-run 服务并回请求接口。 */
@@ -41,7 +69,7 @@ export function startService({ providers = {}, env = FIXED_ENV } = {}) {
   const service = startBridgedService({
     cwd: PKG_ROOT,
     entry: join(PKG_ROOT, 'execute', 'main.ts'),
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...withManyNeeds(env) },
     timeoutMs: 20000,
     onPortCall: (message) => {
       const key = `${message.port}.${message.method}`

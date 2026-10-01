@@ -58,6 +58,12 @@
     #slot-composer { flex: none; min-height: 0; overflow: visible; }
     #slot-overlay { position: fixed; inset: 0; z-index: var(--z-modal); pointer-events: none; }
     #slot-overlay > * { pointer-events: auto; }
+    /* 数据驱动新增的槽：chrome 槽常显占布局（如 statusbar 落 column 末尾）；page 槽占 main 区，
+       活动时隐藏消息列与底部停靠区——页面切换不改 ui-chat，只是把 main 让位。 */
+    .shell-slot-chrome { flex: none; min-height: 0; }
+    #shell-column > .shell-slot-page { flex: 1 1 0; min-height: 0; overflow: hidden; }
+    body.shell-page-active #slot-main,
+    body.shell-page-active #shell-bottom { display: none; }
     /* slot 客户端半边挂载容器：撑满所属 slot；topbar / underbar 常显占布局，高度随内容自适应 */
     .shell-slot-app { height: 100%; min-height: 0; }
     #slot-topbar .shell-slot-app { height: auto; }

@@ -1,0 +1,26 @@
+{
+  "identity": "looprule-fixture",
+  "implements": ["loop-rule"],
+  "methods": { "loop-rule": ["when"] },
+  "judgments": { "loop-rule": { "when": "terms/when.json" } },
+  "pins": {},
+  "start": "",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "never",
+    "backoff": "none",
+    "max": 0,
+    "window_ms": 60000,
+    "drain_ms": 500
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 1000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "term", "path": "terms/" }
+  ],
+  "commands": []
+}

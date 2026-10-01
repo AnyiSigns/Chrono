@@ -83,7 +83,7 @@
 - **危险操作模式**：递归删除、提权 / 改权限、管道下载后执行、改注册表 / 系统服务、格式化 / 分区、
   持久化改环境变量 → `escalate`（模式清单住规则数据）。
 - **外部 MCP**：`port = mcp` 的工具默认 `escalate`；规则里 `confirmed && trusted` 的服务器例外。
-- **net 越档**：调用方（编排层 `gateBag`）把每个 call 声明的 `caps.net` 与当前档 net 范围随 `calls[].net` /
+- **net 越档**：调用方（编排层 `tool.gate` 派发元数据）把每个 call 声明的 `caps.net` 与当前档 net 范围随 `calls[].net` /
   `bag.tier_net` 传入，本插件只做序比较（none < limited < all）与裁决：声明超出档位范围 → `escalate`
   （`net` 段可关 / 改裁决）。批准后由编排层签发一次性 `caps.grant`（`op:"exec"` + `net`）放行本次；
   真正的强制面在 sandbox / 工具自身。`auto` 档 net=all 本就不越档。

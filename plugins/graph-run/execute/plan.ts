@@ -86,7 +86,7 @@ export function escapeRefs(value: Json): Json {
 
 /**
  * 工具结果里冒泡的写计划：`results[].result.$directives`。
- * `tools.dispatch` 只回 results、不冒泡计划，故 question / todo 等提供者把写计划放进工具结果，由此收集并入回合尾计划。
+ * `tool-dispatch.dispatch` 只回 results、不冒泡计划，故 question / todo 等提供者把写计划放进工具结果，由此收集并入回合尾计划。
  */
 export function nestedDirectivesOf(value: Json): Json[] {
   if (!isRecord(value)) return []

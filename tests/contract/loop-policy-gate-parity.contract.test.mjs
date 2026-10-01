@@ -20,7 +20,7 @@ const PINS = {
   context: 'context-window',
   guard: 'guard',
   approval: 'approval',
-  tools: 'tools',
+  'tool-dispatch': 'tool-dispatch',
   router: 'router',
   'evolve-metrics': 'evolve-metrics',
 }

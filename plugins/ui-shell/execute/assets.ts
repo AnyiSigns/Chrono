@@ -2,13 +2,22 @@
 // tokens 失败 → 内联最小 token；icons 失败 → 空 sprite（图标位留空、保留 aria-label）；
 // messages 失败 → 内置最小文案表（见 messages.ts）。三者均不阻塞功能。
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { FALLBACK_MESSAGES } from './messages.ts'
 
 export interface AssetContent {
   text: string
   fallback: boolean
+}
+
+/** 一个壳静态资源的单一登记项：内容类型 + 读取（含降级）。新增资源只加一项，路由与投递自动覆盖。 */
+export interface AssetSpec {
+  name: string
+  contentType: string
+  load(webDir: string): AssetContent
 }
 
 /** 包内 `execute/web/` 绝对路径（以模块位置为准，与 cwd 无关）。 */
@@ -63,6 +72,48 @@ export function loadIcons(webDir: string): AssetContent {
 
 export function loadFavicon(webDir: string): AssetContent {
   return readAsset(webDir, 'favicon.svg', EMPTY_SPRITE)
+}
+
+/**
+ * 壳静态资源总表（单一来源）：路由判定与投递都从这里派生，避免「新增一个资源要改 routes.ts 与
+ * http-server.ts 两处」。顺序即声明顺序，确定性。
+ */
+export const SHELL_ASSETS: readonly AssetSpec[] = [
+  { name: 'tokens.v1.css', contentType: 'text/css; charset=utf-8', load: loadTokens },
+  { name: 'icons.v2.svg', contentType: 'image/svg+xml; charset=utf-8', load: loadIcons },
+  { name: 'messages.v1.json', contentType: 'application/json; charset=utf-8', load: loadMessages },
+  { name: 'favicon.svg', contentType: 'image/svg+xml; charset=utf-8', load: loadFavicon },
+]
+
+export const ASSET_NAMES: readonly string[] = SHELL_ASSETS.map((spec) => spec.name)
+
+/** 按名取资源登记项；未登记返回 null。 */
+export function assetOf(name: string): AssetSpec | null {
+  for (const spec of SHELL_ASSETS) {
+    if (spec.name === name) return spec
+  }
+  return null
+}
+
+/** messages 既是文案表又是静态资源：读失败回落内置最小表（见 messages.ts）。 */
+function loadMessages(webDir: string): AssetContent {
+  return readAsset(webDir, 'messages.v1.json', JSON.stringify(FALLBACK_MESSAGES, null, 2))
+}
+
+/**
+ * 各资源的内容版本（内容 sha256 前 12 位；读不到时用 `fallback`）。
+ * 浏览器经 `?v=<version>` 请求，内容变则 URL 变——`no-store` 之外的第二道缓存保险；
+ * 版本只由字节决定，同内容同版本，确定性。
+ */
+export function assetVersions(webDir: string): { [name: string]: string } {
+  const out: { [name: string]: string } = {}
+  for (const spec of SHELL_ASSETS) {
+    const content = spec.load(webDir)
+    out[spec.name] = content.fallback
+      ? 'fallback'
+      : createHash('sha256').update(content.text, 'utf8').digest('hex').slice(0, 12)
+  }
+  return out
 }
 
 /** 壳页面模板；缺失时返回一个最小可用页（保证 `/` 不空）。 */

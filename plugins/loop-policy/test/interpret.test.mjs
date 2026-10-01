@@ -90,8 +90,8 @@ test('空 body 回落种子图：无工具路径 = context.build → model.chat 
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const value = result.value
     assert.ok(Array.isArray(value.$directives), 'must return $directives')
-    // context.assemble 先经 tools.list 取目录（空目录回落），再 context.build。
-    assert.deepEqual(coreSequence(service), ['tools.list', 'context.build', 'model.chat'])
+    // context.assemble 先经 tool-registry.list 取目录（空目录回落），再 context.build。
+    assert.deepEqual(coreSequence(service), ['tool-registry.list', 'context.build', 'model.chat'])
     // 回合尾内容经 step_append 落盘，收口经 turn_settle（不再有 session.commit）。
     assert.equal(portSequence(service).includes('session.commit'), false, '回合尾一次写已退役')
     const finals = stepResults(service)
@@ -129,7 +129,7 @@ test('有工具路径 allow：assemble → step → gate → dispatch → verify
         decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }],
         summary: { allow: 1, escalate: 0, deny: 0 },
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -148,17 +148,17 @@ test('有工具路径 allow：assemble → step → gate → dispatch → verify
       'context.build',
       'model.chat',
       'guard.judge',
-      'tools.dispatch',
+      'tool-dispatch.dispatch',
       'context.build',
       'model.chat',
     ])
-    // 先写意图再执行：intent 在 tools.dispatch 之前落盘，result 在其后。
+    // 先写意图再执行：intent 在 tool-dispatch.dispatch 之前落盘，result 在其后。
     const seq = portSequence(service)
     const intentIndex = seq.indexOf('session.step_append')
-    const dispatchIndex = seq.indexOf('tools.dispatch')
+    const dispatchIndex = seq.indexOf('tool-dispatch.dispatch')
     assert.ok(
       intentIndex >= 0 && intentIndex < dispatchIndex,
-      'step.intent 必须先于 tools.dispatch',
+      'step.intent 必须先于 tool-dispatch.dispatch',
     )
     const intents = stepsOf(service).filter((record) => record.type === 'step.intent')
     assert.equal(intents.length, 1)
@@ -194,7 +194,7 @@ test('工具调用回灌：assistant(tool_calls) → tool(tool_call_id) 进入�
         decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }],
         summary: { allow: 1, escalate: 0, deny: 0 },
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -243,7 +243,7 @@ test('落盘展示 parts：推理 / 正文 / 工具卡按到达序写入 commit�
         decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }],
         summary: { allow: 1, escalate: 0, deny: 0 },
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -353,7 +353,7 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 显式挂起收口（�
     assert.equal(result.kind, 'result', JSON.stringify(result))
     // 入队后显式挂起收口：已发生的助手消息以 step.result 落盘，回合不收口（awaiting 是段终态）。
     assert.deepEqual(coreSequence(service), [
-      'tools.list',
+      'tool-registry.list',
       'context.build',
       'model.chat',
       'guard.judge',
@@ -365,7 +365,8 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 显式挂起收口（�
     assert.equal(summary.outcome, undefined, '挂起不是回合终态，不写结局')
     assert.equal(settlesOf(service).length, 0, '段终态不 settle')
     const enqueue = service.portCalls.find((call) => call.method === 'enqueue')
-    assert.equal(enqueue.args.kind, 'tool_call')
+    // kind 判据归 approval 提供方：调用方只带 (port, 工具名)，由提供方按同一口径归一。
+    assert.equal(enqueue.args.tool, 'edit')
     assert.equal(enqueue.args.port, 'tool', 'item.port 应为实际工具提供者能力类名')
     assert.equal(enqueue.args.cursor.kind, 'approval', '游标应随队列项落世界')
     assert.equal(enqueue.args.cursor.turn_id, 't1', '游标携带回合身份供续跑续同一回合')
@@ -385,14 +386,14 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 显式挂起收口（�
   }
 })
 
-test('approvalBag：kind / port 由 gate verdict 的 (port, 工具名) 判据带出', async () => {
-  for (const [tool, provider, kind] of [
-    ['plugin.write', 'plugin-admin', 'plugin_write'],
-    ['orchestration.propose', 'orchestration-admin', 'orchestration_change'],
+test('approvalBag：port / tool 由 gate verdict 的 (port, 工具名) 判据带出（kind 判据归 approval）', async () => {
+  for (const [tool, provider] of [
+    ['plugin.write', 'plugin-admin'],
+    ['orchestration.propose', 'orchestration-admin'],
   ]) {
     const service = startService({
       providers: {
-        'tools.list': () => ({
+        'tool-registry.list': () => ({
           tools: [
             {
               name: tool,
@@ -428,7 +429,7 @@ test('approvalBag：kind / port 由 gate verdict 的 (port, 工具名) 判据带
     try {
       await service.interpret({})
       const enqueue = service.portCalls.find((call) => call.method === 'enqueue')
-      assert.equal(enqueue.args.kind, kind, `${tool} 应判为 ${kind}`)
+      assert.equal(enqueue.args.tool, tool)
       assert.equal(enqueue.args.port, provider, `${tool} 的 port 应为 ${provider}`)
     } finally {
       service.close()
@@ -453,7 +454,7 @@ test('审批裁决后经 resume 续跑：approved → dispatch → 重入', asyn
       decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'escalate' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -478,7 +479,7 @@ test('审批裁决后经 resume 续跑：approved → dispatch → 重入', asyn
     })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const seq = portSequence(second)
-    assert.ok(seq.includes('tools.dispatch'), `应继续 dispatch：${seq.join(',')}`)
+    assert.ok(seq.includes('tool-dispatch.dispatch'), `应继续 dispatch：${seq.join(',')}`)
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'done')
   } finally {
@@ -503,7 +504,7 @@ test('审批裁决词汇：槽词汇 accept/deny 映射为 approved/denied 后�
       decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'escalate' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -528,7 +529,7 @@ test('审批裁决词汇：槽词汇 accept/deny 映射为 approved/denied 后�
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'done', `accept 应继续派发而非拒绝：${JSON.stringify(summary)}`)
     assert.ok(
-      portSequence(second).includes('tools.dispatch'),
+      portSequence(second).includes('tool-dispatch.dispatch'),
       `accept 后应继续 dispatch：${portSequence(second).join(',')}`,
     )
   } finally {
@@ -552,7 +553,7 @@ test('批准续跑构造一次性 caps.grant：approved 带 grant、denied 不�
       decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'escalate' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -573,7 +574,7 @@ test('批准续跑构造一次性 caps.grant：approved 带 grant、denied 不�
   try {
     await approved.interpret({ resume: { cursor, thread: 't1', payload: { verdict: 'approved' } } })
     const dispatchCall = approved.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )
     assert.ok(dispatchCall, '批准后应派发工具')
     const grant = dispatchCall.args.grant
@@ -590,7 +591,7 @@ test('批准续跑构造一次性 caps.grant：approved 带 grant、denied 不�
   const denied = startService({ providers })
   try {
     await denied.interpret({ resume: { cursor, thread: 't1', payload: { verdict: 'denied' } } })
-    assert.ok(!portSequence(denied).includes('tools.dispatch'), '拒绝路径不应派发工具')
+    assert.ok(!portSequence(denied).includes('tool-dispatch.dispatch'), '拒绝路径不应派发工具')
     assert.ok(
       denied.portCalls.every((call) => call.args?.grant === undefined),
       '拒绝路径不应带 grant',
@@ -616,7 +617,7 @@ test('stat 工具映射 fsop op=stat：批准后为只读一次性 grant', async
       decisions: [{ index: 0, port: 'tool', tool: 'stat', verdict: 'escalate' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })),
     }),
   }
@@ -633,7 +634,7 @@ test('stat 工具映射 fsop op=stat：批准后为只读一次性 grant', async
   try {
     await approved.interpret({ resume: { cursor, thread: 't1', payload: { verdict: 'approved' } } })
     const dispatchCall = approved.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )
     assert.ok(dispatchCall, '批准后应派发工具')
     const grant = dispatchCall.args.grant
@@ -684,7 +685,7 @@ test('工具结果里的写计划冒泡：#33 收集 results[].result.$directive
         ],
         usage: {},
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -735,7 +736,7 @@ test('展示 parts 剥离计划通道：工具结果取 extern 载荷、不含 $
         decisions: [{ index: 0, port: 'todo', tool: 'todo', verdict: 'allow' }],
         summary: { allow: 1, escalate: 0, deny: 0 },
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: plan })),
       }),
     },
@@ -794,7 +795,7 @@ test('机械 post：畸形 tool_call 在 agent.step 被拦，不进 #27', async 
     const result = await service.interpret({ turn_id: 't1' })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const seq = portSequence(service)
-    assert.ok(!seq.includes('tools.dispatch'), `不应进 #27：${seq.join(',')}`)
+    assert.ok(!seq.includes('tool-dispatch.dispatch'), `不应进 #27：${seq.join(',')}`)
     const settle = settlesOf(service)[0]
     assert.equal(settle.outcome.kind, 'refused', '拒绝后短路到 sink 并收口')
     assert.equal(settle.outcome.code, 'capability_mismatch')
@@ -816,7 +817,7 @@ test('verify 默认零成本：未配命令只选 noop、不发 eff', async () =
         tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }],
         usage: {},
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -849,7 +850,7 @@ test('verify 配置命令：workspace 实例被选中并跑真命令', async () 
         tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }],
         usage: {},
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -900,7 +901,7 @@ test('verify 失败不阻断收口：仍 commit、报告进上下文并重入', 
           usage: {},
         }
       },
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -964,7 +965,7 @@ test('max_turn_iter 达上限仍派发 ⇒ committed + stop_reason（不是 refu
           usage: {},
         }
       },
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -1076,7 +1077,7 @@ test('门禁拒绝：deny 作工具结果回灌、回合继续（不是回合拒
     const summary = summaryOf(result.value)
     assert.equal(summary.ended, 'done', 'deny 不再终结回合')
     assert.equal(summary.outcome.kind, 'committed')
-    assert.ok(!portSequence(service).includes('tools.dispatch'), 'deny 不派发工具')
+    assert.ok(!portSequence(service).includes('tool-dispatch.dispatch'), 'deny 不派发工具')
     assert.equal(settlesOf(service)[0].outcome.kind, 'committed')
     // 拒绝原因作为工具结果回灌：配对保住、助手正文不丢。
     const denied = stepResults(service).find((record) =>
@@ -1103,7 +1104,7 @@ test('提问往返：question 工具 ⇒ 段以 awaiting 收束、回合保持 o
         ],
         usage: {},
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -1230,7 +1231,7 @@ test('无进展熔断：反复派发同一工具指纹 ⇒ 达阈值收口', asy
         decisions: [{ index: 0, port: 'tool', tool: 'stat', verdict: 'allow' }],
         summary: { allow: 1, escalate: 0, deny: 0 },
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })),
       }),
     },
@@ -1261,7 +1262,7 @@ test('提问续跑：答案经 resume 回灌 tool.dispatch，重入后收口', a
         usage: {},
       }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -1311,7 +1312,7 @@ test('transport_failed：节点传输失败 ⇒ 拒绝码 transport_failed', asy
   }
 })
 
-test('bag.tools：context.assemble 经 tools.list 取非空目录 → 模型可见 + tool.dispatch 复用', async () => {
+test('bag.tools：context.assemble 经 tool-registry.list 取非空目录 → 模型可见 + tool.dispatch 复用', async () => {
   const directory = {
     tools: [
       {
@@ -1335,7 +1336,7 @@ test('bag.tools：context.assemble 经 tools.list 取非空目录 → 模型可�
   let step = 0
   const service = startService({
     providers: {
-      'tools.list': () => directory,
+      'tool-registry.list': () => directory,
       'model.chat': () => {
         step += 1
         if (step > 1) return { ok: true, text: 'done after tools', tool_calls: [], usage: {} }
@@ -1353,8 +1354,8 @@ test('bag.tools：context.assemble 经 tools.list 取非空目录 → 模型可�
     const result = await service.interpret({ tools_bindings: { bindings: {} }, mcp_tools: [] })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const seq = portSequence(service).filter((key) => !key.startsWith('graph-gate.'))
-    assert.equal(seq[0], 'tools.list', 'context.assemble 前应取目录')
-    assert.equal(seq.filter((key) => key === 'tools.list').length, 1, '目录只取一次（重入复用）')
+    assert.equal(seq[0], 'tool-registry.list', 'context.assemble 前应取目录')
+    assert.equal(seq.filter((key) => key === 'tool-registry.list').length, 1, '目录只取一次（重入复用）')
     const contextCall = service.portCalls.find(
       (call) => call.port === 'context' && call.method === 'build',
     )
@@ -1363,7 +1364,7 @@ test('bag.tools：context.assemble 经 tools.list 取非空目录 → 模型可�
     assert.equal(firstModel.args.tools.length, 1, '模型应看到非空工具目录')
     assert.equal(firstModel.args.tools[0].name, 'edit')
     const dispatchCall = service.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )
     assert.ok(dispatchCall, '应派发工具')
     assert.equal(dispatchCall.args.directory.tools.length, 1, 'tool.dispatch 复用同一目录')
@@ -1381,7 +1382,7 @@ test('bag.tools：context.assemble 经 tools.list 取非空目录 → 模型可�
 test('提问续跑：游标取派发前（不含本批产出），同批其它工具真实结果经步记录回灌模型', async () => {
   const seen = []
   const providers = {
-    'tools.list': () => ({ tools: [], rejected: [] }),
+    'tool-registry.list': () => ({ tools: [], rejected: [] }),
     'model.chat': (args) => {
       seen.push(Array.isArray(args.messages) ? JSON.parse(JSON.stringify(args.messages)) : [])
       const last = args.messages?.[args.messages.length - 1]
@@ -1397,7 +1398,7 @@ test('提问续跑：游标取派发前（不含本批产出），同批其它�
         usage: {},
       }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) =>
         call.tool === 'question'
           ? { call_id: call.call_id, ok: true, result: { status: 'pending' } }
@@ -1409,7 +1410,7 @@ test('提问续跑：游标取派发前（不含本批产出），同批其它�
   try {
     const first = await service.interpret({ turn_id: 't1', input: { content: 'orig' } })
     const cursor = service.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )?.args?.cursor
     assert.ok(cursor, 'question 派发应带续跑游标')
     assert.equal(cursor.kind, 'question')
@@ -1464,7 +1465,7 @@ test('提问续跑：作答步 seq 取该回合已落步记录之后，不与悬
         usage: {},
       }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -1483,7 +1484,7 @@ test('提问续跑：作答步 seq 取该回合已落步记录之后，不与悬
     assert.ok(recorded.length > 0, '首段应落步记录')
     const hangMax = Math.max(...recorded.map((record) => record.seq))
     const cursor = service.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )?.args?.cursor
     const before = service.portCalls.filter(
       (call) => call.port === 'session' && call.method === 'step_append',
@@ -1540,7 +1541,7 @@ test('resume 保留原始 bag.input：作答时刻槽已是 question.answer 也�
     },
   })
   const providers = {
-    'tools.list': () => ({ tools: [], rejected: [] }),
+    'tool-registry.list': () => ({ tools: [], rejected: [] }),
     'model.chat': (args) => {
       const last = args.messages?.[args.messages.length - 1]
       if (last && last.role === 'tool')
@@ -1552,7 +1553,7 @@ test('resume 保留原始 bag.input：作答时刻槽已是 question.answer 也�
         usage: {},
       }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({
         call_id: call.call_id,
         ok: true,
@@ -1628,7 +1629,7 @@ test('并发 interpret：两次调用各用自己的工具目录解析提供者�
         }))
         return { decisions, summary: { allow: decisions.length, escalate: 0, deny: 0 } }
       },
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })),
       }),
     },
@@ -1668,7 +1669,7 @@ test('dispatchBag 透传 grant：#27 收到一次性 caps.grant', async () => {
         tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }],
         usage: {},
       }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,
@@ -1683,7 +1684,7 @@ test('dispatchBag 透传 grant：#27 收到一次性 caps.grant', async () => {
       grant: { call_id: 'c1', tier: 'severe' },
     })
     const dispatchCall = service.portCalls.find(
-      (call) => call.port === 'tools' && call.method === 'dispatch',
+      (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
     )
     assert.deepEqual(dispatchCall.args.grant, { call_id: 'c1', tier: 'severe' })
   } finally {

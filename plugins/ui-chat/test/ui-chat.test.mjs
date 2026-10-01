@@ -395,12 +395,21 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
 
 // ---- detail.kind 全集 ----
 
-test('detail.kind：text / code / diff / matches / paths / list / table / json / file / image / terminal', () => {
+test('detail.kind：text / code / diff / matches / paths / tree / list / table / json / file / image / terminal', () => {
   assert.equal(detailViewModel({ kind: 'text', text: 't' }).text, 't')
   assert.equal(detailViewModel({ kind: 'code', text: 'x', language: 'ts' }).language, 'ts')
   // 正文 / 语言口径不一：webfetch 结果是 content + 描述符用 lang。
   assert.equal(detailViewModel({ kind: 'code', content: 'body' }).text, 'body')
   assert.equal(detailViewModel({ kind: 'code', lang: 'markdown' }).language, 'markdown')
+  // read 批量：无单一 text 时按 files 拼分段正文（带路径头），避免展开区空白。
+  const batch = detailViewModel({
+    kind: 'code',
+    files: [
+      { path: 'a.ts', text: 'let a = 1' },
+      { path: 'b.ts', text: 'let b = 2' },
+    ],
+  })
+  assert.equal(batch.text, '// a.ts\nlet a = 1\n\n// b.ts\nlet b = 2')
   assert.equal(detailViewModel({ kind: 'unknown-kind', a: 1 }).kind, 'text')
 
   const diff = detailViewModel({ kind: 'diff', before: 'a\nb\nc', after: 'a\nB\nc' })
@@ -436,6 +445,28 @@ test('detail.kind：text / code / diff / matches / paths / list / table / json /
   assert.deepEqual(filesOnly.items[0].before, ['pre'])
   assert.deepEqual(filesOnly.items[0].after, ['post'])
   assert.deepEqual(detailViewModel({ kind: 'paths', paths: ['a', 'b'] }).items, ['a', 'b'])
+  // tree：层级节点拍平成带深度的行；无 tree 时退回扁平 paths。
+  assert.deepEqual(
+    detailViewModel({
+      kind: 'tree',
+      tree: [
+        { name: 'src', type: 'dir', children: [{ name: 'a.ts', type: 'file' }] },
+        { name: 'root.ts', type: 'file' },
+      ],
+    }).items,
+    [
+      { name: 'src', depth: 0, isDir: true },
+      { name: 'a.ts', depth: 1, isDir: false },
+      { name: 'root.ts', depth: 0, isDir: false },
+    ],
+  )
+  assert.deepEqual(
+    detailViewModel({ kind: 'tree', paths: ['a', 'b'] }).items,
+    [
+      { name: 'a', depth: 0, isDir: false },
+      { name: 'b', depth: 0, isDir: false },
+    ],
+  )
   assert.deepEqual(detailViewModel({ kind: 'list', items: [1, 2] }).items, [1, 2])
   // list 数据字段口径不一：websearch=results、plugin.list=list；缺 items 时按已知名回退，否则取首个数组。
   assert.deepEqual(detailViewModel({ kind: 'list', results: [1, 2] }).items, [1, 2])

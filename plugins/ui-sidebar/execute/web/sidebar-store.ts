@@ -17,10 +17,11 @@ import {
   identityBody,
   isCodeGenFallbackBody,
   normalizeConversations,
+  normalizeNav,
   normalizeWorkspaces,
   slotWriteCommand,
 } from './sidebar-model.ts'
-import type { Conversation, Workspace } from './sidebar-model.ts'
+import type { Conversation, NavItem, Workspace } from './sidebar-model.ts'
 import {
   canResize,
   clampWidth,
@@ -31,7 +32,6 @@ import {
   WIDTH_EXPANDED,
   WRITE_DEBOUNCE_MS,
 } from './width.ts'
-
 const THREAD = '_main'
 const TOOLTIP_DELAY_MS = 400
 const FLYOUT_OPEN_MS = 150
@@ -81,6 +81,7 @@ export interface SidebarSnapshot {
   icons: string
   workspaces: Workspace[]
   conversations: Conversation[]
+  nav: NavItem[]
   history: unknown
   query: string
   userCollapsed: boolean
@@ -159,6 +160,7 @@ export class SidebarStore {
       icons: ctx.tokens.icons,
       workspaces: [],
       conversations: [],
+      nav: [],
       history: null,
       query: '',
       userCollapsed: false,
@@ -336,6 +338,14 @@ export class SidebarStore {
     return true
   }
 
+  /** 拉取 `ui-nav` 记录（壳汇集各提供方）；零提供方 / 未就绪 → 空表，不阻塞其余读面。 */
+  private async loadNav(): Promise<boolean> {
+    const result = await this.command('ui-shell.nav', null)
+    if (!result.ok) return false
+    this.update({ nav: normalizeNav(result.value) })
+    return true
+  }
+
   private async loadStoredWidth(): Promise<void> {
     const seq = this.loadSeq
     const result = await this.command('config.read', null)
@@ -359,6 +369,7 @@ export class SidebarStore {
       this.loadHistory(),
       this.loadStoredWidth(),
       this.loadTurns(),
+      this.loadNav(),
     ])
     if (this.disposed || seq !== this.loadSeq) return
     this.update({ loading: false, error: !workspacesOk || !historyOk ? this.text('sidebar_dependency_missing') : null })
@@ -658,9 +669,34 @@ export class SidebarStore {
     }
   }
 
-  openSettings(): void {
-    if (this.ctx.uiState !== undefined && typeof this.ctx.uiState.set === 'function') {
-      this.ctx.uiState.set('settings_open', true)
+  /** 导航项文案：有 `labelCode` 走共享文案表，否则用记录自带 `label`。 */
+  navLabel(item: NavItem): string {
+    return item.labelCode !== undefined ? this.text(item.labelCode) : item.label
+  }
+
+  /**
+   * 执行导航项去向：页面走壳路由（`/page/<id>`），浮层走壳视图状态（`<id>_open`）+ 广播，
+   * 其余直接写壳视图状态。侧栏不认识具体页面 / 浮层，只按记录的 `target` 转发。
+   */
+  openNav(item: NavItem): void {
+    const target = item.target
+    if (target.page !== undefined) {
+      if (typeof this.ctx.navigate === 'function') this.ctx.navigate(`/page/${encodeURIComponent(target.page)}`)
+      return
+    }
+    if (target.uiState !== undefined) {
+      if (this.ctx.uiState !== undefined && typeof this.ctx.uiState.set === 'function') {
+        this.ctx.uiState.set(target.uiState.key, target.uiState.value)
+      }
+      return
+    }
+    if (target.overlay !== undefined) {
+      if (this.ctx.uiState !== undefined && typeof this.ctx.uiState.set === 'function') {
+        this.ctx.uiState.set(`${target.overlay}_open`, true)
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('shell:overlay', { detail: { id: target.overlay } }))
+      }
     }
   }
 

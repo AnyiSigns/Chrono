@@ -1,22 +1,16 @@
-// 纯函数级测试：schema 配置装载 + 后端抽象（零依赖，node --test）。
-// 标题后处理原语（去引号标点 / 码点截断 / 兜底顺序）已迁至 `title-format` 提供方，其行为住该插件测试。
+// 纯函数级测试：schema 配置装载 + 后端抽象 + 标题后处理原语（零依赖，node --test）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { HARD_MAX_CHARS, loadBaseConfig, resolveConfig } from '../execute/config.ts'
 import { PortLink } from 'plugin-sdk'
-import { BackendError, RemoteModel, RemoteTitleFormat } from '../execute/port-link.ts'
-
-/** 记录反向调用并同步应答的假通道。 */
-function fakeLink(responder) {
-  const calls = []
-  return {
-    calls,
-    call: async (port, method, args, options) => {
-      calls.push({ port, method, args, options })
-      return responder(port, method, args)
-    },
-  }
-}
+import { BackendError, RemoteModel } from '../execute/port-link.ts'
+import {
+  cleanModelTitle,
+  fallbackTitle,
+  normalizeWhitespace,
+  resolveTitle,
+  truncateCodePoints,
+} from '../execute/title.ts'
 
 test('loadBaseConfig：schema 默认值与硬顶一致', () => {
   const config = loadBaseConfig()
@@ -54,34 +48,31 @@ test('RemoteModel：单次调用超时作结构化失败（按 timeoutMs 提前�
   assert.ok(Date.now() - started < 2000, '超时应提前收口而非等待宿主超时')
 })
 
-test('RemoteTitleFormat：经反向 port.call 调 title-format.resolve 并回收 title', async () => {
-  const link = fakeLink(() => ({ ok: true, value: { title: '快速排序算法' } }))
-  const backend = new RemoteTitleFormat(link)
-  const title = await backend.resolve('"快速排序算法。"', '帮我写一个快速排序', 10, '新对话')
-  assert.equal(title, '快速排序算法')
-  assert.equal(link.calls.length, 1)
-  assert.equal(link.calls[0].port, 'title-format')
-  assert.equal(link.calls[0].method, 'resolve')
-  assert.deepEqual(link.calls[0].args, {
-    model_text: '"快速排序算法。"',
-    first_message: '帮我写一个快速排序',
-    max_chars: 10,
-    title_default: '新对话',
-  })
-  assert.ok(link.calls[0].options.timeoutMs > 0, '应带严格小于 generate 上限的逐次 timeoutMs')
+test('truncateCodePoints：按码点截断，CJK 每字 = 1、不劈代理对', () => {
+  assert.equal(truncateCodePoints('你好世界', 2), '你好')
+  assert.equal(truncateCodePoints('你好世界', 10), '你好世界')
+  assert.equal(truncateCodePoints('😀😀😀', 2), '😀😀')
+  assert.equal(Array.from(truncateCodePoints('😀😀😀', 2)).length, 2)
 })
 
-test('RemoteTitleFormat：port 失败 / 回包缺 title → 结构化 BackendError', async () => {
-  const failed = new RemoteTitleFormat(
-    fakeLink(() => ({ ok: false, code: 'bad_args', message: 'x' })),
-  )
-  await assert.rejects(
-    failed.resolve(null, '消息', 10, '新对话'),
-    (err) => err instanceof BackendError && err.code === 'bad_args',
-  )
-  const missing = new RemoteTitleFormat(fakeLink(() => ({ ok: true, value: {} })))
-  await assert.rejects(
-    missing.resolve(null, '消息', 10, '新对话'),
-    (err) => err instanceof BackendError && err.code === 'title_format_failed',
-  )
+test('normalizeWhitespace：折叠空白并去首尾', () => {
+  assert.equal(normalizeWhitespace('  你好\n\n世界  '), '你好 世界')
+})
+
+test('cleanModelTitle：取首个非空行、去引号 / 换行 / 结尾标点', () => {
+  assert.equal(cleanModelTitle('「你好，世界。」', 10), '你好，世界')
+  assert.equal(cleanModelTitle('"排序算法。"', 10), '排序算法')
+  assert.equal(cleanModelTitle('\n\n  快速排序。  \n第二行', 10), '快速排序')
+  assert.equal(cleanModelTitle('这是一个很长的标题需要被截断处理', 10), '这是一个很长的标题需')
+})
+
+test('fallbackTitle：首条消息去空白后前 N 字', () => {
+  assert.equal(fallbackTitle('  帮我写一个快速排序算法  ', 10), '帮我写一个快速排序算')
+  assert.equal(fallbackTitle('   ', 10), '')
+})
+
+test('resolveTitle：模型 → 首条消息 → 缺省标题 的兜底顺序', () => {
+  assert.equal(resolveTitle('模型标题', '首条消息', 10, '新对话'), '模型标题')
+  assert.equal(resolveTitle('', '帮我写一个快速排序算法', 10, '新对话'), '帮我写一个快速排序算')
+  assert.equal(resolveTitle(null, '   ', 10, '我的标题'), '我的标题')
 })

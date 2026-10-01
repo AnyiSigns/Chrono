@@ -384,7 +384,7 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
   if (sliceEnabled(wiring, 'style') && style !== null) bag['style'] = style
   if (sliceEnabled(wiring, 'prompt')) bag['system_prompt'] = wiring.system_prompt
   // 缺省工具 schema 只在非空时落键：空数组会被 #27 当作「预建空目录」而屏蔽真实工具目录，
-  // #33 会在 context.assemble 处经 `tools.list` 装配目录。
+  // 图解释器会在 context.assemble 处经 `tool-registry.list` 装配目录。
   if (Array.isArray(wiring.tools) && wiring.tools.length > 0) bag['tools'] = wiring.tools
   return bag
 }

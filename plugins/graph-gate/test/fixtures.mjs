@@ -52,7 +52,7 @@ const CONTRACTS = [
     inputs: [input('verdict', 'verdict', { required: true, binding_mode: 'any' })],
     outputs: [output('results', 'tool_results')],
     publishes: [],
-    effects: { ports: ['tools'], methods: ['dispatch'], caps: WS_FS },
+    effects: { ports: ['tool-dispatch'], methods: ['dispatch'], caps: WS_FS },
     touches_effects: true,
   },
   {
@@ -60,7 +60,7 @@ const CONTRACTS = [
     inputs: [input('changes', 'tool_results')],
     outputs: [output('report', 'verify_report')],
     publishes: [],
-    effects: { ports: ['tools'], methods: ['dispatch'], caps: WS_FS },
+    effects: { ports: ['tool-dispatch'], methods: ['dispatch'], caps: WS_FS },
     touches_effects: true,
   },
   {
@@ -123,7 +123,7 @@ const NODES = [
   node('as-step', 'agent.step', { cap: 'model', method: 'chat' }, GLOBAL),
   node('as-gate', 'tool.gate', { cap: 'guard', method: 'judge' }, GLOBAL),
   node('as-approval', 'approval.wait', { cap: 'approval', method: 'enqueue' }, GLOBAL),
-  node('as-dispatch', 'tool.dispatch', { cap: 'tools', method: 'dispatch' }, GLOBAL),
+  node('as-dispatch', 'tool.dispatch', { cap: 'tool-dispatch', method: 'dispatch' }, GLOBAL),
   node('as-verify-noop', 'verify', null, GLOBAL),
   node('as-commit', 'turn.commit', { cap: 'session', method: 'step_append' }, GLOBAL),
   node('jn-global', 'join', null, GLOBAL, { bindings: { join: 'same_key_latest' } }),

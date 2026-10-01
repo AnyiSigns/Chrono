@@ -87,6 +87,97 @@ fn read_maps_to_fsop_read_with_window_defaults() {
 }
 
 #[test]
+fn read_batch_lists_then_reads_each_file() {
+    let bag = json!({
+        "tool": "read",
+        "args": {"path": "src", "pattern": "*.rs", "max_files": 5},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |call| match call["op"].as_str().unwrap_or("") {
+        "list" => ok(json!({
+            "paths": ["a.rs", "b.rs"], "truncated": false, "skipped_count": 1,
+        })),
+        "read" => ok(json!({
+            "text": "x", "total_lines": 1, "start_line": 1, "end_line": 1,
+            "lines_returned": 1, "has_more": false, "next_offset": null,
+            "content_truncated": false, "truncated": false,
+        })),
+        other => panic!("unexpected op {other}"),
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["result"]["files_returned"], 2, "{result}");
+    assert_eq!(result["result"]["files_matched"], 3, "{result}");
+    assert_eq!(result["result"]["truncated"], true, "{result}"); // 候选被 max_files 截掉 → 非全量
+    assert_eq!(result["result"]["files"][0]["path"], "a.rs");
+    assert_eq!(result["result"]["files"][1]["path"], "b.rs");
+    assert_eq!(result["result"]["digest"]["pattern"], "*.rs");
+    assert_eq!(result["result"]["digest"]["files"], 2);
+    assert_eq!(result["result"]["digest"]["matched"], 3);
+    // list 带 pattern / base / ignore / limit；read 逐个带拼接后的路径与缺省行窗。
+    assert_eq!(calls[0]["op"], "list");
+    assert_eq!(calls[0]["args"]["pattern"], "*.rs");
+    assert_eq!(calls[0]["args"]["base"], "src");
+    assert_eq!(calls[0]["args"]["limit"], 5);
+    assert_eq!(calls[1]["op"], "read");
+    assert_eq!(calls[1]["path"], "src/a.rs");
+    assert_eq!(calls[1]["args"]["limit"], 2000);
+    assert_eq!(calls[2]["path"], "src/b.rs");
+}
+
+#[test]
+fn read_batch_skips_binary_and_warns() {
+    let bag = json!({
+        "tool": "read", "args": {"path": ".", "pattern": "**/*"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, _calls) = run(bag, |call| {
+        if call["op"] == "list" {
+            return ok(json!({"paths": ["a.txt", "bin.dat"], "truncated": false, "skipped_count": 0}));
+        }
+        if call["path"] == "./bin.dat" {
+            return Err(ToolError::new("binary_unsupported", "nul byte"));
+        }
+        ok(json!({
+            "text": "ok", "total_lines": 1, "start_line": 1, "end_line": 1,
+            "lines_returned": 1, "has_more": false, "next_offset": null,
+            "content_truncated": false, "truncated": false,
+        }))
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["result"]["files_returned"], 1, "{result}");
+    assert_eq!(result["result"]["files"][0]["path"], "a.txt");
+    assert_eq!(result["result"]["skipped"]["binary"], 1, "{result}");
+    assert_eq!(result["result"]["truncated"], false, "{result}");
+    assert!(
+        result["result"]["warning"].as_str().unwrap_or("").contains("binary"),
+        "binary skip should warn: {result}"
+    );
+}
+
+#[test]
+fn read_preview_defaults_to_50_and_limit_overrides() {
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "preview": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x", "preview": true})));
+    assert_eq!(calls[0]["args"]["preview"], true);
+    assert_eq!(calls[0]["args"]["limit"], 50);
+    // 显式 limit 覆盖预览缺省。
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "preview": true, "limit": 5},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x", "preview": true})));
+    assert_eq!(calls[0]["args"]["limit"], 5);
+    // 非预览仍用 read_limit 缺省。
+    let bag = json!({"tool": "read", "args": {"path": "a.txt"}, "workspace_root": "C:\\ws"});
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x", "preview": false})));
+    assert!(calls[0]["args"].get("preview").is_none());
+    assert_eq!(calls[0]["args"]["limit"], 2000);
+}
+
+#[test]
 fn read_rejects_invalid_offset_and_limit() {
     for args in [
         json!({"path": "a.txt", "offset": -1}),
@@ -94,6 +185,7 @@ fn read_rejects_invalid_offset_and_limit() {
         json!({"path": "a.txt", "offset": 1.5}),
         json!({"path": "a.txt", "limit": 0}),
         json!({"path": "a.txt", "limit": -2}),
+        json!({"path": "src", "pattern": "*", "max_files": 0}),
     ] {
         let bag = json!({"tool": "read", "args": args, "workspace_root": "C:\\ws"});
         let (result, calls) = run(bag, |_| ok(json!({})));
@@ -332,12 +424,70 @@ fn grep_passes_skipped_through() {
     });
     let (result, _calls) = run(bag, |_| {
         ok(json!({
-            "matches": [], "truncated": false,
+            "matches": [], "truncated": false, "files_scanned": 7,
             "skipped": {"binary": 2, "too_large": 1, "unreadable": 0},
+            "warning": "2 binary file(s) skipped (contents not searched)",
         }))
     });
     assert_eq!(result["result"]["skipped"]["binary"], 2);
     assert_eq!(result["result"]["skipped"]["too_large"], 1);
+    assert_eq!(result["result"]["files_scanned"], 7);
+    assert_eq!(
+        result["result"]["warning"],
+        "2 binary file(s) skipped (contents not searched)"
+    );
+}
+
+#[test]
+fn grep_forwards_echo_and_hint() {
+    let bag = json!({
+        "tool": "grep", "args": {"pattern": "TODO|FIXME"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, _calls) = run(bag, |_| {
+        ok(json!({
+            "matches": [], "truncated": false,
+            "mode": "literal", "base": "C:/ws", "glob": null,
+            "ignore": ["node_modules"], "hint": "no matches; searched as literal text",
+            "ignored_paths": ["node_modules", "target"], "ignored_paths_truncated": false,
+        }))
+    });
+    assert_eq!(result["result"]["mode"], "literal");
+    assert_eq!(result["result"]["base"], "C:/ws");
+    assert_eq!(result["result"]["glob"], Value::Null);
+    assert_eq!(result["result"]["ignore"], json!(["node_modules"]));
+    assert_eq!(result["result"]["ignored_paths"], json!(["node_modules", "target"]));
+    assert_eq!(result["result"]["ignored_paths_truncated"], false);
+    assert_eq!(result["result"]["hint"], "no matches; searched as literal text");
+}
+
+#[test]
+fn glob_forwards_tree_depth_and_returns_tree() {
+    let bag = json!({
+        "tool": "glob",
+        "args": {"pattern": "**/*.rs", "tree": true, "depth": 2},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "tree": [
+                {
+                    "name": "src", "path": "src", "type": "dir",
+                    "children": [{ "name": "a.rs", "path": "src/a.rs", "type": "file" }],
+                },
+            ],
+            "truncated": false, "skipped_count": 0,
+            "warning": "results truncated: showing 1 of 3 matched paths",
+        }))
+    });
+    assert_eq!(calls[0]["args"]["tree"], true);
+    assert_eq!(calls[0]["args"]["depth"], 2);
+    assert_eq!(result["result"]["tree"][0]["name"], "src");
+    assert_eq!(result["result"]["tree"][0]["children"][0]["type"], "file");
+    assert_eq!(result["result"]["paths"], json!([]));
+    assert_eq!(result["result"]["warning"], "results truncated: showing 1 of 3 matched paths");
+    assert_eq!(result["result"]["digest"]["hits"], 1);
+    assert_eq!(result["result"]["digest"]["files"], 1);
 }
 
 #[test]
@@ -517,4 +667,266 @@ fn grep_result_digest_counts_hits_and_files() {
     assert_eq!(result["result"]["digest"]["pattern"], "fn");
     assert_eq!(result["result"]["digest"]["hits"], 3);
     assert_eq!(result["result"]["digest"]["files"], 2);
+}
+
+#[test]
+fn read_line_range_maps_to_offset_and_limit() {
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "start_line": 3, "end_line": 5},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x"})));
+    assert_eq!(calls[0]["args"]["offset"], 2);
+    assert_eq!(calls[0]["args"]["limit"], 3);
+    // 只给起始行：offset 起、limit 用缺省。
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "start_line": 4},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x"})));
+    assert_eq!(calls[0]["args"]["offset"], 3);
+    assert_eq!(calls[0]["args"]["limit"], 2000);
+    // 只给结束行：从首行读到该行。
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "end_line": 7},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"text": "x"})));
+    assert_eq!(calls[0]["args"]["offset"], 0);
+    assert_eq!(calls[0]["args"]["limit"], 7);
+}
+
+#[test]
+fn read_rejects_inverted_or_nonpositive_line_range() {
+    for args in [
+        json!({"path": "a.txt", "start_line": 5, "end_line": 2}),
+        json!({"path": "a.txt", "start_line": 0}),
+        json!({"path": "a.txt", "end_line": -1}),
+    ] {
+        let bag = json!({"tool": "read", "args": args, "workspace_root": "C:\\ws"});
+        let (result, calls) = run(bag, |_| ok(json!({})));
+        assert_eq!(result["error"]["code"], "bad_args", "{result}");
+        assert!(calls.is_empty(), "{result}");
+    }
+}
+
+#[test]
+fn stat_batch_lists_then_stats_each_path() {
+    let bag = json!({
+        "tool": "stat", "args": {"path": "src", "pattern": "*.rs", "max_files": 5},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |call| match call["op"].as_str().unwrap_or("") {
+        "list" => ok(json!({"paths": ["a.rs", "b.rs"], "truncated": false, "skipped_count": 1})),
+        "stat" => ok(json!({"exists": true, "is_dir": false, "size": 10, "mtime": 100})),
+        other => panic!("unexpected op {other}"),
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["result"]["files_returned"], 2, "{result}");
+    assert_eq!(result["result"]["files_matched"], 3, "{result}");
+    assert_eq!(result["result"]["truncated"], true, "{result}");
+    assert_eq!(result["result"]["aggregate"]["files"], 2, "{result}");
+    assert_eq!(result["result"]["aggregate"]["total_size"], 20, "{result}");
+    assert_eq!(result["result"]["aggregate"]["newest_mtime"], 100, "{result}");
+    assert_eq!(result["result"]["files"][0]["path"], "a.rs", "{result}");
+    assert_eq!(calls[0]["op"], "list");
+    assert_eq!(calls[0]["args"]["pattern"], "*.rs");
+    assert_eq!(calls[0]["args"]["base"], "src");
+    assert_eq!(calls[0]["args"]["limit"], 5);
+    assert_eq!(calls[1]["op"], "stat");
+    assert_eq!(calls[1]["path"], "src/a.rs");
+    assert_eq!(calls[2]["path"], "src/b.rs");
+}
+
+#[test]
+fn stat_inline_glob_splits_base_and_pattern() {
+    let bag = json!({
+        "tool": "stat", "args": {"path": "src/**/*.py"},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| {
+        ok(json!({"paths": [], "truncated": false, "skipped_count": 0}))
+    });
+    assert_eq!(calls[0]["op"], "list", "{calls:?}");
+    assert_eq!(calls[0]["args"]["base"], "src");
+    assert_eq!(calls[0]["args"]["pattern"], "**/*.py");
+}
+
+#[test]
+fn stat_recursive_forwards_flag_and_returns_aggregate() {
+    let bag = json!({
+        "tool": "stat", "args": {"path": "src", "recursive": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "exists": true, "is_dir": true, "size": 0, "mtime": 1,
+            "aggregate": {"files": 2, "dirs": 1, "total_size": 30, "newest_mtime": 9, "oldest_mtime": 1},
+        }))
+    });
+    assert_eq!(calls[0]["op"], "stat");
+    assert_eq!(calls[0]["args"]["recursive"], true);
+    assert_eq!(result["result"]["aggregate"]["total_size"], 30, "{result}");
+}
+
+#[test]
+fn glob_exclude_appends_to_ignore() {
+    let bag = json!({
+        "tool": "glob",
+        "args": {"pattern": "*", "ignore": [".git"], "exclude": [".next", "__pycache__"]},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"paths": [], "truncated": false})));
+    assert_eq!(
+        calls[0]["args"]["ignore"],
+        json!([".git", ".next", "__pycache__"])
+    );
+}
+
+#[test]
+fn stat_batch_sorts_and_filters() {
+    let bag = json!({
+        "tool": "stat",
+        "args": {
+            "path": "src", "pattern": "*",
+            "sort_by": "size", "order": "desc", "min_size": 5,
+        },
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |call| match call["op"].as_str().unwrap_or("") {
+        "list" => ok(json!({"paths": ["a.txt", "b.txt", "c.txt"], "truncated": false, "skipped_count": 0})),
+        "stat" => {
+            let size = match call["path"].as_str().unwrap() {
+                "src/a.txt" => 3,
+                "src/b.txt" => 30,
+                _ => 10,
+            };
+            ok(json!({
+                "exists": true, "is_dir": false, "size": size,
+                "mtime": size, "ctime": size, "readonly": false,
+            }))
+        }
+        other => panic!("unexpected op {other}"),
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    // min_size=5 过滤掉 a.txt（3B）。
+    assert_eq!(result["result"]["files_filtered_out"], 1, "{result}");
+    assert_eq!(result["result"]["files_returned"], 2, "{result}");
+    assert_eq!(result["result"]["files_matched"], 3, "{result}");
+    assert_eq!(result["result"]["sort_by"], "size", "{result}");
+    assert_eq!(result["result"]["order"], "desc", "{result}");
+    // size 降序：b.txt(30) 在 c.txt(10) 前。
+    assert_eq!(result["result"]["files"][0]["path"], "b.txt", "{result}");
+    assert_eq!(result["result"]["files"][1]["path"], "c.txt", "{result}");
+    assert_eq!(result["result"]["aggregate"]["total_size"], 40, "{result}");
+    assert_eq!(calls[0]["op"], "list");
+}
+
+#[test]
+fn stat_batch_rejects_bad_sort_or_order() {
+    for args in [
+        json!({"path": "src", "pattern": "*", "sort_by": "ctime"}),
+        json!({"path": "src", "pattern": "*", "order": "up"}),
+        json!({"path": "src", "pattern": "*", "min_size": -1}),
+    ] {
+        let bag = json!({"tool": "stat", "args": args, "workspace_root": "C:\\ws"});
+        let (result, calls) = run(bag, |_| ok(json!({"paths": [], "truncated": false, "skipped_count": 0})));
+        assert_eq!(result["error"]["code"], "bad_args", "{result}");
+        assert!(calls.is_empty(), "{result}");
+    }
+}
+
+#[test]
+fn read_format_maps_to_sandbox_encoding() {
+    let bag = json!({
+        "tool": "read", "args": {"path": "bin.dat", "format": "base64"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "text": "AAEC", "encoding": "base64", "binary": true,
+            "bytes": 3, "content_truncated": false, "truncated": false,
+        }))
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(calls[0]["op"], "read");
+    assert_eq!(calls[0]["args"]["encoding"], "base64");
+    assert_eq!(result["result"]["encoding"], "base64");
+    assert_eq!(result["result"]["bytes_read"], 3);
+    assert_eq!(result["result"]["binary"], true);
+    assert_eq!(result["result"]["digest"]["encoding"], "base64");
+    // 批量 + 非 utf8 format → bad_args（不触盘）。
+    let bag = json!({
+        "tool": "read", "args": {"path": "src", "pattern": "*", "format": "hex"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| ok(json!({})));
+    assert_eq!(result["error"]["code"], "bad_args", "{result}");
+    assert!(calls.is_empty(), "{result}");
+    // 非法 format → bad_args。
+    let bag = json!({
+        "tool": "read", "args": {"path": "a.txt", "format": "md5"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| ok(json!({})));
+    assert_eq!(result["error"]["code"], "bad_args", "{result}");
+    assert!(calls.is_empty(), "{result}");
+}
+
+#[test]
+fn grep_forwards_binary_flag_and_reports_it() {
+    let bag = json!({
+        "tool": "grep", "args": {"pattern": "secret", "binary": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "matches": [{"path": "b.dat", "line": 1, "text": "secret", "binary": true}],
+            "truncated": false, "binary": true,
+        }))
+    });
+    assert_eq!(calls[0]["args"]["binary"], true);
+    assert_eq!(result["result"]["binary"], true);
+    assert_eq!(result["result"]["matches"][0]["binary"], true);
+}
+
+#[test]
+fn grep_forwards_any_patterns() {
+    let bag = json!({
+        "tool": "grep", "args": {"pattern": "alpha", "any": ["beta", "gamma"]},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"matches": [], "truncated": false})));
+    assert_eq!(calls[0]["args"]["any"], json!(["beta", "gamma"]));
+}
+
+#[test]
+fn glob_forwards_min_depth() {
+    let bag = json!({
+        "tool": "glob", "args": {"pattern": "**/*.rs", "min_depth": 2},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| ok(json!({"paths": [], "truncated": false})));
+    assert_eq!(calls[0]["args"]["min_depth"], 2);
+}
+
+#[test]
+fn grep_forwards_all_and_stats_and_reports_stats() {
+    let bag = json!({
+        "tool": "grep",
+        "args": {"pattern": "error", "all": ["panic", "fatal"], "stats": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "matches": [], "truncated": false,
+            "stats": {"files_with_matches": 3, "total_matches": 7},
+        }))
+    });
+    assert_eq!(calls[0]["args"]["all"], json!(["panic", "fatal"]));
+    assert_eq!(calls[0]["args"]["stats"], true);
+    assert_eq!(result["result"]["stats"]["files_with_matches"], 3, "{result}");
+    // digest 取聚合计数（matches 为空时不再为 0）。
+    assert_eq!(result["result"]["digest"]["hits"], 7);
+    assert_eq!(result["result"]["digest"]["files"], 3);
 }

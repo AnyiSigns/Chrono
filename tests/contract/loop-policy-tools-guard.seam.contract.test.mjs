@@ -58,37 +58,25 @@ function guardJudge(guard) {
 }
 
 /**
- * 真实工具链：门面 `tools` + 下游 `tool-registry` / `tool-dispatch` / `tool-schema` 均为真实服务，
+ * 真实工具链：`tool-dispatch` 直接消费 `tool-registry`（目录 + args 校验均为真实服务），
  * 逐跳异步桥接反向 `port.call`（模拟宿主按 pins 路由），只假最外部工具提供者（Rust 构建件）。
  * `providerRoutes` 形如 `{ '<port>.<method>': (args, message) => value | {ok,...} }`。
  */
 function startToolsChain(providerRoutes = {}) {
-  const schema = startRealService({ name: 'tool-schema' })
   const registry = startRealService({ name: 'tool-registry' })
   const dispatch = startRealService({
     name: 'tool-dispatch',
     onPortCall: makeRouter({
-      'tool-schema.validate-args': routeForward(schema),
-      'tool-schema.normalize-decl': routeForward(schema),
-      'tool-schema.normalize-caps': routeForward(schema),
+      'tool-registry.validate-args': routeForward(registry),
       'tool-registry.list': routeForward(registry),
       ...providerRoutes,
     }),
   })
-  const tools = startRealService({
-    name: 'tools',
-    onPortCall: makeRouter({
-      'tool-dispatch.dispatch': routeForward(dispatch),
-      'tool-registry.list': routeForward(registry),
-    }),
-  })
   return {
-    tools,
+    dispatch,
     async stop() {
-      await stopRealService(tools)
       await stopRealService(dispatch)
       await stopRealService(registry)
-      await stopRealService(schema)
     },
   }
 }
@@ -139,14 +127,14 @@ test('消费向：真实 guard 判定消费 gateBag（与夹具逐键一致）',
         gateBags.push(clone(args))
         return guardJudge(guard)(args)
       },
-      'tools.dispatch': (args, message) => {
+      'tool-dispatch.dispatch': (args, message) => {
         dispatchBags.push(clone(args))
-        return forward(chain.tools)(args, message)
+        return forward(chain.dispatch)(args, message)
       },
     },
   })
   try {
-    await chain.tools.hello()
+    await chain.dispatch.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),
@@ -171,7 +159,11 @@ test('消费向：真实 guard 判定消费 gateBag（与夹具逐键一致）',
 
     // 真实 services 确被触达（两处反向帧证据）。
     assert.ok(loop.portCalls.some((call) => call.port === 'guard' && call.method === 'judge'))
-    assert.ok(loop.portCalls.some((call) => call.port === 'tools' && call.method === 'dispatch'))
+    assert.ok(
+      loop.portCalls.some(
+        (call) => call.port === 'tool-dispatch' && call.method === 'dispatch',
+      ),
+    )
   } finally {
     loop.close()
     await loop.exit
@@ -207,11 +199,11 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
         }
       },
       'guard.judge': guardJudge(guard),
-      'tools.dispatch': forward(chain.tools),
+      'tool-dispatch.dispatch': forward(chain.dispatch),
     },
   })
   try {
-    await chain.tools.hello()
+    await chain.dispatch.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),
@@ -224,7 +216,7 @@ test('供给向：真实 loop-policy 消费 deny 回灌（工具不派发、拒�
     // deny 属工具级拒绝：调用不得到达工具提供者（零副作用）。
     assert.equal(toolsTouched, 0, 'deny 后工具提供者不得被触达')
     assert.equal(
-      loop.portCalls.some((call) => call.port === 'tools' && call.method === 'dispatch'),
+      loop.portCalls.some((call) => call.port === 'tool-dispatch' && call.method === 'dispatch'),
       false,
     )
     assert.equal(modelCalls.length, 2, 'deny 后模型应被再次调用（换方案）')
@@ -259,11 +251,11 @@ test('供给向：工具结果里的 $directives 冒泡进回合计划', async (
     providers: {
       ...modelProviders(),
       'guard.judge': guardJudge(guard),
-      'tools.dispatch': forward(chain.tools),
+      'tool-dispatch.dispatch': forward(chain.dispatch),
     },
   })
   try {
-    await chain.tools.hello()
+    await chain.dispatch.hello()
     const result = await loop.interpret({
       tier: 'auto',
       tools: clone(TOOLS),

@@ -86,7 +86,7 @@ test('trace 摘要落成 def：引用为 {def}、可解析、且为不含正文�
         return { ok: true, text: '', tool_calls: [{ id: 'c1', name: 'todo', args: {} }], usage: {} }
       },
       'guard.judge': () => ({ decisions: [{ index: 0, port: 'todo', tool: 'todo', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) => ({
           call_id: call.call_id,
           ok: true,

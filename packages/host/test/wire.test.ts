@@ -23,6 +23,13 @@ describe('入站线格式 wire', () => {
     expect(() => decoder.push(prefix)).toThrow('frame_too_large')
   })
 
+  it('编码超单帧上限 → frame_too_large（不写出脏帧）', () => {
+    const blob = 'a'.repeat(MAX_FRAME_BYTES)
+    expect(() => encodeFrame({ v: '1', id: 'big', kind: 'status', blob })).toThrow(
+      'frame_too_large',
+    )
+  })
+
   it('帧内 JSON 非法 → 解码器抛错', () => {
     const decoder = createFrameDecoder()
     const body = Buffer.from('{', 'utf8')

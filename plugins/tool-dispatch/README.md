@@ -1,7 +1,7 @@
 # tool-dispatch（工具批派发）
 
 整批工具派发提供方：解析执行上下文 → 批级语义门 → 有界并发扇出到具体工具提供者。
-被上层 `tools` 门面经反向 `port.call` 消费；自身消费 `tool-registry`（目录）、`tool-schema`（args 校验）
+被图解释器经反向 `port.call` 消费；自身消费 `tool-registry`（目录装配 + args 校验）
 与 `guard`（语义门），并把工具调用扇出到各工具提供者。
 
 - 身份：`tool-dispatch`
@@ -40,8 +40,7 @@
 
 ## 依赖与背压
 
-- `tool-registry`（`one`）：目录解析。目录服务不可用按 **fail-closed** 抛结构化错误（不放行未知工具）。
-- `tool-schema`（`one`）：args 机械校验。
+- `tool-registry`（`one`）：目录解析与 args 机械校验。目录服务不可用按 **fail-closed** 抛结构化错误（不放行未知工具）。
 - `guard`（`one`）：批级语义门兜底；不可用 fail-closed 全拒。
 - describe/invoke / 绑定提供者类（`one`，逐个）：扇出目标。
 
@@ -54,7 +53,7 @@
 ## 私有参数（`schema/tool-dispatch.json`）
 
 `concurrency`（缺省 4，硬顶 64）与 `cache`（`enabled` 缺省 true、`max_entries` 缺省 256）。
-`method_timeouts` 为 `tool-dispatch.dispatch` 声明大上限，且严格小于门面 `tools.dispatch`。
+`method_timeouts` 为 `tool-dispatch.dispatch` 声明大上限，且严格小于 `loop-policy.interpret`。
 
 ## 服务纪律
 

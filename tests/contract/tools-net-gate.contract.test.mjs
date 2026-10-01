@@ -5,8 +5,48 @@
 // 属跨插件链路，故住根 tests/contract/。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startService } from '../../plugins/tools/test/driver.mjs'
+import { makeRouter, relayFrame, startRealService } from './_bridge.mjs'
 import { startGuardJudgment } from './_guard.mjs'
+
+/**
+ * 最小驱动：起真实 `tool-dispatch`，args 校验转发给真实 `tool-registry`，其余按提供者假实现应答。
+ * 返回值接口与原 `tools` 门面驱动同形（`hello` / `call('dispatch', ...)` / `close`）。
+ */
+function startService({ providers = {} } = {}) {
+  const registry = startRealService({ name: 'tool-registry' })
+  const dispatch = startRealService({
+    name: 'tool-dispatch',
+    onPortCall: makeRouter(
+      {
+        'tool-registry.validate-args': (args, message) =>
+          registry
+            .call(
+              'tool-registry',
+              'validate-args',
+              { schema: args.schema ?? null, value: args.value },
+              message.env,
+            )
+            .then(relayFrame),
+        'tool-registry.list': (args, message) =>
+          registry.call('tool-registry', 'list', args, message.env).then(relayFrame),
+      },
+      async (args, message) => {
+        const dest = typeof message.provider === 'string' ? message.provider : message.port
+        const fn = providers[dest]?.[message.method]
+        if (typeof fn === 'function') return { ok: true, value: await fn(args) }
+        return { ok: false, code: 'unresolved_cap', message: `${dest}.${message.method}` }
+      },
+    ),
+  })
+  return {
+    hello: () => dispatch.hello(),
+    call: (method, args) => dispatch.call('tool-dispatch', method, args),
+    close: () => {
+      dispatch.close()
+      registry.close()
+    },
+  }
+}
 
 const NO_CAPS = { fs: { read: 'none', write: 'none' }, net: 'none' }
 
@@ -74,7 +114,7 @@ async function withService(providers, fn) {
   }
 }
 
-/** 真 guard 判定 + tools 门面，跑 fn 后收服务。 */
+/** 真 guard 判定 + 真实 tool-dispatch，跑 fn 后收服务。 */
 async function withRealGuard(providers, fn) {
   const guard = await startGuardJudgment()
   try {

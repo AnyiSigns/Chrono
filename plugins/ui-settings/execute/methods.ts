@@ -352,6 +352,20 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
 
+    /** `ui-nav` 提供方：设置入口的中立记录；`label_code` 让侧栏经共享文案表本地化。 */
+    list: (): Json => ({
+      records: [
+        {
+          id: 'settings',
+          label: '设置',
+          label_code: 'settings_title',
+          icon: 'settings',
+          target: { overlay: 'settings' },
+          order: 100,
+        },
+      ],
+    }),
+
     /**
      * 客户端半边产物只读交付：参数 `{path}` 必须是包内相对 `.js`（路径穿越防护），
      * 读回 `{path, text}`；非法 / 缺失以结构化失败收口。

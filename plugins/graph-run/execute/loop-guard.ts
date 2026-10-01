@@ -2,8 +2,12 @@
 //
 // 行业共识（OpenHands StuckDetector / smolagents+RunGuard / Claude Lab / loopcanary）：
 // 主信号不是「同一个工具」，而是「同一动作 + 同一观察（结果）」，外加短周期交替与窗口内低新颖；
-// 单纯的动作指纹会漏掉「参数微改但每次同样报错」这类真卡死。故签名 = 动作 + 观察 digest + 状态增量。
+// 单纯的动作指纹会漏掉「参数微改但每次同样报错」这类真卡死。故签名 = 动作 + 观察 + 状态增量。
+//
+// 签名只用于**相等性比较**（repeat / cycle / low_novelty），故取内容摘要、不留正文：签名会被写进每个段
+// checkpoint，正文（工具 args / 结果全文）内嵌会让回合日志随输出体积反复复制、撑爆读取帧。
 
+import { H } from './hash.ts'
 import type { Json, Rec } from './types.ts'
 
 /** 归一化时剔除的易变键：时间戳 / 耗时 / 请求标识 / 临时标识等不承载进展语义的字段。 */
@@ -42,17 +46,6 @@ export function stripVolatile(value: Json): Json {
   return out
 }
 
-/** 稳定序列化（对象键排序、递归）。 */
-function canonicalJson(value: Json): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
-  const record = value as Rec
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`
-}
-
 export interface SegmentPart {
   /** 本段模型派发的工具调用。 */
   calls: Rec[]
@@ -62,18 +55,24 @@ export interface SegmentPart {
   state: Rec
 }
 
-/** 段签名：动作（tool + 规范化 args）+ 观察（成功位 + 结果/错误主体）+ 状态增量。 */
+/** 段签名的内容哈希：动作（tool + 规范化 args）+ 观察（成功位 + 结果/错误主体）+ 状态增量。 */
 export function segmentSignature(part: SegmentPart): string {
   const actions = part.calls.map((call) => [
     call['tool'] ?? call['port'] ?? null,
     stripVolatile((call['args'] ?? null) as Json),
   ])
   const observations = part.results.map((result) => {
-    const record = result !== null && typeof result === 'object' && !Array.isArray(result) ? (result as Rec) : null
+    const record =
+      result !== null && typeof result === 'object' && !Array.isArray(result)
+        ? (result as Rec)
+        : null
     if (record === null) return stripVolatile(result)
-    return { ok: record['ok'] ?? null, out: stripVolatile((record['result'] ?? record['error'] ?? null) as Json) }
+    return {
+      ok: record['ok'] ?? null,
+      out: stripVolatile((record['result'] ?? record['error'] ?? null) as Json),
+    }
   })
-  return canonicalJson({ a: actions as Json, o: observations as Json, s: stripVolatile(part.state) })
+  return H({ a: actions as Json, o: observations as Json, s: stripVolatile(part.state) })
 }
 
 export interface StallVerdict {

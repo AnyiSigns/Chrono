@@ -36,9 +36,9 @@ test('plugin.json 省略 schema 且其余字段齐全', () => {
   assert.equal(decl.state, 'recomputable')
 })
 
-test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法；needs 六条（model / secrets / ref-hydrate / input / skill / config）', () => {
+test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法，兼 ui-nav 提供方；needs 六条（model / secrets / ref-hydrate / input / skill / config）', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-settings'])
+  assert.deepEqual(decl.implements, ['ui-settings', 'ui-nav'])
   assert.deepEqual(decl.methods, {
     'ui-settings': [
       'ping',
@@ -51,6 +51,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法；needs
       'client.read',
       'secret',
     ],
+    'ui-nav': ['list'],
   })
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {

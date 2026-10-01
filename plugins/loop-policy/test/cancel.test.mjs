@@ -51,7 +51,7 @@ test('取消：进入解释前已置标志 ⇒ 不派发任何节点，收口 ca
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const seq = sequence(service)
     assert.ok(!seq.includes('model.chat'), `取消后不得调模型：${seq.join(',')}`)
-    assert.ok(!seq.includes('tools.dispatch'), `取消后不得派发工具：${seq.join(',')}`)
+    assert.ok(!seq.includes('tool-dispatch.dispatch'), `取消后不得派发工具：${seq.join(',')}`)
     assert.equal(summaryOf(result.value).ended, 'cancelled')
     const settle = settlesOf(service)
     assert.equal(settle.length, 1)
@@ -84,7 +84,7 @@ test('取消：派发前命中标志 ⇒ 不派发工具，回合收口 cancelle
     releaseGuard()
     const result = await pending
     const seq = sequence(service)
-    assert.ok(!seq.includes('tools.dispatch'), `取消后不得派发工具：${seq.join(',')}`)
+    assert.ok(!seq.includes('tool-dispatch.dispatch'), `取消后不得派发工具：${seq.join(',')}`)
     const settle = settlesOf(service)
     assert.equal(settle.length, 1)
     assert.equal(settle[0].outcome.kind, 'cancelled')
@@ -118,7 +118,7 @@ test('取消落在两段之间：下一段不派发任何节点，回合收口 c
     providers: {
       'model.chat': () => ({ ok: true, text: '', tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }], usage: {} }),
       'guard.judge': () => ({ decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'allow' }], summary: { allow: 1, escalate: 0, deny: 0 } }),
-      'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
+      'tool-dispatch.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
     },
   })
   try {
@@ -128,7 +128,7 @@ test('取消落在两段之间：下一段不派发任何节点，回合收口 c
     assert.equal(first.kind, 'result', JSON.stringify(first))
     assert.ok(continuationOf(first.value), '段尾应带自续跑 eval')
     assert.ok(
-      service.portCalls.some((call) => call.port === 'tools' && call.method === 'dispatch'),
+      service.portCalls.some((call) => call.port === 'tool-dispatch' && call.method === 'dispatch'),
       '第一段应已派发工具',
     )
 
@@ -146,7 +146,7 @@ test('取消落在两段之间：下一段不派发任何节点，回合收口 c
     })
     const after = service.portCalls.slice(before).map((call) => `${call.port}.${call.method}`)
     assert.ok(!after.includes('model.chat'), `取消后下一段不得调模型：${after.join(',')}`)
-    assert.ok(!after.includes('tools.dispatch'), `取消后下一段不得派发工具：${after.join(',')}`)
+    assert.ok(!after.includes('tool-dispatch.dispatch'), `取消后下一段不得派发工具：${after.join(',')}`)
     assert.equal(continuationOf(second.value), undefined, '取消段不得再自续跑')
     assert.equal(summaryOf(second.value).ended, 'cancelled')
     const settle = settlesOf(service)

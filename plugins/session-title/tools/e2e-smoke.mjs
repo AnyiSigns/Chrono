@@ -1,7 +1,7 @@
 // `session-title` 宿主装配 E2E（黑盒，经 boot CLI + 离线投影读）：
-// pack 依赖闭包（secrets / config / msg-dialect / throttle / model-protocol / title-format / input / session /
+// pack 依赖闭包（secrets / config / msg-dialect / throttle / model-protocol / input / session /
 // session-title）→ seed → 离线读投影确认身份在册（有效 pins 解析通过）→ 声明门禁负例
-// → 直连服务协议，把反向调用桥接到内存假后端 → 覆盖 generate 的正常生成、标题值经 title-format 清理与非流式。
+// → 直连服务协议，把反向调用桥接到内存假后端 → 覆盖 generate 的正常生成、本地标题清理与非流式。
 // 说明：**不执行 `boot start`**——本次验收只到「声明与协议就位」；pack / seed 已覆盖插件声明、needs 与 .worldignore 的宿主门禁。
 // 用法：node plugins/session-title/tools/e2e-smoke.mjs
 import { spawn, spawnSync } from 'node:child_process'
@@ -23,7 +23,6 @@ const PLUGIN_DIRS = [
   ['msg-dialect', join(REPO_ROOT, 'plugins', 'msg-dialect')],
   ['throttle', join(REPO_ROOT, 'plugins', 'throttle')],
   ['model-protocol', join(REPO_ROOT, 'plugins', 'model-protocol')],
-  ['title-format', join(REPO_ROOT, 'plugins', 'title-format')],
   ['input', join(REPO_ROOT, 'plugins', 'input')],
   ['session', join(REPO_ROOT, 'plugins', 'session')],
   ['session-title', join(REPO_ROOT, 'plugins', 'session-title')],
@@ -105,7 +104,7 @@ function waitExit(child) {
 
 /**
  * 直连 session-title 服务 stdio，把 `port.call` 桥接到内存假后端：
- * `model.complete` 回确定性模型文本；`title-format.resolve` 回清理后的标题。
+ * `model.complete` 回确定性模型文本；标题后处理住本插件纯函数。
  * 本插件只产标题值，不写世界、不产 `$directives`（会话落盘由调用方 chat 经 session.commit 一次完成）。
  */
 async function directProtocolSmoke(entry) {
@@ -122,10 +121,6 @@ async function directProtocolSmoke(entry) {
     portCalls.push(message)
     if (message.port === 'model' && message.method === 'complete') {
       child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, text: '"快速排序算法。"' } }))
-      return
-    }
-    if (message.port === 'title-format' && message.method === 'resolve') {
-      child.stdin.write(encodeFrame({ v: '1', id: message.id, kind: 'port.result', ok: true, value: { ok: true, title: '快速排序算法' } }))
       return
     }
     child.stdin.write(
@@ -169,13 +164,10 @@ async function directProtocolSmoke(entry) {
     assert.equal(result.value.title, '快速排序算法')
     const model = portCalls.find((frame) => frame.port === 'model')
     assert.equal(model.method, 'complete', '应走非流式 complete')
-    assert.ok(
-      portCalls.some((frame) => frame.port === 'title-format' && frame.method === 'resolve'),
-      '标题后处理应委派 title-format.resolve',
-    )
+    assert.equal(portCalls.length, 1, '除模型外无其它反向调用（后处理住本插件）')
     assert.equal(events.length, 0, '非流式：不发 model.delta 事件')
 
-    console.log('直连协议：generate 正常生成 + 标题值经 title-format 清理 + 非流式')
+    console.log('直连协议：generate 正常生成 + 标题值本地清理 + 非流式')
   } finally {
     child.stdin.end()
     await waitExit(child)
@@ -211,7 +203,7 @@ async function main() {
     }
     assert.deepEqual(
       projection.ids['session-title'].pins,
-      { model: 'model-protocol', 'title-format': 'title-format' },
+      { model: 'model-protocol' },
       'session-title pins 应解析为身份名',
     )
     console.log('离线投影：闭包身份在册，session-title 有效 pins 解析通过')

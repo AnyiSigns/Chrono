@@ -108,6 +108,52 @@ export function isCodeGenFallbackBody(body: unknown): boolean {
   return true
 }
 
+/** `ui-nav` 记录的点击去向：页面 / 浮层 / 壳视图状态三者取一。 */
+export interface NavTarget {
+  page?: string
+  overlay?: string
+  uiState?: { key: string; value?: unknown }
+}
+
+/** 侧栏导航项（`ui-nav` 中立记录的消费侧形状）。 */
+export interface NavItem {
+  id: string
+  label: string
+  labelCode?: string
+  icon: string
+  target: NavTarget
+}
+
+function normalizeNavTarget(value: unknown): NavTarget | null {
+  if (!isRecord(value)) return null
+  if (typeof value['page'] === 'string' && value['page'].length > 0) return { page: value['page'] }
+  if (typeof value['overlay'] === 'string' && value['overlay'].length > 0) return { overlay: value['overlay'] }
+  const uiState = value['uiState']
+  if (isRecord(uiState) && typeof uiState['key'] === 'string' && uiState['key'].length > 0) {
+    return { uiState: { key: uiState['key'], value: uiState['value'] } }
+  }
+  return null
+}
+
+/** 归一 `ui-shell.nav` 命令回值 `{records:[...]}`；形状非法项跳过（零提供方 → 空表）。 */
+export function normalizeNav(value: unknown): NavItem[] {
+  if (!isRecord(value) || !Array.isArray(value['records'])) return []
+  const out: NavItem[] = []
+  for (const raw of value['records']) {
+    if (!isRecord(raw)) continue
+    const id = typeof raw['id'] === 'string' && raw['id'].length > 0 ? raw['id'] : null
+    if (id === null) continue
+    const label = typeof raw['label'] === 'string' && raw['label'].length > 0 ? raw['label'] : id
+    const icon = typeof raw['icon'] === 'string' && raw['icon'].length > 0 ? raw['icon'] : 'info'
+    const target = normalizeNavTarget(raw['target'])
+    if (target === null) continue
+    const item: NavItem = { id, label, icon, target }
+    if (typeof raw['label_code'] === 'string' && raw['label_code'].length > 0) item.labelCode = raw['label_code']
+    out.push(item)
+  }
+  return out
+}
+
 /** 归一查询串：trim + 小写；非字符串回空串。 */
 export function normalizeQuery(query: unknown): string {
   return typeof query === 'string' ? query.trim().toLowerCase() : ''

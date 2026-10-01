@@ -49,7 +49,6 @@ const EXPECTED_WORLD = [
   'skill',
   'storage-kv',
   'throttle',
-  'title-format',
   'todo',
   'token-estimate',
   'tool-browser',
@@ -57,9 +56,7 @@ const EXPECTED_WORLD = [
   'tool-fs',
   'tool-http',
   'tool-registry',
-  'tool-schema',
   'tool-shell',
-  'tools',
   'turn-ledger',
   'workspace',
 ]
@@ -83,7 +80,7 @@ test('chat 的传递 pin 闭包只含自身（needs 不建闭包边）', () => {
   assert.deepEqual(computeClosure('chat'), EXPECTED_PIN_CLOSURE)
 })
 
-test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 51 个身份', () => {
+test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 49 个身份', () => {
   assert.deepEqual(computeWorldIdentities('chat'), EXPECTED_WORLD)
 })
 

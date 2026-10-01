@@ -153,7 +153,7 @@ test('双向：question 作答后，续跑模型经真实 context-window 须看�
         },
       }),
       'context.build': (args, message) => forwardValue(context)(args, message),
-      'tools.dispatch': (args) => ({
+      'tool-dispatch.dispatch': (args) => ({
         results: args.calls.map((call) =>
           call.tool === 'question'
             ? { call_id: call.call_id, ok: true, result: { status: 'pending' } }
@@ -166,7 +166,7 @@ test('双向：question 作答后，续跑模型经真实 context-window 须看�
     await context.hello()
     const first = await loop.interpret({ turn_id: 't1', input: { content: '测一下提问' } })
     assert.equal(first.kind, 'result', JSON.stringify(first))
-    const cursor = loop.portCalls.find((call) => call.port === 'tools' && call.method === 'dispatch')?.args?.cursor
+    const cursor = loop.portCalls.find((call) => call.port === 'tool-dispatch' && call.method === 'dispatch')?.args?.cursor
     assert.ok(cursor, 'question 派发应带续跑游标')
     const second = await loop.interpret({
       turn_id: 't1',

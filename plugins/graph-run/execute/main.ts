@@ -35,6 +35,8 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
       port: link,
       pins: ctx.pins,
       contextSources: ctx.manyNeeds?.['context-source'] ?? [],
+      ruleProviders: ctx.manyNeeds?.['loop-rule'] ?? [],
+      turnHooks: ctx.manyNeeds?.['turn-hook'] ?? [],
     }),
     emit: ctx.emit,
     log: LOG,

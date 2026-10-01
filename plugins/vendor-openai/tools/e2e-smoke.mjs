@@ -25,8 +25,7 @@ const SEEDED_IDS = [
   'vendor-zai',
   'vendor-kimi',
 ]
-const CUSTOM_ID = 'vendor-custom'
-const ALL_IDS = [...SEEDED_IDS, CUSTOM_ID]
+const ALL_IDS = [...SEEDED_IDS]
 
 const dirOf = (id) => join(REPO_ROOT, 'plugins', id)
 
@@ -52,18 +51,18 @@ function boot(root, args) {
   return parsed
 }
 
-function assertSevenSchemasIdentical() {
+function assertSchemasIdentical() {
   const first = readFileSync(join(dirOf(ALL_IDS[0]), 'schema', 'vendor.json'), 'utf8')
   for (const id of ALL_IDS.slice(1)) {
     const text = readFileSync(join(dirOf(id), 'schema', 'vendor.json'), 'utf8')
-    assert.equal(text, first, '七包 schema 应逐字节一致：' + id)
+    assert.equal(text, first, '厂商包 schema 应逐字节一致：' + id)
   }
   console.log('schema shape: identical across ' + ALL_IDS.length + ' packages')
 }
 
 async function main() {
   const { H } = await import(pathToFileURL(KERNEL_INDEX).href)
-  assertSevenSchemasIdentical()
+  assertSchemasIdentical()
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const root = join(tmpdir(), 'kilo', 'chrono-vendors-' + stamp)

@@ -316,6 +316,8 @@ export const SIDEBAR_CSS = `
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
 .sb-settings:hover { background: var(--c-selection); color: var(--c-text); }
+.sb-nav { display: flex; flex-direction: column; gap: var(--space-4); flex: 1 1 auto; min-width: 0; }
+.sb-foot-rail .sb-nav { flex: none; flex-direction: row; }
 .sb-toggle { width: 34px; height: 34px; }
 .sb-toggle-glyph { display: inline-flex; animation: sb-toggle-in var(--sb-dur) var(--sb-ease) both; }
 @keyframes sb-toggle-in { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }

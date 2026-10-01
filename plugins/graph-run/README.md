@@ -8,7 +8,7 @@
 - 身份：`graph-run`
 - 能力类 / 方法：`graph-run` → `run`（一次调用跑**一段 = 一个 iter**，段尾未完则返回自续跑计划）、`cancel`（置取消标志）
 - `pins`：无（`"pins": {}`）；`needs`：`session` / `model` / `context` /
-  `guard` / `graph-gate` / `approval` / `tools` / `router`（`mode:"one"`），
+  `guard` / `graph-gate` / `approval` / `tool-registry` / `tool-dispatch` / `router`（`mode:"one"`），
   以及 `context-source`（`mode:"many"`，`methods:["collect"]`）——`context.assemble` 前置的通用汇集扩展点
 - 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 运行时零 npm 依赖；服务不写链、不读投影；跨插件只走 `port.call`；`now` 取 `env.now`
@@ -34,10 +34,11 @@
 3. **选实例**：按 `scope` 过滤 + 确定性 tie-break（隔离升序 / 成功率下界降序 / cost 升序 / node_id 升序）。
 4. **pre → 派发 → post**：`pre` 不过 ⇒ `pre_unsat`（node）；传输失败 ⇒ `transport_failed`；节点业务错误 ⇒ 原码或
    `downstream_refusal`；`post` 不过 ⇒ 模型空产出 `empty_output`（可重试）其余 `capability_mismatch`。
+   节点 bag 装配与结果归一由契约的 `bag_pick` / `output_map` / `dispatch` 元数据声明，派发器按声明机械执行（不按 `contract_id` 分支）：轻节点转发 `bag_pick` 键并叠加命名派生字段，重节点用命名 bag 规则，归一用命名规则。
 5. **composite 子图运行期展开**：自己的 `nodes` / `edges` / `entry_supply` / `loop` / `sink`；防失控：`max_subgraph_depth` / `gas` / `max_steps`。
 6. **sink 延后收口**：sink 只在回合终止 / 拒绝短路的那一段执行一次（「回合尾一次写」）。
 7. **跨段重入**：段尾按 `Graph.loop.when` 判定；有回合身份时自续跑 `chat.resume`（状态由步记录重建）。
-8. **空转检测（升级阶梯）**：段尾对「动作 + 观察（工具结果）+ 状态增量」签名做连续重复 / 短周期交替 / 低新颖判定；
+8. **空转检测（升级阶梯）**：段尾对「动作 + 观察（工具结果）+ 状态增量」的**内容摘要**（sha256，只留摘要不留正文）做连续重复 / 短周期交替 / 低新颖判定；
    首次命中注入一次 nudge（`bag.loop_nudge`，前导系统消息）提示换策略，再次命中才 `stopTerminal('no_progress')`。
    阈值 `loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min`；`loop.allow_tools` 声明的轮询类工具豁免。
 9. **取消（协作式）**：命中标志即停、不派发、不写拒绝产物；终态由属主 CAS 落定。

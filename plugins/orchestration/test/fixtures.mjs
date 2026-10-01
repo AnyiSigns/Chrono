@@ -166,7 +166,7 @@ export function pins() {
     session: 'session',
     guard: 'guard',
     approval: 'approval',
-    tools: 'tools',
+    'tool-dispatch': 'tool-dispatch',
   }
 }
 

@@ -60,16 +60,16 @@
 | op | args | result |
 | --- | --- | --- |
 | `stat` | — | `{ exists, is_dir, size, mtime }`（`mtime` 取自文件系统，不参与确定性保证） |
-| `read` | `offset?` / `limit?` | `{ text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, truncated, binary }` |
-| `list` | `pattern?` / `base?` / `ignore?` / `limit?` | `{ paths:[…], truncated }`（相对 `base`、字典序） |
-| `grep` | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `before?` / `after?` / `glob?` / `base?` / `ignore?` / `limit?` | `{ matches:[{path,line,text,before?,after?,count?}], truncated, skipped:{binary,too_large,unreadable} }` |
+| `read` | `offset?` / `limit?` / `preview?` | `{ text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, truncated, binary, preview }` |
+| `list` | `pattern?` / `base?` / `depth?` / `tree?` / `ignore?` / `limit?` | `{ paths:[…], truncated, skipped_count }`；`tree:true` 时改回 `{ tree:[{name,path,type,children?}], truncated, skipped_count }`（相对 `base`、字典序） |
+| `grep` | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `before?` / `after?` / `glob?` / `base?` / `ignore?` / `limit?` | `{ matches:[{path,line,text,before?,after?,count?}], truncated, skipped:{binary,too_large,unreadable}, mode, base, glob, ignore, ignored_paths, ignored_paths_truncated, hint }` |
 | `write` | `data` / `create?` / `exclusive?` / `expected_hash?` | `{ bytes_written, created, hash }` |
 | `replace` | `old` / `new` / `replace_all?` / `expected_hash?` | `{ replaced, added, removed, bytes_written, patch }` |
 
 - 强制点在 `sandbox-fs`：`canonicalize`（解析符号链接 / junction / reparse point、归一 `\\?\` 前缀）后与 `workspace_root` 前缀比对（Windows 大小写不敏感），取「声明 `caps.fs.*` ∩ 当前档」后执行。
 - `replace` 在**一次调用内**完成 read→比对→写（临时文件 + rename），`old` 未命中 / 非唯一 / `expected_hash` 不符 → `edit_conflict`；**非唯一时 `message` 附带命中总数与行号（最多 20 处），模型据此收窄锚点或改用 `replace_all`，无需再读一遍**。行尾自适应：文件为 CRLF 而 `old` 用 LF（或反之）时按文件风格转换后再匹配 / 替换，混合行尾不改写；`bytes_written` 回传原子重写后的整份文件字节数。
 - `write` 的 `exclusive:true`：目标已存在即 `edit_conflict`（`create_new` 语义，写锁内检查 + rename 前复核），供新建只发一次 `write`。
-- `grep` 支持字面与简易正则（`.` `*` `+` `?` `^` `$` `[...]` `\` 转义，无分组 / 交替）；**`args.mode`（`literal` / `regex`）缺省 literal**，`args.regex:true` 亦可显式开启；**正则模式下不支持的结构（交替 `|`、分组 `()`、重复 `{...}`、`\d`/`\w`/`\s` 类简写、悬空量词、未闭合 `[`）一律回 `bad_args`，不静默退化为字面匹配**。
+- `grep` 支持字面与手写简易正则（无外部依赖、确定性）：交替 `|`、分组 `()`、量词 `*`/`+`/`?`/`{n}`/`{n,}`/`{n,m}`、锚点 `^`/`$`、字符类 `[...]`、类简写 `\d`/`\D`/`\w`/`\W`/`\s`/`\S`、转义元字符与 `\n`/`\t`/`\r`；不支持反向引用 / 环视 / 非贪婪量词。**`args.mode`（`literal` / `regex`）缺省自动**：含强正则信号（`|` / 类简写 / 转义元字符 / `{n}`）的模式按正则处理、其余按字面；`args.regex:true` / `mode:"literal"` 可显式强制。**真语法错误（未闭合分组或类 / 悬空量词 / 尾反斜杠 / 未知转义 / `max<min`）一律回 `bad_args`，不静默退化为字面匹配**。
 - `grep` 另支持 `ignore_case`（模式与命中行同做 **Unicode casefold**：Default Case Folding，表驱动、随源码入世；**不含** NFC/NFD 规范化，组合形 / 分解形不互相匹配）、`files_only`（每文件只回一条：首命中行号/文本 + `count`）、`before` / `after`（命中前后上下文行数，各自夹到 ≤20，命中项附 `before` / `after` 数组）；`limit` 缺省 200（`files_only` 下为文件数上限）。二进制 / 超 `output_max` / 不可读的文件被跳过，数量在 `skipped` 回报。
 - `list` / `grep` 的 `ignore`：条目按「文件名 / 整路径 / 任一路径段」匹配，遍历时命中目录整棵剪枝（`target` 即剪掉 `target/`）；含 `/` 的条目按相对路径 glob。
 - `read` 行号统一 1 基：`start_line` / `end_line` 标出窗口首末行，`text` 为原始文本（不带行号前缀，**保留文件原有行尾**）；`has_more` 为真时用 `next_offset`（0 基）续读；`content_truncated` 为真表示内容被 `output_max` 按字节截断（末行可能不完整、文件其余不可再读）。

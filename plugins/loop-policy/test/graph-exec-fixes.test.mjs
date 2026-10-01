@@ -280,7 +280,7 @@ function approvalGrantProviders() {
       ],
       summary: { allow: 0, escalate: 2, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })) }),
+    'tool-dispatch.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })) }),
   }
 }
 
@@ -297,7 +297,7 @@ async function approvalGrantOf(providers) {
   const second = startService({ providers })
   try {
     await second.interpret({ turn_id: 't1', resume: { cursor, thread: 't1', payload: { verdict: 'approved' } } })
-    const dispatchCall = second.portCalls.find((call) => call.port === 'tools' && call.method === 'dispatch')
+    const dispatchCall = second.portCalls.find((call) => call.port === 'tool-dispatch' && call.method === 'dispatch')
     return dispatchCall?.args?.grant ?? null
   } finally {
     second.close()
@@ -321,7 +321,7 @@ test('G8：net-only 升级 ⇒ op:exec + net', async () => {
       decisions: [{ index: 0, port: 'tool', tool: 'fetch', verdict: 'escalate', reason: 'net_outside_tier', rule: 'all' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })) }),
+    'tool-dispatch.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: {} })) }),
   }
   const grant = await approvalGrantOf(providers)
   assert.ok(grant)
@@ -340,7 +340,7 @@ test('G9：sink 不在最后时，步记录 (type,seq) 仍唯一（单调分配�
       if (step > 1) return { ok: true, text: 'done', tool_calls: [], usage: {} }
       return { ok: true, text: '', tool_calls: [{ id: 'c1', name: 'edit', args: { path: 'a.txt' } }], usage: {} }
     },
-    'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
+    'tool-dispatch.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
   }
   const graph = {
     nodes: ['context.assemble', 'agent.step', 'tool.gate', 'tool.dispatch', 'turn.commit', 'join'],
@@ -397,7 +397,7 @@ test('8：模型带 reasoning_blocks ⇒ step.result 持久化厂商中立 reaso
           usage: {},
         }
       },
-      'tools.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
+      'tool-dispatch.dispatch': (args) => ({ results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })) }),
     },
   })
   try {

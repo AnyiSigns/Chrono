@@ -10,7 +10,8 @@
     "context": "context-window",
     "guard": "guard",
     "approval": "approval",
-    "tools": "tools",
+    "tool-dispatch": "tool-dispatch",
+    "tool-registry": "tool-registry",
     "router": "router",
     "evolve-metrics": "evolve-metrics",
     "host": "host"

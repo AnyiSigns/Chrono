@@ -39,9 +39,13 @@ export const SERVICE_INBOUND_KINDS = Object.freeze([
 /** 入站帧种类联合。 */
 export type ServiceInboundKind = (typeof SERVICE_INBOUND_KINDS)[number]
 
-/** 把一条消息编码为一帧（长度前缀 + 规范 JSON 字节）。 */
+/**
+ * 把一条消息编码为一帧（长度前缀 + 规范 JSON 字节）。
+ * 编码端同样受单帧上限约束：超限抛 `frame_too_large`，不写出宿主必然拒收的脏帧。
+ */
 export function encodeFrame(message: Json): Buffer {
   const body = Buffer.from(canonicalJson(message), 'utf8')
+  if (body.length > MAX_FRAME_BYTES) throw new Error('frame_too_large')
   const frame = Buffer.allocUnsafe(4 + body.length)
   frame.writeUInt32BE(body.length, 0)
   body.copy(frame, 4)

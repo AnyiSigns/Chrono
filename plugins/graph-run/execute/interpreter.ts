@@ -43,7 +43,9 @@ import {
   nestedDirectivesOf,
   numberField,
 } from './plan.ts'
-import { evalPost, evalPre, evalWhen, unknownWhenExpr } from './rules.ts'
+import { callTurnHooks, applyDelta } from './hooks.ts'
+import { makeRuleEvaluator } from './rule-port.ts'
+import type { RuleEvaluator } from './rules.ts'
 import { selectInstance } from './scope.ts'
 import {
   consumeBranches,
@@ -84,23 +86,6 @@ interface NodeRunResult {
 /** 终态附加信息：预算主动收口的 `stop_reason`。 */
 interface TerminalExtra {
   stopReason?: string | null
-}
-
-/** 空转 nudge：升级阶梯的第一步——先提示模型换策略，再次命中才收口。 */
-const LOOP_NUDGE =
-  '检测到连续无进展（相同调用/结果重复、或短周期来回）。请停止重复同一操作：换用不同策略，或直接给出结论并结束本轮。'
-
-/**
- * 客户端在本回合轮次边界是否有排队输入：据此挂起，等其由 `resume` 提升为 `step.user` 再恢复。
- * 读取失败（端口不支持 / 回合未知）一律按无输入处理（fail-open 到原行为，不误挂起）。
- */
-async function hasPendingInput(input: InterpretInput, turnId: string): Promise<boolean> {
-  try {
-    const res = await input.port.call('session', 'turn_has_pending_input', { turn_id: turnId })
-    return res.ok && isRecord(res.value) && res.value['pending'] === true
-  } catch {
-    return false
-  }
 }
 
 /** 派发失败值里携带的中止碎片（`error.partial`）。 */
@@ -149,6 +134,7 @@ const LOOP_WINDOW = 16
 export async function interpretGraph(input: InterpretInput): Promise<InterpretResult> {
   const { bag, env, model, trace } = input
   const providerOf = providerResolver(bag)
+  const rules = makeRuleEvaluator(input.port, input.ruleProviders ?? [])
   const view = buildView(model)
   const ids = graphNodes(model.graph)
   const edges = graphEdges(model.graph)
@@ -329,6 +315,7 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       iter,
       directives,
       refusalArtifact(model, code, message),
+      rules,
     )
     machine.send('finalize')
     return finish(endedOf(machine.state, 'refused'))
@@ -336,13 +323,13 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
   // 预算主动收口：不是失败，保留已完成内容并以 `committed` + `stop_reason` 收口（命名哪一维预算用尽）。
   const stopTerminal = async (stopReason: string): Promise<InterpretResult> => {
     machine.send('settle')
-    await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null)
+    await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null, rules)
     machine.send('finalize')
     return finish(endedOf(machine.state, 'done'), null, { stopReason })
   }
 
   // 判据 fail-closed：任何未知 `when` 判据（边与 loop）在进入迭代前显式拒绝，不静默按 false 处理。
-  const unknownWhen = unknownWhenExpr([...edges.map((edge) => edgeWhen(edge)), loopWhen])
+  const unknownWhen = await rules.checkWhens([...edges.map((edge) => edgeWhen(edge)), loopWhen])
   if (unknownWhen !== null) {
     return refuseTerminal('when_unsat', `unknown predicate: ${unknownWhen}`)
   }
@@ -377,6 +364,7 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
       gas,
       0,
       null,
+      rules,
     )
     // nudge 已在本次 runIter 的组装消费（一次性），此处清掉，避免下一段重复注入。
     rs.loopNudge = null
@@ -418,15 +406,16 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
         iter,
         directives,
         result.refused,
+        rules,
       )
       machine.send('finalize')
       return finish(endedOf(machine.state, 'refused'))
     }
-    const loopCtx = ruleCtx(rs, model, bag, iter, trace.effLog, 0)
+    const loopCtx = ruleCtx(rs, model, bag, iter, trace.effLog, 0, rules)
     // 无 loop.when ⇒ 不重入（缺省即单轮）；question_pending 优先 ⇒ 本 run 正常结束。
     let shouldLoop = false
     if (!rs.questionPending && loopWhen.length > 0) {
-      const when = evalWhen(loopWhen, loopCtx, 0)
+      const when = await rules.when(loopWhen, loopCtx, 0)
       if (!when.ok)
         return refuseTerminal(when.code ?? 'when_unsat', when.reason ?? `unknown_when:${loopWhen}`)
       shouldLoop = when.value
@@ -470,8 +459,14 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     if (shouldLoop && verdict !== null) {
       if (!rs.loopNudged) {
         // 第一步：注入 nudge，给模型一次换策略的机会（多数空转在此解开）。
+        // nudge 文案由 `turn-hook` 提供方给出；解释器只补判据摘要后缀。
         rs.loopNudged = true
-        rs.loopNudge = `${LOOP_NUDGE}（${verdict.kind}: ${verdict.detail}）`
+        const delta = await callTurnHooks(input.port, input.turnHooks ?? [], 'after-step', {
+          iter: rs.iter,
+          stall: { kind: verdict.kind, detail: verdict.detail },
+        })
+        const nudge = typeof delta['nudge'] === 'string' ? (delta['nudge'] as string) : ''
+        rs.loopNudge = `${nudge}（${verdict.kind}: ${verdict.detail}）`
       } else {
         // 第二步：nudge 后仍空转 ⇒ 主动收口（保留已完成内容，非失败），与预算收口同形。
         return stopTerminal('no_progress')
@@ -483,15 +478,28 @@ export async function interpretGraph(input: InterpretInput): Promise<InterpretRe
     rs.loopSignatures = window.slice(-LOOP_WINDOW)
     // 待发输入门：本段结束后若客户端有排队输入，挂起等它落盘再 resume——恢复的那一轮即读到，不晚一轮。
     // 放在 settle 之前：否则回合会先收口，排队的消息就没机会进本轮上下文。
-    if (turnId !== null && (await hasPendingInput(input, turnId))) {
-      machine.send('suspend', progressOf(rs, trace))
-      await runSuspend(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, { kind: 'input' })
-      return finish(endedOf(machine.state, 'done'), { kind: 'input' })
+    // 门与增量由 `turn-hook` 提供方在 `before-settle` 固定点给出（队列语义不在本插件硬编码）。
+    if (turnId !== null) {
+      const delta = await callTurnHooks(input.port, input.turnHooks ?? [], 'before-settle', {
+        turn_id: turnId,
+        iter: rs.iter,
+      })
+      applyDelta(rs, delta)
+      const suspend = isRecord(delta['suspend']) ? delta['suspend'] : null
+      if (suspend !== null) {
+        const pending: Rec = {
+          kind: typeof suspend['kind'] === 'string' ? (suspend['kind'] as string) : 'input',
+        }
+        machine.send('suspend', progressOf(rs, trace))
+        await runSuspend(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, pending)
+        return finish(endedOf(machine.state, 'done'), pending)
+      }
     }
     if (!shouldLoop) {
       machine.send('settle')
-      await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null)
+      await runSink(input, view, ids, edges, contracts, sink, scopeCtx, rs, iter, directives, null, rules)
       machine.send('finalize')
+      await callTurnHooks(input.port, input.turnHooks ?? [], 'after-settle', { turn_id: turnId, iter: rs.iter })
       return finish(endedOf(machine.state, trace.outcome === 'refused' ? 'refused' : 'done'))
     }
     // 预算先于机械轮数上限收口：分段后一段约 1 eval 轮 + N write 轮，预算阶梯须先于 MAX_SUBMISSION_ROUNDS 生效。
@@ -629,6 +637,7 @@ async function runIter(
   gas: GasState,
   depth: number,
   parentIndex: number | null,
+  rules: RuleEvaluator,
 ): Promise<IterResult> {
   const { model, trace, bag } = input
   const turnId = asString(bag['turn_id'])
@@ -639,8 +648,8 @@ async function runIter(
     if (isCancelled(turnId)) return { refused: null, pending: null, cancelled: true }
     const contract = contracts.get(ids[index])
     if (contract === undefined) continue
-    const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, index)
-    const resolved = resolveInputs(index, contract, edges, ctx)
+    const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, index, rules)
+    const resolved = await resolveInputs(index, contract, edges, ctx)
     if (!resolved.activated) continue
     consumeBranches(resolved, index, trace)
     iter.inputs.set(index, resolved.inputs)
@@ -660,6 +669,7 @@ async function runIter(
       gas,
       depth,
       parentIndex,
+      rules,
     )
     if (dispatch.cancelled === true) return { refused: null, pending: null, cancelled: true }
     if (dispatch.refusal !== null) return { refused: dispatch.refusal, pending: null }
@@ -722,6 +732,7 @@ async function runCompositeNode(
   gas: GasState,
   depth: number,
   parentIndex: number | null,
+  rules: RuleEvaluator,
 ): Promise<NodeRunResult> {
   const { model, trace } = input
   const subgraph = nodeSubgraph(chosen.node)
@@ -766,6 +777,7 @@ async function runCompositeNode(
     directives,
     providerOf,
     gas,
+    rules,
   )
   if (nested.cancelled === true) {
     step['verdict'] = 'cancelled'
@@ -806,9 +818,9 @@ async function runCompositeNode(
   const output = mapped.value
   applySideEffects(contractId(contract) ?? '', output, rs, providerOf)
   iter.outputs.set(index, output)
-  const post = evalPost(
+  const post = await rules.post(
     contractPost(contract),
-    ruleCtx(rs, model, input.bag, iter, trace.effLog, index),
+    ruleCtx(rs, model, input.bag, iter, trace.effLog, index, rules),
   )
   if (!post.ok) {
     const reason = post.reason ?? 'post_failed'
@@ -818,10 +830,10 @@ async function runCompositeNode(
     trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex)
     return { refusal: refusalArtifact(model, code, reason), pending: null }
   }
-  const over = overTriggeredBranch(
+  const over = await overTriggeredBranch(
     index,
     edges,
-    ruleCtx(rs, model, input.bag, iter, trace.effLog, index),
+    ruleCtx(rs, model, input.bag, iter, trace.effLog, index, rules),
   )
   if (over !== null) {
     step['verdict'] = 'fail'
@@ -857,6 +869,7 @@ async function runSubgraph(
   directives: Json[],
   providerOf: (tool: string) => string,
   gas: GasState,
+  rules: RuleEvaluator,
 ): Promise<SubgraphResult> {
   const { model, trace } = input
   const nestedModel = { ...model, graph: subgraph }
@@ -897,8 +910,8 @@ async function runSubgraph(
     gas.remaining -= 1
     if (isCancelled(asString(input.bag['turn_id'])))
       return { output: null, code: null, message: null, pending: null, cancelled: true }
-    const ctx = ruleCtx(rs, model, input.bag, iter, trace.effLog, index)
-    const resolved = resolveInputs(index, contract, edges, ctx)
+    const ctx = ruleCtx(rs, model, input.bag, iter, trace.effLog, index, rules)
+    const resolved = await resolveInputs(index, contract, edges, ctx)
     if (!resolved.activated) return null
     consumeBranches(resolved, index, trace)
     // 子图入口已带 composite 入边输入：与边收集输入合并（预置优先）。
@@ -923,6 +936,7 @@ async function runSubgraph(
       gas,
       depth,
       parentIndex,
+      rules,
     )
     if (dispatched.cancelled === true)
       return { output: null, code: null, message: null, pending: null, cancelled: true }
@@ -947,8 +961,8 @@ async function runSubgraph(
   // sink 未被激活时仍按收口语义跑一次（与 `runSink` 同形；入口=sink 已在环内执行）。
   if (!iter.executed.has(sink) && contracts.has(ids[sink])) {
     const contract = contracts.get(ids[sink]) as Rec
-    const ctx = ruleCtx(rs, model, input.bag, iter, trace.effLog, sink)
-    const resolved = resolveInputs(sink, contract, edges, ctx)
+    const ctx = ruleCtx(rs, model, input.bag, iter, trace.effLog, sink, rules)
+    const resolved = await resolveInputs(sink, contract, edges, ctx)
     consumeBranches(resolved, sink, trace)
     const preset = iter.inputs.get(sink)
     iter.inputs.set(
@@ -971,6 +985,7 @@ async function runSubgraph(
       gas,
       depth,
       parentIndex,
+      rules,
     )
     if (dispatched.cancelled === true)
       return { output: null, code: null, message: null, pending: null, cancelled: true }
@@ -1023,11 +1038,12 @@ async function runNode(
   gas: GasState,
   depth: number,
   parentIndex: number | null,
+  rules: RuleEvaluator,
 ): Promise<NodeRunResult> {
   const { model, env, trace, bag, pins } = input
   void view
-  const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, index)
-  const pre = evalPre(contractPre(contract), ctx)
+  const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, index, rules)
+  const pre = await rules.pre(contractPre(contract), ctx)
   if (!pre.ok) {
     trace.refuse(
       index,
@@ -1083,6 +1099,7 @@ async function runNode(
       gas,
       depth,
       parentIndex,
+      rules,
     )
   }
   // 回合步记录按 `turn_id` 键；无回合身份（如单测直调）时跳过步记录写入。
@@ -1140,6 +1157,7 @@ async function runNode(
       env,
       port: input.port,
       contextSources: input.contextSources ?? [],
+      turnHooks: input.turnHooks ?? [],
       trace,
     })
     trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])
@@ -1180,9 +1198,9 @@ async function runNode(
     applySideEffects(ids[index], output, rs, providerOf)
     // post 的输入面含本 Scope outputs：先落槽再求值，不过则短路（不产产物）。
     iter.outputs.set(index, output)
-    const post = evalPost(
+    const post = await rules.post(
       contractPost(contract),
-      ruleCtx(rs, model, bag, iter, trace.effLog, index),
+      ruleCtx(rs, model, bag, iter, trace.effLog, index, rules),
     )
     if (post.ok) break
     const reason = post.reason ?? 'post_failed'
@@ -1194,7 +1212,11 @@ async function runNode(
     return { refusal: refusalArtifact(model, code, reason), pending: null }
   }
   // G5：同一输出端口至多一条触发分支；>1 触发即「互斥分支同走」的编排错误，拒绝并短路。
-  const over = overTriggeredBranch(index, edges, ruleCtx(rs, model, bag, iter, trace.effLog, index))
+  const over = await overTriggeredBranch(
+    index,
+    edges,
+    ruleCtx(rs, model, bag, iter, trace.effLog, index, rules),
+  )
   if (over !== null) {
     step['verdict'] = 'fail'
     step['refusal'] = 'redundant'

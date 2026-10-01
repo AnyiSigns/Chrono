@@ -137,9 +137,25 @@ pub fn read_digest(
     })
 }
 
+/// 编码读取摘要：路径、编码、原始字节数、编码后文本的 sha256 与规模。
+pub fn encoded_read_digest(path: &str, encoding: &str, bytes: u64, text: &str) -> Value {
+    json!({
+        "path": path,
+        "encoding": encoding,
+        "bytes": bytes,
+        "sha": sha256_hex(text.as_bytes()),
+        "summary": format!("{encoding} · {}", format_bytes(bytes as usize)),
+    })
+}
+
 /// glob / grep 摘要：模式、命中数、涉及文件数（glob 下同 paths 数）。
 pub fn search_digest(pattern: &str, hits: usize, files: usize) -> Value {
     json!({ "pattern": pattern, "hits": hits, "files": files })
+}
+
+/// read 批量摘要：模式、返回文件数、匹配文件总数（未返回时两者不等，提示非全量）。
+pub fn read_many_digest(pattern: &str, returned: usize, matched: usize) -> Value {
+    json!({ "pattern": pattern, "files": returned, "matched": matched })
 }
 
 #[cfg(test)]
@@ -186,5 +202,11 @@ mod tests {
     fn search_digest_shape() {
         let digest = search_digest("fn", 37, 12);
         assert_eq!(digest, json!({ "pattern": "fn", "hits": 37, "files": 12 }));
+    }
+
+    #[test]
+    fn read_many_digest_shape() {
+        let digest = read_many_digest("*.py", 5, 9);
+        assert_eq!(digest, json!({ "pattern": "*.py", "files": 5, "matched": 9 }));
     }
 }

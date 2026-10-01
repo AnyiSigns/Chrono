@@ -1324,6 +1324,26 @@ test('client.read 方法：非法 / 缺失路径结构化失败，正常路径�
   }
 })
 
+test('ui-nav.list：设置入口中立记录（浮层 target + 文案码）', () => {
+  const handlers = createHandlers({
+    identity: 'ui-settings',
+    model: fakeModel({ ok: false, code: 'x', message: '' }),
+  })
+  const value = handlers['list']({}, { run: null, thread: null, now: 0 })
+  assert.deepEqual(value, {
+    records: [
+      {
+        id: 'settings',
+        label: '设置',
+        label_code: 'settings_title',
+        icon: 'settings',
+        target: { overlay: 'settings' },
+        order: 100,
+      },
+    ],
+  })
+})
+
 // ---- 服务协议级 ----
 
 function encodeFrame(message) {
@@ -1410,7 +1430,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
-    assert.deepEqual(manifest.implements, ['ui-settings'])
+    assert.deepEqual(manifest.implements, ['ui-settings', 'ui-nav'])
     assert.deepEqual(manifest.methods, {
       'ui-settings': [
         'ping',
@@ -1423,6 +1443,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
         'client.read',
         'secret',
       ],
+      'ui-nav': ['list'],
     })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')

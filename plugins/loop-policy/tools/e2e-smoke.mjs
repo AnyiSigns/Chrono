@@ -61,7 +61,6 @@ const PLUGIN_ORDER = [
   'tool-browser',
   'tool-fs',
   'tool-http',
-  'tool-schema',
   'tool-shell',
   'tool-registry',
   'tool-dispatch',
@@ -84,7 +83,7 @@ const EXPECTED_PINS = {
   guard: 'guard',
   'graph-gate': 'graph-gate',
   approval: 'approval',
-  tools: 'tools',
+  'tool-dispatch': 'tool-dispatch',
   router: 'router',
   'evolve-metrics': 'evolve-metrics',
 }

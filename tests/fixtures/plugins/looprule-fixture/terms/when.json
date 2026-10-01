@@ -1,0 +1,1 @@
+["if",["pred","eq",["get",["v",0],["name"]],["c","fixture_loop_never"]],["obj",{"known":["c",true],"ok":["c",true],"value":["c",false]}],["obj",{"known":["c",false]}]]

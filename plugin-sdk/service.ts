@@ -10,7 +10,13 @@ import { parseCallEnv } from './env.ts'
 import { isRecord } from './json.ts'
 import { declaredMethods, deriveManifest, readPluginJson } from './manifest.ts'
 import { settlePortLinks } from './port-link.ts'
-import { createFrameDecoder, writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'
+import { canonicalJson } from './canonical.ts'
+import {
+  createFrameDecoder,
+  writeFrame,
+  MAX_FRAME_BYTES,
+  SERVICE_PROTOCOL_VERSION,
+} from './wire.ts'
 import { BadArgsError, ServiceError } from './types.ts'
 import type { Json, Rec } from './json.ts'
 import type { PortLink } from './port-link.ts'
@@ -189,6 +195,27 @@ export function createService(config: ServiceConfig): ServiceInstance {
     emit({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'error', ok: false, code, message })
   }
 
+  /**
+   * 回结果帧；编码后超单帧上限则改回 `response_too_large` 错误帧。
+   * 结果帧若大到写出即被对端判脏帧，会把整条通道升级成协议损坏；此处先行预检，让超限成为
+   * 协议内**可辨、可重试**的失败，而不是通道坍塌。
+   */
+  function sendResult(id: string, value: Json): void {
+    const message: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'result', ok: true, value }
+    let size: number
+    try {
+      size = Buffer.byteLength(canonicalJson(message), 'utf8')
+    } catch {
+      sendError(id, 'internal', 'result not serializable')
+      return
+    }
+    if (size > MAX_FRAME_BYTES) {
+      sendError(id, 'response_too_large', 'result exceeds frame limit')
+      return
+    }
+    emit(message)
+  }
+
   function sendEvents(events: ServiceEvent[]): void {
     for (const event of events) {
       eventSeq += 1
@@ -252,7 +279,7 @@ export function createService(config: ServiceConfig): ServiceInstance {
     try {
       const result = await handler(rawArgs ?? null, env, call)
       sendEvents(result.events)
-      emit({ v: SERVICE_PROTOCOL_VERSION, id, kind: 'result', ok: true, value: result.value })
+      sendResult(id, result.value)
     } catch (err) {
       if (err instanceof BadArgsError) {
         sendError(id, 'bad_args', err.message)

@@ -5,8 +5,8 @@
 //   export const contract = '2'
 //   export function register(ctx) { ctx.slots.register({ name, children }, Component) }
 // `name` 为目标 slot；`children` 声明本组件提供的子 slot（组件内用 `ctx.slots.Outlet` 落位）。
-// 顶层 slot（sidebar / main / dock / composer / topbar / underbar / overlay）直接映射到壳页面的
-// `[data-slot="<name>"]` 元素；嵌套 slot 由父组件的 `<Outlet name="…"/>` 创建。
+// 顶层 slot 名由壳按数据（`state/ui-slots.json`）渲染成 `[data-slot="<name>"]` 容器，本模块不枚举槽名；
+// 嵌套 slot 由父组件的 `<Outlet name="…"/>` 创建。
 //
 // 纯簿记（目标归一 / epoch 拒绝 / 幂等替换 / outlet 绑定）在 `slot-registry.js`，可脱离浏览器单测；
 // 本文件只在其上挂 React 渲染与错误边界。
@@ -16,9 +16,6 @@ import { createRoot } from 'react-dom/client'
 import { createSlotRegistry, normalizeTarget } from './slot-registry.js'
 
 export { normalizeTarget }
-
-/** 顶层 slot 名（壳页面已提供 outlet 元素）。 */
-export const TOP_SLOTS = ['sidebar', 'main', 'dock', 'composer', 'topbar', 'underbar', 'overlay']
 
 /** 每 slot 的 error boundary：抛错只坏本 slot，渲染占位卡 + 重试。 */
 class SlotErrorBoundary extends Component {

@@ -35,6 +35,13 @@ describe('服务协议帧', () => {
     expect(() => createFrameDecoder().push(head)).toThrow('frame_too_large')
   })
 
+  it('编码超单帧上限抛错（不写出脏帧）', () => {
+    const value = 'a'.repeat(MAX_FRAME_BYTES)
+    expect(() => encodeFrame({ v: '1', id: 'big', kind: 'result', ok: true, value })).toThrow(
+      'frame_too_large',
+    )
+  })
+
   it('坏 JSON 抛错（不静默吞掉）', () => {
     const body = Buffer.from('{not-json', 'utf8')
     const frame = Buffer.allocUnsafe(4 + body.length)

@@ -9,7 +9,6 @@
   "pins": {},
   "needs": {
     "tool-registry": { "mode": "one" },
-    "tool-schema": { "mode": "one" },
     "guard": { "mode": "one" },
     "tool-provider": { "mode": "many" },
     "session": { "mode": "one" },

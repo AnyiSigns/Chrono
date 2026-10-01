@@ -1,0 +1,8 @@
+{
+  "name": "turnhook-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：turn-hook 扩展类提供方，在 before-assemble 固定点给出中立 nudge 增量",
+  "engines": { "node": ">=24" }
+}

@@ -791,15 +791,20 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
           </div>
           <div className="sb-list">{wideBody}</div>
           <div className="sb-foot">
-            <button
-              type="button"
-              className="sb-settings"
-              tabIndex={snap.collapsed ? -1 : 0}
-              onClick={() => store.openSettings()}
-            >
-              <Icon icons={snap.icons} name="settings" />
-              <span className="sb-label">{store.text('sidebar_settings')}</span>
-            </button>
+            <div className="sb-nav">
+              {snap.nav.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="sb-settings"
+                  tabIndex={snap.collapsed ? -1 : 0}
+                  onClick={() => store.openNav(item)}
+                >
+                  <Icon icons={snap.icons} name={item.icon} />
+                  <span className="sb-label">{store.navLabel(item)}</span>
+                </button>
+              ))}
+            </div>
             {toggleButton}
           </div>
         </div>
@@ -816,7 +821,20 @@ function Sidebar({ ctx, store }: { ctx: SlotContext; store: SidebarStore }) {
             <Icon icons={snap.icons} name="folder-plus" />
           </button>
           <div className="sb-list">{railBody}</div>
-          <div className="sb-foot sb-foot-rail">{toggleButton}</div>
+          <div className="sb-foot sb-foot-rail">
+            {snap.nav.map((item) => (
+              <IconButton
+                key={item.id}
+                store={store}
+                icons={snap.icons}
+                name={item.icon}
+                label={store.navLabel(item)}
+                tipLabel={store.navLabel(item)}
+                onClick={() => store.openNav(item)}
+              />
+            ))}
+            {toggleButton}
+          </div>
         </div>
       </div>
       {!snap.collapsed && snap.wide && (

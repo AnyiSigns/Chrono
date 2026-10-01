@@ -98,7 +98,7 @@ test('接缝 7a：真实 approval 消费挂起入参；真实 loop-policy 从同
         return { ok: true, text: '', tool_calls: [{ id: 'c1', name: 'webfetch', args: { url: 'https://example.com' } }], usage: {} }
       },
       'guard.judge': (args) => ESCALATE(args),
-      'tools.dispatch': (args) => {
+      'tool-dispatch.dispatch': (args) => {
         dispatchBags.push(clone(args))
         return { results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { fetched: true } })) }
       },
@@ -185,7 +185,7 @@ test('接缝 7b：真实 question 入队消费挂起入参；真实 loop-policy 
       },
       'guard.judge': (args) => ({ decisions: (args.calls ?? []).map((call, index) => ({ index, port: call.port ?? '', tool: call.tool ?? '', verdict: 'allow' })), summary: { allow: (args.calls ?? []).length, escalate: 0, deny: 0 } }),
       // question 工具经真实 question 服务入队：消费 loop-policy 随 dispatchBag 下传的 resume 游标。
-      'tools.dispatch': (args) =>
+      'tool-dispatch.dispatch': (args) =>
         question.service
           .call('question', 'invoke', {
             tool: 'question',

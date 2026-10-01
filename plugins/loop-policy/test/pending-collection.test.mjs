@@ -43,7 +43,7 @@ function escalateProviders() {
       decisions: [{ index: 0, port: 'tool', tool: 'edit', verdict: 'escalate' }],
       summary: { allow: 0, escalate: 1, deny: 0 },
     }),
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'a.txt' } })),
     }),
   }
@@ -179,7 +179,7 @@ test('提问续跑：用户消息只落一次（续跑 append），助手承接�
       if (last && last.role === 'tool') return { ok: true, text: 'answered', tool_calls: [], usage: {} }
       return { ok: true, text: '需要澄清', tool_calls: [{ id: 'q1', name: 'question', args: { questions: [{ id: 'x', question: 'which?' }] } }], usage: {} }
     },
-    'tools.dispatch': (args) => ({
+    'tool-dispatch.dispatch': (args) => ({
       results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { status: 'pending' } })),
     }),
   }
@@ -187,7 +187,7 @@ test('提问续跑：用户消息只落一次（续跑 append），助手承接�
   let cursor
   try {
     await first.interpret({ input: { kind: 'chat.message', text: '原始用户消息' } })
-    cursor = first.portCalls.find((call) => call.port === 'tools' && call.method === 'dispatch')?.args?.cursor ?? null
+    cursor = first.portCalls.find((call) => call.port === 'tool-dispatch' && call.method === 'dispatch')?.args?.cursor ?? null
     assert.ok(cursor, '提问游标随队列项落世界')
   } finally {
     first.close()

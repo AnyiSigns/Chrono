@@ -1,15 +1,24 @@
-// 节点派发：按契约 / 实例 / 输入构造各能力类的 bag，经反向调用 `port.call` 派发（发出者 = loop-policy）。
-// 节点实现不在本插件（节点是各插件的 eff）；本文件只做 bag 装配、结果归一、模型失败时的降级判定。
+// 节点派发：按契约声明装配 bag、经反向调用 `port.call` 派发、按声明归一结果（发出者 = loop-policy）。
+// 节点语义由契约的 `bag_pick` / `output_map` / `dispatch` 元数据声明（见 dispatch-rules.ts），
+// 本文件只做通用解释：绑定 → 调用 → 归一；模型失败时的降级判定也在此。
 
 import { resolveDowngrade } from './downgrade.ts'
 import { commitParts, committedPartsOf, displayParts, incrementalParts } from './commit-parts.ts'
 import { isCancelled } from './cancel.ts'
-import { latestCheckpoint, renderCheckpointText, subagentTaskText, toSubagentResult } from './subagent.ts'
 import {
-  contractId,
+  applyOutputMap,
+  applyResultMap,
+  buildBag,
+  buildNamedBag,
+  defaultModelBag,
+  dispatchSpecOf,
+  normalizeFor,
+  runPreStep,
+  type DispatchContext,
+} from './dispatch-rules.ts'
+import {
   effectsMethods,
   effectsPorts,
-  nodeBindings,
   nodeEntry,
   type GraphModel,
 } from './model.ts'
@@ -19,6 +28,8 @@ import { appendStep, nextStepSeq } from './steplog.ts'
 import type { ChosenInstance } from './scope.ts'
 import type { TraceRecorder } from './trace.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState } from './types.ts'
+
+export { netScopeOf } from './dispatch-rules.ts'
 
 export interface NodeDispatchInput {
   nodeIndex: number
@@ -34,6 +45,8 @@ export interface NodeDispatchInput {
   port: PortCaller
   /** 世界 `context-source` 成员表（身份名码元序）；`context.assemble` 前置逐一反向 `collect`。 */
   contextSources?: string[]
+  /** 世界 `turn-hook` 成员表（身份名码元序）；`context.assemble` 前置（before-assemble）逐成员取增量。 */
+  turnHooks?: string[]
   trace: TraceRecorder
 }
 
@@ -55,262 +68,6 @@ function target(contract: Rec, instance: ChosenInstance): { cap: string; method:
   const ports = effectsPorts(contract)
   const methods = effectsMethods(contract)
   return { cap: ports[0] ?? '', method: methods[0] ?? 'invoke' }
-}
-
-function pick(bag: Rec, keys: string[]): Rec {
-  const out: Rec = {}
-  for (const key of keys) if (bag[key] !== undefined) out[key] = bag[key]
-  return out
-}
-
-/** 上下文组装的 bag：系统提示词 / 人格 / 技能 / 会话 + 本轮 iter 间产物 + 外部来源汇集。 */
-function assembleBag(input: NodeDispatchInput, external: Json[]): Rec {
-  const bag = input.bag
-  const out = pick(bag, [
-    'config',
-    'input',
-    'session',
-    'style',
-    'skills',
-    'tools',
-    'thread_kind',
-    'thread',
-    // 回合身份随组装下传：context-window 据此把本轮用户消息保留为 P0 `input`、本轮其它记录归 `tool`（T0），
-    // 不把本轮 user_message 投影成可裁剪的历史项（见 context-window project.ts::projectContext）。
-    'turn_id',
-    'workspace_root',
-    'tier',
-    'persona',
-    'skills_select',
-    // 子代理隔离：父摘要 / 任务提示词 / 父检查点随装配下传，消费方按线程口径取用。
-    'parent_summaries',
-    'task_prompt',
-    'parent_checkpoint',
-    // 线程未读收件箱（跨线程投递）：随组装下传给 context-window（所有线程口径均可消费）。
-    'inbox_unread',
-  ])
-  const system = input.model.prompts['system']
-  if (isRecord(system) && typeof system['text'] === 'string') out['system_prompt'] = system['text']
-  else if (bag['system_prompt'] !== undefined) out['system_prompt'] = bag['system_prompt']
-  // item 9 决策：生产默认**不再**往上下文 bag 下传 `extra_messages`——context-window 已改为从会话步日志
-  // （`session.turns[].steps`）投影并明确忽略本键（见 context-window candidates.ts）。仅当调用方显式
-  // `compat_extra_messages === true`（旧式调用 / 测试兼容）才下传，属惰性兼容键，不影响模型可见性真源。
-  // 展示 / 收口路径不读本键（直接读 `rs.extraMessages`，见 commit-parts.ts），故不受影响。
-  if (bag['compat_extra_messages'] === true && input.rs.extraMessages.length > 0) out['extra_messages'] = input.rs.extraMessages
-  // 阈值单一真源：解析后的扁平 thresholds map（含 `large_artifact_bytes`）随 context bag 下传，
-  // 消费方据此覆盖自身 policy 默认，避免两处各定义默认值漂移。
-  out['thresholds'] = input.model.thresholds
-  // 空转 nudge（一次性）：随组装下传，context-window 作为**前导**系统消息注入（不像尾插那样被当成用户最新指令）。
-  if (typeof input.rs.loopNudge === 'string' && input.rs.loopNudge.length > 0) {
-    out['loop_nudge'] = input.rs.loopNudge
-  }
-  // 最近一次完成的模型调用用量随组装下传，供 context-window 校准 token 估算（缺失即不落键）。
-  const usage = isRecord(input.rs.shared['last_usage']) ? (input.rs.shared['last_usage'] as Rec) : null
-  if (usage !== null) out['usage'] = usage
-  // 外部 `context-source` 中性记录：由前置 `collect` 扇出汇集，context-window 按记录机械转候选。
-  if (external.length > 0) out['context_sources'] = external
-  return out
-}
-
-/**
- * 模型调用的连接实例：把上下文组装算出的 `max_output` 对齐进 `config.params.max_tokens`，
- * 使模型真实输出上限与预算假设一致（否则适配器回落自身默认，预算余量与实际不符）。
- */
-function modelConfig(input: NodeDispatchInput): Json {
-  const base = input.bag['config']
-  if (!isRecord(base)) return base ?? null
-  const params = isRecord(input.rs.shared['model_params']) ? (input.rs.shared['model_params'] as Rec) : null
-  const maxOutput = params !== null ? params['max_output'] : undefined
-  if (typeof maxOutput !== 'number' || !Number.isFinite(maxOutput)) return base
-  const configParams = isRecord(base['params']) ? (base['params'] as Rec) : {}
-  return { ...base, params: { ...configParams, max_tokens: maxOutput } }
-}
-
-/** 模型调用的 bag（agent.step / evolve.propose 共用）。 */
-function modelBag(input: NodeDispatchInput): Rec {
-  const bag = input.bag
-  const messages = input.inputs['messages']
-  const out: Rec = {
-    config: modelConfig(input),
-    messages: Array.isArray(messages) ? messages : input.rs.messages,
-  }
-  if (Array.isArray(bag['tools'])) out['tools'] = bag['tools']
-  if (bag['resilience'] !== undefined) out['resilience'] = bag['resilience']
-  if (bag['tool_choice'] !== undefined) out['tool_choice'] = bag['tool_choice']
-  // 前缀缓存提示由 context.assemble 产出（厂商中立），原样转发给模型适配器；缺失即不落键。
-  const cache = isRecord(input.rs.shared['last_cache']) ? (input.rs.shared['last_cache'] as Rec) : null
-  if (cache !== null) out['cache'] = cache
-  // 回合身份随模型调用下传：model-protocol 据此把在途 HTTP 请求登记进可中止表。
-  if (bag['turn_id'] !== undefined) out['turn_id'] = bag['turn_id']
-  return out
-}
-
-/** 收件箱消息体 → 文本：字符串原样，其余稳定 JSON 序列化（同输入同文本）。 */
-function inboxBodyText(value: Json | undefined): string {
-  if (typeof value === 'string') return value
-  if (value === undefined) return ''
-  return JSON.stringify(value)
-}
-
-/**
- * 本线程未读收件箱 → 子代理上下文消息（确定性：按 `bag.inbox_unread` 的声明序，调用方已按 seq 升序）。
- * 渲染与 context-window 同口径：`[收件箱 kind · 来自 from]\nbody`。
- */
-function inboxMessages(bag: Rec): Json[] {
-  if (!Array.isArray(bag['inbox_unread'])) return []
-  const out: Json[] = []
-  for (const item of bag['inbox_unread'] as Json[]) {
-    if (!isRecord(item)) continue
-    const kind = asString(item['kind']) ?? 'instruction'
-    const from = asString(item['from']) ?? 'parent'
-    out.push({ role: 'user', content: `[收件箱 ${kind} · 来自 ${from}]\n${inboxBodyText(item['body'])}` })
-  }
-  return out
-}
-
-/**
- * 子代理模型调用 bag：上下文 = 任务 + 父检查点 + 本线程未读收件箱，**不含父消息历史**；
- * 返回结构化结果而非子代理全程记录（长任务里最便宜的上下文节省）。
- * 父检查点取自本回合最后一条结构化 `checkpoint` 步记录（同一回合内委派场景）。
- */
-function subagentBag(input: NodeDispatchInput): Rec {
-  const task = subagentTaskText(input.inputs, input.bag)
-  const checkpoint = latestCheckpoint(input.bag, asString(input.bag['turn_id']))
-  const messages: Json[] = []
-  const system = input.model.prompts['subagent']
-  if (isRecord(system) && typeof system['text'] === 'string') messages.push({ role: 'system', content: system['text'] })
-  if (task !== null) messages.push({ role: 'user', content: task })
-  if (checkpoint !== null && isRecord(checkpoint['summary'])) {
-    const text = renderCheckpointText(checkpoint['summary'] as Rec)
-    if (text.length > 0) messages.push({ role: 'system', content: `[父检查点]\n${text}` })
-  }
-  for (const message of inboxMessages(input.bag)) messages.push(message)
-  const out: Rec = { config: modelConfig(input), messages, thread_kind: 'subagent' }
-  if (checkpoint !== null) out['parent_checkpoint'] = checkpoint
-  if (input.bag['turn_id'] !== undefined) out['turn_id'] = input.bag['turn_id']
-  return out
-}
-
-/** 内建档位 net 映射（sandbox body 缺失时的兜底；与 sandbox tools/default-body.json 同形）。 */
-const BUILTIN_TIER_NET: Record<string, string> = {
-  auto: 'all',
-  severe: 'limited',
-  review: 'none',
-  deny: 'none',
-}
-
-/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
-export function netScopeOf(value: Json | undefined): string {
-  return value === 'limited' || value === 'all' ? value : 'none'
-}
-
-/** 某工具声明的 net 需求：从工具目录（bag.tools）按名查 caps.net；查不到按 none。 */
-export function declaredNetOf(tool: string, tools: Json[]): string {
-  for (const item of tools) {
-    if (!isRecord(item) || item['name'] !== tool) continue
-    const caps = item['caps']
-    return isRecord(caps) ? netScopeOf(caps['net']) : 'none'
-  }
-  return 'none'
-}
-
-/** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
-export function tierNetOf(tier: Json | undefined, sandboxTiers: Json | undefined): string {
-  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
-  if (typeof tier === 'string' && isRecord(tiers)) {
-    const entry = tiers[tier]
-    if (isRecord(entry)) {
-      const declared = entry['net']
-      if (declared === 'none' || declared === 'limited' || declared === 'all') return declared
-    }
-  }
-  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
-  return 'none'
-}
-
-/** 工具门禁 bag：按 call 逐项判（整批），并带上各 call 声明的 net 与当前档 net 范围供 guard 裁决。 */
-function gateBag(input: NodeDispatchInput): Rec {
-  const calls = Array.isArray(input.rs.lastCalls) ? input.rs.lastCalls : []
-  const tools = Array.isArray(input.bag['tools']) ? (input.bag['tools'] as Json[]) : []
-  return {
-    calls: calls.map((call) => {
-      const tool = typeof call['tool'] === 'string' ? (call['tool'] as string) : ''
-      return {
-        port: call['port'] ?? '',
-        tool: call['tool'] ?? '',
-        args: call['args'] ?? {},
-        net: declaredNetOf(tool, tools),
-      }
-    }),
-    tier: input.bag['tier'] ?? null,
-    tier_net: tierNetOf(input.bag['tier'], input.bag['sandbox_tiers']),
-    workspace_root: input.bag['workspace_root'] ?? null,
-    guard_rules: input.bag['guard_rules'] ?? null,
-  }
-}
-
-function dispatchBag(input: NodeDispatchInput, verdict: Json | null): Rec {
-  const bag = input.bag
-  const out = pick(bag, [
-    'tools',
-    'tools_bindings',
-    'mcp_tools',
-    'directory',
-    'projection_reads',
-    'sandbox_tiers',
-    'guard_rules',
-    'workspace_root',
-    'tier',
-    'grant',
-    'ignore',
-    'question',
-    'session',
-    'session_id',
-    'todo',
-  ])
-  out['calls'] = Array.isArray(input.rs.lastCalls) ? input.rs.lastCalls : []
-  if (verdict !== null) out['verdicts'] = verdict
-  if (input.bag['cursor'] !== undefined) out['cursor'] = input.bag['cursor']
-  return out
-}
-
-/** 整批汇总取最严：any deny → deny；否则 any escalate → escalate；否则 allow。 */
-function strictest(judgeValue: Json): string {
-  if (isRecord(judgeValue) && Array.isArray(judgeValue['decisions'])) {
-    let result = 'allow'
-    for (const decision of judgeValue['decisions'] as Json[]) {
-      const verdict = isRecord(decision) && typeof decision['verdict'] === 'string' ? (decision['verdict'] as string) : 'deny'
-      if (verdict === 'deny') return 'deny'
-      if (verdict === 'escalate') result = 'escalate'
-    }
-    return result
-  }
-  if (isRecord(judgeValue) && typeof judgeValue['summary'] === 'string') return judgeValue['summary'] as string
-  return 'allow'
-}
-
-/** 归一 agent.step / subagent 输出：补 `message` 与规范化 `tool_calls`。 */
-function stepOutput(value: Json): Rec {
-  const raw = isRecord(value) ? value : {}
-  const text = typeof raw['text'] === 'string' ? (raw['text'] as string) : ''
-  const checked = checkToolCalls(raw['tool_calls'])
-  const message: Rec = { role: 'assistant', content: text }
-  // 推理随承接帧携带，供回合落盘时作展示段；context-window 只取 role / parts / tool_calls，
-  // 该字段不参与模型上下文（见 commit-parts.ts 头注）。
-  if (typeof raw['reasoning'] === 'string' && (raw['reasoning'] as string).length > 0) {
-    message['reasoning'] = raw['reasoning']
-  }
-  if (isRecord(raw['usage'])) message['usage'] = raw['usage']
-  // 工具调用回灌：assistant 消息须带上本轮 tool_calls（中性形状 {id,name,arguments}），
-  // 否则下一 iter 模型看不到自己的调用，会反复重调同一工具（协议层按方言编形）。
-  if (checked.calls.length > 0) {
-    message['tool_calls'] = checked.calls.map((call) => ({
-      id: call['call_id'],
-      name: call['tool'],
-      arguments: call['args'] ?? {},
-    }))
-  }
-  return { ...raw, message, tool_calls: checked.calls }
 }
 
 /** 归一模型 tool_calls → 派发 calls（{call_id, tool, args}）；用于 gate / dispatch。 */
@@ -340,85 +97,6 @@ export function providerResolver(bag: Rec): (tool: string) => string {
     }
     return 'tool'
   }
-}
-
-/**
- * `context.assemble` 前置：调用方未预置工具目录时经 `port.call` #27 `list` 取目录，
- * 写进 `bag.tools`（模型上下文可见）与 `bag.directory`（`tool.dispatch` 复用同一目录，不再现场重建）。
- * 目录已解析（调用方预置 / 本轮已取）即复用；`list` 传输失败按空目录处理，不阻断组装。
- */
-async function ensureToolDirectory(input: NodeDispatchInput): Promise<void> {
-  const bag = input.bag
-  if ((Array.isArray(bag['tools']) && bag['tools'].length > 0) || isRecord(bag['directory'])) {
-    return
-  }
-  const listBag = pick(bag, ['tools_bindings', 'mcp_tools'])
-  const outcome = await input.port.call('tools', 'list', listBag)
-  const value = outcome.ok ? outcome.value : null
-  const tools = isRecord(value) && Array.isArray(value['tools']) ? (value['tools'] as Json[]) : []
-  const rejected = isRecord(value) && Array.isArray(value['rejected']) ? (value['rejected'] as Json[]) : []
-  bag['tools'] = tools
-  bag['directory'] = { tools, rejected }
-  input.trace.recordEff(input.iter, 'tools', 'list', listBag, value, outcome.ok ? 'ok' : 'transport_failed')
-}
-
-/**
- * `context.assemble` 前置的通用汇集：向世界 `context-source` 成员（身份名码元序）各发一次反向
- * `collect(bag)`，把返回的 `{records:[…]}` 逐条汇总为随 bag 下传的 `context_sources`。
- * 成员不可用（未就绪 / 出错）只跳过该成员，不阻断组装；零成员合法（空表，内建来源照常）。
- */
-async function collectContextSources(input: NodeDispatchInput): Promise<Json[]> {
-  const records: Json[] = []
-  for (const provider of input.contextSources ?? []) {
-    const outcome = await input.port.call('context-source', 'collect', input.bag, { provider })
-    if (!outcome.ok) {
-      input.trace.recordEff(
-        input.iter,
-        'context-source',
-        'collect',
-        { provider },
-        { code: outcome.code },
-        'transport_failed',
-      )
-      continue
-    }
-    const list =
-      isRecord(outcome.value) && Array.isArray(outcome.value['records'])
-        ? (outcome.value['records'] as Json[])
-        : []
-    for (const item of list) records.push(item)
-    input.trace.recordEff(input.iter, 'context-source', 'collect', { provider }, outcome.value, 'ok')
-  }
-  return records
-}
-
-/** verify 的 dispatch 结果 → `{report:{passed, detail, exit_code}}`（post / trace 的输入面）。 */
-function verifyOutput(value: Json): Rec {
-  const results = isRecord(value) && Array.isArray(value['results']) ? (value['results'] as Json[]) : []
-  const first = results.find((item): item is Rec => isRecord(item))
-  if (first === undefined) return { passed: false, detail: 'no verify result', exit_code: null }
-  if (first['ok'] !== true) {
-    const error = isRecord(first['error']) ? (first['error'] as Rec) : {}
-    return { passed: false, detail: String(error['message'] ?? error['code'] ?? 'verify failed'), exit_code: null }
-  }
-  const inner = isRecord(first['result']) ? (first['result'] as Rec) : {}
-  if (typeof inner['passed'] === 'boolean') {
-    return {
-      passed: inner['passed'],
-      detail: typeof inner['detail'] === 'string' ? inner['detail'] : '',
-      exit_code: typeof inner['exit_code'] === 'number' ? inner['exit_code'] : null,
-    }
-  }
-  return { passed: true, detail: typeof inner['detail'] === 'string' ? inner['detail'] : 'ok', exit_code: null }
-}
-
-function verifyBag(input: NodeDispatchInput): { bag: Rec; skipped: boolean } {
-  const bindings = nodeBindings(input.instance.node)
-  const command = asString(bindings['command']) ?? asString(bindings['verify_command']) ?? asString(bindings['tools'])
-  if (command === null) return { bag: {}, skipped: true }
-  const out = pick(input.bag, ['workspace_root', 'tier', 'guard_rules', 'tools', 'tools_bindings', 'projection_reads'])
-  out['calls'] = [{ call_id: 'verify-0', tool: 'shell', args: { command }, port: 'tool-shell' }]
-  return { bag: out, skipped: false }
 }
 
 /** 助手展示记录：正文 + 可选用量 + 本步增量展示 parts（推理 / 正文 / 工具卡）。 */
@@ -477,52 +155,6 @@ async function appendCommitStep(input: NodeDispatchInput): Promise<NodeDispatchR
   return { ok: true, value: { appended: true }, outcome: 'ok' }
 }
 
-/** 派发一个节点；返回归一结果（不抛，失败作数据）。 */
-export async function dispatchNode(input: NodeDispatchInput): Promise<NodeDispatchResult> {
-  const contractIdValue = contractId(input.contract) ?? ''
-  const { cap, method } = target(input.contract, input.instance)
-
-  if (contractIdValue === 'join') {
-    return { ok: true, value: joinOutput(input), outcome: 'ok' }
-  }
-  if (contractIdValue === 'verify') {
-    const prepared = verifyBag(input)
-    if (prepared.skipped) return { ok: true, value: { report: { skipped: true } }, outcome: 'ok' }
-    const result = await callPort(input, 'tools', 'dispatch', prepared.bag, false)
-    if (!result.ok) return result
-    return { ...result, value: { report: verifyOutput(result.value) } }
-  }
-  if (contractIdValue === 'tool.gate') {
-    return callPort(input, 'guard', 'judge', gateBag(input), false)
-  }
-  if (contractIdValue === 'approval.wait') {
-    return callPort(input, 'approval', 'enqueue', approvalBag(input), false)
-  }
-  if (contractIdValue === 'tool.dispatch') {
-    return callPort(input, 'tools', 'dispatch', dispatchBag(input, input.inputs['verdict'] ?? null), false)
-  }
-  if (contractIdValue === 'turn.commit') {
-    return appendCommitStep(input)
-  }
-  if (contractIdValue === 'context.assemble') {
-    await ensureToolDirectory(input)
-    const external = await collectContextSources(input)
-    return callPort(input, 'context', 'build', assembleBag(input, external), false)
-  }
-  if (contractIdValue === 'subagent') {
-    // 子代理隔离：用任务 + 父检查点的专用 bag（不读父消息历史），产出归一为结构化结果。
-    const result = await callPort(input, cap, method, subagentBag(input), true)
-    if (!result.ok) return result
-    return { ...result, value: toSubagentResult(result.value) }
-  }
-  if (cap.length === 0) {
-    return { ok: true, value: {}, outcome: 'ok' }
-  }
-  const bag = modelBag(input)
-  const isModel = effectsPorts(input.contract).includes('model') || cap === 'model'
-  return callPort(input, cap, method, bag, isModel)
-}
-
 /** join：纯函数（同键取最新），不发 eff。 */
 function joinOutput(input: NodeDispatchInput): Json {
   const merged: Rec = {}
@@ -533,66 +165,49 @@ function joinOutput(input: NodeDispatchInput): Json {
   return { merged }
 }
 
-function approvalBag(input: NodeDispatchInput): Rec {
-  const bag = input.bag
-  const queue = isRecord(bag['approval']) && isRecord((bag['approval'] as Rec)['queue']) ? (bag['approval'] as Rec)['queue'] : bag['queue']
-  const refs = isRecord(bag['approval']) && isRecord((bag['approval'] as Rec)['refs']) ? (bag['approval'] as Rec)['refs'] : bag['refs']
-  const escalated = escalatedCall(input)
-  const port = escalated === null ? 'tool' : escalated.port
-  const tool = escalated === null ? '' : escalated.tool
-  const out: Rec = {
-    kind: approvalKind(port, tool),
-    port,
-    queue: queue ?? null,
-    refs: refs ?? {},
-    cursor: input.bag['cursor'] ?? null,
-    thread: input.env.thread,
-    run: input.env.run,
-    tier: bag['tier'] ?? null,
-    workspace_id: bag['workspace_id'] ?? null,
-    args_ref: { summary: tool.length > 0 ? `tool escalation: ${tool}` : 'tool escalation' },
+/** 本地纯处理（不发端口）：按契约声明名解析。 */
+const LOCAL_STEPS: Record<string, (input: NodeDispatchInput) => Promise<NodeDispatchResult>> = {
+  join: async (input) => ({ ok: true, value: joinOutput(input), outcome: 'ok' }),
+  commit_step: appendCommitStep,
+}
+
+/** 派发一个节点；返回归一结果（不抛，失败作数据）。 */
+export async function dispatchNode(input: NodeDispatchInput): Promise<NodeDispatchResult> {
+  const spec = dispatchSpecOf(input.contract)
+  const { cap, method } = target(input.contract, input.instance)
+
+  if (spec === null) return defaultDispatch(input, cap, method)
+  if (spec.local !== undefined) {
+    const local = LOCAL_STEPS[spec.local]
+    return local === undefined ? { ok: true, value: {}, outcome: 'ok' } : local(input)
   }
-  return out
-}
 
-/**
- * 取触发升级的 call（(port, 工具名) 判据来源）：`tool.gate` 的逐项 decisions 由 gate 节点产出，
- * 经边只传出 `verdict` 字符串，故从派发前游标快照的 outputs 里读 gate 的 decisions；
- * 读不到时回落批内首个 call（v1 整批升级取最严）。
- */
-function escalatedCall(input: NodeDispatchInput): { port: string; tool: string } | null {
-  const decisions = decisionsFromRequest(input.inputs['request']) ?? decisionsFromCursor(input.bag['cursor'])
-  if (decisions !== null) {
-    for (const decision of decisions) {
-      if (isRecord(decision) && decision['verdict'] === 'escalate') {
-        return { port: asString(decision['port']) ?? 'tool', tool: asString(decision['tool']) ?? '' }
-      }
-    }
+  const ctx: DispatchContext = {}
+  for (const step of spec.pre ?? []) await runPreStep(input, step, ctx)
+
+  let bag: Rec
+  if (spec.bag !== undefined) {
+    const built = buildNamedBag(input, spec.bag)
+    if ('skip' in built) return { ok: true, value: built.skip, outcome: 'ok' }
+    bag = built.bag
+  } else {
+    bag = await buildBag(input, spec, ctx)
   }
-  const call = (Array.isArray(input.rs.lastCalls) ? input.rs.lastCalls : []).find((item) => isRecord(item))
-  if (call !== undefined) return { port: asString(call['port']) ?? 'tool', tool: asString(call['tool']) ?? '' }
-  return null
+
+  const useCap = spec.cap ?? cap
+  const useMethod = spec.method ?? method
+  if (useCap.length === 0) return { ok: true, value: {}, outcome: 'ok' }
+  const result = await callPort(input, useCap, useMethod, bag, spec.model === true, spec.output_map ?? null)
+  if (!result.ok) return result
+  if (spec.result_map !== undefined) return { ...result, value: applyResultMap(spec.result_map, result.value) }
+  return result
 }
 
-function decisionsFromRequest(value: Json): Json[] | null {
-  if (isRecord(value) && Array.isArray(value['decisions'])) return value['decisions'] as Json[]
-  return null
-}
-
-function decisionsFromCursor(cursor: Json): Json[] | null {
-  if (!isRecord(cursor) || !isRecord(cursor['outputs'])) return null
-  for (const output of Object.values(cursor['outputs'] as Rec)) {
-    const decisions = decisionsFromRequest(output)
-    if (decisions !== null) return decisions
-  }
-  return null
-}
-
-/** 审批项 kind 判据 = (port, 工具名)：编排提案 → `orchestration_change`，插件写 → `plugin_write`，其余 `tool_call`。 */
-function approvalKind(port: string, tool: string): string {
-  if (tool === 'orchestration.propose' || port === 'orchestration-admin') return 'orchestration_change'
-  if (tool === 'plugin.write' || port === 'plugin-admin') return 'plugin_write'
-  return 'tool_call'
+/** 未声明派发元数据的契约：按默认模型路径（保持旧兜底）。 */
+async function defaultDispatch(input: NodeDispatchInput, cap: string, method: string): Promise<NodeDispatchResult> {
+  if (cap.length === 0) return { ok: true, value: {}, outcome: 'ok' }
+  const isModel = effectsPorts(input.contract).includes('model') || cap === 'model'
+  return callPort(input, cap, method, defaultModelBag(input), isModel, null)
 }
 
 /**
@@ -605,6 +220,7 @@ async function callPort(
   method: string,
   bag: Rec,
   isModel: boolean,
+  map: string | null,
 ): Promise<NodeDispatchResult> {
   const outcome = await input.port.call(cap, method, bag)
   if (!outcome.ok) {
@@ -614,8 +230,10 @@ async function callPort(
   const value = outcome.value
   const isError = isRecord(value) && value['ok'] === false
   input.trace.recordEff(input.iter, cap, method, bag, value, isError ? 'error' : 'ok')
+  const normalize = (target: string, produced: Json): Json =>
+    map === null ? normalizeFor(target, method, produced) : applyOutputMap(map, produced)
   if (!isError) {
-    return { ok: true, value: normalizeValue(cap, method, value), outcome: 'ok' }
+    return { ok: true, value: normalize(cap, value), outcome: 'ok' }
   }
   const error = isRecord(value['error']) ? (value['error'] as Rec) : {}
   const code = asString(error['code']) ?? 'downstream_refusal'
@@ -626,23 +244,13 @@ async function callPort(
       const retry = await input.port.call(downgraded.port, method, bag)
       if (retry.ok && !(isRecord(retry.value) && retry.value['ok'] === false)) {
         input.trace.recordEff(input.iter, downgraded.port, method, bag, retry.value, 'ok')
-        return { ok: true, value: normalizeValue(downgraded.port, method, retry.value), outcome: 'ok' }
+        // 降级端口按目标口径归一（与首调同规则，别名端口回落 identity）。
+        return { ok: true, value: normalizeFor(downgraded.port, method, retry.value), outcome: 'ok' }
       }
       input.trace.recordEff(input.iter, downgraded.port, method, bag, retry.ok ? retry.value : { code: retry.code }, retry.ok ? 'error' : 'transport_failed')
     }
   }
   return { ok: false, value, outcome: 'error', code }
-}
-
-function normalizeValue(cap: string, method: string, value: Json): Json {
-  if (cap === 'model' && method === 'chat') return stepOutput(value)
-  if (cap === 'guard' && method === 'judge') {
-    return isRecord(value) ? { ...value, verdict: strictest(value) } : { decisions: [], summary: { allow: 0, escalate: 0, deny: 0 }, verdict: 'allow' }
-  }
-  if (cap === 'approval' && method === 'enqueue') {
-    return isRecord(value) ? { ...value, decision: 'pending' } : value
-  }
-  return value
 }
 
 /** 从 tool.dispatch 的 results 里挑出成功项（供 wrote_files / extra_messages）。 */

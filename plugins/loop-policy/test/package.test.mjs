@@ -24,8 +24,19 @@ function listFiles(dir) {
 test('plugin.json：identity / implements / methods / pins / needs / start / members / commands', () => {
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'loop-policy')
-  assert.deepEqual(plugin.implements, ['loop-policy'])
+  assert.deepEqual(plugin.implements, ['loop-policy', 'loop-rule', 'turn-hook'])
   assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel'])
+  assert.deepEqual(plugin.methods['loop-rule'], ['when', 'pre', 'post'])
+  assert.deepEqual(plugin.methods['turn-hook'], [
+    'before-assemble',
+    'after-step',
+    'before-settle',
+    'after-settle',
+  ])
+  assert.deepEqual(plugin.slots, {
+    'loop-rule': { methods: ['when', 'pre', 'post'] },
+    'turn-hook': { methods: ['before-assemble', 'after-step', 'before-settle', 'after-settle'] },
+  })
   assert.deepEqual(plugin.pins, { host: 'host' })
   assert.deepEqual(plugin.needs, {
     'graph-run': { mode: 'one' },
@@ -37,7 +48,7 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     guard: { mode: 'one' },
     'graph-gate': { mode: 'one' },
     approval: { mode: 'one' },
-    tools: { mode: 'one' },
+    'tool-dispatch': { mode: 'one' },
     router: { mode: 'one' },
     'evolve-metrics': { mode: 'one' },
   })

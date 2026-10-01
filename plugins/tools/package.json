@@ -3,13 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "工具注册与派发：维护工具目录（describe/invoke 提供者并集 + 能力类绑定表 + 外部 MCP 工具），按调用整批并发派发到具体提供者",
+  "description": "工具绑定表数据身份：只存 bindings（工具名 -> 能力类方法 / argsSchema / caps / 四要素文案），目录装配与派发归 tool-registry / tool-dispatch",
   "files": [
     "plugin.json",
     "package.json",
     "README.md",
     ".worldignore",
-    "execute/",
     "schema/"
   ],
   "engines": {

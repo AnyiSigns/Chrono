@@ -1,4 +1,4 @@
-// `tools` 包形状 / 内容测试（零依赖，node --test）。
+// `tools` 包形状 / 内容测试（零依赖，node --test）：数据身份，无服务进程。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -25,9 +25,7 @@ const DECL_FIELDS = [
   'schema',
   'implements',
   'methods',
-  'concurrent_methods',
   'pins',
-  'needs',
   'start',
   'build',
   'protocol',
@@ -38,31 +36,20 @@ const DECL_FIELDS = [
   'commands',
 ]
 
-test('plugin.json 15 字段齐全且形态合法', () => {
+test('plugin.json 字段齐全且为数据身份（无 implements / 服务 / pins / needs）', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
   assert.equal(decl.identity, 'tools')
   assert.equal(decl.schema, 'schema/tools.json')
-  assert.deepEqual(decl.implements, ['tools'])
-  assert.deepEqual(decl.methods, { tools: ['list', 'dispatch'] })
-  assert.deepEqual(decl.concurrent_methods, ['dispatch'])
-  assert.equal(decl.start, 'node execute/main.ts')
+  assert.deepEqual(decl.implements, [])
+  assert.deepEqual(decl.methods, {})
+  assert.deepEqual(decl.pins, {})
+  assert.equal(decl.start, '')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
+  assert.deepEqual(decl.members, [{ kind: 'schema', path: 'schema/' }])
   assert.deepEqual(decl.commands, [])
-})
-
-test('门面 pins 只保留 host；算法消费走 needs.one（tool-registry / tool-dispatch）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs, {
-    'tool-registry': { mode: 'one' },
-    'tool-dispatch': { mode: 'one' },
-  })
+  assert.equal(existsSync(join(PKG_ROOT, 'execute')), false, '数据身份不起服务')
 })
 
 test('.worldignore 排除 test/ 与 tools/（契约必需文件不可排除）', () => {
@@ -73,39 +60,14 @@ test('.worldignore 排除 test/ 与 tools/（契约必需文件不可排除）',
   assert.deepEqual(lines, ['test/', 'tools/'])
 })
 
-test('schema/tools.json 声明并发上限与结果缓存私有参数', () => {
+test('schema/tools.json 声明绑定表 body 与绑定声明平铺形状', () => {
   const schema = readJson('schema/tools.json')
   assert.equal(schema.type, 'object')
-  assert.equal(schema.properties.concurrency.type, 'integer')
-  assert.equal(schema.properties.concurrency.default, 4)
-  assert.equal(schema.properties.cache.properties.enabled.default, true)
-  assert.equal(schema.properties.cache.properties.max_entries.default, 256)
-  assert.equal(schema.method_timeouts['tools.dispatch'] > 0, true)
-  assert.equal(typeof schema.properties.directory, 'object')
-  assert.equal(typeof schema.properties.dispatch_result, 'object')
-})
-
-test('execute/ 不 import 宿主 / 内核 / client，也不 import 其他插件包', () => {
-  const files = readdirSync(join(PKG_ROOT, 'execute')).filter((name) => name.endsWith('.ts'))
-  assert.ok(files.length > 0)
-  for (const file of files) {
-    const text = readText(join('execute', file))
-    const imports = [...text.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((match) => match[1])
-    for (const specifier of imports) {
-      assert.ok(
-        specifier.startsWith('./') ||
-          specifier.startsWith('../') ||
-          specifier.startsWith('node:') ||
-          specifier === 'plugin-sdk',
-        `${file} 不应 import ${specifier}`,
-      )
-      assert.equal(
-        /packages\/(host|kernel|client)/.test(specifier),
-        false,
-        `${file} 不应 import 宿主 / 内核`,
-      )
-    }
-  }
+  assert.deepEqual(schema.required, ['version', 'bindings'])
+  assert.equal(schema.properties.bindings.type, 'object')
+  assert.equal(schema.properties.binding.properties.class.type, 'string')
+  assert.equal(schema.properties.binding.properties.idempotent.type, 'boolean')
+  assert.equal(schema.properties.binding.properties.hidden_params.type, 'array')
 })
 
 test('package.json 信封：type=module 与 npm test 脚本', () => {
@@ -115,9 +77,9 @@ test('package.json 信封：type=module 与 npm test 脚本', () => {
   assert.equal(pkg.scripts.test, 'node --test')
 })
 
-test('红线：execute/ · src/ · terms/ · test/ 不出现宿主 / 内核 / client 引用', () => {
+test('红线：schema/ · test/ 不出现宿主 / 内核 / client 引用', () => {
   const forbidden = /packages\/(host|kernel|client)/
-  for (const root of ['execute', 'src', 'terms', 'test']) {
+  for (const root of ['schema', 'test']) {
     const dir = join(PKG_ROOT, root)
     if (!existsSync(dir)) continue
     for (const file of listFiles(dir)) {

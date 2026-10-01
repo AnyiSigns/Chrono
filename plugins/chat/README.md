@@ -106,7 +106,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 - 任务与父检查点随 `session.turn_open` 的 `task_prompt` / `parent_checkpoint` / `parent_summaries`
   相邻字段**同一次 append 落盘**（回合头即持久真源），`thread_kind` 一并记录。
 - bag 相应落 `thread_kind:'subagent'` + `task_prompt` / `parent_checkpoint` / `parent_summaries`，
-  经 loop-policy `assembleBag` 透传给 context-window；由它按线程口径组装「任务 + 父检查点」、
+  经 loop-policy `context.assemble` 的派发元数据透传给 context-window；由它按线程口径组装「任务 + 父检查点」、
   **跳过父消息历史**（子代理结果另以结构化 `checkpoint` 步记录回写）。
 - 续跑（`chat.resume` 段续跑 / 裁决续跑）由 `turn_id` 经 `session.read` 定位该回合所属会话，
   从回合记录取回任务与父检查点，重启后仍可续同一子代理回合。
@@ -114,8 +114,8 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 ### 跨线程收件箱（`inbox_unread` 转发 + ack）
 
 - `session.read` 切片的 `inbox_unread`（本会话未读投递，按 `seq` 升序）随 interpret bag 顶层
-  `inbox_unread` 下传：loop-policy `assembleBag` 透传给 context-window（所有线程口径），
-  `subagentBag` 另行渲染进子代理模型消息（子代理模型调用不经 context-window）。
+  `inbox_unread` 下传：loop-policy `context.assemble` 派发元数据透传给 context-window（所有线程口径），
+  `subagent` 派发元数据另行渲染进子代理模型消息（子代理模型调用不经 context-window）。
 - **确认点 = interpret 调用成功返回、且回合未以拒 / 取消收口之后**：只有解释器实际执行（模型确已消费消息）
   且回合没有失败 / 中止才经 `session.ack_inbox{conversation,seq=max未读}` 推进水位。传输 / 结构化失败
   （`interpreted.ok === false`）与解释器产出 `refused` / `cancelled` 终态都不 ack，未读保留供重试 / 续跑重投——
@@ -138,7 +138,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 `title.title_default` 声明会话缺省标题（与 session 新建会话一致）。
 
 `method_timeouts` 为 `chat.send` / `chat.resume` 声明长安全网，须严格大于 `loop-policy.interpret`：命令端点
-包住一次 `interpret`（一段内顺序跑 context.build / model.chat / tools.dispatch 等），不得用宿主缺省 30s 封顶；
+包住一次 `interpret`（一段内顺序跑 context.build / model.chat / tool-dispatch.dispatch 等），不得用宿主缺省 30s 封顶；
 服务侧反向调用通道兜底（`PORT_CALL_TIMEOUT_MS`）落在 `loop-policy.interpret` 与命令安全网之间。
 段续跑在同一个命令 run 内以 eval 连起来，故整回合不由单次安全网兜底（由预算与轮数上限约束）。
 `chat.cancel` 声明 600s：它顺序反向调用

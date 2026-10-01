@@ -3,22 +3,12 @@
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse, Socket } from 'node:http'
-import {
-  loadFavicon,
-  loadIcons,
-  loadLib,
-  loadShellHtml,
-  loadTokens,
-  loadVendor,
-  readAsset,
-  webDirOf,
-} from './assets.ts'
-import type { AssetContent } from './assets.ts'
+import { assetOf, assetVersions, loadLib, loadShellHtml, loadVendor, webDirOf } from './assets.ts'
 import { Bridge, extractValue } from './bridge.ts'
 import { log as defaultLog } from './log.ts'
 import { guardInboundRequest } from './inbound-guard.ts'
-import { FALLBACK_MESSAGES } from './messages.ts'
 import type { HeadlessEntry, MountEntry } from './mounts.ts'
+import type { SlotEntry } from './slots.ts'
 import { buildForwardArgs, forwardCommandName, routeOf } from './routes.ts'
 import type { Route } from './routes.ts'
 import { SseHub, shellStateRecord } from './sse.ts'
@@ -37,6 +27,8 @@ export interface ShellState {
 export interface UiServerDeps {
   mounts: MountEntry[]
   headless: HeadlessEntry[]
+  /** 顶层槽声明（③ 可重算）；页面按它渲染槽容器并注入引导数据。缺省空表（不影响页面自带槽）。 */
+  slots?: SlotEntry[]
   bridge: Bridge
   sse: SseHub
   state: () => ShellState
@@ -67,14 +59,15 @@ export function injectBootstrap(html: string, data: Json): string {
   return html.replace(`${BOOTSTRAP_PLACEHOLDER}{}`, () => JSON.stringify(data))
 }
 
-const CONTENT_TYPES: { [name: string]: string } = {
-  'tokens.v1.css': 'text/css; charset=utf-8',
-  'icons.v2.svg': 'image/svg+xml; charset=utf-8',
-  'messages.v1.json': 'application/json; charset=utf-8',
-  'favicon.svg': 'image/svg+xml; charset=utf-8',
-}
-
 const MAX_BODY_BYTES = 12 * 1024 * 1024
+
+/** 引导数据里的静态资源 URL：按内容版本拼 `?v=`，内容变则 URL 变（确定性）。 */
+function assetUrls(webDir: string): { [name: string]: string } {
+  const versions = assetVersions(webDir)
+  const urls: { [name: string]: string } = {}
+  for (const [name, version] of Object.entries(versions)) urls[name] = `/assets/${name}?v=${version}`
+  return urls
+}
 
 function sendJson(res: ServerResponse, status: number, value: Json): void {
   const body = JSON.stringify(value)
@@ -351,6 +344,8 @@ function serveShellPage(deps: UiServerDeps, webDir: string, res: ServerResponse)
   const html = injectBootstrap(withTheme, {
     mounts: deps.mounts as unknown as Json,
     headless: deps.headless as unknown as Json,
+    slots: (deps.slots ?? []) as unknown as Json,
+    assets: assetUrls(webDir) as unknown as Json,
     theme: current.theme,
   })
   sendText(res, 200, html, 'text/html; charset=utf-8')
@@ -362,14 +357,15 @@ function serveAsset(
   route: Extract<Route, { kind: 'asset' }>,
   res: ServerResponse,
 ): void {
-  let content: AssetContent
-  if (route.name === 'tokens.v1.css') content = loadTokens(webDir)
-  else if (route.name === 'icons.v2.svg') content = loadIcons(webDir)
-  else if (route.name === 'favicon.svg') content = loadFavicon(webDir)
-  else content = readAsset(webDir, 'messages.v1.json', JSON.stringify(FALLBACK_MESSAGES, null, 2))
+  const spec = assetOf(route.name)
+  if (spec === null) {
+    sendJson(res, 404, { ok: false, code: 'not_found', message: route.name })
+    return
+  }
+  const content = spec.load(webDir)
   // 降级不阻塞功能，但必须留痕：否则图标 / token 静默变空很难定位。
   if (content.fallback) (deps.log ?? defaultLog)(`asset fallback: ${route.name}`)
-  sendText(res, 200, content.text, CONTENT_TYPES[route.name] ?? 'application/octet-stream')
+  sendText(res, 200, content.text, spec.contentType)
 }
 
 /** 起壳 HTTP 服务（绑定 127.0.0.1）。 */

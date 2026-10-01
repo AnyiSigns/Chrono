@@ -1,7 +1,7 @@
 // 整批 dispatch：批级解析 workspace_root → guard 兜底（有 verdicts 则跳过）→ 按最严批级判定
 // 并发扇出到提供者（describe/invoke 提供者经扩展类 `tool-provider` 按成员定位调用；绑定项走能力类方法或投影读）。
 // 本插件只返回 results，不落账、不冒泡 $directives；提供者错误原样透传。
-// 目录经反向 `port.call tool-registry.list` 解析；args 校验经 `port.call tool-schema.validate-args`；
+// 目录经反向 `port.call tool-registry.list` 解析；args 校验经 `port.call tool-registry.validate-args`；
 // 语义门经 `port.call guard.judge`；工具提供者经 `tool-provider` 扩展类按成员定位（成员来自世界，不改本模块）。
 
 import { canonicalJson, isRecord } from 'plugin-sdk'
@@ -36,7 +36,7 @@ export interface RegistryBackend {
   list(bag: Rec): Promise<Directory>
 }
 
-/** args 校验后端：生产环境经反向 `port.call tool-schema.validate-args`。 */
+/** args 校验后端：生产环境经反向 `port.call tool-registry.validate-args`。 */
 export interface SchemaBackend {
   validateArgs(schema: Json, value: Json): Promise<{ ok: boolean; message: string }>
 }

@@ -1,11 +1,27 @@
 {
   "identity": "loop-policy",
   "schema": "schema/graph.json",
-  "implements": ["loop-policy"],
+  "implements": ["loop-policy", "loop-rule", "turn-hook"],
   "methods": {
-    "loop-policy": ["interpret", "cancel"]
+    "loop-policy": ["interpret", "cancel"],
+    "loop-rule": ["when", "pre", "post"],
+    "turn-hook": ["before-assemble", "after-step", "before-settle", "after-settle"]
   },
-  "concurrent_methods": ["interpret", "cancel"],
+  "concurrent_methods": [
+    "interpret",
+    "cancel",
+    "when",
+    "pre",
+    "post",
+    "before-assemble",
+    "after-step",
+    "before-settle",
+    "after-settle"
+  ],
+  "slots": {
+    "loop-rule": { "methods": ["when", "pre", "post"] },
+    "turn-hook": { "methods": ["before-assemble", "after-step", "before-settle", "after-settle"] }
+  },
   "pins": {
     "host": "host"
   },
@@ -19,7 +35,7 @@
     "guard": { "mode": "one" },
     "graph-gate": { "mode": "one" },
     "approval": { "mode": "one" },
-    "tools": { "mode": "one" },
+    "tool-dispatch": { "mode": "one" },
     "router": { "mode": "one" },
     "evolve-metrics": { "mode": "one" }
   },

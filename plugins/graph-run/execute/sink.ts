@@ -14,6 +14,7 @@ import {
   type IterState,
 } from './iter-ctx.ts'
 import type { GraphView } from './view.ts'
+import type { RuleEvaluator } from './rules.ts'
 import type { Json, Rec, RunState } from './types.ts'
 
 export async function runSink(
@@ -28,6 +29,7 @@ export async function runSink(
   iter: IterState,
   directives: Json[],
   refusal: Rec | null,
+  rules: RuleEvaluator,
 ): Promise<void> {
   const { model, port, env, trace, bag, pins } = input
   void view
@@ -36,7 +38,7 @@ export async function runSink(
     trace.refuse(sink, rs.iter, 'input_insufficient', 'graph')
     return
   }
-  const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, sink)
+  const ctx = ruleCtx(rs, model, bag, iter, trace.effLog, sink, rules)
   // 拒绝短路不丢弃本回合已产出的内容：把最后一步的助手消息一并交收口步（step.result），正文/推理/工具卡照常落盘，
   // 拒绝码则进结局（由 `turn.settle` 落定）；否则流式时看得到、重载后整回合「记录全没」。
   let sinkInputs: Rec
@@ -45,7 +47,7 @@ export async function runSink(
     const lastMessage = rs.messages.length > 0 ? rs.messages[0] : null
     if (lastMessage !== null) sinkInputs['message'] = lastMessage
   } else {
-    const resolved = resolveInputs(sink, contract, edges, ctx)
+    const resolved = await resolveInputs(sink, contract, edges, ctx)
     consumeBranches(resolved, sink, trace)
     sinkInputs = resolved.inputs
   }
@@ -104,6 +106,7 @@ export async function runSink(
     rs,
     env,
     port,
+    turnHooks: input.turnHooks ?? [],
     trace,
   })
   trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])
@@ -177,6 +180,7 @@ export async function runSuspend(
     rs,
     env,
     port,
+    turnHooks: input.turnHooks ?? [],
     trace,
   })
   trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])

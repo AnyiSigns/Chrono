@@ -22,7 +22,7 @@ const SOCKET_IDLE_MS = THROTTLE.resilience.request_timeout_ms
 const MODEL_TIMEOUTS = readJson('model-protocol/schema/protocol.json').method_timeouts
 const CHAT_TIMEOUTS = readJson('chat/schema/wiring.json').method_timeouts
 const LOOP_TIMEOUTS = readJson('loop-policy/schema/graph.json').method_timeouts
-const TOOLS_TIMEOUTS = readJson('tools/schema/tools.json').method_timeouts
+const TOOLS_TIMEOUTS = readJson('tool-dispatch/schema/tool-dispatch.json').method_timeouts
 const CONTEXT_TIMEOUTS = readJson('context-window/schema/policy.json').method_timeouts
 const SESSION_TIMEOUTS = readJson('session/schema/session.json').method_timeouts
 
@@ -40,7 +40,7 @@ test('method_timeouts 值域：正整数且不超过计时器硬上限', () => {
     ['chat', CHAT_TIMEOUTS],
     ['loop-policy', LOOP_TIMEOUTS],
     ['model-protocol', MODEL_TIMEOUTS],
-    ['tools', TOOLS_TIMEOUTS],
+    ['tool-dispatch', TOOLS_TIMEOUTS],
     ['context-window', CONTEXT_TIMEOUTS],
     ['session', SESSION_TIMEOUTS],
   ]) {
@@ -61,13 +61,13 @@ test('外层安全网严格大于其直接包裹的内层', () => {
   const interpret = LOOP_TIMEOUTS['loop-policy.interpret']
   const modelChat = MODEL_TIMEOUTS['model.chat']
   const modelComplete = MODEL_TIMEOUTS['model.complete']
-  const toolsDispatch = TOOLS_TIMEOUTS['tools.dispatch']
+  const toolsDispatch = TOOLS_TIMEOUTS['tool-dispatch.dispatch']
 
   assert.ok(chatSend > interpret, 'chat.send 必须大于 loop-policy.interpret')
   assert.ok(chatResume > interpret, 'chat.resume 必须大于 loop-policy.interpret')
   assert.ok(interpret > modelChat, 'loop-policy.interpret 必须大于 model.chat')
   assert.ok(interpret > modelComplete, 'loop-policy.interpret 必须大于 model.complete')
-  assert.ok(interpret > toolsDispatch, 'loop-policy.interpret 必须大于 tools.dispatch')
+  assert.ok(interpret > toolsDispatch, 'loop-policy.interpret 必须大于 tool-dispatch.dispatch')
   assert.ok(modelChat > SOCKET_IDLE_MS, 'model.chat 必须大于 socket 空闲超时')
 })
 
@@ -76,8 +76,8 @@ test('外层安全网严格大于一个调用内顺序内层之和', () => {
   // 故外层须超过 model.chat + tools.dispatch 之和，而非仅仅超过其中单个。
   const interpret = LOOP_TIMEOUTS['loop-policy.interpret']
   assert.ok(
-    interpret > MODEL_TIMEOUTS['model.chat'] + TOOLS_TIMEOUTS['tools.dispatch'],
-    'loop-policy.interpret 必须大于 model.chat + tools.dispatch 之和',
+    interpret > MODEL_TIMEOUTS['model.chat'] + TOOLS_TIMEOUTS['tool-dispatch.dispatch'],
+    'loop-policy.interpret 必须大于 model.chat + tool-dispatch.dispatch 之和',
   )
 })
 
@@ -87,7 +87,7 @@ test('分段执行后：一次 interpret = 一段（一个 iter），整回合�
   // （max_turn_iter / max_steps）与宿主轮数上限约束，长回合不再靠单次超时覆盖。
   const bound = Number(readText('loop-policy/execute/seed.ts').match(/max_turn_iter:\s*(\d+)/)?.[1] ?? Number.NaN)
   assert.ok(Number.isInteger(bound) && bound > 1, '未找到 max_turn_iter 阈值')
-  const perIter = MODEL_TIMEOUTS['model.chat'] + TOOLS_TIMEOUTS['tools.dispatch']
+  const perIter = MODEL_TIMEOUTS['model.chat'] + TOOLS_TIMEOUTS['tool-dispatch.dispatch']
   // 一段的同步内层之和须装进本层安全网（一段不再等于整回合）。
   assert.ok(LOOP_TIMEOUTS['loop-policy.interpret'] > perIter, '一次 interpret 必须兜住一段的内层之和')
   // 预算允许的整回合规模远大于单段安全网 ⇒ 整回合不再由单次超时兜底，而由预算 / 轮数上限先收口。
@@ -131,7 +131,7 @@ test('安全网值与约定一致（不得缩小）', () => {
   assert.equal(MODEL_TIMEOUTS['model.complete'], 3600000)
   assert.equal(MODEL_TIMEOUTS['model.abort'], 30000)
   assert.equal(SESSION_TIMEOUTS['session.turn_cancel'], 120000)
-  assert.equal(TOOLS_TIMEOUTS['tools.dispatch'], 1800000)
+  assert.equal(TOOLS_TIMEOUTS['tool-dispatch.dispatch'], 1790000)
   assert.equal(reverseCap('chat/execute/main.ts'), 6150000)
   assert.equal(reverseCap('loop-policy/execute/main.ts'), 4200000)
   // 本地 fs / CPU 层（属主在别处声明），只核验已按表声明，不改它。

@@ -146,7 +146,7 @@ test('供给向：真实 loop-policy 消费真实 model-protocol 的 text/reason
           .call('chat', args, message.env)
           .then((frame) => (frame.kind === 'error' ? portError(frame.error, frame.message) : frame.value))
       },
-      'tools.dispatch': (args) => {
+      'tool-dispatch.dispatch': (args) => {
         dispatchCalls.push(args)
         return { results: args.calls.map((call) => ({ call_id: call.call_id, ok: true, result: { path: 'foo.ts' } })) }
       },

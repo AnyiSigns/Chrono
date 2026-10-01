@@ -197,6 +197,28 @@ function normalizeStrings(value: unknown): string[] {
   )
 }
 
+/** 树视图：把 `tree` 节点拍平成带深度的行；无 `tree` 时退回扁平 `paths`（同一渲染器兼容两种结果）。 */
+function treeItems(detail: any): any[] {
+  const out: any[] = []
+  const walk = (nodes: any, depth: number): void => {
+    if (!Array.isArray(nodes)) return
+    for (const node of nodes) {
+      if (!isRec(node)) continue
+      const isDir = node.type === 'dir' || Array.isArray(node.children)
+      out.push({ name: typeof node.name === 'string' ? node.name : String(node.path ?? ''), depth, isDir })
+      walk(node.children, depth + 1)
+    }
+  }
+  if (Array.isArray(detail.tree)) {
+    walk(detail.tree, 0)
+    return out
+  }
+  for (const path of normalizeStrings(detail.paths ?? detail.items)) {
+    out.push({ name: path, depth: 0, isDir: false })
+  }
+  return out
+}
+
 /** list 的数据数组：各工具口径不一（`results` / `list` / `items` …），按已知名优先，再回退首个数组。 */
 const LIST_ARRAY_KEYS = ['items', 'results', 'list', 'entries', 'rows', 'todos', 'paths', 'matches']
 function listArrayOf(detail: any): any[] {
@@ -316,6 +338,20 @@ function questionViewModel(detail: any): any {
   }
 }
 
+/** read 批量结果 → 分段正文：每个文件以 `// <path>` 起头，空 / 缺字段容错。 */
+function filesText(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((item) => {
+      if (!isRec(item)) return ''
+      const path = typeof item.path === 'string' ? item.path : ''
+      const text = typeof item.text === 'string' ? item.text : ''
+      return `// ${path}\n${text}`
+    })
+    .filter((piece) => piece.length > 0)
+    .join('\n\n')
+}
+
 /** detail 描述符 → 渲染器视图模型；null / undefined 给中性空文本（不渲染字面 "null"）。 */
 export function detailViewModel(detail: unknown): any {
   if (detail === null || detail === undefined) return { kind: 'text', text: '' }
@@ -324,21 +360,24 @@ export function detailViewModel(detail: unknown): any {
   switch (kind) {
     case 'text':
       return { kind: 'text', text: typeof detail.text === 'string' ? detail.text : '' }
-    case 'code':
+    case 'code': {
+      // 正文口径不一：read 单文件是 `text`，webfetch 是 `content`；描述符也可能用 `code`。
+      const direct =
+        typeof detail.text === 'string'
+          ? detail.text
+          : typeof detail.content === 'string'
+            ? detail.content
+            : typeof detail.code === 'string'
+              ? detail.code
+              : ''
       return {
         kind: 'code',
-        // 正文口径不一：read 的结果是 `text`，webfetch 是 `content`；描述符也可能用 `code`。
-        text:
-          typeof detail.text === 'string'
-            ? detail.text
-            : typeof detail.content === 'string'
-              ? detail.content
-              : typeof detail.code === 'string'
-                ? detail.code
-                : '',
+        // read 批量无单一 text：按 files 拼成分段正文，避免展开区空白。
+        text: direct.length > 0 ? direct : filesText(detail.files),
         language:
           typeof detail.language === 'string' ? detail.language : typeof detail.lang === 'string' ? detail.lang : '',
       }
+    }
     case 'diff': {
       const parsed = typeof detail.patch === 'string' ? parsePatch(detail.patch) : computeDiff(detail.before ?? '', detail.after ?? '')
       return { kind: 'diff', rows: parsed.rows, truncated: parsed.truncated }
@@ -347,6 +386,8 @@ export function detailViewModel(detail: unknown): any {
       return { kind: 'matches', items: normalizeMatches(detail.matches ?? detail.items) }
     case 'paths':
       return { kind: 'paths', items: normalizeStrings(detail.paths ?? detail.items) }
+    case 'tree':
+      return { kind: 'tree', items: treeItems(detail) }
     case 'list':
       return listViewModel(detail)
     case 'table': {

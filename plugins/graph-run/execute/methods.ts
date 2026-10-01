@@ -17,6 +17,10 @@ export interface GraphRunDeps {
   pins?: Rec
   /** 世界 `context-source` 成员表（身份名码元序）：`context.assemble` 前置汇集时逐一反向 `collect`。 */
   contextSources?: string[]
+  /** 世界 `loop-rule` 成员表（身份名码元序）：判据按名向成员求值。 */
+  ruleProviders?: string[]
+  /** 世界 `turn-hook` 成员表（身份名码元序）：回合固定点逐成员取中立增量。 */
+  turnHooks?: string[]
 }
 
 function asRecord(value: Json | undefined): Rec | null {
@@ -50,6 +54,8 @@ async function run(args: Json, env: CallEnv, deps: GraphRunDeps): Promise<Json> 
     resume,
     refs,
     contextSources: deps.contextSources ?? [],
+    ruleProviders: deps.ruleProviders ?? [],
+    turnHooks: deps.turnHooks ?? [],
   })
   const ended = result.ended
   // 段终态（stepping）：保留取消标志与 trace 累积，让下一段仍能看见取消、回合尾一次写出。

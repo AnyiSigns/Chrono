@@ -3,7 +3,13 @@
   "schema": "schema/shell.json",
   "implements": ["ui-shell"],
   "methods": {
-    "ui-shell": ["ping"]
+    "ui-shell": ["ping", "nav"]
+  },
+  "slots": {
+    "ui-nav": { "methods": ["list"] }
+  },
+  "needs": {
+    "ui-nav": { "mode": "many", "methods": ["list"] }
   },
   "pins": {
     "host": "host"
@@ -28,7 +34,10 @@
   "state": "recomputable",
   "members": [
     { "kind": "execute", "path": "execute/" },
-    { "kind": "schema", "path": "schema/" }
+    { "kind": "schema", "path": "schema/" },
+    { "kind": "term", "path": "terms/" }
   ],
-  "commands": []
+  "commands": [
+    { "name": "ui-shell.nav", "entry": "terms/nav.json", "readonly": true }
+  ]
 }

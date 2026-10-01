@@ -1,10 +1,11 @@
 {
   "title": "tool-registry（工具目录装配）",
-  "description": "身份自述 / 数据契约：工具目录装配原语。list 把 `pins` 的 describe/invoke 提供者各自 `describe` 并集 + 调用方随 bag 传入的能力类绑定表（bag.tools_bindings）+ 外部 MCP 工具清单（bag.mcp_tools）装配为目录，逐项校验四要素 / argsSchema 白名单 / caps 形状，做工具名去重与模型可见文案拼装；调用方已给出 `bag.directory` / `bag.tools` 时直接复用、不再拉 describe。argsSchema / caps 校验经反向 `port.call tool-schema.*`；服务不读投影、无写通道。",
+  "description": "身份自述 / 数据契约：工具目录装配与 argsSchema 方言校验原语。list 把 `pins` 的 describe/invoke 提供者各自 `describe` 并集 + 调用方随 bag 传入的能力类绑定表（bag.tools_bindings）+ 外部 MCP 工具清单（bag.mcp_tools）装配为目录，逐项校验四要素 / argsSchema 白名单 / caps 形状，做工具名去重与模型可见文案拼装；调用方已给出 `bag.directory` / `bag.tools` 时直接复用、不再拉 describe。validate-args 按同一白名单方言机械校验模型传入的 args。argsSchema / caps 校验是住本插件 `schema-validate.ts` 的纯函数；服务不读投影、无写通道。",
   "type": "object",
   "additionalProperties": true,
   "audit_redact": {
-    "tool-registry.list": []
+    "tool-registry.list": [],
+    "tool-registry.validate-args": []
   },
   "properties": {
     "list_request": {
@@ -39,16 +40,37 @@
         "rejected": { "type": "array", "items": { "type": "object" } }
       }
     },
+    "validate_args_request": {
+      "type": "object",
+      "description": "validate-args 入参：方言 schema 与待校验的值。",
+      "required": ["schema", "value"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "description": "白名单子集 argsSchema。" },
+        "value": { "description": "按 schema 校验的值（模型传入的 args）。" }
+      }
+    },
+    "check_result": {
+      "type": "object",
+      "description": "validate-args 的返回值：{ok, message}。",
+      "required": ["ok", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "message": { "type": "string", "description": "失败时的可读原因。" }
+      }
+    },
     "errors": {
       "type": "object",
       "description": "结构化失败码（协议 error 帧的 code）。",
       "additionalProperties": true,
       "properties": {
-        "bad_args": { "type": "string", "description": "bag 非对象。" }
+        "bad_args": { "type": "string", "description": "args / bag 非对象。" }
       }
     }
   },
   "method_timeouts": {
-    "tool-registry.list": 120000
+    "tool-registry.list": 120000,
+    "tool-registry.validate-args": 2000
   }
 }

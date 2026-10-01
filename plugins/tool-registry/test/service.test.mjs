@@ -1,19 +1,17 @@
 // `tool-registry` 协议级测试（node --test）：list 并集（describe + 绑定 + MCP）、四要素 / schema / caps 拒、
-// 工具名去重、描述拼装与注入参数摘除、复用已装配目录不再拉 describe。
-// 反向桥：`tool-schema.*` spawn 其真实服务进程应答，describe 用注入的假提供者。
+// 工具名去重、描述拼装与注入参数摘除、复用已装配目录不再拉 describe、validate-args 方言校验。
+// schema 校验是住本包的纯函数，不再有 `tool-schema` 反向桥；describe 用注入的假提供者。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { relayFrame, serviceEntry, startBridgedService } from './bridge.mjs'
+import { relayFrame, startBridgedService } from './bridge.mjs'
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
-const SCHEMA_ROOT = resolve(PKG_ROOT, '..', 'tool-schema')
 const FIXTURE_ROOT = resolve(PKG_ROOT, '..', '..', 'tests', 'fixtures', 'plugins', 'tool-fixture')
 
 const PINS = {
-  'tool-schema': 'tool-schema',
   session: 'session',
   'evolve-metrics': 'evolve-metrics',
 }
@@ -34,11 +32,6 @@ const MANY_NEEDS = {
 }
 
 function start(providers = {}, options = {}) {
-  const schema = startBridgedService({
-    cwd: SCHEMA_ROOT,
-    entry: serviceEntry(SCHEMA_ROOT),
-    timeoutMs: 15000,
-  })
   const extra = options.services ?? {}
   const manyNeeds = { ...MANY_NEEDS, ...(options.manyNeeds ?? {}) }
   const registry = startBridgedService({
@@ -50,11 +43,6 @@ function start(providers = {}, options = {}) {
       CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify(manyNeeds),
     },
     async onPortCall(message) {
-      if (message.port === 'tool-schema') {
-        return relayFrame(
-          await schema.call('tool-schema', message.method, message.args ?? {}, message.env),
-        )
-      }
       // 按成员定位的 many：帧 `provider` = 目标提供方身份名；否则为单值端口。
       const dest = typeof message.provider === 'string' ? message.provider : message.port
       const fn = providers[dest]?.describe
@@ -70,10 +58,8 @@ function start(providers = {}, options = {}) {
   })
   return {
     ...registry,
-    exit: Promise.all([registry.exit, schema.exit]).then(([code]) => code),
     close() {
       registry.close()
-      schema.close()
       for (const service of Object.values(extra)) service.close()
     },
   }
@@ -158,11 +144,11 @@ const BASE_PROVIDERS = {
   },
 }
 
-test('hello 回 manifest：能力类与 list 声明与 plugin.json 一致', async () => {
+test('hello 回 manifest：能力类与 list / validate-args 声明与 plugin.json 一致', async () => {
   await withService({}, async (drv) => {
     const manifest = await drv.request('hello', { impl: 'tool-registry' }, 'manifest')
     assert.equal(manifest.identity, 'tool-registry')
-    assert.deepEqual(manifest.methods['tool-registry'], ['list'])
+    assert.deepEqual(manifest.methods['tool-registry'], ['list', 'validate-args'])
   })
 })
 
@@ -195,18 +181,41 @@ test('list 并集：describe 提供者 + 绑定表 + 外部 MCP 工具', async (
   })
 })
 
-test('tool-schema 是校验依赖、不被当作 describe 提供者探测', async () => {
+test('schema 校验住本包：list 不发任何 schema 反向调用', async () => {
   await withService(BASE_PROVIDERS, async (drv) => {
     await listValue(drv, {})
     assert.equal(
-      drv.portCalls.some((frame) => frame.port === 'tool-schema' && frame.method === 'describe'),
+      drv.portCalls.some((frame) => frame.port === 'tool-schema'),
       false,
+      'schema 校验不应再跨插件反向调用',
     )
-    assert.ok(
-      drv.portCalls.some(
-        (frame) => frame.port === 'tool-schema' && frame.method === 'normalize-decl',
-      ),
-    )
+  })
+})
+
+test('validate-args：按白名单方言校验模型 args', async () => {
+  await withService({}, async (drv) => {
+    const schema = {
+      type: 'object',
+      properties: { path: { type: 'string', minLength: 2 }, mode: { enum: ['a', 'b'] } },
+      required: ['path'],
+      additionalProperties: false,
+    }
+    const ok = await drv.call('tool-registry', 'validate-args', {
+      schema,
+      value: { path: 'ab' },
+    })
+    assert.equal(ok.kind, 'result', JSON.stringify(ok))
+    assert.equal(ok.value.ok, true)
+    const missing = await drv.call('tool-registry', 'validate-args', { schema, value: {} })
+    assert.equal(missing.value.ok, false)
+    const extra = await drv.call('tool-registry', 'validate-args', {
+      schema,
+      value: { path: 'ab', extra: 1 },
+    })
+    assert.equal(extra.value.ok, false)
+    const bad = await drv.call('tool-registry', 'validate-args', [1, 2])
+    assert.equal(bad.kind, 'error')
+    assert.equal(bad.code, 'bad_args')
   })
 })
 

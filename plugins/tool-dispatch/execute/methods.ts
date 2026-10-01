@@ -1,5 +1,5 @@
 // 能力类 `tool-dispatch` 的方法表：`dispatch`（整批并发派发）。
-// 目录、args 校验、语义门分别经反向 `port.call` 到 `tool-registry` / `tool-schema` / `guard`；
+// 目录装配与 args 校验均经反向 `port.call` 到 `tool-registry`，语义门经 `guard`；
 // 具体工具调用扇出到各提供者，本插件不读投影、无写通道。
 
 import { PortLink } from 'plugin-sdk'

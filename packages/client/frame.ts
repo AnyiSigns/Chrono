@@ -7,8 +7,10 @@ import type { Json } from '../kernel/index.ts'
 /** 单帧上限：与服务端一致，防无界缓冲。 */
 const MAX_FRAME_BYTES = 16 * 1024 * 1024
 
+/** 编码端同样受单帧上限约束：超限抛 `frame_too_large`，不写出对端必然拒收的脏帧。 */
 export function encodeFrame(message: Json): Uint8Array {
   const body = Buffer.from(canonicalJson(message), 'utf8')
+  if (body.length > MAX_FRAME_BYTES) throw new Error('frame_too_large')
   const frame = Buffer.allocUnsafe(4 + body.length)
   frame.writeUInt32BE(body.length, 0)
   body.copy(frame, 4)

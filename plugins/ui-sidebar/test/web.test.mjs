@@ -15,6 +15,7 @@ import {
   isEmptyView,
   matchTitle,
   normalizeConversations,
+  normalizeNav,
   normalizeQuery,
   normalizeWorkspaces,
   slotWriteCommand,
@@ -425,4 +426,27 @@ test('loadMessages：拉取失败回落内置最小表', async () => {
   assert.ok(table.ui_unreachable !== undefined)
   const ok = () => Promise.resolve({ ok: true, text: () => Promise.resolve('{"a":{"title":"t","body":"b"}}') })
   assert.equal((await loadMessages(ok, '/x')).a.body, 'b')
+})
+
+test('ui-nav 记录归一：三种 target、缺字段跳过、零提供方空表', () => {
+  assert.deepEqual(
+    normalizeNav({
+      records: [
+        { id: 'settings', label: '设置', label_code: 'settings_title', icon: 'settings', target: { overlay: 'settings' } },
+        { id: 'files', label: '文件', icon: 'folder', target: { page: 'files' } },
+        { id: 'x', label: 'X', icon: 'info', target: { uiState: { key: 'settings_open', value: true } } },
+        { id: 'bad-target', label: 'B', icon: 'info', target: {} },
+        { id: 'no-icon', label: 'N', icon: '', target: { page: 'n' } },
+      ],
+    }),
+    [
+      { id: 'settings', label: '设置', labelCode: 'settings_title', icon: 'settings', target: { overlay: 'settings' } },
+      { id: 'files', label: '文件', icon: 'folder', target: { page: 'files' } },
+      { id: 'x', label: 'X', icon: 'info', target: { uiState: { key: 'settings_open', value: true } } },
+      { id: 'no-icon', label: 'N', icon: 'info', target: { page: 'n' } },
+    ],
+  )
+  assert.deepEqual(normalizeNav({ records: [] }), [])
+  assert.deepEqual(normalizeNav({}), [])
+  assert.deepEqual(normalizeNav(null), [])
 })

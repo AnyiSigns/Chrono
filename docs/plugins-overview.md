@@ -4,7 +4,7 @@
 > 各插件「做什么 / 不做什么」见其自带自述 `README.md`；插件之间不 import、不相识，跨身份依赖只经**能力类**表达。
 > 角色挂在能力类上：**拥有方** `slots`（声明契约）/ **提供方** `implements` / **消费方** `needs`。一个插件跨能力类可同时持有三种角色；同一能力类不得既 `implements` 又 `needs`（拥有方可 `implements` 自产自用、或用 `many` 消费自己的扩展点）；无拥有方时契约回落提供方 `methods`。
 
-共 74 个插件。
+共 71 个插件。
 
 | 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | 依赖 `pins` | state | transport |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -23,10 +23,10 @@
 | `evolve-shadow` | — | `evolve-shadow` | `evolve-ledger(one)` | `host` | recomputable | stdio |
 | `evolve-sweep` | — | `evolve-sweep` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `graph-gate` | — | `graph-gate` | — | — | recomputable | stdio |
-| `graph-run` | — | `graph-run` | `session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`context-source(many)` | — | recomputable | stdio |
+| `graph-run` | — | `graph-run` | `session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tool-registry(one)`、`tool-dispatch(one)`、`router(one)`、`context-source(many)`、`loop-rule(many)`、`turn-hook(many)` | — | recomputable | stdio |
 | `guard` | — | `guard` | — | — | recomputable | stdio |
 | `input` | — | `input` | — | — | durable | stdio |
-| `loop-policy` | — | `loop-policy` | `graph-run(one)`、`turn-ledger(one)`、`ref-hydrate(one)`、`session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |
+| `loop-policy` | `loop-rule`、`turn-hook` | `loop-policy`、`loop-rule`、`turn-hook` | `graph-run(one)`、`turn-ledger(one)`、`ref-hydrate(one)`、`session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tool-dispatch(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |
 | `mcp` | — | `mcp`、`tool-provider` | `secrets(one)`、`mcp-client(one)` | — | durable | stdio |
 | `mcp-client` | — | `mcp-client` | — | — | recomputable | stdio |
 | `model-protocol` | — | `model` | `secrets(one)`、`config(one)`、`throttle(one)`、`msg-dialect(one)` | — | recomputable | stdio |
@@ -46,34 +46,31 @@
 | `secrets-env` | — | `secrets-backend` | — | — | recomputable | stdio |
 | `secrets-local` | — | `secrets-backend` | — | — | recomputable | stdio |
 | `session` | — | `session` | `input(one)` | — | durable | stdio |
-| `session-title` | — | `session-title` | `model(one)`、`title-format(one)` | — | recomputable | stdio |
+| `session-title` | — | `session-title` | `model(one)` | — | recomputable | stdio |
 | `skill` | — | `skill` | — | — | durable | stdio |
 | `storage-kv` | — | `storage-kv` | — | — | durable | stdio |
 | `storage-sql` | — | `storage-sql` | — | — | durable | stdio |
 | `throttle` | — | `throttle` | — | — | recomputable | stdio |
-| `title-format` | — | `title-format` | — | — | recomputable | stdio |
 | `todo` | — | `todo`、`tool-provider` | `storage-kv(one)` | — | durable | stdio |
 | `token-estimate` | — | `token-estimate` | — | — | recomputable | stdio |
 | `tokenizer` | — | `tokenizer` | — | — | recomputable | stdio |
 | `tool-browser` | — | `tool-browser`、`tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
-| `tool-dispatch` | — | `tool-dispatch` | `tool-registry(one)`、`tool-schema(one)`、`guard(one)`、`tool-provider(many)`、`session(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
+| `tool-dispatch` | — | `tool-dispatch` | `tool-registry(one)`、`guard(one)`、`tool-provider(many)`、`session(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
 | `tool-fs` | — | `tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
 | `tool-http` | — | `tool-http`、`tool-provider` | `sandbox(one)` | `host` | recomputable | stdio |
-| `tool-registry` | `tool-provider` | `tool-registry` | `tool-provider(many)`、`tool-schema(one)`、`session(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
-| `tool-schema` | — | `tool-schema` | — | — | recomputable | stdio |
+| `tool-registry` | `tool-provider` | `tool-registry` | `tool-provider(many)`、`session(one)`、`evolve-metrics(one)` | — | recomputable | stdio |
 | `tool-shell` | — | `tool-shell`、`tool-provider` | `secrets(one)`、`sandbox(one)` | — | recomputable | stdio |
-| `tools` | — | `tools` | `tool-registry(one)`、`tool-dispatch(one)` | `host` | recomputable | stdio |
+| `tools` | — | — | — | — | recomputable | — |
 | `turn-ledger` | — | `turn-ledger` | `graph-gate(one)`、`evolve-metrics(one)`、`approval(one)` | — | recomputable | stdio |
 | `ui-approval` | — | `ui-approval` | `approval(one)`、`input(one)`、`ref-hydrate(one)` | — | recomputable | stdio |
 | `ui-chat` | — | `ui-chat` | — | — | recomputable | stdio |
 | `ui-composer` | — | `ui-composer` | — | — | recomputable | stdio |
 | `ui-notify` | — | `ui-notify` | — | — | recomputable | — |
-| `ui-settings` | — | `ui-settings` | `model(one)`、`secrets(one)`、`ref-hydrate(one)`、`input(one)`、`skill(one)`、`config(one)` | `host` | recomputable | stdio |
-| `ui-shell` | — | `ui-shell` | — | `host` | recomputable | stdio |
+| `ui-settings` | — | `ui-settings`、`ui-nav` | `model(one)`、`secrets(one)`、`ref-hydrate(one)`、`input(one)`、`skill(one)`、`config(one)` | `host` | recomputable | stdio |
+| `ui-shell` | `ui-nav` | `ui-shell` | `ui-nav(many)` | `host` | recomputable | stdio |
 | `ui-sidebar` | — | `ui-sidebar` | `session(one)`、`workspace(one)`、`workspace-picker(one)`、`input(one)` | `host` | recomputable | stdio |
 | `ui-threads` | — | `ui-threads` | `session(one)`、`todo(one)` | — | recomputable | stdio |
 | `vector-index` | — | `vector-index` | — | — | recomputable | stdio |
-| `vendor-custom` | — | — | — | — | recomputable | — |
 | `vendor-dashscope` | — | — | — | — | recomputable | — |
 | `vendor-deepseek` | — | — | — | — | recomputable | — |
 | `vendor-google` | — | — | — | — | recomputable | — |

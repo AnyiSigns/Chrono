@@ -1,5 +1,5 @@
 // 协议级测试驱动：spawn 真实 `loop-policy` 门面，并把它对 `graph-run` / `turn-ledger` / `graph-gate` 的
-// 反向调用转交给真实服务；对节点能力类（context / model / guard / approval / tools / session /
+// 反向调用转交给真实服务；对节点能力类（context / model / guard / approval / tool-dispatch / session /
 // router / evolve-metrics）由本驱动以假实现应答。跨插件联调只经 spawn 进程 + 帧转发，不 import 兄弟插件源码。
 // `portCalls` / `events` 汇总自各真实服务（门面对 graph-run / turn-ledger 的内部委派不计入端口序，
 // 与拆分前「门面直接派发节点」的观测口径一致）。
@@ -26,7 +26,8 @@ export const DEFAULT_PINS = {
   context: 'context-window',
   guard: 'guard',
   approval: 'approval',
-  tools: 'tools',
+  'tool-dispatch': 'tool-dispatch',
+  'tool-registry': 'tool-registry',
   router: 'router',
   'evolve-metrics': 'evolve-metrics',
   'graph-gate': 'graph-gate',
@@ -81,7 +82,7 @@ export function defaultProviders(overrides = {}) {
         { kind: 'extern', payload: { ok: true, id: 'ap-1', count: 1, pending: 1 } },
       ],
     }),
-    'tools.dispatch': (args) => {
+    'tool-dispatch.dispatch': (args) => {
       const calls = Array.isArray(args.calls) ? args.calls : []
       return {
         results: calls.map((call, index) => ({
@@ -143,7 +144,20 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     })
   }
 
-  const spawnEnv = { ...process.env, CHRONO_PLUGIN_PINS: JSON.stringify(pins) }
+  // graph-run 的 `many` 成员表：judged 规则 / 回合钩子的默认提供方都是本门面 loop-policy。
+  const manyNeeds = { 'loop-rule': ['loop-policy'], 'turn-hook': ['loop-policy'] }
+  const spawnEnv = {
+    ...process.env,
+    CHRONO_PLUGIN_PINS: JSON.stringify(pins),
+    CHRONO_PLUGIN_MANY_NEEDS: JSON.stringify(manyNeeds),
+  }
+  // loop-policy 服务实例（在其创建后回填）：graph-run 的判据 / 钩子反向调用转发回真实提供方。
+  let loopRef = null
+  // 判据 / 钩子是能力内部机件，不计入端口序观测（与拆分前「门面直接派发节点」口径一致）。
+  const INTERNAL_PORTS = new Set(['loop-rule', 'turn-hook'])
+  const record = (message) => {
+    if (!INTERNAL_PORTS.has(message.port)) portCalls.push(message)
+  }
 
   const graphGate = startBridgedService({
     cwd: join(PLUGINS_ROOT, 'graph-gate'),
@@ -151,7 +165,7 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     env: spawnEnv,
     timeoutMs: 20000,
     onPortCall: (message) => {
-      portCalls.push(message)
+      record(message)
       return { ok: true, value: null }
     },
   })
@@ -165,7 +179,7 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     env: spawnEnv,
     timeoutMs: 20000,
     onPortCall: (message) => {
-      portCalls.push(message)
+      record(message)
       return message.port === 'graph-gate' ? forwardGraphGate(message) : answerProvider(message)
     },
   })
@@ -176,8 +190,12 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     env: spawnEnv,
     timeoutMs: 20000,
     onPortCall: (message) => {
-      portCalls.push(message)
-      return message.port === 'graph-gate' ? forwardGraphGate(message) : answerProvider(message)
+      record(message)
+      if (message.port === 'graph-gate') return forwardGraphGate(message)
+      // 判据 / 钩子反向调用转发回真实 loop-policy（提供方）——跨插件经帧转发，不 import 兄弟源码。
+      if (message.port === 'loop-rule' || message.port === 'turn-hook')
+        return loopRef.call(message.port, message.method, message.args, message.env ?? activeEnv).then(relayFrame)
+      return answerProvider(message)
     },
   })
 
@@ -188,7 +206,7 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     timeoutMs: 20000,
     onPortCall: (message) => {
       // 门面对 graph-run / turn-ledger 的内部委派不计入端口序（观测口径与拆分前一致）。
-      if (message.port !== 'graph-run' && message.port !== 'turn-ledger') portCalls.push(message)
+      if (message.port !== 'graph-run' && message.port !== 'turn-ledger') record(message)
       if (message.port === 'graph-run')
         return graphRun
           .call(message.port, message.method, message.args, message.env ?? activeEnv)
@@ -202,6 +220,7 @@ export function startService({ providers = {}, env = FIXED_ENV, pins = DEFAULT_P
     },
   })
 
+  loopRef = loop
   const services = [loop, graphRun, turnLedger, graphGate]
 
   async function interpretTurn(initial, callEnv) {

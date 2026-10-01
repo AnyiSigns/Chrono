@@ -4,7 +4,7 @@
 import { attributionOf, contractInputs, edgePorts, edgeWhen, type GraphModel } from './model.ts'
 import { edgeKey } from './graph.ts'
 import { directivesOf, isRecord } from './plan.ts'
-import { evalWhen, todoIncomplete, type RuleCtx } from './rules.ts'
+import { todoIncomplete, type RuleCtx, type RuleEvaluator } from './rules.ts'
 import type { GraphView } from './view.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState, ServiceEvent } from './types.ts'
 import type { TraceRecorder } from './trace.ts'
@@ -22,6 +22,10 @@ export interface InterpretInput {
   refs: Rec
   /** 世界 `context-source` 成员表（身份名码元序）：`context.assemble` 前置汇集时逐一反向 `collect`。 */
   contextSources?: string[]
+  /** 世界 `loop-rule` 成员表（身份名码元序）：判据按名向成员求值。 */
+  ruleProviders?: string[]
+  /** 世界 `turn-hook` 成员表（身份名码元序）：回合固定点逐成员索取中立增量。 */
+  turnHooks?: string[]
 }
 
 export interface InterpretResult {
@@ -93,6 +97,7 @@ export function ruleCtx(
   iter: IterState,
   effLog: Json[],
   nodeIndex: number,
+  rules: RuleEvaluator,
 ): RuleCtx {
   return {
     nodeIndex,
@@ -101,6 +106,7 @@ export function ruleCtx(
     shared: rs.shared,
     thresholds: model.thresholds,
     effLog,
+    rules,
     state: {
       dispatched_tools: rs.dispatchedTools,
       question_pending: rs.questionPending,
@@ -112,13 +118,13 @@ export function ruleCtx(
   }
 }
 
-/** 入边触发判定（source 已求值 + when 成立）。 */
-export function edgeTriggered(edge: Rec, ctx: RuleCtx): boolean {
+/** 入边触发判定（source 已求值 + when 成立）。判据经 `loop-rule` 提供方按名求值。 */
+export async function edgeTriggered(edge: Rec, ctx: RuleCtx): Promise<boolean> {
   const ports = edgePorts(edge)
   if (ports === null) return false
   const source = ports.from[0]
   if (!ctx.outputs.has(source)) return false
-  const when = evalWhen(edgeWhen(edge), ctx, source)
+  const when = await ctx.rules!.when(edgeWhen(edge), ctx, source)
   // 未知判据不激活边（fail-closed）；未知判据会在解释器入口被判据校验先行拒绝。
   return when.ok && when.value
 }
@@ -155,12 +161,12 @@ function edgeValue(edge: Rec, ctx: RuleCtx): Json {
  *   但零触发仅在**所有这些边的源都已求值**（分支已判定而未走）时成立——源从未求值即不可达，仍不激活。
  * 节点 0（入口）恒激活，输入由调用方按需预置（composite 子图入口）。
  */
-export function resolveInputs(
+export async function resolveInputs(
   index: number,
   contract: Rec,
   edges: Rec[],
   ctx: RuleCtx,
-): InputResolution {
+): Promise<InputResolution> {
   const inputs: Rec = {}
   const taken: Rec[] = []
   const defeated: Rec[] = []
@@ -184,7 +190,10 @@ export function resolveInputs(
   for (const name of order) {
     const portEdges = byPort.get(name) as Rec[]
     const { mode, required } = portSpec(contract, name)
-    const triggered = portEdges.filter((edge) => edgeTriggered(edge, ctx))
+    const triggered: Rec[] = []
+    for (const edge of portEdges) {
+      if (await edgeTriggered(edge, ctx)) triggered.push(edge)
+    }
     if (mode === 'any') {
       if (triggered.length === 0) {
         activated = false
@@ -222,11 +231,11 @@ export function resolveInputs(
  * 至多一条可触发；>1 触发即判 `redundant`（两「互斥」分支同时走的编排错误）。
  * 返回被过度触发的端口与其触发边（声明序）；无则 null。
  */
-export function overTriggeredBranch(
+export async function overTriggeredBranch(
   nodeIndex: number,
   edges: Rec[],
   ctx: RuleCtx,
-): { port: string; edges: Rec[] } | null {
+): Promise<{ port: string; edges: Rec[] } | null> {
   const byPort = new Map<string, Rec[]>()
   for (const edge of edges) {
     const ports = edgePorts(edge)
@@ -238,7 +247,10 @@ export function overTriggeredBranch(
   }
   for (const [port, list] of byPort) {
     if (list.length < 2) continue
-    const triggered = list.filter((edge) => edgeTriggered(edge, ctx))
+    const triggered: Rec[] = []
+    for (const edge of list) {
+      if (await edgeTriggered(edge, ctx)) triggered.push(edge)
+    }
     if (triggered.length > 1) return { port, edges: triggered }
   }
   return null

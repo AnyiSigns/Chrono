@@ -1,11 +1,11 @@
 # tool-registry（工具目录装配）
 
-工具目录装配提供方：把各工具提供者的声明并集装配为**工具目录**。
-被上层 `tools` 门面与 `tool-dispatch` 经反向 `port.call` 消费；自身消费 `tool-schema`
-（argsSchema 白名单 / caps 形状校验）与各工具提供者的 `describe`。
+工具目录装配与 argsSchema 方言校验提供方：把各工具提供者的声明并集装配为**工具目录**，
+并按同一白名单方言校验模型传入的 args。被 `tool-dispatch` 与图解释器经反向 `port.call` 消费；
+自身消费各工具提供者的 `describe`。
 
 - 身份：`tool-registry`
-- 能力类 / 方法：`tool-registry` → `list`
+- 能力类 / 方法：`tool-registry` → `list` / `validate-args`
 - 命令：无（由消费方按能力类反向调用，不暴露命令面）
 - 成员：`execute`（TS 服务）、`schema`（`tool-registry.json`）
 - `pins`：无声明（`"pins": {}`）；目录覆盖的 describe 提供者类与绑定提供者类走 `needs.one` 注入有效 pins
@@ -31,10 +31,15 @@
 * **注入参数（`hidden_params`）**：声明里列出的参数由调用方在派发前填好、模型不该也不能填。list 时把这些属性
   从**模型可见** `argsSchema` 摘掉（`required` 同摘），并保留完整 schema 到 `validateSchema` 供派发校验。
 
+## `validate-args({schema, value}) -> {ok, message}`
+
+按白名单方言（JSON Schema 子集）机械校验模型传入的 args；语义校验归各工具提供者。
+失败回可读原因，不抛异常。
+
 ## 依赖与背压
 
-- `tool-schema`（`one`）：argsSchema 白名单校验 / 净化与 caps 形状校验经反向 `port.call`。
-  校验服务不可用（未就绪 / 超时）时，受影响声明按校验失败处理（不进目录、留 `bad_tool_decl` 诊断）——目录不放行未校验声明。
+- argsSchema 白名单校验 / 净化与 caps 形状校验是住同包 `execute/schema-validate.ts` 的**纯函数**，
+  不再跨插件反向调用。
 - describe/invoke / 绑定提供者类（`one`，逐个）：describe 并集与绑定 class 归属判定。
 
 ## 服务纪律

@@ -10,6 +10,9 @@
       "additionalProperties": false,
       "properties": {
         "read_limit": { "type": "integer", "minimum": 1, "default": 2000 },
+        "preview_limit": { "type": "integer", "minimum": 1, "default": 50 },
+        "read_files_max": { "type": "integer", "minimum": 1, "default": 20 },
+        "stat_files_max": { "type": "integer", "minimum": 1, "default": 200 },
         "list_limit": { "type": "integer", "minimum": 1, "default": 200 },
         "grep_limit": { "type": "integer", "minimum": 1, "default": 200 },
         "output_max": { "type": "integer", "minimum": 1, "default": 1048576 },
@@ -26,11 +29,12 @@
     },
     "binary_policy": {
       "type": "object",
-      "description": "二进制与大文件策略：v1 文本路径完整，命中二进制回 binary_unsupported；二进制字节通道经 host.asset.put/get（契约就位，v1 未启用）。",
+      "description": "二进制与大文件策略：文本内联；read 默认对二进制回 binary_unsupported，可用 format=base64|hex 读原始字节（按 output_max 截断）；grep 默认跳过二进制，可用 binary=true 按原始字节 / Latin-1 解释搜索（ASCII 模式安全，命中条目带 binary 标记）；二进制字节通道经 host.asset.put/get（契约就位，未启用）。",
       "additionalProperties": false,
       "properties": {
         "text": { "enum": ["inline"] },
-        "binary": { "enum": ["binary_unsupported"] },
+        "binary": { "enum": ["binary_unsupported", "base64", "hex"] },
+        "binary_search": { "enum": ["latin-1"] },
         "asset_channel": { "enum": ["host.asset.put/get"] }
       }
     },

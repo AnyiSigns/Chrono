@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createService, pinsFromProcess } from '../service.ts'
+import { MAX_FRAME_BYTES } from '../wire.ts'
 import { PortLink } from '../port-link.ts'
 import { BadArgsError, ServiceError } from '../types.ts'
 import type { Json, Rec } from '../json.ts'
@@ -162,6 +163,24 @@ describe('服务派发器', () => {
       expect(sent.map((message) => message['kind'])).toEqual(['event', 'result'])
       expect(sent[0]['id']).toBe('toy-evt-1')
       expect(sent[1]['value']).toEqual({ ok: true })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('结果帧超单帧上限 → 回 response_too_large 错误帧（不写出脏帧）', async () => {
+    const root = pluginRoot({ methods: { toy: ['echo', 'boom', 'domain', 'blow', 'huge'] } })
+    try {
+      const { instance, sent } = build(root, {
+        handlers: {
+          huge: () => ({ value: { blob: 'a'.repeat(MAX_FRAME_BYTES + 1) }, events: [] }),
+        },
+      })
+      instance.receive({ v: '1', id: 'big', kind: 'call', port: 'toy', method: 'huge', args: {} })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(sent.map((message) => [message['kind'], message['code']])).toEqual([
+        ['error', 'response_too_large'],
+      ])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

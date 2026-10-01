@@ -1,5 +1,5 @@
 // 目录 / args 校验后端：生产环境经 SDK 反向调用通道发 `port.call tool-registry.list` /
-// `tool-schema.validate-args`，单测注入假后端。失败作数据（结构化错误 / 拒绝原因），
+// `tool-registry.validate-args`，单测注入假后端。失败作数据（结构化错误 / 拒绝原因），
 // 不抛未捕获错误、不断通道；目录服务不可用按 fail-closed 抛 ServiceError。
 // 多一跳须严格嵌套超时：按下游方法声明抬高单次反向等待。
 
@@ -15,7 +15,7 @@ import {
 /** `tool-dispatch` → `tool-registry.list` 的等待上限；须 ≥ 下游声明（120000）。 */
 export const REGISTRY_LIST_TIMEOUT_MS = 130_000
 
-/** `tool-dispatch` → `tool-schema.validate-args` 的等待上限；须 ≥ 下游声明（2000）。 */
+/** `tool-dispatch` → `tool-registry.validate-args` 的等待上限；须 ≥ 下游声明（2000）。 */
 export const SCHEMA_TIMEOUT_MS = 10_000
 
 /** `tool-registry.list` 的反向调用后端：回目录索引（含 byName）。 */
@@ -35,7 +35,7 @@ export class RemoteRegistry implements RegistryBackend {
   }
 }
 
-/** `tool-schema.validate-args` 的反向调用后端：回 `{ok, message}`。 */
+/** `tool-registry.validate-args` 的反向调用后端：回 `{ok, message}`。 */
 export class RemoteSchema implements SchemaBackend {
   private readonly link: PortLink
 
@@ -45,7 +45,7 @@ export class RemoteSchema implements SchemaBackend {
 
   async validateArgs(schema: Json, value: Json): Promise<{ ok: boolean; message: string }> {
     const outcome = await this.link.call(
-      'tool-schema',
+      'tool-registry',
       'validate-args',
       { schema: schema ?? null, value },
       { timeoutMs: SCHEMA_TIMEOUT_MS },

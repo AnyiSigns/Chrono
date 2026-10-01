@@ -1,6 +1,6 @@
 // `tool-dispatch` 协议级测试（node --test）：allow 扇出与保序、绑定 / 投影读、escalate / deny、
 // workspace_missing、错误透传、结果缓存、verdicts 跳过 guard、caps / grant 透传、事件、fail-closed。
-// 反向桥：`tool-registry.list` 复用 bag 内目录；`tool-schema.validate-args` spawn 其真实服务进程应答；
+// 反向桥：`tool-registry.list` 复用 bag 内目录；`tool-registry.validate-args` spawn 真实 registry 服务应答；
 // 其余用注入假提供者。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,11 +10,10 @@ import { relayFrame, serviceEntry, startBridgedService } from './bridge.mjs'
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
-const SCHEMA_ROOT = resolve(PKG_ROOT, '..', 'tool-schema')
+const REGISTRY_ROOT = resolve(PKG_ROOT, '..', 'tool-registry')
 
 const PINS = {
   'tool-registry': 'tool-registry',
-  'tool-schema': 'tool-schema',
   guard: 'guard',
   session: 'session',
   'evolve-metrics': 'evolve-metrics',
@@ -23,9 +22,9 @@ const PINS = {
 const isRec = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
 
 function start(providers = {}) {
-  const schema = startBridgedService({
-    cwd: SCHEMA_ROOT,
-    entry: serviceEntry(SCHEMA_ROOT),
+  const registry = startBridgedService({
+    cwd: REGISTRY_ROOT,
+    entry: serviceEntry(REGISTRY_ROOT),
     timeoutMs: 15000,
   })
   const dispatch = startBridgedService({
@@ -35,10 +34,10 @@ function start(providers = {}) {
     env: { CHRONO_PLUGIN_PINS: JSON.stringify(PINS) },
     async onPortCall(message) {
       const args = message.args ?? {}
-      if (message.port === 'tool-schema' && message.method === 'validate-args') {
+      if (message.port === 'tool-registry' && message.method === 'validate-args') {
         return relayFrame(
-          await schema.call(
-            'tool-schema',
+          await registry.call(
+            'tool-registry',
             'validate-args',
             { schema: args.schema ?? null, value: args.value },
             message.env,
@@ -65,10 +64,10 @@ function start(providers = {}) {
   })
   return {
     ...dispatch,
-    exit: Promise.all([dispatch.exit, schema.exit]).then(([code]) => code),
+    exit: Promise.all([dispatch.exit, registry.exit]).then(([code]) => code),
     close() {
       dispatch.close()
-      schema.close()
+      registry.close()
     },
   }
 }
@@ -217,7 +216,7 @@ test('bag.directory 已给：本地索引复用，不发 tool-registry 调用（
     })
     assert.equal(response.value.results[0].ok, true)
     assert.equal(
-      drv.portCalls.some((frame) => frame.port === 'tool-registry'),
+      drv.portCalls.some((frame) => frame.port === 'tool-registry' && frame.method === 'list'),
       false,
     )
   })

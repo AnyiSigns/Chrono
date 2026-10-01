@@ -11,7 +11,7 @@ import {
   isRecord,
   isoAt,
   normalizeArgsRef,
-  normalizeKind,
+  normalizeEnqueueKind,
   normalizeShadow,
   nowOf,
   resolvePort,
@@ -41,7 +41,7 @@ function opKeyOf(run: string, cursor: Json | undefined): string {
 // ── enqueue ────────────────────────────────────────────────────────────────
 
 function enqueue(args: Rec, env: CallEnv, store: ApprovalStore): HandlerResult {
-  const kind = normalizeKind(args['kind'])
+  const kind = normalizeEnqueueKind(args)
   if (kind === null) {
     throw new BadArgsError('kind must be tool_call / orchestration_change / plugin_write')
   }

@@ -410,7 +410,16 @@ class HostClient implements Client {
   }
 
   private write(message: Json): void {
-    this.socket.write(encodeFrame(message))
+    let frame: Uint8Array
+    try {
+      frame = encodeFrame(message)
+    } catch {
+      // 出站帧超上限：不写出对端必然拒收的脏帧；与解码收口同构，失败在途并断开
+      this.failAll()
+      this.socket.destroy()
+      return
+    }
+    this.socket.write(frame)
   }
 
   private onData(chunk: Buffer): void {

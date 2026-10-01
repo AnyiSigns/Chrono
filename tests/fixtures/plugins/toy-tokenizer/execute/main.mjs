@@ -1,4 +1,6 @@
-﻿// 鍚屽悕 toy 鏈嶅姟锛氬涓绘湇鍔″崗璁抚寰幆锛坉ocs/protocol.md 搂浜岋級銆?// 韬唤 / 鑳藉姏 / 鏂规硶鑷鍚屽寘 plugin.json锛涜涓烘寜韬唤鍒嗘淳锛涗笉璇绘姇褰便€佷笉鍐欎笘鐣屻€佷笉鍙栨椂闂撮殢鏈恒€?// stdout 鍙彂鍗忚甯э紝鏃ュ織璧?stderr锛泂tdin EOF / close / error 鍗宠嚜閫€鍑恒€?
+﻿// 同名 toy 服务：宿主服务协议帧循环（docs/protocol.md §二）。
+// 身份 / 能力 / 方法自读同包 plugin.json；行为按身份分派；不读投影、不写世界、不取时间随机。
+// stdout 只发协议帧，日志走 stderr；stdin EOF / close / error 即自退出。
 import { readFileSync } from 'node:fs'
 
 const PLUGIN = JSON.parse(readFileSync(new URL('../plugin.json', import.meta.url), 'utf8'))
@@ -9,7 +11,8 @@ const PROTOCOL = PLUGIN.protocol
 const STATE = PLUGIN.state
 const BEHAVIOR = readBehavior()
 
-/** 鍙€?`e2e.json`锛氭寜鏂规硶瑕嗙洊杩斿洖鍊?/ 娉ㄥ叆閿欒锛堟祴璇曞す鍏风敤浜庡埗閫犲け璐ヨ矾寰勶級銆?*/
+/** 可选 `e2e.json`：按方法覆盖返回值 /
+注入错误（测试夹具用于制造失败路径）。 */
 function readBehavior() {
   try {
     return JSON.parse(readFileSync(new URL('../e2e.json', import.meta.url), 'utf8'))
@@ -36,11 +39,11 @@ function behavior(capability, method, args) {
         tools: [
           {
             name: 'read',
-            intent: '璇诲彇涓€涓枃鏈枃浠剁殑鍐呭銆?,
-            when_to_use: '闇€瑕佹煡鐪嬫枃浠跺唴瀹规椂銆?,
-            param_semantics: { path: '鏂囦欢璺緞銆? },
-            boundaries: '鍙鍗曟枃浠躲€?,
-            description: '璇绘枃鏈枃浠讹紱杩斿洖 {text}銆?,
+            intent: '读取一个文本文件的内容。',
+            when_to_use: '需要查看文件内容时。',
+            param_semantics: { path: '文件路径。' },
+            boundaries: '只读单文件。',
+            description: '读文本文件；返回 {text}。',
             argsSchema: {
               type: 'object',
               properties: { path: { type: 'string', minLength: 1 } },

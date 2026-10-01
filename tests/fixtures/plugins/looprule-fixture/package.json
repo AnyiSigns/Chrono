@@ -1,0 +1,8 @@
+{
+  "name": "looprule-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：loop-rule 判据类提供方，term 承载一个命名判据",
+  "engines": { "node": ">=24" }
+}

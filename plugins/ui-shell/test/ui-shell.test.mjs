@@ -44,6 +44,9 @@ import { createSlotHost } from '../execute/web/lib/slots.js'
 import { createToastQueue, roleForTone, TOAST_DURATIONS, TOAST_MAX_VISIBLE } from '../execute/web/lib/toast.js'
 import { createToastRenderer } from '../execute/web/lib/toast-dom.js'
 import {
+  ASSET_NAMES,
+  assetOf,
+  assetVersions,
   EMPTY_SPRITE,
   loadFavicon,
   loadIcons,
@@ -51,6 +54,8 @@ import {
   MINIMAL_TOKENS,
   webDirOf,
 } from '../execute/assets.ts'
+import { orderNav, parseNavRecord, recordsOf } from '../execute/nav.ts'
+import { DEFAULT_SLOTS, ensureSlots, parseSlots } from '../execute/slots.ts'
 import { FALLBACK_MESSAGES, loadMessages, lookupMessage, MESSAGE_ALIASES, MESSAGE_PREFIXES, missingPrefixes, parseMessages } from '../execute/messages.ts'
 import { BOOTSTRAP_PLACEHOLDER, injectBootstrap, startUiServer } from '../execute/http-server.ts'
 import {
@@ -299,6 +304,122 @@ test('挂载表：启动无表生成默认、坏表回落默认、有表读表',
   } finally {
     rmSync(stateDir, { recursive: true, force: true })
   }
+})
+
+// ---- 顶层槽数据化 ----
+
+test('槽表：默认含自带 7 槽 + page；坏表回落默认、无表落盘默认', () => {
+  assert.deepEqual(
+    DEFAULT_SLOTS.map((entry) => entry.name),
+    ['sidebar', 'topbar', 'underbar', 'main', 'dock', 'composer', 'overlay', 'page'],
+  )
+  // 加 statusbar 只需改数据：合法槽表被接受
+  const data = JSON.stringify([
+    { name: 'main', kind: 'chrome', mount: 'column' },
+    { name: 'statusbar', kind: 'chrome', mount: 'column' },
+    { name: 'page', kind: 'page', mount: 'stage' },
+  ])
+  assert.deepEqual(parseSlots(data), [
+    { name: 'main', kind: 'chrome', mount: 'column' },
+    { name: 'statusbar', kind: 'chrome', mount: 'column' },
+    { name: 'page', kind: 'page', mount: 'stage' },
+  ])
+  // 缺省 kind / mount 有默认值
+  assert.deepEqual(parseSlots('[{"name":"statusbar"}]'), [
+    { name: 'statusbar', kind: 'chrome', mount: 'column' },
+  ])
+  assert.equal(parseSlots('{ not json'), null)
+  assert.equal(parseSlots('[]'), null)
+  assert.equal(parseSlots('[{"name":"Bad Name"}]'), null)
+  assert.equal(parseSlots('[{"name":"a"},{"name":"a"}]'), null)
+  assert.equal(parseSlots('[{"name":"a","kind":"bogus"}]'), null)
+
+  const stateDir = tempDir('slots')
+  try {
+    const first = ensureSlots(stateDir)
+    assert.equal(first.created, true)
+    assert.deepEqual(first.slots, DEFAULT_SLOTS)
+    assert.equal(existsSync(join(stateDir, 'ui-slots.json')), true)
+    // 加 statusbar 的数据改动被读表接住
+    writeFileSync(
+      join(stateDir, 'ui-slots.json'),
+      JSON.stringify([{ name: 'main', kind: 'chrome', mount: 'column' }, { name: 'statusbar', kind: 'chrome', mount: 'column' }]),
+    )
+    const custom = ensureSlots(stateDir)
+    assert.equal(custom.created, false)
+    assert.deepEqual(custom.slots.map((entry) => entry.name), ['main', 'statusbar'])
+    // 坏表回落默认并重写
+    writeFileSync(join(stateDir, 'ui-slots.json'), '[{"name":"bad name"}]')
+    const bad = ensureSlots(stateDir)
+    assert.equal(bad.created, true)
+    assert.deepEqual(bad.slots, DEFAULT_SLOTS)
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true })
+  }
+})
+
+// ---- ui-nav 记录解析与确定性排序 ----
+
+test('ui-nav：解析中立记录、按提供方码元序 + order + id 排序、同 id 去重', () => {
+  assert.deepEqual(
+    parseNavRecord({ id: 'settings', label: '设置', icon: 'settings', target: { overlay: 'settings' } }),
+    { id: 'settings', label: '设置', icon: 'settings', target: { overlay: 'settings' }, order: 0 },
+  )
+  assert.deepEqual(
+    parseNavRecord({ id: 'p', label: 'L', icon: 'i', target: { page: 'p' }, order: 5 }),
+    { id: 'p', label: 'L', icon: 'i', target: { page: 'p' }, order: 5 },
+  )
+  assert.deepEqual(
+    parseNavRecord({ id: 'u', label: 'L', icon: 'i', target: { uiState: { key: 'k', value: 1 } } }),
+    { id: 'u', label: 'L', icon: 'i', target: { uiState: { key: 'k', value: 1 } }, order: 0 },
+  )
+  // 非法形状：缺字段 / 坏 target
+  assert.equal(parseNavRecord({ id: 'x', icon: 'i', target: { page: 'p' } }), null)
+  assert.equal(parseNavRecord({ id: 'x', label: 'l', icon: 'i', target: {} }), null)
+  assert.equal(parseNavRecord(null), null)
+
+  const groups = [
+    { provider: 'zeta', records: [{ id: 'b', label: 'B', icon: 'i', target: { page: 'b' }, order: 0 }] },
+    {
+      provider: 'alpha',
+      records: [
+        { id: 'second', label: 'S', icon: 'i', target: { page: 's' }, order: 10 },
+        { id: 'first', label: 'F', icon: 'i', target: { page: 'f' }, order: 1 },
+      ],
+    },
+  ]
+  // 提供方码元序：alpha 先于 zeta；alpha 内 order 1 先于 10
+  assert.deepEqual(
+    orderNav(groups).map((record) => `${record.provider}:${record.id}`),
+    ['alpha:first', 'alpha:second', 'zeta:b'],
+  )
+  // 同 id 取先到者（alpha 的记录）
+  assert.deepEqual(
+    orderNav([
+      { provider: 'alpha', records: [{ id: 'dup', label: 'A', icon: 'i', target: { page: 'a' }, order: 0 }] },
+      { provider: 'zeta', records: [{ id: 'dup', label: 'Z', icon: 'i', target: { page: 'z' }, order: 0 }] },
+    ]).map((record) => record.label),
+    ['A'],
+  )
+  // 零提供方 / 坏形状 → 空表
+  assert.deepEqual(orderNav([]), [])
+  assert.deepEqual(recordsOf({ records: [null, { id: 'x' }] }), [])
+  assert.deepEqual(recordsOf({ records: 'nope' }), [])
+})
+
+// ---- 静态资源单一登记表 + 内容版本 ----
+
+test('资源表：路由 / 投递从同一登记表派生，内容版本确定', () => {
+  assert.deepEqual([...ASSET_NAMES], ['tokens.v1.css', 'icons.v2.svg', 'messages.v1.json', 'favicon.svg'])
+  assert.equal(assetOf('icons.v2.svg').contentType, 'image/svg+xml; charset=utf-8')
+  assert.equal(assetOf('nope.svg'), null)
+  const versions = assetVersions(WEB_DIR)
+  assert.match(versions['icons.v2.svg'], /^[0-9a-f]{12}$/)
+  // 同内容同版本，确定性
+  assert.deepEqual(assetVersions(WEB_DIR), versions)
+  // 读不到（缺目录）时降级为 fallback，仍确定
+  const missing = join(tempDir('assets-version'), 'nope')
+  assert.equal(assetVersions(missing)['icons.v2.svg'], 'fallback')
 })
 
 // ---- headless 入口路径与坏值回落 ----
@@ -1075,7 +1196,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-shell')
     assert.deepEqual(manifest.implements, ['ui-shell'])
-    assert.deepEqual(manifest.methods, { 'ui-shell': ['ping'] })
+    assert.deepEqual(manifest.methods, { 'ui-shell': ['ping', 'nav'] })
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-shell', method: 'ping', args: {} }))
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')
@@ -1089,6 +1210,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
 
     assert.equal(existsSync(join(root, 'state', 'ui-mounts.json')), true)
     assert.equal(existsSync(join(root, 'state', 'ui-headless.json')), true)
+    assert.equal(existsSync(join(root, 'state', 'ui-slots.json')), true)
 
     child.stdin.write(encodeFrame({ v: '1', id: 'd1', kind: 'drain', deadline_ms: 100 }))
     await waitFor(() => messages.some((message) => message.id === 'd1'), 'bye')

@@ -54,6 +54,23 @@ test('segmentSignature：易变字段不影响签名（时间戳 / 请求 ID 不
   assert.equal(a, b)
 })
 
+test('segmentSignature：签名是内容摘要，长度有界且不随结果正文体积放大', () => {
+  const result = () => ({ ok: true, result: { content: 'x'.repeat(2 * 1024 * 1024) } })
+  const state = { todo_done: 0, verify_failed: false }
+  const a = segmentSignature({
+    calls: [{ tool: 'read', args: { path: 'a.txt' } }],
+    results: [result()],
+    state,
+  })
+  const b = segmentSignature({
+    calls: [{ tool: 'read', args: { path: 'a.txt' } }],
+    results: [result()],
+    state,
+  })
+  assert.equal(a.length, 64)
+  assert.equal(a, b)
+})
+
 test('detectStall：连续重复达 repeatN 命中', () => {
   const verdict = detectStall(['s', 's', 's'], 3, 8, 2)
   assert.equal(verdict?.kind, 'repeat')

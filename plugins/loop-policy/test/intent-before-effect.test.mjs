@@ -31,7 +31,7 @@ test('step.intent 追加失败 ⇒ 工具不派发、回合收口 refused{owner_
     const result = await service.interpret({ turn_id: 't1', tools: [{ name: 'edit', provider: 'tool', caps: { fs: { write: 'workspace' } } }] })
     assert.equal(result.kind, 'result', JSON.stringify(result))
     const seq = portSequence(service)
-    assert.ok(!seq.includes('tools.dispatch'), `意图写不进不得派发工具：${seq.join(',')}`)
+    assert.ok(!seq.includes('tool-dispatch.dispatch'), `意图写不进不得派发工具：${seq.join(',')}`)
     const settle = settlesOf(service)
     assert.equal(settle.length, 1, '在下一步边界收口，不继续空转')
     assert.equal(settle[0].outcome.kind, 'refused')

@@ -46,11 +46,10 @@ test('plugin.json 15 字段齐全且形态合法', () => {
   assert.deepEqual(decl.commands, [])
 })
 
-test('needs：tool-registry + tool-schema + guard + tool-provider(many) + 绑定提供者类逐个 one', () => {
+test('needs：tool-registry + guard + tool-provider(many) + 绑定提供者类逐个 one', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.needs, {
     'tool-registry': { mode: 'one' },
-    'tool-schema': { mode: 'one' },
     guard: { mode: 'one' },
     'tool-provider': { mode: 'many' },
     session: { mode: 'one' },
@@ -58,15 +57,17 @@ test('needs：tool-registry + tool-schema + guard + tool-provider(many) + 绑定
   })
 })
 
-test('schema/tool-dispatch.json 声明并发 / 缓存私有参数与超时（严格小于门面）', () => {
+test('schema/tool-dispatch.json 声明并发 / 缓存私有参数与超时（严格小于 loop-policy.interpret）', () => {
   const schema = readJson('schema/tool-dispatch.json')
   assert.equal(schema.type, 'object')
   assert.equal(schema.properties.concurrency.default, 4)
   assert.equal(schema.properties.cache.properties.enabled.default, true)
   assert.equal(schema.properties.dispatch_result.type, 'object')
   const toolDispatch = schema.method_timeouts['tool-dispatch.dispatch']
-  const facade = readJson('../tools/schema/tools.json').method_timeouts['tools.dispatch']
-  assert.ok(toolDispatch > 0 && toolDispatch < facade, '多一跳须严格嵌套超时')
+  const interpret = readJson('../loop-policy/schema/graph.json').method_timeouts[
+    'loop-policy.interpret'
+  ]
+  assert.ok(toolDispatch > 0 && toolDispatch < interpret, '多一跳须严格嵌套超时')
   assert.ok(Array.isArray(schema.audit_redact['tool-dispatch.dispatch']))
 })
 

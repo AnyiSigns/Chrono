@@ -1020,6 +1020,17 @@ function DetailView({ detail }: { detail: any }): ReactNode {
           ))}
         </div>
       )
+    case 'tree':
+      return (
+        <div className="chat-paths">
+          {vm.items.map((item: any, index: number) => (
+            <div key={index} style={{ paddingLeft: `${item.depth * 16}px` }}>
+              {item.isDir ? <Icon name="folder" size={16} /> : null}
+              <span>{item.name}</span>
+            </div>
+          ))}
+        </div>
+      )
     case 'list':
       return (
         <ul className="chat-list-detail">

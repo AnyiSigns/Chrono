@@ -3,7 +3,7 @@
   "schema": "schema/tool-registry.json",
   "implements": ["tool-registry"],
   "methods": {
-    "tool-registry": ["list"]
+    "tool-registry": ["list", "validate-args"]
   },
   "pins": {},
   "slots": {
@@ -11,7 +11,6 @@
   },
   "needs": {
     "tool-provider": { "mode": "many" },
-    "tool-schema": { "mode": "one" },
     "session": { "mode": "one" },
     "evolve-metrics": { "mode": "one" }
   },

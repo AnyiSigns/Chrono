@@ -16,6 +16,13 @@ describe('客户端线格式 frame', () => {
     expect(() => decoder.push(prefix)).toThrow('frame_too_large')
   })
 
+  it('编码超单帧上限 → frame_too_large（不写出脏帧）', () => {
+    const blob = 'a'.repeat(MAX_FRAME_BYTES)
+    expect(() => encodeFrame({ v: '1', id: 'big', kind: 'status', blob })).toThrow(
+      'frame_too_large',
+    )
+  })
+
   it('客户端帧上限与服务端导出常量一致（相对导入断言，防两侧漂移）', () => {
     const atLimit = Buffer.alloc(4)
     atLimit.writeUInt32BE(MAX_FRAME_BYTES, 0)

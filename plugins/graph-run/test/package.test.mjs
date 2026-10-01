@@ -34,9 +34,15 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     guard: { mode: 'one' },
     'graph-gate': { mode: 'one' },
     approval: { mode: 'one' },
-    tools: { mode: 'one' },
+    'tool-registry': { mode: 'one' },
+    'tool-dispatch': { mode: 'one' },
     router: { mode: 'one' },
     'context-source': { mode: 'many', methods: ['collect'] },
+    'loop-rule': { mode: 'many', methods: ['when', 'pre', 'post'] },
+    'turn-hook': {
+      mode: 'many',
+      methods: ['before-assemble', 'after-step', 'before-settle', 'after-settle'],
+    },
   })
   assert.equal(plugin.start, 'node execute/main.ts')
   assert.deepEqual(plugin.members.map((m) => m.kind).sort(), ['execute', 'schema'])
