@@ -16,11 +16,8 @@ const EXPECTED_WORLD = [
   'chat',
   'config',
   'context-window',
-  'evolve-evidence',
   'evolve-ledger',
   'evolve-metrics',
-  'evolve-shadow',
-  'evolve-sweep',
   'graph-gate',
   'graph-run',
   'guard',
@@ -41,6 +38,8 @@ const EXPECTED_WORLD = [
   'sandbox-exec',
   'sandbox-fs',
   'sandbox-policy',
+  'search-index',
+  'search-index-sql',
   'secrets',
   'secrets-env',
   'secrets-local',
@@ -62,11 +61,8 @@ const EXPECTED_WORLD = [
 ]
 
 const EXPECTED_CARGO = [
-  'evolve-evidence',
   'evolve-ledger',
   'evolve-metrics',
-  'evolve-shadow',
-  'evolve-sweep',
   'sandbox',
   'sandbox-exec',
   'sandbox-fs',
@@ -80,11 +76,11 @@ test('chat 的传递 pin 闭包只含自身（needs 不建闭包边）', () => {
   assert.deepEqual(computeClosure('chat'), EXPECTED_PIN_CLOSURE)
 })
 
-test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 49 个身份', () => {
+test('chat 的世界身份集 = pin 闭包 ∪ 传递 needs 目标 = 47 个身份', () => {
   assert.deepEqual(computeWorldIdentities('chat'), EXPECTED_WORLD)
 })
 
-test('世界内的原生（cargo）构建件 = 12 个', () => {
+test('世界内的原生（cargo）构建件 = 9 个', () => {
   assert.deepEqual(cargoIdentities(EXPECTED_WORLD), EXPECTED_CARGO)
 })
 

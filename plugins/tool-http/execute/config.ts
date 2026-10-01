@@ -16,6 +16,8 @@ export interface SourceConfig {
   endpoint: string | null
   instances: string[]
   query_param: string
+  /** 拼进查询值的前缀（如 arXiv 的 `all:`）；缺省空串。 */
+  query_prefix: string
   timeout_ms: number
   language: string
   /** 固定请求头（如 `API-Key`）；与默认抓取头合并，源声明优先。 */
@@ -39,6 +41,12 @@ export interface Config {
    *  `NODE_USE_ENV_PROXY=1` 与 `HTTPS_PROXY`/`HTTP_PROXY`（Node 24 的 fetch 默认不认代理）。 */
   fetcher_env: Record<string, string>
   source_timeout_ms: number
+  /** 是否启用本地索引（read-through + 写回）；无 search-index 成员时静默降级。 */
+  index_enabled: boolean
+  /** 本地索引结果在 sources_used 里的显示名。 */
+  index_name: string
+  /** HTML 正文短于该字符数即提示 `render_suggested`（建议改用 webbrowser 渲染）。 */
+  render_min_chars: number
   sources: SourceConfig[]
 }
 
@@ -57,6 +65,9 @@ export const BUILTIN_DEFAULTS: Rec = {
   fetcher_cmd: '',
   fetcher_env: {},
   source_timeout_ms: DEFAULT_SOURCE_TIMEOUT_MS,
+  index_enabled: true,
+  index_name: 'Index',
+  render_min_chars: 200,
   sources: [
     {
       id: 'bing-rss',
@@ -76,6 +87,97 @@ export const BUILTIN_DEFAULTS: Rec = {
       parse: 'mojeek',
       enabled: true,
       endpoint: 'https://www.mojeek.com/search',
+      query_param: 'q',
+      timeout_ms: 8000,
+    },
+    {
+      id: 'openalex',
+      name: 'OpenAlex',
+      kind: 'openalex',
+      parse: 'openalex',
+      enabled: true,
+      endpoint: 'https://api.openalex.org/works',
+      query_param: 'search',
+      extra_query: { per_page: '10' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'stackexchange',
+      name: 'Stack Exchange',
+      kind: 'stackexchange',
+      parse: 'stackexchange',
+      enabled: true,
+      endpoint: 'https://api.stackexchange.com/2.3/search/advanced',
+      query_param: 'q',
+      extra_query: { order: 'desc', sort: 'relevance', site: 'stackoverflow', filter: 'default' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'hn',
+      name: 'Hacker News',
+      kind: 'hn-algolia',
+      parse: 'hn-algolia',
+      enabled: true,
+      endpoint: 'https://hn.algolia.com/api/v1/search',
+      query_param: 'query',
+      extra_query: { tags: 'story', hitsPerPage: '10' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'arxiv',
+      name: 'arXiv',
+      kind: 'arxiv',
+      parse: 'arxiv',
+      enabled: true,
+      endpoint: 'https://export.arxiv.org/api/query',
+      query_param: 'search_query',
+      query_prefix: 'all:',
+      extra_query: { max_results: '10', sortBy: 'relevance' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'github',
+      name: 'GitHub',
+      kind: 'github',
+      parse: 'github',
+      enabled: false,
+      endpoint: 'https://api.github.com/search/repositories',
+      query_param: 'q',
+      extra_query: { per_page: '10' },
+      headers: { Accept: 'application/vnd.github+json' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'marginalia',
+      name: 'Marginalia',
+      kind: 'marginalia',
+      parse: 'marginalia',
+      enabled: false,
+      endpoint: 'https://api2.marginalia-search.com/search',
+      query_param: 'query',
+      extra_query: { count: '10' },
+      headers: { 'API-Key': 'public' },
+      timeout_ms: 8000,
+    },
+    {
+      id: 'wikipedia',
+      name: 'Wikipedia',
+      kind: 'wikipedia',
+      parse: 'wikipedia-json',
+      enabled: false,
+      endpoint: 'https://en.wikipedia.org/w/api.php',
+      query_param: 'srsearch',
+      language: 'en',
+      timeout_ms: 8000,
+    },
+    {
+      id: 'searxng',
+      name: 'SearXNG',
+      kind: 'searxng',
+      parse: 'searxng',
+      enabled: false,
+      endpoint: null,
+      instances: ['https://searx.be', 'https://search.inetol.net'],
       query_param: 'q',
       timeout_ms: 8000,
     },
@@ -127,6 +229,7 @@ function parseSource(raw: Json, fallbackTimeout: number): SourceConfig | null {
     endpoint: typeof raw['endpoint'] === 'string' ? raw['endpoint'] : null,
     instances,
     query_param: pickString(raw['query_param'], 'q'),
+    query_prefix: pickString(raw['query_prefix'], ''),
     timeout_ms: pickInt(raw['timeout_ms'], fallbackTimeout, 100, 120000),
     language: pickString(raw['language'], 'en'),
     headers: stringMap(raw['headers']),
@@ -156,6 +259,9 @@ export function normalizeConfig(raw: Rec | null | undefined): Config {
     fetcher_cmd: pickString(src['fetcher_cmd'], ''),
     fetcher_env: stringMap(src['fetcher_env']),
     source_timeout_ms: sourceTimeout,
+    index_enabled: pickBool(src['index_enabled'], true),
+    index_name: pickString(src['index_name'], 'Index'),
+    render_min_chars: pickInt(src['render_min_chars'], 200, 0, 100000),
     sources:
       parseSources(src['sources'], sourceTimeout) ??
       parseSources(BUILTIN_DEFAULTS['sources'], sourceTimeout) ??

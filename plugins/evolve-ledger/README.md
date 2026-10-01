@@ -2,8 +2,7 @@
 
 自进化环的**台账原语**（Rust，纯计算、非 LLM、同输入同输出）：把调用方投影片段归一成可用形状——
 读链窗口、构造台账写计划、解析阈值、算确定性哈希。所有被两处以上复用的台账逻辑住此，
-上游（`evolve-metrics` 门面、`evolve-evidence` / `evolve-sweep` / `evolve-shadow` 提供方）
-经反向 `port.call` 消费，不自带副本。
+上游（`evolve-metrics`）经反向 `port.call` 消费，不自带副本。
 
 - 身份：`evolve-ledger`
 - 能力类 / 方法：`evolve-ledger` → `read-chain` / `patch-plan` / `thresholds` / `hash`

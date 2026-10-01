@@ -5,6 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
+import { Icon, IconButton as KitIconButton } from '@chrono/ui-kit'
 import { badgeFor, badgeForGroup, badgeTextCode, runningRun } from './badges.ts'
 import type { Badge } from './badges.ts'
 import { groupConversations, isEmptyView, matchTitle, relativeBucket, ungroupedConversations } from './sidebar-model.ts'
@@ -34,7 +35,13 @@ export async function register(ctx: SlotContext): Promise<void> {
   }
 }
 
-function tooltipProps(store: SidebarStore, label: string): Record<string, unknown> {
+function tooltipProps(store: SidebarStore, label: string): {
+  'aria-describedby'?: string
+  onMouseEnter?: (event: ReactMouseEvent<HTMLElement>) => void
+  onFocus?: (event: ReactFocusEvent<HTMLElement>) => void
+  onMouseLeave?: () => void
+  onBlur?: () => void
+} {
   if (label.length === 0) return {}
   return {
     'aria-describedby': 'sb-tooltip',
@@ -43,26 +50,6 @@ function tooltipProps(store: SidebarStore, label: string): Record<string, unknow
     onMouseLeave: () => store.hideTooltip(),
     onBlur: () => store.hideTooltip(),
   }
-}
-
-function Icon({ icons, name, size = 16, label = '' }: { icons: string; name: string; size?: number; label?: string }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      role={label.length > 0 ? 'img' : undefined}
-      aria-label={label.length > 0 ? label : undefined}
-      aria-hidden={label.length > 0 ? undefined : true}
-    >
-      <use href={`${icons}#${name}`} />
-    </svg>
-  )
 }
 
 function IconButton(props: {
@@ -78,20 +65,20 @@ function IconButton(props: {
 }) {
   const { store, icons, name, label, onClick, disabled, size = 16, danger, tipLabel } = props
   const tips = tipLabel !== undefined ? tooltipProps(store, tipLabel) : {}
+  // 有自绘 tooltip（tipLabel）时不挂原生 title：否则与 `sb-tooltip` 同时弹出，悬停出现两个浮层。
   return (
-    <button
-      type="button"
+    <KitIconButton
       className="sb-iconbtn"
-      aria-label={label}
-      // 有自绘 tooltip（tipLabel）时不再挂原生 title：否则浏览器原生提示与 `sb-tooltip` 同时弹出，悬停出现两个浮层。
-      title={tipLabel !== undefined ? undefined : label}
+      icons={icons}
+      name={name}
+      label={label}
+      size={size}
       disabled={disabled}
-      data-danger={danger === true ? 'true' : undefined}
+      danger={danger}
+      showTitle={tipLabel === undefined}
       onClick={onClick}
       {...tips}
-    >
-      <Icon icons={icons} name={name} size={size} label={label} />
-    </button>
+    />
   )
 }
 

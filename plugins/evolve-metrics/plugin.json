@@ -5,12 +5,11 @@
   "methods": {
     "evolve-metrics": ["aggregate", "sweep", "shadow", "record"]
   },
-  "pins": {},
+  "pins": {
+    "host": "host"
+  },
   "needs": {
-    "evolve-ledger": { "mode": "one" },
-    "evolve-evidence": { "mode": "one" },
-    "evolve-sweep": { "mode": "one" },
-    "evolve-shadow": { "mode": "one" }
+    "evolve-ledger": { "mode": "one" }
   },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],

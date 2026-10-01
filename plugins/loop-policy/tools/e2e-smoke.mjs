@@ -35,9 +35,6 @@ const PLUGIN_ORDER = [
   'budget',
   'context-window',
   'evolve-ledger',
-  'evolve-evidence',
-  'evolve-shadow',
-  'evolve-sweep',
   'evolve-metrics',
   'graph-gate',
   'guard',
@@ -213,7 +210,7 @@ async function directProtocolSmoke(entry) {
     const manifest = await next()
     assert.equal(manifest.kind, 'manifest')
     assert.equal(manifest.identity, 'loop-policy')
-    assert.deepEqual(manifest.methods['loop-policy'], ['interpret', 'cancel'])
+    assert.deepEqual(manifest.methods['loop-policy'], ['interpret', 'cancel', 'note-input', 'promote-input'])
 
     const result = await call('i1', { turn_id: 't1' })
     assert.equal(result.kind, 'result', JSON.stringify(result))

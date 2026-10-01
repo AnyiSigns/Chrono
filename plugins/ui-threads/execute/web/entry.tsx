@@ -6,8 +6,8 @@
 // 标签数据经壳 `ctx.command('threads.state')` 取回；切换只写 `ctx.uiState.active_thread`。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
+import { Icon } from '@chrono/ui-kit'
 import { FALLBACK_MESSAGES, formatText, loadMessages, messageText } from './messages.ts'
 import { badgeTone, dataChangeTarget, isRecord } from './threads-model.ts'
 import { unreadOf } from './unread.ts'
@@ -41,26 +41,6 @@ const BADGE_TEXT_KEY: { [tone: string]: string } = {
 
 /** 待办清单出现 / 更新时「展开→收起」提示动画的保持时长（展开后停此时长再收起）。 */
 const TODO_PEEK_MS = 200
-
-/** 线性图标（壳统一 sprite）：装饰性，一律 aria-hidden。 */
-function Icon({ icons, name, size = 16, className }: { icons: string; name: string; size?: number; className?: string }): ReactNode {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <use href={`${icons}#${name}`} />
-    </svg>
-  )
-}
 
 /** 顶栏组件（topbar slot）：常显标签 + 数据订阅与事件编排；标签为原生 button，可 Tab 到达。 */
 function Topbar({ ctx, store }: { ctx: SlotContext; store: ThreadsStore }) {

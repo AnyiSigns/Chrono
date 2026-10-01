@@ -245,8 +245,6 @@ const SESSION_TURN_OPEN = 'turn_open'
 const SESSION_TURN_INSERT = 'turn_insert'
 const SESSION_TURN_SETTLE = 'turn_settle'
 const SESSION_TURN_CANCEL = 'turn_cancel'
-const SESSION_TURN_NOTE_INPUT = 'turn_note_input'
-const SESSION_TURN_PROMOTE_INPUT = 'turn_promote_input'
 const SESSION_ACK_INBOX = 'ack_inbox'
 const INPUT_PORT = 'input'
 const INPUT_READ = 'read'
@@ -347,6 +345,9 @@ async function withOwnerSlices(
 const LOOP_PORT = 'loop-policy'
 const INTERPRET_METHOD = 'interpret'
 const CANCEL_METHOD = 'cancel'
+/** 队列写口：回合/输入/队列词汇归门面提供方拥有，本服务不再硬连 session。 */
+const NOTE_INPUT_METHOD = 'note-input'
+const PROMOTE_INPUT_METHOD = 'promote-input'
 
 /** #36 模型 IO 服务：取消链上销毁在途 HTTP 请求。 */
 const MODEL_PORT = 'model'
@@ -515,7 +516,7 @@ function interpretRefusal(failure: Extract<InterpretOutcome, { ok: false }>): Tu
  */
 async function promoteInputs(deps: ChatDeps, turnId: string): Promise<void> {
   try {
-    await deps.port.call(SESSION_PORT, SESSION_TURN_PROMOTE_INPUT, { turn_id: turnId })
+    await deps.port.call(LOOP_PORT, PROMOTE_INPUT_METHOD, { turn_id: turnId })
   } catch {
     // 提升失败不阻断续跑 / 收口：待发输入仍在会话内存，下次边界或收口再提升。
   }
@@ -1195,7 +1196,7 @@ async function insert(args: Json, env: CallEnv, deps: ChatDeps): Promise<Json> {
   }
   // 只**记待发**（内存），不落步、不渲染：图在轮次边界据此挂起，挂起后 `resume` 提升为 `step.user`
   // 才落盘进流——即「消息进入流之后才落盘」。
-  const outcome = await deps.port.call(SESSION_PORT, SESSION_TURN_NOTE_INPUT, {
+  const outcome = await deps.port.call(LOOP_PORT, NOTE_INPUT_METHOD, {
     turn_id: turnId,
     insert_id: insertId,
     user_message: message,

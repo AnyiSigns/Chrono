@@ -101,7 +101,7 @@ test('.worldignore 声明 test/、tools/ 与 execute/web/dist/', () => {
 
 test('package.json：devDeps 含 esbuild、锁文件入 files、带 typecheck 与测试脚本', () => {
   const pkg = readJson('package.json')
-  assert.equal(pkg.dependencies, undefined)
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['@chrono/ui-kit'])
   assert.equal(pkg.peerDependencies, undefined)
   assert.equal(typeof pkg.devDependencies?.esbuild, 'string')
   assert.equal(pkg.scripts.test, 'node --test')

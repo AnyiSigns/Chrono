@@ -465,6 +465,46 @@ test('write：非 host pin 以身份名写入 add_gen.pins（非 active 哈希�
   }
 })
 
+test('write：auto_validate 单调用自动先校验并产计划', async () => {
+  const drv = startService({ hostHandler: stubHostResolving() })
+  try {
+    await drv.hello()
+    const files = candidate('candidate')
+    const plan = await drv.call('plugin', 'write', {
+      identity: 'candidate',
+      files,
+      auto_validate: true,
+    })
+    const payload = plan.$directives[1].payload
+    assert.equal(payload.ok, true, JSON.stringify(plan))
+    assert.equal(payload.identity, 'candidate')
+    const methods = drv.calls.map((call) => call.method)
+    assert.equal(methods.filter((method) => method === 'validate_package').length, 1)
+    assert.ok(methods.includes('identities'))
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
+test('write：auto_validate 校验失败 → validate_failed（不产计划）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const rejected = await drv.callRaw('plugin', 'write', {
+      identity: 'candidate',
+      files: { 'plugin.schema.json': '{}' },
+      auto_validate: true,
+    })
+    assert.equal(rejected.kind, 'error')
+    assert.equal(rejected.code, 'validate_failed')
+    assert.equal(drv.calls.filter((call) => call.method === 'identities').length, 0)
+  } finally {
+    drv.close()
+    drv.cleanup()
+  }
+})
+
 test('write：one need 的解析结果进 meta.needs 与 commit 哈希（与 validate result_hash 一致）', async () => {
   const files = candidate('candidate', { needs: { model: { mode: 'one' } } })
   const needs = { model: 'model-protocol' }

@@ -54,7 +54,11 @@ async function dispatch(
   const ctx = buildContext(bag, callId, backend)
   if (tool === 'websearch') {
     const read = isRec(toolArgs) ? toolArgs['read'] : undefined
-    if (typeof read === 'number' && read > 0) return webresearch(toolArgs, ctx)
+    const highlights = isRec(toolArgs) ? toolArgs['highlights'] : undefined
+    // read>0 或要 highlights 都走研究形态（需抓正文）；否则只检索。
+    if ((typeof read === 'number' && read > 0) || highlights === true) {
+      return webresearch(toolArgs, ctx)
+    }
     return websearch(toolArgs, ctx)
   }
   if (tool === 'webfetch') return webfetch(toolArgs, ctx)
@@ -63,11 +67,15 @@ async function dispatch(
   return fail('unknown_tool', `unknown tool ${tool}`)
 }
 
-/** 构造方法表：反向调用通道由 main 注入（三形态共用同一 `ctx.emit`）。 */
+/**
+ * 构造方法表：反向调用通道由 main 注入（三形态共用同一 `ctx.emit`）。
+ * `indexMembers` 是宿主机注入的 `search-index` 成员表（many）；缺省空 → 索引关闭，静默降级为纯网络检索。
+ */
 export function createHandlers(
   link: PortLink,
+  indexMembers: readonly string[] = [],
 ): Record<string, (args: Json, env: CallEnv, callId: string | null) => Promise<Json>> {
-  const backend = createReverseBackend(link)
+  const backend = createReverseBackend(link, indexMembers[0] ?? null)
   return {
     describe: async () => describeTools() as unknown as Json,
     invoke: async (args, _env, callId) => (await invoke(args, callId, backend)) as unknown as Json,

@@ -28,8 +28,8 @@
 
 | op | args | result |
 | --- | --- | --- |
-| `stat` | — | `{ exists, is_dir, size, mtime }`（`mtime` 取自文件系统，不参与确定性保证） |
-| `read` | `offset?` / `limit?` / `preview?` | `{ text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, truncated, binary, preview }` |
+| `stat` | `path` / `recursive?` / `lines?` | `{ exists, is_dir, size, mtime, ctime?, readonly?, lines? }`（`mtime` 取自文件系统，不参与确定性保证）；`recursive` 且目录时另回 `aggregate:{files,dirs,total_size,total_lines?,newest_mtime,oldest_mtime}` |
+| `read` | `offset?` / `byte_offset?` / `limit?` / `preview?` / `encoding?` | 行窗：`{ text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, next_byte_offset, file_bytes, hint, truncated, binary, preview }`；字节窗（`byte_offset`）：`{ text, encoding, binary, byte_offset, bytes_returned, next_byte_offset, eof, file_bytes, lines_returned, line_truncated }`；编码窗（`encoding`）：`{ text, encoding, binary, bytes, content_truncated, truncated }` |
 | `list` | `pattern?` / `base?` / `depth?` / `tree?` / `ignore?` / `limit?` | `{ paths:[…], truncated, skipped_count, warning }`；`tree:true` 时改回 `{ tree:[{name,path,type,children?}], truncated, skipped_count, warning }`（相对 `base`、字典序） |
 | `grep` | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `before?` / `after?` / `glob?` / `base?` / `ignore?` / `limit?` | `{ matches:[{path,line,text,before?,after?,count?}], truncated, files_scanned, skipped:{binary,too_large,unreadable}, mode, base, glob, ignore, ignored_paths, ignored_paths_truncated, hint, warning }` |
 | `write` | `data` / `create?` / `exclusive?` / `expected_hash?` | `{ bytes_written, created, hash }` |
@@ -49,6 +49,13 @@
   `results truncated: showing A of B matched paths (C not returned)…`；`grep` 在截断或跳过了
   二进制 / 超限 / 不可读文件时，把这些口径拼成一条 `warning`（完整时 `null`）。两者都在**结果主体**
   明确「结果可能不完整」，避免把局部清单当全量而漏报。
+- **read 字节续读**：`read` 受 `output_max` 约束，超出时行窗结果带 `content_truncated:true` 与按完整行
+  对齐的 `next_byte_offset`（+可读 `hint`）；再发 `{ "byte_offset": <next_byte_offset> }` 即可继续，
+  `eof:true` 表示读完。字节窗与行窗参数（`offset` / `limit` / `preview`）互斥（同给回 `bad_args`），
+  每次仍受 `output_max` 约束，故可在不放大资源上限的前提下读完任意大文件。
+- **路径不存在提示**：`read` / `list` / `replace` 命中不存在的目标时，`path_not_found` 的
+  `message` 附带同目录近似名候选（大小写不敏感 + 编辑距离 ≤ 2，稳定排序、最多 3 条）：
+  `… does not exist; did you mean: config.py?`；无近似项时保持原 `… does not exist`。
 
 ## 运行
 

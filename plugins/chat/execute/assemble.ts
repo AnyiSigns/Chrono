@@ -369,9 +369,20 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
   if (guardRules !== null) bag['guard_rules'] = guardRules
   const sandboxTiers = bodyOf(ids, 'sandbox')
   if (sandboxTiers !== null) bag['sandbox_tiers'] = sandboxTiers
-  // 文件工具的忽略表：身份 body 的 `ignore` 数组（缺省 / 空数组语义由工具侧决定）。
+  // 文件工具的忽略表优先级：工具身份 body 的 `ignore` > #2 config 的 `tools.ignore`（项目级）> 工具内置兜底。
+  // 都缺省时不落键；显式空数组语义由工具侧决定。
   const fsBody = bodyOf(ids, 'tool-fs')
-  if (isRecord(fsBody) && Array.isArray(fsBody['ignore'])) bag['ignore'] = fsBody['ignore']
+  const fsIgnore = isRecord(fsBody) && Array.isArray(fsBody['ignore']) ? fsBody['ignore'] : null
+  if (fsIgnore !== null) {
+    bag['ignore'] = fsIgnore
+  } else {
+    const configBody = bodyOf(ids, 'config')
+    const tools =
+      isRecord(configBody) && isRecord(configBody['tools'])
+        ? (configBody['tools'] as Rec)
+        : null
+    if (tools !== null && Array.isArray(tools['ignore'])) bag['ignore'] = tools['ignore']
+  }
   const toolsBody = bodyOf(ids, 'tools')
   if (toolsBody !== null) bag['tools_bindings'] = toolsBody
   const mcpTools = mcpToolsOf(ids)

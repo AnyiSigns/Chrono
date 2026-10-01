@@ -2,8 +2,7 @@
 // `threads.state` 经反向调用问 owner：`session.list` 取会话清单（body + open_turns）、`todo.invoke(todo.read)`
 // 取待办清单（session / todo 运行记录已出世界，故服务不读世界投影）。`client.read` 按包内相对 `.js` 路径回字节。
 
-import { readFileSync } from 'node:fs'
-import { resolve, sep } from 'node:path'
+import { isSafeClientPath, readClientFileInfo } from '@chrono/ui-kit/client-read'
 import type { PortCaller } from 'plugin-sdk'
 import { resolveRootMainId } from './web/threads-model.ts'
 import { assembleThreadsState } from './threads-state.ts'
@@ -18,41 +17,13 @@ export interface HandlerDeps {
   port: PortCaller
 }
 
-export interface ClientFile {
-  path: string
-  text: string
-}
-
-/**
- * 只接受包内相对 `.js` 路径：拒绝空值 / 绝对路径 / 盘符 / 反斜杠 / 空段 / `.` / `..`。
- * 路径穿越防护的第一道（语法层）。
- */
-export function isSafeClientPath(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length === 0) return false
-  if (value.includes('\\') || value.includes('\u0000')) return false
-  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false
-  const segments = value.split('/')
-  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
-    return false
-  }
-  return value.endsWith('.js')
-}
+export { isSafeClientPath }
 
 /**
  * 读回包内 `.js` 资产字节：路径不安全 / 解析后越出根目录 / 读失败 → null。
- * 第二道为解析后前缀校验（防符号链接 / 归一化绕过）。
+ * 实现由共享 UI 套件提供，此处保留方法表对外名。
  */
-export function readClientFile(webRoot: string, path: unknown): ClientFile | null {
-  if (!isSafeClientPath(path)) return null
-  const root = resolve(webRoot)
-  const full = resolve(root, path)
-  if (full !== root && !full.startsWith(root + sep)) return null
-  try {
-    return { path, text: readFileSync(full, 'utf8') }
-  } catch {
-    return null
-  }
-}
+export const readClientFile = readClientFileInfo
 
 /** 运行记录 owner 身份：会话清单 `session.list`、待办清单 `todo.invoke`（均已出世界）。 */
 const SESSION_PORT = 'session'

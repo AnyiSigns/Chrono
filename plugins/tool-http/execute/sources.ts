@@ -221,6 +221,137 @@ function parseWikipediaJson(body: string, language: string): RawResult[] {
   return results
 }
 
+/**
+ * OpenAlex 倒排摘要还原：`{word:[positions]}` 按位置拼回原文（确定、有界）。
+ * 结构不符 / 无位置时回空串。
+ */
+export function restoreInvertedAbstract(index: unknown): string {
+  if (!isRec(index)) return ''
+  const positions: Array<[number, string]> = []
+  for (const [word, raw] of Object.entries(index)) {
+    if (!Array.isArray(raw)) continue
+    for (const item of raw) {
+      if (typeof item === 'number' && Number.isInteger(item)) positions.push([item, word])
+    }
+  }
+  positions.sort((left, right) => (left[0] !== right[0] ? left[0] - right[0] : (left[1] < right[1] ? -1 : 1)))
+  return positions.map(([, word]) => word).join(' ')
+}
+
+/** OpenAlex：`{results:[{display_name,doi,id,publication_year,abstract_inverted_index}]}`。 */
+export function parseOpenAlex(body: string): RawResult[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  if (!isRec(parsed) || !Array.isArray(parsed['results'])) return []
+  const results: RawResult[] = []
+  for (const item of parsed['results']) {
+    if (!isRec(item)) continue
+    const doi = typeof item['doi'] === 'string' ? item['doi'] : ''
+    const id = typeof item['id'] === 'string' ? item['id'] : ''
+    const url = doi.length > 0 ? doi : id
+    if (url.length === 0) continue
+    const title = typeof item['display_name'] === 'string' ? item['display_name'] : url
+    const year = typeof item['publication_year'] === 'number' ? String(item['publication_year']) : ''
+    const abstract = stripTags(restoreInvertedAbstract(item['abstract_inverted_index']))
+    const snippet = [year, abstract].filter((part) => part.length > 0).join(' ').trim()
+    results.push({ title, url, snippet })
+  }
+  return results
+}
+
+/** arXiv Atom：`<entry>` 的 title / id / summary。 */
+export function parseArxiv(xml: string): RawResult[] {
+  const results: RawResult[] = []
+  for (const match of xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)) {
+    const block = match[1] ?? ''
+    const url = tagText(block, 'id')
+    if (url.length === 0) continue
+    results.push({
+      title: tagText(block, 'title') || url,
+      url,
+      snippet: tagText(block, 'summary'),
+    })
+  }
+  return results
+}
+
+/** Stack Exchange：`{items:[{title,link,excerpt?,body?}]}`。 */
+export function parseStackExchange(body: string): RawResult[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  if (!isRec(parsed) || !Array.isArray(parsed['items'])) return []
+  const results: RawResult[] = []
+  for (const item of parsed['items']) {
+    if (!isRec(item)) continue
+    const url = typeof item['link'] === 'string' ? item['link'] : ''
+    if (url.length === 0) continue
+    const raw = typeof item['excerpt'] === 'string' ? item['excerpt'] : item['body']
+    results.push({
+      title: typeof item['title'] === 'string' ? stripTags(item['title']) : url,
+      url,
+      snippet: typeof raw === 'string' ? stripTags(raw) : '',
+    })
+  }
+  return results
+}
+
+/** GitHub 搜索：`{items:[{full_name,html_url,description}]}`。 */
+export function parseGithub(body: string): RawResult[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  if (!isRec(parsed) || !Array.isArray(parsed['items'])) return []
+  const results: RawResult[] = []
+  for (const item of parsed['items']) {
+    if (!isRec(item)) continue
+    const url = typeof item['html_url'] === 'string' ? item['html_url'] : ''
+    if (url.length === 0) continue
+    results.push({
+      title: typeof item['full_name'] === 'string' ? item['full_name'] : url,
+      url,
+      snippet: typeof item['description'] === 'string' ? stripTags(item['description']) : '',
+    })
+  }
+  return results
+}
+
+/** Hacker News (Algolia)：`{hits:[{title,url?,story_text?,objectID}]}`。 */
+export function parseHnAlgolia(body: string): RawResult[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  if (!isRec(parsed) || !Array.isArray(parsed['hits'])) return []
+  const results: RawResult[] = []
+  for (const item of parsed['hits']) {
+    if (!isRec(item)) continue
+    const id = typeof item['objectID'] === 'string' ? item['objectID'] : ''
+    const external = typeof item['url'] === 'string' ? item['url'] : ''
+    const url = external.length > 0 ? external : id.length > 0 ? `https://news.ycombinator.com/item?id=${id}` : ''
+    if (url.length === 0) continue
+    const text = typeof item['story_text'] === 'string' ? item['story_text'] : ''
+    results.push({
+      title: typeof item['title'] === 'string' ? stripTags(item['title']) : url,
+      url,
+      snippet: text.length > 0 ? stripTags(text) : '',
+    })
+  }
+  return results
+}
+
 /** 按源声明的 parse 策略解析响应体。 */
 export function parseSource(source: SourceConfig, body: string): RawResult[] {
   switch (source.parse) {
@@ -242,6 +373,16 @@ export function parseSource(source: SourceConfig, body: string): RawResult[] {
       return parseSearxng(body)
     case 'wikipedia-json':
       return parseWikipediaJson(body, source.language)
+    case 'openalex':
+      return parseOpenAlex(body)
+    case 'arxiv':
+      return parseArxiv(body)
+    case 'stackexchange':
+      return parseStackExchange(body)
+    case 'github':
+      return parseGithub(body)
+    case 'hn-algolia':
+      return parseHnAlgolia(body)
     default:
       return []
   }

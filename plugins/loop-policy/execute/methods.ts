@@ -15,7 +15,7 @@ import {
   hasWhenRule,
   ruleCtxFromWire,
 } from './loop-rule.ts'
-import { afterStep, beforeSettle } from './turn-hook.ts'
+import { afterStep, beforeSettle, noteInput, promoteInput } from './turn-hook.ts'
 import { PINS } from './plugin.ts'
 import { checkContractVersion } from './contract/index.ts'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
@@ -383,6 +383,11 @@ export function createHandlers(deps: LoopPolicyDeps): Record<string, Handler> {
     interpret: (args: Json, env: CallEnv): Promise<HandlerResult> =>
       interpret(args, env, deps, hydrator),
     cancel: (args: Json): Promise<HandlerResult> => cancel(args, deps),
+    // 队列写口：回合/输入/队列词汇归本门面，session 保留持久存储。
+    'note-input': (args: Json): Promise<HandlerResult> =>
+      noteInput(args, { port: deps.port }).then(fixed),
+    'promote-input': (args: Json): Promise<HandlerResult> =>
+      promoteInput(args, { port: deps.port }).then(fixed),
     when: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(whenRule(args))),
     pre: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(preRule(args))),
     post: (args: Json): Promise<HandlerResult> => Promise.resolve(fixed(postRule(args))),

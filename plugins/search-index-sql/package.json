@@ -1,0 +1,21 @@
+{
+  "name": "search-index-sql",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地全文检索索引后端：Node 内置 node:sqlite + FTS5（trigram），按调用帧 env.emitter 分命名空间；数据落 CHRONO_PLUGIN_DATA，跨代存活。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

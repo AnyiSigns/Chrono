@@ -65,7 +65,7 @@ test('.worldignore 声明 test/ 与 tools/ 与 execute/web/dist/', () => {
 
 test('package.json 带构建 / 类型门禁 / 测试脚本与 esbuild devDep', () => {
   const pkg = readJson('package.json')
-  assert.equal(pkg.dependencies, undefined)
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['@chrono/ui-kit'])
   assert.equal(pkg.peerDependencies, undefined)
   assert.equal(typeof pkg.devDependencies.esbuild, 'string')
   assert.equal(pkg.scripts.build, 'node execute/build.mjs')

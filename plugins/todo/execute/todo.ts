@@ -152,10 +152,10 @@ export function normalizeItems(
     const activeForm = readActiveForm(raw, where, limits)
     const at = asString(raw['at']) ?? defaultAt
     if (status === 'in_progress') {
-      if (focusId !== null) {
+      if (focusId !== null && !limits.allowMultipleInProgress) {
         throw new ToolError(
           'multiple_in_progress',
-          `items 含多个 in_progress（${focusId}, ${id}）；同一清单至多一个`,
+          `items 含多个 in_progress（${focusId}, ${id}）；同一清单至多一个（如需并行可传 allow_multiple_in_progress:true）`,
         )
       }
       focusId = id
@@ -208,7 +208,7 @@ export function applyOps(
         const status = readStatus(raw, where, limits, 'pending')
         const activeForm = readActiveForm(raw, where, limits)
         const at = asString(raw['at']) ?? defaultAt
-        if (status === 'in_progress') applyFocus(items, id)
+        if (status === 'in_progress' && !limits.allowMultipleInProgress) applyFocus(items, id)
         const item = buildItem(id, text, status, activeForm, at)
         items.push(item)
         changed.push(projectItem(item))
@@ -222,7 +222,7 @@ export function applyOps(
         if (raw['text'] !== undefined) item['text'] = readText(raw, where, limits)
         if (raw['status'] !== undefined) {
           const status = readStatus(raw, where, limits, 'pending')
-          if (status === 'in_progress') applyFocus(items, id)
+          if (status === 'in_progress' && !limits.allowMultipleInProgress) applyFocus(items, id)
           item['status'] = status
         }
         if (raw['activeForm'] !== undefined) {

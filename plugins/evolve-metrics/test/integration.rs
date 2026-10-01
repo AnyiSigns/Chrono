@@ -1,5 +1,5 @@
-// 集成测试：黑盒经服务协议驱动真实二进制（hello / manifest / 四方法委派），
-// 测试充当最小宿主，应答门面发往提供方的反向调用。`cargo test` 一并运行。
+// 集成测试：黑盒经服务协议驱动真实二进制（hello / manifest / 四方法就地处理）。
+// 测试充当最小宿主，应答 evolve-metrics 发往 evolve-ledger 的反向调用；`cargo test` 一并运行。
 // 用 `test/`（非 cargo 缺省 `tests/`），由 Cargo.toml 的 `[[test]] path` 显式声明。
 
 use std::io::{BufReader, Write};
@@ -44,8 +44,8 @@ impl Service {
             .expect("service closed unexpectedly")
     }
 
-    /// 最小宿主：应答门面发往 `evolve-evidence` / `evolve-sweep` / `evolve-shadow` 的反向调用，
-    /// 直到目标 `id` 的正向应答到达；返回（正向应答, 最后一次反向调用）。
+    /// 最小宿主：应答门面发往 `evolve-ledger` 的反向调用，直到目标 `id` 的正向应答到达；
+    /// 返回（正向应答, 最后一次反向调用）。
     fn call(&mut self, id: &str, method: &str, args: Value) -> (Value, Option<Value>) {
         self.send(&json!({
             "v": "1", "id": id, "kind": "call",
@@ -58,19 +58,17 @@ impl Service {
             match message.get("kind").and_then(Value::as_str) {
                 Some("port.call") => {
                     let port = message.get("port").and_then(Value::as_str).unwrap_or("");
-                    let value = match port {
-                        "evolve-evidence" => json!({
-                            "evidence": [], "unhealthy": {"fired": false},
-                            "evidence_id": "ev-x", "$directives": []
+                    assert_eq!(port, "evolve-ledger", "只应反向调用 evolve-ledger，实得 {port}");
+                    let reverse_method = message.get("method").and_then(Value::as_str).unwrap_or("");
+                    let value = match reverse_method {
+                        "read-chain" => json!({
+                            "trace": [], "evidence": [], "body": null,
+                            "base": null, "refs": {}, "refusal_codes": {}
                         }),
-                        "evolve-sweep" => json!({
-                            "swept": 0, "retained": 0, "$directives": []
-                        }),
-                        "evolve-shadow" => json!({
-                            "status": "unverified", "metric": {}, "metric_id": "0",
-                            "$directives": []
-                        }),
-                        other => panic!("unexpected provider port {other}"),
+                        "thresholds" => json!({ "values": {} }),
+                        "hash" => json!({ "hashes": ["deadbeef"] }),
+                        "patch-plan" => json!({ "$directives": [] }),
+                        other => panic!("unexpected evolve-ledger method {other}"),
                     };
                     last_reverse = Some(message.clone());
                     self.send(&json!({
@@ -95,7 +93,7 @@ impl Drop for Service {
 }
 
 #[test]
-fn protocol_handshake_and_method_delegation() {
+fn protocol_handshake_and_method_handling() {
     let mut service = Service::spawn();
     service.send(&json!({"v":"1","id":"h","kind":"hello","impl":"evolve-metrics"}));
     let manifest = service.recv();
@@ -109,27 +107,24 @@ fn protocol_handshake_and_method_delegation() {
     let (aggregated, reverse) = service.call("a1", "aggregate", json!({"thresholds": {}}));
     assert_eq!(aggregated["kind"], "result", "{aggregated}");
     assert!(aggregated["value"]["evidence"].as_array().unwrap().is_empty());
-    let reverse = reverse.expect("aggregate 应委派提供方");
-    assert_eq!(reverse["port"], "evolve-evidence");
-    assert_eq!(reverse["method"], "aggregate");
-    // 调用帧 env 经 bag.__env 转交。
-    assert_eq!(reverse["args"]["__env"]["run"], "r1");
+    let reverse = reverse.expect("aggregate 应反向调用 evolve-ledger");
+    assert_eq!(reverse["port"], "evolve-ledger");
 
     let (swept, reverse) = service.call("s1", "sweep", json!({}));
     assert_eq!(swept["value"]["swept"], 0);
-    assert_eq!(reverse.unwrap()["port"], "evolve-sweep");
+    assert_eq!(reverse.unwrap()["port"], "evolve-ledger");
 
     let (shadowed, reverse) = service.call("sh1", "shadow", json!({"audit": []}));
     assert_eq!(shadowed["value"]["status"], "unverified");
-    assert_eq!(reverse.unwrap()["port"], "evolve-shadow");
+    assert_eq!(reverse.unwrap()["port"], "evolve-ledger");
 
     let (recorded, reverse) = service.call(
         "r1",
         "record",
         json!({"user_message_def": {"def": "msg"}, "workspace_id": "w1"}),
     );
-    assert_eq!(reverse.unwrap()["port"], "evolve-evidence");
-    assert!(recorded["value"].get("evidence_id").is_some());
+    assert_eq!(reverse.unwrap()["port"], "evolve-ledger");
+    assert_eq!(recorded["value"]["evidence_id"], "ev-deadbeef");
 }
 
 // ── 红线断言（测试不得 import 宿主 / 内核 / client） ──────────────────────────

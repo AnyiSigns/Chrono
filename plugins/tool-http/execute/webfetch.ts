@@ -3,8 +3,10 @@
 // 响应体 ≤ output_max；文本超限截断并标记 truncated，二进制超限回 too_large。
 
 import { NET_WEBFETCH } from './caps.ts'
-import { decodeText, isTextual, normalizeContentType, renderText } from './content.ts'
+import { decodeText, HTML_TYPES, isTextual, normalizeContentType, renderText } from './content.ts'
 import { byteLength, fetchDigest } from './digest.ts'
+import { extractTitle } from './html.ts'
+import { putIndex } from './index.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
 import { DEFAULT_CALL_TIMEOUT_MS, REVERSE_TIMEOUT_MARGIN_MS } from './reverse.ts'
 import { isPrivateHost, parseHttpUrl } from './url.ts'
@@ -83,11 +85,15 @@ export async function webfetch(args: Json, ctx: ToolContext): Promise<ToolResult
   }
   const outcome = await fetchUrl(ctx, fetchSpec(url.toString(), ctx), NET_WEBFETCH)
   if (!outcome.ok) {
-    return fail(
-      outcome.code,
-      outcome.message,
-      outcome.status === undefined ? {} : { status: outcome.status },
-    )
+    const extra: Rec = outcome.status === undefined ? {} : { status: outcome.status }
+    // 4xx/5xx 里 403 / 429 / 503 常见于 JS 挑战 / 限流：提示改用 webbrowser 渲染。
+    if (
+      outcome.code === 'http_status' &&
+      (outcome.status === 403 || outcome.status === 429 || outcome.status === 503)
+    ) {
+      extra['render_suggested'] = true
+    }
+    return fail(outcome.code, outcome.message, extra)
   }
   // 跟随重定向后的最终落点仍需过 robots：初始 URL 的放行不覆盖最终 URL。
   if (ctx.config.obey_robots && outcome.url !== url.toString()) {
@@ -114,13 +120,33 @@ export async function webfetch(args: Json, ctx: ToolContext): Promise<ToolResult
     return stored
   }
   const bytes = oversize ? outcome.bytes.subarray(0, ctx.config.output_max) : outcome.bytes
-  const content = renderText(decodeText(bytes, outcome.contentType), contentType, format)
-  return ok({
+  const rawText = decodeText(bytes, outcome.contentType)
+  const content = renderText(rawText, contentType, format)
+  // 正文回灌本地索引（best-effort）：抓取结果沉淀成可检索语料。
+  await putIndex(
+    [
+      {
+        url: outcome.url,
+        title: HTML_TYPES.has(contentType) ? extractTitle(rawText) : '',
+        snippet: '',
+        source: 'webfetch',
+        body: content,
+      },
+    ],
+    ctx,
+  )
+  const result: Rec = {
     url: outcome.url,
     status: outcome.status,
     content_type: contentType,
     content,
     truncated: outcome.truncated || oversize,
     digest: fetchDigest(outcome.url, outcome.status, byteLength(content)),
-  })
+  }
+  // 抽取到的 HTML 正文过短（多为 JS 渲染页）：提示改用 webbrowser。
+  const minChars = ctx.config.render_min_chars ?? 200
+  if (HTML_TYPES.has(contentType) && content.trim().length < minChars) {
+    result['render_suggested'] = true
+  }
+  return ok(result)
 }

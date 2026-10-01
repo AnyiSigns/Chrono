@@ -1,0 +1,40 @@
+{
+  "name": "@chrono/ui-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "第一方 UI 套件：slot 插件共用的图标 / 文案取用 / 只读读回 / React-free store 原语",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "node": "./src/index.js",
+      "default": "./src/index.ts"
+    },
+    "./messages": {
+      "types": "./src/messages.ts",
+      "browser": "./src/messages.ts",
+      "node": "./src/messages.js",
+      "default": "./src/messages.ts"
+    },
+    "./store": {
+      "types": "./src/store.ts",
+      "browser": "./src/store.ts",
+      "node": "./src/store.js",
+      "default": "./src/store.ts"
+    },
+    "./client-read": {
+      "types": "./src/client-read.ts",
+      "browser": "./src/client-read.ts",
+      "node": "./src/client-read.js",
+      "default": "./src/client-read.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  }
+}

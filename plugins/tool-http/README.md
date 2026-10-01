@@ -12,7 +12,7 @@
 隔离执行（`sandbox.exec`）跑 fetcher 命令，`caps.net` 由隔离执行按档钳制，越档回 `net_denied`。
 
 - 能力类：`tool-http`；方法：`describe` / `invoke`。
-- `pins`：`sandbox`（网络出口与钳制）、`host`（二进制资产存取）。
+- `pins`：`host`（二进制资产存取）；`needs`：`sandbox`（网络出口与钳制，`one`）、`search-index`（本地索引，`many`，可选，缺省空集即关闭）。
 - 命令：无。状态档：`recomputable`。服务不读投影、不取时间 / 随机、不写世界。
 - 方法级超时：schema 顶层 `method_timeouts` 声明 `tool-http.invoke` 130000，避免多源检索被宿主 30s 缺省截断；
   describe 的工具声明 `caps.timeout_ms` 同取 130000，使调用方（tools 按 `caps.timeout_ms + 10s` 推）的反向等待
@@ -23,18 +23,27 @@
 ## `websearch`
 
 ```
-websearch(args = { query, count?, sources?, read?, max_chars? })
-  read 缺省 0（只检索，等价旧 websearch）
+websearch(args = { query, count?, sources?, read?, max_chars?, highlights? })
+  read 缺省 0（只检索，等价旧 websearch）；highlights=true 即走研究形态取相关段落
   -> { results:[{title,url,snippet,source,rank}], sources_used:[…], sources_failed:[…] }
   read > 0（等价旧 webresearch）
   -> { query, results:[{title,url,snippet,source,rank,read,content_type?,status?,content?,truncated?,error?}],
        sources_used, sources_failed, read_used, read_failed }
 ```
 
-- 免费源清单住配置（schema defaults / 数据世代 body），内置：`Bing RSS`（走 `format=rss`，比抓结果页稳定）、`Mojeek`。
-  全部免注册 / 免 key / 零配置；源可带 `headers`（如公开 key）与 `extra_query`（固定参数）。
-  内建清单只保留实测可达的源；DDG / Wikipedia / SearXNG / Marginalia 在部分网络被污染或限流，已移出内建清单，
-  需要时经数据世代 body 加回（配置是数据，不改代码）。
+- 免费源清单住配置（schema defaults / 数据世代 body）。**缺省启用免 key 的 6 源**：`Bing RSS`、`Mojeek`、
+  `OpenAlex`（学术）、`Stack Exchange`（编程问答）、`Hacker News`（Algolia）、`arXiv`（预印本）；
+  另含 4 个**缺省关闭的模板源**：`GitHub`（未认证限额低）、`Marginalia`（公开 key）、`Wikipedia`、`SearXNG`（需实例），
+  经数据世代 body 开启即用。全部免注册 / 免 key / 零配置；源可带 `headers`（如公开 key）、`extra_query`（固定参数）
+  与 `query_prefix`（拼进查询值的前缀，如 arXiv 的 `all:`）。配置是数据，加源 / 换源不改代码。
+- 免 key API 源的解析器：`openalex` / `arxiv` / `stackexchange` / `github` / `hn-algolia`；请求按通用
+  源映射（endpoint + query_param + extra_query + query_prefix + headers），非 2xx / 结构变化只记该源失败。
+- **本地索引（可选增强）**：`index_enabled` 开时，先查 `search-index`（门面，见 `plugins/search-index`）并把它
+  当一个源参与 RRF，再把本次合并结果（链接 + snippet）写回索引；`read>0` / `webfetch` 抓到的**正文也回灌**
+  同一条目（按 URL 覆盖），索引从"链接缓存"升级为"内容库"。无 `search-index` 成员 / 后端不可用时静默降级为纯网络。
+  索引后端缺省为 `plugins/search-index-sql`（Node 内置 `node:sqlite` + FTS5 trigram），数据落插件 ④ 目录、不写世界。
+- **highlights**：`read>0` 时的可选档，给 `highlights: true` 则每页只回与查询最相关的段落（`highlights` 字段）
+  而非整页正文（`content` 置空），比整页省 token、又比 snippet 有信息量；未显式给 `read` 时按缺省条数抓取。
 - 流程：并行查各源 → 归一化 → URL 规范化去重 → RRF 合并（分数 = Σ 1/(k + 名次)，k 住配置，
   缺省 60；同分按 URL 升序）→ 取 `top_n`（缺省 10）。多实例源（SearXNG）的实例 / 格式也并发尝试，
   按声明顺序取首个非空，单实例慢不再串行叠加。
@@ -53,11 +62,13 @@ webfetch(args = { url, format? })   // format = "markdown"（缺省）| "text" |
   `application/json` / `text/*` / `+xml` → 原样；其它二进制 → `host.asset.put` 存资产、回资产引用。
 - 文本响应体 ≤ `output_max`，超限截断并标记 `truncated`；二进制超限或被截断回 `too_large`（不存资产）。
 - `bad_url`：形态非法 / 非 http(s) / 内网地址（按配置 `block_private_hosts`）。
+- **渲染提示**：HTML 抽取正文短于 `render_min_chars`（多为 JS 渲染页），或 HTTP 403 / 429 / 503（JS 挑战 / 限流）时，
+  结果带 `render_suggested: true`，提示改用 `webbrowser`（本工具不执行 JS、不持会话，也不越权代调浏览器）。
 
 ## `websearch`（`read>0`：检索 + 正文抽取）
 
 ```
-websearch(args = { query, count?, sources?, read?, max_chars? })   // read > 0
+websearch(args = { query, count?, sources?, read?, max_chars?, highlights? })   // read > 0 或 highlights
   -> { results:[{title,url,snippet,source,rank,read,content_type?,status?,content?,truncated?,error?}],
        sources_used, sources_failed, read_used, read_failed }
 ```
@@ -101,6 +112,9 @@ websearch(args = { query, count?, sources?, read?, max_chars? })   // read > 0
 | `fetcher_cmd`         | 外部 fetcher 命令名；缺省空 = 用本包内置 Node fetcher                                                                                 |
 | `fetcher_env`         | 传给 fetcher 子进程的环境变量（隔离执行 `env_clear` 后注入）；走代理时设 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY`/`HTTP_PROXY`          |
 | `source_timeout_ms`   | 单源抓取超时缺省                                                                                                                      |
+| `index_enabled`       | 是否启用本地索引（read-through + 写回）；缺省 `true`，无 `search-index` 成员时静默降级                                                 |
+| `index_name`          | 本地索引结果在 `sources_used` 里的显示名（缺省 `Index`）                                                                               |
+| `render_min_chars`    | HTML 抽取正文短于该字符数即回 `render_suggested`（缺省 200）                                                                            |
 
 网络出口被 DNS 污染 / IP 封锁时，抓取会连不上（`fetch_failed`）。内置 fetcher 用 Node `fetch`，
 它**默认不读** `HTTPS_PROXY`；经 `fetcher_env` 注入 `NODE_USE_ENV_PROXY=1` + 代理地址后才会走代理

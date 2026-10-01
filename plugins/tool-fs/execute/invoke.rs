@@ -222,15 +222,17 @@ fn field(result: &Value, key: &str, fallback: Value) -> Value {
 
 // ── 四个工具 ───────────────────────────────────────────────────────────────
 
-/// 读取 `format`：`utf8`（缺省，文本）/ `base64` / `hex`（按原始字节编码，二进制可读）。
+/// 读取 `format`：`utf8`（缺省，文本）/ `base64` / `hex`（按原始字节编码，二进制可读）/
+/// `asset`（字节经 `host.asset.put` 落宿主资产区，回内容寻址引用，避免把字节塞进上下文）。
 fn read_format(args: &Map<String, Value>) -> Result<&'static str, ToolError> {
     match args.get("format").and_then(Value::as_str) {
         None | Some("utf8") => Ok("utf8"),
         Some("base64") => Ok("base64"),
         Some("hex") => Ok("hex"),
+        Some("asset") => Ok("asset"),
         Some(other) => Err(ToolError::new(
             "bad_args",
-            format!("format must be utf8|base64|hex, got `{other}`"),
+            format!("format must be utf8|base64|hex|asset, got `{other}`"),
         )),
     }
 }
@@ -257,6 +259,10 @@ fn read(
         return read_batch(bag, args, path_arg, pattern, backend);
     }
     let target = path::classify(path_arg, workspace_root(bag))?;
+    // 资产读取：字节经 host.asset.put 落宿主资产区，回引用。
+    if format == "asset" {
+        return read_asset(bag, path_arg, &target, args, backend);
+    }
     // 编码读取（base64 / hex）：按原始字节读，行窗 / 预览不适用。
     if format != "utf8" {
         return read_encoded(bag, path_arg, &target, format, backend);
@@ -268,15 +274,30 @@ fn read(
     } else {
         defaults::DEFAULT_READ_LIMIT
     };
+    // 字节续读模式：给出 `byte_offset` 即按字节从该处继续读（大文件越过 output_max 后仍可读完）；
+    // 此时不再注入行窗缺省，与行窗参数冲突由 sandbox 收口。
+    let byte_offset = match args.get("byte_offset") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .ok_or_else(|| ToolError::new("bad_args", "byte_offset must be a non-negative integer"))?,
+        ),
+    };
     let mut fsop_args = Map::new();
-    if let Some(offset) = offset_arg(args)? {
-        fsop_args.insert("offset".to_string(), json!(offset));
+    if let Some(byte_offset) = byte_offset {
+        fsop_args.insert("byte_offset".to_string(), json!(byte_offset));
+    } else {
+        if let Some(offset) = offset_arg(args)? {
+            fsop_args.insert("offset".to_string(), json!(offset));
+        }
+        if preview {
+            fsop_args.insert("preview".to_string(), json!(true));
+        }
+        fsop_args.insert("limit".to_string(), json!(limit(args, default_limit)?));
+        apply_line_range(args, default_limit, &mut fsop_args)?;
     }
-    if preview {
-        fsop_args.insert("preview".to_string(), json!(true));
-    }
-    fsop_args.insert("limit".to_string(), json!(limit(args, default_limit)?));
-    apply_line_range(args, default_limit, &mut fsop_args)?;
+    let byte_mode = fsop_args.contains_key("byte_offset");
     let fsop = forward(
         bag,
         "read",
@@ -286,14 +307,25 @@ fn read(
         Value::Object(fsop_args),
     );
     let result = backend.fsop(&fsop)?;
-    // 摘要取自实际返回窗口：行窗、窗口文本哈希与规模；同输入恒同摘要。
-    let start_line = result.get("start_line").and_then(Value::as_u64).unwrap_or(1);
-    let end_line = result.get("end_line").and_then(Value::as_u64);
-    let lines_returned = result
-        .get("lines_returned")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    // 摘要取自实际返回窗口：行窗 / 字节窗、窗口文本哈希与规模；同输入恒同摘要。
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
+    let digest = if byte_mode {
+        digest::byte_read_digest(
+            path_arg,
+            result.get("byte_offset").and_then(Value::as_u64).unwrap_or(0),
+            result.get("bytes_returned").and_then(Value::as_u64).unwrap_or(0),
+            result.get("eof").and_then(Value::as_bool).unwrap_or(false),
+            text,
+        )
+    } else {
+        let start_line = result.get("start_line").and_then(Value::as_u64).unwrap_or(1);
+        let end_line = result.get("end_line").and_then(Value::as_u64);
+        let lines_returned = result
+            .get("lines_returned")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        digest::read_digest(path_arg, start_line, end_line, lines_returned, text)
+    };
     Ok(json!({
         "text": field(&result, "text", json!("")),
         "total_lines": field(&result, "total_lines", json!(0)),
@@ -305,7 +337,14 @@ fn read(
         "content_truncated": field(&result, "content_truncated", json!(false)),
         "truncated": field(&result, "truncated", json!(false)),
         "preview": field(&result, "preview", json!(preview)),
-        "digest": digest::read_digest(path_arg, start_line, end_line, lines_returned, text),
+        // 字节续读字段（行窗模式为 null）：byte_offset / bytes_returned / next_byte_offset / eof。
+        "byte_offset": field(&result, "byte_offset", Value::Null),
+        "bytes_returned": field(&result, "bytes_returned", Value::Null),
+        "next_byte_offset": field(&result, "next_byte_offset", Value::Null),
+        "eof": field(&result, "eof", Value::Null),
+        "file_bytes": field(&result, "file_bytes", Value::Null),
+        "hint": field(&result, "hint", Value::Null),
+        "digest": digest,
     }))
 }
 
@@ -340,6 +379,54 @@ fn read_encoded(
         "content_truncated": field(&result, "content_truncated", json!(false)),
         "truncated": field(&result, "truncated", json!(false)),
         "digest": digest::encoded_read_digest(path_arg, format, bytes, &text),
+    }))
+}
+
+/// 资产读取（`format:"asset"`）：先经 sandbox 按原始字节读出（base64 跨帧），再经
+/// `host.asset.put` 内容寻址落宿主资产区，回引用 `{kind:"asset", sha256, mime, size}`（不把字节塞进上下文）。
+/// `mime` 缺省 `application/octet-stream`；整体按 `output_max` 截断原始字节。
+fn read_asset(
+    bag: &Value,
+    path_arg: &str,
+    target: &path::Target,
+    args: &Map<String, Value>,
+    backend: &dyn FsopBackend,
+) -> Result<Value, ToolError> {
+    let mut fsop_args = Map::new();
+    fsop_args.insert("encoding".to_string(), json!("base64"));
+    let fsop = forward(
+        bag,
+        "read",
+        Some(&target.path),
+        target.inside,
+        false,
+        Value::Object(fsop_args),
+    );
+    let result = backend.fsop(&fsop)?;
+    let base64 = result.get("text").and_then(Value::as_str).unwrap_or("");
+    let bytes = result.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let binary = field(&result, "binary", json!(true));
+    let truncated = field(&result, "content_truncated", json!(false));
+    let mime = args
+        .get("mime")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream");
+    let asset = backend.asset_put(mime, base64)?;
+    Ok(json!({
+        // 内容寻址引用：可直接嵌到世界数据 / 消息资产位（`{kind:'asset',sha256,mime,size}`）。
+        "asset": {
+            "kind": "asset",
+            "sha256": field(&asset, "sha256", Value::Null),
+            "mime": field(&asset, "mime", json!(mime)),
+            "size": field(&asset, "size", json!(bytes)),
+        },
+        "encoding": "asset",
+        "binary": binary,
+        "bytes_read": bytes,
+        "content_truncated": truncated,
+        "truncated": truncated,
+        "digest": digest::asset_read_digest(path_arg, mime, bytes, &asset),
     }))
 }
 
@@ -539,6 +626,11 @@ fn stat(
     if args.get("recursive").and_then(Value::as_bool) == Some(true) {
         fsop_args.insert("recursive".to_string(), json!(true));
     }
+    // 可选行数统计（文件）；目录 + recursive + lines 时聚合在 aggregate.total_lines。
+    let with_lines = args.get("lines").and_then(Value::as_bool) == Some(true);
+    if with_lines {
+        fsop_args.insert("lines".to_string(), json!(true));
+    }
     let fsop = forward(
         bag,
         "stat",
@@ -557,6 +649,8 @@ fn stat(
         "ctime": field(&result, "ctime", Value::Null),
         // 只读位（跨平台口径，非完整权限审计）。
         "readonly": field(&result, "readonly", Value::Null),
+        // `lines:true` 且为文件时的行数（流式统计）；目录 / 未请求为 null。
+        "lines": field(&result, "lines", Value::Null),
         // `recursive:true` 且为目录时 sandbox 回子树聚合；单路径 / 非递归为 null。
         "aggregate": field(&result, "aggregate", Value::Null),
     }))
@@ -650,13 +744,27 @@ fn stat_batch(
     let listed_extra = listed.get("skipped_count").and_then(Value::as_u64).unwrap_or(0) as usize;
     let matched = paths.len() + listed_extra;
 
+    // 可选行数：逐文件 `stat` 带 `lines:true`，并聚合 `aggregate.total_lines`。
+    let with_lines = args.get("lines").and_then(Value::as_bool) == Some(true);
+    let mut per_stat = Map::new();
+    if with_lines {
+        per_stat.insert("lines".to_string(), json!(true));
+    }
     let mut files = Vec::new();
     let mut skipped_unreadable = 0usize;
     for relative in &paths {
         let full = join_path(base, relative);
-        let stat_bag = forward(bag, "stat", Some(&full), target.inside, false, json!({}));
+        let stat_bag = forward(
+            bag,
+            "stat",
+            Some(&full),
+            target.inside,
+            false,
+            Value::Object(per_stat.clone()),
+        );
         match backend.fsop(&stat_bag) {
             Ok(result) => {
+                let lines = result.get("lines").and_then(Value::as_u64);
                 files.push(json!({
                     "path": relative,
                     "exists": field(&result, "exists", json!(false)),
@@ -665,6 +773,8 @@ fn stat_batch(
                     "mtime": field(&result, "mtime", Value::Null),
                     "ctime": field(&result, "ctime", Value::Null),
                     "readonly": field(&result, "readonly", Value::Null),
+                    // `lines:true` 且为文件时的行数；否则 null。
+                    "lines": lines.map(|value| json!(value)).unwrap_or(Value::Null),
                 }));
             }
             // 单个路径查不动（拒权 / 环境）不应中断整批：跳过并计数。
@@ -719,6 +829,7 @@ fn stat_batch(
     });
     // 聚合统计基于过滤后的返回集。
     let (mut file_count, mut dir_count, mut total_size) = (0u64, 0u64, 0u64);
+    let mut total_lines = 0u64;
     let (mut newest, mut oldest): (Option<u64>, Option<u64>) = (None, None);
     for entry in &files {
         if entry.get("exists").and_then(Value::as_bool).unwrap_or(false) {
@@ -730,6 +841,11 @@ fn stat_batch(
         }
         if let Some(size) = entry.get("size").and_then(Value::as_u64) {
             total_size += size;
+        }
+        if with_lines {
+            if let Some(value) = entry.get("lines").and_then(Value::as_u64) {
+                total_lines += value;
+            }
         }
         if let Some(mtime) = entry.get("mtime").and_then(Value::as_u64) {
             if newest.map(|value| mtime > value).unwrap_or(true) {
@@ -769,6 +885,8 @@ fn stat_batch(
             "files": file_count,
             "dirs": dir_count,
             "total_size": total_size,
+            // `lines:true` 时为过滤后返回集的总行数；否则 null。
+            "total_lines": if with_lines { json!(total_lines) } else { Value::Null },
             "newest_mtime": newest.map(|value| json!(value)).unwrap_or(Value::Null),
             "oldest_mtime": oldest.map(|value| json!(value)).unwrap_or(Value::Null),
         },

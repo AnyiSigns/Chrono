@@ -189,7 +189,7 @@ test('.worldignore 声明 test/ 与 tools/ 与 execute/web/dist/', () => {
 
 test('package.json 零运行期依赖，devDeps 只有 esbuild，带测试与类型脚本', () => {
   const pkg = readJson('package.json')
-  assert.equal(pkg.dependencies, undefined)
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['@chrono/ui-kit'])
   assert.equal(pkg.peerDependencies, undefined)
   assert.deepEqual(pkg.devDependencies, { esbuild: '^0.28.2' })
   assert.equal(pkg.scripts.test, 'node --test')

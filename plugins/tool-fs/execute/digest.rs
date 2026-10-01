@@ -137,6 +137,24 @@ pub fn read_digest(
     })
 }
 
+/// read 字节续读摘要：路径、起始字节、返回字节数、是否到文件尾、窗口内容 sha256 与规模。
+pub fn byte_read_digest(
+    path: &str,
+    byte_offset: u64,
+    bytes_returned: u64,
+    eof: bool,
+    text: &str,
+) -> Value {
+    json!({
+        "path": path,
+        "byte_offset": byte_offset,
+        "bytes": bytes_returned,
+        "eof": eof,
+        "sha": sha256_hex(text.as_bytes()),
+        "summary": format!("{} @{byte_offset}", format_bytes(bytes_returned as usize)),
+    })
+}
+
 /// 编码读取摘要：路径、编码、原始字节数、编码后文本的 sha256 与规模。
 pub fn encoded_read_digest(path: &str, encoding: &str, bytes: u64, text: &str) -> Value {
     json!({
@@ -145,6 +163,19 @@ pub fn encoded_read_digest(path: &str, encoding: &str, bytes: u64, text: &str) -
         "bytes": bytes,
         "sha": sha256_hex(text.as_bytes()),
         "summary": format!("{encoding} · {}", format_bytes(bytes as usize)),
+    })
+}
+
+/// 资产读取摘要：路径、mime、内容寻址 sha256、原始字节数。
+pub fn asset_read_digest(path: &str, mime: &str, bytes: u64, asset: &Value) -> Value {
+    let sha256 = asset.get("sha256").cloned().unwrap_or(Value::Null);
+    json!({
+        "path": path,
+        "encoding": "asset",
+        "sha256": sha256,
+        "mime": mime,
+        "bytes": bytes,
+        "summary": format!("asset · {mime} · {}", format_bytes(bytes as usize)),
     })
 }
 
@@ -181,6 +212,16 @@ mod tests {
         assert_eq!(digest["lines"], "1-240");
         assert_eq!(digest["sha"], "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
         assert_eq!(digest["summary"], "240 行 / 5B");
+    }
+
+    #[test]
+    fn byte_read_digest_shape() {
+        let digest = byte_read_digest("src/a.ts", 4096, 1024, false, "chunk");
+        assert_eq!(digest["path"], "src/a.ts");
+        assert_eq!(digest["byte_offset"], 4096);
+        assert_eq!(digest["bytes"], 1024);
+        assert_eq!(digest["eof"], false);
+        assert_eq!(digest["summary"], "1KB @4096");
     }
 
     #[test]

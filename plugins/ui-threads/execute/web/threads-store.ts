@@ -2,6 +2,8 @@
 // 无 react import：壳经 `ctx.useStore(store)` 以 `useSyncExternalStore` 绑定快照。
 // 快照不可变：每个 action 返回新对象，store.commit 换引用并通知订阅者。
 
+import { createStore } from '@chrono/ui-kit/store'
+import type { ReadableStore } from '@chrono/ui-kit/store'
 import { resolveActiveThread } from './bridge-state.ts'
 import { bumpUnread, clearUnread, unreadTotal } from './unread.ts'
 import type { UnreadCounts } from './unread.ts'
@@ -59,10 +61,7 @@ export interface ThreadsView {
   todoOpen: boolean
 }
 
-export interface ReadableStore<S> {
-  getSnapshot(): S
-  subscribe(listener: (snapshot: S) => void): () => void
-}
+export type { ReadableStore } from '@chrono/ui-kit/store'
 
 export interface ThreadsStore extends ReadableStore<ThreadsView> {
   commit(next: ThreadsView): void
@@ -204,23 +203,9 @@ export function initialView(table: MessageTable): ThreadsView {
   }
 }
 
-/** 建 React-free store：快照 + 订阅 + 换引用提交。 */
+/** 建 React-free store：快照 + 订阅 + 换引用提交（原语由共享 UI 套件提供）。 */
 export function createThreadsStore(initial: ThreadsView): ThreadsStore {
-  let snapshot = initial
-  const listeners = new Set<(value: ThreadsView) => void>()
-  return {
-    getSnapshot: () => snapshot,
-    subscribe(listener) {
-      listeners.add(listener)
-      return () => {
-        listeners.delete(listener)
-      }
-    },
-    commit(next) {
-      snapshot = next
-      for (const listener of [...listeners]) listener(snapshot)
-    },
-  }
+  return createStore(initial)
 }
 
 export function setTable(view: ThreadsView, table: MessageTable): ThreadsView {

@@ -7,6 +7,14 @@
 本包是**数据身份**：只有 `schema`，无服务进程、无 pins、无命令、无 eff。
 工具目录装配归 `tool-registry`，整批派发归 `tool-dispatch`。
 
+## 为何保留为数据身份（而非并入 tool-registry）
+
+- 门面能力已收口到 `tool-registry` / `tool-dispatch`：目录装配与整批派发不再经本包，本包无服务、无端口。
+- 但**绑定数据契约**仍以本身份为唯一真源：它是世界数据（`add_gen` 的数据世代、可回滚、进重放），
+  由装配方入口 term 按字面身份名读投影 `ids.tools.body` 后随 `bag.tools_bindings` 交给目录装配方。
+- 把这份数据身份并入 `tool-registry` 只迁移命名、不改任何可观测行为，却会牵动世界 seed、
+  投影读取与 `tools_bindings` 契约；故保留为数据身份，能力侧保持转发。
+
 ## 身份与数据
 
 - 身份：`tools`

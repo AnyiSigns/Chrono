@@ -43,6 +43,18 @@
         }
       }
     },
+    "tools": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "工具行为配置。`ignore` = 文件工具（glob / grep / stat 批量 / read 批量）的项目级忽略表（字符串数组）；优先级：工具 args.ignore > 工具身份 body.ignore > 本项 > 内置兜底。显式空数组表示不忽略。",
+      "properties": {
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "项目级忽略条目的兜底表；条目按「文件名 / 整路径 / 任一路径段」匹配。"
+        }
+      }
+    },
     "providers": {
       "type": "object",
       "description": "厂商连接实例 + 模型目录，键 = 厂商身份名（vendor-* 去前缀，如 deepseek / custom）。每个值形如：{ name, protocol?, base_url, auth_ref:{kind:'local'|'env',name}, models:{ <id>:{ name, context_window, max_output, reasoning:[档位…], modalities:{input:[],output:[]}, params:{}, enabled } } }；protocol 仅自定义厂商（三基础协议 openai-chat / openai-responses / anthropic-messages），预设厂商的 sdk 由厂商适配提供；auth_ref 只存引用名、不存密钥本体；models 只收用户勾选的模型。形状校验归写入端。",

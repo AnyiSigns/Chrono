@@ -10,7 +10,8 @@
     "host": "host"
   },
   "needs": {
-    "sandbox": { "mode": "one" }
+    "sandbox": { "mode": "one" },
+    "search-index": { "mode": "many" }
   },
   "start": "node execute/main.ts",
   "build": [],

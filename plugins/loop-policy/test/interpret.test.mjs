@@ -84,7 +84,7 @@ test('空 body 回落种子图：无工具路径 = context.build → model.chat 
   try {
     const manifest = await service.hello()
     assert.equal(manifest.identity, 'loop-policy')
-    assert.deepEqual(manifest.methods['loop-policy'], ['interpret', 'cancel'])
+    assert.deepEqual(manifest.methods['loop-policy'], ['interpret', 'cancel', 'note-input', 'promote-input'])
 
     const result = await service.interpret({ turn_id: 't1' })
     assert.equal(result.kind, 'result', JSON.stringify(result))

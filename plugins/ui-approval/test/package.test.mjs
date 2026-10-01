@@ -151,7 +151,7 @@ test('.worldignore 声明 test/、tools/ 与 execute/web/dist/', () => {
 
 test('package.json 带 esbuild devDep / typecheck 脚本 / files 含 lockfile', () => {
   const pkg = readJson('package.json')
-  assert.equal(pkg.dependencies, undefined)
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['@chrono/ui-kit'])
   assert.deepEqual(Object.keys(pkg.devDependencies ?? {}), ['esbuild'])
   assert.equal(pkg.scripts.test, 'node --test')
   assert.equal(pkg.scripts.typecheck, 'tsc --noEmit')

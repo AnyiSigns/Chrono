@@ -1,6 +1,6 @@
 {
   "title": "evolve-ledger（台账原语 · 链窗口 / 写计划 / 阈值 / 哈希）",
-  "description": "身份自述 / 数据契约：描述 evolve-ledger 能力类四方法 read-chain / patch-plan / thresholds / hash 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机），无 needs、无 pins、无自有状态。evolve-metrics 门面与其下游提供方（evolve-evidence / evolve-sweep / evolve-shadow）经反向 port.call 消费本插件：链窗口读取、台账写计划构造、阈值解析与确定性哈希全部住此，消费方不本地复刻。",
+  "description": "身份自述 / 数据契约：描述 evolve-ledger 能力类四方法 read-chain / patch-plan / thresholds / hash 的入参与结果形状。本插件纯计算、非 LLM、同输入同输出（不取时间、不用随机），无 needs、无 pins、无自有状态。evolve-metrics 经反向 port.call 消费本插件：链窗口读取、台账写计划构造、阈值解析与确定性哈希全部住此，消费方不本地复刻。",
   "type": "object",
   "additionalProperties": true,
   "method_timeouts": {

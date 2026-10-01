@@ -4,6 +4,8 @@
 // 零 react import（可 grep 断言）；DOM 只出现在浮层测量 / 下载等动作里，不构建视图。
 
 import type { SlotContext } from '@chrono/ui-contract'
+import { createStore } from '@chrono/ui-kit/store'
+import type { Store } from '@chrono/ui-kit/store'
 import { applyEvent, clearUnread, createBadgeState, seedFromHistory, seedOpenTurns } from './badges.ts'
 import type { BadgeState } from './badges.ts'
 import { clearConfirm, createConfirmState } from './confirm.ts'
@@ -120,8 +122,8 @@ function isWriteAccepted(result: unknown): boolean {
 /** 侧栏 store：状态归约 + 命令编排 + 浮层定位。 */
 export class SidebarStore {
   private readonly ctx: SlotContext
-  private readonly listeners = new Set<(snapshot: SidebarSnapshot) => void>()
-  private snapshot: SidebarSnapshot
+  /** 快照 / 订阅 / 提交由共享 store 原语承载；本类只编排动作与浮层。 */
+  private readonly core: Store<SidebarSnapshot>
   private root: HTMLElement | null = null
   /** 宿主的侧栏槽根（`#slot-sidebar`）：槽宽变量住这里，拖拽时需同步写入以实时重排页面。 */
   private host: HTMLElement | null = null
@@ -155,7 +157,7 @@ export class SidebarStore {
 
   constructor(ctx: SlotContext, messages: MessageTable) {
     this.ctx = ctx
-    this.snapshot = {
+    this.core = createStore({
       messages,
       icons: ctx.tokens.icons,
       workspaces: [],
@@ -182,17 +184,18 @@ export class SidebarStore {
       tooltip: null,
       flyout: { left: 0, top: 0, maxHeight: 0, maxWidth: FLYOUT_WIDTH },
       flyoutOpen: false,
-    }
+    })
   }
 
-  getSnapshot = (): SidebarSnapshot => this.snapshot
-
-  subscribe = (listener: (snapshot: SidebarSnapshot) => void): (() => void) => {
-    this.listeners.add(listener)
-    return () => {
-      this.listeners.delete(listener)
-    }
+  /** 类内读取当前快照的便捷入口；对外仍以 `getSnapshot` 暴露。 */
+  private get snapshot(): SidebarSnapshot {
+    return this.core.getSnapshot()
   }
+
+  getSnapshot = (): SidebarSnapshot => this.core.getSnapshot()
+
+  subscribe = (listener: (snapshot: SidebarSnapshot) => void): (() => void) =>
+    this.core.subscribe(listener)
 
   text(code: string): string {
     return messageText(this.snapshot.messages, code)
@@ -203,9 +206,8 @@ export class SidebarStore {
   }
 
   /** 契约形状：整体替换快照并通知订阅者（`commit(next, meta?)`）。 */
-  commit(next: SidebarSnapshot, _meta?: unknown): void {
-    this.snapshot = next
-    for (const listener of [...this.listeners]) listener(this.snapshot)
+  commit(next: SidebarSnapshot, meta?: unknown): void {
+    this.core.commit(next, meta)
   }
 
   private update(patch: Partial<SidebarSnapshot>): void {

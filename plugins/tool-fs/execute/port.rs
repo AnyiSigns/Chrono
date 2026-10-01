@@ -14,6 +14,15 @@ use crate::error::ToolError;
 /// 触盘后端抽象：生产环境是反向调用 `sandbox.fsop`，单测注入假后端。
 pub trait FsopBackend: Send + Sync {
     fn fsop(&self, bag: &Value) -> Result<Value, ToolError>;
+
+    /// `host.asset.put`：把字节（base64）内容寻址存到宿主资产区，回引用 `{kind,sha256,mime,size}`。
+    /// 缺省不可用（无 host 端口的测试后端）；需要资产写的用例覆写。
+    fn asset_put(&self, _mime: &str, _bytes_base64: &str) -> Result<Value, ToolError> {
+        Err(ToolError::new(
+            "asset_unsupported",
+            "asset channel unavailable",
+        ))
+    }
 }
 
 /// `sandbox.fsop` 的反向调用后端。
@@ -35,6 +44,28 @@ impl FsopBackend for RemoteFsop {
             .map_err(service_error_to_tool)?;
         parse_fsop_response(&value)
     }
+
+    fn asset_put(&self, mime: &str, bytes_base64: &str) -> Result<Value, ToolError> {
+        let value = self
+            .link
+            .call(
+                "host",
+                "asset.put",
+                json!({ "mime": mime, "bytes": bytes_base64 }),
+            )
+            .map_err(service_error_to_tool)?;
+        Ok(unwrap_endpoint_value(value))
+    }
+}
+
+/// 宿主保留能力端点返回可能是 `{ok:true, value}` 包装或裸值；统一取内层（资产引用本身无 `value` 键）。
+fn unwrap_endpoint_value(value: Value) -> Value {
+    if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if let Some(inner) = value.get("value") {
+            return inner.clone();
+        }
+    }
+    value
 }
 
 /// 反向调用错误码词表与工具错误同源：原样搬运，不吞、不改写。

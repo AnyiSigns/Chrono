@@ -10,6 +10,7 @@
     "test": "node tools/test-all.mjs",
     "build:vendor": "node tools/build-vendor.mjs",
     "build:ui": "node tools/build-ui.mjs",
+    "pack:ui-kit": "node tools/pack-ui-kit.mjs",
     "typecheck:ui": "node tools/typecheck-ui.mjs"
   },
   "devDependencies": {

@@ -90,9 +90,11 @@ function todoTool(statuses: string[]): Rec {
         'replace 必填：完整条目数组，整体替换而非增量；传空数组即清空。带 id 的条目保持身份（id 从 action=read 取回），缺省自动分配。',
       ops: 'update 必填：操作数组，按序作用于演进中的清单：{op:"add",text,…} 追加、{op:"update",id,…} 改字段、{op:"remove",id} 删除、{op:"move",id,index} 移到下标。',
       at: '本批条目的缺省时间（ISO 8601）。',
+      allow_multiple_in_progress:
+        '可选：置 true 时允许同一清单存在多个 in_progress（并行工作流）。缺省 false =「焦点唯一」：写入多个回 multiple_in_progress，置某条 in_progress 会把其它降回 pending。',
     },
     boundaries:
-      '只操作本会话清单：replace 整体替换、update 按 id 增量；同一清单至多一个 in_progress（写入多个回 multiple_in_progress；置某条 in_progress 会把其它降回 pending）；不判定任务是否真完成。',
+      '只操作本会话清单：replace 整体替换、update 按 id 增量；缺省同一清单至多一个 in_progress（写入多个回 multiple_in_progress；置某条 in_progress 会把其它降回 pending），显式 allow_multiple_in_progress:true 可并行；blocked 表示受阻；不判定任务是否真完成。',
     description:
       '维护当前会话的待办清单；返回 {total, done}（update 另回 changed，read 另回 items）。',
     argsSchema: {
@@ -109,6 +111,10 @@ function todoTool(statuses: string[]): Rec {
           items: opSchema(statuses),
         },
         at: { type: 'string' },
+        allow_multiple_in_progress: {
+          type: 'boolean',
+          description: '置 true 允许同一清单多个 in_progress（缺省 false = 焦点唯一）。',
+        },
       },
       required: ['action'],
       additionalProperties: false,

@@ -1,0 +1,37 @@
+{
+  "identity": "search-index",
+  "schema": "schema/search-index.json",
+  "implements": ["search-index"],
+  "methods": {
+    "search-index": ["search", "put", "stats"]
+  },
+  "pins": {},
+  "slots": {
+    "search-index-provider": { "methods": ["search", "put", "stats"] }
+  },
+  "needs": {
+    "search-index-provider": { "mode": "many" }
+  },
+  "start": "node execute/main.ts",
+  "build": [],
+  "protocol": "1",
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
+  "state": "recomputable",
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "schema", "path": "schema/" }
+  ],
+  "commands": []
+}

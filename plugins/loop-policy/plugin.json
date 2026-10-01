@@ -3,13 +3,15 @@
   "schema": "schema/graph.json",
   "implements": ["loop-policy", "loop-rule", "turn-hook"],
   "methods": {
-    "loop-policy": ["interpret", "cancel"],
+    "loop-policy": ["interpret", "cancel", "note-input", "promote-input"],
     "loop-rule": ["when", "pre", "post"],
     "turn-hook": ["before-assemble", "after-step", "before-settle", "after-settle"]
   },
   "concurrent_methods": [
     "interpret",
     "cancel",
+    "note-input",
+    "promote-input",
     "when",
     "pre",
     "post",

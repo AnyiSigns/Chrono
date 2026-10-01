@@ -9,13 +9,21 @@ import type { Json } from 'plugin-sdk'
 export const DEFAULT_MAX_ITEMS = 200
 /** 缺省单条文本长度上限（Unicode 码点）。 */
 export const DEFAULT_MAX_TEXT_LENGTH = 500
-/** 缺省状态枚举（`cancelled` = 放弃，不计入完成、也不算未完成）。 */
-export const DEFAULT_STATUSES: string[] = ['pending', 'in_progress', 'completed', 'cancelled']
+/** 缺省状态枚举（`cancelled` = 放弃，不计入完成、也不算未完成；`blocked` = 受阻、非进行中）。 */
+export const DEFAULT_STATUSES: string[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'cancelled',
+  'blocked',
+]
 
 export interface TodoLimits {
   maxItems: number
   maxTextLength: number
   statuses: string[]
+  /** 是否允许同一清单存在多个 in_progress（缺省 false =「焦点唯一」）。 */
+  allowMultipleInProgress: boolean
 }
 
 function positiveInt(value: Json | undefined, fallback: number): number {
@@ -38,6 +46,7 @@ export function resolveLimits(): TodoLimits {
         maxItems: positiveInt(parsed['max_items'], DEFAULT_MAX_ITEMS),
         maxTextLength: positiveInt(parsed['max_text_length'], DEFAULT_MAX_TEXT_LENGTH),
         statuses: stringList(parsed['statuses'], DEFAULT_STATUSES),
+        allowMultipleInProgress: parsed['allow_multiple_in_progress'] === true,
       }
     }
   } catch {
@@ -47,5 +56,6 @@ export function resolveLimits(): TodoLimits {
     maxItems: DEFAULT_MAX_ITEMS,
     maxTextLength: DEFAULT_MAX_TEXT_LENGTH,
     statuses: DEFAULT_STATUSES,
+    allowMultipleInProgress: false,
   }
 }

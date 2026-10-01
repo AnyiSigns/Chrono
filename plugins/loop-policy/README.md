@@ -14,7 +14,18 @@
 - `loop-policy.interpret`（`interpret(bag)`）：门面编排一段回合——
   水合引用闭包 → 契约版本边界 → （编排变更裁决续跑 | `graph-run.run`）→ `turn-ledger.settle` → `session.turn_settle`。
 - `loop-policy.cancel`（`cancel(turn_id)`）：转发取消意图给 `graph-run.cancel`（运行中的 run 在派发边界查、命中即停）；幂等。
-  两者同为 `concurrent_methods`，`cancel` 才不会被在途 `interpret` 挡住。
+- `loop-policy.note-input`（`note-input({turn_id, insert_id, user_message})`）：回合进行中记一条待发输入（队列写口）。
+- `loop-policy.promote-input`（`promote-input({turn_id})`）：把待发输入按序提升为 `step.user`。
+  队列写口转发给 `session`（持久存储与存储引擎归 session），回合 / 输入 / 队列词汇归本门面，消费方不直连 session。
+  以上方法同为 `concurrent_methods`，`cancel` / 队列写口才不会被在途 `interpret` 挡住。
+
+## 门面为何不并入 graph-run
+
+本插件是**门面 + 数据 / 声明身份**与 `loop-rule` / `turn-hook` 两个扩展点的**拥有方与默认提供方**；
+`graph-run` 是只消费这些扩展点的执行引擎（`needs.{loop-rule,turn-hook}` 为 `many`）。
+两者之间只有运行期 `needs` 绑定、无 `pins` 闭包边，合并不产生结构收益，反而会：
+把开放扩展点的拥有权收进执行引擎、把图 / 生命周期数据契约与执行实现耦成一份。
+故保持分离：门面拥有数据与扩展点，引擎只执行。
 
 ## 入口契约（chat 装配 bag，形状不变）
 

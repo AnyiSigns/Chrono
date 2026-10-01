@@ -10,7 +10,9 @@
 // 确定性：遍历按路径字典序、不取时间、不用随机；`stat.mtime` 取自文件系统、不参与确定性保证。
 
 use std::fs;
-use std::io::{Read as IoRead, Write as IoWrite};
+use std::io::{
+    BufReader, Read as IoRead, Seek as IoSeek, SeekFrom, Write as IoWrite,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -75,6 +77,68 @@ fn map_io_error(err: std::io::Error) -> FsError {
         std::io::ErrorKind::NotFound => path_not_found(err.to_string()),
         std::io::ErrorKind::PermissionDenied => permission_denied(err.to_string()),
         _ => io_error(err.to_string()),
+    }
+}
+
+/// 小写化后的编辑距离（用于「近似文件名」提示；文件名短、目录条目有限，成本可忽略）。
+fn edit_distance(left: &str, right: &str) -> usize {
+    let a: Vec<char> = left.chars().collect();
+    let b: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            current[j + 1] = (previous[j] + cost)
+                .min(previous[j + 1] + 1)
+                .min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
+/// 路径不存在时给出同目录近似名候选（大小写不敏感 + 编辑距离 ≤ 2），帮助定位真实路径。
+/// 候选按（编辑距离, 名称）稳定排序，避免目录遍历顺序影响可读输出。
+fn not_found_with_suggestion(target: &Path, kind: &str) -> FsError {
+    let name = target
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut candidates: Vec<(usize, String)> = Vec::new();
+    if !name.is_empty() {
+        if let Some(parent) = target.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                let lower = name.to_lowercase();
+                for entry in entries.flatten() {
+                    let candidate = entry.file_name().to_string_lossy().to_string();
+                    let candidate_lower = candidate.to_lowercase();
+                    let distance = edit_distance(&lower, &candidate_lower);
+                    let close = distance <= 2
+                        || candidate_lower == lower
+                        || (candidate_lower.len() > lower.len()
+                            && candidate_lower.contains(&lower));
+                    if close {
+                        candidates.push((distance, candidate));
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup_by(|left, right| left.1 == right.1);
+    let suggestions: Vec<String> = candidates.into_iter().take(3).map(|(_, name)| name).collect();
+    if suggestions.is_empty() {
+        FsError::new("path_not_found", format!("{kind} does not exist"))
+    } else {
+        FsError::new(
+            "path_not_found",
+            format!(
+                "{kind} does not exist; did you mean: {}?",
+                suggestions.join(", ")
+            ),
+        )
     }
 }
 
@@ -330,6 +394,59 @@ fn read_verified(path: &Path) -> Result<Vec<u8>, FsError> {
     read_verified_capped(path, usize::MAX).map(|(bytes, _)| bytes)
 }
 
+/// 从 `start` 字节起读，最多 `limit` 字节；多读 1 字节以判定之后是否还有内容。
+/// 用于 `read` 的字节窗口续读：单次仍受 `output_max` 约束，故可读完任意大文件而不放大资源上限。
+fn read_verified_range(path: &Path, start: u64, limit: usize) -> Result<(Vec<u8>, bool), FsError> {
+    let mut file = fs::File::open(path).map_err(map_io_error)?;
+    let _metadata = file.metadata().map_err(map_io_error)?;
+    if let Ok(after) = fs::canonicalize(path) {
+        if norm_key(&after) != norm_key(path) {
+            return Err(fs_denied("path changed between check and open"));
+        }
+    }
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))
+            .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+    }
+    let mut bytes = Vec::new();
+    let mut reader = file.take(limit.saturating_add(1) as u64);
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|err| FsError::new("sandbox_setup_failed", err.to_string()))?;
+    let more = bytes.len() > limit;
+    if more {
+        bytes.truncate(limit);
+    }
+    Ok((bytes, more))
+}
+
+/// 按 `\n` 统计行数（与 `split_lines` 同口径：末尾换行不算空行；空文件 0 行）。
+/// 流式读取，内存恒定，不受 `output_max` 约束，供 `stat` 的可选行数聚合。
+fn count_lines(path: &Path) -> Result<u64, FsError> {
+    let file = fs::File::open(path).map_err(map_io_error)?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut newlines: u64 = 0;
+    let mut last: Option<u8> = None;
+    loop {
+        let read = reader.read(&mut buffer).map_err(map_io_error)?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            if *byte == b'\n' {
+                newlines += 1;
+            }
+        }
+        last = Some(buffer[read - 1]);
+    }
+    Ok(match last {
+        None => 0,
+        Some(byte) if byte == b'\n' => newlines,
+        Some(_) => newlines + 1,
+    })
+}
+
 fn strip_extended(path: &Path) -> String {
     let text = path.to_string_lossy().to_string();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
@@ -552,6 +669,10 @@ fn arg_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(Value::as_u64).map(|value| value as usize)
 }
 
+fn arg_u64(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
 fn arg_bool(args: &Value, key: &str) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -608,6 +729,7 @@ fn op_stat(
         return Ok(json!({ "exists": false, "is_dir": false, "size": 0, "mtime": Value::Null }));
     }
     let meta = fs::metadata(&canon).map_err(map_io_error)?;
+    let with_lines = arg_bool(args, "lines");
     let mut result = json!({
         "exists": true,
         "is_dir": meta.is_dir(),
@@ -617,23 +739,31 @@ fn op_stat(
         // 只读位（跨平台口径：Windows 为只读属性、Unix 为无 owner 写位）；不做完整权限审计。
         "readonly": meta.permissions().readonly(),
     });
-    // `recursive:true` + 目录：额外回整棵子树的聚合元信息（总大小 / 最老最新 mtime）。
+    // 可选行数：`lines:true` 且为文件时流式统计（内存恒定，不受 output_max 约束）。
+    if meta.is_file() && with_lines {
+        result["lines"] = json!(count_lines(&canon)?);
+    }
+    // `recursive:true` + 目录：额外回整棵子树的聚合元信息（总大小 / 最老最新 mtime；`lines` 时含总行数）。
     // 遍历同 `walk_files`：不跟随目录符号链接、按文件名排序（确定性），不改动单路径字段。
     if meta.is_dir() && arg_bool(args, "recursive") {
-        result["aggregate"] = stat_aggregate(&canon);
+        result["aggregate"] = stat_aggregate(&canon, with_lines);
     }
     Ok(result)
 }
 
-/// 目录子树聚合：文件数 / 子目录数 / 总字节数 / 最老与最新 mtime（ms）。不跟随目录符号链接避免环。
-fn stat_aggregate(root: &Path) -> Value {
+/// 目录子树聚合：文件数 / 子目录数 / 总字节数 / 最老与最新 mtime（ms）；`with_lines` 时另含总行数。
+/// 不跟随目录符号链接避免环。
+fn stat_aggregate(root: &Path, with_lines: bool) -> Value {
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         dir: &Path,
         files: &mut u64,
         dirs: &mut u64,
         total: &mut u64,
+        total_lines: &mut u64,
         newest: &mut Option<u64>,
         oldest: &mut Option<u64>,
+        with_lines: bool,
     ) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
@@ -647,9 +777,14 @@ fn stat_aggregate(root: &Path) -> Value {
             let path = entry.path();
             if file_type.is_dir() {
                 *dirs += 1;
-                walk(&path, files, dirs, total, newest, oldest);
+                walk(
+                    &path, files, dirs, total, total_lines, newest, oldest, with_lines,
+                );
             } else if file_type.is_file() {
                 *files += 1;
+                if with_lines {
+                    *total_lines += count_lines(&path).unwrap_or(0);
+                }
                 if let Ok(meta) = fs::metadata(&path) {
                     *total += meta.len();
                     if let Some(ms) = mtime_ms_value(&meta) {
@@ -665,12 +800,23 @@ fn stat_aggregate(root: &Path) -> Value {
         }
     }
     let (mut files, mut dirs, mut total) = (0u64, 0u64, 0u64);
+    let mut total_lines = 0u64;
     let (mut newest, mut oldest) = (None, None);
-    walk(root, &mut files, &mut dirs, &mut total, &mut newest, &mut oldest);
+    walk(
+        root,
+        &mut files,
+        &mut dirs,
+        &mut total,
+        &mut total_lines,
+        &mut newest,
+        &mut oldest,
+        with_lines,
+    );
     json!({
         "files": files,
         "dirs": dirs,
         "total_size": total,
+        "total_lines": if with_lines { json!(total_lines) } else { Value::Null },
         "newest_mtime": newest.map(|ms| json!(ms)).unwrap_or(Value::Null),
         "oldest_mtime": oldest.map(|ms| json!(ms)).unwrap_or(Value::Null),
     })
@@ -692,7 +838,7 @@ fn op_read(
     let (canon, exists) = canonical_or_parent(&target)?;
     context.check_read(inside_workspace(context, &canon), &canon, store)?;
     if !exists {
-        return Err(path_not_found("file does not exist"));
+        return Err(not_found_with_suggestion(&target, "file"));
     }
     let meta = fs::metadata(&canon).map_err(map_io_error)?;
     if !meta.is_file() {
@@ -709,6 +855,56 @@ fn op_read(
                 "unknown encoding `{other}` (expected utf8|base64|hex)"
             )))
         }
+    }
+    // 字节窗口模式：给出 `byte_offset` 即按字节续读（大文件超过 output_max 时用）。
+    // 每次仍受 output_max 约束，故可在不放大资源上限的前提下读完任意大文件；与行窗参数互斥。
+    if let Some(start) = arg_u64(args, "byte_offset") {
+        if args.get("offset").is_some()
+            || args.get("limit").is_some()
+            || args.get("start_line").is_some()
+            || args.get("end_line").is_some()
+            || arg_bool(args, "preview")
+        {
+            return Err(bad_args(
+                "byte_offset cannot be combined with offset/limit/start_line/end_line/preview",
+            ));
+        }
+        let (raw, more) = read_verified_range(&canon, start, context.output_max)?;
+        if has_nul(&raw) {
+            return Err(binary_unsupported("file contains NUL bytes"));
+        }
+        let (mut text, _) = decode_utf8_capped(raw, context.output_max)?;
+        // 未到文件尾时回退到最后一个完整行，避免把半行交给调用方；整块无换行（超长单行）则原样返回。
+        let mut line_truncated = false;
+        if more {
+            match text.rfind('\n') {
+                Some(index) => text.truncate(index + 1),
+                None => line_truncated = true,
+            }
+        }
+        let bytes_returned = text.len() as u64;
+        let next = start + bytes_returned;
+        let eof = !more && next >= meta.len();
+        let next_byte_offset = if eof { Value::Null } else { json!(next) };
+        return Ok(json!({
+            "text": text,
+            "encoding": "utf8",
+            "binary": false,
+            "byte_offset": start,
+            "bytes_returned": bytes_returned,
+            "next_byte_offset": next_byte_offset,
+            "eof": eof,
+            "file_bytes": meta.len(),
+            "lines_returned": split_lines(&text).len(),
+            "start_line": Value::Null,
+            "end_line": Value::Null,
+            "total_lines": Value::Null,
+            "has_more": false,
+            "next_offset": Value::Null,
+            "line_truncated": line_truncated,
+            "content_truncated": !eof,
+            "truncated": start > 0 || !eof,
+        }));
     }
     // 读前按上限截断（最多读 output_max + 1 字节）：超限返回截断内容 + truncated（非错）。
     let (raw, _) = read_verified_capped(&canon, context.output_max)?;
@@ -728,9 +924,27 @@ fn op_read(
     };
     let window = lines[offset..end].join("\n");
     let lines_returned = end - offset;
-    // 字节被 output_max 截断时，文件其余内容不可再经本工具读到：`has_more` 不成立、不提供续读游标。
+    // 行窗续读游标：字节未被截断且窗口后仍有行时给出。
     let has_more = !size_truncated && end < total_lines;
     let next_offset = if has_more { json!(end) } else { Value::Null };
+    // 字节被 output_max 截断时行窗覆盖不到文件其余部分：给按完整行对齐的字节游标，用 byte_offset 续读。
+    let next_byte_offset = if size_truncated {
+        match text.rfind('\n') {
+            Some(index) => json!(index + 1),
+            None => json!(text.len()),
+        }
+    } else {
+        Value::Null
+    };
+    let hint = if size_truncated {
+        Some(format!(
+            "file exceeds output_max ({} bytes); continue with byte_offset={}",
+            meta.len(),
+            next_byte_offset
+        ))
+    } else {
+        None
+    };
     // 行号统一 1 基：空窗口仍给出游标所指行（offset+1），`end_line` 无内容时为 null。
     let start_line = offset + 1;
     let end_line = if lines_returned > 0 {
@@ -749,8 +963,13 @@ fn op_read(
         // 窗口之后是否还有行可续读；续读用 next_offset 作为下一次 offset（0 基）。
         "has_more": has_more,
         "next_offset": next_offset,
-        // 内容因 output_max 被按字节截断（末行可能不完整、文件其余不可读）；标记，非错。
+        // 内容因 output_max 被按字节截断（末行可能不完整）；续读用 byte_offset=next_byte_offset。标记，非错。
         "content_truncated": size_truncated,
+        // 被 output_max 截断时给出的字节续读游标（完整行对齐）；未截断为 null。
+        "next_byte_offset": next_byte_offset,
+        "file_bytes": meta.len(),
+        // 被截断时的可读提示：明确如何继续读完整文件。
+        "hint": hint,
         // 窗口不是整份文件（跳过头 / 未到尾 / 按字节截断）即标记，非错。保留旧口径。
         "truncated": size_truncated || offset > 0 || end < total_lines,
         "binary": false,
@@ -771,7 +990,7 @@ fn op_list(
     let (base_canon, exists) = canonical_or_parent(&base)?;
     context.check_read(inside_workspace(context, &base_canon), &base_canon, store)?;
     if !exists {
-        return Err(path_not_found("directory does not exist"));
+        return Err(not_found_with_suggestion(&base, "directory"));
     }
     if !base_canon.is_dir() {
         return Err(not_a_directory("expected a directory"));
@@ -949,7 +1168,7 @@ fn op_grep(
     let (base_canon, exists) = canonical_or_parent(&base)?;
     context.check_read(inside_workspace(context, &base_canon), &base_canon, store)?;
     if !exists {
-        return Err(path_not_found("directory does not exist"));
+        return Err(not_found_with_suggestion(&base, "directory"));
     }
     if !base_canon.is_dir() {
         return Err(not_a_directory("expected a directory"));
@@ -1328,7 +1547,7 @@ fn op_replace(
     let (canon, exists) = canonical_or_parent(&target)?;
     context.check_write(inside_workspace(context, &canon), &canon, store)?;
     if !exists {
-        return Err(path_not_found("file does not exist"));
+        return Err(not_found_with_suggestion(&target, "file"));
     }
     if !canon.is_file() {
         return Err(not_a_file("expected a file"));
@@ -2038,6 +2257,52 @@ mod tests {
     }
 
     #[test]
+    fn read_not_found_suggests_close_names() {
+        let dir = TempDir::new("did-you-mean");
+        dir.write("executor.py", "x\n");
+        dir.write("other.txt", "y\n");
+        let result = call(&bag(&dir, "read", "executr.py", "severe", full_caps(), json!({})));
+        assert_eq!(result["code"], "path_not_found", "{result}");
+        let message = result["message"].as_str().unwrap_or("");
+        assert!(message.contains("did you mean"), "{result}");
+        assert!(message.contains("executor.py"), "{result}");
+    }
+
+    #[test]
+    fn stat_lines_counts_file_lines() {
+        let dir = TempDir::new("stat-lines");
+        // 三行、无尾换行：统计为 3（与 split_lines 同口径）。
+        dir.write("a.txt", "one\ntwo\nthree");
+        let result = call(&bag(
+            &dir,
+            "stat",
+            "a.txt",
+            "severe",
+            full_caps(),
+            json!({"lines": true}),
+        ));
+        assert_eq!(result["result"]["lines"], 3, "{result}");
+        let plain = call(&bag(&dir, "stat", "a.txt", "severe", full_caps(), json!({})));
+        assert_eq!(plain["result"]["lines"], Value::Null, "{plain}");
+    }
+
+    #[test]
+    fn stat_recursive_aggregates_lines() {
+        let dir = TempDir::new("stat-lines-tree");
+        dir.write("a.txt", "one\ntwo\n");
+        dir.write("b.txt", "three");
+        let result = call(&bag(
+            &dir,
+            "stat",
+            ".",
+            "severe",
+            full_caps(),
+            json!({"recursive": true, "lines": true}),
+        ));
+        assert_eq!(result["result"]["aggregate"]["total_lines"], 3, "{result}");
+    }
+
+    #[test]
     fn binary_and_read_truncation() {
         let dir = TempDir::new("binary");
         fs::write(dir.path.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
@@ -2076,6 +2341,71 @@ mod tests {
         assert_eq!(capped["ok"], true, "{capped}");
         assert_eq!(capped["result"]["truncated"], true);
         assert_eq!(capped["result"]["text"], "汉");
+    }
+
+    #[test]
+    fn read_byte_offset_continues_past_output_max() {
+        let dir = TempDir::new("read-byte-page");
+        // 每行 4 字节（含 \n）；output_max=4 时一次只覆盖一行。
+        dir.write("lines.txt", "aaa\nbbb\nccc\n");
+        let first = call(&bag(
+            &dir,
+            "read",
+            "lines.txt",
+            "severe",
+            json!({"fs":{"read":"full","write":"full"},"output_max":4}),
+            json!({}),
+        ));
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["result"]["content_truncated"], true);
+        // 行窗模式按 split_lines 口径去掉尾换行。
+        assert_eq!(first["result"]["text"], "aaa");
+        let next = first["result"]["next_byte_offset"].as_u64().unwrap();
+        assert_eq!(next, 4);
+        let second = call(&bag(
+            &dir,
+            "read",
+            "lines.txt",
+            "severe",
+            json!({"fs":{"read":"full","write":"full"},"output_max":4}),
+            json!({"byte_offset": next}),
+        ));
+        assert_eq!(second["ok"], true, "{second}");
+        assert_eq!(second["result"]["text"], "bbb\n");
+        assert_eq!(second["result"]["byte_offset"], 4);
+    }
+
+    #[test]
+    fn read_byte_offset_reaches_eof() {
+        let dir = TempDir::new("read-byte-eof");
+        dir.write("f.txt", "one\ntwo\n");
+        let result = call(&bag(
+            &dir,
+            "read",
+            "f.txt",
+            "severe",
+            json!({"fs":{"read":"full","write":"full"},"output_max":8}),
+            json!({"byte_offset": 4}),
+        ));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["result"]["text"], "two\n");
+        assert_eq!(result["result"]["eof"], true);
+        assert_eq!(result["result"]["next_byte_offset"], Value::Null);
+    }
+
+    #[test]
+    fn read_byte_offset_rejects_line_params() {
+        let dir = TempDir::new("read-byte-conflict");
+        dir.write("f.txt", "a\nb\n");
+        let result = call(&bag(
+            &dir,
+            "read",
+            "f.txt",
+            "severe",
+            full_caps(),
+            json!({"byte_offset": 0, "limit": 1}),
+        ));
+        assert_eq!(result["code"], "bad_args", "{result}");
     }
 
     #[test]

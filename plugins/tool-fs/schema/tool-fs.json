@@ -29,11 +29,11 @@
     },
     "binary_policy": {
       "type": "object",
-      "description": "二进制与大文件策略：文本内联；read 默认对二进制回 binary_unsupported，可用 format=base64|hex 读原始字节（按 output_max 截断）；grep 默认跳过二进制，可用 binary=true 按原始字节 / Latin-1 解释搜索（ASCII 模式安全，命中条目带 binary 标记）；二进制字节通道经 host.asset.put/get（契约就位，未启用）。",
+      "description": "二进制与大文件策略：文本内联；read 默认对二进制回 binary_unsupported，可用 format=base64|hex 内联原始字节，或 format=asset 经 host.asset.put 内容寻址落宿主资产区并只回引用 {kind:'asset',sha256,mime,size}（按 output_max 截断原始字节）；grep 默认跳过二进制，可用 binary=true 按原始字节 / Latin-1 解释搜索（ASCII 模式安全，命中条目带 binary 标记）；二进制字节通道经 host.asset.put/get（plugin.json 已 pin host）。",
       "additionalProperties": false,
       "properties": {
         "text": { "enum": ["inline"] },
-        "binary": { "enum": ["binary_unsupported", "base64", "hex"] },
+        "binary": { "enum": ["binary_unsupported", "base64", "hex", "asset"] },
         "binary_search": { "enum": ["latin-1"] },
         "asset_channel": { "enum": ["host.asset.put/get"] }
       }

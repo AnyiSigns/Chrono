@@ -170,6 +170,34 @@ test('buildInterpretBag：非空缺省 tools 才落键（空数组不落）', ()
   assert.equal(bag.tools[0].name, 'edit')
 })
 
+test('buildInterpretBag：config.tools.ignore 作项目级忽略表落 bag.ignore（工具 body 优先）', () => {
+  const wiring = loadWiring()
+  const ids = idsFixture({ configBody: configFixture({ tools: { ignore: ['.cache', 'dist'] } }) })
+  const bag = buildInterpretBag({
+    ids,
+    wiring,
+    slot: slotOf(ids, 't1'),
+    conversation: ids.session.body.conversations[0],
+    conversationId: 'c-1',
+    config: modelConfigOf(ids),
+    thread: 't1',
+  })
+  assert.deepEqual(bag.ignore, ['.cache', 'dist'])
+  // 工具身份 body 的 `ignore` 优先于 config.tools.ignore。
+  const withBody = idsFixture({ configBody: configFixture({ tools: { ignore: ['.cache'] } }) })
+  withBody['tool-fs'] = { body: { ignore: ['vendor'] } }
+  const bag2 = buildInterpretBag({
+    ids: withBody,
+    wiring,
+    slot: slotOf(withBody, 't1'),
+    conversation: withBody.session.body.conversations[0],
+    conversationId: 'c-1',
+    config: modelConfigOf(withBody),
+    thread: 't1',
+  })
+  assert.deepEqual(bag2.ignore, ['vendor'])
+})
+
 test('buildInterpretBag：恒带 contract_version（生成契约常量）', () => {
   const ids = idsFixture()
   const bag = buildInterpretBag({

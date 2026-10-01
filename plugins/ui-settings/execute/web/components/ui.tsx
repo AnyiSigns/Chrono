@@ -3,6 +3,9 @@
 // 本文件是原 `dom.js` / `ui-parts.js` 的 React 替代；视图模型仍由纯模块产出。
 
 import { cloneElement, createContext, useContext, useId, type ReactNode } from 'react'
+import { Icon, IconButton as KitIconButton } from '@chrono/ui-kit'
+
+export { Icon }
 
 export const VcContext = createContext<any>(null)
 
@@ -10,43 +13,17 @@ export function useVc(): any {
   return useContext(VcContext)
 }
 
-/** 图标 sprite：`<svg><use/></svg>`；带 label 时补可及名，否则 aria-hidden。 */
-export function Icon(props: { name: string; size?: number; label?: string; className?: string }) {
-  const size = props.size ?? 16
-  const label = props.label ?? ''
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={props.className}
-      role={label.length > 0 ? 'img' : undefined}
-      aria-label={label.length > 0 ? label : undefined}
-      aria-hidden={label.length > 0 ? undefined : true}
-    >
-      <use href={`/assets/icons.v2.svg#${props.name}`} />
-    </svg>
-  )
-}
-
-/** 图标按钮：命中区 ≥24×24，必须带 aria-label。 */
+/** 图标按钮：命中区 ≥24×24，必须带 aria-label；设置页用 `settings-iconbtn` 外壳。 */
 export function IconButton(props: { name: string; label: string; onClick?: () => void; disabled?: boolean; className?: string }) {
+  const className = props.className ? `settings-iconbtn ${props.className}` : 'settings-iconbtn'
   return (
-    <button
-      type="button"
-      className={props.className ? `settings-iconbtn ${props.className}` : 'settings-iconbtn'}
-      aria-label={props.label}
-      title={props.label}
-      disabled={props.disabled}
+    <KitIconButton
+      className={className}
+      name={props.name}
+      label={props.label}
       onClick={props.onClick}
-    >
-      <Icon name={props.name} size={16} label={props.label} />
-    </button>
+      disabled={props.disabled}
+    />
   )
 }
 

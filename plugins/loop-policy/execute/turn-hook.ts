@@ -3,6 +3,7 @@
 // 钩子只回增量、不写世界，也不改会话存储（session 的持久化方法照旧）。
 
 import { isRecord } from './plan.ts'
+import { ServiceError } from './types.ts'
 import type { Json, PortCaller, Rec } from './types.ts'
 
 /** 空转 nudge 文案：升级阶梯的第一步——先提示模型换策略，再次命中才收口。 */
@@ -43,4 +44,24 @@ export function afterStep(args: Json): Rec {
   const input = isRecord(args) ? args : {}
   const stall = isRecord(input['stall']) ? input['stall'] : null
   return stall !== null ? { delta: { nudge: LOOP_NUDGE } } : { delta: {} }
+}
+
+/**
+ * 队列写口 `note-input`：把回合进行中收到的用户输入记入会话待发队列。
+ * 队列词汇归本提供方，session 只作持久存储；传输失败上报 `session_unavailable` 由调用方分码。
+ */
+export async function noteInput(args: Json, deps: TurnHookDeps): Promise<Rec> {
+  const outcome = await deps.port.call('session', 'turn_note_input', isRecord(args) ? args : {})
+  if (!outcome.ok) throw new ServiceError('session_unavailable', outcome.message)
+  return isRecord(outcome.value) ? outcome.value : { ok: false, reason: 'bad_args' }
+}
+
+/**
+ * 队列写口 `promote-input`：把待发输入按序提升为 `step.user`（进入流与后续上下文）。
+ * 失败由调用方按 best-effort 处理，不在此吞并语义。
+ */
+export async function promoteInput(args: Json, deps: TurnHookDeps): Promise<Rec> {
+  const outcome = await deps.port.call('session', 'turn_promote_input', isRecord(args) ? args : {})
+  if (!outcome.ok) throw new ServiceError('session_unavailable', outcome.message)
+  return isRecord(outcome.value) ? outcome.value : { ok: false, reason: 'bad_args' }
 }

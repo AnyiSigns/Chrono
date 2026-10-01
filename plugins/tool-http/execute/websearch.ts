@@ -4,6 +4,7 @@
 import { NET_WEBSEARCH } from './caps.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
 import { searchDigest } from './digest.ts'
+import { putIndex, queryIndex } from './index.ts'
 import { parseSource, parseSearxng } from './sources.ts'
 import { canonicalizeUrl, withQuery } from './url.ts'
 import { fail, isRec, ok } from './types.ts'
@@ -95,7 +96,10 @@ async function queryHtml(
       message: 'source has no endpoint',
     }
   }
-  const url = withQuery(source.endpoint, { ...source.extra_query, [source.query_param]: query })
+  const url = withQuery(source.endpoint, {
+    ...source.extra_query,
+    [source.query_param]: `${source.query_prefix ?? ''}${query}`,
+  })
   const fetched = await fetchSourceText(url, source, ctx, robotsCache)
   if (!fetched.ok)
     return { ok: false, source: source.name, code: fetched.code, message: fetched.message }
@@ -274,14 +278,26 @@ export async function websearch(args: Json, ctx: ToolContext): Promise<ToolResul
   }
   const limit = resolveLimit(bag['count'], ctx.config.top_n)
   const selected = selectSources(ctx.config, bag['sources'])
-  if (selected.length === 0) return fail('all_sources_failed', 'no enabled source selected')
-  const robotsCache = new Map<string, string | null>()
-  const outcomes = await Promise.all(
-    selected.map((source) => safeQuerySource(source, query, limit, ctx, robotsCache)),
-  )
   const used: string[] = []
   const failures: { source: string; code: string; message: string }[] = []
   const lists: SourceList[] = []
+
+  // 本地索引先行（read-through）：有命中即作为一个源参与 RRF；失败 / 无成员静默降级。
+  if (ctx.config.index_enabled) {
+    const cached = await queryIndex(query, limit, ctx)
+    if (cached.length > 0) {
+      used.push(ctx.config.index_name)
+      lists.push({ source: ctx.config.index_name, results: cached })
+    }
+  }
+
+  const robotsCache = new Map<string, string | null>()
+  const outcomes =
+    selected.length === 0
+      ? []
+      : await Promise.all(
+          selected.map((source) => safeQuerySource(source, query, limit, ctx, robotsCache)),
+        )
   for (const outcome of outcomes) {
     if (outcome.ok) {
       used.push(outcome.source)
@@ -291,12 +307,27 @@ export async function websearch(args: Json, ctx: ToolContext): Promise<ToolResul
     }
   }
   if (used.length === 0) {
-    return fail('all_sources_failed', 'all selected sources failed', {
-      sources_failed: failures as unknown as Json,
-    })
+    return fail(
+      'all_sources_failed',
+      selected.length === 0 ? 'no enabled source selected' : 'all selected sources failed',
+      { sources_failed: failures as unknown as Json },
+    )
   }
   const merged = mergeResults(lists, ctx.config.rrf_k)
   const results = merged.slice(0, limit).map((entry, index) => ({ ...entry, rank: index + 1 }))
+
+  // 写回本地索引（best-effort）：把本次合并结果（链接 + snippet）沉淀成本地可检索语料。
+  await putIndex(
+    results.map((entry) => ({
+      url: entry.url,
+      title: entry.title,
+      snippet: entry.snippet,
+      source: entry.source,
+      body: '',
+    })),
+    ctx,
+  )
+
   return ok({
     results: results as unknown as Json,
     sources_used: used as unknown as Json,

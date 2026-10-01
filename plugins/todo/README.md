@@ -20,13 +20,16 @@
 | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `id`         | 稳定标识。写入 / 新增时缺省分配 `t<seq>`（`seq` 随会话持久化，单调递增）；整表替换带上从 `todo.read` 取回的 id 即保持身份。 |
 | `text`       | 条目正文。                                                                                                                  |
-| `status`     | 状态枚举（schema `statuses`，缺省 `pending` / `in_progress` / `completed` / `cancelled`）。                                 |
+| `status`     | 状态枚举（schema `statuses`，缺省 `pending` / `in_progress` / `completed` / `cancelled` / `blocked`）。                     |
 | `activeForm` | 进行时描述（如「正在跑测试」），`in_progress` 时供 UI 展示；可缺省，更新时传空串清除。                                      |
 | `at`         | 条目时间（ISO 8601）；缺省沿用本批缺省时间。                                                                                |
 
-- **焦点唯一**：同一清单至多一个 `in_progress`。`todo.write` 写入多个 → `multiple_in_progress`；
+- **焦点唯一（缺省）**：同一清单至多一个 `in_progress`。`todo.write` 写入多个 → `multiple_in_progress`；
   `todo.update` 把某条置为 `in_progress` 时，自动把其它 `in_progress` 降回 `pending`（焦点切换）。
+  复杂并行工作流可**显式 opt-in**：单次调用传 `allow_multiple_in_progress:true`，或 schema 置
+  `allow_multiple_in_progress:true`，此时允许多个 `in_progress`，不再自动降级。
 - `cancelled` = 放弃：不计完成、也不算未完成（`loop-policy` 的 `todo_incomplete` 不因它重入 loop）。
+- `blocked` = 受阻：既不进行也不完成，用于「等外部依赖 / 待决策」的条目；与 `cancelled` 一样不计完成。
 
 ## 逐字段判定（定义 / 判定 vs 运行记录）
 
@@ -38,6 +41,7 @@
 | `max_items`（schema）                                          | **定义 / 判定（留世界）** | `todo.write` / `todo.update` 门禁阈值；回滚应带上；门禁要从世界读 |
 | `max_text_length`（schema）                                    | **定义 / 判定（留世界）** | 同上                                                              |
 | `statuses`（schema）                                           | **定义 / 判定（留世界）** | 状态枚举门禁；describe 与写入门禁同源现读                         |
+| `allow_multiple_in_progress`（schema）                         | **定义 / 判定（留世界）** | 是否允许多个 `in_progress` 的判定；与调用级 opt-in 取或            |
 
 **结论**：清单条目无留在世界的字段；留在世界的是 `Identity.schema`（数据契约 def，含限额 / 枚举）。
 
@@ -58,24 +62,26 @@
 ## `todo.write`（整表替换）
 
 入参（`todo.invoke` 的 `args.args`）：`items`（必填，完整条目数组）、
-`at`（条目缺省时间，调用方入口 term 由帧 `env.now` 提供；服务**不取时间**）。
+`at`（条目缺省时间，调用方入口 term 由帧 `env.now` 提供；服务**不取时间**）、
+`allow_multiple_in_progress`（可选，true 时允许多个 `in_progress`）。
 `todo.invoke` 的 bag 里可带 `session` / `session_id` 供解析会话 id。
 
 - **整表替换**：每次写都是本会话新数组，不接旧值；其它会话键不动。
 - **空数组 = 清空**：本会话键写空数组。
 - 门禁：条数超 `max_items` → `too_many_items`；文本 / `activeForm` 超 `max_text_length`（Unicode 码点）→ `text_too_long`；
-  状态不在 `statuses` → `bad_status`；多个 `in_progress` → `multiple_in_progress`；id 重复 → `bad_args`；
-  `items` 非数组 → `bad_args`；会话 id 缺失 → `bad_args`。
+  状态不在 `statuses` → `bad_status`；多个 `in_progress` → `multiple_in_progress`（除非 `allow_multiple_in_progress:true`）；
+  id 重复 → `bad_args`；`items` 非数组 → `bad_args`；会话 id 缺失 → `bad_args`。
 - 返回 `{ok:true, conversation_id, total, done}`；**不回传全表**、不产 `$directives`、不落账、不入队、不等审批。
 
 ## `todo.update`（按 id 增量）
 
-入参：`ops`（必填、非空操作数组，按序作用于演进中的清单）、`at`（新增条目缺省时间）。
+入参：`ops`（必填、非空操作数组，按序作用于演进中的清单）、`at`（新增条目缺省时间）、
+`allow_multiple_in_progress`（可选，true 时置 `in_progress` 不降级其它项）。
 
 | op       | 必填           | 语义                                                                                                                            |
 | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `add`    | `text`         | 追加新条目（自动分配稳定 id）；`status` / `activeForm` / `at` 可选。                                                            |
-| `update` | `id`           | 改 `text` / `status` / `activeForm` / `at`（只改给出的字段；`activeForm:""` 清除）。置 `in_progress` 会降级其它 `in_progress`。 |
+| `update` | `id`           | 改 `text` / `status` / `activeForm` / `at`（只改给出的字段；`activeForm:""` 清除）。置 `in_progress` 会降级其它 `in_progress`（`allow_multiple_in_progress:true` 时除外）。 |
 | `remove` | `id`           | 删除该条目。                                                                                                                    |
 | `move`   | `id` / `index` | 把该条目移到下标 `index`（0 基，越界收敛到末位）。                                                                              |
 

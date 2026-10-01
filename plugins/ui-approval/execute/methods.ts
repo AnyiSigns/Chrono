@@ -3,8 +3,7 @@
 // 裁决经宿主反向调用（`port.call`）调 `approval`（队列自有存储）与 `input`（作答槽），并在服务内拼续跑计划。
 // 只返回值 / 计划（`$directives`），不落账、不自取时钟。
 
-import { readFileSync } from 'node:fs'
-import { resolve, sep } from 'node:path'
+import { isSafeClientPath, readClientFileInfo } from '@chrono/ui-kit/client-read'
 import {
   allRefsOf,
   asString,
@@ -31,31 +30,10 @@ export interface HandlerDeps {
   webRoot: string
 }
 
-/**
- * 客户端半边入口路径防护：只接受包内相对 `.js` 路径。
- * 拒绝绝对路径 / 盘符 / 反斜杠 / `..` / `.` / 空段 / 空串 / 非 `.js`。
- */
-export function isSafeClientPath(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length === 0) return false
-  if (value.includes('\\') || value.includes('\u0000')) return false
-  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false
-  const segments = value.split('/')
-  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return false
-  return value.endsWith('.js')
-}
+export { isSafeClientPath }
 
 /** 读客户端半边文件：路径防护 + 结果必须落在 `webRoot` 内；越界 / 不存在回 null。 */
-export function readClientFile(webRoot: string, path: string): { path: string; text: string } | null {
-  if (!isSafeClientPath(path)) return null
-  const root = resolve(webRoot)
-  const full = resolve(root, path)
-  if (full !== root && !full.startsWith(root + sep)) return null
-  try {
-    return { path, text: readFileSync(full, 'utf8') }
-  } catch {
-    return null
-  }
-}
+export const readClientFile = readClientFileInfo
 
 /** 裁决模式：单条（读槽 `id`）或整批（全部 `pending`）。 */
 export type DecideMode = 'single' | 'all'

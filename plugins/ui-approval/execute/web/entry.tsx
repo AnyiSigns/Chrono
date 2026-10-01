@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
+import { Icon } from '@chrono/ui-kit'
 import {
   approvalStatus,
   approvalStatusTextCode,
@@ -48,24 +49,6 @@ type T = (code: string, vars?: Record<string, unknown>) => string
 
 function translator(table: unknown): T {
   return (code, vars) => (vars === undefined ? messageText(table, code) : formatText(table, code, vars))
-}
-
-function Icon({ name, size = 16 }: { name: string; size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <use href={`/assets/icons.v2.svg#${name}`} />
-    </svg>
-  )
 }
 
 function TextButton(props: {

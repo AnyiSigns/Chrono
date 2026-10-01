@@ -82,16 +82,19 @@ test('describe：单一 todo 工具（action 分派）+ 四要素 + argsSchema +
     assert.equal(todo.binding, undefined)
     assert.deepEqual(todo.argsSchema.properties.action.enum, ['replace', 'update', 'read'])
     assert.deepEqual(todo.argsSchema.required, ['action'])
-    // 死接口已移除；状态枚举单一来源（含 cancelled）。
+    // 死接口已移除；状态枚举单一来源（含 cancelled / blocked）。
     assert.equal('body' in todo.argsSchema.properties, false)
     assert.deepEqual(todo.argsSchema.properties.items.items.properties.status.enum, [
       'pending',
       'in_progress',
       'completed',
       'cancelled',
+      'blocked',
     ])
     assert.equal('priority' in todo.argsSchema.properties.items.items.properties, false)
     assert.equal('activeForm' in todo.argsSchema.properties.items.items.properties, true)
+    // 并行工作流 opt-in 开关在工具面上。
+    assert.equal(todo.argsSchema.properties.allow_multiple_in_progress.type, 'boolean')
   } finally {
     drv.close()
   }
@@ -234,6 +237,51 @@ test('write：多个 in_progress → multiple_in_progress；cancelled 合法但�
     assert.equal(ok.ok, true)
     assert.equal(ok.result.total, 3)
     assert.equal(ok.result.done, 1)
+  } finally {
+    drv.close()
+  }
+})
+
+test('opt-in：allow_multiple_in_progress 许并行；blocked 合法状态', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const multi = await drv.call('invoke', {
+      tool: 'todo',
+      args: {
+        conversation_id: 'c1',
+        action: 'replace',
+        allow_multiple_in_progress: true,
+        items: [
+          { text: 'a', status: 'in_progress' },
+          { text: 'b', status: 'in_progress' },
+          { text: 'c', status: 'blocked' },
+        ],
+      },
+    })
+    assert.equal(multi.ok, true, JSON.stringify(multi))
+    const read = await drv.call('invoke', {
+      tool: 'todo',
+      args: { conversation_id: 'c1', action: 'read' },
+    })
+    assert.deepEqual(
+      read.result.items.map((item) => item.status),
+      ['in_progress', 'in_progress', 'blocked'],
+    )
+    // 不传 opt-in 时仍强制焦点唯一。
+    const bad = await drv.call('invoke', {
+      tool: 'todo',
+      args: {
+        conversation_id: 'c1',
+        action: 'replace',
+        items: [
+          { text: 'x', status: 'in_progress' },
+          { text: 'y', status: 'in_progress' },
+        ],
+      },
+    })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'multiple_in_progress')
   } finally {
     drv.close()
   }

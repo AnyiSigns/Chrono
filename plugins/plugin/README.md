@@ -32,6 +32,9 @@ agent 改系统自身的**唯一**管理面：列插件 / 读源码 / 校验 / �
 `write` 用同一口径重算键去查。`validate` 与 `write` **必须同住本插件**：拆开会让 `write` 读不到 `validate`
 写入的 ③ 凭据。
 
+单调用便捷（opt-in）：`plugin.write` 传 `auto_validate:true` 且③无凭据时，`write` 内部先对该候选树跑一次
+`validate`，通过后直接产计划；校验失败回 `validate_failed`。凭据已存在时直接复用；commit 哈希复核与批内原子性不变。
+
 ### 候选树规范化哈希（缓存键口径）
 
 ```text
@@ -86,6 +89,7 @@ add_gen                 # {id, payload:{"$n":commitIndex}, sig:同, pins}
 ## 结构化错误码
 
 `hidden_identity`（黑名单读 / 写 / 校验）、`validate_required`（缺凭据 / 哈希不符）、
+`validate_failed`（`auto_validate` 时候选树校验未通过）、
 `identity_mismatch`（身份名与候选 `plugin.json.identity` 不符）、`unresolved_pin`（引脚解析不到）、
 `bad_candidate`（候选包缺件 / 坏 JSON / 不安全路径）、`source_too_large` / `too_many_files`（大小门禁）；
 宿主错误（`not_found` / `bad_directive` 等）原样透传。

@@ -22,6 +22,7 @@ const WEBSEARCH_ARGS_SCHEMA: Rec = {
       minimum: 200,
       maximum: 20000,
     },
+    highlights: { type: 'boolean' },
   },
 }
 
@@ -38,7 +39,8 @@ const WEBFETCH_ARGS_SCHEMA: Rec = {
 function websearchTool(): Rec {
   return {
     name: 'websearch',
-    intent: '在多个免费检索源上并行检索、去重合并；按需抓取前几条结果的正文。',
+    intent:
+      '在多个免费源（含免 key 学术 / 问答 / 代码 API）上并行检索、去重合并，并按需抓取前几条结果的正文。',
     when_to_use: '需要从公网检索资料、手上没有具体 URL 时；需要可直接引用的成段正文时给 read>0。',
     param_semantics: {
       query: '检索词，必填、非空。',
@@ -46,6 +48,8 @@ function websearchTool(): Rec {
       sources: '只查这些源，可选；按源 id 或名字匹配，缺省查全部启用源。',
       read: '抓取正文的条数，可选 0–5；缺省 0（只检索不读正文），传 1–5 则抓取前 N 条正文。',
       max_chars: '每页正文抽取的字符上限，可选 200–20000（read>0 时生效）；缺省 4000。',
+      highlights:
+        '只要与查询最相关的段落而非整页正文（可选）；给 true 时按缺省条数抓取并回 highlights，省 token。',
     },
     boundaries:
       '无状态检索与正文抽取（read>0），不执行 JS、不持会话；已知具体 URL 用 webfetch，需渲染 / 交互的页面用 webbrowser。',
@@ -74,7 +78,8 @@ function webfetchTool(): Rec {
       url: '要抓取的 http(s) URL，必填；内网地址按配置策略拒绝。',
       format: 'HTML 输出形态，可选：markdown（缺省）/ text / raw（原始 HTML）。',
     },
-    boundaries: '只做无状态抓取，不执行 JS、不持会话；有会话或需渲染的页面改用 webbrowser。',
+    boundaries:
+      '只做无状态抓取，不执行 JS、不持会话；有会话或需渲染的页面改用 webbrowser（HTML 正文过短或 403/429/503 时结果带 render_suggested 提示）。',
     description: '抓取单个 http(s) URL 的正文内容。',
     argsSchema: WEBFETCH_ARGS_SCHEMA,
     caps: declaredCaps(NET_WEBFETCH),

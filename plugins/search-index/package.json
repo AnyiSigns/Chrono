@@ -1,0 +1,21 @@
+{
+  "name": "search-index",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地检索索引门面：拥有 search-index-provider 扩展槽（many），把 search / put / stats 委派给后端索引提供者；自身不落盘、不取时间。",
+  "files": [
+    "plugin.json",
+    "package.json",
+    "README.md",
+    ".worldignore",
+    "execute/",
+    "schema/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

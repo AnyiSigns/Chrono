@@ -55,6 +55,12 @@ function removeNoise(html: string): string {
     .replace(/<(script|style|noscript|svg|head|template|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
 }
 
+/** 取 `<title>` 文本（去标签、折叠空白）；无则空串。 */
+export function extractTitle(html: string): string {
+  const match = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html)
+  return match === null ? '' : stripTags(match[1] ?? '')
+}
+
 /** 正文提取：优先 article / main，其次 body，最后整篇。 */
 export function extractMainHtml(html: string): string {
   return (

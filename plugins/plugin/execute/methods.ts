@@ -123,14 +123,25 @@ function resolvePins(
  * → `validate_required`；通过后按宿主入世同序产 put(blob)×n + put(tree) + put(commit) +
  * put(schema) + add_identity? + add_gen，批内 `{"$n":k}` 占位串起。
  */
-async function writeTool(host: HostCaller, args: Rec, _env: CallEnv): Promise<Json> {
+async function writeTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Json> {
   const identity = requireString(args, 'identity')
   const files = requireFiles(args)
   if (isHidden(identity)) throw new ToolError('hidden_identity', identity)
   enforceLimits(files)
 
   const key = candidateKey(files)
-  const cached = readValidateCache(key)
+  let cached = readValidateCache(key)
+  // 单调用便捷（opt-in）：auto_validate:true 且凭据缺失时先跑一次 validate，免去「先 validate 再 write」两次调用。
+  // 凭据已存在则直接复用；显式 auto_validate 不改变 commit 哈希复核与原子 batch 语义。
+  if (cached === null && args['auto_validate'] === true) {
+    const report = await validateTool(host, { identity, files }, env)
+    if (report['ok'] !== true) {
+      const errors = Array.isArray(report['errors']) ? (report['errors'] as Json[]) : []
+      const detail = errors.length > 0 ? JSON.stringify(errors[0]) : 'candidate validation failed'
+      throw new ToolError('validate_failed', detail)
+    }
+    cached = readValidateCache(key)
+  }
   if (cached === null) throw new ToolError('validate_required', 'no validate result for tree')
   // 调用方若把上次 validate 的 result_hash 带回，则与 ③ 凭据机械比对（防陈旧 / 张冠李戴）
   const carried = args['result_hash']

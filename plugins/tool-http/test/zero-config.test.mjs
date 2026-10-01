@@ -23,7 +23,10 @@ test('服务代码不读环境变量', () => {
 test('plugin.json 不 pin 密钥面（零配置）', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
+  assert.deepEqual(decl.needs, {
+    sandbox: { mode: 'one' },
+    'search-index': { mode: 'many' },
+  })
   assert.ok(!JSON.stringify(decl).includes('secrets'))
 })
 
@@ -46,12 +49,48 @@ test('缺省清单零配置可检索（假后端，离线）', async () => {
         }),
       ),
     ],
+    [
+      'https://api.openalex.org/works',
+      execOk(
+        fetcherStdout({
+          contentType: 'application/json',
+          body: '{"results":[{"display_name":"OpenAlex Paper","doi":"https://doi.org/10.1/a","publication_year":2024}]}',
+        }),
+      ),
+    ],
+    [
+      'https://api.stackexchange.com/2.3/search/advanced',
+      execOk(
+        fetcherStdout({
+          contentType: 'application/json',
+          body: '{"items":[{"title":"Stack Q","link":"https://stackoverflow.test/q","excerpt":"stack snip"}]}',
+        }),
+      ),
+    ],
+    [
+      'https://hn.algolia.com/api/v1/search',
+      execOk(
+        fetcherStdout({
+          contentType: 'application/json',
+          body: '{"hits":[{"title":"HN Story","url":"https://hn.test/s","objectID":"1"}]}',
+        }),
+      ),
+    ],
+    [
+      'https://export.arxiv.org/api/query',
+      execOk(
+        fetcherStdout({
+          contentType: 'application/atom+xml',
+          body: '<feed><entry><title>Arxiv Paper</title><id>https://arxiv.org/abs/2401.00001</id><summary>arxiv snip</summary></entry></feed>',
+        }),
+      ),
+    ],
   ])
   const { backend } = makeBackend(router)
   const config = mergeConfig({ obey_robots: false })
   const result = await websearch({ query: 'chrono' }, makeCtx(config, backend))
   assert.equal(result.ok, true)
-  assert.equal(result.result.sources_used.length, 2)
+  assert.equal(result.result.sources_used.length, 6)
   assert.deepEqual(result.result.sources_failed, [])
-  assert.ok(result.result.results.length >= 2)
+  assert.ok(result.result.results.length >= 6)
 })

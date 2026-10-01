@@ -39,6 +39,9 @@ export function testConfig(overrides = {}) {
     block_private_hosts: true,
     fetcher_cmd: 'fetcher',
     source_timeout_ms: 8000,
+    index_enabled: false,
+    index_name: 'Index',
+    render_min_chars: 200,
     sources: DEFAULT_SOURCES,
     ...overrides,
   }
@@ -93,10 +96,15 @@ export function argValue(bag, flag) {
   return index === -1 ? null : (args[index + 1] ?? null)
 }
 
-/** 假后端：router(url, bag) 返回 CallOutcome；未命中记 fetch_failed。 */
-export function makeBackend(router) {
+/**
+ * 假后端：router(url, bag) 返回 CallOutcome；未命中记 fetch_failed。
+ * `indexRouter(method, bag)` 可选：返回 CallOutcome；缺省索引不可用（index_unavailable），
+ * 使未显式配置索引的用例静默降级为纯网络检索。
+ */
+export function makeBackend(router, indexRouter) {
   const execCalls = []
   const assetCalls = []
+  const indexCalls = []
   const backend = {
     async exec(bag) {
       execCalls.push(bag)
@@ -113,8 +121,18 @@ export function makeBackend(router) {
         value: { kind: 'asset', sha256: 'ab'.repeat(32), mime: input.mime, size },
       }
     },
+    async indexSearch(bag) {
+      indexCalls.push({ method: 'search', bag })
+      if (indexRouter === undefined) return execFail('index_unavailable', 'no index')
+      return indexRouter('search', bag) ?? execFail('index_unavailable', 'no index')
+    },
+    async indexPut(bag) {
+      indexCalls.push({ method: 'put', bag })
+      if (indexRouter === undefined) return execFail('index_unavailable', 'no index')
+      return indexRouter('put', bag) ?? execFail('index_unavailable', 'no index')
+    },
   }
-  return { execCalls, assetCalls, backend }
+  return { execCalls, assetCalls, indexCalls, backend }
 }
 
 /** 按 URL 前缀匹配的 router。 */

@@ -16,7 +16,7 @@
 
 | 工具 | 幂等 | `caps.fs` | args | 结果 |
 | --- | --- | --- | --- | --- |
-| `read` | ✗ | read | `path` / `pattern?` / `offset?` / `start_line?` / `end_line?` / `limit?` / `preview?` / `format?` / `max_files?` / `ignore?` | 单文件文本：`{text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, truncated, preview}`；单文件编码（`format:base64\|hex`）：`{text, encoding, binary, bytes_read, content_truncated, truncated, digest}`；批量（给出 `pattern`）：`{files:[{path,text,…}], files_returned, files_matched, truncated, skipped, warning, digest}` |
+| `read` | ✗ | read | `path` / `pattern?` / `offset?` / `byte_offset?` / `start_line?` / `end_line?` / `limit?` / `preview?` / `format?` / `mime?` / `max_files?` / `ignore?` | 单文件文本：`{text, total_lines, start_line, end_line, lines_returned, has_more, next_offset, content_truncated, next_byte_offset, file_bytes, hint, truncated, preview}`（`byte_offset` 模式另含 `byte_offset, bytes_returned, next_byte_offset, eof, file_bytes`）；单文件编码（`format:base64\|hex`）：`{text, encoding, binary, bytes_read, content_truncated, truncated, digest}`；单文件资产（`format:asset`）：`{asset:{kind,sha256,mime,size}, encoding, binary, bytes_read, content_truncated, truncated, digest}`；批量（给出 `pattern`）：`{files:[{path,text,…}], files_returned, files_matched, truncated, skipped, warning, digest}` |
 | `edit` | ✗ | write | `path` / `old` / `new` / `replace_all?` | `{created?, replaced, bytes_written, added, removed, patch}` |
 | `glob` | ✗ | read | `pattern` / `path?` / `depth?` / `min_depth?` / `tree?` / `ignore?` / `exclude?` / `limit?` | `{paths, tree, truncated, skipped_count, warning}`（`tree:true` 时 `paths:[]`、用 `tree`） |
 | `grep` | ✗ | read | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `all?` / `any?` / `stats?` / `binary?` / `before?` / `after?` / `glob?` / `path?` / `ignore?` / `limit?` | `{matches, truncated, files_scanned, skipped, stats, mode, binary, base, glob, ignore, ignored_paths, ignored_paths_truncated, hint, warning}` |
@@ -60,17 +60,18 @@
 
 | 工具 | fsop op | args |
 | --- | --- | --- |
-| `read`（单文件） | `read` | `offset?` / `start_line?` / `end_line?` / `limit`（缺省 2000）/ `preview?`（缺省 50 行）/ `encoding=format?` |
+| `read`（单文件） | `read` | `offset?` / `byte_offset?` / `start_line?` / `end_line?` / `limit`（缺省 2000）/ `preview?`（缺省 50 行）/ `encoding=format?`（`asset` 时另经 `host.asset.put`） |
 | `read`（批量，`pattern`） | `list` 后逐个 `read` | `list`: `pattern` / `base=path` / `ignore` / `limit=max_files`（缺省 20）；每个文件 `read`: 同单文件行窗 |
 | `edit`（`old` 非空） | `replace` | `old` / `new` / `replace_all?` |
 | `edit`（`old` 空） | `write` | `data=new` / `create:true` / `exclusive:true` |
 | `glob` | `list` | `pattern` / `base=path?` / `depth?` / `min_depth?` / `tree?` / `ignore` / `limit`（缺省 200） |
-| `grep` | `grep` | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `all?` / `any?` / `stats?` / `before?` / `after?` / `glob?` / `base=path?` / `ignore` / `limit`（缺省 200） |
+| `grep` | `grep` | `pattern` / `mode?` / `ignore_case?` / `files_only?` / `all?` / `any?` / `stats?` / `binary?` / `before?` / `after?` / `glob?` / `base=path?` / `ignore` / `limit`（缺省 200） |
 | `stat`（单路径） | `stat` | `path` / `recursive?` |
 | `stat`（批量，`pattern` 或 `path` 内联 glob） | `list` 后逐个 `stat` | `list`: `pattern` / `base=path` / `ignore` / `limit=max_files`（缺省 200）；每个路径 `stat`；本插件按 `sort_by` / `order` / `min_size` / `max_size` / `min_mtime` / `max_mtime` 过滤排序 |
 
 - `glob` / `grep` 的 `path?` 映射 `fsop.base`；`ignore` 原样传。
-- 忽略表优先级：工具 `args.ignore` > 调用方 `bag.ignore`（身份数据世代 body，经入口装配下传）> 内置兜底
+- 忽略表优先级：工具 `args.ignore` > 调用方 `bag.ignore`（装配来源：工具身份 body `ignore`，否则
+  `#2 config` 的 `tools.ignore` 项目级兜底；经入口装配下传）> 内置兜底
   （`.git` / `node_modules` / `target` / `__pycache__` / `.venv`，与 `schema/tool-fs.json` 一致）。
   **显式空数组表示「不忽略」**；忽略条目按路径段匹配并在遍历时对目录整棵剪枝（`target` 即剪掉整棵 `target/`），
   含 `/` 的条目按相对路径 glob。
@@ -109,7 +110,10 @@
   只给 `end_line` 时从首行读到该行。批量下对每个文件生效。
 - `read` 结果带窗口元信息：`start_line` / `end_line`（1 基）、`lines_returned`；有后续行时 `has_more:true`，
   用 `next_offset`（0 基，等价下一次 `offset`）续读；`content_truncated:true` 表示内容被 `output_max` 按字节
-  截断（末行可能不完整、文件其余不可再读）。`truncated` 保留旧口径（窗口非全文即真）。
+  截断（末行可能不完整）。此时结果给出按完整行对齐的 `next_byte_offset` 与可读 `hint`：用 `byte_offset=next_byte_offset`
+  再次 `read` 即可继续，单次仍受 `output_max` 约束，故可读完任意大文件（`eof:true` 表示已到文件尾）。
+  `byte_offset` 模式下 `text` 为字节窗口切出的完整行、附 `byte_offset` / `bytes_returned` / `next_byte_offset` / `eof`，
+  且与 `offset` / `limit` / `start_line` / `end_line` / `preview` 互斥（同给报 `bad_args`）。`truncated` 保留旧口径（窗口非全文即真）。
 - `grep` 的 `mode`（`literal` / `regex`）缺省时按模式内容自动选择：含强正则信号（交替 `|`、类简写 `\d`
   等、转义元字符、`{n}` 重复）的模式按正则处理，其余按字面，避免 `TODO|FIXME` 静默空返；也可显式
   `mode:"literal"` / `mode:"regex"` 强制。`regex` 走手写简易正则
@@ -143,7 +147,10 @@
 - **二进制读取**：`read` 的 `format:"base64"|"hex"` 按原始字节读出并编码，二进制文件也可读（仅单文件；
   行窗 / 预览不适用；按 `output_max` 截断原始字节），结果回 `encoding` / `binary` / `bytes_read` 与编码文本摘要。
   文本文件用该编码读时 `binary:false`。
-- `host.asset.put/get` 是 pin 声明：**契约就位、未启用**（当前二进制经 `read format` / `grep binary` 走文本编码与字节搜索）。
+- **二进制资产**：`read` 的 `format:"asset"` 把字节经 `host.asset.put` 内容寻址落宿主资产区（④ 不可重算、不进世界），
+  只回引用 `{kind:"asset", sha256, mime, size}`（`mime` 缺省 `application/octet-stream`），**不把字节塞进上下文**；
+  取字节用 `host.asset.get`（同 `ui-*` / `msg-dialect` 附件链路）。与 `base64`/`hex` 的区别：后者内联字节、前者只回引用。
+- `host.asset.put/get` 是 pin 声明（`plugin.json` 已 pin `host`）：二进制读写走该通道（`read format=asset` / `grep binary`）。
 
 ## 已知限制与对齐说明
 

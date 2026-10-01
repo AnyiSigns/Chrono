@@ -25,7 +25,7 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'loop-policy')
   assert.deepEqual(plugin.implements, ['loop-policy', 'loop-rule', 'turn-hook'])
-  assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel'])
+  assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel', 'note-input', 'promote-input'])
   assert.deepEqual(plugin.methods['loop-rule'], ['when', 'pre', 'post'])
   assert.deepEqual(plugin.methods['turn-hook'], [
     'before-assemble',

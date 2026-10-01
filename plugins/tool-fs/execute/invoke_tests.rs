@@ -38,6 +38,15 @@ impl FsopBackend for FakeFsop {
         self.calls.lock().unwrap().push(bag.clone());
         (self.responder)(bag)
     }
+
+    fn asset_put(&self, mime: &str, bytes_base64: &str) -> Result<Value, ToolError> {
+        self.calls.lock().unwrap().push(json!({
+            "op": "host.asset.put", "mime": mime, "bytes": bytes_base64,
+        }));
+        Ok(json!({
+            "kind": "asset", "sha256": "a".repeat(64), "mime": mime, "size": 0,
+        }))
+    }
 }
 
 fn run<F>(bag: Value, responder: F) -> (Value, Vec<Value>)
@@ -697,6 +706,44 @@ fn read_line_range_maps_to_offset_and_limit() {
 }
 
 #[test]
+fn read_byte_offset_maps_to_byte_window() {
+    let bag = json!({
+        "tool": "read", "args": {"path": "big.txt", "byte_offset": 4096},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({
+            "text": "tail", "encoding": "utf8", "binary": false,
+            "byte_offset": 4096, "bytes_returned": 4, "next_byte_offset": 8192,
+            "eof": false, "file_bytes": 20000, "lines_returned": 1,
+            "start_line": null, "end_line": null, "total_lines": null,
+            "has_more": false, "next_offset": null,
+            "content_truncated": true, "truncated": true,
+        }))
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(calls[0]["op"], "read");
+    assert_eq!(calls[0]["args"]["byte_offset"], 4096);
+    // 字节模式不注入行窗缺省。
+    assert!(calls[0]["args"].get("limit").is_none(), "{calls:?}");
+    assert_eq!(result["result"]["byte_offset"], 4096);
+    assert_eq!(result["result"]["bytes_returned"], 4);
+    assert_eq!(result["result"]["next_byte_offset"], 8192);
+    assert_eq!(result["result"]["eof"], false);
+    assert_eq!(result["result"]["file_bytes"], 20000);
+    assert_eq!(result["result"]["digest"]["byte_offset"], 4096);
+    assert_eq!(result["result"]["digest"]["bytes"], 4);
+    // 非法 byte_offset → bad_args，不触盘。
+    let bag = json!({
+        "tool": "read", "args": {"path": "big.txt", "byte_offset": -1},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| ok(json!({})));
+    assert_eq!(result["error"]["code"], "bad_args", "{result}");
+    assert!(calls.is_empty(), "{result}");
+}
+
+#[test]
 fn read_rejects_inverted_or_nonpositive_line_range() {
     for args in [
         json!({"path": "a.txt", "start_line": 5, "end_line": 2}),
@@ -708,6 +755,41 @@ fn read_rejects_inverted_or_nonpositive_line_range() {
         assert_eq!(result["error"]["code"], "bad_args", "{result}");
         assert!(calls.is_empty(), "{result}");
     }
+}
+
+#[test]
+fn stat_lines_counts_when_requested() {
+    let bag = json!({
+        "tool": "stat", "args": {"path": "a.txt", "lines": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| {
+        ok(json!({"exists": true, "is_dir": false, "size": 10, "mtime": 1, "lines": 42}))
+    });
+    assert_eq!(calls[0]["args"]["lines"], true);
+    assert_eq!(result["result"]["lines"], 42, "{result}");
+}
+
+#[test]
+fn stat_batch_aggregates_total_lines() {
+    let bag = json!({
+        "tool": "stat", "args": {"path": "src", "pattern": "*.rs", "lines": true},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |call| match call["op"].as_str().unwrap_or("") {
+        "list" => ok(json!({"paths": ["a.rs", "b.rs"], "truncated": false, "skipped_count": 0})),
+        "stat" => {
+            let lines = if call["path"] == "src/a.rs" { 10 } else { 5 };
+            ok(json!({
+                "exists": true, "is_dir": false, "size": 1, "mtime": 1, "lines": lines,
+            }))
+        }
+        other => panic!("unexpected op {other}"),
+    });
+    assert_eq!(calls[1]["args"]["lines"], true);
+    assert_eq!(result["result"]["aggregate"]["total_lines"], 15, "{result}");
+    assert_eq!(result["result"]["files"][0]["lines"], 10, "{result}");
+    assert_eq!(result["result"]["files"][1]["lines"], 5, "{result}");
 }
 
 #[test]
@@ -866,6 +948,55 @@ fn read_format_maps_to_sandbox_encoding() {
     // 非法 format → bad_args。
     let bag = json!({
         "tool": "read", "args": {"path": "a.txt", "format": "md5"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |_| ok(json!({})));
+    assert_eq!(result["error"]["code"], "bad_args", "{result}");
+    assert!(calls.is_empty(), "{result}");
+}
+
+#[test]
+fn read_format_asset_stores_bytes_via_host() {
+    let bag = json!({
+        "tool": "read",
+        "args": {"path": "bin.dat", "format": "asset", "mime": "image/png"},
+        "workspace_root": "C:\\ws",
+    });
+    let (result, calls) = run(bag, |call| {
+        assert_eq!(call["op"], "read");
+        ok(json!({
+            "text": "AAEC", "encoding": "base64", "binary": true,
+            "bytes": 3, "content_truncated": false, "truncated": false,
+        }))
+    });
+    assert_eq!(result["ok"], true, "{result}");
+    // 先按 base64 读原始字节（跨 sandbox 帧），再交 host.asset.put。
+    assert_eq!(calls[0]["op"], "read");
+    assert_eq!(calls[0]["args"]["encoding"], "base64");
+    assert_eq!(calls[1]["op"], "host.asset.put");
+    assert_eq!(calls[1]["mime"], "image/png");
+    assert_eq!(calls[1]["bytes"], "AAEC");
+    assert_eq!(result["result"]["encoding"], "asset");
+    assert_eq!(result["result"]["asset"]["kind"], "asset");
+    assert_eq!(result["result"]["asset"]["mime"], "image/png");
+    assert_eq!(result["result"]["asset"]["sha256"], "a".repeat(64));
+    assert_eq!(result["result"]["bytes_read"], 3);
+    assert_eq!(result["result"]["digest"]["sha256"], "a".repeat(64));
+}
+
+#[test]
+fn read_format_asset_defaults_mime_and_rejects_batch() {
+    let bag = json!({
+        "tool": "read", "args": {"path": "bin.dat", "format": "asset"},
+        "workspace_root": "C:\\ws",
+    });
+    let (_result, calls) = run(bag, |_| {
+        ok(json!({"text": "", "binary": true, "bytes": 0, "content_truncated": false}))
+    });
+    assert_eq!(calls[1]["mime"], "application/octet-stream");
+    // 批量 + asset → bad_args（不触盘）。
+    let bag = json!({
+        "tool": "read", "args": {"path": "src", "pattern": "*", "format": "asset"},
         "workspace_root": "C:\\ws",
     });
     let (result, calls) = run(bag, |_| ok(json!({})));

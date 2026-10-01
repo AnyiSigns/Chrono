@@ -1,7 +1,7 @@
 // `evolve-metrics` 宿主装配 E2E（**不真跑 cargo 物化**）：
-// pack evolve-metrics（残留门面，needs 四个提供方）→ seed → 离线读世界，验证声明
-// （identity / implements / methods / needs / pins / start / members）、schema 不再含 `periodic`
-// （周期触发随方法迁入 evolve-evidence / evolve-sweep）、`.worldignore` 效果（test/ / target/ /
+// pack evolve-metrics（指标层，needs evolve-ledger）→ seed → 离线读世界，验证声明
+// （identity / implements / methods / needs / pins / start / members）、schema 的 periodic
+// （aggregate 每 600000ms / sweep 每 3600000ms）、`.worldignore` 效果（test/ / target/ /
 // tools/ 不入源码树，src/ / execute/ / schema/ / Cargo.toml / Cargo.lock 入树）。
 // 说明：本脚本只做离线入世与投影读，**不起宿主**，故不触发 H15 依赖物化（cargo build）。
 // 用法：node plugins/evolve-metrics/tools/e2e-smoke.mjs
@@ -19,12 +19,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
 const BOOT_MAIN = join(REPO_ROOT, 'packages', 'boot', 'main.ts')
 const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'evolve-metrics')
-// 拓扑序：被依赖者先 pack（evolve-evidence / sweep / shadow 都需 evolve-ledger 先入世）。
+// 拓扑序：被依赖者先 pack（evolve-metrics 需 evolve-ledger 先入世）。
 const PLUGIN_ORDER = [
   'evolve-ledger',
-  'evolve-evidence',
-  'evolve-shadow',
-  'evolve-sweep',
   'evolve-metrics',
 ]
 
@@ -112,12 +109,9 @@ function main() {
   assert.deepEqual(decl.implements, ['evolve-metrics'])
   assert.deepEqual(decl.methods['evolve-metrics'], ['aggregate', 'sweep', 'shadow', 'record'])
   assert.equal(decl.start, 'node execute/launch.mjs')
-  assert.deepEqual(decl.pins, {})
+  assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
     'evolve-ledger': { mode: 'one' },
-    'evolve-evidence': { mode: 'one' },
-    'evolve-sweep': { mode: 'one' },
-    'evolve-shadow': { mode: 'one' },
   })
   assert.equal(decl.state, 'recomputable')
   assert.deepEqual(decl.members.map((member) => member.path).sort(), [
@@ -127,12 +121,15 @@ function main() {
   ])
   console.log('声明：identity / implements / methods / needs / pins / start / members 就位')
 
-  // schema 不再含 periodic：周期触发随方法迁入 evolve-evidence / evolve-sweep。
+  // schema 含 periodic：aggregate 每 600000ms、sweep 每 3600000ms，由宿主按 reads 注入。
   const schema = world.defs[identity.schema].body
-  assert.ok(schema.periodic === undefined, '门面 schema 不应再含 periodic')
+  assert.ok(Array.isArray(schema.periodic), 'schema 应含 periodic 数组')
+  const periodic = Object.fromEntries(schema.periodic.map((entry) => [entry.method, entry.every_ms]))
+  assert.equal(periodic.aggregate, 600000)
+  assert.equal(periodic.sweep, 3600000)
   // 数值调参不重定义：schema 里不出现聚类阈值字段。
   assert.ok(!JSON.stringify(schema).includes('failure_cluster_n'), 'schema 不应重定义聚类阈值')
-  console.log('schema：无 periodic（随方法迁出），不重定义聚类阈值')
+  console.log('schema：periodic（aggregate / sweep）就位，不重定义聚类阈值')
 
   // .worldignore：test/ / target/ / tools/ 不入树；契约必需文件与源码入树。
   const all = [...tree.keys()]
@@ -153,6 +150,15 @@ function main() {
     'src/protocol.rs',
     'src/port.rs',
     'src/error.rs',
+    'src/chain.rs',
+    'src/ledger.rs',
+    'src/state.rs',
+    'src/thresholds.rs',
+    'src/evidence.rs',
+    'src/aggregate.rs',
+    'src/record.rs',
+    'src/sweep.rs',
+    'src/shadow.rs',
   ]) {
     assert.ok(all.includes(required), `源码树缺 ${required}（实有：${all.join(', ')}）`)
   }

@@ -4,6 +4,7 @@
 
 import { BadArgsError } from 'plugin-sdk'
 import { resolveLimits } from './config.ts'
+import type { TodoLimits } from './config.ts'
 import { asArray, asString, isRecord } from './plan.ts'
 import type { TodoStore } from './store.ts'
 import { applyOps, defaultAtOf, nextSeqFor, normalizeItems, summarize } from './todo.ts'
@@ -51,6 +52,15 @@ function requireSession(toolArgs: Rec, bag: Rec): string {
   return conversationId
 }
 
+/** 生效限额：schema 级 allow_multiple_in_progress，或本次调用显式 `allow_multiple_in_progress:true`（opt-in）。 */
+function effectiveLimits(toolArgs: Rec): TodoLimits {
+  const limits = resolveLimits()
+  if (limits.allowMultipleInProgress || toolArgs['allow_multiple_in_progress'] === true) {
+    return { ...limits, allowMultipleInProgress: true }
+  }
+  return limits
+}
+
 /** `todo.describe`：回三工具 + 四要素 + render 描述符。 */
 function describeTool(_args: Rec, _env: CallEnv): Json {
   return describeValue()
@@ -62,7 +72,7 @@ async function writeTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps):
   const at = defaultAtOf(args, bag)
   if (at !== null) args['at'] = at
   const conversationId = requireSession(toolArgs, bag)
-  const limits = resolveLimits()
+  const limits = effectiveLimits(toolArgs)
   const current = await deps.store.load(conversationId)
   const { items, summary, nextSeq } = normalizeItems(
     args,
@@ -78,7 +88,7 @@ async function updateTool(toolArgs: Rec, bag: Rec, env: CallEnv, deps: TodoDeps)
   const ops = asArray(toolArgs['ops'])
   if (ops === null || ops.length === 0) throw new BadArgsError('ops must be a non-empty array')
   const conversationId = requireSession(toolArgs, bag)
-  const limits = resolveLimits()
+  const limits = effectiveLimits(toolArgs)
   const defaultAt = defaultAtOf(toolArgs, bag)
   const current = await deps.store.load(conversationId)
   const { items, changed, summary, nextSeq } = applyOps(

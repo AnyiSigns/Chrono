@@ -11,13 +11,17 @@
     "README.md",
     ".worldignore",
     "execute/",
-    "terms/"
+    "terms/",
+    "vendor/"
   ],
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "node execute/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test"
+  },
+  "dependencies": {
+    "@chrono/ui-kit": "file:./vendor/chrono-ui-kit-0.0.0.tgz"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

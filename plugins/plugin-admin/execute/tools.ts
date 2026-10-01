@@ -95,13 +95,20 @@ export const TOOLS: Json[] = [
     when_to_use: '候选包已通过 plugin.validate、确要推进该插件更新时。',
     param_semantics: {
       identity: '目标插件名，须与候选包内声明一致。',
-      files: '候选源码树，须与上一次 plugin.validate 的一致。',
+      files: '候选源码树，须与上一次 plugin.validate 的一致；auto_validate:true 时无需先单独 validate。',
+      auto_validate:
+        '可选：置 true 且尚无凭据时，先自动对该候选树跑一次校验再提交（免去两次调用）；校验失败回 validate_failed。缺省 false（须先单独 plugin.validate）。',
     },
-    boundaries: '须先通过 plugin.validate，否则报 validate_required。',
+    boundaries:
+      '须先通过 plugin.validate，否则报 validate_required；auto_validate:true 可在同一调用内自动先校验（校验失败回 validate_failed）。',
     description: '提交候选插件源码改动。',
     argsSchema: {
       type: 'object',
-      properties: { identity: IDENTITY_ARG, files: FILES_ARG },
+      properties: {
+        identity: IDENTITY_ARG,
+        files: FILES_ARG,
+        auto_validate: { type: 'boolean', description: '置 true 时无凭据则先自动校验。' },
+      },
       required: ['identity', 'files'],
       additionalProperties: true,
     },

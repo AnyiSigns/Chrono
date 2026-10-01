@@ -1,0 +1,5 @@
+{
+  "type": "object",
+  "title": "search-index",
+  "description": "search-index 身份无世界数据：门面本身不落盘（state: recomputable），数据由 search-index-provider 成员各自持有。"
+}

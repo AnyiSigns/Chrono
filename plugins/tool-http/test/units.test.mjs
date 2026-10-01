@@ -15,23 +15,37 @@ import {
   parseFetcherStdout,
   resolveFetcherCommand,
 } from '../execute/fetcher.ts'
-import { htmlToMarkdown, htmlToText, stripTags, unwrapRedirect } from '../execute/html.ts'
 import {
+  extractTitle,
+  htmlToMarkdown,
+  htmlToText,
+  stripTags,
+  unwrapRedirect,
+} from '../execute/html.ts'
+import { extractPassages } from '../execute/passages.ts'
+import {
+  parseArxiv,
   parseBing,
   parseBingRss,
   parseDdgHtml,
   parseDdgLite,
+  parseGithub,
+  parseHnAlgolia,
   parseMarginalia,
   parseMojeek,
+  parseOpenAlex,
   parseSearxng,
   parseSource,
+  parseStackExchange,
+  restoreInvertedAbstract,
 } from '../execute/sources.ts'
 import { fetcherStdout } from './support.mjs'
 
-test('配置：schema defaults 与内建兜底一致，缺省双源', () => {
+test('配置：schema defaults 与内建兜底一致，缺省免 key 多源', () => {
   assert.deepEqual(readSchemaDefaults(), BUILTIN_DEFAULTS)
   const config = defaultConfig()
-  assert.equal(config.sources.length, 2)
+  assert.equal(config.sources.length, 10)
+  assert.equal(config.sources.filter((source) => source.enabled).length, 6)
   assert.equal(config.top_n, 10)
   assert.equal(config.obey_robots, false)
 })
@@ -235,4 +249,88 @@ test('源解析：各源 HTML / JSON 归一化', () => {
   )
   assert.equal(marg[0].url, 'https://m2.test/')
   assert.equal(marg[0].snippet, 'desc')
+})
+
+test('HTML：extractTitle 去标签折叠空白；无 title 回空串', () => {
+  assert.equal(extractTitle('<html><head><title> A &amp; B </title></head></html>'), 'A & B')
+  assert.equal(extractTitle('<html><body>no title</body></html>'), '')
+})
+
+test('passages：抽与查询最相关的段落，确定；空正文 / 零预算回空', () => {
+  const text = [
+    'gardening tips and flowers',
+    'a paragraph about chrono websearch quality and agent tooling experience',
+    'another chrono note about local indexing and fetch caching',
+  ].join('\n\n')
+  const out = extractPassages(text, 'chrono websearch', 1000)
+  assert.ok(out.length >= 1)
+  assert.ok(out[0].includes('chrono'))
+  assert.deepEqual(extractPassages(text, 'chrono websearch', 1000), out)
+  assert.deepEqual(extractPassages('', 'chrono', 100), [])
+  assert.deepEqual(extractPassages(text, 'chrono', 0), [])
+  assert.ok(extractPassages(text, 'chrono', 10).join('').length <= 10)
+})
+
+test('源解析：免 key API 源（OpenAlex / arXiv / StackExchange / GitHub / HN）', () => {
+  const openalex = parseOpenAlex(
+    JSON.stringify({
+      results: [
+        {
+          display_name: 'Paper A',
+          doi: 'https://doi.org/10.1/a',
+          id: 'https://openalex.org/W1',
+          publication_year: 2024,
+          abstract_inverted_index: { Hello: [0], world: [1] },
+        },
+        { display_name: 'No Id' },
+      ],
+    }),
+  )
+  assert.equal(openalex.length, 1)
+  assert.equal(openalex[0].url, 'https://doi.org/10.1/a')
+  assert.equal(openalex[0].snippet, '2024 Hello world')
+  // 无 doi 时回落到 id
+  const byId = parseOpenAlex(
+    JSON.stringify({ results: [{ display_name: 'B', id: 'https://openalex.org/W2' }] }),
+  )
+  assert.equal(byId[0].url, 'https://openalex.org/W2')
+  // 倒排摘要按位置还原（乱序输入仍确定性）
+  assert.equal(restoreInvertedAbstract({ b: [1], a: [0] }), 'a b')
+  assert.equal(restoreInvertedAbstract(null), '')
+
+  const arxiv = parseArxiv(
+    '<feed><entry><title>Atom Title</title><id>https://arxiv.org/abs/2401.00001v1</id>' +
+      '<summary>abstract &amp; more</summary></entry></feed>',
+  )
+  assert.equal(arxiv[0].url, 'https://arxiv.org/abs/2401.00001v1')
+  assert.equal(arxiv[0].title, 'Atom Title')
+  assert.equal(arxiv[0].snippet, 'abstract & more')
+
+  const se = parseStackExchange(
+    JSON.stringify({ items: [{ title: 'Q', link: 'https://so.test/q', excerpt: '<p>hi</p>' }] }),
+  )
+  assert.equal(se[0].url, 'https://so.test/q')
+  assert.equal(se[0].snippet, 'hi')
+
+  const gh = parseGithub(
+    JSON.stringify({ items: [{ full_name: 'o/r', html_url: 'https://github.test/o/r', description: 'd' }] }),
+  )
+  assert.equal(gh[0].title, 'o/r')
+  assert.equal(gh[0].url, 'https://github.test/o/r')
+
+  const hn = parseHnAlgolia(
+    JSON.stringify({ hits: [{ title: 'Story', objectID: '42', story_text: 'text' }] }),
+  )
+  assert.equal(hn[0].url, 'https://news.ycombinator.com/item?id=42')
+  assert.equal(hn[0].snippet, 'text')
+  const hnExternal = parseHnAlgolia(
+    JSON.stringify({ hits: [{ title: 'S', url: 'https://ext.test/', objectID: '1' }] }),
+  )
+  assert.equal(hnExternal[0].url, 'https://ext.test/')
+
+  // 畸形 JSON 一律回空，不抛
+  assert.deepEqual(parseOpenAlex('nope'), [])
+  assert.deepEqual(parseStackExchange('[]'), [])
+  assert.deepEqual(parseGithub('{}'), [])
+  assert.deepEqual(parseHnAlgolia('nope'), [])
 })

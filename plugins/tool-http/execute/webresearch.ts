@@ -3,12 +3,15 @@
 // 单页失败只记该条（`read:false` + 错误码），不拖垮整次研究。确定性、可回放。
 
 import { NET_WEBFETCH } from './caps.ts'
-import { decodeText, isTextual, normalizeContentType, renderText } from './content.ts'
+import { decodeText, HTML_TYPES, isTextual, normalizeContentType, renderText } from './content.ts'
 import { searchDigest } from './digest.ts'
+import { putIndex } from './index.ts'
 import { fetchUrl, robotsAllowsUrl } from './net.ts'
+import { extractPassages } from './passages.ts'
 import { isPrivateHost, parseHttpUrl } from './url.ts'
 import { websearch } from './websearch.ts'
 import { fail, isRec, ok } from './types.ts'
+import type { IndexDocument } from './index.ts'
 import type { FetchSpec } from './fetcher.ts'
 import type { Json, Rec, ToolResult } from './types.ts'
 import type { ToolContext } from './context.ts'
@@ -34,6 +37,8 @@ interface ReadOutcome {
   contentType?: string
   content?: string
   truncated?: boolean
+  /** HTML 正文过短（多为 JS 渲染页）：提示改用 webbrowser。 */
+  renderSuggested?: boolean
   code?: string
 }
 
@@ -132,6 +137,8 @@ async function readOne(
     contentType,
     content,
     truncated: outcome.truncated || text.length > maxChars,
+    renderSuggested:
+      HTML_TYPES.has(contentType) && content.trim().length < (ctx.config.render_min_chars ?? 200),
   }
 }
 
@@ -146,7 +153,11 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
   if (typeof query !== 'string' || query.trim().length === 0) {
     return fail('bad_args', 'query must be a non-empty string')
   }
-  const read = resolveRead(bag['read'])
+  const highlights = bag['highlights'] === true
+  const rawRead = bag['read']
+  // 只给 highlights（未显式 read）时按缺省条数抓取；显式 read=0 仍尊重「只检索」。
+  const read =
+    highlights && (rawRead === undefined || rawRead === null) ? DEFAULT_READ : resolveRead(rawRead)
   const maxChars = resolveMaxChars(bag['max_chars'])
   const searchArgs: Rec = { query }
   if (bag['count'] !== undefined) searchArgs['count'] = bag['count']
@@ -179,19 +190,43 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
   )
   const readUsed: string[] = []
   const readFailed: Rec[] = []
+  const documents: IndexDocument[] = []
   const results = items.map((item, index) => {
     if (index >= read) return item as unknown as Json
     const outcome = outcomes[index]
     if (outcome.ok) {
       readUsed.push(outcome.url)
+      const content = outcome.content ?? ''
+      // 正文回灌本地索引：抓取是一次性成本，之后同 URL 可从索引直接命中。
+      documents.push({
+        url: outcome.url,
+        title: item.title,
+        snippet: item.snippet,
+        source: item.source,
+        body: content,
+      })
+      if (highlights) {
+        return {
+          ...item,
+          url: outcome.url,
+          read: true,
+          status: outcome.status ?? null,
+          content_type: outcome.contentType ?? '',
+          content: '',
+          highlights: extractPassages(content, query, maxChars) as unknown as Json,
+          truncated: false,
+          ...(outcome.renderSuggested === true ? { render_suggested: true } : {}),
+        } as unknown as Json
+      }
       return {
         ...item,
         url: outcome.url,
         read: true,
         status: outcome.status ?? null,
         content_type: outcome.contentType ?? '',
-        content: outcome.content ?? '',
+        content,
         truncated: outcome.truncated === true,
+        ...(outcome.renderSuggested === true ? { render_suggested: true } : {}),
       } as unknown as Json
     }
     readFailed.push({ url: outcome.url, code: outcome.code ?? 'fetch_failed' })
@@ -201,6 +236,7 @@ export async function webresearch(args: Json, ctx: ToolContext): Promise<ToolRes
       error: { code: outcome.code ?? 'fetch_failed' },
     } as unknown as Json
   })
+  await putIndex(documents, ctx)
 
   return ok({
     query,

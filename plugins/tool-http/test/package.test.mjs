@@ -44,7 +44,10 @@ test('plugin.json 13 字段齐全且形态合法', () => {
     'tool-provider': ['describe', 'invoke'],
   })
   assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs, { sandbox: { mode: 'one' } })
+  assert.deepEqual(decl.needs, {
+    sandbox: { mode: 'one' },
+    'search-index': { mode: 'many' },
+  })
   assert.equal(decl.start, 'node execute/main.ts')
   assert.equal(decl.protocol, '1')
   assert.equal(decl.state, 'recomputable')
@@ -78,8 +81,30 @@ test('schema/tool-http.json 声明两工具形状与免费源默认清单', () =
   assert.equal(defaults.obey_robots, false)
   assert.equal(typeof defaults.user_agent, 'string')
   const names = defaults.sources.map((source) => source.name)
-  assert.deepEqual(names, ['Bing RSS', 'Mojeek'])
-  for (const dead of ['duckduckgo-html', 'duckduckgo-lite', 'searxng', 'wikipedia', 'marginalia']) {
+  assert.deepEqual(names, [
+    'Bing RSS',
+    'Mojeek',
+    'OpenAlex',
+    'Stack Exchange',
+    'Hacker News',
+    'arXiv',
+    'GitHub',
+    'Marginalia',
+    'Wikipedia',
+    'SearXNG',
+  ])
+  // 免 key API 源缺省启用；易限流 / 需实例的源作模板缺省关，可经数据世代开启。
+  const enabled = defaults.sources.filter((source) => source.enabled).map((source) => source.id)
+  assert.deepEqual(enabled, ['bing-rss', 'mojeek', 'openalex', 'stackexchange', 'hn', 'arxiv'])
+  for (const off of ['github', 'marginalia', 'wikipedia', 'searxng']) {
+    assert.equal(
+      defaults.sources.find((source) => source.id === off)?.enabled,
+      false,
+      `${off} 应缺省关闭`,
+    )
+  }
+  // 已验证不可用的 HTML 采集源不再进内建清单。
+  for (const dead of ['duckduckgo-html', 'duckduckgo-lite']) {
     assert.equal(
       defaults.sources.some((source) => source.id === dead),
       false,

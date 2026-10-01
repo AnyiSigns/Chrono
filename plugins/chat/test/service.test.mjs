@@ -608,7 +608,7 @@ test('I3: each injected failure class yields a distinct, recorded outcome', asyn
     {
       name: 'transport',
       bridge: (port, method, args) =>
-        port === 'loop-policy' ? Promise.resolve({ error: 'unresolved_cap', message: 'no loop' }) : defaultBridge()(port, method, args),
+        port === 'loop-policy' && method === 'interpret' ? Promise.resolve({ error: 'unresolved_cap', message: 'no loop' }) : defaultBridge()(port, method, args),
       expected: { code: 'loop_unavailable', attributableTo: 'transport', cause: 'unresolved_cap' },
     },
     {
@@ -647,7 +647,7 @@ test('I3: each injected failure class yields a distinct, recorded outcome', asyn
 test('send: interpret transport failure -> refused{loop_unavailable} settled + receipt + event', async () => {
   const drv = startService({
     bridge: (port, method, args) =>
-      port === 'loop-policy'
+      port === 'loop-policy' && method === 'interpret'
         ? Promise.resolve({ error: 'unresolved_cap', message: 'no loop-policy' })
         : defaultBridge()(port, method, args),
   })
@@ -875,7 +875,7 @@ test('concurrency: readonly history completes while send is suspended on interpr
   })
   const drv = startService({
     bridge: (port, method, args) => {
-      if (port === 'loop-policy') return gate.then(() => ({ value: INTERPRET_PLAN }))
+      if (port === 'loop-policy' && method === 'interpret') return gate.then(() => ({ value: INTERPRET_PLAN }))
       if (port === 'session' && method === 'history') return Promise.resolve({ value: historyFixture() })
       return defaultBridge()(port, method, args)
     },
@@ -902,7 +902,7 @@ test('concurrency: declared-concurrent sends run in parallel', async () => {
   const releases = []
   const drv = startService({
     bridge: (port, method, args) => {
-      if (port === 'loop-policy') {
+      if (port === 'loop-policy' && method === 'interpret') {
         return new Promise((resolve) => {
           releases.push(() => resolve({ value: INTERPRET_PLAN }))
         })
@@ -925,6 +925,37 @@ test('concurrency: declared-concurrent sends run in parallel', async () => {
   assert.equal(await drv.exit, 0)
 })
 
+test('insert: routes a pending input through the loop-policy queue provider', async () => {
+  const seen = []
+  const drv = startService({
+    bridge: defaultBridge({
+      'loop-policy.note-input': (args) => {
+        seen.push(args)
+        return { ok: true, turn_id: args.turn_id, noted: true }
+      },
+    }),
+  })
+  try {
+    await drv.hello()
+    const result = await drv.call('insert', {
+      turn_id: 't-run-slot-1',
+      insert_id: 'i1',
+      user_message: { role: 'user', content: 'mid-turn' },
+    })
+    assert.equal(result.kind, 'result', JSON.stringify(result))
+    assert.equal(result.value.ok, true)
+    assert.equal(result.value.noted, true)
+    // 队列词汇归门面：chat 不直连 session 的队列写口。
+    assert.equal(drv.portCalls.some((frame) => frame.port === 'session' && frame.method === 'turn_note_input'), false)
+    assert.deepEqual(seen, [
+      { turn_id: 't-run-slot-1', insert_id: 'i1', user_message: { role: 'user', content: 'mid-turn' } },
+    ])
+  } finally {
+    drv.close()
+  }
+  assert.equal(await drv.exit, 0)
+})
+
 const COMMITTED = { kind: 'committed', code: null, attributableTo: null, retryable: false, cause: null }
 
 test('cancel: open turn records intent, notifies loop/model, settles cancelled, broadcasts event, keeps slot', async () => {
@@ -940,7 +971,7 @@ test('cancel: open turn records intent, notifies loop/model, settles cancelled, 
     assert.equal(receipt.outcome.kind, 'cancelled')
     assert.deepEqual(
       drv.portCalls.map((frame) => `${frame.port}.${frame.method}`),
-      ['session.turn_cancel', 'loop-policy.cancel', 'model.abort', 'session.turn_promote_input', 'session.turn_settle'],
+      ['session.turn_cancel', 'loop-policy.cancel', 'model.abort', 'loop-policy.promote-input', 'session.turn_settle'],
     )
     assert.equal(callArgs(drv.portCalls, 'session', 'turn_settle').outcome.kind, 'cancelled')
     const event = drv.events.find((frame) => frame.topic === 'chat.turn.settled')

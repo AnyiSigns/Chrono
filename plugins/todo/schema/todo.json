@@ -18,7 +18,11 @@
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "条目状态枚举（todo.write / todo.update 门禁，越界 → bad_status；同一清单至多一个 in_progress）。缺省 [\"pending\",\"in_progress\",\"completed\",\"cancelled\"]。"
+      "description": "条目状态枚举（todo.write / todo.update 门禁，越界 → bad_status；缺省同一清单至多一个 in_progress）。缺省 [\"pending\",\"in_progress\",\"completed\",\"cancelled\",\"blocked\"]。"
+    },
+    "allow_multiple_in_progress": {
+      "type": "boolean",
+      "description": "是否允许同一清单存在多个 in_progress（缺省 false =「焦点唯一」）。置 true 或单次调用传 allow_multiple_in_progress:true 可开并行工作流；schema 成员变化属数据、可热改。"
     }
   }
 }

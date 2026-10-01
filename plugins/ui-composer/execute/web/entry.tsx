@@ -22,6 +22,7 @@ import type {
   RefObject,
 } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
+import { Icon as KitIcon } from '@chrono/ui-kit'
 
 import { STYLE_TEXT } from './styles.ts'
 import { createComposerStore } from './store.ts'
@@ -69,33 +70,10 @@ function useEnv(): Env {
 
 // ---- 原子组件 ----
 
-function Icon({
-  name,
-  size = 16,
-  label = '',
-}: {
-  name: string
-  size?: number
-  label?: string
-}): ReactNode {
+function Icon({ name, size = 16, label = '' }: { name: string; size?: number; label?: string }): ReactNode {
+  // 图标基路径来自宿主 context，套件只负责形状；此处仅做上下文注入。
   const { ctx } = useEnv()
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      role={label.length > 0 ? 'img' : undefined}
-      aria-label={label.length > 0 ? label : undefined}
-      aria-hidden={label.length > 0 ? undefined : true}
-    >
-      <use href={`${ctx.tokens.icons}#${name}`} />
-    </svg>
-  )
+  return <KitIcon icons={ctx.tokens.icons} name={name} size={size} label={label} />
 }
 
 const POPOVER_VIEWPORT_MARGIN = 8

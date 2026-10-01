@@ -1,7 +1,7 @@
 // 确定性内容哈希：FNV-1a 64 位，输出 16 位小写 hex。
 // 用于证据 id / ③ 缓存键——只求「同输入同输出」，不追求密码学强度。
 // `kernel_hash` 另按内核 `H` 口径（sha256(utf8(canonicalJson(v)))）算 def 键，
-// 供 `evolve-shadow` 的 `metric_id` 与投影 `{"def":hash}` 标记对齐；纯 Rust 自实现，无外部依赖。
+// 供 `evolve-metrics` 的 `metric_id` 与投影 `{"def":hash}` 标记对齐；纯 Rust 自实现，无外部依赖。
 // serde_json 缺省 `Map` 是 BTreeMap，`to_string` 键序确定，故 canonical 序列化可复现。
 
 use serde_json::Value;
