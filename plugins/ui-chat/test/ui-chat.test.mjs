@@ -361,10 +361,22 @@ test('工具卡：两形态 / 三 tone / 无描述符与未知 form 降级', () 
 
   assert.equal(toolCardViewModel({ render: { form: 'card', tone: 'bogus' } }).tone, 'plain')
   assert.equal(toolCardViewModel({ render: { form: 'card' } }).status, null)
-  const degraded = toolCardViewModel({ tool: 'x', result: { text: 'plain result' } })
-  assert.equal(degraded.form, 'degraded')
-  assert.equal(degraded.text, 'plain result')
+  // 有结果却缺 render：通用卡（按结果形态给 detail），不再把结果 JSON 泄成正文。
+  const generic = toolCardViewModel({ tool: 'x', result: { text: 'plain result' } })
+  assert.equal(generic.form, 'card')
+  assert.deepEqual(generic.detail, { kind: 'text', text: 'plain result' })
+  const genericTerminal = toolCardViewModel({
+    tool: 'shell',
+    result: { kind: 'terminal', combined: [{ stream: 'stdout', text: 'line1\n' }, { stream: 'stderr', text: 'err\n' }], exit_code: 0 },
+  })
+  assert.equal(genericTerminal.form, 'card')
+  assert.deepEqual(genericTerminal.detail, { kind: 'terminal', stdout: 'line1\nerr\n' })
+  const genericJson = toolCardViewModel({ tool: 'x', result: { a: 1 } })
+  assert.equal(genericJson.form, 'card')
+  assert.deepEqual(genericJson.detail, { kind: 'json', text: safeStringify({ a: 1 }) })
+  // 无 render 且无结果：才退回 markdown 文本降级。
   assert.equal(toolCardViewModel({ render: { form: 'weird' } }).form, 'degraded')
+  assert.equal(toolCardViewModel({ tool: 'x' }).form, 'degraded')
   assert.equal(renderSummary('{a}.{b}', { a: 1, b: 2 }, null), '1.2')
   assert.equal(renderSummary('{missing}', {}, null), '')
   // 可选段 {? ... }：段内字段全非空才输出，缺省参数不留下悬空分隔符。

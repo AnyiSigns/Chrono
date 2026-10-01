@@ -157,6 +157,43 @@ function errorDetail(result: any): any {
   return { kind: 'text', text: typeof result === 'string' ? result : '' }
 }
 
+/** 无 render 时的通用细节推断：终端合并流 / 路径列表 / 文本 / JSON（不把结构化结果原样丢成正文）。 */
+function genericDetail(result: any): any {
+  if (Array.isArray(result)) return { kind: 'list', items: result }
+  if (isRec(result)) {
+    if (Array.isArray(result.combined)) {
+      const text = result.combined
+        .filter((chunk: any) => isRec(chunk) && typeof chunk.text === 'string')
+        .map((chunk: any) => chunk.text as string)
+        .join('')
+      return { kind: 'terminal', stdout: text }
+    }
+    if (Array.isArray(result.paths)) return { kind: 'paths', items: result.paths }
+    if (typeof result.text === 'string') return { kind: 'text', text: result.text }
+    if (typeof result.content === 'string') return { kind: 'text', text: result.content }
+    return { kind: 'json', text: safeStringify(result) }
+  }
+  if (typeof result === 'string') return result.length > 0 ? { kind: 'text', text: result } : null
+  return null
+}
+
+/** 有结果但缺 render 时的通用工具卡：不再降级成 raw JSON 正文，按结果形态给终端 / 文本 / JSON 细节。 */
+function genericToolCard(source: any): any {
+  const status = source.status === 'ok' || source.status === 'error' ? source.status : null
+  const failed = status === 'error'
+  return {
+    form: 'card',
+    label: typeof source.tool === 'string' ? source.tool : '',
+    tone: 'plain',
+    summary: '',
+    detail: failed ? errorDetail(source.result) : genericDetail(source.result),
+    status,
+    icon: toolIcon(source.tool, undefined),
+    live: false,
+    text: '',
+  }
+}
+
 /** 工具 part → 工具卡视图模型。 */
 export function toolCardViewModel(part: any): any {
   const source = isRec(part) ? part : {}
@@ -164,7 +201,10 @@ export function toolCardViewModel(part: any): any {
   const label = typeof render?.label === 'string' ? render.label : typeof source.tool === 'string' ? source.tool : ''
   const status = source.status === 'ok' || source.status === 'error' ? source.status : null
   const icon = toolIcon(source.tool, render?.icon)
+  // 有结果却缺 render：通用卡（不把结果 JSON 泄成正文）；无结果才退回 markdown 文本降级。
+  const hasResult = source.result !== undefined && source.result !== null
   if (render === null) {
+    if (hasResult) return genericToolCard(source)
     return {
       form: 'degraded',
       label,
@@ -179,6 +219,7 @@ export function toolCardViewModel(part: any): any {
   }
   const form = typeof render.form === 'string' && FORMS.has(render.form) ? render.form : 'degraded'
   if (form === 'degraded') {
+    if (hasResult) return genericToolCard(source)
     return {
       form: 'degraded',
       label,

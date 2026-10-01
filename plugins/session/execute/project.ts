@@ -197,6 +197,9 @@ export function flattenTurnEvents(conv: string, turn: Rec): StreamEvent[] {
   let rendered: Json[] = []
   let prevContent = ''
   let segment = 0
+  // 工具卡全局去重：call_id → 首次出现段持有的**同一** part 对象。后续步（含 `step.user` 切断后的新段）
+  // 只回填其结果 / 补 render，不另开一张重复卡——否则同一调用会跨「插入前 / 插入后」两段各出现一次。
+  const toolHome = new Map<string, Json>()
   for (const step of stepsOf(turn)) {
     const type = step['type']
     if (type === 'step.result') {
@@ -205,9 +208,28 @@ export function flattenTurnEvents(conv: string, turn: Rec): StreamEvent[] {
       const content = asString(assistant['content']) ?? ''
       const parts = assistantParts(assistant)
       if (parts.length === 0 && content.length === 0) continue
-      // 本步相对「已渲染」的新 parts（新口径即其增量，旧口径自动切掉累积前缀）。
-      const delta = subtractRendered(rendered, parts)
-      rendered = mergeToolParts(rendered, delta)
+      // 文本 / 推理按出现次数取增量（旧口径自动切掉累积前缀）；工具卡单列按 call_id 去重。
+      const toolParts = parts.filter(isToolPart)
+      const textParts = parts.filter((part) => !isToolPart(part))
+      const textDelta = subtractRendered(rendered, textParts)
+      rendered = mergeToolParts(rendered, textDelta)
+      // 工具卡：首次出现的段持有；已出现过则原位回填结果 / 状态 / render（render 缺失时补齐）。
+      const newTools: Json[] = []
+      for (const part of toolParts) {
+        const callId = String(part['call_id'] ?? '')
+        const home = toolHome.get(callId)
+        if (home !== undefined) {
+          if (part['result'] !== undefined) home['result'] = part['result']
+          if (part['status'] !== undefined) home['status'] = part['status']
+          if (part['render'] !== undefined && part['render'] !== null) home['render'] = part['render']
+          if ((home['args'] === undefined || home['args'] === null) && part['args'] !== undefined) home['args'] = part['args']
+          if ((home['tool'] === undefined || home['tool'] === '') && typeof part['tool'] === 'string') home['tool'] = part['tool']
+          continue
+        }
+        toolHome.set(callId, part)
+        newTools.push(part)
+        rendered = mergeToolParts(rendered, [part])
+      }
       // 本步新正文：新口径即本步正文，旧口径切掉累积前缀（`content` 相同则无新增）。
       const newContent =
         content === prevContent ? '' : content.startsWith(prevContent) ? content.slice(prevContent.length) : content
@@ -222,10 +244,11 @@ export function flattenTurnEvents(conv: string, turn: Rec): StreamEvent[] {
         }
         curEvent = push({ kind: 'assistant', turn_id: turnId, at: turnAt, def: cur, parts: [] })
       }
-      // 并入本步增量：工具卡同 call_id 原位覆盖，文本 / 推理按到达序追加。
-      let merged = mergeToolParts(curEvent.parts ?? [], delta)
+      // 并入本步增量：文本 / 推理按到达序追加，工具卡只并入首次出现的。
+      let merged = mergeToolParts(curEvent.parts ?? [], textDelta)
+      if (newTools.length > 0) merged = mergeToolParts(merged, newTools)
       // 纯文本步（无 parts）只把正文落在 content：补一条 text part，塌成一条后正文仍可见。
-      if (newContent.length > 0 && !delta.some((part) => isRecord(part) && part['type'] === 'text')) {
+      if (newContent.length > 0 && !textDelta.some((part) => isRecord(part) && part['type'] === 'text')) {
         merged = mergeToolParts(merged, [{ type: 'text', text: newContent }])
       }
       curEvent.parts = merged
@@ -287,6 +310,11 @@ function subtractRendered(rendered: Json[], full: Json[]): Json[] {
     if (used >= (prevText.get(key) ?? 0)) out.push(part)
   }
   return out
+}
+
+/** 是否为工具卡 part。 */
+function isToolPart(part: Json): boolean {
+  return isRecord(part) && part['type'] === 'tool'
 }
 
 /** 工具卡按 `call_id` 原位覆盖合并（增量回填），非工具块按到达序追加。 */

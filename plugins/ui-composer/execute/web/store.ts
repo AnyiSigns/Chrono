@@ -1184,18 +1184,6 @@ export function createComposerStore(ctx: SlotContext): ComposerStore {
     clearConfigTimer()
   }
 
-  // TEMP DEBUG（浏览器自动化验证用，提交前删除）：暴露 store 状态与事件入口。
-  ;(globalThis as unknown as Record<string, unknown>)['__composerDebug'] = {
-    snapshot: () => snapshot,
-    emit: onRecord,
-    state,
-    send,
-    setText: (text: string) => {
-      state.text = typeof text === 'string' ? text : ''
-      publish()
-    },
-  }
-
   return {
     getSnapshot: () => snapshot,
     subscribe(listener) {

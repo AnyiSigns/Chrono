@@ -177,6 +177,61 @@ test('step.user：运行中插入的 user 落在其前后助手段之间（回�
   assert.deepEqual(timeline[0].items.map((item) => item.text), ['U3', 'A3', 'INSERT', 'REPLY'])
 })
 
+test('step.user：同一工具卡跨插入段只出现一次（结果 / render 回填到首次出现的段）', () => {
+  const turn = {
+    turn_id: 't4',
+    at: '2026-01-04T00:00:00.000Z',
+    state: 'open',
+    outcome: null,
+    user_message: { content: 'U4' },
+    steps: [
+      {
+        type: 'step.result',
+        turn_id: 't4',
+        seq: 1,
+        assistant: {
+          content: '',
+          parts: [{ type: 'reasoning', text: 'R' }, { type: 'tool', call_id: 'c1', tool: 'shell', render: null }],
+        },
+      },
+      {
+        type: 'step.user',
+        turn_id: 't4',
+        seq: 2,
+        insert_id: 'i1',
+        user_message: { content: 'INSERT', at: '2026-01-04T00:00:01.000Z' },
+      },
+      {
+        type: 'step.result',
+        turn_id: 't4',
+        seq: 3,
+        assistant: {
+          content: 'DONE',
+          parts: [
+            {
+              type: 'tool',
+              call_id: 'c1',
+              tool: 'shell',
+              status: 'ok',
+              render: { form: 'card', label: 'shell', detail: { kind: 'terminal' } },
+              result: { combined: [{ stream: 'stdout', text: 'X' }] },
+            },
+          ],
+        },
+      },
+    ],
+  }
+  const messages = displayMessagesByTurn('c', [turn])[0].messages
+  const toolParts = messages
+    .flatMap((entry) => (Array.isArray(entry.def.parts) ? entry.def.parts : []))
+    .filter((part) => part.type === 'tool' && part.call_id === 'c1')
+  // 同一 call_id 跨插入段只保留首次出现的那张卡，结果 / render 原位回填，不再重复。
+  assert.equal(toolParts.length, 1)
+  assert.equal(toolParts[0].status, 'ok')
+  assert.deepEqual(toolParts[0].result, { combined: [{ stream: 'stdout', text: 'X' }] })
+  assert.deepEqual(toolParts[0].render, { form: 'card', label: 'shell', detail: { kind: 'terminal' } })
+})
+
 test('兼容旧日志：累积前缀 parts 取增量合并，迁移重放不重复', () => {
   const turn = {
     turn_id: 't',
