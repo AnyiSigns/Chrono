@@ -15,7 +15,9 @@ export const DEFAULT_CAPS: Rec = {
   cpu_ms: 60000,
   mem_mb: 512,
   timeout_ms: 120000,
-  output_max: 1048576,
+  // 单次输出上限：超出由 sandbox 按头尾截断并计 `omitted_bytes`。
+  // 1 MiB 过宽——长输出会原样进结果 / 事件 / 前端渲染（曾把页面拖死），收到 128 KiB。
+  output_max: 131072,
   procs_max: 32,
 }
 

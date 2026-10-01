@@ -152,13 +152,14 @@ async function pumpToResult(
     }
   }
   const stdout = dropped > 0 ? `${head}\n… [${dropped} bytes omitted] …\n${tail}` : head + tail
+  // 不另建 `combined`：stderr 已并入 stdout，再放一份等价文本会让结果 / 事件 payload 翻倍。
+  // 结果面保留 `stdout` 为唯一来源；渲染器在 `combined` 缺省时回落 `stdout`（见 ui-chat `genericDetail`）。
   const outcome: Rec = {
     exit_code: exitCode,
     stdout,
     stderr: '',
     truncated: dropped > 0,
     omitted_bytes: dropped,
-    combined: [{ stream: 'stdout', text: stdout }],
     combined_truncated: dropped > 0,
     duration_ms: Date.now() - started,
     code,

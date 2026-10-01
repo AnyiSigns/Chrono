@@ -161,12 +161,16 @@ function errorDetail(result: any): any {
 function genericDetail(result: any): any {
   if (Array.isArray(result)) return { kind: 'list', items: result }
   if (isRec(result)) {
-    if (Array.isArray(result.combined)) {
+    if (Array.isArray(result.combined) && result.combined.length > 0) {
       const text = result.combined
         .filter((chunk: any) => isRec(chunk) && typeof chunk.text === 'string')
         .map((chunk: any) => chunk.text as string)
         .join('')
       return { kind: 'terminal', stdout: text }
+    }
+    // tool-shell 结果以 `stdout` 为唯一来源（stderr 已并入）；`combined` 缺省时回落它，别降级成 JSON。
+    if (typeof result.stdout === 'string' && result.stdout.length > 0) {
+      return { kind: 'terminal', stdout: result.stdout }
     }
     if (Array.isArray(result.paths)) return { kind: 'paths', items: result.paths }
     if (typeof result.text === 'string') return { kind: 'text', text: result.text }

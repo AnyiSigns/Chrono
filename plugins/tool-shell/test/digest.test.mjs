@@ -69,6 +69,16 @@ test('shell run 结果带 digest {cmd,exit,stdout_tail}', async () => {
   assert.equal(digest.stdout_tail, 'hi\n')
 })
 
+test('结果不重复 combined：stdout 是唯一输出源（stderr 已并入）', async () => {
+  const result = await invoke(
+    { tool: 'shell', args: { input: 'echo hi' } },
+    deps({ ...DONE, output: 'hi\n', next_cursor: 3 }),
+  )
+  assert.equal(result.ok, true)
+  assert.equal(result.result.stdout, 'hi\n')
+  assert.deepEqual(result.result.combined, [])
+})
+
 test('shell digest 的 stdout_tail 有界：仅保留最后 20 行', async () => {
   const lines = Array.from({ length: 25 }, (_, index) => `line-${index + 1}`)
   const result = await invoke(

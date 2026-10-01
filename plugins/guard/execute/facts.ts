@@ -87,8 +87,20 @@ function haystack(call: Rec): string {
   return `${tool} ${args}`.toLowerCase().replace(/\s+/g, ' ')
 }
 
+/**
+ * 危险模式词元的边界口径：两侧不得紧邻标识符字符（字母 / 数字 / `_` / `-`）。
+ * 裸子串匹配会误命中——`Format-Table` 含 `rm`、`-Recurse` 含 `-r`，于是 `["rm","-r"]`
+ * 把「统计代码行数」判成递归删除。加边界后 `-r` 不再命中 `-recurse`、`rm` 不再命中 `format`。
+ */
+function tokenBoundaryRe(token: string): RegExp {
+  const body = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![A-Za-z0-9_-])${body}(?![A-Za-z0-9_-])`)
+}
+
 function matchPattern(pattern: { any_of: string[][] }, text: string): boolean {
-  return pattern.any_of.some((group) => group.every((token) => text.includes(token.toLowerCase())))
+  return pattern.any_of.some((group) =>
+    group.every((token) => tokenBoundaryRe(token.toLowerCase()).test(text)),
+  )
 }
 
 /** call 里的路径：顶层 path_keys + args 内 arg_path_keys（字符串或字符串数组）。 */

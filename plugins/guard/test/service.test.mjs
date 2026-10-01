@@ -90,6 +90,29 @@ test('facts：逐 call 出命中事实，不含 verdict / reason 裁决字段', 
   }
 })
 
+test('facts：危险模式按词元边界命中，裸子串不再误报', async () => {
+  const drv = startService()
+  const shellCall = (input) => ({ port: 'tool-shell', tool: 'shell', args: { input } })
+  try {
+    await drv.hello()
+    // 误报回归：`Format-Table` 含 `rm`、`-Recurse` 含 `-r`，加边界后不得判成 recursive_delete。
+    const benign = await drv.facts({
+      bag: {
+        calls: [shellCall("Get-ChildItem -Recurse | Format-Table -AutoSize")],
+      },
+    })
+    assert.equal(benign.value.calls[0].danger.matched, false)
+    // 真危险仍命中。
+    const dangerous = await drv.facts({
+      bag: { calls: [shellCall('Remove-Item -Recurse ./build')] },
+    })
+    assert.equal(dangerous.value.calls[0].danger.matched, true)
+    assert.equal(dangerous.value.calls[0].danger.rule, 'recursive_delete')
+  } finally {
+    drv.close()
+  }
+})
+
 test('facts：bag 非对象 / calls 非数组 → bad_args，不崩进程', async () => {
   const drv = startService()
   try {

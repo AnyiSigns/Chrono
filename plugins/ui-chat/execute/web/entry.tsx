@@ -1159,6 +1159,21 @@ function ToolStatus({ state }: { state: string | null }): ReactNode {
 }
 
 /**
+ * 流式终端保留的尾部字符上限。
+ * 流式输出每来一个 `tool.delta` 就重渲染，若把累积全文整段塞进 `<pre>`（`white-space:pre-wrap`），
+ * 每次都要重排整段 → 总代价 O(N²)，长输出会把主线程堵死（页面无响应）。
+ * 只渲染有界尾部，单帧重排代价与输出总长解耦；完整结果仍随 `tool.end` 落盘，展开可看。
+ */
+const LIVE_TERMINAL_CHARS = 16384
+
+/** 流式终端文本：超上限只留尾部并注明省略量（完整结果在 `tool.end` 的 detail 里）。 */
+function liveTerminalText(chunks: string): string {
+  if (chunks.length <= LIVE_TERMINAL_CHARS) return chunks
+  const omitted = chunks.length - LIVE_TERMINAL_CHARS
+  return `… [前 ${omitted} 字已省略] …\n${chunks.slice(-LIVE_TERMINAL_CHARS)}`
+}
+
+/**
  * 工具卡：`line` 一行不可展开；`card` 折叠头 + 展开体。
  * 收起态 summary 展示调用输入（args）；展开体优先给流式输出（`render.live` 且已有 chunks），
  * 否则渲染描述符与结果合并后的 detail（在途卡 `tool.end` 即带结果、定稿卡读已落盘 part）。
@@ -1218,7 +1233,7 @@ function ToolCard({
             <div className="chat-tool-detail">
               {liveBody ? (
                 <div className="chat-terminal">
-                  <div className="chat-terminal-stdout">{live.chunks}</div>
+                  <div className="chat-terminal-stdout">{liveTerminalText(live.chunks)}</div>
                 </div>
               ) : vm.detail !== null ? (
                 <DetailView detail={vm.detail} />
