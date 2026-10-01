@@ -71,7 +71,7 @@
   --sidebar-w-max: 420px;
   --list-item-h: 34px;
   --msg-gap: 16px;
-  --msg-max-w: 780px;
+  --msg-max-w: 760px;
   --bubble-max-w: 72%;
   --settings-w: clamp(600px, 58vw, 1000px);
   --settings-h: 80vh;

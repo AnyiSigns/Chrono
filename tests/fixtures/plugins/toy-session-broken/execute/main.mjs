@@ -33,17 +33,7 @@ function isRecord(value) {
 
 // 会话 toy：内存版最小回合日志投影（turn_open / step_append / turn_settle / read / history）。
 // 只为 e2e 制造「已发生步骤保留 + 收口失败」的现场；不落盘、不做真实链校验。
-const SESSION = { conversations: [], messages: [], turns: [], current: null }
-
-function appendMessage(conversation, id, body) {
-  SESSION.messages.push({ conversation, id, body })
-}
-
-function upsertMessage(conversation, id, body) {
-  const index = SESSION.messages.findIndex((item) => item.conversation === conversation && item.id === id)
-  if (index >= 0) SESSION.messages[index] = { conversation, id, body }
-  else SESSION.messages.push({ conversation, id, body })
-}
+const SESSION = { conversations: [], turns: [], current: null }
 
 function sessionTurnOpen(args) {
   const turnId = typeof args.turn_id === 'string' ? args.turn_id : ''
@@ -61,9 +51,17 @@ function sessionTurnOpen(args) {
   }
   if (typeof SESSION.current !== 'string') return { ok: false, reason: 'no_conversation' }
   const conversation = SESSION.current
-  const turn = { turn_id: turnId, conversation, slot_ref: slotRef, state: 'open', outcome: null, steps: [] }
+  const turn = {
+    turn_id: turnId,
+    conversation,
+    slot_ref: slotRef,
+    at: typeof args.at === 'string' ? args.at : null,
+    state: 'open',
+    outcome: null,
+    steps: [],
+    user_message: isRecord(args.user_message) ? args.user_message : { role: 'user', content: '' },
+  }
   SESSION.turns.push(turn)
-  appendMessage(conversation, `msg-${conversation}-${turnId}-user`, isRecord(args.user_message) ? args.user_message : { role: 'user', content: '' })
   return { ok: true, turn_id: turnId, conversation, created: spec !== null }
 }
 
@@ -71,12 +69,6 @@ function sessionStepAppend(args) {
   const turn = SESSION.turns.find((item) => item.turn_id === args.turn_id)
   if (turn === undefined) return { ok: false, reason: 'unknown_turn' }
   if (!turn.steps.some((step) => step.type === args.type && step.seq === args.seq)) turn.steps.push(args)
-  if (args.type === 'step.result' && isRecord(args.assistant)) {
-    const body = { role: 'assistant', content: args.assistant.content ?? '' }
-    if (args.assistant.parts !== undefined) body.parts = args.assistant.parts
-    if (args.assistant.meta !== undefined) body.meta = args.assistant.meta
-    upsertMessage(turn.conversation, `msg-${turn.conversation}-${turn.turn_id}-assistant`, body)
-  }
   return { ok: true, turn_id: turn.turn_id, deduped: false }
 }
 
@@ -89,18 +81,116 @@ function sessionTurnSettle(args) {
   return { ok: true, turn_id: turn.turn_id, outcome: turn.outcome, persisted: true }
 }
 
+function isToolPart(part) {
+  return isRecord(part) && part['type'] === 'tool'
+}
+
+/** 键序无关的规范化 JSON（跨段比较用）。 */
+function stableKey(value) {
+  if (Array.isArray(value)) return `[${value.map(stableKey).join(',')}]`
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableKey(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** 展示段合并：工具卡按 `call_id` 原位覆盖，文本 / 推理按到达序追加。 */
+function mergeParts(base, delta) {
+  const merged = [...base]
+  for (const part of delta) {
+    if (isToolPart(part)) {
+      const index = merged.findIndex((item) => isToolPart(item) && item['call_id'] === part['call_id'])
+      if (index >= 0) merged[index] = part
+      else merged.push(part)
+      continue
+    }
+    merged.push(part)
+  }
+  return merged
+}
+
+/** 相对已渲染段取文本 / 推理增量（工具卡单列，由合并处理）。 */
+function subtractRendered(rendered, full) {
+  const prevText = new Map()
+  for (const part of rendered) {
+    if (isToolPart(part)) continue
+    const key = stableKey(part)
+    prevText.set(key, (prevText.get(key) ?? 0) + 1)
+  }
+  const out = []
+  const seen = new Map()
+  for (const part of full) {
+    if (isToolPart(part)) continue
+    const key = stableKey(part)
+    const used = seen.get(key) ?? 0
+    seen.set(key, used + 1)
+    if (used >= (prevText.get(key) ?? 0)) out.push(part)
+  }
+  return out
+}
+
+/**
+ * 回合日志 → 展示消息（与 `plugins/session` 的展示投影同口径）：同一回合的多个 `step.result`
+ * 是**同一助手消息**的本步增量——工具卡按 `call_id` 原位覆盖、文本 / 推理按到达序追加，塌成一条。
+ * 故收口失败也只丢终态，已落步的助手正文与工具卡仍在（不再什么都不留）。
+ */
+function turnMessages(conv, turn) {
+  const messages = []
+  const user = isRecord(turn['user_message']) ? turn['user_message'] : null
+  if (user !== null) {
+    messages.push({
+      id: `msg-${conv}-${turn['turn_id']}-user`,
+      role: 'user',
+      content: typeof user['content'] === 'string' ? user['content'] : '',
+      at: (user['at'] ?? turn['at'] ?? null),
+    })
+  }
+  let current = null
+  let rendered = []
+  let prevContent = ''
+  for (const step of turn['steps']) {
+    if (step['type'] !== 'step.result' || !isRecord(step['assistant'])) continue
+    const assistant = step['assistant']
+    const content = typeof assistant['content'] === 'string' ? assistant['content'] : ''
+    const parts = Array.isArray(assistant['parts']) ? assistant['parts'] : []
+    if (parts.length === 0 && content.length === 0) continue
+    const toolParts = parts.filter(isToolPart)
+    const textParts = parts.filter((part) => !isToolPart(part))
+    const textDelta = subtractRendered(rendered, textParts)
+    rendered = mergeParts(rendered, textDelta)
+    rendered = mergeParts(rendered, toolParts)
+    // 正文增量：新口径为纯本步正文，旧口径切掉累积前缀（与 `content` 相同则无新增）。
+    const newContent =
+      content === prevContent ? '' : content.startsWith(prevContent) ? content.slice(prevContent.length) : content
+    prevContent = content
+    if (current === null) {
+      current = { id: `msg-${conv}-${turn['turn_id']}-assistant`, role: 'assistant', content: '', at: turn['at'] ?? null, parts: [] }
+      messages.push(current)
+    }
+    current['parts'] = mergeParts(current['parts'], textDelta)
+    current['parts'] = mergeParts(current['parts'], toolParts)
+    // 纯文本步（无 parts）只住正文：补一条 text part，塌成一条后正文仍可见。
+    if (newContent.length > 0 && !textDelta.some((part) => isRecord(part) && part['type'] === 'text')) {
+      current['parts'] = mergeParts(current['parts'], [{ type: 'text', text: newContent }])
+    }
+    if (newContent.length > 0) current['content'] += newContent
+  }
+  return messages
+}
+
 function sessionHistory(args) {
   const conversation = typeof args.conversation === 'string' ? args.conversation : SESSION.current
-  const messages = SESSION.messages
-    .filter((item) => item.conversation === conversation)
-    .slice()
-    .reverse()
-    .map((item) => ({ hash: item.id, def: item.body }))
+  const messages = []
+  for (const turn of SESSION.turns) {
+    if (turn['conversation'] !== conversation) continue
+    messages.push(...turnMessages(conversation, turn))
+  }
+  messages.reverse()
   return {
     conversation,
     before: args.before ?? null,
     limit: args.limit ?? null,
-    messages,
+    messages: messages.map((def) => ({ hash: def['id'], def })),
     next_before: null,
     body: { version: 1, current: SESSION.current, conversations: SESSION.conversations.map((item) => ({ ...item })) },
     refs: {},
