@@ -1,27 +1,20 @@
-// UI 客户端半边类型门禁：对每个有 tsconfig.json 的 slot 插件跑 `tsc --noEmit`。
-// 类型不通过即非零退出（供 CI / 提交前门禁）。
+// UI 客户端半边类型门禁：对每个带客户端半边的 UI 插件跑 `tsc --noEmit`。
+// 插件列表从 `plugins/*/plugin.json`（`<id>.client.read` 命令）派生；类型不通过即非零退出。
 
 import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { uiPluginIds } from '../plugin-sdk/tools/build-ui.mjs'
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc')
-
-const PLUGINS = [
-  'ui-chat',
-  'ui-composer',
-  'ui-sidebar',
-  'ui-threads',
-  'ui-approval',
-  'ui-settings',
-]
 
 let checked = 0
 let failed = 0
 
-for (const id of PLUGINS) {
+for (const id of uiPluginIds(root)) {
   const project = join(root, 'plugins', id, 'tsconfig.json')
   if (!existsSync(project)) continue
   checked += 1

@@ -3,6 +3,7 @@
 
 import { applyEntry, entryHash } from './journal.ts'
 import { defHas } from './defs.ts'
+import { OP_NAMES } from './ops.ts'
 import { isHash, isRecord } from './value.ts'
 import type {
   CommitOutcome,
@@ -18,9 +19,7 @@ import type {
 
 type Rec = { [k: string]: Json }
 
-const VALID_OPS: readonly string[] = Object.freeze(
-  'put add_identity add_gen set_active retire fork graft batch note snapshot'.split(' '),
-)
+const VALID_OPS: readonly string[] = OP_NAMES
 
 function isNonemptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0

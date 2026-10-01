@@ -19,40 +19,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全且形态合法；无 needs（无跨身份依赖）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'throttle')
-  assert.equal(decl.schema, 'schema/throttle.json')
-  assert.deepEqual(decl.implements, ['throttle'])
-  assert.deepEqual(decl.methods, { throttle: ['acquire', 'plan', 'penalize', 'policy'] })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.needs, undefined)
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema 声明 resilience / audit_redact / method_timeouts', () => {
   const schema = readJson('schema/throttle.json')

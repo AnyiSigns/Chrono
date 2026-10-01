@@ -25,7 +25,7 @@ test('plugin.json 不 pin 密钥面（零配置）', () => {
   assert.deepEqual(decl.pins, { host: 'host' })
   assert.deepEqual(decl.needs, {
     sandbox: { mode: 'one' },
-    'search-index': { mode: 'many' },
+    'search-index': { mode: 'many', methods: ['search', 'put'] },
   })
   assert.ok(!JSON.stringify(decl).includes('secrets'))
 })

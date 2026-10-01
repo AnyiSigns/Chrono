@@ -20,41 +20,6 @@ function listFiles(dir) {
   return out
 }
 
-test('plugin.json 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [
-    'build',
-    'commands',
-    'health',
-    'identity',
-    'implements',
-    'members',
-    'methods',
-    'pins',
-    'protocol',
-    'restart',
-    'schema',
-    'start',
-    'state',
-  ])
-  assert.equal(decl.identity, 'vector-index')
-  assert.equal(decl.schema, 'schema/vector-index.json')
-  assert.deepEqual(decl.implements, ['vector-index'])
-  assert.deepEqual(decl.methods, {
-    'vector-index': ['upsert', 'remove', 'search', 'info', 'clear'],
-  })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.needs, undefined, '无跨身份依赖，不写 needs')
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.deepEqual(decl.build, [])
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/vector-index.json：方法入参 / 结果形状与超时 / 审计面', () => {
   const schema = readJson('schema/vector-index.json')

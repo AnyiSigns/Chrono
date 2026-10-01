@@ -4,7 +4,7 @@
 //
 // 默认（离线，无需 npm ci / 网络）：
 //   ① 入世树核对（`.worldignore`：契约文件入世，test/ / tools/ / execute/web/dist/ 排除）
-//   ② plugin.json 形态断言（零 schema、无 exclusive、client.read 只读、build = npm ci + node execute/build.mjs）
+//   ② plugin.json 形态断言（零 schema、无 exclusive、client.read 只读、build = npm ci + 共享构建脚本）
 //   ③ seed 真实 pins 闭包（模型协议 / 密钥 / 输入 / 技能 / 配置等，pins 在入世批内解析）
 //   ④ pack（已入世 → unchanged）
 //   ⑤ client.read 路径穿越防护 + 正常读回（直调服务方法，与既有单测同口径）
@@ -26,7 +26,7 @@ import { build } from 'esbuild'
 import { packSourceDir, readWorldignore } from '../../../packages/host/assembly/source.ts'
 import { createHandlers } from '../execute/methods.ts'
 import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
-import { extractValue } from '../execute/bridge.ts'
+import { extractValue } from 'plugin-sdk/web'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')
@@ -133,7 +133,6 @@ function assertWorldTree() {
     'execute/main.ts',
     'execute/methods.ts',
     'execute/client-read.ts',
-    'execute/build.mjs',
     'execute/web/entry.tsx',
     'execute/web/components/App.tsx',
     'execute/web/view-context.ts',
@@ -186,9 +185,12 @@ function assertDeclaration() {
     for (const arg of step.args) assert.equal(arg.includes('='), false, `args 令牌不得含 '='：${arg}`)
   }
   assert.deepEqual(decl.build[0], { cmd: 'npm', args: ['ci'] })
-  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['execute/build.mjs'] })
-  assert.ok(existsSync(join(SETTINGS_DIR, 'execute', 'build.mjs')), '构建脚本 execute/build.mjs 应存在')
-  console.log('plugin.json：ok（零 schema、无 exclusive、client.read 只读、build = npm ci + node execute/build.mjs）')
+  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['../../plugin-sdk/tools/build-ui.mjs'] })
+  assert.ok(
+    existsSync(join(REPO_ROOT, 'plugin-sdk', 'tools', 'build-ui.mjs')),
+    '共享构建脚本 plugin-sdk/tools/build-ui.mjs 应存在',
+  )
+  console.log('plugin.json：ok（零 schema、无 exclusive、client.read 只读、build = npm ci + 共享构建脚本）')
 }
 
 /** ③ seed 真实 pins 闭包（离线）：seed 成功即 pins 在入世批内解析。 */
@@ -226,7 +228,8 @@ function assertPack(root) {
 function ensureBuilt() {
   const outfile = join(WEB_DIR, 'dist', 'entry.js')
   if (existsSync(outfile)) return outfile
-  const result = spawnSync(process.execPath, ['execute/build.mjs'], { cwd: SETTINGS_DIR, encoding: 'utf8' })
+  const buildScript = join(REPO_ROOT, 'plugin-sdk', 'tools', 'build-ui.mjs')
+  const result = spawnSync(process.execPath, [buildScript], { cwd: SETTINGS_DIR, encoding: 'utf8' })
   if (result.status !== 0) {
     throw new Error(`构建客户端半边失败（exit ${result.status}）：${result.stderr || result.stdout}`)
   }

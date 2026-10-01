@@ -3,54 +3,37 @@
 // 计数 / 预算经反向 `port.call`（`token-estimate` / `budget`），应答帧即时结算（不排队）。
 // 启动即加载 policy；失败 ⇒ 在 hello 前退出非 0（宿主隔离）。
 
-import {
-  PortLink,
-  createService as createSdkService,
-  isDirectRun,
-  makeLogger,
-  packageRootOf,
-  runStdio,
-} from 'plugin-sdk'
+import { PortLink, defineService } from 'plugin-sdk'
 import { handleBuild, assertBag } from './methods.ts'
 import { loadPolicy } from './policy.ts'
 import { createBackends } from './port-link.ts'
 import type { Policy } from './types.ts'
-import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
+import type { Handler } from 'plugin-sdk'
 
-const CAPABILITY = 'context'
-const LOG = makeLogger('context-window')
-
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const link = new PortLink({ write: ctx.emit, idPrefix: 'context-window' })
-  const backends = createBackends(link)
-  let policy: Policy = loadPolicy()
-  const handlers: Record<string, Handler> = {
-    build: async (args, env) => {
-      assertBag(args)
-      return handleBuild(args, env, policy, backends)
-    },
-  }
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers,
-    emit: ctx.emit,
-    log: LOG,
-    portLinks: [link],
-    onReload: () => {
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'context',
+  logPrefix: 'context-window',
+  onMalformedFrame: 'exit',
+  onStarted: (log) => log(`service started (pid ${process.pid})`),
+  setup: (ctx, _capability, log) => {
+    const link = new PortLink({ write: ctx.emit, idPrefix: 'context-window' })
+    const backends = createBackends(link)
+    let policy: Policy = loadPolicy()
+    const handlers: Record<string, Handler> = {
+      build: async (args, env) => {
+        assertBag(args)
+        return handleBuild(args, env, policy, backends)
+      },
+    }
+    const onReload = (): void => {
       try {
         policy = loadPolicy()
-        LOG('reload policy reloaded')
+        log('reload policy reloaded')
       } catch (err) {
-        LOG(`reload policy failed, keeping current: ${(err as Error).message}`)
+        log(`reload policy failed, keeping current: ${(err as Error).message}`)
       }
-    },
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG, onMalformedFrame: 'exit' })
-  LOG(`service started (pid ${process.pid})`)
-}
+    }
+    return { handlers, portLinks: [link], onReload }
+  },
+})

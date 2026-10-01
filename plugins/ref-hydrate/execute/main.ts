@@ -2,43 +2,28 @@
 // manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
 // 唯一方法 `hydrate` 逐跳反向调 `host.def.read`；应答帧由 SDK `PortLink` 立即结算。
 
-import {
-  PortLink,
-  createService as createSdkService,
-  isDirectRun,
-  makeLogger,
-  packageRootOf,
-  runStdio,
-} from 'plugin-sdk'
+import { PortLink, defineService } from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
-import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
-const CAPABILITY = 'ref-hydrate'
-const LOG = makeLogger('ref-hydrate')
 /**
  * 等待宿主 `host.def.read` 的上限。须严格小于本插件 `ref-hydrate.hydrate` 的声明超时（25000），
  * 使内层先以自身错误收口；同时小于消费方反向调用本方法的等待上限（ui-settings / ui-approval 为 30000）。
  */
 const PORT_CALL_TIMEOUT_MS = 20000
 
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const link = new PortLink({
-    write: ctx.emit,
-    idPrefix: 'ref-hydrate',
-    timeoutMs: PORT_CALL_TIMEOUT_MS,
-  })
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers: createHandlers(link),
-    emit: ctx.emit,
-    log: LOG,
-    portLinks: [link],
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'ref-hydrate',
+  logPrefix: 'ref-hydrate',
+  setup: (ctx) => {
+    const link = new PortLink({
+      write: ctx.emit,
+      idPrefix: 'ref-hydrate',
+      timeoutMs: PORT_CALL_TIMEOUT_MS,
+    })
+    return {
+      handlers: createHandlers(link),
+      portLinks: [link],
+    }
+  },
+})

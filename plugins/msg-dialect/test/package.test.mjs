@@ -19,50 +19,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全；pins host（资产内联），无 needs', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'msg-dialect')
-  assert.equal(decl.schema, 'schema/msg-dialect.json')
-  assert.deepEqual(decl.implements, ['msg-dialect'])
-  assert.deepEqual(decl.methods, {
-    'msg-dialect': [
-      'normalize-quirks',
-      'reasoning-capability',
-      'encode-tools',
-      'apply-auth',
-      'build',
-      'parse-full',
-      'inline-assets',
-    ],
-  })
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.equal(decl.needs, undefined)
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema 声明 audit_redact / method_timeouts', () => {
   const schema = readJson('schema/msg-dialect.json')

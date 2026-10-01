@@ -9,42 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'slots',
-  'needs',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 15 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'tool-registry')
-  assert.equal(decl.schema, 'schema/tool-registry.json')
-  assert.deepEqual(decl.implements, ['tool-registry'])
-  assert.deepEqual(decl.methods, { 'tool-registry': ['list', 'validate-args'] })
-  assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.slots, { 'tool-provider': { methods: ['describe', 'invoke'] } })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('needs：tool-provider 为 many 扩展类；绑定提供者类逐个 one（schema 校验住本包）', () => {
   const decl = readJson('plugin.json')

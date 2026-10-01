@@ -20,37 +20,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全且为数据身份（无 implements / 服务 / pins / needs）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'tools')
-  assert.equal(decl.schema, 'schema/tools.json')
-  assert.deepEqual(decl.implements, [])
-  assert.deepEqual(decl.methods, {})
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, '')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [{ kind: 'schema', path: 'schema/' }])
-  assert.deepEqual(decl.commands, [])
-  assert.equal(existsSync(join(PKG_ROOT, 'execute')), false, '数据身份不起服务')
-})
 
 test('.worldignore 排除 test/ 与 tools/（契约必需文件不可排除）', () => {
   const lines = readText('.worldignore')

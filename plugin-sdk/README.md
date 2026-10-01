@@ -27,6 +27,7 @@
 | `env.ts`       | 调用帧 `env` 解析与 `nowOf`（固定时钟）                                                   |
 | `types.ts`     | `CallEnv` / `CallContext` / `Handler` / `HandlerResult` / `PortCaller`、错误类            |
 | `driver.ts`    | 测试驱动 `startService` + `request` + port bridge                                         |
+| `web/`         | UI 插件的服务半边共用骨架：宿主根 / 入站 socket 推导、入站客户端、入站桥（子路径 `plugin-sdk/web`） |
 
 ## 派发能力
 

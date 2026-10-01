@@ -2,24 +2,14 @@
 // 逐原语求值与分派表在 machine.eval.ts（点分段，经本文件转口）。
 
 import type { Def, EffRequest, EffResult, Hash, Json, Path } from './types.ts'
+import { TERM_WALK } from './machine.eval.ts'
 
 export { cmp, evaluation, TERM_TAGS } from './machine.eval.ts'
+export { TERM_WALK }
+export type { TermWalkChild, TermWalkRule } from './machine.eval.ts'
 
-export type TermTag =
-  | 'c'
-  | 'g'
-  | 'get'
-  | 'getOr'
-  | 'v'
-  | 'cmp'
-  | 'pred'
-  | 'if'
-  | 'fold'
-  | 'eff'
-  | 'call'
-  | 'arith'
-  | 'list'
-  | 'obj'
+/** 14 原语头，由 `TERM_WALK` 的键派生。 */
+export type TermTag = keyof typeof TERM_WALK
 export type Term = [TermTag, ...Json[]]
 // 14 原语的具化形状（仅供阅读与分派；机器按 term[0] 分派，形态不合按 bad_term/bad_var 报出）：
 //  Const ["c", Json] · Var ["v", 非负整数] · Cmp ["cmp", Term, Term] → -1|0|1

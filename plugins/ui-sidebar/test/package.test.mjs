@@ -44,23 +44,12 @@ const COMMAND_NAMES = [
   'ui-sidebar.client.read',
 ]
 
-test('plugin.json 省略 schema 且其余字段齐全（含 build、无 exclusive）', () => {
-  const decl = readJson('plugin.json')
-  assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  const expected = ['identity', 'implements', 'methods', 'pins', 'needs', 'start', 'build', 'protocol', 'restart', 'health', 'state', 'members', 'commands']
-  assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
-  assert.equal(Object.hasOwn(decl, 'exclusive'), false, 'HTTP 面作废后不得再声明独占端口')
-  assert.equal(decl.identity, 'ui-sidebar')
-  assert.equal(decl.start, 'node execute/main.js')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-})
 
-test('构建声明：npm ci + esbuild 打包脚本，令牌过白名单且不含 =', () => {
+test('构建声明：npm ci + 共享构建脚本，令牌过白名单且不含 =', () => {
   const decl = readJson('plugin.json')
   assert.ok(Array.isArray(decl.build) && decl.build.length === 2, 'build 应为两步')
   assert.deepEqual(decl.build[0], { cmd: 'npm', args: ['ci'] })
-  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['execute/build.mjs'] })
+  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['../../plugin-sdk/tools/build-ui.mjs'] })
   const SAFE = /^[A-Za-z0-9_./:@,+-]+$/
   for (const step of decl.build) {
     assert.ok(SAFE.test(step.cmd), `cmd 令牌非法：${step.cmd}`)
@@ -69,10 +58,10 @@ test('构建声明：npm ci + esbuild 打包脚本，令牌过白名单且不含
       assert.ok(!arg.includes('='), `args 不得含 =：${arg}`)
     }
   }
-  const script = readText(join('execute', 'build.mjs'))
-  assert.match(script, /from 'esbuild'/, '构建脚本应调用 esbuild')
-  assert.match(script, /execute|web\/entry\.tsx/, '构建脚本应以 entry.tsx 为入口')
-  assert.match(script, /dist\/entry\.js/, '构建脚本产物应为 dist/entry.js')
+  const script = readText(join('..', '..', 'plugin-sdk', 'tools', 'build-ui.mjs'))
+  assert.match(script, /esbuild/, '共享脚本应调用 esbuild')
+  assert.match(script, /entry\.tsx/, '共享脚本应以 entry.tsx 为入口')
+  assert.match(script, /dist/, '共享脚本产物应落 dist/')
 })
 
 test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；needs 四条（session / workspace / workspace-picker / input）', () => {

@@ -1,6 +1,8 @@
 // 全部共用类型与错误形态 + `KernelError`——放这里是因为依赖 DAG 里
 // 它是唯一人人可达的公共上游；错误的**数据形态**，零逻辑。
 
+import type { Op } from './ops.ts'
+
 // ── 值 ────────────────────────────────────────────────
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 export type Hash = string // 64 个十六进制字符（sha256 全长，不截断）
@@ -54,17 +56,7 @@ export interface Anchor {
 }
 
 // ── 日志 ──────────────────────────────────────────────
-export type Op =
-  | 'put'
-  | 'add_identity'
-  | 'add_gen'
-  | 'set_active'
-  | 'retire'
-  | 'fork'
-  | 'graft'
-  | 'batch'
-  | 'note'
-  | 'snapshot'
+export type { Op } from './ops.ts'
 
 export interface Entry {
   seq: number

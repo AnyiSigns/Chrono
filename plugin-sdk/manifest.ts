@@ -1,21 +1,15 @@
-// manifest 派生：读同包 `plugin.json` 取 `identity` / `implements` / `methods` / `protocol` / `state`。
-// 服务自述与声明一致由本模块保证；缺声明按 capability / 缺省档回落，不阻断装载。
+// manifest 派生：读同包 `plugin.json` 供握手回带。
+// 字段口径与 `plugin.json` 声明解析同源（`plugin-sdk/decl.ts`），本模块只负责读文件与从已解析值派生。
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { isRecord } from './json.ts'
-import type { Json, Rec } from './json.ts'
+import type { Rec } from './json.ts'
+import type { ServiceManifest } from './decl.ts'
 
-/** 服务握手回带的 manifest（docs/protocol.md §2.1）。 */
-export interface ServiceManifest {
-  v: string
-  identity: string
-  implements: string[]
-  methods: Record<string, string[]>
-  protocol: string
-  state: string
-}
+export { deriveManifest } from './decl.ts'
+export type { ServiceManifest } from './decl.ts'
 
 /** 读同包 `plugin.json`；读取 / 解析失败返回空对象（调用方按缺省回落）。 */
 export function readPluginJson(pluginRoot: string): Rec {
@@ -26,36 +20,6 @@ export function readPluginJson(pluginRoot: string): Rec {
     // plugin.json 缺失 / 非法：按缺省回落；合法插件不会走到这里。
   }
   return {}
-}
-
-function stringList(value: Json | undefined): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
-}
-
-/** 从 plugin.json 派生 manifest；缺声明按 capability / 缺省状态档回落。 */
-export function deriveManifest(
-  plugin: Rec,
-  capability: string,
-  defaultState: string,
-): ServiceManifest {
-  const identity =
-    typeof plugin['identity'] === 'string' ? (plugin['identity'] as string) : capability
-  const implementsList = Array.isArray(plugin['implements'])
-    ? stringList(plugin['implements'])
-    : [capability]
-  const methods = isRecord(plugin['methods']) ? (plugin['methods'] as Rec) : {}
-  const protocol = typeof plugin['protocol'] === 'string' ? (plugin['protocol'] as string) : '1'
-  const state = typeof plugin['state'] === 'string' ? (plugin['state'] as string) : defaultState
-  return {
-    v: '1',
-    identity,
-    implements: implementsList,
-    methods: methods as Record<string, string[]>,
-    protocol,
-    state,
-  }
 }
 
 /**

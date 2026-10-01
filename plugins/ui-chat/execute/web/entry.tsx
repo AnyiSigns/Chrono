@@ -18,6 +18,7 @@ import {
 } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import type { SlotContext } from '@chrono/ui-contract'
+import { Icon as KitIcon } from '@chrono/ui-kit'
 
 import { STYLE_TEXT } from './styles.ts'
 import { slotWriteCommand } from './slot-write.ts'
@@ -155,6 +156,7 @@ function RenderFallback(): ReactNode {
 
 // ---- 原子组件 ----
 
+/** 图标适配器：sprite 取壳上下文提供的同源资产，图形本体由共享 UI 套件渲染。 */
 function Icon({
   name,
   size = 16,
@@ -167,24 +169,7 @@ function Icon({
   className?: string
 }): ReactNode {
   const { ctx } = useChatEnv()
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      role={label.length > 0 ? 'img' : undefined}
-      aria-label={label.length > 0 ? label : undefined}
-      aria-hidden={label.length > 0 ? undefined : true}
-    >
-      <use href={`${ctx.tokens.icons}#${name}`} />
-    </svg>
-  )
+  return <KitIcon name={name} icons={ctx.tokens.icons} size={size} label={label} className={className} />
 }
 
 function IconButton({

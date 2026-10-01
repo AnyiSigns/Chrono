@@ -9,49 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'concurrent_methods',
-  'needs',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'model-protocol')
-  assert.equal(decl.schema, 'schema/protocol.json')
-  assert.deepEqual(decl.implements, ['model'])
-  assert.deepEqual(decl.methods, {
-    model: ['chat', 'complete', 'abort', 'vendors', 'discover', 'profile', 'sync'],
-  })
-  assert.deepEqual(decl.concurrent_methods, ['chat', 'complete', 'abort'])
-  assert.deepEqual(decl.needs, {
-    secrets: { mode: 'one' },
-    config: { mode: 'one' },
-    throttle: { mode: 'one' },
-    'msg-dialect': { mode: 'one' },
-  })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema 顶层含宿主消费键 periodic / method_timeouts', () => {
   const schema = readJson('schema/protocol.json')

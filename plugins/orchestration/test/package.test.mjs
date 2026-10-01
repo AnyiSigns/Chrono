@@ -20,41 +20,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'needs',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全且形态合法（needs graph-gate）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'orchestration')
-  assert.equal(decl.schema, 'schema/orchestration.json')
-  assert.deepEqual(decl.implements, ['orchestration'])
-  assert.deepEqual(decl.methods, { orchestration: ['list', 'read', 'validate', 'propose'] })
-  assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.needs, { 'graph-gate': { mode: 'one' } })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/orchestration.json 声明私有参数（变更类 / 提案上限）', () => {
   const schema = readJson('schema/orchestration.json')

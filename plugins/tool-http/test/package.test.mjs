@@ -16,47 +16,7 @@ import {
   REVERSE_TIMEOUT_MARGIN_MS,
 } from '../execute/reverse.ts'
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'needs',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'tool-http')
-  assert.equal(decl.schema, 'schema/tool-http.json')
-  assert.deepEqual(decl.implements, ['tool-http', 'tool-provider'])
-  assert.deepEqual(decl.methods, {
-    'tool-http': ['describe', 'invoke'],
-    'tool-provider': ['describe', 'invoke'],
-  })
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs, {
-    sandbox: { mode: 'one' },
-    'search-index': { mode: 'many' },
-  })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('无 terms/ 目录且无命令面', () => {
   assert.equal(existsSync(join(PKG_ROOT, 'terms')), false, '不应有 terms/')

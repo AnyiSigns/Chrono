@@ -7,8 +7,8 @@
 // 被调声明判，被调声明读不出（保留能力 `host` / 尚未入世 / 声明不可解析）时跳过，不新增拒绝语义。
 
 import { isRecord } from '../common/json.ts'
-import { TERM_TAGS } from '../../kernel/index.ts'
-import type { Json } from '../../kernel/index.ts'
+import { TERM_TAGS, TERM_WALK } from '../../kernel/index.ts'
+import type { Json, TermWalkRule } from '../../kernel/index.ts'
 
 /** 校验上下文：本包声明面 + 被调身份声明解析。 */
 export interface EffDeclContext {
@@ -36,55 +36,29 @@ export function walkEffs(ast: Json, visit: (port: Json, method: Json) => void): 
   const unknown = new Set<string>()
   const walk = (node: Json): void => {
     if (!Array.isArray(node)) return
-    switch (node[0]) {
-      case 'c':
-      case 'g':
-      case 'v':
-        return
-      case 'get':
-        walk(node[1])
-        return
-      case 'getOr':
-        walk(node[1])
-        walk(node[3])
-        return
-      case 'cmp':
-        walk(node[1])
-        walk(node[2])
-        return
-      case 'pred':
-      case 'arith':
-        walk(node[2])
-        walk(node[3])
-        return
-      case 'if':
-        walk(node[1])
-        walk(node[2])
-        walk(node[3])
-        return
-      case 'fold':
-        walk(node[1])
-        walk(node[2])
-        walk(node[3])
-        return
-      case 'eff':
-        visit(node[1], node[2])
-        walk(node[3])
-        return
-      case 'call':
-        walk(node[1])
-        if (Array.isArray(node[2])) for (const arg of node[2]) walk(arg)
-        return
-      case 'list':
-        if (Array.isArray(node[1])) for (const item of node[1]) walk(item)
-        return
-      case 'obj':
-        if (isRecord(node[1])) for (const key of Object.keys(node[1])) walk(node[1][key])
-        return
-      default:
-        // 头是内核原语却无本表分支 = 两边名单漂移；记录以便整包拒，绝不静默返回。
-        if (typeof node[0] === 'string' && TERM_TAGS.has(node[0])) unknown.add(node[0])
-        return
+    const tag = node[0]
+    if (typeof tag !== 'string') return
+    // 走查规则消费内核单一真源（`TERM_WALK`），新增原语无需在本层同步清单。
+    const rule: TermWalkRule | undefined = (TERM_WALK as Readonly<Record<string, TermWalkRule>>)[
+      tag
+    ]
+    if (rule === undefined) {
+      // 头是内核原语却无走查规则 = 两边失配；记录以便整包拒，绝不静默返回。
+      if (TERM_TAGS.has(tag)) unknown.add(tag)
+      return
+    }
+    if (rule.visit !== undefined) visit(node[rule.visit[0]], node[rule.visit[1]])
+    for (const child of rule.children) {
+      if (typeof child === 'number') {
+        walk(node[child])
+        continue
+      }
+      const value = node[child.at]
+      if (child.spread === 'array') {
+        if (Array.isArray(value)) for (const item of value) walk(item)
+      } else if (isRecord(value)) {
+        for (const key of Object.keys(value)) walk(value[key])
+      }
     }
   }
   walk(ast)

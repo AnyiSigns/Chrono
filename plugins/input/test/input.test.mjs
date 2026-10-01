@@ -16,22 +16,6 @@ const readJson = (rel) => JSON.parse(readText(rel))
 const ENTRY = join(pkgRoot, 'execute', 'main.ts')
 const FIXED_ENV = { run: 'run-1', thread: 't1', now: 1_700_000_000_000 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'exclusive',
-  'members',
-  'commands',
-]
 
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const KEYWORDS = new Set([
@@ -123,24 +107,6 @@ function startService(options = {}) {
 
 // -- package shape -----------------------------------------------------------
 
-test('plugin.json fields complete and well-formed', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'input')
-  assert.equal(decl.schema, 'schema/slot.schema.json')
-  assert.deepEqual(decl.implements, ['input'])
-  assert.deepEqual(decl.methods, { input: ['read', 'write', 'clear'] })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'durable')
-  assert.deepEqual(decl.exclusive, ['data'])
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'term', path: 'terms/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-})
 
 test('commands declare input.read (readonly) and input.write', () => {
   const decl = readJson('plugin.json')

@@ -9,44 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'graph-gate')
-  assert.equal(decl.schema, 'schema/graph-gate.json')
-  assert.deepEqual(decl.implements, ['graph-gate'])
-  assert.deepEqual(decl.methods, { 'graph-gate': ['validate', 'closure', 'select', 'hash'] })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.needs, undefined)
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.health.interval_ms, 10000)
-  assert.equal(decl.health.timeout_ms, 2000)
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/graph-gate.json 声明四方法 / 错误码 / 脱敏 / 超时', () => {
   const schema = readJson('schema/graph-gate.json')

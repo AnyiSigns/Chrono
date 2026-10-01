@@ -1,14 +1,12 @@
-// 自实现入站客户端（UI 插件不得 import 宿主 / 内核 / 客户端包）。
-// 连接宿主本地 socket（named pipe / unix domain），按 docs/protocol.md §三 收发帧：
-// 请求按 id 配对；`event` 无 id、按 `impl` 命名空间回调；断线自动重连并上报连接态。
-// 另持 run 等待表：submit 的终局 `result` 帧无 id、带 `run`，据此保证「槽写落账先于裁决命令」。
-// 只依赖 node:net / node:crypto；日志走 stderr。
+// 自实现入站客户端：UI 插件的服务半边连接宿主本地 socket（named pipe / unix domain）收发帧。
+// 请求按 id 配对；`event` 无 id、按 `impl` 命名空间回调；未配对 `result` 帧按 `run` 交等待方
+// （写落账先于后续裁决命令的次序保证）；断线自动重连并上报连接态。只依赖 node:net / node:crypto。
 
 import { connect } from 'node:net'
 import type { Socket } from 'node:net'
-import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
-import { isRecord } from './types.ts'
-import type { Json, Rec } from './types.ts'
+import { isRecord } from '../json.ts'
+import type { Json, Rec } from '../json.ts'
+import { createFrameDecoder, encodeFrame } from '../wire.ts'
 import type { InboundResult, Transport } from './bridge.ts'
 
 export interface InboundClientOptions {

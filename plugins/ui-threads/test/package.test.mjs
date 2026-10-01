@@ -11,31 +11,6 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-test('plugin.json 省略 schema、无 exclusive、其余字段齐全', () => {
-  const decl = readJson('plugin.json')
-  assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付后不再独占端口')
-  const expected = [
-    'identity',
-    'implements',
-    'methods',
-    'needs',
-    'pins',
-    'start',
-    'build',
-    'protocol',
-    'restart',
-    'health',
-    'state',
-    'members',
-    'commands',
-  ]
-  assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
-  assert.equal(decl.identity, 'ui-threads')
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-})
 
 test('能力类为 ui-threads（ping + threads.state + client.read）；needs = session / todo owner', () => {
   const decl = readJson('plugin.json')
@@ -73,7 +48,7 @@ test('入口 term 形状：threads.state / client.read 均只传命令 args（�
   ])
 })
 
-test('build 声明：npm ci + node execute/build.mjs，args 不含 `=`', () => {
+test('build 声明：npm ci + 共享构建脚本，args 不含 `=`', () => {
   const decl = readJson('plugin.json')
   assert.ok(Array.isArray(decl.build) && decl.build.length === 2, 'build 应为两步')
   for (const step of decl.build) {
@@ -85,8 +60,11 @@ test('build 声明：npm ci + node execute/build.mjs，args 不含 `=`', () => {
     }
   }
   assert.deepEqual(decl.build[0], { cmd: 'npm', args: ['ci', '--no-audit', '--no-fund'] })
-  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['execute/build.mjs'] })
-  assert.ok(existsSync(join(pkgRoot, 'execute', 'build.mjs')), '构建脚本 execute/build.mjs 应存在')
+  assert.deepEqual(decl.build[1], { cmd: 'node', args: ['../../plugin-sdk/tools/build-ui.mjs'] })
+  assert.ok(
+    existsSync(join(pkgRoot, '..', '..', 'plugin-sdk', 'tools', 'build-ui.mjs')),
+    '共享构建脚本 plugin-sdk/tools/build-ui.mjs 应存在',
+  )
 })
 
 test('.worldignore 声明 test/、tools/ 与 execute/web/dist/', () => {

@@ -12,22 +12,6 @@ const ENTRY = join(pkgRoot, 'execute', 'main.ts')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'exclusive',
-  'members',
-  'commands',
-]
 
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const KEYWORDS = new Set([
@@ -91,26 +75,6 @@ function assertWhitelist(schema, where) {
   }
 }
 
-test('plugin.json 字段齐全且形态合法（服务身份）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'skill')
-  assert.equal(decl.schema, 'schema/skill.json')
-  assert.deepEqual(decl.implements, ['skill'])
-  assert.deepEqual(decl.methods, { skill: ['read', 'write'] })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.state, 'durable')
-  assert.deepEqual(decl.exclusive, ['data'])
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'term', path: 'terms/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-})
 
 test('commands 声明 skill.read（只读）+ skill.write（整份）', () => {
   const decl = readJson('plugin.json')

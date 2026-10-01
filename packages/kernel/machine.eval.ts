@@ -9,23 +9,38 @@ import { KernelError } from './types.ts'
 import type { Env, EvalResult, Term, TermTag } from './machine.ts'
 import type { EffRequest, Hash, Json, Path } from './types.ts'
 
+/** 一个原语子项的下钻方式：数字 = 单子项位置；`spread` = 该位置是容器，逐元素下钻。 */
+export type TermWalkChild = number | { at: number; spread: 'array' | 'object' }
+
+/** 原语的结构走查规则：`visit` = `eff` 的 port / method 位置；`children` = 需继续下钻的子项。 */
+export interface TermWalkRule {
+  visit?: readonly [number, number]
+  children: readonly TermWalkChild[]
+}
+
+/**
+ * 14 原语头的单一真源：结构走查表。`TERM_TAGS` 由它派生，宿主 `walkEffs` 直接消费同一张表，
+ * 内核新增原语只需改这里，宿主走查不会静默漂移。
+ */
+export const TERM_WALK = {
+  c: { children: [] },
+  g: { children: [] },
+  v: { children: [] },
+  get: { children: [1] },
+  getOr: { children: [1, 3] },
+  cmp: { children: [1, 2] },
+  pred: { children: [2, 3] },
+  if: { children: [1, 2, 3] },
+  fold: { children: [1, 2, 3] },
+  eff: { visit: [1, 2], children: [3] },
+  call: { children: [1, { at: 2, spread: 'array' }] },
+  arith: { children: [2, 3] },
+  list: { children: [{ at: 1, spread: 'array' }] },
+  obj: { children: [{ at: 1, spread: 'object' }] },
+} as const satisfies Readonly<Record<string, TermWalkRule>>
+
 /** 14 原语头；机器分派与 run 的事前 bad_term 检查共用此名单。 */
-export const TERM_TAGS: ReadonlySet<string> = new Set([
-  'c',
-  'g',
-  'get',
-  'getOr',
-  'v',
-  'cmp',
-  'pred',
-  'if',
-  'fold',
-  'eff',
-  'call',
-  'arith',
-  'list',
-  'obj',
-])
+export const TERM_TAGS: ReadonlySet<string> = new Set(Object.keys(TERM_WALK))
 
 /** `pred` 的谓词算子；返回 Bool，复用 `cmp` 的全序（不引入隐式转换）。 */
 const PRED_OPS: ReadonlySet<string> = new Set(['lt', 'le', 'gt', 'ge', 'eq', 'ne'])

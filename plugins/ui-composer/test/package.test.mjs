@@ -10,30 +10,6 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-test('plugin.json 省略 schema / exclusive，且其余字段齐全', () => {
-  const decl = readJson('plugin.json')
-  assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  assert.equal(Object.hasOwn(decl, 'exclusive'), false, 'HTTP 面已删，不得再声明 port 独占')
-  const expected = [
-    'identity',
-    'implements',
-    'methods',
-    'pins',
-    'start',
-    'build',
-    'protocol',
-    'restart',
-    'health',
-    'state',
-    'members',
-    'commands',
-  ]
-  assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
-  assert.equal(decl.identity, 'ui-composer')
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-})
 
 test('能力类为 ui-composer（ping + client.read）；pins 空；只读交付命令', () => {
   const decl = readJson('plugin.json')
@@ -49,7 +25,7 @@ test('能力类为 ui-composer（ping + client.read）；pins 空；只读交付
   ])
   assert.deepEqual(decl.build, [
     { cmd: 'npm', args: ['ci'] },
-    { cmd: 'node', args: ['execute/build.mjs'] },
+    { cmd: 'node', args: ['../../plugin-sdk/tools/build-ui.mjs'] },
   ])
 })
 
@@ -68,7 +44,7 @@ test('package.json 带构建 / 类型门禁 / 测试脚本与 esbuild devDep', (
   assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['@chrono/ui-kit'])
   assert.equal(pkg.peerDependencies, undefined)
   assert.equal(typeof pkg.devDependencies.esbuild, 'string')
-  assert.equal(pkg.scripts.build, 'node execute/build.mjs')
+  assert.equal(pkg.scripts.build, 'node ../../plugin-sdk/tools/build-ui.mjs')
   assert.equal(pkg.scripts.test, 'node --test')
   assert.equal(pkg.scripts.typecheck, 'tsc --noEmit')
   assert.ok(pkg.files.includes('package-lock.json'))

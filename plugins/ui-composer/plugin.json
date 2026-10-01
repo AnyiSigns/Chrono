@@ -8,7 +8,7 @@
   "start": "node execute/main.ts",
   "build": [
     { "cmd": "npm", "args": ["ci"] },
-    { "cmd": "node", "args": ["execute/build.mjs"] }
+    { "cmd": "node", "args": ["../../plugin-sdk/tools/build-ui.mjs"] }
   ],
   "protocol": "1",
   "restart": {

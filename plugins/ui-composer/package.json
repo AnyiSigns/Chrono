@@ -16,7 +16,7 @@
   ],
   "engines": { "node": ">=24" },
   "scripts": {
-    "build": "node execute/build.mjs",
+    "build": "node ../../plugin-sdk/tools/build-ui.mjs",
     "test": "node --test",
     "typecheck": "tsc --noEmit"
   },

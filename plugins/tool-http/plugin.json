@@ -11,7 +11,7 @@
   },
   "needs": {
     "sandbox": { "mode": "one" },
-    "search-index": { "mode": "many" }
+    "search-index": { "mode": "many", "methods": ["search", "put"] }
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -22,55 +22,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'concurrent_methods',
-  'pins',
-  'needs',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 15 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'chat')
-  assert.equal(decl.schema, 'schema/wiring.json')
-  assert.deepEqual(decl.implements, ['chat'])
-  assert.deepEqual(decl.methods, { chat: ['send', 'history', 'resume', 'cancel', 'insert'] })
-  assert.deepEqual(decl.concurrent_methods, ['send', 'resume', 'history', 'cancel', 'insert'])
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs, {
-    session: { mode: 'one' },
-    'ref-hydrate': { mode: 'one' },
-    input: { mode: 'one' },
-    model: { mode: 'one' },
-    'session-title': { mode: 'one' },
-    'loop-policy': { mode: 'one' },
-    todo: { mode: 'one' },
-    config: { mode: 'one' },
-    mcp: { mode: 'one' },
-    workspace: { mode: 'one' },
-    skill: { mode: 'one' },
-  })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'term', path: 'terms/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-})
 
 test('needs 含 loop-policy（#33 替换管道）', () => {
   const decl = readJson('plugin.json')

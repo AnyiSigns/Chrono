@@ -5,7 +5,8 @@
   "type": "module",
   "description": "插件服务 SDK：服务协议帧编解码 / 帧循环 / manifest 派生 / 调用派发 / 反向调用通道（插件侧库，零内核零宿主依赖）",
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./web": "./web/index.ts"
   },
   "files": [
     "package.json",
@@ -13,15 +14,19 @@
     "tsconfig.json",
     "index.ts",
     "canonical.ts",
+    "decl.ts",
     "driver.ts",
     "env.ts",
     "json.ts",
+    "launch.ts",
     "manifest.ts",
     "plan.ts",
     "port-link.ts",
     "service.ts",
     "types.ts",
     "wire.ts",
+    "web",
+    "tools",
     "rust"
   ],
   "engines": {

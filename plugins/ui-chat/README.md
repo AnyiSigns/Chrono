@@ -88,8 +88,9 @@ export function register(ctx: SlotContext): void {
 ## 构建与产物交付
 
 - `plugin.json.build` 声明两步：`npm ci`（按 `package-lock.json` 恢复 devDependency）与
-  `node execute/build.mjs`（脚本内调 esbuild JS API，避开 build args 白名单「不含 =」与
-  esbuild CLI 字符串选项必须 `--opt=value` 的冲突），产物落 `execute/web/dist/entry.js`。
+  `node ../../plugin-sdk/tools/build-ui.mjs`（共享脚本内调 esbuild JS API，避开 build args
+  白名单「不含 =」与 esbuild CLI 字符串选项必须 `--opt=value` 的冲突），产物落
+  `execute/web/dist/entry.js`。
 - 产物 `externalize` 壳 vendor（`react` / `react/jsx-runtime` / `react-dom` /
   `react-dom/client` / `use-sync-external-store` 及其 shim），单文件输出、不做 code splitting。
 - `.worldignore` 排除 `execute/web/dist/`：产物世代内可重算，入世会污染内容哈希。

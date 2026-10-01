@@ -95,7 +95,7 @@ import {
   interpretResponse,
   submitFrame,
   unwrapPlan,
-} from '../execute/bridge.ts'
+} from 'plugin-sdk/web'
 import {
   assembleDiscoverArgs,
   assembleProfileArgs,

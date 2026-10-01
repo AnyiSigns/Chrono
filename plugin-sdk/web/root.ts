@@ -1,6 +1,6 @@
-// 宿主根目录与入站 socket 地址推导。
-// 宿主以 `CHRONO_PLUGIN_STATE=<root>/state/plugins/<id>` 注入本进程（docs/host.md §五 插件 ③ 目录），
-// 故上溯三级即 root；socket 地址派生规则与宿主的路径推导一致（两侧各自实现、不跨包 import）。
+// 宿主根目录与入站 socket 地址推导：UI 插件的服务半边自实现入站客户端时共用。
+// 宿主以 `CHRONO_PLUGIN_STATE=<root>/state/plugins/<id>` 注入本进程，故上溯三级即 root；
+// socket 地址派生规则与宿主侧 paths 一致（两侧各自实现、不跨包 import）。
 
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'

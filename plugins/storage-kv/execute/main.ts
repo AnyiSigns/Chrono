@@ -3,31 +3,22 @@
 // 服务不读投影、无写通道、无 pins（不发反向调用）：命名空间取帧 `env.emitter`，
 // 数据落 CHRONO_PLUGIN_DATA 下的按 owner 分目录追加日志。
 
-import { createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import { defineService } from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
 import { KvEngine } from './engine.ts'
-import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
-
-const CAPABILITY = 'storage-kv'
-const LOG = makeLogger('storage-kv')
 
 /** 构造服务实例：④ 目录取 loader 参数，引擎由本插件提供。 */
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const engine = new KvEngine(ctx.env['CHRONO_PLUGIN_DATA'] ?? null)
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    defaultState: 'durable',
-    handlers: createHandlers(engine),
-    emit: ctx.emit,
-    log: LOG,
-    onDrain: () => engine.close(),
-    onClose: () => engine.close(),
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'storage-kv',
+  logPrefix: 'storage-kv',
+  defaultState: 'durable',
+  setup: (ctx) => {
+    const engine = new KvEngine(ctx.env['CHRONO_PLUGIN_DATA'] ?? null)
+    return {
+      handlers: createHandlers(engine),
+      onDrain: () => engine.close(),
+      onClose: () => engine.close(),
+    }
+  },
+})

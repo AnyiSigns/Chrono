@@ -79,6 +79,34 @@
 | `members` | 成员清单，每项带 `kind`（`execute` / `term` / `schema`）——「数据热生效 vs 代码起新服务」由此驱动，不按目录名 |
 | `commands` | 命令声明：`{ name, entry, argsSchema, readonly? }`——客户端按 `name` 调用，宿主解析到入口 def 并机械校验参数。`entry` / `argsSchema` 是**包内路径**，入世解析成 def 哈希（与 `schema` 同路：契约层写路径、宿主解析）；`argsSchema` 方言见下。`readonly` 可选布尔（缺省 `false`；显式非布尔入世拒）：`true` = **只读命令（纯查询）**，宿主不广播 run 生命周期事件、不落审计、不推进链头——只有确认命令不写链、不产 write / plan 时才标（产出即 `refused`、reason `readonly_violation`） |
 
+<!-- BEGIN GENERATED: plugin.json fields -->
+`plugin.json` 字段的权威清单（名称 / 必填性）由解析器 `plugin-sdk/decl.ts` 单点定义，下表由它生成，**勿手改**：
+
+| 字段 | 必填性 | 说明 |
+| --- | --- | --- |
+| `identity` | 必填 | 身份名 = 世界里的 `id` |
+| `schema` | 可省略 | 身份自述 / 数据契约的包内路径；可省略（零 schema） |
+| `implements` | 必填 | 提供的能力类 |
+| `methods` | 必填 | 能力类 → 方法名 |
+| `concurrent_methods` | 可省略 | 并发安全的方法名；SDK 消费、宿主不读 |
+| `pins` | 必填 | 身份级依赖（逻辑端点名 → 被依赖身份名） |
+| `needs` | 可省略 | 消费方引用的能力类（`one` / `many`） |
+| `slots` | 可省略 | 拥有方声明的能力类方法契约 |
+| `judgments` | 可省略 | 由 term 承载的能力方法 |
+| `start` | 必填 | 启动命令；空 ≡ 无执行件（数据身份） |
+| `transport` | 可省略 | 服务传输形态：`stdio`（缺省）/ `inproc` / `worker` |
+| `build` | 必填 | 构建声明 `[{cmd, args}]`；空数组 = 无需构建 |
+| `exclusive` | 可省略 | 独占资源类；可省略 |
+| `protocol` | 必填 | 服务协议版本 |
+| `restart` | 必填 | 重启策略 |
+| `health` | 必填 | 健康判据 |
+| `state` | 必填 | 状态档：`recomputable` / `durable` |
+| `members` | 必填 | 成员清单（`execute` / `term` / `schema`） |
+| `commands` | 必填 | 命令声明 `{name, entry, argsSchema?, readonly?}` |
+
+共 19 个字段：必填 12 个、可省略 7 个。
+<!-- END GENERATED: plugin.json fields -->
+
 ### 命令 `argsSchema` 方言（v1 · JSON Schema 白名单子集）
 
 `argsSchema` 指向的 def body 必须落在**白名单子集**内；宿主只做**形态门禁**，语义校验（业务规则）归插件：

@@ -4,40 +4,24 @@
 // 模型反向调用（model.complete）走 `port.call`，应答帧由 SDK 派发器拦截结算（不排队）；
 // 标题后处理住本插件纯函数，不再有第二个反向调用。
 
-import {
-  PortLink,
-  createService as createSdkService,
-  isDirectRun,
-  makeLogger,
-  packageRootOf,
-  runStdio,
-} from 'plugin-sdk'
+import { PortLink, defineService } from 'plugin-sdk'
 import { loadBaseConfig } from './config.ts'
 import { createHandlers } from './methods.ts'
 import { RemoteModel } from './port-link.ts'
-import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
-
-const CAPABILITY = 'session-title'
-const LOG = makeLogger('session-title')
 
 /** 构造服务实例：反向调用通道 + 模型后端，由本插件提供。 */
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const link = new PortLink({ write: ctx.emit, idPrefix: 'session-title' })
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers: createHandlers({
-      config: loadBaseConfig(),
-      model: new RemoteModel(link),
-    }),
-    emit: ctx.emit,
-    log: LOG,
-    portLinks: [link],
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'session-title',
+  logPrefix: 'session-title',
+  setup: (ctx) => {
+    const link = new PortLink({ write: ctx.emit, idPrefix: 'session-title' })
+    return {
+      handlers: createHandlers({
+        config: loadBaseConfig(),
+        model: new RemoteModel(link),
+      }),
+      portLinks: [link],
+    }
+  },
+})

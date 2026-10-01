@@ -13,9 +13,8 @@ import {
   runStdio,
 } from 'plugin-sdk'
 import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
-import { InboundClient } from './inbound.ts'
+import { InboundClient, inboundSocketPath, rootFromPluginState } from 'plugin-sdk/web'
 import { createHandlers } from './methods.ts'
-import { inboundSocketPath, rootFromPluginState } from './root.ts'
 
 const CAPABILITY = 'ui-approval'
 const LOG = makeLogger('ui-approval')

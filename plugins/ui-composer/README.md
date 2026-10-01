@@ -8,8 +8,9 @@
 - `pins`：无（不发 `eff`）；命令经壳 api 按名调（`ctx.command` / `ctx.cancel`），不再自建 HTTP 面。
 - 状态档：`recomputable`（③ 可重算；无世界数据，**零 schema**——省略 `plugin.json.schema`）。
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
-- 构建：`npm ci` + `node execute/build.mjs`（esbuild JS API，externalize 壳 vendor），
-  产物落 `execute/web/dist/entry.js`；`dist/` 被 `.worldignore` 排除，故由插件自交付。
+- 构建：`npm ci` + `node ../../plugin-sdk/tools/build-ui.mjs`（共享脚本调 esbuild JS API，
+  externalize 壳 vendor），产物落 `execute/web/dist/entry.js`；`dist/` 被 `.worldignore` 排除，
+  故由插件自交付。
 
 ## 客户端半边
 

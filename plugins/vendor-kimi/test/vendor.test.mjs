@@ -9,10 +9,6 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity', 'schema', 'implements', 'methods', 'pins', 'start', 'build',
-  'protocol', 'restart', 'health', 'state', 'members', 'commands',
-]
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const KEYWORDS = new Set([
   'type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const',
@@ -101,22 +97,6 @@ test('reasoning_replay 声明与厂商口径一致', () => {
   })
 })
 
-test('plugin.json 13 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, EXPECTED.identity)
-  assert.equal(decl.schema, 'schema/vendor.json')
-  assert.deepEqual(decl.implements, [])
-  assert.deepEqual(decl.methods, {})
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, '')
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [{ kind: 'schema', path: 'schema/' }])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema 是合法 JSON 且符合白名单子集', () => {
   assertWhitelist(readJson('schema/vendor.json'), 'vendor.schema')

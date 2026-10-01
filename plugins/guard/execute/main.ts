@@ -2,12 +2,9 @@
 // manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
 // 服务不读投影、无写通道、不取时间 / 随机——judge 同输入同输出。
 
-import { createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import { defineService } from 'plugin-sdk'
 import { HANDLERS } from './methods.ts'
-import type { Handler, Json, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
-
-const CAPABILITY = 'guard'
-const LOG = makeLogger('guard')
+import type { Handler, Json } from 'plugin-sdk'
 
 /** 把同步业务处理器（args 进、值出）适配为 SDK 处理器（值 + 空事件）。 */
 function sdkHandlers(): Record<string, Handler> {
@@ -18,18 +15,9 @@ function sdkHandlers(): Record<string, Handler> {
   return handlers
 }
 
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers: sdkHandlers(),
-    emit: ctx.emit,
-    log: LOG,
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'guard',
+  logPrefix: 'guard',
+  setup: () => ({ handlers: sdkHandlers() }),
+})

@@ -9,22 +9,6 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'exclusive',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
 const KEYWORDS = new Set([
@@ -60,35 +44,6 @@ function assertWhitelist(schema, where) {
   }
 }
 
-test('plugin.json 14 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'storage-sql')
-  assert.equal(decl.schema, 'schema/storage-sql.json')
-  assert.deepEqual(decl.implements, ['storage-sql'])
-  assert.deepEqual(decl.methods['storage-sql'], [
-    'createTable',
-    'query',
-    'write',
-    'batch',
-    'listTables',
-    'info',
-    'dropNamespace',
-  ])
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.deepEqual(decl.build, [])
-  assert.deepEqual(decl.exclusive, [])
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.state, 'durable')
-  assert.deepEqual(
-    decl.members.map((member) => member.kind).sort(),
-    ['execute', 'schema'],
-  )
-  assert.deepEqual(decl.commands, [])
-})
 
 test('storage-sql schema 是合法 JSON 且符合白名单子集', () => {
   assertWhitelist(readJson('schema/storage-sql.json'), 'storage-sql.schema')

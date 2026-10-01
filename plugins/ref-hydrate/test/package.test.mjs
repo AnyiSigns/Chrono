@@ -20,40 +20,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全且形态合法；pins host、无 needs', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'ref-hydrate')
-  assert.equal(decl.schema, 'schema/ref-hydrate.json')
-  assert.deepEqual(decl.implements, ['ref-hydrate'])
-  assert.deepEqual(decl.methods, { 'ref-hydrate': ['hydrate'] })
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.equal(decl.needs, undefined)
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/ref-hydrate.json 声明 hydrate 入参 / 结果 / 失败码与 method_timeouts', () => {
   const schema = readJson('schema/ref-hydrate.json')

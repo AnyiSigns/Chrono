@@ -2,6 +2,7 @@
 // 点分段文件（*.apply / *.form 等）全部经母文件转口，不出现在本面。加导出 = 改规格。
 
 export * from './types.ts'
+export { OP_NAMES } from './ops.ts'
 export { TYPE_ORDER, t, canonicalJson, deepEq } from './value.ts'
 export type { TypeName } from './value.ts'
 export * from './hash.ts'
@@ -11,5 +12,6 @@ export * from './journal.ts'
 export * from './rebase.ts'
 export * from './recycle.ts'
 export { commit, entryOf, stale, validate } from './commit.ts'
-export { cmp, evaluation as eval, TERM_TAGS } from './machine.ts'
+export { cmp, evaluation as eval, TERM_TAGS, TERM_WALK } from './machine.ts'
+export type { TermTag, Term, TermWalkChild, TermWalkRule } from './machine.ts'
 export { observationsOf, run } from './run.ts'

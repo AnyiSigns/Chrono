@@ -56,8 +56,9 @@ markdown / 消毒、detail 渲染、工具卡视图模型、parts 视图模型�
 - 插件自带构建：`plugin.json.build` 声明依赖安装 + 构建步骤，产物落 `execute/web/dist/entry.js`。
   `build` 的 args 白名单为 `[A-Za-z0-9_./:@,+-]`，**不得含 `=`**；而 esbuild CLI 的字符串选项
   （`--format` / `--outfile` / `--external` 等）必须写成 `--opt=value` 才合法，二者冲突。
-  故构建步骤用 `{ "cmd": "node", "args": ["execute/build.mjs"] }`，脚本内调 esbuild JS API，
-  既避开令牌限制，也不依赖 CLI 参数形态。
+  故构建步骤用共享脚本 `{ "cmd": "node", "args": ["../../plugin-sdk/tools/build-ui.mjs"] }`，
+  脚本内调 esbuild JS API，既避开令牌限制，也不依赖 CLI 参数形态；esbuild 配置与壳 vendor
+  外置清单在该脚本单源，插件构建自身（读同目录 `plugin.json`）与仓库全量构建共用它。
 - 产物必须 `externalize` 壳 vendor：`react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` /
   `use-sync-external-store` / `use-sync-external-store/shim`；单文件输出，不做 code splitting。
 - `.worldignore` 必须新增 `execute/web/dist/`：产物入世会污染内容哈希、触发无意义换代。
@@ -79,8 +80,10 @@ markdown / 消毒、detail 渲染、工具卡视图模型、parts 视图模型�
 
 各 UI 插件客户端半边改由插件自交付后，**其自身**的原 HTTP 面作废，按插件逐一删除：
 `execute/http-server.*`、`execute/port.*`、`execute/routes.*`、`execute/static.*`、`execute/inbound-guard.*`；
-对应 `plugin.json` 去掉 `"exclusive": ["port"]`。保留 `main` / `inbound` / `bridge` / `frames` / `root` /
-`types` / `methods` / `plan` / `port-link` 与 `terms/`、`schema/`。
+对应 `plugin.json` 去掉 `"exclusive": ["port"]`。插件自身保留 `main` / `types` / `methods` / `plan` /
+`port-link` 与 `terms/`、`schema/`；共用的入站客户端与入站桥骨架、宿主根 / socket 推导收进第一方
+非载体包 `plugin-sdk/web`（`rootFromPluginState` / `inboundSocketPath` / `InboundClient` / `Bridge`），
+插件只声明业务方法。
 
 **例外：`ui-shell` 不在此列。** 它是浏览器半边唯一的 HTTP 入口，保留 `execute/http-server.*`、
 `execute/routes.*`、`execute/inbound-guard.*`，并**继续绑定端口**（`DEFAULT_UI_PORT = 8787`，`CHRONO_UI_PORT`

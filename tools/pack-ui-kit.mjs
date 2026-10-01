@@ -2,6 +2,8 @@
 //   1) 预编译 src/*.js（Node 禁止对 node_modules 内文件做类型擦除，服务端走 `node` 条件加载它们）；
 //   2) `npm pack` 出稳定 tarball；
 //   3) 复制进各插件的 `vendor/`，供其 package.json 的 `file:` 依赖在本包内安装。
+// 消费方列表从 `plugins/*/plugin.json`（`<id>.client.read` 命令）派生，无手写清单。
+// 等待态、只读交付等 UI 服务骨架见 `plugin-sdk/web`。
 
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,14 +12,11 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 
+import { VENDOR_EXTERNAL, uiPluginIds } from '../plugin-sdk/tools/build-ui.mjs'
+
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const KIT = join(ROOT, 'ui-kit')
 const TARBALL = 'chrono-ui-kit-0.0.0.tgz'
-
-/** 需要内置 tarball 的 UI 插件（ui-chat 暂不迁移）。 */
-export const KIT_CONSUMERS = ['ui-composer', 'ui-sidebar', 'ui-threads', 'ui-approval', 'ui-settings']
-
-const EXTERNAL = ['react', 'react/jsx-runtime', 'react-dom', 'use-sync-external-store']
 
 /** 预编译一个入口到同目录同名 `.js`；`.ts(x)` 始终是唯一真源。 */
 async function compile(entry, platform) {
@@ -29,7 +28,7 @@ async function compile(entry, platform) {
     platform,
     target: 'es2022',
     jsx: 'automatic',
-    external: platform === 'browser' ? EXTERNAL : [],
+    external: platform === 'browser' ? VENDOR_EXTERNAL : [],
     minify: false,
     legalComments: 'none',
     logLevel: 'warning',
@@ -54,7 +53,7 @@ async function main() {
       throw new Error(`npm pack 失败：${packed.stderr || packed.stdout || `exit ${packed.status}`}`)
     }
     const tarball = join(outDir, TARBALL)
-    for (const id of KIT_CONSUMERS) {
+    for (const id of uiPluginIds(ROOT)) {
       const vendor = join(ROOT, 'plugins', id, 'vendor')
       mkdirSync(vendor, { recursive: true })
       cpSync(tarball, join(vendor, TARBALL))

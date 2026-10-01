@@ -62,7 +62,7 @@ import { formatCount, usageText, usageTotal } from '../execute/web/usage.ts'
 import { COPY_HOLD_MS, createCopyState } from '../execute/web/copy.ts'
 import { FALLBACK_MESSAGES, lookupMessage, messageText as uiText, parseMessages, UI_TEXT } from '../execute/web/messages.ts'
 
-import { Bridge, commandFrame, extractValue, interpretResponse, submitFrame } from '../execute/bridge.ts'
+import { Bridge, commandFrame, extractValue, interpretResponse, submitFrame } from 'plugin-sdk/web'
 import { isSafeClientPath, readClientFile, resolveClientPath } from '../execute/client-read.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))

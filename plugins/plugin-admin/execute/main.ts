@@ -3,42 +3,27 @@
 // 工具面不读投影、无写通道：describe 直回静态工具清单，invoke 经反向调用委派管理平面 `plugin`。
 // 第二方向：服务发 `port.call`（反向调用），宿主回 `port.result` / `port.error`（按 id 配对）。
 
-import {
-  PortLink,
-  createService as createSdkService,
-  isDirectRun,
-  makeLogger,
-  packageRootOf,
-  runStdio,
-} from 'plugin-sdk'
+import { PortLink, defineService } from 'plugin-sdk'
 import { createHandlers } from './methods.ts'
 import { RemotePluginPlane } from './port-link.ts'
-import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
 
-const CAPABILITY = 'plugin-admin'
-const LOG = makeLogger('plugin-admin')
 /** 反向调用等待上限：须严格大于管理平面 `plugin` 声明的 `method_timeouts`（最大 30000）。 */
 const PLANE_CALL_TIMEOUT_MS = 40000
 
 /** 构造服务实例：管理平面委派经反向调用通道，工具描述直出。 */
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const link = new PortLink({
-    write: ctx.emit,
-    idPrefix: 'plugin-admin',
-    timeoutMs: PLANE_CALL_TIMEOUT_MS,
-  })
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers: createHandlers(new RemotePluginPlane(link)),
-    emit: ctx.emit,
-    log: LOG,
-    portLinks: [link],
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'plugin-admin',
+  logPrefix: 'plugin-admin',
+  setup: (ctx) => {
+    const link = new PortLink({
+      write: ctx.emit,
+      idPrefix: 'plugin-admin',
+      timeoutMs: PLANE_CALL_TIMEOUT_MS,
+    })
+    return {
+      handlers: createHandlers(new RemotePluginPlane(link)),
+      portLinks: [link],
+    }
+  },
+})

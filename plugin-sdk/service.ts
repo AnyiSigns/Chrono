@@ -78,6 +78,9 @@ export interface ServiceConfig {
   eventIdPrefix?: string
 }
 
+/** 日志出口：一行一条，只走 stderr。 */
+export type ServiceLog = (line: string) => void
+
 /** 一个已装载的服务实例：收协议帧、可关闭。 */
 export interface ServiceInstance {
   receive(message: Json): void
@@ -427,4 +430,94 @@ export function runStdio(
   process.stdin.on('error', () => process.exit(0))
 
   log(`service started (pid ${process.pid})`)
+}
+
+/** 插件业务装配结果：处理器与协议钩子。 */
+export interface ServiceSetup {
+  /** 方法表：方法名 → 处理器。 */
+  handlers: Record<string, Handler>
+  /**
+   * 反向调用通道：SDK 自动结算其应答帧并在 `drain` / 关闭时 `failAll`，
+   * 插件无需自写 `intercept` 结算。
+   */
+  portLinks?: PortLink[]
+  /** 并发安全方法；缺省读同包 `plugin.json` 的 `concurrent_methods`。 */
+  concurrentMethods?: string[]
+  /** 帧进入派发前的拦截（插件自有扩展面）；返回 true 表示已消费。 */
+  intercept?: (message: Rec) => boolean
+  /** `reload` 帧钩子；在回 `ack` 前调用。 */
+  onReload?: (gen: string) => void
+  /** `drain` 帧后的清理钩子（可异步；SDK 等它落地后才收口）。 */
+  onDrain?: () => void | Promise<void>
+  /** 通道关闭 / stdin EOF 时的清理钩子。 */
+  onClose?: () => void
+  /** 事件帧 id 前缀；缺省 `<identity>-evt`。 */
+  eventIdPrefix?: string
+}
+
+/**
+ * 服务入口定义：把入口壳的一大段样板（包根 / 日志 / 工厂 / stdio 自启动）收成一处声明。
+ * 插件只写 `setup` 里的处理器与钩子。
+ */
+export interface ServiceDefinition {
+  /** 入口模块 URL（`import.meta.url`）：据以定位包根与判定 direct-run。 */
+  entry: string
+  /** 本服务的能力类名（缺声明时的回落；门禁按帧内 `port` 逐能力类判定）。 */
+  capability: string
+  /** 日志前缀；缺省 capability。与 `log` 二选一（给出 `log` 时忽略本项）。 */
+  logPrefix?: string
+  /** 自定义日志出口；缺省 `makeLogger(logPrefix ?? capability)`。 */
+  log?: ServiceLog
+  /** 缺省状态档；`plugin.json` 缺 `state` 时用。 */
+  defaultState?: string
+  /**
+   * stdio 坏帧（坏 JSON / 超长帧）处理：`ignore`（缺省）记日志后继续，`exit` fail-closed 退出非 0。
+   */
+  onMalformedFrame?: 'ignore' | 'exit'
+  /** direct-run 起完 stdio 帧循环后的回调（仅 stdio 形态）。 */
+  onStarted?: (log: ServiceLog) => void
+  /** 构造处理器与协议钩子；插件业务逻辑在此。 */
+  setup: (ctx: ServiceFactoryContext, capability: string, log: ServiceLog) => ServiceSetup
+}
+
+/**
+ * 声明式服务入口：吸收服务入口壳样板（包根 / 日志 / 工厂 / direct-run 自起 stdio），
+ * 返回宿主 inproc / worker 直接调用的 `createService` 工厂。
+ * 插件只写 `setup`（处理器与协议钩子），行为与手写入口逐项一致。
+ */
+export function defineService(
+  definition: ServiceDefinition,
+): (ctx: ServiceFactoryContext) => ServiceInstance {
+  const log = definition.log ?? makeLogger(definition.logPrefix ?? definition.capability)
+  const pluginRoot = packageRootOf(definition.entry)
+
+  function factory(ctx: ServiceFactoryContext): ServiceInstance {
+    const setup = definition.setup(ctx, definition.capability, log)
+    return createService({
+      pluginRoot,
+      capability: definition.capability,
+      handlers: setup.handlers,
+      emit: ctx.emit,
+      log,
+      defaultState: definition.defaultState,
+      portLinks: setup.portLinks,
+      concurrentMethods: setup.concurrentMethods,
+      intercept: setup.intercept,
+      onReload: setup.onReload,
+      onDrain: setup.onDrain,
+      onClose: setup.onClose,
+      eventIdPrefix: setup.eventIdPrefix,
+    })
+  }
+
+  if (isDirectRun(definition.entry)) {
+    const options: RunStdioOptions = { log }
+    if (definition.onMalformedFrame !== undefined) {
+      options.onMalformedFrame = definition.onMalformedFrame
+    }
+    runStdio(factory, options)
+    definition.onStarted?.(log)
+  }
+
+  return factory
 }

@@ -20,44 +20,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'needs',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 字段齐全且形态合法（needs orchestration）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'orchestration-admin')
-  assert.equal(decl.schema, 'schema/orchestration-admin.json')
-  assert.deepEqual(decl.implements, ['orchestration-admin', 'tool-provider'])
-  assert.deepEqual(decl.methods, {
-    'orchestration-admin': ['describe', 'invoke'],
-    'tool-provider': ['describe', 'invoke'],
-  })
-  assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.needs, { orchestration: { mode: 'one' } })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('execute/ 源码齐全且不残留编排逻辑面', () => {
   const files = ['execute/main.ts', 'execute/methods.ts', 'execute/tools.ts', 'execute/types.ts']

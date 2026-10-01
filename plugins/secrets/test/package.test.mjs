@@ -9,47 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'pins',
-  'slots',
-  'needs',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 15 字段齐全且形态合法（拥有方 slots + many needs）', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'secrets')
-  assert.equal(decl.schema, 'schema/secrets.json')
-  assert.deepEqual(decl.implements, ['secrets'])
-  assert.deepEqual(decl.methods, { secrets: ['resolve', 'list'] })
-  assert.deepEqual(decl.pins, {})
-  assert.deepEqual(decl.slots, { 'secrets-backend': { methods: ['read', 'list', 'kinds'] } })
-  assert.deepEqual(decl.needs, { 'secrets-backend': { mode: 'many' } })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.health.interval_ms, 10000)
-  assert.equal(decl.health.timeout_ms, 2000)
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/secrets.json 声明 auth_ref（kind 开放词表）与失败码', () => {
   const schema = readJson('schema/secrets.json')

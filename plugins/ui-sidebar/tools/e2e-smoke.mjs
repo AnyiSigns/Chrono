@@ -78,7 +78,6 @@ function main() {
       'tsconfig.json',
       'execute/main.js',
       'execute/methods.js',
-      'execute/build.mjs',
       'execute/web/entry.tsx',
       'execute/web/badges.ts',
       'execute/web/sidebar-model.ts',

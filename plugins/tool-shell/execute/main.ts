@@ -4,21 +4,11 @@
 
 import { spawnSync } from 'node:child_process'
 
-import {
-  createService as createSdkService,
-  isDirectRun,
-  makeLogger,
-  packageRootOf,
-  runStdio,
-} from 'plugin-sdk'
-import type { ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
+import { defineService } from 'plugin-sdk'
 import { createLink, RemoteExec, RemoteSecrets } from './backends.ts'
 import { createHandlers } from './methods.ts'
 import type { ShellProfile } from './describe.ts'
 import type { Rec } from './types.ts'
-
-const CAPABILITY = 'tool-shell'
-const LOG = makeLogger('tool-shell')
 
 /** 解释器存在性冒烟：跑一条立即退出的命令，只看退出码（不校验版本，更新版本无需改代码）。 */
 function probeCommand(cmd: string, args: string[]): boolean {
@@ -72,31 +62,26 @@ function resolveShellProfile(): ShellProfile {
 }
 
 /** 构造服务实例：反向调用通道 + 执行 / 密钥后端由本插件提供。 */
-function build(ctx: ServiceFactoryContext): ServiceInstance {
-  const link = createLink(ctx.emit)
-  let liveSeq = 0
-  // 调用中途上行 `tool.delta`（前台命令实时输出）；帧 id 与 SDK 的事件序号空间错开，避免撞车。
-  const emitLive = (topic: string, payload: Rec): void => {
-    liveSeq += 1
-    ctx.emit({ v: '1', id: `tool-shell-live-${liveSeq}`, kind: 'event', topic, payload })
-  }
-  return createSdkService({
-    pluginRoot: packageRootOf(import.meta.url),
-    capability: CAPABILITY,
-    handlers: createHandlers({
-      exec: new RemoteExec(link),
-      secrets: new RemoteSecrets(link),
-      profile: resolveShellProfile(),
-      emit: emitLive,
-    }),
-    emit: ctx.emit,
-    log: LOG,
-    portLinks: [link],
-  })
-}
-
-export const createService = build
-
-if (isDirectRun(import.meta.url)) {
-  runStdio(build, { log: LOG })
-}
+export const createService = defineService({
+  entry: import.meta.url,
+  capability: 'tool-shell',
+  logPrefix: 'tool-shell',
+  setup: (ctx) => {
+    const link = createLink(ctx.emit)
+    let liveSeq = 0
+    // 调用中途上行 `tool.delta`（前台命令实时输出）；帧 id 与 SDK 的事件序号空间错开，避免撞车。
+    const emitLive = (topic: string, payload: Rec): void => {
+      liveSeq += 1
+      ctx.emit({ v: '1', id: `tool-shell-live-${liveSeq}`, kind: 'event', topic, payload })
+    }
+    return {
+      handlers: createHandlers({
+        exec: new RemoteExec(link),
+        secrets: new RemoteSecrets(link),
+        profile: resolveShellProfile(),
+        emit: emitLive,
+      }),
+      portLinks: [link],
+    }
+  },
+})

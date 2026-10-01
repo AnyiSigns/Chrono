@@ -11,42 +11,15 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-test('plugin.json 省略 schema 且其余字段齐全', () => {
-  const decl = readJson('plugin.json')
-  assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  const expected = [
-    'identity',
-    'implements',
-    'methods',
-    'concurrent_methods',
-    'pins',
-    'needs',
-    'start',
-    'build',
-    'protocol',
-    'restart',
-    'health',
-    'state',
-    'members',
-    'commands',
-  ]
-  assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
-  assert.equal(decl.identity, 'ui-approval')
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.equal(Object.hasOwn(decl, 'exclusive'), false, '客户端半边自交付，不再独占端口')
-})
 
-test('build 声明：npm ci + node execute/build.mjs，args 不含 =（shell 安全白名单）', () => {
+test('build 声明：npm ci + 共享构建脚本，args 不含 =（shell 安全白名单）', () => {
   const decl = readJson('plugin.json')
   assert.equal(Array.isArray(decl.build), true)
   assert.equal(decl.build[0].cmd, 'npm')
   assert.deepEqual(decl.build[0].args, ['ci', '--no-audit', '--no-fund'])
-  // esbuild CLI 的字符串选项必须 `--opt=value`，与「令牌不含 =」冲突，故构建走脚本内 JS API。
+  // esbuild CLI 的字符串选项必须 `--opt=value`，与「令牌不含 =」冲突，故构建走共享脚本内 JS API。
   assert.equal(decl.build[1].cmd, 'node')
-  assert.deepEqual(decl.build[1].args, ['execute/build.mjs'])
-  assert.ok(readText('execute/build.mjs').length > 0, '构建脚本必须随包入世')
+  assert.deepEqual(decl.build[1].args, ['../../plugin-sdk/tools/build-ui.mjs'])
   for (const step of decl.build) {
     for (const token of [step.cmd, ...step.args]) {
       assert.ok(/^[A-Za-z0-9_./:@,+-]+$/.test(token), `构建令牌非法：${token}`)

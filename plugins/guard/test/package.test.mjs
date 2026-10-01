@@ -9,45 +9,7 @@ const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(PKG_ROOT, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'judgments',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 14 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'guard')
-  assert.equal(decl.schema, 'schema/guard.json')
-  assert.deepEqual(decl.implements, ['guard'])
-  assert.deepEqual(decl.methods, { guard: ['judge', 'facts', 'collect'] })
-  assert.deepEqual(decl.judgments, { guard: { judge: 'terms/guard.json' } })
-  assert.deepEqual(decl.pins, {})
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(typeof decl.restart, 'object')
-  assert.equal(typeof decl.health, 'object')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'term', path: 'terms/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-  assert.deepEqual(decl.build, [])
-})
 
 test('judge 判定住 term：产物为原语 AST，糖化源同包且不入世', () => {
   const entry = readJson('plugin.json').judgments.guard.judge

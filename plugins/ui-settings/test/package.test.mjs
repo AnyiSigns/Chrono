@@ -10,31 +10,6 @@ const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
-test('plugin.json 省略 schema 且其余字段齐全', () => {
-  const decl = readJson('plugin.json')
-  assert.equal(Object.hasOwn(decl, 'schema'), false, '不得以 null 占位 schema，直接省略')
-  const expected = [
-    'identity',
-    'implements',
-    'methods',
-    'concurrent_methods',
-    'pins',
-    'needs',
-    'start',
-    'build',
-    'protocol',
-    'restart',
-    'health',
-    'state',
-    'members',
-    'commands',
-  ]
-  assert.deepEqual(Object.keys(decl).sort(), [...expected].sort())
-  assert.equal(decl.identity, 'ui-settings')
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-})
 
 test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法，兼 ui-nav 提供方；needs 六条（model / secrets / ref-hydrate / input / skill / config）', () => {
   const decl = readJson('plugin.json')

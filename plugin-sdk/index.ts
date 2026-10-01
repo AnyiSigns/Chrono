@@ -30,6 +30,7 @@ export { PORT_CALL_TIMEOUT_MS, PortLink, settlePortLinks } from './port-link.ts'
 export type { PortCallOptions, PortLinkOptions } from './port-link.ts'
 export {
   createService,
+  defineService,
   isDirectRun,
   loaderEnvFromProcess,
   makeLogger,
@@ -41,9 +42,14 @@ export {
 export type {
   RunStdioOptions,
   ServiceConfig,
+  ServiceDefinition,
   ServiceFactoryContext,
   ServiceInstance,
+  ServiceLog,
+  ServiceSetup,
 } from './service.ts'
+export { launchNative } from './launch.ts'
+export type { NativeLaunchOptions } from './launch.ts'
 export { BadArgsError, ServiceError } from './types.ts'
 export type {
   CallContext,

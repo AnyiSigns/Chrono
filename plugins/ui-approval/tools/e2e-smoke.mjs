@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { packSourceDir, readWorldignore } from '../../../packages/host/assembly/source.ts'
-import { extractValue } from '../execute/bridge.ts'
+import { extractValue } from 'plugin-sdk/web'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..', '..', '..')

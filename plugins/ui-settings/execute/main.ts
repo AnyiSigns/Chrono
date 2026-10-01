@@ -11,11 +11,9 @@ import {
   runStdio,
 } from 'plugin-sdk'
 import type { Handler, ServiceFactoryContext, ServiceInstance } from 'plugin-sdk'
-import { Bridge } from './bridge.ts'
-import { InboundClient } from './inbound.ts'
+import { Bridge, InboundClient, inboundSocketPath, rootFromPluginState } from 'plugin-sdk/web'
 import { createHandlers } from './methods.ts'
 import type { SecretsChannel } from './methods.ts'
-import { inboundSocketPath, rootFromPluginState } from './root.ts'
 
 const CAPABILITY = 'ui-settings'
 const LOG = makeLogger('ui-settings')

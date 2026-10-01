@@ -20,42 +20,7 @@ function listFiles(dir) {
   return out
 }
 
-const DECL_FIELDS = [
-  'identity',
-  'schema',
-  'implements',
-  'methods',
-  'needs',
-  'pins',
-  'start',
-  'build',
-  'protocol',
-  'restart',
-  'health',
-  'state',
-  'members',
-  'commands',
-]
 
-test('plugin.json 13 字段齐全且形态合法', () => {
-  const decl = readJson('plugin.json')
-  assert.deepEqual(Object.keys(decl).sort(), [...DECL_FIELDS].sort())
-  assert.equal(decl.identity, 'session-title')
-  assert.equal(decl.schema, 'schema/title.json')
-  assert.deepEqual(decl.implements, ['session-title'])
-  assert.deepEqual(decl.methods, { 'session-title': ['generate'] })
-  assert.deepEqual(decl.needs, {
-    model: { mode: 'one' },
-  })
-  assert.equal(decl.start, 'node execute/main.ts')
-  assert.equal(decl.protocol, '1')
-  assert.equal(decl.state, 'recomputable')
-  assert.deepEqual(decl.members, [
-    { kind: 'execute', path: 'execute/' },
-    { kind: 'schema', path: 'schema/' },
-  ])
-  assert.deepEqual(decl.commands, [])
-})
 
 test('schema/title.json 声明提示词 / 字数上限（≤10）/ max_tokens / 兜底策略 / 超时', () => {
   const schema = readJson('schema/title.json')

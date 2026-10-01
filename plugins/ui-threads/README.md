@@ -33,9 +33,9 @@ contract = '2'；register(ctx) 把标签行注册进 topbar slot、待办面板�
 两个组件共享 register 作用域的同一 store；不再导出 mount
 ```
 
-- 构建：`plugin.json.build` = `npm ci` + `node execute/build.mjs`（esbuild JS API 打包），
-  产物落 `execute/web/dist/entry.js`；externalize 壳 vendor（react / react-dom / jsx-runtime /
-  use-sync-external-store），单文件、无 code splitting。
+- 构建：`plugin.json.build` = `npm ci` + `node ../../plugin-sdk/tools/build-ui.mjs`（共享脚本
+  调 esbuild JS API 打包），产物落 `execute/web/dist/entry.js`；externalize 壳 vendor
+  （react / react-dom / jsx-runtime / use-sync-external-store），单文件、无 code splitting。
 - 交付：产物被 `.worldignore` 排除，壳经只读命令 `ui-threads.client.read` 取字节并缓存；
   路径只接受包内相对 `.js`，拒绝绝对路径 / 盘符 / 反斜杠 / `..` / 空段。
 - 视图层模块：入口编排 `entry.tsx`；纯逻辑 `threads-model.ts`（线程树 / 隔离 / 角标，服务侧装配共用）、
@@ -84,7 +84,7 @@ contract = '2'；register(ctx) 把标签行注册进 topbar slot、待办面板�
 
 ```sh
 npm install               # 生成 lockfile（含 esbuild devDependency）
-npm run build             # node execute/build.mjs → execute/web/dist/entry.js
+npm run build             # 共享构建脚本 → execute/web/dist/entry.js
 npm run typecheck         # tsc --noEmit
 npm test                  # 纯函数视图层 + store fold + 服务装配 + client.read 防护 + 协议级驱动（node --test）
 node tools/e2e-smoke.mjs  # 宿主装配 E2E（pack/seed → start → commands → stop → verify/replay）
