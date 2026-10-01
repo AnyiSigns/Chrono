@@ -1,6 +1,7 @@
 // 分节 token 明细：把已装配消息按用途归类，输出可调试的每节计数。
 // 分类与 manifest 的 11 个分节键一一对应；消息 token = parts + 工具调用 + 推理，三部分分别归位。
 
+import { isKnownSource } from './types.ts'
 import type { CanonicalMessage, SectionTokens } from './types.ts'
 
 function emptySections(): SectionTokens {
@@ -34,6 +35,11 @@ export function computeSections(messages: CanonicalMessage[]): SectionTokens {
     }
     if (message.role === 'tool') {
       sections.tool_results += partsTokens
+      continue
+    }
+    // 外部来源按自报稳定性归节：stable 计入 system，dynamic 计入 history_text。
+    if (!isKnownSource(message.source)) {
+      sections[message.stability === 'stable' ? 'system' : 'history_text'] += partsTokens
       continue
     }
     switch (message.source) {

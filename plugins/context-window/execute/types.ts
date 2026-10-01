@@ -11,7 +11,10 @@ export interface CallEnv {
   now: number
 }
 
-/** 组装来源（优先级与前缀排序都按它分段）。 */
+/**
+ * 组装来源（优先级与前缀排序都按它分段）。内建 7 类语义固定；外部 `context-source` 贡献方可
+ * 自报任意来源名（`string & {}` 保留字面量补全），其保留与排序由 `stability` / `priority` 决定。
+ */
 export type Source =
   | 'prompt'
   | 'tools'
@@ -20,6 +23,18 @@ export type Source =
   | 'history'
   | 'style'
   | 'tool'
+  | (string & {})
+
+/** 内建来源名（配额 / 分节 / 保留阶梯按它们固定处理）。 */
+export const KNOWN_SOURCES = ['prompt', 'tools', 'input', 'skill', 'history', 'style', 'tool'] as const
+
+/** 是否内建来源：外部来源按稳定性走通用保留 / 排序路径。 */
+export function isKnownSource(source: string): boolean {
+  return (KNOWN_SOURCES as readonly string[]).includes(source)
+}
+
+/** 来源稳定性：稳定来源进可缓存前缀，动态来源不得混入稳定前缀。 */
+export type Stability = 'stable' | 'dynamic'
 
 /** 消息角色。 */
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
@@ -111,6 +126,42 @@ export interface RawMessage {
    * 计数 / 规范化缓存键覆盖：parts 相对 def 内容被改写（如 group 线程给历史加发言者前缀）时，
    * 用改写后 parts 的 `computeTokenKey` 定键，保证键与计数输入同口径，避免与未改写形态串计数。
    */
+  tokenKey?: string | null
+  /**
+   * 来源稳定性：内建来源由装配器按 policy 前缀边界自报，外部 `context-source` 记录由贡献方自报。
+   * `stable` 进可缓存前缀并作 P0 强制保留；`dynamic` 不混入前缀、可被预算裁剪。
+   */
+  stability?: Stability | null
+}
+
+/**
+ * 中性上下文记录：`context-source` 扩展类 `collect` 的返回元素（调用方经 `bag.context_sources` 汇集）。
+ * 贡献方只声明事实（来源 / 角色 / 内容 / 稳定性），不改装配器代码；装配器按记录机械转为候选消息。
+ * 内建 7 类来源由 context-window 内置默认 contributor 产出同形记录。
+ */
+export interface ContextRecord {
+  /** 来源名：内建 7 类之一复用既有保留 / 分节语义；其余任意名走通用路径。 */
+  source: string
+  role: Role
+  parts: CanonicalPart[]
+  /** 数值越小越优先、越不可裁（与内建 PRIORITY 同口径）。 */
+  priority: number
+  stability: Stability
+  atomic?: boolean
+  /** 配对 / 保留用的原子组号（历史工具调用 + 结果同组）；外部贡献通常缺省。 */
+  atomicGroup?: number | null
+  at?: number
+  from?: string | null
+  orderHint?: number
+  toolCallId?: string | null
+  toolCalls?: Json | null
+  reasoning?: NeutralReasoning | null
+  toolResult?: ToolResultMeta | null
+  hint?: boolean
+  error?: string | null
+  defKey?: string | null
+  turnId?: string | null
+  step?: number | null
   tokenKey?: string | null
 }
 

@@ -1,0 +1,8 @@
+{
+  "name": "ctxsource-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：context-source 扩展类提供方，返回一条稳定与一条动态中性记录",
+  "engines": { "node": ">=24" }
+}

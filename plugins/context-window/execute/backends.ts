@@ -27,7 +27,7 @@ export interface BudgetBackend {
   ): Promise<{ factor: number; usage: UsageManifest | null }>
 }
 
-/** 一次装配所依赖的反向调用后端。 */
+/** 一次装配所依赖的反向调用后端。外部 `context-source` 记录由调用方随 bag 传入，不经本服务反向调用。 */
 export interface ContextBackends {
   token: TokenBackend
   budget: BudgetBackend

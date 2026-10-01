@@ -20,6 +20,8 @@ export interface InterpretInput {
   resume: Rec | null
   /** 图数据 def 引用闭包（`graph-gate.closure` 读链式条目 / 图 def 用；服务不读投影）。 */
   refs: Rec
+  /** 世界 `context-source` 成员表（身份名码元序）：`context.assemble` 前置汇集时逐一反向 `collect`。 */
+  contextSources?: string[]
 }
 
 export interface InterpretResult {

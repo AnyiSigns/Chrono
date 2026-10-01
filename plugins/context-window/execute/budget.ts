@@ -5,8 +5,9 @@
 import { ageMessage } from './aging.ts'
 import { canonicalize } from './normalize.ts'
 import { lookupCount } from './tokens.ts'
+import { isKnownSource } from './types.ts'
 import { isRecord, applyScale, prefixSums, rangeSum } from './text.ts'
-import type { BudgetOrigin, CanonicalMessage, Policy, Source } from './types.ts'
+import type { BudgetOrigin, CanonicalMessage, Policy } from './types.ts'
 
 /** 每来源配额上限（token，由 `budget.model` 建模给出）。 */
 export interface QuotaCaps {
@@ -48,7 +49,7 @@ export interface AllocationResult {
   error: AllocationError | null
 }
 
-const ALL_SOURCES: Source[] = [
+const ALL_SOURCES: string[] = [
   'prompt',
   'tools',
   'input',
@@ -106,16 +107,23 @@ function collectSources(
 ): Record<string, { tokens: number; count: number }> {
   const sources = emptySources()
   for (const message of kept) {
-    const bucket = sources[message.source] as { tokens: number; count: number }
+    // 外部来源名不在预置表内：按需开桶（保持 manifest 逐字节稳定）。
+    const bucket = sources[message.source] ?? { tokens: 0, count: 0 }
     bucket.tokens += message.tokens
     bucket.count += 1
+    sources[message.source] = bucket
   }
   return sources
 }
 
-/** 强制保留的 P0：系统提示 + 工具 schema（本轮输入可作最后手段截断）。 */
+/** 强制保留的 P0：系统提示 + 工具 schema + 外部稳定来源（本轮输入可作最后手段截断）。 */
+function isMandatory(message: CanonicalMessage): boolean {
+  if (message.source === 'prompt' || message.source === 'tools') return true
+  return !isKnownSource(message.source) && message.stability === 'stable'
+}
+
 function mandatoryOf(messages: CanonicalMessage[]): CanonicalMessage[] {
-  return messages.filter((message) => message.source === 'prompt' || message.source === 'tools')
+  return messages.filter(isMandatory)
 }
 
 interface CoreResult {
@@ -146,8 +154,9 @@ function allocateCore(
   }
   // 本轮记录（T0，`source:'tool'`）：优先保留（先于技能 / 历史配额），不参与历史裁剪。
   // 超预算时由顶层老化 / 丢推理先行收缩；配对完整性由 atomic 组保证。
+  // 外部来源不在此列（按 stability 走 P0 或通用可裁路径）。
   for (const message of byPriority(messages, 4)) {
-    if (message.source === 'history') continue
+    if (message.source === 'history' || !isKnownSource(message.source)) continue
     keep.add(message)
     left -= message.tokens
   }
@@ -159,6 +168,7 @@ function allocateCore(
     let used = 0
     let stopped = false
     for (const message of byPriority(messages, priority)) {
+      if (!isKnownSource(message.source)) continue
       if (stopped || used + message.tokens > limit) {
         trimmed.push({ source: message.source, reason: 'quota' })
         stopped = true
@@ -172,6 +182,25 @@ function allocateCore(
 
   takeByPriority(2, quota.skill)
   takeByPriority(5, quota.style)
+
+  // 外部动态来源（可裁）：按 priority 升序（小 = 更优先）尽量保留，放不下即裁。
+  // 外部稳定来源已在 P0 强制保留；内建来源各有专门路径。
+  const external = messages
+    .filter(
+      (message) =>
+        !isKnownSource(message.source) &&
+        message.stability !== 'stable' &&
+        !keep.has(message),
+    )
+    .sort((a, b) => a.priority - b.priority || a.orderHint - b.orderHint)
+  for (const message of external) {
+    if (message.tokens <= spendable()) {
+      keep.add(message)
+      left -= message.tokens
+    } else {
+      trimmed.push({ source: message.source, reason: 'budget' })
+    }
+  }
 
   // 历史：仅 `source==='history'`（P4）新 → 旧按 atomic 组整组进出；额度不够时停止（保新近连续）。
   // 本轮记录（`source:'tool'`）不在此列——它们是 T0，另有配额保留路径，不产生 `drop_old_turns`。

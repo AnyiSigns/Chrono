@@ -6,6 +6,9 @@
     "context": ["build"]
   },
   "pins": {},
+  "slots": {
+    "context-source": { "methods": ["collect"] }
+  },
   "needs": {
     "token-estimate": { "mode": "one" },
     "budget": { "mode": "one" }

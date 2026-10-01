@@ -15,7 +15,8 @@
     "graph-gate": { "mode": "one" },
     "approval": { "mode": "one" },
     "tools": { "mode": "one" },
-    "router": { "mode": "one" }
+    "router": { "mode": "one" },
+    "context-source": { "mode": "many", "methods": ["collect"] }
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -1,0 +1,8 @@
+{
+  "name": "context-consumer-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：无服务，仅一个 term 命令对 context（one）发正向 eff",
+  "engines": { "node": ">=24" }
+}

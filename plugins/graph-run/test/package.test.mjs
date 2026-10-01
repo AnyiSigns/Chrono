@@ -36,6 +36,7 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     approval: { mode: 'one' },
     tools: { mode: 'one' },
     router: { mode: 'one' },
+    'context-source': { mode: 'many', methods: ['collect'] },
   })
   assert.equal(plugin.start, 'node execute/main.ts')
   assert.deepEqual(plugin.members.map((m) => m.kind).sort(), ['execute', 'schema'])

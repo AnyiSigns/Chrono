@@ -15,6 +15,8 @@ export interface GraphRunDeps {
   port: PortCaller
   /** 宿主注入的有效 pins（声明 `pins` ∪ one-needs）；args 内场景覆盖优先于它。 */
   pins?: Rec
+  /** 世界 `context-source` 成员表（身份名码元序）：`context.assemble` 前置汇集时逐一反向 `collect`。 */
+  contextSources?: string[]
 }
 
 function asRecord(value: Json | undefined): Rec | null {
@@ -47,6 +49,7 @@ async function run(args: Json, env: CallEnv, deps: GraphRunDeps): Promise<Json> 
     trace,
     resume,
     refs,
+    contextSources: deps.contextSources ?? [],
   })
   const ended = result.ended
   // 段终态（stepping）：保留取消标志与 trace 累积，让下一段仍能看见取消、回合尾一次写出。

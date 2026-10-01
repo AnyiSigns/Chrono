@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto'
 import { ServiceError } from 'plugin-sdk'
 import { allocate, readConfig } from './budget.ts'
 import { gatherCandidates } from './candidates.ts'
+import { recordsFromArray } from './contributions.ts'
+import { isKnownSource } from './types.ts'
 import { buildParams, formatMessages } from './format.ts'
 import { canonicalize } from './normalize.ts'
 import { missingResults, repairPairing } from './pairing.ts'
@@ -21,11 +23,11 @@ import type {
   CacheHint,
   CallEnv,
   CanonicalMessage,
+  ContextRecord,
   Json,
   Policy,
   RetentionTier,
   SectionTokens,
-  Source,
   UsageManifest,
 } from './types.ts'
 
@@ -38,23 +40,35 @@ export interface PipelineResult {
   events: { topic: string; payload: Json }[]
 }
 
-/** 前缀缓存排序：稳定前缀（系统提示 → 工具）置前，其后历史 → 技能 → 风格，输入最后。 */
-function sourceRanks(policy: Policy): Record<string, number> {
-  const order: Source[] = [...policy.prefix.stable, ...policy.prefix.order, 'input']
-  const ranks: Record<string, number> = {}
-  order.forEach((source, index) => {
-    if (ranks[source] === undefined) ranks[source] = index
-  })
-  return ranks
+/**
+ * 前缀缓存排序：稳定前缀（系统提示 → 工具）置前，其后历史 → 技能 → 风格，输入最后。
+ * 内建来源按 policy 前缀边界；外部来源按记录自报的 `stability`：
+ * stable 紧接稳定前缀之后（进可缓存段），dynamic 落在历史之后、输入之前；同段内按 orderHint。
+ */
+function rankOf(message: CanonicalMessage, policy: Policy): number {
+  const stable = policy.prefix.stable
+  const order = policy.prefix.order
+  const lastStable = stable.length - 1
+  const beforeInput = stable.length + order.length
+  // 内建来源按 policy 边界（含 `tool` 这类不在 policy 内的内建来源：保持既有排序），
+  // 外部来源按自报 stability：stable 紧接稳定前缀、dynamic 落历史之后输入之前。
+  if (!isKnownSource(message.source)) {
+    return message.stability === 'stable' ? lastStable + 0.5 : beforeInput + 0.5
+  }
+  const stableIndex = stable.indexOf(message.source)
+  if (stableIndex >= 0) return stableIndex
+  const orderIndex = order.indexOf(message.source)
+  if (orderIndex >= 0) return stable.length + orderIndex
+  if (message.source === 'input') return beforeInput + 1
+  return 999
 }
 
 function orderMessages(messages: CanonicalMessage[], policy: Policy): CanonicalMessage[] {
-  const ranks = sourceRanks(policy)
   return messages
     .map((message, index) => ({ message, index }))
     .sort((left, right) => {
-      const leftRank = ranks[left.message.source] ?? 999
-      const rightRank = ranks[right.message.source] ?? 999
+      const leftRank = rankOf(left.message, policy)
+      const rightRank = rankOf(right.message, policy)
       if (leftRank !== rightRank) return leftRank - rightRank
       if (left.message.orderHint !== right.message.orderHint) {
         return left.message.orderHint - right.message.orderHint
@@ -121,11 +135,18 @@ function prefixKey(run: CanonicalMessage[]): string {
  * 前缀内时置真（否则 system 串会含易变切片，标记反而使缓存失效）；`breakpoints` 只标非 system 的前缀消息下标。
  */
 function cacheHintOf(messages: CanonicalMessage[], policy: Policy): CacheHint | null {
-  const stable = new Set<Source>(policy.prefix.stable)
+  const policyStable = new Set<string>(policy.prefix.stable)
+  // 记录自报的 stability 覆盖 policy 边界：显式 dynamic 不入前缀（前缀缓存安全的硬约束）。
+  const isStable = (message: CanonicalMessage): boolean =>
+    message.stability === 'stable'
+      ? true
+      : message.stability === 'dynamic'
+        ? false
+        : policyStable.has(message.source)
   let end = 0
   while (end < messages.length) {
     const message = messages[end] as CanonicalMessage
-    if (message.hint === true || !stable.has(message.source)) break
+    if (message.hint === true || !isStable(message)) break
     end += 1
   }
   if (end === 0) return null
@@ -198,6 +219,8 @@ export async function buildAssembly(
   const config = readConfig(bag)
   const model = typeof config?.['model'] === 'string' ? (config['model'] as string) : 'unknown'
   const factor = await backends.budget.factor(model)
+  // 外部 `context-source` 记录由调用方（graph-run 的 context.assemble 前置）随 bag 汇集传入。
+  const external = recordsFromArray(bag['context_sources'] as Json | undefined)
   const budgetInfo = await backends.budget.model({
     config,
     policy: {
@@ -209,7 +232,7 @@ export async function buildAssembly(
   })
   for (let pass = 0; pass < MAX_COUNT_PASSES; pass += 1) {
     beginCountPass()
-    const result = runPipeline(bag, env, policy, factor, budgetInfo, config, model)
+    const result = runPipeline(bag, env, policy, factor, budgetInfo, config, model, external)
     const missing = endCountPass()
     if (missing.length === 0) {
       const observed = await backends.budget.observe(
@@ -236,8 +259,9 @@ function runPipeline(
   budgetInfo: BudgetModel,
   config: Record<string, unknown> | null,
   model: string,
+  external: ContextRecord[],
 ): PipelineResult {
-  const gathered = gatherCandidates(bag, policy)
+  const gathered = gatherCandidates(bag, policy, external)
   const canonical = canonicalize(gathered.raws, { scale: factor })
   const deduped = dedupe(canonical)
   const retained = applyRetention(deduped.messages, {

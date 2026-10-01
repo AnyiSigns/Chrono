@@ -11,9 +11,9 @@
 | `agents` | — | — | — | — | recomputable | — |
 | `approval` | — | `approval` | — | — | durable | stdio |
 | `budget` | — | `budget` | `token-estimate(one)` | — | recomputable | stdio |
-| `chat` | — | `chat` | `session(one)`、`ref-hydrate(one)`、`input(one)`、`model(one)`、`context(one)`、`session-title(one)`、`loop-policy(one)`、`todo(one)`、`config(one)`、`mcp(one)`、`workspace(one)`、`skill(one)` | `host` | recomputable | stdio |
+| `chat` | — | `chat` | `session(one)`、`ref-hydrate(one)`、`input(one)`、`model(one)`、`session-title(one)`、`loop-policy(one)`、`todo(one)`、`config(one)`、`mcp(one)`、`workspace(one)`、`skill(one)` | `host` | recomputable | stdio |
 | `config` | — | `config` | — | — | durable | stdio |
-| `context-window` | — | `context` | `token-estimate(one)`、`budget(one)` | — | recomputable | stdio |
+| `context-window` | `context-source` | `context` | `token-estimate(one)`、`budget(one)` | — | recomputable | stdio |
 | `embedding` | `embedding-provider` | `embedding` | `embedding-provider(many)` | — | recomputable | stdio |
 | `embedding-local` | — | `embedding-provider` | `tokenizer(one)` | — | recomputable | stdio |
 | `evolution` | — | — | — | — | recomputable | — |
@@ -23,7 +23,7 @@
 | `evolve-shadow` | — | `evolve-shadow` | `evolve-ledger(one)` | `host` | recomputable | stdio |
 | `evolve-sweep` | — | `evolve-sweep` | `evolve-ledger(one)` | — | recomputable | stdio |
 | `graph-gate` | — | `graph-gate` | — | — | recomputable | stdio |
-| `graph-run` | — | `graph-run` | `session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)` | — | recomputable | stdio |
+| `graph-run` | — | `graph-run` | `session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`context-source(many)` | — | recomputable | stdio |
 | `guard` | — | `guard` | — | — | recomputable | stdio |
 | `input` | — | `input` | — | — | durable | stdio |
 | `loop-policy` | — | `loop-policy` | `graph-run(one)`、`turn-ledger(one)`、`ref-hydrate(one)`、`session(one)`、`model(one)`、`context(one)`、`guard(one)`、`graph-gate(one)`、`approval(one)`、`tools(one)`、`router(one)`、`evolve-metrics(one)` | `host` | recomputable | stdio |

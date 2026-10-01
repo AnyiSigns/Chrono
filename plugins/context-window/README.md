@@ -11,7 +11,8 @@
 - 状态档：`recomputable`（③ 可重算；无本地持久状态）
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧）
 - pins：无（一切输入随 bag 由调用方入口 term 装配传入；服务不读投影）
-- `needs`：`token-estimate`（one）、`budget`（one）——token 计数与预算建模经反向 `port.call` 取数
+- `slots`：`context-source` → `collect`（拥有方；外部上下文来源的开放扩展点契约）
+- `needs`：`token-estimate`（one）、`budget`（one）——token 计数 / 预算建模经反向 `port.call` 取数
 
 ## 组装流水线
 
@@ -20,7 +21,16 @@
 → 配额分配 → 降级阶梯 → 前缀缓存排序 → 配对自检 → 方言格式化 → 分节明细 / 组装清单事件
 ```
 
-- **候选来源**：本轮用户消息 / 系统提示 / 环境节 / 工具 schema / 收件箱 / 技能 / 历史 / 风格。
+- **候选来源**：本轮用户消息 / 系统提示 / 环境节 / 工具 schema / 收件箱 / 技能 / 历史 / 风格，
+  以及外部 `context-source` 贡献方（见下）。装配器不枚举来源 / 贡献方身份：内建来源住本插件，
+  外部来源由世界 `many` 成员表解析，加减一个来源只改世界成员表。
+- **外部上下文来源（`context-source`，`many`）**：本插件是扩展类拥有方（`slots.context-source.methods=['collect']`），
+  声明契约但不自行扇出；消费方 **`graph-run`** 在 `context.assemble` 前置按世界 `many` 成员表（身份名码元序）
+  逐一反向 `collect(bag)`，把返回值 `{records:[…]}` 汇总为随 bag 下传的 `context_sources`（成员不可用只跳过，
+  不阻断组装；零成员合法）。本插件读到 `bag.context_sources` 后机械转为候选：记录形状
+  `{source, role, parts, priority, stability, atomic?, atomicGroup?, from?, at?, orderHint?}`。
+  内建 7 类来源复用既有保留 / 分节 / 前缀语义；其余来源名走通用路径：`stability:'stable'` 作 P0 强制保留并进
+  可缓存前缀，`'dynamic'` 可被预算裁剪、落历史之后输入之前。加减一个来源只改世界成员表，装配器不枚举来源身份。
 - **环境节**：`bag.workspace_root` 非空时，紧跟系统提示注入**一条**稳定 system 消息（工作目录 /
   操作系统 / 命令解释器），文案住 `policy.messages.environment`（占位 `{workspace_root}` / `{platform}`）。
   无工作目录不注入（不虚报根）；文案不含内部标识符，避免污染模型推理；与系统提示同属稳定前缀（`source='prompt'`，

@@ -7,8 +7,9 @@
 
 - 身份：`graph-run`
 - 能力类 / 方法：`graph-run` → `run`（一次调用跑**一段 = 一个 iter**，段尾未完则返回自续跑计划）、`cancel`（置取消标志）
-- `pins`：无（`"pins": {}`）；`needs`（一律 `mode:"one"`）：`session` / `model` / `context` /
-  `guard` / `graph-gate` / `approval` / `tools` / `router`
+- `pins`：无（`"pins": {}`）；`needs`：`session` / `model` / `context` /
+  `guard` / `graph-gate` / `approval` / `tools` / `router`（`mode:"one"`），
+  以及 `context-source`（`mode:"many"`，`methods:["collect"]`）——`context.assemble` 前置的通用汇集扩展点
 - 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 运行时零 npm 依赖；服务不写链、不读投影；跨插件只走 `port.call`；`now` 取 `env.now`
 
@@ -40,6 +41,9 @@
    首次命中注入一次 nudge（`bag.loop_nudge`，前导系统消息）提示换策略，再次命中才 `stopTerminal('no_progress')`。
    阈值 `loop_repeat_n` / `loop_novelty_window` / `loop_novelty_min`；`loop.allow_tools` 声明的轮询类工具豁免。
 9. **取消（协作式）**：命中标志即停、不派发、不写拒绝产物；终态由属主 CAS 落定。
+10. **`context.assemble` 前置通用汇集**：派发 `context.build` 前先按世界 `context-source` 成员表（身份名码元序）
+    逐一反向 `collect(bag)`，把各成员返回的 `{records:[…]}` 汇总为 `bag.context_sources` 下传；成员不可用只跳过，
+    零成员合法。加减一个来源只改世界成员表，本插件与 `context-window` 不改。
 
 ## 边界
 

@@ -1139,6 +1139,7 @@ async function runNode(
       rs,
       env,
       port: input.port,
+      contextSources: input.contextSources ?? [],
       trace,
     })
     trace.attachEff(step, trace.effLog.slice(effBefore) as Rec[])

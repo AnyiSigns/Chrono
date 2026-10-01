@@ -14,7 +14,6 @@
     "ref-hydrate": { "mode": "one" },
     "input": { "mode": "one" },
     "model": { "mode": "one" },
-    "context": { "mode": "one" },
     "session-title": { "mode": "one" },
     "loop-policy": { "mode": "one" },
     "todo": { "mode": "one" },

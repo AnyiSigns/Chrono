@@ -16,9 +16,10 @@ const PLUGINS = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const readJson = (rel) => JSON.parse(readFileSync(join(PLUGINS, rel), 'utf8'))
 const readText = (rel) => readFileSync(join(PLUGINS, rel), 'utf8')
 
-const MODEL = readJson('model-protocol/schema/protocol.json')
-const SOCKET_IDLE_MS = MODEL.resilience.request_timeout_ms
-const MODEL_TIMEOUTS = MODEL.method_timeouts
+// 韧性缺省（含 socket 空闲超时 request_timeout_ms）的单一真源在 throttle；model-protocol 只声明方法超时。
+const THROTTLE = readJson('throttle/schema/throttle.json')
+const SOCKET_IDLE_MS = THROTTLE.resilience.request_timeout_ms
+const MODEL_TIMEOUTS = readJson('model-protocol/schema/protocol.json').method_timeouts
 const CHAT_TIMEOUTS = readJson('chat/schema/wiring.json').method_timeouts
 const LOOP_TIMEOUTS = readJson('loop-policy/schema/graph.json').method_timeouts
 const TOOLS_TIMEOUTS = readJson('tools/schema/tools.json').method_timeouts

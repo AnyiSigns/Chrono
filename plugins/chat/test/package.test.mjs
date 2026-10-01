@@ -54,7 +54,6 @@ test('plugin.json 15 字段齐全且形态合法', () => {
     'ref-hydrate': { mode: 'one' },
     input: { mode: 'one' },
     model: { mode: 'one' },
-    context: { mode: 'one' },
     'session-title': { mode: 'one' },
     'loop-policy': { mode: 'one' },
     todo: { mode: 'one' },

@@ -32,6 +32,8 @@ export interface NodeDispatchInput {
   rs: RunState
   env: CallEnv
   port: PortCaller
+  /** 世界 `context-source` 成员表（身份名码元序）；`context.assemble` 前置逐一反向 `collect`。 */
+  contextSources?: string[]
   trace: TraceRecorder
 }
 
@@ -61,8 +63,8 @@ function pick(bag: Rec, keys: string[]): Rec {
   return out
 }
 
-/** 上下文组装的 bag：系统提示词 / 人格 / 技能 / 会话 + 本轮 iter 间产物。 */
-function assembleBag(input: NodeDispatchInput): Rec {
+/** 上下文组装的 bag：系统提示词 / 人格 / 技能 / 会话 + 本轮 iter 间产物 + 外部来源汇集。 */
+function assembleBag(input: NodeDispatchInput, external: Json[]): Rec {
   const bag = input.bag
   const out = pick(bag, [
     'config',
@@ -105,6 +107,8 @@ function assembleBag(input: NodeDispatchInput): Rec {
   // 最近一次完成的模型调用用量随组装下传，供 context-window 校准 token 估算（缺失即不落键）。
   const usage = isRecord(input.rs.shared['last_usage']) ? (input.rs.shared['last_usage'] as Rec) : null
   if (usage !== null) out['usage'] = usage
+  // 外部 `context-source` 中性记录：由前置 `collect` 扇出汇集，context-window 按记录机械转候选。
+  if (external.length > 0) out['context_sources'] = external
   return out
 }
 
@@ -358,6 +362,36 @@ async function ensureToolDirectory(input: NodeDispatchInput): Promise<void> {
   input.trace.recordEff(input.iter, 'tools', 'list', listBag, value, outcome.ok ? 'ok' : 'transport_failed')
 }
 
+/**
+ * `context.assemble` 前置的通用汇集：向世界 `context-source` 成员（身份名码元序）各发一次反向
+ * `collect(bag)`，把返回的 `{records:[…]}` 逐条汇总为随 bag 下传的 `context_sources`。
+ * 成员不可用（未就绪 / 出错）只跳过该成员，不阻断组装；零成员合法（空表，内建来源照常）。
+ */
+async function collectContextSources(input: NodeDispatchInput): Promise<Json[]> {
+  const records: Json[] = []
+  for (const provider of input.contextSources ?? []) {
+    const outcome = await input.port.call('context-source', 'collect', input.bag, { provider })
+    if (!outcome.ok) {
+      input.trace.recordEff(
+        input.iter,
+        'context-source',
+        'collect',
+        { provider },
+        { code: outcome.code },
+        'transport_failed',
+      )
+      continue
+    }
+    const list =
+      isRecord(outcome.value) && Array.isArray(outcome.value['records'])
+        ? (outcome.value['records'] as Json[])
+        : []
+    for (const item of list) records.push(item)
+    input.trace.recordEff(input.iter, 'context-source', 'collect', { provider }, outcome.value, 'ok')
+  }
+  return records
+}
+
 /** verify 的 dispatch 结果 → `{report:{passed, detail, exit_code}}`（post / trace 的输入面）。 */
 function verifyOutput(value: Json): Rec {
   const results = isRecord(value) && Array.isArray(value['results']) ? (value['results'] as Json[]) : []
@@ -472,7 +506,8 @@ export async function dispatchNode(input: NodeDispatchInput): Promise<NodeDispat
   }
   if (contractIdValue === 'context.assemble') {
     await ensureToolDirectory(input)
-    return callPort(input, 'context', 'build', assembleBag(input), false)
+    const external = await collectContextSources(input)
+    return callPort(input, 'context', 'build', assembleBag(input, external), false)
   }
   if (contractIdValue === 'subagent') {
     // 子代理隔离：用任务 + 父检查点的专用 bag（不读父消息历史），产出归一为结构化结果。

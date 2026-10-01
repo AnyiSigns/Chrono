@@ -31,7 +31,11 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
   return createSdkService({
     pluginRoot: packageRootOf(import.meta.url),
     capability: CAPABILITY,
-    handlers: createHandlers({ port: link, pins: ctx.pins }),
+    handlers: createHandlers({
+      port: link,
+      pins: ctx.pins,
+      contextSources: ctx.manyNeeds?.['context-source'] ?? [],
+    }),
     emit: ctx.emit,
     log: LOG,
     portLinks: [link],
