@@ -23,7 +23,7 @@ function candidate(identity = 'candidate', extra = {}) {
       schema: 'plugin.schema.json',
       implements: [],
       methods: {},
-      pins: { host: 'host' },
+      needs: { host: { mode: 'one' } },
       start: '',
       build: [],
       protocol: '1',
@@ -49,7 +49,6 @@ function providerWorld(id, capabilities) {
     identity: id,
     implements: capabilities,
     methods: Object.fromEntries(capabilities.map((cap) => [cap, ['call']])),
-    pins: {},
     start: '',
     build: [],
     protocol: '1',
@@ -92,7 +91,6 @@ function providerWorld(id, capabilities) {
           {
             seq: 0,
             payload: commitHash,
-            pins: {},
             sig: commitHash,
             adopted: { at: 0, by: 'test', write: 'test' },
           },
@@ -208,7 +206,7 @@ test('接缝：真实 validate_package 的 result_hash 与插件 write 计划一
     assert.equal(addGen.args.id, 'candidate')
     assert.deepEqual(addGen.args.payload, { $n: ops.length - 4 })
     assert.deepEqual(addGen.args.sig, addGen.args.payload)
-    assert.deepEqual(addGen.args.pins, { host: 'host' })
+    assert.ok(!('pins' in addGen.args), 'add_gen 不再带 pins')
     assert.equal(plan.$directives[1].payload.new_identity, true)
     assert.equal(plan.$directives[1].payload.commit, report.result_hash)
 

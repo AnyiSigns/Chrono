@@ -15,9 +15,8 @@ test('plugin.json：身份 / 方法面不变，needs 增 mcp-client、保留 sec
   assert.deepEqual(decl.implements, ['mcp', 'tool-provider'])
   assert.deepEqual(decl.methods, {
     mcp: ['describe', 'invoke', 'discover', 'read', 'write'],
-    'tool-provider': ['describe', 'invoke'],
   })
-  assert.deepEqual(decl.pins, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, { secrets: { mode: 'one' }, 'mcp-client': { mode: 'one' } })
   assert.equal(decl.state, 'durable')
   assert.deepEqual(decl.exclusive, ['data'])

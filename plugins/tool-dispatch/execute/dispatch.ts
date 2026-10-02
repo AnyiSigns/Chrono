@@ -4,11 +4,14 @@
 // 目录经反向 `port.call tool-registry.list` 解析；args 校验经 `port.call tool-registry.validate-args`；
 // 语义门经 `port.call guard.judge`；工具提供者经 `tool-provider` 扩展类按成员定位（成员来自世界，不改本模块）。
 
-import { canonicalJson, isRecord } from 'plugin-sdk'
+import { canonicalJson, declaredNetOf as declaredNetOfCaps, indexToolDirectory, isRecord, tierNetOf } from 'plugin-sdk'
 import type { CallEnv, Json, PortLink, PortOutcome, Rec } from 'plugin-sdk'
+import type { Directory, ToolEntry } from 'plugin-sdk'
 import type { ResultCache } from './cache.ts'
 import { resolveCacheEnabled, resolveConcurrency } from './config.ts'
 import { BadArgsError } from './types.ts'
+
+export type { Directory, Rejection, ToolEntry } from 'plugin-sdk'
 
 /** 工具提供方扩展类（拥有方 `slots` 契约）：按目录条目的 `provider` 身份定位成员调用。 */
 const TOOL_PROVIDER = 'tool-provider'
@@ -51,50 +54,9 @@ export interface DispatchDeps {
   cacheEnabled: boolean
 }
 
-export interface Rejection {
-  name: string
-  code: string
-  message: string
-}
-
-export interface ToolEntry {
-  name: string
-  provider: string
-  kind: 'invoke' | 'binding'
-  method: string | null
-  read: string | null
-  decl: Rec
-}
-
-export interface Directory {
-  tools: ToolEntry[]
-  byName: Map<string, ToolEntry>
-  rejected: Rejection[]
-}
-
 /** 从 `list` 的输出重建目录：按名索引，保留 provider / kind / method / read。 */
 export function indexDirectory(json: Json): Directory {
-  const record = isRecord(json) ? json : {}
-  const rawTools = Array.isArray(record['tools']) ? (record['tools'] as Json[]) : []
-  const rejected = Array.isArray(record['rejected'])
-    ? (record['rejected'] as Json[]).filter(isRecord).map((item) => ({
-        name: typeof item['name'] === 'string' ? (item['name'] as string) : '',
-        code: typeof item['code'] === 'string' ? (item['code'] as string) : 'bad_tool_decl',
-        message: typeof item['message'] === 'string' ? (item['message'] as string) : '',
-      }))
-    : []
-  const tools: ToolEntry[] = []
-  for (const raw of rawTools) {
-    if (!isRecord(raw)) continue
-    const name = raw['name']
-    if (typeof name !== 'string' || name.length === 0) continue
-    const kind = raw['kind'] === 'binding' ? 'binding' : 'invoke'
-    const provider = typeof raw['provider'] === 'string' ? (raw['provider'] as string) : ''
-    const method = typeof raw['method'] === 'string' ? (raw['method'] as string) : null
-    const read = typeof raw['read'] === 'string' ? (raw['read'] as string) : null
-    tools.push({ name, provider, kind, method, read, decl: raw })
-  }
-  return { tools, byName: new Map(tools.map((entry) => [entry.name, entry])), rejected }
+  return indexToolDirectory(json)
 }
 
 /**
@@ -295,37 +257,9 @@ function hasRelativePath(args: Rec): boolean {
   return false
 }
 
-/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
-function netScope(value: Json | undefined): string {
-  return value === 'limited' || value === 'all' ? value : 'none'
-}
-
 /** 工具声明的 net 需求：从目录条目的 caps.net 取（只认 none / limited / all；缺失 / 畸形按 none）。 */
 function declaredNetOf(entry: CallEntry): string {
-  const caps = entry.entry?.decl['caps']
-  return isRecord(caps) ? netScope(caps['net']) : 'none'
-}
-
-/** 内建档位 net 映射（sandbox body 缺失时兜底；与 sandbox tools/default-body.json 同形）。 */
-const BUILTIN_TIER_NET: Record<string, string> = {
-  auto: 'all',
-  severe: 'limited',
-  review: 'none',
-  deny: 'none',
-}
-
-/** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
-function tierNetOf(tier: Json | undefined, sandboxTiers: Json | undefined): string {
-  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
-  if (typeof tier === 'string' && isRecord(tiers)) {
-    const entry = tiers[tier]
-    if (isRecord(entry)) {
-      const declared = entry['net']
-      if (declared === 'none' || declared === 'limited' || declared === 'all') return declared
-    }
-  }
-  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
-  return 'none'
+  return declaredNetOfCaps(entry.entry?.decl['caps'])
 }
 
 /**

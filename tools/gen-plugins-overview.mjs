@@ -87,12 +87,6 @@ function fieldValue(entry, fieldName) {
       )
     case 'concurrent_methods':
       return listCell(concurrent)
-    case 'pins':
-      return mapCell(
-        Object.keys(decl.pins)
-          .sort()
-          .map((name) => [name, `\`${esc(decl.pins[name])}\``]),
-      )
     case 'needs':
       return mapCell(
         Object.keys(decl.needs)
@@ -167,10 +161,6 @@ export function renderOverview(root = ROOT) {
         Object.keys(entry.decl.needs)
           .sort()
           .map((cap) => [cap, `(${entry.decl.needs[cap].mode})`]),
-      )} | ${mapCell(
-        Object.keys(entry.decl.pins)
-          .sort()
-          .map((name) => [name, `\`${esc(entry.decl.pins[name])}\``]),
       )} | ${esc(entry.decl.state)} | ${entry.hasService ? `\`${esc(entry.decl.transport)}\`` : DASH} |`,
   )
 
@@ -194,8 +184,8 @@ export function renderOverview(root = ROOT) {
     '',
     '## 角色总览',
     '',
-    '| 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | 依赖 `pins` | state | transport |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| 插件 | 拥有 `slots` | 提供 `implements` | 消费 `needs` | state | transport |',
+    '| --- | --- | --- | --- | --- | --- |',
     ...summaryRows,
     '',
     '## 全字段明细',

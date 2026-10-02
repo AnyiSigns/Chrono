@@ -19,6 +19,9 @@ import {
 import { REPO_ROOT } from '../harness/closure.mjs'
 import { SEED_GRAPH } from '../../plugins/loop-policy/execute/seed.ts'
 import { orderNav, recordsOf } from '../../plugins/ui-shell/execute/nav.ts'
+import { mergeSlotDecls, parseSlotDecls } from '../../plugins/ui-shell/execute/slot-decls.ts'
+import { DEFAULT_SLOTS } from '../../plugins/ui-shell/execute/slots.ts'
+import { navRecordsValue, slotDeclsValue } from '../fixtures/plugins/uislot-fixture/decls.mjs'
 
 const SOURCE = 'ctxsource-fixture'
 
@@ -187,6 +190,45 @@ test('新增 ui-nav 提供方：导航记录经壳确定性汇集，ui-shell / u
     },
   )
   // 加一个导航提供方只改世界成员表：壳 / 侧栏实现文件逐字节未动。
+  assert.deepEqual(snapshot(UI_DIRS), before)
+  for (const path of UI_SHELL_FILES) assert.equal(existsSync(path), true, `缺少壳实现文件 ${path}`)
+})
+
+const UI_SLOT_SOURCE = 'uislot-fixture'
+const EMPTY_TABLES = { slots: [], mounts: [], headless: [] }
+
+test('新增 ui-slot 提供方：状态栏槽经壳合并生效，ui-shell / ui-sidebar 文件逐字节不变', async (t) => {
+  const before = snapshot(UI_DIRS)
+  await withScenario(
+    t,
+    {
+      defaultText: 'ok',
+      closure: [...computeWorldIdentities('chat'), UI_SLOT_SOURCE],
+      overrides: { [UI_SLOT_SOURCE]: fixturePluginDir(UI_SLOT_SOURCE) },
+    },
+    async ({ world }) => {
+      assert.ok(world.loaded.includes(UI_SLOT_SOURCE), `ui-slot 夹具应已装载：${world.loaded.join(',')}`)
+      // 夹具声明经壳合并：新增状态栏槽按数据出现，核心槽不被提供方覆盖。
+      const declared = parseSlotDecls(slotDeclsValue())
+      const merged = mergeSlotDecls({ ...EMPTY_TABLES, slots: DEFAULT_SLOTS }, [declared])
+      assert.ok(
+        merged.slots.some((slot) => slot.name === 'statusbar' && slot.kind === 'chrome' && slot.mount === 'bottom'),
+        `状态栏槽应合并进核心槽表：${JSON.stringify(merged.slots)}`,
+      )
+      const collision = parseSlotDecls({ slots: [{ name: 'main', kind: 'page', mount: 'body' }] })
+      const deduped = mergeSlotDecls({ ...EMPTY_TABLES, slots: DEFAULT_SLOTS }, [collision])
+      assert.deepEqual(
+        deduped.slots.find((slot) => slot.name === 'main'),
+        { name: 'main', kind: 'chrome', mount: 'column' },
+        '同名核心槽应以核心条目为准',
+      )
+      // 同一提供方的页面导航记录经壳确定性汇集消费。
+      const ordered = orderNav([{ provider: UI_SLOT_SOURCE, records: recordsOf(navRecordsValue()) }])
+      assert.deepEqual(ordered.map((record) => record.id), ['fixture-page'])
+      assert.deepEqual(ordered[0].target, { page: 'fixture-page' })
+    },
+  )
+  // 加一个 ui-slot / ui-nav 提供方只改世界成员表：壳 / 侧栏实现文件逐字节未动。
   assert.deepEqual(snapshot(UI_DIRS), before)
   for (const path of UI_SHELL_FILES) assert.equal(existsSync(path), true, `缺少壳实现文件 ${path}`)
 })

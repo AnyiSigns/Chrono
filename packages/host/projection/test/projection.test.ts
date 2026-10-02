@@ -21,7 +21,6 @@ function injectedWorld(): World {
           {
             seq: 0,
             payload: PAYLOAD,
-            pins: {},
             sig: SIG,
             adopted: { at: 7, by: 'seed', write: 'w-1' },
           },
@@ -36,7 +35,6 @@ function injectedWorld(): World {
           {
             seq: 0,
             payload: 'd'.repeat(64),
-            pins: {},
             sig: SIG,
             adopted: { at: 8, by: 'seed', write: 'w-2' },
           },
@@ -51,7 +49,6 @@ function injectedWorld(): World {
           {
             seq: 3,
             payload: 'e'.repeat(64),
-            pins: {},
             sig: SIG,
             adopted: { at: 9, by: 'seed', write: 'w-3' },
           },
@@ -167,14 +164,12 @@ describe('A14 base_only 投影', () => {
       {
         seq: 1,
         payload: dataPayload,
-        pins: {},
         sig: dataPayload,
         adopted: { at: 8, by: 'client', write: 'w-2' },
       },
       {
         seq: 2,
         payload: newerCode,
-        pins: {},
         sig: newerCode,
         adopted: { at: 9, by: 'client', write: 'w-3' },
       },
@@ -200,43 +195,20 @@ describe('A14 base_only 投影', () => {
     expect(view.ids['toy-alpha'].body).toEqual({ tree: 'tree-hash', meta: { name: 'toy-alpha' } })
   })
 
-  it('pins：机械读出当前代码世代声明里的表（名 → 被依赖身份名字面值）', () => {
-    const world = worldWithDecl({ 'toy.alpha': 'toy-alpha', 'toy.beta': 'toy-beta' })
+  it('pins：机械读出当前代码世代 `meta.needs` 的 one 绑定（cap → 被依赖身份名字面值）', () => {
+    const world = worldWithDecl({
+      metaNeeds: { 'toy.alpha': 'toy-alpha', 'toy.beta': 'toy-beta' },
+    })
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
     expect(view.ids['toy-decl'].pins).toEqual({ 'toy.alpha': 'toy-alpha', 'toy.beta': 'toy-beta' })
   })
 
-  it('pins 并入 one-needs：声明 pins ∪ 该世代 meta.needs 的 one 绑定', () => {
-    const world = worldWithDecl(
-      { 'toy.alpha': 'toy-alpha' },
-      { metaNeeds: { 'toy.beta': 'toy-beta' } },
-    )
-    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['toy-decl'].pins).toEqual({
-      'toy.alpha': 'toy-alpha',
-      'toy.beta': 'toy-beta',
-    })
-  })
-
   it('many 无单值绑定：声明 many needs 不并入 pins', () => {
-    const world = worldWithDecl(
-      {},
-      { declNeeds: { 'toy.hook': { mode: 'many', methods: ['onTurn'] } } },
-    )
+    const world = worldWithDecl({
+      declNeeds: { 'toy.hook': { mode: 'many', methods: ['onTurn'] } },
+    })
     const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
     expect(view.ids['toy-decl'].pins).toEqual({})
-  })
-
-  it('键冲突：同名键声明 pins 优先于 one 绑定', () => {
-    const world = worldWithDecl(
-      { 'toy.alpha': 'toy-alpha' },
-      { metaNeeds: { 'toy.alpha': 'other', 'toy.beta': 'toy-beta' } },
-    )
-    const view = projectBaseOnly(world, EMPTY_HEAD) as unknown as Projection
-    expect(view.ids['toy-decl'].pins).toEqual({
-      'toy.alpha': 'toy-alpha',
-      'toy.beta': 'toy-beta',
-    })
   })
 
   it('无代码世代：pins 为 null（不并入 one 绑定）', () => {
@@ -258,19 +230,18 @@ describe('A14 base_only 投影', () => {
 
 /**
  * 一个带可解析 `plugin.json` 的代码世代身份：tree / blob / commit 齐备。
- * `pins` 为声明 pins 表；`declNeeds` 写进 `plugin.json.needs`；`metaNeeds` 写进 commit body 的 `meta.needs`
+ * `declNeeds` 写进 `plugin.json.needs`；`metaNeeds` 写进 commit body 的 `meta.needs`
  * （入世期写入的 `one` 绑定，cap → 身份名）。
  */
-function worldWithDecl(
-  pins: { [name: string]: string },
-  extra?: { declNeeds?: Json; metaNeeds?: { [cap: string]: string } },
-): World {
+function worldWithDecl(extra?: {
+  declNeeds?: Json
+  metaNeeds?: { [cap: string]: string }
+}): World {
   const decl = {
     identity: 'toy-decl',
     schema: 'schema/plugin.schema.json',
     implements: ['toy.decl'],
     methods: { 'toy.decl': ['echo'] },
-    pins,
     ...(extra?.declNeeds === undefined ? {} : { needs: extra.declNeeds }),
     start: '',
     build: [],
@@ -303,7 +274,6 @@ function worldWithDecl(
           {
             seq: 0,
             payload: commit,
-            pins: {},
             sig: commit,
             adopted: { at: 1, by: 'seed', write: 'w-1' },
           },
@@ -327,7 +297,6 @@ function worldWithDataBody(body: Json, defs: World['defs']): World {
           {
             seq: 0,
             payload,
-            pins: {},
             sig: payload,
             adopted: { at: 1, by: 'test', write: 'w-0' },
           },
@@ -344,7 +313,6 @@ describe('补丁世代组装：投影 body = base 世代 + 补丁链', () => {
     return {
       seq,
       payload,
-      pins: {},
       sig: payload,
       adopted: { at: 1, by: 'test', write: `w-${seq}` },
       ...(base !== undefined ? { base } : {}),

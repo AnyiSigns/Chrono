@@ -3,10 +3,8 @@
   "schema": "schema/plugin-admin.json",
   "implements": ["plugin-admin", "tool-provider"],
   "methods": {
-    "plugin-admin": ["describe", "invoke"],
-    "tool-provider": ["describe", "invoke"]
+    "plugin-admin": ["describe", "invoke"]
   },
-  "pins": {},
   "needs": {
     "plugin": { "mode": "one" }
   },

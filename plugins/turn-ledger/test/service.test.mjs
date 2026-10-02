@@ -94,7 +94,6 @@ test('decide：approved ⇒ add_gen(loop-policy) + accepted verdict', async () =
     }
     const result = await drv.call('decide', {
       bag,
-      pins: {},
       resume: {
         cursor: { kind: 'orchestration_change', proposal_ids: ['pr-1'] },
         payload: { verdict: 'approved' },

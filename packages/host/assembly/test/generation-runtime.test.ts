@@ -515,7 +515,6 @@ describe('S5 世代跟随 applyWorld（A6）', () => {
       const gen: Gen = {
         seq: 0,
         payload,
-        pins: {},
         sig: payload,
         adopted: { at: 0, by: '', write: payload },
       }

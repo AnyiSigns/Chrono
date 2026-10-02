@@ -46,7 +46,6 @@ export function createToyPlugin(root: string): string {
         schema: 'schema/plugin.schema.json',
         implements: ['toy.echo'],
         methods: { 'toy.echo': ['echo'] },
-        pins: {},
         start: '',
         build: [],
         protocol: '1',

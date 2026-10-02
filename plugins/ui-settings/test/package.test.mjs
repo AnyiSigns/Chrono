@@ -26,10 +26,10 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法，兼 u
       'client.read',
       'secret',
     ],
-    'ui-nav': ['list'],
   })
-  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {
+    host: { mode: 'one' },
     model: { mode: 'one' },
     secrets: { mode: 'one' },
     'ref-hydrate': { mode: 'one' },

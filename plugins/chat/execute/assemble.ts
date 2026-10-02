@@ -1,6 +1,6 @@
-// interpret bag / title args 装配（纯函数）：入口 term 只传投影切片，服务按 bag 装配契约装配。
+// interpret bag / title 消息装配（纯函数）：入口 term 只传投影切片，服务按 bag 装配契约装配。
 // 下游消费者：#33 `loop-policy.interpret`（一次 bag 覆盖全部节点；#33 再按节点分发）、
-// #49 `session-title.generate`（首条消息标题段 args）。装配只做读取与机械拼装，不做写。
+// 首条消息标题段（chat 内联 `model.complete` 的 system + user 消息）。装配只做读取与机械拼装，不做写。
 // 服务不读投影：世界数据由入口 term 读出随 args / ids 传入。
 
 import { asString, defHashOf, isRecord, numberField } from './plan.ts'
@@ -383,7 +383,7 @@ export function buildInterpretBag(params: InterpretBagInput): Rec {
         : null
     if (tools !== null && Array.isArray(tools['ignore'])) bag['ignore'] = tools['ignore']
   }
-  const toolsBody = bodyOf(ids, 'tools')
+  const toolsBody = bodyOf(ids, 'tool-registry')
   if (toolsBody !== null) bag['tools_bindings'] = toolsBody
   const mcpTools = mcpToolsOf(ids)
   if (mcpTools !== null) bag['mcp_tools'] = mcpTools
@@ -408,28 +408,12 @@ export function shouldGenerateTitle(conversation: Rec | null, titleDefault: stri
   return title === titleDefault && count === 0
 }
 
-/** `#49 session-title.generate` 的 args：首条消息 + 连接实例 + 会话 body。 */
-export function buildTitleArgs(params: {
-  conversationId: string
-  firstMessage: string
-  config: Rec
-  sessionBody: Rec
-  titleDefault: string
-}): Rec {
-  const { conversationId, firstMessage, config, sessionBody, titleDefault } = params
-  const args: Rec = {
-    conversation: conversationId,
-    first_message: firstMessage,
-    config,
-    session: sessionBody,
-    title_default: titleDefault,
-  }
-  const vendor = asString(config['vendor'])
-  const model = asString(config['model'])
-  if (vendor !== null) args['vendor'] = vendor
-  if (model !== null) args['model'] = model
-  if (isRecord(config['params'])) args['params'] = config['params']
-  return args
+/** 首条消息标题的 `model.complete` 消息：system 提示 + 用户首条消息。 */
+export function buildTitleMessages(prompt: string, firstMessage: string): Json[] {
+  return [
+    { role: 'system', content: prompt },
+    { role: 'user', content: firstMessage },
+  ]
 }
 
 /** 首条用户消息文本（title 段用）。 */

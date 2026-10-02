@@ -83,21 +83,19 @@ function mixedChain(): Harness {
   h.push('add_gen', {
     id: 'u1',
     payload: firstPayload.argsHash,
-    pins: { k: secondPayload.argsHash },
     sig: schemaDef.argsHash,
   })
   h.push('batch', {
     ops: [
       { op: 'add_identity', args: { id: 'u2', schema: schemaDef.argsHash } },
       { op: 'put', args: { body: { g: 3 } } },
-      { op: 'add_gen', args: { id: 'u2', payload: { $n: 1 }, pins: {}, sig: schemaDef.argsHash } },
+      { op: 'add_gen', args: { id: 'u2', payload: { $n: 1 }, sig: schemaDef.argsHash } },
     ],
   })
   h.push('fork', { id: 'u3', schema: schemaDef.argsHash, parent: 'u1' })
   h.push('graft', {
     id: 'u3',
     payload: secondPayload.argsHash,
-    pins: {},
     sig: schemaDef.argsHash,
     from: 'u1',
     gen: 0,
@@ -188,7 +186,6 @@ describe('两个身份与常量', () => {
         mkEntry(2, '0'.repeat(64), 'add_gen', {
           id: 'c1',
           payload: H(storedDef as unknown as Json),
-          pins: {},
           sig: H(storedDef as unknown as Json),
         }),
       ),
@@ -210,7 +207,7 @@ describe('两个身份与常量', () => {
 })
 
 describe('replay 与 verify', () => {
-  it('replay(entries) 与逐步 applyEntry 逐字段一致（born/adopted.write/pins/graft）', () => {
+  it('replay(entries) 与逐步 applyEntry 逐字段一致（born/adopted.write/graft）', () => {
     const h = mixedChain()
     const replayed = replay(h.journal)
     expect(JSON.stringify(replayed)).toBe(JSON.stringify(h.w)) // 逐字段（含履历）
@@ -278,7 +275,7 @@ describe('replay 与 verify', () => {
         { op: 'put', args: { body: { z: 9 } } },
         {
           op: 'add_gen',
-          args: { id: 'ghost', payload: 'a'.repeat(64), pins: {}, sig: 'b'.repeat(64) },
+          args: { id: 'ghost', payload: 'a'.repeat(64), sig: 'b'.repeat(64) },
         },
       ],
     })
@@ -297,7 +294,6 @@ describe('replay 与 verify', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: payloadDef.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     h.push('note', { pre: 1 })
@@ -310,7 +306,6 @@ describe('replay 与 verify', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: secondPayload.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     const tail = h.journal.slice(h.journal.indexOf(snap) + 1)
@@ -344,13 +339,13 @@ describe('冻结桩与固定种子随机链', () => {
       mkEntry(0, null, 'put', schemaDef),
       mkEntry(1, null, 'put', payloadDef),
       mkEntry(2, null, 'add_identity', { id: 'bz', schema: schemaKey }),
-      mkEntry(3, null, 'add_gen', { id: 'bz', payload: H(payloadDef), pins: {}, sig: schemaKey }),
+      mkEntry(3, null, 'add_gen', { id: 'bz', payload: H(payloadDef), sig: schemaKey }),
       mkEntry(4, null, 'batch', {
         ops: [
           { op: 'put', args: { body: { b: 2 } } },
           {
             op: 'graft',
-            args: { id: 'bz', payload: { $n: 0 }, pins: {}, sig: schemaKey, from: 'bz', gen: 0 },
+            args: { id: 'bz', payload: { $n: 0 }, sig: schemaKey, from: 'bz', gen: 0 },
           },
           {
             op: 'batch',
@@ -410,7 +405,7 @@ describe('冻结桩与固定种子随机链', () => {
       } else if (pick < 0.85) {
         const id = ids[Math.floor(rnd() * ids.length)]
         const pl = defKeys[Math.floor(rnd() * defKeys.length)]
-        h.push('add_gen', { id, payload: pl, pins: {}, sig: schemaKey })
+        h.push('add_gen', { id, payload: pl, sig: schemaKey })
         gensOf[id].push(pl)
       } else {
         const id = ids[Math.floor(rnd() * ids.length)]

@@ -42,7 +42,7 @@
 服务 → 宿主   error  { id, ok: false, code, message }
 ```
 
-`port` 是**逻辑名**（不是哈希）——宿主已在路由时按发出者 `pins` 解析到本服务；它必须是本服务**声明的能力类**。
+`port` 是**逻辑名**（不是哈希）——宿主已在路由时按发出者 `needs` 绑定解析到本服务；它必须是本服务**声明的能力类**。
 
 - **`env`（宿主填写，机械）**：`{ run, thread, now, emitter }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟、**发出者身份**。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。`emitter` 由宿主解析填写、调用方无从伪造，是被调服务按 owner 分命名空间的**唯一合法依据**（存储类服务据此分库）；宿主保留身份的调用记 `host`。**不得**改用调用方自报的 namespace 参数。
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
@@ -63,8 +63,8 @@
 
 ### 2.4 反向调用（服务 → 宿主）
 
-服务实现一个能力类时，常要调**本插件 `pins` 里的其他身份**（`tool-fs` → `sandbox`、`model-protocol` → `secrets`、
-`context-window` → `budget`…）。故服务协议有**第二方向**的调用：插件 → 宿主，宿主按**发出者 `pins`** 路由后
+服务实现一个能力类时，常要调**本插件 `needs` 绑定的其他身份**（`tool-fs` → `sandbox`、`model-protocol` → `secrets`、
+`context-window` → `budget`…）。故服务协议有**第二方向**的调用：插件 → 宿主，宿主按**发出者 `needs` 绑定**路由后
 转成对目标服务的 `call`（§2.2）。
 
 ```
@@ -73,7 +73,7 @@
 宿主 → 服务   port.error  { id, ok: false, error }
 ```
 
-- **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `pins`（或 `needs.mode:"one"` 的能力类）解析
+- **发出者 = 该服务所属身份**（不是 directive 入口 def 的属主）；`port` 是**逻辑名**，按本插件 `needs`（`one` 绑定或 `many` 成员）解析
   （与 §2.2 的 host→service `call` 同一路由口径，见 `host.md` §五「路由」）。
 - **宿主转发为目标 `call` 帧时会填 `env: {run, thread, now, emitter}`**（§2.2；目标服务与发起服务各自拿到同一 `run` / `thread`，`emitter` = 发起该反向调用的服务身份）。
   发起方 `port.call` 的 **`args` 顶层 `env` 字段保留**（如把密钥经 `env` 下传给需要它的服务）：宿主原样透传给目标、
@@ -84,14 +84,14 @@
   反向 `port.error` 属服务协议族（按 `ok` 判别），错误码字段名为 `error`；§2.2 的正向 `error` 帧该字段名为 `code`。
 - **审计分流（写死）**：世界里的 `eff` 记 `EffectAudit` 并入链；**反向调用只记宿主侧端口审计，不入世界、不参与重放**
   ——它是实现内部的依赖调用，不是回合判定，故不占 `EffRequest` / `eff_id`。
-- **不扩权**：`port` 必须 ∈ 本插件 `pins` ∪ `one`-needs（`needs.mode:"one"` 的能力类，经 needs 分支解析）；`many` 默认不经反向调用，但帧带 `provider`（成员身份）且该类在本插件 `needs` 且 `mode:"many"`、目标 ∈ 世界索引(cap) 时可按成员定位调用（否则 `unresolved_cap`）；不得索取其他插件的物理端点（§2.5）、不得借它写链。
+- **不扩权**：`port` 必须 ∈ 本插件 `needs` 的 `one` 键 ∪ 自能力（`implements`）；`many` 默认不经反向调用，但帧带 `provider`（成员身份）且该类在本插件 `needs` 且 `mode:"many"`、目标 ∈ 世界索引(cap) 时可按成员定位调用（否则 `unresolved_cap`）；不得索取其他插件的物理端点（§2.5）、不得借它写链。
 - 反向调用同样受宿主调用超时（缺省 30s，§2.2）约束。
 - **保留能力类 `host`**（方法集恰 12 项；另有 `thread.resume` / `thread.terminate` 两个弃用别名，见下）：`port = host` 解析到宿主自身（见 `host.md` §五 路由 / 宿主扩展面）。方法：
   `run.spawn` / `run.cancel`（run 生命周期；旧名 `thread.resume` / `thread.terminate` 作为弃用别名并发保留一个协议版本，命中即记宿主 `method_deprecated` 运维日志）、`audit { filter?, limit? }`（只读审计面，供服务读 `EffectAudit`）、
   `identities {}`（只读身份清单面）、`identities.suspend { id }` / `identities.resume { id }`（运行期隔离：停服务摘端点、**判定承载方法一并不可路由**、保留索引、不连坐依赖者；休眠态不持久，已是坏分支隔离态报 `isolated`）、
   `source.read { identity, path }`（只读源码读面）、`def.read { identity, hashes }`（按哈希只读解析 def body；投影 `refs` 只回引用，消费方逐跳取 body；越权 fail-closed、单次有界）、
   `validate_package { files }`（入世校验 dry-run，与 `seed` / `pack` 同一套机械校验、不写世界）、`blob.put { bytes(base64) }`（源码字节落 CAS，回 pointer def body；规范 base64、原始字节上限 8 MiB）、`asset.put` / `asset.get`（服务侧字节存取，8 MiB 内联上限）。
-  上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何声明 `pins:{"host":"host"}` 的插件都可调用（过滤责任在上层，宿主不强制）。
+  上层能力——子代理生命周期（`subagent.resume` / `subagent.terminate`）、身份读 / 校验 / 列（`read` / `validate` / `list`，经 `identities`）、二进制字节、审计读面——走此路。**v1 受信面**：host 能力无方法级鉴权，任何 `needs` 含 host 哨兵的插件都可调用（过滤责任在上层，宿主不强制）。
 
 ### 2.5 上行事件（服务 → 宿主，主动）
 
@@ -183,10 +183,10 @@
 | --- | --- | --- |
 | `protocol_mismatch` | `v` 与声明不一致 | §一 |
 | `handshake_failed` | `manifest` 形态不符 | `host.md` §五 装配 |
-| `unresolved_cap` | 发出者 `pins` 无此名 | `host.md` §五 路由 |
+| `unresolved_cap` | 发出者 `needs` 绑定无此名 / 自能力未声明 | `host.md` §五 路由 |
 | `not_loaded` | 端点表无此项 | `host.md` §五 路由 |
 | `stale` | 依赖失效 | `kernel.md` §九 / `host.md` §五 装配 |
-| `cycle` | `pins` 成环 | `host.md` §五 装配 |
+| `cycle` | `needs.one` 闭包成环 | `host.md` §五 装配 |
 | `writer_busy` | 抢锁失败 | `host.md` §五 写者 |
 | `unknown_command` | 声明里没有这个命令名 | `host.md` §五 命令 |
 | `unknown_run` | `cancel` 指向未知 / 已结束的 run | §三 |
@@ -203,12 +203,13 @@
 | `reserved_command_name` | 插件命令占用框架保留命令名（入世整包拒） | `plugins.md` §二 |
 | `bad_directive` | directive 形态非法（`kind` / 字段不符） | `kernel.md` §十二 |
 | `transport_failed` | 效果未执行（传输级）的审计 `outcome`；具体通道错误码（`timeout` / `closed` / `protocol_error` / `bad_manifest` / `cancelled`）另存 `EffResult.error`（§2.2） | §2.2 |
-| `unresolved_pin` | 被依赖身份不存在 / 未激活（入世、或运行期结构 op / `batch` 子操作的 pins 解析） | `host.md` §五 源码 / 落账 |
+| `unresolved_need` | `needs.one` 能力类在世界上无提供方（入世整包拒） | `host.md` §五 源码 |
+| `ambiguous_need` | `needs.one` 能力类在世界上有多个提供方（入世整包拒） | `host.md` §五 源码 |
 | `bad_worldignore` | `.worldignore` 命中了契约必需文件 | `host.md` §五 源码 |
 | `term_cycle` | 入世时同包 term `$ref` 成环（该包整批拒） | `host.md` §五 源码 |
 | `bad_term_ref` | 入世时 `$ref` 指向包内不存在的成员 | `host.md` §五 源码 |
 | `identity_mismatch` | `pack --identity` 与包内 `plugin.json.identity` 不一致 | `host.md` §五 入世路径 |
-| `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval` / 存储类身份）的引用（入世整批拒） | `host.md` §五 源码 |
+| `protected_pin_removed` | 新世代删除了对受保护身份（`sandbox` / `guard` / `secrets` / `approval` / 存储类身份）的 `needs.one` 绑定（入世整批拒） | `host.md` §五 源码 |
 | `hidden_identity` | `plugin-admin` 读 / 写被可见性过滤排除的身份（`sandbox` / 自身） | `plugins/plugin-admin/README.md` |
 | `validate_required` | `plugin-admin` 的 `write` / `propose` 未携带上次 `validate` 的结果哈希 | `plugins/plugin-admin/README.md` |
 | `restart_exhausted` | 崩溃重启超过 `restart` 上限 | `host.md` §五 装配 |

@@ -2,10 +2,7 @@
   "identity": "search-index-sql",
   "schema": "schema/search-index-sql.json",
   "implements": ["search-index-provider"],
-  "methods": {
-    "search-index-provider": ["search", "put", "stats"]
-  },
-  "pins": {},
+  "methods": {},
   "needs": {},
   "start": "node execute/main.ts",
   "build": [],

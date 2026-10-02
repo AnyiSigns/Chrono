@@ -72,6 +72,16 @@
     /* <1024：消息列与输入框退化为「全宽 − 边距」（响应式断点）；设在 #shell-column 让 main / composer 同时跟随 */
     body.shell-narrow #shell-column { --msg-max-w: 100%; }
     ::selection { background: var(--c-selection); color: var(--c-text); }
+    /* 全局磨砂颗粒：极淡噪点覆在内容区，压平纯底色的塑料感；指针穿透、层级压在 topbar 之下 */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      background-image: var(--grain-noise);
+      opacity: var(--grain-opacity);
+    }
     /* 全局滚动条：与 ::selection 同类，属壳统一的基础表现；细轨道 + 圆角浮层滑块，
        颜色由 token 派生（浅/深主题自适应），插件无需各自重写。
        现代 Chromium 一旦设了非 auto 的 scrollbar-width/scrollbar-color 就会覆盖

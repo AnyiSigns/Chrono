@@ -21,7 +21,7 @@ export function putOp(body: Json): Json {
 
 /** 单条 add_gen 子操作：payload / sig 指向同批更早的 put；`base` 存在即补丁世代。 */
 export function addGenOp(id: string, index: number, base?: number): Json {
-  const args: Rec = { id, payload: { $n: index }, sig: { $n: index }, pins: {} }
+  const args: Rec = { id, payload: { $n: index }, sig: { $n: index } }
   if (base !== undefined) args['base'] = base
   return { op: 'add_gen', args }
 }

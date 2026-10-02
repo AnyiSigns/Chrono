@@ -13,7 +13,6 @@
 - 命令：无（由消费方按能力类反向调用，不暴露命令面）
 - 成员：`execute`（TS 服务）、`schema`
 - `pins`：无（`"pins": {}`）
-- `needs`：`token-estimate`（`one`；定价链上游声明）
 - 状态档：`recomputable`（系数状态落 `CHRONO_PLUGIN_STATE/calibration.json`，可随时删）
 - 启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）
 - 健康探针自述：`budget.model`

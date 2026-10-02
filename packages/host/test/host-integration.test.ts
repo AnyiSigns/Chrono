@@ -194,10 +194,11 @@ describe('宿主集成（入站面）', () => {
   }, 15000)
 
   it('E2E：fixtures + 环 + 握手不符包同处一界，只隔离各自分支，fixtures 仍 loaded', async () => {
-    // cyc-b v1（无 pins）→ cyc-a（pins cyc-b）→ cyc-b v2（pins cyc-a）：双世代构成环
-    const cycBRoot = writeTempPackage(root, { identity: 'toy-cyc-b' })
+    // cyc-b v1（无消费绑定）→ cyc-a（needs b）→ cyc-b v2（needs a）：双世代构成环
+    const cycBRoot = writeTempPackage(root, { identity: 'toy-cyc-b', implements: ['b'] })
     const cycARoot = writeTempPackage(root, {
       identity: 'toy-cyc-a',
+      implements: ['a'],
       pins: { b: 'toy-cyc-b' },
     })
     const badRoot = writeTempPackage(root, {
@@ -219,9 +220,10 @@ describe('宿主集成（入站面）', () => {
     const s3 = runSeed(root, [{ name: 'toy-cyc-a', path: cycARoot }])
     expect(s3.ok).toBe(true)
 
-    // 换代 cyc-b：pins 指向 cyc-a，与 cyc-a 的 pins 形成闭环
+    // 换代 cyc-b：needs 指向 cyc-a，与 cyc-a 的 needs 形成闭环
     writeTempPackage(root, {
       identity: 'toy-cyc-b',
+      implements: ['b'],
       pins: { a: 'toy-cyc-a' },
     })
     const s4 = runSeed(root, [{ name: 'toy-cyc-b', path: cycBRoot }])

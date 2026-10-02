@@ -231,7 +231,7 @@ test('摘要视图：tool_call / orchestration_change / plugin_write', () => {
   assert.equal(argsSummaryOf({ args_ref: { sha256: 'abcdef0123456789' } }), 'abcdef012345')
   assert.equal(argsSummaryOf({}), '')
 
-  const orch = { kind: 'orchestration_change', port: 'orchestration-admin', args_ref: { summary: 'agent.step → composite（+3 节点）' }, shadow: SHADOW }
+  const orch = { kind: 'orchestration_change', port: 'orchestration', args_ref: { summary: 'agent.step → composite（+3 节点）' }, shadow: SHADOW }
   const orchView = orchestrationView(orch, null)
   assert.equal(orchView.title, 'agent.step → composite（+3 节点）')
   assert.equal(orchView.rounds, 12)

@@ -375,7 +375,7 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
     expect(verifyFull(readJournal(journalFile())).ok).toBe(true)
   }, 30000)
 
-  it('依赖换代不重装发出者：caller 世代不动、无隔离记录；路由重解析到新 active（记 dep.drift）', async () => {
+  it('依赖换代不重装发出者：caller 世代不动、无隔离记录；路由按名重解析到新 active', async () => {
     const v2 = writeTempPackage(root, {
       identity: 'toy-alpha',
       dir: 'toy-alpha-v2',
@@ -442,26 +442,14 @@ describe('S5 世代跟随（A6）与单写者（A8）', () => {
       // 发出者（caller）自身不动：进程未重启（pid 文件不变）、无 dep.stale / dep.retired、世代仍是原 payload
       expect(readFileSync(callerPidFile, 'utf8')).toBe(callerPid)
       expect(isPidAlive(Number.parseInt(callerPid, 10))).toBe(true)
-      const records = await waitForLifecycle(
-        lifecycleFile(),
-        (r) =>
-          r.kind === 'dep' && r.event === 'drift' && r.impl === 'toy-caller' && r.gen === v2Gen,
-        '依赖漂移证据',
-      )
+      const records = readLifecycle(lifecycleFile())
       expect(
-        records.some((r) => r.kind === 'dep' && r.impl === 'toy-caller' && r.event !== 'drift'),
+        records.some((r) => r.kind === 'dep' && r.impl === 'toy-caller'),
       ).toBe(false)
       expect((await client.status()).loaded).toContainEqual({
         id: 'toy-caller',
         gen: callerGen,
       })
-      // pin 哈希 ≠ 依赖 active：一条去重的漂移证据
-      expect(
-        records.filter(
-          (r) =>
-            r.kind === 'dep' && r.event === 'drift' && r.impl === 'toy-caller' && r.gen === v2Gen,
-        ),
-      ).toHaveLength(1)
     } finally {
       client.close()
     }

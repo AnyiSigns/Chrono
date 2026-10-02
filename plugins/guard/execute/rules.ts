@@ -177,7 +177,7 @@ export const DEFAULT_RULES: Rules = {
   },
   structural_writes: [
     { port: 'plugin-admin', tool: 'plugin.write', verdict: 'escalate' },
-    { port: 'orchestration-admin', tool: 'orchestration.propose', verdict: 'escalate' },
+    { port: 'orchestration', tool: 'orchestration.propose', verdict: 'escalate' },
   ],
   deny: {
     calls: [],

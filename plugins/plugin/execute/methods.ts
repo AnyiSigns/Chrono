@@ -95,30 +95,6 @@ async function validateTool(host: HostCaller, args: Rec, env: CallEnv): Promise<
 }
 
 /**
- * 校验候选 `plugin.json` 的 pins：`host` 保留字面量，其余值即被依赖身份名（原样透传，不解析成哈希——
- * 宿主在落账段按身份名解析）。缺失 / 未激活的身份仍在此早退报 `unresolved_pin`，给作者及时反馈。
- */
-function resolvePins(
-  declared: Record<string, string>,
-  identities: IdentityInfo[],
-): Record<string, string> {
-  const byId = new Map(identities.map((entry) => [entry.id, entry]))
-  const pins: Record<string, string> = {}
-  for (const [name, depId] of Object.entries(declared)) {
-    if (depId === 'host') {
-      pins[name] = 'host'
-      continue
-    }
-    const dep = byId.get(depId)
-    if (dep === undefined || dep.active === null) {
-      throw new ToolError('unresolved_pin', depId)
-    }
-    pins[name] = depId
-  }
-  return pins
-}
-
-/**
  * `plugin.write`：只产写计划。强制顺序：候选树规范化哈希查 ③ 凭据，缺失 / commit 哈希不符
  * → `validate_required`；通过后按宿主入世同序产 put(blob)×n + put(tree) + put(commit) +
  * put(schema) + add_identity? + add_gen，批内 `{"$n":k}` 占位串起。
@@ -163,7 +139,6 @@ async function writeTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Jso
 
   const identities = await hostIdentities(host)
   const isNew = !identities.some((entry) => entry.id === identity)
-  const pins = resolvePins(decl.pins, identities)
 
   const ops = [...built.ops]
   if (isNew) {
@@ -175,7 +150,6 @@ async function writeTool(host: HostCaller, args: Rec, env: CallEnv): Promise<Jso
       id: identity,
       payload: { $n: built.commitIndex },
       sig: { $n: built.commitIndex },
-      pins,
     },
   })
 

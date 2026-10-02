@@ -12,6 +12,7 @@ import type { RetryPolicy } from './resilience.ts'
 import { BadArgsError } from 'plugin-sdk'
 import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 import { collectVendorBodies } from './vendors.ts'
+import { providerCandidates, stripVendorPrefix } from './alias.ts'
 
 export interface ProfileDeps {
   throttle: PortCaller
@@ -27,11 +28,6 @@ const MANAGED_KEYS = [
   'modalities',
 ] as const
 
-const PROVIDER_ALIASES: Record<string, string> = {
-  'google-genai': 'google',
-  dashscope: 'alibaba',
-}
-
 interface Target {
   vendor: string
   ids: string[]
@@ -39,10 +35,6 @@ interface Target {
   baseUrl?: string
   /** 自定义厂商实例协议（config provider 级 `protocol`），供无模板声明的能力回落。 */
   protocol?: string
-}
-
-function stripVendorPrefix(name: string): string {
-  return name.replace(/^vendor-/, '')
 }
 
 /** 从 base_url 取主机首标签，用作 models.dev provider 候选。 */
@@ -72,12 +64,10 @@ function resolveProviderKey(
   body: Rec | null,
   hints?: { name?: string; baseUrl?: string },
 ): string | null {
-  const candidates = new Set<string>([vendor, stripVendorPrefix(vendor)])
-  if (body !== null && typeof body['sdk'] === 'string') candidates.add(body['sdk'] as string)
-  for (const candidate of [...candidates]) {
-    const alias = PROVIDER_ALIASES[candidate]
-    if (alias !== undefined) candidates.add(alias)
-  }
+  const candidates = providerCandidates(
+    vendor,
+    body !== null && typeof body['sdk'] === 'string' ? (body['sdk'] as string) : undefined,
+  )
   // 自定义厂商（无 sdk / 非 models.dev 键名）按显示名与 base_url 主机回落到 models.dev provider：
   // 如 config `custom`
   const label = hostLabel(hints?.baseUrl)

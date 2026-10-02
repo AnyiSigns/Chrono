@@ -5,7 +5,6 @@
   "methods": {
     "sandbox-fs": ["fsop", "capabilities"]
   },
-  "pins": {},
   "needs": {
     "sandbox-policy": { "mode": "one" }
   },

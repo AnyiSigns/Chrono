@@ -50,7 +50,7 @@ function codeOf(fn: () => unknown): string {
 }
 
 const genArgs = (payload: Hash, extra: Record<string, Json> = {}, sig: Hash = SIG_KEY): Json =>
-  asJson({ id: 'x', payload, pins: {}, sig, ...extra })
+  asJson({ id: 'x', payload, sig, ...extra })
 
 const graftArgs = (
   payload: Hash,
@@ -58,7 +58,7 @@ const graftArgs = (
   from = 'x',
   gen = 0,
   sig: Hash = SIG_KEY,
-): Json => asJson({ id: 'x', payload, pins: {}, sig, from, gen, ...extra })
+): Json => asJson({ id: 'x', payload, sig, from, gen, ...extra })
 
 /** 世界：4 条 def（经 put 入链，重放自足）+ 身份 x（无世代）；journal 收集已入链 entry。 */
 function emptyIdentity(): { world: World; head: Head; journal: Entry[] } {

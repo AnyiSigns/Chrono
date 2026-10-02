@@ -3,7 +3,6 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["example.echo"],
   "methods": { "example.echo": ["echo"] },
-  "pins": {},
   "needs": {},
   "slots": {},
   "start": "node execute/main.js",

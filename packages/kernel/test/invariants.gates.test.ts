@@ -97,7 +97,7 @@ function worldWith(...defs: Json[]): World {
   for (const d of defs) w.defs[H(d)] = d as unknown as Def
   return w
 }
-/** 身份 x：gen0（payload=PAY、pins.p=SIG、sig=SIG）已激活。 */
+/** 身份 x：gen0（payload=PAY、sig=SIG）已激活。 */
 function seeded(): { world: World; head: Head } {
   const world = worldWith(dRec('schema'), dRec('payload'), dRec('sig'), dRec('payload-alt'))
   let head = emptyHead()
@@ -107,7 +107,7 @@ function seeded(): { world: World; head: Head } {
     head: link(
       head,
       world,
-      req('gen-a', 'add_gen', J({ id: 'x', payload: PAY, pins: { p: SIG }, sig: SIG }), head.hash),
+      req('gen-a', 'add_gen', J({ id: 'x', payload: PAY, sig: SIG }), head.hash),
     ),
   }
 }
@@ -196,18 +196,13 @@ describe('引用完整性：内核认识字段里的缺引用一律 missing_ref 
   const cases: [string, RefCase][] = [
     ['add_identity.schema', onBare('add_identity', J({ id: 'q', schema: GHOST }))],
     ['fork.schema', onSeeded('fork', J({ id: 'y', schema: GHOST, parent: 'x' }))],
-    ['add_gen.payload', onSeeded('add_gen', J({ id: 'x', payload: GHOST, pins: {}, sig: SIG }))],
-    ['add_gen.sig', onSeeded('add_gen', J({ id: 'x', payload: PAY, pins: {}, sig: GHOST }))],
-    [
-      'add_gen.pins.*',
-      onSeeded('add_gen', J({ id: 'x', payload: PAY, pins: { p: GHOST }, sig: SIG })),
-    ],
+    ['add_gen.payload', onSeeded('add_gen', J({ id: 'x', payload: GHOST, sig: SIG }))],
+    ['add_gen.sig', onSeeded('add_gen', J({ id: 'x', payload: PAY, sig: GHOST }))],
     [
       'graft.payload',
-      onSeeded('graft', J({ id: 'x', payload: GHOST, pins: {}, sig: SIG, from: 'x', gen: 0 })),
+      onSeeded('graft', J({ id: 'x', payload: GHOST, sig: SIG, from: 'x', gen: 0 })),
     ],
     ['put.args.sig', onBare('put', J({ body: 'probe', sig: GHOST }))],
-    ['put.args.pins.*', onBare('put', J({ body: 'probe', pins: { b: GHOST } }))],
     ['request.ref', onGhostRef],
   ]
   it.each(cases)('%s 缺引用：args 其余字段全合法也拒', (_name, build) => expectRefRejected(build))
@@ -260,7 +255,7 @@ describe('worldRev 覆盖语义：吃内容与 active、不吃履历、按需计
   })
   it('born / adopted 履历不同而内容与 active 相同：两世界 worldRev 相等', () => {
     const trio = (): World => worldWith(dRec('schema'), dRec('payload'), dRec('sig'))
-    const genArgs = J({ id: 'x', payload: PAY, pins: { p: SIG }, sig: SIG })
+    const genArgs = J({ id: 'x', payload: PAY, sig: SIG })
     const direct = trio()
     let h = emptyHead()
     h = link(
@@ -356,11 +351,11 @@ describe('哈希预算：载荷只规范化一次，位置哈希 O(1)', () => {
     const cases: [Op, Json][] = [
       ['note', J({})],
       ['add_identity', J({ id: 'solo', schema: SCHEMA })],
-      ['add_gen', J({ id: 'x', payload: PAY_ALT, pins: {}, sig: SIG })],
+      ['add_gen', J({ id: 'x', payload: PAY_ALT, sig: SIG })],
       ['set_active', J({ id: 'x', active: PAY })],
       ['retire', J({ id: 'x' })],
       ['fork', J({ id: 'y', schema: SCHEMA, parent: 'x' })],
-      ['graft', J({ id: 'x', payload: PAY, pins: {}, sig: SIG, from: 'x', gen: 0 })],
+      ['graft', J({ id: 'x', payload: PAY, sig: SIG, from: 'x', gen: 0 })],
     ]
     for (const [op, args] of cases) {
       const { world, head } = seeded()
@@ -628,7 +623,6 @@ describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且
     const gen0: Gen = {
       seq: 0,
       payload: S,
-      pins: {},
       sig: S,
       adopted: { at: 1, by: 't', write: WRITE0 },
     }
@@ -654,7 +648,7 @@ describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且
     const ops = J({
       ops: [
         sub('put', dRec('rolled')),
-        sub('add_gen', J({ id: 'x', payload: PAY, pins: {}, sig: SIG, base: 0 })),
+        sub('add_gen', J({ id: 'x', payload: PAY, sig: SIG, base: 0 })),
       ],
     })
     let caught: unknown
@@ -683,7 +677,7 @@ describe('批量原子性：段 2 非四态异常也回滚，包成 internal 且
         req(
           'bad-base',
           'add_gen',
-          J({ id: 'x', payload: PAY, pins: {}, sig: SIG, base: 9 }),
+          J({ id: 'x', payload: PAY, sig: SIG, base: 9 }),
           head.hash,
         ),
         NOW,

@@ -1443,7 +1443,6 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
         'client.read',
         'secret',
       ],
-      'ui-nav': ['list'],
     })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')

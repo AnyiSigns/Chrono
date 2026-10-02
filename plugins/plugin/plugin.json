@@ -5,10 +5,9 @@
   "methods": {
     "plugin": ["list", "read", "validate", "write"]
   },
-  "pins": {
-    "host": "host"
+  "needs": {
+    "host": { "mode": "one" }
   },
-  "needs": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

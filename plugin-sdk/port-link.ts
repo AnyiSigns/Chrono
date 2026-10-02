@@ -1,5 +1,5 @@
 // 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：服务发 `port.call`，
-// 宿主按发出者 `pins` 路由后回 `port.result` / `port.error`（按 id 配对）。
+// 宿主按发出者 `needs` 绑定路由后回 `port.result` / `port.error`（按 id 配对）。
 // 失败作数据（结构化错误），不抛未捕获错误、不断通道。
 
 import { writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'

@@ -5,10 +5,6 @@
   "methods": {
     "budget": ["model", "factor", "observe"]
   },
-  "pins": {},
-  "needs": {
-    "token-estimate": { "mode": "one" }
-  },
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

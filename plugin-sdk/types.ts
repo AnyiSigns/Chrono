@@ -64,12 +64,12 @@ export interface PortCallOptions {
   /**
    * 按成员定位的 `many` 目标：反向调用 `port.call` 携带目标提供方身份名（配合扩展类 `port`），
    * 宿主校验「该类在发出者 `needs` 且 `mode:"many"`」且「目标 ∈ 索引(类)」后按该成员端点调用。
-   * 缺省 = 单值语义（`pins` / `one`-needs / 自能力）。
+   * 缺省 = 单值语义（`one`-needs / 自能力）。
    */
   provider?: string
 }
 
-/** 反向调用通道（服务 → 宿主，按发出者 `pins` / `one`-needs / 成员定位的 `many` 路由）。 */
+/** 反向调用通道（服务 → 宿主，按发出者 `one`-needs / 成员定位的 `many` 路由）。 */
 export interface PortCaller {
   call(port: string, method: string, args: Rec, options?: PortCallOptions): Promise<PortOutcome>
 }

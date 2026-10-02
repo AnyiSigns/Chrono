@@ -4,8 +4,11 @@
 // argsSchema 白名单校验 / 净化与 caps 形状校验由同包 `schema-validate.ts` 纯函数提供。
 // 加 / 减一个工具提供方 = 世界成员表变化，本模块代码零改动（不枚举提供方）。
 
-import { canonicalJson, isRecord } from 'plugin-sdk'
+import { canonicalJson, indexToolDirectory, isRecord } from 'plugin-sdk'
+import type { Directory, Rejection, ToolEntry } from 'plugin-sdk'
 import type { Json, PortCaller, Rec } from './types.ts'
+
+export type { Directory, Rejection, ToolEntry } from 'plugin-sdk'
 
 /** 工具提供方扩展类（拥有方 `slots` 契约）：成员由宿主注入的 `many` 成员表给出。 */
 const TOOL_PROVIDER = 'tool-provider'
@@ -36,31 +39,6 @@ export interface CapsOutcome {
   caps: Rec | null
 }
 
-export interface Rejection {
-  name: string
-  code: string
-  message: string
-}
-
-export interface ToolEntry {
-  name: string
-  /** 派发用的逻辑端口名（describe/invoke 提供者 = 其类名；绑定项 = 绑定声明的 class）。 */
-  provider: string
-  kind: 'invoke' | 'binding'
-  /** 绑定项的能力类方法；`null` = 投影读（无服务调用）。 */
-  method: string | null
-  /** 投影读的 bag 键（缺省 = 工具名）。 */
-  read: string | null
-  /** 对外暴露的完整声明（含 provider / kind，供调用方渲染与派发）。 */
-  decl: Rec
-}
-
-export interface Directory {
-  tools: ToolEntry[]
-  byName: Map<string, ToolEntry>
-  rejected: Rejection[]
-}
-
 export interface BuildInput {
   pins: string[]
   /** 扩展类 `tool-provider` 的世界成员（提供方身份名，码元序）；每个成员逐个反向 `describe`。 */
@@ -79,27 +57,7 @@ export function toolsOf(value: Json): Json[] {
 
 /** 从 list 的输出（或 bag.directory）重建目录：按名索引，保留 provider / kind / method / read。 */
 export function directoryFromJson(json: Json): Directory {
-  const record = isRecord(json) ? json : {}
-  const rawTools = Array.isArray(record['tools']) ? (record['tools'] as Json[]) : []
-  const rejected = Array.isArray(record['rejected'])
-    ? (record['rejected'] as Json[]).filter(isRecord).map((item) => ({
-        name: typeof item['name'] === 'string' ? (item['name'] as string) : '',
-        code: typeof item['code'] === 'string' ? (item['code'] as string) : 'bad_tool_decl',
-        message: typeof item['message'] === 'string' ? (item['message'] as string) : '',
-      }))
-    : []
-  const tools: ToolEntry[] = []
-  for (const raw of rawTools) {
-    if (!isRecord(raw)) continue
-    const name = raw['name']
-    if (typeof name !== 'string' || name.length === 0) continue
-    const kind = raw['kind'] === 'binding' ? 'binding' : 'invoke'
-    const provider = typeof raw['provider'] === 'string' ? (raw['provider'] as string) : ''
-    const method = typeof raw['method'] === 'string' ? (raw['method'] as string) : null
-    const read = typeof raw['read'] === 'string' ? (raw['read'] as string) : null
-    tools.push({ name, provider, kind, method, read, decl: raw })
-  }
-  return { tools, byName: new Map(tools.map((entry) => [entry.name, entry])), rejected }
+  return indexToolDirectory(json)
 }
 
 /**

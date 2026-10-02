@@ -3,7 +3,6 @@
   "schema": "schema/vendor.json",
   "implements": [],
   "methods": {},
-  "pins": {},
   "start": "",
   "build": [],
   "protocol": "1",

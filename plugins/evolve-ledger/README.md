@@ -1,22 +1,25 @@
-# evolve-ledger（台账原语 · 链窗口 / 写计划 / 阈值 / 哈希）
+# evolve-ledger（台账原语 + 指标层 · 单一 Rust 身份）
 
-自进化环的**台账原语**（Rust，纯计算、非 LLM、同输入同输出）：把调用方投影片段归一成可用形状——
-读链窗口、构造台账写计划、解析阈值、算确定性哈希。所有被两处以上复用的台账逻辑住此，
-上游（`evolve-metrics`）经反向 `port.call` 消费，不自带副本。
+自进化环的**台账原语 + 指标层**（Rust，纯计算、非 LLM、同输入同输出）：同一二进制同时承载
+台账原语——读链窗口 / 构造写计划 / 解析阈值 / 算确定性哈希——与指标层——
+证据聚合（aggregate）/ 用户请求记录（record）/ 台账清理（sweep）/ 影子回放（shadow）。
+链原语就地调用（同一进程），历史审计经保留身份 `host` 的 `host.audit` 读。
 
 - 身份：`evolve-ledger`
-- 能力类 / 方法：`evolve-ledger` → `read-chain` / `patch-plan` / `thresholds` / `hash`
+- 能力类 / 方法：
+  - `evolve-ledger` → `read-chain` / `patch-plan` / `thresholds` / `hash`
+  - `evolve-metrics` → `aggregate` / `sweep` / `shadow` / `record`
 - 命令：无（成员无 `terms/`）
 - 成员：`execute`（`launch.mjs`）、`src`（Rust 服务源码）、`schema`（`evolve-ledger.json`）
-- pins：无（`{}`）
-- needs：无（本插件是原语提供方，只消费入参）
-- 状态档：`recomputable`（本插件无自有状态）
+- pins：`host` → `host`（`shadow` 经 `host.audit` 读历史审计）
+- needs：无（本插件是原语与指标提供方，只消费入参与调用帧 env）
+- 状态档：`recomputable`（无链写；成本异常基线缓存住宿主侧 `state/plugins/evolve-ledger/`）
 - 启动：`node execute/launch.mjs`（宿主 spawn，stdio 协议帧）
 - 健康探针自述：`evolve-ledger.read-chain`（宿主健康判定实际走协议级 `probe` / `pong`）
 
 ## 边界
 
-- 不读投影 / 不写链（只返回计划）/ 不取时间不用随机（`now` 由调用方解析）/ 无 needs 无 pins。
+- 不读投影 / 不写链（只返回计划）/ 不取时间不用随机（`now` 由调用方解析）/ 无 needs，仅 pin 保留身份 `host`。
 
 ## 方法契约
 
@@ -43,6 +46,17 @@
 - `puts`：只产 `put` 批、无 `add_gen`（无链写）。
 
 `body` 为 `null` 时不产写。`add_gen` 目标身份由 `gen_id` 给出（缺省 `evolution`）。
+
+### 指标层（能力类 `evolve-metrics`）
+
+- `aggregate({bag, now?}, env) -> { evidence, unhealthy, $directives }`：读轨迹窗口产七类证据，
+  按最近连续 refused 收口发 `orchestration.unhealthy` 事件；一切写经计划值交宿主落账。
+- `record({bag}, env) -> { evidence_id, $directives }`：把用户原始消息落成一条 `class:'user_request'` 证据。
+- `sweep({bag}, env) -> { swept, $directives }`：按保留阈值清理 trace / evidence 窗口。
+- `shadow({bag}, env) -> { status, metric, metric_id, $directives }`：影子回放三态门禁，
+  `eff_log` 缺匹配时经 `host.audit` 作补充对照源。
+
+指标层数值调参一律读 `loop-policy` 的 `thresholds`（经本插件的 `thresholds` 归一），不重定义。
 
 ## 测试
 

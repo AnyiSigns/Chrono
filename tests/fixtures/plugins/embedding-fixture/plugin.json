@@ -1,10 +1,7 @@
 {
   "identity": "embedding-fixture",
   "implements": ["embedding-provider"],
-  "methods": {
-    "embedding-provider": ["embed", "describe-models"]
-  },
-  "pins": {},
+  "methods": {},
   "needs": {},
   "start": "node execute/main.mjs",
   "build": [],

@@ -84,10 +84,25 @@ test('声明引用的包内路径存在（schema / 命令入口 / 参数 schema 
   assert.deepEqual(failures, [])
 })
 
-/** 字段名规范：19 个、必填 12 个。 */
+test('start 为空的数据身份使用规范空服务字段（restart / health 空对象，build 空数组）', () => {
+  const failures = []
+  for (const { dir, abs } of declPaths()) {
+    const raw = JSON.parse(readFileSync(abs, 'utf8'))
+    if (raw.start !== '') continue
+    const restartEmpty = typeof raw.restart === 'object' && raw.restart !== null && Object.keys(raw.restart).length === 0
+    const healthEmpty = typeof raw.health === 'object' && raw.health !== null && Object.keys(raw.health).length === 0
+    const buildEmpty = Array.isArray(raw.build) && raw.build.length === 0
+    if (!restartEmpty) failures.push(`${dir}: start 为空时 restart 应为 {}`)
+    if (!healthEmpty) failures.push(`${dir}: start 为空时 health 应为 {}`)
+    if (!buildEmpty) failures.push(`${dir}: start 为空时 build 应为 []`)
+  }
+  assert.deepEqual(failures, [])
+})
+
+/** 字段名规范：18 个、必填 10 个。 */
 test('字段表规范：字段数与必填数符合不变量', () => {
-  assert.equal(CANONICAL_NAMES.length, 19)
-  assert.equal(REQUIRED_NAMES.length, 12)
+  assert.equal(CANONICAL_NAMES.length, 18)
+  assert.equal(REQUIRED_NAMES.length, 10)
   assert.equal(new Set(CANONICAL_NAMES).size, CANONICAL_NAMES.length)
 })
 
@@ -111,8 +126,8 @@ test('docs/plugins.md §二 手写字段表与 §八 字段清单的字段名与
   const tableNames = [...tableText.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1])
   assert.deepEqual([...tableNames].sort(), canonical, '§二 手写字段表字段名与单源不一致')
 
-  // §八：字段清单 bullet 在「19 个字段一个不少：」到首个句号之间。
-  const listStart = doc.indexOf('19 个字段一个不少：')
+  // §八：字段清单 bullet 在「18 个字段一个不少：」到首个句号之间。
+  const listStart = doc.indexOf('18 个字段一个不少：')
   assert.ok(listStart !== -1, 'docs/plugins.md §八 字段清单定位失败')
   const listEnd = doc.indexOf('。', listStart)
   const listText = doc.slice(listStart, listEnd === -1 ? undefined : listEnd)

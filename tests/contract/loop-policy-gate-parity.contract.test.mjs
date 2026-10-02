@@ -1,8 +1,8 @@
 // 跨插件契约测试（根 tests/contract/ 允许多插件 import，插件内不得直连）：
-// 机械闸已单源在 graph-gate——loop-policy 只负责造图（seed.ts），orchestration-admin 只负责委派
+// 机械闸已单源在 graph-gate——loop-policy 只负责造图（seed.ts），orchestration 只负责委派
 // （gate-call.ts → `port.call graph-gate.validate`）。原「两份实现对拍」前提消失，本文件改写为：
 //   1. graph-gate.validate 对若干图产出的错误码 / 结果哈希符合拆分前口径（单源金标准）；
-//   2. orchestration-admin.validate 委派到 graph-gate 后结果逐字节一致。
+//   2. orchestration.validate 委派到 graph-gate 后结果逐字节一致。
 // 文件名沿用原名，内容已由「实现 parity」改为「单源契约 + 委派一致性」。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -151,7 +151,7 @@ test('单源口径：graph-gate.validate 对若干图产出稳定错误码 / 结
   }
 })
 
-test('委派一致性：orchestration-admin.validate 经 graph-gate.validate 结果逐字节一致', async () => {
+test('委派一致性：orchestration.validate 经 graph-gate.validate 结果逐字节一致', async () => {
   const port = delegatingPort()
   for (const [label, build] of SCENARIOS) {
     const { bag } = build()
@@ -163,7 +163,7 @@ test('委派一致性：orchestration-admin.validate 经 graph-gate.validate 结
   }
 })
 
-test('提供方不可用：orchestration-admin.validate 结构化失败（不本地兜底）', async () => {
+test('提供方不可用：orchestration.validate 结构化失败（不本地兜底）', async () => {
   const port = { call: async () => ({ ok: false, message: 'graph-gate down' }) }
   const result = await validateViaGraphGate(port, bagOf(wrapperOf(seedModel().graph, seedModel())))
   assert.equal(result.ok, false)

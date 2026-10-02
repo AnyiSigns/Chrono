@@ -203,21 +203,22 @@ export const STYLE_TEXT = `
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--c-accent-strong) 48%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-send-strong) 48%, transparent);
   border-radius: 50%;
   background-color: var(--c-send-fill);
   background-image: linear-gradient(165deg, var(--c-gloss-hi) 0%, transparent 44%);
-  color: var(--c-accent-text);
+  color: var(--c-send-text);
   cursor: pointer;
   box-shadow:
     inset 0 1px 3px var(--c-gloss-lo),
     inset 0 -1px 2px var(--c-gloss-hi),
-    0 1px 2px color-mix(in srgb, var(--c-accent-strong) 30%, transparent);
-  transition: filter var(--motion-fast), opacity var(--motion-fast), box-shadow var(--motion-fast);
+    0 1px 2px color-mix(in srgb, var(--c-send-strong) 30%, transparent);
+  transition: filter var(--motion-fast), opacity var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
 }
-.composer-send:hover { filter: brightness(1.05) saturate(1.06); }
+.composer-send:hover { filter: brightness(1.09) saturate(1.14); transform: scale(1.06); }
 .composer-send:active {
   filter: brightness(.96);
+  transform: scale(.97);
   box-shadow:
     inset 0 2px 4px var(--c-gloss-lo),
     inset 0 -1px 1px var(--c-gloss-hi),

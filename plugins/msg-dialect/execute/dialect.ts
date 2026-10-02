@@ -5,7 +5,7 @@
 // 有界适配器——每个 protocol 一种，厂商差异经 quirks 与推理能力表声明式覆盖。
 
 import { ServiceError } from 'plugin-sdk'
-import { isRecord } from 'plugin-sdk'
+import { isRecord, normalizeUsage } from 'plugin-sdk'
 import { applyAuth, encodeReasoning, joinUrl, normalizeQuirks, setByPath } from './quirks.ts'
 import type { Quirks } from './quirks.ts'
 import {
@@ -171,60 +171,6 @@ export function applyAuthToUrl(
 }
 
 export { joinUrl }
-
-function numberField(source: Rec, key: string): number | undefined {
-  const value = source[key]
-  return typeof value === 'number' ? value : undefined
-}
-
-/**
- * 缓存 token 归一：OpenAI 系 `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` /
- * 顶层 `cached_tokens`；DeepSeek 系 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`；
- * Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`；Google `cachedContentTokenCount`。
- * 只落出现过的字段，避免给消费方造零值。
- */
-function cacheTokens(source: Rec): Rec {
-  const out: Rec = {}
-  const promptDetails = isRecord(source['prompt_tokens_details'])
-    ? (source['prompt_tokens_details'] as Rec)
-    : null
-  const inputDetails = isRecord(source['input_tokens_details'])
-    ? (source['input_tokens_details'] as Rec)
-    : null
-  const cached =
-    numberField(source, 'cached_tokens') ??
-    (promptDetails === null ? undefined : numberField(promptDetails, 'cached_tokens')) ??
-    (inputDetails === null ? undefined : numberField(inputDetails, 'cached_tokens'))
-  if (cached !== undefined) out['cached_tokens'] = cached
-  const hit = numberField(source, 'prompt_cache_hit_tokens')
-  if (hit !== undefined) out['prompt_cache_hit_tokens'] = hit
-  const miss = numberField(source, 'prompt_cache_miss_tokens')
-  if (miss !== undefined) out['prompt_cache_miss_tokens'] = miss
-  const read = numberField(source, 'cache_read_input_tokens')
-  if (read !== undefined) out['cache_read_input_tokens'] = read
-  const creation = numberField(source, 'cache_creation_input_tokens')
-  if (creation !== undefined) out['cache_creation_input_tokens'] = creation
-  const googleCached = numberField(source, 'cachedContentTokenCount')
-  if (googleCached !== undefined) out['cached_content_tokens'] = googleCached
-  return out
-}
-
-function normalizeUsage(
-  prompt: Json | undefined,
-  completion: Json | undefined,
-  source?: Rec,
-): Rec | null {
-  if (typeof prompt !== 'number' && typeof completion !== 'number') return null
-  const promptTokens = typeof prompt === 'number' ? prompt : 0
-  const completionTokens = typeof completion === 'number' ? completion : 0
-  const usage: Rec = {
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    total_tokens: promptTokens + completionTokens,
-  }
-  if (source !== undefined) Object.assign(usage, cacheTokens(source))
-  return usage
-}
 
 /**
  * 工具调用编形（请求方向）：中性形状 `{id,name,arguments}` 按协议编成厂商字段。

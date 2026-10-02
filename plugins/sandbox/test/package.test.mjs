@@ -23,7 +23,7 @@ test('plugin.json 保留受保护身份与公开方法，委派三提供方', ()
     'fsop',
     'capabilities',
   ])
-  assert.ok('pins' in plugin, 'pins 必填')
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.deepEqual(plugin.needs['sandbox-policy'], { mode: 'one' })
   assert.deepEqual(plugin.needs['sandbox-exec'], { mode: 'one' })
   assert.deepEqual(plugin.needs['sandbox-fs'], { mode: 'one' })

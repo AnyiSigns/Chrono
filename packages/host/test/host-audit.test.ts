@@ -13,8 +13,6 @@ import { FIXTURE_ALPHA, writeTempPackage } from './test-helpers-ext.ts'
 import { connect } from '../../client/index.ts'
 import type { Json } from '../../kernel/index.ts'
 
-const RUN_TERM: Json = ['eff', 'toy.alpha', 'echo', ['c', { n: 1 }]]
-
 function bodyOf(record: { body: Json }): { [k: string]: Json } {
   return record.body as { [k: string]: Json }
 }
@@ -47,24 +45,24 @@ describe('G5 F8 只读审计面（audit）', () => {
   function seed(): void {
     const silent = writeTempPackage(root, {
       identity: 'toy-silent',
-      implements: ['toy.alpha'],
+      implements: ['toy.slow'],
       start: 'node execute/main.js',
       serviceConfig: { callMode: 'silent' },
     })
-    const caller = (identity: string, pin: string): string =>
+    const caller = (identity: string, port: string, provider: string): string =>
       writeTempPackage(root, {
         identity,
-        pins: { 'toy.alpha': pin },
+        pins: { [port]: provider },
         start: '',
         members: [{ kind: 'term', path: 'terms/' }],
-        terms: { 'run.json': JSON.stringify(RUN_TERM) },
+        terms: { 'run.json': JSON.stringify(['eff', port, 'echo', ['c', { n: 1 }]]) },
         commands: [{ name: `${identity}.run`, entry: 'terms/run.json' }],
       })
     const report = runSeed(root, [
       { name: 'toy-silent', path: silent },
       { name: 'toy-alpha', path: FIXTURE_ALPHA },
-      { name: 'toy-caller-ok', path: caller('toy-caller-ok', 'toy-alpha') },
-      { name: 'toy-caller-slow', path: caller('toy-caller-slow', 'toy-silent') },
+      { name: 'toy-caller-ok', path: caller('toy-caller-ok', 'toy.alpha', 'toy-alpha') },
+      { name: 'toy-caller-slow', path: caller('toy-caller-slow', 'toy.slow', 'toy-silent') },
     ])
     expect(report.ok).toBe(true)
   }
@@ -109,7 +107,7 @@ describe('G5 F8 只读审计面（audit）', () => {
       // 最新一条 = 慢调用（transport_failed），并带 run / emitter / outcome / port / method
       expect(bodyOf(all.records[0])).toMatchObject({
         kind: 'effect_audit',
-        port: 'toy.alpha',
+        port: 'toy.slow',
         method: 'echo',
         outcome: 'transport_failed',
         emitter: 'toy-caller-slow',

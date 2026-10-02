@@ -174,7 +174,8 @@ test('hello 回 manifest（与 plugin.json 一致）；reload/probe/drain；EOF 
     assert.equal(manifest.identity, 'mcp')
     assert.deepEqual(manifest.implements, ['mcp', 'tool-provider'])
     assert.deepEqual(manifest.methods.mcp, ['describe', 'invoke', 'discover', 'read', 'write'])
-    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
+    // 契约单源在拥有方 tool-registry 的 slots：提供方不在 manifest 复述 tool-provider 方法。
+    assert.equal(manifest.methods['tool-provider'], undefined)
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
     assert.equal((await drv.request('reload', { gen: 'g2' }, 'ack')).kind, 'ack')

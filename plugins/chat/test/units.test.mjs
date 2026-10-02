@@ -3,9 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildInterpretBag,
-  buildTitleArgs,
+  buildTitleMessages,
   chainEntries,
-  firstMessageOf,
   graphSliceOf,
   ledgerSliceOf,
   modelConfigOf,
@@ -253,22 +252,11 @@ test('shouldGenerateTitle：仅缺省标题且 count==0', () => {
   assert.equal(shouldGenerateTitle(null, '新对话'), false)
 })
 
-test('buildTitleArgs：args 含 config / session / title_default', () => {
-  const ids = idsFixture()
-  const config = modelConfigOf(ids)
-  const args = buildTitleArgs({
-    conversationId: 'c-1',
-    firstMessage: firstMessageOf(slotOf(ids, 't1')),
-    config,
-    sessionBody: ids.session.body,
-    titleDefault: '新对话',
-  })
-  for (const key of ['conversation', 'first_message', 'vendor', 'model', 'params', 'config', 'session', 'title_default']) {
-    assert.ok(Object.hasOwn(args, key), `title args 缺 ${key}`)
-  }
-  assert.equal(args.config.base_url, 'https://api.deepseek.com')
-  assert.equal(args.session.current, 'c-1')
-  assert.equal(args.title_default, '新对话')
+test('buildTitleMessages：system 提示 + 用户首条消息', () => {
+  assert.deepEqual(buildTitleMessages('提示词', '帮我写一个快速排序'), [
+    { role: 'system', content: '提示词' },
+    { role: 'user', content: '帮我写一个快速排序' },
+  ])
 })
 
 test('mergeDirectives：按段序机械数组合并，忽略无计划段', () => {

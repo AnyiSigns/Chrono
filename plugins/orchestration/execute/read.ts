@@ -14,7 +14,7 @@ import {
   nodeLinks,
   nodeScope,
   readGraphModel,
-} from './model.ts'
+} from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from 'plugin-sdk'
 

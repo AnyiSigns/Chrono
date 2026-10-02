@@ -5,7 +5,6 @@
   "methods": {
     "token-estimate": ["count", "version"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",

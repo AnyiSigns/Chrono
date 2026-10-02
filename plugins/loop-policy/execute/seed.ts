@@ -6,6 +6,8 @@
 import { graphNodes, readGraphModel } from './model.ts'
 import type { GraphModel, Json, Rec } from './types.ts'
 
+export { attributionOf, retriableOf } from './model.ts'
+
 /** 默认阈值：字段名契约与 evolve-metrics README「阈值契约」对齐；图/演化参数亦在此。 */
 export const DEFAULT_THRESHOLDS: Rec = {
   // 图与演化（loop-policy 权威）
@@ -79,23 +81,6 @@ export const SEED_REFUSAL_CODES: Rec[] = [
   { code: 'delegate_output_ambiguous', retriable: false, attributable_to: 'graph' },
   { code: 'subgraph_reject', retriable: false, attributable_to: 'graph' },
 ]
-
-/** 拒绝码 → 归因（全局表查不到时回落 graph）。 */
-export function attributionOf(model: GraphModel, code: string): string {
-  for (const entry of model.refusalCodes) {
-    if (entry['code'] === code)
-      return typeof entry['attributable_to'] === 'string' ? entry['attributable_to'] : 'graph'
-  }
-  return 'graph'
-}
-
-/** 拒绝码是否可重试。 */
-export function retriableOf(model: GraphModel, code: string): boolean {
-  for (const entry of model.refusalCodes) {
-    if (entry['code'] === code) return entry['retriable'] === true
-  }
-  return false
-}
 
 function input(name: string, type: string, opts: Rec = {}): Rec {
   return { name, type, required: false, cardinality: 1, binding_mode: 'all', ...opts }

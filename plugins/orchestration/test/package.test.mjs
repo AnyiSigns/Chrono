@@ -39,8 +39,9 @@ test('execute/ 源码齐全', () => {
   const files = [
     'execute/main.ts',
     'execute/methods.ts',
+    'execute/admin-tools.ts',
+    'execute/admin-methods.ts',
     'execute/read.ts',
-    'execute/model.ts',
     'execute/gate-call.ts',
     'execute/propose.ts',
     'execute/hash.ts',

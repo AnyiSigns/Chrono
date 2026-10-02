@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members = execute + term、pins 空、只读命令 client.read、
+// 包形状测试：零 schema、members = execute + term、无 pins 字段、只读命令 client.read、
 // `.worldignore`（含 dist）、README 守卫、无宿主 / 内核 import、web 层无散落中文与硬编码色值。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,11 +11,11 @@ const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
 
-test('能力类为 ui-composer（ping + client.read）；pins 空；只读交付命令', () => {
+test('能力类为 ui-composer（ping + client.read）；无 pins 字段；只读交付命令', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-composer'])
   assert.deepEqual(decl.methods, { 'ui-composer': ['ping', 'client.read'] })
-  assert.deepEqual(decl.pins, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },
     { kind: 'term', path: 'terms/' },

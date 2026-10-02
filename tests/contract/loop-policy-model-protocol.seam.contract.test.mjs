@@ -19,7 +19,7 @@ function clone(value) {
 const FAST = { max_retries: 0, backoff_ms: 1, backoff_max_ms: 2, token_bucket: { capacity: 100, refill_per_sec: 1000 } }
 
 // model-protocol 的中性工具声明读 `argsSchema`（`adapters.ts:107`），与生产方
-// `plugins/tools/execute/directory.ts` 及夹具 `node-io.json` 一致。
+// `plugins/tool-registry/execute/directory.ts` 及夹具 `node-io.json` 一致。
 const TOOLS = [
   {
     name: 'fs.read',

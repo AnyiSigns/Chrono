@@ -2,7 +2,6 @@
   "identity": "toy-router",
   "implements": ["router"],
   "methods": { "router": ["select"] },
-  "pins": {},
   "start": "node execute/main.js",
   "build": [{ "cmd": "node", "args": ["../../../toolchain/build.ts", "."] }],
   "protocol": "1",

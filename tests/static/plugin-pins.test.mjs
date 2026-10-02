@@ -1,5 +1,5 @@
-// 插件声明守护：`plugin.json` 的 `pins` 只允许保留宿主自身（`host`）。
-// 能力类消费一律走 `needs`（`one` / `many`），不再用非 host 的 `pins` 建立跨身份依赖边。
+// 插件声明守护：`plugin.json` 不再有 `pins` 字段。
+// 身份级依赖一律走 `needs`（`one` / `many`）；宿主依赖用保留能力类 `host` 的 `needs.one` 哨兵。
 // 扫描只读各 `plugin.json` 文本、不比对外部状态；违规累积后一次性断言，失败时列出全部违规。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -28,7 +28,7 @@ function toRepoPath(abs) {
   return relative(ROOT, abs).split('\\').join('/')
 }
 
-test('插件 pins 只允许 host：非 host 的跨身份依赖一律走 needs', () => {
+test('插件声明不含 pins 字段：身份级依赖一律走 needs', () => {
   const offenders = []
   let scanned = 0
   for (const abs of walk(PLUGINS_DIR)) {
@@ -41,20 +41,8 @@ test('插件 pins 只允许 host：非 host 的跨身份依赖一律走 needs', 
       continue
     }
     scanned += 1
-    const pins = decl.pins
-    if (pins === undefined || pins === null) continue
-    if (typeof pins !== 'object' || Array.isArray(pins)) {
-      offenders.push(`${repoPath}: pins is not an object`)
-      continue
-    }
-    for (const [name, value] of Object.entries(pins)) {
-      if (name !== 'host') {
-        offenders.push(`${repoPath}: non-host pin "${name}" (use needs instead)`)
-        continue
-      }
-      if (value !== 'host') {
-        offenders.push(`${repoPath}: host pin must bind "host", got ${JSON.stringify(value)}`)
-      }
+    if (Object.prototype.hasOwnProperty.call(decl, 'pins')) {
+      offenders.push(`${repoPath}: has removed field "pins" (use needs instead)`)
     }
   }
   assert.deepEqual(offenders, [])

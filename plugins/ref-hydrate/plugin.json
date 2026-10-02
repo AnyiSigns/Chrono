@@ -5,8 +5,8 @@
   "methods": {
     "ref-hydrate": ["hydrate"]
   },
-  "pins": {
-    "host": "host"
+  "needs": {
+    "host": { "mode": "one" }
   },
   "start": "node execute/main.ts",
   "build": [],

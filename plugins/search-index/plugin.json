@@ -5,7 +5,6 @@
   "methods": {
     "search-index": ["search", "put", "stats"]
   },
-  "pins": {},
   "slots": {
     "search-index-provider": { "methods": ["search", "put", "stats"] }
   },

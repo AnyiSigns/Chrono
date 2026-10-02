@@ -8,11 +8,12 @@
   "system_prompt": "你是 Chrono 的对话助手。只谈意图与结果，不输出工具名、插件名或能力类名。回答简洁、准确，按用户语言作答。",
   "tools": [],
   "title": {
-    "segment": "session-title.generate",
     "when": "first_message",
-    "on_fail": "ignore",
     "title_default": "新对话",
-    "args": ["conversation", "first_message", "vendor", "model", "params", "config", "session", "title_default"]
+    "prompt": "你是会话标题生成器。请依据用户的第一条消息生成一个简洁的中文标题。要求：只输出标题本身，不超过 10 个字，不要加引号、标点、解释或换行。",
+    "max_chars": 10,
+    "max_tokens": 64,
+    "timeout_ms": 15000
   },
   "on_empty_slot": "noop",
   "on_budget": "fail",

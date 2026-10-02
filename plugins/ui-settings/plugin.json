@@ -12,14 +12,11 @@
       "scopes",
       "client.read",
       "secret"
-    ],
-    "ui-nav": ["list"]
+    ]
   },
   "concurrent_methods": ["vendors", "health", "graph", "scopes", "client.read"],
-  "pins": {
-    "host": "host"
-  },
   "needs": {
+    "host": { "mode": "one" },
     "model": { "mode": "one" },
     "secrets": { "mode": "one" },
     "ref-hydrate": { "mode": "one" },

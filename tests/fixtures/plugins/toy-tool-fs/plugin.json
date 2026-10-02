@@ -1,12 +1,10 @@
 {
   "identity": "tool-fs",
   "implements": ["tool-provider"],
-  "methods": {
-    "tool-provider": ["describe", "invoke"]
-  },
-  "pins": {
-    "sandbox": "sandbox",
-    "host": "host"
+  "methods": {},
+  "needs": {
+    "sandbox": { "mode": "one" },
+    "host": { "mode": "one" }
   },
   "start": "node execute/main.mjs",
   "build": [],

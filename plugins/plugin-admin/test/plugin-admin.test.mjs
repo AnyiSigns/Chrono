@@ -101,7 +101,8 @@ test('hello 回 manifest：只实现 plugin-admin，方法声明与 plugin.json 
     assert.equal(manifest.identity, 'plugin-admin')
     assert.deepEqual(manifest.implements, ['plugin-admin', 'tool-provider'])
     assert.deepEqual(manifest.methods['plugin-admin'], ['describe', 'invoke'])
-    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
+    // 契约单源在拥有方 tool-registry 的 slots：提供方不在 manifest 复述 tool-provider 方法。
+    assert.equal(manifest.methods['tool-provider'], undefined)
     assert.equal(manifest.methods.plugin, undefined, '管理平面能力类不再住本插件')
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
@@ -291,13 +292,12 @@ test('未知能力 / 方法 → 结构化错误，不崩进程', async () => {
 
 // ── 包声明：工具面只消费 plugin one，自身不 pin host ────────────────────────
 
-test('plugin.json：needs.plugin=one、pins 空、只实现 plugin-admin', () => {
+test('plugin.json：needs.plugin=one、无 pins 字段、只实现 plugin-admin', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.deepEqual(decl.implements, ['plugin-admin', 'tool-provider'])
   assert.deepEqual(decl.methods, {
     'plugin-admin': ['describe', 'invoke'],
-    'tool-provider': ['describe', 'invoke'],
   })
-  assert.deepEqual(decl.pins, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, { plugin: { mode: 'one' } })
 })

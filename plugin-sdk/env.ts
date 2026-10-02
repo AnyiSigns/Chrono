@@ -1,4 +1,4 @@
-// 调用帧 `env` 的解析与固定时钟：宿主填写的机械字段，服务绝不自取时间。
+// 调用帧 `env` 的解析：宿主填写的机械字段，服务绝不自取时间。
 
 import { isRecord } from './json.ts'
 import type { Json } from './json.ts'
@@ -13,9 +13,4 @@ export function parseCallEnv(raw: Json | undefined): CallEnv {
     now: typeof raw['now'] === 'number' && Number.isFinite(raw['now']) ? raw['now'] : 0,
     emitter: typeof raw['emitter'] === 'string' ? raw['emitter'] : null,
   }
-}
-
-/** 固定时钟；env 缺失回落 0，绝不自取时钟。 */
-export function nowOf(env: CallEnv): number {
-  return typeof env.now === 'number' && Number.isFinite(env.now) ? env.now : 0
 }

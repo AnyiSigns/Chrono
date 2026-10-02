@@ -29,31 +29,20 @@ function isGenIndex(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0
 }
 
-function isPinSet(v: unknown): v is Record<string, string> {
-  if (!isRecord(v)) return false
-  for (const item of Object.values(v)) if (!isHash(item)) return false
-  return true
-}
-
 interface ArgShape {
   r: Rec
   keys: string[]
   exact: (reqd: string[], opt: string[]) => boolean
 }
 
-const GEN_KEYS = ['id', 'payload', 'pins', 'sig']
+const GEN_KEYS = ['id', 'payload', 'sig']
 
 const genBaseOk = (c: ArgShape): boolean =>
-  isNonemptyString(c.r['id']) &&
-  isHash(c.r['payload']) &&
-  isPinSet(c.r['pins']) &&
-  isHash(c.r['sig'])
+  isNonemptyString(c.r['id']) && isHash(c.r['payload']) && isHash(c.r['sig'])
 
 const FORM_CHECKS: { [op: string]: (c: ArgShape) => boolean } = {
   put: (c) =>
-    c.exact(['body'], ['pins', 'sig']) &&
-    (!('pins' in c.r) || isPinSet(c.r['pins'])) &&
-    (!('sig' in c.r) || isHash(c.r['sig'])),
+    c.exact(['body'], ['sig']) && (!('sig' in c.r) || isHash(c.r['sig'])),
   note: () => true, // 任意 JSON 对象 = 留痕载荷（§11.2 形状表）：hasForm 前置已保证 args 是非 null、非数组对象
   snapshot: (c) => c.exact(['world_rev'], []) && isHash(c.r['world_rev']),
   add_identity: (c) =>
@@ -126,21 +115,15 @@ function checkRefs(world: World, req: WriteRequest): string | null {
   const r = req.args as Rec
   const missing = (h: Json | undefined): string | null =>
     h === undefined ? null : defHas(world.defs, h as Hash) ? null : 'missing_ref'
-  const missingPins = (): string | null => {
-    const pins = r['pins'] as Record<string, Hash> | undefined
-    if (!pins) return null
-    for (const h of Object.values(pins)) if (!defHas(world.defs, h)) return 'missing_ref'
-    return null
-  }
   switch (req.op) {
     case 'put':
-      return missing(r['sig']) ?? missingPins()
+      return missing(r['sig'])
     case 'add_identity':
     case 'fork':
       return missing(r['schema'])
     case 'add_gen':
     case 'graft':
-      for (const code of [missing(r['payload']), missing(r['sig']), missingPins()]) {
+      for (const code of [missing(r['payload']), missing(r['sig'])]) {
         if (code) return code
       }
       return null
@@ -246,8 +229,8 @@ export function commit(head: Head, world: World, req: WriteRequest, now: number)
 
 /**
  * 依附判定：def 相对身份当前世代是否失效。不兼容即隔离，不删除。
- * 口径（写死）：sig 只在两侧都非 null 时比较（乐观）；pins 精确断言，单侧缺即坏（保守）；
- * sig/pins 双缺 → 恒 false；身份不存在或 retired（active 为 null）→ true。
+ * 口径（写死）：sig 只在两侧都非 null 时比较（乐观）；def 无 sig → 恒 false；
+ * 身份不存在或 retired（active 为 null）→ true。
  */
 export function stale(def: Def, world: World, identityId: string): boolean {
   const identity = world.ids[identityId]
@@ -255,8 +238,5 @@ export function stale(def: Def, world: World, identityId: string): boolean {
   const gen = identity.gens.find((g) => g.payload === identity.active)
   if (!gen) return true
   if (def.sig != null && gen.sig != null && def.sig !== gen.sig) return true
-  for (const [name, h] of Object.entries(def.pins ?? {})) {
-    if ((gen.pins[name] ?? null) !== h) return true
-  }
   return false
 }

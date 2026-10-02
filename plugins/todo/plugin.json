@@ -3,10 +3,8 @@
   "schema": "schema/todo.json",
   "implements": ["todo", "tool-provider"],
   "methods": {
-    "todo": ["describe", "invoke"],
-    "tool-provider": ["describe", "invoke"]
+    "todo": ["describe", "invoke"]
   },
-  "pins": {},
   "needs": {
     "storage-kv": { "mode": "one" }
   },

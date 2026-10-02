@@ -20,13 +20,13 @@ function listFiles(dir) {
   return out
 }
 
-test('plugin.json：identity / implements / methods / pins / needs / start / members', () => {
+test('plugin.json：identity / implements / methods / needs / start / members', () => {
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'graph-run')
   assert.deepEqual(plugin.implements, ['graph-run'])
   assert.deepEqual(plugin.methods['graph-run'], ['run', 'cancel'])
   assert.deepEqual(plugin.concurrent_methods, ['run', 'cancel'])
-  assert.deepEqual(plugin.pins, {})
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.deepEqual(plugin.needs, {
     session: { mode: 'one' },
     model: { mode: 'one' },
@@ -37,12 +37,9 @@ test('plugin.json：identity / implements / methods / pins / needs / start / mem
     'tool-registry': { mode: 'one' },
     'tool-dispatch': { mode: 'one' },
     router: { mode: 'one' },
-    'context-source': { mode: 'many', methods: ['collect'] },
-    'loop-rule': { mode: 'many', methods: ['when', 'pre', 'post'] },
-    'turn-hook': {
-      mode: 'many',
-      methods: ['before-assemble', 'after-step', 'before-settle', 'after-settle'],
-    },
+    'context-source': { mode: 'many' },
+    'loop-rule': { mode: 'many' },
+    'turn-hook': { mode: 'many' },
   })
   assert.equal(plugin.start, 'node execute/main.ts')
   assert.deepEqual(plugin.members.map((m) => m.kind).sort(), ['execute', 'schema'])

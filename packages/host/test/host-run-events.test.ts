@@ -185,7 +185,7 @@ describe('H10 宿主 run 生命周期事件', () => {
         directives: [
           {
             kind: 'write',
-            request: { id: 'w-1', op: 'put', args: { pins: { x: 'missing-identity' } }, by: 'c' },
+            request: { id: 'w-1', op: 'put', args: {}, by: 'c' },
           },
         ],
       },
@@ -202,7 +202,7 @@ describe('H10 宿主 run 生命周期事件', () => {
     expect(finished[0]['payload']).toMatchObject({
       thread: 'thread-reasons',
       status: 'refused',
-      reasons: ['unresolved_pin'],
+      reasons: ['bad_form'],
     })
   })
 

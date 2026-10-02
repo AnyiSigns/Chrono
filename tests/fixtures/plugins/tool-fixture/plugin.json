@@ -2,10 +2,7 @@
   "identity": "tool-fixture",
   "schema": "schema/tool-fixture.json",
   "implements": ["tool-provider"],
-  "methods": {
-    "tool-provider": ["describe", "invoke"]
-  },
-  "pins": {},
+  "methods": {},
   "needs": {},
   "start": "node execute/main.mjs",
   "build": [],

@@ -37,7 +37,7 @@ import {
 } from '../execute/mounts.ts'
 import { buildForwardArgs, forwardCommandName, routeOf } from '../execute/routes.ts'
 import { identityInvalidatesHeadless } from '../execute/identity-events.ts'
-import { createUiState, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
+import { createUiState, registerKey, UI_STATE_KEYS } from '../execute/web/lib/ui-state.js'
 import { identityActive, identityBody, isCodeGenFallbackBody } from '../execute/web/lib/identity-shape.js'
 import { createSlotRegistry, normalizeTarget } from '../execute/web/lib/slot-registry.js'
 import { createSlotHost } from '../execute/web/lib/slots.js'
@@ -54,7 +54,8 @@ import {
   MINIMAL_TOKENS,
   webDirOf,
 } from '../execute/assets.ts'
-import { orderNav, parseNavRecord, recordsOf } from '../execute/nav.ts'
+import { orderNav, parseNavRecord, recordsOf, uiStateKeysOf } from '../execute/nav.ts'
+import { mergeSlotDecls, parseSlotDecls } from '../execute/slot-decls.ts'
 import { DEFAULT_SLOTS, ensureSlots, parseSlots } from '../execute/slots.ts'
 import { FALLBACK_MESSAGES, loadMessages, lookupMessage, MESSAGE_ALIASES, MESSAGE_PREFIXES, missingPrefixes, parseMessages } from '../execute/messages.ts'
 import { BOOTSTRAP_PLACEHOLDER, injectBootstrap, startUiServer } from '../execute/http-server.ts'
@@ -407,6 +408,60 @@ test('ui-nav：解析中立记录、按提供方码元序 + order + id 排序、
   assert.deepEqual(recordsOf({ records: 'nope' }), [])
 })
 
+test('uiState 键空间：由 nav 记录目标派生（显式 uiState 键 + 浮层派生键 + boot_mode）', () => {
+  const ordered = orderNav([
+    {
+      provider: 'p',
+      records: [
+        { id: 'a', label: 'A', icon: 'i', target: { overlay: 'settings' }, order: 0 },
+        { id: 'b', label: 'B', icon: 'i', target: { uiState: { key: 'panel_open', value: true } }, order: 0 },
+        { id: 'c', label: 'C', icon: 'i', target: { page: 'c' }, order: 0 },
+      ],
+    },
+  ])
+  assert.deepEqual(uiStateKeysOf(ordered), ['boot_mode', 'panel_open', 'settings_open'])
+  assert.deepEqual(uiStateKeysOf([]), ['boot_mode'])
+})
+
+// ---- ui-slot 声明解析与合并 ----
+
+test('ui-slot：提供方声明解析、核心条目优先、按名 / id 去重', () => {
+  const declared = parseSlotDecls({
+    slots: [
+      { name: 'statusbar', kind: 'chrome', mount: 'bottom' },
+      { name: 'statusbar', kind: 'page', mount: 'stage' },
+      { name: 'bad name', mount: 'bottom' },
+    ],
+    mounts: [{ id: 'extra', slot: 'statusbar', entry: 'dist/entry.js' }],
+    headless: [{ id: 'extra-headless', entry: 'web/entry.js' }],
+  })
+  assert.deepEqual(declared.slots, [{ name: 'statusbar', kind: 'chrome', mount: 'bottom' }])
+  assert.deepEqual(declared.mounts, [{ id: 'extra', slot: 'statusbar', entry: 'dist/entry.js' }])
+  assert.deepEqual(declared.headless, [{ id: 'extra-headless', entry: 'web/entry.js' }])
+
+  const core = {
+    slots: DEFAULT_SLOTS,
+    mounts: [{ id: 'ui-chat', slot: 'main', entry: 'dist/entry.js' }],
+    headless: [],
+  }
+  const merged = mergeSlotDecls(core, [
+    parseSlotDecls({ slots: [{ name: 'main', kind: 'page', mount: 'body' }], mounts: [{ id: 'ui-chat', slot: 'dock', entry: 'dist/entry.js' }] }),
+    declared,
+  ])
+  assert.deepEqual(merged.slots.find((entry) => entry.name === 'main'), {
+    name: 'main',
+    kind: 'chrome',
+    mount: 'column',
+  })
+  assert.deepEqual(merged.mounts.find((entry) => entry.id === 'ui-chat'), {
+    id: 'ui-chat',
+    slot: 'main',
+    entry: 'dist/entry.js',
+  })
+  assert.ok(merged.slots.some((entry) => entry.name === 'statusbar'))
+  assert.ok(merged.mounts.some((entry) => entry.id === 'extra'))
+})
+
 // ---- 静态资源单一登记表 + 内容版本 ----
 
 test('资源表：路由 / 投递从同一登记表派生，内容版本确定', () => {
@@ -609,6 +664,25 @@ test('uiState：未登记键告警并忽略（新增键须先登记）', () => {
   assert.equal(state.get('nope'), undefined)
   assert.ok(warned.some((line) => line.includes('nope')), '应告警未登记键')
   assert.equal(state.set('boot_mode', 'ready'), true)
+})
+
+test('uiState：registerKey 与引导键空间登记新键（形态校验、非法拒绝）', () => {
+  const state = createUiState(['panel_open', 'bad key', 'settings_open'])
+  assert.ok(state.keys.includes('panel_open'))
+  assert.ok(state.keys.includes('settings_open'))
+  assert.ok(!state.keys.includes('bad key'))
+  assert.equal(state.set('panel_open', true), true)
+  assert.equal(state.get('panel_open'), true)
+  assert.equal(state.registerKey('tab_x'), true)
+  assert.equal(state.set('tab_x', 1), true)
+  assert.equal(state.registerKey('bad key'), false)
+  // 模块级 registerKey：形态非法拒绝，合法幂等。
+  assert.equal(registerKey('bad key'), false)
+  assert.equal(registerKey('module_key'), true)
+  assert.equal(registerKey('module_key'), true)
+  assert.ok(UI_STATE_KEYS.includes('module_key'))
+  // 还原模块级键表，避免污染同文件其它断言。
+  UI_STATE_KEYS.splice(UI_STATE_KEYS.indexOf('module_key'), 1)
 })
 
 // ---- 主题写口（运行记录出世界） ----

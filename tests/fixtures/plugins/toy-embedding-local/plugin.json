@@ -3,13 +3,7 @@
   "implements": [
     "embedding-provider"
   ],
-  "methods": {
-    "embedding-provider": [
-      "embed",
-      "describe-models"
-    ]
-  },
-  "pins": {},
+  "methods": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

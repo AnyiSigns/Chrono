@@ -114,7 +114,7 @@ describe('逐 op 基础语义', () => {
     const schemaDef = h.push('put', { body: { s: 1 } })
     const payloadDef = h.push('put', { body: { p: 1 } })
     h.push('add_identity', { id: 'u1', schema: schemaDef.argsHash })
-    const base = { id: 'u1', pins: {}, sig: schemaDef.argsHash }
+    const base = { id: 'u1', sig: schemaDef.argsHash }
     expectThrow(h, 'missing_ref', 'add_gen', {
       ...base,
       sig: payloadDef.argsHash,
@@ -141,13 +141,11 @@ describe('逐 op 基础语义', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: firstGenPayload.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     h.push('add_gen', {
       id: 'u1',
       payload: secondGenPayload.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     expect(h.w.ids.u1.gens.map((g) => g.seq)).toEqual([0, 1])
@@ -163,7 +161,6 @@ describe('逐 op 基础语义', () => {
     h.push('add_gen', {
       id: 'u2',
       payload: otherGenPayload.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     expectThrow(h, 'no_identity', 'set_active', { id: 'ghost', active: null })
@@ -181,7 +178,6 @@ describe('逐 op 基础语义', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: payloadDef.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     const setActiveEntry = h.push('set_active', { id: 'u1', active: null })
@@ -236,7 +232,7 @@ describe('batch：原子性、$n、两段式', () => {
       { op: 'put', args: { body: { m: 2 } } },
       {
         op: 'add_gen',
-        args: { id: 'u1', payload: 'a'.repeat(64), pins: {}, sig: schemaDef.argsHash },
+        args: { id: 'u1', payload: 'a'.repeat(64), sig: schemaDef.argsHash },
       },
     ]
     expect(h.apply('batch', { ops }).r).toEqual({ ok: false, error: 'missing_ref' })
@@ -265,21 +261,19 @@ describe('batch：原子性、$n、两段式', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: payloadDef.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     const firstOps: Json[] = [
       { op: 'add_identity', args: { id: 'u9', schema: schemaDef.argsHash } },
       {
         op: 'add_gen',
-        args: { id: 'u1', payload: payloadDef.argsHash, pins: {}, sig: schemaDef.argsHash },
+        args: { id: 'u1', payload: payloadDef.argsHash, sig: schemaDef.argsHash },
       },
       {
         op: 'graft',
         args: {
           id: 'u1',
           payload: payloadDef.argsHash,
-          pins: {},
           sig: schemaDef.argsHash,
           from: 'u1',
           gen: 0,
@@ -408,14 +402,13 @@ describe('batch：原子性、$n、两段式', () => {
       { op: 'put', args: { body: { g: 2 } } },
       {
         op: 'add_gen',
-        args: { id: 'u1', payload: payloadDef.argsHash, pins: {}, sig: schemaDef.argsHash },
+        args: { id: 'u1', payload: payloadDef.argsHash, sig: schemaDef.argsHash },
       },
       {
         op: 'graft',
         args: {
           id: 'u1',
           payload: payloadDef.argsHash,
-          pins: {},
           sig: schemaDef.argsHash,
           from: 'u1',
           gen: 0,
@@ -428,7 +421,7 @@ describe('batch：原子性、$n、两段式', () => {
             { op: 'put', args: { body: { g: 3 } } },
             {
               op: 'add_gen',
-              args: { id: 'u1', payload: { $n: 0 }, pins: {}, sig: schemaDef.argsHash },
+              args: { id: 'u1', payload: { $n: 0 }, sig: schemaDef.argsHash },
             },
           ],
         },
@@ -449,7 +442,6 @@ describe('batch：原子性、$n、两段式', () => {
     const e = h.push('add_gen', {
       id: 'u1',
       payload: payloadDef.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
     const gen = h.w.ids.u1.gens[0]
@@ -483,7 +475,7 @@ describe('batch：原子性、$n、两段式', () => {
     expectFail(h, 'id_taken', 'batch', { ops: [...prefix, prefix[1]] })
     const addGen: Json = {
       op: 'add_gen',
-      args: { id: 'dup', payload: { $n: 0 }, pins: {}, sig: schemaDef.argsHash },
+      args: { id: 'dup', payload: { $n: 0 }, sig: schemaDef.argsHash },
     }
     const e = h.push('batch', { ops: [...prefix, addGen] })
     expect(h.w.ids.dup.gens[0].adopted.write).toBe(entryHash(e)) // 与链上真实位置同一值
@@ -540,10 +532,9 @@ describe('snapshot 与 graft 边界', () => {
     h.push('add_gen', {
       id: 'u1',
       payload: payloadDef.argsHash,
-      pins: {},
       sig: schemaDef.argsHash,
     })
-    const base = { id: 'u2', payload: payloadDef.argsHash, pins: {}, sig: schemaDef.argsHash }
+    const base = { id: 'u2', payload: payloadDef.argsHash, sig: schemaDef.argsHash }
     expectThrow(h, 'missing_parent', 'graft', { ...base, from: 'ghost', gen: 0 })
     expectThrow(h, 'missing_parent', 'graft', { ...base, from: 'u1', gen: 9 })
     h.push('graft', { ...base, from: 'u1', gen: 0 })

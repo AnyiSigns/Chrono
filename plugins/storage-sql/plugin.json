@@ -5,7 +5,6 @@
   "methods": {
     "storage-sql": ["createTable", "query", "write", "batch", "listTables", "info", "dropNamespace"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [],
   "exclusive": [],

@@ -30,6 +30,7 @@ import type { TraceRecorder } from './trace.ts'
 import type { CallEnv, Json, PortCaller, Rec, RunState } from './types.ts'
 
 export { netScopeOf } from './dispatch-rules.ts'
+export { netRank } from 'plugin-sdk'
 
 export interface NodeDispatchInput {
   nodeIndex: number

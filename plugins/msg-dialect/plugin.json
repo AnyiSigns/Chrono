@@ -13,7 +13,9 @@
       "inline-assets"
     ]
   },
-  "pins": { "host": "host" },
+  "needs": {
+    "host": { "mode": "one" }
+  },
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

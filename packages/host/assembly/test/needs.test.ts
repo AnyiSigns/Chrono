@@ -10,7 +10,7 @@ import { writeTempPackage } from '../../test/test-helpers-ext.ts'
 const JOURNAL = (root: string) => `${root}/state/world/journal.jsonl`
 
 describe('能力需求 needs：one 入世解析', () => {
-  it('唯一提供方 → 写 commit.body.meta.needs，不写 gen.pins', async () => {
+  it('唯一提供方 → 写 commit.body.meta.needs，不进内核世代存储', async () => {
     const root = createTempRoot()
     try {
       const provider = writeTempPackage(root, {
@@ -31,14 +31,13 @@ describe('能力需求 needs：one 入世解析', () => {
       const gen = latestCodeGen(world, 'consumer')
       expect(gen).not.toBeNull()
       expect(needsBindingsOf(world, gen!)).toEqual({ title: 'provider' })
-      // 绑定只住 meta，不进 pins（pins 不产生闭包 / 运行态边）
-      expect(gen!.pins['title']).toBeUndefined()
+      // 内核世代只留 seq / payload / sig；依赖只住 commit.body.meta.needs
+      expect(Object.hasOwn(gen as object, 'pins')).toBe(false)
 
       const planned = planIngest(world, root, { name: 'consumer', path: consumer })
       expect(planned.ok).toBe(true)
       if (planned.ok) {
         expect(planned.plan.needs).toEqual({ title: 'provider' })
-        expect(planned.plan.pins).toEqual({})
       }
     } finally {
       await cleanupTempRoot(root)
@@ -121,15 +120,14 @@ describe('能力需求 needs：one 入世解析', () => {
     }
   })
 
-  it('零扰动：无 needs 的包 meta 只有 name / version，pins 出口照实透传', async () => {
+  it('零扰动：无 needs 的包 meta 只有 name / version，不带 needs 字段', async () => {
     const root = createTempRoot()
     try {
-      const pkg = writeTempPackage(root, { identity: 'plain', pins: { host: 'host' } })
+      const pkg = writeTempPackage(root, { identity: 'plain' })
       const planned = planIngest({ defs: {}, ids: {} }, root, { name: 'plain', path: pkg })
       expect(planned.ok).toBe(true)
       if (!planned.ok) return
       expect(planned.plan.needs).toEqual({})
-      expect(planned.plan.pins).toEqual({ host: 'host' })
       const commit = planned.plan.ops.find(
         (op) => (op as { args?: { body?: { meta?: unknown } } }).args?.body?.meta !== undefined,
       ) as { args?: { body?: { meta?: Record<string, unknown> } } } | undefined
@@ -221,6 +219,35 @@ describe('能力需求 needs：seed 排序', () => {
       const report = runSeed(root, [{ name: 'consumer', path: consumer }])
       expect(report.ok).toBe(false)
       expect(report.items[0].reasons).toEqual(['bad_plugin_decl'])
+    } finally {
+      await cleanupTempRoot(root)
+    }
+  })
+
+  it('无自带方法的 many 与拥有方互为依赖（成环）：契约随同批补齐，seed 仍成功', async () => {
+    const root = createTempRoot()
+    try {
+      const owner = writeTempPackage(root, {
+        identity: 'owner',
+        slots: { hook: { methods: ['onTurn'] } },
+        needs: { runner: { mode: 'one' } },
+      })
+      const consumer = writeTempPackage(root, {
+        identity: 'consumer',
+        implements: ['runner'],
+        methods: { runner: ['run'] },
+        needs: { hook: { mode: 'many' } },
+      })
+      const entries = [
+        { name: 'owner', path: owner },
+        { name: 'consumer', path: consumer },
+      ]
+      // 硬依赖 owner needs runner → consumer 决定拓扑序；成环的 many 契约边被放弃。
+      expect(orderEntriesForSeed(root, entries).map((entry) => entry.name)).toEqual([
+        'consumer',
+        'owner',
+      ])
+      expect(runSeed(root, entries).ok).toBe(true)
     } finally {
       await cleanupTempRoot(root)
     }
@@ -324,15 +351,14 @@ describe('能力需求 needs：one 选择跳过休眠提供方', () => {
   })
 })
 
-describe('validate_package 报告：needs / pins 出口', () => {
+describe('validate_package 报告：needs 出口', () => {
   function consumerFiles(needs: Record<string, unknown>): Record<string, string> {
     return {
       'plugin.json': JSON.stringify({
         identity: 'consumer',
         implements: [],
         methods: {},
-        pins: { host: 'host' },
-        needs,
+        needs: { ...needs, host: { mode: 'one' } },
         start: '',
         build: [],
         protocol: '1',
@@ -347,7 +373,7 @@ describe('validate_package 报告：needs / pins 出口', () => {
     }
   }
 
-  it('通过：报告携带解析绑定与声明 pins', async () => {
+  it('通过：报告携带解析绑定', async () => {
     const root = createTempRoot()
     try {
       const provider = writeTempPackage(root, {
@@ -367,15 +393,14 @@ describe('validate_package 报告：needs / pins 出口', () => {
       expect(outcome.accepted).toBe(true)
       if (outcome.accepted) {
         expect(outcome.report.ok).toBe(true)
-        expect(outcome.report.needs).toEqual({ title: 'provider' })
-        expect(outcome.report.pins).toEqual({ host: 'host' })
+        expect(outcome.report.needs).toEqual({ host: 'host', title: 'provider' })
       }
     } finally {
       await cleanupTempRoot(root)
     }
   })
 
-  it('失败：报告 needs / pins 均为 null', async () => {
+  it('失败：报告 needs 为 null', async () => {
     const root = createTempRoot()
     try {
       const outcome = validatePackage(
@@ -389,7 +414,6 @@ describe('validate_package 报告：needs / pins 出口', () => {
       if (outcome.accepted) {
         expect(outcome.report.ok).toBe(false)
         expect(outcome.report.needs).toBeNull()
-        expect(outcome.report.pins).toBeNull()
       }
     } finally {
       await cleanupTempRoot(root)

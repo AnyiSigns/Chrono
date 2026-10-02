@@ -1,5 +1,5 @@
-// 能力需求的闭包相不变量：`needs` 只住 `commit.body.meta.needs`，不进 `gen.pins`，
-// 因而不产生任何装配依赖边——提供方退役 / 缺席只影响该能力调用，不连坐消费方。
+// 能力需求的闭包相：`one` 绑定（`commit.body.meta.needs`）按身份名建装配依赖边、跟随 active；
+// `many` 不并入单值边。提供方退役 / 缺席使消费方 stale 孤立（fail-closed）。
 
 import { describe, expect, it } from 'vitest'
 import { computeAssemblyPlan } from '../index.ts'
@@ -9,7 +9,6 @@ import type { World } from '../../../kernel/index.ts'
 interface IdSpec {
   payload: string
   sig: string
-  pins?: Record<string, string>
   metaNeeds?: Record<string, string>
   active?: string | null
 }
@@ -34,7 +33,6 @@ function worldOf(specs: Record<string, IdSpec>): World {
         {
           seq: 0,
           payload: spec.payload,
-          pins: spec.pins ?? {},
           sig: spec.sig,
           adopted: { at: 0, by: '', write: '' },
         },
@@ -46,57 +44,48 @@ function worldOf(specs: Record<string, IdSpec>): World {
   return { defs, ids }
 }
 
-describe('能力需求 needs：闭包相不建边', () => {
+describe('能力需求 needs：闭包相建依赖边', () => {
   const CONSUMER = { payload: h('consumerP'), sig: h('consumerS') }
 
-  it('有 / 无 needs 的同一世界：装配计划逐项相同，无涉及消费方的边', () => {
+  it('one 绑定建边：装配序提供方先于消费方；many 不写绑定', () => {
     const providerA = { payload: h('pAP'), sig: h('pAS') }
     const providerB = { payload: h('pBP'), sig: h('pBS') }
-    const base = worldOf({
-      consumer: { ...CONSUMER, pins: {} },
-      'prov-a': providerA,
-      'prov-b': providerB,
-    })
-    const withNeeds = worldOf({
+    const world = worldOf({
       consumer: {
         ...CONSUMER,
-        pins: {},
-        metaNeeds: { 'cap.one': 'prov-a', 'cap.many': 'prov-b' },
+        // resolved meta.needs 只含 one 绑定；many 不进绑定表
+        metaNeeds: { 'cap.one': 'prov-a' },
       },
       'prov-a': providerA,
       'prov-b': providerB,
     })
 
-    const planBase = computeAssemblyPlan(base)
-    const planNeeds = computeAssemblyPlan(withNeeds)
-    expect(planNeeds).toEqual(planBase)
-    expect(planNeeds.edges).toEqual([])
-    expect(planNeeds.isolated).toEqual([])
-    expect(planNeeds.order).toContain('consumer')
-    // 绑定只住 meta，不写 gen.pins
-    expect(withNeeds.ids['consumer'].gens[0].pins).toEqual({})
+    const plan = computeAssemblyPlan(world)
+    expect(plan.edges).toEqual([{ from: 'consumer', to: 'prov-a' }])
+    expect(plan.isolated).toEqual([])
+    expect(plan.order.indexOf('prov-a')).toBeLessThan(plan.order.indexOf('consumer'))
+    expect(plan.order).toContain('prov-b')
   })
 
-  it('绑定提供方退役：消费方仍在启动序、不被隔离', () => {
+  it('绑定提供方退役：消费方 stale 孤立', () => {
     const world = worldOf({
       consumer: {
         ...CONSUMER,
-        pins: {},
         metaNeeds: { 'cap.one': 'prov-a' },
       },
       'prov-a': { payload: h('pAP'), sig: h('pAS'), active: null },
     })
     const plan = computeAssemblyPlan(world)
-    expect(plan.order).toEqual(['consumer'])
-    expect(plan.isolated).toEqual([])
-    expect(plan.edges).toEqual([])
+    expect(plan.order).toEqual([])
+    expect(plan.isolated).toEqual([{ id: 'consumer', reason: 'stale' }])
   })
 
-  it('对照：显式 pins 指向退役身份仍连坐（needs 才解耦）', () => {
-    const retiredPayload = h('pAP')
+  it('绑定目标身份缺席：消费方 stale 孤立（不猜、不静默连接）', () => {
     const world = worldOf({
-      consumer: { ...CONSUMER, pins: { 'cap.one': retiredPayload } },
-      'prov-a': { payload: retiredPayload, sig: h('pAS'), active: null },
+      consumer: {
+        ...CONSUMER,
+        metaNeeds: { 'cap.one': 'ghost' },
+      },
     })
     const plan = computeAssemblyPlan(world)
     expect(plan.order).toEqual([])

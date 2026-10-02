@@ -1,0 +1,39 @@
+{
+  "title": "bindings（tool-registry 工具绑定表数据）",
+  "description": "工具绑定表：body = { version, bindings }。bindings 是 `工具名 -> 绑定声明` 的映射，由调用方入口 term 读出后随 bag.tools_bindings 传给目录装配方（工具名 / 能力类方法 / argsSchema / caps / 四要素文案）。本包是数据身份：只有 schema，无服务进程、无 pins、无命令、无 eff；目录装配与派发分别归 tool-registry / tool-dispatch。形态校验归写入端（宿主 v1 不校验身份数据）。",
+  "type": "object",
+  "required": ["version", "bindings"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "integer" },
+    "bindings": {
+      "type": "object",
+      "description": "工具名 -> 绑定声明。空对象 = 无绑定。",
+      "additionalProperties": true
+    },
+    "binding": {
+      "title": "绑定声明（bindings 的条目，单值平铺）",
+      "description": "一条能力类工具绑定：工具名由 bindings 的键给出；class 必填且须在消费方有效 pins 内。",
+      "required": ["class", "argsSchema", "intent", "when_to_use", "param_semantics", "boundaries", "caps", "idempotent"],
+      "additionalProperties": true,
+      "properties": {
+        "class": { "type": "string", "description": "目标能力类 / 逻辑端口名（须在有效 pins 内）。" },
+        "method": { "type": "string", "description": "可选：目标方法；缺省 / null = 投影读（不调服务）。" },
+        "argsSchema": { "type": "object", "description": "白名单子集 argsSchema。" },
+        "intent": { "type": "string", "description": "四要素：工具意图（模型可见短描述）。" },
+        "when_to_use": { "type": "string", "description": "四要素：使用时机。" },
+        "param_semantics": { "type": "object", "description": "四要素：参数语义（并入各属性 description）。" },
+        "boundaries": { "type": "string", "description": "四要素：边界。" },
+        "caps": { "type": "object", "description": "能力声明：fs / net / 数值上限。" },
+        "idempotent": { "type": "boolean", "description": "是否可缓存结果。" },
+        "render": { "type": "object", "description": "可选：展示描述符。" },
+        "read": { "type": "string", "description": "可选：投影读的 bag 键；缺省 = 工具名。" },
+        "hidden_params": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "可选：调用方注入参数，从模型可见 argsSchema 摘掉、保留在校验 schema 里。"
+        }
+      }
+    }
+  }
+}

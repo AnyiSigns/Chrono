@@ -9,7 +9,6 @@
       "consume"
     ]
   },
-  "pins": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

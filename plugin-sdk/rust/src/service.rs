@@ -104,6 +104,21 @@ impl CallEnv {
     }
 }
 
+/// 服务声明的公共面：身份 / 协议 / 状态 / 能力覆盖。
+/// 单能力（`ServiceSpec`）与多能力（`MultiServiceSpec`）共用同一帧循环与 manifest 派生。
+pub trait ServiceDecl: Sync + 'static {
+    /// 身份名。
+    fn identity(&self) -> &'static str;
+    /// 协议版本。
+    fn protocol(&self) -> &'static str;
+    /// 状态档（`recomputable` / `durable`）。
+    fn state(&self) -> &'static str;
+    /// manifest 编入的能力类 → 方法集（声明序）。
+    fn declared_methods(&self) -> Vec<(&'static str, &'static [&'static str])>;
+    /// 本服务是否覆盖该能力类（调用门禁）。
+    fn accepts(&self, port: &str) -> bool;
+}
+
 /// 服务自述口径（与同包 `plugin.json` 一致）。
 pub struct ServiceSpec {
     /// 身份名。
@@ -118,17 +133,77 @@ pub struct ServiceSpec {
     pub methods: &'static [&'static str],
 }
 
+impl ServiceDecl for ServiceSpec {
+    fn identity(&self) -> &'static str {
+        self.identity
+    }
+
+    fn protocol(&self) -> &'static str {
+        self.protocol
+    }
+
+    fn state(&self) -> &'static str {
+        self.state
+    }
+
+    fn declared_methods(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![(self.capability, self.methods)]
+    }
+
+    fn accepts(&self, port: &str) -> bool {
+        port == self.capability
+    }
+}
+
+/// 多能力服务声明：一个身份同时覆盖多个能力类（如合并后的集群身份）。
+pub struct MultiServiceSpec {
+    /// 身份名。
+    pub identity: &'static str,
+    /// 协议版本。
+    pub protocol: &'static str,
+    /// 状态档（`recomputable` / `durable`）。
+    pub state: &'static str,
+    /// 覆盖的能力类 → 方法集（声明序，无重复能力类）。
+    pub capabilities: &'static [(&'static str, &'static [&'static str])],
+}
+
+impl ServiceDecl for MultiServiceSpec {
+    fn identity(&self) -> &'static str {
+        self.identity
+    }
+
+    fn protocol(&self) -> &'static str {
+        self.protocol
+    }
+
+    fn state(&self) -> &'static str {
+        self.state
+    }
+
+    fn declared_methods(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        self.capabilities.to_vec()
+    }
+
+    fn accepts(&self, port: &str) -> bool {
+        self.capabilities.iter().any(|(capability, _)| *capability == port)
+    }
+}
+
 /// 由服务口径构造 `manifest` 帧体（不含 `id` / `kind`）。
-pub fn manifest(spec: &ServiceSpec) -> Value {
+pub fn manifest<S: ServiceDecl>(spec: &S) -> Value {
     let mut methods = Map::new();
-    methods.insert(spec.capability.to_string(), json!(spec.methods));
+    let mut implements = Vec::new();
+    for (capability, method_list) in spec.declared_methods() {
+        implements.push(capability);
+        methods.insert(capability.to_string(), json!(method_list));
+    }
     json!({
-        "v": spec.protocol,
-        "identity": spec.identity,
-        "implements": [spec.capability],
+        "v": spec.protocol(),
+        "identity": spec.identity(),
+        "implements": implements,
         "methods": Value::Object(methods),
-        "protocol": spec.protocol,
-        "state": spec.state,
+        "protocol": spec.protocol(),
+        "state": spec.state(),
     })
 }
 
@@ -179,8 +254,8 @@ impl Drop for CurrentCallIdGuard {
     }
 }
 
-fn error_frame(spec: &ServiceSpec, id: &Value, code: &str, message: &str) -> Value {
-    json!({ "v": spec.protocol, "id": id, "kind": "error", "ok": false, "code": code, "message": message })
+fn error_frame<S: ServiceDecl>(spec: &S, id: &Value, code: &str, message: &str) -> Value {
+    json!({ "v": spec.protocol(), "id": id, "kind": "error", "ok": false, "code": code, "message": message })
 }
 
 fn write_shared(writer: &SharedWriter, message: &Value) {
@@ -242,7 +317,7 @@ impl Drop for InflightGuard {
     }
 }
 
-fn call_response<H: ServiceHandler>(spec: &ServiceSpec, message: &Value, handler: &H) -> Value {
+fn call_response<S: ServiceDecl, H: ServiceHandler>(spec: &S, message: &Value, handler: &H) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     // 每 call 独立线程：记下本线程正在处理的正向帧 id，供反向调用回带 `call_id`；
     // 守卫在返回 / panic 时清空，避免线程复用时残留。
@@ -251,17 +326,17 @@ fn call_response<H: ServiceHandler>(spec: &ServiceSpec, message: &Value, handler
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let args = message.get("args").cloned().unwrap_or(Value::Null);
     let env = message.get("env").cloned().unwrap_or(Value::Null);
-    if port != spec.capability {
+    if !spec.accepts(port) {
         return error_frame(spec, &id, "unresolved_cap", &format!("unknown capability {port}"));
     }
     match handler.call(method, &args, &env) {
-        Ok(value) => json!({ "v": spec.protocol, "id": id, "kind": "result", "ok": true, "value": value }),
+        Ok(value) => json!({ "v": spec.protocol(), "id": id, "kind": "result", "ok": true, "value": value }),
         Err(error) => error_frame(spec, &id, &error.code, &error.message),
     }
 }
 
-fn spawn_call<H: ServiceHandler>(
-    spec: &'static ServiceSpec,
+fn spawn_call<S: ServiceDecl, H: ServiceHandler>(
+    spec: &'static S,
     shared: &SharedWriter,
     inflight: &Arc<(Mutex<usize>, Condvar)>,
     handler: &Arc<H>,
@@ -269,7 +344,7 @@ fn spawn_call<H: ServiceHandler>(
 ) {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let Some(guard) = InflightGuard::try_acquire(Arc::clone(inflight)) else {
-        crate::wire::log(spec.identity, "call rejected: inflight limit reached");
+        crate::wire::log(spec.identity(), "call rejected: inflight limit reached");
         write_shared(shared, &error_frame(spec, &id, "overloaded", "inflight limit reached"));
         return;
     };
@@ -282,12 +357,12 @@ fn spawn_call<H: ServiceHandler>(
         // guard 随闭包结束（或 spawn 失败）而 Drop：计数必归零。
         drop(guard);
     }) {
-        crate::wire::log(spec.identity, &format!("spawn call failed: {err}"));
+        crate::wire::log(spec.identity(), &format!("spawn call failed: {err}"));
         write_shared(&fallback, &error_frame(spec, &id, "spawn_failed", &err.to_string()));
     }
 }
 
-fn handle_control(spec: &ServiceSpec, message: &Value) -> Option<Value> {
+fn handle_control<S: ServiceDecl>(spec: &S, message: &Value) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     match message.get("kind").and_then(Value::as_str) {
         Some("hello") => {
@@ -296,25 +371,25 @@ fn handle_control(spec: &ServiceSpec, message: &Value) -> Option<Value> {
             response["kind"] = json!("manifest");
             Some(response)
         }
-        Some("probe") => Some(json!({ "v": spec.protocol, "id": id, "kind": "pong", "ok": true })),
+        Some("probe") => Some(json!({ "v": spec.protocol(), "id": id, "kind": "pong", "ok": true })),
         Some("reload") => {
-            crate::wire::log(spec.identity, "reload");
-            Some(json!({ "v": spec.protocol, "id": id, "kind": "ack" }))
+            crate::wire::log(spec.identity(), "reload");
+            Some(json!({ "v": spec.protocol(), "id": id, "kind": "ack" }))
         }
         _ => None,
     }
 }
 
-fn finish_drain(spec: &ServiceSpec, shared: &SharedWriter, inflight: &Arc<(Mutex<usize>, Condvar)>, message: &Value) {
+fn finish_drain<S: ServiceDecl>(spec: &S, shared: &SharedWriter, inflight: &Arc<(Mutex<usize>, Condvar)>, message: &Value) {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let deadline = message.get("deadline_ms").and_then(Value::as_u64).unwrap_or(5000);
     wait_for_inflight(inflight, deadline);
-    write_shared(shared, &json!({ "v": spec.protocol, "id": id, "kind": "bye" }));
+    write_shared(shared, &json!({ "v": spec.protocol(), "id": id, "kind": "bye" }));
 }
 
 /// 服务帧循环：拦截帧先结算；`call` 独立线程执行；`drain` 等在途结束再 `bye`；EOF 即自退出。
 /// 循环结束（EOF / 坏帧）时调 `handler.on_close()` 收口（`drain` 已自行收口，不重复）。
-pub fn run_service<R, H>(spec: &'static ServiceSpec, mut reader: R, shared: SharedWriter, handler: H)
+pub fn run_service<R, H, S: ServiceDecl>(spec: &'static S, mut reader: R, shared: SharedWriter, handler: H)
 where
     R: Read,
     H: ServiceHandler,
@@ -326,7 +401,7 @@ where
             Ok(Some(message)) => message,
             Ok(None) => break,
             Err(err) => {
-                crate::wire::log(spec.identity, &format!("bad frame: {err}"));
+                crate::wire::log(spec.identity(), &format!("bad frame: {err}"));
                 break;
             }
         };
@@ -411,6 +486,42 @@ mod tests {
         assert_eq!(value["methods"]["toy"], json!(["echo", "fail"]));
         assert_eq!(value["state"], "recomputable");
         assert_eq!(value["protocol"], "1");
+    }
+
+    static MULTI_SPEC: MultiServiceSpec = MultiServiceSpec {
+        identity: "merged",
+        protocol: "1",
+        state: "recomputable",
+        capabilities: &[("one", &["a", "b"]), ("two", &["c"])],
+    };
+
+    #[test]
+    fn multi_manifest_lists_every_capability() {
+        let value = manifest(&MULTI_SPEC);
+        assert_eq!(value["identity"], "merged");
+        assert_eq!(value["implements"], json!(["one", "two"]));
+        assert_eq!(value["methods"]["one"], json!(["a", "b"]));
+        assert_eq!(value["methods"]["two"], json!(["c"]));
+        assert_eq!(value["protocol"], "1");
+    }
+
+    #[test]
+    fn multi_spec_accepts_each_capability_and_rejects_others() {
+        assert!(MULTI_SPEC.accepts("one"));
+        assert!(MULTI_SPEC.accepts("two"));
+        assert!(!MULTI_SPEC.accepts("three"));
+        let accepted = call_response(
+            &MULTI_SPEC,
+            &json!({"v":"1","id":"c","kind":"call","port":"two","method":"echo","args":{}}),
+            &Echo,
+        );
+        assert_eq!(accepted["kind"], "result");
+        let rejected = call_response(
+            &MULTI_SPEC,
+            &json!({"v":"1","id":"c","kind":"call","port":"three","method":"echo","args":{}}),
+            &Echo,
+        );
+        assert_eq!(rejected["code"], "unresolved_cap");
     }
 
     #[test]

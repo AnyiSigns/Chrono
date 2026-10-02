@@ -7,13 +7,12 @@ import { interpretGraph } from './interpreter.ts'
 import { clearCancel, requestCancel } from './cancel.ts'
 import { clearTrace, traceFor } from './segment-trace.ts'
 import { SEGMENT_ENDED } from './lifecycle.ts'
-import { PINS } from './plugin.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, GraphModel, Handler, HandlerResult, Json, PortCaller, Rec } from './types.ts'
 
 export interface GraphRunDeps {
   port: PortCaller
-  /** 宿主注入的有效 pins（声明 `pins` ∪ one-needs）；args 内场景覆盖优先于它。 */
+  /** 宿主注入的有效 pins（`one`-needs 绑定派生）；args 内场景覆盖优先于它。 */
   pins?: Rec
   /** 世界 `context-source` 成员表（身份名码元序）：`context.assemble` 前置汇集时逐一反向 `collect`。 */
   contextSources?: string[]
@@ -39,7 +38,7 @@ async function run(args: Json, env: CallEnv, deps: GraphRunDeps): Promise<Json> 
   const model = asRecord(input['model'])
   if (bag === null) throw new BadArgsError('args.bag must be an object')
   if (model === null) throw new BadArgsError('args.model must be an object')
-  const pins = asRecord(input['pins']) ?? deps.pins ?? PINS
+  const pins = asRecord(input['pins']) ?? deps.pins ?? {}
   const resume = asRecord(input['resume'])
   const refs = asRecord(input['refs']) ?? {}
   const turnId = asString(bag['turn_id'])

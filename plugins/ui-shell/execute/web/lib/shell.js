@@ -24,7 +24,7 @@ const BOOT_RETRY_DELAY_MS = 800
 const BOOTSTRAP =
   typeof window.__CHRONO_SHELL__ === 'object' && window.__CHRONO_SHELL__ !== null
     ? window.__CHRONO_SHELL__
-    : { mounts: [], headless: [], slots: [], assets: {}, theme: 'system' }
+    : { mounts: [], headless: [], slots: [], uiStateKeys: [], assets: {}, theme: 'system' }
 
 /** 静态资源 URL：服务端按内容升版注入 `?v=`；缺省回退到未升版的固定路径。 */
 const ASSET_URLS =
@@ -77,7 +77,7 @@ async function loadMessages() {
   }
 }
 
-const uiState = createUiState()
+const uiState = createUiState(BOOTSTRAP.uiStateKeys)
 const toastQueue = createToastQueue()
 const toastRoot = document.getElementById('shell-toasts')
 const banner = document.getElementById('shell-banner')
@@ -710,8 +710,8 @@ if (tokensLink !== null) {
   tokensLink.addEventListener('error', () => {
     const style = document.createElement('style')
     style.textContent =
-      ':root{--c-bg:#FAFAF9;--c-surface:#FDFDFC;--c-text:#1F1E1C;--c-border:#E3E2DF;' +
-      '--c-text-2:#6E6D69;--c-text-3:#9C9B96;--c-accent:#46548C;--c-accent-text:#FFFFFF;}'
+      ':root{--c-bg:#F8F8F8;--c-surface:#FFFFFF;--c-text:#1C1C1C;--c-border:#E5E5E5;' +
+      '--c-text-2:#666666;--c-text-3:#999999;--c-accent:#3E6DA8;--c-accent-text:#FFFFFF;}'
     document.head.appendChild(style)
     toastQueue.enqueue({ tone: 'warning', text: msg('shell_tokens_fallback').body })
     renderToasts()

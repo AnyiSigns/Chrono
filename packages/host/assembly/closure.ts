@@ -1,10 +1,10 @@
-// 闭包（装配相）：沿 pins 只读遍历世界 → SCC + 逆拓扑序 + 坏分支隔离。
+// 闭包（装配相）：沿 `needs.one` 绑定只读遍历世界 → SCC + 逆拓扑序 + 坏分支隔离。
 // 纯计算：不装载、不执行效果、不写链；产装配计划与运维事件，调用方按序起服务并落日志。
 // 运行相（自身换代重装、依赖退役隔离）不在本模块。
 
 import { stale } from '../../kernel/index.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
-import { assemblyGen } from './decl.ts'
+import { assemblyGen, needsBindingsOf } from './decl.ts'
 import type { Hash, World } from '../../kernel/index.ts'
 
 /** 隔离原因：cycle = 成环分支（环成员及其依赖者）；stale = 依附失效（含依赖者）。 */
@@ -45,8 +45,7 @@ interface DepGraph {
 
 /**
  * 反查索引：世代 payload → 属主身份，O(1) 反查。
- * 只认 payload（`pins` 解析到的是被依赖身份的世代 payload）；可从 `world.ids` 重建；
- * active 世代的 payload 优先，其余按键与身份 id 字典序先到先得。
+ * 可从 `world.ids` 重建；active 世代的 payload 优先，其余按键与身份 id 字典序先到先得。
  */
 export function buildOwnerIndex(world: World): Map<Hash, string> {
   const index = new Map<Hash, string>()
@@ -72,7 +71,7 @@ function appendEdge(map: Map<string, string[]>, from: string, to: string): void 
   else list.push(to)
 }
 
-function buildGraph(world: World, ownerIndex: Map<Hash, string>): DepGraph {
+function buildGraph(world: World): DepGraph {
   const roots = Object.keys(world.ids)
     .filter((id) => world.ids[id].active !== null)
     .sort()
@@ -83,7 +82,7 @@ function buildGraph(world: World, ownerIndex: Map<Hash, string>): DepGraph {
   const depFailed = new Set<string>()
   const selfFailed = new Set<string>()
   for (const from of roots) {
-    // G7 A1：装配按「最近代码世代」取 pins / 判 stale；数据世代只影响投影读侧。
+    // G7 A1：装配按「最近代码世代」取 `needs` / 判 stale；数据世代只影响投影读侧。
     const gen = assemblyGen(world, from)
     const payloadDef = gen === null ? undefined : world.defs[gen.payload]
     if (
@@ -95,19 +94,18 @@ function buildGraph(world: World, ownerIndex: Map<Hash, string>): DepGraph {
       selfFailed.add(from)
       continue
     }
-    for (const pin of Object.values(gen.pins)) {
-      // 保留能力类 `host`：不建边、不置 depFailed（宿主不是世界节点）
-      if (pin === HOST_CAPABILITY) continue
-      const to = ownerIndex.get(pin)
-      if (to === undefined || world.ids[to].active === null) {
-        depFailed.add(from) // 漏 pins / 依赖退役：显式失效，绝不猜
+    for (const bound of Object.values(needsBindingsOf(world, gen))) {
+      // 宿主依赖哨兵 `host`：不建边、不置 depFailed（宿主不是世界节点）
+      if (bound === HOST_CAPABILITY) continue
+      if (!Object.hasOwn(world.ids, bound) || world.ids[bound].active === null) {
+        depFailed.add(from) // 绑定提供方缺失 / 退役：显式失效，绝不猜
         continue
       }
-      if (seen.has(`${from}\u0000${to}`)) continue
-      seen.add(`${from}\u0000${to}`)
-      edges.push({ from, to })
-      appendEdge(outgoing, from, to)
-      appendEdge(dependents, to, from)
+      if (seen.has(`${from}\u0000${bound}`)) continue
+      seen.add(`${from}\u0000${bound}`)
+      edges.push({ from, to: bound })
+      appendEdge(outgoing, from, bound)
+      appendEdge(dependents, bound, from)
     }
   }
   return { roots, edges, outgoing, dependents, depFailed, selfFailed }
@@ -178,15 +176,14 @@ function reverseReachable(seeds: Iterable<string>, dependents: Map<string, strin
 
 /**
  * 装配计划（装配相）：
- * 1. 沿 pins 建依赖边（反查索引把 pin 值解析回被依赖身份；pin 绑定身份、不锁版本）；
+ * 1. 沿 `needs.one` 绑定建依赖边（绑定按身份名，跟随 active、不锁版本）；
  * 2. Tarjan 单趟出 SCC 与逆拓扑序（被依赖者先起）；
- * 3. 环成员及其依赖者、pin 缺失 / 退役依赖、自身世代不完整或相对自身 active 世代 stale 者
+ * 3. 环成员及其依赖者、绑定提供方缺失 / 退役、自身世代不完整或相对自身 active 世代 stale 者
  *    同样隔离（含其依赖者）；
  * 4. 其余身份按逆拓扑序装载。
  */
 export function computeAssemblyPlan(world: World): AssemblyPlan {
-  const ownerIndex = buildOwnerIndex(world)
-  const graph = buildGraph(world, ownerIndex)
+  const graph = buildGraph(world)
   const sccs = tarjan(graph.roots, graph.outgoing)
 
   const cycles: string[][] = []

@@ -5,7 +5,6 @@
   "methods": {
     "workspace": ["list", "read", "add", "remove"]
   },
-  "pins": {},
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "exclusive": ["data"],

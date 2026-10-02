@@ -74,7 +74,6 @@ test('缺 methods 声明回落处理器表（无 TDZ）', async () => {
     JSON.stringify({
       identity: 'secrets',
       implements: ['secrets'],
-      pins: {},
       start: '',
       protocol: '1',
       state: 'recomputable',

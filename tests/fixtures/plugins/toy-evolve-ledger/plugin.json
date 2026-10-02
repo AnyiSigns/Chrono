@@ -1,7 +1,8 @@
 {
   "identity": "evolve-ledger",
   "implements": [
-    "evolve-ledger"
+    "evolve-ledger",
+    "evolve-metrics"
   ],
   "methods": {
     "evolve-ledger": [
@@ -9,9 +10,17 @@
       "patch-plan",
       "thresholds",
       "hash"
+    ],
+    "evolve-metrics": [
+      "aggregate",
+      "sweep",
+      "shadow",
+      "record"
     ]
   },
-  "pins": {},
+  "needs": {
+    "host": { "mode": "one" }
+  },
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

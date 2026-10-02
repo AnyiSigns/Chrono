@@ -5,7 +5,6 @@
   "methods": {
     "config": ["read", "write"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

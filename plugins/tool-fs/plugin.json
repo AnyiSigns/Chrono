@@ -2,13 +2,9 @@
   "identity": "tool-fs",
   "schema": "schema/tool-fs.json",
   "implements": ["tool-provider"],
-  "methods": {
-    "tool-provider": ["describe", "invoke"]
-  },
-  "pins": {
-    "host": "host"
-  },
+  "methods": {},
   "needs": {
+    "host": { "mode": "one" },
     "sandbox": { "mode": "one" }
   },
   "start": "node execute/launch.mjs",

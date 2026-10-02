@@ -1,11 +1,14 @@
 {
   "identity": "evolve-ledger",
   "schema": "schema/evolve-ledger.json",
-  "implements": ["evolve-ledger"],
+  "implements": ["evolve-ledger", "evolve-metrics"],
   "methods": {
-    "evolve-ledger": ["read-chain", "patch-plan", "thresholds", "hash"]
+    "evolve-ledger": ["read-chain", "patch-plan", "thresholds", "hash"],
+    "evolve-metrics": ["aggregate", "sweep", "shadow", "record"]
   },
-  "pins": {},
+  "needs": {
+    "host": { "mode": "one" }
+  },
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",

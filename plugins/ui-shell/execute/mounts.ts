@@ -66,7 +66,7 @@ export function headlessPath(stateDir: string): string {
   return join(stateDir, HEADLESS_FILE)
 }
 
-function validMount(value: Json): MountEntry | null {
+export function validMount(value: Json): MountEntry | null {
   if (!isRecord(value)) return null
   const id = value['id']
   const slot = value['slot']
@@ -97,7 +97,7 @@ export function parseMounts(text: string): MountEntry[] | null {
   return entries
 }
 
-function validHeadless(value: Json): HeadlessEntry | null {
+export function validHeadless(value: Json): HeadlessEntry | null {
   if (!isRecord(value)) return null
   const id = value['id']
   const entry = value['entry']

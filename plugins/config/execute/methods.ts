@@ -58,7 +58,7 @@ function thresholdPlan(thresholds: Rec): Json {
           args: {
             ops: [
               { op: 'put', args: { body: thresholds } },
-              { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+              { op: 'add_gen', args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 } } },
             ],
           },
         },

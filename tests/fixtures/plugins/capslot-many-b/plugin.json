@@ -2,7 +2,6 @@
   "identity": "capslot-many-b",
   "implements": ["capslot.many"],
   "methods": { "capslot.many": ["collect"] },
-  "pins": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

@@ -21,24 +21,21 @@ function listFiles(dir) {
   return out
 }
 
-test('plugin.json：identity / implements / methods / pins / needs / start / members / commands', () => {
+test('plugin.json：identity / implements / methods / needs / start / members / commands', () => {
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'loop-policy')
   assert.deepEqual(plugin.implements, ['loop-policy', 'loop-rule', 'turn-hook'])
-  assert.deepEqual(plugin.methods['loop-policy'], ['interpret', 'cancel', 'note-input', 'promote-input'])
-  assert.deepEqual(plugin.methods['loop-rule'], ['when', 'pre', 'post'])
-  assert.deepEqual(plugin.methods['turn-hook'], [
-    'before-assemble',
-    'after-step',
-    'before-settle',
-    'after-settle',
-  ])
+  assert.deepEqual(plugin.methods, {
+    'loop-policy': ['interpret', 'cancel', 'note-input', 'promote-input'],
+  })
+  // `loop-rule` / `turn-hook` 方法契约单源在本插件 `slots`，不再于 `methods` 复述。
   assert.deepEqual(plugin.slots, {
     'loop-rule': { methods: ['when', 'pre', 'post'] },
     'turn-hook': { methods: ['before-assemble', 'after-step', 'before-settle', 'after-settle'] },
   })
-  assert.deepEqual(plugin.pins, { host: 'host' })
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.deepEqual(plugin.needs, {
+    host: { mode: 'one' },
     'graph-run': { mode: 'one' },
     'turn-ledger': { mode: 'one' },
     session: { mode: 'one' },

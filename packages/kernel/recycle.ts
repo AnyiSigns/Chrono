@@ -71,10 +71,9 @@ function collectMarkers(value: Json, out: Hash[]): void {
   )
 }
 
-/** 单个 def 的出边：`sig` + `pins` 值 + body 内的引用标记。 */
+/** 单个 def 的出边：`sig` + body 内的引用标记。 */
 function defEdges(def: Def, out: Hash[]): void {
   if (typeof def.sig === 'string') out.push(def.sig)
-  for (const pin of Object.values(def.pins ?? {})) if (typeof pin === 'string') out.push(pin)
   collectMarkers(def.body, out)
 }
 
@@ -104,11 +103,10 @@ function closure(world: World, seeds: Iterable<Hash>): Set<Hash> {
   return visited
 }
 
-/** 一个世代的种子：payload + sig + pins 值。 */
+/** 一个世代的种子：payload + sig。 */
 function genSeeds(gen: Gen): Hash[] {
   const out: Hash[] = [gen.payload]
   if (typeof gen.sig === 'string') out.push(gen.sig)
-  for (const pin of Object.values(gen.pins)) if (typeof pin === 'string') out.push(pin)
   return out
 }
 
@@ -123,21 +121,7 @@ function identitySeeds(world: World): Hash[] {
   return out
 }
 
-/** payload → 世代位置（身份, 下标）索引；用于 pins 固定点回填。 */
-function payloadOwners(world: World): Map<Hash, { id: string; index: number }[]> {
-  const owners = new Map<Hash, { id: string; index: number }[]>()
-  for (const id of Object.keys(world.ids)) {
-    const gens = world.ids[id].gens
-    for (let index = 0; index < gens.length; index++) {
-      const list = owners.get(gens[index].payload)
-      if (list === undefined) owners.set(gens[index].payload, [{ id, index }])
-      else list.push({ id, index })
-    }
-  }
-  return owners
-}
-
-/** 把一个世代下标加入保留集（越界/重复返回 false），供 pins/graft/base 固定点回填。 */
+/** 把一个世代下标加入保留集（越界/重复返回 false），供 graft/base 固定点回填。 */
 function addIndex(
   world: World,
   keep: Map<string, Set<number>>,
@@ -153,9 +137,9 @@ function addIndex(
 }
 
 /**
- * 计算每身份的保留世代：窗口 + active + 调用方显式保留集 + pins 固定点 + graft 来源 + 补丁 base。
+ * 计算每身份的保留世代：窗口 + active + 调用方显式保留集 + graft 来源 + 补丁 base。
  * `keepGens` 是调用方的机械保留集（如投影数据世代），内核只做并集、不解释其含义；
- * 并入发生在固定点回填之前，故其 pins / graft / base 依赖同样被拉入。
+ * 并入发生在固定点回填之前，故其 graft / base 依赖同样被拉入。
  * 固定点用工作表推进：新增项才入表，每代只处理一次（不每轮全量重扫）。
  */
 function retainedGens(
@@ -176,7 +160,6 @@ function retainedGens(
     keep.set(id, set)
   }
   for (const item of keepGens) addIndex(world, keep, item.id, item.seq)
-  const owners = payloadOwners(world)
   const work: { id: string; index: number }[] = []
   for (const id of Object.keys(world.ids)) {
     for (const index of keep.get(id) as Set<number>) work.push({ id, index })
@@ -185,13 +168,6 @@ function retainedGens(
     const item = work.pop() as { id: string; index: number }
     const gen = world.ids[item.id]?.gens[item.index]
     if (gen === undefined) continue
-    for (const pin of Object.values(gen.pins)) {
-      for (const owner of owners.get(pin) ?? []) {
-        if (addIndex(world, keep, owner.id, owner.index)) {
-          work.push({ id: owner.id, index: owner.index })
-        }
-      }
-    }
     if (gen.graft !== undefined && addIndex(world, keep, gen.graft.from, gen.graft.gen)) {
       work.push({ id: gen.graft.from, index: gen.graft.gen })
     }

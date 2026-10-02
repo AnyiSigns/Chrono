@@ -2,12 +2,12 @@
 
 编排平面的**唯一**路径：列图 / 读条目 / 跑机械闸 dry-run / 产提案。
 **只产提案条目，不产证据、不产写**——它把一次编排变更落成可审计的提案，交 loop-policy 的
-「提案扫描与采纳」消费；人闸在采纳，不在本插件。工具面（`describe` / `invoke`）归 `orchestration-admin`：
-它只按工具名反向派发到本插件，本插件是编排逻辑的权威实现。
+「提案扫描与采纳」消费；人闸在采纳，不在本插件。工具面（`describe` / `invoke`）内联在本插件：
+按工具名本地派发到编排方法，本插件是编排逻辑的权威实现。
 
-- 能力类：`orchestration`（`list` / `read` / `validate` / `propose`）。
+- 能力类：`orchestration`（`list` / `read` / `validate` / `propose`）、`tool-provider`（`describe` / `invoke`）。
 - `pins`：`{}`；`needs`：`graph-gate`（`mode:"one"`）—— 机械闸经 `port.call graph-gate.validate` 消费提供方，本插件不再本地复刻。
-- 工具名：`orchestration.list` / `orchestration.read` / `orchestration.validate` / `orchestration.propose`（由工具面 `orchestration-admin` 对外暴露，命名空间化避免与其它工具撞名）。
+- 工具名：`orchestration.list` / `orchestration.read` / `orchestration.validate` / `orchestration.propose`（经自身 `tool-provider.describe` 对外暴露，命名空间化避免与其它工具撞名）。
 - 输入来源：图六类条目、台账与 `ids.loop-policy.pins` **由调用方（loop-policy 装配）随 bag / args 传入**；服务不读投影。
 - 状态档：`recomputable`；启动：`node execute/main.ts`（宿主 spawn，stdio 协议帧；日志走 stderr；stdin EOF 即自退出）。
 - 运行时零 npm 依赖。
@@ -121,7 +121,7 @@ add_gen(evolution)                  # 只对台账身份 add_gen；跨身份写�
 ## 已知限制 / 偏离（明写）
 
 - **不变量 4 按端口 + caps 粒度近似**（规则由 `graph-gate` 提供）：真实判据 = `(port=提供者能力类名, 工具名)`
-  （与 guard / tools 口径对齐）；图数据里只有端口名与 `caps`，故按 `exec` / `plugin-admin` / `orchestration-admin`
+  （与 guard / tools 口径对齐）；图数据里只有端口名与 `caps`，故按 `exec` / `plugin-admin` / `orchestration`
   端口名，外加**声明式写档**（`caps.fs.write` 非 `'none'`）机械判定，并以 `guard → approval` 直边 + 双向可达近似
   「可达路径上存在该段」（composite 同样递归生效）。更精确的 (port, tool) 判据归 loop-policy 运行时。
 - **不变量 6 只查图内出现的契约**：契约池里声明但未实例化的契约（如待插的 `verify`）不要求 global 实例。

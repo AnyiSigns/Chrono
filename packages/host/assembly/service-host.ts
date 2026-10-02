@@ -77,7 +77,7 @@ export interface ServiceFactoryContext {
   /** ③ / ④ 目录（只含已注入项）。 */
   env: Record<string, string>
   /**
-   * 宿主注入的**有效 pins**（声明 `pins` ∪ 该身份当前代码世代的 `one`-needs 绑定）；
+   * 宿主注入的**有效 pins**（该身份当前代码世代 `commit.body.meta.needs` 的 `one` 绑定）；
    * 无代码世代 / 声明不可解析时缺席。stdio 经 spawn env `CHRONO_PLUGIN_PINS` 注入，
    * inproc / worker 作 loader 参数（worker 经 `workerData` 传）。与 plugin-sdk 侧同形。
    */
@@ -132,7 +132,7 @@ export interface ServiceStartInput {
   /** 宿主侧服务启动包装器；仅 stdio 模型使用。 */
   startWrapper?: string
   /**
-   * 宿主按当刻世界算出的**有效 pins**（声明 `pins` ∪ 该身份代码世代的 `one`-needs 绑定）；
+   * 宿主按当刻世界算出的**有效 pins**（该身份代码世代 `commit.body.meta.needs` 的 `one` 绑定）；
    * 未定义表示不注入。stdio 走 spawn env `CHRONO_PLUGIN_PINS`，inproc / worker 走工厂 ctx。
    */
   pins?: Record<string, string>

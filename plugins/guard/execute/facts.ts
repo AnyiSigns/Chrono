@@ -2,6 +2,7 @@
 // 判定（优先级裁决）住 term（terms.src/guard.json）；本模块只出「事实」与「列表材料化」，
 // 不含裁决分支、不读投影、不取时间 / 随机 —— 同输入同输出。
 
+import { netRank, netScope } from 'plugin-sdk'
 import { FAIL_CLOSED_TIER, parseRules } from './rules.ts'
 import type { Rules, TierPolicy } from './rules.ts'
 import { BadArgsError } from './types.ts'
@@ -9,18 +10,6 @@ import type { Json, Rec, Verdict } from './types.ts'
 
 function isRecord(value: Json | undefined): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** net 范围序：none < limited < all（与 sandbox / tool-browser 同口径）。 */
-const NET_RANK: Record<string, number> = { none: 0, limited: 1, all: 2 }
-
-function netRank(scope: string): number {
-  return NET_RANK[scope] ?? 0
-}
-
-/** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
-function netScope(value: Json | undefined): string {
-  return value === 'limited' || value === 'all' ? value : 'none'
 }
 
 function tierPolicy(rules: Rules, tier: string | null): TierPolicy {

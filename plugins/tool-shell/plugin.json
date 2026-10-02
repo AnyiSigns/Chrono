@@ -3,10 +3,8 @@
   "schema": "schema/tool-shell.json",
   "implements": ["tool-shell", "tool-provider"],
   "methods": {
-    "tool-shell": ["describe", "invoke"],
-    "tool-provider": ["describe", "invoke"]
+    "tool-shell": ["describe", "invoke"]
   },
-  "pins": {},
   "needs": {
     "secrets": { "mode": "one" },
     "sandbox": { "mode": "one" }

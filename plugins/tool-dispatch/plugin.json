@@ -6,7 +6,6 @@
     "tool-dispatch": ["dispatch"]
   },
   "concurrent_methods": ["dispatch"],
-  "pins": {},
   "needs": {
     "tool-registry": { "mode": "one" },
     "guard": { "mode": "one" },

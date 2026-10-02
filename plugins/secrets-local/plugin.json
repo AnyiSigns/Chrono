@@ -2,10 +2,7 @@
   "identity": "secrets-local",
   "schema": "schema/secrets-local.json",
   "implements": ["secrets-backend"],
-  "methods": {
-    "secrets-backend": ["read", "list", "kinds"]
-  },
-  "pins": {},
+  "methods": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

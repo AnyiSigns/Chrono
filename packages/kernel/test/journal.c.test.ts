@@ -146,7 +146,7 @@ describe('三步取用与全量逐字段等价：①校基础 → ②校接驳 �
     const schemaDef = h.push('put', { body: { s: 1 } })
     const p1 = h.push('put', { body: { g: 1 } })
     h.push('add_identity', { id: 'u1', schema: schemaDef.argsHash })
-    h.push('add_gen', { id: 'u1', payload: p1.argsHash, pins: {}, sig: schemaDef.argsHash })
+    h.push('add_gen', { id: 'u1', payload: p1.argsHash, sig: schemaDef.argsHash })
     h.push('note', { kind: 'obs', step: 1 })
     const snap = h.push('snapshot', { world_rev: worldRev(h.w) })
     const base = cloneWorld(h.w) // 宿主随快照边界落盘的世界本体
@@ -162,7 +162,7 @@ describe('三步取用与全量逐字段等价：①校基础 → ②校接驳 �
     })
     // 边界继续追加
     const p2 = h.push('put', { body: { g: 2 } })
-    h.push('add_gen', { id: 'u1', payload: p2.argsHash, pins: {}, sig: schemaDef.argsHash })
+    h.push('add_gen', { id: 'u1', payload: p2.argsHash, sig: schemaDef.argsHash })
     h.push('batch', {
       ops: [
         { op: 'put', args: { body: { g: 3 } } },

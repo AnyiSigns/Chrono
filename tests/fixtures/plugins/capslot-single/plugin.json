@@ -2,7 +2,6 @@
   "identity": "capslot-single",
   "implements": ["capslot.single"],
   "methods": { "capslot.single": ["get"] },
-  "pins": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

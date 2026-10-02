@@ -2,7 +2,6 @@
   "identity": "context-consumer-fixture",
   "implements": [],
   "methods": {},
-  "pins": {},
   "needs": {
     "context": { "mode": "one" }
   },

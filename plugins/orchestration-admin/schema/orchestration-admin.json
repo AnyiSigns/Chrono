@@ -1,6 +1,0 @@
-{
-  "title": "orchestration-admin（agent 面编排管理的工具面）",
-  "description": "身份自述 / 数据契约：工具面只做工具名派发，不实现编排逻辑。describe 回四个编排工具的自述（含描述四要素与工具卡描述符）；invoke 按工具名反向 `port.call orchestration.*` 派发到编排平面。本 schema 不声明私有参数（提案额度等归编排平面 schema）。",
-  "type": "object",
-  "additionalProperties": true
-}

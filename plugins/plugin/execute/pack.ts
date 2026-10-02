@@ -35,7 +35,6 @@ export interface CandidateDecl {
   identity: string
   /** 包内 schema 相对路径；省略 / 空串为 `null`（零 schema，入世时用宿主默认体）。 */
   schema: string | null
-  pins: Record<string, string>
   version: string
 }
 
@@ -124,7 +123,7 @@ export function candidateKey(files: Rec): string {
   return H(normalized)
 }
 
-/** 解析候选 `plugin.json`（身份 / schema 路径 / pins）与 `package.json` 版本。 */
+/** 解析候选 `plugin.json`（身份 / schema 路径）与 `package.json` 版本。 */
 export function parseCandidateDecl(files: Rec): CandidateDecl {
   const pluginText = readTextFile(files, 'plugin.json')
   if (pluginText === null) throw new ToolError('bad_candidate', 'plugin.json missing')
@@ -145,12 +144,6 @@ export function parseCandidateDecl(files: Rec): CandidateDecl {
     throw new ToolError('bad_candidate', 'plugin.json schema must be a string')
   }
   const schema = typeof rawSchema === 'string' && rawSchema.length > 0 ? rawSchema : null
-  const pins: Record<string, string> = {}
-  if (isRecord(parsed['pins'])) {
-    for (const [name, value] of Object.entries(parsed['pins'] as Rec)) {
-      if (typeof value === 'string') pins[name] = value
-    }
-  }
   let version = ''
   const packageText = readTextFile(files, 'package.json')
   if (packageText !== null) {
@@ -161,7 +154,7 @@ export function parseCandidateDecl(files: Rec): CandidateDecl {
       version = ''
     }
   }
-  return { identity, schema, pins, version }
+  return { identity, schema, version }
 }
 
 /** 按候选文件表建目录树；不安全路径 / 坏文件值 → `bad_candidate`。 */

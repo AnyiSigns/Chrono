@@ -5,7 +5,6 @@
   "methods": {
     "mcp-client": ["list_tools", "call_tool", "close"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

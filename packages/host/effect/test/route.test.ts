@@ -14,7 +14,6 @@ const DECL: Json = {
   schema: 'schema/plugin.schema.json',
   implements: ['toy.echo'],
   methods: { 'toy.echo': ['echo'] },
-  pins: {},
   start: 'node execute/main.js',
   build: [],
   protocol: '1',
@@ -44,11 +43,10 @@ function commitOf(decl: Json, version: number): { payload: Hash; defs: Record<Ha
 const V1 = commitOf(DECL, 1)
 const V2 = commitOf(DECL, 2)
 
-function genOf(payload: Hash, pins: Record<string, Hash> = {}, seq = 0): Gen {
+function genOf(payload: Hash, _pins: Record<string, Hash> = {}, seq = 0): Gen {
   return {
     seq,
     payload,
-    pins,
     sig: SIG,
     adopted: { at: 1, by: 'seed', write: payload },
   }
@@ -58,16 +56,25 @@ function identityOf(id: string, gens: Gen[], active: Hash | null): Identity {
   return { id, schema: SIG, gens, active, born: { at: 1, by: 'seed' } }
 }
 
-/** caller（pins 可配） + dep（两世代，active 可配）的世界；dep 声明取 depCommit。 */
+/** 把 `one` 绑定（cap → 身份名）写进某 payload def 的 `body.meta.needs`。 */
+function withNeeds(def: Def, needs: Record<string, string>): Def {
+  const body = def.body as { [k: string]: Json }
+  return {
+    ...def,
+    body: { ...body, meta: { ...(body['meta'] as Record<string, Json> | undefined), needs } },
+  }
+}
+
+/** caller（`needs` 可配） + dep（两世代，active 可配）的世界；dep 声明取 depCommit。 */
 function makeWorld(
-  callerPins: Record<string, Hash>,
+  callerNeeds: Record<string, string>,
   depActive: Hash | null = V2.payload,
   depCommit: { payload: Hash; defs: Record<Hash, Def> } = V2,
 ): World {
   const defs: Record<Hash, Def> = {
     ...V1.defs,
     ...depCommit.defs,
-    [CALLER_PAYLOAD]: { body: { caller: true } },
+    [CALLER_PAYLOAD]: withNeeds({ body: { caller: true } }, callerNeeds),
   }
   return {
     defs,
@@ -77,7 +84,7 @@ function makeWorld(
         [genOf(V1.payload, {}, 0), genOf(depCommit.payload, {}, 1)],
         depActive,
       ),
-      caller: identityOf('caller', [genOf(CALLER_PAYLOAD, callerPins)], CALLER_PAYLOAD),
+      caller: identityOf('caller', [genOf(CALLER_PAYLOAD)], CALLER_PAYLOAD),
     },
   }
 }
@@ -95,48 +102,34 @@ function rowOf(impl: string, gen: Hash, cap: string, method: string): EndpointRo
 }
 
 describe('A1 路由 createRoundRouter', () => {
-  it('pins 名 → def → 属主身份 → 当前 active 世代 → 端点表行', () => {
-    const world = makeWorld({ 'toy.echo': V2.payload })
+  it('needs 绑定身份名 → 属主身份 → 当前 active 世代 → 端点表行', () => {
+    const world = makeWorld({ 'toy.echo': 'dep' })
     const endpoints = new EndpointTable()
     endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
-    const drifts: string[] = []
-    const outcome = createRoundRouter({ endpoints, onDrift: () => drifts.push('drift') }).resolve(
-      world,
-      'caller',
-      'toy.echo',
-      'echo',
-    )
+    const outcome = createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')
     expect(outcome.ok).toBe(true)
     if (outcome.ok) {
       expect(outcome.row.impl).toBe('dep')
       expect(outcome.row.gen).toBe(V2.payload)
     }
-    // 无漂移时不记证据
-    expect(drifts).toEqual([])
   })
 
-  it('pins 无此名 / 发出者无 active → unresolved_cap', () => {
+  it('无绑定 / 发出者无 active → unresolved_cap', () => {
     const world = makeWorld({})
     const router = createRoundRouter({ endpoints: new EndpointTable() })
     expect(router.resolve(world, 'caller', 'nope', 'echo')).toEqual({
       ok: false,
       error: 'unresolved_cap',
     })
-    world.ids['caller'] = identityOf(
-      'caller',
-      [genOf(CALLER_PAYLOAD, { 'toy.echo': V2.payload })],
-      null,
-    )
+    world.ids['caller'] = identityOf('caller', [genOf(CALLER_PAYLOAD)], null)
     expect(router.resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
       ok: false,
       error: 'unresolved_cap',
     })
   })
 
-  it('pin 指向的 def 不在世界 / 属主缺失 → stale', () => {
-    const ghost: Hash = 'z'.repeat(64)
-    const world = makeWorld({ 'toy.echo': ghost })
-    world.defs[ghost] = { body: {} } // def 在，但不属于任何身份世代
+  it('绑定目标身份不在世界 → stale', () => {
+    const world = makeWorld({ 'toy.echo': 'ghost' })
     expect(
       createRoundRouter({ endpoints: new EndpointTable() }).resolve(
         world,
@@ -145,20 +138,10 @@ describe('A1 路由 createRoundRouter', () => {
         'echo',
       ),
     ).toEqual({ ok: false, error: 'stale' })
-
-    const absent = makeWorld({ 'toy.echo': 'y'.repeat(64) })
-    expect(
-      createRoundRouter({ endpoints: new EndpointTable() }).resolve(
-        absent,
-        'caller',
-        'toy.echo',
-        'echo',
-      ),
-    ).toEqual({ ok: false, error: 'stale' })
   })
 
   it('依赖 retired（active=null）→ stale，绝不回落旧世代', () => {
-    const world = makeWorld({ 'toy.echo': V1.payload }, null)
+    const world = makeWorld({ 'toy.echo': 'dep' }, null)
     const endpoints = new EndpointTable()
     endpoints.add(rowOf('dep', V1.payload, 'toy.echo', 'echo'))
     expect(createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
@@ -170,7 +153,7 @@ describe('A1 路由 createRoundRouter', () => {
   it('cap 不在依赖声明的能力类 → not_loaded', () => {
     const decl: Json = { ...(DECL as Record<string, Json>), implements: ['other.cap'] }
     const alt = commitOf(decl, 2)
-    const world = makeWorld({ 'toy.echo': alt.payload }, alt.payload, alt)
+    const world = makeWorld({ 'toy.echo': 'dep' }, alt.payload, alt)
     const endpoints = new EndpointTable()
     endpoints.add(rowOf('dep', alt.payload, 'toy.echo', 'echo'))
     expect(createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
@@ -180,7 +163,7 @@ describe('A1 路由 createRoundRouter', () => {
   })
 
   it('端点表无此行 → not_loaded', () => {
-    const world = makeWorld({ 'toy.echo': V2.payload })
+    const world = makeWorld({ 'toy.echo': 'dep' })
     expect(
       createRoundRouter({ endpoints: new EndpointTable() }).resolve(
         world,
@@ -191,29 +174,14 @@ describe('A1 路由 createRoundRouter', () => {
     ).toEqual({ ok: false, error: 'not_loaded' })
   })
 
-  it('绝不回落旧世代：pin=新 active、端点表只有旧世代行 → not_loaded', () => {
-    const world = makeWorld({ 'toy.echo': V2.payload })
+  it('绝不回落旧世代：端点表只有旧世代行 → not_loaded', () => {
+    const world = makeWorld({ 'toy.echo': 'dep' })
     const endpoints = new EndpointTable()
     endpoints.add(rowOf('dep', V1.payload, 'toy.echo', 'echo'))
     expect(createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')).toEqual({
       ok: false,
       error: 'not_loaded',
     })
-  })
-
-  it('pin 世代 ≠ 依赖当前 active：解析到新 active 行 + 记漂移证据', () => {
-    const world = makeWorld({ 'toy.echo': V1.payload })
-    const endpoints = new EndpointTable()
-    endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
-    const drifts: string[] = []
-    const router = createRoundRouter({
-      endpoints,
-      onDrift: (emitter, cap) => drifts.push(`${emitter}:${cap}`),
-    })
-    const outcome = router.resolve(world, 'caller', 'toy.echo', 'echo')
-    expect(outcome.ok).toBe(true)
-    if (outcome.ok) expect(outcome.row.gen).toBe(V2.payload)
-    expect(drifts).toEqual(['caller:toy.echo'])
   })
 
   describe('保留能力类 host', () => {
@@ -269,21 +237,21 @@ describe('A1 路由 createRoundRouter', () => {
     })
   })
 
-  describe('自能力路由（无自 pin）', () => {
+  describe('自能力路由（无消费绑定）', () => {
     const SOLO_DECL: Json = { ...(DECL as Record<string, Json>), identity: 'solo' }
     const SOLO = commitOf(SOLO_DECL, 1)
 
     function soloWorld(
-      soloPins: Record<string, Hash> = {},
+      soloNeeds: Record<string, string> = {},
       active: Hash | null = SOLO.payload,
     ): World {
       return {
-        defs: { ...SOLO.defs },
-        ids: { solo: identityOf('solo', [genOf(SOLO.payload, soloPins, 0)], active) },
+        defs: { ...SOLO.defs, [SOLO.payload]: withNeeds(SOLO.defs[SOLO.payload], soloNeeds) },
+        ids: { solo: identityOf('solo', [genOf(SOLO.payload, {}, 0)], active) },
       }
     }
 
-    it('未 pin、自身 implements 含该能力类 → 解析到自己的端点行并可调用', async () => {
+    it('未消费、自身 implements 含该能力类 → 解析到自己的端点行并可调用', async () => {
       const world = soloWorld()
       const endpoints = new EndpointTable()
       endpoints.add(rowOf('solo', SOLO.payload, 'toy.echo', 'echo'))
@@ -298,16 +266,16 @@ describe('A1 路由 createRoundRouter', () => {
       })
     })
 
-    it('显式 pin 优先于自能力：pin 指向另一身份时解析到被依赖者', () => {
+    it('needs 绑定优先于自能力：绑定另一身份时解析到被依赖者', () => {
       const world: World = {
-        defs: { ...V2.defs, ...SOLO.defs },
+        defs: {
+          ...V2.defs,
+          ...SOLO.defs,
+          [SOLO.payload]: withNeeds(SOLO.defs[SOLO.payload], { 'toy.echo': 'dep' }),
+        },
         ids: {
           dep: identityOf('dep', [genOf(V2.payload, {}, 0)], V2.payload),
-          solo: identityOf(
-            'solo',
-            [genOf(SOLO.payload, { 'toy.echo': V2.payload }, 0)],
-            SOLO.payload,
-          ),
+          solo: identityOf('solo', [genOf(SOLO.payload, {}, 0)], SOLO.payload),
         },
       }
       const endpoints = new EndpointTable()
@@ -318,7 +286,7 @@ describe('A1 路由 createRoundRouter', () => {
       if (outcome.ok) expect(outcome.row.impl).toBe('dep')
     })
 
-    it('未 pin 且自身未声明该能力类 → unresolved_cap（与旧行为一致）', () => {
+    it('未消费且自身未声明该能力类 → unresolved_cap（与旧行为一致）', () => {
       const world = soloWorld()
       const router = createRoundRouter({ endpoints: new EndpointTable() })
       expect(router.resolve(world, 'solo', 'other.cap', 'x')).toEqual({
@@ -339,7 +307,7 @@ describe('A1 路由 createRoundRouter', () => {
       ).toEqual({ ok: false, error: 'not_loaded' })
     })
 
-    it('保留能力类 host 不走自能力：未显式 pin 值 host 仍 unresolved_cap', () => {
+    it('保留能力类 host 不走自能力：未显式 needs 哨兵仍 unresolved_cap', () => {
       const decl: Json = { ...(SOLO_DECL as Record<string, Json>), implements: ['host'] }
       const host = commitOf(decl, 1)
       const world: World = {
@@ -357,7 +325,7 @@ describe('A1 路由 createRoundRouter', () => {
 
   describe('A1 路由缓存与世代偏斜', () => {
     it('声明读不出不缓存 null：补齐 def 后同世界重试成功', () => {
-      const world = makeWorld({ 'toy.echo': V2.payload })
+      const world = makeWorld({ 'toy.echo': 'dep' })
       const endpoints = new EndpointTable()
       endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
       const router = createRoundRouter({ endpoints })
@@ -373,8 +341,8 @@ describe('A1 路由 createRoundRouter', () => {
     })
 
     it('liveWorld：解析世界与活端点表同代，消除锚定旧世代偏斜', () => {
-      const anchored = makeWorld({ 'toy.echo': V1.payload }, V1.payload, V1)
-      const live = makeWorld({ 'toy.echo': V1.payload }, V2.payload, V2)
+      const anchored = makeWorld({ 'toy.echo': 'dep' }, V1.payload, V1)
+      const live = makeWorld({ 'toy.echo': 'dep' }, V2.payload, V2)
       const endpoints = new EndpointTable()
       endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
       // 不注入 liveWorld：锚定世界 dep.active=V1，端点表只有 V2 行 → not_loaded
@@ -393,8 +361,8 @@ describe('A1 路由 createRoundRouter', () => {
     })
 
     it('resolutionWorld：暴露路由采用的解析世界，与 liveWorld 同源', () => {
-      const anchored = makeWorld({ 'toy.echo': V1.payload }, V1.payload, V1)
-      const live = makeWorld({ 'toy.echo': V1.payload }, V2.payload, V2)
+      const anchored = makeWorld({ 'toy.echo': 'dep' }, V1.payload, V1)
+      const live = makeWorld({ 'toy.echo': 'dep' }, V2.payload, V2)
       const router = createRoundRouter({
         endpoints: new EndpointTable(),
         liveWorld: () => live,
@@ -525,30 +493,6 @@ describe('A1 路由 createRoundRouter', () => {
       const outcome = createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')
       expect(outcome.ok).toBe(true)
       if (outcome.ok) expect(outcome.row.impl).toBe('dep2')
-    })
-
-    it('优先级：显式 pins > meta.needs', () => {
-      const dep2Decl: Json = { ...(DECL as Record<string, Json>), identity: 'dep2' }
-      const dep2 = commitOf(dep2Decl, 2)
-      const caller = commitWithMeta(CALLER_DECL, { version: 1, needs: { 'toy.echo': 'dep2' } })
-      const world: World = {
-        defs: { ...V2.defs, ...dep2.defs, ...caller.defs },
-        ids: {
-          dep: identityOf('dep', [genOf(V2.payload, {}, 0)], V2.payload),
-          dep2: identityOf('dep2', [genOf(dep2.payload, {}, 0)], dep2.payload),
-          caller: identityOf(
-            'caller',
-            [genOf(caller.payload, { 'toy.echo': V2.payload }, 0)],
-            caller.payload,
-          ),
-        },
-      }
-      const endpoints = new EndpointTable()
-      endpoints.add(rowOf('dep', V2.payload, 'toy.echo', 'echo'))
-      endpoints.add(rowOf('dep2', dep2.payload, 'toy.echo', 'echo'))
-      const outcome = createRoundRouter({ endpoints }).resolve(world, 'caller', 'toy.echo', 'echo')
-      expect(outcome.ok).toBe(true)
-      if (outcome.ok) expect(outcome.row.impl).toBe('dep')
     })
 
     it('优先级：meta.needs > 自能力路径（无 pins 时）', () => {

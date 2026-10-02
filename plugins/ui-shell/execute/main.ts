@@ -14,13 +14,14 @@ import { InboundClient, inboundSocketPath, rootFromPluginState } from 'plugin-sd
 import { Bridge, deriveBootMode, extractValue } from './bridge.ts'
 import { decodeSourceRead } from './host-client.ts'
 import { startUiServer } from './http-server.ts'
-import type { ShellState, UiServer } from './http-server.ts'
+import type { ShellState, UiServer, UiServerDeps } from './http-server.ts'
 import { identityInvalidatesHeadless } from './identity-events.ts'
 import { log } from './log.ts'
 import { DEFAULT_UI_PORT, ensureHeadless, ensureMounts } from './mounts.ts'
 import type { HeadlessEntry } from './mounts.ts'
-import { orderNav, recordsOf } from './nav.ts'
+import { orderNav, recordsOf, uiStateKeysOf } from './nav.ts'
 import type { NavRecord } from './nav.ts'
+import { mergeSlotDecls, parseSlotDecls } from './slot-decls.ts'
 import { ensureSlots } from './slots.ts'
 import { SHELL_IMPL, shellStateRecord, SseHub } from './sse.ts'
 import { normalizeThemePref, themePrefOfConfig } from './theme.ts'
@@ -28,12 +29,18 @@ import { isRecord } from './types.ts'
 import type { Json, Rec } from './types.ts'
 
 const CAPABILITY = 'ui-shell'
+/** 是否 stdio 直接运行（反向通道随 `runStdio` 的 build 立即可用）；inproc / worker 由宿主后调 build。 */
+const DIRECT_RUN = isDirectRun(import.meta.url)
 
 const root = rootFromPluginState(process.env, process.cwd())
 const stateDir = `${root}/state`
-const { mounts } = ensureMounts(stateDir)
-const { headless } = ensureHeadless(stateDir)
-const { slots } = ensureSlots(stateDir)
+// 核心表（页面自带槽 / 默认挂载 / 默认 headless）：合并提供方 `ui-slot` 声明时它们恒优先。
+const CORE_MOUNTS = ensureMounts(stateDir).mounts
+const CORE_HEADLESS = ensureHeadless(stateDir).headless
+const CORE_SLOTS = ensureSlots(stateDir).slots
+let mounts = CORE_MOUNTS
+let headless = CORE_HEADLESS
+let slots = CORE_SLOTS
 
 /** 解析壳自身端口（`CHRONO_UI_PORT`）；非法 / 缺省返回 null（回落 `DEFAULT_UI_PORT`）。 */
 function parseShellPort(value: string | undefined): number | null {
@@ -48,14 +55,24 @@ const sse = new SseHub()
 let emitFrame: (message: Json) => void = () => {}
 const host = new PortLink({ write: (message) => emitFrame(message), idPrefix: 'ui-shell-pc' })
 const headlessCache = new Map<string, string>()
-const headlessIds = new Set(headless.map((entry) => entry.id))
+let headlessIds = new Set(headless.map((entry) => entry.id))
 /** slot 客户端半边字节缓存（取代 /p/ 反代；按挂载表 entry 字段判定）。 */
 const uiCache = new Map<string, string>()
-const uiEntries = mounts.filter(
-  (entry): entry is typeof entry & { entry: string } =>
-    typeof entry.entry === 'string' && entry.entry.length > 0,
-)
-const uiIds = new Set(uiEntries.map((entry) => entry.id))
+/** 挂载表中带客户端半边入口的项（headless 无入口、不参与 slot 装载）。 */
+function uiEntriesOf(list: typeof mounts): (typeof mounts[number] & { entry: string })[] {
+  return list.filter(
+    (entry): entry is (typeof mounts[number] & { entry: string }) =>
+      typeof entry.entry === 'string' && entry.entry.length > 0,
+  )
+}
+let uiEntries = uiEntriesOf(mounts)
+let uiIds = new Set(uiEntries.map((entry) => entry.id))
+/** 最近一次汇集到的 `ui-nav` 记录：供 bootstrap 派生 uiState 键空间（合并进引导数据）。 */
+let navRecords: NavRecord[] = []
+/** 引导数据里的 uiState 键：由 nav 记录目标派生（供壳按数据登记键空间，不写死白名单）。 */
+function uiStateKeys(): string[] {
+  return uiStateKeysOf(navRecords)
+}
 /** 冷启动竞态等待上限：目标插件服务可能晚于壳就绪（物化 / 构建 / 起进程）。 */
 const COLD_START_DEADLINE_MS = 30_000
 
@@ -88,6 +105,8 @@ const inbound = new InboundClient({
         uiCache.delete(staleUi)
         void refreshUi()
       }
+      // 世界成员表可能变化（新增 / 换代提供方）：合帧后重取槽声明与导航记录。
+      scheduleProviderRefresh()
       return
     }
   },
@@ -107,6 +126,8 @@ const inbound = new InboundClient({
     void refreshHeadless()
     void refreshUi()
     void refreshConfig()
+    void refreshSlotDecls()
+    void refreshNav()
   },
 })
 // 入站桥超时须 ≥ 宿主调用超时（`--call-timeout-ms`，缺省 30s）：否则长回合（`chat.send` 整回合同步执行）
@@ -252,30 +273,95 @@ async function uiSource(id: string): Promise<string | null> {
 }
 
 /**
- * 汇集 `ui-nav` 各提供方的中立记录：经宿主身份清单发现实现者，按身份名码元序逐一反向调
- * `ui-nav.list`（按成员定位的 many）。零提供方 / 调用失败 / 形状非法一律按缺席处理，回空表。
+ * 汇集某能力类各提供方经 `list` 返回的值：经宿主身份清单发现实现者，按身份名码元序逐一反向调
+ * `<capability>.list`（按成员定位的 many）。零提供方 / 调用失败 / 形状非法一律按缺席处理，回空表。
  */
-async function collectNav(): Promise<{ records: NavRecord[] }> {
+async function collectProviders(capability: string): Promise<{ provider: string; value: Json }[]> {
   const listed = await host.call('host', 'identities', {})
-  if (!listed.ok || !isRecord(listed.value)) return { records: [] }
+  if (!listed.ok || !isRecord(listed.value)) return []
   const list = listed.value['list']
-  if (!Array.isArray(list)) return { records: [] }
+  if (!Array.isArray(list)) return []
   const providers: string[] = []
   for (const item of list) {
     if (!isRecord(item)) continue
     const id = item['id']
     const implemented = item['implements']
     if (typeof id !== 'string' || !Array.isArray(implemented)) continue
-    if (implemented.includes('ui-nav')) providers.push(id)
+    if (implemented.includes(capability)) providers.push(id)
   }
   providers.sort()
-  const groups: { provider: string; records: ReturnType<typeof recordsOf> }[] = []
+  const out: { provider: string; value: Json }[] = []
   for (const provider of providers) {
-    const outcome = await host.call('ui-nav', 'list', {}, { provider })
+    const outcome = await host.call(capability, 'list', {}, { provider })
     if (!outcome.ok) continue
-    groups.push({ provider, records: recordsOf(outcome.value) })
+    out.push({ provider, value: outcome.value })
   }
+  return out
+}
+
+/** 汇集 `ui-nav` 各提供方的中立记录并缓存（供 bootstrap 派生 uiState 键空间）。 */
+async function collectNav(): Promise<{ records: NavRecord[] }> {
+  const groups = (await collectProviders('ui-nav')).map(({ provider, value }) => ({
+    provider,
+    records: recordsOf(value),
+  }))
   return { records: orderNav(groups) }
+}
+
+/** 拉取并缓存 `ui-nav` 记录；bootstrap 的 uiState 键空间据此派生。 */
+async function refreshNav(): Promise<void> {
+  const { records } = await collectNav()
+  navRecords = records
+}
+
+/**
+ * 汇集 `ui-slot` 提供方的槽 / 挂载 / headless 声明，并入壳的核心表（核心条目优先）。
+ * 合并结果同时回写 http-server 依赖对象，后续页面引导按合并后的表渲染。
+ */
+async function refreshSlotDecls(): Promise<void> {
+  const decls = (await collectProviders('ui-slot')).map(({ value }) => parseSlotDecls(value))
+  const merged = mergeSlotDecls(
+    { slots: CORE_SLOTS, mounts: CORE_MOUNTS, headless: CORE_HEADLESS },
+    decls,
+  )
+  slots = merged.slots
+  mounts = merged.mounts
+  headless = merged.headless
+  headlessIds = new Set(headless.map((entry) => entry.id))
+  uiEntries = uiEntriesOf(mounts)
+  uiIds = new Set(uiEntries.map((entry) => entry.id))
+  uiDeps.mounts = mounts
+  uiDeps.headless = headless
+  uiDeps.slots = slots
+}
+
+/** http-server 依赖：`refreshSlotDecls` 合并后回写 `mounts` / `headless` / `slots`。 */
+const uiDeps: UiServerDeps = {
+  mounts,
+  headless,
+  slots,
+  bridge,
+  sse,
+  state: shellState,
+  headlessSource,
+  uiSource,
+  applyThemePref,
+  uiStateKeys,
+  log,
+}
+
+/** 提供方声明重取的合帧计时器：identity.changed 常成批到达，合并成一次汇集。 */
+let providerRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 世界身份变化后重取 `ui-slot` 声明与 `ui-nav` 记录（新增 / 换代提供方免改壳源码）。 */
+function scheduleProviderRefresh(): void {
+  if (providerRefreshTimer !== null) return
+  providerRefreshTimer = setTimeout(() => {
+    providerRefreshTimer = null
+    void refreshSlotDecls()
+    void refreshNav()
+  }, 250)
+  providerRefreshTimer.unref?.()
 }
 
 function applyThemePref(pref: string): void {
@@ -300,12 +386,21 @@ function shutdown(): Promise<void> {
 /** 构造服务实例：唯一方法为健康占位；反向调用应答由 SDK 的 `portLinks` 结算。 */
 function build(ctx: ServiceFactoryContext): ServiceInstance {
   emitFrame = ctx.emit
+  // inproc / worker 下模块加载早于宿主调 build，反向通道此时才可用：补一次提供方声明汇集。
+  if (!DIRECT_RUN) {
+    void refreshSlotDecls()
+    void refreshNav()
+  }
   return createSdkService({
     pluginRoot: packageRootOf(import.meta.url),
     capability: CAPABILITY,
     handlers: {
       ping: () => ({ value: { pong: true, identity: CAPABILITY }, events: [] }),
-      nav: async () => ({ value: await collectNav(), events: [] }),
+      nav: async () => {
+        const result = await collectNav()
+        navRecords = result.records
+        return { value: result, events: [] }
+      },
     },
     emit: ctx.emit,
     log,
@@ -326,22 +421,26 @@ if (isDirectRun(import.meta.url)) {
 inbound.start()
 
 const uiPort = parseShellPort(process.env['CHRONO_UI_PORT']) ?? DEFAULT_UI_PORT
-startUiServer(
-  {
-    mounts,
-    headless,
-    slots,
-    bridge,
-    sse,
-    state: shellState,
-    headlessSource,
-    uiSource,
-    applyThemePref,
-    log,
-  },
-  uiPort,
-).then(
-  (server) => {
+
+/** 提供方声明首载等待上限：宿主装配可能晚就绪，超时即用核心表起服务，后续汇聚再回写。 */
+const EAGER_DECL_WAIT_MS = 2500
+
+/**
+ * 起主端口服务。stdio 下先在有限窗口内汇集 `ui-slot` / `ui-nav`，令首批引导数据即含合并后的表；
+ * 窗口内未就绪则照常起服务，由连接恢复 / 世界变更的后续汇聚补齐（不阻塞 UI 端口绑定）。
+ */
+async function bootUiServer(): Promise<void> {
+  if (DIRECT_RUN) {
+    await Promise.race([
+      Promise.all([refreshSlotDecls(), refreshNav()]).then(() => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, EAGER_DECL_WAIT_MS)
+        timer.unref?.()
+      }),
+    ])
+  }
+  try {
+    const server = await startUiServer(uiDeps, uiPort)
     uiServer = server
     log(`ui-shell listening on 127.0.0.1:${server.port} (pid ${process.pid})`)
     // 宿主入站 socket 在装配后才监听：延迟一次尝试取 headless 字节与配置（失败由重连兜底）
@@ -350,12 +449,15 @@ startUiServer(
         void refreshHeadless()
         void refreshUi()
         void refreshConfig()
+        void refreshSlotDecls()
+        void refreshNav()
       }
     }, 1500)
     timer.unref?.()
-  },
-  (err: Error) => {
-    log(`cannot listen on 127.0.0.1:${uiPort}: ${err.message}`)
+  } catch (err) {
+    log(`cannot listen on 127.0.0.1:${uiPort}: ${(err as Error).message}`)
     process.exit(1)
-  },
-)
+  }
+}
+
+void bootUiServer()

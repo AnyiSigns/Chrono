@@ -9,7 +9,7 @@ import type { Handler, HandlerResult, Json, PortLink, Rec } from 'plugin-sdk'
 
 export interface RegistryDeps {
   link: PortLink
-  /** 有效 pins（声明 `pins` ∪ `one`-needs 绑定）的逻辑端口名；绑定工具的 class 校验来源。 */
+  /** 有效 pins（`one`-needs 绑定派生）的逻辑端口名；绑定工具的 class 校验来源。 */
   pins: string[]
   /** 扩展类 `tool-provider` 的世界成员（提供方身份名，码元序）；宿主按世界注入。 */
   manyProviders: string[]

@@ -1,8 +1,7 @@
 {
   "identity": "uinav-fixture",
   "implements": ["ui-nav"],
-  "methods": { "ui-nav": ["list"] },
-  "pins": {},
+  "methods": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

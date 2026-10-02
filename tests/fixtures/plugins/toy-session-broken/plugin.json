@@ -19,8 +19,8 @@
       "turn_settle"
     ]
   },
-  "pins": {
-    "input": "input"
+  "needs": {
+    "input": { "mode": "one" }
   },
   "start": "node execute/main.mjs",
   "build": [],

@@ -174,7 +174,7 @@ function seedFullGen(h: Harness, id: string, body: Json): Hash {
   const schema = h.push('put', { body: { s: 1 } }).argsHash
   h.push('add_identity', { id, schema })
   const payload = h.push('put', { body }).argsHash
-  h.push('add_gen', { id, payload, sig: payload, pins: {} })
+  h.push('add_gen', { id, payload, sig: payload })
   return payload
 }
 
@@ -185,7 +185,7 @@ describe('补丁世代：add_gen base', () => {
     const patch = h.push('put', {
       body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: patch, sig: patch, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: patch, sig: patch, base: 0 })
     const gen = h.w.ids['u1'].gens[1]
     expect(gen.base).toBe(0)
     expect(gen.payload).toBe(patch)
@@ -199,14 +199,14 @@ describe('补丁世代：add_gen base', () => {
     const h = harness()
     seedFullGen(h, 'u1', { n: 1 })
     const p1 = h.push('put', { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, base: 0 })
     const p2 = h.push('put', {
       body: { ops: [{ op: 'append', path: ['tags'], value: 'x' }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, pins: {}, base: 1 })
+    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, base: 1 })
     // 第三个是整份世代（回落 base 缺失）
     const full2 = h.push('put', { body: { n: 9 } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: full2, sig: full2, pins: {} })
+    h.push('add_gen', { id: 'u1', payload: full2, sig: full2 })
     expect(h.w.ids['u1'].gens.map((g) => g.base)).toEqual([undefined, 0, 1, undefined])
   })
 
@@ -226,8 +226,8 @@ describe('补丁世代：add_gen base', () => {
           : '<non-kernel>'
       }
     }
-    expect(codeOf({ id: 'u1', payload: full, sig: full, pins: {}, base: 5 })).toBe('missing_parent')
-    expect(codeOf({ id: 'u1', payload: badPatch, sig: badPatch, pins: {}, base: 0 })).toBe(
+    expect(codeOf({ id: 'u1', payload: full, sig: full, base: 5 })).toBe('missing_parent')
+    expect(codeOf({ id: 'u1', payload: badPatch, sig: badPatch, base: 0 })).toBe(
       'bad_patch',
     )
     // 失败未落地世代，世界分文不动
@@ -249,7 +249,6 @@ describe('补丁世代：add_gen base', () => {
     const gen0: Gen = {
       seq: 0,
       payload: schemaKey,
-      pins: {},
       sig: sigKey,
       adopted: { at: 1, by: 'u', write: 'w'.repeat(64) },
     }
@@ -270,7 +269,6 @@ describe('补丁世代：add_gen base', () => {
     const e = mkEntry(1, null, 'add_gen', {
       id: 'u1',
       payload: ghostPayload,
-      pins: {},
       sig: sigKey,
       base: 0,
     })
@@ -292,11 +290,11 @@ describe('补丁世代：add_gen base', () => {
     const h = harness()
     seedFullGen(h, 'u1', { n: 1 })
     const p1 = h.push('put', { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, base: 0 })
     const p2 = h.push('put', {
       body: { ops: [{ op: 'append', path: ['tags'], value: 'x' }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, pins: {}, base: 1 })
+    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, base: 1 })
     const replayed = replay(h.journal)
     expect(worldRev(replayed)).toBe(worldRev(h.w))
     expect(replayed.ids['u1'].gens.map((g) => g.base)).toEqual([undefined, 0, 1])
@@ -317,13 +315,13 @@ describe('补丁世代：add_gen base', () => {
       by: 'u',
     })
     expect(
-      validate(head, w, req({ id: 'u1', payload: full, sig: full, pins: {}, base: -1 })).ok,
+      validate(head, w, req({ id: 'u1', payload: full, sig: full, base: -1 })).ok,
     ).toBe(false)
     expect(
-      validate(head, w, req({ id: 'u1', payload: full, sig: full, pins: {}, base: 1.5 })).ok,
+      validate(head, w, req({ id: 'u1', payload: full, sig: full, base: 1.5 })).ok,
     ).toBe(false)
     expect(
-      validate(head, w, req({ id: 'u1', payload: full, sig: full, pins: {}, base: '0' })).ok,
+      validate(head, w, req({ id: 'u1', payload: full, sig: full, base: '0' })).ok,
     ).toBe(false)
   })
 })
@@ -334,11 +332,11 @@ describe('压扁 flattenPatches', () => {
     const h = harness()
     seedFullGen(h, 'u1', { n: 1, tags: [] })
     const p1 = h.push('put', { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, base: 0 })
     const p2 = h.push('put', {
       body: { ops: [{ op: 'append', path: ['tags'], value: 'x' }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, pins: {}, base: 1 })
+    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, base: 1 })
     return h
   }
 
@@ -371,19 +369,7 @@ describe('压扁 flattenPatches', () => {
     const schema = h.push('put', { body: { s: 2 } }).argsHash
     h.push('add_identity', { id: 'u2', schema })
     const payload = h.push('put', { body: { grafted: true } }).argsHash
-    h.push('graft', { id: 'u2', payload, sig: payload, pins: {}, from: 'u1', gen: 1 })
-    const { world, flattened } = flattenPatches(h.w)
-    expect(flattened).toBe(0)
-    expect(world.ids['u1'].gens).toHaveLength(3)
-  })
-
-  it('链内非末代 payload 被 pins 指向 → 不折叠（保守）', () => {
-    const h = linearChain()
-    const interior = h.w.ids['u1'].gens[1].payload
-    const schema = h.push('put', { body: { s: 2 } }).argsHash
-    h.push('add_identity', { id: 'u2', schema })
-    const payload = h.push('put', { body: { pinned: true } }).argsHash
-    h.push('add_gen', { id: 'u2', payload, sig: payload, pins: { u1: interior } })
+    h.push('graft', { id: 'u2', payload, sig: payload, from: 'u1', gen: 1 })
     const { world, flattened } = flattenPatches(h.w)
     expect(flattened).toBe(0)
     expect(world.ids['u1'].gens).toHaveLength(3)
@@ -395,11 +381,11 @@ describe('回收协同：补丁世代 base 不悬挂', () => {
     const h = harness()
     seedFullGen(h, 'u1', { n: 1 })
     const p1 = h.push('put', { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, base: 0 })
     const p2 = h.push('put', {
       body: { ops: [{ op: 'append', path: ['tags'], value: 'x' }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, pins: {}, base: 1 })
+    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, base: 1 })
     const { world } = recycleWorld(h.w, { genWindow: 1 })
     const gens = world.ids['u1'].gens
     for (const gen of gens) {
@@ -413,11 +399,11 @@ describe('回收协同：补丁世代 base 不悬挂', () => {
     const h = harness()
     seedFullGen(h, 'u1', { n: 1 })
     const p1 = h.push('put', { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, pins: {}, base: 0 })
+    h.push('add_gen', { id: 'u1', payload: p1, sig: p1, base: 0 })
     const p2 = h.push('put', {
       body: { ops: [{ op: 'append', path: ['tags'], value: 'x' }] },
     }).argsHash
-    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, pins: {}, base: 1 })
+    h.push('add_gen', { id: 'u1', payload: p2, sig: p2, base: 1 })
     const { world } = recycleWorld(h.w, { genWindow: 1, flattenChain: 2 })
     const gens = world.ids['u1'].gens
     expect(gens.every((gen) => gen.base === undefined)).toBe(true)

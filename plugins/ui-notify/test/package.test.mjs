@@ -16,11 +16,11 @@ test('members 仅 terms（无 execute 成员 ⇒ 无服务进程）', () => {
   assert.equal(members.some((member) => member.kind === 'execute'), false)
 })
 
-test('能力类与方法为 ui-notify ping 占位，且无 pins', () => {
+test('能力类与方法为 ui-notify ping 占位，且无 pins 字段', () => {
   const decl = readJson('plugin.json')
   assert.deepEqual(decl.implements, ['ui-notify'])
   assert.deepEqual(decl.methods, { 'ui-notify': ['ping'] })
-  assert.deepEqual(decl.pins, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
 })
 
 test('commands 声明 notify.state 且无 argsSchema（无参可省）', () => {

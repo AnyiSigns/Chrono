@@ -18,10 +18,8 @@
       "removeWorkspace"
     ]
   },
-  "pins": {
-    "host": "host"
-  },
   "needs": {
+    "host": { "mode": "one" },
     "session": { "mode": "one" },
     "workspace": { "mode": "one" },
     "workspace-picker": { "mode": "one" },

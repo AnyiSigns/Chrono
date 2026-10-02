@@ -124,7 +124,6 @@ test('协议往返：hello → manifest，describe → 结果，未知方法 →
     assert.deepEqual(manifest.implements, ['tool-http', 'tool-provider'])
     assert.deepEqual(manifest.methods, {
       'tool-http': ['describe', 'invoke'],
-      'tool-provider': ['describe', 'invoke'],
     })
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')

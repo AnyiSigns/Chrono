@@ -134,7 +134,6 @@ describe('classifyGenerationChange（A6 换代判据）', () => {
     const broken: Gen = {
       seq: 9,
       payload: 'f'.repeat(64),
-      pins: {},
       sig: 'f'.repeat(64),
       adopted: { at: 0, by: '', write: '' },
     }

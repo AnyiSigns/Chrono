@@ -255,25 +255,16 @@ a.chat-file:hover .chat-file-icon, a.chat-file:hover .chat-file-action { color: 
 .chat-btn:disabled { opacity: .45; cursor: not-allowed; }
 .chat-breathe { width: 48px; height: 2px; border-radius: var(--radius-sm); background: var(--c-text-3); animation: chat-breathe 1.6s ease-in-out infinite; }
 .chat-breathe-inline { width: 32px; }
-/* 「正在工作」银色流光：中灰底 + 浅银高光带自左向右扫过（流光）+ 透明度脉冲（呼吸感）；
-   纯灰阶、不引入强调色。字号与消息正文一致（.chat-md）。流式回合全程常驻，右侧带秒级计时。 */
-/* 「正在工作」：中灰底 + 静态浅银高光带（背景裁切到文字）+ 透明度脉冲。
-   流光刻意不做 background-position 动画：那在 background-clip:text 上无法合成、流式全程每帧重绘主线程，
-   是生成时的主要卡顿源；仅保留 opacity 脉冲（可合成），观感仍有呼吸感。字号与正文一致，右侧带秒级计时。 */
-.chat-working { --working-base: var(--c-text-2);
-  --working-hi: color-mix(in srgb, var(--c-text-2) 40%, var(--c-bg));
+/* 「正在工作」：纯文字，颜色在黑 ↔ 亮银之间呼吸明灭（3s ease-in-out），
+   对齐输入框发送键运行态（stop 图标）的脉动节奏。流式常驻，右侧带秒级计时。 */
+.chat-working {
   display: flex; align-items: baseline; gap: var(--space-4); width: fit-content;
   font-size: var(--font-size-md); line-height: var(--leading-body);
-  background: linear-gradient(90deg,
-    var(--working-base) 0%, var(--working-base) 34%,
-    var(--working-hi) 50%,
-    var(--working-base) 66%, var(--working-base) 100%);
-  background-size: 200% 100%; background-repeat: no-repeat;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: chat-working-pulse 2.6s ease-in-out infinite; }
+  color: var(--c-work-hi);
+  animation: chat-working-breathe 3s ease-in-out infinite; }
 .chat-working-time { font-variant-numeric: tabular-nums; }
-/* 省略号：三个点依次明灭（点用自身灰色，不参与父层渐变裁切，保证可见）。 */
-.chat-working-dots { display: inline-flex; margin-left: 1px; color: var(--c-text-3); }
+/* 省略号：三个点依次明灭（点用亮银同系色，不参与父层色变，保证黑相位时仍可辨）。 */
+.chat-working-dots { display: inline-flex; margin-left: 1px; color: var(--c-work-hi); }
 .chat-working-dots > span { animation: chat-dot 1.4s ease-in-out infinite; }
 .chat-working-dots > span:nth-child(2) { animation-delay: .2s; }
 .chat-working-dots > span:nth-child(3) { animation-delay: .4s; }
@@ -306,8 +297,9 @@ a.chat-file:hover .chat-file-icon, a.chat-file:hover .chat-file-action { color: 
 .chat-lightbox-img[data-dragging="true"] { cursor: grabbing; }
 .chat-lightbox-close { position: absolute; top: var(--space-16); right: var(--space-16); color: var(--c-text); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
 @keyframes chat-breathe { 0%, 100% { opacity: .25; } 50% { opacity: .6; } }
-@keyframes chat-working-pulse { 0%, 100% { opacity: .8; } 50% { opacity: 1; } }
 @keyframes chat-dot { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+/* 「正在工作」呼吸明灭：文字色在黑 ↔ 亮银之间脉动（对齐发送键运行态节奏）。 */
+@keyframes chat-working-breathe { 0%, 100% { color: var(--c-work-lo); } 50% { color: var(--c-work-hi); } }
 @keyframes chat-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes chat-fade-out { from { opacity: 1; } to { opacity: 0; } }
 /* 浮层入场：轻微上移 + 淡入（表格导出菜单等瞬时浮层；展开区改用 .chat-collapse 高度过渡）。 */
@@ -322,8 +314,8 @@ a.chat-file:hover .chat-file-icon, a.chat-file:hover .chat-file-action { color: 
   transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
 }
 @media (prefers-reduced-motion: reduce) {
-  /* 呼吸条 / 旋转为位移动效，减少动态时停用；「正在工作」仅色彩与透明度变化，保留以维持可辨识度。 */
-  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"], :root:not([data-motion="full"]) .chat-table-menu, :root:not([data-motion="full"]) .chat-pill:not([hidden]) { animation: none; }
+  /* 呼吸条 / 旋转为位移动效，减少动态时停用；「正在工作」呼吸停用，退回静态亮银文字。 */
+  :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"], :root:not([data-motion="full"]) .chat-working, :root:not([data-motion="full"]) .chat-table-menu, :root:not([data-motion="full"]) .chat-pill:not([hidden]) { animation: none; }
   :root:not([data-motion="full"]) .chat-breathe, :root:not([data-motion="full"]) .chat-tool-spin, :root:not([data-motion="full"]) .chat-group-avatar[data-current="true"] { opacity: .4; }
   :root:not([data-motion="full"]) .chat-lightbox, :root:not([data-motion="full"]) .chat-lightbox[data-closing="true"] { animation: none; }
   :root:not([data-motion="full"]) .chat-list, :root:not([data-motion="full"]) .chat-footnote, :root:not([data-motion="full"]) .chat-tool-chevron, :root:not([data-motion="full"]) .chat-reasoning-chevron, :root:not([data-motion="full"]) .chat-anchor, :root:not([data-motion="full"]) .chat-collapse { transition: none; }

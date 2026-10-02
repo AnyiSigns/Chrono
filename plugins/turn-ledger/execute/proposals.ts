@@ -249,7 +249,7 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
       workspace_id: input.workspaceId,
       shadow: gated.shadow,
       args_ref: { summary: `orchestration_change ${id}` },
-      port: 'orchestration-admin',
+      port: 'orchestration',
     })
     if (outcome.ok) {
       const value = outcome.value
@@ -280,7 +280,6 @@ export async function scanProposals(input: ProposalScanInput): Promise<ProposalS
 export function expandAdoption(
   bag: Rec,
   proposal: Rec,
-  pins: Rec,
   at: string,
   run: string | null,
   round: RoundPatches,
@@ -291,7 +290,7 @@ export function expandAdoption(
   const graphHash = defHashOf(patch['graph']) ?? defHashOf(patch)
   if (graph !== null && graphHash !== null) {
     // 图 def 已在世界（propose 已 put）；采纳 = 对 loop-policy 自身数据世代 add_gen。
-    round.addRef('loop-policy', graphHash, pins)
+    round.addRef('loop-policy', graphHash)
   }
   const writes = Array.isArray(patch['writes']) ? (patch['writes'] as Json[]) : []
   for (const write of writes) {
@@ -300,7 +299,7 @@ export function expandAdoption(
     const payload = write['payload']
     const hash = defHashOf(payload)
     if (typeof identity === 'string' && identity.length > 0 && hash !== null) {
-      round.addRef(identity, hash, {})
+      round.addRef(identity, hash)
     }
   }
   const id = typeof proposal['id'] === 'string' ? proposal['id'] : 'pr-?'

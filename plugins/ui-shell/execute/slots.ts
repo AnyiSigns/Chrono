@@ -38,7 +38,7 @@ function isSlotName(value: Json | undefined): value is string {
   return typeof value === 'string' && /^[a-z][a-z0-9-]*$/.test(value)
 }
 
-function validSlot(value: Json): SlotEntry | null {
+export function validSlot(value: Json): SlotEntry | null {
   if (!isRecord(value)) return null
   const name = value['name']
   if (!isSlotName(name)) return null

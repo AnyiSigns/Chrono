@@ -19,7 +19,8 @@ test('hello 回 manifest：身份 / 能力类 / 方法与 plugin.json 一致', a
     assert.equal(manifest.identity, 'todo')
     assert.deepEqual(manifest.implements, ['todo', 'tool-provider'])
     assert.deepEqual(manifest.methods.todo, ['describe', 'invoke'])
-    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
+    // 契约单源在拥有方 tool-registry 的 slots：提供方不在 manifest 复述 tool-provider 方法。
+    assert.equal(manifest.methods['tool-provider'], undefined)
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
   } finally {

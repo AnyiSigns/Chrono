@@ -21,7 +21,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   afterEach(() => cleanupTempRoot(root))
 
   it('跨代删掉对 sandbox 的 pins 引用 → 整批拒 protected_pin_removed', () => {
-    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
+    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox', implements: ['sandbox'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-x',
       pins: { sandbox: 'sandbox' },
@@ -41,7 +41,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('seed：跨代删掉对 storage-sql 的 pins 引用 → 整批拒 protected_pin_removed', () => {
-    const storageRoot = writeTempPackage(root, { identity: 'storage-sql' })
+    const storageRoot = writeTempPackage(root, { identity: 'storage-sql', implements: ['storage'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-store',
       pins: { storage: 'storage-sql' },
@@ -60,7 +60,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('pack：跨代删掉对 storage-kv 的 pins 引用 → 整批拒 protected_pin_removed', () => {
-    const storageRoot = writeTempPackage(root, { identity: 'storage-kv' })
+    const storageRoot = writeTempPackage(root, { identity: 'storage-kv', implements: ['storage'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-kv',
       pins: { storage: 'storage-kv' },
@@ -79,7 +79,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('validate_package：候选包删存储 pins → 整批拒 protected_pin_removed', () => {
-    const storageRoot = writeTempPackage(root, { identity: 'storage-sql' })
+    const storageRoot = writeTempPackage(root, { identity: 'storage-sql', implements: ['storage'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-validate',
       pins: { storage: 'storage-sql' },
@@ -96,7 +96,6 @@ describe('入世守卫：受保护 pins 不可删', () => {
       schema: 'schema/plugin.schema.json',
       implements: [],
       methods: {},
-      pins: {},
       start: '',
       build: [],
       protocol: '1',
@@ -106,8 +105,8 @@ describe('入世守卫：受保护 pins 不可删', () => {
       members: [],
       commands: [],
     }
-    const files = (pins: Record<string, string>) => ({
-      'plugin.json': JSON.stringify({ ...pluginJson, pins }),
+    const files = (needs: Record<string, { mode: string }>) => ({
+      'plugin.json': JSON.stringify({ ...pluginJson, needs }),
       'schema/plugin.schema.json': JSON.stringify({ type: 'object' }),
       'package.json': JSON.stringify({ name: 'tool-validate', version: '0.0.0' }),
       'README.md': '# tool-validate\n',
@@ -124,11 +123,11 @@ describe('入世守卫：受保护 pins 不可删', () => {
       expect(removed.report.ok).toBe(false)
       expect(removed.report.errors.map((error) => error.code)).toEqual(['protected_pin_removed'])
     }
-    // 正对照：候选包保留存储 pins → 通过（证明旧声明可读、拒绝只因删了保护边）
+    // 正对照：候选包保留存储绑定 → 通过（证明旧声明可读、拒绝只因删了保护边）
     const kept = validatePackage(
       world,
       hostPaths(root).runtimeDir,
-      files({ storage: 'storage-sql' }),
+      files({ storage: { mode: 'one' } }),
       hostPaths(root).blobsDir,
       root,
     )
@@ -137,7 +136,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('保留受保护 pins 引用 → 允许换代', () => {
-    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
+    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox', implements: ['sandbox'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-x',
       pins: { sandbox: 'sandbox' },
@@ -159,7 +158,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('非受保护身份的 pins 删除不受限', () => {
-    const otherRoot = writeTempPackage(root, { identity: 'other-dep' })
+    const otherRoot = writeTempPackage(root, { identity: 'other-dep', implements: ['other'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-x',
       pins: { other: 'other-dep' },
@@ -182,7 +181,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('retired 身份重入世删掉受保护 pin → 拒（不因 active=null 放行）', () => {
-    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
+    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox', implements: ['sandbox'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-x',
       pins: { sandbox: 'sandbox' },
@@ -203,7 +202,7 @@ describe('入世守卫：受保护 pins 不可删', () => {
   })
 
   it('retired 身份重入世保留受保护 pin → 放行', () => {
-    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
+    const sandboxRoot = writeTempPackage(root, { identity: 'sandbox', implements: ['sandbox'] })
     const toolRoot = writeTempPackage(root, {
       identity: 'tool-x',
       pins: { sandbox: 'sandbox' },
@@ -293,7 +292,6 @@ describe('入世守卫：受保护 pins 不可删', () => {
             {
               seq: 0,
               payload: codePayload,
-              pins: {},
               sig: 's'.repeat(64),
               adopted: { at: 1, by: 'seed', write: 'w-1' },
             },

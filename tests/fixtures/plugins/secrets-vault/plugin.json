@@ -2,10 +2,7 @@
   "identity": "secrets-vault",
   "schema": "schema/secrets-vault.json",
   "implements": ["secrets-backend"],
-  "methods": {
-    "secrets-backend": ["read", "list", "kinds"]
-  },
-  "pins": {},
+  "methods": {},
   "needs": {},
   "start": "node execute/main.mjs",
   "build": [],

@@ -1,24 +1,27 @@
 // 入世期 eff 声明校验：term AST 里的效果头必须落在插件声明的能力面内。
-// 纯机械集合判断，不解释糖化语义、不取值：读 `plugin.json` 的 implements / pins / needs / methods，
+// 纯机械集合判断，不解释糖化语义、不取值：读 `plugin.json` 的 implements / needs / methods，
 // 扫 term 原语结构的 eff 头取 port / method 两个位置。
 // 自调用与跨身份口径不同，见 docs/term-toolchain.md §六.1：判定优先级与运行期路由同口径——
-// 显式 pin（含 `needs` 键）优先于自能力，故 `port ∈ pins` 时一律按跨身份判（即便同键也在 implements）；
+// 消费端口（`needs` 键）优先于自能力，故 `port ∈ needs` 时一律按跨身份判（即便同键也在 implements）；
 // 自调用（仅 implements）方法名属本包声明，入世期机械校验；跨身份方法名属被调身份声明，按世界里的
-// 被调声明判，被调声明读不出（保留能力 `host` / 尚未入世 / 声明不可解析）时跳过，不新增拒绝语义。
+// 被调声明判，被调声明读不出（宿主依赖 `host` / 尚未入世 / 声明不可解析）时跳过，不新增拒绝语义。
 
 import { isRecord } from '../common/json.ts'
 import { TERM_TAGS, TERM_WALK } from '../../kernel/index.ts'
 import type { Json, TermWalkRule } from '../../kernel/index.ts'
+import type { SlotDecl } from './decl.ts'
 
 /** 校验上下文：本包声明面 + 被调身份声明解析。 */
 export interface EffDeclContext {
   implements: ReadonlySet<string>
-  /** 本包声明消费的逻辑端点名（port）集合：显式 `pins` 键 ∪ `needs` 键。 */
-  pins: ReadonlySet<string>
-  /** 自调用方法表：能力类 → 方法名。 */
+  /** 本包声明消费的逻辑端点名（port）集合：`needs` 键。 */
+  needs: ReadonlySet<string>
+  /** 自调用方法表：能力类 → 方法名（提供方本包声明；省略时回落本包 `slots`）。 */
   methods: Record<string, string[]>
+  /** 本包拥有方契约：能力类 → 方法契约；`methods[cap]` 缺省时自调用方法名回落此表。 */
+  slots: Readonly<Record<string, SlotDecl>>
   /**
-   * 按 pin 的逻辑端点名解析被调身份的 `methods` 映射；返回 null = 看不到被调声明，
+   * 按需求端口解析被调身份的 `methods` 映射；返回 null = 看不到被调声明，
    * 跳过跨身份方法名校验（不新增拒绝语义）。
    */
   calleeMethodsOf: (port: string) => Record<string, string[]> | null
@@ -76,10 +79,10 @@ export function validateEffDecls(ast: Json, ctx: EffDeclContext): string[] {
       issues.push('undeclared_port')
       return
     }
-    // 跨身份优先：`pins`（显式 pin ∪ needs 键）命中即按被调声明判——与运行期路由
-    // 「显式 pin > needs > 自能力」同口径，避免同键既 implements 又 pins 时门禁按自身 methods 判、
+    // 跨身份优先：`needs` 键命中即按被调声明判——与运行期路由
+    // 「needs > 自能力」同口径，避免同键既 implements 又 needs 时门禁按自身 methods 判、
     // 路由却走被依赖者（合法调用被拒 / 非法调用放行到运行期）。
-    const crossCall = ctx.pins.has(port)
+    const crossCall = ctx.needs.has(port)
     if (!crossCall && !ctx.implements.has(port)) {
       issues.push(`undeclared_port:${port}`)
       return
@@ -91,7 +94,7 @@ export function validateEffDecls(ast: Json, ctx: EffDeclContext): string[] {
       if (calleeMethods === null) return
       declared = calleeMethods[port]
     } else {
-      declared = ctx.methods[port]
+      declared = ctx.methods[port] ?? ctx.slots[port]?.methods
     }
     if (declared === undefined) {
       issues.push(`undeclared_method:${port}`)

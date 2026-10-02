@@ -3,6 +3,7 @@
 // 轻节点按 `bag_pick` + 命名派生字段装配；组装 / 子代理 / 审批 / 校验等重节点用命名 bag 规则。
 // `DEFAULT_DISPATCH` 只是未在契约里声明元数据的最小模型（单测直造）的兼容兜底：世界契约数据优先。
 
+import { declaredNetOf as declaredNetOfCaps, netScope, tierNetOf as tierNetOfShared } from 'plugin-sdk'
 import { applyDelta, callTurnHooks } from './hooks.ts'
 import { nodeBindings } from './model.ts'
 import { asString, isRecord } from './plan.ts'
@@ -122,41 +123,23 @@ function subagentParentCheckpoint(input: NodeDispatchInput): Rec {
   return checkpoint !== null ? { parent_checkpoint: checkpoint } : {}
 }
 
-/** 内建档位 net 映射（sandbox body 缺失时的兜底；与 sandbox tools/default-body.json 同形）。 */
-const BUILTIN_TIER_NET: Record<string, string> = {
-  auto: 'all',
-  severe: 'limited',
-  review: 'none',
-  deny: 'none',
-}
-
 /** 规范化 net 范围：只认 none / limited / all，其余视为 none。 */
 export function netScopeOf(value: Json | undefined): string {
-  return value === 'limited' || value === 'all' ? value : 'none'
+  return netScope(value)
 }
 
 /** 某工具声明的 net 需求：从工具目录（bag.tools）按名查 caps.net；查不到按 none。 */
 export function declaredNetOf(tool: string, tools: Json[]): string {
   for (const item of tools) {
     if (!isRecord(item) || item['name'] !== tool) continue
-    const caps = item['caps']
-    return isRecord(caps) ? netScopeOf(caps['net']) : 'none'
+    return declaredNetOfCaps(item['caps'])
   }
   return 'none'
 }
 
 /** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
 export function tierNetOf(tier: Json | undefined, sandboxTiers: Json | undefined): string {
-  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
-  if (typeof tier === 'string' && isRecord(tiers)) {
-    const entry = tiers[tier]
-    if (isRecord(entry)) {
-      const declared = entry['net']
-      if (declared === 'none' || declared === 'limited' || declared === 'all') return declared
-    }
-  }
-  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
-  return 'none'
+  return tierNetOfShared(tier, sandboxTiers)
 }
 
 /** 工具门禁逐项：每个 call 带上声明的 net，供 guard 判据；整批取最严。 */

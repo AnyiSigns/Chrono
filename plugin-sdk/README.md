@@ -18,13 +18,17 @@
 | 模块           | 内容                                                                                      |
 | -------------- | ----------------------------------------------------------------------------------------- |
 | `wire.ts`      | 帧编解码（4 字节大端长度 + 规范 JSON）、`MAX_FRAME_BYTES`、入站 / 出站 kind 集合          |
-| `canonical.ts` | 规范序列化（键 code-unit 升序、剔除 undefined、-0 归一、最短往返数字）                    |
+| `canonical.ts` | 规范序列化（键 code-unit 升序、剔除 undefined、-0 归一、最短往返数字）与内容哈希 `H`        |
 | `manifest.ts`  | 读同包 `plugin.json` 派生 manifest、按能力类取声明方法集                                  |
 | `service.ts`   | `createService` 派发器、`runStdio` 帧循环、`packageRootOf` / `isDirectRun` / `makeLogger` |
 | `port-link.ts` | 反向调用通道 `PortLink`（`port.call` / `port.result` / `port.error`）与 `settlePortLinks` |
-| `plan.ts`      | 计划值 helper：`externOnly` / `errorValue` / `isErrorValue` / `mergeDirectives`           |
+| `plan.ts`      | 计划值 helper 与共享形态 / 时钟 / 摘要 helper（`externOnly` / `errorValue` / `defHashOf` / `nowOf` 等） |
+| `tool-calls.ts`| 模型 `tool_calls` 结构校验 `checkToolCalls`                                              |
 | `json.ts`      | `Json` / `Rec` / `isRecord` / `asString`                                                  |
-| `env.ts`       | 调用帧 `env` 解析与 `nowOf`（固定时钟）                                                   |
+| `env.ts`       | 调用帧 `env` 解析（固定时钟 `nowOf` 在 `plan.ts`）                                        |
+| `graph-model.ts`| 图六类条目读取与访问（`readGraphModel` / `readEntries` / 链式 `chainEntries` + 契约 / 节点 / 图访问子） |
+| `net-policy.ts`| sandbox net 策略纯原语（`BUILTIN_TIER_NET` / `netScope` / `parseScope` / `netRank` / `declaredNetOf` / `tierNetOf`） |
+| `directory.ts` | 工具目录索引 `indexToolDirectory` 与 `Directory` / `ToolEntry` / `Rejection` 形状 |
 | `types.ts`     | `CallEnv` / `CallContext` / `Handler` / `HandlerResult` / `PortCaller`、错误类            |
 | `driver.ts`    | 测试驱动 `startService` + `request` + port bridge                                         |
 | `web/`         | UI 插件的服务半边共用骨架：宿主根 / 入站 socket 推导、入站客户端、入站桥（子路径 `plugin-sdk/web`） |

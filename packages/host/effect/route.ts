@@ -1,11 +1,10 @@
-// A1 路由：发出者 pins（名 → 哈希）→ def → 属主身份 → 该身份当前 active 世代 → 端点表。
-// `one` 绑定（`commit.body.meta.needs` 的身份名）走同一条端点解析，只按名不按哈希。
+// A1 路由：发出者 `needs.one` 绑定（cap → 提供方身份名）→ 该身份当前装配世代 → 端点表。
+// 宿主依赖哨兵 `host`（绑定值 `host`）→ 宿主保留能力类，不经世界解析。
 // 只读世界：不执行效果、不写链；端点表键不含调用方（impl+gen+cap+method）。
-// `pin` 绑定身份：依赖换代重解析到新 active；pin 哈希 ≠ 依赖 active 只记漂移证据，不阻塞。
+// 绑定按身份名跟随：依赖换代即解析到新 active；退役 / 装载失败得 `stale` / `not_loaded`。
 
 import {
   assemblyGen,
-  buildOwnerIndex,
   capabilityProviders,
   needsBindingsOf,
   readPluginDecl,
@@ -81,8 +80,6 @@ export interface RouterOptions {
   blobsDir?: string
   /** 生态 profile：声明解析（同语言入口扩展名等）随它；缺省内建默认（零行为变化）。 */
   ecosystem?: EcosystemProfile
-  /** pin 哈希与依赖当前 active 不一致：漂移证据（每次解析都可能触发，去重归调用方），不阻塞调用。 */
-  onDrift?: (emitter: string, cap: string, gen: Hash) => void
   /** 宿主保留能力类派发器；缺省时 `host` 路由 → `not_loaded`（未接线，不猜）。 */
   host?: HostCapabilityCall
   /**
@@ -126,7 +123,6 @@ function hostRow(emitter: string, method: string, host: HostCapabilityCall): End
 export function createRoundRouter(options: RouterOptions): RoundRouter {
   // 声明解析口径随构造期注入的生态 profile；缺省即内建默认（零行为变化）。
   const ecosystem = options.ecosystem ?? DEFAULT_ECOSYSTEM
-  const ownerIndexes = new WeakMap<World['ids'], Map<Hash, string>>()
   // 每个身份只留最近解析的 (gen → {caps, needs, judgments})：声明不可变，命中可复用；换代替换，不随历史世代累积。
   const declFactsCache = new Map<
     string,
@@ -137,14 +133,6 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       judgments: Record<string, Record<string, Hash>>
     }
   >()
-
-  const ownerIndexOf = (world: World): Map<Hash, string> => {
-    const cached = ownerIndexes.get(world.ids)
-    if (cached !== undefined) return cached
-    const index = buildOwnerIndex(world)
-    ownerIndexes.set(world.ids, index)
-    return index
-  }
 
   const factsOf = (
     world: World,
@@ -292,47 +280,33 @@ export function createRoundRouter(options: RouterOptions): RoundRouter {
       // 按成员定位的 many：扩展类在发出者 needs 且 mode:"many"，目标须是世界索引(cap)成员。
       if (target !== undefined)
         return resolveMember(resolutionWorld, emitterId, cap, method, target)
-      // G7 A1：pins / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
+      // G7 A1：`needs` / 声明 / 端点都按「最近代码世代」解析（数据世代可能正处 active）
       const gen = assemblyGen(resolutionWorld, emitterId)
-      const pinned = gen?.pins[cap]
-      if (pinned === undefined) {
-        // `one` 绑定（`commit.body.meta.needs` 的身份名）：按绑定身份当前代码世代解析端点，
-        // 优先于自能力路径。按名绑定（非哈希）故不触发 `onDrift`、不比对 pinned 与 active。
-        const bound = gen === null ? undefined : needsBindingsOf(resolutionWorld, gen)[cap]
-        if (typeof bound === 'string') {
-          if (!Object.hasOwn(resolutionWorld.ids, bound)) return { ok: false, error: 'stale' }
-          const ownerGen = assemblyGen(resolutionWorld, bound)
-          if (ownerGen === null) return { ok: false, error: 'stale' }
-          const boundCaps = implementsOf(resolutionWorld, bound, ownerGen.payload)
-          if (boundCaps === null || !boundCaps.has(cap)) return { ok: false, error: 'not_loaded' }
-          return rowFor(resolutionWorld, bound, ownerGen.payload, cap, method)
-        }
-        // 自能力路径（无自 pin）：发出者未 pin 该 cap，但自身装配世代声明实现了它 →
-        // 解析到发出者自己的端点行。保留能力类 `host` 不参与（须显式 pin 值 host 才认）。
-        if (gen === null || cap === HOST_CAPABILITY) return { ok: false, error: 'unresolved_cap' }
-        const own = implementsOf(resolutionWorld, emitterId, gen.payload)
-        if (own === null || !own.has(cap)) return { ok: false, error: 'unresolved_cap' }
-        return rowFor(resolutionWorld, emitterId, gen.payload, cap, method)
-      }
-      // 保留能力类 `host`：只认 cap = host 且方法在保留集内，不查世界 / 端点表
-      if (pinned === HOST_CAPABILITY) {
+      const bound = gen === null ? undefined : needsBindingsOf(resolutionWorld, gen)[cap]
+      if (bound === HOST_CAPABILITY) {
+        // 宿主依赖哨兵：只认 cap = host 且方法在保留集内，不查世界 / 端点表
         if (cap !== HOST_CAPABILITY || !HOST_METHODS.has(method)) {
           return { ok: false, error: 'not_loaded' }
         }
         if (options.host === undefined) return { ok: false, error: 'not_loaded' }
         return { ok: true, row: hostRow(emitterId, method, options.host) }
       }
-      if (resolutionWorld.defs[pinned] === undefined) return { ok: false, error: 'stale' }
-      const owner = ownerIndexOf(resolutionWorld).get(pinned)
-      if (owner === undefined) return { ok: false, error: 'stale' }
-      const ownerGen = assemblyGen(resolutionWorld, owner)
-      if (ownerGen === null) return { ok: false, error: 'stale' }
-      const caps = implementsOf(resolutionWorld, owner, ownerGen.payload)
-      if (caps === null || !caps.has(cap)) return { ok: false, error: 'not_loaded' }
-      const routed = rowFor(resolutionWorld, owner, ownerGen.payload, cap, method)
-      if (!routed.ok) return routed
-      if (pinned !== ownerGen.payload) options.onDrift?.(emitterId, cap, ownerGen.payload)
-      return routed
+      if (typeof bound === 'string') {
+        // `one` 绑定（`commit.body.meta.needs` 的身份名）：按绑定身份当前代码世代解析端点，
+        // 优先于自能力路径。按名绑定（非哈希）故只按名跟随，不比对哈希。
+        if (!Object.hasOwn(resolutionWorld.ids, bound)) return { ok: false, error: 'stale' }
+        const ownerGen = assemblyGen(resolutionWorld, bound)
+        if (ownerGen === null) return { ok: false, error: 'stale' }
+        const boundCaps = implementsOf(resolutionWorld, bound, ownerGen.payload)
+        if (boundCaps === null || !boundCaps.has(cap)) return { ok: false, error: 'not_loaded' }
+        return rowFor(resolutionWorld, bound, ownerGen.payload, cap, method)
+      }
+      // 自能力路径（无消费绑定）：发出者未消费该 cap，但自身装配世代声明实现了它 →
+      // 解析到发出者自己的端点行。保留能力类 `host` 不参与（须显式 needs 哨兵才认）。
+      if (gen === null || cap === HOST_CAPABILITY) return { ok: false, error: 'unresolved_cap' }
+      const own = implementsOf(resolutionWorld, emitterId, gen.payload)
+      if (own === null || !own.has(cap)) return { ok: false, error: 'unresolved_cap' }
+      return rowFor(resolutionWorld, emitterId, gen.payload, cap, method)
     },
     resolveSlot(world, emitterId, cap, method) {
       // 活端点表世界优先（提供时）：与 `resolve` 同规，成员按当前世界解析、随世界收缩 / 扩张。

@@ -2,10 +2,7 @@
   "identity": "embedding-local",
   "schema": "schema/embedding-local.json",
   "implements": ["embedding-provider"],
-  "methods": {
-    "embedding-provider": ["embed", "describe-models"]
-  },
-  "pins": {},
+  "methods": {},
   "needs": {
     "tokenizer": { "mode": "one" }
   },

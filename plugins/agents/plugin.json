@@ -3,7 +3,6 @@
   "schema": "schema/agents.json",
   "implements": [],
   "methods": {},
-  "pins": {},
   "start": "",
   "build": [],
   "protocol": "1",

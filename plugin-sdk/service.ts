@@ -30,7 +30,7 @@ export interface ServiceFactoryContext {
   /** ③ / ④ 目录（只含已注入项）。 */
   env: Record<string, string>
   /**
-   * 宿主注入的**有效 pins**（声明 `pins` ∪ 该身份代码世代的 `one`-needs 绑定）；未注入时缺席。
+   * 宿主注入的**有效 pins**（该身份代码世代 `needs` 的 `one` 绑定派生）；未注入时缺席。
    * stdio 由宿主经 spawn env `CHRONO_PLUGIN_PINS` 注入、SDK 从进程 env 解析；inproc / worker
    * 由宿主经工厂 ctx 原样传入（SDK 不吞）。
    */
@@ -113,7 +113,7 @@ export function loaderEnvFromProcess(): Record<string, string> {
 
 /**
  * 从 `process.env.CHRONO_PLUGIN_PINS` 解析宿主注入的有效 pins（stdio 形态）；
- * 缺失 / 坏 JSON / 非字符串映射一律回落 `undefined`（不抛，服务可回落到本地声明）。
+ * 缺失 / 坏 JSON / 非字符串映射一律回落 `undefined`（不抛，服务可回落到空表）。
  */
 export function pinsFromProcess(): Record<string, string> | undefined {
   const raw = process.env['CHRONO_PLUGIN_PINS']

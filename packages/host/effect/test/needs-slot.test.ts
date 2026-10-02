@@ -26,7 +26,6 @@ function decl(identity: string, overrides: Record<string, Json> = {}): Json {
     schema: 'schema/plugin.schema.json',
     implements: [],
     methods: {},
-    pins: {},
     start: '',
     build: [],
     protocol: '1',
@@ -57,7 +56,7 @@ function commitOf(body: Json, meta?: Json): { payload: Hash; defs: Record<Hash, 
 }
 
 function genOf(payload: Hash): Gen {
-  return { seq: 0, payload, pins: {}, sig: SIG, adopted: { at: 1, by: 'seed', write: payload } }
+  return { seq: 0, payload, sig: SIG, adopted: { at: 1, by: 'seed', write: payload } }
 }
 
 function identityOf(id: string, payload: Hash, active: Hash | null = payload): Identity {

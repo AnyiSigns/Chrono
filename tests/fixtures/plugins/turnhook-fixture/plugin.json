@@ -1,10 +1,7 @@
 {
   "identity": "turnhook-fixture",
   "implements": ["turn-hook"],
-  "methods": {
-    "turn-hook": ["before-assemble", "after-step", "before-settle", "after-settle"]
-  },
-  "pins": {},
+  "methods": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

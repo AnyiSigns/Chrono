@@ -30,7 +30,7 @@ const H2 = 'b'.repeat(64)
 /** 假宿主返回的确定性 result_hash：插件只关心它是 64 位十六进制并落 ③ 缓存。 */
 const STUB_RESULT_HASH = 'a'.repeat(64)
 
-/** 候选包（扁平 + 一个 execute/ 子目录；pin host 以覆盖保留身份路径）。 */
+/** 候选包（扁平 + 一个 execute/ 子目录；host 以 needs 哨兵覆盖保留身份路径）。 */
 function candidate(identity = 'candidate', extra = {}) {
   return {
     'plugin.json': JSON.stringify({
@@ -38,7 +38,7 @@ function candidate(identity = 'candidate', extra = {}) {
       schema: 'plugin.schema.json',
       implements: [],
       methods: {},
-      pins: { host: 'host' },
+      needs: { host: { mode: 'one' } },
       start: '',
       build: [],
       protocol: '1',
@@ -441,13 +441,16 @@ test('write：黑名单身份 → hidden_identity，不调宿主', async () => {
   }
 })
 
-test('write：非 host pin 以身份名写入 add_gen.pins（非 active 哈希）', async () => {
-  const files = candidate('candidate', { pins: { host: 'host', model: 'model-protocol' } })
+test('write：one-needs 绑定以身份名写入 commit.body.meta.needs（非 active 哈希）', async () => {
+  const files = candidate('candidate', {
+    needs: { host: { mode: 'one' }, model: { mode: 'one' } },
+  })
   const identities = [
     { id: 'candidate', active: H1, implements: [], commands: [] },
     { id: 'model-protocol', active: H2, implements: ['model'], commands: [] },
   ]
-  const drv = startService({ hostHandler: stubHostResolving({ needs: {}, identities }) })
+  const bindings = { host: 'host', model: 'model-protocol' }
+  const drv = startService({ hostHandler: stubHostResolving({ needs: bindings, identities }) })
   try {
     await drv.hello()
     const report = await drv.call('plugin', 'validate', { identity: 'candidate', files })
@@ -456,9 +459,13 @@ test('write：非 host pin 以身份名写入 add_gen.pins（非 active 哈希�
     const ops = plan.$directives[0].request.args.ops
     const addGen = ops[ops.length - 1]
     assert.equal(addGen.op, 'add_gen')
-    assert.deepEqual(addGen.args.pins, { host: 'host', model: 'model-protocol' })
-    assert.equal(addGen.args.pins.model, 'model-protocol')
-    assert.notEqual(addGen.args.pins.model, H2, 'pin 不得写成 active 哈希')
+    assert.ok(!('pins' in addGen.args), 'add_gen 不再带 pins')
+    const commitOp = ops.find(
+      (op) => op.op === 'put' && op.args.body && op.args.body.meta && op.args.body.meta.needs,
+    )
+    assert.deepEqual(commitOp.args.body.meta.needs, bindings)
+    assert.equal(commitOp.args.body.meta.needs.model, 'model-protocol')
+    assert.notEqual(commitOp.args.body.meta.needs.model, H2, '绑定不得写成 active 哈希')
   } finally {
     drv.close()
     drv.cleanup()
@@ -602,12 +609,12 @@ test('readValidateCache：旧凭据缺 needs 字段 → 按空绑定读回（向
   }
 })
 
-// ── 包声明：管理平面用 host 保留 pin（host 不可作 needs 键） ─────────────────
+// ── 包声明：管理平面用 host 保留能力类作为 needs 宿主哨兵 ─────────────────
 
-test('plugin.json：pins.host=host 且 needs 空（host 是保留能力类，不走 needs）', () => {
+test('plugin.json：needs.host=one（host 是保留能力类，作为宿主依赖哨兵）', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
   assert.deepEqual(decl.implements, ['plugin'])
   assert.deepEqual(decl.methods, { plugin: ['list', 'read', 'validate', 'write'] })
-  assert.deepEqual(decl.pins, { host: 'host' })
-  assert.deepEqual(decl.needs ?? {}, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
+  assert.deepEqual(decl.needs, { host: { mode: 'one' } })
 })

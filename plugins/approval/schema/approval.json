@@ -37,7 +37,7 @@
         "id": { "type": "string", "description": "确定性 id ap-<run>-<seq>（run + 入队序），非随机" },
         "op_key": { "type": "string", "description": "幂等键（run + 审批节点序），同回合同节点重复入队收敛到同一条" },
         "kind": { "enum": ["tool_call", "orchestration_change", "plugin_write"], "description": "待审批种类；判据 = (port, 工具名)，由调用方随 enqueue args 传入" },
-        "port": { "type": "string", "description": "实际提供者能力类名：tool_call → tool-fs / tool-shell / tool-http / tool-browser / mcp；orchestration_change → orchestration-admin；plugin_write → plugin-admin" },
+        "port": { "type": "string", "description": "实际提供者能力类名：tool_call → tool-fs / tool-shell / tool-http / tool-browser / mcp；orchestration_change → orchestration；plugin_write → plugin-admin" },
         "method": { "type": "string", "description": "调用方法名；缺省 invoke" },
         "args_ref": { "type": "object", "description": "调用描述：{\"sha256\":\"…\"} 资产引用或 {\"summary\":\"…\"} 摘要；只存摘要 / 引用，不内联大 args，不含明文密钥" },
         "tier": { "type": "string", "description": "触发档（四档之一）；由调用方随 enqueue args 传入" },

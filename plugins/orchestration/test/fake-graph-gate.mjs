@@ -4,17 +4,15 @@
 // 真实机械闸行为由 plugins/graph-gate 自带测试与根 tests/contract 覆盖。
 //
 // 规则与 plugins/graph-gate/execute 同口径：闭合 / 类型 / publish 偏序 / 端口 ⊆ pins + 六不变量 + 四演化规则。
-// 读取走本插件自己的 model.ts（与生产同一读取口径），哈希走本插件 hash.ts。
+// 读取走共享读取口径 `plugin-sdk`（与生产同一读取口径），哈希走本插件 hash.ts。
 
 import { H } from '../execute/hash.ts'
 import {
-  asArray,
   contractId,
   contractIndex,
   contractInputs,
   contractOutputs,
   contractPublishes,
-  edgeKey,
   effectsCaps,
   effectsPorts,
   graphDerivedFrom,
@@ -31,8 +29,25 @@ import {
   numericThreshold,
   readGraphModel,
   touchesEffects,
-} from '../execute/model.ts'
+} from 'plugin-sdk'
 import { isRecord } from '../execute/plan.ts'
+
+/** 任意 JSON 数组；非数组回落空数组（不产生 null 迭代）。 */
+function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+/** 一条边的规范键 `u:out->v:in`（diff 用）。 */
+function edgeKey(edge) {
+  const from = asArray(edge['from'])
+  const to = asArray(edge['to'])
+  if (from.length !== 2 || to.length !== 2) return null
+  const [u, out] = from
+  const [v, inp] = to
+  if (typeof u !== 'number' || typeof out !== 'string') return null
+  if (typeof v !== 'number' || typeof inp !== 'string') return null
+  return `${u}:${out}->${v}:${inp}`
+}
 
 // ── 拓扑（纯函数） ──────────────────────────────────────────────────────────
 
@@ -342,7 +357,7 @@ function checkPortsPinned(view, pins) {
 
 // ── 六不变量 ────────────────────────────────────────────────────────────────
 
-const HIGH_RISK_PORTS = new Set(['exec', 'plugin-admin', 'orchestration-admin'])
+const HIGH_RISK_PORTS = new Set(['exec', 'plugin-admin', 'orchestration'])
 
 function instanceContracts(view, contractIdValue) {
   return view.model.nodes.filter((node) => nodeContractId(node) === contractIdValue)

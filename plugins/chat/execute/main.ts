@@ -1,6 +1,6 @@
 // `chat` 服务入口：三形态共用（stdio 起帧循环；inproc / worker 由宿主 import 后直调）。
 // manifest 由 SDK 从同包 plugin.json 派生；stdout 只发协议帧，日志走 stderr；stdin EOF 即自退出。
-// 回合管道经反向调用 `port.call loop-policy.interpret`（title 旁路段 `session-title.generate`）。
+// 回合管道经反向调用 `port.call loop-policy.interpret`（title 旁路段内联 `model.complete`）。
 // `history` 声明为并发方法（plugin.json `concurrent_methods`）：长回合 `send` 挂起时读命令仍可并发。
 
 import { PortLink, defineService } from 'plugin-sdk'

@@ -5,7 +5,6 @@
   "methods": {
     "embedding": ["embed"]
   },
-  "pins": {},
   "slots": {
     "embedding-provider": { "methods": ["embed", "describe-models"] }
   },

@@ -5,7 +5,6 @@
   "methods": {
     "tool-registry": ["list", "validate-args"]
   },
-  "pins": {},
   "slots": {
     "tool-provider": { "methods": ["describe", "invoke"] }
   },

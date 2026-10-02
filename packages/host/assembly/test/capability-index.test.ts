@@ -22,7 +22,6 @@ interface DeclSpec {
   identity: string
   implements?: string[]
   methods?: Record<string, string[]>
-  pins?: Record<string, string>
   needs?: Record<string, { mode: string; methods?: string[] }>
   slots?: Record<string, { methods: string[] }>
 }
@@ -32,7 +31,6 @@ function fullDecl(spec: DeclSpec): Json {
     identity: spec.identity,
     implements: spec.implements ?? [],
     methods: spec.methods ?? {},
-    pins: spec.pins ?? {},
     ...(spec.needs === undefined ? {} : { needs: spec.needs as Json }),
     ...(spec.slots === undefined ? {} : { slots: spec.slots as Json }),
     start: '',
@@ -89,7 +87,6 @@ function genOf(identity: Identity, payload: Hash): Gen {
   return {
     seq: identity.gens.length,
     payload,
-    pins: {},
     sig: payload,
     adopted: { at: 0, by: '', write: '' },
   }

@@ -1,5 +1,5 @@
 // chat service protocol-level tests: spawn `node execute/main.ts`, bridge loop-policy.interpret,
-// session-title.generate and the runtime-record owners (session.read / input.read / session.history).
+// model.complete (title) and the runtime-record owners (session.read / input.read / session.history).
 // Covers handshake/control/EOF, send bag assembly from owner services, empty-slot no-op, title segment,
 // resume, history via owner service, structured failures, and readonly concurrency.
 
@@ -95,10 +95,10 @@ test('send: reads owners, opens turn, interprets; title runs after turn start', 
     ]) {
       assert.ok(order.includes(owner), `missing owner read ${owner}: ${order.join(', ')}`)
     }
-    await waitFor(() => order.includes('session-title.generate') && order.includes('session.set_title'))
+    await waitFor(() => order.includes('model.complete') && order.includes('session.set_title'))
     assert.ok(
-      order.indexOf('session-title.generate') > iTurnOpen,
-      `title generate after turn_open: ${order.join(', ')}`,
+      order.indexOf('model.complete') > iTurnOpen,
+      `title completion after turn_open: ${order.join(', ')}`,
     )
 
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
@@ -121,10 +121,12 @@ test('send: reads owners, opens turn, interprets; title runs after turn start', 
     assert.equal(bag.thread, 't1')
     assert.equal(bag.contract_version, CONTRACT_VERSION)
 
-    const titleArgs = callArgs(drv.portCalls, 'session-title', 'generate')
-    assert.equal(titleArgs.conversation, 'c-1')
-    assert.equal(titleArgs.first_message, '帮我写一个快速排序')
-    assert.equal(titleArgs.title_default, '新对话')
+    const completion = callArgs(drv.portCalls, 'model', 'complete')
+    assert.equal(completion.messages[0].role, 'system')
+    assert.equal(typeof completion.messages[0].content, 'string')
+    assert.deepEqual(completion.messages[1], { role: 'user', content: '帮我写一个快速排序' })
+    assert.equal(completion.config.model, 'deepseek-chat')
+    assert.equal(completion.max_tokens, 64)
 
     assert.deepEqual(directivesOf(result.value), INTERPRET_PLAN.$directives)
   } finally {
@@ -290,7 +292,7 @@ test('send: definition slices omitted when identity absent from projection', asy
   const drv = startService({ bridge: defaultBridge() })
   try {
     await drv.hello()
-    const ids = idsFixture({ omit: ['guard', 'sandbox', 'tools', 'mcp', 'evolution', 'workspace', 'agents', 'skill'] })
+    const ids = idsFixture({ omit: ['guard', 'sandbox', 'tool-registry', 'mcp', 'evolution', 'workspace', 'agents', 'skill'] })
     await drv.call('send', ids)
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
     // 投影缺席且无 owner 供给的切片不落键；owner 供给的切片（mcp / workspace / skill）照常覆盖投影。
@@ -309,7 +311,7 @@ test('send: non-first message skips the title segment', async () => {
   try {
     await drv.hello()
     const result = await drv.call('send', idsFixture())
-    assert.equal(drv.portCalls.some((frame) => frame.port === 'session-title'), false)
+    assert.equal(drv.portCalls.some((frame) => frame.port === 'model' && frame.method === 'complete'), false)
     assert.deepEqual(directivesOf(result.value), INTERPRET_PLAN.$directives)
     // 回合开始自报：客户端据此在首个 delta 前建在途回合（续跑嵌套 eval 无宿主 run 生命周期）。
     const turn = drv.events.find((frame) => frame.topic === 'chat.turn.started')
@@ -496,7 +498,7 @@ test('send: no current conversation + workspace_id -> new_conversation passthrou
     await waitFor(() => callArgs(drv.portCalls, 'session', 'set_title') !== undefined)
     assert.deepEqual(callArgs(drv.portCalls, 'session', 'set_title'), {
       conversation: 'c-9',
-      title: TITLE_VALUE.title,
+      title: TITLE_VALUE.text,
     })
     const bag = callArgs(drv.portCalls, 'loop-policy', 'interpret')
     assert.equal(bag.session_id, 'c-9')
@@ -763,7 +765,7 @@ test('send: a subagent slot opens an isolated thread carrying task + parent chec
     assert.equal(bag.session_id, 'c-sub')
     assert.equal(bag.contract_version, CONTRACT_VERSION)
     // 子代理线程不跑标题段（标题取任务提示词）。
-    assert.equal(drv.portCalls.some((frame) => frame.port === 'session-title'), false)
+    assert.equal(drv.portCalls.some((frame) => frame.port === 'model' && frame.method === 'complete'), false)
   } finally {
     drv.close()
   }

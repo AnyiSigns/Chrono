@@ -58,7 +58,7 @@
 | 字段 | 类型 / 可空性 | 说明 |
 | --- | --- | --- |
 | `kind` | string，必填 | `tool_call` / `orchestration_change` / `plugin_write`；非法 → `bad_args` |
-| `port` | string，可缺 | 实际提供者能力类名；缺省按 `kind` 取 `orchestration-admin` / `plugin-admin`，`tool_call` 缺省 `tool` |
+| `port` | string，可缺 | 实际提供者能力类名；缺省按 `kind` 取 `orchestration` / `plugin-admin`，`tool_call` 缺省 `tool` |
 | `method` | string，可缺 | 调用方法名；缺省 `invoke` |
 | `args_ref` | object，可缺 | `{sha256}` 或 `{summary}`；**不从明文 `args` 合成摘要** |
 | `tier` / `workspace_id` / `run` / `thread` / `at` | 可缺 | 入队描述；`thread` 缺省取帧 `env.thread`、再缺省 `_main`；`at` 缺省取帧 `env.now` |

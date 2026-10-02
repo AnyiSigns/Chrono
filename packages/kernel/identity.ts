@@ -43,7 +43,6 @@ export function worldRev(world: World): Hash {
       gens: identity.gens.map((g) => ({
         seq: g.seq,
         payload: g.payload,
-        pins: g.pins,
         sig: g.sig,
         ...(g.graft ? { graft: g.graft } : {}),
         ...(g.base !== undefined ? { base: g.base } : {}),

@@ -71,7 +71,7 @@ describe.runIf(PYTHON !== null)('S4.5 跨语言（Python toy 服务，不改载�
     return join(root, 'state', 'world', 'journal.jsonl')
   }
 
-  /** JS caller：只声明 pins（名 → 身份）与 term，被调能力类与实现语言无关。 */
+  /** JS caller：只声明 one-needs（能力类 → 唯一提供方身份）与 term，被调能力类与实现语言无关。 */
   function writeCaller(): string {
     return writeTempPackage(root, {
       identity: 'toy-py-caller',

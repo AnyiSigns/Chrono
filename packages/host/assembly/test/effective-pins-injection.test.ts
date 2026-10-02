@@ -1,5 +1,5 @@
 // 有效 pins 注入：stdio / inproc / worker 三形态下，服务工厂上下文拿到的 pins = effectivePins
-// （声明 `pins` ∪ 该身份代码世代的 `one`-needs 绑定）。stdio 走 spawn env，inproc / worker 走工厂 ctx。
+// （该身份代码世代 `commit.body.meta.needs` 的 `one` 绑定）。stdio 走 spawn env，inproc / worker 走工厂 ctx。
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'

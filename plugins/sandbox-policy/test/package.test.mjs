@@ -15,7 +15,7 @@ test('plugin.json 声明身份 / 方法 / schema', () => {
   assert.equal(plugin.identity, 'sandbox-policy')
   assert.deepEqual(plugin.implements, ['sandbox-policy'])
   assert.deepEqual(plugin.methods['sandbox-policy'], ['resolve', 'consume'])
-  assert.ok('pins' in plugin, 'pins 必填')
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.equal(plugin.state, 'recomputable')
   assert.deepEqual(plugin.commands, [])
 })

@@ -4,46 +4,20 @@
 // sandbox 无独立「查 net」方法；`sandbox.capabilities` 只自述强制面（见 sandboxNetEnforcement），
 // 真正的 net 判定在本插件内完成。
 
+import { BUILTIN_TIER_NET, declaredNetOf, netRank, tierNetOf } from 'plugin-sdk'
+import type { Json, NetScope, Rec } from 'plugin-sdk'
 import { ToolError } from './types.ts'
-import type { Json, Rec } from './types.ts'
 
-export type NetScope = 'none' | 'limited' | 'all'
-
-/** 内建档位 net 映射（与 sandbox 的 tools/default-body.json 同形；测试保证一致）。 */
-export const BUILTIN_TIER_NET: Record<string, NetScope> = {
-  auto: 'all',
-  severe: 'limited',
-  review: 'none',
-  deny: 'none',
-}
+export { BUILTIN_TIER_NET, netRank }
+export type { NetScope }
 
 function isRecord(value: Json | undefined): value is Rec {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** net 范围序：none < limited < all。 */
-export function netRank(scope: NetScope): number {
-  if (scope === 'all') return 2
-  if (scope === 'limited') return 1
-  return 0
-}
-
-function parseScope(value: Json | undefined): NetScope | null {
-  return value === 'none' || value === 'limited' || value === 'all' ? value : null
-}
-
 /** 当前档位的 net 范围：bag.sandbox_tiers 覆盖 > 内建；未知 / 缺失档位 fail-closed none。 */
 export function tierNetScope(tier: string | null, sandboxTiers: Json | undefined): NetScope {
-  const tiers = isRecord(sandboxTiers) ? sandboxTiers['tiers'] : undefined
-  if (typeof tier === 'string' && isRecord(tiers)) {
-    const entry = tiers[tier]
-    if (isRecord(entry)) {
-      const declared = parseScope(entry['net'])
-      if (declared !== null) return declared
-    }
-  }
-  if (typeof tier === 'string' && tier in BUILTIN_TIER_NET) return BUILTIN_TIER_NET[tier]
-  return 'none'
+  return tierNetOf(tier, sandboxTiers)
 }
 
 /**
@@ -52,8 +26,7 @@ export function tierNetScope(tier: string | null, sandboxTiers: Json | undefined
  * `parse_caps` 对畸形 net 的回落一致。
  */
 export function declaredNetScope(caps: Json | undefined): NetScope {
-  const net = isRecord(caps) ? caps['net'] : undefined
-  return parseScope(net) ?? 'none'
+  return declaredNetOf(caps)
 }
 
 /**

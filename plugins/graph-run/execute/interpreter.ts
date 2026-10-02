@@ -6,6 +6,7 @@ import {
   assistantRecord,
   dispatchNode,
   lastReasoningOf,
+  netRank,
   netScopeOf,
   providerResolver,
   toCalls,
@@ -1388,11 +1389,6 @@ function escalatedDecisions(cursor: Rec, rs: RunState): { call: Rec; decision: R
     }
   }
   return out
-}
-
-/** net 范围宽窄序：none < limited < all。 */
-function netRank(scope: string): number {
-  return scope === 'all' ? 2 : scope === 'limited' ? 1 : 0
 }
 
 /**

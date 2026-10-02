@@ -2,6 +2,8 @@
 // 零依赖自带实现，与宿主线格式所依赖的内核口径逐字节一致；SDK 不 import 内核。
 // 内容哈希与帧字节的地基——两处同值必须逐字节同一串。
 
+import { createHash } from 'node:crypto'
+
 import type { Json } from './json.ts'
 
 /** 递归序列化深度上限：与内核口径同源。 */
@@ -15,6 +17,16 @@ export const MAX_JSON_DEPTH = 64
  */
 export function canonicalJson(value: Json | undefined): string {
   return canon(value, 0)
+}
+
+/**
+ * 内容哈希：`hex(sha256(utf8(canonicalJson(value))))`。
+ * 与内核同口径，保证同输入同输出。
+ * @param value 待哈希的值
+ * @returns 64 位小写十六进制摘要
+ */
+export function H(value: Json | undefined): string {
+  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')
 }
 
 function canon(value: Json | undefined, depth: number): string {

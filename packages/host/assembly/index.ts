@@ -54,6 +54,7 @@ export type { GenerationChange } from './generation.ts'
 export { commandArgsIssue, validateArgs, validateArgsSchema } from './args-schema.ts'
 export type { ArgsSchemaCheck } from './args-schema.ts'
 export {
+  declaredOwnerCaps,
   orderEntriesForSeed,
   planIngest,
   planPack,

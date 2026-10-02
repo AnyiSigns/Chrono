@@ -63,7 +63,7 @@ test('execute/ 不 import 宿主 / 内核 / client，也不 import 其他插件�
   }
 })
 
-test('package.json 零依赖且带测试脚本；.worldignore 只声明 test/', () => {
+test('package.json 零依赖且带测试脚本；.worldignore 只声明 test/ 与 tools/', () => {
   const pkg = readJson('package.json')
   assert.equal(pkg.name, 'tool-registry')
   assert.equal(pkg.type, 'module')
@@ -73,7 +73,7 @@ test('package.json 零依赖且带测试脚本；.worldignore 只声明 test/', 
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'))
-  assert.deepEqual(lines, ['test/'])
+  assert.deepEqual(lines, ['test/', 'tools/'])
 })
 
 test('README 不含计划编号 / 计划文档引用', () => {

@@ -126,7 +126,8 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致（dura
     assert.equal(manifest.identity, 'question')
     assert.deepEqual(manifest.implements, ['question', 'tool-provider'])
     assert.deepEqual(manifest.methods.question, ['describe', 'invoke', 'list', 'state', 'sweep'])
-    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
+    // 契约单源在拥有方 tool-registry 的 slots：提供方不在 manifest 复述 tool-provider 方法。
+    assert.equal(manifest.methods['tool-provider'], undefined)
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'durable')
   } finally {

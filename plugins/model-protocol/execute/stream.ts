@@ -2,7 +2,12 @@
 // usage 来源由厂商 `stream_usage` 决定，适配器已归一到 {prompt_tokens, completion_tokens, total_tokens}。
 
 import { isRecord } from './plan.ts'
-import type { Json, Rec } from 'plugin-sdk'
+import { normalizeUsage, reasoningBlock } from 'plugin-sdk'
+import type { Json, ReasoningBlock, Rec } from 'plugin-sdk'
+
+// 推理块与用量归一为纯原语，真源在 `plugin-sdk`；本模块转出供本插件（消费方）流式路径使用。
+export { normalizeUsage, reasoningBlock }
+export type { ReasoningBlock }
 
 /** 适配器解析出的归一化分片。 */
 export interface Shard {
@@ -166,76 +171,4 @@ export function asRecord(value: Json | undefined): Rec | null {
   return isRecord(value) ? value : null
 }
 
-/** 厂商中立推理块形状（字段固定）：流式解码在消费方构造，整包解析由 `msg-dialect` 对称产出。 */
-export interface ReasoningBlock {
-  provider: string
-  model: string
-  form: 'text' | 'blocks'
-  payload: string
-  signature: string
-  encrypted: string
-  tokens: number
-}
-
-/** 构造中立块（消费方流式路径用；形状与 `msg-dialect` 一致）。 */
-export function reasoningBlock(
-  provider: string,
-  model: string,
-  form: 'text' | 'blocks',
-  payload: string,
-  signature = '',
-  encrypted = '',
-  tokens = 0,
-): ReasoningBlock {
-  return { provider, model, form, payload, signature, encrypted, tokens }
-}
-
-function numberField(source: Rec, key: string): number | undefined {
-  const value = source[key]
-  return typeof value === 'number' ? value : undefined
-}
-
-/** 缓存 token 归一（与 `msg-dialect` 同口径）：只落出现过的字段。 */
-function cacheTokens(source: Rec): Rec {
-  const out: Rec = {}
-  const promptDetails = isRecord(source['prompt_tokens_details'])
-    ? (source['prompt_tokens_details'] as Rec)
-    : null
-  const inputDetails = isRecord(source['input_tokens_details'])
-    ? (source['input_tokens_details'] as Rec)
-    : null
-  const cached =
-    numberField(source, 'cached_tokens') ??
-    (promptDetails === null ? undefined : numberField(promptDetails, 'cached_tokens')) ??
-    (inputDetails === null ? undefined : numberField(inputDetails, 'cached_tokens'))
-  if (cached !== undefined) out['cached_tokens'] = cached
-  const hit = numberField(source, 'prompt_cache_hit_tokens')
-  if (hit !== undefined) out['prompt_cache_hit_tokens'] = hit
-  const miss = numberField(source, 'prompt_cache_miss_tokens')
-  if (miss !== undefined) out['prompt_cache_miss_tokens'] = miss
-  const read = numberField(source, 'cache_read_input_tokens')
-  if (read !== undefined) out['cache_read_input_tokens'] = read
-  const creation = numberField(source, 'cache_creation_input_tokens')
-  if (creation !== undefined) out['cache_creation_input_tokens'] = creation
-  const googleCached = numberField(source, 'cachedContentTokenCount')
-  if (googleCached !== undefined) out['cached_content_tokens'] = googleCached
-  return out
-}
-
-/** 归一用量为 `{prompt_tokens, completion_tokens, total_tokens}`（含缓存 token）。 */
-export function normalizeUsage(
-  prompt: Json | undefined,
-  completion: Json | undefined,
-  source?: Rec,
-): Rec | null {
-  if (typeof prompt !== 'number' && typeof completion !== 'number') return null
-  const promptTokens = typeof prompt === 'number' ? prompt : 0
-  const completionTokens = typeof completion === 'number' ? completion : 0
-  const usage: Rec = {
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    total_tokens: promptTokens + completionTokens,
-  }
-  if (source !== undefined) Object.assign(usage, cacheTokens(source))
-  return usage
-}
+// 推理块形状与用量归一的真源在 `plugin-sdk`：流式解码消费方构造与整包解析提供方共用同一口径。

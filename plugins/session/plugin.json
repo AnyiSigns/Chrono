@@ -27,7 +27,6 @@
       "history"
     ]
   },
-  "pins": {},
   "needs": {
     "input": { "mode": "one" }
   },

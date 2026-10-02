@@ -6,7 +6,6 @@
     "turn-ledger": ["settle", "decide"]
   },
   "concurrent_methods": ["settle", "decide"],
-  "pins": {},
   "needs": {
     "graph-gate": { "mode": "one" },
     "evolve-metrics": { "mode": "one" },

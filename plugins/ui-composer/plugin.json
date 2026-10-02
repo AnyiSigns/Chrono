@@ -4,7 +4,6 @@
   "methods": {
     "ui-composer": ["ping", "client.read"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [
     { "cmd": "npm", "args": ["ci"] },

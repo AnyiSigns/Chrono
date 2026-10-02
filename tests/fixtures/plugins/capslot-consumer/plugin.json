@@ -2,7 +2,6 @@
   "identity": "capslot-consumer",
   "implements": [],
   "methods": {},
-  "pins": {},
   "needs": {
     "capslot.single": { "mode": "one" },
     "capslot.many": { "mode": "many", "methods": ["collect"] }

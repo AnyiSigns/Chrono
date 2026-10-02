@@ -27,7 +27,6 @@ describe('装配 assembly', () => {
         schema: 'schema/x.json',
         implements: ['toy.echo'],
         methods: { 'toy.echo': ['echo'] },
-        pins: {},
         start: '',
         build: [],
         protocol: '1',
@@ -182,8 +181,8 @@ describe('装配 assembly', () => {
     })
   })
 
-  describe('seed 级：保留 pin host', () => {
-    it("pins 值为 'host'：解析为保留字面量，不报 unresolved_pin", async () => {
+  describe('seed 级：宿主依赖哨兵 host', () => {
+    it("needs.host：解析为宿主哨兵，不报 unresolved_need", async () => {
       const root = createTempRoot()
       try {
         const pkgRoot = writeTempPackage(root, {
@@ -198,8 +197,9 @@ describe('装配 assembly', () => {
         const world = loadAnchor(`${root}/state/world/journal.jsonl`).world
         const identity = world.ids['toy-hostpin']
         expect(identity).toBeDefined()
-        const pins = identity!.gens[identity!.gens.length - 1].pins
-        expect(pins['host']).toBe('host')
+        const gen = identity!.gens[identity!.gens.length - 1]
+        const body = world.defs[gen.payload].body as { meta?: { needs?: Record<string, string> } }
+        expect(body.meta?.needs?.['host']).toBe('host')
       } finally {
         await cleanupTempRoot(root)
       }
@@ -247,8 +247,8 @@ describe('装配 assembly', () => {
       const root = createTempRoot()
       try {
         writeChronoConfig(root, ['sandbox'])
-        const sandboxRoot = writeTempPackage(root, { identity: 'sandbox' })
-        const otherRoot = writeTempPackage(root, { identity: 'other-dep' })
+        const sandboxRoot = writeTempPackage(root, { identity: 'sandbox', implements: ['sandbox'] })
+        const otherRoot = writeTempPackage(root, { identity: 'other-dep', implements: ['other'] })
         const guardedRoot = writeTempPackage(root, {
           identity: 'tool-guarded',
           pins: { sandbox: 'sandbox' },

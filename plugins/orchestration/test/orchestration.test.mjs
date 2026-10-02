@@ -62,8 +62,9 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致', asyn
   try {
     const manifest = await drv.hello()
     assert.equal(manifest.identity, 'orchestration')
-    assert.deepEqual(manifest.implements, ['orchestration'])
+    assert.deepEqual(manifest.implements, ['orchestration', 'tool-provider'])
     assert.deepEqual(manifest.methods.orchestration, ['list', 'read', 'validate', 'propose'])
+    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
     assert.equal(manifest.state, 'recomputable')
   } finally {
     drv.close()
@@ -541,6 +542,73 @@ test('propose：缺证据 / 缺 validate 哈希 / 哈希不符 / 空白整图 / 
   }
 })
 
+// ── 工具面（tool-provider） ─────────────────────────────────────────────────
+
+test('tool-provider.describe：四工具 + 四要素 + render（solid），不发反向调用', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const value = await callValue(drv, 'tool-provider', 'describe', {})
+    assert.deepEqual(
+      value.tools.map((tool) => tool.name),
+      [
+        'orchestration.list',
+        'orchestration.read',
+        'orchestration.validate',
+        'orchestration.propose',
+      ],
+    )
+    for (const tool of value.tools) {
+      for (const field of ['intent', 'when_to_use', 'param_semantics', 'boundaries']) {
+        assert.ok(tool[field] !== undefined, `${tool.name} 缺 ${field}`)
+      }
+      assert.equal(tool.render.form, 'card')
+      assert.equal(tool.render.label, 'orchestration')
+      assert.equal(tool.render.tone, 'solid')
+    }
+    assert.equal(
+      value.tools.find((tool) => tool.name === 'orchestration.propose').idempotent,
+      false,
+    )
+    assert.equal(drv.portCalls.length, 0, 'describe 不得发反向调用')
+  } finally {
+    drv.close()
+    await drv.exit
+  }
+})
+
+test('tool-provider.invoke：按工具名本地派发；未知工具与业务失败作值（不炸本轮）', async () => {
+  const drv = startService()
+  try {
+    await drv.hello()
+    const listed = await callValue(drv, 'tool-provider', 'invoke', {
+      tool: 'orchestration.list',
+      args: forkBag(),
+    })
+    assert.equal(listed.ok, true)
+    assert.equal(listed.result.graph_present, true)
+
+    const unknown = await callValue(drv, 'tool-provider', 'invoke', {
+      tool: 'orchestration.nope',
+      args: {},
+    })
+    assert.equal(unknown.ok, false)
+    assert.equal(unknown.error.code, 'unknown_tool')
+
+    const base = forkBag()
+    const validated = await callValue(drv, 'orchestration', 'validate', base)
+    const failed = await callValue(drv, 'tool-provider', 'invoke', {
+      tool: 'orchestration.propose',
+      args: { ...base, class: 'structure', evidence_ids: [], validate_hash: validated.result_hash },
+    })
+    assert.equal(failed.ok, false)
+    assert.equal(failed.error.code, 'evidence_required')
+  } finally {
+    drv.close()
+    await drv.exit
+  }
+})
+
 // ── 结构化错误 ─────────────────────────────────────────────────────────────
 
 test('未知能力 / 方法 / 非对象 args → 结构化错误，不崩进程', async () => {
@@ -549,8 +617,6 @@ test('未知能力 / 方法 / 非对象 args → 结构化错误，不崩进程'
     await drv.hello()
     const badPort = await drv.call('nope', 'list', {})
     assert.equal(badPort.code, 'unresolved_cap')
-    const toolFace = await drv.call('orchestration-admin', 'describe', {})
-    assert.equal(toolFace.code, 'unresolved_cap', '工具面归 orchestration-admin，本服务不实现')
     const badMethod = await drv.call('orchestration', 'nope', {})
     assert.equal(badMethod.code, 'unknown_method')
     const badArgs = await drv.call('orchestration', 'list', 'not-an-object')

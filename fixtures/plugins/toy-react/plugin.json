@@ -3,7 +3,6 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["toy.react"],
   "methods": { "toy.react": ["ping"] },
-  "pins": {},
   "start": "node execute/main.js",
   "build": [
     { "cmd": "npm", "args": ["ci", "--no-audit", "--no-fund"] },

@@ -1,36 +1,20 @@
 // 计划与共享纯函数：本插件只把节点返回的写计划机械装入 `$directives` 序列；不落账、不读投影。
 // 回合累积（trace 与 verdict 同世代）归 turn-ledger。
+// 形态判定 / def 引用等共享纯函数真源在 `plugin-sdk`；本文件只保留本插件特有的计划组装与剥离。
 
+import { isRecord } from 'plugin-sdk'
 import type { Json, Rec } from './types.ts'
 
-/** def 键形状：64 位小写十六进制。 */
-export const HASH_RE = /^[0-9a-f]{64}$/
-
-export function isRecord(value: Json | undefined): value is Rec {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** 非空字符串；否则 null。 */
-export function asString(value: Json | undefined): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null
-}
-
-/** 数组；否则 null。 */
-export function asArray(value: Json | undefined): Json[] | null {
-  return Array.isArray(value) ? value : null
-}
-
-/** 字符串数组：缺省空数组；含非字符串即剔（不抛）。 */
-export function asStringArray(value: Json | undefined): string[] {
-  const list = asArray(value)
-  if (list === null) return []
-  return list.filter((item): item is string => typeof item === 'string')
-}
-
-/** 有限数值；否则 null。 */
-export function numberField(value: Json | undefined): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
+export {
+  HASH_RE,
+  asArray,
+  asString,
+  asStringArray,
+  defHashOf,
+  directivesOf,
+  isRecord,
+  numberField,
+} from 'plugin-sdk'
 
 /** 单条 put 子操作。 */
 export function putOp(body: Json): Json {
@@ -45,12 +29,6 @@ export function evalDirective(command: string, args: Json, inject?: Rec): Json {
   const directive: Rec = { kind: 'eval', command, args }
   if (inject !== undefined) directive['inject'] = inject
   return directive
-}
-
-/** 值里是否带计划通道包装 `$directives`。 */
-export function directivesOf(value: Json): Json[] {
-  if (isRecord(value) && Array.isArray(value['$directives'])) return value['$directives'] as Json[]
-  return []
 }
 
 /**
@@ -101,12 +79,4 @@ export function nestedDirectivesOf(value: Json): Json[] {
     }
   }
   return out
-}
-
-/** 从 def 引用 / 裸哈希取哈希；形态非法返回 null。 */
-export function defHashOf(value: Json | undefined): string | null {
-  if (typeof value === 'string') return HASH_RE.test(value) ? value : null
-  if (!isRecord(value)) return null
-  const hash = value['def']
-  return typeof hash === 'string' && HASH_RE.test(hash) ? hash : null
 }

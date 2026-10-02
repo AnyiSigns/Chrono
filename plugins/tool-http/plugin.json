@@ -3,13 +3,10 @@
   "schema": "schema/tool-http.json",
   "implements": ["tool-http", "tool-provider"],
   "methods": {
-    "tool-http": ["describe", "invoke"],
-    "tool-provider": ["describe", "invoke"]
-  },
-  "pins": {
-    "host": "host"
+    "tool-http": ["describe", "invoke"]
   },
   "needs": {
+    "host": { "mode": "one" },
     "sandbox": { "mode": "one" },
     "search-index": { "mode": "many", "methods": ["search", "put"] }
   },

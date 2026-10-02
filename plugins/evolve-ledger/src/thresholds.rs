@@ -31,6 +31,19 @@ impl Thresholds {
         Self { values: map }
     }
 
+    /// 从已归一化的扁平表 `{name: number}` 构造（指标层消费 `thresholds` 回包的值面）。
+    pub fn from_values(value: &Value) -> Self {
+        let mut values = BTreeMap::new();
+        if let Some(map) = value.as_object() {
+            for (name, raw) in map {
+                if let Some(number) = raw.as_f64() {
+                    values.insert(name.clone(), number);
+                }
+            }
+        }
+        Self { values }
+    }
+
     /// 跨身份线形：`{name: number}`。
     pub fn to_map(&self) -> Value {
         let mut out = serde_json::Map::new();
@@ -190,5 +203,13 @@ mod tests {
         let bag = json!({"thresholds": {"fold_k": 4}});
         let thresholds = Thresholds::from_bag(&bag);
         assert_eq!(thresholds.to_map(), json!({"fold_k": 4.0}));
+    }
+
+    #[test]
+    fn flat_values_construct_from_wire_map() {
+        let thresholds = Thresholds::from_values(&json!({"fold_k": 4.0, "ratio": 0.5}));
+        assert_eq!(thresholds.count("fold_k", 3), 4);
+        assert_eq!(thresholds.number("ratio", 0.0), 0.5);
+        assert_eq!(thresholds.count("missing", 7), 7);
     }
 }

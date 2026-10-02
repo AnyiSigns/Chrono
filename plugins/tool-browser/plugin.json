@@ -3,13 +3,10 @@
   "schema": "schema/tool-browser.json",
   "implements": ["tool-browser", "tool-provider"],
   "methods": {
-    "tool-browser": ["describe", "invoke"],
-    "tool-provider": ["describe", "invoke"]
-  },
-  "pins": {
-    "host": "host"
+    "tool-browser": ["describe", "invoke"]
   },
   "needs": {
+    "host": { "mode": "one" },
     "sandbox": { "mode": "one" }
   },
   "start": "node execute/main.ts",

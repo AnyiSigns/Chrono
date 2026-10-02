@@ -3,9 +3,7 @@
   "schema": "schema/graph.json",
   "implements": ["loop-policy", "loop-rule", "turn-hook"],
   "methods": {
-    "loop-policy": ["interpret", "cancel", "note-input", "promote-input"],
-    "loop-rule": ["when", "pre", "post"],
-    "turn-hook": ["before-assemble", "after-step", "before-settle", "after-settle"]
+    "loop-policy": ["interpret", "cancel", "note-input", "promote-input"]
   },
   "concurrent_methods": [
     "interpret",
@@ -24,10 +22,8 @@
     "loop-rule": { "methods": ["when", "pre", "post"] },
     "turn-hook": { "methods": ["before-assemble", "after-step", "before-settle", "after-settle"] }
   },
-  "pins": {
-    "host": "host"
-  },
   "needs": {
+    "host": { "mode": "one" },
     "graph-run": { "mode": "one" },
     "turn-ledger": { "mode": "one" },
     "ref-hydrate": { "mode": "one" },

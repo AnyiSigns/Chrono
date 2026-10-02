@@ -5,7 +5,6 @@
   "methods": {
     "tokenizer": ["encode", "chunk"]
   },
-  "pins": {},
   "start": "node execute/launch.mjs",
   "build": [{ "cmd": "cargo", "args": ["build", "--release"] }],
   "protocol": "1",

@@ -25,7 +25,6 @@ function worldOf(): World {
           {
             seq: 0,
             payload: M1,
-            pins: {},
             sig: M1,
             adopted: { at: 1, by: 'seed', write: 'w-1' },
           },
@@ -70,14 +69,12 @@ function patchWorldOf(): World {
           {
             seq: 0,
             payload: BASE,
-            pins: {},
             sig: BASE,
             adopted: { at: 1, by: 'seed', write: 'w-0' },
           },
           {
             seq: 1,
             payload: PATCH,
-            pins: {},
             sig: PATCH,
             base: 0,
             adopted: { at: 2, by: 'seed', write: 'w-1' },

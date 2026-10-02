@@ -5,7 +5,6 @@
   "methods": {
     "context": ["build"]
   },
-  "pins": {},
   "slots": {
     "context-source": { "methods": ["collect"] }
   },

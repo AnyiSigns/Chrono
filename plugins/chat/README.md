@@ -1,7 +1,7 @@
 # chat（回合命令面 + 装配服务 + 接线）
 
 Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一次 `loop-policy.interpret` 调用，
-并把解释器与标题段返回的写计划机械合并成顶层计划值交宿主落账。
+并把解释器返回的写计划机械合并成顶层计划值交宿主落账。
 本包还负责**回合身份**（`send` 铸 `turn_id`、续跑续同一回合）与**结局三通道**（session 回合记录 ·
 `chat.turn.settled` 事件 · 命令回执）。
 本包是**有执行件的身份**：成员 = `execute/`（装配服务）+ `terms/`（三个命令入口）+ `schema/`（接线数据）。
@@ -10,7 +10,7 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 
 - 身份：`chat`；`implements: ["chat"]`、`methods: { chat: ["send", "history", "resume", "cancel"] }`、`start: "node execute/main.ts"`。
 - `pins`：`session` → `session`、`input` → `input`、`model` → `model-protocol`、`context` → `context-window`、
-  `session-title` → `session-title`、`loop-policy` → `loop-policy`。
+  `loop-policy` → `loop-policy`。
 - 入口 term 是**自能力路由**（无自引用 pin）：
   `["eff","chat","send",["g",["ids"]]]` / `["eff","chat","history",["v",0]]` /
   `["eff","chat","resume",["v",0]]` / `["eff","chat","cancel",["v",0]]`——`send` 只把投影切片（定义 / 判定数据）交给自己的服务，
@@ -55,7 +55,7 @@ Chrono 的对话回合入口：把「用户消息已入输入槽」翻译成一�
 
 ```
 session.turn_open               // 调模型前先写回合头（含用户消息与 slot_ref；首条消息时随建会话规格一次性落盘）
-session-title.generate          // 首条用户消息时算标题，写进 session 标题 / 建会话规格
+model.complete (title)          // 首条用户消息时内联算标题，经 session.set_title 写回
 loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop-policy 自驱解释器按节点分发
   └ 逐节点写 step.intent / step.result；终态由 session.turn_settle CAS 落定
 ```
@@ -65,11 +65,10 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
   `persona` / `skills` / `workspace_root` / `evidence` / `todo` / `guard_rules` / `sandbox_tiers` /
   `tools_bindings` / `mcp_tools` 等（缺对应身份即省略，由 loop-policy 回落种子 / 内建兜底）。
   bag 恒带 `contract_version`（取自生成契约副本 `execute/contract/` 的 `CONTRACT_VERSION`），供消费方按主版本显式拒绝过期契约。
-- interpret 段与 title 段返回的 `$directives` **按段序机械合并**为顶层 `$directives`（数组拼接，不构造新 JSON 对象）。
+- interpret 段返回的 `$directives` 作为顶层 `$directives` 交宿主落账（数组拼接，不构造新 JSON 对象）。
 - 首条用户消息判定：投影里当前会话 `title` 仍为缺省「新对话」且 `count == 0`。
-  标题段 `on_fail = ignore`：该段传输失败 / 无标题值一律跳过，不影响主回合。
-  **标题先算**（`session-title.generate` 回标题值）：新会话并入 `new_conversation.title` 交 `turn_open` 建；
-  既有会话走 `session.set_title`。不再合并整份 `set_title` 写计划。
+  标题生成内联在本服务：非流式单次 `model.complete`，失败 / 超时 / 空一律走 `resolveTitle` 的
+  确定性兜底（首条消息前 N 字 → 缺省标题），再经 `session.set_title` 写回；不影响主回合。
 - 回合开始前的拒绝（`empty_slot` / `model_not_configured` / `workspace_missing` / owner 读失败）不持久化回合，
   经命令回执交 composer 渲染引导，输入槽保留供重试；回合开始后的失败产 `refused` 结局（`attributableTo` +
   `retryable`），经 `turn_settle` 记入回合、广播 `chat.turn.settled`，并随回执返回。
@@ -135,7 +134,9 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 
 该文件既是身份自述，也是服务启动时读到的接线数据。字段：`slices` / `system_prompt` / `tools` /
 `title` / `on_empty_slot` / `on_budget` / `stream` / `method_timeouts`。段序不在此（归 loop-policy 图数据）；
-`title.title_default` 声明会话缺省标题（与 session 新建会话一致）。
+`title.title_default` 声明会话缺省标题（与 session 新建会话一致）；`title.prompt` / `max_chars` /
+`max_tokens` / `timeout_ms` 声明内联标题生成的提示词、字数上限与调用上限。建会话规格随 `turn_open`
+以缺省标题落盘，首条消息标题在回合开始后经 `session.set_title` 写回。
 
 `method_timeouts` 为 `chat.send` / `chat.resume` 声明长安全网，须严格大于 `loop-policy.interpret`：命令端点
 包住一次 `interpret`（一段内顺序跑 context.build / model.chat / tool-dispatch.dispatch 等），不得用宿主缺省 30s 封顶；
@@ -157,7 +158,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 ## 测试
 
 `npm test`（`node --test`）：包形状 / 接线 / term 入口 / 服务协议级（驱动桥接 `loop-policy.interpret`
-与 `session-title.generate` 假实现，覆盖空槽 no-op、interpret bag 键完整性、`$directives` 合并、
+与标题 `model.complete` 假实现，覆盖空槽 no-op、interpret bag 键完整性、`$directives` 合并、
 title 触发与失败跳过、`chat.resume` 的 `args.ids` 装配与 `bag.resume` 透传、`chat.history` 链还原与切片）。
 `tools/e2e-smoke.mjs`：boot CLI pack/seed chat 及其 pins 闭包（含 `loop-policy`），
 核对声明 / 命令（含 `chat.resume`）/ pins 解析 / 自能力入口解析 / `.worldignore`。

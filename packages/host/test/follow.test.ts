@@ -23,7 +23,6 @@ const NEXT: World = {
         {
           seq: 0,
           payload: DATA,
-          pins: {},
           sig: SIG,
           adopted: { at: 1, by: 'test', write: WRITE },
         },

@@ -2,7 +2,7 @@
 
 图数据的**纯机械面**：机械闸校验（闭合 / 类型 / publish 偏序 / 端口 ⊆ pins + 六条图不变量 + 四条演化规则）、
 运行期结构闭合、实例确定性选择、内核口径内容哈希。图数据随 `args` 传入（服务**不读投影**），
-供上游 `loop-policy`（解释器入口闭合 + 提案机械闸）与 `orchestration-admin`（`validate` / `propose`）经反向
+供上游 `loop-policy`（解释器入口闭合 + 提案机械闸）与 `orchestration`（`validate` / `propose`）经反向
 `port.call` 消费；自身无反向调用、无写通道、不发 eff。
 
 - 身份：`graph-gate`

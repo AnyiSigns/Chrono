@@ -66,8 +66,9 @@ describe('入世期 eff 声明校验', () => {
     const eff = ['eff', 'p', 'a', ['c', null]] as unknown as Json
     const emptyCtx: EffDeclContext = {
       implements: new Set<string>(),
-      pins: new Set<string>(),
+      needs: new Set<string>(),
       methods: {},
+      slots: {},
       calleeMethodsOf: () => null,
     }
 
@@ -114,8 +115,9 @@ describe('入世期 eff 声明校验', () => {
   describe('validateEffDecls：自调用与跨身份口径分开', () => {
     const base = {
       implements: new Set(['self']),
-      pins: new Set(['remote']),
+      needs: new Set(['remote']),
       methods: { self: ['ok'] },
+      slots: {},
       calleeMethodsOf: (port: string) => (port === 'remote' ? { remote: ['r'] } : null),
     }
 
@@ -127,7 +129,17 @@ describe('入世期 eff 声明校验', () => {
       expect(issues).toEqual(['undeclared_method:self.ghost'])
     })
 
-    it('port 既不在 implements 也不在 pins → undeclared_port', () => {
+    it('自调用 methods[port] 缺省时回落本包 slots[port].methods', () => {
+      const ctx = { ...base, methods: {}, slots: { self: { methods: ['ok'] } } }
+      expect(
+        validateEffDecls(['eff', 'self', 'ok', ['c', null]] as unknown as Json, ctx),
+      ).toEqual([])
+      expect(
+        validateEffDecls(['eff', 'self', 'ghost', ['c', null]] as unknown as Json, ctx),
+      ).toEqual(['undeclared_method:self.ghost'])
+    })
+
+    it('port 既不在 implements 也不在 needs → undeclared_port', () => {
       const issues = validateEffDecls(['eff', 'nope', 'm', ['c', null]] as unknown as Json, base)
       expect(issues).toEqual(['undeclared_port:nope'])
     })
@@ -148,11 +160,12 @@ describe('入世期 eff 声明校验', () => {
       ).toEqual([])
     })
 
-    it('同键既 implements 又 pins：按 pins（被调声明）判，与运行期路由同口径', () => {
+    it('同键既 implements 又 needs：按 needs（被调声明）判，与运行期路由同口径', () => {
       const ctx: EffDeclContext = {
         implements: new Set(['dual']),
-        pins: new Set(['dual']),
+        needs: new Set(['dual']),
         methods: { dual: ['selfOnly'] },
+        slots: {},
         calleeMethodsOf: (port) => (port === 'dual' ? { dual: ['remoteOnly'] } : null),
       }
       // 被调声明的方法放行（旧实现按自身 methods 会把合法调用拒掉）
@@ -293,7 +306,7 @@ describe('入世期 eff 声明校验', () => {
       }
     })
 
-    it('被调身份未入世 → 走既有 unresolved_pin，不新增拒绝语义', async () => {
+    it('被调身份未入世 → 走既有 unresolved_need，不新增拒绝语义', async () => {
       const root = createTempRoot()
       try {
         const caller = writeTempPackage(root, {
@@ -305,7 +318,7 @@ describe('入世期 eff 声明校验', () => {
         })
         const report = runSeed(root, [{ name: 'ui-settings', path: caller }])
         expect(report.ok).toBe(false)
-        expect(report.items[0].reasons).toEqual(['unresolved_pin'])
+        expect(report.items[0].reasons).toEqual(['unresolved_need:secrets'])
       } finally {
         await cleanupTempRoot(root)
       }
@@ -327,43 +340,29 @@ describe('入世期 eff 声明校验', () => {
       }
     })
 
-    it('同键既 implements 又 pins：门禁按被依赖者方法判（与路由同口径）', async () => {
-      const goodRoot = createTempRoot()
-      const badRoot = createTempRoot()
+    it('同键既 implements 又 needs：声明期即拒 bad_plugin_decl（自能力与消费路径互斥）', async () => {
+      const root = createTempRoot()
       try {
-        const provider = (root: string) =>
-          writeTempPackage(root, {
-            identity: 'dual-provider',
-            implements: ['dual.cap'],
-            methods: { 'dual.cap': ['remoteOnly'] },
-          })
-        const caller = (root: string, method: string) =>
-          writeTempPackage(root, {
-            identity: 'dual-caller',
-            implements: ['dual.cap'],
-            methods: { 'dual.cap': ['selfOnly'] },
-            pins: { 'dual.cap': 'dual-provider' },
-            terms: { 'x.json': JSON.stringify(['eff', 'dual.cap', method, ['c', null]]) },
-          })
-
-        // 调被依赖者声明的方法：放行（旧实现按自身 methods 会拒）
-        expect(
-          runSeed(goodRoot, [
-            { name: 'dual-provider', path: provider(goodRoot) },
-            { name: 'dual-caller', path: caller(goodRoot, 'remoteOnly') },
-          ]).ok,
-        ).toBe(true)
-
-        // 调自身方法（不在被依赖者声明）：整包拒（旧实现会放行到运行期）
-        const report = runSeed(badRoot, [
-          { name: 'dual-provider', path: provider(badRoot) },
-          { name: 'dual-caller', path: caller(badRoot, 'selfOnly') },
+        const provider = writeTempPackage(root, {
+          identity: 'dual-provider',
+          implements: ['dual.cap'],
+          methods: { 'dual.cap': ['remoteOnly'] },
+        })
+        const caller = writeTempPackage(root, {
+          identity: 'dual-caller',
+          implements: ['dual.cap'],
+          methods: { 'dual.cap': ['selfOnly'] },
+          pins: { 'dual.cap': 'dual-provider' },
+          terms: { 'x.json': JSON.stringify(['eff', 'dual.cap', 'remoteOnly', ['c', null]]) },
+        })
+        const report = runSeed(root, [
+          { name: 'dual-provider', path: provider },
+          { name: 'dual-caller', path: caller },
         ])
         expect(report.ok).toBe(false)
-        expect(report.items[1].reasons).toContain('undeclared_method:dual.cap.selfOnly')
+        expect(report.items[1].reasons).toContain('bad_plugin_decl')
       } finally {
-        await cleanupTempRoot(goodRoot)
-        await cleanupTempRoot(badRoot)
+        await cleanupTempRoot(root)
       }
     })
   })
@@ -502,7 +501,6 @@ describe('入世期 eff 声明校验', () => {
               identity: 'toy-validate',
               implements: ['toy.validate'],
               methods: { 'toy.validate': ['ok'] },
-              pins: {},
               start: '',
               build: [],
               protocol: '1',

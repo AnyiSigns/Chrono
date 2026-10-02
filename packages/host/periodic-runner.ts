@@ -61,8 +61,10 @@ export function buildPeriodicBag(projection: Json, reads: PeriodicRead[]): Json 
 
 /** 声明里含该方法的能力类（方法名 → cap）；多类同名取字典序第一个。 */
 export function capOfMethod(decl: PluginDecl, method: string): string | null {
-  for (const cap of Object.keys(decl.methods).sort()) {
-    if (decl.methods[cap].includes(method)) return cap
+  const caps = new Set([...Object.keys(decl.methods), ...Object.keys(decl.slots)])
+  for (const cap of [...caps].sort()) {
+    const methods = decl.methods[cap] ?? decl.slots[cap]?.methods ?? []
+    if (methods.includes(method)) return cap
   }
   return null
 }

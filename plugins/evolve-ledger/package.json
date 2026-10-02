@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "台账原语（Rust）：链窗口读取 / 写入计划构造 / 阈值解析 / 确定性哈希；纯计算、非 LLM、同输入同输出，无 npm 依赖，二进制走宿主依赖缓存",
+  "description": "台账原语 + 指标层（Rust，单一身份）：链窗口读取 / 写入计划构造 / 阈值解析 / 确定性哈希 + 证据聚合 / 台账清理 / 影子回放 / 用户请求记录；纯计算、非 LLM、同输入同输出，无 npm 依赖，二进制走宿主依赖缓存",
   "files": [
     "plugin.json",
     "package.json",

@@ -317,29 +317,43 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     expect(loadAnchor(journalFile()).world.ids['toy-badschema']).toBeUndefined()
   })
 
-  it('换 toy 服务实现（改 pins 指向）不改调用方 term：值来自新实现', async () => {
-    const impl2 = writeTempPackage(root, {
-      identity: 'toy-alpha-2',
-      implements: ['toy.alpha'],
-      start: 'node execute/main.js',
-    })
+  it('换 toy 服务实现（退役旧 + 新提供方入世）不改调用方 term：值来自新实现', async () => {
     seedDefault()
-    expect(runSeed(root, [{ name: 'toy-alpha-2', path: impl2 }]).ok).toBe(true)
 
-    // 第一世代：pins → toy-alpha
+    // 第一世代：one 绑定解析到唯一提供方 toy-alpha
     await start()
     let client = await connect({ root, timeoutMs: 3000 })
     try {
       expect((await client.command('toy-caller.run')).status).toBe('done')
+      // 退役旧提供方，使 toy.alpha 的唯一候选让位给新实现
+      const retired = await client.submit([
+        {
+          kind: 'write',
+          request: {
+            id: 'retire-alpha',
+            op: 'retire',
+            target: { expect_pos: null },
+            args: { id: 'toy-alpha' },
+            by: 'client',
+          },
+        },
+      ])
+      expect(retired.status).toBe('done')
     } finally {
       client.close()
     }
     expect(lastAuditImpl()).toBe('toy-alpha')
 
-    // 换代：同一 term 源，只改 pins 指向 toy-alpha-2，重新入世
+    // 换代：同一 term 源，只换提供方实现，重新入世
+    const impl2 = writeTempPackage(root, {
+      identity: 'toy-alpha-2',
+      implements: ['toy.alpha'],
+      start: 'node execute/main.js',
+    })
+    await handles[handles.length - 1].stop()
+    expect(runSeed(root, [{ name: 'toy-alpha-2', path: impl2 }]).ok).toBe(true)
     const callerV2 = writeCaller({ 'toy.alpha': 'toy-alpha-2' })
     expect(readFileSync(join(callerV2, 'terms', 'run.json'), 'utf8')).toBe(JSON.stringify(RUN_TERM))
-    await handles[handles.length - 1].stop()
     expect(runSeed(root, [{ name: 'toy-caller', path: callerV2 }]).ok).toBe(true)
 
     await start()
@@ -375,6 +389,20 @@ describe('S4 效果：eff → 审计侧存 → 回灌 → 落账', () => {
     let client = await connect({ root, timeoutMs: 3000 })
     try {
       expect((await client.command('toy-caller.run')).status).toBe('done')
+      // 退役旧提供方，使 toy.alpha 的唯一候选让位给静默实现
+      const retired = await client.submit([
+        {
+          kind: 'write',
+          request: {
+            id: 'retire-denied',
+            op: 'retire',
+            target: { expect_pos: null },
+            args: { id: 'toy-denied' },
+            by: 'client',
+          },
+        },
+      ])
+      expect(retired.status).toBe('done')
     } finally {
       client.close()
     }

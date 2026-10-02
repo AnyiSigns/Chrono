@@ -52,8 +52,13 @@ describe('离线命令', () => {
     expect(toy!.status).toBe('unchanged')
   })
 
-  it('runSeed 按 pins 名级排序：依赖者先登记也一次入世', () => {
-    const depRoot = writeTempPackage(root, { identity: 'dep', omitSchema: true, start: '' })
+  it('runSeed 按 needs.one 名级排序：依赖者先登记也一次入世', () => {
+    const depRoot = writeTempPackage(root, {
+      identity: 'dep',
+      implements: ['dep'],
+      omitSchema: true,
+      start: '',
+    })
     const consumerRoot = writeTempPackage(root, {
       identity: 'consumer',
       omitSchema: true,

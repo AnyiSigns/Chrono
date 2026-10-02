@@ -76,17 +76,11 @@ function link(head: Head, world: World, req: WriteRequest): Head {
   return { seq: out.entry.seq, hash: out.hash as Hash }
 }
 
-function genReq(
-  id: string,
-  payload: Hash,
-  sig: Hash,
-  pos: Hash | null,
-  pins: Record<string, Hash> = { p: sig },
-): WriteRequest {
-  return opReq('add_gen', asJson({ id, payload, pins, sig }), pos)
+function genReq(id: string, payload: Hash, sig: Hash, pos: Hash | null): WriteRequest {
+  return opReq('add_gen', asJson({ id, payload, sig }), pos)
 }
 
-/** 世界：5 条 def + 身份 x + gen0{payload,pins{p:sig},sig}；nGen>1 加 gen1；retire 退役。 */
+/** 世界：5 条 def + 身份 x + gen0{payload,sig}；nGen>1 加 gen1；retire 退役。 */
 function seeded(nGen = 1, retire = false): { world: World; head: Head } {
   const world = worldWith(
     buildDef('schema'),
@@ -103,13 +97,7 @@ function seeded(nGen = 1, retire = false): { world: World; head: Head } {
   )
   head = link(head, world, genReq('x', PAYLOAD_KEY, SIG_KEY, head.hash))
   if (nGen > 1)
-    head = link(
-      head,
-      world,
-      genReq('x', NEXT_PAYLOAD_KEY, NEXT_SIG_KEY, head.hash, {
-        p: NEXT_PAYLOAD_KEY,
-      }),
-    )
+    head = link(head, world, genReq('x', NEXT_PAYLOAD_KEY, NEXT_SIG_KEY, head.hash))
   if (retire)
     head = link(head, world, opReq('set_active', asJson({ id: 'x', active: null }), head.hash))
   return { world, head }
@@ -140,7 +128,7 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     const world = worldWith(buildDef('a'))
     const bads = [
       opReq('nope', asJson({})),
-      opReq('put', asJson({ pins: {} })),
+      opReq('put', asJson({})),
       opReq('put', buildDef('a'), GHOST.slice(0, 62)),
     ]
     for (const bad of bads) {
@@ -148,9 +136,9 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     }
   })
 
-  it('正例：put.sig / put.pins / request.ref / add_identity.schema 均在 defs', () => {
+  it('正例：put.sig / request.ref / add_identity.schema 均在 defs', () => {
     const world = worldWith(buildDef('a'), buildDef('sig'), buildDef('schema'), buildDef('payload'))
-    const body = asJson({ body: buildDef('a'), sig: SIG_KEY, pins: { k: SCHEMA_KEY } })
+    const body = asJson({ body: buildDef('a'), sig: SIG_KEY })
     expect(validate(EMPTY_HEAD, world, opReq('put', body))).toMatchObject({ ok: true })
     expect(validate(EMPTY_HEAD, world, { ...putReq('a'), ref: SIG_KEY })).toMatchObject({
       ok: true,
@@ -158,9 +146,7 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     expect(
       validate(EMPTY_HEAD, world, opReq('add_identity', asJson({ id: 'z', schema: SCHEMA_KEY }))),
     ).toMatchObject({ ok: true })
-    expect(
-      validate(EMPTY_HEAD, world, genReq('x', PAYLOAD_KEY, SIG_KEY, null, { k: SCHEMA_KEY })),
-    ).toMatchObject({
+    expect(validate(EMPTY_HEAD, world, genReq('x', PAYLOAD_KEY, SIG_KEY, null))).toMatchObject({
       ok: true,
     })
   })
@@ -170,9 +156,8 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     const bads: WriteRequest[] = [
       opReq('add_identity', asJson({ id: 'z', schema: GHOST })),
       opReq('put', asJson({ body: buildDef('a'), sig: GHOST })),
-      opReq('put', asJson({ body: buildDef('a'), pins: { k: GHOST } })),
       { ...putReq('a'), ref: GHOST },
-      genReq('x', GHOST, SIG_KEY, null, {}),
+      genReq('x', GHOST, SIG_KEY, null),
     ]
     for (const b of bads) expect(validate(EMPTY_HEAD, world, b).reasons).toEqual(['missing_ref'])
   })
@@ -213,13 +198,13 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
 
   it('父身份：fork/graft 缺父或 gen 越界 → missing_parent；父在则过', () => {
     const { world, head } = seeded()
-    expect(validate(head, world, genReq('x', PAYLOAD_KEY, SIG_KEY, head.hash, {}))).toMatchObject({
+    expect(validate(head, world, genReq('x', PAYLOAD_KEY, SIG_KEY, head.hash))).toMatchObject({
       ok: true,
     })
     const graft = (from: string, g: number): WriteRequest =>
       opReq(
         'graft',
-        asJson({ id: 'g', payload: PAYLOAD_KEY, pins: {}, sig: SIG_KEY, from, gen: g }),
+        asJson({ id: 'g', payload: PAYLOAD_KEY, sig: SIG_KEY, from, gen: g }),
         head.hash,
       )
     expect(validate(head, world, graft('ghost', 0)).reasons).toEqual(['missing_parent'])
@@ -257,7 +242,7 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
     const { world, head } = seeded()
     const bad = opReq(
       'add_gen',
-      asJson({ id: 'x', payload: PAYLOAD_KEY, pins: {}, sig: SIG_KEY, seq: 0 }),
+      asJson({ id: 'x', payload: PAYLOAD_KEY, sig: SIG_KEY, seq: 0 }),
       head.hash,
     )
     expect(validate(head, world, bad).reasons).toEqual(['bad_form'])
@@ -275,7 +260,6 @@ describe('validate 四步：形态 → 引用 → 位置 → 不变量', () => {
       asJson({
         id: 'x',
         payload: PAYLOAD_KEY,
-        pins: {},
         sig: SIG_KEY,
         graft: { from: 'x', gen: 0 },
       }),

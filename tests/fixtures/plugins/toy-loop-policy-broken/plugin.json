@@ -4,17 +4,21 @@
   "methods": {
     "loop-policy": ["interpret"]
   },
-  "pins": {
-    "session": "session",
-    "model": "model-protocol",
-    "context": "context-window",
-    "guard": "guard",
-    "approval": "approval",
-    "tool-dispatch": "tool-dispatch",
-    "tool-registry": "tool-registry",
-    "router": "router",
-    "evolve-metrics": "evolve-metrics",
-    "host": "host"
+  "slots": {
+    "loop-rule": { "methods": ["when", "pre", "post"] },
+    "turn-hook": { "methods": ["before-assemble", "after-step", "before-settle", "after-settle"] }
+  },
+  "needs": {
+    "session": { "mode": "one" },
+    "model": { "mode": "one" },
+    "context": { "mode": "one" },
+    "guard": { "mode": "one" },
+    "approval": { "mode": "one" },
+    "tool-dispatch": { "mode": "one" },
+    "tool-registry": { "mode": "one" },
+    "router": { "mode": "one" },
+    "evolve-metrics": { "mode": "one" },
+    "host": { "mode": "one" }
   },
   "start": "node execute/main.mjs",
   "build": [],

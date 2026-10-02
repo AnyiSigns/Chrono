@@ -1,0 +1,8 @@
+{
+  "name": "uislot-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端测试夹具：ui-slot / ui-nav 扩展类提供方，返回一条状态栏槽声明与一条页面导航记录。",
+  "engines": { "node": ">=24" }
+}

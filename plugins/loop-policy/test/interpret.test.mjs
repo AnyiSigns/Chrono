@@ -389,7 +389,7 @@ test('有工具路径 escalate：approval.wait 入队 ⇒ 显式挂起收口（�
 test('approvalBag：port / tool 由 gate verdict 的 (port, 工具名) 判据带出（kind 判据归 approval）', async () => {
   for (const [tool, provider] of [
     ['plugin.write', 'plugin-admin'],
-    ['orchestration.propose', 'orchestration-admin'],
+    ['orchestration.propose', 'orchestration'],
   ]) {
     const service = startService({
       providers: {

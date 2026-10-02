@@ -11,16 +11,14 @@ export type Path = (string | number)[]
 // ── 世界 ──────────────────────────────────────────────
 export interface Def {
   body: Json
-  pins?: Record<string, Hash> // 不透明：内核不解释 pin 名
   sig?: Hash
 }
 // Def 就是 put 的载荷本身：put.args: Def，defs[H(Def)] = Def。
-// 键覆盖 body + pins + sig（不是 H(body)），否则改 pin / sig 不动 worldRev。
+// 键覆盖 body + sig（不是 H(body)），否则改 sig 不动 worldRev。
 
 export interface Gen {
   seq: number // 从 0 起、严格 +1；由内核分配，不由写请求提交
   payload: Hash
-  pins: Record<string, Hash>
   sig: Hash
   adopted: { at: number; by: string; write: string } // at/by = 该 Entry；
   // write = 完成采纳的 entry 位置：普通 add_gen = 自身 entryHash；batch 内 = 外层 batch entry 位置

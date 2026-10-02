@@ -20,7 +20,7 @@ const PINS = {
 const MANY_NEEDS = {
   'tool-provider': [
     'mcp',
-    'orchestration-admin',
+    'orchestration',
     'plugin-admin',
     'question',
     'todo',

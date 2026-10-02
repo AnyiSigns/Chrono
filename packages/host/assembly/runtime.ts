@@ -7,9 +7,9 @@
 // G7 A1：数据世代（同身份混合世代）变化不触发跟随 / 隔离 / 服务动作。
 
 import { resolve } from 'node:path'
-import { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
+import { computeAssemblyPlan } from './closure.ts'
 import { capabilityOwnerConflicts, effectiveMethods, manyNeedsMap } from './capability-index.ts'
-import { assemblyGen, isCodeGen, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
+import { assemblyGen, isCodeGen, needsBindingsOf, readPluginDecl, readPluginDeclOfGen } from './decl.ts'
 import type { PluginDecl } from './decl.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import type { IdentitySuspendResult } from '../host-methods.ts'
@@ -155,7 +155,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   order: string[] = []
 
   private world: World
-  private ownerIndex: Map<Hash, string>
   private readonly log: (record: LifecycleRecord) => void
   private readonly onEvent?: (impl: string, topic: string, payload: Json) => void
   private readonly handshakeTimeoutMs: number
@@ -221,7 +220,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       options.sourceRoot ?? ((identity) => resolvePluginSourceRoot(this.paths.root, identity))
     this.onPortCall = options.onPortCall
     this.plan = computeAssemblyPlan(options.world)
-    this.ownerIndex = buildOwnerIndex(options.world)
     this.swapHost = {
       isStopping: () => this.stopping,
       isIsolated: (id) => this.isolated.has(id),
@@ -258,7 +256,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (this.stopping) return
     const prev = this.world
     this.world = next
-    this.ownerIndex = buildOwnerIndex(next)
     this.buildDependencyMaps()
     const ids = new Set([...Object.keys(prev.ids), ...Object.keys(next.ids)])
     const changed: string[] = []
@@ -305,7 +302,6 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       // 只有当宿主再次以更高链头调用 applyWorld 时，才会从 prev 重新 diff 并重试变更身份。
       // 故失败窗口内运行态可能与世界短暂不一致，属已知残留风险，由下一次跟随收敛。
       this.world = prev
-      this.ownerIndex = buildOwnerIndex(prev)
       this.buildDependencyMaps()
       throw err
     }
@@ -491,18 +487,19 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     return gen !== null && isCodeGen(world, gen) ? gen.payload : null
   }
 
-  /** 依赖图（谁 pins 谁）按当前世界重算：换代会改 pins，退役隔离靠它取反向可达。 */
+  /** 依赖图（谁 `needs.one` 谁）按当前世界重算：换代会改绑定，退役隔离靠它取反向可达。 */
   private buildDependencyMaps(): void {
     this.depsOf.clear()
     this.dependents.clear()
     for (const id of Object.keys(this.world.ids).sort()) {
       const gen = this.assemblyGenOf(id)
       const deps = new Set<string>()
-      for (const pin of Object.values(gen?.pins ?? {})) {
-        // 保留能力类 `host`：不是世界身份，不构成依赖边
-        if (pin === HOST_CAPABILITY) continue
-        const owner = this.ownerIndex.get(pin)
-        if (owner !== undefined) deps.add(owner)
+      if (gen !== null) {
+        for (const bound of Object.values(needsBindingsOf(this.world, gen))) {
+          // 宿主依赖哨兵 `host`：不是世界身份，不构成依赖边
+          if (bound === HOST_CAPABILITY) continue
+          if (Object.hasOwn(this.world.ids, bound)) deps.add(bound)
+        }
       }
       this.depsOf.set(id, [...deps])
       for (const dep of deps) {

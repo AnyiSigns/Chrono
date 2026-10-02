@@ -3,7 +3,6 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["toy.python"],
   "methods": { "toy.python": ["echo"] },
-  "pins": {},
   "start": "py execute/main.py",
   "build": [],
   "protocol": "1",

@@ -75,7 +75,7 @@ test('提案扫描：机械闸通过 → shadow → orchestration_change 入人�
     assert.equal(enqueue.args.cursor.kind, 'orchestration_change')
     assert.deepEqual(enqueue.args.cursor.proposal_ids, ['pr-run-1-1'])
     assert.deepEqual(enqueue.args.shadow, { def: 'metric-1' })
-    assert.equal(enqueue.args.port, 'orchestration-admin')
+    assert.equal(enqueue.args.port, 'orchestration')
     assert.match(graphHash, /^[0-9a-f]{64}$/)
   } finally {
     service.close()

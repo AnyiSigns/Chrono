@@ -5,7 +5,6 @@
   "methods": {
     "approval": ["enqueue", "list", "decide", "decide_all", "sweep"]
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

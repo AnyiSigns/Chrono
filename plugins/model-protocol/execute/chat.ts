@@ -25,6 +25,7 @@ import {
   repairsFor,
 } from './quirk-repair.ts'
 import type { RepairKind } from './quirk-repair.ts'
+import { capabilityWithRepairs, protocolLabel } from './downgrade.ts'
 import { BadArgsError } from 'plugin-sdk'
 import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 
@@ -74,40 +75,8 @@ function classifyWithSnippet(status: number, headers: Rec, body: string, now: nu
   return base
 }
 
-/**
- * 降级档：区分「回传可选」「回传强制」「整套关闭」。
- * - 强制回传（DeepSeek/Anthropic/Responses 带签名或加密内容）：去掉回传必然再 400，只能整套关闭思考；
- * - 可选回传（通用 openai-chat/自建端点）：只去掉回传，**保留思考参数与档位**，避免一次 400 把思考能力静默关掉；
- * - `closeAll`：思考参数本身被拒时整套关闭（retention=none，不发参数也不回传）。
- */
-async function downgradedProfile(
-  dialect: DialectClient,
-  quirks: DialectQuirks,
-  current: Json | undefined,
-  closeAll = false,
-): Promise<Json | undefined> {
-  const base = isRecord(current)
-    ? (current as Rec)
-    : await dialect.reasoningCapability({ protocol: protocolLabel(quirks), impl: quirks.impl })
-  if (closeAll || base['requires_replay_in_tool_loop'] === true)
-    return await dialect.reasoningCapability({})
-  return { ...base, replay_form: null, signature_field: null }
-}
-
 /** 每次调用最多新增的字段退让次数（点名字段 + 梯队探测合计）。 */
 const MAX_REPAIRS_PER_CALL = 3
-
-/** 依据已应用退让改写推理能力表：先去回传；仍被拒则整套关闭思考。 */
-async function capabilityWithRepairs(
-  dialect: DialectClient,
-  quirks: DialectQuirks,
-  base: Json | undefined,
-  applied: ReadonlySet<RepairKind>,
-): Promise<Json | undefined> {
-  if (applied.has('drop_reasoning_param')) return await downgradedProfile(dialect, quirks, base, true)
-  if (applied.has('drop_reasoning_replay')) return await downgradedProfile(dialect, quirks, base, false)
-  return base
-}
 
 /**
  * 4xx 字段协商：按已记忆的退让（baseline）+ 本次探测（trial）改写请求重试。
@@ -328,10 +297,6 @@ class DeltaGate {
     }
     if (Object.keys(emitted).length > 1) filtered['tool_call'] = emitted
   }
-}
-
-function protocolLabel(quirks: DialectQuirks): string {
-  return quirks.impl === 'sdk' ? 'sdk' : quirks.protocol
 }
 
 function outputValue(

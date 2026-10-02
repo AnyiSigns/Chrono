@@ -379,8 +379,6 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
       })
       // 路由解析按「已应用世界」而非 run 锚定世界：端点表由 runtime.applyWorld 按该世界换代换键，
       // 锚定旧世代会在并发换代后解析到已被摘除的世代键（假 not_loaded）；liveWorld 与端点表同代。
-      // 漂移证据按 (发出者, pin 名) 只留最近依赖世代，避免键含世代哈希的 Set 只增。
-      const driftLogged = new Map<string, string>()
       // 判定内效果（取数 / 调服务方法）的执行：与路由同代解析，嵌套判定按调用链限深，审计旁路落账。
       const judgmentInvoke = createJudgmentInvoke({
         getRouter: () => router,
@@ -398,12 +396,6 @@ export async function composeHost(options: HostOptions): Promise<ComposedHost> {
         suspended: () => runtime?.suspendedIds() ?? new Set<string>(),
         host: wiring.capability,
         judgment: createJudgmentRunner(DEFAULT_LIMITS, { invoke: judgmentInvoke }),
-        onDrift: (impl, cap, gen) => {
-          const key = `${impl}\u0000${cap}`
-          if (driftLogged.get(key) === gen) return
-          driftLogged.set(key, gen)
-          safeAppendLifecycle({ at: Date.now(), kind: 'dep', event: 'drift', impl, cap, gen })
-        },
       })
       routerReadyResolve?.()
 

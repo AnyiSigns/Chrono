@@ -239,8 +239,8 @@ export function needsBindingsOf(world: World, gen: Gen): Record<string, string> 
 }
 
 /**
- * 该身份当前代码世代的**有效 pins**：声明 `pins` ∪ 该世代 `commit.body.meta.needs` 的 `one` 绑定
- * （cap → 被依赖身份名）；同名键声明 `pins` 优先（`one` 绑定不覆盖）。无代码世代 / 声明不可解析 → `null`。
+ * 该身份当前代码世代的**有效 pins**：该世代 `commit.body.meta.needs` 的 `one` 绑定（cap → 被依赖身份名，
+ * 含宿主依赖哨兵 `host`）。无代码世代 / 声明不可解析 → `null`。
  * 单一来源：投影 `ids.<id>.pins` 与宿主注入服务工厂上下文 `pins` 同调此函数，避免两处口径漂移。
  */
 export function effectivePins(
@@ -250,13 +250,7 @@ export function effectivePins(
 ): Record<string, string> | null {
   const decl = readPluginDecl(world, identityId, blobsDir)
   if (decl === null) return null
-  const merged: Record<string, string> = {}
-  for (const name of Object.keys(decl.decl.pins)) merged[name] = decl.decl.pins[name]
-  const bindings = needsBindingsOf(world, decl.gen)
-  for (const name of Object.keys(bindings)) {
-    if (!Object.hasOwn(merged, name)) merged[name] = bindings[name]
-  }
-  return merged
+  return needsBindingsOf(world, decl.gen)
 }
 
 /** term def 的规范构造：body = AST、sig = 世代签名；读侧与入世侧共用同一构造。 */

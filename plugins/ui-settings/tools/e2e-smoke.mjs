@@ -55,7 +55,6 @@ const BOOT_PACKAGES = [
   'agents',
   'evolution',
   'vendor-deepseek',
-  'vendor-custom',
   'secrets',
   'model-protocol',
 ]

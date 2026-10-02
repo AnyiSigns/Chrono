@@ -38,6 +38,8 @@ export interface UiServerDeps {
   uiSource: (id: string) => Promise<string | null>
   /** 写主题偏好后的运行态更新（缓存 + 广播）。 */
   applyThemePref: (pref: string) => void
+  /** 引导数据里的 uiState 键空间（由 ui-nav 记录目标 + boot_mode 派生）；缺省空表。 */
+  uiStateKeys?: () => string[]
   webDir?: string
   log?: (line: string) => void
 }
@@ -345,6 +347,7 @@ function serveShellPage(deps: UiServerDeps, webDir: string, res: ServerResponse)
     mounts: deps.mounts as unknown as Json,
     headless: deps.headless as unknown as Json,
     slots: (deps.slots ?? []) as unknown as Json,
+    uiStateKeys: (deps.uiStateKeys?.() ?? []) as unknown as Json,
     assets: assetUrls(webDir) as unknown as Json,
     theme: current.theme,
   })

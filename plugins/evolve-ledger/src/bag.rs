@@ -1,4 +1,4 @@
-// bag 解析：把调用方（`evolve-metrics` 门面）或宿主 periodic.reads（周期路径）注入的投影片段，
+// bag 解析：把调用方（指标层 aggregate / record / sweep / shadow）或宿主 periodic.reads（周期路径）注入的投影片段，
 // 归一成纯计算可用的形状。服务不读投影，只认 bag 里的值。
 
 use std::collections::BTreeMap;

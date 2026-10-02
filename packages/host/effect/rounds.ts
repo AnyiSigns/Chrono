@@ -1,12 +1,10 @@
 // A10 轮间驱动：done → 落账回调 → plan 通道（保留包装 `{"$directives":[...]}`）→ 分相 → 下一轮。
 // 分相：eval 连续段（可并一轮，extern 随邻）与 write（每条一轮）不共轮，保序、不重排 plan 语义。
-// 机械填字段：id / by / expect_pos（落账段内锚到当前链头）；
-// 结构 op 的 pins 按「名 → 被依赖身份 active 世代 payload 哈希」解析（与 A0 同路）。
+// 机械填字段：id / by / expect_pos（落账段内锚到当前链头）。
 // eval 的 ctx（A14）：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
 // plan 条目 eval 可写命令名代替入口哈希：宿主按命令声明解析入口（与命令面同路），属主即命令声明方。
 
 import { randomUUID } from 'node:crypto'
-import { HOST_CAPABILITY } from '../host-methods.ts'
 import { isRecord } from '../common/json.ts'
 import { OP_NAMES } from '../common/op-names.ts'
 import { readProjectionPath } from '../projection/index.ts'
@@ -279,57 +277,6 @@ function pickPlan(
 }
 
 /**
- * 结构 op 的 pins：值写身份名 → 解析成该身份 active 世代 payload 哈希（与 A0 同路）；
- * `batch` 递归子操作；非字符串值（如批内 `{"$n":k}` 占位）原样透传，交内核批处理。
- */
-export function resolvePins(
-  op: string,
-  args: Json,
-  world: World,
-  nested = false,
-): { ok: true; value: Json } | { ok: false; reason: string } {
-  if (!isRecord(args)) return { ok: true, value: args }
-  if (op === 'batch') {
-    const ops = args['ops']
-    if (!Array.isArray(ops)) return { ok: true, value: args }
-    const resolvedOps: Json[] = []
-    for (const sub of ops) {
-      if (!isRecord(sub) || typeof sub['op'] !== 'string' || !('args' in sub)) {
-        return { ok: false, reason: 'bad_directive' }
-      }
-      const subArgs = resolvePins(sub['op'], sub['args'] as Json, world, true)
-      if (!subArgs.ok) return subArgs
-      const next: Rec = { ...sub, args: subArgs.value }
-      resolvedOps.push(next)
-    }
-    return { ok: true, value: { ...args, ops: resolvedOps } }
-  }
-  if (op !== 'add_gen' && op !== 'graft' && op !== 'put') return { ok: true, value: args }
-  const pins = args['pins']
-  if (!isRecord(pins)) return { ok: true, value: args }
-  const resolved: Rec = {}
-  for (const [name, value] of Object.entries(pins)) {
-    if (typeof value !== 'string') {
-      resolved[name] = value // 批内占位符 / 已达 def 键的非名字值：不解释，原样给内核
-      continue
-    }
-    // 保留能力类 `host`：内核只在 batch 子操作里不递归校验，顶层结构 op 带它会被判 bad_form；
-    // 顶层提前拒（bad_directive），batch 子操作保留字面量交内核批处理。
-    if (value === HOST_CAPABILITY) {
-      if (!nested) return { ok: false, reason: 'bad_directive' }
-      resolved[name] = HOST_CAPABILITY
-      continue
-    }
-    const dependency = world.ids[value]
-    if (dependency === undefined || dependency.active === null) {
-      return { ok: false, reason: 'unresolved_pin' }
-    }
-    resolved[name] = dependency.active
-  }
-  return { ok: true, value: { ...args, pins: resolved } }
-}
-
-/**
  * 为 `add_gen`（含 `batch` 子 op）注入 `expect_active`：目标身份在基准世界的 active，
  * 身份不存在注入 `null`；args 已显式携带 `expect_active`（UI 两次往返的陈旧读）时不覆盖。
  * `ownActive` 是本 run 自身已落账写对身份 active 的叠加：后续写轮以它覆盖基准，避免自冲突。
@@ -537,13 +484,11 @@ function prepareGroup(
     ) {
       return { ok: false, reason: 'bad_directive' }
     }
-    const args = resolvePins(source.op, source.args, context.world)
-    if (!args.ok) return args
     // add_gen 注入 expect_active：基准 = plan 条目产出 eval 所见世界，否则该轮落账段世界；
     // 本 run 自身先前写以 ownActive 覆盖基准（避免自冲突）；显式值不覆盖。
     const injected = injectExpectActive(
       source.op,
-      args.value,
+      source.args,
       item.baseline ?? context.world,
       context.ownActive,
     )

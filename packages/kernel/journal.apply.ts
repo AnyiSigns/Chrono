@@ -155,7 +155,6 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
   const s = e.args as {
     id: string
     payload: Hash
-    pins?: Record<string, Hash>
     sig: Hash
     base?: number
     from?: string
@@ -194,7 +193,6 @@ function applyAddGen(w: World, e: Entry, ctx: GenCtx): ApplyOutcome {
   identity.gens.push({
     seq: identity.gens.length, // 内核分配：从 0 起、严格 +1，push 之前取值
     payload: s.payload,
-    pins: s.pins ?? {},
     sig: s.sig,
     adopted: { at: e.at, by: e.by, write: adoptedBy ?? entryHash({ ...e, argsHash }) },
     graft,

@@ -220,6 +220,10 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     expect(parsePluginDecl(baseDecl({ identity: '' })).ok).toBe(false)
   })
 
+  it('身份名不得为保留能力类 host → ok:false（host 不是真实身份）', () => {
+    expect(parsePluginDecl(baseDecl({ identity: 'host' })).ok).toBe(false)
+  })
+
   it('commands readonly 缺省 → false（只读是显式声明）', () => {
     const result = parsePluginDecl(baseDecl())
     expect(result.ok).toBe(true)
@@ -404,8 +408,8 @@ describe('parsePluginDecl needs / slots', () => {
     ).toBe(false)
   })
 
-  it('键为空 / 原型键 / 保留名 host → ok:false', () => {
-    for (const cap of ['', '__proto__', 'constructor', 'prototype', 'host']) {
+  it('键为空 / 原型键 → ok:false；needs 保留 host 作宿主哨兵 → ok:true；slots 保留 host → ok:false', () => {
+    for (const cap of ['', '__proto__', 'constructor', 'prototype']) {
       expect(
         parsePluginDecl(baseDecl({ needs: { [cap]: { mode: 'one' } } })).ok,
         `needs 键 ${cap}`,
@@ -415,13 +419,11 @@ describe('parsePluginDecl needs / slots', () => {
         `slots 键 ${cap}`,
       ).toBe(false)
     }
+    expect(parsePluginDecl(baseDecl({ needs: { host: { mode: 'one' } } })).ok).toBe(true)
+    expect(parsePluginDecl(baseDecl({ slots: { host: { methods: ['m'] } } })).ok).toBe(false)
   })
 
-  it('needs 键与 pins / implements / methods 键冲突 → ok:false', () => {
-    expect(
-      parsePluginDecl(baseDecl({ pins: { 'toy.x': 'dep' }, needs: { 'toy.x': { mode: 'one' } } }))
-        .ok,
-    ).toBe(false)
+  it('needs 键与 implements / methods 键冲突 → ok:false', () => {
     expect(parsePluginDecl(baseDecl({ needs: { 'toy.echo': { mode: 'one' } } })).ok).toBe(false)
     expect(
       parsePluginDecl(
@@ -430,12 +432,8 @@ describe('parsePluginDecl needs / slots', () => {
     ).toBe(false)
   })
 
-  it('slots 键与 pins 键冲突 → ok:false', () => {
-    expect(
-      parsePluginDecl(
-        baseDecl({ pins: { 'toy.x': 'dep' }, slots: { 'toy.x': { methods: ['m'] } } }),
-      ).ok,
-    ).toBe(false)
+  it('host 哨兵 mode 必须是 one → ok:false', () => {
+    expect(parsePluginDecl(baseDecl({ needs: { host: { mode: 'many' } } })).ok).toBe(false)
   })
 
   it('mode 缺省 / 非 one|many → ok:false', () => {
@@ -487,6 +485,26 @@ describe('parsePluginDecl needs / slots', () => {
       }),
     )
     expect(missing.ok).toBe(false)
+  })
+
+  it('methods 省略 → ok:true 且为 {}；同包 slots[cap].methods 仍解析（契约单源）', () => {
+    const omitted = baseDecl({ slots: { 'toy.echo': { methods: ['echo'] } } })
+    delete (omitted as Record<string, Json>)['methods']
+    const result = parsePluginDecl(omitted)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.decl.methods).toEqual({})
+      expect(result.decl.slots['toy.echo'].methods).toEqual(['echo'])
+    }
+  })
+
+  it('提供方 methods[cap] 省略、拥有方 slots[cap].methods 存在 → 解析通过', () => {
+    const omitted = baseDecl({
+      implements: ['toy.cap'],
+      slots: { 'toy.cap': { methods: ['a', 'b'] } },
+    })
+    delete (omitted as Record<string, Json>)['methods']
+    expect(parsePluginDecl(omitted).ok).toBe(true)
   })
 
   it('拥有方 implements 自身 slots → 允许', () => {

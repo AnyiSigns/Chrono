@@ -5,7 +5,7 @@
 
 import {
   buildInterpretBag,
-  buildTitleArgs,
+  buildTitleMessages,
   bodyOf,
   conversationsOf,
   findConversation,
@@ -17,6 +17,7 @@ import {
   threadKey,
   workspaceKnown,
 } from './assemble.ts'
+import { resolveTitle } from './title.ts'
 import {
   asString,
   errorValue,
@@ -28,7 +29,7 @@ import {
 import { causeFromError, causeOf, cancelled, refused } from './contract/index.ts'
 import type { TurnOutcome } from './contract/index.ts'
 import { BadArgsError, ServiceError } from './types.ts'
-import type { Wiring } from './wiring.ts'
+import type { TitleWiring, Wiring } from './wiring.ts'
 import type { CallEnv, Handler, Json, PortCaller, Rec } from './types.ts'
 
 /** 服务依赖：反向调用通道 + 生效接线（单测可注入假端口）。 */
@@ -352,10 +353,7 @@ const PROMOTE_INPUT_METHOD = 'promote-input'
 /** #36 模型 IO 服务：取消链上销毁在途 HTTP 请求。 */
 const MODEL_PORT = 'model'
 const MODEL_ABORT_METHOD = 'abort'
-
-/** #49 首条消息标题旁路段。 */
-const TITLE_PORT = 'session-title'
-const TITLE_METHOD = 'generate'
+const MODEL_COMPLETE_METHOD = 'complete'
 
 interface TurnContext {
   ids: Json
@@ -628,8 +626,36 @@ async function ackInbox(deps: ChatDeps, conversation: string | null, items: Rec[
 }
 
 /**
- * 首条消息标题旁路段（回合开始后异步）：调 `session-title.generate` 生成标题，再 `session.set_title` 写回。
- * 不参与回合结局、不阻塞 interpret；失败 / 取消只保留缺省标题。取 `sessionBody` 交判定，避免读回算错首条。
+ * 内联标题生成：system 提示 + 用户首条消息，非流式单次 `model.complete`；
+ * 失败 / 超时 / 空一律回 null，由调用方走确定性兜底（不报错、不阻塞主回合）。
+ */
+async function completeTitle(
+  deps: ChatDeps,
+  config: Rec,
+  title: TitleWiring,
+  firstMessage: string,
+): Promise<string | null> {
+  try {
+    const outcome = await deps.port.call(
+      MODEL_PORT,
+      MODEL_COMPLETE_METHOD,
+      {
+        config,
+        messages: buildTitleMessages(title.prompt, firstMessage),
+        max_tokens: title.max_tokens,
+      },
+      { timeoutMs: title.timeout_ms },
+    )
+    if (!outcome.ok || !isRecord(outcome.value)) return null
+    return asString(outcome.value['text'])
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 首条消息标题旁路段（回合开始后异步）：本插件内联调 `model.complete` 生成标题，再 `session.set_title` 写回。
+ * 不参与回合结局、不阻塞 interpret；模型失败 / 超时 / 空一律走 `resolveTitle` 的确定性兜底。
  */
 async function generateTitle(
   deps: ChatDeps,
@@ -637,16 +663,17 @@ async function generateTitle(
     conversationId: string
     firstMessage: string
     config: Rec
-    sessionBody: Rec
     titleDefault: string
   },
 ): Promise<void> {
+  const title = deps.wiring.title
   try {
-    const outcome = await deps.port.call(TITLE_PORT, TITLE_METHOD, buildTitleArgs(params))
-    const title =
-      outcome.ok && isRecord(outcome.value) ? asString(outcome.value['title']) : null
-    if (title === null) return
-    await deps.port.call(SESSION_PORT, 'set_title', { conversation: params.conversationId, title })
+    const modelText = await completeTitle(deps, params.config, title, params.firstMessage)
+    const resolved = resolveTitle(modelText, params.firstMessage, title.max_chars, params.titleDefault)
+    await deps.port.call(SESSION_PORT, 'set_title', {
+      conversation: params.conversationId,
+      title: resolved,
+    })
   } catch {
     // 标题旁路段失败 / 取消不影响回合：缺省标题保留
   }
@@ -859,7 +886,6 @@ async function send(
       conversationId: titleConversationId,
       firstMessage: firstMessageOf(turn.slot),
       config: turn.config,
-      sessionBody: turn.sessionBody,
       titleDefault,
     })
   }

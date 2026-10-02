@@ -6,6 +6,7 @@ import { statSync, truncateSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { worldRev } from '../kernel/index.ts'
 import {
+  declaredOwnerCaps,
   gcMaterialized,
   latestDataGen,
   orderEntriesForSeed,
@@ -83,11 +84,14 @@ export function runSeed(root: string, explicit?: PluginEntry[]): SeedReport {
   if (!lock.ok) throw new Error('writer_busy')
   try {
     const entries = orderEntriesForSeed(root, explicit ?? readPluginManifest(root))
+    // 同批清单声明的拥有方契约：双向依赖成环时拥有方排在本包之后，`many` 契约可见性据此放宽
+    // （仍须本批真的声明了拥有方，故单包 seed 缺契约照拒）。
+    const deferredOwnerCaps = declaredOwnerCaps(root, entries)
     let anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
     repairTruncatedJournal(paths, anchor)
     const items: SeedItem[] = []
     for (const entry of entries) {
-      const planned = planIngest(anchor.world, root, entry)
+      const planned = planIngest(anchor.world, root, entry, undefined, deferredOwnerCaps)
       if (!planned.ok) {
         items.push({ name: entry.name, status: 'failed', reasons: planned.reasons })
         continue

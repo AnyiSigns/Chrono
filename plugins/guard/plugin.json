@@ -8,7 +8,6 @@
   "judgments": {
     "guard": { "judge": "terms/guard.json" }
   },
-  "pins": {},
   "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",

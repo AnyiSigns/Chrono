@@ -260,19 +260,19 @@ describe('S4.6 投影：term 经 ctx 读世界投影（只读）', () => {
     expect(readJournal(journalFile())).toHaveLength(before)
   })
 
-  it('投影 pins 并入 one-needs：声明 pins ∪ one 绑定', async () => {
+  it('投影 pins 来自 one-needs 绑定：多个 one 绑定并集', async () => {
     seedDefault()
     await start()
     const client = await connect({ root, timeoutMs: 3000 })
     try {
-      // 仅 one 需求（声明 pins 为空）：pins 只含该绑定
+      // 单 one 需求：pins 只含该绑定
       const needer = await client.command('toy-caller.needer-pins')
       expect(needer.status).toBe('done')
       expect((needer.observations[0] as { value: Json }).value).toEqual({
         'toy.beta': 'toy-beta',
       })
 
-      // 声明 pins ∪ one 需求：两键并集
+      // 两个 one 需求：两键并集
       const both = await client.command('toy-caller.both-pins')
       expect(both.status).toBe('done')
       expect((both.observations[0] as { value: Json }).value).toEqual({

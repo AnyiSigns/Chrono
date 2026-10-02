@@ -3,7 +3,6 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["toy.channel"],
   "methods": { "toy.channel": ["echo"] },
-  "pins": {},
   "start": "node execute/main.mjs",
   "build": [],
   "transport": "stdio",

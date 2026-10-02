@@ -12,7 +12,6 @@
       "capabilities"
     ]
   },
-  "pins": {},
   "needs": {
     "sandbox-policy": { "mode": "one" }
   },

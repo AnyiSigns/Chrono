@@ -16,7 +16,6 @@ import {
   ruleCtxFromWire,
 } from './loop-rule.ts'
 import { afterStep, beforeSettle, noteInput, promoteInput } from './turn-hook.ts'
-import { PINS } from './plugin.ts'
 import { checkContractVersion } from './contract/index.ts'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
 import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
@@ -29,7 +28,7 @@ const SEGMENT_ENDED = 'stepping'
 
 export interface LoopPolicyDeps {
   port: PortCaller
-  /** 宿主注入的有效 pins（声明 `pins` ∪ one-needs）；bag 内场景覆盖优先于它。 */
+  /** 宿主注入的有效 pins（`one`-needs 绑定派生）；bag 内场景覆盖优先于它。 */
   pins?: Rec
 }
 
@@ -197,7 +196,7 @@ async function interpret(
   const refs = refsOf(bag)
   const resolved = resolveModel(bag['graph'], refs)
   const model = resolved.model
-  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : (deps.pins ?? PINS)
+  const pins = isRecord(bag['pins']) ? (bag['pins'] as Rec) : (deps.pins ?? {})
   const at = isoAt(nowOf(env, bag))
   const resume = parseResume(bag)
   const turnId = asString(bag['turn_id'])

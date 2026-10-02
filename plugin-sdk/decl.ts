@@ -65,7 +65,6 @@ export interface PluginDecl {
   schema: string | null
   implements: string[]
   methods: Record<string, string[]>
-  pins: Record<string, string>
   /** 消费方引用的能力类（`cap → 引用方式`）；省略为空表。 */
   needs: Record<string, NeedDecl>
   /** 拥有方声明契约的能力类（`cap → 方法契约`）；省略为空表。 */
@@ -102,7 +101,7 @@ export type ParseDeclResult = { ok: true; decl: PluginDecl } | { ok: false; reas
 /**
  * 解析环境：宿主特有的输入作为参数传入，令本模块保持零宿主依赖。
  * `entryExtensions` 判 `inproc` / `worker` 同语言入口；`reservedCommandNames` 判命令保留名；
- * `hostCapability` 是保留能力类名（不得作能力类键），也是 `pins` / `needs` 里绑定宿主自身的值。
+ * `hostCapability` 是保留能力类名（不得作能力类键），也是 `needs` 里绑定宿主自身的哨兵键。
  */
 export interface DeclParseEnv {
   entryExtensions: readonly string[]
@@ -125,9 +124,12 @@ export const PLUGIN_DECL_FIELDS: readonly PluginField[] = [
   { name: 'identity', required: true, summary: '身份名 = 世界里的 `id`' },
   { name: 'schema', required: false, summary: '身份自述 / 数据契约的包内路径；可省略（零 schema）' },
   { name: 'implements', required: true, summary: '提供的能力类' },
-  { name: 'methods', required: true, summary: '能力类 → 方法名' },
+  {
+    name: 'methods',
+    required: false,
+    summary: '能力类 → 方法名；可省略（方法契约单源在拥有方 `slots`，缺省 `{}`）',
+  },
   { name: 'concurrent_methods', required: false, summary: '并发安全的方法名；SDK 消费、宿主不读' },
-  { name: 'pins', required: true, summary: '身份级依赖（逻辑端点名 → 被依赖身份名）' },
   { name: 'needs', required: false, summary: '消费方引用的能力类（`one` / `many`）' },
   { name: 'slots', required: false, summary: '拥有方声明的能力类方法契约' },
   { name: 'judgments', required: false, summary: '由 term 承载的能力方法' },
@@ -161,11 +163,6 @@ const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor',
 /** 字符串数组。 */
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
-
-/** 值全为字符串的映射。 */
-function isStringMap(value: unknown): value is Record<string, string> {
-  return isRecord(value) && Object.values(value).every((item) => typeof item === 'string')
 }
 
 /** 把相对路径拆成路径段：空段与 `.` 丢弃，`..` 视为非法（返回 null）。 */
@@ -332,12 +329,12 @@ function parseImplements(value: Json | undefined, hostCapability: string): strin
  * 解析 `needs`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
  * 只查形状与声明期冲突：`many` 是否真有契约（本包 `methods` 或世界某拥有方 `slots`）在世界层，
  * decl 看不到他人声明，故该规则由入世期按能力索引判定。
- * 键冲突口径：`needs` 键不得与 `pins` / `implements` / `methods` 键重叠——自能力路径与槽路径互斥，
- * 也据此禁「同一能力类既 implements 又 needs」。
+ * 键冲突口径：`needs` 键不得与 `implements` / `methods` 键重叠——自能力路径与消费路径互斥。
+ * 保留能力类 `host` 仅作**宿主依赖哨兵**允许出现在 `needs`：`mode` 必须是 `one`，
+ * 入世时解析成自身（`host → host`），其余键仍须为合法能力类名。
  */
 function parseNeeds(
   value: Json | undefined,
-  pins: Record<string, string>,
   implementsCaps: string[],
   methods: Record<string, string[]>,
   hostCapability: string,
@@ -347,8 +344,8 @@ function parseNeeds(
   const implementsSet = new Set(implementsCaps)
   const out: Record<string, NeedDecl> = {}
   for (const cap of Object.keys(value)) {
-    if (!isCapabilityKey(cap, hostCapability)) return null
-    if (Object.hasOwn(pins, cap)) return null
+    const isHost = cap === hostCapability
+    if (!isHost && !isCapabilityKey(cap, hostCapability)) return null
     if (implementsSet.has(cap)) return null
     if (Object.hasOwn(methods, cap)) return null
     const entry = value[cap]
@@ -358,6 +355,7 @@ function parseNeeds(
     }
     const mode = entry['mode']
     if (mode !== 'one' && mode !== 'many') return null
+    if (isHost && mode !== 'one') return null
     const need: NeedDecl = { mode }
     const declared = entry['methods']
     if (declared !== undefined) {
@@ -375,7 +373,6 @@ function parseNeeds(
  */
 function parseSlots(
   value: Json | undefined,
-  pins: Record<string, string>,
   methods: Record<string, string[]>,
   hostCapability: string,
 ): Record<string, SlotDecl> | null {
@@ -384,7 +381,6 @@ function parseSlots(
   const out: Record<string, SlotDecl> = {}
   for (const cap of Object.keys(value)) {
     if (!isCapabilityKey(cap, hostCapability)) return null
-    if (Object.hasOwn(pins, cap)) return null
     const entry = value[cap]
     if (!isRecord(entry)) return null
     for (const field of Object.keys(entry)) {
@@ -401,9 +397,9 @@ function parseSlots(
 
 /**
  * 解析 `judgments`：缺失 → `{}`（零扰动）；形态非法 → `null`（入世拒 `bad_plugin_decl`）。
- * 每条 = `cap → method → 包内 term 路径`：`cap` 须 ∈ `implements`、`method` 须在该能力类的
- * 有效方法契约内（`methods[cap]`，缺省回落本包 `slots[cap].methods`），路径须是 `terms/`
- * 下的安全相对 JSON 路径（`terms/` 成员在入世时已解析成 def）。
+ * 每条 = `cap → method → 包内 term 路径`：`cap` 须 ∈ `implements`；本包有契约（`methods[cap]`，
+ * 缺省回落本包 `slots[cap].methods`）时 `method` 须落在其内，两者皆无时契约住拥有方、由世界层判，
+ * 故不在此拦；路径须是 `terms/` 下的安全相对 JSON 路径（`terms/` 成员在入世时已解析成 def）。
  */
 function parseJudgments(
   value: Json | undefined,
@@ -419,13 +415,12 @@ function parseJudgments(
   for (const cap of Object.keys(value)) {
     if (!isCapabilityKey(cap, hostCapability) || !implementsSet.has(cap)) return null
     const contract = methods[cap] ?? slots[cap]?.methods
-    if (contract === undefined) return null
+    const methodSet = contract === undefined ? null : new Set(contract)
     const entry = value[cap]
     if (!isRecord(entry)) return null
-    const methodSet = new Set(contract)
     const bound: Record<string, string> = {}
     for (const method of Object.keys(entry)) {
-      if (!methodSet.has(method)) return null
+      if (methodSet !== null && !methodSet.has(method)) return null
       const path = entry[method]
       if (typeof path !== 'string' || path.length === 0) return null
       if (!path.startsWith('terms/') || !path.endsWith('.json')) return null
@@ -473,7 +468,8 @@ function parseTransport(
  * `schema` 可省略 / 空串（零 schema，无世界数据的 UI 插件用），显式非字符串仍拒；
  * `implements` 逐项须为合法能力类名（非空、非原型键、非保留类）且无重复；
  * `build` 是必需字段（宿主不解释语言，声明是唯一构建来源），逐令牌过 shell 安全白名单；
- * `needs` / `slots` / `exclusive` / `transport` / `judgments` 可选，只查形状与声明期冲突。
+ * `needs` / `slots` / `methods` / `exclusive` / `transport` / `judgments` 可选，只查形状与声明期冲突；
+ * `methods` 省略视为 `{}`（能力类方法契约单源在拥有方 `slots`，提供方无需复述）。
  * 只查形状，不查语义（实现正确性、业务含义一律不在本层）。
  */
 export function parsePluginDecl(value: Json, env: DeclParseEnv): ParseDeclResult {
@@ -502,10 +498,10 @@ export function parsePluginDecl(value: Json, env: DeclParseEnv): ParseDeclResult
   const ok =
     typeof value['identity'] === 'string' &&
     value['identity'].length > 0 &&
+    value['identity'] !== env.hostCapability &&
     (rawSchema === undefined || typeof rawSchema === 'string') &&
-    isRecord(value['methods']) &&
-    Object.values(value['methods']).every(isStringArray) &&
-    isStringMap(value['pins']) &&
+    (value['methods'] === undefined ||
+      (isRecord(value['methods']) && Object.values(value['methods']).every(isStringArray))) &&
     typeof value['start'] === 'string' &&
     typeof value['protocol'] === 'string' &&
     isRecord(value['restart']) &&
@@ -516,10 +512,9 @@ export function parsePluginDecl(value: Json, env: DeclParseEnv): ParseDeclResult
     exclusive !== null &&
     transport !== null
   if (!ok) return { ok: false, reasons: ['bad_plugin_decl'] }
-  const methods = value['methods'] as Record<string, string[]>
-  const pins = value['pins'] as Record<string, string>
-  const needs = parseNeeds(value['needs'], pins, implementsCaps, methods, env.hostCapability)
-  const slots = parseSlots(value['slots'], pins, methods, env.hostCapability)
+  const methods = (value['methods'] ?? {}) as Record<string, string[]>
+  const needs = parseNeeds(value['needs'], implementsCaps, methods, env.hostCapability)
+  const slots = parseSlots(value['slots'], methods, env.hostCapability)
   if (needs === null || slots === null) return { ok: false, reasons: ['bad_plugin_decl'] }
   const judgments = parseJudgments(
     value['judgments'],
@@ -548,7 +543,6 @@ export function parsePluginDecl(value: Json, env: DeclParseEnv): ParseDeclResult
       schema,
       implements: implementsCaps,
       methods,
-      pins,
       needs,
       slots,
       judgments,

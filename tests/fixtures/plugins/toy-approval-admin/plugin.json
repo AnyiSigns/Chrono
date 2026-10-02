@@ -2,8 +2,8 @@
   "identity": "e2e-approval-admin",
   "implements": [],
   "methods": {},
-  "pins": {
-    "approval": "approval"
+  "needs": {
+    "approval": { "mode": "one" }
   },
   "start": "",
   "build": [],

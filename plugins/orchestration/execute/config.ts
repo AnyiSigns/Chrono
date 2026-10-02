@@ -2,7 +2,7 @@
 // diff 上限读 loop-policy thresholds，不在本 schema 重定义。
 
 import { readFileSync } from 'node:fs'
-import { asStringArray } from './model.ts'
+import { asStringArray } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json } from 'plugin-sdk'
 

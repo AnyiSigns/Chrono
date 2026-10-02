@@ -2,6 +2,7 @@
 // 各 tab 内容由 `panelOf` 分发；开合状态住 store，壳经 uiState 同步。
 
 import { useEffect, useRef } from 'react'
+import type { ComponentType } from 'react'
 import { BlockLoading, ErrorBar, Icon, IconButton, PanelHead, VcContext, useVc } from './ui.tsx'
 import { TABS } from '../settings-model.ts'
 import { HEALTH_OK, healthView } from '../health.ts'
@@ -12,6 +13,16 @@ import { SkillsPanel } from './Skills.tsx'
 import { OrchestrationPanel } from './Orchestration.tsx'
 import { AboutPanel } from './About.tsx'
 import { Onboarding } from './Onboarding.tsx'
+
+/** tab id → 面板：新增 tab 只需在此加一行 + `TABS` 一条 + 文案行，无需改分发逻辑。 */
+const TAB_PANELS: Record<string, ComponentType> = {
+  general: GeneralPanel,
+  model: ModelPanel,
+  plugins: PluginsPanel,
+  skills: SkillsPanel,
+  orchestration: OrchestrationPanel,
+  about: AboutPanel,
+}
 
 const FOCUSABLE =
   'button:not([disabled]):not([tabindex="-1"]), [href]:not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])'
@@ -179,32 +190,13 @@ function TabContent() {
       />
     )
   }
-  let panel: any
-  switch (vc.state.tab) {
-    case 'general':
-      panel = <GeneralPanel />
-      break
-    case 'model':
-      panel = <ModelPanel />
-      break
-    case 'plugins':
-      panel = <PluginsPanel />
-      break
-    case 'skills':
-      panel = <SkillsPanel />
-      break
-    case 'orchestration':
-      panel = <OrchestrationPanel />
-      break
-    default:
-      panel = <AboutPanel />
-      break
-  }
+  // tab 内容按 id → 面板映射分发；未登记 id 回落关于页（与旧 switch 的 default 一致）。
+  const Panel = TAB_PANELS[vc.state.tab] ?? AboutPanel
   // 行内动作错误：不替换 tab 内容，只在其上方显一条行内条，避免抹掉用户已填输入。
   return (
     <>
       {vc.state.error !== null ? <ErrorBar code={vc.state.error.code} /> : null}
-      {panel}
+      <Panel />
     </>
   )
 }

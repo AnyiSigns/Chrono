@@ -1,6 +1,6 @@
 // chat 协议级测试驱动：spawn `node execute/main.ts`，发 hello / call / 控制帧，
 // 并自动应答反向调用 `port.call`（模拟宿主侧路由：把 #33 loop-policy.interpret 与
-// #49 session-title.generate 两段假实现桥接给服务）。bridge 可注入以覆盖各段回值。
+// 首条消息标题的 `model.complete` 两段假实现桥接给服务）。bridge 可注入以覆盖各段回值。
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -122,7 +122,7 @@ export const INTERPRET_PLAN = {
         args: {
           ops: [
             { op: 'put', args: { body: { id: 'evidence-1', kind: 'trace' } } },
-            { op: 'add_gen', args: { id: 'evolution', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} } },
+            { op: 'add_gen', args: { id: 'evolution', payload: { $n: 0 }, sig: { $n: 0 } } },
           ],
         },
       },
@@ -141,8 +141,8 @@ export const INTERPRET_PLAN = {
   ],
 }
 
-/** #49 session-title.generate 的回值：标题值（非写计划）。 */
-export const TITLE_VALUE = { ok: true, title: '快速排序' }
+/** 首条消息标题的 `model.complete` 回值：单次补全文本。 */
+export const TITLE_VALUE = { text: '快速排序' }
 
 /** 默认输入槽体（owner `input.read` 回值）：带槽写入时的 run id 作 `slot_ref`。 */
 export const DEFAULT_INPUT_BODY = {
@@ -194,7 +194,7 @@ export function historyFixture() {
 }
 
 /**
- * 默认 bridge：#33 interpret / #49 title / owner `session.read`、`input.read`、`session.history`。
+ * 默认 bridge：#33 interpret / 标题 `model.complete` / owner `session.read`、`input.read`、`session.history`。
  * `owners` 可覆盖 owner 回值（如空槽 / 无当前会话），供各测试按需注入。
  */
 export function defaultBridge(overrides = {}, owners = {}) {
@@ -222,7 +222,7 @@ export function defaultBridge(overrides = {}, owners = {}) {
     'workspace.read': () => owners.workspace ?? workspaceFixture(),
     'skill.read': () => owners.skill ?? skillFixture(),
     'loop-policy.interpret': () => INTERPRET_PLAN,
-    'session-title.generate': () => TITLE_VALUE,
+    'model.complete': () => TITLE_VALUE,
     ...overrides,
   }
   return (port, method, args) => {
@@ -420,7 +420,7 @@ export function idsFixture(overrides = {}) {
     'loop-policy': overrides.loopPolicy ?? loopPolicyFixture(),
     guard: { body: guardFixture() },
     sandbox: { body: sandboxFixture() },
-    tools: { body: toolsFixture() },
+    'tool-registry': { body: toolsFixture() },
     mcp: { body: mcpFixture() },
     evolution: { body: evolutionFixture() },
     todo: { body: todo.body, refs: todo.refs },

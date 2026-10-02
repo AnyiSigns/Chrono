@@ -6,13 +6,13 @@
     "ui-shell": ["ping", "nav"]
   },
   "slots": {
-    "ui-nav": { "methods": ["list"] }
+    "ui-nav": { "methods": ["list"] },
+    "ui-slot": { "methods": ["list"] }
   },
   "needs": {
-    "ui-nav": { "mode": "many", "methods": ["list"] }
-  },
-  "pins": {
-    "host": "host"
+    "host": { "mode": "one" },
+    "ui-nav": { "mode": "many" },
+    "ui-slot": { "mode": "many" }
   },
   "start": "node execute/main.ts",
   "build": [],

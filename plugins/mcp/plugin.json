@@ -3,10 +3,8 @@
   "schema": "schema/mcp.json",
   "implements": ["mcp", "tool-provider"],
   "methods": {
-    "mcp": ["describe", "invoke", "discover", "read", "write"],
-    "tool-provider": ["describe", "invoke"]
+    "mcp": ["describe", "invoke", "discover", "read", "write"]
   },
-  "pins": {},
   "needs": {
     "secrets": { "mode": "one" },
     "mcp-client": { "mode": "one" }

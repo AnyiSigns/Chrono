@@ -66,6 +66,20 @@ export function recordsOf(value: Json): Omit<NavRecord, 'provider'>[] {
   return out
 }
 
+/**
+ * 汇集导航记录会写入的壳视图状态键：显式 `target.uiState.key` 与浮层目标的
+ * `${overlay}_open`（侧栏点击浮层入口时写这个派生键），加壳自身的 `boot_mode`。
+ * 供壳按 nav 数据登记 uiState 键空间，免去「加 overlay 要改壳键白名单」。字典序去重。
+ */
+export function uiStateKeysOf(records: readonly NavRecord[]): string[] {
+  const keys = new Set<string>(['boot_mode'])
+  for (const record of records) {
+    if (record.target.uiState !== undefined) keys.add(record.target.uiState.key)
+    if (record.target.overlay !== undefined) keys.add(`${record.target.overlay}_open`)
+  }
+  return [...keys].sort()
+}
+
 /** 合并各提供方的记录：按提供方码元序 → order → id 稳定排序，同 id 取先到者。 */
 export function orderNav(groups: { provider: string; records: Omit<NavRecord, 'provider'>[] }[]): NavRecord[] {
   const tagged: NavRecord[] = []

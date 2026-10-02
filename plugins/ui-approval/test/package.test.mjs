@@ -34,7 +34,7 @@ test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read�
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
   })
-  assert.deepEqual(decl.pins, {})
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {
     approval: { mode: 'one' },
     input: { mode: 'one' },

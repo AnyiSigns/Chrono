@@ -6,15 +6,12 @@
     "chat": ["send", "history", "resume", "cancel", "insert"]
   },
   "concurrent_methods": ["send", "resume", "history", "cancel", "insert"],
-  "pins": {
-    "host": "host"
-  },
   "needs": {
+    "host": { "mode": "one" },
     "session": { "mode": "one" },
     "ref-hydrate": { "mode": "one" },
     "input": { "mode": "one" },
     "model": { "mode": "one" },
-    "session-title": { "mode": "one" },
     "loop-policy": { "mode": "one" },
     "todo": { "mode": "one" },
     "config": { "mode": "one" },

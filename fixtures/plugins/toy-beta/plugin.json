@@ -3,7 +3,9 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["toy.beta"],
   "methods": { "toy.beta": ["echo"] },
-  "pins": { "toy.alpha": "toy-alpha" },
+  "needs": {
+    "toy.alpha": { "mode": "one" }
+  },
   "start": "node execute/main.js",
   "build": [],
   "protocol": "1",

@@ -7,13 +7,18 @@
 import { resolveLimits } from './config.ts'
 import { validateViaGraphGate } from './gate-call.ts'
 import { H, canonicalJson } from './hash.ts'
-import { asArray, asStringArray, graphDerivedFrom, graphNodes, readGraphModel } from './model.ts'
+import { asStringArray, graphDerivedFrom, graphNodes, readGraphModel } from 'plugin-sdk'
 import { baseSeqOf, isRecord, planOf, putOp } from './plan.ts'
 import { BadArgsError } from 'plugin-sdk'
 import { ToolError } from './types.ts'
 import type { CallEnv, Json, PortCaller, Rec } from 'plugin-sdk'
 
 const LIMITS = resolveLimits()
+
+/** 任意 JSON 数组；非数组回落空数组（不产生 null 迭代）。 */
+function asArray(value: Json | undefined): Json[] {
+  return Array.isArray(value) ? value : []
+}
 
 function requireString(source: Rec, key: string): string {
   const value = source[key]
@@ -173,7 +178,7 @@ export async function proposeTool(bag: Rec, env: CallEnv, port: PortCaller): Pro
     )
     ops.push({
       op: 'add_gen',
-      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, pins: {} },
+      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex } },
     })
   } else {
     // 补丁世代：只替换 proposals 槽（version 缺失时补一条），不重写整份台账 body
@@ -184,7 +189,7 @@ export async function proposeTool(bag: Rec, env: CallEnv, port: PortCaller): Pro
     ops.push(putOp({ ops: patches }))
     ops.push({
       op: 'add_gen',
-      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, pins: {}, base },
+      args: { id: 'evolution', payload: { $n: bodyIndex }, sig: { $n: bodyIndex }, base },
     })
   }
 

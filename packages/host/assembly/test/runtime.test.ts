@@ -194,17 +194,17 @@ describe('装配运行时 startAssembly', () => {
     expect(report.ok).toBe(true)
     const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
 
-    // 在内存世界注入环：toy-cyc pins toy-alpha，且 toy-alpha 反向 pins toy-cyc。
+    // 在内存世界注入环：toy-cyc needs.one → toy-alpha，且 toy-alpha 反向 needs.one → toy-cyc。
     const alpha = world.ids['toy-alpha']
     const alphaGen = alpha.gens.find((g) => g.payload === alpha.active) as Gen
-    const alphaTree = (world.defs[alphaGen.payload] as { body: { tree: string } }).body.tree
-    const cycPayload = H({
-      body: { tree: alphaTree, meta: { name: 'toy-cyc', version: '0.0.0' } },
-    } as unknown as Json)
-    const cycSig = H({ body: 'toy-cyc-sig' } as unknown as Json)
-    world.defs[cycPayload] = {
-      body: { tree: alphaTree, meta: { name: 'toy-cyc', version: '0.0.0' } },
+    const alphaBody = (world.defs[alphaGen.payload] as { body: { tree: string; meta: Json } }).body
+    const cycBody = {
+      tree: alphaBody.tree,
+      meta: { name: 'toy-cyc', version: '0.0.0', needs: { alpha: 'toy-alpha' } },
     }
+    const cycPayload = H({ body: cycBody } as unknown as Json)
+    const cycSig = H({ body: 'toy-cyc-sig' } as unknown as Json)
+    world.defs[cycPayload] = { body: cycBody }
     world.defs[cycSig] = { body: null }
     world.ids['toy-cyc'] = {
       id: 'toy-cyc',
@@ -213,7 +213,6 @@ describe('装配运行时 startAssembly', () => {
         {
           seq: 0,
           payload: cycPayload,
-          pins: { alpha: alphaGen.payload },
           sig: cycSig,
           adopted: { at: 0, by: '', write: '' },
         },
@@ -221,7 +220,7 @@ describe('装配运行时 startAssembly', () => {
       active: cycPayload,
       born: { at: 0, by: '' },
     }
-    alphaGen.pins = { cyc: cycPayload }
+    ;(alphaBody.meta as { needs?: Record<string, string> }).needs = { cyc: 'toy-cyc' }
 
     const handle = await startAssembly({ root, world, log })
     handles.push(handle)
@@ -250,7 +249,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-fan',
       start: 'node execute/main.js',
       implements: ['toy.fan'],
-      pins: { dep: 'toy-bad' },
+      pins: { 'toy.bad': 'toy-bad' },
     })
     const { handle } = await startWorld([
       { name: 'toy-alpha', path: FIXTURE_ALPHA },
@@ -559,7 +558,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-dependent',
       start: 'node execute/main.js',
       implements: ['toy.dependent'],
-      pins: { crash: 'toy-crash' },
+      pins: { 'toy.crash': 'toy-crash' },
     })
     const { handle, world } = await startWorld([
       { name: 'toy-crash', path: crashRoot },
@@ -698,7 +697,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-neverfan',
       start: 'node execute/main.js',
       implements: ['toy.neverfan'],
-      pins: { dep: 'toy-neverdep' },
+      pins: { 'toy.neverdep': 'toy-neverdep' },
     })
     const { handle, world } = await startWorld([
       { name: 'toy-neverdep', path: neverRoot },
@@ -751,7 +750,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-drainleaf',
       start: 'node execute/main.js',
       implements: ['toy.drainleaf'],
-      pins: { base: 'toy-drainbase' },
+      pins: { 'toy.drainbase': 'toy-drainbase' },
       restart: { policy: 'on-exit', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 100 },
       serviceConfig: { drainMode: 'silent' },
     })
@@ -803,7 +802,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-relaunchfan',
       start: 'node execute/main.js',
       implements: ['toy.relaunchfan'],
-      pins: { base: 'toy-relaunchfail' },
+      pins: { 'toy.relaunchfail': 'toy-relaunchfail' },
     })
     const { handle, world } = await startWorld([
       { name: 'toy-relaunchfail', path: baseRoot },
@@ -1026,7 +1025,7 @@ describe('装配运行时 startAssembly', () => {
   it("members 含 execute 但 start 为空 → service.start_failed reason 'missing_start_command'，依赖者 dep.stale", async () => {
     const noexecRoot = writeTempPackage(root, {
       identity: 'toy-noexec',
-      implements: [],
+      implements: ['toy.noexec'],
       start: '',
       members: [{ kind: 'execute', path: 'execute/' }],
       files: { 'execute/placeholder.txt': 'x' },
@@ -1035,7 +1034,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-noexecfan',
       start: 'node execute/main.js',
       implements: ['toy.noexecfan'],
-      pins: { base: 'toy-noexec' },
+      pins: { 'toy.noexec': 'toy-noexec' },
     })
     const { handle } = await startWorld([
       { name: 'toy-noexec', path: noexecRoot },
@@ -1071,7 +1070,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-iso-y',
       start: 'node execute/main.js',
       implements: ['toy.iso.y'],
-      pins: { x: 'toy-iso-x' },
+      pins: { 'toy.iso.x': 'toy-iso-x' },
       restart: { policy: 'on-exit', backoff: 'none', max: 50, window_ms: 60000, drain_ms: 200 },
       serviceConfig: { exitAfterMs: 300, crashLimit: 1000 },
     })
@@ -1183,7 +1182,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-lay-leaf',
       start: 'node execute/main.js',
       implements: ['toy.lay.leaf'],
-      pins: { base: 'toy-lay-base' },
+      pins: { 'toy.lay.base': 'toy-lay-base' },
     })
     const events: string[] = []
     const restore = async (_cwd: string, decl: PluginDecl): Promise<void> => {
@@ -1268,7 +1267,7 @@ describe('装配运行时 startAssembly', () => {
       identity: 'toy-buildfan',
       start: 'node execute/main.js',
       implements: ['toy.buildfan'],
-      pins: { dep: 'toy-buildfail' },
+      pins: { 'toy.buildfail': 'toy-buildfail' },
     })
     const { handle } = await startWorld([
       { name: 'toy-alpha', path: FIXTURE_ALPHA },

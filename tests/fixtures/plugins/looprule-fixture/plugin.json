@@ -1,9 +1,8 @@
 {
   "identity": "looprule-fixture",
   "implements": ["loop-rule"],
-  "methods": { "loop-rule": ["when"] },
+  "methods": {},
   "judgments": { "loop-rule": { "when": "terms/when.json" } },
-  "pins": {},
   "start": "",
   "build": [],
   "protocol": "1",

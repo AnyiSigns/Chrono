@@ -5,7 +5,6 @@
   "methods": {
     "sandbox": ["exec", "fsop", "capabilities"]
   },
-  "pins": {},
   "start": "",
   "build": [],
   "protocol": "1",

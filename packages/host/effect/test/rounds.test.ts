@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { EMPTY_WORLD, H, pos, replay, worldRev } from '../../../kernel/index.ts'
 import { WorldWriter } from '../../writer.ts'
 import type { SyncResult, WorldState } from '../../writer.ts'
-import { resolvePins, runSubmission, parsePlanDirectives } from '../rounds.ts'
+import { runSubmission, parsePlanDirectives } from '../rounds.ts'
 import type { AuditDraft } from '../../audit.ts'
 import type { RoundRouter } from '../route.ts'
 import type { EndpointRow } from '../../endpoint-table.ts'
@@ -73,7 +73,6 @@ function identityOf(id: string, active: Hash, schema = 's'.repeat(64)): World['i
       {
         seq: 0,
         payload: active,
-        pins: {},
         sig: schema,
         adopted: { at: 1, by: 'seed', write: active },
       },
@@ -240,72 +239,6 @@ describe('A10 轮间驱动 runSubmission', () => {
       'write',
     ])
     expect(outcome.observations[1]).toEqual({ kind: 'extern', payload: { x: 1 } })
-  })
-
-  it('结构 op 的 pins：名 → 被依赖身份 active 世代 payload 哈希', async () => {
-    const active: Hash = 'a'.repeat(64)
-    const termDef = put({ body: ['c', 1] })
-    const termHash = defHash(termDef)
-    const world = worldOf({ [active]: put({ body: { commit: true } }), [termHash]: termDef })
-    world.ids['dep'] = {
-      id: 'dep',
-      schema: 's'.repeat(64),
-      gens: [
-        {
-          seq: 0,
-          payload: active,
-          pins: {},
-          sig: 's'.repeat(64),
-          adopted: { at: 1, by: 'seed', write: active },
-        },
-      ],
-      active,
-      born: { at: 1, by: 'seed' },
-    }
-    const plan: Json = {
-      $directives: [
-        {
-          kind: 'write',
-          request: { op: 'put', args: { body: { withPins: true }, pins: { 'toy.echo': 'dep' } } },
-        },
-      ],
-    }
-    const planner = defHash(put({ body: ['c', plan] }))
-    world.defs[planner] = put({ body: ['c', plan] })
-    const journal: Entry[] = []
-    const outcome = await runSubmission({
-      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
-      directives: [evalD(planner)],
-      caps: {},
-      limits: LIMITS,
-      initiator: 'tester',
-      now: () => 1,
-      onRound: (entries) => journal.push(...entries),
-    })
-    expect(outcome.status).toBe('done')
-    expect(journal).toHaveLength(1)
-    expect((journal[0].args as { pins: Record<string, Hash> }).pins['toy.echo']).toBe(active)
-  })
-
-  it('顶层结构 op 的 pins 值为 host：提前拒 bad_directive（内核会判 bad_form）', () => {
-    for (const op of ['add_gen', 'put', 'graft']) {
-      expect(resolvePins(op, { body: { x: 1 }, pins: { host: 'host' } }, EMPTY_WORLD)).toEqual({
-        ok: false,
-        reason: 'bad_directive',
-      })
-    }
-  })
-
-  it('batch 子操作的 pins 值为 host：保留字面量，不查世界', () => {
-    const resolved = resolvePins(
-      'batch',
-      { ops: [{ op: 'put', args: { body: { withHost: true }, pins: { host: 'host' } } }] },
-      EMPTY_WORLD,
-    )
-    expect(resolved).toEqual({
-      ok: true,
-      value: { ops: [{ op: 'put', args: { body: { withHost: true }, pins: { host: 'host' } } }] },
-    })
   })
 
   it('plan 条目形态非法（表驱动）→ refused:bad_directive；非数组 $directives 当普通数据', async () => {
@@ -495,55 +428,6 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect(emitters).toEqual(['ownerA', 'ownerB'])
   })
 
-  it('batch 子操作的 pins 同样解析（递归）', async () => {
-    const active: Hash = 'a'.repeat(64)
-    const world = worldOf({ [active]: put({ body: { commit: true } }) })
-    world.ids['dep'] = {
-      id: 'dep',
-      schema: 's'.repeat(64),
-      gens: [
-        {
-          seq: 0,
-          payload: active,
-          pins: {},
-          sig: 's'.repeat(64),
-          adopted: { at: 1, by: 'seed', write: active },
-        },
-      ],
-      active,
-      born: { at: 1, by: 'seed' },
-    }
-    const plan: Json = {
-      $directives: [
-        {
-          kind: 'write',
-          request: {
-            op: 'batch',
-            args: {
-              ops: [{ op: 'put', args: { body: { viaBatch: true }, pins: { 'toy.echo': 'dep' } } }],
-            },
-          },
-        },
-      ],
-    }
-    const planner = defHash(put({ body: ['c', plan] }))
-    world.defs[planner] = put({ body: ['c', plan] })
-    const journal: Entry[] = []
-    const outcome = await runSubmission({
-      writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
-      directives: [evalD(planner)],
-      caps: {},
-      limits: LIMITS,
-      initiator: 'tester',
-      now: () => 1,
-      onRound: (entries) => journal.push(...entries),
-    })
-    expect(outcome.status).toBe('done')
-    expect(journal).toHaveLength(1)
-    const ops = (journal[0].args as { ops: Array<{ args: { pins: Record<string, Hash> } }> }).ops
-    expect(ops[0].args.pins['toy.echo']).toBe(active)
-  })
-
   it('eval 段多条 eff：各次调用均产审计草稿，plan 写不落 ref', async () => {
     const plan: Json = {
       $directives: [{ kind: 'write', request: { op: 'put', args: { body: { after: 2 } } } }],
@@ -604,7 +488,7 @@ describe('A10 轮间驱动 runSubmission', () => {
     expect((journal[1].args as { body: Json }).body).toEqual({ k: 2 })
   })
 
-  it('plan 结构 pins 解析不到身份 → refused:unresolved_pin；batch 子操作缺 args → bad_directive', async () => {
+  it('plan 结构 op 带 pins（已删字段）→ 内核 bad_form；batch 子操作缺 args → bad_directive', async () => {
     const unresolved: Json = {
       $directives: [
         {
@@ -617,8 +501,8 @@ describe('A10 轮间驱动 runSubmission', () => {
       $directives: [{ kind: 'write', request: { op: 'batch', args: { ops: [{ op: 'put' }] } } }],
     }
     for (const [plan, reason] of [
-      [unresolved, 'unresolved_pin'],
-      [missingArgs, 'bad_directive'],
+      [unresolved, 'bad_form'],
+      [missingArgs, 'bad_form'],
     ] as Array<[Json, string]>) {
       const planner = defHash(put({ body: ['c', plan] }))
       const world = worldOf({ [planner]: put({ body: ['c', plan] }) })
@@ -1286,7 +1170,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     const journal: Entry[] = []
     const outcome = await runSubmission({
       writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
-      directives: [writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {} })],
+      directives: [writeD('add_gen', { id: 'dep', payload, sig: payload })],
       caps: {},
       limits: LIMITS,
       initiator: 'tester',
@@ -1309,7 +1193,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     const outcome = await runSubmission({
       writer: new WorldWriter({ world, head: { seq: -1, hash: null } }),
       directives: [
-        writeD('add_gen', { id: 'dep', payload, sig: payload, pins: {}, expect_active: payload }),
+        writeD('add_gen', { id: 'dep', payload, sig: payload, expect_active: payload }),
       ],
       caps: {},
       limits: LIMITS,
@@ -1337,7 +1221,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
         writeD('batch', {
           ops: [
             { op: 'add_identity', args: { id: 'fresh', schema } },
-            { op: 'add_gen', args: { id: 'fresh', payload, sig: payload, pins: {} } },
+            { op: 'add_gen', args: { id: 'fresh', payload, sig: payload } },
           ],
         }),
       ],
@@ -1360,7 +1244,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
       $directives: [
         {
           kind: 'write',
-          request: { op: 'add_gen', args: { id: 'dep', payload, sig: payload, pins: {} } },
+          request: { op: 'add_gen', args: { id: 'dep', payload, sig: payload } },
         },
       ],
     }
@@ -1409,11 +1293,11 @@ describe('add_gen expect_active 注入与落账段物化', () => {
       $directives: [
         {
           kind: 'write',
-          request: { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1, pins: {} } },
+          request: { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1 } },
         },
         {
           kind: 'write',
-          request: { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+          request: { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2 } },
         },
       ],
     }
@@ -1441,7 +1325,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     expect((journal[1].args as { expect_active?: Hash }).expect_active).toBe(p1)
   })
 
-  it('物化下沉到落账段：pins 与 ctx 用段内世界（快照已偏斜也不误判）', async () => {
+  it('物化下沉到落账段：ctx 用段内世界（快照已偏斜也不误判）', async () => {
     const active = 'a'.repeat(64)
     const reader = defHash(put({ body: ['g', ['marker']] }))
     const base = worldOf({
@@ -1463,7 +1347,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
     const outcome = await runSubmission({
       writer,
       directives: [
-        writeD('put', { body: { withPins: true }, pins: { 'toy.echo': 'dep' } }),
+        writeD('put', { body: { landed: true } }),
         { kind: 'eval', entry: reader, args: null },
       ],
       caps: {},
@@ -1477,9 +1361,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
       onRound: (entries) => journal.push(...entries),
     })
     expect(outcome.status).toBe('done')
-    // pins 在段内世界解析到 dep.active（快照世界无 dep，若用快照会 unresolved_pin）
-    expect((journal[0].args as { pins: Record<string, Hash> }).pins['toy.echo']).toBe(active)
-    // ctx 也用段内世界构造
+    // ctx 用段内世界构造
     expect(worlds).toEqual([advanced])
     const evalObservation = outcome.observations.find(
       (o) => (o as { kind: string }).kind === 'eval',
@@ -1503,8 +1385,8 @@ describe('add_gen expect_active 注入与落账段物化', () => {
       directives: [
         writeD('batch', {
           ops: [
-            { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1, pins: {} } },
-            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+            { op: 'add_gen', args: { id: 'dep', payload: p1, sig: p1 } },
+            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2 } },
           ],
         }),
       ],
@@ -1538,14 +1420,12 @@ describe('add_gen expect_active 注入与落账段物化', () => {
         {
           seq: 0,
           payload: active,
-          pins: {},
           sig: schema,
           adopted: { at: 1, by: 'seed', write: active },
         },
         {
           seq: 1,
           payload: p1,
-          pins: {},
           sig: schema,
           adopted: { at: 1, by: 'seed', write: p1 },
         },
@@ -1560,7 +1440,7 @@ describe('add_gen expect_active 注入与落账段物化', () => {
         writeD('batch', {
           ops: [
             { op: 'set_active', args: { id: 'dep', active: p1 } },
-            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2, pins: {} } },
+            { op: 'add_gen', args: { id: 'dep', payload: p2, sig: p2 } },
           ],
         }),
       ],

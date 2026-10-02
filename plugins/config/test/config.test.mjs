@@ -216,7 +216,7 @@ test('write 阈值变化 → 返回世界写计划镜像 permission / params', a
     assert.deepEqual(ops[0].args.body, { version: 1, permission: 'deny', params: {} })
     assert.deepEqual(ops[1], {
       op: 'add_gen',
-      args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 }, pins: {} },
+        args: { id: 'config', payload: { $n: 0 }, sig: { $n: 0 } },
     })
     // 补丁深合并：params 子键合并、null 删键
     const patched = await drv.write({ params: { reasoning: 'high' } })

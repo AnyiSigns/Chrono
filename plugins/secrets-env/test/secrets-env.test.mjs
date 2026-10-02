@@ -123,7 +123,8 @@ test('hello 回 manifest，声明与 plugin.json 一致（secrets-backend 提供
     assert.deepEqual(manifest.implements, ['secrets-backend'])
     assert.equal(manifest.protocol, '1')
     assert.equal(manifest.state, 'recomputable')
-    assert.deepEqual(manifest.methods['secrets-backend'], ['read', 'list', 'kinds'])
+    // 契约单源在拥有方 secrets 的 slots：提供方不在 manifest 复述 secrets-backend 方法。
+    assert.equal(manifest.methods['secrets-backend'], undefined)
   } finally {
     drv.close()
   }

@@ -118,7 +118,7 @@ describe('compact 有界化回收', () => {
       push('put', { body: { gen: 2 } }),
     ]
     push('add_identity', { id: 'x', schema })
-    for (const payload of gens) push('add_gen', { id: 'x', payload, pins: {}, sig: schema })
+    for (const payload of gens) push('add_gen', { id: 'x', payload, sig: schema })
     const orphan = push('put', { body: { orphan: true } })
     const audit = push('put', {
       body: { kind: 'effect_audit', run: 'r', emitter: 'x', outcome: 'ok' },
@@ -204,12 +204,12 @@ describe('compact 有界化回收', () => {
     const leaf = push('put', { body: { leaf: true } })
     const data = push('put', { body: { data: 1, ref: { def: leaf } } })
     push('add_identity', { id: 'x', schema })
-    push('add_gen', { id: 'x', payload: data, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: data, sig: schema })
     // 数据世代后接两个代码世代（payload body 带 tree）→ genWindow=1 时数据世代落窗口外
     const code1 = push('put', { body: { tree: 'a'.repeat(64) } })
-    push('add_gen', { id: 'x', payload: code1, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: code1, sig: schema })
     const code2 = push('put', { body: { tree: 'b'.repeat(64) } })
-    push('add_gen', { id: 'x', payload: code2, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: code2, sig: schema })
     appendJournal(journalFile(), entries)
 
     const all = readJournal(journalFile())
@@ -252,13 +252,13 @@ describe('compact 有界化回收', () => {
     const newLeaf = push('put', { body: { leaf: 'new' } })
     const newData = push('put', { body: { data: 2, ref: { def: newLeaf } } })
     push('add_identity', { id: 'x', schema })
-    push('add_gen', { id: 'x', payload: oldData, pins: {}, sig: schema })
-    push('add_gen', { id: 'x', payload: newData, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: oldData, sig: schema })
+    push('add_gen', { id: 'x', payload: newData, sig: schema })
     // 两个代码世代把两个数据世代都挤出窗口（genWindow=1 只留末代）
     const code1 = push('put', { body: { tree: 'a'.repeat(64) } })
-    push('add_gen', { id: 'x', payload: code1, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: code1, sig: schema })
     const code2 = push('put', { body: { tree: 'b'.repeat(64) } })
-    push('add_gen', { id: 'x', payload: code2, pins: {}, sig: schema })
+    push('add_gen', { id: 'x', payload: code2, sig: schema })
     appendJournal(journalFile(), entries)
 
     const all = readJournal(journalFile())
@@ -364,8 +364,8 @@ function codeWorldWithRollback(): World {
         id: 'known',
         schema: sig,
         gens: [
-          { seq: 1, payload: genA, pins: {}, sig, adopted: { at: 0, by: '', write: '' } },
-          { seq: 2, payload: genB, pins: {}, sig, adopted: { at: 0, by: '', write: '' } },
+          { seq: 1, payload: genA, sig, adopted: { at: 0, by: '', write: '' } },
+          { seq: 2, payload: genB, sig, adopted: { at: 0, by: '', write: '' } },
         ],
         active: genA,
         born: { at: 0, by: '' },

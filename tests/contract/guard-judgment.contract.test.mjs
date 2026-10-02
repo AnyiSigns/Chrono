@@ -174,7 +174,7 @@ test('结构写两键 escalate（severe），auto 直落', async () => {
   await withGuard(async (guard) => {
     const keys = [
       { port: 'plugin-admin', tool: 'plugin.write' },
-      { port: 'orchestration-admin', tool: 'orchestration.propose' },
+      { port: 'orchestration', tool: 'orchestration.propose' },
     ]
     for (const key of keys) {
       const severe = await guard.judge(bag([{ ...key, args: {} }]))

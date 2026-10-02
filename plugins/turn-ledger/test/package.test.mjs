@@ -20,12 +20,12 @@ function listFiles(dir) {
   return out
 }
 
-test('plugin.json：identity / implements / methods / pins / needs / start / members', () => {
+test('plugin.json：identity / implements / methods / needs / start / members', () => {
   const plugin = read('plugin.json')
   assert.equal(plugin.identity, 'turn-ledger')
   assert.deepEqual(plugin.implements, ['turn-ledger'])
   assert.deepEqual(plugin.methods['turn-ledger'], ['settle', 'decide'])
-  assert.deepEqual(plugin.pins, {})
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.deepEqual(plugin.needs, {
     'graph-gate': { mode: 'one' },
     'evolve-metrics': { mode: 'one' },

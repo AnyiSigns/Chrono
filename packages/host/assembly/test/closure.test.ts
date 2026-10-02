@@ -12,18 +12,21 @@ function def(body: Json, sig?: string): { body: Json; sig: string } {
   return { body, sig: sig ?? h('d') }
 }
 
+/** 世代上的 `one` 绑定（cap → 身份名）；makeWorld 会把它搬进 payload def 的 `meta.needs`。 */
 function gen(
   payload: string,
   sig = h('g'),
-  pins: Record<string, string> = {},
+  needs: Record<string, string> = {},
 ): {
   seq: number
   payload: string
-  pins: Record<string, string>
   sig: string
   adopted: { at: number; by: string; write: string }
+  needs?: Record<string, string>
 } {
-  return { seq: 0, payload, pins, sig, adopted: { at: 0, by: '', write: '' } }
+  const out: ReturnType<typeof gen> = { seq: 0, payload, sig, adopted: { at: 0, by: '', write: '' } }
+  if (Object.keys(needs).length > 0) out.needs = needs
+  return out
 }
 
 function makeWorld(
@@ -51,10 +54,18 @@ function makeWorld(
     }
   >
 } {
-  return {
-    defs: defs ?? {},
-    ids,
+  const table = defs ?? {}
+  for (const id of Object.keys(ids)) {
+    for (const g of ids[id].gens) {
+      const needs = g.needs
+      delete g.needs
+      if (needs === undefined) continue
+      const entry = table[g.payload]
+      if (entry === undefined) continue
+      entry.body = { ...(entry.body as Record<string, Json> | null), meta: { name: id, needs } }
+    }
   }
+  return { defs: table, ids }
 }
 
 describe('闭包 closure', () => {
@@ -141,7 +152,7 @@ describe('闭包 closure', () => {
       name: string,
       payload: string,
       sig = h(name),
-      pins: Record<string, string> = {},
+      needs: Record<string, string> = {},
       active: string | null = payload,
     ): {
       id: string
@@ -152,7 +163,7 @@ describe('闭包 closure', () => {
     } => ({
       id: name,
       schema: '',
-      gens: [{ seq: 0, payload, pins, sig, adopted: { at: 0, by: '', write: '' } }],
+      gens: [gen(payload, sig, needs)],
       active,
       born: { at: 0, by: '' },
     })
@@ -166,7 +177,7 @@ describe('闭包 closure', () => {
       const pC = h('pC')
       const sC = h('sC')
       const world = makeWorld(
-        { A: d('A', pA, sA, {}), B: d('B', pB, sB, { dep: pA }), C: d('C', pC, sC, { dep: pB }) },
+        { A: d('A', pA, sA, {}), B: d('B', pB, sB, { dep: 'A' }), C: d('C', pC, sC, { dep: 'B' }) },
         {
           [pA]: def(null, sA),
           [sA]: def(null),
@@ -213,9 +224,9 @@ describe('闭包 closure', () => {
       const world = makeWorld(
         {
           A: d('A', pA, sA, {}),
-          B: d('B', pB, sB, { dep: pA }),
-          C: d('C', pC, sC, { dep: pA }),
-          D: d('D', pD, sD, { x: pB, y: pC }),
+          B: d('B', pB, sB, { dep: 'A' }),
+          C: d('C', pC, sC, { dep: 'A' }),
+          D: d('D', pD, sD, { x: 'B', y: 'C' }),
         },
         {
           [pA]: def(null, sA),
@@ -249,8 +260,8 @@ describe('闭包 closure', () => {
       const world = makeWorld(
         {
           A: d('A', pA, sA, {}),
-          B: d('B', pB, sB, { dep: h('ghost') }),
-          C: d('C', pC, sC, { dep: pB }),
+          B: d('B', pB, sB, { dep: 'ghost' }),
+          C: d('C', pC, sC, { dep: 'B' }),
         },
         {
           [pA]: def(null, sA),
@@ -277,7 +288,7 @@ describe('闭包 closure', () => {
       const sC = h('sC')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB }),
+          A: d('A', pA, sA, { dep: 'B' }),
           B: d('B', pB, sB, {}, null),
           C: d('C', pC, sC, {}),
         },
@@ -308,9 +319,9 @@ describe('闭包 closure', () => {
       const sD = h('sD')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB }),
-          B: d('B', pB, sB, { dep: pA }),
-          C: d('C', pC, sC, { dep: pA }),
+          A: d('A', pA, sA, { dep: 'B' }),
+          B: d('B', pB, sB, { dep: 'A' }),
+          C: d('C', pC, sC, { dep: 'A' }),
           D: d('D', pD, sD, {}),
         },
         {
@@ -343,7 +354,7 @@ describe('闭包 closure', () => {
       const pA = h('pA')
       const sA = h('sA')
       const world = makeWorld(
-        { A: d('A', pA, sA, { self: pA }) },
+        { A: d('A', pA, sA, { self: 'A' }) },
         { [pA]: def(null, sA), [sA]: def(null) },
       )
       const plan = computeAssemblyPlan(world)
@@ -352,8 +363,8 @@ describe('闭包 closure', () => {
       expect(plan.cycles).toEqual([['A']])
     })
 
-    // ---------- 7. 版本漂移：A pin B 旧 payload，B.active 已移到新 payload ----------
-    it('版本漂移：pin 历史 payload 仍解析到同身份，不孤立', () => {
+    // ---------- 7. 按名跟随：A needs.one → B，B.active 在多个世代间移动仍解析到 B ----------
+    it('按名绑定：绑定跟随 active，不锁版本、不孤立', () => {
       const pA = h('pA')
       const sA = h('sA')
       const pB0 = h('pB0')
@@ -362,7 +373,7 @@ describe('闭包 closure', () => {
       const sB1 = h('sB1')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB0 }),
+          A: d('A', pA, sA, { dep: 'B' }),
           B: {
             id: 'B',
             schema: '',
@@ -404,7 +415,7 @@ describe('闭包 closure', () => {
       const pB = h('pB')
       const sB = h('sB')
       const world = makeWorld(
-        { A: d('A', pA, sA, {}), B: d('B', pB, sB, { dep: pA }) },
+        { A: d('A', pA, sA, {}), B: d('B', pB, sB, { dep: 'A' }) },
         { [pA]: def(null, sA), [sA]: def(null), [pB]: def(null, sB), [sB]: def(null) },
       )
       const a = computeAssemblyPlan(world)
@@ -423,8 +434,8 @@ describe('闭包 closure', () => {
       const sC = h('sC')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB }),
-          B: d('B', pB, sB, { dep: h('ghost') }),
+          A: d('A', pA, sA, { dep: 'B' }),
+          B: d('B', pB, sB, { dep: 'ghost' }),
           C: d('C', pC, sC, {}),
         },
         {
@@ -452,8 +463,8 @@ describe('闭包 closure', () => {
       const sC = h('sC')
       const world = makeWorld(
         {
-          C: d('C', pC, sC, { dep: h('ghost') }),
-          B: d('B', pB, sB, { dep: pC }),
+          C: d('C', pC, sC, { dep: 'ghost' }),
+          B: d('B', pB, sB, { dep: 'C' }),
           A: d('A', pA, sA, {}),
         },
         {
@@ -479,8 +490,8 @@ describe('闭包 closure', () => {
       const sB = h('sB')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: h('ghost'), loop: pB }),
-          B: d('B', pB, sB, { dep: pA }),
+          A: d('A', pA, sA, { dep: 'ghost', loop: 'B' }),
+          B: d('B', pB, sB, { dep: 'A' }),
         },
         { [pA]: def(null, sA), [sA]: def(null), [pB]: def(null, sB), [sB]: def(null) },
       )
@@ -489,18 +500,18 @@ describe('闭包 closure', () => {
       expect(entry?.reason).toBe('cycle')
     })
 
-    // ---------- 附加：缺失 pin 且 pin 值碰巧是某身份的 sig → 仍 stale（fail-closed） ----------
-    it('缺失 pin 且值为某身份 sig：仍 stale，不静默连接', () => {
+    // ---------- 附加：缺失绑定目标身份 → stale（fail-closed） ----------
+    it('缺失绑定目标身份：仍 stale，不静默连接', () => {
       const pA = h('pA')
       const sA = h('sA')
       const pB = h('pB')
       const sB = h('sB')
       const pC = h('pC')
       const sC = h('sC')
-      // A 的 dep pin 碰巧等于 B 的 gen.sig（不是 payload）→ ownerIndex 不含 sB → undefined → stale
+      // A 的 needs 绑定指向不存在的身份名 → 不猜、直接 stale
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: sB }),
+          A: d('A', pA, sA, { dep: 'ghost' }),
           B: d('B', pB, sB, {}),
           C: d('C', pC, sC, {}),
         },
@@ -533,32 +544,13 @@ describe('闭包 closure', () => {
       expect(plan.isolated).toEqual([{ id: 'A', reason: 'stale' }])
     })
 
-    it('payload-def stale：def.sig = gen.sig 且 def.pins 匹配 → 正常加载', () => {
+    it('payload-def stale：def.sig = gen.sig → 正常加载', () => {
       const pA = h('pA')
       const sA = h('sA')
       const world = makeWorld({ A: d('A', pA, sA, {}) }, { [pA]: def(null, sA), [sA]: def(null) })
       const plan = computeAssemblyPlan(world)
       expect(plan.order).toEqual(['A'])
       expect(plan.isolated).toEqual([])
-    })
-
-    it('payload-def stale：def.pins 值与 gen.pins 不匹配 → stale', () => {
-      const pA = h('pA')
-      const sA = h('sA')
-      const wrongPin = h('wrongpin')
-      const world = makeWorld(
-        { A: d('A', pA, sA, {}) },
-        {
-          [pA]: { body: null as Json, sig: sA, pins: { foo: wrongPin } } as {
-            body: Json
-            sig: string
-          },
-          [sA]: def(null),
-        },
-      )
-      const plan = computeAssemblyPlan(world)
-      expect(plan.order).toEqual([])
-      expect(plan.isolated).toEqual([{ id: 'A', reason: 'stale' }])
     })
 
     // ---------- 附加：复杂 DAG 全序约束验证 ----------
@@ -575,10 +567,10 @@ describe('闭包 closure', () => {
       const sE = h('sE')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { b: pB, c: pC }),
-          B: d('B', pB, sB, { d: pD }),
-          C: d('C', pC, sC, { d: pD }),
-          D: d('D', pD, sD, { e: pE }),
+          A: d('A', pA, sA, { b: 'B', c: 'C' }),
+          B: d('B', pB, sB, { d: 'D' }),
+          C: d('C', pC, sC, { d: 'D' }),
+          D: d('D', pD, sD, { e: 'E' }),
           E: d('E', pE, sE, {}),
         },
         {
@@ -618,8 +610,8 @@ describe('闭包 closure', () => {
       const sC = h('sC')
       const world = makeWorld(
         {
-          C: d('C', pC, sC, { dep: pA }),
-          A: d('A', pA, sA, { dep: pB }),
+          C: d('C', pC, sC, { dep: 'A' }),
+          A: d('A', pA, sA, { dep: 'B' }),
           B: d('B', pB, sB, {}, null),
         },
         {
@@ -651,10 +643,10 @@ describe('闭包 closure', () => {
       const sE = h('sE')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB }),
-          B: d('B', pB, sB, { dep: pA }),
-          C: d('C', pC, sC, { dep: pD }),
-          D: d('D', pD, sD, { dep: pC }),
+          A: d('A', pA, sA, { dep: 'B' }),
+          B: d('B', pB, sB, { dep: 'A' }),
+          C: d('C', pC, sC, { dep: 'D' }),
+          D: d('D', pD, sD, { dep: 'C' }),
           E: d('E', pE, sE, {}),
         },
         {
@@ -694,10 +686,10 @@ describe('闭包 closure', () => {
       const sE = h('sE')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pC }),
-          B: d('B', pB, sB, { dep: pA }),
-          C: d('C', pC, sC, { dep: pB }),
-          D: d('D', pD, sD, { dep: pB }),
+          A: d('A', pA, sA, { dep: 'C' }),
+          B: d('B', pB, sB, { dep: 'A' }),
+          C: d('C', pC, sC, { dep: 'B' }),
+          D: d('D', pD, sD, { dep: 'B' }),
           E: d('E', pE, sE, {}),
         },
         {
@@ -728,8 +720,8 @@ describe('闭包 closure', () => {
       const sB = h('sB')
       const world = makeWorld(
         {
-          A: d('A', pA, sA, { dep: pB }),
-          B: d('B', pB, sB, { dep: pA }),
+          A: d('A', pA, sA, { dep: 'B' }),
+          B: d('B', pB, sB, { dep: 'A' }),
         },
         { [pA]: def(null, sA), [sA]: def(null), [pB]: def(null, sB), [sB]: def(null) },
       )

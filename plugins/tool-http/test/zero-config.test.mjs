@@ -22,8 +22,9 @@ test('服务代码不读环境变量', () => {
 
 test('plugin.json 不 pin 密钥面（零配置）', () => {
   const decl = JSON.parse(readFileSync(join(PKG_ROOT, 'plugin.json'), 'utf8'))
-  assert.deepEqual(decl.pins, { host: 'host' })
+  assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {
+    host: { mode: 'one' },
     sandbox: { mode: 'one' },
     'search-index': { mode: 'many', methods: ['search', 'put'] },
   })

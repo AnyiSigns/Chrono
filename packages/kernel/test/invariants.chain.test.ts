@@ -52,7 +52,7 @@ function worldWith(...defs: Json[]): World {
   for (const d of defs) w.defs[H(d)] = d as unknown as Def
   return w
 }
-/** 身份 x + gen0（pins.p = SIG）；generations=2 时追加 gen 一代。 */
+/** 身份 x + gen0；generations=2 时追加 gen 一代。 */
 function seeded(generations = 1): { world: World; head: Head } {
   const world = worldWith(
     dRec('schema'),
@@ -66,13 +66,13 @@ function seeded(generations = 1): { world: World; head: Head } {
   head = link(
     head,
     world,
-    req('gen-a', 'add_gen', J({ id: 'x', payload: PAY, pins: { p: SIG }, sig: SIG }), head.hash),
+    req('gen-a', 'add_gen', J({ id: 'x', payload: PAY, sig: SIG }), head.hash),
   )
   if (generations > 1) {
     head = link(
       head,
       world,
-      req('gen-b', 'add_gen', J({ id: 'x', payload: PAY_ALT, pins: {}, sig: SIG_ALT }), head.hash),
+      req('gen-b', 'add_gen', J({ id: 'x', payload: PAY_ALT, sig: SIG_ALT }), head.hash),
     )
   }
   return { world, head }
@@ -151,7 +151,7 @@ describe('纯函数：同输入重跑输出哈希一致，重放期逐字段复�
         J({ op: 'add_identity', args: J({ id: 'x', schema: { $n: 0 } }) }),
         J({
           op: 'add_gen',
-          args: J({ id: 'x', payload: { $n: 1 }, pins: {}, sig: { $n: 2 } }),
+          args: J({ id: 'x', payload: { $n: 1 }, sig: { $n: 2 } }),
         }),
       ],
     })
@@ -279,7 +279,7 @@ describe('深冻结入参：applyEntry / batch / 嵌套 batch / verify / replay 
     const ops = J({
       ops: [
         J({ op: 'put', args: dRec('verify-put') }),
-        J({ op: 'add_gen', args: J({ id: 'x', payload: { $n: 0 }, pins: {}, sig: SIG }) }),
+        J({ op: 'add_gen', args: J({ id: 'x', payload: { $n: 0 }, sig: SIG }) }),
       ],
     })
     const o = commit(head, world, req('verify-batch', 'batch', ops, head.hash), NOW)

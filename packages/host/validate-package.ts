@@ -22,8 +22,6 @@ export interface ValidatePackageReport {
   result_hash: string | null
   /** `one` 绑定（cap → 提供方身份名）；`planPack` 未通过时为 null。 */
   needs: Record<string, string> | null
-  /** 声明的 `pins`（包内名 → 身份名）；`planPack` 未通过时为 null。 */
-  pins: Record<string, string> | null
 }
 
 export type ValidatePackageOutcome =
@@ -93,7 +91,6 @@ export function validatePackage(
           errors: plan.reasons.map(errorOf),
           result_hash: null,
           needs: null,
-          pins: null,
         },
       }
     }
@@ -104,7 +101,6 @@ export function validatePackage(
         errors: [],
         result_hash: plan.plan.commitHash,
         needs: plan.plan.needs,
-        pins: plan.plan.pins,
       },
     }
   } catch (err) {
@@ -121,7 +117,6 @@ export function validatePackage(
         ],
         result_hash: null,
         needs: null,
-        pins: null,
       },
     }
   } finally {

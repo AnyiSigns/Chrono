@@ -171,14 +171,14 @@ export interface ProjectionOptions {
  * `body` 口径（G7 A1）= **最近数据世代的组装结果**（整份世代取 payload def body；补丁世代取 base 世代组装后按序应用补丁）；
  * 无数据世代则回落 active（代码 / commit）def body；`active` / `gens` 保持链上原义。
  * `data_gen` = 组装来源世代 `{seq, payload}`（无数据世代 / 组装失败为 null）；写方据此把下一世代写成
- * 补丁世代（`add_gen` 携带 `base = data_gen.seq`）。`pins` = 当前代码世代声明的 `pins` 表 ∪ 该世代
- * `commit.body.meta.needs` 的 `one` 绑定（名 → 被依赖身份名；声明 `pins` 优先，`many` 无单值绑定、不并入），
- * 机械来自声明与入世解析，供调用方入口 term 判「端口 ⊆ pins」与运行期读自身 `pins` 的插件；无代码世代则 null。
+ * 补丁世代（`add_gen` 携带 `base = data_gen.seq`）。`pins` = 当前代码世代
+ * `commit.body.meta.needs` 的 `one` 绑定（名 → 被依赖身份名，含宿主哨兵 `host`；`many` 无单值绑定、不并入），
+ * 机械来自入世解析，供调用方入口 term 判「端口 ⊆ pins」与运行期读自身 `pins` 的插件；无代码世代则 null。
  * `refs` = body 里 `{"def":hash}` 标记直接出现的哈希列表（只回引用、不回 body；全量无截断，`cap` 仅硬上限）。
  * 只读是宿主纪律：不写链、不推进 head、不参与哈希。
  * @param world 基础世界（v1 = 宿主当前世界）
  * @param head 该世界的链头（投影反映构造时点的世界）
- * @param options 源码 CAS 目录（解析声明 `pins` 用）
+ * @param options 源码 CAS 目录（解析声明用）
  * @returns 交给 term 的 JSON 视图
  */
 export function projectBaseOnly(world: World, head: Head, options?: ProjectionOptions): Json {

@@ -32,7 +32,7 @@ boot ──→ client ──→ kernel
   `service-link` / `wire`，无一条路径通向两个写口）。判定类常量（如调用超时缺省值与硬上限）住
   `host/common/`，不住被判定方，否则配置层会反向依赖运行层而让这条断言失效。
 - `boot` 对内核只有类型引用；`client` 运行时另用内核的 `canonicalJson` 做规范序列化（两侧帧格式独立实现）。
-- `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `pins` / `needs`（见
+- `kernel` 不被任何插件 import；插件不 import 内核、不 import 其他插件包，插件间只走 `needs`（见
   [`docs/plugins.md`](../docs/plugins.md)）。
 - 红线由仓库级静态门禁 `tests/static/plugin-redline.test.mjs` 钉死：插件**运行期源码**（`execute/` / `src/`
   / `terms/` / `test/`）不得 import `packages/*`、不得跨插件直连；仅 `plugins/<插件>/tools/**` 的 dev /
@@ -68,8 +68,8 @@ boot ──→ client ──→ kernel
 | `plugin.json` 字段 `judgments`（由 term 承载的能力方法，宿主命中就地求值、不 spawn 服务）+ 端点形态 `transport='term'` | `host/assembly/decl.ts`、`host/assembly/ingest.ts`、`host/assembly/runtime.ts`（判定方法不登记服务端点）、`host/assembly/supervision.ts`（握手覆盖豁免）、`host/endpoint-table.ts`、`host/effect/route.ts`、`host/effect/judgment.ts`、`host/composition.ts` |
 | 路由语义（`resolve` 的 needs 分支 / `resolveSlot` / `many` fan-out / 聚合审计） | `host/effect/route.ts`、`host/effect/run-loop.ts`、`host/effect/execute.ts` |
 | `validate_package` 结果形状 | `host/validate-package.ts` |
-| 运行期 `pins` 投影并入 `one`-needs（投影 `pins` = 声明 `pins` ∪ `meta.needs`） | `host/projection/index.ts`、`docs/host.md` |
-| 服务工厂上下文新增 `pins`（宿主注入有效 pins，声明 `pins` ∪ `one`-needs）+ stdio spawn env `CHRONO_PLUGIN_PINS` | `host/assembly/decl.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`plugin-sdk/service.ts` |
+| 运行期 `pins` 投影 = 该身份代码世代 `commit.body.meta.needs` 的 `one` 绑定（cap → 被依赖身份名） | `host/projection/index.ts`、`docs/host.md` |
+| 服务工厂上下文 `pins`（宿主注入有效 pins = `one` 绑定）+ stdio spawn env `CHRONO_PLUGIN_PINS` | `host/assembly/decl.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`plugin-sdk/service.ts` |
 | 服务工厂上下文新增 `manyNeeds`（宿主注入 `many` 成员表：cap → 身份名，世界索引）+ stdio spawn env `CHRONO_PLUGIN_MANY_NEEDS`；反向 `port.call` 支持「按成员定位的 `many`」（帧带 `provider`，`route.resolve` 校验 `needs.mode=many` 且目标 ∈ 索引） | `host/assembly/capability-index.ts`、`host/assembly/service-host.ts`、`host/assembly/service-launcher.ts`、`host/effect/route.ts`、`plugin-sdk/service.ts`、`plugin-sdk/port-link.ts` |
 | `plugin-sdk/rust` 新增 `PortLink::call_with_provider`（反向调用帧带 `provider`，按成员定位 `many`）与 `many_needs_from_env`（解析 `CHRONO_PLUGIN_MANY_NEEDS`，键/成员码元序） | `plugin-sdk/rust/src/port.rs`、`plugin-sdk/rust/src/service.rs`、`plugin-sdk/rust/src/lib.rs` |
 | `host.*` 方法集新增休眠 `identities.suspend` / `identities.resume` | `host/host-methods.ts`、`host/host-capability.ts`、`host/capability-wiring.ts`、`host/assembly/runtime.ts` |
@@ -92,8 +92,8 @@ term 原语表有防漂移双保险：宿主 `walkEffs` 以内核 `TERM_TAGS` �
 - **回合不跨重启续跑**：宿主不持久化 run 游标、不自动重发效果。重启后由插件自行判断未完成的回合并重发。
   `host.run.spawn` 是调用方驱动的**新**分离 run，不是内核 `waiting` 态的续跑。
 - **插件独立性无宿主侧强制**：「插件不得互相 import、不得 import 宿主」目前靠约定与各插件自带的
-  `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `pins` ∪ `needs`、
-  运行期路由只认 `pins` / `meta.needs` 与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
+  `test/package.test.mjs`。宿主只强制结构性屏障（term `$ref` 限同包、`eff` 端口须在 `implements` ∪ `needs`、
+  运行期路由只认 `meta.needs` 绑定与自身 `implements`），且这些入世门禁不覆盖运行期顶层 `add_gen`。
 
 ## 一次调用的数据流
 

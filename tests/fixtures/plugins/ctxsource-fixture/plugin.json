@@ -1,8 +1,7 @@
 {
   "identity": "ctxsource-fixture",
   "implements": ["context-source"],
-  "methods": { "context-source": ["collect"] },
-  "pins": {},
+  "methods": {},
   "start": "node execute/main.mjs",
   "build": [],
   "protocol": "1",

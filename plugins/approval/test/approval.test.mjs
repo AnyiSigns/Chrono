@@ -443,7 +443,7 @@ test('三种 kind：port 默认与 shadow 只挂 orchestration_change', async ()
     await drv.call('enqueue', { kind: 'tool_call', port: 'tool-fs', run: 'r1', thread: 't1', cursor: { node_index: 2 }, at: AT })
 
     const items = externOf(await drv.call('list', {})).items
-    assert.equal(items[0].port, 'orchestration-admin')
+    assert.equal(items[0].port, 'orchestration')
     assert.deepEqual(items[0].shadow, { def: H2 })
     assert.equal(items[1].port, 'plugin-admin')
     assert.equal(items[1].shadow, null)
@@ -459,13 +459,13 @@ test('kind 判据：缺省 kind 时按 (port, 工具名) 归一', async () => {
   const drv = startService()
   try {
     await drv.hello()
-    await drv.call('enqueue', { port: 'orchestration-admin', run: 'r1', thread: 't1', cursor: { node_index: 0 }, at: AT })
+    await drv.call('enqueue', { port: 'orchestration', run: 'r1', thread: 't1', cursor: { node_index: 0 }, at: AT })
     await drv.call('enqueue', { tool: 'plugin.write', run: 'r1', thread: 't1', cursor: { node_index: 1 }, at: AT })
     await drv.call('enqueue', { port: 'tool-fs', tool: 'fs.read', run: 'r1', thread: 't1', cursor: { node_index: 2 }, at: AT })
 
     const items = externOf(await drv.call('list', {})).items
     assert.equal(items[0].kind, 'orchestration_change')
-    assert.equal(items[0].port, 'orchestration-admin')
+    assert.equal(items[0].port, 'orchestration')
     assert.equal(items[1].kind, 'plugin_write')
     assert.equal(items[1].port, 'plugin-admin', 'kind 派生后 port 按 kind 取默认')
     assert.equal(items[2].kind, 'tool_call')

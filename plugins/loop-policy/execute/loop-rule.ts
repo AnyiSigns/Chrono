@@ -2,6 +2,7 @@
 // 消费方 graph-run 只按名求值、不再持有封闭词表；外部提供方经同一能力类补名规则。
 // 求值上下文由调用方序列化随 args 传入（服务只收 bag、回结果），本模块不读投影、不 import 宿主。
 
+import { checkToolCalls as checkToolCallsShared } from 'plugin-sdk'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 
@@ -201,44 +202,14 @@ function asText(value: Json | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** 模型 tool_calls 结构校验：name 非空串、args 是对象（或 arguments 可解析为对象）、call_id 不重复。 */
+/** 模型 tool_calls 结构校验：结构真源在 `plugin-sdk`；成功归一为 `{call_id,tool,args}`，失败原样带标记。 */
 function checkToolCalls(raw: Json | undefined): { ok: boolean; reason?: string; calls: Rec[] } {
-  if (raw === undefined || raw === null) return { ok: true, calls: [] }
-  if (!Array.isArray(raw)) return { ok: false, reason: 'malformed_tool_call', calls: [] }
-  const calls: Rec[] = []
-  const seen = new Set<string>()
-  raw.forEach((item, index) => {
-    if (!isRecord(item)) {
-      calls.push({ call_id: `__bad-${index}`, tool: '', args: {}, __bad: true })
-      return
-    }
-    const name = asText(item['name']) || asText(item['tool'])
-    const callId = asText(item['id']) || asText(item['call_id']) || `call-${index}`
-    let args: Json
-    if (item['args'] !== undefined && item['args'] !== null) {
-      args = item['args']
-    } else {
-      const rawArgs = item['arguments']
-      if (typeof rawArgs === 'string') {
-        try {
-          args = JSON.parse(rawArgs) as Json
-        } catch {
-          args = null
-        }
-      } else if (isRecord(rawArgs)) {
-        args = rawArgs
-      } else {
-        args = {}
-      }
-    }
-    const bad = name.length === 0 || !isRecord(args) || seen.has(callId)
-    if (!bad) seen.add(callId)
-    calls.push({ call_id: callId, tool: name, args: isRecord(args) ? args : {}, __bad: bad })
-  })
-  const bad = calls.find((call) => call['__bad'] === true)
-  return bad === undefined
-    ? { ok: true, calls: calls.map((call) => ({ call_id: call['call_id'], tool: call['tool'], args: call['args'] })) }
-    : { ok: false, reason: 'malformed_tool_call', calls }
+  const checked = checkToolCallsShared(raw)
+  if (!checked.ok) return checked
+  return {
+    ok: true,
+    calls: checked.calls.map((call) => ({ call_id: call['call_id'], tool: call['tool'], args: call['args'] })),
+  }
 }
 
 /** `post` 求值：只做结构检查，不查语义（读不到工具目录）。 */

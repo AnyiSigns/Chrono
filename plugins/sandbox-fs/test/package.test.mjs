@@ -15,7 +15,7 @@ test('plugin.json 声明身份 / 方法 / needs / schema', () => {
   assert.equal(plugin.identity, 'sandbox-fs')
   assert.deepEqual(plugin.implements, ['sandbox-fs'])
   assert.deepEqual(plugin.methods['sandbox-fs'], ['fsop', 'capabilities'])
-  assert.ok('pins' in plugin, 'pins 必填')
+  assert.ok(!('pins' in plugin), 'pins 字段已删除')
   assert.deepEqual(plugin.needs['sandbox-policy'], { mode: 'one' })
   assert.deepEqual(plugin.commands, [])
 })

@@ -15,7 +15,6 @@ function gen(payload: Hash, sig: Hash, opts: { base?: number; graft?: Gen['graft
   const out: Gen = {
     seq: 0,
     payload,
-    pins: {},
     sig,
     adopted: { at: 1, by: 'test', write: WRITE },
   }

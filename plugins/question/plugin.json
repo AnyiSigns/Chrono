@@ -3,10 +3,8 @@
   "schema": "schema/question.json",
   "implements": ["question", "tool-provider"],
   "methods": {
-    "question": ["describe", "invoke", "list", "state", "sweep"],
-    "tool-provider": ["describe", "invoke"]
+    "question": ["describe", "invoke", "list", "state", "sweep"]
   },
-  "pins": {},
   "needs": {
     "input": { "mode": "one" }
   },

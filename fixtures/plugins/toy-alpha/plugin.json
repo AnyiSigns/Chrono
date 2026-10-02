@@ -3,7 +3,6 @@
   "schema": "schema/plugin.schema.json",
   "implements": ["toy.alpha"],
   "methods": { "toy.alpha": ["echo"] },
-  "pins": {},
   "start": "node execute/main.js",
   "build": [],
   "protocol": "1",

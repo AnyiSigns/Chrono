@@ -13,7 +13,6 @@ import {
   scanProposals,
 } from './proposals.ts'
 import { buildTraceTail, type TraceFacts } from './tail.ts'
-import { PINS } from './plugin.ts'
 import { BadArgsError } from './types.ts'
 import type { CallEnv, GraphModel, Handler, HandlerResult, Json, PortCaller, Rec } from './types.ts'
 
@@ -45,7 +44,7 @@ async function settle(args: Json, env: CallEnv, deps: TurnLedgerDeps): Promise<J
   if (bag === null) throw new BadArgsError('args.bag must be an object')
   if (model === null) throw new BadArgsError('args.model must be an object')
   if (trace === null) throw new BadArgsError('args.trace must be an object')
-  const pins = asRecord(input['pins']) ?? deps.pins ?? PINS
+  const pins = asRecord(input['pins']) ?? deps.pins ?? {}
   const directives = Array.isArray(input['directives']) ? (input['directives'] as Json[]) : []
   const graphHash = asString(input['graph_hash'])
   const at = asString(input['at']) ?? new Date(env.now).toISOString()
@@ -98,7 +97,6 @@ function decide(args: Json, env: CallEnv, deps: TurnLedgerDeps): Json {
   if (bag === null) throw new BadArgsError('args.bag must be an object')
   const resume = asRecord(input['resume'])
   if (resume === null) throw new BadArgsError('args.resume must be an object')
-  const pins = asRecord(input['pins']) ?? deps.pins ?? PINS
   const at = asString(input['at']) ?? new Date(env.now).toISOString()
   const cursor = isRecord(resume['cursor']) ? (resume['cursor'] as Rec) : {}
   const proposalIds = stringList(cursor['proposal_ids'])
@@ -108,7 +106,7 @@ function decide(args: Json, env: CallEnv, deps: TurnLedgerDeps): Json {
   if (verdict === 'approved' || verdict === 'accept') {
     for (const id of proposalIds) {
       const proposal = proposals.find((item) => item['id'] === id)
-      if (proposal !== undefined) expandAdoption(bag, proposal, pins, at, env.run, round)
+      if (proposal !== undefined) expandAdoption(bag, proposal, at, env.run, round)
     }
     return {
       batch: round.finalize(),

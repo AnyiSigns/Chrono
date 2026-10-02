@@ -13,12 +13,11 @@ function h(ch: string): Hash {
 function gen(
   payload: Hash,
   sig: Hash,
-  opts: { pins?: Record<string, Hash>; graft?: Gen['graft']; seq?: number } = {},
+  opts: { graft?: Gen['graft']; seq?: number } = {},
 ): Gen {
   const out: Gen = {
     seq: opts.seq ?? 0,
     payload,
-    pins: opts.pins ?? {},
     sig,
     adopted: { at: 1, by: 'test', write: h('0') },
   }
@@ -102,34 +101,7 @@ describe('recycleWorld：世代窗口', () => {
   })
 })
 
-describe('recycleWorld：pins / graft 闭包', () => {
-  it('pins 指向的被依赖世代（窗口外）随引用强留', () => {
-    const S = h('s')
-    const P0 = h('1')
-    const P1 = h('2')
-    const X = h('x')
-    const w = world([S, P0, P1, X], {
-      dep: {
-        id: 'dep',
-        schema: S,
-        gens: [gen(P0, S), gen(P1, S)],
-        active: P1,
-        born: { at: 1, by: 'test' },
-      },
-      user: {
-        id: 'user',
-        schema: S,
-        gens: [gen(X, S, { pins: { dep: P0 } })],
-        active: X,
-        born: { at: 1, by: 'test' },
-      },
-    })
-    const { world: out } = recycleWorld(w, { genWindow: 1 })
-    // user 的 pin 指向 dep 的旧世代 P0 ⇒ P0 世代强留（即便在 dep 窗口外）
-    expect(out.ids.dep.gens.map((g) => g.payload)).toEqual([P0, P1])
-    expect(out.defs[P0]).toBeDefined()
-  })
-
+describe('recycleWorld：graft 闭包', () => {
   it('graft 来源世代强留并按下标改写', () => {
     const S = h('s')
     const P0 = h('1')
@@ -299,11 +271,11 @@ describe('recycleWorld：淘汰世代引用拒绝（fail-closed）', () => {
     const patch = h('7')
     w.defs[patch] = { body: { ops: [{ op: 'replace', path: ['n'], value: 2 }] } }
     // 原 index 1 的世代已淘汰，回收后下标越界
-    expect(codeOf(w, 'add_gen', { id: 'x', payload: patch, sig: h('a'), pins: {}, base: 1 })).toBe(
+    expect(codeOf(w, 'add_gen', { id: 'x', payload: patch, sig: h('a'), base: 1 })).toBe(
       'missing_parent',
     )
     // 保留下标 0 合法
-    expect(codeOf(w, 'add_gen', { id: 'x', payload: patch, sig: h('a'), pins: {}, base: 0 })).toBe(
+    expect(codeOf(w, 'add_gen', { id: 'x', payload: patch, sig: h('a'), base: 0 })).toBe(
       '<no-throw>',
     )
   })
@@ -312,12 +284,12 @@ describe('recycleWorld：淘汰世代引用拒绝（fail-closed）', () => {
     const w = recycled()
     const payload = h('8')
     w.defs[payload] = { body: { grafted: true } }
-    expect(
-      codeOf(w, 'graft', { id: 'x', payload, sig: h('a'), pins: {}, from: 'src', gen: 1 }),
-    ).toBe('missing_parent')
-    expect(
-      codeOf(w, 'graft', { id: 'x', payload, sig: h('a'), pins: {}, from: 'src', gen: 0 }),
-    ).toBe('<no-throw>')
+    expect(codeOf(w, 'graft', { id: 'x', payload, sig: h('a'), from: 'src', gen: 1 })).toBe(
+      'missing_parent',
+    )
+    expect(codeOf(w, 'graft', { id: 'x', payload, sig: h('a'), from: 'src', gen: 0 })).toBe(
+      '<no-throw>',
+    )
   })
 })
 

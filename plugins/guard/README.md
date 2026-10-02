@@ -87,7 +87,7 @@
   `bag.tier_net` 传入，本插件只做序比较（none < limited < all）与裁决：声明超出档位范围 → `escalate`
   （`net` 段可关 / 改裁决）。批准后由编排层签发一次性 `caps.grant`（`op:"exec"` + `net`）放行本次；
   真正的强制面在 sandbox / 工具自身。`auto` 档 net=all 本就不越档。
-- **结构写高危**：`(plugin-admin, plugin.write)` 与 `(orchestration-admin, orchestration.propose)` → `escalate`。
+- **结构写高危**：`(plugin-admin, plugin.write)` 与 `(orchestration, orchestration.propose)` → `escalate`。
 - **命令前缀白名单**（`allow_patterns`）：`{port, tool, prefix:[…], verdict}`；对命令串（`args.input` / `args.command`）做保守分词（识别引号、不解析 `&&` / `|` / `;`）后逐词前缀匹配（大小写不敏感）。
   命中即直落 `allow`（reason `allowlisted`，rule = 前缀串），用于免审批放行安全命令；**危险模式先于它判定**，故危险命令不会被白名单放行。缺省空表。
 - **档位开关**（`guard_rules.tiers`）：`auto` 档直落（结构写 / 危险模式 / 工作区外 / net 越档不弹卡），

@@ -1,11 +1,11 @@
-// 反向调用（服务 → 宿主）：本插件 `pins` 为 `{"host":"host"}`，故 port 恒为保留能力类 `host`。
-// 帧方向：服务发 `port.call`（SDK 反向调用通道），宿主按发出者 pins 路由后回
+// 反向调用（服务 → 宿主）：本插件 `needs` 含宿主依赖哨兵 `host`，故 port 恒为保留能力类 `host`。
+// 帧方向：服务发 `port.call`（SDK 反向调用通道），宿主按发出者 needs 绑定路由后回
 // `port.result` / `port.error`（按原 id 配对）。失败一律作数据（PortOutcome），不抛错、不断通道。
 
 import { isRecord } from 'plugin-sdk'
 import type { Json, PortCaller, PortOutcome, Rec } from 'plugin-sdk'
 
-/** 保留能力类名（也是 `pins` 里绑定宿主自身的保留值）。 */
+/** 保留能力类名（也是 `needs` 里绑定宿主自身的保留键）。 */
 export const HOST_PORT = 'host'
 
 /** 反向调用应答：与宿主 CallResponse 同形，失败作数据、不抛错。 */

@@ -4,11 +4,13 @@
 // 未能独立核实的条目显式标注 verified=false，供调用方与后续核实。
 // 中立块形状固定：{provider, model, form, payload, signature, encrypted, tokens}——字段不得增减。
 
-import { isRecord } from 'plugin-sdk'
-import type { Json, Rec } from 'plugin-sdk'
+import { isRecord, reasoningBlock } from 'plugin-sdk'
+import type { Json, ReasoningBlock, ReasoningForm, Rec } from 'plugin-sdk'
+
+export { reasoningBlock }
+export type { ReasoningBlock, ReasoningForm }
 
 export type ReasoningRetention = 'none' | 'turn' | 'session'
-export type ReasoningForm = 'text' | 'blocks'
 /** 回传线格式：Anthropic 内容块 / OpenAI 兼容 reasoning_content / Gemini parts / Responses 推理项。null = 不回传。 */
 export type ReasoningReplayForm =
   'thinking_block' | 'reasoning_content' | 'parts' | 'reasoning_item' | null
@@ -27,16 +29,6 @@ export interface ReasoningCapability {
   /** 规则是否可由本仓代码 / 厂商模板核实；false 即保守默认。 */
   verified: boolean
   note?: string
-}
-
-export interface ReasoningBlock {
-  provider: string
-  model: string
-  form: ReasoningForm
-  payload: string
-  signature: string
-  encrypted: string
-  tokens: number
 }
 
 const INVALIDATED_BY_DEFAULT = ['model_change', 'prefix_change', 'thinking_param_change']
@@ -157,19 +149,6 @@ export function resolveReasoningCapability(input: CapabilityInput): ReasoningCap
 /** 本次调用是否应发送思考 / 推理请求参数（retention=none 一律不发）。 */
 export function sendsReasoningParam(capability: ReasoningCapability): boolean {
   return capability.retention !== 'none'
-}
-
-/** 构造中立块（全字段就位）。 */
-export function reasoningBlock(
-  provider: string,
-  model: string,
-  form: ReasoningForm,
-  payload: string,
-  signature = '',
-  encrypted = '',
-  tokens = 0,
-): ReasoningBlock {
-  return { provider, model, form, payload, signature, encrypted, tokens }
 }
 
 function isReasoningBlock(value: Json | undefined): value is Rec {

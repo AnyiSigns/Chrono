@@ -145,6 +145,7 @@ export interface PackageSpec {
   methods?: Record<string, string[]>
   /** 由 term 承载的方法：`cap → method → 包内 term 路径`；省略不写 `judgments` 字段。 */
   judgments?: Record<string, Record<string, string>>
+  /** 身份级依赖的测试简写：`能力类 → 被依赖身份名`，助 `writePackageAt` 展开为 `needs` `one` 绑定。 */
   pins?: Record<string, string>
   /** 消费方能力引用；省略不写 `needs` 字段（零扰动）。 */
   needs?: Record<string, { mode: string; methods?: string[] }>
@@ -194,13 +195,16 @@ function writePackageAt(pkgRoot: string, spec: PackageSpec): void {
   const methods =
     spec.methods ?? Object.fromEntries(spec.implements?.map((cap) => [cap, ['echo']]) ?? [])
   const start = spec.start ?? ''
+  const needs: Record<string, { mode: string; methods?: string[] }> = { ...(spec.needs ?? {}) }
+  for (const cap of Object.keys(spec.pins ?? {})) {
+    if (!Object.hasOwn(needs, cap)) needs[cap] = { mode: 'one' }
+  }
   const pluginJson = {
     identity: spec.identity,
     ...(spec.omitSchema ? {} : { schema: 'schema/plugin.schema.json' }),
     implements: spec.implements ?? [],
     methods,
-    pins: spec.pins ?? {},
-    ...(spec.needs === undefined ? {} : { needs: spec.needs }),
+    ...(Object.keys(needs).length === 0 ? {} : { needs }),
     ...(spec.slots === undefined ? {} : { slots: spec.slots }),
     ...(spec.judgments === undefined ? {} : { judgments: spec.judgments }),
     start,

@@ -6,7 +6,6 @@
     "model": ["chat", "complete", "abort", "vendors", "discover", "profile", "sync"]
   },
   "concurrent_methods": ["chat", "complete", "abort"],
-  "pins": {},
   "needs": {
     "secrets": { "mode": "one" },
     "config": { "mode": "one" },

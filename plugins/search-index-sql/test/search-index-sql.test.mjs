@@ -52,7 +52,8 @@ test('hello 回 manifest：身份 / 能力类 / 方法与 plugin.json 一致，s
       const manifest = await drv.hello()
       assert.equal(manifest.identity, 'search-index-sql')
       assert.deepEqual(manifest.implements, [CAP])
-      assert.deepEqual(manifest.methods[CAP], ['search', 'put', 'stats'])
+      // 契约单源在拥有方 search-index 的 slots：提供方不在 manifest 复述方法。
+      assert.equal(manifest.methods[CAP], undefined)
       assert.equal(manifest.protocol, '1')
       assert.equal(manifest.state, 'durable')
     })

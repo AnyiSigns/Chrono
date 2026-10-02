@@ -184,7 +184,6 @@ describe('生态 profile 构造期注入路由与宿主保留面', () => {
     identity: 'solo',
     implements: ['toy.echo'],
     methods: { 'toy.echo': ['echo'] },
-    pins: {},
     start: 'execute/main.custom',
     transport: 'inproc',
     build: [],
@@ -213,7 +212,6 @@ describe('生态 profile 构造期注入路由与宿主保留面', () => {
     const gen: Gen = {
       seq: 0,
       payload,
-      pins: {},
       sig: 's'.repeat(64),
       adopted: { at: 1, by: 'seed', write: payload },
     }
