@@ -1181,18 +1181,20 @@ async function runNode(
         'transport_failed',
         attributionOf(model, 'transport_failed'),
         parentIndex,
+        result.message,
       )
       return {
-        refusal: refusalArtifact(model, 'transport_failed', result.code ?? 'transport_failed'),
+        refusal: refusalArtifact(model, 'transport_failed', result.message ?? result.code ?? 'transport_failed'),
         pending: null,
       }
     }
     if (result.outcome === 'error') {
       const code = result.code ?? 'downstream_refusal'
+      const message = result.message ?? `node ${ids[index]} failed`
       step['verdict'] = 'fail'
       step['refusal'] = code
-      trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex)
-      return { refusal: refusalArtifact(model, code, `node ${ids[index]} failed`), pending: null }
+      trace.refuse(index, rs.iter, code, attributionOf(model, code), parentIndex, message)
+      return { refusal: refusalArtifact(model, code, message), pending: null }
     }
 
     output = isRecord(result.value) ? (result.value as Rec) : { value: result.value }

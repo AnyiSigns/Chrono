@@ -8,6 +8,8 @@ import type { AttributableTo, TurnOutcome } from 'chain-contract'
 const ATTRIBUTION: Record<string, AttributableTo> = {
   transport_failed: 'transport',
   budget: 'budget',
+  budget_impossible: 'budget',
+  budget_exceeded: 'budget',
   denied: 'approval',
   needs_approval: 'approval',
   model_timeout: 'model',
@@ -56,6 +58,8 @@ export function refusedOutcome(
     attributableTo: attributionFor(code, fallbackAttribution),
     retryable,
     cause: causeOf('loop-policy.interpret', code, message ?? undefined),
+    // 下游具体错误消息同时上抬到结局顶层：UI / 回执可直接展示真因，而非通用「下游拒绝」。
+    ...(message !== null && message.length > 0 ? { message } : {}),
   })
 }
 

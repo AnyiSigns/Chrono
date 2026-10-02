@@ -291,12 +291,13 @@ async function interpret(
       summary['turn_id'] = turnId
       if (result.pending === null && !stepping) {
         const refusedCode = refusedAt !== null ? asString(refusedAt['code']) : null
+        const refusedMessage = refusedAt !== null ? asString(refusedAt['message']) : null
         const fallbackAttr = refusedCode !== null ? attributionOf(model, refusedCode) : null
         const outcome =
           result.ended === 'refused'
             ? refusedOutcome(
                 refusedCode ?? 'downstream_refusal',
-                null,
+                refusedMessage,
                 refusedCode !== null && retriableOf(model, refusedCode),
                 fallbackAttr,
               )

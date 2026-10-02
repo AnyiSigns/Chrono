@@ -370,12 +370,10 @@ function runPipeline(
     usage: manifestUsage,
   })
 
-  // 动态输出：预算只留 5% 余量给输入；请求输出上限按剩余窗给——`min(模型 max_output, 窗 − 已用输入)`。
-  // 输入越大输出越小，输入可尽量用满模型窗（这就是「窗口=模型本身大小」的落地）。
-  const requestMaxOutput = Math.max(
-    1,
-    Math.min(budgetInfo.max_output, budgetInfo.context_window - allocation.used),
-  )
+  // 动态输出：请求输出上限按**预算**（窗 − 余量）的剩余给，而不是按整窗——`min(模型 max_output, 预算 − 已用输入)`。
+  // 用 `预算 − 已用` 而非 `窗 − 已用`，把余量留作「端点真实上限可能小于档案窗 / tools 另计」的安全头寸，
+  // 避免 `input + 请求输出` 越过端点上限触发 400（输入越大输出越小，仍尽量用满输入）。
+  const requestMaxOutput = Math.max(1, Math.min(budgetInfo.max_output, budgetInfo.budget - allocation.used))
   const value: Json = {
     ok: true,
     messages: formatted.messages,

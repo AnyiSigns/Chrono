@@ -56,6 +56,8 @@ export interface NodeDispatchResult {
   value: Json
   outcome: 'ok' | 'error' | 'transport_failed'
   code?: string
+  /** 下游错误消息（有则随拒绝产物透传，供结局 `cause` / UI 展示真因）。 */
+  message?: string
 }
 
 /** 派发目标：优先节点 `entry`，否则契约 effects 的首个端口 / 方法。 */
@@ -226,7 +228,7 @@ async function callPort(
   const outcome = await input.port.call(cap, method, bag)
   if (!outcome.ok) {
     input.trace.recordEff(input.iter, cap, method, bag, { code: outcome.code }, 'transport_failed')
-    return { ok: false, value: { ok: false, error: { code: 'transport_failed', message: outcome.message } }, outcome: 'transport_failed', code: 'transport_failed' }
+    return { ok: false, value: { ok: false, error: { code: 'transport_failed', message: outcome.message } }, outcome: 'transport_failed', code: 'transport_failed', message: outcome.message }
   }
   const value = outcome.value
   const isError = isRecord(value) && value['ok'] === false
@@ -236,8 +238,14 @@ async function callPort(
   if (!isError) {
     return { ok: true, value: normalize(cap, value), outcome: 'ok' }
   }
-  const error = isRecord(value['error']) ? (value['error'] as Rec) : {}
+  // 错误形状：多数端口 `{ok:false, error:{code,message}}`；context.build 等以顶层 `{ok:false, code, message}` 返回。
+  const error = isRecord(value['error'])
+    ? (value['error'] as Rec)
+    : isRecord(value)
+      ? (value as Rec)
+      : {}
   const code = asString(error['code']) ?? 'downstream_refusal'
+  const message = asString(error['message'])
   // 已取消的回合不降级重试模型：abort 后的失败不该再起一次调用。
   if (isModel && !isCancelled(asString(input.bag['turn_id']))) {
     const downgraded = await resolveDowngrade(input.port, input.pins, input.model.thresholds, code, cap)
@@ -251,7 +259,7 @@ async function callPort(
       input.trace.recordEff(input.iter, downgraded.port, method, bag, retry.ok ? retry.value : { code: retry.code }, retry.ok ? 'error' : 'transport_failed')
     }
   }
-  return { ok: false, value, outcome: 'error', code }
+  return { ok: false, value, outcome: 'error', code, message }
 }
 
 /** 从 tool.dispatch 的 results 里挑出成功项（供 wrote_files / extra_messages）。 */

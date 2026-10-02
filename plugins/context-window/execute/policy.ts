@@ -23,7 +23,7 @@ const VALID_SOURCES: Source[] = [
 export function defaultPolicy(): Policy {
   return {
     version: 1,
-    budget: { margin_ratio: 0.05, default_context_window: 8192, default_max_output: 1024 },
+    budget: { margin_ratio: 0.05, default_context_window: 262144, default_max_output: 1024 },
     quota: { skill: 0.1, style: 0.03 },
     prefix: {
       stable: ['prompt', 'tools'],

@@ -16,7 +16,7 @@ export interface BudgetParams {
 export const DEFAULT_PARAMS: BudgetParams = {
   config: null,
   margin_ratio: 0.05,
-  default_context_window: 8192,
+  default_context_window: 262144,
   default_max_output: 1024,
   quota: { l2: 0.08, l1: 0.08, skill: 0.1, recall: 0.12, style: 0.03 },
 }
@@ -51,7 +51,7 @@ export function computeBudget(params: BudgetParams): BudgetModel {
   return {
     budget,
     context_window: window,
-    max_output: Math.min(output, window),
+    max_output: Math.min(output, budget),
     margin,
     origin: contextWindow === null || maxOutput === null ? 'default' : 'profile',
     flags,

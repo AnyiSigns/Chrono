@@ -230,9 +230,9 @@ test('动态输出：max_output ≥ context 时输出夹到窗，输入不静态
       baseBag({ config: { model: 'm1', context_window: 100, max_output: 100 } }),
     )
     assert.equal(value.ok, true)
-    // 输入预算 = 窗 − 余量（100 − 5 = 95）；请求输出 = min(模型 max_output=100, 窗 − 已用输入)。
+    // 输入预算 = 窗 − 余量（100 − 5 = 95）；max_output 先夹到预算（=95），请求输出再取 min(夹后上限, 预算 − 已用输入)。
     assert.equal(value.manifest.budget, 100 - 5)
-    assert.equal(value.params.max_output, Math.min(100, 100 - value.manifest.used))
+    assert.equal(value.params.max_output, Math.min(100 - 5, 100 - 5 - value.manifest.used))
   } finally {
     drv.close()
   }

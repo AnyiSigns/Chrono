@@ -2,7 +2,7 @@
   "version": 1,
   "budget": {
     "margin_ratio": 0.05,
-    "default_context_window": 8192,
+    "default_context_window": 262144,
     "default_max_output": 1024
   },
   "quota": {

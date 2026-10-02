@@ -800,6 +800,7 @@ function Composer(): ReactNode {
                         attribution: s.outcome.attributableTo,
                       })}`
                     : ''}
+                  {s.outcome.message !== null ? ` ${s.outcome.message}` : ''}
                 </span>
                 {s.outcome.action === 'settings' ? (
                   <button

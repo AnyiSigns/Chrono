@@ -113,6 +113,11 @@ export const STYLE_TEXT = `
 .chat-md ul, .chat-md ol { margin: 0 0 var(--space-8); padding-left: var(--space-24); }
 .chat-md hr { border: none; border-top: 1px solid var(--c-border); }
 .chat-system { background: var(--c-surface); border-left: 3px solid var(--c-danger); border-radius: var(--radius-md); padding: var(--space-8) var(--space-12); color: var(--c-text-2); font-size: var(--font-size-sm); }
+.chat-error-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-8); }
+.chat-outcome { display: flex; align-items: flex-start; gap: var(--space-8); padding: var(--space-8) var(--space-12); background: var(--c-surface); border-left: 3px solid var(--c-danger); border-radius: var(--radius-md); color: var(--c-text-2); font-size: var(--font-size-sm); }
+.chat-outcome-main { flex: 1 1 auto; min-width: 0; }
+.chat-outcome-title { color: var(--c-text); }
+.chat-dismiss { margin-left: auto; flex: none; }
 .chat-footnote { display: flex; align-items: center; gap: var(--space-8); min-height: 24px; font-size: var(--font-size-xs); color: var(--c-text-3); opacity: 0; transition: opacity var(--motion-fast); }
 .chat-msg:hover .chat-footnote, .chat-footnote:focus-within { opacity: 1; }
 .chat-usage { font-variant-numeric: tabular-nums; }

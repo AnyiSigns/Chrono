@@ -98,10 +98,19 @@ export class TraceRecorder {
     step['eff_log'] = list
   }
 
-  refuse(nodeIndex: number, iter: number, code: string, attributableTo: string, parentIndex: number | null = null): void {
+  refuse(
+    nodeIndex: number,
+    iter: number,
+    code: string,
+    attributableTo: string,
+    parentIndex: number | null = null,
+    message?: string,
+  ): void {
     const entry: Rec = { node_index: nodeIndex, iter, code, attributable_to: attributableTo }
     // composite 子图内节点与父图节点共用 node_index 空间：带 parent_index 以保持可还原。
     if (parentIndex !== null) entry['parent_index'] = parentIndex
+    // 下游具体错误消息随拒绝留痕（结局 `cause` 与 UI 据此展示真因，而非通用「下游拒绝」）。
+    if (typeof message === 'string' && message.length > 0) entry['message'] = message
     this.refusedAt = entry
     this.outcome = 'refused'
   }

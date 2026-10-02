@@ -101,7 +101,9 @@ async function negotiateOutput(
     const effectiveQuirks = applyQuirksRepairs(quirks, applied)
     try {
       const output = await attempt(effective, effectiveQuirks, applied)
-      if (trial.size > 0) rememberRepairs(key, [...trial])
+      // `drop_tools` 只在本调用内生效、绝不写入会话记忆：agent 场景去工具=静默失能。
+      const durable = [...trial].filter((kind) => kind !== 'drop_tools')
+      if (durable.length > 0) rememberRepairs(key, durable)
       return output
     } catch (err) {
       if (

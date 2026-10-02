@@ -14,13 +14,22 @@ export type RepairKind =
   | 'drop_reasoning_replay'
   | 'drop_reasoning_param'
 
-/** 错误正文给不出字段线索时的退让梯队（保守 → 让路）。 */
+/**
+ * 错误正文给不出字段线索时的退让梯队（保守 → 让路）。
+ * 不含 `drop_tools`：盲试降到"去工具"会让 agent 静默失能，只在正文明确点名 tools 字段时才用（见 FIELD_HINTS）。
+ */
 export const REPAIR_ESCALATION: readonly RepairKind[] = [
   'drop_max_tokens',
   'drop_stream_options',
   'drop_tool_choice',
-  'drop_tools',
 ]
+
+/**
+ * 上下文长度超限文案：这类 400 的解法是**下调请求输出**（去 `max_tokens` 让端点用默认），
+ * 与 tools 字段无关。必须优先识别，否则正文里的 "tool input" 等字样会被误判成工具字段问题。
+ */
+const CONTEXT_LENGTH_HINT =
+  /maximum context length|context[_\s-]?length|reduce the length|too many tokens|exceeds?[^.]*context|context[^.]*exceed/i
 
 /** 错误正文 -> 退让档：先匹配点名字段；每次只推进一档。 */
 const FIELD_HINTS: ReadonlyArray<readonly [RegExp, RepairKind]> = [
@@ -28,7 +37,8 @@ const FIELD_HINTS: ReadonlyArray<readonly [RegExp, RepairKind]> = [
   [/reasoning|thinking|thought|signature|encrypted/i, 'drop_reasoning_replay'],
   [/stream[_\s-]?options/i, 'drop_stream_options'],
   [/tool[_\s-]?choice/i, 'drop_tool_choice'],
-  [/\btools?\b/i, 'drop_tools'],
+  // 只在真正点名 `tools` 字段时报错时才退让；排除 "tool input/output" 这类描述性短语。
+  [/\btools?\b(?!\s*(?:input|output|are|is\b))/i, 'drop_tools'],
 ]
 
 /**
@@ -36,6 +46,10 @@ const FIELD_HINTS: ReadonlyArray<readonly [RegExp, RepairKind]> = [
  * 返回空数组 = 没有可再退让的字段（调用方据此放弃并原样回灌错误）。
  */
 export function nextRepairs(message: string, applied: ReadonlySet<RepairKind>): RepairKind[] {
+  // 上下文长度超限：只下调请求输出，绝不因正文里的 "tool input" 等字样去动 tools。
+  if (CONTEXT_LENGTH_HINT.test(message)) {
+    return applied.has('drop_max_tokens') ? [] : ['drop_max_tokens']
+  }
   for (const [pattern, kind] of FIELD_HINTS) {
     if (!pattern.test(message)) continue
     if (!applied.has(kind)) return [kind]

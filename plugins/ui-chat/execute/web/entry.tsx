@@ -1322,6 +1322,7 @@ const MessageItem = memo(function MessageItem({
   showCopy?: boolean
 }): ReactNode {
   const env = useChatEnv()
+  const [dismissed, setDismissed] = useState(false)
   const def = entry !== null && typeof entry === 'object' ? entry.def : null
   const role = def !== null && typeof def.role === 'string' ? def.role : 'assistant'
   if (role === 'user') {
@@ -1339,15 +1340,28 @@ const MessageItem = memo(function MessageItem({
     )
   }
   if (role === 'system') {
+    if (dismissed) return null
     const errorCode =
       def !== null && def.meta !== undefined && def.meta !== null && typeof def.meta.error === 'string'
         ? def.meta.error
         : 'unknown'
+    const dismissLabel = lookupMessage(env.table, 'chat_close').body
     return (
       <div className="chat-msg chat-msg-assistant">
         <div className="chat-system">
-          <div className="chat-error-title">
-            {lookupMessage(env.table, errorCode).title || lookupMessage(env.table, 'chat_system_message').body}
+          <div className="chat-error-head">
+            <div className="chat-error-title">
+              {lookupMessage(env.table, errorCode).title || lookupMessage(env.table, 'chat_system_message').body}
+            </div>
+            <button
+              className="chat-iconbtn chat-dismiss"
+              type="button"
+              aria-label={dismissLabel}
+              title={dismissLabel}
+              onClick={() => setDismissed(true)}
+            >
+              <Icon name="x" size={14} />
+            </button>
           </div>
           <div>{lookupMessage(env.table, errorCode).body}</div>
         </div>
@@ -1530,16 +1544,19 @@ function StreamTurn({ view }: { view: any }): ReactNode {
  *  `cancelled` 是用户主动停止，静默（不按错误展示）；`refused` / `interrupted` 仍显式呈现。 */
 const TurnOutcomeLine = memo(function TurnOutcomeLine({ outcome }: { outcome: any }): ReactNode {
   const { table } = useChatEnv()
+  const [dismissed, setDismissed] = useState(false)
+  if (dismissed) return null
   const code = outcomeDisplayCode(outcome)
   const entry = lookupMessage(table, code)
   const detail =
     typeof outcome.attributableTo === 'string' && outcome.attributableTo.length > 0
       ? ` ${formatText('chat_outcome_detail', { code, attribution: outcome.attributableTo })}`
       : ''
+  const dismissLabel = lookupMessage(table, 'chat_close').body
   return (
     <div className="chat-outcome" data-kind={outcome.kind}>
       <Icon name={outcome.kind === 'cancelled' ? 'x' : 'alert-circle'} size={16} />
-      <div>
+      <div className="chat-outcome-main">
         <div className="chat-outcome-title">
           {entry.title || lookupMessage(table, 'chat_error').body}
         </div>
@@ -1548,6 +1565,15 @@ const TurnOutcomeLine = memo(function TurnOutcomeLine({ outcome }: { outcome: an
           {detail}
         </div>
       </div>
+      <button
+        className="chat-iconbtn chat-dismiss"
+        type="button"
+        aria-label={dismissLabel}
+        title={dismissLabel}
+        onClick={() => setDismissed(true)}
+      >
+        <Icon name="x" size={14} />
+      </button>
     </div>
   )
 })

@@ -16,8 +16,8 @@ test('预算建模：缺档案回落默认并标 profile_missing', () => {
   const missing = computeBudget(DEFAULT_PARAMS)
   assert.equal(missing.origin, 'default')
   assert.ok(missing.flags.includes('profile_missing'))
-  assert.equal(missing.context_window, 8192)
-  assert.equal(missing.budget, 8192 - Math.floor(8192 * 0.05))
+  assert.equal(missing.context_window, 262144)
+  assert.equal(missing.budget, 262144 - Math.floor(262144 * 0.05))
 })
 
 test('预算建模：档案给出窗口 / 输出；输入预算 = 窗 − 余量（输出不静态预留）', () => {
@@ -32,12 +32,12 @@ test('预算建模：档案给出窗口 / 输出；输入预算 = 窗 − 余量
   assert.equal(explicit.margin, 50)
   assert.equal(explicit.budget, 950)
 
-  // 输出 ≥ 窗：max_output 夹到窗本身；输入预算不受输出影响。
+  // 输出 ≥ 预算：max_output 夹到预算（窗 − 余量）而非整窗，给「端点真实上限可能小于档案窗 / tools 另计」留头寸。
   const capped = computeBudget({
     ...DEFAULT_PARAMS,
     config: { context_window: 1000, max_output: 2000 },
   })
-  assert.equal(capped.max_output, 1000)
+  assert.equal(capped.max_output, 1000 - 50)
   assert.equal(capped.budget, 1000 - 50)
 })
 
