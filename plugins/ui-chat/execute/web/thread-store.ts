@@ -29,6 +29,8 @@ import {
   loadConversation,
   threadKind,
 } from './history-model.ts'
+import { isOutcomeKind } from 'chain-contract'
+import type { OutcomeKind } from 'chain-contract'
 
 /** 已定稿 run 的记忆长度（丢弃迟到帧用；有界，防无界增长）。 */
 export const FINISHED_MEMORY = 32
@@ -82,8 +84,8 @@ function deltaReasoning(payload: any): string {
 
 // ---- 结局收束（纯函数） ----
 
-/** 回合终态种类（契约封闭集）。 */
-export type OutcomeKind = 'committed' | 'refused' | 'cancelled' | 'interrupted'
+// 回合终态种类封闭集单源在 `chain-contract`（与 ui-composer 共用同一份契约），不再本地复述。
+export type { OutcomeKind } from 'chain-contract'
 
 /** 归一后的结局：展示只需 kind / 码 / 归因 / 可重试 / 下游 cause 码 / 消息。 */
 export interface BusinessOutcome {
@@ -95,16 +97,14 @@ export interface BusinessOutcome {
   message: string | null
 }
 
-const OUTCOME_KINDS: readonly OutcomeKind[] = ['committed', 'refused', 'cancelled', 'interrupted']
-
 /** 归一一条结局；形态非法回 null。 */
 export function normalizeOutcome(value: any): BusinessOutcome | null {
   if (!isRec(value)) return null
   const kind = value.kind
-  if (typeof kind !== 'string' || !OUTCOME_KINDS.includes(kind as OutcomeKind)) return null
+  if (!isOutcomeKind(kind)) return null
   const cause = isRec(value.cause) ? value.cause : null
   return {
-    kind: kind as OutcomeKind,
+    kind,
     code: typeof value.code === 'string' && value.code.length > 0 ? value.code : null,
     attributableTo:
       typeof value.attributableTo === 'string' && value.attributableTo.length > 0 ? value.attributableTo : null,

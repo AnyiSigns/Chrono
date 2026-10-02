@@ -2,33 +2,24 @@
 // 本文件只保留解释器构造上下文与归一结果所需的中立类型 / 结构检查，不再枚举判据名。
 
 import { checkToolCalls as checkToolCallsShared, isRecord } from 'plugin-sdk'
+import type { RuleEvalCtx, RuleEvalResult, WhenEvalResult } from 'chain-contract'
 import type { Json, Rec } from './types.ts'
 
+// 规则求值契约单源在 `chain-contract`（与提供方 loop-policy 共用）；消费方在其上加本进程内字段与传输错误码。
 /** 规则求值上下文（解释器逐步构造，随反向调用序列化为中立形状）。 */
-export interface RuleCtx {
-  nodeIndex: number
-  outputs: Map<number, Rec>
-  inputs: Map<number, Rec>
-  shared: Rec
-  thresholds: Rec
-  state: Rec
-  effLog: Json[]
+export interface RuleCtx extends RuleEvalCtx {
   /** 判据求值端口（`loop-rule` 成员）；只在本进程内使用，不随 args 出线。 */
   rules?: RuleEvaluator
 }
 
-export interface RuleResult {
-  ok: boolean
+/** `pre` / `post` 求值结果（`code` 为消费方传输层错误码，提供方不产生）。 */
+export interface RuleResult extends RuleEvalResult {
   code?: string
-  reason?: string
 }
 
 /** `when` 求值结果：`ok:false` 是结构化拒绝（未知 / 畸形判据），不是「条件不成立」。 */
-export interface WhenResult {
-  ok: boolean
-  value: boolean
+export interface WhenResult extends WhenEvalResult {
   code?: string
-  reason?: string
 }
 
 /** 判据求值端口（消费方视角）：按名向 `loop-rule` 成员求值。 */

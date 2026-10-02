@@ -7,29 +7,20 @@ import { canonicalize } from './normalize.ts'
 import { lookupCount } from './tokens.ts'
 import { isKnownSource } from './types.ts'
 import { isRecord, applyScale, prefixSums, rangeSum } from './text.ts'
-import type { BudgetOrigin, CanonicalMessage, Policy } from './types.ts'
+import type { BudgetModel, BudgetOrigin, CanonicalMessage, Policy, QuotaCaps } from './types.ts'
 
-/** 每来源配额上限（token，由 `budget.model` 建模给出）。 */
-export interface QuotaCaps {
-  skill: number
-  style: number
-}
+// `BudgetModel` / `QuotaCaps` 单源在 `chain-contract`（与提供方 `budget` 共用的线协议形状），
+// 经本地 types.ts re-export；此处仅再导出以保留既有 import 面。
+export type { BudgetModel, QuotaCaps } from './types.ts'
 
-/** 预算模型：`budget.model` 的返回形状（消费方本地类型，跨身份不 import）。 */
-export interface BudgetModel {
-  budget: number
-  context_window: number
-  max_output: number
-  margin: number
-  origin: BudgetOrigin
-  flags: string[]
-  quota: QuotaCaps
-}
-
-/** 由预算标量与 policy 比例在本地回落出配额上限（直调 allocate 时的兜底，与 `budget.model` 同口径）。 */
+/** 由预算标量与 policy 比例在本地回落出配额上限（直调 allocate 时的兜底，与 `budget.model` 同口径）。
+ * 分配器只消费 `skill` / `style`；本地兜底无法由 policy 推出 `l2` / `l1` / `recall`，故置 0（不被读取）。 */
 function quotaCapsFromPolicy(budget: number, policy: Policy): QuotaCaps {
   return {
+    l2: 0,
+    l1: 0,
     skill: Math.floor(budget * policy.quota.skill),
+    recall: 0,
     style: Math.floor(budget * policy.quota.style),
   }
 }

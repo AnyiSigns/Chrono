@@ -41,6 +41,7 @@ export type { ToolCallsCheck } from './tool-calls.ts'
 export {
   MAX_CHAIN,
   attributionOf,
+  buildTopology,
   chainEntries,
   contractCost,
   contractEffects,
@@ -52,6 +53,8 @@ export {
   contractPre,
   contractPublishes,
   contractReads,
+  edgeEndpoints,
+  edgeKey,
   edgePorts,
   edgeWhen,
   effectsCaps,
@@ -63,7 +66,9 @@ export {
   graphLoop,
   graphNodes,
   graphSink,
+  hasCycle,
   isLlmContract,
+  isolationRank,
   nodeAutonomy,
   nodeBindings,
   nodeContractId,
@@ -74,14 +79,19 @@ export {
   nodeScope,
   nodeSubgraph,
   numericThreshold,
+  reachableSet,
+  reaches,
   readEntries,
   readGraphModel,
   readPrompts,
   readThresholds,
   retriableOf,
+  scopeMatches,
+  selectInstance,
+  topoOrder,
   touchesEffects,
 } from './graph-model.ts'
-export type { GraphModel } from './graph-model.ts'
+export type { ChosenInstance, GraphModel, ScopeCtx, Topology } from './graph-model.ts'
 export { cacheTokens, normalizeUsage, reasoningBlock } from './model-output.ts'
 export type { ReasoningBlock, ReasoningForm } from './model-output.ts'
 export {

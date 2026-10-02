@@ -2,8 +2,7 @@
   "identity": "ui-notify",
   "implements": ["ui-notify", "ui-slot"],
   "methods": {
-    "ui-notify": ["ping"],
-    "ui-slot": ["list"]
+    "ui-notify": ["ping"]
   },
   "start": "node execute/main.ts",
   "build": [],

@@ -2,8 +2,7 @@
   "identity": "ui-threads",
   "implements": ["ui-threads", "ui-slot"],
   "methods": {
-    "ui-threads": ["ping", "threads.state", "client.read"],
-    "ui-slot": ["list"]
+    "ui-threads": ["ping", "threads.state", "client.read"]
   },
   "needs": {
     "session": { "mode": "one" },

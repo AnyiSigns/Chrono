@@ -3,32 +3,17 @@
 // 求值上下文由调用方序列化随 args 传入（服务只收 bag、回结果），本模块不读投影、不 import 宿主。
 
 import { checkToolCalls as checkToolCallsShared } from 'plugin-sdk'
+import type { RuleEvalCtx, RuleEvalResult, WhenEvalResult } from 'chain-contract'
 import { isRecord } from './plan.ts'
 import type { Json, Rec } from './types.ts'
 
+// 规则求值契约单源在 `chain-contract`（与消费方 graph-run 共用），不再本地复述。
 /** 规则求值上下文（由 graph-run 的中立形状反序列化而来）。 */
-export interface RuleCtx {
-  nodeIndex: number
-  outputs: Map<number, Rec>
-  inputs: Map<number, Rec>
-  shared: Rec
-  thresholds: Rec
-  state: Rec
-  effLog: Json[]
-}
-
+export type RuleCtx = RuleEvalCtx
 /** `when` 求值结果：`ok:false` 是结构化拒绝（畸形判据），不是「条件不成立」。 */
-export interface WhenResult {
-  ok: boolean
-  value: boolean
-  reason?: string
-}
-
+export type WhenResult = WhenEvalResult
 /** `pre` / `post` 求值结果。 */
-export interface RuleResult {
-  ok: boolean
-  reason?: string
-}
+export type RuleResult = RuleEvalResult
 
 /** 非空判定：字符串 / 数组 / 对象 / 数值。 */
 function nonempty(value: Json | undefined): boolean {

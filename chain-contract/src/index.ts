@@ -2,3 +2,5 @@
 // 消费插件运行期裸导入本包；由宿主准备阶段链接进物化树 `node_modules/chain-contract`。
 
 export * from './runtime.ts'
+export * from './budget.ts'
+export * from './rule.ts'

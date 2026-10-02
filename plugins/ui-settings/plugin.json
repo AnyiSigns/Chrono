@@ -12,8 +12,7 @@
       "scopes",
       "client.read",
       "secret"
-    ],
-    "ui-slot": ["list"]
+    ]
   },
   "concurrent_methods": ["vendors", "health", "graph", "scopes", "client.read"],
   "needs": {

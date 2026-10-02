@@ -1115,7 +1115,7 @@
 - `identity`: `ui-approval`
 - `schema`: —
 - `implements`: `ui-approval`、`ui-slot`
-- `methods`: `ui-approval`→`ping`、`list`、`decide`、`decide_all`、`client.read`、`ui-slot`→`list`
+- `methods`: `ui-approval`→`ping`、`list`、`decide`、`decide_all`、`client.read`
 - `concurrent_methods`: `list`、`client.read`
 - `needs`: `approval`→(one)、`input`→(one)、`ref-hydrate`→(one)
 - `slots`: —
@@ -1136,7 +1136,7 @@
 - `identity`: `ui-chat`
 - `schema`: —
 - `implements`: `ui-chat`、`ui-slot`
-- `methods`: `ui-chat`→`ping`、`client.read`、`ui-slot`→`list`
+- `methods`: `ui-chat`→`ping`、`client.read`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
@@ -1157,7 +1157,7 @@
 - `identity`: `ui-composer`
 - `schema`: —
 - `implements`: `ui-composer`、`ui-slot`
-- `methods`: `ui-composer`→`ping`、`client.read`、`ui-slot`→`list`
+- `methods`: `ui-composer`→`ping`、`client.read`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
@@ -1178,7 +1178,7 @@
 - `identity`: `ui-notify`
 - `schema`: —
 - `implements`: `ui-notify`、`ui-slot`
-- `methods`: `ui-notify`→`ping`、`ui-slot`→`list`
+- `methods`: `ui-notify`→`ping`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
@@ -1199,7 +1199,7 @@
 - `identity`: `ui-settings`
 - `schema`: —
 - `implements`: `ui-settings`、`ui-nav`、`ui-slot`
-- `methods`: `ui-settings`→`ping`、`vendors`、`profile`、`discover`、`health`、`graph`、`scopes`、`client.read`、`secret`、`ui-slot`→`list`
+- `methods`: `ui-settings`→`ping`、`vendors`、`profile`、`discover`、`health`、`graph`、`scopes`、`client.read`、`secret`
 - `concurrent_methods`: `vendors`、`health`、`graph`、`scopes`、`client.read`
 - `needs`: `config`→(one)、`host`→(one)、`input`→(one)、`model`→(one)、`ref-hydrate`→(one)、`secrets`→(one)、`skill`→(one)
 - `slots`: —
@@ -1241,7 +1241,7 @@
 - `identity`: `ui-sidebar`
 - `schema`: —
 - `implements`: `ui-sidebar`、`ui-slot`
-- `methods`: `ui-sidebar`→`ping`、`clientRead`、`newConversation`、`selectConversation`、`renameConversation`、`deleteConversation`、`restoreConversation`、`branchConversation`、`listTurns`、`listConversations`、`listWorkspaces`、`addWorkspace`、`removeWorkspace`、`ui-slot`→`list`
+- `methods`: `ui-sidebar`→`ping`、`clientRead`、`newConversation`、`selectConversation`、`renameConversation`、`deleteConversation`、`restoreConversation`、`branchConversation`、`listTurns`、`listConversations`、`listWorkspaces`、`addWorkspace`、`removeWorkspace`
 - `concurrent_methods`: —
 - `needs`: `host`→(one)、`input`→(one)、`session`→(one)、`workspace`→(one)、`workspace-picker`→(one)
 - `slots`: —
@@ -1262,7 +1262,7 @@
 - `identity`: `ui-threads`
 - `schema`: —
 - `implements`: `ui-threads`、`ui-slot`
-- `methods`: `ui-slot`→`list`、`ui-threads`→`ping`、`threads.state`、`client.read`
+- `methods`: `ui-threads`→`ping`、`threads.state`、`client.read`
 - `concurrent_methods`: —
 - `needs`: `session`→(one)、`todo`→(one)
 - `slots`: —

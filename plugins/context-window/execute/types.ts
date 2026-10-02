@@ -179,8 +179,8 @@ export interface CanonicalMessage extends RawMessage {
   contentKey: string
 }
 
-/** 预算来源：模型档案给出，或缺失时回落 policy 默认值。 */
-export type BudgetOrigin = 'profile' | 'default'
+// 预算来源 / 预算模型 / 用量形状的横切契约单源在 `chain-contract`（与提供方 `budget` 共用），
+// 见本文件末尾 re-export；此处不再本地复述。
 
 /** policy 预算段。 */
 export interface BudgetPolicy {
@@ -250,16 +250,6 @@ export interface SectionTokens {
   hints: number
 }
 
-/** 真实用量解析结果（缓存命中率由此可观测）。 */
-export interface UsageManifest {
-  prompt_tokens: number
-  cached_tokens: number
-  cache_creation_tokens: number
-  completion_tokens: number
-  hit_rate: number | null
-  correction_factor: number | null
-}
-
 /** 方法返回值与上行事件。 */
 export interface BuildResult {
   value: Json
@@ -286,3 +276,4 @@ export interface AssemblyManifest {
 }
 
 export { BadArgsError } from 'plugin-sdk'
+export type { BudgetModel, BudgetOrigin, QuotaCaps, UsageManifest } from 'chain-contract'

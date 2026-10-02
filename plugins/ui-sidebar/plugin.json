@@ -2,7 +2,6 @@
   "identity": "ui-sidebar",
   "implements": ["ui-sidebar", "ui-slot"],
   "methods": {
-    "ui-slot": ["list"],
     "ui-sidebar": [
       "ping",
       "clientRead",

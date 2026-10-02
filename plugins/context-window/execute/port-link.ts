@@ -37,7 +37,10 @@ function quotaOf(value: Json): QuotaCaps {
     return typeof item === 'number' && Number.isFinite(item) ? item : 0
   }
   return {
+    l2: pick('l2'),
+    l1: pick('l1'),
     skill: pick('skill'),
+    recall: pick('recall'),
     style: pick('style'),
   }
 }

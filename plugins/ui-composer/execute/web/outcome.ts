@@ -5,18 +5,11 @@
 // retryable, cause, message}`，与 `chat.turn.settled` 同源）。回合前拒绝发生在回合开启
 // 之前，不带结局，只有 `value.error.code`，按引导渲染。
 
-export type OutcomeKind = 'committed' | 'refused' | 'cancelled' | 'interrupted'
+import { isAttributableTo, isOutcomeKind } from 'chain-contract'
+import type { AttributableTo, OutcomeKind } from 'chain-contract'
 
-/** 归因分类（封闭集，与结局契约一致）。 */
-export type AttributableTo =
-  | 'model'
-  | 'tool'
-  | 'guard'
-  | 'approval'
-  | 'graph'
-  | 'owner'
-  | 'transport'
-  | 'budget'
+// 结局种类 / 归因封闭集单源在 `chain-contract`（横切契约源，随 UI 产物打包），不再本地复述。
+export type { AttributableTo, OutcomeKind } from 'chain-contract'
 
 export interface BusinessOutcome {
   kind: OutcomeKind
@@ -33,8 +26,6 @@ export interface PreTurnRefusal {
   message: string
 }
 
-const OUTCOME_KINDS: readonly OutcomeKind[] = ['committed', 'refused', 'cancelled', 'interrupted']
-
 /** 回合前拒绝码（发生在 `turn.open` 之前，不持久化、无结局）。 */
 const PRE_TURN_CODES: readonly string[] = ['model_not_configured', 'workspace_missing', 'empty_slot']
 
@@ -50,13 +41,13 @@ function asString(value: unknown): string | null {
 export function normalizeOutcome(value: unknown): BusinessOutcome | null {
   if (!isRecord(value)) return null
   const kind = value.kind
-  if (typeof kind !== 'string' || !OUTCOME_KINDS.includes(kind as OutcomeKind)) return null
+  if (!isOutcomeKind(kind)) return null
   const cause = isRecord(value.cause) ? value.cause : null
   const attribution = value.attributableTo
   return {
-    kind: kind as OutcomeKind,
+    kind,
     code: asString(value.code),
-    attributableTo: asString(attribution) as AttributableTo | null,
+    attributableTo: isAttributableTo(attribution) ? attribution : null,
     retryable: value.retryable === true,
     causeCode: cause !== null ? asString(cause.code) : null,
     message: asString(value.message),
