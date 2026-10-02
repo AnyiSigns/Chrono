@@ -119,6 +119,18 @@ function handle(msg) {
   if (msg && typeof msg === "object") {
     switch (msg.kind) {
       case "hello": {
+        // 首次 helloFailTotal 次握手失败（半帧前缀 → 传输层 timeout），第 N+1 次成功：
+        // 验证「临时性起服务失败 → 退避重试自愈」（而非当场永久隔离）。
+        if (
+          typeof config.helloFailTotal === "number" &&
+          counterValue() < config.helloFailTotal
+        ) {
+          bumpCounter();
+          const half = Buffer.allocUnsafe(4);
+          half.writeUInt32BE(4096, 0);
+          process.stdout.write(half);
+          return;
+        }
         if (config.helloMode === "silent") return;
         if (config.helloMode === "garbage") {
           // 首 4 字节即 ≈1.85GB > 单帧上限：协议损坏（frame_too_large）

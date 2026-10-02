@@ -336,6 +336,35 @@ describe('装配运行时 startAssembly', () => {
     )
   }, 15000)
 
+  it('握手超时（临时性）→ 退避重试自愈：首次超时未永久隔离，重试后装载', async () => {
+    const retryRoot = writeTempPackage(root, {
+      identity: 'toy-retryhello',
+      start: 'node execute/main.js',
+      implements: ['toy.retryhello'],
+      serviceConfig: { helloFailTotal: 1 },
+    })
+    const { handle } = await startWorld([{ name: 'toy-retryhello', path: retryRoot }], {
+      handshakeTimeoutMs: 1000,
+    })
+    // 首轮握手超时：记 start_failed(timeout)，当场未装载
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-retryhello')
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-retryhello',
+        reason: 'timeout',
+      }),
+    )
+    // 退避重试（基 2s）后第二跳成功：自愈装载，且无 restart_exhausted / 永久隔离
+    await waitFor(
+      () => handle.loaded().map((x) => x.id).includes('toy-retryhello'),
+      '临时性握手超时经退避重试自愈装载',
+      8000,
+    )
+    expect(records.filter((r) => r.kind === 'service' && r.event === 'restart_exhausted')).toEqual([])
+  }, 15000)
+
   it('probe 超时 → service.exit health_timeout + 自动重启（端点摘除后重挂、pid 更新）', async () => {
     const probeRoot = writeTempPackage(root, {
       identity: 'toy-probe',
@@ -1532,6 +1561,66 @@ describe('装配运行时 startAssembly', () => {
     const gen2 = world2.ids['toy-rejoin'].active as Hash
     expect(handle.endpoints.get('toy-rejoin', gen2, 'toy.rejoin', 'echo')).not.toBeNull()
   }, 15000)
+
+  it('依赖恢复连带复归：主依赖修好后，曾被连带隔离的依赖者随之复归', async () => {
+    const a1 = writeTempPackage(root, {
+      identity: 'toy-casc-a',
+      dir: 'toy-casc-a-v1',
+      start: 'node execute/main.js',
+      implements: ['toy.casc.a'],
+      // 握手完成后再退出：退出即隔离分支，反向可达含依赖者 B
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 800 },
+    })
+    const b = writeTempPackage(root, {
+      identity: 'toy-casc-b',
+      start: 'node execute/main.js',
+      implements: ['toy.casc.b'],
+      needs: { 'toy.casc.a': { mode: 'one', methods: ['echo'] } },
+    })
+    expect(
+      runSeed(root, [
+        { name: 'toy-casc-a', path: a1 },
+        { name: 'toy-casc-b', path: b },
+      ]).ok,
+    ).toBe(true)
+    const world1 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({ root, world: world1, log })
+    handles.push(handle)
+    // 先确认 A、B 均已装载（握手完成后 A 才退出）
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-casc-b'),
+      'B 随 A 初始装载',
+      8000,
+    )
+    // A 退出 → 连带隔离 A 与依赖者 B
+    await waitFor(
+      () => records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-casc-a'),
+      'A 退出并隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'A 连带隔离落地')
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-casc-b')
+
+    // A 换成健康代码世代（不再退出）→ 复归 A，并连带复归自身世代未变的依赖者 B
+    const a2 = writeTempPackage(root, {
+      identity: 'toy-casc-a',
+      dir: 'toy-casc-a-v2',
+      implements: ['toy.casc.a'],
+    })
+    expect(runSeed(root, [{ name: 'toy-casc-a', path: a2 }]).ok).toBe(true)
+    const world2 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    await handle.applyWorld(world2)
+
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'rejoined', impl: 'toy-casc-b' }),
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-casc-b'),
+      '依赖者 B 连带复归装载',
+      8000,
+    )
+  }, 25000)
 
   it("声明 exclusive:['data'] + state:'durable' → 换代走独占序（准备先于 drain），④ 目录跨代保留", async () => {
     const identity = 'toy-data-excl'

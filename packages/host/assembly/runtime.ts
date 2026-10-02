@@ -58,6 +58,20 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
 const DEFAULT_RELOAD_TIMEOUT_MS = 10_000
 
 /**
+ * 起服务**临时性**失败的退避重试上限：握手超时 / 通道关闭多为宿主卡顿或对端尚未就绪，
+ * 退避重试而非当场判坏分支隔离；坏声明 / 缺 start / 协议错误等命定失败仍立即隔离（fail-closed 不变）。
+ */
+const START_RETRY_MAX = 5
+const START_RETRY_BASE_MS = 2_000
+const START_RETRY_MAX_MS = 30_000
+
+/**
+ * 临时性起服务失败码：可退避重试，其余（坏声明 / 构建失败 / 执行体入口坏）按坏分支隔离。
+ * `unknown` 是未分类的原始异常（历史上一度把 secrets 整条依赖链拖下线），同样先重试兜底。
+ */
+const TRANSIENT_START_REASONS = new Set(['timeout', 'closed', 'unknown'])
+
+/**
  * 宿主事件循环延迟（ms）监视：探针超时若发生在宿主自身卡顿期间（多兆字节提交 / GC / 同步哈希），
  * 全服务会**同时**报超时——据此杀服务会把一次卡顿放大成级联重启、丢掉在途回合。
  * 延迟高于探针超时即判定「宿主卡顿」，暂停探针与误杀判定。
@@ -195,6 +209,12 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
   private readonly pendingRestarts = new Set<Promise<void>>()
   /** 在途启动任务：`stop()` 须等它们落定，避免停机返回后仍有启动中的服务挂上端点。 */
   private readonly pendingStarts = new Set<Promise<void>>()
+  /**
+   * 起服务临时性失败（握手超时 / 通道关闭）的退避重试态：计数 + 在途计时器。
+   * 成功装载、判永久隔离或停机时自清；避免一次卡顿把可用插件永久隔离（须等新代码世代才复归）。
+   */
+  private readonly startAttempts = new Map<string, number>()
+  private readonly startRetryTimers = new Map<string, NodeJS.Timeout>()
   /** 换人序所需能力的闭包视图，交 `swap.ts` 用；不暴露运行时私有状态。 */
   private readonly swapHost: SwapHost
   private stopping = false
@@ -295,6 +315,10 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       const follow = [...new Set([...changed, ...reinject])].sort()
       this.recordCapabilityOwnerConflicts(next)
       for (const id of follow) await this.followGeneration(prev, next, id, reinject.has(id))
+      // 连带复归：被跟随且已装载 / 复归的身份，其曾被连带隔离的依赖者若依赖已齐 → 一并复归。
+      for (const id of follow) {
+        if (this.loadedIds.has(id) && !this.isolated.has(id)) await this.rejoinDependentsOf(id)
+      }
       for (const id of retired) await this.retireBranch(id)
     } catch (err) {
       // 跟随未全部成功：世界与索引回到 prev，使「从已应用世界 diff」在下次调用时仍视这些身份为待跟随。
@@ -419,6 +443,9 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     await Promise.allSettled([...this.pendingStarts])
     // 等在途重启落地（其内部会看到 stopping 并停掉刚起的服务），再清表
     await Promise.allSettled([...this.pendingRestarts])
+    for (const timer of this.startRetryTimers.values()) clearTimeout(timer)
+    this.startRetryTimers.clear()
+    this.startAttempts.clear()
     this.endpoints.clear()
     this.loadedIds.clear()
   }
@@ -545,7 +572,15 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     if (this.stopping || this.suspended.has(id)) return
     if (this.isolated.has(id)) return
     const deps = this.depsOf.get(id) ?? []
-    if (deps.some((dep) => !this.loadedIds.has(dep))) {
+    const missing = deps.filter((dep) => !this.loadedIds.has(dep))
+    if (missing.length > 0) {
+      // 依赖在世界里、只是暂未装载（装配 / 换代 / 对端自身重试窗口内）→ 慢速持续重试：只要依赖
+      // 存在且未判坏分支，就等它回来（不受硬上限约束，避免长一点的依赖恢复把依赖者永久拖下线）。
+      // 依赖确实缺席，或依赖本身已判坏分支隔离，才连带隔离（fail-closed 不破）。
+      const blocked = missing.some(
+        (dep) => !Object.hasOwn(this.world.ids, dep) || this.isolated.has(dep),
+      )
+      if (!blocked && this.scheduleStartRetry(id, false)) return
       this.record('dep', 'stale', { impl: id })
       this.isolated.set(id, this.assemblyGenOf(id)?.payload ?? null)
       return
@@ -586,6 +621,7 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
       this.loadedIds.add(id)
       this.registerEndpoints(service)
       this.startHealth(service)
+      this.clearStartRetry(id)
     } catch (err) {
       await this.handleStartFailure(id, gen.payload, err)
     }
@@ -603,7 +639,54 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
 
   private async handleStartFailure(id: string, gen: Hash, err: unknown): Promise<void> {
     this.recordStartFailure(id, gen, err)
+    const failure = classifyStartFailure(err)
+    // 临时性失败（握手超时 / 通道关闭）先退避重试；超限或命定失败才转坏分支隔离。
+    if (
+      failure.event === 'service' &&
+      TRANSIENT_START_REASONS.has(failure.reason) &&
+      this.scheduleStartRetry(id)
+    ) {
+      return
+    }
+    this.clearStartRetry(id)
     await this.isolateStartFailure(id)
+  }
+
+  /**
+   * 排一次起服务退避重试（临时性失败 / 依赖暂未装载）。有界：超过 `START_RETRY_MAX` 回 false，
+   * 交调用方按坏分支隔离。计时器到点重走 `trackStart`，其内部会再判停机 / 休眠 / 隔离 / 已装载。
+   * 返回是否已排程（false 表示重试已耗尽，调用方应走隔离）。
+   */
+  private scheduleStartRetry(id: string, bounded = true): boolean {
+    if (this.stopping || this.suspended.has(id) || this.isolated.has(id)) return false
+    if (this.startRetryTimers.has(id)) return true
+    const attempts = (this.startAttempts.get(id) ?? 0) + 1
+    if (bounded && attempts > START_RETRY_MAX) {
+      this.startAttempts.delete(id)
+      return false
+    }
+    this.startAttempts.set(id, attempts)
+    const step = Math.min(attempts, START_RETRY_MAX)
+    const delay = Math.min(START_RETRY_BASE_MS * 2 ** (step - 1), START_RETRY_MAX_MS)
+    const timer = setTimeout(() => {
+      this.startRetryTimers.delete(id)
+      if (this.stopping || this.suspended.has(id) || this.isolated.has(id)) return
+      if (this.loadedIds.has(id) || !Object.hasOwn(this.world.ids, id)) return
+      void this.trackStart(id)
+    }, delay)
+    timer.unref?.()
+    this.startRetryTimers.set(id, timer)
+    return true
+  }
+
+  /** 清一个身份的起服务重试态（成功装载 / 判永久隔离 / 停机时）。 */
+  private clearStartRetry(id: string): void {
+    const timer = this.startRetryTimers.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.startRetryTimers.delete(id)
+    }
+    this.startAttempts.delete(id)
   }
 
   /** 起服务失败 / 坏声明的分支隔离：该身份 + 反向可达依赖者。 */
@@ -765,6 +848,32 @@ class AssemblyRuntime implements AssemblyRuntimeHandle {
     this.isolated.delete(id)
     this.record('dep', 'rejoined', { impl: id, gen: newCodeGen.payload })
     return true
+  }
+
+  /**
+   * 依赖恢复后的**连带复归**：某个身份成功装载 / 复归后，扫描其曾被连带隔离的反向依赖者，
+   * 只要「其依赖已全部装载」就清隔离并重起。用于补上 `applyWorld` 只跟随「自身代码世代变化」的盲区：
+   * 主依赖先坏（或超时被隔离）、其代码修好复归后，依赖者不会因自身世代未变而永久缺席。
+   * 只复活依赖已健康的身份，非「回落」；每个候选最多尝试一次，避免失败-隔离的自旋。
+   */
+  private async rejoinDependentsOf(seed: string): Promise<void> {
+    const tried = new Set<string>()
+    for (;;) {
+      if (this.stopping) return
+      let progressed = false
+      for (const id of this.reverseReachable([seed]).values()) {
+        if (id === seed || tried.has(id)) continue
+        if (!this.isolated.has(id) || this.suspended.has(id)) continue
+        const deps = this.depsOf.get(id) ?? []
+        if (deps.some((dep) => !this.loadedIds.has(dep))) continue
+        tried.add(id)
+        this.isolated.delete(id)
+        this.record('dep', 'rejoined', { impl: id, gen: this.assemblyGenOf(id)?.payload })
+        await this.trackStart(id)
+        progressed = true
+      }
+      if (!progressed) return
+    }
   }
 
   /** 数据换代：通知服务新世代并等 ack；超时 / 通道断返回 false（交调用方保守处理）。 */
