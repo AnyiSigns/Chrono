@@ -64,6 +64,7 @@ Rust 插件服务同样只写方法实现与领域逻辑，协议壳由 `plugin-
 | `wire`    | 帧编解码（4 字节大端 + 规范 JSON）、`MAX_FRAME_BYTES`、`canonical_json`（与 TS `canonical.ts` 逐字节一致）、`log`                                                           |
 | `service` | `ServiceSpec` / `manifest` 派生、`ServiceHandler` 派发 trait、`run_service` 帧循环（控制帧 / 在途计数 / 线程派发 / drain 收口）、`ServiceError`、`CallEnv`、`shared_writer` |
 | `port`    | `PortLink` 反向调用通道（`port.call` / 应答结算 / `fail_all`），`call_id` 回带由 `service` 的线程局部记录                                                                   |
+| `tiers`   | 四档 fs/net 映射与 caps 钳制（`TierConfig` / `TierPolicy` / `FsScope` / `NetScope` / `parse_tiers` / `parse_caps` / `effective_scope` / `net_within_tier` / `builtin_tiers`） |
 
 - `canonical_json` 数字口径与 TS / 内核一致：JS 最短往返 f64 排版（`1e21 → 1e+21`、`1e-6 → 0.000001`、
   `1e-7 → 1e-7`）、`-0 → 0`、键按 UTF-16 code-unit 升序、深度上限 `MAX_JSON_DEPTH`。

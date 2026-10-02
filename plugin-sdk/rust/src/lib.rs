@@ -4,6 +4,7 @@
 
 mod port;
 mod service;
+pub mod tiers;
 mod wire;
 
 pub use port::{PortLink, DEFAULT_CALL_TIMEOUT_MS};
