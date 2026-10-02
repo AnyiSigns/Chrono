@@ -64,7 +64,7 @@ loop-policy.interpret           // interpret bag 一次覆盖全部节点；loop
 - 服务按 bag 装配契约装配 interpret bag：`input` / `config` / `tier` / `session` / `graph` /
   `persona` / `skills` / `workspace_root` / `evidence` / `todo` / `guard_rules` / `sandbox_tiers` /
   `tools_bindings` / `mcp_tools` 等（缺对应身份即省略，由 loop-policy 回落种子 / 内建兜底）。
-  bag 恒带 `contract_version`（取自生成契约副本 `execute/contract/` 的 `CONTRACT_VERSION`），供消费方按主版本显式拒绝过期契约。
+  bag 恒带 `contract_version`（取自宿主供给、裸导入的 `chain-contract` 包的 `CONTRACT_VERSION`），供消费方按主版本显式拒绝过期契约。
 - interpret 段返回的 `$directives` 作为顶层 `$directives` 交宿主落账（数组拼接，不构造新 JSON 对象）。
 - 首条用户消息判定：投影里当前会话 `title` 仍为缺省「新对话」且 `count == 0`。
   标题生成内联在本服务：非流式单次 `model.complete`，失败 / 超时 / 空一律走 `resolveTitle` 的

@@ -18,7 +18,7 @@ import {
   sessionSliceFixture,
   startService,
 } from './driver.mjs'
-import { CONTRACT_VERSION } from '../execute/contract/index.ts'
+import { CONTRACT_VERSION } from 'chain-contract'
 
 const BAG_KEYS = [
   'contract_version',

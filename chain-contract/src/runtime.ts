@@ -1,6 +1,6 @@
 // 横切契约运行子集：值形状、封闭码集、校验器、结局构造器与 cause 包裹助手。
 // 自包含：不 import 任何模块、不触网、不取时钟，可随插件世代入世，也可在浏览器半边运行。
-// 本文件是生成源：插件内 execute/contract/index.ts 由它加生成头派生，勿直接改生成物。
+// 本文件是运行子集真源，由 src/index.ts 再导出；消费插件经宿主供给的链接裸导入本包。
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 

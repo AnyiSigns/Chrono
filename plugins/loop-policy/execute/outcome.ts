@@ -1,8 +1,8 @@
 // 结局构造：把 loop-policy 内部拒绝码包成契约 `TurnOutcome`（码不重命名，原样进 cause）。
 // 结局层只从封闭小集里取 `code` 与 `attributableTo`；下游业务码逐字节留在 `cause.code`。
 
-import { cancelled, causeOf, committed, isOutcomeCode, refused } from './contract/index.ts'
-import type { AttributableTo, TurnOutcome } from './contract/index.ts'
+import { cancelled, causeOf, committed, isOutcomeCode, refused } from 'chain-contract'
+import type { AttributableTo, TurnOutcome } from 'chain-contract'
 
 /** 已知内部拒绝码 → 封闭归因维度；未知码按种子拒绝码表的 `attributable_to` 兜底。 */
 const ATTRIBUTION: Record<string, AttributableTo> = {

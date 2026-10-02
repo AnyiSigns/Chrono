@@ -1,5 +1,5 @@
 // 根测试编排：分层、失败即停（可关），不引入根 workspace（各包各自安装，见 packages/README.md）。
-// 层序：static（静态扫描）→ drift（契约生成物漂移）→ packages（四个载体包 + plugin-sdk + toolchain）
+// 层序：static（静态扫描）→ packages（四个载体包 + plugin-sdk + toolchain）
 // → plugins（每个带 package.json 的插件）→ contract（根接缝契约测试）→ e2e（端到端，显式开启）。
 // 本脚本只编排，不做安装；缺 node_modules 的条目报 unavailable 并计入该层失败。
 // 用法：node tools/test-all.mjs [--layer=<名>]... [--rust] [--e2e] [--list] [--no-bail]
@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-const ALL_LAYERS = ['static', 'drift', 'packages', 'plugins', 'contract', 'e2e']
+const ALL_LAYERS = ['static', 'packages', 'plugins', 'contract', 'e2e']
 
 /** 载体包（层 `packages`）：各自 `npm test`，均为 vitest。 */
 const CARRIER_PACKAGES = [
@@ -103,12 +103,6 @@ function planStatic() {
   return planNodeDir('static', 'tests/static', join('tests', 'static'))
 }
 
-function planDrift() {
-  const tool = join(ROOT, 'chain-contract', 'tools', 'check-drift.mjs')
-  if (!existsSync(tool)) return [skipped('drift', 'chain-contract/tools/check-drift.mjs', 'tool not present')]
-  return [entry('drift', 'chain-contract/tools/check-drift.mjs', { command: process.execPath, args: [tool] })]
-}
-
 /** npm 条目：整条命令交给 shell（Windows 上是 npm.cmd）。 */
 function npmEntry(layer, target, cwd) {
   return entry(layer, target, { command: 'npm test', cwd, shell: true })
@@ -190,8 +184,6 @@ function planLayer(layer, options) {
   switch (layer) {
     case 'static':
       return planStatic()
-    case 'drift':
-      return planDrift()
     case 'packages':
       return planPackages()
     case 'plugins':

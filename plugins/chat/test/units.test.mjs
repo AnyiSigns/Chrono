@@ -18,7 +18,7 @@ import {
 } from '../execute/assemble.ts'
 import { defHashOf, directivesOf, errorValue, externOnly, isErrorValue, mergeDirectives } from '../execute/plan.ts'
 import { loadWiring } from '../execute/wiring.ts'
-import { CONTRACT_VERSION } from '../execute/contract/index.ts'
+import { CONTRACT_VERSION } from 'chain-contract'
 import { configFixture, idsFixture } from './driver.mjs'
 
 test('modelConfigOf：从 #2 config 解析连接实例 + 档案 + 风格来源', () => {

@@ -16,8 +16,8 @@ import {
 } from './plan.ts'
 import { BadArgsError, asString, isRecord, nowOf } from 'plugin-sdk'
 import type { CallEnv, Handler, HandlerResult, Json, PortCaller } from 'plugin-sdk'
-import { refused, validateOutcome, validateStepRecord } from './contract/index.ts'
-import type { TurnOutcome } from './contract/index.ts'
+import { refused, validateOutcome, validateStepRecord } from 'chain-contract'
+import type { TurnOutcome } from 'chain-contract'
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'terminated'])
 

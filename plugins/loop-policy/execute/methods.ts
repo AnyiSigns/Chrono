@@ -16,7 +16,7 @@ import {
   ruleCtxFromWire,
 } from './loop-rule.ts'
 import { afterStep, beforeSettle, noteInput, promoteInput } from './turn-hook.ts'
-import { checkContractVersion } from './contract/index.ts'
+import { checkContractVersion } from 'chain-contract'
 import { attributionOf, resolveModel, retriableOf } from './seed.ts'
 import { cancelledOutcome, committedOutcome, refusedOutcome } from './outcome.ts'
 import { accumulateDirectives, accumulatedDirectives, clearTrace } from './segment-trace.ts'

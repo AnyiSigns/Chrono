@@ -60,6 +60,31 @@ if (isDirectRun(import.meta.url)) runStdio(build, { log: LOG })
 `
 
 /**
+ * 契约包版 toy 服务源文本：裸导入 `plugin-sdk` 与 `chain-contract`，三形态共用。
+ * 用于验证宿主在任意根下把框架安装的契约包链接进物化树，插件可裸导入并调用其导出。
+ */
+export const FIXTURE_CONTRACT_MAIN = `import { createService as createSdkService, isDirectRun, makeLogger, packageRootOf, runStdio } from 'plugin-sdk'
+import { CONTRACT_VERSION, checkContractVersion } from 'chain-contract'
+const LOG = makeLogger('toy-contract')
+function build(ctx) {
+  return createSdkService({
+    pluginRoot: packageRootOf(import.meta.url),
+    capability: 'toy.contract',
+    handlers: {
+      echo: async (args) => ({
+        value: { echo: args, contract: CONTRACT_VERSION, checked: checkContractVersion('1.0').ok },
+        events: [],
+      }),
+    },
+    emit: ctx.emit,
+    log: LOG,
+  })
+}
+export const createService = build
+if (isDirectRun(import.meta.url)) runStdio(build, { log: LOG })
+`
+
+/**
  * 反向调用夹具服务：配了 `reversePort` 时先发 `port.call` 到目标，再把
  * `{env, forwarded, argsEnv}` 回给宿主；否则回 `{env, args, pid}`。用于验证
  * 反向转发 / 端口审计 / 方法级超时；帧编解码与宿主同形。

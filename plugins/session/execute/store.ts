@@ -28,7 +28,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { STEP_RECORD_TYPES, cancelled, interrupted } from './contract/index.ts'
+import { STEP_RECORD_TYPES, cancelled, interrupted } from 'chain-contract'
 import { displayMessagesByTurn } from './project.ts'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }

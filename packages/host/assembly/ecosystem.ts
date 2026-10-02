@@ -27,6 +27,8 @@ export interface EcosystemProfile {
   readonly cargoTargetDirName: string
   /** 顶层 SDK 包目录名（框架安装布局：与 `packages/` 同级）。 */
   readonly sdkPackageName: string
+  /** 顶层第一方契约包目录名（框架安装布局：与 `packages/` 同级）。 */
+  readonly contractPackageName: string
   /** 物化树内的依赖目录名。 */
   readonly sdkNodeModulesDir: string
   /** SDK crate 在 SDK 包内的目录名（`<sdkDir>/<目录名>/Cargo.toml`）。 */
@@ -53,6 +55,7 @@ export const DEFAULT_ECOSYSTEM: EcosystemProfile = {
   cargoTargetEnvVar: 'CARGO_TARGET_DIR',
   cargoTargetDirName: 'cargo-target',
   sdkPackageName: 'plugin-sdk',
+  contractPackageName: 'chain-contract',
   sdkNodeModulesDir: 'node_modules',
   sdkRustDirName: 'rust',
   entryExtensions: ['mjs', 'cjs', 'js', 'mts', 'cts', 'ts', 'jsx', 'tsx'],
@@ -77,6 +80,7 @@ function mergeEcosystem(overrides: Partial<EcosystemOverrides>): EcosystemProfil
     cargoTargetEnvVar: overrides.cargoTargetEnvVar ?? DEFAULT_ECOSYSTEM.cargoTargetEnvVar,
     cargoTargetDirName: overrides.cargoTargetDirName ?? DEFAULT_ECOSYSTEM.cargoTargetDirName,
     sdkPackageName: overrides.sdkPackageName ?? DEFAULT_ECOSYSTEM.sdkPackageName,
+    contractPackageName: DEFAULT_ECOSYSTEM.contractPackageName,
     sdkNodeModulesDir: overrides.sdkNodeModulesDir ?? DEFAULT_ECOSYSTEM.sdkNodeModulesDir,
     sdkRustDirName: overrides.sdkRustDirName ?? DEFAULT_ECOSYSTEM.sdkRustDirName,
     entryExtensions: overrides.entryExtensions ?? DEFAULT_ECOSYSTEM.entryExtensions,

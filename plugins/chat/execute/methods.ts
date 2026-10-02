@@ -26,8 +26,8 @@ import {
   isRecord,
   mergeDirectives,
 } from './plan.ts'
-import { causeFromError, causeOf, cancelled, refused } from './contract/index.ts'
-import type { TurnOutcome } from './contract/index.ts'
+import { causeFromError, causeOf, cancelled, refused } from 'chain-contract'
+import type { TurnOutcome } from 'chain-contract'
 import { BadArgsError, ServiceError } from './types.ts'
 import type { TitleWiring, Wiring } from './wiring.ts'
 import type { CallEnv, Handler, Json, PortCaller, Rec } from './types.ts'

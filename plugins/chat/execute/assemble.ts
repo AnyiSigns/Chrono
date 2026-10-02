@@ -5,7 +5,7 @@
 
 import { asString, defHashOf, isRecord, numberField } from './plan.ts'
 import { sliceEnabled } from './wiring.ts'
-import { CONTRACT_VERSION } from './contract/index.ts'
+import { CONTRACT_VERSION } from 'chain-contract'
 import type { Wiring } from './wiring.ts'
 import type { Json, Rec } from './types.ts'
 

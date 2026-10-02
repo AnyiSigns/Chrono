@@ -30,6 +30,22 @@ export function frameworkSdkDir(ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM)
 }
 
 /**
+ * 框架安装里的契约包目录：从本模块位置向上定位与 `packages/` 同级的契约包目录。
+ * 与 `frameworkSdkDir` 同路，是「顶层独立包」布局的机械定位。
+ */
+export function frameworkContractDir(
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
+): string {
+  return resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    ecosystem.contractPackageName,
+  )
+}
+
+/**
  * 在物化树内供给 SDK：`<cwd>/node_modules/plugin-sdk` 链到框架安装的 SDK 目录。
  * 幂等：先移除旧落点（只解链，绝不跟进目标）再建链，保证指向当前框架安装。
  * SDK 目录缺失即抛错，由调用方按准备阶段失败（`deps_failed`）收口。
@@ -47,6 +63,34 @@ export function provisionPluginSdk(
   removeExisting(target)
   mkdirSync(dirname(target), { recursive: true })
   symlinkDirOrJunction(target, source)
+}
+
+/**
+ * 在物化树内供给契约包：`<cwd>/node_modules/chain-contract` 链到框架安装的契约目录，
+ * 使插件运行期裸导入 `chain-contract` 在任意宿主根下可解析（对照 `provisionPluginSdk`）。
+ * 契约包以 TS 源码发布，链接经 realpath 指回框架安装目录（不在 `node_modules` 下），
+ * 故 Node 类型剥离与仓库内解析同路。幂等：先解旧落点再建链；并发物化时撞车再复核一次。
+ * 契约目录缺失即抛错，由调用方按准备阶段失败（`deps_failed`）收口。
+ */
+export function provisionChainContract(
+  cwd: string,
+  contractDir?: string,
+  ecosystem: EcosystemProfile = DEFAULT_ECOSYSTEM,
+): void {
+  const source = resolve(contractDir ?? frameworkContractDir(ecosystem))
+  if (!existsSync(join(source, 'package.json'))) {
+    throw new Error(`chain_contract_missing:${source}`)
+  }
+  const target = join(cwd, ecosystem.sdkNodeModulesDir, ecosystem.contractPackageName)
+  if (isLinkTo(target, source)) return
+  removeExisting(target)
+  mkdirSync(dirname(target), { recursive: true })
+  try {
+    symlinkDirOrJunction(target, source)
+  } catch (err) {
+    // 并发下另一物化已建好同一落点：复核后放行，否则原样上抛。
+    if (!isLinkTo(target, source)) throw err
+  }
 }
 
 /**

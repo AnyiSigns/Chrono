@@ -9,32 +9,31 @@
 - **运行子集**（`src/runtime.ts`）——类型、封闭码集、`validateBag`、结局构造器、`cause` 包裹助手、
   契约版本校验器。**自包含**：不 import 任何模块、不触网、不取时钟。
 
-## 为什么生成而不是 import
+## 宿主供给、插件裸导入
 
-运行期代码不在插件之间共享，而是由 `tools/generate.mjs` 从 `src/runtime.ts` **生成**进各消费插件的
-`execute/contract/index.ts`：
+本包是**第一方非载体包**：不随插件入世、不进世界，也不在插件间生成副本。消费插件运行期**裸导入
+`chain-contract`**，由宿主在**准备阶段**把框架安装的 `chain-contract/` 链接进物化树
+`node_modules/chain-contract`（与 `plugin-sdk` 同点，依赖恢复之后），故在**任意宿主根**下都能解析。
 
-- 插件不得 import `packages/*`，也不得互相 import（`docs/plugins.md` 红线 1 / 4）；
-- UI 浏览器半边的 esbuild 打包早于宿主供给 SDK，运行期只能拿到插件树内的文件；
-- 生成物随插件世代入世、随回滚一致，不需要宿主供给，也不要求解冻 `packages/`。
+用链接而非复制：本包以 TS 源码发布（`package.json` 的 `exports` 指向 `./src/index.ts`），Node 类型剥离
+对 `node_modules` 下的文件不生效，链接经 realpath 指回框架安装目录（不在 `node_modules` 下），类型剥离
+与仓库内解析同路。
 
-生成物**不留任何 import**，可随插件入世，也可在浏览器半边运行。手改生成物会造成漂移，
-由生成头里的源哈希与 `tools/check-drift.mjs` 静态比对兜住。
+由此**插件侧零拷贝**：改 `src/` 无需重新生成任何插件文件，只需换代框架安装。本包不进 `needs` / 路由 /
+装配，也不得被插件写链。
 
 ## 目录
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/runtime.ts` | 运行子集真源（生成源，勿手改生成物） |
-| `src/index.ts` | 契约源入口，再导出运行子集供根测试取用 |
+| `src/runtime.ts` | 运行子集真源（自包含，不 import 任何模块） |
+| `src/index.ts` | 契约源入口，再导出运行子集；`package.json` 的 `exports` 指向它 |
 | `schema/interpret-bag.schema.json` | chat -> loop-policy 的 `interpret` bag 形状 |
 | `schema/step-record.schema.json` | 回合事件日志五种步记录 |
 | `schema/turn-outcome.schema.json` | 回合结局 |
 | `schema/contract-version.schema.json` | 契约主版本标记 |
 | `fixtures/` | 共享夹具（真实形状），仅测试期 |
 | `invariants.ts` | I5 码透传、I6 bag 单真源断言器，仅测试期 |
-| `tools/generate.mjs` | 生成器 |
-| `tools/check-drift.mjs` | 生成物漂移检查 |
 
 ## 封闭集
 
@@ -58,7 +57,7 @@ chat 方法实际写出的键。消费方（`plugins/loop-policy/execute/`）读
 ## 用法
 
 ```js
-import { validateBag, refused, causeOf, checkContractVersion } from './execute/contract/index.ts'
+import { validateBag, refused, causeOf, checkContractVersion } from 'chain-contract'
 
 const checked = validateBag(bag)
 if (!checked.ok) return render(checked.outcome)
@@ -71,12 +70,8 @@ const outcome = refused({
 })
 ```
 
-## 生成与漂移检查
+## 测试
 
 ```sh
-npm run generate      # node tools/generate.mjs，派生三份 execute/contract/index.ts
-npm run check-drift   # node tools/check-drift.mjs，逐份比对并点名漂移文件
 npm test              # node --test，校验器 / 构造器 / 夹具 / 不变量
 ```
-
-生成脚本以 `src/` 全部 TS 文件计算源哈希写进生成头；漂移检查重新派生逐字节比对，任一份不一致即退出码 1。

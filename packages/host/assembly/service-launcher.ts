@@ -6,7 +6,11 @@
 
 import { mkdirSync } from 'node:fs'
 import { materializeCommit } from './materialize.ts'
-import { provisionPluginSdk, provisionRustPluginSdk } from './sdk-provision.ts'
+import {
+  provisionChainContract,
+  provisionPluginSdk,
+  provisionRustPluginSdk,
+} from './sdk-provision.ts'
 import { DEFAULT_ECOSYSTEM } from './ecosystem.ts'
 import type { EcosystemProfile } from './ecosystem.ts'
 import { ServiceLink } from '../service-link.ts'
@@ -66,6 +70,12 @@ export interface ServiceLauncherDeps {
    * 在任意宿主根下都可解析（SDK 不随插件入世、不进世界）。
    */
   sdkDir?: string
+  /**
+   * 框架安装里的第一方契约包目录（`chain-contract/`）；缺省按宿主模块位置解析。
+   * 准备阶段把契约包链接进物化树的 `node_modules/chain-contract`，使插件裸导入
+   * `chain-contract` 在任意宿主根下都可解析（契约包不随插件入世、不进世界）。
+   */
+  contractDir?: string
   /**
    * 生态 profile：SDK 包 / 依赖目录 / Rust crate 目录布局由它决定；缺省内建默认。
    * 由组合根在启动时解析一次注入，起服务编排不再各处 `readEcosystem`。
@@ -138,10 +148,11 @@ export async function prepareService(
       throw new ServiceStartError('deps_failed')
     }
   }
-  // SDK 供给：链接进物化树，使裸导入 `plugin-sdk` 在任意宿主根下可解析。
+  // SDK / 契约包供给：链接进物化树，使裸导入 `plugin-sdk` / `chain-contract` 在任意宿主根下可解析。
   // 必须在依赖恢复之后：`npm ci` 会清空物化树的 `node_modules`，先供会被覆盖。
   try {
     provisionPluginSdk(cwd, deps.sdkDir, ecosystem)
+    provisionChainContract(cwd, deps.contractDir, ecosystem)
   } catch (err) {
     if (err instanceof ServiceStartError) throw err
     throw new ServiceStartError('deps_failed')
