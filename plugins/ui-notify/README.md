@@ -1,11 +1,12 @@
 # ui-notify（系统通知 · headless 前端）
 
-把宿主事件转成本机系统通知的**浏览器侧 headless 前端**：不占 slot、不占端口、无服务进程，
-由壳按独立 headless 清单加载一个前端 bundle，在浏览器里调 `Notification` API。
+把宿主事件转成本机系统通知的**浏览器侧 headless 前端**：不占 slot、不占端口；以一轻量声明服务
+经 `ui-slot.list` 自报 headless 入口，由壳按 headless 清单加载一个前端 bundle，在浏览器里调
+`Notification` API。
 
 - 身份：`ui-notify`
-- 能力类：`ui-notify`（`ping` 占位；UI 插件统一 `ui-<身份名>`，互不 pin）
-- 成员：**仅 terms**（`start` 为空、无 execute 成员 ⇒ 宿主不起进程）
+- 能力类：`ui-notify`（`ping` 占位；UI 插件统一 `ui-<身份名>`，互不 pin）、`ui-slot`（自报 headless 入口）
+- 成员：**execute + terms**（轻量 `ui-slot` 声明服务；浏览器侧 bundle 住 `web/`）
 - schema：**省略**（零 schema；无世界数据）
 - pins：无
 - 状态档：`recomputable`
@@ -16,7 +17,7 @@
   （`ctx.ids.config.body`），**不按字段裁剪**。
   - **返回口径（写死）**：返回值 = `config` 数据身份的整份 body。调用方自行取
     `value.ui.notify`；`ui.notify` 缺键 = 全部开关按默认 `true` 处理。
-  - 读投影在**入口 term**；服务不读投影（本插件也没有服务）。
+  - 读投影在**入口 term**；声明服务不读投影。
   - 浏览器权限状态**不在本命令返回值里**（入口 term 读不到浏览器 API），走下面的同页全局。
 
 ## 浏览器权限状态（同页共享契约）
@@ -94,9 +95,9 @@ only_when_unfocused
 ## 前端 bundle 形态与加载
 
 - 入口：`web/entry.js`（ESM、零依赖、自初始化、**不导出 `mount`**）。
-- 加载：壳按 headless 清单 `state/ui-headless.json` 的 `{id, entry}` 经插件源码读面取字节，
-  以壳同源静态路径服务（不占 slot、不进挂载表、不经反代）。本插件对应
-  `{ "id": "ui-notify", "entry": "web/entry.js" }`。
+- 加载：本插件经 `ui-slot.list` 自声明 `{ "id": "ui-notify", "entry": "web/entry.js" }`，壳据此
+  经插件源码读面取字节，以壳同源静态路径服务（不占 slot、不进挂载表、不经反代）；headless 清单
+  不再由壳内置。
 - **单文件原因**：壳按 headless 清单的单个 `{id, entry}` 只服务一个静态路径，兄弟模块的
   相对 import 无处可取，故 bundle 不拆文件；纯逻辑以命名导出暴露，便于在 Node 里直接单测。
 - 自初始化流程：发布权限状态 → 取 `notify.state` 开关与文案表 → 连 `/events` →

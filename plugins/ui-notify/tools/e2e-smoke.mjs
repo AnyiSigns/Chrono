@@ -86,7 +86,7 @@ async function main() {
   mkdirSync(join(packRoot, 'state'), { recursive: true })
   let started = false
   try {
-    // 1) 入世冒烟：零 schema + 成员仅 terms 可 pack
+    // 1) 入世冒烟：零 schema + 成员 execute + terms 可 pack
     const packed = boot(packRoot, ['pack', UI_NOTIFY_DIR, '--identity', 'ui-notify'])
     assert.equal(packed.ok, true, `pack 报告 ok:false：${JSON.stringify(packed)}`)
     console.log(`pack ui-notify: status=${packed.status} commit=${packed.commitHash}`)
@@ -97,11 +97,12 @@ async function main() {
     const source = packSourceDir(UI_NOTIFY_DIR, worldignore.patterns)
     const packedPaths = collectPackedPaths(source.ops, source.rootTreeIndex)
     assert.ok(packedPaths.includes('web/entry.js'), `入世树缺 web/entry.js：${packedPaths.join(', ')}`)
+    assert.ok(packedPaths.includes('execute/main.ts'), '入世树缺 execute/main.ts')
     assert.ok(packedPaths.includes('terms/notify.state.json'), '入世树缺 terms/notify.state.json')
     assert.ok(packedPaths.includes('plugin.json'), '入世树缺 plugin.json')
     assert.ok(!packedPaths.some((path) => path.startsWith('test/')), '入世树含 test/')
     assert.ok(!packedPaths.some((path) => path.startsWith('tools/')), '入世树含 tools/')
-    console.log(`入世树：ok（${packedPaths.length} 个文件，含 web/entry.js，排除 test/ 与 tools/）`)
+    console.log(`入世树：ok（${packedPaths.length} 个文件，含 execute/web/terms，排除 test/ 与 tools/）`)
 
     // 2) seed（ui-notify + config）
     writeFileSync(
@@ -128,10 +129,12 @@ async function main() {
     assert.match(loaded.gen, /^[0-9a-f]{64}$/)
     console.log(`loaded: ${status.loaded.map((item) => item.id).join(' ')}`)
 
-    // 无服务进程：运维日志里不得有 ui-notify 的 service 记录（起 / 停 / 失败）
-    const serviceRecords = lifecycleRecords(root).filter((record) => record.impl === 'ui-notify' && record.kind === 'service')
-    assert.deepEqual(serviceRecords, [], `ui-notify 不应有 service 记录：${JSON.stringify(serviceRecords)}`)
-    console.log('无服务进程：ok（无 ui-notify service 运维记录）')
+    // ui-slot 声明服务：成功起服务不落正记录（运维日志只记失败 / 退出），故断言无 start_failed。
+    const serviceFailures = lifecycleRecords(root).filter(
+      (record) => record.impl === 'ui-notify' && record.kind === 'service' && record.event === 'start_failed',
+    )
+    assert.deepEqual(serviceFailures, [], `ui-notify ui-slot 声明服务不应启动失败：${JSON.stringify(serviceFailures)}`)
+    console.log('ui-slot 声明服务：ok（无 start_failed）')
 
     // 4) 命令已声明
     const commands = boot(root, ['commands'])

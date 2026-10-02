@@ -56,7 +56,11 @@ export interface CallEnv {
   now: number
 }
 
-export type Handler = (args: Json, env: CallEnv) => Promise<Json> | Json
+export type Handler = (
+  args: Json,
+  env: CallEnv,
+  call?: import('plugin-sdk').CallContext,
+) => Promise<Json> | Json
 
 /** 密钥本地存储面（宿主入站 `secrets.put` / `secrets.delete`）：只直写本地文件，不进世界 / 审计。 */
 export interface SecretsChannel {
@@ -352,19 +356,28 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   return {
     ping: (): Json => ({ pong: true, identity: deps.identity }),
 
-    /** `ui-nav` 提供方：设置入口的中立记录；`label_code` 让侧栏经共享文案表本地化。 */
-    list: (): Json => ({
-      records: [
-        {
-          id: 'settings',
-          label: '设置',
-          label_code: 'settings_title',
-          icon: 'settings',
-          target: { overlay: 'settings' },
-          order: 100,
-        },
-      ],
-    }),
+    /**
+     * 同名方法服务两个能力类：
+     * - `ui-nav.list`：设置入口的中立记录；`label_code` 让侧栏经共享文案表本地化。
+     * - `ui-slot.list`：自声明本插件在壳页面 `overlay` 槽的挂载，增删本插件不改壳源码。
+     */
+    list: (_args, _env, call): Json => {
+      if (call?.port === 'ui-slot') {
+        return { mounts: [{ id: deps.identity, slot: 'overlay', entry: 'dist/entry.js' }] }
+      }
+      return {
+        records: [
+          {
+            id: 'settings',
+            label: '设置',
+            label_code: 'settings_title',
+            icon: 'settings',
+            target: { overlay: 'settings' },
+            order: 100,
+          },
+        ],
+      }
+    },
 
     /**
      * 客户端半边产物只读交付：参数 `{path}` 必须是包内相对 `.js`（路径穿越防护），

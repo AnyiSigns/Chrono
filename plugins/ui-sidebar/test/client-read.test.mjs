@@ -5,9 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CLIENT_WEB_DIR, clientRelPath, isSafeClientPath, readClientFile } from '../execute/client-files.js'
-import { createHandlers } from '../execute/methods.js'
-import { BadArgsError } from '../execute/types.js'
+import { CLIENT_WEB_DIR, clientRelPath, isSafeClientPath, readClientFile } from '../execute/client-files.ts'
+import { createHandlers } from '../execute/methods.ts'
+import { BadArgsError } from 'plugin-sdk'
 
 test('路径形态：只接受包内相对 .js，拒绝绝对 / 盘符 / 反斜杠 / .. / 空段 / 非 .js', () => {
   assert.equal(isSafeClientPath('dist/entry.js'), true)

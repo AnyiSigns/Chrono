@@ -40,6 +40,12 @@ export interface UiServerDeps {
   applyThemePref: (pref: string) => void
   /** 引导数据里的 uiState 键空间（由 ui-nav 记录目标 + boot_mode 派生）；缺省空表。 */
   uiStateKeys?: () => string[]
+  /**
+   * 首屏引导前的挂载声明兜底：核心挂载表已不再由壳内置，改由各 UI 插件经 `ui-slot` 自声明。
+   * 若首个页面请求早于提供方注册，`mounts` / `headless` 可能为空；由它（可去重的）等待声明至
+   * 非空或截止。缺省不等待（单测 / 已迁旧表的场景）。
+   */
+  ensureDeclarations?: () => Promise<void>
   webDir?: string
   log?: (line: string) => void
 }
@@ -339,7 +345,13 @@ function handleEvents(deps: UiServerDeps, req: IncomingMessage, res: ServerRespo
   req.on('error', cleanup)
 }
 
-function serveShellPage(deps: UiServerDeps, webDir: string, res: ServerResponse): void {
+async function serveShellPage(
+  deps: UiServerDeps,
+  webDir: string,
+  res: ServerResponse,
+): Promise<void> {
+  // 首屏兜底：表为空时等待提供方 `ui-slot` 声明（去重、有截止），保证引导数据非空。
+  await deps.ensureDeclarations?.()
   const current = deps.state()
   const { text } = loadShellHtml(webDir)
   const withTheme = injectThemeScript(text, current.theme)
@@ -430,7 +442,7 @@ async function handleRequest(
   try {
     switch (route.kind) {
       case 'shell-page':
-        serveShellPage(deps, webDir, res)
+        await serveShellPage(deps, webDir, res)
         return
       case 'asset':
         serveAsset(deps, webDir, route, res)

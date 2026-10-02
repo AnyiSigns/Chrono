@@ -260,8 +260,11 @@ test('协议级：hello → manifest，ping，threads.state（反向调用 owner
   try {
     const manifest = await service.hello()
     assert.equal(manifest.identity, 'ui-threads')
-    assert.deepEqual(manifest.implements, ['ui-threads'])
-    assert.deepEqual(manifest.methods, { 'ui-threads': ['ping', 'threads.state', 'client.read'] })
+    assert.deepEqual(manifest.implements, ['ui-threads', 'ui-slot'])
+    assert.deepEqual(manifest.methods, {
+      'ui-threads': ['ping', 'threads.state', 'client.read'],
+      'ui-slot': ['list'],
+    })
     assert.equal(manifest.state, 'recomputable')
 
     const pong = await service.call('ping', {})

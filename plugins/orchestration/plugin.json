@@ -3,8 +3,7 @@
   "schema": "schema/orchestration.json",
   "implements": ["orchestration", "tool-provider"],
   "methods": {
-    "orchestration": ["list", "read", "validate", "propose"],
-    "tool-provider": ["describe", "invoke"]
+    "orchestration": ["list", "read", "validate", "propose"]
   },
   "needs": {
     "graph-gate": { "mode": "one" }

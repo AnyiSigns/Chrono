@@ -13,8 +13,11 @@ const readJson = (rel) => JSON.parse(readText(rel))
 
 test('能力类为 ui-composer（ping + client.read）；无 pins 字段；只读交付命令', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-composer'])
-  assert.deepEqual(decl.methods, { 'ui-composer': ['ping', 'client.read'] })
+  assert.deepEqual(decl.implements, ['ui-composer', 'ui-slot'])
+  assert.deepEqual(decl.methods, {
+    'ui-composer': ['ping', 'client.read'],
+    'ui-slot': ['list'],
+  })
   assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.members, [
     { kind: 'execute', path: 'execute/' },

@@ -113,8 +113,11 @@ test('服务协议级：hello → manifest，ping，probe，list 反向调用，
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-approval')
-    assert.deepEqual(manifest.implements, ['ui-approval'])
-    assert.deepEqual(manifest.methods, { 'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'] })
+    assert.deepEqual(manifest.implements, ['ui-approval', 'ui-slot'])
+    assert.deepEqual(manifest.methods, {
+      'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
+      'ui-slot': ['list'],
+    })
     assert.equal(manifest.protocol, '1')
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-approval', method: 'ping', args: {} }))

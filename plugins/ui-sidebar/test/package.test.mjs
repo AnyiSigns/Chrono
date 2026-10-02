@@ -66,8 +66,8 @@ test('构建声明：npm ci + 共享构建脚本，令牌过白名单且不含 =
 
 test('能力类为 ui-sidebar（ping + clientRead + 各命令服务方法）；needs 五条（host 哨兵 + session / workspace / workspace-picker / input）', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-sidebar'])
-  assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES })
+  assert.deepEqual(decl.implements, ['ui-sidebar', 'ui-slot'])
+  assert.deepEqual(decl.methods, { 'ui-sidebar': METHOD_NAMES, 'ui-slot': ['list'] })
   assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {
     host: { mode: 'one' },

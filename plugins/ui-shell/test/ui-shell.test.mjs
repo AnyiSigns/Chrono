@@ -25,8 +25,8 @@ import {
 } from '../execute/bridge.ts'
 import { syntheticEventsFor, encodeSseRecord, SseHub, shellStateRecord, SHELL_IMPL } from '../execute/sse.ts'
 import {
-  DEFAULT_HEADLESS,
-  DEFAULT_MOUNTS,
+  EMPTY_HEADLESS,
+  EMPTY_MOUNTS,
   ensureHeadless,
   ensureMounts,
   findMount,
@@ -242,62 +242,67 @@ test('SSE 停机收尾：closeAll 给有 end 的 sink 发终止块并清空，�
 
 // ---- 挂载表 ----
 
-test('挂载表默认值：id/slot/entry 三元组，无 path/port', () => {
-  assert.equal(DEFAULT_MOUNTS.length, 6)
-  assert.deepEqual(
-    DEFAULT_MOUNTS.map((entry) => [entry.id, entry.slot, entry.entry]),
-    [
-      ['ui-sidebar', 'sidebar', 'dist/entry.js'],
-      ['ui-chat', 'main', 'dist/entry.js'],
-      ['ui-approval', 'dock', 'dist/entry.js'],
-      ['ui-composer', 'composer', 'dist/entry.js'],
-      ['ui-threads', 'topbar', 'dist/entry.js'],
-      ['ui-settings', 'overlay', 'dist/entry.js'],
-    ],
-  )
-  for (const entry of DEFAULT_MOUNTS) {
+/** 旧 6 项内置挂载（现由各 UI 插件经 `ui-slot` 自声明）：仅作迁移用例的数据。 */
+const LEGACY_PROVIDER_MOUNTS = [
+  { id: 'ui-sidebar', slot: 'sidebar', entry: 'dist/entry.js' },
+  { id: 'ui-chat', slot: 'main', entry: 'dist/entry.js' },
+  { id: 'ui-approval', slot: 'dock', entry: 'dist/entry.js' },
+  { id: 'ui-composer', slot: 'composer', entry: 'dist/entry.js' },
+  { id: 'ui-threads', slot: 'topbar', entry: 'dist/entry.js' },
+  { id: 'ui-settings', slot: 'overlay', entry: 'dist/entry.js' },
+]
+
+test('挂载表默认值为空；条目形状为 id/slot/entry 三元组，无 path/port', () => {
+  assert.deepEqual(EMPTY_MOUNTS, [], '壳不再内置挂载，条目由 ui-slot 提供方声明')
+  for (const entry of LEGACY_PROVIDER_MOUNTS) {
     assert.equal('path' in entry, false, `${entry.id} 不应有 path`)
     assert.equal('port' in entry, false, `${entry.id} 不应有 port`)
   }
-  assert.equal(findMount(DEFAULT_MOUNTS, 'ui-chat').entry, 'dist/entry.js')
-  assert.equal(findMount(DEFAULT_MOUNTS, 'ui-main-missing'), null)
+  assert.equal(findMount(LEGACY_PROVIDER_MOUNTS, 'ui-chat').entry, 'dist/entry.js')
+  assert.equal(findMount(LEGACY_PROVIDER_MOUNTS, 'ui-main-missing'), null)
 })
 
-test('挂载表：启动无表生成默认、坏表回落默认、有表读表', () => {
+test('挂载表：无表生成空表、坏表回落空表、旧 6 项按数据保留', () => {
   const stateDir = tempDir('mounts')
   try {
     const first = ensureMounts(stateDir)
     assert.equal(first.created, true)
-    assert.equal(first.mounts.length, 6)
+    assert.deepEqual(first.mounts, [])
     assert.equal(existsSync(join(stateDir, 'ui-mounts.json')), true)
 
     const second = ensureMounts(stateDir)
     assert.equal(second.created, false)
-    assert.deepEqual(second.mounts, DEFAULT_MOUNTS)
+    assert.deepEqual(second.mounts, [])
 
     writeFileSync(join(stateDir, 'ui-mounts.json'), '{ not json')
     const third = ensureMounts(stateDir)
     assert.equal(third.created, true)
-    assert.equal(third.mounts.length, 6)
+    assert.deepEqual(third.mounts, [])
 
-    // 老 state 表（带 port/path、无 entry）解析失败 → 回落默认表，即迁移
+    // 旧表若仍含 6 项：按数据原样加载（存量安装不受默认表移除影响）
+    writeFileSync(join(stateDir, 'ui-mounts.json'), JSON.stringify(LEGACY_PROVIDER_MOUNTS))
+    const kept = ensureMounts(stateDir)
+    assert.equal(kept.created, false)
+    assert.deepEqual(kept.mounts, LEGACY_PROVIDER_MOUNTS)
+
+    // 老 state 表（带 port/path、无 entry）解析失败 → 回落空表，即迁移
     writeFileSync(
       join(stateDir, 'ui-mounts.json'),
       '[{"id":"ui-chat","path":"/p/ui-chat/","slot":"main","port":8788}]',
     )
     const migrated = ensureMounts(stateDir)
     assert.equal(migrated.created, true)
-    assert.deepEqual(migrated.mounts, DEFAULT_MOUNTS)
+    assert.deepEqual(migrated.mounts, [])
 
     assert.equal(parseMounts('[{"id":"a","slot":"main","entry":"dist/entry.js"}]').length, 1)
     assert.equal(parseMounts('[{"id":"a","path":"/p/a/","slot":"main","port":1}]'), null)
     assert.equal(parseMounts('[{"id":"a","slot":"main"}]'), null)
     assert.equal(parseMounts('[{"id":"a","slot":"main","entry":"../x.js"}]'), null)
-    assert.equal(parseMounts('[]'), null)
+    assert.deepEqual(parseMounts('[]'), [], '空数组是合法表（默认无内置挂载）')
 
     const headless = ensureHeadless(stateDir)
     assert.equal(headless.created, true)
-    assert.deepEqual(headless.headless, DEFAULT_HEADLESS)
+    assert.deepEqual(headless.headless, [])
     assert.deepEqual(parseHeadless('[{"id":"x","entry":"execute/entry.js"}]'), [
       { id: 'x', entry: 'execute/entry.js' },
     ])
@@ -479,8 +484,8 @@ test('资源表：路由 / 投递从同一登记表派生，内容版本确定',
 
 // ---- headless 入口路径与坏值回落 ----
 
-test('headless 默认入口住 web/、旧路径迁移、坏值回落默认并重写', () => {
-  assert.deepEqual(DEFAULT_HEADLESS, [{ id: 'ui-notify', entry: 'web/entry.js' }])
+test('headless 默认空表、旧路径迁移、坏值回落空表并重写', () => {
+  assert.deepEqual(EMPTY_HEADLESS, [], '壳不再内置 headless，条目由 ui-notify 经 ui-slot 声明')
   assert.equal(isSafeHeadlessEntry('web/entry.js'), true)
   assert.equal(isSafeHeadlessEntry('execute/entry.js'), true)
   assert.equal(isSafeHeadlessEntry(''), false)
@@ -498,7 +503,7 @@ test('headless 默认入口住 web/、旧路径迁移、坏值回落默认并重
     headless: [{ id: 'ui-notify', entry: 'web/entry.js' }],
     changed: false,
   })
-  assert.deepEqual(normalizeHeadless([]), { headless: DEFAULT_HEADLESS, changed: true })
+  assert.deepEqual(normalizeHeadless([]), { headless: [], changed: false })
 
   const stateDir = tempDir('headless')
   try {
@@ -513,11 +518,11 @@ test('headless 默认入口住 web/、旧路径迁移、坏值回落默认并重
       { id: 'ui-notify', entry: 'web/entry.js' },
     ])
 
-    // 坏表（形态非法）：回落默认并重写
+    // 坏表（形态非法）：回落空表并重写
     writeFileSync(join(stateDir, 'ui-headless.json'), JSON.stringify([{ id: 'ui-notify', entry: '../x.js' }]))
     const bad = ensureHeadless(stateDir)
-    assert.deepEqual(bad.headless, DEFAULT_HEADLESS)
-    assert.deepEqual(JSON.parse(readFileSync(join(stateDir, 'ui-headless.json'), 'utf8')), DEFAULT_HEADLESS)
+    assert.deepEqual(bad.headless, [])
+    assert.deepEqual(JSON.parse(readFileSync(join(stateDir, 'ui-headless.json'), 'utf8')), [])
   } finally {
     rmSync(stateDir, { recursive: true, force: true })
   }
@@ -553,9 +558,10 @@ test('identity.changed：仅 code 世代且身份在 headless 清单内才失效
 // ---- /p/<id>/* 两条判定路径 ----
 
 test('路由：表内 UI 插件无 HTTP 面（not-found）vs 表外 forward', () => {
-  assert.equal(routeOf('GET', '/p/ui-chat/entry.js', DEFAULT_MOUNTS).kind, 'not-found')
-  assert.equal(routeOf('POST', '/p/ui-chat/api/foo', DEFAULT_MOUNTS).kind, 'not-found')
-  const forward = routeOf('GET', '/p/mcp/discover', DEFAULT_MOUNTS)
+  const mounts = [{ id: 'ui-chat', slot: 'main', entry: 'dist/entry.js' }]
+  assert.equal(routeOf('GET', '/p/ui-chat/entry.js', mounts).kind, 'not-found')
+  assert.equal(routeOf('POST', '/p/ui-chat/api/foo', mounts).kind, 'not-found')
+  const forward = routeOf('GET', '/p/mcp/discover', mounts)
   assert.deepEqual(forward, { kind: 'forward', id: 'mcp', rest: 'discover' })
 })
 

@@ -104,8 +104,11 @@ test('真实服务：hello → manifest、ping、client.read 越界拒、probe�
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-composer')
-    assert.deepEqual(manifest.implements, ['ui-composer'])
-    assert.deepEqual(manifest.methods, { 'ui-composer': ['ping', 'client.read'] })
+    assert.deepEqual(manifest.implements, ['ui-composer', 'ui-slot'])
+    assert.deepEqual(manifest.methods, {
+      'ui-composer': ['ping', 'client.read'],
+      'ui-slot': ['list'],
+    })
 
     child.stdin.write(
       encodeFrame({

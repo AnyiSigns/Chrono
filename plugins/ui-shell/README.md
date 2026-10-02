@@ -46,16 +46,17 @@ GET  /api/state               壳运行态（连接态 / 主题偏好 / 引导�
 
 ## 挂载表与 headless 清单
 
-- `state/ui-mounts.json` = `[{id, slot, entry}]`；启动无表 / 坏表则写默认值。
-  默认六项均为 `entry: "dist/entry.js"`：`ui-sidebar/sidebar`、`ui-chat/main`、
-  `ui-approval/dock`、`ui-composer/composer`、`ui-threads/topbar`、`ui-settings/overlay`。
-  客户端半边由插件经 `<id>.client.read` 自交付，壳不持每插件端口；一插件一 slot；
-  增删插件只改表，不改壳代码。挂载表的 `slot` 只决定子应用加载位；插件注册时可在任意顶层
+- `state/ui-mounts.json` = `[{id, slot, entry}]`；**默认空表**——条目由各 UI 插件经 `ui-slot.list`
+  自声明（`{ mounts: [{id, slot, entry}] }`），壳按挂载 id 去重合并、核心表优先。存量安装的旧
+  六项仍按数据加载。客户端半边由插件经 `<id>.client.read` 自交付，壳不持每插件端口；一插件一
+  slot；增删插件不改壳源码。挂载表的 `slot` 只决定子应用加载位；插件注册时可在任意顶层
   slot 落位（`sidebar` / `main` / `dock` / `composer` / `topbar` / `underbar` / `overlay`）——
   `underbar` 紧贴 `topbar` 之下、`main` 之上，供顶栏插件挂次级条带（如待办清单）。
-- `state/ui-headless.json` = `[{id, entry}]`；`entry` 为插件包内路径。headless 不进挂载表、
-  不给布局位、不占端口；壳经 `host.source.read` 取字节并以同源静态路径服务。默认
-  `{id:"ui-notify", entry:"web/entry.js"}`。
+- `state/ui-headless.json` = `[{id, entry}]`；**默认空表**，由 `ui-notify` 经 `ui-slot.list` 的
+  `{ headless: [{id, entry}] }` 自声明。`entry` 为插件包内路径。headless 不进挂载表、
+  不给布局位、不占端口；壳经 `host.source.read` 取字节并以同源静态路径服务。
+- **首屏兜底**：核心表为空且提供方尚未注册时，壳在首个 `/` 请求上等待 `ui-slot` 声明至非空或
+  截止（去重、不阻塞端口绑定），保证首个引导数据非空。
 - **headless 字节缓存失效**：壳按宿主 `identity.changed` **逐身份**判定——仅当该身份在 headless 清单内
   且 `kind === 'code'`（代码世代 `active` 变，含新增 / 退役）时删除缓存并重取；`kind === 'data'`
   （数据世代变更）不失效，因为不改入口字节。

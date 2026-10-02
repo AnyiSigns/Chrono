@@ -14,8 +14,11 @@ const readJson = (rel) => JSON.parse(readText(rel))
 
 test('能力类为 ui-threads（ping + threads.state + client.read）；needs = session / todo owner', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-threads'])
-  assert.deepEqual(decl.methods, { 'ui-threads': ['ping', 'threads.state', 'client.read'] })
+  assert.deepEqual(decl.implements, ['ui-threads', 'ui-slot'])
+  assert.deepEqual(decl.methods, {
+    'ui-threads': ['ping', 'threads.state', 'client.read'],
+    'ui-slot': ['list'],
+  })
   assert.deepEqual(decl.needs, { session: { mode: 'one' }, todo: { mode: 'one' } })
 })
 

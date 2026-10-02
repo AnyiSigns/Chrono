@@ -13,7 +13,7 @@ const readJson = (rel) => JSON.parse(readText(rel))
 
 test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法，兼 ui-nav 提供方；needs 六条（model / secrets / ref-hydrate / input / skill / config）', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-settings', 'ui-nav'])
+  assert.deepEqual(decl.implements, ['ui-settings', 'ui-nav', 'ui-slot'])
   assert.deepEqual(decl.methods, {
     'ui-settings': [
       'ping',
@@ -26,6 +26,7 @@ test('能力类为 ui-settings ping 占位 + 模型 / 健康装配方法，兼 u
       'client.read',
       'secret',
     ],
+    'ui-slot': ['list'],
   })
   assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {

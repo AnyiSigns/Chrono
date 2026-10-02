@@ -39,6 +39,11 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
     capability: CAPABILITY,
     handlers: {
       ping: () => ({ value: { pong: true, identity: CAPABILITY }, events: [] }),
+      // `ui-slot` 提供方：自声明本插件在壳页面 `main` 槽的挂载，增删本插件不改壳源码。
+      list: () => ({
+        value: { mounts: [{ id: CAPABILITY, slot: 'main', entry: 'dist/entry.js' }] },
+        events: [],
+      }),
       'client.read': (args) => ({ value: handleClientRead(args), events: [] }),
     },
     emit: ctx.emit,

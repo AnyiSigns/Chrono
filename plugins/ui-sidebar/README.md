@@ -41,7 +41,7 @@ Chrono
 
 ## 怎么起
 
-宿主按 `plugin.json.start`（`node execute/main.js`）拉起本插件服务；服务经 stdio 走服务协议，并连宿主入站面做反向调用。服务不再监听任何端口。客户端半边由 `plugin.json.build`（`npm ci` + `node execute/build.mjs`，脚本内调 esbuild）产出 `execute/web/dist/entry.js`（`.worldignore` 排除，随世代重算），壳经 `ui-sidebar.client.read` 取字节后同源服务。
+宿主按 `plugin.json.start`（`node execute/main.ts`）拉起本插件服务；服务经 stdio 走服务协议，并连宿主入站面做反向调用。服务不再监听任何端口。客户端半边由 `plugin.json.build`（`npm ci` + `node execute/build.mjs`，脚本内调 esbuild）产出 `execute/web/dist/entry.js`（`.worldignore` 排除，随世代重算），壳经 `ui-sidebar.client.read` 取字节后同源服务。
 
 ## 状态档
 

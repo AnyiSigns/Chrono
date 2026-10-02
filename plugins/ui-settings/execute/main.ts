@@ -47,7 +47,11 @@ function build(ctx: ServiceFactoryContext): ServiceInstance {
   })
   const handlers: Record<string, Handler> = {}
   for (const [name, handler] of Object.entries(rawHandlers)) {
-    handlers[name] = async (args, env) => ({ value: await handler(args, env), events: [] })
+    // 透传调用身份上下文：`list` 据 `call.port` 区分 `ui-nav` 记录与 `ui-slot` 自挂载声明。
+    handlers[name] = async (args, env, call) => ({
+      value: await handler(args, env, call),
+      events: [],
+    })
   }
   const close = (): void => {
     inbound.close()

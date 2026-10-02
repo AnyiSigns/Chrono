@@ -30,9 +30,10 @@ test('build 声明：npm ci + 共享构建脚本，args 不含 =（shell 安全�
 
 test('能力类为 ui-approval（ping 占位 + 三条命令方法 + client.read）；needs = approval / input / ref-hydrate', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-approval'])
+  assert.deepEqual(decl.implements, ['ui-approval', 'ui-slot'])
   assert.deepEqual(decl.methods, {
     'ui-approval': ['ping', 'list', 'decide', 'decide_all', 'client.read'],
+    'ui-slot': ['list'],
   })
   assert.ok(!('pins' in decl), 'pins 字段已删除')
   assert.deepEqual(decl.needs, {

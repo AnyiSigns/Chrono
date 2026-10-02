@@ -76,8 +76,8 @@ function main() {
       'package.json',
       'README.md',
       'tsconfig.json',
-      'execute/main.js',
-      'execute/methods.js',
+      'execute/main.ts',
+      'execute/methods.ts',
       'execute/web/entry.tsx',
       'execute/web/badges.ts',
       'execute/web/sidebar-model.ts',
@@ -96,11 +96,11 @@ function main() {
     // 2) 声明 / 命令 / pins 核对（契约字段，离线读 plugin.json）。
     const decl = JSON.parse(readFileSync(join(SIDEBAR_DIR, 'plugin.json'), 'utf8'))
     assert.equal(decl.identity, 'ui-sidebar')
-    assert.equal(decl.start, 'node execute/main.js')
+    assert.equal(decl.start, 'node execute/main.ts')
     assert.equal(Object.hasOwn(decl, 'schema'), false, 'UI 插件应零 schema（省略字段）')
-    assert.deepEqual(decl.implements, ['ui-sidebar'])
-    assert.deepEqual(decl.pins, { host: 'host' })
+    assert.deepEqual(decl.implements, ['ui-sidebar', 'ui-slot'])
     assert.deepEqual(decl.needs, {
+      host: { mode: 'one' },
       session: { mode: 'one' },
       workspace: { mode: 'one' },
       'workspace-picker': { mode: 'one' },

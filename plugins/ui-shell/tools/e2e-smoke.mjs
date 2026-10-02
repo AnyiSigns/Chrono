@@ -351,8 +351,10 @@ async function main() {
     const headlessFile = join(root, 'state', 'ui-headless.json')
     assert.equal(existsSync(mountsFile), true, '缺 state/ui-mounts.json')
     assert.equal(existsSync(headlessFile), true, '缺 state/ui-headless.json')
+    // 状态文件只存「核心表」（现默认空）；插件条目经 `ui-slot` 在内存里合并（见 refreshSlotDecls），
+    // 故本世界挂载文件为空、headless 由 ui-notify 服务自声明并在 `/assets/headless/ui-notify.js` 生效。
     const mounts = JSON.parse(readFileSync(mountsFile, 'utf8'))
-    assert.equal(mounts.length, 6)
+    assert.ok(Array.isArray(mounts), 'ui-mounts.json 应为数组')
     for (const entry of mounts) {
       assert.equal(typeof entry.id, 'string', '挂载项缺 id')
       assert.equal(typeof entry.slot, 'string', '挂载项缺 slot')
@@ -360,7 +362,9 @@ async function main() {
       assert.equal('port' in entry, false, '挂载项不应有 port')
       assert.equal('path' in entry, false, '挂载项不应有 path')
     }
-    console.log('挂载表 / headless 清单：ok（id/slot/entry）')
+    const headlessEntries = JSON.parse(readFileSync(headlessFile, 'utf8'))
+    assert.ok(Array.isArray(headlessEntries), 'ui-headless.json 应为数组')
+    console.log('挂载表 / headless 清单：ok（状态文件为核心空表；headless 由 ui-slot 自声明）')
 
     console.log(`E2E ok（root=${root}，port=${port}）`)
   } finally {

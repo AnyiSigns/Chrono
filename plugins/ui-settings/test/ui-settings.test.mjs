@@ -1430,7 +1430,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-settings')
-    assert.deepEqual(manifest.implements, ['ui-settings', 'ui-nav'])
+    assert.deepEqual(manifest.implements, ['ui-settings', 'ui-nav', 'ui-slot'])
     assert.deepEqual(manifest.methods, {
       'ui-settings': [
         'ping',
@@ -1443,6 +1443,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
         'client.read',
         'secret',
       ],
+      'ui-slot': ['list'],
     })
     assert.equal(manifest.v, '1')
     assert.equal(manifest.protocol, '1')

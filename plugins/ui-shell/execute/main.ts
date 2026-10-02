@@ -75,6 +75,8 @@ function uiStateKeys(): string[] {
 }
 /** 冷启动竞态等待上限：目标插件服务可能晚于壳就绪（物化 / 构建 / 起进程）。 */
 const COLD_START_DEADLINE_MS = 30_000
+/** 提供方声明首载等待上限：宿主装配可能晚就绪，超时即用核心表起服务，后续汇聚再回写。 */
+const EAGER_DECL_WAIT_MS = 2500
 
 let connected = false
 let hasDisconnected = false
@@ -335,6 +337,37 @@ async function refreshSlotDecls(): Promise<void> {
   uiDeps.slots = slots
 }
 
+/**
+ * 首屏声明兜底（复制一次 eager 等待）：核心挂载表已不再由壳内置，改由各 UI 插件经 `ui-slot`
+ * 自声明。若浏览器首个 `/` 请求早于提供方注册，`mounts` / `headless` 会为空——此处不写死任何
+ * 默认挂载，而是在页面请求边界上等待声明至非空或 `COLD_START_DEADLINE_MS` 截止（去重，
+ * 避免并发页面请求重复汇集；不阻塞端口绑定）。存量安装的旧 `state/ui-mounts.json` 仍作为
+ * 核心表加载，故 `mounts` 已非空时该等待直接短路。
+ */
+let declsWait: Promise<void> | null = null
+function ensureDeclarations(): Promise<void> {
+  if (mounts.length > 0 || headless.length > 0) return Promise.resolve()
+  if (declsWait !== null) return declsWait
+  declsWait = (async () => {
+    const deadline = Date.now() + COLD_START_DEADLINE_MS
+    while (!exiting && Date.now() < deadline) {
+      // 单次汇集有上限：宿主未就绪时 refreshSlotDecls 可能挂在 host.call 超时上。
+      await Promise.race([
+        refreshSlotDecls(),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, EAGER_DECL_WAIT_MS)
+          timer.unref?.()
+        }),
+      ])
+      if (mounts.length > 0 || headless.length > 0) return
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+  })().finally(() => {
+    declsWait = null
+  })
+  return declsWait
+}
+
 /** http-server 依赖：`refreshSlotDecls` 合并后回写 `mounts` / `headless` / `slots`。 */
 const uiDeps: UiServerDeps = {
   mounts,
@@ -347,6 +380,7 @@ const uiDeps: UiServerDeps = {
   uiSource,
   applyThemePref,
   uiStateKeys,
+  ensureDeclarations,
   log,
 }
 
@@ -421,9 +455,6 @@ if (isDirectRun(import.meta.url)) {
 inbound.start()
 
 const uiPort = parseShellPort(process.env['CHRONO_UI_PORT']) ?? DEFAULT_UI_PORT
-
-/** 提供方声明首载等待上限：宿主装配可能晚就绪，超时即用核心表起服务，后续汇聚再回写。 */
-const EAGER_DECL_WAIT_MS = 2500
 
 /**
  * 起主端口服务。stdio 下先在有限窗口内汇集 `ui-slot` / `ui-nav`，令首批引导数据即含合并后的表；

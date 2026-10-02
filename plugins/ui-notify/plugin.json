@@ -1,15 +1,30 @@
 {
   "identity": "ui-notify",
-  "implements": ["ui-notify"],
+  "implements": ["ui-notify", "ui-slot"],
   "methods": {
-    "ui-notify": ["ping"]
+    "ui-notify": ["ping"],
+    "ui-slot": ["list"]
   },
-  "start": "",
+  "start": "node execute/main.ts",
   "build": [],
   "protocol": "1",
-  "restart": {},
-  "health": {},
+  "restart": {
+    "policy": "on-exit",
+    "backoff": "exponential",
+    "backoff_ms": 500,
+    "backoff_max_ms": 30000,
+    "max": 5,
+    "window_ms": 60000,
+    "drain_ms": 5000
+  },
+  "health": {
+    "interval_ms": 10000,
+    "timeout_ms": 2000
+  },
   "state": "recomputable",
-  "members": [{ "kind": "term", "path": "terms/" }],
+  "members": [
+    { "kind": "execute", "path": "execute/" },
+    { "kind": "term", "path": "terms/" }
+  ],
   "commands": [{ "name": "notify.state", "entry": "terms/notify.state.json", "readonly": true }]
 }

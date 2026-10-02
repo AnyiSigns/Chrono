@@ -1,7 +1,8 @@
 {
   "identity": "ui-sidebar",
-  "implements": ["ui-sidebar"],
+  "implements": ["ui-sidebar", "ui-slot"],
   "methods": {
+    "ui-slot": ["list"],
     "ui-sidebar": [
       "ping",
       "clientRead",
@@ -25,7 +26,7 @@
     "workspace-picker": { "mode": "one" },
     "input": { "mode": "one" }
   },
-  "start": "node execute/main.js",
+  "start": "node execute/main.ts",
   "build": [
     { "cmd": "npm", "args": ["ci"] },
     { "cmd": "node", "args": ["../../plugin-sdk/tools/build-ui.mjs"] }

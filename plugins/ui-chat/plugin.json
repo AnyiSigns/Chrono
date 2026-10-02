@@ -1,8 +1,9 @@
 {
   "identity": "ui-chat",
-  "implements": ["ui-chat"],
+  "implements": ["ui-chat", "ui-slot"],
   "methods": {
-    "ui-chat": ["ping", "client.read"]
+    "ui-chat": ["ping", "client.read"],
+    "ui-slot": ["list"]
   },
   "start": "node execute/main.ts",
   "build": [

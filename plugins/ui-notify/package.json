@@ -3,12 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "系统通知 headless 前端（浏览器侧 Notification；无服务、零 schema、members 仅 terms）",
+  "description": "系统通知 headless 前端（浏览器侧 Notification；零 schema；轻量 ui-slot 声明服务 + terms + web bundle）",
   "files": [
     "plugin.json",
     "package.json",
     "README.md",
     ".worldignore",
+    "execute/",
     "terms/",
     "web/"
   ],

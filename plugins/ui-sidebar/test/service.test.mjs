@@ -17,13 +17,13 @@ import {
   createHandlers,
   slotOf,
   threadKeyOf,
-} from '../execute/methods.js'
+} from '../execute/methods.ts'
 import { createFrameDecoder, encodeFrame } from 'plugin-sdk'
-import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from '../execute/bridge.js'
+import { commandFrame, extractValue, interpretResponse, submitFrame, unwrapPlan } from 'plugin-sdk/web'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(HERE, '..')
-const ENTRY = join(PKG_ROOT, 'execute', 'main.js')
+const ENTRY = join(PKG_ROOT, 'execute', 'main.ts')
 
 function tempDir(label) {
   return mkdtempSync(join(tmpdir(), `chrono-ui-sidebar-${label}-`))
@@ -368,7 +368,7 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-sidebar')
-    assert.deepEqual(manifest.implements, ['ui-sidebar'])
+    assert.deepEqual(manifest.implements, ['ui-sidebar', 'ui-slot'])
     assert.deepEqual(manifest.methods['ui-sidebar'], [
       'ping',
       'clientRead',

@@ -50,6 +50,12 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
   return {
     ping: (): { value: Json; events: [] } => ({ value: { pong: true, identity: deps.identity }, events: [] }),
 
+    /** `ui-slot` 提供方：自声明本插件在壳页面 `topbar` 槽的挂载，增删本插件不改壳源码。 */
+    list: (): { value: Json; events: [] } => ({
+      value: { mounts: [{ id: deps.identity, slot: 'topbar', entry: 'dist/entry.js' }] },
+      events: [],
+    }),
+
     /** 问 owner 取会话切片 + 待办清单，装配线程标签 + 待办视图（父会话隔离）。 */
     'threads.state': async (): Promise<{ value: Json; events: [] }> => {
       const session = await readSession(deps.port)

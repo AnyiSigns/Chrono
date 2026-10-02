@@ -64,7 +64,7 @@ test('hello 回 manifest：能力类与方法声明与 plugin.json 一致', asyn
     assert.equal(manifest.identity, 'orchestration')
     assert.deepEqual(manifest.implements, ['orchestration', 'tool-provider'])
     assert.deepEqual(manifest.methods.orchestration, ['list', 'read', 'validate', 'propose'])
-    assert.deepEqual(manifest.methods['tool-provider'], ['describe', 'invoke'])
+    assert.equal(manifest.methods['tool-provider'], undefined)
     assert.equal(manifest.state, 'recomputable')
   } finally {
     drv.close()

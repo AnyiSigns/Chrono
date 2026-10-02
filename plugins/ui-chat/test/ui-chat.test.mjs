@@ -1148,8 +1148,11 @@ test('服务协议级：hello → manifest，ping，probe，drain → bye', asyn
     await waitFor(() => messages.some((message) => message.kind === 'manifest'), 'manifest')
     const manifest = messages.find((message) => message.kind === 'manifest')
     assert.equal(manifest.identity, 'ui-chat')
-    assert.deepEqual(manifest.implements, ['ui-chat'])
-    assert.deepEqual(manifest.methods, { 'ui-chat': ['ping', 'client.read'] })
+    assert.deepEqual(manifest.implements, ['ui-chat', 'ui-slot'])
+    assert.deepEqual(manifest.methods, {
+      'ui-chat': ['ping', 'client.read'],
+      'ui-slot': ['list'],
+    })
 
     child.stdin.write(encodeFrame({ v: '1', id: 'c1', kind: 'call', port: 'ui-chat', method: 'ping', args: {} }))
     await waitFor(() => messages.some((message) => message.id === 'c1'), 'ping result')

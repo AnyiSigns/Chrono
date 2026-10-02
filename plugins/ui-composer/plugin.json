@@ -1,8 +1,9 @@
 {
   "identity": "ui-composer",
-  "implements": ["ui-composer"],
+  "implements": ["ui-composer", "ui-slot"],
   "methods": {
-    "ui-composer": ["ping", "client.read"]
+    "ui-composer": ["ping", "client.read"],
+    "ui-slot": ["list"]
   },
   "start": "node execute/main.ts",
   "build": [

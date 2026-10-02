@@ -1,8 +1,9 @@
 // 挂载表与 headless 清单（③ 可重算，不进世界）。
-// 挂载表：`state/ui-mounts.json` = `[{id, slot, entry}]`，启动无表则生成默认值。
+// 挂载表：`state/ui-mounts.json` = `[{id, slot, entry}]`；**默认空表**——条目不再由壳内置，
+// 而由各 UI 插件经 `ui-slot.list` 自声明（见 `slot-decls.ts`），故增删 UI 插件不改壳源码。
 // 客户端半边由插件自产自交付：壳经 `<id>.client.read` 取字节并以 `/assets/ui/<id>.js` 同源服务，无端口、无 `/p/` 反代。
-// 老 state 表（带 port/path、无 entry）解析失败自动回落默认表，即迁移。
-// headless 清单：`state/ui-headless.json` = `[{id, entry}]`，不进挂载表、不给布局位。
+// 老 state 表（带 port/path、无 entry）解析失败自动回落空表，即迁移（旧 6 项若仍在，按数据原样加载）。
+// headless 清单：`state/ui-headless.json` = `[{id, entry}]`，不进挂载表、不给布局位；默认同样为空。
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,20 +27,15 @@ export const HEADLESS_FILE = 'ui-headless.json'
 /** 壳自身 HTTP 端口（`CHRONO_UI_PORT`）；插件无端口。 */
 export const DEFAULT_UI_PORT = 8787
 
-/** 默认挂载表：一插件一 slot，增删改表不改壳代码。 */
-export const DEFAULT_MOUNTS: MountEntry[] = [
-  { id: 'ui-sidebar', slot: 'sidebar', entry: 'dist/entry.js' },
-  { id: 'ui-chat', slot: 'main', entry: 'dist/entry.js' },
-  { id: 'ui-approval', slot: 'dock', entry: 'dist/entry.js' },
-  { id: 'ui-composer', slot: 'composer', entry: 'dist/entry.js' },
-  { id: 'ui-threads', slot: 'topbar', entry: 'dist/entry.js' },
-  { id: 'ui-settings', slot: 'overlay', entry: 'dist/entry.js' },
-]
+/**
+ * 挂载表 / headless 清单的默认值：**空表**。
+ * 壳不再内置任何「插件 → slot / headless」映射；条目一律来自各 UI 插件经 `ui-slot.list` 的自声明，
+ * 由此「加 / 删一个挂 slot 的 UI 插件」无需改 `ui-shell` 源码。
+ */
+export const EMPTY_MOUNTS: readonly MountEntry[] = []
+export const EMPTY_HEADLESS: readonly HeadlessEntry[] = []
 
-/** 默认 headless 清单：ui-notify 不占 slot、不给端口，只提供浏览器侧入口 bundle（住 `web/`）。 */
-export const DEFAULT_HEADLESS: HeadlessEntry[] = [{ id: 'ui-notify', entry: 'web/entry.js' }]
-
-/** 旧版默认 headless 入口路径（bundle 住 `execute/` 的历史值）；加载时迁移到当前默认。 */
+/** 旧版 headless 入口路径（bundle 住 `execute/` 的历史值）；加载时迁移到 `web/`。 */
 const LEGACY_HEADLESS_ENTRIES: { [entry: string]: string } = {
   'execute/entry.js': 'web/entry.js',
 }
@@ -85,7 +81,8 @@ export function parseMounts(text: string): MountEntry[] | null {
   } catch {
     return null
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) return null
+  // 空数组是合法表（默认无内置挂载）：据此区分「坏 / 老表回落」与「空表」。
+  if (!Array.isArray(parsed)) return null
   const entries: MountEntry[] = []
   const seen = new Set<string>()
   for (const item of parsed) {
@@ -135,7 +132,10 @@ function writeJson(path: string, value: Json): boolean {
   }
 }
 
-/** 读挂载表；无表 / 坏表（含带 port/path 的老表）则写默认值。 */
+/**
+ * 读挂载表；无表 / 坏表（含带 port/path 的老表）则写空表。
+ * 旧 6 项挂载若仍在文件里按数据原样加载（`created: false`），故存量安装不受默认表移除影响。
+ */
 export function ensureMounts(stateDir: string): { mounts: MountEntry[]; created: boolean } {
   mkdirSync(stateDir, { recursive: true })
   const path = mountsPath(stateDir)
@@ -143,8 +143,8 @@ export function ensureMounts(stateDir: string): { mounts: MountEntry[]; created:
     const parsed = parseMounts(readFileSync(path, 'utf8'))
     if (parsed !== null) return { mounts: parsed, created: false }
   }
-  writeJson(path, DEFAULT_MOUNTS as unknown as Json)
-  return { mounts: DEFAULT_MOUNTS, created: true }
+  writeJson(path, [] as unknown as Json)
+  return { mounts: [], created: true }
 }
 
 /**
@@ -155,12 +155,13 @@ export function normalizeHeadless(entries: HeadlessEntry[]): {
   headless: HeadlessEntry[]
   changed: boolean
 } {
-  if (entries.length === 0) return { headless: DEFAULT_HEADLESS, changed: true }
+  // 空表是默认态（headless 条目由 `ui-notify` 经 `ui-slot` 自声明）。
+  if (entries.length === 0) return { headless: [], changed: false }
   let changed = false
   const headless: HeadlessEntry[] = []
   for (const entry of entries) {
     if (!isSafeHeadlessId(entry.id) || !isSafeHeadlessEntry(entry.entry)) {
-      return { headless: DEFAULT_HEADLESS, changed: true }
+      return { headless: [], changed: true }
     }
     const migrated = LEGACY_HEADLESS_ENTRIES[entry.entry]
     if (migrated !== undefined) {
@@ -173,7 +174,7 @@ export function normalizeHeadless(entries: HeadlessEntry[]): {
   return { headless, changed }
 }
 
-/** 读 headless 清单；无表 / 坏表 / 旧路径则重写为归一结果。 */
+/** 读 headless 清单；无表 / 坏表 / 旧路径则重写为归一结果（无内置默认，空表示无 headless）。 */
 export function ensureHeadless(stateDir: string): { headless: HeadlessEntry[]; created: boolean } {
   mkdirSync(stateDir, { recursive: true })
   const path = headlessPath(stateDir)
@@ -185,8 +186,8 @@ export function ensureHeadless(stateDir: string): { headless: HeadlessEntry[]; c
       return { headless: normalized.headless, created: false }
     }
   }
-  writeJson(path, DEFAULT_HEADLESS as unknown as Json)
-  return { headless: DEFAULT_HEADLESS, created: true }
+  writeJson(path, [] as unknown as Json)
+  return { headless: [], created: true }
 }
 
 /** 按 id 查挂载项；不在表内返回 null（表外 id 走 forward 帧）。 */

@@ -92,8 +92,12 @@ export function createHandlers(deps: HandlerDeps): Record<string, Handler> {
     /**
      * 待审批队列（含 pending / expired）：反向调 `approval.list`，结果即命令结果。
      * 只读：不构造任何 write；另附各 item `shadow` def body（跨身份 refs 可达者），供 UI 解析影子指标。
+     * 同名方法服务两个能力类：`ui-slot.list` 回本插件自挂载声明（`dock` 槽），不触审批。
      */
-    list: async (args): Promise<Json> => {
+    list: async (args, _env, call): Promise<Json> => {
+      if (call?.port === 'ui-slot') {
+        return { mounts: [{ id: deps.identity, slot: 'dock', entry: 'dist/entry.js' }] }
+      }
       const outcome = await deps.approval.call('approval', 'list', {})
       if (!outcome.ok) return externOnly(failure(outcome.code, outcome.message))
       const shadows = shadowRefsOf(itemsOf(outcome.value), allRefsOf(args))

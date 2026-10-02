@@ -1,6 +1,6 @@
 {
   "identity": "ui-settings",
-  "implements": ["ui-settings", "ui-nav"],
+  "implements": ["ui-settings", "ui-nav", "ui-slot"],
   "methods": {
     "ui-settings": [
       "ping",
@@ -12,7 +12,8 @@
       "scopes",
       "client.read",
       "secret"
-    ]
+    ],
+    "ui-slot": ["list"]
   },
   "concurrent_methods": ["vendors", "health", "graph", "scopes", "client.read"],
   "needs": {

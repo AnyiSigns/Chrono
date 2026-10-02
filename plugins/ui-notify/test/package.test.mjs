@@ -1,4 +1,4 @@
-// 包形状测试：零 schema、members 仅 terms、start 空、无 execute 成员、命令入口 term。
+// 包形状测试：零 schema、members = execute（轻量 ui-slot 声明服务）+ terms、命令入口 term。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -10,16 +10,19 @@ const readText = (rel) => readFileSync(join(pkgRoot, rel), 'utf8')
 const readJson = (rel) => JSON.parse(readText(rel))
 
 
-test('members 仅 terms（无 execute 成员 ⇒ 无服务进程）', () => {
+test('members = execute（轻量 ui-slot 声明服务）+ terms', () => {
   const members = readJson('plugin.json').members
-  assert.deepEqual(members, [{ kind: 'term', path: 'terms/' }])
-  assert.equal(members.some((member) => member.kind === 'execute'), false)
+  assert.deepEqual(members, [
+    { kind: 'execute', path: 'execute/' },
+    { kind: 'term', path: 'terms/' },
+  ])
+  assert.equal(members.some((member) => member.kind === 'execute'), true)
 })
 
-test('能力类与方法为 ui-notify ping 占位，且无 pins 字段', () => {
+test('能力类：ui-notify ping 占位 + ui-slot 自报 headless；无 pins 字段', () => {
   const decl = readJson('plugin.json')
-  assert.deepEqual(decl.implements, ['ui-notify'])
-  assert.deepEqual(decl.methods, { 'ui-notify': ['ping'] })
+  assert.deepEqual(decl.implements, ['ui-notify', 'ui-slot'])
+  assert.deepEqual(decl.methods, { 'ui-notify': ['ping'], 'ui-slot': ['list'] })
   assert.ok(!('pins' in decl), 'pins 字段已删除')
 })
 

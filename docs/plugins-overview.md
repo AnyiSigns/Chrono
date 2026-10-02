@@ -59,14 +59,14 @@
 | `tool-registry` | `tool-provider` | `tool-registry` | `evolve-metrics`→(one)、`session`→(one)、`tool-provider`→(many) | recomputable | `stdio` |
 | `tool-shell` | — | `tool-shell`、`tool-provider` | `sandbox`→(one)、`secrets`→(one) | recomputable | `stdio` |
 | `turn-ledger` | — | `turn-ledger` | `approval`→(one)、`evolve-metrics`→(one)、`graph-gate`→(one) | recomputable | `stdio` |
-| `ui-approval` | — | `ui-approval` | `approval`→(one)、`input`→(one)、`ref-hydrate`→(one) | recomputable | `stdio` |
-| `ui-chat` | — | `ui-chat` | — | recomputable | `stdio` |
-| `ui-composer` | — | `ui-composer` | — | recomputable | `stdio` |
-| `ui-notify` | — | `ui-notify` | — | recomputable | — |
-| `ui-settings` | — | `ui-settings`、`ui-nav` | `config`→(one)、`host`→(one)、`input`→(one)、`model`→(one)、`ref-hydrate`→(one)、`secrets`→(one)、`skill`→(one) | recomputable | `stdio` |
+| `ui-approval` | — | `ui-approval`、`ui-slot` | `approval`→(one)、`input`→(one)、`ref-hydrate`→(one) | recomputable | `stdio` |
+| `ui-chat` | — | `ui-chat`、`ui-slot` | — | recomputable | `stdio` |
+| `ui-composer` | — | `ui-composer`、`ui-slot` | — | recomputable | `stdio` |
+| `ui-notify` | — | `ui-notify`、`ui-slot` | — | recomputable | `stdio` |
+| `ui-settings` | — | `ui-settings`、`ui-nav`、`ui-slot` | `config`→(one)、`host`→(one)、`input`→(one)、`model`→(one)、`ref-hydrate`→(one)、`secrets`→(one)、`skill`→(one) | recomputable | `stdio` |
 | `ui-shell` | `ui-nav`、`ui-slot` | `ui-shell` | `host`→(one)、`ui-nav`→(many)、`ui-slot`→(many) | recomputable | `stdio` |
-| `ui-sidebar` | — | `ui-sidebar` | `host`→(one)、`input`→(one)、`session`→(one)、`workspace`→(one)、`workspace-picker`→(one) | recomputable | `stdio` |
-| `ui-threads` | — | `ui-threads` | `session`→(one)、`todo`→(one) | recomputable | `stdio` |
+| `ui-sidebar` | — | `ui-sidebar`、`ui-slot` | `host`→(one)、`input`→(one)、`session`→(one)、`workspace`→(one)、`workspace-picker`→(one) | recomputable | `stdio` |
+| `ui-threads` | — | `ui-threads`、`ui-slot` | `session`→(one)、`todo`→(one) | recomputable | `stdio` |
 | `vector-index` | — | `vector-index` | — | recomputable | `stdio` |
 | `vendor-dashscope` | — | — | — | recomputable | — |
 | `vendor-deepseek` | — | — | — | recomputable | — |
@@ -485,7 +485,7 @@
 - `identity`: `orchestration`
 - `schema`: `schema/orchestration.json`
 - `implements`: `orchestration`、`tool-provider`
-- `methods`: `orchestration`→`list`、`read`、`validate`、`propose`、`tool-provider`→`describe`、`invoke`
+- `methods`: `orchestration`→`list`、`read`、`validate`、`propose`
 - `concurrent_methods`: —
 - `needs`: `graph-gate`→(one)
 - `slots`: —
@@ -1114,8 +1114,8 @@
 
 - `identity`: `ui-approval`
 - `schema`: —
-- `implements`: `ui-approval`
-- `methods`: `ui-approval`→`ping`、`list`、`decide`、`decide_all`、`client.read`
+- `implements`: `ui-approval`、`ui-slot`
+- `methods`: `ui-approval`→`ping`、`list`、`decide`、`decide_all`、`client.read`、`ui-slot`→`list`
 - `concurrent_methods`: `list`、`client.read`
 - `needs`: `approval`→(one)、`input`→(one)、`ref-hydrate`→(one)
 - `slots`: —
@@ -1135,8 +1135,8 @@
 
 - `identity`: `ui-chat`
 - `schema`: —
-- `implements`: `ui-chat`
-- `methods`: `ui-chat`→`ping`、`client.read`
+- `implements`: `ui-chat`、`ui-slot`
+- `methods`: `ui-chat`→`ping`、`client.read`、`ui-slot`→`list`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
@@ -1156,8 +1156,8 @@
 
 - `identity`: `ui-composer`
 - `schema`: —
-- `implements`: `ui-composer`
-- `methods`: `ui-composer`→`ping`、`client.read`
+- `implements`: `ui-composer`、`ui-slot`
+- `methods`: `ui-composer`→`ping`、`client.read`、`ui-slot`→`list`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
@@ -1177,29 +1177,29 @@
 
 - `identity`: `ui-notify`
 - `schema`: —
-- `implements`: `ui-notify`
-- `methods`: `ui-notify`→`ping`
+- `implements`: `ui-notify`、`ui-slot`
+- `methods`: `ui-notify`→`ping`、`ui-slot`→`list`
 - `concurrent_methods`: —
 - `needs`: —
 - `slots`: —
 - `judgments`: —
-- `start`: ``
-- `transport`: —
+- `start`: `node execute/main.ts`
+- `transport`: `stdio`
 - `build`: `[]`
 - `exclusive`: —
 - `protocol`: `1`
-- `restart`: `{}`
-- `health`: `{}`
+- `restart`: `{"policy":"on-exit","backoff":"exponential","backoff_ms":500,"backoff_max_ms":30000,"max":5,"window_ms":60000,"drain_ms":5000}`
+- `health`: `{"interval_ms":10000,"timeout_ms":2000}`
 - `state`: `recomputable`
-- `members`: `term:terms/`
+- `members`: `execute:execute/`、`term:terms/`
 - `commands`: `notify.state(ro)`
 
 ### `ui-settings`
 
 - `identity`: `ui-settings`
 - `schema`: —
-- `implements`: `ui-settings`、`ui-nav`
-- `methods`: `ui-settings`→`ping`、`vendors`、`profile`、`discover`、`health`、`graph`、`scopes`、`client.read`、`secret`
+- `implements`: `ui-settings`、`ui-nav`、`ui-slot`
+- `methods`: `ui-settings`→`ping`、`vendors`、`profile`、`discover`、`health`、`graph`、`scopes`、`client.read`、`secret`、`ui-slot`→`list`
 - `concurrent_methods`: `vendors`、`health`、`graph`、`scopes`、`client.read`
 - `needs`: `config`→(one)、`host`→(one)、`input`→(one)、`model`→(one)、`ref-hydrate`→(one)、`secrets`→(one)、`skill`→(one)
 - `slots`: —
@@ -1240,13 +1240,13 @@
 
 - `identity`: `ui-sidebar`
 - `schema`: —
-- `implements`: `ui-sidebar`
-- `methods`: `ui-sidebar`→`ping`、`clientRead`、`newConversation`、`selectConversation`、`renameConversation`、`deleteConversation`、`restoreConversation`、`branchConversation`、`listTurns`、`listConversations`、`listWorkspaces`、`addWorkspace`、`removeWorkspace`
+- `implements`: `ui-sidebar`、`ui-slot`
+- `methods`: `ui-sidebar`→`ping`、`clientRead`、`newConversation`、`selectConversation`、`renameConversation`、`deleteConversation`、`restoreConversation`、`branchConversation`、`listTurns`、`listConversations`、`listWorkspaces`、`addWorkspace`、`removeWorkspace`、`ui-slot`→`list`
 - `concurrent_methods`: —
 - `needs`: `host`→(one)、`input`→(one)、`session`→(one)、`workspace`→(one)、`workspace-picker`→(one)
 - `slots`: —
 - `judgments`: —
-- `start`: `node execute/main.js`
+- `start`: `node execute/main.ts`
 - `transport`: `stdio`
 - `build`: `npm ci`、`node ../../plugin-sdk/tools/build-ui.mjs`
 - `exclusive`: —
@@ -1261,8 +1261,8 @@
 
 - `identity`: `ui-threads`
 - `schema`: —
-- `implements`: `ui-threads`
-- `methods`: `ui-threads`→`ping`、`threads.state`、`client.read`
+- `implements`: `ui-threads`、`ui-slot`
+- `methods`: `ui-slot`→`list`、`ui-threads`→`ping`、`threads.state`、`client.read`
 - `concurrent_methods`: —
 - `needs`: `session`→(one)、`todo`→(one)
 - `slots`: —
