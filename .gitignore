@@ -3,3 +3,4 @@ pack/
 .venv/
 dist/
 target/
+.kilo/

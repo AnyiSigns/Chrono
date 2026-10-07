@@ -7,3 +7,5 @@ plugin-sdk/rust/target/
 # 夹具与第一方插件源码按原样保留（含 CJS 双引号风格）
 fixtures/
 plugins/
+# Kilo 工具状态 / Agent Manager worktree（本地物，不参与格式化与提交）
+.kilo/
