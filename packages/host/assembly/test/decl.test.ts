@@ -193,8 +193,8 @@ describe('parsePluginDecl 元 schema 严格性', () => {
     if (result.ok) expect(result.decl.exclusive).toEqual(['data', 'gpu'])
   })
 
-  it('保留命令名（commands / unseeded / help）→ reserved_command_name', () => {
-    for (const name of ['commands', 'unseeded', 'help']) {
+  it('保留命令名（plugin 子命令：ls / info / switch / commands）→ reserved_command_name', () => {
+    for (const name of ['ls', 'info', 'switch', 'commands']) {
       const result = parsePluginDecl(baseDecl({ commands: [{ name, entry: 'terms/hello.json' }] }))
       expect(result.ok, `命令名 ${name} 应被拒`).toBe(false)
       if (!result.ok) expect(result.reasons).toEqual(['reserved_command_name'])

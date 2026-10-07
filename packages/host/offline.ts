@@ -8,6 +8,7 @@ import { worldRev } from '../kernel/index.ts'
 import {
   declaredOwnerCaps,
   gcMaterialized,
+  isCodeGen,
   latestDataGen,
   orderEntriesForSeed,
   planIngest,
@@ -309,6 +310,91 @@ export function unseededIdentities(root: string): string[] {
     if (latestDataGen(anchor.world, id) === null) ids.push(id)
   }
   return ids.sort()
+}
+
+/** 单个身份的一个世代视图（`chrono plugin info` 用）：`seq` 为世代号，`payload` 为内容哈希。 */
+export interface PluginGenView {
+  seq: number
+  payload: Hash
+  code: boolean
+  base?: number
+  graft?: { from: string; gen: number }
+}
+
+export interface PluginInfoReport {
+  identity: string
+  active: Hash | null
+  gens: PluginGenView[]
+}
+
+/**
+ * 只读查看一个身份的世代视图（`chrono plugin info`）：**不取写锁**，宿主运行时亦可读。
+ * 身份不存在返回 null；与 `unseededIdentities` 同用无锁稳定读。
+ */
+export function inspectIdentity(root: string, identity: string): PluginInfoReport | null {
+  const paths = hostPaths(resolve(root))
+  const anchor = loadAnchorStable(paths)
+  const idn = anchor.world.ids[identity]
+  if (idn === undefined) return null
+  return {
+    identity,
+    active: idn.active,
+    gens: idn.gens.map((gen) => ({
+      seq: gen.seq,
+      payload: gen.payload,
+      code: isCodeGen(anchor.world, gen),
+      ...(gen.base === undefined ? {} : { base: gen.base }),
+      ...(gen.graft === undefined ? {} : { graft: gen.graft }),
+    })),
+  }
+}
+
+export interface SetActiveReport {
+  ok: boolean
+  identity: string
+  status: 'switched' | 'unchanged' | 'failed'
+  active?: Hash | null
+  reasons: string[]
+}
+
+/**
+ * 离线切换一个身份的 active 世代（`chrono plugin switch` 宿主未运行时）：持写锁提交一条 `set_active`。
+ * `active` 须是该身份已有世代的 payload（内核校验，非本模块）；身份不存在 → `failed` / `no_identity`。
+ */
+export function runSetActive(root: string, identity: string, active: Hash | null): SetActiveReport {
+  const paths = hostPaths(root)
+  const lock = acquireLock(paths.lockFile, Date.now())
+  if (!lock.ok) throw new Error('writer_busy')
+  try {
+    const anchor = loadAnchor(paths.journalFile, paths.baseFile, paths.coldDir)
+    if (anchor.journalTruncated) truncateSync(paths.journalFile, anchor.journalValidBytes)
+    if (!Object.hasOwn(anchor.world.ids, identity)) {
+      return { ok: false, identity, status: 'failed', reasons: ['no_identity'] }
+    }
+    const committed = commitToWorld(
+      { kind: 'lock', world: anchor.world, head: anchor.head },
+      {
+        id: `switch-${randomUUID()}`,
+        op: 'set_active',
+        args: { id: identity, active },
+        by: 'host',
+      },
+      Date.now(),
+      (entry) => appendJournal(paths.journalFile, [entry]),
+    )
+    if (committed.kind === 'refused') {
+      return { ok: false, identity, status: 'failed', reasons: committed.reasons }
+    }
+    return {
+      ok: true,
+      identity,
+      status: committed.kind === 'committed' ? 'switched' : 'unchanged',
+      active,
+      reasons: [],
+    }
+  } finally {
+    releaseLock(paths.lockFile, lock.info)
+  }
 }
 
 /** 全量校验：抢锁后读整条日志（冷段 + 尾段）校验，绝不静默读半条。 */

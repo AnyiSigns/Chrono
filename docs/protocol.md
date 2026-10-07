@@ -47,7 +47,7 @@
 - **`env`（宿主填写，机械）**：`{ run, thread, now, emitter }` ——本回合 id、发起者提交信封的 `thread`（原样回带、不校验；detached / 周期 run 恒 `null`）、宿主固定时钟、**发出者身份**。**不改 `args` 语义**；服务发事件载荷（`run`/`thread`）、判 TTL（`now`）一律用它，**不得自取时间**（见 `host.md` §五「调用帧 `env` 注入」）。`emitter` 由宿主解析填写、调用方无从伪造，是被调服务按 owner 分命名空间的**唯一合法依据**（存储类服务据此分库）；宿主保留身份的调用记 `host`。**不得**改用调用方自报的 namespace 参数。
 - endpoint **有响应**（`result` 或 `error`）→ 宿主转成 `EffResult{ok:true, value}` **回灌**（`error` 时 `value` 是错误描述；数据，term 可据此降级）；
   只有**没执行**（管道 / 帧 / 进程死亡 / 未解析 / 超时）→ `EffResult{ok:false}`（无值，`error` 记具体错误码：通道错误码，或路由失败码 `unresolved_cap` / `not_loaded` / `stale`，见 `host.md` §五 效果）→ 内核 `eff_error` → 该轮 `refused`（审计 `outcome` 仍 `transport_failed`）。
-- 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `chrono start --call-timeout-ms` 可配；**被调方可按插件 `schema.method_timeouts` 按方法覆盖**，见 `host.md` §五 效果）。
+- 单次 `call` 的等待上限 = 宿主调用超时（缺省 30s；`CHRONO_CALL_TIMEOUT_MS` / `chrono world start --call-timeout-ms` 可配；**被调方可按插件 `schema.method_timeouts` 按方法覆盖**，见 `host.md` §五 效果）。
 
 ### 2.3 控制
 
@@ -120,7 +120,7 @@
 
 ## 三、入站协议（发起者 ↔ 宿主）
 
-发起者 = CLI（`chrono run` / `status` / `chrono <命令>`）、UI、测试、以客户端身份连接的插件。
+发起者 = CLI（`chrono world run` / `world status` / `chrono plugin <世界> <命令>`）、UI、测试、以客户端身份连接的插件。
 
 ```
 发起者 → 宿主   submit   { v, id, directives, caps, limits, thread? }  → accepted { id, run }
@@ -153,7 +153,7 @@
   **不进世界、不写链、不推进**；世界只存引用 `{kind:'asset', sha256, mime, size}`（内联在引用方数据里）。
   `put.bytes` 是**规范 base64**（往返一致才收），宿主解码后算 sha256 落盘（同字节幂等）；原始字节上限 8 MiB
   （base64 ≈10.67 MiB < 16 MiB 帧上限），更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；
-  超限 → `asset_too_large`；`get` 字节缺失 → `asset_missing`。回收走离线 `chrono assets gc`（见 `host.md` §五 资产）。
+  超限 → `asset_too_large`；`get` 字节缺失 → `asset_missing`。回收走离线 `chrono world gc <世界> assets`（见 `host.md` §五 资产）。
 - `secrets.put` / `secrets.delete` 是**密钥本地存储面**（见 `host.md` §五 宿主扩展面）：宿主直写用户本地文件（`state/secrets.local.json`，`0600`），**不经 run、不进世界、不进审计**。`name` 非空、≤256、不得为 `__proto__`/`constructor`/`prototype`；`value` ≤64 KiB；空 / 含 NUL / 越界 → `bad_directive`。`put` 的 `value` 只进本地文件；本地文件损坏时 put/delete **fail-closed**（不静默覆写丢密钥）。`list` 不是入站动词（由密钥插件以 `secrets.list` 经 `eff` 回 `{name,has}`）。
 - **效果审计脱敏**（非入站动词）：宿主写 `EffectAudit` 时按**被调身份 `schema.audit_redact` 声明**（`{"<能力类>.<方法>": [键...]}`，精确键优先、其次裸方法名）把命中方法的 `result` 收成白名单键 + 派生 `has`；未声明落完整结果（见 `host.md` §五 宿主扩展面）。
 - `audit` 是**只读审计面**：按 `run`（回合）/ `emitter`（发出者身份）/ `outcome` 过滤 `EffectAudit`，
@@ -171,7 +171,7 @@
 - **`forward` 是插件入站转发**：壳把 `/p/<id>/*` 转成该帧，宿主按 `command` 解析入口 term 并**要求其属主 = `identity`**（否则 `unknown_command`），构造一次 run（`initiator = "forward"`）——即宿主把入站帧转发到目标插件**自己声明**的入口，`/p/` 反代不直连插件服务（保「唯一主端口」）。`args` 校验、`result` 形状、`cancel` 与 `command` 同规；命令名由壳侧 `/p/<id>/*` 映射提供，宿主不认识业务。
 - directive 的 `eval.ctx` **字段缺省 ⇒ 宿主填入 `base_only` 投影**（形状见 `host.md` §五 投影）；显式给出（含 `null`）⇒ 原样透传；
   客户端 / 命令 / plan 三路同规。
-- `commands` 只读声明，供 `chrono commands` 用（客户端没有世界，必须问宿主）；`chrono help` 是静态文本、不经此面。
+- `commands` 只读声明，供 `chrono plugin <世界> commands` 用（客户端没有世界，必须问宿主）；`chrono help` 是静态文本、不经此面。
 - `caps` / `limits` 由发起者给，宿主**透传不扩权**（缺省：`caps` 空表、`limits` 宿主默认预算）；`now` 由宿主固定，不由客户端给。
 - `event` 无 ack、不落账、不推进，**非留痕通道**；`impl` 是命名空间，防跨服务 `id` 相撞。**三个来源**：① 插件服务上行 `event`（§2.5，`impl` = 上报身份）；② **宿主自身**的 run 生命周期事件（`run.started` / `run.finished`，`impl = "host"`，载荷带 `run` / `thread` / `origin`（`command` / `forward` 另带 `name` = 目标命令名），`origin ∈ submit/command/forward/periodic/detached`，见 `host.md` §五 宿主事件面；只读命令不广播）；③ 宿主的**身份世代事件**（`identity.changed`，`impl = "host"`，载荷 `{identity, kind:'code'|'data', active, prev}`，链头推进后逐身份 diff 广播，见 `host.md` §五 通知面）。三者对发起者同形。`thread` 来自发起者提交时的可选字段，**原样回带、不校验**（展示标签，非安全边界）；detached / 周期 run 恒 `thread:null`、`caps:{}`，结果不回流。
 - `result.observations` 含 term 的 eval 观测与 `extern` 透传观测（`{kind:'extern', payload}`，原样回发起者，不解释、不落账、不推进——见 `host.md` §五 效果）。

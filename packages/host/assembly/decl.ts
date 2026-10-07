@@ -5,7 +5,7 @@
 
 import { H } from '../../kernel/index.ts'
 import { getBlob, isBlobPointer } from '../blobs.ts'
-import { FRAMEWORK_COMMAND_NAME_SET } from '../common/framework-commands.ts'
+import { PLUGIN_RESERVED_COMMAND_NAME_SET } from '../common/framework-commands.ts'
 import { isRecord, PROTOTYPE_KEYS } from '../common/json.ts'
 import { HOST_CAPABILITY } from '../host-methods.ts'
 import { parsePluginDecl as parsePluginDeclWithEnv } from '../../../plugin-sdk/decl.ts'
@@ -44,7 +44,7 @@ export function parsePluginDecl(
 ): ParseDeclResult {
   return parsePluginDeclWithEnv(value, {
     entryExtensions: ecosystem.entryExtensions,
-    reservedCommandNames: FRAMEWORK_COMMAND_NAME_SET,
+    reservedCommandNames: PLUGIN_RESERVED_COMMAND_NAME_SET,
     hostCapability: HOST_CAPABILITY,
   })
 }

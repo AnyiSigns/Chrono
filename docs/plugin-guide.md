@@ -115,9 +115,9 @@ test/
 加入并运行：
 
 ```
-chrono add ./my-plugin       # 你的世界里
-chrono start
-chrono echo.say '{"text":"hi"}'   # 命令形式；或经 run / 客户端调用
+chrono plugin <世界> add ./my-plugin   # 加进指定世界
+chrono world start <世界>
+chrono plugin <世界> echo.say '{"text":"hi"}'   # 命令形式；或经 world run / 客户端调用
 ```
 
 要点：
@@ -279,13 +279,13 @@ export const createService = defineService({
 
 ## 11. 生命周期声明
 
-| 字段        | 取值                                                                                                      | 含义                                                 |
-| ----------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `restart`   | `{policy:'on-exit'            \| 'never', backoff, backoff_ms, backoff_max_ms, max, window_ms, drain_ms}` | 退出后是否重启、退避、窗口、drain 上限               |
-| `health`    | `{interval_ms, timeout_ms}`                                                                               | 健康探测节奏                                         |
-| `hot`       | `auto` / `manual` / `off`                                                                                 | 来源热更跟随：watcher / 仅 `chrono upgrade` / 不跟随 |
-| `exclusive` | `["port"]` / `["data"]`                                                                                   | 独占资源：换代走"先 drain 旧再起新"                  |
-| `transport` | `stdio` / `inproc` / `worker`                                                                             | 服务形态                                             |
+| 字段        | 取值                                                                                                      | 含义                                                        |
+| ----------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `restart`   | `{policy:'on-exit'            \| 'never', backoff, backoff_ms, backoff_max_ms, max, window_ms, drain_ms}` | 退出后是否重启、退避、窗口、drain 上限                      |
+| `health`    | `{interval_ms, timeout_ms}`                                                                               | 健康探测节奏                                                |
+| `hot`       | `auto` / `manual` / `off`                                                                                 | 来源热更跟随：watcher / 仅 `plugin <世界> upgrade` / 不跟随 |
+| `exclusive` | `["port"]` / `["data"]`                                                                                   | 独占资源：换代走"先 drain 旧再起新"                         |
+| `transport` | `stdio` / `inproc` / `worker`                                                                             | 服务形态                                                    |
 
 ## 12. 入世规则与 `.worldignore`
 
@@ -297,15 +297,15 @@ export const createService = defineService({
 ## 13. 本地开发、验证与发布
 
 ```
-chrono add ./my-plugin            # 你的世界里：本地 link，边写边热更（hot=auto）
-chrono start --watch              # 打开源码热更
-chrono upgrade my-plugin          # 手动触发新代码世代
-chrono remove my-plugin           # 退役
-chrono seed ./my-plugin           # 离线入世（宿主未运行）
-chrono pack ./my-plugin --identity my-plugin   # 单目录入世
+chrono plugin <世界> add ./my-plugin            # 你的世界里：本地 link，边写边热更（hot=auto）
+chrono world start <世界> --watch                # 打开源码热更
+chrono plugin <世界> upgrade my-plugin           # 手动触发新代码世代
+chrono plugin <世界> remove my-plugin            # 退役
+chrono world seed <世界> ./my-plugin             # 离线入世（宿主未运行）
+chrono world pack <世界> ./my-plugin --identity my-plugin   # 单目录入世
 ```
 
-发布：普通 npm 包 / git 仓库；使用者用 `chrono add <npm 名 | git+https://...>` 取用。
+发布：普通 npm 包 / git 仓库；使用者用 `chrono plugin <世界> add <npm 名 | git+https://...>` 取用。
 **框架不发布插件，也不会内置你的插件**。
 
 ## 14. 红线（会被门禁拦）

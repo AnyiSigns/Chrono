@@ -45,6 +45,7 @@
     "validate-package.ts",
     "wire.ts",
     "world-commit.ts",
+    "worlds.ts",
     "writer.ts",
     "assembly/",
     "common/",

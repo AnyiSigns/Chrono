@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { runSeed, runVerify, runReplay, startHost } from '../../host/index.ts'
@@ -86,7 +87,7 @@ describe('CLI 薄壳 boot', () => {
 
   it('verify：ok:true → CLI 退出码 0', async () => {
     runSeed(root)
-    const result = await runBoot(['verify', '--root', root])
+    const result = await runBoot(['world', 'verify', root])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as { ok: boolean }
     expect(report.ok).toBe(true)
@@ -104,7 +105,7 @@ describe('CLI 薄壳 boot', () => {
     lines[0] = JSON.stringify(first)
     writeFileSync(journal, `${lines.join('\n')}\n`)
 
-    const result = await runBoot(['verify', '--root', root])
+    const result = await runBoot(['world', 'verify', root])
     expect(result.code).toBe(1)
     const report = JSON.parse(result.stdout) as { ok: boolean; error?: string }
     expect(report.ok).toBe(false)
@@ -123,7 +124,7 @@ describe('CLI 薄壳 boot', () => {
     const started: number[] = []
     try {
       // 显式 CLI 覆盖 env（优先级：CLI > env）
-      const cli = await runBoot(['start', '--root', root, '--call-timeout-ms', '1234'], {
+      const cli = await runBoot(['world', 'start', root, '--call-timeout-ms', '1234'], {
         CHRONO_CALL_TIMEOUT_MS: '2222',
       })
       expect(cli.code).toBe(0)
@@ -133,7 +134,7 @@ describe('CLI 薄壳 boot', () => {
       await stopHost(root)
 
       // 只给 env：打印 env 生效值
-      const envOnly = await runBoot(['start', '--root', root], {
+      const envOnly = await runBoot(['world', 'start', root], {
         CHRONO_CALL_TIMEOUT_MS: '2222',
       })
       expect(envOnly.code).toBe(0)
@@ -147,7 +148,7 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('compact：离线压缩（空世界也成立）', async () => {
-    const result = await runBoot(['compact', '--root', root])
+    const result = await runBoot(['world', 'compact', root])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as { snapshot: { seq: number }; moved: number }
     expect(report.snapshot.seq).toBe(0)
@@ -156,11 +157,11 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('compact --strict / CHRONO_COMPACT_STRICT：开关生效，非法 env fail-closed', async () => {
-    const cli = await runBoot(['compact', '--strict', '--root', root])
+    const cli = await runBoot(['world', 'compact', root, '--strict'])
     expect(cli.code).toBe(0)
-    const env = await runBoot(['compact', '--root', root], { CHRONO_COMPACT_STRICT: 'true' })
+    const env = await runBoot(['world', 'compact', root], { CHRONO_COMPACT_STRICT: 'true' })
     expect(env.code).toBe(0)
-    const bad = await runBoot(['compact', '--root', root], { CHRONO_COMPACT_STRICT: 'nope' })
+    const bad = await runBoot(['world', 'compact', root], { CHRONO_COMPACT_STRICT: 'nope' })
     expect(bad.code).toBe(1)
     expect(bad.stderr).toContain('bad_compact_strict')
   })
@@ -170,7 +171,7 @@ describe('CLI 薄壳 boot', () => {
     mkdirSync(assetsDir, { recursive: true })
     const orphan = 'a'.repeat(64)
     writeFileSync(join(assetsDir, orphan), 'orphan')
-    const result = await runBoot(['assets', 'gc', '--root', root])
+    const result = await runBoot(['world', 'gc', root, 'assets'])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as { removed: string[]; kept: number }
     expect(report.removed).toEqual([orphan])
@@ -183,7 +184,7 @@ describe('CLI 薄壳 boot', () => {
     mkdirSync(blobsDir, { recursive: true })
     const orphan = 'b'.repeat(64)
     writeFileSync(join(blobsDir, orphan), 'orphan')
-    const result = await runBoot(['blobs', 'gc', '--root', root])
+    const result = await runBoot(['world', 'gc', root, 'blobs'])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as {
       scanned: number
@@ -203,7 +204,7 @@ describe('CLI 薄壳 boot', () => {
     mkdirSync(materializedDir, { recursive: true })
     const orphan = 'c'.repeat(64)
     mkdirSync(join(materializedDir, orphan), { recursive: true })
-    const result = await runBoot(['materialized', 'gc', '--root', root])
+    const result = await runBoot(['world', 'gc', root, 'materialized'])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as {
       scanned: number
@@ -222,7 +223,7 @@ describe('CLI 薄壳 boot', () => {
     runSeed(root)
     const handle = await startHost({ root })
     try {
-      const again = await runBoot(['start', '--root', root])
+      const again = await runBoot(['world', 'start', root])
       expect(again.code).toBe(1)
       expect(again.stdout).toBe('')
       expect(again.stderr).toContain('start_failed')
@@ -232,7 +233,7 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('start 非法超时 → 退出码 1、报 bad_call_timeout、不起宿主', async () => {
-    const bad = await runBoot(['start', '--root', root, '--call-timeout-ms', 'abc'])
+    const bad = await runBoot(['world', 'start', root, '--call-timeout-ms', 'abc'])
     expect(bad.code).toBe(1)
     expect(bad.stderr).toContain('bad_call_timeout')
     expect(bad.stdout).toBe('')
@@ -240,12 +241,12 @@ describe('CLI 薄壳 boot', () => {
 
   it('pack：单目录入世（--identity 指定身份名）', async () => {
     const result = await runBoot([
+      'world',
       'pack',
+      root,
       join(root, 'pkg', 'toy'),
       '--identity',
       'toy',
-      '--root',
-      root,
     ])
     expect(result.code).toBe(0)
     const report = JSON.parse(result.stdout) as { ok: boolean; identity: string; status: string }
@@ -255,7 +256,7 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('pack：坏包 → 结构化报告 ok:false 且退出码非 0', async () => {
-    const result = await runBoot(['pack', join(root, 'nope'), '--identity', 'nope', '--root', root])
+    const result = await runBoot(['world', 'pack', root, join(root, 'nope'), '--identity', 'nope'])
     expect(result.code).toBe(1)
     const report = JSON.parse(result.stdout) as { ok: boolean; reasons: string[] }
     expect(report.ok).toBe(false)
@@ -264,12 +265,12 @@ describe('CLI 薄壳 boot', () => {
 
   it('pack：--identity 与包内 plugin.json.identity 不一致 → identity_mismatch、退出码非 0', async () => {
     const result = await runBoot([
+      'world',
       'pack',
+      root,
       join(root, 'pkg', 'toy'),
       '--identity',
       'other',
-      '--root',
-      root,
     ])
     expect(result.code).toBe(1)
     const report = JSON.parse(result.stdout) as { ok: boolean; reasons: string[] }
@@ -278,7 +279,7 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('seed：坏包 → 退出码非 0（与 pack 同规）', async () => {
-    const result = await runBoot(['seed', join(root, 'nope'), '--root', root])
+    const result = await runBoot(['world', 'seed', root, join(root, 'nope')])
     expect(result.code).toBe(1)
     const report = JSON.parse(result.stdout) as { ok: boolean; items: { status: string }[] }
     expect(report.ok).toBe(false)
@@ -287,24 +288,24 @@ describe('CLI 薄壳 boot', () => {
 
   it('pack：未知 flag → 退出码 1、报 unknown_flag', async () => {
     const result = await runBoot([
+      'world',
       'pack',
+      root,
       join(root, 'pkg', 'toy'),
       '--identity',
       'toy',
       '--nope',
-      '--root',
-      root,
     ])
     expect(result.code).toBe(1)
     expect(result.stderr).toContain('unknown_flag')
   })
 
   it('pack：缺目录 / 缺 --identity → 退出码 1', async () => {
-    const noDir = await runBoot(['pack', '--identity', 'toy', '--root', root])
+    const noDir = await runBoot(['world', 'pack', root, '--identity', 'toy'])
     expect(noDir.code).toBe(1)
     expect(noDir.stderr).toContain('missing_dir')
 
-    const noIdentity = await runBoot(['pack', join(root, 'pkg', 'toy'), '--root', root])
+    const noIdentity = await runBoot(['world', 'pack', root, join(root, 'pkg', 'toy')])
     expect(noIdentity.code).toBe(1)
     expect(noIdentity.stderr).toContain('missing_identity')
   })
@@ -312,7 +313,7 @@ describe('CLI 薄壳 boot', () => {
   it('start 包装器优先级：CLI > env，未配置打印 null', async () => {
     const started: number[] = []
     try {
-      const cli = await runBoot(['start', '--root', root, '--start-wrapper', 'wrap-cli'], {
+      const cli = await runBoot(['world', 'start', root, '--start-wrapper', 'wrap-cli'], {
         CHRONO_START_WRAPPER: 'wrap-env',
       })
       expect(cli.code).toBe(0)
@@ -321,7 +322,7 @@ describe('CLI 薄壳 boot', () => {
       started.push(first.pid)
       await stopHost(root)
 
-      const envOnly = await runBoot(['start', '--root', root], {
+      const envOnly = await runBoot(['world', 'start', root], {
         CHRONO_START_WRAPPER: 'wrap-env',
       })
       expect(envOnly.code).toBe(0)
@@ -335,10 +336,79 @@ describe('CLI 薄壳 boot', () => {
   })
 
   it('start 非法包装器 → 退出码 1、报 bad_start_wrapper、不起宿主', async () => {
-    const bad = await runBoot(['start', '--root', root, '--start-wrapper', '   '])
+    const bad = await runBoot(['world', 'start', root, '--start-wrapper', '   '])
     expect(bad.code).toBe(1)
     expect(bad.stderr).toContain('bad_start_wrapper')
     expect(bad.stdout).toBe('')
+  })
+
+  it('world create / ls：登记别名并按 ls 列出运行状态', async () => {
+    const regDir = mkdtempSync(join(tmpdir(), 'chrono-worlds-'))
+    const regFile = join(regDir, 'worlds.json')
+    try {
+      const created = await runBoot(['world', 'create', join(root, 'sub'), 'as', 'mine'], {
+        CHRONO_WORLDS: regFile,
+      })
+      expect(created.code).toBe(0)
+      const report = JSON.parse(created.stdout) as { ok: boolean; alias: string; root: string }
+      expect(report.ok).toBe(true)
+      expect(report.alias).toBe('mine')
+      expect(existsSync(report.root)).toBe(true)
+
+      const listed = await runBoot(['world', 'ls'], { CHRONO_WORLDS: regFile })
+      expect(listed.code).toBe(0)
+      const worlds = (
+        JSON.parse(listed.stdout) as { worlds: { alias: string; running: boolean }[] }
+      ).worlds
+      expect(worlds.map((entry) => entry.alias)).toContain('mine')
+      expect(worlds.find((entry) => entry.alias === 'mine')?.running).toBe(false)
+
+      const removed = await runBoot(['world', 'remove', 'mine'], { CHRONO_WORLDS: regFile })
+      expect(removed.code).toBe(0)
+      const missing = await runBoot(['world', 'remove', 'mine'], { CHRONO_WORLDS: regFile })
+      expect(missing.code).toBe(1)
+      expect(missing.stderr).toContain('unknown_world')
+    } finally {
+      rmSync(regDir, { recursive: true, force: true })
+    }
+  })
+
+  it('plugin ls：按世界列出已登记插件（离线）', async () => {
+    const result = await runBoot(['plugin', root, 'ls'])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as { plugins: { name: string }[] }
+    expect(report.plugins.map((plugin) => plugin.name)).toEqual(['toy'])
+  })
+
+  it('plugin info：离线给出身份与世代视图', async () => {
+    runSeed(root)
+    const result = await runBoot(['plugin', root, 'info', 'toy'])
+    expect(result.code).toBe(0)
+    const report = JSON.parse(result.stdout) as {
+      identity: string
+      active: string | null
+      gens: { seq: number; payload: string; code: boolean }[]
+    }
+    expect(report.identity).toBe('toy')
+    expect(report.gens.length).toBeGreaterThan(0)
+    expect(report.active).toBe(report.gens[0]!.payload)
+  })
+
+  it('plugin switch：离线按世代号切 active；未知版本报 unknown_version', async () => {
+    runSeed(root)
+    const infoRaw = await runBoot(['plugin', root, 'info', 'toy'])
+    const info = JSON.parse(infoRaw.stdout) as { gens: { seq: number }[] }
+    const seq = info.gens[0]!.seq
+
+    const switched = await runBoot(['plugin', root, 'switch', 'toy', String(seq)])
+    expect(switched.code).toBe(0)
+    const report = JSON.parse(switched.stdout) as { ok: boolean; identity: string }
+    expect(report.ok).toBe(true)
+    expect(report.identity).toBe('toy')
+
+    const bad = await runBoot(['plugin', root, 'switch', 'toy', '999'])
+    expect(bad.code).toBe(1)
+    expect(bad.stderr).toContain('unknown_version')
   })
 })
 

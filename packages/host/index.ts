@@ -4,6 +4,7 @@
 export { startHost } from './host.ts'
 export type { HostHandle, HostOptions } from './host.ts'
 export {
+  inspectIdentity,
   readPluginManifest,
   runAssetGc,
   runBlobGc,
@@ -13,6 +14,7 @@ export {
   runReplay,
   runRetire,
   runSeed,
+  runSetActive,
   runVerify,
   unseededIdentities,
 } from './offline.ts'
@@ -20,10 +22,13 @@ export type {
   CompactOptions,
   CompactReport,
   PackReport,
+  PluginGenView,
+  PluginInfoReport,
   ReplayReport,
   RetireReport,
   SeedItem,
   SeedReport,
+  SetActiveReport,
   VerifyReport,
 } from './offline.ts'
 export {
@@ -43,6 +48,16 @@ export type {
   StageOptions,
   StagedPlugin,
 } from './admin.ts'
+export {
+  WORLDS_ENV,
+  findWorldByAlias,
+  listWorlds,
+  registerWorld,
+  resolveWorldRef,
+  unregisterWorld,
+  worldsFile,
+} from './worlds.ts'
+export type { WorldEntry } from './worlds.ts'
 export type { AssetGcReport, AssetRef } from './assets.ts'
 export type { BlobGcReport } from './blobs.ts'
 export type { MaterializedGcReport } from './assembly/index.ts'

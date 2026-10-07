@@ -117,11 +117,14 @@ Chrono/
 
 - **一个插件 = 一个包**（`package.json` **信封**；**npm 只是信封、语言自由**——Rust 等非 JS 包同形，见 `plugins.md` §三 与「宿主扩展面 · 非 TS 插件物化」）（**不分内部 / 外部**；放哪只是位置）。各包自带依赖目录 / 锁文件（`node_modules` / `target/` / 二进制）；框架与插件均按 npm 包发布（框架单包，插件各自发）。
   加插件**不改** `packages/` 下任何文件；同一 `plugin.json` 契约；要加载哪些包由目录发现给出，`state/plugins.json` 只作可选覆盖（路径覆盖 / `node_modules` 解析 / 显式排除）。
-- `chrono` 是**唯一入口的薄壳**（随框架包发布的 `bin/chrono.mjs`），命令分四类：
-  - `chrono start`：起宿主（持**世界单写者锁**，detached 守护）。
-  - **客户端命令**（连运行中的宿主）：`chrono run` / `chrono status` / `chrono stop` / `chrono <命令>`。
-  - **插件管理**：`chrono add <来源>` / `upgrade <name>` / `remove <name>` / `list`（宿主在跑时走入站动词 `plugin.ingest` / `plugin.remove`，否则离线处理）。
-  - **离线命令**（宿主未运行）：`chrono seed` / `pack` / `verify` / `replay` / `compact` / `unseeded` / `assets gc` / `blobs gc` / `materialized gc`，以及 `chrono term build <目录>`。
+- `chrono` 是**唯一入口的薄壳**（随框架包发布的 `bin/chrono.mjs`），四域命名空间 `world` / `plugin` / `term` / `help`：
+  - **世界（world）**：`chrono world ls` / `create <路径> as <别名>` / `remove <世界>` 管理全局注册表；
+    `chrono world start <世界> | --all`（起宿主，持**世界单写者锁**，detached 守护）/ `stop <世界> | --all`；
+    `chrono world status|run|audit|gc|seed|pack|verify|replay|unseeded|compact <世界>` 作用于单个世界。
+  - **插件（plugin）**：`chrono plugin <世界> ls|add|upgrade|remove|info|switch|commands`，以及
+    `chrono plugin <世界> <命令名> [args-json]` 按声明调用插件命令（宿主在跑时走入站动词 `plugin.ingest` / `plugin.remove`，否则离线处理）。
+  - **构建（term）**：`chrono term build <目录>`。
+  - 世界引用 `<世界路径/别名>`：先按全局注册表别名解析，未命中再按文件路径。
 - 连入站面的代码只有一处：`packages/client`；CLI 与"两身份"的前端插件共用它。
 - 装配包（`assembly`）**只读世界**，不 import `effect` / `ledger` 的世界写口。
 - `packages/kernel` / `packages/host` **不被任何插件 import**、也不是任何插件包的依赖；插件只由 `packages/host` 装载（服务经 stdio 协议、客户端经入站面协议认识宿主，**不经源码 import**）。
@@ -284,7 +287,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 - 两条入世路径**共用同一套打包规则**（通用排除 `node_modules` / `.git` + 包内 `.worldignore`，契约必需文件不可排除），故同一目录、同一身份产出**相同的源码 tree 与 commit 哈希**：
   - `seed`：按目录发现 ∪ `state/plugins.json` 覆盖**批量**入世（缺省按此；也可给若干包路径）。
-  - `pack`：**单个目录**手动 / 程序化入世（`chrono pack <目录> --identity <身份名>`）。
+  - `pack`：**单个目录**手动 / 程序化入世（`chrono world pack <世界> <目录> --identity <身份名>`）。
 - 两者都把「一个包 = 一条原子 `batch`」直写 `commit`：身份不存在则 `add_identity` + `add_gen`；身份已存在则只 `add_gen`（追加代码世代，不覆盖既有数据世代；同内容重复入世为 `unchanged`）。坏包（坏声明 / 缺 `plugin.json` / 声明 `schema` 但包内文件缺失 / `.worldignore` 非法 / needs 未解析 / eff 声明越界（`undeclared_port` / `undeclared_method`）/ 内核原语未同步（`bad_term:<原语头>`）/ **删除受保护 needs 绑定**）**整批拒绝、世界分文未动**，报结构化原因（后者 `protected_pin_removed`）。
   - `pack` 的 `--identity` 必须与包内 `plugin.json.identity` **一致**，不一致即拒（`identity_mismatch`）——命名即契约，身份名只有一个来源。
   - **身份名必须是安全单段名**：拒绝含 `/`、`\`、盘符前缀、`.` / `..`、控制字符、空段、Windows 非法字符（`<>:"|?*`）、尾随点 / 空格、Windows 保留设备名（`CON` / `PRN` / `AUX` / `NUL` / `COM1-9` / `LPT1-9`）、JS 原型键（`__proto__` / `constructor` / `prototype`，否则 `world.ids` 继承成员会误判为已存在并触发 `TypeError`），以及保留名 `host`（`host` 恒解析为宿主能力，真实身份会遮蔽它）→ `bad_plugin_decl`。理由：身份名会被用作 ③ 目录名（`state/plugins/<id>/`），不安全名字既会路径穿越、又会被 GC 误删。运行期写指令可造 id，故**起服务边界同样 fail-closed 校验**。
@@ -292,7 +295,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 
 **宿主入口选项**
 
-- 宿主入口（`packages/host/main.ts`）与 `chrono start` 共用同一份入口解析：`--root` / `--call-timeout-ms` / `--start-wrapper` / `--watch`，支持 `--flag value` 与 `--flag=value` 两种形态。
+- 宿主入口（`packages/host/main.ts`）与 `chrono world start` 共用同一份入口解析：`--root` / `--call-timeout-ms` / `--start-wrapper` / `--watch`，支持 `--flag value` 与 `--flag=value` 两种形态。
 - **所有启动选项按同一口径收口**：非法即 fail-closed 拒启动，并记一条 `host` `start_failed` 运维日志（reason 取错误的规范前缀，如 `bad_call_timeout` / `bad_start_wrapper` / `bad_watch` / `unknown_entry_arg`；不进世界、不进链）。
 - **宿主入口拒绝未知位置参数 / 未知 flag**（`rest` 非空 → `unknown_entry_arg`）；`rest` 只供 `chrono` 派发命令与命令专用 flag。
 
@@ -305,7 +308,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 **源码 watcher（热更）**
 
 - **能力归属载体**：watcher 是宿主进程内的一个能力（`packages/host/watch/`），不是独立进程、不是离线命令。理由：宿主常驻时单写者锁恒被持有，离线 `seed` 必然 `writer_busy`；运行期写入只能经宿主自己的落账路径。
-- **默认关**：生产常驻不该无条件监听文件系统；只有显式 `--watch`（宿主入口 / `chrono start`）或 `CHRONO_WATCH=<真值>` 才打开，优先级 **CLI > env > 关**，无法识别的 env 值 fail-closed（`bad_watch`）。
+- **默认关**：生产常驻不该无条件监听文件系统；只有显式 `--watch`（宿主入口 / `chrono world start`）或 `CHRONO_WATCH=<真值>` 才打开，优先级 **CLI > env > 关**，无法识别的 env 值 fail-closed（`bad_watch`）。
 - **监听对象 = 目录发现 ∪ `state/plugins.json` 覆盖的投递路径**：有 `path` 走路径、无 `path` 走 Node 解析；**不按第一方 / 第三方分类**（「只有一个插件种类」），指向 `plugins/`、`fixtures/plugins/` 还是别处一视同仁。解析不到包根的条目跳过（只读目录不产生事件）。
 - **触发过滤**：与打包排除同口径——通用排除（`node_modules` / `.git`）与插件 `.worldignore` 声明项命中的路径**不触发**；`.worldignore` 自身变动触发（排除规则变了）。**这是防死循环的关键**：`dist/` 等构建产物若不过滤，一次构建写产物就会触发下一次换代、换代又重建产物，形成无限循环。
 - **静默窗口**：窗口内多次事件合并为一次重建（尾沿触发），覆盖编辑器保存的多事件与「写临时文件再 rename」。
@@ -334,8 +337,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   无在途调用时补宿主固定时钟、`run` / `thread` 记 `null`（v1 服务实现内部调用都在正向调用内发起，故正常路径恒有值）。
 - `eff` 的 `port` 是**逻辑名**，运行时按发出者 `needs` 绑定解析（见「路由」）；**不改内核的 `EffRequest`**。
 - **调用超时**：常量缺省 30s（`DEFAULT_CALL_TIMEOUT_MS`）；进程级默认读 `CHRONO_CALL_TIMEOUT_MS`，
-  `chrono start --call-timeout-ms <ms>`（或宿主入口 `--call-timeout-ms`）显式覆盖——优先级 **CLI > env > 常量**；
-  非法值启动即拒（`bad_call_timeout`），`chrono start` 打印生效值。超时与连接 / 帧 / 进程死亡同归「没执行」。
+  `chrono world start --call-timeout-ms <ms>`（或宿主入口 `--call-timeout-ms`）显式覆盖——优先级 **CLI > env > 常量**；
+  非法值启动即拒（`bad_call_timeout`），`chrono world start` 打印生效值。超时与连接 / 帧 / 进程死亡同归「没执行」。
 - **方法级超时覆盖（`method_timeouts`）**：插件 `schema` 顶层可选 `method_timeouts: {"<能力类>.<方法>": ms}`
   （键也可省能力类前缀、按方法名全局匹配该插件声明），宿主按声明为**本插件被调方法**覆盖等待上限——
   优先级 **方法级 > 进程级 > 常量**；缺省不设。声明非法（非对象 / 键为空或 JS 原型键 / 值非正整数 / 值超计时器硬上限 `2**31-1`，超限会被 `setTimeout` 溢出成 1ms）→
@@ -413,7 +416,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   以 `refused`、reason `readonly_violation` 收口（**不落账、不执行 plan**）。**只读是声明方责任**：宿主不做语义判定，
   插件须在确认命令不写链、不产 write / plan 时才标（`forward` 帧按目标命令声明同规）。
 - 命令**不是旁路**：判定仍是 term、写仍经「落账」；宿主不认识命令语义，只按声明路由。
-- **框架保留命令名**（单一真源 `common/framework-commands.ts`，CLI 派发与入世校验同源；它是「框架保留的命令名」，CLI 与入世都是它的消费者）：`start` / `stop` / `run` / `status` / `add` / `upgrade` / `remove` / `list` / `term` / `seed` / `pack` / `verify` / `replay` / `unseeded` / `compact` / `commands` / `audit` / `assets` / `blobs` / `materialized` / `help`——插件命令一律不得占用（占 → 入世拒 `reserved_command_name`）。其中 `commands` 仍**问宿主**（客户端没有世界，读声明清单），`help` 是 CLI 本地打印帮助文本；其余为宿主命令与离线命令。
+- **框架保留命令名**（单一真源 `common/framework-commands.ts`，CLI 派发与入世校验同源）：顶层只有 `world` / `plugin` / `term` / `help`；插件声明的命令名与 plugin 子命令动词（`ls` / `add` / `upgrade` / `remove` / `info` / `switch` / `commands`）冲突即入世拒 `reserved_command_name`——插件命令只经 `chrono plugin <世界> <命令名>` 调用，故与顶层名不再冲突。其中 `commands` 仍**问宿主**（客户端没有世界，读声明清单），`help` 是 CLI 本地打印帮助文本。
 - 命令清单由宿主从声明读出——客户端没有世界。
 - 发起者提交 `directive` / 命令时携带 `caps` / `limits`，宿主**透传不扩权**（缺省由宿主补默认预算；
   内核保证 `EffRequest.caps` 恒等于输入）；`now` 由宿主固定，不由客户端给。
@@ -464,8 +467,8 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **锁粒度**：锁**只在 commit 期间持有**——run 可并发推进 eval / 等待效果，只在落账那一刻串行。**run 级并发**：多个 run 同时活动，并发只在 run 之间，每个 run 内部单 pending 不变。
 - **提交队列 + 串行落账**：各 run 的 `commit` 进**单一提交队列**，宿主按**到达序串行**出账（仲裁序 = journal `seq`，不新增字段）；落账在单一互斥段内完成，段内**机械把 `expect_pos` 重锚**到当时链头——故 `pos_conflict` 结构上不产生，**没有「检测 base 冲突再自动重提交」这条路径**（见下条「落账段口径」）。按 per-thread 键控的身份 body（`body.slots[<thread_id>]`（待确认）；**v1 已知限制**：整值 `put` 下不同键并非真正可交换——同线程键写者唯一、服务侧清槽的整份 body 取自入口 term 的轮首 ctx（权威）；跨线程 / 跨客户端并发仍 last-write-wins）；用户级共享身份以读为主，写罕见且 last-write-wins。入站 `submit` **accept 仍 FIFO、不抢占**（§七）；被 accept 的多个 run 可并行推进 eval，只在 commit 排队。
   - **落账段口径**：落账段（内核 `run` + journal append）在单一串行链内**无 await**，write directive 的 `expect_pos` 在段内机械锚到当前链头——即「在新链头上重放同一条 directive」，故结构上不产生 `pos_conflict`，**乐观重试路径不存在**（宿主不检测冲突、不重提交；写者的语义前提由各自 `expect_*` 门禁守，见 `kernel.md` §十二「run 级并发」）。语义等价于 append-only 写（`put` / `add_gen` 等内容寻址 op）可安全 rebase； **读-改-写共享身份 body 的并发写仍是 last-write-wins**（键控身份靠 per-thread 键控化解；共享 body 的语义冲突检测由写者自理，当前无内置门禁）。审计走**旁路侧存**（不进世界、不占 `seq`），故业务写追加序 = `seq` 链序；在途 run 的效果路由锚定**本 run 段内所见的世界**（不跟随其他 run 的后续落账）。
-- **停机序列**（`chrono stop`）：按**启动序逆序**同步摘除各服务（依赖者先摘），随后**并发** `drain` / 终止并各自有界等退出（非逐个串行）→ 落盘 `fsync`（journal 本已 append-only）→ 释放锁 → 退出。并发 drain 是为快速收口、且单个卡住的服务不拖垮整体停机；**推论**：drain 期间依赖者可能仍在跑而被依赖者已先行退场，故依赖者在途调用可能得 `not_loaded`——这是**正常停机行为，不是故障**。停机**不写链、不改 active**。
-- **压缩**：宿主在**启动时**尾段达到阈值（条数 `DEFAULT_COMPACT_TAIL_ENTRIES` 或字节 `DEFAULT_COMPACT_JOURNAL_BYTES`，先到者；任一设 0 关闭该触发）或离线 `chrono compact` 时执行——
+- **停机序列**（`chrono world stop`）：按**启动序逆序**同步摘除各服务（依赖者先摘），随后**并发** `drain` / 终止并各自有界等退出（非逐个串行）→ 落盘 `fsync`（journal 本已 append-only）→ 释放锁 → 退出。并发 drain 是为快速收口、且单个卡住的服务不拖垮整体停机；**推论**：drain 期间依赖者可能仍在跑而被依赖者已先行退场，故依赖者在途调用可能得 `not_loaded`——这是**正常停机行为，不是故障**。停机**不写链、不改 active**。
+- **压缩**：宿主在**启动时**尾段达到阈值（条数 `DEFAULT_COMPACT_TAIL_ENTRIES` 或字节 `DEFAULT_COMPACT_JOURNAL_BYTES`，先到者；任一设 0 关闭该触发）或离线 `chrono world compact` 时执行——
   ① 在链头追加快照 entry（`op:'snapshot'`，`args = { world_rev }`，应用时自校，锚不歪）；② 快照前的 entry 归档进
   `world/cold/`；③ 尾段 journal 重写为「快照 entry 起」；④ 写基础世界——小索引 `world/base.json`
   （快照位置 + `worldRev` / `snapshotRev` + `ids` + def 哈希清单 + 分片参数）+ def body 分片
@@ -474,7 +477,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
   启动取用 = 读索引 + 尾段重放；`verify` / `replay` 仍读冷段 + 尾段全链校验。
   压缩幂等（离线 `compact` 只归档**当前 journal**，不重归档旧冷段）；`base.json` 缺失或与尾段不对齐
   （崩溃窗口）时**回落全链**（冷段 + 尾段按 seq 去重）重放——基础世界是派生缓存，丢了不砖化；仅其**形态损坏**才 fail-closed（`bad_base`）。
-  离线 `chrono compact` 支持 `--strict`（严格回收，缺省读 `CHRONO_COMPACT_STRICT`，默认保守）；
+  离线 `chrono world compact` 支持 `--strict`（严格回收，缺省读 `CHRONO_COMPACT_STRICT`，默认保守）；
   strict 仅在世界未使用 `{"def":hash}` 标记之外的哈希引用（引用图完备）时安全，故只离线 / 显式启用。
 - **分片与按需加载（读基础世界）**：`base.json` 只含小索引，def body 按 def 键前 2 位十六进制字符分片
   （`defs/<gen>/<prefix>.jsonl`，每行 `{h,d}`；`<gen>` = 落盘世界 `worldRev` 前 16 位，内容寻址、同摘要复用）。
@@ -513,7 +516,7 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - **入站面**：`asset.put {mime, bytes(base64)}` → `asset.ref`（宿主解码后算 sha256 落盘；`put` 是宿主侧存储操作，
   **不写链、不推进**）；`asset.get {sha256}` → `asset.bytes`。单帧 base64，原始字节 ≤ 8 MiB（base64 ≈10.67 MiB
   < 16 MiB 帧上限）；更大走分块（后置）。坏 base64 / 空 mime / 非 64hex → `bad_asset`；超限 → `asset_too_large`。
-- **回收归属**：离线命令 `chrono assets gc`（持锁）机械扫描世界里的 `kind:'asset'` 引用，删「世界无引用」的字节
+- **回收归属**：离线命令 `chrono world gc <世界> assets`（持锁）机械扫描世界里的 `kind:'asset'` 引用，删「世界无引用」的字节
   （只动 64-hex 命名的资产文件）；**不在宿主启动时自动删**。
 - **备份口径**：备份世界（`state/world/`）≠ 备份字节；须连同 `state/assets/` 一起备份。
 - **回放语义**：重放只复现引用，不复现字节；字节缺失时 `asset.get` → `asset_missing`（**已知限制**，非框架缺陷）。
@@ -620,10 +623,10 @@ RuntimeState  = { pid, transport, gen }                // 运行态，永不进�
 - 协议实体在 `docs/protocol.md`（服务协议 / 入站协议 / 错误码）。
 - 不做原地热补丁、不做多写者、不做多链合并、不做调度、不定义审批语义。
 - 不定义判定标准：门禁 / 评分 / 路由策略都是 term。
-- 不含 `partial` 取用 / 派生索引的设计。journal 压缩（快照 entry + `world/cold/` 归档）见「写者 · 压缩」——那是宿主启动 / `chrono compact` 的账本维护，不是产品级归档 UI。
+- 不含 `partial` 取用 / 派生索引的设计。journal 压缩（快照 entry + `world/cold/` 归档）见「写者 · 压缩」——那是宿主启动 / `chrono world compact` 的账本维护，不是产品级归档 UI。
 - 不做插件资源隔离（内存 / CPU / fd 上限）——插件是独立进程，OS 提供基础隔离；资源限额列为后续插件契约。
 - 不做 `event` 背压 / 订阅过滤 / 持久——`event` 无 ack、无客户端即丢、无 topic 订阅（见 `docs/protocol.md` §三）。
 - 不做命令发现的授权过滤——`caps` 闸执行不闸发现；v1 单机受信。
 - 不做并发 `submit` 的抢占调度——入站 `submit` **accept FIFO**（先到先 accept，不插队、不抢占已 accept 的 run）；与「写者」节的 run 级并发不冲突：多个已被 accept 的 run 可并行推进 eval，只在 commit 排队。`status` 非阻塞快照、可能瞬态。
 - **不做结构 op（改 / 加插件）的审批闸门**——那属上层能力，不属载体。载体只保证：世界那一处写者唯一且一切写经 `commit` 四步校验、坏分支只隔离（fail-closed；例外：自身代码换代时新世代构建 / 启动失败保留旧服务，见「装配」）。⇒ **人类审批必须落在上层**；否则世界里的数据可以命令宿主持久化并 spawn 新进程执行任意内容。
-- **运行期写出的包不过入世门禁（已知不对称，属已知取舍）**：`chrono seed` 走 ingest 的全套门禁（声明形状 / 路径约束 / `argsSchema` 方言 / term 环 / `.worldignore`），而运行期 `add_gen` 写包只走 `commit` 的形态 / 引用 / 位置 / 不变量校验，宿主仅在命令路径补一次 `argsSchema` 方言元校验。兜底：坏声明由装配期 `parsePluginDecl` 拦下 → 该分支隔离，不炸宿主；但坏 schema / 坏 term 可能到运行时才暴露。
+- **运行期写出的包不过入世门禁（已知不对称，属已知取舍）**：`chrono world seed` 走 ingest 的全套门禁（声明形状 / 路径约束 / `argsSchema` 方言 / term 环 / `.worldignore`），而运行期 `add_gen` 写包只走 `commit` 的形态 / 引用 / 位置 / 不变量校验，宿主仅在命令路径补一次 `argsSchema` 方言元校验。兜底：坏声明由装配期 `parsePluginDecl` 拦下 → 该分支隔离，不炸宿主；但坏 schema / 坏 term 可能到运行时才暴露。

@@ -1,8 +1,8 @@
-// CLI 薄壳（genesis 常量）：解析入口参数后交给派发表；非保留命令连宿主按声明调用。
-// 只做参数解析与转发，不认识任何业务语义。
+// CLI 薄壳：解析入口参数后交给四域派发表 `world` / `plugin` / `term` / `help`。
+// 未知顶层命令 fail-closed（不再有扁平插件命令兜底——插件命令只经 `plugin <世界> <命令>`）。
 
 import { parseEntryArgv, resolveRoot } from '../host/index.ts'
-import { dispatchPluginCommand, handlers, helpText } from './commands.ts'
+import { handlers, helpText } from './commands.ts'
 
 async function main(): Promise<void> {
   const options = parseEntryArgv(process.argv.slice(2))
@@ -14,11 +14,8 @@ async function main(): Promise<void> {
     return
   }
   const handler = Object.hasOwn(handlers, command) ? handlers[command] : undefined
-  if (handler !== undefined) {
-    await handler({ root, args, options })
-    return
-  }
-  await dispatchPluginCommand(root, command, args, options)
+  if (handler === undefined) throw new Error(`unknown_command: ${command}`)
+  await handler({ root, args, options })
 }
 
 try {

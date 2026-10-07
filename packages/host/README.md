@@ -59,7 +59,7 @@ Chrono 的载体：**一个进程、四个包**（装配 / 效果 / 账本 / 投
 `writer.ts` / `world-commit.ts`（世界单写者与落账）、`bootstrap.ts` / `composition.ts` / `capability-wiring.ts`（组合根与接线）、
 `run-registry.ts`（run 登记与取消）、`plugin-data.ts` / `plugin-state.ts`（④ / ③ 目录注入）、`protected-pins.ts`（受保护 pin 名单）、
 `port-audit.ts`（端口审计环形缓冲）、`audit*.ts`（审计侧存 / 分档 / 脱敏 / 回填）、`compact.ts`（账本压缩）、`options.ts`（启动选项与策略默认）。
-`admin.ts`（`chrono add` / `upgrade` / `remove` 三来源取包与暂存 / 登记 / 退役）、`follow.ts`（世代跟随）、`method-timeouts.ts`（方法级超时解析）、
+`admin.ts`（`chrono plugin add` / `upgrade` / `remove` 三来源取包与暂存 / 登记 / 退役）、`worlds.ts`（全局世界注册表：别名 → 世界根，供 CLI 多世界引用）、`follow.ts`（世代跟随）、`method-timeouts.ts`（方法级超时解析）、
 `invalid-decl-log.ts`（坏声明日志）、`periodic-runner.ts`（定时触发运行器）；`inbound/`（入站面 `server` / `dispatch` / `handlers` / `validate`）。
 
 `common/` 是宿主内层共享机制（不 import `effect` / `ledger` 写口）：`op-names.ts` 内核 op 名镜像、
