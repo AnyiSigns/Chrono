@@ -1,0 +1,20 @@
+{
+  "k": "call",
+  "ref": "terms/select.final.json",
+  "args": [
+    {
+      "k": "fold",
+      "coll": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["candidates"] },
+      "init": {
+        "k": "obj",
+        "fields": {
+          "candidates": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["candidates"] },
+          "aliases": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["aliases"] },
+          "primary": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] },
+          "chosen": { "k": "lit", "v": null }
+        }
+      },
+      "step": "terms/select.step.json"
+    }
+  ]
+}

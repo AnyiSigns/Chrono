@@ -1,0 +1,39 @@
+{
+  "name": "@chrono/framework",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "可复现的世界 + 谱系 + 机械校验的框架：只发布框架一个 npm 包，插件由第三方按规范自产",
+  "license": "UNLICENSED",
+  "bin": {
+    "chrono": "bin/chrono.mjs",
+    "boot": "bin/chrono.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "test:static": "node --test \"tests/static/*.test.mjs\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepack": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "3.9.7",
+    "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,148 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { startHost } from '../host.ts'
+import type { HostHandle } from '../host.ts'
+import { join } from 'node:path'
+import { writeFileSync } from 'node:fs'
+import {
+  createTempRoot,
+  createToyPlugin,
+  cleanupTempRoot,
+  readAuditRecords,
+} from '../test/test-helpers.ts'
+import { hostPaths } from '../paths.ts'
+import { runSeed } from '../offline.ts'
+
+describe('宿主 host', () => {
+  let root: string
+  const handles: HostHandle[] = []
+
+  beforeEach(() => {
+    root = createTempRoot()
+    createToyPlugin(root)
+    writeFileSync(
+      join(root, 'state', 'plugins.json'),
+      JSON.stringify([{ name: 'toy', path: join(root, 'pkg', 'toy') }]),
+    )
+  })
+
+  afterEach(async () => {
+    for (const handle of [...handles].reverse()) {
+      try {
+        await handle.stop()
+      } catch {
+        // 尽力停机
+      }
+    }
+    handles.length = 0
+    await cleanupTempRoot(root)
+  })
+
+  async function start(): Promise<HostHandle> {
+    const handle = await startHost({ root })
+    handles.push(handle)
+    return handle
+  }
+
+  it('startHost 返回 HostHandle，含 root / socket / stop / emitEvent', async () => {
+    const handle = await start()
+    expect(handle.root).toBe(root)
+    expect(typeof handle.socket).toBe('string')
+    expect(typeof handle.stop).toBe('function')
+    expect(typeof handle.emitEvent).toBe('function')
+    await handle.stop()
+  })
+
+  it('stop 停机后锁可被重新 acquire', async () => {
+    const handle = await start()
+    await handle.stop()
+    const handle2 = await start()
+    expect(handle2.root).toBe(root)
+    await handle2.stop()
+  })
+
+  it('submit [write] → done 落账', async () => {
+    await start()
+    const { connect } = require('../../client/index.ts')
+    const client = await connect({ root, timeoutMs: 2000 })
+    try {
+      const result = await client.submit([
+        {
+          kind: 'write',
+          request: {
+            id: 'w1',
+            op: 'put',
+            target: { expect_pos: null },
+            args: { body: { v: 1 } },
+            by: 'client',
+          },
+        },
+      ])
+      expect(result.status).toBe('done')
+    } finally {
+      client.close()
+    }
+  })
+
+  it('submit [eval(missing)] → refused，reasons 含 missing_ref 且不落账', async () => {
+    await start()
+    const { connect } = require('../../client/index.ts')
+    const { readJournal } = require('../ledger/index.ts')
+    const client = await connect({ root, timeoutMs: 2000 })
+    try {
+      const result = await client.submit([
+        { kind: 'eval', entry: 'ghost'.repeat(16), args: null, ctx: null },
+      ])
+      expect(result.status).toBe('refused')
+      expect(result.observations[result.observations.length - 1]).toMatchObject({
+        kind: 'refused',
+        reasons: expect.arrayContaining(['missing_ref']),
+      })
+      expect(readJournal(join(root, 'state', 'world', 'journal.jsonl'))).toEqual([])
+    } finally {
+      client.close()
+    }
+  })
+
+  it('submit [eval(toy-eff)] → refused:eff_error，审计进旁路侧存、journal 不变', async () => {
+    const report = runSeed(root)
+    expect(report.ok).toBe(true)
+
+    const { loadAnchor, readJournal } = require('../ledger/index.ts')
+    const { listCommands } = require('../assembly/index.ts')
+    const anchor = loadAnchor(join(root, 'state', 'world', 'journal.jsonl'))
+    const commands = listCommands(anchor.world, hostPaths(root).blobsDir)
+    const toyEff = commands.find((c: any) => c.name === 'toy.eff')
+    expect(toyEff).toBeDefined()
+    const toyEffHash = toyEff!.entry
+
+    await start()
+    const { connect } = require('../../client/index.ts')
+    const client = await connect({ root, timeoutMs: 2000 })
+    try {
+      const journalFile = join(root, 'state', 'world', 'journal.jsonl')
+      const beforeCount = readJournal(journalFile).length
+
+      const result = await client.submit([
+        { kind: 'eval', entry: toyEffHash, args: null, ctx: null },
+      ])
+      expect(result.status).toBe('refused')
+      const lastObs = result.observations[result.observations.length - 1] as any
+      expect(lastObs).toMatchObject({
+        kind: 'refused',
+        reasons: expect.arrayContaining(['eff_error']),
+      })
+
+      // 审计不进 journal；侧存留一条
+      expect(readJournal(journalFile).length).toBe(beforeCount)
+      const audits = readAuditRecords(root)
+      expect(audits).toHaveLength(1)
+      expect(audits[0].by).toBe('client')
+      // toy-eff 的 eff 目标是自身声明的能力类 toy.echo（无自 pin）→ 走自能力路由；
+      // toy 无 execute 成员（start 空）→ 无端点行 → not_loaded，内核归 eff_error
+      const auditBody = audits[0].body as { result: { ok: boolean; error: string } }
+      expect(auditBody.result).toEqual({ ok: false, error: 'not_loaded' })
+    } finally {
+      client.close()
+    }
+  })
+})

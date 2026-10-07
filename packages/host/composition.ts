@@ -1,0 +1,625 @@
+// 宿主组合根接线：读 options → bootstrap 起停编排 → 组装 follow / inbound / router / capability /
+// periodic / watcher → 暴露运行态句柄。本模块只做接线，不解释命令语义、不持有业务判定。
+
+import { hostPaths, socketPath } from './paths.ts'
+import { bootstrapHost } from './bootstrap.ts'
+import type { BootstrappedHost, WiredHost, WorldReady } from './bootstrap.ts'
+import { RunRegistry } from './run-registry.ts'
+import { DEFAULT_LIMITS } from './run-registry.ts'
+import type { BroadcastFn } from './run-registry.ts'
+import { createFollow } from './follow.ts'
+import { createInboundServer } from './inbound/server.ts'
+import type { DispatchFn, InboundServerHandle } from './inbound/server.ts'
+import { createDispatch } from './inbound/dispatch.ts'
+import type { PluginAdminResult } from './inbound/dispatch.ts'
+import { createInboundHandlers } from './inbound/handlers.ts'
+import { createCapabilityWiring } from './capability-wiring.ts'
+import { createPeriodicRunner } from './periodic-runner.ts'
+import { createWatchReload } from './watch/host-reload.ts'
+import { reloadPlugin, retirePlugin } from './watch/reload.ts'
+import {
+  buildCommandIndex,
+  checkCompatibility,
+  parsePluginDecl,
+  readPluginManifest,
+  resolveEntryRoot,
+  startAssembly,
+} from './assembly/index.ts'
+import type { AssemblyRuntimeHandle, CommandIndex, PluginEntry } from './assembly/index.ts'
+import { readEcosystem } from './assembly/ecosystem.ts'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  createRoundRouter,
+  createJudgmentRunner,
+  createJudgmentInvoke,
+  fatalError,
+} from './effect/index.ts'
+import type { RoundRouter } from './effect/index.ts'
+import { PeriodicScheduler } from './periodic.ts'
+import { readMethodTimeouts } from './method-timeouts.ts'
+import { InvalidDeclLog } from './invalid-decl-log.ts'
+import { PortAuditRing } from './port-audit.ts'
+import type { PortAuditRecord, PortAuditSink } from './port-audit.ts'
+import { appendLifecycle, flushLifecycle, flushLifecycleSync } from './lifecycle.ts'
+import type { LifecycleRecord } from './lifecycle.ts'
+import { appendJournal } from './ledger/index.ts'
+import { projectBaseOnly } from './projection/index.ts'
+import { startSourceWatcher } from './watch/index.ts'
+import type { SourceWatcherHandle } from './watch/index.ts'
+import { resolveStartWrapper } from './options.ts'
+import { worldRev } from '../kernel/index.ts'
+import type { Hash, Json, World } from '../kernel/index.ts'
+import type { HostOptions } from './host.ts'
+
+/**
+ * 该运维事件应记住的跟随失败世代（无则 null）：唯一消费者是 watcher（`host-reload` 据集合把
+ * 「旧版本继续服务」讲清）。watcher 关闭时无人消费，记了只会随进程无界增长，故不记。
+ */
+export function followFailureGen(record: LifecycleRecord, watchEnabled: boolean): string | null {
+  if (!watchEnabled || record.gen === undefined) return null
+  if (record.kind === 'service' && record.event === 'start_failed') return record.gen
+  if (record.kind === 'handshake' && record.event === 'failed') return record.gen
+  return null
+}
+
+/** 组合根接线的运行态句柄：停机 / 事件广播 / 端口审计只读快照。 */
+export interface ComposedHost {
+  socket: string
+  stop: () => Promise<void>
+  emitEvent: BroadcastFn
+  portAuditRecords: () => PortAuditRecord[]
+}
+
+/** 起宿主：全程阻塞在入站 socket 上，直到 stop 被调用。 */
+export async function composeHost(options: HostOptions): Promise<ComposedHost> {
+  // 包装器防御：库调用方可能绕过入口解析，非法值同样 fail-closed（不静默降级为无包装器）
+  if (options.startWrapper !== undefined) resolveStartWrapper(options.startWrapper)
+  const root = options.root
+  // 生态 profile 只在启动时解析一次：文件缺失 / 键缺失即内建默认（零行为变化），
+  // 形态非法则与入世侧同口径 fail-closed 拒启动；此后经参数注入装配，不在各处重复读取。
+  const ecosystem = (() => {
+    const read = readEcosystem(root)
+    if (!read.ok) throw new Error(read.reason)
+    return read.profile
+  })()
+  const paths = hostPaths(root)
+  const address = socketPath(root)
+  const startedAt = Date.now()
+  const registry = new RunRegistry(startedAt)
+  const watchEnabled = options.watch === true
+  const followFailedGens = new Set<string>()
+  let stopping = false
+  let runtime: AssemblyRuntimeHandle | undefined
+  let router: RoundRouter | undefined
+  let periodic: PeriodicScheduler | undefined
+  let watcher: SourceWatcherHandle | undefined
+  let server: InboundServerHandle | undefined
+  let stopImpl: (() => Promise<void>) | undefined
+  let bootstrappedRef: BootstrappedHost | undefined
+  let stopPromise: Promise<void> | undefined
+  // 装配接线（wire）落定信号：停机若落在「监听已开、装配未完成」的窗口，等它落定再收口 runtime。
+  let bootstrapDoneResolve: (() => void) | undefined
+  const bootstrapDone = new Promise<void>((resolve) => {
+    bootstrapDoneResolve = resolve
+  })
+  // 入站监听先于装配：服务连上后可能在装配完成前发起反向调用，这里挂起等待路由就绪。
+  let routerReadyResolve: (() => void) | undefined
+  const routerReady = new Promise<void>((resolve) => {
+    routerReadyResolve = resolve
+  })
+
+  /** 运维日志安全写入：日志是旁路，写失败不得在 catch / 事件监听器内抛成未捕获异常。 */
+  const safeAppendLifecycle = (record: LifecycleRecord): void => {
+    try {
+      appendLifecycle(paths.lifecycleFile, record as unknown as Json)
+    } catch {
+      // 日志写不进去只损失可观测性，不影响主流程
+    }
+  }
+
+  /** 运维日志唯一落点；顺带记住跟随失败的世代，供 watcher 观测（只读派生，不额外写盘）。 */
+  const recordLifecycle = (record: LifecycleRecord): void => {
+    safeAppendLifecycle(record)
+    const failedGen = followFailureGen(record, watchEnabled)
+    if (failedGen !== null) followFailedGens.add(failedGen)
+  }
+
+  /** 停机幂等：并发 / 重复调用共享同一个 promise。 */
+  const stop = (): Promise<void> => {
+    if (stopPromise !== undefined) return stopPromise
+    stopPromise = (async () => {
+      stopping = true
+      // 先停周期调度与 watcher：停机中途不再起新的周期 run / 重建
+      periodic?.stop()
+      if (watcher !== undefined) {
+        try {
+          await watcher.stop()
+        } catch {
+          // watcher 停机尽力而为；锁必须释放
+        }
+      }
+      try {
+        appendLifecycle(paths.lifecycleFile, { at: Date.now(), kind: 'host', event: 'stop' })
+      } catch {
+        // 日志写不进去只损失可观测性
+      }
+      // 在途 / 并发推进中的 run 先取消：它们按 cancelled 落定，停机不耗在调用超时上
+      registry.abortAll()
+      await registry.settle()
+      server?.destroyClients()
+      await server?.close()
+      // 停机请求可能落在「监听已开、装配未完成」的窗口：此刻 runtime 尚未赋值，若就此收口会在
+      // 装配随后起出的服务无人停的情况下释放锁（孤儿进程）。等装配落定，再收口它起出的 runtime。
+      if (bootstrappedRef === undefined) await bootstrapDone
+      try {
+        if (runtime !== undefined) await runtime.stop()
+      } catch {
+        // 停机尽力而为；锁必须释放
+      }
+      server?.unlinkSocket()
+      if (bootstrappedRef !== undefined) await bootstrappedRef.shutdown()
+    })()
+    return stopPromise
+  }
+  stopImpl = stop
+
+  /**
+   * 落账致命态收口：run 抛错后若 `fatalError()` 非空（账本追加失败，内存世界已与磁盘分叉），
+   * 记一条运维日志并把致命态升级为停机——继续服务只会让分叉随每轮提交放大。
+   */
+  const escalateFatal = (): void => {
+    const fatal = fatalError()
+    if (fatal === null) return
+    safeAppendLifecycle({
+      at: Date.now(),
+      kind: 'host',
+      event: 'persist_fatal_stop',
+      reason: fatal.message,
+    })
+    try {
+      flushLifecycleSync(paths.lifecycleFile)
+    } catch {
+      // 日志落稳失败不改变致命收口
+    }
+    void stopImpl?.().catch(() => {
+      // 停机尽力而为；失败由锁 / socket 清理逻辑兜底
+    })
+  }
+
+  /** 端口审计落点：缺省写有界环形缓冲；注入 sink 时同时写入快照与 sink。 */
+  const portAuditRing = new PortAuditRing()
+  const injectedPortAuditSink = options.portAuditSink
+  const portAudit: PortAuditSink =
+    injectedPortAuditSink === undefined
+      ? portAuditRing
+      : {
+          record: (record) => {
+            portAuditRing.record(record)
+            injectedPortAuditSink.record(record)
+          },
+        }
+
+  /** watcher 的终端可视线：前台模式直出终端；测试可注入收集。 */
+  const watchLog =
+    options.watchLog ??
+    ((line: string): void => {
+      process.stdout.write(`${line}\n`)
+    })
+
+  /** 世界就绪后由组合根接线：监听 → 起装配 → 建 router / periodic / watcher。 */
+  const buildWired = async (ready: WorldReady): Promise<WiredHost> => {
+    const { writer, audits, world, head, setAuditTierWorld } = ready
+    // `world_rev` 是全量摘要（O(#defs)）：按链头缓存，避免每次 `status` 轮询都阻塞事件循环重算。
+    let revCache: { head: Hash | null; rev: Hash } | undefined
+    const cachedWorldRev = (target: World, targetHead: typeof head): Hash => {
+      if (revCache !== undefined && revCache.head === targetHead.hash) return revCache.rev
+      const rev = worldRev(target)
+      revCache = { head: targetHead.hash, rev }
+      return rev
+    }
+    let ctxCache: { head: Hash | null; seq: number; view: Json } | undefined
+    const cachedProjection = (target: World, targetHead: typeof head): Json => {
+      if (ctxCache !== undefined && ctxCache.head === targetHead.hash) return ctxCache.view
+      const view = projectBaseOnly(target, targetHead, {
+        blobsDir: paths.blobsDir,
+        // 投影内的 `world_rev` 由已缓存的链头摘要供给，不再在投影里重算。
+        worldRev: cachedWorldRev(target, targetHead),
+      })
+      // 单条缓存只被「不更旧」的链头覆盖：并发的陈旧 head 调用不得挤掉更新的缓存
+      if (ctxCache === undefined || targetHead.seq >= ctxCache.seq) {
+        ctxCache = { head: targetHead.hash, seq: targetHead.seq, view }
+      }
+      return view
+    }
+    // 命令索引按链头缓存：同头多路解析复用一次 `buildCommandIndex`（含名字映射）。
+    let commandCache: { head: Hash | null; index: CommandIndex } | undefined
+    const commandIndexFor = (target: World, targetHead: typeof head): CommandIndex => {
+      if (commandCache !== undefined && commandCache.head === targetHead.hash) {
+        return commandCache.index
+      }
+      const index = buildCommandIndex(target, paths.blobsDir)
+      commandCache = { head: targetHead.hash, index }
+      return index
+    }
+
+    /** 周期声明非法条目：每次 `sync` 收集后按身份签名去重（声明修好再变坏可重记）。 */
+    const periodicInvalidBuffer: { identity: string; reason: string }[] = []
+    const periodicInvalid = new InvalidDeclLog((identity, reason) => {
+      safeAppendLifecycle({
+        at: Date.now(),
+        kind: 'dep',
+        event: 'periodic_invalid',
+        impl: identity,
+        reason,
+      })
+    })
+    const syncPeriodic = (target: World): void => {
+      periodicInvalidBuffer.length = 0
+      periodic?.sync(target)
+      periodicInvalid.report(periodicInvalidBuffer)
+    }
+    /** 方法级超时声明非法：按身份签名去重，声明变化才重记（不永久屏蔽）。 */
+    const methodTimeoutInvalid = new InvalidDeclLog((identity, reason) => {
+      safeAppendLifecycle({
+        at: Date.now(),
+        kind: 'dep',
+        event: 'method_timeout_invalid',
+        impl: identity,
+        reason,
+      })
+    })
+    const reportMethodTimeouts = (target: World): void => {
+      methodTimeoutInvalid.report(readMethodTimeouts(target).invalid)
+    }
+
+    let dispatchRef: DispatchFn | undefined
+    let localServer: InboundServerHandle | undefined
+    try {
+      appendLifecycle(paths.lifecycleFile, { at: startedAt, kind: 'host', event: 'start' })
+      // 启动是里程碑：立即落盘，宿主可用的那一刻 start 已可被外部观测
+      flushLifecycle(paths.lifecycleFile)
+      const follow = createFollow({
+        initialWorld: world,
+        initialHead: head,
+        getRuntime: () => runtime,
+        broadcast: (impl, topic, payload) => server?.broadcast(impl, topic, payload),
+        safeAppendLifecycle,
+        isStopping: () => stopping,
+        onApplied: (next) => {
+          setAuditTierWorld(next)
+          if (!stopping) {
+            syncPeriodic(next)
+            reportMethodTimeouts(next)
+          }
+        },
+      })
+
+      // 运行期插件管理：新增 / 重入世在宿主落账互斥段内提交（避开离线 seed 的 writer_busy）。
+      // 兼容性门禁在提交前按新包声明校验；watcher 目标在每次变更后重解析。
+      const watchReload = createWatchReload({
+        root,
+        paths,
+        writer,
+        nextNow: () => registry.nextNow(),
+        applyWorld: follow.applyWorldSerial,
+        safeAppendLifecycle,
+        escalateFatal,
+        getRuntime: () => runtime,
+        isStopping: () => stopping,
+        followFailedGens,
+        watchLog,
+      })
+      const startWatcher = (): void => {
+        if (!watchEnabled) return
+        watcher = startSourceWatcher({
+          root,
+          onReload: watchReload.onReload,
+          onError: (target, reason) => {
+            safeAppendLifecycle({
+              at: Date.now(),
+              kind: 'host',
+              event: 'watch_failed',
+              impl: target.entry.name,
+              reason,
+            })
+          },
+        })
+        appendLifecycle(paths.lifecycleFile, {
+          at: Date.now(),
+          kind: 'host',
+          event: 'watch_start',
+          reason: String(watcher.targets.length),
+        })
+        watchLog(`watcher: 已监听 ${watcher.targets.length} 个投递路径`)
+      }
+      let refreshWatcher: () => Promise<void> = async () => {}
+      const resolveIdentity = (name: string): string => {
+        try {
+          const entry = readPluginManifest(root).find((item) => item.name === name)
+          if (entry !== undefined) {
+            const pkgRoot = resolveEntryRoot(root, entry)
+            if (pkgRoot !== null) {
+              const parsed = parsePluginDecl(
+                JSON.parse(readFileSync(join(pkgRoot, 'plugin.json'), 'utf8')) as Json,
+                ecosystem,
+              )
+              if (parsed.ok) return parsed.decl.identity
+            }
+          }
+        } catch {
+          // 包读不出：回落把 name 当身份名（retire 幂等）
+        }
+        return name
+      }
+      const pluginIngest = async (name: string): Promise<PluginAdminResult> => {
+        let entry: PluginEntry | undefined
+        try {
+          entry = readPluginManifest(root).find((item) => item.name === name)
+        } catch {
+          return { ok: false, name, status: 'failed', code: 'bad_plugins_manifest' }
+        }
+        if (entry === undefined) {
+          return { ok: false, name, status: 'failed', code: 'plugin_not_found', reasons: [name] }
+        }
+        const target = entry
+        const gate = (world: World): string[] =>
+          checkCompatibility(root, world, target, paths.blobsDir, ecosystem)
+        const outcome = await reloadPlugin(
+          {
+            root,
+            paths,
+            writer,
+            now: () => registry.nextNow(),
+            applyWorld: follow.applyWorldSerial,
+            suspended: () => runtime?.suspendedIds() ?? new Set<string>(),
+            gate,
+          },
+          target,
+        )
+        if (outcome.status === 'failed') {
+          safeAppendLifecycle({
+            at: Date.now(),
+            kind: 'host',
+            event: 'watch_failed',
+            impl: name,
+            reason: outcome.reasons.join('|'),
+          })
+          return {
+            ok: false,
+            name,
+            status: 'failed',
+            code: 'ingest_failed',
+            reasons: outcome.reasons,
+          }
+        }
+        await refreshWatcher()
+        return { ok: true, name, status: outcome.status, identity: outcome.identity }
+      }
+      const pluginRemove = async (name: string): Promise<PluginAdminResult> => {
+        const identity = resolveIdentity(name)
+        const outcome = await retirePlugin(
+          {
+            root,
+            paths,
+            writer,
+            now: () => registry.nextNow(),
+            applyWorld: follow.applyWorldSerial,
+          },
+          identity,
+        )
+        if (outcome.status === 'failed') {
+          return {
+            ok: false,
+            name,
+            status: 'failed',
+            code: 'retire_failed',
+            reasons: outcome.reasons,
+          }
+        }
+        await refreshWatcher()
+        return { ok: true, name, status: outcome.status, identity }
+      }
+
+      localServer = createInboundServer({
+        address,
+        sockDir: paths.sockDir,
+        getDispatch: () => {
+          if (dispatchRef === undefined) throw new Error('dispatch not ready')
+          return dispatchRef
+        },
+        onRuntimeError: (err) => {
+          safeAppendLifecycle({
+            at: Date.now(),
+            kind: 'host',
+            event: 'listen_error',
+            reason: err.message,
+          })
+          // 运行期监听错误：按停机序列收口，不崩宿主
+          void stopImpl?.()
+        },
+        onInvalidFrame: (reason) => {
+          // 无法配对的入站畸形帧：只记运维事件（连接由 server 断掉），不影响其它客户端
+          safeAppendLifecycle({ at: Date.now(), kind: 'host', event: 'invalid_frame', reason })
+        },
+      })
+      server = localServer
+
+      const handlers = createInboundHandlers({
+        writer,
+        registry,
+        callTimeoutMs: options.callTimeoutMs,
+        send: localServer.send,
+        getRouter: () => router,
+        commandIndexFor,
+        cachedProjection,
+        persistAudit: (draft) => audits.append(draft),
+        persistRound: (entries) => appendJournal(paths.journalFile, entries),
+        applyWorldSerial: follow.applyWorldSerial,
+        broadcast: localServer.broadcast,
+        safeAppendLifecycle,
+        escalateFatal,
+      })
+
+      const wiring = createCapabilityWiring({
+        root,
+        paths,
+        writer,
+        audits,
+        registry,
+        getRouter: () => router,
+        getRuntime: () => runtime,
+        routerReady,
+        liveWorld: follow.liveWorld,
+        isStopping: () => stopping,
+        startDetachedRun: handlers.startDetachedRun,
+        callTimeoutMs: options.callTimeoutMs,
+        portAudit,
+        nextNow: () => registry.nextNow(),
+        ecosystem,
+      })
+
+      dispatchRef = createDispatch({
+        send: localServer.send,
+        registry,
+        paths,
+        audits,
+        isStopping: () => stopping,
+        requestStop: () => {
+          // 同步置停机态：stop 经 setImmediate 延迟执行，窗口内不得再受理新 run
+          stopping = true
+          setImmediate(() => {
+            void stopImpl?.().catch(() => {
+              // 停机尽力而为
+            })
+          })
+        },
+        getRuntime: () => runtime,
+        getSnapshot: () => writer.snapshot(),
+        cachedWorldRev,
+        commandIndexFor,
+        handlers,
+        pluginIngest,
+        pluginRemove,
+      })
+
+      // 入站面先于装配监听：服务 spawn 后即可连上，装配完成前的反向调用由 handlePortCall 挂起等路由就绪。
+      await localServer.listen()
+      runtime = await startAssembly({
+        root,
+        world: writer.snapshot().world,
+        log: recordLifecycle,
+        onEvent: (impl, topic, payload) => localServer?.broadcast(impl, topic, payload),
+        onPortCall: wiring.handlePortCall,
+        startWrapper: options.startWrapper,
+        depsDir: paths.depsDir,
+        blobsDir: paths.blobsDir,
+        ecosystem,
+      })
+      // 路由解析按「已应用世界」而非 run 锚定世界：端点表由 runtime.applyWorld 按该世界换代换键，
+      // 锚定旧世代会在并发换代后解析到已被摘除的世代键（假 not_loaded）；liveWorld 与端点表同代。
+      // 判定内效果（取数 / 调服务方法）的执行：与路由同代解析，嵌套判定按调用链限深，审计旁路落账。
+      const judgmentInvoke = createJudgmentInvoke({
+        getRouter: () => router,
+        blobsDir: paths.blobsDir,
+        now: () => registry.nextNow(),
+        onAudit: (draft) => audits.append(draft),
+        callTimeoutMs: options.callTimeoutMs,
+      })
+      router = createRoundRouter({
+        endpoints: runtime.endpoints,
+        blobsDir: paths.blobsDir,
+        ecosystem,
+        liveWorld: follow.liveWorld,
+        // 休眠 = 运行期隔离：判定不住端点表，须按运行态休眠集一并摘除其判定路由。
+        suspended: () => runtime?.suspendedIds() ?? new Set<string>(),
+        host: wiring.capability,
+        judgment: createJudgmentRunner(DEFAULT_LIMITS, { invoke: judgmentInvoke }),
+      })
+      routerReadyResolve?.()
+
+      const periodicRunner = createPeriodicRunner({
+        writer,
+        registry,
+        paths,
+        getRouter: () => router,
+        getRuntime: () => runtime,
+        liveWorld: follow.liveWorld,
+        commandIndexFor,
+        cachedProjection,
+        persistAudit: (draft) => audits.append(draft),
+        persistRound: (entries) => appendJournal(paths.journalFile, entries),
+        applyWorldSerial: follow.applyWorldSerial,
+        broadcast: localServer.broadcast,
+        safeAppendLifecycle,
+        escalateFatal,
+        isStopping: () => stopping,
+        callTimeoutMs: options.callTimeoutMs,
+      })
+      periodic = new PeriodicScheduler({
+        onFire: periodicRunner.fire,
+        onInvalid: (identity, reason) => periodicInvalidBuffer.push({ identity, reason }),
+      })
+      syncPeriodic(writer.snapshot().world)
+      reportMethodTimeouts(writer.snapshot().world)
+
+      // 源码 watcher：默认关；只监听、不落账——变动经宿主落账互斥段提交，再交装配跟随。
+      refreshWatcher = async (): Promise<void> => {
+        if (!watchEnabled) return
+        const current = watcher
+        watcher = undefined
+        if (current !== undefined) {
+          try {
+            await current.stop()
+          } catch {
+            // 停机尽力而为
+          }
+        }
+        startWatcher()
+      }
+      startWatcher()
+
+      return { runtime }
+    } catch (err) {
+      // 接线中途抛出：清掉本函数已建的部分（server / runtime）；锁由 bootstrap 释放。
+      try {
+        localServer?.destroyClients()
+        await localServer?.close()
+      } catch {
+        // 清理尽力而为，不遮蔽原始错误
+      }
+      try {
+        if (runtime !== undefined) await runtime.stop()
+      } catch {
+        // 清理尽力而为，不遮蔽原始错误
+      }
+      throw err
+    }
+  }
+
+  let bootstrapped: BootstrappedHost
+  try {
+    bootstrapped = await bootstrapHost({
+      root,
+      paths,
+      startedAt,
+      compactTailEntries: options.compactTailEntries,
+      compactJournalBytes: options.compactJournalBytes,
+      safeAppendLifecycle,
+      wire: buildWired,
+    })
+  } catch (err) {
+    // 装配失败也要放行等 bootstrapDone 的停机续行；锁已由 bootstrap 自身 catch 释放。
+    bootstrapDoneResolve?.()
+    throw err
+  }
+  bootstrappedRef = bootstrapped
+  bootstrapDoneResolve?.()
+
+  return {
+    socket: address,
+    stop,
+    emitEvent: (impl, topic, payload) => server?.broadcast(impl, topic, payload),
+    portAuditRecords: () => portAuditRing.records(),
+  }
+}

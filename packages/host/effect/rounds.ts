@@ -1,0 +1,626 @@
+// 轮间驱动：done → 落账回调 → plan 通道（保留包装 `{"$directives":[...]}`）→ 分相 → 下一轮。
+// 分相：eval 连续段（可并一轮，extern 随邻）与 write（每条一轮）不共轮，保序、不重排 plan 语义。
+// 机械填字段：id / by / expect_pos（落账段内锚到当前链头）。
+// eval 的 ctx：字段缺省 ⇒ 该轮轮首投影（含 eval 的轮构造一次、该轮共享）；显式给出（含 null）⇒ 原样透传。
+// plan 条目 eval 可写命令名代替入口哈希：宿主按命令声明解析入口（与命令面同路），属主即命令声明方。
+
+import { randomUUID } from 'node:crypto'
+import { isRecord } from '../common/json.ts'
+import { OP_NAMES } from '../common/op-names.ts'
+import { readProjectionPath } from '../projection/index.ts'
+import { resolveWriter, runRound } from './run-loop.ts'
+import { assertNotFatal } from './fatal.ts'
+import type { AuditDraft } from '../audit.ts'
+import type { WorldWriter, WorldState } from '../writer.ts'
+import type { RoundRouter } from './route.ts'
+import type {
+  Directive,
+  Entry,
+  Hash,
+  Head,
+  Json,
+  Op,
+  World,
+  WriteRequest,
+} from '../../kernel/index.ts'
+
+type Rec = { [k: string]: Json }
+
+/**
+ * 宿主侧 eval 草稿：`ctx` 字段**可缺省**——缺省 ⇒ 轮首投影；显式给出（含 null）⇒ 原样透传。
+ * 入口二选一：`entry` 哈希，或 `command` 命令名（宿主按命令声明解析成入口，属主即声明方）；二者不可并存、不可都缺。
+ * `inject` = 宿主在执行期把投影片段按声明注入 args（键 → 投影路径）；续跑 eval 据此拿投影而无需自带整份。
+ */
+export type EvalDraft =
+  | { kind: 'eval'; entry: Hash; args: Json; ctx?: Json; inject?: Record<string, Json[]> }
+  | { kind: 'eval'; command: string; args: Json; ctx?: Json; inject?: Record<string, Json[]> }
+
+/** 宿主侧 directive 输入：入站提交与 plan 物化同形（write 的 request 由宿主在分组物化时机械重填）。 */
+export type DirectiveDraft =
+  EvalDraft | { kind: 'extern'; payload: Json } | { kind: 'write'; request: WriteRequest }
+
+/** 投影 provider：按该轮轮首的 world / head 构造；effect 不 import projection，由宿主注入。 */
+export type CtxProvider = (world: World, head: Head) => Json
+
+/** 携带来源标记的 directive：plan 产出的写由宿主重填 id / by（发起者），入站提交的保留作者给的幂等键。
+ *  owner = 发出者（宿主构造 directive 时已知：命令入口属主，plan 条目继承产出者属主）。
+ *  baseline = 产出该计划条目的 eval 所在轮所见世界（`add_gen.expect_active` 基准）；入站直提无此字段。 */
+interface StagedDirective {
+  directive: DirectiveDraft
+  fromPlan: boolean
+  owner?: string
+  baseline?: World
+}
+
+export interface SubmissionInput {
+  /** 落账互斥段：所有内核提交与审计落账都经它串行。 */
+  writer?: WorldWriter
+  directives: DirectiveDraft[]
+  caps: Record<string, boolean>
+  limits: { gas: number; depth: number }
+  initiator: string
+  /** 宿主对外 run id（`accepted{run}`）：审计 def 的 `run` 用它（按回合查询）；缺省用内核轮 run id。 */
+  runId?: string
+  /** 发起者提交信封的 `thread`：只随调用帧 `env` 回带（原样、不校验）；detached / 周期 run 恒 null。 */
+  thread?: string | null
+  /** 每轮取一次 `now`（每轮独立、非回退）。 */
+  now: () => number
+  router?: RoundRouter
+  callTimeoutMs?: number
+  /** 该 run 的取消信号（真取消）：取消即丢弃剩余轮（含 plan 产出的 directives）。 */
+  signal?: AbortSignal
+  /**
+   * 只读提交（命令面 `readonly`）：透传 `audit:false` 给单轮，且禁止任何写——
+   * 任一内核 journal 或 plan 产出的 write directive 都以 `refused`（reason `readonly_violation`）
+   * 收口，且不触发 `onAdvanced`（不落账、不跟随换代）。缺省 false。
+   */
+  readonly?: boolean
+  /** 入站直提 directive 的属主解析（如命令入口哈希 → 身份）；解析不到 → 不路由。 */
+  initialOwnerOf?: (directive: DirectiveDraft) => string | undefined
+  /**
+   * plan 条目 eval 的命令名解析（宿主注入；effect 不认识装配）：命令名 → 入口 def + 声明方身份。
+   * 解析不到 → 该次提交 `refused`（reason `unknown_command`，与命令面同码）。
+   */
+  resolveCommand?: (world: World, name: string) => { entry: Hash; identity: string } | undefined
+  /** eval ctx 缺省时的投影 provider：每轮分组物化时按该轮轮首 world / head 构造一次。 */
+  ctxFor?: CtxProvider
+  /** 审计草稿落点（同步调用，追加旁路侧存；不碰世界 / 链头）。 */
+  onAudit?: (draft: AuditDraft) => void
+  /** 每轮 done 的业务 journal 落点（与内核提交同段调用，保证账本追加序 = 链序）。 */
+  onRound?: (entries: Entry[]) => void
+  /**
+   * 本次提交允许的轮数上限（缺省 `MAX_SUBMISSION_ROUNDS`）：防 plan / 自能力回路无界挂死宿主；
+   * 供宿主 / 测试按需收紧，生产缺省即常量。
+   */
+  maxRounds?: number
+  /**
+   * 链头推进后的宿主钩子（换代跟随）：在进入下一轮之前 await 完成——
+   * 这样 plan 的后续轮与下一次提交都按新世界路由；effect 不认识装配，回调由宿主注入。
+   */
+  onAdvanced?: (world: World, head: Head) => Promise<void> | void
+}
+
+export interface SubmissionOutcome {
+  status: 'done' | 'refused' | 'idle' | 'cancelled'
+  world: World
+  head: Head
+  observations: Json[]
+}
+
+/** 分相：连续 eval / extern 并一轮；每条 write 单独一轮；extern 随邻并保序。 */
+function splitPhases(staged: StagedDirective[]): StagedDirective[][] {
+  const groups: StagedDirective[][] = []
+  let current: StagedDirective[] = []
+  for (const item of staged) {
+    if (item.directive.kind === 'write') {
+      if (current.length > 0) groups.push(current)
+      current = []
+      groups.push([item])
+    } else {
+      current.push(item)
+    }
+  }
+  if (current.length > 0) groups.push(current)
+  return groups
+}
+
+/**
+ * 解析 eval 的 `inject` 声明：键 → 投影路径（字符串 / 整数段数组）。形态非法 → null。
+ * 只做形态检查，路径能否取到值在执行期按投影机械判定。
+ */
+function parseInject(raw: Json | undefined): Record<string, Json[]> | null {
+  if (!isRecord(raw)) return null
+  const out: Record<string, Json[]> = {}
+  for (const key of Object.keys(raw)) {
+    const path = raw[key]
+    if (!Array.isArray(path)) return null
+    for (const segment of path) {
+      if (
+        typeof segment !== 'string' &&
+        !(typeof segment === 'number' && Number.isInteger(segment))
+      ) {
+        return null
+      }
+    }
+    out[key] = path as Json[]
+  }
+  return out
+}
+
+/** plan 里的单个 directive 形态；不合 → bad_directive（整次提交按 refused 收口）。 */
+function materializePlanItem(
+  raw: Json,
+): { ok: true; directive: DirectiveDraft } | { ok: false; reason: string } {
+  if (!isRecord(raw)) return { ok: false, reason: 'bad_directive' }
+  switch (raw['kind']) {
+    case 'eval': {
+      // 入口二选一：entry 与 command 不可同条并存、也不可都缺（否则 bad_directive）
+      const hasEntry = 'entry' in raw
+      const hasCommand = 'command' in raw
+      if (hasEntry === hasCommand) return { ok: false, reason: 'bad_directive' }
+      // ctx 判定用字段存在性：缺省留给宿主投影；显式给出（含 null）原样透传
+      let directive: EvalDraft
+      if (hasEntry) {
+        if (typeof raw['entry'] !== 'string' || raw['entry'].length === 0) {
+          return { ok: false, reason: 'bad_directive' }
+        }
+        directive = { kind: 'eval', entry: raw['entry'], args: raw['args'] ?? null }
+      } else {
+        if (typeof raw['command'] !== 'string' || raw['command'].length === 0) {
+          return { ok: false, reason: 'bad_directive' }
+        }
+        directive = { kind: 'eval', command: raw['command'], args: raw['args'] ?? null }
+      }
+      if ('ctx' in raw) directive.ctx = raw['ctx'] as Json
+      if ('inject' in raw) {
+        const inject = parseInject(raw['inject'])
+        if (inject === null) return { ok: false, reason: 'bad_directive' }
+        directive.inject = inject
+      }
+      return { ok: true, directive }
+    }
+    case 'extern':
+      return { ok: true, directive: { kind: 'extern', payload: raw['payload'] ?? null } }
+    case 'write': {
+      const request = raw['request']
+      if (!isRecord(request) || typeof request['op'] !== 'string' || !OP_NAMES.has(request['op'])) {
+        return { ok: false, reason: 'bad_directive' }
+      }
+      const directive: DirectiveDraft = {
+        kind: 'write',
+        request: {
+          id: '',
+          op: request['op'] as Op,
+          target: { expect_pos: null },
+          args: request['args'] ?? null,
+          by: '',
+        },
+      }
+      return { ok: true, directive }
+    }
+    default:
+      return { ok: false, reason: 'bad_directive' }
+  }
+}
+
+/**
+ * 方法返回的顶层计划值（`{"$directives":[...]}`）→ 宿主 directive 草稿。
+ * 与 plan 通道同形同校验（`materializePlanItem`）；非计划值返回 `not_a_plan`。
+ * 供 H6 定时触发直接调能力方法后落账其计划值。
+ */
+export function parsePlanDirectives(
+  value: Json,
+): { ok: true; directives: DirectiveDraft[] } | { ok: false; reason: string } {
+  if (!isRecord(value) || !Array.isArray(value['$directives'])) {
+    return { ok: false, reason: 'not_a_plan' }
+  }
+  const directives: DirectiveDraft[] = []
+  for (const raw of value['$directives']) {
+    const item = materializePlanItem(raw)
+    if (!item.ok) return item
+    directives.push(item.directive)
+  }
+  return { ok: true, directives }
+}
+
+/**
+ * 从 run 收口的 observations 取最后一条 `refused` 观测的 `reasons`；无则空数组。
+ * 供宿主 `run.finished` 事件面载荷使用（`status=refused` 时说明收口原因）。
+ */
+export function refusedReasons(observations: Json[]): string[] {
+  for (let i = observations.length - 1; i >= 0; i--) {
+    const observation = observations[i]
+    if (!isRecord(observation) || observation['kind'] !== 'refused') continue
+    const reasons = observation['reasons']
+    if (!Array.isArray(reasons)) return []
+    return reasons.filter((reason): reason is string => typeof reason === 'string')
+  }
+  return []
+}
+
+/**
+ * plan 通道：只认顶层 eval 观测 value 里的保留包装。多个 eval 各自产计划时按观测序拼接；
+ * 其余 value 一律当普通数据。plan 条目的发出者继承**产出它的那条 eval 的属主**。
+ *
+ * 匹配按**位置**而非按 entry 反查：`directives` 是本轮 `prepareGroup` 已解析的指令（命令形式 eval
+ * 的入口已按命令声明解析出来），与内核观测一一按序对应；按 entry 反查会在「多身份共享同代 commit /
+ * 同 entry」时把后一条的产出误归给首个同 entry 产出者。位置对齐对命令形式同样成立，不丢计划。
+ */
+function pickPlan(
+  observations: Json[],
+  directives: Directive[],
+  owners: Array<string | undefined>,
+  baseline: World,
+): { ok: true; directives: StagedDirective[] } | { ok: false; reason: string } {
+  const evalOwners: Array<string | undefined> = []
+  directives.forEach((directive, index) => {
+    if (directive.kind === 'eval') evalOwners.push(owners[index])
+  })
+  const out: StagedDirective[] = []
+  // 一条 eval directive 至多一条观测（done 轮内全部完成），观测按 directive 序产出；故按序取产出者即可。
+  let evalIndex = 0
+  for (const observation of observations) {
+    if (!isRecord(observation) || observation['kind'] !== 'eval') continue
+    if (evalIndex >= evalOwners.length) break
+    const owner = evalOwners[evalIndex]
+    evalIndex += 1
+    if (observation['ok'] !== true) continue
+    const value = observation['value']
+    if (!isRecord(value) || !Array.isArray(value['$directives'])) continue
+    for (const raw of value['$directives']) {
+      const item = materializePlanItem(raw)
+      if (!item.ok) return item
+      out.push({ directive: item.directive, fromPlan: true, owner, baseline })
+    }
+  }
+  return { ok: true, directives: out }
+}
+
+/**
+ * 为 `add_gen`（含 `batch` 子 op）注入 `expect_active`：目标身份在基准世界的 active，
+ * 身份不存在注入 `null`；args 已显式携带 `expect_active`（UI 两次往返的陈旧读）时不覆盖。
+ * `ownActive` 是本 run 自身已落账写对身份 active 的叠加：后续写轮以它覆盖基准，避免自冲突。
+ * 同一 `batch` 内按子 op 顺序维护局部叠加：更早子 op 对同一 id active 的改动对后续子 op 生效，
+ * 否则同批双写（`[add_gen X, add_gen X]` / `[set_active X, add_gen X]`）会被误判 stale_active 整批回滚。
+ * `graft`（独立 op）不注入：其形态只含显式来源 `from`/`gen`，目标 active 不是它的判定输入，
+ * 语义是确定性结构复制而非依赖当前 active 的乐观写，故无 `expect_active` 契约。
+ * 基准世界 `baseline` 取产出该计划的 eval 所见世界（plan 条目）或该轮落账段世界（直提写）。
+ */
+export function injectExpectActive(
+  op: string,
+  args: Json,
+  baseline: World,
+  ownActive: ReadonlyMap<string, Hash | null>,
+): Json {
+  return injectWithOverlay(op, args, baseline, ownActive, new Map())
+}
+
+function expectedActive(
+  id: string,
+  baseline: World,
+  ownActive: ReadonlyMap<string, Hash | null>,
+  overlay: ReadonlyMap<string, Hash | null>,
+): Hash | null {
+  if (overlay.has(id)) return overlay.get(id) as Hash | null
+  if (ownActive.has(id)) return ownActive.get(id) as Hash | null
+  const identity = baseline.ids[id]
+  return identity === undefined ? null : identity.active
+}
+
+function injectWithOverlay(
+  op: string,
+  args: Json,
+  baseline: World,
+  ownActive: ReadonlyMap<string, Hash | null>,
+  overlay: Map<string, Hash | null>,
+): Json {
+  if (!isRecord(args)) return args
+  if (op === 'batch') {
+    const ops = args['ops']
+    if (!Array.isArray(ops)) return args
+    return {
+      ...args,
+      ops: ops.map((sub) =>
+        isRecord(sub) && typeof sub['op'] === 'string' && 'args' in sub
+          ? {
+              ...sub,
+              args: injectWithOverlay(sub['op'], sub['args'] as Json, baseline, ownActive, overlay),
+            }
+          : sub,
+      ),
+    }
+  }
+  let result = args
+  if (op === 'add_gen' && !('expect_active' in args)) {
+    const id = args['id']
+    if (typeof id === 'string') {
+      result = { ...args, expect_active: expectedActive(id, baseline, ownActive, overlay) }
+    }
+  }
+  // 推进批内局部叠加：后续同 id 子 op 以本子 op 生效后的 active 为基准
+  recordOverlayActive(op, result, overlay)
+  return result
+}
+
+/** 批内局部叠加：按子 op 语义把该 id 的期望 active 推进到本子 op 生效后的值。 */
+function recordOverlayActive(op: string, args: Json, overlay: Map<string, Hash | null>): void {
+  if (!isRecord(args)) return
+  const id = args['id']
+  if (typeof id !== 'string') return
+  if (op === 'add_gen' || op === 'graft') {
+    const payload = args['payload']
+    overlay.set(id, typeof payload === 'string' ? payload : null)
+    return
+  }
+  if (op === 'set_active') {
+    const active = args['active']
+    overlay.set(id, typeof active === 'string' || active === null ? active : null)
+    return
+  }
+  if (op === 'retire' || op === 'add_identity' || op === 'fork') overlay.set(id, null)
+}
+
+/**
+ * 记录本 run 已落账的身份 op 对 active 的影响，供后续写轮 `expect_active` 叠加。
+ * 递归 `batch` 子 op；args 里的占位符解析不出具体值时回读落账后世界（best-effort）。
+ */
+export function recordOwnActive(
+  entries: Entry[],
+  worldAfter: World,
+  ownActive: Map<string, Hash | null>,
+): void {
+  for (const entry of entries) recordEntryActive(entry.op, entry.args, worldAfter, ownActive)
+}
+
+function recordEntryActive(
+  op: string,
+  args: Json,
+  worldAfter: World,
+  ownActive: Map<string, Hash | null>,
+): void {
+  if (!isRecord(args)) return
+  if (op === 'batch') {
+    const ops = args['ops']
+    if (!Array.isArray(ops)) return
+    for (const sub of ops) {
+      if (isRecord(sub) && typeof sub['op'] === 'string' && 'args' in sub) {
+        recordEntryActive(sub['op'], sub['args'] as Json, worldAfter, ownActive)
+      }
+    }
+    return
+  }
+  const id = args['id']
+  if (typeof id !== 'string') return
+  if (op === 'add_gen' || op === 'graft') {
+    const payload = args['payload']
+    ownActive.set(id, typeof payload === 'string' ? payload : (worldAfter.ids[id]?.active ?? null))
+    return
+  }
+  if (op === 'set_active') {
+    const active = args['active']
+    if (typeof active === 'string' || active === null) ownActive.set(id, active)
+    else ownActive.set(id, worldAfter.ids[id]?.active ?? null)
+    return
+  }
+  if (op === 'retire' || op === 'add_identity' || op === 'fork') ownActive.set(id, null)
+}
+
+/** 机械填字段；plan 写覆盖 id / by，入站写缺省补齐；eval 的 ctx 缺省填该轮投影（构造一次、该轮共享）。 */
+function prepareGroup(
+  group: StagedDirective[],
+  context: {
+    head: Head
+    initiator: string
+    world: World
+    ownActive: ReadonlyMap<string, Hash | null>
+    ctxFor?: CtxProvider
+    resolveCommand?: (world: World, name: string) => { entry: Hash; identity: string } | undefined
+  },
+):
+  | { ok: true; directives: Directive[]; owners: Array<string | undefined> }
+  | { ok: false; reason: string } {
+  const directives: Directive[] = []
+  const owners: Array<string | undefined> = []
+  let roundCtx: Json | undefined
+  // 按需构造：仅当该组确有缺省 ctx 的 eval 时才算（write 组不构造）；该组（= 该轮）共享同一份。
+  // provider 缺席时 eval 缺省 ctx 无值可填：宿主接线缺陷，立即抛错（不得静默退化成 null）。
+  const ctxOf = (): Json => {
+    if (roundCtx === undefined) {
+      if (context.ctxFor === undefined) {
+        throw new Error('ctxFor required when eval ctx is absent')
+      }
+      const built = context.ctxFor(context.world, context.head)
+      if (built === undefined) throw new Error('ctxFor returned undefined')
+      roundCtx = built
+    }
+    return roundCtx
+  }
+  for (const item of group) {
+    if (item.directive.kind === 'eval') {
+      // 命令形式：按命令声明解析入口，属主 = 命令声明方（该 eval 发出的 eff 按声明方 pins 路由）
+      let entry: Hash
+      let owner = item.owner
+      if ('command' in item.directive) {
+        const resolved = context.resolveCommand?.(context.world, item.directive.command)
+        if (resolved === undefined) return { ok: false, reason: 'unknown_command' }
+        entry = resolved.entry
+        owner = resolved.identity
+      } else {
+        entry = item.directive.entry
+      }
+      // 投影片段注入：续跑 eval 声明 `inject` 时由宿主按声明路径从该轮投影取片段并入 args，
+      // 免去调用方把整份投影内嵌进 args（投影只回引用后更小，仍由宿主按需注入）。
+      let args = item.directive.args
+      if (item.directive.inject !== undefined) {
+        if (!isRecord(args)) return { ok: false, reason: 'bad_directive' }
+        const base: Rec = { ...(args as Rec) }
+        const projection = ctxOf()
+        for (const key of Object.keys(item.directive.inject)) {
+          base[key] = readProjectionPath(projection, item.directive.inject[key])
+        }
+        args = base
+      }
+      // 字段存在性判定（JSON 值只能是 null / 其它，非 undefined）：缺省 ⇒ 投影；显式（含 null）⇒ 原样
+      const explicit = item.directive.ctx
+      const evalDirective: Extract<Directive, { kind: 'eval' }> =
+        explicit !== undefined
+          ? { kind: 'eval', entry, args, ctx: explicit }
+          : { kind: 'eval', entry, args, ctx: ctxOf() }
+      directives.push(evalDirective)
+      owners.push(owner)
+      continue
+    }
+    if (item.directive.kind === 'extern') {
+      directives.push(item.directive)
+      owners.push(item.owner)
+      continue
+    }
+    const source = item.directive.request
+    // 入站畸形 request（缺 op / 非对象）：按 bad_directive 拒，不让 TypeError 冒泡成 internal
+    if (
+      !isRecord(source as unknown as Json) ||
+      typeof source.op !== 'string' ||
+      !OP_NAMES.has(source.op)
+    ) {
+      return { ok: false, reason: 'bad_directive' }
+    }
+    // add_gen 注入 expect_active：基准 = plan 条目产出 eval 所见世界，否则该轮落账段世界；
+    // 本 run 自身先前写以 ownActive 覆盖基准（避免自冲突）；显式值不覆盖。
+    const injected = injectExpectActive(
+      source.op,
+      source.args,
+      item.baseline ?? context.world,
+      context.ownActive,
+    )
+    const generated = item.fromPlan || typeof source.id !== 'string' || source.id.length === 0
+    const by =
+      item.fromPlan || typeof source.by !== 'string' || source.by.length === 0
+        ? context.initiator
+        : source.by
+    const request: WriteRequest = {
+      id: generated ? `w-${randomUUID()}` : source.id,
+      op: source.op,
+      // 占位：并发提交下轮首头会前进，expect_pos 由 run-loop 在落账段内锚到当前链头
+      target: { expect_pos: null },
+      args: injected,
+      by,
+    }
+    directives.push({ kind: 'write', request })
+    owners.push(undefined)
+  }
+  return { ok: true, directives, owners }
+}
+
+/**
+ * 单次提交允许的轮数上限：plan 可逐层递归产 directive，自能力 eff 又能让服务回计划再次 eff 自己——
+ * 无界即成环挂死宿主。正常远低于此；超限以 `refused` 收口（reason `too_many_rounds`）。
+ */
+export const MAX_SUBMISSION_ROUNDS = 10_000
+
+/**
+ * 跑一次入站提交：初始 directives 分相执行；每轮 done 后取 plan 产出的 directives
+ * 插在剩余轮之前（= 保序：该 eval 的判定立即生效），继续到穷尽 / refused / idle。
+ */
+export async function runSubmission(input: SubmissionInput): Promise<SubmissionOutcome> {
+  assertNotFatal()
+  const writer = resolveWriter(input)
+  const observations: Json[] = []
+  if (input.directives.length === 0) {
+    const snap = writer.snapshot()
+    return { status: 'idle', world: snap.world, head: snap.head, observations }
+  }
+  const pending = splitPhases(
+    input.directives.map((directive) => ({
+      directive,
+      fromPlan: false,
+      owner: input.initialOwnerOf?.(directive),
+    })),
+  )
+  let rounds = 0
+  const maxRounds = input.maxRounds ?? MAX_SUBMISSION_ROUNDS
+  // 本 run 自身已落账写对身份 active 的叠加（随轮推进）：plan 的 add_gen 基准据此避免自冲突。
+  const ownActive = new Map<string, Hash | null>()
+  // 每轮物化所见世界：产出计划的那轮所见世界即该计划写条目的 expect_active 基准。
+  let roundWorld: World | undefined
+  while (pending.length > 0) {
+    if (input.signal?.aborted === true) {
+      // 取消即丢弃剩余轮（含 plan 产出的 directives）；已落账内容不回溯
+      const snap = writer.snapshot()
+      return { status: 'cancelled', world: snap.world, head: snap.head, observations }
+    }
+    if (rounds >= maxRounds) {
+      // plan 自产指令成环（含自能力 eff 回计划）：有界收口，不挂死宿主
+      observations.push({ kind: 'refused', reasons: ['too_many_rounds'] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    rounds += 1
+    const group = pending.shift() as StagedDirective[]
+    // 物化下沉到落账段：pins 解析 / ctx 构造 / 命令解析都用该轮段内 world / head，
+    // 使判定世界 = 路由世界 = 提交世界；失败按该轮 refused 收口（不冒泡成 internal）。
+    const materialize = (state: WorldState) => {
+      roundWorld = state.world
+      return prepareGroup(group, {
+        head: state.head,
+        initiator: input.initiator,
+        world: state.world,
+        ownActive,
+        ctxFor: input.ctxFor,
+        resolveCommand: input.resolveCommand,
+      })
+    }
+    const out = await runRound({
+      writer,
+      materialize,
+      caps: input.caps,
+      limits: input.limits,
+      initiator: input.initiator,
+      runId: input.runId,
+      thread: input.thread,
+      now: input.now(),
+      router: input.router,
+      callTimeoutMs: input.callTimeoutMs,
+      signal: input.signal,
+      audit: input.readonly !== true,
+      onAudit: input.onAudit,
+      onRound: input.onRound,
+    })
+    observations.push(...out.observations)
+    if (input.readonly === true && out.journal.length > 0) {
+      // 只读提交不得落任何业务写：本轮已产出 journal 即违例，收口且不跟随换代
+      observations.push({ kind: 'refused', reasons: ['readonly_violation'] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    if (out.status !== 'done') {
+      // refused / idle / cancelled：本轮 waiting 期间的审计已直写推进 world / head，必须回灌
+      return { status: out.status, world: out.world, head: out.head, observations }
+    }
+    // 非只读时业务 journal 已由 runRound 在落账段内追加并推进 writer；此处只做换代跟随（只读不跟随）
+    if (input.onAdvanced !== undefined && input.readonly !== true) {
+      await input.onAdvanced(out.world, out.head)
+    }
+    // 本 run 自身写轮结果并入基准叠加（按 journal 中身份 op 推进 active）
+    recordOwnActive(out.journal, out.world, ownActive)
+    const plan = pickPlan(out.observations, out.directives, out.owners, roundWorld ?? out.world)
+    if (!plan.ok) {
+      observations.push({ kind: 'refused', reasons: [plan.reason] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    if (
+      input.readonly === true &&
+      plan.directives.some((item) => item.directive.kind === 'write')
+    ) {
+      // 只读提交不得经 plan 落写：在进入下一轮前收口（不执行、不落账）
+      observations.push({ kind: 'refused', reasons: ['readonly_violation'] })
+      const snap = writer.snapshot()
+      return { status: 'refused', world: snap.world, head: snap.head, observations }
+    }
+    if (plan.directives.length > 0) {
+      pending.unshift(...splitPhases(plan.directives))
+    }
+  }
+  const snap = writer.snapshot()
+  return { status: 'done', world: snap.world, head: snap.head, observations }
+}

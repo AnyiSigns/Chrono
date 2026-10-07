@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["packages/**/*.ts", "plugin-sdk/**/*.ts", "toolchain/**/*.ts"],
+  "exclude": [
+    "**/node_modules/**",
+    "**/test/**",
+    "**/*.test.ts",
+    "**/vitest.config.ts",
+    "plugin-sdk/rust/target/**",
+    "dist/**"
+  ]
+}

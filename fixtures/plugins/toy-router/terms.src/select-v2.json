@@ -1,0 +1,13 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "call",
+    "ref": "terms/member.json",
+    "args": [
+      { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["candidates"] },
+      { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] }
+    ]
+  },
+  "then": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] },
+  "else": { "k": "lit", "v": { "ok": false, "error": { "code": "no_candidate" } } }
+}

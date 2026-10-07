@@ -1,0 +1,199 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import {
+  appendJournal,
+  headOf,
+  loadAnchor,
+  readAllEntries,
+  readJournal,
+  readJournalTolerant,
+  repairJournalTail,
+  replayFull,
+  verifyFull,
+} from '../index.ts'
+import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { H, entryHash } from '../../../kernel/index.ts'
+import type { Entry } from '../../../kernel/index.ts'
+import { createTempRoot, createToyPlugin, cleanupTempRoot } from '../../test/test-helpers.ts'
+
+const EMPTY_HEAD = { seq: -1, hash: null as string | null }
+
+type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
+type Op =
+  | 'put'
+  | 'add_identity'
+  | 'add_gen'
+  | 'set_active'
+  | 'retire'
+  | 'fork'
+  | 'graft'
+  | 'batch'
+  | 'note'
+  | 'snapshot'
+
+function mkEntry(seq: number, prev: string | null, op: Op, args: Json) {
+  return { seq, prev, op, args, argsHash: 'a'.repeat(64), by: 'u', at: 1000 + seq }
+}
+
+describe('账本 journal', () => {
+  const root = createTempRoot()
+  const file = join(root, 'state', 'world', 'journal.jsonl')
+
+  afterEach(() => cleanupTempRoot(root))
+
+  it('空日志 → headOf 返回 EMPTY_HEAD，readJournal 返回空数组', () => {
+    expect(headOf([])).toEqual(EMPTY_HEAD)
+    expect(readJournal(file)).toEqual([])
+  })
+
+  it('appendJournal 空数组不产生任何落盘', () => {
+    appendJournal(file, [])
+    expect(readJournal(file)).toEqual([])
+  })
+
+  it('单条 entry 追加后 readJournal 原样返回，headOf 正确', () => {
+    const entry = mkEntry(1, null, 'put', { body: { v: 1 } })
+    appendJournal(file, [entry])
+    const entries = readJournal(file)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].seq).toBe(1)
+    expect(entries[0].prev).toBeNull()
+    expect(headOf(entries)).toEqual({ seq: 1, hash: expect.stringMatching(/^[a-f0-9]{64}$/) })
+  })
+
+  it('loadAnchor 从空文件重建空世界与 EMPTY_HEAD', () => {
+    const anchor = loadAnchor(file)
+    expect(anchor.head).toEqual(EMPTY_HEAD)
+    expect(Object.keys(anchor.world.defs)).toHaveLength(0)
+    expect(Object.keys(anchor.world.ids)).toHaveLength(0)
+    expect(anchor.entries).toEqual([])
+  })
+
+  it('verifyFull 空日志通过，head 为 EMPTY_HEAD，worldRev 为空世界摘要', () => {
+    const report = verifyFull([])
+    expect(report.ok).toBe(true)
+    expect(report.head).toEqual(EMPTY_HEAD)
+    expect(typeof report.worldRev).toBe('string')
+  })
+
+  it('replayFull 空日志重建空世界', () => {
+    const world = replayFull([])
+    expect(Object.keys(world.defs)).toHaveLength(0)
+    expect(Object.keys(world.ids)).toHaveLength(0)
+  })
+
+  it('幂等追加：同内容两次 appendJournal 产生两条 entry，head 推进', () => {
+    const entry = mkEntry(1, null, 'put', { body: { v: 1 } })
+    appendJournal(file, [entry])
+    const entry2 = { ...entry, seq: 2, prev: entry.argsHash }
+    appendJournal(file, [entry2])
+    const entries = readJournal(file)
+    expect(entries).toHaveLength(2)
+    expect(headOf(entries).seq).toBe(2)
+  })
+
+  it('容错读：末行半截 JSON 被丢弃并报告截断位置，前面的 entry 保留', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    const validBytes = statSync(file).size
+    appendFileSync(file, '{"seq":3,"prev":')
+    const read = readJournalTolerant(file)
+    expect(read.entries).toHaveLength(2)
+    expect(read.truncated).toBe(true)
+    expect(read.validBytes).toBe(validBytes)
+  })
+
+  it('严格读抛撕裂尾；离线全链读与启动同口径（容错丢弃撕裂尾）', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    appendFileSync(file, '{"seq":3,"prev":')
+    // 严格读（冷段 / 单段）暴露损坏
+    expect(() => readJournal(file)).toThrow()
+    // verify / replay 走 reprJournalTolerant 同口径：丢弃下次启动会截断的撕裂尾，不静默丢**完整**末条
+    expect(readAllEntries(file, join(root, 'state', 'world', 'cold'))).toHaveLength(2)
+  })
+
+  it('repairJournalTail：截断撕裂尾到有效前缀，之后 append 不粘行', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    appendJournal(file, [e1, e2])
+    const validBytes = statSync(file).size
+    appendFileSync(file, '{"seq":3,"prev":')
+    const repaired = repairJournalTail(file)
+    expect(repaired.truncated).toBe(true)
+    expect(statSync(file).size).toBe(validBytes)
+    const e3 = mkEntry(3, e2.argsHash, 'put', { body: { v: 3 } })
+    appendJournal(file, [e3])
+    const entries = readJournal(file)
+    expect(entries).toHaveLength(3)
+    expect(headOf(entries).seq).toBe(3)
+  })
+
+  it('末段完整但缺尾换行：repairJournalTail 截断，appendJournal 成功且链完整', () => {
+    const a0 = { text: 'x' } as unknown as Json
+    const a1 = { text: 'y' } as unknown as Json
+    const e0: Entry = { seq: 0, prev: null, op: 'note', args: a0, argsHash: H(a0), by: 'u', at: 1 }
+    const e1: Entry = {
+      seq: 1,
+      prev: entryHash(e0),
+      op: 'note',
+      args: a1,
+      argsHash: H(a1),
+      by: 'u',
+      at: 2,
+    }
+    appendJournal(file, [e0])
+    const validBytes = statSync(file).size
+    // 模拟第二条内容已写入但尾换行未持久化：末段是完整 JSON、无换行
+    appendFileSync(file, JSON.stringify(e1))
+    const repaired = repairJournalTail(file)
+    expect(repaired.entries).toHaveLength(1)
+    expect(repaired.truncated).toBe(true)
+    expect(statSync(file).size).toBe(validBytes)
+    // 追加不粘行：不再抛 journal_torn_tail
+    appendJournal(file, [e1])
+    // 链完整性校验通过：seq 连续、prev 衔接、argsHash 与实算一致
+    expect(verifyFull(readJournal(file)).ok).toBe(true)
+  })
+
+  it('appendJournal 守卫：文件以半截行结尾（未换行）时拒追加，不粘行', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    appendJournal(file, [e1])
+    appendFileSync(file, '{"seq":2,"prev":')
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    expect(() => appendJournal(file, [e2])).toThrow('journal_torn_tail')
+  })
+
+  it('结构坏 entry（形态不符）即拒：语法合法但字段缺失不得静默进重放', () => {
+    appendJournal(file, [mkEntry(0, null, 'put', { body: { v: 1 } })])
+    // 语法合法、缺 prev / argsHash：形态校验必须拒
+    appendFileSync(
+      file,
+      JSON.stringify({ seq: 1, op: 'put', args: { body: { v: 2 } }, by: 'u', at: 1 }) + '\n',
+    )
+    expect(() => readJournal(file)).toThrow('bad_journal')
+    expect(() => readJournalTolerant(file)).toThrow('bad_journal')
+    expect(() => loadAnchor(file)).toThrow('bad_journal')
+  })
+
+  it('链后缀不得当完整链：首条 seq ≠ 0 时 loadAnchor 回落读抛 bad_journal', () => {
+    // 直接写从 seq 5 起的尾段（模拟冷段缺失后的残链）：prev null 但 seq 不从 0 起
+    appendJournal(file, [mkEntry(5, null, 'put', { body: { v: 1 } })])
+    expect(() => loadAnchor(file)).toThrow('bad_journal')
+  })
+
+  it('中间行损坏仍抛：不得静默读半条', () => {
+    const e1 = mkEntry(1, null, 'put', { body: { v: 1 } })
+    const e2 = mkEntry(2, e1.argsHash, 'put', { body: { v: 2 } })
+    const e3 = mkEntry(3, e2.argsHash, 'put', { body: { v: 3 } })
+    appendJournal(file, [e1, e2, e3])
+    const lines = readFileSync(file, 'utf8').split('\n')
+    lines[1] = '{"broken":'
+    writeFileSync(file, lines.join('\n'))
+    expect(() => readJournal(file)).toThrow()
+    // 带换行的中间损坏即便容错读也抛（只有末段无换行的撕裂尾才容错）
+    expect(() => readJournalTolerant(file)).toThrow()
+  })
+})

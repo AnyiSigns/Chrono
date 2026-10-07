@@ -1,0 +1,46 @@
+// 效果包出口：单轮效果执行（含审计）、通用 run loop、路由与 轮间驱动。
+
+export { buildAudit, callEffect } from './execute.ts'
+export type {
+  AuditMeta,
+  EffectCall,
+  EndpointCaller,
+  SlotAudit,
+  SlotAuditElement,
+} from './execute.ts'
+export { createRoundRouter } from './route.ts'
+export type {
+  HostCapabilityCall,
+  RouteError,
+  RouteOutcome,
+  RoundRouter,
+  RouterOptions,
+  SlotMember,
+  SlotOutcome,
+} from './route.ts'
+export { createJudgmentRunner, MAX_JUDGMENT_EFFECTS } from './judgment.ts'
+export type {
+  JudgmentCall,
+  JudgmentDeps,
+  JudgmentRunnerOptions,
+  JudgmentTarget,
+} from './judgment.ts'
+export { createJudgmentInvoke, MAX_JUDGMENT_DEPTH } from './judgment-invoke.ts'
+export type { JudgmentInvokeOptions } from './judgment-invoke.ts'
+export { DEFAULT_CALL_TIMEOUT_MS } from '../common/call-timeout.ts'
+export { runRound } from './run-loop.ts'
+export type { RoundInput, RoundMaterialize, RoundOutcome } from './run-loop.ts'
+export { assertNotFatal, fatalError, PersistFatalError } from './fatal.ts'
+export {
+  runSubmission,
+  parsePlanDirectives,
+  refusedReasons,
+  MAX_SUBMISSION_ROUNDS,
+} from './rounds.ts'
+export type {
+  CtxProvider,
+  DirectiveDraft,
+  EvalDraft,
+  SubmissionInput,
+  SubmissionOutcome,
+} from './rounds.ts'

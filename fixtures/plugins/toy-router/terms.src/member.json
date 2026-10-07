@@ -1,0 +1,13 @@
+{
+  "k": "get",
+  "of": {
+    "k": "fold",
+    "coll": { "k": "arg", "i": 0 },
+    "init": {
+      "k": "obj",
+      "fields": { "needle": { "k": "arg", "i": 1 }, "found": { "k": "lit", "v": false } }
+    },
+    "step": "terms/member.step.json"
+  },
+  "path": ["found"]
+}

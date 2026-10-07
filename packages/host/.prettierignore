@@ -1,0 +1,4 @@
+# 生成物不受格式化管辖：锁文件由包管理器写出，prettier 重排会产生大量无意义 diff。
+package-lock.json
+pnpm-lock.yaml
+node_modules/

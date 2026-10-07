@@ -1,0 +1,274 @@
+// 基础世界 def 分片存储 + 按需加载。
+// 分片按 def 键（内容哈希）前 N 位十六进制字符命名：`<prefix>.jsonl`，每行一条 `{h,d}`。
+// `DefStore` 只按需读分片，LRU 缓存已读 def；**清单有而分片取值无**（文件缺失 / 缺行）按
+// **损坏**处理（抛 `bad_base`，兑现内核「清单有而取值无 → fail-closed」口径，不得静默当缺 def）；
+// 行不可解析或 body 复算哈希与键不符同样按损坏处理。
+// 内容自校按需：分片整片入缓存时未校条目标记待校，首次取用才复算 `H(d) === h`。
+// `createLazyDefs` 把 store 包成与普通 defs 表同形的对象：内核照常按下标读 / 写 / 列键，
+// 但 `Object.keys`、判存在、克隆都不读 body——只有真正取 def 才触发一次分片读。
+// 写入走内存覆盖层（副本独立），底层分片保持只读。
+
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { H, LAZY_DEFS } from '../../kernel/index.ts'
+import type { Def, Hash, Json } from '../../kernel/index.ts'
+import { jsonByteLength } from '../common/json.ts'
+
+/** 单 store 的 LRU def 上限（缺省）：约几千份 body，远低于整世界规模。 */
+export const DEFAULT_DEF_CACHE = 4096
+
+/** 单 store 的 LRU 字节上限（缺省）：防大 body 撑爆内存（条数与字节任一超限即淘汰）。 */
+export const DEFAULT_DEF_CACHE_BYTES = 64 * 1024 * 1024
+
+export interface DefStoreStats {
+  /** 命中缓存次数。 */
+  hits: number
+  /** 未命中且键在清单内的次数。 */
+  misses: number
+  /** 分片文件读取次数（按需加载的核心指标）。 */
+  loads: number
+  /** 读过的不同分片数。 */
+  shards: number
+}
+
+export interface DefStoreOptions {
+  /** 分片目录（`<prefix>.jsonl` 所在目录）。 */
+  dir: string
+  /** 分片前缀长度（十六进制字符数）。 */
+  shard: number
+  /** def 键清单（内容哈希，落盘时的全集）。 */
+  hashes: Hash[]
+}
+
+/** def 体量近似：body 的 JSON 字符数（够用且无额外依赖）；序列化异常按 0 计。 */
+function defBytes(def: Def): number {
+  return jsonByteLength(def.body)
+}
+
+/**
+ * 分片 def 存储：清单在内存（判存在 / 列键零 IO），body 按分片惰性读入 LRU。
+ * 读侧：**键在清单内而分片取不到 body**（文件缺失 / 缺行）fail-closed（抛 `bad_base`）；
+ * 行损坏 / body 哈希不符同样 fail-closed。body 哈希按需自校：整片入缓存的条目先标记待校，
+ * 首次取用才复算，避免热路径重复哈希。
+ */
+export class DefStore {
+  private readonly dir: string
+  private readonly shard: number
+  private readonly manifest: Set<Hash>
+  private readonly order: Hash[]
+  private readonly cache = new Map<Hash, { def: Def; bytes: number; verified: boolean }>()
+  private readonly seenShards = new Set<string>()
+  private readonly cacheLimit: number
+  private readonly cacheBytesLimit: number
+  private cacheBytes = 0
+  readonly stats: DefStoreStats = { hits: 0, misses: 0, loads: 0, shards: 0 }
+
+  constructor(options: DefStoreOptions) {
+    this.dir = options.dir
+    this.shard = options.shard
+    this.order = [...options.hashes]
+    this.manifest = new Set(this.order)
+    this.cacheLimit = DEFAULT_DEF_CACHE
+    this.cacheBytesLimit = DEFAULT_DEF_CACHE_BYTES
+  }
+
+  /** 键是否在清单内（零 IO）。 */
+  has(hash: Hash): boolean {
+    return this.manifest.has(hash)
+  }
+
+  /** def 键清单（零 IO，落盘顺序）。 */
+  hashes(): Hash[] {
+    return this.order
+  }
+
+  /** 按哈希取 def：缓存优先，未命中读其分片；缺分片 → undefined（fail-open），body 哈希不符 → 抛 `bad_base`。 */
+  get(hash: Hash): Def | undefined {
+    const cached = this.cache.get(hash)
+    if (cached !== undefined) {
+      this.stats.hits += 1
+      if (!cached.verified) {
+        this.assertBody(hash, cached.def)
+        cached.verified = true
+      }
+      this.touch(hash, cached.def, cached.bytes)
+      return cached.def
+    }
+    if (!this.manifest.has(hash)) return undefined
+    this.stats.misses += 1
+    const prefix = hash.slice(0, this.shard)
+    const loaded = this.loadShard(prefix)
+    const def = loaded.get(hash)
+    if (def === undefined) {
+      // 键在清单内（上方已判），却取不到 body（分片文件缺失 / 分片缺行）＝清单与分片不一致，
+      // 按损坏 fail-closed：内核要求「清单有而取值无」报 missing_ref，不得静默当缺 def 吞掉。
+      throw new Error('bad_base')
+    }
+    // verify-on-demand：只校被取用的 def；整片入缓存的其余条目留待各自首次取用时再校。
+    this.assertBody(hash, def)
+    // 分片已整片解析：先算一次各 def 体量，整片入 LRU（请求项最后 touch，避免被同片项挤掉）。
+    // 分片字节超预算时只缓存请求项——整片入会一次挤掉大量条目且随即被淘汰，徒增抖动。
+    const sizes = new Map<Hash, number>()
+    let total = 0
+    for (const [key, value] of loaded) {
+      const size = defBytes(value)
+      sizes.set(key, size)
+      total += size
+    }
+    if (total <= this.cacheBytesLimit) {
+      for (const [key, value] of loaded) this.touch(key, value, sizes.get(key), key === hash)
+    }
+    this.touch(hash, def, sizes.get(hash), true)
+    return def
+  }
+
+  /** 内容寻址自校：body 复算哈希须等于其键，否则抛 `bad_base`（损坏不得当缺 def 静默吞掉）。 */
+  private assertBody(hash: Hash, def: Def): void {
+    if (H(def as unknown as Json) !== hash) throw new Error('bad_base')
+  }
+
+  /** 已缓存 def 数（诊断 / 测试）。 */
+  cached(): number {
+    return this.cache.size
+  }
+
+  /** 已缓存 def 的近似字节（诊断 / 测试）。 */
+  cachedBytes(): number {
+    return this.cacheBytes
+  }
+
+  /**
+   * LRU 登记：条数与字节任一超限即淘汰最旧；单 def 超字节上限则不缓存（防一个大 body 撑爆）。
+   * `bytes` 已由调用方算好时直接复用，避免命中路径每次访问都重新序列化 body。
+   * `verified` = body 是否已通过内容哈希自校；整片入缓存的条目为 false，首次取用再校。
+   */
+  private touch(hash: Hash, def: Def, bytes?: number, verified = true): void {
+    const existing = this.cache.get(hash)
+    if (existing !== undefined) {
+      this.cache.delete(hash)
+      this.cacheBytes -= existing.bytes
+    }
+    const size = bytes ?? defBytes(def)
+    if (size > this.cacheBytesLimit) return
+    this.cache.set(hash, { def, bytes: size, verified })
+    this.cacheBytes += size
+    while (this.cache.size > this.cacheLimit || this.cacheBytes > this.cacheBytesLimit) {
+      const oldest = this.cache.keys().next().value
+      if (oldest === undefined) break
+      const evicted = this.cache.get(oldest)
+      this.cache.delete(oldest)
+      if (evicted !== undefined) this.cacheBytes -= evicted.bytes
+    }
+  }
+
+  private loadShard(prefix: string): Map<Hash, Def> {
+    const out = new Map<Hash, Def>()
+    const file = join(this.dir, `${prefix}.jsonl`)
+    this.stats.loads += 1
+    if (!existsSync(file)) return out
+    let text: string
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch {
+      return out
+    }
+    if (!this.seenShards.has(prefix)) {
+      this.seenShards.add(prefix)
+      this.stats.shards = this.seenShards.size
+    }
+    for (const line of text.split('\n')) {
+      if (line.length === 0) continue
+      let record: { h?: unknown; d?: unknown }
+      try {
+        record = JSON.parse(line) as { h?: unknown; d?: unknown }
+      } catch {
+        throw new Error('bad_base')
+      }
+      if (typeof record.h !== 'string' || record.d === undefined) throw new Error('bad_base')
+      out.set(record.h, record.d as unknown as Def)
+    }
+    return out
+  }
+}
+
+interface LazyHandle {
+  has(hash: Hash): boolean
+  hashes(): Hash[]
+  clone(): Record<Hash, Def>
+}
+
+/**
+ * 把 `DefStore` 包成与普通 defs 表同形的对象（惰性代理）。
+ * 语义：下标读走覆盖层 → 底层分片；`Object.keys` / `in` / 克隆只看清单与覆盖层，不读 body；
+ * 下标写 / delete 只改内存覆盖层，不落盘、不改底层分片。
+ * @param store 底层分片存储（被多个克隆共享）
+ */
+export function createLazyDefs(store: DefStore): Record<Hash, Def> {
+  return makeLazy(store, new Map<Hash, Def>(), new Set<Hash>())
+}
+
+function makeLazy(store: DefStore, overlay: Map<Hash, Def>, deleted: Set<Hash>): Record<Hash, Def> {
+  const read = (hash: Hash): Def | undefined => {
+    if (overlay.has(hash)) return overlay.get(hash)
+    if (deleted.has(hash)) return undefined
+    return store.get(hash)
+  }
+  const present = (hash: string): boolean =>
+    overlay.has(hash) || (store.has(hash) && !deleted.has(hash))
+  const own = (): Hash[] => {
+    const out: Hash[] = []
+    for (const hash of store.hashes()) if (!deleted.has(hash)) out.push(hash)
+    for (const hash of overlay.keys()) {
+      if (!deleted.has(hash) && !store.has(hash)) out.push(hash)
+    }
+    return out
+  }
+  const handle: LazyHandle = {
+    has: (hash) => present(hash),
+    hashes: own,
+    clone: () => makeLazy(store, new Map(overlay), new Set(deleted)),
+  }
+  const target: Record<string, unknown> = {}
+  const handler: ProxyHandler<Record<string, unknown>> = {
+    get(t, key) {
+      if (key === LAZY_DEFS) return handle
+      if (typeof key !== 'string') return Reflect.get(t, key)
+      return read(key)
+    },
+    has(t, key) {
+      if (typeof key !== 'string') return Reflect.has(t, key)
+      return present(key)
+    },
+    ownKeys(t) {
+      return [...own(), ...Reflect.ownKeys(t)]
+    },
+    getOwnPropertyDescriptor(t, key) {
+      // 只报「存在且可枚举」，不在描述符里取 body——`Object.keys` / `Object.hasOwn` 因此零读盘
+      if (typeof key === 'string' && present(key)) {
+        return {
+          enumerable: true,
+          configurable: true,
+          get: () => read(key),
+          set: (value: Def) => {
+            overlay.set(key, value)
+            deleted.delete(key)
+          },
+        }
+      }
+      return Reflect.getOwnPropertyDescriptor(t, key)
+    },
+    set(t, key, value) {
+      if (typeof key !== 'string') return Reflect.set(t, key, value)
+      overlay.set(key, value as Def)
+      deleted.delete(key)
+      return true
+    },
+    deleteProperty(t, key) {
+      if (typeof key !== 'string') return Reflect.deleteProperty(t, key)
+      overlay.delete(key)
+      deleted.add(key)
+      return true
+    },
+  }
+  return new Proxy(target, handler) as unknown as Record<Hash, Def>
+}

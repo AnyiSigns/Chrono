@@ -1,0 +1,1687 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { startAssembly } from '../runtime.ts'
+import type { AssemblyRuntimeHandle, StartAssemblyOptions } from '../runtime.ts'
+import type { PluginDecl } from '../decl.ts'
+import { runSeed } from '../../offline.ts'
+import { loadAnchor } from '../../ledger/index.ts'
+import { hostPaths } from '../../paths.ts'
+import { createTempRoot, cleanupTempRoot } from '../../test/test-helpers.ts'
+import {
+  FIXTURE_ALPHA,
+  FIXTURE_BETA,
+  FIXTURE_SERVICE_MAIN,
+  isPidAlive,
+  killProcessTree,
+  waitFor,
+  waitForQuiescence,
+  writeTempPackage,
+} from '../../test/test-helpers-ext.ts'
+import { H, cloneWorld, commit } from '../../../kernel/index.ts'
+import type { Gen, Hash, Identity, Json, World } from '../../../kernel/index.ts'
+
+type LifeRecord = {
+  kind: string
+  event: string
+  impl?: string
+  reason?: string
+  caps?: string[]
+}
+
+/**
+ * 探针序列服务：按 2 失败 1 成功循环应答探针，每次探针另发一条 `probe` 事件供测试计数。
+ * 成功探针必须复位连续失败计数，否则第 4 次探针即累计到阈值 3 被杀。
+ */
+const PROBE_RESET_SERVICE = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const COUNTER = path.join(process.cwd(), "probe-seq.txt");
+function readN() { try { return parseInt(fs.readFileSync(COUNTER, "utf8"), 10) || 0; } catch (e) { return 0; } }
+function frame(msg) {
+  const body = Buffer.from(JSON.stringify(msg), "utf8");
+  const head = Buffer.allocUnsafe(4);
+  head.writeUInt32BE(body.length, 0);
+  process.stdout.write(Buffer.concat([head, body]));
+}
+function handle(msg) {
+  if (!msg || typeof msg !== "object") return;
+  switch (msg.kind) {
+    case "hello": {
+      const p = JSON.parse(fs.readFileSync(path.join(process.cwd(), "plugin.json"), "utf8"));
+      frame({ id: msg.id, kind: "manifest", v: "1", identity: p.identity, implements: p.implements, methods: p.methods, protocol: p.protocol, state: p.state });
+      return;
+    }
+    case "probe": {
+      const n = readN();
+      fs.writeFileSync(COUNTER, String(n + 1));
+      frame({ v: "1", id: "evt-" + n, kind: "event", topic: "probe", payload: { n: n } });
+      frame({ id: msg.id, kind: "pong", ok: n % 3 === 2 });
+      return;
+    }
+    case "reload": frame({ v: "1", id: msg.id, kind: "ack" }); return;
+    case "drain": frame({ v: "1", id: msg.id, kind: "bye" }); return;
+    case "call": frame({ v: "1", id: msg.id, kind: "result", ok: true, value: { pid: process.pid } }); return;
+  }
+}
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+  while (buffer.length >= 4) {
+    const length = buffer.readUInt32BE(0);
+    if (buffer.length < 4 + length) break;
+    const body = buffer.subarray(4, 4 + length).toString("utf8");
+    buffer = buffer.subarray(4 + length);
+    try { handle(JSON.parse(body)); } catch (e) {}
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
+process.stdin.on("error", () => process.exit(0));
+`
+
+describe('装配运行时 startAssembly', () => {
+  let root: string
+  let records: LifeRecord[] = []
+  const handles: AssemblyRuntimeHandle[] = []
+
+  beforeEach(() => {
+    root = createTempRoot()
+    records = []
+    handles.length = 0
+  })
+
+  afterEach(async () => {
+    for (const handle of [...handles].reverse()) {
+      const pids = handle.endpoints.list().map((row) => row.pid)
+      try {
+        await handle.stop()
+      } catch {
+        // 尽力停机
+      }
+      for (const pid of pids) {
+        await waitFor(() => !isPidAlive(pid), `停机后进程退出 pid=${pid}`, 3000).catch(() => {
+          // 尽力等待；进程退出是异步的，不影响断言
+        })
+      }
+    }
+    handles.length = 0
+    await cleanupTempRoot(root)
+  })
+
+  const log = (r: LifeRecord): void => {
+    records.push(r)
+  }
+
+  async function startWorld(
+    entries: Array<{ name: string; path?: string }>,
+    opts: Partial<StartAssemblyOptions> = {},
+  ): Promise<{ handle: AssemblyRuntimeHandle; world: World }> {
+    const report = runSeed(root, entries)
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({ root, world, log, ...opts })
+    handles.push(handle)
+    return { handle, world }
+  }
+
+  it('跨 pins 拓扑启动序：被依赖者先起；端点行按 impl+gen+cap+method 建', async () => {
+    const { handle, world } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
+    ])
+    expect(handle.order).toEqual(['toy-alpha', 'toy-beta'])
+    const loaded = handle.loaded()
+    expect(loaded.map((x) => x.id).sort()).toEqual(['toy-alpha', 'toy-beta'])
+    expect(loaded.every((x) => x.service === true)).toBe(true)
+
+    const alphaGen = world.ids['toy-alpha'].active as Hash
+    const betaGen = world.ids['toy-beta'].active as Hash
+    const rowA = handle.endpoints.get('toy-alpha', alphaGen, 'toy.alpha', 'echo')
+    expect(rowA).not.toBeNull()
+    expect(rowA!.transport).toBe('stdio')
+    expect(rowA!.pid).toBeGreaterThan(0)
+    expect(rowA!.link).toBeTruthy()
+    const rowB = handle.endpoints.get('toy-beta', betaGen, 'toy.beta', 'echo')
+    expect(rowB).not.toBeNull()
+    expect(handle.endpoints.get('toy-alpha', alphaGen, 'toy.alpha', 'ghost')).toBeNull()
+    expect(handle.endpoints.get('toy-alpha', alphaGen, 'toy.ghost', 'echo')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(2)
+  }, 15000)
+
+  it('提供方缺 methods[cap] 时按世界 slots 契约注册端点', async () => {
+    const ownerRoot = writeTempPackage(root, {
+      identity: 'toy-slot-owner',
+      start: '',
+      slots: { 'toy.slot': { methods: ['echo', 'ping'] } },
+    })
+    const provRoot = writeTempPackage(root, {
+      identity: 'toy-slot-prov',
+      implements: ['toy.slot'],
+      methods: {},
+      start: 'node execute/main.js',
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-slot-owner', path: ownerRoot },
+      { name: 'toy-slot-prov', path: provRoot },
+    ])
+    const provGen = world.ids['toy-slot-prov'].active as Hash
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'echo')).not.toBeNull()
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'ping')).not.toBeNull()
+    expect(handle.endpoints.get('toy-slot-prov', provGen, 'toy.slot', 'ghost')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(2)
+  }, 15000)
+
+  it("start:'' 数据身份装载、无服务、无端点行", async () => {
+    const dataRoot = writeTempPackage(root, { identity: 'toy-data' })
+    const { handle } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-data', path: dataRoot },
+    ])
+    const data = handle.loaded().find((x) => x.id === 'toy-data')
+    expect(data).toBeDefined()
+    expect(data!.service).toBe(false)
+    expect(handle.endpoints.list().every((row) => row.impl !== 'toy-data')).toBe(true)
+  }, 15000)
+
+  it('pins 成环 → dep.cycle 隔离环成员及依赖者，其余照起', async () => {
+    const dataRoot = writeTempPackage(root, { identity: 'toy-data' })
+    const report = runSeed(root, [
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
+      { name: 'toy-data', path: dataRoot },
+    ])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+
+    // 在内存世界注入环：toy-cyc needs.one → toy-alpha，且 toy-alpha 反向 needs.one → toy-cyc。
+    const alpha = world.ids['toy-alpha']
+    const alphaGen = alpha.gens.find((g) => g.payload === alpha.active) as Gen
+    const alphaBody = (world.defs[alphaGen.payload] as { body: { tree: string; meta: Json } }).body
+    const cycBody = {
+      tree: alphaBody.tree,
+      meta: { name: 'toy-cyc', version: '0.0.0', needs: { alpha: 'toy-alpha' } },
+    }
+    const cycPayload = H({ body: cycBody } as unknown as Json)
+    const cycSig = H({ body: 'toy-cyc-sig' } as unknown as Json)
+    world.defs[cycPayload] = { body: cycBody }
+    world.defs[cycSig] = { body: null }
+    world.ids['toy-cyc'] = {
+      id: 'toy-cyc',
+      schema: alpha.schema,
+      gens: [
+        {
+          seq: 0,
+          payload: cycPayload,
+          sig: cycSig,
+          adopted: { at: 0, by: '', write: '' },
+        },
+      ],
+      active: cycPayload,
+      born: { at: 0, by: '' },
+    }
+    ;(alphaBody.meta as { needs?: Record<string, string> }).needs = { cyc: 'toy-cyc' }
+
+    const handle = await startAssembly({ root, world, log })
+    handles.push(handle)
+
+    expect(handle.order).toEqual(['toy-data'])
+    const loaded = handle.loaded()
+    expect(loaded.map((x) => x.id)).toEqual(['toy-data'])
+    expect(loaded[0].service).toBe(false)
+    expect(handle.endpoints.list()).toHaveLength(0)
+    expect(
+      records
+        .filter((r) => r.kind === 'dep' && r.event === 'cycle')
+        .map((r) => r.impl)
+        .sort(),
+    ).toEqual(['toy-alpha', 'toy-beta', 'toy-cyc'])
+  })
+
+  it('依赖握手失败 → 依赖者 dep.stale 且跳过；独立身份照常起', async () => {
+    const badRoot = writeTempPackage(root, {
+      identity: 'toy-bad',
+      start: 'node execute/main.js',
+      implements: ['toy.bad'],
+      serviceConfig: { manifest: { protocol: '9' } },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-fan',
+      start: 'node execute/main.js',
+      implements: ['toy.fan'],
+      pins: { 'toy.bad': 'toy-bad' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-bad', path: badRoot },
+      { name: 'toy-fan', path: fanRoot },
+    ])
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-alpha'])
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'handshake', event: 'failed', impl: 'toy-bad' }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-fan' }),
+    )
+    expect(records.some((r) => r.impl === 'toy-fan' && r.event === 'exit')).toBe(false)
+  }, 15000)
+
+  it('manifest 形态/语义不符（identity/protocol/state/implements/methods/v）→ handshake.failed 各自隔离', async () => {
+    const cases: Array<{ identity: string; manifest: Record<string, unknown> }> = [
+      { identity: 'toy-w-ident', manifest: { identity: 'other.identity' } },
+      { identity: 'toy-w-proto', manifest: { protocol: '9' } },
+      { identity: 'toy-w-state', manifest: { state: 'durable' } },
+      { identity: 'toy-w-impl', manifest: { implements: [] } },
+      { identity: 'toy-w-meth', manifest: { methods: {} } },
+      { identity: 'toy-w-v', manifest: { v: '2' } },
+    ]
+    const entries: Array<{ name: string; path: string }> = []
+    for (const c of cases) {
+      const pkgRoot = writeTempPackage(root, {
+        identity: c.identity,
+        start: 'node execute/main.js',
+        implements: [c.identity.replace('toy-w-', 'toy.')],
+        serviceConfig: { manifest: c.manifest },
+      })
+      entries.push({ name: c.identity, path: pkgRoot })
+    }
+    const { handle } = await startWorld(entries)
+    expect(handle.loaded()).toEqual([])
+    for (const c of cases) {
+      expect(records).toContainEqual(
+        expect.objectContaining({ kind: 'handshake', event: 'failed', impl: c.identity }),
+      )
+    }
+  }, 15000)
+
+  it('多余 cap → handshake.extra_dropped，且不登记多余端点行', async () => {
+    const extraRoot = writeTempPackage(root, {
+      identity: 'toy-extra',
+      start: 'node execute/main.js',
+      implements: ['toy.extra'],
+      serviceConfig: { manifest: { implements: ['toy.extra', 'toy.unused'] } },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-extra', path: extraRoot }])
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-extra'])
+    const extra = records.find((r) => r.kind === 'handshake' && r.event === 'extra_dropped')
+    expect(extra).toBeDefined()
+    expect(extra!.impl).toBe('toy-extra')
+    expect(extra!.caps).toEqual(['toy.unused'])
+    const gen = world.ids['toy-extra'].active as Hash
+    expect(handle.endpoints.get('toy-extra', gen, 'toy.extra', 'echo')).not.toBeNull()
+    expect(handle.endpoints.get('toy-extra', gen, 'toy.unused', 'echo')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(1)
+  }, 15000)
+
+  it('握手超时 → service.start_failed，身份不装载', async () => {
+    const silentRoot = writeTempPackage(root, {
+      identity: 'toy-silent',
+      start: 'node execute/main.js',
+      implements: ['toy.silent'],
+      serviceConfig: { helloMode: 'silent' },
+    })
+    const { handle } = await startWorld([{ name: 'toy-silent', path: silentRoot }], {
+      // 超时给足 1.5s：确保 node 进程已完全启动后再判超时（Windows 上 shell 包装的
+      // 子进程若在未调度时被杀，可能在清理后才启动并报 MODULE_NOT_FOUND 噪音）
+      handshakeTimeoutMs: 1500,
+    })
+    expect(handle.loaded()).toEqual([])
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-silent',
+        reason: 'timeout',
+      }),
+    )
+  }, 15000)
+
+  it('握手超时（临时性）→ 退避重试自愈：首次超时未永久隔离，重试后装载', async () => {
+    const retryRoot = writeTempPackage(root, {
+      identity: 'toy-retryhello',
+      start: 'node execute/main.js',
+      implements: ['toy.retryhello'],
+      serviceConfig: { helloFailTotal: 1 },
+    })
+    const { handle } = await startWorld([{ name: 'toy-retryhello', path: retryRoot }], {
+      handshakeTimeoutMs: 1000,
+    })
+    // 首轮握手超时：记 start_failed(timeout)，当场未装载
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-retryhello')
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-retryhello',
+        reason: 'timeout',
+      }),
+    )
+    // 退避重试（基 2s）后第二跳成功：自愈装载，且无 restart_exhausted / 永久隔离
+    await waitFor(
+      () =>
+        handle
+          .loaded()
+          .map((x) => x.id)
+          .includes('toy-retryhello'),
+      '临时性握手超时经退避重试自愈装载',
+      8000,
+    )
+    expect(records.filter((r) => r.kind === 'service' && r.event === 'restart_exhausted')).toEqual(
+      [],
+    )
+  }, 15000)
+
+  it('probe 超时 → service.exit health_timeout + 自动重启（端点摘除后重挂、pid 更新）', async () => {
+    const probeRoot = writeTempPackage(root, {
+      identity: 'toy-probe',
+      start: 'node execute/main.js',
+      implements: ['toy.probe'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeFailTotal: 2 },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-probe', path: probeRoot }])
+    const gen = world.ids['toy-probe'].active as Hash
+    const firstRow = handle.endpoints.get('toy-probe', gen, 'toy.probe', 'echo')
+    expect(firstRow).not.toBeNull()
+    const firstPid = firstRow!.pid
+    await waitFor(
+      () =>
+        records.filter(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-probe' &&
+            r.reason === 'health_timeout',
+        ).length >= 2,
+      '健康探针超时至少触发两次 service.exit（证明重启发生）',
+      8000,
+    )
+    // 进程退出即摘除该 gen 端点行，重启成功后重挂：有界等待重挂且 pid 与首次不同
+    await waitFor(
+      () => {
+        const row = handle.endpoints.get('toy-probe', gen, 'toy.probe', 'echo')
+        return row !== null && row.pid !== firstPid
+      },
+      'toy-probe 重启后端点重挂且 pid 更新',
+      8000,
+    )
+    expect(handle.loaded().map((x) => x.id)).toContain('toy-probe')
+  }, 15000)
+
+  it('服务退出即摘除该 gen 端点行，重启成功后再挂（重启窗口内该行缺席）', async () => {
+    const endpointRoot = writeTempPackage(root, {
+      identity: 'toy-endpoint',
+      start: 'node execute/main.js',
+      implements: ['toy.endpoint'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      // fixed 退避 400ms：退出到重挂之间有确定的可观测窗口
+      restart: {
+        policy: 'on-exit',
+        backoff: 'fixed',
+        backoff_ms: 400,
+        max: 3,
+        window_ms: 60000,
+        drain_ms: 200,
+      },
+      serviceConfig: { probeFailTotal: 1 },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-endpoint', path: endpointRoot }])
+    const gen = world.ids['toy-endpoint'].active as Hash
+    const firstPid = handle.endpoints.get('toy-endpoint', gen, 'toy.endpoint', 'echo')!.pid
+    await waitFor(
+      () =>
+        records.some(
+          (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-endpoint',
+        ),
+      'toy-endpoint 健康超时退出',
+      8000,
+    )
+    // 摘除与 exit 记录在同一同步路径：观察到记录时该行必已不存在，且退避窗口内保持缺席
+    expect(handle.endpoints.get('toy-endpoint', gen, 'toy.endpoint', 'echo')).toBeNull()
+    await waitFor(
+      () => {
+        const row = handle.endpoints.get('toy-endpoint', gen, 'toy.endpoint', 'echo')
+        return row !== null && row.pid !== firstPid
+      },
+      'toy-endpoint 重启后端点重挂且 pid 更新',
+      8000,
+    )
+    expect(handle.loaded().map((x) => x.id)).toContain('toy-endpoint')
+  }, 15000)
+
+  it('进程退出后的重启退避窗口内：loaded 报 service:false（不把已死进程当在跑服务）', async () => {
+    const backoffRoot = writeTempPackage(root, {
+      identity: 'toy-backoff',
+      start: 'node execute/main.js',
+      implements: ['toy.backoff'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      // fixed 退避 2000ms：退出到重启之间有足够宽的可观测窗口
+      restart: {
+        policy: 'on-exit',
+        backoff: 'fixed',
+        backoff_ms: 2000,
+        max: 3,
+        window_ms: 60000,
+        drain_ms: 200,
+      },
+      serviceConfig: { probeFailTotal: 1 },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-backoff', path: backoffRoot }])
+    const gen = world.ids['toy-backoff'].active as Hash
+    const firstPid = handle.endpoints.get('toy-backoff', gen, 'toy.backoff', 'echo')!.pid
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: true })
+
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-backoff'),
+      'toy-backoff 健康超时退出',
+      8000,
+    )
+    // 进程已死、端点已摘：退避窗口内 loaded 必须报 service:false，而非仍在跑
+    expect(isPidAlive(firstPid)).toBe(false)
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: false })
+
+    await waitFor(
+      () => {
+        const row = handle.endpoints.get('toy-backoff', gen, 'toy.backoff', 'echo')
+        return row !== null && row.pid !== firstPid
+      },
+      '退避后重启端点重挂',
+      8000,
+    )
+    expect(handle.loaded()).toContainEqual({ id: 'toy-backoff', gen, service: true })
+  }, 15000)
+
+  it('探针无 pong（超时）→ 按退出处理；超限 → service.restart_exhausted 并隔离', async () => {
+    const silentRoot = writeTempPackage(root, {
+      identity: 'toy-silentprobe',
+      start: 'node execute/main.js',
+      implements: ['toy.silentprobe'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 1, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeMode: 'silent' },
+    })
+    const { handle } = await startWorld([{ name: 'toy-silentprobe', path: silentRoot }])
+    await waitFor(
+      () =>
+        records.filter(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-silentprobe' &&
+            r.reason === 'health_timeout',
+        ).length >= 2,
+      '探针无 pong 超时两次（证明中途重启过一次）',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'toy-silentprobe 重启环落地（超限隔离）')
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'restart_exhausted',
+        impl: 'toy-silentprobe',
+      }),
+    )
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it('杀掉服务进程 → service.exit + 自动重启（轮询新 pid / loaded 仍含它）', async () => {
+    const { handle, world } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
+    ])
+    const gen = world.ids['toy-alpha'].active as Hash
+    const row = handle.endpoints.get('toy-alpha', gen, 'toy.alpha', 'echo')
+    expect(row).not.toBeNull()
+    const oldPid = row!.pid
+    expect(isPidAlive(oldPid)).toBe(true)
+
+    await killProcessTree(oldPid)
+    await waitFor(
+      () => {
+        const current = handle.endpoints.get('toy-alpha', gen, 'toy.alpha', 'echo')
+        return current !== null && current.pid !== oldPid
+      },
+      'toy-alpha 服务重启后端点 pid 更新',
+      8000,
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'service', event: 'exit', impl: 'toy-alpha' }),
+    )
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-alpha', 'toy-beta'])
+    const current = handle.endpoints.get('toy-alpha', gen, 'toy.alpha', 'echo')
+    expect(current).not.toBeNull()
+    expect(isPidAlive(current!.pid)).toBe(true)
+  }, 15000)
+
+  it('持续崩溃超 restart.max → service.restart_exhausted + 分支隔离（依赖者停、端点移除）', async () => {
+    const crashRoot = writeTempPackage(root, {
+      identity: 'toy-crash',
+      start: 'node execute/main.js',
+      implements: ['toy.crash'],
+      restart: { policy: 'on-exit', backoff: 'none', max: 1, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 40, crashLimit: 2 },
+    })
+    const depRoot = writeTempPackage(root, {
+      identity: 'toy-dependent',
+      start: 'node execute/main.js',
+      implements: ['toy.dependent'],
+      pins: { 'toy.crash': 'toy-crash' },
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-crash', path: crashRoot },
+      { name: 'toy-dependent', path: depRoot },
+    ])
+    await waitFor(
+      () =>
+        records.some(
+          (r) => r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-crash',
+        ),
+      'toy-crash 重启超限',
+      8000,
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'exit',
+        impl: 'toy-dependent',
+        reason: 'isolated',
+      }),
+    )
+    expect(handle.loaded()).toEqual([])
+    const crashGen = world.ids['toy-crash'].active as Hash
+    const depGen = world.ids['toy-dependent'].active as Hash
+    expect(handle.endpoints.get('toy-crash', crashGen, 'toy.crash', 'echo')).toBeNull()
+    expect(handle.endpoints.get('toy-dependent', depGen, 'toy.dependent', 'echo')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it('window_ms 复位语义：稳定窗口内运行后崩溃 → attempts 归零，不触发 restart_exhausted', async () => {
+    const winRoot = writeTempPackage(root, {
+      identity: 'toy-window',
+      start: 'node execute/main.js',
+      implements: ['toy.window'],
+      restart: { policy: 'on-exit', backoff: 'none', max: 2, window_ms: 30, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 50, crashLimit: 3 },
+    })
+    const { handle } = await startWorld([{ name: 'toy-window', path: winRoot }])
+    await waitFor(
+      () =>
+        records.filter((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-window')
+          .length >= 3,
+      'toy-window 至少重启两次（attempts 每次归零则不超限）',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'toy-window 重启环落地')
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-window',
+      ),
+    ).toBe(false)
+  }, 15000)
+
+  it('stop() 停机：全部服务进程退出、端点清空', async () => {
+    const { handle } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
+    ])
+    const pids = handle.endpoints.list().map((row) => row.pid)
+    expect(pids).toHaveLength(2)
+    await handle.stop()
+    expect(handle.endpoints.list()).toHaveLength(0)
+    await waitFor(() => pids.every((pid) => !isPidAlive(pid)), '停机后服务进程全部退出', 5000)
+  }, 10000)
+
+  it('服务上行 event 经 onEvent 回调上报', async () => {
+    const eventRoot = writeTempPackage(root, {
+      identity: 'toy-event',
+      start: 'node execute/main.js',
+      implements: ['toy.event'],
+      health: { interval_ms: 100, timeout_ms: 200, grace_period_ms: 0 },
+      serviceConfig: { eventTopic: 'ping', eventPayload: { n: 1 }, eventOnProbe: true },
+    })
+    const events: Array<{ impl: string; topic: string; payload: Json }> = []
+    const report = runSeed(root, [{ name: 'toy-event', path: eventRoot }])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({
+      root,
+      world,
+      log,
+      onEvent: (impl, topic, payload) => events.push({ impl, topic, payload }),
+    })
+    handles.push(handle)
+    await waitFor(
+      () =>
+        events.some(
+          (e) =>
+            e.impl === 'toy-event' && e.topic === 'ping' && (e.payload as { n: number }).n === 1,
+        ),
+      'onEvent 收到 toy-event 的 ping 事件',
+      8000,
+    )
+  }, 15000)
+
+  it("restart.policy='never'：单身份退出 → 恰一条 service.exit（真实退出码）、不重启、无 restart_exhausted、该身份隔离", async () => {
+    const neverRoot = writeTempPackage(root, {
+      identity: 'toy-never',
+      start: 'node execute/main.js',
+      implements: ['toy.never'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 60, crashLimit: 1 },
+    })
+    const { handle, world } = await startWorld([{ name: 'toy-never', path: neverRoot }])
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-never'),
+      'toy-never 退出并隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'toy-never 隔离落地')
+    const exits = records.filter(
+      (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-never',
+    )
+    expect(exits).toHaveLength(1)
+    expect(exits[0].reason).toBe('exit:1')
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-never',
+      ),
+    ).toBe(false)
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-never')
+    const gen = world.ids['toy-never'].active as Hash
+    expect(handle.endpoints.get('toy-never', gen, 'toy.never', 'echo')).toBeNull()
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it("restart.policy='never'：运行中的依赖者随分支隔离（service.exit isolated、端点移除、loaded 不含）", async () => {
+    const neverRoot = writeTempPackage(root, {
+      identity: 'toy-neverdep',
+      start: 'node execute/main.js',
+      implements: ['toy.neverdep'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-neverfan',
+      start: 'node execute/main.js',
+      implements: ['toy.neverfan'],
+      pins: { 'toy.neverdep': 'toy-neverdep' },
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-neverdep', path: neverRoot },
+      { name: 'toy-neverfan', path: fanRoot },
+    ])
+    // startWorld 返回时两者都已握手装载；此刻由测试侧杀掉 never 服务（taskkill /T），
+    // 隔离必然发生在依赖者运行中（service.exit isolated 才有机会产生）
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-neverdep', 'toy-neverfan'])
+    const gen = world.ids['toy-neverdep'].active as Hash
+    const row = handle.endpoints.get('toy-neverdep', gen, 'toy.neverdep', 'echo')
+    expect(row).not.toBeNull()
+    await killProcessTree(row!.pid)
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-neverfan' &&
+            r.reason === 'isolated',
+        ),
+      'toy-neverfan 被随分支隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'never 分支隔离落地')
+    const seedExits = records.filter(
+      (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-neverdep',
+    )
+    expect(seedExits).toHaveLength(1)
+    expect(seedExits[0].reason).toMatch(/^exit:\d+$/)
+    expect(records.some((r) => r.kind === 'service' && r.event === 'restart_exhausted')).toBe(false)
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it('stop() 按启动序逆序 drain：顺序证据（两静默服务各记 drain_timeout，记录序 = 启动序逆序）', async () => {
+    const baseRoot = writeTempPackage(root, {
+      identity: 'toy-drainbase',
+      start: 'node execute/main.js',
+      implements: ['toy.drainbase'],
+      restart: { policy: 'on-exit', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 100 },
+      serviceConfig: { drainMode: 'silent' },
+    })
+    const leafRoot = writeTempPackage(root, {
+      identity: 'toy-drainleaf',
+      start: 'node execute/main.js',
+      implements: ['toy.drainleaf'],
+      pins: { 'toy.drainbase': 'toy-drainbase' },
+      restart: { policy: 'on-exit', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 100 },
+      serviceConfig: { drainMode: 'silent' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-drainbase', path: baseRoot },
+      { name: 'toy-drainleaf', path: leafRoot },
+    ])
+    expect(handle.order).toEqual(['toy-drainbase', 'toy-drainleaf'])
+    await handle.stop()
+    // stop() 逐个 await drain：先排空启动序末位（依赖者），其 drain_timeout 必先落日志
+    const drained = records
+      .filter((r) => r.kind === 'service' && r.event === 'exit' && r.reason === 'drain_timeout')
+      .map((r) => r.impl)
+    expect(drained).toEqual(['toy-drainleaf', 'toy-drainbase'])
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it('stop() 不写链：journal 字节与各身份 active 均不变', async () => {
+    const report = runSeed(root, [
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-beta', path: FIXTURE_BETA },
+    ])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const journalFile = hostPaths(root).journalFile
+    const beforeBytes = readFileSync(journalFile)
+    const activeBefore = Object.fromEntries(
+      Object.entries(world.ids).map(([id, identity]) => [id, identity.active]),
+    )
+    const handle = await startAssembly({ root, world, log })
+    handles.push(handle)
+    expect(handle.loaded()).toHaveLength(2)
+    await handle.stop()
+    expect(readFileSync(journalFile).equals(beforeBytes)).toBe(true)
+    for (const [id, active] of Object.entries(activeBefore)) {
+      expect(world.ids[id].active).toBe(active)
+    }
+  }, 15000)
+
+  it('回归：稳定运行 ≥ window 后崩溃 + relaunch 持续握手失败 → max 次内 restart_exhausted + 分支隔离', async () => {
+    const baseRoot = writeTempPackage(root, {
+      identity: 'toy-relaunchfail',
+      start: 'node execute/main.js',
+      implements: ['toy.relaunchfail'],
+      restart: { policy: 'on-exit', backoff: 'none', max: 2, window_ms: 200, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 400, crashLimit: 1 },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-relaunchfan',
+      start: 'node execute/main.js',
+      implements: ['toy.relaunchfan'],
+      pins: { 'toy.relaunchfail': 'toy-relaunchfail' },
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-relaunchfail', path: baseRoot },
+      { name: 'toy-relaunchfan', path: fanRoot },
+    ])
+    expect(handle.loaded()).toHaveLength(2)
+    // 稳定运行期篡改物化目录的 plugin.json.identity：重启进程自述与新声明不符 → relaunch 握手必败。
+    // 旧缺陷（在 scheduleRestart 里用已死旧实例的 startedAt 复位）会让 attempts 每次失败都归零、
+    // 永不超限；本用例即钉住该行为。
+    const materialized = join(
+      hostPaths(root).materializedDir,
+      world.ids['toy-relaunchfail'].active as string,
+    )
+    const pluginJson = JSON.parse(readFileSync(join(materialized, 'plugin.json'), 'utf8')) as {
+      identity: string
+    }
+    pluginJson.identity = 'toy-hijacked'
+    // 源码文件物化时置只读；篡改须先解写位（等价于服务强行绕过只读保护）
+    chmodSync(join(materialized, 'plugin.json'), 0o666)
+    writeFileSync(join(materialized, 'plugin.json'), JSON.stringify(pluginJson, null, 2))
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'restart_exhausted' &&
+            r.impl === 'toy-relaunchfail',
+        ),
+      'relaunch 持续失败达 max → restart_exhausted',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'B1 分支隔离落地')
+    expect(
+      records.filter(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-relaunchfail',
+      ),
+    ).toHaveLength(1)
+    expect(
+      records.some(
+        (r) => r.kind === 'handshake' && r.event === 'failed' && r.impl === 'toy-relaunchfail',
+      ),
+    ).toBe(true)
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'exit',
+        impl: 'toy-relaunchfan',
+        reason: 'isolated',
+      }),
+    )
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+  }, 15000)
+
+  it('超限长度前缀 / 坏 JSON 帧 → handshake.failed（不降级成传输层 timeout）', async () => {
+    const overRoot = writeTempPackage(root, {
+      identity: 'toy-garbage',
+      start: 'node execute/main.js',
+      implements: ['toy.garbage'],
+      serviceConfig: { helloMode: 'garbage' },
+    })
+    const badJsonRoot = writeTempPackage(root, {
+      identity: 'toy-badjson',
+      start: 'node execute/main.js',
+      implements: ['toy.badjson'],
+      serviceConfig: { helloMode: 'bad-json' },
+    })
+    // 超时放宽：node 冷启动 + 收 hello 后才写坏帧，重负载下 500ms 会先超时；
+    // 坏帧一到即失败，放宽不影响失败分类（不引入等待）。
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-garbage', path: overRoot },
+        { name: 'toy-badjson', path: badJsonRoot },
+      ],
+      { handshakeTimeoutMs: 4000 },
+    )
+    // 不崩宿主：assembly 正常返回；两者均被隔离（loaded/端点皆空）
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+    // (a) 首 4 字节 ≈1.85GB > 16 MiB 单帧上限 → 协议损坏 → handshake.failed，不落 start_failed
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'handshake', event: 'failed', impl: 'toy-garbage' }),
+    )
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'start_failed' && r.impl === 'toy-garbage',
+      ),
+    ).toBe(false)
+    // (b) 合法长度前缀 + 非法 JSON → markClosed('protocol_error') → 按协议形态错误收口
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'handshake', event: 'failed', impl: 'toy-badjson' }),
+    )
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'start_failed' && r.impl === 'toy-badjson',
+      ),
+    ).toBe(false)
+  }, 15000)
+
+  it('小长度前缀不发体 → 凑不满且未超上限 → 传输层失败 timeout', async () => {
+    const stallRoot = writeTempPackage(root, {
+      identity: 'toy-stall',
+      start: 'node execute/main.js',
+      implements: ['toy.stall'],
+      serviceConfig: { helloMode: 'stall' },
+    })
+    // stall 必须等满超时，单列一个世界保持 500ms，避免拖慢用例
+    const { handle } = await startWorld([{ name: 'toy-stall', path: stallRoot }], {
+      handshakeTimeoutMs: 500,
+    })
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-stall',
+        reason: 'timeout',
+      }),
+    )
+    expect(
+      records.some((r) => r.kind === 'handshake' && r.event === 'failed' && r.impl === 'toy-stall'),
+    ).toBe(false)
+  }, 15000)
+
+  it('服务回应错误 kind → 协议形态错误按 handshake.failed 收口', async () => {
+    const wrongRoot = writeTempPackage(root, {
+      identity: 'toy-wrongkind',
+      start: 'node execute/main.js',
+      implements: ['toy.wrongkind'],
+      serviceConfig: { helloMode: 'wrong-kind' },
+    })
+    const { handle } = await startWorld([{ name: 'toy-wrongkind', path: wrongRoot }], {
+      handshakeTimeoutMs: 2000,
+    })
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'handshake', event: 'failed', impl: 'toy-wrongkind' }),
+    )
+    expect(records.some((r) => r.kind === 'service' && r.event === 'start_failed')).toBe(false)
+  }, 15000)
+
+  it('restart.policy 缺失/未知 → 按 on-exit 处理（服务仍会重启）', async () => {
+    // 启动 pid 落文件：崩溃重启会发生「同一文件里出现两次启动」，不靠读端点表的瞬时行（防测试竞态）。
+    // exitAfterMs 取足够大，保证 startWorld 返回后能先读到首实例的端点行 pid。
+    const pidFiles: Record<string, string> = {
+      'toy-poldef': join(root, 'poldef.pids'),
+      'toy-polbogus': join(root, 'polbogus.pids'),
+    }
+    const withPidFile = (id: string): string =>
+      `require('node:fs').appendFileSync(${JSON.stringify(pidFiles[id])}, String(process.pid) + '\\n')\n${FIXTURE_SERVICE_MAIN}`
+    const defRoot = writeTempPackage(root, {
+      identity: 'toy-poldef',
+      start: 'node execute/main.js',
+      implements: ['toy.poldef'],
+      // 无 policy 字段
+      restart: { backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 1200, crashLimit: 1 },
+      files: { 'execute/main.js': withPidFile('toy-poldef') },
+    })
+    const bogusRoot = writeTempPackage(root, {
+      identity: 'toy-polbogus',
+      start: 'node execute/main.js',
+      implements: ['toy.polbogus'],
+      restart: { policy: 'bogus', backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 1200, crashLimit: 1 },
+      files: { 'execute/main.js': withPidFile('toy-polbogus') },
+    })
+    const { handle, world } = await startWorld([
+      { name: 'toy-poldef', path: defRoot },
+      { name: 'toy-polbogus', path: bogusRoot },
+    ])
+    const rowOf = (id: string): { pid?: number } | null =>
+      handle.endpoints.get(id, world.ids[id].active as Hash, id.replace('toy-', 'toy.'), 'echo')
+    const firstRowPids = new Map(
+      ['toy-poldef', 'toy-polbogus'].map((id) => {
+        const row = rowOf(id)
+        expect(row, `${id} 首实例端点行应在`).not.toBeNull()
+        return [id, (row as { pid: number }).pid]
+      }),
+    )
+    const pidsOf = (id: string): number[] => {
+      try {
+        return readFileSync(pidFiles[id], 'utf8')
+          .split('\n')
+          .filter((line) => line.trim().length > 0)
+          .map((line) => Number.parseInt(line, 10))
+      } catch {
+        return []
+      }
+    }
+    for (const id of ['toy-poldef', 'toy-polbogus']) {
+      await waitFor(
+        () => pidsOf(id).length >= 2,
+        `${id} 崩溃后按 on-exit 重启（两次启动 pid）`,
+        8000,
+      )
+      const [first, second] = pidsOf(id)
+      expect(second).not.toBe(first)
+      // 端点行必须重挂到新实例（pid 与首实例不同），不是留着旧行
+      await waitFor(
+        () => {
+          const row = rowOf(id)
+          return row !== null && row.pid !== firstRowPids.get(id)
+        },
+        `${id} 端点重挂到新实例`,
+        8000,
+      )
+    }
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-polbogus', 'toy-poldef'])
+    expect(records.some((r) => r.kind === 'service' && r.event === 'restart_exhausted')).toBe(false)
+  }, 15000)
+
+  it("members 含 execute 但 start 为空 → service.start_failed reason 'missing_start_command'，依赖者 dep.stale", async () => {
+    const noexecRoot = writeTempPackage(root, {
+      identity: 'toy-noexec',
+      implements: ['toy.noexec'],
+      start: '',
+      members: [{ kind: 'execute', path: 'execute/' }],
+      files: { 'execute/placeholder.txt': 'x' },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-noexecfan',
+      start: 'node execute/main.js',
+      implements: ['toy.noexecfan'],
+      pins: { 'toy.noexec': 'toy-noexec' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-noexec', path: noexecRoot },
+      { name: 'toy-noexecfan', path: fanRoot },
+    ])
+    expect(handle.loaded()).toEqual([])
+    expect(handle.endpoints.list()).toHaveLength(0)
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-noexec',
+        reason: 'missing_start_command',
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-noexecfan' }),
+    )
+  }, 15000)
+
+  it('隔离后在途 relaunch 失败不再记失败 / 不再排程（无隔离后重启噪声）', async () => {
+    // X：never 策略，延迟退出 → 退出即隔离分支（反向可达含依赖者 Y）
+    const xRoot = writeTempPackage(root, {
+      identity: 'toy-iso-x',
+      start: 'node execute/main.js',
+      implements: ['toy.iso.x'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 2500 },
+    })
+    // Y：pins X，on-exit；先崩溃一次，随后 relaunch 卡在握手上（篡改物化 service-config），
+    // 使 X 退出隔离 Y 时，Y 的 relaunch 正在途。
+    const yRoot = writeTempPackage(root, {
+      identity: 'toy-iso-y',
+      start: 'node execute/main.js',
+      implements: ['toy.iso.y'],
+      pins: { 'toy.iso.x': 'toy-iso-x' },
+      restart: { policy: 'on-exit', backoff: 'none', max: 50, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 300, crashLimit: 1000 },
+    })
+    const { handle, world } = await startWorld(
+      [
+        { name: 'toy-iso-x', path: xRoot },
+        { name: 'toy-iso-y', path: yRoot },
+      ],
+      { handshakeTimeoutMs: 2000 },
+    )
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-iso-x', 'toy-iso-y'])
+
+    // 先等 Y 首次崩溃，确认重启环已在转，再篡改配置：使其后续 relaunch 进入握手在途环。
+    // 否则重负载下若首崩晚于 X 退出，隔离时 Y 无在途 relaunch，用例退化为恒过。
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-y'),
+      'Y 首次崩溃进入重启环',
+      8000,
+    )
+    const materialized = join(
+      hostPaths(root).materializedDir,
+      world.ids['toy-iso-y'].active as Hash,
+    )
+    // 源码文件物化时置只读；篡改须先解写位（等价于服务强行绕过只读保护）
+    chmodSync(join(materialized, 'service-config.json'), 0o666)
+    writeFileSync(join(materialized, 'service-config.json'), JSON.stringify({ helloMode: 'stall' }))
+
+    // X 退出 → 隔离 Y（Y 正处于 relaunch 握手在途窗口内）
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-x'),
+      'X never 退出并隔离分支',
+      8000,
+    )
+    const exitIndex = records.findIndex(
+      (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-iso-x',
+    )
+    // 观察窗需覆盖在途 relaunch 的握手超时落地（≤ handshakeTimeoutMs）
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+
+    const after = records.slice(exitIndex + 1)
+    expect(
+      after.some(
+        (r) =>
+          (r.kind === 'service' && r.event === 'start_failed' && r.impl === 'toy-iso-y') ||
+          (r.kind === 'handshake' && r.event === 'failed' && r.impl === 'toy-iso-y') ||
+          (r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-iso-y'),
+      ),
+    ).toBe(false)
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-iso-y')
+  }, 20000)
+
+  it('装配按依赖层并发：同层无依赖身份在构建阶段重叠', async () => {
+    const aRoot = writeTempPackage(root, {
+      identity: 'toy-conc-a',
+      start: 'node execute/main.js',
+      implements: ['toy.conc.a'],
+    })
+    const bRoot = writeTempPackage(root, {
+      identity: 'toy-conc-b',
+      start: 'node execute/main.js',
+      implements: ['toy.conc.b'],
+    })
+    let active = 0
+    let maxActive = 0
+    let entered = 0
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const restore = async (): Promise<void> => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      entered += 1
+      if (entered >= 2) release()
+      // 有界等待：若分层错误导致两项不重叠，最多等 3s 后按实际 maxActive 判定失败
+      await Promise.race([gate, new Promise((resolve) => setTimeout(resolve, 3000))])
+      active -= 1
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-conc-a', path: aRoot },
+        { name: 'toy-conc-b', path: bRoot },
+      ],
+      { restore },
+    )
+    expect(maxActive).toBe(2)
+    expect(
+      handle
+        .loaded()
+        .map((x) => x.id)
+        .sort(),
+    ).toEqual(['toy-conc-a', 'toy-conc-b'])
+  }, 15000)
+
+  it('装配按依赖层顺序：被依赖者的构建完成后依赖者才开跑', async () => {
+    const baseRoot = writeTempPackage(root, {
+      identity: 'toy-lay-base',
+      start: 'node execute/main.js',
+      implements: ['toy.lay.base'],
+    })
+    const leafRoot = writeTempPackage(root, {
+      identity: 'toy-lay-leaf',
+      start: 'node execute/main.js',
+      implements: ['toy.lay.leaf'],
+      pins: { 'toy.lay.base': 'toy-lay-base' },
+    })
+    const events: string[] = []
+    const restore = async (_cwd: string, decl: PluginDecl): Promise<void> => {
+      events.push(`${decl.identity}:start`)
+      if (decl.identity === 'toy-lay-base') {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+      events.push(`${decl.identity}:end`)
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-lay-base', path: baseRoot },
+        { name: 'toy-lay-leaf', path: leafRoot },
+      ],
+      { restore },
+    )
+    expect(events.indexOf('toy-lay-base:end')).toBeLessThan(events.indexOf('toy-lay-leaf:start'))
+    expect(handle.order).toEqual(['toy-lay-base', 'toy-lay-leaf'])
+  }, 15000)
+
+  it('同层并发上限生效：startConcurrency=1 → 构建不重叠', async () => {
+    const aRoot = writeTempPackage(root, {
+      identity: 'toy-cap-a',
+      start: 'node execute/main.js',
+      implements: ['toy.cap.a'],
+    })
+    const bRoot = writeTempPackage(root, {
+      identity: 'toy-cap-b',
+      start: 'node execute/main.js',
+      implements: ['toy.cap.b'],
+    })
+    let active = 0
+    let maxActive = 0
+    const restore = async (): Promise<void> => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      active -= 1
+    }
+    const { handle } = await startWorld(
+      [
+        { name: 'toy-cap-a', path: aRoot },
+        { name: 'toy-cap-b', path: bRoot },
+      ],
+      { restore, startConcurrency: 1 },
+    )
+    expect(maxActive).toBe(1)
+    expect(handle.loaded()).toHaveLength(2)
+  }, 15000)
+
+  it('构建耗时不计入握手超时：慢构建 + 短握手超时仍正常装载', async () => {
+    const slowRoot = writeTempPackage(root, {
+      identity: 'toy-slowbuild',
+      start: 'node execute/main.js',
+      implements: ['toy.slowbuild'],
+    })
+    const restore = async (): Promise<void> => {
+      // 构建耗时 3s > 握手超时 1.5s：若构建计入握手窗口，这里必报 timeout
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+    }
+    const { handle } = await startWorld([{ name: 'toy-slowbuild', path: slowRoot }], {
+      restore,
+      handshakeTimeoutMs: 1500,
+    })
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-slowbuild'])
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'start_failed' && r.reason === 'timeout',
+      ),
+    ).toBe(false)
+  }, 15000)
+
+  it('装配期构建失败（deps_failed）→ 该身份及依赖者隔离，独立插件不受影响', async () => {
+    const badRoot = writeTempPackage(root, {
+      identity: 'toy-buildfail',
+      start: 'node execute/main.js',
+      implements: ['toy.buildfail'],
+      build: [{ cmd: 'node', args: ['execute/fail.js'] }],
+      files: { 'execute/fail.js': 'process.exit(1)\n' },
+    })
+    const fanRoot = writeTempPackage(root, {
+      identity: 'toy-buildfan',
+      start: 'node execute/main.js',
+      implements: ['toy.buildfan'],
+      pins: { 'toy.buildfail': 'toy-buildfail' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-alpha', path: FIXTURE_ALPHA },
+      { name: 'toy-buildfail', path: badRoot },
+      { name: 'toy-buildfan', path: fanRoot },
+    ])
+    expect(handle.loaded().map((x) => x.id)).toEqual(['toy-alpha'])
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        kind: 'service',
+        event: 'start_failed',
+        impl: 'toy-buildfail',
+        reason: 'deps_failed',
+      }),
+    )
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'stale', impl: 'toy-buildfan' }),
+    )
+  }, 15000)
+
+  it('连续探针失败容错：未达 failure_threshold 不杀，达到才按退出处理', async () => {
+    const twoRoot = writeTempPackage(root, {
+      identity: 'toy-health-two',
+      start: 'node execute/main.js',
+      implements: ['toy.health.two'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeFailTotal: 2 },
+    })
+    const threeRoot = writeTempPackage(root, {
+      identity: 'toy-health-three',
+      start: 'node execute/main.js',
+      implements: ['toy.health.three'],
+      health: {
+        interval_ms: 100,
+        timeout_ms: 100,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeFailTotal: 3 },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-health-two', path: twoRoot },
+      { name: 'toy-health-three', path: threeRoot },
+    ])
+    // three 连续失败 3 次 → 达阈值被杀；two 仅失败 2 次 → 始终不杀
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-health-three' &&
+            r.reason === 'health_timeout',
+        ),
+      '第三次连续失败触发退出',
+      8000,
+    )
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-health-two',
+      ),
+    ).toBe(false)
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-health-two'),
+      '未达阈值的身份仍装载',
+      8000,
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-health-three'),
+      'three 重启后恢复',
+      8000,
+    )
+    expect(
+      records.filter(
+        (r) =>
+          r.kind === 'service' &&
+          r.event === 'exit' &&
+          r.impl === 'toy-health-three' &&
+          r.reason === 'health_timeout',
+      ),
+    ).toHaveLength(1)
+  }, 15000)
+
+  it('启动宽限期内的探针失败不杀服务（对照组宽限为 0 则被杀）', async () => {
+    const holdRoot = writeTempPackage(root, {
+      identity: 'toy-grace-hold',
+      start: 'node execute/main.js',
+      implements: ['toy.grace.hold'],
+      health: {
+        interval_ms: 50,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 30000,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeMode: 'fail' },
+    })
+    const controlRoot = writeTempPackage(root, {
+      identity: 'toy-grace-kill',
+      start: 'node execute/main.js',
+      implements: ['toy.grace.kill'],
+      health: {
+        interval_ms: 50,
+        timeout_ms: 100,
+        failure_threshold: 1,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { probeMode: 'fail' },
+    })
+    const { handle } = await startWorld([
+      { name: 'toy-grace-hold', path: holdRoot },
+      { name: 'toy-grace-kill', path: controlRoot },
+    ])
+    // 对照组（宽限 0）在首个探针失败即被杀，证明探针确已发出且失败会被处理
+    await waitFor(
+      () =>
+        records.some(
+          (r) =>
+            r.kind === 'service' &&
+            r.event === 'exit' &&
+            r.impl === 'toy-grace-kill' &&
+            r.reason === 'health_timeout',
+        ),
+      '对照组宽限为 0 被健康超时杀掉',
+      8000,
+    )
+    // 宽限身份同一时段内多次探针失败仍不被杀
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-grace-hold',
+      ),
+    ).toBe(false)
+    expect(handle.loaded().some((x) => x.id === 'toy-grace-hold')).toBe(true)
+  }, 15000)
+
+  it('成功探针复位连续失败计数：2 失败 1 成功循环不触发退出', async () => {
+    const resetRoot = writeTempPackage(root, {
+      identity: 'toy-probereset',
+      start: 'node execute/main.js',
+      implements: ['toy.probereset'],
+      health: {
+        interval_ms: 50,
+        timeout_ms: 200,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 5, window_ms: 60000, drain_ms: 200 },
+      files: { 'execute/main.js': PROBE_RESET_SERVICE },
+    })
+    const events: Array<{ impl: string; topic: string; payload: Json }> = []
+    const report = runSeed(root, [{ name: 'toy-probereset', path: resetRoot }])
+    expect(report.ok).toBe(true)
+    const world = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({
+      root,
+      world,
+      log,
+      onEvent: (impl, topic, payload) => events.push({ impl, topic, payload }),
+    })
+    handles.push(handle)
+    // 等 9 次探针（3 个完整循环）：若成功不复位，第 4 次探针即累计到阈值 3 被杀
+    await waitFor(
+      () => events.filter((e) => e.impl === 'toy-probereset' && e.topic === 'probe').length >= 9,
+      '完成 3 个探针循环',
+      8000,
+    )
+    expect(
+      records.some(
+        (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-probereset',
+      ),
+    ).toBe(false)
+    expect(handle.loaded().some((x) => x.id === 'toy-probereset')).toBe(true)
+  }, 15000)
+
+  it('成功探针复位重启尝试：崩溃但有健康响应则不累计到 restart_exhausted', async () => {
+    const crashRoot = writeTempPackage(root, {
+      identity: 'toy-attemptsreset',
+      start: 'node execute/main.js',
+      implements: ['toy.attemptsreset'],
+      health: {
+        interval_ms: 50,
+        timeout_ms: 200,
+        failure_threshold: 3,
+        grace_period_ms: 0,
+      },
+      restart: { policy: 'on-exit', backoff: 'none', max: 2, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 500, crashLimit: 4 },
+    })
+    const { handle } = await startWorld([{ name: 'toy-attemptsreset', path: crashRoot }])
+    // 每次崩溃前都有多次成功探针把 attempts 归零；否则第 3 次崩溃即超 max=2 被隔离
+    await waitFor(
+      () =>
+        records.filter(
+          (r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-attemptsreset',
+        ).length >= 3,
+      '至少三次崩溃重启',
+      8000,
+    )
+    expect(
+      records.some(
+        (r) =>
+          r.kind === 'service' && r.event === 'restart_exhausted' && r.impl === 'toy-attemptsreset',
+      ),
+    ).toBe(false)
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-attemptsreset'),
+      '崩溃后仍装载',
+      8000,
+    )
+  }, 15000)
+
+  it('隔离身份在新代码世代到来时复归（dep.rejoined，服务重起）', async () => {
+    const v1 = writeTempPackage(root, {
+      identity: 'toy-rejoin',
+      dir: 'toy-rejoin-v1',
+      start: 'node execute/main.js',
+      implements: ['toy.rejoin'],
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 120 },
+    })
+    const report = runSeed(root, [{ name: 'toy-rejoin', path: v1 }])
+    expect(report.ok).toBe(true)
+    const world1 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({ root, world: world1, log })
+    handles.push(handle)
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-rejoin'),
+      'v1 退出并隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'v1 隔离落地')
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-rejoin')
+
+    // 新代码世代（健康实例，不再自杀）
+    const v2 = writeTempPackage(root, {
+      identity: 'toy-rejoin',
+      dir: 'toy-rejoin-v2',
+      start: 'node execute/main.js',
+      implements: ['toy.rejoin'],
+    })
+    expect(runSeed(root, [{ name: 'toy-rejoin', path: v2 }]).ok).toBe(true)
+    const world2 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    await handle.applyWorld(world2)
+
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'rejoined', impl: 'toy-rejoin' }),
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-rejoin'),
+      '新代码世代复归装载',
+      8000,
+    )
+    const gen2 = world2.ids['toy-rejoin'].active as Hash
+    expect(handle.endpoints.get('toy-rejoin', gen2, 'toy.rejoin', 'echo')).not.toBeNull()
+  }, 15000)
+
+  it('依赖恢复连带复归：主依赖修好后，曾被连带隔离的依赖者随之复归', async () => {
+    const a1 = writeTempPackage(root, {
+      identity: 'toy-casc-a',
+      dir: 'toy-casc-a-v1',
+      start: 'node execute/main.js',
+      implements: ['toy.casc.a'],
+      // 握手完成后再退出：退出即隔离分支，反向可达含依赖者 B
+      restart: { policy: 'never', backoff: 'none', max: 3, window_ms: 60000, drain_ms: 200 },
+      serviceConfig: { exitAfterMs: 800 },
+    })
+    const b = writeTempPackage(root, {
+      identity: 'toy-casc-b',
+      start: 'node execute/main.js',
+      implements: ['toy.casc.b'],
+      needs: { 'toy.casc.a': { mode: 'one', methods: ['echo'] } },
+    })
+    expect(
+      runSeed(root, [
+        { name: 'toy-casc-a', path: a1 },
+        { name: 'toy-casc-b', path: b },
+      ]).ok,
+    ).toBe(true)
+    const world1 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    const handle = await startAssembly({ root, world: world1, log })
+    handles.push(handle)
+    // 先确认 A、B 均已装载（握手完成后 A 才退出）
+    await waitFor(() => handle.loaded().some((x) => x.id === 'toy-casc-b'), 'B 随 A 初始装载', 8000)
+    // A 退出 → 连带隔离 A 与依赖者 B
+    await waitFor(
+      () =>
+        records.some((r) => r.kind === 'service' && r.event === 'exit' && r.impl === 'toy-casc-a'),
+      'A 退出并隔离',
+      8000,
+    )
+    await waitForQuiescence(() => records, 'A 连带隔离落地')
+    expect(handle.loaded().map((x) => x.id)).not.toContain('toy-casc-b')
+
+    // A 换成健康代码世代（不再退出）→ 复归 A，并连带复归自身世代未变的依赖者 B
+    const a2 = writeTempPackage(root, {
+      identity: 'toy-casc-a',
+      dir: 'toy-casc-a-v2',
+      implements: ['toy.casc.a'],
+    })
+    expect(runSeed(root, [{ name: 'toy-casc-a', path: a2 }]).ok).toBe(true)
+    const world2 = loadAnchor(join(root, 'state', 'world', 'journal.jsonl')).world
+    await handle.applyWorld(world2)
+
+    expect(records).toContainEqual(
+      expect.objectContaining({ kind: 'dep', event: 'rejoined', impl: 'toy-casc-b' }),
+    )
+    await waitFor(
+      () => handle.loaded().some((x) => x.id === 'toy-casc-b'),
+      '依赖者 B 连带复归装载',
+      8000,
+    )
+  }, 25000)
+
+  it("声明 exclusive:['data'] + state:'durable' → 换代走独占序（准备先于 drain），④ 目录跨代保留", async () => {
+    const identity = 'toy-data-excl'
+    const base = {
+      implements: ['toy.data'],
+      methods: { 'toy.data': ['echo'] },
+      start: 'node execute/main.js',
+      members: [{ kind: 'execute', path: 'execute/' }],
+      state: 'durable',
+      exclusive: ['data'],
+    }
+    // 先 seed v2、后 seed v1 ⇒ v1 active、v2 在案（与 swap-exclusive 同法）
+    const v2Root = writeTempPackage(root, {
+      identity,
+      dir: `${identity}-v2`,
+      ...base,
+      files: { 'execute/extra.js': '// v2\n' },
+    })
+    expect(runSeed(root, [{ name: identity, path: v2Root }]).ok).toBe(true)
+    const v1Root = writeTempPackage(root, { identity, dir: `${identity}-v1`, ...base })
+    expect(runSeed(root, [{ name: identity, path: v1Root }]).ok).toBe(true)
+    const anchor = loadAnchor(join(root, 'state', 'world', 'journal.jsonl'))
+    const world = anchor.world
+    const v1 = world.ids[identity].active as Hash
+    const v2 = world.ids[identity].gens[0].payload
+
+    let oldPid: number | undefined = -1
+    let oldAliveAtPrepare: boolean | null = null
+    const restore = async (cwd: string): Promise<void> => {
+      if (cwd.endsWith(v2)) oldAliveAtPrepare = isPidAlive(oldPid)
+    }
+    const handle = await startAssembly({ root, world, log, restore })
+    handles.push(handle)
+    oldPid = handle.endpoints.get(identity, v1, 'toy.data', 'echo')!.pid
+    expect(isPidAlive(oldPid)).toBe(true)
+
+    const next = cloneWorld(world)
+    const outcome = commit(
+      anchor.head,
+      next,
+      {
+        id: 't',
+        op: 'set_active',
+        target: { expect_pos: anchor.head.hash },
+        args: { id: identity, active: v2 },
+        by: 'test',
+      },
+      Date.now(),
+    )
+    expect(outcome.verdict.ok).toBe(true)
+    await handle.applyWorld(next)
+
+    // 独占序：准备（构建 / 物化）在旧实例仍服务时完成，随后才 drain 旧、spawn 新
+    expect(oldAliveAtPrepare).toBe(true)
+    await waitFor(() => !isPidAlive(oldPid), '旧服务 drain 后退出', 5000)
+    expect(handle.endpoints.get(identity, v2, 'toy.data', 'echo')).not.toBeNull()
+    expect(handle.endpoints.get(identity, v1, 'toy.data', 'echo')).toBeNull()
+    // ④ 目录按身份命名：代码换代不碰它
+    expect(existsSync(join(root, 'state', 'data', identity))).toBe(true)
+  }, 15000)
+})

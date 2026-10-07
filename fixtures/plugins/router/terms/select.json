@@ -1,0 +1,1 @@
+["call",["c",{"$ref":"terms/select.final.json"}],[["fold",["get",["v",0],["candidates"]],["obj",{"candidates":["get",["v",0],["candidates"]],"aliases":["getOr",["v",0],["aliases"],["c",[]]],"primary":["getOr",["v",0],["primary"],["c","model"]],"chosen":["c",null]}],["c",{"$ref":"terms/select.step.json"}]]]]

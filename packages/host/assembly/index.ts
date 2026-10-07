@@ -1,0 +1,79 @@
+// 装配包出口：只读世界的声明解析、源码打包计划、pins 闭包与装配计划。
+// 本包不 import effect / ledger 的写口——"不认识插件种类"由此成为 import 图上的事实。
+
+export { buildOwnerIndex, computeAssemblyPlan } from './closure.ts'
+export type { AssemblyPlan, DependencyEdge, IsolatedIdentity, IsolatedReason } from './closure.ts'
+export {
+  assemblyGen,
+  buildCommandIndex,
+  DEFAULT_SCHEMA_BODY,
+  effectivePins,
+  isCodeGen,
+  latestCodeGen,
+  latestDataGen,
+  listCommands,
+  needsBindingsOf,
+  parsePluginDecl,
+  readPluginDecl,
+  readPluginDeclOfGen,
+  resolveCommand,
+  resolveJudgmentHash,
+  resolveTreeBlob,
+  resolveTreeEntry,
+  resolveTreeJson,
+  termDefOf,
+} from './decl.ts'
+export type {
+  CommandDecl,
+  CommandIndex,
+  DeclRead,
+  JudgmentDecl,
+  NeedDecl,
+  NeedMode,
+  ParseDeclResult,
+  PluginBuildStep,
+  PluginCommand,
+  PluginDecl,
+  PluginMember,
+  SlotDecl,
+  TreeEntryRef,
+} from './decl.ts'
+export {
+  buildCapabilityIndex,
+  capabilityContract,
+  capabilityOwners,
+  capabilityProviders,
+  effectiveMethods,
+  implementedCaps,
+  manyNeedsMap,
+  manyNeedsOf,
+} from './capability-index.ts'
+export type { CapabilityIndex } from './capability-index.ts'
+export { classifyGenerationChange } from './generation.ts'
+export type { GenerationChange } from './generation.ts'
+export { commandArgsIssue, validateArgs, validateArgsSchema } from './args-schema.ts'
+export type { ArgsSchemaCheck } from './args-schema.ts'
+export {
+  declaredOwnerCaps,
+  orderEntriesForSeed,
+  planIngest,
+  planPack,
+  readPluginManifest,
+  resolveEntryRoot,
+  resolvePluginSourceRoot,
+} from './ingest.ts'
+export type { IngestPlan, IngestResult, PluginEntry } from './ingest.ts'
+export { validateEffDecls, walkEffs } from './eff-decls.ts'
+export type { EffDeclContext } from './eff-decls.ts'
+export { checkCompatibility } from './compat.ts'
+export { copyAssetsManifest, readAssetsManifest } from './assets-manifest.ts'
+export type { AssetManifestEntry, AssetsManifestRead } from './assets-manifest.ts'
+export {
+  gcMaterialized,
+  MATERIALIZED_KEEP_GENERATIONS,
+  materializeCommit,
+  materializedKeepSet,
+} from './materialize.ts'
+export type { MaterializedGcReport } from './materialize.ts'
+export { startAssembly } from './runtime.ts'
+export type { AssemblyRuntimeHandle, LoadedIdentity, StartAssemblyOptions } from './runtime.ts'

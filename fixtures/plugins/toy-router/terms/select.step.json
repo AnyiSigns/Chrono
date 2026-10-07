@@ -1,0 +1,1 @@
+["if",["pred","ne",["get",["v",0],["chosen"]],["c",null]],["v",0],["if",["call",["c",{"$ref":"terms/member.json"}],[["get",["v",0],["aliases"]],["v",1]]],["obj",{"candidates":["get",["v",0],["candidates"]],"aliases":["get",["v",0],["aliases"]],"primary":["get",["v",0],["primary"]],"chosen":["v",1]}],["v",0]]]

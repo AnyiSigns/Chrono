@@ -1,0 +1,31 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "pred",
+    "op": "ne",
+    "a": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["chosen"] },
+    "b": { "k": "lit", "v": null }
+  },
+  "then": { "k": "arg", "i": 0 },
+  "else": {
+    "k": "if",
+    "cond": {
+      "k": "call",
+      "ref": "terms/member.json",
+      "args": [
+        { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["aliases"] },
+        { "k": "arg", "i": 1 }
+      ]
+    },
+    "then": {
+      "k": "obj",
+      "fields": {
+        "candidates": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["candidates"] },
+        "aliases": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["aliases"] },
+        "primary": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] },
+        "chosen": { "k": "arg", "i": 1 }
+      }
+    },
+    "else": { "k": "arg", "i": 0 }
+  }
+}

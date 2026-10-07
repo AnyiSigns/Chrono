@@ -1,0 +1,9 @@
+dist/
+node_modules/
+package-lock.json
+plugin-sdk/rust/target/
+# 判定编译产物必须与编译器输出逐字节一致，不做格式化
+**/terms/
+# 夹具与第一方插件源码按原样保留（含 CJS 双引号风格）
+fixtures/
+plugins/

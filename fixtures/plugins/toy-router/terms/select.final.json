@@ -1,0 +1,1 @@
+["if",["pred","ne",["get",["v",0],["chosen"]],["c",null]],["get",["v",0],["chosen"]],["if",["call",["c",{"$ref":"terms/member.json"}],[["get",["v",0],["candidates"]],["get",["v",0],["primary"]]]],["get",["v",0],["primary"]],["c",{"ok":false,"error":{"code":"no_candidate"}}]]]

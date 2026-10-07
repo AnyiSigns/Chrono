@@ -1,0 +1,23 @@
+{
+  "k": "if",
+  "cond": {
+    "k": "pred",
+    "op": "ne",
+    "a": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["chosen"] },
+    "b": { "k": "lit", "v": null }
+  },
+  "then": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["chosen"] },
+  "else": {
+    "k": "if",
+    "cond": {
+      "k": "call",
+      "ref": "terms/member.json",
+      "args": [
+        { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["candidates"] },
+        { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] }
+      ]
+    },
+    "then": { "k": "get", "of": { "k": "arg", "i": 0 }, "path": ["primary"] },
+    "else": { "k": "lit", "v": { "ok": false, "error": { "code": "no_candidate" } } }
+  }
+}

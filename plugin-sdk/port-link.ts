@@ -1,0 +1,123 @@
+// 反向调用通道（服务 → 宿主，docs/protocol.md §2.4）：服务发 `port.call`，
+// 宿主按发出者 `needs` 绑定路由后回 `port.result` / `port.error`（按 id 配对）。
+// 失败作数据（结构化错误），不抛未捕获错误、不断通道。
+
+import { writeFrame, SERVICE_PROTOCOL_VERSION } from './wire.ts'
+import type { Json, Rec } from './json.ts'
+import type { PortCaller, PortCallOptions, PortOutcome } from './types.ts'
+
+export type { PortCallOptions } from './types.ts'
+
+/** 反向调用等待上限（通道兜底）。 */
+export const PORT_CALL_TIMEOUT_MS = 30000
+
+interface PendingCall {
+  resolve: (outcome: PortOutcome) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+export interface PortLinkOptions {
+  /** 发帧出口；缺省写 stdout（stdio 形态）。 */
+  write?: (message: Json) => void
+  /** 等待上限；缺省 `PORT_CALL_TIMEOUT_MS`。 */
+  timeoutMs?: number
+  /** 帧 id 前缀；缺省 `port`。 */
+  idPrefix?: string
+}
+
+/** 进程内默认前缀序号：未显式给 `idPrefix` 的实例各自取唯一前缀，避免多通道应答串链。 */
+let defaultLinkSeq = 0
+
+/** 反向调用通道：`call` 发 `port.call`，`settle` 结算宿主回帧。 */
+export class PortLink implements PortCaller {
+  private readonly pending = new Map<string, PendingCall>()
+  private seq = 0
+  private readonly write: (message: Json) => void
+  private readonly timeoutMs: number
+  private readonly idPrefix: string
+
+  constructor(options: PortLinkOptions = {}) {
+    this.write = options.write ?? writeFrame
+    this.timeoutMs = options.timeoutMs ?? PORT_CALL_TIMEOUT_MS
+    // 缺省前缀必须逐实例唯一：两条默认 PortLink 若都用 `port`，`settlePortLinks` 首命中会
+    // 把 B 的应答交给 A（seq 各从 1 起）。显式传 idPrefix 的调用方自担唯一性。
+    defaultLinkSeq += 1
+    this.idPrefix = options.idPrefix ?? `port-${defaultLinkSeq}`
+  }
+
+  call(
+    port: string,
+    method: string,
+    args: Rec,
+    options: PortCallOptions = {},
+  ): Promise<PortOutcome> {
+    this.seq += 1
+    const id = `${this.idPrefix}-${this.seq}`
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs
+    return new Promise<PortOutcome>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        resolve({ ok: false, code: 'transport_failed', message: `${port}.${method} timeout` })
+      }, timeoutMs)
+      timer.unref?.()
+      this.pending.set(id, { resolve, timer })
+      const frame: Rec = { v: SERVICE_PROTOCOL_VERSION, id, kind: 'port.call', port, method, args }
+      const callId = options.callId
+      if (typeof callId === 'string' && callId.length > 0) frame['call_id'] = callId
+      const provider = options.provider
+      if (typeof provider === 'string' && provider.length > 0) frame['provider'] = provider
+      try {
+        this.write(frame)
+      } catch (err) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        resolve({ ok: false, code: 'transport_failed', message: (err as Error).message })
+      }
+    })
+  }
+
+  /**
+   * 宿主侧应答入口：`port.result` / `port.error` 按 id 结算；返回是否已消费该帧。
+   * 只认本通道登记过的 id——多条反向通道共存时各链只结算自己的应答，不吞并他人。
+   */
+  settle(message: Rec): boolean {
+    const kind = message['kind']
+    if (kind !== 'port.result' && kind !== 'port.error') return false
+    const id = message['id']
+    if (typeof id !== 'string') return false
+    const entry = this.pending.get(id)
+    if (entry === undefined) return false
+    this.pending.delete(id)
+    clearTimeout(entry.timer)
+    if (kind === 'port.result') {
+      entry.resolve({ ok: true, value: (message['value'] ?? null) as Json })
+    } else {
+      entry.resolve({
+        ok: false,
+        code: typeof message['error'] === 'string' ? message['error'] : 'port_failed',
+        message: typeof message['message'] === 'string' ? message['message'] : '',
+      })
+    }
+    return true
+  }
+
+  /** 断连 / drain 时结算全部在途：失败作数据，不悬挂。 */
+  failAll(code = 'transport_failed'): void {
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer)
+      entry.resolve({ ok: false, code, message: 'link closed' })
+    }
+    this.pending.clear()
+  }
+}
+
+/**
+ * 依次尝试用多条反向通道结算同一帧：命中即返回 true（该帧归其登记通道）。
+ * 多条链共存时由 `createService` 的 `portLinks` 调用，无需插件自写逐一结算。
+ */
+export function settlePortLinks(links: readonly PortLink[], message: Rec): boolean {
+  for (const link of links) {
+    if (link.settle(message)) return true
+  }
+  return false
+}

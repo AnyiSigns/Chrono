@@ -1,0 +1,339 @@
+// 效果审计旁路侧存验收：追加 / 重载 / 保留淘汰 / 上限压实 / 半写安全 / 坏行跳过 / 查询等价。
+// 侧存不进世界、不进链、不参与重放，故这些用例只验证侧存自身与其内存索引。
+
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { H } from '../../kernel/index.ts'
+import type { Entry, Hash, Json, World } from '../../kernel/index.ts'
+import { AuditIndex } from '../audit.ts'
+import type { AuditDraft, AuditFilter, AuditRecord, AuditTierBudget } from '../audit.ts'
+import { AuditStore } from '../audit-store.ts'
+import { backfillAuditStore, readAuditBackfillMeta } from '../audit-backfill.ts'
+import { hostPaths } from '../paths.ts'
+import { createTempRoot, cleanupTempRoot } from './test-helpers.ts'
+
+describe('AuditStore 旁路侧存', () => {
+  let root: string
+  let file: string
+
+  beforeEach(() => {
+    root = createTempRoot()
+    file = join(root, 'state', 'audit', 'audit.jsonl')
+  })
+
+  afterEach(async () => {
+    await cleanupTempRoot(root)
+  })
+
+  function draft(
+    run: string,
+    outcome = 'ok',
+    emitter = 'toy',
+  ): { at: number; by: string; body: Json } {
+    return {
+      at: 1000,
+      by: 'host',
+      body: { kind: 'effect_audit', run, emitter, outcome },
+    }
+  }
+
+  function draftPort(port: string, run: string): { at: number; by: string; body: Json } {
+    return {
+      at: 1000,
+      by: 'host',
+      body: { kind: 'effect_audit', run, emitter: 'toy', outcome: 'ok', port },
+    }
+  }
+
+  function lines(): number {
+    if (!existsSync(file)) return 0
+    return readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((line) => line.length > 0).length
+  }
+
+  it('追加分配单调 seq；重载后索引与记录一致', () => {
+    const store = AuditStore.open(file)
+    const first = store.append(draft('r0'))
+    const second = store.append(draft('r1'))
+    expect(first.seq).toBe(0)
+    expect(second.seq).toBe(1)
+    expect(lines()).toBe(2)
+
+    const reopened = AuditStore.open(file)
+    expect(reopened.size()).toBe(2)
+    expect(reopened.records().map((r) => r.seq)).toEqual([0, 1])
+    // 续写接着已有 seq，不回退
+    expect(reopened.append(draft('r2')).seq).toBe(2)
+  })
+
+  it('条数保留窗口：超限淘汰最旧，磁盘压实到保留集', () => {
+    const store = AuditStore.open(file, { maxRecords: 3 })
+    for (let i = 0; i < 6; i++) store.append(draft(`r${i}`))
+    expect(store.records().map((r) => r.seq)).toEqual([3, 4, 5])
+    // 压实阈值缺省为保留窗口两倍（8MiB×2），此处未触发；显式压实后磁盘只剩保留集
+    store.compact()
+    expect(lines()).toBe(3)
+    const reopened = AuditStore.open(file, { maxRecords: 3 })
+    expect(reopened.records().map((r) => r.seq)).toEqual([3, 4, 5])
+  })
+
+  it('字节保留窗口：超限淘汰最旧', () => {
+    const store = AuditStore.open(file, { maxRecords: 1000, maxBytes: 10 })
+    store.append(draft('a'))
+    expect(store.records()).toEqual([])
+    expect(store.size()).toBe(0)
+  })
+
+  /** 声明式分档预算表：按端口给预算，未列端口归 default 档。 */
+  function budgetOf(
+    map: Record<string, AuditTierBudget>,
+  ): (port: unknown) => AuditTierBudget | undefined {
+    return (port) => (typeof port === 'string' ? map[port] : undefined)
+  }
+
+  it('声明式分档：单端口刷满不挤掉其他端口的记录；档内仍按最旧淘汰', () => {
+    const store = AuditStore.open(file, {
+      tierBudgetOf: budgetOf({
+        'storage-sql': { maxRecords: 3, maxBytes: 1_000_000 },
+        model: { maxRecords: 5, maxBytes: 1_000_000 },
+      }),
+    })
+    // 先放两条模型记录（模型档）
+    store.append(draftPort('model', 'm0'))
+    store.append(draftPort('model', 'm1'))
+    // 数据端口刷满自己的档（预算 3 条），挤掉的是本档最旧，不碰模型档
+    for (let i = 0; i < 6; i++) store.append(draftPort('storage-sql', `d${i}`))
+    const runs = store.records().map((record) => (record.body as { run: string }).run)
+    expect(runs).toContain('m0')
+    expect(runs).toContain('m1')
+    // 档内淘汰仍按最旧：只留最后 3 条
+    expect(runs.filter((run) => run.startsWith('d'))).toEqual(['d3', 'd4', 'd5'])
+  })
+
+  it('分档记录载入重放：磁盘超各档预算即按档压实', () => {
+    const budget = budgetOf({
+      'storage-sql': { maxRecords: 2, maxBytes: 1_000_000 },
+      model: { maxRecords: 2, maxBytes: 1_000_000 },
+    })
+    const store = AuditStore.open(file, { tierBudgetOf: budget })
+    store.append(draftPort('model', 'm0'))
+    store.append(draftPort('model', 'm1'))
+    store.append(draftPort('model', 'm2'))
+    store.append(draftPort('storage-sql', 'd0'))
+    store.append(draftPort('storage-sql', 'd1'))
+    store.append(draftPort('storage-sql', 'd2'))
+    const reopened = AuditStore.open(file, { tierBudgetOf: budget })
+    const runs = reopened.records().map((record) => (record.body as { run: string }).run)
+    expect(runs).toEqual(['m1', 'm2', 'd1', 'd2'])
+    expect(lines()).toBe(4)
+  })
+
+  it('半写安全：末行撕裂被丢弃并截断，随后追加不粘行', () => {
+    const store = AuditStore.open(file)
+    store.append(draft('ok'))
+    appendFileSync(file, '{"seq":99,"at":1,"by":"x","body":{') // 撕裂尾：无换行、非法 JSON
+    const reopened = AuditStore.open(file)
+    expect(reopened.size()).toBe(1)
+    expect(readFileSync(file, 'utf8').endsWith('\n')).toBe(true)
+    expect(reopened.append(draft('after')).seq).toBe(1)
+    expect(lines()).toBe(2)
+  })
+
+  it('半写安全：末段完整但缺尾换行按撕裂尾截断，追加不粘行、不静默丢后续记录', () => {
+    const store = AuditStore.open(file)
+    store.append(draft('r0'))
+    // 模拟第二条内容已写入但尾换行未持久化：末段是完整 JSON、无换行
+    appendFileSync(
+      file,
+      JSON.stringify({ seq: 1, at: 1000, by: 'host', body: { kind: 'effect_audit', run: 'r1' } }),
+    )
+    const reopened = AuditStore.open(file)
+    // 未终结段被截掉，只剩完整行
+    expect(reopened.records().map((r) => (r.body as { run: string }).run)).toEqual(['r0'])
+    expect(readFileSync(file, 'utf8').endsWith('\n')).toBe(true)
+    // 追加不粘行：新记录独立成行，重载可读，且未把后续记录一并吞掉
+    expect(reopened.append(draft('r2')).seq).toBe(1)
+    expect(lines()).toBe(2)
+    const reloaded = AuditStore.open(file)
+    expect(reloaded.records().map((r) => (r.body as { run: string }).run)).toEqual(['r0', 'r2'])
+  })
+
+  it('带换行的坏行跳过（fail-open），不影响后续记录', () => {
+    const store = AuditStore.open(file)
+    store.append(draft('a'))
+    appendFileSync(file, 'not-json\n')
+    store.append(draft('b'))
+    const reopened = AuditStore.open(file)
+    expect(reopened.size()).toBe(2)
+    expect(reopened.records().map((r) => (r.body as { run: string }).run)).toEqual(['a', 'b'])
+  })
+
+  it('查询等价：与 AuditIndex 同口径（run / emitter / outcome / limit / truncated / seq 降序）', () => {
+    const store = AuditStore.open(file)
+    const index = new AuditIndex()
+    const specs: Array<[string, string, string]> = [
+      ['r0', 'ok', 'x'],
+      ['r1', 'error', 'y'],
+      ['r1', 'transport_failed', 'x'],
+      ['r2', 'ok', 'z'],
+    ]
+    for (const [run, outcome, emitter] of specs) {
+      const record = store.append(draft(run, outcome, emitter))
+      index.add(record)
+    }
+    const filters: AuditFilter[] = [
+      {},
+      { run: 'r1' },
+      { emitter: 'x' },
+      { outcome: 'ok' },
+      { run: 'r1', outcome: 'error' },
+      { limit: 2 },
+    ]
+    for (const filter of filters) {
+      expect(store.query(filter)).toEqual(index.query(filter))
+    }
+    // seq 降序 + truncated
+    const limited = store.query({ limit: 1 })
+    expect(limited.records.map((r) => r.seq)).toEqual([3])
+    expect(limited.truncated).toBe(true)
+  })
+
+  it('重载后淘汰：磁盘超出保留窗口即压实', () => {
+    const store = AuditStore.open(file, { maxRecords: 5 })
+    for (let i = 0; i < 5; i++) store.append(draft(`r${i}`))
+    expect(lines()).toBe(5)
+    const reopened = AuditStore.open(file, { maxRecords: 2 })
+    expect(reopened.records().map((r) => r.seq)).toEqual([3, 4])
+    expect(lines()).toBe(2)
+  })
+
+  it('空侧存：open 不创建文件；append 才落盘', () => {
+    const store = AuditStore.open(file)
+    expect(store.size()).toBe(0)
+    expect(existsSync(file)).toBe(false)
+    store.append(draft('a'))
+    expect(existsSync(file)).toBe(true)
+  })
+})
+
+describe('历史审计一次性回填', () => {
+  let root: string
+  beforeEach(() => {
+    root = createTempRoot()
+  })
+  afterEach(async () => {
+    await cleanupTempRoot(root)
+  })
+
+  function auditDef(run: string): { def: { body: Json }; key: Hash } {
+    const def = { body: { kind: 'effect_audit', run, emitter: 'toy', outcome: 'ok' } }
+    return { def, key: H(def as unknown as Json) }
+  }
+
+  function putEntry(seq: number, at: number, by: string, def: { body: Json }): Entry {
+    return {
+      seq,
+      prev: null,
+      op: 'put',
+      args: def as unknown as Json,
+      argsHash: H(def as unknown as Json),
+      by,
+      at,
+    }
+  }
+
+  it('扫 entry 的 put args 回填侧存、写 meta、二次调用幂等', () => {
+    const paths = hostPaths(root)
+    const a = auditDef('r-old')
+    const world: World = { defs: { [a.key]: a.def }, ids: {} }
+    const entry = putEntry(3, 111, 'host', a.def)
+    const store = AuditStore.open(paths.auditFile)
+    const report = backfillAuditStore(paths, world, [entry], store)
+    expect(report.backfilled).toBe(1)
+    expect(store.records()).toHaveLength(1)
+    expect(store.records()[0]).toMatchObject({ seq: 0, at: 111, by: 'host' })
+    expect((store.records()[0].body as { run: string }).run).toBe('r-old')
+    expect(readAuditBackfillMeta(paths.auditMetaFile)).toEqual({
+      backfilled: true,
+      throughEntrySeq: 3,
+    })
+    // 幂等：再次调用不重复追加；重载侧存仍见
+    expect(backfillAuditStore(paths, world, [entry], store).backfilled).toBe(0)
+    expect(store.records()).toHaveLength(1)
+    expect(AuditStore.open(paths.auditFile).size()).toBe(1)
+  })
+
+  it('崩溃窗口（追加中途、meta 未写）重跑不重复：去重后只补尾部', () => {
+    const paths = hostPaths(root)
+    const defs: Record<Hash, { body: Json }> = {}
+    const entries: Entry[] = []
+    for (let i = 0; i < 3; i++) {
+      const a = auditDef(`r-${i}`)
+      defs[a.key] = a.def
+      entries.push(putEntry(i, 1000 + i, 'host', a.def))
+    }
+    const world: World = { defs, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    // 模拟崩溃：第一次只成功追加 1 条即抛错（此时 meta 尚未写）
+    let appended = 0
+    const flaky = {
+      records: () => store.records(),
+      append: (draft: AuditDraft) => {
+        if (appended >= 1) throw new Error('crash')
+        appended += 1
+        return store.append(draft)
+      },
+    } as unknown as AuditStore
+    expect(() => backfillAuditStore(paths, world, entries, flaky)).toThrow('crash')
+    expect(readAuditBackfillMeta(paths.auditMetaFile)).toBeNull()
+    expect(store.records()).toHaveLength(1)
+    // 重跑：识别已追加的 1 条，只补剩余 2 条，不产生重复
+    const report = backfillAuditStore(paths, world, entries, store)
+    expect(report.backfilled).toBe(2)
+    expect(store.records().map((r) => (r.body as { run: string }).run)).toEqual([
+      'r-0',
+      'r-1',
+      'r-2',
+    ])
+    // 落盘无重复：重载后仍是三条
+    expect(
+      AuditStore.open(paths.auditFile)
+        .records()
+        .map((r) => (r.body as { run: string }).run),
+    ).toEqual(['r-0', 'r-1', 'r-2'])
+  })
+
+  it('仅存于 base world 的审计 def（无对应 entry）也回填', () => {
+    const paths = hostPaths(root)
+    const a = auditDef('r-base')
+    const world: World = { defs: { [a.key]: a.def }, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    expect(backfillAuditStore(paths, world, [], store).backfilled).toBe(1)
+    expect(store.records()).toHaveLength(1)
+    expect((store.records()[0].body as { run: string }).run).toBe('r-base')
+  })
+
+  it('窗口裁剪：按 entry seq 升序回填全部候选（缺省保留窗口内）', () => {
+    const paths = hostPaths(root)
+    const defs: Record<Hash, { body: Json }> = {}
+    const entries: Entry[] = []
+    for (let i = 0; i < 5; i++) {
+      const a = auditDef(`r-${i}`)
+      defs[a.key] = a.def
+      entries.push(putEntry(i, 1000 + i, 'host', a.def))
+    }
+    const world: World = { defs, ids: {} }
+    const store = AuditStore.open(paths.auditFile)
+    const report = backfillAuditStore(paths, world, entries, store)
+    expect(report.backfilled).toBe(5)
+    expect(store.records().map((r) => (r.body as { run: string }).run)).toEqual([
+      'r-0',
+      'r-1',
+      'r-2',
+      'r-3',
+      'r-4',
+    ])
+  })
+})

@@ -1,0 +1,10 @@
+{
+  "k": "get",
+  "of": {
+    "k": "fold",
+    "coll": { "k": "ctx", "path": ["cands"] },
+    "init": { "k": "lit", "v": null },
+    "step": "terms/best.step.json"
+  },
+  "path": ["id"]
+}
